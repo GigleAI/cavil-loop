@@ -68,7 +68,7 @@ export interface FakeDesktop {
   /** the updater as the "shell" has it (GitHub#184; null = this build does not update itself) */
   update: any | null;
   /** a beat sent without `everyMs` is sent with 0: no gap after a round that ran over a beat (GitHub#324 — the test keeps the time; the gap itself is in test/unit/timed-sync.test.ts) */
-  push(ev: { kind: 'tick'; everyMs?: number } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' }): void;
+  push(ev: { kind: 'tick'; everyMs?: number } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' } | { kind: 'closeTab' }): void;
   /** the shell changed the updater's status: the window hears it the way it hears the real one */
   setUpdate(status: any): void;
 }
@@ -179,7 +179,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
           ok = await desktop.next();
         } else if (op === 'updateStatus') {
           ok = desktop.update;
-        } else if (op === 'checkUpdate' || op === 'restartToUpdate' || op === 'clearNotifications') {
+        } else if (op === 'checkUpdate' || op === 'restartToUpdate' || op === 'clearNotifications' || op === 'closeWindow') {
           desktop.records.push({ op });
         } else if (op === 'setAutoUpdate') {
           desktop.records.push({ op, on: args.on });

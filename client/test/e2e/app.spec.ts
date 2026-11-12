@@ -26,6 +26,41 @@ async function launch(env: Env) {
   return { app, page: app.page };
 }
 
+/** GitHub#397: the detail is a tab; putting it away = closing the tab in front (the board is the home tab behind it). */
+async function closeDetail(page: Page) {
+  const front = page.locator('[data-testid="tab"][data-front="yes"]');
+  const key = await front.getAttribute('data-key');
+  await front.getByTestId('tab-close').click();
+  await expect(page.locator(`[data-testid="tab"][data-key="${key}"]`)).toHaveCount(0);
+  // another tab may have come forward (the closed one's neighbour): the board is what the caller wants
+  if ((await page.getByTestId('tab-home').getAttribute('data-front')) !== 'yes') await page.getByTestId('tab-home').click();
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+}
+/** GitHub#397: the board (the home tab) in front, whatever tab was. */
+async function homeFirst(page: Page) {
+  if ((await page.getByTestId('tab-home').getAttribute('data-front')) !== 'yes') await goHome(page);
+}
+/** Type into the board's search box (GitHub#397: the board is the home tab — behind a detail tab it is brought forward first). */
+async function searchFill(page: Page, text: string) {
+  await homeFirst(page);
+  await page.getByTestId('search').fill(text);
+}
+/** Refresh by hand: the board's button — or, the board being behind a detail tab (GitHub#397), its key (the same action). */
+async function refreshNow(page: Page) {
+  if ((await page.getByTestId('tab-home').getAttribute('data-front')) === 'yes') await page.getByTestId('refresh').click();
+  else await page.keyboard.press('Control+r');
+}
+/** GitHub#397: back to the board, the detail's tab stays open behind it. */
+async function goHome(page: Page) {
+  await page.getByTestId('tab-home').click();
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+}
+/** GitHub#397: bring an open item's tab to the front again (its detail is a new opening: it reads again). */
+async function showTab(page: Page, n: number) {
+  await page.locator(`[data-testid="tab"][data-key="gigleai/cavil-loop#${n}"]`).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+}
+
 async function shot(page: Page, name: string) {
   await page.waitForTimeout(150);
   await page.screenshot({ path: join(screens, `${name}.png`) });
@@ -134,7 +169,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
 
   // iteration (default): each iteration column holds what the Project says, a PR counted where its issue is (GitHub#275)
   // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
@@ -176,7 +211,7 @@ test('browser login → board; restart skips login; sources; three column modes;
 
   // a source that fails mid-pagination keeps last round's data; the ⚠️ next to refresh says so (GitHub#248)
   env.fake.state.failProjectPage.set('org/gigleai/11', 1);
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   // GitHub#374: the failing page is asked twice more (after 1 s and 3 s) before the board counts as failed
   await expect(page.getByTestId('sync-trouble')).toBeVisible({ timeout: 15_000 });
   expect(await countOf(page, 'Iteration 25')).toBe('13');
@@ -218,7 +253,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   // back online, but the credential was revoked on GitHub
   env.fake.state.offline = false;
   env.fake.state.validTokens.clear();
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('login-reason')).toContainText('凭据已失效');
   expect(existsSync(env.cred)).toBe(false);
   await shot(page, '09-revoked');
@@ -316,7 +351,7 @@ async function signInWithSources(page: Page, iteration25 = '13') {
   // these tests are about the board, so switch back to it and clear the filter
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe(iteration25);
 }
@@ -354,6 +389,11 @@ async function openNotices(page: Page) {
 }
 
 const card = (page: Page, n: number) => page.locator(`[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`).first();
+/** Click an item's card on the board. GitHub#397: the board is the home tab — behind a detail tab it is brought forward first. */
+async function openCard(page: Page, n: number) {
+  await homeFirst(page);
+  await card(page, n).click();
+}
 const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
 
 test('detail newest first in an isolated view; labels, status, drag, reply + hand back, merge / refused merge, new issue; offline greys it all', async () => {
@@ -372,7 +412,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await signInWithSources(page);
 
   // ---- detail: newest first, GitHub's HTML in a sandboxed frame ----
-  await card(page, 138).click();
+  await openCard(page, 138);
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   const frameEl = page.getByTestId('timeline-frame');
@@ -390,11 +430,14 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   // ---- labels: add in the detail, remove on the card ----
   await pickLabel(page, 'Done');
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  // GitHub#397: the board is the home tab behind the detail's
+  await goHome(page);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
   await card(page, 138).hover();
   await card(page, 138).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toHaveCount(0);
+  await showTab(page, 138);
 
   // ---- status and milestone in the detail ----
   await detail.getByTestId('status-select').selectOption('In progress');
@@ -413,11 +456,14 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await shot(page, '22-replied');
   await detail.getByTestId('hand-back').click();
   await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已交给 agent');
+  await closeDetail(page);
   await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
   await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
 
   // ---- drag a card to another iteration: only that Project's value changes ----
+  // (the hand-back's notice is on the board now and puts itself away after 5 s: wait for it, or the cards move under the drag)
+  await expect(page.locator('[data-testid="board-bars"] [data-testid="op-notice"]')).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0, { timeout: 15_000 });
   const before137 = writes().length;
   await card(page, 137).dragTo(page.locator('[data-testid="column"][data-title="Iteration 26"]'));
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
@@ -428,19 +474,19 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
 
   // ---- PR: status next to the buttons; merge refused when a new commit was pushed; then merged ----
   await page.getByTestId('mode').selectOption('status');
-  await card(page, prN).click();
+  await openCard(page, prN);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   // GitHub#175: the merge method starts where it was last left in this repository
   await expect(page.getByTestId('merge-method')).toHaveValue('merge'); // nothing chosen yet: the first one allowed
   await page.getByTestId('merge-method').selectOption('squash');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   env.fake.state.w.mergeMethods.set('gigleai/cavil-loop', { merge: true, squash: false, rebase: true });
-  await card(page, prN).click();
+  await openCard(page, prN);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await expect(page.getByTestId('merge-method')).toHaveValue('merge'); // squash switched off meanwhile: first allowed…
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   env.fake.state.w.mergeMethods.delete('gigleai/cavil-loop');
-  await card(page, prN).click();
+  await openCard(page, prN);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await expect(page.getByTestId('merge-method')).toHaveValue('squash'); // …and that fallback was not remembered
   const pull = env.fake.state.w.pulls.get(`gigleai/cavil-loop#${prN}`)!;
@@ -463,13 +509,13 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
   await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已合并');
-  await expect(card(page, prN).getByTestId('card-state')).toContainText('已合并');
   expect(env.fake.writes().filter((w) => w.path.endsWith('/merge')).map((w) => w.body)).toEqual([
     { merge_method: 'squash', sha: seen },
     { merge_method: 'squash', sha: 'f'.repeat(40) },
   ]);
   await shot(page, '25-merged');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
+  await expect(card(page, prN).getByTestId('card-state')).toContainText('已合并');
 
   // ---- new issue: labels from the picker (GitHub's colours), joins the Project ticked in the dialog (GitHub#205) ----
   await page.getByTestId('write-entry').click();
@@ -498,16 +544,18 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   ]);
   // joined the ticked board (and, GitHub#276, set its current iteration when today is in one — pinned in its own test below)
   await expect.poll(() => writes().some((w) => w[0] === 'CavilAddProjectItem')).toBe(true);
+  // GitHub#397: the new issue opened in its own tab; the board is the home tab behind it
+  await goHome(page);
   await expect(card(page, next)).toBeVisible();
 
   // ---- offline: every change entry greys out, nothing is sent ----
   env.fake.state.offline = true;
-  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
-  await page.getByTestId('refresh').press('Enter');
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('write-entry')).toBeDisabled();
+  await showTab(page, next);
   await expect(page.getByTestId('reply-input')).toBeDisabled();
   await expect(page.getByTestId('label-add')).toBeDisabled();
-  await expect(page.getByTestId('write-entry')).toBeDisabled();
   await shot(page, '27-offline-detail');
   await app.close();
 });
@@ -536,11 +584,13 @@ test('GitHub#177: merging in the detail shows the issue it closes closed at once
   const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilProjectItems' && !(l.variables as any)?.after).length;
   const before = rounds();
 
-  await card(page, 146).click();
+  await openCard(page, 146);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
   await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已合并');
+  // GitHub#397: the board is the home tab behind the detail's
+  await goHome(page);
   // at once, with no sync round: the PR merged and the issue it closes closed, both still in their old columns
   // colours follow GitHub (#174): an issue a merge closed (completed) and a merged PR are both purple ("done")
   await expect(card(page, 139).getByTestId('card-state')).toHaveAttribute('data-tone', 'done');
@@ -578,9 +628,9 @@ test('a slow answer for the item you left never lands on the one you are looking
 
   // 1. #138's detail is slow; #137 is opened meanwhile and finishes first
   const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect.poll(() => env.fake.log.some((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138)).toBe(true);
-  await card(page, 137).click();
+  await openCard(page, 137);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
   await expect(frame.locator('body')).toContainText('BODY_137');
   releaseDetail();
@@ -616,7 +666,7 @@ test('a slow answer for the item you left never lands on the one you are looking
   const releaseWrite = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/labels'));
   await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/137/labels'))).toBe(true);
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   await expect(frame.locator('body')).toContainText('BODY_138');
   await page.getByTestId('reply-input').fill('写给 138 的草稿');
@@ -625,8 +675,10 @@ test('a slow answer for the item you left never lands on the one you are looking
   await expect(page.getByTestId('action-result')).toHaveCount(0);
   await expect(page.getByTestId('reply-input')).toHaveValue('写给 138 的草稿');
   await expect(frame.locator('body')).toContainText('BODY_138');
-  await expect(card(page, 137).locator('.label', { hasText: 'Done' })).toBeVisible();
   await shot(page, '29-left-behind-result');
+  await goHome(page);
+  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#137：已加上标签「Done」');
+  await expect(card(page, 137).locator('.label', { hasText: 'Done' })).toBeVisible();
   await app.close();
 });
 
@@ -648,16 +700,16 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   const detail = page.getByTestId('detail');
   const roundTrip = async () => {
-    await card(page, 137).click();
+    await openCard(page, 137);
     await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
-    await card(page, 138).click();
+    await openCard(page, 138);
     await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   };
 
   // the first opening of #138: its detail read and its label list are both slow
   const releaseDetail = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
   const releaseLabels = holdFirst((e) => e.method === 'GET' && /\/labels(\?|$)/.test(e.path));
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect.poll(() => env.fake.log.filter((l) => /\/labels(\?|$)/.test(l.path) && l.method === 'GET').length).toBe(1);
   // the data changes on GitHub; the slow answers already carry the old one
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_NEW</p>');
@@ -702,6 +754,8 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await detail.getByTestId('reply-send').click();
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/comments'))).toBe(true);
   await roundTrip();
+  // GitHub#397: unsent text stays with its tab — but text whose send is on its way is not unsent: the box comes back empty
+  await expect(detail.getByTestId('reply-input')).toHaveValue('');
   await detail.getByTestId('reply-input').fill('NEW_UNSENT_DRAFT_AFTER_RETURN');
   releaseSend();
   await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：评论已发出');
@@ -740,8 +794,8 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   const releaseLabel = holdFirst((e) => e.method === 'POST' && e.path.endsWith('/issues/138/labels'));
   await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
-  await page.getByTestId('detail-close').click();
-  await card(page, 138).click();
+  await closeDetail(page);
+  await openCard(page, 138);
   await detail.getByTestId('reply-input').fill('DRAFT_AFTER_REOPEN');
   releaseLabel();
   await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：已加上标签「Done」');
@@ -772,16 +826,18 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
     const n = rounds();
     app.desktop.push({ kind: 'tick' });
     await expect.poll(rounds).toBeGreaterThan(n);
-    await expect(page.getByTestId('refresh')).toBeEnabled();
+    await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 30_000 });
     await page.waitForTimeout(400);
   };
   await signInWithSources(page);
-  await card(page, 138).click();
+  await openCard(page, 138);
   const detail = page.getByTestId('detail');
   const frameEl = page.getByTestId('timeline-frame');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(frameEl).toHaveAttribute('data-ready', 'yes');
   await expect(frame.locator('details.entry')).toHaveCount(31);
+  /** GitHub#397: the item's own check (an item no complete read carries is read by itself, one request) */
+  const ownChecks = () => env.fake.log.filter((l) => l.operation === 'CavilItemRefresh' && l.variables?.number === 138).length;
 
   // ---- nothing changed on GitHub: no read, no redraw ----
   const render0 = await frameEl.getAttribute('data-render');
@@ -811,23 +867,39 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
   await expect(page.getByTestId('detail-error')).toHaveCount(0);
   await shot(page, '226-detail-follows-round');
 
-  // ---- every source carrying the item failed this round: its cached copy is no new data, no read ----
+  // ---- every source carrying the item failed this round: their cached copies are no new data. GitHub#397:
+  //      the tab then checks the item by itself (one request), and that check is what the detail follows ----
+  expect(ownChecks()).toBe(0); // so far the rounds carried it: never checked by itself
   env.fake.state.failProjectPage.set('org/gigleai/11', 0);
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
-  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_AFTER_FAILED_ROUND</p>');
-  touchItem(138);
+  // nothing changed on GitHub: the check finds the same update time, the detail is not read
   const reads1 = reads(138).length;
   await round();
+  await expect.poll(ownChecks).toBe(1);
+  await page.waitForTimeout(400);
   expect(reads(138).length).toBe(reads1);
+  // it changed. #138 is a closed issue: an ended item is checked every ten minutes, not with every round —
+  // the next round asks nothing (the timing itself is in test/unit/tabs-controller.test.ts) …
+  w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_AFTER_FAILED_ROUND</p>');
+  touchItem(138);
+  await round();
+  expect(ownChecks()).toBe(1);
+  expect(reads(138).length).toBe(reads1);
+  // … and the detail's refresh button checks it now and reads the detail
+  await detail.getByTestId('detail-refresh').click();
+  await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
+  await expect.poll(ownChecks).toBe(2);
+  const reads1b = reads(138).length;
+  expect(reads1b).toBeGreaterThan(reads1);
   env.fake.state.failProjectPage.clear();
   env.fake.state.failRepoPage.clear();
-  // the next complete round brings it — GitHub#374: sources that just failed wait a minute for the
-  // next automatic read, so this round is the refresh by hand (which never waits)
+  // the sources read again — GitHub#374: sources that just failed wait a minute for the next automatic
+  // read, so this round is the refresh by hand (which never waits; its key, the board being behind this tab)
   {
     const n = rounds();
-    await page.getByTestId('refresh').click();
+    await page.keyboard.press('Control+r');
     await expect.poll(rounds).toBeGreaterThan(n);
-    await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no');
+    await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 20_000 });
     await page.waitForTimeout(400);
   }
   await expect(frame.locator('body')).toContainText('BODY_AFTER_FAILED_ROUND');
@@ -918,7 +990,7 @@ test('GitHub#226: an open PR whose checks are still running is read every round 
     await page.waitForTimeout(400);
   };
   await signInWithSources(page);
-  await card(page, prN).click();
+  await openCard(page, prN);
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${prN}`);
   await expect(detail.getByTestId('pr-status')).toContainText('检查：进行中');
@@ -973,7 +1045,7 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
     await page.waitForTimeout(300);
   };
   await signInWithSources(page);
-  await card(page, prN).click();
+  await openCard(page, prN);
   await expect(page.getByTestId('pr-status')).toContainText('检查：进行中');
   const frameEl = page.getByTestId('timeline-frame');
   await expect(frameEl).toHaveAttribute('data-ready', 'yes');
@@ -1058,21 +1130,21 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   // a row's title opens the same detail panel as a card on the board (#138)
   await page.locator(`[data-testid="row"][data-key="${rows[0]}"] [data-testid="row-title"]`).click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', rows[0]);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.getByTestId('detail')).toHaveCount(0);
 
   // search: GitHub syntax, and Chinese in the middle of a word
-  await page.getByTestId('search').fill('label:pending/human');
+  await searchFill(page, 'label:pending/human');
   await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
-  await page.getByTestId('search').fill('客户端');
+  await searchFill(page, '客户端');
   await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBeGreaterThan(
     filterResults.find((r) => r.query === '客户端')!.server.length,
   );
 
   // words this client does not support: a yellow bar naming them, never "0 results"
-  await page.getByTestId('search').fill('label:pending/human updated:>2026-01-01 priority:High');
+  await searchFill(page, 'label:pending/human updated:>2026-01-01 priority:High');
   await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toContainText('priority:High');
   await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
@@ -1080,14 +1152,14 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   );
   await shot(page, '11-unsupported-words');
   // a Chinese custom field is named and ignored too, not searched as text
-  await page.getByTestId('search').fill('优先级:高 label:pending/human');
+  await searchFill(page, '优先级:高 label:pending/human');
   await expect(page.getByTestId('filter-unsupported')).toContainText('优先级:高');
   await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
 
   // customise: group by status, repository slices, fewer columns; then restart
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await page.getByTestId('open-view-panel').click();
   await page.getByTestId('group-by').selectOption('status');
   // the repository slices are on after an import (GitHub's API does not say whether the web view has them)
@@ -1160,7 +1232,7 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await expect(page.locator('[data-testid="slice"][data-value=""]')).toHaveClass(/on/);
 
   // repository first, alphabetical; zeta has only its own "no iteration" group
@@ -1256,7 +1328,7 @@ const cardsByColumn = (page: Page) =>
     cs.map((c) => [...c.querySelectorAll('[data-testid="card"]')].map((x) => [x.getAttribute('data-key')!, x.getAttribute('data-under')] as [string, string | null])),
   );
 
-test('GitHub#155: avatars; the detail floats over the board, keeps its dragged width; only the newest entry unfolded; PRs under their issue', async () => {
+test('GitHub#155: avatars; the detail fills its own tab (GitHub#397), the board behind it untouched; only the newest entry unfolded; PRs under their issue', async () => {
   const author138 = loadCavilProjectPages().flatMap((p: any) => p.items.nodes).find((n: any) => n.content?.number === 138)!.content.author.login as string;
   env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
     { id: 'C1', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>FIRST comment</p>', author: { login: 'user-2' } },
@@ -1280,16 +1352,23 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   expect(await loaded.first().evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
   await expect.poll(() => (existsSync(env.requests) ? readFileSync(env.requests, 'utf8') : '')).toMatch(/request https:\/\/avatars\.githubusercontent\.com\/[^?]+\?s=40\n/);
 
-  // ---- 2. the detail floats over the board, stuck to the right; the board keeps its width ----
+  // ---- 2. GitHub#397: the detail is a tab of its own — the whole window under the tab bar, its content centred;
+  //         the board behind it is laid out exactly as before ----
   const boardBefore = await page.locator('.board').boundingBox();
-  await card(page, 138).click();
+  await openCard(page, 138);
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
-  await expect(detail).toHaveAttribute('data-width', '560');
   expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
+  await expect(page.locator('.board')).not.toBeVisible();
   let box = (await detail.boundingBox())!;
-  expect(Math.round(box.x + box.width)).toBe(1280);
-  expect(Math.round(box.width)).toBe(560);
+  expect(Math.round(box.x)).toBe(0);
+  expect(Math.round(box.width)).toBe(1280);
+  expect(Math.round(box.y + box.height)).toBe(800);
+  const tabsBox = (await page.getByTestId('tabs').boundingBox())!;
+  expect(Math.round(box.y)).toBe(Math.round(tabsBox.y + tabsBox.height));
+  const head = (await detail.locator('.detail-head').boundingBox())!;
+  expect(head.width).toBeLessThanOrEqual(980);
+  expect(Math.abs(head.x + head.width / 2 - 640)).toBeLessThanOrEqual(2);
   await expect(detail.getByTestId('detail-people').locator('[data-testid="avatar"]').first()).toHaveAttribute('data-login', author138);
 
   // ---- 3. only the newest entry is unfolded; a folded one opens on a click; unfold all / fold all ----
@@ -1308,16 +1387,21 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   // (near the start of the line: the middle of it may be the "在网页上看" link)
   await frame.locator('details.entry[data-entry="C1"] > summary').click({ position: { x: 40, y: 10 } });
   await expect(frame.locator('details.entry[data-entry="C1"] .md')).toBeVisible();
-  // the keyboard is now inside the isolated discussion: Esc stays there and does not close the panel
-  // (PR #171: kept isolated by the maintainer's choice); a click on the panel outside it gives it back
+  // the keyboard is now inside the isolated discussion: Esc stays there and does not leave the tab
+  // (PR #171: kept isolated by the maintainer's choice); a click on the detail outside it gives it back
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   await detail.locator('.detail-title').click();
+  // Esc: back to the home tab — the item's tab stays open behind it
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
-  await card(page, 138).click();
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  await expect(page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#138"]')).toHaveCount(1);
+  expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
+  await openCard(page, 138);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(page.getByTestId('tab')).toHaveCount(1);
   await expect.poll(async () => (await folds())[0]).toEqual(['C3', true]);
   await page.getByTestId('unfold-toggle').click();
   await expect.poll(async () => (await folds()).every(([, open]) => open)).toBe(true);
@@ -1326,44 +1410,24 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   // the people in the discussion have avatars too
   await expect.poll(() => readFileSync(env.requests, 'utf8')).toContain('request https://avatars.githubusercontent.com/user-4?s=40\n');
 
-  // ---- 4. drag the left edge: wider; the board still does not move; the width is kept ----
-  const h = (await page.getByTestId('detail-resize').boundingBox())!;
-  const x0 = h.x + h.width / 2;
-  await page.mouse.move(x0, h.y + 200);
-  await page.mouse.down();
-  await page.mouse.move(x0 - 100, h.y + 200, { steps: 4 });
-  await page.mouse.move(x0 - 200, h.y + 200, { steps: 4 });
-  await page.mouse.up();
-  // 200px wider, give or take the sub-pixel position of the edge
-  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - 760)).toBeLessThanOrEqual(2);
-  const dragged = (await detail.getAttribute('data-width'))!;
-  expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
-  await shot(page, '41-detail-wider');
-  await page.keyboard.press('Escape');
-  await expect(detail).toHaveCount(0);
-  await card(page, 137).click();
-  await expect(detail).toHaveAttribute('data-width', dragged);
-  // a narrow window leaves a strip of the board uncovered; the kept width comes back when it is wide again
+  // ---- 4. a narrow window: the detail takes all of it; Esc in the reply box only leaves the box ----
   await page.setViewportSize({ width: 800, height: 800 });
-  await expect(detail).toHaveAttribute('data-width', '680');
+  box = (await detail.boundingBox())!;
+  expect(Math.round(box.width)).toBe(800);
+  expect(await detail.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(detail).toHaveAttribute('data-width', dragged);
-  // Esc while typing a reply does not close the panel (and so does not drop the draft)
   await detail.getByTestId('reply-input').fill('草稿');
   await detail.getByTestId('reply-input').press('Escape');
-  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(detail.getByTestId('reply-input')).toHaveValue('草稿');
   await app.close();
 
-  // a restart: the same width
+  // a restart: the tab is still there, behind the home tab
   ({ app, page } = await launch(env));
   await expect(card(page, 138)).toBeVisible({ timeout: 15_000 });
-  await card(page, 138).click();
-  await expect(page.getByTestId('detail')).toHaveAttribute('data-width', dragged);
-  // a card under the panel can still be reached: the board scrolls it out from under the panel
-  const covered = page.locator('[data-testid="column"] [data-testid="card"]').last();
-  await covered.click();
-  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', (await covered.getAttribute('data-key'))!);
-  await page.getByTestId('detail-close').click();
+  await expect(page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#138"]')).toHaveAttribute('data-front', 'no');
+  await page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#138"] [data-testid="tab-close"]').click();
+  await expect(page.getByTestId('tab')).toHaveCount(0);
 
   // ---- 5. PRs right under the issue they are linked to (columns by status: the recorded pairs share one) ----
   await page.getByTestId('mode').selectOption('status');
@@ -1447,10 +1511,10 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
 
   // offline with an unsupported word in the box: two bars; × closes only the one clicked
-  await page.getByTestId('search').fill(`-label:Done ${UNSUPPORTED}`);
+  await searchFill(page, `-label:Done ${UNSUPPORTED}`);
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('offline-close')).toHaveAccessibleName('关闭提示');
   await shot(page, '14-bars-with-close');
@@ -1476,17 +1540,17 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   // "unsupported words": closed → filter cleared (the bar is gone, so is the record) → same words again → back
   await page.getByTestId('filter-unsupported-close').click();
   await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
-  await page.getByTestId('search').fill('');
-  await page.getByTestId('search').fill(`-label:Done ${UNSUPPORTED}`);
+  await searchFill(page, '');
+  await searchFill(page, `-label:Done ${UNSUPPORTED}`);
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
   await expect(page.getByTestId('offline')).toHaveCount(0);
 
   // recovers, then goes offline again → shows again
   env.fake.state.offline = false;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect.poll(async () => (await syncOf(page)).offline, { timeout: 15_000 }).toBe(false); // the round really recovered
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
 
   // closed, then recovers and goes offline again while the settings page is up → shows again back on the board
@@ -1518,7 +1582,7 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
 
   // a source fails while filtering: no full-width bar, a ⚠️ left of refresh, not opened by itself
   env.fake.state.failProjectPage.set(P11, 1);
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   const btn = page.getByTestId('sync-trouble');
   await expect(btn).toBeVisible({ timeout: 15_000 });
   await expect(btn).toHaveAccessibleName('同步不完整：1 个来源读取失败（点开看详情）');
@@ -1563,17 +1627,17 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
 
   // no filter: the filter line goes, the source list stays (open while it changes)
   await btn.click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await expect(page.getByTestId('sync-trouble-filter')).toHaveCount(0);
   await expect(page.getByTestId('sync-trouble-source')).toHaveCount(1);
   await page.keyboard.press('Escape');
 
   // offline, not filtering: no ⚠️ (the offline bar says it); offline and filtering: ⚠️ with the filter line only
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(btn).toHaveCount(0);
-  await page.getByTestId('search').fill('label:x');
+  await searchFill(page, 'label:x');
   await expect(btn).toBeVisible();
   await btn.click();
   await expect(page.getByTestId('sync-trouble-filter')).toBeVisible();
@@ -1582,7 +1646,7 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
 
   // back online, still failing: both parts; then it recovers with the details open → ⚠️ and details go together
   env.fake.state.offline = false;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toHaveCount(0, { timeout: 15_000 });
   await btn.click();
   await expect(page.getByTestId('sync-trouble-source')).toHaveCount(1);
@@ -1593,7 +1657,7 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
 
   // fails again: the ⚠️ comes back closed
   env.fake.state.failProjectPage.set(P11, 1);
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(btn).toBeVisible({ timeout: 15_000 });
   await expect(panel).toHaveCount(0);
   env.fake.state.failProjectPage.clear();
@@ -1649,11 +1713,12 @@ test('on an engine without the newer web APIs (macOS 11 / Safari 14): sign in, s
   await signInWithSources(page);
   // the round really reached GitHub through the back end
   expect(env.fake.log.some((l) => l.path === '/api/graphql' && l.auth)).toBe(true);
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   await pickLabel(page, 'Done');
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels'))).toBe(true);
+  await goHome(page);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
   await expect(page.locator('[data-testid="sync-problem"]')).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -1718,7 +1783,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   // "did happen": both sources' first complete read is on the board, history and the seeded item included
   await page.getByTestId('back').click();
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill(`#${seeded}`);
+  await searchFill(page, `#${seeded}`);
   await expect(card(page, seeded)).toBeVisible({ timeout: 15_000 });
   await expect(card(page, seeded).locator('.label', { hasText: 'pending/human' })).toBeVisible();
   await expect.poll(() => env.fake.log.filter((l) => l.path.includes('/repos/GigleAI/cavil-loop/issues?') && l.status === 200).length).toBeGreaterThanOrEqual(2);
@@ -1759,10 +1824,10 @@ test('pending/human: nothing about the history at start, one notification per ne
   expect(itemNote.title).toBe(`待处理：GigleAI/cavil-loop#${fresh}`);
   await expect.poll(badge).toBe(1);
   // "did happen": that round read the merged PR with its label
-  await page.getByTestId('search').fill(`#${mergedPr}`);
+  await searchFill(page, `#${mergedPr}`);
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
   await expect(card(page, mergedPr).locator('.label', { hasText: 'pending/human' })).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   app.desktop.push({ kind: 'tick' });
   await page.waitForTimeout(800);
   expect(notes()).toHaveLength(1);
@@ -1787,7 +1852,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   releaseDetail();
   await expect(page.getByTestId('detail').getByTestId('detail-cached')).toHaveCount(0);
   // closed, then the settings page and back: an old click never reopens it
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.getByTestId('detail')).toHaveCount(0);
   await page.getByTestId('open-settings').click();
   await page.getByTestId('back').click();
@@ -1887,7 +1952,7 @@ test('GitHub#373: "which items remind" in Settings — every pending item by def
   // "did happen": that round read the other one with its label and its assignee
   await page.getByTestId('back').click();
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill(`#${theirs}`);
+  await searchFill(page, `#${theirs}`);
   await expect(card(page, theirs).locator('.label', { hasText: 'pending/human' })).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(500);
   expect(notes()).toEqual([`gigleai/cavil-loop#${mine}`]);
@@ -1917,9 +1982,9 @@ test('notifications refused by the system: the board says so and how to allow th
   await page.getByTestId('back').click();
   // adding the Project imported its saved web view (a table): back to the board to see the first read
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill(`#${first}`);
+  await searchFill(page, `#${first}`);
   await expect(card(page, first)).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await page.getByTestId('open-settings').click();
   putPending(first);
   app.desktop.push({ kind: 'tick' });
@@ -1980,9 +2045,9 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   const badge = page.getByTestId('detail-kind');
 
   const open = async (n: number) => {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, n).click();
+    await openCard(page, n);
     await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
   };
   /** the detail read finished (so a draft mark, if any, has arrived) */
@@ -2043,22 +2108,22 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   await expect(card(page, 149).getByTestId('card-state')).toHaveAttribute('data-tone', 'open');
   // … until the next sync brings the mark to the board too (ready → draft)
   draft(149, true, 'lists');
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(card(page, 149).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
   expect(await fg(card(page, 149).getByTestId('card-state'))).toBe(FG.neutral);
 
   // draft → ready: after a sync the card is green again, and so is the badge on the next opening
   draft(147, false);
-  await page.getByTestId('refresh').click();
-  await page.getByTestId('search').fill('#147');
+  await refreshNow(page);
+  await searchFill(page, '#147');
   await expect(card(page, 147).getByTestId('card-state')).toHaveAttribute('data-tone', 'open');
   await open(147);
   await loaded();
   await expect(badge).toHaveAttribute('data-tone', 'open');
   await expect(badge).toHaveText('Pull Request·开');
   draft(147, true);
-  await page.getByTestId('refresh').click();
-  await page.getByTestId('search').fill('#147');
+  await refreshNow(page);
+  await searchFill(page, '#147');
   await expect(card(page, 147).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
 
   // a detail read that fails: the panel says so, and the badge goes by the board's own read (here: not a draft) — nothing is guessed
@@ -2070,12 +2135,12 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   await expect(badge).toHaveText('Pull Request·开');
   expect(await bg()).toBe(BG.open);
   await shot(page, '32-badge-detail-failed');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // the table row: same colour rule
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   for (const [n, tone] of [[128, 'done'], [138, 'neutral'], [123, 'closed'], [137, 'open'], [147, 'neutral'], [129, 'closed'], [148, 'open']] as const) {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     const cell = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"] [data-testid="row-state"]`).first();
     await expect(cell, `table #${n}`).toHaveAttribute('data-tone', tone);
     expect(await fg(cell), `table #${n}`).toBe(FG[tone]);
@@ -2085,15 +2150,15 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   // a detail read that fails on a PR the board knows is a draft: the badge takes the board's mark (grey)
   draft(148, true, 'lists');
   env.fake.state.w.failDetail.add('gigleai/cavil-loop#148');
-  await page.getByTestId('refresh').click();
-  await page.getByTestId('search').fill('#148');
+  await refreshNow(page);
+  await searchFill(page, '#148');
   await expect(card(page, 148).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
   await open(148);
   // GitHub#229: #148 was opened above, so its last read shows and the failed read is said in small print
   await expect(page.getByTestId('detail-stale')).toBeVisible({ timeout: 15_000 });
   await expect(badge).toHaveAttribute('data-tone', 'neutral');
   await expect(badge).toHaveText('Pull Request·草稿');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // dark mode: GitHub's darker palette, white text still on a coloured badge
   await page.emulateMedia({ colorScheme: 'dark' });
@@ -2272,12 +2337,13 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await readableBoth(page, 'board', 100);
   await chipsTinted(page, '[data-testid="card"] .label', 'board card');
 
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
-  await readableBoth(page, 'detail', 100);
+  // GitHub#397: the detail is a tab of its own — only its own text is on screen (the board's is behind it), tab bar included
+  await readableBoth(page, 'detail', 15);
   await chipsTinted(page, '[data-testid="detail"] .label', 'detail');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   await page.getByTestId('open-view-panel').click();
@@ -2399,7 +2465,7 @@ test('GitHub#181 many sources: at 1024 and 1280 px every source in the top bar c
   await app.close();
 });
 
-test('GitHub#180: close an issue from the detail (reason + optional comment); the panel\'s own button says 收起 and keeps its Esc rules', async () => {
+test('GitHub#180: close an issue from the detail (reason + optional comment); Esc leaves the tab open and only goes back home (GitHub#397)', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   /** #n open on GitHub on every copy, whatever the recorded fixture captured */
   const openOnGitHub = (n: number) => {
@@ -2418,25 +2484,28 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   const detail = page.getByTestId('detail');
   const badge = page.getByTestId('detail-kind');
   const open = async (n: number) => {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, n).click();
+    await openCard(page, n);
     await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     // the detail read finished: the close entry depends on it
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
 
-  // ---- 1. the panel's own button: 收起, the Esc rules still told; it only puts the panel away ----
+  // ---- 1. GitHub#397: the detail is a tab. Esc goes back to the home tab and writes nothing; the tab stays;
+  //         closing the tab (its ×) is not closing the issue either ----
   await open(137);
-  const hide = page.getByTestId('detail-close');
-  await expect(hide).toHaveText('收起 ›');
-  await expect(hide).toHaveAttribute('title', '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）');
+  await expect(page.getByTestId('detail-close')).toHaveCount(0);
   await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…');
-  await shot(page, '50-issue-open-hide-button');
-  await hide.click();
+  await shot(page, '50-issue-open-in-its-tab');
+  await detail.locator('.detail-title').click();
+  await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
+  await expect(page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#137"]')).toHaveCount(1);
+  await page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#137"] [data-testid="tab-close"]').click();
+  await expect(page.getByTestId('tab')).toHaveCount(0);
   expect(env.fake.writes()).toEqual([]);
-  // Esc after a click into the discussion stays there; a click outside it, then Esc, puts the panel away
+  // Esc after a click into the discussion stays there; a click outside it, then Esc, goes back home
   await open(137);
   await page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry > summary').first().click({ position: { x: 40, y: 10 } });
   await page.keyboard.press('Escape');
@@ -2453,7 +2522,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(badge).toHaveAttribute('data-tone', 'open');
   await expect(page.getByTestId('close-pr')).toBeVisible();
   await expect(page.getByTestId('close-issue')).toHaveCount(0);
-  await hide.click();
+  await closeDetail(page);
 
   // ---- 3. close #137 as "not planned" with a comment ----
   await open(137);
@@ -2486,9 +2555,9 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(card(page, 137).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
   await expect(page.getByTestId('close-issue')).toHaveCount(0);
   await shot(page, '52-issue-closed');
-  await hide.click();
+  await closeDetail(page);
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  await page.getByTestId('search').fill('#137');
+  await searchFill(page, '#137');
   await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-state"]').first()).toHaveAttribute('data-tone', 'neutral');
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
 
@@ -2499,190 +2568,26 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）');
   expect(writes().slice(2)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
   await expect(badge).toHaveAttribute('data-tone', 'done');
-  await hide.click();
+  await closeDetail(page);
 
   // ---- 5. offline: the close entry greys out, nothing sent ----
   openOnGitHub(139);
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await open(139);
   await expect(page.getByTestId('close-issue')).toBeEnabled();
   const before = env.fake.writes().length;
   env.fake.state.offline = true;
-  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
-  await page.getByTestId('refresh').press('Enter');
-  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  // the refresh key: the board's own button is behind this tab
+  await page.keyboard.press('Control+r');
+  await expect(page.getByTestId('offline')).toBeAttached({ timeout: 15_000 });
   await expect(page.getByTestId('close-issue')).toBeDisabled();
   await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '离线时不能修改');
   expect(env.fake.writes()).toHaveLength(before);
   await app.close();
 });
 
-test('GitHub#191: a click outside the detail puts it away; cards and row titles switch; not inside, not with a dialog up, not with a reply typed', async () => {
-  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
-  for (const n of [137, 138]) {
-    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
-    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
-    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
-  }
-  // two entries on #138, so its detail has the "unfold all" switch
-  env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
-    { id: 'C-191', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
-  ]);
-  const { app, page } = await launch(env);
-  await signInWithSources(page);
-  const detail = page.getByTestId('detail');
-  const frame = page.frameLocator('[data-testid="timeline-frame"]');
-  /** a blank spot of the window outside the panel: the head of the leftmost column (not a card) */
-  const outside = () => page.locator('[data-testid="column"] .column-head').first().click({ position: { x: 4, y: 4 } });
-  const open = async (n: number) => {
-    await card(page, n).click();
-    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
-    await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
-  };
-  const stays = async (n: number) => {
-    await page.waitForTimeout(200);
-    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
-  };
-
-  // ---- 1. a plain click outside puts it away; nothing is sent ----
-  await open(137);
-  await outside();
-  await expect(detail).toHaveCount(0);
-  // the top bar is outside too
-  await open(137);
-  await page.locator('.hdr').click({ position: { x: 4, y: 4 } });
-  await expect(detail).toHaveCount(0);
-  // pressed just above the panel's top edge, let go just inside it (2px): the panel stays
-  // (the click itself goes to the common ancestor; PR #199 review round 1)
-  await open(137);
-  {
-    const b = (await detail.boundingBox())!;
-    const x = b.x + 40;
-    const [above, inside] = [Math.floor(b.y) - 1, Math.ceil(b.y) + 1];
-    // the two points really are on either side of the edge, and the one above is not a card
-    const hit = (y: number) =>
-      page.evaluate(([px, py]) => {
-        const el = document.elementFromPoint(px, py);
-        return { inPanel: !!el?.closest('[data-testid="detail"]'), card: !!el?.closest('[data-opens-item]') };
-      }, [x, y]);
-    expect(await hit(above)).toEqual({ inPanel: false, card: false });
-    expect((await hit(inside)).inPanel).toBe(true);
-    await page.mouse.move(x, above);
-    await page.mouse.down();
-    await page.mouse.move(x, inside);
-    await page.mouse.up();
-    await stays(137);
-    // …and the same press let go where it started still puts it away
-    await page.mouse.move(x, above);
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect(detail).toHaveCount(0);
-  }
-
-  // ---- 2. another card switches; the same card keeps this opening (its unfold state survives) ----
-  await open(137);
-  await card(page, 138).click();
-  await stays(138);
-  await page.getByTestId('unfold-toggle').click();
-  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-  await card(page, 138).click();
-  await stays(138);
-  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-
-  // ---- 3. inside the panel; a selection dragged from inside to outside ----
-  await detail.locator('.detail-title').click();
-  await detail.locator('.detail-head').click({ position: { x: 4, y: 4 } });
-  await stays(138);
-  const title = await detail.locator('.detail-title').boundingBox();
-  const head = await page.locator('[data-testid="column"] .column-head').first().boundingBox();
-  await page.mouse.move(title!.x + title!.width / 2, title!.y + title!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(head!.x + 4, head!.y + 4, { steps: 5 });
-  await page.mouse.up();
-  await stays(138);
-  // the resize edge: dragged and let go
-  const edge = await page.getByTestId('detail-resize').boundingBox();
-  await page.mouse.move(edge!.x + edge!.width / 2, edge!.y + 40);
-  await page.mouse.down();
-  await page.mouse.move(edge!.x - 60, edge!.y + 40, { steps: 5 });
-  await page.mouse.up();
-  await stays(138);
-
-  // ---- 4. a typed reply keeps the panel (and the reply); an emptied one does not ----
-  await detail.getByTestId('reply-input').fill('还没写完');
-  await outside();
-  await stays(138);
-  await expect(detail.getByTestId('reply-input')).toHaveValue('还没写完');
-  await detail.getByTestId('reply-input').fill('');
-  await outside();
-  await expect(detail).toHaveCount(0);
-
-  // ---- 5. the panel's own dialog: its backdrop closes the dialog only; the next click outside hides ----
-  await open(137);
-  await page.getByTestId('close-issue').click();
-  const dialog = page.getByTestId('confirm-dialog');
-  await expect(dialog).toBeVisible();
-  await dialog.click({ position: { x: 4, y: 4 } });
-  await expect(dialog).toHaveCount(0);
-  await stays(137);
-  await outside();
-  await expect(detail).toHaveCount(0);
-
-  // ---- 6. the board's own dialog ("加入看板？", dropping a card that is on no board) ----
-  await open(137);
-  // the panel floats over the right of the board: bring the last iteration column to the left
-  // edge, so it and 未加入看板 next to it are both clear of the panel, then drop an unboarded card there
-  const titles = await page.locator('[data-testid="column"]').evaluateAll((cs) => cs.map((c) => c.getAttribute('data-title') ?? ''));
-  const target = titles.slice(0, titles.indexOf('未加入看板')).filter((t) => t.startsWith('Iteration')).pop()!;
-  const targetCol = page.locator(`[data-testid="column"][data-title="${target}"]`);
-  await targetCol.evaluate((el) => el.scrollIntoView({ inline: 'start', block: 'nearest' }));
-  const panelLeft = (await detail.boundingBox())!.x;
-  const unboarded = page.locator('[data-testid="column"][data-title="未加入看板"] [data-testid="card"]').first();
-  const ub = (await unboarded.boundingBox())!;
-  expect(ub.x + ub.width).toBeLessThan(panelLeft);
-  await unboarded.dragTo(targetCol);
-  await expect(page.getByTestId('confirm-question')).toContainText('还没加入看板');
-  await stays(137);
-  await shot(page, '60-outside-click-board-dialog');
-  await dialog.click({ position: { x: 4, y: 4 } });
-  await expect(dialog).toHaveCount(0);
-  await stays(137);
-  await outside();
-  await expect(detail).toHaveCount(0);
-
-  // ---- 6b. the shortcut list (?) is a dialog too: its backdrop closes it, not the panel ----
-  await open(137);
-  await detail.locator('.detail-title').click();
-  await page.keyboard.press('?');
-  const help = page.getByTestId('shortcut-help');
-  await expect(help).toBeVisible();
-  await help.click({ position: { x: 4, y: 4 } });
-  await expect(help).toHaveCount(0);
-  await stays(137);
-  await outside();
-  await expect(detail).toHaveCount(0);
-
-  // ---- 7. the table: a row title opens / switches; a click elsewhere hides ----
-  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  const rowTitle = (n: number) => page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"] [data-testid="row-title"]`).first();
-  await rowTitle(137).click();
-  await stays(137);
-  await rowTitle(138).click();
-  await stays(138);
-  // the same row title again keeps this opening: its unfold state survives
-  await page.getByTestId('unfold-toggle').click();
-  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-  await rowTitle(138).click();
-  await stays(138);
-  await expect(page.getByTestId('unfold-toggle')).toHaveAttribute('data-unfold', 'all');
-  // a spot of the table page outside the title cells is outside too: the repository list's heading on the left
-  // (the panel covers every other column; the title cell itself opens, GitHub#257)
-  await page.locator('[data-testid="slices"] > .small.muted').click();
-  await expect(detail).toHaveCount(0);
-
-  expect(env.fake.writes()).toEqual([]);
-  await app.close();
-});
+// (GitHub#191's test — a click outside the floating detail put it away — went with that panel: since GitHub#397
+// the detail is a tab of its own, see tabs.spec.ts.)
 
 // ---- GitHub#192: keyboard shortcuts. Keys are pressed in the real window; what counts is what
 // the screen shows and what the fake GitHub received. Ctrl stands for ⌘ off macOS (both work). ----
@@ -2690,7 +2595,7 @@ const MOD = 'ControlOrMeta';
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const lastOnline = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.lastOnlineAt as number | null);
 
-test('GitHub#257: the whole title cell of a table row opens the detail — icon, number, blank space, a nested PR\'s indent; switches without hiding; other cells unchanged', async () => {
+test('GitHub#257: the whole title cell of a table row opens the detail — icon, number, blank space, a nested PR\'s indent; each in its own tab (GitHub#397); other cells unchanged', async () => {
   // two entries on #138, so its detail has the "unfold all" switch
   env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
     { id: 'C-257', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
@@ -2723,24 +2628,22 @@ test('GitHub#257: the whole title cell of a table row opens the detail — icon,
   await cellOf(a).click({ position: { x: box.width - 4, y: box.height / 2 } });
   await opened(a);
 
-  // 2. the state icon and the "repo #number" text of another row: switches, never hides first
+  // 2. the state icon and the "repo #number" text of other rows (GitHub#397: each opens its own tab, in front)
+  await goHome(page);
   await rowOf(b).getByTestId('row-state').click();
-  await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', b);
+  await goHome(page);
   await rowOf(c).locator('.title-cell .muted.small').click();
-  await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', c);
+  await expect(page.getByTestId('tab')).toHaveCount(3);
 
-  // 3. the same cell again keeps this opening (its unfold state survives)
+  // 3. the same cell again: the same tab comes forward, never a second one
   await opened(c);
-  const unfold = page.getByTestId('unfold-toggle');
-  await expect(unfold).toHaveCount(1);
-  await unfold.click();
-  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+  await goHome(page);
   await cellOf(c).click({ position: { x: (await cellOf(c).boundingBox())!.width - 4, y: 6 } });
-  await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', c);
-  await expect(unfold).toHaveAttribute('data-unfold', 'all');
+  await expect(page.getByTestId('tab')).toHaveCount(3);
+  await goHome(page);
 
   // 4. a PR nested under its issue: the indent left of the ↳ mark opens the PR
   const nested = page.locator('[data-testid="row"][data-under]').first();
@@ -2749,18 +2652,18 @@ test('GitHub#257: the whole title cell of a table row opens the detail — icon,
   const mark = (await nested.locator('.nest-mark').boundingBox())!;
   expect(mark.x - nb.x).toBeGreaterThan(16);
   await nested.getByTestId('title-cell').click({ position: { x: 6, y: nb.height / 2 } });
-  await page.waitForTimeout(200);
   await expect(detail).toHaveAttribute('data-key', prKey);
+  await goHome(page);
 
   // 5. the title link still works from the keyboard: focus it, Enter opens that row
   await rowOf(a).getByTestId('row-title').focus();
   await page.keyboard.press('Enter');
   await opened(a);
 
-  // 6. outside the title cells (the repository list's heading; the panel covers the other columns) puts it away
-  await page.locator('[data-testid="slices"] > .small.muted').click();
+  // 6. on the home tab: a cell that cannot be edited opens nothing; an editable one still edits in place
+  await goHome(page);
   await expect(detail).toHaveCount(0);
-  // with the panel away: a cell that cannot be edited opens nothing; an editable one still edits in place
+  const tabsNow = await page.getByTestId('tab').count();
   await rowOf(b).locator('[data-testid="cell"][data-col="updated"]').click();
   await page.waitForTimeout(200);
   await expect(detail).toHaveCount(0);
@@ -2768,6 +2671,7 @@ test('GitHub#257: the whole title cell of a table row opens the detail — icon,
   await labels.click();
   await expect(labels).toHaveAttribute('data-editing', 'yes');
   await expect(detail).toHaveCount(0);
+  await expect(page.getByTestId('tab')).toHaveCount(tabsNow);
   await shot(page, '257-title-cell');
 
   expect(env.fake.writes()).toEqual([]);
@@ -2796,7 +2700,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await page.keyboard.press('?');
   await expect(help).toBeVisible();
   expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
-    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
+    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'closeTab', 'nextTab', 'prevTab', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
     'graphFit', 'graphZoomIn', 'graphZoomOut', 'settingsBack', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
   ]);
   await shot(page, '60-shortcut-list');
@@ -2845,7 +2749,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await expect(dialog).toHaveCount(0, { timeout: 15_000 });
   // GitHub#229: the dialog closes before GitHub answers — wait for the write itself
   await expect.poll(() => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues').map((w) => (w.body as { title?: string } | undefined)?.title)).toEqual(['KEYS_NEW']);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await blur(page);
 
   // ---- 5. Settings (⌘,): every global key still works there ----
@@ -2926,7 +2830,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await app.close();
 });
 
-test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a draft, the label / milestone pickers send one change each, a dialog takes the keys first', async () => {
+test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc goes home and never drops a draft, the label / milestone pickers send one change each, a dialog takes the keys first', async () => {
   // #137 open on GitHub on every copy, whatever the recorded fixture captured (its "close issue" is used at the end)
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const c137 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
@@ -2940,7 +2844,7 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   const picker = detail.getByTestId('label-picker');
   const dialog = page.getByTestId('confirm-dialog');
   const open137 = async () => {
-    await card(page, 137).click();
+    await openCard(page, 137);
     await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
     await expect(detail.getByTestId('label-add')).toBeEnabled();
@@ -2985,32 +2889,29 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   await page.keyboard.press(`${MOD}+Shift+KeyP`);
   await expect(page.getByTestId('reply-preview')).toHaveCount(0);
 
-  // ---- 4. Esc and an unsent reply: the text is never dropped by a key ----
-  const hint = page.getByTestId('draft-esc-hint');
+  // ---- 4. Esc and an unsent reply (GitHub#397): Esc leaves the box, the next Esc goes back to the home tab —
+  //         the item's tab stays open and keeps the text, so a key never drops it ----
   await reply.fill('方案收到');
   await page.keyboard.press('Escape'); // leaves the reply box
   expect(await replyFocused()).toBe(false);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
-  await expect(hint).toHaveCount(0);
-  await page.keyboard.press('Escape'); // the panel stays, and says why
-  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
-  await expect(hint).toBeVisible();
+  await expect(reply).toHaveValue('方案收到');
+  await page.keyboard.press('Escape'); // back home; the tab is still there
+  await expect(detail).toHaveCount(0);
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  await expect(page.locator('[data-testid="tab"][data-key="gigleai/cavil-loop#137"]')).toHaveCount(1);
+  await showTab(page, 137);
   await expect(reply).toHaveValue('方案收到');
   await shot(page, '62-esc-keeps-draft');
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Escape');
-  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
-  await expect(reply).toHaveValue('方案收到');
-  // cleared: Esc leaves the box, the next Esc puts the panel away; reopened, the box is empty
+  // cleared: the same two keys; back in the tab, the box is empty
   await reply.fill('');
-  await expect(hint).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await open137();
   await expect(reply).toHaveValue('');
-  // an empty box from the start: R, Esc (leaves), Esc (puts away)
+  // an empty box from the start: R, Esc (leaves), Esc (home)
   await page.keyboard.press('r');
   await expect(reply).toBeFocused();
   await page.keyboard.press('Escape');
@@ -3018,6 +2919,7 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await open137();
+  await expect(page.getByTestId('tab')).toHaveCount(1);
 
   // ---- 5. L: the label picker. Typing filters (even "c" or "/"); ↑↓ choose; one Enter = one add or one remove ----
   const before = writes().length;
@@ -3118,7 +3020,7 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   });
   const msgs = () => page.evaluate(() => (window as any).__msgs as string[]);
   await signInWithSources(page);
-  await card(page, 138).click();
+  await openCard(page, 138);
   const iframe = page.getByTestId('timeline-frame');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
@@ -3190,9 +3092,9 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
 
   // ---- 6. offline: every box greys out, nothing sent ----
   env.fake.state.offline = true;
-  // from the keyboard: a click on the toolbar would put the panel away (GitHub#191)
-  await page.getByTestId('refresh').press('Enter');
-  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  // the refresh key (GitHub#397: the board's own button may be behind a detail tab)
+  await page.keyboard.press('Control+r');
+  await expect(page.getByTestId('offline')).toBeAttached({ timeout: 15_000 });
   await expect(box('C_Q', 0)).toBeDisabled();
   await expect(box('C_Q', 1)).toBeDisabled();
   expect(env.fake.writes()).toHaveLength(2);
@@ -3212,7 +3114,7 @@ test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirme
   const source = (id: string) => w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === id)!.body;
   const { app, page } = await launch(env);
   await signInWithSources(page);
-  await card(page, 138).click();
+  await openCard(page, 138);
   const iframe = page.getByTestId('timeline-frame');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
@@ -3302,11 +3204,11 @@ test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirme
   release = env.fake.holdWhen((e) => e.operation === 'CavilUpdateComment');
   await box('C_OLD', 0).click();
   await expect(waiting()).toHaveCount(1);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.getByTestId('timeline-frame')).toHaveCount(0);
   release();
   await expect.poll(() => env.fake.writes().length).toBe(3);
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   await page.getByTestId('unfold-toggle').click();
   await expect(box('C_OLD', 0)).toBeChecked();
@@ -3677,7 +3579,7 @@ test('GitHub#217: refresh while a round runs — the button and ⌘R start over;
   env.fake.state.w.bodies.set('gigleai/cavil-loop#137', '<p>BODY_217_OLD</p>');
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
-  await card(page, 137).click();
+  await openCard(page, 137);
   await expect(frame.locator('body')).toContainText('BODY_217_OLD', { timeout: 15_000 });
   const detailReads = () => env.fake.log.filter((e) => e.operation === 'CavilItemDetail').length;
   const release = holdFirst((e) => e.operation === 'CavilItemDetail');
@@ -3792,7 +3694,7 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   // GitHub#229: the dialog closes before GitHub answers — wait for the write itself
   await expect.poll(() => writes().slice(before).map((w) => [w[0], w[2]])).toEqual([['POST', { title: '只进仓库的 issue', body: '', labels: ['pending/human'] }]]);
   // the new issue opened in the detail: put it away first (a click outside it only does that, GitHub#191)
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // every source shown again: the same board starts ticked — the top filter plays no part (GitHub#231)
   await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').check();
   await page.getByTestId('write-entry').click();
@@ -3834,7 +3736,7 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
 
   const { app, page } = await launch(env);
   await signInWithSources(page);
-  await card(page, 138).click();
+  await openCard(page, 138);
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
@@ -3856,7 +3758,8 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
     ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
   ]);
-  await expect(card(page, 138).locator('.label', { hasText: 'autopilot' })).toBeVisible();
+  // (the board is the home tab behind this one, GitHub#397: its card carries the label)
+  await expect(card(page, 138).locator('.label', { hasText: 'autopilot' })).toBeAttached();
 
   // ---- 2. edit: only where GitHub allows it; the whole new text goes up, read back from GitHub ----
   await frame.locator('details.entry[data-entry="C_THEIRS"] > summary').click({ position: { x: 40, y: 10 } });
@@ -3896,19 +3799,19 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await detail.getByTestId('paste-image-web').click();
   await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop/issues/138\n');
   await detail.getByTestId('reply-input').fill('');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 4. a PR with a conflict: a red bar, and the merge button is off and says why ----
   await page.getByTestId('mode').selectOption('status');
-  await card(page, 146).click();
+  await openCard(page, 146);
   await expect(page.getByTestId('pr-conflict')).toContainText('有冲突');
   await expect(page.getByTestId('merge')).toBeDisabled();
   await expect(page.getByTestId('merge')).toHaveText('有冲突，不能合并');
   await shot(page, '205-08-conflict');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // no conflict: no bar, the button works as before
   Object.assign(pull, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
-  await card(page, 146).click();
+  await openCard(page, 146);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await expect(page.getByTestId('pr-conflict')).toHaveCount(0);
   await expect(page.getByTestId('merge')).toBeEnabled();
@@ -3940,7 +3843,7 @@ test('GitHub#205 (PR #220 review round 1): an item shown in two groups (two boar
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await page.getByTestId('open-view-panel').click();
   await page.getByTestId('group-by').selectOption('status');
   const labelsCol = page.locator('[data-testid="columns-pick"] input[data-col="labels"]');
@@ -4016,8 +3919,8 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n1}`);
   expect(writes().filter((w) => w[0] === 'CavilSetStatus')).toHaveLength(1);
+  await closeDetail(page);
   await expect(group('In progress').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n1}"]`)).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('detail-close').click();
 
   // a folded group has no "+"
   await group('In progress').getByTestId('group-toggle').click();
@@ -4059,8 +3962,8 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
     await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     const created = writes().filter((w) => w[0] === 'POST' && w[1] === '/api/repos/GigleAI/cavil-loop/issues').at(-1)!;
     expect(created[2]).toEqual({ title: `里程碑组 ${stale}`, body: '', labels: [], milestone: 5 });
+    await closeDetail(page);
     await expect(group('v1.2').locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`)).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId('detail-close').click();
   }
 
   // ---- 3. the milestone list cannot be read: shown, creating not offered ----
@@ -4075,8 +3978,9 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
 
   // ---- 4. offline: every "+" greys out ----
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').press('Enter');
-  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  // the refresh key (GitHub#397: the board's own button may be behind a detail tab)
+  await page.keyboard.press('Control+r');
+  await expect(page.getByTestId('offline')).toBeAttached({ timeout: 15_000 });
   await expect(page.getByTestId('group-add').first()).toBeDisabled();
   env.fake.state.offline = false;
   await app.close();
@@ -4120,7 +4024,7 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   await expect(detail.locator('[data-testid="milestone-select"] option', { hasText: 'v9' })).toHaveCount(1);
 
   // ③ re-opening: the last read shows at once, marked, while the new read is held
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 139);
   await card(page, 139).getByTestId('card-title').click();
   await expect(detail.getByTestId('detail-cached')).toContainText('正在更新');
@@ -4135,7 +4039,8 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   const issue = detail.locator('[data-testid="edit-issue"][data-field="label"]');
   await expect(issue).toHaveAttribute('data-edit', 'failed');
   await expect(issue.getByTestId('edit-target')).toContainText('加上「pending/PR」');
-  await expect(card(page, 139).getByTestId('card-edit-flag')).toBeVisible();
+  // (the board is the home tab behind this one, GitHub#397: its card and its bar say so)
+  await expect(card(page, 139).getByTestId('card-edit-flag')).toBeAttached();
   await expect(page.getByTestId('edits-bar')).toHaveAttribute('data-count', '1');
   await shot(page, '229-04-label-not-saved');
   env.fake.state.w.failLabel = null;
@@ -4171,7 +4076,7 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   await expect(detail.getByTestId('milestone-select')).toHaveValue('v9');
   await expect.poll(() => patches()).toBe(m0 + 1);
   await expect(detail.locator('[data-testid="edit-status"][data-field="milestone"]')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ⑥ the table: a click anywhere on a group heading folds it; the arrow still toggles once
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
@@ -4225,7 +4130,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await signInWithSources(page);
 
   // ---- 1. 托管: three paragraphs; "不再提示" unticked; cancel keeps asking; ticked + confirmed → no dialog next time ----
-  await card(page, 138).click();
+  await openCard(page, 138);
   const quick = page.getByTestId('detail').locator('.reply .row.end');
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）…');
   await quick.getByTestId('autopilot').click();
@@ -4248,9 +4153,9 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
   expect(writes().slice(b1)).toEqual(autopilotWrites(138));
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // another item: the button has no "…", one click writes, no dialog
-  await card(page, 139).click();
+  await openCard(page, 139);
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）');
   const b2 = writes().length;
   await quick.getByTestId('autopilot').click();
@@ -4274,12 +4179,12 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   for (const o of detailOptions.filter((o) => o.part === '当前')) expect(o.text).toContain('（当前）');
   // every iteration listed once, before or after today as its part says
   expect(new Set(detailOptions.map((o) => o.id)).size).toBe(detailOptions.length);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 3. table: "no iteration" last; a folded group stays folded across the board and a restart; per grouping ----
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   await expect(page.getByTestId('table')).toBeVisible();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await expect.poll(async () => (await tableShape(page)).length, { timeout: 15_000 }).toBeGreaterThan(1);
   await expect.poll(async () => (await tableShape(page)).at(-1)!.title).toBe('无迭代');
   const group = (title: string) => page.locator(`[data-testid="group"][data-title="${title}"]`);
@@ -4421,9 +4326,9 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   await signInWithSources(page);
   const detail = page.getByTestId('detail');
   const open = async (n: number) => {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, n).click();
+    await openCard(page, n);
     await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
@@ -4446,7 +4351,7 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   await expect.poll(() => env.fake.writes().filter((w) => w.method === 'PATCH').length).toBe(1);
   await shot(page, '250-01-closing-dialog-gone');
   // put away and opened again: the notice waited above the board, the close entry is still off
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.locator('[data-testid="op-notice"][data-key="gigleai/cavil-loop#137"]')).toBeVisible();
   await open(137);
   // GitHub already carried the close out (only its answer is held), so the detail reads it closed and
@@ -4463,7 +4368,7 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '做完了' }],
   ]);
   await shot(page, '250-02-closed');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 2. refused by GitHub: the reason is said; "重新关闭" brings back the reason and the comment ----
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
@@ -4514,7 +4419,7 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
     await page.getByTestId('new-issue-title').fill(title);
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-    await page.getByTestId('detail-close').click();
+    await closeDetail(page);
   };
 
   // ---- 1. first time: "只建 issue"; the plain request is exactly as before ----
@@ -4625,7 +4530,7 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
   await expect.poll(() => creates().at(-1)).toEqual({ title: '组里交给 agent', body: '', labels: ['pending/agent'] });
 
   // ---- 8. no autopilot label in Settings: no "托管" choice; a remembered autopilot falls back without being lost ----
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await page.getByTestId('open-settings').click();
   await page.getByTestId('hand-back-autopilot').fill('');
   await page.getByTestId('hand-back-autopilot').blur();
@@ -4646,9 +4551,9 @@ test('GitHub#250 (PR #255 code review round 1): a reply built from a kept commen
   await signInWithSources(page);
   const detail = page.getByTestId('detail');
   const open = async () => {
-    await page.getByTestId('search').fill('#137');
+    await searchFill(page, '#137');
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, 137).click();
+    await openCard(page, 137);
     await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
@@ -4669,7 +4574,7 @@ test('GitHub#250 (PR #255 code review round 1): a reply built from a kept commen
   await page.getByTestId('reply-send').click();
   await expect.poll(() => (env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).length).toBe(1);
   // the panel is put away before the answer comes
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   release();
   await expect(page.getByTestId('board-action-result')).toContainText('评论已发出');
   // opened again: the kept comment is gone with its draft; nothing offers to send it again
@@ -4688,9 +4593,9 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   for (const r of c0.rest) Object.assign(r, { state: 'open', state_reason: null });
   const { app, page } = await launch(env);
   await signInWithSources(page);
-  await page.getByTestId('search').fill('#137');
+  await searchFill(page, '#137');
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-  await card(page, 137).click();
+  await openCard(page, 137);
   await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   const notice = page.locator('[data-testid="detail"] [data-testid="op-notice"]').last();
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
@@ -4717,9 +4622,10 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   // GitHub#359: there is no "check again" button — the next sync round checks by itself: the comment list shows a
   // new comment with that text — the comment is done, "重新关闭" comes back without it
   await expect(notice.getByTestId('op-recheck')).toHaveCount(0);
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await openNotices(page);
-  await expect(notice.getByTestId('op-retry')).toBeVisible();
+  // (the round reads every source first, then checks: allow it its time)
+  await expect(notice.getByTestId('op-retry')).toBeVisible({ timeout: 20_000 });
   await notice.getByTestId('op-retry').click();
   await expect(page.getByTestId('close-comment')).toHaveValue('');
   await expect(page.getByTestId('close-reason-completed')).toBeChecked();
@@ -4736,8 +4642,8 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   for (const r of copies.rest) Object.assign(r, { state: 'open', state_reason: null });
   const { app, page } = await launch(env);
   await signInWithSources(page);
-  await page.getByTestId('search').fill('#138');
-  await card(page, 138).click();
+  await searchFill(page, '#138');
+  await openCard(page, 138);
   const detail = page.getByTestId('detail');
   await expect(detail.getByTestId('hand-back')).toBeVisible({ timeout: 15_000 });
   const adds = () => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138/labels' && ((w.body as any)?.labels ?? []).includes('pending/agent')).length;
@@ -4814,9 +4720,9 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await signInWithSources(page);
   const detail = page.getByTestId('detail');
   const open = async (n: number) => {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, n).click();
+    await openCard(page, n);
     await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
@@ -4847,13 +4753,13 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(inDetail(137)).toBeVisible();
   await ff(1_100);
   await expect(inDetail(137)).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // put away for good: not above the board either
   await expect(onBoard(137)).toHaveCount(0);
 
   // ---- 2. above the board: keyboard focus inside pauses it ----
   await closeIt(139);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // the notice may come up under the pointer (that pauses it, as it should): move it away first
   await page.mouse.move(5, 5);
   await expect(onBoard(139).getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）', { timeout: 15_000 });
@@ -4873,7 +4779,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await closeIt(142);
   await expect(inDetail(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(3_000);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await page.mouse.move(5, 5);
   await expect(onBoard(142)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
@@ -4919,13 +4825,13 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(inDetail(135)).toBeVisible();
   await ff(1_100);
   await expect(inDetail(135)).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 4. what stays: merged but the linked issues were not read; refused; closed with the comment refused ----
   // GitHub says "there is a next page" of the issues this PR closes without saying where: that read fails
   env.fake.state.w.closingIssuesPageSize = 0;
-  await page.getByTestId('search').fill('#146');
-  await card(page, 146).click();
+  await searchFill(page, '#146');
+  await openCard(page, 146);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并', { timeout: 15_000 });
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
@@ -4934,13 +4840,13 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   // GitHub#279: every step worked but the linked issues were not read — a warning (it used to read "ok"); the
   // linked issues stay unreadable to the end of this test, so every round's re-read keeps the problem
   await expect(inDetail(146)).toHaveAttribute('data-kind', 'warn');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
   await closeIt(136);
   await expect(inDetail(136)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   env.fake.state.w.readOnlyRepos.clear();
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   env.fake.state.w.failComment = true;
   await open(141);
@@ -4949,7 +4855,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await page.getByTestId('confirm-ok').click();
   await expect(inDetail(141).getByTestId('op-notice-text')).toContainText('附的评论没有发出去', { timeout: 15_000 });
   env.fake.state.w.failComment = false;
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   for (const n of [146, 136, 141]) await expect(onBoard(n)).not.toHaveAttribute('data-auto-dismiss', /./);
   await ff(60_000);
@@ -4965,7 +4871,7 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await expect(page.getByTestId('action-result')).toBeVisible();
   await ff(1_100);
   await expect(page.getByTestId('action-result')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await card(page, 144).hover();
   await card(page, 144).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
@@ -5004,14 +4910,14 @@ test('GitHub#296: a missed "pointer left" / "focus left" / "window back" never k
   };
   const onBoard = (n: number) => page.locator(`[data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
   const closeOnBoard = async (n: number) => {
-    await page.getByTestId('search').fill(`#${n}`);
+    await searchFill(page, `#${n}`);
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
-    await card(page, n).click();
+    await openCard(page, n);
     await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     await page.getByTestId('close-issue').click();
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-    await page.getByTestId('detail-close').click();
+    await closeDetail(page);
     await page.mouse.move(5, 5);
     await expect(onBoard(n).getByTestId('op-notice-text')).toHaveText(`issue #${n} 已关闭（已完成）`, { timeout: 15_000 });
     await expect(onBoard(n)).toHaveAttribute('data-auto-dismiss', 'counting');
@@ -5108,13 +5014,13 @@ test('GitHub#279: the close worked but the re-read right after it failed — a y
   const refreshes = () => env.fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === N).length;
   // the close goes through; only the one-item re-read after it fails
   env.fake.state.w.failRefresh.add(ITEM);
-  await page.getByTestId('search').fill(`#${N}`);
-  await card(page, N).click();
+  await searchFill(page, `#${N}`);
+  await openCard(page, N);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', ITEM);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   const notice = page.locator(`[data-testid="op-notice"][data-key="${ITEM}"]`);
   await expect(notice.getByTestId('op-notice-text')).toContainText('重读这一条失败', { timeout: 15_000 });
   expect(refreshes()).toBeGreaterThan(0);
@@ -5129,7 +5035,7 @@ test('GitHub#279: the close worked but the re-read right after it failed — a y
   // GitHub answers again: the next round re-reads it
   env.fake.state.w.failRefresh.delete(ITEM);
   const n = refreshes();
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(notice.getByTestId('op-notice-text')).toHaveText(`issue #${N} 已关闭（已完成）`, { timeout: 15_000 });
   expect(refreshes()).toBeGreaterThan(n);
   await expect(notice).toHaveAttribute('data-kind', 'ok');
@@ -5167,7 +5073,7 @@ test('GitHub#258: a status group\'s "+" with the board left unticked — the boa
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   const key = await page.getByTestId('detail').getAttribute('data-key');
   const n = Number(String(key).split('#')[1]);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   // not added by the client
   expect(writes().filter((w) => w[0] === 'CavilAddProjectItem')).toHaveLength(0);
 
@@ -5192,7 +5098,7 @@ test('GitHub#258: a status group\'s "+" with the board left unticked — the boa
   await app.close();
 });
 
-test('GitHub#260: the detail starts under the view bar and never moves — bars keep to its left, its own notices sit behind one button in the head, fields fold (remembered), the PR state is icons above send', async () => {
+test('GitHub#260: the detail starts under the tab bar (GitHub#397) and never moves — the board\'s bars are behind it, its own notices sit behind one button in the head, fields fold (remembered), the PR state is icons above send', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
   const prN = node.content.number as number;
@@ -5203,49 +5109,42 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   Object.assign(pull, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: 'SUCCESS', reviewDecision: null });
   let { app, page } = await launch(env);
   await signInWithSources(page);
-  // wide enough for the PR line to fit on one line (narrower, the buttons wrap under the icons)
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
-  await card(page, prN).click();
+  await openCard(page, prN);
   const detail = page.getByTestId('detail');
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   const topOf = (sel: string) => page.locator(sel).first().evaluate((e) => Math.round(e.getBoundingClientRect().top));
   const discussionTop = () => topOf('[data-testid="timeline-frame"]');
-  const vbarBottom = await page.locator('.vbar').evaluate((e) => Math.round(e.getBoundingClientRect().bottom));
-  expect(await topOf('[data-testid="detail"]')).toBe(vbarBottom);
+  // GitHub#397: the detail is a tab of its own — it starts right under the tab bar, whatever the board behind it shows
+  const tabsBottom = await page.getByTestId('tabs').evaluate((e) => Math.round(e.getBoundingClientRect().bottom));
+  expect(await topOf('[data-testid="detail"]')).toBe(tabsBottom);
   const t0 = await discussionTop();
 
-  // ---- 1. bars above the board appear: the panel and its discussion stay where they are; the bars keep to its left ----
-  // (keyboard, not clicks: a click outside the panel puts it away, GitHub#191)
-  await page.getByTestId('open-view-panel').press('Enter');
+  // ---- 1. bars on the board (behind this tab) appear: the detail and its discussion stay where they are ----
+  await goHome(page);
+  await page.getByTestId('open-view-panel').click();
   await expect(page.getByTestId('view-panel')).toBeVisible();
-  await page.getByTestId('search').fill(UNSUPPORTED);
+  await searchFill(page, UNSUPPORTED);
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
-  await expect(detail).toBeVisible();
-  expect(await topOf('[data-testid="detail"]')).toBe(vbarBottom);
-  expect(await discussionTop()).toBe(t0);
-  const panelLeft = (await detail.boundingBox())!.x;
-  for (const id of ['filter-unsupported', 'view-panel']) {
-    const b = (await page.getByTestId(id).boundingBox())!;
-    expect(b.x + b.width, id).toBeLessThanOrEqual(panelLeft);
-  }
-  // nothing covers a bar's own close button
-  const close = (await page.getByTestId('filter-unsupported-close').boundingBox())!;
-  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid]')?.getAttribute('data-testid'), [close.x + close.width / 2, close.y + close.height / 2])).toBe('filter-unsupported-close');
-  await shot(page, '260-01-bars-beside-detail');
-  // put away: the bars take the whole width again
-  await page.getByTestId('detail-close').click();
-  await expect(detail).toHaveCount(0);
+  // the bars have the whole width of the board
   const wide = (await page.getByTestId('filter-unsupported').boundingBox())!;
-  expect(wide.x + wide.width).toBeGreaterThan(panelLeft + 100);
-  await page.getByTestId('open-view-panel').press('Enter');
-  await expect(page.getByTestId('view-panel')).toHaveCount(0);
-  await page.getByTestId('search').fill('');
-  await card(page, prN).click();
+  expect(wide.width).toBeGreaterThan(1200);
+  await showTab(page, prN);
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-  // opened again, the panel first shows this run's cached copy with a one-line "read at HH:MM" note above
+  await expect(page.getByTestId('filter-unsupported')).not.toBeVisible();
+  expect(await topOf('[data-testid="detail"]')).toBe(tabsBottom);
+  // back in the tab, the detail first shows this run's cached copy with a one-line "read at HH:MM" note above
   // the discussion until the fresh read lands (GitHub#229); t0 was taken with no note (first opening).
   // Compare like with like: wait for the fresh read (PR #272 review round 2 — measured before it landed,
   // the discussion sat one note lower: 234 → 253 px, reproduced by holding the read)
+  await expect(page.getByTestId('detail-cached')).toHaveCount(0, { timeout: 15_000 });
+  expect(await discussionTop()).toBe(t0);
+  await shot(page, '260-01-detail-tab');
+  await goHome(page);
+  await page.getByTestId('open-view-panel').click();
+  await expect(page.getByTestId('view-panel')).toHaveCount(0);
+  await searchFill(page, '');
+  await showTab(page, prN);
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   await expect(page.getByTestId('detail-cached')).toHaveCount(0, { timeout: 15_000 });
   expect(await discussionTop()).toBe(t0);
 
@@ -5285,13 +5184,12 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
   await page.frameLocator('[data-testid="timeline-frame"]').locator('body').click({ position: { x: 20, y: 60 } });
   await expect(detail.getByTestId('detail-notices')).toBeHidden();
-  // the narrowest panel (360 px): every head button and the open notices stay inside it, nothing scrolls sideways
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 360 }));
-  await expect(detail).toHaveAttribute('data-width', '360');
+  // a narrow window (480 px): every head button and the open notices stay inside the detail, nothing scrolls sideways
+  await page.setViewportSize({ width: 480, height: 800 });
   await toggle.click();
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
   const panel = (await detail.boundingBox())!;
-  for (const id of ['detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
+  for (const id of ['detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-notices']) {
     const b = (await detail.getByTestId(id).boundingBox())!;
     expect(b.x, id).toBeGreaterThanOrEqual(panel.x);
     expect(b.x + b.width, id).toBeLessThanOrEqual(panel.x + panel.width);
@@ -5302,12 +5200,7 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.getByTestId('edit-resend')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(detail.getByTestId('detail-notices')).toBeHidden();
-  // the close button really is reachable: a click puts the panel away
-  await detail.getByTestId('detail-close').click();
-  await expect(detail).toHaveCount(0);
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
-  await card(page, prN).click();
-  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   // sent again once GitHub accepts: the kept change goes, the count follows
   env.fake.state.w.failLabel = null;
   await toggle.click();
@@ -5324,14 +5217,14 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.getByTestId('fields-toggle')).toHaveAttribute('data-shown', 'no');
   expect(tOpen - (await discussionTop())).toBeGreaterThanOrEqual(Math.floor(fieldsH));
   await shot(page, '260-03-fields-folded');
-  await page.getByTestId('detail-close').click();
-  await card(page, 137).click();
+  await closeDetail(page);
+  await openCard(page, 137);
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
   await expect(detail.getByTestId('detail-fields')).toHaveCount(0);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
-  await card(page, prN).click();
+  await openCard(page, prN);
   await expect(page.getByTestId('detail').getByTestId('detail-fields')).toHaveCount(0);
   await expect(page.getByTestId('detail').getByTestId('label-add')).toHaveCount(0);
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
@@ -5395,7 +5288,7 @@ test('GitHub#275: repository heading kept in view, lighter groups, rows under th
   await signInWithSources(page, '14'); // the PR named one more Iteration 25 issue
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   await expect(page.getByTestId('table')).toBeVisible();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   const C = 'repo:gigleai/cavil-loop';
   const group = (title: string) => page.locator(`[data-testid="group"][data-key^="${C}|"][data-title="${title}"]`);
   await expect(group('Iteration 25').getByTestId('row').first()).toBeVisible({ timeout: 15_000 });
@@ -5530,7 +5423,7 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   expect((writes().slice(before1)[2][2] as any).iterationId).toBe(CURRENT);
   const node1 = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((x: any) => x.content?.number === n1) as any;
   expect(node1.fieldValues.nodes.find((v: any) => v.__typename === 'ProjectV2ItemFieldIterationValue')?.title).toBe('Iteration 26');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 2. a "no iteration" group's "+": joined, no iteration; a "no status" group's "+": the current one ----
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
@@ -5548,7 +5441,7 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   await expect.poll(() => writes().filter((w) => w[0] === 'CavilAddProjectItem').length).toBe(2);
   await page.waitForTimeout(500);
   expect(iterationWrites().length).toBe(it0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await page.getByTestId('group-by').selectOption('status');
   await expect(group('无状态').getByTestId('group-add')).toBeEnabled({ timeout: 15_000 });
   await group('无状态').getByTestId('group-add').click();
@@ -5558,7 +5451,7 @@ test('GitHub#276: a new issue gets the current iteration of the ticked board —
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n3}`);
   await expect.poll(() => iterationWrites().length).toBe(it0 + 1);
   expect((iterationWrites().at(-1)![2] as any).iterationId).toBe(CURRENT);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 3. two iterations current at once (dates overlap): said under the boards, nothing guessed ----
   const field = env.fake.state.projects.get('org/gigleai/11')![0].fields.nodes.find((f: any) => f.__typename === 'ProjectV2IterationField') as any;
@@ -5609,14 +5502,14 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
   const input = page.getByTestId('edit-title-input');
 
   // ---- 1. no permission on GitHub: no button ----
-  await card(page, 137).click();
+  await openCard(page, 137);
   await expect(detail.getByTestId('detail-title')).toBeVisible();
   await expect(detail.getByTestId('detail-refresh')).toHaveAttribute('data-loading', 'no', { timeout: 15_000 });
   await expect(detail.getByTestId('detail-edit-title')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 2. an issue it may change: the dialog holds the title; a plain Enter, or ⌘↩ while composing, sends nothing ----
-  await card(page, 138).click();
+  await openCard(page, 138);
   const old = onGitHub(138);
   await detail.getByTestId('detail-edit-title').click();
   await expect(input).toHaveValue(old);
@@ -5668,30 +5561,31 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
   expect(onGitHub(138)).toBe('又一版');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 5. a PR, saved with the button, shown in the table ----
   await page.getByTestId('mode').selectOption('status');
-  await card(page, 146).click();
+  await openCard(page, 146);
   await detail.getByTestId('detail-edit-title').click();
   await input.fill('PR 的新标题');
   const b5 = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
   expect(writes().slice(b5)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/146', { title: 'PR 的新标题' }]]);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#146"] [data-testid="row-title"]').first()).toContainText('PR 的新标题');
   await expect(page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#138"] [data-testid="row-title"]').first()).toContainText('又一版');
 
   // ---- 6. offline: the button greys out, nothing is sent ----
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(detail.getByTestId('detail-edit-title')).toBeEnabled();
   fake.state.offline = true;
-  await page.getByTestId('refresh').press('Enter');
-  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  // the refresh key (GitHub#397: the board's own button may be behind a detail tab)
+  await page.keyboard.press('Control+r');
+  await expect(page.getByTestId('offline')).toBeAttached({ timeout: 15_000 });
   await expect(detail.getByTestId('detail-edit-title')).toBeDisabled();
   await expect(detail.getByTestId('detail-edit-title')).toHaveAttribute('title', '离线时不能修改');
   fake.state.offline = false;
@@ -5714,7 +5608,7 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
   await page.getByTestId('back').click();
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await page.getByTestId('mode').selectOption('status');
   const done = rawCountFollowing('Status', 'name')['Done'];
   await expect.poll(async () => (await columnCounts(page))['Done'], { timeout: 15_000 }).toBe(done);
@@ -5783,13 +5677,13 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
   await shot(page, '297-02-lane-folded');
 
   // a filter changes the folded lane's count; it stays folded
-  await page.getByTestId('search').fill('is:pr');
+  await searchFill(page, 'is:pr');
   await expect.poll(async () => Number(await loop.getByTestId('lane-count').textContent())).toBeLessThan(before);
   const prs = Number(await loop.getByTestId('lane-count').textContent());
   expect(prs).toBeGreaterThan(0);
   await expect(loop.locator('[data-testid="column"]')).toHaveCount(0);
   await expect(z).toHaveCount(0); // zeta has no PRs: no lane
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await expect(z).toHaveCount(1);
   await expect(loop.getByTestId('lane-count')).toHaveText(String(before));
 
@@ -5816,10 +5710,10 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
   await page.setViewportSize({ width: 720, height: 480 });
   app.desktop.setUpdate({ supported: true, current: '0.5.0', auto: true, channel: 'stable', devUnavailable: null, problem: null, phase: 'ready', version: '0.5.1', dismissed: null, last: null });
   await expect(page.getByTestId('update-ready')).toBeVisible();
-  await page.getByTestId('search').fill('updated:>2026-01-01');
+  await searchFill(page, 'updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await page.locator('.board').evaluate((el) => (el.scrollTop = 0));
   const doneCol2 = page.locator('[data-testid="lane"][data-lane="GigleAI/cavil-loop"] [data-testid="column"][data-title="Done"]');
@@ -5947,7 +5841,7 @@ test('GitHub#294: drag a table row to another group — the board\'s drop: set, 
 
   // ---- 6. offline: rows do not drag ----
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('[data-testid="row"]').first()).toBeVisible();
   expect(await page.locator('[data-testid="row"][draggable="true"]').count()).toBe(0);
@@ -6034,7 +5928,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await everywhere([B, A, C]);
   await shot(page, '304-01-lanes-after-restart');
 
@@ -6047,11 +5941,11 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   // ---- 6. the same round trip by the board's swimlane heads ----
   await dragRepo(lane(C), lane(A));
   await everywhere([C, A, B]);
-  await page.getByTestId('search').fill('kept');
+  await searchFill(page, 'kept');
   await expect.poll(lanes).toEqual([C, B]);
   await dragRepo(lane(B), lane(C));
   await expect.poll(lanes).toEqual([B, C]);
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await everywhere([B, A, C]);
   // dropped on the lower half: after the target
   await dragRepo(lane(B), lane(C), true);
@@ -6059,7 +5953,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
   await everywhere([A, C, B]);
 
   // ---- 7. a card dragged onto a swimlane head, a swimlane dragged onto a column: nothing changes, nothing is written ----
@@ -6158,7 +6052,7 @@ test('GitHub#323: the red result bar above the board has an × and goes by itsel
   // 4. the change turns out to be on GitHub (a refresh reads it): the bar goes by itself
   await unsure(137, 'Done');
   labelOnGitHub(137, 'Done');
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
   await expect(bar).toHaveCount(0);
 
@@ -6217,14 +6111,14 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
 
   /** a click on the board's bars may already have put the detail away */
   const putAway = async () => {
-    if (await page.getByTestId('detail').count()) await page.getByTestId('detail-close').click();
+    if (await page.getByTestId('detail').count()) await closeDetail(page);
     await expect(page.getByTestId('detail')).toHaveCount(0);
   };
 
   // 1. the detail is closed before GitHub refuses: the red bar lands on the board; abandoned → it goes by itself
   env.fake.state.w.failLabel = 'pending/PR';
   let release = await addHeld(139, 'pending/PR');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.getByTestId('detail')).toHaveCount(0);
   release();
   await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
@@ -6235,16 +6129,19 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
 
   // 2. another item is opened before GitHub refuses: the same; resent and accepted → it goes by itself
   release = await addHeld(139, 'pending/PR');
-  await card(page, 138).click();
+  await openCard(page, 138);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   release();
   await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   await expect(editsBar).toHaveAttribute('data-count', '1');
   env.fake.state.w.failLabel = null;
+  // GitHub#397: the board's bars are on the home tab, behind #138's
+  await goHome(page);
   await editsBar.getByTestId('edits-resend-all').click();
   await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
   await expect(bar).toHaveCount(0);
   await expect(card(page, 139).locator('.label', { hasText: 'pending/PR' })).toBeVisible();
+  await showTab(page, 138);
   await putAway();
 
   // 3. a comment that failed after its detail was closed is not a field change: a field change of the
@@ -6257,7 +6154,7 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
   await page.getByTestId('reply-input').fill('留在看板上的失败评论');
   await page.getByTestId('reply-send').click();
   await expect.poll(() => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments')).length).toBe(c0 + 1);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(page.getByTestId('detail')).toHaveCount(0);
   release();
   await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
@@ -6270,8 +6167,10 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
   await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
   env.fake.state.w.dropWrites = false;
   await expect(bar).toHaveText(kept ?? '');
+  await goHome(page);
   await editsBar.getByTestId('edits-abandon-all').click();
   await expect(editsBar).toHaveCount(0);
+  await showTab(page, 137);
   await putAway();
   await page.waitForTimeout(500);
   await expect(bar).toHaveText(kept ?? '');
@@ -6293,7 +6192,7 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   const { app, page } = await launch(env);
   await signInWithSources(page);
   await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
-  await card(page, prN).click();
+  await openCard(page, prN);
   const detail = page.getByTestId('detail');
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
@@ -6446,8 +6345,9 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
 
   // ---- 8. offline: the box cannot take text, a click on the card does nothing ----
   env.fake.state.offline = true;
-  await page.getByTestId('refresh').press('Enter');
-  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  // the refresh key (GitHub#397: the board's own button may be behind a detail tab)
+  await page.keyboard.press('Control+r');
+  await expect(page.getByTestId('offline')).toBeAttached({ timeout: 15_000 });
   await expect(reply).toBeDisabled();
   await expect(reply).toHaveAttribute('placeholder', '离线时不能回复');
   await blur(page);
@@ -6491,7 +6391,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
 
   // ---- 1. merge: on its way (blue, spinner) → accepted, waiting for GitHub's state (still blue, spinner, no tick) → read back (green, tick) → gone after 5 s ----
   const releaseMerge = env.fake.holdWhen((e) => e.method === 'PUT' && e.path === '/api/repos/GigleAI/cavil-loop/pulls/146/merge');
-  await card(page, 146).click();
+  await openCard(page, 146);
   await expect(page.getByTestId('pr-status')).toContainText('可以合并');
   await page.getByTestId('merge').click();
   await page.getByTestId('confirm-ok').click();
@@ -6504,7 +6404,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect(inDetail(146).getByTestId('op-notice-text')).toHaveText('PR #146 已合并（正在等 GitHub 的最新状态）');
   await looks(inDetail(146), 'busy', 'spin');
   // the same notice above the board says the same
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await expect(onBoard(146).getByTestId('op-notice-text')).toHaveText('PR #146 已合并（正在等 GitHub 的最新状态）');
   await looks(onBoard(146), 'busy', 'spin');
   const blue = await bg(onBoard(146));
@@ -6531,8 +6431,8 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   env.fake.state.w.failRefresh.add(KEY(138));
   let checkReads = 0;
   const releaseCheck = env.fake.holdWhen((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138 && ++checkReads > 0);
-  await page.getByTestId('search').fill('#138');
-  await card(page, 138).click();
+  await searchFill(page, '#138');
+  await openCard(page, 138);
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', KEY(138));
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
@@ -6541,7 +6441,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect(inDetail(138).getByTestId('op-notice-text')).toContainText('；正在查证…');
   await looks(inDetail(138), 'busy', 'spin');
   await expect(inDetail(138).getByTestId('op-recheck')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await looks(onBoard(138), 'busy', 'spin');
   await shot(page, '357-03-checking-blue');
   releaseCheck();
@@ -6560,7 +6460,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   // the re-read that failed earlier); then it is a plain success
   env.fake.state.w.failRefresh.delete(KEY(138));
   late.land();
-  await page.getByTestId('refresh').click();
+  await refreshNow(page);
   await expect(onBoard(138).getByTestId('op-notice-text')).toHaveText('issue #138 已关闭（已完成）', { timeout: 15_000 });
   await looks(onBoard(138), 'ok', 'check');
   expect(env.fake.writes().filter((w) => w.method === 'PATCH' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138')).toHaveLength(1);
@@ -6569,7 +6469,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect(onBoard(138)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(5_200);
   await expect(onBoard(138)).toHaveCount(0);
-  await page.getByTestId('search').fill('');
+  await searchFill(page, '');
 
   // ---- 3. a new issue its board refused: never retried (yellow) → "再试加入看板" on its way (blue, no button to click twice) → refused again (red, why) → on its way again (blue, the reason gone) → joined (gone) ----
   env.fake.state.w.readOnlyProjects.add('org/gigleai/11');
@@ -6580,7 +6480,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   const bar = page.locator('[data-testid="create-bar"][data-status="partial"]');
   await expect(bar).toContainText('没能加入看板', { timeout: 15_000 });
   // the new issue opened in the detail: put it away
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   await looks(bar, 'warn', 'warn');
   const joins = () => env.fake.log.filter((e) => e.operation === 'CavilAddProjectItem').length;
   const j0 = joins();
@@ -6708,7 +6608,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
 
   // ---- 3. the reply box: a C is a letter; ⌘N opens the dialog and the typed reply stays ----
   await page.keyboard.press(`${MOD}+1`);
-  await card(page, 138).click();
+  await openCard(page, 138);
   const reply = page.getByTestId('reply-input');
   await reply.click();
   await page.keyboard.type('cc');
@@ -6719,9 +6619,12 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect(dialog).toBeVisible();
   await expect(title).toBeFocused();
   await page.getByTestId('confirm-cancel').click();
+  // GitHub#397: the dialog is the board's — ⌘N went to the home tab; #138's tab is behind it and kept the text
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  await showTab(page, 138);
   await expect(reply).toHaveValue('cc');
   await reply.fill('');
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 4. a settings field: a C is a letter; ⌘N goes back to the board with the dialog; ⌘3 from settings shows the graph ----
   await page.keyboard.press(`${MOD}+,`);
@@ -6766,7 +6669,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect.poll(() => writes().slice(before).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem', 'CavilSetIteration']);
   expect(writes().slice(before)[0][2]).toEqual({ title: '选了迭代和里程碑', body: '', labels: [], milestone: 5 });
   expect((writes().slice(before)[2][2] as any).iterationId).toBe(NEXT);
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 6. "不设迭代": joined, no iteration written ----
   await page.getByTestId('write-entry').click();
@@ -6779,7 +6682,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await page.waitForTimeout(500);
   expect(writes().slice(before2).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem']);
   expect(writes().slice(before2)[0][2]).toEqual({ title: '不设迭代', body: '', labels: [] });
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
 
   // ---- 7. the milestone list cannot be read: the picker is off, a plain issue is still created ----
   env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
@@ -6791,7 +6694,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   const before3 = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect.poll(() => writes().slice(before3)[0]?.[2]).toEqual({ title: '读不到里程碑也能建', body: '', labels: [] });
-  await page.getByTestId('detail-close').click();
+  await closeDetail(page);
   env.fake.state.w.failMilestones.delete('gigleai/cavil-loop');
 
   // ---- 8. refused for sure: the draft comes back with the title focused (caret at its end) and both picks kept ----
@@ -6876,7 +6779,7 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
     frame = page.frameLocator('[data-testid="timeline-frame"]');
     blocks = frame.locator('details.entry[data-entry="C_CODE"] .cb');
     [sh, ts, plain] = [blocks.nth(0), blocks.nth(1), blocks.nth(2)];
-    await card(page, 138).click();
+    await openCard(page, 138);
     await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
     await page.getByTestId('unfold-toggle').click();
     await expect(iframe).toHaveAttribute('data-ready', 'yes');

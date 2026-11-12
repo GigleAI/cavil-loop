@@ -25,6 +25,8 @@ const PATHS = {
   key: <><circle cx="5" cy="11" r="2.8" /><path d="M7 9l6.5-6.5M11 5l1.8 1.8" /></>,
   bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3z" /><path d="M6.5 14.5h3" /></>,
   back: <path d="M10 3L5 8l5 5" />,
+  // GitHub#397: the home tab
+  home: <path d="M2.5 7.5L8 2.5l5.5 5v6h-3.6v-3.8H6.1v3.8H2.5z" />,
   chevron: <path d="M4 6l4 4 4-4" />,
   pencil: <><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /><path d="M9 4l3 3" /></>,
   // item states (same shapes as GitHub's: circle + dot, circle + tick, circle + slash, branch, merge)

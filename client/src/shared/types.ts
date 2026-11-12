@@ -1,6 +1,7 @@
 // Types shared by the main process, the data layer and the renderer.
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
+import type { TabInfo } from './tabs';
 import type { MergePrefs } from './mergePrefs';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
@@ -520,7 +521,7 @@ export interface ViewSettings {
   imported: ImportInfo | null;
   /** PRs shown right under the issue they are linked to, on the board and in the table (GitHub#155) */
   prsUnderIssues: boolean;
-  /** width of the floating detail panel, CSS px (GitHub#155) */
+  /** width of the floating detail panel, CSS px (GitHub#155). Not used since GitHub#397 (the detail fills a tab of its own); kept so that a saved view stays valid */
   detailWidth: number;
   /** labels / milestone / board fields shown in the detail panel; false = folded away (GitHub#260) */
   detailFields: boolean;
@@ -610,6 +611,12 @@ export interface AppState {
   notifyProblem: string | null;
   /** a notification was clicked: open this item's detail (`seq` changes on every click) */
   focus: { key: string; seq: number } | null;
+  /** GitHub#397: the open detail tabs, in order (the board is the fixed home tab, not in this list) */
+  tabs: TabInfo[];
+  /** GitHub#397: the label an agent's work in progress carries (a tab then shows "running"); '' = never shown */
+  doingLabel: string;
+  /** GitHub#397: the shell's "close" key was pressed (macOS: the menu's ⌘W); changes on every press, 0 = never */
+  closeTabReq: number;
   /** the app updating itself (GitHub#184); null = this build does not */
   update: UpdateStatus | null;
   /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
@@ -648,4 +655,6 @@ export interface BoardData {
    * before relations were read, and no full read succeeded since). Not "these have no relations".
    */
   relationsUnknown?: string[];
+  /** GitHub#397: the open tabs' items that `items` does not hold (a source unticked, or no source lists them any more) */
+  tabItems?: Item[];
 }

@@ -89,6 +89,22 @@ export interface CavilApi {
   /** who a new issue is handed to by default, as last chosen in the dialog (GitHub#245) */
   setNewIssueHandoff(h: Handoff): Promise<void>;
   /**
+   * Detail tabs (GitHub#397). `openTab`: false = no such item is known (nothing opens). The list
+   * itself is `state.tabs`; which tab is in front is the window's own.
+   */
+  openTab(key: string): Promise<boolean>;
+  closeTab(key: string): Promise<void>;
+  /** a tab dragged to position `to` of the list */
+  moveTab(key: string, to: number): Promise<void>;
+  /** the tab is in front and shows the item as of `updatedAt` (its "something new" dot goes) */
+  seenTab(key: string, updatedAt: string): Promise<void>;
+  /** the tab came to the front, or its refresh button: an item no complete read carries is checked now */
+  checkTab(key: string): Promise<void>;
+  /** the label an agent's work in progress carries ('' = never show "running") */
+  setDoingLabel(label: string): Promise<void>;
+  /** the shell's "close" key with no tab in front: close the window the way its close button does */
+  closeWindow(): Promise<void>;
+  /**
    * The local cavil-loop daemon (GitHub#314). Fixed requests only: the back end reads the daemon's
    * status script again before acting and decides every path, unit and command itself.
    */

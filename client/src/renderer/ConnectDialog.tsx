@@ -13,7 +13,6 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
 import { useLayer, useShortcuts } from './keyboard';
-import { MODAL } from './outsideClick';
 import { copyText } from './pasteImage';
 import { precheckRows, projectsFor, schedWord, type ConnectInfo, type ConnectOutcome, type ConnectPoll, type DirCheck, type Precheck2 } from '../shared/daemon';
 import type { DaemonState } from './DaemonSection';
@@ -203,7 +202,7 @@ export function ConnectDialog({ repo, onClose }: { repo: string; onClose: () => 
   useShortcuts({ cancel: close, confirm: () => (outcome ? close() : void start()) });
 
   return (
-    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="connect-dialog" onClick={close}>
+    <div className="modal-back" data-testid="connect-dialog" onClick={close}>
       <div className="modal connect" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
         <h3>把 {repo} 接上本机 daemon</h3>
         {!info && <p className="small">正在读本机 daemon…</p>}

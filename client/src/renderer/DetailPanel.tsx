@@ -8,12 +8,10 @@ import { pickMergeMethod } from '../shared/mergePrefs';
 import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
 import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
-import { usePanelWidth } from './panelWidth';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
-import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { Keys } from './ShortcutHelp';
@@ -32,13 +30,28 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
   completed: { name: '已完成', hint: '做完了 / 问题已解决' },
   not_planned: { name: '不计划', hint: '不做了、不是问题' },
 };
-/** the panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
-const HIDE_LABEL = '收起 ›';
 /** GitHub#322: clicks on these in the reply card do their own thing; a click anywhere else there goes to the reply box */
 const CARD_OWN_CLICK = 'button, select, a, input, textarea, label, summary, iframe, [tabindex], [contenteditable]';
 /** the reply box's least height: about four lines (also in styles.css, .reply textarea) */
 const REPLY_MIN_PX = 96;
-const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+
+/**
+ * GitHub#397: what a tab's detail holds that was not sent yet. Only one detail is mounted (the tab
+ * in front); the window keeps this per tab, so switching tabs never drops typed text.
+ */
+export interface TabDraft {
+  reply: string;
+  /** the reply box holds an operation's kept comment (GitHub#250) */
+  replyFromOp: string | null;
+  editing: { entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null;
+  titleEdit: { seen: string; text: string } | null;
+}
+
+/** Text that closing the tab would lose. */
+export function draftDirty(d: TabDraft | null | undefined): boolean {
+  if (!d) return false;
+  return d.reply.trim() !== '' || (d.editing !== null && d.editing.text !== d.editing.source) || (d.titleEdit !== null && d.titleEdit.text !== d.titleEdit.seen);
+}
 
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
 
@@ -333,21 +346,28 @@ export function DetailPanel({
   itemKey,
   state,
   data,
-  onClose,
+  onHome,
   onLeftBehind,
   intent,
+  draft,
+  onDraft,
 }: {
   itemKey: string;
   state: AppState;
   data: BoardData;
-  onClose: () => void;
+  /** Esc: back to the home tab (this tab stays open) */
+  onHome: () => void;
+  /** GitHub#397: what this tab held unsent when it was last in front, and where changes to it are reported */
+  draft?: TabDraft | null;
+  onDraft?: (d: TabDraft) => void;
   /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
   intent?: { opId: string; what: 'retry' | 'toReply' } | null;
   /** a change made on an item the panel has since left: its result goes to the board instead */
   /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
   onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
 }) {
-  const item = data.items.find((i) => i.key === itemKey) ?? null;
+  // GitHub#397: a tab's item may be one the view does not hold (no source lists it any more): the controller hands it over whole
+  const item = data.items.find((i) => i.key === itemKey) ?? data.tabItems?.find((i) => i.key === itemKey) ?? null;
   // One panel instance = one opening (the board gives every opening its own
   // React key). Every late answer goes through `session` (openSession.ts):
   // after the opening ended, or once a newer call of the same kind started,
@@ -366,13 +386,13 @@ export function DetailPanel({
   /** GitHub#229: label / milestone / status / iteration changes of this opening still waiting for GitHub (nothing waits for them, but a sync round does not read the detail meanwhile) */
   const [changing, setChanging] = useState(0);
   const [note, setNote] = useState<ResultNote | null>(null);
-  const [reply, setReply] = useState('');
+  const [reply, setReply] = useState(draft?.reply ?? '');
   const [preview, setPreview] = useState<string | null>(null);
   /** GitHub#205: the body / comment being edited (its source when the edit started), and the text so far */
-  const [editing, setEditing] = useState<{ entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null>(null);
+  const [editing, setEditing] = useState<{ entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null>(draft?.editing ?? null);
   const [editNote, setEditNote] = useState<ResultNote | null>(null);
   /** GitHub#299: the title being edited (the title shown when the edit started), and the text so far */
-  const [titleEdit, setTitleEdit] = useState<{ seen: string; text: string } | null>(null);
+  const [titleEdit, setTitleEdit] = useState<{ seen: string; text: string } | null>(draft?.titleEdit ?? null);
   const [titleNote, setTitleNote] = useState<ResultNote | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const titleOpen = titleEdit !== null;
@@ -394,11 +414,22 @@ export function DetailPanel({
   /** GitHub#250: the operation refused at once (nothing sent): said inside the dialog, which stays */
   const [dialogNote, setDialogNote] = useState<ResultNote | null>(null);
   /** GitHub#250: the reply box holds an operation's kept comment: sent = that draft is done */
-  const [replyFromOp, setReplyFromOp] = useState<string | null>(null);
+  const [replyFromOp, setReplyFromOp] = useState<string | null>(draft?.replyFromOp ?? null);
   /** the label / milestone picker that is open (GitHub#192) */
   const [picker, setPicker] = useState<'labels' | 'milestone' | null>(null);
-  /** Esc was pressed while the reply box held unsent text: the panel stayed, say why */
-  const [escKept, setEscKept] = useState(false);
+  // GitHub#397: the unsent text is the tab's, not this mounting's — reported on every change
+  const onDraftRef = useRef(onDraft);
+  onDraftRef.current = onDraft;
+  /**
+   * The reply text whose send is on its way. It is not "unsent text" any more: a tab left while
+   * the send runs comes back with an empty box, never with the text GitHub is already taking
+   * (sent twice otherwise). A send refused here puts it back: the box still holds it.
+   */
+  const [sendingReply, setSendingReply] = useState<string | null>(null);
+  useEffect(() => {
+    const inFlight = sendingReply !== null && sendingReply === reply;
+    onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit });
+  }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
   const offlineWhy = canWrite ? undefined : '离线时不能修改';
@@ -406,8 +437,12 @@ export function DetailPanel({
 
   // GitHub#226: the board's `updatedAt` of this item when the detail on screen was read. Set only
   // when a read lands: a read that was dropped, superseded or failed leaves it, so the next round tries again.
-  const itemRef = useRef(item);
-  itemRef.current = item;
+  // GitHub#397: the newest `updatedAt` known of the item. While a complete read carries it that is
+  // the board's copy; otherwise the tab's own check may know more than a cached source does.
+  const tabInfo = state.tabs.find((t) => t.key === itemKey) ?? null;
+  const knownAt = !item ? null : tabInfo && !tabInfo.listed && tabInfo.item.updatedAt > item.updatedAt ? tabInfo.item.updatedAt : item.updatedAt;
+  const knownRef = useRef(knownAt);
+  knownRef.current = knownAt;
   const readAt = useRef<string | null>(null);
   /** an automatic re-read failed: what is on screen was last confirmed by a read at this time (epoch ms) */
   const [autoFailed, setAutoFailed] = useState<number | null>(null);
@@ -425,7 +460,7 @@ export function DetailPanel({
   const load = useCallback(
     async (quiet = false) => {
       const mine = session.begin('detail');
-      const seen = itemRef.current?.updatedAt ?? null;
+      const seen = knownRef.current;
       setLoading(true);
       // GitHub#357: a read a person asked for starts over — the failure of the one before is not shown while it runs
       if (!quiet) setLoadError(null);
@@ -466,16 +501,29 @@ export function DetailPanel({
   }, [load, itemKey, session]);
   // GitHub#226: a sync round read a source carrying this item completely → maybe read the detail again.
   // The mark the panel opened with is not a new round (the opening read is already on its way).
+  // GitHub#397: an item no complete read carries has no round of its own: the tab's own check of it
+  // (the controller's, with every round) is its news — a new `updatedAt` is then the trigger.
   const mark = freshMark(item, state.sync.sources);
-  const lastMark = useRef(mark);
+  const trigger = mark !== null ? `round:${mark}` : knownAt !== null ? `own:${knownAt}` : null;
+  const lastMark = useRef(trigger);
   useEffect(() => {
-    if (mark === lastMark.current) return;
-    lastMark.current = mark;
-    if (mark === null) return;
-    if (shouldAutoRefresh({ item, readAt: readAt.current, detail, busy: busy || changing > 0, loading })) void load(true);
+    if (trigger === lastMark.current) return;
+    lastMark.current = trigger;
+    if (trigger === null) return;
+    if (shouldAutoRefresh({ item: knownAt === null ? null : { updatedAt: knownAt }, readAt: readAt.current, detail, busy: busy || changing > 0, loading })) void load(true);
     // only a new round decides; the values are this render's
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mark]);
+  }, [trigger]);
+  // GitHub#397: this tab is in front. An item no complete read carries is checked now (once per
+  // opening), and whatever `updatedAt` the tab shows is seen: the "something new" dot is for the
+  // tabs that are not in front.
+  useEffect(() => {
+    void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
+  }, [itemKey]);
+  const shownAt = knownAt;
+  useEffect(() => {
+    if (shownAt !== null) void Promise.resolve(api().seenTab(itemKey, shownAt)).catch(() => undefined);
+  }, [itemKey, shownAt]);
   // GitHub#229: the refresh button and "重试" read the labels / milestones again (a failed read used to stay until the panel closed)
   const [optsRound, setOptsRound] = useState(0);
   useEffect(() => {
@@ -713,17 +761,12 @@ export function DetailPanel({
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
-  const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
-  // GitHub#260: the labels / milestone / board fields can be folded away; remembered like the width
+  // GitHub#260: the labels / milestone / board fields can be folded away; remembered on this machine
   const [fieldsShown, setFieldsShown] = useState(state.view.detailFields);
   const showFields = (v: boolean) => {
     setFieldsShown(v);
     void Promise.resolve(api().setView({ detailFields: v })).catch(() => undefined);
   };
-  // the board leaves this much room to scroll past the panel (BoardView's spacer)
-  useEffect(() => {
-    document.documentElement.style.setProperty('--detail-space', `${width}px`);
-  }, [width]);
   // ---- keyboard (GitHub#192): each key presses a button, behind that button's own enabled condition ----
   const sendBlocked = !item || !canWrite || busy || !reply.trim();
   const previewBlocked = !item || !canWrite || !reply.trim();
@@ -732,12 +775,13 @@ export function DetailPanel({
   const send = async () => {
     if (!item) return;
     // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
+    setSendingReply(reply);
     const r = await run({ kind: 'comment', key: item.key, body: reply, ...(replyFromOp ? { draftOf: replyFromOp } : {}) }, '评论已发出');
+    if (r.here) setSendingReply(null);
     if (r.ok && r.here) {
       setReplyFromOp(null);
       setReply('');
       setPreview(null);
-      setEscKept(false);
       setPasted(null);
     }
   };
@@ -814,17 +858,12 @@ export function DetailPanel({
       setPicker('milestone');
     },
     reply: focusReply,
-    // Esc puts the panel away — never while the reply box holds unsent text: a key never drops a draft.
-    // (Dialogs and pickers are layers: their Esc never gets here. Neither does a key pressed inside the
-    // isolated discussion frame — PR #171, the maintainer chose to keep it isolated; its one script
-    // reports ticked boxes and the view (GitHub#193) and a bare R (GitHub#322), never any other key.)
-    hide: () => {
-      if (reply.trim()) {
-        setEscKept(true);
-        return;
-      }
-      onClose();
-    },
+    // GitHub#397: Esc goes back to the home tab; this tab stays open and keeps its unsent text, so a
+    // key never drops a draft. (Dialogs and pickers are layers: their Esc never gets here. Neither does
+    // a key pressed inside the isolated discussion frame — PR #171, the maintainer chose to keep it
+    // isolated; its one script reports ticked boxes and the view (GitHub#193) and a bare R (GitHub#322),
+    // never any other key.)
+    hide: () => onHome(),
     send: () => {
       if (!sendBlocked) void send();
     },
@@ -834,40 +873,7 @@ export function DetailPanel({
     leaveReply: () => replyBox.current?.blur(),
   });
 
-  // A click outside the panel puts it away (GitHub#191; the rule is outsideClick.ts): not on a card or
-  // a row title (those switch items), not while a dialog was open, not with a reply typed.
   const panelRef = useRef<HTMLElement | null>(null);
-  const draftRef = useRef(reply);
-  draftRef.current = reply;
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    let press: Press | null = null;
-    let release: Release | null = null;
-    const down = (e: PointerEvent) => {
-      press = pressAt(e, panelRef.current);
-      release = null;
-    };
-    // where the button really went up: the click's own target is the common ancestor of press and release
-    const up = (e: PointerEvent) => {
-      release = releaseAt(e, panelRef.current);
-    };
-    const click = (e: MouseEvent) => {
-      const p = press;
-      const r = releaseOfClick(e, release);
-      press = null;
-      release = null;
-      if (hidesPanel(p, r, draftRef.current)) closeRef.current();
-    };
-    window.addEventListener('pointerdown', down, true);
-    window.addEventListener('pointerup', up, true);
-    window.addEventListener('click', click, true);
-    return () => {
-      window.removeEventListener('pointerdown', down, true);
-      window.removeEventListener('pointerup', up, true);
-      window.removeEventListener('click', click, true);
-    };
-  }, []);
   // ---- GitHub#250: this item's operations ----
   const myOps = state.ops.filter((r) => r.key === itemKey);
   const lock = opLockOf(state.ops, itemKey);
@@ -905,10 +911,9 @@ export function DetailPanel({
   const shell = (key: string | undefined, children: React.ReactNode) => (
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
-    <aside ref={panelRef} className={`detail${dragging ? ' resizing' : ''}`} data-testid="detail" data-key={key} style={{ width }} data-width={width} tabIndex={-1}>
-      <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
+    <section ref={panelRef} className="detail" data-testid="detail" data-key={key} tabIndex={-1}>
       {children}
-    </aside>
+    </section>
   );
 
   if (!item) {
@@ -916,11 +921,9 @@ export function DetailPanel({
       undefined,
       <>
         <div className="detail-head">
-          <span className="muted">这一条已不在当前视图里</span>
-          <div className="spacer" />
-          <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
-            {HIDE_LABEL}
-          </button>
+          <span className="muted" data-testid="detail-gone">
+            这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。
+          </span>
         </div>
       </>,
     );
@@ -1034,6 +1037,8 @@ export function DetailPanel({
           onClick={() => {
             void load();
             rereadOptions();
+            // GitHub#397: an item no complete read carries: its tab's own check too
+            void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
           }}
           data-testid="detail-refresh"
           data-loading={loading ? 'yes' : 'no'}
@@ -1041,9 +1046,6 @@ export function DetailPanel({
           title={loading ? '读取中…（点一下：重新读取）' : '刷新这一条（连同标签 / 里程碑列表）'}
         >
           <Icon name="refresh" />
-        </button>
-        <button className="ghost" onClick={onClose} data-testid="detail-close" title={HIDE_TITLE}>
-          {HIDE_LABEL}
         </button>
         </span>
       </div>
@@ -1308,7 +1310,6 @@ export function DetailPanel({
           onChange={(e) => {
             setReply(e.target.value);
             if (!e.target.value.trim()) {
-              setEscKept(false);
               // emptied: what is sent next is not that operation's kept comment any more
               setReplyFromOp(null);
             }
@@ -1331,11 +1332,6 @@ export function DetailPanel({
             }}
             onDismiss={() => setPasted(null)}
           />
-        )}
-        {escKept && reply.trim() && (
-          <div className="banner warn draft-kept" data-testid="draft-esc-hint" ref={(el) => el?.scrollIntoView?.({ block: 'nearest' })}>
-            回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。
-          </div>
         )}
         {preview !== null && (
           <iframe

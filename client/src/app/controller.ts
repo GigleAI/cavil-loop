@@ -15,6 +15,7 @@ import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
+import { listedNow, moveTab, newestCopy, normalizeDoingLabel, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
@@ -237,6 +238,11 @@ const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
 const NOTIFY_SCOPE = 'notifyScope';
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
+/** GitHub#397: the open detail tabs (order, what each last showed), and the label an agent's work in progress carries */
+const TABS = 'tabs';
+/** how many re-read items no source carries are kept for opening in a tab */
+const LOOSE_ITEMS = 20;
+const DOING_LABEL = 'doingLabel';
 
 /**
  * The settings, as the window sees them: read once at start, every change
@@ -359,6 +365,20 @@ export class Controller {
   /** items carrying the pending label: notifications, badge and summary all come from here (GitHub#139) */
   private readonly pending: PendingTracker;
   private focusSeq = 0;
+
+  // ---- GitHub#397: detail tabs ----
+  /** the open tabs in order, with what each last showed (kept on this machine under TABS) */
+  private tabList: StoredTab[] = [];
+  /** items no complete read carries, as their own check last read them (this run only) */
+  private tabOwn = new Map<string, Item>();
+  /** when such an item's own check last answered (this run only; a failed check leaves it) */
+  private tabChecked = new Map<string, number>();
+  /** the next round's end checks every such item, also an ended one checked a moment ago (refresh by hand) */
+  private tabsForce = false;
+  private tabsChecking: Promise<void> | null = null;
+  /** items this run re-read that no source carries, newest last (so that such an item can be opened in a tab) */
+  private looseItems = new Map<string, Item>();
+  private closeTabSeq = 0;
   private eventsRunning = false;
 
   // ---- GitHub#229 ----
@@ -465,6 +485,9 @@ export class Controller {
       launchAtLogin: null,
       notifyProblem: null,
       focus: null,
+      tabs: [],
+      doingLabel: normalizeDoingLabel(this.cache.getSetting<unknown>(DOING_LABEL, null)),
+      closeTabReq: 0,
       update: null,
       editsNeedingAction: 0,
       editsResending: [],
@@ -476,6 +499,7 @@ export class Controller {
       else if (s.sourceKey === OPS_KEY) this.loadOps(s);
       else this.snapshots.set(s.sourceKey, s);
     }
+    this.tabList = normalizeTabs(this.cache.getSetting<unknown>(TABS, null));
     this.refreshDerived();
   }
 
@@ -487,7 +511,10 @@ export class Controller {
     const configured = this.state.sources.map((s) => s.key);
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
-    const merged = mergeSnapshots(snaps, selected);
+    const merged0 = mergeSnapshots(snaps, selected);
+    // GitHub#397: an open tab's item the view does not hold (a source unticked, or no source lists it any more)
+    const tabItems = this.tabItemsOutside(merged0.items);
+    const merged = tabItems.length ? { ...merged0, tabItems } : merged0;
     if (!this.edits.size) return { ...merged, allProjects: this.allProjects(), boardRepos: this.boardRepos() };
     // GitHub#229: the changes on their way show on the item itself, the others beside it
     const byKey = new Map<string, EditRecord[]>();
@@ -555,6 +582,7 @@ export class Controller {
     if (dataFrom !== cur.dataFrom || checkedFrom !== cur.checkedFrom || !sameTimes || progress !== cur.progress) {
       this.state = { ...this.state, sync: { ...cur, dataFrom, checkedFrom, times: sameTimes ? cur.times : times, progress } };
     }
+    this.refreshTabs();
   }
 
   async start(): Promise<void> {
@@ -721,6 +749,8 @@ export class Controller {
     this.cancelFollowUp();
     this.dropMirror();
     this.cache.mirror('viewer', null);
+    // GitHub#397: the tabs belong to the account that opened them
+    this.dropTabs();
     this.set({
       phase: 'login',
       loginReason: reason,
@@ -1112,6 +1142,11 @@ export class Controller {
       this.onUpdate(ev.status);
       return;
     }
+    if (ev.kind === 'closeTab') {
+      // GitHub#397: the shell's "close" key (macOS: the menu's ⌘W) — the window closes the tab in front, or asks for the window to close
+      this.set({ closeTabReq: ++this.closeTabSeq });
+      return;
+    }
     // a click: the item's detail in the app; an item no longer on the board opens on GitHub instead
     if (this.state.phase === 'ready' && this.findItem(ev.key)) {
       this.set({ focus: { key: ev.key, seq: ++this.focusSeq } });
@@ -1271,6 +1306,11 @@ export class Controller {
 
   removeSource(key: string): void {
     const sources = this.state.sources.filter((s) => s.key !== key);
+    // GitHub#397: an open tab's item this source carried stays known — as the tab's own copy, off any board
+    for (const t of this.tabList) {
+      const it = this.snapshots.get(key)?.items.find((i) => i.key === t.key);
+      if (it && !this.tabOwn.has(t.key)) this.tabOwn.set(t.key, { ...it, projects: [], sources: [] });
+    }
     this.bumpEpoch(key);
     // GitHub#258: its watches and their buttons end with it (adding it again does not bring them back)
     for (const j of this.state.creates) if (j.watch?.some((w) => w.projectKey === key)) this.patchWatch(j.id, key, () => null);
@@ -1290,6 +1330,8 @@ export class Controller {
     this.cache.setSetting('view', view);
     this.cache.setSetting(PENDING_IMPORTS, this.pendingImports().filter((p) => p.sourceKey !== key));
     this.set({ sources, view, sync: { ...this.state.sync, sources: this.state.sync.sources.filter((s) => s.sourceKey !== key) } });
+    // GitHub#397: and those items are checked by themselves from now on — the first time right away
+    if (this.tabList.length && this.signedIn) void this.checkTabs();
   }
 
   /** A change made by the user. Invalid values are ignored as a whole. */
@@ -1366,6 +1408,10 @@ export class Controller {
             // a round must never reject: the 60 s timer and the window would see an unhandled rejection
             this.set({ sync: { ...this.state.sync, syncing: false, problem: `同步出错：${(e as Error).message}` } });
           }
+          // GitHub#397: with every round — however it ended, also one that had no source left to read (they
+          // all wait after failing) — the open tabs no complete read carries are checked one by one. Not while
+          // GitHub cannot be reached, nor while it says "rate limited": then nothing more is asked of it.
+          if (this.signedIn && this.state.phase === 'ready' && !this.state.sync.offline && !this.state.sync.sources.some((st) => st.rateLimited)) void this.checkTabs();
         } while (this.resync && this.signedIn);
       } finally {
         this.syncing = null;
@@ -1459,6 +1505,8 @@ export class Controller {
     // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the new gate closes again).
     // A new gate, not the old one opened: a dropped round's late answer can only reach the gate it was sent through.
     this.readGate = new ReadGate(this.now);
+    // GitHub#397: and every open tab no source lists, also an ended one checked a moment ago
+    this.tabsForce = true;
     if (this.round?.reading) this.round.drop();
     return this.syncNow();
   }
@@ -1789,6 +1837,184 @@ export class Controller {
     this.set({ newIssueHandoff: h as Handoff });
   }
 
+  // ---- GitHub#397: detail tabs ---------------------------------------------
+
+  /** Every copy the configured sources hold of one item, as one: the newest, with every source that carries it. */
+  private cachedCopy(key: string): Item | null {
+    let best: Item | null = null;
+    const sources: string[] = [];
+    for (const src of this.state.sources) {
+      const it = this.snapshots.get(src.key)?.items.find((i) => i.key === key);
+      if (!it) continue;
+      for (const k of it.sources) if (!sources.includes(k)) sources.push(k);
+      if (!best || it.updatedAt > best.updatedAt) best = it;
+    }
+    return best ? { ...best, sources } : null;
+  }
+
+  /**
+   * What the tabs show, from what is held now. An item a complete read of this run carries follows
+   * the board; any other shows the newest copy known (its own check, a cached source, what the tab
+   * showed last). The one place `state.tabs` is written.
+   */
+  private refreshTabs(): void {
+    if (!this.tabList.length && !this.state.tabs.length) return;
+    let stored = false;
+    const tabs: TabInfo[] = this.tabList.map((t) => {
+      const cached = this.cachedCopy(t.key);
+      const listed = listedNow(cached, this.state.sync.sources);
+      let item: TabSummary;
+      if (listed) {
+        this.tabOwn.delete(t.key);
+        this.tabChecked.delete(t.key);
+        item = summarize(cached!);
+      } else {
+        const own = this.tabOwn.get(t.key);
+        item = newestCopy([own ? summarize(own) : null, cached ? summarize(cached) : null, t.item])!;
+      }
+      if (JSON.stringify(item) !== JSON.stringify(t.item)) {
+        t.item = item;
+        stored = true;
+      }
+      return { key: t.key, item: t.item, seen: t.seen, listed };
+    });
+    if (stored) this.storeTabs();
+    if (JSON.stringify(tabs) !== JSON.stringify(this.state.tabs)) this.state = { ...this.state, tabs };
+  }
+
+  private storeTabs(): void {
+    this.cache.setSetting(
+      TABS,
+      this.tabList.map((t) => ({ key: t.key, item: t.item, seen: t.seen })),
+    );
+  }
+
+  private dropTabs(): void {
+    this.looseItems.clear();
+    if (!this.tabList.length) return;
+    this.tabList = [];
+    this.tabOwn.clear();
+    this.tabChecked.clear();
+    this.looseItems.clear();
+    this.storeTabs();
+  }
+
+  /** The open tabs' items the view does not hold, whole (the detail needs more than the summary). */
+  private tabItemsOutside(shown: Item[]): Item[] {
+    if (!this.tabList.length) return [];
+    const out: Item[] = [];
+    let all: Item[] | null = null;
+    for (const t of this.tabList) {
+      if (shown.some((i) => i.key === t.key)) continue;
+      all ??= this.cachedItems();
+      const cached = all.find((i) => i.key === t.key) ?? null;
+      const it = listedNow(cached, this.state.sync.sources) ? cached : newestCopy([this.tabOwn.get(t.key), cached]);
+      if (it) out.push(it);
+    }
+    return out;
+  }
+
+  /** Open `key` in a tab (false: no such item is known). An item already open keeps its tab. */
+  openTab(key: unknown): boolean {
+    if (typeof key !== 'string' || this.state.phase !== 'ready') return false;
+    if (this.tabList.some((t) => t.key === key)) return true;
+    // what the view shows, else any configured source's copy (its source may be unticked), else an item
+    // this run read by itself and no source carries (a new issue no source lists yet)
+    const loose = this.looseItems.get(key);
+    const item = this.findItem(key) ?? this.cachedItems().find((i) => i.key === key) ?? loose ?? null;
+    if (!item) return false;
+    if (item === loose) this.tabOwn.set(key, loose);
+    this.tabList = [...this.tabList, { key, item: summarize(item), seen: null }];
+    this.storeTabs();
+    this.set({});
+    return true;
+  }
+
+  closeTab(key: unknown): void {
+    if (!this.tabList.some((t) => t.key === key)) return;
+    this.tabList = this.tabList.filter((t) => t.key !== key);
+    this.tabOwn.delete(key as string);
+    this.tabChecked.delete(key as string);
+    this.storeTabs();
+    this.set({});
+  }
+
+  /** A tab dragged to position `to`. */
+  moveTab(key: unknown, to: unknown): void {
+    const next = moveTab(this.tabList, key, to);
+    if (next === this.tabList) return;
+    this.tabList = next;
+    this.storeTabs();
+    this.set({});
+  }
+
+  /** The tab is in front and shows the item as of `updatedAt`: nothing newer than that is news. */
+  seenTab(key: unknown, updatedAt: unknown): void {
+    const t = this.tabList.find((x) => x.key === key);
+    if (!t || typeof updatedAt !== 'string' || t.seen === updatedAt) return;
+    t.seen = updatedAt;
+    this.storeTabs();
+    this.set({});
+  }
+
+  /**
+   * Check the open tabs' items no complete read carries, one request each. An open one with every
+   * round; an ended one every ENDED_CHECK_MS — never "ended, so never again" (it is reopened, it is
+   * commented on). A check that fails changes nothing and is due again with the next round.
+   * `only`: just that tab, now (it came to the front, or its refresh button).
+   */
+  checkTabs(only?: string): Promise<void> {
+    const force = this.tabsForce || only !== undefined;
+    if (only === undefined) this.tabsForce = false;
+    const run = async () => {
+      const session = this.session;
+      for (const t of [...this.tabList]) {
+        if (only !== undefined && t.key !== only) continue;
+        if (!this.tabList.some((x) => x.key === t.key)) continue;
+        if (listedNow(this.cachedCopy(t.key), this.state.sync.sources)) continue;
+        if (!tabCheckDue(t.item.state, this.tabChecked.get(t.key) ?? null, this.now(), force)) continue;
+        const c = await this.clientForCall(false);
+        if ('error' in c || c.session !== session) return;
+        try {
+          const fresh = await fetchItem(c.client, t.item.repo, t.item.number, this.now());
+          if (session !== this.session) return;
+          const item = contentToItem(fresh.content, [], []);
+          // closed meanwhile: nothing of it is kept
+          if (!item || !this.tabList.some((x) => x.key === t.key)) continue;
+          this.tabOwn.set(t.key, item);
+          this.tabChecked.set(t.key, this.now());
+          this.set({});
+        } catch (e) {
+          // could not read: what the tab shows stays, and it is due again with the next round
+          this.noteAuthFailure(e);
+        }
+      }
+    };
+    const p = (this.tabsChecking ?? Promise.resolve()).then(run, run);
+    this.tabsChecking = p;
+    void p.finally(() => {
+      if (this.tabsChecking === p) this.tabsChecking = null;
+    });
+    return p;
+  }
+
+  /** Every check of the tabs started so far has ended (tests wait for it). */
+  async checkTabsSettled(): Promise<void> {
+    while (this.tabsChecking) await this.tabsChecking;
+  }
+
+  setDoingLabel(label: unknown): void {
+    const next = normalizeDoingLabel(typeof label === 'string' ? label : null);
+    if (next === this.state.doingLabel) return;
+    this.cache.setSetting(DOING_LABEL, next);
+    this.set({ doingLabel: next });
+  }
+
+  /** The shell's "close" key found no tab in front: close the window the way its close button does. */
+  async closeWindow(): Promise<void> {
+    await this.deps.desktop?.closeWindow().catch(() => undefined);
+  }
+
   setHandBack(patch: Partial<HandBackLabels>): void {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
@@ -1824,7 +2050,9 @@ export class Controller {
   }
 
   private findItem(key: string) {
-    return this.getBoardData().items.find((i) => i.key === key) ?? null;
+    const data = this.getBoardData();
+    // GitHub#397: an open tab's item is still an item when the view (or every source) no longer lists it
+    return data.items.find((i) => i.key === key) ?? data.tabItems?.find((i) => i.key === key) ?? null;
   }
 
   /** The whole detail of one item, read from GitHub now (not cached). */
@@ -1927,7 +2155,8 @@ export class Controller {
     const c = await this.clientForCall(true);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
-    const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? null) : null;
+    // (GitHub#397: an open tab's item the view does not hold is still an item)
+    const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? data.tabItems?.find((i) => i.key === action.key) ?? null) : null;
     // GitHub#205: a new issue joins exactly the Projects ticked in the dialog; one the app does not know is refused before sending
     const known = this.allProjects();
     const wanted = action.kind === 'createIssue' ? (Array.isArray(action.projects) ? action.projects : null) : [];
@@ -2025,6 +2254,19 @@ export class Controller {
     );
     if (landing.kind === 'ended') return { kind: 'ended', problem: null, issuedAt, own: null };
     if (landing.kind === 'failed') return failed(landing.reason);
+    // GitHub#397: no source carries it. A tab that shows it takes this read; with no tab yet it is
+    // kept for a while, so that it can be opened (a new issue no source lists yet).
+    if (own) {
+      const it = own as Item;
+      this.looseItems.delete(it.key);
+      this.looseItems.set(it.key, it);
+      while (this.looseItems.size > LOOSE_ITEMS) this.looseItems.delete(this.looseItems.keys().next().value!);
+      if (this.tabList.some((t) => t.key === it.key)) {
+        this.tabOwn.set(it.key, it);
+        this.tabChecked.set(it.key, this.now());
+        this.set({});
+      }
+    }
     if (landing.rows.length) this.set({});
     // the checks of the changes read what the board data holds now (this read, or a newer one)
     this.feedEvidence(freshK ?? key, issuedAt, own, opts.final);
@@ -2223,7 +2465,7 @@ export class Controller {
     if (!(await this.storeEdits())) return { result: await this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出') };
     if (!holds()) return notSent;
     const data = this.getBoardData();
-    const item = data.items.find((i) => i.key === action.key) ?? null;
+    const item = data.items.find((i) => i.key === action.key) ?? data.tabItems?.find((i) => i.key === action.key) ?? null;
     let outcome;
     try {
       outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });

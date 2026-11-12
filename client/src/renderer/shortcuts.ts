@@ -21,6 +21,9 @@ export type ShortcutId =
   | 'viewBoard'
   | 'viewTable'
   | 'viewGraph'
+  | 'closeTab'
+  | 'nextTab'
+  | 'prevTab'
   | 'sync'
   | 'settings'
   | 'help'
@@ -47,7 +50,7 @@ export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: s
 
 export const SCOPE_TITLE: Record<Scope, string> = {
   global: '已登录的任何页面',
-  detail: '详情面板（光标不在输入框里时）',
+  detail: '详情标签页（光标不在输入框里时）',
   graph: '依赖图（光标不在输入框里时；拖动空白处平移，滚轮缩放）',
   settings: '设置页',
   reply: '回复框里',
@@ -66,10 +69,15 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true }], label: '切到看板（在别的页面会先回到看板）' },
   { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true }], label: '切到表格（在别的页面会先回到看板）' },
   { id: 'viewGraph', scope: 'global', keys: [{ key: '3', mod: true }], label: '切到依赖图（在别的页面会先回到看板）' },
+  // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
+  // with no tab in front it closes the window, as before.
+  { id: 'closeTab', scope: 'global', keys: [{ key: 'w', mod: true }], label: '关掉当前标签页（在首页时：macOS 关窗，别的系统不做事）' },
+  { id: 'nextTab', scope: 'global', keys: [{ key: ']', mod: true, shift: true }], label: '下一个标签页' },
+  { id: 'prevTab', scope: 'global', keys: [{ key: '[', mod: true, shift: true }], label: '上一个标签页' },
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
-  { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '收起面板（回复框里有没发出的文字时不收起）' },
+  { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '回到首页（标签页留着，没发出的文字也留着）' },
   { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
   { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
   { id: 'graphZoomOut', scope: 'graph', keys: [{ key: '-' }], label: '缩小' },
@@ -110,12 +118,16 @@ export function composing(e: KeyLike): boolean {
   return e.isComposing === true || e.keyCode === 229;
 }
 
+const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
+
 export function matches(spec: KeySpec, e: KeyLike): boolean {
   const mod = e.metaKey || e.ctrlKey;
   if (Boolean(spec.mod) !== mod || e.altKey) return false;
   // '?' needs Shift on most layouts: it is part of the key, not a separate modifier
   if (spec.key === '?') return e.key === '?';
   if (Boolean(spec.shift) !== e.shiftKey) return false;
+  // with Shift held a bracket key reports the brace on most layouts (GitHub#397: ⌘⇧] / ⌘⇧[)
+  if (spec.shift && SHIFTED[spec.key]) return e.key === spec.key || e.key === SHIFTED[spec.key];
   return spec.key.length === 1 ? e.key.toLowerCase() === spec.key : e.key === spec.key;
 }
 

@@ -126,7 +126,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
       <section id="set-hand-back" data-testid="hand-back-settings">
         <h3>「交给 agent」「托管」用的标签</h3>
         <p className="muted small">
-          详情页发送按钮旁的「交给 agent」：加上第二个标签、去掉第一个；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 pending/human → pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
+          详情页发送按钮旁的「交给 agent」：加上第二个标签、去掉第一个；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 pending/human → pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。最后一格不参与修改：条目带着它时，标签页上显示「正在运行」的图标（默认 doing/agent，要和 daemon 配置一致；留空就不显示这个状态）。
         </p>
         <div className="row">
           <label>
@@ -142,6 +142,10 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
             <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
           </label>
         </div>
+        <label className="doing-label">
+          agent 正在处理时的标签（只用来显示状态图标）
+          <input data-testid="doing-label" defaultValue={state.doingLabel} onBlur={(e) => api().setDoingLabel(e.target.value)} />
+        </label>
         <label className="row small">
           <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
           「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）

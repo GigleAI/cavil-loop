@@ -115,7 +115,12 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   );
   expect(label).toBeTruthy();
   await until(() => fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels')), 'label POST reached GitHub');
+  // GitHub#397: the detail is a tab of its own; the board is the home tab behind it
+  await wd.click('[data-testid="tab-home"]');
   await until(async () => (await wd.text(card(138))).includes(label), 'card shows the new label');
+  await wd.click('[data-testid="tab"][data-key="gigleai/cavil-loop#138"]');
+  await wd.find('[data-testid="detail"][data-key="gigleai/cavil-loop#138"]');
+  await wd.find('[data-testid="timeline-frame"][data-ready="yes"]', 30_000);
 
   // GitHub's HTML in the sandboxed frame: a link there asks for a new window — the shell's
   // handler sends it to the browser, the window itself stays where it is

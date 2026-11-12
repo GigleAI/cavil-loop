@@ -581,27 +581,14 @@ export const MUTATIONS = [
     from: '    const missing = unmappedNames(list, { unit: map, e2e: e2eTests() });\n    if (missing.length)',
     to: '    const missing = [];\n    if (missing.length)',
     expect: ['the baseline names every entry whose named test no longer exists'] },
-  // ---- GitHub#191: a click outside the detail puts it away; one rule (outsideClick.ts), each call site its own control ----
-  { what: '点面板外：面板没把回复框的字交给判定', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: 'if (hidesPanel(p, r, draftRef.current)) closeRef.current();', to: "if (hidesPanel(p, r, '')) closeRef.current();",
-    expect: ['GitHub#191'] },
-  // the keyboard guard is checked by the unit test that hands it a button-up recorded earlier: in the
-  // window every click consumes the recorded press / release, so a window test cannot set that up (PR #199 review round 3)
-  { what: '点面板外：点卡片 / 行标题也先收起（切换变成重开，展开状态丢了）', file: 'src/renderer/outsideClick.ts', runner: 'e2e',
-    from: '  if (press.opensItem || release.opensItem) return false;\n', to: '',
-    expect: ['GitHub#191'] },
-  { what: '点面板外：看板卡片没标「打开条目」', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
+  // ---- GitHub#191 → GitHub#397: the detail is a tab now, nothing is "outside" it any more. What is left of the
+  // old rule is the mark on what opens an item: the middle button on it opens the item's tab in the background. ----
+  { what: '中键开标签页：看板卡片没标「打开条目」', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
     from: "      data-key={it.key}\n      {...{ [OPENS_ITEM]: '' }}", to: '      data-key={it.key}',
-    expect: ['GitHub#191'] },
-  { what: '点面板外：表格行的标题格没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
+    expect: ['the board is the fixed home tab; an item opens in its own tab'] },
+  { what: '中键开标签页：表格行的标题格没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
     from: "              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}\n              {...{ [OPENS_ITEM]: '' }}", to: "              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}",
-    expect: ['GitHub#191'] },
-  { what: '点面板外：快捷键列表（?）的遮罩没有标记（点遮罩关列表时顺带收起面板）', file: 'src/renderer/ShortcutHelp.tsx', runner: 'e2e',
-    from: "<div className=\"modal-back\" {...{ [MODAL]: '' }} data-testid=\"shortcut-help\"", to: '<div className="modal-back" data-testid="shortcut-help"',
-    expect: ['GitHub#191'] },
-  { what: '点面板外：只认详情自己的确认框（漏了看板的「加入看板？」，方案复审第 1 轮）', file: 'src/renderer/outsideClick.ts', runner: 'e2e',
-    from: 'dialogOpen: document.querySelector(`[${MODAL}]`) !== null,', to: 'dialogOpen: panel !== null && panel.querySelector(`[${MODAL}]`) !== null,',
-    expect: ['GitHub#191'] },
+    expect: ['the board is the fixed home tab; an item opens in its own tab'] },
   // ---- GitHub#193: tick a task-list box in the detail ----
   { what: '勾选：写前现读的原文和看到的不一样也照写', file: 'src/data/actions.ts',
     from: "      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);\n", to: '',
