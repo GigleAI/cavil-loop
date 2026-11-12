@@ -51,10 +51,16 @@ heavy_scope_state() {   # <分组名>
 }
 
 # 停一个分组并确认它消失。返回 0 = 已确认消失；非 0 = 没停掉或查不清（调用方按「还在跑」处理）。
+# 停之前在这里再读一次状态，只有读到明确的「运行中」才发停止请求：调用方先前读到过什么不算数，
+# 这一次读不出来（unknown）就什么都不发、直接返回非 0。所有要停分组的地方都走这一个函数。
 heavy_stop_unit() {   # <分组名> [最多等几秒，默认 30]
     local unit="$1" wait_secs="${2:-30}" i st
     st="$(heavy_scope_state "$unit")"
-    [ "$st" != gone ] || return 0
+    case "$st" in
+        gone) return 0 ;;
+        active) ;;
+        *) return 1 ;;
+    esac
     systemctl --user stop "$unit" >/dev/null 2>&1 || true
     for ((i = 0; i < wait_secs * 5; i++)); do
         st="$(heavy_scope_state "$unit")"
@@ -78,10 +84,15 @@ heavy_proc_start() {   # <pid>
 heavy_launch_file() { printf '%s/worker-launch/%s' "$1" "$2"; }
 
 # 起这套测试的那次 worker 启动现在怎样：
-#   alive   启动记录里的进程还在，而且还是同一个进程
-#   ended   那个进程号已不存在，或现在是启动时间不同的另一个进程
-#   none    没有这次启动的记录（派工时没读到窗格进程号）——无从判断，调用方不据此停任何东西
-#   unknown 记录读不出来 / 格式不对 / 读不到进程信息
+#   alive        启动记录里的进程还在，而且还是同一个进程
+#   ended        那个进程号已不存在，或现在是启动时间不同的另一个进程，或记录上已经盖了「已结束」
+#   unidentified 派工登记了这次启动，但没读到 worker 的进程号（刚起、或读窗格失败）——无从判断它
+#                在不在：它的测试可以跑，但不会被「worker 已结束」这条规则停掉
+#   none         没有这次启动的记录。派工在起 worker **之前**就写下记录，已结束的记录也只盖章不删，
+#                所以正常情况下不会出现；出现了就是来历不明，调用方不放行
+#   unknown      记录读不出来 / 格式不对 / 读不到进程信息
+# 「已结束」是不可逆的：一旦确认过，heavy_launch_mark_ended 在记录上盖章，之后不再看进程号——
+# 进程号被复用、记录被整理，都不会让一次已经结束的启动重新变回「还在」或「没记录」。
 heavy_launch_state() {   # <项目状态目录> <启动编号>
     local sdir="$1" id="$2" f pid start cur
     [[ "$id" =~ ^[0-9a-f]{32}$ ]] || { echo unknown; return 0; }
@@ -89,7 +100,9 @@ heavy_launch_state() {   # <项目状态目录> <启动编号>
     f="$(heavy_launch_file "$sdir" "$id")"
     if [ ! -e "$f" ]; then echo none; return 0; fi
     [ -r "$f" ] || { echo unknown; return 0; }
+    if [ "$(heavy_field "$f" ended)" = 1 ]; then echo ended; return 0; fi
     pid="$(heavy_field "$f" pid)"; start="$(heavy_field "$f" start)"
+    if [ "$pid" = pending ]; then echo unidentified; return 0; fi
     [[ "$pid" =~ ^[0-9]+$ && "$start" =~ ^[0-9]+$ ]] || { echo unknown; return 0; }
     if [ ! -d "/proc/$pid" ]; then echo ended; return 0; fi
     if ! cur="$(heavy_proc_start "$pid")"; then
@@ -98,6 +111,14 @@ heavy_launch_state() {   # <项目状态目录> <启动编号>
         return 0
     fi
     if [ "$cur" = "$start" ]; then echo alive; else echo ended; fi
+}
+
+# 在一份启动记录上盖「已结束」。只在 heavy_launch_state 刚返回 ended 之后调。
+heavy_launch_mark_ended() {   # <项目状态目录> <启动编号>
+    local f
+    f="$(heavy_launch_file "$1" "$2")"
+    [ -f "$f" ] || return 0
+    [ "$(heavy_field "$f" ended)" = 1 ] || printf 'ended=1\n' >> "$f" 2>/dev/null || true
 }
 
 heavy_item_lock_path() { printf '%s/item-locks/%s.lock' "$1" "$2"; }

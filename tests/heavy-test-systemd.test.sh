@@ -203,7 +203,7 @@ chk "别的条目的测试正常跑完" "$rc" 0
 yes_ "别的条目的测试跑到了结束" ended other
 no_ "本条目排队中的测试从没启动过" started mine
 
-echo "── 6. 文档里「查看谁在占、手动停一套」的命令：两份文档一致，原样可用 ──"
+echo "── 6. 文档里「查看谁在占、手动停一套」的命令：两份一致，干净环境原样执行；别的条目占着排队时只停自己那一套 ──"
 extract() { awk '/<!-- heavy-test-ops:begin -->/ { on = 1; next } /<!-- heavy-test-ops:end -->/ { on = 0 } on && !/^```/' "$1"; }
 extract "$REPO_DIR/docs/operations.md" > "$TMP/ops.en.sh"
 extract "$REPO_DIR/docs/operations.zh.md" > "$TMP/ops.zh.sh"
@@ -211,13 +211,65 @@ yes_ "文档里有这段命令" test -s "$TMP/ops.zh.sh"
 yes_ "中英两份的命令一致" cmp -s "$TMP/ops.en.sh" "$TMP/ops.zh.sh"
 DH="$TMP/dochome"; mkdir -p "$DH/.agents/skills"
 ln -s "$REPO_DIR" "$DH/.agents/skills/cavil-loop"
+DRUNS="$DH/.local/state/cavil-loop/heavy-test/runs"
+doc_units() { sed -n 's/^\([0-9a-f]\{32\}\)  .*/cavil-heavy-\1.scope/p' "$1" >> "$UNITS_SEEN"; }
+# 6a. 没有别的运行：只给 HOME、PATH 和找用户实例要的 XDG_RUNTIME_DIR，命令一个字不改
 env -i HOME="$DH" PATH="$PATH" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" bash "$TMP/ops.zh.sh" > "$TMP/ops.out" 2>&1
-grep -o 'cavil-heavy-[0-9a-f]*\.scope' "$TMP/ops.out" >> "$UNITS_SEEN" 2>/dev/null
-sed -n 's/^\([0-9a-f]\{32\}\)  .*/cavil-heavy-\1.scope/p' "$TMP/ops.out" >> "$UNITS_SEEN"
-yes_ "--list 列出了那一套在运行" grep -Eq '^[0-9a-f]{32}  running  分组:active  手动运行（sleep 120）' "$TMP/ops.out"
-yes_ "--stop 把它停了" grep -q "^已停：" "$TMP/ops.out"
+doc_units "$TMP/ops.out"
+mine="$(sed -n 's/^\([0-9a-f]\{32\}\)  [a-z]*  分组:active  手动运行（sleep 120）.*/\1/p' "$TMP/ops.out" | head -1)"
+yes_ "--list 列出了那一套" test -n "$mine"
+yes_ "--stop 停的是它" grep -qx "已停：$mine" "$TMP/ops.out"
 yes_ "停完再列：没有登记着的重测试" grep -q "没有登记着的重测试" "$TMP/ops.out"
-chk "没有留下运行记录" "$(ls "$DH/.local/state/cavil-loop/heavy-test/runs" 2>/dev/null | wc -l)" 0
+chk "没有留下运行记录" "$(ls "$DRUNS" 2>/dev/null | wc -l)" 0
+# 6b. 别的项目的一套先占着排队：文档那一套排在后面，停的必须是它自己
+env HOME="$DH" CAVIL_HEAVY_ITEM=777 CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_STATE_DIR="$D/state" CAVIL_HEAVY_PROJECT=example/another \
+    bash "$HT" -- bash -c "$(job docother 300)" > "$W/docother.out" 2>&1 < /dev/null &
+po=$!
+wait_for 10 started docother || bad "别的项目的测试没启动"
+ro="$(grep -l -- "$M/docother.start" "$DRUNS"/* | head -1)"; uo="$(field "$ro" unit)"; echo "$uo" >> "$UNITS_SEEN"
+env -i HOME="$DH" PATH="$PATH" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" bash "$TMP/ops.zh.sh" > "$TMP/ops2.out" 2>&1
+doc_units "$TMP/ops2.out"
+yes_ "--list 里别的项目那套在运行" grep -Eq "^${ro##*/}  running  分组:active  example/another #777" "$TMP/ops2.out"
+mine="$(sed -n 's/^\([0-9a-f]\{32\}\)  queued  分组:active  手动运行（sleep 120）.*/\1/p' "$TMP/ops2.out" | head -1)"
+yes_ "--list 里文档自己那套在排队" test -n "$mine"
+yes_ "停掉的是文档自己那一套" grep -qx "已停：$mine" "$TMP/ops2.out"
+yes_ "文档那套的分组消失了" unit_gone "cavil-heavy-$mine.scope"
+no_ "别的项目的分组没被动" unit_gone "$uo"
+yes_ "别的项目的记录还在" test -f "$ro"
+env HOME="$DH" bash "$HT" --stop "${ro##*/}" > /dev/null 2>&1
+wait "$po" 2>/dev/null
+
+echo "── 7. 用户实例这一次没问到（上一套的包装命令被强杀、测试还在真实分组里）：不降级、不启动 ──"
+hw_bg prev7 -- bash -c "echo \$\$ > '$M/prev7.main'; date +%s%N > '$M/prev7.start'; sleep 300"
+px=$HW_PID
+wait_for 10 started prev7 || bad "上一套没启动"
+rx="$(rec_of prev7.main)"; ux="$(unit_of prev7.main)"
+kill -KILL "$px" "$(field "$rx" pid)" 2>/dev/null; wait "$px" 2>/dev/null
+yes_ "上一套的测试还在分组里" in_unit "$(cat "$M/prev7.main")" "$ux"
+# 只让「问用户实例」这一次失败，别的 systemctl / systemd-run 调用都交给真的
+SHIM="$TMP/shim"; mkdir -p "$SHIM"
+REAL_SYSTEMCTL="$(command -v systemctl)"
+cat > "$SHIM/systemctl" <<SH
+#!/usr/bin/env bash
+case "\$*" in *show-environment*) [ ! -e "$TMP/env-fail" ] || exit 1 ;; esac
+exec "$REAL_SYSTEMCTL" "\$@"
+SH
+chmod +x "$SHIM/systemctl"
+touch "$TMP/env-fail"
+env HOME="$HH" PATH="$SHIM:$PATH" bash "$HT" -- bash -c "$(job next7 0.3)" > "$W/next7.out" 2>&1; rc=$?
+chk "退出码 70" "$rc" 70
+no_ "没有启动" started next7
+no_ "没有走降级" grep -q "只排队这条命令本身" "$W/next7.out"
+yes_ "上一套的测试没被打扰" kill -0 "$(cat "$M/prev7.main")"
+mv "$TMP/env-fail" "$TMP/env-fail.off"
+env HOME="$HH" PATH="$SHIM:$PATH" CAVIL_HEAVY_PRINT_SECS=1 bash "$HT" -- bash -c "$(job next7 0.3)" > "$W/next7.out" 2>&1 &
+pb=$!
+sleep 3
+no_ "恢复后：上一套还在跑，仍不启动" started next7
+kill -KILL "$(cat "$M/prev7.main")" 2>/dev/null
+wait "$pb"; rc=$?
+chk "恢复后：上一套结束才跑完" "$rc" 0
+yes_ "确实跑到了结束" ended next7
 
 echo
 echo "通过 $pass，失败 $fail"

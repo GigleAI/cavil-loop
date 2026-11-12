@@ -1092,28 +1092,29 @@ From the next dispatch on, the worker prompt gets one more section telling the a
 - Dispatch (create the worktree, start the worker, record this launch) and `cleanup-issue.sh` (stop the session, stop the tests, remove the worktree) each hold one per-item lock from start to end, so they run one after the other. When the lock cannot be taken (60 seconds by default), dispatch does nothing this round and leaves the label, and cleanup changes nothing and exits non-zero.
 - Every item has a generation, bumped by cleanup as soon as it holds the lock. A worker carries the generation it was started with, and a test checks it when it registers and again before it starts: on a mismatch (the item was cleaned after this worker started) it does not start, exit code 76. A worker dispatched after the cleanup gets the new generation and is not affected.
 - Cleanup first stops this item's queued and running heavy tests and removes the worktree only after their scopes are confirmed gone. Unknown state or a failed stop → the worktree is kept and the exit code is non-zero; the automatic post-merge cleanup then does not record the item as cleaned and retries next round, and the PR's `Done` label waits for the round in which cleanup succeeds.
-- Each worker launch records the worker's pid and start time. Every poll round checks them: when that process is gone (or the pid now belongs to another process) while a test it started is still queued or running, the whole scope is stopped. A worker that is alive, or one that cannot be identified, is left alone.
+- Each worker launch records the worker's pid and start time (registered before the worker starts, completed with the pid once it is up). Every poll round checks them: when that process is gone (or the pid now belongs to another process) while a test it started is still queued or running, the whole scope is stopped. A worker that is alive, or one that cannot be identified, is left alone. A launch confirmed as ended is marked, not deleted, so a late request left behind by that worker does not start either (exit code 76); the record is removed when the item is cleaned up.
 
 **See who holds the queue, stop one run by hand**
 
 <!-- heavy-test-ops:begin -->
 ```bash
 SKILL="$HOME/.agents/skills/cavil-loop"
-bash "$SKILL/scripts/heavy-test.sh" -- sleep 120 &
-sleep 3
+IDF="$(mktemp)"
+bash "$SKILL/scripts/heavy-test.sh" --id-file "$IDF" -- sleep 120 &
+while [ ! -s "$IDF" ] && kill -0 $! 2>/dev/null; do sleep 0.2; done
 bash "$SKILL/scripts/heavy-test.sh" --list
-RUN="$(bash "$SKILL/scripts/heavy-test.sh" --list | awk '$2 == "running" { print $1; exit }')"
-bash "$SKILL/scripts/heavy-test.sh" --stop "$RUN"
+bash "$SKILL/scripts/heavy-test.sh" --stop "$(cat "$IDF")"
 wait
 bash "$SKILL/scripts/heavy-test.sh" --list
+rm -f "$IDF"
 ```
 <!-- heavy-test-ops:end -->
 
-In order: start a run (`sleep 120` stands in for a real test command); list the registered runs (id, queued / running, scope state, project and item, command, age); take the id of the running one and stop it (its command exits with 143); list again, which should say there are no registered heavy tests. `--stop` removes the record only after the scope is confirmed gone, otherwise it reports an error and keeps the record.
+In order: start a run (`sleep 120` stands in for a real test command) and have it write **its own run id** to a temporary file once it is registered; wait for the id; list every run registered under this account (id, queued / running, scope state, project and item, command, age); stop exactly that run by its id (its command exits with 143) — it is stopped the same way while still queued; list again. Other items' runs may be in the list at that point and these commands do not touch them: always name the run to stop by its id, never pick "the first running one" from the list — that may well belong to another item. To stop one run in everyday use, read `--list` for the project, item and command first, then `--stop <its id>`. `--stop` removes the record only after the scope is confirmed gone; when the scope's state cannot be read it sends no stop request, reports an error and keeps the record.
 
 **Limits**
 
-- The full behavior needs Linux + cgroup v2 + a systemd user manager. Elsewhere (macOS) only the wrapper itself is queued: no scope, no record, no cleanup, and a notice is printed. When a systemd user manager exists but the scope cannot be created, the wrapper exits with 70 and does not run the test — it never degrades silently.
+- The full behavior needs Linux + cgroup v2 + a systemd user manager. Where these are plainly absent (not Linux, not cgroup v2, no `systemd-run` / `systemctl`, no user-manager socket for this account — macOS, for one) only the wrapper itself is queued: no scope, no record, no cleanup, and a notice is printed. When the user manager exists but did not answer this time, or the scope cannot be created, the wrapper exits with 70 and does not run the test — it never degrades silently, because the degraded mode cannot see existing scopes and would start while the previous run is still going. In degraded mode it also exits with 70 while run records are still registered: once those runs are known to have ended, remove the records under `~/.local/state/cavil-loop/heavy-test/runs/` and retry.
 - "Machine-wide" means one system account: the queue lock and the run records live under `~/.local/state/cavil-loop/` (`heavy-test.lock`, `heavy-test/runs/`); different accounts do not queue behind each other.
 - Only tests started through the wrapper are queued or stopped. A command the worker runs directly, a dev server, any other background process is neither queued nor stopped.
 - A test moved into its own scope is no longer under a memory cap set on the tmux pane's scope. Use `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"` (space-separated systemd properties) when a cap is needed; none by default.

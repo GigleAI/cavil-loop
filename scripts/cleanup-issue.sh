@@ -95,6 +95,8 @@ if [ "$HEAVY_CLEANUP" = 1 ] && ! heavy_stop_item_runs "$ISSUE"; then
     echo "❌ 条目 #$ISSUE 的重测试没能确认停掉，工作树保留；看 bash $HEAVY_TEST_SCRIPT --list"
     exit 1
 fi
+# 本条目以前的启动记录用不上了（代数已变），一并删掉
+[ "$HEAVY_CLEANUP" != 1 ] || heavy_launch_forget_item "$ISSUE"
 
 # ── 4. worktree ──
 if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then

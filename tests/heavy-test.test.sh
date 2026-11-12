@@ -102,10 +102,18 @@ if [ -n "\${FAKE_UNIT:-}" ]; then exec env -u FAKE_UNIT -u CAVIL_HEAVY_CGROUP_OV
 members() { grep -lzx "FAKE_UNIT=\$1" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 | grep -vx "\$\$" || true; }
 [ "\${1:-}" = --user ] && shift
 case "\${1:-}" in
-    show-environment) exit 0 ;;
+    show-environment)
+        echo "env" >> "$FAKE/calls"
+        [ ! -e "$FAKE/env-fail" ] || exit 1
+        exit 0 ;;
     show)
         echo "show \$2" >> "$FAKE/calls"
         [ ! -e "$FAKE/show-fail" ] || exit 1
+        # show-fail-after 里写 N：从立起这个开关算起，前 N 次查询照常回答，之后的都失败
+        if [ -e "$FAKE/show-fail-after" ]; then
+            c=\$(( \$(cat "$FAKE/show-count" 2>/dev/null || echo 0) + 1 )); echo "\$c" > "$FAKE/show-count"
+            [ "\$c" -le "\$(cat "$FAKE/show-fail-after")" ] || exit 1
+        fi
         [ ! -e "$FAKE/show-junk" ] || { echo "LoadState=masked"; echo "ActiveState=maintenance"; exit 0; }
         [ ! -e "$FAKE/show-empty" ] || exit 0
         if [ -n "\$(members "\$2")" ]; then echo "LoadState=loaded"; echo "ActiveState=active"
@@ -133,7 +141,8 @@ SH
 chmod +x "$FAKEBIN"/*
 calls() { local n; n="$(grep -c "^$1" "$FAKE/calls" 2>/dev/null)"; echo "${n:-0}"; }
 members() { grep -lzx "FAKE_UNIT=$1" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 || true; }
-faults_off() { rm -f "$FAKE"/show-fail "$FAKE"/show-junk "$FAKE"/show-empty "$FAKE"/stop-fail "$FAKE"/stop-hold "$FAKE"/run-fail "$FAKE"/wrong-cgroup; }
+faults_off() { rm -f "$FAKE"/show-fail "$FAKE"/show-junk "$FAKE"/show-empty "$FAKE"/stop-fail "$FAKE"/stop-hold "$FAKE"/run-fail "$FAKE"/wrong-cgroup "$FAKE"/env-fail "$FAKE"/show-fail-after "$FAKE"/show-count; }
+fail_after() { faults_off; echo "$1" > "$FAKE/show-fail-after"; }
 
 export PATH="$FAKEBIN:$PATH"
 NEW="$REPO_DIR"
@@ -337,9 +346,16 @@ no_ "worker 已结束：没有启动" started l3
 echo garbage > "$SD/worker-launch/$L"
 run_item l4 CAVIL_HEAVY_LAUNCH="$L"; chk "启动记录读不出：退出码 76" "$?" 76
 no_ "启动记录读不出：没有启动" started l4
-rm -f "$SD/worker-launch/$L"
-run_item l5 CAVIL_HEAVY_LAUNCH="$L"; chk "没有这次启动的记录（派工时没读到进程号）：照常跑" "$?" 0
-yes_ "没有启动记录：确实跑了" ended l5
+printf 'pid=pending\nstart=\n' > "$SD/worker-launch/$L"
+run_item l5 CAVIL_HEAVY_LAUNCH="$L"; chk "登记了启动、进程号还没读到：照常跑" "$?" 0
+yes_ "进程号待定：确实跑了" ended l5
+printf 'pid=%s\nstart=%s\nended=1\n' "$$" "$mystart" > "$SD/worker-launch/$L"
+run_item l6 CAVIL_HEAVY_LAUNCH="$L"; chk "记录上盖了「已结束」（就算那个进程号现在有进程）：退出码 76" "$?" 76
+no_ "盖了已结束：没有启动" started l6
+mv "$SD/worker-launch/$L" "$SD/worker-launch/moved-away"
+run_item l7 CAVIL_HEAVY_LAUNCH="$L"; chk "找不到这次启动的记录：退出码 76" "$?" 76
+no_ "没有记录：没有启动" started l7
+yes_ "没有记录：说了原因" grep -q "找不到起这套测试的那次 worker 启动的记录" "$W/l7.out"
 
 echo "── 9. 没有 systemd 用户实例：只排队包装命令本身，说明降级，不登记 ──"
 reset1
@@ -354,6 +370,41 @@ yes_ "降级：两套仍然不重叠" no_overlap a b
 yes_ "降级：打印了降级说明" grep -q "只排队这条命令本身" "$W/a.out"
 chk "降级：没有建分组" "$(calls run)" 0
 chk "降级：没有登记" "$(ls "$RUNS" | wc -l)" 0
+# 降级模式看不了分组：还留着登记着的运行时不能当它们不存在
+id="$(printf '%032x' 77)"
+printf 'state=running\nunit=cavil-heavy-%s.scope\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
+env HOME="$HH" CAVIL_HEAVY_MODE=degraded bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job c 0.1)" > "$W/c.out" 2>&1; rc=$?
+chk "降级但还有登记着的运行：退出码 70" "$rc" 70
+no_ "降级但还有登记着的运行：没有启动" started c
+yes_ "那条记录还在" test -f "$RUNS/$id"
+
+echo "── 9b. systemd 用户实例这一次没问到：不是「不支持」——不降级、不启动；恢复后等上一套结束才启动 ──"
+reset1
+# 上一套：包装命令被强杀，排队锁已经放了，测试还在分组里跑
+hw_bg x -- bash -c "echo \$\$ > '$M/x.main'; date +%s%N > '$M/x.start'; sleep 300"
+px=$HW_PID
+wait_for 5 started x || bad "上一套没启动"
+rx="$(rec_of x.main)"
+kill -KILL "$px" "$(field "$rx" pid)" 2>/dev/null; wait "$px" 2>/dev/null
+yes_ "上一套的测试还活着" kill -0 "$(cat "$M/x.main")"
+yes_ "排队锁此刻没人拿着" flock -n "$QLOCK" true
+touch "$FAKE/env-fail"; : > "$FAKE/calls"
+env HOME="$HH" CAVIL_HEAVY_MODE=probe bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job b 0.3)" > "$W/b.out" 2>&1; rc=$?
+chk "没问到用户实例：退出码 70" "$rc" 70
+no_ "没问到用户实例：没有启动" started b
+no_ "没问到用户实例：没有走降级" grep -q "只排队这条命令本身" "$W/b.out"
+yes_ "没问到用户实例：说了原因" grep -q "没能问到 systemd 用户实例" "$W/b.out"
+chk "确实问过一次、没有建分组" "$(calls env) $(calls run)" "1 0"
+yes_ "上一套的测试没被打扰" kill -0 "$(cat "$M/x.main")"
+faults_off
+env HOME="$HH" CAVIL_HEAVY_MODE=probe CAVIL_HEAVY_PRINT_SECS=1 bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job b 0.3)" > "$W/b.out" 2>&1 &
+pb=$!
+sleep 2.5
+no_ "恢复后：上一套还在跑，仍不启动" started b
+kill -KILL "$(cat "$M/x.main")" 2>/dev/null
+wait "$pb"; rc=$?
+chk "恢复后：上一套结束才跑完" "$rc" 0
+yes_ "恢复后：确实跑到了结束" ended b
 
 echo "── 10. 查看谁在跑、手动停一套 ──"
 reset1
@@ -521,7 +572,43 @@ yes_ "日志里写了停的是哪个条目的" grep -q "停掉遗留的重测试
 wait "$p1" 2>/dev/null
 no_ "被停的测试没有跑到结束" ended t1
 sweep
-no_ "没人引用的、已结束的启动记录被顺手删掉" test -f "$D/state/worker-launch/$L1"
+yes_ "已结束的启动记录没有被删" test -f "$D/state/worker-launch/$L1"
+chk "而是盖上了「已结束」" "$(field "$D/state/worker-launch/$L1" ended)" 1
+# 跨轮：那个 worker 留下的迟到请求（同一个启动编号、同一代）在这一轮检查之后才来排队
+env HOME="$D/home" CAVIL_HEAVY_MODE=full CAVIL_HEAVY_ITEM="$N" CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_LAUNCH="$L1" CAVIL_HEAVY_STATE_DIR="$D/state" \
+    bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job late1 0.1)" > "$W/late1.out" 2>&1; rc=$?
+chk "已结束的 worker 的迟到请求：退出码 76" "$rc" 76
+no_ "迟到请求没有启动" started late1
+sweep; sweep
+env HOME="$D/home" CAVIL_HEAVY_MODE=full CAVIL_HEAVY_ITEM="$N" CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_LAUNCH="$L1" CAVIL_HEAVY_STATE_DIR="$D/state" \
+    bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job late2 0.1)" > "$W/late2.out" 2>&1; rc=$?
+chk "再过两轮检查之后再来：仍是 76" "$rc" 76
+no_ "仍然没有启动" started late2
+# 同一条目重新派工（没有清理过，还是第 0 代）：新 worker 的测试照常跑
+dispatch "$NEW" issue
+yes_ "重新派工起了新 worker" wait_for 5 test "$(wc -l < "$CTL/runs")" -ge 2
+L2="$(wenv CAVIL_HEAVY_LAUNCH)"
+yes_ "新 worker 是另一个启动编号" test -n "$L2" -a "$L2" != "$L1"
+hw2_bg fresh 0.3; wait "$HW_PID"; rc=$?
+chk "新 worker 的测试正常跑完" "$rc" 0
+yes_ "它确实跑到了结束" ended fresh
+
+echo "── 13b. 每轮检查：先读到「运行中」、停之前再读时查询失败 → 不发停止请求；恢复后停掉 ──"
+hw2_bg t2 300; p2=$HW_PID
+wait_for 5 started t2 || bad "测试没启动"
+r2="$(rec_of "$M/t2.start")"; u2="$(field "$r2" unit)"
+wp="$(pane_pid)"; T kill-session -t "=$SESS"; kill -KILL "$wp" 2>/dev/null; kill -KILL $(awk '{print $2}' "$CTL/runs") 2>/dev/null
+wait_for 5 pid_gone "$wp"
+: > "$FAKE/calls"; fail_after 1
+sweep
+chk "第二次查询失败：没有发停止请求" "$(calls stop)" 0
+chk "确实查了两次（第一次读到运行中，第二次失败）" "$(calls "show $u2")" 2
+yes_ "测试还在" test -n "$(members "$u2")"
+yes_ "记录还在" test -f "$r2"
+faults_off
+sweep
+yes_ "查询恢复后的一轮把它停掉" wait_for 5 test -z "$(members "$u2")"
+wait "$p2" 2>/dev/null
 
 echo "── 14. 清理：别的条目占着排队、本条目的测试在排队 → 先停后删，别的条目不受影响 ──"
 setup2 clean "$ON"
@@ -557,15 +644,20 @@ no_ "没有启动" started late
 yes_ "说了原因" grep -q "已被清理过" "$W/late.out"
 
 echo "── 16. 清理时测试停不掉 / 状态查不清：保留工作树，非 0 退出；恢复后重试成功 ──"
-for fault in stop-fail show-fail show-junk; do
+for fault in stop-fail show-fail show-junk show-fail-after; do
     setup2 "f-$fault" "$ON" "HEAVY_STOP_WAIT_SECS=3"
     dispatch "$NEW" issue
     wait_for 5 test -s "$CTL/runs"
     hw2_bg t 300; pt=$HW_PID
     wait_for 5 started t || bad "$fault：测试没启动"
     rt="$(rec_of "$M/t.start")"; ut="$(field "$rt" unit)"
-    touch "$FAKE/$fault"
+    # show-fail-after：清理先读到「运行中」，停之前的那一次再读失败
+    if [ "$fault" = show-fail-after ]; then fail_after 1; else touch "$FAKE/$fault"; fi
     cleanup_item "$NEW" --force; rc=$?
+    if [ "$fault" = show-fail-after ]; then
+        chk "$fault：没有发停止请求" "$(calls stop)" 0
+        yes_ "$fault：确实读过两次以上" test "$(calls "show $ut")" -ge 2
+    fi
     yes_ "$fault：清理非 0 退出" test "$rc" -ne 0
     yes_ "$fault：工作树保留" test -d "$WT"
     yes_ "$fault：运行记录保留" test -f "$rt"
@@ -598,7 +690,7 @@ chk "worker 是派工起的那一次" "$(wc -l < "$CTL/runs")" 1
 chk "清理随后完成" "$rcc" 0
 chk "清理把代数加到 1" "$(gen_now)" 1
 no_ "清理最后删了工作树" test -d "$WT"
-yes_ "派工记下的启动是清理之前那一代" grep -qx "gen=0" "$D"/state/worker-launch/*
+chk "清理把本条目以前的启动记录删了（代数已变，用不上了）" "$(ls "$D/state/worker-launch" 2>/dev/null | wc -l)" 0
 
 echo "── 18. 清理进行到一半时来了派工：派工等清理做完，拿新代数重新起，新测试照常跑 ──"
 for where in hook stop; do
@@ -630,6 +722,7 @@ for where in hook stop; do
     yes_ "$where：派工重建了工作树" test -d "$WT"
     yes_ "$where：新 worker 起来了" wait_for 5 test "$(wc -l < "$CTL/runs")" -gt "$n_before"
     chk "$where：新 worker 带的是清理之后的代数" "$(wenv CAVIL_HEAVY_GEN)" 1
+    chk "$where：启动记录只剩新 worker 这一份，记的是新代数" "$(ls "$D/state/worker-launch" | wc -l) $(field "$D/state/worker-launch/$(wenv CAVIL_HEAVY_LAUNCH)" gen)" "1 1"
     n_stop="$(calls stop)"
     hw2_bg new 0.5; pn=$HW_PID
     wait "$pn"; rc=$?
@@ -764,26 +857,36 @@ yes_ "它的记录还在" test -f "$PRUNS/$ID_LIVE"
 chk "只停了一个分组" "$(calls stop)" 1
 kill "$s_live" 2>/dev/null
 
-echo "── 22. 文档里「查看谁在占、手动停一套」的命令：两份文档一致，原样可用 ──"
+echo "── 22. 文档里「查看谁在占、手动停一套」的命令：两份一致；别的条目占着排队时只停自己那一套 ──"
 extract() { awk '/<!-- heavy-test-ops:begin -->/ { on = 1; next } /<!-- heavy-test-ops:end -->/ { on = 0 } on && !/^```/' "$1"; }
 extract "$REPO_DIR/docs/operations.md" > "$TMP/ops.en.sh"
 extract "$REPO_DIR/docs/operations.zh.md" > "$TMP/ops.zh.sh"
 yes_ "文档里有这段命令" test -s "$TMP/ops.zh.sh"
 yes_ "中英两份的命令一致" cmp -s "$TMP/ops.en.sh" "$TMP/ops.zh.sh"
-if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-    faults_off; rm -f "$FAKE/calls"
-    DH="$TMP/dochome"; mkdir -p "$DH/.agents/skills"
-    ln -s "$REPO_DIR" "$DH/.agents/skills/cavil-loop"
-    # 干净环境、只给 HOME 和 PATH，命令一个字不改
-    env -i HOME="$DH" PATH="$PATH" HV_TEST_TAG="$HV_TEST_TAG" bash "$TMP/ops.zh.sh" > "$TMP/ops.out" 2>&1
-    yes_ "--list 列出了那一套在运行" grep -Eq '^[0-9a-f]{32}  running  分组:active  手动运行（sleep 120）' "$TMP/ops.out"
-    yes_ "--stop 把它停了" grep -q "^已停：" "$TMP/ops.out"
-    yes_ "停完再列：没有登记着的重测试" grep -q "没有登记着的重测试" "$TMP/ops.out"
-    chk "没有留下运行记录" "$(ls "$DH/.local/state/cavil-loop/heavy-test/runs" 2>/dev/null | wc -l)" 0
-    chk "确实建过分组、停过分组" "$(calls run) $(calls stop)" "1 1"
-else
-    echo "  ⏭ 这台机器不是 cgroup v2，包装命令会走降级模式：文档命令的原样执行由 heavy-test-systemd 那份覆盖"
-fi
+faults_off; : > "$FAKE/calls"
+DH="$TMP/dochome"; mkdir -p "$DH/.agents/skills"
+ln -s "$REPO_DIR" "$DH/.agents/skills/cavil-loop"
+DRUNS="$DH/.local/state/cavil-loop/heavy-test/runs"
+# 别的项目的一套先占着排队：文档里那一套只能排在它后面
+env HOME="$DH" CAVIL_HEAVY_MODE=probe CAVIL_HEAVY_ITEM=777 CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_STATE_DIR="$SD" CAVIL_HEAVY_PROJECT=example/another \
+    bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job docother 300)" > "$W/docother.out" 2>&1 < /dev/null &
+po=$!
+wait_for 5 started docother || bad "别的项目的测试没启动"
+ro="$(grep -l -- "$M/docother.start" "$DRUNS"/* | head -1)"; uo="$(field "$ro" unit)"
+# 命令一个字不改。环境里只多一样：CAVIL_HEAVY_MODE=probe，让包装命令去问替身而不是看这台机器有没有
+# 真的用户实例（CI 的机器没有）；不带任何变量的原样执行在 heavy-test-systemd 那份里
+env -i HOME="$DH" PATH="$PATH" HV_TEST_TAG="$HV_TEST_TAG" CAVIL_HEAVY_MODE=probe bash "$TMP/ops.zh.sh" > "$TMP/ops.out" 2>&1
+yes_ "--list 里别的项目那套在运行" grep -Eq "^${ro##*/}  running  分组:active  example/another #777" "$TMP/ops.out"
+mine="$(sed -n 's/^\([0-9a-f]\{32\}\)  queued  分组:active  手动运行（sleep 120）.*/\1/p' "$TMP/ops.out" | head -1)"
+yes_ "--list 里文档自己那套在排队" test -n "$mine"
+yes_ "停掉的是文档自己那一套" grep -qx "已停：$mine" "$TMP/ops.out"
+chk "只发了一次停止请求，停的是自己的分组" "$(grep '^stop ' "$FAKE/calls" | cut -d' ' -f2)" "cavil-heavy-$mine.scope"
+yes_ "别的项目的测试还在跑" test -n "$(members "$uo")"
+yes_ "别的项目的记录还在" test -f "$ro"
+chk "三次 --list 行里：别的项目那套出现两次，文档那套只在停之前出现一次" "$(grep -c "^${ro##*/} " "$TMP/ops.out") $(grep -c "^$mine " "$TMP/ops.out")" "2 1"
+chk "文档自己那套没有留下记录" "$(ls "$DRUNS" | grep -c "$mine")" 0
+env HOME="$DH" CAVIL_HEAVY_MODE=probe bash "$NEW/scripts/heavy-test.sh" --stop "${ro##*/}" > /dev/null 2>&1
+wait "$po" 2>/dev/null
 
 echo
 compat_summary

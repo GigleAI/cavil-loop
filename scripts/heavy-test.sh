@@ -3,6 +3,7 @@
 #
 # 用法：
 #   bash scripts/heavy-test.sh -- <命令…>     排队 → 轮到了再跑 → 原样返回命令的退出码
+#        前面可加 --id-file <文件>：登记后把本次运行的编号写进去（拿去 --stop，不用从列表里猜）
 #   bash scripts/heavy-test.sh --list         列出登记着的运行（谁在排队、谁在跑）
 #   bash scripts/heavy-test.sh --stop <编号>  停掉一套（--list 第一列的编号）
 #
@@ -20,6 +21,7 @@
 # 跳过条目核对，只排队。
 #
 # 其余环境（macOS、没有 systemd 用户实例）：只排队包装命令本身，不建分组、不登记、不清理。
+# 「不支持」必须是当场看得见的事实；用户实例在、只是这一次没问到，算「不知道」——不跑，不降级。
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -42,7 +44,8 @@ say() { printf '[heavy-test] %s\n' "$*" >&2; }
 usage() {
     cat >&2 <<'EOF'
 用法：
-  heavy-test.sh -- <命令…>      排队跑一套重测试
+  heavy-test.sh [--id-file <文件>] -- <命令…>
+                                排队跑一套重测试；--id-file：登记后把本次运行的编号写进这个文件
   heavy-test.sh --list          列出登记着的运行
   heavy-test.sh --stop <编号>   停掉一套
 EOF
@@ -113,8 +116,9 @@ item_check() {
     [ -n "$LAUNCH" ] || return 0
     ls="$(heavy_launch_state "$SDIR" "$LAUNCH")"
     case "$ls" in
-        alive|none) return 0 ;;
+        alive|unidentified) return 0 ;;
         ended) say "起这套测试的 worker 已经结束，不启动"; return 1 ;;
+        none) say "找不到起这套测试的那次 worker 启动的记录，不启动"; return 1 ;;
         *) say "读不到起这套测试的 worker 是否还在，不启动"; return 1 ;;
     esac
 }
@@ -152,7 +156,11 @@ write_record() {   # <状态>
     mv -f "$tmp" "$REC"
 }
 
-register_queued() { item_check_if_item && write_record queued; }
+register_queued() {
+    item_check_if_item && write_record queued || return 1
+    # 调用方要的话，把本次运行的编号写给它（之后可以拿去 --stop，不用从全账号的列表里猜）
+    [ -z "${ID_FILE:-}" ] || printf '%s\n' "$RUN_ID" > "$ID_FILE" 2>/dev/null || true
+}
 mark_running() { item_check_if_item && write_record running; }
 item_check_if_item() { [ -z "$ITEM" ] || item_check; }
 
@@ -259,19 +267,39 @@ run_inner() {
 }
 
 # ── 外层 ──
-heavy_mode() {
-    case "${CAVIL_HEAVY_MODE:-}" in full|degraded) echo "$CAVIL_HEAVY_MODE"; return 0 ;; esac
-    if [ "$(uname -s)" = Linux ] && [ -f /sys/fs/cgroup/cgroup.controllers ] \
-       && command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 \
-       && systemctl --user show-environment >/dev/null 2>&1; then
-        echo full
-    else
-        echo degraded
+# 这台机器能不能用进程分组：
+#   full        能（Linux + cgroup v2 + systemd 用户实例应答了）
+#   unsupported 明确不能：不是 Linux / 不是 cgroup v2 / 没装 systemd-run 或 systemctl / 这个账号
+#               根本没有 systemd 用户实例（它的 socket 不存在）——这些都是当场看得见的事实
+#   unknown     看起来应该能，但这一次问用户实例没问到。**不能**当成 unsupported：那会跳过对
+#               已有分组的检查，上一套还在跑也照样开始
+heavy_platform() {
+    case "${CAVIL_HEAVY_MODE:-}" in full) echo full; return 0 ;; degraded) echo unsupported; return 0 ;; esac
+    if [ "${CAVIL_HEAVY_MODE:-}" != probe ]; then      # probe：测试用，跳过下面这些看机器的判断，只做最后那次询问
+        [ "$(uname -s)" = Linux ] && [ -f /sys/fs/cgroup/cgroup.controllers ] || { echo unsupported; return 0; }
+        command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 || { echo unsupported; return 0; }
+        [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/private" ] || { echo unsupported; return 0; }
     fi
+    if systemctl --user show-environment >/dev/null 2>&1; then echo full; else echo unknown; fi
+}
+
+# 登记着的运行有没有（不管状态）。有 = 这台机器上有人在用进程分组跑测试。
+any_run_records() {
+    local f
+    for f in "$RUNS"/*; do
+        [ -f "$f" ] && heavy_is_run_id "${f##*/}" && return 0
+    done
+    return 1
 }
 
 run_degraded() {
     local qfd rc=0 waited=0
+    # 降级模式看不了分组。只要还有登记着的运行，就没法确认它们已经结束——不跑，而不是当它们不存在
+    if any_run_records; then
+        say "这台机器上还有登记着的重测试（$RUNS），而现在用不了进程分组，没法确认它们已经结束：不跑"
+        say "确认它们都已结束后删掉那些记录，再重试"
+        exit 70
+    fi
     say "这台机器没有可用的 systemd 用户实例（或不是 Linux / cgroup v2）：只排队这条命令本身，不管它留下的后台进程"
     mkdir -p "$(dirname "$QUEUE_LOCK")"
     exec {qfd}<>"$QUEUE_LOCK"
@@ -297,7 +325,7 @@ run_outer() {
     trap 'systemctl --user stop "$UNIT" >/dev/null 2>&1 || true; wait "$child" 2>/dev/null || true; rm -f "$RC_DIR/$RUN_ID".*; exit 143' TERM INT HUP
 
     systemd-run --user --scope --quiet --collect --unit="$UNIT" "${props[@]}" -- \
-        bash "$SELF" --inner "$RUN_ID" -- "$@" <&0 &
+        env ID_FILE="${ID_FILE:-}" bash "$SELF" --inner "$RUN_ID" -- "$@" <&0 &
     child=$!
     wait "$child" || rc=$?
     trap - TERM INT HUP
@@ -321,6 +349,7 @@ case "${1:-}" in
     --list) cmd_list; exit 0 ;;
     --stop) cmd_stop "${2:-}"; exit 0 ;;
     --inner) INNER=1; RUN_ID="${2:-}"; shift 2; heavy_is_run_id "$RUN_ID" || usage ;;
+    --id-file) ID_FILE="${2:-}"; [ -n "$ID_FILE" ] || usage; shift 2 ;;
     --) ;;
     *) usage ;;
 esac
@@ -329,7 +358,10 @@ shift
 [ $# -gt 0 ] || usage
 
 if [ "$INNER" = 1 ]; then run_inner "$@"; fi
-case "$(heavy_mode)" in
+case "$(heavy_platform)" in
     full) run_outer "$@" ;;
-    *) run_degraded "$@" ;;
+    unsupported) run_degraded "$@" ;;
+    *)
+        say "这一次没能问到 systemd 用户实例，没法确认上一套重测试是否已经结束：不跑（稍后重试）"
+        exit 70 ;;
 esac

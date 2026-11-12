@@ -7169,9 +7169,24 @@ heavy_launch_prepare() {   # <条目号>
     HEAVY_LAUNCH_ITEM="$1"; HEAVY_LAUNCH_GEN="$g"
 }
 
+heavy_launch_write() {   # <进程号 | pending> <进程启动时间>
+    local f tmp
+    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
+        "$1" "$2" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+}
+
 # 交给 worker 的环境变量（tmux -e 参数，NUL 分隔，格式同 tmux_env_args 的其余部分）。
 heavy_tmux_env_args() {
     [ -n "$HEAVY_LAUNCH_ITEM" ] || return 0
+    # 这里只在真的要起 worker 时才会走到（注入现有会话不拼环境参数），而且在起之前：先登记这次启动
+    # （进程号待定）。worker 一起来就可能跑排队命令，那时记录必须已经在——排队命令对「没有记录的
+    # 启动编号」一律不放行。写不进去时 worker 照常起，只是它的重测试会被拒绝（不放行比乱放行安全）。
+    if [ -n "$HEAVY_LAUNCH_ID" ] && [ ! -e "$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")" ]; then
+        heavy_launch_write pending "" || echo "[cavil-loop] WARN: 写不进这次启动的记录，这个 worker 的重测试会被排队命令拒绝" >&2
+    fi
     printf -- '-e\0CAVIL_HEAVY_ITEM=%s\0' "$HEAVY_LAUNCH_ITEM"
     printf -- '-e\0CAVIL_HEAVY_GEN=%s\0' "$HEAVY_LAUNCH_GEN"
     printf -- '-e\0CAVIL_HEAVY_LAUNCH=%s\0' "$HEAVY_LAUNCH_ID"
@@ -7181,22 +7196,32 @@ heavy_tmux_env_args() {
     printf -- '-e\0CAVIL_HEAVY_SCOPE_PROPERTIES=%s\0' "$HEAVY_TEST_SCOPE_PROPERTIES"
 }
 
-# 起完 worker 之后调：记下这次启动的窗格进程号和它的启动时间。注入现有会话（没有新起程序）不调。
-# 认不出 worker 窗格 / 读不到进程 → 不写记录：这次启动起的测试只会被等，不会被每轮检查停掉。
+# 起完 worker 之后调：把这次启动的记录补上窗格进程号和它的启动时间。
+# 认不出 worker 窗格 / 读不到进程 → 记录停在「进程号待定」：这次启动起的测试可以跑、只会被等，
+# 不会被每轮检查停掉。注入现有会话（没有新起程序）不调，那种情况也没有登记过新的启动。
 heavy_launch_record() {   # <tmux_session>
     [ -n "$HEAVY_LAUNCH_ID" ] || return 0
-    local sess="$1" st pane pid dead start f tmp
+    local sess="$1" st pane pid dead start
     read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
     case "$st" in found|single) ;; *) st="" ;; esac
     if [ -z "$st" ] || [ "$dead" = 1 ] || ! start="$(heavy_proc_start "$pid")"; then
-        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，没有记下这次启动（它起的重测试不会被自动停）"
+        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，这次启动的进程号没记下（它起的重测试不会被自动停）"
         return 0
     fi
-    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
-    mkdir -p "$(dirname "$f")"
-    tmp="$f.tmp.$$"
-    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
-        "$pid" "$start" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+    heavy_launch_write "$pid" "$start" || log "  ⚠️ 写不进这次启动的记录（它起的重测试不会被自动停）"
+}
+
+# 条目清理（代数已经加一）之后：这个条目以前的启动记录都用不上了——带旧代数的测试在核对代数那一步
+# 就被拦下，轮不到看启动记录。在条目锁里调。
+heavy_launch_forget_item() {   # <条目号>
+    local f d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        [[ "${f##*/}" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" item)" = "$1" ] || continue
+        rm -f "$f"
+    done
 }
 
 # 本项目登记着的运行记录（可选只要某个条目的），一行一个文件路径。
@@ -7251,10 +7276,11 @@ heavy_stop_item_runs() {   # <条目号>
             *) log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue ;;
         esac
         log "  停掉条目 #$1 的重测试：$unit（$(heavy_field "$f" state)，$(heavy_field "$f" cmd)）"
+        # heavy_stop_unit 自己会再读一次状态：这一次读不出来就不发停止请求
         if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
             rm -f "$f"
         else
-            log "  ⚠️ 没能确认 $unit 已停（现在：$(heavy_scope_state "$unit")）"
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态；现在：$(heavy_scope_state "$unit")）"
             rc=1
         fi
     done < <(heavy_project_runs "$1")
@@ -7262,10 +7288,12 @@ heavy_stop_item_runs() {   # <条目号>
 }
 
 # 每轮轮询：本项目登记着的运行里，分组已经消失的删记录；起它的 worker 已确认结束、分组还在的，
-# 整组停掉。worker 还在 / 认不清 / 没有启动记录的一律不动。再顺手删掉没人引用的、已结束的启动记录。
+# 整组停掉。worker 还在 / 认不清 / 没读到进程号的一律不动。
+# 已结束的启动记录**不删**，只盖上「已结束」：删了的话，这个启动编号再被拿来问就成了「没记录」，
+# 旧 worker 留下的迟到请求会被重新放行。记录到条目清理时才删（那时代数已变，旧请求过不了代数那一关）。
 # 没有任何记录时只是两次目录读。
 heavy_sweep_tick() {
-    local f unit launch d id used=" "
+    local f unit launch d id
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         unit="$(heavy_field "$f" unit)"; launch="$(heavy_field "$f" launch)"
@@ -7273,14 +7301,13 @@ heavy_sweep_tick() {
         case "$(heavy_scope_state "$unit")" in
             gone) rm -f "$f"; continue ;;
             active) ;;
-            *) used="$used$launch "; continue ;;
+            *) continue ;;
         esac
         if [ -n "$launch" ] && [ "$(heavy_launch_state "$STATE_DIR" "$launch")" = ended ]; then
             log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$(heavy_field "$f" item)，$(heavy_field "$f" cmd)）"
             if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
-            log "  ⚠️ 没能确认 $unit 已停，下一轮再试"
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态），下一轮再试"
         fi
-        used="$used$launch "
     done < <(heavy_project_runs)
     d="$STATE_DIR/worker-launch"
     [ -d "$d" ] || return 0
@@ -7288,9 +7315,9 @@ heavy_sweep_tick() {
         [ -f "$f" ] || continue
         id="${f##*/}"
         [[ "$id" =~ ^[0-9a-f]{32}$ ]] || continue
-        case "$used" in *" $id "*) continue ;; esac
+        [ "$(heavy_field "$f" ended)" = 1 ] && continue
         [ "$(heavy_launch_state "$STATE_DIR" "$id")" = ended ] || continue
-        rm -f "$f"
+        heavy_launch_mark_ended "$STATE_DIR" "$id"
     done
     return 0
 }
