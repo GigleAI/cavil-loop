@@ -7224,16 +7224,20 @@ heavy_launch_forget_item() {   # <条目号>
     done
 }
 
-# 本项目登记着的运行记录（可选只要某个条目的），一行一个文件路径。
-heavy_project_runs() {   # [条目号]
-    local f id
+# 本账号下登记着的全部运行记录文件，一行一个路径（只看文件名，不读内容）。是不是本项目 / 本条目的，
+# 由调用方用 heavy_run_load 读过之后再问 heavy_run_is_mine——读不到的记录不能在这里被悄悄筛掉。
+heavy_run_files() {
+    local f
     for f in "$CAVIL_HEAVY_TEST_RUNS"/*; do
-        [ -f "$f" ] || continue
-        id="${f##*/}"; heavy_is_run_id "$id" || continue
-        [ "$(heavy_field "$f" statedir)" = "$STATE_DIR" ] || continue
-        if [ -n "${1:-}" ] && [ "$(heavy_field "$f" item)" != "$1" ]; then continue; fi
+        [ -f "$f" ] || [ -L "$f" ] || continue
+        heavy_is_run_id "${f##*/}" || continue
         printf '%s\n' "$f"
     done
+}
+# 刚用 heavy_run_load 读过的那条记录是不是本项目的（可选：是不是这个条目的）。只在读成功（返回 0）之后问。
+heavy_run_is_mine() {   # [条目号]
+    [ "$HR_STATEDIR" = "$STATE_DIR" ] || return 1
+    [ -z "${1:-}" ] || [ "$HR_ITEM" = "$1" ]
 }
 
 # 清理这个条目要不要走条目锁 / 代数 / 停分组：功能开着，或者（功能后来关了但）它还有登记着的运行、
@@ -7241,7 +7245,16 @@ heavy_project_runs() {   # [条目号]
 heavy_cleanup_needed() {   # <条目号>
     heavy_enabled && return 0
     [ -e "$(heavy_gen_file "$STATE_DIR" "$1")" ] && return 0
-    [ -n "$(heavy_project_runs "$1")" ]
+    local f rc
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        rc=0; heavy_run_load "$f" || rc=$?
+        case "$rc" in
+            0) ! heavy_run_is_mine "$1" || return 0 ;;
+            2) return 0 ;;      # 读不到：可能就是这个条目的，不能当成没有
+        esac
+    done < <(heavy_run_files)
+    return 1
 }
 
 # 清理：代数加一并落盘。在条目锁里调。读不出旧值 / 写不进去 → 非 0，调用方不继续清理。
@@ -7260,22 +7273,24 @@ heavy_gen_bump() {   # <条目号>
 # 清理：停掉本条目登记着的全部运行（排队中和运行中），逐个确认分组消失。在条目锁里、代数加一之后调。
 # 任何一个查不清 / 停不掉 → 非 0，调用方保留工作树。
 heavy_stop_item_runs() {   # <条目号>
-    local f unit st rc=0
+    local f unit st rc=0 lr
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        unit="$(heavy_field "$f" unit)"
-        if [ "$unit" != "$(heavy_unit_name "${f##*/}")" ]; then
-            [ -e "$f" ] || continue
-            log "  ⚠️ 运行记录 $f 里的分组名不对，不认识就不动它"
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        unit="$(heavy_unit_name "${f##*/}")"       # 分组名由文件名决定，记录读不到也推得出来
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine "$1"; then continue; fi
+        st="$(heavy_scope_state "$unit")"
+        if [ "$st" = gone ]; then rm -f "$f"; continue; fi
+        if [ "$lr" = 2 ]; then
+            # 读不到它是谁的：可能就是本条目的。不停它（也可能是别人的），但也不能当它不存在去删工作树
+            log "  ⚠️ 运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在（或查不清）：没法确认不是条目 #$1 的"
             rc=1; continue
         fi
-        st="$(heavy_scope_state "$unit")"
-        case "$st" in
-            gone) rm -f "$f"; continue ;;
-            active) ;;
-            *) log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue ;;
-        esac
-        log "  停掉条目 #$1 的重测试：$unit（$(heavy_field "$f" state)，$(heavy_field "$f" cmd)）"
+        if [ "$st" != active ]; then
+            log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue
+        fi
+        log "  停掉条目 #$1 的重测试：$unit（$HR_STATE，$HR_CMD）"
         # heavy_stop_unit 自己会再读一次状态：这一次读不出来就不发停止请求
         if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
             rm -f "$f"
@@ -7283,7 +7298,7 @@ heavy_stop_item_runs() {   # <条目号>
             log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态；现在：$(heavy_scope_state "$unit")）"
             rc=1
         fi
-    done < <(heavy_project_runs "$1")
+    done < <(heavy_run_files)
     return "$rc"
 }
 
@@ -7293,22 +7308,29 @@ heavy_stop_item_runs() {   # <条目号>
 # 旧 worker 留下的迟到请求会被重新放行。记录到条目清理时才删（那时代数已变，旧请求过不了代数那一关）。
 # 没有任何记录时只是两次目录读。
 heavy_sweep_tick() {
-    local f unit launch d id
+    local f unit d id lr
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        unit="$(heavy_field "$f" unit)"; launch="$(heavy_field "$f" launch)"
-        [ "$unit" = "$(heavy_unit_name "${f##*/}")" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine; then continue; fi
+        unit="$(heavy_unit_name "${f##*/}")"
         case "$(heavy_scope_state "$unit")" in
-            gone) rm -f "$f"; continue ;;
+            gone) rm -f "$f"; continue ;;       # 分组确认消失：不管记录读没读到，这条运行都了结了
             active) ;;
             *) continue ;;
         esac
-        if [ -n "$launch" ] && [ "$(heavy_launch_state "$STATE_DIR" "$launch")" = ended ]; then
-            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$(heavy_field "$f" item)，$(heavy_field "$f" cmd)）"
+        # 读不到的记录：不知道是谁的、谁起的，不停。它会挡着排队和本账号下的条目清理，所以每轮说一声
+        if [ "$lr" = 2 ]; then
+            log "⚠️ 重测试的运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在：不动它（确认后可 heavy-test.sh --stop ${f##*/}）"
+            continue
+        fi
+        if [ -n "$HR_LAUNCH" ] && [ "$(heavy_launch_state "$STATE_DIR" "$HR_LAUNCH")" = ended ]; then
+            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$HR_ITEM，$HR_CMD）"
             if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
             log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态），下一轮再试"
         fi
-    done < <(heavy_project_runs)
+    done < <(heavy_run_files)
     d="$STATE_DIR/worker-launch"
     [ -d "$d" ] || return 0
     for f in "$d"/*; do

@@ -271,6 +271,28 @@ wait "$pb"; rc=$?
 chk "恢复后：上一套结束才跑完" "$rc" 0
 yes_ "确实跑到了结束" ended next7
 
+echo "── 8. 上一套的运行记录读不到（包装命令被强杀、测试还在真实分组里）：不启动；恢复可读后仍等它结束 ──"
+hw_bg prev8 -- bash -c "echo \$\$ > '$M/prev8.main'; date +%s%N > '$M/prev8.start'; sleep 300"
+px=$HW_PID
+wait_for 10 started prev8 || bad "上一套没启动"
+rx="$(rec_of prev8.main)"; ux="$(unit_of prev8.main)"
+kill -KILL "$px" "$(field "$rx" pid)" 2>/dev/null; wait "$px" 2>/dev/null
+if [ "$(id -u)" = 0 ]; then mv "$rx" "$rx.keep"; echo garbage > "$rx"; else chmod 000 "$rx"; fi
+hw_bg next8 -- bash -c "$(job next8 0.3)"; pb=$HW_PID
+sleep 3
+no_ "下一套没有启动" started next8
+yes_ "那条记录还在" test -e "$rx"
+yes_ "上一套的测试还在分组里" in_unit "$(cat "$M/prev8.main")" "$ux"
+yes_ "下一套说了是哪条记录读不出来" grep -q "运行记录读不出来或内容不认识" "$W/next8.out"
+if [ "$(id -u)" = 0 ]; then mv -f "$rx.keep" "$rx"; else chmod 600 "$rx"; fi
+sleep 2
+no_ "记录恢复可读、上一套还在跑：仍不启动" started next8
+kill -KILL "$(cat "$M/prev8.main")" 2>/dev/null
+wait "$pb"; rc=$?
+chk "上一套结束后下一套跑完" "$rc" 0
+yes_ "确实跑到了结束" ended next8
+no_ "上一套的记录随后被删" test -e "$rx"
+
 echo
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

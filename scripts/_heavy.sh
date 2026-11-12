@@ -21,6 +21,43 @@ heavy_field() {   # <记录文件> <键>
     return 0
 }
 
+# 读一条运行记录。运行记录的每一个消费者（排队、列表、清理、每轮检查）都只通过它读，不各自拿
+# heavy_field 的空字符串去猜——空字符串分不出「这个字段是空的」和「文件读不到」。
+#   返回 0  读到了，而且是认识的形状：HR_STATE（queued | running）、HR_UNIT、HR_STATEDIR、HR_PROJECT、
+#           HR_ITEM、HR_GEN、HR_LAUNCH、HR_PID、HR_SINCE、HR_CMD 已填好
+#   返回 1  文件已经不在了（别人刚删掉）——这条运行已经了结，跳过即可
+#   返回 2  文件在，但读不到、或内容不认识（状态不是那两个词、分组名和文件名对不上、条目号不是数字）。
+#           **不能**当成「不在跑」「不是我的」：调用方按文件名推出分组名（heavy_unit_name）去查分组，
+#           只有分组确认消失才能删这条记录；分组还在或查不清时，它挡着排队、挡着删工作树，也不会被停。
+heavy_run_load() {   # <记录文件>
+    local f="$1" content line k
+    HR_STATE=""; HR_UNIT=""; HR_STATEDIR=""; HR_PROJECT=""; HR_ITEM=""; HR_GEN=""
+    HR_LAUNCH=""; HR_PID=""; HR_SINCE=""; HR_CMD=""
+    if ! content="$(cat "$f" 2>/dev/null)"; then
+        if [ -e "$f" ] || [ -L "$f" ]; then return 2; fi
+        return 1
+    fi
+    while IFS= read -r line; do
+        k="${line%%=*}"
+        case "$k" in
+            state) HR_STATE="${line#*=}" ;;
+            unit) HR_UNIT="${line#*=}" ;;
+            statedir) HR_STATEDIR="${line#*=}" ;;
+            project) HR_PROJECT="${line#*=}" ;;
+            item) HR_ITEM="${line#*=}" ;;
+            gen) HR_GEN="${line#*=}" ;;
+            launch) HR_LAUNCH="${line#*=}" ;;
+            pid) HR_PID="${line#*=}" ;;
+            since) HR_SINCE="${line#*=}" ;;
+            cmd) HR_CMD="${line#*=}" ;;
+        esac
+    done <<<"$content"
+    case "$HR_STATE" in queued|running) ;; *) return 2 ;; esac
+    [ "$HR_UNIT" = "$(heavy_unit_name "${f##*/}")" ] || return 2
+    [[ "$HR_ITEM" =~ ^[0-9]*$ ]] || return 2
+    return 0
+}
+
 # 运行记录文件名就是运行编号：32 位十六进制。目录里别的东西（写到一半的临时文件）不算记录。
 heavy_is_run_id() { [[ "$1" =~ ^[0-9a-f]{32}$ ]]; }
 

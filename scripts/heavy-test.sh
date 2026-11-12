@@ -58,22 +58,24 @@ fmt_age() {   # <开始的秒数>
     if [ "$s" -ge 60 ]; then printf '%d 分 %d 秒' $((s / 60)) $((s % 60)); else printf '%d 秒' "$s"; fi
 }
 
-describe_run() {   # <记录文件> → 「项目 #条目（命令）」
-    local f="$1" project item cmd
-    project="$(heavy_field "$f" project)"; item="$(heavy_field "$f" item)"; cmd="$(heavy_field "$f" cmd)"
-    printf '%s%s（%s）' "${project:-手动运行}" "${item:+ #$item}" "$cmd"
+describe_run() {   # 刚用 heavy_run_load 读过的那条记录 → 「项目 #条目（命令）」
+    printf '%s%s（%s）' "${HR_PROJECT:-手动运行}" "${HR_ITEM:+ #$HR_ITEM}" "$HR_CMD"
 }
 
 # ── 查看 / 手动停 ──
 cmd_list() {
-    local f id n=0 since
+    local f id n=0 since rc
     for f in "$RUNS"/*; do
-        [ -f "$f" ] || continue
+        [ -f "$f" ] || [ -L "$f" ] || continue
         id="${f##*/}"; heavy_is_run_id "$id" || continue
-        since="$(heavy_field "$f" since)"
-        [[ "$since" =~ ^[0-9]+$ ]] || since="$(date +%s)"
-        printf '%s  %s  分组:%s  %s  已 %s\n' "$id" "$(heavy_field "$f" state)" \
-            "$(heavy_scope_state "$(heavy_field "$f" unit)")" "$(describe_run "$f")" "$(fmt_age "$since")"
+        rc=0; heavy_run_load "$f" || rc=$?
+        [ "$rc" != 1 ] || continue
+        if [ "$rc" = 2 ]; then
+            printf '%s  读不到  分组:%s  这条运行记录读不出来或内容不认识：%s\n' "$id" "$(heavy_scope_state "$(heavy_unit_name "$id")")" "$f"
+        else
+            since="$HR_SINCE"; [[ "$since" =~ ^[0-9]+$ ]] || since="$(date +%s)"
+            printf '%s  %s  分组:%s  %s  已 %s\n' "$id" "$HR_STATE" "$(heavy_scope_state "$HR_UNIT")" "$(describe_run)" "$(fmt_age "$since")"
+        fi
         n=$((n + 1))
     done
     [ "$n" -gt 0 ] || echo "没有登记着的重测试"
@@ -83,9 +85,9 @@ cmd_stop() {
     local id="${1:-}" f unit
     heavy_is_run_id "$id" || { say "编号不对：要 --list 第一列那串 32 位字符"; exit 2; }
     f="$RUNS/$id"
-    [ -f "$f" ] || { say "没有这条运行记录：$id"; exit 1; }
-    unit="$(heavy_field "$f" unit)"
-    [ "$unit" = "$(heavy_unit_name "$id")" ] || { say "记录里的分组名不对，没有动任何东西：$f"; exit 1; }
+    [ -f "$f" ] || [ -L "$f" ] || { say "没有这条运行记录：$id"; exit 1; }
+    # 分组名由编号决定，不从记录里读：记录读不出来时也照样能按编号停
+    unit="$(heavy_unit_name "$id")"
     if heavy_stop_unit "$unit" 30; then
         rm -f "$f"
         echo "已停：$id"
@@ -166,32 +168,36 @@ item_check_if_item() { [ -z "$ITEM" ] || item_check; }
 
 # 还在跑的别的运行：分组确认消失的顺手删记录，其余的列出来。
 others_running() {
-    local f id unit st
+    local f id rc
     BLOCKERS=()
     for f in "$RUNS"/*; do
-        [ -f "$f" ] || continue
+        [ -f "$f" ] || [ -L "$f" ] || continue
         id="${f##*/}"; heavy_is_run_id "$id" || continue
         [ "$id" != "$RUN_ID" ] || continue
-        st="$(heavy_field "$f" state)"; unit="$(heavy_field "$f" unit)"
-        [ -e "$f" ] || continue            # 读的时候正好被删了
-        if [ "$unit" != "$(heavy_unit_name "$id")" ]; then
-            # 不是本工具写的东西：不认识就当它还在跑，不替人删
-            [ "$st" != running ] || BLOCKERS+=("$f")
-            continue
-        fi
-        case "$(heavy_scope_state "$unit")" in
-            gone) rm -f "$f" ;;
-            *) [ "$st" != running ] || BLOCKERS+=("$f") ;;
+        rc=0; heavy_run_load "$f" || rc=$?
+        [ "$rc" != 1 ] || continue            # 读的时候正好被删了
+        # 不管记录读没读到，分组名都由文件名决定；分组确认消失 = 这条运行了结了
+        case "$(heavy_scope_state "$(heavy_unit_name "$id")")" in
+            gone) rm -f "$f"; continue ;;
         esac
+        # 分组还在（或查不清）：明确写着「排队中」的不挡人（它也在等这把锁）；写着「运行中」的挡；
+        # 读不到 / 不认识的也挡——不知道它是不是在跑，就不能当它没在跑
+        if [ "$rc" = 2 ] || [ "$HR_STATE" = running ]; then BLOCKERS+=("$f"); fi
     done
 }
 
 print_waiting() {
-    local f since any=0
+    local f since any=0 rc
     others_running
     for f in "${BLOCKERS[@]}"; do
-        since="$(heavy_field "$f" since)"; [[ "$since" =~ ^[0-9]+$ ]] || since="$(date +%s)"
-        say "排队中：上一套重测试 $(describe_run "$f") 还有进程在运行，已 $(fmt_age "$since")"
+        rc=0; heavy_run_load "$f" || rc=$?
+        if [ "$rc" = 0 ]; then
+            since="$HR_SINCE"; [[ "$since" =~ ^[0-9]+$ ]] || since="$(date +%s)"
+            say "排队中：上一套重测试 $(describe_run) 还有进程在运行，已 $(fmt_age "$since")"
+        elif [ "$rc" = 2 ]; then
+            say "排队中：有一条运行记录读不出来或内容不认识，它的进程分组还在（或查不清），没法确认它没在跑：$f"
+            say "  确认那套测试的去向后用 --stop ${f##*/} 停掉它；它的分组消失后这里会自动放行"
+        fi
         any=1
     done
     [ "$any" = 1 ] || say "排队中：另一套重测试正在检查或收尾"

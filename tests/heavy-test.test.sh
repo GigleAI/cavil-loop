@@ -281,6 +281,67 @@ for fault in show-fail show-junk show-empty; do
     no_ "$fault：那条记录随后被删" test -f "$RUNS/$id"
 done
 
+echo "── 5b. 上一套的运行记录读不到 / 内容不认识：不能当它没在跑——不启动、不删记录；它结束后才启动 ──"
+# 把一条记录弄坏的几种办法；每种都记下原样，之后能恢复
+spoil() {   # <办法> <记录文件>
+    cp -p "$2" "$TMP/rec.bak"
+    case "$1" in
+        unreadable) chmod 000 "$2" ;;
+        garbage) echo "not a record at all" > "$2" ;;
+        empty) : > "$2" ;;
+        bad-state) sed -i 's/^state=.*/state=finished/' "$2" ;;
+        no-state) sed -i '/^state=/d' "$2" ;;
+        wrong-unit) sed -i 's/^unit=.*/unit=cavil-heavy-00000000000000000000000000000000.scope/' "$2" ;;
+    esac
+}
+unspoil() { chmod 600 "$1" 2>/dev/null; cp -p "$TMP/rec.bak" "$1"; }
+WAYS="garbage empty bad-state no-state wrong-unit"
+[ "$(id -u)" = 0 ] || WAYS="unreadable $WAYS"       # root 读得了权限 000 的文件，那一种测不出东西
+for way in $WAYS; do
+    reset1
+    hw_bg x -- bash -c "echo \$\$ > '$M/x.main'; date +%s%N > '$M/x.start'; sleep 300"
+    px=$HW_PID
+    wait_for 5 started x || bad "$way：上一套没启动"
+    rx="$(rec_of x.main)"; ux="$(field "$rx" unit)"
+    kill -KILL "$px" "$(field "$rx" pid)" 2>/dev/null; wait "$px" 2>/dev/null      # 包装命令没了，排队锁放了，测试还在
+    spoil "$way" "$rx"
+    hw_bg b -- bash -c "$(job b 0.3)"; pb=$HW_PID
+    sleep 2.5
+    no_ "$way：下一套没有启动" started b
+    yes_ "$way：那条记录还在" test -e "$rx"
+    yes_ "$way：上一套的测试没被打扰" kill -0 "$(cat "$M/x.main")"
+    chk "$way：没有停任何分组" "$(calls stop)" 0
+    yes_ "$way：确实按文件名查过它的分组" grep -q "^show $ux" "$FAKE/calls"
+    yes_ "$way：说了是哪条记录读不出来" grep -q "运行记录读不出来或内容不认识" "$W/b.out"
+    hw --list > "$W/list.out" 2>&1
+    yes_ "$way：--list 里它标着读不到" grep -q "^${rx##*/}  读不到  分组:active" "$W/list.out"
+    unspoil "$rx"
+    sleep 2
+    no_ "$way：记录恢复可读、上一套还在跑：仍不启动" started b
+    kill -KILL "$(cat "$M/x.main")" 2>/dev/null
+    wait "$pb"; rc=$?
+    chk "$way：上一套结束后下一套跑完" "$rc" 0
+    yes_ "$way：确实跑到了结束" ended b
+    no_ "$way：上一套的记录随后被删" test -e "$rx"
+done
+# 记录读不到、但它的分组已经确认消失：这条运行了结了，删掉记录、照常放行
+reset1
+id="$(printf '%032x' 4242)"; echo "garbage" > "$RUNS/$id"
+hw_bg b -- bash -c "$(job b 0.2)"; wait "$HW_PID"; rc=$?
+chk "读不到的记录、分组已消失：下一套照常跑完" "$rc" 0
+no_ "那条记录被删" test -e "$RUNS/$id"
+# 读不到的记录也能按编号手动停
+reset1
+hw_bg x -- bash -c "echo \$\$ > '$M/x.main'; date +%s%N > '$M/x.start'; sleep 300"; px=$HW_PID
+wait_for 5 started x || bad "没启动"
+rx="$(rec_of x.main)"
+echo "garbage" > "$rx"
+hw --stop "${rx##*/}" > "$W/stop.out" 2>&1; rc=$?
+chk "读不到的记录：--stop 按编号照样停得掉" "$rc" 0
+yes_ "测试被停了" wait_for 5 pid_gone "$(cat "$M/x.main")"
+no_ "记录被删" test -e "$rx"
+wait "$px" 2>/dev/null
+
 echo "── 6. 测试退出时留下后台子进程：收尾把整个分组停掉；分组外的进程不受影响 ──"
 reset1
 sleep 300 & outside=$!
@@ -670,6 +731,46 @@ for fault in stop-fail show-fail show-junk show-fail-after; do
     no_ "$fault：测试停了" test -n "$(members "$ut")"
     wait "$pt" 2>/dev/null
 done
+
+echo "── 16b. 清理 / 每轮检查碰到读不到的运行记录：不停它，也不能当它不存在去删工作树 ──"
+for way in garbage bad-state wrong-unit; do
+    setup2 "bad-$way" "$ON" "HEAVY_STOP_WAIT_SECS=3"
+    dispatch "$NEW" issue
+    wait_for 5 test -s "$CTL/runs"
+    hw2_bg t 300; pt=$HW_PID
+    wait_for 5 started t || bad "$way：测试没启动"
+    rt="$(rec_of "$M/t.start")"; ut="$(field "$rt" unit)"
+    spoil "$way" "$rt"
+    sweep
+    chk "$way：每轮检查没有停它" "$(calls stop)" 0
+    yes_ "$way：每轮检查在日志里说了这条记录" grep -q "读不出来或内容不认识.*${rt##*/}" "$D/state/poll.log"
+    yes_ "$way：每轮检查确实查过它的分组" grep -q "^show $ut" "$FAKE/calls"
+    cleanup_item "$NEW" --force; rc=$?
+    yes_ "$way：清理非 0 退出" test "$rc" -ne 0
+    yes_ "$way：工作树保留" test -d "$WT"
+    yes_ "$way：记录还在" test -e "$rt"
+    yes_ "$way：测试还在" test -n "$(members "$ut")"
+    chk "$way：清理也没有停它（不知道是谁的）" "$(calls stop)" 0
+    yes_ "$way：说了原因" grep -q "重测试没能确认停掉，工作树保留" "$D/cleanup.out"
+    unspoil "$rt"
+    cleanup_item "$NEW" --force; rc=$?
+    chk "$way：记录恢复后再清理成功" "$rc" 0
+    no_ "$way：这次工作树删了" test -d "$WT"
+    no_ "$way：测试停了" test -n "$(members "$ut")"
+    wait "$pt" 2>/dev/null
+done
+# 功能没开、也没清理过的项目，状态目录里只有一条读不到的记录（可能是这个条目的）：清理不能照旧直接删
+setup2 bad-off "HEAVY_STOP_WAIT_SECS=3"
+id="$(printf '%032x' 5151)"; echo garbage > "$RUNS/$id"
+env FAKE_UNIT="cavil-heavy-$id.scope" sleep 300 & stray=$!
+cleanup_item "$NEW" --force; rc=$?
+yes_ "功能没开但有读不到的记录、它的分组还在：清理非 0 退出" test "$rc" -ne 0
+yes_ "工作树保留" test -d "$WT"
+kill -KILL "$stray" 2>/dev/null; wait "$stray" 2>/dev/null
+cleanup_item "$NEW" --force; rc=$?
+chk "那个分组消失后再清理成功" "$rc" 0
+no_ "工作树删了" test -d "$WT"
+no_ "读不到的那条记录被删" test -e "$RUNS/$id"
 
 echo "── 17. 派工进行到一半时来了清理：清理等派工做完，才轮到它 ──"
 setup2 race1 "$ON"
