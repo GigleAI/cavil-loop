@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# kind: install
+# 远程入口（GitHub#387）：开关与配对脚本、常驻服务、daemon 侧的停 / 启脚本。
+#
+# 全部在假 HOME + 假 systemctl / launchctl / uname / tailscale 下跑**真实**脚本和真实服务进程；
+# 请求由一份照文档协议独立写的参考客户端发出（tests/fixtures/remote-access-client.py，不 import 服务端）。
+# 断言的是落盘文件、调度器与转发状态、服务的回复——不读源码文本。
+#
+#   1. 默认是关的；前提不满足（Tailscale 没连上 / 没开证书 / 没权限登记转发 / 端口开着公网入口 /
+#      后台任务状态读不到）时什么都不留
+#   2. 打开：转发登记、服务文件、后台任务；重复打开不重复登记
+#   3. 来访者不是查得到的 Tailscale 设备 → 拒绝（每条旁边有一条「是的话就通过」）
+#   4. 配对码：没生成 / 输错 / 过期 / 错满 5 次 / 用过，都换不到钥匙；正确的换到
+#   5. 签名请求：读状态、签名不对、重放、时间不对、换了设备、服务重启后的旧请求
+#   6. 停 / 启：只在状态对得上时执行，执行后读回；读不到不动；macOS 一侧同一套规则
+#   7. 日志最后 200 行
+#   8. 撤销：命令行撤销、客户端自己撤销（回复带签名），之后旧钥匙被拒
+#   9. 关闭：读不到不动；停服务 + 撤转发，设备清单保留
+#  10. 文档里写给人照做的命令，按字面在空环境跑通
+#
+#   bash tests/remote-access.test.sh
+set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=fixtures/install-fakes.sh
+source "$REPO_DIR/tests/fixtures/install-fakes.sh"
+# shellcheck source=fixtures/remote-access-fakes.sh
+source "$REPO_DIR/tests/fixtures/remote-access-fakes.sh"
+SANDBOX="$(mktemp -d)"
+SERVER_PID=""
+stop_server() { if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""; fi; }
+trap 'stop_server; rm -rf "$SANDBOX"' EXIT
+export TZ=UTC
+
+pass=0; fail=0
+chk() {
+    if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
+    else echo "  ❌ $1"; echo "     期望：[$3]"; echo "     实得：[$2]"; fail=$((fail+1)); fi
+}
+chk_has() {
+    case "$2" in *"$3"*) echo "  ✅ $1"; pass=$((pass+1)) ;;
+        *) echo "  ❌ $1（没找到 [$3]）"; printf '%s\n' "$2" | head -30 | sed 's/^/     | /'; fail=$((fail+1)) ;; esac
+}
+chk_lacks() {
+    case "$2" in *"$3"*) echo "  ❌ $1（不该出现 [$3]）"; printf '%s\n' "$2" | head -30 | sed 's/^/     | /'; fail=$((fail+1)) ;;
+        *) echo "  ✅ $1"; pass=$((pass+1)) ;; esac
+}
+
+FK="$SANDBOX/fakes"; install_fakes "$FK"; install_fake_tailscale "$FK"
+H="$SANDBOX/h"; HOST="$SANDBOX/p/widget"
+export FAKE_SD="$SANDBOX/sd" FAKE_LD="$SANDBOX/ld" FAKE_TS="$SANDBOX/ts"
+SYS_PATH="/usr/bin:/bin"
+RA_STATE="$H/.local/state/cavil-loop/remote-access"
+UNIT=cavil-loop-remote.service
+TIMER=cavil-loop-poll@widget.timer
+
+# skill 副本做成 git 仓库（Linux 上 setup.sh 会从它发布受管 release，需要 origin）
+SKILL="$SANDBOX/skill"
+make_skill() {
+    mkdir -p "$SKILL"; git init -q --bare "$SKILL.git"
+    (cd "$REPO_DIR" && git ls-files -co --exclude-standard -z -- . ':!client' ':!docs' ':!tests') \
+        | (cd "$REPO_DIR" && xargs -0 -I{} cp --parents -P {} "$SKILL/" 2>/dev/null)
+    git -C "$SKILL" init -q -b main
+    git -C "$SKILL" add -A >/dev/null
+    git -C "$SKILL" -c user.email=t@example.invalid -c user.name=t commit -qm snapshot
+    git -C "$SKILL" remote add origin "$SKILL.git"; git -C "$SKILL" push -q -u origin main 2>/dev/null
+}
+make_skill
+
+# 空环境：只给 HOME、PATH 和假工具要的状态目录；再加调用方给的 VAR=值
+in_env() {   # <os> [VAR=值 ...] -- <命令...>
+    local os="$1"; shift
+    local extra=()
+    while [ "$1" != -- ]; do extra+=("$1"); shift; done
+    shift
+    env -i HOME="$H" PATH="$FK/bin:$FK/agents-claude:$SYS_PATH" TZ=UTC FAKE_UNAME="$os" \
+        FAKE_SD="$FAKE_SD" FAKE_LD="$FAKE_LD" FAKE_TS="$FAKE_TS" ${extra[@]+"${extra[@]}"} "$@"
+}
+ra() {   # <os> [VAR=值 ...] -- <remote-access.sh 的参数...>；输出在 $out，退出码在 $rc
+    local pre=()
+    while [ "$1" != -- ]; do pre+=("$1"); shift; done
+    shift
+    rc=0; out="$(in_env "${pre[@]}" -- bash "$SKILL/scripts/remote-access.sh" "$@" 2>&1)" || rc=$?
+}
+
+fresh_world() {
+    stop_server
+    rm -rf "$H" "$SANDBOX/p" "$FAKE_SD" "$FAKE_LD" "$FAKE_TS"; mkdir -p "$H" "$SANDBOX/p" "$FAKE_SD" "$FAKE_LD" "$FAKE_TS"
+    git init -q -b main "$HOST"; git -C "$HOST" -c user.email=t@x -c user.name=t commit -q --allow-empty -m init
+}
+connect_project() {   # <os>
+    in_env "$1" -- bash "$SKILL/setup.sh" --yes "$HOST" < /dev/null > "$SANDBOX/setup.out" 2>&1 \
+        || { echo "  ❌ 夹具：setup.sh 没能接上项目"; tail -20 "$SANDBOX/setup.out"; fail=$((fail+1)); }
+}
+sd_calls() { grep -cE "$1" "$FAKE_SD/calls" 2>/dev/null || true; }
+ts_calls() { grep -cE "$1" "$FAKE_TS/calls" 2>/dev/null || true; }
+mapping() { jq -c '.Web // {}' "$FAKE_TS/serve.json" 2>/dev/null || echo '{}'; }
+PORT=47387
+
+echo "── 1. 默认是关的；前提不满足时什么都不留 ──"
+fresh_world
+ra Linux -- status
+chk "没打开过：状态是 closed" "$rc $(tail -1 <<<"$out")" "0 RESULT=closed"
+chk "没打开过：没有服务文件、没有转发" "$([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit) $(mapping)" " {}"
+
+nothing_left() {   # <标题>
+    chk "$1：没有服务文件、没有转发、后台任务没启动" \
+        "$([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit) $(mapping) $(cat "$FAKE_SD/$UNIT.active" 2>/dev/null)" " {} "
+}
+echo Stopped > "$FAKE_TS/backend"
+ra Linux -- enable
+chk "Tailscale 没连上：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=tailscale_down"
+nothing_left "Tailscale 没连上"
+rm -f "$FAKE_TS/backend"
+ra Linux FAKE_TS_STATUS=fail -- enable
+chk "Tailscale 状态读不到：退出 2，不当成没连上也不当成连上了" "$rc $(tail -1 <<<"$out")" "2 RESULT=tailscale_unknown"
+nothing_left "Tailscale 状态读不到"
+: > "$FAKE_TS/certdomain"
+ra Linux -- enable
+chk "没开 HTTPS 证书功能：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=no_https"
+nothing_left "没开证书功能"
+rm -f "$FAKE_TS/certdomain"
+ra Linux FAKE_TS_SERVE=deny -- enable
+chk "没权限登记转发：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=need_admin"
+chk_has "没权限登记转发：给出要人跑的那条命令" "$out" "sudo tailscale serve --bg --https=$PORT http://127.0.0.1:$PORT"
+nothing_left "没权限登记转发"
+chk "没权限登记转发：试过一次 sudo（免密的话就不用人动手）" "$(grep -c '^-n tailscale serve --bg' "$FAKE_TS/sudo-calls")" 1
+ra Linux FAKE_TS_SERVE=lie -- enable
+chk "登记报成功但读回没有：退出 3，不启动服务" "$rc $(tail -1 <<<"$out")" "3 RESULT=failed"
+nothing_left "登记读回不对"
+ra Linux FAKE_TS_SERVE_STATUS=fail -- enable
+chk "现有转发读不到：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=tailscale_unknown"
+chk "现有转发读不到：没有去登记转发" "$(ts_calls '^serve --bg')" 2   # 只有上面 deny / lie 那两次
+jq -n --arg hp "box.tailnet.ts.net:$PORT" '{AllowFunnel:{($hp):true}}' > "$FAKE_TS/serve.json"
+ra Linux -- enable
+chk "端口上开着公网入口：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=funnel"
+chk "端口上开着公网入口：没有去登记转发" "$(ts_calls '^serve --bg')" 2
+jq -n --arg hp "box.tailnet.ts.net:$PORT" --arg p "$PORT" '{TCP:{($p):{HTTPS:true}}, Web:{($hp):{Handlers:{"/":{Proxy:"http://127.0.0.1:3000"}}}}}' > "$FAKE_TS/serve.json"
+ra Linux -- enable
+chk "端口上已有别的转发：退出 2，不覆盖" "$rc $(tail -1 <<<"$out") $(jq -r '.Web[].Handlers["/"].Proxy' "$FAKE_TS/serve.json")" "2 RESULT=port_taken http://127.0.0.1:3000"
+rm -f "$FAKE_TS/serve.json"
+ra Linux FAKE_SD_MODE=fail -- enable
+chk "后台任务状态读不到：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=unknown"
+chk "后台任务状态读不到：没有去登记转发" "$(ts_calls '^serve --bg') $(mapping)" "2 {}"
+ra Linux -- enable --port 80
+chk "端口不合规：退出 1" "$rc $(tail -1 <<<"$out")" "1 RESULT=bad_port"
+
+echo "── 2. 打开 ──"
+fresh_world
+ra Linux -- enable
+chk "打开成功" "$rc $(tail -1 <<<"$out")" "0 RESULT=enabled"
+chk "转发：这个端口 → 本机回环同一端口" "$(mapping)" "{\"box.tailnet.ts.net:$PORT\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:$PORT\"}}}}"
+unit_file="$H/.config/systemd/user/$UNIT"
+chk_has "服务文件：启动的是服务程序，带状态目录、端口、skill 目录" "$(cat "$unit_file" 2>/dev/null)" \
+    "scripts/remote-access/remote_access.py serve --state $RA_STATE --port $PORT --skill $SKILL"
+chk "后台任务：已启用、在跑" "$(cat "$FAKE_SD/$UNIT.enabled") $(cat "$FAKE_SD/$UNIT.active")" "enabled active"
+chk "状态目录只有本人能进" "$(stat -c %a "$RA_STATE")" 700
+ra Linux -- status
+chk "状态：open" "$(tail -1 <<<"$out")" "RESULT=open"
+ra Linux -- enable
+chk "再打开一次：成功，不重复登记转发" "$rc $(tail -1 <<<"$out") $(ts_calls '^serve --bg')" "0 RESULT=enabled 1"
+ra Linux -- enable --port 47999
+chk "换端口打开：新端口登记了转发，服务文件换成新端口" "$rc $(jq -r '.Web | keys | join(",")' "$FAKE_TS/serve.json") $(grep -c -- '--port 47999 ' "$unit_file")" \
+    "0 box.tailnet.ts.net:47387,box.tailnet.ts.net:47999 1"
+fresh_world
+ra Linux FAKE_TS_SERVE=deny FAKE_SUDO=ok -- enable
+chk "自己没权限但 sudo 免密：经 sudo 登记成功" "$rc $(tail -1 <<<"$out") $(mapping | jq length)" "0 RESULT=enabled 1"
+# macOS：服务文件是 launchd 的
+fresh_world
+ra Darwin -- enable
+plist="$H/Library/LaunchAgents/dev.luosky.cavil-loop.remote.plist"
+chk "macOS 打开成功，launchd 已加载这份文件" "$rc $(tail -1 <<<"$out") $(cat "$FAKE_LD/dev.luosky.cavil-loop.remote.path" 2>/dev/null)" "0 RESULT=enabled $plist"
+chk "macOS 服务文件是合法 plist，启动的是服务程序" \
+    "$(python3 -c 'import plistlib,sys; a=plistlib.load(open(sys.argv[1],"rb"))["ProgramArguments"]; print(a[1].split("/")[-1], a[2], a[5], a[6])' "$plist" 2>&1)" \
+    "remote_access.py serve --port $PORT"
+ra Darwin -- disable
+chk "macOS 关闭：已卸载、文件已删、转发已撤" "$rc $(tail -1 <<<"$out") $([ -e "$plist" ] && echo file) $(mapping)" "0 RESULT=disabled  {}"
+
+# ── 起一个真的服务进程，后面几组都对着它发请求 ──
+fresh_world
+connect_project Linux
+fake_ts_device 100.64.0.7 nMAC1 test-mac
+fake_ts_device 100.64.0.9 nOTHER other-box
+PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+start_server() {   # [VAR=值 ...]：服务进程的额外环境。直接起（不经函数后台），$! 才是服务进程本身
+    env -i HOME="$H" PATH="$FK/bin:$FK/agents-claude:$SYS_PATH" TZ=UTC FAKE_UNAME=Linux \
+        FAKE_SD="$FAKE_SD" FAKE_LD="$FAKE_LD" FAKE_TS="$FAKE_TS" "$@" \
+        python3 "$SKILL/scripts/remote-access/remote_access.py" serve --state "$RA_STATE" --port "$PORT" --skill "$SKILL" \
+        >>"$SANDBOX/server.log" 2>&1 &
+    SERVER_PID=$!
+    local i
+    for i in $(seq 1 80); do
+        python3 -c 'import sys,urllib.request; urllib.request.urlopen("http://127.0.0.1:%s/v1/hello" % sys.argv[1], timeout=1)' "$PORT" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    echo "  ❌ 夹具：服务没起来"; tail -5 "$SANDBOX/server.log"; fail=$((fail+1))
+}
+start_server
+cl() { python3 "$REPO_DIR/tests/fixtures/remote-access-client.py" --port "$PORT" "$@"; }
+pair_code() { in_env Linux -- python3 "$SKILL/scripts/remote-access/remote_access.py" pair-code --state "$RA_STATE"; }
+st_err() { jq -r '"\(.status) \(.body.error // "-")"'; }
+
+echo "── 3. 来访者不是查得到的 Tailscale 设备 → 拒绝 ──"
+CODE="$(pair_code)"
+chk "没有来访地址" "$(cl --no-xff pair "$CODE" | st_err)" "403 not_tailscale"
+chk "来访地址是公网地址" "$(cl --xff 8.8.8.8 pair "$CODE" | st_err)" "403 not_tailscale"
+chk "来访地址是局域网地址" "$(cl --xff 192.168.1.5 pair "$CODE" | st_err)" "403 not_tailscale"
+chk "来访地址不止一个" "$(cl --xff '100.64.0.7, 100.64.0.9' pair "$CODE" | st_err)" "403 not_tailscale"
+chk "地址在 Tailscale 段内，但本机 Tailscale 查不到这台设备" "$(cl --xff 100.64.0.99 pair "$CODE" | st_err)" "403 unknown_device"
+chk "带公网入口标记" "$(cl --funnel pair "$CODE" | st_err)" "403 funnel"
+stop_server
+start_server FAKE_TS_WHOIS=fail
+chk "查询设备身份的命令失败：拒绝，不当成匿名放行" "$(cl pair "$CODE" | st_err)" "403 unknown_device"
+stop_server; start_server FAKE_TS_WHOIS=garbage
+chk "查询设备身份的输出读不懂：拒绝" "$(cl pair "$CODE" | st_err)" "403 unknown_device"
+stop_server; start_server
+chk "以上都没有消耗配对码的错误次数" "$(jq -r .tries "$RA_STATE/pairing.json")" 0
+resp="$(cl pair "$CODE" my-mac)"
+chk "查得到的 Tailscale 设备 + 正确配对码：配对成功" "$(jq -r '"\(.status) \(.body.version) \(.body.name) \(.body.key | length)"' <<<"$resp")" "200 1 my-mac 64"
+ID="$(jq -r .body.id <<<"$resp")"; KEY="$(jq -r .body.key <<<"$resp")"
+
+echo "── 4. 配对码 ──"
+chk "用过的配对码不能再用" "$(cl pair "$CODE" | st_err)" "403 pairing_closed"
+chk "没生成过配对码时兑换" "$(cl pair 00000000 | st_err)" "403 pairing_closed"
+CODE2="$(pair_code)"
+wrong="$(printf '%08d' $(( (10#$CODE2 + 1) % 100000000 )))"
+chk "输错" "$(cl pair "$wrong" | st_err)" "403 pairing_wrong"
+chk "输错一次后，正确的仍可用（带空格的写法也认）" "$(cl pair "${CODE2:0:4} ${CODE2:4:4}" second | jq -r .status)" 200
+CODE3="$(pair_code)"
+wrong="$(printf '%08d' $(( (10#$CODE3 + 1) % 100000000 )))"
+for _ in 1 2 3 4; do cl pair "$wrong" >/dev/null; done
+chk "第 5 次输错：作废" "$(cl pair "$wrong" | st_err)" "403 pairing_locked"
+chk "作废后正确的也换不到" "$(cl pair "$CODE3" | st_err)" "403 pairing_closed"
+CODE4="$(pair_code)"
+jq '.expires = 1' "$RA_STATE/pairing.json" > "$RA_STATE/p.tmp" && mv "$RA_STATE/p.tmp" "$RA_STATE/pairing.json"
+chk "过期" "$(cl pair "$CODE4" | st_err)" "403 pairing_expired"
+chk "配对码文件里没有明文、只本人可读" "$(pair_code >/dev/null; grep -c '"hash"' "$RA_STATE/pairing.json") $(stat -c %a "$RA_STATE/pairing.json") $(stat -c %a "$RA_STATE/devices.json")" "1 600 600"
+ra Linux -- list
+chk_has "列出已配对设备" "$out" "my-mac"
+chk "已配对两台" "$(jq length "$RA_STATE/devices.json")" 2
+
+echo "── 5. 签名请求 ──"
+call() { cl call "$@" --id "$ID" --key "$KEY"; }
+resp="$(call GET /v1/status)"
+chk "读状态：成功，回复的签名验得过" "$(jq -r '"\(.status) \(.signed)"' <<<"$resp")" "200 true"
+chk "读状态：就是状态脚本的输出（项目、后台任务状态）" "$(jq -r '.body.status | "\(.version) \(.projects[0].key) \(.projects[0].scheduler.state)"' <<<"$resp")" "1 widget running"
+chk "读状态：和本机直接跑状态脚本逐字段一致" \
+    "$(jq -cS '.body.status | del(.projects[].last_poll)' <<<"$resp")" \
+    "$(in_env Linux -- bash "$SKILL/scripts/install-status.sh" | jq -cS 'del(.projects[].last_poll)')"
+chk "签名不对" "$(call GET /v1/status --bad-sig | st_err)" "403 signature"
+chk "钥匙不对" "$(cl call GET /v1/status --id "$ID" --key "$(printf 'ab%.0s' $(seq 32))" | st_err)" "403 signature"
+chk "没配对过的设备编号" "$(cl call GET /v1/status --id deadbeefdeadbeef --key "$KEY" | st_err)" "401 revoked"
+N="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+chk "同一个请求第一次：成功" "$(call GET /v1/status --nonce "$N" | jq -r .status)" 200
+chk "同一个请求再发一次：拒绝" "$(call GET /v1/status --nonce "$N" | st_err)" "403 replay"
+chk "时间差太多（旧）" "$(call GET /v1/status --time $(( $(date +%s) - 600 )) | st_err)" "403 clock"
+chk "时间差太多（新）" "$(call GET /v1/status --time $(( $(date +%s) + 600 )) | st_err)" "403 clock"
+chk "钥匙被拿到另一台 Tailscale 设备上用" "$(cl --xff 100.64.0.9 call GET /v1/status --id "$ID" --key "$KEY" | st_err)" "403 device_mismatch"
+chk "签名的是别的路径" "$(call GET /v1/nothing | st_err)" "404 not_found"
+OLD_T="$(date +%s)"; sleep 1.2
+stop_server; start_server
+chk "服务重启前签的请求，重启后重放：拒绝" "$(call GET /v1/status --time "$OLD_T" | st_err)" "403 clock"
+chk "重启后新签的请求：成功" "$(call GET /v1/status | jq -r .status)" 200
+
+echo "── 6. 停 / 启 ──"
+: > "$FAKE_SD/calls"
+resp="$(call POST /v1/projects/widget/stop)"
+chk "停：成功，读回已停，回复带签名" "$(jq -r '"\(.status) \(.body.result) \(.body.state) \(.signed)"' <<<"$resp")" "200 ok stopped true"
+chk "停：后台任务确实停了，只发了一条停的命令" "$(cat "$FAKE_SD/$TIMER.active") $(sd_calls " stop $TIMER\$")" "inactive 1"
+resp="$(call POST /v1/projects/widget/stop)"
+chk "已停时再停：拒绝，没有再发命令" "$(jq -r '"\(.body.result) \(.body.state)"' <<<"$resp") $(sd_calls " stop $TIMER\$")" "refused stopped 1"
+chk_has "已停时再停：说明原因" "$(jq -r .body.output <<<"$resp")" "现在的后台任务状态是「已停」"
+resp="$(call POST /v1/projects/widget/start)"
+chk "启：成功，读回在跑" "$(jq -r '"\(.body.result) \(.body.state)"' <<<"$resp") $(cat "$FAKE_SD/$TIMER.active") $(sd_calls " start $TIMER\$")" "ok running active 1"
+resp="$(call POST /v1/projects/nosuch/stop)"
+chk "没有这个项目：not_found，没有发任何停 / 启命令" "$(jq -r .body.result <<<"$resp") $(sd_calls ' (stop|start) ')" "not_found 2"
+chk "项目名不合规：不认这个请求" "$(call POST '/v1/projects/wid%20get/stop' | st_err)" "404 not_found"
+# 状态读不到：重启服务让它带着「systemctl 连不上」的环境
+stop_server
+start_server FAKE_SD_MODE=fail
+: > "$FAKE_SD/calls"
+resp="$(call POST /v1/projects/widget/stop)"
+chk "后台任务状态读不到：拒绝，状态报读不到，没有发停的命令" "$(jq -r '"\(.body.result) \(.body.state)"' <<<"$resp") $(sd_calls " stop ")" "refused unknown 0"
+chk "读不到之前确实读了状态" "$(( $(sd_calls ' show ') > 0 ))" 1
+stop_server
+# 停了但读回不对
+start_server FAKE_SD_STUCK=1
+resp="$(call POST /v1/projects/widget/stop)"
+chk "发了停的命令但读回仍在跑：failed，状态如实报在跑" "$(jq -r '"\(.body.result) \(.body.state)"' <<<"$resp")" "failed running"
+stop_server; start_server
+# 脚本本身：macOS 一侧同一套规则
+ps_run() { rc=0; out="$(in_env "$1" -- bash "$SKILL/scripts/project-service.sh" widget "$2" 2>&1)" || rc=$?; }
+fresh_macos() { rm -rf "$H/.config" "$H/Library" "$FAKE_LD"; mkdir -p "$FAKE_LD"; connect_project Darwin; : > "$FAKE_LD/calls"; }
+LABEL=dev.luosky.cavil-loop.widget
+fresh_macos
+ps_run Darwin start
+chk "macOS 在跑时启：拒绝，没有调 launchctl 加载" "$rc $(tail -1 <<<"$out") $(grep -c '^bootstrap' "$FAKE_LD/calls")" "2 RESULT=refused 0"
+ps_run Darwin stop
+chk "macOS 停：成功，已卸载" "$rc $(tail -2 <<<"$out" | tr '\n' ' ') $([ -e "$FAKE_LD/$LABEL.path" ] && echo loaded)" "0 STATE=stopped RESULT=ok  "
+ps_run Darwin start
+chk "macOS 启：成功，加载的是这个项目的配置文件" "$rc $(tail -1 <<<"$out") $(cat "$FAKE_LD/$LABEL.path")" "0 RESULT=ok $H/Library/LaunchAgents/$LABEL.plist"
+ps_run Darwin stop; mv "$H/Library/LaunchAgents/$LABEL.plist" "$SANDBOX/kept.plist"; : > "$FAKE_LD/calls"
+ps_run Darwin start
+chk "macOS 配置文件不在：拒绝，没有调 launchctl 加载" "$rc $(tail -1 <<<"$out") $(grep -c '^bootstrap' "$FAKE_LD/calls")" "2 RESULT=refused 0"
+rc=0; out="$(in_env Darwin FAKE_LD_PRINT=fail -- bash "$SKILL/scripts/project-service.sh" widget stop 2>&1)" || rc=$?
+chk "macOS 状态读不到：拒绝" "$rc $(tail -2 <<<"$out" | tr '\n' ' ')" "2 STATE=unknown RESULT=refused "
+rc=0; out="$(in_env Linux -- bash "$SKILL/scripts/project-service.sh" widget restart 2>&1)" || rc=$?
+chk "不认识的操作：退出 1" "$rc $(tail -1 <<<"$out")" "1 RESULT=refused"
+
+echo "── 7. 日志 ──"
+fresh_world; connect_project Linux
+fake_ts_device 100.64.0.7 nMAC1 test-mac
+start_server
+resp="$(cl pair "$(pair_code)" my-mac)"; ID="$(jq -r .body.id <<<"$resp")"; KEY="$(jq -r .body.key <<<"$resp")"
+STATE_DIR="$(in_env Linux -- bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[0].state_dir')"
+rm -f "$STATE_DIR/poll.log"
+resp="$(call GET /v1/projects/widget/log)"
+chk "还没有日志：如实说没有，不报错" "$(jq -r '"\(.status) \(.body.exists) \(.body.text | length)"' <<<"$resp")" "200 false 0"
+mkdir -p "$STATE_DIR"; seq 1 450 | sed 's/^/[widget] line /' > "$STATE_DIR/poll.log"
+resp="$(call GET /v1/projects/widget/log)"
+chk "日志：最后 200 行，回复带签名" "$(jq -r '"\(.status) \(.signed) \(.body.text | split("\n") | length) \(.body.text | split("\n") | first) / \(.body.text | split("\n") | last)"' <<<"$resp")" \
+    "200 true 200 [widget] line 251 / [widget] line 450"
+chk "别的项目的日志：没有这个项目" "$(call GET /v1/projects/nosuch/log | st_err)" "404 no_project"
+
+echo "── 8. 撤销 ──"
+resp2="$(cl pair "$(pair_code)" second-mac)"; ID2="$(jq -r .body.id <<<"$resp2")"; KEY2="$(jq -r .body.key <<<"$resp2")"
+chk "撤销前第二台能读状态" "$(cl call GET /v1/status --id "$ID2" --key "$KEY2" | jq -r .status)" 200
+ra Linux -- revoke second-mac
+chk_has "命令行按设备名撤销" "$rc $out" "0 ✓ 已撤销：second-mac"
+chk "撤销后立刻被拒" "$(cl call GET /v1/status --id "$ID2" --key "$KEY2" | st_err)" "401 revoked"
+chk "没撤销的那台不受影响" "$(call GET /v1/status | jq -r .status)" 200
+ra Linux -- revoke nobody
+chk "撤销不存在的设备：退出 1" "$rc" 1
+resp="$(call POST /v1/unpair)"
+chk "客户端自己撤销：成功，回复带签名（对面凭它确认真撤了）" "$(jq -r '"\(.status) \(.body.result) \(.signed)"' <<<"$resp")" "200 revoked true"
+chk "自己撤销后：设备清单里没有它了，旧钥匙被拒" "$(jq length "$RA_STATE/devices.json") $(call GET /v1/status | st_err)" "0 401 revoked"
+
+echo "── 9. 关闭 ──"
+fresh_world
+ra Linux -- pair
+chk_has "pair：入口没开时先打开，再给出机器名和配对码" "$rc $out" "机器名：box.tailnet.ts.net"
+chk "pair：最后一行是 RESULT=code，配对码是 8 位数字" "$(tail -1 <<<"$out") $(grep -cE '配对码：[0-9]{4} [0-9]{4}$' <<<"$out")" "RESULT=code 1"
+chk "pair 之后入口是开着的" "$(cat "$FAKE_SD/$UNIT.active") $(mapping | jq 'length')" "active 1"
+jq -n '[{id:"aa", name:"kept-mac", node:"n1", node_name:"kept", key:"00", paired_at:1}]' > "$RA_STATE/devices.json"
+ra Linux FAKE_SD_MODE=fail -- disable
+chk "关闭时后台任务状态读不到：退出 2，转发和服务文件都还在" "$rc $(tail -1 <<<"$out") $(mapping | jq 'length') $([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit)" "2 RESULT=unknown 1 unit"
+ra Linux FAKE_TS_SERVE_STATUS=fail -- disable
+chk "关闭时转发设置读不到：退出 2，什么都没动" "$rc $(tail -1 <<<"$out") $(cat "$FAKE_SD/$UNIT.active")" "2 RESULT=tailscale_unknown active"
+ra Linux FAKE_TS_SERVE_OFF=stuck -- disable
+chk "转发撤不掉：退出 3，如实说还剩什么" "$rc $(tail -1 <<<"$out")" "3 RESULT=partial"
+chk_has "转发撤不掉：给出要人跑的命令" "$out" "sudo tailscale serve --https=47387 off"
+ra Linux -- disable
+chk "关闭：成功" "$rc $(tail -1 <<<"$out")" "0 RESULT=disabled"
+chk "关闭后：服务停了、不再自启、服务文件删了、转发撤了、等待中的配对码清了" \
+    "$(cat "$FAKE_SD/$UNIT.active") $(cat "$FAKE_SD/$UNIT.enabled") $([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit) $(mapping) $([ -e "$RA_STATE/pairing.json" ] && echo code)" \
+    "inactive disabled  {} "
+chk "关闭后：已配对设备清单保留" "$(jq -r '.[0].name' "$RA_STATE/devices.json")" kept-mac
+ra Linux -- status
+chk "关闭后状态：closed" "$(tail -1 <<<"$out")" "RESULT=closed"
+
+echo "── 10. 文档里的命令按字面跑通 ──"
+doc_block() {
+    awk -v b="<!-- $2:begin -->" -v e="<!-- $2:end -->" '$0==b{f=1;next} $0==e{f=0} f' "$REPO_DIR/docs/$1" \
+        | awk '/^```bash$/{f=1;next} /^```$/{f=0} f'
+}
+doc_block operations.md remote-access-ops > "$SANDBOX/doc.sh"
+chk "中英两份文档里的命令一字不差" "$(doc_block operations.zh.md remote-access-ops)" "$(cat "$SANDBOX/doc.sh")"
+chk "命令块非空" "$(grep -c . "$SANDBOX/doc.sh" | awk '{print ($1>3)}')" 1
+fresh_world; mkdir -p "$H/.agents/skills"; ln -s "$SKILL" "$H/.agents/skills/cavil-loop"
+ra Linux -- enable
+chk "装在稳定入口下时：服务文件指向稳定入口（不是软链背后的某个版本目录）" \
+    "$rc $(grep -c "^ExecStart=.* $H/.agents/skills/cavil-loop/scripts/remote-access/remote_access.py serve " "$H/.config/systemd/user/$UNIT")" "0 1"
+ra Linux -- disable
+jq -n '[{id:"aa11", name:"MacBook-Pro", node:"n1", node_name:"macbook-pro", key:"00", paired_at:1}]' > "$SANDBOX/dev.json"
+mkdir -p "$RA_STATE" && cp "$SANDBOX/dev.json" "$RA_STATE/devices.json"
+rc=0; out="$(env -i HOME="$H" PATH="$FK/bin:$SYS_PATH" FAKE_UNAME=Linux FAKE_SD="$FAKE_SD" FAKE_LD="$FAKE_LD" FAKE_TS="$FAKE_TS" bash -euo pipefail "$SANDBOX/doc.sh" 2>&1)" || rc=$?
+chk "打开 → 配对码 → 状态 → 列出 → 撤销 → 关闭：空环境下跑完、退出 0" "$rc" 0
+chk_has "文档流程：给出了配对码" "$out" "配对码："
+chk_has "文档流程：状态是开着的" "$out" "RESULT=open"
+chk_has "文档流程：撤销了那台设备" "$out" "✓ 已撤销：MacBook-Pro"
+chk "文档流程：最后一行是关闭成功" "$(tail -1 <<<"$out")" "RESULT=disabled"
+chk "文档流程跑完：没有服务文件、没有转发、设备已撤销" "$([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit) $(mapping) $(jq length "$RA_STATE/devices.json")" " {} 0"
+
+echo
+echo "通过 $pass，失败 $fail"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

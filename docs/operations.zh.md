@@ -1263,6 +1263,63 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 
 它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复——两者都读回确认过才报它）、`needs_human`（退出 4：恢复失败或确认不了——输出里有报错原文、原文件位置和手动恢复的命令，做过备份的话备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
 
+## 远程入口：让另一台电脑上的客户端看这台机器的 daemon（GitHub#387）
+
+daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客户端的「设置 → 远程 daemon」可以列出这台机器接了哪些项目、在不在跑，停 / 启某个项目的轮询，看轮询日志的最后 200 行。**只通过 Tailscale**，并且要先配对。默认是关的：不跑下面的命令，这台机器上没有任何监听、没有任何转发。
+
+**前提**（缺哪一条，`enable` 会说明并停下，不留半开的入口）：
+
+- 这台机器的 Tailscale 已连上，所在网络在管理后台 DNS 页开了 MagicDNS 和 HTTPS Certificates。
+- 登记转发要管理员权限：当前用户是 Tailscale 的操作者（`sudo tailscale set --operator=$USER` 设一次），或 `sudo` 免密。都没有时 `enable` 会给出一条要人用 `sudo` 跑的命令，跑完重跑 `enable`。
+- 本机有 `python3`、`tailscale`、`jq`。
+- 客户端那台电脑在同一个 Tailscale 网络里。
+
+<!-- remote-access-ops:begin -->
+```bash
+RA="$HOME/.agents/skills/cavil-loop/scripts/remote-access.sh"
+bash "$RA" enable
+bash "$RA" pair
+bash "$RA" status
+bash "$RA" list
+bash "$RA" revoke MacBook-Pro
+bash "$RA" disable
+```
+<!-- remote-access-ops:end -->
+
+依次是：打开入口；生成一个配对码（入口没开时 `pair` 会先打开，所以平时只跑 `pair` 就够）；看入口状态；列出已配对设备；撤销名叫 `MacBook-Pro` 的那台；关闭入口。
+
+**配对**：`pair` 打印这台机器的完整机器名（以 `.ts.net` 结尾）和一个 8 位配对码，在客户端「添加远程 daemon」里填这两样。配对码 10 分钟有效、只能用一次、连续输错 5 次作废。配对成功后客户端得到一把只属于它的钥匙（存在它的系统钥匙串里），这台机器把它记在 `~/.local/state/cavil-loop/remote-access/devices.json`（目录 700、文件 600）。
+
+**每条命令**的最后一行是 `RESULT=<...>`（`list` / `revoke` 除外）：
+
+| 命令 | 做什么 | 结果 |
+|------|--------|------|
+| `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387 | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
+| `pair` | 入口没开就先 `enable`，再生成配对码 | `code` |
+| `status` | 只读 | `open` / `closed` / `partial` / `unknown` |
+| `list` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间 | — |
+| `revoke <设备名或编号>` | 撤销一台设备，立刻生效；没有这台设备退出 1 | — |
+| `disable` | 停服务并移除后台任务文件 → 撤掉转发 → 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
+
+**边界**：
+
+- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。
+- 每个请求先确认来访者：转发层给出的来访地址必须是一个 Tailscale 地址，且本机 `tailscale whois` 查得到它是哪台设备。查不到、查询失败、带公网入口标记，一律拒绝。
+- 配对之后钥匙不再传输：每个请求带「时间 + 一次性随机数 + 请求内容」的签名，回复也带签名；来访设备的 Tailscale 身份必须等于配对时那台，钥匙拷到别的设备上用会被拒。
+- 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能执行任意命令。
+- 日志原样返回：`poll.log` 里若有令牌，配对过的客户端看得到。
+- 同一台机器上的其他系统用户能连到回环端口，但没有配对码和钥匙做不了任何事。
+- 常驻服务不随 daemon 自动更新而重启；更新后要用上新版本，重跑一次 `enable`。
+
+**客户端取消配对**：连得上时由这台机器确认撤销；连不上时客户端只能停止使用并显示「取消配对未完成」——这时这台机器上的授权**还在**，恢复连接后客户端会重试，或在这台机器上跑 `revoke`。
+
+**协议**（给想自己写客户端或排查的人）。入口 `https://<机器名>:<端口>`：
+
+- `POST /v1/pair`，请求体 `{"code": "<8 位>", "name": "<设备名>"}` → `{"version": 1, "id": "<设备编号>", "key": "<64 位十六进制钥匙>", "name": ...}`。
+- 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒，且不早于服务启动）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
+- `GET /v1/status` → `{"status": <install-status.sh 的输出>}`；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
+- 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）。
+
 ## 多 project 共存
 
 skill 装一次，调度器模板装一次。每个 project 跑：
