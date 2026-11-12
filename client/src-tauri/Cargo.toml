@@ -2,7 +2,7 @@
 # wires it to the window (one IPC command) and to the operating system.
 [package]
 name = "cavil-loop-client"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "MIT"
 description = "Cavil Loop desktop board client"
