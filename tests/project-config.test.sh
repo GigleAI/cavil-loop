@@ -9,6 +9,8 @@
 #   3. 拒绝写入的每种情况文件不变，旁边各有一个合规的同样保存确实写进去了
 #   3b. 赋值写在 if / 循环 / case / 函数 / { } 组里、接在别的命令后面（缩进或不缩进、执行或没执行）→ 只显示，
 #       显示的是 daemon 实际用的值；写成空值的行显示默认值
+#       一行写完的 if / 函数、接在 && 后面、declare / read / printf -v / ${…:=…} 等写法同样只显示、不许追加；
+#       结构读不出来时所有项只显示
 #   4. 保存进行中的外部写入：在真实的 cp / mv 前后插入一次外部修改（包装命令，脚本没有测试开关）
 #   5. 两次保存同时发生
 #   6. 备份是内容快照、只留最近 10 份
@@ -221,9 +223,9 @@ assert t.count('MAX_CONCURRENT_WORKERS=1\n') == 1
 open(p, 'w', encoding='utf-8').write(t.replace('MAX_CONCURRENT_WORKERS=1\n', block + '\n'))
 PY
     local g before; g="$(run get widget)"; before="$(sum "$CONF")"
-    chk "$1：值 $2、只显示" "$(jq -r .state <<<"$g") $(field "$g" MAX_CONCURRENT_WORKERS)" "ok [\"$2\",true,false]"
+    chk "$1：值 $2、只显示、不算「配置文件里没写」" "$(jq -r .state <<<"$g") $(field "$g" MAX_CONCURRENT_WORKERS)" "ok [\"$2\",true,false]"
     save widget '{"MAX_CONCURRENT_WORKERS":"4"}'
-    chk "$1：强行保存 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+    chk "$1：强行保存 → not_editable，文件不变（既没改行也没在末尾追加）" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
     save widget '{"REVIEW_MAX_ROUNDS":"7"}'
     chk "$1：同一份文件里最外层的另一项照常能改" "$RESULT $(grep -c "^REVIEW_MAX_ROUNDS='7'\$" "$CONF")" "RESULT=saved 1"
 }
@@ -243,6 +245,54 @@ structure_case "接在 || 后面的下一行（没执行）" 1 "true ||${NL}MAX_
 structure_case "here-doc 里的同名字样（不是赋值）" 1 ": <<DOC${NL}MAX_CONCURRENT_WORKERS=2${NL}DOC"
 structure_case "多行字符串里的同名字样（不是赋值）" 1 "NOTE=\"${NL}MAX_CONCURRENT_WORKERS=2${NL}\""
 structure_case "续行里（成了别的命令的参数）" 1 "true \\${NL}MAX_CONCURRENT_WORKERS=2"
+
+# 写在一行里的结构、以及不是 KEY= 开头的各种写法：行首找不到赋值，不等于文件里没有这一项——
+# 一样只显示、不许在末尾追加一行把它盖掉（PR #399 代码复审第 2 轮）
+structure_case "一行写完的 if（没执行）" 1 "if false; then MAX_CONCURRENT_WORKERS=2; fi"
+structure_case "一行写完的 if（执行了）" 2 "if true; then MAX_CONCURRENT_WORKERS=2; fi"
+structure_case "一行写完的函数（没调用）" 1 "set_it() { MAX_CONCURRENT_WORKERS=2; }"
+structure_case "一行写完的函数（调用了）" 2 "set_it() { MAX_CONCURRENT_WORKERS=2; }; set_it"
+structure_case "同一行接在 && 后面（执行了）" 2 "true && MAX_CONCURRENT_WORKERS=2"
+structure_case "同一行接在 && 后面（没执行）" 1 "false && MAX_CONCURRENT_WORKERS=2"
+structure_case "同一行接在 ; 后面" 2 ": ; MAX_CONCURRENT_WORKERS=2"
+structure_case "一行里的 { } 组" 2 "{ MAX_CONCURRENT_WORKERS=2; }"
+structure_case "一行里的 for 循环体" 2 "for _x in 1; do MAX_CONCURRENT_WORKERS=2; done"
+structure_case "一行里的 case" 2 "case x in x) MAX_CONCURRENT_WORKERS=2 ;; esac"
+structure_case "同一行两个赋值、这一项在后面" 2 "PC_OTHER=1 MAX_CONCURRENT_WORKERS=2"
+structure_case "declare 赋值" 2 "declare MAX_CONCURRENT_WORKERS=2"
+structure_case "只 export、不赋值" 1 "export MAX_CONCURRENT_WORKERS"
+structure_case "\${…:=…} 给默认值（执行了）" 2 ': "${MAX_CONCURRENT_WORKERS:=2}"'
+structure_case "\${…:=…} 给默认值（没执行）" 1 'false && : "${MAX_CONCURRENT_WORKERS:=2}"'
+structure_case "read 读进来" 2 "read -r MAX_CONCURRENT_WORKERS <<<2"
+structure_case "printf -v 写进去" 2 "printf -v MAX_CONCURRENT_WORKERS %s 2"
+structure_case "当作 for 的循环变量" 2 "for MAX_CONCURRENT_WORKERS in 2; do :; done"
+structure_case "(( )) 里赋值" 2 "((MAX_CONCURRENT_WORKERS=2))"
+structure_case "unset 掉" 1 "unset MAX_CONCURRENT_WORKERS"
+structure_case "只是读了一下它的值" 1 ': "$MAX_CONCURRENT_WORKERS"'
+# 最外层那一行本身是普通字面值，但别处还提到这一项：不是「只有这一处」，同样只显示
+structure_case "最外层字面值 + 后面没执行的条件里再赋值" 1 "MAX_CONCURRENT_WORKERS=1${NL}if false; then MAX_CONCURRENT_WORKERS=2; fi"
+structure_case "最外层字面值 + 后面执行了的 += " 12 "MAX_CONCURRENT_WORKERS=1${NL}true && MAX_CONCURRENT_WORKERS+=2"
+# 注释里提到不算（配置模板里大量「# KEY=…」的示例行）：照常可改、可追加
+fresh_world; printf '# MAX_CONCURRENT_WORKERS=9 的写法见文档\n# POLL_IDLE_PROBE=false\n' >> "$CONF"
+G="$(run get widget)"
+chk "注释里提到这一项不算：最外层的字面值照常可改，没写的项照常算没写" "$(field "$G" MAX_CONCURRENT_WORKERS) $(field "$G" POLL_IDLE_PROBE)" '["1",true,true] ["true",false,true]'
+save widget '{"MAX_CONCURRENT_WORKERS":"2","POLL_IDLE_PROBE":"false"}'
+chk "……保存：一处改行、一处追加" "$RESULT $(grep -c '^MAX_CONCURRENT_WORKERS=2$' "$CONF") $(tail -1 "$CONF")" 'RESULT=saved 1 POLL_IDLE_PROBE="false"'
+
+# 结构读不出来：不知道有没有、在哪 → 所有项只显示，改行和追加都不许（读不出 ≠ 没有）
+# 轮询会用的那个 bash 换成一个包装：只有「读结构」那一次调用失败，其余照常
+fresh_world; NOSTRUCT="$SANDBOX/nostruct"; mkdir -p "$NOSTRUCT"
+printf '#!%s\ncase "$*" in *__pc_fn*) exit 3 ;; esac\nexec %s "$@"\n' "$(command -v bash)" "$(command -v bash)" > "$NOSTRUCT/bash"; chmod +x "$NOSTRUCT/bash"
+G="$(RUN_PATH="$NOSTRUCT:$SYS_PATH" run get widget)"; before="$(sum "$CONF")"
+chk "结构读不出来：state 仍是 ok（值照常给），可改的项一个都没有" "$(jq -r .state <<<"$G") $(jq '[.fields[] | select(.editable)] | length' <<<"$G") $(field "$G" MAX_CONCURRENT_WORKERS) $(field "$G" POLL_IDLE_PROBE)" 'ok 0 ["1",true,false] ["true",true,false]'
+chk_has "结构读不出来：写明原因" "$(why "$G" MAX_CONCURRENT_WORKERS)" "读不出配置文件的结构"
+rev="$(jq -r .rev <<<"$G")"
+RUN_PATH="$NOSTRUCT:$SYS_PATH" save widget '{"MAX_CONCURRENT_WORKERS":"2"}' "$rev"
+chk "结构读不出来：改已有的行 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+RUN_PATH="$NOSTRUCT:$SYS_PATH" save widget '{"POLL_IDLE_PROBE":"false"}' "$rev"
+chk "结构读不出来：追加没写的项 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+save widget '{"MAX_CONCURRENT_WORKERS":"2","POLL_IDLE_PROBE":"false"}' "$rev"
+chk "可达性：同一份文件、结构读得出来时这两项都写得进去" "$RESULT $(grep -c '^MAX_CONCURRENT_WORKERS=2$' "$CONF") $(tail -1 "$CONF")" 'RESULT=saved 1 POLL_IDLE_PROBE="false"'
 
 # 写成空值：各处都是「空 = 用默认值」，表单显示默认值；这一行是普通字面值，可以改
 fresh_world; sed -i 's/^MAX_CONCURRENT_WORKERS=1$/MAX_CONCURRENT_WORKERS=""/' "$CONF"

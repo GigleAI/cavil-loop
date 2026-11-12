@@ -207,13 +207,17 @@ $__pc_src
     case "$NORM" in *__pc_end__) NORM_OK=1 ;; esac
     return 0
 }
-# top_level_only <KEY>：规范格式里这一项恰好出现一次，而且在最外层
-top_level_only() {
-    local k="$1" all top
-    [ "$NORM_OK" = 1 ] || return 1
-    all="$(printf '%s\n' "$NORM" | grep -cE "^[[:space:]]*(export[[:space:]]+)?$k=" || true)"
-    top="$(printf '%s\n' "$NORM" | grep -cE "^    (export )?$k=" || true)"
-    [ "$all" = 1 ] && [ "$top" = 1 ]
+# 这一项的名字在整份配置的代码里（注释不算——规范格式里没有注释）出现了几次、是不是最外层的赋值。
+# 「能不能改这一行」和「没有这一行、能不能在末尾追加」用的是这同一份证据：
+#   mentions <KEY>           名字作为一个完整的词出现的次数。不只数 KEY= 这种写法：export / declare / read /
+#                            printf -v / for KEY in / ${KEY:=…} / unset / 写在一行里的 if、函数体、a && KEY=…
+#                            都会提到这个名字，一处都不能漏看
+#   top_level_assign <KEY>   规范格式里有一行恰好缩进 4 格、以 KEY= 开头
+mentions() {
+    { printf '%s\n' "$NORM" | grep -ow -- "$1" || true; } | wc -l | tr -d ' '
+}
+top_level_assign() {
+    printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
 }
 
 # daemon 实际用的值：各处读这些配置项都是「没设置或为空 → 默认值」（${X:-默认}），这里同一条规则。
@@ -238,21 +242,34 @@ read_values() {   # <配置文件> → 填 V_SET / V_VAL（和 F_NAME 同下标�
 }
 
 # ── 一个配置项在文件里是怎么写的 ──
-# 结果放全局：W_KIND = literal（正好一行、在最外层、普通字面值、且加载后的值就是它）/ absent（没有这一行、
-# 加载后也确实没有值）/ complex；W_LINE 行号、W_QUOTE 引号（" ' 或空）、W_LITERAL 这一行写的字面值、
+# 结果放全局：W_KIND = literal（整份代码里只提到这一次、是最外层单独一行的普通字面值、且加载后的值就是它）/
+# absent（整份代码里一次都没提到、加载后也确实没有值）/ complex；W_LINE 行号、W_QUOTE 引号（" ' 或空）、W_LITERAL 这一行写的字面值、
 # W_WHY 不可改的原因。调用前先对同一个文件跑过 load_structure。
 inspect_field() {   # <配置文件> <下标>
-    local file="$1" i="$2" k="${F_NAME[$2]}" hits count ln text re
+    local file="$1" i="$2" k="${F_NAME[$2]}" hits count ln text re m
     W_KIND=complex; W_LINE=0; W_QUOTE=""; W_WHY=""; W_LITERAL=""
-    hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
-    if [ -z "$hits" ]; then
+    # 结构读不出来：不知道这一项在文件里有没有、在哪——不当成「没有」，也不当成「在最外层」
+    if [ "$NORM_OK" != 1 ]; then
+        W_WHY="读不出配置文件的结构，判断不了这一项能不能安全地改"; return 0
+    fi
+    m="$(mentions "$k")"
+    # 整份配置的代码里一次都没提到这个名字，加载后也确实没有值：才算「没有这一行」，可以追加
+    if [ "$m" = 0 ]; then
         if [ "${V_SET[$i]}" = 0 ]; then W_KIND=absent
-        else W_WHY="配置文件里找不到这一项的赋值行，它的值是别处给的"; fi
+        else W_WHY="配置文件里找不到这一项的赋值，它的值是别处给的"; fi
         return 0
     fi
-    count="$(printf '%s\n' "$hits" | wc -l | tr -d ' ')"
-    if [ "$count" -ne 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
+    hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
+    count=0; [ -z "$hits" ] || count="$(printf '%s\n' "$hits" | wc -l | tr -d ' ')"
+    if [ "$count" -gt 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
+    # 不是「单独一行、在最外层的赋值」：写在 if / 循环 / case / 函数 / { } 组里（一行写完的也算）、
+    # 接在别的命令后面，或者是 export / declare / read 这类别的写法。看结构，不看缩进
+    if [ "$count" = 0 ] || ! top_level_assign "$k"; then
+        W_WHY="配置文件里这一项写在条件、循环或函数里面，接在别的命令后面，或不是普通的赋值写法"; return 0
+    fi
+    if [ "$m" != 1 ]; then W_WHY="配置文件里除了赋值的那一行，别处还提到了这一项（共 $m 处）"; return 0; fi
     ln="${hits%%:*}"; text="${hits#*:}"
+    case "$text" in [[:space:]]*) W_WHY="配置文件里这一行前面有缩进"; return 0 ;; esac
     W_WHY="配置文件里这一项是手写的算式或引用了别的变量"
     re='^(export[[:space:]]+)?'"$k"'="(['"$LIT_CHARS"']*)"([[:space:]]+#.*|[[:space:]]*)$'
     if [[ "$text" =~ $re ]]; then W_QUOTE='"'
@@ -264,13 +281,7 @@ inspect_field() {   # <配置文件> <下标>
             [[ "$text" =~ $re ]] || return 0
         fi
     fi
-    # 不在最外层：在 if / 循环 / case / 函数 / { } 组里，或接在别的命令后面（看结构，不看缩进）
-    if ! top_level_only "$k"; then
-        if [ "$NORM_OK" = 1 ]; then W_WHY="配置文件里这一项的赋值写在条件、循环或函数里面，或接在别的命令后面"
-        else W_WHY="读不出配置文件的结构，判断不了这一行能不能安全地改"; fi
-        return 0
-    fi
-    # 字面值和加载后的值不一样：后面还有别的写法改了它（条件赋值、+= ……）
+    # 字面值和加载后的值不一样：别处还有看不见的写法改了它（另一个文件、运行时拼出来的名字）
     if [ "${V_SET[$i]}" != 1 ] || [ "${BASH_REMATCH[2]}" != "${V_VAL[$i]}" ]; then
         W_WHY="配置文件里这一行写的值和加载后实际的值不一样，别处还改了它"; return 0
     fi
