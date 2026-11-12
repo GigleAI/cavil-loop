@@ -10,22 +10,11 @@
 // Pure (no React): the panel calls it, tests drive it directly.
 
 import type { ItemDetail } from '../shared/actions';
-import type { Item, SourceStatus } from '../shared/types';
+import type { Item } from '../shared/types';
 
-/**
- * The newest complete read, this session, of a source that carries `item`;
- * null = none of its sources has been read completely (or the item is not on
- * the board). A source keeps its old snapshot when a read fails, so only a
- * status that says ok counts: another source succeeding, or this one failing
- * and keeping its cache, never looks like fresh data of this item.
- */
-export function freshMark(item: Pick<Item, 'sources'> | null, sources: SourceStatus[]): number | null {
-  if (!item) return null;
-  let mark: number | null = null;
-  for (const st of sources)
-    if (st.ok && st.dataFrom !== null && item.sources.includes(st.sourceKey) && (mark === null || st.dataFrom > mark)) mark = st.dataFrom;
-  return mark;
-}
+// `freshMark` — the newest complete read of a source that carries the item — lives in shared/tabs.ts since
+// GitHub#397: the tabs ask the same question ("do the sync rounds keep this item fresh?"), and one rule answers both.
+export { freshMark } from '../shared/tabs';
 
 /** The detail shows a PR state GitHub was still working out when it was read. */
 export function stillSettling(detail: ItemDetail | null): boolean {

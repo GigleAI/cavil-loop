@@ -936,7 +936,7 @@ export const MUTATIONS = [
     expect: ['GitHub#213: "all repositories" in the table'] },
   // ---- PR #220 review round 1: an item shown in two groups ----
   // ---- GitHub#226: the open detail follows the sync rounds ----
-  { what: '自动更新：失败的来源也算「读到了这一条的新数据」', file: 'src/renderer/autoRefresh.ts',
+  { what: '自动更新：失败的来源也算「读到了这一条的新数据」', file: 'src/shared/tabs.ts',
     from: 'if (st.ok && st.dataFrom !== null', to: 'if (st.dataFrom !== null',
     expect: ['a failed source keeps its old snapshot: its time does not count'] },
   { what: '自动更新：提交进行中照样自动读取', file: 'src/renderer/autoRefresh.ts',

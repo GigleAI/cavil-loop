@@ -101,12 +101,27 @@ export function tabUnread(t: Pick<TabInfo, 'seen' | 'item'>, active: boolean): b
 }
 
 /**
- * Does a source read completely in this run carry the item? Only then do the sync rounds keep it
- * fresh; a source that failed (and kept its cache), was removed, or no longer lists the item does not.
+ * The newest complete read, this session, of a source that carries `item`;
+ * null = none of its sources has been read completely (or the item is not on
+ * the board). A source keeps its old snapshot when a read fails, so only a
+ * status that says ok counts: another source succeeding, or this one failing
+ * and keeping its cache, never looks like fresh data of this item.
+ */
+export function freshMark(item: Pick<Item, 'sources'> | null, sources: SourceStatus[]): number | null {
+  if (!item) return null;
+  let mark: number | null = null;
+  for (const st of sources)
+    if (st.ok && st.dataFrom !== null && item.sources.includes(st.sourceKey) && (mark === null || st.dataFrom > mark)) mark = st.dataFrom;
+  return mark;
+}
+
+/**
+ * Do the sync rounds keep the item fresh — does a source read completely in this run carry it? A
+ * source that failed (and kept its cache), was removed, or no longer lists the item does not.
+ * The same question as `freshMark`, so the same answer.
  */
 export function listedNow(item: Pick<Item, 'sources'> | null, sources: SourceStatus[]): boolean {
-  if (!item) return false;
-  return sources.some((st) => st.ok && st.dataFrom !== null && item.sources.includes(st.sourceKey));
+  return freshMark(item, sources) !== null;
 }
 
 /** An ended item changes rarely: it is checked this often (an open one with every sync round). */
