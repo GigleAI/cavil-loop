@@ -30,6 +30,12 @@ if [ -n "${CAVIL_MIGRATE_GATE_FD:-}" ]; then
     unset CAVIL_MIGRATE_GATE_FD
 fi
 
+# ── base 分支测试工作流失败报告（GitHub#345）──
+# 故意放在节奏闸门**之前**：它是闸门之外的一个独立定时项，有自己的 5 分钟间隔和失败退避，项目空闲、
+# 主轮询退避时也要按时查。它不读也不写 state.json、不碰快照目录；CI_FAILURE_REPORT_WORKFLOWS 留空时
+# 这里什么都不做。放在 flock 之后：它改报告的标签，和派工不能同时进行。
+ci_failure_report_tick
+
 # ── 轮询节奏闸门（issue #35）──
 # 长期没动静的项目渐进退避：闹钟照旧每分钟把这个脚本叫醒，这里决定被叫醒之后要不要
 # 真的去打 GitHub。判定和状态都在 _lib.sh 的 pace_* 那一段。
@@ -346,6 +352,11 @@ collect_queue_rows() {
         [ -n "$num" ] || continue
         key="$kind:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
+        # CI 失败报告（GitHub#345）：交人没做完 / 本机记录丢失期间的报告不派，不管它挂着什么标签
+        if [ "$kind" = issue ] && ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            continue
+        fi
         queued_keys[$key]=1
         # review 轮次烧光的条目会**同时**挂着 pending/review + pending/human：留着
         # pending/review 是为了在看板上区分「审过了等人拍板」（只有 pending/human）和
@@ -443,6 +454,12 @@ dispatch_one_issue() {
     local d_rc d_out
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
+
+    # 启动前再问一次（GitHub#345）：收集候选之后才进不派工名单的，也不能派
+    if ci_report_dispatch_hold "$num"; then
+        log "issue #$num 不派工：$CI_REPORT_HOLD_REASON（CI 失败报告）"
+        return 0
+    fi
 
     # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
     # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
@@ -580,6 +597,11 @@ collect_queue_rows_greedy() {
             GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
             continue
         fi
+        if [ "$kind" = issue ] && ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            GREEDY_SKIPPED+=" ${kind}#${num}(CI 失败报告不派工)"
+            continue
+        fi
         # 没有任何挡工标签 = 自动续工。等外部需求机器人期间等待标签被提前摘掉、之后没人打派工标签的
         # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
         rc=0; requester_bot_wait_hold "$num" || rc=$?
@@ -637,6 +659,10 @@ collect_autopilot_rows() {
         key="issue:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
         autopilot_labels_in_flow "$labels_csv" && continue
+        if ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            continue
+        fi
         if ! autopilot_enabled; then
             # 托管需要复审关卡把关；没配就不托管，说一次、交人
             if autopilot_notice_once "$STATE_FILE" "$num" no-review-gate "⚠️ **托管标签 \`$LABEL_AUTOPILOT\` 不生效：本项目没有开复审关卡**
@@ -699,6 +725,8 @@ if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
         log_debug "greedy 跳过（括号里是挡住它的 label）:$GREEDY_SKIPPED"
     fi
 fi
+
+ci_report_hold_flush
 
 if [ -n "$REVIEW_CAPPED" ]; then
     log_debug "review 轮次已用尽、挂着 $LABEL_PENDING_HUMAN 等人工（本轮不派工，摘掉该标签才恢复）:$REVIEW_CAPPED"

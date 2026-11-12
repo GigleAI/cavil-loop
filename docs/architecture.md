@@ -197,6 +197,16 @@ State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
 have I seen" cursors. A backed-off tick still writes one line to `poll.log`
 saying which tier it is on and how long it will wait.
 
+One thing runs **outside** this gate on purpose: the base-branch CI failure report
+(`CI_FAILURE_REPORT_WORKFLOWS`, off by default — see
+[operations.md](operations.md#report-a-failed-test-workflow-on-the-base-branch-off-by-default)).
+`agent-poll.sh` calls it right after taking the poll lock and before the gate, so a red `main`
+is reported within about five minutes even while the poller itself is backed off; it has its own
+five-minute clock and failure backoff in `$STATE_DIR/ci-failure-report.json`, never reads or
+writes `state.json`, and does nothing at all when the setting is empty. It runs under the lock
+because it changes labels on its report issues, and its *do not dispatch* list is consulted at
+every dispatch entry of the same round.
+
 ## Worker session model
 
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process

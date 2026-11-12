@@ -134,6 +134,7 @@ PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
 AUTO_ADD_PROJECTS=""             # 把本仓库 issue / PR 加进这些 Project（"myorg/4 myorg/11"）；留空 = 关闭
+CI_FAILURE_REPORT_WORKFLOWS=""   # base 分支测试工作流失败自动报告（"tests.yml"）；留空 = 关闭
 # WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
@@ -370,6 +371,91 @@ Project 的写权限。读身份看不见某个 Project 时，不往它写任何
 第一次开始同步的时间、首次全量是否完成、上次完整成功同步的时间。第一次开始同步的时间在第一次
 尝试时写下、之后不变。删掉这个文件 = 所有 Project 从头开始（「新建时间晚于」的分界随之挪到现在）。
 请求量：没什么改动时每轮多 1 次合并读取；多配一个 Project 不会翻倍。
+
+## base 分支测试工作流失败自动报告（**默认关闭**）
+
+合并之后才在 `main` 上暴露的红灯（两个各自通过的 PR 合在一起坏了、环境变了、偶发失败）以前要等人
+自己看到。开了这项，daemon 会给它开一条 issue（GitHub#345）。
+
+```bash
+CI_FAILURE_REPORT_WORKFLOWS="tests.yml"   # 工作流文件名，空格或逗号分隔；留空 = 关闭
+CI_FAILURE_REPORT_BRANCH="main"           # 看哪个分支上的运行
+CI_FAILURE_REPORT_DISPATCH=false          # true：新开 / 重开的报告打派工标签
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2      # 这么多个不同的修复 PR 合并后仍然红 → 交人
+```
+
+已经自己会报告的工作流不要写进来（本仓库的 `release.yml` 就是）。**一个仓库只在一台机器上开**：
+下面的「不派工名单」存在本机，另一台轮询同一仓库的机器仍可能把正在交人的报告派出去（只在
+`CI_FAILURE_REPORT_DISPATCH=true` 时有这个问题）。
+
+**看什么。** 列出的工作流在那个分支上、由推送触发、在开启那一刻及之后创建的运行。只看每次运行的
+第一次尝试：重新运行不管红绿都不写任何东西。检查每 5 分钟一次，在主轮询里做（持着轮询锁、在空闲
+退避闸门**之前**，所以主轮询退避时它照样按自己的钟走）。停机之后从上次完整核对到的位置接着看，
+不会跳过，只是报告晚到。
+
+**一次红的运行落到哪**，从上往下第一条命中的：
+
+| 这次运行 | 落到 |
+|---|---|
+| 它的提交是某个 PR 的合并提交，PR 正文引用了某条报告（`Closes` / `Fixes` / `Resolves` / `Refs #N`，关键词和编号在同一行） | 那条报告：「修复 #P 合并后仍然失败（第 k 次）」。已按「已完成」关闭的会被重开。按修复 PR 计次 |
+| CI 把失败的测试标全了，而且和某条开着的报告完全相同 | 在那条报告上追加评论 |
+| CI 标全了，没有开着的报告对得上 | 新开一条报告 |
+| CI 的清单不完整（有失败任务没有错误标注，或某个步骤正好 10 条——GitHub 每步最多留 10 条） | 本工作流唯一一条开着的「原因未确认」报告，它明写这些失败不代表是同一个原因 |
+
+所以「同一个原因」指的是「失败的测试文件相同」（本仓库 `tests/run.sh` 标出来的粒度）：同一个测试
+文件里两处不同的断言坏了，会被当成一个原因。工作流重新转绿时，每条开着的报告会收到一条「已转绿」；
+报告不会被自动关闭。被关成「不做 / 重复」的报告不再动它。
+
+**交人。** 不同的修复 PR 失败达到 `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS` 次时，报告先进本机的
+**不派工名单**，然后评论里写明、摘掉派工标签、加上 `pending/human`。在名单里期间，三个派工入口
+（标签、greedy、托管）都不会为它启动 worker，不管它身上是什么标签。交人确认完成后出名单；或者只要有
+人改了它的流程标签、关闭了它，也出名单，之后 daemon 不再动它。正处在别的流程里的报告
+（`doing/agent`、复审、等前置……）留在名单里不动，等那边有变化。
+
+**日志摘录**是不可信文本：去掉时间戳和颜色控制符，令牌样式打码，只留最后 80 行 / 6000 字符，
+让伪造的隐藏标记失效，再放进围栏比其中最长的反引号串还长的代码块。
+
+**令牌。** 读用 `GH_TOKEN`：要能读 Actions 运行和检查标注（fine-grained：*Actions: read*、
+*Checks: read*）。遇到限流就等过去，不会报成权限问题；普通的 403 / 404 每天记一次日志。
+
+**状态**（`$STATE_DIR/ci-failure-report.json`，故意不放进 `state.json`）：每个工作流的开启时刻、
+运行完整核对到哪、还没处理完的运行，以及不派工名单。这样看：
+
+<!-- ci-failure-report-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --list
+```
+<!-- ci-failure-report-ops:end -->
+
+**这个文件丢失或损坏时**（而 GitHub 上已经有本功能的报告），daemon 不去重建它——它已经决定但还没
+写到 GitHub 的那部分，从 GitHub 上读不回来。它会暂停：不检查、不写，本功能的报告一律不派工，并开一条
+提示 issue（`pending/human`），列出每条开着的报告和它的标签。**从丢失到重新开始之间的失败不会被
+报告**（这段时间自己看一眼 Actions 页面）；做到一半的交人不会续做，那条报告的标签由人来定。然后从
+当前时刻重新开始：
+
+<!-- ci-failure-report-restart:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --restart
+```
+<!-- ci-failure-report-restart:end -->
+
+成功时它打印 `已从当前时刻重新开始`；下一轮轮询会在提示 issue 上留言并关闭它。失败时它什么都不改、
+暂停保持原样——修好原因再跑一次。没有处在暂停中时它拒绝执行。修复次数是从报告的评论里数出来的，
+重新开始之后不会丢。
+
+**关闭这项功能。** 先跑上面的 `--list`，等到它打印 `不派工名单：空`：配置留空之后名单既不被查
+也不再处理，正在进行的交人会停在半路。然后把 `CI_FAILURE_REPORT_WORKFLOWS` 留空。以后再填上，会从
+留着的状态文件接着看。
 
 ## 交叉 review 关卡（可选，**默认关闭**）
 

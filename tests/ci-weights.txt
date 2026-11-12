@@ -18,6 +18,7 @@ cavil-names 4
 checkout-stale-alert 2
 claude-resume-model 8
 client-tauri-mutation-prep 1
+ci-failure-report 175
 closed-issue-done 14
 comment-footer 11
 comment-layout-prompts 1

@@ -546,6 +546,90 @@ PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
 # 逻辑全在 scripts/project-auto-add.sh；这里只放默认值和每轮的入口 project_auto_add_tick。
 AUTO_ADD_PROJECTS="${AUTO_ADD_PROJECTS:-}"
 
+# ── base 分支测试工作流失败 → 自动开 / 续报告 issue（GitHub#345）──
+# CI_FAILURE_REPORT_WORKFLOWS：要监视的工作流文件名（空格或逗号分隔）；留空 = 关闭（默认），
+# 一个请求都不多发、派工一处都不多查。逻辑在 scripts/ci_failure_report.py（经 ci-failure-report.sh 运行），
+# 这里只放默认值、每轮的入口 ci_failure_report_tick，和派工入口问的那一个函数 ci_report_dispatch_hold。
+CI_FAILURE_REPORT_WORKFLOWS="${CI_FAILURE_REPORT_WORKFLOWS:-}"
+CI_FAILURE_REPORT_BRANCH="${CI_FAILURE_REPORT_BRANCH:-main}"
+CI_FAILURE_REPORT_DISPATCH="${CI_FAILURE_REPORT_DISPATCH:-false}"
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS="${CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:-2}"
+# 报告 issue 正文首行标记的固定开头（ci_failure_report.py 的 REPORT_RE 同一个写法）
+CI_REPORT_BODY_MARK='<!-- cavil-ci-failure v=1 '
+
+ci_failure_report_enabled() {
+    [ -n "$(printf '%s' "${CI_FAILURE_REPORT_WORKFLOWS:-}" | tr -d ' ,\t\n')" ]
+}
+
+# 本项目配置下的全部流程标签：现有那份（派工标签含追加的、等人、等 PR、进行中、等合并、等外部机器人、
+# 等前置）补上复审和 Done。报告身上有其中任何一个，就是有人或某个流程在管它。
+ci_report_flow_labels() {
+    {
+        closed_done_flow_labels
+        printf '%s\n' "${LABEL_PENDING_REVIEW:-}" "${LABEL_DONE:-}"
+    } | awk 'NF && !seen[$0]++'
+}
+
+# 每轮一次，在轮询锁内、节奏闸门之前（它有自己的 5 分钟间隔，项目空闲退避时照样按时查；它不读也不写
+# state.json）。跑成子进程并带超时：里面任何失败都只留日志，不碰这一轮的派工和退出码。
+ci_failure_report_tick() {
+    ci_failure_report_enabled || return 0
+    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}"
+    case "$budget" in ''|*[!0-9]*) budget=90 ;; esac
+    CODING_AGENT_CONFIG="$CONFIG_FILE" CI_FAILURE_REPORT_IN_POLL=1 \
+        timeout "$((budget + 60))" bash "$_LIB_DIR/ci-failure-report.sh" 9>&- || rc=$?
+    [ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查异常退出（退出码 $rc），本轮跳过；不派工名单照常生效"
+    return 0
+}
+
+# 「这条 issue 现在能不能派工」——普通标签入口、greedy 入口、托管入口和启动 worker 之前都问这一个函数。
+# 返回 0 = 不能派（原因在 CI_REPORT_HOLD_REASON），1 = 这个功能不拦它。功能关闭时直接返回 1，什么都不读。
+#   · 在不派工名单里（修复失败达到上限、交人还没做完）→ 不派，不管它身上是什么标签
+#   · 本机记录没有或读不懂（暂停中 / 还不知道是不是首次启用）→ 本功能开的报告一律不派；
+#     是不是报告看 issue 正文首行的标记，读不到这条 issue 也按不能派算
+ci_report_dispatch_hold() {   # <issue 编号>
+    ci_failure_report_enabled || return 1
+    local n="$1" sf="$STATE_DIR/ci-failure-report.json" hf="$STATE_DIR/ci-failure-report.hold" readable=0 item body
+    CI_REPORT_HOLD_REASON=""
+    if [ -f "$sf" ] && jq -e 'type == "object" and .v == 1 and (.handover | type == "object")' "$sf" >/dev/null 2>&1; then
+        readable=1
+        if jq -e --arg n "$n" '.handover[$n] != null' "$sf" >/dev/null 2>&1; then
+            CI_REPORT_HOLD_REASON="修复失败次数已到上限、正在交人"
+            return 0
+        fi
+    fi
+    if [ "$readable" = 1 ] && [ ! -f "$hf" ]; then
+        return 1
+    fi
+    if ! item=$(autopilot_snapshot_item issues "$n") || [ -z "$item" ]; then
+        CI_REPORT_HOLD_REASON="CI 失败报告的本机记录不可用，且读不到这条 issue"
+        return 0
+    fi
+    body=$(printf '%s' "$item" | jq -r '.body // ""' 2>/dev/null) || body=""
+    case "$body" in
+        "$CI_REPORT_BODY_MARK"*)
+            CI_REPORT_HOLD_REASON="CI 失败报告的本机记录丢失或损坏，已暂停"
+            return 0 ;;
+    esac
+    return 1
+}
+
+# 被拦下的条目：同一批只在名单变了的时候写一行日志（每分钟一轮，原样重复写没有信息量）
+CI_REPORT_HELD=""
+ci_report_hold_note() {   # <issue 编号>
+    CI_REPORT_HELD="$CI_REPORT_HELD #$1（$CI_REPORT_HOLD_REASON）"
+}
+ci_report_hold_flush() {
+    ci_failure_report_enabled || return 0
+    local f="$STATE_DIR/ci-failure-report.heldlog" cur
+    cur=$(printf '%s' "$CI_REPORT_HELD" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | sort | tr '\n' ' ')
+    if [ "$cur" != "$(cat "$f" 2>/dev/null || true)" ]; then
+        [ -z "$cur" ] || log "CI 失败报告：这些 issue 本轮不派工：$cur"
+        printf '%s' "$cur" > "$f" 2>/dev/null || true
+    fi
+    return 0
+}
+
 project_gh_graphql() {
     if [ -n "${PROJECT_GH_TOKEN:-}" ]; then
         GH_TOKEN="$PROJECT_GH_TOKEN" gh api graphql "$@"
