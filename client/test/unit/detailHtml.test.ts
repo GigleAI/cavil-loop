@@ -98,6 +98,44 @@ describe('isolated detail view', () => {
     expect(doc).toContain('有 1 张图片不在 GitHub 的地址上');
   });
 
+  it('GitHub#439: an image GitHub serves through its proxy is not counted — its original address sits in data-canonical-src, which loads nothing', () => {
+    // a real loop comment as GitHub renders it (recorded fixture): three screenshots on an outside host, shown via camo
+    const fx = JSON.parse(readFileSync(new URL('../fixtures/codeblocks.github.json', import.meta.url), 'utf8')) as { comments: { url: string; bodyHTML: string }[] };
+    const real = fx.comments.find((c) => c.bodyHTML.includes('data-canonical-src='));
+    expect(real, 'the fixture holds a comment with proxied images').toBeTruthy();
+    const tags = real!.bodyHTML.match(/<img\b[^>]*>/gi) ?? [];
+    expect(tags.filter((t) => /src="https:\/\/camo\.githubusercontent\.com\//.test(t) && /data-canonical-src="https:\/\/(?!camo)/.test(t)).length).toBe(3);
+    expect(blockedImages(real!.bodyHTML)).toBe(0);
+    const d = detail('a', 'b');
+    d.timeline[0].bodyHtml = real!.bodyHTML;
+    d.timeline[0].lineComments = [{ id: 'L1', url: 'https://github.com/o/r/pull/1#discussion_r1', path: 'a.ts', line: 1, author: 'x', at: '2026-11-12T00:00:00Z', bodyHtml: real!.bodyHTML }];
+    const doc = timelineDocument(d, false);
+    expect(doc).not.toContain('data-blocked=');
+    expect(doc).not.toContain('不在 GitHub 的地址上');
+    // the same proxied image, attribute order / quotes / case varied
+    const camo = 'https://camo.githubusercontent.com/abc/def';
+    const out = 'https://futurelab.example:8443/review-assets/a.png';
+    for (const tag of [
+      `<img data-canonical-src="${out}" src="${camo}" alt="x">`,
+      `<img src='${camo}' alt='x' data-canonical-src='${out}'>`,
+      `<IMG SRC="${camo}" DATA-CANONICAL-SRC="${out}">`,
+      `<img\nsrc="${camo}"\ndata-canonical-src="${out}"\nstyle="max-width: 100%;">`,
+    ])
+      expect(blockedImages(tag), tag).toBe(0);
+    // what really does not load is still counted, and the entry still says so
+    expect(blockedImages(`<img src="${out}" alt="x">`)).toBe(1);
+    expect(blockedImages(`<img alt="x" data-canonical-src="${camo}" src="${out}">`)).toBe(1);
+    expect(blockedImages(`<img src="${camo}" data-canonical-src="${out}"><img src="${out}">`)).toBe(1);
+    const d2 = detail('a', 'b');
+    d2.timeline[0].bodyHtml = real!.bodyHTML + `<img src="${out}" alt="x">`;
+    expect(timelineDocument(d2, false)).toContain('有 1 张图片不在 GitHub 的地址上');
+    // an <img> with only the original-address attribute loads nothing: not counted
+    expect(blockedImages(`<img alt="x" data-canonical-src="${out}">`)).toBe(0);
+    // an escaped address is judged as the browser reads it
+    expect(blockedImages('<img src="https://example.com/a.png?x=1&amp;y=2">')).toBe(1);
+    expect(blockedImages('<img src="https://camo.githubusercontent.com/a?x=1&amp;y=2">')).toBe(0);
+  });
+
   it('GitHub#205: the window\'s own policy (tauri.conf.json, which the frame also falls under) allows exactly the same image hosts', () => {
     const conf = JSON.parse(readFileSync(new URL('../../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
     expect(conf.app.security.csp['img-src'].split(' ')).toEqual(["'self'", 'data:', ...IMAGE_HOSTS]);
