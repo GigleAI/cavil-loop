@@ -217,6 +217,18 @@ LABEL_PENDING_MERGE="pending/merge"
 AUTOPILOT_MERGE_METHOD="squash"
 # 自动检查超过几小时还没跑完就交人
 AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
+# Files a human must look at before an autopilot merge (GitHub#337): CI, git hooks, agent configuration,
+# install / build / environment files — changes that make code run later as the maintainer. An autopilot PR
+# touching a listed file goes to pending/human with a note naming the files. Empty = exactly the previous
+# behaviour (only .github/ is refused). Space- or comma-separated; leading / = repo root only, none = any
+# depth; trailing / = directory; `default` = the built-in list (see docs/operations.md). Examples:
+#   AUTOPILOT_HUMAN_PATHS="default"
+#   AUTOPILOT_HUMAN_PATHS="default /deploy/ /setup.sh"
+# 合并前必须人过目的文件（GitHub#337）：CI、git hooks、agent 配置、安装 / 构建 / 环境配置这类「之后会以维护者身份
+# 运行代码」的文件。托管 PR 碰到清单里的文件就翻 pending/human 交人，说明里列出文件。留空 = 和以前完全一样
+# （只拦 .github/）。空格或逗号分隔；开头 / = 只认仓库根目录，不写 = 任何深度；末尾 / = 目录；`default` = 内置清单
+# （见 docs/operations.zh.md）。写法读不懂的条目不会被跳过：那时每次托管合并都交人，直到改好。
+AUTOPILOT_HUMAN_PATHS=""
 # Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
 # sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
 # access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).

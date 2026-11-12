@@ -408,6 +408,12 @@ AUTOPILOT_MERGE_METHOD="${AUTOPILOT_MERGE_METHOD:-squash}"
 AUTOPILOT_CHECKS_TIMEOUT_HOURS="${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6}"
 # 授权 / PR / 检查连续读不到几轮后交人（读不到不等于「没授权」，也不等于「有授权」）
 AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
+# 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
+# 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
+AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
+# 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
+AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
 # 互通仓库名单（GitHub#233）：逗号 / 空格分隔的 owner/repo。名单里的仓库 ① 可以当拆分子项的父 issue 所在仓库
 # （父 issue 上维护者亲手打的托管标签，授权本仓库的子项；打标签的人在两个仓库都要有写权限）；② 可以当
 # 等前置的前置所在仓库（`<!-- agent-blocked-by: owner/repo#N -->`、「Blocked by」里那个仓库的条目）。
@@ -4745,6 +4751,78 @@ autopilot_files_verdict() {   # <PR>
         echo ok
     fi
 }
+# 改动有没有碰「合并前必须人过目」的文件（GitHub#337，只在 AUTOPILOT_HUMAN_PATHS 非空时调用）。
+# 结果放全局变量（在调用方自己的 shell 里调，不放进 $( )）：
+#   AP_PATHS_V       ok（读全了、没命中）/ hit（命中）/ bad（清单里有写法不认识的条目）/ unread（读不全）
+#   AP_PATHS_DETAIL  hit：命中的文件，JSON 数组（排序去重）；bad：不认识的条目和原因；unread：原因
+#
+# 条目写法（空格或逗号分隔，和 .gitignore 的常用部分一致）：
+#   开头 /  = 只认仓库根目录（/setup.sh 不命中 tools/setup.sh）；不写 = 任何深度（package.json 命中 client/package.json）
+#   末尾 /  = 目录（其下任何文件）；没有 = 文件。* 只在一段内通配
+#   default = 内置清单 AUTOPILOT_HUMAN_PATHS_DEFAULT；/.github/ 始终在清单里，配置去不掉
+#   写法不认识（开头没 / 却在中间含 /、含 . 或 .. 段、空段、**）→ bad，绝不悄悄忽略：忽略 = 少拦
+# 读全：PR 详情自报的改动文件数（changed_files）和列表条数对得上才算读全。缺页（这个接口一个 PR 最多给
+# 3000 个文件）、缺自报数、坏响应、请求失败、空输出都是 unread —— 读不到绝不当成「没命中」。
+# 改名的文件新旧路径都拿来匹配。
+autopilot_paths_verdict() {   # <PR> <PR JSON>
+    local pr="$1" pj="$2" files out
+    AP_PATHS_V=unread; AP_PATHS_DETAIL=""
+    # 先看配置（不用读 GitHub）：写错了就不必读文件列表
+    out=$(jq -rn --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'
+        rules($spec; $def) | map(select(.bad)) | if length > 0 then "bad\t\(.[0].raw)（\(.[0].bad)）" else "fine" end' 2>/dev/null) || out=""
+    case "$out" in
+        fine) ;;
+        bad$'\t'*) AP_PATHS_V=bad; AP_PATHS_DETAIL="${out#*$'\t'}"; return 0 ;;
+        *) AP_PATHS_DETAIL="清单解析失败"; return 0 ;;
+    esac
+    if ! files=$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/files" 2>/dev/null) || [ -z "$files" ]; then
+        AP_PATHS_DETAIL="请求失败或空输出"; return 0
+    fi
+    out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
+        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        ($pj.changed_files) as $n
+        | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
+          elif (type != "array") or (all(.[]; type == "array") | not)
+               or (all(.[][]; type == "object" and (.filename | type) == "string" and .filename != ""
+                               and ((.previous_filename // "") | type) == "string") | not)
+          then "unread\t文件列表的形状不对"
+          elif ([.[][]] | length) != $n then "unread\t列表有 \([.[][]] | length) 个文件，PR 自报 \($n) 个"
+          else (rules($spec; $def) | map(.re)) as $res
+            | ([ .[][] | .filename, (.previous_filename // empty) | select(. != "") ]
+               | map(select(. as $f | any($res[]; . as $re | $f | test($re)))) | unique) as $hits
+            | if ($hits | length) > 0 then "hit\t\($hits | tojson)" else "ok\t" end
+          end' 2>/dev/null) || out=""
+    case "$out" in
+        ok$'\t'*) AP_PATHS_V=ok ;;
+        hit$'\t'*) AP_PATHS_V=hit; AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        unread$'\t'*) AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        *) AP_PATHS_DETAIL="文件列表不是合法的 JSON" ;;
+    esac
+}
+# 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]
+# shellcheck disable=SC2016
+AUTOPILOT_PATHS_JQ='
+    def esc: explode | map([.] | implode | . as $c
+        | if $c == "*" then "[^/]*"
+          elif ([".", "^", "$", "+", "?", "(", ")", "[", "]", "{", "}", "|", "\\"] | index($c)) != null then "\\" + $c
+          else $c end) | join("");
+    def rule: . as $raw
+        | startswith("/") as $rooted | endswith("/") as $dir
+        | (if $rooted then .[1:] else . end | if $dir then .[:-1] else . end) as $core
+        | ($core | split("/")) as $segs
+        | if $core == "" then {raw: $raw, bad: "空条目"}
+          elif ($segs | any(. == "")) then {raw: $raw, bad: "有空的一段"}
+          elif ($segs | any(. == "." or . == "..")) then {raw: $raw, bad: "不能含 . 或 .. 段"}
+          elif ($core | contains("**")) then {raw: $raw, bad: "不支持 **"}
+          elif (($rooted | not) and ($segs | length) > 1) then {raw: $raw, bad: "中间含 / 的条目要以 / 开头"}
+          else {raw: $raw, re: ((if $rooted then "^" else "(^|/)" end) + ($segs | map(esc) | join("/")) + (if $dir then "/" else "$" end))}
+          end;
+    def rules($spec; $def):
+        ([$spec | splits("[,\\s]+") | select(. != "")]
+         | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)
+         | ["/.github/"] + . | unique) | map(rule);
+'
+
 # 与目标分支冲突没有：GitHub 两个信号任一说冲突就算冲突（mergeable=false 或 mergeable_state=dirty），
 # mergeable=null 是还在算。输出 ok / conflict / computing
 autopilot_conflict_verdict() {   # <PR JSON>
@@ -4775,6 +4853,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" pj ij labels rc
     AP_V=unknown; AP_REASON=""; AP_NEXT=""; AP_N=""; AP_KIND=""; AP_WN=""; AP_HEAD=""; AP_BASE=""; AP_REF=""
     AP_RH=""; AP_RB=""; AP_RAT=""; AP_CHECKS=""; AP_CHECKS_DETAIL=""; AP_BODY=""; AP_TITLE=""
+    AP_STOP=""; AP_STOP_KEY=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then
         AP_REASON="读不到 PR #$pr"; return 0
     fi
@@ -4845,6 +4924,25 @@ autopilot_permit() {   # <state_file> <PR 编号>
     if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || [ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || [ -z "$AP_RAT" ]; then
         AP_V=review; return 0
     fi
+    # 需人过目清单（GitHub#337）：配了才走新判断；没配走下面原来的 .github/ 判断，一行不变
+    if [ -n "$AUTOPILOT_HUMAN_PATHS" ]; then
+        autopilot_paths_verdict "$pr" "$pj"
+        case "$AP_PATHS_V" in
+            ok) ;;
+            hit)
+                AP_V=human; AP_STOP=paths; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="改动碰了合并前需人过目的文件：$(printf '%s' "$AP_PATHS_DETAIL" | jq -r '
+                    (.[:10] | map("`" + . + "`") | join("、")) + (if length > 10 then " 等 \(length) 个" else "" end)')。托管不自动合并这类改动。"
+                AP_NEXT="请人工审这部分改动后自己合并；不合就关掉 PR 或改回去再交复审。"
+                return 0 ;;
+            bad)
+                AP_V=human; AP_STOP=paths-config; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="本项目配置里「合并前需人过目的文件」清单（\`AUTOPILOT_HUMAN_PATHS\`）有一个条目写法不认识：\`$AP_PATHS_DETAIL\`。清单不完整时托管不自动合并。"
+                AP_NEXT="请改好配置里的这个条目（开头 \`/\` = 只认仓库根目录，不写 = 任何深度；末尾 \`/\` = 目录），再把 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\` 重新走复审和合并。"
+                return 0 ;;
+            *) AP_REASON="读不全 PR #$pr 的改动文件列表（$AP_PATHS_DETAIL）"; return 0 ;;
+        esac
+    else
     case "$(autopilot_files_verdict "$pr")" in
         ok) ;;
         touches)
@@ -4853,6 +4951,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
             return 0 ;;
         *) AP_REASON="读不到 PR #$pr 的改动文件列表"; return 0 ;;
     esac
+    fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
     rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?
     case "$rc" in
@@ -4877,7 +4976,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
 }
 
 autopilot_merge_one() {   # <state_file> <PR 编号>
-    local sf="$1" pr="$2" n kind head base ref checks since now limit out short where body
+    local sf="$1" pr="$2" n kind head base ref checks since now limit out short where body stop skey
     autopilot_permit "$sf" "$pr"
     case "$AP_V" in
         skip) return 0 ;;
@@ -4887,7 +4986,20 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
                 gh_label_flip "$pr" --remove "$LABEL_PENDING_MERGE" && AUTOPILOT_ACTED=1
             log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN（已被叫停）→ 不合并，摘掉 $LABEL_PENDING_MERGE"
             return 0 ;;
-        human) autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
+        human)
+            # 需人过目清单的两种交人（GitHub#337）：写之前把许可原样再判一遍，结论、命中内容和 PR 身份都没变才交人；
+            # 变了或这次读不全 → 本轮不写、不记，下轮按现状重判。交人本身用现有的写法（先说明、再翻标签）
+            if [ -n "$AP_STOP" ]; then
+                stop="$AP_STOP"; skey="$AP_STOP_KEY"
+                n="$AP_N"; kind="$AP_KIND"; head="$AP_HEAD"; base="$AP_BASE"; ref="$AP_REF"
+                autopilot_permit "$sf" "$pr"
+                if [ "$AP_V" != human ] || [ "$AP_STOP" != "$stop" ] || [ "$AP_STOP_KEY" != "$skey" ] || [ "$AP_N" != "$n" ] \
+                   || [ "$AP_KIND" != "$kind" ] || [ "$AP_HEAD" != "$head" ] || [ "$AP_BASE" != "$base" ] || [ "$AP_REF" != "$ref" ]; then
+                    log "托管：PR #$pr 交人之前重判有变化（重判结果 $AP_V${AP_REASON:+：$AP_REASON}），本轮不写"
+                    return 0
+                fi
+            fi
+            autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
         worker) autopilot_to_worker "$sf" "$pr" "$AP_WN" "$AP_REASON"; return 0 ;;
         review) autopilot_to_review "$sf" "$pr" "$AP_HEAD" "$AP_RH" "$AP_BASE" "$AP_RB"; return 0 ;;
         unknown) autopilot_unknown "$sf" "$pr" "$AP_REASON"; return 0 ;;

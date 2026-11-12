@@ -8,7 +8,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   events.json     {"<n>": [ {event, label:{name}, actor:{login,type}} ]}   id 按位置补（写了 "id": null 的不补）
   comments.json   {"<n>": [ {id, body, user:{login}, created_at} ]}
   perms.json      {"<login>": "admin|write|read|none"}
-  files.json      {"<pr>": [ {filename, previous_filename?} ]}
+  files.json      {"<pr>": [ {filename, previous_filename?} ]}   PR 详情的 changed_files 默认按它算（items 里可另写，
+                  "__missing__" = 缺这个字段）；raw_pulls_<n>_files 文件 = 原样当作文件列表的响应（GitHub#337）
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
   edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
@@ -217,6 +218,11 @@ def view(n):
     if kind == "pr":
         it.setdefault("state", "open")
         it.setdefault("merged", False)
+        # GitHub#337：PR 详情自报的改动文件数。夹具没写就按 files.json 算；写成 "__missing__" = 这个字段缺失
+        if it.get("changed_files") == "__missing__":
+            del it["changed_files"]
+        elif "changed_files" not in it:
+            it["changed_files"] = len(load("files.json", {}).get(str(n), [{"filename": "scripts/x.sh"}]))
     return kind, it
 
 
@@ -371,6 +377,10 @@ if method == "GET":
                 out.append(as_issue(b))
         emit(out, pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "files":
+        # GitHub#337：raw_pulls_<n>_files 里的内容原样当作这次响应（缺页、坏形状、不是 JSON）
+        if os.path.exists(p("raw_" + key)):
+            sys.stdout.write(open(p("raw_" + key)).read())
+            sys.exit(0)
         emit(load("files.json", {}).get(parts[1], [{"filename": "scripts/x.sh"}]), pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] in ("comments", "reviews"):
         emit([], pages=True)
