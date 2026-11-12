@@ -11,7 +11,7 @@ import { GitHubClient } from '../../src/data/github';
 import { contentToItem, fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { applyFreshItem, fetchItem } from '../../src/data/itemRefresh';
 import { mergeSnapshots } from '../../src/data/merge';
-import { fetchRelationsBatch, readRelations, relationsKnown } from '../../src/data/relations';
+import { readRelations, relationsKnown } from '../../src/data/relations';
 import { syncRound } from '../../src/data/sync';
 import type { SourceCheck } from '../../src/data/changeCheck';
 import { parseSource } from '../../src/shared/sources';
@@ -120,7 +120,7 @@ describe('what is read', () => {
     expect(outside.title.length).toBeGreaterThan(0);
   });
 
-  it('repository: one batch request, for exactly the issues whose counts say they have relations; the others are known to have none', async () => {
+  it('repository: one batch request, for the issues whose counts say they have relations and every open item (GitHub#373); the others are known to have none', async () => {
     const issues = loadRelationIssues();
     const hinted = issues.filter((r) => r.issue_dependencies_summary.total_blocked_by || r.issue_dependencies_summary.total_blocking || r.sub_issues_summary?.total || r.parent_issue_url);
     expect(hinted.length).toBeGreaterThan(0);
@@ -129,7 +129,11 @@ describe('what is read', () => {
     const batches = ops(fake.log, 'CavilIssueRelationsBatch');
     expect(batches).toHaveLength(1);
     const idOf = (n: number) => of(snap, n).nodeId;
-    expect([...(batches[0].variables!.ids as string[])].sort()).toEqual(hinted.map((r) => idOf(r.number)).sort());
+    // GitHub#373: every open item is read too (how the signed-in account stands to it); a closed issue only for its relations
+    const asked = snap.items.filter((it) => it.state === 'open' || hinted.some((r) => r.number === it.number));
+    expect(hinted.some((r) => r.state !== 'open') || asked.length > hinted.length).toBe(true);
+    expect([...(batches[0].variables!.ids as string[])].sort()).toEqual(asked.map((it) => idOf(it.number)).sort());
+    for (const it of snap.items) expect(it.viewerAt, `#${it.number}`).toBe(it.state === 'open' ? NOW : undefined);
     expect(ops(fake.log, 'CavilIssueRelations')).toHaveLength(0);
     for (const it of snap.items) {
       const has = hinted.some((r) => r.number === it.number);
@@ -139,14 +143,19 @@ describe('what is read', () => {
     expect(numbers(of(snap, BLOCKED).relations!.blockedBy)).toEqual([BLOCKER]);
   });
 
-  it('repository: more issues than one batch holds are read batch by batch, all of them', async () => {
-    const snap = await fetchRepo(client(), repoSrc(), NOW);
-    const withRel = snap.items.filter((i) => i.relations!.parent || i.relations!.subIssues.length || i.relations!.blockedBy.length || i.relations!.blocking.length);
+  it('repository: more items than one batch holds are read batch by batch, all of them', async () => {
+    const whole = await fetchRepo(client(), repoSrc(), NOW);
+    const asked = ops(fake.log, 'CavilIssueRelationsBatch').flatMap((e) => e.variables!.ids as string[]);
+    expect(asked.length).toBeGreaterThan(2);
     const n = fake.log.length;
-    const got = await fetchRelationsBatch(client(), withRel.map((i) => ({ nodeId: i.nodeId, what: i.key })), 2);
-    expect(ops(since(n), 'CavilIssueRelationsBatch')).toHaveLength(Math.ceil(withRel.length / 2));
+    // the real read, two ids a request
+    const snap = await fetchRepo(client(), repoSrc(), NOW, 2);
+    const batches = ops(since(n), 'CavilIssueRelationsBatch');
+    expect(batches).toHaveLength(Math.ceil(asked.length / 2));
+    expect(batches.flatMap((e) => e.variables!.ids as string[])).toEqual(asked);
+    expect(snap.items).toEqual(whole.items);
+    const withRel = snap.items.filter((i) => i.relations!.parent || i.relations!.subIssues.length || i.relations!.blockedBy.length || i.relations!.blocking.length);
     expect(withRel.length).toBeGreaterThan(2);
-    for (const i of withRel) expect(got.get(i.nodeId)).toEqual(i.relations);
   });
 
   it('a pull request has no relations: known-empty, not unknown (the earlier recording, which holds pull requests)', async () => {

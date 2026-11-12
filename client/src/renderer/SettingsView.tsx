@@ -150,9 +150,36 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
 
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
-        <p className="muted small">
-          开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+        <p className="muted small" data-testid="pending-rule">
+          {state.notifyScope === 'mine' ? (
+            <>
+              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的不提醒。App 启动或新加来源时已有的算历史，不通知、不计数。
+            </>
+          ) : (
+            <>
+              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+            </>
+          )}
         </p>
+        {/* GitHub#373: several people on one repository — each is reminded of their own items only */}
+        <div className="notify-scope" role="radiogroup" aria-label="提醒哪些条目" data-testid="notify-scope">
+          <div className="small notify-scope-title">提醒哪些条目</div>
+          <label className="radio small">
+            <input type="radio" name="notify-scope" data-testid="notify-scope-all" checked={state.notifyScope === 'all'} onChange={() => api().setNotifyScope('all')} />
+            全部待处理（所有人共用的待办都提醒）
+          </label>
+          <label className="radio small">
+            <input type="radio" name="notify-scope" data-testid="notify-scope-mine" checked={state.notifyScope === 'mine'} onChange={() => api().setNotifyScope('mine')} />
+            <span>
+              只提醒和我（<b>{state.viewer ?? '…'}</b>）有关的
+            </span>
+          </label>
+          <p className="muted small notify-scope-note" data-testid="notify-scope-note">
+            {state.notifyScope === 'mine'
+              ? '「和我有关」：① 指派给我、或请我 review 的，提醒；② 已指派给别人、或只请了别人 review 的，即使我在 GitHub 上订阅着也不提醒；③ 谁都没指派、也没请人 review 的，我订阅着就提醒（开过、评论过、被 @ 过会自动订阅；条目页右侧 Subscribe 可手动加减）。PR 本身谁都没指派时，按它关联的 issue 判断。'
+              : '一个仓库有几个人一起用时，每人都会收到全部待处理的通知；改成下面一项就只收自己的。'}
+          </p>
+        </div>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
             <Icon name="warn" />

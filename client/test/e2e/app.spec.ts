@@ -1837,6 +1837,77 @@ test('pending/human: nothing about the history at start, one notification per ne
   await app.close();
 });
 
+/** Assign an item on the fake GitHub (every copy), the way a maintainer does on GitHub. */
+function assignTo(n: number, logins: string[]) {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+  const now = new Date().toISOString();
+  for (const g of c.gql) ((g.assignees = { nodes: logins.map((login) => ({ login })) }), (g.updatedAt = now));
+  for (const r of c.rest) ((r.assignees = logins.map((login) => ({ login }))), (r.updated_at = now));
+}
+
+test('GitHub#373: "which items remind" in Settings — every pending item by default; "only mine" explains its rule, stays after a restart, and then only the account\'s items notify', async () => {
+  const [theirs, mine, later] = openUnlabelled();
+  for (const n of [theirs, mine, later]) assignTo(n, []);
+  let { app, page } = await launch(env);
+  await signInForReminders(page, ['GigleAI/cavil-loop']);
+  const notes = () => app.desktop.records.filter((a) => a.op === 'notify' && a.alert.kind === 'item').map((a) => a.alert.key);
+  // the default: every pending item, and the page says what the other choice is for
+  await expect(page.getByTestId('notify-scope-all')).toBeChecked();
+  await expect(page.getByTestId('notify-scope-mine')).not.toBeChecked();
+  await expect(page.getByTestId('notify-scope-note')).toContainText('每人都会收到全部待处理的通知');
+  await expect(page.getByTestId('pending-rule')).not.toContainText('和我有关');
+  await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
+  await shot(page, '22-notify-scope-all');
+  // "only mine": the account it means, and the three steps
+  await page.getByTestId('notify-scope-mine').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  await expect(page.getByTestId('notify-scope-all')).not.toBeChecked();
+  await expect(page.getByTestId('notify-scope')).toContainText(`只提醒和我（${env.fake.state.viewer}）有关的`);
+  for (const part of ['指派给我、或请我 review 的，提醒', '即使我在 GitHub 上订阅着也不提醒', '我订阅着就提醒', '按它关联的 issue 判断']) await expect(page.getByTestId('notify-scope-note')).toContainText(part);
+  await expect(page.getByTestId('pending-rule')).toContainText('并且和我有关时发一次系统通知');
+  await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
+  await shot(page, '23-notify-scope-mine');
+  // back and forth follows the click
+  await page.getByTestId('notify-scope-all').click();
+  await expect(page.getByTestId('notify-scope-all')).toBeChecked();
+  await expect(page.getByTestId('pending-rule')).not.toContainText('和我有关');
+  await page.getByTestId('notify-scope-mine').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  // the first complete read is in (the baseline): only then do labels count as new
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').length).toBeGreaterThan(0);
+
+  // somebody else's item and the account's both get the label: one notification, the account's
+  assignTo(theirs, ['someone-else']);
+  putPending(theirs);
+  assignTo(mine, [env.fake.state.viewer]);
+  putPending(mine);
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(notes).toEqual([`gigleai/cavil-loop#${mine}`]);
+  // "did happen": that round read the other one with its label and its assignee
+  await page.getByTestId('back').click();
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill(`#${theirs}`);
+  await expect(card(page, theirs).locator('.label', { hasText: 'pending/human' })).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(500);
+  expect(notes()).toEqual([`gigleai/cavil-loop#${mine}`]);
+  await app.close();
+
+  // after a restart the choice is still there, and still the one used
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').length).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  expect(notes()).toEqual([]);
+  // handed to the account now: a long-labelled item becomes a notification
+  assignTo(theirs, [env.fake.state.viewer]);
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(notes).toEqual([`gigleai/cavil-loop#${theirs}`]);
+  await app.close();
+});
+
 test('notifications refused by the system: the board says so and how to allow them', async () => {
   const { app, page } = await launch(env);
   app.desktop.refuse = 'Notifications are not allowed for this application';

@@ -1,5 +1,6 @@
 import type { BoardData, Item, ProjectMeta, SourceSnapshot } from '../shared/types';
 import { relationsKnown } from './relations';
+import { mergedViewerTies } from './viewerTies';
 
 /** GitHub#349: which of the two copies of one item the relations are taken from (null: neither has any). */
 function newerRelations(newer: Item, older: Item): Item | null {
@@ -18,7 +19,8 @@ function newerRelations(newer: Item, older: Item): Item | null {
  * later (`relationsAt`) — not the one with the later `updatedAt`: closing a
  * blocker changes what the blocked issue's relations say without touching the
  * blocked issue. A source whose snapshot predates relations is listed in
- * `relationsUnknown`.
+ * `relationsUnknown`. How the signed-in account stands to the item (GitHub#373: subscription,
+ * review requests) is merged by its own read time the same way — see `mergedViewerTies`.
  */
 export function mergeSnapshots(snapshots: SourceSnapshot[], selected: string[] | null): BoardData {
   const pick = selected ? snapshots.filter((s) => selected.includes(s.sourceKey)) : snapshots;
@@ -43,10 +45,10 @@ export function mergeSnapshots(snapshots: SourceSnapshot[], selected: string[] |
       // a repository list does not know linked pull requests; take them from the copy that does
       const linked = newer.linkedPrs ?? older.linkedPrs;
       // a snapshot cached before #349 has no relations: unknown, so the other copy's are taken
-      const { relations: _r, relationsAt: _t, ...rest } = newer;
+      const { relations: _r, relationsAt: _t, viewerSubscribed: _s, reviewRequested: _q, closingIssues: _c, viewerAt: _v, ...rest } = newer;
       const from = newerRelations(newer, older);
       const rel = from ? { relations: from.relations!, ...(from.relationsAt !== undefined ? { relationsAt: from.relationsAt } : {}) } : {};
-      byKey.set(it.key, { ...rest, linkedPrs: linked, ...rel, projects: memberships, sources });
+      byKey.set(it.key, { ...rest, linkedPrs: linked, ...rel, ...mergedViewerTies(prev, it), projects: memberships, sources });
     }
   }
   return { items: [...byKey.values()], projects, relationsUnknown: pick.filter((s) => !relationsKnown(s.items)).map((s) => s.sourceKey) };
