@@ -4,7 +4,7 @@
 // requests that actually arrived, the paired-device list, the scheduler — not from the back
 // end's word. A case that says "nothing was sent" sits next to one where the same thing is sent.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -20,12 +20,26 @@ let w: DaemonWorld;
 let r: RemoteWorld;
 let path: string;
 
-async function world(serverEnv: Record<string, string> = {}) {
+let snapshot: string;
+
+// The machine (daemon installed, one project connected with the real setup.sh) is the same for
+// every case: build it once and put it back from a copy before each case, at the same path, so
+// the absolute paths setup.sh wrote stay valid. Rebuilding it per case cost ~2 s of real scripts
+// each and slowed the whole client suite down enough for a neighbouring timed test to miss its
+// budget on CI (PR #400 review round 5).
+beforeAll(() => {
   w = daemonWorld(tempDir());
   installFakeTailscale(w);
   installByHand(w);
   path = pathFor(w);
   connect(w, 'widget', 'Linux', path);
+  snapshot = `${w.dir}.tar`;
+  execFileSync('tar', ['-cf', snapshot, '-C', w.dir, '.']);
+}, 60_000);
+
+/** A fresh copy of the machine, and the remote-access service on it. */
+async function world(serverEnv: Record<string, string> = {}) {
+  execFileSync('bash', ['-c', 'rm -rf "$1" && mkdir -p "$1" && tar -xf "$2" -C "$1"', '_', w.dir, snapshot]);
   r = await remoteWorld(w, path, serverEnv);
 }
 
