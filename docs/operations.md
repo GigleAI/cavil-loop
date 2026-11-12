@@ -1161,6 +1161,9 @@ maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) strictly after the label was la
 seconds, so a marker in the same second as that removal cannot be told apart and is treated as the previous round's. `#12` means this repo; `OWNER/REPO#34`
 another repo, see below (this repo's own full name, any case, counts as `#12`). Free
 text such as "waiting on #12" is never read. `resume=` must be one of the configured trigger labels, otherwise the default one is used.
+Which marker counts is decided in `_lib.sh` `blocked_mark_pick`; the desktop client's dependency graph reads the same marker by the same rule to draw
+its arrows (GitHub#429; both run one shared set of cases), except that the client does not know the loop's write account and only accepts
+markers by `OWNER` / `MEMBER` / `COLLABORATOR`. The client setting "等前置的标签" must match `LABEL_PENDING_BLOCKED` here.
 
 **Prerequisites in another repo** (GitHub#233): with `TRUSTED_REPOS` set, the marker may say `owner/repo#N` and that
 repo's *Blocked by* entries count too; the daemon reads their state there, with the same notion of done. A bare `#N`

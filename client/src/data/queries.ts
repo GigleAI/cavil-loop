@@ -445,3 +445,47 @@ const CHOICE_NODES = 'nodes { number title closed url } pageInfo { hasNextPage e
 export const CHOICES_VIEWER_QUERY = `query CavilChoicesViewer($after: String) { viewer { login projectsV2(first: 50, after: $after) { ${CHOICE_NODES} } } }`;
 export const CHOICES_ORGS_QUERY = `query CavilChoicesOrgs($after: String) { viewer { organizations(first: 100, after: $after) { nodes { login } pageInfo { hasNextPage endCursor } } } }`;
 export const CHOICES_ORG_QUERY = `query CavilChoicesOrg($login: String!, $after: String) { organization(login: $login) { projectsV2(first: 50, after: $after) { ${CHOICE_NODES} } } }`;
+
+/**
+ * GitHub#429: what the graph needs to find the loop's registration on an open issue carrying the
+ * "waiting for a prerequisite" label — its newest comments (with the author's standing in the
+ * repository) and the newest removals of a label. Older pages: LOOP_BLOCKED_MORE_QUERY.
+ */
+const LOOP_COMMENTS = (args: string, directive = '') =>
+  `comments(${args})${directive} { pageInfo { hasPreviousPage startCursor } nodes { databaseId body createdAt authorAssociation } }`;
+const LOOP_EVENTS = (args: string, directive = '') =>
+  `timelineItems(itemTypes: [UNLABELED_EVENT], ${args})${directive} { pageInfo { hasPreviousPage startCursor } nodes { __typename ... on UnlabeledEvent { createdAt label { name } } } }`;
+
+export const LOOP_BLOCKED_BATCH_QUERY = `
+query CavilLoopBlocked($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    __typename
+    ... on Issue { id ${LOOP_COMMENTS('last: 100')} ${LOOP_EVENTS('last: 100')} }
+  }
+}
+`;
+
+export const LOOP_BLOCKED_MORE_QUERY = `
+query CavilLoopBlockedMore($id: ID!, $comments: Boolean!, $commentsBefore: String, $events: Boolean!, $eventsBefore: String) {
+  node(id: $id) {
+    __typename
+    ... on Issue {
+      ${LOOP_COMMENTS('last: 100, before: $commentsBefore', ' @include(if: $comments)')}
+      ${LOOP_EVENTS('last: 100, before: $eventsBefore', ' @include(if: $events)')}
+    }
+  }
+}
+`;
+
+/** GitHub#429: one prerequisite a registration names — its title and state (an issue or a pull request). */
+export const LOOP_END_QUERY = `
+query CavilLoopEnd($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue { number title url state stateReason repository { nameWithOwner } }
+      ... on PullRequest { number title url state merged repository { nameWithOwner } }
+    }
+  }
+}
+`;

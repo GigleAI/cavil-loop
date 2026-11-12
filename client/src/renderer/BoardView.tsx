@@ -610,7 +610,9 @@ export function BoardView({
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // GitHub#350: the dependency graph of what the sources and search picked
-  const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items) : null), [view.layout, data.items, items]);
+  // GitHub#429: plus the loop's own prerequisite registrations, read under the waiting label setting
+  const loopLabel = state.handBack.blocked;
+  const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   const { running, agent, human } = state.handBack;
   const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);

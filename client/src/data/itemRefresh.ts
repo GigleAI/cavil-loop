@@ -3,7 +3,8 @@
 // only source": the cache only ever takes what GitHub just answered; a
 // failed re-read changes nothing (the next sync round reads it anyway).
 
-import type { Item, ProjectMeta, SourceSnapshot } from '../shared/types';
+import type { Item, LoopBlocked, ProjectMeta, SourceSnapshot } from '../shared/types';
+import { readLoopBlocked } from './loopBlocked';
 import { GitHubClient, GitHubError } from './github';
 import { contentToItem, readMembership, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
 import { ITEM_REFRESH_QUERY } from './queries';
@@ -20,9 +21,11 @@ export interface FreshItem {
   readAt: number;
   content: GqlContent;
   projectItems: GqlProjectItem[];
+  /** GitHub#429: the loop's registration read with it (absent: the setting is off, or not an issue) */
+  loopBlocked?: LoopBlocked;
 }
 
-export async function fetchItem(client: GitHubClient, repo: string, number: number, now: number = Date.now()): Promise<FreshItem> {
+export async function fetchItem(client: GitHubClient, repo: string, number: number, now: number = Date.now(), loopLabel: string = ''): Promise<FreshItem> {
   const [owner, name] = repo.split('/');
   const data = await client.graphql<{ repository: { issueOrPullRequest: (GqlContent & { projectItems?: { nodes: GqlProjectItem[] } }) | null } | null }>(
     ITEM_REFRESH_QUERY,
@@ -32,7 +35,11 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
   if (!c) throw new GitHubError('graphql', `找不到 ${repo}#${number}`);
   // GitHub#349: the same relation fields as a full read, read to the last page the same way —
   // a re-read that cannot finish them fails as a whole (the item keeps what the cache holds)
-  return { readAt: now, content: await withRelations(client, c), projectItems: c.projectItems?.nodes ?? [] };
+  const content = await withRelations(client, c);
+  // GitHub#429: the same reader as a full read — a re-read that cannot finish it fails as a whole
+  const probe = contentToItem(content, [], [], now);
+  if (probe) await readLoopBlocked(client, [probe], loopLabel);
+  return { readAt: now, content, projectItems: c.projectItems?.nodes ?? [], ...(probe?.loopBlocked ? { loopBlocked: probe.loopBlocked } : {}) };
 }
 
 /**
@@ -43,8 +50,9 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
  * (GitHub#229) read the re-read through.
  */
 export function freshViews(snapshots: SourceSnapshot[], fresh: FreshItem): { snap: SourceSnapshot; item: Item | null }[] {
-  const base = contentToItem(fresh.content, [], [], fresh.readAt);
-  if (!base) return [];
+  const read = contentToItem(fresh.content, [], [], fresh.readAt);
+  if (!read) return [];
+  const base: Item = fresh.loopBlocked ? { ...read, loopBlocked: fresh.loopBlocked } : read;
   const out: { snap: SourceSnapshot; item: Item | null }[] = [];
   for (const snap of snapshots) {
     if (snap.project) {

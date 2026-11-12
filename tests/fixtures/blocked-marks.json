@@ -1,0 +1,320 @@
+{
+ "_doc": "GitHub#429：哪条前置登记算数——daemon（scripts/_lib.sh blocked_mark_pick）与客户端（client/src/data/loopBlocked.ts pickLoopMark）共用的样例与期望。want = daemon 的结果；clientWant 只在客户端结果不同（已知限制）时给出。",
+ "self": "gigleai/cavil-loop",
+ "me": "luosky-bot-pusher",
+ "cases": [
+  {
+   "name": "多条登记取最新",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "## 等 #12\n\n<!-- agent-blocked-by: #12 resume=pending/agent -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    },
+    {
+     "id": 2,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "## 改等 #34\n\n<!-- agent-blocked-by: #34 resume=pending/agent -->",
+     "created_at": "2026-11-02T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 34
+    }
+   ]
+  },
+  {
+   "name": "创建时间同一秒按 id 取后一条",
+   "since": "",
+   "comments": [
+    {
+     "id": 20,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #20 -->",
+     "created_at": "2026-11-02T00:00:00Z"
+    },
+    {
+     "id": 10,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #10 -->",
+     "created_at": "2026-11-02T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 20
+    }
+   ]
+  },
+  {
+   "name": "一条评论里两个标记取最后一个",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "maint"
+     },
+     "author_association": "OWNER",
+     "body": "<!-- agent-blocked-by: #1 -->\n正文\n<!-- agent-blocked-by: #2 #3 resume=pending/agent -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 2
+    },
+    {
+     "r": "",
+     "n": 3
+    }
+   ]
+  },
+  {
+   "name": "没有写权限的账号写的登记不算",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #5 -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    },
+    {
+     "id": 2,
+     "user": {
+      "login": "stranger"
+     },
+     "author_association": "NONE",
+     "body": "<!-- agent-blocked-by: #99 -->",
+     "created_at": "2026-11-03T00:00:00Z"
+    },
+    {
+     "id": 3,
+     "user": {
+      "login": "contrib"
+     },
+     "author_association": "CONTRIBUTOR",
+     "body": "<!-- agent-blocked-by: #98 -->",
+     "created_at": "2026-11-04T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 5
+    }
+   ]
+  },
+  {
+   "name": "daemon 自己的结论评论里的示例标记不算",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #7 resume=pending/agent -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    },
+    {
+     "id": 2,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-resolved #8 v=failed -->\n照抄：`<!-- agent-blocked-by: #8 -->`",
+     "created_at": "2026-11-05T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 7
+    }
+   ]
+  },
+  {
+   "name": "摘标签之前和同一秒的登记不算",
+   "since": "2026-11-03T00:00:00Z",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #1 -->",
+     "created_at": "2026-11-02T00:00:00Z"
+    },
+    {
+     "id": 2,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #2 -->",
+     "created_at": "2026-11-03T00:00:00Z"
+    }
+   ],
+   "want": []
+  },
+  {
+   "name": "摘标签之后的登记算",
+   "since": "2026-11-03T00:00:00Z",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #1 -->",
+     "created_at": "2026-11-02T00:00:00Z"
+    },
+    {
+     "id": 2,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "COLLABORATOR",
+     "body": "<!-- agent-blocked-by: #4 -->",
+     "created_at": "2026-11-03T00:00:01Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 4
+    }
+   ]
+  },
+  {
+   "name": "本仓库全名等同裸编号，别的仓库名转小写",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "maint"
+     },
+     "author_association": "OWNER",
+     "body": "<!-- agent-blocked-by: GigleAI/Cavil-Loop#12 Luosky/Arkknights-Data#45 #12 resume=pending/agent -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 12
+    },
+    {
+     "r": "luosky/arkknights-data",
+     "n": 45
+    }
+   ]
+  },
+  {
+   "name": "标记里只有恢复标签、没有编号",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: resume=pending/agent -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": []
+  },
+  {
+   "name": "普通文字「等 #12」不算",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "maint"
+     },
+     "author_association": "OWNER",
+     "body": "等 #12 合并后再做",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": []
+  },
+  {
+   "name": "重复编号去重",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "MEMBER",
+     "body": "<!-- agent-blocked-by: #9 #9 #3 -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 3
+    },
+    {
+     "r": "",
+     "n": 9
+    }
+   ]
+  },
+  {
+   "name": "loop 账号在仓库里没有写权限身份：daemon 认，客户端不认（已知限制）",
+   "since": "",
+   "comments": [
+    {
+     "id": 1,
+     "user": {
+      "login": "luosky-bot-pusher"
+     },
+     "author_association": "NONE",
+     "body": "<!-- agent-blocked-by: #12 -->",
+     "created_at": "2026-11-01T00:00:00Z"
+    }
+   ],
+   "want": [
+    {
+     "r": "",
+     "n": 12
+    }
+   ],
+   "clientWant": []
+  }
+ ]
+}

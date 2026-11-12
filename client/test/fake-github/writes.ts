@@ -32,6 +32,8 @@ export interface FakeComment {
   author: { login: string } | null;
   /** markdown source (GitHub#193): when set, bodyHTML is rendered from it */
   body?: string;
+  /** GitHub#429: the author's standing in the repository (GitHub's authorAssociation); absent = NONE */
+  authorAssociation?: string;
 }
 
 export interface FakeReview {
@@ -127,6 +129,14 @@ export interface WritableState {
   eventPage: number;
   failEventPages: boolean;
   staleSnapshotLabels: { name: string }[] | null;
+  /** GitHub#429: page size of the loop-registration reads (comments, label removals; 0 = 100) */
+  loopPage: number;
+  /** GitHub#429: answer every loop-registration read of this `owner/repo#n` (lower-cased) with HTTP 502 */
+  failLoop: Set<string>;
+  /** GitHub#429: answer only the older pages of those reads with HTTP 502 */
+  failLoopPages: boolean;
+  /** GitHub#429: `owner/repo#n` lower-cased -> answer the prerequisite read as GitHub does for an issue this account cannot see */
+  hiddenEnds: Set<string>;
   /** GitHub#258: Project key (`org/owner/n`) -> its workflows; a Project not listed answers the read with an error */
   workflows: Map<string, { name: string; enabled: boolean }[]>;
   /** GitHub#258: answer this many reads of "which boards is this new issue on" with HTTP 502 */
@@ -213,6 +223,10 @@ export function defaultWritable(): WritableState {
     eventPage: 0,
     failEventPages: false,
     staleSnapshotLabels: null,
+    loopPage: 0,
+    failLoop: new Set(),
+    failLoopPages: false,
+    hiddenEnds: new Set(),
     workflows: new Map(),
     failCreatedBoards: 0,
     relations: new Map(),
@@ -957,6 +971,47 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
         },
       },
     };
+  }
+  // GitHub#429: the loop's registration — newest comments and label removals, walked back with `before`
+  if (op === 'CavilLoopBlocked' || op === 'CavilLoopBlockedMore') {
+    const size = w.loopPage || 100;
+    const page = <T,>(all: T[], before: string | null | undefined, prefix: string) => {
+      const end = before ? Number(String(before).replace(prefix, '')) : all.length;
+      const from = Math.max(0, end - size);
+      return { pageInfo: { hasPreviousPage: from > 0, startCursor: from > 0 ? `${prefix}${from}` : null }, nodes: all.slice(from, end) };
+    };
+    const loopNode = (id: string, comments: boolean, cBefore: string | null, events: boolean, eBefore: string | null): any => {
+      const c = findByNodeId(store, id);
+      if (!c) return null;
+      if (c.kind !== 'Issue') return { __typename: c.kind };
+      const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+      if (w.failLoop.has(ikey)) throw Object.assign(new Error('502'), { http: 502 });
+      if (w.failLoopPages && (cBefore || eBefore)) throw Object.assign(new Error('502'), { http: 502 });
+      const all = (w.comments.get(ikey) ?? []).map((x, i) => ({ databaseId: i + 1, body: x.body ?? '', createdAt: x.createdAt, authorAssociation: x.authorAssociation ?? 'NONE' }));
+      const evs = (w.labelEvents.get(ikey) ?? []).filter((e) => e.event === 'unlabeled').map((e) => ({ __typename: 'UnlabeledEvent', createdAt: e.created_at, label: e.label }));
+      return {
+        __typename: 'Issue',
+        id,
+        ...(comments ? { comments: page(all, cBefore, 'lc:') } : {}),
+        ...(events ? { timelineItems: page(evs, eBefore, 'le:') } : {}),
+      };
+    };
+    try {
+      if (op === 'CavilLoopBlocked') return { data: { nodes: (v.ids as string[]).map((id) => loopNode(id, true, null, true, null)) } };
+      return { data: { node: loopNode(v.id, v.comments, v.commentsBefore, v.events, v.eventsBefore) } };
+    } catch (e) {
+      if ((e as any).http) return { httpStatus: (e as any).http };
+      throw e;
+    }
+  }
+  if (op === 'CavilLoopEnd') {
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    const missing = { data: { repository: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a Repository with the name '${v.owner}/${v.name}'.` }] };
+    if (!c || w.hiddenEnds.has(`${String(v.owner).toLowerCase()}/${String(v.name).toLowerCase()}#${v.number}`)) return missing;
+    const g = gqlContent(c);
+    const base = { __typename: c.kind, number: c.number, title: g.title, url: g.url, repository: { nameWithOwner: c.repo } };
+    const node = c.kind === 'Issue' ? { ...base, state: g.state, stateReason: g.stateReason ?? null } : { ...base, state: g.state === 'MERGED' ? 'MERGED' : g.state, merged: g.state === 'MERGED' || g.merged === true };
+    return { data: { repository: { issueOrPullRequest: node } } };
   }
   if (op === 'CavilIssueRelations') {
     const c = findByNodeId(store, v.id);

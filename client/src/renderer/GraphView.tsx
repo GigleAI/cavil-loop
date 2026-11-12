@@ -51,7 +51,7 @@ interface Props {
   onOpen: (key: string) => void;
 }
 
-const nodeTone = (n: GraphNode) => stateTone('issue', n.state, n.stateReason, null);
+const nodeTone = (n: GraphNode) => stateTone(n.kind, n.state, n.stateReason, null);
 
 export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow }: Props) {
   // one function for the whole life of the view, so a node whose look did not change is not redrawn
@@ -355,9 +355,9 @@ function GraphBar({ testid, source, children }: { testid: string; source: string
 function StateMark({ n }: { n: GraphNode }) {
   const tone = nodeTone(n);
   return (
-    <span className={`kind issue ${tone}`} data-testid="graph-node-state" data-tone={tone}>
-      <Icon name={itemIcon('issue', n.state, n.stateReason)} size={14} />
-      Issue · {badgeText('issue', n.state, n.stateReason, null)}
+    <span className={`kind ${n.kind} ${tone}`} data-testid="graph-node-state" data-tone={tone} data-kind={n.kind}>
+      <Icon name={itemIcon(n.kind, n.state, n.stateReason)} size={14} />
+      {n.kind === 'pr' ? 'PR' : 'Issue'} · {badgeText(n.kind, n.state, n.stateReason, null)}
     </span>
   );
 }
