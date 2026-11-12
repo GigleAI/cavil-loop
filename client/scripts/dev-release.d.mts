@@ -14,3 +14,6 @@ export declare const NOTES_HEADING: string;
 export declare function previousBuildCommit(list: unknown[], version: string): string | null;
 export declare function addedNotes(base: string, head: string, root?: string): string[] | null;
 export declare function composeBody(notes: string, added: string[] | null | undefined): string;
+export declare const APP_PATHS: string[];
+export declare function untoldCommits(base: string, head: string, root?: string): { sha: string; title: string }[] | null;
+export declare function buildNotes(base: string, head: string, root?: string): { lines: string[]; notes: number; titles: number } | null;
