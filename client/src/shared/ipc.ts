@@ -8,6 +8,7 @@ import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
 import type { BlockedLabels, EntryState, Pick as BlockedPick, Ref } from './blocked';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
+import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 
 export interface Snapshot {
   state: AppState;
@@ -172,4 +173,23 @@ export interface CavilApi {
   daemonPickFolder(start?: string): Promise<{ result: string; path?: string | null; output?: string }>;
   daemonConnect(o: { repo: string; agent: string; dir?: string; cloneInto?: string }): Promise<DaemonResult & { job?: number }>;
   daemonConnectPoll(job: number, from: number): Promise<ConnectPoll>;
+  /**
+   * A daemon on another machine (GitHub#387), over Tailscale only. The window names a machine from the
+   * list and a project; the back end holds the key, proves the other end is that machine before it
+   * sends anything, and signs each request.
+   */
+  remoteList(): Promise<RemoteList>;
+  remotePair(host: string, code: string): Promise<RemoteResult>;
+  remoteStatus(id: string): Promise<RemoteRead>;
+  remoteService(id: string, key: string, action: 'stop' | 'start'): Promise<RemoteResult>;
+  remoteLog(id: string, key: string): Promise<RemoteResult>;
+  /** `localOnly`: when the machine cannot confirm, stop using the key anyway and keep the entry as "取消配对未完成" */
+  remoteUnpair(id: string, localOnly: boolean): Promise<RemoteResult>;
+  /** drop a "取消配对未完成" entry: the person revoked this computer on the machine itself */
+  remoteForget(id: string): Promise<RemoteResult>;
+  /** the machines this computer's Tailscale knows, each looked at once: is its remote entry open */
+  remoteTailnet(): Promise<TailnetList>;
+  /** this machine as the one being connected to: its remote entry switch, a pairing code, the computers paired with it */
+  remoteHost(action: 'status'): Promise<HostStatus>;
+  remoteHost(action: Exclude<HostAction, 'status'>, target?: string): Promise<HostResult>;
 }

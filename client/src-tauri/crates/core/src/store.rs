@@ -25,7 +25,7 @@ pub const SECRET_KEYS: [&str; 4] = [TRUSTED, CACHE_CREDENTIAL, CACHE_OWNER, GRAN
 /// previous account's name back.
 pub const VIEWER: &str = "viewer";
 /// Settings the window may read but never write.
-pub const BACKEND_ONLY_KEYS: [&str; 1] = [VIEWER];
+pub const BACKEND_ONLY_KEYS: [&str; 2] = [VIEWER, crate::remote::REMOTES];
 
 pub struct Store {
     db: Mutex<Connection>,

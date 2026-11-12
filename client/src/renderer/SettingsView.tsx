@@ -6,6 +6,7 @@ import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { UpdateSection } from './UpdateViews';
 import { DaemonSection, useDaemonStatus } from './DaemonSection';
+import { RemoteSection } from './RemoteSection';
 import { ConnectButton } from './ConnectDialog';
 import { Icon, type IconName } from './Icons';
 import { useShortcuts } from './keyboard';
@@ -23,6 +24,8 @@ const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-update', icon: 'refresh', title: '更新' },
   // the local cavil-loop daemon (GitHub#314)
   { id: 'set-daemon', icon: 'gear', title: '本机 daemon' },
+  // daemons on other machines, over Tailscale (GitHub#387)
+  { id: 'set-remote', icon: 'gear', title: '远程 daemon' },
   { id: 'set-account', icon: 'user', title: '账号' },
   { id: 'set-login', icon: 'key', title: '登录方式' },
 ];
@@ -291,6 +294,8 @@ export function SettingsView({
       <UpdateSection update={state.update} />
 
       <DaemonSection daemon={daemon} />
+
+      <RemoteSection />
 
       <section id="set-account">
         <h3>账号</h3>

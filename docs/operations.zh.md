@@ -113,10 +113,6 @@ SELFHEAL_MAX_RETRIES=3
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
 CHECKOUT_STALE_ALERT_COMMITS=0
 
-# 本配置缺某个「不写就关、模板里开着」的新功能那一行时，开一条挂 pending/human 的提示 issue，
-# 写明要加哪一行；false = 只写轮询日志（GitHub#289，见下文「升级不会自动补上的新配置」）
-CONFIG_NOTICE_ISSUE=true
-
 # 1 = PR 分支被本项目自己的主 checkout 占着、且它干净、没有进行中的操作、与 PR 最新提交
 # 完全一致时，把它切回 BASE_BRANCH 继续派工（会在 PR 上留言）。默认 0 = 关：它放宽了
 # 「daemon 不碰你的工作区」
@@ -679,7 +675,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 有一类文件，改动本身不是「运行代码」，但会让代码在之后以维护者身份运行：CI 工作流、git hooks、agent 配置、
 安装 / 构建 / 环境配置文件。配了 `AUTOPILOT_HUMAN_PATHS` 之后，托管 PR 只要碰到清单里的文件就不合并，
 翻 `pending/human` 交人，说明里列出命中的文件。**留空或不写 = 和以前完全一样**（只拦 `.github/`，走的是
-原来那段代码：GitHub 调用、state、评论都不变）。不配的项目没有任何变化，也不会为它开提示 issue。
+原来那段代码：GitHub 调用、state、评论都不变）。不配的项目没有任何变化。
 
 开启：在项目配置里加一行，下一轮轮询生效：
 
@@ -1519,6 +1515,7 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 | `scripts/install-status.sh [--agent <名字>] [--project <目录>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
 | `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
 | `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
+| `scripts/project-service.sh <key> stop\|start` | 停 / 启一个项目的后台轮询任务（远程入口用，GitHub#387）：只在「在跑 → 停」「已停 → 启」时执行，读不到不动，执行后读回 | 会 |
 
 <!-- install-scripts-ops:begin -->
 ```bash
@@ -1591,6 +1588,66 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 
 **保存时不要同时在编辑器里改同一个文件。** 脚本没法让编辑器等它。最后一次核对时文件和 `--rev` 不一样，它就不写；那次核对之后的事它看不到：编辑器在那次核对和换上之间存的一版会被新文件换掉；编辑器在保存前就开着这个文件、保存后才存盘的，要么用它手里整份旧内容把新值盖回去，要么写进刚被换下的那个文件。这两种情况结果仍可能是 `saved`，丢掉的修改找不回来——备份里只有保存前的那一版。新文件换上之后脚本不再写配置文件：不回滚，不自动恢复。轮询每一轮开头读一次配置，替换是改名，所以它读到的要么是旧的整份、要么是新的整份；已经在跑的 worker 用的还是它启动时的值。
 
+## 远程入口：让另一台电脑上的客户端看这台机器的 daemon（GitHub#387）
+
+daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客户端的「设置 → 远程 daemon」可以列出这台机器接了哪些项目、在不在跑，停 / 启某个项目的轮询，看轮询日志的最后 200 行。**只通过 Tailscale**，并且要先配对。默认是关的：不跑下面的命令，这台机器上没有任何监听、没有任何转发。
+
+**前提**（缺哪一条，`enable` 会说明并停下，不留半开的入口）：
+
+- 这台机器的 Tailscale 已连上，所在网络在管理后台 DNS 页开了 MagicDNS 和 HTTPS Certificates。
+- 登记转发要管理员权限：当前用户是 Tailscale 的操作者（`sudo tailscale set --operator=$USER` 设一次），或 `sudo` 免密。都没有时 `enable` 会给出一条要人用 `sudo` 跑的命令，跑完重跑 `enable`。
+- 本机有 `python3`、`tailscale`、`jq`。
+- 客户端那台电脑在同一个 Tailscale 网络里。
+
+<!-- remote-access-ops:begin -->
+```bash
+RA="$HOME/.agents/skills/cavil-loop/scripts/remote-access.sh"
+bash "$RA" enable
+bash "$RA" pair
+bash "$RA" status
+bash "$RA" list
+bash "$RA" revoke MacBook-Pro
+bash "$RA" disable
+```
+<!-- remote-access-ops:end -->
+
+依次是：打开入口；生成一个配对码（入口没开时 `pair` 会先打开，所以平时只跑 `pair` 就够）；看入口状态；列出已配对设备；撤销名叫 `MacBook-Pro` 的那台；关闭入口。
+
+**不用终端**：这台机器上也装了桌面客户端（Mac）时，上面这些在它的「设置 → 本机 daemon → 允许其他电脑远程连接」里都有——开关跑 `enable` / `disable`，「生成配对码」跑 `pair` 并用大字显示码和剩余时间，「作废这个码」跑 `pair-cancel`，「已配对的电脑…」跑 `list` / `revoke`。开关显示的是之后 `status` 读回的结果；读不到时显示「状态未知」，不提供开关。另一台电脑上，「添加远程 daemon」列出那台电脑 Tailscale 里的机器（`tailscale status --json`，只读），对在线的每一台在 47387 端口问一次远程入口在不在——「已打开远程连接」「未打开远程连接」（连接被拒绝）「不确定」（其余一切情况，不当成没开）「不在线」——机器名点选、不用抄；自定端口或列表读不到时仍可「手动输入机器名」。远程入口只能在那台机器上打开：没有窗口的服务器仍要在它上面跑一次 `pair`。
+
+**配对**：`pair` 打印这台机器的完整机器名（以 `.ts.net` 结尾）和一个 8 位配对码，在客户端「添加远程 daemon」里填这两样。配对码 10 分钟有效、只能用一次、连续输错 5 次作废。配对成功后客户端得到一把只属于它的钥匙（存在它的系统钥匙串里），这台机器把它记在 `~/.local/state/cavil-loop/remote-access/devices.json`（目录 700、文件 600）。
+
+**每条命令**的最后一行是 `RESULT=<...>`（`list` / `revoke` 除外）：
+
+| 命令 | 做什么 | 结果 |
+|------|--------|------|
+| `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387。换端口时，新端口起来之后撤掉本功能在旧端口上的转发（撤不掉：`partial`，退出 3，写明哪个端口）。端口上已有别的转发时不接管，哪怕形状一样（`port_taken`） | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
+| `pair` | 入口没开就先 `enable`，再生成配对码（新码顶替等待中的码）。另给桌面客户端打印 `HOST=` / `CODE=` / `EXPIRES=`（失效时刻，秒） | `code` |
+| `pair-cancel` | 作废等待中的配对码（没有也算成功） | `cancelled` |
+| `status` | 只读。另给桌面客户端打印 `HOST=`（读到机器名时才有）、`PORT=`、`DEVICES=`（台数，清单读不懂是 `unknown`） | `open` / `closed` / `partial` / `unknown` |
+| `list [--machine]` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间。`--machine`：一台一行 `DEVICE=<编号>\t<设备名>\t<设备>\t<时间>`，最后 `RESULT=ok` | —（`--machine` 时 `ok`） |
+| `revoke <设备名或编号>` | 撤销一台设备，立刻生效；没有这台设备退出 1 | — |
+| `disable` | 停服务并移除后台任务文件 → 撤掉本功能登记过的每一个端口的转发（换过端口也一并撤，别的功能的转发不动）→ 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
+
+**边界**：
+
+- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。本功能登记过哪些端口记在 `~/.local/state/cavil-loop/remote-access/ports`（登记前先记、撤掉并读回确认后才划掉），关闭和换端口都按它收尾；Tailscale 的转发设置读不到（查询失败，或退出 0 却没有输出）时什么都不动。这份清单和记着当前端口的 `port` 文件本身也分「没有 / 读得懂 / 读不懂」三种：读不了、或有一行不是端口号，就是「不知道哪些转发是本功能的」——`enable`、`pair`、`disable` 退出 2（`RESULT=state_unknown`）、什么都不动、不覆盖这份文件，`status` 报 `unknown`；按提示用 `tailscale serve status` 核对后把 `ports` 改成每行一个本功能登记过的端口（一个都没有就删掉文件）再重跑。清单写不进去时：登记之前发现的，不登记（`state_unwritable`，退出 2）；撤掉转发之后才发现的，报 `partial`（退出 3），修好后重跑。已配对设备清单读不懂时，`status` 写「读不到」、`list` / `revoke` 退出 2，不报「0 台」。
+- 每个请求先确认来访者：转发层给出的来访地址必须是一个 Tailscale 地址，且本机 `tailscale whois` 查得到它是哪台设备。查不到、查询失败、带公网入口标记，一律拒绝。
+- 配对之后钥匙不再传输：每个请求带「时间 + 一次性随机数 + 请求内容」的签名，回复也带签名；来访设备的 Tailscale 身份必须等于配对时那台，钥匙拷到别的设备上用会被拒。
+- 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能执行任意命令。
+- 日志按盘上的样子返回，不另做处理：daemon 写 `poll.log` 之前已把 GitHub 令牌脱敏（GitHub#342，开着的话），其余内容配对过的客户端都看得到。
+- 同一台机器上的其他系统用户能连到回环端口，但没有配对码和钥匙做不了任何事。
+- 常驻服务不随 daemon 自动更新而重启；更新后要用上新版本，重跑一次 `enable`。
+
+**客户端取消配对**：连得上时由这台机器确认撤销；连不上时客户端只能停止使用并显示「取消配对未完成」——这时这台机器上的授权**还在**，恢复连接后客户端会重试，或在这台机器上跑 `revoke`。
+
+**协议**（给想自己写客户端或排查的人）。入口 `https://<机器名>:<端口>`：
+
+- `POST /v1/pair`，请求体 `{"code": "<8 位>", "name": "<设备名>"}` → `{"version": 1, "id": "<设备编号>", "key": "<64 位十六进制钥匙>", "name": ...}`。
+- 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复——处理过的请求记在 `nonces.json` 里，服务重启后重放同一个请求照样被拒；这份记录读不懂时，服务在 240 秒内不接受任何签名请求，回 503 `not_ready`）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
+- `GET /v1/status` → `{"status": <install-status.sh 的输出>}`；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
+- 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）、`not_ready`（503，见上）。
+
 ## 多 project 共存
 
 skill 装一次，调度器模板装一次。每个 project 跑：
@@ -1657,17 +1714,11 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 升级换的是代码，不动项目自己的 `cavil-loop.config`。新功能若是**配置里不写就关**、而 `cavil-loop.config.example` 里是开的（新装项目因此默认就有），老项目上它就一直关着，没有任何提示（GitHub#289：等前置标签 `pending/blocked` 在老项目上一直没开，维护者以为早已生效）。这类配置项在 [`scripts/config-notices.txt`](../scripts/config-notices.txt) 里登记为 `notice`；模板里其余每一项都登记为 `quiet` 并写明原因（不写时行为相同、必填项、示例值、权限参数）。
 
-daemon 每轮把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `LABEL_PENDING_BLOCKED=""`）算「已决定不开」，不会被提示。每个缺项：
+daemon 每轮调度轮询把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `LABEL_PENDING_BLOCKED=""`）算「已决定不开」，不会被提示。每个缺项在 `poll.log` 里写一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`，附上要开时照抄的模板行和不开时写的值）——每项一次；补上又去掉的项会再写一次。
 
-| 做什么 | 什么时候 |
-|---|---|
-| `poll.log` 里一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`） | 每项一次 |
-| 在项目仓库开一条挂 `pending/human` 的 issue（不会被派工），写明每项做什么、要开照抄模板里哪一行、不开写什么 | 第一次出现缺项时；这条 issue 开着期间又出现的缺项，以评论追加在上面 |
-| 关掉这条 issue | 列出的每一项都写进配置（开或不开）之后 |
+它只做这一件事（GitHub#428）：这件事上 daemon 不发任何 GitHub 调用，不开提示 issue；早先版本开过的提示 issue 不评论、也不再自动关，由人手动关掉。老配置里还写着的 `CONFIG_NOTICE_ISSUE` 一行不再起作用，留着无害。daemon 从不改配置。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不写。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏每个缺项的日志多写一次）。
 
-人手动关掉这条 issue = 这一批不再提示，只有之后新出现的缺项才开新的。daemon 从不改配置。读不到这条 issue 或写失败时什么都不发，下一轮重来，「读不到」从不当成「已关」。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不会开 issue。`CONFIG_NOTICE_ISSUE=false` 只留日志，不发任何 GitHub 调用。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏多开一条）。
-
-不等 issue、直接看一个项目缺什么，在任意 shell 里跑（先改 `KEY`，别的什么都不用设）：
+直接看一个项目缺什么，在任意 shell 里跑（先改 `KEY`，别的什么都不用设）：
 
 <!-- config-notice-ops:begin -->
 ```bash
@@ -1687,7 +1738,7 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 ```
 <!-- config-notice-ops:end -->
 
-怎么看：`logged` 是当前缺的项（每项在 `poll.log` 写过一次），`issued` 是已经写进提示 issue 的项，`issue` 是那条 issue 的号（`null` = 没有开着的）。把某一项写进配置后，下一轮调度轮询就把它从两个列表里去掉；全都补上后 `issue` 回到 `null`，那条 issue 被关掉。如果有人把提示 issue 转进了别的流程（摘掉 `pending/human`、或打上派工标签），daemon 就不再碰它、也不再跟踪（`poll.log` 里有一行 `已被转进别的流程`）。
+怎么看：`logged` 是当前缺的项（每项在 `poll.log` 写过一次）。把某一项写进配置后，下一轮调度轮询就把它从列表里去掉。早先版本写下的文件里可能还有 `issue` / `issued`，下一轮调度轮询会把它们去掉。
 
 往 `cavil-loop.config.example` 里加配置项时，要在同一个改动里登记进 `scripts/config-notices.txt`，否则 `tests/config-notice.test.sh` 红。只有「不写就关、模板里开」的才登记成 `notice`。
 

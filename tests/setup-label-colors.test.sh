@@ -24,14 +24,14 @@ chk() {
     else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
 }
 
-# 期望的 14 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）还没在本仓库的 labels 页上建过，颜色是新定的。等外部需求机器人那个标签的名字由下面的配置指定。
+# 期望的 14 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）照抄本仓库 labels 页的 2dcdd0（GitHub#435）。等外部需求机器人那个标签的名字由下面的配置指定。
 EXPECTED='Done|586069
 autopilot|ff401e
 doing/agent|c2e0c6
 pending/PR|eeeeee
 pending/agent|d4c5f9
 pending/agent/fable|8250df
-pending/blocked|c5def5
+pending/blocked|2dcdd0
 pending/human|fbca04
 pending/merge|5319e7
 pending/review|1d76db

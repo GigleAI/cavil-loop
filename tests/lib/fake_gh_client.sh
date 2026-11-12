@@ -30,7 +30,12 @@ fake_gh_forward() {
     local port token reply
     if { read -r port < "$FAKE_GH_STATE/port" && read -r token < "$FAKE_GH_STATE/token" \
          && exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
-        printf '%s %s %s\n' "$token" "$$" "$#" >&3
+        # Sent from a subshell on purpose: `printf … >&3` in this shell would point this process's
+        # own fd 1 at the socket for the length of the write, and the server — which reads
+        # /proc/$$/fd/1 the moment the line arrives — then sometimes saw a socket instead of the
+        # caller's pipe and answered FALLBACK (measured: 31 of 120 copies of fake-gh-server run 40 at
+        # a time, every extra fallback logged fd 1 = socket). `$$` in the subshell is still this pid.
+        ( printf '%s %s %s\n' "$token" "$$" "$#" ) >&3
         if ! IFS= read -r reply <&3; then
             echo "假 GitHub：请求已交出、执行结果未知，不重试（服务没有回复就断开了）" >&2
             exit 70
