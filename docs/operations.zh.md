@@ -1229,6 +1229,7 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 | `scripts/install-status.sh [--agent <名字>] [--project <目录>]` | 输出一个 JSON 对象，本机状态一次读全 | 不会 |
 | `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
 | `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
+| `scripts/project-service.sh <key> stop\|start` | 停 / 启一个项目的后台轮询任务（远程入口用，GitHub#387）：只在「在跑 → 停」「已停 → 启」时执行，读不到不动，执行后读回 | 会 |
 
 <!-- install-scripts-ops:begin -->
 ```bash

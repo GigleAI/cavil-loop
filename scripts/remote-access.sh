@@ -142,7 +142,7 @@ Documentation=https://github.com/GigleAI/cavil-loop
 
 [Service]
 ExecStart=$py $skill/scripts/remote-access/remote_access.py serve --state $STATE --port $p --skill $skill
-Environment=PATH=$PATH
+Environment="PATH=$PATH"
 Restart=on-failure
 RestartSec=5
 

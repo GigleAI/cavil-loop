@@ -1479,6 +1479,7 @@ Four entry points give a program (the desktop client, or a script of your own) a
 | `scripts/install-status.sh [--agent <name>] [--project <dir>]` | Prints one JSON object with the whole local state | no |
 | `scripts/disconnect-project.sh <key>` | Stops one project's poller and removes its registration; keeps the project config and state | yes |
 | `scripts/launchd-refresh.sh <key>` | macOS only: replaces one project's launchd plist after the template changed, with backup and rollback | yes |
+| `scripts/project-service.sh <key> stop\|start` | Stops / starts one project's background poller (used by remote access, GitHub#387): only "running → stop" and "stopped → start", nothing when the state cannot be read, read back afterwards | yes |
 
 <!-- install-scripts-ops:begin -->
 ```bash
