@@ -33,6 +33,7 @@ export type ShortcutId =
   | 'closeIssue'
   | 'handBack'
   | 'autopilot'
+  | 'blocked'
   | 'hide'
   | 'send'
   | 'preview'
@@ -86,6 +87,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x', mod: true, shift: true }], label: '关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）' },
   { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: '交给 agent（回复框、讨论区里也能按；回复框里的字不发出）' },
   { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按）' },
+  // GitHub#434: "等前置…" next to them, same ⌘⇧ family
+  { id: 'blocked', scope: 'detail', keys: [{ key: 'b', mod: true, shift: true }], label: '等前置（打开选前置的对话框；回复框、讨论区里也能按）' },
   { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '回到首页（标签页留着，没发出的文字也留着）' },
   { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
   { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
@@ -209,7 +212,7 @@ export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
  * built from this table into its text), and a forwarded key may only end in one of these ids
  * (keyboard.ts, frameKey) — every other key stays inside the frame (PR #171).
  */
-export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot'];
+export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked'];
 
 /** the keys of FRAME_IDS, as the frame script compares them: a lower-case single key, ⌘/Ctrl, Shift */
 export const FRAME_FORWARD: readonly { key: string; mod: boolean; shift: boolean }[] = FRAME_IDS.flatMap((id) =>

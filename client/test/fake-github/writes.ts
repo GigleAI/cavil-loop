@@ -32,7 +32,7 @@ export interface FakeComment {
   author: { login: string } | null;
   /** markdown source (GitHub#193): when set, bodyHTML is rendered from it */
   body?: string;
-  /** GitHub#429: the author's standing in the repository (GitHub's authorAssociation); absent = NONE */
+  /** GitHub#429: the author's standing in the repository (GitHub's authorAssociation); absent = NONE. GitHub#434: the REST list's author_association too */
   authorAssociation?: string;
 }
 
@@ -597,7 +597,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
       return send(200, w.labelEvents.get(gk) ?? []), true;
     }
     if (w.failCommentList) return send(502, { message: 'Server Error' }), true;
-    return send(200, (w.comments.get(gk) ?? []).map((x, i) => ({ id: i + 1, node_id: x.id, body: x.body ?? '', created_at: x.createdAt, user: x.author ? { login: x.author.login } : null }))), true;
+    return send(200, (w.comments.get(gk) ?? []).map((x, i) => ({ id: i + 1, node_id: x.id, body: x.body ?? '', created_at: x.createdAt, user: x.author ? { login: x.author.login } : null, author_association: x.authorAssociation ?? 'NONE' }))), true;
   }
   if (method === 'GET') return false;
 
@@ -706,7 +706,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
     if (w.failComment) return send(422, { message: 'Validation Failed: body is too long' }), true;
     const list = w.comments.get(ikey) ?? [];
     const id = `IC_fake_${list.length + 1}_${c.number}`;
-    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: actor }, body: String(body?.body ?? '') });
+    list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: actor }, body: String(body?.body ?? ''), authorAssociation: 'COLLABORATOR' });
     w.comments.set(ikey, list);
     touch(store, c);
     return send(201, { id }), true;
