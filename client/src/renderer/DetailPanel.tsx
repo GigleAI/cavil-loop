@@ -15,8 +15,7 @@ import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { Keys } from './ShortcutHelp';
-import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
+import { keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
@@ -773,7 +772,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -785,8 +784,9 @@ export function DetailPanel({
       else if (m.cavil === 'wrap' && typeof m.on === 'boolean') now.setWrap(m.on);
       else if (m.cavil === 'image') now.image(now.render, m.id, m.src);
       else if (m.cavil === 'reread') now.reread();
-      // GitHub#322: the frame passes on a bare R only; the window's own rules decide, and only "go to the reply box" may act
-      else if (m.cavil === 'key' && typeof m.key === 'string') frameKey(m.key);
+      // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
+      // own rules decide, and only those shortcuts may act (frameKey)
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -1487,11 +1487,10 @@ export function DetailPanel({
             </button>
           )}
           <div className="spacer" />
-          <span className="small muted keys-hint">
-            按 <Keys parts={keyParts(SHORTCUTS.find((x) => x.id === 'send')!.keys[0], isMac())} /> 发送
-          </span>
+          {/* GitHub#433: every button with a key carries it itself, the same way */}
           <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={`预览（${keyText('preview')}）`} onClick={() => void togglePreview()}>
             {preview !== null ? '继续编辑' : '预览'}
+            <kbd>{keyText('preview')}</kbd>
           </button>
           {detailRead && (
             <span className="quick-actions" data-testid="quick-actions">
@@ -1523,6 +1522,7 @@ export function DetailPanel({
           )}
           <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={`发送（${keyText('send')}）`} onClick={() => void send()}>
             发送
+            <kbd>{keyText('send')}</kbd>
           </button>
         </div>
       </section>

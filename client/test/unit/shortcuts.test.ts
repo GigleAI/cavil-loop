@@ -2,7 +2,7 @@
 // the shortcut list both read SHORTCUTS. These cases pin the rules; the window tests
 // (test/e2e/app.spec.ts, "GitHub#192: …") press the real keys and check what GitHub received.
 import { describe, expect, it } from 'vitest';
-import { SHORTCUTS, keyParts, keyText, matches, resolve, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
+import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
 
 const key = (k: string, o: Partial<KeyLike> = {}): KeyLike => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o });
 const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none' };
@@ -139,42 +139,64 @@ describe('resolve: who gets the key', () => {
       expect(resolve(key('1', { metaKey: true }), { ...idle, layer }), layer).toBeNull();
     }
   });
-  it('GitHub#413: X opens the close dialog, Shift+A hands to the agent, Shift+P is autopilot — only with nothing typed and nothing on top', () => {
-    // nothing typed, no layer: the three keys act (Caps Lock X too)
-    expect(resolve(key('x'), idle)).toBe('closeIssue');
-    expect(resolve(key('X'), idle)).toBe('closeIssue');
-    expect(resolve(key('A', { shiftKey: true }), idle)).toBe('handBack');
-    expect(resolve(key('P', { shiftKey: true }), idle)).toBe('autopilot');
-    // the two that write at once need Shift: a bare a / p (or Caps Lock A / P) is nobody's
-    for (const k of ['a', 'p', 'A', 'P']) expect(resolve(key(k), idle), k).toBeNull();
-    // Shift+X is not X; ⌘ / Alt with any of them is nobody's (⌘⇧P outside the reply box neither)
-    expect(resolve(key('X', { shiftKey: true }), idle)).toBeNull();
-    for (const [k, o] of [
-      ['x', { metaKey: true }],
-      ['A', { metaKey: true, shiftKey: true }],
-      ['P', { metaKey: true, shiftKey: true }],
-      ['P', { ctrlKey: true, shiftKey: true }],
-      ['A', { altKey: true, shiftKey: true }],
-    ] as const)
-      expect(resolve(key(k, o), idle), `${k} ${JSON.stringify(o)}`).toBeNull();
-    // typing: an x, a capital A or P is text — in the reply box, another field, a settings field
-    for (const ctx of [{ ...idle, typing: 'reply' }, { ...idle, typing: 'other' }, { ...idle, page: 'settings', typing: 'other' }] as KeyContext[]) {
+  it('GitHub#413 / #433: ⌘⇧X closes (dialog), ⌘⇧Z hands to the agent, ⌘⇧C is autopilot — also from the reply box, never from another field', () => {
+    const ev = (k: string, o: Partial<KeyLike> = {}) => key(k, { shiftKey: true, ...o });
+    const three = [
+      ['X', 'closeIssue'],
+      ['Z', 'handBack'],
+      ['C', 'autopilot'],
+    ] as const;
+    for (const [k, id] of three) {
+      // nothing typed, with ⌘ or Ctrl, upper or lower case (macOS reports a lower-case key with ⌘⇧)
+      for (const o of [{ metaKey: true }, { ctrlKey: true }])
+        for (const kk of [k, k.toLowerCase()]) expect(resolve(ev(kk, o), idle), `${kk} ${JSON.stringify(o)}`).toBe(id);
+      // the reply box: they act (GitHub#433) — a ⌘ key is never typing
+      expect(resolve(ev(k, { metaKey: true }), { ...idle, typing: 'reply' }), k).toBe(id);
+      expect(resolve(ev(k, { ctrlKey: true }), { ...idle, typing: 'reply' }), k).toBe(id);
+      // another field (search box, the new issue's title, a settings field): nobody's
+      expect(resolve(ev(k, { metaKey: true }), { ...idle, typing: 'other' }), k).toBeNull();
+      expect(resolve(ev(k, { metaKey: true }), { ...idle, page: 'settings', typing: 'other' }), k).toBeNull();
+      // without ⌘, without Shift, with Alt: not these
+      expect(resolve(ev(k), idle), k).toBeNull();
+      expect(resolve(key(k.toLowerCase(), { metaKey: true }), idle), k).not.toBe(id);
+      expect(resolve(ev(k, { metaKey: true, altKey: true }), idle), k).toBeNull();
+      // a layer on top takes them; the settings page has no detail keys; never while composing
+      for (const layer of ['dialog', 'picker', 'help'] as const) expect(resolve(ev(k, { metaKey: true }), { ...idle, layer }), layer).toBeNull();
+      expect(resolve(ev(k, { metaKey: true }), { ...idle, page: 'settings' })).toBeNull();
+      expect(resolve(ev(k, { metaKey: true, isComposing: true }), idle)).toBeNull();
+      expect(resolve(ev(k, { ctrlKey: true, keyCode: 229 }), { ...idle, typing: 'reply' })).toBeNull();
+    }
+    // the old keys are nobody's now: a bare x, Shift+A, Shift+P — and in the reply box they stay letters
+    for (const ctx of [idle, { ...idle, typing: 'reply' }] as KeyContext[]) {
       expect(resolve(key('x'), ctx)).toBeNull();
       expect(resolve(key('A', { shiftKey: true }), ctx)).toBeNull();
       expect(resolve(key('P', { shiftKey: true }), ctx)).toBeNull();
     }
-    // the reply box keeps its ⌘⇧P (preview)
+    // the letters keep their other jobs: a bare C is still 新建 outside a field, ⌘⇧P still 预览 in the reply box
+    expect(resolve(key('c'), idle)).toBe('newIssue');
+    expect(resolve(key('c'), { ...idle, typing: 'reply' })).toBeNull();
     expect(resolve(key('P', { metaKey: true, shiftKey: true }), { ...idle, typing: 'reply' })).toBe('preview');
-    // a layer on top takes them; the settings page has no detail keys; never while composing
-    for (const layer of ['dialog', 'picker', 'help'] as const) {
-      expect(resolve(key('x'), { ...idle, layer }), layer).toBeNull();
-      expect(resolve(key('A', { shiftKey: true }), { ...idle, layer }), layer).toBeNull();
-      expect(resolve(key('P', { shiftKey: true }), { ...idle, layer }), layer).toBeNull();
+    // the other detail keys stay letters in the reply box
+    for (const k of ['l', 'm', 'r']) expect(resolve(key(k), { ...idle, typing: 'reply' }), k).toBeNull();
+  });
+  it('GitHub#433: the keys the discussion frame passes on are exactly those of FRAME_IDS, and each resolves to its own id', () => {
+    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot']);
+    expect([...FRAME_FORWARD]).toEqual([
+      { key: 'r', mod: false, shift: false },
+      { key: 'x', mod: true, shift: true },
+      { key: 'z', mod: true, shift: true },
+      { key: 'c', mod: true, shift: true },
+    ]);
+    // one table: every forwarded key is a single lower-case key that resolves (outside any field) to a FRAME_IDS shortcut
+    for (const f of FRAME_FORWARD) {
+      expect(f.key).toMatch(/^[a-z]$/);
+      const id = resolve(key(f.key, { metaKey: f.mod, shiftKey: f.shift }), idle);
+      expect(FRAME_IDS, JSON.stringify(f)).toContain(id);
     }
-    expect(resolve(key('x'), { ...idle, page: 'settings' })).toBeNull();
-    expect(resolve(key('A', { shiftKey: true }), { ...idle, page: 'settings' })).toBeNull();
-    expect(resolve(key('x', { isComposing: true }), idle)).toBeNull();
-    expect(resolve(key('A', { shiftKey: true, keyCode: 229 }), idle)).toBeNull();
+    // and every key of every FRAME_IDS shortcut is forwarded
+    for (const id of FRAME_IDS)
+      for (const k of SHORTCUTS.find((s) => s.id === id)!.keys)
+        expect(FRAME_FORWARD).toContainEqual({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift) });
   });
   it('matches: ⌘ and Ctrl both count as the modifier', () => {
     expect(matches({ key: 'r', mod: true }, key('r', { ctrlKey: true }))).toBe(true);
@@ -195,11 +217,13 @@ describe('keys on screen', () => {
     expect(keyText('newIssue', true)).toBe('C / ⌘N');
     expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
     expect(keyText('viewGraph', true)).toBe('⌘3');
-    // GitHub#413
-    expect(keyText('closeIssue', true)).toBe('X');
-    expect(keyText('handBack', true)).toBe('⇧A');
-    expect(keyText('handBack', false)).toBe('Shift+A');
-    expect(keyText('autopilot', true)).toBe('⇧P');
-    expect(keyText('autopilot', false)).toBe('Shift+P');
+    // GitHub#413 / #433
+    expect(keyText('closeIssue', true)).toBe('⌘⇧X');
+    expect(keyText('closeIssue', false)).toBe('Ctrl+Shift+X');
+    expect(keyText('handBack', true)).toBe('⌘⇧Z');
+    expect(keyText('handBack', false)).toBe('Ctrl+Shift+Z');
+    expect(keyText('autopilot', true)).toBe('⌘⇧C');
+    expect(keyText('autopilot', false)).toBe('Ctrl+Shift+C');
+    expect(keyText('preview', false)).toBe('Ctrl+Shift+P');
   });
 });
