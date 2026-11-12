@@ -178,7 +178,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await ready(page);
   await page.getByTestId('open-settings').click();
   const section = page.getByTestId('hand-back-settings');
-  await expect(section.locator('h3')).toHaveText('流程标签（顶栏的三个数、「交给 agent」「托管」都用这几个）');
+  await expect(section.locator('h3')).toHaveText('流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）');
   await expect(page.getByTestId('hand-back-running')).toHaveValue('doing/agent');
   await section.scrollIntoViewIfNeeded();
   await page.evaluate(() => document.getElementById('set-hand-back')!.scrollIntoView({ block: 'start' }));
@@ -227,7 +227,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await expect(page.getByTestId('hand-back-agent')).toHaveValue('pending/agent');
   await expect
     .poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack))
-    .toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: '' });
+    .toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: '', blocked: 'pending/blocked' });
   expect(await page.evaluate(async () => (await (window as any).cavil.get()).state.pendingCount)).toBe(pendingBefore);
   await page.getByTestId('back').click();
   await expect(tally(page, 'agent').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/agent')));
