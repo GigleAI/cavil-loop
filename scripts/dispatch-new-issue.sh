@@ -32,7 +32,7 @@ TMUX_SESSION="$(tmux_session_name "$ISSUE")"
 WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
 PROMPT_FILE="$(prompt_file_path new "$ISSUE")"
-prompt_dir_ensure || { log "派工 #$ISSUE：建不出提示词目录 $(prompt_dir)，本轮不派工"; exit 1; }
+prompt_dir_ensure || { log "派工 #${ISSUE}：建不出提示词目录 $(prompt_dir)，本轮不派工"; exit 1; }
 
 # 0. 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）
 heavy_launch_prepare "$ISSUE" || exit 1

@@ -111,6 +111,7 @@
 - 失败处理：调 `gh` 不要写 `gh ... 2>/dev/null || log "失败"`——会吞 stderr；用 `run_gh "描述" gh ...` helper，stderr 自动拼到 log
 - git 同理：用 `run_git "描述" git ...`。**不要**写 `git ... 2>&1 | tail -N` —— 截断会把唯一有用的那行盖掉；而且 `_lib.sh` 顶部的 `exec 9>&- 2>/dev/null` 是**永久**重定向，凡是 source 过它的脚本（含 poller 本身）fd 2 就是 `/dev/null`，git 写在 stderr 上的 `fatal:` 既不进 `poll.log` 也不进 journal。`run_git` 显式收 `2>&1` 再经 `log()` 写出去，那是唯一的通道
 - 变量后面紧跟非 ASCII 字符时一律写 `${VAR}`：`"${label}："`，**不要**写 `"$label："`（GitHub#411）。macOS 自带的 bash 3.2 按字节判断变量名到哪里结束，会把 `：` 的首字节读进名字，`set -u` 下直接以 `label\357: unbound variable` 退出——桌面客户端调用的脚本（`setup.sh`、`install-status.sh`、`disconnect-project.sh`、`launchd-refresh.sh`、`project-config.sh`）就跑在这个 bash 上。Linux 的 bash 不会出错，所以由 `tests/bash-multibyte-vars.test.sh` 扫描 `scripts/` 下所有脚本和 `setup.sh`。检查是逐字匹配，原样文字（单引号、注释、引号界定符的 here-doc）也算：注释里照样写 `${VAR}`，原样输出换个写法；要分出哪些真会展开就得解析 shell，PR #417 三轮复审每轮都找出一种手写解析认错的写法
+- 从 GitHub 读回来、大小没有上限的内容（正文、评论、修改历史、整条列表、带正文的 issue / PR JSON）一律不经命令行参数交给程序（`jq --arg` / `--argjson`、位置参数）：走管道（`printf '%s\n' "$a" "$b" | jq -cs '.[0] + .[1]'`）或文件（GitHub#426）。Linux 单个参数上限 128 KB，超过了程序连起都起不来（退出码 126，`Argument list too long`），而 stderr 已被丢弃（见上面 `run_git` 一条），日志里什么都不留——一条讨论很长的托管条目就这样让外部内容读取命令失败、原因还是空的。`printf` 是 shell 内建命令，它自己的参数不受影响。编号、标签名、daemon 自己拼的小对象照旧可以当参数
 
 ### Prompt 模板
 
