@@ -6440,10 +6440,14 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await page.mouse.down();
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
   // Linux WebKit (what CI runs) draws no corner to drag on a text box — the macOS app's WebKit and
-  // Chromium do. There the engine's part (the box gets a new height while the button is held) is done
-  // here, between the same press and release; what the app does with that height is checked either way
-  // (GitHub#378).
-  if ((await height()) === small) await reply.evaluate((el: HTMLElement, h: number) => { el.style.height = `${h}px`; }, small + 80);
+  // Chromium do. On that one engine only, the engine's part (the box gets a new height while the button
+  // is held) is done here, between the same press and release, and what the app does with that height
+  // is checked; everywhere else the real drag must have changed the height by itself (GitHub#378).
+  const noCorner = process.platform === 'linux' && page.context().browser()?.browserType().name() === 'webkit';
+  if (noCorner) {
+    expect(await height()).toBe(small); // still true there: if Linux WebKit ever grows a corner, stop standing in for it
+    await reply.evaluate((el: HTMLElement, h: number) => { el.style.height = `${h}px`; }, small + 80);
+  }
   await page.mouse.up();
   const draggedH = await height();
   expect(draggedH).toBeGreaterThan(small + 40);
