@@ -290,6 +290,56 @@ chk "主轮询确实没干活：普通条目没被派工" "$(labels_of 55)" "pen
 chk "但检查照常运行，失败被报告" "$(jq -r '[.[] | select(.kind == "issue" and (.body | startswith("<!-- cavil-ci-failure")))] | length' "$GD/items.json")" "1"
 unset POLL_FAKE_NOW
 
+section "【5b】没有 timeout 命令的机器（macOS 的安装条件）：检查照常启动；时限靠自己"
+# 一套不含 timeout 的命令目录：系统目录里的命令逐个链接过来，唯独不要 timeout
+FARM="$SANDBOX/farm"; mkdir -p "$FARM"
+for d in /bin /usr/bin /usr/local/bin; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+        b=${f##*/}
+        [ "$b" = timeout ] || [ "$b" = gtimeout ] || [ -e "$FARM/$b" ] || ln -s "$f" "$FARM/$b" 2>/dev/null
+    done
+done
+for b in python3 jq git flock; do [ -e "$FARM/$b" ] || ln -s "$(command -v "$b")" "$FARM/$b"; done
+fresh "PATH=\"$SANDBOX/bin:$FARM\""
+chk "搭好：这台「机器」上确实没有 timeout" "$(env PATH="$SANDBOX/bin:$FARM" bash -c 'command -v timeout >/dev/null 2>&1 && echo has || echo missing')" "missing"
+poll
+chk "没有 timeout：检查照常启动，建了本机记录" "$([ -f "$ST" ] && echo yes || echo no)" "yes"
+hasnt "没有 timeout：日志里没有异常退出" "$(cat "$W/state/poll.log")" "异常退出"
+later
+redrun 550 $((NOW - 60)) 3 requester-bot
+poll
+chk "没有 timeout：新的失败照常被报告" "$(n_issues)" "1"
+tick --list
+has "没有 timeout：人工查看的入口也能用" "$(cat "$W/out")" "状态：正常"
+# 一次 gh 调用卡住：检查程序自己到时限就结束这次调用、收尾退出，不靠外部命令
+fresh "PATH=\"$SANDBOX/bin:$FARM\""; enable
+redrun 551 $((NOW - 60)) 3 requester-bot
+printf 'sleep 25\n' > "$GD/hook_actions_workflows_tests.yml_runs_1"
+T1=$(date +%s)
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" CI_FAILURE_REPORT_CALL_TIMEOUT=2 bash "$NEW/scripts/agent-poll.sh" > "$W/pollout" 2>&1
+T2=$(date +%s)
+chk "gh 调用卡住：几秒内就结束这一轮（实测 $((T2 - T1)) 秒），没等它 25 秒" "$([ $((T2 - T1)) -le 15 ] && echo yes || echo no)" "yes"
+has "日志写明是调用超时" "$(cat "$W/state/poll.log")" "没有返回，已结束这次调用"
+chk "这一轮什么都没写，运行留着下一轮再看" "$(n_issues)" "0"
+rm -f "$GD/hook_actions_workflows_tests.yml_runs_1"; later
+poll
+chk "下一轮恢复：失败被报告" "$(n_issues)" "1"
+# 兜底：检查程序整个不退出 → 主轮询用 bash 内建等到上限后把它停掉，这一轮照常往下走
+fresh "PATH=\"$SANDBOX/bin:$FARM\""; enable
+mkissue 55 "pending/agent"
+redrun 552 $((NOW - 60)) 3 requester-bot
+printf 'sleep 25\n' > "$GD/hook_actions_workflows_tests.yml_runs_1"
+T1=$(date +%s)
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" CI_FAILURE_REPORT_CALL_TIMEOUT=100 CI_FAILURE_REPORT_HARD_LIMIT=3 \
+    bash "$NEW/scripts/agent-poll.sh" > "$W/pollout" 2>&1
+T2=$(date +%s)
+has "检查不退出：到上限被强制停掉" "$(cat "$W/state/poll.log")" "强制停掉"
+chk "强制停掉后这一轮照常派工，没被拖住（实测 $((T2 - T1)) 秒）" "$(session_of 55),$([ $((T2 - T1)) -le 20 ] && echo yes || echo no)" "1,yes"
+sleep 1
+chk "检查程序没有留下孤儿进程" "$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0"
+rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
+
 section "【6】同因看失败的测试；证据不完整进「原因未确认」"
 fresh; enable
 redrun 600 $((NOW - 60)) 3 requester-bot; tick; later

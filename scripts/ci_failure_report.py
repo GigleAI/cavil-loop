@@ -67,6 +67,11 @@ TRIGGER_LABELS = _lines("CI_REPORT_TRIGGER_LABELS")  # the ones that make the da
 EXTRA_BOTS = [x.lower() for x in _lines("CI_REPORT_BOT_LOGINS")]
 WRITE_TOKEN = os.environ.get("CI_REPORT_WRITE_TOKEN", "")
 
+try:
+    CALL_TIMEOUT = max(1, int(os.environ.get("CI_FAILURE_REPORT_CALL_TIMEOUT", "") or 60))
+except ValueError:
+    CALL_TIMEOUT = 60
+
 INTERVAL = 300
 OVERLAP = 600
 ORDER_WAIT = 7200          # an unfinished earlier run blocks later ones for at most this long
@@ -142,7 +147,15 @@ def gh(method, path, fields=None, write=False, raw=False):
     if write and WRITE_TOKEN:
         # same as gh_write in _lib.sh: the write identity, in the child's environment only
         env = dict(os.environ, GH_TOKEN=WRITE_TOKEN)
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # Every call is bounded here, with nothing but the standard library: a hung gh is killed and
+    # the round ends. (No coreutils `timeout` anywhere on this path — macOS does not ship it.)
+    limit = CALL_TIMEOUT
+    if _deadline is not None:
+        limit = max(5, min(limit, int(_deadline - time.time()) + 5))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=limit)
+    except subprocess.TimeoutExpired:
+        raise Budget("gh api %s %s 超过 %d 秒没有返回，已结束这次调用" % (method, path.split("?")[0], limit))
     if r.returncode != 0:
         err = (r.stderr or "").strip()
         m = re.search(r"HTTP (\d{3})", err)
@@ -1151,8 +1164,8 @@ def tick():
         if st is not None:
             st["next_check"] = t + wait
             save(st)
-    except Budget:
-        say("CI 失败报告：这一轮到了时长上限，没做完的下一轮接着做")
+    except Budget as e:
+        say("CI 失败报告：这一轮到了时长上限，没做完的下一轮接着做%s" % ("（%s）" % e if str(e) else ""))
         if st is not None:
             save(st)
     return 0

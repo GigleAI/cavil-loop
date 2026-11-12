@@ -30,32 +30,52 @@ if [ "${CI_FAILURE_REPORT_IN_POLL:-}" != 1 ] && [ "$MODE" != list ]; then
     fi
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+    if [ "$MODE" = tick ]; then
+        log "⚠️ CI 失败报告：找不到 python3，这项检查没有运行（装上 python3，或把 CI_FAILURE_REPORT_WORKFLOWS 留空）"
+        exit 0
+    fi
+    echo "找不到 python3" >&2
+    exit 1
+fi
+
+# 配置交给检查程序，然后 exec：这样本脚本拿到的子进程号就是 python 自己，要停它时信号直接送到
 run_py() {
     local wt=""
     [ -z "${WRITE_GH_TOKEN:-}" ] || wt="$WRITE_GH_TOKEN"
-    CI_REPORT_REPO="$REPO" \
-    CI_REPORT_STATE_DIR="$STATE_DIR" \
-    CI_REPORT_BASE="${CI_FAILURE_REPORT_BRANCH:-main}" \
-    CI_REPORT_WORKFLOWS="${CI_FAILURE_REPORT_WORKFLOWS:-}" \
-    CI_REPORT_DISPATCH="${CI_FAILURE_REPORT_DISPATCH:-false}" \
-    CI_REPORT_MAX_FIX="${CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:-2}" \
-    CI_REPORT_DISPATCH_LABEL="$LABEL_PENDING_AGENT_DEFAULT" \
-    CI_REPORT_LABEL_HUMAN="$LABEL_PENDING_HUMAN" \
-    CI_REPORT_LABEL_DOING="$LABEL_AGENT_DOING" \
-    CI_REPORT_FLOW_LABELS="$(ci_report_flow_labels)" \
-    CI_REPORT_TRIGGER_LABELS="$(trigger_labels_all | awk 'NF && !seen[$0]++')" \
-    CI_REPORT_BOT_LOGINS="${REQUESTER_BOT_ACCOUNT:-}" \
-    CI_REPORT_WRITE_TOKEN="$wt" \
-        python3 "$SCRIPT_DIR/ci_failure_report.py" "$@"
+    export CI_REPORT_REPO="$REPO" \
+        CI_REPORT_STATE_DIR="$STATE_DIR" \
+        CI_REPORT_BASE="${CI_FAILURE_REPORT_BRANCH:-main}" \
+        CI_REPORT_WORKFLOWS="${CI_FAILURE_REPORT_WORKFLOWS:-}" \
+        CI_REPORT_DISPATCH="${CI_FAILURE_REPORT_DISPATCH:-false}" \
+        CI_REPORT_MAX_FIX="${CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:-2}" \
+        CI_REPORT_DISPATCH_LABEL="$LABEL_PENDING_AGENT_DEFAULT" \
+        CI_REPORT_LABEL_HUMAN="$LABEL_PENDING_HUMAN" \
+        CI_REPORT_LABEL_DOING="$LABEL_AGENT_DOING" \
+        CI_REPORT_FLOW_LABELS="$(ci_report_flow_labels)" \
+        CI_REPORT_TRIGGER_LABELS="$(trigger_labels_all | awk 'NF && !seen[$0]++')" \
+        CI_REPORT_BOT_LOGINS="${REQUESTER_BOT_ACCOUNT:-}" \
+        CI_REPORT_WRITE_TOKEN="$wt"
+    exec python3 "$SCRIPT_DIR/ci_failure_report.py" "$@"
 }
 
 if [ "$MODE" != tick ]; then
-    run_py "$MODE"
+    ( run_py "$MODE" )
     exit $?
 fi
 
+# 输出先落到文件、跑完再逐行进日志：python 是直接子进程，本脚本被要求停下（TERM）时把它一起停掉，
+# 不留孤儿。它自己对每次 gh 调用都有时限，正常情况下走不到这里。
+OUT=$(mktemp "$STATE_DIR/.ci-failure-report.XXXXXX")
+( run_py tick ) > "$OUT" 2>&1 &
+PY=$!
+trap 'kill -TERM "$PY" 2>/dev/null; sleep 1; kill -KILL "$PY" 2>/dev/null; rm -f "$OUT"; exit 143' TERM INT
 rc=0
+wait "$PY" || rc=$?
+trap - TERM INT
 while IFS= read -r line; do
     [ -n "$line" ] && log "$line"
-done < <(run_py tick 2>&1 || echo "⚠️ CI 失败报告：检查程序异常退出（退出码 $?）")
-exit "$rc"
+done < "$OUT"
+rm -f "$OUT"
+[ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查程序异常退出（退出码 $rc）"
+exit 0

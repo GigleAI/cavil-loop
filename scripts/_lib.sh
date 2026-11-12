@@ -571,13 +571,34 @@ ci_report_flow_labels() {
 }
 
 # 每轮一次，在轮询锁内、节奏闸门之前（它有自己的 5 分钟间隔，项目空闲退避时照样按时查；它不读也不写
-# state.json）。跑成子进程并带超时：里面任何失败都只留日志，不碰这一轮的派工和退出码。
+# state.json）。跑成子进程：里面任何失败都只留日志，不碰这一轮的派工和退出码。
+#
+# 时限分两层，都不用 coreutils 的 timeout（macOS 没有，安装时也只要求 Linux 有）：
+#   · 检查程序自己：每次 gh 调用有时限（默认 60 秒），整轮有预算（默认 90 秒），到了就收尾退出
+#   · 这里兜底：只用 bash 内建等它，超过「预算 + 120 秒」还没退就 TERM、2 秒后 KILL（入口脚本收到
+#     TERM 会把检查程序一起停掉）
 ci_failure_report_tick() {
     ci_failure_report_enabled || return 0
-    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}"
+    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}" limit pid waited=0
     case "$budget" in ''|*[!0-9]*) budget=90 ;; esac
+    limit="${CI_FAILURE_REPORT_HARD_LIMIT:-$((budget + 120))}"
+    case "$limit" in ''|*[!0-9]*) limit=$((budget + 120)) ;; esac
     CODING_AGENT_CONFIG="$CONFIG_FILE" CI_FAILURE_REPORT_IN_POLL=1 \
-        timeout "$((budget + 60))" bash "$_LIB_DIR/ci-failure-report.sh" 9>&- || rc=$?
+        bash "$_LIB_DIR/ci-failure-report.sh" 9>&- &
+    pid=$!
+    # 以 0.2 秒为一步等：平时这一步不到 1 秒就结束，不该为了兜底让每轮多睡 1 秒
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge $((limit * 5)) ]; then
+            log "⚠️ CI 失败报告：检查超过 ${limit} 秒没有结束，强制停掉；不派工名单照常生效"
+            kill -TERM "$pid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null || true
+            break
+        fi
+        sleep 0.2
+        waited=$((waited + 1))
+    done
+    wait "$pid" 2>/dev/null || rc=$?
     [ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查异常退出（退出码 $rc），本轮跳过；不派工名单照常生效"
     return 0
 }

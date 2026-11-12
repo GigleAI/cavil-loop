@@ -482,6 +482,12 @@ it — the daemon then does not touch it any more. A report that is waiting in a
 strings masked, the last 80 lines / 6000 characters kept, hidden-marker look-alikes defused, and
 it goes into a code block whose fence is longer than any backtick run in it.
 
+**Needs** `python3` on the machine (standard library only) besides the tools the daemon already
+requires. Nothing here uses coreutils `timeout`, which macOS lacks: the checker bounds every `gh`
+call itself (60 s) and the whole round (90 s), and the poller waits for it with bash builtins and
+stops it if it still has not returned 120 s after that. Without `python3` the check does not run
+(one log line per round) and this feature's reports are held back from dispatch.
+
 **Token.** Reads use `GH_TOKEN`: it must be able to read Actions runs and check-run
 annotations (fine-grained: *Actions: read*, *Checks: read*). A rate limit is waited out and never
 reported as a permission problem; a plain 403 / 404 is logged once a day.
