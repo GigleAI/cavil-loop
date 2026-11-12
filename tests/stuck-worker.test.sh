@@ -679,9 +679,9 @@ pr_scn frz1
 hook_after_add "$P" "$FAKEBIN/hlabel" "$GD" "$N" add pending/human
 tick 60
 chk "9a 到达性：暂停发生在加标签生效之后" "$(hook_ran)" "yes"
-chk "9a 当轮停住：没摘 doing/agent、没撤回加上的标签、没结束会话、没记重派" \
-    "$(frozen "$N")/$(labels_of "$P")/$(cnt "DELETE repos/example/sw/issues/$P/labels" "$CALLS")/$(alive "$N")/$(efield "$N" '.restarts // 0')" \
-    "true/doing/agent,pending/review/0/yes/0"
+chk "9a 当轮停住：没摘 doing/agent、没撤回加上的标签、没结束会话；重派预算在动手前已占掉一次，不留进行中标记" \
+    "$(frozen "$N")/$(labels_of "$P")/$(cnt "DELETE repos/example/sw/issues/$P/labels" "$CALLS")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(efield "$N" '.inflight // "none"')" \
+    "true/doing/agent,pending/review/0/yes/1/none"
 chk "9a 停住范围包括 PR 和关联的 issue" "$(ff "$N" 'items | sort | join(",")')" "$N,$P"
 w0=$(lwrites "$P"); g0=$(got "$N"); d0=$(disp "$P")
 tick 10; tick 60; tick 110
@@ -693,6 +693,43 @@ chk "9a 停住说明发了一条，带记号，写明现状和恢复办法" \
 chk "9a 说明里不用「你 / 我」" "$(jq -r --arg n "$P" '.[$n][-1].body' "$GD/comments.json" | grep -c '[你我]')" "0"
 chk "9a 说明确认发出、恢复起点已记" "$(ff "$N" posted)/$(ff "$N" 'base != null')" "yes/true"
 
+# 9d 代码复审第 7 轮的复现：加标签生效之后、后续写入之前轮询进程被杀。本机必须先记下「这一步已开始」，
+# 下一轮按结果不明停住——daemon 自己加的派工标签不能被普通派工队列当成派工信号，重派预算也不能被绕过
+tick_kill() {   # 跑一轮，进程号记在 $W/poll.pid（不套 timeout：要杀的就是它）
+    NOW=$((NOW + ${1:-0}))
+    (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" POLL_FAKE_NOW="$NOW" POLL_PID_FILE="$W/poll.pid" \
+        bash -c 'echo $$ > "$POLL_PID_FILE"; exec bash "$0"' "$ROOT/scripts/agent-poll.sh") > "$W/poll.out" 2>&1
+}
+kill_after_add() {   # <名字> <restart|human> <加上的标签> <被杀之后 GitHub 上的标签>
+    local name="$1" step="$2" lab="$3" want_l="$4" k g0 d0 c0 w0
+    local extra=(); [ "$step" = human ] && extra=('STUCK_WORKER_MAX_RESTARTS=0')
+    is_scn "$name" ${extra[@]+"${extra[@]}"}
+    k=$(( $(cat "$GD/count_POST_issues_${N}_labels" 2>/dev/null || echo 0) + 1 ))
+    printf 'kill -9 "$(cat %q)"\ntouch %q\n' "$W/poll.pid" "$GD/hook.ran" > "$GD/hook_after_POST_issues_${N}_labels_$k"
+    rm -f "$GD/hook.ran"
+    tick_kill 60
+    sleep 2
+    chk "9d $name · 到达性：加 $lab 生效之后轮询被杀；GitHub 上停在半路，本机记着这一步已开始" \
+        "$(hook_ran)/$(labels_of "$N")/$(efield "$N" '.inflight.step')/$(frozen "$N")/$(alive "$N")" "yes/$want_l/$step/false/yes"
+    [ "$step" = restart ] && chk "9d $name · 重派次数在动手前就记上了" "$(efield "$N" '.restarts')" "1"
+    g0=$(got "$N"); d0=$(disp "$N"); c0=$(comments_on "$N"); w0=$(lwrites "$N")
+    tick 5
+    chk "9d $name · 下一轮：当场停住（原因写明中途被打断），不派工、不送任务、不写标签" \
+        "$(frozen "$N")/$(ff "$N" why | grep -c '中途被打断')/$(efield "$N" '.inflight // "gone"')/$(( $(disp "$N") - d0 ))/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(labels_of "$N")" \
+        "true/1/gone/0/0/0/$want_l"
+    tick 10; tick 60; tick 110
+    chk "9d $name · 之后三轮：仍不派工、不送任务、不写标签；停住说明发出一条" \
+        "$(( $(disp "$N") - d0 ))/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(notes_on "$N")/$(ff "$N" posted)" "0/0/0/1/yes"
+}
+kill_after_add crashR restart pending/agent "doing/agent,pending/agent"
+kill_after_add crashH human pending/human "doing/agent,pending/human"
+chk "9d crashH · 交人说明在被杀之前已发出（加上的是交人标签）" "$(jq -r --arg n "$N" '[(.[$n] // [])[] | select(.body | contains("连续约"))] | length' "$GD/comments.json")" "1"
+# 对照：同样的阶梯不被打断 → 照常重派一次、记录里不留「进行中」
+is_scn crashOK
+tick 60
+chk "9d 对照 · 不被打断：照常翻回派工标签、结束会话、记一次重派，不留进行中标记" \
+    "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')/$(efield "$N" '.inflight // "none"')/$(frozen "$N")" "pending/agent/no/1/none/false"
+
 # 9b 每个写入点出错各一例 → 当轮停住，之后不派工、不重试
 frz_case() {   # <名字> <restart|human> <期望的标签> <故障注入命令…>
     local name="$1" step="$2" want_labels="$3"; shift 3
@@ -701,7 +738,9 @@ frz_case() {   # <名字> <restart|human> <期望的标签> <故障注入命令�
     "$@"
     tick 60
     rm -f "$GD"/F_post_labels "$GD"/F_delete_labels "$GD"/F_post_comment "$GD/F_issues_${N}_events"
-    chk "$name：当轮停住，会话还在，没记重派" "$(frozen "$N")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(labels_of "$N")" "true/yes/0/$want_labels"
+    local wr=0; [ "$step" = restart ] && wr=1   # 重派预算在第一次写入之前就占掉（代码复审第 7 轮）；交人不占
+    chk "$name：当轮停住，会话还在，重派次数 $wr，不留进行中标记" \
+        "$(frozen "$N")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(efield "$N" '.inflight // "none"')/$(labels_of "$N")" "true/yes/$wr/none/$want_labels"
     local w0 d0 r0; w0=$(lwrites "$N"); d0=$(disp "$N"); r0=$(runs "$N")
     tick 10; tick 60; tick 110
     chk "$name：之后三轮不重试写标签、不派工、不起新进程，只发了停住说明" \

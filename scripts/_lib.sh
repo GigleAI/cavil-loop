@@ -8619,7 +8619,7 @@ stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [
     fi
     STUCK_ACTED=1
     log "🧊 卡住检测：$kind #$num 停住，交给人处理 —— ${why}（daemon 不再对这一条派工、改标签、结束会话或合并）"
-    stuck_entry_set "$n" '.kind = $kind | .num = $num | .since = 0 | .id = "" | .fp = "" | .warned = ""
+    stuck_entry_set "$n" 'del(.inflight) | .kind = $kind | .num = $num | .since = 0 | .id = "" | .fp = "" | .warned = ""
         | .frozen = {why: $why, at: $now, token: $token, posted: "no", comment: 0, tries: 0, base: null,
                      cand: null, miss: 0, key: "", settled: false, used: (.frozen.used // null),
                      scope_unknown: ($su or (.frozen.scope_unknown // false)),
@@ -8644,9 +8644,16 @@ stuck_frozen_scan() {
     stuck_enabled || return 0
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
     out=$(jq -sre 'if length == 1 and (.[0] | type) == "object" and ((.[0].stuck_workers // {}) | type) == "object"
-            then [(.[0].stuck_workers // {}) | to_entries[] | select((.value | type) == "object" and .value.frozen != null)] as $f
-                 | if any($f[]; (.value.frozen | type) != "object" or .value.frozen.scope_unknown == true) then "all"
-                   else ([$f[] | .value.frozen.items[]? | tostring] | unique) as $i
+            then [(.[0].stuck_workers // {}) | to_entries[] | select((.value | type) == "object"
+                    and (.value.frozen != null or .value.inflight != null))] as $f
+                 # 做到一半的那一步（inflight）也算停住：范围 = 条目本身 + 动手前核对过的关联条目
+                 | [$f[] | select(.value.frozen == null) | .value
+                    | ((.id // "") | if type == "string" and . != "" then (fromjson? // null) else null end) as $d
+                    | if $d == null or ((.num // "") | tostring | test("^[0-9]+$") | not) then null
+                      else {items: ([(.num | tostring)] + [$d.bound[]?.n | tostring])} end] as $inf
+                 | if any($f[]; .value.frozen != null and ((.value.frozen | type) != "object" or .value.frozen.scope_unknown == true))
+                      or any($inf[]; . == null) then "all"
+                   else ([($f[] | .value.frozen.items[]? | tostring), ($inf[] | .items[])] | unique) as $i
                         | (if ($i | length) == 0 then "none" else ($i | join(" ")) end)
                           + "\t" + ([$f[] | .key] | join(" ")) end
             else error("bad state") end' "$STATE_FILE" 2>/dev/null) || { STUCK_FZ=all; return 0; }
@@ -9183,6 +9190,18 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         return 0
     fi
     id0="${F[0]}"; nudged="${F[1]}"; restarted="${F[2]}"; restarts="${F[3]}"; since="${F[4]}"
+    # 第一次对外写入之前，先记下「这一步已开始」（重派同时占掉这一次预算）。写不进 → 这一轮不动手。
+    # 这一步做完才清掉；中途被打断（进程被杀、机器重启）留下的标记，下一轮开头一律按「结果不明」停住，
+    # 停住名单也把它算进去——daemon 自己加上的派工标签绝不能被当成普通派工消费（代码复审第 7 轮）
+    now=$(pace_now)
+    if [ "$step" = human ]; then
+        stuck_entry_set "$n" '.inflight = {step: $s, at: $now}' --arg s "$step" --argjson now "$now" \
+            || { log "卡住检测：$kind #$num 记不下「这一步已开始」→ 这一轮不动手"; return 0; }
+    else
+        stuck_entry_set "$n" '.inflight = {step: $s, at: $now} | .restarts = ((.restarts // 0) + 1) | .restarted_at = $now' \
+            --arg s "$step" --argjson now "$now" \
+            || { log "卡住检测：$kind #$num 记不下「这一步已开始」→ 这一轮不动手"; return 0; }
+    fi
     STUCK_ACTED=1
     if [ "$step" = human ]; then
         now=$(pace_now); mins=0
@@ -9231,9 +9250,9 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
     tmux kill-session -t "=$sess" 2>/dev/null || true
     ex=0; worker_session_exists "$sess" || ex=$?
     [ "$ex" = 1 ] || log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束（下一轮派工会照常处理还活着的会话）"
-    now=$(pace_now)
-    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .since = 0 | .id = "" | .fp = ""' \
-        --argjson now "$now" || true
+    # 重派次数在动手前已经记上了；这里只清掉「进行中」并让空闲计时从头开始。
+    # 清不掉 → 下一轮按中途被打断停住（宁可多停，不能让这一步看起来没开始过）
+    stuck_entry_set "$n" 'del(.inflight) | .since = 0 | .id = "" | .fp = ""' || true
     return 0
 }
 
@@ -9279,14 +9298,21 @@ stuck_tick() {
         [ -n "$n" ] || continue
         F=()
         if e=$(stuck_entry "$n"); then
-            mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen != null), (.restarts // 0), .trigger]') || F=()
+            mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen != null), (.restarts // 0), .trigger,
+                    (.inflight != null), (.inflight.step // "")]') || F=()
         fi
-        if [ "${#F[@]}" != 5 ]; then
+        if [ "${#F[@]}" != 7 ]; then
             log "卡住检测：读不出工作编号 $n 的记录，这一轮不动它"
             handled[$n]=1
             continue
         fi
         kind="${F[0]}"; num="${F[1]}"; fz="${F[2]}"; restarts="${F[3]}"; trig="${F[4]}"
+        # 上一轮做到一半被打断的那一步：GitHub 上停在哪一步不知道 → 当场停住，交给人
+        if [ "$fz" = false ] && [ "${F[5]}" = true ]; then
+            handled[$n]=1
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 上一轮在$([ "${F[6]}" = human ] && echo 交人 || echo 重派)的中途被打断（轮询进程没能走完这一步），GitHub 上的标签和评论停在哪一步不确定" || true
+            continue
+        fi
         if [ "$fz" = true ]; then
             handled[$n]=1
             stuck_frozen_tick "$n" "$e" || true
