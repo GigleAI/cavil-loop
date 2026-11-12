@@ -953,6 +953,56 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
+## GitHub 令牌脱敏（GitHub#342）
+
+worker 的环境里有 GitHub 令牌。agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头），随后落进长期保留的文件。daemon 分三处处理，匹配规则只有一份（`scripts/redact_tokens.py`）：
+
+| 文件 | 谁写的 | 怎么处理 | 开关 |
+|---|---|---|---|
+| `poll.log`、窗格历史（`$STATE_DIR/sessions/*.log`） | daemon | **落盘前**替换：日志函数、清理钩子的输出、tmux 报错、秒退 / 信任框截屏、迁移时并入的旧日志、窗格历史的实时写入，都先过同一个入口 | 始终开着 |
+| claude / codex 的会话记录（`~/.claude/projects`、`~/.codex/sessions`） | agent 的 CLI | daemon 每 10 分钟扫一次，**原地**替换：只改令牌那几个字节，文件长度不变、不改名、不删、不留备份。只碰工作目录在本项目 `WORKTREE_BASE` 之下的会话 | `REDACT_AGENT_RECORDS`（默认开；留空 / `false` = 不改） |
+| codex 的环境快照（`~/.codex/shell_snapshots/*.sh`） | codex | 不事后改：daemon 起 codex worker 时关掉这项功能（`--disable shell_snapshot`），**不再产生新快照**。已有的旧快照用下面的命令清一次 | `CODEX_SHELL_SNAPSHOT`（默认 `off`；`on` = 保留 codex 的默认行为） |
+
+替换后的样子是 `REDACTED-<12 位指纹>`，后面用 `-` 补到和原令牌一样长。指纹是令牌 sha256 的前 12 位：推不回原文，同一把令牌在所有文件里指纹相同，可以用来认「是哪一把」：
+
+```bash
+printf '%s' "$GH_TOKEN" | sha256sum | cut -c1-12
+```
+
+每次扫描替换了东西，`poll.log` 里有一行 `令牌脱敏：N 个文件里替换了 M 处（指纹 …）`。扫描位置记在 `$STATE_DIR/redact-scan.json`、上次扫描时间在 `$STATE_DIR/redact-scan.stamp`；两个都删掉 = 下一轮从头扫一遍（已替换的不会再变）。
+
+**会话记录为什么敢原地改**：周报和用量 footer 都读这些文件，agent 的 CLI 还一直开着它追加。替换只动令牌所在的字节，换上的字符和令牌是同一类（字母、数字、`-`），所以任何时刻读到的每一行都是同样结构的 JSON；用来认领记录的字段（工作目录、会话编号、请求编号、时间、模型等）里的串即使长得像令牌也不改。`tests/token-redaction.test.sh` 在替换写到一半时跑真实的周报采集，结果与替换前逐字节相同。
+
+**不处理的范围**（原文可能仍在）：
+
+- 不带前缀的老格式令牌（2021 年前的 40 位十六进制）：和提交哈希无法区分，不认
+- 窗格历史是终端原始输出：令牌被终端折行、或中间夹了控制码时认不出（紧跟在颜色控制码后面的认得）
+- 升级前就在跑、且认不出 worker 窗格的会话（人分过屏、又没有窗格记录）：日志管道不会被换成过滤版，它之后写下的原文只能靠定期扫描事后替换
+- 工作目录不在 `WORKTREE_BASE` 之下的会话（人自己手动开的 claude / codex）、claude 的输入历史和文件改动备份、cursor / opencode 的记录
+- GitHub 令牌以外的密钥（例如 codex 快照里的其他登录令牌）
+- 替换脚本本身起不来时（例如本机没有 `python3`）：daemon 的日志入口只写一行 `令牌替换失败…已丢弃`，窗格历史不再写入——宁可缺记录，不落原文
+
+### 清理 codex 已有的环境快照
+
+升级后新起的 codex worker 不再写快照，但以前写下的还在，每一份都有 `GH_TOKEN` 原文。正在跑的 codex 执行命令时还会读它自己的快照，这时把令牌换掉，它后面的 `gh` 就全用假令牌了——所以清理脚本只在**本机当前用户没有任何 codex 进程**时才动手；有进程在跑、或进程清单读不到，它列出原因并退出，一个文件都不改。
+
+先让 codex worker 干完活（或停掉列出的进程），再原样运行：
+
+<!-- redact-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"    # the installed skill / 装好的 skill 目录
+SNAPS="$HOME/.codex/shell_snapshots"
+with_token() { grep -lE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}' "$SNAPS"/*.sh 2>/dev/null | wc -l; }
+echo "snapshots holding a token before / 清理前带令牌的快照: $(with_token)"
+if bash "$SKILL/scripts/redact-snapshots.sh" --check; then
+    bash "$SKILL/scripts/redact-snapshots.sh"
+fi
+echo "snapshots holding a token after / 清理后带令牌的快照: $(with_token)"
+```
+<!-- redact-ops:end -->
+
+看到 `完成：N 个快照文件，其中 M 个含令牌，共替换 K 处` 且最后一行是 0 就清完了。看到 `❌ 本机还有 codex 进程在跑` 说明什么都没改：等它列出的进程结束后重跑。替换不可撤销（没有备份），也不需要撤销：令牌本身没变，worker 的环境里照旧有它。`--check` 只检查、不改文件。
+
 ## 重测试排队（可选，**默认关闭**，GitHub#343）
 
 多个条目的 worker 同时跑整套测试，内存和 CPU 会叠到整机卡死。配了这一项之后，项目里列出的「重测试」命令在同一个系统账号下一次只放行一套，其余排队；条目被清理、或起测试的 worker 结束后，它留下的测试会被停掉。
