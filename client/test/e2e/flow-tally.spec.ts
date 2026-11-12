@@ -3,6 +3,7 @@
 // the real back end behind the loopback bridge, the fake GitHub serving the board recorded from the
 // real cavil project. The expected numbers are counted here straight from the items the window holds,
 // with a rule written out in this file (open, whole label name, any case) — not with the app's function.
+// GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `is:open no:label`.
 // Screenshots land in test-results/screens/.
 
 import { test, expect, type Page } from '@playwright/test';
@@ -19,6 +20,22 @@ const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
 
 let env: AppEnv;
+/** GitHub#418: drop the labels of the items numbered in `unlabel`, wherever the recorded GitHub answers carry them */
+function stripLabels<T>(data: T, unlabel: number[]): T {
+  const walk = (o: any) => {
+    if (!o || typeof o !== 'object') return;
+    if (typeof o.number === 'number' && unlabel.includes(o.number) && o.labels) {
+      if (Array.isArray(o.labels)) o.labels = [];
+      else if (Array.isArray(o.labels.nodes)) {
+        o.labels.nodes = [];
+        if ('totalCount' in o.labels) o.labels.totalCount = 0;
+      }
+    }
+    for (const v of Object.values(o)) walk(v);
+  };
+  walk(data);
+  return data;
+}
 test.beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-tally-'));
   env = {
@@ -71,7 +88,8 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   const bar = page.locator('.vbar');
 
   // ---- the numbers: open items per label, counted from what the window holds ----
-  await expect(page.getByTestId('tally')).toHaveCount(3);
+  await expect(page.getByTestId('tally')).toHaveCount(4);
+  await expect(page.getByTestId('tally').last()).toHaveAttribute('data-kind', 'unlabeled');
   const want = { running: await expected(page, 'doing/agent'), agent: await expected(page, 'pending/agent'), human: await expected(page, 'pending/human') };
   // the recorded board really has items in flow, so equality is not 0 = 0
   expect(want.running).toBeGreaterThan(0);
@@ -194,7 +212,8 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await page.getByTestId('hand-back-running').blur();
   await page.getByTestId('back').click();
   await expect(tally(page, 'running')).toHaveCount(0);
-  await expect(page.getByTestId('tally')).toHaveCount(2);
+  await expect(page.getByTestId('tally')).toHaveCount(3);
+  await expect(tally(page, 'unlabeled')).toHaveCount(1);
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.running)).toBe('');
 
   // the two hand-back labels cleared: the boxes show the defaults again, the numbers still count them
@@ -213,4 +232,58 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await page.getByTestId('back').click();
   await expect(tally(page, 'agent').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/agent')));
   await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/human')));
+});
+
+test('GitHub#418: 未处理 counts open issues / PRs with no label; a click shows exactly them, a second click gives the search back', async () => {
+  // the recorded board has no open item without labels: #350 (open, only pending/blocked — none of the three
+  // flow labels) is served without its labels, so it is the one "未处理"
+  await env.fake.close();
+  env.fake = await startFakeGitHub({
+    projects: new Map([['org/gigleai/11', stripLabels(loadRelationPages(), [350])]]),
+    repos: new Map([['gigleai/cavil-loop', stripLabels(loadRelationIssues(), [350])]]),
+  });
+  const { page } = await launchApp(env);
+  await ready(page);
+  const u = tally(page, 'unlabeled');
+
+  /** open items with no label — written out here, independent of the app */
+  const bare = async () => (await items(page)).filter((i) => i.state === 'open' && i.labels.length === 0);
+  const want = await bare();
+  expect(want.map((i) => i.number)).toEqual([350]);
+  await expect(u.getByTestId('tally-count')).toHaveText('1');
+  await expect(u).toContainText('未处理 1');
+  await expect(u).toHaveAttribute('title', new RegExp(`^开着的条目里一个标签都没有的有 1 个 · 点一下只看这些\\n当前来源共 ${(await items(page)).length} 个条目`));
+  // the three flow numbers are unchanged by it
+  const flow = { running: await expected(page, 'doing/agent'), agent: await expected(page, 'pending/agent'), human: await expected(page, 'pending/human') };
+  for (const [k, v] of Object.entries(flow)) await expect(tally(page, k).getByTestId('tally-count')).toHaveText(String(v));
+  // a search does not change it
+  await page.getByTestId('search').fill('新增依赖图视图');
+  await expect(u.getByTestId('tally-count')).toHaveText('1');
+  await shot(page, 'flow-tally-05-unlabeled');
+
+  // click: the box says `is:open no:label`, lit, and the list is exactly the counted items
+  await u.click();
+  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await expect(u).toHaveAttribute('aria-pressed', 'true');
+  await expect(u).toHaveAttribute('title', /再点一下回到之前的搜索/);
+  await expect(shown(page)).toHaveCount(want.length);
+  expect((await shown(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-key')))).sort()).toEqual(want.map((i) => i.key).sort());
+  await shot(page, 'flow-tally-06-unlabeled-on');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'flow-tally-06-unlabeled-on-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  // switching to another number and back keeps the first search; the lit one again gives it back
+  await tally(page, 'running').click();
+  await expect(page.getByTestId('search')).toHaveValue('is:open label:"doing/agent"');
+  await expect(u).toHaveAttribute('aria-pressed', 'false');
+  await u.click();
+  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await u.click();
+  await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+  await expect(u).toHaveAttribute('aria-pressed', 'false');
+
+  // the board layout shows it too
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await expect(u.getByTestId('tally-count')).toHaveText('1');
 });
