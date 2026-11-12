@@ -23,7 +23,7 @@ const REPO_KEY = 'repo:gigleai/cavil-loop';
 /** recorded issue #139 (open) */
 const ISSUE = 139;
 const K = (n: number) => `gigleai/cavil-loop#${n}`;
-const LABELS = { human: 'pending/human', doing: 'doing/agent' };
+const LABELS = { human: 'pending/human', doing: 'doing/agent', blocked: 'pending/blocked' };
 
 let fake: FakeGitHub;
 let dir: string;
@@ -450,11 +450,33 @@ describe('kept on this machine, and gone with the account', () => {
     c.openTab(K(ISSUE));
     setIssue({ labels: ['wip'] });
     await round(c);
-    const labels = () => ({ human: c.getState().handBack.human, doing: c.getState().handBack.running });
+    const labels = () => ({ human: c.getState().handBack.human, doing: c.getState().handBack.running, blocked: c.getState().handBack.blocked });
     expect(tabStatus(tab(c)!.item, labels())).toBe('open');
     c.setHandBack({ running: ' wip ' });
     expect(tabStatus(tab(c)!.item, labels())).toBe('running');
     c.setHandBack({ running: '' });
+    expect(tabStatus(tab(c)!.item, labels())).toBe('open');
+  });
+
+  it('the waiting label is the one Settings holds (GitHub#443): the pause follows the rounds and the setting', async () => {
+    const c = await ready();
+    c.openTab(K(ISSUE));
+    const labels = () => ({ human: c.getState().handBack.human, doing: c.getState().handBack.running, blocked: c.getState().handBack.blocked });
+    setIssue({ labels: ['pending/blocked'] });
+    await round(c);
+    expect(tabStatus(tab(c)!.item, labels())).toBe('blocked');
+    // the prerequisite is done: the daemon takes the label off, the next round shows it
+    setIssue({ labels: ['pending/agent'] });
+    await round(c);
+    expect(tabStatus(tab(c)!.item, labels())).toBe('open');
+    setIssue({ labels: ['on-hold'] });
+    await round(c);
+    expect(tabStatus(tab(c)!.item, labels())).toBe('open');
+    c.setHandBack({ blocked: ' on-hold ' });
+    expect(tabStatus(tab(c)!.item, labels())).toBe('blocked');
+    c.setHandBack({ blocked: '' });
+    expect(c.getState().handBack.blocked).toBe('');
+    expect(tabStatus({ ...tab(c)!.item, labels: ['pending/blocked'] }, labels())).toBe('open');
     expect(tabStatus(tab(c)!.item, labels())).toBe('open');
   });
 

@@ -349,6 +349,8 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 @media (prefers-reduced-motion: reduce) { .tab-icon.running { animation: none; } }
 .tab-icon.waiting .disc { fill: var(--edge-open); }
 .tab-icon.waiting .person { fill: #fff; }
+.tab-icon.blocked .disc { fill: var(--state-neutral-fg); }
+.tab-icon.blocked .bar { fill: #fff; }
 .tab-dot { position: absolute; top: -3px; right: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--col); box-sizing: content-box; }
 .tab-pages { flex: 1; min-height: 0; position: relative; }
 /* the home tab stays mounted (and laid out) behind a detail tab: only hidden, so it keeps its scroll position */
