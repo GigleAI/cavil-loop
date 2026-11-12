@@ -56,6 +56,7 @@ import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, se
 import {
   DEFAULT_BLOCKED_LABELS,
   applyDone,
+  confirmBlock,
   entryState,
   factsDiffer,
   factsOf,
@@ -3309,7 +3310,6 @@ export class Controller {
     if (!bl.blocked || !names.human.trim()) return refuse('设置里等前置的标签或「等人处理」的标签是空的，没有修改');
     const picks = Array.isArray(req.picks) ? req.picks : [];
     const restore = Array.isArray(req.restore) ? req.restore : [];
-    if (!picks.length && !restore.length) return refuse('没有选前置，没有修改');
     const c = await this.clientForCall(true);
     if ('error' in c) return refuse(c.error);
     // step ② of the plan: read again, the same as shown or nothing is written
@@ -3337,7 +3337,9 @@ export class Controller {
       fresh.push({ repo: cand.repo, number: cand.number, kind: cand.kind, id: cand.id, title: cand.title });
     }
     const plan = planBlocked({ itemIsPr: read.isPr, selfRepo: item.repo, entry: view.entry, latest: latestRefs(read), native: read.native, picks: fresh, restore });
-    if (!plan.steps.some((s) => s.name !== 'check' && s.name !== 'unpause')) return refuse('选的前置都已经登记过了，没有修改');
+    // the dialog asks the same rule (confirmBlock): a registration stopped half way may be finished with nothing new picked
+    const why = confirmBlock({ picks: fresh.length, restore: restore.length, current: view.current.length, plan });
+    if (why) return { ok: false, error: `${why}，GitHub 上什么都没改`, view };
     const step = (name: OpStep['name'], b: OpStep['blocked'], extra: Partial<OpStep> = {}): OpStep => ({ name, state: 'unsent', reason: null, sentAt: null, answeredAt: null, blocked: b, ...extra });
     const steps: OpStep[] = plan.steps.map((s) => {
       switch (s.name) {
@@ -3379,6 +3381,7 @@ export class Controller {
         labels: { blocked: bl.blocked, human: names.human },
         picks: fresh.filter((p) => plan.steps.some((s) => s.target === itemKey(p.repo, p.number))),
         markRefs: plan.markRefs,
+        resume: names.agent,
         commentId: null,
         stop: null,
       },
@@ -3407,7 +3410,7 @@ export class Controller {
   private blockedExpected(r: OpRecord): Facts {
     const b = r.blocked!;
     let f = b.basis;
-    for (const s of r.steps) if (s.state === 'ok' && s.blocked) f = applyDone(f, { name: s.blocked, target: s.target }, { human: b.labels.human, blocked: b.labels.blocked, commentId: b.commentId });
+    for (const s of r.steps) if (s.state === 'ok' && s.blocked) f = applyDone(f, { name: s.blocked, target: s.target }, { human: b.labels.human, blocked: b.labels.blocked, commentId: b.commentId, mark: { refs: b.markRefs, resume: b.resume ?? this.state.handBack.agent } });
     return f;
   }
 
@@ -3489,7 +3492,7 @@ export class Controller {
         if (s.name === 'addLabel') await addLabel(c.client, r.repo, r.number, s.label ?? '');
         else if (s.name === 'removeLabel') await removeLabel(c.client, r.repo, r.number, s.label ?? '');
         else if (s.name === 'relation') await addBlockedBy(c.client, r.repo, r.number, pick!.id);
-        else if (s.name === 'comment') commentId = await postComment(c.client, r.repo, r.number, markComment(b.markRefs, r.repo, names.agent, b.opId));
+        else if (s.name === 'comment') commentId = await postComment(c.client, r.repo, r.number, markComment(b.markRefs, r.repo, b.resume ?? names.agent, b.opId));
         state = 'ok';
       } catch (e) {
         if (s.name === 'removeLabel' && e instanceof GitHubError && e.status === 404) {

@@ -224,8 +224,11 @@ export interface Facts {
   /** flowLabelsOf */
   flow: string[];
   round: { last: string; id: number | null | '*' ; since: string };
-  /** ids of the registrations of the current wait */
-  marks: number[];
+  /**
+   * the registrations of the current wait, each as `id:prerequisites|resume` (markKey) — the content
+   * too, not only the id: a registration edited in place keeps its id (PR #441 code review round 1)
+   */
+  marks: string[];
   /** native "Blocked by", refKey, sorted */
   native: string[];
 }
@@ -235,9 +238,14 @@ export function factsOf(read: BlockedRead, names: { human: string; agent: string
     state: read.state,
     flow: flowLabelsOf(read.labels, names, bl),
     round: { ...read.round },
-    marks: read.marks.map((m) => m.id),
+    marks: read.marks.map((m) => markKey(m.id, m.refs, m.resume)),
     native: read.native.map(refKey).sort(),
   };
+}
+
+/** One registration as the steps compare it: its id, its prerequisites (sorted) and its resume label. */
+export function markKey(id: number, refs: readonly Ref[], resume: string): string {
+  return `${id}:${refs.map(refKey).sort().join(',')}|${resume}`;
 }
 
 /** The fingerprint of a read: what the dialog showed. Two reads with the same one hold the same for this operation. */
@@ -317,7 +325,7 @@ export function lostRefs(read: BlockedRead): Ref[] {
 // ---- the permit, before every write ----
 
 /** What one step that is done changes in the facts (the waiting label going on starts a new wait: its id is not known in advance). */
-export function applyDone(f: Facts, step: { name: BlockedStepName; target?: string }, ctx: { human: string; blocked: string; commentId?: number | null }): Facts {
+export function applyDone(f: Facts, step: { name: BlockedStepName; target?: string }, ctx: { human: string; blocked: string; commentId?: number | null; mark?: { refs: readonly Ref[]; resume: string } }): Facts {
   const h = ctx.human.toLowerCase();
   const b = ctx.blocked.toLowerCase();
   const withLabel = (x: string) => [...new Set([...f.flow, x])].sort();
@@ -332,7 +340,7 @@ export function applyDone(f: Facts, step: { name: BlockedStepName; target?: stri
     case 'relation':
       return { ...f, native: [...new Set([...f.native, step.target ?? ''])].sort() };
     case 'comment':
-      return { ...f, marks: ctx.commentId != null ? [...f.marks, ctx.commentId] : f.marks };
+      return { ...f, marks: ctx.commentId != null && ctx.mark ? [...f.marks, markKey(ctx.commentId, ctx.mark.refs, ctx.mark.resume)] : f.marks };
     case 'check':
       return f;
   }
@@ -352,7 +360,7 @@ export function factsDiffer(expected: Facts, now: Facts, basisRoundId: number | 
     const gone = expected.flow.filter((x) => !now.flow.includes(x));
     return `流程标签变了（${[...added.map((x) => `多了「${x}」`), ...gone.map((x) => `少了「${x}」`)].join('、')}）`;
   }
-  if (JSON.stringify(now.marks) !== JSON.stringify(expected.marks)) return '这期间有新的前置登记评论';
+  if (JSON.stringify(now.marks) !== JSON.stringify(expected.marks)) return '这期间前置登记评论有新增或被改动';
   if (JSON.stringify(now.native) !== JSON.stringify(expected.native)) return '这期间侧栏「Blocked by」变了';
   return null;
 }
@@ -415,4 +423,22 @@ export function planLines(plan: Plan, selfRepo: string, names: { human: string; 
 function parseKey(key: string): Ref {
   const i = key.lastIndexOf('#');
   return { repo: key.slice(0, i), number: Number(key.slice(i + 1)) };
+}
+
+/** The steps of a plan that write something ('check' only reads). */
+export function planWrites(plan: Plan): BlockedStepPlan[] {
+  return plan.steps.filter((s) => s.name !== 'check');
+}
+
+/**
+ * GitHub#434 (PR #441 code review round 1): may "登记前置" be confirmed? One rule for the dialog and the
+ * controller. Something new picked or restored; or nothing picked but the item already has prerequisites
+ * the daemon counts (`current`) and the plan still has writes left — a registration stopped half way is
+ * finished without inventing a new prerequisite. Never an item put on the waiting label with nothing to
+ * wait for (the daemon would hand it straight to a person). null = may; else why not.
+ */
+export function confirmBlock(o: { picks: number; restore: number; current: number; plan: Plan }): string | null {
+  if (!planWrites(o.plan).length) return o.picks || o.restore ? '选的前置都已经登记过了，没有修改' : '没有要补做的，也没有选新的前置';
+  if (!o.picks && !o.restore && !o.current) return '还没有选前置';
+  return null;
 }

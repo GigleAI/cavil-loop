@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_BLOCKED_LABELS,
   applyDone,
+  confirmBlock,
   entryState,
   factsDiffer,
   factsOf,
@@ -214,7 +215,7 @@ describe('the permit before every write', () => {
   });
   it("the operation's own steps are expected; anybody else's change is not", () => {
     let f = applyDone(basis, { name: 'relation', target: `${SELF}#2` }, ctx);
-    f = applyDone(f, { name: 'comment' }, { ...ctx, commentId: 77 });
+    f = applyDone(f, { name: 'comment' }, { ...ctx, commentId: 77, mark: { refs: [], resume: '' } });
     const after = read({ native: [{ repo: SELF, number: 2 }], marks: [{ id: 77, createdAt: 'x', refs: [], resume: '' }] });
     expect(factsDiffer(f, factsOf(after, NAMES, BL), null)).toBeNull();
     // the waiting label going on starts a wait whose id is not known in advance
@@ -222,7 +223,7 @@ describe('the permit before every write', () => {
     const on = read({ ...after, labels: ['pending/human', 'pending/blocked'], round: { last: 'labeled', id: 9, since: '' } });
     expect(factsDiffer(g, factsOf(on, NAMES, BL), null)).toBeNull();
     // somebody else's registration, another flow label, closing, a new wait — each stops it
-    expect(factsDiffer(f, factsOf({ ...after, marks: [...after.marks, { id: 78, createdAt: 'y', refs: [], resume: '' }] }, NAMES, BL), null)).toMatch(/新的前置登记/);
+    expect(factsDiffer(f, factsOf({ ...after, marks: [...after.marks, { id: 78, createdAt: 'y', refs: [], resume: '' }] }, NAMES, BL), null)).toMatch(/有新增或被改动/);
     expect(factsDiffer(f, factsOf({ ...after, labels: ['pending/human', 'doing/agent'] }, NAMES, BL), null)).toMatch(/多了「doing\/agent」/);
     expect(factsDiffer(f, factsOf({ ...after, state: 'closed' }, NAMES, BL), null)).toMatch(/关闭/);
     expect(factsDiffer(f, factsOf({ ...after, round: { last: 'unlabeled', id: null, since: 'z' } }, NAMES, BL), null)).toMatch(/换了一轮/);
@@ -232,7 +233,7 @@ describe('the permit before every write', () => {
     // expected after: pause, comment 77 — the other client's comment 78 arrived and it took the pause off
     const waiting = read({ labels: ['pending/blocked'], round: { last: 'labeled', id: 4, since: '' } });
     const b = factsOf(waiting, NAMES, BL);
-    const exp = applyDone(applyDone(b, { name: 'pause' }, ctx), { name: 'comment' }, { ...ctx, commentId: 77 });
+    const exp = applyDone(applyDone(b, { name: 'pause' }, ctx), { name: 'comment' }, { ...ctx, commentId: 77, mark: { refs: [], resume: '' } });
     const mk = (id: number) => ({ id, createdAt: String(id), refs: [], resume: '' });
     const crossed = read({ ...waiting, marks: [mk(77), mk(78)] });
     expect(repauseAllowed(exp, factsOf(crossed, NAMES, BL), 4, 'pending/human')).toEqual({ ok: true });
@@ -243,5 +244,43 @@ describe('the permit before every write', () => {
     expect(repauseAllowed(exp, factsOf({ ...crossed, labels: ['pending/blocked', 'pending/human'] }, NAMES, BL), 4, 'pending/human').ok).toBe(false);
     expect(repauseAllowed(exp, factsOf({ ...waiting, marks: [mk(77)] }, NAMES, BL), 4, 'pending/human').ok).toBe(false);
     expect(repauseAllowed(exp, factsOf({ ...waiting, marks: [mk(78)] }, NAMES, BL), 4, 'pending/human').ok).toBe(false);
+  });
+});
+
+describe('PR #441 code review round 1', () => {
+  const ctx = { human: 'pending/human', blocked: 'pending/blocked' };
+  const mark = (id: number, ns: number[], resume = 'pending/agent') => ({ id, createdAt: String(id), refs: ns.map((n) => ({ repo: SELF, number: n })), resume });
+  it('a registration edited in place (same id, more prerequisites) is a change; the same content is not', () => {
+    const waiting = read({ labels: ['pending/blocked'], round: { last: 'labeled', id: 4, since: '' }, marks: [mark(1, [12])] });
+    const basis = factsOf(waiting, NAMES, BL);
+    const exp = applyDone(basis, { name: 'pause' }, ctx);
+    const paused = { ...waiting, labels: ['pending/blocked', 'pending/human'] };
+    expect(factsDiffer(exp, factsOf(paused, NAMES, BL), 4)).toBeNull();
+    expect(factsDiffer(exp, factsOf({ ...paused, marks: [mark(1, [12, 17])] }, NAMES, BL), 4)).toMatch(/被改动/);
+    expect(factsDiffer(exp, factsOf({ ...paused, marks: [mark(1, [12], 'pending/agent/01')] }, NAMES, BL), 4)).toMatch(/被改动/);
+    // the dialog's fingerprint sees it too
+    expect(fingerprint(factsOf({ ...waiting, marks: [mark(1, [12, 17])] }, NAMES, BL))).not.toBe(fingerprint(basis));
+    // this operation's own registration is expected with exactly what it wrote
+    const mine = applyDone(exp, { name: 'comment' }, { ...ctx, commentId: 2, mark: { refs: [{ repo: SELF, number: 12 }, { repo: SELF, number: 16 }], resume: 'pending/agent' } });
+    expect(factsDiffer(mine, factsOf({ ...paused, marks: [mark(1, [12]), mark(2, [16, 12])] }, NAMES, BL), 4)).toBeNull();
+    expect(factsDiffer(mine, factsOf({ ...paused, marks: [mark(1, [12]), mark(2, [16])] }, NAMES, BL), 4)).toMatch(/被改动/);
+  });
+  it('confirming with nothing new: allowed to finish a registration stopped half way, never to wait on nothing', () => {
+    const plan = (entry: Parameters<typeof planBlocked>[0]['entry'], latest: number[], native: number[] = []) =>
+      planBlocked({ itemIsPr: false, selfRepo: SELF, entry, latest: latest.map((n) => ({ repo: SELF, number: n })), native: native.map((n) => ({ repo: SELF, number: n })), picks: [], restore: [] });
+    // paused with a full registration: only the pause comes off
+    const p1 = plan({ kind: 'paused' }, [12]);
+    expect(p1.steps.map((s) => s.name)).toEqual(['unpause']);
+    expect(confirmBlock({ picks: 0, restore: 0, current: 1, plan: p1 })).toBeNull();
+    // stopped after the native relation, before the waiting label
+    const p2 = plan({ kind: 'human' }, [], [11]);
+    expect(p2.steps.map((s) => s.name)).toEqual(['addBlocked', 'unpause']);
+    expect(confirmBlock({ picks: 0, restore: 0, current: 1, plan: p2 })).toBeNull();
+    // already waiting, nothing new: nothing to do
+    expect(confirmBlock({ picks: 0, restore: 0, current: 1, plan: plan({ kind: 'waiting' }, [12]) })).toMatch(/没有要补做/);
+    // waiting for a person with no prerequisite at all: not put on the waiting label
+    expect(confirmBlock({ picks: 0, restore: 0, current: 0, plan: plan({ kind: 'human' }, []) })).toMatch(/还没有选前置/);
+    // something picked: as before
+    expect(confirmBlock({ picks: 1, restore: 0, current: 0, plan: p2 })).toBeNull();
   });
 });

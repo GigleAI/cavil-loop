@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { planBlocked, planLines, refKey, type Pick, type Ref } from '../shared/blocked';
+import { confirmBlock, planBlocked, planLines, refKey, type Pick, type Ref } from '../shared/blocked';
 import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
 
@@ -129,7 +129,9 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
 
   const restoreRefs: Ref[] = view?.ok ? view.lost.filter((r) => restore.has(refKey(r))).map((r) => ({ repo: r.repo, number: r.number })) : [];
   const plan = view?.ok && !view.refuse ? planBlocked({ itemIsPr: view.isPr, selfRepo: item.repo, entry: view.entry, latest: view.latest, native: view.native, picks, restore: restoreRefs }) : null;
-  const lines = plan && (picks.length || restoreRefs.length) ? planLines(plan, item.repo, { human: state.handBack.human, blocked: state.blockedLabels.blocked }) : [];
+  // one rule with the controller: something new, or a registration stopped half way to finish
+  const blockWhy = view?.ok && plan ? confirmBlock({ picks: picks.length, restore: restoreRefs.length, current: view.current.length, plan }) : null;
+  const lines = plan && !blockWhy ? planLines(plan, item.repo, { human: state.handBack.human, blocked: state.blockedLabels.blocked }) : [];
   const paused = view?.ok && view.entry.kind === 'paused';
 
   const confirm = async () => {
@@ -148,7 +150,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       confirmLabel="登记前置"
       busy={busy}
       dirty={picks.length > 0 || text.trim().length > 0}
-      disabled={!view?.ok || Boolean(view.refuse) || (!picks.length && !restoreRefs.length)}
+      disabled={!view?.ok || Boolean(view.refuse) || !plan || Boolean(blockWhy)}
       onConfirm={() => void confirm()}
       onCancel={onClose}
     >
@@ -174,7 +176,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
             )}
             {paused && (
               <div className="warn-text" data-testid="blocked-paused">
-                这一条正暂停在等前置里（同时挂着「{state.handBack.human}」）。确认后会把登记补完整、恢复等待。
+                这一条正暂停在等前置里（同时挂着「{state.handBack.human}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。
               </div>
             )}
             <div className="blocked-sec">

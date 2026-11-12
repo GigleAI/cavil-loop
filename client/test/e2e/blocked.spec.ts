@@ -261,3 +261,84 @@ test('GitHub#434: the answer of the registration is lost — found again by its 
   expect(lost.caught()).toBe(1);
   expect(commentsOf(10).filter((b) => b.includes('<!-- agent-blocked-by:'))).toHaveLength(1);
 });
+
+test('PR #441 review round 1: the registration is edited in place (same comment, one more prerequisite) between two steps — the client stops and loses nothing; done again, the edit is kept', async () => {
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 14);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  await dialog.getByTestId('blocked-search').fill('16');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  // hold the answer of the pause: GitHub has it, the client has not heard yet; meanwhile a maintainer edits the registration
+  const release = env.fake.holdWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/14/labels`);
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => labelsOf(14), { timeout: 15_000 }).toEqual(['pending/blocked', 'pending/human']);
+  env.fake.state.w.comments.get(`${REPO}#14`)![0].body = '在等 PR #12 和 #17\n<!-- agent-blocked-by: #12 #17 resume=pending/agent -->';
+  release();
+  const notice = page.getByTestId('op-notice-text').filter({ hasText: '停在' }).first();
+  await expect(notice).toHaveCount(1, { timeout: 15_000 });
+  await expect(notice).toContainText('被改动');
+  await expect(notice).toContainText('已暂停');
+  // nothing after the pause went out: no registration that would have dropped #17, the pause stays
+  expect(writesTo(14)).toEqual(['POST labels ["pending/human"]']);
+  expect(commentsOf(14).filter((b) => b.includes('<!-- agent-blocked-by:'))).toHaveLength(1);
+  expect(labelsOf(14)).toEqual(['pending/blocked', 'pending/human']);
+  // done again from the dialog: it shows the edited registration, and the new one keeps #17
+  await expect(detail.getByTestId('blocked-open')).toBeEnabled({ timeout: 15_000 });
+  await detail.getByTestId('blocked-open').click();
+  await expect(dialog.getByTestId('blocked-current')).toContainText('#17');
+  await dialog.getByTestId('blocked-search').fill('16');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => labelsOf(14), { timeout: 15_000 }).toEqual(['pending/blocked']);
+  expect(commentsOf(14).filter((b) => b.includes('<!-- agent-blocked-by:')).pop()).toContain('<!-- agent-blocked-by: #12 #17 #16 resume=pending/agent -->');
+});
+
+test('PR #441 review round 1: only taking the pause off failed — after a restart the dialog finishes it with nothing new picked; with nothing left to do it cannot be confirmed', async () => {
+  let app = await launchApp(env);
+  let page = app.page;
+  await ready(page);
+  env.fake.state.w.failUnlabel = 'pending/human';
+  let detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  let dialog = page.getByTestId('blocked-dialog');
+  await dialog.getByTestId('blocked-search').fill('12');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await page.getByTestId('confirm-ok').click();
+  // the registration and the waiting label went on; taking 等人处理 off was refused
+  await expect.poll(() => labelsOf(10), { timeout: 15_000 }).toEqual(['pending/blocked', 'pending/human']);
+  await expect(page.getByTestId('op-notice-text').filter({ hasText: '没有成功' }).first()).toHaveCount(1, { timeout: 15_000 });
+  const before = writesTo(10);
+  expect(before).toEqual(['POST comments', 'POST labels ["pending/blocked"]', `DELETE labels/${encodeURIComponent('pending/human')}`]);
+  env.fake.state.w.failUnlabel = null;
+  // restart: nothing goes on by itself
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.locator(`[data-testid="card"][data-key="${REPO}#10"]`)).toBeVisible({ timeout: 15_000 });
+  expect(writesTo(10)).toEqual(before);
+  detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  dialog = page.getByTestId('blocked-dialog');
+  await expect(dialog.getByTestId('blocked-paused')).toBeVisible();
+  await expect(dialog.getByTestId('blocked-current')).toContainText('PR #12');
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(0);
+  await expect(dialog.getByTestId('blocked-summary')).toContainText('去掉「pending/human」');
+  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+  await page.screenshot({ path: join(screens, 'blocked-05-finish-paused.png') });
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => labelsOf(10), { timeout: 15_000 }).toEqual(['pending/blocked']);
+  // only the missing step went out
+  expect(writesTo(10)).toEqual([...before, `DELETE labels/${encodeURIComponent('pending/human')}`]);
+  // the control: already waiting with a full registration and nothing new — confirm stays off, nothing sent
+  await page.keyboard.press('Escape');
+  detail = await openItem(page, 14);
+  await detail.getByTestId('blocked-open').click();
+  await expect(dialog.getByTestId('blocked-current')).toContainText('PR #12');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  expect(writesTo(14)).toEqual([]);
+});

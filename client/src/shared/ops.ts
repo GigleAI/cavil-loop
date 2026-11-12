@@ -79,6 +79,8 @@ export interface BlockedOpData {
   picks: Pick[];
   /** the prerequisites the registration lists */
   markRefs: Ref[];
+  /** the resume label written into the registration ("交给 agent" when it started); absent in a record from before PR #441 round 1 */
+  resume?: string;
   /** the registration's comment, once posted (its numeric id) */
   commentId?: number | null;
   /** why it stopped (null = it did not), and whether the last full read showed the item paused */
