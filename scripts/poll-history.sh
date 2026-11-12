@@ -3,7 +3,7 @@
 #
 # 用法：
 #   bash scripts/poll-history.sh [-n 轮数] [--json] [--no-log] [--config <配置文件> | --state-dir <状态目录>]
-# 不给 --config / --state-dir 时：先看 $CODING_AGENT_CONFIG，再从当前目录往上找项目配置。
+# 不给 --config / --state-dir 时：先看 ${CODING_AGENT_CONFIG}，再从当前目录往上找项目配置。
 #
 # **只读**：不改任何记录文件。被强杀的轮次不会被补成正式记录（维护者在 #344 选的 A），这里拿它
 # 留下的进度文件对照进程列表，现场显示成「未正常结束」「还在跑」或「判断不了」。

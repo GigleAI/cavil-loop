@@ -442,7 +442,7 @@ _prio_rank_unset=${#_prio_labels[@]}
 # Project / 原生字段那一路的档位表由 agent-poll 每轮装载（读不到就留空 = 全体回落到 label）。
 declare -A PROJECT_PRIO=()
 
-# 第一排序键。所有来源的档位都是「越小越优先」的下标；哪儿都没标的一律 $_prio_rank_unset。
+# 第一排序键。所有来源的档位都是「越小越优先」的下标；哪儿都没标的一律 ${_prio_rank_unset}。
 priority_rank() {
     local labels_csv=",$1," num="${2:-}" i l
     # Project / 原生字段上真的设了值 → 直接用它（project / both 两种模式一致）
@@ -6809,7 +6809,7 @@ gh_label_flip() {
     local L encoded
     for L in "${removes[@]}"; do
         # 跳过空串：调用方的 label 列表里可能含未配置的可选 label（如没启用 review
-        # 关卡时的 $LABEL_PENDING_REVIEW），拿空串去 DELETE 只会白打一次 404。
+        # 关卡时的 ${LABEL_PENDING_REVIEW}），拿空串去 DELETE 只会白打一次 404。
         [ -n "$L" ] || continue
         encoded=$(printf '%s' "$L" | jq -sRr @uri)
         # 404 表示 label 已经不在了——视为成功（idempotent）
@@ -6827,7 +6827,7 @@ gh_label_flip() {
     return 0
 }
 
-# daemon 自己把活转人工（翻 $LABEL_PENDING_HUMAN）时，先在 issue / PR 上留一条评论。
+# daemon 自己把活转人工（翻 ${LABEL_PENDING_HUMAN}）时，先在 issue / PR 上留一条评论。
 # 只翻 label 不说话的话，看 issue 的人只看到标签变了，既不知道出了什么事也不知道该干什么
 # ——原因只写在本机 poll.log 里，而没人会去翻 poll.log（tutor PR #959：留言「解一下冲突」
 # 后一秒被翻回 pending/human，页面上零解释）。
@@ -6857,7 +6857,7 @@ notify_bounced_to_human() {
 # WIP 或切走分支，给它们默认开一个永不触发的检查只是噪音，何况告警要往仓库里开
 # issue，不该是装上框架就自动获得的行为。
 #
-# 开出来的 issue 挂 $LABEL_PENDING_HUMAN：
+# 开出来的 issue 挂 ${LABEL_PENDING_HUMAN}：
 #   · label 模式下它不是触发 label，本来就不会被派工；
 #   · greedy 模式下**所有开着的 issue 都会被派**，只有挡工 label 拦得住它（见
 #     greedy_skip_label_list）。不挂就会被 worker 捡去「修」—— 而这条 issue 讲的是
@@ -8305,7 +8305,7 @@ agent_session_preexisting_snapshot() {   # <num> <cwd>
 }
 
 # 找一条可以被 worker 角色收养的旧会话。
-# 返回：会话 id / $AGENT_SESSION_LEGACY（driver 不支持按 id 定位，走老路）/ 空（起全新）。
+# 返回：会话 id / ${AGENT_SESSION_LEGACY}（driver 不支持按 id 定位，走老路）/ 空（起全新）。
 agent_session_adoptable() {   # <num> <cwd>
     local num="$1" cwd="$2"
     local blocked allowed line

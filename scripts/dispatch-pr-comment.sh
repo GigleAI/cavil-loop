@@ -188,7 +188,7 @@ fi
 #
 # 用 `refs/pull/$PR/head` 拉 PR head——GitHub 把所有 PR（含来自 fork 的 external PR）的 head
 # commit 都暴露在这个 ref 下。这条对 fork 透明，不需要额外 remote。
-# 拉下来后存到本地命名分支 $BRANCH（跟 daemon-spawned PR 一致），worktree 基于它建。
+# 拉下来后存到本地命名分支 ${BRANCH}（跟 daemon-spawned PR 一致），worktree 基于它建。
 log "PR #$PR -> 全新重建 worktree on $BRANCH (via refs/pull/$PR/head)"
 cd "$PROJECT_ROOT"
 
