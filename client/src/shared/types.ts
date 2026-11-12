@@ -578,6 +578,8 @@ export interface AppState {
   /** true when clientId is the built-in one (no override saved for this kind) */
   clientIdIsDefault: boolean;
   viewer: string | null;
+  /** GitHub#395: the web base of the GitHub this client talks to (https://github.com in the app); release attachment images are recognised by it */
+  githubWeb: string;
   sources: SourceConfig[];
   view: ViewSettings;
   sync: SyncState;
