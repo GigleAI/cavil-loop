@@ -22,6 +22,18 @@ export const RELATION_FIELDS = `
     ${relationList('blockedBy', 'first: 20')}
     ${relationList('blocking', 'first: 20')}`;
 
+/**
+ * GitHub#373: how the signed-in account stands to an item — does it subscribe, and (pull requests)
+ * who is asked to review and which issues GitHub lists as linked (a pull request nobody answers
+ * for reminds whoever its issue concerns). The one piece every read carries (the board read, the one-item re-read,
+ * the repository batch), so they cannot ask for different things. `totalCount` tells a whole list
+ * from one cut short.
+ */
+export const VIEWER_ISSUE_FIELDS = 'viewerSubscription';
+export const REVIEW_REQUESTS_FIRST = 20;
+export const CLOSING_ISSUES_FIRST = 20;
+export const VIEWER_PR_FIELDS = `viewerSubscription reviewRequests(first: ${REVIEW_REQUESTS_FIRST}) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } } closingIssuesReferences(first: ${CLOSING_ISSUES_FIRST}) { totalCount nodes { number repository { nameWithOwner } } }`;
+
 const CONTENT_FIELDS = `
   __typename
   ... on Issue {
@@ -31,6 +43,7 @@ const CONTENT_FIELDS = `
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
+    ${VIEWER_ISSUE_FIELDS}
 ${RELATION_FIELDS}
     subIssuesSummary { total completed }
     closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
@@ -44,6 +57,7 @@ ${RELATION_FIELDS}
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
+    ${VIEWER_PR_FIELDS}
   }
   ... on DraftIssue { title }
 `;
@@ -152,14 +166,16 @@ query CavilIssueRelations($id: ID!, $subIssues: Boolean!, $subIssuesAfter: Strin
 `;
 
 /**
- * GitHub#349: the relations of up to 100 issues of a repository source, by node id, in one
- * request. (The REST issue list says only *how many* relations an issue has.)
+ * What a repository source reads by node id after its REST list, up to 100 items a request — the
+ * list carries neither of them. GitHub#349: an issue's relations (the list says only *how many*).
+ * GitHub#373: how the signed-in account stands to an issue / pull request.
  */
 export const ISSUE_RELATIONS_BATCH_QUERY = `
 query CavilIssueRelationsBatch($ids: [ID!]!) {
   nodes(ids: $ids) {
     __typename
-    ... on Issue { id ${RELATION_FIELDS} }
+    ... on Issue { id ${VIEWER_ISSUE_FIELDS} ${RELATION_FIELDS} }
+    ... on PullRequest { id ${VIEWER_PR_FIELDS} }
   }
 }
 `;

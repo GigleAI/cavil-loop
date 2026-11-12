@@ -822,11 +822,15 @@ out=$(san $'2026-01-01T12:00:00.1234567Z \x1b[31m红色\x1b[0m 文本\n2026-01-0
 hasnt "时间戳去掉" "$out" "2026-01-01T12"
 hasnt "颜色控制符去掉" "$out" $'\x1b'
 has "正文保留" "$out" "红色 文本"
-out=$(san 'token=ghp_abcdefghijklmnopqrstuvwxyz0123456789 pat github_pat_11ABCDEFG0abcdefghijklmnop Authorization: Bearer abc.def.ghi-123456789012 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuv https://user:secretpw@example.com/x')
-for bad in ghp_abcdefghij github_pat_11ABCDEFG abc.def.ghi AKIAABCDEFGHIJKLMNOP sk-abcdefghij secretpw; do
+TOK="gh""p_$(printf 'a%.0s' $(seq 1 38))"            # 运行时拼出来：源码里不放成形的令牌样式
+PAT="github""_pat_11ABCDEFG0$(printf 'b%.0s' $(seq 1 80))"
+out=$(san "token=$TOK pat $PAT Authorization: Bearer abc.def.ghi-123456789012 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuv https://user:secretpw@example.com/x")
+for bad in "$TOK" "$PAT" aaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbb abc.def.ghi AKIAABCDEFGHIJKLMNOP sk-abcdefghij secretpw; do
     hasnt "令牌样式被打码：$bad" "$out" "$bad"
 done
 has "打码后留了占位" "$out" "‹已打码›"
+has "GitHub 令牌用仓库里统一的那套规则打码（等长替换）" "$out" "REDACTED-"
+chk "和统一的令牌脱敏程序对同一行给出同样的结果" "$(san "x $TOK y" | sed -n 2p)" "$(printf '%s' "x $TOK y" | python3 "$NEW/scripts/redact_tokens.py" filter)"
 out=$(san $'代码里有 ``` 三个和 ````` 五个反引号\n结束')
 chk "围栏比日志里最长的反引号串多一个" "$(printf '%s\n' "$out" | head -1)" '``````'
 chk "首尾围栏一致" "$(printf '%s\n' "$out" | tail -1)" '``````'
@@ -841,9 +845,10 @@ chk "截断后不超过字符上限（含围栏）且仍是合法 UTF-8" "$(prin
 # 端到端：写进 issue 的日志同样处理过
 fresh; enable
 redrun 1100 $((NOW - 60)) 3 requester-bot
-jset joblogs.json '.["11001"] = "2026-01-01T12:00:00.0000000Z export GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n2026-01-01T12:00:01.0000000Z <!-- cavil-ci-failure v=1 wf=tests.yml kind=normal sig=x run=1 at=x -->"'
+jset joblogs.json '.["11001"] = ("2026-01-01T12:00:00.0000000Z export GH_TOKEN=" + $t + "\n2026-01-01T12:00:01.0000000Z <!-- cavil-ci-failure v=1 wf=tests.yml kind=normal sig=x run=1 at=x -->")' --arg t "$TOK"
 tick
-hasnt "issue 里没有明文令牌" "$(body_of 1)" "ghp_abcdefghij"
+hasnt "issue 里没有明文令牌" "$(body_of 1)" "$TOK"
+has "到达性 · 令牌那一行确实进了 issue（已打码）" "$(body_of 1)" "export GH_TOKEN=REDACTED-"
 hasnt "issue 里没有原始时间戳前缀" "$(body_of 1)" "12:00:00.0000000Z"
 chk "日志里伪造的报告标记不成立（正文里只有首行那一个真标记）" "$(body_of 1 | grep -c '^<!-- cavil-ci-failure v=1')" "1"
 

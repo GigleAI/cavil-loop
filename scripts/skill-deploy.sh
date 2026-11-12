@@ -62,6 +62,7 @@ install_entrypoints() {
     ln -sfn ../release-entry.sh "$root/weekly-report/run.sh"
     # worker 在会话里跑的命令也要走长期入口：发版切换后旧版本目录会被清掉
     ln -sfn release-entry.sh "$root/notify-requester-bot.sh"
+    ln -sfn release-entry.sh "$root/heavy-test.sh"   # 重测试排队命令（GitHub#343）
     ln -sfn release-entry.sh "$root/notify-relay.sh"   # 早期入口名（GitHub#97 改名前的提示词还在用）
 }
 

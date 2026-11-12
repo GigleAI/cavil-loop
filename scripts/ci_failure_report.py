@@ -231,9 +231,9 @@ def parse_refs(body):
     return out
 
 
+# GitHub tokens: the matching rules live in redact_tokens.py and nowhere else (GitHub#342); the
+# patterns below are the other secrets a CI log may carry, which that file does not cover.
 REDACT = [
-    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "‹已打码›"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "‹已打码›"),
     (re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer|token|basic)\s+)\S+"), r"\1‹已打码›"),
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{20,}"), r"\1‹已打码›"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "‹已打码›"),
@@ -247,6 +247,12 @@ CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def redact(text):
+    import redact_tokens
+    data = text.encode("utf-8", "surrogatepass")
+    spans, _ = redact_tokens.analyze(data, 0, True)
+    for a, b in reversed(spans):
+        data = data[:a] + redact_tokens.replacement(data[a:b]) + data[b:]
+    text = data.decode("utf-8", "surrogatepass")
     for rx, sub in REDACT:
         text = rx.sub(sub, text)
     return text

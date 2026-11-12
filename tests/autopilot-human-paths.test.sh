@@ -119,6 +119,7 @@ happy() {
             mergeable:true, mergeable_state:"clean"}' --arg h "$H1"
     jset labels.json '.["8"] = ["pending/merge","autopilot"]'
     ev 8 labeled autopilot loop-bot
+    ev 8 labeled pending/merge loop-bot   # 真 GitHub 上每个标签都有打上它的那条记录；交人的写前核对要读它（GitHub#382）
     echo '{}' > "$STATE"
     jq --arg h "$H1" '.autopilot.prs["8"] = {reviewed_head:$h, reviewed_at:"2026-01-01T00:00:00Z", reviewed_base:"main"}' \
         "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
@@ -144,8 +145,11 @@ jhook() {  # <key> <k> <文件> <jq 表达式>：第 k 次读之前原地改假 
 ON='AUTOPILOT_HUMAN_PATHS="default"'
 
 # ─────────────────────────────────────────────────────────────────────────
-section "【1】没配清单（不写 / 写成空）：GitHub 调用、state.json、评论、标签和改动前逐字节一致"
-# 四个场景各自从干净状态起跑若干轮；连读数不正常的情况也要一样（没配就是原来的代码）
+section "【1】没配清单（不写 / 写成空）：GitHub 调用、state.json、评论、标签和改动前一致"
+# 五个场景各自从干净状态起跑若干轮；连读数不正常的情况也要一样（没配就是原来的代码）。
+# 没有交人发生的场景（clean / emptypages / packagejson）连 GitHub 调用逐字节比；发生交人的两个场景
+# （dotgithub、readfail 到上限）交人本身多了写前核对（GitHub#382：调用变多、说明末尾多一行隐藏标记），
+# 比的是结果：state、标签、评论的可见文字
 off_run() {   # <scripts 根> <配置行（可空）> <场景> → 输出一份可比的记录
     local root="$1" line="$2" sc="$3" i
     if [ -n "$line" ]; then fresh "$line"; else fresh; fi
@@ -159,12 +163,12 @@ off_run() {   # <scripts 根> <配置行（可空）> <场景> → 输出一份�
     esac
     for i in 1 2 3; do
         tick "$root/scripts"
-        echo "── 第 $i 轮调用"; cat "$CALLS"
+        case "$sc" in dotgithub|readfail) ;; *) echo "── 第 $i 轮调用"; cat "$CALLS" ;; esac
     done
     # daemon 翻标签时假 GitHub 把条目的更新时间记成「现在」，state 里引用它的地方按秒变：抹成同一个占位
     echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
     echo "── 标签"; jq -S . "$GD/labels.json"
-    echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
+    echo "── 评论"; jq -S '[.[] | .[] | .body | sub("\\n<!-- cavil-loop:autopilot-handover [^>]*-->$"; "")]' "$GD/comments.json"
     echo "── 合并后交接记录（去掉时间）"; jq -S '(.autopilot.handoff // {}) | map_values(.body)' "$STATE"
 }
 if ! compat_skip "没配清单时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
@@ -182,7 +186,7 @@ fresh; happy; files '[{"filename":"client/package.json"}]'; tick
 chk "到达性 · 没配清单：改 package.json 的 PR 照常合并" "$(merged)" 1
 fresh; happy; files '[{"filename":".github/workflows/ci.yml"}]'; tick
 chk "到达性 · 没配清单：改 .github/ 的 PR 交人，文字是原来那句" "$(has_label pending/human)/$(comments_with '改动碰了 `.github/` 目录（Actions 和仓库自动化）')" "yes/1"
-chk "到达性 · 没配清单：交人前只读了一次文件列表（没有新加的重判）" "$(files_reads)" 1
+chk "到达性 · 没配清单：交人这一轮读了 4 次文件列表（触发 1 次 + 交人函数里写前重判 3 次，GitHub#382）" "$(files_reads)" 4
 
 # ─────────────────────────────────────────────────────────────────────────
 section "【2】配了默认清单：命中 → 交人并列出文件；没命中 → 照常合并"
@@ -197,7 +201,7 @@ for c in 'client/package.json|[{"filename":"scripts/x.sh"},{"filename":"client/p
     chk "$what → 不合并" "$(merged)" 0
     chk "$what → 交人：挂 pending/human、摘 pending/merge" "$(has_label pending/human)/$(has_label pending/merge)" "yes/no"
     chk "$what → 说明里列出命中的文件" "$(comments_with "改动碰了合并前需人过目的文件：\`$hit\`")" 1
-    chk "$what → 交人前把文件列表又读了一遍（重判）" "$(files_reads)" 2
+    chk "$what → 交人时每次写入前都重判（触发 1 次 + 写前 3 次读文件列表）" "$(files_reads)" 4
 done
 fresh "$ON"; happy; files '[{"filename":"scripts/x.sh"},{"filename":"docs/a.md"},{"filename":"apackage.json"},{"filename":"Makefile.am"}]'
 tick
@@ -324,12 +328,13 @@ chk "  → 到达性：第一次读到了命中、第二次读（重判）确实
     "$(files_reads)/$([ -e "$GD/F_pulls_8_files" ] && echo 开关已开 || echo 没开)/$(grep -cF '交人之前重判有变化（重判结果 unknown：读不全 PR #8 的改动文件列表（请求失败或空输出））' "$W/state/poll.log")" "2/开关已开/1"
 
 fresh "$ON"; happy; files '[{"filename":"client/package.json"}]'
-jhook pulls_8 2 labels.json '.["8"] += ["pending/human"]'
+hook pulls_8 2 'jq '"'"'.["8"] += ["pending/human"]'"'"' labels.json > l.tmp && mv l.tmp labels.json
+    jq '"'"'.["8"] += [{id: 90001, event: "labeled", label: {name: "pending/human"}, actor: {login: "maint", type: "User"}, created_at: "2026-01-02T00:00:00Z"}]'"'"' events.json > e.tmp && mv e.tmp events.json'
 tick
 chk "重判时人已在 PR 上挂了 pending/human → daemon 不发说明、不动标签" "$(writes)/$(comments_with '需人过目')" "0/0"
-# 到达性：第一次判定读了文件列表（命中）；重判读 PR 时标签已被挂上，停在读文件列表之前；两个标签都原样留着
+# 到达性：第一次判定读了文件列表（命中）；交人函数取基准时读到人挂的标签，停在重判之前；两个标签都原样留着
 chk "  → 到达性：第一次命中、重判读到了人挂的标签并停下" \
-    "$(files_reads)/$(n_calls "^gh api $R/pulls/8\$")/$(has_label pending/human)/$(has_label pending/merge)/$(grep -cF '交人之前重判有变化（重判结果 halt_pr' "$W/state/poll.log")" "1/2/yes/yes/1"
+    "$(files_reads)/$(n_calls "^gh api $R/pulls/8\$")/$(has_label pending/human)/$(has_label pending/merge)/$(grep -cF 'PR #8 交人前现状已变' "$W/state/poll.log")" "1/2/yes/yes/1"
 
 section "【7】决定时没命中、合并请求前一刻新推了清单里的文件 → 不合并"
 fresh "$ON"; happy
@@ -367,6 +372,7 @@ jset items.json '.["10"] = {kind:"pr", state:"open", merged:false, draft:false, 
         mergeable:true, mergeable_state:"clean"}' --arg h "$H2"
 jset labels.json '.["10"] = ["pending/merge","autopilot"]'
 ev 10 labeled autopilot loop-bot
+ev 10 labeled pending/merge loop-bot
 jq --arg h "$H2" '.autopilot.prs["10"] = {reviewed_head:$h, reviewed_at:"2026-01-01T00:00:00Z", reviewed_base:"main"}' \
     "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
 jset comments.json '.["10"] = [{id:950, user:{login:"loop-bot"}, created_at:"2026-06-01T00:00:00Z",

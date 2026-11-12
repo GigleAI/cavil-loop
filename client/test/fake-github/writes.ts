@@ -76,6 +76,8 @@ export interface WritableState {
   failLabel: string | null;
   /** repositories where every write answers 403 (the account has read access only) */
   readOnlyRepos: Set<string>;
+  /** GitHub#381: what the markdown renderer answers, whatever was sent (a recorded rendering of GitHub's); null = the text in a <p> */
+  markdownHtml: string | null;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
   readOnlyProjects: Set<string>;
   /** drop the connection of every write request (offline in the middle of a change) */
@@ -142,6 +144,17 @@ export interface WritableState {
   failRelationPages: Set<string>;
   /** GitHub#349: the batch read of relations (CavilIssueRelationsBatch) answers HTTP 502 */
   failRelationsBatch: boolean;
+  /**
+   * GitHub#373: `owner/repo#n` lower-cased -> what `viewerSubscription` answers for the signed-in
+   * account. Not listed = 'UNSUBSCRIBED' (the account never touched the item); null = GitHub
+   * answers null.
+   */
+  subscriptions: Map<string, 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'IGNORED' | null>;
+  /**
+   * GitHub#373: `owner/repo#n` lower-cased -> the pull request's review requests: the people
+   * asked, how many teams, and `total` when GitHub has more than the read returns (default: all).
+   */
+  reviewRequests: Map<string, { users: string[]; teams?: number; total?: number }>;
 }
 
 export interface FakeRelated {
@@ -180,6 +193,7 @@ export function defaultWritable(): WritableState {
     titleSourceDrop: null,
     titleKept: null,
     readOnlyRepos: new Set(),
+    markdownHtml: null,
     readOnlyProjects: new Set(),
     dropWrites: false,
     detailPageSize: 100,
@@ -205,6 +219,8 @@ export function defaultWritable(): WritableState {
     relationPage: { subIssues: 50, blockedBy: 20, blocking: 20, more: 100 },
     failRelationPages: new Set(),
     failRelationsBatch: false,
+    subscriptions: new Map(),
+    reviewRequests: new Map(),
   };
 }
 
@@ -367,10 +383,32 @@ export function relationFields(store: Store, repo: string, number: number): any 
   };
 }
 
-/** GitHub#349: content as a read answers it: an issue with its relations as they are now. */
+/** GitHub#373: how the signed-in account stands to an item, as a read answers it now. */
+export function viewerFields(store: Store, kind: string, repo: string, number: number): any {
+  const ikey = `${repo.toLowerCase()}#${number}`;
+  const sub = store.w.subscriptions.has(ikey) ? store.w.subscriptions.get(ikey) : 'UNSUBSCRIBED';
+  if (kind !== 'PullRequest') return { viewerSubscription: sub };
+  const rr = store.w.reviewRequests.get(ikey) ?? { users: [] };
+  const nodes = [
+    ...rr.users.map((login) => ({ requestedReviewer: { __typename: 'User', login } })),
+    ...Array.from({ length: rr.teams ?? 0 }, () => ({ requestedReviewer: { __typename: 'Team' } })),
+  ];
+  // the issues GitHub lists as linked to the pull request (GitHub computes these live), the first 20
+  const c = findCopies(store, repo, number);
+  const closing = c ? closingIssuesOf(store, c) : [];
+  const shown = closing.slice(0, 20).map((x) => ({ number: x.number, repository: { nameWithOwner: x.repo } }));
+  return { viewerSubscription: sub, reviewRequests: { totalCount: rr.total ?? nodes.length, nodes }, closingIssuesReferences: { totalCount: closing.length, nodes: shown } };
+}
+
+/**
+ * Content as a read answers it: an issue with its relations as they are now (GitHub#349), an
+ * issue / pull request with how the signed-in account stands to it (GitHub#373).
+ */
 export function withRelationFields(store: Store, content: any): any {
-  if (!content || content.__typename !== 'Issue') return content;
-  return { ...content, ...relationFields(store, content.repository.nameWithOwner, content.number) };
+  if (!content || (content.__typename !== 'Issue' && content.__typename !== 'PullRequest')) return content;
+  const viewer = viewerFields(store, content.__typename, content.repository.nameWithOwner, content.number);
+  if (content.__typename !== 'Issue') return { ...content, ...viewer };
+  return { ...content, ...viewer, ...relationFields(store, content.repository.nameWithOwner, content.number) };
 }
 
 /** The GraphQL shape of an item (from a Project copy if there is one, else built from the REST copy). */
@@ -515,7 +553,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   const w = store.w;
   if (method === 'POST' && path === '/api/markdown') {
     const esc = String(body?.text ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
-    sendText(`<p>${esc}</p>`);
+    sendText(w.markdownHtml ?? `<p>${esc}</p>`);
     return true;
   }
   const m = path.match(/^\/api\/repos\/([^/]+)\/([^/]+)(\/.*)$/);
@@ -935,8 +973,8 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const nodes = (v.ids as string[]).map((id) => {
       const c = findByNodeId(store, id);
       if (!c) return null;
-      if (c.kind !== 'Issue') return { __typename: c.kind };
-      return { __typename: 'Issue', id, ...relationFields(store, c.repo, c.number) };
+      if (c.kind !== 'Issue') return { __typename: c.kind, id, ...viewerFields(store, c.kind, c.repo, c.number) };
+      return { __typename: 'Issue', id, ...viewerFields(store, c.kind, c.repo, c.number), ...relationFields(store, c.repo, c.number) };
     });
     return { data: { nodes } };
   }

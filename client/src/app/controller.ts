@@ -10,7 +10,7 @@ import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardDa
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
-import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
@@ -233,6 +233,8 @@ const TABLE_FOLDS = 'tableFolds';
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
 const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
+/** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
+const NOTIFY_SCOPE = 'notifyScope';
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
@@ -436,7 +438,8 @@ export class Controller {
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
-    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human);
+    const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
+    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -454,6 +457,7 @@ export class Controller {
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
+      notifyScope,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -926,7 +930,9 @@ export class Controller {
    * Feed the snapshots read completely this round; notify what became pending. A source's first
    * read is only its baseline: no notification, no summary, nothing unread (GitHub#251).
    */
-  private observePending(fresh: SourceSnapshot[]): void {
+  private observePending(fresh: SourceSnapshot[], viewer: string | null): void {
+    // GitHub#373: whose reminders — the login as this round read it (a change is recomputed silently)
+    this.pending.setAudience({ scope: this.state.notifyScope, viewer });
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
     // unread (the badge): what arrived while the user was not looking at the window
     if (!this.active) for (const it of change.appeared) this.unread.add(it.key);
@@ -1578,7 +1584,7 @@ export class Controller {
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
-    this.observePending(accepted);
+    this.observePending(accepted, round.viewer ?? this.state.viewer);
     // GitHub#266: the back end wrote it when it adopted the viewer, under the session check;
     // a write from here could land after a sign-out and put the old name back
     if (round.viewer) this.cache.mirror('viewer', round.viewer);
@@ -1729,6 +1735,24 @@ export class Controller {
     if (typeof on !== 'boolean' || on === this.state.clearAllOnActivate) return;
     this.cache.setSetting(CLEAR_ALL_ON_ACTIVATE, on);
     this.set({ clearAllOnActivate: on });
+  }
+
+  /**
+   * GitHub#373: which pending items remind — every one ('all') or only the ones that concern the
+   * signed-in account ('mine'). Recounted silently, like another label name: a settings change is
+   * not new work arriving, so nothing is notified and nothing becomes unread; a notification
+   * queued before it does not go out. Anything but the two words is ignored.
+   */
+  setNotifyScope(scope: unknown): void {
+    if ((scope !== 'all' && scope !== 'mine') || scope === this.state.notifyScope) return;
+    this.cache.setSetting(NOTIFY_SCOPE, scope);
+    this.labelVersion++;
+    this.pending.setAudience({ scope, viewer: this.state.viewer });
+    // what was unread and no longer reminds is not counted; what reminds only now was never unread
+    for (const k of [...this.unread]) if (!this.pending.has(k)) this.unread.delete(k);
+    this.badge();
+    this.state = { ...this.state, ...this.pendingNow() };
+    this.set({ notifyScope: scope });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */

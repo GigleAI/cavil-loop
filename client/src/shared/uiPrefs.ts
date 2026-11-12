@@ -2,7 +2,7 @@
 // part of the view settings, so importing a Project's web view never touches them.
 // Pure; shared by the controller (reads / writes the settings) and the renderer.
 
-import type { GroupBy } from './types';
+import type { GroupBy, NotifyScope } from './types';
 import { GROUP_BYS } from './viewSettings';
 
 /**
@@ -76,4 +76,12 @@ export function normalizeAutopilotConfirm(raw: unknown): boolean {
  */
 export function normalizeClearAllOnActivate(raw: unknown): boolean {
   return raw === true;
+}
+
+/**
+ * GitHub#373: which pending items remind. Anything but an explicit 'mine' is 'all' — a value this
+ * build cannot read must never make reminders fewer.
+ */
+export function normalizeNotifyScope(raw: unknown): NotifyScope {
+  return raw === 'mine' ? 'mine' : 'all';
 }

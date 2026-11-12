@@ -770,6 +770,32 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Can't read something** (events, permissions, checks, files, comments): nothing is
   written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.
   "Can't read" is never treated as "authorized", "passed" or "no conflict".
+- **Every write of a hand-over is checked against the current state first** (GitHub#382). Handing a PR to a
+  human takes three requests — post the note → add `pending/human` → remove `pending/merge`. The daemon first
+  takes a baseline (PR open / draft / head / target branch / branch / source / body / all labels, the ids of
+  "this queueing" and of the last label change in the PR's label events; state, labels and label events of the
+  bound issue and of a split sub-issue's parent), judges the reason again from fresh reads, then confirms the
+  baseline is unchanged; before each later write it judges the reason and compares the state once more, allowing
+  only the one write of its own it has just confirmed. If a maintainer closed the PR, touched any label, pushed,
+  changed the target branch, re-queued the same commit, or lifted a stop on the issue in between, nothing more
+  is written this round and the next round judges the PR as it then is.
+  - No local to-do is kept: a PR still in the merge queue is judged from scratch next round; a note for the
+    same queueing, commit and reason is not posted twice (it ends with a hidden marker), and after the same
+    commit is re-queued the old note no longer counts.
+  - If the note cannot be posted the labels are not flipped — never `pending/human` without a note.
+  - A PR carrying both `pending/human` and `pending/merge` (a maintainer's stop, or a hand-over cut short):
+    only `pending/merge` is removed, silently, after the same baseline-and-compare. To keep a PR queued,
+    remove `pending/human` first.
+  - State that cannot be read whole (PR, issue, any label history or the comments unreadable; an answer with a
+    field missing or an unknown state word; a label event without an id, or events that contradict the current
+    labels): nothing is written this round. So the
+    "unreadable for N rounds" hand-over only gets written when these are readable (it works as before when what
+    is unreadable is the changed files, checks or a permission); otherwise the PR stays queued and is retried
+    every round — never merged, with the reason in the log.
+  - ⚠️ What cannot be closed: GitHub has no "write only if unchanged", so an action that lands between the start
+    of the last check and the write reaching GitHub is not seen. The worst outcome is one more `pending/human`
+    or one more note on a PR that was just closed or taken over, or `pending/merge` removed from a PR that was
+    just re-queued. It never causes a merge.
 - **Bounces back to the worker** are counted per PR and capped at `REVIEW_MAX_ROUNDS`.
 - **Stopping it**: remove the label from the issue or the PR, or add `pending/human` to the
   issue or the PR. The re-read right before merging catches a stop that lands between the
@@ -815,7 +841,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   between. Turning it on here is a deliberate choice; merging the feature does not.
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
-unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
+unreadable rounds, check-wait start, `off_handover` (the to-do of an autopilot-off hand-over still in progress; it carries its baseline, see "Turning autopilot off"); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
 cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
 old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished; `mirror`: PRs judged "nothing to copy / remove" with the same kind of cache key, GitHub#190). Like `requester_bot_done_queue` it is not in the migration loop
@@ -855,12 +881,11 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   has to equal the number of entries read. Missing pages (the endpoint returns at most 3000 files per
   PR), a missing count, a malformed answer or a failed request all count as "can't read": no merge and
   nothing written this round, a human after `AUTOPILOT_UNKNOWN_MAX` rounds. "Can't read" is never "no hit".
-- **Judged twice before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
+- **Judged again before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
   again from fresh reads; the verdict, the files hit and the PR's head / target branch / branch / bound
-  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same
-  "comment, then labels" every other autopilot hand-off uses. ⚠️ A maintainer action that lands between
-  those writes is not seen: the PR may get `pending/human` and lose `pending/merge` once more. It never
-  causes a merge.
+  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same code every
+  other autopilot hand-over uses: each of its three writes is preceded by a fresh judgement and a state check
+  (see "Every write of a hand-over is checked against the current state first" above, GitHub#382).
 - **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
   `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
   if the project wants them.
@@ -1013,12 +1038,19 @@ else to run. From the next round the daemon cleans up by itself:
 - queued and running work is not cleared — it finishes the normal way and ends with a human; completed merges stay.
 
 Only PRs this machine had on autopilot are touched (recorded under `autopilot.prs` in `state.json`), so a same-named
-label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The PR is
-re-read before any write (still open, not merged) and an unreadable PR waits for the next round. The target state is
-`pending/human` present, the merge label gone, one hand-over comment on the PR. Before touching GitHub the sweep records
-"hand-over in progress" in `state.json`; it then converges the labels and reads them back, checks the PR's comments so the
-note is posted only once, and clears the record only when all of that is confirmed — a failure at any step, or a killed
-process, is picked up the next round through that record.
+label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The target
+state is `pending/human` present, the merge label gone, one hand-over comment on the PR; the order is add
+`pending/human` → remove the merge label → post the note. The three writes follow the same checks as a hand-over while
+autopilot is on (GitHub#382): before touching GitHub the sweep records a to-do in `state.json` that carries the PR's
+state at the start (the baseline), "what it should look like now" (the baseline plus the daemon's own confirmed writes)
+and the one write already decided on but not yet confirmed; before each write the PR is read afresh and must match the
+to-do, and after it the PR is read once more to confirm only that one change was added. A failure at any step, or a
+killed process, is picked up the next round through the to-do: if the PR is as it should be the sweep continues, and if
+exactly the pending write has appeared it is taken as its own. **Any other difference means somebody touched the PR**
+(closed it, removed `pending/human` to take it over, re-queued it, pushed…): the to-do is dropped and nothing more is
+written this round; after that a PR no longer in the merge queue is left alone, and one still carrying the merge label
+is started from scratch the following round as a new case. State that cannot be read whole means no write this round
+and the to-do stays. Turning autopilot back on clears every to-do, so turning it off again never resumes a half-done one.
 
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
@@ -1218,6 +1250,111 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
+
+## GitHub token redaction (GitHub#342)
+
+A worker's environment holds a GitHub token. An agent can print it verbatim while it works (running `env`, debugging `gh`, an error that echoes request headers), and it then lands in files that are kept for a long time. The daemon handles three places with one set of matching rules (`scripts/redact_tokens.py`):
+
+| File | Written by | What happens | Switch |
+|---|---|---|---|
+| `poll.log`, pane history (`$STATE_DIR/sessions/*.log`) | the daemon | Replaced **before it reaches disk**: the log function, cleanup-hook output, tmux errors, the instant-exit / trust-dialog pane captures, the old log merged in during migration and the live pane-history pipe all go through one entry point | always on |
+| claude / codex session records (`~/.claude/projects`, `~/.codex/sessions`) | the agent's CLI | The daemon scans every 10 minutes and replaces **in place**: only the token's bytes change, the file keeps its length and name, nothing is deleted, no backup is kept. Only sessions whose working directory is under this project's `WORKTREE_BASE` are touched | `REDACT_AGENT_RECORDS` (on by default; empty / `false` = leave them alone) |
+| codex environment snapshots (`~/.codex/shell_snapshots/*.sh`) | codex | Not rewritten afterwards: the daemon starts codex workers with the feature turned off (`--disable shell_snapshot`), so **no new snapshot is written**. Clean the existing ones once with the command below | `CODEX_SHELL_SNAPSHOT` (`off` by default; `on` = keep codex's default behaviour) |
+
+A replaced token reads `REDACTED-<12-character fingerprint>`, padded with `-` to the original length. The fingerprint is the first 12 hex characters of the token's sha256: it cannot be turned back into the token, and one token has the same fingerprint in every file, so it tells you *which* token it was:
+
+```bash
+printf '%s' "$GH_TOKEN" | sha256sum | cut -c1-12
+```
+
+Whenever a scan replaced something, `poll.log` gets a line `令牌脱敏：N 个文件里替换了 M 处（指纹 …）`. Scan positions live in `$STATE_DIR/redact-scan.json` and the time of the last scan in `$STATE_DIR/redact-scan.stamp`; delete both to have the next round scan everything from the start (what is already replaced does not change again).
+
+**Why session records can be edited in place**: the weekly report and the usage footer read these files, and the agent's CLI keeps them open and appends. A replacement touches only the token's bytes and writes characters of the same kind (letters, digits, `-`), so every line reads as the same JSON structure at any moment; strings in the fields used to claim a record (working directory, session id, request id, timestamp, model, …) are left alone even when they look like a token. `tests/token-redaction.test.sh` runs the real weekly-report collector while a replacement is half written and gets byte-identical results.
+
+**Not covered** (the original text may still be there):
+
+- Old-format tokens without a prefix (40 hex characters, before 2021): indistinguishable from a commit hash, not matched
+- Pane history is raw terminal output: a token the terminal wrapped, or one with control codes in the middle, is not recognised (one right after a colour code is)
+- Sessions that were running before the upgrade and whose worker pane cannot be identified (a person split the window and there is no pane record): their log pipe is not switched to the filtering one, so what they write later is only replaced afterwards by the periodic scan
+- Sessions whose working directory is not under `WORKTREE_BASE` (claude / codex a person started by hand), claude's input history and file-edit backups, cursor / opencode records
+- Secrets other than GitHub tokens (for example other login tokens in a codex snapshot)
+- When the redaction script itself cannot start (for example no `python3`): the daemon's log entry points write one line `令牌替换失败…已丢弃` and pane history stops being written — a missing record rather than the original text
+
+### Cleaning the existing codex environment snapshots
+
+After the upgrade new codex workers write no snapshot, but the old ones are still there, each with `GH_TOKEN` in clear text. A running codex still reads its own snapshot when it runs a command; replace the token under it and every later `gh` uses a fake token. So the cleanup script only acts when **the current user has no codex process at all**; with one running, or when the process list cannot be read, it prints the reason and exits without changing a file.
+
+Let the codex workers finish (or stop the processes it lists), then run this as written:
+
+<!-- redact-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"    # the installed skill / 装好的 skill 目录
+SNAPS="$HOME/.codex/shell_snapshots"
+with_token() { grep -lE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}' "$SNAPS"/*.sh 2>/dev/null | wc -l; }
+echo "snapshots holding a token before / 清理前带令牌的快照: $(with_token)"
+if bash "$SKILL/scripts/redact-snapshots.sh" --check; then
+    bash "$SKILL/scripts/redact-snapshots.sh"
+fi
+echo "snapshots holding a token after / 清理后带令牌的快照: $(with_token)"
+```
+<!-- redact-ops:end -->
+
+`完成：N 个快照文件，其中 M 个含令牌，共替换 K 处` followed by a last line of 0 means it is done. `❌ 本机还有 codex 进程在跑` means nothing was changed: rerun once the listed processes have ended. A replacement cannot be undone (there is no backup) and does not need to be: the token itself is unchanged and the worker's environment still has it. `--check` only checks and changes nothing.
+
+## Heavy tests: one at a time (optional, **off by default**, GitHub#343)
+
+Several workers running the full test suite at once stack memory and CPU until the machine stalls. With this on, the "heavy test" commands a project lists are let through one at a time under one system account, the rest wait; when an item is cleaned up, or the worker that started a test has ended, the tests it left behind are stopped.
+
+**Turn it on**: list the heavy commands in the project's `cavil-loop.config`, one per line:
+
+```bash
+HEAVY_TEST_COMMANDS="bash tests/run.sh"
+```
+
+From the next dispatch on, the worker prompt gets one more section telling the agent to run these as `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh`; a single test file needs no queue. Workers already running are not affected (their prompt was fixed at start).
+
+**How the queue works**
+
+- Each run goes into its own systemd scope (`cavil-heavy-<id>.scope`). The next run starts only when every "running" scope ahead of it has no process left — a killed wrapper, a test that closes inherited descriptors, a child that backgrounds itself or leaves the process group cannot release it early. While waiting it prints, every 30 seconds, which project and item it waits for and for how long.
+- When the test's main process exits, the wrapper stops its own scope, so background children left behind end with it.
+- Scope state is read from explicit answers only: "not found / inactive" means ended; a failed query, empty output or an unknown word counts as still running.
+- A run record that cannot be read, or whose content is not recognised (any of its ten fields missing, a field given twice, a state other than queued / running, a scope name that does not match its id, only part of the project / item / generation ownership present), is not taken for "not running" either: its scope is looked up by the id, and the record is removed only once that scope is confirmed gone; while the scope is there it keeps blocking the queue and the worktree cleanup of items under this account, and the waiting notice and the poll log name the file. `--list` shows it as unreadable (「读不到」); once it is clear what that run is, `--stop <id>` stops it.
+- No first-come-first-served guarantee, only no overlap. `HEAVY_TEST_LOCK_WAIT=<seconds>` caps the wait (exit code 75); default 0 = wait as long as it takes.
+
+**What happens when an item ends**
+
+- Dispatch (create the worktree, start the worker, record this launch) and `cleanup-issue.sh` (stop the session, stop the tests, remove the worktree) each hold one per-item lock from start to end, so they run one after the other. When the lock cannot be taken (60 seconds by default), dispatch does nothing this round and leaves the label, and cleanup changes nothing and exits non-zero.
+- Every item has a generation, bumped by cleanup as soon as it holds the lock. A worker carries the generation it was started with, and a test checks it when it registers and again before it starts: on a mismatch (the item was cleaned after this worker started) it does not start, exit code 76. A worker dispatched after the cleanup gets the new generation and is not affected.
+- Cleanup first stops this item's queued and running heavy tests and removes the worktree only after their scopes are confirmed gone. Unknown state or a failed stop → the worktree is kept and the exit code is non-zero; the automatic post-merge cleanup then does not record the item as cleaned and retries next round, and the PR's `Done` label waits for the round in which cleanup succeeds.
+- Each worker launch records the worker's pid and start time (registered before the worker starts, completed with the pid once it is up). Every poll round checks them: when that process is gone (or the pid now belongs to another process) while a test it started is still queued or running, the whole scope is stopped. A worker that is alive, or one that cannot be identified, is left alone. A launch confirmed as ended is marked, not deleted, so a late request left behind by that worker does not start either (exit code 76); the record is removed when the item is cleaned up.
+
+**See who holds the queue, stop one run by hand**
+
+<!-- heavy-test-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+IDF="$(mktemp)"
+bash "$SKILL/scripts/heavy-test.sh" --id-file "$IDF" -- sleep 120 &
+while [ ! -s "$IDF" ] && kill -0 $! 2>/dev/null; do sleep 0.2; done
+bash "$SKILL/scripts/heavy-test.sh" --list
+bash "$SKILL/scripts/heavy-test.sh" --stop "$(cat "$IDF")"
+wait
+bash "$SKILL/scripts/heavy-test.sh" --list
+rm -f "$IDF"
+```
+<!-- heavy-test-ops:end -->
+
+In order: start a run (`sleep 120` stands in for a real test command) and have it write **its own run id** to a temporary file once it is registered; wait for the id; list every run registered under this account (id, queued / running, scope state, project and item, command, age); stop exactly that run by its id (its command exits with 143) — it is stopped the same way while still queued; list again. Other items' runs may be in the list at that point and these commands do not touch them: always name the run to stop by its id, never pick "the first running one" from the list — that may well belong to another item. To stop one run in everyday use, read `--list` for the project, item and command first, then `--stop <its id>`. `--stop` removes the record only after the scope is confirmed gone; when the scope's state cannot be read it sends no stop request, reports an error and keeps the record.
+
+**Limits**
+
+- The full behavior needs Linux + cgroup v2 + a systemd user manager. Where these are plainly absent (not Linux, not cgroup v2, no `systemd-run` / `systemctl`, no user-manager socket for this account — macOS, for one) only the wrapper itself is queued: no scope, no record, no cleanup, and a notice is printed. When the user manager exists but did not answer this time, or the scope cannot be created, the wrapper exits with 70 and does not run the test — it never degrades silently, because the degraded mode cannot see existing scopes and would start while the previous run is still going. In degraded mode it also exits with 70 while run records are still registered: once those runs are known to have ended, remove the records under `~/.local/state/cavil-loop/heavy-test/runs/` and retry.
+- "Machine-wide" means one system account: the queue lock and the run records live under `~/.local/state/cavil-loop/` (`heavy-test.lock`, `heavy-test/runs/`); different accounts do not queue behind each other.
+- Only tests started through the wrapper are queued or stopped. A command the worker runs directly, a dev server, any other background process is neither queued nor stopped.
+- A test moved into its own scope is no longer under a memory cap set on the tmux pane's scope. Use `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"` (space-separated systemd properties) when a cap is needed; none by default.
+- A forced cleanup (`--force`) of an item whose worker is busy still stops that worker, as before; what the item lock guarantees is that cleanup never interleaves with a launch in progress.
+
+**Turn it off**: leave `HEAVY_TEST_COMMANDS` empty (or remove the line). Later dispatches no longer carry the section and no longer take the item lock. Workers started before that may still run tests through the wrapper; those queue as usual, and runs still registered are stopped at item cleanup and by the poll round exactly as before — nothing to do by hand; use `--stop` above to stop one right away. `item-locks/`, `item-gen/` and `worker-launch/` left in the project's state directory need not be removed.
 
 ## Prompt templates
 

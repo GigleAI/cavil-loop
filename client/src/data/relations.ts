@@ -11,7 +11,7 @@ import { parseStateReason } from '../shared/stateTone';
 import type { Item, ItemRelations, RelatedIssue } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
-import { ISSUE_RELATIONS_BATCH_QUERY, ISSUE_RELATIONS_QUERY } from './queries';
+import { ISSUE_RELATIONS_QUERY } from './queries';
 
 /** issues per request of the repository batch (GitHub's limit for `nodes(ids:)`) */
 export const RELATION_BATCH_SIZE = 100;
@@ -110,29 +110,24 @@ export async function completeRelations<T extends GqlRelationFields>(client: Git
 }
 
 /**
- * The relations of the issues with these node ids, each read to its last page: one request
- * per RELATION_BATCH_SIZE ids, plus the follow-up pages of an issue whose lists are long.
- * Every id gets an answer or the whole call throws.
+ * What a repository source reads by node id after its list (an issue's relations; GitHub#373: how
+ * the signed-in account stands to an item): `nodes(ids:)`, RELATION_BATCH_SIZE a request, answers
+ * in the order asked.
+ * Every id gets an answer slot or the whole call throws (a slot may be null: the caller says what
+ * that means). `query` takes `$ids` and returns `nodes`.
  */
-export async function fetchRelationsBatch(
+export async function fetchNodesBatch<T>(
   client: GitHubClient,
-  issues: { nodeId: string; what: string }[],
-  /** tests: a smaller batch, to cross the batch boundary with the recorded issues */
+  query: string,
+  ids: string[],
   size: number = RELATION_BATCH_SIZE,
-): Promise<Map<string, ItemRelations>> {
-  const out = new Map<string, ItemRelations>();
-  for (let at = 0; at < issues.length; at += size) {
-    const batch = issues.slice(at, at + size);
-    const data = await client.graphql<{ nodes: ((GqlRelationFields & { __typename?: string }) | null)[] }>(ISSUE_RELATIONS_BATCH_QUERY, { ids: batch.map((i) => i.nodeId) });
+): Promise<((T & { __typename?: string }) | null)[]> {
+  const out: ((T & { __typename?: string }) | null)[] = [];
+  for (let at = 0; at < ids.length; at += size) {
+    const batch = ids.slice(at, at + size);
+    const data = await client.graphql<{ nodes: ((T & { __typename?: string }) | null)[] }>(query, { ids: batch });
     if (!Array.isArray(data.nodes) || data.nodes.length !== batch.length) throw new GitHubError('graphql', '批量读关系：回应的条数和请求的不一致');
-    for (let i = 0; i < batch.length; i++) {
-      const node = data.nodes[i];
-      const { what } = batch[i];
-      if (!node || node.__typename !== 'Issue') throw new GitHubError('graphql', `${what} 的关系没有读到`);
-      const rel = readRelations(await completeRelations(client, node, what));
-      if (!rel) throw new GitHubError('graphql', `${what} 的关系没有读全`);
-      out.set(batch[i].nodeId, rel);
-    }
+    out.push(...data.nodes);
   }
   return out;
 }
