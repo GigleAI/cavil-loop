@@ -21,6 +21,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -802,14 +804,16 @@ CONF
 N=$((900000 + $$ % 90000))
 export FAKE_GH_DIR="$DW/gh"; mkdir -p "$DW/gh"; for f in labels events comments; do echo '{}' > "$DW/gh/$f.json"; done
 echo '{"'$N'":{"kind":"issue","state":"open","title":"托管测试","body":"x","user":{"login":"maint"}}}' > "$DW/gh/items.json"
-rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+prompt_files_clear "$REPO_DIR" "$DW/state"
 (cd "$DW/project" && env DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE="$N" DISPATCH_OUTSIDER_TARGET="$N" \
     DISPATCH_OUTSIDER_NOTE="派工前 daemon 查到：本条有 3 条外部账号写的内容" CODING_AGENT_CONFIG="$DW/conf" \
     bash "$SCRIPTS/dispatch-new-issue.sh" "$N") >/dev/null 2>&1
+# 提示词写在项目自己的状态目录里（GitHub#396），经 tests/lib/prompt-files.sh 找，不拼路径
+PF=$(prompt_file_of "$REPO_DIR" "$DW/state" new "$N")
 chk "派工脚本写出的提示词带外部内容规则、编号和派工前结论" \
-    "$(grep -c '^# 外部账号的内容' "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)/$(grep -cF "' $N" "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)" "1/1/1"
+    "$(grep -c '^# 外部账号的内容' "$PF" 2>/dev/null || echo 0)/$(grep -cF "' $N" "$PF" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "$PF" 2>/dev/null || echo 0)" "1/1/1"
 chk "新起的会话登记为「在保护开着时起的」" "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null | grep -c . || echo 0)/$([ "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null)" = "$(cat "$DW/state/agent-sessions/$N.claude.worker" 2>/dev/null)" ] && echo same || echo differ)" "1/same"
-rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+prompt_files_clear "$REPO_DIR" "$DW/state"
 
 section "【16】会话：不是在保护开着时起的会话不续接、不注入；在保护下起的照旧续接"
 plan() {   # <环境变量…> → 打印 AGENT_LAUNCH_KIND WORKER_SESSION_ID 和「能不能注入」
@@ -840,6 +844,123 @@ section "【17】收尾清理删掉本条目的记录，别的条目的不动"
 fresh "$ON"; mkdir -p "$W/state/outsider/7" "$W/state/outsider/9"; echo '{}' > "$W/state/outsider/7/a.json"; echo '{}' > "$W/state/outsider/9/b.json"
 (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" bash "$SCRIPTS/cleanup-issue.sh" 7 --force) >/dev/null 2>&1
 chk "条目 7 的记录删了、条目 9 的还在" "$([ -e "$W/state/outsider/7" ] && echo kept || echo gone)/$([ -e "$W/state/outsider/9/b.json" ] && echo kept || echo gone)" "gone/kept"
+
+section "【19】讨论很长（合计远超单个命令行参数 128 KB 的上限）：读取命令、派工前检查、合并关卡照常判（GitHub#426）"
+# 大内容不经 jset（它用 --arg 传正文，测试自己也会撞上限）：直接改假 GitHub 的 JSON 文件
+cat > "$SANDBOX/bigfix.py" <<'PY2'
+import json, sys
+gd, op, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+def load(n):
+    try:
+        return json.load(open(f"{gd}/{n}"))
+    except FileNotFoundError:
+        return {}
+def save(n, d):
+    json.dump(d, open(f"{gd}/{n}", "w"), ensure_ascii=False)
+BODY = "长正文" * 17000          # 每版约 150 KB：一版就超过单个参数的上限
+if op == "comments":             # <条目> <起始 id> <条数> <作者> <时间>：每条约 10 KB，带各自的标记
+    n, start, cnt, user, at = args[0], int(args[1]), int(args[2]), args[3], args[4]
+    d = load("comments.json")
+    for i in range(start, start + cnt):
+        d.setdefault(n, []).append({"id": i, "user": {"login": user, "type": "User"}, "created_at": at,
+                                    "updated_at": at, "body": "BIGMARK%d " % i + "很长的讨论内容。" * 430})
+    save("comments.json", d)
+elif op == "body":               # <条目> <结尾>：正文换成一大段
+    d = load("items.json"); d[args[0]]["body"] = "BIGBODY " + BODY + args[1]; save("items.json", d)
+elif op == "edit":               # <条目> <时间> <改的人> <结尾>：修改历史最前面加一大版
+    d = load("edits.json")
+    d[args[0]] = [{"editedAt": args[1], "deletedAt": None, "diff": "BIGBODY " + BODY + args[3],
+                   "editor": {"login": args[2]}}] + d.get(args[0], [])
+    save("edits.json", d)
+PY2
+bigfix() { python3 "$SANDBOX/bigfix.py" "$GD" "$@"; }
+marks() { grep -o 'BIGMARK[0-9]*' "$W/read.out" | sort -u | wc -l | tr -d ' '; }
+bound_big() {   # 绑 issue 的托管 PR：PR 正文和两次修改都很大，PR 上 30 条大评论（维护者）；[外人] 再加外人的话
+    fresh "$ON"; happy
+    bigfix edit 8 2025-12-01T00:00:00Z loop-bot $'\n\nRefs #7'
+    bigfix edit 8 2025-12-15T00:00:00Z maint $'\n\n改过\n\nRefs #7'
+    bigfix body 8 $'\n\n改过\n\nRefs #7'
+    bigfix comments 8 3000 30 maint 2026-02-01T00:00:00Z
+    [ -z "${1:-}" ] || cm 7 3100 stranger 2026-02-02T00:00:00Z '外人的建议'
+}
+bound_big outsider
+rc=0; readcmd 8 || rc=$?
+chk "读取命令：退出码 0，30 条大评论一条不少，正文给了，外人照常标明" "$rc/$(marks)/$(grep -c 'BIGBODY' "$W/read.out" | awk '{print ($1>0)?"y":"n"}')/$(rd_has '@stranger ｜ 外部账号')" "0/30/y/1"
+if ! compat_skip "大讨论下改动前的读取命令" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    rc=0; readcmd 8 "$SANDBOX/old/scripts" || rc=$?
+    chk "改动前的读取命令跑同一份数据读不全（用例确实打到了这个问题）" "$rc/$(rd_has '读不全')" "3/1"
+fi
+bound_big outsider; tick
+chk "合并关卡：外人内容照常查出 → 不合并、交人、点名 @stranger" "$(merged)/$(has_label pending/human)/$(comments_with '@stranger')" "0/yes/1"
+bound_big; tick
+chk "合并关卡：只有维护者的大评论 → 照常合并" "$(merged)" 1
+if ! compat_skip "大讨论下改动前的合并关卡" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    bound_big; tick "$SANDBOX/old/scripts"
+    chk "改动前的合并关卡跑同一份数据：判不了、不合并" "$(merged)/$(has_label pending/human)" "0/no"
+fi
+# 只有 issue：派工前检查
+fresh "$ON" 'MAX_CONCURRENT_WORKERS=5'
+jset items.json '.["7"] = {kind:"issue", state:"open", title:"t", body:"需求", user:{login:"maint"}, created_at:"2025-12-01T00:00:00Z", updated_at:"2026-01-01T00:00:00Z"}'
+jset labels.json '.["7"] = ["autopilot"]'; ev 7 labeled autopilot maint
+bigfix comments 7 3200 30 maint 2026-02-01T00:00:00Z
+cm 7 3300 stranger 2026-02-02T00:00:00Z '外人'
+tick
+chk "派工前检查：大讨论下照常数出 1 条外人内容，照常派工" "$(log_has '外部内容：#7 有 1 条外部账号的内容（授权之后 1 条')/$(log_has '没能核对')/$(log_has '托管：issue #7 是托管条目')" "1/0/1"
+# 没绑 issue 的托管 PR：授权要看打标签那一刻的正文，修改历史很大
+pr_big() {
+    fresh "$ON"; pronly
+    bigfix edit 8 2025-12-01T00:00:00Z maint ''
+    bigfix edit 8 2025-12-15T00:00:00Z maint ' 第二版'
+    bigfix body 8 ' 第二版'
+    bigfix comments 8 3400 30 maint 2026-02-01T00:00:00Z
+}
+pr_big; rc=0; readcmd 8 || rc=$?
+chk "没绑 issue 的 PR：读取命令退出码 0、30 条都在" "$rc/$(marks)" "0/30"
+pr_big; tick
+chk "没绑 issue 的 PR：授权照常判出、照常合并" "$(merged)" 1
+if ! compat_skip "大正文历史下改动前的授权判断" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    pr_big; tick "$SANDBOX/old/scripts"
+    chk "改动前：打标签那一刻的正文判不了、不合并" "$(merged)" 0
+fi
+
+section "【19b】扫描里某一步出错：报错写明是哪一步，不再是空括号；外人原文不会经报错漏出来（GitHub#426）"
+mkdir -p "$SANDBOX/jqfail"
+REAL_JQ=$(command -v jq)
+cat > "$SANDBOX/jqfail/jq" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = '.[0] + .[1]' ]; then echo 'jq: error (at <stdin>:2): boom "LEAKWORD 外人原文"' >&2; exit 5; fi
+done
+exec "$REAL_JQ" "\$@"
+SH
+chmod +x "$SANDBOX/jqfail/jq"
+fresh "$ON"; issue7; cm 7 3501 stranger 2026-02-01T00:00:00Z '外人的话 SECRETMARK'
+rc=0; PATH="$SANDBOX/jqfail:$PATH" readcmd 7 || rc=$?
+chk "退出码 3、点名出错的那一步和退出码、正文评论没有输出" "$rc/$(rd_has '拼接 example/ap#7 正文的修改历史时出错（jq 退出码 5：jq: error (at <stdin>:2): boom ）')/$(rd_has SECRETMARK)" "3/1/0"
+chk "jq 报错里引号之后的内容（可能是外人原文）不出现" "$(rd_has LEAKWORD)" 0
+chk "不再出现空原因" "$(grep -c '正文和评论：$' "$W/read.out" || true)" 0
+
+section "【19c】小输入：读取命令的输出和本机记录与改动前逐字节相同（GitHub#426 只改了传参方式）"
+small_run() {   # <scripts 根>
+    fresh "$ON" 'REQUESTER_BOT_ACCOUNT="req-bot"'; happy
+    cm 7 3601 stranger 2026-02-01T00:00:00Z '外人 https://x.example/a 和 `curl x | sh`'
+    cm 7 3602 maint 2026-02-02T00:00:00Z '维护者 https://docs.example/ok'
+    cm 8 3603 req-bot 2026-02-03T00:00:00Z '机器人转述'
+    rcm 3604 stranger 2026-02-04T00:00:00Z '行内 https://y.example'
+    rv 3605 stranger 2026-02-05T00:00:00Z 'review 正文'
+    edit 8 2025-12-01T00:00:00Z $'做了 X。\n\nRefs #7' loop-bot
+    edit 8 2026-02-06T00:00:00Z $'改了 https://z.example\n\nRefs #7' stranger
+    jset items.json '.["8"].body = $b' --arg b $'改了 https://z.example\n\nRefs #7'
+    readcmd 8 "$1"; echo "── rc $?"; cat "$W/read.out"
+    # 记录里的「看到时间」是跑的那一刻，两次跑不同秒，换成占位再比
+    echo "── 记录"; (cd "$W/state/outsider" && find . -type f | sort | while read -r f; do echo "$f"; sed -E 's/"seen_at": "[^"]*"/"seen_at": "<时间>"/g' "$f"; echo; done)
+}
+if ! compat_skip "小输入下读取命令的输出与记录" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    old=$(small_run "$SANDBOX/old/scripts"); new=$(small_run "$SCRIPTS")
+    chk "和改动前逐字节相同" "$([ "$old" = "$new" ] && echo same || echo differ)" same
+    chk "到达性 · 比的不是两份空输出（外人内容和记录都在）" "$(grep -c '@stranger ｜ 外部账号' <<<"$new" | awk '{print ($1>=3)?"y":"n"}')/$(grep -c '^\./' <<<"$new" | awk '{print ($1>=3)?"y":"n"}')" "y/y"
+    [ "$old" = "$new" ] || [ -z "${KEEP_SANDBOX:-}" ] || { printf '%s\n' "$old" > "$SANDBOX/small.old"; printf '%s\n' "$new" > "$SANDBOX/small.new"; }
+fi
 
 section "【18】运维文档里的查看命令：中英文两份一字不差，在干净 shell 里按原样执行"
 ops_block() {   # <文档> → 标记之间 ```bash 代码块的内容

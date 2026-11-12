@@ -4293,7 +4293,8 @@ autopilot_body_has_close() {   # 正文从 stdin
 autopilot_pr_kind() {   # <PR JSON> [正文]
     local pj="$1" n repo body by_line by_whole
     AUTOPILOT_PR_KIND=bad; AUTOPILOT_PR_N=""; AUTOPILOT_REASON=""
-    if [ "$#" -ge 2 ] && ! pj=$(printf '%s' "$pj" | jq -c --arg b "$2" '.body = $b' 2>/dev/null); then
+    # 正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+    if [ "$#" -ge 2 ] && ! pj=$( { printf '%s\n' "$pj"; printf '%s' "$2" | jq -Rs .; } | jq -cs '.[1] as $b | .[0] | .body = $b' 2>/dev/null); then
         AUTOPILOT_REASON="读不懂 PR 的内容"; return 0
     fi
     if n=$(autopilot_pr_binding "$pj"); then
@@ -4346,16 +4347,21 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
                   | select((.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean") | .nodes' 2>/dev/null); then
             AUTOPILOT_REASON="读不到 PR #$pr 正文的修改历史"; return 2
         fi
-        edits=$(jq -cn --argjson a "$edits" --argjson b "$nodes" '$a + $b')
+        # 修改历史、正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+        if ! edits=$(printf '%s\n%s\n' "$edits" "$nodes" | jq -cs '.[0] + .[1]' 2>/dev/null); then
+            AUTOPILOT_REASON="拼不起 PR #$pr 正文的修改历史"; return 2
+        fi
         # 倒序：已经读到早于打标签的那一版就够了
         printf '%s' "$nodes" | jq -e --arg t "$t" 'any(.[]; (.editedAt | type) == "string" and .editedAt < $t)' >/dev/null 2>&1 && break
         [ "$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.hasNextPage')" = true ] || break
         after=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.endCursor // ""')
         [ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }
     done
-    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" \
+    out=$(printf '%s\n%s\n' "$edits" "$(printf '%s' "$pj" | jq -c '(.body // "") | tostring | sub("\n+$"; "")' || echo '""')" | jq -cs --arg t "$t" \
               --arg created "$(printf '%s' "$pj" | jq -r '.created_at // ""')" '
-        if ($e | length) == 0 then {ok: [$cur]}
+        # 正文和改前一样去掉末尾换行（改前它经 $(…) 当参数传进来）
+        .[0] as $e | .[1] as $cur
+        | if ($e | length) == 0 then {ok: [$cur]}
         elif any($e[]; (.editedAt | type) != "string" or .editedAt == "") then {err: "unreadable"}
         else
           ([$e[] | select(.editedAt == $t)] + ([$e[] | select(.editedAt < $t)] | sort_by(.editedAt) | .[-1:])) as $c
@@ -5217,7 +5223,7 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
         AP_PATHS_DETAIL="请求失败或空输出"; return 0
     fi
     out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
-        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        --argjson pj "$(printf '%s' "$pj" | jq -c '{changed_files}')" "$AUTOPILOT_PATHS_JQ"'
         ($pj.changed_files) as $n
         | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
           elif (type != "array") or (all(.[]; type == "array") | not)
@@ -5405,10 +5411,10 @@ autopilot_permit() {   # <state_file> <PR 编号>
         case "$rc" in
             0) ;;
             1) AP_V=human; AP_STOP=outsider; AP_STOP_KEY="$OS_GATE_KEY"
-               AP_REASON="托管授权（$OS_AUTH_WHERE）之后，有外部账号（在本仓库没有写权限的账号）写的内容：$OS_GATE_TEXT。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
+               AP_REASON="托管授权（${OS_AUTH_WHERE}）之后，有外部账号（在本仓库没有写权限的账号）写的内容：${OS_GATE_TEXT}。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
                AP_NEXT="请维护者看过这些内容和 PR 的改动后选一种：① 自己审完直接合并；② 认为没问题、要继续托管——在 $(autopilot_auth_where) 上把 \`$LABEL_AUTOPILOT\` 摘掉再打上（表示这些内容已看过），再把本 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\`，重新走复审和合并；③ 不合，关掉 PR。"
                return 0 ;;
-            *) AP_REASON="核对外部账号的内容时读不全（$OS_WHY）"; return 0 ;;
+            *) AP_REASON="核对外部账号的内容时读不全（${OS_WHY:-内部步骤异常退出（退出码 ${rc}），原因没记下}）"; return 0 ;;
         esac
     fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
@@ -5494,14 +5500,25 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
         else where="本 issue "; fi
         body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head")
+        # 说明里照搬了 PR 正文的总结段，大小没有上限：经文件交给 jq 和 gh，不经命令行参数（GitHub#426）
+        local bf=""
+        if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+            [ -z "$bf" ] || rm -f "$bf"; bf=""
+            log "  ⚠️ 托管：PR #$pr 已合并，但写不出合并说明的临时文件；说明$( [ "$kind" = issue ] && echo "改由交接补发（短版）" || echo "这次没发")"
+        fi
         if [ "$kind" = issue ]; then
             # 合并后的交接（GitHub#233）：issue 留着、翻 pending/human 给人验收。先记下要做的事和评论全文，
             # 评论发不出去、标签没翻好，都由合并后的清理那一步（merged_issue_label → autopilot_merged_handoff）接着做
-            autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --arg b "$body" || true
+            if [ -n "$bf" ]; then
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --rawfile b "$bf" || true
+            else
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: ""}' --arg p "$pr" --arg n "$n" || true
+            fi
         fi
-        if run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -f "body=$body"; then
+        if [ -n "$bf" ] && run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -F "body=@$bf"; then
             [ "$kind" != issue ] || autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
         fi
+        [ -z "$bf" ] || rm -f "$bf"
         autopilot_state_set "$sf" 'del(.prs[$p])' --arg p "$pr" || true
         return 0
     fi
@@ -5555,7 +5572,16 @@ autopilot_merged_handoff() {   # <issue> <PR>
                 any(.[][]?; ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase) and ((.body // "") | contains($m)))' >/dev/null 2>&1; then
             body=$(autopilot_state_get "$sf" '.handoff[$p].body' --arg p "$pr")
             [ -n "$body" ] || body="## ✅ 托管：已自动合并 PR #$pr"$'\n\n'"$(autopilot_daemon_sig)"$'\n'"<!-- cavil-loop:autopilot-merged pr=$pr head= -->"
-            run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -f "body=$body" || return 1
+            # 正文经文件交给 gh，不经命令行参数（GitHub#426：说明里有 PR 的总结段，大小没有上限）
+            local bf
+            if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+                [ -z "${bf:-}" ] || rm -f "$bf"
+                log "  ⚠️ 托管合并交接：写不出合并说明的临时文件，下轮再试"; return 1
+            fi
+            if ! run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -F "body=@$bf"; then
+                rm -f "$bf"; return 1
+            fi
+            rm -f "$bf"
         fi
         autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
     fi
