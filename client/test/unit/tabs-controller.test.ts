@@ -368,17 +368,17 @@ describe('kept on this machine, and gone with the account', () => {
     expect(cache.getSetting('tabs', null)).toEqual([]);
   });
 
-  it('the running label: kept, trimmed, empty turns the status off', async () => {
+  it('the running label is the one Settings holds (GitHub#404): changed or emptied there, the tab follows', async () => {
     const c = await ready();
-    expect(c.getState().doingLabel).toBe('doing/agent');
-    c.setDoingLabel('  wip ');
-    expect(c.getState().doingLabel).toBe('wip');
-    c.setDoingLabel('');
-    expect(c.getState().doingLabel).toBe('');
-    await c.settled();
-    await backends[0].close();
-    backends = [];
-    expect((await ready(false)).getState().doingLabel).toBe('');
+    c.openTab(K(ISSUE));
+    setIssue({ labels: ['wip'] });
+    await round(c);
+    const labels = () => ({ human: c.getState().handBack.human, doing: c.getState().handBack.running });
+    expect(tabStatus(tab(c)!.item, labels())).toBe('open');
+    c.setHandBack({ running: ' wip ' });
+    expect(tabStatus(tab(c)!.item, labels())).toBe('running');
+    c.setHandBack({ running: '' });
+    expect(tabStatus(tab(c)!.item, labels())).toBe('open');
   });
 
   it('the shell\'s close key: the window hears every press', async () => {

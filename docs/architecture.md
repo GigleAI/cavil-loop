@@ -197,6 +197,10 @@ State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
 have I seen" cursors. A backed-off tick still writes one line to `poll.log`
 saying which tier it is on and how long it will wait.
 
+## When an agent hits its usage limit (GitHub#341)
+
+Optional (`ENABLE_USAGE_LIMIT_PAUSE`). A subscription's usage limit shows up as a notice on the worker pane: the session stays alive, the label stays `doing/agent`, and none of the other safety nets apply (self-heal needs the session gone, the reaper needs the label gone). The daemon recognises the notice from the pane plus the session's own record, then (1) stops dispatching **to that agent** until the reset time — machine-wide, per agent and account directory, other agents carry on — and (2) comments on the interrupted item and moves it from `doing/agent` to `pending/human`. It does not touch the session. A human puts the trigger label back after the reset time; the next dispatch resumes the registered conversation. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+
 ## Worker session model
 
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process

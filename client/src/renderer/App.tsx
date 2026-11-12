@@ -182,6 +182,8 @@ export function App() {
   });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
+  // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
+  const tallySaved = useRef<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -204,7 +206,7 @@ export function App() {
         <TabBar
           tabs={tabs}
           active={front}
-          labels={{ human: snap!.state.handBack.human, doing: snap!.state.doingLabel }}
+          labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running }}
           onPick={(key) => show(key)}
           onClose={closeTab}
           onMove={(key, to) => void api().moveTab(key, to)}
@@ -237,6 +239,7 @@ export function App() {
                 onRequestTaken={() => setBoardReq(null)}
                 onSettings={() => setPage('settings')}
                 onKeysHelp={() => setKeysHelp(true)}
+                tallySaved={tallySaved}
               />
             )}
           </div>

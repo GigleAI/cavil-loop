@@ -33,6 +33,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     restartToUpdate: () => c.restartToUpdate(),
     loadDetail: (key) => c.loadDetail(String(key)),
     cachedDetail: async (key) => c.cachedDetail(String(key)),
+    loadImage: (src) => c.loadImage(String(src)),
     repoOptions: (repo, fresh) => c.repoOptions(String(repo), Boolean(fresh)),
     resendEdit: (id, force) => c.resendEdit(String(id), Boolean(force)),
     abandonEdit: (id) => c.abandonEdit(String(id)),
@@ -65,7 +66,6 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     moveTab: async (key, to) => c.moveTab(String(key), Number(to)),
     seenTab: async (key, updatedAt) => c.seenTab(String(key), String(updatedAt)),
     checkTab: (key) => c.checkTabs(String(key)),
-    setDoingLabel: async (label) => c.setDoingLabel(String(label)),
     closeWindow: () => c.closeWindow(),
     // GitHub#314: straight to the back end, which runs every command (the controller has no part in it)
     daemonStatus: () => backend.call('daemonStatus'),
@@ -74,6 +74,9 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     daemonDisconnect: (key) => backend.call('daemonDisconnect', { key: String(key) }),
     daemonOpen: (key, what) => backend.call('daemonOpen', { key: String(key), what: what === 'config' ? 'config' : 'log' }),
     daemonUpdate: () => backend.call('daemonUpdate'),
+    daemonConfigGet: (key) => backend.call('daemonConfigGet', { key: String(key) }),
+    daemonConfigSet: (key, rev, values) =>
+      backend.call('daemonConfigSet', { key: String(key), rev: String(rev), values: Object.fromEntries(Object.entries(values ?? {}).map(([k, v]) => [String(k), String(v)])) }),
     daemonConnectInfo: (repo) => backend.call('daemonConnectInfo', { repo: String(repo) }),
     daemonPrecheck: (agent) => backend.call('daemonPrecheck', { agent: String(agent) }),
     daemonCheckDir: (repo, dir) => backend.call('daemonCheckDir', { repo: String(repo), dir: String(dir) }),

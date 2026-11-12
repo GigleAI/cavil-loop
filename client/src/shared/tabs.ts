@@ -57,7 +57,7 @@ export type TabStatus = 'merged' | 'closed' | 'done' | 'skipped' | 'waiting' | '
 export interface TabLabels {
   /** "waiting for a human" — the same setting the reminders use */
   human: string;
-  /** "an agent is working on it" */
+  /** "an agent is working on it" — the "running" label of Settings (GitHub#404), the one the top bar counts */
   doing: string;
 }
 
@@ -86,14 +86,6 @@ export const TAB_STATUS_TEXT: Record<TabStatus, string> = {
   draft: '草稿',
   open: '打开',
 };
-
-/** The label an agent's work in progress carries, unless Settings says otherwise. */
-export const DEFAULT_DOING_LABEL = 'doing/agent';
-
-/** Whatever was saved: a string (trimmed; '' = never show "running"), anything else is the default. */
-export function normalizeDoingLabel(raw: unknown): string {
-  return typeof raw === 'string' ? raw.trim() : DEFAULT_DOING_LABEL;
-}
 
 /** A tab that was not looked at since its item changed (the blue dot). Never on the tab in front. */
 export function tabUnread(t: Pick<TabInfo, 'seen' | 'item'>, active: boolean): boolean {

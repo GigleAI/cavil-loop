@@ -125,7 +125,7 @@ FABLE_MODEL="fable"
 #
 # 代价：state.json 丢了之后，存量 doing/agent 条目本机不再认领（worker_hosts 没记录
 # = 不是我的），人工重标一次即可恢复。单机场景保持 false，就是原来的行为。
-SELFHEAL_ONLY_OWN_WORKERS="false"
+SELFHEAL_ONLY_OWN_WORKERS=false
 # Defaults to the short hostname; set explicitly only if two machines share one.
 # 默认取短主机名；两台机器重名时才需要显式写死。
 # SELFHEAL_HOST_ID="futurelab-01"
@@ -162,7 +162,7 @@ REVIEW_WORKER_AGENT="codex"
 REVIEW_MODEL=""
 REVIEW_MAX_ROUNDS=6
 # Design proposals through the gate too (GitHub#102). Off by default: a design proposal (and a
-# revised one) goes straight to pending/human, exactly as before. With "true" *and*
+# revised one) goes straight to pending/human, exactly as before. With true *and*
 # LABEL_PENDING_REVIEW set, the worker flips a proposal to the review label instead; the reviewer
 # checks the proposal itself and passes it to pending/human or bounces it back for a rewrite
 # (never "go implement"). Clarifying answers / questions still go straight to the human.
@@ -170,10 +170,10 @@ REVIEW_MAX_ROUNDS=6
 # whether this is on or off.
 #
 # 设计方案也先过复审（GitHub#102）。默认关：写完方案 / 修订方案直接翻 pending/human，和以前一样。
-# 设成 "true" **并且** 配了 LABEL_PENDING_REVIEW 时，方案改翻复审标签：复审审方案本身，通过才交人，
+# 设成 true **并且** 配了 LABEL_PENDING_REVIEW 时，方案改翻复审标签：复审审方案本身，通过才交人，
 # 不通过打回改方案（不是去实现）。澄清答复、提问仍直接交人。已经在自己的 <name>.extra.md 里
 # 写了「方案交复审」的项目，开不开这一项都照常工作。
-REVIEW_DESIGN_PROPOSALS="false"
+REVIEW_DESIGN_PROPOSALS=false
 
 # ── Optional autopilot label / 托管标签（默认关闭，GitHub#114）──
 # A maintainer puts this label on an ISSUE to hand the whole thing to the agents: the design goes
@@ -273,7 +273,7 @@ BLOCKED_RECHECK_SECS=300
 BLOCKED_MAX_TRIES=10
 
 # ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340）──
-# With "true", every worker dispatch (new issue, issue comment, PR comment, split sub-issue) gets one more
+# With true, every worker dispatch (new issue, issue comment, PR comment, split sub-issue) gets one more
 # section: the other open items labelled doing/agent, the review label (when set) or pending/PR — number,
 # title, branch — and the files each branch has changed. A PR's files are relative to that PR's own base
 # branch; an item with no PR yet is compared with `main` (the branch this tool cuts work branches from) and
@@ -282,18 +282,44 @@ BLOCKED_MAX_TRIES=10
 # before hand-off still runs. Read only at dispatch (one issue list per label + one PR list, polling
 # identity; files come from a local `git fetch` + diff), never during polling. A list that cannot be read is
 # written as "could not read", never as "nothing else". At most 20 items and 30 files per item are listed,
-# with the real remainder stated. Reviews do not get the section. Empty / "false" / line missing = off:
+# with the real remainder stated. Reviews do not get the section. Empty / false / line missing = off:
 # prompts and GitHub calls are byte-identical to before.
 #
-# 设成 "true" 时，worker 的每次派工（新 issue、issue 评论、PR 评论、拆出来的子项）提示词里多一段：其他带
+# 设成 true 时，worker 的每次派工（新 issue、issue 评论、PR 评论、拆出来的子项）提示词里多一段：其他带
 # doing/agent、复审标签（配了才算）、pending/PR 的打开条目——编号、标题、分支——以及各分支已经改了哪些文件。
 # 已有 PR 的按那个 PR 自己的目标分支算；还没有 PR 的固定和 `main` 比（本工具建工作分支就是从它切的），行内写明。
 # worker 的方案或改动和它们有文件重叠时，必须在方案或交接评论里写出「和哪个条目、哪些文件」，由人决定先后。
 # 这是派工那一刻的快照，只含已推送的提交，不替代交接前的冲突检查。只在派工时读（每个标签一次条目列表 +
 # 一次 PR 列表，轮询身份；文件靠本地 git fetch + diff），轮询不多一次调用。读不到写「未能读取」，绝不写成
 # 「没有」。最多列 20 个条目、每个条目 30 个文件，超出写明真实剩余数。复审不带这一段。
-# 留空 / "false" / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
-ENABLE_CONCURRENT_WORK_HINT="true"
+# 留空 / false / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
+ENABLE_CONCURRENT_WORK_HINT=true
+
+# ── Agent hit its usage limit / agent 撞到用量上限（GitHub#341）──
+# Both agents run on flat-rate subscriptions with a usage limit per time window. With true, the daemon
+# looks every poll round at the worker sessions this machine dispatched that still carry doing/agent. When
+# the last block on a pane is the CLI's limit notice (and the session record shows the sentence was not
+# printed by the model or a tool, the agent is idle, and nothing changed across two rounds) it does two things:
+#   1. that agent gets no new work until the reset time read from the notice — machine-wide, per agent and
+#      account directory; queued items keep their labels and nothing counts as a failed dispatch
+#   2. the interrupted item gets one comment (which agent, when it lifts, which label to put back) and goes
+#      to pending/human. The session is not typed into, stopped or resumed.
+# The pause ends at its time, or when its record under ~/.local/state/cavil-loop/usage-limit/ is deleted.
+# Empty / false / line missing = off: no extra tmux or GitHub read, no state file. See docs/operations.md.
+#
+# 两个 agent 都跑在包月订阅上，有时段用量上限。设成 true 时，daemon 每轮看一眼本机派出去、仍挂着 doing/agent
+# 的 worker 会话。窗格最后一块是 CLI 的上限提示（并且会话记录里看不到这句话是模型或工具打出来的、agent 空闲、
+# 连续两轮都没变）时做两件事：
+#   1. 这个 agent 在提示里写的解除时间之前不再接新活——整台机器、按 agent 和账号目录记；排队的条目标签不动，
+#      不计派工失败
+#   2. 被打断的那一条留一条评论（哪个 agent、几点解除、标签改回哪个）并转 pending/human。不往会话里送字、
+#      不停程序、不自己续接。
+# 暂停到点结束，或者删掉 ~/.local/state/cavil-loop/usage-limit/ 下它的记录时结束。
+# 留空 / false / 不写这一行 = 关闭：不多读一次 tmux 或 GitHub，不留状态文件。详见 docs/operations.zh.md。
+ENABLE_USAGE_LIMIT_PAUSE=true
+# How long to pause when the notice's reset time cannot be read or lies more than 8 days ahead (seconds, 60–604800)
+# 提示里的解除时间读不出、或在 8 天以外时暂停多久（秒，60–604800）
+USAGE_LIMIT_FALLBACK_SECS=3600
 
 # ── GitHub 令牌脱敏 / token redaction（GitHub#342）──
 # worker 的环境里有 GitHub 令牌，agent 运行时可能把它原样打印出来（执行 env、调试 gh、报错带出请求头）。
@@ -302,8 +328,8 @@ ENABLE_CONCURRENT_WORK_HINT="true"
 # daemon 每 10 分钟扫一次，把里面的令牌原地换掉——只改那几个字节，文件长度不变，不删、不留备份，周报数字不受影响。
 # 只碰工作目录在上面 WORKTREE_BASE 之下的会话；人自己手动开的会话不碰。
 # 只认带前缀的 GitHub 令牌（ghp_ / gho_ / ghu_ / ghs_ / ghr_ / github_pat_）。
-# "true" / 不写这一行 = 开；留空 / "false" = 不改 agent 的会话记录。
-REDACT_AGENT_RECORDS="true"
+# true / 不写这一行 = 开；留空 / false = 不改 agent 的会话记录。
+REDACT_AGENT_RECORDS=true
 # codex 默认每次启动把整份环境变量（含 GH_TOKEN）存成一个环境快照文件（~/.codex/shell_snapshots/），
 # 长期留在磁盘上。"off" / 不写这一行 = 启动 codex worker 时关掉这项功能，不再产生新快照；
 # "on" = 保留 codex 的默认行为（令牌会继续写进快照）。已有的旧快照用 scripts/redact-snapshots.sh 清理，
@@ -401,7 +427,7 @@ LABEL_PENDING_REQUESTER_BOT=""
 REQUESTER_BOT_ACCOUNT=""
 REQUESTER_BOT_ALLOWED_ACTORS=""
 REQUESTER_BOT_ORIGIN_MARKER=""
-REQUESTER_BOT_REPORT_FIRST="false"
+REQUESTER_BOT_REPORT_FIRST=false
 
 # Optional (GitHub#133): also allow waking the bot on items it did NOT file (a maintainer's own
 # issue, the PR made from it), e.g. "please check this copy with the bot's ops people". Off by
@@ -416,7 +442,7 @@ REQUESTER_BOT_REPORT_FIRST="false"
 # 叫醒脚本另发一条叫醒记录，写明挂标签的事件编号和那条交接评论，机器人凭它找回那一条。机器人那边先支持这套约定才能打开——
 # 见 docs/requester-bot.zh.md「维护者自己的条目」。
 #   true / false，默认 false
-REQUESTER_BOT_WAKE_ANY_ITEM="false"
+REQUESTER_BOT_WAKE_ANY_ITEM=false
 
 # Optional webhook (GitHub#100). One POST and the bot pulls every item carrying the waiting label.
 # Sent only after a confirmed wake-up / merge-close notice; a failure is one log line and never
@@ -756,7 +782,7 @@ WORKER_SECRET_ENV="GH_TOKEN"
 #          GitHub issue/PR/comment
 # 所以即使开着自动 cleanup，半年后仍能事后查阅、按 SOP 续上对话。
 # 详见 docs/persistence.md。
-AUTO_CLEANUP_ON_MERGE="true"
+AUTO_CLEANUP_ON_MERGE=true
 
 # PRs waiting at pending/human that start conflicting with their base branch
 # (GitHub#86). Each tick compares the base branch's latest commit (git ls-remote,
@@ -770,7 +796,7 @@ AUTO_CLEANUP_ON_MERGE="true"
 #   older, or from a fork → one reminder comment, label unchanged
 # AUTOFIX_DAYS=0 = remind only, never hand back automatically.
 # CHECK=false turns the whole check off.
-PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_CHECK=true
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
 # How many ticks to retry when the check itself fails (fetch error, PR ref not
 # there yet) before giving up on that base/head pair.
@@ -783,7 +809,7 @@ PENDING_HUMAN_CONFLICT_MAX_TRIES=10
 # Project lessons: .agents/skills/cavil-loop/prompts/lessons.md
 # Never publishes project evidence or generated text to the public skill repo.
 # Public workflow improvements require a separate de-identification review.
-POST_MERGE_RETROSPECTIVE="true"
+POST_MERGE_RETROSPECTIVE=true
 RETROSPECTIVE_MODEL="sonnet"
 # Project lessons are a counted error book: a rule seen in 3 different PRs is
 # promoted, and every self-review / cross review checks the promoted rules one
@@ -804,7 +830,7 @@ RETROSPECTIVE_PROMOTION="auto"
 #           Turning it off and on again starts counting anew.
 #   false = retrospect every queued PR as before, never write directory lessons.
 # Any other value stops the retrospective before it reads or writes anything.
-RETROSPECTIVE_DIRECTORY_LESSONS="true"
+RETROSPECTIVE_DIRECTORY_LESSONS=true
 #
 # Command run after the retrospective, before its commit (empty = off), at the root
 # of the retrospective's temporary checkout, 10-minute limit. Gets
@@ -1195,7 +1221,7 @@ POLL_FORCE_SYNC_SECS=1800
 # POLL_IDLE_PROBE_MAX_SECS while the probe is on.
 # Cost: one request per tick while backed off (free when 304); a change anywhere
 # in the repo, related or not, triggers one full poll (counts against quota).
-# "false" turns it off: no probe, no cap, byte-identical to before.
+# false turns it off: no probe, no cap, byte-identical to before.
 #
 # 空闲轻量检查（GitHub#252）。GitHub 没有本机进程能用的订阅接口（webhook 要公网接收端
 # + 改仓库设置），但 REST 支持条件请求：带上次的 ETag 再问，没变化回 304，正确认证时
@@ -1206,7 +1232,7 @@ POLL_FORCE_SYNC_SECS=1800
 # 间隔封顶 POLL_IDLE_PROBE_MAX_SECS。
 # 代价：退避中每 tick 一次请求（回 304 时不占主额度）；仓库里任何条目一变（不管跟本机
 # 有没有关系）都会提前完整跑一轮，那一轮照常占额度。
-# 写 "false" 关掉：不问、不封顶，行为逐字节回到改动前。版本标记存在
+# 写 false 关掉：不问、不封顶，行为逐字节回到改动前。版本标记存在
 # $STATE_DIR/poll-probe.etag，删掉它只会让下一次检查多跑一轮。
 POLL_IDLE_PROBE=true
 
@@ -1226,14 +1252,14 @@ POLL_IDLE_PROBE_MAX_SECS=600
 # saves a snapshot. Look at it with `scripts/poll-history.sh`. Records only — nothing in
 # the poller reads these files, and a failed write never affects a poll. No tokens, no
 # issue / comment text, no source lines. Lives in $STATE_DIR/runlog/.
-# "false" turns it off; leaving the line out = on.
+# false turns it off; leaving the line out = on.
 #
 # 轮询运行记录（GitHub#344）。每一轮轮询退出时写一条很小的记录（开始 / 结束时间、结果、走到的
 # 最后一步、候选数、派工数、轮询进程自己发的 GitHub 调用数和失败数）；非零退出、读不到 GitHub、
 # 轻量检查超时、某一步太慢、发现上一轮卡住的那一轮，另存一份快照。用 `scripts/poll-history.sh` 看。
 # 只记不判：轮询的任何判断都不读这些文件，写失败也不影响轮询。里面没有令牌、没有 issue / 评论
 # 正文、没有源码行。放在 $STATE_DIR/runlog/。
-# "false" = 关闭；不写这一行 = 开。
+# false = 关闭；不写这一行 = 开。
 ENABLE_POLL_RUN_LOG=true
 # How many round records / snapshots / in-flight progress files to keep, and how many
 # seconds one step may take before the round saves a "slow step" snapshot.

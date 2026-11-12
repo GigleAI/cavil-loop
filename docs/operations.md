@@ -68,13 +68,13 @@ WORKER_PASS_ENV="GH_TOKEN"
 # WRITE_GH_TOKEN=""
 
 # Auto-cleanup after merge (worktree + tmux)
-AUTO_CLEANUP_ON_MERGE="true"
+AUTO_CLEANUP_ON_MERGE=true
 
 # PRs waiting at pending/human that start conflicting with their base (GitHub#86).
 # Checked only when the base or the PR head moved. Updated within N days → one
 # comment + back to pending/agent for the worker to resolve; older / forks →
 # one reminder comment, label unchanged. 0 = remind only, never auto-fix.
-PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_CHECK=true
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
 
 # Project-level cleanup hook (release ports, tear down tunnels, push metrics)
@@ -96,7 +96,7 @@ POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
 POLL_FORCE_SYNC_SECS=1800
 # Idle probe (GitHub#252): while backed off, each tick first sends one
 # conditional request (free when the answer is 304); if the repo changed, a full
-# poll runs now. "false" turns it off. While on, full polls are at most this far apart.
+# poll runs now. false turns it off. While on, full polls are at most this far apart.
 POLL_IDLE_PROBE=true
 POLL_IDLE_PROBE_MAX_SECS=600
 # Failure gets its own ladder (starts at POLL_INTERVAL_SECS, doubles each time,
@@ -1005,6 +1005,67 @@ label is seen within a minute, the project having just been active). `rm poll-pa
 loop itself, the resumed worker checks the locally deployed version before relying on it. Not supported: prerequisites on
 other hosts than github.com, cycle detection (two items waiting on each other both stay waiting).
 
+## Agent hit its usage limit: pause that agent, hand the interrupted item to a human (GitHub#341)
+
+Both agents run on flat-rate subscriptions with a usage limit per time window. When a worker hits it, the CLI stops on a notice: the session is alive, the item still says `doing/agent`, the slot stays taken — and every new session dispatched to that agent hits the limit on its first request. With `ENABLE_USAGE_LIMIT_PAUSE=true` the daemon looks, every poll round, at the sessions this machine dispatched that still carry `doing/agent`, and when it recognises the notice it does two things and nothing else:
+
+| What | Detail |
+|---|---|
+| that agent gets no new work until the limit lifts | new issues, issue comments, PR comments, reviews and prompts injected into a live session are all skipped for that agent; labels stay as they are, nothing counts as a failed dispatch, and dispatch resumes by itself at the reset time. Other agents carry on. The pause is **machine-wide per agent and account directory** (`~/.claude` / `CLAUDE_CONFIG_DIR`, `~/.codex` / `CODEX_HOME`): projects sharing an account hit the limit together |
+| the interrupted item goes to a human | one comment (which agent, when the limit lifts, which label to put back), then `pending/human` is added and `doing/agent` removed. The daemon does not type into the session, stop its program, close it or resume it |
+
+`poll.log` says `⏸ 用量上限：<agent> 撞到用量上限（…），暂停派工到 <time>` when a pause starts and lists the skipped items each round after that.
+
+**What a human does.** Open the item the daemon commented on. After the time in the comment, replace `pending/human` with the trigger label the comment names (`pending/agent`, the review label, …) in the Labels box. Doing it earlier is fine: the daemon waits for the reset time before dispatching. The next dispatch resumes the role's registered conversation. If the item is not dispatched after the reset time, or hits the limit again, leave it on `pending/human` and read the daemon's comment and `poll.log` rather than flipping labels back and forth.
+
+**How the limit is recognised.** All four must hold, or nothing happens (exactly as with the switch off):
+
+- the last block on the worker pane is the CLI's limit notice, followed only by lines the CLI itself draws under it (rules in `scripts/usage_limit.py`, written from real pane captures in `tests/fixtures/usage-limit/`); reminders such as "You've used 99% of your session limit" or codex's "You have N usage limit resets available" are not it
+- the agent is idle
+- the session is the one registered for this item and role, and its record shows no model reply, tool output or dispatch prompt containing that sentence since this dispatch started
+- screen and session record are unchanged across two consecutive poll rounds
+
+The reset time is read from the notice (claude: time of day plus time zone, e.g. `resets 4:50pm (Asia/Singapore)`; codex: `try again at Aug 20th, 2026 11:35 AM`, read in the machine's time zone). A time that cannot be read, or lies more than 8 days ahead, becomes a fixed wait of `USAGE_LIMIT_FALLBACK_SECS` (default 3600); if the limit is still on after that, the next worker that hits it is recognised again.
+
+**Limits to know about.**
+
+- The notice exists only on the pane — nothing in the session record marks it — so the source check is "the record does not show the sentence being produced", not proof. A wrong call costs: one item is commented on and handed to a human (put the label back), and that agent is paused until the time read from the screen (lift it by hand, below).
+- Handing over does not stop the session. The existing reaper closes it after it has been idle for the grace period (the conversation is kept; background commands in it end), and a claude that offers "continuing automatically" may carry on by itself at the reset time.
+- Between the daemon's three writes (comment, add `pending/human`, remove `doing/agent`) everything is re-read. If the item, its PR (base branch, head commit, source), its labels or the local session changed, the daemon **stops and undoes nothing**. An item can therefore be left with both `pending/human` and `doing/agent`: it still takes a slot until a human removes `doing/agent`. A read that fails is not a change: the daemon waits and continues next round.
+- A CLI that exits at once on launch is handled as before (no real sample of a limit shown that way), and there is no real sample of a *weekly* limit screen — it is matched by the same structure, not verified.
+- Only the pause decides whether a round dispatches; `ENABLE_USAGE_LIMIT_PAUSE` off, empty or missing means no extra read of tmux or GitHub and no state file.
+
+**Look at / lift a pause by hand.** The pause ends only at its time, or when its record is deleted — never because another session looks busy. Run in any shell on the daemon's machine (nothing needs to be set for the first block):
+
+<!-- usage-limit-ops:begin -->
+```bash
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+# 1. look: which agents are paused on this machine, until when / 查看：本机哪些 agent 在暂停、到几点
+found=0
+for f in "$DIR"/*.json; do
+    [ -e "$f" ] || continue
+    found=1
+    row=$(jq -er '[.agent, (.until | floor | tostring), .account, .item, .source] | @tsv' "$f" 2>/dev/null) \
+        || { echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"; continue; }
+    IFS=$'\t' read -r agent until account item source <<<"$row"
+    when=$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z')   # GNU date / BSD date
+    echo "$agent  until $when  account=$account  seen-on=$item  time-from=$source"
+done
+[ "$found" = 1 ] || echo "no pause record on this machine / 本机没有暂停记录"
+```
+
+```bash
+# 2. lift a pause by hand: set AGENT, then run / 手动解除：先填 AGENT 再执行
+AGENT=claude
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+rm -f "$DIR/$AGENT"-*.json
+left=$(ls "$DIR" 2>/dev/null | grep -c "^$AGENT-" || true)
+echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
+```
+<!-- usage-limit-ops:end -->
+
+After lifting, the next poll round dispatches to that agent again; if the account is in fact still limited, the first worker to hit it is recognised and the pause comes back (there is nothing to roll back). A project's own progress file is `$STATE_DIR/usage-limit.json` (dispatch start times, and hand-overs in progress); leave it alone while a hand-over is in progress — deleting it then can produce a second comment.
+
 ## External requester bot (optional, **off by default**)
 
 When another AI assistant with its own GitHub account files requests directly, the agent's
@@ -1017,7 +1078,7 @@ Leaving the five settings (`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUN
 empty keeps today's behaviour byte-for-byte. The early names (`LABEL_PENDING_RELAY`, `RELAY_*`)
 are still read; for each setting the new name wins when it has a value. The webhook has three more
 settings (`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`); an empty URL sends nothing, and the
-config file must be mode 600. `REQUESTER_BOT_WAKE_ANY_ITEM="true"` (default false, GitHub#133) also lets
+config file must be mode 600. `REQUESTER_BOT_WAKE_ANY_ITEM=true` (default false, GitHub#133) also lets
 items the bot did not file wake it — see [requester-bot.md](requester-bot.md#a-maintainers-own-items-optional);
 merge / close notices still go to the bot's own requests only.
 
@@ -1513,6 +1574,7 @@ your-project/
 ~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
+├── usage-limit.json                    # only with ENABLE_USAGE_LIMIT_PAUSE: dispatch start times + hand-overs in progress (GitHub#341)
 ├── poll.log                            # rolling log
 ├── runlog/                             # run log: one record per poll round + snapshots (GitHub#344)
 ├── poll.lock                           # flock
@@ -1595,6 +1657,44 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 <!-- install-scripts-mac-ops:end -->
 
 It renders the new plist with the same function `setup.sh` uses, checks it with `plutil -lint`, and compares it with the current file — identical means `RESULT=unchanged`. Otherwise it reads the job state (unreadable → stop, nothing touched); if the job is loaded it takes the project's poll lock (waits for the current poll to end, at most `CAVIL_REFRESH_LOCK_WAIT` seconds, default 300), boots it out and confirms it is gone; copies the old file to `$STATE_DIR/launchd-backup/`; swaps the new one in atomically; and loads it again if it was loaded before, reading back that it is loaded from that file. If loading fails it restores the backup and the previous state. The last line is `RESULT=` one of `replaced` / `unchanged` (exit 0), `unknown` / `lint_failed` / `lock_timeout` (exit 2, nothing touched), `not_found` / `not_macos` (exit 1), `failed` (exit 3, old file and state restored — only after reading both back), `needs_human` (exit 4: the restore failed or could not be confirmed — the output shows the error texts, where the original file is, and how to restore it by hand; a backup, if one was made, is kept). On Linux the unit files are symlinks to the templates and the deployer reloads them, so this script does not apply there.
+
+## Edit a project's settings from a script (GitHub#388)
+
+`scripts/project-config.sh` reads and changes the everyday settings of one connected project. The desktop client's "项目配置" dialog is built on it; a person can run it too. `myproject` is the instance key.
+
+<!-- project-config-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.mode == "edit") | "\(.name)=\(.value) editable=\(.editable)"'
+REV="$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .rev)"
+SAVED="$(printf '{"MAX_CONCURRENT_WORKERS":"2"}' | bash "$SKILL/scripts/project-config.sh" set myproject --rev "$REV")"
+printf '%s\n' "$SAVED" | tail -1
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "MAX_CONCURRENT_WORKERS") | "\(.name)=\(.value)"'
+BACKUP="$(printf '%s\n' "$SAVED" | sed -n 's/^DETAIL=//p' | jq -r .backup)"
+cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .real)"
+```
+<!-- project-config-ops:end -->
+
+In order: list the settings that can be changed with their current values; take the file's fingerprint; change one setting; print the result line; read the new value back; then put the pre-save version back from the backup the save made (the last two lines are the whole way back — nothing else was touched).
+
+**What it can read and change.** Only the settings registered in `scripts/config-fields.txt` (agent and model, concurrency, retry and round counts, the comment language, a few switches). Commands, hooks, tokens, URLs, directories and the project's names are not registered: they are never printed and cannot be set. Four settings that make the daemon do a new kind of thing — dispatch mode, the review gate, autopilot, waiting on a prerequisite — are shown only (`mode: "show"`). A registered setting is editable only when the config's code names it exactly once, and that one place is an unindented line of its own at the top level holding a plain literal. One written as arithmetic or with a variable, assigned twice, placed inside an `if`, a loop, a `case`, a function or a `{ }` group — on several lines or on one, indented or not, whether that branch runs or not — following another command (`cmd && KEY=…`), written some other way (`declare`, a bare `export`, `read`, `printf -v`, `${KEY:=…}`), or merely mentioned a second time anywhere else in the code comes back `editable: false` with the reason, and stays a job for a text editor. The same evidence decides whether a setting counts as missing from the file: only when the code never names it at all (comments do not count) may a save append a line for it. Where things sit is read from bash's own parse of the file, not from its indentation; when that parse cannot be read, every setting is show-only. One thing cannot be seen: a name put together at run time (`eval`, another file that is sourced) inside a branch that did not run. `value` is always what the daemon works with, separately from whether the line can be changed: a setting that is unset or empty after the config loads — no such line, an empty value, a branch that did not run — is reported with the daemon's default. `in_file: false` means the file's code never names the setting; saving it appends one line.
+
+**`get <key>`** prints one JSON object: `state` (`ok` / `unreadable` / `not_found`), `config`, `real` (the file after following symlinks), `rev` (fingerprint of that location plus the content) and `fields[]` — `name`, `group`, `mode`, `label`, `help`, `type` (`agent` / `model` / `int` / `bool` / `enum` / `label`, with `options`, `min` / `max`, `on` / `off` as the type needs), `value`, `default`, `in_file`, `editable`, `reason`. A config that cannot be loaded is `unreadable` with no values at all — never "nothing set".
+
+**`set <key> --rev <fingerprint>`** takes a JSON object of strings on standard input and writes all of it or none of it. It locks on the file's real location, works from a private copy of the file, validates every value against its registered type, changes only those lines (comments, quoting and every other byte stay), checks that the new file still loads and that no other variable moved, copies the pre-save version to `$STATE_DIR/config-backups/` (mode 600, the latest 10 kept), compares the file with `--rev` once more right before the swap, and renames the new file into place. The next-to-last line is `DETAIL=<json>` (`changes[]` with old and new values, `backup`), the last is `RESULT=`:
+
+| `RESULT` | Exit | Meaning |
+|---|---|---|
+| `saved` | 0 | written; reading it back right after the swap gave the new content |
+| `unchanged` | 0 | every value already was what the file says; nothing written |
+| `changed` | 2 | the file is not the one `--rev` was taken from (edited since the read, or during the save); nothing written — read again |
+| `invalid` / `not_editable` | 2 | a value does not fit its type / a setting is not registered, show-only, or not a plain literal; nothing written |
+| `busy` | 2 | another save holds the lock (`--lock-wait <seconds>`, default 15); nothing written |
+| `unreadable` / `verify_failed` / `backup_failed` / `write_failed` | 2 | the config does not load / the new file failed its check / the backup could not be written / a file operation failed; nothing written |
+| `not_found` | 1 | no such connected project |
+| `saved_then_changed` | 4 | the new file was swapped in, and something else rewrote the file before the read-back; the script leaves it as it is — read again and compare with the backup |
+
+**Do not edit the same file in an editor while saving.** The script cannot make an editor wait. It refuses to write when the file differs from `--rev` at its last check; after that check it cannot see anything: a version an editor stores between that check and the swap is replaced by the new file, and an editor that had the file open before the save and stores afterwards either overwrites the new values with its whole old copy or writes into the file that was just swapped out. In both cases the result may still be `saved`, and the lost edit cannot be recovered — the backup holds only the version from before the save. Once the new file is in place the script never writes the config again: no rollback, no automatic restore. The poller reads the config once at the start of each tick, and the swap is a rename, so it sees the whole old file or the whole new one; a running worker keeps the values it started with.
 
 ## Running multiple projects
 

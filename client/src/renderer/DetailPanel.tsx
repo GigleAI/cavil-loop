@@ -6,6 +6,7 @@ import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
 import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
+import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
 import { labelStyle, useDarkMode } from './colors';
@@ -695,9 +696,9 @@ export function DetailPanel({
   const frame = useMemo(() => {
     if (!detail) return { doc: '', render: '' };
     const render = `r${++renderSeq.current}`;
-    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current }), render };
+    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current, web: state.githubWeb, offline: !canWrite }), render };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, unfold, isDark, canTick, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked]);
+  }, [detail, unfold, isDark, canTick, canWrite, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked]);
   const doc = frame.doc;
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   /** the rendering whose script reported in: the frame's script ran (tests wait on it) */
@@ -735,8 +736,32 @@ export function DetailPanel({
     setEditNote(null);
     setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
   };
-  const live = useRef({ tick, edit, setWrap, render: frame.render, ids: [] as string[] });
-  live.current = { tick, edit, setWrap, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  /**
+   * GitHub#395: the frame asks for a release attachment image (`id` = its number in that rendering).
+   * The controller fetches it with the sign-in (or answers from memory / "rate limited until …");
+   * the answer goes back to the frame that asked — a frame rendered again meanwhile asks by itself.
+   */
+  const image = (render: string, id: unknown, src: unknown) => {
+    if (typeof id !== 'string' || typeof src !== 'string' || !parseReleaseImage(src, state.githubWeb)) return;
+    void api()
+      .loadImage(src)
+      .then((r) => {
+        const now = live.current;
+        if (now.render !== render) return;
+        const answer = r.ok
+          ? { cavil: 'image', render, id, ok: true, data: r.dataUrl }
+          : { cavil: 'image', render, id, ok: false, state: r.kind === 'limited' ? 'limited' : 'failed', why: imageFailureText(r), ...(r.kind === 'limited' ? { until: r.until } : {}) };
+        frameRef.current?.contentWindow?.postMessage(answer, '*');
+      })
+      .catch(() => undefined);
+  };
+  /** GitHub#395: "reload" on an image that did not load: read the discussion again (fresh addresses) and draw the frame again */
+  const reread = () => {
+    if (!canWrite) return;
+    void load(false).then(() => setRedraw((n) => n + 1));
+  };
+  const live = useRef({ tick, edit, setWrap, image, reread, render: frame.render, ids: [] as string[] });
+  live.current = { tick, edit, setWrap, image, reread, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
   // One listener for the panel's whole life, in place before the first frame loads (a layout effect
   // runs right after the frame is inserted, before its document can run): a frame that loads fast
   // must not report before anyone listens.
@@ -745,7 +770,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; on?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -755,6 +780,8 @@ export function DetailPanel({
       else if (m.cavil === 'task') void now.tick(m.entry, m.index, m.checked);
       else if (m.cavil === 'edit') now.edit(m.entry);
       else if (m.cavil === 'wrap' && typeof m.on === 'boolean') now.setWrap(m.on);
+      else if (m.cavil === 'image') now.image(now.render, m.id, m.src);
+      else if (m.cavil === 'reread') now.reread();
       // GitHub#322: the frame passes on a bare R only; the window's own rules decide, and only "go to the reply box" may act
       else if (m.cavil === 'key' && typeof m.key === 'string') frameKey(m.key);
     };

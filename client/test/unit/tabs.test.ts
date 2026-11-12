@@ -1,14 +1,12 @@
 // GigleAI/cavil-loop#397: detail tabs — the pure rules (shared/tabs.ts).
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_DOING_LABEL,
   ENDED_CHECK_MS,
   HOME,
   afterClose,
   listedNow,
   moveTab,
   newestCopy,
-  normalizeDoingLabel,
   normalizeTabs,
   stepTab,
   summarize,
@@ -57,13 +55,6 @@ describe('the status a tab shows', () => {
     expect(tabStatus(sum({ labels: ['working'] }), { human: 'pending/human', doing: ' Working ' })).toBe('running');
     expect(tabStatus(sum({ labels: ['doing/agent', ''] }), { human: 'pending/human', doing: '' })).toBe('open');
     expect(tabStatus(sum({ labels: ['pending/human'] }), { human: '', doing: 'doing/agent' })).toBe('open');
-  });
-
-  it('the running label as saved: a string is kept (empty = off), anything else is the default', () => {
-    expect(normalizeDoingLabel(' wip ')).toBe('wip');
-    expect(normalizeDoingLabel('')).toBe('');
-    expect(normalizeDoingLabel(null)).toBe(DEFAULT_DOING_LABEL);
-    expect(normalizeDoingLabel(3)).toBe(DEFAULT_DOING_LABEL);
   });
 });
 

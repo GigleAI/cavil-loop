@@ -1,0 +1,48 @@
+# 客户端「项目配置」弹窗里出现的配置项登记表（GitHub#388）。scripts/project-config.sh 读它。
+# The settings the desktop client's "项目配置" dialog shows (GitHub#388); read by scripts/project-config.sh.
+#
+# 只有登记在这里的配置项会被读出来给客户端，只有登记成 edit 的能被 project-config.sh set 改。
+# 命令、钩子、令牌、网络地址、目录、项目名这几类**不登记**：窗口里能填它们，就等于窗口有了
+# 在本机跑任意命令 / 读凭据的入口（tests/project-config.test.sh 按名单断言它们不在这里）。
+#
+# 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
+#   KEY | 分组标题 | 类型 | 不写这一行时 daemon 实际用的值 | edit / show | 名称 | 一句说明
+#
+# 类型：
+#   agent          daemon 自带的 agent（scripts/drivers/ 下的 driver 名）
+#   model          模型名；可以留空
+#   int:MIN:MAX    整数，含两端
+#   bool:ON:OFF    开关；ON / OFF 是写进配置文件的那两个词
+#   enum:a=说明,b=说明   几选一；= 后面是给人看的说明
+#   label          标签名：空 = 这个功能关着（只用于 show）
+#
+# 「不写这一行时的值」必须和 daemon 实际用的一致——有的在 _lib.sh 加载时定，有的在 agent-poll.sh
+# 用到的地方才补（${X:-默认}）。两类都和真实的使用方对拍（tests/project-config.test.sh 第 7 节、
+# tests/project-config-poll.test.sh），新加一行就要补上它的对拍；改默认值时两边一起改。
+# edit 项只在「配置的代码里只提到它一次，且那是最外层单独一行、顶格写的普通字面值」时可改；写成算式、引用变量、
+# 多处赋值、写在 if / 循环 / case / 函数里（一行写完的也算）、别处还提到它的只显示。代码里一次都没提到才算「没写」。显示的值一律是 daemon 实际用的：没设置或为空 = 这里登记的默认值。
+#
+WORKER_AGENT | agent 与模型 | agent | claude | edit | 干活的 agent | 派工时用哪个 agent 程序写代码
+WORKER_MODEL | agent 与模型 | model | | edit | 干活用的模型 | 留空 = 用 agent 自己的默认模型
+REVIEW_WORKER_AGENT | agent 与模型 | agent | codex | edit | 复审的 agent | 独立复审用哪个 agent（复审关卡开着时才用到）
+REVIEW_MODEL | agent 与模型 | model | | edit | 复审用的模型 | 留空 = 用 agent 自己的默认模型
+RETROSPECTIVE_MODEL | agent 与模型 | model | sonnet | edit | 合并后复盘用的模型 | 留空 = sonnet
+MAX_CONCURRENT_WORKERS | 派工与重试 | int:1:16 | 1 | edit | 同时最多几个 worker | 同一时刻最多有几条 issue / PR 在干活；1 = 一条一条来，最稳
+DISPATCH_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | 派工连续失败几次后交人 | 派不出去时最多自动重试几次，之后标 pending/human
+SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退出后最多重派几次 | 之后标 pending/human
+REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决
+REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
+OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
+COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
+ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，提醒写明重叠
+PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒
+BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有
+BLOCKED_MAX_TRIES | 等人期间 | int:1:100 | 10 | edit | 等前置：写 GitHub 连续失败几次后放弃 | 放弃后条目留在等前置标签上，只记日志
+AUTO_CLEANUP_ON_MERGE | 等人期间 | bool:true:false | true | edit | 合并后自动清理工作目录 | 清掉这条 issue 的工作目录和终端会话；分支、对话记录、日志都保留
+POLL_IDLE_PROBE | 其他 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询
+LOG_LEVEL | 其他 | enum:info=常规,debug=排查（更详细） | info | edit | 日志详细程度 | 写进轮询日志的内容多少
+DISPATCH_MODE | 只显示、不在这里改的设置 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |
+LABEL_PENDING_REVIEW | 只显示、不在这里改的设置 | label | | show | 复审关卡 |
+LABEL_AUTOPILOT | 只显示、不在这里改的设置 | label | | show | 托管（自动合并） |
+LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | | show | 等前置 |

@@ -31,7 +31,8 @@ export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN \
-    LABEL_PENDING_BLOCKED CONFIG_NOTICE_ISSUE DEMO_NEW_FEATURE ENABLE_CONCURRENT_WORK_HINT CONCURRENT_WORK_HINT
+    LABEL_PENDING_BLOCKED CONFIG_NOTICE_ISSUE DEMO_NEW_FEATURE ENABLE_CONCURRENT_WORK_HINT CONCURRENT_WORK_HINT \
+    ENABLE_USAGE_LIMIT_PAUSE
 export FAKE_GH_REPO="example/cn"
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
@@ -97,6 +98,7 @@ MAX_CONCURRENT_WORKERS=0
 # 这份「老项目配置」对别的 notice 项都已经拿过主意（写成空值 = 决定不开），只剩等前置标签那一项没写：
 # 下面每一组都以「恰好缺 LABEL_PENDING_BLOCKED 一项」为起点
 ENABLE_CONCURRENT_WORK_HINT=""
+ENABLE_USAGE_LIMIT_PAUSE=""
 # 这一项改名前的名字（GitHub#356）：当前代码不认它，只有对拍用的改动前那份代码还读它
 CONCURRENT_WORK_HINT=""
 PATH="$SANDBOX/bin:\$PATH"
@@ -245,7 +247,7 @@ only_old_name
 tick
 chk "只写旧名字：开一条提示 issue" "$(creates)/$(n_items)" "1/1"
 body=$(item 1 .body)
-chk "正文点名新名字、给出模板里新名字那一行" "$(grep -c "\`$NEW_KEY\`" <<<"$body")/$(grep -cx "$NEW_KEY=\"true\"" <<<"$body")" "1/1"
+chk "正文点名新名字、给出模板里新名字那一行" "$(grep -c "\`$NEW_KEY\`" <<<"$body")/$(grep -cx "$NEW_KEY=true" <<<"$body")" "1/1"
 chk "正文说明旧名字已不再生效" "$(grep -c "原来叫 \`$OLD_KEY\`，那个名字已不再生效" <<<"$body")" 1
 chk "记下的是新名字" "$(nst '.issued')" "[\"$NEW_KEY\"]"
 conf_set "$NEW_KEY=\"true\""
@@ -259,7 +261,7 @@ sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"
 tick
 chk "旧记录 + 两个名字都没写：零创建、原 issue 上一条评论" "$(creates)/$(comments_on 1)" "0/1"
 cbody=$(jq -r '.["1"][0].body' "$GD/comments.json")
-chk "评论给出新名字那一行" "$(grep -cx "$NEW_KEY=\"true\"" <<<"$cbody")" 1
+chk "评论给出新名字那一行" "$(grep -cx "$NEW_KEY=true" <<<"$cbody")" 1
 chk "记录里只剩现在登记着的名字" "$(nst '.issued')" "[\"$NEW_KEY\",\"LABEL_PENDING_BLOCKED\"]"
 tick
 chk "再下一轮：不重复评论" "$(comments_on 1)/$(on_issue 1)" "1/0"
@@ -459,6 +461,20 @@ conf_set 'LABEL_PENDING_BLOCKED=""'
 tick
 out=$(run_ops)
 chk "补上配置后：缺项清空、issue 回到 null，issue 已关" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c '[.issue, .logged, .issued]')/$(item 1 .state)" '[null,[],[]]/closed'
+
+echo "【开关写法】模板里的 true / false 不带引号，提示里照抄的那一行也不带（GitHub#403）"
+chk "模板里没有带引号的 true / false 赋值" "$(grep -cE '^[A-Z_]+="(true|false)"' "$REPO_DIR/cavil-loop.config.example" || true)" 0
+fresh 'LABEL_PENDING_BLOCKED=""'
+sed -i '/^ENABLE_USAGE_LIMIT_PAUSE=/d' "$CONF"
+tick
+body=$(item 1 .body)
+chk "恰好缺用量上限这一项：开了一条 issue" "$(creates)/$(n_items)/$(nst '.logged')" '1/1/["ENABLE_USAGE_LIMIT_PAUSE"]'
+chk "正文里要照抄的那一行不带引号" "$(grep -cxF 'ENABLE_USAGE_LIMIT_PAUSE=true' <<<"$body")/$(grep -cF 'ENABLE_USAGE_LIMIT_PAUSE="true"' <<<"$body")" "1/0"
+chk "轮询日志里的同一句也不带引号" "$(log_has '里加 ENABLE_USAGE_LIMIT_PAUSE=true；')/$(log_has 'ENABLE_USAGE_LIMIT_PAUSE="true"')" "1/0"
+# 老配置里带引号的写法照样算「已经写了」：补上之后缺项清空、issue 关闭
+conf_set 'ENABLE_USAGE_LIMIT_PAUSE="true"'
+tick
+chk "配置里写带引号的旧写法：照样认，issue 已关" "$(nst '[.issue, .logged]')/$(item 1 .state)" '[null,[]]/closed'
 
 echo
 echo "结果：$pass 通过 / $fail 失败"

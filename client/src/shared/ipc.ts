@@ -4,8 +4,9 @@
 import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
-import type { ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
+import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 
 export interface Snapshot {
   state: AppState;
@@ -40,6 +41,8 @@ export interface CavilApi {
   loadDetail(key: string): Promise<DetailResult>;
   /** GitHub#229: the detail read last in this run, shown at once on re-opening; null = none */
   cachedDetail(key: string): Promise<ItemDetail | null>;
+  /** GitHub#395: a release attachment image of the discussion, fetched with the sign-in (kept in memory for this account) */
+  loadImage(src: string): Promise<ImageResult>;
   /** `fresh`: read again even when a read of this run worked (the detail's refresh button) */
   repoOptions(repo: string, fresh?: boolean): Promise<RepoOptions>;
   /** GitHub#229: send a change not saved / not confirmed again (read GitHub first unless `force`), or give it up */
@@ -100,8 +103,6 @@ export interface CavilApi {
   seenTab(key: string, updatedAt: string): Promise<void>;
   /** the tab came to the front, or its refresh button: an item no complete read carries is checked now */
   checkTab(key: string): Promise<void>;
-  /** the label an agent's work in progress carries ('' = never show "running") */
-  setDoingLabel(label: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
   closeWindow(): Promise<void>;
   /**
@@ -114,6 +115,13 @@ export interface CavilApi {
   daemonDisconnect(key: string): Promise<DaemonResult>;
   daemonOpen(key: string, what: 'log' | 'config'): Promise<DaemonResult>;
   daemonUpdate(): Promise<DaemonUpdate>;
+  /**
+   * "配置" on a project (GitHub#388): its everyday settings as the daemon's own script reads them, and a
+   * save of some of them. The window names a project and settings; where the file is and what may be
+   * changed is the daemon's answer, checked again by the back end right before the save.
+   */
+  daemonConfigGet(key: string): Promise<ConfigRead>;
+  daemonConfigSet(key: string, rev: string, values: Record<string, string>): Promise<ConfigSave>;
   /** "接上 daemon" (GitHub#315): the back end checks repository, agent and folder again before running setup.sh */
   daemonConnectInfo(repo: string): Promise<ConnectInfo>;
   daemonPrecheck(agent: string): Promise<Precheck2>;

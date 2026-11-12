@@ -497,7 +497,7 @@ export interface ImportInfo {
   notes: string[];
 }
 
-/** The labels the "hand to the agent" buttons use (follows the daemon's label names; editable in Settings). */
+/** The labels the "hand to the agent" buttons and the view bar's flow numbers use (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
   /** removed: the item waits for a human */
   human: string;
@@ -505,9 +505,11 @@ export interface HandBackLabels {
   agent: string;
   /** added by "autopilot (merge automatically)" before handing over (GitHub#205); '' = no such button */
   autopilot: string;
+  /** GitHub#404: the item is being worked on by an agent — counted as "运行中" in the view bar; '' = that number is not shown */
+  running: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' };
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -579,6 +581,8 @@ export interface AppState {
   /** true when clientId is the built-in one (no override saved for this kind) */
   clientIdIsDefault: boolean;
   viewer: string | null;
+  /** GitHub#395: the web base of the GitHub this client talks to (https://github.com in the app); release attachment images are recognised by it */
+  githubWeb: string;
   sources: SourceConfig[];
   view: ViewSettings;
   sync: SyncState;
@@ -613,8 +617,6 @@ export interface AppState {
   focus: { key: string; seq: number } | null;
   /** GitHub#397: the open detail tabs, in order (the board is the fixed home tab, not in this list) */
   tabs: TabInfo[];
-  /** GitHub#397: the label an agent's work in progress carries (a tab then shows "running"); '' = never shown */
-  doingLabel: string;
   /** GitHub#397: the shell's "close" key was pressed (macOS: the menu's ⌘W); changes on every press, 0 = never */
   closeTabReq: number;
   /** the app updating itself (GitHub#184); null = this build does not */

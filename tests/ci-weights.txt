@@ -49,6 +49,8 @@ preview-socket-activation 7
 price-fetch 6
 price-identifiability 1
 project-auto-add 41
+project-config 105
+project-config-poll 25
 project-priority 1
 prompt-compose 1
 reap-finished-workers 10
@@ -73,6 +75,7 @@ smoke 6
 sub-issue-split 3
 token-usage-claude 3
 token-usage-codex 3
+usage-limit 140
 weekly-report-attribution 1
 weekly-report-bot-logins 1
 weekly-report-by-model 2

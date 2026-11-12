@@ -1,0 +1,13 @@
+  读取 issue 41 的正文与评论
+  ⎿  $ gh issue view 41 --repo example/app --json
+     body,comments,state,createdAt; echo; gh api
+     repos/example/app/issues/41 --jq '{parent:.parent_issue_url,
+     sub:.sub_issues_summary, labels:[.labels[].name]}'
+
+· Sock-hopping… (11s · ↓ 408 tokens · thinking)
+    You've used 77% of your weekly limit · resets Nov 13, 2pm (Asia/Singapore)
+────────────────────────── https://github.com/example/app/issues/41 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  dev@host:/work/app/issue-41 [Fable …
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

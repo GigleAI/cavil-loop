@@ -358,7 +358,7 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   await app.close();
 });
 
-test('settings: the label that means "an agent is working on it" can be changed, or emptied to turn the status off', async () => {
+test('settings: the "running" label (GitHub#404) is the one a tab\'s status reads — changed or emptied there, the tabs follow', async () => {
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
@@ -373,10 +373,10 @@ test('settings: the label that means "an agent is working on it" can be changed,
   await page.getByTestId('open-settings').click();
   // the tab bar stays above the settings page
   await expect(tabs(page)).toHaveCount(2);
-  const field = page.getByTestId('doing-label');
+  const field = page.getByTestId('hand-back-running');
   await expect(field).toHaveValue('doing/agent');
   await field.scrollIntoViewIfNeeded();
-  await shot(page, '397-07-settings-doing-label');
+  await shot(page, '397-07-settings-running-label');
   await field.fill('wip');
   await field.blur();
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running');
