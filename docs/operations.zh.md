@@ -134,6 +134,7 @@ PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
 AUTO_ADD_PROJECTS=""             # 把本仓库 issue / PR 加进这些 Project（"myorg/4 myorg/11"）；留空 = 关闭
+CI_FAILURE_REPORT_WORKFLOWS=""   # base 分支测试工作流失败自动报告（"tests.yml"）；留空 = 关闭
 # WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
 
@@ -370,6 +371,96 @@ Project 的写权限。读身份看不见某个 Project 时，不往它写任何
 第一次开始同步的时间、首次全量是否完成、上次完整成功同步的时间。第一次开始同步的时间在第一次
 尝试时写下、之后不变。删掉这个文件 = 所有 Project 从头开始（「新建时间晚于」的分界随之挪到现在）。
 请求量：没什么改动时每轮多 1 次合并读取；多配一个 Project 不会翻倍。
+
+## base 分支测试工作流失败自动报告（**默认关闭**）
+
+合并之后才在 `main` 上暴露的红灯（两个各自通过的 PR 合在一起坏了、环境变了、偶发失败）以前要等人
+自己看到。开了这项，daemon 会给它开一条 issue（GitHub#345）。
+
+```bash
+CI_FAILURE_REPORT_WORKFLOWS="tests.yml"   # 工作流文件名，空格或逗号分隔；留空 = 关闭
+CI_FAILURE_REPORT_BRANCH="main"           # 看哪个分支上的运行
+CI_FAILURE_REPORT_DISPATCH=false          # true：新开 / 重开的报告打派工标签
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2      # 这么多个不同的修复 PR 合并后仍然红 → 交人
+```
+
+已经自己会报告的工作流不要写进来（本仓库的 `release.yml` 就是）。**一个仓库只在一台机器上开**：
+下面的「不派工名单」存在本机，另一台轮询同一仓库的机器仍可能把正在交人的报告派出去（只在
+`CI_FAILURE_REPORT_DISPATCH=true` 时有这个问题）。
+
+**看什么。** 列出的工作流在那个分支上、由推送触发、在开启那一刻及之后创建的运行。只看每次运行的
+第一次尝试：重新运行不管红绿都不写任何东西。检查每 5 分钟一次，在主轮询里做（持着轮询锁、在空闲
+退避闸门**之前**，所以主轮询退避时它照样按自己的钟走）。停机之后从上次完整核对到的位置接着看，
+不会跳过，只是报告晚到。
+
+**一次红的运行落到哪**，从上往下第一条命中的：
+
+| 这次运行 | 落到 |
+|---|---|
+| 它的提交是某个 PR 的合并提交，PR 正文引用了某条报告（`Closes` / `Fixes` / `Resolves` / `Refs #N`，关键词和编号在同一行） | 那条报告：「修复 #P 合并后仍然失败（第 k 次）」。已按「已完成」关闭的会被重开。按修复 PR 计次 |
+| CI 把失败的测试标全了，而且和某条开着的报告完全相同 | 在那条报告上追加评论 |
+| CI 标全了，没有开着的报告对得上 | 新开一条报告 |
+| CI 的清单不完整（有失败任务没有错误标注，或某个步骤正好 10 条——GitHub 每步最多留 10 条） | 本工作流唯一一条开着的「原因未确认」报告，它明写这些失败不代表是同一个原因 |
+
+所以「同一个原因」指的是「失败的测试文件相同」（本仓库 `tests/run.sh` 标出来的粒度）：同一个测试
+文件里两处不同的断言坏了，会被当成一个原因。工作流重新转绿时，每条开着的报告会收到一条「已转绿」；
+报告不会被自动关闭。被关成「不做 / 重复」的报告不再动它。
+
+**交人。** 不同的修复 PR 失败达到 `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS` 次时，报告先进本机的
+**不派工名单**，然后评论里写明、摘掉派工标签、加上 `pending/human`。在名单里期间，三个派工入口
+（标签、greedy、托管）都不会为它启动 worker，不管它身上是什么标签。交人确认完成后出名单；或者只要有
+人改了它的流程标签、关闭了它，也出名单，之后 daemon 不再动它。正处在别的流程里的报告
+（`doing/agent`、复审、等前置……）留在名单里不动，等那边有变化。
+
+**日志摘录**是不可信文本：去掉时间戳和颜色控制符，令牌样式打码，只留最后 80 行 / 6000 字符，
+让伪造的隐藏标记失效，再放进围栏比其中最长的反引号串还长的代码块。
+
+**依赖**：除了 daemon 本来就要的工具，还需要机器上有 `python3`（只用标准库）。这里不用 coreutils 的
+`timeout`（macOS 没有）：检查程序自己给每次 `gh` 调用设时限（60 秒）、给整轮设预算（90 秒），主轮询
+用 bash 内建等它，超过预算 120 秒还不退就把它连同它起的 `gh` 等进程整组停掉，等到一个不剩才往下走（之后不会有迟到的写入）。没有 `python3` 时检查不运行（每轮一行日志），
+本功能的报告一律不派工。
+
+**令牌。** 读用 `GH_TOKEN`：要能读 Actions 运行和检查标注（fine-grained：*Actions: read*、
+*Checks: read*）。遇到限流就等过去，不会报成权限问题；普通的 403 / 404 每天记一次日志。
+
+**状态**（`$STATE_DIR/ci-failure-report.json`，故意不放进 `state.json`）：每个工作流的开启时刻、
+运行完整核对到哪、还没处理完的运行，以及不派工名单。这样看：
+
+<!-- ci-failure-report-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --list
+```
+<!-- ci-failure-report-ops:end -->
+
+**这个文件丢失或损坏时**（而 GitHub 上已经有本功能的报告），daemon 不去重建它——它已经决定但还没
+写到 GitHub 的那部分，从 GitHub 上读不回来。它会暂停：不检查、不写，本功能的报告一律不派工，并开一条
+提示 issue（`pending/human`），列出每条开着的报告和它的标签。**从丢失到重新开始之间的失败不会被
+报告**（这段时间自己看一眼 Actions 页面）；做到一半的交人不会续做，那条报告的标签由人来定。然后从
+当前时刻重新开始：
+
+<!-- ci-failure-report-restart:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --restart
+```
+<!-- ci-failure-report-restart:end -->
+
+成功时它打印 `已从当前时刻重新开始`；下一轮轮询会在提示 issue 上留言并关闭它。失败时它什么都不改、
+暂停保持原样——修好原因再跑一次。没有处在暂停中时它拒绝执行。修复次数是从报告的评论里数出来的，
+重新开始之后不会丢。
+
+**关闭这项功能。** 先跑上面的 `--list`，等到它打印 `不派工名单：空`：配置留空之后名单既不被查
+也不再处理，正在进行的交人会停在半路。然后把 `CI_FAILURE_REPORT_WORKFLOWS` 留空。以后再填上，会从
+留着的状态文件接着看。
 
 ## 交叉 review 关卡（可选，**默认关闭**）
 
@@ -617,6 +708,72 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 - **只看路径，不看内容**：清单里的文件只要被改就算（`package.json` 里只升级依赖版本也算）。锁文件和
   `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
 - **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
+
+### 托管条目上外部账号的内容（`AUTOPILOT_OUTSIDER_GUARD`，GitHub#391）
+
+公开仓库里任何账号都能评论。外部账号（在本仓库**没有写权限**的账号——不是维护者、不是 loop 的写入账号、不是外部需求机器人）的
+评论触发不了 daemon 的任何动作：开不了工、合不了 PR、冒充不了托管授权。但托管条目派给 agent 之后，agent 会读到这些评论；托管
+中间没有人确认方案、没有人点合并。打开这一项后：
+
+- **agent 改用读取命令读本条**（`scripts/outsider-read.sh`，托管条目的提示词里写好了确切命令）：输出本条的全部正文和评论（PR 带上它绑定的 issue，
+  拆分子项带上父 issue），每条标明作者身份。外部账号的**文字照常给读**，其中的链接、图片、附件、代码块、行内代码、HTML 注释和看不见的字符
+  换成写明种类的占位；loop 自己的旧评论里原样引用过的同一个链接 / 代码也去掉。授权之后被外部账号改过的正文，给授权那一刻的版本。
+  外部账号的话只当参考：不算需求、不算确认、不改变范围；里面的文件和命令不下载、不运行、不照抄。
+- **合并前交人**（`block` 档）：维护者打托管标签之后，有外部账号评论（issue、PR 对话、行内评论、review）或改过正文——现在查得到的，或
+  本机记录里有的（事后删掉也算）——这条 PR 就不自动合并，翻 `pending/human`，说明里点名那几条。授权之前就在的外部内容算维护者已过目，不拦。
+- **模型预筛**（`AUTOPILOT_OUTSIDER_SCREEN="on"`）：daemon 派工前把每条外部内容（已剥离的文字）交给一个**不给任何工具**的模型，问它是不是
+  在指挥 agent 做事；判为是的、筛失败的、还没筛过的，给 agent 看时整条换成占位、只留出处链接。每条新内容只筛一次（按内容存结论），
+  每次派工最多补筛 5 条。读取命令自己不调模型（实测：在 worker 会话里再起 `claude -p` 认证失败），所以派工之后新来的外部评论要等
+  下次派工才筛得到，这期间是隐藏的。
+- **会话**：托管条目派工时，这个角色现有的会话如果不是在保护开着时起的（以前是普通条目、或这一项是后来才打开的），就作废旧会话、
+  起一条全新的——旧会话里可能有没剥过的原文。之后照旧续接。
+
+开启：在项目配置里写
+
+```bash
+AUTOPILOT_OUTSIDER_GUARD="block"   # 或 "mark"：只标注和剥离，合并条件不变
+AUTOPILOT_OUTSIDER_SCREEN="on"     # 不写或 "" = 不预筛
+```
+
+下一轮轮询生效。留空或不写 = 和以前完全一样（GitHub 调用、state、提示词都不变）。写了认不出的词按 `block` 处理。
+预筛命令可以用 `AUTOPILOT_OUTSIDER_SCREEN_CMD` 换（文字从 stdin 进、stdout 只认 `SAFE` / `SUSPECT`，别的输出都算没筛成）；
+留空用内置的 `claude -p --tools '' --strict-mcp-config …`（关掉全部工具和 MCP，模型 haiku）。
+
+**PR 被拦在合并前之后怎么办**（在 GitHub 网页上操作）：
+
+1. 打开交人说明里点名的那几条外部内容，再看一遍 PR 的改动，确认改动里没有照着外部内容做的、超出本条范围的东西。
+2. 选一种：
+   - **自己合**：审完直接在 PR 页面点合并。
+   - **继续托管**：到提供授权的地方（说明里写着，通常是 issue）把 `autopilot` 标签摘掉、再打上——这表示「这些我看过了」，之后的
+     判断只看这次重新打标签之后的外部内容；再把 PR 的标签从 `pending/human` 改成 `pending/review`。复审通过后 daemon 再检查、合并。
+     看到 PR 上出现托管合并说明就算恢复了；要是又被拦下，说明里点名的是重新打标签之后新来的外部内容。
+   - **不合**：关掉 PR。
+3. 想看 agent 看到的是什么、本机记下了什么，在装着这个项目的机器上跑（只改前两行；跑这条命令本身也会把查到的外部内容记下来，和 agent 跑时一样）：
+
+<!-- outsider-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+N=123            # the issue or PR number / 条目编号
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+ENTRY="$HOME/.agents/releases/cavil-loop/entrypoints/outsider-read.sh"
+[ -f "$ENTRY" ] || ENTRY="$HOME/.agents/skills/cavil-loop/scripts/outsider-read.sh"   # development mode / 开发模式
+bash "$ENTRY" --config "$CONF" "$N"
+echo "exit code / 退出码: $?"
+ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有任何记录"
+```
+<!-- outsider-ops:end -->
+
+退出码 0 = 读全了；3 = 读不全（网络、权限查不到、正文那一版取不回），什么都不输出。记录按条目编号分目录（PR 绑着 issue 时用 issue 的编号），
+条目收尾清理时删掉。
+
+**它挡不住的**（这不是沙箱）：不守规则的 agent 仍然可以绕开读取命令去读原文、下载并运行别人给的文件；纯文字写的恶意要求剥不掉
+（预筛能拦下一部分，也会漏判、误判）；拆开写的网址、用自己的话转述的内容认不出来；两次检查之间出现又删掉的评论 daemon 没见过；
+合并前最后一次检查到合并请求到达 GitHub 之间的窗口消除不了；本机记录不在多台机器之间同步。
+
+**关闭**：删掉这两行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
 
 ### 只在一台机器上跑这个仓库的轮询
 

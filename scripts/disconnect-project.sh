@@ -40,11 +40,11 @@ case "$OS" in
     Linux)
         unit="$(cavil_systemd_timer "$layout" "$KEY")"
         if [ ! -e "$env_file" ] && [ ! -e "$HOME/.config/systemd/user/timers.target.wants/$unit" ]; then
-            echo "没有接入实例 $KEY（找不到 $env_file）"
+            echo "没有接入实例 ${KEY}（找不到 ${env_file}）"
             result not_found 1
         fi
         cavil_systemd_probe "$unit"
-        echo "后台任务 $unit：$CAVIL_SCHED_STATE"
+        echo "后台任务 ${unit}：$CAVIL_SCHED_STATE"
         if [ "$CAVIL_SCHED_STATE" = unknown ]; then
             echo "读不到后台任务状态，什么都没动。读到的原文："
             printf '%s\n' "$CAVIL_SCHED_RAW" | sed 's/^/  /'
@@ -54,7 +54,7 @@ case "$OS" in
         cavil_systemd_probe "$unit"
         cavil_systemd_enabled_probe "$unit"
         if [ "$CAVIL_SCHED_STATE" != stopped ] || [ "$CAVIL_SCHED_ENABLED" != no ]; then
-            echo "停不下来或确认不了（运行：$CAVIL_SCHED_STATE，开机自启：$CAVIL_SCHED_ENABLED），登记保留。"
+            echo "停不下来或确认不了（运行：${CAVIL_SCHED_STATE}，开机自启：${CAVIL_SCHED_ENABLED}），登记保留。"
             [ -n "$disable_out" ] && printf '%s\n' "$disable_out" | sed 's/^/  /'
             result failed 3
         fi
@@ -64,11 +64,11 @@ case "$OS" in
         label="$(cavil_launchd_label "$layout" "$KEY")"
         plist="$HOME/Library/LaunchAgents/$label.plist"
         if [ ! -e "$env_file" ] && [ ! -e "$plist" ]; then
-            echo "没有接入实例 $KEY（找不到 $env_file 和 $plist）"
+            echo "没有接入实例 ${KEY}（找不到 $env_file 和 ${plist}）"
             result not_found 1
         fi
         cavil_launchd_probe "$label"
-        echo "后台任务 $label：$CAVIL_SCHED_STATE"
+        echo "后台任务 ${label}：$CAVIL_SCHED_STATE"
         case "$CAVIL_SCHED_STATE" in
             unknown)
                 echo "读不到后台任务状态，什么都没动。读到的原文："
@@ -78,7 +78,7 @@ case "$OS" in
                 bootout_out="$(launchctl bootout "gui/$(id -u)/$label" 2>&1)" || true
                 cavil_launchd_probe "$label"
                 if [ "$CAVIL_SCHED_STATE" != unloaded ]; then
-                    echo "卸载后读回不是「未加载」（$CAVIL_SCHED_STATE），登记保留。"
+                    echo "卸载后读回不是「未加载」（${CAVIL_SCHED_STATE}），登记保留。"
                     [ -n "$bootout_out" ] && printf '%s\n' "$bootout_out" | sed 's/^/  /'
                     result failed 3
                 fi

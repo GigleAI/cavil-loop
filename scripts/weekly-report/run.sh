@@ -71,7 +71,7 @@ REV="wk-$(date +%Y%m%d)-$(date +%s%N | tail -c 7)"
 EXTRA_PROJECTS="$(printf '%s' "${WEEKLY_REPORT_EXTRA_PROJECTS:-}" | tr ',' ' ' | xargs)"
 
 if [ -z "$EXTRA_PROJECTS" ]; then
-echo "== 1/4 采数（repo=$REPO）"
+echo "== 1/4 采数（repo=${REPO}）"
 git -C "$PROJECT_ROOT" fetch origin --quiet || true
 # 处理时长要去本机 agent 日志里取每一轮的起止，需要知道 worktree 路径。
 # 那两个值在 daemon 的配置里（$PROJECT_ROOT/cavil-loop.config，改名前叫 coding-agent.config），不在本脚本读的
@@ -137,7 +137,7 @@ collect_one() {   # $1 项目名  $2 输出文件  $3 记录「仓库名 + workt
         [ -n "$repo" ] || { echo "[error] 项目 $1：推不出仓库名，请在 $conf 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
         # 取最新主干：合并模式下失败就是失败（单项目那条路是 `|| true`）
         git -C "$PROJECT_ROOT" fetch origin --quiet \
-            || { echo "[error] 项目 $1（$repo）：取最新主干失败（git fetch origin）" >&2; exit 1; }
+            || { echo "[error] 项目 $1（${repo}）：取最新主干失败（git fetch origin）" >&2; exit 1; }
         local dconf wtb="" wtp=""
         dconf="$(cavil_project_config "$PROJECT_ROOT")"
         if [ -f "$dconf" ]; then
@@ -149,17 +149,17 @@ collect_one() {   # $1 项目名  $2 输出文件  $3 记录「仓库名 + workt
         local wtkey=""; [ -z "$wtb" ] || [ -z "$wtp" ] || wtkey="$wtb/$wtp-"
         printf '%s\t%s\t%s\n' "$1" "$repo" "$wtkey" >> "$3"
         local sw="${WEEKLY_REPORT_SWITCH_WEEK:-}"
-        echo "   · $1（repo=$repo）"
+        echo "   · $1（repo=${repo}）"
         ( cd "$PROJECT_ROOT" && python3 "$HERE/collect.py" --strict --repo "$repo" --out "$2" \
             ${WEEK_OF:+--week-of "$WEEK_OF"} \
             ${wtb:+--worktree-base "$wtb"} \
             ${wtp:+--session-prefix "$wtp"} \
             ${sw:+--switch-week "$sw"} ) \
-            || { echo "[error] 项目 $1（$repo）：采数失败，整份周报不发" >&2; exit 1; }
+            || { echo "[error] 项目 $1（${repo}）：采数失败，整份周报不发" >&2; exit 1; }
     )
 }
 
-echo "== 1/4 采数（多个项目合并：$PROJECT $EXTRA_PROJECTS）"
+echo "== 1/4 采数（多个项目合并：$PROJECT ${EXTRA_PROJECTS}）"
 IDS="$WORK/ids.tsv"; : > "$IDS"
 PARTS=()
 i=0
@@ -201,7 +201,7 @@ done
 for n in delivery effort cost token; do
     f="$n-$REV.png"
     code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
-    [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP $code），中止" >&2; exit 1; }
+    [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP ${code}），中止" >&2; exit 1; }
     echo "   $ASSET_URL/$f → 200"
 done
 

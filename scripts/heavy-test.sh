@@ -112,7 +112,7 @@ fi
 item_check() {
     local g ls
     if ! g="$(heavy_gen_read "$SDIR" "$ITEM")"; then
-        say "读不到条目 #$ITEM 的清理记录（$SDIR），不启动"
+        say "读不到条目 #$ITEM 的清理记录（${SDIR}），不启动"
         return 1
     fi
     if [ "$g" != "$GEN" ]; then
@@ -248,7 +248,7 @@ run_inner() {
     cg="${CAVIL_HEAVY_CGROUP_OVERRIDE:-$(cat /proc/self/cgroup 2>/dev/null || true)}"
     cg="${cg%%$'\n'*}"; cur="${cg##*/}"
     if [ "$cur" != "$UNIT" ]; then
-        say "不在预期的进程分组里（期望 $UNIT，实际 ${cur:-读不到}），不登记、不跑"
+        say "不在预期的进程分组里（期望 ${UNIT}，实际 ${cur:-读不到}），不登记、不跑"
         finish 70
     fi
 
@@ -317,7 +317,7 @@ run_degraded() {
     local qfd rc=0 waited=0
     # 降级模式看不了分组。只要还有登记着的运行，就没法确认它们已经结束——不跑，而不是当它们不存在
     if any_run_records; then
-        say "这台机器上还有登记着的重测试（$RUNS），而现在用不了进程分组，没法确认它们已经结束：不跑"
+        say "这台机器上还有登记着的重测试（${RUNS}），而现在用不了进程分组，没法确认它们已经结束：不跑"
         say "确认它们都已结束后删掉那些记录，再重试"
         exit 70
     fi
@@ -352,7 +352,7 @@ run_outer() {
     trap - TERM INT HUP
 
     if [ ! -e "$RC_DIR/$RUN_ID.entered" ]; then
-        say "建不出这次运行的进程分组（systemd-run 退出码 $rc），没有跑命令"
+        say "建不出这次运行的进程分组（systemd-run 退出码 ${rc}），没有跑命令"
         exit 70
     fi
     if [ -s "$RC_DIR/$RUN_ID.rc" ]; then rc="$(cat "$RC_DIR/$RUN_ID.rc")"; fi

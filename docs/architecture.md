@@ -197,6 +197,16 @@ State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
 have I seen" cursors. A backed-off tick still writes one line to `poll.log`
 saying which tier it is on and how long it will wait.
 
+One thing runs **outside** this gate on purpose: the base-branch CI failure report
+(`CI_FAILURE_REPORT_WORKFLOWS`, off by default — see
+[operations.md](operations.md#report-a-failed-test-workflow-on-the-base-branch-off-by-default)).
+`agent-poll.sh` calls it right after taking the poll lock and before the gate, so a red `main`
+is reported within about five minutes even while the poller itself is backed off; it has its own
+five-minute clock and failure backoff in `$STATE_DIR/ci-failure-report.json`, never reads or
+writes `state.json`, and does nothing at all when the setting is empty. It runs under the lock
+because it changes labels on its report issues, and its *do not dispatch* list is consulted at
+every dispatch entry of the same round.
+
 ## When an agent hits its usage limit (GitHub#341)
 
 Optional (`ENABLE_USAGE_LIMIT_PAUSE`). A subscription's usage limit shows up as a notice on the worker pane: the session stays alive, the label stays `doing/agent`, and none of the other safety nets apply (self-heal needs the session gone, the reaper needs the label gone). The daemon recognises the notice from the pane plus the session's own record, then (1) stops dispatching **to that agent** until the reset time — machine-wide, per agent and account directory, other agents carry on — and (2) comments on the interrupted item and moves it from `doing/agent` to `pending/human`. It does not touch the session. A human puts the trigger label back after the reset time; the next dispatch resumes the registered conversation. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
@@ -227,6 +237,7 @@ dispatch would inherit the review's. Both directions are blocked:
 | The worker role adopts only conversations snapshotted in `.preexisting` | Any conversation created *after* role tracking began — whoever created it, we knew its role at the time — becoming adoptable because its registration went missing |
 | A forced new session retires the old id instead of deleting it | The "resume died in 2s" fallback turning the reviewer's previous conversation into an unowned one |
 | The post-launch read-back must prove the candidate was started with this dispatch's prompt | An earlier role's unclaimed session file landing inside this role's window and being claimed by it |
+| Autopilot items with the outside-content protection on (GitHub#391): only a session recorded in `.guarded` (started with the protection on) is resumed; any other is retired and a fresh one started, and a live one is not injected into | An old session that read outside accounts' original text — while the item was an ordinary one, or before the setting was turned on — being carried into an autopilot flow that is supposed to filter that text |
 
 Review rounds 2..N reuse the review's own session, so the reviewer can check
 whether its earlier findings were addressed.

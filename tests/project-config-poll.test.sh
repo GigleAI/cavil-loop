@@ -66,7 +66,7 @@ G() { git -C "$SANDBOX/seed" -c user.email=t@x -c user.name=t "$@"; }
     && echo from-pr > "$SANDBOX/seed/f.txt" && G commit -q -am "pr work" && G push -q origin "HEAD:refs/pull/$P/head") >/dev/null 2>&1
 PR_SHA="$(G rev-parse HEAD)"
 (G reset -q --hard HEAD~1 && echo from-main > "$SANDBOX/seed/f.txt" && G commit -q -am "main moved" && G push -q origin HEAD:main) >/dev/null 2>&1
-# 编号取得很大：派工脚本会往 /tmp 写 prompt 文件，避开本机真实派工的文件名
+# 编号取得很大，避开本机真实派工的编号
 A=987201; B=987202; C=987203; M=987204
 ROOT="$SANDBOX/skill"; mkdir -p "$ROOT"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$ROOT/"
 
@@ -148,7 +148,6 @@ conflict_scenarios() {   # <PR 刚更新时期望> <PR 3 天没更新时期望>
     chk "到达性 · 这一轮确实读了打开的 PR 列表" "$([ "$(grep -c "repos/example/pc/pulls" "$GD/calls.log" 2>/dev/null || true)" -ge 1 ] && echo yes)" "yes"
     world conflict 3; poll
     chk "同一个 PR、3 天没更新：$2" "$(conflict_outcome)" "$2"
-    rm -f /tmp/cavil-loop-pr-$P-* /tmp/cavil-loop-issue-$P-* 2>/dev/null
 }
 default_of() { grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' -v k="$1" '{gsub(/[ \t]/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $4)} $1 == k {print $4}'; }
 
@@ -162,7 +161,6 @@ scenarios() {   # <同时几条> <派工失败上限> <自愈上限> <合并后�
     chk "派工失败：日志写「第 1/$2 次」" "$(logged "#$A 派工失败（第 1/$2 次")" "1"
     world dead-worker; poll
     chk "worker 会话没了：日志写自愈「第 1/$3 次」" "$(logged "#$C session=.*自动重新派工（第 1/$3 次")" "1"
-    rm -f /tmp/cavil-loop-issue-98720[1-4]-* 2>/dev/null
 }
 
 echo "【1】配置里这几项一项都不写"

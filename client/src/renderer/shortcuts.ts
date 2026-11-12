@@ -30,6 +30,9 @@ export type ShortcutId =
   | 'labels'
   | 'milestone'
   | 'reply'
+  | 'closeIssue'
+  | 'handBack'
+  | 'autopilot'
   | 'hide'
   | 'send'
   | 'preview'
@@ -77,6 +80,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
+  // GitHub#413: the three buttons next to "发送". X only opens the close dialog (it still needs ⌘↩);
+  // the two that write at once take Shift, so one stray letter never hands an item over.
+  { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x' }], label: '关闭 issue（只打开选原因的确认框）' },
+  { id: 'handBack', scope: 'detail', keys: [{ key: 'a', shift: true }], label: '交给 agent' },
+  { id: 'autopilot', scope: 'detail', keys: [{ key: 'p', shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框）' },
   { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '回到首页（标签页留着，没发出的文字也留着）' },
   { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
   { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
@@ -85,7 +93,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
   { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
   { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
-  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 加入看板）' },
+  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 托管 / 加入看板）' },
   { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: '取消（新建 issue 里有字时不取消）' },
   { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: '上一个' },
   { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: '下一个' },

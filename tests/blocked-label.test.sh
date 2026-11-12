@@ -24,6 +24,8 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -57,6 +59,8 @@ mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$SANDBOX/old"
 cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
 mkdir -p "$SANDBOX/new"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$SANDBOX/new/"
+# 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$SANDBOX/old" "$SANDBOX/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
 
 T0=1790000000   # 受控时钟的起点（agent-poll 的节奏和细查间隔都读 POLL_FAKE_NOW）
 
@@ -698,12 +702,13 @@ GH_TOKEN="fake-token-for-test"
 CONF
         [ "$sw" = on ] && echo 'LABEL_PENDING_BLOCKED="pending/blocked"'
     } > "$w/config"
-    rm -f "/tmp/cavil-loop-issue-$N_NEW-prompt.md" "/tmp/cavil-loop-issue-$N_SUB-prompt.md" "/tmp/cavil-loop-issue-$N_CMT-cmt-0.md"
+    prompt_files_clear "$root" "$w/state"
     local e=(env -u CODING_AGENT_RELEASE_ROOT -u LABEL_PENDING_BLOCKED HOME="$SANDBOX/home" CODING_AGENT_CONFIG="$w/config")
     (cd "$w/project" && "${e[@]}" bash "$root/scripts/dispatch-new-issue.sh" "$N_NEW") >/dev/null 2>&1
     (cd "$w/project" && "${e[@]}" bash "$root/scripts/dispatch-new-issue.sh" "$N_SUB") >/dev/null 2>&1
     (cd "$w/project" && "${e[@]}" bash "$root/scripts/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
-    for kind in new-issue:"/tmp/cavil-loop-issue-$N_NEW-prompt.md" sub-issue:"/tmp/cavil-loop-issue-$N_SUB-prompt.md" issue-comment:"/tmp/cavil-loop-issue-$N_CMT-cmt-0.md"; do
+    for kind in new-issue:"$(prompt_file_of "$root" "$w/state" new "$N_NEW")" sub-issue:"$(prompt_file_of "$root" "$w/state" new "$N_SUB")" \
+                issue-comment:"$(prompt_file_of "$root" "$w/state" cmt "$N_CMT" 0)"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ -s "$f" ]; then
             sed -e "s|$root|<ROOT>|g" -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"

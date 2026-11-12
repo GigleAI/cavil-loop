@@ -62,7 +62,8 @@ issue_title="$(github_issue_title "$ISSUE_N" || true)"
 # DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
 # 不设就是本路径的默认模板。
 TEMPLATE="$(compose_prompt_template "${DISPATCH_PROMPT_KIND:-pr-comment}")"
-PROMPT_FILE="/tmp/cavil-loop-pr-$PR-prompt.md"
+PROMPT_FILE="$(prompt_file_path pr "$ISSUE_N" "$PR")"
+prompt_dir_ensure || { log "派工 PR #$PR：建不出提示词目录 $(prompt_dir)，本轮不派工"; exit 1; }
 if [ -n "$TEMPLATE" ]; then
     sed \
         -e "s|\${PR}|$PR|g" \
@@ -123,10 +124,13 @@ if session_alive "$TMUX_SESSION"; then
         # （可能停掉正在干活的 worker）。本轮不动，非 0 退出，标签不翻，下一轮再判。
         log "PR #$PR -> 读不到 $TMUX_SESSION 记录的 worker / 模型 / 角色（tmux 查询失败），本轮不注入也不换程序"
         exit 1
+    elif [ "$_match" = 0 ] && ! outsider_session_reusable "$ISSUE_N"; then
+        # 外部内容保护（GitHub#391）：活着的会话不是在保护开着时起的，不往里注入；Case B 原地换成全新会话
+        log "PR #$PR -> 现有会话不是在外部内容保护开着时起的，不注入，原地换成全新会话"
     elif [ "$_match" = 0 ]; then
         REUSE_SESSION=1
     else
-        log "PR #$PR -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（$WORKER_SESSION_ROLE）"
+        log "PR #$PR -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（${WORKER_SESSION_ROLE}）"
     fi
 fi
 
@@ -153,7 +157,7 @@ if [ -d "$WORKTREE" ]; then
     # 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-    log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
+    log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
     worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
     # resume 可能续到异常 state（之前 worker 留下的 Rewind UI 等）然后立即退出
@@ -188,7 +192,7 @@ fi
 #
 # 用 `refs/pull/$PR/head` 拉 PR head——GitHub 把所有 PR（含来自 fork 的 external PR）的 head
 # commit 都暴露在这个 ref 下。这条对 fork 透明，不需要额外 remote。
-# 拉下来后存到本地命名分支 $BRANCH（跟 daemon-spawned PR 一致），worktree 基于它建。
+# 拉下来后存到本地命名分支 ${BRANCH}（跟 daemon-spawned PR 一致），worktree 基于它建。
 log "PR #$PR -> 全新重建 worktree on $BRANCH (via refs/pull/$PR/head)"
 cd "$PROJECT_ROOT"
 
@@ -215,7 +219,7 @@ if find_branch_holder "$BRANCH" "$WORKTREE"; then
     branch_holder_state "$BRANCH" "$PR_HEAD_SHA" "PR #$PR 的最新提交" "读不出 PR 的最新提交"
     HOLDER_WHO="$(branch_holder_who)"
     HOLDER_DIR="$BH_DIR"   # 下面切换后重查会清掉 BH_*，留言要用切换前的那个目录
-    log "PR #$PR -> 分支 $BRANCH 已被${HOLDER_WHO} 签出（git 报的路径：$BH_RAW）"
+    log "PR #$PR -> 分支 $BRANCH 已被${HOLDER_WHO} 签出（git 报的路径：${BH_RAW}）"
     log "  → 占用者现状：$BH_STATE_TEXT"
 
     RELEASED=0
@@ -234,7 +238,7 @@ if find_branch_holder "$BRANCH" "$WORKTREE"; then
 
     if [ "$RELEASED" != 1 ]; then
         log "  → 拒绝重建 worktree（fetch 会被 git 拒绝；--force 建出来是两个 worktree 共用一个分支）"
-        log "  → 翻 label 回 $LABEL_PENDING_HUMAN，不重试"
+        log "  → 翻 label 回 ${LABEL_PENDING_HUMAN}，不重试"
         reason="分支 \`$BRANCH\` 已被本机${HOLDER_WHO} 签出，daemon 没法为这个 PR 建工作目录——硬建会变成两个 worktree 往同一分支提交。占用者现状：${BH_STATE_TEXT}。"
         if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ] && [ -n "${AUTO_RELEASE_REASON:-}" ]; then
             reason="$reason 没有自动切走它：${AUTO_RELEASE_REASON}。"
@@ -247,7 +251,7 @@ if find_branch_holder "$BRANCH" "$WORKTREE"; then
         exit 0
     fi
 
-    log "  → 已把主 checkout 从 $BRANCH 切回 $BASE（切换前干净、与 PR 最新提交一致）"
+    log "  → 已把主 checkout 从 $BRANCH 切回 ${BASE}（切换前干净、与 PR 最新提交一致）"
 fi
 
 # 本地分支要落到 PR 最新提交上，两条路写法不同：
@@ -261,7 +265,7 @@ fi
 if [ "${RELEASED:-0}" = 1 ]; then
     if ! cas_out=$(git update-ref "refs/heads/$BRANCH" "$PR_HEAD_SHA" "$PR_HEAD_SHA" 2>&1); then
         now_sha=$(git rev-parse -q --verify "refs/heads/$BRANCH^{commit}" 2>/dev/null || echo "读不出")
-        log "PR #$PR -> 让出主 checkout 期间分支 $BRANCH 变了（检查时 $PR_HEAD_SHA，现在 $now_sha），不覆盖、不派工，转人工"
+        log "PR #$PR -> 让出主 checkout 期间分支 $BRANCH 变了（检查时 ${PR_HEAD_SHA}，现在 ${now_sha}），不覆盖、不派工，转人工"
         log "  git: $(printf '%s' "$cas_out" | tr '\n' ' ' | head -c 300)"
         notify_bounced_to_human "$PR" \
             "daemon 已把本机主 checkout \`$HOLDER_DIR\` 从 \`$BRANCH\` 切回 \`$BASE\`，但就在检查和切换之间，分支 \`$BRANCH\` 多出了新提交（检查时是 \`$PR_HEAD_SHA\`，现在是 \`$now_sha\`）。daemon 没有覆盖它，也没有派工。" \
@@ -302,7 +306,7 @@ done
 
 agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
+log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")

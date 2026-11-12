@@ -147,6 +147,7 @@ PROJECT_NUMBER=""                # empty = first board linked to this repo
 PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
 PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
 AUTO_ADD_PROJECTS=""             # add this repo's issues / PRs to these projects ("myorg/4 myorg/11"); empty = off
+CI_FAILURE_REPORT_WORKFLOWS=""   # report a failed test workflow on the base branch ("tests.yml"); empty = off
 # WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
 
@@ -429,6 +430,111 @@ and the last fully successful sync. The first-sync time is written on the first 
 never changes. Deleting the file starts every project over (the "created after" cut-off then
 moves to now). Requests: one combined read per poll when nothing changed; adding a second
 project does not double it.
+
+## Report a failed test workflow on the base branch (**off by default**)
+
+A test run that goes red on `main` after a merge (two PRs that each passed, a changed
+environment, a flaky test) used to wait until somebody looked. With this on, the daemon opens
+an issue for it (GitHub#345).
+
+```bash
+CI_FAILURE_REPORT_WORKFLOWS="tests.yml"   # workflow file names, space or comma separated; empty = off
+CI_FAILURE_REPORT_BRANCH="main"           # the branch whose runs are watched
+CI_FAILURE_REPORT_DISPATCH=false          # true: a new / reopened report gets the dispatch label
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2      # this many different fix PRs still red → hand to a human
+```
+
+Do not list a workflow that already reports itself (this repository's `release.yml` does).
+**Turn it on on one machine per repository**: the "do not dispatch" list below is local, so a
+second machine polling the same repository could still dispatch a report that is being handed
+over (only with `CI_FAILURE_REPORT_DISPATCH=true`).
+
+**What is watched.** Runs of the listed workflows on that branch, triggered by a push, created
+at or after the moment you turned it on. Only a run's first attempt counts: a re-run, red or
+green, writes nothing. The check runs every 5 minutes inside the poll (under the poll lock,
+*before* the idle-backoff gate, so it keeps its own clock while the poller backs off). After
+downtime it continues from where it had completely checked — nothing is skipped, reports just
+arrive late.
+
+**Where a red run goes**, first match wins:
+
+| the run | goes to |
+|---|---|
+| its commit is the merge of a PR whose body refers to a report (`Closes` / `Fixes` / `Resolves` / `Refs #N`, keyword and number on one line) | that report: "fix #P merged, still failing (k-th time)". A report closed as completed is reopened. Counted per fix PR |
+| CI marked the failed tests completely, and they are exactly those of an open report | a comment on that report |
+| CI marked them completely, no open report matches | a new report |
+| CI's list is incomplete (a failed job without an error annotation, or a step with 10 of them — GitHub keeps at most 10) | this workflow's single open "cause not confirmed" report, which says in so many words that its failures need not share a cause |
+
+"The same cause" therefore means "the same failed test files" (what this repository's
+`tests/run.sh` annotates): two different assertions breaking inside one test file are treated
+as one cause. When the workflow goes green again, each open report gets one "green again" comment;
+reports are never closed automatically. A report closed as *not planned* / *duplicate* is left alone.
+
+**Hand-over.** When `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS` different fix PRs have failed, the
+report enters the local *do not dispatch* list first, then its comment says so, the dispatch
+labels are removed and `pending/human` is added. While it is on the list no dispatch entry
+(label, greedy, autopilot) starts a worker for it, whatever labels it carries. It leaves the list
+when the hand-over is confirmed, or as soon as a person changes one of its flow labels or closes
+it — the daemon then does not touch it any more. A report that is waiting in another flow
+(`doing/agent`, review, blocked, …) stays on the list untouched until that changes.
+
+**The log excerpt** is untrusted text: timestamps and colour codes are stripped, token-like
+strings masked, the last 80 lines / 6000 characters kept, hidden-marker look-alikes defused, and
+it goes into a code block whose fence is longer than any backtick run in it.
+
+**Needs** `python3` on the machine (standard library only) besides the tools the daemon already
+requires. Nothing here uses coreutils `timeout`, which macOS lacks: the checker bounds every `gh`
+call itself (60 s) and the whole round (90 s), and the poller waits for it with bash builtins and
+stops it — together with `gh` and anything it started, as one process group, waiting until none
+is left, so no late write follows — if it still has not returned 120 s after that. Without `python3` the check does not run
+(one log line per round) and this feature's reports are held back from dispatch.
+
+**Token.** Reads use `GH_TOKEN`: it must be able to read Actions runs and check-run
+annotations (fine-grained: *Actions: read*, *Checks: read*). A rate limit is waited out and never
+reported as a permission problem; a plain 403 / 404 is logged once a day.
+
+**State** (`$STATE_DIR/ci-failure-report.json`, deliberately not in `state.json`): per workflow
+the enable time, how far the runs were completely checked, the runs not settled yet, and the
+*do not dispatch* list. Look at it with:
+
+<!-- ci-failure-report-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --list
+```
+<!-- ci-failure-report-ops:end -->
+
+**If that file is lost or damaged** while GitHub already has reports of this feature, the daemon
+does not reconstruct it — what it had decided but not yet written cannot be read back from GitHub.
+It pauses: no checks, no writes, none of this feature's reports is dispatched, and one notice
+issue (`pending/human`) lists every open report with its labels. **Failures between the loss and
+the restart are not reported** (look at the Actions page yourself), and a hand-over that was
+half done is not resumed — set that report's labels yourself. Then restart from now:
+
+<!-- ci-failure-report-restart:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+SKILL="$HOME/.agents/skills/cavil-loop"
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --restart
+```
+<!-- ci-failure-report-restart:end -->
+
+It prints `已从当前时刻重新开始` on success; the next poll comments on the notice issue and
+closes it. If it fails it changes nothing and the pause stays — fix the cause and run it again. It
+refuses to run when nothing is paused. Fix counts are read from the reports' comments, so they
+survive the restart.
+
+**Turning it off.** Run the `--list` command first and wait until it prints `不派工名单：空`:
+with the setting empty the list is neither consulted nor worked on, so a hand-over in progress
+would stop where it is. Then empty `CI_FAILURE_REPORT_WORKFLOWS`. Setting it again later continues
+from the kept state file.
 
 ## Optional cross-review gate (**off by default**)
 
@@ -786,6 +892,89 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   if the project wants them.
 - **Turning it off**: delete the line (or set it to `""`). From the next poll on the previous rule
   applies again; PRs already handed to a human stay with the human.
+
+### Comments by outside accounts on autopilot items (`AUTOPILOT_OUTSIDER_GUARD`, GitHub#391)
+
+Anyone can comment on a public repository. A comment by an outside account (one **without write access** to this repo — not a
+maintainer, not the loop's write account, not the requester bot) cannot make the daemon do anything: it starts no work, merges
+nothing and cannot pose as the autopilot authorization. But once an autopilot item is dispatched, the agent reads those comments,
+and on autopilot nobody confirms the plan or clicks merge. With this setting on:
+
+- **The agent reads the item through a read command** (`scripts/outsider-read.sh`; the autopilot prompt gives the exact command): it
+  prints every body and comment of the item (a PR also brings the issue it is bound to, a split sub-issue its parent), each one
+  labelled with who wrote it. An outside account's **text stays readable**; its links, images, attachments, code blocks, inline code,
+  HTML comments and invisible characters become placeholders that name what was removed, and the same links / code are also removed
+  from the loop's own earlier comments that quoted them. A body an outside account edited after the authorization is shown as it was
+  at the moment of the authorization. Outside text is only a reference: not a requirement, not a confirmation, no change of scope;
+  files and commands in it are never downloaded, run or copied.
+- **Hand-over before merging** (`block`): once an outside account has commented (issue, PR conversation, inline comment, review) or
+  edited a body after the maintainer added the autopilot label — seen now, or recorded on this machine earlier (a deleted comment still
+  counts) — the PR is not merged automatically; it goes to `pending/human` with a note naming those comments. Outside content from
+  before the authorization counts as already seen by the maintainer.
+- **Model pre-screening** (`AUTOPILOT_OUTSIDER_SCREEN="on"`): before dispatching, the daemon hands every outside comment (already
+  stripped) to a model that has **no tools**, asking whether it is ordering the agent to do something; those judged so, those whose
+  screening failed and those not screened yet are shown to the agent as a placeholder with the link only. Each version is screened
+  once (the verdict is stored by content), at most 5 new ones per dispatch. The read command never calls the model itself (measured:
+  a nested `claude -p` inside a worker session fails to authenticate), so an outside comment posted after a dispatch stays hidden until
+  the next dispatch screens it.
+- **Sessions**: when an autopilot item is dispatched and this role's current session was not started with the protection on (the item
+  used to be an ordinary one, or the setting was turned on later), that session is retired and a fresh one started — the old one may
+  hold unstripped text. After that it is resumed as usual.
+
+To turn it on, write in the project's config:
+
+```bash
+AUTOPILOT_OUTSIDER_GUARD="block"   # or "mark": only label and strip, merge rules unchanged
+AUTOPILOT_OUTSIDER_SCREEN="on"     # missing or "" = no pre-screening
+```
+
+It takes effect on the next poll. Empty or missing = exactly the previous behaviour (GitHub calls, state and prompts unchanged).
+An unknown word counts as `block`. `AUTOPILOT_OUTSIDER_SCREEN_CMD` replaces the screening command (text on stdin, stdout exactly
+`SAFE` or `SUSPECT`, anything else = not screened); empty = the built-in `claude -p --tools '' --strict-mcp-config …` (every tool and
+MCP server off, model haiku).
+
+**When a PR was held back before merging** (on the GitHub website):
+
+1. Open the outside comments the note names and look at the PR's changes again: make sure nothing in them follows the outside text or
+   goes beyond the item.
+2. Pick one:
+   - **Merge it yourself**: review and click merge on the PR page.
+   - **Keep autopilot**: where the authorization is (the note says; usually the issue) remove the `autopilot` label and add it again —
+     that means "I have seen these", and from then on only outside content after the new label counts; then change the PR's label from
+     `pending/human` to `pending/review`. Once the review passes the daemon checks and merges again. The autopilot merge note on the PR
+     means it worked; if it is held back again, the note names outside content that arrived after the new label.
+   - **Don't merge**: close the PR.
+3. To see what the agent sees and what this machine recorded, run this on the machine that runs the project (change the first two
+   lines only; running it also records the outside content it finds, exactly as when the agent runs it):
+
+<!-- outsider-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+N=123            # the issue or PR number / 条目编号
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+ENTRY="$HOME/.agents/releases/cavil-loop/entrypoints/outsider-read.sh"
+[ -f "$ENTRY" ] || ENTRY="$HOME/.agents/skills/cavil-loop/scripts/outsider-read.sh"   # development mode / 开发模式
+bash "$ENTRY" --config "$CONF" "$N"
+echo "exit code / 退出码: $?"
+ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有任何记录"
+```
+<!-- outsider-ops:end -->
+
+Exit code 0 = read completely; 3 = could not read everything (network, a permission that cannot be read, a body version that cannot
+be recovered) and nothing is printed. Records are kept per item number (the issue's number when a PR is bound to an issue) and
+removed when the item is cleaned up.
+
+**What it does not stop** (this is not a sandbox): an agent that ignores its rules can still read the original and run what it was
+given; malicious requests written as plain text cannot be stripped (pre-screening catches some and also misses and misjudges); a link
+written in pieces or content retold in someone's own words is not recognised; a comment posted and deleted between two checks is never
+seen; the window between the last check and the merge request reaching GitHub cannot be closed; records are not shared between
+machines.
+
+**Turning it off**: remove the two lines (or set them to `""`). The old rules apply from the next poll; PRs already handed over stay
+with a human.
 
 ### Poll the repo from one machine only
 

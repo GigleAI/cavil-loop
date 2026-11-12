@@ -229,6 +229,35 @@ AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
 # （只拦 .github/）。空格或逗号分隔；开头 / = 只认仓库根目录，不写 = 任何深度；末尾 / = 目录；`default` = 内置清单
 # （见 docs/operations.zh.md）。写法读不懂的条目不会被跳过：那时每次托管合并都交人，直到改好。
 AUTOPILOT_HUMAN_PATHS=""
+# Comments and edits by outside accounts on autopilot items (GitHub#391; only matters when LABEL_AUTOPILOT is set).
+# An "outside account" has no write access to this repo. The worker and the reviewer read the item through a read
+# command that names every author; an outside account's text stays readable, but its links, images, attachments,
+# code blocks, inline code, HTML comments and invisible characters are replaced by placeholders, and the same
+# links / code are also removed from the loop's own earlier comments that quoted them.
+#   mark  = only that
+#   block = also: once an outside account has commented (or edited a body) after the maintainer's autopilot label,
+#           the PR is not merged automatically — it goes to pending/human, naming those comments
+#   empty = off, exactly the previous behaviour
+# This is not a sandbox: an agent that ignores its rules can still read the original and run what it was given.
+# 托管条目上外部账号（在本仓库没有写权限的账号）写的评论和改过的正文（GitHub#391，只在 LABEL_AUTOPILOT 非空时有用）。
+# worker 和复审改用读取命令读本条：每条标明作者；外部账号的文字照常给读，其中的链接、图片、附件、代码块、行内代码、
+# HTML 注释和看不见的字符换成占位，loop 自己的旧评论里原样引用过的同一个链接 / 代码也一并去掉。
+#   mark  = 只做上面这些
+#   block = 再加：维护者打托管标签之后有外部账号评论（或改正文），这条 PR 就不自动合并，交 pending/human 并点名那几条
+#   留空  = 关闭，和以前完全一样
+# 这不是沙箱：不守规则的 agent 仍然能绕开去读原文、运行别人给的东西。
+AUTOPILOT_OUTSIDER_GUARD="block"
+# Pre-screen each outside comment with a model that has no tools (GitHub#391): on = before dispatch the daemon asks it
+# whether the comment is ordering the agent to do something; such comments, and ones not screened yet, are shown
+# to the agent as a placeholder with the link only. Empty = off. Needs AUTOPILOT_OUTSIDER_GUARD.
+# 外部账号的每条内容先交给一个不给任何工具的模型预筛（GitHub#391）：on = daemon 派工前问它这段话是不是在指挥 agent 做事；
+# 判为是的、和还没筛过的，给 agent 看时整条换成占位，只留出处链接。留空 = 不预筛。要和上一项一起开。
+AUTOPILOT_OUTSIDER_SCREEN="on"
+# The screening command: the text comes in on stdin, stdout must be exactly SAFE or SUSPECT (anything else = not
+# screened). Empty = the built-in one (claude, all tools and MCP servers turned off, model haiku).
+# 预筛命令：文字从 stdin 进，stdout 只认 SAFE / SUSPECT（别的输出 = 没筛成）。留空 = 内置命令（claude，关掉全部工具和
+# MCP，模型 haiku）。
+AUTOPILOT_OUTSIDER_SCREEN_CMD=""
 # Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
 # sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
 # access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).
@@ -1159,6 +1188,50 @@ PROJECT_GH_TOKEN=""
 #     失败只记一行警告、下一轮重试，派工不受影响
 #   · 每个 Project 的进度在 $STATE_DIR/project-auto-add.json（删掉它 = 从头开始）
 AUTO_ADD_PROJECTS=""               # e.g. / 例：AUTO_ADD_PROJECTS="myorg/4 myorg/11"
+
+# ── Report a failed test workflow on the base branch (GitHub#345) / base 分支测试工作流失败自动报告 ──
+#
+# One or more workflow file names, space or comma separated (e.g. "tests.yml"). Empty = off
+# (default): not one extra request, dispatch is not touched.
+#   · what is watched: runs of these workflows on CI_FAILURE_REPORT_BRANCH triggered by a push,
+#     first attempt only (re-runs are never reported); runs created before you turned this on
+#     are never reported
+#   · a failure opens an issue (workflow, run link, commit, failed job / step / tests, the end of
+#     the job log — cleaned, token-like strings masked, in a code block, marked untrusted).
+#     A later run failing in exactly the same tests is added to that issue as a comment. When CI
+#     does not say completely which tests failed, the failure goes to this workflow's single
+#     "cause not confirmed" issue instead
+#   · a merged PR whose body refers to a report (Closes / Fixes / Refs #N) and whose run is still
+#     red counts as one failed fix of that report; at CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS different
+#     PRs the report is handed to a human (pending/human) and is not dispatched any more
+#   · CI_FAILURE_REPORT_DISPATCH=true puts the dispatch label on a new / reopened report
+#     (default false: report only)
+#   · checked every 5 minutes, also while the poller backs off; reads use GH_TOKEN (it must be
+#     able to read Actions runs and check annotations), writes use the WRITE identity
+#   · turn it on on ONE machine per repository: the "do not dispatch" list is local
+#   · if $STATE_DIR/ci-failure-report.json is lost or damaged the check pauses, holds every report
+#     back from dispatch and opens a notice issue; see docs/operations.md for the restart command
+#
+# 一个或多个工作流文件名，空格或逗号分隔（如 "tests.yml"）。留空 = 关闭（默认）：一个请求都不多发，
+# 派工一处都不多查。
+#   · 看什么：这些工作流在 CI_FAILURE_REPORT_BRANCH 上、由推送触发的运行，只看第一次尝试
+#     （重新运行不报）；开启之前创建的运行永远不报
+#   · 失败 → 开一条 issue（工作流、运行链接、提交、失败的任务 / 步骤 / 测试、任务日志末尾——
+#     清洗过、令牌样式打码、放在代码块里并注明不可信）。之后失败的测试完全相同的运行，作为评论
+#     追加在这条 issue 上；CI 没把失败的测试标全时，改进本工作流唯一一条「原因未确认」issue
+#   · 正文引用了某条报告（Closes / Fixes / Refs #N）的 PR 合并后运行仍然红 = 这条报告的一次
+#     修复失败；不同的 PR 失败达到 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS 次就交人（pending/human），
+#     不再派工
+#   · CI_FAILURE_REPORT_DISPATCH=true：新开 / 重开的报告打派工标签（默认 false = 只报告）
+#   · 每 5 分钟查一次，主轮询空闲退避时也照查；读用 GH_TOKEN（要能读 Actions 运行和检查标注），
+#     写走写身份
+#   · 一个仓库只在**一台**机器上开：「不派工名单」存在本机
+#   · $STATE_DIR/ci-failure-report.json 丢失或损坏时会暂停、本功能的报告都不派工，并开一条提示
+#     issue；重新开始的命令见 docs/operations.zh.md
+CI_FAILURE_REPORT_WORKFLOWS=""        # e.g. / 例：CI_FAILURE_REPORT_WORKFLOWS="tests.yml"
+CI_FAILURE_REPORT_BRANCH="main"
+CI_FAILURE_REPORT_DISPATCH=false
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2
 
 # ── Poll interval + idle backoff / 轮询间隔与空闲退避 ──
 
