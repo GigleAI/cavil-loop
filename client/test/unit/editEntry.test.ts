@@ -245,7 +245,7 @@ describe('GitHub#404: the running label next to the hand-back labels', () => {
     expect(c.getState().handBack.running).toBe('doing/agent');
     c.setHandBack({ running: '  ' });
     expect(c.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, running: '' });
-    expect(flowTally(c.getBoardData().items, c.getState().handBack).map((e) => e.kind)).toEqual(['agent', 'human']);
+    expect(flowTally(c.getBoardData().items, c.getState().handBack).map((e) => e.kind)).toEqual(['agent', 'human', 'unlabeled']);
     c.setHandBack({ agent: 'go' });
     expect(c.getState().handBack.running).toBe('');
     c.setHandBack({ running: ' doing/agent ' });

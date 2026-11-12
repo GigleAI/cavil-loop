@@ -99,7 +99,7 @@ paa_get() {   # <key> <field> → 值（没有就空）
 paa_warn_once() {   # <key> <消息>
     local key="$1" msg="$2"
     if [ "$(paa_get "$key" last_warn)" != "$msg" ]; then
-        paa_warn "$key：$msg"
+        paa_warn "${key}：$msg"
         paa_set '.projects[$k].last_warn = $m' --arg k "$key" --arg m "$msg"
     fi
 }
@@ -132,7 +132,7 @@ if [ "${#KEYS[@]}" -eq 0 ]; then paa_save || true; exit 0; fi
 for k in "${KEYS[@]}"; do
     [ -n "$(paa_get "$k" enabled_at)" ] || paa_set '.projects[$k].enabled_at = $t' --arg k "$k" --arg t "$T"
 done
-paa_save || { paa_warn "写不进状态文件 $PAA_STATE，本轮跳过"; exit 0; }
+paa_save || { paa_warn "写不进状态文件 ${PAA_STATE}，本轮跳过"; exit 0; }
 
 # ── 3. 解析 Project 编号 → 内部 id（缓存进状态；核对不过时清掉，下一轮重解析）──
 declare -A PID=() OK=() WHY=() CUT=() INITIAL=() PID_OWNER=()
@@ -366,9 +366,9 @@ for k in "${KEYS[@]}"; do
     else
         why=""
         [ "$read_ok" = 1 ] || why="${WHY_SEG:-读取失败}（这个 Project 需要的条目没读全）"
-        [ -z "$write_err" ] || why="${why:+$why；}写入失败（写身份需要能写这个 Project）：$write_err"
-        [ "$unknown_n" = 0 ] || why="${why:+$why；}$unknown_n 个条目挂的 Project 列表没读全"
-        paa_warn_once "$k" "$why，同步时间不推进，下一轮重试"
+        [ -z "$write_err" ] || why="${why:+${why}；}写入失败（写身份需要能写这个 Project）：$write_err"
+        [ "$unknown_n" = 0 ] || why="${why:+${why}；}$unknown_n 个条目挂的 Project 列表没读全"
+        paa_warn_once "$k" "${why}，同步时间不推进，下一轮重试"
     fi
 done
 paa_save || paa_warn "写不进状态文件 $PAA_STATE"

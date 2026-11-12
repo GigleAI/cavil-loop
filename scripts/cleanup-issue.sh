@@ -98,6 +98,10 @@ fi
 # 本条目以前的启动记录用不上了（代数已变），一并删掉
 [ "$HEAVY_CLEANUP" != 1 ] || heavy_launch_forget_item "$ISSUE"
 
+# ── 3c. 派工提示词 ──
+# worker 只在启动那一刻读它，session 已经杀掉，留着只会在状态目录里越积越多
+prompt_files_forget "$ISSUE" || log "  ⚠️ 删不掉条目 #$ISSUE 的派工提示词（继续 cleanup）"
+
 # ── 4. worktree ──
 if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then
     log "removing worktree $WORKTREE"
@@ -115,6 +119,10 @@ if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then
     # worktree 没了，里面那些会话也就无从续接；留着登记只会让下次派工先试一次
     # 必然失败的 resume。--keep-worktree 时不清，因为会话还能续。
     agent_session_forget_all "$ISSUE"
+fi
+# 外部账号内容的记录（GitHub#391）：只为这一条目的合并前交人服务，条目收尾就用不上了（--keep-worktree 时留着）
+if [ "$KEEP_WORKTREE" -eq 0 ]; then
+    case "$ISSUE" in ''|*[!0-9]*) ;; *) rm -rf "$(outsider_record_dir "$ISSUE")" ;; esac
 fi
 
 # ── 5. 本地分支 ──

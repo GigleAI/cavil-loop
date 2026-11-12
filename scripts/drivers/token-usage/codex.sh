@@ -304,7 +304,7 @@ RES=$(printf '%s\n' "$STAMPED" | jq -sr --arg mode "$MODE" --argjson prices "$PR
               else "" end)
            # 模型名必须出现在**人读**这一行（GitHub#29）：footer 的 `token …` 行是
            # 「整行原样用脚本输出」，模型只写进 --kv 的隐藏标记，等于评论里永远看不到。
-           # 口径与机器字段同源（$modelarr / $model_unknown），不另起一套判断。
+           # 口径与机器字段同源（$modelarr / ${model_unknown}），不另起一套判断。
            + (if ($modelarr | length) == 0 then "（模型未知）"
               else "（模型：\($modelarr | join("、"))"
                    + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)

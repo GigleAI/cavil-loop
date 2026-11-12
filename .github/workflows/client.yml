@@ -30,17 +30,9 @@ on:
       - 'client/v*'
   schedule:
     - cron: '40 16 * * 0'
+  # No negative controls here, manual runs included: they run only in negative-controls.yml
+  # (GitHub#416).
   workflow_dispatch:
-    inputs:
-      mutation:
-        description: 'Also run the negative controls (MUTATION=1)'
-        type: boolean
-        default: false
-      mutation_scope:
-        description: 'Which negative controls: all, or only the app shell''s (each rebuilds the real app)'
-        type: choice
-        options: [all, shell]
-        default: all
 
 permissions:
   contents: read
@@ -58,11 +50,11 @@ jobs:
   test:
     name: client quick tests (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.mutation && 240 || 30 }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          # the negative-control runner and the upgrade tests take earlier commits' files (git show / archive)
+          # the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
       - uses: ./.github/actions/client-setup
       - name: Type check
@@ -71,11 +63,6 @@ jobs:
         run: npm run test:rust
       - name: Unit tests (vitest, real back end as a child process)
         run: npm test
-      # Negative controls run in the weekly release gate (.github/workflows/release.yml,
-      # GitHub#195), not here; a manual run can still ask for them.
-      - name: Negative controls
-        if: ${{ inputs.mutation && inputs.mutation_scope != 'shell' }}
-        run: MUTATION=1 npm run test:mutation
 
   # Playwright + the real app on Linux. Each builds the whole app, so only on a client/v* tag,
   # the weekly run and a manual run — not on pull requests, not on pushes to main.
@@ -83,8 +70,7 @@ jobs:
     name: client full tests (Linux)
     if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # negative controls rebuild the back end / the app per entry
-    timeout-minutes: ${{ inputs.mutation && 240 || 60 }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,9 +87,6 @@ jobs:
           grep -q 'CAVIL_SMOKE_OK' <<<"$out"
       - name: The real app over WebDriver (sign in, sync, a change, the shell's link and navigation handlers)
         run: xvfb-run -a npm run test:tauri
-      - name: Negative controls for the app shell (each rebuilds the real app)
-        if: ${{ inputs.mutation }}
-        run: xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4

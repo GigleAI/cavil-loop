@@ -2,6 +2,8 @@
 // (production: https://api.github.com and https://github.com); pagination
 // links that point anywhere else are refused so the token never leaves them.
 
+import type { FailureInput } from '../shared/readFailure';
+
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface Endpoints {
@@ -15,7 +17,24 @@ export const GITHUB_ENDPOINTS: Endpoints = { api: 'https://api.github.com', web:
 
 export type GitHubErrorKind = 'network' | 'auth' | 'http' | 'graphql';
 
+/**
+ * GitHub#401: what an answer said besides its message — read by the failure classifier
+ * (shared/readFailure.ts) to tell an organisation's restriction, single sign-on or a missing scope
+ * from a plain "not found". Filled where the answer is at hand; absent = not said.
+ */
+export interface GitHubErrorMeta {
+  /** GraphQL error types (NOT_FOUND, FORBIDDEN, INSUFFICIENT_SCOPES, …) */
+  gqlTypes?: string[];
+  /** X-GitHub-SSO */
+  sso?: string | null;
+  /** X-OAuth-Scopes (an OAuth app's granted scopes) */
+  scopes?: string | null;
+  /** the read was given up on (a dropped round), not refused */
+  cancelled?: boolean;
+}
+
 export class GitHubError extends Error {
+  meta: GitHubErrorMeta = {};
   constructor(
     readonly kind: GitHubErrorKind,
     message: string,
@@ -47,6 +66,31 @@ export class RateLimitError extends GitHubError {
     super('http', message, status);
     this.name = 'RateLimitError';
   }
+  /** when the answer arrived (a retry-after counts from here) */
+  readonly heardAt: number | null = Date.now();
+}
+
+/** an answer's headers the failure classifier reads (GitHub#401) */
+function headerMeta(res: Response): GitHubErrorMeta {
+  return { sso: res.headers.get('x-github-sso'), scopes: res.headers.get('x-oauth-scopes') };
+}
+
+/** GitHub#401: an error as the failure classifier takes it; anything not a GitHubError is "unknown" */
+export function failureInput(e: unknown): FailureInput {
+  if (!(e instanceof GitHubError)) return { kind: 'unknown', message: e instanceof Error ? e.message : String(e) };
+  const limited = e instanceof RateLimitError;
+  const retryAt = limited ? (e.retryAfterMs !== null ? (e.heardAt ?? Date.now()) + e.retryAfterMs : e.resetAt) : null;
+  return {
+    kind: e.kind,
+    message: e.message,
+    ...(e.status !== undefined ? { status: e.status } : {}),
+    ...(e.meta.cancelled ? { cancelled: true } : {}),
+    ...(limited ? { rateLimited: true, retryAt } : {}),
+    ...(e.transient ? { transient: true } : {}),
+    ...(e.meta.gqlTypes ? { gqlTypes: e.meta.gqlTypes } : {}),
+    ...(e.meta.sso !== undefined ? { sso: e.meta.sso } : {}),
+    ...(e.meta.scopes !== undefined ? { scopes: e.meta.scopes } : {}),
+  };
 }
 
 export const RATE_LIMIT_MESSAGE = 'GitHub 限流（这个账号的查询额度暂时用完了）';
@@ -73,7 +117,9 @@ export async function refusalOf(res: Response): Promise<GitHubError> {
   } catch {
     /* body not JSON */
   }
-  return rateLimitOf(res, detail) ?? new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+  const e = rateLimitOf(res, detail) ?? new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+  e.meta = headerMeta(res);
+  return e;
 }
 
 function limitError(res: Response, status: number | undefined): RateLimitError {
@@ -208,7 +254,11 @@ export class GitHubClient {
   }
 
   private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
-    if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');
+    if (this.cancelled?.aborted) {
+      const given = new GitHubError('network', '已放弃这一轮同步');
+      given.meta.cancelled = true;
+      throw given;
+    }
     this.reads?.gate.check();
     let res: Response;
     try {
@@ -260,7 +310,9 @@ export class GitHubClient {
         throw limited;
       }
       const transient = body.errors.every((e) => !e.type && TRANSIENT_GRAPHQL.test(e.message));
-      throw new GitHubError('graphql', body.errors.map((e) => e.message).join('；'), undefined, transient);
+      const err = new GitHubError('graphql', body.errors.map((e) => e.message).join('；'), undefined, transient);
+      err.meta = { ...headerMeta(res), gqlTypes: body.errors.map((e) => e.type).filter((t): t is string => typeof t === 'string') };
+      throw err;
     }
     if (!body.data) throw new GitHubError('graphql', 'GitHub 回应缺少 data');
     return body.data;

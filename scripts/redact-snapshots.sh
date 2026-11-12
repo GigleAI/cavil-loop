@@ -58,7 +58,7 @@ refuse_if_running() {
 }
 
 if [ ! -d "$SNAP_DIR" ]; then
-    echo "没有快照目录 $SNAP_DIR，不需要清理。"
+    echo "没有快照目录 ${SNAP_DIR}，不需要清理。"
     exit 0
 fi
 

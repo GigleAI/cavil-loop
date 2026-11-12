@@ -121,10 +121,10 @@ rev_of() {   # <真实位置> <读内容的文件>
 # ── 项目登记：环境文件 → 项目根、配置文件 ──
 env_value() { sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1; }
 ENV_FILE="$(cavil_project_env "$KEY")"
-[ -f "$ENV_FILE" ] || fail not_found "本机没有接入项目 $KEY（找不到 $ENV_FILE）" 1
+[ -f "$ENV_FILE" ] || fail not_found "本机没有接入项目 ${KEY}（找不到 ${ENV_FILE}）" 1
 HOST="$(env_value "$ENV_FILE" PROJECT_ROOT)"
 CONFIG="$(env_value "$ENV_FILE" CODING_AGENT_CONFIG)"
-[ -n "$CONFIG" ] || fail unreadable "项目 $KEY 的登记里没有写配置文件的位置（$ENV_FILE）" 2
+[ -n "$CONFIG" ] || fail unreadable "项目 $KEY 的登记里没有写配置文件的位置（${ENV_FILE}）" 2
 [ -f "$CONFIG" ] && [ -r "$CONFIG" ] || fail unreadable "配置文件不存在或读不了：$CONFIG" 2
 REAL="$(resolve_path "$CONFIG")" || fail unreadable "解析不了配置文件的真实位置：$CONFIG" 2
 OS="$(uname -s 2>/dev/null || true)"
@@ -349,7 +349,7 @@ if [ "$MODE" = get ]; then
         if [ "${F_MODE[$i]}" = edit ]; then
             if [ "$W_KIND" = complex ]; then :
             elif valid_value "${F_TYPE[$i]}" "$value"; then editable=true
-            else why="现在的值不是这里能改的写法（$BAD_WHY）"; fi
+            else why="现在的值不是这里能改的写法（${BAD_WHY}）"; fi
         else
             why=""
         fi
@@ -394,7 +394,7 @@ if ! flock -w "$LOCK_WAIT_SECS" 8; then
 fi
 
 # 2. 私有副本 + 第一次核对
-cp -p "$REAL" "$SNAP" 2>/dev/null || { echo "复制不了配置文件到 $SNAP，什么都没写"; finish write_failed 2; }
+cp -p "$REAL" "$SNAP" 2>/dev/null || { echo "复制不了配置文件到 ${SNAP}，什么都没写"; finish write_failed 2; }
 snap_rev="$(rev_of "$REAL" "$SNAP")" || { echo "读不了副本，什么都没写"; finish write_failed 2; }
 if [ "$snap_rev" != "$REV" ]; then
     echo "配置文件在读取之后被别处改过，什么都没写。重新读取后再改。"
@@ -422,7 +422,7 @@ for j in "${!W_NAMES[@]}"; do
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
     fi
     if ! valid_value "${F_TYPE[$i]}" "$v"; then
-        echo "${F_LABEL[$i]}（$k）的值不合规：$BAD_WHY。什么都没写"
+        echo "${F_LABEL[$i]}（${k}）的值不合规：${BAD_WHY}。什么都没写"
         DETAIL="$(jq -cn --arg k "$k" --arg why "$BAD_WHY" '{field:$k, reason:$why}')"; finish invalid 2
     fi
     # 文件里已经是这个值的不算改动（没写过的项即使等于默认值也算：写进去才是「已决定」）
@@ -439,7 +439,7 @@ fi
 changes_json="$(printf '%s\n' "${changes[@]}" | jq -cs '.')"
 
 # 4. 从副本生成新文件
-cp -p "$SNAP" "$NEW" 2>/dev/null || { echo "建不了临时文件 $NEW，什么都没写"; finish write_failed 2; }
+cp -p "$SNAP" "$NEW" 2>/dev/null || { echo "建不了临时文件 ${NEW}，什么都没写"; finish write_failed 2; }
 {
     n=0; ended=1; tail_nl=1
     while IFS= read -r line || { ended=0; [ -n "$line" ]; }; do
@@ -463,7 +463,7 @@ cp -p "$SNAP" "$NEW" 2>/dev/null || { echo "建不了临时文件 $NEW，什么�
         first=0
         printf '%s="%s"\n' "${F_NAME[${E_IDX[$e]}]}" "${E_NEW[$e]}"
     done
-} > "$NEW" || { echo "写不了临时文件 $NEW，什么都没写"; finish write_failed 2; }
+} > "$NEW" || { echo "写不了临时文件 ${NEW}，什么都没写"; finish write_failed 2; }
 
 # 5. 验证新文件
 changed_names=()
@@ -498,7 +498,7 @@ BACKUP="$BK_DIR/$(date +%Y%m%d-%H%M%S)-$$.config"
 if ! mkdir -p "$BK_DIR" 2>/dev/null || ! cp "$SNAP" "$BACKUP" 2>/dev/null || ! chmod 600 "$BACKUP" 2>/dev/null \
    || ! cmp -s "$SNAP" "$BACKUP"; then
     rm -f "$BACKUP" 2>/dev/null || true
-    echo "备份写不进 $BK_DIR，什么都没写"; finish backup_failed 2
+    echo "备份写不进 ${BK_DIR}，什么都没写"; finish backup_failed 2
 fi
 # 只留最近 BACKUP_KEEP 份（只动自己命名的备份）
 ls -1 "$BK_DIR" 2>/dev/null | grep -E '^[0-9]{8}-[0-9]{6}-[0-9]+\.config$' | sort -r | tail -n +$((BACKUP_KEEP + 1)) \
@@ -508,7 +508,7 @@ DETAIL="$(jq -cn --argjson c "$changes_json" --arg b "$BACKUP" --arg config "$CO
 # 7. 紧挨着替换的最后核对：真实位置没变、内容没变
 real_now="$(resolve_path "$CONFIG" || true)"
 if [ "$real_now" != "$REAL" ] || [ "$(rev_of "$REAL" "$REAL" || true)" != "$REV" ]; then
-    echo "保存进行中配置文件被别处改了，什么都没写（备份留在 $BACKUP，可以不管它）"
+    echo "保存进行中配置文件被别处改了，什么都没写（备份留在 ${BACKUP}，可以不管它）"
     finish changed 2
 fi
 

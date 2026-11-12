@@ -1,5 +1,6 @@
 import type { SourceConfig, SourceSnapshot, SourceStatus } from '../shared/types';
-import { GitHubClient, GitHubError, RateLimitError } from './github';
+import { GitHubClient, GitHubError, RateLimitError, failureInput } from './github';
+import { classifyFailure } from '../shared/readFailure';
 import { fetchSource } from './fetchSources';
 import { boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
 import { VIEWER_QUERY } from './queries';
@@ -53,8 +54,10 @@ export async function syncRound(
   onSourceDone: () => void = () => {},
 ): Promise<SyncRound> {
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
-  const unchangedStatus = (error: string): SourceStatus[] =>
-    sources.map((s) => ({ sourceKey: s.key, ok: false, error, dataFrom: previous.get(s.key)?.fetchedAt ?? null }));
+  // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
+  const orgOf = (s: SourceConfig) => (s.kind === 'project' ? (s.ownerType === 'org' ? s.owner : undefined) : s.owner);
+  const unchangedStatus = (e: unknown): SourceStatus[] =>
+    sources.map((s) => ({ sourceKey: s.key, ok: false, error: (e as Error).message, dataFrom: previous.get(s.key)?.fetchedAt ?? null, failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project') }));
 
   let viewer: string | null = null;
   try {
@@ -67,7 +70,7 @@ export async function syncRound(
     return {
       snapshots: keep(),
       replaced: [],
-      status: unchangedStatus(err.message).map((st) => ({ ...st, rateLimited: limited })),
+      status: unchangedStatus(err).map((st) => ({ ...st, rateLimited: limited })),
       offline,
       offlineReason: offline ? err.message || null : null,
       authFailed,
@@ -138,7 +141,14 @@ export async function syncRound(
       checks.delete(src.key);
       const err = r.reason as Error;
       if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;
-      status.push({ sourceKey: src.key, ok: false, error: err.message, dataFrom: previous.get(src.key)?.fetchedAt ?? null, rateLimited: err instanceof RateLimitError });
+      status.push({
+        sourceKey: src.key,
+        ok: false,
+        error: err.message,
+        dataFrom: previous.get(src.key)?.fetchedAt ?? null,
+        rateLimited: err instanceof RateLimitError,
+        failure: classifyFailure(failureInput(err), orgOf(src), src.kind === 'project'),
+      });
     }
   });
   return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged, held: false };

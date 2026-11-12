@@ -11,7 +11,10 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   files.json      {"<pr>": [ {filename, previous_filename?} ]}   PR 详情的 changed_files 默认按它算（items 里可另写，
                   "__missing__" = 缺这个字段）；raw_pulls_<n>_files 文件 = 原样当作文件列表的响应（GitHub#337）
   checks.json     {"<sha>": {"check_runs": [...], "statuses": [...]}}
-  edits.json      {"<pr>": [ {editedAt, deletedAt, diff} ]}  PR 正文修改历史，倒序（GraphQL userContentEdits）
+  edits.json      {"<pr>": [ {editedAt, deletedAt, diff, editor?} ]}  正文修改历史，倒序（GraphQL userContentEdits；
+                  查询里写 issueOrPullRequest 时 issue 的也按编号从这里取，GitHub#391）
+  review_comments.json / reviews.json  {"<pr>": [...]}  PR 行内评论 / review（GitHub#391；没有 = 空）
+  perms.json 里写 "__404__" = 这个账号不存在
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
   subs.json       {"<n>": [<n> | "<owner/repo>#<n>", ...]}  子项（GitHub#233）：/issues/N/sub_issues 和 sub_issues_summary
   items 里的 parent_issue_url 原样带进 issue（GitHub#233）；repos/<owner>__<repo>/ 子目录 = 另一个仓库的同一套状态
@@ -87,11 +90,31 @@ def me():
 
 
 argv = sys.argv[1:]
+
+
+def _logged(args):
+    # 记的是实际发给 GitHub 的内容：`-F 键=@文件`（真 gh 读文件内容当值）记成 `-f 键=<文件内容>`。
+    # GitHub#426 起大正文经临时文件传，文件名每次不同；展开后和改动前的 `-f 键=<正文>` 逐字节相同，
+    # 「调用和改动前一样」的对拍比的仍是发出去的内容
+    out, k = [], 0
+    while k < len(args):
+        a = args[k]
+        if a == "-F" and k + 1 < len(args):
+            key, _, v = args[k + 1].partition("=")
+            if v.startswith("@") and os.path.isfile(v[1:]):
+                with open(v[1:], encoding="utf-8") as fh:
+                    out += ["-f", key + "=" + fh.read()]
+                k += 2; continue
+        out.append(a); k += 1
+    return out
+
+
+_log_argv = _logged(argv)
 with open(p("calls.log"), "a") as f:
-    f.write("gh " + " ".join(argv) + "\n")
+    f.write("gh " + " ".join(_log_argv) + "\n")
 # 每次调用用的是哪把令牌（GitHub#190：daemon 的写入走写入身份），单独记一份，不改 calls.log 的格式
 with open(p("tokens.log"), "a") as f:
-    f.write(os.environ.get("GH_TOKEN", "") + " gh " + " ".join(argv) + "\n")
+    f.write(os.environ.get("GH_TOKEN", "") + " gh " + " ".join(_log_argv) + "\n")
 
 
 def fail(msg, code=1):
@@ -169,6 +192,9 @@ while i < len(argv):
         slurp = True; i += 1; continue
     if a in ("-f", "-F"):
         k, _, v = argv[i + 1].partition("=")
+        if a == "-F" and v.startswith("@"):   # 真 gh：-F key=@文件 读文件内容当值（GitHub#426：大正文经文件传）
+            with open(v[1:], encoding="utf-8") as fh:
+                v = fh.read()
         if k == "labels[]":
             labels_add.append(v)
         else:
@@ -354,7 +380,9 @@ if path == "graphql":
     nodes = edits[start:start + size]
     more = start + size < len(edits)
     cursor = str(start + size) if more and not os.path.exists(p("F_graphql_nocursor_" + n)) else None
-    emit({"data": {"repository": {"pullRequest": {"userContentEdits": {
+    # GitHub#391：外部内容保护按 issueOrPullRequest 读（issue 和 PR 的正文都要），节点里带 editor
+    where = "issueOrPullRequest" if "issueOrPullRequest" in fields.get("query", "") else "pullRequest"
+    emit({"data": {"repository": {where: {"userContentEdits": {
         "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}})
 
 if path is None or not path.startswith("repos/" + REPO):
@@ -531,9 +559,12 @@ if method == "GET":
             sys.exit(0)
         emit(load("files.json", {}).get(parts[1], [{"filename": "scripts/x.sh"}]), pages=True)
     if len(parts) == 3 and parts[0] == "pulls" and parts[2] in ("comments", "reviews"):
-        emit([], pages=True)
+        # GitHub#391：review_comments.json（行内评论）/ reviews.json，{"<pr>": [...]}；没有 = 空
+        emit(load(("review_comments" if parts[2] == "comments" else "reviews") + ".json", {}).get(parts[1], []), pages=True)
     if len(parts) == 3 and parts[0] == "collaborators" and parts[2] == "permission":
         perm = load("perms.json", {}).get(parts[1], "read")
+        if perm == "__404__":   # GitHub#391：账号不存在（已删除）
+            fail("gh: %s is not a user (HTTP 404)" % parts[1])
         emit({"permission": perm, "user": {"login": parts[1]}})
     if len(parts) == 3 and parts[0] == "commits" and parts[2] == "check-runs":
         c = load("checks.json", {}).get(parts[1], {})

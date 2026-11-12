@@ -26,6 +26,8 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 
@@ -42,6 +44,8 @@ mkdir -p "$TMP/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$TMP/old"
 cp -r "$REPO_DIR/prompts" "$TMP/old/"
 mkdir -p "$TMP/new"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$TMP/new/"
+# 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$TMP/old" "$TMP/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
 
 # ── 假 gh / 假 tmux ──
 mkdir -p "$TMP/bin" "$TMP/home"
@@ -120,14 +124,14 @@ GH_TOKEN="fake-token-for-test"
 CONF
         [ "$sw" = unset ] || echo "REVIEW_DESIGN_PROPOSALS=\"$sw\""
     } > "$w/config"
-    rm -f "/tmp/cavil-loop-issue-$N_NEW-prompt.md" "/tmp/cavil-loop-issue-$N_CMT-cmt-0.md"
+    prompt_files_clear "$root" "$w/state"
     (cd "$w/project" && env -u CODING_AGENT_RELEASE_ROOT -u REVIEW_DESIGN_PROPOSALS HOME="$TMP/home" CODING_AGENT_CONFIG="$w/config" \
         bash "$root/scripts/dispatch-new-issue.sh" "$N_NEW") >/dev/null 2>&1
     (cd "$w/project" && env -u CODING_AGENT_RELEASE_ROOT -u REVIEW_DESIGN_PROPOSALS HOME="$TMP/home" CODING_AGENT_CONFIG="$w/config" \
         bash "$root/scripts/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
     # 只把每次运行都会变的东西（时间戳、脚本所在目录）换成固定字样，其余逐字节保留
     local f kind
-    for kind in new-issue:"/tmp/cavil-loop-issue-$N_NEW-prompt.md" issue-comment:"/tmp/cavil-loop-issue-$N_CMT-cmt-0.md"; do
+    for kind in new-issue:"$(prompt_file_of "$root" "$w/state" new "$N_NEW")" issue-comment:"$(prompt_file_of "$root" "$w/state" cmt "$N_CMT" 0)"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ -s "$f" ]; then
             sed -e "s|$root|<ROOT>|g" -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"

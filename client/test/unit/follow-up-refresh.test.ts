@@ -166,6 +166,8 @@ describe('merge / close a PR: the issues it links are read again at once', () =>
     expect(count('closing')).toBe(1);
   });
 
+  // GitHub#413 code review round 1: 101 issues read back through the real back end — ~3 s idle, past the
+  // default 20 s per case on a box at load ~45. The two cases below get a limit that fits their work.
   it('more than one page (repository source only, 101 issues): every one is read again; issues on no board are not', async () => {
     openPair();
     const extra = addRepoIssues(5001, 101);
@@ -185,7 +187,7 @@ describe('merge / close a PR: the issues it links are read again at once', () =>
     // the PR + 101 + #139; #9999 is in no source
     expect(count('refresh') - refresh).toBe(1 + 101 + 1);
     expect(count('rounds')).toBe(rounds);
-  });
+  }, 60_000);
 
   it('a later page fails: the change stands, the user is told the list is partial, what was read is updated, the follow-up round catches the rest', async () => {
     openPair();
@@ -217,7 +219,7 @@ describe('merge / close a PR: the issues it links are read again at once', () =>
     // the follow-up round reads the repository again: #5101 is no longer shown open
     await waitFor(() => count('rounds') > rounds && !c.getState().sync.syncing, 'follow-up round');
     await waitFor(() => find(c, 5101)?.state !== 'open', '#5101 caught up');
-  });
+  }, 60_000);
 
   it('the first page fails too: the cached links still bring the issue up to date, and the user is told', async () => {
     openPair();

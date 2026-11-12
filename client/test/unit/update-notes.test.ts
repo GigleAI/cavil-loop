@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { NOTES_HEADING, addedNotes, composeBody, previousBuildCommit } from '../../scripts/dev-release.mjs';
+import { NOTES_HEADING, addedNotes, buildNotes, composeBody, previousBuildCommit, untoldCommits } from '../../scripts/dev-release.mjs';
 import { tempDir } from './helpers';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -228,5 +228,61 @@ describe('GitHub#348: the development build publisher adds what the build change
     expect(n.entries[0].items).toEqual([{ title: '乙（GitHub#2）', more: '二，带 代码' }]);
     const plain = await notes([rel('0.5.1-dev.2', first), rel('0.5.1-dev.1', '')], '0.5.1-dev.1', '0.5.1-dev.2');
     expect(titles(plain)).toEqual([['0.5.1-dev.2', ['feat(client): two (#2)']]]);
+  });
+});
+
+// GitHub#427: a commit whose own build was never published, and that wrote no note line, is listed
+// by its title on the next published build's page. Producer and app on the same body.
+describe('GitHub#427: app changes with no note line, from builds that were never published', () => {
+  /** base → x (app change + note) → y (app change, no note, never built) → z (test-only, no note) → head (app change + note) */
+  function repo() {
+    const repo = tempDir();
+    const client = join(repo, 'client');
+    mkdirSync(join(client, 'src'), { recursive: true });
+    mkdirSync(join(client, 'test'), { recursive: true });
+    git(repo, 'init', '-q', '-b', 'main');
+    const lines: string[] = [];
+    const commit = (m: string, file: string, note?: string) => {
+      if (note) lines.unshift(note);
+      writeFileSync(join(client, 'RELEASE_NOTES.md'), `### 这一版（0.5）\n\n${lines.join('\n')}\n`);
+      writeFileSync(join(client, file), m);
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', m);
+      return git(repo, 'rev-parse', 'HEAD');
+    };
+    const base = commit('base', 'src/a.ts', '- **旧的**：已在上一版');
+    const x = commit('feat(client): x (#10)', 'src/x.ts', '- **新功能 X**（GitHub#10）：说明');
+    const y = commit('feat(client): pick a Project from GitHub (#414)', 'src/y.ts');
+    const z = commit('test(client): only tests (#12)', 'test/z.ts');
+    const head = commit('feat(client): head (#13)', 'src/h.ts', '- **新功能 H**（GitHub#13）：说明');
+    return { client, base, x, y, z, head };
+  }
+
+  it('the untold commits are exactly the app changes with no note line; every commit with a note → the same lines as before this change', () => {
+    const r = repo();
+    expect(untoldCommits(r.base, r.head, r.client)).toEqual([{ sha: r.y, title: 'feat(client): pick a Project from GitHub (#414)' }]);
+    expect(buildNotes(r.base, r.head, r.client)).toEqual({
+      lines: ['- **新功能 H**（GitHub#13）：说明', '- **新功能 X**（GitHub#10）：说明', '- feat(client): pick a Project from GitHub (#414)'],
+      notes: 2,
+      titles: 1,
+    });
+    // a range where every app change wrote a note: what the publisher wrote before GitHub#427 (the note lines alone)
+    expect(buildNotes(r.base, r.x, r.client)!.lines).toEqual(addedNotes(r.base, r.x, r.client));
+    expect(buildNotes(r.y, r.z, r.client)).toEqual({ lines: [], notes: 0, titles: 0 });
+    // history that cannot be read → nothing at all, never half of it
+    expect(untoldCommits('f'.repeat(40), r.head, r.client)).toBeNull();
+    expect(buildNotes('f'.repeat(40), r.head, r.client)).toBeNull();
+  });
+
+  it('the app lists the untold commit under the build that carried it, once', async () => {
+    const r = repo();
+    const first = `开发版 0.5.1-dev.3，构建自 main 的 ${r.head}：feat(client): head (#13)\n\n${TAIL}\n`;
+    const body = composeBody(first, buildNotes(r.base, r.head, r.client)!.lines);
+    const n = await notes([rel('0.5.1-dev.3', body), rel('0.5.1-dev.1', '')], '0.5.1-dev.1', '0.5.1-dev.3');
+    expect(n.entries[0].items).toEqual([
+      { title: '新功能 H（GitHub#13）', more: '说明' },
+      { title: '新功能 X（GitHub#10）', more: '说明' },
+      { title: 'feat(client): pick a Project from GitHub (#414)', more: null },
+    ]);
   });
 });

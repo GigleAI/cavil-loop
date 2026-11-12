@@ -528,9 +528,9 @@ trust_config_locked_update() {
         return 1
     fi
     lockdir="${CAVIL_TRUST_LOCK_DIR:-$HOME/.local/state/cavil-loop-trust-locks}"
-    mkdir -p "$lockdir" || { echo "[trust] WARN: 建不了锁目录 $lockdir，不写 $real" >&2; return 1; }
+    mkdir -p "$lockdir" || { echo "[trust] WARN: 建不了锁目录 ${lockdir}，不写 $real" >&2; return 1; }
     lock="$lockdir/$(printf '%s' "$real" | cksum | cut -d' ' -f1).lock"
-    exec {fd}>>"$lock" || { echo "[trust] WARN: 打不开锁文件 $lock，不写 $real" >&2; return 1; }
+    exec {fd}>>"$lock" || { echo "[trust] WARN: 打不开锁文件 ${lock}，不写 $real" >&2; return 1; }
     if ! flock -w "${TRUST_LOCK_WAIT_SECS:-10}" "$fd"; then
         exec {fd}>&-
         echo "[trust] WARN: 等 $real 的锁超过 ${TRUST_LOCK_WAIT_SECS:-10}s，本次不写" >&2
@@ -566,7 +566,7 @@ trust_config_locked_update() {
         fi
         mv -f "$tmp" "$real" || { rm -f "$tmp"; rc=1; break; }
         if "$verify" "$real" "$@"; then
-            echo "[trust] 已写入 $real：$*" >&2
+            echo "[trust] 已写入 ${real}：$*" >&2
             rc=0
         else
             echo "[trust] WARN: 写入 $real 后读回没找到自己的记录（可能刚被别的进程整体写回）" >&2

@@ -209,7 +209,7 @@ self_heal_one() {
     pending_label="$(worker_requeue_label "$issue_n")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
-        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
+        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
         pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
@@ -252,10 +252,10 @@ if [ -n "$zombie_issue_nums" ]; then
     done <<< "$zombie_issue_nums"
 fi
 if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
-    log "self-heal 跳过（挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
+    log "self-heal 跳过（挂着外部需求机器人等待标签 ${LABEL_PENDING_REQUESTER_BOT}，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
 fi
 if [ -n "$SELFHEAL_BLOCKED" ]; then
-    log "self-heal 跳过（挂着等前置标签 $LABEL_PENDING_BLOCKED，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
+    log "self-heal 跳过（挂着等前置标签 ${LABEL_PENDING_BLOCKED}，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
 fi
 if [ -n "$SELFHEAL_STUCK" ]; then
     log "self-heal 跳过（卡住检测已对它停手，等人恢复）:$SELFHEAL_STUCK"
@@ -376,7 +376,7 @@ if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
                 *) PROJECT_PRIO[$_pn]=$_pr ;;
             esac
         done < "$_pp_out"
-        log_debug "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
+        log_debug "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=${PRIORITY_SOURCE}）"
     else
         # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
         log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"
@@ -437,11 +437,11 @@ collect_queue_rows() {
         # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
         # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
         if labels_have_requester_bot_wait "$labels_csv"; then
-            log "${kind} #${num} 挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
+            log "${kind} #${num} 挂着外部需求机器人等待标签 ${LABEL_PENDING_REQUESTER_BOT}，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
         # 等前置期间有人打了触发标签（GitHub#157）：同上，按触发标签派，派工时一并摘掉等前置标签
         if labels_have_blocked "$labels_csv"; then
-            log "${kind} #${num} 挂着等前置标签 $LABEL_PENDING_BLOCKED，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
+            log "${kind} #${num} 挂着等前置标签 ${LABEL_PENDING_BLOCKED}，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
@@ -479,7 +479,7 @@ dispatch_failed() {
         log "${kind} #${num} 派工失败（第 $tries/$cap 次，下轮重试）：$reason"
         return 0
     fi
-    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 $LABEL_PENDING_HUMAN（停止重试）：$reason"
+    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 ${LABEL_PENDING_HUMAN}（停止重试）：$reason"
     notify_bounced_to_human "$num" \
         "daemon 连续 $tries 次没能把这条活派出去，为防止空转已停止重试。最后一次的错误：\`$(printf '%s' "$reason" | tr '`' "'")\`" \
         "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。"
@@ -495,18 +495,24 @@ dispatch_failed() {
 # 托管关闭时两个都是空串，autopilot_for_item 第一行就返回，不碰 GitHub。
 # 派复审到 PR 时顺带记下复审的提交：daemon 只合这一个提交。
 # 没绑 issue 的 PR（GitHub#142）：AP_ISSUE 为空，AP_PR = PR 编号
-AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
+AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""; AP_OT=""; AP_ON=""
 autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
-    AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""
+    AP_FLAG=""; AP_ISSUE=""; AP_PR=""; AP_WHERE=""; AP_OT=""; AP_ON=""
     local rc=0
     autopilot_for_item "$STATE_FILE" "$1" "$2" || rc=$?
     # 2 = 托管的拆分子项判不了（GitHub#233）：本轮不派，触发标签留着下轮再判
     [ "$rc" != 2 ] || return 1
     if [ "$rc" = 0 ]; then
         AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"; AP_PR="$AUTOPILOT_PR"; AP_WHERE="$(autopilot_auth_where)"
-        log "托管：$1 #$2 是托管条目（授权在 $AP_WHERE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
+        log "托管：$1 #$2 是托管条目（授权在 ${AP_WHERE}，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
             autopilot_remember_review "$STATE_FILE" "$2" || true
+        fi
+        # 外部账号的内容（GitHub#391）：派工前查一次、记下、补筛；记录写不进就本轮不派（记录是删评论之后还能拦合并的
+        # 唯一依据）。关着时一次调用都没有
+        if outsider_guard_on; then
+            outsider_before_dispatch "$2" || return 1
+            AP_OT="$2"; AP_ON="$OS_DISPATCH_NOTE"
         fi
     fi
     return 0
@@ -523,7 +529,7 @@ dispatch_one_issue() {
 
     # 启动前再问一次（GitHub#345）：收集候选之后才进不派工名单的，也不能派
     if ci_report_dispatch_hold "$num"; then
-        log "issue #$num 不派工：$CI_REPORT_HOLD_REASON（CI 失败报告）"
+        log "issue #$num 不派工：${CI_REPORT_HOLD_REASON}（CI 失败报告）"
         return 0
     fi
 
@@ -549,7 +555,7 @@ dispatch_one_issue() {
         d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
         stuck_release_begin issue "$num" "$trigger_label" || rel=$?
         [ "$rel" != 2 ] || return 0
-        d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         runlog_dispatch "$d_rc"
@@ -580,7 +586,7 @@ dispatch_one_issue() {
     d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
     stuck_release_begin issue "$num" "$trigger_label" || rel=$?
     [ "$rel" != 2 ] || return 0
-    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
@@ -646,7 +652,7 @@ dispatch_one_pr() {
     d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
     stuck_release_begin pr "$prnum" "$trigger_label" || rel=$?
     [ "$rel" != 2 ] || return 0
-    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
@@ -700,10 +706,10 @@ collect_queue_rows_greedy() {
         # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
         rc=0; requester_bot_wait_hold "$num" || rc=$?
         case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
                GREEDY_SKIPPED+=" ${kind}#${num}(等待已摘、无派工标签)"
                continue ;;
-            2) log "greedy：${kind} #${num} 本轮不续工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+            2) log "greedy：${kind} #${num} 本轮不续工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                continue ;;
         esac
         queued_keys[$key]=1
@@ -785,9 +791,9 @@ collect_autopilot_rows() {
                 # 只挂托管标签 = 自动开工。等待标签被提前摘掉、之后没人打派工标签的不开工（GitHub#162）
                 rc=0; requester_bot_wait_hold "$num" || rc=$?
                 case "$rc" in
-                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
                        continue ;;
-                    2) log "托管：issue #$num 本轮不自动开工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+                    2) log "托管：issue #$num 本轮不自动开工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                        continue ;;
                 esac
                 queued_keys[$key]=1
@@ -797,12 +803,12 @@ collect_autopilot_rows() {
                 QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}issue${US}${num}${US}-${US}${LABEL_PENDING_AGENT_DEFAULT}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
                 ;;
             1)
-                log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
+                log "托管：issue #$num 只挂着托管标签，但授权不成立（${AUTOPILOT_REASON}）→ 不派工"
                 autopilot_note_denial "$STATE_FILE" "$num"
                 autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$AUTOPILOT_JUDGE_REV|$updated" || true
                 ;;
             *)
-                log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"
+                log "托管：issue #$num 的托管授权判不了（${AUTOPILOT_REASON}），下轮再看"
                 ;;
         esac
     done <<< "$raw"

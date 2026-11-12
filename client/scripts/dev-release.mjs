@@ -130,8 +130,11 @@ export function stillToDelete(list, c, keep, version, kind = c?.kind) {
 // Installed apps list what every version between theirs and the new one changed, read out of the
 // release pages (src-tauri/crates/core/src/update.rs `notes`). So each development build's page
 // carries, under `NOTES_HEADING`, the lines its commits added to RELEASE_NOTES.md since the
-// previous published development build. Nothing added, or the previous build's commit cannot be
-// told or read → no section (the app then shows the commit title in the page's first line).
+// previous published development build — and, after them, the title of every commit in that range
+// that changed the app but added no line (GitHub#427): a commit whose own build was never published
+// (packaging failed, a newer push cancelled it) has no page of its own, so this is the only place it
+// can show up. Nothing to list, or the previous build's commit cannot be told or any history read
+// fails → no section (the app then shows the commit title in the page's first line).
 
 /** The heading the app looks for (update.rs `NOTES_HEADING`; test/unit/update-notes.test.ts holds both to one fixture). */
 export const NOTES_HEADING = '### 更新内容';
@@ -166,6 +169,50 @@ export function addedNotes(base, head, root = CLIENT_ROOT) {
     .split('\n')
     .filter((l) => l.startsWith('+- '))
     .map((l) => l.slice(1).trimEnd());
+}
+
+/**
+ * What "changed the app" means: the files that go into the installed app (the window, the back end,
+ * its icons and resources, the version). Tests, the test back end, CI, docs and the packaging scripts
+ * change nothing a person using the app can see. Pathspecs, relative to the client directory.
+ */
+export const APP_PATHS = ['src', 'src-tauri', ':(exclude)src-tauri/crates/harness', 'build', 'package.json'];
+
+/**
+ * The commits on main's first-parent line after `base` up to `head` that changed the app (APP_PATHS)
+ * and added no note line to RELEASE_NOTES.md, newest first: [{ sha, title }].
+ * null = could not be told (git failing on the range or on any one commit) — never a partial list.
+ */
+export function untoldCommits(base, head, root = CLIENT_ROOT) {
+  let log;
+  try {
+    log = execFileSync('git', ['log', '--first-parent', '--no-color', '--format=%H %s', `${base}..${head}`, '--', ...APP_PATHS], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    return null;
+  }
+  const out = [];
+  for (const line of log.split('\n')) {
+    const m = /^([0-9a-f]{40}) (.*)$/.exec(line);
+    if (!m) continue;
+    const own = addedNotes(`${m[1]}^`, m[1], root);
+    if (own === null) return null;
+    const title = m[2].trim();
+    if (!own.length && title) out.push({ sha: m[1], title });
+  }
+  return out;
+}
+
+/**
+ * The lines under `NOTES_HEADING` for a build whose previous build was made from `base`: the note
+ * lines RELEASE_NOTES.md gained (file order), then `- <title>` for each untold commit (newest first).
+ * → { lines, notes, titles } | null (could not be told: no section at all, never half of one).
+ */
+export function buildNotes(base, head, root = CLIENT_ROOT) {
+  const added = addedNotes(base, head, root);
+  if (added === null) return null;
+  const untold = untoldCommits(base, head, root);
+  if (untold === null) return null;
+  return { lines: [...added, ...untold.map((c) => `- ${c.title}`)], notes: added.length, titles: untold.length };
 }
 
 /** The release page's text: `notes` as given, then the added note lines under the heading (none → `notes` unchanged). */
@@ -303,10 +350,14 @@ function main() {
     const title = `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
     if (d.action === 'create') {
       const base = previousBuildCommit(before, version);
-      const added = base ? addedNotes(base, sha) : null;
-      console.log(added?.length ? `发版页带上 ${added.length} 条更新说明（相对 ${base.slice(0, 7)}）` : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : added ? '发版说明没有新增条目' : '比不出发版说明的变化'}`);
+      const got = base ? buildNotes(base, sha) : null;
+      console.log(
+        got?.lines.length
+          ? `发版页带上 ${got.notes} 条更新说明${got.titles ? `、补上 ${got.titles} 个没写更新说明的提交标题` : ''}（相对 ${base.slice(0, 7)}）`
+          : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : got ? '发版说明没有新增条目，也没有没写说明的 App 改动' : '比不出发版说明的变化'}`,
+      );
       const body = join(mkdtempSync(join(tmpdir(), 'cavil-dev-release-')), 'notes.md');
-      writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), added));
+      writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), got?.lines));
       gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', body]);
     } else {
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);

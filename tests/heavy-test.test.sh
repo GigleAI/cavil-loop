@@ -34,6 +34,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 for dep in tmux git flock; do
     if ! command -v "$dep" > /dev/null 2>&1; then echo "⏭ 本机没有 $dep，整份跳过"; exit 0; fi
@@ -67,6 +69,9 @@ bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望 [$3]，实得 [$2]）"; fi; }
 yes_() { if "${@:2}"; then ok "$1"; else bad "$1"; fi; }
 no_()  { if "${@:2}"; then bad "$1"; else ok "$1"; fi; }
+# 测试自己造的运行编号：分组名由它而来，假 systemd 按「环境里带 FAKE_UNIT=<分组名>」在整机进程里找分组成员，
+# 所以编号前 8 位放本次运行的进程号——两份本测试同时跑时，各自造的分组不会把对方的进程认成自己的
+fixed_id() { printf '%08x%024x' "$$" "$1"; }
 wait_for() {   # <最多几秒> <命令…>：等到命令成功
     local i n=$(( $1 * 10 )); shift
     for ((i = 0; i < n; i++)); do "$@" && return 0; sleep 0.1; done
@@ -266,7 +271,7 @@ no_ "它的记录被删掉了" test -f "$ra"
 echo "── 5. 分组状态查不到 / 不认识：当作还在跑——不删记录、不放行、不停任何分组 ──"
 for fault in show-fail show-junk show-empty; do
     reset1
-    id="$(printf '%032x' $RANDOM)"
+    id="$(fixed_id $RANDOM)"
     printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/q\nproject=example/q\nitem=9\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
     touch "$FAKE/$fault"
     hw_bg b -- bash -c "$(job b 0.3)"; pb=$HW_PID
@@ -329,7 +334,7 @@ for way in $WAYS; do
 done
 # 记录读不到、但它的分组已经确认消失：这条运行了结了，删掉记录、照常放行
 reset1
-id="$(printf '%032x' 4242)"; echo "garbage" > "$RUNS/$id"
+id="$(fixed_id 4242)"; echo "garbage" > "$RUNS/$id"
 hw_bg b -- bash -c "$(job b 0.2)"; wait "$HW_PID"; rc=$?
 chk "读不到的记录、分组已消失：下一套照常跑完" "$rc" 0
 no_ "那条记录被删" test -e "$RUNS/$id"
@@ -484,7 +489,7 @@ yes_ "降级：打印了降级说明" grep -q "只排队这条命令本身" "$W/
 chk "降级：没有建分组" "$(calls run)" 0
 chk "降级：没有登记" "$(ls "$RUNS" | wc -l)" 0
 # 降级模式看不了分组：还留着登记着的运行时不能当它们不存在
-id="$(printf '%032x' 77)"
+id="$(fixed_id 77)"
 printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=\nproject=\nitem=\ngen=\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
 env HOME="$HH" CAVIL_HEAVY_MODE=degraded bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job c 0.1)" > "$W/c.out" 2>&1; rc=$?
 chk "降级但还有登记着的运行：退出码 70" "$rc" 70
@@ -565,7 +570,7 @@ G="$TMP/git"; mkdir -p "$G"
 gq init -q --bare -b main "$G/up.git"
 gq clone -q "$G/up.git" "$G/seed"
 (cd "$G/seed" && echo x > f && gq add f && gq commit -qm init && gq push -q origin HEAD:main)
-# 编号取真实 issue 用不到的大数：派工脚本把提示词写到固定的 /tmp/cavil-loop-issue-<N>-*.md
+# 编号取真实 issue 用不到的大数，避开本机真实派工的编号（提示词写在各场景自己的状态目录里）
 N=987343
 SESS="hvtest-issue$N"
 
@@ -646,7 +651,7 @@ L1="$(wenv CAVIL_HEAVY_LAUNCH)"
 yes_ "worker 环境里有启动编号" test -n "$L1"
 chk "启动记录里是 worker 窗格的进程号" "$(field "$D/state/worker-launch/$L1" pid)" "$(pane_pid)"
 yes_ "派工结束后条目锁是空闲的（worker 还活着）" lock_free
-PROMPT="/tmp/cavil-loop-issue-$N-cmt-0.md"
+PROMPT="$(prompt_file_of "$NEW" "$D/state" cmt "$N" 0)"
 LINE="$(grep -m1 -E '^bash [^ ]*/scripts/heavy-test\.sh -- bash tests/run\.sh$' "$PROMPT")"
 chk "提示词里写了排队命令的整行写法" "$LINE" "bash $NEW/scripts/heavy-test.sh -- bash tests/run.sh"
 # 用量 footer 认测试命令的那份规则，拿提示词里这一行原样去认：必须还是「整套测试」，否则测试时间会悄悄少算
@@ -793,7 +798,7 @@ for way in garbage bad-state wrong-unit no-statedir no-item blank-statedir no-ge
     wait_for 5 started t || bad "$way：测试没启动"
     rt="$(rec_of "$M/t.start")"; ut="$(field "$rt" unit)"
     # 另一个项目的一套（记录完整）：本条目的测试起来之后才登记，之后的清理和每轮检查都不该碰它
-    oid="$(printf '%032x' 9090)"
+    oid="$(fixed_id 9090)"
     env FAKE_UNIT="cavil-heavy-$oid.scope" sleep 300 & other=$!
     printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/other\nproject=example/other\nitem=%s\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=other\n' "$oid" "$N" "$(date +%s)" > "$RUNS/$oid"
     spoil "$way" "$rt"
@@ -821,7 +826,7 @@ for way in garbage bad-state wrong-unit no-statedir no-item blank-statedir no-ge
 done
 # 功能没开、也没清理过的项目，状态目录里只有一条读不到的记录（可能是这个条目的）：清理不能照旧直接删
 setup2 bad-off "HEAVY_STOP_WAIT_SECS=3"
-id="$(printf '%032x' 5151)"; echo garbage > "$RUNS/$id"
+id="$(fixed_id 5151)"; echo garbage > "$RUNS/$id"
 env FAKE_UNIT="cavil-heavy-$id.scope" sleep 300 & stray=$!
 cleanup_item "$NEW" --force; rc=$?
 yes_ "功能没开但有读不到的记录、它的分组还在：清理非 0 退出" test "$rc" -ne 0
@@ -928,18 +933,20 @@ OLD="$TMP/old"; mkdir -p "$OLD" "$TMP/newcopy"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$OLD"
 cp -r "$REPO_DIR/prompts" "$OLD/"
 cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$TMP/newcopy/"
+# 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$OLD" "$TMP/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
 # 一种写法跑一遍：派工（issue / PR 入口）→ 清理。记下提示词、GitHub 调用、状态文件名、worker 环境
 run_off() {   # <根> <输出目录> [多出来的配置行…]
     local root="$1" out="$2" k; shift 2
     rm -rf "$out"; mkdir -p "$out"
     for k in issue pr; do
         setup2 "off-$k" "$@"
-        rm -f "/tmp/cavil-loop-issue-$N-cmt-0.md" "/tmp/cavil-loop-pr-$N-prompt.md"
+        prompt_files_clear "$root" "$D/state"
         T kill-session -t "=$SESS" 2>/dev/null
         dispatch "$root" "$k"; echo "rc=$?" > "$out/$k.rc"
         wait_for 5 test -s "$CTL/runs"
-        if [ "$k" = issue ]; then cp "/tmp/cavil-loop-issue-$N-cmt-0.md" "$out/$k.md" 2>/dev/null
-        else cp "/tmp/cavil-loop-pr-$N-prompt.md" "$out/$k.md" 2>/dev/null; fi
+        if [ "$k" = issue ]; then cp "$(prompt_file_of "$root" "$D/state" cmt "$N" 0)" "$out/$k.md" 2>/dev/null
+        else cp "$(prompt_file_of "$root" "$D/state" pr "$N")" "$out/$k.md" 2>/dev/null; fi
         # 只抹掉三样必然不同的东西：场景目录、被测脚本所在的根、footer 命令里的开始时刻
         sed -e "s|$D|<D>|g" -e "s|$root|<R>|g" -e 's|--start "[^"]*"|--start "<T>"|' "$out/$k.md" > "$out/$k.md.n" 2>/dev/null
         worker_env > "$out/$k.env"
@@ -1003,7 +1010,7 @@ mk_run() {   # <运行编号> <启动编号> <worker 进程号> <它的启动时
         "$1" "$PW/state" "$2" "$(date +%s)" > "$PRUNS/$1"
 }
 sleep 0.01 & gonepid=$!; wait "$gonepid"
-ID_DEAD=$(printf '%032x' 1); ID_LIVE=$(printf '%032x' 2)
+ID_DEAD=$(fixed_id 1); ID_LIVE=$(fixed_id 2)
 mk_run "$ID_DEAD" "$(printf '%032x' 11)" "$gonepid" 1; s_dead=$!
 mk_run "$ID_LIVE" "$(printf '%032x' 12)" "$$" "$mystart"; s_live=$!
 rm -f "$FAKE/calls"; faults_off

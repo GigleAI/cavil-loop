@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       gate_only:
-        description: 'Only run the release gate (every negative control); cut no tag, create no Release'
+        description: 'Only run the release gate (the shell regression tests); cut no tag, create no Release'
         type: boolean
         default: false
 
@@ -26,15 +26,14 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-# Every negative control in the repo runs here and nowhere else automatically
-# (GitHub#195): the shell tests' and both client sets, before a tag is cut,
-# against the one commit the tag will point at. Any failure means no tag and no
-# Release this run.
+# The release gate is the shell regression suite — the same tests/run.sh shards and exactly-once
+# check as the Tests workflow — run against the one commit the tag will point at, before a tag is
+# cut. Any failure means no tag and no Release this run. The negative controls are not part of it:
+# they run every night in negative-controls.yml and a red one opens an issue there, it does not
+# hold a release (GitHub#416; until then they were this gate, GitHub#195).
 #   plan  → which commit, and is there anything to release at all
-#   gate / gate-autopilot → MUTATION=1 on every tests/*.test.sh (autopilot's ~100
-#           broken copies are split over their own jobs, the rest over 4 shards)
-#   gate-client → every client negative control: test/mutation and the real app's set
-#   gate-summary → green only when every shard and every gate job passed
+#   gate  → tests/run.sh --ci on 4 shards (no MUTATION)
+#   gate-summary → green only when every unit passed exactly once and every gate job passed
 #   release → checks the gate again, then tags exactly the planned commit, notes, Release page
 # The two "did the gate pass" steps read the `needs` context, which only holds the
 # jobs a job declares: dropping a gate job from `needs` fails them, it never skips the check.
@@ -103,17 +102,13 @@ jobs:
     needs: plan
     if: needs.plan.outputs.work == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     env:
-      MUTATION: '1'
-      # autopilot's negative controls run in gate-autopilot; here the file still
-      # runs its scenarios, with no broken copy selected (no name matches).
-      AUTOPILOT_MUT_ONLY: none-see-gate-autopilot
-      RUN_TEST_TIMEOUT: '5400'
+      RUN_TEST_TIMEOUT: '900'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,8 +122,8 @@ jobs:
         run: |
           command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
           tmux -V
-      - name: Negative controls, shard ${{ matrix.shard }}/4
-        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out "$RUNNER_TEMP/results"
+      - name: Tests, shard ${{ matrix.shard }}/4
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 -j 2 --out "$RUNNER_TEMP/results"
       - name: Upload results and logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,101 +133,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  gate-autopilot:
-    name: gate autopilot ${{ matrix.part }}/6
-    needs: plan
-    if: needs.plan.outputs.work == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [1, 2, 3, 4, 5, 6]
-    env:
-      MUTATION: '1'
-      AUTOPILOT_MUT_SHARD: ${{ matrix.part }}/6
-      RUN_TEST_TIMEOUT: '12600'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          fetch-depth: 0
-      - name: Check origin/main is present
-        run: |
-          git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base HEAD origin/main
-      - name: Install tmux
-        run: |
-          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
-          tmux -V
-      - name: autopilot negative controls, part ${{ matrix.part }}/6
-        run: bash tests/run.sh autopilot --out "$RUNNER_TEMP/results"
-      - name: Upload results and logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-autopilot-${{ matrix.part }}
-          path: ${{ runner.temp }}/results/
-          if-no-files-found: error
-          retention-days: 14
-
-  gate-client:
-    name: gate client
-    needs: plan
-    if: needs.plan.outputs.work == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
-    defaults:
-      run:
-        working-directory: client
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          # the negative-control runner takes earlier commits' files (git show / archive)
-          fetch-depth: 0
-      # The same environment as client.yml's tests, Playwright's WebKit included: the
-      # runner starts a UI baseline before the first broken copy.
-      - uses: ./.github/actions/client-setup
-      # Both runners' output is kept (tee) so a failure can name the entries that did not go red.
-      - name: Negative controls (vitest / back end / UI)
-        run: |
-          set -o pipefail
-          MUTATION=1 npm run test:mutation 2>&1 | tee "$RUNNER_TEMP/client-mutation.log"
-      # It builds the window (dist/) and the app's icons itself before its first entry: this
-      # checkout is clean, and neither is in git (tests/client-tauri-mutation-prep.test.sh).
-      - name: Negative controls for the app shell (each rebuilds the real app)
-        run: |
-          set -o pipefail
-          xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh 2>&1 | tee "$RUNNER_TEMP/client-tauri-mutation.log"
-      # The "did not go red" lines, for the failure report (GitHub#285); a small file, not the logs.
-      - name: Keep the list of entries that did not go red
-        if: failure()
-        run: |
-          mkdir -p "$RUNNER_TEMP/client-failures"
-          cat "$RUNNER_TEMP"/client-*mutation.log 2>/dev/null | grep '^❌' > "$RUNNER_TEMP/client-failures/not-red.txt" || true
-          cat "$RUNNER_TEMP/client-failures/not-red.txt"
-      - name: Upload the list
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-client-failures
-          path: ${{ runner.temp }}/client-failures/
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-client-screens
-          path: client/test-results/
-          if-no-files-found: ignore
-
   # Green only when every expected test file passed exactly once across the four
   # shards and every gate job passed: a shard that never ran fails it too.
   gate-summary:
     name: release gate
-    needs: [plan, gate, gate-autopilot, gate-client]
+    needs: [plan, gate]
     if: ${{ !cancelled() && needs.plan.outputs.work == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -245,35 +150,18 @@ jobs:
         with:
           pattern: gate-results-shard-*
           path: results
-      # The autopilot jobs' results, only for the negative-control totals below: each of the six
-      # jobs runs every autopilot part, so they cannot go through the exactly-once check.
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: gate-autopilot-*
-          path: results-autopilot
-      # Both summaries are also saved for the failure report (GitHub#285: its list of failed units).
+      # The summary is also saved for the failure report (GitHub#285: its list of failed units).
       - name: Every shell shard passed exactly once
         run: |
           set -o pipefail
           mkdir -p results "$RUNNER_TEMP/gate-summary"
           bash tests/run.sh --ci --verify results | tee "$RUNNER_TEMP/gate-summary/verify.md"
-      # Reports only (exit 0): how many negative controls ran across the shell shards and the six
-      # autopilot jobs, how many did not go red, and which units failed (GitHub#212). The verdict is
-      # the step above and the next one. "Skipped" adds up overlapping slices (each autopilot job
-      # skips what the other five run); "ran" is the number to read.
-      - name: Negative-control totals
-        if: always()
-        run: |
-          set -o pipefail
-          mkdir -p results results-autopilot "$RUNNER_TEMP/gate-summary"
-          bash tests/run.sh --tally results results-autopilot | tee "$RUNNER_TEMP/gate-summary/tally.md"
       - name: Every gate job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           rc=0
-          for j in gate gate-autopilot gate-client; do
+          for j in gate; do
             r="$(jq -r --arg j "$j" '.[$j].result // "missing"' <<<"$NEEDS")"
             echo "$j: $r"
             [ "$r" = success ] || { echo "::error::gate job $j ended with '$r'"; rc=1; }
@@ -439,7 +327,7 @@ jobs:
   # Turned off by the repository variable RELEASE_FAILURE_REPORT=off (docs/operations.md, Release cadence).
   report-failure:
     name: report failure
-    needs: [plan, gate, gate-autopilot, gate-client, gate-summary, release]
+    needs: [plan, gate, gate-summary, release]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && vars.RELEASE_FAILURE_REPORT != 'off' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -455,11 +343,6 @@ jobs:
         with:
           name: gate-summary-report
           path: ${{ runner.temp }}/gate-summary
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: gate-client-failures
-          path: ${{ runner.temp }}/client-failures
       - name: Open or comment on the release-failure issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -468,6 +351,6 @@ jobs:
           GATE_ONLY: ${{ inputs.gate_only && 'true' || '' }}
           # Must match this repo's dispatch label (LABEL_PENDING_AGENT in the daemon's config).
           DISPATCH_LABEL: ${{ vars.RELEASE_FAILURE_LABEL || 'pending/agent' }}
+          REPORT_KIND: release
           SUMMARY_DIR: ${{ runner.temp }}/gate-summary
-          CLIENT_DIR: ${{ runner.temp }}/client-failures
         run: python3 scripts/release_failure_report.py

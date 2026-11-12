@@ -1,9 +1,12 @@
 // GitHub#404: the view bar's three flow numbers and what a click on one does to the search box.
 // Counting and the click query must pick the same items, and "等人处理" must be the reminders' own
 // rule (isPending) — checked here on the same items through all three paths.
+// GitHub#418: the fourth number "未处理" (open, no label at all) — its count and its click query
+// `is:open no:label` must pick the same items too.
 
 import { describe, expect, it } from 'vitest';
-import { flowTally, litTally, tallyClick, tallyForget, tallyQuery, type TallyEntry } from '../../src/data/flowTally';
+import { flowTally, litTally, tallyClick, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
+import { mergeSnapshots } from '../../src/data/merge';
 import { isPending } from '../../src/data/pending';
 import { applyFilter, parseFilter } from '../../src/shared/filter';
 import { DEFAULT_HAND_BACK, type Item } from '../../src/shared/types';
@@ -21,7 +24,10 @@ const ITEMS: Item[] = [
   item(R, 7, { labels: L('pending/agent'), kind: 'pr', isDraft: true }), // a draft PR is open
   item(R, 8, { labels: L('bug') }),
   item(R, 9, { labels: L('pending/human-ish') }), // a whole-name match, not a prefix
-  item(R, 10, {}),
+  item(R, 10, {}), // no label at all: "未处理"
+  item(R, 11, { kind: 'pr', isDraft: true }), // a draft PR with no label: open, so "未处理"
+  item(R, 12, { state: 'closed', stateReason: 'not_planned' }), // closed, no label: never counted
+  item(R, 13, { kind: 'pr', state: 'merged' }), // merged, no label: never counted
 ];
 const counts = (e: TallyEntry[]) => Object.fromEntries(e.map((x) => [x.kind, x.count]));
 const today = '2026-11-12';
@@ -29,13 +35,13 @@ const today = '2026-11-12';
 describe('flowTally', () => {
   it('counts open issues and PRs per flow label, whole name, any case, closed / merged left out', () => {
     const e = flowTally(ITEMS, DEFAULT_HAND_BACK);
-    expect(e.map((x) => x.kind)).toEqual(['running', 'agent', 'human']);
-    expect(counts(e)).toEqual({ running: 2, agent: 2, human: 2 });
+    expect(e.map((x) => x.kind)).toEqual(['running', 'agent', 'human', 'unlabeled']);
+    expect(counts(e)).toEqual({ running: 2, agent: 2, human: 2, unlabeled: 2 });
   });
 
   it('the count, the click query and the reminders rule pick the same items', () => {
     for (const labels of [DEFAULT_HAND_BACK, { ...DEFAULT_HAND_BACK, running: ' DOING/AGENT ', human: 'Pending/Human' }]) {
-      for (const e of flowTally(ITEMS, labels)) {
+      for (const e of flowTally(ITEMS, labels).filter((x) => x.kind !== 'unlabeled')) {
         const viaQuery = applyFilter(ITEMS, parseFilter(e.query!), { viewer: null, today, projects: [] }).map((i) => i.number);
         const viaRule = ITEMS.filter((i) => isPending(i, e.label)).map((i) => i.number);
         expect(viaQuery, e.kind).toEqual(viaRule);
@@ -47,12 +53,12 @@ describe('flowTally', () => {
 
   it('an empty running label leaves "运行中" out; the other two are still there', () => {
     const e = flowTally(ITEMS, { ...DEFAULT_HAND_BACK, running: '  ' });
-    expect(e.map((x) => x.kind)).toEqual(['agent', 'human']);
-    expect(counts(e)).toEqual({ agent: 2, human: 2 });
+    expect(e.map((x) => x.kind)).toEqual(['agent', 'human', 'unlabeled']);
+    expect(counts(e)).toEqual({ agent: 2, human: 2, unlabeled: 2 });
   });
 
   it('zero is shown as zero (the number stays in place)', () => {
-    expect(counts(flowTally([], DEFAULT_HAND_BACK))).toEqual({ running: 0, agent: 0, human: 0 });
+    expect(counts(flowTally([], DEFAULT_HAND_BACK))).toEqual({ running: 0, agent: 0, human: 0, unlabeled: 0 });
   });
 
   it('every label: either the click shows exactly the counted items, or the number cannot be clicked (PR #408 review round 1)', () => {
@@ -88,6 +94,67 @@ describe('flowTally', () => {
     expect(applyFilter(items, parseFilter(q), { viewer: null, today, projects: [] }).map((i) => i.number)).toEqual([1]);
     expect(tallyQuery('say "hi"')).toBeNull();
     expect(tallyQuery('')).toBeNull();
+  });
+});
+
+describe('GitHub#418: 未处理 (open, no label at all)', () => {
+  /** the rule written out here, independent of the filter the app uses */
+  const bare = (items: Item[]) => items.filter((i) => i.state === 'open' && i.labels.length === 0).map((i) => i.number);
+
+  it('counts open issues and draft / ready PRs with no label; any label, closed or merged leaves it out', () => {
+    expect(bare(ITEMS)).toEqual([10, 11]);
+    const u = unlabeledTally(ITEMS);
+    expect(u).toEqual({ kind: 'unlabeled', label: '', count: 2, query: 'is:open no:label' });
+    // one label of any kind is enough to leave: a classification label, the autopilot label, a flow label
+    for (const name of ['bug', 'autopilot', 'pending/agent']) {
+      expect(unlabeledTally([item(R, 1, { labels: L(name) }), item(R, 2, {})]).count, name).toBe(1);
+    }
+  });
+
+  it('the count and the click query pick the same items, through the real filter', () => {
+    for (const items of [ITEMS, ITEMS.slice(0, 9), [], [item(R, 1, { kind: 'pr' }), item(R, 2, { kind: 'pr', state: 'closed' })]]) {
+      const u = unlabeledTally(items);
+      const viaQuery = applyFilter(items, parseFilter(u.query!), { viewer: null, today, projects: [] }).map((i) => i.number);
+      expect(viaQuery).toEqual(bare(items));
+      expect(u.count).toBe(viaQuery.length);
+    }
+    expect(parseFilter(UNLABELED_QUERY).unsupported).toEqual([]);
+  });
+
+  it('it does not follow the label settings: always there, always last, even with "运行中" cleared', () => {
+    for (const labels of [DEFAULT_HAND_BACK, { ...DEFAULT_HAND_BACK, running: '' }, { running: 'x', agent: 'bug', human: 'y' }]) {
+      const e = flowTally(ITEMS, labels);
+      expect(e.at(-1)).toEqual(unlabeledTally(ITEMS));
+      expect(e.filter((x) => x.kind === 'unlabeled')).toHaveLength(1);
+    }
+  });
+
+  it('an item carried by two sources counts once (the board merges by item before counting)', () => {
+    const shared = item(R, 20, {});
+    const board = mergeSnapshots(
+      [
+        { sourceKey: 'a', fetchedAt: 1, items: [shared, item(R, 21, {})] },
+        { sourceKey: 'b', fetchedAt: 1, items: [{ ...shared }, item(R, 22, { labels: L('bug') })] },
+      ],
+      null,
+    );
+    expect(unlabeledTally(board.items).count).toBe(2);
+  });
+
+  it('a click works like the other numbers: lit, back to the search before, switching keeps it', () => {
+    const E = flowTally(ITEMS, DEFAULT_HAND_BACK);
+    const u = E.find((x) => x.kind === 'unlabeled')!;
+    const human = E.find((x) => x.kind === 'human')!;
+    let s = tallyClick('新增依赖图视图', null, u, E);
+    expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
+    expect(litTally(s.query, E)).toBe('unlabeled');
+    s = tallyClick(s.query, s.saved, human, E);
+    expect(s).toEqual({ query: 'is:open label:"pending/human"', saved: '新增依赖图视图' });
+    s = tallyClick(s.query, s.saved, u, E);
+    expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
+    expect(tallyClick(s.query, s.saved, u, E)).toEqual({ query: '新增依赖图视图', saved: null });
+    // its query never reads as one of the label numbers' queries
+    expect(E.filter((x) => x.query === UNLABELED_QUERY).map((x) => x.kind)).toEqual(['unlabeled']);
   });
 });
 

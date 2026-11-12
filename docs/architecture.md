@@ -241,6 +241,7 @@ dispatch would inherit the review's. Both directions are blocked:
 | The worker role adopts only conversations snapshotted in `.preexisting` | Any conversation created *after* role tracking began — whoever created it, we knew its role at the time — becoming adoptable because its registration went missing |
 | A forced new session retires the old id instead of deleting it | The "resume died in 2s" fallback turning the reviewer's previous conversation into an unowned one |
 | The post-launch read-back must prove the candidate was started with this dispatch's prompt | An earlier role's unclaimed session file landing inside this role's window and being claimed by it |
+| Autopilot items with the outside-content protection on (GitHub#391): only a session recorded in `.guarded` (started with the protection on) is resumed; any other is retired and a fresh one started, and a live one is not injected into | An old session that read outside accounts' original text — while the item was an ordinary one, or before the setting was turned on — being carried into an autopilot flow that is supposed to filter that text |
 
 Review rounds 2..N reuse the review's own session, so the reviewer can check
 whether its earlier findings were addressed.

@@ -264,7 +264,7 @@ else
         "s|TMUX_PREFIX=\"myproject\"|TMUX_PREFIX=\"$project_name\"|" \
         "s|^WORKER_AGENT=\"claude\"|WORKER_AGENT=\"$WORKER_AGENT_PICK\"|"
     harden_perms "$config"
-    echo "  ✓ $config（权限 600）"
+    echo "  ✓ ${config}（权限 600）"
 fi
 
 # ── 1b. worker agent 目录信任 ──
@@ -344,7 +344,7 @@ PATH=$daemon_path:/usr/local/bin:/usr/bin:/bin
 EOF
     )
     harden_perms "$env_file"
-    echo "  ✓ $env_file（权限 600）"
+    echo "  ✓ ${env_file}（权限 600）"
 fi
 
 # ── 4. 安装调度器 unit（按 OS 分支）──
@@ -421,7 +421,7 @@ OnActiveSec=30s
 OnUnitActiveSec=${POLL_SECS}s
 AccuracySec=5s
 DROP
-        echo "  ✓ $drop（间隔 ${POLL_SECS}s）"
+        echo "  ✓ ${drop}（间隔 ${POLL_SECS}s）"
         systemctl --user daemon-reload 2>/dev/null || true
     fi
 }

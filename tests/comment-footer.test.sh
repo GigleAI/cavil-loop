@@ -19,6 +19,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/prompt-files.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -459,19 +461,20 @@ PATH="$DSB/bin:\$PATH"
 # 本来带着 GH_TOKEN 的 daemon / worker 环境里是绿的。gh 是假的，这个值不会被拿去用。
 GH_TOKEN="fake-token-for-test"
 CONF
-# 编号取得很大，避免撞上本机真实派工写在 /tmp 下的 prompt
+# 编号取得很大，避开本机真实派工的编号
 N_NEW=987601; N_CMT=987602; N_PR=987603
 dispatch_check() { # $1 = scripts 目录；打印 PASS / FAIL
     local sd="$1" kind f
-    rm -f "/tmp/cavil-loop-issue-$N_NEW-prompt.md" "/tmp/cavil-loop-issue-$N_CMT-cmt-0.md" "/tmp/cavil-loop-pr-$N_PR-prompt.md"
+    prompt_files_clear "${sd%/scripts}" "$DSB/state"
     (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-new-issue.sh" "$N_NEW") >/dev/null 2>&1
     (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
     (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-pr-comment.sh" "$N_PR" "feature/issue-$N_PR" 0) >/dev/null 2>&1
-    for kind in new-issue:"/tmp/cavil-loop-issue-$N_NEW-prompt.md" issue-comment:"/tmp/cavil-loop-issue-$N_CMT-cmt-0.md" \
-                pr-comment:"/tmp/cavil-loop-pr-$N_PR-prompt.md"; do
+    for kind in new-issue:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" new "$N_NEW")" \
+                issue-comment:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" cmt "$N_CMT" 0)" \
+                pr-comment:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" pr "$N_PR")"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ ! -s "$f" ]; then echo "FAIL dispatch_$kind :: 没写出 prompt"
         elif grep -q 'COMMENT_FOOTER_CMD' "$f"; then echo "FAIL dispatch_$kind :: 占位没被换掉"
@@ -479,7 +482,7 @@ dispatch_check() { # $1 = scripts 目录；打印 PASS / FAIL
             echo "PASS dispatch_$kind"
         else echo "FAIL dispatch_$kind :: 渲染出的命令不对：$(grep -m1 '^FOOTER=' "$f")"; fi
     done
-    rm -f "/tmp/cavil-loop-issue-$N_NEW-prompt.md" "/tmp/cavil-loop-issue-$N_CMT-cmt-0.md" "/tmp/cavil-loop-pr-$N_PR-prompt.md"
+    prompt_files_clear "${sd%/scripts}" "$DSB/state"
 }
 while IFS= read -r l; do
     case "$l" in

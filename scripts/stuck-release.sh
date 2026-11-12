@@ -47,7 +47,7 @@ else
     fi
     env_file="$(cavil_project_env "$KEY")"
     if [ ! -f "$env_file" ]; then
-        echo "没有接入项目 $KEY（找不到 $env_file）"
+        echo "没有接入项目 ${KEY}（找不到 ${env_file}）"
         exit 1
     fi
     # 后台任务的环境文件（KEY=VALUE，可带一层引号）：照它的内容设环境，和轮询跑起来时一样
@@ -74,7 +74,7 @@ case "$LOCK_WAIT" in ''|*[!0-9]*) LOCK_WAIT=120 ;; esac
 case "$CONFIRM_WAIT" in ''|*[!0-9]*) CONFIRM_WAIT=300 ;; esac
 
 if [ ! -f "$STATE_FILE" ]; then
-    echo "没有停住记录：#$NUM（这个项目还没有状态文件 $STATE_FILE）"
+    echo "没有停住记录：#${NUM}（这个项目还没有状态文件 ${STATE_FILE}）"
     exit 1
 fi
 
@@ -92,7 +92,7 @@ if ! n=$(jq -er --arg n "$NUM" 'if type == "object" and ((.stuck_workers // {}) 
                | select(.value.frozen != null and ((.value.num == $n) or ((.value.frozen.items // []) | index($n) != null)))
                | .key] | first // "")
         else error("bad state") end' "$STATE_FILE" 2>/dev/null); then
-    echo "读不出本机的状态文件 $STATE_FILE，不能解除。什么都没改。"
+    echo "读不出本机的状态文件 ${STATE_FILE}，不能解除。什么都没改。"
     exit 4
 fi
 if [ -z "$n" ]; then
@@ -104,7 +104,7 @@ if e=$(stuck_entry "$n"); then
     mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen.base // 0)]') || F=()
 fi
 if [ "${#F[@]}" != 3 ]; then
-    echo "读不出本机的停住记录（$STATE_FILE），不能解除。什么都没改。"
+    echo "读不出本机的停住记录（${STATE_FILE}），不能解除。什么都没改。"
     exit 4
 fi
 kind="${F[0]}"; num="${F[1]}"; base="${F[2]}"
@@ -121,14 +121,14 @@ if ! doc1=$(stuck_release_doc "$kind" "$num" "$base"); then
 fi
 
 # 4. 给人看，等确认
-echo "停住记录（$kind #$num，工作编号 $n）："
+echo "停住记录（$kind #${num}，工作编号 ${n}）："
 printf '%s' "$e" | jq '{kind, num, frozen: (.frozen | {why, at, items, posted, comment, base})}'
 echo
-echo "现在读到的 $kind #$num："
+echo "现在读到的 $kind #${num}："
 printf '%s' "$doc1" | jq '{target: .target, bound: .bound, last_flow_label_event: .last}'
 echo
 echo "解除后，这一条回到普通流程：条目上现有的派工标签会照常派工；"
-echo "遗留的 $LABEL_AGENT_DOING、${LABEL_PENDING_REVIEW:-$LABEL_PENDING_AGENT} 等流程标签请先在页面上摘掉再运行。"
+echo "遗留的 ${LABEL_AGENT_DOING}、${LABEL_PENDING_REVIEW:-$LABEL_PENDING_AGENT} 等流程标签请先在页面上摘掉再运行。"
 printf '确认解除请输入 yes：'
 ans=""
 read -r -t "$CONFIRM_WAIT" ans || ans=""
@@ -149,10 +149,10 @@ if [ "$doc1" != "$doc2" ]; then
     exit 3
 fi
 if ! stuck_entry_del "$n"; then
-    echo "停住记录没删掉（写不了 $STATE_FILE），什么都没改。"
+    echo "停住记录没删掉（写不了 ${STATE_FILE}），什么都没改。"
     exit 3
 fi
 rm -f "$(stuck_release_file "$n")"
 log "卡住检测：$kind #$num 的停住记录已由本机命令 stuck-release.sh 解除"
-echo "已解除：$kind #$num。下一轮轮询起照普通流程处理。"
+echo "已解除：$kind #${num}。下一轮轮询起照普通流程处理。"
 exit 0

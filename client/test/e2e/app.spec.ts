@@ -2440,7 +2440,7 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   const hide = page.getByTestId('detail-close');
   await expect(hide).toHaveText('收起 ›');
   await expect(hide).toHaveAttribute('title', '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）');
-  await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…');
+  await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…X');
   await shot(page, '50-issue-open-hide-button');
   await hide.click();
   await expect(detail).toHaveCount(0);
@@ -2805,7 +2805,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await page.keyboard.press('?');
   await expect(help).toBeVisible();
   expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
-    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'hide',
+    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'closeIssue', 'handBack', 'autopilot', 'hide',
     'graphFit', 'graphZoomIn', 'graphZoomOut', 'settingsBack', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
   ]);
   await shot(page, '60-shortcut-list');
@@ -4250,7 +4250,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   // ---- 1. 托管: three paragraphs; "不再提示" unticked; cancel keeps asking; ticked + confirmed → no dialog next time ----
   await card(page, 138).click();
   const quick = page.getByTestId('detail').locator('.reply .row.end');
-  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）…');
+  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）…Shift+P');
   await quick.getByTestId('autopilot').click();
   for (const part of ['labels', 'then', 'stop']) await expect(page.getByTestId(`autopilot-explain-${part}`)).toBeVisible();
   await expect(page.getByTestId('autopilot-explain').locator('p')).toHaveCount(3);
@@ -4274,7 +4274,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await page.getByTestId('detail-close').click();
   // another item: the button has no "…", one click writes, no dialog
   await card(page, 139).click();
-  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）');
+  await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）Shift+P');
   const b2 = writes().length;
   await quick.getByTestId('autopilot').click();
   await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toContainText('已托管');
@@ -4360,7 +4360,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await page.getByTestId('back').click();
   await page.locator('[data-testid="source-pick"] input[data-key^="project:"]').check();
   await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-title"]').first().click();
-  await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…');
+  await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…Shift+P');
   await app.close();
 });
 
@@ -7519,5 +7519,176 @@ test('GitHub#398: "open this repository on GitHub" on the board\'s swimlane head
   expect(await savedOrder()).toEqual(['gigleai/aaa', 'gigleai/bbb']);
   expect(opened()).toEqual(want);
   expect(want.length).toBe(8);
+  await app.close();
+});
+
+// ---- GitHub#413: 关闭 issue / 交给 agent / 托管 from the keyboard (X / Shift+A / Shift+P). A key only presses
+// the button: the same handler behind the same "is it showing, can it be pressed" condition, so what GitHub
+// receives is compared with what the button sends, and every "nothing happened" has a "this did happen" next to it.
+test('GitHub#413: X opens the close dialog, Shift+A hands to the agent, Shift+P is autopilot — the button\'s own write; never while typing, offline, busy, without the button', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const openOnGitHub = (n: number) => {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  };
+  openOnGitHub(137);
+  openOnGitHub(139);
+  const prN = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!.content.number as number;
+  for (const g of findCopies(store, 'GigleAI/cavil-loop', prN)!.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of findCopies(store, 'GigleAI/cavil-loop', prN)!.rest) Object.assign(r, { state: 'open', pull_request: { ...r.pull_request, merged_at: null } });
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const dialog = page.getByTestId('confirm-dialog');
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+    await blur(page);
+  };
+  const autopilotWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
+    ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
+  ];
+  const handBackWrites = (n: number) => autopilotWrites(n).slice(1);
+  /** the operation of the item on screen has settled: the panel's last notice is no longer busy */
+  const settled = () => expect(detail.locator('[data-testid="op-notice"]').last()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
+
+  // ---- 1. the keys are on the buttons and in their tooltips (this window runs as Linux: Shift, not ⇧) ----
+  await open(137);
+  await expect(page.getByTestId('close-issue')).toHaveText('关闭 issue…X');
+  await expect(page.getByTestId('hand-back')).toHaveText('交给 agentShift+A');
+  await expect(page.getByTestId('autopilot')).toHaveText('托管（自动合并）…Shift+P');
+  await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '在 GitHub 上关闭这个 issue（先选原因，X）');
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /（标签名在设置里改，Shift\+A）$/);
+  await expect(page.getByTestId('autopilot')).toHaveAttribute('title', /（Shift\+P）$/);
+  await shot(page, '413-01-keys-on-buttons');
+
+  // ---- 2. X: the close dialog of #137, nothing sent; Esc cancels it, the panel stays ----
+  await page.keyboard.press('x');
+  await expect(dialog.locator('h3')).toHaveText('关闭 issue #137？');
+  await shot(page, '413-02-x-opens-close-dialog');
+  expect(env.fake.writes()).toEqual([]);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#137');
+  // with the dialog up the other two keys are the dialog's: nothing
+  await page.keyboard.press('x');
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Shift+A');
+  await page.keyboard.press('Shift+P');
+  await expect(page.getByTestId('autopilot-explain')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(env.fake.writes()).toEqual([]);
+
+  // ---- 3. typing in the reply box: x, A, P are letters ----
+  await page.getByTestId('reply-input').click();
+  await page.keyboard.press('x');
+  await page.keyboard.press('Shift+A');
+  await page.keyboard.press('Shift+P');
+  await expect(page.getByTestId('reply-input')).toHaveValue('xAP');
+  await expect(dialog).toHaveCount(0);
+  await page.getByTestId('reply-input').fill('');
+  await blur(page);
+  expect(env.fake.writes()).toEqual([]);
+
+  // ---- 4. Shift+A: the hand-back write; while it is held GitHub has the item busy — the keys do nothing more ----
+  const release = env.fake.holdWhen((e) => e.method === 'DELETE' && e.path.includes('/issues/137/labels/'));
+  await page.keyboard.press('Shift+A');
+  await expect.poll(() => writes().length).toBe(2);
+  await expect(page.getByTestId('hand-back')).toBeDisabled();
+  await page.keyboard.press('Shift+A');
+  await page.keyboard.press('x');
+  await page.keyboard.press('Shift+P');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  release();
+  await settled();
+  expect(writes()).toEqual(handBackWrites(137));
+
+  // ---- 5. Shift+P with "ask first" on: the autopilot dialog; Esc cancels; ⌘↩ (Ctrl here) confirms the same write as the button ----
+  await expect(page.getByTestId('hand-back')).toBeEnabled();
+  let before = writes().length;
+  await page.keyboard.press('Shift+P');
+  await expect(page.getByTestId('autopilot-explain')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect(writes()).toHaveLength(before);
+  await page.keyboard.press('Shift+P');
+  await expect(page.getByTestId('autopilot-explain')).toBeVisible();
+  await page.keyboard.press('Control+Enter');
+  await expect(dialog).toHaveCount(0);
+  await settled();
+  expect(writes().slice(before)).toEqual(autopilotWrites(137));
+
+  // ---- 6. the button on #139 (ticking "不再提示"): its write is the key's write on another item ----
+  await open(139);
+  before = writes().length;
+  await page.getByTestId('autopilot').click();
+  await page.getByTestId('autopilot-no-more-ask').check();
+  await page.getByTestId('confirm-ok').click();
+  await settled();
+  const byButton = writes().slice(before);
+  expect(byButton).toEqual(autopilotWrites(139));
+
+  // ---- 7. an open PR: no "close issue" there, so X does nothing; Shift+P now autopilots at once (no dialog) ----
+  await open(prN);
+  await expect(page.getByTestId('close-issue')).toHaveCount(0);
+  await expect(page.getByTestId('autopilot')).toHaveText('托管（自动合并）Shift+P');
+  before = writes().length;
+  await page.keyboard.press('x');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  expect(writes()).toHaveLength(before);
+  await page.keyboard.press('Shift+P');
+  await settled();
+  await expect(dialog).toHaveCount(0);
+  expect(writes().slice(before)).toEqual(byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]));
+
+  // ---- 8. X then ⌘↩ (Ctrl here): #139 really closes ----
+  await open(139);
+  before = writes().length;
+  await page.keyboard.press('x');
+  await expect(dialog.locator('h3')).toHaveText('关闭 issue #139？');
+  await page.keyboard.press('Control+Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => writes().slice(before)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
+  await settled();
+
+  // ---- 9. no autopilot label in Settings: no button, so Shift+P does nothing; Shift+A still hands back ----
+  await page.getByTestId('detail-close').click();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('hand-back-autopilot').fill('');
+  await page.getByTestId('hand-back-autopilot').blur();
+  await page.getByTestId('back').click();
+  await open(137);
+  await expect(page.getByTestId('autopilot')).toHaveCount(0);
+  before = writes().length;
+  await page.keyboard.press('Shift+P');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  expect(writes()).toHaveLength(before);
+  await page.keyboard.press('Shift+A');
+  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(137));
+  await settled();
+
+  // ---- 10. offline: the buttons grey out and the keys do nothing ----
+  before = writes().length;
+  env.fake.state.offline = true;
+  await page.getByTestId('refresh').press('Enter');
+  await expect(page.getByTestId('offline')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('close-issue')).toBeDisabled();
+  await expect(page.getByTestId('hand-back')).toBeDisabled();
+  await blur(page);
+  await page.keyboard.press('x');
+  await page.keyboard.press('Shift+A');
+  await page.waitForTimeout(300);
+  await expect(dialog).toHaveCount(0);
+  expect(writes()).toHaveLength(before);
   await app.close();
 });

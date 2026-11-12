@@ -429,7 +429,7 @@ mutate prompt-report-rule-swapped _lib.sh '    if requester_bot_report_first; th
         rule="本项目要求**先向机器人汇报结果**' '    if ! requester_bot_report_first; then
         rule="本项目要求**先向机器人汇报结果**'
 # 整份换回钉死的旧实现（配本版 prompts/）：必须变红。83d29bf = 代码复审第 1 轮打回的那一版（按 updated_at 缓存结论）。
-# 原先还有一份「换回 merge-base」：PR 上是改动前，但发版门禁跑在 main 上，merge-base 就是当前代码，
+# 原先还有一份「换回 merge-base」：PR 上是改动前，但负对照（当时在发版门禁里，如今每晚）跑在 main 上，merge-base 就是当前代码，
 # 对照基准没有意义，已删（GigleAI/cavil-loop#284）。它守的行为由「正式版」整套场景的普通断言覆盖。
 mutate_rev() {   # <名字> <提交>
     local name="$1" rev="$2" M="$SANDBOX/mut-rev-$1"

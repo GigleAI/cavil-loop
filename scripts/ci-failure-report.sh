@@ -111,5 +111,5 @@ while IFS= read -r line; do
     [ -n "$line" ] && log "$line"
 done < "$OUT"
 rm -f "$OUT"
-[ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查程序异常退出（退出码 $rc）"
+[ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查程序异常退出（退出码 ${rc}）"
 exit 0

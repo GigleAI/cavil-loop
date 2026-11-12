@@ -38,7 +38,7 @@ fi
 
 # Entries that leave the window's code alone copy the built window (dist/) into their work dir, and
 # every entry compiles the app, which needs the icon set build.mjs generates (src-tauri/icons).
-# Neither is in git: a clean checkout — the weekly release gate starts from one (GitHub#195) — has
+# Neither is in git: a clean checkout — the nightly negative-controls run starts from one (GitHub#416) — has
 # neither. So build them here, once, before the first entry; only when entries will run.
 if mutation_on; then
     "$node" "$here/../../scripts/build.mjs" \

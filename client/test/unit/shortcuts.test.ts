@@ -139,6 +139,43 @@ describe('resolve: who gets the key', () => {
       expect(resolve(key('1', { metaKey: true }), { ...idle, layer }), layer).toBeNull();
     }
   });
+  it('GitHub#413: X opens the close dialog, Shift+A hands to the agent, Shift+P is autopilot — only with nothing typed and nothing on top', () => {
+    // nothing typed, no layer: the three keys act (Caps Lock X too)
+    expect(resolve(key('x'), idle)).toBe('closeIssue');
+    expect(resolve(key('X'), idle)).toBe('closeIssue');
+    expect(resolve(key('A', { shiftKey: true }), idle)).toBe('handBack');
+    expect(resolve(key('P', { shiftKey: true }), idle)).toBe('autopilot');
+    // the two that write at once need Shift: a bare a / p (or Caps Lock A / P) is nobody's
+    for (const k of ['a', 'p', 'A', 'P']) expect(resolve(key(k), idle), k).toBeNull();
+    // Shift+X is not X; ⌘ / Alt with any of them is nobody's (⌘⇧P outside the reply box neither)
+    expect(resolve(key('X', { shiftKey: true }), idle)).toBeNull();
+    for (const [k, o] of [
+      ['x', { metaKey: true }],
+      ['A', { metaKey: true, shiftKey: true }],
+      ['P', { metaKey: true, shiftKey: true }],
+      ['P', { ctrlKey: true, shiftKey: true }],
+      ['A', { altKey: true, shiftKey: true }],
+    ] as const)
+      expect(resolve(key(k, o), idle), `${k} ${JSON.stringify(o)}`).toBeNull();
+    // typing: an x, a capital A or P is text — in the reply box, another field, a settings field
+    for (const ctx of [{ ...idle, typing: 'reply' }, { ...idle, typing: 'other' }, { ...idle, page: 'settings', typing: 'other' }] as KeyContext[]) {
+      expect(resolve(key('x'), ctx)).toBeNull();
+      expect(resolve(key('A', { shiftKey: true }), ctx)).toBeNull();
+      expect(resolve(key('P', { shiftKey: true }), ctx)).toBeNull();
+    }
+    // the reply box keeps its ⌘⇧P (preview)
+    expect(resolve(key('P', { metaKey: true, shiftKey: true }), { ...idle, typing: 'reply' })).toBe('preview');
+    // a layer on top takes them; the settings page has no detail keys; never while composing
+    for (const layer of ['dialog', 'picker', 'help'] as const) {
+      expect(resolve(key('x'), { ...idle, layer }), layer).toBeNull();
+      expect(resolve(key('A', { shiftKey: true }), { ...idle, layer }), layer).toBeNull();
+      expect(resolve(key('P', { shiftKey: true }), { ...idle, layer }), layer).toBeNull();
+    }
+    expect(resolve(key('x'), { ...idle, page: 'settings' })).toBeNull();
+    expect(resolve(key('A', { shiftKey: true }), { ...idle, page: 'settings' })).toBeNull();
+    expect(resolve(key('x', { isComposing: true }), idle)).toBeNull();
+    expect(resolve(key('A', { shiftKey: true, keyCode: 229 }), idle)).toBeNull();
+  });
   it('matches: ⌘ and Ctrl both count as the modifier', () => {
     expect(matches({ key: 'r', mod: true }, key('r', { ctrlKey: true }))).toBe(true);
     expect(matches({ key: 'r', mod: true }, key('r', { metaKey: true }))).toBe(true);
@@ -158,5 +195,11 @@ describe('keys on screen', () => {
     expect(keyText('newIssue', true)).toBe('C / ⌘N');
     expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
     expect(keyText('viewGraph', true)).toBe('⌘3');
+    // GitHub#413
+    expect(keyText('closeIssue', true)).toBe('X');
+    expect(keyText('handBack', true)).toBe('⇧A');
+    expect(keyText('handBack', false)).toBe('Shift+A');
+    expect(keyText('autopilot', true)).toBe('⇧P');
+    expect(keyText('autopilot', false)).toBe('Shift+P');
   });
 });
