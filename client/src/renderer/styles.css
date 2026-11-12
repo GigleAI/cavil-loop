@@ -734,3 +734,22 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .gdot.done { background: var(--edge-done); }
 .gpop-actions { display: flex; gap: 8px; }
 .gpop-outside { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* GitHub#405: the new-issue dialog's labels / milestone / iteration in one fold, shut by default; the head line says what they are set to.
+   PR #410 review round 1: the head line wraps instead of squeezing — every part keeps its own width, never drawn over the next;
+   a long label name is cut with "…" (its full name on hover), a long milestone / iteration text breaks onto another line */
+.more-fields { border: 1px solid var(--border); border-radius: 6px; }
+.form .more-fields button.more-head { display: flex; justify-content: flex-start; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 4px 10px; border: 0; border-radius: 6px; background: none; text-align: left; white-space: normal; }
+.form .more-fields button.more-head:hover:not(:disabled) { background: var(--hover); }
+.more-head .icon { flex: none; color: var(--muted); transform: rotate(-90deg); transition: transform .12s; }
+.more-fields.open .more-head .icon { transform: none; }
+.more-title { flex: none; font-weight: 500; white-space: nowrap; }
+.more-sum { flex: 1 1 0; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 6px; min-width: 0; margin-left: auto; color: var(--muted); font-size: 12px; font-weight: normal; }
+.more-part { flex: 0 1 auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.more-part[data-tone='plain'] { color: var(--fg); }
+.more-sum .sep { flex: none; opacity: .6; }
+.more-part > [data-testid^='new-issue-more-'] { flex: 1 1 auto; min-width: 0; }
+.more-part:not([data-part='labels']) { flex-wrap: nowrap; }
+.more-sum .label { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.more-label-name { display: block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 10px; border-top: 1px solid var(--border-muted); }
