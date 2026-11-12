@@ -48,6 +48,12 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 令牌脱敏入口（GitHub#342）：log() 和所有往 poll.log / 窗格历史追加内容的地方都用它
+# shellcheck source=_redact.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
+# 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
+# shellcheck source=_heavy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -408,6 +414,12 @@ AUTOPILOT_MERGE_METHOD="${AUTOPILOT_MERGE_METHOD:-squash}"
 AUTOPILOT_CHECKS_TIMEOUT_HOURS="${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6}"
 # 授权 / PR / 检查连续读不到几轮后交人（读不到不等于「没授权」，也不等于「有授权」）
 AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
+# 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
+# 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
+AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
+# 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
+AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
 # 互通仓库名单（GitHub#233）：逗号 / 空格分隔的 owner/repo。名单里的仓库 ① 可以当拆分子项的父 issue 所在仓库
 # （父 issue 上维护者亲手打的托管标签，授权本仓库的子项；打标签的人在两个仓库都要有写权限）；② 可以当
 # 等前置的前置所在仓库（`<!-- agent-blocked-by: owner/repo#N -->`、「Blocked by」里那个仓库的条目）。
@@ -813,8 +825,14 @@ SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
 SKILL_DIR="${CODING_AGENT_RELEASE_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 
+# 日志文字里出现 GitHub 令牌前缀时先替换再写（GitHub#342）：写文件和写 stderr（进 journal）
+# 用的是同一份替换后的文字。平常的日志行不含前缀，不多起进程。
 log() {
-    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
+    local msg="$*"
+    case "$msg" in
+        *gh[pousr]_*|*github_pat_*) msg="$(printf '%s' "$msg" | redact_pipe)" ;;
+    esac
+    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $msg" | tee -a "$LOG_FILE" >&2   # redact-ok：上面已替换
 }
 
 # 默认仅输出常规日志；LOG_LEVEL=debug 额外显示排查用的例行明细。
@@ -1414,15 +1432,19 @@ pace_probe_etag_write() {  # <文件> <ETag>
 # 检查才被看到。304 响应里 GitHub 给回的 ETag 去掉了 W/ 前缀（实测），所以 304 时沿用
 # 已存的，不覆盖。
 pace_probe() {
-    local etag out status new_etag
+    local etag out status new_etag p_rc=0
     PACE_PROBE_REASON=""
     etag=$(pace_probe_etag_read "$PROBE_ETAG_FILE")
     local -a cmd=(gh api -i --method GET)
     if [ -n "$etag" ]; then cmd+=(-H "If-None-Match: $etag"); fi
     cmd+=("repos/$REPO/issues" -f state=all -f sort=updated -f direction=desc -f per_page=1)
     if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30 "${cmd[@]}"); fi
-    out=$("${cmd[@]}" 2>/dev/null) || true
+    # RUNLOG_NO_TALLY：这一次调用的计数由下面的 runlog_probe_note 统一记，gh 计数函数不重复记。
+    out=$(RUNLOG_NO_TALLY=1 "${cmd[@]}" 2>/dev/null) || p_rc=$?
     status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r' | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+    # 运行记录（GitHub#344）：把这次检查的结果旁路记一笔——超时、读不到、各状态码分开。只记，
+    # 下面怎么放行一个字不变。
+    if declare -F runlog_probe_note >/dev/null; then runlog_probe_note "$p_rc" "$status"; fi
     case "$status" in
         304)
             if [ -n "$etag" ]; then return 0; fi
@@ -2246,6 +2268,8 @@ tmux_env_args() {
             echo "[cavil-loop]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
+    # 重测试排队（GitHub#343）：这次启动的条目、代数、启动编号；功能关着什么都不加
+    heavy_tmux_env_args
 }
 
 tmux_session_name() {
@@ -4662,18 +4686,232 @@ autopilot_checks() {   # <提交>
 
 autopilot_daemon_sig() { printf '<sub>cavil-loop daemon @ %s 自动留言</sub>' "$(hostname -s 2>/dev/null || hostname)"; }
 
-# 交人：说明 + PR 翻 pending/human、摘 pending/merge
-autopilot_to_human() {   # <state_file> <PR> <原因> [怎么继续]
-    local sf="$1" pr="$2" reason="$3" next="${4:-}"
+# ── 交人的写前核对（GitHub#382）──
+# 交人要连发几个独立请求（发说明 → 加 pending/human → 摘 pending/merge），GitHub 没有「状态没变才写」的写法，
+# 所以三条流程（交人 autopilot_to_human、PR 上已挂 pending/human 的收尾 autopilot_halt_dequeue、托管关掉后的
+# 收尾 autopilot_off_sweep）都照同两条规则：
+#   1. 判定被基准夹住：先取一份现状指纹作基准，再判定，再取一次确认和基准相同。更早的判断只算触发，不作依据。
+#   2. 之后每次写入之前现取指纹，必须等于「基准 + daemon 自己已确认的写入」；别的差异一概停手，本轮不再写。
+# 消除不了的窗口只剩「最后一次取指纹」到「写请求到达 GitHub」之间。
+#
+# 指纹（一行 JSON，键排好序，整串比较）：
+#   pr     {open, draft, head, base, ref, repo, body（正文校验和）, labels（排序）, q, last}
+#   issue  {open, labels, last}（绑了 issue 才有）；parent 同 issue（拆分子项才有）
+#   q    = 排队编号：标签记录里最后一次「加上等合并标签」那条事件的编号（同一提交重新入队就变）
+#   last = 标签记录里最后一条加 / 摘标签事件的编号（任何人动过任何标签就变）
+# 只在同一个条目的标签事件之间比编号；不和评论编号比、不比时间（GitHub#337 实测：评论编号和事件编号不可比）。
+# 读不到、事件缺编号 / 编号重复、等合并标签或 pending/human 在记录里的最后一次和当前标签对不上 → 分不清（return 1），
+# 调用方本轮不写。
+#
+# 字段规则（都在 autopilot_fp_place 这一处校验；缺字段、类型不对、不认识的状态词一律是「分不清」，绝不默认成
+# 「没合并」「不是草稿」「已关闭」——代码复审第 1 轮：缺 merged 的响应被当成没合并，照样交了人；不认识的 state 被当成
+# 「有人动过」，删掉了还欠着说明的待办）：
+#   PR 和 issue 都要：state 是 "open" 或 "closed"；labels 是数组，每项的 name 是字符串
+#   PR 另外要：merged、draft 是布尔值；head.sha、head.ref、base.ref 是非空字符串
+#   标签事件：是「页的数组」，每页是数组；加 / 摘标签的事件 id 是数字、不重复，label.name 是字符串
+
+# 一处的现状。结果在 AF_PLACE（一行 JSON）、AF_EVENTS（这一处的标签事件 [{id,event,name,actor}]，按编号排序）；
+# 分不清时 return 1、AF_WHY 是原因。在调用方自己的 shell 里调。
+autopilot_fp_place() {   # <编号> <pr|issue> [仓库]
+    local n="$1" kind="$2" repo="${3:-$REPO}" j ev ck out m="${AUTOPILOT_MERGE_LABEL_NAME:-$LABEL_PENDING_MERGE}"
+    AF_PLACE=""; AF_EVENTS=""; AF_WHY=""
+    if [ "$kind" = pr ]; then j=$(gh api "repos/$repo/pulls/$n" 2>/dev/null) || j=""
+    else j=$(gh api "repos/$repo/issues/$n" 2>/dev/null) || j=""; fi
+    if [ -z "$j" ]; then AF_WHY="读不到 #$n"; return 1; fi
+    if ! ev=$(gh api --paginate --slurp "repos/$repo/issues/$n/events" 2>/dev/null) || [ -z "$ev" ]; then
+        AF_WHY="读不到 #$n 的标签记录"; return 1
+    fi
+    ck=$(printf '%s' "$j" | jq -r '.body // ""' 2>/dev/null | cksum 2>/dev/null | tr -s ' \t' '-') || ck=""
+    if [ -z "$ck" ]; then AF_WHY="读不懂 #$n"; return 1; fi
+    # 条目和事件都从 stdin 进 jq：事件列表可以很长，放不进命令行参数
+    if ! out=$({ printf '%s\n' "$j"; printf '%s\n' "$ev"; } | jq -cS -s --arg M "$m" --arg H "$LABEL_PENDING_HUMAN" --arg kind "$kind" --arg ck "$ck" '
+        .[0] as $j | .[1] as $ev
+        | if ($j | type) != "object" or ($j.labels | type) != "array" or ($ev | type) != "array"
+             or any($ev[]; type != "array") or any($ev[][]; type != "object")
+             or any($j.labels[]; (type != "object") or ((.name | type) != "string"))
+          then error("shape") else . end
+        | if ($j.state == "open" or $j.state == "closed") then . else error("state") end
+        | if $kind == "pr" and ((($j.merged | type) != "boolean") or (($j.draft | type) != "boolean")
+                                or (($j.head | type) != "object") or (($j.base | type) != "object"))
+          then error("fields") else . end
+        | [ $ev[][] | select(.event == "labeled" or .event == "unlabeled")
+            | {id, event, name: .label.name, actor: (.actor.login // "")} ] as $raw
+        | if any($raw[]; ((.id | type) != "number") or ((.name | type) != "string")) then error("id") else . end
+        | if ($raw | map(.id) | unique | length) != ($raw | length) then error("dup") else . end
+        | ($raw | sort_by(.id)) as $le
+        | ($j.labels | map(.name) | sort) as $labels
+        | if all([$M, $H][]; . as $L
+                 | (($le | map(select(.name == $L)) | last | .event) == "labeled") == ($labels | index($L) != null))
+          then . else error("mismatch") end
+        | { events: $le,
+            place: ({open: ($j.state == "open" and ($kind != "pr" or $j.merged == false)), labels: $labels, last: ($le | last | .id)}
+                    + (if $kind == "pr" then
+                         (if all([$j.head.sha, $j.head.ref, $j.base.ref][]; (type == "string") and (. != ""))
+                          then . else error("fields") end)
+                         | {draft: $j.draft, head: $j.head.sha, base: $j.base.ref, ref: $j.head.ref,
+                            repo: ($j.head.repo.full_name // ""), body: $ck,
+                            q: ($le | map(select(.name == $M and .event == "labeled")) | last | .id)}
+                       else {} end)) }' 2>/dev/null) || [ -z "$out" ]; then
+        AF_WHY="#$n 的现状或标签记录读不全（缺字段、不认识的状态、事件缺编号，或标签记录和当前标签对不上）"; return 1
+    fi
+    AF_PLACE=$(printf '%s' "$out" | jq -cS '.place') || return 1
+    AF_EVENTS=$(printf '%s' "$out" | jq -c '.events') || return 1
+    [ -n "$AF_PLACE" ] && [ -n "$AF_EVENTS" ]
+}
+
+# 整份指纹：PR，加上（给了的话）绑定的 issue 和拆分子项的父 issue。结果在 AF_FP、AF_PR_EVENTS；return 1 = 分不清
+autopilot_fingerprint() {   # <PR> [issue 编号] [父 issue「仓库#编号」]
+    local pr="$1" n="${2:-}" parent="${3:-}" a b=null c=null
+    AF_FP=""; AF_PR_EVENTS=""
+    autopilot_fp_place "$pr" pr || return 1
+    a="$AF_PLACE"; AF_PR_EVENTS="$AF_EVENTS"
+    if [ -n "$n" ]; then autopilot_fp_place "$n" issue || return 1; b="$AF_PLACE"; fi
+    if [ -n "$parent" ]; then autopilot_fp_place "${parent##*#}" issue "${parent%#*}" || return 1; c="$AF_PLACE"; fi
+    AF_FP=$(jq -cnS --argjson a "$a" --argjson b "$b" --argjson c "$c" '{pr: $a, issue: $b, parent: $c}' 2>/dev/null) || AF_FP=""
+    if [ -z "$AF_FP" ]; then AF_WHY="拼不出 PR #$pr 的现状"; return 1; fi
+}
+
+# 现取指纹，必须和 <预期> 一字不差。0 = 相同；1 = 不同或分不清（AF_WHY）
+autopilot_fp_expect() {   # <预期指纹> <PR> [issue] [父]
+    local want="$1"; shift
+    autopilot_fingerprint "$@" || return 1
+    [ "$AF_FP" = "$want" ] && return 0
+    AF_WHY="PR #$1 的现状和判定时不一样了（有人动过）"; return 1
+}
+
+# 刚取的指纹（AF_FP / AF_PR_EVENTS）是不是「<基准> + 恰好一次 daemon 自己的标签写入」：基准之后 PR 的标签记录
+# 恰好多一条、是写入账号做的这一次加 / 摘，其余一字不差。多出别的事件、或那一条不是写入账号的 → 1
+autopilot_fp_is_own_write() {   # <基准指纹> <labeled|unlabeled> <标签>
+    local base="$1" op="$2" label="$3" me want m="${AUTOPILOT_MERGE_LABEL_NAME:-$LABEL_PENDING_MERGE}"
+    me=$(write_identity_login)
+    [ -n "$me" ] && [ -n "$AF_FP" ] || return 1
+    want=$(printf '%s' "$AF_PR_EVENTS" | jq -cS --argjson b "$base" --arg op "$op" --arg L "$label" --arg me "$me" --arg M "$m" '
+        ($b.pr.last // -1) as $last | [ .[] | select(.id > $last) ] as $new
+        | if ($new | length) == 1 and $new[0].event == $op and $new[0].name == $L
+             and (($new[0].actor | ascii_downcase) == ($me | ascii_downcase))
+          then $b | .pr.last = $new[0].id
+               | .pr.labels = (if $op == "labeled" then (.pr.labels + [$L] | unique) else (.pr.labels - [$L]) end)
+               | (if $op == "labeled" and $L == $M then .pr.q = $new[0].id else . end)
+          else empty end' 2>/dev/null) || want=""
+    [ -n "$want" ] && [ "$want" = "$AF_FP" ]
+}
+
+# 摘一个标签，确认摘掉了才算成功：2xx，或 404（已经不在了）
+autopilot_label_delete() {   # <编号> <标签>
+    local out
+    out=$(gh_write api -X DELETE "repos/$REPO/issues/$1/labels/$(printf '%s' "$2" | jq -sRr @uri)" 2>&1) && return 0
+    case "$out" in *"HTTP 404"*) return 0 ;; esac
+    log "  ⚠️ 托管：#$1 摘 $2 失败：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+    return 1
+}
+
+# 交人原因重判：合并许可原样再判一遍，结论、原因代号、命中内容和身份都要和触发时（HO_*）一样。
+# 「读不到到上限」那种只要求仍是读不到（读不到的位置可以不同；提交 / 分支由指纹比）
+autopilot_handover_rejudge() {   # <state_file> <PR> [mine：PR 上那枚 pending/human 是 daemon 本次已确认加上的]
+    local AP_HANDOVER_MINE="${3:-}"
+    autopilot_permit "$1" "$2"
+    [ "$AP_V" = "$HO_WANT" ] && [ "$AP_STOP" = "$HO_STOP" ] && [ "$AP_STOP_KEY" = "$HO_SKEY" ] \
+        && [ "$AP_N" = "$HO_N" ] && [ "$AP_KIND" = "$HO_KIND" ] && [ "$AP_PARENT" = "$HO_PARENT" ] || return 1
+    [ "$HO_WANT" = unknown ] && return 0
+    [ "$AP_HEAD" = "$HO_HEAD" ] && [ "$AP_BASE" = "$HO_BASE" ] && [ "$AP_REF" = "$HO_REF" ]
+}
+
+# 交人（所有托管交人原因共用，流程一）：说明 → 加 pending/human → 摘 pending/merge，每次写入之前都核对。
+# 调用时 AP_* 是触发这次交人的那次许可判定的结果；<期望的许可结论> 是那次判定的 AP_V。触发只是触发：
+# 作数的判定在这里重做，夹在两次取指纹之间。不记本机待办——中断后 PR 上的标签和已发的说明就是进度：
+#   仍在合并队列 → 下一轮从头重判；同一次入队、同一提交、同一原因的说明已在就不重发；
+#   两枚标签都在 → 下一轮走 autopilot_halt_dequeue。
+# 顺序固定：先摘等合并标签的话，许可判断就不再认这个 PR，后面的重判全部失效。
+autopilot_to_human() {   # <state_file> <PR> <原因代号> <期望的许可结论> <原因> [怎么继续]
+    local sf="$1" pr="$2" why="$3" reason="$5" next="${6:-}" fp0 fp1 q head me cmts marker body
+    local HO_WANT="$4" HO_STOP="$AP_STOP" HO_SKEY="$AP_STOP_KEY" HO_N="$AP_N" HO_KIND="$AP_KIND" HO_PARENT="$AP_PARENT"
+    local HO_HEAD="$AP_HEAD" HO_BASE="$AP_BASE" HO_REF="$AP_REF"
     [ -n "$next" ] || next="要继续托管：处理好之后把 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\`（重新复审，通过后 daemon 再检查、合并）。不托管了：自己审、自己合并。"
-    notify_bounced_to_human "$pr" "托管自动合并已停下。$reason" "$next"
-    if ! run_gh "label 翻转 (托管 PR #$pr → $LABEL_PENDING_HUMAN)" \
-        gh_label_flip "$pr" --add "$LABEL_PENDING_HUMAN" --remove "$LABEL_PENDING_MERGE"; then
+    # ① 基准
+    if ! autopilot_fingerprint "$pr" "$HO_N" "$HO_PARENT"; then
+        log "托管：PR #$pr 该交人（$reason），但交人前读不全现状（$AF_WHY），本轮不写，下轮再试"; return 0
+    fi
+    fp0="$AF_FP"
+    if ! printf '%s' "$fp0" | jq -e --arg M "$LABEL_PENDING_MERGE" --arg H "$LABEL_PENDING_HUMAN" \
+            '.pr.open and (.pr.labels | index($M) != null) and (.pr.labels | index($H) == null)' >/dev/null 2>&1; then
+        log "托管：PR #$pr 交人前现状已变（不在合并队列、已挂 $LABEL_PENDING_HUMAN 或已关闭），本轮不写"; return 0
+    fi
+    q=$(printf '%s' "$fp0" | jq -r '.pr.q // ""'); head=$(printf '%s' "$fp0" | jq -r '.pr.head // ""')
+    me=$(write_identity_login)
+    if [ -z "$q" ] || [ -z "$head" ] || [ -z "$me" ]; then
+        log "托管：PR #$pr 交人前读不到排队记录或写入账号，本轮不写"; return 0
+    fi
+    # ② 已经发过的说明（认本次入队：标记里有排队编号）
+    if ! cmts=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments" 2>/dev/null) || [ -z "$cmts" ] \
+       || ! printf '%s' "$cmts" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        log "托管：PR #$pr 交人前读不到已有评论（分不清说明发没发过），本轮不写"; return 0
+    fi
+    marker="<!-- cavil-loop:autopilot-handover pr=$pr q=$q head=$head why=$why -->"
+    # ③ 作数的判定 + 确认基准
+    if ! autopilot_handover_rejudge "$sf" "$pr"; then
+        log "托管：PR #$pr 交人之前重判有变化（重判结果 $AP_V${AP_REASON:+：$AP_REASON}），本轮不写"; return 0
+    fi
+    if ! autopilot_fp_expect "$fp0" "$pr" "$HO_N" "$HO_PARENT"; then
+        log "托管：PR #$pr 交人之前现状有变化（$AF_WHY），本轮不写"; return 0
+    fi
+    # ④ 说明
+    if ! printf '%s' "$cmts" | jq -e --arg T "$marker" --arg me "$me" \
+            'any(.[][]?; ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase) and ((.body // "") | contains($T)))' >/dev/null 2>&1; then
+        body="$(printf '⚠️ **自动处理已暂停，转人工（`%s`）**\n\n**原因**：%s\n\n**怎么继续**：%s\n\n%s\n%s' \
+            "$LABEL_PENDING_HUMAN" "托管自动合并已停下。$reason" "$next" "$(autopilot_daemon_sig)" "$marker")"
+        if ! run_gh "托管交人说明评论 (PR #$pr)" gh_write api -X POST "repos/$REPO/issues/$pr/comments" -f "body=$body"; then
+            log "托管：PR #$pr 交人说明没发出去，不翻标签，下轮再试"; return 0
+        fi
+        AUTOPILOT_ACTED=1
+        if ! autopilot_handover_rejudge "$sf" "$pr"; then
+            log "托管：PR #$pr 说明发出后重判有变化（重判结果 $AP_V${AP_REASON:+：$AP_REASON}），不翻标签"; return 0
+        fi
+        if ! autopilot_fp_expect "$fp0" "$pr" "$HO_N" "$HO_PARENT"; then
+            log "托管：PR #$pr 说明发出后现状有变化（$AF_WHY），不翻标签"; return 0
+        fi
+    fi
+    # ⑤ 加 pending/human，再确认多出来的恰好是自己这一次
+    if ! run_gh "托管交人：PR #$pr 加 $LABEL_PENDING_HUMAN" \
+            gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_PENDING_HUMAN"; then
         return 0
     fi
     AUTOPILOT_ACTED=1
+    if ! autopilot_fingerprint "$pr" "$HO_N" "$HO_PARENT" || ! autopilot_fp_is_own_write "$fp0" labeled "$LABEL_PENDING_HUMAN"; then
+        log "托管：PR #$pr 加 $LABEL_PENDING_HUMAN 之后现状对不上（${AF_WHY:-除了这一次加标签还有别的变化}），不摘 $LABEL_PENDING_MERGE，下轮按现状处理"
+        return 0
+    fi
+    fp1="$AF_FP"
+    # ⑥ 摘等合并标签
+    if ! autopilot_handover_rejudge "$sf" "$pr" mine; then
+        log "托管：PR #$pr 摘 $LABEL_PENDING_MERGE 之前重判有变化（重判结果 $AP_V${AP_REASON:+：$AP_REASON}），不摘，下轮按现状处理"; return 0
+    fi
+    if ! autopilot_fp_expect "$fp1" "$pr" "$HO_N" "$HO_PARENT"; then
+        log "托管：PR #$pr 摘 $LABEL_PENDING_MERGE 之前现状有变化（$AF_WHY），不摘，下轮按现状处理"; return 0
+    fi
+    autopilot_label_delete "$pr" "$LABEL_PENDING_MERGE" || return 0
     autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) | del(.unknown, .checks_pending_since))' --arg p "$pr" || true
     log "托管：PR #$pr 交人 → $LABEL_PENDING_HUMAN：$reason"
+}
+
+# 开着的 PR 同时挂着 pending/human 和等合并标签 → 只摘等合并标签，不说话（流程二）。维护者自己叫停、
+# autopilot_to_human 加完 pending/human 后停下或中断，都走这里。判定的全部输入（开着、两枚标签都在）都在指纹里，
+# 所以判定直接从基准得出；摘之前现取指纹必须等于基准。
+autopilot_halt_dequeue() {   # <PR>
+    local pr="$1" fp
+    if ! autopilot_fingerprint "$pr"; then
+        log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN，摘 $LABEL_PENDING_MERGE 之前读不全现状（$AF_WHY），下轮再试"; return 0
+    fi
+    fp="$AF_FP"
+    if ! printf '%s' "$fp" | jq -e --arg M "$LABEL_PENDING_MERGE" --arg H "$LABEL_PENDING_HUMAN" \
+            '.pr.open and (.pr.labels | index($M) != null) and (.pr.labels | index($H) != null)' >/dev/null 2>&1; then
+        log "托管：PR #$pr 现状已变（不再同时挂着两个标签，或已关闭），本轮不写"; return 0
+    fi
+    if ! autopilot_fp_expect "$fp" "$pr"; then
+        log "托管：PR #$pr 摘 $LABEL_PENDING_MERGE 之前现状有变化（$AF_WHY），本轮不写"; return 0
+    fi
+    autopilot_label_delete "$pr" "$LABEL_PENDING_MERGE" || return 0
+    AUTOPILOT_ACTED=1
+    log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN（已被叫停）→ 不合并，摘掉 $LABEL_PENDING_MERGE"
 }
 
 # 交回 worker 修（检查没过、冲突）。打回次数单独计，上限沿用复审轮数上限 REVIEW_MAX_ROUNDS。
@@ -4682,7 +4920,7 @@ autopilot_to_worker() {   # <state_file> <PR> <issue 编号> <原因>
     bounces=$(autopilot_state_get "$sf" '.prs[$p].bounces // 0' --arg p "$pr"); bounces="${bounces:-0}"
     cap="${REVIEW_MAX_ROUNDS:-6}"
     if [ "$bounces" -ge "$cap" ] 2>/dev/null; then
-        autopilot_to_human "$sf" "$pr" "合并前检查已经打回 worker $bounces 次（上限 $cap），这次仍没过：$reason"
+        autopilot_to_human "$sf" "$pr" bounce-cap worker "合并前检查已经打回 worker $bounces 次（上限 $cap），这次仍没过：$reason"
         return 0
     fi
     label=$(pr_conflict_return_label "$issue_n" "$sf")
@@ -4720,13 +4958,13 @@ autopilot_to_review() {   # <state_file> <PR> <现在的提交> <复审时记下
 }
 
 # 读不到：本轮什么都不写；连续 AUTOPILOT_UNKNOWN_MAX 轮读不到才交人
-autopilot_unknown() {   # <state_file> <PR> <原因>
+autopilot_unknown() {   # <state_file> <PR> <原因> [触发时的许可结论，默认 unknown；合并请求失败时是 ok]
     local sf="$1" pr="$2" reason="$3" k cap
     cap="${AUTOPILOT_UNKNOWN_MAX:-10}"
     [[ "$cap" =~ ^[0-9]+$ ]] && [ "$cap" -gt 0 ] || cap=10
     k=$(autopilot_state_get "$sf" '.prs[$p].unknown // 0' --arg p "$pr"); k=$(( ${k:-0} + 1 ))
     if [ "$k" -ge "$cap" ]; then
-        autopilot_to_human "$sf" "$pr" "连续 $k 轮读不到判断所需的信息，最后一次：$reason"
+        autopilot_to_human "$sf" "$pr" unknown-cap "${4:-unknown}" "连续 $k 轮读不到判断所需的信息，最后一次：$reason"
         return 0
     fi
     autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) + {unknown: ($k | tonumber)})' --arg p "$pr" --arg k "$k" || true
@@ -4745,6 +4983,78 @@ autopilot_files_verdict() {   # <PR>
         echo ok
     fi
 }
+# 改动有没有碰「合并前必须人过目」的文件（GitHub#337，只在 AUTOPILOT_HUMAN_PATHS 非空时调用）。
+# 结果放全局变量（在调用方自己的 shell 里调，不放进 $( )）：
+#   AP_PATHS_V       ok（读全了、没命中）/ hit（命中）/ bad（清单里有写法不认识的条目）/ unread（读不全）
+#   AP_PATHS_DETAIL  hit：命中的文件，JSON 数组（排序去重）；bad：不认识的条目和原因；unread：原因
+#
+# 条目写法（空格或逗号分隔，和 .gitignore 的常用部分一致）：
+#   开头 /  = 只认仓库根目录（/setup.sh 不命中 tools/setup.sh）；不写 = 任何深度（package.json 命中 client/package.json）
+#   末尾 /  = 目录（其下任何文件）；没有 = 文件。* 只在一段内通配
+#   default = 内置清单 AUTOPILOT_HUMAN_PATHS_DEFAULT；/.github/ 始终在清单里，配置去不掉
+#   写法不认识（开头没 / 却在中间含 /、含 . 或 .. 段、空段、**）→ bad，绝不悄悄忽略：忽略 = 少拦
+# 读全：PR 详情自报的改动文件数（changed_files）和列表条数对得上才算读全。缺页（这个接口一个 PR 最多给
+# 3000 个文件）、缺自报数、坏响应、请求失败、空输出都是 unread —— 读不到绝不当成「没命中」。
+# 改名的文件新旧路径都拿来匹配。
+autopilot_paths_verdict() {   # <PR> <PR JSON>
+    local pr="$1" pj="$2" files out
+    AP_PATHS_V=unread; AP_PATHS_DETAIL=""
+    # 先看配置（不用读 GitHub）：写错了就不必读文件列表
+    out=$(jq -rn --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'
+        rules($spec; $def) | map(select(.bad)) | if length > 0 then "bad\t\(.[0].raw)（\(.[0].bad)）" else "fine" end' 2>/dev/null) || out=""
+    case "$out" in
+        fine) ;;
+        bad$'\t'*) AP_PATHS_V=bad; AP_PATHS_DETAIL="${out#*$'\t'}"; return 0 ;;
+        *) AP_PATHS_DETAIL="清单解析失败"; return 0 ;;
+    esac
+    if ! files=$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/files" 2>/dev/null) || [ -z "$files" ]; then
+        AP_PATHS_DETAIL="请求失败或空输出"; return 0
+    fi
+    out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
+        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        ($pj.changed_files) as $n
+        | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
+          elif (type != "array") or (all(.[]; type == "array") | not)
+               or (all(.[][]; type == "object" and (.filename | type) == "string" and .filename != ""
+                               and ((.previous_filename // "") | type) == "string") | not)
+          then "unread\t文件列表的形状不对"
+          elif ([.[][]] | length) != $n then "unread\t列表有 \([.[][]] | length) 个文件，PR 自报 \($n) 个"
+          else (rules($spec; $def) | map(.re)) as $res
+            | ([ .[][] | .filename, (.previous_filename // empty) | select(. != "") ]
+               | map(select(. as $f | any($res[]; . as $re | $f | test($re)))) | unique) as $hits
+            | if ($hits | length) > 0 then "hit\t\($hits | tojson)" else "ok\t" end
+          end' 2>/dev/null) || out=""
+    case "$out" in
+        ok$'\t'*) AP_PATHS_V=ok ;;
+        hit$'\t'*) AP_PATHS_V=hit; AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        unread$'\t'*) AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        *) AP_PATHS_DETAIL="文件列表不是合法的 JSON" ;;
+    esac
+}
+# 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]
+# shellcheck disable=SC2016
+AUTOPILOT_PATHS_JQ='
+    def esc: explode | map([.] | implode | . as $c
+        | if $c == "*" then "[^/]*"
+          elif ([".", "^", "$", "+", "?", "(", ")", "[", "]", "{", "}", "|", "\\"] | index($c)) != null then "\\" + $c
+          else $c end) | join("");
+    def rule: . as $raw
+        | startswith("/") as $rooted | endswith("/") as $dir
+        | (if $rooted then .[1:] else . end | if $dir then .[:-1] else . end) as $core
+        | ($core | split("/")) as $segs
+        | if $core == "" then {raw: $raw, bad: "空条目"}
+          elif ($segs | any(. == "")) then {raw: $raw, bad: "有空的一段"}
+          elif ($segs | any(. == "." or . == "..")) then {raw: $raw, bad: "不能含 . 或 .. 段"}
+          elif ($core | contains("**")) then {raw: $raw, bad: "不支持 **"}
+          elif (($rooted | not) and ($segs | length) > 1) then {raw: $raw, bad: "中间含 / 的条目要以 / 开头"}
+          else {raw: $raw, re: ((if $rooted then "^" else "(^|/)" end) + ($segs | map(esc) | join("/")) + (if $dir then "/" else "$" end))}
+          end;
+    def rules($spec; $def):
+        ([$spec | splits("[,\\s]+") | select(. != "")]
+         | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)
+         | ["/.github/"] + . | unique) | map(rule);
+'
+
 # 与目标分支冲突没有：GitHub 两个信号任一说冲突就算冲突（mergeable=false 或 mergeable_state=dirty），
 # mergeable=null 是还在算。输出 ok / conflict / computing
 autopilot_conflict_verdict() {   # <PR JSON>
@@ -4771,10 +5081,15 @@ autopilot_conflict_verdict() {   # <PR JSON>
 #   AP_REASON   给人看的一句话；AP_NEXT 交人时「怎么继续」（可空）
 #   AP_N AP_HEAD AP_BASE AP_REF AP_RH AP_RB AP_RAT AP_CHECKS AP_CHECKS_DETAIL
 #   AP_KIND（issue / pr，GitHub#142；pr 时 AP_N 为空）AP_WN（这个 PR 的工作编号）
+#   AP_STOP    结论是 human 时的原因代号（draft / not-eligible / issue-halt / auth / github-dir / paths /
+#              paths-config / no-evidence），AP_STOP_KEY 是命中的内容（只有需人过目清单那两种有）；交人说明的
+#              隐藏标记和交人前的重判都认它（GitHub#337 / #382）。加新的交人原因时在这里给一个代号
+#   AP_PARENT  绑的 issue 是拆分子项时，父 issue 的「仓库#编号」（交人的写前核对连它一起比，GitHub#382）
 autopilot_permit() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" pj ij labels rc
     AP_V=unknown; AP_REASON=""; AP_NEXT=""; AP_N=""; AP_KIND=""; AP_WN=""; AP_HEAD=""; AP_BASE=""; AP_REF=""
     AP_RH=""; AP_RB=""; AP_RAT=""; AP_CHECKS=""; AP_CHECKS_DETAIL=""; AP_BODY=""; AP_TITLE=""
+    AP_STOP=""; AP_STOP_KEY=""; AP_PARENT=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then
         AP_REASON="读不到 PR #$pr"; return 0
     fi
@@ -4783,7 +5098,9 @@ autopilot_permit() {   # <state_file> <PR 编号>
     fi
     labels=$(printf '%s' "$pj" | jq -r '[.labels[]?.name] | join(",")')
     case ",$labels," in *",$LABEL_PENDING_MERGE,"*) ;; *) AP_V=skip; return 0 ;; esac
-    case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) AP_V=halt_pr; return 0 ;; esac
+    # AP_HANDOVER_MINE：交人进行中（autopilot_to_human 摘等合并标签之前的那次重判），PR 上这枚 pending/human 是
+    # daemon 本次已确认加上的，当它不在、继续往下判；是不是「那一枚」由调用方紧接着比指纹保证（GitHub#382）
+    case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) [ -n "${AP_HANDOVER_MINE:-}" ] || { AP_V=halt_pr; return 0; } ;; esac
     # PR 属于哪一种（GitHub#142）：绑 issue → issue 和 PR 两处判；以 PR 为准 → AP_N 为空、ij 为空，
     # 下面 issue 上的叫停自然不成立，授权函数只看 PR
     autopilot_pr_kind "$pj"
@@ -4791,7 +5108,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
         issue) AP_KIND=issue; AP_N="$AUTOPILOT_PR_N"; AP_WN="$AP_N" ;;
         pr)    AP_KIND=pr; AP_N=""
                AP_WN=$(pr_to_issue_num "$pr" "$(printf '%s' "$pj" | jq -r '.head.ref // ""')" "$(printf '%s' "$pj" | jq -r '.body // ""')") ;;
-        *)     AP_V=human; AP_REASON="这个 PR 不满足托管条件：$AUTOPILOT_REASON。"; return 0 ;;
+        *)     AP_V=human; AP_STOP=not-eligible; AP_REASON="这个 PR 不满足托管条件：$AUTOPILOT_REASON。"; return 0 ;;
     esac
     # 多机：复审记录只在派复审的那台机器上。别家的活不碰，免得两台机器互相送回重审。
     if ! worker_is_ours "$AP_WN"; then AP_V=skip; return 0; fi
@@ -4800,12 +5117,14 @@ autopilot_permit() {   # <state_file> <PR 编号>
         AP_REASON="读不到 issue #$AP_N"; return 0
     fi
     if printf '%s' "$ij" | jq -e --arg H "$LABEL_PENDING_HUMAN" 'any(.labels[]?; .name == $H)' >/dev/null 2>&1; then
-        AP_V=human; AP_REASON="issue #$AP_N 上挂了 \`$LABEL_PENDING_HUMAN\`（已叫停）。"; return 0
+        AP_V=human; AP_STOP=issue-halt; AP_REASON="issue #$AP_N 上挂了 \`$LABEL_PENDING_HUMAN\`（已叫停）。"; return 0
     fi
     rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?
+    # 拆分子项的父 issue（GitHub#233）也是交人判定的输入：记下来，交人的写前核对连它一起比（GitHub#382）
+    if [ "$AP_KIND" = issue ] && [ -n "${SPLIT_PARENT_NUM:-}" ]; then AP_PARENT="$SPLIT_PARENT_REPO#$SPLIT_PARENT_NUM"; fi
     case "$rc" in
         0) ;;
-        1) AP_V=human
+        1) AP_V=human; AP_STOP=auth
            if [ "$AUTOPILOT_DENY" = no-label ]; then
                AP_REASON="$AUTOPILOT_REASON。"
            else
@@ -4836,7 +5155,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
         AP_REASON="PR #$pr 的提交 / 目标分支 / 分支名读不全"; return 0
     fi
     if printf '%s' "$pj" | jq -e '.draft == true' >/dev/null 2>&1; then
-        AP_V=human; AP_REASON="PR 是草稿状态。"; return 0
+        AP_V=human; AP_STOP=draft; AP_REASON="PR 是草稿状态。"; return 0
     fi
     AP_RH=$(autopilot_state_get "$sf" '.prs[$p].reviewed_head' --arg p "$pr")
     AP_RB=$(autopilot_state_get "$sf" '.prs[$p].reviewed_base' --arg p "$pr")
@@ -4845,19 +5164,39 @@ autopilot_permit() {   # <state_file> <PR 编号>
     if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || [ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || [ -z "$AP_RAT" ]; then
         AP_V=review; return 0
     fi
+    # 需人过目清单（GitHub#337）：配了才走新判断；没配走下面原来的 .github/ 判断，一行不变
+    if [ -n "$AUTOPILOT_HUMAN_PATHS" ]; then
+        autopilot_paths_verdict "$pr" "$pj"
+        case "$AP_PATHS_V" in
+            ok) ;;
+            hit)
+                AP_V=human; AP_STOP=paths; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="改动碰了合并前需人过目的文件：$(printf '%s' "$AP_PATHS_DETAIL" | jq -r '
+                    (.[:10] | map("`" + . + "`") | join("、")) + (if length > 10 then " 等 \(length) 个" else "" end)')。托管不自动合并这类改动。"
+                AP_NEXT="请人工审这部分改动后自己合并；不合就关掉 PR 或改回去再交复审。"
+                return 0 ;;
+            bad)
+                AP_V=human; AP_STOP=paths-config; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="本项目配置里「合并前需人过目的文件」清单（\`AUTOPILOT_HUMAN_PATHS\`）有一个条目写法不认识：\`$AP_PATHS_DETAIL\`。清单不完整时托管不自动合并。"
+                AP_NEXT="请改好配置里的这个条目（开头 \`/\` = 只认仓库根目录，不写 = 任何深度；末尾 \`/\` = 目录），再把 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\` 重新走复审和合并。"
+                return 0 ;;
+            *) AP_REASON="读不全 PR #$pr 的改动文件列表（$AP_PATHS_DETAIL）"; return 0 ;;
+        esac
+    else
     case "$(autopilot_files_verdict "$pr")" in
         ok) ;;
         touches)
-            AP_V=human; AP_REASON="改动碰了 \`.github/\` 目录（Actions 和仓库自动化），托管不自动合并这类改动。"
+            AP_V=human; AP_STOP=github-dir; AP_REASON="改动碰了 \`.github/\` 目录（Actions 和仓库自动化），托管不自动合并这类改动。"
             AP_NEXT="请人工审这部分改动后自己合并；不合就关掉 PR 或改回去再交复审。"
             return 0 ;;
         *) AP_REASON="读不到 PR #$pr 的改动文件列表"; return 0 ;;
     esac
+    fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
     rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?
     case "$rc" in
         0) ;;
-        1) AP_V=human; AP_REASON="复审的通过评论里找不到提交 \`${AP_HEAD:0:7}\` 的有效测试重跑记录（要求失败 0、通过至少 1；记录被删掉或改成有失败也算没有）。没有它 daemon 不合并。"; return 0 ;;
+        1) AP_V=human; AP_STOP=no-evidence; AP_REASON="复审的通过评论里找不到提交 \`${AP_HEAD:0:7}\` 的有效测试重跑记录（要求失败 0、通过至少 1；记录被删掉或改成有失败也算没有）。没有它 daemon 不合并。"; return 0 ;;
         *) AP_REASON="读不到 PR #$pr 的评论"; return 0 ;;
     esac
     autopilot_checks "$AP_HEAD"
@@ -4882,12 +5221,12 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
     case "$AP_V" in
         skip) return 0 ;;
         halt_pr)
-            # 有人在 PR 上叫停：只摘 pending/merge，不说话（是人自己打的）
-            run_gh "label 翻转 (托管 PR #$pr 已被叫停，摘 $LABEL_PENDING_MERGE)" \
-                gh_label_flip "$pr" --remove "$LABEL_PENDING_MERGE" && AUTOPILOT_ACTED=1
-            log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN（已被叫停）→ 不合并，摘掉 $LABEL_PENDING_MERGE"
-            return 0 ;;
-        human) autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
+            # PR 上挂着 pending/human（人叫停，或交人做到一半）：只摘 pending/merge，不说话；摘之前同样核对现状
+            autopilot_halt_dequeue "$pr"; return 0 ;;
+        human)
+            # 所有交人原因走同一个函数：作数的判定在里面重做，每次写入之前都核对现状（GitHub#382；
+            # 需人过目清单那两种原先在这里单独重判一次，GitHub#337，现在并进去了）
+            autopilot_to_human "$sf" "$pr" "${AP_STOP:-human}" human "$AP_REASON" "$AP_NEXT"; return 0 ;;
         worker) autopilot_to_worker "$sf" "$pr" "$AP_WN" "$AP_REASON"; return 0 ;;
         review) autopilot_to_review "$sf" "$pr" "$AP_HEAD" "$AP_RH" "$AP_BASE" "$AP_RB"; return 0 ;;
         unknown) autopilot_unknown "$sf" "$pr" "$AP_REASON"; return 0 ;;
@@ -4902,7 +5241,7 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
             fi
             limit=$(( ${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6} * 3600 ))
             if [ $(( now - since )) -ge "$limit" ] 2>/dev/null; then
-                autopilot_to_human "$sf" "$pr" "自动检查超过 ${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6} 小时还没跑完：$AP_REASON。"
+                autopilot_to_human "$sf" "$pr" checks-timeout wait_checks "自动检查超过 ${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6} 小时还没跑完：$AP_REASON。"
             else
                 log "托管：PR #$pr 等自动检查跑完（$AP_REASON）"
             fi
@@ -4950,8 +5289,8 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
     case "$out" in
         *"HTTP 409"*) log "托管：PR #$pr 合并时提交对不上（刚有新推送），下轮重新判" ;;
         *"HTTP 405"*|*"HTTP 403"*|*"HTTP 422"*)
-            autopilot_to_human "$sf" "$pr" "GitHub 拒绝合并：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)（常见原因：仓库规则要求人工批准、该合并方式未开启）。" ;;
-        *) autopilot_unknown "$sf" "$pr" "合并请求失败：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;;
+            autopilot_to_human "$sf" "$pr" merge-refused ok "GitHub 拒绝合并：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)（常见原因：仓库规则要求人工批准、该合并方式未开启）。" ;;
+        *) autopilot_unknown "$sf" "$pr" "合并请求失败：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ok ;;
     esac
     return 0
 }
@@ -5756,22 +6095,57 @@ autopilot_mirror_tick() {   # <state_file>
 # 其余状态都不用管：配置关了以后派工不再拼托管规则，排队、被打断的活按普通流程走完、交人。
 # 所以这里每轮把本机托管过的 PR（state.json 里 .autopilot.prs 有记录）交给人。
 #
-# 交接要做到的最终状态：有 pending/human、没有等合并标签、PR 上有一条交人说明。中间任何一步
-# （写本地记录、加标签、摘标签、回读、读评论、发评论、清记录，或者进程半路被杀）断掉，下一轮都要能接着做：
-#   · 先记意图：动 GitHub 之前先在 .prs[n].off_handover 记下「这个 PR 正在交接」，记不下就本轮不动它。
-#     候选 = 挂着等合并标签的，或者有这个记号的——所以标签改完、说明还没发的 PR 下一轮照样找得到。
-#   · 标签按目标收敛：缺 pending/human 就加、有等合并标签就摘（先加后摘），然后回读；回读读不到或还没到目标，
-#     记号留着，下一轮接着收敛。
-#   · 说明只发一条：发之前读这个 PR 的评论，已有带交接标记的就不再发（上一轮发出去了、只是记号没清掉）。
-#   · 最终状态都确认了才清记号。
+# 交接要做到的最终状态：有 pending/human、没有等合并标签、PR 上有一条交人说明。顺序：加 pending/human →
+# 摘等合并标签 → 发说明。三次写入照「交人的写前核对」那两条规则做（GitHub#382，流程三），而且这里的待办是跨轮的，
+# 所以**待办带着基准**：.prs[n].off_handover = {base, expect, pending}
+#   base    开始收尾时 PR 的指纹（判定「开着、挂着等合并标签」直接从它得出）
+#   expect  base + daemon 已确认的自己的写入 = 现在 PR 应该是的样子
+#   pending 已经决定要发、还没确认结果的那一次标签写入 {op, label}（先记再写）
+# 每一轮、每一次写入之前现取指纹：
+#   = expect                        → 接着做
+#   = expect + 恰好 pending 那一次  → 上次写成了、没来得及记：记上，接着做
+#   其他任何差异                    → 有人动过：待办作废（删掉），本轮不再写。之后 PR 不在合并队列就不再碰
+#                                     （人已接手）；仍挂着等合并标签的，下一轮当作新的一件事从头开始
+#   分不清（读不到）                → 本轮不写，待办原样留着
+# 说明只发一条：发之前读评论，已有本次入队标记的不再发。最终状态都确认了才删待办。
+# 托管重新开启时清掉全部待办（只改本机文件）：之后再关，一律从头开始，旧待办不会复活。旧版留下的
+# 「true」记号没有基准，按作废处理。
 # 只认本机托管过的 PR：别的项目可能恰好也有叫这个名字的标签，从没开过托管的项目（没有 .autopilot.prs）
-# 这里直接返回，一个 GitHub 调用都不多。写之前现读这个 PR：仍开着、没合并才动；读不到本轮不动。
+# 这里直接返回，一个 GitHub 调用都不多。
 AUTOPILOT_OFF_TAG='<!-- autopilot-off-handover -->'
+# 收尾里的一次标签写入：先记 pending → 现取指纹必须等于 expect → 写 → 重读，确认只多了自己这一条 → 记进 expect。
+# 0 = 写成并确认；1 = 本轮到此为止（待办留着，下一轮由 autopilot_off_sweep 判断是补完还是作废）
+autopilot_off_write() {   # <state_file> <PR> <labeled|unlabeled> <标签>
+    local sf="$1" pr="$2" op="$3" label="$4" exp
+    exp=$(jq -c --arg p "$pr" '.autopilot.prs[$p].off_handover.expect' "$sf" 2>/dev/null) || return 1
+    autopilot_state_set "$sf" '.prs[$p].off_handover.pending = {op: $o, label: $l}' --arg p "$pr" --arg o "$op" --arg l "$label" \
+        || { log "托管已关：PR #$pr 记不下待写的那一步，本轮不动"; return 1; }
+    if ! autopilot_fp_expect "$(printf '%s' "$exp" | jq -cS .)" "$pr"; then
+        log "托管已关：PR #$pr 写之前现状有变化（$AF_WHY），本轮不写"; return 1
+    fi
+    if [ "$op" = labeled ]; then
+        run_gh "托管已关：PR #$pr 加 $label" gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$label" || return 1
+    else
+        autopilot_label_delete "$pr" "$label" || return 1
+    fi
+    AUTOPILOT_ACTED=1
+    if ! autopilot_fingerprint "$pr" || ! autopilot_fp_is_own_write "$(printf '%s' "$exp" | jq -cS .)" "$op" "$label"; then
+        log "托管已关：PR #$pr 写完后现状对不上（${AF_WHY:-除了这一次还有别的变化}），本轮到此为止"; return 1
+    fi
+    autopilot_state_set "$sf" '.prs[$p].off_handover |= ((.expect = $e) | del(.pending))' --arg p "$pr" --argjson e "$AF_FP" \
+        || { log "托管已关：PR #$pr 记不下刚确认的写入，下轮再对"; return 1; }
+}
+
 autopilot_off_sweep() {   # <state_file>
-    local sf="$1" m="${AUTOPILOT_MERGE_LABEL_NAME:-}" mine pages open_nums tmp pr pj labels enc cands cmts
+    local sf="$1" m="${AUTOPILOT_MERGE_LABEL_NAME:-}" mine pages open_nums tmp pr rec exp pend cands cmts q marker
     # 只在托管开关本身关掉时收尾。配了开关但没配复审关卡是另一回事（托管没生效、但人没说要关），
-    # 那种情况合并这一段照旧整个不动
-    autopilot_configured && return 0
+    # 那种情况合并这一段照旧整个不动。托管开着：上次关掉时没做完的收尾待办作废（只改本机文件）
+    if autopilot_configured; then
+        if jq -e '[(.autopilot.prs // {})[] | select(has("off_handover"))] | length > 0' "$sf" >/dev/null 2>&1; then
+            autopilot_state_set "$sf" '.prs |= with_entries(.value |= del(.off_handover))' || true
+        fi
+        return 0
+    fi
     [ -n "$m" ] && [ -n "${LABEL_PENDING_HUMAN:-}" ] || return 0
     mine=$(jq -r '(.autopilot.prs // {}) | keys[]' "$sf" 2>/dev/null) || return 0
     [ -n "$mine" ] || return 0
@@ -5783,50 +6157,68 @@ autopilot_off_sweep() {   # <state_file>
             '.autopilot.prs = ((.autopilot.prs // {}) | with_entries(select(.key as $k | $open | index($k))))' \
             "$sf" > "$tmp" 2>/dev/null; then mv "$tmp" "$sf"; else rm -f "$tmp"; fi
     fi
-    # 候选：本机有记录、开着的 PR 里，挂着等合并标签的，或者交接做到一半的
+    # 候选：本机有记录、开着的 PR 里，挂着等合并标签的，或者收尾做到一半的
     cands=$(printf '%s' "$pages" | jq -r --arg M "$m" --slurpfile st "$sf" '
         (($st[0].autopilot.prs) // {}) as $prs
         | .[][] | select($prs[(.number | tostring)] != null)
-        | select(any(.labels[]?; .name == $M) or ($prs[(.number | tostring)].off_handover // false))
+        | select(any(.labels[]?; .name == $M) or ($prs[(.number | tostring)] | has("off_handover")))
         | .number' 2>/dev/null) || return 0
-    enc=$(printf '%s' "$m" | jq -sRr @uri)
     for pr in $cands; do
-        pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || { log "托管已关：读不到 PR #$pr，下轮再收尾"; continue; }
-        printf '%s' "$pj" | jq -e '.state == "open" and (.merged | not)' >/dev/null 2>&1 || continue
-        # ① 先记意图；记不下就本轮不碰 GitHub（等合并标签还在，下轮照样选中）
-        if [ "$(autopilot_state_get "$sf" '.prs[$p].off_handover // false' --arg p "$pr")" != true ]; then
-            autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) + {off_handover: true})' --arg p "$pr" \
-                || { log "托管已关：PR #$pr 记不下交接记号，本轮不动"; continue; }
+        if ! autopilot_fingerprint "$pr"; then log "托管已关：读不全 PR #$pr 的现状（$AF_WHY），下轮再收尾"; continue; fi
+        rec=$(jq -c --arg p "$pr" '.autopilot.prs[$p].off_handover // null' "$sf" 2>/dev/null) || continue
+        if [ "$rec" = null ]; then
+            # 新的一件事：判定直接从这份指纹得出（开着、挂着等合并标签），它就是基准。先记待办，记不下本轮不碰 GitHub
+            printf '%s' "$AF_FP" | jq -e --arg M "$m" '.pr.open and (.pr.labels | index($M) != null)' >/dev/null 2>&1 || continue
+            autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) + {off_handover: {base: $f, expect: $f}})' --arg p "$pr" --argjson f "$AF_FP" \
+                || { log "托管已关：PR #$pr 记不下收尾待办，本轮不动"; continue; }
+        else
+            exp=$(printf '%s' "$rec" | jq -cS '.expect? // empty' 2>/dev/null) || exp=""
+            pend=$(printf '%s' "$rec" | jq -c '.pending? // empty' 2>/dev/null) || pend=""
+            if [ -n "$exp" ] && [ "$AF_FP" = "$exp" ]; then
+                :
+            elif [ -n "$exp" ] && [ -n "$pend" ] \
+                 && autopilot_fp_is_own_write "$exp" "$(printf '%s' "$pend" | jq -r '.op')" "$(printf '%s' "$pend" | jq -r '.label')"; then
+                # 上次那一步写成了、没来得及记
+                autopilot_state_set "$sf" '.prs[$p].off_handover |= ((.expect = $e) | del(.pending))' --arg p "$pr" --argjson e "$AF_FP" \
+                    || { log "托管已关：PR #$pr 记不下已确认的写入，本轮不动"; continue; }
+            else
+                autopilot_state_set "$sf" '.prs[$p] |= del(.off_handover)' --arg p "$pr" || true
+                log "托管已关：PR #$pr 的现状和收尾做到一半时不一样了（有人动过），收尾待办作废，本轮不再写"
+                continue
+            fi
         fi
-        # ② 标签收敛到目标：先加 pending/human，再摘等合并标签
-        labels=$(printf '%s' "$pj" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels=""
-        case ",$labels," in
-            *",$LABEL_PENDING_HUMAN,"*) ;;
-            *) run_gh "托管已关：PR #$pr 加 $LABEL_PENDING_HUMAN" \
-                   gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_PENDING_HUMAN" || continue
-               AUTOPILOT_ACTED=1 ;;
-        esac
-        case ",$labels," in
-            *",$m,"*) gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" >/dev/null 2>&1 || true
-                      AUTOPILOT_ACTED=1 ;;
-        esac
-        labels=$(gh api "repos/$REPO/issues/$pr" --jq '[.labels[].name] | join(",")' 2>/dev/null) \
-            || { log "托管已关：PR #$pr 标签读不回来，下轮再看"; continue; }
-        case ",$labels," in *",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;; esac
-        case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) ;; *) log "托管已关：PR #$pr 回读没有 $LABEL_PENDING_HUMAN，下轮再收尾"; continue ;; esac
-        # ③ 交人说明只发一条：已经有了（上一轮发出去、只是记号没清）就不再发
-        cmts=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments" 2>/dev/null) \
-            || { log "托管已关：PR #$pr 评论读不到，下轮再发说明"; continue; }
-        if ! printf '%s' "$cmts" | jq -e --arg T "$AUTOPILOT_OFF_TAG" 'any(.[][]?; (.body // "") | contains($T))' >/dev/null 2>&1; then
+        # 标签收敛到目标：先加 pending/human，再摘等合并标签（每一步都以 expect 为准）
+        exp=$(jq -c --arg p "$pr" '.autopilot.prs[$p].off_handover.expect' "$sf" 2>/dev/null) || continue
+        if printf '%s' "$exp" | jq -e --arg H "$LABEL_PENDING_HUMAN" '.pr.labels | index($H) == null' >/dev/null 2>&1; then
+            autopilot_off_write "$sf" "$pr" labeled "$LABEL_PENDING_HUMAN" || continue
+        fi
+        exp=$(jq -c --arg p "$pr" '.autopilot.prs[$p].off_handover.expect' "$sf" 2>/dev/null) || continue
+        if printf '%s' "$exp" | jq -e --arg M "$m" '.pr.labels | index($M) != null' >/dev/null 2>&1; then
+            autopilot_off_write "$sf" "$pr" unlabeled "$m" || continue
+        fi
+        exp=$(jq -cS --arg p "$pr" '.autopilot.prs[$p].off_handover.expect' "$sf" 2>/dev/null) || continue
+        printf '%s' "$exp" | jq -e --arg M "$m" --arg H "$LABEL_PENDING_HUMAN" \
+            '.pr.open and (.pr.labels | index($M) == null) and (.pr.labels | index($H) != null)' >/dev/null 2>&1 || continue
+        # 交人说明只发一条：已经有了（上一轮发出去、只是待办没清）就不再发。认本次入队（基准里的排队编号）
+        q=$(jq -r --arg p "$pr" '.autopilot.prs[$p].off_handover.base.pr.q // ""' "$sf" 2>/dev/null) || q=""
+        marker="<!-- cavil-loop:autopilot-off pr=$pr q=$q -->"
+        if ! cmts=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/comments" 2>/dev/null) || [ -z "$cmts" ] \
+           || ! printf '%s' "$cmts" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            log "托管已关：PR #$pr 评论读不到，下轮再发说明"; continue
+        fi
+        if ! printf '%s' "$cmts" | jq -e --arg T "$marker" 'any(.[][]?; (.body // "") | contains($T))' >/dev/null 2>&1; then
+            if ! autopilot_fp_expect "$exp" "$pr"; then
+                log "托管已关：PR #$pr 发说明之前现状有变化（$AF_WHY），本轮不写"; continue
+            fi
             run_gh "托管已关：PR #$pr 交人说明" gh_write api -X POST "repos/$REPO/issues/$pr/comments" \
-                -f "body=$(printf '⚠️ **托管已关掉，这个 PR 不再自动合并（`%s`）**\n\n**原因**：托管已在配置里关掉。这个 PR 是托管开着时复审通过、挂着 `%s` 等合并的，现在交给人。\n\n**怎么继续**：自己审、自己合并；或者重新打开托管后，把标签改成 `%s` 重新复审。\n\n%s\n%s' \
-                    "$LABEL_PENDING_HUMAN" "$m" "${LABEL_PENDING_REVIEW:-pending/review}" "$(autopilot_daemon_sig)" "$AUTOPILOT_OFF_TAG")" \
+                -f "body=$(printf '⚠️ **托管已关掉，这个 PR 不再自动合并（`%s`）**\n\n**原因**：托管已在配置里关掉。这个 PR 是托管开着时复审通过、挂着 `%s` 等合并的，现在交给人。\n\n**怎么继续**：自己审、自己合并；或者重新打开托管后，把标签改成 `%s` 重新复审。\n\n%s\n%s\n%s' \
+                    "$LABEL_PENDING_HUMAN" "$m" "${LABEL_PENDING_REVIEW:-pending/review}" "$(autopilot_daemon_sig)" "$AUTOPILOT_OFF_TAG" "$marker")" \
                 || { log "托管已关：PR #$pr 交人说明没发出去，下轮补发"; continue; }
             AUTOPILOT_ACTED=1
             log "托管已关：PR #$pr 不再等自动合并 → $LABEL_PENDING_HUMAN"
         fi
-        # ④ 最终状态都确认了才清记号（清不掉：下一轮看到说明已在，只清记号、不重复发）
-        autopilot_state_set "$sf" '.prs[$p] = ((.prs[$p] // {}) | del(.off_handover))' --arg p "$pr" || true
+        # 最终状态都确认了才删待办（删不掉：下一轮看到说明已在，只删待办、不重复发）
+        autopilot_state_set "$sf" '.prs[$p] |= del(.off_handover)' --arg p "$pr" || true
     done
     return 0
 }
@@ -5853,27 +6245,27 @@ configure_tmux_session_display() {
     fi
 
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_model "$WORKER_MODEL" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_model 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_agent "$WORKER_AGENT" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_role "$WORKER_SESSION_ROLE" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_role 失败（worker 继续运行）"
     fi
 
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
 }
@@ -6109,7 +6501,7 @@ start_session_logging() {
     {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
-    } >> "$log_path"
+    } >> "$log_path"   # redact-ok：固定文字 + 会话名
     # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
     read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$sess")"
     case "$st" in
@@ -6118,15 +6510,31 @@ start_session_logging() {
             log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
             return 0 ;;
     esac
-    [ "$pipe" = 1 ] && return 0
+    session_log_pipe_ensure "$sess" "$tgt" "$pipe" "$log_path" || \
+        log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+}
+
+# 让 worker 窗格的日志管道是「带令牌过滤」的那种（GitHub#342）。返回 1 = 没挂上。
+#   已经挂着、会话上有 @redact_pipe 标记 → 什么都不做
+#   挂着但没有标记 = 升级前用 `cat` 挂的 → 换成过滤版（不带 -o 再挂一次是直接替换，不会关掉）
+#   没挂 → 挂上
+# 标记读不到时不换（下次再判）：读不到不等于没有。
+session_log_pipe_ensure() {   # <tmux_session> <worker 窗格> <已挂=1> <日志路径>
+    local sess="$1" tgt="$2" pipe="$3" log_path="$4" mark pipe_cmd
+    if [ "$pipe" = 1 ]; then
+        mark="$(tmux show-options -qv -t "=$sess:" @redact_pipe 2>/dev/null)" || return 0
+        [ "$mark" = 1 ] && return 0
+    fi
+    pipe_cmd="$(redact_pane_pipe_cmd "$log_path")"
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。
-    if ! tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null; then
+    if ! tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null; then
         sleep 0.3
-        tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null || \
-            log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+        tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null || return 1
     fi
+    tmux set-option -t "=$sess:" @redact_pipe 1 2>/dev/null || true
+    return 0
 }
 
 # 起完 fresh session 后探活并 capture 秒退死因。
@@ -6151,7 +6559,7 @@ verify_fresh_session() {
             printf '\n===== %s session=%s 秒退，pane capture =====\n' \
                 "$(date -Iseconds)" "$sess"
             tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-        } | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
+        } | redact_pipe | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
         tmux kill-session -t "$sess" 2>/dev/null || true
         return 1
     fi
@@ -7100,6 +7508,263 @@ concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作�
     return 0
 }
 
+# ── 重测试排队 + 条目结束时清掉它的测试（GitHub#343）──
+# 项目在 HEAVY_TEST_COMMANDS 里列出哪些命令算「重测试」（每行一条），空 = 不限制、本段什么都不做。
+# 非空时：
+#   · worker 的提示词多一段，要求这些命令通过 scripts/heavy-test.sh 跑（同一账号下一次只放行一套，
+#     放行依据是上一套的进程分组已清空，规则见那个脚本和 _heavy.sh）；
+#   · 派工和清理整段拿着同一把「条目锁」，两者只能一先一后——清理不会删掉正在启动的 worker 的
+#     工作树，也不会误停清理之后才起的测试；
+#   · 每个条目一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前
+#     都在条目锁里核对，对不上就退出；清理在同一把锁里停掉本条目登记着的分组，确认消失才删工作树；
+#   · 每次起 worker 记一份启动记录（窗格进程号 + 进程启动时间），每轮轮询据此把「worker 已经
+#     结束、测试还在排队或运行」的分组停掉——不依赖 tmux 会话还在。
+# 判断全部在 _heavy.sh，wrapper 和这里用的是同一份。「读不到」从不当成「没有 / 已停」。
+HEAVY_TEST_COMMANDS="${HEAVY_TEST_COMMANDS:-}"
+HEAVY_TEST_LOCK_WAIT="${HEAVY_TEST_LOCK_WAIT:-0}"
+HEAVY_TEST_SCOPE_PROPERTIES="${HEAVY_TEST_SCOPE_PROPERTIES:-}"
+ITEM_LOCK_WAIT_SECS="${ITEM_LOCK_WAIT_SECS:-60}"
+# 清理时停一个分组后最多等多久确认它消失（秒）。systemd 那边 10 秒后会强杀，30 秒足够
+HEAVY_STOP_WAIT_SECS="${HEAVY_STOP_WAIT_SECS:-30}"
+# worker 在会话里跑的包装命令：托管安装走长期入口，发版切换后路径不失效（同用量 footer）
+HEAVY_TEST_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/heavy-test.sh"
+_MANAGED_HEAVY_TEST="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/heavy-test.sh"
+[ ! -f "$_MANAGED_HEAVY_TEST" ] || HEAVY_TEST_SCRIPT="$_MANAGED_HEAVY_TEST"
+
+heavy_enabled() { [ -n "${HEAVY_TEST_COMMANDS//[[:space:]]/}" ]; }
+
+# 派工 / 清理脚本的开头调：还没拿条目锁 → 在锁里把本脚本重跑一遍并以它的退出码退出；已经在锁里
+# （上一层传下来的标记）→ 返回 0 接着跑。锁由 flock 进程自己拿着（-o：不把描述符传给脚本），
+# 所以它不会顺着 tmux server 漏到 worker 手里——那样 worker 活着锁就一直不放。
+# 等不到锁退出码 75：派工那边标签不翻、下一轮重试；清理那边什么都没动。
+ITEM_LOCK_HELD_FOR=""
+item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
+    local n="$1" self="$2" lock rc=0
+    shift 2
+    if [ "${CAVIL_ITEM_LOCK_HELD:-}" = "$n" ]; then
+        unset CAVIL_ITEM_LOCK_HELD      # 不留在环境里：起 tmux server 时会被它整份抄走
+        ITEM_LOCK_HELD_FOR="$n"
+        return 0
+    fi
+    lock="$(heavy_item_lock_path "$STATE_DIR" "$n")"
+    mkdir -p "$(dirname "$lock")"
+    CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
+    if [ "$rc" = 75 ]; then
+        log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
+    fi
+    exit "$rc"
+}
+
+# 派工：定下这次启动的编号和代数，tmux_env_args 会把它们交给 worker。读不到代数 → 非 0，本轮不派。
+HEAVY_LAUNCH_ID=""; HEAVY_LAUNCH_ITEM=""; HEAVY_LAUNCH_GEN=""
+heavy_launch_prepare() {   # <条目号>
+    heavy_enabled || return 0
+    local g
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")），本轮不派工"
+        return 1
+    fi
+    HEAVY_LAUNCH_ID="$(tr -d '-' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    if ! [[ "$HEAVY_LAUNCH_ID" =~ ^[0-9a-f]{32}$ ]]; then
+        # 没有 /proc（macOS）：那里包装命令只排队、不登记，启动编号用不上
+        HEAVY_LAUNCH_ID=""
+    fi
+    HEAVY_LAUNCH_ITEM="$1"; HEAVY_LAUNCH_GEN="$g"
+}
+
+heavy_launch_write() {   # <进程号 | pending> <进程启动时间>
+    local f tmp
+    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
+        "$1" "$2" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# 交给 worker 的环境变量（tmux -e 参数，NUL 分隔，格式同 tmux_env_args 的其余部分）。
+heavy_tmux_env_args() {
+    [ -n "$HEAVY_LAUNCH_ITEM" ] || return 0
+    # 这里只在真的要起 worker 时才会走到（注入现有会话不拼环境参数），而且在起之前：先登记这次启动
+    # （进程号待定）。worker 一起来就可能跑排队命令，那时记录必须已经在——排队命令对「没有记录的
+    # 启动编号」一律不放行。写不进去时 worker 照常起，只是它的重测试会被拒绝（不放行比乱放行安全）。
+    if [ -n "$HEAVY_LAUNCH_ID" ] && [ ! -e "$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")" ]; then
+        heavy_launch_write pending "" || echo "[cavil-loop] WARN: 写不进这次启动的记录，这个 worker 的重测试会被排队命令拒绝" >&2
+    fi
+    printf -- '-e\0CAVIL_HEAVY_ITEM=%s\0' "$HEAVY_LAUNCH_ITEM"
+    printf -- '-e\0CAVIL_HEAVY_GEN=%s\0' "$HEAVY_LAUNCH_GEN"
+    printf -- '-e\0CAVIL_HEAVY_LAUNCH=%s\0' "$HEAVY_LAUNCH_ID"
+    printf -- '-e\0CAVIL_HEAVY_STATE_DIR=%s\0' "$STATE_DIR"
+    printf -- '-e\0CAVIL_HEAVY_PROJECT=%s\0' "$REPO"
+    printf -- '-e\0CAVIL_HEAVY_LOCK_WAIT=%s\0' "$HEAVY_TEST_LOCK_WAIT"
+    printf -- '-e\0CAVIL_HEAVY_SCOPE_PROPERTIES=%s\0' "$HEAVY_TEST_SCOPE_PROPERTIES"
+}
+
+# 起完 worker 之后调：把这次启动的记录补上窗格进程号和它的启动时间。
+# 认不出 worker 窗格 / 读不到进程 → 记录停在「进程号待定」：这次启动起的测试可以跑、只会被等，
+# 不会被每轮检查停掉。注入现有会话（没有新起程序）不调，那种情况也没有登记过新的启动。
+heavy_launch_record() {   # <tmux_session>
+    [ -n "$HEAVY_LAUNCH_ID" ] || return 0
+    local sess="$1" st pane pid dead start
+    read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in found|single) ;; *) st="" ;; esac
+    if [ -z "$st" ] || [ "$dead" = 1 ] || ! start="$(heavy_proc_start "$pid")"; then
+        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，这次启动的进程号没记下（它起的重测试不会被自动停）"
+        return 0
+    fi
+    heavy_launch_write "$pid" "$start" || log "  ⚠️ 写不进这次启动的记录（它起的重测试不会被自动停）"
+}
+
+# 条目清理（代数已经加一）之后：这个条目以前的启动记录都用不上了——带旧代数的测试在核对代数那一步
+# 就被拦下，轮不到看启动记录。在条目锁里调。
+heavy_launch_forget_item() {   # <条目号>
+    local f d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        [[ "${f##*/}" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" item)" = "$1" ] || continue
+        rm -f "$f"
+    done
+}
+
+# 本账号下登记着的全部运行记录文件，一行一个路径（只看文件名，不读内容）。是不是本项目 / 本条目的，
+# 由调用方用 heavy_run_load 读过之后再问 heavy_run_is_mine——读不到的记录不能在这里被悄悄筛掉。
+heavy_run_files() {
+    local f
+    for f in "$CAVIL_HEAVY_TEST_RUNS"/*; do
+        [ -f "$f" ] || [ -L "$f" ] || continue
+        heavy_is_run_id "${f##*/}" || continue
+        printf '%s\n' "$f"
+    done
+}
+# 刚用 heavy_run_load 读过的那条记录是不是本项目的（可选：是不是这个条目的）。只在读成功（返回 0）之后问。
+heavy_run_is_mine() {   # [条目号]
+    [ "$HR_STATEDIR" = "$STATE_DIR" ] || return 1
+    [ -z "${1:-}" ] || [ "$HR_ITEM" = "$1" ]
+}
+
+# 清理这个条目要不要走条目锁 / 代数 / 停分组：功能开着，或者（功能后来关了但）它还有登记着的运行、
+# 或被清理过。三样都没有 = 这个项目从没用过，清理过程和以前一模一样。
+heavy_cleanup_needed() {   # <条目号>
+    heavy_enabled && return 0
+    [ -e "$(heavy_gen_file "$STATE_DIR" "$1")" ] && return 0
+    local f rc
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        rc=0; heavy_run_load "$f" || rc=$?
+        case "$rc" in
+            0) ! heavy_run_is_mine "$1" || return 0 ;;
+            2) return 0 ;;      # 读不到：可能就是这个条目的，不能当成没有
+        esac
+    done < <(heavy_run_files)
+    return 1
+}
+
+# 清理：代数加一并落盘。在条目锁里调。读不出旧值 / 写不进去 → 非 0，调用方不继续清理。
+heavy_gen_bump() {   # <条目号>
+    local f g tmp
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")）"
+        return 1
+    fi
+    f="$(heavy_gen_file "$STATE_DIR" "$1")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf '%s\n' $((g + 1)) > "$tmp" && mv -f "$tmp" "$f" || { log "❌ 写不进 $f"; return 1; }
+}
+
+# 清理：停掉本条目登记着的全部运行（排队中和运行中），逐个确认分组消失。在条目锁里、代数加一之后调。
+# 任何一个查不清 / 停不掉 → 非 0，调用方保留工作树。
+heavy_stop_item_runs() {   # <条目号>
+    local f unit st rc=0 lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        unit="$(heavy_unit_name "${f##*/}")"       # 分组名由文件名决定，记录读不到也推得出来
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine "$1"; then continue; fi
+        st="$(heavy_scope_state "$unit")"
+        if [ "$st" = gone ]; then rm -f "$f"; continue; fi
+        if [ "$lr" = 2 ]; then
+            # 读不到它是谁的：可能就是本条目的。不停它（也可能是别人的），但也不能当它不存在去删工作树
+            log "  ⚠️ 运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在（或查不清）：没法确认不是条目 #$1 的"
+            rc=1; continue
+        fi
+        if [ "$st" != active ]; then
+            log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue
+        fi
+        log "  停掉条目 #$1 的重测试：$unit（$HR_STATE，$HR_CMD）"
+        # heavy_stop_unit 自己会再读一次状态：这一次读不出来就不发停止请求
+        if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
+            rm -f "$f"
+        else
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态；现在：$(heavy_scope_state "$unit")）"
+            rc=1
+        fi
+    done < <(heavy_run_files)
+    return "$rc"
+}
+
+# 每轮轮询：本项目登记着的运行里，分组已经消失的删记录；起它的 worker 已确认结束、分组还在的，
+# 整组停掉。worker 还在 / 认不清 / 没读到进程号的一律不动。
+# 已结束的启动记录**不删**，只盖上「已结束」：删了的话，这个启动编号再被拿来问就成了「没记录」，
+# 旧 worker 留下的迟到请求会被重新放行。记录到条目清理时才删（那时代数已变，旧请求过不了代数那一关）。
+# 没有任何记录时只是两次目录读。
+heavy_sweep_tick() {
+    local f unit d id lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine; then continue; fi
+        unit="$(heavy_unit_name "${f##*/}")"
+        case "$(heavy_scope_state "$unit")" in
+            gone) rm -f "$f"; continue ;;       # 分组确认消失：不管记录读没读到，这条运行都了结了
+            active) ;;
+            *) continue ;;
+        esac
+        # 读不到的记录：不知道是谁的、谁起的，不停。它会挡着排队和本账号下的条目清理，所以每轮说一声
+        if [ "$lr" = 2 ]; then
+            log "⚠️ 重测试的运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在：不动它（确认后可 heavy-test.sh --stop ${f##*/}）"
+            continue
+        fi
+        if [ -n "$HR_LAUNCH" ] && [ "$(heavy_launch_state "$STATE_DIR" "$HR_LAUNCH")" = ended ]; then
+            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$HR_ITEM，$HR_CMD）"
+            if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态），下一轮再试"
+        fi
+    done < <(heavy_run_files)
+    d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" ended)" = 1 ] && continue
+        [ "$(heavy_launch_state "$STATE_DIR" "$id")" = ended ] || continue
+        heavy_launch_mark_ended "$STATE_DIR" "$id"
+    done
+    return 0
+}
+
+# 提示词里追加的那一段（compose_prompt_template 在功能开着时加）。
+heavy_prompt_section() {
+    local f="$SKILL_DIR/prompts/heavy-test.md" text cmds="" line wrapper
+    # 路径不加引号（只在含特殊字符时由 %q 转义）：用量 footer 认测试命令时会把引号里的内容整个去掉，
+    # 加了引号它就看不出这是排队命令、后面跟的是哪条测试了（test_time.py 的 classify_segment）
+    printf -v wrapper '%q' "$HEAVY_TEST_SCRIPT"
+    [ -s "$f" ] || { log "⚠️ 重测试排队说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+        cmds="${cmds}${cmds:+$'\n'}bash $wrapper -- $line"
+    done <<<"$HEAVY_TEST_COMMANDS"
+    text="$(cat "$f")"
+    text="${text//@@HEAVY_TEST_COMMANDS@@/"$cmds"}"
+    text="${text//@@HEAVY_TEST_LIST@@/"bash $wrapper --list"}"
+    printf '%s\n' "$text"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -7113,7 +7778,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name"; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -7137,6 +7802,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
+        if heavy_enabled; then
+            printf '\n\n---\n\n'
+            heavy_prompt_section
         fi
         # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
@@ -7216,6 +7886,101 @@ project_auto_add_tick() {
     local rc=0
     CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/project-auto-add.sh" || rc=$?
     [ "$rc" = 0 ] || log "⚠️ 自动加入 Project：同步脚本异常退出（退出码 $rc），本轮跳过，派工不受影响"
+    return 0
+}
+
+# ── 令牌脱敏：定期扫描（GitHub#342）──
+# daemon 自己写的日志在落盘前就替换了（log() / redact_pipe / 窗格历史的过滤管道）。这里补两件事：
+#   1. agent 自己写的会话记录（claude / codex 的对话记录）：CLI 写入时 daemon 插不上手，
+#      改为定期原地替换。只碰工作目录在本项目 WORKTREE_BASE 下的会话。
+#   2. 升级前已经落盘的窗格历史 / poll.log，以及升级前用 `cat` 挂着日志的活会话（换成过滤版）。
+# REDACT_AGENT_RECORDS 写成空值 / false 只关第 1 件；daemon 自己的日志始终处理。
+# 每 REDACT_SCAN_INTERVAL_SECS（默认 600）秒一次；一次最多跑 REDACT_SCAN_BUDGET_SECS（默认 20）秒，
+# 没扫完不记时间，下一轮接着扫（位置记在 $STATE_DIR/redact-scan.json）。
+# 这里的任何失败都只记日志，不影响派工。
+REDACT_AGENT_RECORDS="${REDACT_AGENT_RECORDS-true}"
+
+redact_agent_records_on() {
+    case "$(printf '%s' "${REDACT_AGENT_RECORDS:-}" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off) return 1 ;;
+    esac
+    return 0
+}
+
+redact_scan_tick() {
+    local stamp="$STATE_DIR/redact-scan.stamp" now last=0
+    local every="${REDACT_SCAN_INTERVAL_SECS:-600}"
+    [[ "$every" =~ ^[0-9]+$ ]] || every=600
+    now="$(date +%s)"
+    [ -f "$stamp" ] && last="$(cat "$stamp" 2>/dev/null || true)"
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [ $((now - last)) -ge "$every" ] || return 0
+
+    # tmux 会话清单：成功读到才算数（「没有 server」也是成功读到：一个会话都没有）。
+    # 读不到时不给清单，扫描就不会把任何窗格历史当成「已经写完」。
+    local live="" live_ok=0 err list name
+    err="$(mktemp)"
+    if list="$(tmux list-sessions -F '#{session_name}' 2>"$err")"; then
+        live="$list"; live_ok=1
+    elif grep -qE '^(no server running on |error connecting to .*\(No such file or directory\))' "$err"; then
+        live_ok=1
+    fi
+    rm -f "$err"
+
+    # 升级前用 `cat` 挂着日志的本项目活会话：认得出 worker 窗格的换成过滤版
+    if [ "$live_ok" = 1 ] && [ -n "${SESSION_LOG_DIR:-}" ]; then
+        local st tgt pid dead pipe rest
+        while IFS= read -r name; do
+            # 只认本项目的 worker 会话：名字是「前缀-issue<编号>」，而且它的日志就在本项目的
+            # 日志目录里。别的项目的前缀可能以本项目的前缀开头（tutor / tutor-web），
+            # 认错了会把别人的日志管道改指到这里来。
+            rest="${name#"${TMUX_PREFIX}-${SESSION_NAME_PREFIX}"}"
+            [ "$rest" != "$name" ] && [[ "$rest" =~ ^[0-9]+$ ]] || continue
+            [ -f "$(session_log_path "$name")" ] || continue
+            read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$name")"
+            case "$st" in found|single) ;; *) continue ;; esac
+            [ "$pipe" = 1 ] || continue
+            session_log_pipe_ensure "$name" "$tgt" "$pipe" "$(session_log_path "$name")" || true
+        done <<<"$live"
+    fi
+
+    # 不加全机锁：几个项目的 daemon 同时扫到同一份会话记录也没关系——每一处都是「再读一次，
+    # 还是那个令牌才写」，写进去的又是同样的字节，谁先谁后结果一样。扫描位置各项目各记各的。
+    local args=(scan --state "$STATE_DIR/redact-scan.json"
+                --budget-secs "${REDACT_SCAN_BUDGET_SECS:-20}" --plain "$LOG_FILE")
+    local live_file=""
+    if [ -n "${SESSION_LOG_DIR:-}" ]; then
+        args+=(--pane-dir "$SESSION_LOG_DIR")
+        if [ "$live_ok" = 1 ]; then
+            live_file="$(mktemp)"
+            printf '%s\n' "$live" > "$live_file"
+            args+=(--live-sessions "$live_file")
+        fi
+    fi
+    if redact_agent_records_on && [ -n "${WORKTREE_BASE:-}" ]; then
+        args+=(--cwd-prefix "$WORKTREE_BASE"
+               --claude-root "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+               --codex-root "${CODEX_SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}")
+    fi
+    local out rc=0 line done=1
+    # 和上面各个入口用同一份脚本（_redact.sh 里定的路径），不另拼一个
+    out="$(python3 "$_REDACT_PY" "${args[@]}" 2>&1)" || rc=$?
+    [ -n "$live_file" ] && rm -f "$live_file"
+    if [ "$rc" != 0 ]; then
+        log "⚠️ 令牌脱敏：扫描异常退出（退出码 $rc），下一轮重试：$(printf '%s' "$out" | tail -1)"
+        return 0
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            error=*) log "⚠️ 令牌脱敏：${line#error=}（这个文件本轮没处理，下一轮重试）" ;;
+            files=*)
+                [[ "$line" == *" unfinished=1 "* ]] && done=0
+                if [[ "$line" =~ changed=([0-9]+)\ replaced=([0-9]+) ]] && [ "${BASH_REMATCH[2]}" -gt 0 ]; then
+                    log "令牌脱敏：${BASH_REMATCH[1]} 个文件里替换了 ${BASH_REMATCH[2]} 处（指纹 ${line##*fingerprints=}）"
+                fi ;;
+        esac
+    done <<<"$out"
+    [ "$done" = 1 ] && printf '%s\n' "$now" > "$stamp"
     return 0
 }
 
@@ -7455,7 +8220,7 @@ agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
             {
                 printf '\n===== %s session=%s 卡在目录信任框，pane capture =====\n' "$(date -Iseconds)" "$sess"
                 tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-            } >> "${log_path:-/dev/null}" 2>/dev/null
+            } | redact_pipe >> "${log_path:-/dev/null}" 2>/dev/null
             tmux kill-session -t "$sess" 2>/dev/null || true
             return 0
         fi
@@ -7671,5 +8436,594 @@ agent_session_forget_all() {   # <num>
         agent_session_is_aux_file "$f" && continue
         rm -f "$f"
     done
+    return 0
+}
+
+# ── 用量上限：撞上限的 agent 停派到解除，被打断的条目转人工（GitHub#341，可选，默认关闭）──
+#
+# 两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后界面停在一条提示上：会话活着、
+# 标签还是 doing/agent、名额占着，而新派出去的会话一开口又撞一次。开了 ENABLE_USAGE_LIMIT_PAUSE
+# 之后 daemon 每轮看一眼本机派出去、挂着 doing/agent 的会话，认出上限提示就做两件事，别的都不做：
+#
+#   1. 这个 agent 在解除时间之前不再派新活（整台机器、同一个账号目录共用一份暂停记录；别的 agent
+#      照常）。排队的条目标签不动、不计派工失败，到点自动恢复。
+#   2. 被打断的那一条：留言（哪个 agent、几点解除、标签改回哪个）→ 加 pending/human → 摘 doing/agent。
+#      不往会话里送字、不停进程、不关会话、不自己续接。
+#
+# 几条规矩（每一条都是方案复审里踩出来的，改之前先读 tests/usage-limit.test.sh 对应那组）：
+#   · 认定要四样齐：屏幕最后一块是上限提示（规则在 usage_limit.py，按真实截屏写的）、agent 空闲、
+#     会话是本项目登记的那条且它的记录里模型回复 / 工具输出都没有这句、连续两轮屏幕和记录都没变。
+#     任何一样读不到 = 证据不足 = 什么都不做（和没开这项功能一样）。
+#   · 暂停只按时刻结束，或由人删掉记录文件。不因为「别的会话在忙」提前结束：忙是按终端文字判的，
+#     证明不了额度恢复，还会被另一个账号的会话误清。
+#   · 转人工的三次写入，每一次之前都重读条目、PR、标签事件和本机会话，和认定时记下的那份整份比对。
+#     只允许多出 daemon 自己上一步写的标签（按标签事件的操作人和「先记意图再写」的记录认）。
+#     确认变了 → 停手，不补偿（不摘回标签、不补留言）；读不到 → 本轮不写，记录留着下一轮再来。
+#   · 这里不做任何会改并发名额的事：三步期间条目一直挂 doing/agent，摘掉之后名额才空出。
+ENABLE_USAGE_LIMIT_PAUSE="${ENABLE_USAGE_LIMIT_PAUSE:-}"
+USAGE_LIMIT_FALLBACK_SECS="${USAGE_LIMIT_FALLBACK_SECS:-3600}"
+case "$USAGE_LIMIT_FALLBACK_SECS" in ''|*[!0-9]*) USAGE_LIMIT_FALLBACK_SECS=3600 ;; esac
+if [ "$USAGE_LIMIT_FALLBACK_SECS" -lt 60 ] || [ "$USAGE_LIMIT_FALLBACK_SECS" -gt 604800 ]; then USAGE_LIMIT_FALLBACK_SECS=3600; fi
+USAGE_LIMIT_MAX_AHEAD=$((8 * 86400 + 3600))   # 比这还远的暂停不是本程序写的 → 当作没有
+USAGE_LIMIT_PACE_SECS=120                      # 有暂停 / 有没做完的转人工时，轮询最慢多久一轮
+USAGE_LIMIT_WRITE_TRIES=10                     # 同一条的写入累计失败这么多次就停手
+USAGE_LIMIT_MARK='agent-usage-limit'
+USAGE_LIMIT_WAITING=0
+USAGE_LIMIT_ACTED=0
+USAGE_LIMIT_SKIPPED=""
+USAGE_LIMIT_UNTIL=""
+USAGE_LIMIT_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/usage_limit.py"
+declare -A _USAGE_LIMIT_INFO=()
+declare -A _USAGE_LIMIT_PAUSE=()
+declare -A _USAGE_LIMIT_SAID=()
+
+usage_limit_enabled() {
+    case "$(printf '%s' "${ENABLE_USAGE_LIMIT_PAUSE:-}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# 当前时刻：和轮询节奏用同一个来源（测试用 POLL_FAKE_NOW 拨钟，样本屏上的解除时间是写死的）。
+usage_limit_now() { pace_now; }
+
+usage_limit_clock() {   # <epoch> → 给人看的本机时间
+    printf '%(%Y-%m-%d %H:%M %z)T' "$1"
+}
+
+usage_limit_file() { printf '%s\n' "$STATE_DIR/usage-limit.json"; }
+
+usage_limit_get() {   # <jq 表达式> [jq 参数…] → stdout（文件不在 / 读不出当空对象）
+    local f; f="$(usage_limit_file)"
+    if [ -s "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+        jq -r "${@:2}" "$1" "$f"
+    else
+        jq -rn "${@:2}" "{} | $1"
+    fi
+}
+
+usage_limit_put() {   # <jq 表达式> [jq 参数…]
+    local f tmp; f="$(usage_limit_file)"
+    tmp="$(mktemp "$f.XXXXXX")" || return 1
+    if [ -s "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+        jq "${@:2}" "$1" "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
+    else
+        jq -n "${@:2}" "{} | $1" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$f"
+}
+
+# 同一句话同一轮只说一次（暂停记录读不出这类，每个派工入口都会碰到）
+usage_limit_say_once() {   # <键> <日志>
+    [ -z "${_USAGE_LIMIT_SAID[$1]:-}" ] || return 0
+    _USAGE_LIMIT_SAID[$1]=1
+    log "$2"
+}
+
+# 这个 agent 支不支持认上限、账号目录在哪。设 UL_KIND / UL_ACCOUNT；不支持返回 1。
+# 放在子 shell 里加载它的 driver：轮询进程自己加载的是默认 worker 的 driver，复审可能是另一个 agent，
+# 在本进程里换 driver 会把默认 worker 的函数全盖掉。
+usage_limit_agent_info() {   # <agent>
+    local a="$1" out
+    if [ -z "${_USAGE_LIMIT_INFO[$a]+x}" ]; then
+        out="$( (
+            source_driver "$a" >/dev/null 2>&1 || exit 0
+            [ -n "${AGENT_USAGE_LIMIT:-}" ] || exit 0
+            declare -F agent_account_dir >/dev/null && declare -F agent_session_record >/dev/null || exit 0
+            printf '%s\t%s' "$AGENT_USAGE_LIMIT" "$(agent_account_dir)"
+        ) 2>/dev/null )" || out=""
+        _USAGE_LIMIT_INFO[$a]="$out"
+    fi
+    out="${_USAGE_LIMIT_INFO[$a]}"
+    UL_KIND="${out%%$'\t'*}"; UL_ACCOUNT="${out#*$'\t'}"
+    [ -n "$out" ] && [ -n "$UL_KIND" ] && [ -n "$UL_ACCOUNT" ] && [ "$UL_ACCOUNT" != "$out" ]
+}
+
+usage_limit_pause_file() {   # <agent> → 暂停记录文件（整机共用，一个 agent + 账号目录一个）
+    usage_limit_agent_info "$1" || return 1
+    local h
+    h="$(printf '%s' "$UL_ACCOUNT" | _pace_hash | cut -c1-12)"
+    printf '%s/%s-%s.json\n' "$CAVIL_USAGE_LIMIT_DIR" "$1" "$h"
+}
+
+# 这个 agent 现在是不是在暂停中。是 → 返回 0，USAGE_LIMIT_UNTIL = 解除时刻。
+# 读不出的记录按「没有暂停」：最坏是派出去再撞一次、再被认出来；按「暂停」处理则是整个项目悄悄停摆。
+usage_limit_paused() {   # <agent>
+    local a="$1" f until now
+    USAGE_LIMIT_UNTIL=""
+    if [ -z "${_USAGE_LIMIT_PAUSE[$a]+x}" ]; then
+        until=0
+        if f="$(usage_limit_pause_file "$a")" && [ -e "$f" ]; then
+            if until="$(jq -er '.until | select(type == "number") | floor' "$f" 2>/dev/null)"; then
+                now="$(usage_limit_now)"
+                if [ "$until" -le "$now" ]; then
+                    until=0
+                elif [ $((until - now)) -gt "$USAGE_LIMIT_MAX_AHEAD" ]; then
+                    usage_limit_say_once "far-$a" "⚠️ 用量上限：$a 的暂停记录 $f 写着 $(usage_limit_clock "$until")，超出合理范围，按「没有暂停」处理"
+                    until=0
+                fi
+            else
+                usage_limit_say_once "bad-$a" "⚠️ 用量上限：$a 的暂停记录 $f 读不出，按「没有暂停」处理"
+                until=0
+            fi
+        fi
+        _USAGE_LIMIT_PAUSE[$a]="$until"
+    fi
+    until="${_USAGE_LIMIT_PAUSE[$a]}"
+    [ "$until" -gt 0 ] || return 1
+    USAGE_LIMIT_UNTIL="$until"
+    return 0
+}
+
+# 记下暂停。只往后延：已经有一条更晚、仍有效的就留着它。几个项目的轮询会同时写，所以加锁、整文件替换。
+usage_limit_pause_set() {   # <agent> <解除时刻> <来源 screen|fallback> <哪个条目>
+    local a="$1" until="$2" src="$3" item="$4" f now rc=0
+    f="$(usage_limit_pause_file "$a")" || return 1
+    usage_limit_agent_info "$a" || return 1   # 上一行在子 shell 里，UL_ACCOUNT 要在本 shell 再取一次
+    mkdir -p "$CAVIL_USAGE_LIMIT_DIR" || return 1
+    now="$(usage_limit_now)"
+    (
+        flock -w 10 7 || exit 1
+        cur="$(jq -er '.until | select(type == "number") | floor' "$f" 2>/dev/null)" || cur=0
+        if [ "$cur" -ge "$until" ] && [ $((cur - now)) -le "$USAGE_LIMIT_MAX_AHEAD" ]; then exit 3; fi
+        tmp="$(mktemp "$f.XXXXXX")" || exit 1
+        jq -n --arg agent "$a" --arg account "$UL_ACCOUNT" --argjson until "$until" --arg source "$src" \
+              --arg item "$item" --argjson seen "$now" --arg host "$SELFHEAL_HOST_ID" \
+              '{agent: $agent, account: $account, until: $until, source: $source, item: $item, seen: $seen, host: $host}' \
+              > "$tmp" || { rm -f "$tmp"; exit 1; }
+        mv "$tmp" "$f"
+    ) 7>"$CAVIL_USAGE_LIMIT_DIR/.lock" || rc=$?
+    case "$rc" in
+        0) _USAGE_LIMIT_PAUSE[$a]="$until"; return 0 ;;
+        3) unset "_USAGE_LIMIT_PAUSE[$a]"; return 3 ;;   # 已有更晚的：没写，下次读文件为准
+        *) return 1 ;;
+    esac
+}
+
+# 派工前的闸门：这次派工要用的 agent 在暂停中 → 返回 0（调用方跳过这一条，什么都不改）。
+# 所有派工入口（新 issue、issue 评论、PR 评论、复审、往已有会话注入）都过这一个函数。
+usage_limit_gate() {   # <agent（空 = 默认 worker）> <条目称呼>
+    usage_limit_enabled || return 1
+    local a="${1:-$WORKER_AGENT_DEFAULT}"
+    usage_limit_paused "$a" || return 1
+    USAGE_LIMIT_SKIPPED+="${a}"$'\t'"${USAGE_LIMIT_UNTIL}"$'\t'"${2}"$'\n'
+    USAGE_LIMIT_WAITING=1
+    return 0
+}
+
+usage_limit_skip_summary() {
+    [ -n "$USAGE_LIMIT_SKIPPED" ] || return 0
+    local a until items
+    while IFS=$'\t' read -r a until; do
+        [ -n "$a" ] || continue
+        items="$(printf '%s' "$USAGE_LIMIT_SKIPPED" | awk -F'\t' -v a="$a" '$1 == a { printf "%s%s", (n++ ? "、" : ""), $3 }')"
+        log "⏸ 用量上限：$a 暂停派工到 $(usage_limit_clock "$until")，本轮跳过（标签不动、不计失败）：$items"
+    done < <(printf '%s' "$USAGE_LIMIT_SKIPPED" | cut -f1,2 | awk '!seen[$0]++')
+    return 0
+}
+
+# 派工成功后记下这次派工的开始时刻：核对会话记录时只看这之后的内容（之前几轮的对话里
+# 引用过这句话不算数）。功能关着时不写任何东西。
+usage_limit_note_dispatch() {   # <工作编号> <开始时刻>
+    usage_limit_enabled || return 0
+    usage_limit_put '.dispatched[$k] = $t' --arg k "$1" --argjson t "$2" || true
+}
+
+# 除了 doing/agent 之外的流程标签（JSON 数组）。条目上挂着其中任何一个 = 已经在别的流程里，不转人工。
+usage_limit_other_flow_labels() {
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_DONE" "$LABEL_PENDING_PR" "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_MERGE:-}" "${LABEL_PENDING_BLOCKED:-}" "${LABEL_PENDING_REQUESTER_BOT:-}" "${TRIGGER_LABELS_ALL[@]}" \
+        | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
+# 条目现在的样子（重读 GitHub）。stdout 一行 JSON；读不到 / 缺字段返回 2。
+usage_limit_item_doc() {   # <issue|pr> <编号>
+    local kind="$1" num="$2" ij pj doc
+    ij="$(gh api "repos/$REPO/issues/$num" 2>/dev/null)" || return 2
+    doc="$(printf '%s' "$ij" | jq -ce '
+        if (.state | type) != "string" or (.labels | type) != "array" then error("shape") else
+        {state: .state, is_pr: (.pull_request != null), labels: ([.labels[].name] | sort)} end' 2>/dev/null)" || return 2
+    if [ "$kind" = pr ]; then
+        pj="$(gh api "repos/$REPO/pulls/$num" 2>/dev/null)" || return 2
+        doc="$(printf '%s' "$pj" | jq -ce --argjson d "$doc" '
+            if (.base.ref | type) != "string" or (.head.sha | type) != "string" or (.head.ref | type) != "string"
+               or ((.merged // false) | type) != "boolean" then error("shape") else
+            $d + {merged: (.merged // false), base: .base.ref, head: .head.sha, ref: .head.ref,
+                  src: (.head.repo.full_name // "")} end' 2>/dev/null)" || return 2
+    fi
+    printf '%s\n' "$doc"
+}
+
+# 条目的标签事件（加 / 摘），按编号排好。读不到、缺编号或缺操作人返回 2。
+usage_limit_label_events() {   # <编号>
+    local ev
+    ev="$(gh api --paginate --slurp "repos/$REPO/issues/$1/events" 2>/dev/null)" || return 2
+    printf '%s' "$ev" | jq -ce '
+        if type != "array" or any(.[]; type != "array") then error("shape") else
+        [ .[][] | select(.event == "labeled" or .event == "unlabeled")
+          | {id: .id, e: .event, l: .label.name, a: .actor.login} ]
+        | if any(.[]; (.id | type) != "number" or (.l | type) != "string" or (.a | type) != "string")
+          then error("shape") else sort_by(.id) end end' 2>/dev/null || return 2
+}
+
+# 本机这一侧现在的样子：会话、登记的工作窗格、窗格里那个进程（进程号 + 启动时刻）、agent 与角色、
+# 这个角色登记的 agent 会话编号、派工归属、触发标签。
+# 窗格编号不变不等于还是撞上限的那个 worker：换 agent / 换角色 / 续接失败降级都是在**原窗格**里
+# 换程序（worker_session_launch 的 respawn-pane），角色登记的会话编号也会跟着换。所以进程和登记都
+# 进这份身份（代码复审第 1 轮：只比窗格编号时，新起的正常 worker 被当成旧的上限事件转给了人）。
+# 进程号会被系统复用，所以带上启动时刻；读不出启动时刻算读不到，不算「没变」。
+# stdout 一行 JSON。会话 / 窗格确定不在了返回 1；读不到返回 2。
+usage_limit_local_doc() {   # <工作编号>
+    local work="$1" sess st pane pid dead pipe agent role host trigger started sid rc=0
+    sess="$(tmux_session_name "$work")"
+    worker_session_exists "$sess" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    agent="$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null)" || return 2
+    role="$(tmux show-options -qv -t "=$sess:" @worker_role 2>/dev/null)" || return 2
+    [ -n "$agent" ] || agent="$WORKER_AGENT_DEFAULT"
+    [ -n "$role" ] || role="worker"
+    read -r st pane pid dead pipe <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        gone) return 1 ;;
+        *) return 2 ;;
+    esac
+    [ "$dead" = 0 ] || return 1
+    started="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')" || return 2
+    [ -n "$started" ] || return 2
+    sid="$(agent_session_id_get "$work" "$agent" "$role")" || return 2
+    host="$(jq -er --arg k "$work" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
+    trigger="$(jq -er --arg k "$work" '.worker_trigger_labels[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
+    jq -cn --arg sess "$sess" --arg pane "$pane" --arg agent "$agent" --arg role "$role" \
+           --arg host "$host" --arg trigger "$trigger" --arg pid "$pid" --arg started "$started" --arg sid "$sid" \
+           '{sess: $sess, pane: $pane, pid: $pid, started: $started, agent: $agent, role: $role, sid: $sid,
+             host: $host, trigger: $trigger}'
+}
+
+# 把 usage_limit_local_doc 的结果摊到 UL_PANE / UL_AGENT / UL_ROLE（那个函数总在 $( ) 里调，设不了全局）
+usage_limit_use_loc() {   # <local doc JSON>
+    UL_PANE="$(printf '%s' "$1" | jq -r '.pane // ""')"
+    UL_AGENT="$(printf '%s' "$1" | jq -r '.agent // ""')"
+    UL_ROLE="$(printf '%s' "$1" | jq -r '.role // ""')"
+    [ -n "$UL_PANE" ] && [ -n "$UL_AGENT" ]
+}
+
+# 看一眼这个会话的屏幕（和会话记录）。stdout 是 usage_limit.py 的那一行 JSON。
+#   返回 0 = 认定是上限（verdict=limit）；1 = 不是；2 = 像但证据不足 / 读不到（stdout 仍可能有 reason）
+# 要先调过 usage_limit_use_loc（用它设的 UL_PANE / UL_AGENT / UL_ROLE）。
+usage_limit_look() {   # <工作编号> [screen-only]
+    local work="$1" only="${2:-}" screen sfile info busy record sid wt since out verdict rc=1
+    screen="$(tmux capture-pane -p -t "$UL_PANE" 2>/dev/null)" || return 2
+    # 屏上根本没有这句话：绝大多数轮次到这里就结束，不加载 driver、不起 python、不读会话记录
+    case "$screen" in *"hit your "*) ;; *) return 1 ;; esac
+    usage_limit_agent_info "$UL_AGENT" || return 1
+    sid="$(agent_session_id_get "$work" "$UL_AGENT" "$UL_ROLE")"
+    wt="$(worktree_path "$work")"
+    info="$( (
+        source_driver "$UL_AGENT" >/dev/null 2>&1 || exit 1
+        b=0
+        if printf '%s\n' "$screen" | tail -"${AGENT_BUSY_TAIL}" | grep -qiE "$AGENT_BUSY_RE"; then b=1; fi
+        r=""
+        if [ -n "$sid" ]; then r="$(agent_session_record "$wt" "$sid")"; fi
+        printf '%s\t%s' "$b" "$r"
+    ) 2>/dev/null )" || return 2
+    busy="${info%%$'\t'*}"; record="${info#*$'\t'}"
+    [ "$busy" = 0 ] || return 1
+    sfile="$(mktemp)" || return 2
+    printf '%s\n' "$screen" > "$sfile"
+    since="$(usage_limit_get '.dispatched[$k] // 0' --arg k "$work")" || since=0
+    local -a args=(detect --agent "$UL_KIND" --screen "$sfile" --since "$since"
+                   --now "$(usage_limit_now)" --fallback "$USAGE_LIMIT_FALLBACK_SECS")
+    if [ -z "$only" ]; then
+        # 会话登记了但找不到记录文件：照样交给脚本，它会答「读不到」；没登记则不带这个参数
+        if [ -n "$sid" ]; then args+=(--record "${record:-/nonexistent/usage-limit-record}"); fi
+    fi
+    out="$(python3 -I "$USAGE_LIMIT_SCRIPT" "${args[@]}" 2>/dev/null)" || { rm -f "$sfile"; return 2; }
+    rm -f "$sfile"
+    verdict="$(printf '%s' "$out" | jq -er '.verdict' 2>/dev/null)" || return 2
+    printf '%s\n' "$out"
+    case "$verdict" in
+        limit) rc=0 ;;
+        no) rc=1 ;;
+        *) rc=2 ;;
+    esac
+    return "$rc"
+}
+
+usage_limit_comment_body() {   # <记录 JSON>
+    local rec="$1" agent role until src text trigger nonce when how role_cn
+    agent="$(printf '%s' "$rec" | jq -r '.agent')"; role="$(printf '%s' "$rec" | jq -r '.role')"
+    until="$(printf '%s' "$rec" | jq -r '.until')"; src="$(printf '%s' "$rec" | jq -r '.src')"
+    text="$(printf '%s' "$rec" | jq -r '.reset_text // ""')"; nonce="$(printf '%s' "$rec" | jq -r '.nonce')"
+    trigger="$(printf '%s' "$rec" | jq -r '.ident.local.trigger // ""')"
+    [ -n "$trigger" ] || trigger="$LABEL_PENDING_AGENT_DEFAULT"
+    case "$role" in review) role_cn="复审" ;; *) role_cn="开发" ;; esac
+    if [ "$src" = screen ]; then
+        when="$(usage_limit_clock "$until")（agent 界面上写的是「${text}」）"
+    else
+        when="$(usage_limit_clock "$until")（界面上读不出解除时间，按固定等待 $((USAGE_LIMIT_FALLBACK_SECS / 60)) 分钟估的；到点如果还在上限里，daemon 会再认出来、再顺延）"
+    fi
+    how="解除时间之后，把这一条的标签从 \`$LABEL_PENDING_HUMAN\` 改回 \`$trigger\`，daemon 会照常派工并续接原来的会话。提前改回也可以，daemon 会等到解除时间再派。"
+    printf '<!-- %s n=%s -->\n⚠️ **agent 撞到用量上限，这一条已转人工（`%s`）**\n\n- 撞上限的 agent：`%s`（%s）\n- 解除时间：%s\n- 在此之前 daemon 不再给这个 agent 派新活；排队的条目标签不动，到点自动恢复。\n\n**怎么继续**：%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
+        "$USAGE_LIMIT_MARK" "$nonce" "$LABEL_PENDING_HUMAN" "$agent" "$role_cn" "$when" "$how" \
+        "$(hostname -s 2>/dev/null || hostname)"
+}
+
+usage_limit_drop() {   # <键> <日志（空 = 不说）>
+    [ -z "${2:-}" ] || log "$2"
+    usage_limit_put 'del(.items[$k])' --arg k "$1" || true
+}
+
+# 停手：记录换成一块「这一屏已经处理过」的牌子（同一屏、同一份会话记录不再从头来一遍——否则
+# 留过言之后停手的条目，两轮后又会被认出来、再留一条）。条目离开 doing/agent、屏幕不再是上限提示、
+# 或会话记录又长了（= 之后又干过活、再撞的是新的一次）时，牌子自然作废。
+usage_limit_close() {   # <键> <日志>
+    [ -z "${2:-}" ] || log "$2"
+    usage_limit_put '.items[$k] = {step: -1, fp: (.items[$k].fp // ""), rsize: (.items[$k].rsize // -1)}' --arg k "$1" || true
+}
+
+# 转人工：从记录里的那一步接着做。每圈重读一遍、最多做一次写入，直到做完、停手或读不到。
+usage_limit_handoff() {   # <issue|pr> <编号>
+    local kind="$1" num="$2" key="$1:$2" name rec work step item loc evs me base_ev base_cm ident phase
+    local human="$LABEL_PENDING_HUMAN" doing="$LABEL_AGENT_DOING" out rc round tries cid body look
+    local UL_PANE="" UL_AGENT="" UL_ROLE=""
+    [ "$kind" = pr ] && name="PR #$num" || name="issue #$num"
+    USAGE_LIMIT_WAITING=1
+    for round in 1 2 3 4 5 6 7 8; do
+        rec="$(usage_limit_get '.items[$k] // empty | tojson' --arg k "$key")"
+        [ -n "$rec" ] || return 0
+        work="$(printf '%s' "$rec" | jq -r '.work')"
+        step="$(printf '%s' "$rec" | jq -r '.step')"
+        tries="$(printf '%s' "$rec" | jq -r '.tries // 0')"
+        if [ "$tries" -ge "$USAGE_LIMIT_WRITE_TRIES" ]; then
+            usage_limit_close "$key" "⚠️ 用量上限：$name 转人工的写入累计失败 $tries 次 → 停手，条目留在现在的标签上，请人工处理"
+            return 0
+        fi
+
+        # ── 重读：条目、本机会话、标签事件、写身份 ──
+        item="$(usage_limit_item_doc "$kind" "$num")" || {
+            log "  用量上限：$name 的条目读不到，本轮不写（转人工停在第 $step 步，下轮接着）"; return 0; }
+        rc=0; loc="$(usage_limit_local_doc "$work")" || rc=$?
+        if [ "$rc" = 2 ]; then
+            log "  用量上限：$name 的本机会话读不到（tmux），本轮不写（转人工停在第 $step 步，下轮接着）"; return 0
+        fi
+        [ "$rc" = 0 ] || loc='{"gone":true}'
+        evs="$(usage_limit_label_events "$num")" || {
+            log "  用量上限：$name 的标签事件读不到，本轮不写（转人工停在第 $step 步，下轮接着）"; return 0; }
+        me="$(write_identity_login)"
+        [ -n "$me" ] || { log "  用量上限：读不到 daemon 写身份的账号名，本轮不写（$name 转人工停在第 $step 步）"; return 0; }
+
+        ident="$(printf '%s' "$rec" | jq -c '.ident // empty')"
+        if [ -z "$ident" ]; then
+            # 第一次：记下认定时的样子和基线（之后的每一步都和它比）
+            if ! printf '%s' "$item" | jq -e --arg d "$doing" --argjson flow "$(usage_limit_other_flow_labels)" \
+                    '.state == "open" and (.merged // false) == false
+                     and (.labels | index($d)) != null and ((.labels - (.labels - $flow)) | length) == 0' >/dev/null 2>&1; then
+                usage_limit_close "$key" "用量上限：$name 不转人工——已关闭 / 已合并，或标签不是单独一个 $doing（现在是：$(printf '%s' "$item" | jq -r '.labels | join(", ")')）。暂停派工不受影响"
+                return 0
+            fi
+            if [ "$rc" != 0 ] || [ "$(printf '%s' "$loc" | jq -r '.host')" != "$SELFHEAL_HOST_ID" ]; then
+                usage_limit_close "$key" "用量上限：$name 不转人工——本机会话不在了，或派工归属不是本机"
+                return 0
+            fi
+            base_cm="$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[] | .id' 2>/dev/null | tail -n1)" || {
+                log "  用量上限：$name 的评论读不到，本轮不写（下轮接着）"; return 0; }
+            base_ev="$(printf '%s' "$evs" | jq -r '(map(.id) | max) // 0')"
+            usage_limit_put '.items[$k].ident = {item: $i, local: $l} | .items[$k].base_ev = $e | .items[$k].base_cm = $c' \
+                --arg k "$key" --argjson i "$item" --argjson l "$loc" --argjson e "$base_ev" --argjson c "${base_cm:-0}" || return 0
+            continue
+        fi
+        base_ev="$(printf '%s' "$rec" | jq -r '.base_ev')"; base_cm="$(printf '%s' "$rec" | jq -r '.base_cm')"
+
+        # ── 比对：除了 daemon 自己写的标签，别的必须和认定时一模一样 ──
+        phase="$(jq -rn --argjson id "$ident" --argjson item "$item" --argjson loc "$loc" --argjson evs "$evs" \
+                    --argjson base "$base_ev" --arg me "$me" --arg human "$human" --arg doing "$doing" '
+            ($id.item.labels) as $l0 | (($l0 + [$human]) | unique) as $l1 | ($l1 - [$doing]) as $l2
+            | [ $evs[] | select(.id > $base) | {e, l, a} ] as $new
+            | {e: "labeled", l: $human, a: $me} as $e1 | {e: "unlabeled", l: $doing, a: $me} as $e2
+            | if ($item | del(.labels)) != ($id.item | del(.labels)) then "changed:条目变了（开闭、合并、目标分支、最新提交或来源）"
+              # 三次写入都已经在 GitHub 上了：本机会话之后怎么样（比如被完工回收关掉）不再相干
+              elif $item.labels == $l2 and $new == [$e1, $e2] then "C"
+              elif $loc != $id.local then "changed:本机会话、工作窗格、窗格里的进程、agent、角色、登记的会话编号、派工归属或触发标签变了"
+              elif $item.labels == $l0 and $new == [] then "A"
+              elif $item.labels == $l1 and $new == [$e1] then "B"
+              else "changed:标签被改过（现在是：" + ($item.labels | join(", ")) + "）" end')" || return 0
+        case "$phase" in
+            changed:*)
+                usage_limit_close "$key" "用量上限：$name 转人工停手（做到第 $step 步）——${phase#changed:}。已经写上去的不撤回，之后不再写"
+                return 0 ;;
+        esac
+
+        case "$step:$phase" in
+            1:A)
+                # ① 留言。上一轮可能已经发出去、只是没收到回应：先按随机编号找
+                cid=""
+                if [ "$(printf '%s' "$rec" | jq -r '.c_tried // 0')" = 1 ]; then
+                    out="$(gh api --paginate --slurp "repos/$REPO/issues/$num/comments" 2>/dev/null)" || {
+                        log "  用量上限：$name 的评论读不到，本轮不写（下轮接着）"; return 0; }
+                    cid="$(printf '%s' "$out" | jq -er --argjson base "$base_cm" --arg me "$me" \
+                            --arg mark "<!-- $USAGE_LIMIT_MARK n=$(printf '%s' "$rec" | jq -r '.nonce') -->" '
+                        if type != "array" or any(.[]; type != "array") then error("shape") else
+                        [ .[][] | select(.id > $base and .user.login == $me and (.body | contains($mark))) | .id ] | (.[0] // "") end' \
+                        2>/dev/null)" || { log "  用量上限：$name 的评论读不全，本轮不写（下轮接着）"; return 0; }
+                fi
+                if [ -z "$cid" ]; then
+                    usage_limit_use_loc "$loc" || { log "  用量上限：$name 的本机会话读不全，本轮不写（下轮接着）"; return 0; }
+                    rc=0; look="$(usage_limit_look "$work" screen-only)" || rc=$?
+                    if [ "$rc" = 2 ] && [ -z "$look" ]; then
+                        log "  用量上限：$name 的屏幕读不到，本轮不写（下轮接着）"; return 0
+                    fi
+                    if [ "$(printf '%s' "$look" | jq -r '.fingerprint // ""' 2>/dev/null)" != "$(printf '%s' "$rec" | jq -r '.fp')" ]; then
+                        usage_limit_close "$key" "用量上限：$name 转人工停手——屏幕已经不是那条上限提示（agent 又动了）。什么都没写"
+                        return 0
+                    fi
+                    usage_limit_put '.items[$k].c_tried = 1' --arg k "$key" || return 0
+                    body="$(usage_limit_comment_body "$rec")"
+                    if ! out="$(gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" 2>&1)"; then
+                        log "  ⚠️ 用量上限：$name 留言失败，下轮再试：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                        usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                        return 0
+                    fi
+                    cid="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null)" || cid=""
+                    [ -n "$cid" ] || cid=0
+                fi
+                USAGE_LIMIT_ACTED=1
+                usage_limit_put '.items[$k].comment_id = $c | .items[$k].step = 2' --arg k "$key" --argjson c "$cid" || return 0
+                ;;
+            2:A)
+                # ② 加 pending/human（意图在进这一步时已经记下）
+                if ! out="$(gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$human" 2>&1)"; then
+                    log "  ⚠️ 用量上限：$name 加 $human 失败，下轮再核对：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                    usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                    return 0
+                fi
+                USAGE_LIMIT_ACTED=1
+                ;;
+            2:B)
+                usage_limit_put '.items[$k].step = 3' --arg k "$key" || return 0
+                ;;
+            3:B)
+                # ③ 摘 doing/agent。404 = 已经不在了，下一圈重读时自然会分清是谁摘的
+                if ! out="$(gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$doing" | jq -sRr @uri)" 2>&1)" \
+                   && ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+                    log "  ⚠️ 用量上限：$name 摘 $doing 失败，下轮再核对：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                    usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                    return 0
+                fi
+                USAGE_LIMIT_ACTED=1
+                ;;
+            3:C)
+                usage_limit_drop "$key" "⏸ 用量上限：$name 已留言并转人工（$doing → $human），会话原样留着；解除后由人把标签改回 $(printf '%s' "$ident" | jq -r '.local.trigger | if . == "" then "派工标签" else . end')"
+                return 0 ;;
+            *)
+                usage_limit_close "$key" "用量上限：$name 转人工停手（记录在第 $step 步，条目却已经是另一个样子）——标签不是 daemon 这一步写成的。之后不再写"
+                return 0 ;;
+        esac
+    done
+    return 0
+}
+
+# 每轮一次：先把没做完的转人工接着做，再看本机派出去、挂着 doing/agent 的会话。
+usage_limit_tick() {
+    usage_limit_enabled || return 0
+    local rows="" kind num branch labels work key rec rc look loc fp rsize until src text note seen_keys=" " n agent
+    local UL_PANE="" UL_AGENT="" UL_ROLE=""
+    local -A work_count=()
+
+    # 没做完的转人工：条目这一轮还挂不挂 doing/agent 都要接着核对（摘掉它的可能正是 daemon 自己）
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        usage_limit_handoff "${key%%:*}" "${key#*:}"
+        seen_keys+="$key "
+    done < <(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) >= 1) | .key')
+
+    rows+="$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | awk -F'\t' '{print "issue\t" $1 "\t" $2}')"$'\n' || true
+    rows+="$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | awk -F'\t' '{print "pr\t" $1 "\t" $2}')"$'\n' || true
+    # 同一个工作编号下 issue 和 PR 都挂着 doing/agent：分不清会话在干哪一条，都不碰
+    while IFS=$'\t' read -r kind num branch; do
+        [ -n "$num" ] || continue
+        if [ "$kind" = pr ]; then work="$(pr_to_issue_num "$num" "$branch")"; else work="$num"; fi
+        work_count[$work]=$(( ${work_count[$work]:-0} + 1 ))
+    done <<< "$rows"
+
+    while IFS=$'\t' read -r kind num branch; do
+        [ -n "$num" ] || continue
+        key="$kind:$num"
+        case "$seen_keys" in *" $key "*) continue ;; esac
+        seen_keys+="$key "
+        if [ "$kind" = pr ]; then work="$(pr_to_issue_num "$num" "$branch")"; n="PR #$num"; else work="$num"; n="issue #$num"; fi
+        rec="$(usage_limit_get '.items[$k] // empty | tojson' --arg k "$key")"
+        if [ "${work_count[$work]:-0}" -gt 1 ] \
+           || [ "$(jq -r --arg k "$work" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" != "$SELFHEAL_HOST_ID" ]; then
+            [ -z "$rec" ] || usage_limit_drop "$key" ""
+            continue
+        fi
+        rc=0; loc="$(usage_limit_local_doc "$work")" || rc=$?
+        look=""
+        if [ "$rc" = 0 ]; then usage_limit_use_loc "$loc" || rc=2; fi
+        if [ "$rc" = 0 ]; then look="$(usage_limit_look "$work")" || rc=$?; fi
+        case "$rc" in
+            0) ;;
+            1) [ -z "$rec" ] || usage_limit_drop "$key" ""
+               continue ;;
+            *) # 像上限但证据不足 / 读不到：什么都不做。同一个原因只说一次
+               note="$(printf '%s' "$look" | jq -r '.reason // ""' 2>/dev/null)" || note=""
+               if [ -n "$note" ] && [ "$(printf '%s' "${rec:-null}" | jq -r '.note? // ""' 2>/dev/null)" != "$note" ]; then
+                   log "用量上限：$n 的屏幕像是撞了上限，但证据不足（$note）→ 不暂停、不转人工"
+                   usage_limit_put '.items[$k] = {step: 0, note: $n}' --arg k "$key" --arg n "$note" || true
+               fi
+               continue ;;
+        esac
+        fp="$(printf '%s' "$look" | jq -r '.fingerprint')"; rsize="$(printf '%s' "$look" | jq -r '.record_size')"
+        if [ -n "$rec" ] && [ "$(printf '%s' "$rec" | jq -r '.step // 0')" = -1 ] \
+           && [ "$(printf '%s' "$rec" | jq -r '.fp // ""')" = "$fp" ] \
+           && [ "$(printf '%s' "$rec" | jq -r '.rsize // ""')" = "$rsize" ]; then
+            continue   # 这一屏已经处理过（转人工停手了）：不从头再来
+        fi
+        if [ -z "$rec" ] || [ "$(printf '%s' "$rec" | jq -r '.step // 0')" != 0 ] \
+           || [ "$(printf '%s' "$rec" | jq -r '.fp // ""')" != "$fp" ] \
+           || [ "$(printf '%s' "$rec" | jq -r '.rsize // ""')" != "$rsize" ]; then
+            # 第一次看到（或者和上一轮不一样）：记下，下一轮屏幕和会话记录都没变才算数
+            log "用量上限：$n 的屏幕最后一块是上限提示（$UL_AGENT），下一轮屏幕和会话记录都没变就认定"
+            usage_limit_put '.items[$k] = {step: 0, fp: $fp, rsize: $rs, seen: $t}' --arg k "$key" --arg fp "$fp" \
+                --argjson rs "$rsize" --argjson t "$(usage_limit_now)" || true
+            USAGE_LIMIT_WAITING=1
+            continue
+        fi
+        # 认定
+        agent="$UL_AGENT"
+        until="$(printf '%s' "$look" | jq -r '.reset_epoch')"; src="$(printf '%s' "$look" | jq -r '.reset_source')"
+        text="$(printf '%s' "$look" | jq -r '.reset_text // ""')"
+        rc=0; usage_limit_pause_set "$agent" "$until" "$src" "$REPO $n" || rc=$?
+        case "$rc" in
+            0) if [ "$src" = screen ]; then
+                   log "⏸ 用量上限：$agent 撞到用量上限（$n），暂停派工到 $(usage_limit_clock "$until")（读自界面「$text」，会话记录已核对）"
+               else
+                   log "⏸ 用量上限：$agent 撞到用量上限（$n），界面上读不出解除时间，按固定等待暂停派工到 $(usage_limit_clock "$until")"
+               fi ;;
+            3) ;;
+            *) log "  ⚠️ 用量上限：$agent 的暂停记录写不进去（$CAVIL_USAGE_LIMIT_DIR），本轮不转人工，下轮再试"
+               continue ;;
+        esac
+        USAGE_LIMIT_ACTED=1
+        usage_limit_put '.items[$k] = {step: 1, work: $w, agent: $a, role: $r, fp: $fp, rsize: $rs, until: $u, src: $s, reset_text: $x, nonce: $n}' \
+            --arg k "$key" --arg w "$work" --arg a "$agent" --arg r "$UL_ROLE" --arg fp "$fp" --argjson rs "$rsize" --argjson u "$until" \
+            --arg s "$src" --arg x "$text" --arg n "$(agent_session_new_uuid)" || continue
+        usage_limit_handoff "$kind" "$num"
+    done <<< "$rows"
+
+    # 已经不挂 doing/agent 的观察记录和「处理过」的牌子不留
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        case "$seen_keys" in *" $key "*) ;; *) usage_limit_drop "$key" "" ;; esac
+    done < <(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) <= 0) | .key')
+
+    # 本项目会用到的 agent 里有在暂停的：下一轮别退避得太远，到点好恢复
+    for agent in "$WORKER_AGENT_DEFAULT" "${REVIEW_WORKER_AGENT:-}" "${FABLE_WORKER_AGENT:-}"; do
+        [ -n "$agent" ] || continue
+        if usage_limit_paused "$agent"; then USAGE_LIMIT_WAITING=1; fi
+    done
+    if [ -n "$(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) >= 0) | .key' | head -1)" ]; then USAGE_LIMIT_WAITING=1; fi
     return 0
 }

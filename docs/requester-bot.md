@@ -70,7 +70,7 @@ LABEL_PENDING_REQUESTER_BOT="pending/requester-bot"
 REQUESTER_BOT_ACCOUNT="grokbot"
 REQUESTER_BOT_ALLOWED_ACTORS="your-worker-bot"          # the account workers / reviewers comment with
 REQUESTER_BOT_ORIGIN_MARKER="<!-- requested-by-grokbot -->"
-REQUESTER_BOT_REPORT_FIRST="true"                       # report to grokbot first, maintainer merges after approval
+REQUESTER_BOT_REPORT_FIRST=true                       # report to grokbot first, maintainer merges after approval
 # webhook (URL and key from grokbot's side)
 REQUESTER_BOT_WEBHOOK_URL="https://<url from grokbot>"
 REQUESTER_BOT_WEBHOOK_KEY_HEADER="Authorization"
@@ -124,7 +124,7 @@ cavil-loop only handles its own side; grokbot implements the following:
 
 ## One request end to end: what you see on the issue
 
-With `REQUESTER_BOT_REPORT_FIRST="true"`:
+With `REQUESTER_BOT_REPORT_FIRST=true`:
 
 | Step | Who | Labels | New comment |
 |---|---|---|---|
@@ -140,7 +140,7 @@ With `REQUESTER_BOT_REPORT_FIRST="true"`:
 | 10. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
 | 11. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
 
-With `REQUESTER_BOT_REPORT_FIRST="false"` steps 7 and 8 do not happen: finished work goes straight to the maintainer, and steps 10 and 11 still follow the merge.
+With `REQUESTER_BOT_REPORT_FIRST=false` steps 7 and 8 do not happen: finished work goes straight to the maintainer, and steps 10 and 11 still follow the merge.
 
 ## Troubleshooting
 
@@ -169,7 +169,7 @@ Wake-up script exit codes: [Reference → The wake-up script](#the-wake-up-scrip
 By default only grokbot's own requests can wake it. With `REQUESTER_BOT_WAKE_ANY_ITEM` on, items **not filed by the bot** (a maintainer's own issue, the PR made from it) can wake grokbot too, so it can go and ask someone. The typical case: on their own PR a maintainer writes "please check this public copy with the ops people on the bot's side" (GitHub#133).
 
 ```bash
-REQUESTER_BOT_WAKE_ANY_ITEM="true"     # default false
+REQUESTER_BOT_WAKE_ANY_ITEM=true     # default false
 ```
 
 **Make sure grokbot supports the "handoff protocol" below before turning it on**: otherwise it pulls an item that is not its own request and does not know whom to forward to.
@@ -266,9 +266,9 @@ If the project also uses the autopilot label (GitHub#114), requests filed by the
 | Step | Normal (no autopilot) | Autopilot |
 |---|---|---|
 | Proposal | review passes → wake grokbot → requester confirms | same |
-| Code review passes (`REQUESTER_BOT_REPORT_FIRST="true"`) | wake grokbot to report the current commit | same |
+| Code review passes (`REQUESTER_BOT_REPORT_FIRST=true`) | wake grokbot to report the current commit | same |
 | Requester approves the current commit | hand to the maintainer to merge (`pending/human`) | hand to review (`pending/review`) → the reviewer checks the approval names the PR's head commit and reruns the tests → `pending/merge` → the daemon merges under the usual autopilot conditions |
-| Code review passes (`REQUESTER_BOT_REPORT_FIRST="false"`) | hand to the maintainer | `pending/merge` → the daemon merges |
+| Code review passes (`REQUESTER_BOT_REPORT_FIRST=false`) | hand to the maintainer | `pending/merge` → the daemon merges |
 | After the merge | the daemon posts "request done" | same |
 
 A new commit after the approval (say the maintainer asked for a change on the PR) voids it: review again, report again. The daemon does not read comment content: which commit was approved is checked by the reviewer under the [evidence rules](#what-grokbot-has-to-do-on-its-side), and none of the daemon's pre-merge checks is dropped. Workers and reviewers get these rules from the "requests filed by the bot + autopilot" section of the dispatch prompt, which appears only when both features are on and the item is on autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).

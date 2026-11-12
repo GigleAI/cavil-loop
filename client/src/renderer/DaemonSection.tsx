@@ -1,6 +1,7 @@
 // Settings → 本机 daemon (GitHub#314): is the local cavil-loop daemon installed,
 // what is missing, which projects are connected and whether each one runs;
-// stop / start / disconnect one, open its log or config, update the daemon.
+// stop / start / disconnect one, open its log, change its everyday settings
+// ("配置", GitHub#388: a form — ProjectConfigDialog), update the daemon.
 //
 // Everything shown comes from the daemon's status script through the back end.
 // Stop, start and disconnect are sent only after a confirmation, and only offered
@@ -12,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
+import { ProjectConfigDialog } from './ProjectConfigDialog';
 import { copyText } from './pasteImage';
 import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus, type Outdated, type CheckRow } from '../shared/daemon';
 
@@ -59,6 +61,8 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
   /** the last answer per project (or "install"), shown under it */
   const [notes, setNotes] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [update, setUpdate] = useState<DaemonUpdate | null>(null);
+  /** the project whose "配置" dialog is open (GitHub#388) */
+  const [cfg, setCfg] = useState<DaemonProject | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -92,6 +96,9 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
     }
   };
 
+  const openFile = (p: DaemonProject, what: 'log' | 'config', okText: (path: string) => string = (path) => `已打开 ${path}`) =>
+    run(p.key, () => api().daemonOpen(p.key, what), (r) => r.result === 'ok', (r) => okText(r.path ?? ''));
+
   const doUpdate = async () => {
     setBusy('update');
     setUpdate(null);
@@ -117,9 +124,24 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
       {status?.state === 'ok' && (
         <>
           <Checks st={status.status} />
-          <Projects st={status.status} busy={busy} notes={notes} onAsk={setAsk} onOpen={(p, what) => run(p.key, () => api().daemonOpen(p.key, what), (r) => r.result === 'ok', (r) => `已打开 ${r.path}`)} />
+          <Projects st={status.status} busy={busy} notes={notes} onAsk={setAsk} onOpen={(p) => void openFile(p, 'log')} onConfig={setCfg} />
           <Update st={status.status} busy={busy} result={update} onUpdate={doUpdate} />
         </>
+      )}
+      {cfg && (
+        <ProjectConfigDialog
+          project={cfg}
+          status={status?.state === 'ok' ? status.status : null}
+          onClose={() => setCfg(null)}
+          onOpenEditor={() => void openFile(cfg, 'config')}
+          onUnsupported={(why) => {
+            // a daemon from before the config script: the editor, as before, and say why there is no form
+            const p = cfg;
+            setCfg(null);
+            void openFile(p, 'config', (path) => `已用编辑器打开 ${path}\n${why}`);
+          }}
+          onSaved={() => void check()}
+        />
       )}
       {ask && (
         <ConfirmDialog
@@ -241,7 +263,21 @@ function Command({ text }: { text: string }) {
   );
 }
 
-function Projects({ st, busy, notes, onAsk, onOpen }: { st: LocalStatus; busy: string | null; notes: Record<string, { ok: boolean; text: string }>; onAsk: (a: Ask) => void; onOpen: (p: DaemonProject, what: 'log' | 'config') => void }) {
+function Projects({
+  st,
+  busy,
+  notes,
+  onAsk,
+  onOpen,
+  onConfig,
+}: {
+  st: LocalStatus;
+  busy: string | null;
+  notes: Record<string, { ok: boolean; text: string }>;
+  onAsk: (a: Ask) => void;
+  onOpen: (p: DaemonProject) => void;
+  onConfig: (p: DaemonProject) => void;
+}) {
   if (st.projects.length === 0) {
     return (
       <p className="muted small" data-testid="daemon-projects-empty">
@@ -309,11 +345,11 @@ function Projects({ st, busy, notes, onAsk, onOpen }: { st: LocalStatus; busy: s
                 <button data-testid="daemon-disconnect" disabled={!!busy} onClick={() => onAsk({ kind: 'disconnect', p })}>
                   断开…
                 </button>
-                <button className="ghost" data-testid="daemon-log" disabled={!!busy || !p.state_dir} onClick={() => onOpen(p, 'log')}>
+                <button className="ghost" data-testid="daemon-log" disabled={!!busy || !p.state_dir} onClick={() => onOpen(p)}>
                   日志
                 </button>
-                <button className="ghost" data-testid="daemon-config" disabled={!!busy || !p.config} onClick={() => onOpen(p, 'config')}>
-                  配置
+                <button className="ghost" data-testid="daemon-config" disabled={!!busy || !p.config} title="改这个项目的常用设置" onClick={() => onConfig(p)}>
+                  配置…
                 </button>
                 {busy === p.key && <div className="muted small">正在执行…</div>}
                 {note && <Note id={p.key} note={note} />}

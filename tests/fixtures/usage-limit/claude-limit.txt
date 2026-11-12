@@ -1,0 +1,20 @@
+● Bash(node /tmp/scratchpad/shoot-all.mjs 2>&1 | tail -15)
+  ⎿  shot: 02-learn-home
+     shot: 03-photo-solve
+     shot: 04-question-bank
+     … +10 lines (ctrl+o to expand)
+  ⎿  (timeout 7m)
+  ⎿  You've hit your session limit · resets 4:50pm (Asia/Singapore)
+     /usage-credits to finish what you’re working on.
+
+✻ Cogitated for 19m 1s
+
+  6 tasks (2 done, 1 in progress, 3 open)
+  ◼ 任务一
+  ◻ 任务二
+  ◻ 任务三
+  ◻ 任务四
+  ✔ 任务五
+   … +1 completed
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── https://github.com/example/app/issues/7

@@ -23,6 +23,7 @@ case "$0" in
         ;;
     */weekly-report/run.sh) relative="scripts/weekly-report/run.sh" ;;
     */notify-requester-bot.sh) relative="scripts/notify-requester-bot.sh" ;;   # worker 叫醒外部需求机器人（GitHub#95 / #97）
+    */heavy-test.sh) relative="scripts/heavy-test.sh" ;;   # worker 跑重测试的排队命令（GitHub#343）
     */notify-relay.sh) relative="scripts/notify-relay.sh" ;;   # 同上的早期入口名，转发到新脚本
     *) echo "unknown managed entrypoint: $0" >&2; exit 2 ;;
 esac

@@ -98,6 +98,10 @@ button.ghost { background: transparent; border-color: transparent; color: var(--
 button.ghost:hover:not(:disabled) { color: var(--fg); }
 button.icon-btn { width: 28px; padding: 0; color: var(--muted); }
 button.icon-btn:hover:not(:disabled) { color: var(--fg); }
+/* GitHub#398: the small "open this repository on GitHub" button next to a repository's name */
+button.icon-btn.repo-web { flex: none; width: 22px; min-height: 22px; height: 22px; border-color: transparent; background: transparent; cursor: pointer; }
+button.icon-btn.repo-web:hover:not(:disabled) { background: var(--hover); color: var(--accent); }
+table.items .repo-head .repo-web { vertical-align: middle; margin-left: 2px; }
 /* a round / read in flight (GitHub#217): the icon turns; the button stays clickable */
 @keyframes icon-spin { to { transform: rotate(360deg); } }
 button.icon-btn.spinning svg { animation: icon-spin 0.9s linear infinite; }
@@ -208,7 +212,11 @@ table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outli
 .lane { margin-bottom: 16px; }
 .lane.folded { margin-bottom: 4px; }
 /* the head stays in view while the board scrolls through a lane; a click folds the lane to this line */
-.lane-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; min-height: 0; margin: 0 0 4px; padding: 6px 4px; border: none; border-radius: 0; background: var(--canvas); color: var(--fg); font-weight: 600; text-align: left; cursor: pointer; }
+/* GitHub#398: the row is what sticks; the fold / drag button is as wide as its text and its ::before stretches over the whole row, so a click or a drag anywhere on the row still lands on it; the link to GitHub sits above that */
+.lane-head-row { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 2px; margin: 0 0 4px; background: var(--canvas); }
+.lane-head { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 6px; min-height: 0; margin: 0; padding: 6px 4px; border: none; border-radius: 0; background: var(--canvas); color: var(--fg); font-weight: 600; text-align: left; cursor: pointer; }
+.lane-head::before { content: ''; position: absolute; inset: 0; }
+.lane-head-row .repo-web { position: relative; z-index: 1; }
 .lane-head:hover:not(:disabled) { background: var(--canvas); color: var(--accent); }
 .lane-head .lane-mark { width: 12px; color: var(--muted); }
 .lane-head .icon { color: var(--muted); }
@@ -256,6 +264,13 @@ table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outli
 .slices > .small { margin: 4px 8px 6px; font-weight: 600; }
 .slice { justify-content: space-between; border: none; background: transparent; padding: 0 8px; min-height: 30px; font-weight: 400; }
 .slice.on { background: var(--accent-subtle); font-weight: 600; }
+/* GitHub#398: room for the link to GitHub at the right of each repository; it shows when the pointer or the keyboard focus is on that row */
+.slice-row { position: relative; display: flex; }
+.slice-row .slice, .slices > .slice { padding-right: 30px; } /* "全部" too, so the counts stay in one column */
+.slice-row .slice { flex: 1 1 auto; min-width: 0; }
+.slice-row .slice-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.slice-row .repo-web { position: absolute; right: 4px; top: 50%; margin-top: -11px; opacity: 0; }
+.slice-row:hover .repo-web, .slice-row:focus-within .repo-web { opacity: 1; }
 .slice .count { background: transparent; }
 .table-scroll { flex: 1; min-width: 0; overflow: auto; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 12px; }
 table.items { border-collapse: collapse; width: 100%; }
@@ -382,6 +397,10 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .app-kind { margin: 8px 0 12px; }
 .app-kind .row { flex-wrap: wrap; }
 label.radio { display: inline-flex; gap: 6px; align-items: center; }
+/* GitHub#373: which pending items remind — two choices, one under the other, the rule below */
+.notify-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 12px; }
+.notify-scope-title { font-weight: 600; }
+.notify-scope-note { margin: 2px 0 0 20px; }
 .advanced { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .advanced label { display: flex; flex-direction: column; gap: 4px; align-self: stretch; }
 
@@ -586,7 +605,7 @@ button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
 /* GitHub#304: dragging a repository to another place (the table's slices, the board's swimlane heads) */
 .slice[draggable='true'], .lane-head[draggable='true'] { cursor: grab; }
 [data-repo-drag='yes'] { opacity: 0.5; }
-.slice[data-drop-at] { position: relative; } /* a swimlane head is already sticky (GitHub#297), which positions its line too */
+.slice[data-drop-at] { position: relative; } /* a swimlane head's line is positioned by its sticky row (GitHub#297 / #398) */
 .slice[data-drop-at]::after, .lane-head[data-drop-at]::after {
   content: ''; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--accent); border-radius: 1px; pointer-events: none;
 }
@@ -618,6 +637,40 @@ table.daemon-projects td { border-bottom: 1px solid var(--border-muted); padding
 .connect-agent { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .modal.connect .row input.title-box { flex: 1; min-width: 0; }
 .modal.connect .daemon-output { max-height: 280px; }
+/* a project's "配置" (GitHub#388) */
+.modal.pcfg { width: 780px; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.pcfg-head { padding: 16px 20px 10px; border-bottom: 1px solid var(--border-muted); }
+.modal.pcfg .pcfg-head h3 { margin: 0 0 4px; }
+.pcfg-intro { margin-top: 6px; }
+.pcfg-body { padding: 4px 20px 12px; overflow: auto; min-height: 0; flex: 1; }
+.pcfg-form { border: 0; margin: 0; padding: 0; min-width: 0; }
+.pcfg-group { font-size: 12px; font-weight: 600; color: var(--muted); margin: 14px 0 2px; padding-bottom: 4px; border-bottom: 1px solid var(--border-muted); }
+.pcfg-note { margin: 6px 0; }
+.pcfg-row { display: flex; gap: 16px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border-muted); }
+.pcfg-row .what { flex: 1; min-width: 0; }
+.pcfg-row .ctl { flex: 0 0 250px; display: flex; flex-direction: column; gap: 3px; align-items: stretch; min-width: 0; }
+.pcfg-row .ctl select, .pcfg-row .ctl input.t { width: 100%; box-sizing: border-box; }
+.pcfg-row .ctl input.n { width: 90px; }
+.pcfg-num { display: flex; align-items: center; gap: 6px; }
+.pcfg-row.changed { background: var(--warn-bg); margin: 0 -20px; padding: 8px 20px; box-shadow: inset 3px 0 0 var(--warn-border); }
+.pcfg-row.bad { background: var(--err-bg); margin: 0 -20px; padding: 8px 20px; box-shadow: inset 3px 0 0 var(--err-fg); }
+.pcfg-was, .pcfg-pending { font-size: 12px; color: var(--warn-icon); }
+.pcfg-ro { font: 12px var(--mono); background: var(--canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 4px 8px; overflow-wrap: anywhere; }
+.pcfg-pill { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); margin-right: 6px; }
+button.pcfg-switch { align-self: flex-start; border: none; background: transparent; padding: 0; gap: 8px; min-height: 22px; }
+button.pcfg-switch:hover:not(:disabled) { background: transparent; }
+.pcfg-switch i { width: 34px; height: 20px; border-radius: 10px; background: var(--border); position: relative; display: inline-block; }
+.pcfg-switch i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: left 0.1s; }
+.pcfg-switch.on i { background: var(--primary-bg); }
+.pcfg-switch.on i::after { left: 16px; }
+.pcfg-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border-muted); background: var(--canvas); }
+.pcfg-foot .grow { flex: 1; }
+.pcfg-kept { padding: 6px 20px 0; }
+.modal.pcfg .banner { margin: 10px 0 4px; }
+.modal.pcfg .daemon-command { margin-top: 4px; }
+table.pcfg-changes { border-collapse: collapse; width: 100%; font-size: 13px; margin: 6px 0; }
+table.pcfg-changes th { text-align: left; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border-muted); padding: 5px 8px; }
+table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5px 8px; }
 
 /* ---- GitHub#350: dependency graph ---- */
 .graph-page { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 16px 16px; gap: 8px; }

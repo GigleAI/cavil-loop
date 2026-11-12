@@ -21,6 +21,9 @@ Machine reboot, accidental tmux kill, auto-cleanup after PR merge — all are re
 | Dispatch dedup / progress | `$STATE_DIR/state.json` | No one; daemon restart doesn't lose it | Occasional `cp` to backup |
 | Retry counters (consecutive dispatch failures / self-heal attempts) | `$STATE_DIR/dispatch-fail/<kind>-<N>`, `$STATE_DIR/selfheal/<N>` | Cleared on the first success and again when the item is escalated to `pending/human` | Not worth backing up — losing them only grants a fresh set of attempts |
 | Poll pace (idle + failure backoff) | `$STATE_DIR/poll-pace.json` | No one; safe to delete by hand at any time | Not worth backing up — deleting it just means the project polls at full speed again |
+| Usage-limit pause, per agent and account directory (GitHub#341) | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json` (machine-wide, shared by every project) | No one; it stops counting at its `until` time. Deleting it lifts the pause now | Not worth backing up — if the account is still limited, the next worker that hits the limit brings it back |
+| Usage-limit progress of one project (GitHub#341) | `$STATE_DIR/usage-limit.json` | The daemon, as items leave `doing/agent` | Not worth backing up; do not delete it while a hand-over is in progress (a second comment could follow) |
+| Poll run log (one record per round, snapshots; GitHub#344) | `$STATE_DIR/runlog/` (`rounds/`, `snapshots/`, `inflight/`, `acct/`), plus `~/.local/state/cavil-loop/runlog/entry/` for polls that never loaded their config | The poller itself: newest 1000 records, 20 snapshots, 64 progress files, 200 entry records; safe to delete by hand at any time | Not worth backing up — diagnostics only, nothing reads it back |
 | Machine-wide post-merge retrospective lock | `~/.local/state/cavil-loop/retrospective.lock` (one per machine, shared by every project and every deployed release; GitHub#165) | No one; an empty file whose lock is released when the process exits | Not worth backing up — safe to delete while no retrospective is running |
 | Auto-fetched prices for models missing from the built-in tables | `~/.cache/cavil-loop/fetched-prices.json` (+ `unpriced/` markers, `price-fetch-state.json` retry state) | No one; markers are removed once a model is priced | Not worth backing up — deleting it just makes the daemon fetch again the next time a gap shows up |
 
@@ -120,7 +123,7 @@ Want to turn it off (post-merge leaves everything in place, fully manual):
 
 ```bash
 # cavil-loop.config
-AUTO_CLEANUP_ON_MERGE="false"
+AUTO_CLEANUP_ON_MERGE=false
 ```
 
 Then run `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>` when you want to clean. Flags in [operations.md](operations.md).

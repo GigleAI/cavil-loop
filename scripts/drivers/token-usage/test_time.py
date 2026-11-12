@@ -141,6 +141,12 @@ def classify_segment(seg):
             return None
         head, rest = args[0], rest[rest.index(args[0]) + 1:]
         base = os.path.basename(head)
+        # 重测试排队命令（GitHub#343）：`bash …/heavy-test.sh -- <原命令>` 跑的是 `--` 后面那条，
+        # 按那条认；`--list` / `--stop` 不跑测试
+        if base == "heavy-test.sh":
+            if "--" in rest:
+                return classify_segment(" ".join(rest[rest.index("--") + 1:]))
+            return None
     if base == "run.sh" and os.path.basename(os.path.dirname(head)) == "tests":
         if any(a in SUITE_NON_RUN or a.startswith("--verify=") for a in rest):
             return "suite-meta"

@@ -16,6 +16,7 @@ import { noteOf, type ResultNote } from './DetailPanel';
 import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
 import { useRepoDrag } from './repoDrag';
+import { RepoWebLink } from './RepoWebLink';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -610,8 +611,9 @@ export function TableView({
             全部 <span className="count">{items.length}</span>
           </button>
           {table.slices.map((s) => (
+            // GitHub#398: the link to the repository's GitHub page sits next to the slice button, shown on hover / keyboard focus
+            <div className="slice-row" key={s.value}>
             <button
-              key={s.value}
               className={table.slice?.toLowerCase() === s.value.toLowerCase() ? 'slice on' : 'slice'}
               data-testid="slice"
               data-value={s.value}
@@ -619,8 +621,10 @@ export function TableView({
               onClick={() => api().setView({ table: { slice: s.value } })}
               {...repoDrag.props(s.value)}
             >
-              {s.value} <span className="count" data-testid="slice-count">{s.count}</span>
+              <span className="slice-name">{s.value}</span> <span className="count" data-testid="slice-count">{s.count}</span>
             </button>
+            <RepoWebLink repo={s.value} />
+            </div>
           ))}
           {repoOrder.length > 0 && (
             <button className="link small slice-reset" data-testid="repo-order-reset" title="不再用拖出来的顺序，仓库回到按名称排" onClick={() => void Promise.resolve(api().resetRepoOrder()).catch(() => undefined)}>
@@ -654,6 +658,7 @@ export function TableView({
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
                         <Icon name="repo" size={16} /> <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
+                        <RepoWebLink repo={r.title} />
                       </td>
                     </tr>
                   </tbody>

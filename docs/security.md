@@ -90,6 +90,14 @@ and the daemon logs a warning each round if a config that holds a token is
 group- or world-readable. This matters: the common `umask 0002` produces `0664`,
 which every local user can read.
 
+## Tokens do not stay in local logs (GitHub#342)
+
+A worker's environment holds a GitHub token, and an agent can print it verbatim; it then ends up in files that are kept for a long time — pane history, `poll.log`, the agent's own session records, codex's environment snapshots. Any process of the same user on the machine can read them, and the session records are the weekly report's data source, so they cannot simply be deleted.
+
+- The daemon replaces tokens with `REDACTED-<fingerprint>` before its own logs reach disk; it periodically replaces them in place in the agents' session records; codex workers no longer write environment snapshots. Scope, switches and the command that cleans old snapshots: [operations.md](operations.md#github-token-redaction-github342).
+- This reduces what reaches disk; it is not isolation: the token is still in the worker's environment, and processes of the same user can still read it. Only prefixed GitHub tokens are matched; ones the terminal wrapped, old-format ones and other secrets are out of scope (full list behind the link above).
+- The fingerprint is the first 12 hex characters of the token's sha256 and cannot be turned back into it; it only tells you which token showed up in a log — rotate it as you normally would.
+
 ## What **doesn't** trigger the daemon (even with stale labels + anonymous comments)
 
 Easy to worry about: you merge a PR, forget to flip `pending/agent` back to `pending/human`, an attacker drops a comment on that merged PR — will the worker fire? **No**, the daemon filters this out by default:
@@ -147,7 +155,9 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
 - **Stop is always one action away**: remove the label from, or add `pending/human` to, the issue
   or the PR. Everything the decision relied on is re-read right before the merge call; any change, or
   anything unreadable, means no merge this round
-- **Never merged automatically**: changes under `.github/` (Actions / repo automation), PRs from
+- **Never merged automatically**: changes under `.github/` (Actions / repo automation; with
+  `AUTOPILOT_HUMAN_PATHS` set, also every other listed file that makes code run later — hooks, agent
+  configuration, install / build files, GitHub#337, see [operations](operations.md#files-a-human-must-look-at-before-an-autopilot-merge-autopilot_human_paths-github337)), PRs from
   forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection).
   Requests filed by the requester bot can be on autopilot (GitHub#162), but only a maintainer adding
   the label by hand authorizes it — the bot account's own label does not count; the requester's

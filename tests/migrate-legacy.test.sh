@@ -369,9 +369,13 @@ chk "迁完后入口不再跳过本项目（进度文件已收尾）" "$([ -e "$
 # 有人在中途绕过入口、在旧位置建了空壳（只有日志）：认得出来，清掉，不卡成「两个都在」
 make_project iota "\"$OLDS/iota\"" yes
 chmod 555 "$TMP/projects/iota"; migrate --key iota >/dev/null; chmod 755 "$TMP/projects/iota"
-mkdir -p "$OLDS/iota"; echo 'stray line' > "$OLDS/iota/poll.log"; : > "$OLDS/iota/poll.lock"
+# 那份日志里带着一把（假）GitHub 令牌：并进新日志前就替换掉，不等定期扫描（GitHub#342）
+STRAY_TOKEN="ghp_$(printf '%036d' 0 | tr 0 k)"
+mkdir -p "$OLDS/iota"; printf 'stray line\nGH_TOKEN=%s\n' "$STRAY_TOKEN" > "$OLDS/iota/poll.log"; : > "$OLDS/iota/poll.lock"
 migrate --key iota >/dev/null; rc=$?
 chk "旧位置冒出的空壳被清掉，迁移接着完成" "$rc|$([ -e "$OLDS/iota" ] && echo left || echo gone)|$(grep -c 'stray line' "$NEWS/iota/poll.log")" "0|gone|1"
+chk "并进新日志的内容里没有令牌原文，换成了带指纹的占位" \
+    "$(grep -c "$STRAY_TOKEN" "$NEWS/iota/poll.log")|$(grep -cE '^GH_TOKEN=REDACTED-[0-9a-f]{12}-{19}$' "$NEWS/iota/poll.log")" "0|1"
 
 echo "【10】交接失败：新任务开不起来时旧任务保持开着，下一轮由旧任务自己接着迁"
 for fault in fail-enable fail-start; do
