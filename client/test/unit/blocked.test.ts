@@ -19,9 +19,12 @@ import {
   flowLabelsOf,
   latestRefs,
   lostRefs,
-  dropSettled,
+  layerRows,
   markComment,
   NUMBER_PICK_LIMIT,
+  SETTLES_NOTHING,
+  settledOf,
+  type NumberSettled,
   parseRefQuery,
   planBlocked,
   rankByNumber,
@@ -350,23 +353,49 @@ describe('GitHub#448: the picker reads a number, a number prefix and an address 
   });
 });
 
-describe('PR #452 review round 1: board copies of what GitHub\'s answer settled are dropped before ranking', () => {
-  const b = (number: number, repo = SELF) => ({ repo, number, state: 'open' });
-  const keys = (xs: { repo: string; number: number }[]) => xs.map((x) => `${x.repo}#${x.number}`);
-  it('an exact number read now (closed or missing) and a repository read whole settle their board copies; nothing else', () => {
-    const local = [b(11), b(110), b(11, 'other/repo')];
-    expect(keys(dropSettled(local, { decided: [`${SELF}#11`], whole: null }))).toEqual([`${SELF}#110`, 'other/repo#11']);
-    expect(keys(dropSettled(local, { decided: [], whole: 'GigleAI/Cavil-Loop' }))).toEqual(['other/repo#11']);
-    // a read that failed settles nothing: the board's rows stay
-    expect(keys(dropSettled(local, { decided: [], whole: null }))).toEqual(keys(local));
-    expect(keys(dropSettled(local, undefined))).toEqual(keys(local));
+describe('PR #452 review rounds 1–2: which source an item\'s row comes from — the freshest word on it wins', () => {
+  type Row = { repo: string; number: number; state: string };
+  const r = (number: number, state = 'open', repo = SELF): Row => ({ repo, number, state });
+  const SELF_ITEM = { repo: SELF, number: 448 };
+  const nums = (xs: { number: number }[]) => xs.map((x) => x.number);
+  const exactLayer = (outcome: 'open' | 'closed' | 'missing' | 'failed', n = 11) => ({
+    rows: outcome === 'open' ? [r(n)] : outcome === 'closed' ? [r(n, 'closed')] : [],
+    settled: { decided: outcome === 'failed' ? [] : [`${SELF}#${n}`], whole: null },
   });
-  it('ranked together the way the window does: GitHub said #11 is closed, the board\'s open copy does not come back', () => {
-    const remote: { repo: string; number: number; state: string }[] = [];
-    const local = [b(11), b(110)];
-    const settled = { decided: [`${SELF}#11`], whole: null };
-    expect(rankByNumber([...remote, ...dropSettled(local, settled)], SELF, '11', { repo: SELF, number: 448 }).map((x) => x.number)).toEqual([110]);
-    // without the settled part (the round-1 code) the stale copy was ranked first
-    expect(rankByNumber([...remote, ...local], SELF, '11', { repo: SELF, number: 448 }).map((x) => x.number)).toEqual([11, 110]);
+  const listLayer = (outcome: 'ok' | 'failed', rows: Row[]) => ({ rows: outcome === 'ok' ? rows : [], settled: { decided: [], whole: outcome === 'ok' ? SELF : null } });
+  // the list is a minute old: it still holds #11 open and #110 open
+  const stale = [r(11), r(110)];
+
+  // every outcome of the exact read × the list, as the back end layers them (the board is the window's)
+  const cases: [string, 'open' | 'closed' | 'missing' | 'failed', 'ok' | 'failed', number[]][] = [
+    ['exact open, list ok', 'open', 'ok', [11, 110]],
+    ['exact closed, list (stale) ok', 'closed', 'ok', [110]],
+    ['exact missing (404), list (stale) ok — round 2', 'missing', 'ok', [110]],
+    ['exact read failed, list ok: the list\'s word stands', 'failed', 'ok', [11, 110]],
+    ['exact open, list failed', 'open', 'failed', [11]],
+    ['exact missing, list failed', 'missing', 'failed', []],
+  ];
+  for (const [name, exact, list, want] of cases)
+    it(`back end: ${name}`, () => {
+      const layers = [exactLayer(exact), listLayer(list, stale)];
+      expect(nums(rankByNumber(layerRows(layers), SELF, '11', SELF_ITEM))).toEqual(want);
+    });
+
+  it('window: GitHub\'s answer over the board — what the answer settled hides the board copy; a failed read settles nothing; other repositories are untouched', () => {
+    const board = [r(11), r(110), r(11, 'open', 'other/repo')];
+    const win = (answer: Row[], settled: NumberSettled) => layerRows([{ rows: answer, settled }, { rows: board, settled: SETTLES_NOTHING }]);
+    // the exact number settled (closed / missing): the board's open #11 does not come back — round 1
+    expect(nums(rankByNumber(win([], { decided: [`${SELF}#11`], whole: null }), SELF, '11', SELF_ITEM))).toEqual([110]);
+    // the whole repository settled: only GitHub's rows of it
+    expect(nums(rankByNumber(win([r(111)], { decided: [], whole: SELF }), SELF, '11', SELF_ITEM))).toEqual([111]);
+    // nothing settled (both reads failed): the board's rows stay
+    expect(nums(rankByNumber(win([], SETTLES_NOTHING), SELF, '11', SELF_ITEM))).toEqual([11, 110]);
+    expect(nums(rankByNumber(win([], { decided: [`${SELF}#11`], whole: SELF }), 'other/repo', '11', SELF_ITEM))).toEqual([11]);
+  });
+
+  it('end to end through both layers: the back end\'s settled set is everything its layers settled', () => {
+    const layers = [exactLayer('missing'), listLayer('ok', stale)];
+    expect(settledOf(layers)).toEqual({ decided: [`${SELF}#11`], whole: SELF });
+    expect(settledOf([exactLayer('failed'), listLayer('failed', stale)])).toEqual(SETTLES_NOTHING);
   });
 });

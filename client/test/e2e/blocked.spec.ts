@@ -481,3 +481,36 @@ test('PR #452 review round 1: the board still holds an item as open but GitHub c
   expect(listReads()).toBe(okAfter);
   await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
 });
+
+test('PR #452 review round 2: the list is kept a minute, then the exact number is deleted — its 404 wins over the kept list (and the board); the other prefix rows stay', async () => {
+  env.fake.state.repos.get(REPO)!.push(issue(110, '一百一十号', []));
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-search');
+  const reads = (path: string) => env.fake.log.filter((e) => e.method === 'GET' && e.path === path).length;
+  const listReads = () => env.fake.log.filter((e) => e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?state=open`)).length;
+  const listBefore = listReads();
+  await box.fill('#11');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${REPO}#11`, `${REPO}#110`]);
+  await expect.poll(() => listReads(), { timeout: 15_000 }).toBeGreaterThan(listBefore);
+  await expect(dialog.getByText('正在搜 GitHub…')).toHaveCount(0);
+  const listKept = listReads();
+  // #11 is deleted on GitHub; the board and the kept list still hold it open
+  const repo = env.fake.state.repos.get(REPO)!;
+  repo.splice(
+    repo.findIndex((i) => i.number === 11),
+    1,
+  );
+  const exactBefore = reads(`/api/repos/${REPO}/issues/11`);
+  await box.fill('');
+  await box.fill('#11');
+  await expect.poll(() => reads(`/api/repos/${REPO}/issues/11`), { timeout: 15_000 }).toBeGreaterThan(exactBefore);
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${REPO}#110`]);
+  await expect(dialog.getByText('正在搜 GitHub…')).toHaveCount(0);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  // the kept list really was what answered (no new list read)
+  expect(listReads()).toBe(listKept);
+});

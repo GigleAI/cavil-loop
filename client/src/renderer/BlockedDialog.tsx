@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { confirmBlock, dropSettled, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type NumberSettled, type Pick, type Ref } from '../shared/blocked';
+import { SETTLES_NOTHING, confirmBlock, layerRows, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type NumberSettled, type Pick, type Ref } from '../shared/blocked';
 import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
 
@@ -97,7 +97,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       local = rankByNumber(board(repo), repo, parsed.digits, self);
       // GitHub's copies first: they carry the ids a native relation needs, and their state is fresh; a
       // board copy of what GitHub's answer settled (a closed exact number, the whole repository) goes
-      combine = (remote, settled) => rankByNumber([...remote, ...dropSettled(local, settled)], repo, parsed.digits, self);
+      combine = (remote, settled) => rankByNumber(layerRows([{ rows: remote, settled: settled ?? SETTLES_NOTHING }, { rows: local, settled: SETTLES_NOTHING }]), repo, parsed.digits, self);
     } else if (parsed.kind === 'url') {
       local = board(parsed.repo).filter((c) => c.number === parsed.number && c.state === 'open' && refKey(c) !== refKey(self));
       combine = (remote) => remote;

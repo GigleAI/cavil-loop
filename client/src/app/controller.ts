@@ -63,6 +63,7 @@ import {
   factsOf,
   fingerprint,
   isOpComment,
+  layerRows,
   latestRefs,
   lostRefs,
   markComment,
@@ -71,6 +72,7 @@ import {
   rankByNumber,
   refKey,
   repauseAllowed,
+  settledOf,
   type BlockedLabels,
   type BlockedRead,
   type Facts,
@@ -3570,15 +3572,15 @@ export class Controller {
       const repo = parsed.repo ?? self.repo;
       const exactNo = /^0/.test(parsed.digits) ? null : Number(parsed.digits);
       const [exact, list] = await Promise.allSettled([exactNo === null ? Promise.resolve(null) : one(repo, exactNo), this.openCandidates(c.client, repo)]);
-      const pool: Candidate[] = [];
-      if (exact.status === 'fulfilled' && exact.value) pool.push(exact.value);
-      if (list.status === 'fulfilled') pool.push(...list.value);
-      const items = rankByNumber(pool, repo, parsed.digits, self).map((x) => ({ ...x }));
-      // what was read now, so the window's out-of-date copies of it go (a closed item is not in `items`)
-      const settled: NumberSettled = {
-        decided: exactNo !== null && exact.status === 'fulfilled' ? [refKey({ repo, number: exactNo })] : [],
-        whole: list.status === 'fulfilled' ? repo : null,
-      };
+      // freshest first: the exact read settles its number over the list (read now or kept a minute) — a
+      // 404 or a closed answer hides that number's row in the list too (PR #452 review round 2)
+      const layers = [
+        { rows: exact.status === 'fulfilled' && exact.value ? [exact.value] : [], settled: { decided: exactNo !== null && exact.status === 'fulfilled' ? [refKey({ repo, number: exactNo })] : [], whole: null } },
+        { rows: list.status === 'fulfilled' ? list.value : [], settled: { decided: [], whole: list.status === 'fulfilled' ? repo : null } },
+      ];
+      const items = rankByNumber(layerRows(layers), repo, parsed.digits, self).map((x) => ({ ...x }));
+      // what was read, so the window puts its board copies of it under GitHub's answer
+      const settled: NumberSettled = settledOf(layers);
       const errs: string[] = [];
       if (exact.status === 'rejected') errs.push(fail(exact.reason));
       if (list.status === 'rejected') errs.push(`搜索失败：开着的条目没读全（${(list.reason as Error)?.message ?? String(list.reason)}）`);

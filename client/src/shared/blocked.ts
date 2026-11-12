@@ -508,20 +508,45 @@ export function rankByNumber<T extends { repo: string; number: number; state: st
 }
 
 /**
- * What a number search's GitHub answer settled (GitHub#448, PR #452 review round 1): `decided` — items
- * read now one by one (the exact number; closed or missing ones are not in the rows), `whole` — a
- * repository whose open items were read to the last page. A board copy inside either is out of date
- * and is dropped before the board's rows and GitHub's are ranked together; anything else the board
- * holds stays (a read that failed settles nothing).
+ * What a source of a number search settled (GitHub#448, PR #452 review rounds 1–2): `decided` — items
+ * read one by one (the exact number; a closed or missing one is in no row), `whole` — a repository
+ * whose open items were read to the last page. A read that failed settles nothing.
  */
 export interface NumberSettled {
   decided: string[];
   whole: string | null;
 }
 
-export function dropSettled<T extends Ref>(local: readonly T[], settled: NumberSettled | undefined): T[] {
-  if (!settled) return [...local];
-  const decided = new Set(settled.decided);
-  const whole = settled.whole?.toLowerCase() ?? null;
-  return local.filter((x) => x.repo.toLowerCase() !== whole && !decided.has(refKey({ repo: x.repo.toLowerCase(), number: x.number })));
+/** one source of rows, with what it settled */
+export interface NumberLayer<T> {
+  rows: readonly T[];
+  settled: NumberSettled;
 }
+
+const settles = (s: NumberSettled, x: Ref) =>
+  x.repo.toLowerCase() === (s.whole?.toLowerCase() ?? null) || s.decided.includes(refKey({ repo: x.repo.toLowerCase(), number: x.number }));
+
+/**
+ * The one rule for which source an item's row comes from (PR #452 review rounds 1–2): `layers` freshest
+ * first — the exact number read now, then the repository's open list (read now or kept a minute), then
+ * the board's copy. A row is dropped when a fresher layer settled that item, whether that layer has a
+ * row for it (open) or not (closed, missing): the freshest word on an item wins. Used by the back end
+ * (exact read + list) and the window (GitHub's answer + the board), then ranked by `rankByNumber`.
+ */
+export function layerRows<T extends Ref>(layers: readonly NumberLayer<T>[]): T[] {
+  const out: T[] = [];
+  layers.forEach((layer, i) => {
+    for (const x of layer.rows) if (!layers.slice(0, i).some((f) => settles(f.settled, x))) out.push(x);
+  });
+  return out;
+}
+
+/** Everything the layers settled together (the back end hands this to the window, which puts the board's copies under it). */
+export function settledOf(layers: readonly { settled: NumberSettled }[]): NumberSettled {
+  return {
+    decided: [...new Set(layers.flatMap((l) => l.settled.decided))],
+    whole: layers.map((l) => l.settled.whole).find((w) => w !== null) ?? null,
+  };
+}
+
+export const SETTLES_NOTHING: NumberSettled = { decided: [], whole: null };
