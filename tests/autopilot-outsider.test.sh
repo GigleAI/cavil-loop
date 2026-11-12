@@ -75,6 +75,12 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old"
 rm -rf "$SANDBOX/old/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
+# 「改动前还读不全」的三组对拍要的是 GitHub#426 修复之前的代码，固定在它合入前的主干提交。
+# 用 merge-base 的话，分支一跟上主干，merge-base 就已经带着修复，这三组就红了（PR #430）。
+PRE426_REV=5043ad0e00edb2b0f70876605114ee7162a414e9
+mkdir -p "$SANDBOX/pre426"
+git -C "$REPO_DIR" archive "$PRE426_REV" scripts prompts | tar -x -C "$SANDBOX/pre426"
+rm -rf "$SANDBOX/pre426/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/pre426/prompts"
 
 H1=1111111111111111111111111111111111111111
 R="repos/example/ap"
@@ -810,6 +816,7 @@ prompt_files_clear "$REPO_DIR" "$DW/state"
     bash "$SCRIPTS/dispatch-new-issue.sh" "$N") >/dev/null 2>&1
 # 提示词写在项目自己的状态目录里（GitHub#396），经 tests/lib/prompt-files.sh 找，不拼路径
 PF=$(prompt_file_of "$REPO_DIR" "$DW/state" new "$N")
+chk "派工脚本确实写出了提示词" "$([ -s "$PF" ] && echo yes || echo no)" yes
 chk "派工脚本写出的提示词带外部内容规则、编号和派工前结论" \
     "$(grep -c '^# 外部账号的内容' "$PF" 2>/dev/null || echo 0)/$(grep -cF "' $N" "$PF" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "$PF" 2>/dev/null || echo 0)" "1/1/1"
 chk "新起的会话登记为「在保护开着时起的」" "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null | grep -c . || echo 0)/$([ "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null)" = "$(cat "$DW/state/agent-sessions/$N.claude.worker" 2>/dev/null)" ] && echo same || echo differ)" "1/same"
@@ -886,16 +893,16 @@ bound_big() {   # 绑 issue 的托管 PR：PR 正文和两次修改都很大，P
 bound_big outsider
 rc=0; readcmd 8 || rc=$?
 chk "读取命令：退出码 0，30 条大评论一条不少，正文给了，外人照常标明" "$rc/$(marks)/$(grep -c 'BIGBODY' "$W/read.out" | awk '{print ($1>0)?"y":"n"}')/$(rd_has '@stranger ｜ 外部账号')" "0/30/y/1"
-if ! compat_skip "大讨论下改动前的读取命令" "$SANDBOX/old" "$REPO_DIR" scripts; then
-    rc=0; readcmd 8 "$SANDBOX/old/scripts" || rc=$?
+if ! compat_skip "大讨论下改动前的读取命令" "$SANDBOX/pre426" "$REPO_DIR" scripts; then
+    rc=0; readcmd 8 "$SANDBOX/pre426/scripts" || rc=$?
     chk "改动前的读取命令跑同一份数据读不全（用例确实打到了这个问题）" "$rc/$(rd_has '读不全')" "3/1"
 fi
 bound_big outsider; tick
 chk "合并关卡：外人内容照常查出 → 不合并、交人、点名 @stranger" "$(merged)/$(has_label pending/human)/$(comments_with '@stranger')" "0/yes/1"
 bound_big; tick
 chk "合并关卡：只有维护者的大评论 → 照常合并" "$(merged)" 1
-if ! compat_skip "大讨论下改动前的合并关卡" "$SANDBOX/old" "$REPO_DIR" scripts; then
-    bound_big; tick "$SANDBOX/old/scripts"
+if ! compat_skip "大讨论下改动前的合并关卡" "$SANDBOX/pre426" "$REPO_DIR" scripts; then
+    bound_big; tick "$SANDBOX/pre426/scripts"
     chk "改动前的合并关卡跑同一份数据：判不了、不合并" "$(merged)/$(has_label pending/human)" "0/no"
 fi
 # 只有 issue：派工前检查
@@ -918,8 +925,8 @@ pr_big; rc=0; readcmd 8 || rc=$?
 chk "没绑 issue 的 PR：读取命令退出码 0、30 条都在" "$rc/$(marks)" "0/30"
 pr_big; tick
 chk "没绑 issue 的 PR：授权照常判出、照常合并" "$(merged)" 1
-if ! compat_skip "大正文历史下改动前的授权判断" "$SANDBOX/old" "$REPO_DIR" scripts; then
-    pr_big; tick "$SANDBOX/old/scripts"
+if ! compat_skip "大正文历史下改动前的授权判断" "$SANDBOX/pre426" "$REPO_DIR" scripts; then
+    pr_big; tick "$SANDBOX/pre426/scripts"
     chk "改动前：打标签那一刻的正文判不了、不合并" "$(merged)" 0
 fi
 
