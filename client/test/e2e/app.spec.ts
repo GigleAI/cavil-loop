@@ -7184,6 +7184,100 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
 });
 
 
+test('GitHub#395: release attachment images are fetched with the sign-in and shown; a refusal, a rate limit and an ordinary image that did not load each get a box with "重新加载"', async () => {
+  const { fake } = env;
+  const w = fake.state.w;
+  const PICTURE = readFileSync(join(root, 'build', 'icon.png'));
+  const TINY = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  fake.state.releases.set('acme/private-app', [
+    {
+      tag: 'preview/pr-412',
+      assets: [
+        { id: 11, name: 'home.png', bytes: PICTURE },
+        { id: 12, name: 'map.png', bytes: PICTURE },
+      ],
+    },
+  ]);
+  const rel = (file: string, repo = 'acme/private-app') => `${fake.web}/${repo}/releases/download/preview/pr-412/${file}`;
+  const linked = (src: string, alt: string) => `<p><a target="_blank" rel="noopener noreferrer" href="${src}"><img src="${src}" alt="${alt}" style="max-width: 100%;"></a></p>`;
+  const comment = (broken: string) => ({
+    id: 'C_IMG',
+    url: 'https://github.com/GigleAI/cavil-loop/issues/138#c-img',
+    createdAt: '2026-11-05T01:00:00Z',
+    author: { login: 'user-2' },
+    bodyHTML:
+      '<p>预览已更新，截图如下</p>' +
+      linked(rel('home.png'), '首页截图') +
+      linked(rel('wrong-book.png', 'acme/other-app'), '错题本截图') +
+      linked(rel('map.png'), '知识图谱截图') +
+      `<p><img src="${broken}" alt="手机预览码"></p>`,
+  });
+  w.comments.set('gigleai/cavil-loop#138', [comment('data:image/png;base64,xx')]);
+  // the third image's download is rate limited, for 4 seconds
+  const limit = (e: { path: string }) => (e.path.includes('/releases/assets/12') ? { status: 429, body: { message: 'slow down' }, headers: { 'retry-after': '4' } } : null);
+  fake.state.answerOverride = limit;
+  const of = (part: string) => fake.log.filter((l) => l.path.includes(part));
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const box = (alt: string) => frame.locator('.imgbox', { has: frame.locator('.alt', { hasText: alt }) });
+  const natural = (alt: string) => frame.locator(`img[alt="${alt}"]`).evaluate((el: HTMLImageElement) => el.naturalWidth);
+
+  // ---- 1. the private repo's attachment is shown; the credential went to the API, the file was fetched without it ----
+  await expect(frame.locator('img[alt="首页截图"]')).toBeVisible({ timeout: 15_000 });
+  expect(await natural('首页截图')).toBeGreaterThan(100);
+  await expect(box('首页截图')).toHaveCount(0);
+  // the release's tag holds a slash (`preview/pr-412`), as this repo's own client releases do
+  expect(of('/api/repos/acme/private-app/releases/tags/preview/pr-412').map((l) => l.status)).toContain(200);
+  expect(of('/api/repos/acme/private-app/releases/assets/11').map((l) => [l.status, Boolean(l.auth)])).toEqual([[302, true]]);
+  expect(of('/web/release-assets/11').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
+  // the window itself never asked for a release address
+  expect(of('/releases/download/')).toEqual([]);
+
+  // ---- 2. a repo this sign-in cannot read: says so, without a word about GitHub Apps (signed in the default way) ----
+  await expect(box('错题本截图').locator('.why')).toHaveText('没取到：当前登录读不到这个仓库的发布附件');
+  await expect(box('错题本截图').locator('button')).toBeEnabled();
+
+  // ---- 3. rate limited: says until when, nothing about access; the button waits for that time ----
+  const limited = box('知识图谱截图');
+  await expect(limited.locator('.why')).toHaveText(/^GitHub 限流，\d\d:\d\d 之后可以再试$/);
+  await expect(limited.locator('button')).toBeDisabled();
+  expect(of('/releases/assets/12').map((l) => l.status)).toEqual([429]);
+  // ---- 4. an ordinary image that did not load ----
+  await expect(box('手机预览码').locator('.why')).toHaveText('图片没加载出来');
+  await box('错题本截图').scrollIntoViewIfNeeded();
+  await shot(page, '395-images');
+
+  // the limit is over on GitHub's side at once, but nothing is asked before the time GitHub gave
+  fake.state.answerOverride = null;
+  await page.waitForTimeout(1500);
+  expect(of('/releases/assets/12')).toHaveLength(1);
+  await expect(limited.locator('button')).toBeEnabled({ timeout: 10_000 });
+  await limited.locator('button').click();
+  await expect(frame.locator('img[alt="知识图谱截图"]')).toBeVisible({ timeout: 15_000 });
+  expect(await natural('知识图谱截图')).toBeGreaterThan(100);
+  expect(of('/web/release-assets/12').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
+
+  // ---- 5. "重新加载" on the ordinary image reads the discussion again; GitHub now gives an address that loads ----
+  const reads = () => fake.log.filter((l) => l.operation === 'CavilItemDetail').length;
+  const before = reads();
+  w.comments.set('gigleai/cavil-loop#138', [comment(TINY)]);
+  await box('手机预览码').locator('button').click();
+  await expect.poll(reads).toBeGreaterThan(before);
+  await expect(frame.locator('img[alt="手机预览码"]')).toBeVisible({ timeout: 15_000 });
+  await expect(box('手机预览码')).toHaveCount(0);
+  // the images fetched before come back from memory: no second download
+  await expect(frame.locator('img[alt="首页截图"]')).toBeVisible();
+  expect(of('/web/release-assets/11')).toHaveLength(1);
+  expect(of('/web/release-assets/12')).toHaveLength(1);
+  await shot(page, '395-images-reloaded');
+  expect(fake.writes()).toEqual([]);
+  await app.close();
+});
+
 // ---- GitHub#398: a repository's GitHub page, one click from where the repository is shown ----
 
 test('GitHub#398: "open this repository on GitHub" on the board\'s swimlane heads, the table\'s repository sections and its repository list — one request with the repository\'s address each; folding, the slice filter and the dragged order stay as they were and still work', async () => {

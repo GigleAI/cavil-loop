@@ -10,6 +10,7 @@ pub mod engine;
 pub mod grant;
 pub mod http;
 pub mod platform;
+pub mod release_image;
 pub mod store;
 pub mod update;
 pub mod window_state;

@@ -60,6 +60,22 @@ export function rateLimitOf(res: Response, detail: string): RateLimitError | nul
   return limitError(res, res.status);
 }
 
+/**
+ * What an answer that is not a success means — the one rule, for every request and (GitHub#395) for
+ * the answer the back end hands over when a release attachment could not be downloaded: a refused
+ * credential, a rate limit (a 403 is not "no access" before this said so), or GitHub's own error.
+ */
+export async function refusalOf(res: Response): Promise<GitHubError> {
+  if (res.status === 401) return new GitHubError('auth', 'GitHub 凭据无效（可能已被撤销或过期）', 401);
+  let detail = '';
+  try {
+    detail = ((await res.json()) as { message?: string }).message ?? '';
+  } catch {
+    /* body not JSON */
+  }
+  return rateLimitOf(res, detail) ?? new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+}
+
 function limitError(res: Response, status: number | undefined): RateLimitError {
   const reset = Number(res.headers.get('x-ratelimit-reset'));
   const after = Number(res.headers.get('retry-after'));
@@ -210,21 +226,12 @@ export class GitHubClient {
     } catch (e) {
       throw new GitHubError('network', `无法连接 GitHub：${(e as Error).message}`);
     }
-    if (res.status === 401) throw new GitHubError('auth', 'GitHub 凭据无效（可能已被撤销或过期）', 401);
+    if (res.status === 401) throw await refusalOf(res);
     if (notModifiedOk && res.status === 304) return res;
     if (!res.ok) {
-      let detail = '';
-      try {
-        detail = ((await res.json()) as { message?: string }).message ?? '';
-      } catch {
-        /* body not JSON */
-      }
-      const limited = rateLimitOf(res, detail);
-      if (limited) {
-        this.limitHeard(limited);
-        throw limited;
-      }
-      throw new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+      const refused = await refusalOf(res);
+      if (refused instanceof RateLimitError) this.limitHeard(refused);
+      throw refused;
     }
     return res;
   }

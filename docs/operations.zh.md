@@ -67,12 +67,12 @@ WORKER_PASS_ENV="GH_TOKEN"
 # WRITE_GH_TOKEN=""
 
 # Merge 后 daemon 自动 cleanup（worktree + tmux）
-AUTO_CLEANUP_ON_MERGE="true"
+AUTO_CLEANUP_ON_MERGE=true
 
 # 等你审（pending/human）的 PR 和目标分支冲突了（GitHub#86）。只在目标分支或 PR
 # 自己有新提交时才查。N 天内有更新 → 发一条评论 + 改回 pending/agent 让 worker 解；
 # 更久没动 / 外部仓库 → 只发一条提醒，标签不动。设 0 = 只提醒、从不自动解。
-PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_CHECK=true
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
 
 # 项目级 cleanup hook（解端口、撤 tunnel、推 metric）
@@ -815,7 +815,7 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 
 ## agent 撞到用量上限：停派这个 agent，被打断的条目转人工（GitHub#341）
 
-两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后，CLI 停在一条提示上：会话活着、条目还挂 `doing/agent`、名额占着——而新派给这个 agent 的会话一开口又撞一次。配置 `ENABLE_USAGE_LIMIT_PAUSE="true"` 后，daemon 每轮看一眼本机派出去、仍挂着 `doing/agent` 的会话，认出这条提示就做两件事，别的都不做：
+两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后，CLI 停在一条提示上：会话活着、条目还挂 `doing/agent`、名额占着——而新派给这个 agent 的会话一开口又撞一次。配置 `ENABLE_USAGE_LIMIT_PAUSE=true` 后，daemon 每轮看一眼本机派出去、仍挂着 `doing/agent` 的会话，认出这条提示就做两件事，别的都不做：
 
 | 做什么 | 细节 |
 |---|---|
@@ -883,7 +883,7 @@ echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
 五个配置项（`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUNT` / `REQUESTER_BOT_ALLOWED_ACTORS` /
 `REQUESTER_BOT_ORIGIN_MARKER` / `REQUESTER_BOT_REPORT_FIRST`）全部留空 = 关闭，行为逐字节不变。
 webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`），地址留空 = 不发；配置文件必须是 600。
-`REQUESTER_BOT_WAKE_ANY_ITEM="true"`（默认 false，GitHub#133）让不是机器人提的条目也能叫醒它，见
+`REQUESTER_BOT_WAKE_ANY_ITEM=true`（默认 false，GitHub#133）让不是机器人提的条目也能叫醒它，见
 [requester-bot.zh.md](requester-bot.zh.md#维护者自己的条目可选)；合并 / 关闭通知照旧只发给机器人提的需求。
 早期的名字（`LABEL_PENDING_RELAY`、`RELAY_*`）照样认；同一项新名字有值时用新名字。
 

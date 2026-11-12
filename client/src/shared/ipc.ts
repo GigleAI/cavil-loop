@@ -4,6 +4,7 @@
 import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 
@@ -40,6 +41,8 @@ export interface CavilApi {
   loadDetail(key: string): Promise<DetailResult>;
   /** GitHub#229: the detail read last in this run, shown at once on re-opening; null = none */
   cachedDetail(key: string): Promise<ItemDetail | null>;
+  /** GitHub#395: a release attachment image of the discussion, fetched with the sign-in (kept in memory for this account) */
+  loadImage(src: string): Promise<ImageResult>;
   /** `fresh`: read again even when a read of this run worked (the detail's refresh button) */
   repoOptions(repo: string, fresh?: boolean): Promise<RepoOptions>;
   /** GitHub#229: send a change not saved / not confirmed again (read GitHub first unless `force`), or give it up */

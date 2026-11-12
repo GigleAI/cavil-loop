@@ -16,6 +16,7 @@ import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../sh
 import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
 import { annotateCodeBlocks, codeCss } from './codeBlocks';
+import { parseReleaseImage } from '../shared/images';
 
 /** the reply preview: no scripts at all */
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
@@ -35,6 +36,32 @@ export const FRAME_CSP = `default-src 'none'; img-src ${IMAGE_HOSTS.join(' ')} d
 
 /** The timeline frame's own policy: FRAME_CSP with FRAME_SCRIPT, and nothing else, allowed to run. */
 export const TIMELINE_CSP = FRAME_CSP.replace("script-src 'none'", `script-src ${FRAME_SCRIPT_HASH}`);
+
+const IMG_TAG = /<img\b[^>]*>/gi;
+const IMG_SRC = /(\s)src(\s*=\s*)(["'])([^"']*)\3/i;
+
+function unescapeAttr(s: string): string {
+  return s.replace(/&(amp|quot|#39|#x27|lt|gt);/gi, (_, e: string) => ({ amp: '&', quot: '"', '#39': "'", '#x27': "'", lt: '<', gt: '>' })[e.toLowerCase()] ?? '');
+}
+
+/**
+ * GitHub#395: release attachment images are not loaded by the frame (a private repo's answer is
+ * 404 without the sign-in, a public one's redirect leaves the allowed hosts). Each such `<img>`
+ * loses its `src` and carries the address as `data-rel` instead: nothing is fetched while the
+ * document loads; FRAME_SCRIPT asks the window for it, and the window fetches it with the sign-in.
+ * `web` = the web base of the GitHub in use; without one, or with no such image, the HTML is
+ * returned as it is.
+ */
+export function markReleaseImages(html: string, web: string | undefined): string {
+  if (!web || !html.includes('/releases/download/')) return html;
+  return html.replace(IMG_TAG, (tag) => {
+    const m = IMG_SRC.exec(tag);
+    if (!m || /\sdata-rel\s*=/i.test(tag)) return tag;
+    const src = unescapeAttr(m[4]);
+    if (!parseReleaseImage(src, web)) return tag;
+    return tag.replace(IMG_SRC, `$1data-rel$2"${escapeHtml(src)}"`);
+  });
+}
 
 /** How many <img> in GitHub's HTML point outside the allowed hosts (they will not load). */
 export function blockedImages(html: string): number {
@@ -103,15 +130,15 @@ export type Unfold = 'latest' | 'all' | 'none';
  * can be clicked only when the entry allows it (GitHub#193) and `canTick` (online,
  * no change in flight). A read-only entry says why under its text.
  */
-function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null, wrap: boolean): { html: string; note: string } {
+function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null, wrap: boolean, web?: string): { html: string; note: string } {
   const t = e.tasks;
   // GitHub#381: every code block gets its two buttons; the boxes are numbered first, exactly as before
-  const html = annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending), wrap);
+  const html = markReleaseImages(annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending), wrap), web);
   const note = t && !t.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(t.why)}</div>` : '';
   return { html, note };
 }
 
-function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false): string {
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string): string {
   const who = escapeHtml(e.author ?? '（已删除的账号）');
   const head =
     e.kind === 'body'
@@ -123,7 +150,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载；点「在网页上看」查看</div>` : '';
-  const tasks = bodyWithTasks(e, canTick, pending, wrap);
+  const tasks = bodyWithTasks(e, canTick, pending, wrap, web);
   // GitHub#205: only what GitHub says this account may change, only while a change can be sent
   const edit =
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
@@ -137,7 +164,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
       e.lineComments
         .map(
           (l) =>
-            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${annotateCodeBlocks(l.bodyHtml, wrap)}</div></div>`,
+            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${markReleaseImages(annotateCodeBlocks(l.bodyHtml, wrap), web)}</div></div>`,
         )
         .join('') +
       '</div>';
@@ -176,10 +203,14 @@ export interface TimelineOptions {
   view?: FrameView | null;
   /** GitHub#381: long lines of code blocks fold onto the next line (the user's switch; off = scroll sideways) */
   wrap?: boolean;
+  /** GitHub#395: the web base of the GitHub in use — release attachment images under it are fetched with the sign-in */
+  web?: string;
+  /** GitHub#395: no connection — "reload" of a failed image cannot be asked for */
+  offline?: boolean;
 }
 
 export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
-  const { render = '', canTick = false, view = null, pending = null, wrap = false } = opts;
+  const { render = '', canTick = false, view = null, pending = null, wrap = false, web, offline = false } = opts;
   const known = new Set(view?.known ?? []);
   const opened = new Set(view?.open ?? []);
   const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
@@ -248,8 +279,16 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
-</style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}"${wrap ? ' data-wrap=""' : ''}>
-${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap)).join('\n')}
+.imgbox{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;box-sizing:border-box;max-width:100%;min-height:40px;margin:2px 0;padding:8px 12px;border:1px dashed ${border};border-radius:6px;background:${canvas};color:${muted};font-size:12px;line-height:1.5}
+.imgbox .alt{color:${fg};font-weight:600}
+.imgbox .acts{margin-left:auto;display:flex;gap:10px;align-items:center}
+.imgbox button{font:12px inherit;color:${accent};background:${bg};border:1px solid ${border};border-radius:6px;padding:2px 10px;cursor:pointer}
+.imgbox button[disabled]{color:${muted};background:${canvas};cursor:default}
+.imgbox[data-state="loading"] .why::before{content:"";display:inline-block;width:10px;height:10px;margin-right:6px;border:2px solid ${border};border-top-color:${accent};border-radius:50%;vertical-align:-2px;animation:imgspin 1s linear infinite}
+@keyframes imgspin{to{transform:rotate(360deg)}}
+[data-img-hidden]{display:none!important}
+</style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}"${wrap ? ' data-wrap=""' : ''}${offline ? ' data-offline=""' : ''}>
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap, web)).join('\n')}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }
