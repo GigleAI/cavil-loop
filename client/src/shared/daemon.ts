@@ -239,3 +239,150 @@ export function projectsFor(st: LocalStatus, repo: string): DaemonProject[] {
   const r = repo.toLowerCase();
   return st.projects.filter((p) => (p.repo ?? '').toLowerCase() === r);
 }
+
+// ── "配置" on a project (GitHub#388) ──
+// What can be read and changed is decided by the daemon (scripts/config-fields.txt, read through
+// scripts/project-config.sh); the client draws the form from it and checks typed values the same
+// way, so a wrong value is marked before anything is sent. The script checks everything again.
+
+export interface ConfigField {
+  name: string;
+  group: string;
+  /** "show": listed, never changed here */
+  mode: 'edit' | 'show';
+  label: string;
+  help: string;
+  /** agent | model | int | bool | enum | label — one this client does not know is shown only */
+  type: string;
+  options?: { value: string; label: string }[];
+  min?: number;
+  max?: number;
+  on?: string;
+  off?: string;
+  value: string;
+  default: string;
+  /** false: the config file has no such line; `value` is what the daemon uses then */
+  in_file: boolean;
+  editable: boolean;
+  reason: string | null;
+}
+
+export interface ProjectConfig {
+  version: 1;
+  key: string;
+  state: 'ok';
+  config: string;
+  real: string;
+  /** fingerprint of the file as read; a save names it and is refused when the file is another one by then */
+  rev: string;
+  fields: ConfigField[];
+}
+
+export interface ConfigRead extends DaemonResult {
+  /** `unsupported`: a daemon from before the config script — the editor is the only way */
+  result: 'ok' | 'unsupported' | 'unreadable' | 'not_found' | 'refused';
+  config?: ProjectConfig;
+}
+
+export interface ConfigChange {
+  name: string;
+  label: string;
+  old: string;
+  new: string;
+  added: boolean;
+}
+
+export interface ConfigSave extends DaemonResult {
+  detail?: { changes?: ConfigChange[]; backup?: string; config?: string; field?: string; reason?: string };
+}
+
+const KNOWN_TYPES = new Set(['agent', 'model', 'int', 'bool', 'enum']);
+/** what project-config.sh may write on one config line (its LIT_CHARS) */
+const PLAIN = /^[A-Za-z0-9._:/@,+-]*$/;
+
+/** A field the form lets the person change: the daemon says editable, and this client knows the type. */
+export const canEdit = (f: ConfigField) => f.mode === 'edit' && f.editable && KNOWN_TYPES.has(f.type);
+
+/** Why `v` cannot be saved into `f`; null when it can. */
+export function fieldProblem(f: ConfigField, v: string): string | null {
+  if (!PLAIN.test(v)) return '不能有空格、引号、$ 这类字符';
+  switch (f.type) {
+    case 'int': {
+      const lo = f.min ?? 0;
+      const hi = f.max ?? 999_999_999;
+      return /^(0|[1-9]\d{0,8})$/.test(v) && Number(v) >= lo && Number(v) <= hi ? null : `只能是 ${lo} 到 ${hi} 之间的整数`;
+    }
+    case 'model':
+      return v === '' || (v.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(v)) ? null : '模型名只能含字母、数字和 . _ : / @ -';
+    case 'agent':
+    case 'enum':
+      return (f.options ?? []).some((o) => o.value === v) ? null : '不在可选的值里';
+    case 'bool':
+      return v === f.on || v === f.off ? null : `只能是 ${f.on} 或 ${f.off}`;
+    default:
+      return '这一项不能在这里改';
+  }
+}
+
+/** A value as the person reads it (read-only rows, "原来：…", the list of what was saved). */
+export function valueText(f: ConfigField, v: string): string {
+  if (f.type === 'label') return v === '' ? '关' : `开，标签 ${v}`;
+  if (f.type === 'bool') return v === f.on ? '开' : v === f.off ? '关' : v;
+  if (f.type === 'enum') {
+    const o = (f.options ?? []).find((x) => x.value === v);
+    return o && o.label && o.label !== v ? `${o.label}（${v}）` : v;
+  }
+  return v === '' ? '（空）' : v;
+}
+
+/** Fields by group, in the daemon's order. */
+export function configGroups(fields: ConfigField[]): { title: string; fields: ConfigField[] }[] {
+  const out: { title: string; fields: ConfigField[] }[] = [];
+  for (const f of fields) {
+    const g = out.find((x) => x.title === f.group);
+    if (g) g.fields.push(f);
+    else out.push({ title: f.group, fields: [f] });
+  }
+  return out;
+}
+
+/** What a save would send: editable fields whose typed value differs from the one read. */
+export function draftChanges(fields: ConfigField[], draft: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    const v = draft[f.name];
+    if (v !== undefined && canEdit(f) && v !== f.value) out[f.name] = v;
+  }
+  return out;
+}
+
+/** results of a save after which the config file is exactly as it was */
+const NOT_WRITTEN = new Set(['changed', 'invalid', 'not_editable', 'busy', 'unreadable', 'verify_failed', 'backup_failed', 'write_failed', 'not_found', 'refused']);
+
+export type SaveKind = 'saved' | 'unchanged' | 'conflict' | 'not_written' | 'rewritten' | 'unknown';
+
+/** What a save's result word means for the person. Anything unheard of is "unknown", never "saved". */
+export function saveKind(result: string): SaveKind {
+  if (result === 'saved') return 'saved';
+  if (result === 'unchanged') return 'unchanged';
+  if (result === 'changed') return 'conflict';
+  if (result === 'saved_then_changed') return 'rewritten';
+  return NOT_WRITTEN.has(result) ? 'not_written' : 'unknown';
+}
+
+export function saveWord(result: string): string {
+  return (
+    {
+      changed: '打开这个弹窗之后，配置文件被别处改过（比如在编辑器里）。重新读取后再改一次。',
+      invalid: '有一项的值不合规。',
+      not_editable: '有一项现在不能在这里改（配置文件里它的写法变了）。重新读取后再看。',
+      busy: '另一个保存还没结束，稍后再试。',
+      unreadable: '配置文件现在加载不了。',
+      verify_failed: '新文件没通过检查：改完之后配置加载出来的结果对不上。这份配置请用编辑器改。',
+      backup_failed: '保存前的备份写不进去，所以没有保存。',
+      write_failed: '写不了配置文件所在的目录。',
+      not_found: '本机已经没有接入这个项目。',
+      refused: '后台没有执行这次保存。',
+    } as Record<string, string>
+  )[result] ?? '';
+}

@@ -70,7 +70,7 @@ LABEL_PENDING_REQUESTER_BOT="pending/requester-bot"
 REQUESTER_BOT_ACCOUNT="grokbot"
 REQUESTER_BOT_ALLOWED_ACTORS="your-worker-bot"          # worker / reviewer 发评论用的那个账号
 REQUESTER_BOT_ORIGIN_MARKER="<!-- requested-by-grokbot -->"
-REQUESTER_BOT_REPORT_FIRST="true"                       # 做完先向 grokbot 汇报，提需求方认可后再交维护者
+REQUESTER_BOT_REPORT_FIRST=true                       # 做完先向 grokbot 汇报，提需求方认可后再交维护者
 # webhook（grokbot 那边给的地址和密钥）
 REQUESTER_BOT_WEBHOOK_URL="https://<grokbot 给的地址>"
 REQUESTER_BOT_WEBHOOK_KEY_HEADER="Authorization"
@@ -124,7 +124,7 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 
 ## 一条需求的完整来回：issue 上会看到什么
 
-以 `REQUESTER_BOT_REPORT_FIRST="true"` 为例：
+以 `REQUESTER_BOT_REPORT_FIRST=true` 为例：
 
 | 步骤 | 谁做 | 标签 | 新出现的评论 |
 |---|---|---|---|
@@ -140,7 +140,7 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 | 10. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
 | 11. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |
 
-`REQUESTER_BOT_REPORT_FIRST="false"` 时没有第 7、8 步：做完直接交维护者，合并后照样有第 10、11 步。
+`REQUESTER_BOT_REPORT_FIRST=false` 时没有第 7、8 步：做完直接交维护者，合并后照样有第 10、11 步。
 
 ## 排查
 
@@ -169,7 +169,7 @@ cavil-loop 只管自己这一侧，下面这些由 grokbot 实现：
 默认只有 grokbot 自己提的需求能叫醒它。打开 `REQUESTER_BOT_WAKE_ANY_ITEM` 后，**不是机器人提的条目**（维护者自己开的 issue、它做出来的 PR）也能叫醒 grokbot，让它去找人确认。典型场景：维护者在自己的 PR 上留言「这段对外文案请和机器人那边的运营同步一下」（GitHub#133）。
 
 ```bash
-REQUESTER_BOT_WAKE_ANY_ITEM="true"     # 默认 false
+REQUESTER_BOT_WAKE_ANY_ITEM=true     # 默认 false
 ```
 
 **先确认 grokbot 那边支持了下面的「交接协议」再打开**：否则它会拉到一个不是自己提的需求的条目，不知道该转给谁。
@@ -266,9 +266,9 @@ REQUESTER_BOT_WAKE_ANY_ITEM="true"     # 默认 false
 | 步骤 | 普通（不托管） | 托管 |
 |---|---|---|
 | 方案 | 复审通过 → 叫醒 grokbot → 提需求方确认 | 同左 |
-| 代码复审通过（`REQUESTER_BOT_REPORT_FIRST="true"`） | 叫醒 grokbot 汇报当前提交 | 同左 |
+| 代码复审通过（`REQUESTER_BOT_REPORT_FIRST=true`） | 叫醒 grokbot 汇报当前提交 | 同左 |
 | 提需求方认可当前提交 | 交维护者合并（`pending/human`） | 交复审（`pending/review`）→ 复审核对认可的就是 PR 最新提交、重跑测试 → `pending/merge` → daemon 按托管的固定条件合并 |
-| 代码复审通过（`REQUESTER_BOT_REPORT_FIRST="false"`） | 交维护者合并 | `pending/merge` → daemon 合并 |
+| 代码复审通过（`REQUESTER_BOT_REPORT_FIRST=false`） | 交维护者合并 | `pending/merge` → daemon 合并 |
 | 合并后 | daemon 发「需求已完成」 | 同左 |
 
 认可之后又有新提交（比如维护者在 PR 上提了修改），旧认可作废，要重新复审、重新汇报。daemon 不判断评论内容：「认可的是哪个提交」由复审按[交接规则的证据规则](#grokbot-那边要照做的约定)核对，daemon 合并前的检查一条不少。这些规则由派工提示词里「外部需求机器人提的需求 + 托管」一段交给 worker 和复审，只在两个功能都开、条目是托管条目时出现。见 [operations](operations.zh.md#托管标签可选默认关闭)。
