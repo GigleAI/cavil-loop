@@ -103,7 +103,15 @@ run_in() {   # <根> <脚本> <参数…>
     (cd "$W/project" && env FAKE_LOG="$W/log" CODING_AGENT_CONFIG="$W/config" PATH="$SANDBOX/bin:$PATH" \
         timeout 120 bash "$root/scripts/$s" "$@") > "$W/log/$s.out" 2>&1
 }
-tmp_hits() { find /tmp -maxdepth 1 -name "cavil-loop-*-$1-*" 2>/dev/null | wc -l | tr -d ' '; }
+# 改动前的三个固定文件名（编号每次运行都不同，所以它们在 /tmp 下出现只能是本次运行写的）。
+# 只查这几个确切路径，不遍历 /tmp：共享临时目录可能有几百万条目，扫一遍要几分钟（PR #420 代码复审第 1 轮）
+tmp_hits() {   # <工作编号> <PR 号>
+    local f n=0
+    for f in "/tmp/cavil-loop-issue-$1-prompt.md" "/tmp/cavil-loop-issue-$1-cmt-0.md" "/tmp/cavil-loop-pr-$2-prompt.md"; do
+        [ -e "$f" ] && n=$((n + 1))
+    done
+    echo "$n"
+}
 
 echo "── 1. 三个派工脚本写到状态目录，/tmp 下什么都不写 ──"
 setup cur
@@ -117,7 +125,7 @@ yes_ "issue 评论：写在 $N-cmt-0.md" test -s "$W/state/prompts/$N-cmt-0.md"
 yes_ "PR 评论：按工作编号开头，写在 $N-pr-$P.md" test -s "$W/state/prompts/$N-pr-$P.md"
 chk "提示词目录只有这三份" "$(ls "$W/state/prompts" | sort | tr '\n' ' ')" "$N-cmt-0.md $N-new.md $N-pr-$P.md "
 chk "提示词目录权限是 700" "$(stat -c %a "$W/state/prompts")" 700
-chk "/tmp 下没有这两个编号的提示词" "$(tmp_hits "$N")/$(tmp_hits "$P")" "0/0"
+chk "/tmp 下没有改动前那三个文件名（按本次编号）" "$(tmp_hits "$N" "$P")" 0
 yes_ "提示词是真的派工提示词（带着 issue 编号）" grep -q "#$N" "$W/state/prompts/$N-new.md"
 yes_ "worker 启动命令读的就是这份文件" grep -qF "$W/state/prompts/$N-new.md" "$W/log/tmux.log"
 chk "测试用的查找规则找到的就是这三份" \
@@ -180,7 +188,7 @@ run_in "$OLD" dispatch-new-issue.sh "$N"; rc=$?
 chk "旧脚本派工成功" "$rc" 0
 yes_ "旧脚本的提示词写在本次运行的目录里" test -s "$SANDBOX/legacy/cavil-loop-issue-$N-prompt.md"
 chk "查找规则找到的就是它" "$(prompt_file_of "$OLD" "$W/state" new "$N")" "$SANDBOX/legacy/cavil-loop-issue-$N-prompt.md"
-chk "/tmp 下没有这个编号的提示词" "$(tmp_hits "$N")" 0
+chk "/tmp 下没有改动前那几个文件名（按本次编号）" "$(tmp_hits "$N" "$P")" 0
 run_in "$OLD" dispatch-pr-comment.sh "$P" "feature/issue-$N" 0
 yes_ "旧脚本的 PR 提示词也在本次运行的目录里" test -s "$SANDBOX/legacy/cavil-loop-pr-$P-prompt.md"
 chk "PR 的查找规则找到的就是它" "$(prompt_file_of "$OLD" "$W/state" pr "$P")" "$SANDBOX/legacy/cavil-loop-pr-$P-prompt.md"
