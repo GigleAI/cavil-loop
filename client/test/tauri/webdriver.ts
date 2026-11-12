@@ -58,7 +58,16 @@ export class WebDriver {
   }
 
   async click(css: string): Promise<void> {
-    await this.cmd('POST', this.s(`/element/${await this.find(css)}/click`), {});
+    const id = await this.find(css);
+    // WebKitWebDriver scrolls an off-screen element into view itself, but inside a container with
+    // `scroll-behavior: smooth` (the settings page) that scroll is still under way when it checks the
+    // element, and the click fails with "element not interactable". A person scrolls first; so does
+    // the test, instantly, before handing the click to the driver (GitHub#378).
+    await this.cmd('POST', this.s('/execute/sync'), {
+      script: "arguments[0].scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });",
+      args: [{ [ELEMENT]: id }],
+    });
+    await this.cmd('POST', this.s(`/element/${id}/click`), {});
   }
 
   async type(css: string, text: string): Promise<void> {
