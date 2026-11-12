@@ -1013,8 +1013,11 @@ found=0
 for f in "$DIR"/*.json; do
     [ -e "$f" ] || continue
     found=1
-    jq -r '"\(.agent)  until \(.until | localtime | strftime("%Y-%m-%d %H:%M %Z"))  account=\(.account)  seen-on=\(.item)  time-from=\(.source)"' "$f" \
-        || echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"
+    row=$(jq -er '[.agent, (.until | floor | tostring), .account, .item, .source] | @tsv' "$f" 2>/dev/null) \
+        || { echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"; continue; }
+    IFS=$'\t' read -r agent until account item source <<<"$row"
+    when=$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z')   # GNU date / BSD date
+    echo "$agent  until $when  account=$account  seen-on=$item  time-from=$source"
 done
 [ "$found" = 1 ] || echo "no pause record on this machine / 本机没有暂停记录"
 ```
