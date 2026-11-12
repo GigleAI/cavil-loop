@@ -181,90 +181,107 @@ def _write_match(fd, off, token, stats):
     stats.fingerprints.add(fingerprint(token))
 
 
-def _protected_strings(obj, out):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k in PROTECTED_KEYS and isinstance(v, str):
-                out.append(v)
-            else:
-                _protected_strings(v, out)
-    elif isinstance(obj, list):
-        for v in obj:
-            _protected_strings(v, out)
+JSON_STRING = re.compile(rb'"(?:[^"\\]|\\.)*"', re.S)
 
 
-def _line_protected(line):
-    """这一行里受保护字段的值（解析不了的行没有受保护字段，按普通文字处理）。"""
+def _protected_spans(line):
+    """这一行里受保护字段的值在行内的字节范围 [(起, 止)]。
+
+    按位置判，不按内容判：同一个串既出现在受保护字段里、又出现在别的字段里时，只有前者不改。
+    一行合法 JSON 里引号只出现在字符串两端（内部的都带反斜杠），所以从行首顺着找字符串，
+    「字符串、冒号、字符串」就是一对键和值。解析不了的行没有受保护字段，按普通文字处理。
+    """
     try:
-        obj = json.loads(line.decode("utf-8", "replace"))
+        json.loads(line.decode("utf-8", "replace"))
     except ValueError:
         return []
-    out = []
-    _protected_strings(obj, out)
-    return [s.encode("utf-8", "replace") for s in out]
+    spans = []
+    key = None          # 上一个字符串是键（后面跟着冒号）时，它的名字
+    pos = 0
+    for m in JSON_STRING.finditer(line):
+        between = line[pos:m.start()]
+        is_value = key is not None and between.strip() == b":"
+        after = line[m.end():m.end() + 16].lstrip()
+        if is_value:
+            if key in PROTECTED_KEYS:
+                spans.append((m.start(), m.end()))
+            key = None
+        elif after.startswith(b":"):
+            key = m.group()[1:-1].decode("utf-8", "replace")
+        else:
+            key = None
+        pos = m.end()
+    return spans
 
 
 def scan_file(path, off, final, jsonl, stats, deadline=None, chunk_size=4 << 20):
-    """从 off 起扫 path，原地替换。返回新的扫描位置（下次从这里接着扫）。
+    """打开 path 从 off 起扫，原地替换。返回新的扫描位置。"""
+    fd = os.open(path, os.O_RDWR)
+    try:
+        return scan_fd(fd, off, final, jsonl, stats, deadline, chunk_size)
+    finally:
+        os.close(fd)
+
+
+def scan_fd(fd, off, final, jsonl, stats, deadline=None, chunk_size=4 << 20):
+    """从 off 起扫已经打开的文件，原地替换。返回新的扫描位置（下次从这里接着扫）。
 
     jsonl=True：只处理已经写完的行（以换行结束），受保护字段里的串不改。
     final=True：文件末尾就是结尾（最后一段不需要结束字符）。
+    调用方负责打开和关闭：归属、扫描位置和写入用的是同一个已打开的文件，中途路径上换了
+    别的文件也不会写到那个新文件里去。
     """
-    fd = os.open(path, os.O_RDWR)
-    try:
-        size = os.fstat(fd).st_size
-        if off > size:
-            off = 0
-        before = stats.replaced
-        ctx_from = max(0, off - CTX)
-        carry = os.pread(fd, off - ctx_from, ctx_from)   # 左边界上下文
-        start = len(carry)
-        base = ctx_from          # carry[0] 在文件里的位置
-        pos = off
-        new_off = off
-        while True:
-            chunk = os.pread(fd, min(chunk_size, size - pos), pos) if pos < size else b""
-            pos += len(chunk)
-            at_end = pos >= size
-            buf = carry + chunk
-            if jsonl:
-                # 只到最后一个换行为止；没写完的最后一行留给下次
-                cut = buf.rfind(b"\n", start) + 1
-                if cut <= start:
-                    cut = start
-                matches, _ = analyze(buf[:cut], start, True) if cut > start else ([], cut)
-                hold = cut
-                cache = {}
-                for a, b in matches:
-                    ls = buf.rfind(b"\n", 0, a) + 1
-                    if ls not in cache:
-                        le = buf.find(b"\n", b)
-                        cache[ls] = _line_protected(buf[ls:le if le >= 0 else cut])
-                    token = buf[a:b]
-                    if any(token in p for p in cache[ls]):
-                        stats.kept += 1
-                        continue
-                    _write_match(fd, base + a, token, stats)
-            else:
-                matches, hold = analyze(buf, start, final and at_end)
-                for a, b in matches:
-                    _write_match(fd, base + a, buf[a:b], stats)
-            new_off = base + hold
-            if at_end:
-                break
-            keep_from = max(0, hold - CTX)
-            carry = buf[keep_from:]
-            start = hold - keep_from
-            base += keep_from
-            if deadline is not None and time.time() > deadline:
-                stats.unfinished = True
-                break
-        stats.files += 1
-        if stats.replaced > before:
-            stats.changed_files += 1
-        return new_off
-    finally:
-        os.close(fd)
+    size = os.fstat(fd).st_size
+    if off > size:
+        off = 0
+    before = stats.replaced
+    ctx_from = max(0, off - CTX)
+    carry = os.pread(fd, off - ctx_from, ctx_from)   # 左边界上下文
+    start = len(carry)
+    base = ctx_from          # carry[0] 在文件里的位置
+    pos = off
+    new_off = off
+    while True:
+        chunk = os.pread(fd, min(chunk_size, size - pos), pos) if pos < size else b""
+        pos += len(chunk)
+        at_end = pos >= size
+        buf = carry + chunk
+        if jsonl:
+            # 只到最后一个换行为止；没写完的最后一行留给下次
+            cut = buf.rfind(b"\n", start) + 1
+            if cut <= start:
+                cut = start
+            matches, _ = analyze(buf[:cut], start, True) if cut > start else ([], cut)
+            hold = cut
+            cache = {}
+            for a, b in matches:
+                ls = buf.rfind(b"\n", 0, a) + 1
+                if ls not in cache:
+                    le = buf.find(b"\n", b)
+                    cache[ls] = _protected_spans(buf[ls:le if le >= 0 else cut])
+                # 这一次匹配本身落在受保护字段的值里才不改；同一行别处的相同内容照常替换
+                if any(s <= a - ls and b - ls <= e for s, e in cache[ls]):
+                    stats.kept += 1
+                    continue
+                _write_match(fd, base + a, buf[a:b], stats)
+        else:
+            matches, hold = analyze(buf, start, final and at_end)
+            for a, b in matches:
+                _write_match(fd, base + a, buf[a:b], stats)
+        new_off = base + hold
+        if at_end:
+            break
+        keep_from = max(0, hold - CTX)
+        carry = buf[keep_from:]
+        start = hold - keep_from
+        base += keep_from
+        if deadline is not None and time.time() > deadline:
+            stats.unfinished = True
+            break
+    stats.files += 1
+    if stats.replaced > before:
+        stats.changed_files += 1
+    return new_off
 
 
 # ── 哪些 agent 会话记录属于本项目 ───────────────────────────────────────────
@@ -273,32 +290,29 @@ def _under(cwd, prefix):
     return bool(cwd) and (cwd == prefix or cwd.startswith(prefix.rstrip("/") + "/"))
 
 
-def _claude_cwd(path, max_lines=50):
-    try:
-        with open(path, "rb") as fh:
-            for _ in range(max_lines):
-                line = fh.readline()
-                if not line:
-                    break
-                try:
-                    cwd = json.loads(line).get("cwd")
-                except (ValueError, AttributeError):
-                    continue
-                if isinstance(cwd, str) and cwd:
-                    return cwd
-    except OSError:
-        pass
+def _first_lines(fd, max_lines, limit=1 << 20):
+    """已打开文件的前几行（不动它的读写位置）。"""
+    data = os.pread(fd, limit, 0)
+    return data.split(b"\n")[:max_lines]
+
+
+def _claude_cwd(fd):
+    for line in _first_lines(fd, 50):
+        try:
+            cwd = json.loads(line).get("cwd")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(cwd, str) and cwd:
+            return cwd
     return None
 
 
-def _codex_cwd(path):
+def _codex_cwd(fd):
     try:
-        with open(path, "rb") as fh:
-            first = fh.readline()
-        cwd = (json.loads(first).get("payload") or {}).get("cwd")
-        return cwd if isinstance(cwd, str) else None
-    except (OSError, ValueError, AttributeError):
+        cwd = (json.loads(_first_lines(fd, 1)[0]).get("payload") or {}).get("cwd")
+    except (ValueError, AttributeError):
         return None
+    return cwd if isinstance(cwd, str) and cwd else None
 
 
 def _walk_jsonl(root):
@@ -308,53 +322,38 @@ def _walk_jsonl(root):
                 yield os.path.join(d, name)
 
 
-def agent_records(cwd_prefix, claude_root, codex_root, known):
-    """本项目工作目录下的会话记录。归属按记录里写的工作目录判，判过的记在 known 里。
-
-    读不出工作目录的文件这次不算（下次再看），不会被当成「是」。
-    """
+def agent_record_candidates(cwd_prefix, claude_root, codex_root):
+    """可能属于本项目的会话记录 [(路径, 读工作目录的函数)]。是不是真的属于，打开以后再判。"""
     out = []
     if claude_root and os.path.isdir(claude_root):
-        # 目录名是工作目录把 / 和 . 换成 - 得来的：先用它粗筛（省掉打开无关项目的几千个文件），
-        # 再读记录里的工作目录确认。
+        # 目录名是工作目录把 / 和 . 换成 - 得来的：先用它粗筛（省掉无关项目的几千个文件），
+        # 打开后再读记录里的工作目录确认。
         # （CLI 把所有非字母数字都换成 -；本仓库的读取方只换 /。两种写法归一后再比。）
         enc = re.sub(r"[^A-Za-z0-9]", "-", cwd_prefix.rstrip("/"))
         for name in sorted(os.listdir(claude_root)):
-            if not re.sub(r"[^A-Za-z0-9]", "-", name).startswith(enc):
-                continue
-            for path in _walk_jsonl(os.path.join(claude_root, name)):
-                own = known.get(path)
-                if own is None:
-                    cwd = _claude_cwd(path)
-                    if cwd is None:
-                        continue
-                    own = known[path] = _under(cwd, cwd_prefix)
-                if own:
-                    out.append(path)
+            if re.sub(r"[^A-Za-z0-9]", "-", name).startswith(enc):
+                out.extend((p, _claude_cwd) for p in _walk_jsonl(os.path.join(claude_root, name)))
     if codex_root and os.path.isdir(codex_root):
-        for path in _walk_jsonl(codex_root):
-            own = known.get(path)
-            if own is None:
-                cwd = _codex_cwd(path)
-                if cwd is None:
-                    continue
-                own = known[path] = _under(cwd, cwd_prefix)
-            if own:
-                out.append(path)
+        out.extend((p, _codex_cwd) for p in _walk_jsonl(codex_root))
     return out
 
 
 # ── 扫描位置 ────────────────────────────────────────────────────────────────
 
 def load_state(path):
+    """{"files": {路径: {dev, ino, off, final, own, head, size, mtime}}}。
+
+    一个文件的扫描位置和「属不属于本项目」记在同一条里，都绑在文件身份（设备号 + inode）上：
+    路径上换了一个文件，两样一起作废、重新判断。读不出来的状态文件 = 从头来。
+    """
     try:
         with open(path) as fh:
             st = json.load(fh)
-        if isinstance(st, dict) and isinstance(st.get("files"), dict) and isinstance(st.get("own"), dict):
-            return st
+        if isinstance(st, dict) and isinstance(st.get("files"), dict):
+            return {"files": {k: v for k, v in st["files"].items() if isinstance(v, dict)}}
     except (OSError, ValueError):
         pass
-    return {"files": {}, "own": {}}
+    return {"files": {}}
 
 
 def save_state(path, st):
@@ -392,19 +391,23 @@ def _summary(stats):
         1 if stats.unfinished else 0, ",".join(sorted(stats.fingerprints))))
 
 
+def _same_file(rec, info):
+    return rec.get("ino") == info.st_ino and rec.get("dev") == info.st_dev
+
+
 def run_scan(argv):
     o = _args(argv)
     state_path = o.get("state")
-    st = load_state(state_path) if state_path else {"files": {}, "own": {}}
+    st = load_state(state_path) if state_path else {"files": {}}
     budget = float(o.get("budget_secs") or 0)
     deadline = time.time() + budget if budget > 0 else None
     stats = Stats()
 
-    jobs = []   # (路径, 是不是会话记录, 文件末尾算不算结尾)
+    jobs = []   # (路径, 读工作目录的函数（会话记录才有）, 文件末尾算不算结尾)
     for p in o["plain"]:
-        jobs.append((p, False, False))
+        jobs.append((p, None, False))
     for p in o["plain_final"]:
-        jobs.append((p, False, True))
+        jobs.append((p, None, True))
     pane_dir = o.get("pane_dir")
     if pane_dir and os.path.isdir(pane_dir):
         # 窗格历史以 tmux 会话命名。只有成功读到的会话清单里确实没有它，才算写完了；
@@ -419,13 +422,14 @@ def run_scan(argv):
         for name in sorted(os.listdir(pane_dir)):
             if name.endswith(".log"):
                 done = live is not None and name[:-4] not in live
-                jobs.append((os.path.join(pane_dir, name), False, done))
-    if o.get("cwd_prefix"):
-        for p in agent_records(o["cwd_prefix"], o.get("claude_root"), o.get("codex_root"), st["own"]):
-            jobs.append((p, True, False))
+                jobs.append((os.path.join(pane_dir, name), None, done))
+    prefix = o.get("cwd_prefix")
+    if prefix:
+        for p, cwd_of in agent_record_candidates(prefix, o.get("claude_root"), o.get("codex_root")):
+            jobs.append((p, cwd_of, False))
 
     seen = set()
-    for path, jsonl, final in jobs:
+    for path, cwd_of, final in jobs:
         if path in seen:
             continue
         seen.add(path)
@@ -437,25 +441,59 @@ def run_scan(argv):
         except OSError:
             continue
         rec = st["files"].get(path) or {}
-        off = rec.get("off", 0) if rec.get("ino") == info.st_ino else 0
-        if off == info.st_size and not final:
-            continue
-        if off == info.st_size and rec.get("final"):
-            continue
+        # 不用打开就能跳过的：还是上次那个文件，而且（判过不属于本项目、之后没再写过 或 已经扫到末尾）
+        if _same_file(rec, info) and info.st_size >= rec.get("size", 0):
+            if cwd_of is not None and rec.get("own") is False \
+                    and rec.get("size") == info.st_size and rec.get("mtime") == info.st_mtime_ns:
+                continue
+            if rec.get("off") == info.st_size and (not final or rec.get("final")) \
+                    and (cwd_of is None or rec.get("own") is True):
+                continue
         try:
-            new_off = scan_file(path, off, final, jsonl, stats, deadline)
+            fd = os.open(path, os.O_RDWR)
         except OSError as e:
-            # 读不了 / 写不了：不推进扫描位置，下次再来
             stats.errors += 1
             print("error=%s: %s" % (path, e.strerror or e), file=sys.stderr)
             continue
-        st["files"][path] = {"ino": info.st_ino, "off": new_off,
-                             "final": bool(final and new_off == info.st_size)}
+        try:
+            # 以打开的这个文件为准：stat 和 open 之间路径上换了文件，也只按打开的这个判
+            info = os.fstat(fd)
+            if not _same_file(rec, info) or info.st_size < rec.get("size", 0):
+                rec = {}        # 换了文件 / 被截短重写：扫描位置和归属一起作废
+            own = None
+            if cwd_of is not None:
+                # 每次打开都从这个文件里重读工作目录，不信上次的结论：同一个文件也可能被
+                # 原地重写成别的内容。开头那一段变了，扫描位置一起作废。
+                head = hashlib.sha256(os.pread(fd, 4096, 0)).hexdigest()[:16]
+                if rec.get("head") != head:
+                    rec = {}
+                cwd = cwd_of(fd)
+                if cwd is None:
+                    continue        # 读不出工作目录：这次不算，也不记，下次再看
+                own = _under(cwd, prefix)
+                if not own:
+                    st["files"][path] = {"dev": info.st_dev, "ino": info.st_ino, "head": head,
+                                         "size": info.st_size, "mtime": info.st_mtime_ns, "own": False}
+                    continue
+            off = rec.get("off", 0)
+            try:
+                new_off = scan_fd(fd, off, final, cwd_of is not None, stats, deadline)
+            except OSError as e:
+                # 读不了 / 写不了：不推进扫描位置，下次再来
+                stats.errors += 1
+                print("error=%s: %s" % (path, e.strerror or e), file=sys.stderr)
+                continue
+            new = {"dev": info.st_dev, "ino": info.st_ino, "size": info.st_size, "off": new_off,
+                   "final": bool(final and new_off == info.st_size)}
+            if own is not None:
+                new["own"] = own
+                new["head"] = head
+            st["files"][path] = new
+        finally:
+            os.close(fd)
     if state_path:
         for path in [p for p in st["files"] if not os.path.exists(p)]:
             del st["files"][path]
-        for path in [p for p in st["own"] if not os.path.exists(p)]:
-            del st["own"][path]
         save_state(state_path, st)
     _summary(stats)
     return 0

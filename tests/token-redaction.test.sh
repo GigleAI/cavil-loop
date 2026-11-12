@@ -424,6 +424,43 @@ chk "真令牌被替换了；内容里出现的那段目录名（不在受保护
     "$(has "$CX" "$TO" && echo raw || echo clean)|$(has "$CX" "$(want "$TO")" && echo fp)|$(sed -n 4p "$CX" | grep -c "$TP")" "clean|fp|0"
 chk "每行仍能按 JSON 解析" "$(lines_ok "$CX")" "ok"
 
+echo "【12b】同一行里：受保护字段不改，别的字段里相同的串照常替换"
+# 工作目录名是一段令牌样式，同一行的输出字段里又出现了同一个串（复审第 1 轮第 1 条）
+SAME="$HOME/.codex/sessions/2026/09/14/rollout-2026-09-14T00-00-01-5d9e5509-1591-493b-80b9-7d93e3f5344b.jsonl"
+{
+    printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n' "$ODD"
+    printf '{"type":"response_item","payload":{"cwd":"%s","output":"GH_TOKEN=%s","nested":{"note":"%s","cwd":"%s"},"list":["%s"]}}\n' "$ODD" "$TP" "$TP" "$ODD" "$TP"
+} > "$SAME"
+scan 2>/dev/null
+chk "两处工作目录字段一个字节没动" "$(sed -n 2p "$SAME" | grep -o "\"cwd\":\"$ODD\"" | wc -l | tr -d ' ')" "2"
+chk "同一行的输出字段、嵌套字段、数组里的相同串都被替换（3 处）" \
+    "$(sed -n 2p "$SAME" | grep -o "$(want "$TP")" | wc -l | tr -d ' ')|$(sed -n 2p "$SAME" | grep -o "$TP" | wc -l | tr -d ' ')" "3|2"
+chk "这一行仍能按 JSON 解析" "$(lines_ok "$SAME")" "ok"
+
+echo "【12c】同一路径换了一个文件：归属和扫描位置都重新判断"
+SW="$HOME/.codex/sessions/2026/09/14/rollout-2026-09-14T00-00-02-6d9e5509-1591-493b-80b9-7d93e3f5344c.jsonl"
+mine()   { printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n{"type":"x","payload":{"output":"%s %s"}}\n' "$TMP/wt/issue-9" "$1" "$TO"; }
+theirs() { printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n{"type":"x","payload":{"output":"%s %s"}}\n' "$TMP/wt-other/issue-9" "$1" "$TO"; }
+swap()   { "$1" "$2" > "$SW.new" && mv "$SW.new" "$SW"; }    # 原子替换：同一路径、新的文件
+mine first > "$SW"; scan 2>/dev/null
+chk "前提：本项目的记录被替换了" "$(has "$SW" "$TO" && echo raw || echo clean)" "clean"
+swap theirs second; cp "$SW" "$TMP/sw.orig"; scan 2>/dev/null
+chk "换成别的项目的记录：一个字节不动" "$(cmp -s "$SW" "$TMP/sw.orig" && echo same)" "same"
+scan 2>/dev/null
+chk "再扫一轮仍然不动" "$(cmp -s "$SW" "$TMP/sw.orig" && echo same)" "same"
+swap mine third; scan 2>/dev/null
+chk "再换回本项目的记录：照常替换（没有因为上一轮判过「不是」而漏掉）" \
+    "$(has "$SW" "$TO" && echo raw || echo clean)|$(has "$SW" "$(want "$TO")" && echo fp)|$(grep -c third "$SW")" "clean|fp|1"
+# 反方向：一开始就是别的项目的记录（先被判成「不是」），后来同一路径换成本项目的
+SW2="${SW%c.jsonl}d.jsonl"
+theirs fifth > "$SW2"; scan 2>/dev/null
+chk "前提：一开始是别的项目的记录，没被动" "$(has "$SW2" "$TO" && echo raw)" "raw"
+mine sixth > "$SW2.new" && mv "$SW2.new" "$SW2"; scan 2>/dev/null
+chk "换成本项目的记录后被替换（没有因为判过「不是」而一直漏扫）" "$(has "$SW2" "$TO" && echo raw || echo clean)|$(grep -c sixth "$SW2")" "clean|1"
+# 同一个文件被截短后原地重写成别的项目的内容（inode 不变）
+theirs fourth > "$SW"; cp "$SW" "$TMP/sw.orig"; scan 2>/dev/null
+chk "同一个文件被截短重写成别的项目的记录：也不动" "$(cmp -s "$SW" "$TMP/sw.orig" && echo same)" "same"
+
 echo "【13】开关：REDACT_AGENT_RECORDS 留空时不改 agent 的文件，daemon 自己的日志照常处理"
 printf '{"type":"user","cwd":"%s","message":{"content":"关着的时候 %s"}}\n' "$TMP/wt/issue-7" "$TS" >> "$CJ"
 cp "$CJ" "$TMP/cj.off"
