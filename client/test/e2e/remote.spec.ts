@@ -5,6 +5,7 @@
 // and the two ways unpairing ends — confirmed by the machine, or left as "取消配对未完成".
 
 import { test, expect, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -44,8 +45,8 @@ test.afterAll(async () => {
 });
 
 /** `local`: the app also runs on the machine itself (its 本机 daemon section, its Tailscale) */
-async function openSection(local = false): Promise<{ app: RunningApp; page: Page }> {
-  const app = await launchApp(env, { backendEnv: { ...(local ? daemonEnv(w, { os: 'Linux', path, extra: { FAKE_TS: r.ts } }) : {}), ...r.env } });
+async function openSection(local = false, extra: Record<string, string> = {}): Promise<{ app: RunningApp; page: Page }> {
+  const app = await launchApp(env, { backendEnv: { ...(local ? daemonEnv(w, { os: 'Linux', path, extra: { FAKE_TS: r.ts, ...extra } }) : {}), ...r.env } });
   running.push(app);
   const page = app.page;
   await page.getByTestId('oauth-settings-toggle').click();
@@ -325,4 +326,40 @@ test('this machine’s own switch: on, a code in the window, void it, the paired
   await page.getByTestId('confirm-ok').click();
   await sw.click();
   await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 60_000 });
+});
+
+test('a revoke that fails stays on screen after the list is read again; the computer is still listed (PR #400 review round 8)', async () => {
+  // a thin wrapper in front of the real script: `revoke` fails the way the real script reports a
+  // failure (exit 3), every other command — the list read included — is the real script
+  const dir = join(w.skill, 'scripts');
+  execFileSync('mv', [join(dir, 'remote-access.sh'), join(dir, 'remote-access.real.sh')]);
+  writeFileSync(
+    join(dir, 'remote-access.sh'),
+    `#!/usr/bin/env bash
+echo "$*" >> "$FAKE_TS/wrapper-calls"
+d="$(cd "$(dirname "$0")" && pwd)"
+[ "$1" = revoke ] && { echo "devices.json 写不进去"; exit 3; }
+exec bash "$d/remote-access.real.sh" "$@"
+`,
+  );
+  writeFileSync(join(r.state, 'devices.json'), JSON.stringify([{ id: '0123456789abcdef', name: 'MacBook', node: 'n1', node_name: 'macbook', key: '0'.repeat(64), paired_at: 1 }]));
+  const { page } = await openSection(true);
+  await page.getByTestId('local-remote').scrollIntoViewIfNeeded();
+  await page.getByTestId('local-remote-devices').click();
+  await expect(page.getByTestId('local-remote-device')).toHaveCount(1, { timeout: 30_000 });
+  await page.getByTestId('local-remote-revoke').click();
+  await page.getByTestId('confirm-ok').click();
+  const err = page.getByTestId('local-remote-revoke-error');
+  await expect(err).toContainText('没有确认撤销 MacBook', { timeout: 30_000 });
+  await expect(err).toContainText('devices.json 写不进去');
+  // the list was read again (successfully) and still shows the computer, which really is still authorized
+  const calls = () => readFileSync(join(r.ts, 'wrapper-calls'), 'utf8').trim().split('\n');
+  await expect.poll(() => calls().slice(-2)).toEqual(['revoke 0123456789abcdef', 'list --machine']);
+  await expect(page.getByTestId('local-remote-device')).toHaveCount(1);
+  await expect(page.getByTestId('local-remote-devices-error')).toHaveCount(0);
+  expect(devices(r)).toHaveLength(1);
+  // …and the error is still there once that read has finished
+  await page.waitForTimeout(500);
+  await expect(err).toBeVisible();
+  await page.screenshot({ path: join(screens, 'remote-12-revoke-failed.png') });
 });

@@ -196,7 +196,10 @@ export function RemoteHostBlock() {
 
 function DevicesDialog({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [list, setList] = useState<HostDevice[] | null>(null);
+  // two separate things: why the list could not be read, and why a revoke did not happen —
+  // a successful re-read after a failed revoke must not wipe the revoke's failure (PR #400 review round 8)
   const [err, setErr] = useState<string | null>(null);
+  const [opErr, setOpErr] = useState<string | null>(null);
   const [ask, setAsk] = useState<HostDevice | null>(null);
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
@@ -224,6 +227,7 @@ function DevicesDialog({ onClose, onChanged }: { onClose: () => void; onChanged:
   }, []);
   const revoke = async (d: HostDevice) => {
     setBusy(true);
+    setOpErr(null);
     let r: HostResult;
     try {
       r = await api().remoteHost('revoke', d.id);
@@ -233,7 +237,8 @@ function DevicesDialog({ onClose, onChanged }: { onClose: () => void; onChanged:
     if (!alive.current) return;
     setBusy(false);
     setAsk(null);
-    if (r.result !== 'ok') setErr(`没有撤销 ${d.name}：${r.output || r.result}`);
+    if (r.result === 'not_found') setOpErr(`没有撤销 ${d.name}：这台机器上已经没有它的记录（可能刚被别处撤销）。${r.output ?? ''}`);
+    else if (r.result !== 'ok') setOpErr(`没有确认撤销 ${d.name}，它的授权可能还在，下面的列表是重新读到的：${r.output || r.result}`);
     await load();
     onChanged();
   };
@@ -248,10 +253,18 @@ function DevicesDialog({ onClose, onChanged }: { onClose: () => void; onChanged:
   return (
     <ConfirmDialog title="已配对的电脑" confirmLabel="关闭" onConfirm={onClose} onCancel={onClose}>
       <div data-testid="local-remote-devices-dialog">
+        {opErr && (
+          <div className="banner error remote-inline" data-testid="local-remote-revoke-error">
+            <Icon name="warn" />
+            <span className="banner-text" style={{ whiteSpace: 'pre-wrap' }}>
+              {opErr}
+            </span>
+          </div>
+        )}
         {err && (
           <div className="banner error remote-inline" data-testid="local-remote-devices-error">
             <Icon name="warn" />
-            <span className="banner-text">{list === null ? `读不到已配对的电脑（不是「没有」）：${err}` : err}</span>
+            <span className="banner-text">读不到已配对的电脑（不是「没有」）：{err}</span>
           </div>
         )}
         {list === null && !err && <p className="muted small">正在读取…</p>}
