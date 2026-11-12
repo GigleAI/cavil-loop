@@ -138,6 +138,7 @@ interface GqlEnd {
   state: string;
   stateReason?: string | null;
   merged?: boolean;
+  isDraft?: boolean | null;
   repository: { nameWithOwner: string };
 }
 
@@ -164,7 +165,7 @@ async function readEnd(client: GitHubClient, repo: string, number: number): Prom
     url: c.url ?? '',
     state: pr && c.merged ? 'merged' : c.state === 'OPEN' ? 'open' : 'closed',
     stateReason: pr ? null : parseStateReason(c.stateReason),
-    ...(pr ? { kind: 'pr' as const } : {}),
+    ...(pr ? { kind: 'pr' as const, isDraft: typeof c.isDraft === 'boolean' ? c.isDraft : null } : {}),
   };
 }
 
@@ -176,7 +177,7 @@ const asRelated = (x: Item): RelatedIssue => ({
   url: x.url,
   state: x.state,
   stateReason: x.stateReason,
-  ...(x.kind === 'pr' ? { kind: 'pr' as const } : {}),
+  ...(x.kind === 'pr' ? { kind: 'pr' as const, isDraft: x.isDraft } : {}),
 });
 
 /** Does `it` get its registration read under this setting? (open issue carrying the label) */

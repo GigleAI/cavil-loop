@@ -20,6 +20,7 @@
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { loopCandidate } from './loopBlocked';
+import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
   key: string;
@@ -31,6 +32,8 @@ export interface GraphNode {
   url: string;
   state: ItemState;
   stateReason: IssueStateReason | null;
+  /** GitHub#429: a pull request's draft mark (the item's when it is in a source, else what the registration read said); null = not a PR / not known */
+  isDraft: boolean | null;
   /** the item as the sources hold it; null = in no ticked source (drawn dashed, "不在当前来源中") */
   item: Item | null;
   /** in a source but hidden by the search: drawn faded, so the arrows into it do not break */
@@ -111,11 +114,15 @@ export function buildGraph(
   const nodes = new Map<string, GraphNode>();
   /** what GitHub said about an end outside the sources, and when that was read (the newest wins) */
   const heardAt = new Map<string, number>();
-  const blank = (x: { key: string; repo: string; number: number; title: string; url: string; state: ItemState; stateReason: IssueStateReason | null; kind?: ItemKind }, item: Item | null): GraphNode => ({
+  const blank = (
+    x: { key: string; repo: string; number: number; title: string; url: string; state: ItemState; stateReason: IssueStateReason | null; kind?: ItemKind; isDraft?: boolean | null },
+    item: Item | null,
+  ): GraphNode => ({
     key: x.key,
     repo: x.repo,
     number: x.number,
     kind: x.kind === 'pr' ? 'pr' : 'issue',
+    isDraft: x.kind === 'pr' && typeof x.isDraft === 'boolean' ? x.isDraft : null,
     title: x.title,
     url: x.url,
     state: x.state,
@@ -218,7 +225,7 @@ export function buildGraph(
   for (const n of nodes.values()) {
     const it = n.item;
     const sub = it?.subIssues ?? null;
-    n.look = JSON.stringify([n.kind, n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
+    n.look = JSON.stringify([n.kind, n.isDraft, n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
   }
 
   const roots = [...nodes.values()].filter((n) => n.parent === null).sort(byNumber).map((n) => n.key);
@@ -233,4 +240,16 @@ export function boxProgress(model: GraphModel, key: string): { completed: number
   const subs = n.item?.relations?.subIssues;
   if (subs?.length) return { total: subs.length, completed: subs.filter((s) => s.state === 'closed').length };
   return null;
+}
+
+/**
+ * GitHub#429: a node's state colour and words — the same rule as the board card and the table
+ * (`stateTone` / `badgeText`), with every input the node carries (a PR's draft mark included).
+ * The one place the graph asks; GraphView and its minimap go through it.
+ */
+export function nodeTone(n: GraphNode): StateTone {
+  return stateTone(n.kind, n.state, n.stateReason, n.isDraft);
+}
+export function nodeBadge(n: GraphNode): string {
+  return badgeText(n.kind, n.state, n.stateReason, n.isDraft);
 }

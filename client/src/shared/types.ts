@@ -119,6 +119,8 @@ export interface RelatedIssue {
   stateReason: IssueStateReason | null;
   /** GitHub#429: 'pr' when the other end is a pull request (only a loop registration can name one); absent = an issue */
   kind?: ItemKind;
+  /** GitHub#429: a pull request's draft mark (same meaning as Item.isDraft); absent = an issue / not known */
+  isDraft?: boolean | null;
 }
 
 /**

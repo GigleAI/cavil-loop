@@ -1010,7 +1010,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     if (!c || w.hiddenEnds.has(`${String(v.owner).toLowerCase()}/${String(v.name).toLowerCase()}#${v.number}`)) return missing;
     const g = gqlContent(c);
     const base = { __typename: c.kind, number: c.number, title: g.title, url: g.url, repository: { nameWithOwner: c.repo } };
-    const node = c.kind === 'Issue' ? { ...base, state: g.state, stateReason: g.stateReason ?? null } : { ...base, state: g.state === 'MERGED' ? 'MERGED' : g.state, merged: g.state === 'MERGED' || g.merged === true };
+    const node = c.kind === 'Issue' ? { ...base, state: g.state, stateReason: g.stateReason ?? null } : { ...base, state: g.state === 'MERGED' ? 'MERGED' : g.state, merged: g.state === 'MERGED' || g.merged === true, isDraft: g.isDraft === true };
     return { data: { repository: { issueOrPullRequest: node } } };
   }
   if (op === 'CavilIssueRelations') {

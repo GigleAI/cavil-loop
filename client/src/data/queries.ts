@@ -484,7 +484,7 @@ query CavilLoopEnd($owner: String!, $name: String!, $number: Int!) {
     issueOrPullRequest(number: $number) {
       __typename
       ... on Issue { number title url state stateReason repository { nameWithOwner } }
-      ... on PullRequest { number title url state merged repository { nameWithOwner } }
+      ... on PullRequest { number title url state merged isDraft repository { nameWithOwner } }
     }
   }
 }

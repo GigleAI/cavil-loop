@@ -13,10 +13,11 @@ import { fetchRepo, fetchSource } from '../../src/data/fetchSources';
 import { applyFreshItem, fetchItem } from '../../src/data/itemRefresh';
 import { syncRound } from '../../src/data/sync';
 import { pickLoopMark, loopKnown } from '../../src/data/loopBlocked';
-import { buildGraph } from '../../src/data/graph';
+import { buildGraph, nodeBadge, nodeTone } from '../../src/data/graph';
+import { badgeText, stateTone } from '../../src/shared/stateTone';
 import { parseSource } from '../../src/shared/sources';
 import type { SourceConfig, SourceSnapshot } from '../../src/shared/types';
-import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
+import { loadRelationPages, startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN } from './helpers';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -287,9 +288,101 @@ describe('the one-item re-read goes through the same reader', () => {
     const off = await fetchItem(client(), REPO, 56, NOW + 2, '');
     expect(off.loopBlocked).toBeUndefined();
   });
-  it('fetchSource passes the setting on to both kinds of source', async () => {
+  it('fetchSource passes the setting on to a repository source', async () => {
     await chain();
     const snap = await fetchSource(client(), src(), NOW, BLOCKED);
     expect(snap.items.find((i) => i.number === 58)!.loopBlocked!.ends.map((e) => e.key)).toEqual([K(57)]);
+  });
+});
+
+// PR #437 code review round 1: the Project read path, on the recorded board (#350 carries the waiting
+// label; GitHub records #349 blocks #350; #181 is closed and blocks nobody)
+describe('a Project source reads the registrations too', () => {
+  const BOARD = 'org/gigleai/11';
+  const PROJECT = parseSource('https://github.com/orgs/GigleAI/projects/11') as Extract<SourceConfig, { kind: 'project' }>;
+  const CK = (n: number) => `gigleai/cavil-loop#${n}`;
+  async function board() {
+    fake = await startFakeGitHub({ projects: new Map([[BOARD, loadRelationPages()]]) });
+    // the registration names #349 (also GitHub's "Blocked by": one arrow) and #181 (registration only)
+    comment(fake, 350, MARK('#349 #181'), '2026-11-10T08:00:00Z', 'MEMBER', 'gigleai/cavil-loop');
+  }
+  it('an issue on the board with only a registration gets its arrow, read through the Project read itself', async () => {
+    await board();
+    const snap = await fetchSource(client(), PROJECT, NOW, BLOCKED);
+    expect(fake.log.filter((e) => e.operation === 'CavilLoopBlocked')).toHaveLength(1);
+    // the batch asked only for the open issues carrying the label
+    const asked = fake.log.find((e) => e.operation === 'CavilLoopBlocked')!.variables!.ids as string[];
+    const it350 = snap.items.find((i) => i.key === CK(350))!;
+    expect(asked).toEqual(snap.items.filter((i) => i.kind === 'issue' && i.state === 'open' && i.labels.some((l) => l.name === BLOCKED)).map((i) => i.nodeId));
+    expect(asked).toContain(it350.nodeId);
+    expect(it350.loopBlocked!.ends.map((e) => e.key)).toEqual([CK(181), CK(349)]);
+    const g = buildGraph(snap.items, snap.items, BLOCKED);
+    expect(g.edges.filter((e) => e.to === CK(350))).toEqual([
+      { from: CK(181), to: CK(350), open: false },
+      { from: CK(349), to: CK(350), open: true },
+    ]);
+    // the setting off: the same board read sends no registration request and draws GitHub's arrow only
+    fake.log.length = 0;
+    const off = await fetchSource(client(), PROJECT, NOW, '');
+    expect(fake.log.some((e) => e.operation === 'CavilLoopBlocked')).toBe(false);
+    expect(buildGraph(off.items, off.items, '').edges.filter((e) => e.to === CK(350))).toEqual([{ from: CK(349), to: CK(350), open: true }]);
+  });
+  it('a registration read that fails fails the Project read, and the sync round keeps the previous snapshot', async () => {
+    await board();
+    const first = await syncRound(client(), [PROJECT], new Map(), NOW, new Map(), 0, () => {}, BLOCKED);
+    expect(first.status[0].ok).toBe(true);
+    fake.state.w.failLoop.add(CK(350));
+    await expect(fetchSource(client(), PROJECT, NOW + 1, BLOCKED)).rejects.toThrow();
+    const second = await syncRound(client(), [PROJECT], first.snapshots, NOW + 2, new Map(), 0, () => {}, BLOCKED);
+    expect(second.status[0].ok).toBe(false);
+    expect(second.snapshots.get(PROJECT.key)).toBe(first.snapshots.get(PROJECT.key));
+  });
+});
+
+// PR #437 code review round 1: a draft PR named by a registration — the graph says what the board and the table say
+describe('a pull request a registration waits for keeps its draft mark', () => {
+  const draftPr = (n: number, draft: boolean, updated = '2026-11-12T05:35:00Z') => ({ ...pr(n, 'open', false), draft, updated_at: updated });
+  const boardSays = (draft: boolean | null) => ({ tone: stateTone('pr', 'open', null, draft), text: badgeText('pr', 'open', null, draft) });
+  it('in the source: grey "草稿", the same words and colour as the board card', async () => {
+    await start([issue(56, [BLOCKED]), draftPr(61, true)]);
+    comment(fake, 56, MARK('#61'), '2026-11-12T05:34:59Z');
+    const snap = await read();
+    expect(snap.items.find((i) => i.number === 61)!.isDraft).toBe(true);
+    const n = buildGraph(snap.items, snap.items, BLOCKED).nodes.get(K(61))!;
+    expect(n.isDraft).toBe(true);
+    expect({ tone: nodeTone(n), text: nodeBadge(n) }).toEqual(boardSays(true));
+    expect(boardSays(true)).toEqual({ tone: 'neutral', text: '草稿' });
+  });
+  it('outside the source: the draft mark comes from the prerequisite read', async () => {
+    // a draft PR in another repository, which is not a source here
+    await start([issue(56, [BLOCKED])], [{ ...draftPr(63, true), node_id: 'PR_data_63' }]);
+    comment(fake, 56, MARK(`${OTHER}#63`), '2026-11-12T05:34:59Z');
+    const snap = await read();
+    const OK = K(63, OTHER.toLowerCase());
+    const end = snap.items.find((i) => i.number === 56)!.loopBlocked!.ends[0];
+    expect(end).toMatchObject({ key: OK, kind: 'pr', isDraft: true });
+    expect(fake.log.filter((e) => e.operation === 'CavilLoopEnd')).toHaveLength(1);
+    const n = buildGraph(snap.items, snap.items, BLOCKED).nodes.get(OK)!;
+    expect(n.item).toBeNull();
+    expect({ tone: nodeTone(n), text: nodeBadge(n) }).toEqual(boardSays(true));
+  });
+  it('marked ready for review: the node turns green "开" and is redrawn (its look changed)', async () => {
+    await start([issue(56, [BLOCKED]), draftPr(61, true)]);
+    comment(fake, 56, MARK('#61'), '2026-11-12T05:34:59Z');
+    const before = buildGraph((await read()).items, (await read()).items, BLOCKED).nodes.get(K(61))!;
+    fake.state.repos.get(KEY)!.find((r: any) => r.number === 61).draft = false;
+    const snap = await read();
+    const after = buildGraph(snap.items, snap.items, BLOCKED).nodes.get(K(61))!;
+    expect({ tone: nodeTone(after), text: nodeBadge(after) }).toEqual(boardSays(false));
+    expect(boardSays(false)).toEqual({ tone: 'open', text: '开' });
+    expect(after.look).not.toBe(before.look);
+  });
+  it('merged and closed still win over a draft mark (the one rule)', async () => {
+    await start([issue(56, [BLOCKED]), { ...draftPr(64, true), state: 'closed', pull_request: { merged_at: '2026-11-11T00:00:00Z' } }]);
+    comment(fake, 56, MARK('#64'), '2026-11-12T05:34:59Z');
+    const snap = await read();
+    const n = buildGraph(snap.items, snap.items, BLOCKED).nodes.get(K(64))!;
+    expect({ tone: nodeTone(n), text: nodeBadge(n) }).toEqual({ tone: stateTone('pr', 'merged', null, true), text: badgeText('pr', 'merged', null, true) });
+    expect(nodeTone(n)).toBe('done');
   });
 });
