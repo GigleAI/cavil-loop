@@ -95,8 +95,19 @@ test('"去设置添加" focuses the address box', async () => {
   await expect(page.getByTestId('project-picker')).toHaveCount(0);
 });
 
-test('an organisation that has not approved the app: one explanation in the card, Settings and the ⚠️; approved + "重新读取" reads it', async () => {
+/** title + explanation + GitHub's words + buttons of one failure note, as shown */
+async function noteText(note: import('@playwright/test').Locator) {
+  return {
+    title: await note.getByTestId('failure-title').innerText(),
+    body: await note.getByTestId('failure-body').innerText(),
+    raw: await note.getByTestId('failure-raw').innerText(),
+    buttons: await note.locator('.failure-actions button').allInnerTexts(),
+  };
+}
+
+test('an organisation that has not approved the app: the same explanation in the card, Settings, the ⚠️ and the picker; the README steps, followed as written, read it once approved', async () => {
   env.fake.state.restrictedOrgs.set('gigleai', { kind: 'oauth' });
+  env.fake.state.memberOrgs.set('user-1', ['GigleAI']);
   const page = await signIn();
   // the first read is held: while it has not answered there is no "failed" card
   const release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
@@ -111,28 +122,110 @@ test('an organisation that has not approved the app: one explanation in the card
   const card = page.getByTestId('empty-guide');
   await expect(card).toHaveAttribute('data-kind', 'failed', { timeout: 15_000 });
   await expect(card.getByTestId('failure-title')).toHaveText(RESTRICTED_TITLE);
-  await expect(card.getByTestId('failure-auth-page')).toBeVisible();
-  await expect(card).toContainText('OAuth App access restrictions');
   await expect(page.getByTestId('board-notice')).toHaveCount(0);
+  const inCard = await noteText(card.getByTestId('guide-failure'));
+  expect(inCard.raw).toContain('OAuth App access restrictions');
+  expect(inCard.buttons).toEqual(['打开 GitHub 授权页', '重新读取']);
   await shot(page, 'board-failed');
 
+  // the ⚠️ panel: the same note (explanation, buttons, GitHub's words), not only the title
   await page.getByTestId('sync-trouble').click();
   await expect(page.getByTestId('sync-trouble-source')).toContainText(`读取失败（${RESTRICTED_TITLE}）`);
+  expect(await noteText(page.getByTestId('sync-trouble-failure'))).toEqual(inCard);
+  await shot(page, 'trouble-panel');
   await page.getByTestId('sync-trouble').click();
 
   await page.getByTestId('open-settings').click();
   const row = page.getByTestId('source-row');
-  await expect(row.getByTestId('source-failure').getByTestId('failure-title')).toHaveText(RESTRICTED_TITLE);
+  const inSettings = await noteText(row.getByTestId('source-failure'));
+  expect(inSettings).toEqual(inCard);
   await shot(page, 'settings-failed');
 
-  // approved on GitHub; "重新读取" from the row reads it
+  // the picker's row for the same organisation: the same explanation and buttons
+  await page.getByTestId('source-pick').click();
+  const pick = page.locator('[data-testid="picker-group"][data-owner="GigleAI"] [data-testid="picker-group-failure"]');
+  await expect(pick).toBeVisible();
+  const inPicker = await noteText(pick);
+  expect({ title: inPicker.title, body: inPicker.body, buttons: inPicker.buttons }).toEqual({ title: inCard.title, body: inCard.body, buttons: inCard.buttons });
+  expect(inPicker.raw).toContain('OAuth App access restrictions');
+  await page.getByTestId('source-pick').click();
+
+  // README "读不到组织的 Project 怎么办", step by step:
+  // 1. 点「打开 GitHub 授权页」 → this app's own page on GitHub
+  const before = opened().length;
+  await row.getByTestId('failure-auth-page').click();
+  await expect.poll(() => opened().slice(before)).toBe(`${env.fake.web}/settings/connections/applications/${env.fake.state.oauthClientId}\n`);
+  // (not approved yet) 「重新读取」 → still not readable, the same explanation stays (the way back: nothing lost)
+  const reads = () => env.fake.log.filter((e) => e.operation === 'CavilProjectItems').length;
+  const n = reads();
+  await row.getByTestId('failure-retry').click();
+  await expect.poll(reads).toBeGreaterThan(n);
+  await expect(row.getByTestId('source-failure').getByTestId('failure-title')).toHaveText(RESTRICTED_TITLE);
+  // 2. on GitHub the organisation's access is granted (stand-in: the fake GitHub stops refusing — the
+  //    real page's Request / Grant cannot be driven here)
   env.fake.state.restrictedOrgs.delete('gigleai');
+  // 3. 回到这里点「重新读取」 → read: the explanation goes, the items are there
   await row.getByTestId('failure-retry').click();
   await expect(row.getByTestId('source-failure')).toHaveCount(0, { timeout: 15_000 });
-  await expect(page.locator('[data-testid="source-row"] .kind')).not.toContainText(' 0 个条目', { timeout: 15_000 });
+  await expect(row.locator('.kind')).not.toContainText(' 0 个条目');
   await page.getByTestId('back').click();
   await expect(page.getByTestId('board')).toBeVisible();
   await expect(page.getByTestId('empty-guide')).toHaveCount(0);
+});
+
+test('Client ID changed in Settings without signing in again: "打开 GitHub 授权页" still opens the page of the app this sign-in used', async () => {
+  const page = await signIn();
+  await page.getByTestId('open-settings').click();
+  await page.locator('#set-login').getByTestId('oauth-settings-toggle').click();
+  await page.locator('#set-login').getByTestId('client-id').fill('Ov23liAnotherApp');
+  await page.locator('#set-login').getByTestId('save-client-id').click();
+  await page.getByTestId('back').click();
+  // the save really happened: Settings now holds the other app's ID for the next sign-in
+  await page.getByTestId('open-settings').click();
+  if ((await page.locator('#set-login').getByTestId('client-id').count()) === 0) await page.locator('#set-login').getByTestId('oauth-settings-toggle').click();
+  await expect(page.locator('#set-login').getByTestId('client-id')).toHaveValue('Ov23liAnotherApp');
+  await page.getByTestId('back').click();
+  const before = opened().length;
+  await page.getByTestId('guide-auth-page').click();
+  await expect.poll(() => opened().slice(before)).toBe(`${env.fake.web}/settings/connections/applications/${env.fake.state.oauthClientId}\n`);
+  expect(opened()).not.toContain('Ov23liAnotherApp');
+});
+
+test('"从 GitHub 选" rate limited: every way of reading again waits (no request), the buttons come back by themselves at GitHub\'s time, then it reads', async () => {
+  let limited = true;
+  env.fake.state.answerOverride = (e) => (limited && e.operation === 'CavilChoicesViewer' ? { status: 429, body: { message: 'too many' }, headers: { 'retry-after': '3' } } : null);
+  const page = await signIn();
+  const reads = () => env.fake.log.filter((e) => e.operation === 'CavilChoicesViewer').length;
+  await page.getByTestId('guide-pick').click();
+  const note = page.getByTestId('picker-failure');
+  await expect(note).toHaveAttribute('data-kind', 'rateLimited');
+  await expect(note.getByTestId('failure-retry')).toBeDisabled();
+  await expect(page.getByTestId('picker-reload')).toBeDisabled();
+  expect(reads()).toBe(1);
+  // closing and opening the list again sends nothing either
+  await page.getByTestId('source-pick').click();
+  await page.getByTestId('source-pick').click();
+  await expect(page.getByTestId('picker-failure')).toHaveAttribute('data-kind', 'rateLimited');
+  expect(reads()).toBe(1);
+  limited = false;
+  // nothing else happens on the page: the buttons come back at GitHub's time on their own
+  await expect(page.getByTestId('picker-failure').getByTestId('failure-retry')).toBeEnabled({ timeout: 8_000 });
+  await expect(page.getByTestId('picker-reload')).toBeEnabled();
+  expect(reads()).toBe(1);
+  await page.getByTestId('picker-failure').getByTestId('failure-retry').click();
+  await expect(page.locator('[data-testid="picker-group"]').first()).toBeVisible();
+  expect(reads()).toBe(2);
+});
+
+test('a missing repository while the grant lacks the Project scope: "找不到", never "sign in again"', async () => {
+  env.fake.state.oauthScopes = 'repo, read:org';
+  const page = await signIn();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('acme/missing');
+  await page.getByTestId('source-add').click();
+  const note = page.getByTestId('source-failure');
+  await expect(note).toHaveAttribute('data-kind', 'notFound', { timeout: 15_000 });
+  await expect(note.getByTestId('failure-relogin')).toHaveCount(0);
 });
 
 test('no connection: "连不上 GitHub", only "重新读取", nothing about authorising', async () => {

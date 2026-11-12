@@ -50,16 +50,16 @@ afterEach(async () => {
 
 const NO_TIMERS: SyncTimers = { setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {} };
 
-async function boot(sources: string[]) {
+async function boot(sources: string[], now: () => number = () => FIXTURE_NOW) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
   const credentials = new FileStore(join(dir, 'cred'));
   await credentials.set(FAKE_TOKEN);
   const endpoints = { api: fake.api, web: fake.web };
-  const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
+  const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
+  const c = await Controller.create({ backend: harness, endpoints, now, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
   controllers.push(c);
   for (const s of sources) c.addSource(s);
   await c.start();
@@ -92,6 +92,16 @@ describe("a source's failure, classified (GitHub#401)", () => {
     await c.stopTimer();
     fake.state.oauthScopes = 'read:org, repo';
     c = await boot([ACME_URL]);
+    expect(status(c, ACME_KEY).failure?.kind).toBe('scope');
+  });
+
+  it('a missing repository with the project scope not granted: notFound, never "sign in again for Project access" (PR #414 review round 1)', async () => {
+    fake.state.oauthScopes = 'repo, read:org';
+    const c = await boot(['acme/missing', ACME_URL]);
+    const repo = status(c, 'repo:acme/missing');
+    expect(repo.failure?.kind).toBe('notFound');
+    expect(describeFailure(failureOf(repo), FIXTURE_NOW).actions).not.toContain('relogin');
+    // the same scope list explains the Project's refusal
     expect(status(c, ACME_KEY).failure?.kind).toBe('scope');
   });
 
@@ -171,6 +181,28 @@ describe('"从 GitHub 选" (GitHub#401)', () => {
     expect(r.ok).toBe(true);
     expect(r.orgsFailure?.kind).toBe('transient');
     expect(r.groups.map((g) => g.owner)).toEqual(['user-1']);
+  });
+
+  it('rate limited: every read asked for before GitHub\'s time gets the same answer without a request; after it, a real read (PR #414 review round 1)', async () => {
+    const clock = { t: Date.now() };
+    let limit = true;
+    fake.state.answerOverride = (e: LoggedRequest) => (limit && e.operation === 'CavilChoicesViewer' ? { status: 429, body: { message: 'too many' }, headers: { 'retry-after': '120' } } : null);
+    const c = await boot([], () => clock.t);
+    const reads = () => fake.log.filter((e) => e.operation === 'CavilChoicesViewer').length;
+    const first = await c.projectChoices();
+    expect(first).toMatchObject({ ok: false, failure: { kind: 'rateLimited' } });
+    expect(first.failure!.retryAt).toBeGreaterThan(clock.t + 100_000);
+    expect(reads()).toBe(1);
+    // asked again (the list's button, a failure's button, the list closed and opened): no request
+    expect(await c.projectChoices()).toEqual(first);
+    expect(await c.projectChoices()).toEqual(first);
+    expect(reads()).toBe(1);
+    // GitHub's time has passed: read again for real
+    limit = false;
+    clock.t = first.failure!.retryAt! + 1;
+    const after = await c.projectChoices();
+    expect(after.ok).toBe(true);
+    expect(reads()).toBe(2);
   });
 
   it('nothing can be read (offline): not ok, network', async () => {

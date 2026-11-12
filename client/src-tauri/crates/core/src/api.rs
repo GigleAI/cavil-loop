@@ -129,6 +129,11 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             Ok(Value::Null)
         }
         "openExternal" => e.open_external(s(&a, "url")?).await.map(|_| Value::Null),
+        // GitHub#401: the authorisation page of the app this sign-in used (the back end builds it)
+        "openAuthPage" => {
+            let url = e.auth_page_url();
+            e.open_external(&url).await.map(|_| Value::Null)
+        }
         // page zoom (GitHub#155): "get" reads the kept level, "in" / "out" / "reset" step and keep it
         "zoom" => {
             let step = s(&a, "step")?;

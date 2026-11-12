@@ -5,8 +5,7 @@ import type { AppState } from '../shared/types';
 import type { EmptyGuide as Guide } from '../shared/emptyGuide';
 import { failureOf } from '../shared/readFailure';
 import { Icon } from './Icons';
-import { FailureNote, authUrlOf } from './FailureNote';
-import { api } from './api';
+import { FailureNote, openAuthPage } from './FailureNote';
 
 export type SettingsIntent = 'pick' | 'add';
 
@@ -39,7 +38,7 @@ export function EmptyGuide({ guide, state, labelOf, onSettings }: { guide: NonNu
         <div className="guide-hint">
           <Icon name="warn" size={14} />
           <span>组织的 Project 看不到？组织可能还没批准 Cavil Loop 访问，需要组织管理员批准一次。</span>
-          <button className="link" data-testid="guide-auth-page" onClick={() => void api().openExternal(authUrlOf(state))}>
+          <button className="link" data-testid="guide-auth-page" onClick={openAuthPage}>
             打开 GitHub 授权页
           </button>
         </div>

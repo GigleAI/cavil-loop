@@ -77,6 +77,7 @@ import {
 import { GitHubError } from '../data/github';
 import { fetchReleaseImage } from '../data/releaseImage';
 import { readProjectChoices } from '../data/projectChoices';
+import { choicesWaitUntil } from '../shared/readFailure';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
@@ -462,6 +463,7 @@ export class Controller {
       appKind,
       ...this.clientIdFor(appKind),
       viewer: this.cache.getSetting<string | null>('viewer', null),
+      signedInAppKind: null,
       githubWeb: deps.endpoints.web,
       sources: this.cache.getSetting<SourceConfig[]>('sources', []),
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
@@ -741,6 +743,7 @@ export class Controller {
       phase: 'login',
       loginReason: reason,
       viewer: null,
+      signedInAppKind: null,
       sync: { ...this.state.sync, problem: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
@@ -1513,6 +1516,9 @@ export class Controller {
     await this.saveUnsaved();
     const info = await this.backend.call<GrantInfo>('grantInfo');
     if (!info.signedIn || info.session !== this.session) return;
+    // GitHub#401: the failure explanations speak of the app this sign-in used
+    const kind = info.githubApp ? 'github-app' : 'oauth';
+    if (this.state.signedInAppKind !== kind) this.set({ signedInAppKind: kind });
     if (fresh !== 'ok' && info.expired) {
       // expired and no new token (GitHub unreachable, or the refresh failed for a reason
       // that does not prove the credential dead): keep everything, the cache stays
@@ -1984,10 +1990,18 @@ export class Controller {
   async projectChoices(): Promise<ProjectChoices> {
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, failure: { kind: 'other', raw: c.error }, groups: [] };
+    // PR #414 review round 1: GitHub said wait — every way of asking again (the list's button, a
+    // failure's button, closing and opening the list) gets the same answer until then, without a request
+    const held = this.choicesHeld;
+    if (held && held.session === c.session && this.now() < held.until) return held.result;
     const r = await readProjectChoices(c.client);
+    const until = choicesWaitUntil(r);
+    this.choicesHeld = until !== null ? { session: c.session, until, result: r } : null;
     if (!r.ok && r.failure?.kind === 'auth') this.noteAuthFailure(new GitHubError('auth', r.failure.raw, 401));
     return r;
   }
+  /** GitHub#401: the "从 GitHub 选" list's last answer while GitHub's rate limit holds it (of one session) */
+  private choicesHeld: { session: number; until: number; result: ProjectChoices } | null = null;
 
   /** GitHub renders the reply preview (same renderer as the web page). */
   async previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }> {

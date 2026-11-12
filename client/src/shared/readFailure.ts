@@ -70,9 +70,11 @@ function ssoUrlOf(header: string | null | undefined): string | undefined {
 
 /**
  * Which kind a failed read is. `org` = the organisation the read was about (a Project's or a
- * picker row's owner), used when GitHub's words do not name one.
+ * picker row's owner), used when GitHub's words do not name one. `projectRead` = the read needed
+ * the Project scope (a Project, or a list of Projects): only then can a granted-scope list without
+ * it explain a refusal — a missing repository is not a missing Project scope (PR #414 review round 1).
  */
-export function classifyFailure(input: FailureInput, org?: string): ReadFailure {
+export function classifyFailure(input: FailureInput, org?: string, projectRead = false): ReadFailure {
   const raw = input.message;
   const base = (kind: FailureKind, extra: Partial<ReadFailure> = {}): ReadFailure => ({ kind, raw, ...extra });
   if (input.cancelled) return base('cancelled');
@@ -93,7 +95,7 @@ export function classifyFailure(input: FailureInput, org?: string): ReadFailure 
     return base('sso', { ...withOrg, ...(url ? { ssoUrl: url } : {}) });
   }
   if (types.includes('INSUFFICIENT_SCOPES')) return base('scope');
-  if (input.scopes != null && refused) {
+  if (projectRead && input.scopes != null && refused) {
     const granted = input.scopes.split(',').map((s) => s.trim()).filter(Boolean);
     if (!granted.some((s) => PROJECT_SCOPES.includes(s))) return base('scope');
   }
@@ -171,10 +173,17 @@ export function describeFailure(f: ReadFailure, now: number, appKind: 'oauth' | 
   }
 }
 
-/** GitHub's page where the user sees this app and each organisation's access (request / grant) */
-export function authPageUrl(githubWeb: string, appKind: 'oauth' | 'github-app', clientId: string): string {
-  const web = githubWeb.replace(/\/+$/, '');
-  return appKind === 'github-app' || !clientId ? `${web}/settings/apps/authorizations` : `${web}/settings/connections/applications/${encodeURIComponent(clientId)}`;
+/**
+ * GitHub#401 / PR #414 review round 1: until when the "从 GitHub 选" list may not be read again — the
+ * latest rate-limit time among its failures (the whole list, the organisation list, any one
+ * organisation); null = no wait. One rule for the list's own button, each failure's button and the
+ * controller, which answers a read asked for before then from what it has, without a request.
+ */
+export function choicesWaitUntil(r: { failure?: ReadFailure; orgsFailure?: ReadFailure; groups: { failure?: ReadFailure }[] }): number | null {
+  let until: number | null = null;
+  for (const f of [r.failure, r.orgsFailure, ...r.groups.map((g) => g.failure)])
+    if (f?.kind === 'rateLimited' && f.retryAt !== undefined) until = Math.max(until ?? 0, f.retryAt);
+  return until;
 }
 
 /** a status saved by an older version has no classification: shown as the plain "读取失败" */

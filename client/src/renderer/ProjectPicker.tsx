@@ -8,7 +8,8 @@ import type { AppState, ProjectChoices } from '../shared/types';
 import { parseSource } from '../shared/sources';
 import { api } from './api';
 import { Icon } from './Icons';
-import { FailureNote, authUrlOf } from './FailureNote';
+import { FailureNote, openAuthPage, useWaiting } from './FailureNote';
+import { choicesWaitUntil } from '../shared/readFailure';
 
 export function ProjectPicker({ state }: { state: AppState }) {
   const [res, setRes] = useState<ProjectChoices | null>(null);
@@ -24,7 +25,11 @@ export function ProjectPicker({ state }: { state: AppState }) {
       alive = false;
     };
   }, [seq]);
-  const reload = () => setSeq((n) => n + 1);
+  // PR #414 review round 1: a rate limit holds every way of reading this list again, this button too
+  const waiting = useWaiting(res ? choicesWaitUntil(res) : null);
+  const reload = () => {
+    if (!waiting) setSeq((n) => n + 1);
+  };
   const added = new Set(state.sources.map((s) => s.key));
   const add = async (url: string) => {
     const r = await api().addSource(url);
@@ -35,7 +40,7 @@ export function ProjectPicker({ state }: { state: AppState }) {
       <div className="pp-head">
         这个账号能看到的 Project
         <span className="spacer" />
-        <button className="ghost" data-testid="picker-reload" onClick={reload} disabled={res === null}>
+        <button className="ghost" data-testid="picker-reload" onClick={reload} disabled={res === null || waiting}>
           <Icon name="refresh" />
           重新读取
         </button>
@@ -54,7 +59,7 @@ export function ProjectPicker({ state }: { state: AppState }) {
             </div>
             {!g.ok && g.failure && (
               <div className="pp-pad">
-                <FailureNote failure={g.failure} state={state} onRetry={reload} compact testid="picker-group-failure" />
+                <FailureNote failure={g.failure} state={state} onRetry={reload}  testid="picker-group-failure" />
               </div>
             )}
             {g.ok && g.projects.length === 0 && <div className="pp-empty muted">没有开着的 Project</div>}
@@ -85,7 +90,7 @@ export function ProjectPicker({ state }: { state: AppState }) {
         <div className="pp-group" data-testid="picker-orgs-failure">
           <div className="pp-grp">所在组织</div>
           <div className="pp-pad">
-            <FailureNote failure={res.orgsFailure} state={state} onRetry={reload} compact testid="picker-orgs-note" />
+            <FailureNote failure={res.orgsFailure} state={state} onRetry={reload} testid="picker-orgs-note" />
           </div>
         </div>
       )}
@@ -98,7 +103,7 @@ export function ProjectPicker({ state }: { state: AppState }) {
       )}
       <div className="pp-foot">
         <span className="muted small">没看到要找的组织？组织没批准 Cavil Loop 时，GitHub 可能连组织名都不返回——到授权页的「Organization access」里申请或批准，再回来重新读取；也可以直接在上面贴 Project 的网址。</span>
-        <button data-testid="picker-auth-page" onClick={() => void api().openExternal(authUrlOf(state))}>
+        <button data-testid="picker-auth-page" onClick={openAuthPage}>
           打开 GitHub 授权页
         </button>
       </div>

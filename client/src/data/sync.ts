@@ -57,7 +57,7 @@ export async function syncRound(
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
   const orgOf = (s: SourceConfig) => (s.kind === 'project' ? (s.ownerType === 'org' ? s.owner : undefined) : s.owner);
   const unchangedStatus = (e: unknown): SourceStatus[] =>
-    sources.map((s) => ({ sourceKey: s.key, ok: false, error: (e as Error).message, dataFrom: previous.get(s.key)?.fetchedAt ?? null, failure: classifyFailure(failureInput(e), orgOf(s)) }));
+    sources.map((s) => ({ sourceKey: s.key, ok: false, error: (e as Error).message, dataFrom: previous.get(s.key)?.fetchedAt ?? null, failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project') }));
 
   let viewer: string | null = null;
   try {
@@ -147,7 +147,7 @@ export async function syncRound(
         error: err.message,
         dataFrom: previous.get(src.key)?.fetchedAt ?? null,
         rateLimited: err instanceof RateLimitError,
-        failure: classifyFailure(failureInput(err), orgOf(src)),
+        failure: classifyFailure(failureInput(err), orgOf(src), src.kind === 'project'),
       });
     }
   });

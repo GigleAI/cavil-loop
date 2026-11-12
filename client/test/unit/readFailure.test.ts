@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { GitHubClient, failureInput } from '../../src/data/github';
-import { authPageUrl, classifyFailure, describeFailure, failureOf, type FailureKind, type ReadFailure } from '../../src/shared/readFailure';
+import { choicesWaitUntil, classifyFailure, describeFailure, failureOf, type FailureKind, type ReadFailure } from '../../src/shared/readFailure';
 
 const ENDPOINTS = { api: 'https://api.github.com', web: 'https://github.com' };
 const NOW = Date.UTC(2026, 10, 12, 4, 0, 0);
@@ -31,8 +31,13 @@ const RESTRICTED =
   'Although you appear to have the correct authorization credentials, the `acme-team` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited.';
 const SAML = 'Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.';
 
-async function kindOf(answer: () => Response | Promise<Response>, org?: string): Promise<ReadFailure> {
-  return classifyFailure(failureInput(await raisedBy(answer)), org);
+async function kindOf(answer: () => Response | Promise<Response>, org?: string, projectRead = true): Promise<ReadFailure> {
+  return classifyFailure(failureInput(await raisedBy(answer)), org, projectRead);
+}
+/** what the real client raises for a REST read (a repository source) */
+async function restRaised(answer: () => Response): Promise<unknown> {
+  const c = new GitHubClient(ENDPOINTS, 'gho_x', async () => answer());
+  return c.restList('/repos/acme/missing/issues?state=open').then(() => { throw new Error('the read did not fail'); }, (e) => e);
 }
 
 describe('classifying a failed read (GitHub#401)', () => {
@@ -93,6 +98,19 @@ describe('classifying a failed read (GitHub#401)', () => {
     expect((await kindOf(() => gqlErrors([{ type: 'NOT_FOUND', message: 'Could not resolve to a ProjectV2 with the number 3.' }], { 'x-oauth-scopes': 'repo, read:org' }))).kind).toBe('scope');
     // the scope was granted: a plain not found
     expect((await kindOf(() => gqlErrors([{ type: 'NOT_FOUND', message: 'Could not resolve to a ProjectV2 with the number 3.' }], { 'x-oauth-scopes': 'project, read:org, repo' }))).kind).toBe('notFound');
+  });
+
+  it('the same 404 + granted scopes without project: scope only for a Project read — a missing repository or an organisation list is notFound (PR #414 review round 1)', async () => {
+    const answer = () => json(404, { message: 'Not Found' }, { 'x-oauth-scopes': 'repo, read:org' });
+    const repo = await restRaised(answer);
+    expect(classifyFailure(failureInput(repo), 'acme', false).kind).toBe('notFound');
+    expect(describeFailure(classifyFailure(failureInput(repo), 'acme', false), NOW).actions).not.toContain('relogin');
+    expect(classifyFailure(failureInput(repo), 'acme', true).kind).toBe('scope');
+    const nf = () => gqlErrors([{ type: 'NOT_FOUND', message: 'Could not resolve to a ProjectV2 with the number 3.' }], { 'x-oauth-scopes': 'repo, read:org' });
+    expect((await kindOf(nf, 'acme', true)).kind).toBe('scope');
+    expect((await kindOf(nf, 'acme', false)).kind).toBe('notFound');
+    // GitHub saying INSUFFICIENT_SCOPES itself is believed whatever was read
+    expect((await kindOf(() => json(200, { errors: [{ type: 'INSUFFICIENT_SCOPES', message: 'scopes' }] }), undefined, false)).kind).toBe('scope');
   });
 
   it('a plain "not found" / "forbidden" → notFound, naming no cause; anything else → other', async () => {
@@ -166,8 +184,11 @@ describe('what each kind says (GitHub#401)', () => {
     expect(noTime.body).toContain('稍后会自动再读');
   });
 
-  it("the authorisation page: an OAuth app's own page, or a GitHub App's list", () => {
-    expect(authPageUrl('https://github.com', 'oauth', 'Ov23liTgYsFUdK0wup54')).toBe('https://github.com/settings/connections/applications/Ov23liTgYsFUdK0wup54');
-    expect(authPageUrl('https://github.com/', 'github-app', 'Iv1.abc')).toBe('https://github.com/settings/apps/authorizations');
+  it('the "从 GitHub 选" list waits for the latest rate-limit time among its failures; none = no wait', () => {
+    const lim = (t: number): ReadFailure => ({ kind: 'rateLimited', raw: 'x', retryAt: t });
+    expect(choicesWaitUntil({ groups: [] })).toBeNull();
+    expect(choicesWaitUntil({ failure: lim(5), groups: [] })).toBe(5);
+    expect(choicesWaitUntil({ orgsFailure: lim(3), groups: [{ failure: lim(9) }, { failure: { kind: 'network', raw: 'x' } }, {}] })).toBe(9);
+    expect(choicesWaitUntil({ groups: [{ failure: { kind: 'rateLimited', raw: 'x' } }] })).toBeNull();
   });
 });

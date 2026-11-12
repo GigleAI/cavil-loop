@@ -776,9 +776,6 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .failure-note .failure-body { line-height: 1.55; white-space: pre-line; }
 .failure-note .failure-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .failure-note .failure-raw { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.failure-note.compact { flex-direction: row; align-items: center; gap: 10px; }
-.failure-note.compact b { flex: 1; min-width: 0; }
-.failure-note.compact .failure-actions { margin-top: 0; }
 .sources li.failed { flex-wrap: wrap; }
 .sources .src-why { flex-basis: 100%; margin: 0 0 4px 44px; min-width: 0; }
 
@@ -811,3 +808,5 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .guide-fail { padding: 10px 0; border-top: 1px solid var(--border-muted); display: flex; flex-direction: column; gap: 6px; }
 .guide-fail:first-of-type { border-top: none; }
 .guide-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.trouble-panel { max-height: min(70vh, 640px); overflow: auto; }
+.trouble-panel .failure-note { margin-top: 6px; }

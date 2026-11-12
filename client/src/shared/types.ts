@@ -583,6 +583,12 @@ export interface AppState {
   /** true when clientId is the built-in one (no override saved for this kind) */
   clientIdIsDefault: boolean;
   viewer: string | null;
+  /**
+   * GitHub#401: the kind of application the *current* sign-in went through (the back end tells it
+   * by the Client ID the sign-in was made with); null = not known yet. `appKind` above is what the
+   * next sign-in will use — the two differ once Settings changes it without signing in again.
+   */
+  signedInAppKind: AppKind | null;
   /** GitHub#395: the web base of the GitHub this client talks to (https://github.com in the app); release attachment images are recognised by it */
   githubWeb: string;
   sources: SourceConfig[];

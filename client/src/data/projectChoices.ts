@@ -49,7 +49,7 @@ export async function readProjectChoices(client: GitHubClient): Promise<ProjectC
       return d.viewer.projectsV2;
     });
   } catch (e) {
-    return { ok: false, failure: classifyFailure(failureInput(e)), groups: [] };
+    return { ok: false, failure: classifyFailure(failureInput(e), undefined, true), groups: [] };
   }
   const groups: ChoiceGroup[] = [{ owner: viewer, ownerType: 'user', ok: true, projects: openOnes(own.nodes), truncated: own.truncated }];
   let orgs: { nodes: { login: string }[]; truncated: boolean };
@@ -64,7 +64,7 @@ export async function readProjectChoices(client: GitHubClient): Promise<ProjectC
         const r = await allPages<RawProject>(async (after) => (await client.graphql<{ organization: { projectsV2: Page<RawProject> } | null }>(CHOICES_ORG_QUERY, { login, after })).organization?.projectsV2 ?? null);
         return { owner: login, ownerType: 'org', ok: true, projects: openOnes(r.nodes), truncated: r.truncated };
       } catch (e) {
-        return { owner: login, ownerType: 'org', ok: false, projects: [], failure: classifyFailure(failureInput(e), login), truncated: false };
+        return { owner: login, ownerType: 'org', ok: false, projects: [], failure: classifyFailure(failureInput(e), login, true), truncated: false };
       }
     }),
   );
