@@ -66,7 +66,9 @@ beforeAll(async () => {
   });
   if (!readFileSync(legacyDriver, 'utf8').includes('pendingCredentialDelete')) throw new Error('legacy bundle does not contain the old controller');
   if (readFileSync(electronDriver, 'utf8').includes('pendingCredentialDelete')) throw new Error('electron bundle should be the 0.2 controller');
-});
+  // two `git archive` exports and three esbuild bundles: ~7 s on an idle box, already most of vitest's
+  // default 10 s hook limit — a loaded box timed it out and skipped all 11 cases (GitHub#413 code review round 1)
+}, 60_000);
 
 /** One phase in its own process: the current client (Rust back end), the Electron build ('electron') or the preview build before the trust list ('legacy'). */
 function phase(dir: string, scenario: string, build: 'current' | 'electron' | 'legacy' | true = 'current') {
