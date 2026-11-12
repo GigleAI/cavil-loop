@@ -41,6 +41,13 @@ CAVIL_USAGE_LIMIT_DIR="$CAVIL_STATE_HOME/usage-limit"
 # 复盘是「有人在跑就跳过」，这里是「排队等」。
 CAVIL_HEAVY_TEST_LOCK="$CAVIL_STATE_HOME/heavy-test.lock"
 CAVIL_HEAVY_TEST_RUNS="$CAVIL_STATE_HOME/heavy-test/runs"
+# 远程入口（GitHub#387）：整机一个，管这台机器上所有项目，所以和上面两样一样固定放在新名字的
+# 状态根目录下。里面是已配对设备和它们的钥匙（目录 700、文件 600）。后台任务名也只有一套：
+# 这个功能是改名之后才有的，没有旧名字的安装要兼容。
+CAVIL_REMOTE_ACCESS_HOME="$CAVIL_STATE_HOME/remote-access"
+CAVIL_REMOTE_ACCESS_UNIT="cavil-loop-remote.service"
+CAVIL_REMOTE_ACCESS_LABEL="dev.luosky.cavil-loop.remote"
+CAVIL_REMOTE_ACCESS_PORT=47387
 
 # 项目根目录那份本地配置文件
 CAVIL_PROJECT_CONFIG_NAME="cavil-loop.config"

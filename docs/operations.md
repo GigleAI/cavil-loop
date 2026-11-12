@@ -1808,6 +1808,7 @@ Four entry points give a program (the desktop client, or a script of your own) a
 | `scripts/install-status.sh [--agent <name>] [--project <dir>]` | Prints one JSON object with the whole local state | no |
 | `scripts/disconnect-project.sh <key>` | Stops one project's poller and removes its registration; keeps the project config and state | yes |
 | `scripts/launchd-refresh.sh <key>` | macOS only: replaces one project's launchd plist after the template changed, with backup and rollback | yes |
+| `scripts/project-service.sh <key> stop\|start` | Stops / starts one project's background poller (used by remote access, GitHub#387): only "running → stop" and "stopped → start", nothing when the state cannot be read, read back afterwards | yes |
 
 <!-- install-scripts-ops:begin -->
 ```bash
@@ -1879,6 +1880,66 @@ In order: list the settings that can be changed with their current values; take 
 | `saved_then_changed` | 4 | the new file was swapped in, and something else rewrote the file before the read-back; the script leaves it as it is — read again and compare with the backup |
 
 **Do not edit the same file in an editor while saving.** The script cannot make an editor wait. It refuses to write when the file differs from `--rev` at its last check; after that check it cannot see anything: a version an editor stores between that check and the swap is replaced by the new file, and an editor that had the file open before the save and stores afterwards either overwrites the new values with its whole old copy or writes into the file that was just swapped out. In both cases the result may still be `saved`, and the lost edit cannot be recovered — the backup holds only the version from before the save. Once the new file is in place the script never writes the config again: no rollback, no automatic restore. The poller reads the config once at the start of each tick, and the swap is a rename, so it sees the whole old file or the whole new one; a running worker keeps the values it started with.
+
+## Remote access: let the client on another computer see this machine's daemon (GitHub#387)
+
+When the daemon runs on one machine and the desktop client on another, the client's "设置 → 远程 daemon" section can list the projects this machine has connected and whether they are running, stop / start one project's poller, and show the last 200 lines of its poll log. **Tailscale only**, and only after pairing. It is off by default: without the commands below nothing listens on this machine and nothing is forwarded.
+
+**Requirements** (`enable` names the missing one and stops, leaving nothing half open):
+
+- Tailscale is connected on this machine, and its tailnet has MagicDNS and HTTPS Certificates turned on (admin console, DNS page).
+- Registering the forward needs admin rights: the current user is the Tailscale operator (`sudo tailscale set --operator=$USER`, once), or `sudo` works without a password. With neither, `enable` prints the one command to run with `sudo`; run it, then run `enable` again.
+- `python3`, `tailscale` and `jq` are installed.
+- The client's computer is in the same tailnet.
+
+<!-- remote-access-ops:begin -->
+```bash
+RA="$HOME/.agents/skills/cavil-loop/scripts/remote-access.sh"
+bash "$RA" enable
+bash "$RA" pair
+bash "$RA" status
+bash "$RA" list
+bash "$RA" revoke MacBook-Pro
+bash "$RA" disable
+```
+<!-- remote-access-ops:end -->
+
+In order: open the entry; make a pairing code (`pair` opens the entry first when it is closed, so `pair` alone is usually enough); show the entry's state; list paired devices; revoke the one named `MacBook-Pro`; close the entry.
+
+**Without a terminal**: when this machine runs the desktop client too (a Mac), the same things are in its "设置 → 本机 daemon → 允许其他电脑远程连接" block — a switch that runs `enable` / `disable`, "生成配对码" that runs `pair` and shows the code in large digits with the time left, "作废这个码" (`pair-cancel`), and "已配对的电脑…" (`list` / `revoke`). The switch shows what `status` reads back afterwards; when that read fails it shows "状态未知" and offers no switch. On the other computer, "添加远程 daemon" lists the machines in that computer's Tailscale (`tailscale status --json`, read-only) and asks each online one once whether its remote entry answers on port 47387 — "已打开远程连接", "未打开远程连接" (the connection was refused), "不确定" (anything else: never shown as closed) or "不在线" — so the name is picked, not copied; "手动输入机器名" stays for a custom port or when the list cannot be read. The remote entry can only be opened on the machine itself: a server without a window still runs `pair` once there.
+
+**Pairing**: `pair` prints this machine's full name (ending in `.ts.net`) and an 8-digit code; type both into the client's "添加远程 daemon" dialog. A code lasts 10 minutes, works once, and is void after 5 wrong tries in a row. A successful pairing gives the client a key of its own (kept in its system keychain); this machine records it in `~/.local/state/cavil-loop/remote-access/devices.json` (directory 700, file 600).
+
+**Every command** ends with a `RESULT=<...>` line (except `list` / `revoke`):
+
+| Command | What it does | Result |
+|---------|--------------|--------|
+| `enable [--port N]` | Registers the `tailscale serve` forward (HTTPS, tailnet only) → writes the background job file → starts the resident service. Default port 47387. On a port change, the forward this feature had on the old port is removed once the new one is up (cannot remove it: `partial`, exit 3, naming the port). A forward already on the port is never taken over, even one of the same shape (`port_taken`) | `enabled`; a missing requirement: `tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel` (the port has a public entry) / `port_taken` / `unknown` (job state unreadable), exit 2, nothing changed; `failed`, exit 3 |
+| `pair` | Runs `enable` first when the entry is closed, then makes a code (a new code replaces the waiting one). Also prints `HOST=` / `CODE=` / `EXPIRES=` (epoch seconds) for the desktop client | `code` |
+| `pair-cancel` | Voids the waiting code (none waiting is also success) | `cancelled` |
+| `status` | Read-only. Also prints `HOST=` (only when the name was read), `PORT=` and `DEVICES=` (a number, `unknown` when the list cannot be read) for the desktop client | `open` / `closed` / `partial` / `unknown` |
+| `list [--machine]` | Paired devices: id, name, Tailscale device name, time of pairing. `--machine`: one `DEVICE=<id>\t<name>\t<device>\t<time>` line each, then `RESULT=ok` | — (`ok` with `--machine`) |
+| `revoke <name or id>` | Revokes one device, effective at once; exit 1 when there is no such device | — |
+| `disable` | Stops the service and removes its job file → removes the forward on every port this feature registered (after a port change too; other features' forwards are left alone) → drops a waiting pairing code. The list of paired devices is kept | `disabled`; unreadable state: exit 2, nothing changed; cannot stop or cannot remove the forward: exit 3 (`partial`), the output says what is left and which command to run |
+
+**Limits**:
+
+- The resident service listens on `127.0.0.1` only; the one way in is the `tailscale serve` HTTPS forward. `enable` never opens a public entry (funnel) and refuses a port that has one. The ports this feature registered are kept in `~/.local/state/cavil-loop/remote-access/ports` (written before registering, struck only after the removal was read back), and closing or changing the port goes by that list; when Tailscale's forward settings cannot be read (the query fails, or exits 0 with no output) nothing is changed. That list and the `port` file holding the current port are themselves read three ways — absent / readable / not readable: a file that cannot be read, or has a line that is not a port number, means "which forwards are this feature's is not known" — `enable`, `pair` and `disable` exit 2 (`RESULT=state_unknown`), change nothing and do not overwrite the file, and `status` reports `unknown`; check with `tailscale serve status` as the message says, make `ports` one registered port per line (delete the file when there is none) and run the command again. When the list cannot be written: found before registering, nothing is registered (`state_unwritable`, exit 2); found only after a forward was removed, the result is `partial` (exit 3) — fix it and run again. When the list of paired devices cannot be read, `status` says "读不到" and `list` / `revoke` exit 2, never "0 devices".
+- Every request is checked for who sent it first: the caller address the forwarding layer gives must be one Tailscale address, and `tailscale whois` on this machine must know which device it is. Not found, a failed lookup, or a public-entry mark: refused.
+- After pairing the key never travels again: each request carries a signature over "time + one-time nonce + the request", and so does each reply; the caller's Tailscale identity must be the device that paired, so a key copied to another device is refused.
+- All it can do: read the status (the output of `install-status.sh`, unchanged), stop / start one project (`scripts/project-service.sh <key> stop|start` — only "running → stop" and "stopped → start", neither when the state cannot be read, and the state is read back afterwards), read the last 200 lines of one project's `poll.log`, revoke itself. It cannot disconnect a project, update the daemon, connect a new project, or run an arbitrary command.
+- The log is returned as it is on disk, with no processing of its own: the daemon already redacts GitHub tokens before writing `poll.log` (GitHub#342, when on); everything else in it is visible to a paired client.
+- Other system users on the same machine can reach the loopback port, but can do nothing without a pairing code or a key.
+- The resident service is not restarted when the daemon updates itself; run `enable` again to pick up a new version.
+
+**Unpairing from the client**: when this machine can be reached, it confirms the revocation; when it cannot, the client can only stop using the key and show "取消配对未完成" — the authorization on this machine is **still there**. The client retries once the connection is back, or run `revoke` on this machine.
+
+**Protocol** (for writing another client, or for debugging). The entry is `https://<machine name>:<port>`:
+
+- `POST /v1/pair` with `{"code": "<8 digits>", "name": "<device name>"}` → `{"version": 1, "id": "<device id>", "key": "<64 hex digits>", "name": ...}`.
+- Every other request carries four headers: `X-Cavil-Device` (device id), `X-Cavil-Time` (Unix seconds, within 120 s of this machine's clock), `X-Cavil-Nonce` (16–64 hex digits, never repeated — handled requests are recorded in `nonces.json`, so the same request replayed after a service restart is still refused; when that record cannot be read the service accepts no signed request for 240 s and answers 503 `not_ready`), `X-Cavil-Signature` = hex of HMAC-SHA256(key, `method\npath\ntime\nnonce\nhex SHA256(body)`). A reply's `X-Cavil-Signature` = hex of HMAC-SHA256(key, `resp\nnonce\nstatus code\nhex SHA256(reply body)`).
+- `GET /v1/status` → `{"status": <install-status.sh output>}`; `POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`; `GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`; `POST /v1/unpair` → `{"result": "revoked"}`.
+- An error reply is `{"error": "<code>", "message": "<words for a person>"}`: `not_tailscale` / `unknown_device` / `funnel` (403, the caller is not a known Tailscale device), `pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked` (403), `revoked` (401, never paired or revoked), `device_mismatch` / `signature` / `clock` / `replay` (403), `status_failed` (502, the status script did not run), `not_ready` (503, see above).
 
 ## Running multiple projects
 

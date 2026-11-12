@@ -8,6 +8,7 @@
 // when the status script read the job's state: an unreadable state offers nothing
 // that could register the job twice.
 
+import { RemoteHostBlock } from './RemoteHostBlock';
 import { noticeTone } from '../shared/noticeTone';
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
@@ -126,6 +127,7 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
           <Checks st={status.status} />
           <Projects st={status.status} busy={busy} notes={notes} onAsk={setAsk} onOpen={(p) => void openFile(p, 'log')} onConfig={setCfg} />
           <Update st={status.status} busy={busy} result={update} onUpdate={doUpdate} />
+          <RemoteHostBlock />
         </>
       )}
       {cfg && (
