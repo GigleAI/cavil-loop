@@ -14,6 +14,9 @@ import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { EDIT_CHANGED } from '../../src/data/actions';
 import type { ItemDetail, TimelineEntry } from '../../src/shared/actions';
+import { flowTally } from '../../src/data/flowTally';
+import { isPending } from '../../src/data/pending';
+import { DEFAULT_HAND_BACK } from '../../src/shared/types';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -162,7 +165,7 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
   const restWrites = () => fake.writes().map((w) => [w.method, w.path, w.body]);
   it('autopilot: the autopilot label first, then the agent label, then the human one off; names from Settings', async () => {
     const c = await ready();
-    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' });
+    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' });
     expect((await c.act({ kind: 'autopilot', key: K(138) })).ok).toBe(true);
     expect(restWrites()).toEqual([
       ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
@@ -181,7 +184,7 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
   it('an empty autopilot label: the setting keeps it empty (no button) and the action is refused before sending', async () => {
     const c = await ready();
     c.setHandBack({ autopilot: '' });
-    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: '' });
+    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: '', running: 'doing/agent' });
     // changing another name keeps it empty
     c.setHandBack({ agent: 'go' });
     expect(c.getState().handBack.autopilot).toBe('');
@@ -203,5 +206,61 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
     // GitHub#250: every step is named, the one that failed with GitHub's reason
     expect(r.warning).toContain('托管没有全部完成：已加上「autopilot」；加「pending/agent」没有成功');
     expect(r.warning).toContain('还没摘「pending/human」');
+  });
+});
+
+describe('GitHub#404: the running label next to the hand-back labels', () => {
+  it('the two hand-back labels cleared: defaults come back, the view bar numbers, reminders and "hand to the agent" keep working', async () => {
+    const c = await ready();
+    const items = () => c.getBoardData().items;
+    const count = (kind: string) => flowTally(items(), c.getState().handBack).find((e) => e.kind === kind)!.count;
+    // the recorded board has no open item with the default labels, so first give both numbers something to count:
+    // "hand to the agent" puts pending/agent on an open issue; reminders and "等人处理" follow a custom label with 4 open items
+    const open = items().filter((i) => i.state === 'open' && i.kind === 'issue' && i.repo === REPO && !i.labels.some((l) => l.name === 'pending/agent'));
+    expect(open.length).toBeGreaterThanOrEqual(2);
+    expect((await c.act({ kind: 'handBack', key: open[0].key })).ok).toBe(true);
+    c.setHandBack({ human: 'doing/agent' });
+    const agentBefore = count('agent');
+    expect(agentBefore).toBeGreaterThan(0);
+    expect(count('human')).toBe(4);
+    expect(c.getState().pendingCount).toBe(4);
+    // both cleared: the defaults are back, and the numbers, reminders and buttons all use them
+    c.setHandBack({ human: '', agent: '   ' });
+    expect(c.getState().handBack).toEqual(DEFAULT_HAND_BACK);
+    expect(count('agent')).toBe(agentBefore);
+    const human = count('human');
+    expect(c.getState().pendingCount).toBe(human);
+    expect(human).toBe(items().filter((i) => isPending(i, 'pending/human')).length);
+    const sent = fake.writes().length;
+    expect((await c.act({ kind: 'handBack', key: open[1].key })).ok).toBe(true);
+    expect(fake.writes().slice(sent).map((w) => [w.method, w.path])).toEqual([
+      ['POST', `/api/repos/GigleAI/cavil-loop/issues/${open[1].number}/labels`],
+      ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${open[1].number}/labels/pending%2Fhuman`],
+    ]);
+    expect(count('agent')).toBe(agentBefore + 1);
+  });
+
+  it('an empty running label is kept (the number is not shown), also after a restart; the others are untouched', async () => {
+    const c = await ready();
+    expect(c.getState().handBack.running).toBe('doing/agent');
+    c.setHandBack({ running: '  ' });
+    expect(c.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, running: '' });
+    expect(flowTally(c.getBoardData().items, c.getState().handBack).map((e) => e.kind)).toEqual(['agent', 'human']);
+    c.setHandBack({ agent: 'go' });
+    expect(c.getState().handBack.running).toBe('');
+    c.setHandBack({ running: ' doing/agent ' });
+    expect(c.getState().handBack.running).toBe('doing/agent');
+    c.setHandBack({ running: '' });
+    await c.settled();
+    const again = await ready();
+    expect(again.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, agent: 'go', running: '' });
+  });
+
+  it('settings saved before the running label existed: the default', async () => {
+    const cache = new Cache(join(dir, 'cache.sqlite'));
+    cache.setSetting('handBack', { human: 'wait', agent: 'go', autopilot: '' });
+    cache.close();
+    const c = await ready();
+    expect(c.getState().handBack).toEqual({ human: 'wait', agent: 'go', autopilot: '', running: 'doing/agent' });
   });
 });

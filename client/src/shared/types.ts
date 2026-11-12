@@ -499,7 +499,7 @@ export interface ImportInfo {
   notes: string[];
 }
 
-/** The labels the "hand to the agent" buttons use (follows the daemon's label names; editable in Settings). */
+/** The labels the "hand to the agent" buttons and the view bar's flow numbers use (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
   /** removed: the item waits for a human */
   human: string;
@@ -507,9 +507,11 @@ export interface HandBackLabels {
   agent: string;
   /** added by "autopilot (merge automatically)" before handing over (GitHub#205); '' = no such button */
   autopilot: string;
+  /** GitHub#404: the item is being worked on by an agent — counted as "运行中" in the view bar; '' = that number is not shown */
+  running: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' };
 
 export interface ViewSettings {
   mode: ColumnMode;

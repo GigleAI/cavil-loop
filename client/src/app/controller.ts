@@ -450,6 +450,8 @@ export class Controller {
     this.readGate = new ReadGate(this.now);
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
+    // GitHub#404: saved before the running label existed (or not a string) → the default; an empty one stays empty
+    if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
@@ -1812,6 +1814,8 @@ export class Controller {
       agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
       // empty is a choice here: no autopilot button (a project without autopilot)
       autopilot: typeof patch.autopilot === 'string' ? patch.autopilot.trim() : this.state.handBack.autopilot,
+      // GitHub#404: empty is a choice too — the view bar leaves out "运行中"
+      running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently

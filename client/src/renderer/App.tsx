@@ -90,6 +90,8 @@ export function App() {
   });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
+  // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
+  const tallySaved = useRef<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -132,6 +134,7 @@ export function App() {
             setPage('settings');
           }}
           onKeysHelp={() => setKeysHelp(true)}
+          tallySaved={tallySaved}
         />
       )}
       {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
