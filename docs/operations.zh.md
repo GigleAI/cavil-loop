@@ -417,7 +417,7 @@ CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2      # 这么多个不同的修复 PR 合�
 
 **依赖**：除了 daemon 本来就要的工具，还需要机器上有 `python3`（只用标准库）。这里不用 coreutils 的
 `timeout`（macOS 没有）：检查程序自己给每次 `gh` 调用设时限（60 秒）、给整轮设预算（90 秒），主轮询
-用 bash 内建等它，超过预算 120 秒还不退就把它停掉。没有 `python3` 时检查不运行（每轮一行日志），
+用 bash 内建等它，超过预算 120 秒还不退就把它连同它起的 `gh` 等进程整组停掉，等到一个不剩才往下走（之后不会有迟到的写入）。没有 `python3` 时检查不运行（每轮一行日志），
 本功能的报告一律不派工。
 
 **令牌。** 读用 `GH_TOKEN`：要能读 Actions 运行和检查标注（fine-grained：*Actions: read*、

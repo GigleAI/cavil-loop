@@ -340,6 +340,69 @@ sleep 1
 chk "检查程序没有留下孤儿进程" "$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0"
 rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 
+section "【5c】检查被停掉时：gh 和它起的进程一个不留，返回之后不再有写入"
+# gh 客户端一侧的替身：命中的调用先等（等的是它自己起的子进程），再走真正的假 GitHub。请求还没发出去
+# 就被停掉的话，GitHub 上什么都不该多出来。每个进程号记进文件，停掉之后逐个核对。
+SLOW="$SANDBOX/slowbin"; SLOWD="$SANDBOX/slow"; mkdir -p "$SLOW" "$SLOWD"
+cat > "$SLOW/gh" <<SH
+#!/usr/bin/env bash
+if [ -f "$SLOWD/match" ] && printf '%s ' "\$@" | grep -qE -- "\$(cat "$SLOWD/match")"; then
+    echo \$\$ >> "$SLOWD/pids"
+    sleep "\$(cat "$SLOWD/secs")" &
+    echo \$! >> "$SLOWD/pids"
+    wait
+fi
+exec "$SANDBOX/bin/gh" "\$@"
+SH
+chmod +x "$SLOW/gh"
+slow_alive() {   # 记下的进程里还活着几个
+    local p n=0
+    while read -r p; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done < "$SLOWD/pids"
+    echo "$n"
+}
+slow_case() {   # <名字> <命中哪种调用> <每次调用时限> <兜底上限> <日志里该有的话>
+    local name="$1" match="$2" call="$3" hard="$4" want="$5" base calls
+    fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+    mkissue 55 "pending/agent"
+    redrun 560 $((NOW - 60)) 3 requester-bot
+    base=$(n_issues)
+    : > "$SLOWD/pids"; printf '%s' "$match" > "$SLOWD/match"; echo 8 > "$SLOWD/secs"
+    env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" CI_FAILURE_REPORT_CALL_TIMEOUT="$call" \
+        CI_FAILURE_REPORT_HARD_LIMIT="$hard" bash "$NEW/scripts/agent-poll.sh" > "$W/pollout" 2>&1
+    calls=$(grep -c . "$CALLS")
+    has "$name：确实停在这次调用上" "$(cat "$W/state/poll.log")" "$want"
+    chk "$name：被等的调用确实发生过（记到了 gh 和它起的进程）" "$([ "$(grep -c . "$SLOWD/pids")" -ge 2 ] && echo yes || echo no)" "yes"
+    chk "$name：主轮询返回时，gh 和它起的进程都已结束" "$(slow_alive)" "0"
+    chk "$name：检查程序也没有留下" "$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0"
+    chk "$name：返回时没有多出报告" "$(n_issues)" "$base"
+    chk "$name：这一轮普通条目照常派工" "$(session_of 55),$(labels_of 55)" "1,doing/agent"
+    sleep 9   # 等过替身原本要等的 8 秒：迟到的请求要是还在，这时已经发出去了
+    chk "$name：再等 9 秒，仍然没有多出报告" "$(n_issues)" "$base"
+    chk "$name：再等 9 秒，假 GitHub 没有收到任何新请求" "$(grep -c . "$CALLS")" "$calls"
+    rm -f "$SLOWD/match" /tmp/cavil-loop-issue-55-* 2>/dev/null
+    later; poll
+    chk "$name：下一轮恢复，失败被报告" "$(n_issues)" "$((base + 1))"
+}
+slow_case "兜底停掉、正等着建报告的写请求" '-X POST repos/[^ ]+/issues ' 100 3 "强制停掉"
+slow_case "兜底停掉、正等着读运行列表" 'actions/workflows/[^ ]+/runs' 100 3 "强制停掉"
+slow_case "单次调用超时、正等着建报告的写请求" '-X POST repos/[^ ]+/issues ' 2 60 "没有返回，已结束这次调用"
+slow_case "单次调用超时、正等着读运行列表" 'actions/workflows/[^ ]+/runs' 2 60 "没有返回，已结束这次调用"
+# 人工跑的入口被停（TERM）：检查程序和它正等的 gh 一起结束，之后没有写入
+fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+redrun 561 $((NOW - 60)) 3 requester-bot
+: > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 8 > "$SLOWD/secs"
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" bash "$NEW/scripts/ci-failure-report.sh" > "$W/out" 2>&1 &
+HAND=$!
+i=0; while [ ! -s "$SLOWD/pids" ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
+GHPID=$(head -1 "$SLOWD/pids")
+kill -TERM "$HAND"; rc=0; wait "$HAND" || rc=$?
+chk "人工入口被停：以被停的退出码结束" "$rc" "143"
+chk "人工入口被停：它正等的 gh 已结束，检查程序没有留下" \
+    "$(kill -0 "$GHPID" 2>/dev/null && echo alive || echo gone),$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "gone,0"
+sleep 9
+chk "人工入口被停：再等 9 秒也没有建出报告" "$(n_issues)" "0"
+rm -f "$SLOWD/match"
+
 section "【6】同因看失败的测试；证据不完整进「原因未确认」"
 fresh; enable
 redrun 600 $((NOW - 60)) 3 requester-bot; tick; later

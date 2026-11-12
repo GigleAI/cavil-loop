@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -134,6 +135,25 @@ class Unknown(Exception):
     """A read failed, came back incomplete, or does not look the way it must."""
 
 
+_child = None
+
+
+def _on_stop(signum, _frame):
+    """Asked to stop: end the gh call in flight first, so no request outlives this process."""
+    c = _child
+    if c is not None:
+        try:
+            c.kill()
+            c.wait(timeout=5)
+        except Exception:
+            pass
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(128 + signum)
+
+
 def gh(method, path, fields=None, write=False, raw=False):
     if _deadline is not None and time.time() > _deadline:
         raise Budget()
@@ -152,21 +172,33 @@ def gh(method, path, fields=None, write=False, raw=False):
     limit = CALL_TIMEOUT
     if _deadline is not None:
         limit = max(5, min(limit, int(_deadline - time.time()) + 5))
+    global _child
+    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=limit)
-    except subprocess.TimeoutExpired:
-        raise Budget("gh api %s %s 超过 %d 秒没有返回，已结束这次调用" % (method, path.split("?")[0], limit))
-    if r.returncode != 0:
-        err = (r.stderr or "").strip()
+        try:
+            out, errout = _child.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            _child.kill()
+            try:
+                # whatever gh started may still hold the pipes: do not wait on them for long
+                _child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise Budget("gh api %s %s 超过 %d 秒没有返回，已结束这次调用" % (method, path.split("?")[0], limit))
+        rcode = _child.returncode
+    finally:
+        _child = None
+    if rcode != 0:
+        err = (errout or "").strip()
         m = re.search(r"HTTP (\d{3})", err)
         status = int(m.group(1)) if m else None
         if status == 429 or (status == 403 and re.search(r"rate limit|abuse|secondary", err, re.I)):
             raise RateLimited(err[:200])
         raise GhError(status, "%s %s: %s" % (method, path.split("?")[0], err[:200]))
     if raw:
-        return r.stdout
+        return out
     try:
-        return json.loads(r.stdout)
+        return json.loads(out)
     except ValueError:
         raise GhError(None, "%s %s: response is not JSON" % (method, path.split("?")[0]))
 
@@ -1244,6 +1276,8 @@ def main():
         # the one definition of "the local record is usable"; _lib.sh asks it for the dispatch hold
         print("ok" if load_state()[0] is not None else "bad")
         return 0
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
     if cmd == "restart":
         return restart()
     if cmd == "list":

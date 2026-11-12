@@ -485,7 +485,8 @@ it goes into a code block whose fence is longer than any backtick run in it.
 **Needs** `python3` on the machine (standard library only) besides the tools the daemon already
 requires. Nothing here uses coreutils `timeout`, which macOS lacks: the checker bounds every `gh`
 call itself (60 s) and the whole round (90 s), and the poller waits for it with bash builtins and
-stops it if it still has not returned 120 s after that. Without `python3` the check does not run
+stops it — together with `gh` and anything it started, as one process group, waiting until none
+is left, so no late write follows — if it still has not returned 120 s after that. Without `python3` the check does not run
 (one log line per round) and this feature's reports are held back from dispatch.
 
 **Token.** Reads use `GH_TOKEN`: it must be able to read Actions runs and check-run

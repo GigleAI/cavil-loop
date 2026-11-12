@@ -576,35 +576,62 @@ ci_report_flow_labels() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# 检查的整条进程链（入口脚本 → 检查程序 → gh → gh 再起的任何进程）放在同一个进程组里，组号就是
+# 入口脚本的进程号。要停就停整组、并等到组里一个进程都不剩：只停检查程序的话，它正在等的那次 gh 写
+# 请求还活着，主轮询往下走了之后它照样把报告建出来（PR #393 复审第 4 轮）。只用 bash 内建
+# （set -m、kill、wait），Linux 和 macOS 一样。
+ci_report_group_alive() {   # <组号>：组里还有进程 → 0
+    kill -0 -- "-$1" 2>/dev/null
+}
+ci_report_group_stop() {   # <组号>：TERM 整组，最多等 3 秒；还有就 KILL 整组，再等到清空（最多 10 秒）
+    local g="$1" i=0
+    ci_report_group_alive "$g" || return 0
+    kill -TERM -- "-$g" 2>/dev/null || true
+    while ci_report_group_alive "$g" && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); done
+    ci_report_group_alive "$g" || return 0
+    kill -KILL -- "-$g" 2>/dev/null || true
+    i=0
+    while ci_report_group_alive "$g" && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+    ! ci_report_group_alive "$g"
+}
+
 # 每轮一次，在轮询锁内、节奏闸门之前（它有自己的 5 分钟间隔，项目空闲退避时照样按时查；它不读也不写
 # state.json）。跑成子进程：里面任何失败都只留日志，不碰这一轮的派工和退出码。
 #
 # 时限分两层，都不用 coreutils 的 timeout（macOS 没有，安装时也只要求 Linux 有）：
 #   · 检查程序自己：每次 gh 调用有时限（默认 60 秒），整轮有预算（默认 90 秒），到了就收尾退出
-#   · 这里兜底：只用 bash 内建等它，超过「预算 + 120 秒」还没退就 TERM、2 秒后 KILL（入口脚本收到
-#     TERM 会把检查程序一起停掉）
+#   · 这里兜底：只用 bash 内建等它，超过「预算 + 120 秒」还没退就把整个进程组停掉
+# 不管是哪种结束法，返回之前组里都必须已经没有进程——返回之后不会再有迟到的 GitHub 写入。
 ci_failure_report_tick() {
     ci_failure_report_enabled || return 0
-    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}" limit pid waited=0
+    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}" limit pid waited=0 monitor=off
     case "$budget" in ''|*[!0-9]*) budget=90 ;; esac
     limit="${CI_FAILURE_REPORT_HARD_LIMIT:-$((budget + 120))}"
     case "$limit" in ''|*[!0-9]*) limit=$((budget + 120)) ;; esac
+    # set -m 只为这一次启动：后台作业自成一个进程组（组号 = 它的进程号），启动完立刻还原
+    case "$-" in *m*) monitor=on ;; esac
+    set -m
     CODING_AGENT_CONFIG="$CONFIG_FILE" CI_FAILURE_REPORT_IN_POLL=1 \
         bash "$_LIB_DIR/ci-failure-report.sh" 9>&- &
     pid=$!
+    [ "$monitor" = on ] || set +m
+    # 自成一组之后，停主轮询的信号不再自动传到它：主轮询被停时先把这一组停干净
+    trap 'ci_report_group_stop "$pid" || true; trap - TERM INT HUP; exit 143' TERM INT HUP
     # 以 0.2 秒为一步等：平时这一步不到 1 秒就结束，不该为了兜底让每轮多睡 1 秒
     while kill -0 "$pid" 2>/dev/null; do
         if [ "$waited" -ge $((limit * 5)) ]; then
             log "⚠️ CI 失败报告：检查超过 ${limit} 秒没有结束，强制停掉；不派工名单照常生效"
-            kill -TERM "$pid" 2>/dev/null || true
-            sleep 2
-            kill -KILL "$pid" 2>/dev/null || true
             break
         fi
         sleep 0.2
         waited=$((waited + 1))
     done
+    # 入口已经退出时组里通常已空；还有进程（超时没退，或某次 gh 调用超时后它起的进程还在）就整组停掉
+    if ! ci_report_group_stop "$pid"; then
+        log "⚠️ CI 失败报告：检查的进程组 $pid 停不干净，仍有进程在；不派工名单照常生效"
+    fi
     wait "$pid" 2>/dev/null || rc=$?
+    trap - TERM INT HUP
     [ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查异常退出（退出码 $rc），本轮跳过；不派工名单照常生效"
     return 0
 }

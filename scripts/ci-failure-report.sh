@@ -64,12 +64,21 @@ if [ "$MODE" != tick ]; then
     exit $?
 fi
 
-# 输出先落到文件、跑完再逐行进日志：python 是直接子进程，本脚本被要求停下（TERM）时把它一起停掉，
-# 不留孤儿。它自己对每次 gh 调用都有时限，正常情况下走不到这里。
+# 输出先落到文件、跑完再逐行进日志。本脚本被要求停下（TERM）时把检查程序一起停掉、等它真的退出
+# 再走：检查程序收到 TERM 会先结束它正在等的那次 gh 调用。主轮询调用时整条链在同一个进程组里，
+# 由 ci_failure_report_tick 整组停、等组清空（它自己对每次 gh 调用都有时限，正常情况下走不到）。
 OUT=$(mktemp "$STATE_DIR/.ci-failure-report.XXXXXX")
 ( run_py tick ) > "$OUT" 2>&1 &
 PY=$!
-trap 'kill -TERM "$PY" 2>/dev/null; sleep 1; kill -KILL "$PY" 2>/dev/null; rm -f "$OUT"; exit 143' TERM INT
+stop_py() {
+    local i=0
+    kill -TERM "$PY" 2>/dev/null || true
+    while kill -0 "$PY" 2>/dev/null && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); done
+    kill -KILL "$PY" 2>/dev/null || true
+    wait "$PY" 2>/dev/null || true
+    rm -f "$OUT"
+}
+trap 'stop_py; exit 143' TERM INT
 rc=0
 wait "$PY" || rc=$?
 trap - TERM INT
