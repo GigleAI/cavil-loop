@@ -7318,7 +7318,8 @@ redact_scan_tick() {
                --codex-root "${CODEX_SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}")
     fi
     local out rc=0 line done=1
-    out="$(python3 "$_LIB_DIR/redact_tokens.py" "${args[@]}" 2>&1)" || rc=$?
+    # 和上面各个入口用同一份脚本（_redact.sh 里定的路径），不另拼一个
+    out="$(python3 "$_REDACT_PY" "${args[@]}" 2>&1)" || rc=$?
     [ -n "$live_file" ] && rm -f "$live_file"
     if [ "$rc" != 0 ]; then
         log "⚠️ 令牌脱敏：扫描异常退出（退出码 $rc），下一轮重试：$(printf '%s' "$out" | tail -1)"
