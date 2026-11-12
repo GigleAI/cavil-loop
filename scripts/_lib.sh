@@ -48,6 +48,9 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 令牌脱敏入口（GitHub#342）：log() 和所有往 poll.log / 窗格历史追加内容的地方都用它
+# shellcheck source=_redact.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -813,8 +816,14 @@ SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
 SKILL_DIR="${CODING_AGENT_RELEASE_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 
+# 日志文字里出现 GitHub 令牌前缀时先替换再写（GitHub#342）：写文件和写 stderr（进 journal）
+# 用的是同一份替换后的文字。平常的日志行不含前缀，不多起进程。
 log() {
-    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
+    local msg="$*"
+    case "$msg" in
+        *gh[pousr]_*|*github_pat_*) msg="$(printf '%s' "$msg" | redact_pipe)" ;;
+    esac
+    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $msg" | tee -a "$LOG_FILE" >&2   # redact-ok：上面已替换
 }
 
 # 默认仅输出常规日志；LOG_LEVEL=debug 额外显示排查用的例行明细。
@@ -5853,27 +5862,27 @@ configure_tmux_session_display() {
     fi
 
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_model "$WORKER_MODEL" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_model 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_agent "$WORKER_AGENT" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_role "$WORKER_SESSION_ROLE" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_role 失败（worker 继续运行）"
     fi
 
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
 }
@@ -6109,7 +6118,7 @@ start_session_logging() {
     {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
-    } >> "$log_path"
+    } >> "$log_path"   # redact-ok：固定文字 + 会话名
     # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
     read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$sess")"
     case "$st" in
@@ -6118,15 +6127,31 @@ start_session_logging() {
             log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
             return 0 ;;
     esac
-    [ "$pipe" = 1 ] && return 0
+    session_log_pipe_ensure "$sess" "$tgt" "$pipe" "$log_path" || \
+        log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+}
+
+# 让 worker 窗格的日志管道是「带令牌过滤」的那种（GitHub#342）。返回 1 = 没挂上。
+#   已经挂着、会话上有 @redact_pipe 标记 → 什么都不做
+#   挂着但没有标记 = 升级前用 `cat` 挂的 → 换成过滤版（不带 -o 再挂一次是直接替换，不会关掉）
+#   没挂 → 挂上
+# 标记读不到时不换（下次再判）：读不到不等于没有。
+session_log_pipe_ensure() {   # <tmux_session> <worker 窗格> <已挂=1> <日志路径>
+    local sess="$1" tgt="$2" pipe="$3" log_path="$4" mark pipe_cmd
+    if [ "$pipe" = 1 ]; then
+        mark="$(tmux show-options -qv -t "=$sess:" @redact_pipe 2>/dev/null)" || return 0
+        [ "$mark" = 1 ] && return 0
+    fi
+    pipe_cmd="$(redact_pane_pipe_cmd "$log_path")"
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。
-    if ! tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null; then
+    if ! tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null; then
         sleep 0.3
-        tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null || \
-            log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+        tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null || return 1
     fi
+    tmux set-option -t "=$sess:" @redact_pipe 1 2>/dev/null || true
+    return 0
 }
 
 # 起完 fresh session 后探活并 capture 秒退死因。
@@ -6151,7 +6176,7 @@ verify_fresh_session() {
             printf '\n===== %s session=%s 秒退，pane capture =====\n' \
                 "$(date -Iseconds)" "$sess"
             tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-        } | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
+        } | redact_pipe | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
         tmux kill-session -t "$sess" 2>/dev/null || true
         return 1
     fi
@@ -7219,6 +7244,100 @@ project_auto_add_tick() {
     return 0
 }
 
+# ── 令牌脱敏：定期扫描（GitHub#342）──
+# daemon 自己写的日志在落盘前就替换了（log() / redact_pipe / 窗格历史的过滤管道）。这里补两件事：
+#   1. agent 自己写的会话记录（claude / codex 的对话记录）：CLI 写入时 daemon 插不上手，
+#      改为定期原地替换。只碰工作目录在本项目 WORKTREE_BASE 下的会话。
+#   2. 升级前已经落盘的窗格历史 / poll.log，以及升级前用 `cat` 挂着日志的活会话（换成过滤版）。
+# REDACT_AGENT_RECORDS 写成空值 / false 只关第 1 件；daemon 自己的日志始终处理。
+# 每 REDACT_SCAN_INTERVAL_SECS（默认 600）秒一次；一次最多跑 REDACT_SCAN_BUDGET_SECS（默认 20）秒，
+# 没扫完不记时间，下一轮接着扫（位置记在 $STATE_DIR/redact-scan.json）。
+# 这里的任何失败都只记日志，不影响派工。
+REDACT_AGENT_RECORDS="${REDACT_AGENT_RECORDS-true}"
+
+redact_agent_records_on() {
+    case "$(printf '%s' "${REDACT_AGENT_RECORDS:-}" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off) return 1 ;;
+    esac
+    return 0
+}
+
+redact_scan_tick() {
+    local stamp="$STATE_DIR/redact-scan.stamp" now last=0
+    local every="${REDACT_SCAN_INTERVAL_SECS:-600}"
+    [[ "$every" =~ ^[0-9]+$ ]] || every=600
+    now="$(date +%s)"
+    [ -f "$stamp" ] && last="$(cat "$stamp" 2>/dev/null || true)"
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [ $((now - last)) -ge "$every" ] || return 0
+
+    # tmux 会话清单：成功读到才算数（「没有 server」也是成功读到：一个会话都没有）。
+    # 读不到时不给清单，扫描就不会把任何窗格历史当成「已经写完」。
+    local live="" live_ok=0 err list name
+    err="$(mktemp)"
+    if list="$(tmux list-sessions -F '#{session_name}' 2>"$err")"; then
+        live="$list"; live_ok=1
+    elif grep -qE '^(no server running on |error connecting to .*\(No such file or directory\))' "$err"; then
+        live_ok=1
+    fi
+    rm -f "$err"
+
+    # 升级前用 `cat` 挂着日志的本项目活会话：认得出 worker 窗格的换成过滤版
+    if [ "$live_ok" = 1 ] && [ -n "${SESSION_LOG_DIR:-}" ]; then
+        local st tgt pid dead pipe rest
+        while IFS= read -r name; do
+            # 只认本项目的 worker 会话：名字是「前缀-issue<编号>」，而且它的日志就在本项目的
+            # 日志目录里。别的项目的前缀可能以本项目的前缀开头（tutor / tutor-web），
+            # 认错了会把别人的日志管道改指到这里来。
+            rest="${name#"${TMUX_PREFIX}-${SESSION_NAME_PREFIX}"}"
+            [ "$rest" != "$name" ] && [[ "$rest" =~ ^[0-9]+$ ]] || continue
+            [ -f "$(session_log_path "$name")" ] || continue
+            read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$name")"
+            case "$st" in found|single) ;; *) continue ;; esac
+            [ "$pipe" = 1 ] || continue
+            session_log_pipe_ensure "$name" "$tgt" "$pipe" "$(session_log_path "$name")" || true
+        done <<<"$live"
+    fi
+
+    # 不加全机锁：几个项目的 daemon 同时扫到同一份会话记录也没关系——每一处都是「再读一次，
+    # 还是那个令牌才写」，写进去的又是同样的字节，谁先谁后结果一样。扫描位置各项目各记各的。
+    local args=(scan --state "$STATE_DIR/redact-scan.json"
+                --budget-secs "${REDACT_SCAN_BUDGET_SECS:-20}" --plain "$LOG_FILE")
+    local live_file=""
+    if [ -n "${SESSION_LOG_DIR:-}" ]; then
+        args+=(--pane-dir "$SESSION_LOG_DIR")
+        if [ "$live_ok" = 1 ]; then
+            live_file="$(mktemp)"
+            printf '%s\n' "$live" > "$live_file"
+            args+=(--live-sessions "$live_file")
+        fi
+    fi
+    if redact_agent_records_on && [ -n "${WORKTREE_BASE:-}" ]; then
+        args+=(--cwd-prefix "$WORKTREE_BASE"
+               --claude-root "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+               --codex-root "${CODEX_SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}")
+    fi
+    local out rc=0 line done=1
+    out="$(python3 "$_LIB_DIR/redact_tokens.py" "${args[@]}" 2>&1)" || rc=$?
+    [ -n "$live_file" ] && rm -f "$live_file"
+    if [ "$rc" != 0 ]; then
+        log "⚠️ 令牌脱敏：扫描异常退出（退出码 $rc），下一轮重试：$(printf '%s' "$out" | tail -1)"
+        return 0
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            error=*) log "⚠️ 令牌脱敏：${line#error=}（这个文件本轮没处理，下一轮重试）" ;;
+            files=*)
+                [[ "$line" == *" unfinished=1 "* ]] && done=0
+                if [[ "$line" =~ changed=([0-9]+)\ replaced=([0-9]+) ]] && [ "${BASH_REMATCH[2]}" -gt 0 ]; then
+                    log "令牌脱敏：${BASH_REMATCH[1]} 个文件里替换了 ${BASH_REMATCH[2]} 处（指纹 ${line##*fingerprints=}）"
+                fi ;;
+        esac
+    done <<<"$out"
+    [ "$done" = 1 ] && printf '%s\n' "$now" > "$stamp"
+    return 0
+}
+
 price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
     local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"
@@ -7455,7 +7574,7 @@ agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
             {
                 printf '\n===== %s session=%s 卡在目录信任框，pane capture =====\n' "$(date -Iseconds)" "$sess"
                 tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-            } >> "${log_path:-/dev/null}" 2>/dev/null
+            } | redact_pipe >> "${log_path:-/dev/null}" 2>/dev/null
             tmux kill-session -t "$sess" 2>/dev/null || true
             return 0
         fi

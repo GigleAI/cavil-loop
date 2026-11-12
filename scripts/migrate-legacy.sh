@@ -32,6 +32,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_names.sh
 source "$SCRIPT_DIR/_names.sh"
+# 往项目日志里追加内容前先做令牌脱敏（GitHub#342）
+# shellcheck source=_redact.sh
+source "$SCRIPT_DIR/_redact.sh"
 # shellcheck source=_preview_adopt.sh
 source "$SCRIPT_DIR/_preview_adopt.sh"
 
@@ -323,7 +326,7 @@ migrate_key() {
         # 第一轮就会写它）。只在本项目确实在迁（有进度文件）时认它，日志并进新目录后删掉。
         if [ -f "$progress" ] && [ -d "$old_sd" ] && [ -d "$new_sd" ] && [ ! -e "$old_sd/state.json" ] \
            && [ -z "$(find "$old_sd" -mindepth 1 -maxdepth 1 ! -name poll.log ! -name poll.lock ! -name .tick 2>/dev/null)" ]; then
-            [ ! -f "$old_sd/poll.log" ] || cat "$old_sd/poll.log" >> "$new_sd/poll.log" 2>/dev/null || true
+            [ ! -f "$old_sd/poll.log" ] || redact_stream < "$old_sd/poll.log" >> "$new_sd/poll.log" 2>/dev/null || true
             rm -rf -- "$old_sd" && mlog "清掉迁移中途在旧位置冒出的空状态目录 $old_sd（只有日志，已并进新目录）"
         fi
         if [ -e "$old_sd" ] && [ -e "$new_sd" ]; then
@@ -431,7 +434,7 @@ migrate_key() {
         rm -f "$tcfg"
         # 本项目自己的日志里也留一笔，翻 poll.log 的人能看到这里发生过什么
         printf '[%s] [migrate] 本项目已从 %s 迁到 %s，详情见 %s\n' "$(date -Iseconds)" "$old_sd" "$new_sd" "$MIG_LOG" \
-            >> "$new_sd/poll.log" 2>/dev/null || true
+            | redact_pipe >> "$new_sd/poll.log" 2>/dev/null || true
     fi
 
     # ── 5. 环境文件 ──

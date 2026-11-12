@@ -90,6 +90,14 @@ and the daemon logs a warning each round if a config that holds a token is
 group- or world-readable. This matters: the common `umask 0002` produces `0664`,
 which every local user can read.
 
+## Tokens do not stay in local logs (GitHub#342)
+
+A worker's environment holds a GitHub token, and an agent can print it verbatim; it then ends up in files that are kept for a long time — pane history, `poll.log`, the agent's own session records, codex's environment snapshots. Any process of the same user on the machine can read them, and the session records are the weekly report's data source, so they cannot simply be deleted.
+
+- The daemon replaces tokens with `REDACTED-<fingerprint>` before its own logs reach disk; it periodically replaces them in place in the agents' session records; codex workers no longer write environment snapshots. Scope, switches and the command that cleans old snapshots: [operations.md](operations.md#github-token-redaction-github342).
+- This reduces what reaches disk; it is not isolation: the token is still in the worker's environment, and processes of the same user can still read it. Only prefixed GitHub tokens are matched; ones the terminal wrapped, old-format ones and other secrets are out of scope (full list behind the link above).
+- The fingerprint is the first 12 hex characters of the token's sha256 and cannot be turned back into it; it only tells you which token showed up in a log — rotate it as you normally would.
+
 ## What **doesn't** trigger the daemon (even with stale labels + anonymous comments)
 
 Easy to worry about: you merge a PR, forget to flip `pending/agent` back to `pending/human`, an attacker drops a comment on that merged PR — will the worker fire? **No**, the daemon filters this out by default:

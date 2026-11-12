@@ -85,6 +85,14 @@ EnvironmentFile 两者强制收紧（老安装再跑一次也会补上），daem
 里装着 token 却是同组 / 其他人可读时写一条告警。这条有实际意义 —— 常见的 `umask 0002`
 产出的是 `0664`，同机任何用户都读得到。
 
+## 令牌不留在本机日志里（GitHub#342）
+
+worker 的环境里有 GitHub 令牌，agent 可能把它原样打印出来，随后进入长期保留的文件——窗格历史、`poll.log`、agent 自己的会话记录、codex 的环境快照。这些文件同机同用户都读得到，会话记录还是周报的数据来源，不能删。
+
+- daemon 自己写的日志在落盘前把令牌换成 `REDACTED-<指纹>`；agent 的会话记录由 daemon 定期原地替换；codex worker 不再写环境快照。范围、开关、清理旧快照的命令见 [operations.zh.md](operations.zh.md#github-令牌脱敏github342)。
+- 这是减少落盘，不是隔离：令牌仍在 worker 的环境里，同机同用户的进程照旧读得到。只认带前缀的 GitHub 令牌；终端折行的、老格式的、别的密钥都不在范围内（完整清单见上面的链接）。
+- 指纹是令牌 sha256 的前 12 位，推不回原文；它只用来认「日志里出现过的是哪一把」，发现后该轮换的照常轮换。
+
 ## 什么**不会**触发 daemon（哪怕 label 没翻、有匿名评论）
 
 容易担心：PR merge 完忘记把 `pending/agent` 翻成 `pending/human`，attacker 跑去

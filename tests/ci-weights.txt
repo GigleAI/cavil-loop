@@ -92,3 +92,4 @@ weekly-report-worktime-turns 2
 worker-selection 1
 write-token-split 1
 session-switch-keeps-client 74
+token-redaction 35

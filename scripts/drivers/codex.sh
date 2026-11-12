@@ -29,6 +29,27 @@ codex_no_daemon_flag() {
     return 0
 }
 
+# 不让 codex 写环境快照（GitHub#342）。codex 默认每次启动把整份环境变量（含 GH_TOKEN）写进
+# $CODEX_HOME/shell_snapshots/<会话编号>.<时间>.sh，之后执行命令时读回；文件长期留着、
+# 越积越多（实测一台机器三天 300 多份，每份都是令牌原文）。事后去改它没法证明「没人在用」，
+# 所以从源头关掉：0.167.1 实测 `--disable shell_snapshot` 后交互式会话不再写快照，命令照常执行。
+# 只在这个版本的 codex 确实有这项功能时才传（老版本没有这项功能，也就不写快照）。
+# CODEX_SHELL_SNAPSHOT=on 可以留着快照（那样令牌会继续写进去）。
+codex_no_snapshot_flag() {
+    case "$(printf '%s' "${CODEX_SHELL_SNAPSHOT:-off}" | tr '[:upper:]' '[:lower:]')" in
+        on|1|true|yes) return 0 ;;
+    esac
+    codex features list 2>/dev/null | grep -qE '^shell_snapshot[[:space:]]' && echo "--disable shell_snapshot"
+    return 0
+}
+
+# 每条启动命令都带的两个开关，中间只在两个都有时才加空格（没有第二个时命令串和以前逐字节相同）。
+codex_launch_flags() {
+    local a b
+    a="$(codex_no_daemon_flag)"; b="$(codex_no_snapshot_flag)"
+    printf '%s' "$a${a:+${b:+ }}$b"
+}
+
 codex_session_dirs() {
     local home="${CODEX_HOME:-$HOME/.codex}"
     local d
@@ -162,7 +183,7 @@ agent_command_new() {
     local model_arg
     model_arg="$(worker_model_arg)"
     printf 'codex %s %s %s "$(cat %q)"' \
-        "$(codex_no_daemon_flag)" \
+        "$(codex_launch_flags)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
@@ -180,7 +201,7 @@ agent_command_resume() {
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
         printf 'codex resume %q %s %s %s "$(cat %q)"' \
             "$WORKER_SESSION_ID" \
-            "$(codex_no_daemon_flag)" \
+            "$(codex_launch_flags)" \
             "${CODEX_EXTRA_FLAGS:-}" \
             "$model_arg" \
             "$prompt_file"
@@ -188,7 +209,7 @@ agent_command_resume() {
     fi
     # tmux 已在目标 worktree cwd 中启动；--last 会按 cwd 续接最近会话并直接注入 prompt。
     printf 'codex resume --last %s %s %s "$(cat %q)"' \
-        "$(codex_no_daemon_flag)" \
+        "$(codex_launch_flags)" \
         "${CODEX_EXTRA_FLAGS:-}" \
         "$model_arg" \
         "$prompt_file"
