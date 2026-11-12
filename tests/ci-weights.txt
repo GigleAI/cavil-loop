@@ -73,6 +73,7 @@ smoke 6
 sub-issue-split 3
 token-usage-claude 3
 token-usage-codex 3
+usage-limit 140
 weekly-report-attribution 1
 weekly-report-bot-logins 1
 weekly-report-by-model 2

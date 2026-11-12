@@ -73,3 +73,11 @@ agent_command_resume() {
 # agent_trust_paths() {    # <key>... ；必须幂等，写文件走共享锁
 #     trust_config_locked_update "<配置文件>" _my_render _my_verify "$@"
 # }
+
+# 可选：你的 agent 是包月订阅、有时段用量上限时实现这三样（契约见 _common.sh「用量上限」）。
+# 先在真实环境里把撞上限那一刻的整屏截下来，在 scripts/usage_limit.py 里加一段屏幕规则和样本。
+# AGENT_USAGE_LIMIT=your-agent
+# agent_account_dir() { printf '%s\n' "${YOUR_AGENT_HOME:-$HOME/.your-agent}"; }
+# agent_session_record() {   # <cwd> <session_id> → 会话记录文件路径
+#     ...
+# }
