@@ -21,7 +21,9 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (F403_<key>: a
 permission 403, F403rl_<key>: a rate-limit 403 — GitHub#243) (key = path with
 '/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
-F_post_comment / F_post_labels / F_delete_labels make those writes fail; F_post_label_<name> fails
+F_post_comment / F_post_labels / F_delete_labels make those writes fail (F_post_comment_lost: the comment
+is created but the call reports failure; hook_POST_issues_<n>_comments_<k> / hook_after_POST_issues_<n>_comments_<k>
+run right before / after the k-th comment on item n — GitHub#382); F_post_label_<name> fails
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
 tokens.log records the GH_TOKEN each call ran with.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
@@ -269,8 +271,10 @@ def touch(n):
 
 def append_event(n, ev, name):
     evs = load("events.json", {})
+    # 不存 id：读的时候统一按位置补（见 GET …/events），这样夹具手写的记录和 daemon 写出来的记录
+    # 编号先后与发生先后一致，和真 GitHub 一样（GitHub#382：交人的写前核对按编号认先后）
     evs.setdefault(str(n), []).append(
-        {"id": 50000 + sum(len(v) for v in evs.values()), "event": ev, "label": {"name": name},
+        {"event": ev, "label": {"name": name},
          "actor": {"login": me(), "type": "User"}, "created_at": now_iso()})
     save("events.json", evs)
 
@@ -436,11 +440,25 @@ if method in ("POST", "DELETE") and len(parts) >= 3 and parts[0] == "issues" and
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
     if os.path.exists(p("F_post_comment")):
         fail("HTTP 500: injected comment failure")
+    # GitHub#382：hook_POST_issues_<n>_comments_<k> 在这个条目第 k 次发评论之前运行，hook_after_POST_issues_<n>_comments_<k>
+    # 在它已经生效之后运行；F_post_comment_lost = 评论已经发上去了、却向调用方报失败（响应丢了）
+    _ck = "POST_issues_%s_comments" % parts[1]
+    _cc = p("count_" + _ck)
+    _c = int(open(_cc).read()) + 1 if os.path.exists(_cc) else 1
+    open(_cc, "w").write(str(_c))
+    _ch = p("hook_%s_%d" % (_ck, _c))
+    if os.path.exists(_ch):
+        subprocess.run(["bash", _ch], check=False, stdin=subprocess.DEVNULL, timeout=30)
     cm = load("comments.json", {})
     lst = cm.setdefault(parts[1], [])
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
                 "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
+    _ah = p("hook_after_%s_%d" % (_ck, _c))
+    if os.path.exists(_ah):
+        subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)
+    if os.path.exists(p("F_post_comment_lost")):
+        fail("HTTP 502: injected: comment was created but the response was lost")
     emit({"id": lst[-1]["id"]})
 
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "labels":
