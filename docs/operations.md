@@ -2882,7 +2882,7 @@ merge that item (nor the bound issue / PR it checked at that moment):
 | Autopilot: takeover, copying the label, merge | skipped |
 | Waiting-on-prerequisite check | skipped, not flipped back even when the prerequisite is done |
 | Relabeling the bound issue after a PR was closed unmerged; `Done` / hand-over and worktree cleanup after a merge; the parent roll-up when all sub-issues are closed | held back and not recorded as done; done in the round after resuming |
-| Conflict check on `pending/human` PRs, missing-settings notice | skipped |
+| Conflict check on `pending/human` PRs | skipped |
 
 Closing the item does not resume it: the record stays and the item is still stopped when
 reopened (a merged PR cannot be reopened; its record is dropped).
