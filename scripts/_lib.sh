@@ -5491,14 +5491,25 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
         else where="本 issue "; fi
         body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head")
+        # 说明里照搬了 PR 正文的总结段，大小没有上限：经文件交给 jq 和 gh，不经命令行参数（GitHub#426）
+        local bf=""
+        if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+            [ -z "$bf" ] || rm -f "$bf"; bf=""
+            log "  ⚠️ 托管：PR #$pr 已合并，但写不出合并说明的临时文件；说明$( [ "$kind" = issue ] && echo "改由交接补发（短版）" || echo "这次没发")"
+        fi
         if [ "$kind" = issue ]; then
             # 合并后的交接（GitHub#233）：issue 留着、翻 pending/human 给人验收。先记下要做的事和评论全文，
             # 评论发不出去、标签没翻好，都由合并后的清理那一步（merged_issue_label → autopilot_merged_handoff）接着做
-            autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --arg b "$body" || true
+            if [ -n "$bf" ]; then
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --rawfile b "$bf" || true
+            else
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: ""}' --arg p "$pr" --arg n "$n" || true
+            fi
         fi
-        if run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -f "body=$body"; then
+        if [ -n "$bf" ] && run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -F "body=@$bf"; then
             [ "$kind" != issue ] || autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
         fi
+        [ -z "$bf" ] || rm -f "$bf"
         autopilot_state_set "$sf" 'del(.prs[$p])' --arg p "$pr" || true
         return 0
     fi
@@ -5552,7 +5563,16 @@ autopilot_merged_handoff() {   # <issue> <PR>
                 any(.[][]?; ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase) and ((.body // "") | contains($m)))' >/dev/null 2>&1; then
             body=$(autopilot_state_get "$sf" '.handoff[$p].body' --arg p "$pr")
             [ -n "$body" ] || body="## ✅ 托管：已自动合并 PR #$pr"$'\n\n'"$(autopilot_daemon_sig)"$'\n'"<!-- cavil-loop:autopilot-merged pr=$pr head= -->"
-            run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -f "body=$body" || return 1
+            # 正文经文件交给 gh，不经命令行参数（GitHub#426：说明里有 PR 的总结段，大小没有上限）
+            local bf
+            if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+                [ -z "${bf:-}" ] || rm -f "$bf"
+                log "  ⚠️ 托管合并交接：写不出合并说明的临时文件，下轮再试"; return 1
+            fi
+            if ! run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -F "body=@$bf"; then
+                rm -f "$bf"; return 1
+            fi
+            rm -f "$bf"
         fi
         autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
     fi

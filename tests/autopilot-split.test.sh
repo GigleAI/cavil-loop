@@ -211,6 +211,35 @@ $SUMMARY" "$H1" "pending/merge"
     chk "  → 交接记录已清" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
     chk "  → 合并说明只有一条" "$(comments_with 51 'autopilot-merged pr=52 ')" 1
 
+    section "【1L】总结段很长（合并说明约 135 KB，超过单个命令行参数 128 KB 的上限）：照样发出全文；发不出时交接记录存下全文、下一轮补发（GitHub#426）"
+    # 正文太大，测试自己也不能经 jq --arg 写：用 python 直接改假 GitHub 的文件
+    big_summary() {
+        python3 - "$GD/items.json" <<'PY2'
+import json, sys
+f = sys.argv[1]; d = json.load(open(f))
+big = ("<!-- autopilot-summary:begin -->\n<details><summary>背景</summary>\n\nSUMMARYMARK "
+       + "很长的总结内容。" * 5700 + "\n\n</details>\n<!-- autopilot-summary:end -->")
+d["52"]["body"] = "做了 X。\n\nRefs #51\nPart of #50\n\n" + big
+json.dump(d, open(f, "w"), ensure_ascii=False)
+PY2
+    }
+    merged_note() {   # <issue>：daemon 发的合并说明里，带 SUMMARYMARK 的那几条的 UTF-8 字节数（一行一条）
+        jq -r --arg n "$1" '(.[$n] // [])[] | select(.body | contains("autopilot-merged pr=52 ")) | select(.body | contains("SUMMARYMARK")) | (.body | utf8bytelength)' "$GD/comments.json"
+    }
+    fresh; split_ready; big_summary
+    tick
+    chk "照常合并" "$(merged 52)" 1
+    chk "  → 合并说明发出一条，带上全部总结段（超过 130000 字节）" "$(merged_note 51 | awk '$1>130000' | wc -l | tr -d ' ')" 1
+    fresh; split_ready; big_summary
+    : > "$GD/F_post_comment"
+    tick
+    chk "评论发不出：照常合并、说明没发出去" "$(merged 52)/$(merged_note 51 | wc -l | tr -d ' ')" "1/0"
+    chk "  → 交接记录存下了说明全文" "$(jq -r '.autopilot.handoff["52"].body // "" | select(contains("SUMMARYMARK")) | utf8bytelength > 130000' "$STATE")" true
+    rm -f "$GD/F_post_comment"
+    tick
+    chk "  → 下一轮补发全文，只有一条" "$(merged_note 51 | awk '$1>130000' | wc -l | tr -d ' ')" 1
+    chk "  → 交接完成：子项翻 pending/human，记录已清" "$(has_label 51 pending/human)/$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" "yes/none"
+
     section "【1b】同一轮里的无关 PR（issue 不是拆分子项、也没有托管标签）不被补标签、不被合并"
     fresh; split_ready
     mkissue 60 "pending/PR"; mkpr 61 feature/issue-60 "Refs #60" "$H1" "pending/review"
