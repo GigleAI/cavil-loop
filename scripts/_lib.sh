@@ -8014,10 +8014,15 @@ usage_limit_label_events() {   # <编号>
           then error("shape") else sort_by(.id) end end' 2>/dev/null || return 2
 }
 
-# 本机这一侧现在的样子：会话、登记的工作窗格、窗格里的 agent 与角色、派工归属、触发标签。
+# 本机这一侧现在的样子：会话、登记的工作窗格、窗格里那个进程（进程号 + 启动时刻）、agent 与角色、
+# 这个角色登记的 agent 会话编号、派工归属、触发标签。
+# 窗格编号不变不等于还是撞上限的那个 worker：换 agent / 换角色 / 续接失败降级都是在**原窗格**里
+# 换程序（worker_session_launch 的 respawn-pane），角色登记的会话编号也会跟着换。所以进程和登记都
+# 进这份身份（代码复审第 1 轮：只比窗格编号时，新起的正常 worker 被当成旧的上限事件转给了人）。
+# 进程号会被系统复用，所以带上启动时刻；读不出启动时刻算读不到，不算「没变」。
 # stdout 一行 JSON。会话 / 窗格确定不在了返回 1；读不到返回 2。
 usage_limit_local_doc() {   # <工作编号>
-    local work="$1" sess st pane pid dead pipe agent role host trigger rc=0
+    local work="$1" sess st pane pid dead pipe agent role host trigger started sid rc=0
     sess="$(tmux_session_name "$work")"
     worker_session_exists "$sess" || rc=$?
     [ "$rc" = 0 ] || return "$rc"
@@ -8032,11 +8037,15 @@ usage_limit_local_doc() {   # <工作编号>
         *) return 2 ;;
     esac
     [ "$dead" = 0 ] || return 1
+    started="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')" || return 2
+    [ -n "$started" ] || return 2
+    sid="$(agent_session_id_get "$work" "$agent" "$role")" || return 2
     host="$(jq -er --arg k "$work" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
     trigger="$(jq -er --arg k "$work" '.worker_trigger_labels[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
     jq -cn --arg sess "$sess" --arg pane "$pane" --arg agent "$agent" --arg role "$role" \
-           --arg host "$host" --arg trigger "$trigger" \
-           '{sess: $sess, pane: $pane, agent: $agent, role: $role, host: $host, trigger: $trigger}'
+           --arg host "$host" --arg trigger "$trigger" --arg pid "$pid" --arg started "$started" --arg sid "$sid" \
+           '{sess: $sess, pane: $pane, pid: $pid, started: $started, agent: $agent, role: $role, sid: $sid,
+             host: $host, trigger: $trigger}'
 }
 
 # 把 usage_limit_local_doc 的结果摊到 UL_PANE / UL_AGENT / UL_ROLE（那个函数总在 $( ) 里调，设不了全局）
@@ -8183,7 +8192,7 @@ usage_limit_handoff() {   # <issue|pr> <编号>
             | if ($item | del(.labels)) != ($id.item | del(.labels)) then "changed:条目变了（开闭、合并、目标分支、最新提交或来源）"
               # 三次写入都已经在 GitHub 上了：本机会话之后怎么样（比如被完工回收关掉）不再相干
               elif $item.labels == $l2 and $new == [$e1, $e2] then "C"
-              elif $loc != $id.local then "changed:本机会话、工作窗格、agent、角色、派工归属或触发标签变了"
+              elif $loc != $id.local then "changed:本机会话、工作窗格、窗格里的进程、agent、角色、登记的会话编号、派工归属或触发标签变了"
               elif $item.labels == $l0 and $new == [] then "A"
               elif $item.labels == $l1 and $new == [$e1] then "B"
               else "changed:标签被改过（现在是：" + ($item.labels | join(", ")) + "）" end')" || return 0

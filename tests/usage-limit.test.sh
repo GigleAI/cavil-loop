@@ -640,6 +640,29 @@ chk "PR 已合并：不写标签" "$(posts_label 31) $(dels) $(labels 31)" "0 0 
 arm; hook hook_issues_7_3 "'$REAL_TMUX' -S '$SOCK' kill-session -t '=$PFX-issue7'; '$REAL_TMUX' -S '$SOCK' new-session -d -s '$PFX-issue7' 'sleep 900'"; poll
 chk "留言后会话被换掉（窗格不是原来那个）：不写标签" "$(posts_label 7) $(labels 7)" "0 doing/agent"
 has "会话被换掉：日志写明停手" "$LOG" "转人工停手"
+# 原窗格里换了程序（换 agent / 续接降级都走 respawn-pane，窗格编号不变）、或角色登记换了会话编号：
+# 都不再是撞上限的那个 worker（代码复审第 1 轮）
+respawn="'$REAL_TMUX' -S '$SOCK' respawn-pane -k -t '$PFX-issue7' 'echo NEW-WORKER; exec sleep 900'"
+arm; pane_before="$(T list-panes -t "=$PFX-issue7:" -F '#{pane_id}')"
+hook hook_issues_7_3 "$respawn"; poll
+chk "留言后原窗格里换了程序：窗格编号确实没变、新程序在跑" "$(T list-panes -t "=$PFX-issue7:" -F '#{pane_id}') $(screen_of 7 | grep -c NEW-WORKER)" "$pane_before 1"
+chk "留言后原窗格里换了程序：不加人工标签" "$(posts_label 7) $(labels 7)" "0 doing/agent"
+has "原窗格里换了程序：日志写明停手" "$LOG" "转人工停手"
+poll; poll
+chk "原窗格里换了程序：之后也不写，新 worker 的进行中标签还在" "$(nwrites) $(labels 7) $(ncomments 7)" "0 doing/agent 1"
+arm; hook hook_issues_7_5 "$respawn"; poll
+chk "加标签后原窗格里换了程序：不摘进行中" "$(dels) $(labels 7)" "0 doing/agent,pending/human"
+arm; hook hook_issues_7_3 "echo $SID2 > '$W/state/agent-sessions/7.claude.worker'"; poll
+chk "留言后角色登记换了会话编号：不加人工标签" "$(posts_label 7) $(labels 7) $(cat "$W/state/agent-sessions/7.claude.worker")" "0 doing/agent $SID2"
+poll; poll
+chk "角色登记换了会话编号：之后也不写" "$(nwrites) $(labels 7) $(ncomments 7)" "0 doing/agent 1"
+arm; hook hook_issues_7_5 "echo $SID2 > '$W/state/agent-sessions/7.claude.worker'"; poll
+chk "加标签后角色登记换了会话编号：不摘进行中" "$(dels) $(labels 7)" "0 doing/agent,pending/human"
+# 进程的启动时刻读不出：算读不到，不算没变
+arm; printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/ps"; chmod +x "$SANDBOX/bin/ps"; poll
+chk "进程启动时刻读不出：本轮什么都不写" "$(nwrites) $(labels 7)" "0 doing/agent"
+rm -f "$SANDBOX/bin/ps"; poll; poll
+chk "读得出之后：照常认定并转人工（对照：没变化时确实交人）" "$(ncomments 7) $(labels 7)" "1 pending/human"
 arm; jset "$STATE" '.worker_hosts["7"] = "other-host"'; poll
 chk "认定前派工归属变了：什么都不写" "$(nwrites) $(labels 7)" "0 doing/agent"
 
