@@ -5882,7 +5882,14 @@ async function dragRow(src: Locator, target: Locator) {
   // a group head: its group's body, not the (sticky) head itself: scrolling to a sticky row can leave it under the next group's head
   await target.evaluate((el: Element) => ((el.closest('.group-head') && el.closest('tbody')) || el).scrollIntoView({ block: 'center', inline: 'nearest' }));
   const b = (await target.boundingBox())!;
-  await page.mouse.move(b.x + Math.min(20, b.width / 2), b.y + b.height / 2, { steps: 6 });
+  const x = b.x + Math.min(20, b.width / 2);
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x, y, { steps: 6 });
+  // WebKit only drops where the last "drag over" was accepted, and the last step above can end on an
+  // element the pointer has only just entered: stay on it for two more moves before letting go — a hand
+  // always does (GitHub#378: on WebKit the release right after entering dropped nothing)
+  await page.mouse.move(x + 1, y);
+  await page.mouse.move(x, y);
   await page.mouse.up();
 }
 
@@ -6465,6 +6472,15 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4);
   await page.mouse.down();
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
+  // Linux WebKit (what CI runs) draws no corner to drag on a text box — the macOS app's WebKit and
+  // Chromium do. On that one engine only, the engine's part (the box gets a new height while the button
+  // is held) is done here, between the same press and release, and what the app does with that height
+  // is checked; everywhere else the real drag must have changed the height by itself (GitHub#378).
+  const noCorner = process.platform === 'linux' && page.context().browser()?.browserType().name() === 'webkit';
+  if (noCorner) {
+    expect(await height()).toBe(small); // still true there: if Linux WebKit ever grows a corner, stop standing in for it
+    await reply.evaluate((el: HTMLElement, h: number) => { el.style.height = `${h}px`; }, small + 80);
+  }
   await page.mouse.up();
   const draggedH = await height();
   expect(draggedH).toBeGreaterThan(small + 40);

@@ -1,6 +1,6 @@
 [package]
 name = "cavil-harness"
-version = "0.5.1"
+version = "0.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Test-only: the client back end over stdin/stdout, so the TypeScript suites drive the real Rust code"
