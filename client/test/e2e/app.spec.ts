@@ -6899,6 +6899,92 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await app.close();
 });
 
+// ---- GitHub#405 (PR #410 review round 1): the shut fold's head line never draws one part over another ----
+test('GitHub#405 (PR #410 review round 1): many / long labels, a long milestone, an unreadable list — the shut fold\'s head line wraps; no two parts overlap, none leaves the dialog, at full and narrow width', async () => {
+  const REPO_KEY = 'gigleai/cavil-loop';
+  const LONG = 'needs-design-review-before-anything-else-happens';
+  const names = ['priority/p1', 'pending/human', LONG, 'bug', 'client'];
+  env.fake.state.w.repoLabels.set(REPO_KEY, [...names, 'autopilot', 'pending/agent'].map((name, i) => ({ name, color: ['d73a4a', 'fbca04', '0e8a16', '1d76db', '5319e7', 'ededed', 'c5def5'][i] })));
+  env.fake.state.w.milestones.set(REPO_KEY, [{ number: 7, title: '2026 年第四季度客户端正式版本（带完整的发布说明和下载页）', state: 'open', due_on: null }]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const toggle = page.getByTestId('new-issue-more-toggle');
+  const sumOf = (f: string) => page.getByTestId(`new-issue-more-${f}`);
+
+  /** every part of the head line: its box; none overlaps another, all inside the head button */
+  const assertNoOverlap = async (what: string) => {
+    const boxes = await page.evaluate(() => {
+      const head = document.querySelector('[data-testid="new-issue-more-toggle"]')!;
+      const sel = '.more-title, [data-testid="new-issue-more-label"], [data-testid="new-issue-more-extra"], [data-testid="new-issue-more-labels"], [data-testid="new-issue-more-milestone"], [data-testid="new-issue-more-iteration"]';
+      const r = (e: Element) => {
+        // a text part that broke onto two lines: each line box on its own
+        const rects = [...e.getClientRects()];
+        return rects.map((b) => ({ l: b.left, r: b.right, t: b.top, b: b.bottom }));
+      };
+      const h = head.getBoundingClientRect();
+      return { head: { l: h.left, r: h.right, t: h.top, b: h.bottom }, parts: [...head.querySelectorAll(sel)].map((e) => ({ id: e.getAttribute('data-testid') ?? e.className, label: e.getAttribute('data-label'), rects: r(e) })) };
+    });
+    expect(boxes.parts.length, what).toBeGreaterThan(2);
+    const flat = boxes.parts.flatMap((p) => p.rects.map((b) => ({ ...b, who: `${p.id}${p.label ? `:${p.label}` : ''}` })));
+    for (const b of flat) {
+      expect(b.l, `${what}: ${b.who} starts inside the head`).toBeGreaterThanOrEqual(boxes.head.l - 0.5);
+      expect(b.r, `${what}: ${b.who} ends inside the head`).toBeLessThanOrEqual(boxes.head.r + 0.5);
+      expect(b.b, `${what}: ${b.who} inside the head (height)`).toBeLessThanOrEqual(boxes.head.b + 0.5);
+    }
+    for (let i = 0; i < flat.length; i++)
+      for (let j = i + 1; j < flat.length; j++) {
+        const a = flat[i];
+        const b = flat[j];
+        if (a.who === b.who) continue;
+        const overlap = Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5;
+        expect(overlap, `${what}: ${a.who} and ${b.who} overlap`).toBe(false);
+      }
+  };
+
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('很多标签');
+  await openMoreFields(page);
+  await page.getByTestId('new-issue-milestone').selectOption({ index: 1 });
+  await page.getByTestId('new-issue-label-add').click();
+  for (const n of names) await page.locator(`[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="${n}"]`).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('new-issue-label-chip')).toHaveCount(5);
+  await toggle.click();
+  // the first three named, then "+2"; the cut long name keeps its full name on hover
+  expect(await page.getByTestId('new-issue-more-label').evaluateAll((els) => els.map((e) => e.getAttribute('data-label')))).toEqual(names.slice(0, 3));
+  await expect(page.getByTestId('new-issue-more-extra')).toHaveText('+2');
+  await expect(page.getByTestId('new-issue-more-extra')).toHaveAttribute('title', 'bug、client');
+  await expect(page.locator(`[data-testid="new-issue-more-label"][data-label="${LONG}"]`)).toHaveAttribute('title', LONG);
+  await expect(sumOf('milestone')).toHaveText('2026 年第四季度客户端正式版本（带完整的发布说明和下载页）');
+  await expect(sumOf('iteration')).toBeVisible();
+  await assertNoOverlap('1280 wide');
+  await shot(page, '405-05-many-labels-shut');
+  // a narrow window: the dialog shrinks with it, the line wraps further
+  await page.setViewportSize({ width: 560, height: 800 });
+  await assertNoOverlap('560 wide');
+  await shot(page, '405-06-many-labels-shut-narrow');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByTestId('confirm-cancel').click();
+  if (await page.getByTestId('dialog-esc-hint').count()) await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+  // the lists cannot be read: the red words are on the line, readable, overlapping nothing
+  env.fake.state.w.failLabels.add(REPO_KEY);
+  env.fake.state.w.failMilestones.add(REPO_KEY);
+  await page.getByTestId('write-entry').click();
+  await expect(sumOf('labels')).toHaveText('标签读取失败');
+  await expect(sumOf('milestone')).toHaveText('里程碑读取失败');
+  await expect(sumOf('labels')).toBeVisible();
+  await expect(sumOf('milestone')).toBeVisible();
+  await assertNoOverlap('unreadable, 1280 wide');
+  await page.setViewportSize({ width: 560, height: 800 });
+  await assertNoOverlap('unreadable, 560 wide');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  env.fake.state.w.failLabels.delete(REPO_KEY);
+  env.fake.state.w.failMilestones.delete(REPO_KEY);
+  await app.close();
+});
+
 // ---- GitHub#381: code blocks in the discussion — copy, wrap long lines, syntax colours ----
 const CODE381 = JSON.parse(readFileSync(join(root, 'test', 'fixtures', 'codeblocks.github.json'), 'utf8')) as {
   samples: Record<string, { markdown: string; html: string }>;

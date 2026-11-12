@@ -363,11 +363,15 @@ export function NewIssueDialog({
                     {part.kind === 'labels' ? (
                       <>
                         {part.names.map((n) => (
-                          <span key={n} className="label" data-testid="new-issue-more-label" data-label={n} style={labelStyle(colorOf(n), isDark)}>
-                            {n}
+                          <span key={n} className="label" data-testid="new-issue-more-label" data-label={n} title={n} style={labelStyle(colorOf(n), isDark)}>
+                            <span className="more-label-name">{n}</span>
                           </span>
                         ))}
-                        {part.more > 0 && <span data-testid="new-issue-more-extra">+{part.more}</span>}
+                        {part.more > 0 && (
+                          <span data-testid="new-issue-more-extra" title={labels.slice(part.names.length).join('、')}>
+                            +{part.more}
+                          </span>
+                        )}
                       </>
                     ) : (
                       <span className={part.tone === 'error' ? 'err' : undefined} data-testid={`new-issue-more-${part.field}`}>
