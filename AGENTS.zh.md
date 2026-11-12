@@ -358,6 +358,12 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 - **测试不能依赖开发机。** 第一次 CI 就抓到三处：假仓库的分支名跟着本机 `init.defaultBranch` 走（GitHub 机器默认是 `master`，
   要写 `git init -b main`）；夹具按北京时间写、`date` 却跟着本机时区（要固定 `TZ`）；结果目录放在仓库里，被扫全仓库的测试读到。
   新测试推上去之前，用 `TZ=UTC GIT_CONFIG_GLOBAL=<只含 user.name/email 的文件> bash tests/<名>.test.sh` 粗略模拟一台 GitHub 机器
+- **派工提示词在项目自己的状态目录里**（GitHub#396：`_lib.sh` 的 `prompt_file_path`，`$STATE_DIR/prompts/<N>-new.md` /
+  `<N>-cmt-<评论号>.md` / `<N>-pr-<PR号>.md`，目录 700，`cleanup-issue.sh` 清理时删掉），不在 `/tmp`——`/tmp` 下的固定文件名在同机几个
+  项目之间、同一份测试的两个副本之间都会撞。测试读提示词一律经 `tests/lib/prompt-files.sh`（`prompt_file_of` / `prompt_files_clear`），
+  不自己拼路径。跑旧版本派工脚本对拍的测试，先把那份目录交给 `prompt_tree_isolate <根> <目录>`：旧写法的每个脚本只把定文件名的那一行
+  改到本次运行的目录，新写法不动，介于两者之间一律报错——绝不悄悄退回 `/tmp`。由 `tests/prompt-files.test.sh` 守着（约 1.5 分钟；
+  真派工、真清理，以及固定提交 `4f585de` 的脚本经改写后真跑）
 - 检查绿了不等于可以不在本机跑改到的测试——它是底线，不是复审。`tests/run.sh` 自己由 `tests/run.test.sh` 守着
 
 ### 默认回归与负对照（GitHub#103）

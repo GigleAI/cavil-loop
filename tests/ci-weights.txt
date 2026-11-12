@@ -55,6 +55,7 @@ project-config 105
 project-config-poll 25
 project-priority 1
 prompt-compose 1
+prompt-files 60
 reap-finished-workers 10
 release-auto 11
 repair-unit-links 9
