@@ -63,11 +63,18 @@ export function markReleaseImages(html: string, web: string | undefined): string
   });
 }
 
-/** How many <img> in GitHub's HTML point outside the allowed hosts (they will not load). */
+/**
+ * How many <img> in GitHub's HTML point outside the allowed hosts (they will not load).
+ * Only the `src` the frame loads counts (GitHub#439): GitHub serves an outside image through its
+ * proxy and keeps the original address in `data-canonical-src`, which loads nothing — the same
+ * tag / attribute rules as `markReleaseImages`, so `data-canonical-src` is never read as `src`.
+ */
 export function blockedImages(html: string): number {
   let n = 0;
-  for (const m of html.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi)) {
-    const src = m[1];
+  for (const tag of html.match(IMG_TAG) ?? []) {
+    const m = IMG_SRC.exec(tag);
+    if (!m) continue;
+    const src = unescapeAttr(m[4]);
     if (src.startsWith('data:')) continue;
     if (!IMAGE_HOSTS.some((h) => src === h || src.startsWith(`${h}/`))) n++;
   }
