@@ -495,13 +495,14 @@ dispatch_one_issue() {
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
         d_rc=0; rel=0
-        stuck_release_begin issue "$num" "$trigger_label" && rel=1
+        stuck_release_begin issue "$num" "$trigger_label" || rel=$?
+        [ "$rel" != 2 ] || return 0
         d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
         # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
-        if [ "$rel" = 1 ]; then stuck_release_finish "$d_rc" || return 0; fi
+        if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
         if [ "$d_rc" = 0 ]; then
             dispatch_fail_reset "issue-$num"
             tmp=$(mktemp)
@@ -523,11 +524,12 @@ dispatch_one_issue() {
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
     d_rc=0; rel=0
-    stuck_release_begin issue "$num" "$trigger_label" && rel=1
+    stuck_release_begin issue "$num" "$trigger_label" || rel=$?
+    [ "$rel" != 2 ] || return 0
     d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
-    if [ "$rel" = 1 ]; then stuck_release_finish "$d_rc" || return 0; fi
+    if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "issue-$num"
     else
@@ -582,11 +584,12 @@ dispatch_one_pr() {
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
     d_rc=0; rel=0
-    stuck_release_begin pr "$prnum" "$trigger_label" && rel=1
+    stuck_release_begin pr "$prnum" "$trigger_label" || rel=$?
+    [ "$rel" != 2 ] || return 0
     d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
-    if [ "$rel" = 1 ]; then stuck_release_finish "$d_rc" || return 0; fi
+    if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "pr-$prnum"
         tmp=$(mktemp)

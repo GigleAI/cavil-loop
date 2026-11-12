@@ -7660,7 +7660,7 @@ stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [
                      items: (([$num] + $items + (.frozen.items // [])) | unique)}' \
         --arg kind "$kind" --arg num "$num" --arg why "$why" --arg token "$(stuck_new_token)" \
         --argjson now "$(pace_now)" --argjson items "$items" \
-        || log "❌ 卡住检测：$kind #$num 的停住记录写不进 $STATE_FILE"
+        || { log "❌ 卡住检测：$kind #$num 的停住记录写不进 $STATE_FILE"; return 1; }
 }
 # 各环节因为停住而跳过时留一行（调试级别：停住可能持续几天，不每轮刷正式日志）
 stuck_skip_note() {   # <环节> <编号>
@@ -7873,7 +7873,8 @@ stuck_frozen_tick() {   # <工作编号> <记录 JSON>
 
 # ── 人恢复：派工 ──
 # 父进程（轮询）在调派工脚本之前问：这次派工是不是在动用人的恢复指令。0 = 是，STUCK_REL 已设好
-# （传给派工脚本的 DISPATCH_STUCK_RELEASE）；1 = 普通派工，和没有这个功能时一模一样。
+# （传给派工脚本的 DISPATCH_STUCK_RELEASE）；1 = 普通派工，和没有这个功能时一模一样；
+# 2 = 是恢复派工，但上一次的结果还没了结，这一轮不要派。
 # 三条派工路径（新 issue / issue 评论 / PR 评论）都在同一个位置调这一个。
 STUCK_REL=""
 stuck_release_file() { printf '%s/stuck-release/%s.used' "$STATE_DIR" "$1"; }
@@ -7886,7 +7887,12 @@ stuck_release_begin() {   # <issue|pr> <编号> <触发标签>
         '(.stuck_workers // {}) | to_entries[] | select(.value.frozen != null and .value.kind == $kind
             and .value.num == $n and (.value.frozen.cand.label // "") == $l) | .key' "$STATE_FILE" 2>/dev/null | head -1)
     [ -n "$n" ] || return 1
-    rm -f "$(stuck_release_file "$n")"
+    # 上一次按恢复指令派工留下的「已用掉」凭据还在（那一轮没收尾，这一轮开头的 stuck_release_recover
+    # 也没能处理掉）：结果不明，这一轮不派工，更不能把凭据删掉重来
+    if [ -e "$(stuck_release_file "$n")" ]; then
+        log "卡住检测：$1 #$2 上一次恢复派工的结果还没了结，这一轮不派工"
+        return 2
+    fi
     STUCK_REL="$n|$(stuck_new_token)|$1|$2"
     log "卡住检测：$1 #$2 这次派工动用人的恢复指令（$3），结果由 stuck_release_finish 统一收尾"
     return 0
@@ -7963,9 +7969,14 @@ stuck_release_finish() {   # <派工脚本退出码>
     file="$(stuck_release_file "$n")"
     e=$(stuck_entry "$n")
     x=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
-    if ! used=$(jq -r --arg t "$token" 'select(.token == $t) | .event' "$file" 2>/dev/null) || ! [[ "$used" =~ ^[0-9]+$ ]]; then
+    if [ -e "$file" ] && { ! used=$(jq -r --arg t "$token" 'select(.token == $t) | .event' "$file" 2>/dev/null) || ! [[ "$used" =~ ^[0-9]+$ ]]; }; then
+        # 凭据在、却读不出是不是这一次的：当作已用掉、结果不明，重新停住（凭据在停住落盘后才删）
+        stuck_entry_set "$n" '.frozen.cand = null' || return 1
+        stuck_freeze "$n" "$kind" "$num" "按人的恢复指令（\`$x\`）派工后，本机留下的派工凭据读不出来，结果不明。任务可能已送出，请先看会话 \`$(tmux_session_name "$n")\` 再决定" && rm -f "$file"
+        return 1
+    fi
+    if [ ! -e "$file" ]; then
         # 指令没用掉：不算派工。清掉候选，下一轮重新初筛
-        rm -f "$file"
         if [ "$rc" = 75 ]; then
             stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
             return 1
@@ -7982,8 +7993,12 @@ stuck_release_finish() {   # <派工脚本退出码>
         stuck_freeze "$n" "$kind" "$num" "按人的恢复指令（\`$x\`）派工，连续 $miss 次都没能开始（派工脚本提前退出，退出码 $rc，原因见 daemon 机器的 poll.log）；任务没有送出"
         return 1
     fi
-    rm -f "$file"
-    stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$used" || true
+    # 先把「这条指令已用掉」落进状态文件，凭据文件最后才删：中途进程没了，下一轮开头的
+    # stuck_release_recover 凭它接着了结，同一条指令不会因为凭据丢了而再派一遍
+    if ! stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$used"; then
+        log "❌ 卡住检测：$kind #$num 记不下「恢复指令已用掉」，凭据留着，下一轮先了结它"
+        return 1
+    fi
     sess="$(tmux_session_name "$n")"
     stok=$(tmux show-options -qv -t "=$sess:" @dispatch_token 2>/dev/null) || stok=""
     why=""
@@ -8011,7 +8026,8 @@ stuck_release_finish() {   # <派工脚本退出码>
     fi
     if [ -z "$why" ]; then
         log "卡住检测：$kind #$num 按人的恢复指令（$x）派工成功 → 停住记录清掉，之后照常"
-        stuck_entry_del "$n" || true
+        stuck_entry_del "$n" || return 1
+        rm -f "$file"
         STUCK_ACTED=1
         return 0
     fi
@@ -8020,8 +8036,30 @@ stuck_release_finish() {   # <派工脚本退出码>
     else
         why="按人的恢复指令（\`$x\`）派工没有确认成功：${why}。任务可能已送出，请先看会话 \`$sess\` 再决定"
     fi
-    stuck_freeze "$n" "$kind" "$num" "$why"
+    stuck_freeze "$n" "$kind" "$num" "$why" && rm -f "$file"
     return 1
+}
+# 每轮开头（任何初筛和派工之前）：了结上一轮留下的「已用掉」凭据。凭据还在 = 派工脚本过了最后一次
+# 核对、可能已经把任务送出去，而父进程没走到收尾（被杀、机器重启）。结果不明 → 这条指令记为已用掉，
+# 重新停住等人；凭据在这两件事都落进状态文件之后才删。记录已经不在（收尾成功、只差删凭据）→ 直接删。
+stuck_release_recover() {
+    local f n e ev kind num
+    for f in "$STATE_DIR"/stuck-release/*.used; do
+        [ -e "$f" ] || continue
+        n="$(basename "$f" .used)"
+        e=$(stuck_entry "$n")
+        if [ "$(printf '%s' "$e" | jq -r '.frozen != null')" != true ]; then rm -f "$f"; continue; fi
+        kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
+        ev=$(jq -r '.event // ""' "$f" 2>/dev/null) || ev=""
+        if [[ "$ev" =~ ^[0-9]+$ ]]; then
+            stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$ev" || continue
+        else
+            stuck_entry_set "$n" '.frozen.cand = null' || continue
+        fi
+        stuck_freeze "$n" "$kind" "$num" "上一轮按人的恢复指令派工时，轮询在收尾之前中止了，结果没有留下。任务可能已送出，请先看会话 \`$(tmux_session_name "$n")\` 再决定" || continue
+        rm -f "$f"
+    done
+    return 0
 }
 
 # ── ②③ 的写入 ──
@@ -8138,6 +8176,7 @@ stuck_tick() {
     local now irows prows n kind num upd labels wn sha e
     local -A irow=() prow=() prs_of=() doing=() handled=()
     now=$(pace_now)
+    stuck_release_recover
     if ! irows=$(stuck_issue_rows) || ! prows=$(stuck_pr_rows); then
         log "卡住检测：读不到本轮的条目快照，本轮不判"
         return 0

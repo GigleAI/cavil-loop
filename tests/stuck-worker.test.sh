@@ -1166,6 +1166,50 @@ chk "新建路径：没有普通的转人工留言、没翻 pending/human、失�
     "0/pending/agent/2/true/new"
 r0=$(runs "$N"); d0=$(disp "$N"); tick 5; tick 5
 chk "新建路径：之后两轮不再派工、不起新进程" "$(( $(disp "$N") - d0 ))/$(( $(runs "$N") - r0 ))" "0/0"
+# 复审第 2 轮（代码）的复现：任务已经送进会话，轮询进程在收尾之前被杀掉；派工标签因为摘失败还留着。
+# 下一轮没有任何新的人工操作 → 不能凭同一条指令再派一遍
+tick_killable() {   # 跑一轮，把轮询进程的进程号记在 $W/poll.pid（不套 timeout：要杀的就是它本身）
+    NOW=$((NOW + ${1:-0}))
+    (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" POLL_FAKE_NOW="$NOW" POLL_PID_FILE="$W/poll.pid" \
+        bash -c 'echo $$ > "$POLL_PID_FILE"; exec bash "$0"' "$ROOT/scripts/agent-poll.sh") > "$W/poll.out" 2>&1
+}
+frozen_is crash1; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token); g0=$(got "$N")
+touch "$GD/F_delete_labels"
+# 派工脚本翻标签的第一步（摘派工标签）之前，杀掉轮询进程；这时任务已经送进会话
+k=$(( $(cat "$GD/count_DELETE_issues_${N}_labels" 2>/dev/null || echo 0) + 1 ))
+printf 'kill -9 "$(cat %q)"\ntouch %q\n' "$W/poll.pid" "$GD/hook.ran" > "$GD/hook_DELETE_issues_${N}_labels_$k"
+rm -f "$GD/hook.ran"
+tick_killable 5
+sleep 2   # 派工脚本成了孤儿，等它自己跑完
+rm -f "$GD/F_delete_labels"
+chk "轮询被杀 · 夹具：任务已送出、派工标签还在、状态里还没记「已用掉」，本机留着这次的凭据" \
+    "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")/$(ff "$N" used)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)" \
+    "yes/sent/doing/agent,pending/agent/null/file"
+g1=$(got "$N"); d1=$(disp "$N"); r1=$(runs "$N")
+tick 5
+chk "轮询被杀 · 下一轮（没有新的人工操作）：不再派工、不再送任务；指令记为已用掉，重新停住，凭据在这之后才清掉" \
+    "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))/$(( $(runs "$N") - r1 ))/$(ff "$N" 'used != null')/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(ff "$N" why | grep -c '收尾之前中止')" \
+    "0/0/0/true/new/none/1"
+tick 5; tick 5
+chk "轮询被杀 · 再过两轮：仍不派工，新的停住说明已发出" "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))/$(ff "$N" posted)" "0/0/yes"
+d1=$(disp "$N"); human_resume "$N" pending/agent doing/agent pending/agent
+tick 5
+chk "轮询被杀 · 对照：人重新打一次派工标签 → 派工一次，记录清掉" "$(( $(disp "$N") - d1 ))/$(labels_of "$N")/$(entry "$N")" "1/doing/agent/{}"
+# 凭据还在、状态写不进去的那种（这里直接摆出这个状态）：这一轮不派工，凭据不删
+frozen_is crash2; human_resume "$N" pending/agent doing/agent pending/agent
+mkdir -p "$W/state/stuck-release"
+# 先让初筛记下候选，再摆一份别的派工留下的凭据；把凭据做成这一轮开头了结不掉的样子不容易，
+# 所以直接验 begin 的那道闸：凭据文件在初筛之后、派工之前出现
+k=$(( $(cat "$GD/count_issues_$N" 2>/dev/null || echo 0) + 1 ))
+printf 'echo %q > %q\ntouch %q\n' '{"token":"left-over","event":1}' "$W/state/stuck-release/$N.used" "$GD/hook.ran" > "$GD/hook_issues_${N}_$k"
+rm -f "$GD/hook.ran"; g0=$(got "$N"); w0=$(lwrites "$N")
+tick 5
+chk "遗留凭据在初筛之后才出现 · 这一轮不派工、不删凭据" \
+    "$(hook_ran)/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(plog "#$N 上一次恢复派工的结果还没了结")/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)" "yes/0/0/1/file"
+tick 5
+chk "遗留凭据 · 下一轮开头了结：记为已用掉、重新停住、凭据清掉，仍不派工" \
+    "$(ff "$N" used)/$(( $(got "$N") - g0 ))/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(frozen "$N")" "1/0/none/true"
 # 对照：同样秒退，换一条没停住的新 issue → 派工脚本照原规则留言并翻 pending/human
 scn nob3; N=$SEQ
 mk_issue "$N" pending/agent; : > "$CTL/die.issue-$N"
