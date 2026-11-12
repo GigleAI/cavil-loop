@@ -665,6 +665,32 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 - **Can't read something** (events, permissions, checks, files, comments): nothing is
   written this round; after `AUTOPILOT_UNKNOWN_MAX` (10) rounds in a row it goes to a human.
   "Can't read" is never treated as "authorized", "passed" or "no conflict".
+- **Every write of a hand-over is checked against the current state first** (GitHub#382). Handing a PR to a
+  human takes three requests — post the note → add `pending/human` → remove `pending/merge`. The daemon first
+  takes a baseline (PR open / draft / head / target branch / branch / source / body / all labels, the ids of
+  "this queueing" and of the last label change in the PR's label events; state, labels and label events of the
+  bound issue and of a split sub-issue's parent), judges the reason again from fresh reads, then confirms the
+  baseline is unchanged; before each later write it judges the reason and compares the state once more, allowing
+  only the one write of its own it has just confirmed. If a maintainer closed the PR, touched any label, pushed,
+  changed the target branch, re-queued the same commit, or lifted a stop on the issue in between, nothing more
+  is written this round and the next round judges the PR as it then is.
+  - No local to-do is kept: a PR still in the merge queue is judged from scratch next round; a note for the
+    same queueing, commit and reason is not posted twice (it ends with a hidden marker), and after the same
+    commit is re-queued the old note no longer counts.
+  - If the note cannot be posted the labels are not flipped — never `pending/human` without a note.
+  - A PR carrying both `pending/human` and `pending/merge` (a maintainer's stop, or a hand-over cut short):
+    only `pending/merge` is removed, silently, after the same baseline-and-compare. To keep a PR queued,
+    remove `pending/human` first.
+  - State that cannot be read whole (PR, issue, any label history or the comments unreadable; an answer with a
+    field missing or an unknown state word; a label event without an id, or events that contradict the current
+    labels): nothing is written this round. So the
+    "unreadable for N rounds" hand-over only gets written when these are readable (it works as before when what
+    is unreadable is the changed files, checks or a permission); otherwise the PR stays queued and is retried
+    every round — never merged, with the reason in the log.
+  - ⚠️ What cannot be closed: GitHub has no "write only if unchanged", so an action that lands between the start
+    of the last check and the write reaching GitHub is not seen. The worst outcome is one more `pending/human`
+    or one more note on a PR that was just closed or taken over, or `pending/merge` removed from a PR that was
+    just re-queued. It never causes a merge.
 - **Bounces back to the worker** are counted per PR and capped at `REVIEW_MAX_ROUNDS`.
 - **Stopping it**: remove the label from the issue or the PR, or add `pending/human` to the
   issue or the PR. The re-read right before merging catches a stop that lands between the
@@ -710,7 +736,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   between. Turning it on here is a deliberate choice; merging the feature does not.
 
 State lives in `state.json` under `autopilot` (`prs.<n>`: reviewed commit / target branch / time, bounces,
-unreadable rounds, check-wait start, `off_handover` (an autopilot-off hand-over still in progress); `notices` / `denied`: one-time comments and rejected
+unreadable rounds, check-wait start, `off_handover` (the to-do of an autopilot-off hand-over still in progress; it carries its baseline, see "Turning autopilot off"); `notices` / `denied`: one-time comments and rejected
 issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handoff`: PRs judged "no takeover" with their
 cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
 old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished; `mirror`: PRs judged "nothing to copy / remove" with the same kind of cache key, GitHub#190). Like `requester_bot_done_queue` it is not in the migration loop
@@ -750,12 +776,11 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   has to equal the number of entries read. Missing pages (the endpoint returns at most 3000 files per
   PR), a missing count, a malformed answer or a failed request all count as "can't read": no merge and
   nothing written this round, a human after `AUTOPILOT_UNKNOWN_MAX` rounds. "Can't read" is never "no hit".
-- **Judged twice before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
+- **Judged again before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
   again from fresh reads; the verdict, the files hit and the PR's head / target branch / branch / bound
-  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same
-  "comment, then labels" every other autopilot hand-off uses. ⚠️ A maintainer action that lands between
-  those writes is not seen: the PR may get `pending/human` and lose `pending/merge` once more. It never
-  causes a merge.
+  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same code every
+  other autopilot hand-over uses: each of its three writes is preceded by a fresh judgement and a state check
+  (see "Every write of a hand-over is checked against the current state first" above, GitHub#382).
 - **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
   `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
   if the project wants them.
@@ -908,12 +933,19 @@ else to run. From the next round the daemon cleans up by itself:
 - queued and running work is not cleared — it finishes the normal way and ends with a human; completed merges stay.
 
 Only PRs this machine had on autopilot are touched (recorded under `autopilot.prs` in `state.json`), so a same-named
-label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The PR is
-re-read before any write (still open, not merged) and an unreadable PR waits for the next round. The target state is
-`pending/human` present, the merge label gone, one hand-over comment on the PR. Before touching GitHub the sweep records
-"hand-over in progress" in `state.json`; it then converges the labels and reads them back, checks the PR's comments so the
-note is posted only once, and clears the record only when all of that is confirmed — a failure at any step, or a killed
-process, is picked up the next round through that record.
+label used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call. The target
+state is `pending/human` present, the merge label gone, one hand-over comment on the PR; the order is add
+`pending/human` → remove the merge label → post the note. The three writes follow the same checks as a hand-over while
+autopilot is on (GitHub#382): before touching GitHub the sweep records a to-do in `state.json` that carries the PR's
+state at the start (the baseline), "what it should look like now" (the baseline plus the daemon's own confirmed writes)
+and the one write already decided on but not yet confirmed; before each write the PR is read afresh and must match the
+to-do, and after it the PR is read once more to confirm only that one change was added. A failure at any step, or a
+killed process, is picked up the next round through the to-do: if the PR is as it should be the sweep continues, and if
+exactly the pending write has appeared it is taken as its own. **Any other difference means somebody touched the PR**
+(closed it, removed `pending/human` to take it over, re-queued it, pushed…): the to-do is dropped and nothing more is
+written this round; after that a PR no longer in the merge queue is left alone, and one still carrying the merge label
+is started from scratch the following round as a new case. State that cannot be read whole means no write this round
+and the to-do stays. Turning autopilot back on clears every to-do, so turning it off again never resumes a half-done one.
 
 Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
