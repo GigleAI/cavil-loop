@@ -734,3 +734,45 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .gdot.done { background: var(--edge-done); }
 .gpop-actions { display: flex; gap: 8px; }
 .gpop-outside { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* ---- GitHub#401: why a read failed (one look everywhere), the Project picker, the empty board's card ---- */
+.failure-note { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--warn-border); background: var(--warn-bg); border-radius: 8px; color: var(--fg); text-align: left; }
+.failure-note[data-kind='network'], .failure-note[data-kind='rateLimited'], .failure-note[data-kind='transient'], .failure-note[data-kind='other'] { background: var(--surface); border-color: var(--border); }
+.failure-note .failure-body { line-height: 1.55; white-space: pre-line; }
+.failure-note .failure-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.failure-note .failure-raw { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.failure-note.compact { flex-direction: row; align-items: center; gap: 10px; }
+.failure-note.compact b { flex: 1; min-width: 0; }
+.failure-note.compact .failure-actions { margin-top: 0; }
+.sources li.failed { flex-wrap: wrap; }
+.sources .src-why { flex-basis: 100%; margin: 0 0 4px 44px; min-width: 0; }
+
+.pp { border: 1px solid var(--border-muted); border-radius: 10px; margin: 10px 0 4px; overflow: hidden; background: var(--surface); }
+.pp-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--canvas); border-bottom: 1px solid var(--border-muted); font-weight: 600; }
+.pp-group + .pp-group { border-top: 1px solid var(--border-muted); }
+.pp-grp { padding: 6px 12px 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.pp-row { display: flex; align-items: center; gap: 10px; padding: 5px 12px; }
+.pp-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-row .n { color: var(--muted); font-size: 12px; }
+.pp-row .icon { color: var(--icon); }
+.pp-empty { padding: 6px 12px 8px; font-size: 12px; }
+.pp-pad { padding: 4px 12px 8px; }
+.pp .banner { margin: 8px 12px; }
+.pp-foot { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border-muted); background: var(--canvas); }
+.pp-foot > span { flex: 1; min-width: 0; }
+
+.center-guide { padding: 24px 16px; overflow: auto; }
+.guide { max-width: 620px; margin: 16px auto; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 12px; padding: 22px 26px; box-shadow: var(--shadow-sm); text-align: left; }
+.guide h3 { margin: 0 0 6px; font-size: 16px; }
+.guide > p { margin: 0 0 12px; color: var(--muted); }
+.guide-choice { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+.guide-choice .opt { flex: 1 1 220px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.guide-choice .opt b { display: flex; gap: 8px; align-items: center; }
+.guide-choice .opt span { color: var(--muted); font-size: 12px; flex: 1; }
+.guide-choice .opt button { align-self: flex-start; }
+.guide-hint { border-top: 1px solid var(--border-muted); padding-top: 12px; font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.guide-hint > span { flex: 1; }
+.guide-hint .icon { color: var(--warn-icon); }
+.guide-fail { padding: 10px 0; border-top: 1px solid var(--border-muted); display: flex; flex-direction: column; gap: 6px; }
+.guide-fail:first-of-type { border-top: none; }
+.guide-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }

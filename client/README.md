@@ -413,6 +413,29 @@ npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip
 
 内置的 Client ID 在 `src/shared/config.ts`：OAuth 应用是 `DEFAULT_OAUTH_CLIENT_ID`，GitHub App 是 `DEFAULT_GITHUB_APP_CLIENT_ID`（目前为空）。Client ID 不是秘密。两种方式各存各的覆盖值（`oauthClientId` / `githubAppClientId`），在登录页或设置页「改 Client ID」里改；选了 GitHub App 而没有 Client ID 时，登录直接说明要填什么，不会联系 GitHub。预览版只有一格 Client ID：里面存的是 GitHub App 的 ID（`Iv` 开头）时，升级后自动归到 GitHub App 那一格并保持选 GitHub App。续期时用的是登录那一刻的 Client ID，之后改登录方式或 Client ID 都不影响已登录的令牌（有测试）。
 
+### 读不到组织的 Project 怎么办（#401）
+
+**先选，再说为什么读不到。** 设置 →「数据来源」的「从 GitHub 选…」列出当前账号自己的 Project 和所在每个组织的 Project（只列开着的），点「添加」就加上，和贴网址加的一样；贴网址照旧可用。每个组织单独读：一个组织不让读，只有那一行写原因，其余照常列出；读不到的组织写「读不到」和原因，不写成「没有 Project」。组织没批准这个应用时，GitHub 可能连组织名都不返回，所以列表底部固定有一句提示和「打开 GitHub 授权页」。列表每次打开都现读，不缓存。读取在 `src/data/projectChoices.ts`，界面在 `src/renderer/ProjectPicker.tsx`。
+
+**读不到时的说明只有一份。** 某个来源读不到时，设置里那一行、选择列表里的组织行、看板空着时的卡片、刷新按钮旁 ⚠️ 的详情，说的是同一段话：判断在 `src/shared/readFailure.ts` 的 `classifyFailure`，文字和按钮在同一文件的 `describeFailure`，界面都用 `src/renderer/FailureNote.tsx`。按下面的顺序判断，命中即停；每一类都在下面保留错误原文：
+
+| 顺序 | 怎么认出来 | 说明 | 按钮 |
+|---|---|---|---|
+| 1 | 这一轮被放弃（手动重新同步） | 不算失败 | — |
+| 2 | 连不上，或回应不完整 | 连不上 GitHub，和权限无关 | 重新读取 |
+| 3 | GitHub 说限流（429、配额为 0 的 403、GraphQL 的 RATE_LIMITED） | 暂时限制了读取次数；GitHub 给了时间就写几点之后再读 | 重新读取（到点前不可点） |
+| 4 | 401 | 登录已失效 | 重新登录 |
+| 5 | 5xx，或 GraphQL 说「稍后再试 / 超时」 | GitHub 暂时出错，不代表不存在或没权限 | 重新读取 |
+| 6 | 原话提到 OAuth App access restrictions | 组织还没有批准 Cavil Loop，附申请 / 批准三步 | 打开 GitHub 授权页、重新读取 |
+| 7 | 原话或 `X-GitHub-SSO` 头提到单点登录 | 组织要求单点登录授权 | GitHub 给了地址就开它，否则开授权页 |
+| 8 | GraphQL 的 INSUFFICIENT_SCOPES，或 `X-OAuth-Scopes` 里没有 `project` / `read:project` | 登录时没有授予读 Project 的权限 | 重新登录 |
+| 9 | 其余的「找不到 / 禁止访问」 | 找不到，或当前账号 / 应用无权看（不猜是哪一种） | 打开 GitHub 授权页、重新读取 |
+| 10 | 以上都不是 | 读取失败 | 重新读取 |
+
+第 6、7 类认的是 GitHub 文档里的原话和响应头，没有在真的开了限制的组织上实测过；认不出时落到第 9 类，不会把猜测显示成确定的原因。「授权页」是 GitHub 上这个应用自己的页面：OAuth 应用是 `https://github.com/settings/connections/applications/<Client ID>`，在「Organization access」里找到组织，旁边是「Request」就点它（发申请给组织管理员），是「Grant」就直接点（本人是管理员），批准后回客户端点「重新读取」；GitHub App 登录时打开 `https://github.com/settings/apps/authorizations`。旧版本存下的读取状态没有分类，按第 10 类显示。
+
+**看板空着时的卡片**（`src/shared/emptyGuide.ts` 决定显示哪一种，看板、表格、依赖图同一张）：一个来源都没有时，卡片给「从 GitHub 选…」（进设置并展开列表）和「去设置添加」（进设置并把光标放进地址框）；视图里的来源**全部已经读完且都失败**、手上一条它们的条目都没有时，卡片逐个列出来源和上面那段说明。还在等第一次读取结果时不出失败卡片；有的来源读到了，看板照常显示，失败的仍在 ⚠️ 里。没有任何来源时，不再显示「所选 Project 都没有迭代字段」。
+
 ### 建 GitHub App 的逐项设置
 
 1. 在 GigleAI 组织页「Settings → Developer settings → GitHub Apps → New GitHub App」新建（建在组织下，组织的 Project 才能授权给它）。

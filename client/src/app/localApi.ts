@@ -20,6 +20,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setClientId: async (id) => c.setClientId(String(id)),
     addSource: async (input) => c.addSource(String(input)),
     removeSource: async (key) => c.removeSource(String(key)),
+    projectChoices: () => c.projectChoices(),
     setView: async (patch) => c.setView(patch),
     syncNow: () => c.syncNow(),
     restartSync: () => c.restartSync(),

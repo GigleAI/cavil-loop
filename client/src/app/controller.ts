@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -76,6 +76,7 @@ import {
 } from '../data/edits';
 import { GitHubError } from '../data/github';
 import { fetchReleaseImage } from '../data/releaseImage';
+import { readProjectChoices } from '../data/projectChoices';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
@@ -1970,6 +1971,18 @@ export class Controller {
         return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };
       }
     }
+  }
+
+  /**
+   * GitHub#401: the Projects "从 GitHub 选" offers — the account's own and each organisation's, read
+   * now (never cached: an organisation approved a minute ago must show at the next look).
+   */
+  async projectChoices(): Promise<ProjectChoices> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, failure: { kind: 'other', raw: c.error }, groups: [] };
+    const r = await readProjectChoices(c.client);
+    if (!r.ok && r.failure?.kind === 'auth') this.noteAuthFailure(new GitHubError('auth', r.failure.raw, 401));
+    return r;
   }
 
   /** GitHub renders the reply preview (same renderer as the web page). */

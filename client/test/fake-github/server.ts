@@ -125,6 +125,23 @@ export interface FakeState {
    * credential asked, under the web base's `/release-assets/<id>`.
    */
   releases: Map<string, FakeRelease[]>;
+  /**
+   * GitHub#401: organisations (lower-cased) that refuse this app, as GitHub does: `oauth` = OAuth
+   * App access restrictions (not approved yet), `sso` = SAML single sign-on not authorised for this
+   * token. Every read of that organisation's Projects (the board read, the item count, the picker)
+   * gets GitHub's refusal; `hidden` = the organisation is also left out of the viewer's list.
+   */
+  restrictedOrgs: Map<string, { kind: 'oauth' | 'sso'; hidden?: boolean }>;
+  /**
+   * GitHub#401: the picker's lists. login -> organisations the account belongs to (as spelt on
+   * GitHub); absent = every organisation that owns a Project here. Projects listed are the ones in
+   * `projects` (title from the first page) plus `extraProjects`, key `org/<owner>` / `user/<owner>`
+   * lower-cased.
+   */
+  memberOrgs: Map<string, string[]>;
+  extraProjects: Map<string, { number: number; title: string; closed?: boolean }[]>;
+  /** GitHub#401: X-OAuth-Scopes sent with every API answer; null = not sent (a GitHub App's token) */
+  oauthScopes: string | null;
 }
 
 export interface FakeRelease {
@@ -265,6 +282,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     breakAnswer: null,
     answerOverride: null,
     releases: new Map(),
+    restrictedOrgs: new Map(),
+    memberOrgs: new Map(),
+    extraProjects: new Map(),
+    oauthScopes: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -307,7 +328,26 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     }) as typeof res.end;
     const send = (status: number, body: unknown, headers?: Record<string, string>) => {
       entry.status = status;
-      json(res, status, body, headers);
+      // GitHub#401: an OAuth app's token is told its scopes on every API answer
+      const scoped: Record<string, string> = state.oauthScopes !== null && url.pathname.startsWith('/api/') ? { 'X-OAuth-Scopes': state.oauthScopes } : {};
+      json(res, status, body, { ...scoped, ...headers });
+    };
+    /** GitHub#401: GitHub's refusal of a restricted organisation's data, as GraphQL errors + headers; null = not restricted */
+    const orgRefusal = (org: string): { error: { type: string; message: string }; headers: Record<string, string> } | null => {
+      const r = state.restrictedOrgs.get(org.toLowerCase());
+      if (!r) return null;
+      if (r.kind === 'oauth')
+        return {
+          error: {
+            type: 'FORBIDDEN',
+            message: `Although you appear to have the correct authorization credentials, the \`${org}\` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. For more information on these restrictions, including how to enable this app, visit https://docs.github.com/articles/restricting-access-to-your-organization-s-data/`,
+          },
+          headers: {},
+        };
+      return {
+        error: { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.' },
+        headers: { 'X-GitHub-SSO': `required; url=https://github.com/orgs/${org}/sso?authorization_request=fake` },
+      };
     };
     const token = auth?.replace(/^Bearer\s+/i, '') ?? '';
     const login = () => state.tokenViewers.get(token) ?? state.viewer;
@@ -456,7 +496,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
           const i = m[1];
           const key = `${m[2] === 'organization' ? 'org' : 'user'}/${String(v[`o${i}`]).toLowerCase()}/${v[`n${i}`]}`;
           const pages = state.projects.get(key);
-          if (!pages) {
+          const refused = m[2] === 'organization' ? orgRefusal(String(v[`o${i}`])) : null;
+          if (refused) {
+            data[`p${i}`] = null;
+            errors.push(refused.error);
+          } else if (!pages) {
             data[`p${i}`] = { projectV2: null };
             errors.push({ type: 'NOT_FOUND', message: `Could not resolve to a ProjectV2 with the number ${v[`n${i}`]}.` });
           } else data[`p${i}`] = { projectV2: { items: { totalCount: pages.reduce((n, p) => n + p.items.nodes.length, 0) } } };
@@ -470,6 +514,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const key = `${v.isOrg ? 'org' : 'user'}/${String(v.owner).toLowerCase()}/${v.number}`;
         const pages = state.projects.get(key);
         const holder = v.isOrg ? 'organization' : 'user';
+        const refused = v.isOrg ? orgRefusal(String(v.owner)) : null;
+        if (refused) {
+          await held();
+          return send(200, { data: { [holder]: null }, errors: [refused.error] }, refused.headers);
+        }
         if (!pages) return send(200, { data: { [holder]: { projectV2: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a ProjectV2 with the number ${v.number}.` }] });
         const idx = v.after ? pages.findIndex((p) => p.items.pageInfo.endCursor === v.after) + 1 : 0;
         if (idx <= 0 && v.after) return send(200, { errors: [{ message: 'bad cursor' }] });
@@ -480,6 +529,37 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...page, viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
         await held();
         return send(200, frozen);
+      }
+      // GitHub#401: the Project picker's three reads
+      if (op === 'CavilChoicesViewer' || op === 'CavilChoicesOrgs' || op === 'CavilChoicesOrg') {
+        const v = body.variables ?? {};
+        const me = login();
+        const listOf = (owner: string, kind: 'org' | 'user') => {
+          const out: { number: number; title: string; closed: boolean; url: string }[] = [];
+          for (const [key, pages] of state.projects) {
+            const [k, o, n] = key.split('/');
+            if (k === kind && o === owner.toLowerCase()) out.push({ number: Number(n), title: pages[0]?.title ?? `#${n}`, closed: false, url: `https://github.com/${kind === 'org' ? 'orgs' : 'users'}/${owner}/projects/${n}` });
+          }
+          for (const p of state.extraProjects.get(`${kind}/${owner.toLowerCase()}`) ?? [])
+            out.push({ number: p.number, title: p.title, closed: Boolean(p.closed), url: `https://github.com/${kind === 'org' ? 'orgs' : 'users'}/${owner}/projects/${p.number}` });
+          return out.sort((a, b) => a.number - b.number);
+        };
+        // pages of 2, so a test sees the cursor followed
+        const page = <T,>(all: T[]) => {
+          const start = v.after ? Number(String(v.after).replace('c', '')) : 0;
+          const end = start + 2;
+          return { nodes: all.slice(start, end), pageInfo: { hasNextPage: end < all.length, endCursor: end < all.length ? `c${end}` : null } };
+        };
+        await held();
+        if (op === 'CavilChoicesViewer') return send(200, { data: { viewer: { login: me, projectsV2: page(listOf(me, 'user')) } } });
+        if (op === 'CavilChoicesOrgs') {
+          const derived = [...new Set([...state.projects.keys()].filter((k) => k.startsWith('org/')).map((k) => k.split('/')[1]))];
+          const orgs = (state.memberOrgs.get(me) ?? derived).filter((o) => !state.restrictedOrgs.get(o.toLowerCase())?.hidden);
+          return send(200, { data: { viewer: { organizations: page(orgs.map((o) => ({ login: o }))) } } });
+        }
+        const refused = orgRefusal(String(v.login));
+        if (refused) return send(200, { data: { organization: null }, errors: [refused.error] }, refused.headers);
+        return send(200, { data: { organization: { projectsV2: page(listOf(String(v.login), 'org')) } } });
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
     }

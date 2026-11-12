@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AppState, BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
@@ -9,6 +9,10 @@ import { ConnectButton } from './ConnectDialog';
 import { Icon, type IconName } from './Icons';
 import { useShortcuts } from './keyboard';
 import { keyText, typingOf } from './shortcuts';
+import { ProjectPicker } from './ProjectPicker';
+import { FailureNote } from './FailureNote';
+import type { SettingsIntent } from './EmptyGuide';
+import { failureOf } from '../shared/readFailure';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
@@ -22,9 +26,33 @@ const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-login', icon: 'key', title: '登录方式' },
 ];
 
-export function SettingsView({ state, data, onBack, onHelp }: { state: AppState; data: BoardData; onBack: () => void; onHelp: () => void }) {
+export function SettingsView({
+  state,
+  data,
+  onBack,
+  onHelp,
+  intent = null,
+  onIntentTaken,
+}: {
+  state: AppState;
+  data: BoardData;
+  onBack: () => void;
+  onHelp: () => void;
+  /** GitHub#401: opened from the empty board — the picker open, or the address box focused (taken once) */
+  intent?: { what: SettingsIntent; seq: number } | null;
+  onIntentTaken?: () => void;
+}) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const inputBox = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.what === 'pick') setPicking(true);
+    else inputBox.current?.focus();
+    document.getElementById('set-sources')?.scrollIntoView({ block: 'start' });
+    onIntentTaken?.();
+  }, [intent?.seq]);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
   const daemon = useDaemonStatus();
@@ -81,6 +109,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
         <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目，加上最近 14 天内有更新的。</p>
         <div className="row">
           <input
+            ref={inputBox}
             data-testid="source-input"
             value={input}
             placeholder="https://github.com/orgs/GigleAI/projects/11  或  GigleAI/cavil-loop"
@@ -90,7 +119,11 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           <button className="primary" data-testid="source-add" onClick={add}>
             添加
           </button>
+          <button className={picking ? 'on' : undefined} data-testid="source-pick" aria-expanded={picking} onClick={() => setPicking(!picking)}>
+            从 GitHub 选…
+          </button>
         </div>
+        {picking && <ProjectPicker state={state} />}
         {error && (
           <div className="banner error" data-testid="source-error">
             <Icon name="warn" />
@@ -101,7 +134,7 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           {state.sources.map((s) => {
             const st = state.sync.sources.find((x) => x.sourceKey === s.key);
             return (
-              <li key={s.key} data-testid="source-row" data-key={s.key}>
+              <li key={s.key} data-testid="source-row" data-key={s.key} className={st && !st.ok ? 'failed' : undefined}>
                 <span className="src-icon">
                   <Icon name={s.kind === 'project' ? 'project' : 'repo'} />
                 </span>
@@ -111,11 +144,20 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
                     {s.kind === 'project' ? 'GitHub Project' : '仓库'} · {data.items.filter((it) => it.sources.includes(s.key)).length} 个条目
                   </span>
                 </span>
-                {st && !st.ok && <span className="err small">读取失败：{st.error}</span>}
+                {st && !st.ok && (
+                  <span className="err small" data-testid="source-failed">
+                    读取失败
+                  </span>
+                )}
                 {s.kind === 'repo' && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
                 <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   删除
                 </button>
+                {st && !st.ok && (
+                  <div className="src-why">
+                    <FailureNote failure={failureOf(st)} state={state} testid="source-failure" />
+                  </div>
+                )}
               </li>
             );
           })}

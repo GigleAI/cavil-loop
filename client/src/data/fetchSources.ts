@@ -208,7 +208,11 @@ export async function fetchProject(
       isOrg: src.ownerType === 'org',
     });
     const p = (src.ownerType === 'org' ? data.organization : data.user)?.projectV2;
-    if (!p) throw new GitHubError('graphql', `找不到 Project：${src.url}（不存在，或当前账号没有权限）`);
+    if (!p) {
+      const missing = new GitHubError('graphql', `找不到 Project：${src.url}（不存在，或当前账号没有权限）`);
+      missing.meta.gqlTypes = ['NOT_FOUND'];
+      throw missing;
+    }
     if (!meta) {
       const iterField = p.fields.nodes.find((f) => f.__typename === 'ProjectV2IterationField');
       const statusField = p.fields.nodes.find(
