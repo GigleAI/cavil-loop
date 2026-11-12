@@ -52,6 +52,29 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
+import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, searchCandidates, type Candidate } from '../data/blocked';
+import {
+  DEFAULT_BLOCKED_LABELS,
+  applyDone,
+  confirmBlock,
+  entryState,
+  factsDiffer,
+  factsOf,
+  fingerprint,
+  isOpComment,
+  latestRefs,
+  lostRefs,
+  markComment,
+  planBlocked,
+  refKey,
+  repauseAllowed,
+  type BlockedLabels,
+  type BlockedRead,
+  type Facts,
+  type Pick as BlockedPick,
+  type Ref,
+} from '../shared/blocked';
+import type { BlockedStart, BlockedStartResult, BlockedView, BlockedRefInfo } from '../shared/ipc';
 import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
 import {
@@ -238,6 +261,14 @@ const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+/** GitHub#434: the two settings of "等前置…" */
+const BLOCKED_LABELS = 'blockedLabels';
+
+/** the waiting label is the one setting of GitHub#429 (handBack.blocked); this setting keeps the other flow labels */
+function normalizeBlockedLabels(raw: unknown, blocked: string): BlockedLabels {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<BlockedLabels>;
+  return { blocked, flow: typeof r.flow === 'string' && r.flow.trim() ? r.flow.trim() : DEFAULT_BLOCKED_LABELS.flow };
+}
 const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
 /** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
 const NOTIFY_SCOPE = 'notifyScope';
@@ -471,6 +502,7 @@ export class Controller {
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
+      blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null), handBack.blocked),
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
@@ -1824,6 +1856,13 @@ export class Controller {
     this.set({ newIssueHandoff: h as Handoff });
   }
 
+  /** GitHub#434: the other flow labels (empty = the default). The waiting label is `handBack.blocked` (setHandBack). */
+  setBlockedLabels(patch: Partial<BlockedLabels>): void {
+    const flow = typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow;
+    this.cache.setSetting(BLOCKED_LABELS, { flow });
+    this.set({ blockedLabels: { blocked: this.state.handBack.blocked, flow } });
+  }
+
   setHandBack(patch: Partial<HandBackLabels>): void {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
@@ -1845,7 +1884,8 @@ export class Controller {
       this.state = { ...this.state, ...this.pendingNow() };
     }
     const reread = next.blocked !== this.state.handBack.blocked;
-    this.set({ handBack: next });
+    // GitHub#434: "等前置…" uses the same waiting label
+    this.set({ handBack: next, blockedLabels: { ...this.state.blockedLabels, blocked: next.blocked } });
     // GitHub#429: the registrations held were read under the old label — the graph shows them as
     // unknown until a read under the new one, which starts now
     if (reread && this.signedIn && this.state.phase === 'ready') void this.syncNow();
@@ -3170,6 +3210,423 @@ export class Controller {
     return { ok: true, error: null, id };
   }
 
+  // ---- GitHub#434: "等前置…" ------------------------------------------------------------
+  //
+  // The rules are shared/blocked.ts; this part reads, sends and records. A record of kind 'blocked'
+  // locks its item like every operation. Before every write the item is read again in full and must
+  // hold what the person confirmed plus exactly what the steps done so far changed (factsDiffer);
+  // otherwise the record stops there and says why. It is never continued by itself.
+
+  private blockedNames(): { human: string; agent: string; running: string } {
+    const { human, agent, running } = this.state.handBack;
+    return { human, agent, running };
+  }
+
+  private async blockedRefInfo(client: GitHubClient, r: Ref): Promise<BlockedRefInfo> {
+    const known = this.cachedItems().find((i) => i.key === refKey(r));
+    try {
+      const c = await readCandidate(client, r.repo, r.number);
+      return { repo: c.repo, number: c.number, kind: c.kind, title: c.title, state: c.state, url: c.url };
+    } catch {
+      return { repo: r.repo, number: r.number, kind: known ? known.kind : null, title: known?.title ?? '', state: 'unknown', url: known?.url ?? '' };
+    }
+  }
+
+  /** GitHub#434: the dialog's read. */
+  async blockedRead(key: string): Promise<BlockedView> {
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录' };
+    const item = this.findItem(key);
+    if (!item) return { ok: false, error: '看板上找不到这一条（可能刚被同步掉了），请刷新后再试' };
+    const bl = this.state.blockedLabels;
+    if (!bl.blocked) return { ok: false, error: '设置里没有填等前置的标签' };
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error };
+    let read: BlockedRead;
+    try {
+      read = await readBlocked(c.client, item.repo, item.number, bl.blocked);
+    } catch (e) {
+      return { ok: false, error: `没能完整读到这一条现在的状态，不能登记（${(e as Error)?.message ?? String(e)}）` };
+    }
+    return this.blockedViewOf(c.client, item, read);
+  }
+
+  private async blockedViewOf(client: GitHubClient, item: Item, read: BlockedRead): Promise<BlockedView> {
+    const bl = this.state.blockedLabels;
+    const names = this.blockedNames();
+    const facts = factsOf(read, names, bl);
+    const latest = read.marks.length ? read.marks[read.marks.length - 1].refs : [];
+    const seen = new Map<string, Ref>();
+    for (const r of [...read.native, ...latest]) seen.set(refKey(r), r);
+    const current = await Promise.all([...seen.values()].map((r) => this.blockedRefInfo(client, r)));
+    const lost = (await Promise.all(lostRefs(read).map((r) => this.blockedRefInfo(client, r)))).filter((x) => x.state === 'open' || x.state === 'unknown');
+    const entry = entryState(read.labels, names, bl);
+    let refuse: string | null = null;
+    if (read.state !== 'open') refuse = '这一条已经关闭';
+    else if (entry.kind === 'other') refuse = `挂着「${entry.label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「${names.human}」后再登记`;
+    else {
+      const opts = await this.repoOptions(item.repo);
+      if (opts.error) refuse = `读不到这个仓库的标签（${opts.error}），不能确认「${bl.blocked}」「${names.human}」两个标签都在`;
+      else {
+        const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
+        const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
+        if (missing.length) refuse = `这个仓库没有标签 ${missing.map((m) => `「${m}」`).join('、')}（客户端不会替仓库新建标签）`;
+      }
+    }
+    return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
+  }
+
+  /** GitHub#434: the picker's search (the item's own repository; `owner/repo#N` another one). */
+  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }> {
+    const item = this.findItem(key);
+    if (!item) return { ok: false, error: '看板上找不到这一条' };
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error };
+    const q = text.trim();
+    const one = /^(?:([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+))?#?(\d+)$/.exec(q);
+    try {
+      let found: Candidate[];
+      if (one) found = [await readCandidate(c.client, one[1] ?? item.repo, Number(one[2]))];
+      else if (q.length < 2) return { ok: true, items: [] };
+      else found = await searchCandidates(c.client, item.repo, q);
+      const items = found.filter((x) => x.state === 'open' && !(x.repo === item.repo.toLowerCase() && x.number === item.number));
+      return { ok: true, items: items.map((x) => ({ ...x })) };
+    } catch (e) {
+      if (one && e instanceof GitHubError && e.status === 404) return { ok: true, items: [] };
+      return { ok: false, error: `搜索失败：${(e as Error)?.message ?? String(e)}` };
+    }
+  }
+
+  /** GitHub#434: confirm in the dialog. Refused (nothing written) when GitHub no longer holds what was shown. */
+  async blockedStart(req: BlockedStart): Promise<BlockedStartResult> {
+    const refuse = (error: string): BlockedStartResult => ({ ok: false, error });
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    const item = this.findItem(String(req?.key ?? ''));
+    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    const blockedOp = this.opBlocked(item.key);
+    if (blockedOp) return refuse(blockedOp);
+    const bl = this.state.blockedLabels;
+    const names = this.blockedNames();
+    if (!bl.blocked || !names.human.trim()) return refuse('设置里等前置的标签或「等人处理」的标签是空的，没有修改');
+    const picks = Array.isArray(req.picks) ? req.picks : [];
+    const restore = Array.isArray(req.restore) ? req.restore : [];
+    const c = await this.clientForCall(true);
+    if ('error' in c) return refuse(c.error);
+    // step ② of the plan: read again, the same as shown or nothing is written
+    let read: BlockedRead;
+    try {
+      read = await readBlocked(c.client, item.repo, item.number, bl.blocked);
+    } catch (e) {
+      return refuse(`没能完整读到这一条现在的状态，什么都没写（${(e as Error)?.message ?? String(e)}）`);
+    }
+    const view = await this.blockedViewOf(c.client, item, read);
+    if (!view.ok) return refuse(view.error);
+    if (view.fingerprint !== req.fingerprint) return { ok: false, error: '点「登记前置」后重新读到：这期间这一条有了变化。什么都没写，下面已按最新内容刷新，核对后再点一次', view };
+    if (view.refuse) return { ok: false, error: view.refuse, view };
+    // every prerequisite picked is read again: open, the kind and id it was picked with
+    const fresh: BlockedPick[] = [];
+    for (const p of picks) {
+      let cand: Candidate;
+      try {
+        cand = await readCandidate(c.client, p.repo, p.number);
+      } catch (e) {
+        return refuse(`读不到前置 ${p.repo}#${p.number}（${(e as Error)?.message ?? String(e)}），什么都没写`);
+      }
+      if (cand.state !== 'open') return { ok: false, error: `前置 ${p.repo}#${p.number} 已经关闭或合并，什么都没写`, view };
+      if (cand.repo === item.repo.toLowerCase() && cand.number === item.number) return refuse('不能把这一条自己设成前置');
+      fresh.push({ repo: cand.repo, number: cand.number, kind: cand.kind, id: cand.id, title: cand.title });
+    }
+    const plan = planBlocked({ itemIsPr: read.isPr, selfRepo: item.repo, entry: view.entry, latest: latestRefs(read), native: read.native, picks: fresh, restore });
+    // the dialog asks the same rule (confirmBlock): a registration stopped half way may be finished with nothing new picked
+    const why = confirmBlock({ picks: fresh.length, restore: restore.length, current: view.current.length, plan });
+    if (why) return { ok: false, error: `${why}，GitHub 上什么都没改`, view };
+    const step = (name: OpStep['name'], b: OpStep['blocked'], extra: Partial<OpStep> = {}): OpStep => ({ name, state: 'unsent', reason: null, sentAt: null, answeredAt: null, blocked: b, ...extra });
+    const steps: OpStep[] = plan.steps.map((s) => {
+      switch (s.name) {
+        case 'pause':
+          return step('addLabel', 'pause', { label: names.human, role: 'human' });
+        case 'unpause':
+          return step('removeLabel', 'unpause', { label: names.human, role: 'human' });
+        case 'addBlocked':
+          return step('addLabel', 'addBlocked', { label: bl.blocked });
+        case 'relation':
+          return step('relation', 'relation', { target: s.target });
+        case 'comment':
+          return step('comment', 'comment');
+        default:
+          return step('check', 'check');
+      }
+    });
+    const id = `op-${++this.opSeq}`;
+    const rec: OpRecord = {
+      id,
+      key: item.key,
+      repo: item.repo,
+      number: item.number,
+      kind: 'blocked',
+      startedAt: this.stamp(),
+      steps,
+      draft: {},
+      readAt: null,
+      targetSeen: false,
+      unlocked: false,
+      draftDropped: false,
+      dismissed: false,
+      stuck: false,
+      checkProblem: null,
+      running: true,
+      blocked: {
+        opId: `${id}-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        basis: factsOf(read, names, bl),
+        labels: { blocked: bl.blocked, human: names.human },
+        picks: fresh.filter((p) => plan.steps.some((s) => s.target === itemKey(p.repo, p.number))),
+        markRefs: plan.markRefs,
+        resume: names.agent,
+        commentId: null,
+        stop: null,
+      },
+    };
+    this.setOp(rec);
+    this.pruneOps();
+    this.opsChanged();
+    const session = this.session;
+    const job = this.runBlocked(id, item, c)
+      .catch(() => undefined)
+      .then(() => {
+        const r = this.ops.get(id);
+        if (!r || session !== this.session) return;
+        if (r.running) this.setOp({ ...r, running: false });
+        this.opsChanged();
+        void this.storeOps();
+      });
+    this.opJobs.set(id, job);
+    void job.then(() => {
+      if (this.opJobs.get(id) === job) this.opJobs.delete(id);
+    });
+    return { ok: true, id };
+  }
+
+  /** What GitHub must hold now: what was confirmed plus the changes of the steps done. */
+  private blockedExpected(r: OpRecord): Facts {
+    const b = r.blocked!;
+    let f = b.basis;
+    for (const s of r.steps) if (s.state === 'ok' && s.blocked) f = applyDone(f, { name: s.blocked, target: s.target }, { human: b.labels.human, blocked: b.labels.blocked, commentId: b.commentId, mark: { refs: b.markRefs, resume: b.resume ?? this.state.handBack.agent } });
+    return f;
+  }
+
+  private blockedPatch(id: string, patch: (r: OpRecord) => OpRecord): OpRecord | null {
+    const r = this.ops.get(id);
+    if (!r) return null;
+    const next = patch(r);
+    this.setOp(next);
+    this.opsChanged();
+    return next;
+  }
+
+  /** The steps of a "等前置…" record, one after the other, each behind a full read and the permit. */
+  private async runBlocked(id: string, item: Item, c: { client: GitHubClient; session: number }): Promise<void> {
+    const session = this.session;
+    if (!(await this.storeOps())) {
+      this.blockedPatch(id, (r) => ({ ...r, steps: r.steps.map((s, j) => (j === 0 ? { ...s, reason: '没能存到本机，没有发送' } : s)) }));
+      return;
+    }
+    const names = this.blockedNames();
+    const bl = this.state.blockedLabels;
+    let lastRead: BlockedRead | null = null;
+    for (let i = 0; ; i++) {
+      const r = this.ops.get(id);
+      if (!r || session !== this.session || c.session !== this.session || i >= r.steps.length) break;
+      const s = r.steps[i];
+      if (s.state !== 'unsent') continue;
+      const b = r.blocked!;
+      // the read right before this step, and the permit
+      let read: BlockedRead;
+      try {
+        read = await readBlocked(c.client, r.repo, r.number, b.labels.blocked);
+      } catch (e) {
+        await this.blockedStop(id, c, `没能完整读到这一条现在的状态（${(e as Error)?.message ?? String(e)}）`, null);
+        break;
+      }
+      lastRead = read;
+      if (session !== this.session) return;
+      const now = factsOf(read, names, bl);
+      const diff = factsDiffer(this.blockedExpected(r), now, b.basis.round.id as number | null);
+      if (diff) {
+        await this.blockedStop(id, c, diff, read);
+        break;
+      }
+      if (s.blocked === 'check') {
+        // the registration just posted is the newest of this wait, and nothing else new (the permit above)
+        const last = read.marks[read.marks.length - 1];
+        if (!last || last.id !== b.commentId) {
+          await this.blockedStop(id, c, '本轮最新的登记不是刚发的这一条', read);
+          break;
+        }
+        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'ok' as const, reason: '本轮最新登记就是这一条', answeredAt: this.stamp() } : y)) }));
+        await this.storeOps();
+        continue;
+      }
+      let pick: BlockedPick | undefined;
+      if (s.blocked === 'relation') {
+        pick = b.picks.find((p) => itemKey(p.repo, p.number) === s.target);
+        let cand: Candidate | null = null;
+        try {
+          cand = pick ? await readCandidate(c.client, pick.repo, pick.number) : null;
+        } catch {
+          cand = null;
+        }
+        if (!pick || !cand || cand.state !== 'open') {
+          await this.blockedStop(id, c, `前置 ${s.target ?? ''} ${cand ? '已经关闭或合并' : '读不到'}`, read);
+          break;
+        }
+      }
+      this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'pending' as const, reason: null, sentAt: this.stamp() } : y)) }));
+      if (!(await this.storeOps())) {
+        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null } : y)) }));
+        break;
+      }
+      let state: 'ok' | 'refused' | 'unknown';
+      let reason: string | null = null;
+      let commentId: number | null = null;
+      try {
+        if (s.name === 'addLabel') await addLabel(c.client, r.repo, r.number, s.label ?? '');
+        else if (s.name === 'removeLabel') await removeLabel(c.client, r.repo, r.number, s.label ?? '');
+        else if (s.name === 'relation') await addBlockedBy(c.client, r.repo, r.number, pick!.id);
+        else if (s.name === 'comment') commentId = await postComment(c.client, r.repo, r.number, markComment(b.markRefs, r.repo, b.resume ?? names.agent, b.opId));
+        state = 'ok';
+      } catch (e) {
+        if (s.name === 'removeLabel' && e instanceof GitHubError && e.status === 404) {
+          state = 'ok';
+          reason = '这个标签本来就不在';
+        } else if (refusedForSure(e)) {
+          state = 'refused';
+          reason = explainError(e, s.name === 'comment' ? 'comment' : 'addLabel');
+        } else {
+          state = 'unknown';
+          reason = (e as Error)?.message ?? String(e);
+        }
+        if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      }
+      if (session !== this.session) return;
+      if (state === 'ok' && s.name === 'comment' && commentId === null) {
+        // GitHub said yes without the comment's id: find it by this operation's hidden id
+        commentId = await this.blockedFindComment(c.client, r.repo, r.number, b.opId);
+      }
+      if (state === 'unknown') {
+        // one read for evidence (never a second send)
+        const proven = await this.blockedEvidence(c.client, r, s, b.opId);
+        if (proven) {
+          state = 'ok';
+          reason = proven.reason;
+          if (proven.commentId !== undefined) commentId = proven.commentId;
+        }
+      }
+      this.blockedPatch(id, (x) => ({
+        ...x,
+        ...(commentId !== null ? { blocked: { ...x.blocked!, commentId } } : {}),
+        steps: x.steps.map((y, j) => (j === i ? { ...y, state, reason, answeredAt: this.stamp() } : y)),
+      }));
+      await this.storeOps();
+      if (state !== 'ok') {
+        const after = this.ops.get(id);
+        if (after) this.blockedPatch(id, (x) => ({ ...x, blocked: { ...x.blocked!, stop: { text: state === 'refused' ? 'GitHub 拒绝了这一步' : '这一步的结果不明', paused: this.blockedPaused(x, lastRead) } } }));
+        break;
+      }
+      if (s.name === 'comment' && commentId === null) {
+        await this.blockedStop(id, c, '登记评论发出后找不到它', null);
+        break;
+      }
+    }
+    if (session !== this.session) return;
+    await this.storeOps();
+    await this.opReread(id, item, c);
+  }
+
+  /** whether the last full read showed the item paused (open, "等人处理" on) — only when a registration is involved */
+  private blockedPaused(r: OpRecord, read: BlockedRead | null): 'yes' | 'unconfirmed' | 'none' {
+    const commentStep = r.steps.find((s) => s.blocked === 'comment');
+    const wrote = r.steps.some((s) => s.state === 'ok' || s.state === 'unknown');
+    if (!commentStep || !wrote) return 'none';
+    if (!read) return 'unconfirmed';
+    const h = r.blocked!.labels.human.toLowerCase();
+    return read.state === 'open' && read.labels.some((l) => l.toLowerCase() === h) ? 'yes' : 'unconfirmed';
+  }
+
+  /**
+   * Stop before a step: record why, and (plan v4, step 9) put the "等人处理" label back only when the one
+   * change seen is other people's registrations / relations — behind `repauseAllowed` on the read just made.
+   */
+  private async blockedStop(id: string, c: { client: GitHubClient; session: number }, text: string, read: BlockedRead | null): Promise<void> {
+    const r = this.ops.get(id);
+    if (!r) return;
+    const b = r.blocked!;
+    let paused = this.blockedPaused(r, read);
+    let why = text;
+    const wroteMark = r.steps.some((s) => s.blocked === 'comment' && (s.state === 'ok' || s.state === 'unknown'));
+    if (read && wroteMark && paused === 'unconfirmed') {
+      const now = factsOf(read, this.blockedNames(), this.state.blockedLabels);
+      const may = repauseAllowed(this.blockedExpected(r), now, b.basis.round.id as number | null, b.labels.human);
+      if (may.ok) {
+        const repause: OpStep = { name: 'addLabel', label: b.labels.human, role: 'human', blocked: 'repause', state: 'pending', reason: null, sentAt: this.stamp(), answeredAt: null };
+        this.blockedPatch(id, (x) => ({ ...x, steps: [...x.steps, repause] }));
+        await this.storeOps();
+        let state: 'ok' | 'refused' | 'unknown' = 'ok';
+        let reason: string | null = '交错登记后补挂';
+        try {
+          await addLabel(c.client, r.repo, r.number, b.labels.human);
+        } catch (e) {
+          state = refusedForSure(e) ? 'refused' : 'unknown';
+          reason = (e as Error)?.message ?? String(e);
+        }
+        const n = this.ops.get(id);
+        if (n) {
+          const steps = n.steps.map((s, j) => (j === n.steps.length - 1 ? { ...s, state, reason, answeredAt: this.stamp() } : s));
+          this.setOp({ ...n, steps });
+        }
+        paused = 'unconfirmed';
+        if (state === 'ok') {
+          try {
+            const back = await readBlocked(c.client, r.repo, r.number, b.labels.blocked);
+            const h = b.labels.human.toLowerCase();
+            if (back.state === 'open' && back.labels.some((l) => l.toLowerCase() === h)) paused = 'yes';
+          } catch {
+            // not read back: not confirmed
+          }
+        }
+        why = `${text}（另一份登记和本次交错：${state === 'ok' ? `已补挂「${b.labels.human}」` : `补挂「${b.labels.human}」没有成功：${reason}`}）`;
+      } else why = `${text}（没有补挂「${b.labels.human}」：${may.why}）`;
+    }
+    this.blockedPatch(id, (x) => ({ ...x, blocked: { ...x.blocked!, stop: { text: why, paused } } }));
+    await this.storeOps();
+  }
+
+  private async blockedFindComment(client: GitHubClient, repo: string, number: number, opId: string): Promise<number | null> {
+    try {
+      const list = await readComments(client, repo, number);
+      return list.find((x) => isOpComment(x.body, opId))?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** one read after a lost answer: did the step happen? (labels, the native list, the comment by its hidden id) */
+  private async blockedEvidence(client: GitHubClient, r: OpRecord, s: OpStep, opId: string): Promise<{ reason: string; commentId?: number } | null> {
+    try {
+      if (s.name === 'comment') {
+        const cid = await this.blockedFindComment(client, r.repo, r.number, opId);
+        return cid !== null ? { reason: '重读时找到了这条登记评论', commentId: cid } : null;
+      }
+      const read = await readBlocked(client, r.repo, r.number, r.blocked!.labels.blocked);
+      const has = (l: string) => read.labels.some((x) => x.toLowerCase() === l.toLowerCase());
+      if (s.name === 'addLabel' && has(s.label ?? '')) return { reason: '重读时这个标签已在' };
+      if (s.name === 'removeLabel' && !has(s.label ?? '')) return { reason: '重读时这个标签已不在' };
+      if (s.name === 'relation' && read.native.some((x) => refKey(x) === s.target)) return { reason: '重读时这条「Blocked by」已在' };
+    } catch {
+      // not read: stays unknown
+    }
+    return null;
+  }
+
   /** Why nothing conflicting may be sent for this item now; null = it may. */
   private opBlocked(key: string): string | null {
     const lock = opLockOf([...this.ops.values()], key);
@@ -3484,6 +3941,8 @@ export class Controller {
     for (const r of [...this.ops.values()]) {
       if (session !== this.session || !this.signedIn) return;
       if (r.running || r.checking || this.opJobs.has(r.id) || this.opPreparing.has(r.key)) continue;
+      // GitHub#434: a "等前置…" record is never checked or continued in the background (each write needs its whole permit; a person reopens the dialog)
+      if (r.kind === 'blocked') continue;
       const unknown = opPhase(r) === 'unknown';
       if (!unknown && opNextAuto(r) < 0) continue;
       const item = this.findItem(r.key);

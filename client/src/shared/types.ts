@@ -2,6 +2,7 @@
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
 import type { MergePrefs } from './mergePrefs';
+import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
@@ -622,6 +623,8 @@ export interface AppState {
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
   handBack: HandBackLabels;
+  /** GitHub#434: the waiting label of "等前置…" and the other flow labels (kept on this machine) */
+  blockedLabels: BlockedLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
   mergePrefs: MergePrefs;
   /** which table groups are folded, per "group by" (GitHub#231; kept on this machine) */

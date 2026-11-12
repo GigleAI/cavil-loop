@@ -14,7 +14,7 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self' 'sha256-kLhNZxAWrHbnLfjaoi383eM01EzI6oRZt67vp1jnBWI='",
+        "script-src": "'self' 'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU='",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: https://github.com https://api.github.com https://avatars.githubusercontent.com https://private-user-images.githubusercontent.com https://user-images.githubusercontent.com https://camo.githubusercontent.com https://raw.githubusercontent.com",
         "connect-src": "ipc: http://ipc.localhost",

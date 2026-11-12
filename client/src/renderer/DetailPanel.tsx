@@ -23,6 +23,8 @@ import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { AUTO_DISMISS_MS, opAutoDismissable, opDraftLeft, opLockOf, opReusableDraft, opText, opTone, type OpRecord } from '../shared/ops';
 import { OpNotice } from './OpNotice';
+import { BlockedDialog } from './BlockedDialog';
+import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
@@ -385,6 +387,8 @@ export function DetailPanel({
   /** the method picked by hand in this opening; null = none yet */
   const [picked, setPicked] = useState<MergeMethod | null>(null);
   const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | 'autopilot' | null>(null);
+  /** GitHub#434: the "等前置…" dialog is open */
+  const [blockedOpen, setBlockedOpen] = useState(false);
   /** GitHub#231: "不再提示" in the 托管 dialog, unticked every time it opens */
   const [noMoreAsk, setNoMoreAsk] = useState(false);
   const [closeComment, setCloseComment] = useState('');
@@ -540,6 +544,10 @@ export function DetailPanel({
     } else if (r.kind === 'autopilot') {
       setNoMoreAsk(false);
       setAsk('autopilot');
+    } else if (r.kind === 'blocked') {
+      // GitHub#434: done again from the dialog, which reads the item afresh
+      setRetryFrom(null);
+      setBlockedOpen(true);
     } else {
       void (async () => {
         setRetryFrom(r.id);
@@ -833,11 +841,12 @@ export function DetailPanel({
    * once the item is known: each is the button's own handler when that button is showing and can be
    * pressed, else undefined — so a key never does what the button would not.
    */
-  const quickKeys = useRef<Partial<Record<'closeIssue' | 'handBack' | 'autopilot', () => void>>>({});
+  const quickKeys = useRef<Partial<Record<'closeIssue' | 'handBack' | 'autopilot' | 'blocked', () => void>>>({});
   useShortcuts({
     closeIssue: () => quickKeys.current.closeIssue?.(),
     handBack: () => quickKeys.current.handBack?.(),
     autopilot: () => quickKeys.current.autopilot?.(),
+    blocked: () => quickKeys.current.blocked?.(),
     // folded fields come back first: the picker opens next to them (GitHub#260)
     labels: () => {
       if (pickBlocked) return;
@@ -987,7 +996,14 @@ export function DetailPanel({
     setNoMoreAsk(false);
     openAsk('autopilot');
   };
+  // GitHub#434: "等前置…" — only when a waiting label is set; greyed (with why) when the item is in another flow
+  const blockedLabel = state.blockedLabels.blocked;
+  const itemOpen = detail ? detail.state === 'open' : item.state === 'open';
+  const blockedEntry = entryState(detail?.labels.map((l) => l.name) ?? item.labels.map((l) => l.name), hb, state.blockedLabels);
+  const blockedWhy = !itemOpen ? '这一条已经关闭' : blockedEntry.kind === 'other' ? `挂着「${blockedEntry.label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「${hb.human}」后再登记` : null;
+  const pressBlocked = () => setBlockedOpen(true);
   quickKeys.current = {
+    blocked: detailRead && blockedLabel && !opBlocked && !blockedWhy ? pressBlocked : undefined,
     closeIssue: issueOpen && !opBlocked ? pressCloseIssue : undefined,
     handBack: detailRead && !opBlocked ? pressHandBack : undefined,
     autopilot: detailRead && hb.autopilot && !opBlocked ? pressAutopilot : undefined,
@@ -1495,6 +1511,17 @@ export function DetailPanel({
           </button>
           {detailRead && (
             <span className="quick-actions" data-testid="quick-actions">
+              {blockedLabel && (
+                <button
+                  data-testid="blocked-open"
+                  disabled={opBlocked || Boolean(blockedWhy)}
+                  title={offlineWhy ?? lockWhy ?? blockedWhy ?? `选这一条要等的 issue / PR，登记后挂上「${blockedLabel}」；前置全部完成后 daemon 自动翻回「${hb.agent}」（${keyText('blocked')}）`}
+                  onClick={pressBlocked}
+                >
+                  等前置…
+                  <kbd>{keyText('blocked')}</kbd>
+                </button>
+              )}
               <button
                 data-testid="hand-back"
                 disabled={opBlocked}
@@ -1544,6 +1571,7 @@ export function DetailPanel({
           </p>
         </ConfirmDialog>
       )}
+      {blockedOpen && <BlockedDialog item={item} state={state} items={data.items} onClose={() => setBlockedOpen(false)} />}
       {ask === 'autopilot' && (
         <ConfirmDialog
           title={`托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}

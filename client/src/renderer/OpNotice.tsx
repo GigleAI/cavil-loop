@@ -16,6 +16,8 @@ const RETRY_LABEL: Record<OpRecord['kind'], string> = {
   merge: '重新合并…',
   autopilot: '重新托管…',
   handBack: '重新交给 agent',
+  // GitHub#434: opens the dialog again, read afresh
+  blocked: '等前置…（重新登记）',
 };
 
 export function opItemUrl(r: OpRecord): string {

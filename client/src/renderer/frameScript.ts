@@ -235,4 +235,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-kLhNZxAWrHbnLfjaoi383eM01EzI6oRZt67vp1jnBWI='";
+export const FRAME_SCRIPT_HASH = "'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU='";

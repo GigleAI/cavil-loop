@@ -17,26 +17,13 @@ import type { Item, RelatedIssue } from '../shared/types';
 import { GitHubClient, GitHubError } from './github';
 import { LOOP_BLOCKED_BATCH_QUERY, LOOP_BLOCKED_MORE_QUERY, LOOP_END_QUERY } from './queries';
 import { fetchNodesBatch } from './relations';
+import { countingMarks, parseMark, type MarkComment, type MarkEnd } from '../shared/blocked';
 
-export const LOOP_MARK = '<!-- agent-blocked-by:';
-const RESOLVED_MARK = '<!-- agent-blocked-resolved';
-const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 /** pages (100 each) of one issue's comments / label removals before giving up */
 const MAX_PAGES = 50;
 
-export interface MarkComment {
-  /** the comment's database id (the daemon's tie-break within one second) */
-  id: number;
-  body: string;
-  createdAt: string;
-  /** GitHub's author_association: OWNER / MEMBER / COLLABORATOR / … */
-  authorAssociation: string;
-}
-export interface MarkEnd {
-  /** '' = the issue's own repository; else owner/repo lower-cased */
-  r: string;
-  n: number;
-}
+// GitHub#434: the rule itself is shared with "等前置…" (src/shared/blocked.ts): one implementation
+export type { MarkComment, MarkEnd } from '../shared/blocked';
 
 /**
  * The prerequisites the counting registration names, or [] when none counts.
@@ -44,25 +31,8 @@ export interface MarkEnd {
  * `self`: the issue's own repository, lower-cased (a registration naming it in full means "this repository").
  */
 export function pickLoopMark(comments: MarkComment[], since: string, self: string): MarkEnd[] {
-  const valid = comments
-    .filter((c) => (c.body ?? '').includes(LOOP_MARK))
-    .filter((c) => TRUSTED.has(c.authorAssociation ?? ''))
-    .filter((c) => !c.body.includes(RESOLVED_MARK))
-    .filter((c) => since === '' || (c.createdAt ?? '') > since)
-    .sort((a, b) => ((a.createdAt ?? '') < (b.createdAt ?? '') ? -1 : (a.createdAt ?? '') > (b.createdAt ?? '') ? 1 : (a.id ?? 0) - (b.id ?? 0)));
-  const last = valid[valid.length - 1];
-  if (!last) return [];
-  const marks = [...last.body.matchAll(/<!-- agent-blocked-by:([^>]*)-->/g)];
-  const m = marks.length ? marks[marks.length - 1][1] : '';
-  const seen = new Map<string, MarkEnd>();
-  for (const x of m.matchAll(/(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9-]*\/\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*)?#([0-9]+)/g)) {
-    let r = (x[1] ?? '').toLowerCase();
-    if (r === self) r = '';
-    const n = Number(x[2]);
-    seen.set(`${r}#${n}`, { r, n });
-  }
-  // the daemon's jq `unique`: sorted by repository, then number
-  return [...seen.values()].sort((a, b) => (a.r < b.r ? -1 : a.r > b.r ? 1 : a.n - b.n));
+  const last = countingMarks(comments, since).pop();
+  return last ? parseMark(last.body, self).ends : [];
 }
 
 interface GqlPage<T> {
