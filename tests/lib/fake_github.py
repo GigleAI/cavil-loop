@@ -90,11 +90,31 @@ def me():
 
 
 argv = sys.argv[1:]
+
+
+def _logged(args):
+    # 记的是实际发给 GitHub 的内容：`-F 键=@文件`（真 gh 读文件内容当值）记成 `-f 键=<文件内容>`。
+    # GitHub#426 起大正文经临时文件传，文件名每次不同；展开后和改动前的 `-f 键=<正文>` 逐字节相同，
+    # 「调用和改动前一样」的对拍比的仍是发出去的内容
+    out, k = [], 0
+    while k < len(args):
+        a = args[k]
+        if a == "-F" and k + 1 < len(args):
+            key, _, v = args[k + 1].partition("=")
+            if v.startswith("@") and os.path.isfile(v[1:]):
+                with open(v[1:], encoding="utf-8") as fh:
+                    out += ["-f", key + "=" + fh.read()]
+                k += 2; continue
+        out.append(a); k += 1
+    return out
+
+
+_log_argv = _logged(argv)
 with open(p("calls.log"), "a") as f:
-    f.write("gh " + " ".join(argv) + "\n")
+    f.write("gh " + " ".join(_log_argv) + "\n")
 # 每次调用用的是哪把令牌（GitHub#190：daemon 的写入走写入身份），单独记一份，不改 calls.log 的格式
 with open(p("tokens.log"), "a") as f:
-    f.write(os.environ.get("GH_TOKEN", "") + " gh " + " ".join(argv) + "\n")
+    f.write(os.environ.get("GH_TOKEN", "") + " gh " + " ".join(_log_argv) + "\n")
 
 
 def fail(msg, code=1):
@@ -172,6 +192,9 @@ while i < len(argv):
         slurp = True; i += 1; continue
     if a in ("-f", "-F"):
         k, _, v = argv[i + 1].partition("=")
+        if a == "-F" and v.startswith("@"):   # 真 gh：-F key=@文件 读文件内容当值（GitHub#426：大正文经文件传）
+            with open(v[1:], encoding="utf-8") as fh:
+                v = fh.read()
         if k == "labels[]":
             labels_add.append(v)
         else:
