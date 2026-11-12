@@ -114,6 +114,84 @@ def replace_targets(text, pick, rep):
     return "".join(out), n
 
 
+# ── 代码片段：一处规范化，两头用（PR #409 代码复审第 3 轮）──
+# 剥离端记指纹、loop 副本端比对指纹，都把代码片段过同一个 code_units()：按行拆，去掉引用 / 列表容器前缀，
+# 再按反引号串、围栏标记、HTML 标签和注释符切开，每段压空白。这样外人写成跨行行内代码、`<pre><code>`、
+# 引用里的围栏，loop 写成另一种代码形状或普通一行，切出来的单元一样，指纹就对得上。
+# 指纹两种：每个够长的单元一个（code），整段片段一个（inline，短代码只能靠它）。
+CODE_SPLIT_RE = re.compile(r"`+|~{3,}|<!--|-->|</?[a-zA-Z!][^>\n]*>")
+
+
+def code_units(s):
+    units = []
+    for ln in (s or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        ln = ln[len(CONT_RE.match(ln).group(0)):]
+        for part in CODE_SPLIT_RE.split(ln):
+            u = " ".join(part.split())
+            if u:
+                units.append(u)
+    return units
+
+
+def code_whole(s):
+    return " ".join(code_units(s))
+
+
+def split_glued(lines):
+    """agent 读的是原文不是渲染结果：句子中间冒出来的 ``` / ~~~ 也当围栏——先拆成单独一行，带上同样的容器前缀。
+    剥离端和 loop 副本端都先过它，再找围栏"""
+    split = []
+    for ln in lines:
+        pre = CONT_RE.match(ln).group(0)
+        rest = ln[len(pre):]
+        cut = [m.start() for m in re.finditer(r"`{3,}|~{3,}", rest) if m.start() > 0 and rest[:m.start()].strip()]
+        if not cut:
+            split.append(ln); continue
+        prev = 0
+        cont = re.sub(r"[-*+]|\d{1,9}[.)]", lambda m: " " * len(m.group(0)), pre)   # 列表标记换成同宽空格
+        for c in cut:
+            split.append((pre if prev == 0 else cont) + rest[prev:c]); prev = c
+        split.append(cont + rest[prev:])
+    return split
+
+
+def indented(lines):
+    """缩进代码块（制表符或 4 个空格开头的连续行，引用里的也算；列表里的续行也算，往多剥）
+    → [(首行, 止行（不含）, 引用前缀, 去掉引用前缀的各行)]。剥离端和 loop 副本端都用它"""
+    out, cur = [], None
+    for k, ln in enumerate(lines):
+        q = QUOTE_RE.match(ln).group(0)
+        rest = ln[len(q):]
+        if rest.startswith("\t") or rest.startswith("    "):
+            if cur and cur[2] == q and cur[1] == k:
+                cur[1] = k + 1; cur[3].append(rest)
+            else:
+                cur = [k, k + 1, q, [rest]]; out.append(cur)
+    return [tuple(c) for c in out]
+
+
+def fences(lines):
+    """围栏代码块（顶层的，和写在引用 / 列表项里的；没闭合就到末尾）→ [(首行, 止行（不含）, 容器前缀, 正文行)]。
+    剥离端和 loop 副本端都用它找围栏"""
+    out, i = [], 0
+    while i < len(lines):
+        pre = CONT_RE.match(lines[i]).group(0)
+        m = FENCE_RE.match(lines[i][len(pre):])
+        if not m:
+            i += 1; continue
+        mark = m.group(1)
+        close = re.compile(r"^ {0,3}" + re.escape(mark[0]) + "{" + str(len(mark)) + r",}\s*$")
+        j, body = i + 1, []
+        while j < len(lines):
+            ln = lines[j]
+            if close.match(ln[len(CONT_RE.match(ln).group(0)):]):
+                break
+            body.append(ln); j += 1
+        out.append((i, min(j + 1, len(lines)), pre, body))
+        i = j + 1
+    return out
+
+
 def norm(s):
     return " ".join(s.split())
 
@@ -142,11 +220,15 @@ class Removed:
         for m in SCHEME_RE.finditer(text):
             self.url.add(fp(url_norm(m.group(0))))
 
-    def add_lines(self, lines):
-        for ln in lines:
-            if len(norm(ln)) >= MIN_LINE:
-                self.code.add(fp(ln))
-            self.add_urls(ln)
+    def add_code(self, body):
+        """一段代码（围栏正文、缩进行、行内代码、HTML 代码元素、HTML 注释）：单元指纹 + 整段指纹"""
+        for u in code_units(body):
+            if len(u) >= MIN_LINE:
+                self.code.add(fp(u))
+        whole = code_whole(body)
+        if len(whole) >= MIN_INLINE:
+            self.inline.add(fp(whole))
+        self.add_urls(body)
 
     def add_targets(self, text):
         for _, _, v in targets(text):
@@ -180,46 +262,23 @@ def strip(text):
     rm.add_targets(t)
     # ② 围栏代码块：顶层的，和写在引用 / 列表项里的（先去掉容器前缀再认围栏）；没闭合就到末尾。
     # agent 读的是原文不是渲染结果：句子中间冒出来的 ``` / ~~~ 也当围栏（先拆成单独一行，带上同样的容器前缀）
-    split = []
-    for ln in t.split("\n"):
-        pre = CONT_RE.match(ln).group(0)
-        rest = ln[len(pre):]
-        cut = [m.start() for m in re.finditer(r"`{3,}|~{3,}", rest) if m.start() > 0 and rest[:m.start()].strip()]
-        if not cut:
-            split.append(ln); continue
-        prev = 0
-        cont = re.sub(r"[-*+]|\d{1,9}[.)]", lambda m: " " * len(m.group(0)), pre)   # 列表标记换成同宽空格
-        for c in cut:
-            split.append((pre if prev == 0 else cont) + rest[prev:c]); prev = c
-        split.append(cont + rest[prev:])
+    split = split_glued(t.split("\n"))
     out, lines, i = [], split, 0
-    while i < len(lines):
-        pre = CONT_RE.match(lines[i]).group(0)
-        m = FENCE_RE.match(lines[i][len(pre):])
-        if not m:
-            out.append(lines[i]); i += 1; continue
-        mark = m.group(1)
-        close = re.compile(r"^ {0,3}" + re.escape(mark[0]) + "{" + str(len(mark)) + r",}\s*$")
-        j, body = i + 1, []
-        while j < len(lines):
-            ln = lines[j]
-            if close.match(ln[len(CONT_RE.match(ln).group(0)):]):
-                break
-            body.append(ln); j += 1
-        rm.add_lines(body + [re.sub(r"^(\s*>)+", "", b) for b in body])
+    for a, b, pre, body in fences(lines):
+        out.extend(lines[i:a])
+        rm.add_code("\n".join(body))
         out.append(pre + PH_CODE)
-        i = j + 1
+        i = b
+    out.extend(lines[i:])
     # ③ 缩进代码（制表符或 4 个空格开头的行，引用里的也算；列表里的续行也算，往多剥）
-    lines, out = out, []
-    for ln in lines:
-        q = QUOTE_RE.match(ln).group(0)
-        rest = ln[len(q):]
-        if rest.startswith("\t") or rest.startswith("    "):
-            rm.add_lines([ln, rest])
-            if not out or out[-1] != q + PH_CODE:
-                out.append(q + PH_CODE)
-        else:
-            out.append(ln)
+    # 连着的缩进行算一段代码（整段指纹和别的代码形状对得上）
+    lines, out, i = out, [], 0
+    for a, b, q, body in indented(lines):
+        out.extend(lines[i:a])
+        rm.add_code("\n".join(body))
+        out.append(q + PH_CODE)
+        i = b
+    out.extend(lines[i:])
     t = "\n".join(out)
     # ④ HTML 注释：没闭合就到末尾
     parts, pos = [], 0
@@ -230,7 +289,7 @@ def strip(text):
         parts.append(t[pos:a])
         b = t.find("-->", a + 4)
         inner = t[a + 4:] if b < 0 else t[a + 4:b]
-        rm.add_lines(inner.split("\n"))
+        rm.add_code(inner)
         parts.append(PH_HIDDEN)
         if b < 0:
             break
@@ -238,20 +297,13 @@ def strip(text):
     t = "".join(parts)
     # ④b HTML 的代码类元素：内容整段剥掉、记指纹
     def _hcode(m):
-        body = m.group(2)
-        lines = body.split("\n")
-        rm.add_lines(lines + [re.sub(r"^(\s*>)+", "", b) for b in lines])
-        if len(norm(body)) >= MIN_INLINE:
-            rm.inline.add(fp(body.strip()))
-        rm.add_targets(body)
+        rm.add_code(m.group(2))
+        rm.add_targets(m.group(2))
         return PH_CODE
     t = HTML_CODE_RE.sub(_hcode, t)
     # ⑤ 行内代码
     def _inline(m):
-        c = m.group(2).strip()
-        if len(norm(c)) >= MIN_INLINE:
-            rm.inline.add(fp(c))
-        rm.add_urls(c)
+        rm.add_code(m.group(2))
         return PH_CODE
     t = INLINE_RE.sub(_inline, t)
     # ⑥ 图片、链接、引用式链接定义、尖括号自动链接
@@ -294,40 +346,68 @@ def strip(text):
 
 
 def copy_strip(text, fps):
-    """loop 账号（和外部需求机器人）自己的评论：原样带着的外人链接目标 / 代码行 / 行内代码 / HTML 代码剥掉，其余不动。
-    链接目标用和剥离同一个 targets() 找：外人写成参考式、loop 写成行内链接（或反过来），都认得出是同一个目标"""
-    url_s, code_s, inl_s = set(fps["url"]), set(fps["code"]), set(fps["inline"]) | set(fps["code"])
-    if not (url_s or code_s or inl_s):
+    """loop 账号（和外部需求机器人）自己的评论：原样带着的外人链接目标 / 代码剥掉，其余不动。
+    链接目标用和剥离同一个 targets() 找，代码用同一个 fences() / HTML_CODE_RE / INLINE_RE 找、过同一个
+    code_units() 比指纹：外人和 loop 用的写法不同（参考式对行内链接、跨行行内代码对围栏、`<pre><code>` 对
+    普通一行），也认得出是同一份内容。两层比对：
+      ① 整段：loop 评论里的每个代码片段，整段指纹对上外人的任一片段，整段换掉（短代码只能靠这一层）
+      ② 单元：每一行按 code_units() 的切法切开，够长的单元对上外人代码里的单元，就换掉那一段
+    """
+    url_s, code_s = set(fps["url"]), set(fps["code"])
+    whole_s = set(fps["inline"]) | code_s
+    if not (url_s or code_s or whole_s):
         return text, 0
     n = [0]
 
-    def _inline(m):
-        if fp(m.group(2).strip()) in inl_s:
-            n[0] += 1
-            return COPY_CODE
-        return m.group(0)
+    def hit(body):
+        return bool(code_units(body)) and fp(code_whole(body)) in whole_s
 
-    def _hcode(m):
-        body = m.group(2)
-        hit = fp(body.strip()) in inl_s or any(
-            len(norm(b)) >= MIN_LINE and (fp(b) in code_s or fp(re.sub(r"^(\s*>)+", "", b)) in code_s)
-            for b in body.split("\n"))
-        if hit:
-            n[0] += 1
-            return COPY_CODE
-        return m.group(0)
-
-    out = []
-    for ln in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        bare = re.sub(r"^(\s*>)+", "", ln)
-        for cand in (bare, bare.strip("`")):
-            if len(norm(cand)) >= MIN_LINE and fp(cand) in code_s:
-                out.append(ln[: len(ln) - len(bare)] + COPY_CODE)
-                n[0] += 1
-                break
+    # ① 整段：围栏、HTML 代码元素、行内代码（可跨行）
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    glued = split_glued(lines)
+    if glued != lines and fences(glued):
+        lines = glued      # 有句中围栏才拆行：没有的评论一个字节都不动
+    out, i = [], 0
+    for a, b, pre, body in fences(lines):
+        out.extend(lines[i:a])
+        if hit("\n".join(body)):
+            out.append(pre + COPY_CODE); n[0] += 1
         else:
-            out.append(INLINE_RE.sub(_inline, ln))
-    t = HTML_CODE_RE.sub(_hcode, "\n".join(out))
+            out.extend(lines[a:b])
+        i = b
+    out.extend(lines[i:])
+    lines, out, i = out, [], 0
+    for a, b, q, body in indented(lines):
+        out.extend(lines[i:a])
+        if hit("\n".join(body)):
+            out.append(q + COPY_CODE); n[0] += 1
+        else:
+            out.extend(lines[a:b])
+        i = b
+    out.extend(lines[i:])
+    t = "\n".join(out)
+
+    def _piece(m):
+        if hit(m.group(2)):
+            n[0] += 1
+            return COPY_CODE
+        return m.group(0)
+    t = HTML_CODE_RE.sub(_piece, t)
+    t = INLINE_RE.sub(_piece, t)
+
+    # ② 单元：逐行切开比对（切口和 code_units() 一样，切口本身原样留下）
+    out = []
+    for ln in t.split("\n"):
+        pre = CONT_RE.match(ln).group(0)
+        parts = re.split("(" + CODE_SPLIT_RE.pattern + ")", ln[len(pre):])
+        for k in range(0, len(parts), 2):
+            u = " ".join(parts[k].split())
+            if len(u) >= MIN_LINE and fp(u) in code_s:
+                lead = parts[k][: len(parts[k]) - len(parts[k].lstrip())]
+                parts[k] = lead + COPY_CODE
+                n[0] += 1
+        out.append(pre + "".join(parts))
+    t = "\n".join(out)
     t, k = replace_targets(t, lambda v: target_fp(v) in url_s, COPY_LINK)
     return t, n[0] + k
 
