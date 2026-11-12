@@ -28,6 +28,7 @@ src/
   shared/    tabs.ts 标签页的规则（状态图标、列表外条目多久查一次、增删排序，GitHub#397）；类型、来源地址解析、界面 API 约定（ipc.ts）、搜索筛选（filter.ts）、视图设置与导入（viewSettings.ts / viewImport.ts）
   data/      GitHub 请求、同步、去重、看板分列（board.ts）、表格分组（table.ts）、两者共用的排序（sort.ts）；taskList.ts 任务列表勾选框（GitHub#193）；
              graph.ts 依赖图进图的条目、框与箭头，graphLayout.ts 依赖图的排布与平移缩放（GitHub#350）；
+             loopBlocked.ts 读评论里 loop 的前置登记，和 GitHub「Blocked by」一起画线（GitHub#429）；
              actions.ts 每种修改一个函数，detail.ts 详情（评论倒序），itemRefresh.ts 改完后重读一条，pending.ts 待处理提醒
   app/       controller.ts 应用逻辑（同步轮次、设置、修改、详情、提醒），跑在窗口里，不碰凭据；localApi.ts 把它包成 window.cavil；
              desktop.ts 窗口对外壳「桌面这一侧」的约定（通知、角标、开机自启、同步节拍、点了哪条通知）

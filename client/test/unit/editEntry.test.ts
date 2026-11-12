@@ -165,7 +165,7 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
   const restWrites = () => fake.writes().map((w) => [w.method, w.path, w.body]);
   it('autopilot: the autopilot label first, then the agent label, then the human one off; names from Settings', async () => {
     const c = await ready();
-    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' });
+    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' });
     expect((await c.act({ kind: 'autopilot', key: K(138) })).ok).toBe(true);
     expect(restWrites()).toEqual([
       ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
@@ -184,7 +184,7 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
   it('an empty autopilot label: the setting keeps it empty (no button) and the action is refused before sending', async () => {
     const c = await ready();
     c.setHandBack({ autopilot: '' });
-    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: '', running: 'doing/agent' });
+    expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: '', running: 'doing/agent', blocked: 'pending/blocked' });
     // changing another name keeps it empty
     c.setHandBack({ agent: 'go' });
     expect(c.getState().handBack.autopilot).toBe('');
@@ -261,6 +261,20 @@ describe('GitHub#404: the running label next to the hand-back labels', () => {
     cache.setSetting('handBack', { human: 'wait', agent: 'go', autopilot: '' });
     cache.close();
     const c = await ready();
-    expect(c.getState().handBack).toEqual({ human: 'wait', agent: 'go', autopilot: '', running: 'doing/agent' });
+    expect(c.getState().handBack).toEqual({ human: 'wait', agent: 'go', autopilot: '', running: 'doing/agent', blocked: 'pending/blocked' });
+  });
+
+  it('GitHub#429: the waiting label — saved empty stays empty (the graph then reads no registration), and is kept across a restart', async () => {
+    const c = await ready();
+    expect(c.getState().handBack.blocked).toBe('pending/blocked');
+    c.setHandBack({ blocked: '  ' });
+    expect(c.getState().handBack.blocked).toBe('');
+    c.setHandBack({ agent: 'go' });
+    expect(c.getState().handBack.blocked).toBe('');
+    c.setHandBack({ blocked: ' waiting ' });
+    expect(c.getState().handBack.blocked).toBe('waiting');
+    await c.settled();
+    const again = await ready();
+    expect(again.getState().handBack.blocked).toBe('waiting');
   });
 });

@@ -577,3 +577,71 @@ test('GitHub#350: a graph too big to read at one screen opens on the open part, 
   await expect.poll(scaleNow).toBeCloseTo(fitScale, 2);
   await app.close();
 });
+
+// GigleAI/cavil-loop#429: the shape that started it (luosky/arkknights-tool) — #56 waits for #55, #57
+// for #56, #58 for #57, registered only in the loop's hidden comments (GitHub's "Blocked by" empty).
+test('GitHub#429: the loop registrations in comments are drawn as arrows; the setting turns them off', async () => {
+  const TOOL = 'luosky/arkknights-tool';
+  const TK = (n: number) => `luosky/arkknights-tool#${n}`;
+  const issue = (n: number, labels: string[]) => ({
+    number: n,
+    node_id: `I_tool_${n}`,
+    title: `明日方舟抽卡分析 ${n}`,
+    state: 'open',
+    html_url: `https://github.com/${TOOL}/issues/${n}`,
+    updated_at: '2026-11-12T05:35:00Z',
+    labels: labels.map((name) => ({ name, color: 'c5def5' })),
+    assignees: [],
+    milestone: null,
+    user: { login: 'luosky' },
+    parent_issue_url: null,
+    sub_issues_summary: { total: 0, completed: 0, percent_completed: 0 },
+    issue_dependencies_summary: { blocked_by: 0, total_blocked_by: 0, blocking: 0, total_blocking: 0 },
+  });
+  env.fake.state.repos.set(TOOL, [issue(55, ['pending/PR']), issue(56, ['pending/blocked']), issue(57, ['pending/blocked']), issue(58, ['pending/blocked'])]);
+  let i = 0;
+  for (const [n, waits] of [
+    [56, 55],
+    [57, 56],
+    [58, 57],
+  ]) {
+    const body = `## 等前置 #${waits}\n\n<!-- agent-blocked-by: #${waits} resume=pending/agent -->`;
+    env.fake.state.w.comments.set(`${TOOL}#${n}`, [
+      { id: `IC_tool_${++i}`, url: `https://github.com/${TOOL}/issues/${n}#c${i}`, createdAt: `2026-11-12T05:35:0${i}Z`, bodyHTML: body, body, author: { login: 'luosky-bot-pusher' }, authorAssociation: 'COLLABORATOR' },
+    ]);
+  }
+  const app = await launchApp(env);
+  const { page } = app;
+  await signInToGraph(page, [TOOL]);
+  for (const [from, to] of [
+    [55, 56],
+    [56, 57],
+    [57, 58],
+  ])
+    await expect(edgeOf(page, TK(from), TK(to))).toHaveCount(1);
+  await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(3);
+  await expect(nodeOf(page, TK(55)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 3 项');
+  for (const n of [56, 57, 58]) await expect(nodeOf(page, TK(n)).getByTestId('graph-blocked-by')).toHaveText('被 1 项挡住');
+  // #55 is drawn as the end of a registration: not counted among the hidden ones
+  await expect(page.getByTestId('graph-hidden')).toHaveCount(0);
+  await page.getByTestId('graph-fit').click();
+  await shot(page, 'graph-11-loop-registrations');
+
+  // the setting: empty = only GitHub's own relations (none here) — the arrows go, no registration is read again
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('hand-back-blocked')).toHaveValue('pending/blocked');
+  await shot(page, 'graph-12-setting');
+  await page.getByTestId('hand-back-blocked').fill('');
+  await page.getByTestId('hand-back-blocked').blur();
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.blocked)).toBe('');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('graph-hidden')).toBeVisible();
+  await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(0);
+  // and back: the next read under the label brings them back
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('hand-back-blocked').fill('pending/blocked');
+  await page.getByTestId('hand-back-blocked').blur();
+  await page.getByTestId('back').click();
+  await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(3, { timeout: 20_000 });
+  await app.close();
+});

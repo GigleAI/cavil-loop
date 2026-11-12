@@ -5,6 +5,7 @@ import { fetchSource } from './fetchSources';
 import { boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
 import { VIEWER_QUERY } from './queries';
 import { relationsKnown } from './relations';
+import { loopKnown } from './loopBlocked';
 
 export interface SyncRound {
   /** snapshot per source key: fresh where the read completed, previous otherwise */
@@ -52,6 +53,8 @@ export async function syncRound(
   fullReadEveryMs: number = FULL_READ_EVERY_MS,
   /** GitHub#324: one source is over — read, confirmed unchanged or failed (the round's progress) */
   onSourceDone: () => void = () => {},
+  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
+  loopLabel: string = '',
 ): Promise<SyncRound> {
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
@@ -103,7 +106,8 @@ export async function syncRound(
     // a record vouches only for the very snapshot it was taken for — and never for one whose
     // relations are unknown (GitHub#349: cached before they were read): "nothing changed" must
     // not keep that snapshot, only a full read can fill them in
-    const usable = prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) ? old : null;
+    // GitHub#429: nor for one whose loop registrations were read under another label setting (or not at all)
+    const usable = prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) && loopKnown(prev.items, loopLabel) ? old : null;
     let checked: CheckResult | null = null;
     if (checking) {
       try {
@@ -120,7 +124,7 @@ export async function syncRound(
       checks.set(src.key, { ...checked.record, snapshotAt: usable.snapshotAt, fullAt: usable.fullAt });
       return { kind: 'unchanged' };
     }
-    const snap = await fetchSource(client, src, now);
+    const snap = await fetchSource(client, src, now, loopLabel);
     // the tags were taken before this read began: a change in between is seen again next round
     if (checked) checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: now });
     return { kind: 'read', snap };

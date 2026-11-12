@@ -4,9 +4,8 @@
 // only draws and handles the pointer.
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { badgeText, stateTone } from '../shared/stateTone';
 import type { SourceStatus } from '../shared/types';
-import { boxProgress, type GraphModel, type GraphNode } from '../data/graph';
+import { boxProgress, nodeBadge, nodeTone, type GraphModel, type GraphNode } from '../data/graph';
 import { edgePath, fitView, focusOpen, keepAnchor, layoutGraph, zoomAt, BOX_HEAD, type GraphLayout, type Rect, type Viewport } from '../data/graphLayout';
 import { api } from './api';
 import { labelStyle } from './colors';
@@ -53,7 +52,6 @@ interface Props {
   keys?: boolean;
 }
 
-const nodeTone = (n: GraphNode) => stateTone('issue', n.state, n.stateReason, null);
 
 export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow, keys = true }: Props) {
   // one function for the whole life of the view, so a node whose look did not change is not redrawn
@@ -357,9 +355,9 @@ function GraphBar({ testid, source, children }: { testid: string; source: string
 function StateMark({ n }: { n: GraphNode }) {
   const tone = nodeTone(n);
   return (
-    <span className={`kind issue ${tone}`} data-testid="graph-node-state" data-tone={tone}>
-      <Icon name={itemIcon('issue', n.state, n.stateReason)} size={14} />
-      Issue · {badgeText('issue', n.state, n.stateReason, null)}
+    <span className={`kind ${n.kind} ${tone}`} data-testid="graph-node-state" data-tone={tone} data-kind={n.kind}>
+      <Icon name={itemIcon(n.kind, n.state, n.stateReason)} size={14} />
+      {n.kind === 'pr' ? 'PR' : 'Issue'} · {nodeBadge(n)}
     </span>
   );
 }

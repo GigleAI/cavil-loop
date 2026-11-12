@@ -1283,7 +1283,7 @@ export const MUTATIONS = [
     from: '        checked = null; // could not tell: read in full, keep no record', to: "        checked = usable ? { unchanged: true, record: { pages: usable.pages, fields: usable.fields, count: usable.count } } : null;",
     expect: ['an item page answers 500', 'the repository answers 500'] },
   { what: '变化检查（GitHub#261）：版本标记在整读之后才取（检查与整读之间的改动永远看不见）', file: 'src/data/sync.ts',
-    from: '    const snap = await fetchSource(client, src, now);', to: '    const snap = await fetchSource(client, src, now);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
+    from: '    const snap = await fetchSource(client, src, now, loopLabel);', to: '    const snap = await fetchSource(client, src, now, loopLabel);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
     expect: ['a change between the check and the full read: not in this read, seen by the next round'] },
   { what: '变化检查（GitHub#261）：没超过 10 分钟也不强制整读（看不见的改动永远不出现）', file: 'src/data/sync.ts',
     from: 'if (checked?.unchanged && usable && now - usable.fullAt < fullReadEveryMs) {', to: 'if (checked?.unchanged && usable) {',

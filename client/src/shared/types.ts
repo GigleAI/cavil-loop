@@ -118,6 +118,24 @@ export interface RelatedIssue {
   url: string;
   state: ItemState;
   stateReason: IssueStateReason | null;
+  /** GitHub#429: 'pr' when the other end is a pull request (only a loop registration can name one); absent = an issue */
+  kind?: ItemKind;
+  /** GitHub#429: a pull request's draft mark (same meaning as Item.isDraft); absent = an issue / not known */
+  isDraft?: boolean | null;
+}
+
+/**
+ * GitHub#429: what an issue waits for according to the loop's own registration — the hidden
+ * `<!-- agent-blocked-by: … -->` comment the daemon goes by — read only while the issue is open and
+ * carries the "waiting for a prerequisite" label. Same rule as the daemon's (which comment counts),
+ * except that the client does not know the loop's own account: a registration counts only when its
+ * author is the repository's owner / a member / a collaborator.
+ */
+export interface LoopBlocked {
+  /** the label setting this was read with: a different setting now means "not read" */
+  label: string;
+  /** the prerequisites; empty = none (no registration, or the issue does not wait) */
+  ends: RelatedIssue[];
 }
 
 /**
@@ -193,6 +211,11 @@ export interface Item {
    * the item, this — never `updatedAt` — says whose relations are newer.
    */
   relationsAt?: number;
+  /**
+   * GitHub#429: the loop's registered prerequisites (see LoopBlocked). Absent = not read (the setting
+   * is empty, or a cache written before #429) — never "none".
+   */
+  loopBlocked?: LoopBlocked;
   /**
    * GitHub#373: does the signed-in account subscribe to this item (GitHub's `viewerSubscription`)?
    * null = read, but GitHub's answer is not one this client knows; absent = not read (a cache
@@ -510,9 +533,11 @@ export interface HandBackLabels {
   autopilot: string;
   /** GitHub#404: the item is being worked on by an agent — counted as "运行中" in the view bar; '' = that number is not shown */
   running: string;
+  /** GitHub#429: the daemon's "waiting for a prerequisite" label — the graph reads the loop's registration on open issues carrying it; '' = not read */
+  blocked: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
 
 export interface ViewSettings {
   mode: ColumnMode;
