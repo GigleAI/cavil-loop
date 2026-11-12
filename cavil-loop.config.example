@@ -229,6 +229,35 @@ AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
 # （只拦 .github/）。空格或逗号分隔；开头 / = 只认仓库根目录，不写 = 任何深度；末尾 / = 目录；`default` = 内置清单
 # （见 docs/operations.zh.md）。写法读不懂的条目不会被跳过：那时每次托管合并都交人，直到改好。
 AUTOPILOT_HUMAN_PATHS=""
+# Comments and edits by outside accounts on autopilot items (GitHub#391; only matters when LABEL_AUTOPILOT is set).
+# An "outside account" has no write access to this repo. The worker and the reviewer read the item through a read
+# command that names every author; an outside account's text stays readable, but its links, images, attachments,
+# code blocks, inline code, HTML comments and invisible characters are replaced by placeholders, and the same
+# links / code are also removed from the loop's own earlier comments that quoted them.
+#   mark  = only that
+#   block = also: once an outside account has commented (or edited a body) after the maintainer's autopilot label,
+#           the PR is not merged automatically — it goes to pending/human, naming those comments
+#   empty = off, exactly the previous behaviour
+# This is not a sandbox: an agent that ignores its rules can still read the original and run what it was given.
+# 托管条目上外部账号（在本仓库没有写权限的账号）写的评论和改过的正文（GitHub#391，只在 LABEL_AUTOPILOT 非空时有用）。
+# worker 和复审改用读取命令读本条：每条标明作者；外部账号的文字照常给读，其中的链接、图片、附件、代码块、行内代码、
+# HTML 注释和看不见的字符换成占位，loop 自己的旧评论里原样引用过的同一个链接 / 代码也一并去掉。
+#   mark  = 只做上面这些
+#   block = 再加：维护者打托管标签之后有外部账号评论（或改正文），这条 PR 就不自动合并，交 pending/human 并点名那几条
+#   留空  = 关闭，和以前完全一样
+# 这不是沙箱：不守规则的 agent 仍然能绕开去读原文、运行别人给的东西。
+AUTOPILOT_OUTSIDER_GUARD="block"
+# Pre-screen each outside comment with a model that has no tools (GitHub#391): on = before dispatch the daemon asks it
+# whether the comment is ordering the agent to do something; such comments, and ones not screened yet, are shown
+# to the agent as a placeholder with the link only. Empty = off. Needs AUTOPILOT_OUTSIDER_GUARD.
+# 外部账号的每条内容先交给一个不给任何工具的模型预筛（GitHub#391）：on = daemon 派工前问它这段话是不是在指挥 agent 做事；
+# 判为是的、和还没筛过的，给 agent 看时整条换成占位，只留出处链接。留空 = 不预筛。要和上一项一起开。
+AUTOPILOT_OUTSIDER_SCREEN="on"
+# The screening command: the text comes in on stdin, stdout must be exactly SAFE or SUSPECT (anything else = not
+# screened). Empty = the built-in one (claude, all tools and MCP servers turned off, model haiku).
+# 预筛命令：文字从 stdin 进，stdout 只认 SAFE / SUSPECT（别的输出 = 没筛成）。留空 = 内置命令（claude，关掉全部工具和
+# MCP，模型 haiku）。
+AUTOPILOT_OUTSIDER_SCREEN_CMD=""
 # Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
 # sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
 # access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).

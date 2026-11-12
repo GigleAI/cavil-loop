@@ -162,6 +162,15 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
   Requests filed by the requester bot can be on autopilot (GitHub#162), but only a maintainer adding
   the label by hand authorizes it — the bot account's own label does not count; the requester's
   confirmations still apply and none of the daemon's pre-merge checks is dropped
+- **Comments by outside accounts** (`AUTOPILOT_OUTSIDER_GUARD`, GitHub#391, off by default): a comment by an
+  outside account (no write access to this repo) never triggers anything in the daemon, but the agent on an
+  autopilot item reads it. With the setting on, the agent reads the item through a read command: outside text
+  stays readable and is labelled as such, while its links, attachments, code, HTML comments and invisible
+  characters become placeholders; `block` also holds back the merge whenever outside content arrived after the
+  authorization, even if it was deleted later (this machine keeps a record); optional pre-screening by a model
+  with no tools hides comments that look like orders to the agent. **This is not a sandbox**: an agent that
+  ignores its rules can still read the original and run what it was given; malicious plain-text requests,
+  links written in pieces and retold content are not recognised. See [operations](operations.md#comments-by-outside-accounts-on-autopilot-items-autopilot_outsider_guard-github391)
 - **Limit, stated plainly**: the "tests were re-run" record in the reviewer's comment is written by
   the same account as the worker; the daemon checks that it exists, names the reviewed commit, is
   newer than the review dispatch and reports zero failures — it cannot prove the run happened.

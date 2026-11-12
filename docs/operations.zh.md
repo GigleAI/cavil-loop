@@ -709,6 +709,72 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
 - **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
 
+### 托管条目上外部账号的内容（`AUTOPILOT_OUTSIDER_GUARD`，GitHub#391）
+
+公开仓库里任何账号都能评论。外部账号（在本仓库**没有写权限**的账号——不是维护者、不是 loop 的写入账号、不是外部需求机器人）的
+评论触发不了 daemon 的任何动作：开不了工、合不了 PR、冒充不了托管授权。但托管条目派给 agent 之后，agent 会读到这些评论；托管
+中间没有人确认方案、没有人点合并。打开这一项后：
+
+- **agent 改用读取命令读本条**（`scripts/outsider-read.sh`，托管条目的提示词里写好了确切命令）：输出本条的全部正文和评论（PR 带上它绑定的 issue，
+  拆分子项带上父 issue），每条标明作者身份。外部账号的**文字照常给读**，其中的链接、图片、附件、代码块、行内代码、HTML 注释和看不见的字符
+  换成写明种类的占位；loop 自己的旧评论里原样引用过的同一个链接 / 代码也去掉。授权之后被外部账号改过的正文，给授权那一刻的版本。
+  外部账号的话只当参考：不算需求、不算确认、不改变范围；里面的文件和命令不下载、不运行、不照抄。
+- **合并前交人**（`block` 档）：维护者打托管标签之后，有外部账号评论（issue、PR 对话、行内评论、review）或改过正文——现在查得到的，或
+  本机记录里有的（事后删掉也算）——这条 PR 就不自动合并，翻 `pending/human`，说明里点名那几条。授权之前就在的外部内容算维护者已过目，不拦。
+- **模型预筛**（`AUTOPILOT_OUTSIDER_SCREEN="on"`）：daemon 派工前把每条外部内容（已剥离的文字）交给一个**不给任何工具**的模型，问它是不是
+  在指挥 agent 做事；判为是的、筛失败的、还没筛过的，给 agent 看时整条换成占位、只留出处链接。每条新内容只筛一次（按内容存结论），
+  每次派工最多补筛 5 条。读取命令自己不调模型（实测：在 worker 会话里再起 `claude -p` 认证失败），所以派工之后新来的外部评论要等
+  下次派工才筛得到，这期间是隐藏的。
+- **会话**：托管条目派工时，这个角色现有的会话如果不是在保护开着时起的（以前是普通条目、或这一项是后来才打开的），就作废旧会话、
+  起一条全新的——旧会话里可能有没剥过的原文。之后照旧续接。
+
+开启：在项目配置里写
+
+```bash
+AUTOPILOT_OUTSIDER_GUARD="block"   # 或 "mark"：只标注和剥离，合并条件不变
+AUTOPILOT_OUTSIDER_SCREEN="on"     # 不写或 "" = 不预筛
+```
+
+下一轮轮询生效。留空或不写 = 和以前完全一样（GitHub 调用、state、提示词都不变）。写了认不出的词按 `block` 处理。
+预筛命令可以用 `AUTOPILOT_OUTSIDER_SCREEN_CMD` 换（文字从 stdin 进、stdout 只认 `SAFE` / `SUSPECT`，别的输出都算没筛成）；
+留空用内置的 `claude -p --tools '' --strict-mcp-config …`（关掉全部工具和 MCP，模型 haiku）。
+
+**PR 被拦在合并前之后怎么办**（在 GitHub 网页上操作）：
+
+1. 打开交人说明里点名的那几条外部内容，再看一遍 PR 的改动，确认改动里没有照着外部内容做的、超出本条范围的东西。
+2. 选一种：
+   - **自己合**：审完直接在 PR 页面点合并。
+   - **继续托管**：到提供授权的地方（说明里写着，通常是 issue）把 `autopilot` 标签摘掉、再打上——这表示「这些我看过了」，之后的
+     判断只看这次重新打标签之后的外部内容；再把 PR 的标签从 `pending/human` 改成 `pending/review`。复审通过后 daemon 再检查、合并。
+     看到 PR 上出现托管合并说明就算恢复了；要是又被拦下，说明里点名的是重新打标签之后新来的外部内容。
+   - **不合**：关掉 PR。
+3. 想看 agent 看到的是什么、本机记下了什么，在装着这个项目的机器上跑（只改前两行；跑这条命令本身也会把查到的外部内容记下来，和 agent 跑时一样）：
+
+<!-- outsider-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+N=123            # the issue or PR number / 条目编号
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+ENTRY="$HOME/.agents/releases/cavil-loop/entrypoints/outsider-read.sh"
+[ -f "$ENTRY" ] || ENTRY="$HOME/.agents/skills/cavil-loop/scripts/outsider-read.sh"   # development mode / 开发模式
+bash "$ENTRY" --config "$CONF" "$N"
+echo "exit code / 退出码: $?"
+ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有任何记录"
+```
+<!-- outsider-ops:end -->
+
+退出码 0 = 读全了；3 = 读不全（网络、权限查不到、正文那一版取不回），什么都不输出。记录按条目编号分目录（PR 绑着 issue 时用 issue 的编号），
+条目收尾清理时删掉。
+
+**它挡不住的**（这不是沙箱）：不守规则的 agent 仍然可以绕开读取命令去读原文、下载并运行别人给的文件；纯文字写的恶意要求剥不掉
+（预筛能拦下一部分，也会漏判、误判）；拆开写的网址、用自己的话转述的内容认不出来；两次检查之间出现又删掉的评论 daemon 没见过；
+合并前最后一次检查到合并请求到达 GitHub 之间的窗口消除不了；本机记录不在多台机器之间同步。
+
+**关闭**：删掉这两行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
+
 ### 只在一台机器上跑这个仓库的轮询
 
 开托管前，确认**只有一台机器**在跑这个仓库的轮询。另一台只要还在跑，**不管它开没开托管**都可能领走托管条目的

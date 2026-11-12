@@ -54,6 +54,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
 # 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
 # shellcheck source=_heavy.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
+# 托管条目上外部账号的内容（GitHub#391）：读取命令、派工前检查、合并前交人共用这一份
+_OUTSIDER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_outsider.sh
+source "$_OUTSIDER_DIR/_outsider.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -417,6 +421,12 @@ AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
 # 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
 # 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
 AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# 外部账号内容的保护（GitHub#391，只对托管条目生效）。留空 / 不写 = 和以前逐字节一样。
+# mark = 读取命令标明作者、剥掉外人内容里的链接 / 附件 / 代码 / 隐藏文字；block = 再加「授权之后有外人内容就不自动合并」。
+# SCREEN=on 时外人内容先过一个不给任何工具的模型预筛（daemon 派工前跑，见 scripts/_outsider.sh）
+AUTOPILOT_OUTSIDER_GUARD="${AUTOPILOT_OUTSIDER_GUARD:-}"
+AUTOPILOT_OUTSIDER_SCREEN="${AUTOPILOT_OUTSIDER_SCREEN:-}"
+AUTOPILOT_OUTSIDER_SCREEN_CMD="${AUTOPILOT_OUTSIDER_SCREEN_CMD:-}"
 # `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
 # 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
 AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
@@ -4649,7 +4659,7 @@ autopilot_place_strip_copy() {   # <称呼>
 # 打托管标签的这个人算不算维护者授权：User 类型、不是 loop 的写入账号、不是外部需求机器人账号、有写权限。
 #   0 = 算（AUTOPILOT_ACTOR）；1 = 不算（AUTOPILOT_DENY / AUTOPILOT_REASON）；2 = 判不了
 autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写权限的仓库（跨仓库的父 issue，GitHub#233）]
-    local actor="$1" atype="$2" also="${3:-}" me perm
+    local actor="$1" atype="$2" also="${3:-}" me rc
     AUTOPILOT_ACTOR=""; AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     if [ -z "$actor" ] || [ "$actor" = null ]; then
         AUTOPILOT_REASON="标签记录里没有操作人"; return 2
@@ -4667,20 +4677,21 @@ autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写�
     if [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then
         AUTOPILOT_DENY=actor-requester-bot; AUTOPILOT_REASON="托管标签是外部需求机器人账号 \`$actor\` 打的"; return 1
     fi
-    if ! perm=$(gh api "repos/$REPO/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-        AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2
-    fi
-    case "$perm" in
-        admin|write) ;;
-        *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 $perm 权限，需要写权限"; return 1 ;;
+    # 「是不是维护者」和外部内容那边共用一份判据（repo_maintainer_check，GitHub#391）
+    rc=0; repo_maintainer_check "$actor" "$atype" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) AUTOPILOT_DENY=actor-perm
+           AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+        *) AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2 ;;
     esac
     if [ -n "$also" ] && [ "$(requester_bot_lc "$also")" != "$(requester_bot_lc "$REPO")" ]; then
-        if ! perm=$(gh api "repos/$also/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-            AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2
-        fi
-        case "$perm" in
-            admin|write) ;;
-            *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 $perm 权限，需要写权限"; return 1 ;;
+        rc=0; repo_maintainer_check "$actor" "$atype" "$also" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) AUTOPILOT_DENY=actor-perm
+               AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+            *) AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2 ;;
         esac
     fi
     AUTOPILOT_ACTOR="$actor"
@@ -5377,6 +5388,19 @@ autopilot_permit() {   # <state_file> <PR 编号>
             return 0 ;;
         *) AP_REASON="读不到 PR #$pr 的改动文件列表"; return 0 ;;
     esac
+    fi
+    # 外部账号的内容（GitHub#391，只在 block 档）：授权之后有外人写的评论 / 改过的正文——现在查得到的，或本机
+    # 记录里有的（事后删掉也算）——就不自动合并，交维护者过目。关着时这里一次调用都没有
+    if outsider_block_on; then
+        rc=0; outsider_permit_gate "$AP_N" "$ij" "$pr" "$pj" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) AP_V=human; AP_STOP=outsider; AP_STOP_KEY="$OS_GATE_KEY"
+               AP_REASON="托管授权（$OS_AUTH_WHERE）之后，有外部账号（在本仓库没有写权限的账号）写的内容：$OS_GATE_TEXT。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
+               AP_NEXT="请维护者看过这些内容和 PR 的改动后选一种：① 自己审完直接合并；② 认为没问题、要继续托管——在 $(autopilot_auth_where) 上把 \`$LABEL_AUTOPILOT\` 摘掉再打上（表示这些内容已看过），再把本 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\`，重新走复审和合并；③ 不合，关掉 PR。"
+               return 0 ;;
+            *) AP_REASON="核对外部账号的内容时读不全（$OS_WHY）"; return 0 ;;
+        esac
     fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
     rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?
@@ -8014,6 +8038,11 @@ compose_prompt_template() {
                 printf '\n\n---\n\n'
                 autopilot_requester_bot_section
             fi
+            # 外部账号的内容（GitHub#391）：保护开着才加；关着时托管提示词和以前逐字节一样
+            if outsider_guard_on; then
+                printf '\n\n---\n\n'
+                outsider_prompt_section "$name"
+            fi
         fi
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
@@ -8055,6 +8084,13 @@ REQUESTER_BOT_NOTIFY_SCRIPT="$_LIB_DIR/notify-requester-bot.sh"
 _MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-requester-bot.sh"
 [ ! -f "$_MANAGED_REQUESTER_BOT" ] || REQUESTER_BOT_NOTIFY_SCRIPT="$_MANAGED_REQUESTER_BOT"
 REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
+
+# ── 托管条目读正文和评论的命令（GitHub#391，写进「外部账号的内容」规则段）──
+# 同上走长期入口；配置路径由这里给定
+OUTSIDER_READ_SCRIPT="$_LIB_DIR/outsider-read.sh"
+_MANAGED_OUTSIDER_READ="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/outsider-read.sh"
+[ ! -f "$_MANAGED_OUTSIDER_READ" ] || OUTSIDER_READ_SCRIPT="$_MANAGED_OUTSIDER_READ"
+OUTSIDER_READ_CMD="bash '$OUTSIDER_READ_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
@@ -8253,6 +8289,9 @@ agent_session_id_set() {   # <num> <agent> <role> <id>
     f="$(agent_session_file "$1" "$2" "$3")"
     mkdir -p "$AGENT_SESSION_DIR"
     printf '%s\n' "$4" > "$f"
+    # 这条全新会话是在外部内容保护开着时起的（GitHub#391）：记进 .guarded，之后的派工才能续接它。
+    # 只有 agent_session_plan 起全新会话时设这个标记（codex 的 id 起完才回捞，也经过这里）
+    if [ "${OUTSIDER_SESSION_MARK:-}" = 1 ]; then outsider_session_mark "$1" "$2" "$3" "$4"; fi
 }
 
 agent_session_id_forget() {   # <num> <agent> <role>
@@ -8265,9 +8304,10 @@ agent_session_id_forget() {   # <num> <agent> <role>
 #   <num>.<agent>.<role>.retired  已知属于这个角色、但已被换掉的 id（只增不删）
 #   <num>.<agent>.preexisting     本功能第一次管这条活时，cwd 里已经有的 id（可收养白名单）
 #   <num>.<agent>.unresolved      回捞失败的启动记录，仅供排查
+#   <num>.<agent>.<role>.guarded  在外部内容保护开着时起的 id（GitHub#391，只增不删）
 agent_session_is_aux_file() {   # <path>
     case "$1" in
-        *.retired|*.preexisting|*.unresolved) return 0 ;;
+        *.retired|*.preexisting|*.unresolved|*.guarded) return 0 ;;
     esac
     return 1
 }
@@ -8451,6 +8491,7 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
     AGENT_LAUNCH_KIND=""
     WORKER_SESSION_ID=""
     AGENT_SESSION_PRELAUNCH_IDS=""
+    OUTSIDER_SESSION_MARK=""
 
     # 每次起会话（新建 / 续接 / 续接失败重建，三个派工脚本全部经过这里）之前先补目录信任
     agent_prepare_trust "$cwd"
@@ -8460,6 +8501,21 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
         agent_session_preexisting_snapshot "$num" "$cwd"
     fi
 
+    # 外部内容保护开着的托管条目（GitHub#391）：旧会话里可能有没剥过的外人原文。这个角色现在登记的会话
+    # 不是在保护开着时起的（之前是普通条目、或配置后来才打开）就不续接、不收养，作废了起全新的；
+    # 是在保护下起的照旧续接
+    if outsider_session_guard_needed; then
+        id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
+        if [ "$force_new" != 1 ] && [ -n "$id" ] && outsider_session_is_guarded "$num" "$WORKER_AGENT" "$role" "$id" \
+           && agent_session_exists "$cwd" "$id"; then
+            WORKER_SESSION_ID="$id"
+            AGENT_LAUNCH_KIND="resume"
+            return 0
+        fi
+        [ -z "$id" ] || log "外部内容保护：#$num 的 $role 会话不是在保护开着时起的（或已不在），起一条全新的" 2>/dev/null || true
+        force_new=1
+        OUTSIDER_SESSION_MARK=1
+    fi
     if [ "$force_new" != 1 ]; then
         id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
         if [ -n "$id" ]; then
