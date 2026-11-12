@@ -345,11 +345,13 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .tab-icon.tone-closed { color: var(--state-closed-fg); }
 .tab-icon.tone-done { color: var(--state-done-fg); }
 .tab-icon.tone-neutral { color: var(--state-neutral-fg); }
-/* GitHub#442: "an agent is working on it" — a still robot on a disc, the pair of "waiting for a human" (a spinner read as "still loading") */
-.tab-icon.running .disc { fill: var(--accent); }
-.tab-icon.running .robot { fill: #fff; }
-.tab-icon.running .eye { fill: var(--accent); }
-.tab-icon.running .antenna { stroke: #fff; }
+/* GitHub#449: "an agent is working on it" — a short bright stretch of edge going round a hollow square, one lap in 2 s
+   (a square path and no disc: GitHub#442 dropped a spinner because it read as "still loading") */
+.tab-icon.running .track { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0.25; }
+.tab-icon.running .seg { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 24 76; animation: tab-running 2s linear infinite; }
+.tab-icon.running .core { fill: var(--accent); }
+@keyframes tab-running { to { stroke-dashoffset: -100; } }
+@media (prefers-reduced-motion: reduce) { .tab-icon.running .seg { animation: none; } }
 .tab-icon.waiting .disc { fill: var(--edge-open); }
 .tab-icon.waiting .person { fill: #fff; }
 .tab-icon.blocked .disc { fill: var(--state-neutral-fg); }

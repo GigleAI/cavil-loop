@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
+import { restIdOf } from '../fake-github/blocked';
 import { findCopies, gqlContent } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 
@@ -19,7 +20,9 @@ mkdirSync(screens, { recursive: true });
 
 const REPO = 'acme/demo';
 const T0 = '2026-11-10T00:00:00Z';
+// `id`: the REST database id, the same one the fake's single-item answer carries (a real list always has it)
 const issue = (number: number, title: string, labels: string[], extra: Record<string, unknown> = {}) => ({
+  id: restIdOf(REPO, number),
   number,
   node_id: `I_demo_${number}`,
   title,
@@ -341,4 +344,173 @@ test('PR #441 review round 1: only taking the pause off failed — after a resta
   await expect(dialog.getByTestId('blocked-current')).toContainText('PR #12');
   await expect(page.getByTestId('confirm-ok')).toBeDisabled();
   expect(writesTo(14)).toEqual([]);
+});
+
+// ---- GitHub#448: a number prefix, a number in another repository, an address ----
+
+const BIG = 'acme/big';
+/** acme/big is not on the board: every row comes from GitHub. #901–#1000 fill the first page (updated last), #444 / #447 are on the second */
+function bigRepo() {
+  const at = (n: number) => `2026-11-10T0${n > 900 ? 5 : 1}:00:00Z`;
+  const big = (n: number, state = 'open') => ({ ...issue(n, `big ${n}`, [], { state, updated_at: at(n) }), id: restIdOf(BIG, n), node_id: `I_big_${n}`, html_url: `https://github.com/acme/big/issues/${n}` });
+  return [...Array.from({ length: 100 }, (_, i) => big(901 + i)), big(444), big(447), big(4, 'closed'), big(45, 'closed')];
+}
+const refsShown = (page: Page) => page.getByTestId('blocked-dialog').getByTestId('blocked-result').evaluateAll((els) => els.map((e) => e.getAttribute('data-ref')));
+const bigListReads = () => env.fake.log.filter((e) => e.method === 'GET' && e.path.startsWith(`/api/repos/${BIG}/issues?`)).length;
+
+test('GitHub#448: owner/repo#4 lists the open items whose number starts with 4 — the second page too; the list is reused a minute; an address finds its item', async () => {
+  env.fake.state.repos.set(BIG, bigRepo());
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-search');
+  // #4 itself is closed; #447 / #444 are only on the second page of the open list
+  await box.fill('acme/big#4');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`, `${BIG}#444`]);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  // the reachability side of "reused": the list really was read, both pages
+  expect(bigListReads()).toBe(2);
+  // another prefix within the minute: the same complete list, not read again (the number itself is)
+  await box.fill('ACME/big#44');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`, `${BIG}#444`]);
+  await box.fill('acme/big#9');
+  // 20 rows at most, the largest numbers starting with 9 (#9 itself does not exist; #1000 does not start with 9)
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual(Array.from({ length: 20 }, (_, i) => `${BIG}#${999 - i}`));
+  expect(bigListReads()).toBe(2);
+  // an address: that one item, no prefix (#4440… would not be listed either way)
+  await box.fill('https://github.com/acme/big/issues/444');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#444`]);
+  await box.fill(`${env.fake.web}/acme/big/pull/447#issuecomment-1`);
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`]);
+  // a closed one by address: nothing listed, no error
+  await box.fill('github.com/acme/big/issues/4');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([]);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  // the exact number, then Enter: that item is picked
+  await box.fill('acme/big#447');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`]);
+  await box.press('Enter');
+  await expect(dialog.getByTestId('blocked-pick')).toHaveAttribute('data-ref', `${BIG}#447`);
+  await page.screenshot({ path: join(screens, 'blocked-06-prefix.png') });
+  expect(env.fake.writes()).toEqual([]);
+});
+
+test('GitHub#448: the second page fails — the exact item is still listed, next to "没读全", never an empty "no results"; the failure is not kept, the next search reads again', async () => {
+  env.fake.state.repos.set(BIG, bigRepo());
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-search');
+  env.fake.state.failRepoPage.set(BIG, 2);
+  await box.fill('acme/big#44');
+  await expect(dialog.getByTestId('blocked-search-err')).toContainText('开着的条目没读全', { timeout: 15_000 });
+  // #44 itself does not exist (404 is "none"), so nothing to list: the reason is what shows
+  expect(await refsShown(page)).toEqual([]);
+  await box.fill('acme/big#447');
+  await expect(dialog.getByTestId('blocked-search-err')).toContainText('开着的条目没读全', { timeout: 15_000 });
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`]);
+  const failed = bigListReads();
+  expect(failed).toBeGreaterThanOrEqual(4);
+  env.fake.state.failRepoPage.delete(BIG);
+  await box.fill('acme/big#4');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${BIG}#447`, `${BIG}#444`]);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  expect(bigListReads()).toBe(failed + 2);
+  await page.screenshot({ path: join(screens, 'blocked-07-prefix-failed.png') });
+});
+
+test('GitHub#448: a bare prefix lists the board copies at once; a board copy clicked while GitHub has not answered is that item, not another one with the same prefix', async () => {
+  const repo = env.fake.state.repos.get(REPO)!;
+  repo.push(issue(110, '一百一十号', []), issue(111, '一百一十一号', []), issue(112, '已关闭的一百一十二号', [], { state: 'closed' }));
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const release = env.fake.hold(`/repos/${REPO}/issues?state=open`);
+  try {
+    // the board's rows before GitHub answers: #11 itself first, then #111, #110 (the closed #112 is not one)
+    await dialog.getByTestId('blocked-search').fill('#11');
+    await expect.poll(() => refsShown(page)).toEqual([`${REPO}#11`, `${REPO}#111`, `${REPO}#110`]);
+    await dialog.getByTestId('blocked-result').filter({ hasText: '#110' }).click();
+  } finally {
+    release();
+  }
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(1, { timeout: 15_000 });
+  await expect(dialog.getByTestId('blocked-pick')).toHaveAttribute('data-ref', `${REPO}#110`);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+});
+
+test('PR #452 review round 1: the board still holds an item as open but GitHub closed it — once the number search has answered it is gone; a failed list keeps the board\'s rows', async () => {
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-search');
+  // closed on GitHub after the board read them; the board is not synced again
+  for (const n of [11, 17]) env.fake.state.repos.get(REPO)!.find((i) => i.number === n)!.state = 'closed';
+  const reads = (path: string) => env.fake.log.filter((e) => e.method === 'GET' && e.path === path).length;
+  const listReads = () => env.fake.log.filter((e) => e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?state=open`)).length;
+  // ① the open list cannot be read: it settles nothing — the board's rows (the stale #11 / #17 among them) stay, next to the reason
+  env.fake.state.failRepoPage.set(REPO, 1);
+  const failedBefore = listReads();
+  await box.fill('1');
+  await expect(dialog.getByTestId('blocked-search-err')).toContainText('开着的条目没读全', { timeout: 15_000 });
+  expect(listReads()).toBeGreaterThan(failedBefore);
+  expect(await refsShown(page)).toEqual([17, 16, 14, 13, 12, 11].map((n) => `${REPO}#${n}`));
+  env.fake.state.failRepoPage.delete(REPO);
+  // ② the exact number, read now: closed → gone, though the board still lists it as open (the open list is read
+  // again too — the failure was not kept)
+  const before11 = reads(`/api/repos/${REPO}/issues/11`);
+  const okBefore = listReads();
+  await box.fill('#11');
+  await expect.poll(() => reads(`/api/repos/${REPO}/issues/11`), { timeout: 15_000 }).toBeGreaterThan(before11);
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([]);
+  await expect(dialog.getByText('正在搜 GitHub…')).toHaveCount(0);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  const okAfter = listReads();
+  expect(okAfter).toBeGreaterThan(okBefore);
+  // ③ a prefix: the open list read whole in ② (reused within the minute) settles #17 too; the open ones stay
+  await box.fill('1');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([16, 14, 13, 12].map((n) => `${REPO}#${n}`));
+  expect(listReads()).toBe(okAfter);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+});
+
+test('PR #452 review round 2: the list is kept a minute, then the exact number is deleted — its 404 wins over the kept list (and the board); the other prefix rows stay', async () => {
+  env.fake.state.repos.get(REPO)!.push(issue(110, '一百一十号', []));
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-search');
+  const reads = (path: string) => env.fake.log.filter((e) => e.method === 'GET' && e.path === path).length;
+  const listReads = () => env.fake.log.filter((e) => e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?state=open`)).length;
+  const listBefore = listReads();
+  await box.fill('#11');
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${REPO}#11`, `${REPO}#110`]);
+  await expect.poll(() => listReads(), { timeout: 15_000 }).toBeGreaterThan(listBefore);
+  await expect(dialog.getByText('正在搜 GitHub…')).toHaveCount(0);
+  const listKept = listReads();
+  // #11 is deleted on GitHub; the board and the kept list still hold it open
+  const repo = env.fake.state.repos.get(REPO)!;
+  repo.splice(
+    repo.findIndex((i) => i.number === 11),
+    1,
+  );
+  const exactBefore = reads(`/api/repos/${REPO}/issues/11`);
+  await box.fill('');
+  await box.fill('#11');
+  await expect.poll(() => reads(`/api/repos/${REPO}/issues/11`), { timeout: 15_000 }).toBeGreaterThan(exactBefore);
+  await expect.poll(() => refsShown(page), { timeout: 15_000 }).toEqual([`${REPO}#110`]);
+  await expect(dialog.getByText('正在搜 GitHub…')).toHaveCount(0);
+  await expect(dialog.getByTestId('blocked-search-err')).toHaveCount(0);
+  // the kept list really was what answered (no new list read)
+  expect(listReads()).toBe(listKept);
 });
