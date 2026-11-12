@@ -31,6 +31,13 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
+/** GitHub#405: the new-issue dialog keeps labels / milestone / iteration in a fold, shut when it opens */
+async function openMoreFields(page: Page) {
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'no');
+  await page.getByTestId('new-issue-more-toggle').click();
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'yes');
+}
+
 /** expected per-column counts straight from the recorded JSON */
 function rawCount(field: string, key: 'title' | 'name') {
   const out: Record<string, number> = {};
@@ -475,6 +482,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.getByTestId('write-entry').click();
   await page.getByTestId('new-issue-title').fill('客户端里建的 issue');
   await page.getByTestId('new-issue-body').fill('正文');
+  await openMoreFields(page);
   await page.getByTestId('new-issue-label-add').click();
   await page.locator('[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="pending/human"]').click();
   await page.keyboard.press('Escape');
@@ -1551,9 +1559,10 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   // click outside → away
   await btn.click();
   await expect(panel).toBeVisible();
-  // its right end: since GitHub#368 the count can go on ("· 另有 N 个子 issue 随父 issue 显示") to the left, under the open panel
-  const mc = (await page.getByTestId('match-count').boundingBox())!;
-  await page.getByTestId('match-count').click({ position: { x: mc.width - 4, y: mc.height / 2 } });
+  // an empty spot of the view bar (GitHub#404: its right end is the flow numbers, buttons that change the search)
+  const vs = (await page.getByTestId('open-view-panel').boundingBox())!;
+  await page.mouse.click(vs.x + vs.width + 40, vs.y + vs.height / 2);
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
   await expect(panel).toHaveCount(0);
   // Esc → away
   await btn.click();
@@ -3771,6 +3780,7 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   await page.getByTestId('write-entry').click();
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await page.getByTestId('new-issue-title').fill('只进仓库的 issue');
+  await openMoreFields(page);
   await page.getByTestId('new-issue-label-add').click();
   const picker = page.getByTestId('new-issue-label-picker');
   await expect(picker.locator('[data-testid="picker-item"]').first()).toBeVisible();
@@ -3783,6 +3793,13 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   await expect(chip).toBeVisible();
   expect(await chip.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
   await shot(page, '205-04-new-issue');
+  // GitHub#405: shut, the chosen label is on the fold's head line in the same colour
+  const chipColour = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+  await page.getByTestId('new-issue-more-toggle').click();
+  await expect(chip).toHaveCount(0);
+  const headChip = page.locator('[data-testid="new-issue-more-label"][data-label="pending/human"]');
+  await expect(headChip).toBeVisible();
+  expect(await headChip.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(chipColour);
   // untick the board: the new issue joins none
   await page.getByTestId('new-issue-project').uncheck();
   await expect(page.getByTestId('new-issue-projects-hint')).toContainText('不加入任何看板');
@@ -4008,6 +4025,10 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await expect(line('group')).toContainText('当前没有勾选看板，不会设置状态');
   await expect(line(PROJECT_KEY)).toHaveCount(0);
   await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'boards');
+  // GitHub#405: lines about the boards stay outside the fold — seen while it is shut
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'no');
+  await expect(line('group')).toBeVisible();
+  expect(await page.getByTestId('new-issue-more').locator('[data-testid="new-issue-preset-line"]').count()).toBe(0);
   await board.check();
   await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
   await page.getByTestId('new-issue-title').fill('在 In progress 组里建的');
@@ -4054,6 +4075,8 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
     await expect(line('milestone')).toHaveCount(0);
     await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
     await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+    // GitHub#405: the group's milestone is said on the shut fold's head line
+    await expect(page.getByTestId('new-issue-more-milestone')).toHaveText('v1.2');
     const n = nextNumber();
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
@@ -4555,6 +4578,8 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
   await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('读不到仓库 GigleAI/cavil-loop 的标签');
   await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('记住的选项不变');
   await expect(handoff).not.toContainText('没有标签');
+  // GitHub#405: the fold is shut; its head line says the label list could not be read
+  await expect(page.getByTestId('new-issue-more-labels')).toHaveText('标签读取失败');
   await shot(page, '245-02-new-issue-labels-unreadable');
   await createAndClose('读不到标签时建的');
   expect(creates().at(-1)).toEqual({ title: '读不到标签时建的', body: '', labels: [] });
@@ -5857,7 +5882,14 @@ async function dragRow(src: Locator, target: Locator) {
   // a group head: its group's body, not the (sticky) head itself: scrolling to a sticky row can leave it under the next group's head
   await target.evaluate((el: Element) => ((el.closest('.group-head') && el.closest('tbody')) || el).scrollIntoView({ block: 'center', inline: 'nearest' }));
   const b = (await target.boundingBox())!;
-  await page.mouse.move(b.x + Math.min(20, b.width / 2), b.y + b.height / 2, { steps: 6 });
+  const x = b.x + Math.min(20, b.width / 2);
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x, y, { steps: 6 });
+  // WebKit only drops where the last "drag over" was accepted, and the last step above can end on an
+  // element the pointer has only just entered: stay on it for two more moves before letting go — a hand
+  // always does (GitHub#378: on WebKit the release right after entering dropped nothing)
+  await page.mouse.move(x + 1, y);
+  await page.mouse.move(x, y);
   await page.mouse.up();
 }
 
@@ -6000,6 +6032,12 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
   const heads = async () => (await repoHeads(page)).map(([t]) => t);
   const saved = () => page.evaluate(async () => (await (window as any).cavil.get()).state.repoOrder as string[]);
+  /**
+   * What the back end has written to disk. The window queues setting writes to the back end; closing it
+   * while one is still queued loses it (PR #408 review round 2: under load a restart came back with an
+   * older order). A restart is only meaningful once the order is really stored, so every close waits here.
+   */
+  const stored = () => app.backend.call<{ settings: Record<string, unknown> }>('init', {}).then((r) => r.settings.repoOrder ?? null);
   /** the order on screen in the table (the slice list and the "all repositories" sections) and on the board (the swimlanes) */
   async function everywhere(want: string[]) {
     await layout('table');
@@ -6031,6 +6069,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await everywhere([B, A, C]);
 
   // ---- 4. a restart keeps it ----
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/aaa', 'gigleai/ccc']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -6056,6 +6095,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   // dropped on the lower half: after the target
   await dragRepo(lane(B), lane(C), true);
   await everywhere([A, C, B]);
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/aaa', 'gigleai/ccc', 'gigleai/bbb']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -6432,6 +6472,15 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4);
   await page.mouse.down();
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
+  // Linux WebKit (what CI runs) draws no corner to drag on a text box — the macOS app's WebKit and
+  // Chromium do. On that one engine only, the engine's part (the box gets a new height while the button
+  // is held) is done here, between the same press and release, and what the app does with that height
+  // is checked; everywhere else the real drag must have changed the height by itself (GitHub#378).
+  const noCorner = process.platform === 'linux' && page.context().browser()?.browserType().name() === 'webkit';
+  if (noCorner) {
+    expect(await height()).toBe(small); // still true there: if Linux WebKit ever grows a corner, stop standing in for it
+    await reply.evaluate((el: HTMLElement, h: number) => { el.style.height = `${h}px`; }, small + 80);
+  }
   await page.mouse.up();
   const draggedH = await height();
   expect(draggedH).toBeGreaterThan(small + 40);
@@ -6751,6 +6800,37 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await page.keyboard.press(`${MOD}+n`);
   const ms = page.getByTestId('new-issue-milestone');
   const it = page.getByTestId('new-issue-iteration');
+  // GitHub#405: the three sit in one fold, shut when the dialog opens: not on the page, their values on its head line
+  const fold = page.getByTestId('new-issue-more');
+  const toggle = page.getByTestId('new-issue-more-toggle');
+  const sumOf = (f: string) => page.getByTestId(`new-issue-more-${f}`);
+  /** the text of the option a picker holds — what the shut fold's head line must say */
+  const chosenText = (sel: typeof ms) => sel.evaluate((e: HTMLSelectElement) => e.options[e.selectedIndex]?.textContent ?? '');
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(ms).toHaveCount(0);
+  await expect(it).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-label-add')).toHaveCount(0);
+  await expect(sumOf('labels')).toHaveText('未选标签');
+  await expect(sumOf('milestone')).toHaveText('不设里程碑');
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  await expect(toggle).toContainText('标签、里程碑、迭代');
+  await shot(page, '405-01-new-issue-shut');
+  // no board ticked: no iteration picker, so the line and the title leave the iteration out
+  const board = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
+  await board.uncheck();
+  await expect(sumOf('iteration')).toHaveCount(0);
+  await expect(toggle).toContainText('标签、里程碑');
+  await expect(toggle).not.toContainText('迭代');
+  await board.check();
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  // the keyboard opens it: Tab lands on the head, Enter opens; the three come in the order labels → milestone → iteration
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(fold).toHaveAttribute('data-open', 'yes');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const order = await fold.locator('[data-testid="new-issue-labels"], [data-testid="new-issue-milestone"], [data-testid="new-issue-iteration"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+  expect(order).toEqual(['new-issue-labels', 'new-issue-milestone', 'new-issue-iteration']);
+  expect(await chosenText(it)).toBe('当前迭代（Iteration 26）');
   await expect(ms).toBeEnabled();
   await expect(ms).toHaveValue('');
   expect(await ms.locator('option').evaluateAll((o) => o.map((x) => x.textContent))).toEqual(['不设里程碑', 'v1.2']);
@@ -6760,6 +6840,21 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await ms.selectOption('v1.2');
   await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
   await shot(page, '372-02-new-issue-picked');
+  await shot(page, '405-02-new-issue-open');
+  const itPicked = await chosenText(it);
+  expect(itPicked).toBe('Iteration 27（2026-11-16 起）');
+  // shut again (Space on the head): the head line says what the pickers held; created shut, the picks still go
+  await toggle.focus();
+  await page.keyboard.press(' ');
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(it).toHaveCount(0);
+  await expect(sumOf('milestone')).toHaveText('v1.2');
+  await expect(sumOf('iteration')).toHaveText(itPicked);
+  await shot(page, '405-03-new-issue-picked-shut');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(sumOf('iteration')).toHaveText(itPicked);
+  await shot(page, '405-04-new-issue-picked-shut-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
   const before = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect(dialog).toHaveCount(0);
@@ -6772,7 +6867,13 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await page.getByTestId('write-entry').click();
   await expect(title).toBeFocused();
   await title.fill('不设迭代');
+  // a new dialog: shut again, the picks of the last one gone
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  await openMoreFields(page);
   await it.selectOption('none');
+  expect(await chosenText(it)).toBe('不设迭代');
+  await toggle.click();
+  await expect(sumOf('iteration')).toHaveText('不设迭代');
   const before2 = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect.poll(() => writes().slice(before2).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem']);
@@ -6784,6 +6885,10 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   // ---- 7. the milestone list cannot be read: the picker is off, a plain issue is still created ----
   env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
   await page.getByTestId('write-entry').click();
+  // shut: the head line says so, in red
+  await expect(sumOf('milestone')).toHaveText('里程碑读取失败');
+  await expect(sumOf('milestone')).toHaveClass(/err/);
+  await openMoreFields(page);
   await expect(ms).toHaveAttribute('data-read', 'error');
   await expect(ms).toBeDisabled();
   await title.fill('读不到里程碑也能建');
@@ -6798,6 +6903,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
   await page.getByTestId('write-entry').click();
   await title.fill('REFUSED_372');
+  await openMoreFields(page);
   await ms.selectOption('v1.2');
   await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
   await page.getByTestId('confirm-ok').click();
@@ -6807,9 +6913,100 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect(title).toHaveValue('REFUSED_372');
   await expect(title).toBeFocused();
   expect(await title.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd])).toEqual([11, 11]);
+  // the draft comes back shut, its picks on the head line
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(sumOf('milestone')).toHaveText('v1.2');
+  await expect(sumOf('iteration')).toHaveText('Iteration 27（2026-11-16 起）');
+  await openMoreFields(page);
   await expect(ms).toHaveValue('v1.2');
   await expect(it).toHaveValue(/Iteration 27/);
   await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();
+  await app.close();
+});
+
+// ---- GitHub#405 (PR #410 review round 1): the shut fold's head line never draws one part over another ----
+test('GitHub#405 (PR #410 review round 1): many / long labels, a long milestone, an unreadable list — the shut fold\'s head line wraps; no two parts overlap, none leaves the dialog, at full and narrow width', async () => {
+  const REPO_KEY = 'gigleai/cavil-loop';
+  const LONG = 'needs-design-review-before-anything-else-happens';
+  const names = ['priority/p1', 'pending/human', LONG, 'bug', 'client'];
+  env.fake.state.w.repoLabels.set(REPO_KEY, [...names, 'autopilot', 'pending/agent'].map((name, i) => ({ name, color: ['d73a4a', 'fbca04', '0e8a16', '1d76db', '5319e7', 'ededed', 'c5def5'][i] })));
+  env.fake.state.w.milestones.set(REPO_KEY, [{ number: 7, title: '2026 年第四季度客户端正式版本（带完整的发布说明和下载页）', state: 'open', due_on: null }]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const toggle = page.getByTestId('new-issue-more-toggle');
+  const sumOf = (f: string) => page.getByTestId(`new-issue-more-${f}`);
+
+  /** every part of the head line: its box; none overlaps another, all inside the head button */
+  const assertNoOverlap = async (what: string) => {
+    const boxes = await page.evaluate(() => {
+      const head = document.querySelector('[data-testid="new-issue-more-toggle"]')!;
+      const sel = '.more-title, [data-testid="new-issue-more-label"], [data-testid="new-issue-more-extra"], [data-testid="new-issue-more-labels"], [data-testid="new-issue-more-milestone"], [data-testid="new-issue-more-iteration"]';
+      const r = (e: Element) => {
+        // a text part that broke onto two lines: each line box on its own
+        const rects = [...e.getClientRects()];
+        return rects.map((b) => ({ l: b.left, r: b.right, t: b.top, b: b.bottom }));
+      };
+      const h = head.getBoundingClientRect();
+      return { head: { l: h.left, r: h.right, t: h.top, b: h.bottom }, parts: [...head.querySelectorAll(sel)].map((e) => ({ id: e.getAttribute('data-testid') ?? e.className, label: e.getAttribute('data-label'), rects: r(e) })) };
+    });
+    expect(boxes.parts.length, what).toBeGreaterThan(2);
+    const flat = boxes.parts.flatMap((p) => p.rects.map((b) => ({ ...b, who: `${p.id}${p.label ? `:${p.label}` : ''}` })));
+    for (const b of flat) {
+      expect(b.l, `${what}: ${b.who} starts inside the head`).toBeGreaterThanOrEqual(boxes.head.l - 0.5);
+      expect(b.r, `${what}: ${b.who} ends inside the head`).toBeLessThanOrEqual(boxes.head.r + 0.5);
+      expect(b.b, `${what}: ${b.who} inside the head (height)`).toBeLessThanOrEqual(boxes.head.b + 0.5);
+    }
+    for (let i = 0; i < flat.length; i++)
+      for (let j = i + 1; j < flat.length; j++) {
+        const a = flat[i];
+        const b = flat[j];
+        if (a.who === b.who) continue;
+        const overlap = Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5;
+        expect(overlap, `${what}: ${a.who} and ${b.who} overlap`).toBe(false);
+      }
+  };
+
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('很多标签');
+  await openMoreFields(page);
+  await page.getByTestId('new-issue-milestone').selectOption({ index: 1 });
+  await page.getByTestId('new-issue-label-add').click();
+  for (const n of names) await page.locator(`[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="${n}"]`).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('new-issue-label-chip')).toHaveCount(5);
+  await toggle.click();
+  // the first three named, then "+2"; the cut long name keeps its full name on hover
+  expect(await page.getByTestId('new-issue-more-label').evaluateAll((els) => els.map((e) => e.getAttribute('data-label')))).toEqual(names.slice(0, 3));
+  await expect(page.getByTestId('new-issue-more-extra')).toHaveText('+2');
+  await expect(page.getByTestId('new-issue-more-extra')).toHaveAttribute('title', 'bug、client');
+  await expect(page.locator(`[data-testid="new-issue-more-label"][data-label="${LONG}"]`)).toHaveAttribute('title', LONG);
+  await expect(sumOf('milestone')).toHaveText('2026 年第四季度客户端正式版本（带完整的发布说明和下载页）');
+  await expect(sumOf('iteration')).toBeVisible();
+  await assertNoOverlap('1280 wide');
+  await shot(page, '405-05-many-labels-shut');
+  // a narrow window: the dialog shrinks with it, the line wraps further
+  await page.setViewportSize({ width: 560, height: 800 });
+  await assertNoOverlap('560 wide');
+  await shot(page, '405-06-many-labels-shut-narrow');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByTestId('confirm-cancel').click();
+  if (await page.getByTestId('dialog-esc-hint').count()) await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+
+  // the lists cannot be read: the red words are on the line, readable, overlapping nothing
+  env.fake.state.w.failLabels.add(REPO_KEY);
+  env.fake.state.w.failMilestones.add(REPO_KEY);
+  await page.getByTestId('write-entry').click();
+  await expect(sumOf('labels')).toHaveText('标签读取失败');
+  await expect(sumOf('milestone')).toHaveText('里程碑读取失败');
+  await expect(sumOf('labels')).toBeVisible();
+  await expect(sumOf('milestone')).toBeVisible();
+  await assertNoOverlap('unreadable, 1280 wide');
+  await page.setViewportSize({ width: 560, height: 800 });
+  await assertNoOverlap('unreadable, 560 wide');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  env.fake.state.w.failLabels.delete(REPO_KEY);
+  env.fake.state.w.failMilestones.delete(REPO_KEY);
   await app.close();
 });
 
@@ -7097,6 +7294,100 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await app.close();
 });
 
+
+test('GitHub#395: release attachment images are fetched with the sign-in and shown; a refusal, a rate limit and an ordinary image that did not load each get a box with "重新加载"', async () => {
+  const { fake } = env;
+  const w = fake.state.w;
+  const PICTURE = readFileSync(join(root, 'build', 'icon.png'));
+  const TINY = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  fake.state.releases.set('acme/private-app', [
+    {
+      tag: 'preview/pr-412',
+      assets: [
+        { id: 11, name: 'home.png', bytes: PICTURE },
+        { id: 12, name: 'map.png', bytes: PICTURE },
+      ],
+    },
+  ]);
+  const rel = (file: string, repo = 'acme/private-app') => `${fake.web}/${repo}/releases/download/preview/pr-412/${file}`;
+  const linked = (src: string, alt: string) => `<p><a target="_blank" rel="noopener noreferrer" href="${src}"><img src="${src}" alt="${alt}" style="max-width: 100%;"></a></p>`;
+  const comment = (broken: string) => ({
+    id: 'C_IMG',
+    url: 'https://github.com/GigleAI/cavil-loop/issues/138#c-img',
+    createdAt: '2026-11-05T01:00:00Z',
+    author: { login: 'user-2' },
+    bodyHTML:
+      '<p>预览已更新，截图如下</p>' +
+      linked(rel('home.png'), '首页截图') +
+      linked(rel('wrong-book.png', 'acme/other-app'), '错题本截图') +
+      linked(rel('map.png'), '知识图谱截图') +
+      `<p><img src="${broken}" alt="手机预览码"></p>`,
+  });
+  w.comments.set('gigleai/cavil-loop#138', [comment('data:image/png;base64,xx')]);
+  // the third image's download is rate limited, for 4 seconds
+  const limit = (e: { path: string }) => (e.path.includes('/releases/assets/12') ? { status: 429, body: { message: 'slow down' }, headers: { 'retry-after': '4' } } : null);
+  fake.state.answerOverride = limit;
+  const of = (part: string) => fake.log.filter((l) => l.path.includes(part));
+
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const box = (alt: string) => frame.locator('.imgbox', { has: frame.locator('.alt', { hasText: alt }) });
+  const natural = (alt: string) => frame.locator(`img[alt="${alt}"]`).evaluate((el: HTMLImageElement) => el.naturalWidth);
+
+  // ---- 1. the private repo's attachment is shown; the credential went to the API, the file was fetched without it ----
+  await expect(frame.locator('img[alt="首页截图"]')).toBeVisible({ timeout: 15_000 });
+  expect(await natural('首页截图')).toBeGreaterThan(100);
+  await expect(box('首页截图')).toHaveCount(0);
+  // the release's tag holds a slash (`preview/pr-412`), as this repo's own client releases do
+  expect(of('/api/repos/acme/private-app/releases/tags/preview/pr-412').map((l) => l.status)).toContain(200);
+  expect(of('/api/repos/acme/private-app/releases/assets/11').map((l) => [l.status, Boolean(l.auth)])).toEqual([[302, true]]);
+  expect(of('/web/release-assets/11').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
+  // the window itself never asked for a release address
+  expect(of('/releases/download/')).toEqual([]);
+
+  // ---- 2. a repo this sign-in cannot read: says so, without a word about GitHub Apps (signed in the default way) ----
+  await expect(box('错题本截图').locator('.why')).toHaveText('没取到：当前登录读不到这个仓库的发布附件');
+  await expect(box('错题本截图').locator('button')).toBeEnabled();
+
+  // ---- 3. rate limited: says until when, nothing about access; the button waits for that time ----
+  const limited = box('知识图谱截图');
+  await expect(limited.locator('.why')).toHaveText(/^GitHub 限流，\d\d:\d\d 之后可以再试$/);
+  await expect(limited.locator('button')).toBeDisabled();
+  expect(of('/releases/assets/12').map((l) => l.status)).toEqual([429]);
+  // ---- 4. an ordinary image that did not load ----
+  await expect(box('手机预览码').locator('.why')).toHaveText('图片没加载出来');
+  await box('错题本截图').scrollIntoViewIfNeeded();
+  await shot(page, '395-images');
+
+  // the limit is over on GitHub's side at once, but nothing is asked before the time GitHub gave
+  fake.state.answerOverride = null;
+  await page.waitForTimeout(1500);
+  expect(of('/releases/assets/12')).toHaveLength(1);
+  await expect(limited.locator('button')).toBeEnabled({ timeout: 10_000 });
+  await limited.locator('button').click();
+  await expect(frame.locator('img[alt="知识图谱截图"]')).toBeVisible({ timeout: 15_000 });
+  expect(await natural('知识图谱截图')).toBeGreaterThan(100);
+  expect(of('/web/release-assets/12').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
+
+  // ---- 5. "重新加载" on the ordinary image reads the discussion again; GitHub now gives an address that loads ----
+  const reads = () => fake.log.filter((l) => l.operation === 'CavilItemDetail').length;
+  const before = reads();
+  w.comments.set('gigleai/cavil-loop#138', [comment(TINY)]);
+  await box('手机预览码').locator('button').click();
+  await expect.poll(reads).toBeGreaterThan(before);
+  await expect(frame.locator('img[alt="手机预览码"]')).toBeVisible({ timeout: 15_000 });
+  await expect(box('手机预览码')).toHaveCount(0);
+  // the images fetched before come back from memory: no second download
+  await expect(frame.locator('img[alt="首页截图"]')).toBeVisible();
+  expect(of('/web/release-assets/11')).toHaveLength(1);
+  expect(of('/web/release-assets/12')).toHaveLength(1);
+  await shot(page, '395-images-reloaded');
+  expect(fake.writes()).toEqual([]);
+  await app.close();
+});
 
 // ---- GitHub#398: a repository's GitHub page, one click from where the repository is shown ----
 

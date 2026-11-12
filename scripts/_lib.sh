@@ -558,6 +558,156 @@ PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
 # 逻辑全在 scripts/project-auto-add.sh；这里只放默认值和每轮的入口 project_auto_add_tick。
 AUTO_ADD_PROJECTS="${AUTO_ADD_PROJECTS:-}"
 
+# ── base 分支测试工作流失败 → 自动开 / 续报告 issue（GitHub#345）──
+# CI_FAILURE_REPORT_WORKFLOWS：要监视的工作流文件名（空格或逗号分隔）；留空 = 关闭（默认），
+# 一个请求都不多发、派工一处都不多查。逻辑在 scripts/ci_failure_report.py（经 ci-failure-report.sh 运行），
+# 这里只放默认值、每轮的入口 ci_failure_report_tick，和派工入口问的那一个函数 ci_report_dispatch_hold。
+CI_FAILURE_REPORT_WORKFLOWS="${CI_FAILURE_REPORT_WORKFLOWS:-}"
+CI_FAILURE_REPORT_BRANCH="${CI_FAILURE_REPORT_BRANCH:-main}"
+CI_FAILURE_REPORT_DISPATCH="${CI_FAILURE_REPORT_DISPATCH:-false}"
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS="${CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:-2}"
+# 报告 issue 正文首行标记的固定开头（ci_failure_report.py 的 REPORT_RE 同一个写法）
+CI_REPORT_BODY_MARK='<!-- cavil-ci-failure v=1 '
+
+ci_failure_report_enabled() {
+    [ -n "$(printf '%s' "${CI_FAILURE_REPORT_WORKFLOWS:-}" | tr -d ' ,\t\n')" ]
+}
+
+# 本项目配置下的全部流程标签：现有那份（派工标签含追加的、等人、等 PR、进行中、等合并、等外部机器人、
+# 等前置）补上复审和 Done。报告身上有其中任何一个，就是有人或某个流程在管它。
+ci_report_flow_labels() {
+    {
+        closed_done_flow_labels
+        printf '%s\n' "${LABEL_PENDING_REVIEW:-}" "${LABEL_DONE:-}"
+    } | awk 'NF && !seen[$0]++'
+}
+
+# 检查的整条进程链（入口脚本 → 检查程序 → gh → gh 再起的任何进程）放在同一个进程组里，组号就是
+# 入口脚本的进程号。要停就停整组、并等到组里一个进程都不剩：只停检查程序的话，它正在等的那次 gh 写
+# 请求还活着，主轮询往下走了之后它照样把报告建出来（PR #393 复审第 4 轮）。只用 bash 内建
+# （set -m、kill、wait），Linux 和 macOS 一样。
+ci_report_group_alive() {   # <组号>：组里还有进程 → 0
+    kill -0 -- "-$1" 2>/dev/null
+}
+ci_report_group_stop() {   # <组号>：TERM 整组，最多等 3 秒；还有就 KILL 整组，再等到清空（最多 10 秒）
+    local g="$1" i=0
+    ci_report_group_alive "$g" || return 0
+    kill -TERM -- "-$g" 2>/dev/null || true
+    while ci_report_group_alive "$g" && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); done
+    ci_report_group_alive "$g" || return 0
+    kill -KILL -- "-$g" 2>/dev/null || true
+    i=0
+    while ci_report_group_alive "$g" && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+    ! ci_report_group_alive "$g"
+}
+
+# 每轮一次，在轮询锁内、节奏闸门之前（它有自己的 5 分钟间隔，项目空闲退避时照样按时查；它不读也不写
+# state.json）。跑成子进程：里面任何失败都只留日志，不碰这一轮的派工和退出码。
+#
+# 时限分两层，都不用 coreutils 的 timeout（macOS 没有，安装时也只要求 Linux 有）：
+#   · 检查程序自己：每次 gh 调用有时限（默认 60 秒），整轮有预算（默认 90 秒），到了就收尾退出
+#   · 这里兜底：只用 bash 内建等它，超过「预算 + 120 秒」还没退就把整个进程组停掉
+# 不管是哪种结束法，返回之前组里都必须已经没有进程——返回之后不会再有迟到的 GitHub 写入。
+ci_failure_report_tick() {
+    ci_failure_report_enabled || return 0
+    local rc=0 budget="${CI_FAILURE_REPORT_BUDGET:-90}" limit pid waited=0 monitor=off
+    case "$budget" in ''|*[!0-9]*) budget=90 ;; esac
+    limit="${CI_FAILURE_REPORT_HARD_LIMIT:-$((budget + 120))}"
+    case "$limit" in ''|*[!0-9]*) limit=$((budget + 120)) ;; esac
+    # set -m 只为这一次启动：后台作业自成一个进程组（组号 = 它的进程号），启动完立刻还原
+    case "$-" in *m*) monitor=on ;; esac
+    set -m
+    CODING_AGENT_CONFIG="$CONFIG_FILE" CI_FAILURE_REPORT_IN_POLL=1 \
+        bash "$_LIB_DIR/ci-failure-report.sh" 9>&- &
+    pid=$!
+    [ "$monitor" = on ] || set +m
+    # 自成一组之后，停主轮询的信号不再自动传到它：主轮询被停时先把这一组停干净，再照原信号结束自己
+    # （不改成普通退出——主轮询「被信号停掉」这件事对外保持原样）
+    local sig
+    for sig in TERM INT HUP; do
+        # shellcheck disable=SC2064
+        trap "ci_report_group_stop '$pid' || true; trap - TERM INT HUP; kill -s $sig \$\$" "$sig"
+    done
+    # 以 0.2 秒为一步等：平时这一步不到 1 秒就结束，不该为了兜底让每轮多睡 1 秒
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge $((limit * 5)) ]; then
+            log "⚠️ CI 失败报告：检查超过 ${limit} 秒没有结束，强制停掉；不派工名单照常生效"
+            break
+        fi
+        sleep 0.2
+        waited=$((waited + 1))
+    done
+    # 入口已经退出时组里通常已空；还有进程（超时没退，或某次 gh 调用超时后它起的进程还在）就整组停掉
+    if ! ci_report_group_stop "$pid"; then
+        log "⚠️ CI 失败报告：检查的进程组 $pid 停不干净，仍有进程在；不派工名单照常生效"
+    fi
+    wait "$pid" 2>/dev/null || rc=$?
+    trap - TERM INT HUP
+    [ "$rc" = 0 ] || log "⚠️ CI 失败报告：检查异常退出（退出码 $rc），本轮跳过；不派工名单照常生效"
+    return 0
+}
+
+# 「这条 issue 现在能不能派工」——普通标签入口、greedy 入口、托管入口和启动 worker 之前都问这一个函数。
+# 返回 0 = 不能派（原因在 CI_REPORT_HOLD_REASON），1 = 这个功能不拦它。功能关闭时直接返回 1，什么都不读。
+#   · 在不派工名单里（修复失败达到上限、交人还没做完）→ 不派，不管它身上是什么标签
+#   · 本机记录没有或读不懂（暂停中 / 还不知道是不是首次启用）→ 本功能开的报告一律不派；
+#     是不是报告看 issue 正文首行的标记，读不到这条 issue 也按不能派算
+# 本机记录能不能用，只有一个定义：ci_failure_report.py 的 load_state（state-check 子命令）。这里不另写
+# 一套判据——两边不一样时，损坏的记录会被这边当成正常、放开派工。每次都现问、不缓存：按修改时间 /
+# 大小缓存的话，同一秒里原位改坏、长度不变的文件会沿用旧结论（PR #393 复审第 2 轮）；也不依赖 stat
+# 这类各平台参数不同的工具。读不出结论（python 起不来等）按不能用算。
+ci_report_state_usable() {
+    local sf="$STATE_DIR/ci-failure-report.json" out
+    [ -f "$sf" ] || return 1
+    out=$(CI_REPORT_REPO="$REPO" CI_REPORT_STATE_DIR="$STATE_DIR" \
+        python3 "$_LIB_DIR/ci_failure_report.py" state-check 2>/dev/null) || out=""
+    [ "$out" = ok ]
+}
+
+ci_report_dispatch_hold() {   # <issue 编号>
+    ci_failure_report_enabled || return 1
+    local n="$1" sf="$STATE_DIR/ci-failure-report.json" hf="$STATE_DIR/ci-failure-report.hold" usable=0 item body listed
+    CI_REPORT_HOLD_REASON=""
+    if ci_report_state_usable; then
+        usable=1
+        # 记录可用却读不出名单（文件刚好在换）→ 按在名单里算
+        if ! listed=$(jq -r --arg n "$n" '.handover | has($n)' "$sf" 2>/dev/null) || [ "$listed" != false ]; then
+            CI_REPORT_HOLD_REASON="修复失败次数已到上限、正在交人"
+            return 0
+        fi
+    fi
+    if [ "$usable" = 1 ] && [ ! -f "$hf" ]; then
+        return 1
+    fi
+    if ! item=$(autopilot_snapshot_item issues "$n") || [ -z "$item" ]; then
+        CI_REPORT_HOLD_REASON="CI 失败报告的本机记录不可用，且读不到这条 issue"
+        return 0
+    fi
+    body=$(printf '%s' "$item" | jq -r '.body // ""' 2>/dev/null) || body=""
+    case "$body" in
+        "$CI_REPORT_BODY_MARK"*)
+            CI_REPORT_HOLD_REASON="CI 失败报告的本机记录丢失或损坏，已暂停"
+            return 0 ;;
+    esac
+    return 1
+}
+
+# 被拦下的条目：同一批只在名单变了的时候写一行日志（每分钟一轮，原样重复写没有信息量）
+CI_REPORT_HELD=""
+ci_report_hold_note() {   # <issue 编号>
+    CI_REPORT_HELD="$CI_REPORT_HELD #$1（$CI_REPORT_HOLD_REASON）"
+}
+ci_report_hold_flush() {
+    ci_failure_report_enabled || return 0
+    local f="$STATE_DIR/ci-failure-report.heldlog" cur
+    cur=$(printf '%s' "$CI_REPORT_HELD" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | sort | tr '\n' ' ')
+    if [ "$cur" != "$(cat "$f" 2>/dev/null || true)" ]; then
+        [ -z "$cur" ] || log "CI 失败报告：这些 issue 本轮不派工：$cur"
+        printf '%s' "$cur" > "$f" 2>/dev/null || true
+    fi
+    return 0
+}
+
 project_gh_graphql() {
     if [ -n "${PROJECT_GH_TOKEN:-}" ]; then
         GH_TOKEN="$PROJECT_GH_TOKEN" gh api graphql "$@"
@@ -8402,6 +8552,15 @@ stuck_frozen() {   # <issue / PR 编号>
             | (any($f[]; .frozen.scope_unknown == true)) or ([$f[] | .frozen.items[]?] | index($n) != null)' \
         "$STATE_FILE" 2>/dev/null) || return 0
     [ "$out" != false ]
+}
+# 停住的全部条目编号，空格分隔；范围不明或状态读不出 → 输出 all。功能关着 / 没有状态文件 → 什么都不输出。
+# 给跑在子进程里、自己不读 state.json 的环节用（CI 失败报告），判断和 stuck_frozen 是同一个。
+stuck_frozen_items() {
+    stuck_enabled || return 0
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
+    jq -r '[(.stuck_workers // {})[] | select(.frozen != null)] as $f
+        | if any($f[]; .frozen.scope_unknown == true) then "all"
+          else ([$f[] | .frozen.items[]?] | unique | join(" ")) end' "$STATE_FILE" 2>/dev/null || echo all
 }
 # 停住的条目里按工作编号问（自愈、会话回收用：它们手里是工作编号）
 stuck_frozen_work() {   # <工作编号>

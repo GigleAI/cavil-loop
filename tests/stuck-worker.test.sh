@@ -1318,6 +1318,21 @@ r3=0; wr stuck_entry_set "$N" '.kind = "pr"' || r3=$?
 r4=0; wr stuck_freeze "$N" "" "$N" "测试" || r4=$?
 chk "写入口检查（先加载一次库，之后再比）：空类型 / 错编号 / 换类型 / 空类型停住都拒写，状态文件逐字节不变" \
     "$r0/$r1/$r2/$r3/$r4/$(cmp -s "$STATE" "$W/state.before" && echo same || echo changed)" "0/1/1/1/1/same"
+# 主干后来加的「CI 失败报告」在子进程里写报告 issue：停住的条目名单由 stuck_frozen_items 交过去，
+# 写到名单里的条目时这一步按写失败处理（下一轮再试）；功能关着时名单为空、什么都不拦
+fl=$(cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh"; STATE_FILE="$STATE_DIR/state.json" stuck_frozen_items' _ "$ROOT" 2>/dev/null)
+fl_off=$(cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" STUCK_WORKER_QUIET_SECS= bash -c 'source "$1/scripts/_lib.sh"; STUCK_WORKER_QUIET_SECS=""; STATE_FILE="$STATE_DIR/state.json" stuck_frozen_items' _ "$ROOT" 2>/dev/null)
+ciw() {   # <名单> <路径> → yes = 拦下
+    CI_REPORT_STUCK_FROZEN="$1" python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("cfr", sys.argv[1]); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print("yes" if m.stuck_frozen(sys.argv[2]) else "no")' "$ROOT/scripts/ci_failure_report.py" "$2"
+}
+chk "CI 失败报告：停住的条目在名单里；功能关着名单为空" \
+    "$(printf '%s\n' $fl | grep -cx "$N")/[$fl_off]" "1/[]"
+chk "CI 失败报告：写到停住的条目（评论 / 标签 / 改状态）拦下，别的条目和新开报告不拦，名单为空不拦" \
+    "$(ciw "$fl" "repos/example/sw/issues/$N/comments")/$(ciw "$fl" "repos/example/sw/issues/$N/labels/x")/$(ciw "$fl" "repos/example/sw/issues/$N")/$(ciw "$fl" "repos/example/sw/issues/1$N/comments")/$(ciw "$fl" "repos/example/sw/issues")/$(ciw "" "repos/example/sw/issues/$N/comments")/$(ciw "all" "repos/example/sw/issues/7/comments")" \
+    "yes/yes/yes/no/no/no/yes"
 r5=0; wr stuck_entry_set "$N" '.frozen.tries = 1' || r5=$?
 chk "写入口检查 · 对照：正常字段照常写进去" "$r5/$(ff "$N" tries)/$(efield "$N" '.kind')" "0/1/issue"
 # 复审第 4 轮（代码）的复现：每轮遍历停住记录时读失败一次。读不出 ≠ 没有记录：停住记录要留着、

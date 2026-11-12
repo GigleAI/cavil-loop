@@ -75,6 +75,8 @@ import {
   type EditValue,
 } from '../data/edits';
 import { GitHubError } from '../data/github';
+import { fetchReleaseImage } from '../data/releaseImage';
+import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
@@ -171,6 +173,9 @@ export const OPS_KEY = '__ops__';
 export type OpAction = Extract<WriteAction, { kind: OpKind }>;
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
 export const DETAIL_CACHE_SIZE = 50;
+/** GitHub#395: release attachment images fetched at once, and how much of them is kept (characters of data: addresses, ~36 MB of files) */
+export const IMAGE_FETCHES = 4;
+export const IMAGE_CACHE_CHARS = 48 * 1024 * 1024;
 /** GitHub#328: how many of one round's newly pending items have their detail read ahead (the rest is read when opened). */
 export const PREFETCH_PER_ROUND = 10;
 
@@ -379,6 +384,13 @@ export class Controller {
   private detailCache = new Map<string, { detail: ItemDetail; read: number }>();
   /** every detail read takes the next number when it starts: a read that lands after a later-started one of its item is not kept */
   private detailReads = 0;
+  /** GitHub#395: release attachment images fetched with the sign-in, `session \n address` → data: address */
+  private images = new Map<string, string>();
+  private imageChars = 0;
+  private imageFlights = new Map<string, Promise<ImageResult>>();
+  private imageLimit: { session: number; until: number } | null = null;
+  private imageRunning = 0;
+  private imageWaiters: (() => void)[] = [];
   /**
    * GitHub#328: newly pending items whose detail is read ahead, so a clicked notification shows
    * it at once. Each with what its notification was decided on, the session it was queued in, and
@@ -437,6 +449,8 @@ export class Controller {
     this.readGate = new ReadGate(this.now);
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
+    // GitHub#404: saved before the running label existed (or not a string) → the default; an empty one stays empty
+    if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
@@ -447,6 +461,7 @@ export class Controller {
       appKind,
       ...this.clientIdFor(appKind),
       viewer: this.cache.getSetting<string | null>('viewer', null),
+      githubWeb: deps.endpoints.web,
       sources: this.cache.getSetting<SourceConfig[]>('sources', []),
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
@@ -774,6 +789,9 @@ export class Controller {
     this.editsStored = false;
     this.itemQueues.clear();
     this.detailCache.clear();
+    this.images.clear();
+    this.imageChars = 0;
+    this.imageLimit = null;
     this.prefetchQueue = [];
     this.prefetchGen++;
     this.prefetching = false;
@@ -1795,6 +1813,8 @@ export class Controller {
       agent: (patch.agent ?? this.state.handBack.agent).trim() || DEFAULT_HAND_BACK.agent,
       // empty is a choice here: no autopilot button (a project without autopilot)
       autopilot: typeof patch.autopilot === 'string' ? patch.autopilot.trim() : this.state.handBack.autopilot,
+      // GitHub#404: empty is a choice too — the view bar leaves out "运行中"
+      running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
@@ -1857,6 +1877,73 @@ export class Controller {
       this.noteAuthFailure(e);
       const msg = e instanceof GitHubError && e.kind === 'network' ? `连不上 GitHub，读不到详情（${e.message}）` : `读取详情失败：${(e as Error).message}`;
       return { ok: false, error: msg };
+    }
+  }
+
+  // ---- release attachment images of the discussion (GitHub#395) ----
+
+  /**
+   * One release attachment image, fetched with the sign-in. Kept in memory only, for this account
+   * only (the key carries the session; sign-out and another account drop them all). While GitHub's
+   * rate limit holds, nothing is asked: the answer is "limited until …" at once. At most
+   * IMAGE_FETCHES run at a time; two calls for one address share one fetch.
+   */
+  loadImage(src: string): Promise<ImageResult> {
+    if (!parseReleaseImage(src, this.deps.endpoints.web)) return Promise.resolve({ ok: false, kind: 'denied' });
+    const key = `${this.session}\n${src}`;
+    const kept = this.images.get(key);
+    if (kept !== undefined) {
+      this.images.delete(key);
+      this.images.set(key, kept);
+      return Promise.resolve({ ok: true, dataUrl: kept });
+    }
+    const held = this.imageHeld();
+    if (held) return Promise.resolve(held);
+    let flight = this.imageFlights.get(key);
+    if (!flight) {
+      flight = this.fetchImage(src, key).finally(() => this.imageFlights.delete(key));
+      this.imageFlights.set(key, flight);
+    }
+    return flight;
+  }
+
+  /** the rate limit an image fetch of this session heard still holds */
+  private imageHeld(): ImageResult | null {
+    const l = this.imageLimit;
+    return l && l.session === this.session && this.now() < l.until ? { ok: false, kind: 'limited', until: l.until } : null;
+  }
+
+  private async fetchImage(src: string, key: string): Promise<ImageResult> {
+    if (this.imageRunning >= IMAGE_FETCHES) await new Promise<void>((go) => this.imageWaiters.push(go));
+    this.imageRunning++;
+    try {
+      // a limit heard while this one waited its turn
+      const held = this.imageHeld();
+      if (held) return held;
+      const c = await this.clientForCall(false);
+      if ('error' in c) return { ok: false, kind: 'auth' };
+      const r = await fetchReleaseImage(c.client, this.backend, c.session, this.deps.endpoints, src, this.now);
+      // the account changed on the way: this answer belongs to nobody
+      if (c.session !== this.session) return { ok: false, kind: 'auth' };
+      if (r.ok) {
+        this.images.set(key, r.dataUrl);
+        this.imageChars += r.dataUrl.length;
+        while (this.imageChars > IMAGE_CACHE_CHARS && this.images.size > 1) {
+          const [oldest, data] = this.images.entries().next().value!;
+          this.images.delete(oldest);
+          this.imageChars -= data.length;
+        }
+      } else if (r.kind === 'limited') {
+        this.imageLimit = { session: c.session, until: r.until };
+      } else if (r.kind === 'denied') {
+        // only a refusal is told which kind of sign-in it met: a GitHub App's permissions are its own
+        const info = await this.backend.call<GrantInfo>('grantInfo').catch(() => null);
+        if (info?.signedIn && info.session === c.session && info.githubApp) return { ok: false, kind: 'denied', app: true };
+      }
+      return r;
+    } finally {
+      this.imageRunning--;
+      this.imageWaiters.shift()?.();
     }
   }
 

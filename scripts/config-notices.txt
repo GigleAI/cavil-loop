@@ -111,6 +111,10 @@ PROJECT_OWNER | quiet | 不写这一行时的行为和模板里的值相同
 PROJECT_PRIORITY_FIELD | quiet | 不写这一行时的行为和模板里的值相同
 PROJECT_GH_TOKEN | quiet | 不写这一行时的行为和模板里的值相同
 AUTO_ADD_PROJECTS | quiet | 不写这一行时的行为和模板里的值相同
+CI_FAILURE_REPORT_WORKFLOWS | quiet | 不写这一行时的行为和模板里的值相同
+CI_FAILURE_REPORT_BRANCH | quiet | 不写这一行时的行为和模板里的值相同
+CI_FAILURE_REPORT_DISPATCH | quiet | 不写这一行时的行为和模板里的值相同
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | quiet | 不写这一行时的行为和模板里的值相同
 POLL_INTERVAL_SECS | quiet | 不写这一行时的行为和模板里的值相同
 POLL_BACKOFF_LADDER | quiet | 不写这一行时的行为和模板里的值相同
 POLL_FORCE_SYNC_SECS | quiet | 不写这一行时的行为和模板里的值相同

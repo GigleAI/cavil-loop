@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Cavil Loop",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "identifier": "dev.luosky.cavil-loop.client",
   "mainBinaryName": "Cavil Loop",
   "build": {
@@ -14,7 +14,7 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self' 'sha256-n7R7lqeA2CY7Vipr7uoBltAStlxFIhBbCXnRDcka/aM='",
+        "script-src": "'self' 'sha256-2bUKpUxqIwEAJpxmPcGrWfebEoJ3VFO9lGliNsgyGKI='",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: https://github.com https://api.github.com https://avatars.githubusercontent.com https://private-user-images.githubusercontent.com https://user-images.githubusercontent.com https://camo.githubusercontent.com https://raw.githubusercontent.com",
         "connect-src": "ipc: http://ipc.localhost",

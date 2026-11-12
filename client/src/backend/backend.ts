@@ -41,6 +41,8 @@ export interface GrantInfo {
   canRefresh?: boolean;
   /** the access token is past its deadline */
   expired?: boolean;
+  /** GitHub#395: this sign-in went through a GitHub App (its permissions are that App's own) */
+  githubApp?: boolean;
 }
 
 interface Proxied {
