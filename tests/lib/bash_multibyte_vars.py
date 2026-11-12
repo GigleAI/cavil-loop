@@ -155,9 +155,8 @@ class Scanner:
         m = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-]").match(self.d, j)
         if m:
             j = m.end()
-        if self.d[j:j + 1] == b"[":                 # ${a[...]}
-            k = self.d.find(b"]", j)
-            j = self.n if k < 0 else k + 1
+        if self.d[j:j + 1] == b"[":                 # ${a[...]}: the subscript is expanded too
+            j = self.subscript(j + 1, in_dq)
         op = self.d[j:j + 2]
         default_op = op[:1] in (b"-", b"=", b"?", b"+") or op in (b":-", b":=", b":?", b":+")
         squote_literal = in_dq and default_op
@@ -175,6 +174,51 @@ class Scanner:
             if c == 0x27 and not squote_literal:
                 k = self.d.find(b"'", i + 1)
                 i = self.n if k < 0 else k + 1
+                continue
+            if c == 0x24:
+                if self.d[i + 1:i + 2] == b"(":
+                    i = self.code(i + 2, b")")
+                    continue
+                if self.d[i + 1:i + 2] == b"{":
+                    i = self.brace(i + 2, in_dq)
+                    continue
+                i = self._var(i)
+                continue
+            if c == 0x60:
+                i = self.code(i + 1, b"`")
+                continue
+            i += 1
+        return i
+
+    def subscript(self, i, in_dq):
+        """Inside an array subscript, from just after '['. Returns index after the matching ']'.
+
+        The subscript is expanded ($x, $(...), ${...}, `...`); single quotes in it quote
+        whether or not the whole expansion is inside double quotes (measured on bash 5.2).
+        Nested brackets (a[b[0]]) are followed, so the first ']' is not taken blindly.
+        """
+        depth = 0
+        while i < self.n:
+            c = self.d[i]
+            if c == 0x5C:
+                i += 2
+                continue
+            if c == 0x5B:                       # [
+                depth += 1
+                i += 1
+                continue
+            if c == 0x5D:                       # ]
+                if depth == 0:
+                    return i + 1
+                depth -= 1
+                i += 1
+                continue
+            if c == 0x27:
+                k = self.d.find(b"'", i + 1)
+                i = self.n if k < 0 else k + 1
+                continue
+            if c == 0x22:
+                i = self.dquote(i + 1)
                 continue
             if c == 0x24:
                 if self.d[i + 1:i + 2] == b"(":
