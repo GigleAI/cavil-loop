@@ -101,8 +101,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   // from the reply box (a ⌘ key is never typing, see `resolve`) and are forwarded by the discussion
   // frame (FRAME_FORWARD); the letters are the maintainer's choice in #433.
   { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x', mod: true, shift: true }], label: '关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）' },
-  { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: '交给 agent（回复框、讨论区里也能按；回复框里的字不发出）' },
-  { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按）' },
+  { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: '交给 agent（回复框、讨论区里也能按；回复框里有字时先作为评论发出，发成功后再改标签）' },
+  { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按；回复框里有字时先作为评论发出）' },
   // GitHub#434: "等前置…" next to them, same ⌘⇧ family
   { id: 'blocked', scope: 'detail', keys: [{ key: 'b', mod: true, shift: true }], label: '等前置（打开选前置的对话框；回复框、讨论区里也能按）' },
   { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '回到首页（标签页留着，没发出的文字也留着）' },

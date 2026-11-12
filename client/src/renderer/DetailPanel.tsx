@@ -598,7 +598,32 @@ export function DetailPanel({
     setNote(null);
     return true;
   };
-  const runAutopilot = () => startOp({ kind: 'autopilot', key: item!.key }, ask === 'autopilot');
+  /**
+   * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
+   * once it went out. A dialog opened again from a notice ("重新托管…") carries that operation's kept
+   * comment instead, never the reply box's. Blank = labels only, as before.
+   */
+  const handOffComment = (): { comment: string; fromBox: boolean } => {
+    const rec = retryFrom ? state.ops.find((x) => x.id === retryFrom) : undefined;
+    if (rec) return { comment: opReusableDraft(rec)?.comment ?? '', fromBox: false };
+    return { comment: reply.trim() ? reply : '', fromBox: true };
+  };
+  const handOff = async (kind: 'handBack' | 'autopilot', inDialog: boolean): Promise<boolean> => {
+    const { comment, fromBox } = handOffComment();
+    const withComment = comment.trim() ? { comment, ...(fromBox && replyFromOp ? { draftOf: replyFromOp } : {}) } : {};
+    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog);
+    // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
+    if (ok && fromBox && comment.trim()) {
+      setReply((cur) => (cur === comment ? '' : cur));
+      setReplyFromOp(null);
+      session.supersede('preview');
+      setPreview(null);
+      setEscKept(false);
+      setPasted(null);
+    }
+    return ok;
+  };
+  const runAutopilot = () => handOff('autopilot', ask === 'autopilot');
   /** the dialog of an operation again, its draft restored (GitHub#250) */
   const retryOp = (r: OpRecord) => {
     // never a comment a reply made from it may already have posted (code review round 2)
@@ -625,7 +650,8 @@ export function DetailPanel({
     } else {
       void (async () => {
         setRetryFrom(r.id);
-        const res = await api().startOp({ kind: 'handBack', key: r.key }, r.id);
+        // GitHub#451: the comment it did not get out goes with it again
+        const res = await api().startOp({ kind: 'handBack', key: r.key, ...(d.comment?.trim() ? { comment: d.comment } : {}) }, r.id);
         if (!session.current()) return;
         setRetryFrom(null);
         setNote(res.ok ? null : { kind: 'error', text: res.error ?? '没有发送' });
@@ -1093,7 +1119,11 @@ export function DetailPanel({
   // GitHub#413: one condition per button, read by the button and by its key alike
   const opBlocked = !canWrite || busy || Boolean(lock);
   const pressCloseIssue = () => openAsk('closeIssue');
-  const pressHandBack = () => void startOp({ kind: 'handBack', key: item.key }, false);
+  const pressHandBack = () => void handOff('handBack', false);
+  // GitHub#451: the reply box's text goes out first — the buttons and the 托管 dialog say so
+  const boxComment = reply.trim() ? reply : '';
+  const handOffFirst = boxComment ? '先把回复框里的字作为评论发出，发成功后再' : '';
+  const dialogComment = ask === 'autopilot' ? handOffComment().comment : '';
   const pressAutopilot = () => {
     // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
     if (!state.autopilotConfirm) return void runAutopilot();
@@ -1624,24 +1654,26 @@ export function DetailPanel({
               <button
                 data-testid="hand-back"
                 disabled={opBlocked}
-                title={offlineWhy ?? lockWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
+                data-comment={boxComment ? 'yes' : 'no'}
+                title={offlineWhy ?? lockWhy ?? `${handOffFirst}加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
                 onClick={pressHandBack}
               >
-                交给 agent
+                {boxComment ? '评论并交给 agent' : '交给 agent'}
                 <kbd>{keyText('handBack')}</kbd>
               </button>
               {hb.autopilot && (
                 <button
                   data-testid="autopilot"
+                  data-comment={boxComment ? 'yes' : 'no'}
                   disabled={opBlocked}
                   title={
                     offlineWhy ??
                     lockWhy ??
-                    `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
+                    `${handOffFirst}加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
                   }
                   onClick={pressAutopilot}
                 >
-                  {state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）'}
+                  {`${boxComment ? '评论并' : ''}托管（自动合并）${state.autopilotConfirm ? '…' : ''}`}
                   <kbd>{keyText('autopilot')}</kbd>
                 </button>
               )}
@@ -1673,7 +1705,7 @@ export function DetailPanel({
       {blockedOpen && <BlockedDialog item={item} state={state} items={data.items} onClose={() => setBlockedOpen(false)} />}
       {ask === 'autopilot' && (
         <ConfirmDialog
-          title={`托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
+          title={`${dialogComment ? '评论并' : ''}托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
           confirmLabel="确认托管"
           busy={busy}
           onCancel={cancelAsk}
@@ -1685,9 +1717,21 @@ export function DetailPanel({
         >
           <ResultBanner note={dialogNote} testid="dialog-result" />
           <div data-testid="autopilot-explain">
-            <p data-testid="autopilot-explain-labels">
-              会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
-            </p>
+            {dialogComment ? (
+              <>
+                <p data-testid="autopilot-explain-comment">{retryFrom ? '先发出上一次没发出去的评论：' : '先发出回复框里的评论：'}</p>
+                <blockquote className="op-comment" data-testid="autopilot-comment">
+                  {dialogComment}
+                </blockquote>
+                <p data-testid="autopilot-explain-labels">
+                  评论发成功后，再加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。评论没发成功就什么标签都不动，这段话留着可以放回回复框。
+                </p>
+              </>
+            ) : (
+              <p data-testid="autopilot-explain-labels">
+                会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
+              </p>
+            )}
             <p data-testid="autopilot-explain-then">agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
             <p data-testid="autopilot-explain-stop">
               要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。

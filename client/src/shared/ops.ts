@@ -278,6 +278,27 @@ function labelText(s: OpStep, checks = 0): string {
   }
 }
 
+/** GitHub#451: how the comment a hand-over / autopilot sends first reads */
+function commentText(s: OpStep): string {
+  switch (s.state) {
+    case 'ok':
+      return '已发出评论';
+    case 'refused':
+      return `评论没有发出去：${s.reason ?? ''}`;
+    case 'unknown':
+      return '评论不确定有没有发出';
+    case 'pending':
+      return '正在发评论…';
+    case 'unsent':
+      return `还没发评论${s.reason ? `：${s.reason}` : ''}`;
+  }
+}
+
+/** a step of a hand-over / autopilot: its comment (GitHub#451) or one of its labels */
+function handStepText(s: OpStep, checks = 0): string {
+  return s.name === 'comment' ? commentText(s) : labelText(s, checks);
+}
+
 /** The notice of a record: every step that did not simply succeed is named, nothing is left out. */
 export function opText(r: OpRecord): string {
   // created, its first request not marked sent yet: it reads as on its way
@@ -324,15 +345,20 @@ export function opText(r: OpRecord): string {
               ? `没有合并 ${w}：${m.reason ?? '没有发出'}`
               : `${w} 已合并`;
   } else {
-    const verb = r.kind === 'autopilot' ? '托管' : '交给 agent';
+    // GitHub#451: a hand-over carrying the reply box's text sends it first ("评论并…")
+    const commented = m.name === 'comment';
+    const verb = `${commented ? '评论并' : ''}${r.kind === 'autopilot' ? '托管' : '交给 agent'}`;
     const allOk = r.steps.every((s) => s.state === 'ok');
     const u = r.steps.find((s) => s.state === 'unknown');
-    if (m.state === 'pending') head = `正在${verb}…`;
+    if (m.state === 'pending') head = commented ? `正在${verb}：先发评论，发出后再改标签…` : `正在${verb}…`;
     else if (r.checking && u && !r.steps.some((s) => s.state === 'pending'))
-      head = `正在${verb}…「${u.label ?? ''}」发出后没有收到 GitHub 的应答，正在自动核对有没有${u.name === 'addLabel' ? '加上' : '摘掉'}（第 ${(r.checks ?? 0) + 1} 次）`;
-    else if (m.state === 'refused' || m.state === 'unsent') head = `没有${verb}：${labelText(m)}`;
-    else if (allOk) head = r.kind === 'autopilot' ? `已托管：${r.steps.map((s) => labelText(s)).join('、')}` : `已交给 agent：${r.steps.map((s) => labelText(s)).join('、')}`;
-    else head = `${verb}没有全部完成：${r.steps.map((s) => labelText(s, r.checks ?? 0)).join('；')}`;
+      head =
+        u.name === 'comment'
+          ? `正在${verb}…评论发出后没有收到 GitHub 的应答，正在自动核对有没有发出（第 ${(r.checks ?? 0) + 1} 次）；标签还没动`
+          : `正在${verb}…「${u.label ?? ''}」发出后没有收到 GitHub 的应答，正在自动核对有没有${u.name === 'addLabel' ? '加上' : '摘掉'}（第 ${(r.checks ?? 0) + 1} 次）`;
+    else if (m.state === 'refused' || m.state === 'unsent') head = `没有${verb}：${handStepText(m)}${commented ? '，标签都没动' : ''}`;
+    else if (allOk) head = `已${verb}：${r.steps.map((s) => handStepText(s)).join('、')}`;
+    else head = `${verb}没有全部完成：${r.steps.map((s) => handStepText(s, r.checks ?? 0)).join('；')}`;
   }
   const p = opPhase(r);
   const labelOp = r.kind === 'autopilot' || r.kind === 'handBack';

@@ -3437,10 +3437,26 @@ export class Controller {
         const { human, agent, autopilot } = this.state.handBack;
         if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
+        // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
+        // not go out (or whose answer never came) leaves every label alone: never handed over without it
+        const comment = typeof action.comment === 'string' ? action.comment : '';
+        if (comment.trim()) draft = { comment };
         // the autopilot label first (the daemon must see it when it picks the item up); add before remove
-        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []), step('addLabel', agent, 'agent'), step('removeLabel', human, 'human')];
+        steps = [
+          ...(comment.trim() ? [step('comment')] : []),
+          ...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []),
+          step('addLabel', agent, 'agent'),
+          step('removeLabel', human, 'human'),
+        ];
         break;
       }
+    }
+    // GitHub#451: the reply box carried an earlier operation's kept comment — it moves into this one (that
+    // record no longer offers it), never while a reply made from it may still be on its way or unproven
+    const draftOf = (action.kind === 'autopilot' || action.kind === 'handBack') && draft.comment !== undefined && typeof action.draftOf === 'string' ? this.ops.get(action.draftOf) : undefined;
+    if (draftOf && draftOf.key === item.key) {
+      if (draftOf.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有发送');
+      if (opPhase(draftOf) === 'waiting' || opPhase(draftOf) === 'unknown') return refuse(`上一次操作还没结清，附带评论先不发：${opText(draftOf)}`);
     }
     const id = `op-${++this.opSeq}`;
     const rec: OpRecord = {
@@ -3464,6 +3480,7 @@ export class Controller {
     // a draft taken from an earlier record (its "重新关闭 / 合并 / 托管") now lives here
     const from = opts.from ? this.ops.get(opts.from) : undefined;
     if (from) this.setOp({ ...from, draftDropped: true, dismissed: true });
+    if (draftOf && draftOf.key === item.key && draftOf.id !== from?.id && this.ops.has(draftOf.id)) this.setOp({ ...this.ops.get(draftOf.id)!, commentUsed: true });
     this.setOp(rec);
     this.pruneOps();
     this.opsChanged();

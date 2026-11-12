@@ -24,10 +24,15 @@ export type WriteAction =
   | { kind: 'addToProject'; key: string; projectKey: string; iterationId: string | null; status: string | null }
   /** `draftOf` (GitHub#250): the reply carries the kept comment of that operation — sent = that draft is done, wherever the panel is by then */
   | { kind: 'comment'; key: string; body: string; draftOf?: string }
-  /** remove the "waiting for a human" label, add the "agent, go" one (names from Settings) */
-  | { kind: 'handBack'; key: string }
-  /** GitHub#205: add the autopilot label (name from Settings), then hand to the agent as above */
-  | { kind: 'autopilot'; key: string }
+  /**
+   * remove the "waiting for a human" label, add the "agent, go" one (names from Settings).
+   * GitHub#451: `comment` (the reply box's text) goes out first, and the labels only once it did —
+   * the daemon dispatches on the label, so the comment must be there when it looks. Blank / absent =
+   * labels only. `draftOf`: the text carries that earlier operation's kept comment, which moves into this one
+   */
+  | { kind: 'handBack'; key: string; comment?: string; draftOf?: string }
+  /** GitHub#205: add the autopilot label (name from Settings), then hand to the agent as above (`comment` / `draftOf` likewise) */
+  | { kind: 'autopilot'; key: string; comment?: string; draftOf?: string }
   /** headOid: the commit the user saw; GitHub refuses the merge if the PR moved since */
   | { kind: 'merge'; key: string; method: MergeMethod; headOid: string }
   | { kind: 'closePr'; key: string; comment: string }

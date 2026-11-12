@@ -432,6 +432,8 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .modal-back { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .modal { width: 520px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow-lg); }
 .modal h3 { margin: 0 0 12px; font-size: 16px; }
+/* GitHub#451: the comment "评论并托管" sends first, quoted as typed */
+.modal blockquote.op-comment { margin: 6px 0 10px; padding: 6px 10px; border-left: 3px solid var(--border); background: var(--canvas); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
 .modal textarea { width: 100%; min-height: 80px; font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); resize: vertical; }
 .form { display: flex; flex-direction: column; gap: 10px; }
 .form label { display: flex; flex-direction: column; gap: 4px; font-weight: 500; }
