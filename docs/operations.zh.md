@@ -1317,6 +1317,7 @@ your-project/
 ├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
 ├── usage-limit.json                    # 开了 ENABLE_USAGE_LIMIT_PAUSE 才有：各条目派工开始时刻 + 做到一半的转人工（GitHub#341）
 ├── poll.log                            # 滚动日志
+├── runlog/                             # 运行记录：每轮轮询一条 + 快照（GitHub#344）
 ├── poll.lock                           # flock
 └── sessions/                           # 每个 worker tmux session 的 pane 日志
     └── <project>-issue<N>.log
@@ -1771,6 +1772,80 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
+
+### 最近几轮轮询都干了什么（运行记录，GitHub#344）
+
+`poll.log` 里只有代码主动打的那些行，轮询进程的 stderr 又是指向 `/dev/null` 的。运行记录补上另一半：每一轮
+轮询退出时自己写**一条记录**——开始 / 结束时间、耗时、结果、走到的最后一步、看到几个候选、派了几个工、发了
+几次 GitHub 调用、其中几次失败。非零退出、读不到 GitHub、轻量检查超时或失败、某一步超过
+`POLL_RUN_LOG_SLOW_SECS`、发现上一轮卡在锁上的那一轮，还会另存一份**快照**。`poll-entry.sh` 一进来就先写
+一行「已启动」，所以「完全没跑起来」和「跑了没事做」分得开。
+
+<!-- poll-history-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
+```
+<!-- poll-history-ops:end -->
+
+它打印的内容：最近几轮的表格；有进度文件、没有正式记录的轮次；入口记录（启动了但没走到「配置加载完」，或
+在那之前就退出了，带退出码）；最近一份快照，连同那一轮在 `poll.log` 里对应的那一段。`--json` 是同一份数据，
+给机器读。
+
+| 结果 | 含义 |
+|---|---|
+| `ok` | 正常跑完 |
+| `pace-skip` | 被空闲 / 故障退避跳过（轻量检查的结果在单独一列） |
+| `lock-busy` | 上一轮还没跑完；备注里写着占锁的是哪一轮、已经跑了多久 |
+| `github-unreadable` | 读不到 GitHub，没派工就停了（有快照） |
+| `error` | 非零退出（有快照，带脚本名和行号） |
+| `early-exit` | 没走到最后就以 0 退出，走的是运行记录没有起名字的路径 |
+
+读的时候要知道：
+
+- **被直接杀掉的那一轮**（断电、内存不足被系统杀、`SIGKILL`）写不了记录，事后也没有谁替它补。它只留下进度
+  文件，查看命令对照进程列表后把它显示成「未正常结束」，并写明停在哪一步。进程列表不可信时显示「判断不了」，
+  不乱猜。进度文件只留最近 64 份。
+- **GitHub 调用数**只算轮询进程自己发出的（含它的子 shell 和轻量检查那一次），不含派工脚本和 Python 辅助程序
+  发的。`gh` 以非零退出就算一次失败；只有轻量检查那一次例外——回 `200` 或 `304` 算成功（真的 `gh` 对 `304`
+  也是以 1 退出）。显示「未知」是那一轮的计数器没建成或读不回来——别当成 0；数字后面带 `+` 是数到了上限
+  （一轮 20000 次调用），真实次数不少于这个数。
+- **入口脚本自己都没被执行**（文件缺失、退出码 127）时，这里什么都记不下。查看命令这时会直接打印该看的
+  `journalctl` 那一行。
+- 快照里只有校验过的字段：脚本名、行号、函数名、步骤名、退出码、少量校验过的配置值、节奏状态里的数字字段、
+  `poll.log` 的字节位置——没有源码行、没有命令输出、没有 issue 和评论的文字。同一原因、同一位置一小时内只留
+  一份。
+- 轮询的任何判断都不读这些文件。写失败、目录满了又腾不出位置，都只是少记一条。
+
+文件在哪、各留多少（每个目录都是先腾出一个位置再新增，所以就算轮次接连在写到一半时被杀，数量也守得住；只有
+恰好同一时刻在写的几轮才会短暂超出，每轮最多多一份）：
+
+| 路径 | 内容 | 保留 |
+|---|---|---|
+| `$STATE_DIR/runlog/rounds/` | 每轮一条正式记录 | `POLL_RUN_LOG_ROUNDS`（1000） |
+| `$STATE_DIR/runlog/snapshots/` | 快照 | `POLL_RUN_LOG_SNAPSHOTS`（20） |
+| `$STATE_DIR/runlog/inflight/` | 进行中轮次的进度 | `POLL_RUN_LOG_INFLIGHT`（64） |
+| `$STATE_DIR/runlog/acct/` | 平时是空的：每一轮在这里建一份计数用的文件，打开之后立刻删掉 | `POLL_RUN_LOG_INFLIGHT`（64） |
+| `~/.local/state/cavil-loop/runlog/entry/` | 没走到「配置加载完」的那些轮询的入口记录（本机所有项目共用） | 200 |
+
+关掉并删除已有记录（要再打开，把 `ENABLE_POLL_RUN_LOG=false` 那一行删掉；下一轮轮询会重新建目录）：
+
+<!-- poll-history-off-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+[ -n "$STATE_DIR" ] || { echo "cannot read STATE_DIR from $CONF / 读不到 STATE_DIR"; exit 1; }
+echo 'ENABLE_POLL_RUN_LOG=false' >> "$CONF"
+rm -rf "$STATE_DIR/runlog"
+echo "run log off, records removed: $STATE_DIR/runlog / 已关闭并删除记录"
+```
+<!-- poll-history-off-ops:end -->
 
 ### poll.log 变稀疏了，daemon 是不是死了
 

@@ -1432,15 +1432,19 @@ pace_probe_etag_write() {  # <文件> <ETag>
 # 检查才被看到。304 响应里 GitHub 给回的 ETag 去掉了 W/ 前缀（实测），所以 304 时沿用
 # 已存的，不覆盖。
 pace_probe() {
-    local etag out status new_etag
+    local etag out status new_etag p_rc=0
     PACE_PROBE_REASON=""
     etag=$(pace_probe_etag_read "$PROBE_ETAG_FILE")
     local -a cmd=(gh api -i --method GET)
     if [ -n "$etag" ]; then cmd+=(-H "If-None-Match: $etag"); fi
     cmd+=("repos/$REPO/issues" -f state=all -f sort=updated -f direction=desc -f per_page=1)
     if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30 "${cmd[@]}"); fi
-    out=$("${cmd[@]}" 2>/dev/null) || true
+    # RUNLOG_NO_TALLY：这一次调用的计数由下面的 runlog_probe_note 统一记，gh 计数函数不重复记。
+    out=$(RUNLOG_NO_TALLY=1 "${cmd[@]}" 2>/dev/null) || p_rc=$?
     status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r' | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+    # 运行记录（GitHub#344）：把这次检查的结果旁路记一笔——超时、读不到、各状态码分开。只记，
+    # 下面怎么放行一个字不变。
+    if declare -F runlog_probe_note >/dev/null; then runlog_probe_note "$p_rc" "$status"; fi
     case "$status" in
         304)
             if [ -n "$etag" ]; then return 0; fi

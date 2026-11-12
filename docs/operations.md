@@ -1576,6 +1576,7 @@ your-project/
 ├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
 ├── usage-limit.json                    # only with ENABLE_USAGE_LIMIT_PAUSE: dispatch start times + hand-overs in progress (GitHub#341)
 ├── poll.log                            # rolling log
+├── runlog/                             # run log: one record per poll round + snapshots (GitHub#344)
 ├── poll.lock                           # flock
 └── sessions/                           # tmux pane logs per worker
     └── <project>-issue<N>.log
@@ -2078,6 +2079,87 @@ Polling has up to 1 minute of latency. For instant:
 Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
+
+### What did the last polls do? (run log, GitHub#344)
+
+`poll.log` only has what the code chose to log, and the poller's stderr goes to `/dev/null`. The run log is the
+other half: every poll round writes **one record** when it exits — start / end, how long, the result, the last
+step it reached, how many candidates it saw and dispatched, and how many GitHub calls it made and how many of
+those failed. A round that exits non-zero, cannot read GitHub, has its idle probe time out or fail, spends more
+than `POLL_RUN_LOG_SLOW_SECS` in one step, or finds the previous round stuck behind the lock also saves a
+**snapshot**. `poll-entry.sh` writes a "started" line before anything else, so "never got going" and "ran with
+nothing to do" look different.
+
+<!-- poll-history-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
+```
+<!-- poll-history-ops:end -->
+
+What it prints: the last rounds as a table; rounds that have a progress file but no record; entry records (the
+poll started but never got as far as loading the config, or exited before that with the exit code shown); and
+the latest snapshot with the matching slice of `poll.log`. `--json` gives the same data for a machine.
+
+| Result | Meaning |
+|---|---|
+| `ok` | ran to the end |
+| `pace-skip` | skipped by the idle / failure backoff (the idle probe result is in its own column) |
+| `lock-busy` | the previous round was still running; the note says which round holds the lock and for how long |
+| `github-unreadable` | could not read GitHub, stopped without dispatching (snapshot saved) |
+| `error` | exited non-zero (snapshot saved, with script name and line number) |
+| `early-exit` | exited 0 before reaching the end, by a path the run log has no name for |
+
+Things to know when reading it:
+
+- **A round that was killed outright** (power loss, OOM, `SIGKILL`) cannot write its record, and nothing writes
+  one for it afterwards. It leaves its progress file, which the command shows as "未正常结束" (did not finish)
+  with the step it stopped in, after checking the process list. When the process list cannot be trusted the
+  command says "判断不了" (cannot tell) instead of guessing. Only the 64 most recent progress files are kept.
+- **GitHub calls** are the ones the poll process itself made (its subshells and the idle probe included), not
+  those of dispatch scripts or Python helpers. A call counts as failed when `gh` exits non-zero; the idle probe
+  is the one exception — a `200` or `304` answer is a success there (the real `gh` exits 1 on `304`). `未知`
+  (unknown) means the round could not set its counters up or read them back — never read it as zero; a
+  trailing `+` means the count reached its cap (20000 calls in one round) and the real number is at least that.
+- **If the entry script itself never ran** (a missing file, exit 127), nothing can be written here. The command
+  then prints the `journalctl` line to look at instead.
+- Snapshots hold checked fields only: script name, line number, function name, step name, exit code, a few
+  validated config values, the pace state's numeric fields, and byte offsets into `poll.log` — no source text,
+  no command output, no issue or comment text. The same reason at the same place is saved once per hour.
+- Nothing in the poller reads these files; they decide nothing. A write that fails, or a full directory that
+  cannot be trimmed, only means one record fewer.
+
+Where the files are and how much is kept (each directory makes room before it adds a file, so the counts hold
+even when rounds keep getting killed mid-write; only rounds writing at the very same moment can exceed them
+briefly, by at most one file each):
+
+| Path | What | Kept |
+|---|---|---|
+| `$STATE_DIR/runlog/rounds/` | one record per round | `POLL_RUN_LOG_ROUNDS` (1000) |
+| `$STATE_DIR/runlog/snapshots/` | snapshots | `POLL_RUN_LOG_SNAPSHOTS` (20) |
+| `$STATE_DIR/runlog/inflight/` | progress of rounds in flight | `POLL_RUN_LOG_INFLIGHT` (64) |
+| `$STATE_DIR/runlog/acct/` | normally empty: a round creates its counter file here, opens it and deletes it at once | `POLL_RUN_LOG_INFLIGHT` (64) |
+| `~/.local/state/cavil-loop/runlog/entry/` | entry records of polls that never loaded their config (all projects) | 200 |
+
+To turn it off and remove what was recorded (delete the `ENABLE_POLL_RUN_LOG=false` line again to turn it back
+on; the next poll recreates the directory):
+
+<!-- poll-history-off-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+[ -n "$STATE_DIR" ] || { echo "cannot read STATE_DIR from $CONF / 读不到 STATE_DIR"; exit 1; }
+echo 'ENABLE_POLL_RUN_LOG=false' >> "$CONF"
+rm -rf "$STATE_DIR/runlog"
+echo "run log off, records removed: $STATE_DIR/runlog / 已关闭并删除记录"
+```
+<!-- poll-history-off-ops:end -->
 
 ### poll.log went sparse — did the daemon die?
 

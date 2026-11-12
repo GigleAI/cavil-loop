@@ -43,6 +43,7 @@ User wants the state. Steps:
 3. For each project in step 1's `projects[]`:
    - `tail -20 $STATE_DIR/poll.log` (`state_dir` in step 1's output)
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
+   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR` — what the last poll rounds did (result, last step, dispatches, GitHub calls), rounds that did not finish, and the latest snapshot (GitHub#344; see [docs/operations.md](docs/operations.md#what-did-the-last-polls-do-run-log-github344)). Read-only
    - `jq . $STATE_DIR/config-notice.json` (if present) — new optional settings this project's config lacks, so the feature is off here while new installs have it on (GitHub#289; see [docs/operations.md](docs/operations.md#new-settings-an-upgrade-does-not-add-to-your-config)). List each missing key with the line that turns it on
 4. Summarize for the user
 
