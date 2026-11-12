@@ -9,6 +9,7 @@ agent-trust-paths 54
 autopilot:1/3 108
 autopilot:2/3 70
 autopilot:3/3 82
+autopilot-handover 260
 autopilot-human-paths 110
 autopilot-ops 25
 autopilot-split 43
@@ -39,6 +40,7 @@ paginated-latest-id 1
 pending-human-conflict 7
 plain-language-prompts 1
 poll-pace 46
+poll-runlog 90
 poll-probe 40
 preview-legacy-adopt 6
 preview-port-ownership 3
@@ -73,6 +75,7 @@ smoke 6
 sub-issue-split 3
 token-usage-claude 3
 token-usage-codex 3
+usage-limit 140
 weekly-report-attribution 1
 weekly-report-bot-logins 1
 weekly-report-by-model 2
@@ -95,5 +98,6 @@ weekly-report-worktime-turns 2
 worker-selection 1
 write-token-split 1
 session-switch-keeps-client 74
+token-redaction 35
 heavy-test 150
 heavy-test-systemd 35

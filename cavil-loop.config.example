@@ -295,6 +295,47 @@ BLOCKED_MAX_TRIES=10
 # 留空 / "false" / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
 ENABLE_CONCURRENT_WORK_HINT="true"
 
+# ── Agent hit its usage limit / agent 撞到用量上限（GitHub#341）──
+# Both agents run on flat-rate subscriptions with a usage limit per time window. With "true", the daemon
+# looks every poll round at the worker sessions this machine dispatched that still carry doing/agent. When
+# the last block on a pane is the CLI's limit notice (and the session record shows the sentence was not
+# printed by the model or a tool, the agent is idle, and nothing changed across two rounds) it does two things:
+#   1. that agent gets no new work until the reset time read from the notice — machine-wide, per agent and
+#      account directory; queued items keep their labels and nothing counts as a failed dispatch
+#   2. the interrupted item gets one comment (which agent, when it lifts, which label to put back) and goes
+#      to pending/human. The session is not typed into, stopped or resumed.
+# The pause ends at its time, or when its record under ~/.local/state/cavil-loop/usage-limit/ is deleted.
+# Empty / "false" / line missing = off: no extra tmux or GitHub read, no state file. See docs/operations.md.
+#
+# 两个 agent 都跑在包月订阅上，有时段用量上限。设成 "true" 时，daemon 每轮看一眼本机派出去、仍挂着 doing/agent
+# 的 worker 会话。窗格最后一块是 CLI 的上限提示（并且会话记录里看不到这句话是模型或工具打出来的、agent 空闲、
+# 连续两轮都没变）时做两件事：
+#   1. 这个 agent 在提示里写的解除时间之前不再接新活——整台机器、按 agent 和账号目录记；排队的条目标签不动，
+#      不计派工失败
+#   2. 被打断的那一条留一条评论（哪个 agent、几点解除、标签改回哪个）并转 pending/human。不往会话里送字、
+#      不停程序、不自己续接。
+# 暂停到点结束，或者删掉 ~/.local/state/cavil-loop/usage-limit/ 下它的记录时结束。
+# 留空 / "false" / 不写这一行 = 关闭：不多读一次 tmux 或 GitHub，不留状态文件。详见 docs/operations.zh.md。
+ENABLE_USAGE_LIMIT_PAUSE="true"
+# How long to pause when the notice's reset time cannot be read or lies more than 8 days ahead (seconds, 60–604800)
+# 提示里的解除时间读不出、或在 8 天以外时暂停多久（秒，60–604800）
+USAGE_LIMIT_FALLBACK_SECS=3600
+
+# ── GitHub 令牌脱敏 / token redaction（GitHub#342）──
+# worker 的环境里有 GitHub 令牌，agent 运行时可能把它原样打印出来（执行 env、调试 gh、报错带出请求头）。
+# daemon 自己写的文件（窗格历史、poll.log）在落盘前就把令牌换成 REDACTED-<指纹>，这部分始终开着、没有开关。
+# 这个开关管的是 agent 自己写的会话记录（claude 的 ~/.claude/projects、codex 的 ~/.codex/sessions）：
+# daemon 每 10 分钟扫一次，把里面的令牌原地换掉——只改那几个字节，文件长度不变，不删、不留备份，周报数字不受影响。
+# 只碰工作目录在上面 WORKTREE_BASE 之下的会话；人自己手动开的会话不碰。
+# 只认带前缀的 GitHub 令牌（ghp_ / gho_ / ghu_ / ghs_ / ghr_ / github_pat_）。
+# "true" / 不写这一行 = 开；留空 / "false" = 不改 agent 的会话记录。
+REDACT_AGENT_RECORDS="true"
+# codex 默认每次启动把整份环境变量（含 GH_TOKEN）存成一个环境快照文件（~/.codex/shell_snapshots/），
+# 长期留在磁盘上。"off" / 不写这一行 = 启动 codex worker 时关掉这项功能，不再产生新快照；
+# "on" = 保留 codex 的默认行为（令牌会继续写进快照）。已有的旧快照用 scripts/redact-snapshots.sh 清理，
+# 见 docs/operations.md。
+CODEX_SHELL_SNAPSHOT="off"
+
 # ── Queue heavy tests machine-wide / 重测试整机排队（默认关闭，GitHub#343）──
 # One command per line: the commands that count as a "heavy test" in this project (the full suite).
 # Empty = off: prompts, dispatch, cleanup and local processes are exactly as before. When set:
@@ -1203,6 +1244,30 @@ POLL_IDLE_PROBE=true
 # 的档位按它算；默认 600 = 安静 7 天那一档从 30 分钟变成 10 分钟。写错了打一行警告、
 # 不封顶（按阶梯原样）。
 POLL_IDLE_PROBE_MAX_SECS=600
+
+# Poll run log (GitHub#344). Every poll round writes one small record when it exits
+# (start / end, result, last step, candidates, dispatches, GitHub calls made by the poll
+# process and how many failed); a round that exits non-zero, cannot read GitHub, has its
+# idle probe time out, spends too long in one step or finds the previous round stuck also
+# saves a snapshot. Look at it with `scripts/poll-history.sh`. Records only — nothing in
+# the poller reads these files, and a failed write never affects a poll. No tokens, no
+# issue / comment text, no source lines. Lives in $STATE_DIR/runlog/.
+# "false" turns it off; leaving the line out = on.
+#
+# 轮询运行记录（GitHub#344）。每一轮轮询退出时写一条很小的记录（开始 / 结束时间、结果、走到的
+# 最后一步、候选数、派工数、轮询进程自己发的 GitHub 调用数和失败数）；非零退出、读不到 GitHub、
+# 轻量检查超时、某一步太慢、发现上一轮卡住的那一轮，另存一份快照。用 `scripts/poll-history.sh` 看。
+# 只记不判：轮询的任何判断都不读这些文件，写失败也不影响轮询。里面没有令牌、没有 issue / 评论
+# 正文、没有源码行。放在 $STATE_DIR/runlog/。
+# "false" = 关闭；不写这一行 = 开。
+ENABLE_POLL_RUN_LOG=true
+# How many round records / snapshots / in-flight progress files to keep, and how many
+# seconds one step may take before the round saves a "slow step" snapshot.
+# 保留多少条轮次记录 / 多少份快照 / 多少份进行中的进度文件；一步超过多少秒算「慢」并留快照。
+POLL_RUN_LOG_ROUNDS=1000
+POLL_RUN_LOG_SNAPSHOTS=20
+POLL_RUN_LOG_INFLIGHT=64
+POLL_RUN_LOG_SLOW_SECS=600
 
 # Failure backoff cap. Reading GitHub is not the same as having nothing to do,
 # so failures get their own ladder — it starts at POLL_INTERVAL_SECS, doubles on

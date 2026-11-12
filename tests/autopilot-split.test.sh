@@ -138,6 +138,10 @@ CONF
                 mergeable:true, mergeable_state:"clean"}' \
             --arg n "$1" --arg r "$2" --arg b "$3" --arg h "$4"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$5"
+        # 真 GitHub 上挂着的标签都有打上它的那条记录；交人的写前核对（GitHub#382）要从记录里认「这一次入队」
+        case ",$5," in *",pending/merge,"*)
+            jset events.json '.[$n] = ((.[$n] // []) + [{event:"labeled", label:{name:"pending/merge"}, actor:{login:"loop-bot", type:"User"}, created_at:"2025-12-31T00:00:00Z"}])' --arg n "$1" ;;
+        esac
     }
     ev() {   # <n> <labeled|unlabeled> <标签> <操作人> [仓库前缀 other/]
         EVN=$((EVN + 1))
@@ -242,7 +246,7 @@ $SUMMARY" "$H1" "pending/merge"
     tick
     chk "父 issue 摘了托管标签 → 不合并" "$(merged 52)" 0
     fresh; split_ready; jset labels.json '.["52"] = ["pending/merge","autopilot"]'; ev 52 labeled autopilot loop-bot
-    jset labels.json '.["50"] += ["pending/human"]'
+    jset labels.json '.["50"] += ["pending/human"]'; ev 50 labeled pending/human maint
     tick
     chk "父 issue 打 pending/human → 不合并" "$(merged 52)" 0
     chk "  → PR 交人" "$(has_label 52 pending/human)" yes

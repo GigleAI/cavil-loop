@@ -76,6 +76,8 @@ export interface WritableState {
   failLabel: string | null;
   /** repositories where every write answers 403 (the account has read access only) */
   readOnlyRepos: Set<string>;
+  /** GitHub#381: what the markdown renderer answers, whatever was sent (a recorded rendering of GitHub's); null = the text in a <p> */
+  markdownHtml: string | null;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
   readOnlyProjects: Set<string>;
   /** drop the connection of every write request (offline in the middle of a change) */
@@ -191,6 +193,7 @@ export function defaultWritable(): WritableState {
     titleSourceDrop: null,
     titleKept: null,
     readOnlyRepos: new Set(),
+    markdownHtml: null,
     readOnlyProjects: new Set(),
     dropWrites: false,
     detailPageSize: 100,
@@ -550,7 +553,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   const w = store.w;
   if (method === 'POST' && path === '/api/markdown') {
     const esc = String(body?.text ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
-    sendText(`<p>${esc}</p>`);
+    sendText(w.markdownHtml ?? `<p>${esc}</p>`);
     return true;
   }
   const m = path.match(/^\/api\/repos\/([^/]+)\/([^/]+)(\/.*)$/);
