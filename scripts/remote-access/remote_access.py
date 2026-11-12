@@ -15,11 +15,13 @@
     「查不到」绝不当成「匿名但放行」。
   · 配对：一次性 8 位配对码（10 分钟、错 5 次作废）换一把随机长钥匙。钥匙只在这一次传回。
   · 之后的每个请求带签名（时间 + 一次性随机数 + 请求内容），回复也带签名；钥匙不再传输。
+    处理过的请求记在盘上，服务重启后重放同一个请求照样被拒。
     设备的 Tailscale 身份必须等于配对时记下的那台。
   · 能做的只有固定几件事：读状态（scripts/install-status.sh 原样）、停 / 启一个项目
     （scripts/project-service.sh）、读一个项目轮询日志的最后 200 行、撤销本设备。
 
-状态目录（权限 700，文件 600）：devices.json 已配对设备；pairing.json 当前配对码（只存散列）。
+状态目录（权限 700，文件 600）：devices.json 已配对设备；pairing.json 当前配对码（只存散列）；
+nonces.json 最近处理过的请求（防重放，重启后仍然认得）。
 """
 import argparse
 import fcntl
@@ -183,9 +185,22 @@ class Service:
     def __init__(self, state, skill):
         self.state = state
         self.skill = skill
-        self.started = time.time()
-        self.nonces = {}
         self.mu = threading.Lock()
+        # 已处理过的请求（设备编号:随机数 → 处理时间），落盘在 nonces.json，重启后照样认得。
+        # 一个请求只在「它的时间与本机相差不超过 CLOCK_WINDOW」时被接受，所以处理过的记录留
+        # 2 × CLOCK_WINDOW 就够：再晚，同一个请求会先被时间那一关拒掉。
+        # 文件在但读不懂时不知道刚才处理过什么：这段时间里一律不接受签名请求（quarantine），
+        # 等到重启前可能处理过的请求全都过了时间那一关为止——不把「读不到」当成「没处理过」。
+        self.quarantine_until = 0.0
+        try:
+            saved = state.read("nonces.json", {})
+            if not isinstance(saved, dict) or not all(isinstance(v, (int, float)) for v in saved.values()):
+                raise ValueError("nonces.json 的内容不是「随机数 → 时间」")
+            self.nonces = {str(k): float(v) for k, v in saved.items()}
+        except (ValueError, OSError) as e:
+            sys.stderr.write("读不懂已处理请求的记录（%s）：%d 秒内不接受签名请求\n" % (e, 2 * CLOCK_WINDOW))
+            self.nonces = {}
+            self.quarantine_until = time.time() + 2 * CLOCK_WINDOW
 
     def script(self, name, args, timeout):
         path = os.path.join(self.skill, "scripts", name)
@@ -209,14 +224,20 @@ class Service:
             return None, "状态脚本输出的格式认不出"
         return st, None
 
-    def fresh_nonce(self, nonce, now):
+    def fresh_nonce(self, device_id, nonce, now):
+        """这个请求没处理过 → 先记下（落盘）再返回 "new"；处理过 → "seen"；记不下来 → "unsaved"（不处理）。"""
+        key = "%s:%s" % (device_id, nonce)
         with self.mu:
-            for k in [k for k, t in self.nonces.items() if now - t > 2 * CLOCK_WINDOW]:
-                del self.nonces[k]
-            if nonce in self.nonces:
-                return False
-            self.nonces[nonce] = now
-            return True
+            if key in self.nonces:
+                return "seen"
+            kept = {k: t for k, t in self.nonces.items() if now - t <= 2 * CLOCK_WINDOW}
+            kept[key] = now
+            try:
+                self.state.write("nonces.json", kept)
+            except OSError:
+                return "unsaved"
+            self.nonces = kept
+            return "new"
 
 
 def request_signature(key_hex, method, path, when, nonce, body):
@@ -357,11 +378,18 @@ class Handler(BaseHTTPRequestHandler):
             self.deny(403, "signature", "签名不对")
             return None, ""
         now = time.time()
-        if abs(now - int(when)) > CLOCK_WINDOW or int(when) < int(self.svc.started):
+        if now < self.svc.quarantine_until:
+            self.deny(503, "not_ready", "这台机器的远程入口刚重启、读不到之前处理过哪些请求，约 %d 秒后恢复" % (int(self.svc.quarantine_until - now) + 1), device, nonce)
+            return None, ""
+        if abs(now - int(when)) > CLOCK_WINDOW:
             self.deny(403, "clock", "请求时间和这台机器相差太多（这台机器现在是 %s）" % time.strftime("%Y-%m-%d %H:%M:%S %z"), device, nonce)
             return None, ""
-        if not self.svc.fresh_nonce(nonce, now):
+        fresh = self.svc.fresh_nonce(device["id"], nonce, now)
+        if fresh == "seen":
             self.deny(403, "replay", "这个请求已经处理过一次")
+            return None, ""
+        if fresh != "new":
+            self.deny(503, "not_ready", "这台机器记不下已处理的请求（状态目录写不进去），没有执行", device, nonce)
             return None, ""
         return device, nonce
 

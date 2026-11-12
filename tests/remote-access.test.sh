@@ -133,6 +133,10 @@ nothing_left "登记读回不对"
 ra Linux FAKE_TS_SERVE_STATUS=fail -- enable
 chk "现有转发读不到：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=tailscale_unknown"
 chk "现有转发读不到：没有去登记转发" "$(ts_calls '^serve --bg')" 2   # 只有上面 deny / lie 那两次
+n_reads="$(ts_calls '^serve status')"
+ra Linux FAKE_TS_SERVE_STATUS=blank -- enable
+chk "转发查询退出 0 但没有输出：算读不到，退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=tailscale_unknown"
+chk "转发查询没有输出：确实查过，但没有登记、也没有撤销" "$(( $(ts_calls '^serve status') > n_reads )) $(ts_calls '^serve --bg') $(ts_calls '^serve --https=[0-9]+ off')" "1 2 0"
 jq -n --arg hp "box.tailnet.ts.net:$PORT" '{AllowFunnel:{($hp):true}}' > "$FAKE_TS/serve.json"
 ra Linux -- enable
 chk "端口上开着公网入口：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESULT=funnel"
@@ -146,6 +150,21 @@ chk "后台任务状态读不到：退出 2" "$rc $(tail -1 <<<"$out")" "2 RESUL
 chk "后台任务状态读不到：没有去登记转发" "$(ts_calls '^serve --bg') $(mapping)" "2 {}"
 ra Linux -- enable --port 80
 chk "端口不合规：退出 1" "$rc $(tail -1 <<<"$out")" "1 RESULT=bad_port"
+# 端口上已有一条形状一样（端口 → 本机同一端口）、但不是本功能登记的转发——按需预览登记的就长这样
+fresh_world
+jq -n --arg hp "box.tailnet.ts.net:$PORT" --arg p "$PORT" '{TCP:{($p):{HTTPS:true}}, Web:{($hp):{Handlers:{"/":{Proxy:("http://127.0.0.1:" + $p)}}}}}' > "$FAKE_TS/serve.json"
+ra Linux -- enable
+chk "同形状但不是本功能登记的转发：不接管，退出 2" "$rc $(tail -1 <<<"$out") $(mapping | jq length) $([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit)" "2 RESULT=port_taken 1 "
+ra Linux -- disable
+chk "…关闭时也不撤它" "$(mapping | jq length) $(ts_calls 'off$')" "1 0"
+# 没权限 → 人照提示用管理员权限登记 → 重跑：认得这一条是本功能的，关闭时撤掉
+fresh_world
+ra Linux FAKE_TS_SERVE=deny -- enable
+in_env Linux -- tailscale serve --bg --https="$PORT" "http://127.0.0.1:$PORT" >/dev/null
+ra Linux FAKE_TS_SERVE=deny -- enable
+chk "没权限 → 人照提示登记 → 重跑：打开成功" "$rc $(tail -1 <<<"$out")" "0 RESULT=enabled"
+ra Linux -- disable
+chk "…关闭时撤掉这条转发" "$rc $(tail -1 <<<"$out") $(mapping)" "0 RESULT=disabled {}"
 
 echo "── 2. 打开 ──"
 fresh_world
@@ -161,9 +180,24 @@ ra Linux -- status
 chk "状态：open" "$(tail -1 <<<"$out")" "RESULT=open"
 ra Linux -- enable
 chk "再打开一次：成功，不重复登记转发" "$rc $(tail -1 <<<"$out") $(ts_calls '^serve --bg')" "0 RESULT=enabled 1"
+# 换端口：新端口打开，旧端口上本功能的转发撤掉，别的功能的转发不动；之后关闭，一条都不剩
+jq --arg hp "box.tailnet.ts.net:3000" '.TCP["3000"] = {HTTPS:true} | .Web[$hp] = {Handlers:{"/":{Proxy:"http://127.0.0.1:3000"}}}' "$FAKE_TS/serve.json" > "$FAKE_TS/s.tmp" && mv "$FAKE_TS/s.tmp" "$FAKE_TS/serve.json"
+web_keys() { jq -r '.Web // {} | keys | join(",")' "$FAKE_TS/serve.json"; }
+ra Linux FAKE_TS_SERVE_OFF=stuck -- enable --port 47999
+chk "换端口但旧端口的转发撤不掉：退出 3，如实说还剩哪个端口" "$rc $(tail -1 <<<"$out") $(web_keys)" \
+    "3 RESULT=partial box.tailnet.ts.net:3000,box.tailnet.ts.net:47387,box.tailnet.ts.net:47999"
+chk_has "…给出要人跑的命令" "$out" "sudo tailscale serve --https=47387 off"
 ra Linux -- enable --port 47999
-chk "换端口打开：新端口登记了转发，服务文件换成新端口" "$rc $(jq -r '.Web | keys | join(",")' "$FAKE_TS/serve.json") $(grep -c -- '--port 47999 ' "$unit_file")" \
-    "0 box.tailnet.ts.net:47387,box.tailnet.ts.net:47999 1"
+chk "重跑：旧端口的转发撤掉了，新端口在，别的功能的转发没动，服务文件是新端口" "$rc $(tail -1 <<<"$out") $(web_keys) $(grep -c -- '--port 47999 ' "$unit_file")" \
+    "0 RESULT=enabled box.tailnet.ts.net:3000,box.tailnet.ts.net:47999 1"
+ra Linux -- enable --port 47387
+ra Linux -- enable --port 48111
+chk "再换两次端口：只剩最后一个端口和别的功能的转发" "$rc $(web_keys)" "0 box.tailnet.ts.net:3000,box.tailnet.ts.net:48111"
+ra Linux -- disable
+chk "默认端口打开 → 换端口 → 关闭：本功能的转发全部撤掉，别的功能的转发还在" "$rc $(tail -1 <<<"$out") $(web_keys) $(cat "$RA_STATE/ports" | wc -l)" \
+    "0 RESULT=disabled box.tailnet.ts.net:3000 0"
+ra Linux -- status
+chk "…关闭后状态是 closed（下次打开仍用最后那个端口）" "$(tail -1 <<<"$out") $(cat "$RA_STATE/port")" "RESULT=closed 48111"
 fresh_world
 ra Linux FAKE_TS_SERVE=deny FAKE_SUDO=ok -- enable
 chk "自己没权限但 sudo 免密：经 sudo 登记成功" "$rc $(tail -1 <<<"$out") $(mapping | jq length)" "0 RESULT=enabled 1"
@@ -259,10 +293,21 @@ chk "时间差太多（旧）" "$(call GET /v1/status --time $(( $(date +%s) - 6
 chk "时间差太多（新）" "$(call GET /v1/status --time $(( $(date +%s) + 600 )) | st_err)" "403 clock"
 chk "钥匙被拿到另一台 Tailscale 设备上用" "$(cl --xff 100.64.0.9 call GET /v1/status --id "$ID" --key "$KEY" | st_err)" "403 device_mismatch"
 chk "签名的是别的路径" "$(call GET /v1/nothing | st_err)" "404 not_found"
-OLD_T="$(date +%s)"; sleep 1.2
+# 重启前后重放：客户端的钟快 60 秒（在允许的 120 秒之内），所以重启后这个请求的时间仍然「合法」
+N2="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"; T2=$(( $(date +%s) + 60 ))
+chk "钟快 60 秒的请求：接受" "$(call GET /v1/status --nonce "$N2" --time "$T2" | jq -r .status)" 200
+chk "不重启，原样重发：拒绝" "$(call GET /v1/status --nonce "$N2" --time "$T2" | st_err)" "403 replay"
 stop_server; start_server
-chk "服务重启前签的请求，重启后重放：拒绝" "$(call GET /v1/status --time "$OLD_T" | st_err)" "403 clock"
-chk "重启后新签的请求：成功" "$(call GET /v1/status | jq -r .status)" 200
+chk "服务重启后，原样重发：仍然拒绝" "$(call GET /v1/status --nonce "$N2" --time "$T2" | st_err)" "403 replay"
+chk "重启后新签的请求（同样钟快 60 秒）：成功" "$(call GET /v1/status --time "$T2" | jq -r .status)" 200
+chk "已处理请求的记录只本人可读" "$(stat -c %a "$RA_STATE/nonces.json")" 600
+# 记录读不懂：不知道重启前处理过什么，这段时间一律不接受签名请求
+stop_server; cp "$RA_STATE/nonces.json" "$SANDBOX/nonces.keep"; echo '{broken' > "$RA_STATE/nonces.json"; start_server
+resp="$(call GET /v1/status)"
+chk "已处理请求的记录读不懂：不接受签名请求（回复带签名），不当成「都没处理过」" "$(jq -r '"\(.status) \(.body.error) \(.signed)"' <<<"$resp")" "503 not_ready true"
+chk "…重放的那个请求同样不被接受" "$(call GET /v1/status --nonce "$N2" --time "$T2" | jq -r .status)" 503
+stop_server; cp "$SANDBOX/nonces.keep" "$RA_STATE/nonces.json"; start_server
+chk "记录恢复后：新请求成功，旧请求仍被拒" "$(call GET /v1/status | jq -r .status) $(call GET /v1/status --nonce "$N2" --time "$T2" | st_err)" "200 403 replay"
 
 echo "── 6. 停 / 启 ──"
 : > "$FAKE_SD/calls"
@@ -348,6 +393,13 @@ ra Linux FAKE_SD_MODE=fail -- disable
 chk "关闭时后台任务状态读不到：退出 2，转发和服务文件都还在" "$rc $(tail -1 <<<"$out") $(mapping | jq 'length') $([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit)" "2 RESULT=unknown 1 unit"
 ra Linux FAKE_TS_SERVE_STATUS=fail -- disable
 chk "关闭时转发设置读不到：退出 2，什么都没动" "$rc $(tail -1 <<<"$out") $(cat "$FAKE_SD/$UNIT.active")" "2 RESULT=tailscale_unknown active"
+n_reads="$(ts_calls '^serve status')"
+ra Linux FAKE_TS_SERVE_STATUS=blank -- disable
+chk "关闭时转发查询没有输出：退出 2，服务还在跑、转发没动、没有发撤销" "$rc $(tail -1 <<<"$out") $(cat "$FAKE_SD/$UNIT.active") $(mapping | jq length) $(ts_calls 'off$') $(( $(ts_calls '^serve status') > n_reads ))" \
+    "2 RESULT=tailscale_unknown active 1 0 1"
+n_bg="$(ts_calls '^serve --bg')"
+ra Linux FAKE_TS_SERVE_STATUS=blank -- pair
+chk "生成配对码时转发查询没有输出：退出 2，不给配对码、不登记转发" "$rc $(tail -1 <<<"$out") $(grep -c '配对码：' <<<"$out") $(ts_calls '^serve --bg')" "2 RESULT=tailscale_unknown 0 $n_bg"
 ra Linux FAKE_TS_SERVE_OFF=stuck -- disable
 chk "转发撤不掉：退出 3，如实说还剩什么" "$rc $(tail -1 <<<"$out")" "3 RESULT=partial"
 chk_has "转发撤不掉：给出要人跑的命令" "$out" "sudo tailscale serve --https=47387 off"

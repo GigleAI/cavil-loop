@@ -5,7 +5,7 @@
 # install_fake_tailscale <目录>：在 <目录>/bin 写出 tailscale 和 sudo，状态放在 $FAKE_TS：
 #   status --json          $FAKE_TS/backend（默认 Running）、$FAKE_TS/certdomain（默认 box.tailnet.ts.net；
 #                          文件为空 = 没开证书功能）。FAKE_TS_STATUS=fail → 连不上（stderr + 退出 1）
-#   serve status --json    $FAKE_TS/serve.json（没有 = {}）。FAKE_TS_SERVE_STATUS=fail → 退出 1
+#   serve status --json    $FAKE_TS/serve.json（没有 = {}）。FAKE_TS_SERVE_STATUS=fail → 退出 1；=blank → 退出 0 但什么都不输出
 #   serve --bg --https=P T 往 serve.json 加一条；FAKE_TS_SERVE=deny → 「Access denied」退出 1；
 #                          FAKE_TS_SERVE=lie → 报成功但什么都不加
 #   serve --https=P off    删掉那一条；FAKE_TS_SERVE_OFF=stuck → 报成功但不删
@@ -33,6 +33,7 @@ case "${1:-}" in
         shift
         if [ "${1:-}" = status ]; then
             [ "${FAKE_TS_SERVE_STATUS:-}" = fail ] && { echo "serve status unavailable" >&2; exit 1; }
+            [ "${FAKE_TS_SERVE_STATUS:-}" = blank ] && exit 0
             serve_json; exit 0
         fi
         port=""; off=0; target=""

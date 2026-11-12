@@ -1295,16 +1295,16 @@ bash "$RA" disable
 
 | 命令 | 做什么 | 结果 |
 |------|--------|------|
-| `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387 | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
+| `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387。换端口时，新端口起来之后撤掉本功能在旧端口上的转发（撤不掉：`partial`，退出 3，写明哪个端口）。端口上已有别的转发时不接管，哪怕形状一样（`port_taken`） | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
 | `pair` | 入口没开就先 `enable`，再生成配对码 | `code` |
 | `status` | 只读 | `open` / `closed` / `partial` / `unknown` |
 | `list` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间 | — |
 | `revoke <设备名或编号>` | 撤销一台设备，立刻生效；没有这台设备退出 1 | — |
-| `disable` | 停服务并移除后台任务文件 → 撤掉转发 → 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
+| `disable` | 停服务并移除后台任务文件 → 撤掉本功能登记过的每一个端口的转发（换过端口也一并撤，别的功能的转发不动）→ 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
 
 **边界**：
 
-- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。
+- 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。本功能登记过哪些端口记在 `~/.local/state/cavil-loop/remote-access/ports`（登记前先记、撤掉并读回确认后才划掉），关闭和换端口都按它收尾；Tailscale 的转发设置读不到（查询失败，或退出 0 却没有输出）时什么都不动。
 - 每个请求先确认来访者：转发层给出的来访地址必须是一个 Tailscale 地址，且本机 `tailscale whois` 查得到它是哪台设备。查不到、查询失败、带公网入口标记，一律拒绝。
 - 配对之后钥匙不再传输：每个请求带「时间 + 一次性随机数 + 请求内容」的签名，回复也带签名；来访设备的 Tailscale 身份必须等于配对时那台，钥匙拷到别的设备上用会被拒。
 - 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能执行任意命令。
@@ -1317,9 +1317,9 @@ bash "$RA" disable
 **协议**（给想自己写客户端或排查的人）。入口 `https://<机器名>:<端口>`：
 
 - `POST /v1/pair`，请求体 `{"code": "<8 位>", "name": "<设备名>"}` → `{"version": 1, "id": "<设备编号>", "key": "<64 位十六进制钥匙>", "name": ...}`。
-- 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒，且不早于服务启动）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
+- 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复——处理过的请求记在 `nonces.json` 里，服务重启后重放同一个请求照样被拒；这份记录读不懂时，服务在 240 秒内不接受任何签名请求，回 503 `not_ready`）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
 - `GET /v1/status` → `{"status": <install-status.sh 的输出>}`；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
-- 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）。
+- 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）、`not_ready`（503，见上）。
 
 ## 多 project 共存
 

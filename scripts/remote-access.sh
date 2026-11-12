@@ -78,7 +78,9 @@ ts_identity() {
 }
 
 # ts_mapping <端口>：写 TS_MAP=ours|absent|other|funnel|unknown
-#   ours   这个端口的 HTTPS 转发正指向 127.0.0.1:<端口>，且没开公网入口
+#   ours   这个端口的 HTTPS 转发正指向 127.0.0.1:<端口>、没开公网入口，**而且这个端口登记在本功能名下**
+#          （$STATE/ports）。只看形状不够：按需预览登记的转发也是「端口 → 本机同一端口」，认错了
+#          就会在关闭时撤掉别人的转发
 #   absent 这个端口上没有转发
 #   other  这个端口上有别的转发（不是本功能的）
 #   funnel 这个端口开着公网入口
@@ -87,7 +89,8 @@ ts_mapping() {
     local p="$1" js
     TS_MAP=unknown
     js="$(tailscale serve status --json 2>/dev/null)" || return 0
-    [ -n "$js" ] || js='{}'
+    # 退出 0 却什么都没输出 = 没读到，不是「没有转发」（明确的空配置是 {}）
+    [ -n "${js//[[:space:]]/}" ] || return 0
     TS_MAP="$(jq -r --arg hp "$TS_HOST:$p" --arg target "http://127.0.0.1:$p" '
         if type != "object" then "unknown"
         elif (.AllowFunnel // {})[$hp] == true then "funnel"
@@ -97,6 +100,37 @@ ts_mapping() {
             else "other" end
         end' <<<"$js" 2>/dev/null || echo unknown)"
     [ -n "$TS_MAP" ] || TS_MAP=unknown
+    if [ "$TS_MAP" = ours ] && ! owns_port "$p"; then TS_MAP=other; fi
+}
+
+# ── 本功能登记过哪些端口的转发（$STATE/ports，一行一个）──
+# 登记转发**之前**先记下，撤掉并读回确认之后才划掉：中途被打断时宁可多记一个（下次再核对），
+# 不漏记一个（那条转发就没人撤了）。换端口、关闭都按这份清单收尾。
+owned_ports() { [ -f "$STATE/ports" ] && grep -E '^[0-9]{4,5}$' "$STATE/ports" | sort -u || true; }
+owns_port()   { owned_ports | grep -qx "$1"; }
+own_add()     { mkdir -p "$STATE"; chmod 700 "$STATE"; { owned_ports; echo "$1"; } | sort -u > "$STATE/ports.tmp" && mv "$STATE/ports.tmp" "$STATE/ports"; }
+own_drop()    { owned_ports | grep -vx "$1" > "$STATE/ports.tmp" || true; mv "$STATE/ports.tmp" "$STATE/ports"; }
+
+# release_port <端口>：撤掉本功能在这个端口上的转发。写 REL=
+#   gone     已撤掉并读回确认（或本来就没有了），从清单划掉
+#   foreign  端口上现在是别的转发 / 公网入口：不是本功能的了，不动它，从清单划掉
+#   stuck    撤了但读回还在，留在清单里
+#   unknown  读不到，什么都没动，留在清单里
+release_port() {
+    local p="$1"
+    ts_mapping "$p"
+    case "$TS_MAP" in
+        unknown) REL=unknown; return 0 ;;
+        absent)  own_drop "$p"; REL=gone; return 0 ;;
+        other|funnel) own_drop "$p"; REL=foreign; return 0 ;;
+    esac
+    ts_serve "$p" off || true
+    ts_mapping "$p"
+    case "$TS_MAP" in
+        absent) own_drop "$p"; REL=gone ;;
+        unknown) REL=unknown ;;
+        *) REL=stuck ;;
+    esac
 }
 
 ts_serve() {   # <端口> on|off → 跑转发登记 / 撤销；先不带 sudo，不行再 sudo -n
@@ -231,8 +265,10 @@ cmd_enable() {
                  echo "换一个端口：bash $0 enable --port <端口>"; result funnel 2 ;;
         other)   echo "端口 $p 上已经有别的 Tailscale 转发，什么都没动。换一个端口：bash $0 enable --port <端口>"; result port_taken 2 ;;
         absent)
+            own_add "$p"
             if ! ts_serve "$p" on; then
-                echo "登记 Tailscale 转发失败（需要管理员权限），什么都没动。Tailscale 的原话："
+                # 端口留在清单里：下面请人用管理员权限登记的，就是本功能的这一条，重跑时要认得它
+                echo "登记 Tailscale 转发失败（需要管理员权限），入口没有打开。Tailscale 的原话："
                 printf '%s\n' "$TS_SERVE_OUT" | sed 's/^/  /'
                 echo "请先用管理员权限跑一次下面这条，再重跑本命令："
                 echo "  sudo tailscale serve --bg --https=$p http://127.0.0.1:$p"
@@ -240,8 +276,9 @@ cmd_enable() {
             fi
             ts_mapping "$p"
             if [ "$TS_MAP" != ours ]; then
-                echo "登记了转发，但读回的结果不对（$TS_MAP）。已尝试撤掉，入口没有打开。"
-                ts_serve "$p" off || echo "  撤不掉，请手动跑：sudo tailscale serve --https=$p off"
+                echo "登记了转发，但读回的结果不对（$TS_MAP）。入口没有打开。"
+                release_port "$p"
+                [ "$REL" = gone ] || [ "$REL" = foreign ] || echo "  没能确认撤掉（$REL），请手动核对：tailscale serve status；撤掉用 sudo tailscale serve --https=$p off"
                 result failed 3
             fi
             echo "✓ 已登记转发：https://$TS_HOST:$p → 127.0.0.1:$p（仅本 Tailscale 网络）" ;;
@@ -257,7 +294,19 @@ cmd_enable() {
         result failed 3
     fi
     echo "✓ 常驻服务已启动"
+    # 换过端口：把本功能以前登记的其他端口的转发撤掉
+    local q left=""
+    for q in $(owned_ports); do
+        [ "$q" = "$p" ] && continue
+        release_port "$q"
+        case "$REL" in
+            gone)    echo "✓ 已撤掉以前端口 $q 上的转发" ;;
+            foreign) echo "以前的端口 $q 上现在是别的转发，没有动它" ;;
+            *)       echo "以前端口 $q 上的转发没能撤掉（$REL）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left="$left $q" ;;
+        esac
+    done
     echo "远程入口已打开：$TS_HOST（端口 $p）。生成配对码：bash $0 pair"
+    if [ -n "$left" ]; then result partial 3; fi
     result enabled 0
 }
 
@@ -274,7 +323,7 @@ cmd_disable() {
     fi
     ts_mapping "$p"
     if [ "$TS_MAP" = unknown ]; then echo "读不到 Tailscale 现有的转发设置，什么都没动"; result tailscale_unknown 2; fi
-    local left=0
+    local left=0 q released=0
     if ! svc_stop_and_remove; then
         echo "常驻服务停不下来或确认不了（状态：$SVC_STATE）"
         [ -n "${SVC_OUT:-}" ] && printf '%s\n' "$SVC_OUT" | sed 's/^/  /'
@@ -282,18 +331,16 @@ cmd_disable() {
     else
         echo "✓ 常驻服务已停止并移除"
     fi
-    if [ "$TS_MAP" = ours ]; then
-        ts_serve "$p" off || true
-        ts_mapping "$p"
-        if [ "$TS_MAP" = absent ]; then
-            echo "✓ 已撤掉转发（端口 $p）"
-        else
-            echo "转发没能撤掉（现在读到：$TS_MAP）。请用管理员权限跑：sudo tailscale serve --https=$p off"
-            left=1
-        fi
-    else
-        echo "端口 $p 上没有本功能的转发（读到：$TS_MAP），没有动 Tailscale 的设置"
-    fi
+    # 本功能登记过的每一个端口（换过端口时不止一个）都撤掉
+    for q in $(owned_ports); do
+        release_port "$q"
+        case "$REL" in
+            gone)    echo "✓ 已撤掉转发（端口 $q）"; released=1 ;;
+            foreign) echo "端口 $q 上现在是别的转发，没有动它" ;;
+            *)       echo "转发没能撤掉（端口 $q，$REL）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left=1 ;;
+        esac
+    done
+    [ "$released" = 1 ] || [ "$left" = 1 ] || echo "没有本功能登记的转发，没有动 Tailscale 的设置"
     rm -f "$STATE/pairing.json"
     if [ "$left" = 1 ]; then result partial 3; fi
     echo "远程入口已关闭。已配对设备清单保留（$(device_count) 台）；要一并清掉：逐台 bash $0 revoke <设备名>"
