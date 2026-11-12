@@ -43,6 +43,8 @@ LABEL_PENDING_BLOCKED | notice | GigleAI/cavil-loop#157 | "" | 等前置标签�
 BLOCKED_RECHECK_SECS | quiet | 不写这一行时的行为和模板里的值相同
 BLOCKED_MAX_TRIES | quiet | 不写这一行时的行为和模板里的值相同
 ENABLE_CONCURRENT_WORK_HINT | notice | GigleAI/cavil-loop#340 | "" | 派工时告诉 worker 还有哪些条目在进行：worker 的提示词里多一段，列出其他带 `doing/agent`、复审标签、`pending/PR` 的打开条目（编号、标题、分支）和各分支已经改了哪些文件；worker 的方案或改动和它们有文件重叠时，必须在方案或交接评论里写出「和哪个条目、哪些文件」，由人决定先后。关着时 worker 只知道自己的条目，重叠要到交接时的冲突检查或对方合并后才发现。只在派工那一刻读（每次派工多 3–4 次只读调用），不需要建标签。这项设置原来叫 `CONCURRENT_WORK_HINT`，那个名字已不再生效，配置里写着它等于没写。
+REDACT_AGENT_RECORDS | quiet | 不写这一行时的行为和模板里的值相同
+CODEX_SHELL_SNAPSHOT | quiet | 不写这一行时的行为和模板里的值相同
 LABEL_PENDING_REQUESTER_BOT | quiet | 不写这一行时的行为和模板里的值相同
 REQUESTER_BOT_ACCOUNT | quiet | 不写这一行时的行为和模板里的值相同
 REQUESTER_BOT_ALLOWED_ACTORS | quiet | 不写这一行时的行为和模板里的值相同

@@ -295,6 +295,21 @@ BLOCKED_MAX_TRIES=10
 # 留空 / "false" / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
 ENABLE_CONCURRENT_WORK_HINT="true"
 
+# ── GitHub 令牌脱敏 / token redaction（GitHub#342）──
+# worker 的环境里有 GitHub 令牌，agent 运行时可能把它原样打印出来（执行 env、调试 gh、报错带出请求头）。
+# daemon 自己写的文件（窗格历史、poll.log）在落盘前就把令牌换成 REDACTED-<指纹>，这部分始终开着、没有开关。
+# 这个开关管的是 agent 自己写的会话记录（claude 的 ~/.claude/projects、codex 的 ~/.codex/sessions）：
+# daemon 每 10 分钟扫一次，把里面的令牌原地换掉——只改那几个字节，文件长度不变，不删、不留备份，周报数字不受影响。
+# 只碰工作目录在上面 WORKTREE_BASE 之下的会话；人自己手动开的会话不碰。
+# 只认带前缀的 GitHub 令牌（ghp_ / gho_ / ghu_ / ghs_ / ghr_ / github_pat_）。
+# "true" / 不写这一行 = 开；留空 / "false" = 不改 agent 的会话记录。
+REDACT_AGENT_RECORDS="true"
+# codex 默认每次启动把整份环境变量（含 GH_TOKEN）存成一个环境快照文件（~/.codex/shell_snapshots/），
+# 长期留在磁盘上。"off" / 不写这一行 = 启动 codex worker 时关掉这项功能，不再产生新快照；
+# "on" = 保留 codex 的默认行为（令牌会继续写进快照）。已有的旧快照用 scripts/redact-snapshots.sh 清理，
+# 见 docs/operations.md。
+CODEX_SHELL_SNAPSHOT="off"
+
 # ── Queue heavy tests machine-wide / 重测试整机排队（默认关闭，GitHub#343）──
 # One command per line: the commands that count as a "heavy test" in this project (the full suite).
 # Empty = off: prompts, dispatch, cleanup and local processes are exactly as before. When set:

@@ -1114,6 +1114,56 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
+## GitHub token redaction (GitHub#342)
+
+A worker's environment holds a GitHub token. An agent can print it verbatim while it works (running `env`, debugging `gh`, an error that echoes request headers), and it then lands in files that are kept for a long time. The daemon handles three places with one set of matching rules (`scripts/redact_tokens.py`):
+
+| File | Written by | What happens | Switch |
+|---|---|---|---|
+| `poll.log`, pane history (`$STATE_DIR/sessions/*.log`) | the daemon | Replaced **before it reaches disk**: the log function, cleanup-hook output, tmux errors, the instant-exit / trust-dialog pane captures, the old log merged in during migration and the live pane-history pipe all go through one entry point | always on |
+| claude / codex session records (`~/.claude/projects`, `~/.codex/sessions`) | the agent's CLI | The daemon scans every 10 minutes and replaces **in place**: only the token's bytes change, the file keeps its length and name, nothing is deleted, no backup is kept. Only sessions whose working directory is under this project's `WORKTREE_BASE` are touched | `REDACT_AGENT_RECORDS` (on by default; empty / `false` = leave them alone) |
+| codex environment snapshots (`~/.codex/shell_snapshots/*.sh`) | codex | Not rewritten afterwards: the daemon starts codex workers with the feature turned off (`--disable shell_snapshot`), so **no new snapshot is written**. Clean the existing ones once with the command below | `CODEX_SHELL_SNAPSHOT` (`off` by default; `on` = keep codex's default behaviour) |
+
+A replaced token reads `REDACTED-<12-character fingerprint>`, padded with `-` to the original length. The fingerprint is the first 12 hex characters of the token's sha256: it cannot be turned back into the token, and one token has the same fingerprint in every file, so it tells you *which* token it was:
+
+```bash
+printf '%s' "$GH_TOKEN" | sha256sum | cut -c1-12
+```
+
+Whenever a scan replaced something, `poll.log` gets a line `令牌脱敏：N 个文件里替换了 M 处（指纹 …）`. Scan positions live in `$STATE_DIR/redact-scan.json` and the time of the last scan in `$STATE_DIR/redact-scan.stamp`; delete both to have the next round scan everything from the start (what is already replaced does not change again).
+
+**Why session records can be edited in place**: the weekly report and the usage footer read these files, and the agent's CLI keeps them open and appends. A replacement touches only the token's bytes and writes characters of the same kind (letters, digits, `-`), so every line reads as the same JSON structure at any moment; strings in the fields used to claim a record (working directory, session id, request id, timestamp, model, …) are left alone even when they look like a token. `tests/token-redaction.test.sh` runs the real weekly-report collector while a replacement is half written and gets byte-identical results.
+
+**Not covered** (the original text may still be there):
+
+- Old-format tokens without a prefix (40 hex characters, before 2021): indistinguishable from a commit hash, not matched
+- Pane history is raw terminal output: a token the terminal wrapped, or one with control codes in the middle, is not recognised (one right after a colour code is)
+- Sessions that were running before the upgrade and whose worker pane cannot be identified (a person split the window and there is no pane record): their log pipe is not switched to the filtering one, so what they write later is only replaced afterwards by the periodic scan
+- Sessions whose working directory is not under `WORKTREE_BASE` (claude / codex a person started by hand), claude's input history and file-edit backups, cursor / opencode records
+- Secrets other than GitHub tokens (for example other login tokens in a codex snapshot)
+- When the redaction script itself cannot start (for example no `python3`): the daemon's log entry points write one line `令牌替换失败…已丢弃` and pane history stops being written — a missing record rather than the original text
+
+### Cleaning the existing codex environment snapshots
+
+After the upgrade new codex workers write no snapshot, but the old ones are still there, each with `GH_TOKEN` in clear text. A running codex still reads its own snapshot when it runs a command; replace the token under it and every later `gh` uses a fake token. So the cleanup script only acts when **the current user has no codex process at all**; with one running, or when the process list cannot be read, it prints the reason and exits without changing a file.
+
+Let the codex workers finish (or stop the processes it lists), then run this as written:
+
+<!-- redact-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"    # the installed skill / 装好的 skill 目录
+SNAPS="$HOME/.codex/shell_snapshots"
+with_token() { grep -lE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}' "$SNAPS"/*.sh 2>/dev/null | wc -l; }
+echo "snapshots holding a token before / 清理前带令牌的快照: $(with_token)"
+if bash "$SKILL/scripts/redact-snapshots.sh" --check; then
+    bash "$SKILL/scripts/redact-snapshots.sh"
+fi
+echo "snapshots holding a token after / 清理后带令牌的快照: $(with_token)"
+```
+<!-- redact-ops:end -->
+
+`完成：N 个快照文件，其中 M 个含令牌，共替换 K 处` followed by a last line of 0 means it is done. `❌ 本机还有 codex 进程在跑` means nothing was changed: rerun once the listed processes have ended. A replacement cannot be undone (there is no backup) and does not need to be: the token itself is unchanged and the worker's environment still has it. `--check` only checks and changes nothing.
+
 ## Heavy tests: one at a time (optional, **off by default**, GitHub#343)
 
 Several workers running the full test suite at once stack memory and CPU until the machine stalls. With this on, the "heavy test" commands a project lists are let through one at a time under one system account, the rest wait; when an item is cleaned up, or the worker that started a test has ended, the tests it left behind are stopped.
