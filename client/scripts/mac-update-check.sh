@@ -122,6 +122,24 @@ print(json.dumps(last))
 EOF
 }
 
+# did the updater ever report this phase? Reads the whole record file in one process: in a
+# `grep … | grep -q …` pipeline the second grep stops reading at its first hit, the first one then
+# dies writing into the closed pipe, and under pipefail that reads as "not found" exactly when the
+# record is long (GitHub#423)
+ever_phase() {
+  python3 - "$1" "$2" <<'EOF'
+import json, sys
+for line in open(sys.argv[1]):
+    try:
+        r = json.loads(line)
+    except ValueError:
+        continue
+    if r.get("op") == "update" and (r.get("status") or {}).get("phase") == sys.argv[2]:
+        sys.exit(0)
+sys.exit(1)
+EOF
+}
+
 wait_round() {
   local rec="$1"
   for _ in $(seq 1 180); do
@@ -147,14 +165,18 @@ wait "$pid" 2>/dev/null || true
 pid=""
 python3 -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s["phase"]=="ready" and s["version"]==sys.argv[2] else 1)' "$st" "$new" \
   || { echo "❌ the update did not end ready for $new"; exit 1; }
-grep -F '"op":"update"' "$work/rec-good.jsonl" | grep -qF '"phase":"downloading"' || { echo "❌ never reported downloading"; exit 1; }
+ever_phase "$work/rec-good.jsonl" downloading || { echo "❌ never reported downloading"; exit 1; }
 
 echo "== 3. /Applications holds the new version, unmarked, signed, and it starts like a double-click"
 got="$(plist CFBundleShortVersionString "$installed")"
 [ "$got" = "$new" ] || { echo "❌ installed version is $got, expected $new"; exit 1; }
 [ "$(cat "$installed/Contents/Resources/cavil-update-marker" 2>/dev/null)" = "$new" ] || { echo "❌ the new package's marker file is not in the installed app"; exit 1; }
-if xattr -lr "$installed" 2>/dev/null | grep -q 'com.apple.quarantine'; then
-  echo "❌ the updated app carries the quarantine mark:"; xattr -lr "$installed" | grep 'com.apple.quarantine' | head; exit 1
+# read the attributes whole first, then look: piping xattr straight into `grep -q` can cut it off
+# and, under pipefail, turn a mark that is there into "no mark"; a failed read is a failure, never
+# "no mark" (GitHub#423)
+attrs="$(xattr -lr "$installed")" || { echo "❌ could not read the updated app's extended attributes"; exit 1; }
+if grep -q 'com.apple.quarantine' <<<"$attrs"; then
+  echo "❌ the updated app carries the quarantine mark:"; grep -m 10 'com.apple.quarantine' <<<"$attrs"; exit 1
 fi
 echo "quarantine mark on the new app before the updater's own clean-up: $(grep -F '"op":"quarantine"' "$work/rec-good.jsonl" || echo '(not recorded)')"
 codesign --verify --deep --strict "$installed"

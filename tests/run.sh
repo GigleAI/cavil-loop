@@ -19,7 +19,7 @@
 #   bash tests/run.sh --verify DIR --ci  read every results.tsv under DIR (one per shard)
 #                                        and pass only if each expected unit passed once
 #   bash tests/run.sh --tally DIR...     add up the count lines of every results.tsv under DIR...
-#                                        (no "exactly once" rule; the release gate uses it for
+#                                        (no "exactly once" rule; the nightly negative-controls run uses it for
 #                                        the autopilot jobs, whose parts run in six jobs)
 #   --out DIR                            where results.tsv and logs/<unit>.log go
 #                                        (default: a fresh temp dir, printed at the end)
@@ -291,7 +291,7 @@ counts_report() {
                 printf "负对照：跑了 %d 项；没变红 %d 项", MR, MF
                 if (MFU) printf "（另有 %d 个单位不单独统计这一项，看下面的失败单位）", MFU
                 print ""
-            } else printf "（负对照本次一项没跑：只在发版门禁或 MUTATION=1 时跑）\n"
+            } else printf "（负对照本次一项没跑：只在每晚负对照运行或 MUTATION=1 时跑）\n"
             if (nb) { print ""; print "没通过的单位："; for (i = 1; i <= nb; i++) print "- ❌ `" bad[i] "`" }
         }'
 }

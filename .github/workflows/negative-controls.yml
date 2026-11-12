@@ -1,0 +1,304 @@
+name: Negative controls
+
+# Every negative control in the repo runs here, and nowhere else automatically (GitHub#416):
+# the shell tests' (MUTATION=1 on every tests/*.test.sh) and both client sets. A negative
+# control breaks the code on purpose and checks that the tests go red — it tests the tests,
+# not the code — so it does not hold a release: release.yml gates on the regression suite only.
+# A red run opens an issue for the daemon, or comments on the open one of the same kind
+# (scripts/release_failure_report.py with REPORT_KIND=negative-controls).
+# Pull requests never run them (GitHub#195 / #234); neither does a manual run of Tests or Client.
+#   plan      → main's tip, and whether it was already green (then the run stops there)
+#   shell     → MUTATION=1 on 4 shards (autopilot's broken copies are left to the next job)
+#   autopilot → autopilot's ~100 broken copies over 6 jobs
+#   client    → test/mutation and the real app's set
+#   summary   → green only when every shard unit passed exactly once and every job passed
+on:
+  # 02:10 Beijing time (18:10 UTC), clear of the release run at 00:10.
+  schedule:
+    - cron: '10 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A scheduled run and a manual one queue behind each other; neither cancels the other.
+concurrency:
+  group: negative-controls
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.decide.outputs.sha }}
+      run: ${{ steps.decide.outputs.run }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only main is tested. A scheduled run stops here when this workflow's last successful run
+      # was on the same commit; a lookup that fails or reads anything but a commit id means
+      # "run" — an unneeded run costs CI time, a wrong skip would stop the controls silently.
+      # A manual run on main always runs.
+      - name: Decide whether to run
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          run=true
+          if [ "$REF" != refs/heads/main ]; then
+            echo "只跑 main：本次在 $REF 上，不跑"
+            run=false
+          elif [ "$EVENT" = schedule ]; then
+            set +e
+            last="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/negative-controls.yml/runs?branch=main&status=success&per_page=1" \
+              --jq '.workflow_runs[0].head_sha // ""')"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "上一次成功运行查不到（exit $rc），照跑"
+            elif ! [[ "$last" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "没有可用的上一次成功运行（读到 '${last}'），照跑"
+            elif [ "$last" = "$sha" ]; then
+              echo "main 仍是 $sha，上一次成功运行就在这个提交上，本次不跑"
+              run=false
+            else
+              echo "main 从 $last 变到 $sha，照跑"
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  shell:
+    name: negative controls ${{ matrix.shard }}/4
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      MUTATION: '1'
+      # autopilot's negative controls run in the autopilot job; here the file still
+      # runs its scenarios, with no broken copy selected (no name matches).
+      AUTOPILOT_MUT_ONLY: none-see-autopilot-job
+      RUN_TEST_TIMEOUT: '5400'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+      - name: Check origin/main is present
+        run: |
+          git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base HEAD origin/main
+      - name: Install tmux
+        run: |
+          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+          tmux -V
+      - name: Negative controls, shard ${{ matrix.shard }}/4
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 --out "$RUNNER_TEMP/results"
+      - name: Upload results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-results-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: error
+          retention-days: 14
+
+  autopilot:
+    name: negative controls autopilot ${{ matrix.part }}/6
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6]
+    env:
+      MUTATION: '1'
+      AUTOPILOT_MUT_SHARD: ${{ matrix.part }}/6
+      RUN_TEST_TIMEOUT: '12600'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+      - name: Check origin/main is present
+        run: |
+          git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base HEAD origin/main
+      - name: Install tmux
+        run: |
+          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+          tmux -V
+      - name: autopilot negative controls, part ${{ matrix.part }}/6
+        run: bash tests/run.sh autopilot --out "$RUNNER_TEMP/results"
+      - name: Upload results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-autopilot-${{ matrix.part }}
+          path: ${{ runner.temp }}/results/
+          if-no-files-found: error
+          retention-days: 14
+
+  client:
+    name: negative controls client
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          # the negative-control runner takes earlier commits' files (git show / archive)
+          fetch-depth: 0
+      # The same environment as client.yml's tests, Playwright's WebKit included: the
+      # runner starts a UI baseline before the first broken copy.
+      - uses: ./.github/actions/client-setup
+      # Both runners' output is kept (tee) so a failure can name the entries that did not go red.
+      - name: Negative controls (vitest / back end / UI)
+        run: |
+          set -o pipefail
+          MUTATION=1 npm run test:mutation 2>&1 | tee "$RUNNER_TEMP/client-mutation.log"
+      # It builds the window (dist/) and the app's icons itself before its first entry: this
+      # checkout is clean, and neither is in git (tests/client-tauri-mutation-prep.test.sh).
+      - name: Negative controls for the app shell (each rebuilds the real app)
+        run: |
+          set -o pipefail
+          xvfb-run -a env MUTATION=1 bash test/tauri/mutations.sh 2>&1 | tee "$RUNNER_TEMP/client-tauri-mutation.log"
+      # The "did not go red" lines, for the failure report; a small file, not the logs.
+      - name: Keep the list of entries that did not go red
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/client-failures"
+          cat "$RUNNER_TEMP"/client-*mutation.log 2>/dev/null | grep '^❌' > "$RUNNER_TEMP/client-failures/not-red.txt" || true
+          cat "$RUNNER_TEMP/client-failures/not-red.txt"
+      - name: Upload the list
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-client-failures
+          path: ${{ runner.temp }}/client-failures/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-client-screens
+          path: client/test-results/
+          if-no-files-found: ignore
+
+  # Green only when every expected test file passed exactly once across the four shards and
+  # every job passed: a shard that never ran fails it too.
+  summary:
+    name: negative controls summary
+    needs: [plan, shell, autopilot, client]
+    if: ${{ !cancelled() && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: nc-results-shard-*
+          path: results
+      # The autopilot jobs' results, only for the totals below: each of the six jobs runs every
+      # autopilot part, so they cannot go through the exactly-once check.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: nc-autopilot-*
+          path: results-autopilot
+      # Both summaries are also saved for the failure report (its list of failed units).
+      - name: Every shell shard passed exactly once
+        run: |
+          set -o pipefail
+          mkdir -p results "$RUNNER_TEMP/nc-summary"
+          bash tests/run.sh --ci --verify results | tee "$RUNNER_TEMP/nc-summary/verify.md"
+      # Reports only (exit 0): how many negative controls ran across the shell shards and the six
+      # autopilot jobs, how many did not go red, and which units failed (GitHub#212). The verdict is
+      # the step above and the next one. "Skipped" adds up overlapping slices (each autopilot job
+      # skips what the other five run); "ran" is the number to read.
+      - name: Negative-control totals
+        if: always()
+        run: |
+          set -o pipefail
+          mkdir -p results results-autopilot "$RUNNER_TEMP/nc-summary"
+          bash tests/run.sh --tally results results-autopilot | tee "$RUNNER_TEMP/nc-summary/tally.md"
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          rc=0
+          for j in shell autopilot client; do
+            r="$(jq -r --arg j "$j" '.[$j].result // "missing"' <<<"$NEEDS")"
+            echo "$j: $r"
+            [ "$r" = success ] || { echo "::error::job $j ended with '$r'"; rc=1; }
+          done
+          exit "$rc"
+      - name: Upload the summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-summary-report
+          path: ${{ runner.temp }}/nc-summary/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Any job above failed → open an issue labelled for the daemon, or comment on the open one of the
+  # same kind — its own issue, never the release-failure one. Never on a cancelled run. It only
+  # creates or comments, never changes an existing issue's labels: scripts/release_failure_report.py.
+  # Turned off by the repository variable NEGATIVE_CONTROLS_REPORT=off (docs/operations.md, Release cadence).
+  report-failure:
+    name: report failure
+    needs: [plan, shell, autopilot, client, summary]
+    if: ${{ !cancelled() && contains(needs.*.result, 'failure') && vars.NEGATIVE_CONTROLS_REPORT != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The only job that may write issues; actions: read for the run's job list.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nc-summary-report
+          path: ${{ runner.temp }}/nc-summary
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: nc-client-failures
+          path: ${{ runner.temp }}/client-failures
+      - name: Open or comment on the negative-controls issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          # Must match this repo's dispatch label (LABEL_PENDING_AGENT in the daemon's config).
+          DISPATCH_LABEL: ${{ vars.RELEASE_FAILURE_LABEL || 'pending/agent' }}
+          REPORT_KIND: negative-controls
+          SUMMARY_DIR: ${{ runner.temp }}/nc-summary
+          CLIENT_DIR: ${{ runner.temp }}/client-failures
+        run: python3 scripts/release_failure_report.py
