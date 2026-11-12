@@ -324,11 +324,11 @@ outsider_before_dispatch() {   # <编号>
     outsider_scan "$1" dispatch || rc=$?
     if [ "$rc" != 0 ]; then
         if [ -n "$OS_REC_FAIL" ]; then
-            log "⚠️ 外部内容：#$1 的外部内容记录写不进 / 读不出（$OS_WHY），本轮不派工"
+            log "⚠️ 外部内容：#$1 的外部内容记录写不进 / 读不出（${OS_WHY}），本轮不派工"
             return 1
         fi
-        log "外部内容：#$1 派工前没能核对评论作者（$OS_WHY），照常派工"
-        OS_DISPATCH_NOTE="派工前 daemon 没能核对这条的评论作者（$OS_WHY）：读取命令会再查一次，读不到就停下交人。"
+        log "外部内容：#$1 派工前没能核对评论作者（${OS_WHY}），照常派工"
+        OS_DISPATCH_NOTE="派工前 daemon 没能核对这条的评论作者（${OS_WHY}）：读取命令会再查一次，读不到就停下交人。"
         return 0
     fi
     n=$(printf '%s' "$OS_RES" | jq -r '.outsiders'); a=$(printf '%s' "$OS_RES" | jq -r '.after_auth'); h=$(printf '%s' "$OS_RES" | jq -r '.hidden')

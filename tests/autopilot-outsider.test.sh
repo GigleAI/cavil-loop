@@ -21,6 +21,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -802,14 +804,16 @@ CONF
 N=$((900000 + $$ % 90000))
 export FAKE_GH_DIR="$DW/gh"; mkdir -p "$DW/gh"; for f in labels events comments; do echo '{}' > "$DW/gh/$f.json"; done
 echo '{"'$N'":{"kind":"issue","state":"open","title":"托管测试","body":"x","user":{"login":"maint"}}}' > "$DW/gh/items.json"
-rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+prompt_files_clear "${SCRIPTS%/scripts}" "$DW/state"
 (cd "$DW/project" && env DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE="$N" DISPATCH_OUTSIDER_TARGET="$N" \
     DISPATCH_OUTSIDER_NOTE="派工前 daemon 查到：本条有 3 条外部账号写的内容" CODING_AGENT_CONFIG="$DW/conf" \
     bash "$SCRIPTS/dispatch-new-issue.sh" "$N") >/dev/null 2>&1
+PF=$(prompt_file_of "${SCRIPTS%/scripts}" "$DW/state" new "$N")
+chk "派工脚本确实写出了提示词" "$([ -s "$PF" ] && echo yes || echo no)" yes
 chk "派工脚本写出的提示词带外部内容规则、编号和派工前结论" \
-    "$(grep -c '^# 外部账号的内容' "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)/$(grep -cF "' $N" "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)" "1/1/1"
+    "$(grep -c '^# 外部账号的内容' "$PF" 2>/dev/null || echo 0)/$(grep -cF "' $N" "$PF" 2>/dev/null || echo 0)/$(grep -c '本条有 3 条外部账号写的内容' "$PF" 2>/dev/null || echo 0)" "1/1/1"
 chk "新起的会话登记为「在保护开着时起的」" "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null | grep -c . || echo 0)/$([ "$(cat "$DW/state/agent-sessions/$N.claude.worker.guarded" 2>/dev/null)" = "$(cat "$DW/state/agent-sessions/$N.claude.worker" 2>/dev/null)" ] && echo same || echo differ)" "1/same"
-rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+prompt_files_clear "${SCRIPTS%/scripts}" "$DW/state"
 
 section "【16】会话：不是在保护开着时起的会话不续接、不注入；在保护下起的照旧续接"
 plan() {   # <环境变量…> → 打印 AGENT_LAUNCH_KIND WORKER_SESSION_ID 和「能不能注入」

@@ -38,7 +38,7 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 rc=0; outsider_scan "$NUM" read "$OUT" || rc=$?
 if [ "$rc" != 0 ]; then
-    log "outsider-read #$NUM: 读不全（$OS_WHY）" 2>/dev/null || true
+    log "outsider-read #$NUM: 读不全（${OS_WHY}）" 2>/dev/null || true
     echo "❌ 读不全 #$NUM 的正文和评论：$OS_WHY"
     echo "什么都没有输出。重试一次；仍然失败就照规则停下交人，不要改用别的命令去读原文。"
     exit 3
@@ -56,7 +56,7 @@ fi
     echo "# #$NUM 的正文和评论"
     echo
     if [ "$OS_AUTH_RC" = 0 ]; then
-        echo "托管授权：$OS_AUTH_WHERE。"
+        echo "托管授权：${OS_AUTH_WHERE}。"
     else
         echo "托管授权目前不成立（${OS_AUTH_REASON:-已叫停}）：照提示词停下交人；下面的内容照样整理好了。"
     fi
