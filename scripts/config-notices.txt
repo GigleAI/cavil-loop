@@ -90,6 +90,9 @@ PREVIEW_READY_TIMEOUT | quiet | 不写这一行时的行为和模板里的值相
 PREVIEW_TAILSCALE_SERVE | quiet | 不写这一行时的行为和模板里的值相同
 PREVIEW_URL_HOST | quiet | 不写这一行时的行为和模板里的值相同
 PR_CREATED_HOOK | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_COMMANDS | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_LOCK_WAIT | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_SCOPE_PROPERTIES | quiet | 不写这一行时的行为和模板里的值相同
 MAX_CONCURRENT_WORKERS | quiet | 不写这一行时的行为和模板里的值相同
 DISPATCH_MODE | quiet | 不写这一行时的行为和模板里的值相同
 GREEDY_SKIP_LABELS | quiet | 不写这一行时的行为和模板里的值相同

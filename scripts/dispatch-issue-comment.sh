@@ -9,6 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 重测试排队开着时（GitHub#343），整个派工在条目锁里跑，和 cleanup-issue.sh 一先一后
+if heavy_enabled; then item_lock_reexec "${1:?need issue number}" "${BASH_SOURCE[0]}" "$@"; fi
+
 # 派工时要一并摘掉的全部触发 label（含 LABEL_PENDING_AGENT_EXTRA 里的多机标签）。
 # 装配一次，下面五处 --remove 共用；漏掉任何一个都会让同一条活被反复重开。
 trigger_labels_array
@@ -26,6 +29,9 @@ sync_project_checkout
 
 ISSUE="${1:?need issue number}"
 LATEST_COMMENT_ID="${2:-0}"
+
+# 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）；注入现有会话时用不上
+heavy_launch_prepare "$ISSUE" || exit 1
 
 WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
@@ -147,6 +153,7 @@ if [ -d "$WORKTREE" ]; then
     fi
 
     # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+    heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
     agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0
     agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
@@ -162,4 +169,5 @@ if session_alive "$TMUX_SESSION"; then
     kill_session_procs "$TMUX_SESSION"
     tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
 fi
-exec bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$ISSUE"
+# 已经在条目锁里的话把标记带过去，新脚本不再去等自己手里的锁
+exec env ${ITEM_LOCK_HELD_FOR:+CAVIL_ITEM_LOCK_HELD="$ITEM_LOCK_HELD_FOR"} bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$ISSUE"
