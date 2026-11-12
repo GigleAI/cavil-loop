@@ -251,6 +251,53 @@ test('"已在那台机器上取消": the revoke command shown really revokes the
   await expect(page.getByTestId('remote-host')).toHaveCount(0);
 });
 
+test('removing a "取消配对未完成" row that the back end cannot remove: the row stays, the reason stays on screen, a retry then works (PR #400 review)', async () => {
+  const { page } = await openSection();
+  await pairInWindow(page);
+  const host = page.getByTestId('remote-host');
+  await expect(host).toHaveAttribute('data-state', 'ok');
+  offTailscale();
+  await host.getByTestId('remote-unpair').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('remote-unpair-text')).toHaveAttribute('data-offline', 'true');
+  await page.getByTestId('confirm-ok').click();
+  await expect(host).toHaveAttribute('data-state', 'pending');
+  // another connection holds the app's real database write lock: the back end's remove really fails
+  const { spawn } = await import('node:child_process');
+  const lock = spawn('python3', ['-I', '-c', [
+    'import sqlite3, sys',
+    'c = sqlite3.connect(sys.argv[1], isolation_level=None)',
+    'c.execute("BEGIN IMMEDIATE")',
+    'print("locked", flush=True)',
+    'sys.stdin.readline()',
+    'c.execute("ROLLBACK")',
+  ].join('\n'), join(env.userData, 'cache.sqlite')], { stdio: ['pipe', 'pipe', 'inherit'] });
+  try {
+    await new Promise<void>((ok, bad) => {
+      lock.stdout.on('data', (d) => String(d).includes('locked') && ok());
+      lock.on('exit', (c) => bad(new Error(`lock holder exited ${c}`)));
+    });
+    await host.getByTestId('remote-forget').click();
+    const note = host.getByTestId('remote-note');
+    await expect(note).toContainText('没能从列表里移除', { timeout: 20_000 });
+    await expect(note).toContainText('database is locked');
+    await expect(note).toHaveAttribute('data-ok', 'false');
+    // the list read that follows the failure has finished: the row and its reason are both still there
+    await expect(host.getByTestId('remote-forget')).toBeEnabled();
+    await page.waitForTimeout(500);
+    await expect(host).toHaveAttribute('data-state', 'pending');
+    await expect(note).toBeVisible();
+    await page.screenshot({ path: join(screens, 'remote-13-forget-failed.png') });
+  } finally {
+    lock.stdin.end('\n');
+    await new Promise((ok) => (lock.exitCode !== null ? ok(null) : lock.on('exit', ok)));
+  }
+  // the lock is gone: the same button now removes the row
+  await host.getByTestId('remote-forget').click();
+  await expect(page.getByTestId('remote-host')).toHaveCount(0);
+  await expect(page.getByTestId('remote-empty')).toBeVisible();
+});
+
 // GitHub#387 round 7: pairing without a terminal
 test('pick the machine from this computer’s Tailscale: open ones first, how to open a closed one, offline cannot be picked', async () => {
   writeFileSync(join(r.ts, 'certdomain'), 'me.tailnet.ts.net');

@@ -158,8 +158,11 @@ export function RemoteSection() {
       {list?.map((e) =>
         e.state === 'pending_revoke' ? (
           <Pending key={e.id} e={e} busy={busy === e.id} note={notes[e.id]} onRetry={() => retryRevoke(e, false)} onForget={async () => {
-            await act(e.id, () => api().remoteForget(e.id), (r) => r.result === 'unpaired', () => '');
-            note(e.id, null);
+            // the row is dropped only once the back end says so: a failure keeps its reason on screen
+            // (act already put it there) through the list read that follows
+            const r = await act(e.id, () => api().remoteForget(e.id), (r) => r.result === 'unpaired', (r) => r.output ?? '');
+            if (!alive.current) return;
+            if (r?.result === 'unpaired') note(e.id, null);
             await load(false);
           }} />
         ) : (
