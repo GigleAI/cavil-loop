@@ -118,8 +118,8 @@ if [ -n "$TEMPLATE" ]; then
 else
     # 兜底：内联 minimal prompt
     cat > "$PROMPT_FILE" <<EOF
-你正在处理 GitHub issue #$ISSUE（仓库 $REPO，标题：${issue_title}）。
-工作目录 $WORKTREE  分支 $BRANCH。
+你正在处理 GitHub issue #${ISSUE}（仓库 ${REPO}，标题：${issue_title}）。
+工作目录 $WORKTREE  分支 ${BRANCH}。
 读 issue → 实现 → 测试通过 → commit + push → gh pr create --base main (body 含 "Closes #$ISSUE")
 拿到 PR 编号 <P> 后翻 label（走 REST 避免 bot PAT 缺 read:org 的 GraphQL 调用挂）：
   gh api -X POST "repos/$REPO/issues/<P>/labels" -f "labels[]=$LABEL_PENDING_HUMAN"
@@ -158,7 +158,7 @@ start_session_logging "$TMUX_SESSION"
 #     必须就地 capture 死因（否则 pipe-pane 一挂日志全空），并保持 label 干净
 #     —— 没活起来就不翻 doing/agent，留在 pending/agent 等下轮重试，避免假"进行中"。
 if ! verify_fresh_session "$TMUX_SESSION"; then
-    log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 $LABEL_PENDING_HUMAN（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
+    log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 ${LABEL_PENDING_HUMAN}（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
     notify_bounced_to_human "$ISSUE" \
         "worker 启动后立刻退出了（常见：agent CLI 正在自动升级、新目录的信任确认弹窗）。死因已截在 daemon 机器的 poll.log 里。" \
         "偶发的话直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；再秒退就去 poll.log 看截下来的 pane 输出。"

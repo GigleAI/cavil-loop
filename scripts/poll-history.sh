@@ -207,7 +207,7 @@ if [ "$(printf '%s' "$MODEL" | jq -r '.last_snapshot != null')" = true ]; then
         FROM=$(printf '%s' "$MODEL" | jq -r '.last_snapshot.poll_log.from // 0')
         TO=$(printf '%s' "$MODEL" | jq -r '.last_snapshot.poll_log.to // 0')
         LOGF="$SD/poll.log"
-        echo "  那一轮在 poll.log 里的内容（字节 $FROM–$TO）："
+        echo "  那一轮在 poll.log 里的内容（字节 ${FROM}–${TO}）："
         if [ -f "$LOGF" ] && [ "$TO" -gt "$FROM" ] && [ "$(wc -c < "$LOGF")" -ge "$TO" ]; then
             tail -c "+$((FROM + 1))" "$LOGF" | head -c "$((TO - FROM))" | head -n 200 | sed 's/^/    /'
         elif [ "$TO" -le "$FROM" ]; then

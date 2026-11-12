@@ -60,7 +60,7 @@ template="$SKILL_DIR/launchd/dev.luosky.cavil-loop.plist.template"
 domain="gui/$(id -u)"
 
 if [ ! -f "$env_file" ] || [ ! -f "$plist" ]; then
-    echo "没有接入实例 $KEY（需要 $env_file 和 $plist 都在；没装过的项目请跑 setup.sh）"
+    echo "没有接入实例 ${KEY}（需要 $env_file 和 $plist 都在；没装过的项目请跑 setup.sh）"
     result not_found 1
 fi
 config="$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$env_file" | tail -1)"
@@ -97,7 +97,7 @@ echo "2. 和现有文件不同，需要换新"
 # ── 3. 读任务状态 ──
 cavil_launchd_probe "$label"
 orig_state="$CAVIL_SCHED_STATE"
-echo "3. 后台任务 $label：$orig_state"
+echo "3. 后台任务 ${label}：$orig_state"
 if [ "$orig_state" = unknown ]; then
     echo "   读不到任务状态，什么都没动。读到的原文："
     printf '%s\n' "$CAVIL_SCHED_RAW" | indent
@@ -135,7 +135,7 @@ if [ "$orig_state" = loaded ]; then
     bootout_out="$(launchctl bootout "$domain/$label" 2>&1)" || true
     cavil_launchd_probe "$label"
     if [ "$CAVIL_SCHED_STATE" != unloaded ]; then
-        echo "4. 卸载后读回不是「未加载」（$CAVIL_SCHED_STATE），原文件未动："
+        echo "4. 卸载后读回不是「未加载」（${CAVIL_SCHED_STATE}），原文件未动："
         printf '%s\n' "$bootout_out" "$CAVIL_SCHED_RAW" | indent
         # 「原样」要读回确认：仍是原来那份在跑，或者按原状态重新加载原文件后读回确认。
         # 读不到 / 加载失败都不能报 failed（failed = 已确认恢复），只能交人。
@@ -149,7 +149,7 @@ if [ "$orig_state" = loaded ]; then
         fi
         echo "   重新加载原文件没有确认成功——需要人处理："
         printf '%s\n' "${LOAD_BACK_OUT:-}" "$CAVIL_SCHED_RAW" | indent
-        echo "   原文件未动：$plist；原来的状态：$orig_state；手动恢复：launchctl bootstrap $domain \"$plist\""
+        echo "   原文件未动：${plist}；原来的状态：${orig_state}；手动恢复：launchctl bootstrap $domain \"$plist\""
         result needs_human 4
     fi
     echo "4. 已卸载（拿着轮询锁，期间不会有新一轮开始）"
@@ -159,7 +159,7 @@ fi
 backup_dir="$state_dir/launchd-backup"
 backup="$backup_dir/$label.plist.$(date +%Y%m%d-%H%M%S).$$"
 if ! { mkdir -p "$backup_dir" && cp -p "$plist" "$backup" && cmp -s "$plist" "$backup"; } 2>/dev/null; then
-    echo "5. 备份失败（$backup），不换；按原状态重新加载原文件"
+    echo "5. 备份失败（${backup}），不换；按原状态重新加载原文件"
     if load_back "$plist"; then result failed 3; fi
     echo "   重新加载原文件也没成功："
     printf '%s\n' "$LOAD_BACK_OUT" "$CAVIL_SCHED_RAW" | indent
@@ -180,7 +180,7 @@ if load_back "$plist"; then
     result replaced 0
 fi
 first_out="$LOAD_BACK_OUT"; first_raw="$CAVIL_SCHED_RAW"
-echo "6. 加载新文件失败（读回：$CAVIL_SCHED_STATE）："
+echo "6. 加载新文件失败（读回：${CAVIL_SCHED_STATE}）："
 printf '%s\n' "$first_out" "$first_raw" | indent
 
 # ── 7. 用备份恢复 ──
@@ -188,7 +188,7 @@ LOAD_BACK_OUT=""
 restore_tmp="$(mktemp "$plist_dir/.$label.plist.restore.XXXXXX")"
 if cp -p "$backup" "$restore_tmp" && mv -f "$restore_tmp" "$plist" && cmp -s "$backup" "$plist" \
    && load_back "$plist"; then
-    echo "7. 已用备份恢复原文件，并按原状态（$orig_state）重新加载、读回确认"
+    echo "7. 已用备份恢复原文件，并按原状态（${orig_state}）重新加载、读回确认"
     echo "   备份保留：$backup"
     result failed 3
 fi
@@ -198,6 +198,6 @@ echo "   第一次（加载新文件）的原文："
 printf '%s\n' "$first_out" "$first_raw" | indent
 echo "   第二次（恢复原文件）的原文："
 printf '%s\n' "${LOAD_BACK_OUT:-}" "$CAVIL_SCHED_RAW" | indent
-echo "   原文件备份：$backup（保留，不会删）"
-echo "   原来的状态：$orig_state；手动恢复：cp \"$backup\" \"$plist\" && launchctl bootstrap $domain \"$plist\""
+echo "   原文件备份：${backup}（保留，不会删）"
+echo "   原来的状态：${orig_state}；手动恢复：cp \"$backup\" \"$plist\" && launchctl bootstrap $domain \"$plist\""
 result needs_human 4
