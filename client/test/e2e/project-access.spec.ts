@@ -217,6 +217,36 @@ test('"从 GitHub 选" rate limited: every way of reading again waits (no reques
   expect(reads()).toBe(2);
 });
 
+test('one organisation rate limited while another is still loading: closing and opening the list sends nothing; after GitHub\'s time it reads (PR #414 review round 2)', async () => {
+  env.fake.state.memberOrgs.set('user-1', ['a-org', 'b-org']);
+  let limited = true;
+  env.fake.state.answerOverride = (e) =>
+    limited && e.operation === 'CavilChoicesOrg' && e.variables?.login === 'a-org' ? { status: 429, body: { message: 'too many' }, headers: { 'retry-after': '3' } } : null;
+  const release = env.fake.holdWhen((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'b-org');
+  const page = await signIn();
+  const viewerReads = () => env.fake.log.filter((e) => e.operation === 'CavilChoicesViewer').length;
+  await page.getByTestId('guide-pick').click();
+  await expect.poll(() => env.fake.log.some((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'a-org' && e.status === 429)).toBe(true);
+  await expect.poll(() => env.fake.log.some((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'b-org')).toBe(true);
+  await expect(page.getByTestId('picker-loading')).toBeVisible();
+  expect(viewerReads()).toBe(1);
+  // closed and opened again while b-org has not answered
+  await page.getByTestId('source-pick').click();
+  await page.getByTestId('source-pick').click();
+  await page.waitForTimeout(300);
+  expect(viewerReads()).toBe(1);
+  release();
+  const aOrg = page.locator('[data-testid="picker-group"][data-owner="a-org"] [data-testid="picker-group-failure"]');
+  await expect(aOrg).toHaveAttribute('data-kind', 'rateLimited');
+  await expect(page.getByTestId('picker-reload')).toBeDisabled();
+  expect(viewerReads()).toBe(1);
+  limited = false;
+  await expect(page.getByTestId('picker-reload')).toBeEnabled({ timeout: 8_000 });
+  await page.getByTestId('picker-reload').click();
+  await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"] [data-testid="picker-group-failure"]')).toHaveCount(0);
+  expect(viewerReads()).toBe(2);
+});
+
 test('a missing repository while the grant lacks the Project scope: "找不到", never "sign in again"', async () => {
   env.fake.state.oauthScopes = 'repo, read:org';
   const page = await signIn();

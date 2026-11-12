@@ -77,7 +77,6 @@ import {
 import { GitHubError } from '../data/github';
 import { fetchReleaseImage } from '../data/releaseImage';
 import { readProjectChoices } from '../data/projectChoices';
-import { choicesWaitUntil } from '../shared/readFailure';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
@@ -1990,18 +1989,36 @@ export class Controller {
   async projectChoices(): Promise<ProjectChoices> {
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, failure: { kind: 'other', raw: c.error }, groups: [] };
-    // PR #414 review round 1: GitHub said wait — every way of asking again (the list's button, a
-    // failure's button, closing and opening the list) gets the same answer until then, without a request
-    const held = this.choicesHeld;
-    if (held && held.session === c.session && this.now() < held.until) return held.result;
-    const r = await readProjectChoices(c.client);
-    const until = choicesWaitUntil(r);
-    this.choicesHeld = until !== null ? { session: c.session, until, result: r } : null;
+    // PR #414 review rounds 1–2: GitHub said wait. Every way into this list — its own button, a
+    // failure's button, closing and opening it, a read already running — is held in one place:
+    //  - the list's reads go through their own read gate: the moment any request (the account's
+    //    Projects, the organisations, any organisation, any page) hears a rate limit, every later
+    //    request of the list fails here without being sent, while the rest of that read is still
+    //    under way;
+    //  - a read asked for while one runs gets that same read (never a second one, never an older
+    //    answer landing after a newer one);
+    //  - asked for while the gate is closed, the last answer is given again, without a request.
+    if (!this.choices || this.choices.session !== c.session) this.choices = { session: c.session, gate: new ReadGate(this.now), running: null, last: null };
+    const ch = this.choices;
+    if (ch.running) return ch.running;
+    if (ch.last && ch.gate.until !== null && this.now() < ch.gate.until) return ch.last;
+    const client = this.client(c.session, undefined, { gate: ch.gate, retryDelaysMs: [] });
+    const run = readProjectChoices(client).then((r) => {
+      if (this.choices === ch) ch.last = r;
+      return r;
+    });
+    ch.running = run;
+    let r: ProjectChoices;
+    try {
+      r = await run;
+    } finally {
+      if (ch.running === run) ch.running = null;
+    }
     if (!r.ok && r.failure?.kind === 'auth') this.noteAuthFailure(new GitHubError('auth', r.failure.raw, 401));
     return r;
   }
-  /** GitHub#401: the "从 GitHub 选" list's last answer while GitHub's rate limit holds it (of one session) */
-  private choicesHeld: { session: number; until: number; result: ProjectChoices } | null = null;
+  /** GitHub#401: the "从 GitHub 选" list of one sign-in session — its read gate, the read under way, the last answer */
+  private choices: { session: number; gate: ReadGate; running: Promise<ProjectChoices> | null; last: ProjectChoices | null } | null = null;
 
   /** GitHub renders the reply preview (same renderer as the web page). */
   async previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }> {

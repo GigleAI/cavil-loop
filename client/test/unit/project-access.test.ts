@@ -67,6 +67,13 @@ async function boot(sources: string[], now: () => number = () => FIXTURE_NOW) {
   return c;
 }
 const status = (c: Controller, key: string) => c.getState().sync.sources.find((s) => s.sourceKey === key)!;
+async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
+    if (pred()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`timeout: ${what}`);
+}
 
 describe("a source's failure, classified (GitHub#401)", () => {
   it('an organisation that has not approved the app: orgRestricted, naming it; the other source reads as before', async () => {
@@ -203,6 +210,51 @@ describe('"从 GitHub 选" (GitHub#401)', () => {
     const after = await c.projectChoices();
     expect(after.ok).toBe(true);
     expect(reads()).toBe(2);
+  });
+
+  it('one organisation rate limited while another is still loading: asking again sends nothing (the read under way is shared), later pages are held without a request, and after GitHub\'s time it reads (PR #414 review round 2)', async () => {
+    const clock = { t: Date.now() };
+    fake.state.memberOrgs.set('user-1', ['a-org', 'b-org']);
+    fake.state.extraProjects.set('org/b-org', [
+      { number: 1, title: '一' },
+      { number: 2, title: '二' },
+      { number: 3, title: '三' },
+    ]);
+    let limit = true;
+    fake.state.answerOverride = (e: LoggedRequest) =>
+      limit && e.operation === 'CavilChoicesOrg' && e.variables?.login === 'a-org' ? { status: 429, body: { message: 'too many' }, headers: { 'retry-after': '120' } } : null;
+    // b-org's first page is held until a-org's 429 has arrived
+    const release = fake.holdWhen((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'b-org' && !e.variables?.after);
+    const c = await boot([], () => clock.t);
+    const sent = (op: string) => fake.log.filter((e) => e.operation === op).length;
+    const first = c.projectChoices();
+    await waitFor(() => fake.log.some((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'a-org' && e.status === 429), 'a-org 429');
+    await waitFor(() => fake.log.some((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'b-org'), 'b-org asked');
+    expect(sent('CavilChoicesViewer')).toBe(1);
+    // the list is closed and opened again while b-org has not answered: the same read, no request
+    const again = c.projectChoices();
+    expect(sent('CavilChoicesViewer')).toBe(1);
+    release();
+    const [r1, r2] = await Promise.all([first, again]);
+    expect(r2).toBe(r1);
+    expect(r1.groups.find((g) => g.owner === 'a-org')).toMatchObject({ ok: false, failure: { kind: 'rateLimited' } });
+    // b-org's second page came after the limit: held here, never sent
+    expect(r1.groups.find((g) => g.owner === 'b-org')).toMatchObject({ ok: false, failure: { kind: 'rateLimited' } });
+    expect(fake.log.some((e) => e.operation === 'CavilChoicesOrg' && e.variables?.login === 'b-org' && e.variables?.after)).toBe(false);
+    // asked again before GitHub's time: the last answer, no request
+    const n = fake.log.length;
+    expect(await c.projectChoices()).toBe(r1);
+    expect(fake.log.length).toBe(n);
+    // after it: a real read, everything listed
+    limit = false;
+    clock.t += 121_000;
+    const after = await c.projectChoices();
+    expect(sent('CavilChoicesViewer')).toBe(2);
+    expect(after.groups.map((g) => [g.owner, g.ok, g.projects.length])).toEqual([
+      ['user-1', true, 0],
+      ['a-org', true, 0],
+      ['b-org', true, 3],
+    ]);
   });
 
   it('nothing can be read (offline): not ok, network', async () => {
