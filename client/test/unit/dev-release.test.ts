@@ -503,3 +503,89 @@ describe('the release page carries what the build changed (GitHub#348)', () => {
     }
   });
 });
+
+// ---- GitHub#427: commits whose own build never got published ---------------------------
+// A merge whose build failed or was cancelled has no page; when it wrote no note line either, the
+// next published build's page is the only place it can appear. Real script, real repository whose
+// commits touch the app, its tests, its test back end, the packaging scripts and the repository's CI.
+
+describe('the release page also lists app changes that wrote no note line (GitHub#427)', () => {
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' };
+  const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', env }).trim();
+
+  function repo() {
+    const top = tempDir();
+    const client = join(top, 'client');
+    const scripts = join(client, 'scripts');
+    mkdirSync(scripts, { recursive: true });
+    for (const f of ['dev-release.mjs', 'update-manifest.mjs']) copyFileSync(join(root, 'scripts', f), join(scripts, f));
+    git(top, 'init', '-q', '-b', 'main');
+    const notes: string[] = [];
+    /** one commit: `files` (paths under the repository top) get new content; `note` is prepended to RELEASE_NOTES.md */
+    const commit = (msg: string, files: string[], note?: string) => {
+      if (note) notes.unshift(note);
+      writeFileSync(join(client, 'RELEASE_NOTES.md'), `### 这一版（0.5）\n\n${notes.join('\n')}\n`);
+      for (const f of files) {
+        mkdirSync(dirname(join(top, f)), { recursive: true });
+        writeFileSync(join(top, f), String(Math.random()));
+      }
+      git(top, 'add', '-A');
+      git(top, 'commit', '-q', '-m', msg);
+      return git(top, 'rev-parse', 'HEAD');
+    };
+    return { top, client, script: join(scripts, 'dev-release.mjs'), commit };
+  }
+  const page = (w: ReturnType<typeof world>, v: string) => published(w.read(), `client/v${v}`)!.body;
+
+  /** the history of 0.5.2-dev.497 → 0.5.3-dev.508, in miniature: one published build, then six merges with no build of their own */
+  function history() {
+    const r = repo();
+    const base = r.commit('feat(client): the previous build (#1)', ['client/src/a.ts']);
+    r.commit('fix(client): two UI tests, bump the version (#412)', ['client/package.json', 'client/test/e2e/x.spec.ts']);
+    r.commit('feat(client): pick a Project from GitHub (#414)', ['client/src/b.tsx', 'client/src-tauri/crates/core/src/c.rs']);
+    r.commit('test(client): scroll before a real-app click (#421)', ['client/test/tauri/y.ts']);
+    r.commit('test(client): the test back end only (#9)', ['client/src-tauri/crates/harness/src/main.rs']);
+    r.commit('feat(ci): nightly negative controls (#422)', ['.github/workflows/client.yml', 'client/README.md']);
+    r.commit('feat(client): shortcuts in the detail panel (#419)', ['client/src/d.tsx'], '- **详情里的快捷键**（GitHub#413）：X / ⇧A / ⇧P');
+    const head = r.commit('fix(client): the Mac update check (#424)', ['client/scripts/mac-update-check.sh']);
+    return { ...r, base, head };
+  }
+
+  it('the note lines first, then the title of every app change that wrote none, newest first; tests, the test back end, CI, docs and packaging scripts stay out', () => {
+    const h = history();
+    const w = world([devRel('0.5.2-dev.497', { target_commitish: h.base })], [], {}, { script: h.script, sha: h.head });
+    w.build('0.5.3-dev.508');
+    const run = w.run('0.5.3-dev.508');
+    expect(run.code, run.out).toBe(0);
+    expect(page(w, '0.5.3-dev.508')).toBe(
+      '开发版\n\n### 更新内容\n\n- **详情里的快捷键**（GitHub#413）：X / ⇧A / ⇧P\n- feat(client): pick a Project from GitHub (#414)\n- fix(client): two UI tests, bump the version (#412)\n',
+    );
+    expect(run.out).toContain('发版页带上 1 条更新说明、补上 2 个没写更新说明的提交标题');
+  });
+
+  it('the build’s own commit counts too, and a range with only untold app changes still gets its section', () => {
+    const r = repo();
+    const base = r.commit('feat(client): base (#1)', ['client/src/a.ts']);
+    r.commit('feat(client): unpublished (#2)', ['client/build/icon.png']);
+    const head = r.commit('feat(client): this build (#3)', ['client/src/b.ts']);
+    const w = world([devRel('0.5.1-dev.380', { target_commitish: base })], [], {}, { script: r.script, sha: head });
+    w.build('0.5.1-dev.387');
+    const run = w.run('0.5.1-dev.387');
+    expect(run.code, run.out).toBe(0);
+    expect(page(w, '0.5.1-dev.387')).toBe('开发版\n\n### 更新内容\n\n- feat(client): this build (#3)\n- feat(client): unpublished (#2)\n');
+    expect(run.out).toContain('发版页带上 0 条更新说明、补上 2 个没写更新说明的提交标题');
+  });
+
+  it('only non-app changes since the previous build: no section, the same as before', () => {
+    const r = repo();
+    const base = r.commit('feat(client): base (#1)', ['client/src/a.ts']);
+    r.commit('test(client): tests (#2)', ['client/test/unit/z.test.ts']);
+    const head = r.commit('docs(client): readme (#3)', ['client/README.md']);
+    const w = world([devRel('0.5.1-dev.380', { target_commitish: base })], [], {}, { script: r.script, sha: head });
+    w.build('0.5.1-dev.387');
+    const run = w.run('0.5.1-dev.387');
+    expect(run.code, run.out).toBe(0);
+    expect(page(w, '0.5.1-dev.387')).toBe('开发版\n');
+    expect(run.out).toContain('发版页不带更新说明：发版说明没有新增条目，也没有没写说明的 App 改动');
+  });
+});
