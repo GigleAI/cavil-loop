@@ -4473,7 +4473,7 @@ autopilot_place_strip_copy() {   # <称呼>
 # 打托管标签的这个人算不算维护者授权：User 类型、不是 loop 的写入账号、不是外部需求机器人账号、有写权限。
 #   0 = 算（AUTOPILOT_ACTOR）；1 = 不算（AUTOPILOT_DENY / AUTOPILOT_REASON）；2 = 判不了
 autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写权限的仓库（跨仓库的父 issue，GitHub#233）]
-    local actor="$1" atype="$2" also="${3:-}" me perm
+    local actor="$1" atype="$2" also="${3:-}" me rc
     AUTOPILOT_ACTOR=""; AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     if [ -z "$actor" ] || [ "$actor" = null ]; then
         AUTOPILOT_REASON="标签记录里没有操作人"; return 2
@@ -4491,20 +4491,21 @@ autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写�
     if [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then
         AUTOPILOT_DENY=actor-requester-bot; AUTOPILOT_REASON="托管标签是外部需求机器人账号 \`$actor\` 打的"; return 1
     fi
-    if ! perm=$(gh api "repos/$REPO/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-        AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2
-    fi
-    case "$perm" in
-        admin|write) ;;
-        *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 $perm 权限，需要写权限"; return 1 ;;
+    # 「是不是维护者」和外部内容那边共用一份判据（repo_maintainer_check，GitHub#391）
+    rc=0; repo_maintainer_check "$actor" "$atype" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) AUTOPILOT_DENY=actor-perm
+           AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+        *) AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2 ;;
     esac
     if [ -n "$also" ] && [ "$(requester_bot_lc "$also")" != "$(requester_bot_lc "$REPO")" ]; then
-        if ! perm=$(gh api "repos/$also/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-            AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2
-        fi
-        case "$perm" in
-            admin|write) ;;
-            *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 $perm 权限，需要写权限"; return 1 ;;
+        rc=0; repo_maintainer_check "$actor" "$atype" "$also" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) AUTOPILOT_DENY=actor-perm
+               AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+            *) AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2 ;;
         esac
     fi
     AUTOPILOT_ACTOR="$actor"

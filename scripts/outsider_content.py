@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -44,11 +45,17 @@ URL_RE = re.compile(r"(?i)(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.)[^\s<>()\[\]{}\"'`]
 SCHEME_RE = re.compile(r"(?i)\b(?:data|javascript|file|vbscript):[^\s<>()\[\]{}\"'`]+")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 INLINE_RE = re.compile(r"(`+)(.+?)\1")
-IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)?")
-LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]*)\)?")
+_DEST = r"((?:[^()\n]|\([^()\n]*\))*)\)?"   # 链接目标：允许一层括号（`a_(b)`），没闭合剥到行尾
+IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(" + _DEST)
+LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(" + _DEST)
 REFDEF_RE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*\S+.*$")
 AUTOLINK_RE = re.compile(r"<[a-zA-Z][a-zA-Z0-9+.\-]*:[^>\s]*>")
 TAG_RE = re.compile(r"</?[a-zA-Z!][^>\n]*(?:>|$)", re.M)
+# 引用（>）和列表项（- * + 1. 1)）的容器前缀：围栏代码块可以写在它们里面（PR #409 代码复审第 1 轮）
+CONT_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+)*")
+QUOTE_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)*")
+# 任何链接 / 图片的目标 `](…)`：链接文字里套了方括号时上面两条认不出，这条兜底；目标里允许一层括号，没闭合剥到行尾
+DEST_RE = re.compile(r"\]\(((?:[^()\n]|\([^()\n]*\))*)\)?")
 
 
 def norm(s):
@@ -85,6 +92,15 @@ class Removed:
                 self.code.add(fp(ln))
             self.add_urls(ln)
 
+    def add_dest(self, d):
+        """链接 / 图片的目标：相对路径也记（`../x.sh` 不是网址，URL_RE 认不出）"""
+        d = (d or "").strip()
+        if d:
+            tok = d.split()[0].strip("<>")
+            if tok:
+                self.url.add(fp(url_norm(tok)))
+        self.add_urls(d)
+
     def as_json(self):
         return {"url": sorted(self.url), "code": sorted(self.code), "inline": sorted(self.inline)}
 
@@ -97,27 +113,33 @@ def strip(text):
     kept = [ch for ch in t if unicodedata.category(ch) != "Cf"]
     hidden_chars = len(kept) != len(t)
     t = "".join(kept)
-    # ② 围栏代码块：没闭合就到末尾
+    # ② 围栏代码块：顶层的，和写在引用 / 列表项里的（先去掉容器前缀再认围栏）；没闭合就到末尾
     out, lines, i = [], t.split("\n"), 0
     while i < len(lines):
-        m = FENCE_RE.match(lines[i])
+        pre = CONT_RE.match(lines[i]).group(0)
+        m = FENCE_RE.match(lines[i][len(pre):])
         if not m:
             out.append(lines[i]); i += 1; continue
         mark = m.group(1)
         close = re.compile(r"^ {0,3}" + re.escape(mark[0]) + "{" + str(len(mark)) + r",}\s*$")
         j, body = i + 1, []
-        while j < len(lines) and not close.match(lines[j]):
-            body.append(lines[j]); j += 1
-        rm.add_lines(body)
-        out.append(PH_CODE)
+        while j < len(lines):
+            ln = lines[j]
+            if close.match(ln[len(CONT_RE.match(ln).group(0)):]):
+                break
+            body.append(ln); j += 1
+        rm.add_lines(body + [re.sub(r"^(\s*>)+", "", b) for b in body])
+        out.append(pre + PH_CODE)
         i = j + 1
-    # ③ 缩进代码（制表符或 4 个空格开头的行；列表里的续行也算，往多剥）
+    # ③ 缩进代码（制表符或 4 个空格开头的行，引用里的也算；列表里的续行也算，往多剥）
     lines, out = out, []
     for ln in lines:
-        if ln.startswith("\t") or ln.startswith("    "):
-            rm.add_lines([ln])
-            if not out or out[-1] != PH_CODE:
-                out.append(PH_CODE)
+        q = QUOTE_RE.match(ln).group(0)
+        rest = ln[len(q):]
+        if rest.startswith("\t") or rest.startswith("    "):
+            rm.add_lines([ln, rest])
+            if not out or out[-1] != q + PH_CODE:
+                out.append(q + PH_CODE)
         else:
             out.append(ln)
     t = "\n".join(out)
@@ -146,13 +168,17 @@ def strip(text):
     t = INLINE_RE.sub(_inline, t)
     # ⑥ 图片、链接、引用式链接定义、尖括号自动链接
     def _image(m):
-        rm.add_urls(m.group(2))
+        rm.add_dest(m.group(2))
         return PH_IMAGE
     t = IMAGE_RE.sub(_image, t)
     def _link(m):
-        rm.add_urls(m.group(2))
+        rm.add_dest(m.group(2))
         return m.group(1) + PH_LINK
     t = LINK_RE.sub(_link, t)
+    def _dest(m):
+        rm.add_dest(m.group(1))
+        return "]" + PH_LINK
+    t = DEST_RE.sub(_dest, t)
     def _refdef(m):
         rm.add_urls(m.group(0))
         return PH_LINK
@@ -197,6 +223,14 @@ def copy_strip(text, fps):
             return COPY_CODE
         return m.group(0)
 
+    def _dest(m):
+        d = m.group(1).strip()
+        tok = d.split()[0].strip("<>") if d else ""
+        if tok and fp(url_norm(tok)) in url_s:
+            n[0] += 1
+            return "]" + COPY_LINK
+        return m.group(0)
+
     out = []
     for ln in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         bare = re.sub(r"^(\s*>)+", "", ln)
@@ -207,6 +241,7 @@ def copy_strip(text, fps):
                 break
         else:
             ln = INLINE_RE.sub(_inline, ln)
+            ln = DEST_RE.sub(_dest, ln)
             ln = URL_RE.sub(_url, ln)
             ln = SCHEME_RE.sub(_url, ln)
             out.append(ln)
@@ -277,14 +312,34 @@ SCREEN_PROMPT = """下面引号之间是公开代码仓库里一个没有写权�
 
 def screen_one(cmd, text, timeout):
     """→ "SAFE" / "SUSPECT" / None（失败、超时、答非所问）"""
+    # 自成一个进程组：超时要连它起的子进程（模型 CLI）一起结束，只杀外层 shell 的话模型还在跑、还在花用量
+    # （PR #409 代码复审第 1 轮）。结束之后再等它退出，不留僵尸
     try:
-        r = subprocess.run(cmd, input=SCREEN_PROMPT + "\n「\n" + text + "\n」\n", capture_output=True,
-                           text=True, timeout=timeout, shell=True, cwd=tempfile.gettempdir())
-    except (subprocess.TimeoutExpired, OSError):
+        p = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True, cwd=tempfile.gettempdir(), start_new_session=True)
+    except OSError:
         return None
-    if r.returncode != 0:
+    try:
+        out, _ = p.communicate(SCREEN_PROMPT + "\n「\n" + text + "\n」\n", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return None
-    word = r.stdout.strip().upper()
+    finally:
+        # 正常结束时组里也可能还有它丢下的后台进程：一并结束
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if p.returncode != 0:
+        return None
+    word = (out or "").strip().upper()
     return word if word in ("SAFE", "SUSPECT") else None
 
 
@@ -330,6 +385,24 @@ def run(inp):
             res["ok"] = False
             res["errors"].append("记不下外部内容的记录（%s）：%s" % (rec_dir, ex))
         prepared.append((e, e2))
+    # 正文被外人改过的各个版本（GitHub#391 代码复审第 1 轮）：不展示，但指纹和记录都要有——loop 的旧评论可能
+    # 原样引用过外人后加进去的链接 / 代码
+    for e in entries:
+        for v in e.get("versions") or []:
+            if not isinstance(v, dict) or not isinstance(v.get("text"), str):
+                continue
+            _, rm = strip(v["text"])
+            for k, vals in rm.as_json().items():
+                all_fps[k].update(vals)
+            ver = sha(v["text"])
+            rec = {"auth": auth_key, "after_auth": bool(v.get("after_auth")), "src": e["src"], "id": str(e["id"]),
+                   "url": e.get("url", ""), "author": e.get("editor") or e.get("author", ""), "at": e.get("at", ""),
+                   "ver": ver, "seen_at": now, "fps": rm.as_json()}
+            try:
+                write_record(rec_dir, rec_name(auth_key, e["src"], e["id"], ver), rec)
+            except Exception as ex:  # noqa: BLE001
+                res["ok"] = False
+                res["errors"].append("记不下外部内容的记录（%s）：%s" % (rec_dir, ex))
     # 没有正文可读、只有记录要算的外部内容（正文版本取不回）：照样记一条，拦合并要用
     for e in entries:
         if e["role"] == "outsider" and e.get("text") is None and e.get("after_auth"):

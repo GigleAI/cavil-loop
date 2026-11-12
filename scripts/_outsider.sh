@@ -36,6 +36,11 @@ outsider_screen_on() {
     return 1
 }
 outsider_screen_cmd() { printf '%s' "${AUTOPILOT_OUTSIDER_SCREEN_CMD:-$OUTSIDER_SCREEN_CMD_DEFAULT}"; }
+# 每条预筛的超时秒数。只有测试改它（1–600，别的值一律 60）
+outsider_screen_timeout() {
+    local t="${OUTSIDER_SCREEN_TIMEOUT:-60}"
+    if [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -ge 1 ] && [ "$t" -le 600 ]; then echo "$t"; else echo 60; fi
+}
 outsider_record_dir() { printf '%s/outsider/%s' "$STATE_DIR" "$1"; }
 outsider_screen_dir() { printf '%s/outsider-screen' "$STATE_DIR"; }
 
@@ -43,10 +48,34 @@ outsider_screen_dir() { printf '%s/outsider-screen' "$STATE_DIR"; }
 outsider_session_guard_needed() { [ "${DISPATCH_AUTOPILOT:-}" = 1 ] && outsider_guard_on; }
 
 # ── 账号的角色 ──
-# OS_ROLE = maintainer / loop / bot / outsider；return 2 = 判不了（OS_WHY）
+# 「是不是维护者」只有一份判据，托管授权（autopilot_actor_check）和这里共用：真人账号（User 类型）、在 <仓库> 有
+# admin / write 权限。0 = 是；1 = 不是（REPO_MAINTAINER_WHY）；2 = 判不了（REPO_MAINTAINER_WHY）。
+# 每次调用都现查，不缓存：合并前的重判必须看到两次判断之间的撤权 / 授权（PR #409 代码复审第 1 轮）
+repo_maintainer_check() {   # <login> <账号类型> [仓库，默认本仓库]
+    local login="$1" atype="$2" repo="${3:-$REPO}" out
+    REPO_MAINTAINER_WHY=""; REPO_MAINTAINER_PERM=""
+    if [ "$atype" != User ]; then
+        REPO_MAINTAINER_WHY="\`$login\` 是 ${atype:-未知类型} 账号，不是真人维护者"; return 1
+    fi
+    if out=$(gh api "repos/$repo/collaborators/$login/permission" --jq '.permission // ""' 2>&1) && [ -n "$out" ]; then
+        REPO_MAINTAINER_PERM="$out"
+        case "$out" in
+            admin|write) return 0 ;;
+            read|none|triage) REPO_MAINTAINER_WHY="\`$login\` 在 $repo 只有 $out 权限，需要写权限"; return 1 ;;
+            *) REPO_MAINTAINER_WHY="读不懂 \`$login\` 在 $repo 的权限（\`$out\`）"; return 2 ;;
+        esac
+    fi
+    case "$out" in
+        *"is not a user"*) REPO_MAINTAINER_PERM=none; REPO_MAINTAINER_WHY="\`$login\` 这个账号不存在（已删除）"; return 1 ;;
+    esac
+    REPO_MAINTAINER_WHY="查不到 \`$login\` 在 $repo 的权限"; return 2
+}
+
+# OS_ROLE = maintainer / loop / bot / outsider；return 2 = 判不了（OS_WHY）。
+# 缓存只在一次扫描之内（outsider_scan_items 开头清空）：同一次扫描里同一个账号只查一次权限
 declare -gA OUTSIDER_ROLE_CACHE=()
 outsider_role() {   # <login> <账号类型>
-    local login="$1" atype="${2:-User}" lc me perm out
+    local login="$1" atype="${2:-User}" lc me rc
     OS_ROLE=""
     lc=$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')
     if [ -z "$lc" ] || [ "$lc" = null ]; then OS_ROLE=outsider; return 0; fi
@@ -57,22 +86,14 @@ outsider_role() {   # <login> <账号类型>
         OS_ROLE=loop
     elif [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$lc" = "$(printf '%s' "$REQUESTER_BOT_ACCOUNT" | tr '[:upper:]' '[:lower:]')" ]; then
         OS_ROLE=bot
-    elif [ -n "$atype" ] && [ "$atype" != User ] && [ "$atype" != null ]; then
-        OS_ROLE=outsider   # 机器人、组织账号：不是维护者
     else
-        if out=$(gh api "repos/$REPO/collaborators/$login/permission" --jq '.permission // ""' 2>&1); then
-            perm="$out"
-            case "$perm" in
-                admin|write) OS_ROLE=maintainer ;;
-                read|none|triage) OS_ROLE=outsider ;;
-                *) OS_WHY="读不懂 \`$login\` 在仓库里的权限（\`$perm\`）"; return 2 ;;
-            esac
-        else
-            case "$out" in
-                *"is not a user"*|*"HTTP 404"*) OS_ROLE=outsider ;;   # 账号不存在（已删除）：不可能是维护者
-                *) OS_WHY="查不到 \`$login\` 在仓库里的权限"; return 2 ;;
-            esac
-        fi
+        [ -n "$atype" ] && [ "$atype" != null ] || atype=User
+        rc=0; repo_maintainer_check "$login" "$atype" || rc=$?
+        case "$rc" in
+            0) OS_ROLE=maintainer ;;
+            1) OS_ROLE=outsider ;;
+            *) OS_WHY="$REPO_MAINTAINER_WHY"; return 2 ;;
+        esac
     fi
     OUTSIDER_ROLE_CACHE[$lc]="$OS_ROLE"
 }
@@ -97,27 +118,40 @@ outsider_edits() {   # <仓库> <编号>
     OS_EDITS="$edits"
 }
 
-# 正文一条 → 追加到 OS_ENTRIES。授权之后被外人改过：输出授权那一刻的版本；取不回 → text=null
+# 正文一条 → 追加到 OS_ENTRIES。授权之后被外人改过：给 agent 看的是授权那一刻的版本（取不回 → text=null），
+# 但外人写过的**每一个**版本（versions，含现在这一版）都要交给处理程序记指纹、写记录——loop 的旧评论可能引用过
+# 新加进去的链接，只看展示的那一版就清不掉（PR #409 代码复审第 1 轮）
 outsider_body_entry() {   # <src> <仓库> <编号> <条目 JSON> <issue|pull>
-    local src="$1" repo="$2" num="$3" item="$4" kind="$5" author atype role e_logins lg after=false text notes='[]' ent editor=""
+    local src="$1" repo="$2" num="$3" item="$4" kind="$5" author atype role lg after=false text cur notes='[]' ent editor=""
+    local created roles='{}' versions='[]'
     author=$(printf '%s' "$item" | jq -r '.user.login // ""')
     atype=$(printf '%s' "$item" | jq -r '.user.type // "User"')
     outsider_role "$author" "$atype" || return 2
     role="$OS_ROLE"
-    text=$(printf '%s' "$item" | jq -c '.body // ""')
+    cur=$(printf '%s' "$item" | jq -c '.body // ""'); text="$cur"
+    created=$(printf '%s' "$item" | jq -r '.created_at // ""')
     if [ -n "$OS_AUTH_T" ]; then
         outsider_edits "$repo" "$num" || return 2
-        # 授权之后改过正文的人（创建那一次不算改）
-        e_logins=$(printf '%s' "$OS_EDITS" | jq -r --arg t "$OS_AUTH_T" --arg c "$(printf '%s' "$item" | jq -r '.created_at // ""')" '
-            .[] | select((.editedAt // "") >= $t and (.editedAt // "") != $c) | (.editor.login // "@ghost")') || { OS_WHY="读不懂 $repo#$num 正文的修改历史"; return 2; }
+        # 改过正文的每个账号定一次角色（账号已删除 = 外人）
         while IFS= read -r lg; do
             [ -n "$lg" ] || continue
-            if [ "$lg" = "@ghost" ]; then after=true; editor="（已删除的账号）"; break; fi   # 改的人账号已删除：不可能是维护者
-            outsider_role "$lg" User || return 2
-            if [ "$OS_ROLE" = outsider ]; then after=true; editor="$lg"; break; fi
-        done <<< "$e_logins"
-        if [ "$after" = true ]; then
-            role=outsider
+            if [ "$lg" = "@ghost" ]; then OS_ROLE=outsider
+            else outsider_role "$lg" User || return 2; fi
+            roles=$(jq -cn --argjson r "$roles" --arg k "$lg" --arg v "$OS_ROLE" '$r + {($k): $v}')
+        done < <(printf '%s' "$OS_EDITS" | jq -r '.[] | (.editor.login // "@ghost")' | sort -u)
+        # 授权之后由外人改的那几次（创建那一次不算改）
+        editor=$(printf '%s' "$OS_EDITS" | jq -r --arg t "$OS_AUTH_T" --arg c "$created" --argjson r "$roles" '
+            [ .[] | select((.editedAt // "") >= $t and (.editedAt // "") != $c)
+                  | (.editor.login // "@ghost") | select($r[.] == "outsider") ] | first // ""') \
+            || { OS_WHY="读不懂 $repo#$num 正文的修改历史"; return 2; }
+        # 外人写过的各个版本（只记指纹，不展示）
+        versions=$(printf '%s' "$OS_EDITS" | jq -c --arg t "$OS_AUTH_T" --argjson r "$roles" '
+            [ .[] | select($r[(.editor.login // "@ghost")] == "outsider" and (.diff | type) == "string" and .deletedAt == null)
+                  | {text: .diff, after_auth: ((.editedAt // "") >= $t)} ]')
+        if [ -n "$editor" ]; then
+            after=true; role=outsider
+            [ "$editor" != "@ghost" ] || editor="（已删除的账号）"
+            versions=$(jq -cn --argjson v "$versions" --argjson c "$cur" '$v + [{text: $c, after_auth: true}]')
             text=$(printf '%s' "$OS_EDITS" | jq -c --arg t "$OS_AUTH_T" '
                 [ .[] | select((.editedAt // "") < $t and (.editedAt // "") != "") ] | max_by(.editedAt)
                 | if . == null or .deletedAt != null or (.diff | type) != "string" then null else .diff end')
@@ -130,9 +164,10 @@ outsider_body_entry() {   # <src> <仓库> <编号> <条目 JSON> <issue|pull>
     fi
     ent=$(jq -cn --arg src "$src" --arg id "$repo#$num" --arg ref "$( [ "$repo" = "$REPO" ] && echo "#$num" || echo "$repo#$num")" \
         --arg url "https://github.com/$repo/$( [ "$kind" = pull ] && echo pull || echo issues)/$num" \
-        --arg author "$author" --arg role "$role" --arg at "$(printf '%s' "$item" | jq -r '.created_at // ""')" \
-        --argjson after "$after" --argjson text "$text" --argjson notes "$notes" --arg editor "$editor" \
-        '{src: $src, id: $id, ref: $ref, url: $url, author: $author, editor: $editor, role: $role, at: $at, after_auth: $after, text: $text, notes: $notes}')
+        --arg author "$author" --arg role "$role" --arg at "$created" \
+        --argjson after "$after" --argjson text "$text" --argjson notes "$notes" --arg editor "$editor" --argjson versions "$versions" \
+        '{src: $src, id: $id, ref: $ref, url: $url, author: $author, editor: $editor, role: $role, at: $at, after_auth: $after,
+          text: $text, notes: $notes, versions: $versions}')
     OS_ENTRIES=$(jq -cn --argjson a "$OS_ENTRIES" --argjson e "$ent" '$a + [$e]')
 }
 
@@ -179,6 +214,7 @@ outsider_list_entries() {   # <src> <仓库> <编号> <endpoint> <评论 | revie
 outsider_scan_items() {
     local inum="$1" ij="$2" pr="$3" pj="$4" mode="$5" out_file="${6:-}" wn in res
     OS_RES=""; OS_REC_FAIL=""; OS_WHY=""; OS_ENTRIES='[]'
+    OUTSIDER_ROLE_CACHE=()   # 权限每次扫描现查：合并前的重判要看到这期间的撤权 / 授权
     if [ -n "${SPLIT_PARENT_NUM:-}" ] && [ -n "${SPLIT_PARENT_JSON:-}" ]; then
         outsider_body_entry parent-body "$SPLIT_PARENT_REPO" "$SPLIT_PARENT_NUM" "$SPLIT_PARENT_JSON" issue || return 2
         outsider_list_entries parent-comment "$SPLIT_PARENT_REPO" "$SPLIT_PARENT_NUM" "issues/$SPLIT_PARENT_NUM/comments" comment || return 2
@@ -204,8 +240,8 @@ outsider_scan_items() {
     OS_WORK_NUM="$wn"
     in=$(jq -cn --arg mode "$mode" --arg key "$OS_AUTH_KEY" --arg rd "$(outsider_record_dir "$wn")" \
         --argjson screen "$(outsider_screen_on && echo true || echo false)" --arg sd "$(outsider_screen_dir)" \
-        --arg sc "$(outsider_screen_cmd)" --argjson ents "$OS_ENTRIES" \
-        '{mode: $mode, auth_key: $key, record_dir: $rd, screen: $screen, screen_dir: $sd, screen_cmd: $sc, entries: $ents}')
+        --arg sc "$(outsider_screen_cmd)" --argjson ents "$OS_ENTRIES" --argjson st "$(outsider_screen_timeout)" \
+        '{mode: $mode, auth_key: $key, record_dir: $rd, screen: $screen, screen_dir: $sd, screen_cmd: $sc, screen_timeout: $st, entries: $ents}')
     if ! res=$(printf '%s' "$in" | python3 "$_OUTSIDER_DIR/outsider_content.py" run 2>/dev/null) \
        || ! printf '%s' "$res" | jq -e '.gate | type == "array"' >/dev/null 2>&1; then
         OS_WHY="外部内容处理程序出错"; return 2
