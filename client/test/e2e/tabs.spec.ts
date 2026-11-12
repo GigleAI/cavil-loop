@@ -168,14 +168,37 @@ test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the ri
   await row(page, B).click({ button: 'right' });
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
-  // the running icon is a still one (GitHub#442: a spinner read as "still loading")
+  // the running icon (GitHub#449): a bright stretch of edge goes round a square — really moving, one lap in 2 s;
+  // the icon itself does not spin (GitHub#442: a spinner read as "still loading")
   change(A, { labels: ['doing/agent'] });
   beat(app);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   const icon = tab(page, A).locator('.tab-icon.running');
-  await expect(icon).toHaveAttribute('data-icon', 'robot');
+  await expect(icon).toHaveAttribute('data-icon', 'frame-run');
   expect(await icon.evaluate((e) => getComputedStyle(e).animationName)).toBe('none');
+  const seg = icon.locator('.seg');
+  const segAt = () => seg.evaluate((e) => {
+    const c = getComputedStyle(e);
+    return { name: c.animationName, secs: c.animationDuration, offset: parseFloat(c.strokeDashoffset) || 0 };
+  });
+  const first = await segAt();
+  expect(first).toMatchObject({ name: 'tab-running', secs: '2s' });
+  await expect.poll(async () => (await segAt()).offset, { timeout: 3_000 }).not.toBe(first.offset);
+  // the other icons do not move
+  for (const other of [B, C])
+    expect(await tab(page, other).locator('.tab-icon, .tab-icon *').evaluateAll((es) => es.map((e) => getComputedStyle(e).animationName).filter((n) => n !== 'none'))).toEqual([]);
+  // "reduce motion": the stretch stands still at the top-left, the icon is whole
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(async () => (await segAt()).name).toBe('none');
+  expect((await segAt()).offset).toBe(0);
+  await expect(icon.locator('.track')).toHaveCount(1);
+  await expect(icon.locator('.core')).toHaveCount(1);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect.poll(async () => (await segAt()).name).toBe('tab-running');
   await shot(page, '442-05-home-with-tabs');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, '449-01-running-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
 
   // ⌘1 … ⌘9: ⌘1 is home, ⌘N the (N-1)th tab, ⌘9 the last one; past the last tab nothing moves
   await page.keyboard.press('Control+3');
