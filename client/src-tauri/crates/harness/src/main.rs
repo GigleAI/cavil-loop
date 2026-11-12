@@ -149,7 +149,10 @@ async fn main() {
     let clock: Arc<dyn Clock> = Arc::new(RemoteClock(link.clone()));
     let kept_store = store.clone();
     let updater_slot = Arc::new(update::Slot::default());
+    // daemons on other machines (GitHub#387): keys in a file, names leading to loopback stand-ins (CAVIL_CLIENT_TEST_REMOTE_*)
+    let remote = Arc::new(cavil_core::remote::Remote::from_env(true, std::env::consts::OS, &std::env::vars().collect(), store.clone()));
     let engine = Engine::new(Deps {
+        remote,
         store,
         credentials,
         clock: clock.clone(),

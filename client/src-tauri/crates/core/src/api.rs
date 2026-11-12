@@ -163,6 +163,17 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "daemonPickFolder" => Ok(e.daemon().pick_folder(a.get("start").and_then(|v| v.as_str()).map(str::to_string)).await),
         "daemonConnect" => Ok(e.daemon_arc().connect(s(&a, "repo")?, s(&a, "agent")?, a.get("dir").and_then(|v| v.as_str()), a.get("cloneInto").and_then(|v| v.as_str())).await),
         "daemonConnectPoll" => Ok(e.daemon().connect_poll(a.get("job").and_then(|v| v.as_u64()).ok_or_else(|| "缺参数 job".to_string())?, a.get("from").and_then(|v| v.as_u64()).unwrap_or(0) as usize)),
+        // a daemon on another machine (GitHub#387): the window names a machine from the list and a
+        // project; the back end holds the key, checks the connection and signs the request
+        "remoteList" => Ok(e.remote().list()),
+        "remotePair" => Ok(e.remote().pair(s(&a, "host")?, s(&a, "code")?).await),
+        "remoteStatus" => Ok(e.remote().status(s(&a, "id")?).await),
+        "remoteService" => Ok(e.remote().service(s(&a, "id")?, s(&a, "key")?, s(&a, "action")?).await),
+        "remoteLog" => Ok(e.remote().log(s(&a, "id")?, s(&a, "key")?).await),
+        "remoteUnpair" => Ok(e.remote().unpair(s(&a, "id")?, a.get("localOnly").and_then(|v| v.as_bool()).unwrap_or(false)).await),
+        "remoteForget" => Ok(e.remote().forget(s(&a, "id")?).await),
+        "remoteTailnet" => Ok(e.remote().tailnet(e.daemon()).await),
+        "remoteHost" => Ok(e.daemon().remote_host(s(&a, "action")?, a.get("target").and_then(|v| v.as_str())).await),
         other => Err(format!("未知命令：{other}")),
     }
 }

@@ -193,6 +193,9 @@ describe('the back end and the daemon\'s real script', () => {
     expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   });
 
+  // 17 values × (read + save) through the real script, one after another: 16 s on CI with the
+  // default 20 s budget (main run 43150760693), so any extra load on the runner tipped it over
+  // (PR #400 review round 5). The work is the point of the test; give it the time, keep every value.
   it('one list of values, three checks — the form, the back end, the script — agree on which may be written', async () => {
     const b = backend();
     const values = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];

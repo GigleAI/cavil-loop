@@ -7025,26 +7025,20 @@ check_checkout_staleness() {
     return 0
 }
 
-# ── 配置缺新功能的设置：提示维护者（GitHub#289）──
+# ── 配置缺新功能的设置：提示维护者（GitHub#289；GitHub#428 起只写日志）──
 # 自动升级把新代码带到老项目，却不改项目的配置。「不写就关」而模板里开着的新功能（登记成
 # notice 的项，见 scripts/config-notices.txt）在老项目上就一直关着，没有任何信号——维护者以为
 # 早已生效（arkknights-tool#38：等前置标签）。这里每轮做一次纯本地比对（CONFIG_NOTICE_UNSET，
-# 在 source 配置之后立刻记下），缺项集合变了才对外动作：
-#   · 新出现的缺项 → 写一行轮询日志（每项一次）
-#   · CONFIG_NOTICE_ISSUE=true（默认）时：没有开着的提示 issue → 开一条挂 pending/human 的
-#     （greedy 模式也靠它才不被派工）；已有开着的 → 在上面评论新增的；缺项全补上 → 关掉它；
-#     人手动关掉 → 这一批不再提示，只有出现新缺项才开新的
+# 在 source 配置之后立刻记下）：新出现的缺项在轮询日志里写一行（每项一次；补上又去掉的项再写一次）。
+# 不发任何 GitHub 调用（GitHub#428：不再开提示 issue；哪些功能可开留给配置界面让人自己看）。
+# 早先版本开过的提示 issue 不读、不评论、不关；配置里还写着的 CONFIG_NOTICE_ISSUE 不再读取。
 # daemon 从不改配置。只在调度器经 poll-entry.sh 起的轮询里运行（POLL_SCHEDULED=1，agent-poll.sh
 # 开头从 poll-entry.sh 交来的 CAVIL_SCHEDULED_POLL 收下，并立刻 unset，worker 继承不到）：手动直接跑
-# agent-poll.sh 做试跑、worker 会话里跑、以及直接起 agent-poll.sh 的测试都不该往仓库里开 issue。
-# 不用 CODING_AGENT_RELEASE_ROOT 当判据：它是导出的，worker 会话里也有。
+# agent-poll.sh 做试跑、worker 会话里跑、以及直接起 agent-poll.sh 的测试都不写这行日志。
 #
 # 状态在 $STATE_DIR/config-notice.json（不进 state.json：删掉它只意味着「重新判断一次」，最坏
-# 多开一条提示）：{"issue": <号|null>, "logged": [已写过日志的项], "issued": [已在 issue 里提示过的项]}。
-# 读写规矩同其它 daemon 写入：写之前重读那条 issue（是否开着、是不是本功能开的、不是 PR），
-# 读不到 / 写失败 → 本轮不写、不记，下一轮重来；从不把「读不到」当成「已关」。
-CONFIG_NOTICE_ISSUE="${CONFIG_NOTICE_ISSUE:-true}"
-CONFIG_NOTICE_MARKER='<!-- cavil-config-notice -->'
+# 多写一行日志）：{"logged": [已写过日志的项]}。早先版本留下的 issue / issued 等字段读到就丢掉，
+# 不据此做任何事。
 
 config_notice_state_file() { printf '%s\n' "$STATE_DIR/config-notice.json"; }
 
@@ -7060,143 +7054,38 @@ config_notice_template_line() {   # <KEY>
     grep -m1 -E "^$1=" "$SKILL_DIR/cavil-loop.config.example" 2>/dev/null || true
 }
 
-# 一项缺项的说明（issue 正文和追加评论共用）
-config_notice_item_md() {   # <序号> <KEY>
-    local i="$1" key="$2" ref off text line
-    ref=$(config_notice_field "$key" 3); off=$(config_notice_field "$key" 4); text=$(config_notice_field "$key" 5)
-    line=$(config_notice_template_line "$key")
-    printf '### %s. `%s`%s\n\n%s\n\n' "$i" "$key" "${ref:+（${ref}）}" "$text"
-    if [ -n "$line" ]; then
-        printf '要开：在配置里加这一行（配置模板里的原文）\n\n```bash\n%s\n```\n\n' "$line"
-    fi
-    printf '不开：写成 `%s=%s`，daemon 就不再提示这一项。\n\n' "$key" "$off"
-}
-
 config_notice_log_line() {   # <KEY>
     local key="$1" line
     line=$(config_notice_template_line "$key")
     log "⚠️ 配置提示：本项目配置里没有 ${key}，这个新功能现在是关着的（$(config_notice_field "$key" 3)）。要开就在 $CONFIG_FILE 里加 ${line:-$key=...}；不开就写 $key=$(config_notice_field "$key" 4)"
 }
 
-config_notice_issue_body() {   # <KEY>...
-    local n=$# i=0 key
-    printf '%s\n## 本项目配置里缺 %s 项新功能的设置\n\n' "$CONFIG_NOTICE_MARKER" "$n"
-    printf 'cavil-loop 自动升级带来了新功能，但本项目的配置文件（`%s`，在 daemon 所在的机器 `%s` 上）里没有对应的行，下面这些功能现在是**关着**的。新装的项目从配置模板拷配置，这些功能默认是开的。\n\n' \
-        "$CONFIG_FILE" "$(hostname -s 2>/dev/null || hostname)"
-    printf '**要人做的事**：逐项决定开或不开，把对应的那一行写进配置文件（开：照抄下面的行；不开：写成空值）。daemon 只提示、不改配置；下一轮轮询发现每一项都写进去了，会自动关闭这条 issue。不想处理也可以直接关掉，同一批缺项不会再提示。\n\n'
-    for key in "$@"; do
-        i=$((i + 1))
-        config_notice_item_md "$i" "$key"
-    done
-    printf -- '---\n这条 issue 由 daemon 自动开。不想再收到这类提示：在配置里写 `CONFIG_NOTICE_ISSUE=false`（之后只写轮询日志）。\n'
-}
-
-# 重读提示 issue，判定能不能动它（评论 / 关闭之前各读一次，L41）。输出：
-#   ours     开着、正文带本功能标记、不是 PR，且标签正好是 daemon 开它时挂的那个保护标签
-#            （pending/human 在、没有任何别的流程标签）——只有这时才可以评论或关闭
-#   closed   已关（人手动关掉）
-#   foreign  不是本功能开的 issue，或是 PR
-#   handed   开着，但保护标签被摘、或挂上了别的流程标签（人把它转进了别的流程，如派给 worker）
-# 读不到、字段缺失、状态词不认识 → 返回 1（未知：本轮不写、不记）。
-config_notice_issue_state() {   # <号>
-    local out st pr mk labels flow l
-    out=$(run_gh_capture "读配置提示 issue #$1" gh api "repos/$REPO/issues/$1" \
-        --jq "[.state // \"\", (.pull_request != null | tostring), ((.body // \"\") | contains(\"$CONFIG_NOTICE_MARKER\") | tostring), (if (.labels | type) == \"array\" then ([.labels[].name] | join(\"\\n\")) + \"\\n\" | @base64 else \"-\" end)] | join(\" \")") \
-        || return 1
-    read -r st pr mk labels <<<"$out"
-    case "$pr/$mk" in true/*|false/false) printf 'foreign\n'; return 0 ;; false/true) ;; *) return 1 ;; esac
-    case "$st" in open) ;; closed) printf 'closed\n'; return 0 ;; *) return 1 ;; esac
-    [ -n "$labels" ] && [ "$labels" != - ] || return 1
-    labels=$(printf '%s' "$labels" | base64 -d 2>/dev/null) || return 1
-    printf '%s\n' "$labels" | grep -qxF -- "${LABEL_PENDING_HUMAN:-pending/human}" || { printf 'handed\n'; return 0; }
-    flow=$({ closed_done_flow_labels; printf '%s\n' "${LABEL_DONE:-}"; } | grep -vxF -- "${LABEL_PENDING_HUMAN:-pending/human}" | awk 'NF')
-    while IFS= read -r l; do
-        [ -n "$l" ] || continue
-        if printf '%s\n' "$flow" | grep -qxF -- "$l"; then printf 'handed\n'; return 0; fi
-    done <<<"$labels"
-    printf 'ours\n'
-}
-
 config_notice_tick() {
     [ "${POLL_SCHEDULED:-}" = 1 ] || return 0
-    local f missing st issue logged issued new_log new_iss k state num body changed=0
+    local f missing st logged new_log k changed=0
     f=$(config_notice_state_file)
     missing=$(printf '%s\n' $CONFIG_NOTICE_UNSET | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
     if [ -f "$f" ]; then
         if ! st=$(jq -ce 'if type == "object" then . else error("bad") end' "$f" 2>/dev/null); then
-            log "⚠️ 配置提示：$f 读不懂，按全新状态重来（最坏多开一条提示 issue）"
+            log "⚠️ 配置提示：$f 读不懂，按全新状态重来（最坏把缺项的日志多写一次）"
             st='{}'; changed=1
         fi
     else
         [ "$missing" = '[]' ] && return 0
         st='{}'; changed=1
     fi
-    issue=$(jq -r '.issue // empty | tostring' <<<"$st")
-    case "$issue" in ''|*[!0-9]*) issue="" ;; esac
-    # 补上又去掉的项要能再提示一次：已提示记录只保留仍然缺的
+    # 早先版本留下的字段（issue / issued …）：丢掉，哪怕这一轮没有新日志要写
+    [ "$(jq -c 'keys - ["logged"]' <<<"$st")" = '[]' ] || changed=1
+    # 补上又去掉的项要能再写一次：已写记录只保留仍然缺的
     logged=$(jq -c --argjson m "$missing" '[(.logged // [])[] | select(. as $k | $m | index($k))] | unique' <<<"$st")
-    issued=$(jq -c --argjson m "$missing" '[(.issued // [])[] | select(. as $k | $m | index($k))] | unique' <<<"$st")
     [ "$logged" = "$(jq -c '(.logged // []) | unique' <<<"$st")" ] || changed=1
-    [ "$issued" = "$(jq -c '(.issued // []) | unique' <<<"$st")" ] || changed=1
 
     new_log=$(jq -r --argjson l "$logged" '.[] | select(. as $k | $l | index($k) | not)' <<<"$missing")
     for k in $new_log; do config_notice_log_line "$k"; done
     if [ -n "$new_log" ]; then logged="$missing"; changed=1; fi
 
-    if [ "${CONFIG_NOTICE_ISSUE}" = true ]; then
-        new_iss=$(jq -r --argjson l "$issued" '.[] | select(. as $k | $l | index($k) | not)' <<<"$missing")
-        if [ -n "$issue" ] && { [ "$missing" = '[]' ] || [ -n "$new_iss" ]; }; then
-            if ! state=$(config_notice_issue_state "$issue"); then
-                state=unknown
-            fi
-            case "$state" in
-                ours)
-                    if [ "$missing" = '[]' ]; then
-                        if run_gh "关闭配置提示 issue #$issue" gh_write api -X PATCH "repos/$REPO/issues/$issue" \
-                                -f state=closed -f state_reason=completed; then
-                            log "配置提示：缺的设置都已写进配置，关闭提示 issue #$issue"
-                            issue=""; changed=1
-                        fi
-                    else
-                        local i=0 add=""
-                        for k in $new_iss; do i=$((i + 1)); add="$add$(config_notice_item_md "$i" "$k")"$'\n'; done
-                        body="$CONFIG_NOTICE_MARKER"$'\n'"## 配置里又多了 $i 项新功能的设置没写"$'\n\n'"做法和上面一样：逐项写进配置文件 \`$CONFIG_FILE\`（开或写成空值），每一项都写进去后 daemon 自动关闭这条 issue。"$'\n\n'"$add"
-                        if run_gh "在配置提示 issue #$issue 上追加新缺项" gh_write api -X POST \
-                                "repos/$REPO/issues/$issue/comments" -f "body=$body"; then
-                            log "配置提示：在提示 issue #$issue 上追加了 $(printf '%s ' $new_iss)"
-                            issued="$missing"; new_iss=""; changed=1
-                        fi
-                    fi
-                    ;;
-                closed|foreign|handed)
-                    # 人已经关掉、这个号已不是本功能的 issue、或人把它转进了别的流程：不评论、不关闭，
-                    # 从此不再跟踪它（否则每轮都要重读）。仍有新缺项时下面开一条新的
-                    [ "$state" = handed ] && log "配置提示：提示 issue #$issue 已被转进别的流程（保护标签变了），不再碰它"
-                    issue=""; changed=1
-                    ;;
-                *)  # 读不到：什么都不写、不记，下一轮再看
-                    new_iss=""
-                    ;;
-            esac
-        fi
-        if [ -z "$issue" ] && [ -n "$new_iss" ]; then
-            # shellcheck disable=SC2046
-            body=$(config_notice_issue_body $(jq -r '.[]' <<<"$missing"))
-            num=$(run_gh_capture "开配置提示 issue" gh_write api -X POST "repos/$REPO/issues" \
-                -f "title=[daemon] 本项目配置缺 $(jq 'length' <<<"$missing") 项新功能的设置" \
-                -f "body=$body" -f "labels[]=${LABEL_PENDING_HUMAN:-pending/human}" --jq '.number') || num=""
-            case "$num" in
-                ''|*[!0-9]*) ;;
-                *) issue="$num"; issued="$missing"; changed=1
-                   log "配置提示：本项目配置缺 $(jq -r 'join(" ")' <<<"$missing")，已开提示 issue #$num" ;;
-            esac
-        fi
-    fi
-
     [ "$changed" = 1 ] || return 0
-    jq -n --arg i "$issue" --argjson l "$logged" --argjson s "$issued" \
-        '{issue: (if $i == "" then null else ($i | tonumber) end), logged: $l, issued: $s}' > "$f.tmp" \
-        && mv "$f.tmp" "$f"
+    jq -n --argjson l "$logged" '{logged: $l}' > "$f.tmp" && mv "$f.tmp" "$f"
     return 0
 }
 

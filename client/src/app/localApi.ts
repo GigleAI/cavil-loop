@@ -76,6 +76,16 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     daemonDisconnect: (key) => backend.call('daemonDisconnect', { key: String(key) }),
     daemonOpen: (key, what) => backend.call('daemonOpen', { key: String(key), what: what === 'config' ? 'config' : 'log' }),
     daemonUpdate: () => backend.call('daemonUpdate'),
+    // GitHub#387: a daemon on another machine — straight to the back end, which holds the key and signs
+    remoteList: () => backend.call('remoteList'),
+    remotePair: (host, code) => backend.call('remotePair', { host: String(host), code: String(code) }),
+    remoteStatus: (id) => backend.call('remoteStatus', { id: String(id) }),
+    remoteService: (id, key, action) => backend.call('remoteService', { id: String(id), key: String(key), action: action === 'start' ? 'start' : 'stop' }),
+    remoteLog: (id, key) => backend.call('remoteLog', { id: String(id), key: String(key) }),
+    remoteUnpair: (id, localOnly) => backend.call('remoteUnpair', { id: String(id), localOnly: localOnly === true }),
+    remoteForget: (id) => backend.call('remoteForget', { id: String(id) }),
+    remoteTailnet: () => backend.call('remoteTailnet'),
+    remoteHost: ((action: string, target?: string) => backend.call('remoteHost', target === undefined ? { action: String(action) } : { action: String(action), target: String(target) })) as never,
     daemonConfigGet: (key) => backend.call('daemonConfigGet', { key: String(key) }),
     daemonConfigSet: (key, rev, values) =>
       backend.call('daemonConfigSet', { key: String(key), rev: String(rev), values: Object.fromEntries(Object.entries(values ?? {}).map(([k, v]) => [String(k), String(v)])) }),

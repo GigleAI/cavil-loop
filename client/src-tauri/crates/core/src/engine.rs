@@ -52,6 +52,8 @@ pub struct Deps {
     pub endpoints: Endpoints,
     /// the local cavil-loop daemon (GitHub#314)
     pub daemon: Arc<crate::daemon::Daemon>,
+    /// daemons on other machines, over Tailscale (GitHub#387)
+    pub remote: Arc<crate::remote::Remote>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +184,10 @@ impl Engine {
 
     pub fn daemon(&self) -> &crate::daemon::Daemon {
         &self.d.daemon
+    }
+
+    pub fn remote(&self) -> &crate::remote::Remote {
+        &self.d.remote
     }
 
     /// the same, for work that outlives one request ("接上 daemon" runs in the background, GitHub#315)

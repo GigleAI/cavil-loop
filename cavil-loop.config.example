@@ -1390,27 +1390,21 @@ POLL_DUE_SLACK_SECS=10
 CHECKOUT_STALE_ALERT_COMMITS=0
 # CHECKOUT_STALE_ALERT_TITLE="[daemon] 主 checkout 长期落后 origin"
 
-# ── Tell the maintainer about new optional settings this config lacks / 配置缺新功能的设置时提示 ──
+# ── New optional settings this config lacks / 配置缺新功能的设置 ──
 # An automatic upgrade brings new code to an existing project but never edits its config. A new
 # feature that is off when its line is missing (while this template turns it on) then stays off
 # with no signal anywhere — e.g. the waiting-on-prerequisite label stayed off on an old project
-# while its maintainer thought it was live. Each poll the daemon checks the keys registered as
-# "notice" in scripts/config-notices.txt; any that this config leaves unset (an empty value such
-# as KEY="" counts as "decided: off") is written to poll.log once and listed in one issue in this
-# repo, labelled pending/human (never dispatched), saying what each does and which line turns it
-# on. Once every listed key is in the config the daemon closes that issue; closing it by hand
-# silences that batch until a new key appears. The daemon never edits the config. Runs only in
-# the scheduled poller (started through poll-entry.sh), not when agent-poll.sh is run by hand.
-# false = poll.log only, no GitHub call at all.
+# while its maintainer thought it was live. Each scheduled poll the daemon checks the keys
+# registered as "notice" in scripts/config-notices.txt; any that this config leaves unset (an
+# empty value such as KEY="" counts as "decided: off") is written to poll.log once. No GitHub
+# call, no setting: since GitHub#428 the daemon no longer opens an issue about it, and an old
+# CONFIG_NOTICE_ISSUE line is ignored.
 #
 # 自动升级会把新代码带到老项目，却不会改项目的配置。新功能若是「配置里不写就关」、而模板里是开的，
 # 老项目就一直关着、没有任何提示（例：等前置标签在老项目上一直没开，维护者以为早就生效了）。
-# daemon 每轮核对 scripts/config-notices.txt 里登记成 notice 的配置项：本项目配置没设置的
-# （写成空值 KEY="" 算「已决定不开」，不算缺）写一次轮询日志，并在本仓库开一条挂 pending/human 的
-# 提示 issue（不会被派工），写明每项做什么、要开写哪一行。缺项都写进配置后 daemon 自动关掉它；
-# 人手动关掉 = 这一批不再提示，以后有新缺项才再开。daemon 不改配置。只在调度器（经 poll-entry.sh）
-# 跑的轮询里生效，手动直接跑 agent-poll.sh 不提示。false = 只写轮询日志，不发任何 GitHub 调用。
-CONFIG_NOTICE_ISSUE=true
+# daemon 每轮调度轮询核对 scripts/config-notices.txt 里登记成 notice 的配置项：本项目配置没设置的
+# （写成空值 KEY="" 算「已决定不开」，不算缺）在轮询日志里写一次。不发任何 GitHub 调用，也没有开关：
+# GitHub#428 起不再开提示 issue，配置里留着的 CONFIG_NOTICE_ISSUE 一行不再起作用。
 
 # ── Release a PR branch held by the main checkout / 主 checkout 占着 PR 分支时自动让出 ──
 

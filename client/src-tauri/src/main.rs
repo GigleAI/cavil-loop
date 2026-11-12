@@ -296,7 +296,9 @@ fn main() {
                 StoreKind::Memory => Arc::new(MemoryStore::default()),
             };
             let endpoints = selection.endpoints.clone();
+            let remote = Arc::new(cavil_core::remote::Remote::from_env(selection.test_mode, os, &env, store.clone()));
             let engine = Engine::new(Deps {
+                remote,
                 store,
                 credentials,
                 clock: Arc::new(SystemClock),
