@@ -55,9 +55,9 @@ export function summarize(it: Item): TabSummary {
 
 /**
  * The one status of a tab, in this order: ended (merged / closed, by GitHub's own state) →
- * waiting for a human → an agent is working on it → open.
+ * waiting for a human → waiting for a prerequisite (GitHub#443) → an agent is working on it → open.
  */
-export type TabStatus = 'merged' | 'closed' | 'done' | 'skipped' | 'waiting' | 'running' | 'draft' | 'open';
+export type TabStatus = 'merged' | 'closed' | 'done' | 'skipped' | 'waiting' | 'blocked' | 'running' | 'draft' | 'open';
 
 /** The two label names the status reads; '' = that status is never shown. */
 export interface TabLabels {
@@ -65,6 +65,12 @@ export interface TabLabels {
   human: string;
   /** "an agent is working on it" — the "running" label of Settings (GitHub#404), the one the top bar counts */
   doing: string;
+  /**
+   * "waiting for a prerequisite" (GitHub#443) — the waiting label of Settings (`handBack.blocked`, default
+   * `pending/blocked`), the same one the dependency graph and the "等前置…" button use. Only the label
+   * counts, never GitHub's own "Blocked by": the icon shows where the loop's flow is.
+   */
+  blocked: string;
 }
 
 /** GitHub label names are case-insensitive. */
@@ -78,6 +84,8 @@ export function tabStatus(it: Pick<TabSummary, 'kind' | 'state' | 'stateReason' 
   if (it.kind === 'pr' && it.state === 'closed') return 'closed';
   if (it.state !== 'open') return it.stateReason === 'not_planned' || it.stateReason === 'duplicate' ? 'skipped' : 'done';
   if (carries(it.labels, labels.human)) return 'waiting';
+  // the daemon swaps the running label for the waiting one: both on is only the moment of that swap
+  if (carries(it.labels, labels.blocked)) return 'blocked';
   if (carries(it.labels, labels.doing)) return 'running';
   return it.kind === 'pr' && it.isDraft === true ? 'draft' : 'open';
 }
@@ -88,6 +96,7 @@ export const TAB_STATUS_TEXT: Record<TabStatus, string> = {
   done: '已关闭（完成）',
   skipped: '已关闭（不做 / 重复）',
   waiting: '等待人处理',
+  blocked: '等前置完成',
   running: '正在运行',
   draft: '草稿',
   open: '打开',

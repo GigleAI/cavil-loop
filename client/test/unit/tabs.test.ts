@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ENDED_CHECK_MS,
   HOME,
+  TAB_STATUS_TEXT,
   afterClose,
   listedNow,
   moveTab,
@@ -19,7 +20,7 @@ import {
 import type { SourceStatus } from '../../src/shared/types';
 import { item } from './helpers';
 
-const LABELS = { human: 'pending/human', doing: 'doing/agent' };
+const LABELS = { human: 'pending/human', doing: 'doing/agent', blocked: 'pending/blocked' };
 const sum = (extra: Partial<TabSummary> = {}): TabSummary => ({
   key: 'o/r#1',
   repo: 'o/r',
@@ -53,9 +54,37 @@ describe('the status a tab shows', () => {
 
   it('label names are GitHub\'s: case does not matter; an empty setting never matches', () => {
     expect(tabStatus(sum({ labels: ['Doing/Agent'] }), LABELS)).toBe('running');
-    expect(tabStatus(sum({ labels: ['working'] }), { human: 'pending/human', doing: ' Working ' })).toBe('running');
-    expect(tabStatus(sum({ labels: ['doing/agent', ''] }), { human: 'pending/human', doing: '' })).toBe('open');
-    expect(tabStatus(sum({ labels: ['pending/human'] }), { human: '', doing: 'doing/agent' })).toBe('open');
+    expect(tabStatus(sum({ labels: ['working'] }), { human: 'pending/human', doing: ' Working ', blocked: 'pending/blocked' })).toBe('running');
+    expect(tabStatus(sum({ labels: ['doing/agent', ''] }), { human: 'pending/human', doing: '', blocked: 'pending/blocked' })).toBe('open');
+    expect(tabStatus(sum({ labels: ['pending/human'] }), { human: '', doing: 'doing/agent', blocked: 'pending/blocked' })).toBe('open');
+  });
+});
+
+describe('waiting for a prerequisite (GitHub#443): the pause', () => {
+  it('an open item with the waiting label is paused', () => {
+    expect(tabStatus(sum({ labels: ['pending/blocked'] }), LABELS)).toBe('blocked');
+    expect(tabStatus(sum({ kind: 'pr', labels: ['pending/blocked'] }), LABELS)).toBe('blocked');
+    expect(tabStatus(sum({ kind: 'pr', isDraft: true, labels: ['pending/blocked'] }), LABELS)).toBe('blocked');
+  });
+  it('a human asked comes first; the running label next to it is only the moment of the swap', () => {
+    expect(tabStatus(sum({ labels: ['pending/blocked', 'pending/human'] }), LABELS)).toBe('waiting');
+    expect(tabStatus(sum({ labels: ['doing/agent', 'pending/blocked'] }), LABELS)).toBe('blocked');
+  });
+  it('an ended item shows how it ended, whatever label it still carries', () => {
+    expect(tabStatus(sum({ kind: 'pr', state: 'merged', labels: ['pending/blocked'] }), LABELS)).toBe('merged');
+    expect(tabStatus(sum({ kind: 'pr', state: 'closed', labels: ['pending/blocked'] }), LABELS)).toBe('closed');
+    expect(tabStatus(sum({ state: 'closed', stateReason: 'completed', labels: ['pending/blocked'] }), LABELS)).toBe('done');
+    expect(tabStatus(sum({ state: 'closed', stateReason: 'not_planned', labels: ['pending/blocked'] }), LABELS)).toBe('skipped');
+  });
+  it('the label of Settings: case does not matter, another name is followed, an empty setting never matches', () => {
+    expect(tabStatus(sum({ labels: ['Pending/Blocked'] }), LABELS)).toBe('blocked');
+    expect(tabStatus(sum({ labels: ['on-hold'] }), { ...LABELS, blocked: ' On-Hold ' })).toBe('blocked');
+    expect(tabStatus(sum({ labels: ['pending/blocked'] }), { ...LABELS, blocked: 'on-hold' })).toBe('open');
+    expect(tabStatus(sum({ labels: ['pending/blocked', ''] }), { ...LABELS, blocked: '' })).toBe('open');
+    expect(tabStatus(sum({ labels: ['doing/agent', 'pending/blocked'] }), { ...LABELS, blocked: '' })).toBe('running');
+  });
+  it('its words', () => {
+    expect(TAB_STATUS_TEXT.blocked).toBe('等前置完成');
   });
 });
 
