@@ -341,16 +341,18 @@ chk "检查程序没有留下孤儿进程" "$(pgrep -f -- "$NEW/scripts/ci_failu
 rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 
 section "【5c】检查被停掉时：gh 和它起的进程一个不留，返回之后不再有写入"
-# gh 客户端一侧的替身：命中的调用先等（等的是它自己起的子进程），再走真正的假 GitHub。请求还没发出去
+# gh 客户端一侧的替身：命中的调用交给它起的一个后代进程去做——后代先等，再向假 GitHub 发真正的请求；
+# 替身自己只等这个后代。所以只停 gh 本身不够：后代还活着，就会在之后把请求发出去。请求还没发出去
 # 就被停掉的话，GitHub 上什么都不该多出来。每个进程号记进文件，停掉之后逐个核对。
 SLOW="$SANDBOX/slowbin"; SLOWD="$SANDBOX/slow"; mkdir -p "$SLOW" "$SLOWD"
 cat > "$SLOW/gh" <<SH
 #!/usr/bin/env bash
 if [ -f "$SLOWD/match" ] && printf '%s ' "\$@" | grep -qE -- "\$(cat "$SLOWD/match")"; then
     echo \$\$ >> "$SLOWD/pids"
-    sleep "\$(cat "$SLOWD/secs")" &
+    ( sleep "\$(cat "$SLOWD/secs")"; exec "$SANDBOX/bin/gh" "\$@" ) &
     echo \$! >> "$SLOWD/pids"
-    wait
+    wait \$!
+    exit \$?
 fi
 exec "$SANDBOX/bin/gh" "\$@"
 SH
@@ -393,15 +395,38 @@ redrun 561 $((NOW - 60)) 3 requester-bot
 : > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 8 > "$SLOWD/secs"
 env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" bash "$NEW/scripts/ci-failure-report.sh" > "$W/out" 2>&1 &
 HAND=$!
-i=0; while [ ! -s "$SLOWD/pids" ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
-GHPID=$(head -1 "$SLOWD/pids")
+i=0; while [ "$(grep -c . "$SLOWD/pids" 2>/dev/null)" -lt 2 ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
+calls=$(grep -c . "$CALLS")
 kill -TERM "$HAND"; rc=0; wait "$HAND" || rc=$?
-chk "人工入口被停：以被停的退出码结束" "$rc" "143"
-chk "人工入口被停：它正等的 gh 已结束，检查程序没有留下" \
-    "$(kill -0 "$GHPID" 2>/dev/null && echo alive || echo gone),$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "gone,0"
+chk "人工入口被停：以被停的退出码结束，被等的调用确实发生过（gh 和它起的后代都记到了）" \
+    "$rc,$([ "$(grep -c . "$SLOWD/pids")" -ge 2 ] && echo yes || echo no)" "143,yes"
+chk "人工入口被停：返回时 gh、它起的后代、检查程序都已结束" \
+    "$(slow_alive),$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0,0"
 sleep 9
-chk "人工入口被停：再等 9 秒也没有建出报告" "$(n_issues)" "0"
+chk "人工入口被停：再等 9 秒也没有建出报告，假 GitHub 没收到新请求" "$(n_issues),$(grep -c . "$CALLS")" "0,$calls"
 rm -f "$SLOWD/match"
+later; tick
+chk "人工入口被停：下一次正常检查照常报告" "$(n_issues)" "1"
+# 人工入口只停自己建的那一组：和它同一会话里另一个程序不受影响
+sleep 60 & BYSTANDER=$!
+fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+redrun 563 $((NOW - 60)) 3 requester-bot
+: > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 8 > "$SLOWD/secs"
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" bash "$NEW/scripts/ci-failure-report.sh" > "$W/out" 2>&1 &
+HAND=$!
+i=0; while [ "$(grep -c . "$SLOWD/pids" 2>/dev/null)" -lt 2 ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done
+kill -TERM "$HAND"; rc=0; wait "$HAND" || rc=$?
+chk "人工入口被停：同一会话里的别的程序没被一起停掉，入口自己照常结束" \
+    "$(kill -0 "$BYSTANDER" 2>/dev/null && echo alive || echo gone),$rc,$(slow_alive)" "alive,143,0"
+kill "$BYSTANDER" 2>/dev/null; wait "$BYSTANDER" 2>/dev/null || true
+rm -f "$SLOWD/match"
+# 人工入口正常跑完：结果照常、组里没有留下进程
+fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+redrun 564 $((NOW - 60)) 3 requester-bot
+trc=0; tick || trc=$?
+chk "人工入口正常跑完：报告照常建出，退出码 0" "$(n_issues),$trc" "1,0"
+tick --list
+has "人工入口正常跑完：查看命令的输出照常打印" "$(cat "$W/out")" "状态：正常"
 
 # 主轮询自己被停（TERM）时检查正等着写请求：检查那一组先停干净，主轮询再照原信号结束
 fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable

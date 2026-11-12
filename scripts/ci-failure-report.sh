@@ -59,29 +59,51 @@ run_py() {
     exec python3 "$SCRIPT_DIR/ci_failure_report.py" "$@"
 }
 
-if [ "$MODE" != tick ]; then
-    ( run_py "$MODE" )
-    exit $?
-fi
-
-# 输出先落到文件、跑完再逐行进日志。本脚本被要求停下（TERM）时把检查程序一起停掉、等它真的退出
-# 再走：检查程序收到 TERM 会先结束它正在等的那次 gh 调用。主轮询调用时整条链在同一个进程组里，
-# 由 ci_failure_report_tick 整组停、等组清空（它自己对每次 gh 调用都有时限，正常情况下走不到）。
+# 停止规则只有一条，主轮询和人工运行都照它：检查的整条进程链（检查程序 → gh → gh 起的任何进程）在
+# 一个进程组里，要停就整组停、等到组里一个进程都不剩（ci_report_group_stop）；正常结束后也核对一次，
+# 组里还有进程就停掉。只停检查程序或它直属的 gh，gh 起的后代还会在本脚本退出后把报告建出来
+# （PR #393 复审第 4、5 轮）。
+#   · 主轮询调用（CI_FAILURE_REPORT_IN_POLL=1）：本脚本已经是 ci_failure_report_tick 建的那一组的
+#     组长，检查程序直接留在这一组里，由 tick 整组停
+#   · 人工运行：本脚本自己给检查程序建一组（set -m，只为这一次启动），只停这一组——调用它的终端、
+#     同一终端里的别的程序都不在组里，不会被误停
+# 输出先落到文件、跑完再交出去（检查进日志，其余原样打印）。
 OUT=$(mktemp "$STATE_DIR/.ci-failure-report.XXXXXX")
-( run_py tick ) > "$OUT" 2>&1 &
+OWN_GROUP=no
+if [ "${CI_FAILURE_REPORT_IN_POLL:-}" = 1 ]; then
+    ( run_py "$MODE" ) > "$OUT" 2>&1 &
+else
+    set -m
+    ( run_py "$MODE" ) > "$OUT" 2>&1 &
+    set +m
+    OWN_GROUP=yes
+fi
 PY=$!
-stop_py() {
+stop_check() {
     local i=0
-    kill -TERM "$PY" 2>/dev/null || true
-    while kill -0 "$PY" 2>/dev/null && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); done
-    kill -KILL "$PY" 2>/dev/null || true
+    if [ "$OWN_GROUP" = yes ]; then
+        ci_report_group_stop "$PY" || true
+    else
+        # 组归主轮询管：这里只让检查程序先结束它正在等的那次 gh 调用，整组由 tick 收尾
+        kill -TERM "$PY" 2>/dev/null || true
+        while kill -0 "$PY" 2>/dev/null && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); done
+        kill -KILL "$PY" 2>/dev/null || true
+    fi
     wait "$PY" 2>/dev/null || true
     rm -f "$OUT"
 }
-trap 'stop_py; exit 143' TERM INT
+trap 'stop_check; exit 143' TERM INT HUP
 rc=0
 wait "$PY" || rc=$?
-trap - TERM INT
+if [ "$OWN_GROUP" = yes ] && ! ci_report_group_stop "$PY"; then
+    echo "⚠️ 检查的进程组 $PY 停不干净，仍有进程在" >&2
+fi
+trap - TERM INT HUP
+if [ "$MODE" != tick ]; then
+    cat "$OUT"
+    rm -f "$OUT"
+    exit "$rc"
+fi
 while IFS= read -r line; do
     [ -n "$line" ] && log "$line"
 done < "$OUT"

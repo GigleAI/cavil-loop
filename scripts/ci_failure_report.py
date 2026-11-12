@@ -138,15 +138,41 @@ class Unknown(Exception):
 _child = None
 
 
+def _end_call(c):
+    """End one gh call and everything it started, and wait until none of it is left.
+
+    gh runs in a process group of its own (start_new_session), so the group can be stopped
+    without touching this process: killing gh alone leaves whatever it started running, and that
+    can still send the request after this process has moved on or exited (PR #393 review rounds
+    4 and 5). Standard library only, the same on Linux and macOS."""
+    try:
+        os.killpg(c.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        c.kill()
+    except OSError:
+        pass
+    try:
+        c.wait(timeout=5)
+    except Exception:
+        pass
+    end = time.time() + 5
+    while time.time() < end:
+        try:
+            os.killpg(c.pid, 0)
+        except OSError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _on_stop(signum, _frame):
-    """Asked to stop: end the gh call in flight first, so no request outlives this process."""
+    """Asked to stop: end the gh call in flight (its whole group) first, so no request outlives
+    this process."""
     c = _child
     if c is not None:
-        try:
-            c.kill()
-            c.wait(timeout=5)
-        except Exception:
-            pass
+        _end_call(c)
     try:
         sys.stdout.flush()
     except Exception:
@@ -173,17 +199,13 @@ def gh(method, path, fields=None, write=False, raw=False):
     if _deadline is not None:
         limit = max(5, min(limit, int(_deadline - time.time()) + 5))
     global _child
-    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                              start_new_session=True)
     try:
         try:
             out, errout = _child.communicate(timeout=limit)
         except subprocess.TimeoutExpired:
-            _child.kill()
-            try:
-                # whatever gh started may still hold the pipes: do not wait on them for long
-                _child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+            _end_call(_child)
             raise Budget("gh api %s %s 超过 %d 秒没有返回，已结束这次调用" % (method, path.split("?")[0], limit))
         rcode = _child.returncode
     finally:
