@@ -769,13 +769,19 @@ pub(crate) fn refused(m: &str) -> Value {
     json!({ "result": "refused", "output": m })
 }
 
+/// The one test of "this is a status the client understands" — for the local status script and for
+/// the same output relayed by a remote machine (GitHub#387).
+pub(crate) fn status_shape(v: &Value) -> bool {
+    v["version"] == 1 && v["projects"].is_array()
+}
+
 pub(crate) fn parse_status(out: &Out) -> Result<Value, String> {
     if !out.ok() {
         let t = out.text();
         return Err(format!("状态脚本{}：{}", match out.code { Some(c) => format!("退出码 {c}"), None => "没有正常结束".into() }, if t.is_empty() { "没有输出".into() } else { t }));
     }
     match serde_json::from_str::<Value>(out.stdout.trim()) {
-        Ok(v) if v["version"] == 1 && v["projects"].is_array() => Ok(v),
+        Ok(v) if status_shape(&v) => Ok(v),
         Ok(v) => Err(format!("状态脚本输出的格式认不出（version = {}），客户端可能需要更新", v["version"])),
         Err(e) => Err(format!("状态脚本输出的不是 JSON（{e}）：{}", tail(out.stdout.trim(), 2000))),
     }

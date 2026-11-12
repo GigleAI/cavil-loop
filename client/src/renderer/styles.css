@@ -612,6 +612,26 @@ table.daemon-projects td { border-bottom: 1px solid var(--border-muted); padding
 .daemon-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: var(--canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 6px 8px; margin: 4px 0; font: 12px var(--mono); white-space: pre-wrap; }
 .daemon-refresh { list-style: none; padding: 0; margin: 6px 0; }
 .daemon-refresh li { margin: 4px 0; }
+/* ---- settings: 远程 daemon (GitHub#387) ---- */
+#set-remote code { font: 12px var(--mono); background: var(--canvas); border: 1px solid var(--border-muted); border-radius: 4px; padding: 0 4px; user-select: all; overflow-wrap: anywhere; }
+#set-remote .ok-mark { color: var(--state-open-fg); }
+.remote-host { border-top: 1px solid var(--border-muted); margin-top: 12px; padding-top: 10px; }
+.remote-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remote-head .remote-spacer { flex: 1; }
+.remote-pill { display: inline-block; border: 1px solid var(--border-muted); border-radius: 999px; padding: 0 8px; font-size: 12px; line-height: 20px; white-space: nowrap; }
+.remote-pill.ok { color: var(--state-open-fg); }
+.remote-pill.bad { color: var(--err-fg); }
+.remote-pill.busy { color: var(--muted); }
+.banner.remote-inline { margin: 8px 0; }
+table.daemon-projects.remote-old { opacity: 0.55; }
+.remote-steps { margin: 6px 0 10px; padding-left: 20px; }
+.remote-steps li { margin: 6px 0; }
+.modal label.remote-field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.modal label.remote-field input { width: 100%; }
+.modal label.remote-field input.remote-code { width: 160px; font: 14px var(--mono); letter-spacing: 2px; }
+.modal code { font: 12px var(--mono); }
+.modal.remote-log { width: 720px; }
+.modal.remote-log .daemon-output { max-height: 340px; }
 /* "接上 daemon" (GitHub#315) */
 .modal.connect { width: 640px; }
 .connect-form { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
