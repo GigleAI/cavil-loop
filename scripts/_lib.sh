@@ -245,12 +245,18 @@ REQUESTER_BOT_DISPATCH_CLEAR=()
 # 共用这一份，等待标签只在这里加一次，不会有哪条派工路径漏摘。
 # 用法：flip_to_doing <编号> <日志里的描述>
 flip_to_doing() {
+    local _flip_rc=0
+    # 恢复派工（GitHub#339）：第一次对外动作之前的最后一次核对；平时什么都不做
+    stuck_release_gate
     [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    STUCK_RELEASE_FLIP_OK=1
     run_gh "label 翻转 ($2)" \
         gh_label_flip "$1" \
         --add "$LABEL_AGENT_DOING" \
         --remove "${TRIGGER_LABELS_ALL[@]}" ${REQUESTER_BOT_DISPATCH_CLEAR[@]+"${REQUESTER_BOT_DISPATCH_CLEAR[@]}"} \
-            ${BLOCKED_DISPATCH_CLEAR[@]+"${BLOCKED_DISPATCH_CLEAR[@]}"}
+            ${BLOCKED_DISPATCH_CLEAR[@]+"${BLOCKED_DISPATCH_CLEAR[@]}"} || _flip_rc=$?
+    STUCK_RELEASE_FLIP_OK=""
+    return "$_flip_rc"
 }
 
 # labels_csv 里挂没挂等待标签（整名匹配，label 名可能含空格 / 正则元字符）
@@ -852,6 +858,12 @@ gh_write_token() {
 # 没配 WRITE_GH_TOKEN 时**原样调 gh**，不写成 GH_TOKEN="" —— 空值和未设对 gh 不是
 # 同一回事，那会让单 token 部署的行为悄悄变掉。
 gh_write() {
+    # 动用人的恢复指令的派工（GitHub#339）：派工脚本里普通流程的失败留言、转人工翻标签都不做，
+    # 成没成由父进程统一收尾（stuck_release_finish）。平时这个变量是空的。
+    if [ -n "${STUCK_REL_CTX:-}" ] && ! stuck_release_write_ok "$@"; then
+        log "卡住检测：恢复派工里不做普通流程的这次 GitHub 写入（gh ${1:-} ${2:-} ${3:-} ${4:-}），结果交给统一收尾"
+        return 1
+    fi
     if [ -n "${WRITE_GH_TOKEN:-}" ]; then
         GH_TOKEN="$WRITE_GH_TOKEN" gh "$@"
     else
@@ -923,9 +935,12 @@ fi
 inject_prompt_logged() {
     local sess="$1" prompt_file="$2"
     local err rc line
+    # 恢复派工（GitHub#339）：往会话里送任务之前的最后一次核对；平时什么都不做
+    stuck_release_gate
     err="$(mktemp)"
     agent_inject_prompt "$sess" "$prompt_file" 2>"$err"
     rc=$?
+    [ "$rc" != 0 ] || stuck_release_mark_session
     if [ -s "$err" ]; then
         while IFS= read -r line; do
             [ -n "$line" ] && log "  [inject] $line"
@@ -2019,6 +2034,11 @@ reap_finished_workers() {
         if [ -n "${_active[$n]:-}" ]; then
             continue
         fi
+        # 卡住检测停住的条目（GitHub#339）：会话原样留着，等人恢复。功能关着时恒为否。
+        if stuck_frozen_work "$n"; then
+            log "⏳ 回收暂缓: $sess（issue #$n 卡住检测已对它停手，会话留给人看）"
+            continue
+        fi
         # 宽限期：worker 是**先翻 label 再收尾**的（推 commit、发 review 评论、贴总结）。
         # session_activity 仅作额外宽限；不能据此判定测试或 worker 已停止。
         last_act="${_last_act[$sess]:-}"
@@ -2550,10 +2570,17 @@ sub_issue_rollup() {
 
 # 父 issue 一侧的汇总（GitHub#233 从 sub_issue_rollup 拆出）：子项从哪来不管（本仓库或别的仓库），
 # 只看父 issue 自己的子项列表。第 3 个参数给了 = 由这个刚关掉的子项触发，额外要求它在列表里。
+STUCK_ROLLUP_HELD=""
 sub_issue_rollup_parent() {   # <父号> <state_file> [触发的子号]
     local parent="$1" state_file="$2" sub="${3:-}"
     local subs total open_left parent_state done_total commented tmp body
     local parent_meta summary_total
+    # 卡住检测停住的父 issue（GitHub#339）：先不收尾，留在队列里、不计重试次数。功能关着时恒为否。
+    if stuck_frozen "$parent"; then
+        stuck_skip_note "子项全部关闭后的父 issue 收尾" "$parent"
+        STUCK_ROLLUP_HELD=1
+        return 1
+    fi
     parent_meta=$(run_gh_capture "读取父 issue #$parent 状态" \
         gh api "repos/$REPO/issues/$parent" --jq '"\(.state)\t\(.sub_issues_summary.total // "")"') || return 1
     parent_state=${parent_meta%%$'\t'*}
@@ -2683,6 +2710,8 @@ merged_label_drain() {
     for issue in $(jq -r '(.merged_label_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
         [[ "$issue" =~ ^[0-9]+$ ]] || continue
         prnum=$(jq -r --arg i "$issue" '.merged_label_queue[$i].pr // "?"' "$state_file")
+        # 卡住检测停住的 issue（GitHub#339）：先不打标签，留在队列里、不计重试次数。功能关着时恒为否。
+        if stuck_frozen "$issue"; then stuck_skip_note "合并后给 issue 打标签" "$issue"; continue; fi
         tmp=$(mktemp)
         if merged_issue_label "$issue" "$prnum"; then
             jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
@@ -2878,11 +2907,13 @@ sub_issue_rollup_drain() {
     local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" sub tries tmp
     for sub in $(jq -r '(.split_rollup_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
         [[ "$sub" =~ ^[0-9]+$ ]] || continue
+        STUCK_ROLLUP_HELD=""
         if sub_issue_rollup "$sub" "$state_file"; then
             tmp=$(mktemp)
             jq --arg s "$sub" 'del(.split_rollup_queue[$s])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
             continue
         fi
+        [ -z "$STUCK_ROLLUP_HELD" ] || continue
         tries=$(jq -r --arg s "$sub" '(.split_rollup_queue[$s] // 0) + 1' "$state_file")
         tmp=$(mktemp)
         if [ "$tries" -ge "$cap" ]; then
@@ -3241,6 +3272,8 @@ blocked_tick() {   # <state_file>
     write_identity_login >/dev/null || true
     while IFS=$'\t' read -r num labels_csv; do
         [ -n "$num" ] || continue
+        # 卡住检测停住的条目（GitHub#339）：不检查、不翻回，等前置的进度也不前进。功能关着时恒为否。
+        if stuck_frozen "$num"; then stuck_skip_note "等前置检查" "$num"; continue; fi
         if stop=$(blocked_stop_reason "$labels_csv"); then
             log_debug "等前置：#$num 同时挂着 $stop，不归这里管"
             continue
@@ -3759,6 +3792,8 @@ pending_human_conflict_tick() {
     local -a todo=()
     while IFS=$'\t' read -r num head base fork labels_csv; do
         [ -n "$num" ] && [ -n "$head" ] && [ -n "$base" ] || continue
+        # 卡住检测停住的条目（GitHub#339）：不检查冲突、不留言。功能关着时恒为否。
+        if stuck_frozen "$num"; then stuck_skip_note "等人 PR 的冲突检查" "$num"; continue; fi
         pr_conflict_labels_busy "$labels_csv" && continue
         st_acted=$(jq -r --arg p "$num" '.pr_conflict[$p].acted_head // ""' "$state_file")
         [ "$st_acted" = "$head" ] && continue
@@ -5145,6 +5180,8 @@ autopilot_merge_tick() {   # <state_file>
     rows=$(printf '%s' "$pages" | jq -r --arg M "$LABEL_PENDING_MERGE" \
         '.[][] | select(any(.labels[]?; .name == $M)) | .number' 2>/dev/null) || return 0
     for num in $rows; do
+        # 卡住检测停住的条目（GitHub#339，PR 自己或它背后的 issue）：不合并。功能关着时恒为否。
+        if stuck_frozen "$num"; then stuck_skip_note "托管合并" "$num"; continue; fi
         autopilot_merge_one "$sf" "$num" || true
     done
     return 0
@@ -5524,6 +5561,7 @@ autopilot_takeover_tick() {   # <state_file>
     if ! autopilot_enabled; then
         while IFS=$'\t' read -r num upd; do
             [ -n "$num" ] || continue
+            if stuck_frozen "$num"; then stuck_skip_note "托管提示" "$num"; continue; fi
             printf '%s' "$pages" | jq -e --argjson n "$num" --arg L "$LABEL_AUTOPILOT" \
                 'any(.[][]; .number == $n and any(.labels[]?; .name == $L))' >/dev/null 2>&1 || continue
             autopilot_notice_once "$sf" "$num" no-review-gate "⚠️ **托管标签 \`$LABEL_AUTOPILOT\` 不生效：本项目没有开复审关卡**
@@ -5535,6 +5573,8 @@ autopilot_takeover_tick() {   # <state_file>
     ipages=$(open_snapshot issues) || ipages="[]"
     while IFS=$'\t' read -r num upd; do
         [ -n "$num" ] || continue
+        # 卡住检测停住的条目（GitHub#339）：不接手。功能关着时恒为否。
+        if stuck_frozen "$num"; then stuck_skip_note "托管接手" "$num"; continue; fi
         pj=$(printf '%s' "$pages" | jq -c --argjson n "$num" 'first(.[][] | select(.number == $n)) // empty' 2>/dev/null) || pj=""
         n=$(autopilot_pr_binding "$pj" 2>/dev/null) || n="-"
         iupd="-"
@@ -5729,6 +5769,8 @@ autopilot_mirror_tick() {   # <state_file>
     rows=$(printf '%s' "$pages" | jq -r '.[][] | "\(.number)\t\(.updated_at // "")"' 2>/dev/null) || return 0
     while IFS=$'\t' read -r num upd; do
         [ -n "$num" ] || continue
+        # 卡住检测停住的条目（GitHub#339）：不复制、不收回托管标签。功能关着时恒为否。
+        if stuck_frozen "$num"; then stuck_skip_note "托管标签同步" "$num"; continue; fi
         pj=$(printf '%s' "$pages" | jq -c --argjson n "$num" 'first(.[][] | select(.number == $n)) // empty' 2>/dev/null) || pj=""
         [ -n "$pj" ] || continue
         n=$(autopilot_pr_binding "$pj" 2>/dev/null) || n="-"
@@ -5798,6 +5840,7 @@ autopilot_off_sweep() {   # <state_file>
         | .number' 2>/dev/null) || return 0
     enc=$(printf '%s' "$m" | jq -sRr @uri)
     for pr in $cands; do
+        if stuck_frozen "$pr"; then stuck_skip_note "托管关闭后的交接" "$pr"; continue; fi
         pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || { log "托管已关：读不到 PR #$pr，下轮再收尾"; continue; }
         printf '%s' "$pj" | jq -e '.state == "open" and (.merged | not)' >/dev/null 2>&1 || continue
         # ① 先记意图；记不下就本轮不碰 GitHub（等合并标签还在，下轮照样选中）
@@ -6015,6 +6058,15 @@ worker_alive() {   # <tmux_session>
 #
 # 返回非 0：读不到窗格状态，或 tmux 命令本身失败。程序是否起得来由调用方用 worker_alive 判断。
 worker_session_launch() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
+    local _launch_rc=0
+    # 恢复派工（GitHub#339）：启动 / 换程序之前的最后一次核对，起来之后把本次派工的记号写在
+    # 会话上；平时两句都什么都不做
+    stuck_release_gate
+    worker_session_launch_do "$@" || _launch_rc=$?
+    [ "$_launch_rc" != 0 ] || stuck_release_mark_session
+    return "$_launch_rc"
+}
+worker_session_launch_do() {   # <tmux_session> <cwd> <command> [tmux -e 参数…]
     local sess="$1" cwd="$2" cmd="$3" st pane pid dead i
     shift 3
     if ! session_alive "$sess"; then
@@ -6512,7 +6564,8 @@ config_notice_tick() {
 
     if [ "${CONFIG_NOTICE_ISSUE}" = true ]; then
         new_iss=$(jq -r --argjson l "$issued" '.[] | select(. as $k | $l | index($k) | not)' <<<"$missing")
-        if [ -n "$issue" ] && { [ "$missing" = '[]' ] || [ -n "$new_iss" ]; }; then
+        # 卡住检测停住的条目（GitHub#339）不追加、不关闭；功能关着时 stuck_frozen 恒为否
+        if [ -n "$issue" ] && ! stuck_frozen "$issue" && { [ "$missing" = '[]' ] || [ -n "$new_iss" ]; }; then
             if ! state=$(config_notice_issue_state "$issue"); then
                 state=unknown
             fi
@@ -7195,7 +7248,7 @@ compose_prompt_template() {
 #   · 任何一项读不出 / 认不出 = 未知：不推进、不清零、不动手（硬规则 L36）。
 #   · ②③ 动手前把目标、绑定条目、本地会话**全部重读**，和这个空闲周期开始时记下的身份串
 #     整串比对，结论也要再判一次（stuck_doc + stuck_verdict，两处同一份）；不一致就不写、
-#     不结束会话、不记完成（硬规则 L41）。上一轮没做完的待办（stuck_resume）过同一道核对。
+#     不结束会话、不记完成（硬规则 L41）。一步里每一次副作用之前（stuck_step_gate）过同一道核对。
 #   · 阶梯进度只进不退，直到条目离开 doing/agent 且不是 daemon 自己翻回去等重派的状态。
 #
 # 进度在 state.json 的 stuck_workers（只在功能动作时才写，故意不进开头的补字段循环）。
@@ -7454,7 +7507,7 @@ stuck_doc() {   # <issue|pr> <编号> <工作编号>
                sample: {state: $st, why: $why, pane: $pane, pid: $pid, agent: $agent, role: $role}}'
 }
 # 条目这一侧的结论：目标还开着、没合并、还挂着 doing/agent、没有保护标签；绑定条目没有保护
-# 标签、没有同时挂 doing/agent。stuck_verdict 和待办重试（stuck_resume）共用。
+# 标签、没有同时挂 doing/agent。stuck_verdict 用。
 # STUCK_V = stuck / no（原因在 STUCK_V_WHY）
 stuck_verdict_items() {   # <身份串 JSON>
     local doc="$1" tl p b bn
@@ -7540,34 +7593,31 @@ stuck_nudge() {   # <工作编号> <kind> <num> <取样目标串>
     esac
     stuck_entry_set "$n" '.nudged_at = $now | .nudge_rc = $rc' --argjson now "$now" --argjson rc "$rc" || true
 }
-# ── ②③ 重派 / 交人：一步拆成几次写入，每次写入都要有「是 daemon 自己做成的」证据 ──
+# ── ②③ 重派 / 交人，和「异常就停住」──
 #
-# 一步 = 按固定顺序的几次写入：
+# 一步 = 按固定顺序的几次写入，**全部在同一轮里做完**：
 #   重派：加触发标签 → 摘 doing/agent → 结束会话
 #   交人：发评论 → 加 pending/human → 摘 doing/agent        （会话保留，方便人查）
-# 标签先加后摘：中途停下时条目不会变成一个流程标签都没有。先加上去的那个标签在整步做完之前
-# 只是半成品：派工队列不认它（stuck_dispatch_hold），这一步作废时摘回去（stuck_own_retract）。会话最后才结束：之前任何一次写入
-# 没成，都还没做不可逆的事，也不会留下「doing/agent 还在、会话没了」让 self-heal 不看保护标签就接手。
+# 标签先加后摘：中途停下时条目不会变成一个流程标签都没有。会话最后才结束。
 #
-# 记录里的 .id 是「此刻条目应该是什么样」：空闲周期开始时存下，之后**只在 daemon 的某次写入有
-# 证据确实做成时**改它——
-#   评论：POST 的响应里有这条评论的编号 → .id 里目标的最新评论编号改成它
-#   标签：写之前先登记 .claim = {op, label, after}（要做哪个动作、当时目标的最新标签事件编号）；
-#         写完去读目标在 after 之后的标签事件：
-#           恰好一条、动作和标签对得上、操作者是 daemon 的写身份 → 做成了：改 .id 的标签和事件编号
-#           一条都没有                                               → 没写上，条目没变
-#           其余任何情况（多了别的事件、操作者不是 daemon）          → 有别人动过：放弃这一步
-#           读不到                                                   → 不知道：登记留着，下一轮再核实
-# 「打算加的标签出现在条目上」本身不算证据：人自己挂上 pending/human 和 daemon 加的长得一样，
-# 只有事件记录分得清（代码复审第 2 轮）。
+# 记录里的 .id 是「此刻条目应该是什么样」：空闲周期开始时存下，之后只在 daemon 的某次写入有
+# 证据确实做成时改它（评论：POST 的响应里有评论编号；标签：写完后目标的标签事件里恰好多出一条、
+# 动作和标签对得上、操作者是 daemon 的写身份）。「打算加的标签出现在条目上」不算证据：人自己
+# 挂上 pending/human 和 daemon 加的长得一样，只有事件记录分得清。
+# 每一次副作用之前都是同一道核对（stuck_step_gate）：stuck_doc 全部重读，和 .id 整串相同才继续。
 #
-# **每一次副作用**之前——发评论、加标签、摘标签、结束会话，首次和续做都一样——都是同一道核对
-# （stuck_step_gate）：stuck_doc 全部重读，和 .id **整串相同**才继续，不做任何换算、不跳过任何字段。
+# 第一次写入之前核对不过 / 读不到：什么都没写，重新计时。
+# **第一次写入之后**，任何一次写入没当场确认成功、两次写入之间核对出变化、或读不到状态：
+# 当场停住（stuck_freeze）——不撤回、不重试、不留到下一轮接着做。前六轮代码复审的问题都出在
+# 「半成品状态跨轮续做 / 撤回」上：每多一种中间状态，就多一处能被别的流程当成正常标签消费的口子。
 #
-# 做不完的次数按条目累计（.fails），不随空闲周期清零：到 STUCK_STEP_MAX_FAILS 就标 .exhausted，
-# 这一条从此不再自动处理，直到它离开 doing/agent（正常交接、人改了标签）或有证据表明被重新派工
-# （出现了新的「打上 doing/agent」事件）。否则一个一直失败的写入会一批接一批地重试下去。
-STUCK_STEP_MAX_FAILS=10
+# 停住的条目（目标 + 当时核对过的关联条目）：daemon 不派工、不改标签、不发评论（停住说明除外）、
+# 不结束会话、不合并，所有会动条目的环节都问 stuck_frozen。只有两条路让它重新动起来：
+#   · 人恢复：停住说明**确认发出之后**，人在条目上打上一个派工标签，并且到派工那一刻仍然有效
+#     （stuck_release_ok 三条 + 派工脚本第一次对外动作前的 stuck_release_gate）；这条指令只能用一次
+#   · 本机解卡：scripts/stuck-release.sh（说明发不出去、起点记不下来时）
+STUCK_NOTE_MAX_TRIES=10
+STUCK_RELEASE_MISS_MAX=3
 
 # 目标条目上编号大于 <after> 的标签事件，按编号升序，每行「编号 TAB 动作 TAB 标签 TAB 操作者」。
 # 读不到 / 有事件缺编号 → 1。
@@ -7581,156 +7631,405 @@ stuck_label_events_after() {   # <编号> <after>
     printf '%s\n' "$rows" | awk -F'\t' '$1 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' || return 1
     printf '%s\n' "$rows" | sort -t$'\t' -k1,1n | awk -F'\t' -v a="$2" '($1 + 0) > (a + 0)'
 }
-# 放弃没做完的这一步（有别人动过 / 和决定动手时不一样了）。不计入做不完的次数：这不是写入失败。
-stuck_step_drop() {   # <工作编号> <kind> <num> <原因>
-    log "卡住检测：$2 #$3 没做完的这一步作废：$4"
-    # 评论编号一并清掉：以后再卡住是新的一次，交人时要重新说明
-    stuck_entry_set "$1" '.pending = "" | .claim = null | .comment_id = 0 | .since = 0 | .id = "" | .fp = ""' || true
-    # 这一步里 daemon 自己加上去的标签摘回去：留着的话，它会被下一轮的派工队列当成「有人要派工」
-    stuck_own_retract "$1" "$2" "$3"
+# 流程标签：派工 / 复审 / 进行中 / 交人 / 等前置 / 等外部需求机器人 / 已转 PR / 等合并。每行一个。
+# 分类标签（bug、优先级…）不在里面，人整理它们不影响任何判断。
+stuck_flow_labels() {
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" "$LABEL_PENDING_HUMAN" "${LABEL_PENDING_BLOCKED:-}" \
+        "${LABEL_PENDING_REQUESTER_BOT:-}" "${LABEL_PENDING_PR:-}" "${LABEL_PENDING_MERGE:-}" | awk 'NF && !seen[$0]++'
 }
-# daemon 在没做完 / 已作废的一步里自己加上的标签（.own），在这一步做完之前**不是派工信号**。
-# 派工队列入队前问这里：0 = 这个触发标签是 daemon 的半成品，别派。纯本地判断，不发请求；
-# 功能关着、没有这种记录时恒为 1。
-# 人明确要恢复时不受它挡：人把这个标签摘掉或重新打一次，事件记录里就有了不是 daemon 那次的
-# 动作，stuck_own_retract 下一轮读到后放弃归属（.own 清掉），之后照常派工。
-# （代码复审第 4 轮：一步中途停下后留在条目上的触发标签，被下一轮普通派工当真派了出去。）
-stuck_dispatch_hold() {   # <issue|pr> <编号> <触发标签>
+stuck_new_token() {
+    if [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen > /dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'
+    else printf '%s-%s-%s' "$(date +%s)" "$$" "$RANDOM$RANDOM"; fi
+}
+
+# ── 停住 ──
+# 当场停住这一条。范围 = 目标 + 身份串里核对过的关联条目（再停住时沿用上一次的范围）。
+# 已经用掉的那条人工指令（.frozen.used）带过去：它永远不会再放行。
+stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [身份串 JSON]
+    local n="$1" kind="$2" num="$3" why="$4" doc="${5:-}" items
+    [ -n "$doc" ] || doc=$(jq -r --arg k "$n" '.stuck_workers[$k].id // ""' "$STATE_FILE" 2>/dev/null) || doc=""
+    items=$(printf '%s' "$doc" | jq -c '[(.target.n // empty | tostring), (.bound[]?.n | tostring)]' 2>/dev/null) || items=""
+    [ -n "$items" ] || items='[]'
+    STUCK_ACTED=1
+    log "🧊 卡住检测：$kind #$num 停住，交给人处理 —— $why（daemon 不再对这一条派工、改标签、结束会话或合并）"
+    stuck_entry_set "$n" '.kind = $kind | .num = $num | .since = 0 | .id = "" | .fp = "" | .warned = ""
+        | .frozen = {why: $why, at: $now, token: $token, posted: "no", comment: 0, tries: 0, base: null,
+                     cand: null, miss: 0, key: "", settled: false, used: (.frozen.used // null),
+                     items: (([$num] + $items + (.frozen.items // [])) | unique)}' \
+        --arg kind "$kind" --arg num "$num" --arg why "$why" --arg token "$(stuck_new_token)" \
+        --argjson now "$(pace_now)" --argjson items "$items" \
+        || log "❌ 卡住检测：$kind #$num 的停住记录写不进 $STATE_FILE"
+}
+# 各环节因为停住而跳过时留一行（调试级别：停住可能持续几天，不每轮刷正式日志）
+stuck_skip_note() {   # <环节> <编号>
+    log_debug "卡住检测：#$2 已停手 → 「$1」这一轮跳过它"
+}
+# 这一条（或把它当关联条目核对过的那一条）停住了吗。0 = 停住。只读本地记录，不发请求；
+# 功能关着恒为 1。每个会写条目 / 动会话的环节在动手前问这里。
+stuck_frozen() {   # <issue / PR 编号>
     stuck_enabled || return 1
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    # 两种都算：已核实是 daemon 加的（.own），和**已经发出去、还没核实成没成**的那次加标签（.claim）。
-    # 后一种不能因为「归属还查不到」就当成别人打的派工标签（代码复审第 5 轮）。
-    # 这一轮开头还是半成品、这一轮里才了结（摘回去了 / 整步做完了 / 放手了）的也算：派工队列读的是
-    # 这一轮开头的快照，快照里那个标签还在，当轮就派等于拿过期的快照当依据。下一轮再按新快照来。
-    case "$STUCK_ROUND_HOLDS" in *$'\n'"$1:$2:$3"$'\n'*) return 0 ;; esac
-    [ "$(stuck_holds_now | grep -cxF -- "$1:$2:$3")" -gt 0 ]
+    [ "$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null) | .frozen.items[]?] | index($n) != null' \
+        "$STATE_FILE" 2>/dev/null)" = true ]
 }
-# 此刻状态文件里所有「daemon 的半成品标签」，每行 kind:num:label
-stuck_holds_now() {
-    jq -r '(.stuck_workers // {})[] | . as $e
-        | ([$e.own.label // empty] + [if ($e.claim.op // "") == "labeled" then $e.claim.label else empty end])[]
-        | "\($e.kind):\($e.num):\(.)"' "$STATE_FILE" 2>/dev/null || true
+# 停住的条目里按工作编号问（自愈、会话回收用：它们手里是工作编号）
+stuck_frozen_work() {   # <工作编号>
+    stuck_enabled || return 1
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
+    [ "$(jq -r --arg k "$1" '(.stuck_workers[$k].frozen // null) != null' "$STATE_FILE" 2>/dev/null)" = true ] && return 0
+    stuck_frozen "$1"
 }
-STUCK_ROUND_HOLDS=$'\n'
-# 这条记录里还有没了结的东西吗：没做完的一步、没核实的标签写入、没还原的标签改动。
-# 有的话这条记录不能被「条目不挂 doing/agent 了」那条清理规则删掉——doing/agent 不在，可能正是
-# daemon 自己摘的、还没加回去；删了记录，派工队列的那道闸和还原待办就一起没了（代码复审第 5 轮）。
-stuck_entry_unfinished() {   # <记录 JSON>
-    [ "$(printf '%s' "$1" | jq -r '(.pending // "") != "" or .claim != null or .own != null or .took != null')" = true ]
-}
-# 一步作废后把 daemon 在这一步里做过的标签改动还原，顺序和做的时候相反：先把摘掉的（.took，
-# 也就是 doing/agent）加回去，再把加上的（.own）摘回去——任何时刻条目都不会一个流程标签都没有，
-# 还原完就是这一步开始之前的样子。
-# 只在条目还停在 daemon 留下的那个半成品状态时才还原。事件记录里，daemon 那两次写入之后只要有
-# 任何人动过这两个标签中的任何一个，就是人（或别的流程）在管这一条了：两项都放手，一个也不碰。
-# 摘回 .own 之前还要现读一次标签：doing/agent 不在（而 daemon 又没有待加回的），摘掉 .own 会让
-# 条目一个流程标签都不剩——那也放手。
-# 每次写完按事件核实；没成 / 读不到 → 记录原样留着（派工继续被挡、记录不会被清理），下一轮再试，
-# 最多 STUCK_STEP_MAX_FAILS 轮。返回值没有用处：有没有还原完，看记录里 .own / .took 还在不在。
-stuck_own_retract() {   # <工作编号> <kind> <num>
-    local n="$1" kind="$2" num="$3" e me ol oe tl te base rows cur
-    e=$(stuck_entry "$n")
-    ol=$(printf '%s' "$e" | jq -r '.own.label // ""'); oe=$(printf '%s' "$e" | jq -r '.own.event // ""')
-    tl=$(printf '%s' "$e" | jq -r '.took.label // ""'); te=$(printf '%s' "$e" | jq -r '.took.event // ""')
-    [ -n "$ol$tl" ] || return 0
-    if { [ -n "$ol" ] && ! [[ "$oe" =~ ^[0-9]+$ ]]; } || { [ -n "$tl" ] && ! [[ "$te" =~ ^[0-9]+$ ]]; }; then
-        stuck_entry_set "$n" '.own = null | .took = null' || true; return 0
-    fi
-    me=$(write_identity_login)
-    base="${oe:-$te}"; [ -z "$oe" ] || [ -z "$te" ] || [ "$te" -ge "$oe" ] || base="$te"
-    if [ -z "$me" ] || ! rows=$(stuck_label_events_after "$num" "$base"); then
-        log "卡住检测：$kind #$num 读不到标签记录，这一轮先不还原（派工继续不认 daemon 加的标签）"
-        return 0
-    fi
-    # daemon 自己那两次写入之后，这两个标签上还有别的事件吗
-    if printf '%s\n' "$rows" | awk -F'\t' -v ol="$ol" -v oe="${oe:-0}" -v tl="$tl" -v te="${te:-0}" '
-            (ol != "" && $3 == ol && ($1 + 0) > (oe + 0)) || (tl != "" && $3 == tl && ($1 + 0) > (te + 0)) { f = 1 }
-            END { exit !f }'; then
-        log "卡住检测：$kind #$num 上 daemon 留下的标签之后有人动过 → 不再当成 daemon 的半成品，不还原"
-        stuck_entry_set "$n" '.own = null | .took = null' || true; return 0
-    fi
-    if ! stuck_entry_set "$n" '.own_tries = ((.own_tries // 0) + 1)' \
-       || [ "$(jq -r --arg k "$n" '.stuck_workers[$k].own_tries // 0' "$STATE_FILE" 2>/dev/null)" -gt "$STUCK_STEP_MAX_FAILS" ]; then
-        return 0
-    fi
-    if [ -n "$tl" ]; then
-        STUCK_ACTED=1
-        run_gh "卡住检测：$kind #$num 加回 $tl" \
-            gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$tl" || true
-        if rows=$(stuck_label_events_after "$num" "$te") \
-           && printf '%s\n' "$rows" | awk -F'\t' -v l="$tl" -v me="$me" '$2 == "labeled" && $3 == l && $4 == me { f = 1 } END { exit !f }'; then
-            log "卡住检测：$kind #$num 已加回 $tl（还原作废的那一步）"
-            stuck_entry_set "$n" '.took = null' || true
-        else
-            log "⚠️ 卡住检测：$kind #$num 的 $tl 没加回去 → 记录留着、派工继续不认 daemon 加的标签，下一轮再试"
-            return 0
-        fi
-    fi
-    [ -n "$ol" ] || return 0
-    if ! cur=$(gh api "repos/$REPO/issues/$num" --jq '[.labels[].name] | join(",")' 2>/dev/null); then
-        log "卡住检测：$kind #$num 读不到当前标签，这一轮先不摘 $ol"
-        return 0
-    fi
-    case ",$cur," in
-        *",$LABEL_AGENT_DOING,"*) ;;
-        *)  log "卡住检测：$kind #$num 已经不挂 $LABEL_AGENT_DOING → 不摘 $ol（摘了就一个流程标签都不剩），放手"
-            stuck_entry_set "$n" '.own = null' || true; return 0 ;;
-    esac
-    STUCK_ACTED=1
-    run_gh "卡住检测：$kind #$num 摘回 daemon 加的 $ol" \
-        gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$ol" | jq -sRr @uri)" || true
-    if rows=$(stuck_label_events_after "$num" "$oe") \
-       && printf '%s\n' "$rows" | awk -F'\t' -v l="$ol" -v me="$me" '$2 == "unlabeled" && $3 == l && $4 == me { f = 1 } END { exit !f }'; then
-        log "卡住检测：$kind #$num 已摘回 $ol（还原作废的那一步）"
-        stuck_entry_set "$n" '.own = null | .own_tries = 0' || true
-    else
-        log "⚠️ 卡住检测：$kind #$num 的 $ol 没摘回去 → 记录留着、派工继续不认它，下一轮再试"
-    fi
-    return 0
-}
-# 这一步这一轮没做完（写入失败 / 核实不了）。累计到上限 → 这一条不再自动处理。
-stuck_step_fail() {   # <工作编号> <kind> <num>
-    local n="$1" fails ev
-    stuck_entry_set "$n" '.fails = ((.fails // 0) + 1)' || return 0
-    fails=$(jq -r --arg k "$n" '.stuck_workers[$k].fails // 0' "$STATE_FILE" 2>/dev/null) || fails=0
-    [ "$fails" -ge "$STUCK_STEP_MAX_FAILS" ] || return 0
-    ev=$(jq -r --arg k "$n" '(.stuck_workers[$k].id // "" | if . == "" then 0 else (fromjson | .target.event // 0) end)' "$STATE_FILE" 2>/dev/null) || ev=0
-    log "⚠️ 卡住检测：$2 #$3 累计 $fails 次没做完 → 不再自动处理这一条（等它离开 $LABEL_AGENT_DOING 或被重新派工）"
-    stuck_entry_set "$n" '.exhausted = true | .exh_event = $ev | .exh_upd = "" | .pending = "" | .since = 0 | .id = "" | .fp = ""' \
-        --argjson ev "${ev:-0}" || true
-}
-# 核实登记的那次标签写入。0 = 做成了（.id 已更新）；1 = 没写上；2 = 有别人动过；3 = 读不到
-stuck_claim_settle() {   # <工作编号> <编号>
-    local n="$1" num="$2" e op label after me rows hit
-    e=$(stuck_entry "$n")
-    op=$(printf '%s' "$e" | jq -r '.claim.op // ""'); label=$(printf '%s' "$e" | jq -r '.claim.label // ""')
-    after=$(printf '%s' "$e" | jq -r '.claim.after // ""')
-    if [ -z "$op" ] || [ -z "$label" ] || ! [[ "$after" =~ ^[0-9]+$ ]]; then return 2; fi
-    me=$(write_identity_login); [ -n "$me" ] || return 3
-    rows=$(stuck_label_events_after "$num" "$after") || return 3
-    if [ -z "$rows" ]; then
-        stuck_entry_set "$n" '.claim = null' || return 3
+# 派工队列入队前问：0 = 别派。停住的条目只有一个例外——目标条目本身、触发标签正好是初筛候选
+# 的那一枚（这里只挑候选，快照可能过时；放不放行由派工脚本里的 stuck_release_gate 现读决定）。
+stuck_dispatch_hold() {   # <issue|pr> <编号> <触发标签>
+    stuck_frozen "$2" || return 1
+    if [ -n "$3" ] && [ "$(jq -r --arg kind "$1" --arg n "$2" --arg l "$3" \
+            '[(.stuck_workers // {})[] | select(.frozen != null and .kind == $kind and .num == $n
+               and (.frozen.cand.label // "") == $l)] | length' "$STATE_FILE" 2>/dev/null)" = 1 ]; then
         return 1
     fi
-    hit=$(printf '%s\n' "$rows" | awk -F'\t' -v op="$op" -v l="$label" -v me="$me" \
-        'NR == 1 && $2 == op && $3 == l && $4 == me { id = $1 } END { if (NR == 1 && id != "") print id }')
-    [ -n "$hit" ] || return 2
-    # 加上去的标签记成「daemon 自己的」（.own：标签名 + 那次事件的编号）：这一步做完之前，它不是
-    # 给派工队列看的信号（stuck_dispatch_hold）；摘掉的标签记在 .took。这一步作废时由
-    # stuck_own_retract 按相反的顺序还原：先把摘掉的加回去，再把加上的摘回去。
-    stuck_entry_set "$n" '.claim = null | .id = (if (.id // "") == "" then "" else (.id | fromjson
-            | .target.labels = (if $op == "labeled" then (.target.labels + [$l]) else (.target.labels - [$l]) end | unique)
-            | .target.event = $ev | tojson) end)
-            | (if $op == "labeled" then .own = {label: $l, event: $ev} else .took = {label: $l, event: $ev} end)' \
-        --arg op "$op" --arg l "$label" --argjson ev "$hit" || return 3
     return 0
 }
-# 一次标签写入：登记 → 写 → 核实。返回值同 stuck_claim_settle。
+
+# ── 人恢复：判断 ──
+# 判断「人的恢复指令现在是否有效」要看的全部内容，键排序、紧凑，本身就是比对用的身份串：
+# 目标的打开 / 合并 / 目标分支 / 最新提交 / 来源仓库 / 标签，起点之后最后一条流程标签事件，
+# 关联条目的打开状态和标签。初筛、派工前最后一次核对、本机解卡的两次读取，用的都是这一个函数。
+# 读不全 → 1。
+stuck_release_doc() {   # <issue|pr> <编号> <起点事件编号>
+    local g rows flow last
+    g=$(stuck_gather "$1" "$2") || return 1
+    rows=$(stuck_label_events_after "$2" "$3") || return 1
+    flow=$(stuck_flow_labels)
+    last=$(printf '%s\n' "$rows" | STUCK_FLOW="$flow" awk -F'\t' '
+        BEGIN { n = split(ENVIRON["STUCK_FLOW"], a, "\n"); for (i = 1; i <= n; i++) f[a[i]] = 1 }
+        NF && ($3 in f) { line = $0 } END { print line }')
+    if [ -n "$last" ]; then
+        last=$(printf '%s' "$last" | jq -Rc 'split("\t") | {id: (.[0] | tonumber), op: .[1], label: .[2], actor: .[3]}') || return 1
+    else
+        last=null
+    fi
+    jq -cnS --argjson g "$g" --argjson last "$last" \
+        '{target: ($g.target | {n, pr, state, labels, merged: (.merged // null), base: (.base // null),
+                                head: (.head // null), src: (.src // null)}),
+          bound: [$g.bound[] | {n, state, labels}], last: $last}'
+}
+# 三条同时成立才算有效，成立时输出那枚派工标签：
+#   ① 起点之后最后一条流程标签事件是「打上派工标签 X」，操作者不是写账号，也不是已经用掉的那条
+#   ② 目标开着、没合并，现在的流程标签只有 X 一枚
+#   ③ 开着的关联条目没有保护标签，也不挂 doing/agent
+# 写账号读不出 → 不成立。
+stuck_release_ok() {   # <stuck_release_doc 的输出> <已用掉的事件编号（没有 = 空）>
+    local doc="$1" used="${2:-}" me x flow cur bn b
+    me=$(write_identity_login); [ -n "$me" ] || return 1
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    [ "$(printf '%s' "$doc" | jq -r '.target.state == "open" and .target.merged != true and .last != null
+            and .last.op == "labeled" and (.last.actor // "") != ""')" = true ] || return 1
+    [ "$(printf '%s' "$doc" | jq -r '.last.actor')" != "$me" ] || return 1
+    [ "$(printf '%s' "$doc" | jq -r '.last.id')" != "$used" ] || return 1
+    x=$(printf '%s' "$doc" | jq -r '.last.label')
+    printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" | grep -qxF -- "$x" || return 1
+    flow=$(stuck_flow_labels)
+    cur=$(printf '%s' "$doc" | jq -r '.target.labels[]' | grep -xF -f <(printf '%s\n' "$flow") || true)
+    [ "$cur" = "$x" ] || return 1
+    while IFS=$'\t' read -r bn b; do
+        [ -n "$bn" ] || continue
+        [ "$b" = "-" ] && b=""
+        case ",$b," in *",$LABEL_AGENT_DOING,"*) return 1 ;; esac
+        if stuck_labels_protect bound "$b" > /dev/null; then return 1; fi
+    done < <(printf '%s' "$doc" | jq -r '.bound[] | select(.state == "open")
+                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv')
+    printf '%s\n' "$x"
+}
+
+# ── 停住说明 ──
+stuck_note_marker() { printf '<!-- stuck-frozen:%s -->' "$1"; }
+stuck_note_body() {   # <工作编号> <kind> <num> <为什么> <记号> <stuck_gather 的输出>
+    local n="$1" why="$4" g="$6" labels sess ex=0 sess_text
+    labels=$(printf '%s' "$g" | jq -r '.target.labels | map("`" + . + "`") | join("、")')
+    [ -n "$labels" ] || labels="（没有标签）"
+    sess="$(tmux_session_name "$n")"
+    worker_session_exists "$sess" || ex=$?
+    case "$ex" in
+        0) sess_text="worker 会话 \`$sess\` 还开着（daemon 机器上 \`session-log.sh $n\` 可以看终端历史）" ;;
+        1) sess_text="worker 会话 \`$sess\` 已经不在" ;;
+        *) sess_text="worker 会话 \`$sess\` 的状态读不出" ;;
+    esac
+    printf '%s\n' "$(stuck_note_marker "$5")"
+    printf '⚠️ **daemon 已对这一条停手，等人处理**\n\n'
+    printf '**发生了什么**：%s。为避免在状态不明时继续自动操作，daemon 从现在起不再对这一条派工、改标签、结束会话或合并，直到人明确恢复。\n\n' "$why"
+    printf '**现在的状态**：标签 %s；%s。\n\n' "$labels" "$sess_text"
+    printf '**怎么恢复**：\n\n'
+    printf '1. 在这一条的 Labels 里，把流程标签（`%s`、`%s` 这一类）全部摘掉；摘标签不会触发任何事。\n' "$LABEL_AGENT_DOING" "${LABEL_PENDING_REVIEW:-$LABEL_PENDING_AGENT}"
+    printf '2. 再打上要用的那一枚派工标签（例如 `%s`）。要用的正是刚摘掉的那枚，就摘掉后重新打一次。\n' "$LABEL_PENDING_AGENT"
+    printf '3. daemon 下一轮看到后照常派工，并把这枚标签换成 `%s`。\n\n' "$LABEL_AGENT_DOING"
+    printf '只认**这条说明发出之后**打上的派工标签；条目上同时留着别的流程标签、或关联的 issue / PR 挂着 `%s` 时不会开工。打上后两轮还没开工，就摘掉再打一次。只想留给人处理的话，什么都不用做。\n\n' "$LABEL_PENDING_HUMAN"
+    printf '<sub>cavil-loop daemon @ %s 自动留言</sub>' "$(hostname -s 2>/dev/null || hostname)"
+}
+# 把停住说明发出去并确认。0 = 已确认发出（记录里 posted = yes）。
+#   · 上一次的发送结果不明：把评论读全，找写账号发的、带这次记号的那条；读不全 = 仍不明，不重发
+#   · 发之前按读到的内容写正文，发送前再读一遍，两次整串相同才发（硬规则 L41）；
+#     条目已关闭 → 不发；两次不一样 / 读不到 → 这一轮不发、不计失败
+#   · 请求失败计一次，满 STUCK_NOTE_MAX_TRIES 不再发
+stuck_frozen_note() {   # <工作编号> <kind> <num> <记录 JSON>
+    local n="$1" kind="$2" num="$3" e="$4" token posted tries me rows hit a b body cid
+    token=$(printf '%s' "$e" | jq -r '.frozen.token // ""'); posted=$(printf '%s' "$e" | jq -r '.frozen.posted // "no"')
+    tries=$(printf '%s' "$e" | jq -r '.frozen.tries // 0')
+    [ -n "$token" ] || return 1
+    me=$(write_identity_login); [ -n "$me" ] || return 1
+    if [ "$posted" = unknown ]; then
+        rows=$(gh api --paginate "repos/$REPO/issues/$num/comments" \
+            --jq '.[] | [(.id // "" | tostring), (.user.login // ""), ((.body // "") | contains("stuck-frozen:'"$token"'") | tostring)] | @tsv' 2>/dev/null) || return 1
+        printf '%s\n' "$rows" | awk -F'\t' 'NF && $1 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' || return 1
+        hit=$(printf '%s\n' "$rows" | awk -F'\t' -v me="$me" '$2 == me && $3 == "true" { print $1; exit }')
+        if [ -n "$hit" ]; then
+            log "卡住检测：$kind #$num 的停住说明上一轮其实发出去了（评论 $hit）"
+            stuck_entry_set "$n" '.frozen.posted = "yes" | .frozen.comment = $c' --argjson c "$hit" || return 1
+            return 0
+        fi
+        stuck_entry_set "$n" '.frozen.posted = "no"' || return 1
+    fi
+    if [ "$tries" -ge "$STUCK_NOTE_MAX_TRIES" ]; then return 1; fi
+    a=$(stuck_gather "$kind" "$num") || return 1
+    [ "$(printf '%s' "$a" | jq -r '.target.state')" = open ] || return 1
+    body=$(stuck_note_body "$n" "$kind" "$num" "$(printf '%s' "$e" | jq -r '.frozen.why // ""')" "$token" "$a")
+    b=$(stuck_gather "$kind" "$num") || return 1
+    if [ "$a" != "$b" ]; then
+        log "卡住检测：$kind #$num 发停住说明前两次读到的不一样 → 这一轮不发"
+        return 1
+    fi
+    # 先记成「结果不明」再发：进程在请求中途没了，下一轮也会先去找这条评论而不是直接重发
+    stuck_entry_set "$n" '.frozen.posted = "unknown"' || return 1
+    STUCK_ACTED=1
+    if cid=$(run_gh_capture "卡住检测：停住说明 ($kind #$num)" \
+            gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" --jq '.id') \
+       && [[ "$cid" =~ ^[0-9]+$ ]]; then
+        stuck_entry_set "$n" '.frozen.posted = "yes" | .frozen.comment = $c' --argjson c "$cid" || return 1
+        return 0
+    fi
+    tries=$((tries + 1))
+    stuck_entry_set "$n" '.frozen.tries = $t' --argjson t "$tries" || true
+    if [ "$tries" -ge "$STUCK_NOTE_MAX_TRIES" ]; then
+        log "⚠️ 卡住检测：$kind #$num 的停住说明连续 $tries 次没发出去，不再发。这一条继续停住；要恢复请在本机运行：bash $SKILL_DIR/scripts/stuck-release.sh $CONFIG_FILE $num"
+    else
+        log "⚠️ 卡住检测：$kind #$num 的停住说明没发出去（第 $tries/$STUCK_NOTE_MAX_TRIES 次），下一轮先确认再重发"
+    fi
+    return 1
+}
+# 停住的条目每轮做的事：发说明 → 记恢复起点 → 初筛人的恢复指令。用到 stuck_tick 里的 irow / prow。
+# 任何一步读不到：停在那一步，什么都不写，下一轮再试。
+stuck_frozen_tick() {   # <工作编号> <记录 JSON>
+    local n="$1" e="$2" kind num row base key it doc x pj
+    kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
+    if [ -z "$kind" ] || [ -z "$num" ]; then stuck_entry_del "$n" || true; return 0; fi
+    if [ "$kind" = issue ]; then row="${irow[$num]:-}"; else row="${prow[$num]:-}"; fi
+    if [ -z "$row" ]; then
+        # 不在打开的清单里。合并了的 PR 开不回来 → 记录清掉；只是关了的留着，重新打开后仍然停住
+        if [ "$kind" = pr ] && pj=$(stuck_gh_obj "pulls/$num") && [ "$(printf '%s' "$pj" | jq -r '.merged')" = true ]; then
+            log "卡住检测：PR #$num 已合并 → 停住记录清掉"
+            stuck_entry_del "$n" || true
+        fi
+        return 0
+    fi
+    if [ "$(printf '%s' "$e" | jq -r '.frozen.posted // "no"')" != yes ]; then
+        stuck_frozen_note "$n" "$kind" "$num" "$e" || return 0
+        e=$(stuck_entry "$n")
+    fi
+    base=$(printf '%s' "$e" | jq -r '.frozen.base // ""')
+    if ! [[ "$base" =~ ^[0-9]+$ ]]; then
+        # 起点 = 说明确认发出之后第一次把标签事件读全时的最新编号。这之前人打的标签都不算
+        base=$(stuck_max_id "issues/$num/events" '.[] | select(.event == "labeled" or .event == "unlabeled") | .id') || return 0
+        stuck_entry_set "$n" '.frozen.base = $b' --argjson b "$base" || return 0
+        log "卡住检测：$kind #$num 的停住说明已发出，从标签事件 $base 之后开始认人的恢复指令"
+        return 0
+    fi
+    # 涉及的条目更新时间都没变、而且已经在不变的情况下读过一遍 → 这一轮不发请求。
+    # （updated_at 只到秒：变化和上一次读取落在同一秒时，要靠「不变之后再读一遍」才看得到。）
+    key=""
+    while IFS= read -r it; do
+        [ -n "$it" ] || continue
+        key="$key|$it@${irow[$it]:-}${prow[$it]:-}"
+    done < <(printf '%s' "$e" | jq -r '.frozen.items[]?')
+    if [ "$(printf '%s' "$e" | jq -r '.frozen.key // ""')" = "$key" ] \
+       && [ "$(printf '%s' "$e" | jq -r '.frozen.settled // false')" = true ] \
+       && [ "$(printf '%s' "$e" | jq -r '.frozen.cand == null')" = true ]; then
+        return 0
+    fi
+    if ! doc=$(stuck_release_doc "$kind" "$num" "$base"); then
+        stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
+        return 0
+    fi
+    if x=$(stuck_release_ok "$doc" "$(printf '%s' "$e" | jq -r '.frozen.used // ""')"); then
+        stuck_entry_set "$n" '.frozen.cand = {label: $x, doc: $doc} | .frozen.key = $key | .frozen.settled = true' \
+            --arg x "$x" --arg doc "$doc" --arg key "$key" || true
+        log_debug "卡住检测：$kind #$num 上有人的恢复指令（$x），交给派工前的最后一次核对"
+    else
+        stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = (.frozen.key == $key) | .frozen.key = $key' --arg key "$key" || true
+    fi
+    return 0
+}
+
+# ── 人恢复：派工 ──
+# 父进程（轮询）在调派工脚本之前问：这次派工是不是在动用人的恢复指令。0 = 是，STUCK_REL 已设好
+# （传给派工脚本的 DISPATCH_STUCK_RELEASE）；1 = 普通派工，和没有这个功能时一模一样。
+# 三条派工路径（新 issue / issue 评论 / PR 评论）都在同一个位置调这一个。
+STUCK_REL=""
+stuck_release_file() { printf '%s/stuck-release/%s.used' "$STATE_DIR" "$1"; }
+stuck_release_begin() {   # <issue|pr> <编号> <触发标签>
+    local n
+    STUCK_REL=""
+    stuck_enabled || return 1
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] && [ -n "$3" ] || return 1
+    n=$(jq -r --arg kind "$1" --arg n "$2" --arg l "$3" \
+        '(.stuck_workers // {}) | to_entries[] | select(.value.frozen != null and .value.kind == $kind
+            and .value.num == $n and (.value.frozen.cand.label // "") == $l) | .key' "$STATE_FILE" 2>/dev/null | head -1)
+    [ -n "$n" ] || return 1
+    rm -f "$(stuck_release_file "$n")"
+    STUCK_REL="$n|$(stuck_new_token)|$1|$2"
+    log "卡住检测：$1 #$2 这次派工动用人的恢复指令（$3），结果由 stuck_release_finish 统一收尾"
+    return 0
+}
+# 派工脚本一侧。每个对外动作（翻标签、启动会话、往会话里送任务）之前都先过这里；一个进程只真正
+# 核对一次。不是恢复派工时什么都不做。
+#   现读 stuck_release_doc，和初筛记下的整串相同、三条仍成立、标签还是那一枚 → 先在本地写下
+#   「指令已用掉 + 本次派工的记号」，再放行。否则以 75 退出：什么都没做，指令没用掉。
+# 父进程用环境变量 DISPATCH_STUCK_RELEASE 把「这是恢复派工」交给派工脚本。这里一加载就收进不导出的
+# shell 变量并从环境里拿掉：派工脚本接着会启动 tmux 和 worker，环境变量留着会漏进 worker 的会话，
+# worker 再跑本工具的脚本（发评论的 footer、叫醒外部需求机器人…）时写入就会被误拦。
+STUCK_REL_CTX="${DISPATCH_STUCK_RELEASE:-}"
+STUCK_RELEASE_GATED="${DISPATCH_STUCK_RELEASE_GATED:-}"
+unset DISPATCH_STUCK_RELEASE DISPATCH_STUCK_RELEASE_GATED
+# 派工脚本要 exec 另一个派工脚本时（没有工作目录 → 回落到新建流程）先调这个，把上面两项交过去。
+stuck_release_reexport() {
+    [ -n "$STUCK_REL_CTX" ] || return 0
+    export DISPATCH_STUCK_RELEASE="$STUCK_REL_CTX" DISPATCH_STUCK_RELEASE_GATED="$STUCK_RELEASE_GATED"
+}
+stuck_release_gate() {
+    [ -n "$STUCK_REL_CTX" ] || return 0
+    [ -z "$STUCK_RELEASE_GATED" ] || return 0
+    local n token kind num e cdoc clabel base used doc x file tmp
+    IFS='|' read -r n token kind num <<< "$STUCK_REL_CTX"
+    STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
+    e=$(stuck_entry "$n")
+    cdoc=$(printf '%s' "$e" | jq -r '.frozen.cand.doc // ""'); clabel=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
+    base=$(printf '%s' "$e" | jq -r '.frozen.base // ""'); used=$(printf '%s' "$e" | jq -r '.frozen.used // ""')
+    if [ -z "$cdoc" ] || [ -z "$clabel" ] || ! [[ "$base" =~ ^[0-9]+$ ]] \
+       || ! doc=$(stuck_release_doc "$kind" "$num" "$base") || [ "$doc" != "$cdoc" ] \
+       || ! x=$(stuck_release_ok "$doc" "$used") || [ "$x" != "$clabel" ]; then
+        log "卡住检测：$kind #$num 派工前最后一次核对没过（条目和初筛时不一样了，或读不全）→ 不派工，继续停住"
+        exit 75
+    fi
+    file="$(stuck_release_file "$n")"
+    if ! mkdir -p "$(dirname "$file")" || ! tmp=$(mktemp "$file.XXXXXX") \
+       || ! jq -cn --arg token "$token" --argjson ev "$(printf '%s' "$doc" | jq '.last.id')" '{token: $token, event: $ev}' > "$tmp" \
+       || ! mv "$tmp" "$file"; then
+        log "卡住检测：$kind #$num 记不下「恢复指令已用掉」→ 不派工，继续停住"
+        exit 75
+    fi
+    STUCK_RELEASE_GATED=1
+    log "卡住检测：$kind #$num 派工前最后一次核对通过，人的恢复指令（$x）记为已用掉"
+    return 0
+}
+# 恢复派工里，派工脚本只许做「把任务交出去」本身的 GitHub 写入（flip_to_doing）。普通流程的
+# 失败留言、转人工翻标签、别的说明评论一律不做：成没成由父进程的 stuck_release_finish 统一判。
+stuck_release_write_ok() {   # <gh 的参数…> → 0 = 放行
+    [ "${STUCK_RELEASE_FLIP_OK:-}" = 1 ] && return 0
+    [ "${1:-}" = api ] || return 1
+    local a
+    for a in "$@"; do
+        case "$a" in -X*|--method*|-f|-F|--field|--raw-field|--input) return 1 ;; esac
+    done
+    return 0
+}
+# 把本次派工的记号写在会话上：收尾时凭它确认「这个会话是这次派工起的 / 送过任务的」。
+stuck_release_mark_session() {
+    [ -n "$STUCK_REL_CTX" ] && [ -n "$STUCK_RELEASE_GATED" ] || return 0
+    local n token _rest
+    IFS='|' read -r n token _rest <<< "$STUCK_REL_CTX"
+    tmux set-option -t "=$(tmux_session_name "$n"):" @dispatch_token "$token" 2>/dev/null || true
+}
+# 父进程一侧的收尾：动用恢复指令的派工，不管结果如何都只走这里，不进普通的成功 / 失败分支
+# （不动失败计数、不发失败留言、不翻标签、评论读取位置不前进）。
+#   0 = 确认成功（调用方接着走普通派工的成功收尾：失败计数清零、评论读取位置前进）
+#   1 = 其余（调用方什么都不再做）
+# 成功 = 四条同时成立：脚本退出码 0；现读标签有 doing/agent、没有任何派工标签；指令事件之后的
+# 流程标签事件恰好是写账号做的「摘掉那枚派工标签」和「打上 doing/agent」；会话上的记号是本次的。
+stuck_release_finish() {   # <派工脚本退出码>
+    local rc="$1" n token kind num file used ev e x labels me rows sess stok why miss
+    IFS='|' read -r n token kind num <<< "$STUCK_REL"
+    STUCK_REL=""
+    file="$(stuck_release_file "$n")"
+    e=$(stuck_entry "$n")
+    x=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
+    if ! used=$(jq -r --arg t "$token" 'select(.token == $t) | .event' "$file" 2>/dev/null) || ! [[ "$used" =~ ^[0-9]+$ ]]; then
+        # 指令没用掉：不算派工。清掉候选，下一轮重新初筛
+        rm -f "$file"
+        if [ "$rc" = 75 ]; then
+            stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
+            return 1
+        fi
+        miss=$(( $(printf '%s' "$e" | jq -r '.frozen.miss // 0') + 1 ))
+        if [ "$miss" -lt "$STUCK_RELEASE_MISS_MAX" ]; then
+            log "卡住检测：$kind #$num 派工脚本没走到派工前核对就退出了（退出码 $rc，第 $miss/$STUCK_RELEASE_MISS_MAX 次）→ 不算派工，继续停住，下一轮重新判断"
+            stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false | .frozen.miss = $m' --argjson m "$miss" || true
+            return 1
+        fi
+        # 同一条指令连着几次都起不了头：不再每轮空转，用掉这条指令，重新停住等人
+        ev=$(printf '%s' "$e" | jq -r '.frozen.cand.doc // "" | if . == "" then "" else (fromjson | .last.id) end' 2>/dev/null) || ev=""
+        [[ "$ev" =~ ^[0-9]+$ ]] && { stuck_entry_set "$n" '.frozen.used = $ev' --argjson ev "$ev" || true; }
+        stuck_freeze "$n" "$kind" "$num" "按人的恢复指令（\`$x\`）派工，连续 $miss 次都没能开始（派工脚本提前退出，退出码 $rc，原因见 daemon 机器的 poll.log）；任务没有送出"
+        return 1
+    fi
+    rm -f "$file"
+    stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$used" || true
+    sess="$(tmux_session_name "$n")"
+    stok=$(tmux show-options -qv -t "=$sess:" @dispatch_token 2>/dev/null) || stok=""
+    why=""
+    me=$(write_identity_login)
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    if [ "$rc" != 0 ]; then
+        why="派工脚本以退出码 $rc 结束"
+    elif [ -z "$me" ]; then
+        why="读不出 daemon 的写账号，确认不了标签是谁换的"
+    elif ! labels=$(gh api "repos/$REPO/issues/$num" --jq '[.labels[].name] | join("\n")' 2>/dev/null); then
+        why="派工后读不到条目的标签"
+    elif ! printf '%s\n' "$labels" | grep -qxF -- "$LABEL_AGENT_DOING"; then
+        why="派工后条目上没有 \`$LABEL_AGENT_DOING\`"
+    elif printf '%s\n' "$labels" | grep -qxF -f <(printf '%s\n' "${TRIGGER_LABELS_ALL[@]}"); then
+        why="派工后条目上还留着派工标签"
+    elif ! rows=$(stuck_label_events_after "$num" "$used"); then
+        why="派工后读不到条目的标签记录"
+    elif [ "$(printf '%s\n' "$rows" | STUCK_FLOW="$(stuck_flow_labels)" awk -F'\t' -v me="$me" -v x="$x" -v d="$LABEL_AGENT_DOING" '
+            BEGIN { n = split(ENVIRON["STUCK_FLOW"], a, "\n"); for (i = 1; i <= n; i++) f[a[i]] = 1 }
+            NF && ($3 in f) { c++; if ($4 == me && $2 == "unlabeled" && $3 == x) u++; if ($4 == me && $2 == "labeled" && $3 == d) l++ }
+            END { print (c == 2 && u == 1 && l == 1) ? "ok" : "no" }')" != ok ]; then
+        why="派工期间条目上有不属于这次派工的标签变化"
+    elif [ "$stok" != "$token" ]; then
+        why="会话 \`$sess\` 上没有这次派工的记号"
+    fi
+    if [ -z "$why" ]; then
+        log "卡住检测：$kind #$num 按人的恢复指令（$x）派工成功 → 停住记录清掉，之后照常"
+        stuck_entry_del "$n" || true
+        STUCK_ACTED=1
+        return 0
+    fi
+    if [ "$stok" = "$token" ]; then
+        why="按人的恢复指令（\`$x\`）派工没有确认成功：${why}。任务已送出，会话 \`$sess\` 还开着"
+    else
+        why="按人的恢复指令（\`$x\`）派工没有确认成功：${why}。任务可能已送出，请先看会话 \`$sess\` 再决定"
+    fi
+    stuck_freeze "$n" "$kind" "$num" "$why"
+    return 1
+}
+
+# ── ②③ 的写入 ──
+# 一次标签写入：写 → 按事件记录核实。0 = 做成了（.id 已更新）；非 0 = 没写上 / 有别人动过 / 读不到。
 stuck_label_write() {   # <工作编号> <kind> <num> <labeled|unlabeled> <标签>
-    local n="$1" kind="$2" num="$3" op="$4" label="$5" after rc=0
+    local n="$1" kind="$2" num="$3" op="$4" label="$5" after me rows hit
     after=$(jq -r --arg k "$n" '.stuck_workers[$k].id | fromjson | .target.event' "$STATE_FILE" 2>/dev/null) || return 3
     [[ "$after" =~ ^[0-9]+$ ]] || return 3
-    stuck_entry_set "$n" '.claim = {op: $op, label: $l, after: $a}' --arg op "$op" --arg l "$label" --argjson a "$after" || return 3
     if [ "$op" = labeled ]; then
         run_gh "卡住检测：$kind #$num 加标签 $label" \
             gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$label" || true
@@ -7738,48 +8037,44 @@ stuck_label_write() {   # <工作编号> <kind> <num> <labeled|unlabeled> <标�
         run_gh "卡住检测：$kind #$num 摘标签 $label" \
             gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$label" | jq -sRr @uri)" || true
     fi
-    stuck_claim_settle "$n" "$num" || rc=$?
-    return "$rc"
+    me=$(write_identity_login); [ -n "$me" ] || return 3
+    rows=$(stuck_label_events_after "$num" "$after") || return 3
+    [ -n "$rows" ] || return 1
+    hit=$(printf '%s\n' "$rows" | awk -F'\t' -v op="$op" -v l="$label" -v me="$me" \
+        'NR == 1 && $2 == op && $3 == l && $4 == me { id = $1 } END { if (NR == 1 && id != "") print id }')
+    [ -n "$hit" ] || return 2
+    stuck_entry_set "$n" '.id = (.id | fromjson
+            | .target.labels = (if $op == "labeled" then (.target.labels + [$l]) else (.target.labels - [$l]) end | unique)
+            | .target.event = $ev | tojson)' \
+        --arg op "$op" --arg l "$label" --argjson ev "$hit" || return 3
+    return 0
 }
-# 每一次副作用（发评论、加标签、摘标签、结束会话）之前的同一道核对：stuck_doc 全部重读，和 .id
-# 整串相同才放行。上一次写入由事件记录证明是 daemon 做的，只说明**那一次写入**没问题，说明不了
-# 此刻绑定条目没被人暂停、agent 没有重新忙起来、提交没变——所以一步里面的每一次动手前都要再过
-# 一遍，不只是整步开始时过一次（代码复审第 3 轮）。
-#   0 = 一样，放行；1 = 不一样了（这一步已作废）；2 = 读不全 / 会话状态读不出（这一步留着，下一轮再核对）
-stuck_step_gate() {   # <工作编号> <kind> <num> <接下来要做的事，写日志用>
+# 每一次副作用之前的同一道核对：stuck_doc 全部重读，和 .id 整串相同才放行。
+#   0 = 一样；1 = 不一样了，或读不全 / 会话状态读不出（原因在 STUCK_GATE_WHY）
+stuck_step_gate() {   # <工作编号> <kind> <num>
     local n="$1" kind="$2" num="$3" doc saved
-    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
-        log "卡住检测：$kind #$num 「$4」之前读不全条目 → 先不做，下一轮再核对"
-        return 2
-    fi
+    STUCK_GATE_WHY=""
+    if ! doc=$(stuck_doc "$kind" "$num" "$n"); then STUCK_GATE_WHY="读不全条目或关联条目"; return 1; fi
     case "$(printf '%s' "$doc" | jq -r '.sample.state')" in
         idle|busy|absent) ;;
-        *) log "卡住检测：$kind #$num 「$4」之前会话状态读不出（$(printf '%s' "$doc" | jq -r '.sample.why')）→ 先不做，下一轮再核对"
-           return 2 ;;
+        *) STUCK_GATE_WHY="会话状态读不出（$(printf '%s' "$doc" | jq -r '.sample.why')）"; return 1 ;;
     esac
     saved=$(jq -r --arg k "$n" '.stuck_workers[$k].id // ""' "$STATE_FILE" 2>/dev/null | jq -cS . 2>/dev/null) || saved=""
     if [ -z "$saved" ] || [ "$saved" != "$(printf '%s' "$doc" | jq -cS .)" ]; then
-        stuck_step_drop "$n" "$kind" "$num" "「$4」之前复查，和 daemon 记下的样子不一样了（agent、会话、条目或绑定条目有变化）"
-        return 1
+        STUCK_GATE_WHY="和 daemon 记下的样子不一样了（agent、会话、条目或关联条目有变化）"; return 1
     fi
     return 0
 }
-# 把一步从它停下的地方做下去。第 6 个参数 checked = 调用方刚刚做过同样的整串核对（首次动手时
-# stuck_tick_one 做的），第一次副作用前不必重复读；之后的每一次副作用照样各过一遍。
-stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签> [checked]
-    local n="$1" kind="$2" num="$3" step="$4" trig="$5" fresh="${6:-}" add e labels sess ex=0 now cid
-    # 用法：_gate <要做的事> || return 0
-    _stuck_gate_once() {
-        if [ "$fresh" = checked ]; then fresh=""; return 0; fi
-        stuck_step_gate "$n" "$kind" "$num" "$1"
-    }
-    local steps nudged restarted restarts since mins body
-    add="$trig"; [ "$step" = human ] && add="$LABEL_PENDING_HUMAN"
-    stuck_entry_set "$n" '.pending = $s | .trigger = $t' --arg s "$step" --arg t "$trig" || return 0
+# 做一步。调用方（stuck_tick_one）刚做过第一次写入之前的整串核对；这里从第一次写入开始，
+# 之后每一次副作用前各过一遍 stuck_step_gate，任何一处不对就停住。
+stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签>
+    local n="$1" kind="$2" num="$3" step="$4" trig="$5" add e sess ex=0 now cid what
+    local steps nudged restarted restarts since mins body op lab first=1
+    if [ "$step" = human ]; then add="$LABEL_PENDING_HUMAN"; what="交人"; else add="$trig"; what="重派"; fi
+    stuck_entry_set "$n" '.trigger = $t' --arg t "$trig" || return 0
     STUCK_ACTED=1
     e=$(stuck_entry "$n")
-    if [ "$step" = human ] && [ "$(printf '%s' "$e" | jq -r '(.comment_id // 0) > 0')" != true ]; then
-        _stuck_gate_once "发交人评论" || return 0
+    if [ "$step" = human ]; then
         nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
         restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
         restarts=$(printf '%s' "$e" | jq -r '.restarts // 0')
@@ -7796,38 +8091,34 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         if ! cid=$(run_gh_capture "卡住交人说明评论 ($kind #$num)" \
                 gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" --jq '.id') \
            || ! [[ "$cid" =~ ^[0-9]+$ ]]; then
-            log "⚠️ 卡住检测：$kind #$num 交人说明没发出去 → 这一步留着，下一轮重新核对后接着做"
-            stuck_step_fail "$n" "$kind" "$num"; return 0
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 准备把这一条交给人，但交人说明没能确认发出（可能已经发出）"
+            return 0
         fi
-        stuck_entry_set "$n" '.comment_id = $c | .id = (.id | fromjson | .target.comment = $c | tojson)' --argjson c "$cid" || return 0
+        stuck_entry_set "$n" '.id = (.id | fromjson | .target.comment = $c | tojson)' --argjson c "$cid" || true
+        first=0
     fi
-    local op lab
     for op in labeled unlabeled; do
-        labels=$(jq -r --arg k "$n" '.stuck_workers[$k].id | fromjson | .target.labels | join(",")' "$STATE_FILE" 2>/dev/null) || return 0
-        if [ "$op" = labeled ]; then
-            lab="$add"
-            case ",$labels," in *",$lab,"*) continue ;; esac
-        else
-            lab="$LABEL_AGENT_DOING"
-            case ",$labels," in *",$lab,"*) ;; *) continue ;; esac
+        if [ "$op" = labeled ]; then lab="$add"; else lab="$LABEL_AGENT_DOING"; fi
+        if [ "$first" = 1 ]; then
+            first=0
+        elif ! stuck_step_gate "$n" "$kind" "$num"; then
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}的中途（$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 之前）复查，发现$STUCK_GATE_WHY"
+            return 0
         fi
-        _stuck_gate_once "$([ "$op" = labeled ] && echo 加标签 || echo 摘标签) $lab" || return 0
-        ex=0; stuck_label_write "$n" "$kind" "$num" "$op" "$lab" || ex=$?
-        case "$ex" in
-            0) ;;
-            2) stuck_step_drop "$n" "$kind" "$num" "条目上出现了不是 daemon 做的标签变化"; return 0 ;;
-            1) log "⚠️ 卡住检测：$kind #$num 标签没写上（$op $lab）→ 这一步留着，下一轮重新核对后接着做"
-               stuck_step_fail "$n" "$kind" "$num"; return 0 ;;
-            *) log "⚠️ 卡住检测：$kind #$num 标签写完核实不了（$op $lab）→ 这一步留着，下一轮先核实"
-               stuck_step_fail "$n" "$kind" "$num"; return 0 ;;
-        esac
+        if ! stuck_label_write "$n" "$kind" "$num" "$op" "$lab"; then
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}时$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 没能确认成功（没写上、读不到标签记录，或同时有别的标签变化）"
+            return 0
+        fi
     done
     if [ "$step" = human ]; then
         log "🙋 卡住检测：$kind #$num 重派后仍然卡住 → 已留言并转人工 $LABEL_PENDING_HUMAN"
         stuck_entry_del "$n" || true
         return 0
     fi
-    _stuck_gate_once "结束会话" || return 0
+    if ! stuck_step_gate "$n" "$kind" "$num"; then
+        stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 已把标签翻回 \`$trig\`，在结束旧会话之前复查，发现$STUCK_GATE_WHY"
+        return 0
+    fi
     sess="$(tmux_session_name "$n")"
     log "🔁 卡住检测：$kind #$num 催过仍无动静 → 已翻回 $trig，结束会话 $sess，等下一轮重派"
     kill_session_procs "$sess"
@@ -7835,30 +8126,8 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
     ex=0; worker_session_exists "$sess" || ex=$?
     [ "$ex" = 1 ] || log "⚠️ 卡住检测：$kind #$num 会话 $sess 没能确认已结束（下一轮派工会照常处理还活着的会话）"
     now=$(pace_now)
-    # 整步做完：触发标签从这一刻起才是给派工队列的信号
-    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .pending = "" | .claim = null | .own = null | .took = null | .since = 0 | .id = "" | .fp = ""' \
+    stuck_entry_set "$n" '.restarts = ((.restarts // 0) + 1) | .restarted_at = $now | .since = 0 | .id = "" | .fp = ""' \
         --argjson now "$now" || true
-    return 0
-}
-# 上一轮没做完的那一步：先核实登记着的那次写入，再过和首次动手同一道核对，然后接着做。
-stuck_resume() {   # <工作编号> <记录 JSON>
-    local n="$1" e="$2" kind num trig pend rc=0
-    kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-    trig=$(printf '%s' "$e" | jq -r '.trigger // ""'); pend=$(printf '%s' "$e" | jq -r '.pending // ""')
-    case "$pend" in restart|human) ;; *) stuck_entry_set "$n" '.pending = "" | .claim = null' || true; return 0 ;; esac
-    if [ -z "$kind" ] || [ -z "$num" ] || [ -z "$trig" ] || [ "$(printf '%s' "$e" | jq -r '.id // ""')" = "" ]; then
-        stuck_step_drop "$n" "${kind:-?}" "${num:-?}" "记录不全"; return 0
-    fi
-    if [ "$(printf '%s' "$e" | jq -r '.claim != null')" = true ]; then
-        stuck_claim_settle "$n" "$num" || rc=$?
-        case "$rc" in
-            0|1) ;;
-            2) stuck_step_drop "$n" "$kind" "$num" "条目上出现了不是 daemon 做的标签变化"; return 0 ;;
-            *) log "卡住检测：$kind #$num 上一轮的标签写入还核实不了 → 下一轮再核实"
-               stuck_step_fail "$n" "$kind" "$num"; return 0 ;;
-        esac
-    fi
-    stuck_step_run "$n" "$kind" "$num" "$pend" "$trig"
     return 0
 }
 
@@ -7866,9 +8135,8 @@ stuck_resume() {   # <工作编号> <记录 JSON>
 stuck_tick() {
     stuck_enabled || return 0
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
-    local now irows prows n kind num upd labels wn sha e pend rc
+    local now irows prows n kind num upd labels wn sha e
     local -A irow=() prow=() prs_of=() doing=() handled=()
-    STUCK_ROUND_HOLDS=$'\n'"$(stuck_holds_now)"$'\n'
     now=$(pace_now)
     if ! irows=$(stuck_issue_rows) || ! prows=$(stuck_pr_rows); then
         log "卡住检测：读不到本轮的条目快照，本轮不判"
@@ -7889,34 +8157,16 @@ stuck_tick() {
         case ",$labels," in *",$LABEL_AGENT_DOING,"*) doing[$wn]="${doing[$wn]:-} pr:$num" ;; esac
     done <<< "$prows"
 
-    # 1. 已有记录的：先做完上一轮的待办；条目正常交接走了的清掉记录
+    # 1. 已有记录的：停住的走停住那一套（说明 / 起点 / 初筛），这一轮不再判它卡没卡住；
+    #    其余的，条目正常交接走了就清掉记录
     while IFS= read -r n; do
         [ -n "$n" ] || continue
         e=$(stuck_entry "$n")
-        pend=$(printf '%s' "$e" | jq -r '.pending // ""')
-        if [ -n "$pend" ]; then
-            handled[$n]=1
-            stuck_resume "$n" "$e"
-            continue
-        fi
         kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-        # 没有待做的一步，但还有没了结的标签改动（步骤已作废 / 累计做不完已停手）：
-        #   条目已经不在打开的清单里（关了、合并了）→ 没什么可还原的，记录清掉
-        #   有一次标签写入还没核实 → 先核实（只读）
-        #   有 daemon 加的 / 摘的标签没还原 → 接着还原
-        # 了结之前这条记录不走下面的清理（见 stuck_entry_unfinished）
-        if stuck_entry_unfinished "$e"; then
-            if { [ "$kind" = issue ] && [ -z "${irow[$num]:-}" ]; } || { [ "$kind" = pr ] && [ -z "${prow[$num]:-}" ]; }; then
-                stuck_entry_del "$n" || true; continue
-            fi
-            if [ "$(printf '%s' "$e" | jq -r '.claim != null')" = true ]; then
-                rc=0; stuck_claim_settle "$n" "$num" || rc=$?
-                # 0 = 确实写上了（已记成 .own / .took）；1 = 没写上；2 = 有别人动过 → 不是 daemon 的了
-                [ "$rc" != 2 ] || stuck_entry_set "$n" '.claim = null' || true
-            fi
-            stuck_own_retract "$n" "$kind" "$num"
-            e=$(stuck_entry "$n")
-            if stuck_entry_unfinished "$e"; then handled[$n]=1; continue; fi
+        if [ "$(printf '%s' "$e" | jq -r '.frozen != null')" = true ]; then
+            handled[$n]=1
+            stuck_frozen_tick "$n" "$e" || true
+            continue
         fi
         [ -z "${doing[$n]:-}" ] || continue
         # 不挂 doing/agent 了。daemon 自己翻回去、还在等重派的（挂着记下的触发标签）留着；
@@ -7937,6 +8187,8 @@ stuck_tick() {
     # 2. 挂着 doing/agent 的
     for n in "${!doing[@]}"; do
         [ -z "${handled[$n]:-}" ] || continue
+        # 作为关联条目被停住的（它的 PR / issue 那一条停住时核对过它）也不判
+        if stuck_frozen "$n"; then continue; fi
         stuck_tick_one "$n" ${doing[$n]} || true
     done
     return 0
@@ -7961,21 +8213,6 @@ stuck_tick_one() {
         IFS=$'\t' read -r upd labels sha <<< "${prow[$num]}"
     fi
     [ "$labels" = "-" ] && labels=""
-    # 累计做不完、已经停手的：只看它有没有被重新派工（出现新的「打上 doing/agent」事件）。
-    # 更新时间没变就不发请求。
-    e=$(stuck_entry "$n")
-    if [ "$(printf '%s' "$e" | jq -r '.exhausted // false')" = true ]; then
-        [ "$(printf '%s' "$e" | jq -r '.exh_upd // ""')" != "$upd" ] || return 0
-        if p=$(stuck_label_events_after "$num" "$(printf '%s' "$e" | jq -r '.exh_event // 0')"); then
-            if printf '%s\n' "$p" | awk -F'\t' -v l="$LABEL_AGENT_DOING" '$2 == "labeled" && $3 == l { f = 1 } END { exit !f }'; then
-                log "卡住检测：$kind #$num 被重新派工了 → 之前停手的记录清掉，从头算"
-                stuck_entry_del "$n" || true
-            else
-                stuck_entry_set "$n" '.exh_upd = $u' --arg u "$upd" || true
-            fi
-        fi
-        return 0
-    fi
     if p=$(stuck_labels_protect target "$labels"); then stuck_quiet_reset "$n"; return 0; fi
     # 绑定条目（快照预判；动手前 stuck_doc 会重读）
     if [ "$kind" = pr ]; then
@@ -8063,7 +8300,7 @@ stuck_tick_one() {
         log "卡住检测：$kind #$num 动手前复查和开始计时时不一样（${STUCK_V}${STUCK_V_WHY:+：$STUCK_V_WHY}）→ 不动手，重新计时"
         stuck_quiet_reset "$n"; return 0
     fi
-    stuck_step_run "$n" "$kind" "$num" "$step" "$(printf '%s' "$doc" | jq -r '.trigger')" checked
+    stuck_step_run "$n" "$kind" "$num" "$step" "$(printf '%s' "$doc" | jq -r '.trigger')"
     return 0
 }
 

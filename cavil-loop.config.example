@@ -961,6 +961,10 @@ SELFHEAL_MAX_RETRIES=3
 #   3. stuck again: comment and hand to pending/human (the session is kept for inspection)
 # A busy agent, any new activity, or anything the daemon cannot read resets or holds the
 # clock; before step 2 / 3 everything is re-read and must be unchanged.
+# If step 2 / 3 hits anything unexpected after its first GitHub write (a write that cannot be
+# confirmed, a change in between, an unreadable state), the daemon stops on that item: no
+# rollback, no retry, no dispatch / relabel / merge of it, and a comment on the item says how
+# to resume (docs/operations.md, "After the daemon has stopped on an item").
 # Limits: "idle" is read off the screen, so an agent waiting on a background job looks
 # idle too (hence the long default and the harmless first step); a session with no agent
 # record, or with several panes and no recorded worker pane, is never touched.
@@ -979,6 +983,9 @@ SELFHEAL_MAX_RETRIES=3
 #   3. 再卡住：留言并转 pending/human（会话保留，方便查看）
 # agent 在忙、有任何新动静、或 daemon 有读不出的东西，都会清零或暂停计时；第 2、3 步动手前
 # 全部重读一遍，必须和开始计时时一样。
+# 第 2、3 步在第一次写 GitHub 之后遇到任何意外（写入确认不了、中间有变化、状态读不出），daemon
+# 就对这一条停手：不撤回、不重试，不再对它派工 / 改标签 / 合并，并在条目上留言说明怎么恢复
+# （docs/operations.zh.md「daemon 对一条停手之后」）。
 # 限制：「空闲」是看屏幕判断的，agent 把活放到后台等结果时看起来也是空闲（所以默认值给得
 # 长、第一步也无害）；会话上没有 agent 记录、或有多个窗格又没登记工作窗格的，一律不处理。
 # 留空或 0 = 关闭（和没有这个功能时一样）。配置里没有这一行也是关闭。

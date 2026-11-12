@@ -2,7 +2,7 @@
 # kind: e2e
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （约 8 分钟；没有负对照）
+# 跑法：bash tests/stuck-worker.test.sh        （约 11 分钟；没有负对照；STUCK_ONLY=9,13 只跑指定的组）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和
@@ -79,6 +79,8 @@ for a in claude codex; do
 #!/usr/bin/env bash
 [ -n "\${TMUX:-}" ] || exit 0
 key=\$(basename "\$PWD")
+# $CTL/die.<工作目录名> 存在时一启动就退出（模拟 worker 秒退）
+[ -e "$CTL/die.\$key" ] && exit 1
 echo "$a \$\$" >> "$CTL/runs.\$key"
 last="__none__"
 while :; do
@@ -176,7 +178,7 @@ CONF
     echo '{}' > "$GD/items.json"; echo '{}' > "$GD/labels.json"; echo '{}' > "$GD/events.json"
     echo '{}' > "$GD/comments.json"; echo '{}' > "$GD/perms.json"; echo loop-bot > "$GD/me"
     echo '{"cleaned_prs":[],"cleaned_issues":[],"worker_hosts":{},"worker_trigger_labels":{},"worker_models":{}}' > "$STATE"
-    rm -f "$CTL"/screen.* "$CTL"/got.* "$CTL"/runs.* "$CTL/fault" "$CTL/fault.hits"; : > "$CTL/tmux.log"
+    rm -f "$CTL"/screen.* "$CTL"/got.* "$CTL"/runs.* "$CTL"/die.* "$CTL/fault" "$CTL/fault.hits"; : > "$CTL/tmux.log"
     # 等旧 server 真的退干净再起新的：否则新会话连到正在退出的 server 上，窗格编号也不从头数
     T kill-server >/dev/null 2>&1
     local i; for ((i = 0; i < 50; i++)); do T list-sessions >/dev/null 2>&1 || break; sleep 0.1; done
@@ -562,154 +564,30 @@ for v in closed merged issue-closed; do
 done
 fi
 
-# ════════════════════════════════════════════════════════════════════════════
-if want 9; then
-echo "【9】动手到一半失败 → 下一轮照原来的依据重新核对：没变就做完，变了就放弃"
-# 9a 重派：加触发标签失败 → 什么不可逆的事都没做；下一轮收敛
-scn retry1; N=$SEQ
-mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
-tick 0; tick 60; tick 50
-touch "$GD/F_post_labels"
-tick 60
-chk "加标签失败：会话不动、标签不动，待办留着、没记成已重派" \
-    "$(alive "$N")/$(labels_of "$N")/$(efield "$N" '.pending')/$(efield "$N" '.restarts // 0')" "yes/doing/agent/restart/0"
-rm -f "$GD/F_post_labels"
-: > "$CTL/tmux.log"
-tick 10
-chk "到达性 · 续做前重新抓了工作窗格的画面" "$([ "$(captured "%1")" -ge 1 ] && echo yes || echo no)" "yes"
-chk "下一轮收敛：标签是触发标签、会话结束、记一次重派、待办清掉" \
-    "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')/$(efield "$N" '.pending')" "pending/agent/no/1/"
-chk "没有重复催促、没有评论" "$(plog '发催促')/$(comments_on "$N")" "1/0"
-# 9a2 重派：标签加上了、doing/agent 没摘掉 → 下一轮接着摘
-scn retry1b; N=$SEQ
-mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
-tick 0; tick 60; tick 50
-touch "$GD/F_delete_labels"
-tick 60
-chk "摘 doing/agent 失败：两个标签都在，会话不动，待办留着" \
-    "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.pending')" "doing/agent,pending/agent/yes/restart"
-rm -f "$GD/F_delete_labels"
-R0=$(runs "$N")
-tick 10
-chk "下一轮收敛：摘掉 doing/agent、结束旧会话、记一次重派；当轮不派工（队列手里是这一轮开头的旧快照）" \
-    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(labels_of "$N")/$(alive "$N")/$(runs "$N")" "1//pending/agent/no/$R0"
-tick 10
-chk "再下一轮：照常重派，起了新的 agent 进程" "$(labels_of "$N")/$([ "$(runs "$N")" -gt "$R0" ] && echo yes || echo no)" "doing/agent/yes"
-# 9b 待办留着时各种变化 → 放弃，不补写。每种一套场景；最后一列是这一轮对目标的写请求数
-drop_case() {   # <名字> <restart|human> <pr|issue> <变化命令…>
-    local name="$1" step="$2" shape="$3"; shift 3
-    local extra=(); [ "$step" = human ] && extra=('STUCK_WORKER_MAX_RESTARTS=0')
-    scn "drop$((++DROPN))" ${extra[@]+"${extra[@]}"}; N=$SEQ; P=$((SEQ + 1)); TGT=$N
-    if [ "$shape" = pr ]; then
-        mk_issue "$N" pending/PR; mk_pr "$P" "feature/issue-$N" "Refs #$N" doing/agent; TGT=$P
-        own "$N" pending/review
+# ── 停住 / 恢复 用到的小工具（【9】【13】共用）─────────────────────────────────
+# 人（默认 maint）在条目上打 / 摘一个标签：标签、事件记录、更新时间一起变，和真 GitHub 一样
+HT=0
+hlabel() {   # <编号> <add|rm> <标签> [谁]
+    local n="$1" op="$2" l="$3" who="${4:-maint}" ev
+    if [ "$op" = add ]; then
+        ev=labeled; jset "$GD/labels.json" '.[$n] = (((.[$n] // []) + [$l]) | unique)' --arg n "$n" --arg l "$l"
     else
-        mk_issue "$N" doing/agent; own "$N" pending/agent
+        ev=unlabeled; jset "$GD/labels.json" '.[$n] = ((.[$n] // []) - [$l])' --arg n "$n" --arg l "$l"
     fi
-    mk_wt "$N"; mk_sess "$N" claude worker
-    tick 0; tick 60; tick 50
-    if [ "$step" = human ]; then touch "$GD/F_post_comment"; else touch "$GD/F_post_labels"; fi
-    tick 60
-    rm -f "$GD/F_post_comment" "$GD/F_post_labels"
-    chk "$name · 夹具：待办留着" "$(efield "$N" '.pending')" "$step"
-    "$@"
-    local w0 c0 g0; w0=$(writes_on "$TGT"); c0=$(comments_on "$TGT"); g0=$(cnt "repos/example/sw/issues/$TGT\$" "$CALLS")
-    : > "$CTL/tmux.log"
-    tick 10
-    chk "$name · 到达性：这一轮重读了目标条目" "$([ "$(cnt "repos/example/sw/issues/$TGT\$" "$CALLS")" -gt "$g0" ] && echo yes || echo no)" "yes"
-    # 条目被关闭时，轮询里的收尾流程会自己清掉会话，那不是卡住检测动的手：那一例不看会话
-    local al; al=$(alive "$N"); [ "${DROP_SKIP_ALIVE:-0}" = 1 ] && al=yes
-    chk "$name：放弃待办，目标上没有写入、没有新评论、卡住检测没结束会话" \
-        "$(( $(writes_on "$TGT") - w0 ))/$(( $(comments_on "$TGT") - c0 ))/$al/$(plog '已翻回')/$(efield "$N" '.pending // ""')/$(efield "$N" '.restarts // 0')" "0/0/yes/0//0"
+    jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: (50000 + ([.[][]] | length)), event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
+        --arg n "$n" --arg ev "$ev" --arg l "$l" --arg who "$who"
+    HT=$((HT + 1))
+    jset "$GD/items.json" '.[$n].updated_at = $t' --arg n "$n" --arg t "$(printf '2026-03-01T%02d:%02d:%02dZ' $((HT / 3600)) $((HT / 60 % 60)) $((HT % 60)))"
 }
-DROPN=0
-set_labels() { jset "$GD/labels.json" '.[$n] = $ARGS.positional' --arg n "$1" --args "${@:2}"; }
-# 复审第 1 轮的两个复现
-drop_case "交人待办 · agent 又在忙了" human issue eval 'screen "$N" "$BUSY_CLAUDE"'
-chk "交人待办 · agent 又在忙了 · 到达性：续做前抓了工作窗格的画面" "$([ "$(captured "$(pane_of "$N")")" -ge 1 ] && echo yes || echo no)" "yes"
-chk "交人待办 · agent 又在忙了：标签仍是 doing/agent" "$(labels_of "$N")" "doing/agent"
-drop_case "重派待办 · 绑定的 issue 被人挂上 pending/human" restart pr eval 'set_labels "$N" pending/PR pending/human'
-chk "重派待办 · 绑定 issue 暂停：PR 没被加回复审标签" "$(labels_of "$P" | grep -c 'pending/review')" "0"
-# 复审第 2 轮的复现：评论还没发成、标签一次都没写过，人自己加上了 pending/human（doing/agent 还在）
-drop_case "交人待办 · 人自己加上了 pending/human（daemon 还没加过）" human issue eval 'set_labels "$N" doing/agent pending/human'
-chk "交人待办 · 人自己加上了 pending/human：doing/agent 没被摘掉" "$(labels_of "$N")" "doing/agent,pending/human"
-# 标签净结果没变，但事件记录里多了不是 daemon 做的动作（人加了又摘了一个标签）
-add_event() { jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: $id, event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' --arg n "$1" --arg ev "$2" --arg l "$3" --arg who "$4" --argjson id "$5"; }
-drop_case "重派待办 · 人加了又摘了一个标签（净结果没变）" restart issue eval 'add_event "$N" labeled bug maint 900001; add_event "$N" unlabeled bug maint 900002'
-# 其余组合
-drop_case "重派待办 · agent 又在忙了" restart issue eval 'screen "$N" "$BUSY_CLAUDE"'
-drop_case "重派待办 · 目标被人挂上 pending/human" restart issue eval 'set_labels "$N" doing/agent pending/human'
-drop_case "重派待办 · 目标被人换成 pending/human" restart issue eval 'set_labels "$N" pending/human'
-drop_case "重派待办 · 目标多了一条评论" restart issue eval 'add_comment "$N"'
-DROP_SKIP_ALIVE=1 drop_case "重派待办 · 目标被关闭" restart issue eval 'jset "$GD/items.json" ".[\$n].state = \"closed\"" --arg n "$N"'
-drop_case "重派待办 · 工作窗格里的进程换了" restart issue eval 'T respawn-pane -k -t "$(pane_of "$N")" "$FAKEBIN/claude"; sleep 1'
-drop_case "重派待办 · PR 远端多了新提交" restart pr eval 'jset "$GD/items.json" ".[\$n].head.sha = \"3333333333333333333333333333333333333333\"" --arg n "$P"'
-drop_case "交人待办 · 绑定的 issue 被人挂上等前置标签" human pr eval 'set_labels "$N" pending/PR pending/blocked'
-drop_case "交人待办 · 目标多了一条评论" human issue eval 'add_comment "$N"'
-drop_case "交人待办 · 本地有新提交" human issue eval '(cd "$W/wt/issue-$N" && echo y > g && gq add g && gq commit -qm work)'
-# 9c 续做时读不出 → 待办原样留着；读得出之后做完
-scn retry3; N=$SEQ
-mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
-tick 0; tick 60; tick 50
-touch "$GD/F_post_labels"; tick 60; rm -f "$GD/F_post_labels"
-printf '%s\n' 'capture-pane*' > "$CTL/fault"; w0=$(writes_on "$N")
-tick 10
-chk "续做时画面抓不到：不写、不放弃，待办留着" "$(( $(writes_on "$N") - w0 ))/$(efield "$N" '.pending')/$(alive "$N")" "0/restart/yes"
-rm -f "$CTL/fault"; touch "$GD/F_issues_${N}_comments"
-tick 10
-chk "续做时条目读不全：不写、不放弃，待办留着" "$(( $(writes_on "$N") - w0 ))/$(efield "$N" '.pending')/$(alive "$N")" "0/restart/yes"
-rm -f "$GD/F_issues_${N}_comments"
-tick 10
-chk "读得出之后：做完" "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')" "pending/agent/no/1"
-# 9d 交人：评论失败 → 下一轮补；加标签失败 → 下一轮补，评论不重复
-scn retry4 'STUCK_WORKER_MAX_RESTARTS=0'; N=$SEQ
-mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
-tick 0; tick 60; tick 50
-chk "夹具 · 已催过" "$([ "$(nudges "$N")" -ge 1 ] && echo yes || echo no)" "yes"
-touch "$GD/F_post_comment"
-tick 60
-chk "最多重派 0 次：催完直接交人，不结束会话" "$(alive "$N")/$(efield "$N" '.pending')" "yes/human"
-chk "评论没发出去：标签不动" "$(labels_of "$N")/$(comments_on "$N")" "doing/agent/0"
-rm -f "$GD/F_post_comment"; touch "$GD/F_post_labels"
-tick 10
-chk "评论补发了；加标签失败，待办仍留着、标签不动" "$(comments_on "$N")/$(efield "$N" '.pending')/$(labels_of "$N")" "1/human/doing/agent"
-rm -f "$GD/F_post_labels"; touch "$GD/F_delete_labels"
-tick 10
-chk "标签加上了、doing/agent 没摘掉：待办仍留着，评论仍只有一条" "$(labels_of "$N")/$(efield "$N" '.pending')/$(comments_on "$N")" "doing/agent,pending/human/human/1"
-rm -f "$GD/F_delete_labels"
-tick 10
-chk "下一轮收敛：pending/human，评论仍只有一条，记录清掉" "$(labels_of "$N")/$(comments_on "$N")/$(entry "$N")" "pending/human/1/{}"
-fi
-
-if want 9 || want 9e; then
-# 9e 一直做不完：次数按条目累计，用完就停手，不会换一个空闲周期又重来（复审第 2 轮）
-scn retry5; N=$SEQ
-mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
-tick 0; tick 60; tick 50
-touch "$GD/F_post_labels"
-tick 60
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tick 5; done
-chk "加标签一直失败：试 10 次后停手，会话和标签都没动" \
-    "$(writes_on "$N")/$(efield "$N" '.pending')/$(efield "$N" '.exhausted')/$(alive "$N")/$(labels_of "$N")" "10//true/yes/doing/agent"
-tick 0; tick 110; tick 0; tick 110; tick 60
-chk "之后又过了两个空闲周期：不再重试（写请求数没变）、没有再催" "$(writes_on "$N")/$(plog '发催促')" "10/1"
-chk "到达性 · 这几轮轮询确实跑了" "$([ "$(plog 'poll done')" -ge 20 ] && echo yes || echo no)" "yes"
-# 有证据表明被重新派工（新的「打上 doing/agent」事件）→ 从头算
-rm -f "$GD/F_post_labels"
-jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: 40001, event: "labeled", label: {name: "doing/agent"}, actor: {login: "loop-bot", type: "User"}}])' --arg n "$N"
-touch_item "$N" 09
-tick 10
-chk "重新派工后：停手记录清掉" "$(entry "$N")" "{}"
-G0=$(nudges "$N")
-tick 0; tick 60; tick 50
-chk "重新派工后又卡住：从催促重新开始" "$([ "$(nudges "$N")" -gt "$G0" ] && echo yes || echo no)" "yes"
-tick 60
-chk "这一次写得上：正常重派" "$(labels_of "$N")/$(efield "$N" '.restarts')" "pending/agent/1"
-fi
-
-# ════════════════════════════════════════════════════════════════════════════
-if want 13; then
-echo "【13】一步里面的每次动手之前都重新核对：两次写入之间有人暂停 / agent 又忙了 → 后面的不做"
+frozen() { jq -r --arg n "$1" '(.stuck_workers[$n].frozen // null) != null' "$STATE"; }
+ff() { jq -r --arg n "$1" ".stuck_workers[\$n].frozen.$2" "$STATE" 2>/dev/null; }
+got() { cnt '' "$CTL/got.issue-$1"; }
+# 这一条被派工的次数（三条派工路径的日志都算）
+disp() { cnt "dispatch PR #$1 comment\|dispatch issue-comment for #$1 \|dispatch new issue #$1:" "$W/state/poll.log"; }
+# 目标上的标签写请求 / 评论写请求条数
+lwrites() { local c; c=$(grep -cE -- "-X (POST|DELETE) repos/example/sw/issues/$1/labels" "$CALLS" 2>/dev/null); printf '%s\n' "${c:-0}"; }
+cposts() { local c; c=$(grep -cE -- "-X POST repos/example/sw/issues/$1/comments" "$CALLS" 2>/dev/null); printf '%s\n' "${c:-0}"; }
+notes_on() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("stuck-frozen:"))] | length' "$GD/comments.json"; }
 # 从现在数第 <k> 次 GET 这个路径之前执行一条命令
 hook_at() {   # <key> <第几次> <命令…>
     local key="$1" off="$2" k; shift 2
@@ -724,162 +602,576 @@ hook_after_add() {   # <编号> <命令…>
     rm -f "$GD/hook.ran"
     { printf '%q ' "$@"; printf '\n'; printf 'touch %q\n' "$GD/hook.ran"; } > "$GD/hook_after_POST_issues_${n}_labels_$k"
 }
+# 导出给钩子脚本用（钩子在假 GitHub 的子进程里跑）
+export_hook_env() { export GD FAKEBIN CTL; }
+# 钩子里用的「人打 / 摘标签」（独立脚本：钩子拿不到本文件里的函数）
+cat > "$FAKEBIN/hlabel" <<'SH'
+#!/usr/bin/env bash
+# hlabel <假 GitHub 目录> <编号> <add|rm> <标签> [谁]
+GD="$1"; n="$2"; op="$3"; l="$4"; who="${5:-maint}"; J="$(dirname "$0")/jset"
+if [ "$op" = add ]; then ev=labeled; "$J" "$GD/labels.json" '.[$n] = (((.[$n] // []) + [$l]) | unique)' --arg n "$n" --arg l "$l"
+else ev=unlabeled; "$J" "$GD/labels.json" '.[$n] = ((.[$n] // []) - [$l])' --arg n "$n" --arg l "$l"; fi
+"$J" "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: (50000 + ([.[][]] | length)), event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
+    --arg n "$n" --arg ev "$ev" --arg l "$l" --arg who "$who"
+"$J" "$GD/items.json" '.[$n].updated_at = "2026-04-01T00:00:00Z"' --arg n "$n"
+SH
+chmod +x "$FAKEBIN/hlabel"
 pr_scn() {   # <名字> [配置行…]：PR 挂 doing/agent、issue 挂 pending/PR，已催过、间隔将满
     scn "$@"; N=$SEQ; P=$((SEQ + 1))
     mk_issue "$N" pending/PR; mk_pr "$P" "feature/issue-$N" "Refs #$N" doing/agent
     mk_wt "$N"; own "$N" pending/review; mk_sess "$N" codex review
     tick 0; tick 60; tick 50
 }
-# 13a 重派：加上触发标签之后、摘 doing/agent 之前，绑定的 issue 被人挂上 pending/human（复审第 3 轮的复现）
-pr_scn mid1
-hook_after_add "$P" "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/human"]' --arg n "$N"
+is_scn() {   # <名字> [配置行…]：issue 挂 doing/agent，已催过、间隔将满
+    scn "$@"; N=$SEQ
+    mk_issue "$N" doing/agent; mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
+    tick 0; tick 60; tick 50
+}
+# 停住一条 PR（重派时摘 doing/agent 失败），并等到说明发出、恢复起点记下。
+# 结束时：PR 标签 doing/agent + pending/review，会话还在，停住，起点已记。
+frozen_pr() {   # <名字> [配置行…]
+    pr_scn "$@"
+    touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+    tick 0; tick 0
+}
+# 同上，issue 版（重派时摘 doing/agent 失败）：标签 doing/agent + pending/agent
+frozen_is() {   # <名字> [配置行…]
+    is_scn "$@"
+    touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+    tick 0; tick 0
+}
+# 人按停住说明恢复：摘净流程标签，再打上一枚派工标签
+human_resume() {   # <编号> <派工标签> <现有的流程标签…>
+    local n="$1" x="$2" l; shift 2
+    for l in "$@"; do hlabel "$n" rm "$l"; done
+    hlabel "$n" add "$x"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+if want 9; then
+echo "【9】重派 / 交人的写入出异常 → 当场停住：不撤回、不重试、不续做；发说明；之后不派工"
+# 9a 复审第 6 轮的复现：加上复审标签之后、摘 doing/agent 之前，关联的 issue 被人挂上 pending/human
+pr_scn frz1
+hook_after_add "$P" "$FAKEBIN/hlabel" "$GD" "$N" add pending/human
 tick 60
-chk "13a 到达性：暂停发生在加标签生效之后" "$(hook_ran)" "yes"
-chk "13a 暂停之后不摘 doing/agent、不结束会话、不记重派；daemon 自己加的复审标签摘回去了" \
-    "$(labels_of "$P")/$(cnt "labels/doing%2Fagent" "$CALLS")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(efield "$N" '.pending // ""')/$(efield "$N" '.own')" \
-    "doing/agent/0/yes/0//null"
-# 复审第 4 轮：之后几轮，issue 仍然暂停着 → 不派工、不往会话里送东西、不再写 PR
-w0=$(writes_on "$P"); g0=$(cnt '' "$CTL/got.issue-$N")
+chk "9a 到达性：暂停发生在加标签生效之后" "$(hook_ran)" "yes"
+chk "9a 当轮停住：没摘 doing/agent、没撤回加上的标签、没结束会话、没记重派" \
+    "$(frozen "$N")/$(labels_of "$P")/$(cnt "DELETE repos/example/sw/issues/$P/labels" "$CALLS")/$(alive "$N")/$(efield "$N" '.restarts // 0')" \
+    "true/doing/agent,pending/review/0/yes/0"
+chk "9a 停住范围包括 PR 和关联的 issue" "$(ff "$N" 'items | sort | join(",")')" "$N,$P"
+w0=$(lwrites "$P"); g0=$(got "$N"); d0=$(disp "$P")
 tick 10; tick 60; tick 110
-chk "13a 之后三轮：没有派工、会话没收到新输入、PR 上没有新的写入" \
-    "$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))/$(( $(writes_on "$P") - w0 ))/$(labels_of "$P")" "0/0/0/doing/agent"
-chk "13a 到达性：这三轮轮询确实跑了派工队列" "$([ "$(plog 'poll done')" -ge 7 ] && echo yes || echo no)" "yes"
-# 人解除暂停之后：照常重新计时、催促、重派
-jset "$GD/labels.json" '.[$n] = ["pending/PR"]' --arg n "$N"; touch_item "$N" 21
+chk "9a 之后三轮：没有派工、会话没收到新输入、PR 上没有标签写入（遗留的复审标签不算派工信号）" \
+    "$(( $(disp "$P") - d0 ))/$(( $(got "$N") - g0 ))/$(( $(lwrites "$P") - w0 ))/$(labels_of "$P")" "0/0/0/doing/agent,pending/review"
+chk "9a 到达性：派工队列确实看到这条挂着复审标签并跳过" "$([ "$(plog "本轮不派工的条目.*pr#$P(pending/review)")" -ge 1 ] && echo yes || echo no)" "yes"
+chk "9a 停住说明发了一条，带记号，写明现状和恢复办法" \
+    "$(notes_on "$P")/$(jq -r --arg n "$P" '.[$n][-1].body' "$GD/comments.json" | grep -c '已对这一条停手')/$(jq -r --arg n "$P" '.[$n][-1].body' "$GD/comments.json" | grep -c '怎么恢复')/$(jq -r --arg n "$P" '.[$n][-1].body' "$GD/comments.json" | grep -c '标签 `doing/agent`、`pending/review`')" "1/1/1/1"
+chk "9a 说明里不用「你 / 我」" "$(jq -r --arg n "$P" '.[$n][-1].body' "$GD/comments.json" | grep -c '[你我]')" "0"
+chk "9a 说明确认发出、恢复起点已记" "$(ff "$N" posted)/$(ff "$N" 'base != null')" "yes/true"
+
+# 9b 每个写入点出错各一例 → 当轮停住，之后不派工、不重试
+frz_case() {   # <名字> <restart|human> <期望的标签> <故障注入命令…>
+    local name="$1" step="$2" want_labels="$3"; shift 3
+    local extra=(); [ "$step" = human ] && extra=('STUCK_WORKER_MAX_RESTARTS=0')
+    is_scn "frz$((++FRZN))" ${extra[@]+"${extra[@]}"}
+    "$@"
+    tick 60
+    rm -f "$GD"/F_post_labels "$GD"/F_delete_labels "$GD"/F_post_comment "$GD/F_issues_${N}_events"
+    chk "$name：当轮停住，会话还在，没记重派" "$(frozen "$N")/$(alive "$N")/$(efield "$N" '.restarts // 0')/$(labels_of "$N")" "true/yes/0/$want_labels"
+    local w0 d0 r0; w0=$(lwrites "$N"); d0=$(disp "$N"); r0=$(runs "$N")
+    tick 10; tick 60; tick 110
+    chk "$name：之后三轮不重试写标签、不派工、不起新进程，只发了停住说明" \
+        "$(( $(lwrites "$N") - w0 ))/$(( $(disp "$N") - d0 ))/$(( $(runs "$N") - r0 ))/$(notes_on "$N")/$(alive "$N")" "0/0/0/1/yes"
+}
+FRZN=1
+frz_case "9b 重派 · 加触发标签失败" restart "doing/agent" eval 'touch "$GD/F_post_labels"'
+frz_case "9b 重派 · 摘 doing/agent 失败" restart "doing/agent,pending/agent" eval 'touch "$GD/F_delete_labels"'
+chk "9b 重派 · 摘失败后两个标签都在：派工队列看到 pending/agent 并跳过" "$([ "$(plog "本轮不派工的条目.*issue#$N(pending/agent)")" -ge 1 ] && echo yes || echo no)" "yes"
+frz_case "9b 交人 · 说明评论没发成" human "doing/agent" eval 'touch "$GD/F_post_comment"'
+frz_case "9b 交人 · 加 pending/human 失败" human "doing/agent" eval 'touch "$GD/F_post_labels"'
+frz_case "9b 交人 · 摘 doing/agent 失败" human "doing/agent,pending/human" eval 'touch "$GD/F_delete_labels"'
+frz_case "9b 重派 · 写完读不到标签记录" restart "doing/agent,pending/agent" eval 'hook_after_add "$N" touch "$GD/F_issues_${N}_events"'
+frz_case "9b 重派 · 写完多出别人的标签事件" restart "bug,doing/agent,pending/agent" eval 'hook_after_add "$N" "$FAKEBIN/hlabel" "$GD" "$N" add bug'
+frz_case "9b 重派 · 两次写入之间 agent 又忙了" restart "doing/agent,pending/agent" eval 'hook_after_add "$N" bash -c "printf \"%s\\n\" \"$BUSY_CLAUDE\" > \"$CTL/screen.issue-$N\"; sleep 0.8"'
+
+# 9c 第一次写入之前读不到 → 什么都没写，重新计时，不算停住；读得到之后照常重派
+is_scn nofrz
+touch "$GD/F_issues_${N}_comments"
+tick 60
+chk "9c 动手前读不全：没写、没停住、重新计时" "$(writes_on "$N")/$(frozen "$N")/$(efield "$N" '.since')" "0/false/0"
+rm -f "$GD/F_issues_${N}_comments"
 tick 0; tick 110
-chk "13a 人解除暂停后：重新走阶梯，这一次重派做完" "$(efield "$N" '.restarts')/$(labels_of "$P")/$(alive "$N")" "1/pending/review/no"
-# 13a2 同样的暂停，但摘回自己加的标签也失败 → 标签留在条目上，派工队列不认它；人重新打一次才算数
-pr_scn mid1b
-hook_after_add "$P" bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_delete_labels'"
-tick 60
-chk "13a2 夹具：复审标签没摘回去，留在 PR 上" "$(hook_ran)/$(labels_of "$P")/$(efield "$N" '.own.label')" "yes/doing/agent,pending/review/pending/review"
-g0=$(cnt '' "$CTL/got.issue-$N")
-tick 10; tick 60
-chk "13a2 之后两轮：标签还在，但没有派工、会话没收到新输入、doing/agent 还在" \
-    "$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))/$(labels_of "$P")" "0/0/doing/agent,pending/review"
-chk "13a2 到达性：派工队列确实看到了这条并跳过" "$([ "$(plog '是卡住检测没做完的一步里加的')" -ge 1 ] && echo yes || echo no)" "yes"
-rm -f "$GD/F_delete_labels"
+chk "9c 对照 · 读得到之后：正常重派，没停住" "$(labels_of "$N")/$(alive "$N")/$(efield "$N" '.restarts')/$(frozen "$N")" "pending/agent/no/1/false"
+
+echo "【9】停住说明：发前两次读取、结果不明先确认、发出之后才记恢复起点"
+# 9d 说明发不出去期间人打的派工标签不算；发出、记下起点之后也不算，要重新打一次
+is_scn note1
+touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"
+chk "9d 夹具：停住，标签 doing/agent + pending/agent" "$(frozen "$N")/$(labels_of "$N")" "true/doing/agent,pending/agent"
+tick 0
+chk "9d 说明没发出去：计一次失败，没有起点" "$(ff "$N" tries)/$(ff "$N" posted)/$(ff "$N" base)/$(notes_on "$N")" "1/unknown/null/0"
+human_resume "$N" pending/agent doing/agent pending/agent
+d0=$(disp "$N"); tick 0
+chk "9d 说明没发出去时人按恢复办法打了标签：不派工" "$(( $(disp "$N") - d0 ))/$(labels_of "$N")/$(ff "$N" tries)" "0/pending/agent/2"
+rm -f "$GD/F_post_comment"
+tick 0
+chk "9d 说明发出去了" "$(ff "$N" posted)/$(notes_on "$N")" "yes/1"
+tick 0
+chk "9d 起点记在说明发出之后：不早于人刚才那次打标签" \
+    "$([ "$(ff "$N" base)" -ge "$(jq -r --arg n "$N" '[.[$n][] | select(.actor.login == "maint")] | last | .id' "$GD/events.json")" ] && echo yes || echo no)" "yes"
+tick 0; tick 10
+chk "9d 说明发出前打的标签不算：仍停住、不派工" "$(frozen "$N")/$(( $(disp "$N") - d0 ))/$(labels_of "$N")" "true/0/pending/agent"
+chk "9d 到达性：派工队列看到 pending/agent 并跳过" "$([ "$(plog "本轮不派工的条目.*issue#$N(pending/agent)")" -ge 1 ] && echo yes || echo no)" "yes"
+human_resume "$N" pending/agent pending/agent
+tick 0
+chk "9d 对照 · 说明之后重新打一次：派工，换成 doing/agent，停住记录清掉" "$(( $(disp "$N") - d0 ))/$(labels_of "$N")/$(entry "$N")" "1/doing/agent/{}"
+
+# 9e 发送结果不明：评论读不全 → 不重发、不记起点；读全后找到带记号的那条 → 认作已发出
+is_scn note2
+touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"
+tick 0
+c0=$(cposts "$N")
+touch "$GD/F_issues_${N}_comments"
+tick 0; tick 0
+chk "9e 结果不明且评论读不全：不重发、不计失败、没有起点" "$(( $(cposts "$N") - c0 ))/$(ff "$N" tries)/$(ff "$N" posted)/$(ff "$N" base)" "0/1/unknown/null"
+# 其实上一次发出去了（响应丢了）：评论在 GitHub 上，带着这次的记号
+jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 7777, body: ("<!-- stuck-frozen:" + $t + " -->\n说明"), user: {login: "loop-bot"}}])' --arg n "$N" --arg t "$(ff "$N" token)"
+rm -f "$GD/F_issues_${N}_comments"
+tick 0
+chk "9e 读全后找到带记号的评论：认作已发出，不再发第二条" "$(ff "$N" posted)/$(ff "$N" comment)/$(( $(cposts "$N") - c0 ))" "yes/7777/0"
+# 别人贴了一条带同样记号的评论不算（要写账号发的）
+is_scn note2b
+touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"
+tick 0
+jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: 7778, body: ("<!-- stuck-frozen:" + $t + " -->"), user: {login: "someone"}}])' --arg n "$N" --arg t "$(ff "$N" token)"
+rm -f "$GD/F_post_comment"
+tick 0
+chk "9e 别人贴的带记号评论不算：daemon 自己重发一条" "$(ff "$N" posted)/$([ "$(ff "$N" comment)" != 7778 ] && echo own || echo theirs)" "yes/own"
+
+# 9f 发前两次读取之间条目变了 → 这一轮不发、不计失败；条目关闭 → 不发，记录留着
+is_scn note3
+touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+c0=$(cposts "$N")
+hook_at "issues_$N" 2 "$FAKEBIN/hlabel" "$GD" "$N" add bug
+tick 0
+chk "9f 到达性：改动发生在发说明前的第二次读取之前" "$(hook_ran)" "yes"
+chk "9f 两次读到的不一样：这一轮不发、不计失败" "$(( $(cposts "$N") - c0 ))/$(ff "$N" tries)/$(ff "$N" posted)" "0/0/no"
+tick 0
+chk "9f 对照 · 下一轮没再变：发出" "$(ff "$N" posted)/$(notes_on "$N")" "yes/1"
+for v in base head src; do
+    pr_scn "note3$v"
+    touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+    c0=$(cposts "$P")
+    case "$v" in
+        base) hook_at "issues_$P" 2 "$FAKEBIN/jset" "$GD/items.json" '.[$n].base.ref = "release"' --arg n "$P" ;;
+        head) hook_at "issues_$P" 2 "$FAKEBIN/jset" "$GD/items.json" '.[$n].head.sha = "2222222222222222222222222222222222222222"' --arg n "$P" ;;
+        src)  hook_at "issues_$P" 2 "$FAKEBIN/jset" "$GD/items.json" '.[$n].head.repo.full_name = "fork/sw"' --arg n "$P" ;;
+    esac
+    tick 0
+    chk "9f PR 的 $v 在两次读取之间变了：到达、这一轮不发、不计失败" "$(hook_ran)/$(( $(cposts "$P") - c0 ))/$(ff "$N" tries)" "yes/0/0"
+done
+is_scn note4
+touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+jset "$GD/items.json" '.[$n].state = "closed"' --arg n "$N"
+tick 0; tick 0
+chk "9f 发说明前条目被关闭：不发，停住记录留着" "$(notes_on "$N")/$(frozen "$N")" "0/true"
+jset "$GD/items.json" '.[$n].state = "open"' --arg n "$N"
+d0=$(disp "$N"); tick 0; tick 0; tick 0
+chk "9f 重新打开：仍然停住（遗留的 pending/agent 不派工），说明这时发出" "$(frozen "$N")/$(( $(disp "$N") - d0 ))/$(notes_on "$N")" "true/0/1"
+
+# 9g 说明一直发不出去：满 10 次不再发，继续停住，日志里给出本机解卡命令
+is_scn note5
+touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13; do tick 5; done
+chk "9g 连续失败：只发 10 次，仍停住、没有起点" "$(cposts "$N")/$(ff "$N" tries)/$(frozen "$N")/$(ff "$N" base)" "10/10/true/null"
+chk "9g 日志里写了本机解卡命令" "$([ "$(plog "stuck-release.sh .* $N")" -ge 1 ] && echo yes || echo no)" "yes"
+human_resume "$N" pending/agent doing/agent pending/agent
+rm -f "$GD/F_post_comment"; d0=$(disp "$N")
+tick 5; tick 5
+chk "9g 没有说明就没有起点：人怎么打标签都不派工" "$(( $(disp "$N") - d0 ))/$(frozen "$N")" "0/true"
+
+# 9h 起点读不到：说明已发出，标签记录读不全 → 不记起点；期间人打的标签落在起点之前，不算
+is_scn base1
+touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"
+# 说明发出那一轮里，读标签事件的顺序是：发前第一次读、发前第二次读、记起点。让第三次起读不到
+hook_at "issues_${N}_events" 2 touch "$GD/F_issues_${N}_events"
+tick 0; tick 0
+chk "9h 标签记录读不全：说明已发出，但没有起点" "$(ff "$N" posted)/$(ff "$N" base)" "yes/null"
+human_resume "$N" pending/agent doing/agent pending/agent
+tick 0
+rm -f "$GD/F_issues_${N}_events"; d0=$(disp "$N")
+tick 0; tick 0; tick 0
+chk "9h 读全后记下起点；之前打的标签不算，不派工" "$(ff "$N" 'base != null')/$(( $(disp "$N") - d0 ))/$(frozen "$N")" "true/0/true"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# 本机解卡命令：照 docs/operations.zh.md 里那段命令的字面跑（项目名、编号两行换成本场景的值）。
+# 环境只有 HOME 和 PATH；项目的环境文件、技能目录都按真实安装的位置摆在假 HOME 下。
+OPS_BLOCK() { sed -n '/<!-- stuck-release-ops:begin -->/,/<!-- stuck-release-ops:end -->/p' "$1" | sed -n '/^```bash$/,/^```$/p' | sed '1d;$d'; }
+release_cmd() {   # <编号> <喂给确认提示的输入> [额外环境…] → 输出在 $W/release.out，返回退出码
+    local num="$1" input="$2"; shift 2
+    mkdir -p "$HOME/.config/cavil-loop" "$HOME/.agents/skills"
+    ln -sfn "$NEW" "$HOME/.agents/skills/cavil-loop"
+    printf 'CODING_AGENT_CONFIG=%s\nPATH=%s\nTMUX_TMPDIR=%s\nFAKE_GH_DIR=%s\nFAKE_GH_LISTS=1\nFAKE_GH_REPO=example/sw\nGIT_CONFIG_GLOBAL=/dev/null\n' \
+        "$CONF" "$PATH" "$TMUX_DIR" "$GD" > "$HOME/.config/cavil-loop/swproj.conf"
+    OPS_BLOCK "$REPO_DIR/docs/operations.zh.md" | sed -e "s/^KEY=.*/KEY=swproj/" -e "s/^N=.*/N=$num/" > "$W/release.sh"
+    local rc=0
+    printf '%s' "$input" | env -i HOME="$HOME" PATH="$PATH" "$@" bash "$W/release.sh" > "$W/release.out" 2>&1 || rc=$?
+    return "$rc"
+}
+
+if want 13; then
+echo "【13】人恢复：说明之后打上的派工标签，要到派工那一刻仍然有效"
+# 13a 各种「不算恢复」，最后一步才是有效的恢复
+frozen_pr rel1
+step() {   # <说明>：跑一轮，断言没派工、仍停住
+    local d0 w0 g0; d0=$(disp "$P"); w0=$(lwrites "$P"); g0=$(got "$N")
+    tick 5
+    chk "13a $1：不派工、不写标签、会话没收到输入、仍停住" "$(( $(disp "$P") - d0 ))/$(( $(lwrites "$P") - w0 ))/$(( $(got "$N") - g0 ))/$(frozen "$N")" "0/0/0/true"
+}
+hlabel "$P" add bug;                step "只加分类标签"
+hlabel "$P" rm doing/agent;         step "只摘 doing/agent（遗留 pending/review）"
+chk "13a 到达性：派工队列看到遗留的 pending/review 并跳过" "$([ "$(plog "本轮不派工的条目.*pr#$P(pending/review)")" -ge 1 ] && echo yes || echo no)" "yes"
+hlabel "$P" add pending/agent;      step "打上 pending/agent，但 pending/review 还留着"
+hlabel "$P" rm pending/agent;       step "打上又摘掉（撤回），pending/review 还留着"
+hlabel "$P" rm pending/review;      step "流程标签全摘了、没打派工标签"
+hlabel "$P" add pending/agent; hlabel "$P" add pending/human;  step "打上 pending/agent 之后又挂 pending/human"
+hlabel "$P" rm pending/human;       step "摘掉 pending/human（最后一次流程标签变化不是打派工标签）"
+hlabel "$P" add pending/blocked;    step "挂等前置标签"
+hlabel "$P" rm pending/blocked; hlabel "$P" rm pending/agent
+hlabel "$N" add pending/human; hlabel "$P" add pending/agent;  step "打上 pending/agent，但关联的 issue 挂着 pending/human"
+R0=$(runs "$N"); d0=$(disp "$P")
+hlabel "$N" rm pending/human
+tick 5
+chk "13a 正向对照 · 关联 issue 的 pending/human 摘掉后：按 pending/agent 派工一次，换成 doing/agent，停住记录清掉" \
+    "$(( $(disp "$P") - d0 ))/$(labels_of "$P")/$(entry "$N")/$([ "$(runs "$N")" -gt "$R0" ] && echo yes || echo no)" "1/bug,doing/agent/{}/yes"
+chk "13a 派工用的是人打的那一枚标签" "$(jq -r --arg n "$N" '.worker_trigger_labels[$n]' "$STATE")" "pending/agent"
 tick 10
-chk "13a2 摘得动之后：摘回去了" "$(labels_of "$P")/$(efield "$N" '.own')" "doing/agent/null"
-# 13a3 摘不回去期间，人明确重新打了一次复审标签 → 这是人的派工信号，照常派
-pr_scn mid1c
-hook_after_add "$P" bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_delete_labels'"
-tick 60
-jset "$GD/events.json" '.[$n] += [{id: 60001, event: "unlabeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}, {id: 60002, event: "labeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}]' --arg n "$P"
-rm -f "$GD/F_delete_labels"
-tick 10
-chk "13a3 人重新打过标签：daemon 放手、没去摘它" \
-    "$(efield "$N" '.own')/$(plog '之后有人动过')/$(plog '已摘回')/$(labels_of "$P")" "null/1/0/doing/agent,pending/review"
-tick 10
-chk "13a3 下一轮照常派工" "$([ "$(plog "dispatch PR #$P")" -ge 1 ] && echo yes || echo no)" "yes"
-# 13a4 复审第 5 轮：复审标签加上了，但核实它的那次标签记录读取失败，而且之后一直读不到
-pr_scn mid1d
-hook_after_add "$P" touch "$GD/F_issues_${P}_events"
-tick 60
-chk "13a4 夹具：标签已经加上，这次写入还没核实" "$(hook_ran)/$(labels_of "$P")/$(efield "$N" '.claim.label')/$(efield "$N" '.own')" "yes/doing/agent,pending/review/pending/review/null"
-g0=$(cnt '' "$CTL/got.issue-$N"); w0=$(writes_on "$P")
-tick 10; tick 10; tick 60
-chk "13a4 读不到的三轮：没有派工、会话没收到新输入、PR 上没有新的写入" \
-    "$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))/$(( $(writes_on "$P") - w0 ))/$(labels_of "$P")" "0/0/0/doing/agent,pending/review"
-chk "13a4 到达性：派工队列确实看到了这条并跳过" "$([ "$(plog '是卡住检测没做完的一步里加的')" -ge 1 ] && echo yes || echo no)" "yes"
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tick 5; done
-chk "13a4 一直读不到、累计到停手之后：仍然不派工，那次没核实的写入还记着" \
-    "$(plog "dispatch PR #$P")/$(efield "$N" '.exhausted')/$(efield "$N" '.claim.label')" "0/true/pending/review"
-rm -f "$GD/F_issues_${P}_events"
-tick 10
-chk "13a4 读得到之后：核实是 daemon 加的，摘回去，PR 回到只挂 doing/agent，没有派工" \
-    "$(labels_of "$P")/$(efield "$N" '.claim')/$(efield "$N" '.own')/$(plog "dispatch PR #$P")" "doing/agent/null/null/0"
-tick 10; tick 10
-chk "13a4 之后两轮：也没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
-# 13a5 同样是核实读取失败，但下一轮就读得到 → 核实后照原路把这一步做完
-pr_scn mid1e
-hook_after_add "$P" touch "$GD/F_issues_${P}_events"
-tick 60
-rm -f "$GD/F_issues_${P}_events"
-tick 10
-chk "13a5 下一轮读得到、什么都没变：重派做完（当轮不派工）" "$(efield "$N" '.restarts')/$(labels_of "$P")/$(alive "$N")/$(plog "dispatch PR #$P")" "1/pending/review/no/0"
-tick 10
-chk "13a5 再下一轮：照常派工" "$([ "$(plog "dispatch PR #$P")" -ge 1 ] && echo yes || echo no)" "yes"
-# 13b 重派：摘掉 doing/agent 之后、结束会话之前，绑定的 issue 被暂停
-pr_scn mid2
-# 这一轮对 PR 标签事件的读取依次是：动手前核对、核实加标签、摘标签前核对、核实摘标签、结束会话前核对
-hook_at "issues_${P}_events" 4 "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/human"]' --arg n "$N"
-tick 60
-chk "13b 到达性：暂停发生在摘标签之后" "$(hook_ran)/$(cnt "labels/doing%2Fagent" "$CALLS")" "yes/1"
-chk "13b 暂停之后不结束会话、不记重派；标签还原成这一步之前的样子" \
-    "$(alive "$N")/$(efield "$N" '.restarts // 0')/$(plog '已翻回')/$(labels_of "$P")/$(efield "$N" '.own')/$(efield "$N" '.took')" "yes/0/0/doing/agent/null/null"
-tick 10; tick 60
-chk "13b 之后两轮：没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
-# 13b2 复审第 5 轮：摘掉 doing/agent 之后被暂停，还原时「加回 doing/agent」失败，而且之后一直失败
-pr_scn mid2b
-hook_at "issues_${P}_events" 4 bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_post_labels'"
-tick 60
-chk "13b2 夹具：doing/agent 已摘、没加回去，两份归属记录都在" \
-    "$(hook_ran)/$(labels_of "$P")/$(efield "$N" '.own.label')/$(efield "$N" '.took.label')/$(alive "$N")" "yes/pending/review/pending/review/doing/agent/yes"
-g0=$(cnt '' "$CTL/got.issue-$N")
-tick 10; tick 10; tick 60
-chk "13b2 加回一直失败的三轮：记录还在、标签没丢、没有派工、会话没收到新输入" \
-    "$(efield "$N" '.own.label')/$(efield "$N" '.took.label')/$(labels_of "$P")/$(plog "dispatch PR #$P")/$(( $(cnt '' "$CTL/got.issue-$N") - g0 ))" \
-    "pending/review/doing/agent/pending/review/0/0"
-chk "13b2 到达性：这三轮确实又试过加回" "$([ "$(plog '没加回去')" -ge 2 ] && echo yes || echo no)" "yes"
+chk "13a 之后照常：不再重复派工" "$(( $(disp "$P") - d0 ))/$(labels_of "$P")" "1/bug,doing/agent"
+
+echo "【13】派工前最后一次现读：初筛之后人撤回 / 暂停 → 不翻标签、不启动会话、不送任务"
+# 13b 三条派工路径各一例。改动挂在这一轮第二次读目标条目之前：第一次是卡住检测的初筛，
+# 派工脚本的最后一次核对在它之后
+final_case() {   # <名字> <pr|issue|new> <改动命令（钩子里跑）…>
+    local name="$1" path="$2" T0; shift 2
+    if [ "$path" = pr ]; then frozen_pr "fin$((++FINN))"; T0=$P; human_resume "$P" pending/agent doing/agent pending/review
+    else frozen_is "fin$((++FINN))"; T0=$N; human_resume "$N" pending/agent doing/agent pending/agent; fi
+    if [ "$path" = new ]; then
+        T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
+    fi
+    local r0 g0 w0; r0=$(runs "$N"); g0=$(got "$N"); w0=$(lwrites "$T0")
+    hook_at "issues_$T0" 2 "$@"
+    tick 5
+    chk "$name · 到达性：改动发生在初筛之后；派工脚本确实跑到了最后一次核对" "$(hook_ran)/$(plog "#$T0 派工前最后一次核对没过")" "yes/1"
+    chk "$name：没翻标签、没起新进程、会话没收到任务、仍停住、指令没用掉" \
+        "$(( $(lwrites "$T0") - w0 ))/$(( $(runs "$N") - r0 ))/$(( $(got "$N") - g0 ))/$(frozen "$N")/$(ff "$N" used)" "0/0/0/true/null"
+    [ "$path" != new ] || chk "$name：没有启动会话" "$(alive "$N")" "no"
+}
+FINN=0
+final_case "13b PR 评论路径 · 人摘掉派工标签" pr "$FAKEBIN/hlabel" "$TMP/sc.fin1/gh" "$((SEQ + 11))" rm pending/agent
+final_case "13b PR 评论路径 · 关联 issue 被挂上 pending/human" pr "$FAKEBIN/hlabel" "$TMP/sc.fin2/gh" "$((SEQ + 10))" add pending/human
+final_case "13b issue 评论路径 · 人摘掉派工标签" issue "$FAKEBIN/hlabel" "$TMP/sc.fin3/gh" "$((SEQ + 10))" rm pending/agent
+final_case "13b 新建路径 · 人摘掉派工标签" new "$FAKEBIN/hlabel" "$TMP/sc.fin4/gh" "$((SEQ + 10))" rm pending/agent
+final_case "13b PR 评论路径 · 初筛之后 PR 推了新提交" pr "$FAKEBIN/jset" "$TMP/sc.fin5/gh/items.json" '.[$n].head.sha = "2222222222222222222222222222222222222222"' --arg n "$((SEQ + 11))"
+# 正向对照：新建路径什么都不改 → 起会话、换成 doing/agent、记录清掉
+frozen_is finok; human_resume "$N" pending/agent doing/agent pending/agent
+T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
+tick 5
+chk "13b 正向对照 · 新建路径：起了会话、换成 doing/agent、停住记录清掉" "$(alive "$N")/$(labels_of "$N")/$(entry "$N")" "yes/doing/agent/{}"
+
+echo "【13】恢复指令只用一次：用掉之后派工没确认成功 → 重新停住，同一条指令不再派工；不进普通失败兜底"
+# after_freeze <名字> <目标> <说明里应有的字样>：这一轮之后 → 重新停住（新记号）、指令已用掉；
+# 再跑两轮：不再派工、不起新进程、不再送任务，派工标签还在也一样
+after_refreeze() {
+    local name="$1" T0="$2" phrase="$3" tok="$4" r0 g0 d0
+    chk "$name：重新停住（新的一次：新记号、说明待发），这条指令记为已用掉" \
+        "$(frozen "$N")/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$(ff "$N" 'used != null')/$(ff "$N" why | grep -c "$phrase")" "true/new/true/1"
+    r0=$(runs "$N"); g0=$(got "$N"); d0=$(disp "$T0")
+    tick 5; tick 5
+    chk "$name：之后两轮不再派工、不起新进程、不再送任务" "$(( $(disp "$T0") - d0 ))/$(( $(runs "$N") - r0 ))/$(( $(got "$N") - g0 ))/$(frozen "$N")" "0/0/0/true"
+}
+# 13c① PR 评论路径：最后一次核对通过之后，换程序失败（任务没送成）。这一条的普通失败计数已经是
+#       「再失败一次就交人」；同一轮里另一条没停住的 issue 也在同样的计数上、同样失败（对照）
+frozen_pr use1; M=$((SEQ + 5))
+mk_issue "$M" pending/agent; mk_wt "$M"; own "$M" pending/agent; mk_sess "$M" codex review
+mkdir -p "$W/state/dispatch-fail"; echo 2 > "$W/state/dispatch-fail/pr-$P"; echo 2 > "$W/state/dispatch-fail/issue-$M"
+human_resume "$P" pending/agent doing/agent pending/review
+tok=$(ff "$N" token); c0=$(comments_on "$P")
+printf '%s\n' 'respawn-pane*' > "$CTL/fault"
+tick 5
+rm -f "$CTL/fault"
+chk "13c① 到达性：核对通过、指令用掉之后才失败" "$(plog "#$P 派工前最后一次核对通过")/$([ -s "$CTL/fault.hits" ] && echo hit || echo miss)" "1/hit"
+chk "13c① 不进普通失败兜底：没有普通的转人工留言、没翻 pending/human、失败计数没动、评论读取位置没前进" \
+    "$(jq -r --arg n "$P" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json")/$(labels_of "$P")/$(cat "$W/state/dispatch-fail/pr-$P")/$(jq -r --arg n "$P" '.seen_comments[$n] // "none"' "$STATE")" \
+    "0/pending/agent/2/none"
+chk "13c① 对照 · 没停住的那条照原规则：第 3 次失败 → 留言并翻 pending/human" \
+    "$(jq -r --arg n "$M" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json")/$(labels_of "$M")" "1/pending/human"
+after_refreeze "13c①" "$P" "任务可能已送出" "$tok"
+# 重新授权：新说明发出、新起点之后，人再打一次 → 正常派工一次
+tick 0
+chk "13c① 新的停住说明发出（第二条）" "$(notes_on "$P")/$(ff "$N" posted)" "2/yes"
+d0=$(disp "$P"); human_resume "$P" pending/agent pending/agent
+tick 5
+chk "13c① 重新授权 · 人再打一次：派工一次，换成 doing/agent，停住记录清掉，失败计数清零" \
+    "$(( $(disp "$P") - d0 ))/$(labels_of "$P")/$(entry "$N")/$([ -e "$W/state/dispatch-fail/pr-$P" ] && echo kept || echo reset)" "1/doing/agent/{}/reset"
+
+# 13c② 新建路径：会话已经起来，翻标签时加 doing/agent 失败（派工标签已摘掉）
+frozen_is use2; human_resume "$N" pending/agent doing/agent pending/agent
+T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
+tok=$(ff "$N" token); touch "$GD/F_post_labels"
+tick 5
 rm -f "$GD/F_post_labels"
-tick 10
-chk "13b2 服务恢复后：doing/agent 加回、复审标签摘回，记录了结，没有派工" \
-    "$(labels_of "$P")/$(efield "$N" '.own')/$(efield "$N" '.took')/$(plog "dispatch PR #$P")/$(alive "$N")" "doing/agent/null/null/0/yes"
-tick 10; tick 10
-chk "13b2 之后两轮：也没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
-# 13b3 对照：还原失败期间，人把这条接过去了（摘掉复审标签、挂上 pending/human）→ daemon 放手，什么都不写
-pr_scn mid2c
-hook_at "issues_${P}_events" 4 bash -c "'$FAKEBIN/jset' '$GD/labels.json' '.[\$n] = [\"pending/PR\", \"pending/human\"]' --arg n '$N'; touch '$GD/F_post_labels'"
-tick 60
-rm -f "$GD/F_post_labels"
-jset "$GD/labels.json" '.[$n] = ["pending/human"]' --arg n "$P"
-jset "$GD/events.json" '.[$n] += [{id: 60011, event: "unlabeled", label: {name: "pending/review"}, actor: {login: "maint", type: "User"}}, {id: 60012, event: "labeled", label: {name: "pending/human"}, actor: {login: "maint", type: "User"}}]' --arg n "$P"
-w0=$(writes_on "$P")
-tick 10; tick 10
-chk "13b3 人接手之后：daemon 放手，PR 上 0 次写入，标签是人设的样子" \
-    "$(( $(writes_on "$P") - w0 ))/$(labels_of "$P")/$(plog '之后有人动过')" "0/pending/human/1"
-# 13c 重派：加上触发标签之后，agent 又忙了
-pr_scn mid3
-hook_after_add "$P" bash -c "printf '%s\n' 'Working (3s • esc to interrupt)' > '$CTL/screen.issue-$N'; sleep 0.8"
-tick 60
-chk "13c 到达性" "$(hook_ran)" "yes"
-chk "13c agent 又忙了：不摘 doing/agent、不结束会话；自己加的复审标签摘回去" \
-    "$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.restarts // 0')" "doing/agent/yes/0"
-tick 10; tick 60
-chk "13c 之后两轮：没有派工" "$(plog "dispatch PR #$P")/$(labels_of "$P")" "0/doing/agent"
-# 13d 重派：加上触发标签之后，绑定的 issue 读不到 → 这一步留着；读得到之后做完
-pr_scn mid4
-hook_after_add "$P" touch "$GD/F_issues_$N"
-tick 60
-chk "13d 读不全：后面的先不做，这一步留着" \
-    "$(hook_ran)/$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.pending')" "yes/doing/agent,pending/review/yes/restart"
-tick 10; tick 10
-chk "13d 一直读不全的两轮：标签留着但不派工，这一步还留着" \
-    "$(plog "dispatch PR #$P")/$(labels_of "$P")/$(efield "$N" '.pending')/$(alive "$N")" "0/doing/agent,pending/review/restart/yes"
+chk "13c② 夹具：会话起来了，但条目上没有 doing/agent" "$(alive "$N")/$(labels_of "$N")" "yes/"
+after_refreeze "13c②" "$N" "任务已送出，会话" "$tok"
+chk "13c② 会话原样留着" "$(alive "$N")" "yes"
+
+# 13c③ issue 评论路径：任务已经送进现有会话，翻标签时摘派工标签失败（结果：两个标签都在）
+frozen_is use3; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token); g0=$(got "$N"); touch "$GD/F_delete_labels"
+tick 5
+rm -f "$GD/F_delete_labels"
+chk "13c③ 夹具：任务送进了会话；派工标签没摘掉" "$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")" "sent/doing/agent,pending/agent"
+after_refreeze "13c③" "$N" "任务已送出，会话" "$tok"
+chk "13c③ 到达性：之后派工队列看到遗留的 pending/agent 并跳过" "$([ "$(plog "本轮不派工的条目.*issue#$N(pending/agent)")" -ge 2 ] && echo yes || echo no)" "yes"
+
+# 13c④ 派工之后读不到条目
+frozen_is use4; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token)
+hook_after_add "$N" touch "$GD/F_issues_$N"
+tick 5
 rm -f "$GD/F_issues_$N"
-tick 10
-chk "13d 读得到之后：摘掉 doing/agent、结束会话、记一次重派" \
-    "$(efield "$N" '.restarts')/$(efield "$N" '.pending')/$(plog '已翻回')" "1//1"
-# 13e 交人：评论发出之后、加 pending/human 之前，绑定的 issue 被挂上等前置标签
-pr_scn mid5 'STUCK_WORKER_MAX_RESTARTS=0'
-# 这一轮对 PR 标签事件的读取：动手前核对（评论前不再重复读）、加标签前核对
-hook_at "issues_${P}_events" 2 "$FAKEBIN/jset" "$GD/labels.json" '.[$n] = ["pending/PR", "pending/blocked"]' --arg n "$N"
-tick 60
-chk "13e 到达性：变化发生在评论发出之后" "$(hook_ran)/$(comments_on "$P")" "yes/1"
-chk "13e 之后不加 pending/human、不摘 doing/agent" "$(labels_of "$P")/$(efield "$N" '.pending // ""')" "doing/agent/"
-# 13f 交人：加上 pending/human 之后、摘 doing/agent 之前，agent 又忙了
-pr_scn mid6 'STUCK_WORKER_MAX_RESTARTS=0'
-hook_after_add "$P" bash -c "printf '%s\n' 'Working (3s • esc to interrupt)' > '$CTL/screen.issue-$N'; sleep 0.8"
-tick 60
-chk "13f agent 又忙了：doing/agent 留着，自己加的 pending/human 摘回去" "$(hook_ran)/$(labels_of "$P")" "yes/doing/agent"
-# 对照：同样的节奏、中间什么都没变 → 两种步骤都做完
-pr_scn mid7
-tick 60
-chk "对照 · 重派：标签换好、会话结束、记一次重派" "$(labels_of "$P")/$(alive "$N")/$(efield "$N" '.restarts')" "pending/review/no/1"
-pr_scn mid8 'STUCK_WORKER_MAX_RESTARTS=0'
-tick 60
-chk "对照 · 交人：评论一条、标签换成 pending/human、会话保留" "$(comments_on "$P")/$(labels_of "$P")/$(alive "$N")" "1/pending/human/yes"
+chk "13c④ 到达性：翻标签之后才读不到" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent"
+after_refreeze "13c④" "$N" "读不到条目的标签" "$tok"
+
+# 13c⑤ 「指令已用掉」写不进本地 → 不派工，什么都没送出，指令没用掉；写得进之后正常派工
+frozen_is use5; human_resume "$N" pending/agent doing/agent pending/agent
+g0=$(got "$N"); w0=$(lwrites "$N")
+echo x > "$W/state/stuck-release"
+tick 5
+chk "13c⑤ 写不进：没送任务、没翻标签、仍停住、指令没用掉" "$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(frozen "$N")/$(ff "$N" used)" "0/0/true/null"
+chk "13c⑤ 到达性：派工脚本跑到了这一步" "$(plog "#$N 记不下「恢复指令已用掉」")" "1"
+rm -f "$W/state/stuck-release"
+tick 5
+chk "13c⑤ 对照 · 写得进之后：派工，记录清掉" "$(labels_of "$N")/$(entry "$N")/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)" "doing/agent/{}/sent"
+
+# 13c⑥ 成功不只看标签：派工期间人自己打了 doing/agent → 不算这次派工成功
+frozen_is use6; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token)
+k=$(( $(cat "$GD/count_POST_issues_${N}_labels" 2>/dev/null || echo 0) + 1 ))
+printf '%q ' "$FAKEBIN/hlabel" "$GD" "$N" add doing/agent > "$GD/hook_POST_issues_${N}_labels_$k"
+tick 5
+chk "13c⑥ 夹具：标签看起来和成功一模一样" "$(labels_of "$N")" "doing/agent"
+after_refreeze "13c⑥" "$N" "不属于这次派工的标签变化" "$tok"
+# 13c⑦ 会话上的记号不是这一次的 → 不算成功
+frozen_is use7; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token)
+hook_after_add "$N" "$REAL_TMUX" -S "$SOCK" set-option -t "=$(sess_of "$N"):" @dispatch_token someone-else
+tick 5
+chk "13c⑦ 到达性" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent"
+after_refreeze "13c⑦" "$N" "任务可能已送出" "$tok"
+
+# 13c⑧ 派工脚本没走到最后一次核对就退出（读不到会话记录）：不算派工；连着 3 次 → 用掉指令、重新停住
+frozen_is use8; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token); g0=$(got "$N")
+printf '%s\n' 'show-options*@worker_model' > "$CTL/fault"
+tick 5; tick 5
+chk "13c⑧ 前两次：不算派工，仍是原来那次停住，指令没用掉，没有普通失败计数" \
+    "$(ff "$N" miss)/$([ "$(ff "$N" token)" = "$tok" ] && echo same || echo new)/$(ff "$N" used)/$([ -e "$W/state/dispatch-fail/issue-$N" ] && echo counted || echo none)" "2/same/null/none"
+tick 5
+rm -f "$CTL/fault"
+chk "13c⑧ 第三次：用掉这条指令、重新停住，任务没送出" "$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$(ff "$N" 'used != null')/$(ff "$N" why | grep -c '任务没有送出')/$(( $(got "$N") - g0 ))" "new/true/1/0"
+d0=$(disp "$N"); tick 5; tick 5
+chk "13c⑧ 之后不再每轮空转" "$(( $(disp "$N") - d0 ))" "0"
+
+echo "【13】停住期间，会动这一条的各个环节都跳过它（每例都有「没停住的同类条目照常处理」或解除后照常处理的对照）"
+# 13d① 自愈：会话不在了也不翻标签
+frozen_is con1; M=$((SEQ + 5))
+mk_issue "$M" doing/agent; own "$M" pending/agent
+T kill-session -t "=$(sess_of "$N")"
+w0=$(lwrites "$N")
+tick 5
+chk "13d① 自愈跳过停住的条目；同一轮里没停住的那条照常翻回触发标签" \
+    "$(( $(lwrites "$N") - w0 ))/$(labels_of "$N")/$(plog "self-heal 跳过（卡住检测已对它停手.*issue#$N")/$(labels_of "$M" | grep -c 'pending/agent\|doing/agent')" "0/doing/agent,pending/agent/1/1"
+# 13d② 完工会话回收：doing/agent 被摘了，会话也不结束
+frozen_is con2 'REAP_GRACE_SECS=0'; M=$((SEQ + 5))
+mk_issue "$M" pending/human; mk_wt "$M"; own "$M" pending/agent; mk_sess "$M" claude worker
+hlabel "$N" rm doing/agent
+sleep 1; tick 5
+chk "13d② 回收跳过停住的条目（会话还在）；同一轮里没停住的完工会话照常回收" \
+    "$(alive "$N")/$([ "$(plog "回收暂缓.*issue #$N 卡住检测已对它停手")" -ge 1 ] && echo yes || echo no)/$(alive "$M")" "yes/yes/no"
+# 13d③ 等前置：前置完成了也不翻回、不留言
+frozen_is con3; M=$((SEQ + 5)); Q=$((SEQ + 6))
+echo '{}' > "$GD/blocked_by.json"
+jset "$GD/items.json" '.[$n] = {kind:"issue", state:"closed", state_reason:"completed", title:"前置", body:"x", user:{login:"maint"}, updated_at:"2026-01-01T00:00:00Z"}' --arg n "$Q"
+blocked_fix() {   # <编号>：挂等前置标签 + 登记等 #Q
+    jset "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: (8000 + ([.[][]] | length)), body: ("## 在等前置\n\n<!-- agent-blocked-by: #" + $q + " resume=pending/agent -->"), user: {login: "loop-bot"}, author_association: "COLLABORATOR", created_at: "2026-05-01T00:00:00Z"}])' --arg n "$1" --arg q "$Q"
+}
+mk_issue "$M"; hlabel "$M" add pending/blocked loop-bot; blocked_fix "$M"
+hlabel "$N" rm doing/agent; hlabel "$N" rm pending/agent; hlabel "$N" add pending/blocked loop-bot; blocked_fix "$N"
+w0=$(writes_on "$N")
+tick 5
+chk "13d③ 等前置跳过停住的条目；同一轮里没停住的那条照常翻回并留言" \
+    "$(( $(writes_on "$N") - w0 ))/$(labels_of "$N")/$(jq -r --arg n "$M" '[(.[$n] // [])[] | select(.body | contains("agent-blocked-resolved"))] | length' "$GD/comments.json")" "0/pending/blocked/1"
+# 13d④ PR 没合并就关闭（停住的 PR 是关联 issue 唯一的 PR），daemon 在重开之前轮询了一次
+frozen_pr con4
+jset "$GD/items.json" '.[$n].state = "closed"' --arg n "$P"
+w0=$(writes_on "$N")
+tick 5
+chk "13d④ PR 关闭期间跨过一轮轮询：关联 issue 的标签没动、没记「已处理」、仍停住" \
+    "$(( $(writes_on "$N") - w0 ))/$(labels_of "$N")/$(jq -r --argjson n "$P" '(.unmerged_prs_handled // []) | index($n) != null' "$STATE")/$(frozen "$N")" "0/pending/PR/false/true"
+jset "$GD/items.json" '.[$n].state = "open"' --arg n "$P"
+d0=$(disp "$P"); tick 5; tick 5
+chk "13d④ 重新打开后：仍停住、不派工，关联关系和标签原样" "$(frozen "$N")/$(( $(disp "$P") - d0 ))/$(labels_of "$N")/$(labels_of "$P")" "true/0/pending/PR/doing/agent,pending/review"
+# 对照：同样的关闭，换一条没停住的 PR → 关联 issue 照常从 pending/PR 翻成 pending/human
+scn con4b; N=$SEQ; P=$((SEQ + 1))
+mk_issue "$N" pending/PR; mk_pr "$P" "feature/issue-$N" "Refs #$N" pending/human
+jset "$GD/items.json" '.[$n].state = "closed"' --arg n "$P"
+tick 5
+chk "13d④ 对照 · 没停住时：issue 从 pending/PR 翻成 pending/human" "$(labels_of "$N")" "pending/human"
+# 13d⑤ PR 合并：停住的 issue 不打 Done / pending/human、不清理、不记「已清理」；解除后才做
+scn con5; N=$SEQ; P=$((SEQ + 1))
+mk_issue "$N" doing/agent; mk_pr "$P" "feature/issue-$N" "Refs #$N"
+mk_wt "$N"; own "$N" pending/agent; mk_sess "$N" claude worker
+tick 0; tick 60; tick 50
+touch "$GD/F_delete_labels"; tick 60; rm -f "$GD/F_delete_labels"; tick 0
+chk "13d⑤ 夹具：issue 停住，范围里有它的 PR" "$(frozen "$N")/$(ff "$N" 'items | sort | join(",")')" "true/$N,$P"
+jset "$GD/items.json" '.[$n].state = "closed" | .[$n].merged = true' --arg n "$P"
+w0=$(writes_on "$N")
+tick 5; tick 5
+chk "13d⑤ PR 合并后两轮：issue 没被写、工作目录和会话还在、没记「已清理」、合并后标签队列里没有它" \
+    "$(( $(writes_on "$N") - w0 ))/$([ -d "$W/wt/issue-$N" ] && echo wt || echo gone)/$(alive "$N")/$(jq -r --argjson n "$P" '(.cleaned_prs // []) | index($n) != null' "$STATE")/$(jq -r '(.merged_label_queue // {}) | length' "$STATE")" \
+    "0/wt/yes/false/0"
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+chk "13d⑤ 本机解卡：退出码 0，停住记录删掉" "$rc/$(frozen "$N")" "0/false"
+tick 5
+chk "13d⑤ 对照 · 解除后的那一轮：照常清理、记「已清理」、issue 交给人" \
+    "$([ -d "$W/wt/issue-$N" ] && echo wt || echo gone)/$(jq -r --argjson n "$P" '(.cleaned_prs // []) | index($n) != null' "$STATE")/$(labels_of "$N" | grep -c 'pending/human')" "gone/true/1"
+# 13d⑥ 子项全部关闭后的父 issue 收尾：父 issue 停住时先不做、不计重试次数；解除后才做
+frozen_is con6 'LOG_LEVEL=debug'; S=$((SEQ + 6))
+jset "$GD/items.json" '.[$s] = {kind:"issue", state:"closed", state_reason:"completed", title:"子项", body:"x", user:{login:"loop-bot"}, updated_at:"2026-01-01T00:00:00Z", parent_issue_url: ("https://api.github.com/repos/example/sw/issues/" + $n)}' --arg s "$S" --arg n "$N"
+echo "{\"$N\": [$S]}" > "$GD/subs.json"
+jset "$STATE" '.split_rollup_queue = {($s): 0}' --arg s "$S"
+c0=$(comments_on "$N"); w0=$(lwrites "$N")
+tick 5; tick 5
+chk "13d⑥ 父 issue 停住：不留汇总、不翻标签，子项留在队列里、重试次数没涨" \
+    "$(( $(comments_on "$N") - c0 ))/$(( $(lwrites "$N") - w0 ))/$(jq -r --arg s "$S" '.split_rollup_queue[$s] // "gone"' "$STATE")" "0/0/0"
+chk "13d⑥ 到达性：收尾确实走到了父 issue 这一步" "$([ "$(plog "#$N 已停手 → 「子项全部关闭后的父 issue 收尾」")" -ge 1 ] && echo yes || echo no)" "yes"
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+tick 5
+chk "13d⑥ 对照 · 解除后：父 issue 收尾做了（记成已汇总、挂上 pending/human），子项出队" \
+    "$rc/$(jq -r --arg n "$N" '.split_rollups[$n] // "none"' "$STATE")/$(labels_of "$N" | grep -c 'pending/human')/$(jq -r --arg s "$S" '.split_rollup_queue[$s] // "gone"' "$STATE")" "0/1/1/gone"
+# 13d⑦ 等人 PR 的冲突检查、托管的接手 / 标签同步 / 合并：停住时一条都不碰
+frozen_pr con7 'LOG_LEVEL=debug' 'PENDING_HUMAN_CONFLICT_CHECK=true' 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"'
+hlabel "$P" rm doing/agent; hlabel "$P" rm pending/review; hlabel "$P" add pending/merge; hlabel "$P" add autopilot; hlabel "$N" add autopilot
+w0=$(writes_on "$P"); : > "$CALLS.mark"; m0=$(cnt "pulls/$P/merge" "$CALLS")
+tick 5
+chk "13d⑦ 托管合并 / 接手 / 标签同步都跳过停住的 PR：PR 上没有写入、没有调合并" \
+    "$(( $(writes_on "$P") - w0 ))/$(( $(cnt "pulls/$P/merge" "$CALLS") - m0 ))/$(labels_of "$P")" "0/0/autopilot,pending/merge"
+chk "13d⑦ 到达性：三个环节都走到了这条 PR" \
+    "$([ "$(plog "#$P 已停手 → 「托管合并」")" -ge 1 ] && echo y || echo n)/$([ "$(plog "#$P 已停手 → 「托管接手」")" -ge 1 ] && echo y || echo n)/$([ "$(plog "#$P 已停手 → 「托管标签同步」")" -ge 1 ] && echo y || echo n)" "y/y/y"
+hlabel "$P" rm pending/merge; hlabel "$P" add pending/human
+w0=$(writes_on "$P")
+tick 5
+chk "13d⑦ 等人 PR 的冲突检查跳过停住的 PR" "$(( $(writes_on "$P") - w0 ))/$([ "$(plog "#$P 已停手 → 「等人 PR 的冲突检查」")" -ge 1 ] && echo y || echo n)/$(jq -r --arg n "$P" '(.pr_conflict // {}) | has($n)' "$STATE")" "0/y/false"
+rc=0; release_cmd "$P" $'yes\n' || rc=$?
+tick 5
+chk "13d⑦ 对照 · 解除后：冲突检查和托管环节重新处理这条 PR" \
+    "$rc/$([ "$(plog "#$P 已停手")" -ge 1 ] && echo y || echo n)/$(jq -r --arg n "$P" '((.pr_conflict // {}) | has($n)) or ((.autopilot // {}) | tostring | contains($n))' "$STATE")" "0/y/true"
+
+echo "【13】本机解卡命令（照文档里那段命令的字面跑，环境只有 HOME 和 PATH）"
+chk "两份文档里的命令段一字不差" "$(diff <(OPS_BLOCK "$REPO_DIR/docs/operations.md") <(OPS_BLOCK "$REPO_DIR/docs/operations.zh.md") >/dev/null && echo same || echo differ)/$([ -n "$(OPS_BLOCK "$REPO_DIR/docs/operations.zh.md")" ] && echo found || echo empty)" "same/found"
+# 说明一直发不出去的那种停住：没有起点，只能本机解卡
+is_scn cmd1
+touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"; tick 5
+chk "夹具：停住，说明没发出去，没有起点，标签 doing/agent + pending/agent" "$(frozen "$N")/$(ff "$N" posted)/$(ff "$N" base)/$(labels_of "$N")" "true/unknown/null/doing/agent,pending/agent"
+E0=$(entry "$N")
+keep() { [ "$(entry "$N")" = "$E0" ] && echo kept || echo changed; }
+rc=0; release_cmd "$((N + 3))" $'yes\n' || rc=$?
+chk "没有这一条的停住记录 → 退出码 1，什么都没改" "$rc/$(grep -c '没有停住记录' "$W/release.out")/$(keep)" "1/1/kept"
+( exec 7>"$W/state/poll.lock"; flock 7; sleep 4 ) &
+LOCKPID=$!; sleep 0.5
+rc=0; release_cmd "$N" $'yes\n' STUCK_RELEASE_LOCK_WAIT=1 || rc=$?
+wait "$LOCKPID" 2>/dev/null
+chk "轮询锁被占着 → 等待超时，退出码 2，什么都没改" "$rc/$(keep)" "2/kept"
+touch "$GD/F_issues_$N"
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+rm -f "$GD/F_issues_$N"
+chk "读不到 GitHub → 退出码 4，没有问确认，什么都没改" "$rc/$(grep -c '确认解除请输入' "$W/release.out")/$(keep)" "4/0/kept"
+rc=0; release_cmd "$N" $'no\n' || rc=$?
+chk "输入的不是 yes → 退出码 5，什么都没改" "$rc/$(keep)" "5/kept"
+rc=0; release_cmd "$N" '' STUCK_RELEASE_CONFIRM_WAIT=1 || rc=$?
+chk "没有输入 → 退出码 5，什么都没改" "$rc/$(keep)" "5/kept"
+chk "确认前把整份身份打印出来了（标签、最新一条流程标签事件）" "$(grep -c '"labels"' "$W/release.out")/$(grep -c 'last_flow_label_event' "$W/release.out")" "1/1"
+hook_at "issues_$N" 2 "$FAKEBIN/hlabel" "$GD" "$N" add bug
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+chk "确认期间人改了标签 → 退出码 3，什么都没改" "$(hook_ran)/$rc/$(keep)" "yes/3/kept"
+hook_at "issues_$N" 2 touch "$GD/F_issues_${N}_events"
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+rm -f "$GD/F_issues_${N}_events"
+chk "确认之后再读没读全 → 退出码 3，什么都没改" "$(hook_ran)/$rc/$(keep)" "yes/3/kept"
+d0=$(disp "$N"); tick 5
+chk "各条失败退出之后：下一轮仍不派工" "$(( $(disp "$N") - d0 ))/$(frozen "$N")" "0/true"
+# 正常解除：人先把标签整理成只剩一枚派工标签
+hlabel "$N" rm doing/agent
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+chk "正常解除 → 退出码 0，停住记录删掉" "$rc/$(frozen "$N")/$(grep -c '已解除' "$W/release.out")" "0/false/1"
+tick 5
+chk "解除后下一轮：按条目上的派工标签照常派工" "$(( $(disp "$N") - d0 ))/$(labels_of "$N" | grep -c 'doing/agent')" "1/1"
+# PR：确认期间只推了新提交 / 只改投了分支，标签没动 → 也不解除
+for v in head base; do
+    pr_scn "cmd2$v"
+    touch "$GD/F_delete_labels" "$GD/F_post_comment"; tick 60; rm -f "$GD/F_delete_labels"
+    E0=$(entry "$N")
+    case "$v" in
+        head) hook_at "issues_$P" 2 "$FAKEBIN/jset" "$GD/items.json" '.[$n].head.sha = "2222222222222222222222222222222222222222"' --arg n "$P" ;;
+        base) hook_at "issues_$P" 2 "$FAKEBIN/jset" "$GD/items.json" '.[$n].base.ref = "release"' --arg n "$P" ;;
+    esac
+    rc=0; release_cmd "$P" $'yes\n' || rc=$?
+    chk "PR 确认期间只变了 $v（标签没动）→ 退出码 3，什么都没改" "$(hook_ran)/$rc/$(keep)" "yes/3/kept"
+done
+rc=0; release_cmd "$N" $'yes\n' || rc=$?
+chk "给的是关联 issue 的编号也找得到这条停住记录；整份身份里有 PR 的分支、提交、来源" \
+    "$rc/$(grep -c '"base": "release"' "$W/release.out")/$(grep -c '"head":' "$W/release.out")/$(grep -c '"src": "example/sw"' "$W/release.out")" "0/1/1/1"
+fi
+
+
+if want 13 || want 13x; then
+echo "【13】恢复派工失败时，普通失败兜底不介入：另外两条派工路径（各从「再失败一次就交人」开始）"
+bounced() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json"; }
+# issue 评论路径：会话不在、工作目录还在 → 重起会话；核对通过之后起会话失败
+frozen_is nob1; human_resume "$N" pending/agent doing/agent pending/agent
+T kill-session -t "=$(sess_of "$N")"
+mkdir -p "$W/state/dispatch-fail"; echo 2 > "$W/state/dispatch-fail/issue-$N"
+tok=$(ff "$N" token)
+printf '%s\n' 'new-session*' > "$CTL/fault"
+tick 5
+rm -f "$CTL/fault"
+chk "issue 评论路径 · 到达性：核对通过、指令用掉之后才失败" "$(plog "#$N 派工前最后一次核对通过")/$([ -s "$CTL/fault.hits" ] && echo hit || echo miss)" "1/hit"
+chk "issue 评论路径：没有普通的转人工留言、没翻 pending/human、失败计数没动、评论读取位置没前进；重新停住" \
+    "$(bounced "$N")/$(labels_of "$N")/$(cat "$W/state/dispatch-fail/issue-$N")/$(jq -r --arg n "$N" '.seen_issue_comments[$n] // "none"' "$STATE")/$(frozen "$N")/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)" \
+    "0/pending/agent/2/none/true/new"
+d0=$(disp "$N"); tick 5; tick 5
+chk "issue 评论路径：之后两轮不再派工（派工标签还在）" "$(( $(disp "$N") - d0 ))/$(alive "$N")" "0/no"
+# 新建路径：会话起来就秒退 → 派工脚本自己那段「留言 + 翻 pending/human」也不做
+frozen_is nob2; human_resume "$N" pending/agent doing/agent pending/agent
+T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
+mkdir -p "$W/state/dispatch-fail"; echo 2 > "$W/state/dispatch-fail/issue-$N"
+tok=$(ff "$N" token); : > "$CTL/die.issue-$N"
+tick 5
+rm -f "$CTL/die.issue-$N"
+chk "新建路径 · 到达性：派工脚本走到了秒退后的转人工那一段，那两次写入都被拦下" \
+    "$(plog "dispatch-new-issue: #$N worker 秒退")/$([ "$(plog '恢复派工里不做普通流程的这次 GitHub 写入')" -ge 2 ] && echo yes || echo no)" "1/yes"
+chk "新建路径：没有普通的转人工留言、没翻 pending/human、失败计数没动；重新停住" \
+    "$(bounced "$N")/$(labels_of "$N")/$(cat "$W/state/dispatch-fail/issue-$N")/$(frozen "$N")/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)" \
+    "0/pending/agent/2/true/new"
+r0=$(runs "$N"); d0=$(disp "$N"); tick 5; tick 5
+chk "新建路径：之后两轮不再派工、不起新进程" "$(( $(disp "$N") - d0 ))/$(( $(runs "$N") - r0 ))" "0/0"
+# 对照：同样秒退，换一条没停住的新 issue → 派工脚本照原规则留言并翻 pending/human
+scn nob3; N=$SEQ
+mk_issue "$N" pending/agent; : > "$CTL/die.issue-$N"
+tick 5
+rm -f "$CTL/die.issue-$N"
+chk "对照 · 没停住的新 issue 秒退：照原规则留言并翻 pending/human" "$(bounced "$N")/$(labels_of "$N")" "1/pending/human"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

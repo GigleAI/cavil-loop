@@ -135,8 +135,12 @@ while IFS= read -r -d '' _tmux_e; do
 done < <(tmux_env_args)
 # remain-on-exit 用 `\;` 链在同一次 tmux 调用里设上：worker 秒退时 pane 留尸，
 # verify_fresh_session 才 capture 得到死因。隔语句再设会被亚毫秒级秒退抢跑（race）。
+# 动用人的恢复指令的派工（GitHub#339）：启动会话之前的最后一次核对，起来之后把本次派工的记号
+# 写在会话上。平时两句都什么都不做。
+stuck_release_gate
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD" \
     \; set-option -w -t "$TMUX_SESSION" remain-on-exit on
+stuck_release_mark_session
 
 # 4.4 给 tmux session 写入 GitHub issue 标题，并让 prefix+s 列表显示它
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"

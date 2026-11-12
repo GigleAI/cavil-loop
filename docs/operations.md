@@ -2222,19 +2222,13 @@ Every check is a script comparison, never a model call:
   and the clock restarts.
 - **Unreadable means hands off**: if tmux or GitHub cannot be read, the round neither advances
   nor resets.
-- **A step that failed half-way** (a label or the comment did not go through) is checked against
-  the same evidence next round and only continued when the item is exactly what the daemon has on
-  record; an agent that is busy again, or anyone touching the item or its bound item (even just
-  adding `pending/human` themselves), drops it. The daemon counts a label change as its own only
-  when the event log says so.
-- **A step stopped half-way** (someone paused the bound item, the agent is busy again, …): the
-  rest is not done and the daemon puts the labels it changed in that step back as they were
-  (`doing/agent` back on, the label it added off); a hand-over comment already posted stays.
-  Until that is done, the dispatch label the daemon added is not taken as a dispatch signal;
-  remove it or add it again yourself and it is handled as yours.
-- **A step that never finishes**: after 10 failed attempts on one item the daemon stops handling
-  it (one log line says so) until it leaves `doing/agent` (handed on, relabeled by a human) or is
-  dispatched again.
+- **Any anomaly half-way stops the item**: the restart / hand-over step is several GitHub writes
+  (restart: add the trigger label → remove `doing/agent` → end the session; hand-over: comment →
+  add `pending/human` → remove `doing/agent`), all done within one round. After the first write,
+  a write that cannot be confirmed on the spot, a change found between two writes, or state that
+  cannot be read makes the daemon stop on that item right there: nothing is rolled back, nothing
+  is retried, nothing is continued next round. A failed check before the first write only
+  restarts the clock.
 
 Never handled (each reason is logged once):
 
@@ -2248,6 +2242,78 @@ Never handled (each reason is logged once):
 too. Hence the 30-minute default and the harmless first step. Progress lives in `stuck_workers`
 in `state.json`, so a daemon restart continues where it was; it is cleared once the item is
 handed on normally (leaves `doing/agent`). To turn it off, write `STUCK_WORKER_QUIET_SECS=""`.
+
+#### After the daemon has stopped on an item
+
+The log has a line `🧊 卡住检测：… 停住，交给人处理` and the item has a comment
+"⚠️ daemon 已对这一条停手，等人处理" (what happened, the labels now, whether the session is still
+open, how to resume). While stopped, the daemon does not dispatch, relabel, end the session of or
+merge that item (nor the bound issue / PR it checked at that moment):
+
+| Pass | While stopped |
+|---|---|
+| Dispatch (every dispatch label, review, the greedy pass, autopilot-only auto start) | not dispatched; the one exception is the label under "Resume on GitHub" below |
+| Self-heal when the session is gone, reaping finished sessions | skipped, labels and session left as they are |
+| Autopilot: takeover, copying the label, merge | skipped |
+| Waiting-on-prerequisite check | skipped, not flipped back even when the prerequisite is done |
+| Relabeling the bound issue after a PR was closed unmerged; `Done` / hand-over and worktree cleanup after a merge; the parent roll-up when all sub-issues are closed | held back and not recorded as done; done in the round after resuming |
+| Conflict check on `pending/human` PRs, missing-settings notice | skipped |
+
+Closing the item does not resume it: the record stays and the item is still stopped when
+reopened (a merged PR cannot be reopened; its record is dropped).
+
+**Resume on GitHub** (the normal way):
+
+1. In the item's Labels, remove every flow label (`doing/agent`, `pending/review`,
+   `pending/agent` and the like); removing labels triggers nothing.
+2. Add the one dispatch label to use (e.g. `pending/agent`); if it is the one just removed, add
+   it again after removing it.
+3. Next round the daemon dispatches as usual, swaps that label for `doing/agent` and drops the
+   record.
+
+What the daemon accepts: the last flow-label change **after the comment was posted** is a human
+adding a dispatch label, that label is the only flow label on the item now, and the bound issue
+/ PR carries no `pending/human` / waiting-on-prerequisite / waiting-for-requester-bot label. The
+dispatch script reads all of this again right before it flips a label or starts a session and
+only goes on when it still holds. Adding a classification label, adding `pending/human` or
+removing labels does not resume; a label added before the comment (or within seconds of it) does
+not count — if nothing starts within two rounds, remove it and add it again.
+Where people and the daemon share one GitHub account the daemon cannot tell who added the label, so this
+way does not work; use the release on the machine below.
+
+One resume instruction is used once: after dispatching on it, the daemon counts it a success only
+when it can confirm the labels were swapped by this dispatch and the session was started / fed by
+this dispatch; otherwise (the dispatch script failed, the labels were not swapped, the result
+cannot be read) it stops again and posts a new comment — saying whether the task already reached
+the session — and the same label event never dispatches a second time; add the label again to go
+on. These dispatches do not go through the ordinary "N failures in a row → `pending/human`".
+
+**Release on the machine** (when the comment never gets posted, or `poll.log` never shows
+"开始认人的恢复指令"): on the machine running the daemon, run
+
+<!-- stuck-release-ops:begin -->
+```bash
+KEY=myproject      # the project's instance name (~/.config/cavil-loop/<KEY>.conf)
+N=123              # the issue / PR the daemon stopped on
+bash ~/.agents/skills/cavil-loop/scripts/stuck-release.sh "$KEY" "$N"
+```
+<!-- stuck-release-ops:end -->
+
+It holds the project's poll lock (polling pauses meanwhile), reads the item's whole identity
+(open / merged, base branch, head commit, source repo, labels, latest flow-label event, the
+bound item's labels), prints it and asks for `yes` (waits at most 5 minutes), then reads again
+and deletes the record only when both reads are identical. It changes the local record only and
+writes nothing to GitHub. Afterwards the item is back in the ordinary flow — a dispatch label on
+it will be dispatched — so tidy the labels on the page first.
+
+| Exit code | Meaning (nothing was changed unless 0) |
+|---|---|
+| 0 | released |
+| 1 | bad usage / no such project / no record for this item |
+| 2 | the poll lock was not free within 2 minutes; run it again later |
+| 3 | after `yes` the second read failed or the item differs (labels, commit, base branch, …); run it again to release |
+| 4 | GitHub could not be read; run it again when it can |
+| 5 | `yes` was not entered |
 
 ### Dispatch fails every round for the same item
 
