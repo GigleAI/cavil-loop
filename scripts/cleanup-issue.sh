@@ -75,7 +75,7 @@ if [ -n "${CLEANUP_HOOK:-}" ]; then
         log "running cleanup hook: $hook"
         ISSUE="$ISSUE" WORKTREE="$WORKTREE" BRANCH="$BRANCH" REPO="$REPO" \
             PROJECT_ROOT="$PROJECT_ROOT" \
-            bash "$hook" 2>&1 | sed 's/^/  [hook] /' | tee -a "$LOG_FILE" || \
+            bash "$hook" 2>&1 | sed 's/^/  [hook] /' | redact_pipe | tee -a "$LOG_FILE" || \
             log "  ⚠️ hook 非零退出（继续 cleanup）"
     else
         log "  ⚠️ CLEANUP_HOOK=$CLEANUP_HOOK 文件不存在，跳过"

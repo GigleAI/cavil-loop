@@ -87,6 +87,23 @@
 #     判定在 agent_trust_prompt_on_screen（本文件），拿真机截屏做夹具测。
 #
 #   入口统一是 agent_trust_dirs <dir>...（本文件），setup.sh 和每次派工都走它。
+#
+#   ── 用量上限（可选，GitHub#341）──
+#   包月订阅的 agent 有时段用量上限；撞上之后界面停在一条提示上，会话还活着、却不再干活。
+#   下面三样配齐，daemon 才会认这个 agent 的上限提示（认出后：这个 agent 停派到解除时间，
+#   被打断的条目留言并转人工）。不配 = 这个 agent 永远不会被判成撞上限，行为和以前一样。
+#
+#   AGENT_USAGE_LIMIT
+#     scripts/usage_limit.py 里对应的屏幕规则名（现有 claude / codex）。新 agent 要先拿真实
+#     截屏在那个脚本里加一段规则和样本，不能凭印象写。
+#
+#   agent_account_dir
+#     stdout 写一行：这个 agent 的登录账号存在哪个目录。额度跟账号走，所以「暂停派工」按
+#     (agent, 这个目录) 记，整台机器共用——同一账号的几个项目会一起撞上限。
+#
+#   agent_session_record <cwd> <session_id>
+#     stdout 写这条会话的记录文件路径（找不到输出空）。daemon 用它核对「屏幕上那句提示不是
+#     模型回复或工具输出打出来的」；记录读不到就什么都不做。
 
 # ── 通用工具：encoded cwd ──
 # 把 cwd 绝对路径里的 '/' 换成 '-'，作为本地历史目录名。
@@ -328,6 +345,9 @@ source_driver() {
     # 目录信任是可选能力：上一个 driver 留下的实现会让新 driver 往别人的配置文件里写
     unset -f agent_trust_key agent_trust_paths 2>/dev/null || true
     AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
+    # 用量上限同理（GitHub#341）：没声明的 driver 不能沿用上一个 driver 的规则和账号目录
+    AGENT_USAGE_LIMIT=""
+    unset -f agent_account_dir agent_session_record 2>/dev/null || true
     for d in "${candidates[@]}"; do
         if [ -f "$d" ]; then
             # shellcheck disable=SC1090

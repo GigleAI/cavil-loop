@@ -544,6 +544,23 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 
 - **读不到**（标签记录、权限、检查、文件、评论）：本轮不写任何东西；连续 `AUTOPILOT_UNKNOWN_MAX`（10）
   轮读不到才交人。「读不到」绝不当成「有授权」「通过」「无冲突」。
+- **交人的每次写入之前都核对现状**（GitHub#382）：交人要连发三个请求——发说明 → 加 `pending/human` → 摘
+  `pending/merge`。daemon 先取一份现状作基准（PR 是否开着、草稿、提交、目标分支、分支、来源、正文、全部标签，
+  PR 标签记录里「这一次入队」和最后一次标签变动的编号；绑定的 issue 和拆分子项的父 issue 的状态、标签、
+  标签记录），把交人原因用现读的数据重新判一遍，再确认基准没变；之后每次写入之前都再判一遍原因、再比一遍
+  现状，只允许多出 daemon 自己刚确认过的那一次写入。维护者在中间关了 PR、动了任何标签、推了提交、改了目标
+  分支、把同一个提交重新送进队列，或在 issue 上撤销了叫停——daemon 本轮不再写，下一轮按现状重新判断。
+  - 交人不留本机待办：仍在合并队列的下一轮从头重判；同一次入队、同一提交、同一原因的说明已经在就不重发
+    （说明末尾有一行隐藏标记），同一提交重新入队后旧说明不算。
+  - 说明发不出去就不翻标签，不会出现「挂了 `pending/human` 却没有说明」。
+  - PR 上同时挂着 `pending/human` 和 `pending/merge`（人叫停，或交人做到一半）：只摘 `pending/merge`、不留言；
+    摘之前同样取基准、再比一遍。要让 PR 留在队列里，先摘掉 `pending/human`。
+  - 现状读不全（PR、issue、任一处的标签记录、评论读不到；响应缺字段或状态词不认识；标签记录缺编号，或和当前标签对不上）：本轮不写。
+    所以「连续读不到到上限」那种交人，只在这些读得到时才写得出去（读不到的是改动文件、检查、权限这类时
+    照常交人）；否则 PR 留在队列里每轮重试，不会被合并，日志里有原因。
+  - ⚠️ 消除不了的窗口：GitHub 没有「状态没变才写」的写法，最后一次核对开始读到写请求到达 GitHub 之间的操作
+    daemon 看不到。落在里面的最坏结果是已关闭 / 已被人接手的 PR 多一个 `pending/human` 或多一条说明，或刚重新
+    排队的 PR 被摘掉 `pending/merge`。它不会导致合并。
 - **交回 worker** 按 PR 计次，上限沿用 `REVIEW_MAX_ROUNDS`。
 - **叫停**：摘掉 issue 或 PR 上的托管标签，或在 issue / PR 上打 `pending/human`。检查之后、合并之前的叫停由
   合并前的重读拦住。
@@ -570,7 +587,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 - **本仓库会部署自己**：`GigleAI/cavil-loop` 的 `main` 合并后几分钟内就在 daemon 上生效，在这里开托管意味着
   自动合并的改动会无人经手地改掉正在运行的 daemon。要不要在本仓库开是单独的决定，合入这个功能本身不会打开它。
 
-状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
+状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后收尾做到一半的待办 `off_handover`（带着基准，见下文「怎么整体关闭托管」）；
 `notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办；`mirror`：判过「不用补 / 不用收回托管标签」的 PR 及同样的缓存键，GitHub#190）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
 
@@ -602,10 +619,9 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 - **文件列表必须读全**：GitHub 在 PR 上自报的改动文件数（`changed_files`）要和读到的条数相等。缺页（这个接口
   一个 PR 最多给 3000 个文件）、缺自报数、响应形状不对、请求失败都算「读不到」：本轮不合并、什么都不写，
   连续 `AUTOPILOT_UNKNOWN_MAX` 轮后交人。「读不到」绝不当成「没命中」。
-- **交人前判两次**：命中（或条目读不懂）之后，整个合并许可用现读的数据原样再判一遍；结论、命中的文件、PR 的
-  最新提交 / 目标分支 / 分支名 / 绑定的 issue 都没变才交人，否则本轮什么都不写。交人本身和托管其他交人一样，
-  是「先发说明、再翻标签」。⚠️ 维护者恰好在这两次写入之间做的操作 daemon 看不到：PR 可能多挂一次
-  `pending/human`、少一个 `pending/merge`。它不会导致合并。
+- **交人前重判**：命中（或条目读不懂）之后，整个合并许可用现读的数据原样再判；结论、命中的文件、PR 的
+  最新提交 / 目标分支 / 分支名 / 绑定的 issue 都没变才交人，否则本轮什么都不写。交人本身和托管其他交人走同一段
+  代码：三次写入每次之前都重判、都核对现状（见上文「交人的每次写入之前都核对现状」，GitHub#382）。
 - **只看路径，不看内容**：清单里的文件只要被改就算（`package.json` 里只升级依赖版本也算）。锁文件和
   `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
 - **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
@@ -751,10 +767,14 @@ echo "HOST_VERDICT=$verdict"
 - 排队中、正在跑的活不清空，照普通流程走完、交人；已完成的合并不撤回。
 
 只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没开过托管的项目
-一个 GitHub 调用都不多。写之前现读那个 PR（仍开着、没合并才动），读不到就下一轮再来。交接的最终状态是：有
-`pending/human`、没有等合并标签、PR 上有一条交人说明。动 GitHub 之前先在 `state.json` 记下「正在交接」，
-然后让标签收敛到目标、回读确认，发说明前先看 PR 上是不是已经有了（只发一条），全部确认后才清记号——中间任何
-一步失败或进程被杀，下一轮靠这个记号找回这个 PR 接着做。
+一个 GitHub 调用都不多。交接的最终状态是：有 `pending/human`、没有等合并标签、PR 上有一条交人说明；顺序是
+加 `pending/human` → 摘等合并标签 → 发说明。三次写入和开着时的交人照同一套核对（GitHub#382）：动 GitHub 之前先在
+`state.json` 记下一条待办，里面带着开始时 PR 的现状（基准）、「现在应该是什么样」（基准 + daemon 已确认的自己的
+写入）和已经决定要发、还没确认结果的那一步；每次写入之前现读 PR，和待办对得上才写，写完再读一次确认只多了
+自己这一条。中间任何一步失败或进程被杀，下一轮靠待办接着做：现状等于「应该的样子」就继续，恰好多出待写的
+那一步就认作自己写成的。**其他任何差异都说明有人动过**（关了 PR、摘了 `pending/human` 自己接手、重新入队、
+推了提交……）：待办作废，本轮不再写；之后 PR 不在合并队列就不再碰，仍挂着等合并标签的下一轮当作新的一件事
+从头开始。现状读不全时本轮不写，待办原样留着。重新开启托管时待办全部清掉，之后再关不会接着上次做到一半的地方。
 
 issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，不想这样就摘掉。
 
@@ -800,6 +820,67 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
 1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。「已合并」不等于「本机已部署」：前置是 loop 自身的改动时，
 被叫回来的 worker 先核对本机部署版本再用。不支持：github.com 以外的前置、环形依赖检测（互相等的两条都一直等）。
+
+## agent 撞到用量上限：停派这个 agent，被打断的条目转人工（GitHub#341）
+
+两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后，CLI 停在一条提示上：会话活着、条目还挂 `doing/agent`、名额占着——而新派给这个 agent 的会话一开口又撞一次。配置 `ENABLE_USAGE_LIMIT_PAUSE="true"` 后，daemon 每轮看一眼本机派出去、仍挂着 `doing/agent` 的会话，认出这条提示就做两件事，别的都不做：
+
+| 做什么 | 细节 |
+|---|---|
+| 这个 agent 在解除之前不再接新活 | 新 issue、issue 评论、PR 评论、复审、往已有会话里注入，凡是要用这个 agent 的都跳过；标签不动、不计派工失败，到解除时间自动恢复。别的 agent 照常。暂停是**整台机器、按 agent 和账号目录**记的（`~/.claude` / `CLAUDE_CONFIG_DIR`，`~/.codex` / `CODEX_HOME`）：同一个账号的几个项目会一起撞 |
+| 被打断的那一条交给人 | 留一条评论（哪个 agent、几点解除、标签改回哪个），然后加 `pending/human`、摘 `doing/agent`。daemon 不往会话里送字、不停程序、不关会话、不自己续接 |
+
+暂停开始时 `poll.log` 里有 `⏸ 用量上限：<agent> 撞到用量上限（…），暂停派工到 <时间>`，之后每轮列出被跳过的条目。
+
+**人要做的事。** 打开 daemon 留言的那个条目。到留言里写的解除时间之后，在右侧 Labels 里把 `pending/human` 换成留言指定的触发标签（`pending/agent`、复审标签……）。提前换也可以：daemon 会等到解除时间再派。重新派工时续接这个角色登记的原会话。到点后仍没被派、或又撞了上限，就让它留在 `pending/human`，看 daemon 的留言和 `poll.log`，不要来回切标签。
+
+**怎么认出撞上限。** 下面四样都成立才算，否则什么都不做（和没开这项一样）：
+
+- 工作窗格最后一块输出是 CLI 的上限提示，后面只跟着 CLI 自己画在它下面的行（规则在 `scripts/usage_limit.py`，照 `tests/fixtures/usage-limit/` 里的真实截屏写的）；「You've used 99% of your session limit」这类提醒、codex 的「You have N usage limit resets available」都不是
+- agent 空闲
+- 会话是这个条目、这个角色登记的那条，而且它的记录里，本次派工开始之后的模型回复、工具输出、派工说明都不含这句话
+- 连续两轮，屏幕和会话记录都没变
+
+解除时间读自提示本身（claude：钟点加时区，如 `resets 4:50pm (Asia/Singapore)`；codex：`try again at Aug 20th, 2026 11:35 AM`，按本机时区读）。读不出、或在 8 天以外的，改用固定等待 `USAGE_LIMIT_FALLBACK_SECS`（默认 3600 秒）；到点如果还在上限里，下一个撞上的 worker 会再被认出来。
+
+**要知道的限制。**
+
+- 这条提示只出现在窗格里，会话记录里没有对应的标记，所以来源核对是「记录里看不到这句话是模型或工具打出来的」，不是证明。认错的代价：一个条目被留言并转给人（把标签改回即可），这个 agent 暂停到屏幕上读出的那个时间（可以按下面的命令手动解除）。
+- 转人工不等于停止执行。现有的完工回收会在会话闲置满宽限时间后关掉它（对话保留，里面的后台命令随之结束）；带「到点自动继续」的 claude 可能到点自己接着干。
+- daemon 的三次写入（留言、加 `pending/human`、摘 `doing/agent`）之间每次都重读。条目、它的 PR（目标分支、最新提交、来源）、标签或本机会话变了，daemon 就**停手，不撤回任何已经写上去的东西**。所以条目可能同时挂着 `pending/human` 和 `doing/agent`：它仍占一个名额，直到人摘掉 `doing/agent`。读不到不算变了：daemon 等下一轮接着做。
+- CLI 一启动就退出的情况照原来的流程处理（没有以这种方式出现上限提示的真实样本）；**周**上限撞满的屏也没有真实样本——按同一结构匹配，没有实测过。
+- 只有暂停决定一轮派不派；`ENABLE_USAGE_LIMIT_PAUSE` 关着、留空或不写时，不多读一次 tmux 或 GitHub，也不留状态文件。
+
+**查看 / 手动解除暂停。** 暂停只在到点时结束，或者它的记录被删掉时结束——不会因为别的会话看起来在忙而提前结束。在 daemon 那台机器上任意 shell 里执行（第一段什么都不用填）：
+
+<!-- usage-limit-ops:begin -->
+```bash
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+# 1. look: which agents are paused on this machine, until when / 查看：本机哪些 agent 在暂停、到几点
+found=0
+for f in "$DIR"/*.json; do
+    [ -e "$f" ] || continue
+    found=1
+    row=$(jq -er '[.agent, (.until | floor | tostring), .account, .item, .source] | @tsv' "$f" 2>/dev/null) \
+        || { echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"; continue; }
+    IFS=$'\t' read -r agent until account item source <<<"$row"
+    when=$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z')   # GNU date / BSD date
+    echo "$agent  until $when  account=$account  seen-on=$item  time-from=$source"
+done
+[ "$found" = 1 ] || echo "no pause record on this machine / 本机没有暂停记录"
+```
+
+```bash
+# 2. lift a pause by hand: set AGENT, then run / 手动解除：先填 AGENT 再执行
+AGENT=claude
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+rm -f "$DIR/$AGENT"-*.json
+left=$(ls "$DIR" 2>/dev/null | grep -c "^$AGENT-" || true)
+echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
+```
+<!-- usage-limit-ops:end -->
+
+解除之后，下一轮轮询就会重新给这个 agent 派工；如果账号其实还在上限里，第一个撞上的 worker 会再被认出来、暂停重新出现（没有需要回退的东西）。项目自己的进度文件是 `$STATE_DIR/usage-limit.json`（各条目的派工开始时刻、做到一半的转人工）；转人工做到一半时别动它——那时删掉可能多出第二条留言。
 
 ## 外部需求机器人（可选，**默认关闭**）
 
@@ -899,6 +980,56 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
     gh run watch 1; }`）会让函数体被当成已执行。多算多少取决于命令里掺了多少别的耗时操作，说不出上限。
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
+
+## GitHub 令牌脱敏（GitHub#342）
+
+worker 的环境里有 GitHub 令牌。agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头），随后落进长期保留的文件。daemon 分三处处理，匹配规则只有一份（`scripts/redact_tokens.py`）：
+
+| 文件 | 谁写的 | 怎么处理 | 开关 |
+|---|---|---|---|
+| `poll.log`、窗格历史（`$STATE_DIR/sessions/*.log`） | daemon | **落盘前**替换：日志函数、清理钩子的输出、tmux 报错、秒退 / 信任框截屏、迁移时并入的旧日志、窗格历史的实时写入，都先过同一个入口 | 始终开着 |
+| claude / codex 的会话记录（`~/.claude/projects`、`~/.codex/sessions`） | agent 的 CLI | daemon 每 10 分钟扫一次，**原地**替换：只改令牌那几个字节，文件长度不变、不改名、不删、不留备份。只碰工作目录在本项目 `WORKTREE_BASE` 之下的会话 | `REDACT_AGENT_RECORDS`（默认开；留空 / `false` = 不改） |
+| codex 的环境快照（`~/.codex/shell_snapshots/*.sh`） | codex | 不事后改：daemon 起 codex worker 时关掉这项功能（`--disable shell_snapshot`），**不再产生新快照**。已有的旧快照用下面的命令清一次 | `CODEX_SHELL_SNAPSHOT`（默认 `off`；`on` = 保留 codex 的默认行为） |
+
+替换后的样子是 `REDACTED-<12 位指纹>`，后面用 `-` 补到和原令牌一样长。指纹是令牌 sha256 的前 12 位：推不回原文，同一把令牌在所有文件里指纹相同，可以用来认「是哪一把」：
+
+```bash
+printf '%s' "$GH_TOKEN" | sha256sum | cut -c1-12
+```
+
+每次扫描替换了东西，`poll.log` 里有一行 `令牌脱敏：N 个文件里替换了 M 处（指纹 …）`。扫描位置记在 `$STATE_DIR/redact-scan.json`、上次扫描时间在 `$STATE_DIR/redact-scan.stamp`；两个都删掉 = 下一轮从头扫一遍（已替换的不会再变）。
+
+**会话记录为什么敢原地改**：周报和用量 footer 都读这些文件，agent 的 CLI 还一直开着它追加。替换只动令牌所在的字节，换上的字符和令牌是同一类（字母、数字、`-`），所以任何时刻读到的每一行都是同样结构的 JSON；用来认领记录的字段（工作目录、会话编号、请求编号、时间、模型等）里的串即使长得像令牌也不改。`tests/token-redaction.test.sh` 在替换写到一半时跑真实的周报采集，结果与替换前逐字节相同。
+
+**不处理的范围**（原文可能仍在）：
+
+- 不带前缀的老格式令牌（2021 年前的 40 位十六进制）：和提交哈希无法区分，不认
+- 窗格历史是终端原始输出：令牌被终端折行、或中间夹了控制码时认不出（紧跟在颜色控制码后面的认得）
+- 升级前就在跑、且认不出 worker 窗格的会话（人分过屏、又没有窗格记录）：日志管道不会被换成过滤版，它之后写下的原文只能靠定期扫描事后替换
+- 工作目录不在 `WORKTREE_BASE` 之下的会话（人自己手动开的 claude / codex）、claude 的输入历史和文件改动备份、cursor / opencode 的记录
+- GitHub 令牌以外的密钥（例如 codex 快照里的其他登录令牌）
+- 替换脚本本身起不来时（例如本机没有 `python3`）：daemon 的日志入口只写一行 `令牌替换失败…已丢弃`，窗格历史不再写入——宁可缺记录，不落原文
+
+### 清理 codex 已有的环境快照
+
+升级后新起的 codex worker 不再写快照，但以前写下的还在，每一份都有 `GH_TOKEN` 原文。正在跑的 codex 执行命令时还会读它自己的快照，这时把令牌换掉，它后面的 `gh` 就全用假令牌了——所以清理脚本只在**本机当前用户没有任何 codex 进程**时才动手；有进程在跑、或进程清单读不到，它列出原因并退出，一个文件都不改。
+
+先让 codex worker 干完活（或停掉列出的进程），再原样运行：
+
+<!-- redact-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"    # the installed skill / 装好的 skill 目录
+SNAPS="$HOME/.codex/shell_snapshots"
+with_token() { grep -lE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}' "$SNAPS"/*.sh 2>/dev/null | wc -l; }
+echo "snapshots holding a token before / 清理前带令牌的快照: $(with_token)"
+if bash "$SKILL/scripts/redact-snapshots.sh" --check; then
+    bash "$SKILL/scripts/redact-snapshots.sh"
+fi
+echo "snapshots holding a token after / 清理后带令牌的快照: $(with_token)"
+```
+<!-- redact-ops:end -->
+
+看到 `完成：N 个快照文件，其中 M 个含令牌，共替换 K 处` 且最后一行是 0 就清完了。看到 `❌ 本机还有 codex 进程在跑` 说明什么都没改：等它列出的进程结束后重跑。替换不可撤销（没有备份），也不需要撤销：令牌本身没变，worker 的环境里照旧有它。`--check` 只检查、不改文件。
 
 ## 重测试排队（可选，**默认关闭**，GitHub#343）
 
@@ -1192,7 +1323,9 @@ your-project/
 ~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
+├── usage-limit.json                    # 开了 ENABLE_USAGE_LIMIT_PAUSE 才有：各条目派工开始时刻 + 做到一半的转人工（GitHub#341）
 ├── poll.log                            # 滚动日志
+├── runlog/                             # 运行记录：每轮轮询一条 + 快照（GitHub#344）
 ├── poll.lock                           # flock
 └── sessions/                           # 每个 worker tmux session 的 pane 日志
     └── <project>-issue<N>.log
@@ -1647,6 +1780,80 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 Worker 切换走一层薄的 **driver 抽象**，不需要 fork。普通任务默认使用 `WORKER_AGENT=claude`；`WORKER_MODEL` 只覆盖普通任务的模型。启用可选 review 关卡后，review 独立使用 `REVIEW_WORKER_AGENT=codex` 和 `REVIEW_MODEL`；模型留空时由对应 driver 使用自己的当前默认值。内置：`claude`、`opencode`、`codex`、`cursor`。想加自家 agent，往 `scripts/drivers/<name>.sh` 加（或放项目级 `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`） — 5 个函数的接口契约和模板见 [drivers.zh.md](drivers.zh.md)。
 
 ## 故障排查
+
+### 最近几轮轮询都干了什么（运行记录，GitHub#344）
+
+`poll.log` 里只有代码主动打的那些行，轮询进程的 stderr 又是指向 `/dev/null` 的。运行记录补上另一半：每一轮
+轮询退出时自己写**一条记录**——开始 / 结束时间、耗时、结果、走到的最后一步、看到几个候选、派了几个工、发了
+几次 GitHub 调用、其中几次失败。非零退出、读不到 GitHub、轻量检查超时或失败、某一步超过
+`POLL_RUN_LOG_SLOW_SECS`、发现上一轮卡在锁上的那一轮，还会另存一份**快照**。`poll-entry.sh` 一进来就先写
+一行「已启动」，所以「完全没跑起来」和「跑了没事做」分得开。
+
+<!-- poll-history-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
+```
+<!-- poll-history-ops:end -->
+
+它打印的内容：最近几轮的表格；有进度文件、没有正式记录的轮次；入口记录（启动了但没走到「配置加载完」，或
+在那之前就退出了，带退出码）；最近一份快照，连同那一轮在 `poll.log` 里对应的那一段。`--json` 是同一份数据，
+给机器读。
+
+| 结果 | 含义 |
+|---|---|
+| `ok` | 正常跑完 |
+| `pace-skip` | 被空闲 / 故障退避跳过（轻量检查的结果在单独一列） |
+| `lock-busy` | 上一轮还没跑完；备注里写着占锁的是哪一轮、已经跑了多久 |
+| `github-unreadable` | 读不到 GitHub，没派工就停了（有快照） |
+| `error` | 非零退出（有快照，带脚本名和行号） |
+| `early-exit` | 没走到最后就以 0 退出，走的是运行记录没有起名字的路径 |
+
+读的时候要知道：
+
+- **被直接杀掉的那一轮**（断电、内存不足被系统杀、`SIGKILL`）写不了记录，事后也没有谁替它补。它只留下进度
+  文件，查看命令对照进程列表后把它显示成「未正常结束」，并写明停在哪一步。进程列表不可信时显示「判断不了」，
+  不乱猜。进度文件只留最近 64 份。
+- **GitHub 调用数**只算轮询进程自己发出的（含它的子 shell 和轻量检查那一次），不含派工脚本和 Python 辅助程序
+  发的。`gh` 以非零退出就算一次失败；只有轻量检查那一次例外——回 `200` 或 `304` 算成功（真的 `gh` 对 `304`
+  也是以 1 退出）。显示「未知」是那一轮的计数器没建成或读不回来——别当成 0；数字后面带 `+` 是数到了上限
+  （一轮 20000 次调用），真实次数不少于这个数。
+- **入口脚本自己都没被执行**（文件缺失、退出码 127）时，这里什么都记不下。查看命令这时会直接打印该看的
+  `journalctl` 那一行。
+- 快照里只有校验过的字段：脚本名、行号、函数名、步骤名、退出码、少量校验过的配置值、节奏状态里的数字字段、
+  `poll.log` 的字节位置——没有源码行、没有命令输出、没有 issue 和评论的文字。同一原因、同一位置一小时内只留
+  一份。
+- 轮询的任何判断都不读这些文件。写失败、目录满了又腾不出位置，都只是少记一条。
+
+文件在哪、各留多少（每个目录都是先腾出一个位置再新增，所以就算轮次接连在写到一半时被杀，数量也守得住；只有
+恰好同一时刻在写的几轮才会短暂超出，每轮最多多一份）：
+
+| 路径 | 内容 | 保留 |
+|---|---|---|
+| `$STATE_DIR/runlog/rounds/` | 每轮一条正式记录 | `POLL_RUN_LOG_ROUNDS`（1000） |
+| `$STATE_DIR/runlog/snapshots/` | 快照 | `POLL_RUN_LOG_SNAPSHOTS`（20） |
+| `$STATE_DIR/runlog/inflight/` | 进行中轮次的进度 | `POLL_RUN_LOG_INFLIGHT`（64） |
+| `$STATE_DIR/runlog/acct/` | 平时是空的：每一轮在这里建一份计数用的文件，打开之后立刻删掉 | `POLL_RUN_LOG_INFLIGHT`（64） |
+| `~/.local/state/cavil-loop/runlog/entry/` | 没走到「配置加载完」的那些轮询的入口记录（本机所有项目共用） | 200 |
+
+关掉并删除已有记录（要再打开，把 `ENABLE_POLL_RUN_LOG=false` 那一行删掉；下一轮轮询会重新建目录）：
+
+<!-- poll-history-off-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+[ -n "$STATE_DIR" ] || { echo "cannot read STATE_DIR from $CONF / 读不到 STATE_DIR"; exit 1; }
+echo 'ENABLE_POLL_RUN_LOG=false' >> "$CONF"
+rm -rf "$STATE_DIR/runlog"
+echo "run log off, records removed: $STATE_DIR/runlog / 已关闭并删除记录"
+```
+<!-- poll-history-off-ops:end -->
 
 ### poll.log 变稀疏了，daemon 是不是死了
 

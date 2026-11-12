@@ -524,6 +524,8 @@ export interface ViewSettings {
   detailWidth: number;
   /** labels / milestone / board fields shown in the detail panel; false = folded away (GitHub#260) */
   detailFields: boolean;
+  /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */
+  codeWrap: boolean;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';
