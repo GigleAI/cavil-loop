@@ -21,6 +21,10 @@ import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
+import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
+import { FailureNote } from './FailureNote';
+import { emptyGuideOf } from '../shared/emptyGuide';
+import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
@@ -275,7 +279,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
  * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
  * opens it by itself.
  */
-function SyncTroubleButton({ trouble, describe, retryOf }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null }) {
+function SyncTroubleButton({ trouble, describe, retryOf, appKind }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind'] }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
@@ -295,7 +299,7 @@ function SyncTroubleButton({ trouble, describe, retryOf }: { trouble: SyncTroubl
       >
         <Icon name="warn" />
       </button>
-      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} box={box} onClose={() => setOpen(false)} />}
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} onClose={() => setOpen(false)} />}
     </span>
   );
 }
@@ -304,12 +308,14 @@ function SyncTroublePanel({
   trouble,
   describe,
   retryOf,
+  appKind,
   box,
   onClose,
 }: {
   trouble: SyncTrouble;
   describe: (f: SyncTrouble['failed'][number]) => string;
   retryOf: (f: SyncTrouble['failed'][number]) => string | null;
+  appKind: AppState['signedInAppKind'];
   box: RefObject<HTMLSpanElement | null>;
   onClose: () => void;
 }) {
@@ -340,6 +346,8 @@ function SyncTroublePanel({
                     {retryOf(f)}
                   </small>
                 )}
+                {/* GitHub#401: the same explanation, buttons and GitHub's words as Settings and the empty board */}
+                <FailureNote failure={failureOf(f)} state={{ signedInAppKind: appKind }} testid="sync-trouble-failure" />
               </li>
             ))}
           </ul>
@@ -576,7 +584,7 @@ export function BoardView({
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
   request?: BoardRequest | null;
   onRequestTaken?: () => void;
-  onSettings: () => void;
+  onSettings: (intent?: SettingsIntent) => void;
   onKeysHelp?: () => void;
   /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
   tallySaved?: { current: string | null };
@@ -624,11 +632,18 @@ export function BoardView({
     const s = state.sources.find((x) => x.key === sourceKey);
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
   };
+  // GitHub#401: the same words as Settings and the empty board's card (shared/readFailure.ts)
   const describeFailed = (f: (typeof failed)[number]) => {
     const shown = `显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-    // GitHub#374: the rate limit's own words already carry their brackets
-    return f.rateLimited ? `${labelOf(f.sourceKey)} 读取失败：${f.error}，${shown}` : `${labelOf(f.sourceKey)} 读取失败（${f.error}），${shown}`;
+    return `${labelOf(f.sourceKey)} 读取失败（${describeFailure(failureOf(f), now, state.signedInAppKind ?? 'oauth').title}），${shown}`;
   };
+  // GitHub#401: the empty board's card (add a source / why nothing was read)
+  const guide = emptyGuideOf(
+    state.sources,
+    view.selected,
+    sync.sources,
+    data.items.map((it) => it.sources),
+  );
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
   // going to another item and back is a new opening, never the old one resumed
@@ -833,7 +848,7 @@ export function BoardView({
               <span className="sync-text">{headerText(sync, now)}</span>
             </span>
           )}
-          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} />}
+          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} />}
           {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
             className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
@@ -856,7 +871,7 @@ export function BoardView({
             <Icon name="plus" />
             新建 issue
           </button>
-          <button className="icon-btn" onClick={onSettings} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
+          <button className="icon-btn" onClick={() => onSettings()} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
             <Icon name="gear" />
           </button>
           {state.viewer && (
@@ -989,14 +1004,14 @@ export function BoardView({
       {state.creates.map((j) => (
         <CreateBar key={j.id} job={j} onOpen={openItem} onDraft={(d) => setNewIssue({ draft: d })} />
       ))}
-      {view.layout === 'board' && board.notice && (
+      {view.layout === 'board' && board.notice && !guide && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
         </div>
       )}
-      {state.sources.length === 0 && (
-        <div className="center muted" data-testid="empty">
-          还没有数据来源。<button className="link" onClick={onSettings}>去设置里添加 Project 或仓库</button>
+      {guide && (
+        <div className="center-guide" data-testid="empty">
+          <EmptyGuide guide={guide} state={state} labelOf={labelOf} onSettings={onSettings} />
         </div>
       )}
 

@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -76,6 +76,7 @@ import {
 } from '../data/edits';
 import { GitHubError } from '../data/github';
 import { fetchReleaseImage } from '../data/releaseImage';
+import { readProjectChoices } from '../data/projectChoices';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
@@ -461,6 +462,7 @@ export class Controller {
       appKind,
       ...this.clientIdFor(appKind),
       viewer: this.cache.getSetting<string | null>('viewer', null),
+      signedInAppKind: null,
       githubWeb: deps.endpoints.web,
       sources: this.cache.getSetting<SourceConfig[]>('sources', []),
       view: normalizeView(this.cache.getSetting<unknown>('view', {})),
@@ -740,6 +742,7 @@ export class Controller {
       phase: 'login',
       loginReason: reason,
       viewer: null,
+      signedInAppKind: null,
       sync: { ...this.state.sync, problem: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
@@ -1512,6 +1515,9 @@ export class Controller {
     await this.saveUnsaved();
     const info = await this.backend.call<GrantInfo>('grantInfo');
     if (!info.signedIn || info.session !== this.session) return;
+    // GitHub#401: the failure explanations speak of the app this sign-in used
+    const kind = info.githubApp ? 'github-app' : 'oauth';
+    if (this.state.signedInAppKind !== kind) this.set({ signedInAppKind: kind });
     if (fresh !== 'ok' && info.expired) {
       // expired and no new token (GitHub unreachable, or the refresh failed for a reason
       // that does not prove the credential dead): keep everything, the cache stays
@@ -1975,6 +1981,44 @@ export class Controller {
       }
     }
   }
+
+  /**
+   * GitHub#401: the Projects "从 GitHub 选" offers — the account's own and each organisation's, read
+   * now (never cached: an organisation approved a minute ago must show at the next look).
+   */
+  async projectChoices(): Promise<ProjectChoices> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, failure: { kind: 'other', raw: c.error }, groups: [] };
+    // PR #414 review rounds 1–2: GitHub said wait. Every way into this list — its own button, a
+    // failure's button, closing and opening it, a read already running — is held in one place:
+    //  - the list's reads go through their own read gate: the moment any request (the account's
+    //    Projects, the organisations, any organisation, any page) hears a rate limit, every later
+    //    request of the list fails here without being sent, while the rest of that read is still
+    //    under way;
+    //  - a read asked for while one runs gets that same read (never a second one, never an older
+    //    answer landing after a newer one);
+    //  - asked for while the gate is closed, the last answer is given again, without a request.
+    if (!this.choices || this.choices.session !== c.session) this.choices = { session: c.session, gate: new ReadGate(this.now), running: null, last: null };
+    const ch = this.choices;
+    if (ch.running) return ch.running;
+    if (ch.last && ch.gate.until !== null && this.now() < ch.gate.until) return ch.last;
+    const client = this.client(c.session, undefined, { gate: ch.gate, retryDelaysMs: [] });
+    const run = readProjectChoices(client).then((r) => {
+      if (this.choices === ch) ch.last = r;
+      return r;
+    });
+    ch.running = run;
+    let r: ProjectChoices;
+    try {
+      r = await run;
+    } finally {
+      if (ch.running === run) ch.running = null;
+    }
+    if (!r.ok && r.failure?.kind === 'auth') this.noteAuthFailure(new GitHubError('auth', r.failure.raw, 401));
+    return r;
+  }
+  /** GitHub#401: the "从 GitHub 选" list of one sign-in session — its read gate, the read under way, the last answer */
+  private choices: { session: number; gate: ReadGate; running: Promise<ProjectChoices> | null; last: ProjectChoices | null } | null = null;
 
   /** GitHub renders the reply preview (same renderer as the web page). */
   async previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }> {
