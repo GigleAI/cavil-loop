@@ -140,7 +140,8 @@ export interface OpRecord {
    * proves nothing about this request. null = that read failed: such a step can never be proven
    * automatically (a person checks and unlocks). Absent = the operation has no step needing it.
    */
-  before?: { comments: string[]; events: string[]; labels?: string[] } | null;
+  /** GitHub#451: `state` — open / closed / merged as read then (absent in a record from before it) */
+  before?: { comments: string[]; events: string[]; labels?: string[]; state?: 'open' | 'closed' | 'merged' } | null;
   /**
    * GitHub#359, this run of the app only (never kept over a restart): the steps not sent yet may go
    * out by themselves once the unknown one is proven (set when the sending stopped at an unknown
@@ -820,7 +821,12 @@ export type OpPermit =
  *   - the step's wanted state is not there yet (else: done, nothing to send);
  *   - auto: within OP_AUTO_MS, in the run that started it (`r.auto`).
  */
-export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend'; now: number; autoMs?: number }): OpPermit {
+/**
+ * `mode: 'follow'` (GitHub#451): the first label step right after a hand-over's comment came back — the
+ * comment proves only that the text went out, not that the item stayed as it was while it was on its way;
+ * the same judgement, without the "same run / within 10 minutes" part (it is the click's own send).
+ */
+export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend' | 'follow'; now: number; autoMs?: number }): OpPermit {
   const s = r.steps[index];
   if (!s || !isLabelStep(s)) return { ok: false, why: 'halt', text: '这一步不是改标签' };
   if (opts.mode === 'auto') {
@@ -829,7 +835,10 @@ export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, op
   }
   const news = opNewEvents(r, snap);
   if (news === null || !snap) return { ok: false, why: 'unread', text: '没能完整读到这一条现在的状态和标签记录' };
-  if (snap.state !== 'open') return { ok: false, why: 'halt', text: '这一条已经关闭', redo: true };
+  // GitHub#451: after a hand-over's comment, what stops it is a change while the comment was on its way —
+  // a hand-over of an item that was already closed is allowed (as without a comment); unknown = must be open
+  const wasState = opts.mode === 'follow' ? r.before?.state : undefined;
+  if (snap.state !== (wasState ?? 'open')) return { ok: false, why: 'halt', text: snap.state === 'open' ? '这一条被重新打开了' : '这一条已经关闭', redo: true };
   const allowed = new Map<string, number>();
   for (const d of r.steps) {
     if (d === s || d.state !== 'ok' || !isLabelStep(d)) continue;

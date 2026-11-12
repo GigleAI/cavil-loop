@@ -3959,7 +3959,7 @@ export class Controller {
       try {
         // GitHub#359: the labels too — the label records made later must add up to the labels read then
         const rec = await readItemSnapshot(c.client, item.repo, item.number, null);
-        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels };
+        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels, state: rec.state };
       } catch {
         // sent anyway; a step of it whose answer never comes can then only be checked by a person
       }
@@ -4018,8 +4018,11 @@ export class Controller {
       const again = opts.resend === i && r.steps[i].state === 'unknown';
       if (r.steps[i].state !== 'unsent' && !again) continue;
       if (i > 0 && r.steps[i - 1].state !== 'ok') break;
-      if (opts.gated) {
-        const mode = again ? ('resend' as const) : ('auto' as const);
+      // GitHub#451: the first label after a hand-over's comment is judged on a fresh read like a send nobody
+      // clicked — the item may have been closed, or its labels changed, while the comment was on its way
+      const follow = !opts.gated && !again && i > 0 && r.steps[i - 1].name === 'comment' && (r.kind === 'autopilot' || r.kind === 'handBack');
+      if (opts.gated || follow) {
+        const mode = again ? ('resend' as const) : follow ? ('follow' as const) : ('auto' as const);
         // judged twice: on the read the decision was made on (when there is one), and on one made right now
         const snaps: (OpSnapshot | null)[] = decided !== undefined ? [decided] : [];
         decided = undefined;
@@ -4041,7 +4044,16 @@ export class Controller {
           }
           // could not be read: nothing is sent now, the next check / round judges again. Anything else ends "by
           // itself" for the steps left; a step a person wanted sent again just stays "not sure" (its verdict says why)
-          const halt = no.why === 'unread' ? (again ? { checkProblem: no.text } : {}) : again ? {} : { halt: { text: no.text, redo: no.redo === true }, auto: false };
+          const halt =
+            follow
+              ? { halt: { text: no.why === 'unread' ? '评论发出后没能完整读到这一条现在的状态，没敢接着改标签' : `评论发出期间${no.text.replace(/^这期间/, '')}`, redo: no.redo === true }, auto: false }
+              : no.why === 'unread'
+                ? again
+                  ? { checkProblem: no.text }
+                  : {}
+                : again
+                  ? {}
+                  : { halt: { text: no.text, redo: no.redo === true }, auto: false };
           this.setOp(opCheckSteps({ ...now, ...halt }, snaps[snaps.length - 1]));
           this.opsChanged();
           await this.storeOps();
