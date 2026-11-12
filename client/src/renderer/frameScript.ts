@@ -9,8 +9,9 @@
 // or not — GitHub#358: the box turns grey at once and every box of the frame
 // stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
-// put both back, and a bare R key (GitHub#322: "go to the reply box" — the one
-// key it passes on; every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
+// put both back, a few keys (GitHub#322: a bare R, "go to the reply box"; GitHub#433: the ⌘⇧ keys of
+// 关闭 issue / 交给 agent / 托管 — the list is FRAME_FORWARD, built from the shortcut table into this text;
+// every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
 // and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
 // block shows, except that the last line break is left out when GitHub itself says so — its rendering of a
@@ -31,7 +32,10 @@
 // (no allow-same-origin) nor the network (connect-src 'none').
 //
 // Change the text → change FRAME_SCRIPT_HASH and the hash in tauri.conf.json
-// (test/unit/taskList.test.ts checks all three agree).
+// (test/unit/taskList.test.ts checks all three agree). Changing the keys of FRAME_IDS in the shortcut
+// table changes the text too.
+
+import { FRAME_FORWARD } from './shortcuts';
 
 export const FRAME_SCRIPT = `(function () {
   var b = document.body, render = b.getAttribute('data-render');
@@ -207,11 +211,16 @@ export const FRAME_SCRIPT = `(function () {
     if (m.ok === true && typeof m.data === 'string' && /^data:image\\/(png|jpeg|gif|webp);base64,/.test(m.data)) show(img, m.data);
     else box(img, m.state === 'limited' ? 'limited' : 'failed', String(m.why || '没取到'), m.until);
   });
+  var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
-    if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-    if (e.key !== 'r' && e.key !== 'R') return;
-    e.preventDefault();
-    send({ cavil: 'key', key: 'r' });
+    if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
+    var k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey, sh = e.shiftKey;
+    for (var i = 0; i < fwd.length; i++) {
+      if (fwd[i].key !== k || fwd[i].mod !== mod || fwd[i].shift !== sh) continue;
+      e.preventDefault();
+      send({ cavil: 'key', key: k, mod: mod, shift: sh });
+      return;
+    }
   });
   document.addEventListener('toggle', function () { send({ cavil: 'view' }); want(); }, true);
   var timer = 0;
@@ -226,4 +235,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-2bUKpUxqIwEAJpxmPcGrWfebEoJ3VFO9lGliNsgyGKI='";
+export const FRAME_SCRIPT_HASH = "'sha256-kLhNZxAWrHbnLfjaoi383eM01EzI6oRZt67vp1jnBWI='";
