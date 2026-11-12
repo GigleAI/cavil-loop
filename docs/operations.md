@@ -122,11 +122,6 @@ SELFHEAL_MAX_RETRIES=3
 # actually work in gets stuck this way. 20 is a good value when you want it.
 CHECKOUT_STALE_ALERT_COMMITS=0
 
-# When this config lacks a line for a new feature that is off when missing (while the template
-# turns it on), open one pending/human issue saying which line to add; false = poll.log only
-# (GitHub#289, see "New settings an upgrade does not add to your config" below)
-CONFIG_NOTICE_ISSUE=true
-
 # 1 = when a PR's branch is held by this project's own main checkout, and that
 # checkout is clean, has nothing in progress and matches the PR's latest commit
 # exactly, switch it back to BASE_BRANCH and carry on (comments on the PR).
@@ -1951,17 +1946,11 @@ Only managed Linux installations fetch script-only updates automatically.
 
 An upgrade replaces the code, never your project's `cavil-loop.config`. A new feature that is **off when its line is missing** — while `cavil-loop.config.example` turns it on, so freshly installed projects have it — therefore stays off on an existing project, silently (GitHub#289: the waiting label `pending/blocked` stayed off on a project whose maintainer thought it was live). The keys this applies to are registered as `notice` in [`scripts/config-notices.txt`](../scripts/config-notices.txt); every other key of the template is registered there as `quiet`, with the reason (same behaviour when missing, required, example value, permission flag).
 
-Each poll the daemon checks those keys against what the config (plus the systemd environment file) actually sets. An empty value such as `LABEL_PENDING_BLOCKED=""` counts as "decided: off" and is never reported. For each key that is missing:
+Each scheduled poll the daemon checks those keys against what the config (plus the systemd environment file) actually sets. An empty value such as `LABEL_PENDING_BLOCKED=""` counts as "decided: off" and is never reported. Each key that is missing gets one line in `poll.log` (`⚠️ 配置提示：本项目配置里没有 <KEY> …`, with the template line that turns it on and the value that keeps it off) — once per key; a key that is added and later removed again is logged again.
 
-| What | When |
-|---|---|
-| one line in `poll.log` (`⚠️ 配置提示：本项目配置里没有 <KEY> …`) | once per key |
-| one issue in the project's repo, labelled `pending/human` (never dispatched), saying what each key does, the template line that turns it on and the value that keeps it off | when the first key goes missing; a key that goes missing later is added as a comment while that issue is open |
-| that issue closed | once every listed key is in the config (on or off) |
+That log line is all it does (GitHub#428). The daemon sends no GitHub call for this: it opens no issue, and a notice issue an earlier version opened is neither commented on nor closed — close it by hand. A `CONFIG_NOTICE_ISSUE` line still in an old config is ignored and can stay. The daemon never edits the config. This runs only in the scheduled poller (started through `poll-entry.sh`): running `agent-poll.sh` by hand for a dry run, or from inside a worker session, writes nothing. State lives in `$STATE_DIR/config-notice.json`; deleting it only means "judge afresh" (at worst each missing key is logged once more).
 
-Closing the issue by hand silences that batch; only a key that newly goes missing opens a new one. The daemon never edits the config. Nothing is sent when the issue cannot be read or a write fails — it retries next round, and "cannot read" is never taken for "closed". This runs only in the scheduled poller (started through `poll-entry.sh`): running `agent-poll.sh` by hand for a dry run, or from inside a worker session, never opens an issue. `CONFIG_NOTICE_ISSUE=false` keeps only the log line, with no GitHub call at all. State lives in `$STATE_DIR/config-notice.json`; deleting it only means "judge afresh" (at worst one more issue).
-
-To see what a project lacks without waiting for the issue, run this in any shell (set `KEY` first; nothing else needs to be set):
+To see what a project lacks, run this in any shell (set `KEY` first; nothing else needs to be set):
 
 <!-- config-notice-ops:begin -->
 ```bash
@@ -1981,7 +1970,7 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 ```
 <!-- config-notice-ops:end -->
 
-How to read it: `logged` lists the keys missing right now (each written to `poll.log` once); `issued` the ones already put in the notice issue; `issue` is that issue's number (`null` = none open). After you add a key's line to the config, the next scheduled poll drops it from both lists; once nothing is missing, `issue` goes back to `null` and the issue is closed. If someone moved the notice issue into another flow (took `pending/human` off, or put a dispatch label on it), the daemon leaves it alone and stops tracking it (`poll.log`: `已被转进别的流程`).
+How to read it: `logged` lists the keys missing right now (each written to `poll.log` once). After you add a key's line to the config, the next scheduled poll drops it from the list. A file written by an earlier version may still carry `issue` / `issued`; the next scheduled poll drops them.
 
 Adding a key to `cavil-loop.config.example` means registering it in `scripts/config-notices.txt` in the same change — `tests/config-notice.test.sh` fails otherwise. Register it as `notice` only when it is off when missing but on in the template.
 
