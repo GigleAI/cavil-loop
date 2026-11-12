@@ -47,6 +47,8 @@ preview-socket-activation 7
 price-fetch 6
 price-identifiability 1
 project-auto-add 41
+project-config 30
+project-config-poll 15
 project-priority 1
 prompt-compose 1
 reap-finished-workers 10

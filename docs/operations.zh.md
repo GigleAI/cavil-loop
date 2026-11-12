@@ -1263,6 +1263,44 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 
 它用 `setup.sh` 同一个函数生成新 plist，`plutil -lint` 校验，和现有文件逐字比对——一样就 `RESULT=unchanged`。不一样：读任务状态（读不到就停，什么都不动）；已加载的先拿该项目的轮询锁（等当前这一轮结束，最多 `CAVIL_REFRESH_LOCK_WAIT` 秒，默认 300），bootout 并确认已卸载；把旧文件备份到 `$STATE_DIR/launchd-backup/`；原子换上新文件；原来已加载的就重新加载，并读回确认加载的是这个文件。加载失败就用备份恢复原文件和原状态。最后一行 `RESULT=` 是 `replaced` / `unchanged`（退出 0）、`unknown` / `lint_failed` / `lock_timeout`（退出 2，什么都没动）、`not_found` / `not_macos`（退出 1）、`failed`（退出 3，原文件和原状态已恢复——两者都读回确认过才报它）、`needs_human`（退出 4：恢复失败或确认不了——输出里有报错原文、原文件位置和手动恢复的命令，做过备份的话备份保留）。Linux 上单元文件是指向模板的软链，部署器自己重新加载，不适用这个脚本。
 
+## 用脚本读 / 改一个项目的常用配置（GitHub#388）
+
+`scripts/project-config.sh` 读、改一个已接项目的常用配置项。桌面客户端的「项目配置」弹窗就是调它；人也可以直接跑。`myproject` 是实例名。
+
+<!-- project-config-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.mode == "edit") | "\(.name)=\(.value) editable=\(.editable)"'
+REV="$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .rev)"
+SAVED="$(printf '{"MAX_CONCURRENT_WORKERS":"2"}' | bash "$SKILL/scripts/project-config.sh" set myproject --rev "$REV")"
+printf '%s\n' "$SAVED" | tail -1
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "MAX_CONCURRENT_WORKERS") | "\(.name)=\(.value)"'
+BACKUP="$(printf '%s\n' "$SAVED" | sed -n 's/^DETAIL=//p' | jq -r .backup)"
+cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .real)"
+```
+<!-- project-config-ops:end -->
+
+依次是：列出能改的配置项和当前值；取配置文件的指纹；改一项；打印结果行；读回新值；最后用这次保存留下的备份把保存前的版本放回去（还原就是最后两行，别的什么都没动过）。
+
+**能读、能改哪些。** 只有 `scripts/config-fields.txt` 里登记的（agent 与模型、并发数、重试次数和轮数、评论语言、几个开关）。命令、钩子、令牌、网络地址、目录、项目的各种名字不登记：不会被打印，也改不了。会让 daemon 多做一类事的四项——派工模式、复审关卡、托管、等前置——只显示（`mode: "show"`）。登记了的项只有在配置文件里「正好一行、写成普通字面值」时才可改；写成算式、引用了变量、放在 `if` 里、或有两处赋值的，返回 `editable: false` 并写明原因，仍然用文本编辑器改。配置文件里没有的项，给出 daemon 实际用的值（`in_file: false`）；保存它会在文件末尾追加一行。
+
+**`get <key>`** 输出一个 JSON：`state`（`ok` / `unreadable` / `not_found`）、`config`、`real`（解析掉软链接后的文件）、`rev`（真实位置加内容的指纹）、`fields[]`——`name`、`group`、`mode`、`label`、`help`、`type`（`agent` / `model` / `int` / `bool` / `enum` / `label`，按类型带 `options`、`min` / `max`、`on` / `off`）、`value`、`default`、`in_file`、`editable`、`reason`。配置加载不了就是 `unreadable`，一个值都不给——绝不当成「什么都没设」。
+
+**`set <key> --rev <指纹>`** 从标准输入读一个值全是字符串的 JSON 对象，要么全写要么全不写。它按文件的真实位置拿锁，基于一份私有副本工作，逐个值按登记的类型校验，只改那几行（注释、引号写法和其余每个字节都不动），检查新文件还能加载、别的变量一个都没变，把保存前的版本复制到 `$STATE_DIR/config-backups/`（权限 600，留最近 10 份），紧挨着替换再拿文件和 `--rev` 比一次，然后把新文件改名换上。倒数第二行是 `DETAIL=<json>`（`changes[]` 里有原值和新值，`backup` 是备份位置），最后一行是 `RESULT=`：
+
+| `RESULT` | 退出码 | 含义 |
+|---|---|---|
+| `saved` | 0 | 已写入；换上之后马上读回，是新内容 |
+| `unchanged` | 0 | 要写的值文件里本来就是；什么都没写 |
+| `changed` | 2 | 文件不是取 `--rev` 时的那一份了（读取之后、或保存进行中被改过）；什么都没写——重新读取 |
+| `invalid` / `not_editable` | 2 | 值不符合类型 / 这一项没登记、只显示、或不是普通字面值；什么都没写 |
+| `busy` | 2 | 另一个保存占着锁（`--lock-wait <秒>`，默认 15）；什么都没写 |
+| `unreadable` / `verify_failed` / `backup_failed` / `write_failed` | 2 | 配置加载不了 / 新文件没通过检查 / 备份写不进去 / 文件操作失败；什么都没写 |
+| `not_found` | 1 | 没有这个已接项目 |
+| `saved_then_changed` | 4 | 新文件已经换上，读回之前又被别处改写了；脚本不再动它——重新读取，并和备份对一下 |
+
+**保存时不要同时在编辑器里改同一个文件。** 脚本没法让编辑器等它。最后一次核对时文件和 `--rev` 不一样，它就不写；那次核对之后的事它看不到：编辑器在那次核对和换上之间存的一版会被新文件换掉；编辑器在保存前就开着这个文件、保存后才存盘的，要么用它手里整份旧内容把新值盖回去，要么写进刚被换下的那个文件。这两种情况结果仍可能是 `saved`，丢掉的修改找不回来——备份里只有保存前的那一版。新文件换上之后脚本不再写配置文件：不回滚，不自动恢复。轮询每一轮开头读一次配置，替换是改名，所以它读到的要么是旧的整份、要么是新的整份；已经在跑的 worker 用的还是它启动时的值。
+
 ## 多 project 共存
 
 skill 装一次，调度器模板装一次。每个 project 跑：
