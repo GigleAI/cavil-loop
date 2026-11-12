@@ -43,8 +43,12 @@ const SAMPLES = {
   'a block inside <details>': '<details><summary>log</summary>\n\n```text\nfolded away\n```\n\n</details>\n',
 };
 
-/** a public comment with a shell block, a block without a language, inline code and two task boxes (#374) */
-const COMMENTS = [6795853087];
+/**
+ * a public comment with a shell block, a block without a language, inline code and two task boxes (#374);
+ * and the sample comment on PR #386 (review round 2): nine block endings, numbered, as the discussion gets
+ * them — with GitHub's own copy text around each block, which the markdown endpoint above does not give
+ */
+const COMMENTS = [6795853087, 6811864777];
 
 function gh(args, input) {
   return execFileSync('gh', args, { encoding: 'utf8', input, maxBuffer: 64 << 20 });

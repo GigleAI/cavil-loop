@@ -12,10 +12,12 @@
 // put both back, and a bare R key (GitHub#322: "go to the reply box" — the one
 // key it passes on; every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
-// and reports nothing: the block's text goes to the clipboard inside the click — all of it, less the one line
-// break GitHub's renderer adds after a block without a language (<pre> holding one <code> and nothing else; a
-// block with a language or a hand-written <pre> gets none, so a line break at its end is the author's and is
-// kept: PR #386 review round 1) — by select + copy, the way that
+// and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
+// block shows, except that the last line break is left out when GitHub itself says so — its rendering of a
+// discussion carries, on the element around a block, the text its own copy button copies, and when that is the
+// shown text less one final line break, that is what is copied. Nothing is guessed from the block's shape (PR
+// #386 review rounds 1 and 2: two different sources render to the same HTML), and GitHub's text is never taken
+// when it differs from the shown text in any other way. It goes by select + copy, the way that
 // works in a frame that is not same-origin; the clipboard API after it), and when neither way works the button
 // says so and the block stays selected. It has no way to change anything on GitHub by
 // itself: the window decides, and the frame cannot reach the window's objects
@@ -66,7 +68,7 @@ export const FRAME_SCRIPT = `(function () {
       send({ cavil: 'wrap', on: on });
       return;
     }
-    copy(pre, t);
+    copy(pre, t, block);
   });
   var copying = null;
   document.addEventListener('copy', function (e) {
@@ -83,9 +85,9 @@ export const FRAME_SCRIPT = `(function () {
       btn.textContent = '复制';
     }, 2000);
   }
-  function copy(pre, btn) {
-    var text = pre.textContent, c = pre.children.length === 1 ? pre.firstElementChild : null;
-    if (c && c.tagName === 'CODE' && c.textContent === text) text = text.replace(/\\n$/, '');
+  function copy(pre, btn, block) {
+    var text = pre.textContent, own = block.parentElement ? block.parentElement.getAttribute('data-snippet-clipboard-copy-content') : null;
+    if (own !== null && own + '\\n' === text) text = own;
     var s = window.getSelection(), g = document.createRange(), ok = false;
     g.selectNodeContents(pre);
     s.removeAllRanges();
@@ -116,4 +118,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-i7hTzbr0V50tFWsw/0IJXDQod0kNEbZIMmM+yBC5vow='";
+export const FRAME_SCRIPT_HASH = "'sha256-n7R7lqeA2CY7Vipr7uoBltAStlxFIhBbCXnRDcka/aM='";

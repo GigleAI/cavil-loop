@@ -6759,11 +6759,24 @@ const EDGE381 = [
   'raw <pre> ending in a line break',
   'raw <pre> ending in two line breaks',
 ];
-/** what the author typed as the block's text: between the fences, or between <pre> and </pre> */
-const typed381 = (name: string) => {
-  const md = CODE381.samples[name].markdown;
-  return md.startsWith('<pre>') ? md.replace(/^<pre>/, '').replace(/<\/pre>\n$/, '') : fenced381(name);
-};
+/**
+ * The sample comment on PR #386, block by block: what was typed, and what "copy" must give — the same as
+ * GitHub's own copy button on that block.
+ */
+const GH381: [string, string][] = [
+  ['```bash + a blank line before the closing fence', 'echo one\n'],
+  ['```bash, no blank line', 'echo one'],
+  ['``` (no language) + a blank line before the closing fence', 'echo one\n'],
+  ['``` (no language), no blank line', 'echo one'],
+  ['hand-written <pre> ending in a line break', 'raw one\nraw two\n'],
+  ['hand-written <pre> ending in two line breaks', 'raw one\n\n'],
+  ['hand-written <pre><code> ending in a line break (GitHub renders it exactly as block 4)', 'echo one'],
+  ['hand-written <pre><code>, no line break at the end', 'echo one'],
+  ['hand-written wrapper with a copy text of its own (GitHub drops it and writes the real one)', 'shown text'],
+];
+
+/** code blocks on screen: 2 in the real comment, 3 in C_CODE, the nine endings, the two odd ones, the six without a copy text */
+const BLOCKS381 = 2 + 3 + GH381.length + 2 + EDGE381.length;
 
 test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the clipboard and says so (or says it failed); "换行" folds long lines everywhere and is remembered; GitHub\'s syntax marks are coloured, light and dark, in the discussion and the reply preview', async () => {
   const w = env.fake.state.w;
@@ -6774,6 +6787,9 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   w.comments.set('gigleai/cavil-loop#138', [
     // a real comment as GitHub rendered it: a shell block, a block without a language, inline code, task boxes
     { id: 'C_REAL', url: url('C_REAL'), createdAt: '2026-11-02T01:00:00Z', bodyHTML: CODE381.comments[0].bodyHTML, author: { login: 'user-2' } },
+    { id: 'C_GH', url: url('C_GH'), createdAt: '2026-11-01T02:00:00Z', bodyHTML: CODE381.comments[1].bodyHTML, author: { login: 'user-5' } },
+    // not GitHub's: a copy text that is not the shown text, and one that is two line breaks short of it
+    { id: 'C_ODD', url: url('C_ODD'), createdAt: '2026-11-01T03:00:00Z', bodyHTML: '<div data-snippet-clipboard-copy-content="rm -rf /"><pre><code>ls\n</code></pre></div><div data-snippet-clipboard-copy-content="ls"><pre><code>ls\n\n</code></pre></div>', author: { login: 'user-5' } },
     { id: 'C_EDGE', url: url('C_EDGE'), createdAt: '2026-11-01T01:00:00Z', bodyHTML: EDGE381.map((n) => CODE381.samples[n].html).join('\n'), author: { login: 'user-4' } },
     { id: 'C_CODE', url: url('C_CODE'), createdAt: '2026-11-03T01:00:00Z', bodyHTML: `<p>run <code class="notranslate">npm test</code></p>${CODE381.samples[SH].html}${CODE381.samples[TS].html}${CODE381.samples[PLAIN].html}`, author: { login: 'user-3' } },
   ]);
@@ -6813,8 +6829,8 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   // ---- 1. every block has the two buttons, inline code has none; they show on hover / keyboard focus ----
   await expect(blocks).toHaveCount(3);
   await expect(frame.locator('details.entry[data-entry="C_REAL"] .cb')).toHaveCount(2);
-  await expect(frame.locator('button[data-code-copy]')).toHaveCount(5 + EDGE381.length);
-  await expect(frame.locator('button[data-code-wrap]')).toHaveCount(5 + EDGE381.length);
+  await expect(frame.locator('button[data-code-copy]')).toHaveCount(BLOCKS381);
+  await expect(frame.locator('button[data-code-wrap]')).toHaveCount(BLOCKS381);
   expect(await frame.locator('code').evaluateAll((cs) => cs.filter((c) => !c.closest('pre') && c.closest('.cb')).length)).toBe(0);
   const barOpacity = (b: Locator) => b.locator('.cbar').evaluate((e) => getComputedStyle(e).opacity);
   await page.getByTestId('reply-input').hover();
@@ -6838,11 +6854,12 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await expect(copyBtn(ts)).toHaveAttribute('data-state', 'ok');
   expect(await pasted()).toBe(fenced381(TS));
   await shot(page, '381-code-copied');
-  // a block without a language: indentation, the blank line in it; the line break GitHub adds at the end is not part of it
+  // a block without a language: indentation, the blank line in it
   await plain.locator('pre').hover();
   await copyBtn(plain).click();
   await expect(copyBtn(plain)).toHaveText('已复制 ✓');
-  expect(await pasted()).toBe(fenced381(PLAIN));
+  // (this rendering is from GitHub's markdown endpoint, which gives no copy text: the line break at its end stays)
+  expect(await pasted()).toBe(`${fenced381(PLAIN)}\n`);
   expect(fenced381(PLAIN)).toContain('    indented    columns\n\nlast line');
   // the long line, whole
   await sh.locator('pre').hover();
@@ -6857,21 +6874,36 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   expect(await frame.locator('body').evaluate(() => String(getSelection()))).toBe('');
   expect(env.fake.writes()).toEqual([]);
 
-  // ---- 2b. the end of a block (PR #386 review round 1): only the line break GitHub adds after a block without a
-  // language is left out; a blank line the author wrote before the closing fence, or at the end of a hand-written
-  // <pre>, is part of the text — each case is GitHub's own rendering, compared with what was typed ----
+  // ---- 2b. the end of a block (PR #386 review rounds 1 and 2): what is copied is what GitHub's own copy button
+  // copies. The nine blocks are one real comment as the discussion gets it (GitHub's copy text around each block) ----
+  const gh = frame.locator('details.entry[data-entry="C_GH"] .cb');
+  await expect(gh).toHaveCount(GH381.length);
+  const copyAll = async (blocks: Locator, n: number) => {
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      await blocks.nth(i).locator('pre').hover();
+      await copyBtn(blocks.nth(i)).click();
+      await expect(copyBtn(blocks.nth(i))).toHaveText('已复制 ✓');
+      out.push(await pasted());
+    }
+    return out;
+  };
+  expect(await copyAll(gh, GH381.length)).toEqual(GH381.map(([, text]) => text));
+  // 4 and 7 — a fence without a language, and a hand-written <pre><code> ending in a line break — are the same
+  // HTML from GitHub, byte for byte: no rule can copy them differently, and GitHub's own button does not either
+  const ghHtml = await gh.evaluateAll((bs) => bs.map((b) => b.parentElement!.outerHTML));
+  expect(ghHtml[6]).toBe(ghHtml[3]);
+  expect(ghHtml[3]).toContain('data-snippet-clipboard-copy-content="echo one"');
+  // GitHub gave no copy text (its markdown endpoint gives none; a hand-written <pre> never has one): everything
+  // the block shows is copied, nothing is taken off its end
   const edge = frame.locator('details.entry[data-entry="C_EDGE"] .cb');
   await expect(edge).toHaveCount(EDGE381.length);
-  const ends: Record<string, string> = {};
-  for (const [i, name] of EDGE381.entries()) {
-    await edge.nth(i).locator('pre').hover();
-    await copyBtn(edge.nth(i)).click();
-    await expect(copyBtn(edge.nth(i))).toHaveText('已复制 ✓');
-    ends[name] = await pasted();
-  }
-  expect(ends).toEqual(Object.fromEntries(EDGE381.map((n) => [n, typed381(n)])));
-  // what the cases are: the same line, ending in a line break only where the author put a blank line
-  expect(EDGE381.map(typed381)).toEqual(['echo one\n', 'echo one', 'echo one\n', 'echo one', 'raw one\nraw two\n', 'raw one\n\n']);
+  expect(await edge.evaluateAll((bs) => bs.filter((b) => b.parentElement!.hasAttribute('data-snippet-clipboard-copy-content')).length)).toBe(0);
+  expect(await copyAll(edge, EDGE381.length)).toEqual(['echo one\n', 'echo one', 'echo one\n\n', 'echo one\n', 'raw one\nraw two\n', 'raw one\n\n']);
+  // a copy text that differs from what is shown by more than the last line break is not GitHub's (it strips the
+  // attribute from what people write — block 9 above): what is shown is copied
+  const odd = frame.locator('details.entry[data-entry="C_ODD"] .cb');
+  expect(await copyAll(odd, 2)).toEqual(['ls\n', 'ls\n\n']);
 
   // ---- 3. the clipboard refuses both ways: the button says so, the clipboard keeps what it had, the block stays selected ----
   await frame.locator('body').evaluate(() => {
@@ -6885,7 +6917,7 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await expect(copyBtn(ts)).toHaveAttribute('data-state', 'fail');
   expect((await frame.locator('body').evaluate(() => String(getSelection()))).trim()).toBe(fenced381(TS).trim());
   // still the last thing that was copied
-  expect(await pasted()).toBe(typed381(EDGE381.at(-1)!));
+  expect(await pasted()).toBe('ls\n\n');
   await shot(page, '381-code-copy-failed');
   // "select + copy" refused, the clipboard API takes it: copied
   await frame.locator('body').evaluate(() => {
@@ -6894,7 +6926,7 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   });
   await copyBtn(plain).click();
   await expect(copyBtn(plain)).toHaveText('已复制 ✓');
-  expect(await frame.locator('body').evaluate(() => (window as any).__api)).toEqual([fenced381(PLAIN)]);
+  expect(await frame.locator('body').evaluate(() => (window as any).__api)).toEqual([`${fenced381(PLAIN)}\n`]);
   await frame.locator('body').evaluate(() => {
     document.execCommand = (window as any).__exec;
   });
@@ -6911,8 +6943,8 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   expect(await wrapped()).toBe(true);
   expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
   // every block, also in the other entry; every switch says "on"
-  expect(await frame.locator('pre').evaluateAll((ps) => ps.map((p) => getComputedStyle(p).whiteSpace))).toEqual(Array(5 + EDGE381.length).fill('pre-wrap'));
-  expect(await frame.locator('button[data-code-wrap]').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-pressed')))).toEqual(Array(5 + EDGE381.length).fill('true'));
+  expect(await frame.locator('pre').evaluateAll((ps) => ps.map((p) => getComputedStyle(p).whiteSpace))).toEqual(Array(BLOCKS381).fill('pre-wrap'));
+  expect(await frame.locator('button[data-code-wrap]').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-pressed')))).toEqual(Array(BLOCKS381).fill('true'));
   expect(await iframe.getAttribute('data-render')).toBe(render);
   // folded lines still copy as the one line they are
   await copyBtn(sh).click();
@@ -6958,6 +6990,8 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
     text: await colour(frame.locator('body')),
   });
   await page.emulateMedia({ colorScheme: 'light' });
+  // a change of theme draws the frame again: wait for the new drawing before reading colours from it
+  await expect.poll(() => colour(ts.locator('.pl-k')).catch(() => '')).toBe('rgb(207, 34, 46)');
   await expect(iframe).toHaveAttribute('data-ready', 'yes');
   const light = await seen();
   expect(light).toMatchObject({ keyword: 'rgb(207, 34, 46)', comment: 'rgb(89, 99, 110)', string: 'rgb(10, 48, 105)' });
@@ -6965,7 +6999,8 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await ts.locator('pre').hover();
   await shot(page, '381-code-light');
   await page.emulateMedia({ colorScheme: 'dark' });
-  await expect.poll(() => colour(ts.locator('.pl-k'))).toBe('rgb(255, 123, 114)');
+  await expect.poll(() => colour(ts.locator('.pl-k')).catch(() => '')).toBe('rgb(255, 123, 114)');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
   const dark = await seen();
   expect(dark).toMatchObject({ keyword: 'rgb(255, 123, 114)', comment: 'rgb(145, 152, 161)', string: 'rgb(165, 214, 255)' });
   expect(dark.plain).toBe(dark.text);
