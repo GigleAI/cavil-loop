@@ -185,6 +185,19 @@ hook() {   # <hook 文件名（不带 hook_ 前缀）> <动作…>：到那个�
     printf '%q %q %s < /dev/null\n' "$SANDBOX/bin/gd-act" "$GD" "$2 ${3:-}" > "$GD/hook_$1"
 }
 nohooks() { rm -f "$GD"/hook_*; }
+# 等假 GitHub 把某一次写入完整落盘（它写完会留下 done_<…> 文件）。调用方被杀之后请求还在假 GitHub 里继续跑，
+# 「GitHub 上已生效」要等到这个信号才成立——不靠固定的睡眠。最多等 20 秒，等不到返回 1
+wait_done() {   # <done 文件名（不带 done_ 前缀）>
+    local i
+    for i in $(seq 1 400); do [ -e "$GD/done_$1" ] && return 0; sleep 0.05; done
+    return 1
+}
+shape() {   # <key（pulls_8 / issues_7）> <jq 表达式>：这个条目的详情从现在起按它改形状；空 = 恢复
+    if [ -n "${2:-}" ]; then printf '%s' "$2" > "$GD/jq_$1"; else rm -f "$GD/jq_$1"; fi
+}
+shape_hook() {   # <hook 文件名> <key> <jq 表达式>：到那个时刻才开始改形状
+    printf 'printf %%s %q > %q\n' "$3" "$GD/jq_$2" > "$GD/hook_$1"
+}
 
 # 交人那一轮里 PR #8 被读的次数（GET pulls/8）：
 #   1 触发（合并许可）  2 取基准  3 作数的判定  4 确认基准 →【发说明】
@@ -368,7 +381,7 @@ chk "PR 被关闭 → 下一轮零写入" "$(writes)" 0
 section "【6】中断与失败：下一轮接上，说明只有一条"
 fresh; draft; hook after_POST_issues_8_comments_1 kill; tick
 chk "说明发出后进程被杀 → 只有说明" "$(comments_with 'cavil-loop:autopilot-handover')/$(labels_of 8)" "1/autopilot,pending/merge"
-nohooks; sleep 0.3; tick
+nohooks; tick
 chk "  → 下一轮不重发说明，补完两次标签写" "$(wseq)/$(comments_with 'cavil-loop:autopilot-handover')/$(labels_of 8)" "HM/1/autopilot,pending/human"
 
 fresh; draft; : > "$GD/F_post_comment_lost"; tick
@@ -393,7 +406,7 @@ chk "  → 下一轮按现状摘掉，不再发说明" "$(wseq)/$(comments_with 
 
 fresh; draft; hook after_POST_issues_8_labels_1 kill; tick
 chk "加完 pending/human 后进程被杀 → 两个标签都在" "$(labels_of 8)" "autopilot,pending/human,pending/merge"
-nohooks; sleep 0.3; tick
+nohooks; tick
 chk "  → 下一轮按现状摘掉 pending/merge" "$(wseq)/$(labels_of 8)" "M/autopilot,pending/human"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -417,6 +430,51 @@ unk "标签记录和当前标签对不上（挂着 pending/merge，记录里最�
     'cp "$GD/events.json" "$GD/events.keep"; ev 8 unlabeled pending/merge maint' 'cp "$GD/events.keep" "$GD/events.json"'
 unk "标签记录里编号重复" \
     'cp "$GD/events.json" "$GD/events.keep"; jset events.json ".[\"8\"][0].id = 7 | .[\"8\"][1].id = 7"' 'cp "$GD/events.keep" "$GD/events.json"'
+
+# ─────────────────────────────────────────────────────────────────────────
+section "【7b】读到了、但响应不完整（缺字段、不认识的状态词）→ 同样是分不清：不写，待办留着（代码复审第 1 轮）"
+# 字段规则只有一处（autopilot_fp_place），三条流程各用同一组坏响应过一遍
+BAD_PR=('del(.merged)' 'del(.draft)' '.state = "unexpected"' '.merged = "no"' 'del(.labels)' '.labels = [{}]' 'del(.head)' '.base.ref = ""')
+BAD_ISSUE=('.state = "unexpected"' 'del(.state)' 'del(.labels)')
+for b in "${BAD_PR[@]}"; do
+    # 流程一：触发那次读（第 1 次）是好的，从取基准（第 2 次）起响应不完整
+    fresh; happy; act add-human 7; shape_hook pulls_8_2 pulls_8 "$b"; tick
+    chk "交人 · PR 详情 [$b] → 零写入" "$(writes)/$(labels_of 8)" "0/autopilot,pending/merge"
+    chk "交人 · PR 详情 [$b] → 到达性：停在交人前的取基准" "$(log_has 'PR #8 该交人')" 1
+    nohooks; shape pulls_8; tick
+    chk "交人 · PR 详情 [$b] → 恢复后完成交人" "$(wseq)/$(labels_of 8)" "CHM/autopilot,pending/human"
+    # 流程二：维护者叫停后的收尾
+    fresh; happy; act add-human; shape_hook pulls_8_2 pulls_8 "$b"; tick
+    chk "叫停收尾 · PR 详情 [$b] → 不摘" "$(writes)/$(labels_of 8)" "0/autopilot,pending/human,pending/merge"
+    nohooks; shape pulls_8; tick
+    chk "叫停收尾 · PR 详情 [$b] → 恢复后摘掉" "$(wseq)" "M"
+    # 流程三：一开始就不完整 → 不开始收尾
+    fresh "$OFF"; happy; shape pulls_8 "$b"; tick
+    chk "关闭托管 · 一开始 PR 详情 [$b] → 零写入、不记待办" "$(writes)/$(off_rec)/$(labels_of 8)" "0//autopilot,pending/merge"
+    chk "关闭托管 · 一开始 PR 详情 [$b] → 到达性：确实读了这个 PR" "$([ "$(pr_reads)" -ge 1 ] && echo yes || echo no)" yes
+    shape pulls_8; tick
+    chk "关闭托管 · 一开始 PR 详情 [$b] → 恢复后完成" "$(wseq)/$(labels_of 8)" "HMC/autopilot,pending/human"
+    # 流程三：跨轮待办在（标签已翻、说明欠着），下一轮响应不完整 → 待办必须留着，恢复后补发说明
+    fresh "$OFF"; happy; : > "$GD/F_post_comment"; tick
+    rm -f "$GD/F_post_comment"; shape pulls_8 "$b"; tick
+    chk "关闭托管 · 欠着说明时 PR 详情 [$b] → 不写，待办留着" "$(writes)/$(off_rec)/$(comments_with '托管已在配置里关掉')" "0/待办/0"
+    shape pulls_8; tick
+    chk "关闭托管 · 欠着说明时 PR 详情 [$b] → 恢复后补发说明、清待办" "$(wseq)/$(comments_with '托管已在配置里关掉')/$(off_rec)" "C/1/"
+done
+for b in "${BAD_ISSUE[@]}"; do
+    # 触发那次判定读的是好的 issue（第 1 次），从取基准（第 2 次）起不完整
+    fresh; draft; shape_hook issues_7_2 issues_7 "$b"; tick
+    chk "交人 · issue 详情 [$b] → 零写入" "$(writes)/$(labels_of 8)" "0/autopilot,pending/merge"
+    chk "交人 · issue 详情 [$b] → 到达性：停在交人前的取基准" "$(log_has 'PR #8 该交人')" 1
+    nohooks; shape issues_7; tick
+    chk "交人 · issue 详情 [$b] → 恢复后完成交人" "$(wseq)/$(labels_of 8)" "CHM/autopilot,pending/human"
+done
+# 合法的「已关闭 / 已合并」不是分不清：照原来的约定处理
+fresh "$OFF"; happy; : > "$GD/F_post_comment"; tick
+rm -f "$GD/F_post_comment"; act close; tick
+chk "对照：欠着说明时 PR 真的被关闭 → 不写，本机记录清掉（不是分不清）" "$(writes)/$(jq -r '.autopilot.prs["8"] // "无"' "$STATE")" "0/无"
+fresh; draft; hook pulls_8_4 close; tick
+chk "对照：交人途中 PR 真的被关闭 → 零写入（认得出是关闭）" "$(writes)/$(log_has 'PR #8 交人之前现状有变化')" "0/1"
 
 # ─────────────────────────────────────────────────────────────────────────
 section "【8】PR 上已挂着 pending/human（维护者叫停）：只摘 pending/merge、不发说明；摘之前现状变了就不摘"
@@ -485,18 +543,20 @@ chk "  → 再下一轮：仍挂着等合并标签，作为新的一件事完成
 # 每次写入前后进程被杀：下一轮分得清「写成了没记」和「没写成」
 fresh "$OFF"; happy; hook after_POST_issues_8_labels_1 kill; tick
 chk "加 pending/human 写成后进程被杀 → 待办留着（记着待写的那一步）" "$(labels_of 8)/$(off_rec)" "autopilot,pending/human,pending/merge/待办"
-nohooks; sleep 0.3; tick
+nohooks; tick
 chk "  → 下一轮认出那次是自己写成的，接着摘、发说明" "$(wseq)/$(labels_of 8)/$(comments_with "$OFFMSG")/$(off_rec)" "MC/autopilot,pending/human/1/"
 fresh "$OFF"; happy; hook POST_issues_8_labels_1 kill; tick
-chk "加 pending/human 的请求刚发出进程就被杀（daemon 没看到结果，GitHub 上已生效）→ 待办留着" "$(labels_of 8)/$(off_rec)" "autopilot,pending/human,pending/merge/待办"
-nohooks; sleep 0.3; tick
+# daemon 已死，那次请求还在假 GitHub 里跑：等它落盘的信号，再看「GitHub 上已生效」
+chk "加 pending/human 的请求刚发出进程就被杀 → 那次写入在 GitHub 上落盘了（等到完成信号）" "$(wait_done POST_issues_8_labels_1 && echo yes || echo no)" yes
+chk "  → daemon 没看到结果、GitHub 上已生效，待办留着" "$(labels_of 8)/$(off_rec)" "autopilot,pending/human,pending/merge/待办"
+nohooks; tick
 chk "  → 下一轮认出是自己写成的，接着摘、发说明" "$(wseq)/$(labels_of 8)/$(comments_with "$OFFMSG")" "MC/autopilot,pending/human/1"
 fresh "$OFF"; happy; : > "$GD/F_post_labels"; tick
 chk "加 pending/human 没写成（待写已记下）→ 标签没动、待办留着" "$(labels_of 8)/$(off_rec)" "autopilot,pending/merge/待办"
 rm -f "$GD/F_post_labels"; tick
 chk "  → 下一轮现状等于预期，从这一步接着做完" "$(wseq)/$(labels_of 8)/$(comments_with "$OFFMSG")" "HMC/autopilot,pending/human/1"
 fresh "$OFF"; happy; hook after_POST_issues_8_comments_1 kill; tick
-nohooks; sleep 0.3; tick
+nohooks; tick
 chk "说明发出后进程被杀（待办没清）→ 下一轮不重发，只清待办" "$(writes)/$(comments_with "$OFFMSG")/$(off_rec)" "0/1/"
 
 fresh "$OFF"; happy; : > "$GD/F_issues_8_events"; tick

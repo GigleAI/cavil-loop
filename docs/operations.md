@@ -681,8 +681,9 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   - A PR carrying both `pending/human` and `pending/merge` (a maintainer's stop, or a hand-over cut short):
     only `pending/merge` is removed, silently, after the same baseline-and-compare. To keep a PR queued,
     remove `pending/human` first.
-  - State that cannot be read whole (PR, issue, any label history or the comments unreadable; a label event
-    without an id, or events that contradict the current labels): nothing is written this round. So the
+  - State that cannot be read whole (PR, issue, any label history or the comments unreadable; an answer with a
+    field missing or an unknown state word; a label event without an id, or events that contradict the current
+    labels): nothing is written this round. So the
     "unreadable for N rounds" hand-over only gets written when these are readable (it works as before when what
     is unreadable is the changed files, checks or a permission); otherwise the PR stays queued and is retried
     every round — never merged, with the reason in the log.

@@ -30,6 +30,9 @@ Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that pa
 hook_<POST|DELETE>_issues_<n>_labels_<k> runs right before the k-th label add / remove on item n,
 hook_after_POST_issues_<n>_labels_<k> right after the k-th label add took effect;
 used to change GitHub between the daemon's check and its re-read.
+jq_<key> (GitHub#382): a jq filter applied to the answer of GET pulls/<n> / issues/<n> (drop a field, set an
+unknown state word). done_POST_issues_<n>_labels_<k> appears once the k-th label add on item n is fully saved —
+a test that kills the caller mid-request waits for it instead of sleeping.
 """
 import json, os, subprocess, sys, time
 
@@ -340,14 +343,22 @@ if method == "GET":
             if kind == "pr" and it.get("state") == "open" and not it.get("merged"):
                 out.append(it)
         emit(out, pages=True)
+    # GitHub#382：jq_<key> 文件里的 jq 表达式套在这次 PR / issue 详情的响应上（删字段、改成不认识的状态词），
+    # 模拟「读到了、但响应不完整」
+    def shaped(data):
+        f = p("jq_" + key)
+        if not os.path.exists(f):
+            return data
+        r = subprocess.run(["jq", "-c", open(f).read()], input=json.dumps(data), capture_output=True, text=True)
+        return json.loads(r.stdout)
     if len(parts) == 2 and parts[0] == "pulls":
         if parts[1] not in items or items[parts[1]]["kind"] != "pr":
             fail("HTTP 404: Not Found")
-        emit(view(parts[1])[1])
+        emit(shaped(view(parts[1])[1]))
     if len(parts) == 2 and parts[0] == "issues":
         if parts[1] not in items:
             fail("HTTP 404: Not Found")
-        emit(as_issue(parts[1]))
+        emit(shaped(as_issue(parts[1])))
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
         # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
         evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
@@ -476,6 +487,8 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
             append_event(parts[1], "labeled", l)
     save("labels.json", labels)
     touch(parts[1])
+    # 这次写入已经全部落盘的记号（GitHub#382）：调用方被杀掉之后请求还在这里继续跑，测试等这个文件出现再看结果
+    open(p("done_%s_%d" % (_wk, _c)), "w").write("1")
     # hook_after_POST_issues_<n>_labels_<k>：第 k 次加标签已经生效之后运行（GitHub#233）
     _ah = p("hook_after_POST_issues_%s_labels_%d" % (parts[1], _c))
     if os.path.exists(_ah):

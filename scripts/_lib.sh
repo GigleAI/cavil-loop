@@ -4684,6 +4684,13 @@ autopilot_daemon_sig() { printf '<sub>cavil-loop daemon @ %s 自动留言</sub>'
 # 只在同一个条目的标签事件之间比编号；不和评论编号比、不比时间（GitHub#337 实测：评论编号和事件编号不可比）。
 # 读不到、事件缺编号 / 编号重复、等合并标签或 pending/human 在记录里的最后一次和当前标签对不上 → 分不清（return 1），
 # 调用方本轮不写。
+#
+# 字段规则（都在 autopilot_fp_place 这一处校验；缺字段、类型不对、不认识的状态词一律是「分不清」，绝不默认成
+# 「没合并」「不是草稿」「已关闭」——代码复审第 1 轮：缺 merged 的响应被当成没合并，照样交了人；不认识的 state 被当成
+# 「有人动过」，删掉了还欠着说明的待办）：
+#   PR 和 issue 都要：state 是 "open" 或 "closed"；labels 是数组，每项的 name 是字符串
+#   PR 另外要：merged、draft 是布尔值；head.sha、head.ref、base.ref 是非空字符串
+#   标签事件：是「页的数组」，每页是数组；加 / 摘标签的事件 id 是数字、不重复，label.name 是字符串
 
 # 一处的现状。结果在 AF_PLACE（一行 JSON）、AF_EVENTS（这一处的标签事件 [{id,event,name,actor}]，按编号排序）；
 # 分不清时 return 1、AF_WHY 是原因。在调用方自己的 shell 里调。
@@ -4701,11 +4708,17 @@ autopilot_fp_place() {   # <编号> <pr|issue> [仓库]
     # 条目和事件都从 stdin 进 jq：事件列表可以很长，放不进命令行参数
     if ! out=$({ printf '%s\n' "$j"; printf '%s\n' "$ev"; } | jq -cS -s --arg M "$m" --arg H "$LABEL_PENDING_HUMAN" --arg kind "$kind" --arg ck "$ck" '
         .[0] as $j | .[1] as $ev
-        | if ($j | type) != "object" or ($j.labels | type) != "array" or ($j.state | type) != "string" or ($ev | type) != "array"
+        | if ($j | type) != "object" or ($j.labels | type) != "array" or ($ev | type) != "array"
+             or any($ev[]; type != "array") or any($ev[][]; type != "object")
+             or any($j.labels[]; (type != "object") or ((.name | type) != "string"))
           then error("shape") else . end
-        | [ $ev[][]? | select(.event == "labeled" or .event == "unlabeled")
-            | {id, event, name: (.label.name // ""), actor: (.actor.login // "")} ] as $raw
-        | if any($raw[]; (.id | type) != "number") then error("id") else . end
+        | if ($j.state == "open" or $j.state == "closed") then . else error("state") end
+        | if $kind == "pr" and ((($j.merged | type) != "boolean") or (($j.draft | type) != "boolean")
+                                or (($j.head | type) != "object") or (($j.base | type) != "object"))
+          then error("fields") else . end
+        | [ $ev[][] | select(.event == "labeled" or .event == "unlabeled")
+            | {id, event, name: .label.name, actor: (.actor.login // "")} ] as $raw
+        | if any($raw[]; ((.id | type) != "number") or ((.name | type) != "string")) then error("id") else . end
         | if ($raw | map(.id) | unique | length) != ($raw | length) then error("dup") else . end
         | ($raw | sort_by(.id)) as $le
         | ($j.labels | map(.name) | sort) as $labels
@@ -4713,15 +4726,15 @@ autopilot_fp_place() {   # <编号> <pr|issue> [仓库]
                  | (($le | map(select(.name == $L)) | last | .event) == "labeled") == ($labels | index($L) != null))
           then . else error("mismatch") end
         | { events: $le,
-            place: ({open: ($j.state == "open" and (($j.merged // false) == false)), labels: $labels, last: ($le | last | .id)}
+            place: ({open: ($j.state == "open" and ($kind != "pr" or $j.merged == false)), labels: $labels, last: ($le | last | .id)}
                     + (if $kind == "pr" then
-                         (if (($j.head.sha // "") == "") or (($j.base.ref // "") == "") or (($j.head.ref // "") == "")
-                          then error("fields") else . end)
-                         | {draft: ($j.draft // false), head: $j.head.sha, base: $j.base.ref, ref: $j.head.ref,
+                         (if all([$j.head.sha, $j.head.ref, $j.base.ref][]; (type == "string") and (. != ""))
+                          then . else error("fields") end)
+                         | {draft: $j.draft, head: $j.head.sha, base: $j.base.ref, ref: $j.head.ref,
                             repo: ($j.head.repo.full_name // ""), body: $ck,
                             q: ($le | map(select(.name == $M and .event == "labeled")) | last | .id)}
                        else {} end)) }' 2>/dev/null) || [ -z "$out" ]; then
-        AF_WHY="#$n 的现状或标签记录读不全（缺字段、事件缺编号，或标签记录和当前标签对不上）"; return 1
+        AF_WHY="#$n 的现状或标签记录读不全（缺字段、不认识的状态、事件缺编号，或标签记录和当前标签对不上）"; return 1
     fi
     AF_PLACE=$(printf '%s' "$out" | jq -cS '.place') || return 1
     AF_EVENTS=$(printf '%s' "$out" | jq -c '.events') || return 1
