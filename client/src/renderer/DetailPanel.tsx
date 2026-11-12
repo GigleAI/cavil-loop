@@ -503,10 +503,12 @@ export function DetailPanel({
   }, [load, itemKey, session]);
   // GitHub#226: a sync round read a source carrying this item completely → maybe read the detail again.
   // The mark the panel opened with is not a new round (the opening read is already on its way).
-  // GitHub#397: an item no complete read carries has no round of its own: the tab's own check of it
-  // (the controller's, with every round) is its news — a new `updatedAt` is then the trigger.
+  // GitHub#397: an item no complete read carries has no round of its own: every answer of the tab's own
+  // check of it (the controller's, with every round) is its round — the same rule then decides, so a PR
+  // whose checks are still running is read again even when its `updatedAt` did not move (code review round 2).
   const mark = freshMark(item, state.sync.sources);
-  const trigger = mark !== null ? `round:${mark}` : knownAt !== null ? `own:${knownAt}` : null;
+  const ownMark = tabInfo?.checkedAt ?? null;
+  const trigger = mark !== null ? `round:${mark}` : ownMark !== null ? `own:${ownMark}` : null;
   const lastMark = useRef(trigger);
   useEffect(() => {
     if (trigger === lastMark.current) return;

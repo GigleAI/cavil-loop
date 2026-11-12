@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
-import { findCopies } from '../fake-github/writes';
+import { findCopies, pullOf } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -376,6 +376,58 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   await expect(detail(page).locator('[data-testid="detail-label"][data-label="doing/agent"]')).toHaveCount(0);
   await home(page).click();
   await expect(page.locator(`[data-testid="row"][data-key="${K(A)}"] [data-testid="row-state"]`).first()).toHaveAttribute('data-tone', 'done');
+  await app.close();
+});
+
+test('an unlisted PR whose checks are still running: each own check is a round for its detail — read again until they finish, even though the PR\'s update time never moves', async () => {
+  const PR = 146;
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c = findCopies(store, REPO, PR)!;
+  for (const g of c.gql) Object.assign(g, { state: 'OPEN', merged: false });
+  for (const r of c.rest) Object.assign(r, { state: 'open', pull_request: { ...(r.pull_request ?? {}), merged_at: null } });
+  const pull = pullOf(store, c);
+  pull.checks = 'PENDING';
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page, [REPO]);
+  await row(page, PR).click();
+  const d = detail(page);
+  await expect(d).toHaveAttribute('data-key', K(PR));
+  await expect(d.getByTestId('pr-status')).toContainText('检查：进行中', { timeout: 15_000 });
+  // the repository's list cannot be read: the PR is checked by itself from now on
+  env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+  await page.keyboard.press('Control+r');
+  await expect(tab(page, PR)).toHaveAttribute('data-listed', 'no', { timeout: 15_000 });
+  await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(0);
+  await page.waitForTimeout(500);
+  // still running, nothing on GitHub moved: each check reads the detail again (the GitHub#226 rule)
+  const d0 = detailReads(PR);
+  const i0 = itemReads(PR);
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i0);
+  await expect.poll(() => detailReads(PR), { timeout: 15_000 }).toBeGreaterThan(d0);
+  // the checks finish — the PR's update time stays the same — and the next check shows it, nothing clicked
+  pull.checks = 'SUCCESS';
+  const i1 = itemReads(PR);
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i1);
+  await expect(d.getByTestId('pr-status')).toContainText('检查：全部通过', { timeout: 15_000 });
+  // finished: checks no longer read the detail while nothing changes
+  await page.waitForTimeout(500);
+  const d2 = detailReads(PR);
+  const i2 = itemReads(PR);
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i2);
+  await page.waitForTimeout(800);
+  expect(detailReads(PR)).toBe(d2);
+  // behind another tab, a check never reads the detail
+  await home(page).click();
+  pull.checks = 'PENDING';
+  const i3 = itemReads(PR);
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i3);
+  await page.waitForTimeout(800);
+  expect(detailReads(PR)).toBe(d2);
   await app.close();
 });
 

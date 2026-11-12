@@ -1892,7 +1892,7 @@ export class Controller {
         t.item = item;
         stored = true;
       }
-      return { key: t.key, item: t.item, seen: t.seen, listed };
+      return { key: t.key, item: t.item, seen: t.seen, listed, checkedAt: listed ? null : (this.tabChecked.get(t.key) ?? null) };
     });
     if (stored) this.storeTabs();
     if (JSON.stringify(tabs) !== JSON.stringify(this.state.tabs)) this.state = { ...this.state, tabs };
@@ -2012,7 +2012,7 @@ export class Controller {
           // closed meanwhile: nothing of it is kept
           if (!item || !this.tabList.some((x) => x.key === t.key)) continue;
           this.tabOwn.set(t.key, item);
-          this.tabChecked.set(t.key, this.now());
+          this.markChecked(t.key);
           this.set({});
         } catch (e) {
           // could not read: what the tab shows stays, and it is due again with the next round
@@ -2026,6 +2026,16 @@ export class Controller {
       if (this.tabsChecking === p) this.tabsChecking = null;
     });
     return p;
+  }
+
+  /**
+   * An own check of `key` answered: when (for "is it due again"), and — strictly later than the last
+   * answer — the news the open detail reads as "a fresh read landed" (two answers within one clock tick
+   * must still be two).
+   */
+  private markChecked(key: string): void {
+    const prev = this.tabChecked.get(key) ?? 0;
+    this.tabChecked.set(key, Math.max(this.now(), prev + 1));
   }
 
   /** Every check of the tabs started so far has ended (tests wait for it). */
@@ -2355,7 +2365,7 @@ export class Controller {
       while (this.looseItems.size > LOOSE_ITEMS) this.looseItems.delete(this.looseItems.keys().next().value!);
       if (this.tabList.some((t) => t.key === it.key)) {
         this.tabOwn.set(it.key, it);
-        this.tabChecked.set(it.key, this.now());
+        this.markChecked(it.key);
         this.set({});
       }
     }

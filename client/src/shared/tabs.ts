@@ -29,6 +29,12 @@ export interface TabInfo {
   seen: string | null;
   /** a source read completely in this run carries the item: its icon follows the sync rounds */
   listed: boolean;
+  /**
+   * When the item's own check last answered (epoch ms; null = never in this run, or `listed`). For an
+   * item no complete read carries this is what a sync round is for a listed one: news that a fresh read
+   * landed — even with the item's `updatedAt` unchanged (a PR's checks finish without moving it).
+   */
+  checkedAt: number | null;
 }
 
 export function summarize(it: Item): TabSummary {
