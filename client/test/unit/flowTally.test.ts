@@ -55,6 +55,32 @@ describe('flowTally', () => {
     expect(counts(flowTally([], DEFAULT_HAND_BACK))).toEqual({ running: 0, agent: 0, human: 0 });
   });
 
+  it('every label: either the click shows exactly the counted items, or the number cannot be clicked (PR #408 review round 1)', () => {
+    const names = ['>待处理', '<x', '> 空格', 'wait for, me', 'a b', 'pending/human', 'x..y', '-neg', '@me', 'is:open', 'a:b', '中文 标签', 'say "hi"'];
+    const unclickable = new Set(['>待处理', '<x', '> 空格', 'say "hi"']);
+    for (const name of names) {
+      // the label on #1 only, unrelated open items around it, one closed item with it
+      const items = [
+        item(R, 1, { labels: L(name) }),
+        item(R, 2, { labels: L('bug') }),
+        item(R, 3, {}),
+        item(R, 4, { labels: L(name), state: 'closed', stateReason: 'completed' }),
+        item(R, 5, { labels: L(`${name}x`) }),
+      ];
+      const [e] = flowTally(items, { running: name, agent: 'pending/agent', human: 'pending/human' });
+      expect(e.count, name).toBe(1);
+      expect(items.filter((i) => isPending(i, e.label)).map((i) => i.number), name).toEqual([1]);
+      if (unclickable.has(name)) {
+        expect(e.query, name).toBeNull();
+        continue;
+      }
+      expect(e.query, name).not.toBeNull();
+      const parsed = parseFilter(e.query!);
+      expect(parsed.unsupported, name).toEqual([]);
+      expect(applyFilter(items, parsed, { viewer: null, today, projects: [] }).map((i) => i.number), name).toEqual([1]);
+    }
+  });
+
   it('labels with spaces / commas still make a working query; a double quote makes none', () => {
     const items = [item(R, 1, { labels: L('wait for, me') }), item(R, 2, { labels: L('x') })];
     const q = tallyQuery(' wait for, me ')!;

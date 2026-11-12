@@ -177,6 +177,17 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   expect(blocked).toBeGreaterThan(0);
   await expect(tally(page, 'running').getByTestId('tally-count')).toHaveText(String(blocked));
 
+  // a label the search box cannot carry (a leading ">" is a comparison the filter drops): shown, not clickable
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('hand-back-running').fill('>待处理');
+  await page.getByTestId('hand-back-running').blur();
+  await page.getByTestId('back').click();
+  const before = await page.getByTestId('search').inputValue();
+  await expect(tally(page, 'running')).toBeDisabled();
+  await expect(tally(page, 'running')).toHaveAttribute('title', /写不进搜索框/);
+  await tally(page, 'running').click({ force: true });
+  await expect(page.getByTestId('search')).toHaveValue(before);
+
   // cleared: no "运行中"; the other two stay
   await page.getByTestId('open-settings').click();
   await page.getByTestId('hand-back-running').fill('');

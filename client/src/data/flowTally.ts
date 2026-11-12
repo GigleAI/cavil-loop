@@ -4,10 +4,11 @@
 // Counting goes through `isPending` (open + carries the label, case-insensitive): the very rule the
 // reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
 // A number can be clicked: the search box becomes `is:open label:"<label>"` (the same items, through
-// the ordinary filter), and clicking the lit number again puts back what the box said before.
+// the ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
 
 import type { HandBackLabels, Item } from '../shared/types';
 import { isPending } from './pending';
+import { parseFilter } from '../shared/filter';
 
 export type TallyKind = 'running' | 'agent' | 'human';
 
@@ -23,11 +24,25 @@ export interface TallyEntry {
 
 export const TALLY_TEXT: Record<TallyKind, string> = { running: '运行中', agent: '等 agent', human: '等人处理' };
 
-/** `is:open label:"<label>"`, or null for a label the search syntax cannot carry (a double quote in it). */
+/**
+ * `is:open label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
+ * parser, not by guessing which characters are safe: the query must read back as exactly "open" plus
+ * this one whole label, nothing ignored — a double quote breaks the quoting, and a leading `<` / `>`
+ * is a comparison the filter drops (PR #408 review round 1: the number said 1, the click showed every
+ * open item).
+ */
 export function tallyQuery(label: string): string | null {
   const l = label.trim();
   if (l === '' || l.includes('"')) return null;
-  return `is:open label:"${l}"`;
+  const q = `is:open label:"${l}"`;
+  const { clauses, unsupported } = parseFilter(q);
+  const [open, lab] = clauses;
+  const ok =
+    unsupported.length === 0 &&
+    clauses.length === 2 &&
+    open.kind === 'field' && open.field === 'is' && !open.negated && open.values.length === 1 && open.values[0].toLowerCase() === 'open' &&
+    lab.kind === 'field' && lab.field === 'label' && !lab.negated && lab.values.length === 1 && lab.values[0] === l;
+  return ok ? q : null;
 }
 
 /**
