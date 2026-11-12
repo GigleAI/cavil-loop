@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { Handoff } from './handoff';
@@ -59,8 +59,8 @@ export interface CavilApi {
    * still has an operation that is not settled). Its progress is `state.ops`.
    */
   startOp(action: Extract<WriteAction, { kind: 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' }>, from?: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
-  /** read the evidence of an operation whose answer never came again (reads only) */
-  opRecheck(id: string): Promise<WriteResult>;
+  /** GitHub#359, "仍要重发…": send a label step again whose answer never came (checked first; judged again right before the send) */
+  opResend(id: string): Promise<WriteResult>;
   /** "补做剩下的步骤" (re-reads first) */
   opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
   /** "已核对，解除锁定": local only */
@@ -78,6 +78,10 @@ export interface CavilApi {
   setLaneFold(lane: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** whether switching to the window takes back every delivered notification (GitHub#369) */
+  setClearAllOnActivate(on: boolean): Promise<void>;
+  /** which pending items remind: every one, or only the signed-in account's (GitHub#373) */
+  setNotifyScope(scope: NotifyScope): Promise<void>;
   /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */
   reorderRepos(shown: string[], next: string[]): Promise<void>;
   /** "按名称排序": forget the dragged order (GitHub#304) */

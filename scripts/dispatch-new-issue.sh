@@ -6,6 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 重测试排队开着时（GitHub#343），整个派工在条目锁里跑：和 cleanup-issue.sh 一先一后，
+# 清理不会删掉正在启动的 worker 的工作树。没开时这两行什么都不做。
+if heavy_enabled; then item_lock_reexec "${1:?need issue number}" "${BASH_SOURCE[0]}" "$@"; fi
+
 # 派工时要一并摘掉的全部触发 label（含 LABEL_PENDING_AGENT_EXTRA 里的多机标签）。
 # 装配一次，下面五处 --remove 共用；漏掉任何一个都会让同一条活被反复重开。
 trigger_labels_array
@@ -28,6 +32,9 @@ TMUX_SESSION="$(tmux_session_name "$ISSUE")"
 WORKER_SESSION="$(worker_session_name "$ISSUE")"
 BRANCH="$(branch_name "$ISSUE")"
 PROMPT_FILE="/tmp/cavil-loop-issue-$ISSUE-prompt.md"
+
+# 0. 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）
+heavy_launch_prepare "$ISSUE" || exit 1
 
 # 1. 建 worktree
 bash "$SCRIPT_DIR/create-worktree.sh" "$ISSUE" main
@@ -141,6 +148,9 @@ stuck_release_gate
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD" \
     \; set-option -w -t "$TMUX_SESSION" remain-on-exit on
 stuck_release_mark_session
+
+# 4.3 记下这次启动的 worker 进程（重测试排队：之后据此判断「起测试的 worker 还在不在」）
+heavy_launch_record "$TMUX_SESSION"
 
 # 4.4 给 tmux session 写入 GitHub issue 标题，并让 prefix+s 列表显示它
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"

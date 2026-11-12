@@ -5,6 +5,7 @@ import type { MergePrefs } from './mergePrefs';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
+import type { Picks } from './actions';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -132,6 +133,17 @@ export interface ItemRelations {
   blocking: RelatedIssue[];
 }
 
+/** GitHub#373: the review requests of one pull request, read whole. */
+export interface ReviewRequested {
+  /** logins of the people asked, lower-cased, sorted */
+  users: string[];
+  /** somebody else is asked too: a team, or a reviewer that is not a person */
+  others: boolean;
+}
+
+/** GitHub#373: which pending items remind — every one, or only the ones that concern the signed-in account. */
+export type NotifyScope = 'all' | 'mine';
+
 export interface Item {
   /** `owner/repo#N`, lower-cased owner/repo: the identity used for de-duplication. */
   key: string;
@@ -179,6 +191,31 @@ export interface Item {
    * the item, this — never `updatedAt` — says whose relations are newer.
    */
   relationsAt?: number;
+  /**
+   * GitHub#373: does the signed-in account subscribe to this item (GitHub's `viewerSubscription`)?
+   * null = read, but GitHub's answer is not one this client knows; absent = not read (a cache
+   * written before #373, or a closed item of a repository list). Unknown is never "no".
+   */
+  viewerSubscribed?: boolean | null;
+  /**
+   * GitHub#373: who is asked to review (pull requests; an issue has nobody: known-empty).
+   * null = read, but not whole (more requests than the read returned); absent = not read.
+   */
+  reviewRequested?: ReviewRequested | null;
+  /**
+   * GitHub#373: pull requests — keys (`owner/repo#N`, sorted) of the issues GitHub lists as linked
+   * to it ("Development" in the sidebar, or a closing keyword): whose reminder a pull request
+   * nobody answers for is. An issue has none: known-empty. null = read, but not whole; absent =
+   * not read. Only reminders read it — which issue a PR is shown under goes by `linkedPrs` /
+   * `refIssues`, as before.
+   */
+  closingIssues?: string[] | null;
+  /**
+   * GitHub#373: epoch ms of the read that brought the three fields above — the full read of the
+   * source, or the one-item re-read. Subscribing changes neither field's item `updatedAt`, so when
+   * two sources hold the item, this — never `updatedAt` — says whose answer is newer.
+   */
+  viewerAt?: number;
   projects: ProjectMembership[];
   /** keys of the sources this item came from (filled when sources are merged) */
   sources: string[];
@@ -225,6 +262,13 @@ export interface CreateBoard {
   /** what the board was meant to carry */
   iterationId: string | null;
   status: string | null;
+  /**
+   * GitHub#357: a "再试加入看板" worked on this board and left it unfinished (still not joined, or
+   * joined with its field refused). It stays with the board until a later retry works on this very
+   * board again — another board's success never clears it. Absent: left by the create itself,
+   * nobody tried again yet.
+   */
+  retryFailed?: boolean;
 }
 
 /**
@@ -253,6 +297,11 @@ export interface CreateWatch {
   writes: number;
   /** a button click is being carried out */
   busy?: boolean;
+  /**
+   * GitHub#357: why the last click of this board's "改成…" did not do it. Cleared when the next
+   * click on this board starts; nothing done on another board touches it.
+   */
+  clickError?: string | null;
   /** which addition of that board's source this watch belongs to (removed / added again → over) */
   epoch: number;
 }
@@ -283,7 +332,21 @@ export interface CreateJob {
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
-  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean };
+  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean; picks?: Picks };
+  /** GitHub#357: "再试加入看板" is being carried out (set before its first wait, cleared on every way out) */
+  retrying?: boolean;
+  /**
+   * GitHub#357: why the last "再试加入看板" could not start at all (offline, not signed in) — no
+   * board was worked on. Cleared when the next retry starts. What a retry or a click left
+   * unfinished on one board is kept on that board (`CreateBoard.retryFailed`,
+   * `CreateWatch.clickError`): the notice's colour is taken from every part still there, never
+   * from the last attempt alone. All of it lives on the job, not in the bar that was clicked.
+   */
+  retryError?: string | null;
+  /** GitHub#357: unknown — the look for same-title issues is running */
+  looking?: boolean;
+  /** GitHub#357: unknown — why that look could not be done */
+  lookError?: string | null;
 }
 
 export interface FieldOption {
@@ -374,10 +437,27 @@ export interface SourceStatus {
   error: string | null;
   /** epoch ms of the snapshot currently shown for this source (null: never synced) */
   dataFrom: number | null;
+  /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
+  rateLimited?: boolean;
+  /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
+  retry?: SourceRetry;
+}
+
+/** GitHub#374: what the ⚠ says about a source that keeps failing */
+export interface SourceRetry {
+  /** failures in a row (rate limits not counted: they say nothing about the source) */
+  count: number;
+  /** epoch ms of the first of them */
+  since: number;
+  /** epoch ms of the next automatic read; null = the next round */
+  nextAt: number | null;
+  /** rate limited: no read before this (epoch ms); null = not rate limited */
+  limitedUntil: number | null;
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';
-export type Layout = 'board' | 'table';
+/** GitHub#350: 'graph' = the dependency graph */
+export type Layout = 'board' | 'table' | 'graph';
 export type GroupBy = 'iteration' | 'status' | 'milestone' | 'repo' | 'none';
 export type SortField = 'manual' | 'updated' | 'title' | 'number' | 'repo' | 'iteration' | 'status' | 'milestone';
 export type TableColumn =
@@ -510,6 +590,10 @@ export interface AppState {
   laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** GitHub#369: switching to the window takes back every delivered notification; false (default) = they stay, a click takes back only that one */
+  clearAllOnActivate: boolean;
+  /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */
+  notifyScope: NotifyScope;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */
@@ -528,6 +612,8 @@ export interface AppState {
   update: UpdateStatus | null;
   /** GitHub#229: changes not saved (refused) or not confirmed (no answer): the ones that need the user */
   editsNeedingAction: number;
+  /** GitHub#357: ids of the changes a "重新发送" a person asked for is working on right now (their notices read as running) */
+  editsResending: string[];
   /** GitHub#229: new issues being created, and their outcome until dismissed */
   creates: CreateJob[];
   /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */

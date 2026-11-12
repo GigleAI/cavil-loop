@@ -7,6 +7,8 @@ import { UpdateSection } from './UpdateViews';
 import { DaemonSection, useDaemonStatus } from './DaemonSection';
 import { ConnectButton } from './ConnectDialog';
 import { Icon, type IconName } from './Icons';
+import { useShortcuts } from './keyboard';
+import { keyText, typingOf } from './shortcuts';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
@@ -26,6 +28,15 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
   const daemon = useDaemonStatus();
+  // GitHub#369: Esc goes back to the board, like the "返回看板" button. In a text field the first Esc
+  // only leaves it (the label fields save when left), so a half-typed value is never carried away.
+  useShortcuts({
+    settingsBack: () => {
+      const el = document.activeElement;
+      if (typingOf(el) !== 'none') (el as HTMLElement).blur();
+      else onBack();
+    },
+  });
 
   const add = async () => {
     const r = await api().addSource(input);
@@ -38,9 +49,10 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
   return (
     <div className="settings" data-testid="settings">
       <div className="toolbar">
-        <button className="ghost" onClick={onBack} data-testid="back">
+        <button className="ghost" onClick={onBack} data-testid="back" title={`返回看板（${keyText('settingsBack')}）`}>
           <Icon name="back" />
           返回看板
+          <kbd data-testid="back-key">{keyText('settingsBack')}</kbd>
         </button>
         <h2>设置</h2>
         <span className="muted small">只保存在这台电脑上</span>
@@ -138,9 +150,36 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
 
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
-        <p className="muted small">
-          开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+        <p className="muted small" data-testid="pending-rule">
+          {state.notifyScope === 'mine' ? (
+            <>
+              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的不提醒。App 启动或新加来源时已有的算历史，不通知、不计数。
+            </>
+          ) : (
+            <>
+              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+            </>
+          )}
         </p>
+        {/* GitHub#373: several people on one repository — each is reminded of their own items only */}
+        <div className="notify-scope" role="radiogroup" aria-label="提醒哪些条目" data-testid="notify-scope">
+          <div className="small notify-scope-title">提醒哪些条目</div>
+          <label className="radio small">
+            <input type="radio" name="notify-scope" data-testid="notify-scope-all" checked={state.notifyScope === 'all'} onChange={() => api().setNotifyScope('all')} />
+            全部待处理（所有人共用的待办都提醒）
+          </label>
+          <label className="radio small">
+            <input type="radio" name="notify-scope" data-testid="notify-scope-mine" checked={state.notifyScope === 'mine'} onChange={() => api().setNotifyScope('mine')} />
+            <span>
+              只提醒和我（<b>{state.viewer ?? '…'}</b>）有关的
+            </span>
+          </label>
+          <p className="muted small notify-scope-note" data-testid="notify-scope-note">
+            {state.notifyScope === 'mine'
+              ? '「和我有关」：① 指派给我、或请我 review 的，提醒；② 已指派给别人、或只请了别人 review 的，即使我在 GitHub 上订阅着也不提醒；③ 谁都没指派、也没请人 review 的，我订阅着就提醒（开过、评论过、被 @ 过会自动订阅；条目页右侧 Subscribe 可手动加减）。PR 本身谁都没指派时，按它关联的 issue 判断。'
+              : '一个仓库有几个人一起用时，每人都会收到全部待处理的通知；改成下面一项就只收自己的。'}
+          </p>
+        </div>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
             <Icon name="warn" />
@@ -148,8 +187,24 @@ export function SettingsView({ state, data, onBack, onHelp }: { state: AppState;
           </div>
         )}
         <p className="note small" data-testid="pending-how-to-clear">
-          Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零，已经弹出的系统通知也一并收起。还没看就被摘掉标签或关掉的那条，不再算未读。
+          Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。
+          <br />
+          {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box below */}
+          <span data-testid="notification-keep-rule">
+            {state.clearAllOnActivate
+              ? '已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。'
+              : '系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。'}
+          </span>
         </p>
+        <label className="row small">
+          <input
+            type="checkbox"
+            data-testid="clear-all-on-activate"
+            checked={state.clearAllOnActivate}
+            onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
+          />
+          切到 App 时收起全部系统通知（勾上后，点一条通知时其余也会一起收起）
+        </label>
         {state.launchAtLogin !== null && (
           <label className="row small">
             <input

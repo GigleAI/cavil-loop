@@ -6,11 +6,11 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
-import { normalizeAutopilotConfirm, normalizeLaneFolds, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
@@ -18,14 +18,16 @@ import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
-import { Endpoints, GitHubClient } from '../data/github';
+import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, readItemSnapshot, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
+  OP_AUTO_MS,
+  OP_CHECK_DELAYS_MS,
   STUCK_MS,
   finishSteps,
   isOpKind,
@@ -33,14 +35,20 @@ import {
   needsRecords,
   opAfterRestart,
   opApplyRead,
+  opCheckSteps,
   opDisposable,
   opLockOf,
+  opNextAuto,
+  opPermit,
   opPhase,
   opProveFromRecords,
+  opProveFromSnapshot,
+  opResendStep,
   opText,
   opWithoutStale,
   type OpKind,
   type OpRecord,
+  type OpSnapshot,
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
@@ -84,6 +92,8 @@ export function offlineFields(offline: boolean, reason: string | null): { offlin
 }
 
 export const REFRESH_MARGIN_MS = 5 * 60_000;
+/** GitHub#374: a source waiting to be read again is read by a round that starts at most this much before its time */
+export const RETRY_SLACK_MS = 10_000;
 
 /** What a queued notification was decided on (see Controller.noticeContext). */
 interface NoticeContext {
@@ -126,6 +136,11 @@ export interface ControllerDeps {
    * every source in full). Default FULL_READ_EVERY_MS.
    */
   fullReadEveryMs?: number;
+  /**
+   * GitHub#374: the sync asks a read that failed for a temporary reason again after each of these
+   * waits (default READ_RETRY_DELAYS_MS); [] = never. Tests shorten them.
+   */
+  readRetryDelaysMs?: number[];
   /** tests only: a round's read is in and its change-check records were dealt with (`dropped`: the round had been given up on) */
   afterRoundRead?: (dropped: boolean) => void;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
@@ -139,6 +154,10 @@ export interface ControllerDeps {
   observeFirstMs?: number;
   /** GitHub#250: how long a succeeded operation waits for its re-read before the manual unlock is offered (tests shorten it) */
   opStuckMs?: number;
+  /** GitHub#359: the automatic checks of a step whose answer never came, after the one made at once (tests shorten them; [] = that one only) */
+  opCheckDelaysMs?: readonly number[];
+  /** GitHub#359: how long after its start an operation may still send its remaining steps by itself (tests shorten it) */
+  opAutoMs?: number;
   /** GitHub#258: when the boards not ticked are looked at after a create (ms after it), and the check after a write (tests shorten them) */
   watchLooksMs?: number[];
   watchVerifyMs?: number;
@@ -213,6 +232,9 @@ const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
+/** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
+const NOTIFY_SCOPE = 'notifyScope';
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 
@@ -273,6 +295,15 @@ export class Controller {
    */
   private checks = new Map<string, { epoch: number; check: SourceCheck }>();
   private checksSession: number | null = null;
+  /**
+   * GitHub#374: the sync's reads go through this gate — rate limited = no read until GitHub's
+   * reset time, across rounds. Of one session: another account starts with it open.
+   */
+  private readGate: ReadGate;
+  /** GitHub#374: per source (as the addition `epoch`), its failures in a row and when it is read again automatically */
+  private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
+  /** the session the gate and the failures belong to */
+  private readsSession: number | null = null;
   /** GitHub#261: refresh by hand asked for a full read: the next round to start ignores the records */
   private fullReadNext = false;
   /** signed in, as the back end last said (it holds the credential, this side never does) */
@@ -381,6 +412,8 @@ export class Controller {
   private opPreparing = new Set<string>();
   /** the wait of a succeeded operation for its re-read: offers the manual unlock when it runs out */
   private opTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** GitHub#359: the waits between the automatic checks (ended early, as "do not go on", when the session ends) */
+  private opWaits = new Map<ReturnType<typeof setTimeout>, (go: boolean) => void>();
 
   /** Read what the back end has (settings, cached snapshots), then build the controller. */
   static async create(deps: ControllerDeps): Promise<Controller> {
@@ -401,10 +434,12 @@ export class Controller {
     this.now = deps.now ?? Date.now;
     this.timers = deps.timers ?? REAL_TIMERS;
     this.timedGapMs = deps.syncGapMs ?? deps.syncIntervalMs ?? SYNC_INTERVAL_MS;
+    this.readGate = new ReadGate(this.now);
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
-    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human);
+    const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
+    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -421,6 +456,8 @@ export class Controller {
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
+      notifyScope,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -430,6 +467,7 @@ export class Controller {
       focus: null,
       update: null,
       editsNeedingAction: 0,
+      editsResending: [],
       creates: [],
       ops: [],
     };
@@ -549,6 +587,7 @@ export class Controller {
     // GitHub#258: and the watches of new issues (they only end here or with the session)
     for (const t of this.watchTimers) clearTimeout(t);
     this.watchTimers.clear();
+    this.endOpWaits();
   }
 
   /**
@@ -743,13 +782,16 @@ export class Controller {
     this.itemReadAt.clear();
     for (const t of this.opTimers.values()) clearTimeout(t);
     this.opTimers.clear();
+    this.endOpWaits();
     this.ops.clear();
     this.opsStored = false;
     this.opPreparing.clear();
     // GitHub#258: the watches of that account's new issues end with it
     for (const t of this.watchTimers) clearTimeout(t);
     this.watchTimers.clear();
-    this.state = { ...this.state, editsNeedingAction: 0, creates: [], ops: [] };
+    this.resending.clear();
+    this.resendQueue.clear();
+    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -819,12 +861,16 @@ export class Controller {
     return n;
   }
 
-  /** The user switched to the window: everything is read — the badge and the delivered notifications go. */
+  /**
+   * The user switched to the window: everything is read — the badge goes. The delivered
+   * notifications stay in Notification Center (GitHub#369: a click takes back only the one clicked,
+   * in the shell), unless the user ticked "切到 App 时收起全部系统通知" in Settings.
+   */
   private markRead(): void {
     this.unread.clear();
     this.set({ unreadCount: 0 });
     this.badge();
-    this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+    if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
   }
 
   private badge(): void {
@@ -884,7 +930,9 @@ export class Controller {
    * Feed the snapshots read completely this round; notify what became pending. A source's first
    * read is only its baseline: no notification, no summary, nothing unread (GitHub#251).
    */
-  private observePending(fresh: SourceSnapshot[]): void {
+  private observePending(fresh: SourceSnapshot[], viewer: string | null): void {
+    // GitHub#373: whose reminders — the login as this round read it (a change is recomputed silently)
+    this.pending.setAudience({ scope: this.state.notifyScope, viewer });
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
     // unread (the badge): what arrived while the user was not looking at the window
     if (!this.active) for (const it of change.appeared) this.unread.add(it.key);
@@ -1408,6 +1456,9 @@ export class Controller {
   restartSync(): Promise<void> {
     // GitHub#261: by hand = read every source in full now, whatever the change check would say
     this.fullReadNext = true;
+    // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the new gate closes again).
+    // A new gate, not the old one opened: a dropped round's late answer can only reach the gate it was sent through.
+    this.readGate = new ReadGate(this.now);
     if (this.round?.reading) this.round.drop();
     return this.syncNow();
   }
@@ -1450,8 +1501,14 @@ export class Controller {
       return;
     }
     const session = this.session;
-    const sources = this.state.sources;
-    const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
+    // GitHub#374: the gate and the failures in a row are of one session
+    if (this.readsSession !== session) {
+      this.readGate = new ReadGate(this.now);
+      this.failures.clear();
+      this.readsSession = session;
+    }
+    const configured = this.state.sources;
+    const epochAtStart = new Map(configured.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     this.set({ sync: { ...this.state.sync, syncing: true } });
     // the one stretch a restart may cut: reading GitHub (GitHub#217)
     run.reading = true;
@@ -1468,17 +1525,22 @@ export class Controller {
     // refresh by hand: no record is offered, so every source is read in full (and new tags are taken)
     const byHand = this.fullReadNext;
     this.fullReadNext = false;
+    // GitHub#374: a source that keeps failing waits its turn (1, 2, 4, 8, 10 min); by hand, nobody waits.
+    // The ones left out keep their status (failure and next try) as it is.
+    const startedAt = this.now();
+    const sources = byHand ? configured : configured.filter((src) => !this.waiting(src.key, epochAtStart.get(src.key) ?? 0, startedAt));
     if (!byHand) for (const [key, c] of this.checks) if (c.epoch === epochAtStart.get(key)) recorded.set(key, c.check);
     // GitHub#324: how far the round is, for the hover of the header (a dropped round reports nothing more)
     const total = sources.length;
     let done = 0;
-    const startedAt = this.now();
     const progress = () => {
       if (this.round !== run || run.signal.aborted || !this.state.sync.syncing) return;
       this.set({ sync: { ...this.state.sync, progress: { startedAt, done, total } } });
     };
     progress();
-    const round = await syncRound(this.client(session, run.signal), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
+    const gate = this.readGate;
+    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
+    const round = await syncRound(this.client(session, run.signal, reads), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
       done++;
       progress();
     });
@@ -1522,13 +1584,18 @@ export class Controller {
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
     // Only what was read completely this round (and still belongs here) is compared.
-    this.observePending(accepted);
+    this.observePending(accepted, round.viewer ?? this.state.viewer);
     // GitHub#266: the back end wrote it when it adopted the viewer, under the session check;
     // a write from here could land after a sign-out and put the old name back
     if (round.viewer) this.cache.mirror('viewer', round.viewer);
     const status = round.status
       .filter((st) => current(st.sourceKey))
-      .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }));
+      .map((st) => (st.ok ? st : { ...st, dataFrom: this.snapshots.get(st.sourceKey)?.fetchedAt ?? null }))
+      // GitHub#374: a round that could not use GitHub at all, or whose credential was refused, says
+      // nothing about any source: no count moves
+      .map((st) => (round.offline || round.authFailed ? st : this.noteResult(st, startedAt, epochAtStart.get(st.sourceKey) ?? 0, gate)));
+    // GitHub#374: a round that reached GitHub and heard no limit anywhere ends a run of limits
+    if (!round.offline && !round.held && !round.status.some((st) => st.rateLimited)) gate.roundClean();
     const untouched = this.state.sync.sources.filter((st) => !status.some((x) => x.sourceKey === st.sourceKey) && this.state.sources.some((x) => x.key === st.sourceKey));
     // GitHub#324: read in full or confirmed unchanged this round — and only then: a source that
     // failed keeps the time it had
@@ -1539,12 +1606,17 @@ export class Controller {
         ...this.state.sync,
         syncing: false,
         ...offlineFields(round.offline, round.offlineReason),
-        lastOnlineAt: round.offline ? this.state.sync.lastOnlineAt : this.now(),
+        // GitHub#374: a round the closed gate kept at home did not reach GitHub either
+        lastOnlineAt: round.offline || round.held ? this.state.sync.lastOnlineAt : this.now(),
         sources: [...status, ...untouched],
       },
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
-    if (!round.offline && !round.authFailed && status.some((st) => st.ok)) await this.catchUpReads(session);
+    if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
+      await this.catchUpReads(session);
+      // GitHub#359: and check again what an operation's answer that never came left open
+      this.catchUpChecks(session);
+    }
     if (round.authFailed) {
       // A GitHub App token can be refreshed once before the credential is declared dead —
       // the token this round used, not one that changed meanwhile.
@@ -1592,9 +1664,43 @@ export class Controller {
     }
   }
 
-  /** A GitHub client whose requests the back end signs for `session`. */
-  private client(session: number, signal?: AbortSignal): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal);
+  /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
+  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
+  }
+
+  /**
+   * GitHub#374: is this source (as the addition `epoch`) still waiting for its next automatic read?
+   * A little early counts as due: the beat that should read it starts just before the time set.
+   */
+  private waiting(key: string, epoch: number, now: number): boolean {
+    const f = this.failures.get(key);
+    return !!f && f.epoch === epoch && f.nextAt !== null && now < f.nextAt - RETRY_SLACK_MS;
+  }
+
+  /**
+   * GitHub#374: one source's result of a round into its failures in a row — the one place they
+   * change. Read = forgotten. Failed = one more, the next automatic read 1, 2, 4, 8, 10 min after
+   * this round started. Rate limited = not counted (it says nothing about the source); the next
+   * read is when the gate opens.
+   */
+  private noteResult(st: SourceStatus, at: number, epoch: number, gate: ReadGate): SourceStatus {
+    if (st.ok) {
+      this.failures.delete(st.sourceKey);
+      return st;
+    }
+    const prev = this.failures.get(st.sourceKey);
+    const old = prev && prev.epoch === epoch ? prev : null;
+    if (st.rateLimited) {
+      const until = gate.until;
+      const f = { count: old?.count ?? 0, since: old?.since ?? at, nextAt: null, epoch };
+      this.failures.set(st.sourceKey, f);
+      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until } };
+    }
+    const count = (old?.count ?? 0) + 1;
+    const f = { count, since: old?.since ?? at, nextAt: at + backoffStep(count), epoch };
+    this.failures.set(st.sourceKey, f);
+    return { ...st, retry: { count, since: f.since, nextAt: f.nextAt, limitedUntil: null } };
   }
 
   // ---- view & change one item ---------------------------------------------
@@ -1622,6 +1728,31 @@ export class Controller {
     if (next === this.state.laneFolds) return;
     this.cache.setSetting(LANE_FOLDS, next);
     this.set({ laneFolds: next });
+  }
+
+  /** GitHub#369: switching to the window takes back every delivered notification (true) or none (false, the default). Anything but a boolean is ignored. */
+  setClearAllOnActivate(on: unknown): void {
+    if (typeof on !== 'boolean' || on === this.state.clearAllOnActivate) return;
+    this.cache.setSetting(CLEAR_ALL_ON_ACTIVATE, on);
+    this.set({ clearAllOnActivate: on });
+  }
+
+  /**
+   * GitHub#373: which pending items remind — every one ('all') or only the ones that concern the
+   * signed-in account ('mine'). Recounted silently, like another label name: a settings change is
+   * not new work arriving, so nothing is notified and nothing becomes unread; a notification
+   * queued before it does not go out. Anything but the two words is ignored.
+   */
+  setNotifyScope(scope: unknown): void {
+    if ((scope !== 'all' && scope !== 'mine') || scope === this.state.notifyScope) return;
+    this.cache.setSetting(NOTIFY_SCOPE, scope);
+    this.labelVersion++;
+    this.pending.setAudience({ scope, viewer: this.state.viewer });
+    // what was unread and no longer reminds is not counted; what reminds only now was never unread
+    for (const k of [...this.unread]) if (!this.pending.has(k)) this.unread.delete(k);
+    this.badge();
+    this.state = { ...this.state, ...this.pendingNow() };
+    this.set({ notifyScope: scope });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */
@@ -2247,6 +2378,25 @@ export class Controller {
    * held back until `force` (the user's "overwrite anyway" / "send anyway").
    */
   async resendEdit(id: string, force = false): Promise<WriteResult> {
+    // GitHub#357: its notice reads as running from before the first wait to the end of the request
+    const session = this.session;
+    this.markResending([id], true);
+    try {
+      return await this.resendEditNow(id, force);
+    } finally {
+      if (session === this.session && !this.resendQueue.has(id)) this.markResending([id], false);
+    }
+  }
+
+  /** GitHub#357: the changes a "重新发送" a person asked for is working on (`resendQueue`: the ones of a "全部重新发送" still running). */
+  private resending = new Set<string>();
+  private resendQueue = new Set<string>();
+  private markResending(ids: string[], on: boolean): void {
+    for (const id of ids) on ? this.resending.add(id) : this.resending.delete(id);
+    this.set({ editsResending: [...this.resending] });
+  }
+
+  private async resendEditNow(id: string, force: boolean): Promise<WriteResult> {
     const r = this.edits.get(id);
     if (!r) return { ok: false, error: '这处修改已经不在了', warning: null };
     const st = editStatus(r);
@@ -2303,9 +2453,18 @@ export class Controller {
   async resendAllEdits(): Promise<WriteResult> {
     const ids = [...this.edits.values()].filter((r) => ['failed', 'unconfirmed'].includes(editStatus(r))).map((r) => r.id);
     const held: string[] = [];
-    for (const id of ids) {
-      const r = await this.resendEdit(id);
-      if (!r.ok && r.error) held.push(r.error);
+    // GitHub#357: the whole batch reads as running until its last one is through
+    const session = this.session;
+    for (const id of ids) this.resendQueue.add(id);
+    this.markResending(ids, true);
+    try {
+      for (const id of ids) {
+        const r = await this.resendEdit(id);
+        if (!r.ok && r.error) held.push(r.error);
+      }
+    } finally {
+      for (const id of ids) this.resendQueue.delete(id);
+      if (session === this.session) this.markResending(ids, false);
     }
     return held.length ? { ok: false, error: `${held.length} 处没有重新发送：${held[0]}`, warning: null } : { ok: true, error: null, warning: null };
   }
@@ -2329,7 +2488,7 @@ export class Controller {
     if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
     if (!action.title.trim()) return { ok: false, error: '标题不能为空' };
     const id = ++this.createSeq;
-    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true };
+    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true, ...(action.picks ? { picks: action.picks } : {}) };
     this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
     void this.runCreate(id, action);
     return { ok: true, error: null, job: id };
@@ -2384,10 +2543,16 @@ export class Controller {
       this.setCreate({ ...cur, status: 'failed', message: r.error });
       return;
     }
-    this.setCreate({ ...cur, status: 'unknown', message: `请求发出后没收到 GitHub 的明确答复（${unanswered}），不确定有没有建好` });
+    // GitHub#357: the look below is this notice's own request — it reads as running until it ends, and a look that failed is said
+    this.setCreate({ ...cur, status: 'unknown', message: `请求发出后没收到 GitHub 的明确答复（${unanswered}），不确定有没有建好`, looking: true });
+    const lookOver = (lookError: string | null) => {
+      const now = job();
+      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, looking: false, lookError });
+    };
     // same-title issues this account opened in this repository lately: links to look at, nothing is claimed or changed
     const c = await this.clientForCall(false);
-    if ('error' in c || c.session !== session) return;
+    // not signed in / offline: no look was made (not a failed one)
+    if ('error' in c || c.session !== session) return lookOver(null);
     try {
       const [owner, name] = action.repo.split('/');
       const list = await c.client.restList<{ number: number; html_url: string; title: string; created_at: string; user?: { login?: string }; pull_request?: unknown }>(
@@ -2398,9 +2563,11 @@ export class Controller {
         .filter((x) => !x.pull_request && x.title === action.title && (!this.state.viewer || x.user?.login === this.state.viewer) && Date.parse(x.created_at) >= since)
         .map((x) => ({ number: x.number, url: x.html_url, createdAt: x.created_at }));
       const now = job();
-      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates });
-    } catch {
+      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates, looking: false, lookError: null });
+      else lookOver(null);
+    } catch (e) {
       // no list: the notice still says "not sure", with the web link
+      lookOver((e as Error)?.message ?? String(e));
     }
   }
 
@@ -2653,8 +2820,22 @@ export class Controller {
     const w = job?.watch?.find((x) => x.projectKey === key);
     if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: '没有要改的看板', warning: null };
     if (w.busy) return { ok: false, error: '上一次修改还没完成', warning: null };
-    // taken before the first wait (code review round 2): a second click meanwhile is refused above
-    this.patchWatch(id, key, (x) => ({ ...x, busy: true }));
+    // taken before the first wait (code review round 2): a second click meanwhile is refused above.
+    // GitHub#357: the failure of this board's click before goes at the same moment (only this board's)
+    this.patchWatch(id, key, (x) => ({ ...x, busy: true, clickError: null }));
+    const start = this.session;
+    try {
+      const out = await this.applyCreateWatchNow(id, key, job);
+      // why it did not do it stays on the notice (the account changed: that notice is gone)
+      if (!out.ok && start === this.session) this.patchWatch(id, key, (x) => ({ ...x, clickError: out.error }));
+      return out;
+    } finally {
+      // no way out leaves the board marked as being worked on
+      if (start === this.session) this.patchWatch(id, key, (x) => (x.busy ? { ...x, busy: false } : x));
+    }
+  }
+
+  private async applyCreateWatchNow(id: number, key: string, job: CreateJob): Promise<WriteResult> {
     const unbusy = (error: string): WriteResult => {
       this.patchWatch(id, key, (x) => ({ ...x, busy: false }));
       return { ok: false, error, warning: null };
@@ -2662,7 +2843,7 @@ export class Controller {
     const c = await this.clientForCall(true);
     if ('error' in c) return unbusy(c.error);
     const session = c.session;
-    const seen = await this.readWatched(id, session, job.createdNodeId, [key]);
+    const seen = await this.readWatched(id, session, job.createdNodeId ?? '', [key]);
     if (seen === 'ended') return { ok: false, error: '账号已切换', warning: null };
     const s = typeof seen === 'string' ? null : seen.get(key);
     if (!s || s.state === 'unknown') return unbusy(`读不到这条在看板上的当前值（${typeof seen === 'string' ? seen : '回应不完整'}），没有修改`);
@@ -2693,8 +2874,32 @@ export class Controller {
   async retryCreateProjects(id: number): Promise<WriteResult> {
     const cur = this.state.creates.find((j) => j.id === id);
     if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: '没有要补的看板', warning: null };
+    const created = cur.createdKey;
+    if (cur.retrying) return { ok: false, error: '上一次再试还没完成', warning: null };
+    // GitHub#357: running from before the first wait, the failure of the attempt before gone
+    const session = this.session;
+    this.patchCreate(id, { retrying: true, retryError: null });
+    try {
+      return await this.retryCreateProjectsNow(id, { ...cur, createdKey: created });
+    } finally {
+      // a way out that wrote no result (the notice was closed meanwhile, the account changed: nothing is left to mark)
+      if (session === this.session && this.state.creates.find((j) => j.id === id)?.retrying) this.patchCreate(id, { retrying: false });
+    }
+  }
+
+  /** GitHub#357: fields of a job's notice changed in place; a job that is gone (closed, another account) stays gone. */
+  private patchCreate(id: number, patch: Partial<CreateJob>): void {
+    const job = this.state.creates.find((j) => j.id === id);
+    if (job) this.setCreate({ ...job, ...patch });
+  }
+
+  private async retryCreateProjectsNow(id: number, cur: CreateJob & { createdKey: string }): Promise<WriteResult> {
+    const fail = (error: string): WriteResult => {
+      this.patchCreate(id, { retrying: false, retryError: error });
+      return { ok: false, error, warning: null };
+    };
     const c = await this.clientForCall(true);
-    if ('error' in c) return { ok: false, error: c.error, warning: null };
+    if ('error' in c) return fail(c.error);
     const results = new Map<string, CreateBoard | null>();
     for (const b of cur.boards ?? []) {
       if (b.state !== 'missing') continue;
@@ -2702,10 +2907,10 @@ export class Controller {
       try {
         if (!p) throw new ActionRefused('这个看板已不在来源里');
         const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', b.iterationId, b.status);
-        results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject') });
+        results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject'), retryFailed: true });
       } catch (e) {
         if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-        results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject') });
+        results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject'), retryFailed: true });
       }
     }
     if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
@@ -2726,7 +2931,8 @@ export class Controller {
       const boards = mergeRetry(now.boards ?? [], results);
       // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245);
       // boards still watched keep the job (GitHub#258)
-      this.settleCreate({ ...now, number: now.number ?? number, boards });
+      // GitHub#357: what this retry left unfinished is marked on those boards (above); the boards it did not work on keep theirs
+      this.settleCreate({ ...now, number: now.number ?? number, boards, retrying: false, retryError: null });
     }
     return stillMissing.length ? { ok: false, error, warning } : { ok: true, error: null, warning };
   }
@@ -2750,7 +2956,7 @@ export class Controller {
     if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
-    const step = (name: OpStep['name'], label?: string): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null });
+    const step = (name: OpStep['name'], label?: string, role?: OpStep['role']): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null, ...(role ? { role } : {}) });
     let steps: OpStep[];
     let draft: OpRecord['draft'] = {};
     switch (action.kind) {
@@ -2783,7 +2989,7 @@ export class Controller {
         if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
         // the autopilot label first (the daemon must see it when it picks the item up); add before remove
-        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot)] : []), step('addLabel', agent), step('removeLabel', human)];
+        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []), step('addLabel', agent, 'agent'), step('removeLabel', human, 'human')];
         break;
       }
     }
@@ -2820,6 +3026,9 @@ export class Controller {
   private opBlocked(key: string): string | null {
     const lock = opLockOf([...this.ops.values()], key);
     if (lock) return `上一次操作还没结清，没有发送：${opText(lock)}`;
+    // GitHub#359: a record that is going on by itself right now (reading before its next step) is not finished
+    // or started over from elsewhere in between
+    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id) && opNextAuto(r) >= 0)) return '上一次操作还在自动处理剩下的步骤，没有发送';
     if (this.opPreparing.has(key)) return '正在准备补做上一次操作剩下的步骤，没有发送';
     return null;
   }
@@ -2865,8 +3074,9 @@ export class Controller {
     if (first && first.before === undefined && first.steps.some(needsRecords)) {
       let before: OpRecord['before'] = null;
       try {
-        const rec = await readItemRecords(c.client, item.repo, item.number);
-        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id) };
+        // GitHub#359: the labels too — the label records made later must add up to the labels read then
+        const rec = await readItemSnapshot(c.client, item.repo, item.number, null);
+        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels };
       } catch {
         // sent anyway; a step of it whose answer never comes can then only be checked by a person
       }
@@ -2875,18 +3085,99 @@ export class Controller {
       if (!now) return;
       this.setOp({ ...now, before });
     }
+    const sent = await this.sendSteps(id, item, c, {});
+    if (!sent || session !== this.session) return;
+    // GitHub#357: an answer that never came is looked into right away (the re-read, then the evidence):
+    // the notice reads as checking from here, not as a problem nobody is working on. GitHub#359: to the
+    // end of the app's own checks (the one made at once and the few after it) — settleOp ends it.
+    const lost = this.ops.get(id);
+    if (lost && opPhase(lost) === 'unknown') {
+      this.setOp({ ...lost, checking: true, checkProblem: null });
+      this.opsChanged();
+    }
+    try {
+      await this.opReread(id, item, c);
+      await this.settleOp(id, item, c, { first: true });
+    } finally {
+      const left = session === this.session ? this.ops.get(id) : undefined;
+      if (left?.checking) {
+        this.setOp({ ...left, checking: false });
+        this.opsChanged();
+      }
+    }
+  }
+
+  /**
+   * GitHub#359: resolved when a record's own run has nothing more to do right away — its requests, re-reads
+   * and the check made at once are through and only the later checks (seconds apart) are left. `act` waits
+   * for this, not for those.
+   */
+  private opFirst = new Map<string, () => void>();
+
+  /**
+   * The requests of a record, one after the other, stopping at the first that is not done. GitHub#359:
+   * `gated` — these sends were not asked for by a click at this moment (the steps left after an unknown
+   * one was proven; a step a person sends again, `resend`): each goes out only after opPermit allowed it
+   * on a read made right before it. Returns whether a request went out.
+   */
+  private async sendSteps(id: string, item: Item, c: { client: GitHubClient; session: number }, opts: { gated?: boolean; resend?: number; decided?: OpSnapshot | null }): Promise<boolean> {
+    const session = this.session;
     let sent = false;
+    let decided = opts.decided;
+    const start = this.ops.get(id);
+    if (start && !start.running) {
+      this.setOp({ ...start, running: true });
+      this.opsChanged();
+    }
     for (let i = 0; ; i++) {
       let r = this.ops.get(id);
       if (!r || session !== this.session || i >= r.steps.length) break;
-      if (r.steps[i].state !== 'unsent') continue;
+      const again = opts.resend === i && r.steps[i].state === 'unknown';
+      if (r.steps[i].state !== 'unsent' && !again) continue;
       if (i > 0 && r.steps[i - 1].state !== 'ok') break;
-      this.setOp((r = { ...r, steps: r.steps.map((s, j) => (j === i ? { ...s, state: 'pending' as const, reason: null, sentAt: this.stamp() } : s)) }));
+      if (opts.gated) {
+        const mode = again ? ('resend' as const) : ('auto' as const);
+        // judged twice: on the read the decision was made on (when there is one), and on one made right now
+        const snaps: (OpSnapshot | null)[] = decided !== undefined ? [decided] : [];
+        decided = undefined;
+        snaps.push(await this.readOpSnapshot(c.client, r));
+        if (session !== this.session) return sent;
+        const now = this.ops.get(id);
+        if (!now) return sent;
+        r = now;
+        const verdicts = snaps.map((snap) => opPermit(now, i, snap, { mode, now: this.stamp(), autoMs: this.deps.opAutoMs ?? OP_AUTO_MS }));
+        const no = verdicts.find((v) => !v.ok);
+        if (no && !no.ok) {
+          const last = verdicts[verdicts.length - 1];
+          if (!last.ok && last.why === 'satisfied' && verdicts.every((v) => v.ok || v.why === 'satisfied')) {
+            // the wanted state is already there: done without a send
+            this.setOp({ ...now, steps: now.steps.map((x, j) => (j === i ? { ...x, state: 'ok' as const, reason: last.text, answeredAt: this.stamp() } : x)) });
+            this.opsChanged();
+            await this.storeOps();
+            continue;
+          }
+          // could not be read: nothing is sent now, the next check / round judges again. Anything else ends "by
+          // itself" for the steps left; a step a person wanted sent again just stays "not sure" (its verdict says why)
+          const halt = no.why === 'unread' ? (again ? { checkProblem: no.text } : {}) : again ? {} : { halt: { text: no.text, redo: no.redo === true }, auto: false };
+          this.setOp(opCheckSteps({ ...now, ...halt }, snaps[snaps.length - 1]));
+          this.opsChanged();
+          await this.storeOps();
+          break;
+        }
+      }
+      this.setOp(
+        (r = {
+          ...r,
+          ...(again ? { halt: null, auto: true, autoSince: this.stamp() } : {}),
+          steps: r.steps.map((s, j) => (j === i ? { ...(({ check: _c, ...rest }) => rest)(s), state: 'pending' as const, reason: null, sentAt: this.stamp(), ...(again ? { resent: (s.resent ?? 0) + 1 } : {}) } : s)),
+        }),
+      );
       this.opsChanged();
       if (!(await this.storeOps())) {
         const now = this.ops.get(id);
         if (now && session === this.session) {
-          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null } : s)) });
+          // not stored = not sent: a step sent again goes back to "not sure" (its first request stands)
+          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? (again ? { ...s, state: 'unknown' as const, reason: '没能存到本机，没有重发' } : { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null }) : s)) });
           this.opsChanged();
         }
         break;
@@ -2911,10 +3202,13 @@ export class Controller {
         }
         if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       }
-      if (session !== this.session) return;
+      if (session !== this.session) return sent;
       const now = this.ops.get(id);
-      if (!now) return;
-      this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? { ...s, state, reason, answeredAt: this.stamp() } : s)) });
+      if (!now) return sent;
+      // GitHub#359: the sending stops at a label step whose answer never came — once that step is proven
+      // (by a check, or by any read) what is left may go out by itself, in this run of the app
+      const goOn = state === 'unknown' && (now.kind === 'autopilot' || now.kind === 'handBack') && !now.auto ? { auto: true, autoSince: now.autoSince ?? now.startedAt } : {};
+      this.setOp({ ...now, ...goOn, steps: now.steps.map((s, j) => (j === i ? { ...s, state, reason, answeredAt: this.stamp() } : s)) });
       this.opsChanged();
       await this.storeOps();
       if (state !== 'ok') break;
@@ -2925,10 +3219,214 @@ export class Controller {
       this.setOp({ ...done, running: false });
       this.opsChanged();
     }
-    if (!sent || session !== this.session) return;
-    await this.opReread(id, item, c);
+    return sent;
+  }
+
+  /** GitHub#359: the item as one snapshot (state, labels, label records back to what the record saw before it started); null = not read. */
+  private async readOpSnapshot(client: GitHubClient, r: OpRecord): Promise<OpSnapshot | null> {
+    try {
+      const snap = await readItemSnapshot(client, r.repo, r.number, r.before?.events ?? null);
+      return { complete: snap.complete, labelsComplete: snap.labelsComplete, state: snap.state, labels: snap.labels, events: snap.labelEvents };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * GitHub#359: what a record does by itself after its requests: while a step's answer never came it is
+   * checked (at once when `first`, then after each of the waits — reads only); once nothing is unknown the
+   * steps not sent yet go out (sendSteps, gated), and if one of those is not answered either the checks
+   * start again. Ends when nothing is left to do by itself: a person takes over from the notice.
+   */
+  private async settleOp(
+    id: string,
+    item: Item,
+    c: { client: GitHubClient; session: number },
+    opts: {
+      /** check at once (the record's own run, a sync round's check) before any wait */
+      first: boolean;
+      /** the waits before the later checks; default: the app's own burst */
+      waits?: readonly number[];
+      /** the snapshot of a check the caller made just now */
+      checked?: OpSnapshot | null;
+      /** a sync round's check: a background loop — the notice does not read as checking for it (GitHub#357) */
+      background?: boolean;
+    },
+  ): Promise<void> {
+    const { first, checked } = opts;
+    const waits = opts.waits ?? this.deps.opCheckDelaysMs ?? OP_CHECK_DELAYS_MS;
+    const show = !opts.background;
+    const session = c.session;
+    const mine = () => session === this.session && this.ops.get(id) !== undefined;
+    for (let pass = 0; pass < 8; pass++) {
+      // the snapshot of the check that proved the step in this pass (never an older one: it would judge a state long gone)
+      let decided: OpSnapshot | null | undefined = pass === 0 ? checked : undefined;
+      const r = this.ops.get(id);
+      if (!r || !mine()) return;
+      if (opPhase(r) === 'unknown') {
+        const delays = [...(first || pass > 0 ? [0] : []), ...waits];
+        if (!delays.length) return;
+        if (show && !r.checking) {
+          this.setOp({ ...r, checking: true, checkProblem: null });
+          this.opsChanged();
+        }
+        try {
+          for (const ms of delays) {
+            if (ms > 0) this.opFirst.get(id)?.();
+            if (ms > 0 && !(await this.opWait(ms))) return;
+            const cur = this.ops.get(id);
+            if (!cur || !mine()) return;
+            if (opPhase(cur) !== 'unknown') break;
+            const cc = ms > 0 ? await this.clientForCall(false) : c;
+            if ('error' in cc) {
+              this.patchOp(id, { checkProblem: cc.error });
+              continue;
+            }
+            if (cc.session !== session) return;
+            decided = await this.recheckWith(id, cc, true, false);
+            if (!mine()) return;
+          }
+        } finally {
+          const end = this.ops.get(id);
+          if (end?.checking && session === this.session) {
+            this.setOp({ ...end, checking: false });
+            this.opsChanged();
+            void this.storeOps();
+          }
+        }
+      }
+      const now = this.ops.get(id);
+      if (!now || !mine() || opNextAuto(now) < 0) return;
+      const cw = await this.clientForCall(true);
+      if ('error' in cw || cw.session !== session) return;
+      // the first of the two judgements: the read of the check that proved the step, or (proven by another read) one made now
+      if (decided === undefined) decided = await this.readOpSnapshot(cw.client, now);
+      if (!mine()) return;
+      const sent = await this.sendSteps(id, item, cw, { gated: true, decided });
+      if (!sent || !mine()) return;
+      await this.opReread(id, item, cw);
+    }
+  }
+
+  /** a wait between two automatic checks; false = the session ended meanwhile (do not go on) */
+  private opWait(ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => {
+        this.opWaits.delete(t);
+        resolve(true);
+      }, ms);
+      this.opWaits.set(t, resolve);
+    });
+  }
+
+  private endOpWaits(): void {
+    for (const [t, resolve] of this.opWaits) {
+      clearTimeout(t);
+      resolve(false);
+    }
+    this.opWaits.clear();
+  }
+
+  /**
+   * GitHub#359: after a sync round that reached GitHub, every record with a step still unknown is checked
+   * once more (reads only), and a record whose unknown step a read proved meanwhile goes on with the steps
+   * it has left — both only when nothing of that record runs already.
+   */
+  private catchUpChecks(session: number): void {
+    for (const r of [...this.ops.values()]) {
+      if (session !== this.session || !this.signedIn) return;
+      if (r.running || r.checking || this.opJobs.has(r.id) || this.opPreparing.has(r.key)) continue;
+      const unknown = opPhase(r) === 'unknown';
+      if (!unknown && opNextAuto(r) < 0) continue;
+      const item = this.findItem(r.key);
+      if (!item) continue;
+      this.launchJob(r.id, this.settleOp(r.id, item, { client: this.client(session), session }, { first: unknown, waits: [], background: true }));
+    }
+  }
+
+  /** A job of a record that is not its first run: kept in opJobs so nothing else of it starts meanwhile. */
+  private launchJob(id: string, run: Promise<void>): void {
+    const job = run.catch(() => undefined).then(() => {
+      const r = this.ops.get(id);
+      if (r?.running) {
+        this.setOp({ ...r, running: false });
+        this.opsChanged();
+      }
+      void this.storeOps();
+    });
+    this.opJobs.set(id, job);
+    void job.then(() => {
+      if (this.opJobs.get(id) === job) this.opJobs.delete(id);
+    });
+  }
+
+  /**
+   * Check a record with a step whose answer never came now (reads only), as every sync round does
+   * (GitHub#359: the window no longer has a button for it); a step this proves lets the record go on.
+   */
+  async opRecheck(id: string): Promise<WriteResult> {
+    const r = this.ops.get(id);
+    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
+    if (r.checking || this.opJobs.has(id)) return { ok: false, error: '正在查证，稍等', warning: null };
+    const c = await this.clientForCall(false);
+    if ('error' in c) {
+      this.patchOp(id, { checkProblem: c.error });
+      return { ok: false, error: c.error, warning: null };
+    }
+    const item = this.findItem(r.key);
+    const run = this.recheckWith(id, c).then((snap) => (item ? this.settleOp(id, item, c, { first: false, waits: [], checked: snap }) : undefined));
+    this.launchJob(id, run);
+    await this.opJobs.get(id);
     const after = this.ops.get(id);
-    if (after && opPhase(after) === 'unknown') await this.recheckWith(id, c);
+    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
+  }
+
+  /**
+   * GitHub#359, "仍要重发…": a person, told what it can cause, sends a label step again whose answer never
+   * came and that a full read did not find. Checked once more first (a step proven by that check is not
+   * sent: the record just goes on); the send itself is judged again on a read made right before it.
+   */
+  async opResend(id: string): Promise<WriteResult> {
+    const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
+    const r = this.ops.get(id);
+    if (!r) return refuse('这次操作已经不在了');
+    const i = opResendStep(r);
+    if (i < 0 || this.opJobs.has(id)) return refuse('这一步现在不能重发');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (this.opPreparing.has(r.key)) return refuse('这一条正在准备别的操作，没有发送');
+    const item = this.findItem(r.key);
+    if (!item) return refuse('看板上找不到这一条，请刷新后再试');
+    this.opPreparing.add(r.key);
+    try {
+      const c = await this.clientForCall(true);
+      if ('error' in c) return refuse(c.error);
+      const decided = await this.recheckWith(id, c);
+      if (c.session !== this.session) return refuse('账号已切换');
+      const now = this.ops.get(id);
+      if (!now) return refuse('这次操作已经不在了');
+      if (now.steps[i].state !== 'unknown') {
+        // the check found it done after all: nothing is sent again; the person is here, so what is left goes on
+        this.setOp({ ...now, auto: now.kind === 'autopilot' || now.kind === 'handBack', autoSince: this.stamp(), halt: null });
+        this.opsChanged();
+        this.launchJob(id, this.settleOp(id, item, c, { first: false, waits: [], checked: decided }));
+        return { ok: true, error: null, warning: '核对时发现上一次请求已经生效，没有重发' };
+      }
+      if (opResendStep(now) !== i) return refuse(`没有重发：${opText(now)}`);
+      const permit = opPermit(now, i, decided ?? null, { mode: 'resend', now: this.stamp() });
+      if (!permit.ok) return refuse(`没有重发：${permit.text}`);
+      this.launchJob(
+        id,
+        (async () => {
+          const sent = await this.sendSteps(id, item, c, { gated: true, resend: i, decided: decided ?? null });
+          if (!sent || c.session !== this.session) return;
+          await this.opReread(id, item, c);
+          await this.settleOp(id, item, c, { first: true });
+        })(),
+      );
+      return { ok: true, error: null, warning: null };
+    } finally {
+      this.opPreparing.delete(r.key);
+    }
   }
 
   private stepKind(r: OpRecord, i: number): WriteAction['kind'] {
@@ -3032,6 +3530,17 @@ export class Controller {
     if (changed) {
       this.opsChanged();
       void this.storeOps();
+      this.goOnAfterRead(key);
+    }
+  }
+
+  /** GitHub#359: a read proved an unknown step outside the record's own job: the steps it has left go on (gated). */
+  private goOnAfterRead(key: string): void {
+    for (const r of [...this.ops.values()]) {
+      if (r.key !== key || opNextAuto(r) < 0 || this.opJobs.has(r.id) || this.opPreparing.has(r.key)) continue;
+      const item = this.findItem(r.key);
+      if (!item || !this.signedIn) continue;
+      this.launchJob(r.id, this.settleOp(r.id, item, { client: this.client(this.session), session: this.session }, { first: false, waits: [], background: true }));
     }
   }
 
@@ -3049,82 +3558,119 @@ export class Controller {
     return it ? { state: it.state, labels: it.labels.map((l) => l.name) } : null;
   }
 
-  /** "重新查证据": reads only — the item again, the comments, the label events. */
-  async opRecheck(id: string): Promise<WriteResult> {
-    const r = this.ops.get(id);
-    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
-    const c = await this.clientForCall(false);
-    if ('error' in c) {
-      this.patchOp(id, { checkProblem: c.error });
-      return { ok: false, error: c.error, warning: null };
-    }
-    await this.recheckWith(id, c);
-    const after = this.ops.get(id);
-    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
-  }
-
-  private async recheckWith(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
+  /**
+   * One check of a record with a step whose answer never came (reads only): the item again (an unknown
+   * close / merge read back closed / merged, a label read back on / off), then one snapshot — the comments
+   * and label records as positive evidence, and (GitHub#359) for every label step still unknown what this
+   * read found: not read / read in full and not there / touched by somebody. Never "it did not happen".
+   * GitHub#357: the one place an evidence read runs — with `show` the notice reads as checking from here to
+   * its end (unless a burst of checks already says so and ends it itself); the check of a sync round is a
+   * background loop and does not (`show: false`).
+   */
+  private async recheckWith(id: string, c: { client: GitHubClient; session: number }, quiet = false, show = true): Promise<OpSnapshot | null | undefined> {
     const start = this.ops.get(id);
-    if (!start) return;
-    const problems: string[] = [];
-    // the item itself: an unknown close / merge read back closed / merged, a label read back gone
-    const read = await this.refreshOne(c.client, c.session, start.repo, start.number);
-    if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
-    if (c.session !== this.session) return;
-    const login = this.state.viewer;
-    const mid = this.ops.get(id);
-    if (!mid) return;
-    if (mid.replyState === 'unknown' || mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
-      if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
-      else {
-        try {
-          const records = await readItemRecords(c.client, mid.repo, mid.number);
-          if (c.session !== this.session) return;
-          const now = this.ops.get(id);
-          if (now) {
-            const out = opProveFromRecords(now, records, login);
-            this.setOp(out.record);
-            problems.push(...out.missing);
-          }
-        } catch (e) {
-          problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
-        }
+    if (!start) return undefined;
+    const own = show && !start.checking;
+    if (own) {
+      this.setOp({ ...start, checking: true, checkProblem: null });
+      this.opsChanged();
+    }
+    try {
+      return await this.recheckRead(id, c, quiet);
+    } finally {
+      // every way out (the account changed: its records are gone with it)
+      const left = c.session === this.session ? this.ops.get(id) : undefined;
+      if (own && left?.checking) {
+        this.setOp({ ...left, checking: false });
+        this.opsChanged();
       }
     }
-    if (c.session !== this.session) return;
+  }
+
+  private async recheckRead(id: string, c: { client: GitHubClient; session: number }, quiet: boolean): Promise<OpSnapshot | null | undefined> {
+    const start = this.ops.get(id);
+    if (!start) return undefined;
+    /** the snapshot this check read (null = it could not be read); undefined = this check needed none */
+    let seen: OpSnapshot | null | undefined;
+    const problems: string[] = [];
+    const read = await this.refreshOne(c.client, c.session, start.repo, start.number, { quiet });
+    if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
+    if (c.session !== this.session) return undefined;
+    const login = this.state.viewer;
+    const mid = this.ops.get(id);
+    if (!mid) return undefined;
+    if (mid.replyState === 'unknown' || mid.steps.some((s) => s.state === 'unknown' && needsRecords(s))) {
+      let snap: Awaited<ReturnType<typeof readItemSnapshot>> | null = null;
+      try {
+        snap = await readItemSnapshot(c.client, mid.repo, mid.number, mid.before?.events ?? null);
+      } catch (e) {
+        problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
+      }
+      if (c.session !== this.session) return undefined;
+      const view: OpSnapshot | null = snap ? { complete: snap.complete, labelsComplete: snap.labelsComplete, state: snap.state, labels: snap.labels, events: snap.labelEvents } : null;
+      let now = this.ops.get(id);
+      if (now) {
+        if (snap) {
+          if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
+          else {
+            const out = opProveFromRecords(now, snap, login);
+            now = out.record;
+            problems.push(...out.missing);
+          }
+          now = opProveFromSnapshot(now, view);
+        }
+        now = opCheckSteps(now, view);
+        if (snap && !problems.length && now.steps.some((s) => s.state === 'unknown' && s.check === 'unread')) problems.push('没能完整读到这一条的标签记录');
+        this.setOp(now);
+        seen = view;
+      }
+    }
+    if (c.session !== this.session) return undefined;
     const end = this.ops.get(id);
-    if (!end) return;
-    this.setOp({ ...end, checkProblem: problems.length ? problems.join('；') : null });
+    if (!end) return undefined;
+    this.setOp({ ...end, checks: (end.checks ?? 0) + 1, checkProblem: problems.length ? problems.join('；') : null });
     this.opsChanged();
     await this.storeOps();
+    return seen;
   }
 
   /** "补做剩下的步骤": the item is read first; only the label steps still missing on GitHub go out, as a new record. */
   async opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }> {
     const r = this.ops.get(id);
     if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (r.finishing) return { ok: false, error: '正在补做，稍等' };
     if (!finishSteps(r).length) return { ok: false, error: '没有需要补做的步骤' };
-    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
+    // GitHub#357: running from before the first wait, the failure of the attempt before gone; every
+    // way out below either says why this one did nothing (red) or hands over to the new record
+    const session = this.session;
+    const fail = (error: string) => {
+      if (session === this.session) this.patchOp(id, { finishing: false, finishProblem: error });
+      return { ok: false, error };
+    };
+    this.setOp({ ...r, finishing: true, finishProblem: null });
+    this.opsChanged();
+    if (!writesEnabled(this.state.sync)) return fail('离线时不能修改：GitHub 上什么都没改');
     const blocked = this.opBlocked(r.key);
-    if (blocked) return { ok: false, error: blocked };
+    if (blocked) return fail(blocked);
     this.opPreparing.add(r.key);
     try {
       const c = await this.clientForCall(true);
-      if ('error' in c) return { ok: false, error: c.error };
+      if (session !== this.session) return { ok: false, error: '账号已切换' };
+      if ('error' in c) return fail(c.error);
       const read = await this.refreshOne(c.client, c.session, r.repo, r.number);
       if (c.session !== this.session) return { ok: false, error: '账号已切换' };
       const seen = read.kind === 'done' ? this.itemEvidence(r.key, read.issuedAt, read.own) : null;
-      if (!seen) return { ok: false, error: `重读这一条失败，什么都没发${read.problem ? `（${read.problem}）` : ''}` };
+      if (!seen) return fail(`重读这一条失败，什么都没发${read.problem ? `（${read.problem}）` : ''}`);
       const now = this.ops.get(id);
       if (!now) return { ok: false, error: '这次操作已经不在了' };
       const steps = finishSteps(now, seen.labels);
       const item = this.findItem(r.key);
-      if (!item) return { ok: false, error: '看板上找不到这一条，请刷新后再试' };
+      if (!item) return fail('看板上找不到这一条，请刷新后再试');
       this.opPreparing.delete(r.key);
       const lock = this.opBlocked(r.key);
-      if (lock) return { ok: false, error: lock };
+      if (lock) return fail(lock);
       if (!steps.length) {
-        this.setOp({ ...now, dismissed: true });
+        this.setOp({ ...now, dismissed: true, finishing: false });
         this.pruneOps();
         this.opsChanged();
         void this.storeOps();
@@ -3150,7 +3696,7 @@ export class Controller {
         finishOf: id,
         running: true,
       };
-      this.setOp({ ...now, dismissed: true });
+      this.setOp({ ...now, dismissed: true, finishing: false });
       this.setOp(rec);
       this.pruneOps();
       this.opsChanged();
@@ -3158,6 +3704,8 @@ export class Controller {
       return { ok: true, error: null, id: nid };
     } finally {
       this.opPreparing.delete(r.key);
+      const left = session === this.session ? this.ops.get(id) : undefined;
+      if (left?.finishing) this.patchOp(id, { finishing: false });
     }
   }
 
@@ -3276,7 +3824,10 @@ export class Controller {
   private async actOp(action: OpAction): Promise<WriteResult> {
     const s = this.startOp(action);
     if (!s.ok || !s.id) return { ok: false, error: s.error, warning: null };
-    await this.opJobs.get(s.id);
+    // the requests, the re-reads and the check made at once — not the later checks of a step whose answer never came
+    const id = s.id;
+    await Promise.race([this.opJobs.get(id), new Promise<void>((resolve) => this.opFirst.set(id, resolve))]);
+    this.opFirst.delete(id);
     const r = this.ops.get(s.id);
     if (!r) return { ok: false, error: '这次操作已经不在了', warning: null };
     const m = r.steps[0];

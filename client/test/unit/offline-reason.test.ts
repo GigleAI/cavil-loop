@@ -107,8 +107,11 @@ describe('one round: offline or not, and why', () => {
 
   it('the identity query answers 503 → not offline (unchanged rule), no reason, the sources show it', async () => {
     const { c } = await signedIn();
-    fake.state.viewerAnswers.push({ status: 503, body: { message: 'Server Error' } });
+    // GitHub#374: a 503 is asked twice more before it counts
+    for (const _ of [1, 2, 3]) fake.state.viewerAnswers.push({ status: 503, body: { message: 'Server Error' } });
+    const asked = viewerAsks().length;
     await c.syncNow();
+    expect(viewerAsks().length).toBe(asked + 3);
     expect(viewerAsks().at(-1)).toMatchObject({ status: 503 });
     expect(sync(c)).toMatchObject({ offline: false, offlineReason: null });
     expect(sync(c).sources.every((s) => !s.ok && /HTTP 503/.test(s.error ?? ''))).toBe(true);

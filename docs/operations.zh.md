@@ -537,7 +537,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 | issue 和 PR 都没被打 `pending/human` | `pending/human`（PR 上的 `pending/human`：只摘 `pending/merge`） |
 | PR 最新提交**和目标分支**都是派复审时记下的那一对（同一提交改投别的分支 = 另一份改动；旧版没记目标分支的记录算缺） | 回 `pending/review` 重审 |
 | 复审的结论评论（写入账号、派复审之后发的）里有这个提交的测试记录，`failed=0`、`passed>0` | `pending/human` |
-| 没改 `.github/` | `pending/human` |
+| 没改 `.github/`——配了 `AUTOPILOT_HUMAN_PATHS`（GitHub#337）时是没改清单里的任何文件，见下 | `pending/human` |
 | 这个提交上的检查（check run / commit status）全部通过（一个都没有 = 只靠上一条记录） | 没过 → 交回 worker；超过 `AUTOPILOT_CHECKS_TIMEOUT_HOURS`（6）还没跑完 → `pending/human` |
 | GitHub 判定可合并（无冲突） | 交回 worker |
 | 合并前最后一刻，**同一个许可判断用现读的数据原样再跑一遍**——上面每一行都在内，包括复审的测试记录（评论可以被编辑、删除）和自动检查（变红、重跑中、原本没有又冒出来）；两次都判「可以合」、且是同一个 issue / 提交 / 目标分支才合 | 本轮不合、不记任何状态 |
@@ -573,6 +573,42 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 状态在 `state.json` 的 `autopilot` 下（`prs.<n>`：复审的提交、目标分支与时间、打回次数、连续读不到次数、开始等检查的时间、托管关掉后交接做到一半的记号 `off_handover`；
 `notices` / `denied`：只说一次的评论、按 `updated_at` 记下的被拒 issue；`takeover` / `takeover_unknown` / `takeover_handoff`：判过「不接手」的 PR 及其缓存键（`denied` 和 `takeover` 的值都带判定规则版本，规则放宽后的升级里旧记录自动作废、按新规则重判一次）、接手阶段连续判不了的轮数、还没做完的交人待办；`mirror`：判过「不用补 / 不用收回托管标签」的 PR 及同样的缓存键，GitHub#190）。和 `requester_bot_done_queue` 一样
 不进迁移循环，功能真做了事才出现。
+
+### 合并前必须人过目的文件（`AUTOPILOT_HUMAN_PATHS`，GitHub#337）
+
+有一类文件，改动本身不是「运行代码」，但会让代码在之后以维护者身份运行：CI 工作流、git hooks、agent 配置、
+安装 / 构建 / 环境配置文件。配了 `AUTOPILOT_HUMAN_PATHS` 之后，托管 PR 只要碰到清单里的文件就不合并，
+翻 `pending/human` 交人，说明里列出命中的文件。**留空或不写 = 和以前完全一样**（只拦 `.github/`，走的是
+原来那段代码：GitHub 调用、state、评论都不变）。不配的项目没有任何变化，也不会为它开提示 issue。
+
+开启：在项目配置里加一行，下一轮轮询生效：
+
+<!-- autopilot-human-paths:examples:begin -->
+```bash
+AUTOPILOT_HUMAN_PATHS="default"
+AUTOPILOT_HUMAN_PATHS="default /systemd/ /launchd/ /setup.sh"
+AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh"
+```
+<!-- autopilot-human-paths:examples:end -->
+
+- `default` 展开成内置清单：`/.github/` `.husky/` `.githooks/` `/.pre-commit-config.yaml` `/lefthook.yml`
+  `.claude/` `.codex/` `.agents/` `.mcp.json` `.devcontainer/` `.vscode/` `package.json` `Makefile` `.envrc`。
+  可以和别的条目混写（上面第二、三行）；不含 `default` 就只用写出来的条目。`/.github/` 始终在清单里。
+- **条目怎么读**（空格或逗号分隔，和 `.gitignore` 的常用部分一致）：开头 `/` = 只认仓库根目录（`/setup.sh`
+  不命中 `tools/setup.sh`）；开头没有 `/` = 任何深度（`package.json` 命中 `client/package.json`）；末尾 `/` =
+  目录及其下所有文件；`*` 只在一段路径内通配。改名的文件新旧路径都拿来匹配。
+- **读不懂的条目绝不跳过**：开头没有 `/` 却在中间含 `/`（`a/b.txt`）、含 `.` / `..` 段、有空段、`**`。这时本项目
+  每一次托管合并都交人，说明里点名这个条目，直到配置改好。
+- **文件列表必须读全**：GitHub 在 PR 上自报的改动文件数（`changed_files`）要和读到的条数相等。缺页（这个接口
+  一个 PR 最多给 3000 个文件）、缺自报数、响应形状不对、请求失败都算「读不到」：本轮不合并、什么都不写，
+  连续 `AUTOPILOT_UNKNOWN_MAX` 轮后交人。「读不到」绝不当成「没命中」。
+- **交人前判两次**：命中（或条目读不懂）之后，整个合并许可用现读的数据原样再判一遍；结论、命中的文件、PR 的
+  最新提交 / 目标分支 / 分支名 / 绑定的 issue 都没变才交人，否则本轮什么都不写。交人本身和托管其他交人一样，
+  是「先发说明、再翻标签」。⚠️ 维护者恰好在这两次写入之间做的操作 daemon 看不到：PR 可能多挂一次
+  `pending/human`、少一个 `pending/merge`。它不会导致合并。
+- **只看路径，不看内容**：清单里的文件只要被改就算（`package.json` 里只升级依赖版本也算）。锁文件和
+  `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
+- **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
 
 ### 只在一台机器上跑这个仓库的轮询
 
@@ -863,6 +899,61 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
     gh run watch 1; }`）会让函数体被当成已执行。多算多少取决于命令里掺了多少别的耗时操作，说不出上限。
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
+
+## 重测试排队（可选，**默认关闭**，GitHub#343）
+
+多个条目的 worker 同时跑整套测试，内存和 CPU 会叠到整机卡死。配了这一项之后，项目里列出的「重测试」命令在同一个系统账号下一次只放行一套，其余排队；条目被清理、或起测试的 worker 结束后，它留下的测试会被停掉。
+
+**启用**：在项目的 `cavil-loop.config` 里列出算重测试的命令，每行一条：
+
+```bash
+HEAVY_TEST_COMMANDS="bash tests/run.sh"
+```
+
+下一次派工起，worker 的提示词多一段，要求这些命令写成 `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh` 来跑；只跑一个测试文件不用排队。已经在跑的 worker 不受影响（它们的提示词是启动时定的）。
+
+**怎么排的**
+
+- 每套测试放进 systemd 给它单独建的一个进程分组（`cavil-heavy-<编号>.scope`）。下一套要等前面每个「运行中」的分组里一个进程都不剩才开始——包装命令被强杀、被测程序关掉继承来的文件、子进程跑到后台或脱离进程组，都不会提前放行。等的时候每 30 秒打印一行在等哪个项目、哪个条目、跑了多久。
+- 测试主进程退出后，包装命令把自己的分组整个停掉，留下的后台子进程一起结束。
+- 分组状态只认明确的回答：「不存在 / 已停止」才算结束，查询失败、空输出、不认识的词一律当作还在跑。
+- 运行记录本身读不出来、或内容不认识（十个字段缺了哪一行、同一个字段出现两次、状态不是「排队中 / 运行中」、分组名和编号对不上、项目 / 条目 / 代数这三项归属只有一部分）时，同样不当它「没在跑」：按编号查它的分组，分组确认消失才删这条记录；分组还在就一直挡着后面的排队和本账号下条目的工作树清理，并在排队提示和轮询日志里指出是哪个文件。`--list` 里它显示为「读不到」，确认去向后用 `--stop <编号>` 停掉即可。
+- 不保证先到先得，只保证不重叠。`HEAVY_TEST_LOCK_WAIT=<秒>` 设排队上限，到时退出码 75；默认 0 = 一直等。
+
+**条目结束时怎么清**
+
+- 派工（建工作树、起 worker、记下这次启动）和 `cleanup-issue.sh`（停会话、停测试、删工作树）整段拿着同一把条目锁，只能一先一后。等不到锁（默认 60 秒）时，派工本轮不派、标签不动，清理什么都不动并以非 0 退出。
+- 每个条目有一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前都要核对：对不上（条目在这个 worker 启动之后被清理过）就不启动，退出码 76。清理之后重新派出的 worker 拿到的是新代数，不受影响。
+- 清理先停掉本条目还在排队 / 还在跑的重测试，确认分组消失后才删工作树。查不清或停不掉 → 保留工作树、非 0 退出；合并后的自动清理因此不记「已清理」，下一轮重试，PR 的 `Done` 标签也等到清理成功那一轮。
+- 每次起 worker 记下它的进程号和启动时间（起之前先登记，起来后补上进程号）。每轮轮询据此检查：worker 进程已经不在（或那个进程号现在是别的进程）而它起的测试还在排队 / 运行，就整组停掉。worker 还在、或认不清，都不停。确认结束的启动记录只盖章不删，所以那个 worker 留下的迟到请求再来排队也不会启动（退出码 76）；记录到条目清理时才删。
+
+**查看谁在占、手动停一套**
+
+<!-- heavy-test-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+IDF="$(mktemp)"
+bash "$SKILL/scripts/heavy-test.sh" --id-file "$IDF" -- sleep 120 &
+while [ ! -s "$IDF" ] && kill -0 $! 2>/dev/null; do sleep 0.2; done
+bash "$SKILL/scripts/heavy-test.sh" --list
+bash "$SKILL/scripts/heavy-test.sh" --stop "$(cat "$IDF")"
+wait
+bash "$SKILL/scripts/heavy-test.sh" --list
+rm -f "$IDF"
+```
+<!-- heavy-test-ops:end -->
+
+上面依次是：跑一套（这里用 `sleep 120` 代替真的测试命令），让它登记后把**自己的运行编号**写进一个临时文件；等到编号写出来；列出本账号下登记着的全部运行（编号、排队中 / 运行中、分组状态、项目和条目、命令、已多久）；按那个编号把刚才这一套停掉（它的命令以 143 退出）——它还在排队也一样停得掉；再列一次。别的条目的运行这时可能也在列表里，这几条命令不会碰它们：要停哪一套，一律拿编号指定，不要从列表里挑「第一条运行中的」——那很可能是别的条目的。平时只想停某一套时，先 `--list` 看清项目、条目和命令，再 `--stop <它的编号>`。`--stop` 只在确认分组已消失后才删记录；查不到分组状态时不发停止请求，报错并保留记录。
+
+**边界**
+
+- 完整效果需要 Linux + cgroup v2 + systemd 用户实例。明确没有这些的环境（不是 Linux、不是 cgroup v2、没装 `systemd-run` / `systemctl`、这个账号没有用户实例的 socket，例如 macOS）只排队包装命令本身：不建分组、不登记、不清理，运行时打印一行说明。用户实例在、只是这一次没问到，或建不出分组时，包装命令以 70 退出、不跑测试——不会悄悄降级，因为降级模式看不到已有的分组，上一套还在跑也会照样开始。降级模式下如果还留着登记着的运行，同样以 70 退出：确认它们都已结束后删掉 `~/.local/state/cavil-loop/heavy-test/runs/` 里的记录再重试。
+- 「整机」指同一个系统账号：排队锁和运行记录在 `~/.local/state/cavil-loop/` 下（`heavy-test.lock`、`heavy-test/runs/`），不同账号互不排队。
+- 只管通过包装命令起的测试。worker 直接跑、开发服务器、别的后台进程都不排队也不会被停。
+- 测试搬进自己的分组后，不再受 tmux 窗格分组上配的内存上限约束。需要上限时用 `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"`（空格分隔的 systemd 属性），默认不加。
+- 强制清理（`--force`）一个 worker 正在干活的条目，照旧会停掉那个 worker；条目锁保证的是清理不会和「正在启动」交错。
+
+**关掉**：把 `HEAVY_TEST_COMMANDS` 留空（或删掉这一行）。之后的派工不再带这一段、不再拿条目锁。关掉之前起的 worker 仍可能通过包装命令跑测试，它们照常排队；这些还登记着的运行在条目清理和每轮轮询时照样会被停掉，不需要手动处理，要立刻停就用上面的 `--stop`。项目状态目录里留下的 `item-locks/`、`item-gen/`、`worker-launch/` 不用删。
 
 ## Prompt 模板
 

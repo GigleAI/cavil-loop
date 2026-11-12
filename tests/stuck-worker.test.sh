@@ -1270,6 +1270,18 @@ chk "遗留凭据在初筛之后才出现 · 这一轮不派工、不删凭据" 
 tick 5
 chk "遗留凭据 · 下一轮开头了结：记为已用掉、重新停住、凭据清掉，仍不派工" \
     "$(ff "$N" used)/$(( $(got "$N") - g0 ))/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(frozen "$N")" "1/0/none/true"
+# 重测试排队开着时（GitHub#343），派工脚本会在条目锁里重新起自己一遍：恢复派工的标记要跟过去，
+# 锁里跑的那一份照样过最后一次核对，不能变成普通派工
+frozen_is heavy1 'HEAVY_TEST_COMMANDS="bash tests/run.sh"'; human_resume "$N" pending/agent doing/agent pending/agent
+g0=$(got "$N"); w0=$(lwrites "$N")
+hook_at "issues_$N" 2 "$FAKEBIN/hlabel" "$GD" "$N" rm pending/agent
+tick 5
+chk "条目锁里重新起的派工脚本 · 初筛之后人摘掉派工标签：照样被最后一次核对拦下，没送任务、没翻标签" \
+    "$(hook_ran)/$(plog "#$N 派工前最后一次核对没过")/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(frozen "$N")" "yes/1/0/0/true"
+hlabel "$N" add pending/agent
+tick 5
+chk "条目锁里重新起的派工脚本 · 对照：没有变化时核对通过、按恢复指令派工，记录清掉" \
+    "$(plog "#$N 派工前最后一次核对通过")/$(labels_of "$N")/$(entry "$N")/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)" "1/doing/agent/{}/sent"
 # 对照：同样秒退，换一条没停住的新 issue → 派工脚本照原规则留言并翻 pending/human
 scn nob3; N=$SEQ
 mk_issue "$N" pending/agent; : > "$CTL/die.issue-$N"

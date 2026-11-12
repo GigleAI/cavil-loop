@@ -48,6 +48,9 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
+# shellcheck source=_heavy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -414,6 +417,12 @@ AUTOPILOT_MERGE_METHOD="${AUTOPILOT_MERGE_METHOD:-squash}"
 AUTOPILOT_CHECKS_TIMEOUT_HOURS="${AUTOPILOT_CHECKS_TIMEOUT_HOURS:-6}"
 # 授权 / PR / 检查连续读不到几轮后交人（读不到不等于「没授权」，也不等于「有授权」）
 AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
+# 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
+# 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
+AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
+# 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
+AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
 # 互通仓库名单（GitHub#233）：逗号 / 空格分隔的 owner/repo。名单里的仓库 ① 可以当拆分子项的父 issue 所在仓库
 # （父 issue 上维护者亲手打的托管标签，授权本仓库的子项；打标签的人在两个仓库都要有写权限）；② 可以当
 # 等前置的前置所在仓库（`<!-- agent-blocked-by: owner/repo#N -->`、「Blocked by」里那个仓库的条目）。
@@ -2273,6 +2282,8 @@ tmux_env_args() {
             echo "[cavil-loop]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
+    # 重测试排队（GitHub#343）：这次启动的条目、代数、启动编号；功能关着什么都不加
+    heavy_tmux_env_args
 }
 
 tmux_session_name() {
@@ -4787,6 +4798,78 @@ autopilot_files_verdict() {   # <PR>
         echo ok
     fi
 }
+# 改动有没有碰「合并前必须人过目」的文件（GitHub#337，只在 AUTOPILOT_HUMAN_PATHS 非空时调用）。
+# 结果放全局变量（在调用方自己的 shell 里调，不放进 $( )）：
+#   AP_PATHS_V       ok（读全了、没命中）/ hit（命中）/ bad（清单里有写法不认识的条目）/ unread（读不全）
+#   AP_PATHS_DETAIL  hit：命中的文件，JSON 数组（排序去重）；bad：不认识的条目和原因；unread：原因
+#
+# 条目写法（空格或逗号分隔，和 .gitignore 的常用部分一致）：
+#   开头 /  = 只认仓库根目录（/setup.sh 不命中 tools/setup.sh）；不写 = 任何深度（package.json 命中 client/package.json）
+#   末尾 /  = 目录（其下任何文件）；没有 = 文件。* 只在一段内通配
+#   default = 内置清单 AUTOPILOT_HUMAN_PATHS_DEFAULT；/.github/ 始终在清单里，配置去不掉
+#   写法不认识（开头没 / 却在中间含 /、含 . 或 .. 段、空段、**）→ bad，绝不悄悄忽略：忽略 = 少拦
+# 读全：PR 详情自报的改动文件数（changed_files）和列表条数对得上才算读全。缺页（这个接口一个 PR 最多给
+# 3000 个文件）、缺自报数、坏响应、请求失败、空输出都是 unread —— 读不到绝不当成「没命中」。
+# 改名的文件新旧路径都拿来匹配。
+autopilot_paths_verdict() {   # <PR> <PR JSON>
+    local pr="$1" pj="$2" files out
+    AP_PATHS_V=unread; AP_PATHS_DETAIL=""
+    # 先看配置（不用读 GitHub）：写错了就不必读文件列表
+    out=$(jq -rn --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'
+        rules($spec; $def) | map(select(.bad)) | if length > 0 then "bad\t\(.[0].raw)（\(.[0].bad)）" else "fine" end' 2>/dev/null) || out=""
+    case "$out" in
+        fine) ;;
+        bad$'\t'*) AP_PATHS_V=bad; AP_PATHS_DETAIL="${out#*$'\t'}"; return 0 ;;
+        *) AP_PATHS_DETAIL="清单解析失败"; return 0 ;;
+    esac
+    if ! files=$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/files" 2>/dev/null) || [ -z "$files" ]; then
+        AP_PATHS_DETAIL="请求失败或空输出"; return 0
+    fi
+    out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
+        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        ($pj.changed_files) as $n
+        | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
+          elif (type != "array") or (all(.[]; type == "array") | not)
+               or (all(.[][]; type == "object" and (.filename | type) == "string" and .filename != ""
+                               and ((.previous_filename // "") | type) == "string") | not)
+          then "unread\t文件列表的形状不对"
+          elif ([.[][]] | length) != $n then "unread\t列表有 \([.[][]] | length) 个文件，PR 自报 \($n) 个"
+          else (rules($spec; $def) | map(.re)) as $res
+            | ([ .[][] | .filename, (.previous_filename // empty) | select(. != "") ]
+               | map(select(. as $f | any($res[]; . as $re | $f | test($re)))) | unique) as $hits
+            | if ($hits | length) > 0 then "hit\t\($hits | tojson)" else "ok\t" end
+          end' 2>/dev/null) || out=""
+    case "$out" in
+        ok$'\t'*) AP_PATHS_V=ok ;;
+        hit$'\t'*) AP_PATHS_V=hit; AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        unread$'\t'*) AP_PATHS_DETAIL="${out#*$'\t'}" ;;
+        *) AP_PATHS_DETAIL="文件列表不是合法的 JSON" ;;
+    esac
+}
+# 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]
+# shellcheck disable=SC2016
+AUTOPILOT_PATHS_JQ='
+    def esc: explode | map([.] | implode | . as $c
+        | if $c == "*" then "[^/]*"
+          elif ([".", "^", "$", "+", "?", "(", ")", "[", "]", "{", "}", "|", "\\"] | index($c)) != null then "\\" + $c
+          else $c end) | join("");
+    def rule: . as $raw
+        | startswith("/") as $rooted | endswith("/") as $dir
+        | (if $rooted then .[1:] else . end | if $dir then .[:-1] else . end) as $core
+        | ($core | split("/")) as $segs
+        | if $core == "" then {raw: $raw, bad: "空条目"}
+          elif ($segs | any(. == "")) then {raw: $raw, bad: "有空的一段"}
+          elif ($segs | any(. == "." or . == "..")) then {raw: $raw, bad: "不能含 . 或 .. 段"}
+          elif ($core | contains("**")) then {raw: $raw, bad: "不支持 **"}
+          elif (($rooted | not) and ($segs | length) > 1) then {raw: $raw, bad: "中间含 / 的条目要以 / 开头"}
+          else {raw: $raw, re: ((if $rooted then "^" else "(^|/)" end) + ($segs | map(esc) | join("/")) + (if $dir then "/" else "$" end))}
+          end;
+    def rules($spec; $def):
+        ([$spec | splits("[,\\s]+") | select(. != "")]
+         | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)
+         | ["/.github/"] + . | unique) | map(rule);
+'
+
 # 与目标分支冲突没有：GitHub 两个信号任一说冲突就算冲突（mergeable=false 或 mergeable_state=dirty），
 # mergeable=null 是还在算。输出 ok / conflict / computing
 autopilot_conflict_verdict() {   # <PR JSON>
@@ -4817,6 +4900,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
     local sf="$1" pr="$2" pj ij labels rc
     AP_V=unknown; AP_REASON=""; AP_NEXT=""; AP_N=""; AP_KIND=""; AP_WN=""; AP_HEAD=""; AP_BASE=""; AP_REF=""
     AP_RH=""; AP_RB=""; AP_RAT=""; AP_CHECKS=""; AP_CHECKS_DETAIL=""; AP_BODY=""; AP_TITLE=""
+    AP_STOP=""; AP_STOP_KEY=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then
         AP_REASON="读不到 PR #$pr"; return 0
     fi
@@ -4887,6 +4971,25 @@ autopilot_permit() {   # <state_file> <PR 编号>
     if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || [ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || [ -z "$AP_RAT" ]; then
         AP_V=review; return 0
     fi
+    # 需人过目清单（GitHub#337）：配了才走新判断；没配走下面原来的 .github/ 判断，一行不变
+    if [ -n "$AUTOPILOT_HUMAN_PATHS" ]; then
+        autopilot_paths_verdict "$pr" "$pj"
+        case "$AP_PATHS_V" in
+            ok) ;;
+            hit)
+                AP_V=human; AP_STOP=paths; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="改动碰了合并前需人过目的文件：$(printf '%s' "$AP_PATHS_DETAIL" | jq -r '
+                    (.[:10] | map("`" + . + "`") | join("、")) + (if length > 10 then " 等 \(length) 个" else "" end)')。托管不自动合并这类改动。"
+                AP_NEXT="请人工审这部分改动后自己合并；不合就关掉 PR 或改回去再交复审。"
+                return 0 ;;
+            bad)
+                AP_V=human; AP_STOP=paths-config; AP_STOP_KEY="$AP_PATHS_DETAIL"
+                AP_REASON="本项目配置里「合并前需人过目的文件」清单（\`AUTOPILOT_HUMAN_PATHS\`）有一个条目写法不认识：\`$AP_PATHS_DETAIL\`。清单不完整时托管不自动合并。"
+                AP_NEXT="请改好配置里的这个条目（开头 \`/\` = 只认仓库根目录，不写 = 任何深度；末尾 \`/\` = 目录），再把 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\` 重新走复审和合并。"
+                return 0 ;;
+            *) AP_REASON="读不全 PR #$pr 的改动文件列表（$AP_PATHS_DETAIL）"; return 0 ;;
+        esac
+    else
     case "$(autopilot_files_verdict "$pr")" in
         ok) ;;
         touches)
@@ -4895,6 +4998,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
             return 0 ;;
         *) AP_REASON="读不到 PR #$pr 的改动文件列表"; return 0 ;;
     esac
+    fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
     rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?
     case "$rc" in
@@ -4919,7 +5023,7 @@ autopilot_permit() {   # <state_file> <PR 编号>
 }
 
 autopilot_merge_one() {   # <state_file> <PR 编号>
-    local sf="$1" pr="$2" n kind head base ref checks since now limit out short where body
+    local sf="$1" pr="$2" n kind head base ref checks since now limit out short where body stop skey
     autopilot_permit "$sf" "$pr"
     case "$AP_V" in
         skip) return 0 ;;
@@ -4929,7 +5033,20 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
                 gh_label_flip "$pr" --remove "$LABEL_PENDING_MERGE" && AUTOPILOT_ACTED=1
             log "托管：PR #$pr 上挂着 $LABEL_PENDING_HUMAN（已被叫停）→ 不合并，摘掉 $LABEL_PENDING_MERGE"
             return 0 ;;
-        human) autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
+        human)
+            # 需人过目清单的两种交人（GitHub#337）：写之前把许可原样再判一遍，结论、命中内容和 PR 身份都没变才交人；
+            # 变了或这次读不全 → 本轮不写、不记，下轮按现状重判。交人本身用现有的写法（先说明、再翻标签）
+            if [ -n "$AP_STOP" ]; then
+                stop="$AP_STOP"; skey="$AP_STOP_KEY"
+                n="$AP_N"; kind="$AP_KIND"; head="$AP_HEAD"; base="$AP_BASE"; ref="$AP_REF"
+                autopilot_permit "$sf" "$pr"
+                if [ "$AP_V" != human ] || [ "$AP_STOP" != "$stop" ] || [ "$AP_STOP_KEY" != "$skey" ] || [ "$AP_N" != "$n" ] \
+                   || [ "$AP_KIND" != "$kind" ] || [ "$AP_HEAD" != "$head" ] || [ "$AP_BASE" != "$base" ] || [ "$AP_REF" != "$ref" ]; then
+                    log "托管：PR #$pr 交人之前重判有变化（重判结果 $AP_V${AP_REASON:+：$AP_REASON}），本轮不写"
+                    return 0
+                fi
+            fi
+            autopilot_to_human "$sf" "$pr" "$AP_REASON" "$AP_NEXT"; return 0 ;;
         worker) autopilot_to_worker "$sf" "$pr" "$AP_WN" "$AP_REASON"; return 0 ;;
         review) autopilot_to_review "$sf" "$pr" "$AP_HEAD" "$AP_RH" "$AP_BASE" "$AP_RB"; return 0 ;;
         unknown) autopilot_unknown "$sf" "$pr" "$AP_REASON"; return 0 ;;
@@ -7164,6 +7281,266 @@ concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作�
     return 0
 }
 
+# ── 重测试排队 + 条目结束时清掉它的测试（GitHub#343）──
+# 项目在 HEAVY_TEST_COMMANDS 里列出哪些命令算「重测试」（每行一条），空 = 不限制、本段什么都不做。
+# 非空时：
+#   · worker 的提示词多一段，要求这些命令通过 scripts/heavy-test.sh 跑（同一账号下一次只放行一套，
+#     放行依据是上一套的进程分组已清空，规则见那个脚本和 _heavy.sh）；
+#   · 派工和清理整段拿着同一把「条目锁」，两者只能一先一后——清理不会删掉正在启动的 worker 的
+#     工作树，也不会误停清理之后才起的测试；
+#   · 每个条目一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前
+#     都在条目锁里核对，对不上就退出；清理在同一把锁里停掉本条目登记着的分组，确认消失才删工作树；
+#   · 每次起 worker 记一份启动记录（窗格进程号 + 进程启动时间），每轮轮询据此把「worker 已经
+#     结束、测试还在排队或运行」的分组停掉——不依赖 tmux 会话还在。
+# 判断全部在 _heavy.sh，wrapper 和这里用的是同一份。「读不到」从不当成「没有 / 已停」。
+HEAVY_TEST_COMMANDS="${HEAVY_TEST_COMMANDS:-}"
+HEAVY_TEST_LOCK_WAIT="${HEAVY_TEST_LOCK_WAIT:-0}"
+HEAVY_TEST_SCOPE_PROPERTIES="${HEAVY_TEST_SCOPE_PROPERTIES:-}"
+ITEM_LOCK_WAIT_SECS="${ITEM_LOCK_WAIT_SECS:-60}"
+# 清理时停一个分组后最多等多久确认它消失（秒）。systemd 那边 10 秒后会强杀，30 秒足够
+HEAVY_STOP_WAIT_SECS="${HEAVY_STOP_WAIT_SECS:-30}"
+# worker 在会话里跑的包装命令：托管安装走长期入口，发版切换后路径不失效（同用量 footer）
+HEAVY_TEST_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/heavy-test.sh"
+_MANAGED_HEAVY_TEST="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/heavy-test.sh"
+[ ! -f "$_MANAGED_HEAVY_TEST" ] || HEAVY_TEST_SCRIPT="$_MANAGED_HEAVY_TEST"
+
+heavy_enabled() { [ -n "${HEAVY_TEST_COMMANDS//[[:space:]]/}" ]; }
+
+# 派工 / 清理脚本的开头调：还没拿条目锁 → 在锁里把本脚本重跑一遍并以它的退出码退出；已经在锁里
+# （上一层传下来的标记）→ 返回 0 接着跑。锁由 flock 进程自己拿着（-o：不把描述符传给脚本），
+# 所以它不会顺着 tmux server 漏到 worker 手里——那样 worker 活着锁就一直不放。
+# 等不到锁退出码 75：派工那边标签不翻、下一轮重试；清理那边什么都没动。
+ITEM_LOCK_HELD_FOR=""
+item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
+    local n="$1" self="$2" lock rc=0
+    shift 2
+    if [ "${CAVIL_ITEM_LOCK_HELD:-}" = "$n" ]; then
+        unset CAVIL_ITEM_LOCK_HELD      # 不留在环境里：起 tmux server 时会被它整份抄走
+        ITEM_LOCK_HELD_FOR="$n"
+        return 0
+    fi
+    lock="$(heavy_item_lock_path "$STATE_DIR" "$n")"
+    mkdir -p "$(dirname "$lock")"
+    # 动用人的恢复指令的派工（GitHub#339）：本文件一加载就把那个标记从环境里收走了，重新起自己
+    # 之前要交回去，不然锁里跑的那一份会把停住的条目当成普通派工。平时什么都不做。
+    stuck_release_reexport
+    CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
+    if [ "$rc" = 75 ]; then
+        log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
+    fi
+    exit "$rc"
+}
+
+# 派工：定下这次启动的编号和代数，tmux_env_args 会把它们交给 worker。读不到代数 → 非 0，本轮不派。
+HEAVY_LAUNCH_ID=""; HEAVY_LAUNCH_ITEM=""; HEAVY_LAUNCH_GEN=""
+heavy_launch_prepare() {   # <条目号>
+    heavy_enabled || return 0
+    local g
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")），本轮不派工"
+        return 1
+    fi
+    HEAVY_LAUNCH_ID="$(tr -d '-' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    if ! [[ "$HEAVY_LAUNCH_ID" =~ ^[0-9a-f]{32}$ ]]; then
+        # 没有 /proc（macOS）：那里包装命令只排队、不登记，启动编号用不上
+        HEAVY_LAUNCH_ID=""
+    fi
+    HEAVY_LAUNCH_ITEM="$1"; HEAVY_LAUNCH_GEN="$g"
+}
+
+heavy_launch_write() {   # <进程号 | pending> <进程启动时间>
+    local f tmp
+    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
+        "$1" "$2" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# 交给 worker 的环境变量（tmux -e 参数，NUL 分隔，格式同 tmux_env_args 的其余部分）。
+heavy_tmux_env_args() {
+    [ -n "$HEAVY_LAUNCH_ITEM" ] || return 0
+    # 这里只在真的要起 worker 时才会走到（注入现有会话不拼环境参数），而且在起之前：先登记这次启动
+    # （进程号待定）。worker 一起来就可能跑排队命令，那时记录必须已经在——排队命令对「没有记录的
+    # 启动编号」一律不放行。写不进去时 worker 照常起，只是它的重测试会被拒绝（不放行比乱放行安全）。
+    if [ -n "$HEAVY_LAUNCH_ID" ] && [ ! -e "$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")" ]; then
+        heavy_launch_write pending "" || echo "[cavil-loop] WARN: 写不进这次启动的记录，这个 worker 的重测试会被排队命令拒绝" >&2
+    fi
+    printf -- '-e\0CAVIL_HEAVY_ITEM=%s\0' "$HEAVY_LAUNCH_ITEM"
+    printf -- '-e\0CAVIL_HEAVY_GEN=%s\0' "$HEAVY_LAUNCH_GEN"
+    printf -- '-e\0CAVIL_HEAVY_LAUNCH=%s\0' "$HEAVY_LAUNCH_ID"
+    printf -- '-e\0CAVIL_HEAVY_STATE_DIR=%s\0' "$STATE_DIR"
+    printf -- '-e\0CAVIL_HEAVY_PROJECT=%s\0' "$REPO"
+    printf -- '-e\0CAVIL_HEAVY_LOCK_WAIT=%s\0' "$HEAVY_TEST_LOCK_WAIT"
+    printf -- '-e\0CAVIL_HEAVY_SCOPE_PROPERTIES=%s\0' "$HEAVY_TEST_SCOPE_PROPERTIES"
+}
+
+# 起完 worker 之后调：把这次启动的记录补上窗格进程号和它的启动时间。
+# 认不出 worker 窗格 / 读不到进程 → 记录停在「进程号待定」：这次启动起的测试可以跑、只会被等，
+# 不会被每轮检查停掉。注入现有会话（没有新起程序）不调，那种情况也没有登记过新的启动。
+heavy_launch_record() {   # <tmux_session>
+    [ -n "$HEAVY_LAUNCH_ID" ] || return 0
+    local sess="$1" st pane pid dead start
+    read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in found|single) ;; *) st="" ;; esac
+    if [ -z "$st" ] || [ "$dead" = 1 ] || ! start="$(heavy_proc_start "$pid")"; then
+        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，这次启动的进程号没记下（它起的重测试不会被自动停）"
+        return 0
+    fi
+    heavy_launch_write "$pid" "$start" || log "  ⚠️ 写不进这次启动的记录（它起的重测试不会被自动停）"
+}
+
+# 条目清理（代数已经加一）之后：这个条目以前的启动记录都用不上了——带旧代数的测试在核对代数那一步
+# 就被拦下，轮不到看启动记录。在条目锁里调。
+heavy_launch_forget_item() {   # <条目号>
+    local f d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        [[ "${f##*/}" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" item)" = "$1" ] || continue
+        rm -f "$f"
+    done
+}
+
+# 本账号下登记着的全部运行记录文件，一行一个路径（只看文件名，不读内容）。是不是本项目 / 本条目的，
+# 由调用方用 heavy_run_load 读过之后再问 heavy_run_is_mine——读不到的记录不能在这里被悄悄筛掉。
+heavy_run_files() {
+    local f
+    for f in "$CAVIL_HEAVY_TEST_RUNS"/*; do
+        [ -f "$f" ] || [ -L "$f" ] || continue
+        heavy_is_run_id "${f##*/}" || continue
+        printf '%s\n' "$f"
+    done
+}
+# 刚用 heavy_run_load 读过的那条记录是不是本项目的（可选：是不是这个条目的）。只在读成功（返回 0）之后问。
+heavy_run_is_mine() {   # [条目号]
+    [ "$HR_STATEDIR" = "$STATE_DIR" ] || return 1
+    [ -z "${1:-}" ] || [ "$HR_ITEM" = "$1" ]
+}
+
+# 清理这个条目要不要走条目锁 / 代数 / 停分组：功能开着，或者（功能后来关了但）它还有登记着的运行、
+# 或被清理过。三样都没有 = 这个项目从没用过，清理过程和以前一模一样。
+heavy_cleanup_needed() {   # <条目号>
+    heavy_enabled && return 0
+    [ -e "$(heavy_gen_file "$STATE_DIR" "$1")" ] && return 0
+    local f rc
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        rc=0; heavy_run_load "$f" || rc=$?
+        case "$rc" in
+            0) ! heavy_run_is_mine "$1" || return 0 ;;
+            2) return 0 ;;      # 读不到：可能就是这个条目的，不能当成没有
+        esac
+    done < <(heavy_run_files)
+    return 1
+}
+
+# 清理：代数加一并落盘。在条目锁里调。读不出旧值 / 写不进去 → 非 0，调用方不继续清理。
+heavy_gen_bump() {   # <条目号>
+    local f g tmp
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")）"
+        return 1
+    fi
+    f="$(heavy_gen_file "$STATE_DIR" "$1")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf '%s\n' $((g + 1)) > "$tmp" && mv -f "$tmp" "$f" || { log "❌ 写不进 $f"; return 1; }
+}
+
+# 清理：停掉本条目登记着的全部运行（排队中和运行中），逐个确认分组消失。在条目锁里、代数加一之后调。
+# 任何一个查不清 / 停不掉 → 非 0，调用方保留工作树。
+heavy_stop_item_runs() {   # <条目号>
+    local f unit st rc=0 lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        unit="$(heavy_unit_name "${f##*/}")"       # 分组名由文件名决定，记录读不到也推得出来
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine "$1"; then continue; fi
+        st="$(heavy_scope_state "$unit")"
+        if [ "$st" = gone ]; then rm -f "$f"; continue; fi
+        if [ "$lr" = 2 ]; then
+            # 读不到它是谁的：可能就是本条目的。不停它（也可能是别人的），但也不能当它不存在去删工作树
+            log "  ⚠️ 运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在（或查不清）：没法确认不是条目 #$1 的"
+            rc=1; continue
+        fi
+        if [ "$st" != active ]; then
+            log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue
+        fi
+        log "  停掉条目 #$1 的重测试：$unit（$HR_STATE，$HR_CMD）"
+        # heavy_stop_unit 自己会再读一次状态：这一次读不出来就不发停止请求
+        if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
+            rm -f "$f"
+        else
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态；现在：$(heavy_scope_state "$unit")）"
+            rc=1
+        fi
+    done < <(heavy_run_files)
+    return "$rc"
+}
+
+# 每轮轮询：本项目登记着的运行里，分组已经消失的删记录；起它的 worker 已确认结束、分组还在的，
+# 整组停掉。worker 还在 / 认不清 / 没读到进程号的一律不动。
+# 已结束的启动记录**不删**，只盖上「已结束」：删了的话，这个启动编号再被拿来问就成了「没记录」，
+# 旧 worker 留下的迟到请求会被重新放行。记录到条目清理时才删（那时代数已变，旧请求过不了代数那一关）。
+# 没有任何记录时只是两次目录读。
+heavy_sweep_tick() {
+    local f unit d id lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine; then continue; fi
+        unit="$(heavy_unit_name "${f##*/}")"
+        case "$(heavy_scope_state "$unit")" in
+            gone) rm -f "$f"; continue ;;       # 分组确认消失：不管记录读没读到，这条运行都了结了
+            active) ;;
+            *) continue ;;
+        esac
+        # 读不到的记录：不知道是谁的、谁起的，不停。它会挡着排队和本账号下的条目清理，所以每轮说一声
+        if [ "$lr" = 2 ]; then
+            log "⚠️ 重测试的运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在：不动它（确认后可 heavy-test.sh --stop ${f##*/}）"
+            continue
+        fi
+        if [ -n "$HR_LAUNCH" ] && [ "$(heavy_launch_state "$STATE_DIR" "$HR_LAUNCH")" = ended ]; then
+            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$HR_ITEM，$HR_CMD）"
+            if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态），下一轮再试"
+        fi
+    done < <(heavy_run_files)
+    d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" ended)" = 1 ] && continue
+        [ "$(heavy_launch_state "$STATE_DIR" "$id")" = ended ] || continue
+        heavy_launch_mark_ended "$STATE_DIR" "$id"
+    done
+    return 0
+}
+
+# 提示词里追加的那一段（compose_prompt_template 在功能开着时加）。
+heavy_prompt_section() {
+    local f="$SKILL_DIR/prompts/heavy-test.md" text cmds="" line wrapper
+    # 路径不加引号（只在含特殊字符时由 %q 转义）：用量 footer 认测试命令时会把引号里的内容整个去掉，
+    # 加了引号它就看不出这是排队命令、后面跟的是哪条测试了（test_time.py 的 classify_segment）
+    printf -v wrapper '%q' "$HEAVY_TEST_SCRIPT"
+    [ -s "$f" ] || { log "⚠️ 重测试排队说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+        cmds="${cmds}${cmds:+$'\n'}bash $wrapper -- $line"
+    done <<<"$HEAVY_TEST_COMMANDS"
+    text="$(cat "$f")"
+    text="${text//@@HEAVY_TEST_COMMANDS@@/"$cmds"}"
+    text="${text//@@HEAVY_TEST_LIST@@/"bash $wrapper --list"}"
+    printf '%s\n' "$text"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -7177,7 +7554,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name"; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -7201,6 +7578,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
+        if heavy_enabled; then
+            printf '\n\n---\n\n'
+            heavy_prompt_section
         fi
         # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
@@ -7926,7 +8308,7 @@ stuck_release_begin() {   # <issue|pr> <编号> <触发标签>
 # 派工脚本一侧。每个对外动作（翻标签、启动会话、往会话里送任务）之前都先过这里；一个进程只真正
 # 核对一次。不是恢复派工时什么都不做。
 #   现读 stuck_release_doc，和初筛记下的整串相同、三条仍成立、标签还是那一枚 → 先在本地写下
-#   「指令已用掉 + 本次派工的记号」，再放行。否则以 75 退出：什么都没做，指令没用掉。
+#   「指令已用掉 + 本次派工的记号」，再放行。否则以 76 退出：什么都没做，指令没用掉。（75 是条目锁等不到时的退出码，同样什么都没做。）
 # 父进程用环境变量 DISPATCH_STUCK_RELEASE 把「这是恢复派工」交给派工脚本。这里一加载就收进不导出的
 # shell 变量并从环境里拿掉：派工脚本接着会启动 tmux 和 worker，环境变量留着会漏进 worker 的会话，
 # worker 再跑本工具的脚本（发评论的 footer、叫醒外部需求机器人…）时写入就会被误拦。
@@ -7951,14 +8333,14 @@ stuck_release_gate() {
        || ! doc=$(stuck_release_doc "$kind" "$num" "$base") || [ "$doc" != "$cdoc" ] \
        || ! x=$(stuck_release_ok "$doc" "$used") || [ "$x" != "$clabel" ]; then
         log "卡住检测：$kind #$num 派工前最后一次核对没过（条目和初筛时不一样了，或读不全）→ 不派工，继续停住"
-        exit 75
+        exit 76
     fi
     file="$(stuck_release_file "$n")"
     if ! mkdir -p "$(dirname "$file")" || ! tmp=$(mktemp "$file.XXXXXX") \
        || ! jq -cn --arg token "$token" --argjson ev "$(printf '%s' "$doc" | jq '.last.id')" '{token: $token, event: $ev}' > "$tmp" \
        || ! mv "$tmp" "$file"; then
         log "卡住检测：$kind #$num 记不下「恢复指令已用掉」→ 不派工，继续停住"
-        exit 75
+        exit 76
     fi
     STUCK_RELEASE_GATED=1
     log "卡住检测：$kind #$num 派工前最后一次核对通过，人的恢复指令（$x）记为已用掉"
@@ -8006,7 +8388,8 @@ stuck_release_finish() {   # <派工脚本退出码>
     fi
     if [ ! -e "$file" ]; then
         # 指令没用掉：不算派工。清掉候选，下一轮重新初筛
-        if [ "$rc" = 75 ]; then
+        # 76 = 最后一次核对没过；75 = 条目锁被占着没等到（重测试排队开着时）。两种都什么都没做
+        if [ "$rc" = 76 ] || [ "$rc" = 75 ]; then
             stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
             return 1
         fi

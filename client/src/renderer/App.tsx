@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../shared/ipc';
+import type { Layout } from '../shared/types';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
 import { LoginView } from './LoginView';
@@ -52,7 +53,9 @@ export function App() {
   // board go back to it first and hand it a request, taken once (like a clicked notification).
   const signedIn = snap?.state.phase === 'ready';
   const keysOn = signedIn;
-  useKeyboard(keysOn);
+  // GitHub#369: the settings page has its own Esc (back to the board), only while it is the page showing
+  const onSettings = signedIn && !help && page === 'settings';
+  useKeyboard(keysOn, onSettings ? 'settings' : 'board');
   const [keysHelp, setKeysHelp] = useState(false);
   const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
   const reqSeq = useRef(0);
@@ -61,9 +64,18 @@ export function App() {
     setPage('board');
     setBoardReq({ kind, seq: ++reqSeq.current });
   };
+  const toLayout = (layout: Layout) => {
+    setHelp(false);
+    setPage('board');
+    void api().setView({ layout });
+  };
   useShortcuts({
     search: () => toBoard('search'),
     newIssue: () => toBoard('newIssue'),
+    // GitHub#372: the layout buttons' own action (the choice is kept like a click), on the board page
+    viewBoard: () => toLayout('board'),
+    viewTable: () => toLayout('table'),
+    viewGraph: () => toLayout('graph'),
     // also while a round runs: starts over, like the button (GitHub#217)
     sync: () => void api().restartSync(),
     settings: () => {

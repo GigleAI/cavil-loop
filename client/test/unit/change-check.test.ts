@@ -297,13 +297,15 @@ describe('an answer that is not a clear "not modified" reads in full', () => {
   }
 
   it('the count query fails: every board reads in full each round (repositories are not affected)', async () => {
-    const { c } = await ready();
+    const { c, clock } = await ready();
     // a board that does not exist makes the one count query answer with an error
     c.addSource('https://github.com/orgs/GigleAI/projects/98');
     await c.settled();
     await c.syncNow();
     const of11 = (l: LoggedRequest[]) => l.filter((e) => e.operation === 'CavilProjectItems' && e.variables?.number === 11 && (e.variables?.after ?? null) === null).length;
-    for (const _ of [1, 2]) {
+    // GitHub#374: the missing board waits 1, then 2 minutes before it is read again — the clock moves on to each turn
+    for (const wait of [60_000, 120_000]) {
+      clock.t += wait;
       const sent = await round(c);
       expect(sent.some((e) => e.operation === 'CavilProjectCounts' && e.status === 200)).toBe(true);
       expect(of11(sent)).toBe(1);

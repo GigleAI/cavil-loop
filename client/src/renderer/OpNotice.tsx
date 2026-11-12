@@ -3,7 +3,8 @@
 // send gate uses), in the panel and above the board alike.
 
 import { useState } from 'react';
-import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
 import { Icon } from './Icons';
@@ -42,12 +43,15 @@ export function OpNotice({
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean | null>(null);
   const [working, setWorking] = useState(false);
+  // GitHub#359: "仍要重发…" asks first, saying what a second send can cause
+  const [asking, setAsking] = useState(false);
+  const confirm = opResendConfirm(r);
   const tone = opTone(r);
   const phase = opPhase(r);
   const buttons = opButtons(r);
   const left = opDraftLeft(r);
   const has = (b: OpButton) => buttons.includes(b);
-  const cls = tone === 'error' ? 'error' : tone === 'warn' ? 'warn' : 'info';
+  // GitHub#357: the tone is the class (styles.css), decided by shared/noticeTone.ts alone
   // GitHub#256: a fully successful notice puts itself away after 5 s, exactly like the ×
   const auto = useAutoDismiss(opAutoDismissable(r), AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
   const run = async (f: () => Promise<{ ok: boolean; error: string | null } | void>) => {
@@ -61,8 +65,8 @@ export function OpNotice({
     }
   };
   return (
-    <div className={`banner ${cls} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
-      {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' ? 'check' : 'warn'} />}
+    <div className={`banner ${tone} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
+      {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' || tone === 'info' ? 'check' : 'warn'} />}
       <span className="banner-text">
         {prefix && <b>{prefix}</b>}
         <span data-testid="op-notice-text">{opText(r)}</span>
@@ -77,9 +81,9 @@ export function OpNotice({
               打开
             </button>
           )}
-          {has('recheck') && (
-            <button className="link" data-testid="op-recheck" disabled={working} onClick={() => void run(() => api().opRecheck(r.id))}>
-              重新查证据
+          {has('resend') && (
+            <button className="link" data-testid="op-resend" disabled={working} onClick={() => setAsking(true)}>
+              仍要重发…
             </button>
           )}
           {has('openWeb') && (
@@ -125,13 +129,33 @@ export function OpNotice({
             </button>
           )}
         </span>
-        {problem && (
+        {/* GitHub#357: what the record itself says ("这次没能查证 / 补做：…") is not said twice */}
+        {problem && !opText(r).includes(problem) && (
           <span className="small err" data-testid="op-problem">
             {' '}
             {problem}
           </span>
         )}
       </span>
+      {asking && confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          confirmLabel="仍要重发"
+          busy={working}
+          onCancel={() => setAsking(false)}
+          onConfirm={() => {
+            setAsking(false);
+            void run(() => api().opResend(r.id));
+          }}
+        >
+          <div data-testid="op-resend-confirm">
+            {confirm.lines.map((line, i) => (
+              <p key={i}>{line}</p>
+            ))}
+            {confirm.after && <p className="small">{confirm.after}</p>}
+          </div>
+        </ConfirmDialog>
+      )}
       {has('dismiss') && (
         <button className="banner-close" aria-label="关掉提示" title={left ? '关掉提示（草稿还留着，可以从这一条的详情里找回）' : '关掉提示'} data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
           <Icon name="x" />

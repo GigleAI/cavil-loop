@@ -95,7 +95,7 @@ export interface FakeState {
    * answer is lost; `apply: 'later'` = the client sees the connection drop at once, the write is
    * carried out only when `land()` of `lateWhen` is called (it arrived and lands late).
    */
-  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number }[];
+  lost: { match: (entry: LoggedRequest) => boolean; apply: 'now' | 'later'; pending: (() => void)[]; caught: number; then?: () => void }[];
   /** live refresh tokens -> the access token they were issued with (GitHub rotates both on refresh) */
   refreshTokens: Map<string, string>;
   refreshSeq: number;
@@ -107,6 +107,24 @@ export interface FakeState {
   w: WritableState;
   /** GitHub#261: answer matching change-check requests (board field / item lists, repo HEAD) this way; null = honestly */
   checkFault: ((e: LoggedRequest) => CheckFault | null) | null;
+  /**
+   * GitHub#364: break the answer of a request after it was read (and acted on): `close` = the
+   * connection drops before a byte of answer; `cut` = the head and half the body go out, then
+   * the connection drops. Asked once per answer; null = answer honestly.
+   */
+  breakAnswer: ((e: LoggedRequest) => 'close' | 'cut' | null) | null;
+  /**
+   * GitHub#374: answer an API request (GraphQL: operation + variables filled) this way instead of
+   * honestly — a 5xx, a rate limit with its headers, …; null = honestly. Asked once per request.
+   */
+  answerOverride: ((e: LoggedRequest) => CannedAnswer | null) | null;
+}
+
+/** GitHub#374: one answer as sent: status, JSON body, extra headers */
+export interface CannedAnswer {
+  status: number;
+  body?: unknown;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -124,6 +142,8 @@ export interface LoggedRequest {
   status: number;
   /** parsed JSON body of a REST request that has one */
   body?: unknown;
+  /** GitHub#364: how `breakAnswer` broke this request's answer */
+  broken?: 'close' | 'cut';
 }
 
 export interface FakeGitHub {
@@ -139,9 +159,14 @@ export interface FakeGitHub {
   /** hold responses of requests matching `pred` (GraphQL: operation + variables are filled) until released */
   holdWhen(pred: (entry: LoggedRequest) => boolean): () => void;
   /** GitHub#250: matching REST writes are carried out, then their connection is dropped (the answer is lost) */
-  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; stop: () => void };
+  dropAnswerWhen(pred: (entry: LoggedRequest) => boolean, then?: () => void): { caught: () => number; stop: () => void };
   /** GitHub#250: matching REST writes see the connection drop at once and are carried out only on `land()` */
   lateWhen(pred: (entry: LoggedRequest) => boolean): { caught: () => number; land: () => void; stop: () => void };
+  /**
+   * GitHub#359: a REST write by another account carried out at once, without a request (so it can be
+   * done from inside `dropAnswerWhen`'s `then`, in the same moment as the write it follows).
+   */
+  actAs(login: string, method: string, path: string, body?: unknown): void;
   /** everything writable, serialised: equal before / after = GitHub changed nothing */
   digest(): string;
   /** requests that ask GitHub to change something (REST non-GET except the markdown renderer, GraphQL mutations) */
@@ -224,6 +249,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     viewerAnswers: [],
     w: defaultWritable(),
     checkFault: null,
+    breakAnswer: null,
+    answerOverride: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -245,6 +272,25 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     const auth = (req.headers.authorization as string | undefined) ?? null;
     const entry: LoggedRequest = { method: req.method ?? 'GET', path: url.pathname + url.search, auth, status: 0 };
     log.push(entry);
+    // GitHub#364: every answer leaves through res.end — that is where it is broken on purpose
+    const end = res.end.bind(res) as (...a: unknown[]) => ServerResponse;
+    res.end = ((...a: unknown[]) => {
+      if (!entry.status) entry.status = res.statusCode;
+      const how = state.breakAnswer?.(entry) ?? null;
+      const chunk = typeof a[0] === 'string' || Buffer.isBuffer(a[0]) ? Buffer.from(a[0] as string) : null;
+      if (how === 'close' || (how === 'cut' && (!chunk || chunk.length < 2))) {
+        entry.broken = 'close';
+        req.socket.destroy();
+        return res;
+      }
+      if (how === 'cut' && chunk) {
+        entry.broken = 'cut';
+        if (!res.headersSent) res.setHeader('Content-Length', String(chunk.length));
+        res.write(chunk.subarray(0, Math.floor(chunk.length / 2)), () => req.socket.destroy());
+        return res;
+      }
+      return end(...a);
+    }) as typeof res.end;
     const send = (status: number, body: unknown, headers?: Record<string, string>) => {
       entry.status = status;
       json(res, status, body, headers);
@@ -358,7 +404,18 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return;
       }
       if (!authed()) return;
-      const live = handleGraphql(store, op, body.variables ?? {});
+      const canned = state.answerOverride?.(entry) ?? null;
+      if (canned) {
+        await held();
+        return send(canned.status, canned.body ?? {}, canned.headers);
+      }
+      let live: ReturnType<typeof handleGraphql>;
+      try {
+        live = handleGraphql(store, op, body.variables ?? {});
+      } catch (e) {
+        // variables the fake cannot work with: answered as GitHub would, with an error (not left hanging)
+        return send(200, { errors: [{ message: `fake: ${(e as Error).message}` }] });
+      }
       if (live) {
         // frozen now (GitHub#229): a held answer carries the data of the moment it arrived
         const answered = JSON.parse(JSON.stringify(live));
@@ -411,6 +468,15 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         return send(200, frozen);
       }
       return send(200, { errors: [{ message: `fake: unknown operation ${op}` }] });
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      const canned = state.answerOverride?.(entry) ?? null;
+      if (canned) {
+        if (!authed()) return;
+        await held();
+        return send(canned.status, canned.body ?? {}, canned.headers);
+      }
     }
 
     // ---- GitHub#261: a board's REST field list and item list (what the change check reads) ----
@@ -476,8 +542,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
             () => {},
             login(),
           );
-        if (lost.apply === 'now') run();
-        else lost.pending.push(run);
+        if (lost.apply === 'now') {
+          run();
+          // what happens on GitHub right after it, before any read of the client can arrive
+          lost.then?.();
+        } else lost.pending.push(run);
         entry.status = -1;
         req.socket.destroy();
         return;
@@ -583,8 +652,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         release();
       };
     },
-    dropAnswerWhen(pred) {
-      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0 };
+    actAs(login, method, path, body) {
+      handleRest(store, method, `/api${path}`, body, () => {}, () => {}, login);
+    },
+    dropAnswerWhen(pred, then) {
+      const l = { match: pred, apply: 'now' as const, pending: [], caught: 0, ...(then ? { then } : {}) };
       state.lost.push(l);
       return { caught: () => l.caught, stop: () => void (state.lost = state.lost.filter((x) => x !== l)) };
     },

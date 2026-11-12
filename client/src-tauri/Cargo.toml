@@ -2,7 +2,7 @@
 # wires it to the window (one IPC command) and to the operating system.
 [package]
 name = "cavil-loop-client"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT"
 description = "Cavil Loop desktop board client"
@@ -37,7 +37,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSBundle", "NSProcessInfo", "NSDictionary", "NSSet", "NSObject", "NSThread"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSBundle", "NSProcessInfo", "NSDictionary", "NSSet", "NSObject", "NSThread"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotification", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNNotificationSound"] }
 
 [workspace]

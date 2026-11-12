@@ -41,7 +41,7 @@ export type WriteAction =
    * labels come from Settings and are checked against a fresh read of the repository's labels;
    * absent = 'none'. `handoffPicked`: chosen by hand in the dialog — the app remembers it once the issue exists
    */
-  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff; handoffPicked?: boolean }
+  | { kind: 'createIssue'; repo: string; title: string; body: string; labels: string[]; projects: string[]; plan?: CreatePlan; handoff?: Handoff; handoffPicked?: boolean; picks?: Picks }
   /**
    * tick / untick one task-list box of a body or comment (GitHub#193): `entryId` is the
    * body's / comment's node id, `index` the box's number in it (document order),
@@ -74,6 +74,21 @@ export type GroupPreset =
   | { by: 'milestone'; title: string }
   | { by: 'repo'; repo: string }
   | { by: 'none'; field?: 'iteration' | 'status' | 'milestone' };
+
+/**
+ * GitHub#372: the dialog's iteration and milestone pickers. `null` = not touched: the value the
+ * group (or the plain "新建") gives, exactly as before the pickers existed.
+ *   iteration: `auto` = the iteration today falls in, per ticked board (GitHub#276); `none` = none;
+ *              `set` = this one (same title and start date — the key the table groups by) on every
+ *              ticked board that has it.
+ *   milestone: `none` = none; `set` = the repository's milestone with that title (an open one first).
+ */
+export type IterationPick = { kind: 'auto' } | { kind: 'none' } | { kind: 'set'; title: string; startDate: string };
+export type MilestonePick = { kind: 'none' } | { kind: 'set'; title: string };
+export interface Picks {
+  iteration: IterationPick | null;
+  milestone: MilestonePick | null;
+}
 
 /**
  * What a new issue from a group's "+" sets, as confirmed in the dialog (GitHub#214).

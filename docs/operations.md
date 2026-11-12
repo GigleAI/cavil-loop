@@ -667,7 +667,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 | Nobody added `pending/human` to the issue or the PR | `pending/human` (PR-side `pending/human`: just drops `pending/merge`) |
 | The PR head **and target branch** are the ones recorded when the review was dispatched (same commit retargeted to another branch = a different change; an old record without the branch counts as missing) | back to `pending/review` |
 | The reviewer's verdict comment (write account, after dispatch) carries the record for that commit with `failed=0`, `passed>0` | `pending/human` |
-| No change under `.github/` | `pending/human` |
+| No change under `.github/` — or, with `AUTOPILOT_HUMAN_PATHS` set (GitHub#337), no change to any listed file, see below | `pending/human` |
 | Every check run / commit status on that commit passed (none at all = rely on the record above) | failing → back to the worker; still running after `AUTOPILOT_CHECKS_TIMEOUT_HOURS` (6) → `pending/human` |
 | GitHub says mergeable (no conflict) | back to the worker |
 | Right before merging, the **same permit function runs again from fresh reads** — every row above, including the reviewer's test record (a comment can be edited or deleted) and the checks (red, re-running, or newly appeared); both runs must say "merge" for the same issue / commit / target | skip this round, record nothing |
@@ -725,6 +725,52 @@ issues by their `updated_at`; `takeover` / `takeover_unknown` / `takeover_handof
 cache key (the values of `denied` and `takeover` carry a judging-rules revision, so after an upgrade that relaxes a rule the
 old records stop matching and each item is judged once under the new rule), undecidable rounds during takeover, and hand-offs not yet finished; `mirror`: PRs judged "nothing to copy / remove" with the same kind of cache key, GitHub#190). Like `requester_bot_done_queue` it is not in the migration loop
 and only appears once the feature does something.
+
+### Files a human must look at before an autopilot merge (`AUTOPILOT_HUMAN_PATHS`, GitHub#337)
+
+Some files do not run code by being changed, but make code run later as the maintainer: CI workflows,
+git hooks, agent configuration, install / build / environment files. With `AUTOPILOT_HUMAN_PATHS` set,
+an autopilot PR that touches a listed file is not merged: it goes to `pending/human` with a note
+naming the files. **Empty or not set = exactly the previous behaviour** (only `.github/` is refused,
+through the unchanged code path: same GitHub calls, same state, same comments). Nothing else changes
+for a project that does not set it, and no notice is opened about it.
+
+To turn it on, add one line to the project's config; it takes effect on the next poll:
+
+<!-- autopilot-human-paths:examples:begin -->
+```bash
+AUTOPILOT_HUMAN_PATHS="default"
+AUTOPILOT_HUMAN_PATHS="default /systemd/ /launchd/ /setup.sh"
+AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh"
+```
+<!-- autopilot-human-paths:examples:end -->
+
+- `default` expands to the built-in list: `/.github/` `.husky/` `.githooks/` `/.pre-commit-config.yaml`
+  `/lefthook.yml` `.claude/` `.codex/` `.agents/` `.mcp.json` `.devcontainer/` `.vscode/` `package.json`
+  `Makefile` `.envrc`. It can be mixed with more entries (second and third line above); a value without
+  `default` uses only the entries written. `/.github/` is always on the list.
+- **How an entry is read** (space- or comma-separated, the common part of `.gitignore`): a leading `/`
+  means the repo root only (`/setup.sh` does not match `tools/setup.sh`); no leading `/` means any depth
+  (`package.json` matches `client/package.json`); a trailing `/` means a directory and everything under
+  it; `*` matches within one path segment. A renamed file is matched on both its old and new path.
+- **An entry the daemon cannot read is never skipped**: no leading `/` but a `/` in the middle
+  (`a/b.txt`), a `.` / `..` segment, an empty segment, `**`. Every autopilot merge of the project then
+  goes to a human with a note naming the entry, until the config is fixed.
+- **The file list must be read whole**: the number of files GitHub reports on the PR (`changed_files`)
+  has to equal the number of entries read. Missing pages (the endpoint returns at most 3000 files per
+  PR), a missing count, a malformed answer or a failed request all count as "can't read": no merge and
+  nothing written this round, a human after `AUTOPILOT_UNKNOWN_MAX` rounds. "Can't read" is never "no hit".
+- **Judged twice before the hand-off**: after a hit (or an unreadable entry) the whole merge permit runs
+  again from fresh reads; the verdict, the files hit and the PR's head / target branch / branch / bound
+  issue must be the same, otherwise nothing is written this round. The hand-off itself is the same
+  "comment, then labels" every other autopilot hand-off uses. ⚠️ A maintainer action that lands between
+  those writes is not seen: the PR may get `pending/human` and lose `pending/merge` once more. It never
+  causes a merge.
+- **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
+  `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
+  if the project wants them.
+- **Turning it off**: delete the line (or set it to `""`). From the next poll on the previous rule
+  applies again; PRs already handed to a human stay with the human.
 
 ### Poll the repo from one machine only
 
@@ -1077,6 +1123,61 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     an `&&` / `||` / `if` / `case` branch is counted as run (whether the branch ran cannot be
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
+
+## Heavy tests: one at a time (optional, **off by default**, GitHub#343)
+
+Several workers running the full test suite at once stack memory and CPU until the machine stalls. With this on, the "heavy test" commands a project lists are let through one at a time under one system account, the rest wait; when an item is cleaned up, or the worker that started a test has ended, the tests it left behind are stopped.
+
+**Turn it on**: list the heavy commands in the project's `cavil-loop.config`, one per line:
+
+```bash
+HEAVY_TEST_COMMANDS="bash tests/run.sh"
+```
+
+From the next dispatch on, the worker prompt gets one more section telling the agent to run these as `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh`; a single test file needs no queue. Workers already running are not affected (their prompt was fixed at start).
+
+**How the queue works**
+
+- Each run goes into its own systemd scope (`cavil-heavy-<id>.scope`). The next run starts only when every "running" scope ahead of it has no process left — a killed wrapper, a test that closes inherited descriptors, a child that backgrounds itself or leaves the process group cannot release it early. While waiting it prints, every 30 seconds, which project and item it waits for and for how long.
+- When the test's main process exits, the wrapper stops its own scope, so background children left behind end with it.
+- Scope state is read from explicit answers only: "not found / inactive" means ended; a failed query, empty output or an unknown word counts as still running.
+- A run record that cannot be read, or whose content is not recognised (any of its ten fields missing, a field given twice, a state other than queued / running, a scope name that does not match its id, only part of the project / item / generation ownership present), is not taken for "not running" either: its scope is looked up by the id, and the record is removed only once that scope is confirmed gone; while the scope is there it keeps blocking the queue and the worktree cleanup of items under this account, and the waiting notice and the poll log name the file. `--list` shows it as unreadable (「读不到」); once it is clear what that run is, `--stop <id>` stops it.
+- No first-come-first-served guarantee, only no overlap. `HEAVY_TEST_LOCK_WAIT=<seconds>` caps the wait (exit code 75); default 0 = wait as long as it takes.
+
+**What happens when an item ends**
+
+- Dispatch (create the worktree, start the worker, record this launch) and `cleanup-issue.sh` (stop the session, stop the tests, remove the worktree) each hold one per-item lock from start to end, so they run one after the other. When the lock cannot be taken (60 seconds by default), dispatch does nothing this round and leaves the label, and cleanup changes nothing and exits non-zero.
+- Every item has a generation, bumped by cleanup as soon as it holds the lock. A worker carries the generation it was started with, and a test checks it when it registers and again before it starts: on a mismatch (the item was cleaned after this worker started) it does not start, exit code 76. A worker dispatched after the cleanup gets the new generation and is not affected.
+- Cleanup first stops this item's queued and running heavy tests and removes the worktree only after their scopes are confirmed gone. Unknown state or a failed stop → the worktree is kept and the exit code is non-zero; the automatic post-merge cleanup then does not record the item as cleaned and retries next round, and the PR's `Done` label waits for the round in which cleanup succeeds.
+- Each worker launch records the worker's pid and start time (registered before the worker starts, completed with the pid once it is up). Every poll round checks them: when that process is gone (or the pid now belongs to another process) while a test it started is still queued or running, the whole scope is stopped. A worker that is alive, or one that cannot be identified, is left alone. A launch confirmed as ended is marked, not deleted, so a late request left behind by that worker does not start either (exit code 76); the record is removed when the item is cleaned up.
+
+**See who holds the queue, stop one run by hand**
+
+<!-- heavy-test-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+IDF="$(mktemp)"
+bash "$SKILL/scripts/heavy-test.sh" --id-file "$IDF" -- sleep 120 &
+while [ ! -s "$IDF" ] && kill -0 $! 2>/dev/null; do sleep 0.2; done
+bash "$SKILL/scripts/heavy-test.sh" --list
+bash "$SKILL/scripts/heavy-test.sh" --stop "$(cat "$IDF")"
+wait
+bash "$SKILL/scripts/heavy-test.sh" --list
+rm -f "$IDF"
+```
+<!-- heavy-test-ops:end -->
+
+In order: start a run (`sleep 120` stands in for a real test command) and have it write **its own run id** to a temporary file once it is registered; wait for the id; list every run registered under this account (id, queued / running, scope state, project and item, command, age); stop exactly that run by its id (its command exits with 143) — it is stopped the same way while still queued; list again. Other items' runs may be in the list at that point and these commands do not touch them: always name the run to stop by its id, never pick "the first running one" from the list — that may well belong to another item. To stop one run in everyday use, read `--list` for the project, item and command first, then `--stop <its id>`. `--stop` removes the record only after the scope is confirmed gone; when the scope's state cannot be read it sends no stop request, reports an error and keeps the record.
+
+**Limits**
+
+- The full behavior needs Linux + cgroup v2 + a systemd user manager. Where these are plainly absent (not Linux, not cgroup v2, no `systemd-run` / `systemctl`, no user-manager socket for this account — macOS, for one) only the wrapper itself is queued: no scope, no record, no cleanup, and a notice is printed. When the user manager exists but did not answer this time, or the scope cannot be created, the wrapper exits with 70 and does not run the test — it never degrades silently, because the degraded mode cannot see existing scopes and would start while the previous run is still going. In degraded mode it also exits with 70 while run records are still registered: once those runs are known to have ended, remove the records under `~/.local/state/cavil-loop/heavy-test/runs/` and retry.
+- "Machine-wide" means one system account: the queue lock and the run records live under `~/.local/state/cavil-loop/` (`heavy-test.lock`, `heavy-test/runs/`); different accounts do not queue behind each other.
+- Only tests started through the wrapper are queued or stopped. A command the worker runs directly, a dev server, any other background process is neither queued nor stopped.
+- A test moved into its own scope is no longer under a memory cap set on the tmux pane's scope. Use `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"` (space-separated systemd properties) when a cap is needed; none by default.
+- A forced cleanup (`--force`) of an item whose worker is busy still stops that worker, as before; what the item lock guarantees is that cleanup never interleaves with a launch in progress.
+
+**Turn it off**: leave `HEAVY_TEST_COMMANDS` empty (or remove the line). Later dispatches no longer carry the section and no longer take the item lock. Workers started before that may still run tests through the wrapper; those queue as usual, and runs still registered are stopped at item cleanup and by the poll round exactly as before — nothing to do by hand; use `--stop` above to stop one right away. `item-locks/`, `item-gen/` and `worker-launch/` left in the project's state directory need not be removed.
 
 ## Prompt templates
 

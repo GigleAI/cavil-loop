@@ -5,7 +5,7 @@
 //   上次检查  the latest full read, or the latest "nothing changed" answer of the change check —
 //             which does not see everything (CHECK_BLIND), so it is never called "current as of"
 
-import type { SyncState } from '../shared/types';
+import type { SourceStatus, SyncState } from '../shared/types';
 
 export function ago(from: number, now: number): string {
   const mins = Math.max(0, Math.floor((now - from) / 60_000));
@@ -15,6 +15,27 @@ export function ago(from: number, now: number): string {
   if (h < 24) return `${h} 小时前`;
   return `${Math.floor(h / 24)} 天前`;
 }
+
+/** a time of day, HH:MM (local) */
+export function clockAt(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** GitHub#374: the line under a failed source — the panel and the hover both take it from here */
+export function retryText(st: SourceStatus, now: number): string | null {
+  const r = st.retry;
+  if (st.ok || !r) return null;
+  if (st.rateLimited) {
+    if (r.limitedUntil === null) return null;
+    return r.limitedUntil > now ? `额度约 ${clockAt(r.limitedUntil)} 恢复，到时自动重读；在那之前不再发读取请求` : '限流时间已过，下一轮自动重读';
+  }
+  const next = r.nextAt === null || r.nextAt <= now ? '下一轮自动重试' : `下次自动重试 ${clockAt(r.nextAt)}`;
+  return `从 ${clockAt(r.since)} 起连续失败 ${r.count} 次 · ${next}（失败越多隔得越久，最长 10 分钟）`;
+}
+
+/** GitHub#374: under the list of failed sources, when any of them waits for its next try */
+export const RETRY_BY_HAND = '点「重新同步」会马上重读，不等自动重试。';
 
 /** what the check cannot see (data/changeCheck.ts); no promise of when the full read succeeds */
 export const CHECK_BLIND =
@@ -44,6 +65,10 @@ export function hoverLines(sync: SyncState, label: (sourceKey: string) => string
       ? `${label(t.sourceKey)}：还没有读到过`
       : `${label(t.sourceKey)}：整份读取 ${ago(t.readAt, now)} · 上次检查 ${ago(t.checkedAt, now)}`,
   );
+  for (const st of sync.sources) {
+    const r = retryText(st, now);
+    if (r) lines.push(`${label(st.sourceKey)}：${r}`);
+  }
   lines.push(sync.lastOnlineAt === null ? '最后连上 GitHub：这次打开后还没有连上过' : `最后连上 GitHub：${ago(sync.lastOnlineAt, now)}`);
   lines.push(CHECK_BLIND);
   if (sync.syncing && sync.progress) {

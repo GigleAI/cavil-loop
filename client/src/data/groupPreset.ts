@@ -17,9 +17,10 @@
 //     or when there is none; only two at once (overlapping dates) is said, and
 //     then nothing is guessed. The unticked boards are never touched by this.
 
-import type { CreatePlan, GroupPreset, RepoOptions } from '../shared/actions';
-import { isCurrentIteration } from '../shared/filter';
-import type { Item, ProjectMeta } from '../shared/types';
+import type { CreatePlan, GroupPreset, IterationPick, MilestonePick, Picks, RepoOptions } from '../shared/actions';
+export type { IterationPick, MilestonePick, Picks } from '../shared/actions';
+import { isCurrentIteration, iterationSections } from '../shared/filter';
+import type { Item, Iteration, ProjectMeta } from '../shared/types';
 
 /** The repository's milestone with this title: an open one first. One rule for the detail and for a new issue. */
 export function pickMilestone<T extends { title: string; state: string }>(list: T[], title: string): T | null {
@@ -62,6 +63,98 @@ export function previewCreate(preset: GroupPreset, projects: ProjectMeta[], repo
   const out = previewGroup(preset, projects, repo, read, others);
   if (out.plan && today !== null && fillsCurrentIteration(preset)) fillCurrentIteration(out.plan, projects, today, out.lines);
   return out;
+}
+
+/** What the iteration picker holds when not touched: the group's iteration, none for a "no iteration" group, else the current one. */
+export function defaultIterationPick(preset: GroupPreset): IterationPick {
+  if (preset.by === 'iteration') return { kind: 'set', title: preset.title, startDate: preset.startDate };
+  if (preset.by === 'none' && preset.field === 'iteration') return { kind: 'none' };
+  return { kind: 'auto' };
+}
+
+/** What the milestone picker holds when not touched: the group's milestone, else none. */
+export function defaultMilestonePick(preset: GroupPreset): MilestonePick {
+  return preset.by === 'milestone' ? { kind: 'set', title: preset.title } : { kind: 'none' };
+}
+
+export function samePick(a: IterationPick | MilestonePick, b: IterationPick | MilestonePick): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind !== 'set' || b.kind !== 'set') return true;
+  return a.title === b.title && ('startDate' in a ? a.startDate : '') === ('startDate' in b ? b.startDate : '');
+}
+
+/** Whether any ticked board can take an iteration from this dialog: only then is the iteration picker shown. */
+export function canPickIteration(projects: ProjectMeta[]): boolean {
+  return projects.some(carriesIteration);
+}
+
+function carriesIteration(p: ProjectMeta): boolean {
+  return p.viewerCanUpdate && p.hasIterationField && Boolean(p.iterationFieldId);
+}
+
+/** The key of an iteration across boards (the table's grouping key): title + start date. */
+export function iterationKey(it: { title: string; startDate: string }): string {
+  return `${it.title}\u0000${it.startDate}`;
+}
+
+/**
+ * The iterations the picker offers: the current and upcoming ones of the ticked boards that can
+ * take one, one entry per title + start date (`id` = that key), so the picker's sections and order
+ * are the detail panel's. Ended ones are not offered.
+ */
+export function iterationChoices(projects: ProjectMeta[], today: string): Iteration[] {
+  const out = new Map<string, Iteration>();
+  for (const p of projects.filter(carriesIteration))
+    for (const it of p.iterations) {
+      const k = iterationKey(it);
+      if (!out.has(k)) out.set(k, { ...it, id: k });
+    }
+  const s = iterationSections([...out.values()], today);
+  return [...s.current, ...s.upcoming];
+}
+
+/** The milestones the picker offers: the repository's open ones, one per title (the title is what a plan picks by). */
+export function milestoneChoices(read: MilestoneRead): string[] {
+  if (read.state !== 'ok') return [];
+  const out: string[] = [];
+  for (const m of read.milestones) if (m.state === 'open' && !out.includes(m.title)) out.push(m.title);
+  return out;
+}
+
+/**
+ * GitHub#372: the plan of a new issue with the pickers' values. One rule with the group's "+":
+ * a picked iteration is planned exactly like an iteration group, a picked milestone exactly like a
+ * milestone group (`previewGroup`), and a status group keeps its status. Untouched pickers give
+ * the same plan as `previewCreate` (pinned by the unit tests). Unticked boards are only watched
+ * for the group's own value (GitHub#258): a different iteration picked by hand is set on the
+ * ticked boards only.
+ */
+export function previewCreateWith(preset: GroupPreset, picks: Picks, projects: ProjectMeta[], repo: string, read: MilestoneRead, others: ProjectMeta[] = [], today: string | null = null): CreatePreview {
+  const groupIt = defaultIterationPick(preset);
+  const it = picks.iteration ?? groupIt;
+  const ms = picks.milestone ?? defaultMilestonePick(preset);
+  const parts: CreatePreview[] = [];
+  // the group's own value when it is neither an iteration nor a milestone (status, repository, none)
+  if (preset.by !== 'iteration' && preset.by !== 'milestone') parts.push(previewGroup(preset, projects, repo, read, others));
+  if (it.kind === 'set') parts.push(previewGroup({ by: 'iteration', title: it.title, startDate: it.startDate }, projects, repo, read, samePick(it, groupIt) ? others : []));
+  else if (it.kind === 'none') parts.push(previewGroup({ by: 'none', field: 'iteration' }, projects, repo, read, others));
+  if (ms.kind === 'set') parts.push(previewGroup({ by: 'milestone', title: ms.title }, projects, repo, read, others));
+  const lines: PreviewLine[] = [];
+  for (const part of parts) for (const l of part.lines) if (!lines.some((x) => x.target === l.target && x.text === l.text)) lines.push(l);
+  const blocked = parts.find((x) => x.blocked)?.blocked ?? null;
+  if (parts.some((x) => !x.plan)) return { plan: null, lines, blocked };
+  const plans = parts.map((x) => x.plan!);
+  const watch = plans.flatMap((x) => x.watch ?? []);
+  const plan: CreatePlan = {
+    milestone: plans.find((x) => x.milestone)?.milestone ?? null,
+    projects: projects.map((p) => {
+      const mine = plans.map((x) => x.projects.find((e) => e.projectKey === p.key));
+      return { projectKey: p.key, iterationId: mine.find((e) => e?.iterationId)?.iterationId ?? null, status: mine.find((e) => e?.status)?.status ?? null };
+    }),
+    ...(watch.length ? { watch } : {}),
+  };
+  if (it.kind === 'auto' && today !== null) fillCurrentIteration(plan, projects, today, lines);
+  return { plan, lines, blocked };
 }
 
 /** GitHub#276: does a new issue from this group get the current iteration where its own value leaves it empty? */

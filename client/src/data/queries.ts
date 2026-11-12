@@ -1,6 +1,8 @@
 // GraphQL documents used by the sync layer. The fake GitHub used in tests
 // dispatches on the operation name, so keep the names stable.
 
+import { ITEM_LABELS_FIRST } from '../shared/ops';
+
 /**
  * GitHub#349: the other end of a relation, as read with the item that names it (no request to its repository).
  */
@@ -20,15 +22,28 @@ export const RELATION_FIELDS = `
     ${relationList('blockedBy', 'first: 20')}
     ${relationList('blocking', 'first: 20')}`;
 
+/**
+ * GitHub#373: how the signed-in account stands to an item — does it subscribe, and (pull requests)
+ * who is asked to review and which issues GitHub lists as linked (a pull request nobody answers
+ * for reminds whoever its issue concerns). The one piece every read carries (the board read, the one-item re-read,
+ * the repository batch), so they cannot ask for different things. `totalCount` tells a whole list
+ * from one cut short.
+ */
+export const VIEWER_ISSUE_FIELDS = 'viewerSubscription';
+export const REVIEW_REQUESTS_FIRST = 20;
+export const CLOSING_ISSUES_FIRST = 20;
+export const VIEWER_PR_FIELDS = `viewerSubscription reviewRequests(first: ${REVIEW_REQUESTS_FIRST}) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } } closingIssuesReferences(first: ${CLOSING_ISSUES_FIRST}) { totalCount nodes { number repository { nameWithOwner } } }`;
+
 const CONTENT_FIELDS = `
   __typename
   ... on Issue {
     id number title url state stateReason updatedAt
     repository { nameWithOwner }
-    labels(first: 50) { nodes { name color } }
+    labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
+    ${VIEWER_ISSUE_FIELDS}
 ${RELATION_FIELDS}
     subIssuesSummary { total completed }
     closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
@@ -38,10 +53,11 @@ ${RELATION_FIELDS}
   ... on PullRequest {
     id number title url state merged isDraft updatedAt body
     repository { nameWithOwner }
-    labels(first: 50) { nodes { name color } }
+    labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
     assignees(first: 20) { nodes { login } }
     milestone { number title dueOn }
     author { login }
+    ${VIEWER_PR_FIELDS}
   }
   ... on DraftIssue { title }
 `;
@@ -150,14 +166,16 @@ query CavilIssueRelations($id: ID!, $subIssues: Boolean!, $subIssuesAfter: Strin
 `;
 
 /**
- * GitHub#349: the relations of up to 100 issues of a repository source, by node id, in one
- * request. (The REST issue list says only *how many* relations an issue has.)
+ * What a repository source reads by node id after its REST list, up to 100 items a request — the
+ * list carries neither of them. GitHub#349: an issue's relations (the list says only *how many*).
+ * GitHub#373: how the signed-in account stands to an issue / pull request.
  */
 export const ISSUE_RELATIONS_BATCH_QUERY = `
 query CavilIssueRelationsBatch($ids: [ID!]!) {
   nodes(ids: $ids) {
     __typename
-    ... on Issue { id ${RELATION_FIELDS} }
+    ... on Issue { id ${VIEWER_ISSUE_FIELDS} ${RELATION_FIELDS} }
+    ... on PullRequest { id ${VIEWER_PR_FIELDS} }
   }
 }
 `;
@@ -254,13 +272,13 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
       ... on Issue {
         id number title url state createdAt bodyHTML body viewerCanUpdate
         author { login }
-        labels(first: 50) { nodes { name color } }
+        labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         ${DETAIL_COMMENTS}
       }
       ... on PullRequest {
         id number title url state merged isDraft createdAt bodyHTML body viewerCanUpdate
         author { login }
-        labels(first: 50) { nodes { name color } }
+        labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         mergeable mergeStateStatus reviewDecision headRefOid baseRefName headRefName
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
         ${DETAIL_COMMENTS}
@@ -362,6 +380,33 @@ const OP_RECORDS_FIELDS = `
       timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
       }`;
+/**
+ * GitHub#359: one read for a check of an operation / right before a send nobody clicked: the item's
+ * state, its labels, its newest comments and one page of its label events (newest first page;
+ * `$before` walks back). `labels.totalCount` and `pageInfo` say whether what came is everything.
+ */
+const OP_SNAPSHOT_FIELDS = `
+      state
+      labels(first: 100) { totalCount nodes { name } }
+      comments(last: 100) { nodes { id body author { login } } }
+      timelineItems(last: 100, before: $before, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes { __typename ... on LabeledEvent { id actor { login } label { name } } ... on UnlabeledEvent { id actor { login } label { name } } }
+      }`;
+export const OP_SNAPSHOT_QUERY = `
+query CavilOpSnapshot($owner: String!, $name: String!, $number: Int!, $before: String) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue {${OP_SNAPSHOT_FIELDS}
+      }
+      ... on PullRequest {
+        merged${OP_SNAPSHOT_FIELDS}
+      }
+    }
+  }
+}
+`;
 export const OP_RECORDS_QUERY = `
 query CavilOpRecords($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {

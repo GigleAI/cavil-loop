@@ -24,6 +24,9 @@
   --err-fg: #d1242f;
   --info-bg: #ddf4ff;
   --info-border: #54aeff;
+  --ok-bg: #dafbe1;
+  --ok-border: #4ac26b;
+  --ok-icon: #1a7f37;
   --shadow-sm: 0 1px 0 rgba(31, 35, 40, 0.04), 0 1px 2px rgba(31, 35, 40, 0.06);
   --shadow-lg: 0 12px 32px rgba(31, 35, 40, 0.14), 0 0 0 1px rgba(31, 35, 40, 0.06);
   --overlay: rgba(31, 35, 40, 0.35);
@@ -33,6 +36,9 @@
      Which role an item gets is decided in one place, src/shared/stateTone.ts. */
   --state-open-fg: #1a7f37; --state-closed-fg: #d1242f; --state-done-fg: #8250df; --state-neutral-fg: #59636e;
   --state-open-bg: #1f883d; --state-closed-bg: #cf222e; --state-done-bg: #8250df; --state-neutral-bg: #59636e;
+  /* GitHub#350: the dependency graph's arrows and badges */
+  --edge-open: #bf8700; --edge-done: #8c959f; --blocked-fg: #7d4e00; --blocked-bg: #fff8c5; --blocked-border: #d4a72c;
+  --graph-dot: #d1d9e0;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -59,11 +65,16 @@
     --err-fg: #f85149;
     --info-bg: #0f2645;
     --info-border: #1f6feb;
+    --ok-bg: #12261e;
+    --ok-border: #238636;
+    --ok-icon: #3fb950;
     --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.02);
     --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px #3d444d;
     --overlay: rgba(1, 4, 9, 0.6);
     --state-open-fg: #3fb950; --state-closed-fg: #f85149; --state-done-fg: #ab7df8; --state-neutral-fg: #9198a1;
     --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
+    --edge-open: #d29922; --edge-done: #6e7681; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
+    --graph-dot: #2a313c;
   }
 }
 
@@ -110,14 +121,20 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .count { display: inline-block; color: var(--muted); background: var(--hover); border-radius: 999px; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* ---- notice bars: one shape for yellow (warn), red (error), blue (info) ---- */
+/* ---- notice bars: one shape for every colour. GitHub#357: which one a notice gets is decided in
+   src/shared/noticeTone.ts alone — busy (blue, spinner): something of its own is running; ok (green): all
+   went through, goes after 5 s; warn (yellow): the app keeps retrying; error (red): refused, or the last
+   attempt failed; info (blue, no spinner): a plain remark ---- */
 .banner { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid; border-radius: 8px; margin: 0 16px 8px; color: var(--fg); }
 .banner > .icon { margin-top: 2px; }
 .banner.warn { background: var(--warn-bg); border-color: var(--warn-border); }
 .banner.warn > .icon { color: var(--warn-icon); }
 .banner.error { background: var(--err-bg); border-color: var(--err-border); }
 .banner.error > .icon { color: var(--err-fg); }
-.banner.info { background: var(--info-bg); border-color: var(--info-border); }
+.banner.info, .banner.busy { background: var(--info-bg); border-color: var(--info-border); }
+.banner.ok { background: var(--ok-bg); border-color: var(--ok-border); }
+.banner.ok > .icon { color: var(--ok-icon); }
+.banner > .spin { flex: none; margin-top: 4px; }
 .banner .banner-text { flex: 1; min-width: 0; }
 .banner-close { flex: none; border: none; background: transparent; color: var(--muted); padding: 0 2px; min-height: 0; cursor: pointer; }
 .banner-close:hover:not(:disabled), .banner-close:focus-visible { color: var(--fg); background: transparent; }
@@ -178,6 +195,8 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .column.drop-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* GitHub#294: a table row dragged to another group; the group under the pointer lights up */
 table.items tr.dragging { opacity: 0.5; }
+/* GitHub#368: a sub-issue shown only because an issue above it matched the search */
+table.items tr.pulled > td { opacity: 0.55; }
 table.items tbody.drop-over td, table.items tbody.drop-over .group-head td { background-color: var(--accent-subtle); }
 table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outline-offset: 1px; border-radius: 4px; }
 .column-head { padding: 10px 12px 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
@@ -363,6 +382,10 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .app-kind { margin: 8px 0 12px; }
 .app-kind .row { flex-wrap: wrap; }
 label.radio { display: inline-flex; gap: 6px; align-items: center; }
+/* GitHub#373: which pending items remind — two choices, one under the other, the rule below */
+.notify-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 12px; }
+.notify-scope-title { font-weight: 600; }
+.notify-scope-note { margin: 2px 0 0 20px; }
 .advanced { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .advanced label { display: flex; flex-direction: column; gap: 4px; align-self: stretch; }
 
@@ -526,6 +549,8 @@ button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(-
 .trouble-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .trouble-head .icon { color: var(--warn-icon); }
 .trouble-panel ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.trouble-retry { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.trouble-note { color: var(--muted); font-size: 12px; }
 .trouble-filter { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
 .trouble-foot { display: flex; justify-content: flex-end; }
 
@@ -597,3 +622,66 @@ table.daemon-projects td { border-bottom: 1px solid var(--border-muted); padding
 .connect-agent { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .modal.connect .row input.title-box { flex: 1; min-width: 0; }
 .modal.connect .daemon-output { max-height: 280px; }
+
+/* ---- GitHub#350: dependency graph ---- */
+.graph-page { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 16px 16px; gap: 8px; }
+.graph-page .graph-banner { margin: 0; align-items: center; }
+.graph-banner .small-btn, .gbar .small-btn { margin-left: 8px; min-height: 24px; padding: 0 10px; }
+.graph-canvas { flex: 1; min-height: 0; position: relative; overflow: hidden; border: 1px solid var(--border-muted); border-radius: 10px; background-color: var(--surface); background-image: radial-gradient(var(--graph-dot) 1px, transparent 1px); background-size: 16px 16px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; display: flex; }
+.graph-canvas:active { cursor: grabbing; }
+.graph-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.graph-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.gedge { fill: none; }
+.gedge.open { stroke: var(--edge-open); stroke-width: 2.4; }
+.gedge.done { stroke: var(--edge-done); stroke-width: 1.3; }
+.gedge.faded { opacity: 0.45; }
+.garrow.open { fill: var(--edge-open); }
+.garrow.done { fill: var(--edge-done); }
+.gnode, .gbox { position: absolute; }
+.gnode { background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow-sm); cursor: pointer; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+.gnode:hover { border-color: var(--accent); }
+.gnode.selected, .gbox-head.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gnode.outside { border-style: dashed; background: var(--canvas); }
+.gnode.dim, .gbox.dim { opacity: 0.5; }
+.gnode-head, .gbox-head, .gpop-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--muted); }
+.gnode-head .ref, .gbox-head .ref, .gpop-head .ref { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gnode-head .spacer, .gbox-head .spacer, .gpop-head .spacer { flex: 1; }
+.gnode-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.gnode-labels { flex-wrap: nowrap; overflow: hidden; }
+.gbox { background: var(--col); border: 1px solid var(--border-muted); border-radius: 12px; }
+.gbox.outside { border-style: dashed; border-color: var(--border); }
+.gbox-head { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border-muted); border-radius: 12px 12px 0 0; cursor: pointer; border: 1px solid transparent; border-bottom-color: var(--border-muted); }
+.gbox-head:hover { background: var(--hover); }
+.gbox-title { font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-size: 13px; }
+.gbox-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gbox-head .ref { flex: none; max-width: 45%; }
+.gprogress { white-space: nowrap; flex: none; }
+.gbadge { flex: none; white-space: nowrap; font-size: 11.5px; font-weight: 600; padding: 0 6px; border-radius: 4px; line-height: 18px; color: var(--blocked-fg); background: var(--blocked-bg); border: 1px solid var(--blocked-border); }
+.gtag { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 4px; font-size: 11.5px; color: var(--muted); background: var(--hover); border: 1px solid var(--border-muted); white-space: nowrap; }
+.glegend, .gtools, .gcounts, .gmini, .gbar { position: absolute; z-index: 2; cursor: default; }
+.glegend { left: 12px; top: 12px; display: flex; gap: 14px; align-items: center; padding: 4px 10px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border-muted); border-radius: 8px; }
+.gleg { display: inline-flex; align-items: center; gap: 6px; }
+.gleg-box { width: 18px; height: 11px; border-radius: 3px; background: var(--col); border: 1px solid var(--border); }
+.gtools { right: 12px; top: 12px; display: flex; gap: 8px; z-index: 4; }
+.gzoom { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; color: var(--muted); }
+.gbar { left: 50%; bottom: 52px; transform: translateX(-50%); padding: 4px 6px 4px 12px; border-radius: 8px; background: var(--info-bg); border: 1px solid var(--info-border); font-size: 12px; display: flex; align-items: center; white-space: nowrap; }
+.gcounts { left: 12px; bottom: 12px; padding: 4px 10px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border-muted); border-radius: 8px; }
+.gunknown { color: var(--err-fg); }
+.gmini { right: 12px; bottom: 12px; padding: 6px; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 8px; box-shadow: var(--shadow-sm); line-height: 0; }
+.gmini svg { cursor: pointer; display: block; }
+.gmini-node { fill: var(--border); }
+.gmini-node.box { fill: none; stroke: var(--border); stroke-width: 1; }
+.gmini-node.open:not(.box) { fill: var(--state-open-fg); opacity: 0.55; }
+.gmini-node.done:not(.box) { fill: var(--state-done-fg); opacity: 0.4; }
+.gmini-view { fill: var(--accent-subtle); fill-opacity: 0.5; stroke: var(--accent); stroke-width: 1.2; }
+.gpop { position: absolute; z-index: 3; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; cursor: default; user-select: text; -webkit-user-select: text; }
+.gpop > * { flex: none; }
+.gpop > .gpop-body { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; overscroll-behavior: contain; }
+.gpop-title { font-weight: 600; font-size: 14px; line-height: 1.4; }
+.gpop-sec { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.gpop-rel { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.gdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.gdot.open { background: var(--edge-open); }
+.gdot.done { background: var(--edge-done); }
+.gpop-actions { display: flex; gap: 8px; }
+.gpop-outside { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }

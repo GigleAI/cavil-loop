@@ -2,7 +2,7 @@
 // part of the view settings, so importing a Project's web view never touches them.
 // Pure; shared by the controller (reads / writes the settings) and the renderer.
 
-import type { GroupBy } from './types';
+import type { GroupBy, NotifyScope } from './types';
 import { GROUP_BYS } from './viewSettings';
 
 /**
@@ -68,4 +68,20 @@ export function setLaneFold(folds: LaneFolds, lane: unknown, folded: unknown): L
 /** "托管" asks first unless the user ticked "不再提示" (GitHub#231); anything but an explicit `false` asks. */
 export function normalizeAutopilotConfirm(raw: unknown): boolean {
   return raw !== false;
+}
+
+/**
+ * GitHub#369: switching to the window takes back every delivered notification only when the user
+ * ticked it in Settings; anything but an explicit `true` keeps them (a click still takes back the one clicked).
+ */
+export function normalizeClearAllOnActivate(raw: unknown): boolean {
+  return raw === true;
+}
+
+/**
+ * GitHub#373: which pending items remind. Anything but an explicit 'mine' is 'all' — a value this
+ * build cannot read must never make reminders fewer.
+ */
+export function normalizeNotifyScope(raw: unknown): NotifyScope {
+  return raw === 'mine' ? 'mine' : 'all';
 }

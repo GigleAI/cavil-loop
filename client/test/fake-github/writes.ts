@@ -121,6 +121,10 @@ export interface WritableState {
   failEvents: boolean;
   /** GitHub#250: answer the item comments list with HTTP 502 */
   failCommentList: boolean;
+  /** GitHub#359: label events per page of a snapshot (0 = 100); an older page fails; the labels a snapshot reports instead of the real ones */
+  eventPage: number;
+  failEventPages: boolean;
+  staleSnapshotLabels: { name: string }[] | null;
   /** GitHub#258: Project key (`org/owner/n`) -> its workflows; a Project not listed answers the read with an error */
   workflows: Map<string, { name: string; enabled: boolean }[]>;
   /** GitHub#258: answer this many reads of "which boards is this new issue on" with HTTP 502 */
@@ -138,6 +142,17 @@ export interface WritableState {
   failRelationPages: Set<string>;
   /** GitHub#349: the batch read of relations (CavilIssueRelationsBatch) answers HTTP 502 */
   failRelationsBatch: boolean;
+  /**
+   * GitHub#373: `owner/repo#n` lower-cased -> what `viewerSubscription` answers for the signed-in
+   * account. Not listed = 'UNSUBSCRIBED' (the account never touched the item); null = GitHub
+   * answers null.
+   */
+  subscriptions: Map<string, 'SUBSCRIBED' | 'UNSUBSCRIBED' | 'IGNORED' | null>;
+  /**
+   * GitHub#373: `owner/repo#n` lower-cased -> the pull request's review requests: the people
+   * asked, how many teams, and `total` when GitHub has more than the read returns (default: all).
+   */
+  reviewRequests: Map<string, { users: string[]; teams?: number; total?: number }>;
 }
 
 export interface FakeRelated {
@@ -192,12 +207,17 @@ export function defaultWritable(): WritableState {
     failComment: false,
     failEvents: false,
     failCommentList: false,
+    eventPage: 0,
+    failEventPages: false,
+    staleSnapshotLabels: null,
     workflows: new Map(),
     failCreatedBoards: 0,
     relations: new Map(),
     relationPage: { subIssues: 50, blockedBy: 20, blocking: 20, more: 100 },
     failRelationPages: new Set(),
     failRelationsBatch: false,
+    subscriptions: new Map(),
+    reviewRequests: new Map(),
   };
 }
 
@@ -360,10 +380,32 @@ export function relationFields(store: Store, repo: string, number: number): any 
   };
 }
 
-/** GitHub#349: content as a read answers it: an issue with its relations as they are now. */
+/** GitHub#373: how the signed-in account stands to an item, as a read answers it now. */
+export function viewerFields(store: Store, kind: string, repo: string, number: number): any {
+  const ikey = `${repo.toLowerCase()}#${number}`;
+  const sub = store.w.subscriptions.has(ikey) ? store.w.subscriptions.get(ikey) : 'UNSUBSCRIBED';
+  if (kind !== 'PullRequest') return { viewerSubscription: sub };
+  const rr = store.w.reviewRequests.get(ikey) ?? { users: [] };
+  const nodes = [
+    ...rr.users.map((login) => ({ requestedReviewer: { __typename: 'User', login } })),
+    ...Array.from({ length: rr.teams ?? 0 }, () => ({ requestedReviewer: { __typename: 'Team' } })),
+  ];
+  // the issues GitHub lists as linked to the pull request (GitHub computes these live), the first 20
+  const c = findCopies(store, repo, number);
+  const closing = c ? closingIssuesOf(store, c) : [];
+  const shown = closing.slice(0, 20).map((x) => ({ number: x.number, repository: { nameWithOwner: x.repo } }));
+  return { viewerSubscription: sub, reviewRequests: { totalCount: rr.total ?? nodes.length, nodes }, closingIssuesReferences: { totalCount: closing.length, nodes: shown } };
+}
+
+/**
+ * Content as a read answers it: an issue with its relations as they are now (GitHub#349), an
+ * issue / pull request with how the signed-in account stands to it (GitHub#373).
+ */
 export function withRelationFields(store: Store, content: any): any {
-  if (!content || content.__typename !== 'Issue') return content;
-  return { ...content, ...relationFields(store, content.repository.nameWithOwner, content.number) };
+  if (!content || (content.__typename !== 'Issue' && content.__typename !== 'PullRequest')) return content;
+  const viewer = viewerFields(store, content.__typename, content.repository.nameWithOwner, content.number);
+  if (content.__typename !== 'Issue') return { ...content, ...viewer };
+  return { ...content, ...viewer, ...relationFields(store, content.repository.nameWithOwner, content.number) };
 }
 
 /** The GraphQL shape of an item (from a Project copy if there is one, else built from the REST copy). */
@@ -882,6 +924,37 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const events = (w.labelEvents.get(ikey) ?? []).slice(-100).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
     return { data: { repository: { issueOrPullRequest: { __typename: c.kind, comments: { nodes: comments }, timelineItems: { nodes: events } } } } };
   }
+  // GitHub#359: state, labels, comments and one page of label events (walked back with `before`)
+  if (op === 'CavilOpSnapshot') {
+    const c = findCopies(store, `${v.owner}/${v.name}`, v.number);
+    if (!c) return { data: { repository: { issueOrPullRequest: null } }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to an issue or pull request with the number of ${v.number}.` }] };
+    if (w.failEvents || w.failCommentList) return { httpStatus: 502 };
+    // an older page of the label events cannot be read (the newest one can)
+    if (w.failEventPages && v.before) return { httpStatus: 502 };
+    const ikey = `${c.repo.toLowerCase()}#${c.number}`;
+    const content = gqlContent(c);
+    const comments = (w.comments.get(ikey) ?? []).slice(-100).map((x) => ({ id: x.id, body: x.body ?? '', author: x.author }));
+    const all = (w.labelEvents.get(ikey) ?? []).map((e) => ({ __typename: e.event === 'labeled' ? 'LabeledEvent' : 'UnlabeledEvent', id: `LE_${ikey}_${e.id}`, actor: e.actor, label: e.label }));
+    const end = v.before ? Number(String(v.before).replace(/^ev:/, '')) : all.length;
+    const from = Math.max(0, end - (w.eventPage || 100));
+    // like GitHub: the first 100 labels of the item, and how many it has (PR #365 code review round 1)
+    const allLabels = w.staleSnapshotLabels ?? (content.labels?.nodes ?? []).map((l: any) => ({ name: l.name }));
+    const labels = allLabels.slice(0, 100);
+    return {
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: c.kind,
+            state: content.state,
+            ...(c.kind === 'PullRequest' ? { merged: content.merged === true } : {}),
+            labels: { totalCount: allLabels.length, nodes: labels },
+            comments: { nodes: comments },
+            timelineItems: { pageInfo: { hasPreviousPage: from > 0, startCursor: from > 0 ? `ev:${from}` : null }, nodes: all.slice(from, end) },
+          },
+        },
+      },
+    };
+  }
   if (op === 'CavilIssueRelations') {
     const c = findByNodeId(store, v.id);
     if (!c || c.kind !== 'Issue') return { data: { node: null }, errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${v.id}'` }] };
@@ -897,8 +970,8 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const nodes = (v.ids as string[]).map((id) => {
       const c = findByNodeId(store, id);
       if (!c) return null;
-      if (c.kind !== 'Issue') return { __typename: c.kind };
-      return { __typename: 'Issue', id, ...relationFields(store, c.repo, c.number) };
+      if (c.kind !== 'Issue') return { __typename: c.kind, id, ...viewerFields(store, c.kind, c.repo, c.number) };
+      return { __typename: 'Issue', id, ...viewerFields(store, c.kind, c.repo, c.number), ...relationFields(store, c.repo, c.number) };
     });
     return { data: { nodes } };
   }
@@ -915,7 +988,9 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
           for (const n of p.items.nodes)
             if (n.content?.repository?.nameWithOwner?.toLowerCase() === c.repo.toLowerCase() && n.content.number === c.number)
               projectItems.push({ id: n.id, isArchived: n.isArchived, project: { id: p.id }, fieldValues: n.fieldValues });
-      return { data: { repository: { issueOrPullRequest: { ...withRelationFields(store, content), projectItems: { nodes: projectItems } } } } };
+      // like GitHub: the first ITEM_LABELS_FIRST labels the query asks for (PR #365 code review round 1)
+      const asked = { ...content, ...(content.labels ? { labels: { ...content.labels, nodes: content.labels.nodes.slice(0, 50) } } : {}) };
+      return { data: { repository: { issueOrPullRequest: { ...withRelationFields(store, asked), projectItems: { nodes: projectItems } } } } };
     }
     if (w.failDetail.has(ikey)) return { httpStatus: 502 };
     const size = w.detailPageSize;

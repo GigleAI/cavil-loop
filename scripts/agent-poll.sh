@@ -287,7 +287,12 @@ fi
 # 打 gh API。被回收的 session 本来就不在 active_keys 里，所以不影响本轮并发计数。
 reap_finished_workers active_keys
 
-# ── 0c. 卡在 doing/agent 没人管的 worker（GitHub#339）──
+# ── 0c. 遗留的重测试（GitHub#343）──
+# worker 已经结束（被上面回收、自己退出、会话没了都算）而它通过排队命令起的测试还在排队或还在跑：
+# 整组停掉。不依赖 tmux 会话还在；没有登记着的运行时只是两次目录读。
+heavy_sweep_tick
+
+# ── 0d. 卡在 doing/agent 没人管的 worker（GitHub#339）──
 # §0 管「label 在、session 没了」，§0b 管「session 在、label 没了」；这里管剩下的那种：
 # label 和 session 都在，agent 却空手停着。不配置 STUCK_WORKER_QUIET_SECS 时第一行就返回。
 # 这一轮翻回触发标签的条目下一轮才重派（本轮的派工队列读的是轮询开头的快照）。

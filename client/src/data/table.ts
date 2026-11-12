@@ -2,6 +2,15 @@
 // "all repositories" picked: one section per repository, GitHub#213) -> groups
 // -> sorted rows, sub-issues indented under their parent. Pure (callers pass
 // `today`), shared by the renderer and the tests.
+//
+// GitHub#368: with "show hierarchy" on, the search no longer cuts a matched
+// issue off from its sub-issues. After each group is laid out, the sub-issues
+// (and theirs) of the rows already in it are added as "pulled" rows when they
+// did not match the search, walking down from those rows only: a sub-issue
+// that matched, or that the picked repository leaves out, ends the walk. So a
+// pulled row's parent row is always right there in the same group. Which
+// parent links count (`validParents`) is one rule, used for the walk and for
+// the indenting alike.
 
 import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { GroupPreset } from '../shared/actions';
@@ -19,6 +28,8 @@ export interface Row {
   item: Item;
   /** 0 = top level; 1 = a sub-issue shown under its parent, or a PR under its issue; … */
   depth: number;
+  /** did not match the search; shown only because an issue above it in this group did (GitHub#368) */
+  pulled: boolean;
   /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null otherwise */
   under: string | null;
   /** what dragging this row to another group changes: the same as the board card in that column (GitHub#294) */
@@ -54,7 +65,7 @@ export interface RepoSection {
   /** `repo:<lower-cased owner/name>`; also the prefix of its groups' keys */
   key: string;
   title: string;
-  /** distinct items of this repository — an item shown in two groups counts once */
+  /** distinct items shown in this repository's groups (pulled rows included) — an item shown in two groups counts once */
   itemCount: number;
   groups: Group[];
 }
@@ -68,8 +79,12 @@ export interface Table {
   slices: Slice[] | null;
   /** the slice actually applied (a picked repository that has no items left is still applied, showing nothing) */
   slice: string | null;
-  /** distinct items shown */
+  /** distinct items picked (matched and in the picked repository); pulled rows not included */
   itemCount: number;
+  /** items that matched the search, before the repository slice: what the view bar's "显示 N / M 条" says (GitHub#368) */
+  matchCount: number;
+  /** distinct items shown as pulled rows anywhere in the table (GitHub#368) */
+  pulledCount: number;
 }
 
 interface Seed {
@@ -180,24 +195,21 @@ function arrange(
   hierarchy: boolean,
   prs: boolean,
   follow: Map<string, string> | undefined,
+  parents: Map<string, string>,
+  pulled: ReadonlySet<string>,
 ): Row[] {
   const sorted = [...items].sort(sort);
+  const row = (item: Item, depth: number, under: string | null): Row => ({ id: `${item.key}@${groupKey}`, item, depth, under, pulled: pulled.has(item.key), projectKeys: [], projectTitles: [] });
   if (!hierarchy) {
-    if (!prs) return sorted.map((item) => ({ id: `${item.key}@${groupKey}`, item, depth: 0, under: null, projectKeys: [], projectTitles: [] }));
-    return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => ({ id: `${entry.key}@${groupKey}`, item: entry, depth: under ? 1 : 0, under, projectKeys: [], projectTitles: [] }));
+    if (!prs) return sorted.map((item) => row(item, 0, null));
+    return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => row(entry, under ? 1 : 0, under));
   }
   const here = new Map(sorted.map((it) => [it.key, it]));
   const hosts = prs ? listHosts(sorted, follow) : new Map<string, string>();
-  // parent inside this group, and no cycle on the way up
+  // a parent link that counts (`validParents`: never a cycle), whose parent is in this group
   const parentOf = (it: Item): string | null => {
-    if (!it.parent || it.parent === it.key || !here.has(it.parent)) return null;
-    const seen = new Set([it.key]);
-    for (let p: string | null = it.parent; p; p = here.get(p)?.parent ?? null) {
-      if (seen.has(p)) return null;
-      seen.add(p);
-      if (!here.has(p)) break;
-    }
-    return it.parent;
+    const p = parents.get(it.key);
+    return p !== undefined && here.has(p) ? p : null;
   };
   const children = new Map<string, Item[]>();
   const guests = new Map<string, Item[]>();
@@ -214,12 +226,67 @@ function arrange(
   const place = (list: Item[]) => orderUnits(list, (it) => unitUpdated(it, guests.get(it.key) ?? []), sortSetting);
   const out: Row[] = [];
   const walk = (it: Item, depth: number) => {
-    out.push({ id: `${it.key}@${groupKey}`, item: it, depth, under: null, projectKeys: [], projectTitles: [] });
-    for (const pr of guests.get(it.key) ?? []) out.push({ id: `${pr.key}@${groupKey}`, item: pr, depth: depth + 1, under: it.key, projectKeys: [], projectTitles: [] });
+    out.push(row(it, depth, null));
+    for (const pr of guests.get(it.key) ?? []) out.push(row(pr, depth + 1, it.key));
     for (const c of place(children.get(it.key) ?? [])) walk(c, depth + 1);
   };
   for (const it of place(top)) walk(it, 0);
   return out;
+}
+
+/**
+ * GitHub#368: the parent link of each item that counts, as `child key -> parent key`. A link
+ * counts when the parent is not the item itself, is among `universe` (the items the sources
+ * hold), and walking up from it never comes back to the item (a link on a cycle — which GitHub
+ * itself does not allow, only a damaged cache could hold one — counts for nobody on the cycle).
+ * The one rule for both the indenting and the pulling of sub-issues.
+ */
+export function validParents(universe: readonly Item[]): Map<string, string> {
+  const raw = new Map(universe.map((it) => [it.key, it.parent]));
+  const out = new Map<string, string>();
+  for (const it of universe) {
+    const p = it.parent;
+    if (!p || p === it.key || !raw.has(p)) continue;
+    let onCycle = false;
+    let cur: string | null | undefined = p;
+    for (let n = 0; cur && n <= raw.size; n++) {
+      if (cur === it.key) {
+        onCycle = true;
+        break;
+      }
+      cur = raw.get(cur);
+    }
+    if (!onCycle) out.set(it.key, p);
+  }
+  return out;
+}
+
+/** What laying out one group needs to add pulled rows (GitHub#368); null = no pulled rows. */
+interface Pull {
+  /** parent key -> its sub-issues in the sources, by the links that count */
+  children: Map<string, Item[]>;
+  /** keys of the items that matched the search */
+  matched: ReadonlySet<string>;
+  /** the picked repository (lower-cased); null = every repository */
+  slice: string | null;
+}
+
+/** A group's items plus the pulled ones: walking down from the items already in it, stopping at a matched or sliced-away sub-issue. */
+function withPulled(list: Item[], pull: Pull | null): { items: Item[]; pulled: Set<string> } {
+  const pulled = new Set<string>();
+  if (!pull) return { items: list, pulled };
+  const inGroup = new Set(list.map((it) => it.key));
+  const out = [...list];
+  for (let i = 0; i < out.length; i++) {
+    for (const c of pull.children.get(out[i].key) ?? []) {
+      if (inGroup.has(c.key) || pull.matched.has(c.key)) continue;
+      if (pull.slice !== null && c.repo.toLowerCase() !== pull.slice) continue;
+      inGroup.add(c.key);
+      pulled.add(c.key);
+      out.push(c);
+    }
+  }
+  return { items: out, pulled };
 }
 
 export function buildTable(
@@ -231,6 +298,12 @@ export function buildTable(
   prsUnderIssues = false,
   /** the saved repository order (GitHub#304): slices, sections and "group by repository" go by it; empty = alphabetical */
   repoOrder: readonly string[] = [],
+  /**
+   * every item the sources hold, `items` being the ones the search matched (GitHub#368): with
+   * "show hierarchy" on, sub-issues that did not match are pulled in under the rows above them.
+   * Left out (older callers), `items` is all there is and nothing is pulled.
+   */
+  all: readonly Item[] = items,
 ): Table {
   const compareRepo = repoComparator(repoOrder);
   let slices: Slice[] | null = null;
@@ -246,7 +319,18 @@ export function buildTable(
     }
   }
 
-  const sort = itemSorter(settings.sort, projects, items);
+  const sort = itemSorter(settings.sort, projects, [...all]);
+  const parents = validParents(all);
+  let pull: Pull | null = null;
+  if (settings.hierarchy && all !== items) {
+    const byKey = new Map(all.map((it) => [it.key, it]));
+    const children = new Map<string, Item[]>();
+    for (const [child, parent] of parents) {
+      const c = byKey.get(child);
+      if (c && c.kind === 'issue') children.set(parent, [...(children.get(parent) ?? []), c]);
+    }
+    pull = { children, matched: new Set(items.map((it) => it.key)), slice: slice === null ? null : slice.toLowerCase() };
+  }
   const byKey = new Map(projects.map((p) => [p.key, p]));
   // GitHub#275: a PR goes to the group(s) of the issue it is shown under, never by its own value then.
   // An issue on none of the selected Projects (iteration / status grouping) does not pull its PRs into "no value".
@@ -257,7 +341,9 @@ export function buildTable(
   const pickedByKey = new Map(picked.map((it) => [it.key, it]));
   /** whose value decides where an item goes: its own, or the issue it follows */
   const placedBy = (it: Item) => pickedByKey.get(follow.get(it.key) ?? '') ?? it;
-  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy, compareRepo);
+  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy, compareRepo, parents, pull);
+  /** distinct items shown as pulled rows in these groups */
+  const pulledIn = (gs: Group[]) => new Set(gs.flatMap((g) => g.rows.filter((r) => r.pulled).map((r) => r.item.key))).size;
 
   // "all repositories" picked in the slice list: repository first, then the chosen grouping inside it (GitHub#213)
   if (settings.sliceByRepo && !settings.slice && settings.groupBy !== 'repo') {
@@ -272,10 +358,15 @@ export function buildTable(
     }
     const repos = [...byRepo]
       .sort(([, a], [, b]) => compareRepo(a.title, b.title))
-      .map(([key, r]) => ({ key, title: r.title, itemCount: r.items.length, groups: group(r.items, `${key}|`, key) }));
-    return { groups: repos.flatMap((r) => r.groups), repos, slices, slice, itemCount: picked.length };
+      .map(([key, r]) => {
+        const groups = group(r.items, `${key}|`, key);
+        return { key, title: r.title, itemCount: r.items.length + pulledIn(groups), groups };
+      });
+    const groups = repos.flatMap((r) => r.groups);
+    return { groups, repos, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
   }
-  return { groups: group(picked, '', null), repos: null, slices, slice, itemCount: picked.length };
+  const groups = group(picked, '', null);
+  return { groups, repos: null, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
 }
 
 const repoKey = (repo: string) => `repo:${repo.toLowerCase()}`;
@@ -293,10 +384,16 @@ function groupItems(
   follow: Map<string, string>,
   placedBy: (it: Item) => Item,
   compareRepo: (a: string, b: string) => number,
+  parents: Map<string, string>,
+  pull: Pull | null,
 ): Group[] {
+  const lay = (list: Item[], key: string) => {
+    const w = withPulled(list, pull);
+    return arrange(w.items, key, settings.sort, sort, settings.hierarchy, prs, follow, parents, w.pulled);
+  };
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
-    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section, rows: arrange(items, key, settings.sort, sort, settings.hierarchy, prs, follow) }];
+    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section, rows: lay(items, key) }];
   }
   const mode = boardMode(settings.groupBy);
   // GitHub#294: each row carries what a drag changes, by the board's own rule for that column
@@ -311,7 +408,7 @@ function groupItems(
     .map((s) => {
       const key = `${prefix}${s.key}`;
       const column = groupColumn(settings.groupBy, s.key);
-      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, column, section, rows: scoped(arrange(s.items, key, settings.sort, sort, settings.hierarchy, prs, follow), column) };
+      return { key, title: s.title, subtitle: s.subtitle, current: s.current, empty: s.empty, preset: s.preset, column, section, rows: scoped(lay(s.items, key), column) };
     });
 }
 

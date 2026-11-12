@@ -8,7 +8,7 @@
 
 为满足复盘 8 条上限，本版仅保留硬规则与高价值观察项，其余低频观察项（L6–L8、L10、L12–L28）已移出共享文件，历史见迁移表。
 
-<!-- next-id: 68 -->
+<!-- next-id: 69 -->
 
 ## 硬规则
 
@@ -321,3 +321,10 @@
 - 为什么：PR #222 抽出共享的里程碑选择函数后，一条旧负对照仍寻找已删除的内联代码，静态检查退出码 1；默认 `npm test` 只跳过负对照，578 条单元测试全绿也发现不了，会让每周发版门禁因准备失败变红。PR #268 改了后端账号名写入的源码结构，两条旧负对照（第 20、89 项）同样失去替换原文，由复审实跑静态检查发现。
 - 这样做是对的：PR #222 返工后把变异改到详情里的真实调用点，保留「无同名里程碑则拒绝」的覆盖，静态检查 317 项原文都在（https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699647411）。PR #268 返工后两条变异改指向新代码、故障含义不变，静态检查 498 项原文都在，并用 `cargo check` 确认变异后能编译（https://github.com/GigleAI/cavil-loop/pull/268#issuecomment-6715870629）。
 - Seen 2×: #222 https://github.com/GigleAI/cavil-loop/pull/222#issuecomment-6699572556 [client/test/mutation/] · #268 https://github.com/GigleAI/cavil-loop/pull/268#issuecomment-6715849560 [client/test/mutation/]
+
+### L68
+- 规则：给客户端快捷键表里已有动作再追加一个带修饰键的触发键时，输入框内是否放行要按本次实际匹配的键判断，不能按动作整体判断；单元测试逐项列举「动作 × 键 × 光标位置」，窗口测试在搜索、回复、设置三类输入框打字确认文字完整且不触发动作。
+- 适用：client/src/renderer/shortcuts.ts 一类的快捷键表与放行判断。
+- 为什么：PR #379 首版方案给「新建」再挂 ⌘N 后，原判断按动作里是否含带修饰键的键放行整个动作，输入框里打普通 C 也会触发新建；复审在判断函数层面复现，方案改为按实际匹配键判断。
+- 这样做是对的：PR #379 最终实现按实际键判断，并补三类输入框打字与修饰键新建的窗口测试；作者手动改回旧写法后单元测试 3 项和窗口测试变红（该结果来自 PR 正文自述，非仓库登记负对照）。
+- Seen 1×: #379 https://github.com/GigleAI/cavil-loop/issues/372#issuecomment-6808838871 [client/src/renderer/]

@@ -321,9 +321,10 @@ describe('how a refresh answer is classified (HTTP status × body shape)', () =>
       res.end(body ?? '');
     });
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
-    const port = (srv.address() as AddressInfo).port;
-    // no connection at all: a port nobody listens on
+    // no connection at all: port 1, which nobody listens on and no test server can take (a freed
+    // port can be taken by a test running alongside while the connect is retried — GitHub#364)
     if (body === null) await new Promise<void>((r) => srv.close(() => r()));
+    const port = body === null ? 1 : (srv.address() as AddressInfo).port;
     const b = new HarnessBackend({
       db: join(dir, 'cache.sqlite'),
       endpoints: { api: `http://127.0.0.1:${port}/api`, web: `http://127.0.0.1:${port}/web` },
