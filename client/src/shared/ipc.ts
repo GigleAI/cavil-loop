@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { Handoff } from './handoff';
@@ -80,6 +80,8 @@ export interface CavilApi {
   setAutopilotConfirm(on: boolean): Promise<void>;
   /** whether switching to the window takes back every delivered notification (GitHub#369) */
   setClearAllOnActivate(on: boolean): Promise<void>;
+  /** which pending items remind: every one, or only the signed-in account's (GitHub#373) */
+  setNotifyScope(scope: NotifyScope): Promise<void>;
   /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */
   reorderRepos(shown: string[], next: string[]): Promise<void>;
   /** "按名称排序": forget the dragged order (GitHub#304) */
