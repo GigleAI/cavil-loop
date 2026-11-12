@@ -267,6 +267,25 @@ function HeadOp({ r }: { r: OpRecord }) {
   );
 }
 
+/**
+ * GitHub#447: the close went through, but this tab / panel holds text not sent yet, so it was not put
+ * away by itself. Stays until its × (it says something the person has to act on: send or clear, then close).
+ */
+function HeldLine({ floating, onDismiss }: { floating: boolean; onDismiss: () => void }) {
+  const text = floating
+    ? '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。'
+    : '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。';
+  return (
+    <div className="detail-held small" data-testid="auto-close-held" data-mode={floating ? 'float' : 'tab'} role="status">
+      <Icon name="warn" size={13} />
+      <span className="detail-held-text">{text}</span>
+      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="auto-close-held-dismiss" onClick={onDismiss}>
+        <Icon name="x" size={12} />
+      </button>
+    </div>
+  );
+}
+
 /** the notices button: the plain blue of a remark shows as the quiet check it always was */
 export type NoticeTone = 'busy' | 'error' | 'warn' | 'ok';
 
@@ -359,6 +378,8 @@ export function DetailPanel({
   intent,
   draft,
   onDraft,
+  onCloseStarted,
+  autoCloseHeld = null,
 }: {
   itemKey: string;
   state: AppState;
@@ -379,6 +400,13 @@ export function DetailPanel({
   /** a change made on an item the panel has since left: its result goes to the board instead */
   /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
   onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
+  /**
+   * GitHub#447: a close of this item (issue or PR) was started from this opening; the window puts the
+   * opening away once GitHub took it (and keeps it when it holds unsent text)
+   */
+  onCloseStarted?: (opId: string) => void;
+  /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
+  autoCloseHeld?: { onDismiss: () => void } | null;
 }) {
   // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
   // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
@@ -596,6 +624,7 @@ export function DetailPanel({
     setRetryFrom(null);
     setDialogNote(null);
     setNote(null);
+    if ((action.kind === 'closeIssue' || action.kind === 'closePr') && r.id) onCloseStarted?.(r.id);
     return true;
   };
   const runAutopilot = () => startOp({ kind: 'autopilot', key: item!.key }, ask === 'autopilot');
@@ -1233,6 +1262,7 @@ export function DetailPanel({
           </button>
         )}
       </div>
+      {autoCloseHeld && <HeldLine floating={floating} onDismiss={autoCloseHeld.onDismiss} />}
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
           显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
