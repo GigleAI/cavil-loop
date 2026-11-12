@@ -12,7 +12,7 @@ autopilot:3/3 82
 autopilot-handover 260
 autopilot-human-paths 110
 autopilot-ops 25
-autopilot-outsider 180
+autopilot-outsider 240
 autopilot-split 43
 blocked-label 49
 branch-holder 6

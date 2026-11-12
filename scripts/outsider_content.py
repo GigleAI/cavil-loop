@@ -44,7 +44,8 @@ TRAIL = ".,;:!?)]}'\"」』）】》。，；：！？、"
 URL_RE = re.compile(r"(?i)(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.)[^\s<>()\[\]{}\"'`]+")
 SCHEME_RE = re.compile(r"(?i)\b(?:data|javascript|file|vbscript):[^\s<>()\[\]{}\"'`]+")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-INLINE_RE = re.compile(r"(`+)(.+?)\1")
+# 行内代码可以跨行（GitHub 把跨行的反引号串也渲染成行内代码，PR #409 代码复审第 2 轮）；配不上的反引号不动
+INLINE_RE = re.compile(r"(?s)(`+)(.+?)\1")
 _DEST = r"((?:[^()\n]|\([^()\n]*\))*)\)?"   # 链接目标：允许一层括号（`a_(b)`），没闭合剥到行尾
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(" + _DEST)
 LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(" + _DEST)
@@ -56,6 +57,61 @@ CONT_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-*+]|\d{1,9}[.)])[ \t
 QUOTE_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)*")
 # 任何链接 / 图片的目标 `](…)`：链接文字里套了方括号时上面两条认不出，这条兜底；目标里允许一层括号，没闭合剥到行尾
 DEST_RE = re.compile(r"\]\(((?:[^()\n]|\([^()\n]*\))*)\)?")
+# HTML 的代码类元素：内容整段算代码（`<pre><code>…</code></pre>`、`<code>…</code>`、`<script>` …），没闭合到末尾
+HTML_CODE_RE = re.compile(r"(?is)<(pre|code|script|style|textarea|xmp|listing|plaintext|kbd|samp|tt|var)\b[^>]*>(.*?)(?:</\1\s*>|\Z)")
+
+# ── 链接目标：一处认出，三处用（PR #409 代码复审第 2 轮）──
+# 剥离（兜底替换）、记指纹（所有写法的目标都记）、清 loop 副本（同一个目标写成哪种写法都认）都调 targets()，
+# 不再各自写正则：上两轮的漏口都是「某一处少认了一种写法」。认的写法：
+#   ① 行内链接 / 图片的目标 `](…)`（链接文字里套方括号也行，目标里允许一层括号）
+#   ② 参考式定义 `[x]: 目标`——顶层、引用、列表、嵌套容器里都认；目标写在下一行也认
+#   ③ 尖括号自动链接 `<scheme:…>`
+#   ④ HTML 属性 href / src / srcset / action / data / poster / formaction / background / cite / ping / xlink:href
+#   ⑤ 裸网址（scheme:// 和 www.）、data: / javascript: / file: / vbscript:
+_CONT = r"(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+)*"
+_TARGET_RES = (
+    (re.compile(r"\]\([ \t]*<?((?:[^()\s<>]|\([^()\s]*\))+)"), (1,)),
+    (re.compile(r"(?m)^" + _CONT + r"[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(?:\n(?:[ \t]{0,3}>[ \t]?)*[ \t]*)?<?([^\s<>]+)"), (1,)),
+    (re.compile(r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>\s]*)>"), (1,)),
+    (re.compile(r"(?i)\b(?:href|src|srcset|action|data|poster|formaction|background|cite|ping|xlink:href)\s*=\s*"
+                r"(?:\"([^\"]*)\"|'([^']*)'|([^\s>\"']+))"), (1, 2, 3)),
+    (URL_RE, (0,)),
+    (SCHEME_RE, (0,)),
+)
+
+
+def targets(text):
+    """→ [(起, 止, 目标原文)]，按位置排、去掉被别的目标包住的"""
+    spans = []
+    for rx, groups in _TARGET_RES:
+        for m in rx.finditer(text or ""):
+            for g in groups:
+                if m.group(g):
+                    spans.append((m.start(g), m.end(g), m.group(g)))
+                    break
+    spans.sort(key=lambda x: (x[0], -x[1]))
+    out, end = [], -1
+    for sp in spans:
+        if sp[0] >= end:
+            out.append(sp)
+            end = sp[1]
+    return out
+
+
+def target_fp(v):
+    v = (v or "").strip()
+    tok = v.split()[0].strip("<>") if v else ""
+    return fp(url_norm(tok)) if tok else ""
+
+
+def replace_targets(text, pick, rep):
+    """把 pick(目标) 为真的目标换成 rep；→ (新文字, 换了几处)"""
+    out, pos, n = [], 0, 0
+    for a, b, v in targets(text):
+        if pick(v):
+            out.append(text[pos:a]); out.append(rep); pos = b; n += 1
+    out.append(text[pos:])
+    return "".join(out), n
 
 
 def norm(s):
@@ -92,6 +148,13 @@ class Removed:
                 self.code.add(fp(ln))
             self.add_urls(ln)
 
+    def add_targets(self, text):
+        for _, _, v in targets(text):
+            f = target_fp(v)
+            if f:
+                self.url.add(f)
+            self.add_urls(v)
+
     def add_dest(self, d):
         """链接 / 图片的目标：相对路径也记（`../x.sh` 不是网址，URL_RE 认不出）"""
         d = (d or "").strip()
@@ -113,8 +176,23 @@ def strip(text):
     kept = [ch for ch in t if unicodedata.category(ch) != "Cf"]
     hidden_chars = len(kept) != len(t)
     t = "".join(kept)
-    # ② 围栏代码块：顶层的，和写在引用 / 列表项里的（先去掉容器前缀再认围栏）；没闭合就到末尾
-    out, lines, i = [], t.split("\n"), 0
+    # 所有写法的链接目标先整体记一遍指纹（后面各步怎么剥都不会漏记）
+    rm.add_targets(t)
+    # ② 围栏代码块：顶层的，和写在引用 / 列表项里的（先去掉容器前缀再认围栏）；没闭合就到末尾。
+    # agent 读的是原文不是渲染结果：句子中间冒出来的 ``` / ~~~ 也当围栏（先拆成单独一行，带上同样的容器前缀）
+    split = []
+    for ln in t.split("\n"):
+        pre = CONT_RE.match(ln).group(0)
+        rest = ln[len(pre):]
+        cut = [m.start() for m in re.finditer(r"`{3,}|~{3,}", rest) if m.start() > 0 and rest[:m.start()].strip()]
+        if not cut:
+            split.append(ln); continue
+        prev = 0
+        cont = re.sub(r"[-*+]|\d{1,9}[.)]", lambda m: " " * len(m.group(0)), pre)   # 列表标记换成同宽空格
+        for c in cut:
+            split.append((pre if prev == 0 else cont) + rest[prev:c]); prev = c
+        split.append(cont + rest[prev:])
+    out, lines, i = [], split, 0
     while i < len(lines):
         pre = CONT_RE.match(lines[i]).group(0)
         m = FENCE_RE.match(lines[i][len(pre):])
@@ -158,6 +236,16 @@ def strip(text):
             break
         pos = b + 3
     t = "".join(parts)
+    # ④b HTML 的代码类元素：内容整段剥掉、记指纹
+    def _hcode(m):
+        body = m.group(2)
+        lines = body.split("\n")
+        rm.add_lines(lines + [re.sub(r"^(\s*>)+", "", b) for b in lines])
+        if len(norm(body)) >= MIN_INLINE:
+            rm.inline.add(fp(body.strip()))
+        rm.add_targets(body)
+        return PH_CODE
+    t = HTML_CODE_RE.sub(_hcode, t)
     # ⑤ 行内代码
     def _inline(m):
         c = m.group(2).strip()
@@ -198,24 +286,20 @@ def strip(text):
         rm.add_urls(m.group(0))
         return PH_HTML
     t = TAG_RE.sub(_tag, t)
+    # ⑨ 兜底：上面哪一步漏认了的链接目标（参考式定义写在引用 / 列表里、属性没被标签规则吃掉……），一律换成占位
+    t, _ = replace_targets(t, lambda v: True, PH_LINK)
     if hidden_chars:
         t = PH_HIDDEN + "\n" + t
     return t, rm
 
 
 def copy_strip(text, fps):
-    """loop 账号（和外部需求机器人）自己的评论：原样带着的外人网址 / 代码行 / 行内代码 / 隐藏文字剥掉，其余不动"""
+    """loop 账号（和外部需求机器人）自己的评论：原样带着的外人链接目标 / 代码行 / 行内代码 / HTML 代码剥掉，其余不动。
+    链接目标用和剥离同一个 targets() 找：外人写成参考式、loop 写成行内链接（或反过来），都认得出是同一个目标"""
     url_s, code_s, inl_s = set(fps["url"]), set(fps["code"]), set(fps["inline"]) | set(fps["code"])
     if not (url_s or code_s or inl_s):
         return text, 0
     n = [0]
-
-    def _url(m):
-        u = m.group(0)
-        if fp(url_norm(u)) in url_s:
-            n[0] += 1
-            return COPY_LINK
-        return u
 
     def _inline(m):
         if fp(m.group(2).strip()) in inl_s:
@@ -223,12 +307,14 @@ def copy_strip(text, fps):
             return COPY_CODE
         return m.group(0)
 
-    def _dest(m):
-        d = m.group(1).strip()
-        tok = d.split()[0].strip("<>") if d else ""
-        if tok and fp(url_norm(tok)) in url_s:
+    def _hcode(m):
+        body = m.group(2)
+        hit = fp(body.strip()) in inl_s or any(
+            len(norm(b)) >= MIN_LINE and (fp(b) in code_s or fp(re.sub(r"^(\s*>)+", "", b)) in code_s)
+            for b in body.split("\n"))
+        if hit:
             n[0] += 1
-            return "]" + COPY_LINK
+            return COPY_CODE
         return m.group(0)
 
     out = []
@@ -240,12 +326,10 @@ def copy_strip(text, fps):
                 n[0] += 1
                 break
         else:
-            ln = INLINE_RE.sub(_inline, ln)
-            ln = DEST_RE.sub(_dest, ln)
-            ln = URL_RE.sub(_url, ln)
-            ln = SCHEME_RE.sub(_url, ln)
-            out.append(ln)
-    return "\n".join(out), n[0]
+            out.append(INLINE_RE.sub(_inline, ln))
+    t = HTML_CODE_RE.sub(_hcode, "\n".join(out))
+    t, k = replace_targets(t, lambda v: target_fp(v) in url_s, COPY_LINK)
+    return t, n[0] + k
 
 
 # ── 记录 ──
