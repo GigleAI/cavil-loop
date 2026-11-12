@@ -108,7 +108,13 @@ snapshot() {
                       echo "$HOST/cavil-loop.config"; echo "$HOST/.gitignore"
                       find "$FAKE_SD" "$FAKE_LD" -type f 2>/dev/null; } | sort -u); do
             echo "== file ${f#"$SANDBOX"}"
-            if [ -L "$f" ]; then echo "-> $(readlink "$f")"; elif [ -f "$f" ]; then cat "$f"; else echo "(无)"; fi
+            if [ -L "$f" ]; then echo "-> $(readlink "$f")"
+            elif [ "$f" = "$HOST/cavil-loop.config" ] && [ -f "$f" ] && [ -f "$SKILL/cavil-loop.config.example" ]; then
+                # 项目配置是从配置模板生成的：只比 setup.sh 相对**这一版模板**改了哪些行。模板本身多一项
+                # 配置（GitHub#339）不是 setup.sh 的行为变化，整份内容照比的话每次加配置项这里都会红。
+                echo "(相对本版配置模板改动的行)"
+                diff "$SKILL/cavil-loop.config.example" "$f" | grep '^[<>]' || true
+            elif [ -f "$f" ]; then cat "$f"; else echo "(无)"; fi
         done
     } | sed -e "s|$SANDBOX|<SB>|g" -E -e 's/[0-9a-f]{40}/<SHA>/g'
 }

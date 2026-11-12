@@ -100,6 +100,16 @@ pending_label_for_model() {
     esac
 }
 
+# worker 没干完、要送回队列时该翻回哪个标签：优先用派工时记下的触发 label（review 关卡靠它
+# 才能送回 review 队列而不是打回 claude）；老条目没有这个字段时回落到按 model 反推。
+# self-heal 和卡住检测（stuck_*，GitHub#339）用的是这一份。
+worker_requeue_label() {   # <工作编号>
+    local label
+    label=$(jq -r --arg key "$1" '.worker_trigger_labels[$key] // ""' "$STATE_FILE")
+    [ -n "$label" ] || label="$(pending_label_for_model "$(jq -r --arg key "$1" '.worker_models[$key] // ""' "$STATE_FILE")")"
+    printf '%s\n' "$label"
+}
+
 remember_worker_model() {
     local issue_n="$1"
     local model="$2"
@@ -164,6 +174,11 @@ self_heal_one() {
         selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
         return 0                    # session 真活着，不是 zombie
     fi
+    # 卡住检测停住的条目（GitHub#339）：会话不在也不翻标签，等人恢复。功能关着时恒为否。
+    if stuck_frozen "$n"; then
+        SELFHEAL_STUCK+=" ${kind}#${n}"
+        return 0
+    fi
     # 等外部需求机器人带回答复中（叫醒脚本摘 doing/agent 没摘成，或人手动挂上）：翻回触发标签会立刻
     # 按「有人又打了触发标签」重新派工并摘掉等待标签，等于 daemon 自己替人说了「接着干」。
     # 不动它：等机器人带回答复 / 人来处理。
@@ -191,10 +206,7 @@ self_heal_one() {
     local tries cap=${SELFHEAL_MAX_RETRIES:-3}
     local model pending_label
     model=$(jq -r --arg key "$issue_n" '.worker_models[$key] // ""' "$STATE_FILE")
-    # 优先用派工时记下的触发 label（review 关卡靠它才能送回 review 队列而不是打回 claude）；
-    # 老条目没有这个字段时回落到按 model 反推。
-    pending_label=$(jq -r --arg key "$issue_n" '.worker_trigger_labels[$key] // ""' "$STATE_FILE")
-    [ -n "$pending_label" ] || pending_label="$(pending_label_for_model "$model")"
+    pending_label="$(worker_requeue_label "$issue_n")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
@@ -222,6 +234,7 @@ self_heal_one() {
 SELFHEAL_FOREIGN=""
 SELFHEAL_REQUESTER_BOT=""
 SELFHEAL_BLOCKED=""
+SELFHEAL_STUCK=""
 
 if [ -n "$zombie_pr_data" ]; then
     while IFS=$'\t' read -r pr branch zlabels; do
@@ -243,6 +256,9 @@ if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
 fi
 if [ -n "$SELFHEAL_BLOCKED" ]; then
     log "self-heal 跳过（挂着等前置标签 ${LABEL_PENDING_BLOCKED}，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
+fi
+if [ -n "$SELFHEAL_STUCK" ]; then
+    log "self-heal 跳过（卡住检测已对它停手，等人恢复）:$SELFHEAL_STUCK"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -307,6 +323,14 @@ reap_finished_workers active_keys
 # worker 已经结束（被上面回收、自己退出、会话没了都算）而它通过排队命令起的测试还在排队或还在跑：
 # 整组停掉。不依赖 tmux 会话还在；没有登记着的运行时只是两次目录读。
 heavy_sweep_tick
+
+# ── 0d. 卡在 doing/agent 没人管的 worker（GitHub#339）──
+# §0 管「label 在、session 没了」，§0b 管「session 在、label 没了」；这里管剩下的那种：
+# label 和 session 都在，agent 却空手停着。不配置 STUCK_WORKER_QUIET_SECS 时第一行就返回。
+# 这一轮翻回触发标签的条目下一轮才重派（本轮的派工队列读的是轮询开头的快照）。
+runlog_step stuck
+stuck_tick || true
+if [ "${STUCK_ACTED:-0}" = 1 ]; then pace_mark_acted; fi
 
 runlog_step queue
 # ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
@@ -374,6 +398,7 @@ stage_rank() {
 }
 
 # 结果直接追加到全局 QUEUE_ROWS（不走 $(...)——命令替换会开子 shell，queued_keys 去重表就丢了）
+STUCK_HELD=""
 collect_queue_rows() {
     local kind="$1" trigger_label="$2" model="$3" worker_agent="$4" prompt_kind="$5"
     [ -n "$trigger_label" ] || return 0
@@ -401,6 +426,13 @@ collect_queue_rows() {
                     REVIEW_CAPPED+=" ${kind}#${num}"
                     continue ;;
             esac
+        fi
+        # 卡住检测停住的条目（GitHub#339）不派工；唯一的例外是人在停住说明之后打上的那一枚派工
+        # 标签（这里只挑候选，放不放行由派工脚本里的最后一次现读决定）。不配置卡住检测时这个
+        # 函数第一行就返回，不读任何东西。
+        if stuck_dispatch_hold "$kind" "$num" "$trigger_label"; then
+            STUCK_HELD+=" ${kind}#${num}($trigger_label)"
+            continue
         fi
         # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
         # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
@@ -489,7 +521,7 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
-    local d_rc d_out ul_t0
+    local d_rc d_out ul_t0 rel
     # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
     if usage_limit_gate "$worker_agent" "issue #$num"; then return 0; fi
     sess="$(tmux_session_name "$num")"
@@ -520,11 +552,16 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        d_rc=0; printf -v ul_t0 '%(%s)T' -1
-        d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
+        stuck_release_begin issue "$num" "$trigger_label" || rel=$?
+        [ "$rel" != 2 ] || return 0
+        d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         runlog_dispatch "$d_rc"
+        # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
+        # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
+        if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
         if [ "$d_rc" = 0 ]; then
             dispatch_fail_reset "issue-$num"
             usage_limit_note_dispatch "$num" "$ul_t0"
@@ -546,11 +583,16 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    d_rc=0; printf -v ul_t0 '%(%s)T' -1
-    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
+    stuck_release_begin issue "$num" "$trigger_label" || rel=$?
+    [ "$rel" != 2 ] || return 0
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
+    # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
+    # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
+    if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "issue-$num"
         usage_limit_note_dispatch "$num" "$ul_t0"
@@ -568,7 +610,7 @@ dispatch_one_pr() {
     local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
-    local d_rc d_out ul_t0
+    local d_rc d_out ul_t0 rel
     # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
     if usage_limit_gate "$worker_agent" "PR #$prnum"; then return 0; fi
     issue_n=$(pr_to_issue_num "$prnum" "$branch")
@@ -607,11 +649,16 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    d_rc=0; printf -v ul_t0 '%(%s)T' -1
-    d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
+    stuck_release_begin pr "$prnum" "$trigger_label" || rel=$?
+    [ "$rel" != 2 ] || return 0
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
+    # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
+    # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
+    if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "pr-$prnum"
         usage_limit_note_dispatch "$issue_n" "$ul_t0"
@@ -643,6 +690,11 @@ collect_queue_rows_greedy() {
         [ -z "${queued_keys[$key]:-}" ] || continue
         if blocked=$(greedy_skip_reason "$labels_csv"); then
             GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
+            continue
+        fi
+        # 卡住检测停住的条目（GitHub#339）：没有触发标签的兜底续工一律不做
+        if stuck_dispatch_hold "$kind" "$num" ""; then
+            STUCK_HELD+=" ${kind}#${num}(greedy)"
             continue
         fi
         if [ "$kind" = issue ] && ci_report_dispatch_hold "$num"; then
@@ -707,6 +759,11 @@ collect_autopilot_rows() {
         key="issue:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
         autopilot_labels_in_flow "$labels_csv" && continue
+        # 卡住检测停住的条目（GitHub#339）：不自动开工，也不替它写标签
+        if stuck_dispatch_hold issue "$num" ""; then
+            STUCK_HELD+=" issue#${num}(托管)"
+            continue
+        fi
         if ci_report_dispatch_hold "$num"; then
             ci_report_hold_note "$num"
             continue
@@ -774,6 +831,9 @@ if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
     fi
 fi
 
+if [ -n "$STUCK_HELD" ]; then
+    log "卡住检测已停手、本轮不派工的条目（括号里是没被采用的触发来源；恢复办法见条目上的停住说明）:$STUCK_HELD"
+fi
 ci_report_hold_flush
 
 if [ -n "$REVIEW_CAPPED" ]; then
@@ -840,6 +900,15 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
         while IFS=$'\t' read -r prnum branch; do
             if jq -e ".cleaned_prs | index($prnum)" "$STATE_FILE" >/dev/null 2>&1; then
                 continue
+            fi
+            # 卡住检测停住的条目（GitHub#339）：这个 PR 自己（合并后下一轮清掉停住记录）或它背后的
+            # issue 停住时，清理和收尾先不做、不记已清理，解除后的那一轮再做。
+            if stuck_enabled; then
+                _stuck_n=$(pr_to_issue_num "$prnum" "$branch")
+                if stuck_frozen "$prnum" || { [ -n "$_stuck_n" ] && stuck_frozen "$_stuck_n"; }; then
+                    stuck_skip_note "合并后的清理和收尾" "$prnum"
+                    continue
+                fi
             fi
             NEW_MERGE_SEEN=1
             pace_mark_acted
@@ -938,6 +1007,12 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
             fi
 
             issue_n=$(pr_to_issue_num "$prnum" "$branch")
+            # 卡住检测停住的条目（GitHub#339）：PR 自己（关了也仍然停住）或它背后的 issue 停住时，
+            # 不替 issue 翻标签、不通知、不记已处理，解除后再判。功能关着时恒为否。
+            if stuck_frozen "$prnum" || stuck_frozen "$issue_n"; then
+                stuck_skip_note "PR 关闭未合并后的 issue 标签" "$prnum"
+                continue
+            fi
             # 走 /issues/N 而不是 gh issue view：这个 endpoint 同时覆盖 issue 和 PR，
             # standalone PR（pr_to_issue_num 兜底成 PR 编号自己）也查得到，不会 not found。
             issue_json=$(gh api "repos/$REPO/issues/$issue_n" --jq '{s: .state, l: [.labels[].name]}' 2>/dev/null || true)

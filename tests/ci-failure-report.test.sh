@@ -1065,6 +1065,49 @@ has "重新开始后查看：正常" "$out" "状态：正常"
 tick
 chk "下一轮：提示 issue 被关闭" "$(jq -r '[.[] | select(.kind == "issue" and (.body | contains("cavil-ci-failure-paused")))][0].state' "$GD/items.json")" "closed"
 
+section "【14】卡住检测停住的报告：本机状态读不出时也不写（GitHub#339，代码复审第 6 轮）"
+# 同一份 state.json，普通入口（stuck_frozen）和交给报告子进程的名单必须是同一个结论；
+# 读不出（空文件、两段 JSON、不是 JSON、结构不对）一律按「全部停住」，报告这一步不写。
+FROZEN1='{"cleaned_prs":[],"cleaned_issues":[],"stuck_workers":{"1":{"kind":"issue","num":"1","frozen":{"why":"t","items":["1"]}}}}'
+FROZEN9='{"cleaned_prs":[],"cleaned_issues":[],"stuck_workers":{"9":{"kind":"issue","num":"9","frozen":{"why":"t","items":["9"]}}}}'
+CLEAN='{"cleaned_prs":[],"cleaned_issues":[]}'
+sw_verdict() {   # 同一份状态：按条目编号问 / 按工作编号问 / 交给子进程的名单
+    env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$0/scripts/_lib.sh" >/dev/null 2>&1; STATE_FILE="$STATE_DIR/state.json"
+        if stuck_frozen 1; then a=hold; else a=go; fi; if stuck_frozen_work 1; then b=hold; else b=go; fi
+        printf "%s/%s/%s" "$a" "$b" "$(stuck_frozen_items)"' "$NEW" 2>/dev/null
+}
+sw_case() {   # <名字> <state.json 内容（printf %s 原样写入）> <普通入口/名单 应为> <追加评论数 应为>
+    local w0 c0
+    fresh STUCK_WORKER_QUIET_SECS=600; enable
+    redrun 1700 $((NOW - 60)) 3 requester-bot; tick; later
+    chk "$1 · 到达性：报告 #1 已开" "$(n_issues),$(state_of 1)" "1,open"
+    printf '%s' "$2" > "$W/state/state.json"
+    chk "$1 · 三种问法和交给子进程的名单结论一致" "$(sw_verdict)" "$3"
+    redrun 1701 $((NOW - 60)) 3 requester-bot
+    w0=$(writes); c0=$(n_comments 1); tick; later
+    chk "$1 · 同一测试再次失败：往 #1 追加的评论数 / 写入数" "$(( $(n_comments 1) - c0 )),$(( $(writes) - w0 ))" "$4"
+}
+sw_case "停住的就是 #1" "$FROZEN1" "hold/hold/1" "0,0"
+has "停住的就是 #1 · 日志说明是因为停住而没写" "$(cat "$W/out")" "被卡住检测停住了"
+printf '%s' "$CLEAN" > "$W/state/state.json"; c0=$(n_comments 1); tick; later
+chk "停住的就是 #1 · 对照：解除后下一轮补上这条评论" "$(( $(n_comments 1) - c0 ))" "1"
+sw_case "停住的是别的条目 #9（对照：#1 照常写）" "$FROZEN9" "go/go/9" "1,1"
+sw_case "状态文件是空文件（第 6 轮复现）" "" "hold/hold/all" "0,0"
+has "空文件 · 日志说明是因为停住而没写" "$(cat "$W/out")" "被卡住检测停住了"
+printf '%s' "$CLEAN" > "$W/state/state.json"; c0=$(n_comments 1); tick; later
+chk "空文件 · 对照：状态恢复后下一轮补上这条评论" "$(( $(n_comments 1) - c0 ))" "1"
+sw_case "状态文件里是两段 JSON" "$CLEAN$FROZEN9" "hold/hold/all" "0,0"
+sw_case "状态文件不是 JSON" "{\"cleaned_prs\":[" "hold/hold/all" "0,0"
+sw_case "停住记录的结构不对（stuck_workers 不是对象）" '{"stuck_workers":[1]}' "hold/hold/all" "0,0"
+sw_case "没有停住的条目（对照）" "$CLEAN" "go/go/none" "1,1"
+# 子进程这一侧：变量在但取值为空 / 不认识 → 按全部停住；变量不在 = 功能关着
+sfz() { env ${1+CI_REPORT_STUCK_FROZEN="$1"} python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("cfr", sys.argv[1]); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print("yes" if m.stuck_frozen("repos/example/ci/issues/1/comments") else "no", end="")' "$NEW/scripts/ci_failure_report.py"; }
+chk "子进程读名单：空值 / 乱写按全部停住，none 不拦，变量不在不拦" \
+    "$(sfz '')/$(sfz 'x 1')/$(sfz none)/$(sfz all)/$(sfz '1 2')/$(sfz '9')/$(unset CI_REPORT_STUCK_FROZEN; sfz)" "yes/yes/no/yes/yes/no/no"
+
 compat_summary
 echo
 report_counts "$pass" "$fail"

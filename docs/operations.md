@@ -117,6 +117,16 @@ DISPATCH_MAX_RETRIES=3
 # be auto-redispatched before the item goes to pending/human instead.
 SELFHEAL_MAX_RETRIES=3
 
+# An item on doing/agent whose session is alive but nobody is working (GitHub#339): the agent
+# is idle and nothing changed on GitHub or the local branch for this many seconds in a row →
+# nudge the session once; still nothing STEP_GAP seconds later → end the session, put the
+# trigger label back and redispatch (at most MAX_RESTARTS times); stuck again → comment and
+# hand to pending/human. Script checks only, no model call. Empty or 0 = off; so is a config
+# without this line.
+STUCK_WORKER_QUIET_SECS=1800
+STUCK_WORKER_STEP_GAP_SECS=900
+STUCK_WORKER_MAX_RESTARTS=1
+
 # Open an issue when the local base falls this many commits behind origin
 # (auto-closed once it catches up). Off by default — only a checkout people
 # actually work in gets stuck this way. 20 is a good value when you want it.
@@ -2803,6 +2813,135 @@ gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
 
 If the worker finishes without leaving any comment, state.json's comment ID doesn't advance and the same comment gets treated as new next time. Prompts should require the worker to leave at least one reply.
+
+### An item stays on `doing/agent`, the session is alive, nobody is working
+
+The worker stopped without commenting or flipping the label (decided "not mine" and quit, got an
+empty prompt, crashed before the flip) while its tmux session is still alive. Self-heal only acts
+when the session is gone and the reaper skips anything labeled `doing/agent`, so the item keeps its
+concurrency slot.
+
+With `STUCK_WORKER_QUIET_SECS` set (GitHub#339) the daemon handles it; its `poll.log` lines all
+start with "卡住检测：":
+
+| When | What the daemon does |
+|---|---|
+| agent idle, nothing new on GitHub or the local branch, for `STUCK_WORKER_QUIET_SECS` in a row | pastes a fixed reminder into the worker pane (no GitHub write) |
+| still nothing `STUCK_WORKER_STEP_GAP_SECS` after the reminder | swaps `doing/agent` for the label that triggered the dispatch, ends the session once the swap is confirmed, redispatches next round; at most `STUCK_WORKER_MAX_RESTARTS` times |
+| stuck again for `STUCK_WORKER_QUIET_SECS` after the redispatch | posts a comment (how long, what was tried, how to continue), flips to `pending/human`; the session is kept |
+
+Every check is a script comparison, never a model call:
+
+- **Busy or not** is read off the recorded worker pane, with the rules of the agent that session
+  actually runs (the review agent and the development agent show "busy" differently). Compacting
+  counts as busy; sitting on a dialog counts as idle.
+- **Activity**: labels, comments and commits on the item and on the item bound to it (the issue
+  behind a PR, the PRs of an issue), plus the local work branch's head. Any change, or one round
+  that sees the agent busy, resets the clock.
+- **Protecting labels**: nothing happens while the item itself also carries `pending/human`, the
+  blocked label, the requester-bot waiting label, any dispatch label, `pending/merge` or
+  `pending/PR`, or while the bound item carries `pending/human`, the blocked label or the
+  requester-bot waiting label. `pending/PR` on the issue behind a PR is the normal state after
+  the PR was opened and does not protect.
+- **Everything is re-read before each action**: before the comment, before each label write
+  and before ending the session, the item, the bound item and the local session are read again and must be exactly
+  what they were when the clock started (open / merged, base branch, head commit, source, labels,
+  latest comment and label event, worker pane and agent); otherwise nothing is done this round
+  and the clock restarts.
+- **Unreadable means hands off**: if tmux or GitHub cannot be read, the round neither advances
+  nor resets.
+- **Any anomaly half-way stops the item**: the restart / hand-over step is several GitHub writes
+  (restart: add the trigger label → remove `doing/agent` → end the session; hand-over: comment →
+  add `pending/human` → remove `doing/agent`), all done within one round. After the first write,
+  a write that cannot be confirmed on the spot, a change found between two writes, or state that
+  cannot be read makes the daemon stop on that item right there: nothing is rolled back, nothing
+  is retried, nothing is continued next round. A failed check before the first write only
+  restarts the clock.
+
+Never handled (each reason is logged once):
+
+- not dispatched by this machine (`worker_hosts` in `state.json` names another host)
+- the session has no recorded agent / role, or has several panes and no recorded worker pane
+- an issue and a PR of the same work number both carry `doing/agent` (one shared session; no way
+  to tell which one it is working for)
+- the session is gone (that is self-heal's job)
+
+"Idle" is read off the screen: an agent that pushed work to the background and waits looks idle
+too. Hence the 30-minute default and the harmless first step. Progress lives in `stuck_workers`
+in `state.json`, so a daemon restart continues where it was; it is cleared once the item is
+handed on normally (leaves `doing/agent`). To turn it off, write `STUCK_WORKER_QUIET_SECS=""`.
+
+#### After the daemon has stopped on an item
+
+The log has a line `🧊 卡住检测：… 停住，交给人处理` and the item has a comment
+"⚠️ daemon 已对这一条停手，等人处理" (what happened, the labels now, whether the session is still
+open, how to resume). While stopped, the daemon does not dispatch, relabel, end the session of or
+merge that item (nor the bound issue / PR it checked at that moment):
+
+| Pass | While stopped |
+|---|---|
+| Dispatch (every dispatch label, review, the greedy pass, autopilot-only auto start) | not dispatched; the one exception is the label under "Resume on GitHub" below |
+| Self-heal when the session is gone, reaping finished sessions | skipped, labels and session left as they are |
+| Autopilot: takeover, copying the label, merge | skipped |
+| Waiting-on-prerequisite check | skipped, not flipped back even when the prerequisite is done |
+| Relabeling the bound issue after a PR was closed unmerged; `Done` / hand-over and worktree cleanup after a merge; the parent roll-up when all sub-issues are closed | held back and not recorded as done; done in the round after resuming |
+| Conflict check on `pending/human` PRs | skipped |
+
+Closing the item does not resume it: the record stays and the item is still stopped when
+reopened (a merged PR cannot be reopened; its record is dropped).
+
+**Resume on GitHub** (the normal way):
+
+1. In the item's Labels, remove every flow label (`doing/agent`, `pending/review`,
+   `pending/agent` and the like); removing labels triggers nothing.
+2. Add the one dispatch label to use (e.g. `pending/agent`); if it is the one just removed, add
+   it again after removing it.
+3. Next round the daemon dispatches as usual, swaps that label for `doing/agent` and drops the
+   record.
+
+What the daemon accepts: the last flow-label change **after the comment was posted** is a human
+adding a dispatch label, that label is the only flow label on the item now, and the bound issue
+/ PR carries no `pending/human` / waiting-on-prerequisite / waiting-for-requester-bot label. The
+dispatch script reads all of this again right before it flips a label or starts a session and
+only goes on when it still holds. Adding a classification label, adding `pending/human` or
+removing labels does not resume; a label added before the comment (or within seconds of it) does
+not count — if nothing starts within two rounds, remove it and add it again.
+Where people and the daemon share one GitHub account the daemon cannot tell who added the label, so this
+way does not work; use the release on the machine below.
+
+One resume instruction is used once: after dispatching on it, the daemon counts it a success only
+when it can confirm the labels were swapped by this dispatch and the session was started / fed by
+this dispatch; otherwise (the dispatch script failed, the labels were not swapped, the result
+cannot be read) it stops again and posts a new comment — saying whether the task already reached
+the session — and the same label event never dispatches a second time; add the label again to go
+on. These dispatches do not go through the ordinary "N failures in a row → `pending/human`".
+
+**Release on the machine** (when the comment never gets posted, or `poll.log` never shows
+"开始认人的恢复指令"): on the machine running the daemon, run
+
+<!-- stuck-release-ops:begin -->
+```bash
+KEY=myproject      # the project's instance name (~/.config/cavil-loop/<KEY>.conf)
+N=123              # the issue / PR the daemon stopped on
+bash ~/.agents/skills/cavil-loop/scripts/stuck-release.sh "$KEY" "$N"
+```
+<!-- stuck-release-ops:end -->
+
+It holds the project's poll lock (polling pauses meanwhile), reads the item's whole identity
+(open / merged, base branch, head commit, source repo, labels, latest flow-label event, the
+bound item's labels), prints it and asks for `yes` (waits at most 5 minutes), then reads again
+and deletes the record only when both reads are identical. It changes the local record only and
+writes nothing to GitHub. Afterwards the item is back in the ordinary flow — a dispatch label on
+it will be dispatched — so tidy the labels on the page first.
+
+| Exit code | Meaning (nothing was changed unless 0) |
+|---|---|
+| 0 | released |
+| 1 | bad usage / no such project / no record for this item |
+| 2 | the poll lock was not free within 2 minutes; run it again later |
+| 3 | after `yes` the second read failed or the item differs (labels, commit, base branch, …); run it again to release |
+| 4 | GitHub (or the local state file) could not be read; run it again when it can |
+| 5 | `yes` was not entered |
 
 ### Dispatch fails every round for the same item
 

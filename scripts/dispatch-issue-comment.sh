@@ -169,9 +169,13 @@ fi
 # Case C: worktree 也没了 → 回到 dispatch-new-issue 走全新流程
 log "issue #$ISSUE -> 无 worktree，fallback 走 dispatch-new-issue.sh"
 # 工作目录都没了，旧 session 里的程序也跑不下去；新建流程要用同名 session，先收掉它
+# 动用人的恢复指令的派工（GitHub#339）：收掉旧 session 也是对外动作，先过最后一次核对；
+# 再把「这是恢复派工、已经核对过」交给接手的脚本。平时两句都什么都不做。
+stuck_release_gate
 if session_alive "$TMUX_SESSION"; then
     kill_session_procs "$TMUX_SESSION"
     tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
 fi
+stuck_release_reexport
 # 已经在条目锁里的话把标记带过去，新脚本不再去等自己手里的锁
 exec env ${ITEM_LOCK_HELD_FOR:+CAVIL_ITEM_LOCK_HELD="$ITEM_LOCK_HELD_FOR"} bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$ISSUE"

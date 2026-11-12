@@ -104,6 +104,9 @@ GREEDY_SKIP_LABELS | quiet | 不写这一行时的行为和模板里的值相同
 GREEDY_SCAN_LIMIT | quiet | 不写这一行时的行为和模板里的值相同
 DISPATCH_MAX_RETRIES | quiet | 不写这一行时的行为和模板里的值相同
 SELFHEAL_MAX_RETRIES | quiet | 不写这一行时的行为和模板里的值相同
+STUCK_WORKER_QUIET_SECS | notice | GigleAI/cavil-loop#339 | "" | 卡住的条目自动推进：条目挂着 `doing/agent`、worker 会话还在却一直空闲、GitHub 上也没有新动静时，daemon 先往会话里催一次，仍没动静就结束会话重新派工，再卡住才留言转 `pending/human`；关着时这类条目会一直占着并发名额，要人发现后手工结束会话、把标签翻回去。判断全是脚本比对，不调用大模型。模板里的值是连续空闲 1800 秒（30 分钟）算卡住。
+STUCK_WORKER_STEP_GAP_SECS | quiet | 不写这一行时的行为和模板里的值相同
+STUCK_WORKER_MAX_RESTARTS | quiet | 不写这一行时的行为和模板里的值相同
 PRIORITY_LABELS | quiet | 不写这一行时的行为和模板里的值相同
 PRIORITY_SOURCE | quiet | 不写这一行时的行为和模板里的值相同
 PROJECT_NUMBER | quiet | 不写这一行时的行为和模板里的值相同

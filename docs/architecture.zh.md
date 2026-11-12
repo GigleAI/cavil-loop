@@ -91,7 +91,9 @@ agent / 模板选择**的 label 仍然生效；greedy 只是把剩下的用默�
 
 greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡），完工翻 `pending/human`
 （被挡）——所以同一条活不会被反复重开。worker 崩了没来得及翻 label 时，§ self-heal 会把它
-送回 `pending/agent` 队列。
+送回 `pending/agent` 队列。会话还在、worker 却空手停着（没评论、没翻 label）的那种，self-heal
+和回收都够不着；配了 `STUCK_WORKER_QUIET_SECS` 时由卡住检测处理：催一次 → 结束会话重派 →
+转 `pending/human`（GitHub#339，见 [operations.zh.md](operations.zh.md#条目一直停在-doingagent会话还在却没人干活)）。
 
 > ⚠️ greedy 模式下**任何人新开一个 issue 都会立刻烧一个 worker 的 token**——公开仓里包括
 > 匿名外部用户。开之前先想清楚这个仓库的 issue 是不是真的「开了就是要干」。
