@@ -48,10 +48,12 @@ interface Props {
   now: number;
   dark: boolean;
   onOpen: (key: string) => void;
+  /** GitHub#397: false while a detail tab is in front of the board: the graph's keys are not its own then */
+  keys?: boolean;
 }
 
 
-export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow }: Props) {
+export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow, keys = true }: Props) {
   // one function for the whole life of the view, so a node whose look did not change is not redrawn
   const openRef = useRef(openNow);
   openRef.current = openNow;
@@ -119,7 +121,7 @@ export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow 
   const zoom = (factor: number) => {
     if (size) setView((v) => v && zoomAt(v, factor, size.w / 2, size.h / 2));
   };
-  useShortcuts({ graphFit: fit, graphZoomIn: () => zoom(ZOOM_STEP), graphZoomOut: () => zoom(1 / ZOOM_STEP) });
+  useShortcuts(keys ? { graphFit: fit, graphZoomIn: () => zoom(ZOOM_STEP), graphZoomOut: () => zoom(1 / ZOOM_STEP) } : {});
 
   // wheel: zoom around the pointer (a native listener: React's is passive and cannot stop the page scrolling)
   useEffect(() => {

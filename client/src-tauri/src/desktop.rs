@@ -242,6 +242,9 @@ pub fn spawn_background<R: Runtime>(app: AppHandle<R>) {
                         if let (Some(w), [width, height]) = (app.get_webview_window("main"), n.as_slice()) {
                             let _ = w.set_size(tauri::LogicalSize::new(*width, *height));
                         }
+                    } else if line == "close-key" {
+                        // the same handler the menu's ⌘W runs (GitHub#397)
+                        close_key(&app);
                     } else if line == "quit" {
                         app.exit(0);
                     } else if line == "restart" {
@@ -346,6 +349,29 @@ pub fn desktop_set_login_item<R: Runtime>(app: AppHandle<R>, on: bool) -> Result
     {
         Err("这个系统还不支持开机自动启动".into())
     }
+}
+
+/// GitHub#397: the "close" key (macOS: the menu's ⌘W). The window decides what it closes: the
+/// detail tab in front, or — none in front — itself, through `desktop_close_window`. A window that
+/// is not showing has no tab in front to close: nothing is sent.
+pub fn close_key<R: Runtime>(app: &AppHandle<R>) {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "closeKey" }));
+    if main_visible(app) {
+        d.push(json!({ "kind": "closeTab" }));
+    }
+}
+
+/// The window asks to be closed the way its close button does it (macOS: it hides, see
+/// `WindowEvent::CloseRequested` in main.rs).
+#[tauri::command]
+pub async fn desktop_close_window<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "closeWindow" }));
+    if let Some(w) = app.get_webview_window("main") {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

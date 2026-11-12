@@ -6,7 +6,6 @@ import type { UpdateNotes, UpdateStatus } from '../shared/types';
 import { api } from './api';
 import { Icon } from './Icons';
 import { useLayer, useShortcuts } from './keyboard';
-import { MODAL } from './outsideClick';
 
 const MB = 1_000_000;
 const mb = (n: number) => (n / MB).toFixed(1);
@@ -57,7 +56,7 @@ export function UpdateNotesDialog({ notes, restart, onClose }: { notes: UpdateNo
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => box.current?.focus(), []);
   return (
-    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="update-notes" onClick={onClose}>
+    <div className="modal-back" data-testid="update-notes" onClick={onClose}>
       <div className="modal update-notes" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
         <h3>
           更新内容{' '}

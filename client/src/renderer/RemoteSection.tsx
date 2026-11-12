@@ -12,7 +12,6 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useLayer, useShortcuts } from './keyboard';
-import { MODAL } from './outsideClick';
 import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
 import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, sortTailnet, tailnetPill, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult, type TailnetDevice, type TailnetList } from '../shared/remote';
@@ -600,7 +599,7 @@ function LogDialog({ e, projectKey, onClose }: { e: RemoteEntry; projectKey: str
     };
   }, []);
   return (
-    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="remote-log-dialog" onClick={onClose}>
+    <div className="modal-back" data-testid="remote-log-dialog" onClick={onClose}>
       <div className="modal remote-log" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(ev) => ev.stopPropagation()}>
         <h3>
           日志 · {remoteName(e.host)} / {projectKey}

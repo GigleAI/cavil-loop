@@ -213,6 +213,7 @@ describe('the back end and the daemon\'s real script', () => {
     // both kinds really occurred, and a refusal never came back as anything but "nothing written"
     expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
     expect(new Set(verdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
+    // 17 values × (read + save through the real script): ~17 s on a loaded dev box, past the 20 s default on CI (PR #415)
   }, 60_000);
 
   it('a config that does not load: "unreadable" with no values; an unknown project: "not_found"', async () => {

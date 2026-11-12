@@ -36,5 +36,6 @@ export function bridgeDesktop(): Desktop {
     dismissUpdate: (version) => d('dismissUpdate', { version }),
     dismissInstalledUpdate: (version) => d('dismissInstalledUpdate', { version }),
     restartToUpdate: () => d('restartToUpdate'),
+    closeWindow: () => d('closeWindow'),
   };
 }

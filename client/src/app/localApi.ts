@@ -67,6 +67,12 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     reorderRepos: async (shown, next) => c.reorderRepos(shown, next),
     resetRepoOrder: async () => c.resetRepoOrder(),
     setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),
+    openTab: async (key) => c.openTab(String(key)),
+    closeTab: async (key) => c.closeTab(String(key)),
+    moveTab: async (key, to) => c.moveTab(String(key), Number(to)),
+    seenTab: async (key, updatedAt) => c.seenTab(String(key), String(updatedAt)),
+    checkTab: (key) => c.checkTabs(String(key)),
+    closeWindow: () => c.closeWindow(),
     // GitHub#314: straight to the back end, which runs every command (the controller has no part in it)
     daemonStatus: () => backend.call('daemonStatus'),
     daemonInstall: () => backend.call('daemonInstall'),

@@ -99,6 +99,7 @@ async function signedIn(
     dismissUpdate: async () => {},
     dismissInstalledUpdate: async () => {},
     restartToUpdate: async () => {},
+    closeWindow: async () => {},
   };
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);

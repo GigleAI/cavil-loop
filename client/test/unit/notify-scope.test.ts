@@ -492,6 +492,7 @@ async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknow
     dismissUpdate: async () => {},
     dismissInstalledUpdate: async () => {},
     restartToUpdate: async () => {},
+    closeWindow: async () => {},
   };
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);

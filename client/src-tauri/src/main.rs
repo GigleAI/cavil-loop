@@ -111,18 +111,80 @@ fn is_app_url(url: &url::Url) -> bool {
         || (cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("localhost"))
 }
 
-#[cfg(target_os = "macos")]
+// The menu is the macOS app's; it is built on every system so that the other ones compile it too.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const ZOOM_ITEMS: [(&str, &str, &str); 3] = [
     ("zoom-in", "放大", "CmdOrCtrl+="),
     ("zoom-out", "缩小", "CmdOrCtrl+-"),
     ("zoom-reset", "实际大小", "CmdOrCtrl+0"),
 ];
 
+/// The id of the menu's own "close" item (GitHub#397).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const CLOSE_TAB_ID: &str = "close-tab";
+
 /// The standard macOS menu plus 缩放 (zoom in / out / actual size).
-#[cfg(target_os = "macos")]
+///
+/// GitHub#397: the same items as Tauri's default menu (`Menu::default`), except that ⌘W is not the
+/// system's "Close Window" any more: it is the app's own item, which closes the detail tab in front
+/// and — with no tab in front — closes the window as before (`desktop::close_key`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, Submenu};
-    let menu = Menu::default(app)?;
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    let pkg = app.package_info();
+    let config = app.config();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+    let close = MenuItem::with_id(app, CLOSE_TAB_ID, "关闭标签页", true, Some("CmdOrCtrl+W"))?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &Submenu::with_items(
+                app,
+                pkg.name.clone(),
+                true,
+                &[
+                    &PredefinedMenuItem::about(app, None, Some(about))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::hide(app, None)?,
+                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "File", true, &[&close])?,
+            &Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?,
+            &Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?,
+            &Submenu::with_id_and_items(
+                app,
+                tauri::menu::WINDOW_SUBMENU_ID,
+                "Window",
+                true,
+                &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?],
+            )?,
+            &Submenu::with_id_and_items(app, tauri::menu::HELP_SUBMENU_ID, "Help", true, &[])?,
+        ],
+    )?;
     let items = ZOOM_ITEMS
         .iter()
         .map(|(id, text, key)| MenuItem::with_id(app, *id, *text, true, Some(*key)))
@@ -130,6 +192,19 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     menu.append(&Submenu::with_items(app, "缩放", true, &refs)?)?;
     Ok(menu)
+}
+
+/// One of the menu's own items was chosen (by the mouse or by its key).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn menu_event(app: &tauri::AppHandle, id: &str) {
+    let step = match id {
+        "zoom-in" => cavil_core::zoom::Step::In,
+        "zoom-out" => cavil_core::zoom::Step::Out,
+        "zoom-reset" => cavil_core::zoom::Step::Reset,
+        CLOSE_TAB_ID => return desktop::close_key(app),
+        _ => return,
+    };
+    zoom(app, Some(step));
 }
 
 /// Step the zoom (or just apply the kept level: `None`) and set it on the window.
@@ -187,15 +262,7 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     {
-        builder = builder.menu(app_menu).on_menu_event(|app, event| {
-            let step = match event.id().as_ref() {
-                "zoom-in" => cavil_core::zoom::Step::In,
-                "zoom-out" => cavil_core::zoom::Step::Out,
-                "zoom-reset" => cavil_core::zoom::Step::Reset,
-                _ => return,
-            };
-            zoom(app, Some(step));
-        });
+        builder = builder.menu(app_menu).on_menu_event(|app, event| menu_event(app, event.id().as_ref()));
     }
     #[cfg(target_os = "macos")]
     {
@@ -391,6 +458,7 @@ fn main() {
             desktop::desktop_login_item,
             desktop::desktop_set_login_item,
             desktop::desktop_next_event,
+            desktop::desktop_close_window,
             updater::desktop_update_status,
             updater::desktop_update_check,
             updater::desktop_update_set_auto,

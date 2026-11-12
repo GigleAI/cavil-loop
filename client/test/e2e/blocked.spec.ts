@@ -170,7 +170,8 @@ test('GitHub#434: an item in another flow cannot enter (button greyed, why named
   await page.keyboard.press('Control+Shift+B');
   await expect(page.getByTestId('blocked-dialog')).toBeVisible();
   await page.getByTestId('confirm-cancel').click();
-  // Settings: an empty waiting label = no button
+  // Settings: an empty waiting label = no button (GitHub#397: Settings is reached from the home tab)
+  await page.keyboard.press('Escape');
   await page.getByTestId('open-settings').click();
   await page.getByTestId('hand-back-blocked').fill('');
   await page.getByTestId('hand-back-blocked').blur();

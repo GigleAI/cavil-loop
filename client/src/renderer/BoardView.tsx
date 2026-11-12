@@ -14,7 +14,7 @@ import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { createFailures, createTone, editsTone } from '../shared/noticeTone';
-import { DetailPanel, noteOf, ResultBanner, type ResultNote } from './DetailPanel';
+import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
@@ -557,6 +557,9 @@ function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: str
   );
 }
 
+/** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
+export type OpenIntent = { opId: string; what: 'retry' | 'toReply' };
+
 export function BoardView({
   state,
   data,
@@ -564,8 +567,9 @@ export function BoardView({
   setQuery,
   parsed,
   warn,
-  focus = null,
-  onFocusTaken,
+  onOpen,
+  detailKey,
+  leftNote = null,
   request = null,
   onRequestTaken,
   onSettings,
@@ -578,9 +582,16 @@ export function BoardView({
   setQuery: (q: string) => void;
   parsed: ParsedFilter;
   warn: BoardWarnings;
-  /** a clicked notification's item, to open once (GitHub#169) */
-  focus?: { key: string; seq: number } | null;
-  onFocusTaken?: () => void;
+  /** GitHub#397: open this item in its detail tab (`intent`: to do this with one of its operations, GitHub#250) */
+  onOpen: (key: string, intent?: OpenIntent) => void;
+  /**
+   * GitHub#397: the item whose detail tab is in front; null = the home tab is. Behind a detail tab the
+   * board stays mounted, but its keys are not its own — and that item's notices are the detail's to
+   * show (and to put away), not also the board's.
+   */
+  detailKey: string | null;
+  /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
+  leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
   request?: BoardRequest | null;
   onRequestTaken?: () => void;
@@ -647,17 +658,8 @@ export function BoardView({
     data.items.map((it) => it.sources),
   );
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
-  // every opening of the detail panel is its own panel instance (its React key):
-  // going to another item and back is a new opening, never the old one resumed
-  const [opened, setOpened] = useState<{ key: string; n: number; intent?: { opId: string; what: 'retry' | 'toReply' } } | null>(null);
-  const openSeq = useRef(0);
-  const openItem = (key: string) => setOpened((cur) => (cur?.key === key ? cur : { key, n: ++openSeq.current }));
-  // a clicked notification (GitHub#169): every click opens that item, as a new opening
-  useEffect(() => {
-    if (!focus) return;
-    setOpened({ key: focus.key, n: ++openSeq.current });
-    onFocusTaken?.();
-  }, [focus?.seq]);
+  // GitHub#397: an item opens in its own detail tab (the window's, see App)
+  const openItem = (key: string) => onOpen(key);
   // false = closed; true = the plain dialog; a seed = from a table group's "+" (GitHub#214)
   const [newIssue, setNewIssue] = useState<boolean | GroupSeed | { draft: CreateJob['draft'] }>(false);
   const searchBox = useRef<HTMLInputElement>(null);
@@ -668,6 +670,10 @@ export function BoardView({
     const e = n?.kind === 'error' && about ? noteEditOf(about) : null;
     setShownNote(n ? { note: n, watch: e ? [e] : [] } : null);
   };
+  useEffect(() => {
+    if (leftNote) setNote(leftNote.note, leftNote.about);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftNote?.seq]);
   useEffect(() => {
     if (!shownNote?.watch.length) return;
     const step = stepNoteEdits(shownNote.watch, data.items);
@@ -793,8 +799,6 @@ export function BoardView({
         {shown.map((c) => (
           <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />
         ))}
-        {/* the floating detail covers the right of the board: room to scroll any column out from under it (#155) */}
-        {opened && <div className="detail-spacer" data-testid="detail-spacer" aria-hidden="true" />}
       </div>
     );
   };
@@ -960,10 +964,9 @@ export function BoardView({
           快捷键 <kbd>?</kbd>
         </button>
       </div>
-      {/* GitHub#260: everything under the view bar. The detail panel floats from its top, so bars never push it
-          down; while it is open the bars keep to the left of it (the board itself keeps its width, #155) */}
+      {/* everything under the view bar */}
       <div className="below-bar">
-      <div className={`board-bars${opened ? ' beside-detail' : ''}`} data-testid="board-bars">
+      <div className="board-bars" data-testid="board-bars">
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
       </WarnBar>
@@ -992,15 +995,15 @@ export function BoardView({
       <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
       <EditsBar state={state} data={data} onOpen={openItem} />
       {state.ops
-        .filter((r) => !r.dismissed && r.key !== opened?.key)
+        .filter((r) => !r.dismissed && r.key !== detailKey)
         .map((r) => (
           <OpNotice
             key={r.id}
             r={r}
             prefix={`${r.repo}#${r.number}：`}
             onOpen={openItem}
-            onRetry={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'retry' } })}
-            onToReply={(x) => setOpened({ key: x.key, n: ++openSeq.current, intent: { opId: x.id, what: 'toReply' } })}
+            onRetry={(x) => onOpen(x.key, { opId: x.id, what: 'retry' })}
+            onToReply={(x) => onOpen(x.key, { opId: x.id, what: 'toReply' })}
           />
         ))}
       {state.creates.map((j) => (
@@ -1035,6 +1038,7 @@ export function BoardView({
           now={now}
           dark={dark}
           onOpen={openItem}
+          keys={detailKey === null}
         />
       ) : view.layout === 'table' ? (
         <TableView
@@ -1092,7 +1096,6 @@ export function BoardView({
       </div>
       )}
       </div>
-      {opened && <DetailPanel key={opened.n} itemKey={opened.key} state={state} data={data} onClose={() => setOpened(null)} onLeftBehind={setNote} intent={opened.intent ?? null} />}
       </div>
       {newIssue && (
         <NewIssueDialog

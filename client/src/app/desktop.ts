@@ -27,7 +27,9 @@ export type DesktopEvent =
   | { kind: 'update'; status: UpdateStatus }
   /** the window came to the front / left it (GitHub#185: switching to the app reads the unread items) */
   | { kind: 'active' }
-  | { kind: 'inactive' };
+  | { kind: 'inactive' }
+  /** GitHub#397: the shell's "close" key (macOS: the menu's ⌘W): the tab in front closes, or — none in front — the window */
+  | { kind: 'closeTab' };
 
 export interface Desktop {
   /** resolves with what the system did (macOS may refuse: not allowed in System Settings) */
@@ -54,4 +56,6 @@ export interface Desktop {
   dismissInstalledUpdate(version: string): Promise<void>;
   /** quit and start the new version (only once it is in place) */
   restartToUpdate(): Promise<void>;
+  /** GitHub#397: close the window the way its close button does (macOS: it hides, the app keeps running) */
+  closeWindow(): Promise<void>;
 }

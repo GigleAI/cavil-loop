@@ -16,7 +16,6 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { useLayer, useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
-import { MODAL } from './outsideClick';
 import { copyText } from './pasteImage';
 import {
   canEdit,
@@ -128,7 +127,7 @@ export function ProjectConfigDialog({
   });
 
   return (
-    <div className="modal-back" {...{ [MODAL]: '' }} data-testid="config-dialog" data-phase={phase.at} onClick={dirty ? undefined : close}>
+    <div className="modal-back" data-testid="config-dialog" data-phase={phase.at} onClick={dirty ? undefined : close}>
       <div
         className="modal pcfg"
         role="dialog"

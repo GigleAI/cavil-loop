@@ -233,6 +233,21 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
   expect(ops.slice(0, 2)).toEqual(['active', 'badge 0']);
   await new Promise((r) => setTimeout(r, 1500));
   expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
+
+  // GitHub#397: the shell's "close" key — on macOS the menu's ⌘W; here the very handler it runs, asked for by
+  // the test. A detail tab is in front (the clicked item's): that tab closes, the window stays where it is …
+  const closeAt = records().length;
+  appendFileSync(control, 'close-key\n');
+  await until(async () => (await wd.exec<number>(`return document.querySelectorAll('[data-testid="detail"]').length`)) === 0, 'the tab in front closed', 10_000);
+  expect(await wd.exec<number>(`return document.querySelectorAll('[data-testid="tab"]').length`)).toBe(0);
+  expect(await wd.exec<string>(`return document.querySelector('[data-testid="tab-home"]').getAttribute('data-front')`)).toBe('yes');
+  await new Promise((r) => setTimeout(r, 500));
+  expect(records().slice(closeAt).filter((r) => r.op === 'closeWindow' || r.op === 'hidden')).toEqual([]);
+  // … and with the home tab in front it closes the window the way the close button does (here: hidden, not quit)
+  appendFileSync(control, 'close-key\n');
+  await until(() => records().slice(closeAt).some((r) => r.op === 'hidden'), 'window hidden by the close key', 10_000);
+  expect(records().slice(closeAt).filter((r) => r.op === 'closeKey')).toHaveLength(2);
+  expect(records().slice(closeAt).filter((r) => r.op === 'closeWindow')).toHaveLength(1);
 });
 
 test('started hidden (launch at login): no window, still syncing and reminding within 120 s', async () => {
@@ -242,6 +257,9 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   await startApp();
   await signInWithRepo();
   await wd.click('[data-testid="open-settings"]');
+  // the box is below the fold since GitHub#397 added a field above it, and the settings page scrolls smoothly:
+  // WebDriver's own scroll has not arrived when it clicks ("element not interactable"). Scroll there at once first.
+  await wd.exec(`document.querySelector('[data-testid="clear-all-on-activate"]').scrollIntoView({ block: 'center', behavior: 'instant' })`);
   await wd.click('[data-testid="clear-all-on-activate"]');
   await until(async () => (await wd.count('[data-testid="clear-all-on-activate"]:checked')) === 1, 'the box is ticked', 10_000);
   await wd.click('[data-testid="back"]');

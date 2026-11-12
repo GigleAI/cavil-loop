@@ -178,7 +178,7 @@ export function SettingsView({
       <section id="set-hand-back" data-testid="hand-back-settings">
         <h3>流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）</h3>
         <p className="muted small">
-          顶栏右侧的「运行中 / 等 agent / 等人处理」三个数，分别数开着的条目里带「运行中的标签」「交给 agent 的标签」「等人处理的标签」的。运行中的标签留空，就不显示「运行中」这个数；另外两格留空会恢复成默认值。
+          顶栏右侧的「运行中 / 等 agent / 等人处理」三个数，分别数开着的条目里带「运行中的标签」「交给 agent 的标签」「等人处理的标签」的。运行中的标签留空，就不显示「运行中」这个数（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
           <br />
           详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
           <br />
