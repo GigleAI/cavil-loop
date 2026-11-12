@@ -119,12 +119,46 @@ pub fn send_with(req: &HttpRequest, policy: &Policy) -> Result<HttpResponse, Str
 }
 
 fn send_on(agent: &ureq::Agent, req: &HttpRequest, policy: &Policy) -> Result<HttpResponse, String> {
+    send_as(agent, req, policy, &text_body).map(|(status, headers, body)| HttpResponse { status, headers, body })
+}
+
+/// The body of an ordinary answer: text, at most 64 MB.
+fn text_body(b: &mut ureq::Body) -> Result<String, ureq::Error> {
+    b.with_config().limit(64 * 1024 * 1024).read_to_string()
+}
+
+/// GitHub#395: an answer whose body is bytes (an image). `body` is None when it is larger than the limit asked for.
+#[derive(Debug)]
+pub struct BytesResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
+}
+
+/// GitHub#395: one GET whose body is read as bytes, at most `limit` of them. Same pool and same retry
+/// rule as `send` (a GET is a read). Err = no complete answer at all.
+pub async fn send_bytes(req: HttpRequest, limit: u64) -> Result<BytesResponse, String> {
+    tokio::task::spawn_blocking(move || send_bytes_with(&req, limit, &Policy::default())).await.map_err(|e| e.to_string())?
+}
+
+pub fn send_bytes_with(req: &HttpRequest, limit: u64, policy: &Policy) -> Result<BytesResponse, String> {
+    let read = move |b: &mut ureq::Body| match b.with_config().limit(limit).read_to_vec() {
+        Ok(v) => Ok(Some(v)),
+        Err(ureq::Error::BodyExceedsLimit(_)) => Ok(None),
+        Err(e) => Err(e),
+    };
+    send_as(agent(), req, policy, &read).map(|(status, headers, body)| BytesResponse { status, headers, body })
+}
+
+type Answer<T> = (u16, Vec<(String, String)>, T);
+
+fn send_as<T>(agent: &ureq::Agent, req: &HttpRequest, policy: &Policy, body: &dyn Fn(&mut ureq::Body) -> Result<T, ureq::Error>) -> Result<Answer<T>, String> {
     let started = Instant::now();
     let read = is_read(req);
     let mut retries = 0usize;
     loop {
         let left = policy.budget.saturating_sub(started.elapsed());
-        let broke = match attempt(agent, req, left) {
+        let broke = match attempt(agent, req, left, body) {
             Ok(r) => return Ok(r),
             Err(b) => b,
         };
@@ -314,7 +348,7 @@ fn agent() -> &'static ureq::Agent {
     AGENT.get_or_init(|| build_agent(DefaultResolver::default()))
 }
 
-fn attempt(a: &ureq::Agent, req: &HttpRequest, left: Duration) -> Result<HttpResponse, Broke> {
+fn attempt<T>(a: &ureq::Agent, req: &HttpRequest, left: Duration, read_body: &dyn Fn(&mut ureq::Body) -> Result<T, ureq::Error>) -> Result<Answer<T>, Broke> {
     let local = |message: String| Broke { phase: Phase::Connect, network: false, message };
     let mut b = ureq::http::Request::builder().method(req.method.as_str()).uri(req.url.as_str());
     for (k, v) in &req.headers {
@@ -341,13 +375,8 @@ fn attempt(a: &ureq::Agent, req: &HttpRequest, left: Duration) -> Result<HttpRes
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
         .collect();
-    let body = res
-        .body_mut()
-        .with_config()
-        .limit(64 * 1024 * 1024)
-        .read_to_string()
-        .map_err(|e| Broke { phase: Phase::InBody, network: is_network(&e), message: e.to_string() })?;
-    Ok(HttpResponse { status, headers, body })
+    let body = read_body(res.body_mut()).map_err(|e| Broke { phase: Phase::InBody, network: is_network(&e), message: e.to_string() })?;
+    Ok((status, headers, body))
 }
 
 /// The connection was lost, refused, timed out or cut off — as opposed to a request ureq would

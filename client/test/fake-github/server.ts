@@ -118,6 +118,19 @@ export interface FakeState {
    * honestly — a 5xx, a rate limit with its headers, …; null = honestly. Asked once per request.
    */
   answerOverride: ((e: LoggedRequest) => CannedAnswer | null) | null;
+  /**
+   * GitHub#395: releases with attachments, key `owner/name` lower-cased. A draft is not found by its
+   * tag (as on GitHub) and only shows in the list. The attachment's API address answers with a
+   * redirect to the file (`redirect`: somewhere else instead); the file is served, without any
+   * credential asked, under the web base's `/release-assets/<id>`.
+   */
+  releases: Map<string, FakeRelease[]>;
+}
+
+export interface FakeRelease {
+  tag: string;
+  draft?: boolean;
+  assets: { id: number; name: string; bytes: Buffer; redirect?: string }[];
 }
 
 /** GitHub#374: one answer as sent: status, JSON body, extra headers */
@@ -251,6 +264,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     checkFault: null,
     breakAnswer: null,
     answerOverride: null,
+    releases: new Map(),
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -477,6 +491,53 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         await held();
         return send(canned.status, canned.body ?? {}, canned.headers);
       }
+    }
+
+    // ---- GitHub#395: releases, their attachments, and the files themselves ----
+    const file = req.method === 'GET' ? url.pathname.match(/^\/web\/release-assets\/(\d+)$/) : null;
+    if (file) {
+      await held();
+      for (const list of state.releases.values())
+        for (const r of list)
+          for (const a of r.assets)
+            if (a.id === Number(file[1])) {
+              entry.status = 200;
+              res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(a.bytes.length) });
+              res.end(a.bytes);
+              return;
+            }
+      return send(404, { message: 'Not Found' });
+    }
+    const rel = req.method === 'GET' ? url.pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/releases(?:\/(tags)\/([^/]+)|\/(assets)\/(\d+))?$/) : null;
+    if (rel) {
+      if (!authed()) return;
+      await held();
+      const key = `${rel[1]}/${rel[2]}`.toLowerCase();
+      if (state.deniedRepos.get(login())?.has(key)) return send(404, { message: 'Not Found' });
+      const list = state.releases.get(key) ?? [];
+      const shape = (r: FakeRelease) => ({
+        tag_name: r.tag,
+        draft: Boolean(r.draft),
+        assets: r.assets.map((a) => ({
+          id: a.id,
+          name: a.name,
+          url: `${fake.api}/repos/${rel[1]}/${rel[2]}/releases/assets/${a.id}`,
+          browser_download_url: `${fake.web}/${rel[1]}/${rel[2]}/releases/download/${encodeURIComponent(r.tag)}/${encodeURIComponent(a.name)}`,
+        })),
+      });
+      if (rel[3]) {
+        const found = list.find((r) => !r.draft && r.tag === decodeURIComponent(rel[4]));
+        return found ? send(200, shape(found)) : send(404, { message: 'Not Found' });
+      }
+      if (rel[5]) {
+        const a = list.flatMap((r) => r.assets).find((x) => x.id === Number(rel[6]));
+        if (!a) return send(404, { message: 'Not Found' });
+        entry.status = 302;
+        res.writeHead(302, { Location: a.redirect ?? `${fake.web}/release-assets/${a.id}` });
+        res.end();
+        return;
+      }
+      return send(200, list.map(shape));
     }
 
     // ---- GitHub#261: a board's REST field list and item list (what the change check reads) ----
