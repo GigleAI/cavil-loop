@@ -263,12 +263,10 @@ const AUTOPILOT_CONFIRM = 'autopilotConfirm';
 /** GitHub#434: the two settings of "等前置…" */
 const BLOCKED_LABELS = 'blockedLabels';
 
-function normalizeBlockedLabels(raw: unknown): BlockedLabels {
+/** the waiting label is the one setting of GitHub#429 (handBack.blocked); this setting keeps the other flow labels */
+function normalizeBlockedLabels(raw: unknown, blocked: string): BlockedLabels {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<BlockedLabels>;
-  return {
-    blocked: typeof r.blocked === 'string' ? r.blocked.trim() : DEFAULT_BLOCKED_LABELS.blocked,
-    flow: typeof r.flow === 'string' && r.flow.trim() ? r.flow.trim() : DEFAULT_BLOCKED_LABELS.flow,
-  };
+  return { blocked, flow: typeof r.flow === 'string' && r.flow.trim() ? r.flow.trim() : DEFAULT_BLOCKED_LABELS.flow };
 }
 const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
 /** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
@@ -484,6 +482,8 @@ export class Controller {
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // GitHub#404: saved before the running label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
+    // GitHub#429: saved before the waiting label existed (or not a string) → the default; an empty one stays empty
+    if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
@@ -501,7 +501,7 @@ export class Controller {
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
-      blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null)),
+      blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null), handBack.blocked),
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
@@ -1597,10 +1597,19 @@ export class Controller {
     progress();
     const gate = this.readGate;
     const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
-    const round = await syncRound(this.client(session, run.signal, reads), sources, this.snapshots, startedAt, recorded, this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS, () => {
-      done++;
-      progress();
-    });
+    const round = await syncRound(
+      this.client(session, run.signal, reads),
+      sources,
+      this.snapshots,
+      startedAt,
+      recorded,
+      this.deps.fullReadEveryMs ?? FULL_READ_EVERY_MS,
+      () => {
+        done++;
+        progress();
+      },
+      this.state.handBack.blocked,
+    );
     run.reading = false;
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
     // not tell, 10 minutes were up, or the refresh was by hand). Its old record goes now, before anything
@@ -1846,14 +1855,11 @@ export class Controller {
     this.set({ newIssueHandoff: h as Handoff });
   }
 
-  /** GitHub#434: the waiting label (empty = no "等前置…" button) and the other flow labels (empty = the default) */
+  /** GitHub#434: the other flow labels (empty = the default). The waiting label is `handBack.blocked` (setHandBack). */
   setBlockedLabels(patch: Partial<BlockedLabels>): void {
-    const next: BlockedLabels = {
-      blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.blockedLabels.blocked,
-      flow: typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow,
-    };
-    this.cache.setSetting(BLOCKED_LABELS, next);
-    this.set({ blockedLabels: next });
+    const flow = typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow;
+    this.cache.setSetting(BLOCKED_LABELS, { flow });
+    this.set({ blockedLabels: { blocked: this.state.handBack.blocked, flow } });
   }
 
   setHandBack(patch: Partial<HandBackLabels>): void {
@@ -1864,6 +1870,8 @@ export class Controller {
       autopilot: typeof patch.autopilot === 'string' ? patch.autopilot.trim() : this.state.handBack.autopilot,
       // GitHub#404: empty is a choice too — the view bar leaves out "运行中"
       running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
+      // GitHub#429: empty is a choice — the graph then draws GitHub's own relations only
+      blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.handBack.blocked,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
@@ -1874,7 +1882,12 @@ export class Controller {
       this.badge();
       this.state = { ...this.state, ...this.pendingNow() };
     }
-    this.set({ handBack: next });
+    const reread = next.blocked !== this.state.handBack.blocked;
+    // GitHub#434: "等前置…" uses the same waiting label
+    this.set({ handBack: next, blockedLabels: { ...this.state.blockedLabels, blocked: next.blocked } });
+    // GitHub#429: the registrations held were read under the old label — the graph shows them as
+    // unknown until a read under the new one, which starts now
+    if (reread && this.signedIn && this.state.phase === 'ready') void this.syncNow();
   }
 
   /** A client for one call, or why there is none (signed out / offline / credential ended). */
@@ -2164,7 +2177,7 @@ export class Controller {
     };
     let fresh;
     try {
-      fresh = await fetchItem(client, repo, number, this.now());
+      fresh = await fetchItem(client, repo, number, this.now(), this.state.handBack.blocked);
     } catch (e) {
       return failed((e as Error).message);
     }

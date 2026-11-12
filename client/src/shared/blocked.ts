@@ -10,9 +10,9 @@
 
 import { itemKey } from './sources';
 
-/** GitHub#434: the two settings of "等前置…" (Settings → 流程标签). */
+/** GitHub#434: the labels of "等前置…" (Settings → 流程标签). */
 export interface BlockedLabels {
-  /** the waiting label ('' = no "等前置…" button) */
+  /** the waiting label — the same setting as the graph's (GitHub#429, `handBack.blocked`); '' = no "等前置…" button */
   blocked: string;
   /** the other flow labels, comma separated; `x/*` = every label starting with `x/`; case-insensitive */
   flow: string;
@@ -88,12 +88,24 @@ export function refText(r: Ref, selfRepo: string): string {
   return r.repo === selfRepo.toLowerCase() ? `#${r.number}` : `${r.repo}#${r.number}`;
 }
 
-export interface RestComment {
+/**
+ * A comment as the registration rule reads it (GitHub#429 / #434: the dependency graph and "等前置…"
+ * read registrations with this one rule; data/loopBlocked.ts and data/blocked.ts fill it from
+ * GraphQL and REST).
+ */
+export interface MarkComment {
+  /** the comment's database id (the daemon's tie-break within one second) */
   id: number;
-  body: string | null;
-  created_at: string;
-  author_association?: string | null;
-  user?: { login?: string | null } | null;
+  body: string;
+  createdAt: string;
+  /** GitHub's author_association: OWNER / MEMBER / COLLABORATOR / … */
+  authorAssociation: string;
+}
+
+/** A prerequisite as the daemon writes it: `r` '' = the item's own repository, else owner/repo lower-cased. */
+export interface MarkEnd {
+  r: string;
+  n: number;
 }
 
 export interface RestEvent {
@@ -135,41 +147,46 @@ export interface Mark {
 }
 
 const REF_RE = /(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9-]*\/\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*)?#([0-9]+)/g;
-
-/** The prerequisites and resume label of one mark text (what follows `agent-blocked-by:`). */
-export function parseMarkText(text: string, selfRepo: string): { refs: Ref[]; resume: string } {
-  const self = selfRepo.toLowerCase();
-  const seen = new Map<string, Ref>();
-  for (const m of text.matchAll(REF_RE)) {
-    const r = { repo: (m[1] ?? '').toLowerCase() || self, number: Number(m[2]) };
-    seen.set(refKey(r), r);
-  }
-  const refs = [...seen.values()].sort((a, b) => (a.repo === b.repo ? a.number - b.number : a.repo < b.repo ? -1 : 1));
-  const resume = /resume=([^ ]+)/.exec(text)?.[1] ?? '';
-  return { refs, resume };
-}
+const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /**
- * The registrations that count in the current wait, oldest first — the daemon's rule: a comment holding
- * the mark, written by a maintainer of the repository (OWNER / MEMBER / COLLABORATOR; the daemon also
- * accepts its own write account, which has write access and so is one of them), not one of the daemon's
- * own "resolved" comments, and strictly after the waiting label was last taken off. The last mark of a
- * comment is the one read. The newest of them is what the daemon uses.
+ * The registrations that count, oldest first — the daemon's rule (scripts/_lib.sh `blocked_mark_pick`):
+ * a comment holding the mark, written by a maintainer of the repository (OWNER / MEMBER / COLLABORATOR;
+ * the daemon also accepts its own write account, which the client does not know — it has write access,
+ * so in practice it is one of them), not one of the daemon's own "resolved" comments, and strictly after
+ * the waiting label was last taken off (`since`, '' = never). The newest is what the daemon uses.
  */
-export function roundMarks(comments: readonly RestComment[], round: Round, selfRepo: string): Mark[] {
-  const out: Mark[] = [];
-  for (const c of comments) {
-    const body = c.body ?? '';
-    if (!body.includes(BLOCKED_MARK)) continue;
-    if (!['OWNER', 'MEMBER', 'COLLABORATOR'].includes(c.author_association ?? '')) continue;
-    if (body.includes(RESOLVED_MARK)) continue;
-    if (round.since !== '' && !((c.created_at ?? '') > round.since)) continue;
-    const all = [...body.matchAll(/<!-- agent-blocked-by:([^>]*)-->/g)];
-    const text = all.length ? all[all.length - 1][1] : '';
-    out.push({ id: c.id, createdAt: c.created_at ?? '', ...parseMarkText(text, selfRepo) });
+export function countingMarks(comments: readonly MarkComment[], since: string): MarkComment[] {
+  return comments
+    .filter((c) => (c.body ?? '').includes(BLOCKED_MARK))
+    .filter((c) => TRUSTED.has(c.authorAssociation ?? ''))
+    .filter((c) => !c.body.includes(RESOLVED_MARK))
+    .filter((c) => since === '' || (c.createdAt ?? '') > since)
+    .sort((a, b) => ((a.createdAt ?? '') < (b.createdAt ?? '') ? -1 : (a.createdAt ?? '') > (b.createdAt ?? '') ? 1 : (a.id ?? 0) - (b.id ?? 0)));
+}
+
+/** What one registration says: the last mark of the comment, its prerequisites (daemon's `r`/`n`) and resume label. */
+export function parseMark(body: string, self: string): { ends: MarkEnd[]; resume: string } {
+  const marks = [...body.matchAll(/<!-- agent-blocked-by:([^>]*)-->/g)];
+  const text = marks.length ? marks[marks.length - 1][1] : '';
+  const seen = new Map<string, MarkEnd>();
+  for (const x of text.matchAll(REF_RE)) {
+    let r = (x[1] ?? '').toLowerCase();
+    if (r === self.toLowerCase()) r = '';
+    const n = Number(x[2]);
+    seen.set(`${r}#${n}`, { r, n });
   }
-  // the daemon: sort_by(.created_at, .id) | last
-  return out.sort((a, b) => (a.createdAt === b.createdAt ? a.id - b.id : a.createdAt < b.createdAt ? -1 : 1));
+  const ends = [...seen.values()].sort((a, b) => (a.r < b.r ? -1 : a.r > b.r ? 1 : a.n - b.n));
+  return { ends, resume: /resume=([^ ]+)/.exec(text)?.[1] ?? '' };
+}
+
+/** The registrations of the current wait, oldest first (countingMarks), with their prerequisites as `Ref`s. */
+export function roundMarks(comments: readonly MarkComment[], round: Round, selfRepo: string): Mark[] {
+  const self = selfRepo.toLowerCase();
+  return countingMarks(comments, round.since).map((c) => {
+    const { ends, resume } = parseMark(c.body, self);
+    return { id: c.id, createdAt: c.createdAt, refs: ends.map((e) => ({ repo: e.r || self, number: e.n })), resume };
+  });
 }
 
 /** The comment a registration of this client is: a sentence for people, the daemon's mark, this operation's id. */

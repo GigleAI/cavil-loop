@@ -3,9 +3,19 @@
 // the native relation write. Every list is read to its last page; anything short throws (the caller
 // reads a throw as "could not read", never as "nothing there"). The rules are shared/blocked.ts.
 
-import type { BlockedRead, Pick, Ref, RestComment, RestEvent } from '../shared/blocked';
+import type { BlockedRead, MarkComment, Pick, Ref, RestEvent } from '../shared/blocked';
 import { roundMarks, roundOf } from '../shared/blocked';
 import { GitHubClient, GitHubError } from './github';
+
+/** a comment as GitHub's REST list gives it */
+export interface RestComment {
+  id: number;
+  body: string | null;
+  created_at: string;
+  author_association?: string | null;
+}
+
+const markCommentOf = (c: RestComment): MarkComment => ({ id: c.id, body: c.body ?? '', createdAt: c.created_at, authorAssociation: c.author_association ?? '' });
 
 function repoPath(repo: string): string {
   const [owner, name] = repo.split('/');
@@ -88,7 +98,7 @@ export async function readBlocked(client: GitHubClient, repo: string, number: nu
     isPr: !!item.pull_request,
     labels,
     round,
-    marks: roundMarks(comments, round, repo),
+    marks: roundMarks(comments.map(markCommentOf), round, repo),
     native,
   };
 }

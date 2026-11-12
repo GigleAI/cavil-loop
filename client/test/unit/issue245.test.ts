@@ -19,7 +19,7 @@ describe('GitHub#245: hand-over rules', () => {
     expect(handoffLabelNames('none', hb)).toEqual([]);
     expect(handoffLabelNames('agent', hb)).toEqual(['pending/agent']);
     expect(handoffLabelNames('autopilot', hb)).toEqual(['autopilot', 'pending/agent']);
-    const custom = { human: 'wait', agent: ' go ', autopilot: ' ship ', running: 'doing/agent' };
+    const custom = { human: 'wait', agent: ' go ', autopilot: ' ship ', running: 'doing/agent', blocked: 'pending/blocked' };
     expect(handoffLabelNames('autopilot', custom)).toEqual(['ship', 'go']);
     expect(handoffLabelNames('autopilot', { ...hb, autopilot: '  ' })).toBeNull();
     expect(handoffLabelNames('agent', { ...hb, autopilot: '' })).toEqual(['pending/agent']);

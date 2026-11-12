@@ -66,7 +66,7 @@ test.beforeEach(async () => {
   // #14 waits already: the waiting label went on (event 1) and a maintainer registered PR #12 after it
   w.labelEvents.set(`${REPO}#14`, [{ id: 1, event: 'labeled', label: { name: 'pending/blocked' }, actor: { login: 'user-1' }, created_at: '2026-11-10T01:00:00Z' }]);
   w.comments.set(`${REPO}#14`, [
-    { id: 'IC_14_1', url: 'https://github.com/acme/demo/issues/14#issuecomment-1', createdAt: '2026-11-10T01:00:05Z', bodyHTML: '<p>waits</p>', author: { login: 'user-1' }, body: '在等 PR #12\n<!-- agent-blocked-by: #12 resume=pending/agent -->', association: 'OWNER' },
+    { id: 'IC_14_1', url: 'https://github.com/acme/demo/issues/14#issuecomment-1', createdAt: '2026-11-10T01:00:05Z', bodyHTML: '<p>waits</p>', author: { login: 'user-1' }, body: '在等 PR #12\n<!-- agent-blocked-by: #12 resume=pending/agent -->', authorAssociation: 'OWNER' },
   ]);
 });
 test.afterEach(async () => {
@@ -172,8 +172,8 @@ test('GitHub#434: an item in another flow cannot enter (button greyed, why named
   await page.getByTestId('confirm-cancel').click();
   // Settings: an empty waiting label = no button
   await page.getByTestId('open-settings').click();
-  await page.getByTestId('blocked-label').fill('');
-  await page.getByTestId('blocked-label').blur();
+  await page.getByTestId('hand-back-blocked').fill('');
+  await page.getByTestId('hand-back-blocked').blur();
   await page.getByTestId('back').click();
   detail = await openItem(page, 10);
   await expect(detail.getByTestId('blocked-open')).toHaveCount(0);

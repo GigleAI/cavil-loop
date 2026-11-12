@@ -3139,6 +3139,26 @@ sub_issue_rollup_drain() {
 
 BLOCKED_MARK='<!-- agent-blocked-by:'
 
+# 从一组评论里挑出这一轮等待算数的那条前置登记，解析出前置（GitHub#429 抽出，供 daemon 和客户端对拍）。
+# stdin：评论列表，REST 形状（user.login / author_association / body / created_at / id），可以是
+# --paginate --slurp 的「页的数组」。参数：<loop 写入账号> <本仓库 owner/repo 小写> <最近一次摘掉等前置标签的时间，空 = 从没摘过>
+# stdout：{set:[{r,n}], resume}；r 空 = 本仓库。客户端（client/src/data/loopBlocked.ts）照同一套规则实现，
+# 两边用 tests/fixtures/blocked-marks.json 对拍（tests/blocked-mark-parse.test.sh、client 单元测试）——改这里要两边一起改。
+blocked_mark_pick() {   # <me> <self> <since>
+    jq -c --arg M "$BLOCKED_MARK" --arg me "$1" --arg self "$2" --arg since "$3" '
+        [ .[][]? | select((.body // "") | contains($M))
+          | select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)
+                   or ((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)))
+          | select((.body | contains("<!-- agent-blocked-resolved")) | not)
+          | select($since == "" or (.created_at // "") > $since) ]
+        | sort_by(.created_at // "", .id // 0) | last
+        | if . == null then {set: [], resume: ""} else
+            (.body | [ match("<!-- agent-blocked-by:([^>]*)-->"; "g") ] | last | .captures[0].string // "") as $m
+            | { set: ([ $m | scan("(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*)?#([0-9]+)")
+                          | {r: ((.[0] // "") | ascii_downcase | if . == $self then "" else . end), n: (.[1] | tonumber)} ] | unique),
+                resume: (first($m | capture("resume=(?<r>[^ ]+)") | .r) // "") } end'
+}
+
 # 挂着就说明这条活不归「等前置」管：人叫停了，或已经在别的流程里
 blocked_stop_labels() {
     [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
@@ -3209,18 +3229,7 @@ blocked_decide() {   # <编号>
     if ! comments=$(gh api --paginate --slurp "repos/$REPO/issues/$num/comments" 2>/dev/null) || [ -z "$comments" ]; then
         _bfail "读不到 #$num 的评论"; return 2
     fi
-    if ! mark=$(printf '%s' "$comments" | jq -c --arg M "$BLOCKED_MARK" --arg me "$me" --arg self "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" --arg since "$(printf '%s' "$ep" | jq -r .since)" '
-        [ .[][]? | select((.body // "") | contains($M))
-          | select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)
-                   or ((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)))
-          | select((.body | contains("<!-- agent-blocked-resolved")) | not)
-          | select($since == "" or (.created_at // "") > $since) ]
-        | sort_by(.created_at // "", .id // 0) | last
-        | if . == null then {set: [], resume: ""} else
-            (.body | [ match("<!-- agent-blocked-by:([^>]*)-->"; "g") ] | last | .captures[0].string // "") as $m
-            | { set: ([ $m | scan("(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9-]*/\\.?[A-Za-z0-9_-][A-Za-z0-9_.-]*)?#([0-9]+)")
-                          | {r: ((.[0] // "") | ascii_downcase | if . == $self then "" else . end), n: (.[1] | tonumber)} ] | unique),
-                resume: (first($m | capture("resume=(?<r>[^ ]+)") | .r) // "") } end' 2>/dev/null) || [ -z "$mark" ]; then
+    if ! mark=$(printf '%s' "$comments" | blocked_mark_pick "$me" "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" "$(printf '%s' "$ep" | jq -r .since)" 2>/dev/null) || [ -z "$mark" ]; then
         _bfail "读不懂 #$num 评论里的前置标记"; return 2
     fi
     if ! deps=$(gh api --paginate --slurp "repos/$REPO/issues/$num/dependencies/blocked_by" 2>/dev/null) || [ -z "$deps" ]; then

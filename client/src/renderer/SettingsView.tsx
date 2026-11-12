@@ -176,11 +176,13 @@ export function SettingsView({
       </section>
 
       <section id="set-hand-back" data-testid="hand-back-settings">
-        <h3>流程标签（顶栏的三个数、「交给 agent」「托管」都用这几个）</h3>
+        <h3>流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）</h3>
         <p className="muted small">
           顶栏右侧的「运行中 / 等 agent / 等人处理」三个数，分别数开着的条目里带「运行中的标签」「交给 agent 的标签」「等人处理的标签」的。运行中的标签留空，就不显示「运行中」这个数；另外两格留空会恢复成默认值。
           <br />
           详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
+          <br />
+          <b>关系图</b>：开着的 issue 挂着「等前置的标签」时，读它评论里 loop 的前置登记，和 GitHub 的「Blocked by」一起画成依赖线（默认 pending/blocked，要和 daemon 配置一致）。只认仓库所有者 / 成员 / 协作者写的登记。
         </p>
         <div className="row label-grid">
           <label>
@@ -200,8 +202,8 @@ export function SettingsView({
             <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
           </label>
           <label>
-            等前置的标签（「等前置…」时加上；留空 = 不显示按钮）
-            <input data-testid="blocked-label" defaultValue={state.blockedLabels.blocked} onBlur={(e) => api().setBlockedLabels({ blocked: e.target.value })} />
+            等前置的标签（关系图按它读 loop 的前置登记，「等前置…」时加上；留空 = 两样都不做）
+            <input data-testid="hand-back-blocked" defaultValue={state.handBack.blocked} onBlur={(e) => api().setHandBack({ blocked: e.target.value })} />
           </label>
           <label>
             其他流程标签（挂着时不让登记等前置；逗号分隔，* 结尾 = 前缀）

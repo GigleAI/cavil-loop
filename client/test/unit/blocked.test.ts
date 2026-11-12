@@ -27,7 +27,7 @@ import {
   roundOf,
   type BlockedRead,
   type Facts,
-  type RestComment,
+  type MarkComment,
   type RestEvent,
 } from '../../src/shared/blocked';
 
@@ -37,16 +37,27 @@ const SELF = 'gigleai/cavil-loop';
 const NAMES = { human: 'pending/human', agent: 'pending/agent', running: 'doing/agent' };
 const BL = DEFAULT_BLOCKED_LABELS;
 
-/** the single-quoted jq program that follows `marker` in _lib.sh */
-function daemonJq(marker: string): string {
+/** the single-quoted jq program that follows `marker` in _lib.sh, up to `end` */
+function daemonJq(marker: string, end: string): string {
   const at = LIB.indexOf(marker);
   if (at < 0) throw new Error(`not in _lib.sh: ${marker}`);
   const open = LIB.indexOf("'\n", at);
-  const close = LIB.indexOf("' 2>/dev/null)", open + 2);
+  const close = LIB.indexOf(end, open + 2);
+  if (close < 0) throw new Error(`end not found after ${marker}`);
   return LIB.slice(open + 1, close);
 }
-const MARK_JQ = daemonJq('if ! mark=$(printf');
-const ROUND_JQ = daemonJq('if ! ep=$(printf');
+// GitHub#429 moved the daemon's pick into its own function (blocked_mark_pick); its jq ends the function
+const MARK_JQ = daemonJq('blocked_mark_pick() {', "'\n}");
+const ROUND_JQ = daemonJq('if ! ep=$(printf', "' 2>/dev/null)");
+
+/** a comment as GitHub's REST list gives it (what the daemon reads) */
+interface RestComment {
+  id: number;
+  body: string;
+  created_at: string;
+  author_association: string;
+}
+const asMark = (c: RestComment): MarkComment => ({ id: c.id, body: c.body, createdAt: c.created_at, authorAssociation: c.author_association });
 
 function jq(program: string, args: Record<string, string>, input: unknown): any {
   const argv = ['-c', ...Object.entries(args).flatMap(([k, v]) => ['--arg', k, v]), program];
@@ -102,7 +113,7 @@ describe('the registration the daemon counts — client and daemon on the same i
       for (let k = 0; k <= COMMENTS.length; k++) {
         const events = EVENTS.slice(0, e);
         const comments = COMMENTS.slice(0, k);
-        const marks = roundMarks(comments, roundOf(events, 'pending/blocked'), SELF);
+        const marks = roundMarks(comments.map(asMark), roundOf(events, 'pending/blocked'), SELF);
         const { mark } = daemonRead(events, comments);
         const latest = marks.length ? marks[marks.length - 1] : null;
         expect({ set: latest ? toDaemonSet(latest.refs) : [], resume: latest ? latest.resume : '' }, `events ${e} comments ${k}`).toEqual(mark);
@@ -112,7 +123,7 @@ describe('the registration the daemon counts — client and daemon on the same i
   });
 
   it('reads the hard cases the way the daemon does (positive check of the fixture itself)', () => {
-    const marks = roundMarks(COMMENTS, roundOf(EVENTS, 'pending/blocked'), SELF);
+    const marks = roundMarks(COMMENTS.map(asMark), roundOf(EVENTS, 'pending/blocked'), SELF);
     expect(marks.map((m) => m.id)).toEqual([105, 106, 107]);
     expect(marks[1].refs.map(refKey).sort()).toEqual(['gigleai/cavil-loop#5', 'gigleai/cavil-loop#8', 'other-org/repo.x#6']);
     expect(marks[1].resume).toBe('pending/agent/01');

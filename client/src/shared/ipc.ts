@@ -123,7 +123,7 @@ export interface CavilApi {
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
-  /** GitHub#434: the two settings of "等前置…" */
+  /** GitHub#434: the other flow labels of "等前置…" (the waiting label is set with setHandBack) */
   setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
   /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */
   blockedRead(key: string): Promise<BlockedView>;

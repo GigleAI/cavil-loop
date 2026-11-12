@@ -12,17 +12,28 @@
 //   drawn as "no relations": it is counted apart and the view says so.
 // - the layout depends on which nodes, boxes and arrows there are (`structure`), never on states
 //   or labels: a state change redraws a node, it never moves one.
+// - GitHub#429: an arrow also comes from the loop's own registration (the hidden comment the daemon
+//   waits by), read only for open issues carrying the "waiting for a prerequisite" label; merged with
+//   GitHub's "Blocked by" (one arrow per pair). Its prerequisite may be a pull request: that node is
+//   drawn too (only as such an end — PRs still never go in as entries). A registration read under
+//   another label setting, or not yet read, makes the issue "unknown", never "waits for nothing".
 
-import type { IssueStateReason, Item, ItemState, RelatedIssue } from '../shared/types';
+import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
+import { loopCandidate } from './loopBlocked';
+import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
   key: string;
   repo: string;
   number: number;
+  /** GitHub#429: 'pr' only for a pull request named by a loop registration */
+  kind: ItemKind;
   title: string;
   url: string;
   state: ItemState;
   stateReason: IssueStateReason | null;
+  /** GitHub#429: a pull request's draft mark (the item's when it is in a source, else what the registration read said); null = not a PR / not known */
+  isDraft: boolean | null;
   /** the item as the sources hold it; null = in no ticked source (drawn dashed, "不在当前来源中") */
   item: Item | null;
   /** in a source but hidden by the search: drawn faded, so the arrows into it do not break */
@@ -53,7 +64,7 @@ export interface GraphModel {
   /** top-level node keys, in a stable order */
   roots: string[];
   edges: GraphEdge[];
-  /** the items the search picked that went in */
+  /** the items the search picked that went in (GitHub#429: or are drawn as the other end of one that did) */
   entries: number;
   /** the items the search picked that have no relation (PRs included): not drawn */
   noRelation: number;
@@ -63,9 +74,14 @@ export interface GraphModel {
   structure: string;
 }
 
-const hasRelations = (i: Item) => {
+/** GitHub#429: the loop registration's prerequisites under the current setting ('' = off: none taken) */
+const loopEnds = (i: Item, loopLabel: string): RelatedIssue[] => (loopLabel && i.loopBlocked?.label === loopLabel ? i.loopBlocked.ends : []);
+/** GitHub#429: an issue whose registration should be there but was not read under the current setting */
+const loopUnknown = (i: Item, loopLabel: string) => loopCandidate(i, loopLabel) && i.loopBlocked?.label !== loopLabel;
+
+const hasRelations = (i: Item, loopLabel: string) => {
   const r = i.relations!;
-  return r.parent !== null || r.subIssues.length > 0 || r.blockedBy.length > 0 || r.blocking.length > 0;
+  return r.parent !== null || r.subIssues.length > 0 || r.blockedBy.length > 0 || r.blocking.length > 0 || loopEnds(i, loopLabel).length > 0;
 };
 
 const byNumber = (a: { repo: string; number: number }, b: { repo: string; number: number }) =>
@@ -75,26 +91,38 @@ const byNumber = (a: { repo: string; number: number }, b: { repo: string; number
  * The graph of `shown` (the items the view's sources and search picked) within `all` (every item of
  * the ticked sources, searched or not).
  */
-export function buildGraph(all: Item[], shown: Item[]): GraphModel {
+export function buildGraph(
+  all: Item[],
+  shown: Item[],
+  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = only GitHub's own relations */
+  loopLabel: string = '',
+): GraphModel {
   const inSource = new Map(all.map((i) => [i.key, i]));
   const picked = new Set(shown.map((i) => i.key));
   let unknown = 0;
   let noRelation = 0;
   const entries: Item[] = [];
+  /** picked, known, with no relation of its own — not drawn unless another entry names it */
+  const rest: Item[] = [];
   for (const i of shown) {
-    if (i.relations === undefined) unknown++;
-    else if (i.kind === 'issue' && hasRelations(i)) entries.push(i);
-    else noRelation++;
+    if (i.relations === undefined || loopUnknown(i, loopLabel)) unknown++;
+    else if (i.kind === 'issue' && hasRelations(i, loopLabel)) entries.push(i);
+    else rest.push(i);
   }
 
   // the nodes: every entry, and the other end of each of its relations
   const nodes = new Map<string, GraphNode>();
   /** what GitHub said about an end outside the sources, and when that was read (the newest wins) */
   const heardAt = new Map<string, number>();
-  const blank = (x: { key: string; repo: string; number: number; title: string; url: string; state: ItemState; stateReason: IssueStateReason | null }, item: Item | null): GraphNode => ({
+  const blank = (
+    x: { key: string; repo: string; number: number; title: string; url: string; state: ItemState; stateReason: IssueStateReason | null; kind?: ItemKind; isDraft?: boolean | null },
+    item: Item | null,
+  ): GraphNode => ({
     key: x.key,
     repo: x.repo,
     number: x.number,
+    kind: x.kind === 'pr' ? 'pr' : 'issue',
+    isDraft: x.kind === 'pr' && typeof x.isDraft === 'boolean' ? x.isDraft : null,
     title: x.title,
     url: x.url,
     state: x.state,
@@ -111,11 +139,13 @@ export function buildGraph(all: Item[], shown: Item[]): GraphModel {
   for (const e of entries) {
     const r = e.relations!;
     const at = e.relationsAt ?? 0;
-    for (const end of [...(r.parent ? [r.parent] : []), ...r.subIssues, ...r.blockedBy, ...r.blocking]) {
+    const loop = new Set(loopEnds(e, loopLabel).map((x) => x.key));
+    for (const end of [...(r.parent ? [r.parent] : []), ...r.subIssues, ...r.blockedBy, ...r.blocking, ...loopEnds(e, loopLabel)]) {
       const item = inSource.get(end.key);
       if (item) {
-        // a PR never has relations; an end that is one would be a GitHub oddity: leave it out
-        if (item.kind === 'issue' && !nodes.has(end.key)) nodes.set(end.key, blank(item, item));
+        // a PR never has GitHub relations; one named there would be a GitHub oddity: leave it out —
+        // but a loop registration may wait for a PR (GitHub#429): that one is drawn
+        if ((item.kind === 'issue' || loop.has(end.key)) && !nodes.has(end.key)) nodes.set(end.key, blank(item, item));
         continue;
       }
       const seen = heardAt.get(end.key);
@@ -125,6 +155,12 @@ export function buildGraph(all: Item[], shown: Item[]): GraphModel {
       }
     }
   }
+
+  // GitHub#429: a picked item with no relation of its own that an entry names (a loop registration
+  // waits for it; GitHub records no reverse side for that) is drawn: it counts as shown, not hidden
+  let drawnEnds = 0;
+  for (const i of rest) if (nodes.has(i.key)) drawnEnds++;
+  else noRelation++;
 
   // boxes: a child's own word on its parent first, then the parents' sub-issue lists
   const parentOf = new Map<string, string>();
@@ -153,6 +189,8 @@ export function buildGraph(all: Item[], shown: Item[]): GraphModel {
   for (const n of known) {
     for (const b of n.item!.relations!.blockedBy) addEdge(b.key, n.key);
     for (const x of n.item!.relations!.blocking) addEdge(n.key, x.key);
+    // GitHub#429: the loop's registration, the same direction as "Blocked by" (same pair: one arrow)
+    for (const b of loopEnds(n.item!, loopLabel)) addEdge(b.key, n.key);
   }
   pairs.sort(([a, b], [c, d]) => (a === c ? (b < d ? -1 : b > d ? 1 : 0) : a < c ? -1 : 1));
   // an in-source node's state is the fresher one: it is read with the item, not with the other end's relations
@@ -187,12 +225,12 @@ export function buildGraph(all: Item[], shown: Item[]): GraphModel {
   for (const n of nodes.values()) {
     const it = n.item;
     const sub = it?.subIssues ?? null;
-    n.look = JSON.stringify([n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
+    n.look = JSON.stringify([n.kind, n.isDraft, n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
   }
 
   const roots = [...nodes.values()].filter((n) => n.parent === null).sort(byNumber).map((n) => n.key);
   const structure = JSON.stringify([[...nodes.keys()].sort(), [...parentOf].sort(), pairs]);
-  return { nodes, roots, edges, entries: entries.length, noRelation, unknown, structure };
+  return { nodes, roots, edges, entries: entries.length + drawnEnds, noRelation, unknown, structure };
 }
 
 /** The sub-issue count a box shows: GitHub's own count when the item carries it, else what the graph holds. */
@@ -202,4 +240,16 @@ export function boxProgress(model: GraphModel, key: string): { completed: number
   const subs = n.item?.relations?.subIssues;
   if (subs?.length) return { total: subs.length, completed: subs.filter((s) => s.state === 'closed').length };
   return null;
+}
+
+/**
+ * GitHub#429: a node's state colour and words — the same rule as the board card and the table
+ * (`stateTone` / `badgeText`), with every input the node carries (a PR's draft mark included).
+ * The one place the graph asks; GraphView and its minimap go through it.
+ */
+export function nodeTone(n: GraphNode): StateTone {
+  return stateTone(n.kind, n.state, n.stateReason, n.isDraft);
+}
+export function nodeBadge(n: GraphNode): string {
+  return badgeText(n.kind, n.state, n.stateReason, n.isDraft);
 }
