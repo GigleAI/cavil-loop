@@ -2,17 +2,26 @@
 // the shortcut list both read SHORTCUTS. These cases pin the rules; the window tests
 // (test/e2e/app.spec.ts, "GitHub#192: …") press the real keys and check what GitHub received.
 import { describe, expect, it } from 'vitest';
-import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
+import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, resolveKey, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
 
 const key = (k: string, o: Partial<KeyLike> = {}): KeyLike => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o });
-const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none' };
-/** the event a spec describes, with ⌘ (mac) or Ctrl */
-const eventOf = (spec: KeySpec, mod: 'meta' | 'ctrl' = 'meta'): KeyLike =>
-  key(spec.key === '?' ? '?' : spec.shift && spec.key.length === 1 ? spec.key.toUpperCase() : spec.key, {
+const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none', mac: true };
+/** a digit's key as a US layout reports it with Shift / ⌥ held (GitHub#442: matched by `code`, not by this) */
+const SHIFTED_DIGIT: Record<string, string> = { '1': '!', '2': '@', '3': '#' };
+const ALT_DIGIT: Record<string, string> = { '1': '¡', '2': '™', '3': '£' };
+/** the event a spec describes, with ⌘ (mac) or Ctrl — as the browser reports it, `code` included */
+const eventOf = (spec: KeySpec, mod: 'meta' | 'ctrl' = 'meta'): KeyLike => {
+  const digit = /^[0-9]$/.test(spec.key);
+  const k =
+    spec.key === '?' ? '?' : digit ? (spec.shift ? (SHIFTED_DIGIT[spec.key] ?? spec.key) : spec.alt ? (ALT_DIGIT[spec.key] ?? spec.key) : spec.key) : spec.shift && spec.key.length === 1 ? spec.key.toUpperCase() : spec.key;
+  return key(k, {
     metaKey: Boolean(spec.mod) && mod === 'meta',
     ctrlKey: Boolean(spec.mod) && mod === 'ctrl',
     shiftKey: Boolean(spec.shift),
+    altKey: Boolean(spec.alt),
+    ...(digit ? { code: `Digit${spec.key}` } : {}),
   });
+};
 /** a context in which a scope's shortcuts are the ones meant to act */
 const ctxFor = (scope: Scope): KeyContext =>
   scope === 'global' || scope === 'detail' || scope === 'graph'
@@ -119,8 +128,10 @@ describe('resolve: who gets the key', () => {
       for (const ch of ['c', 'C', 'a', 'h', 'e']) expect(resolve(key(ch), ctx), `${where}: ${ch}`).toBeNull();
       expect(resolve(key('n', { metaKey: true }), ctx), `${where}: ⌘N`).toBe('newIssue');
       expect(resolve(key('n', { ctrlKey: true }), ctx), `${where}: Ctrl+N`).toBe('newIssue');
+      // GitHub#442: the layouts are ⌘⇧1/2/3 now, ⌘1…⌘9 pick a tab — both ⌘ keys, so they act in a field too
       for (const [d, id] of [['1', 'viewBoard'], ['2', 'viewTable'], ['3', 'viewGraph']] as const) {
-        expect(resolve(key(d, { metaKey: true }), ctx), `${where}: ⌘${d}`).toBe(id);
+        expect(resolve(key(SHIFTED_DIGIT[d], { metaKey: true, shiftKey: true, code: `Digit${d}` }), ctx), `${where}: ⌘⇧${d}`).toBe(id);
+        expect(resolve(key(d, { metaKey: true }), ctx), `${where}: ⌘${d}`).toBe('tabAt');
         expect(resolve(key(d), ctx), `${where}: ${d}`).toBeNull();
       }
     }
@@ -128,11 +139,13 @@ describe('resolve: who gets the key', () => {
     expect(resolve(key('c'), idle)).toBe('newIssue');
     expect(resolve(key('n', { metaKey: true }), idle)).toBe('newIssue');
     expect(resolve(key('c'), { ...idle, page: 'settings' })).toBe('newIssue');
-    expect(resolve(key('2', { ctrlKey: true }), { ...idle, page: 'settings' })).toBe('viewTable');
-    // a bare N or digit is nobody's; ⌘N / ⌘1 with Shift or Alt neither
+    expect(resolve(key('@', { ctrlKey: true, shiftKey: true, code: 'Digit2' }), { ...idle, page: 'settings' })).toBe('viewTable');
+    // a bare N or digit is nobody's; ⌘N with Shift neither; ⌥⌘1 only on macOS (GitHub#442)
     for (const k of ['n', '1', '2', '3']) expect(resolve(key(k), idle), k).toBeNull();
     expect(resolve(key('N', { metaKey: true, shiftKey: true }), idle)).toBeNull();
-    expect(resolve(key('1', { metaKey: true, altKey: true }), idle)).toBeNull();
+    expect(resolve(key('¡', { metaKey: true, altKey: true, code: 'Digit1' }), idle)).toBe('viewBoard');
+    expect(resolve(key('1', { ctrlKey: true, altKey: true, code: 'Digit1' }), { ...idle, mac: false })).toBeNull();
+    expect(resolve(key('4', { metaKey: true, altKey: true, code: 'Digit4' }), idle)).toBeNull();
     // a layer on top (dialog, picker, shortcut list) takes them
     for (const layer of ['dialog', 'picker', 'help'] as const) {
       expect(resolve(key('n', { metaKey: true }), { ...idle, layer }), layer).toBeNull();
@@ -180,7 +193,7 @@ describe('resolve: who gets the key', () => {
     for (const k of ['l', 'm', 'r']) expect(resolve(key(k), { ...idle, typing: 'reply' }), k).toBeNull();
   });
   it('GitHub#433: the keys the discussion frame passes on are exactly those of FRAME_IDS, and each resolves to its own id', () => {
-    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked']);
+    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt']);
     expect([...FRAME_FORWARD]).toEqual([
       { key: 'r', mod: false, shift: false },
       { key: 'x', mod: true, shift: true },
@@ -188,10 +201,12 @@ describe('resolve: who gets the key', () => {
       { key: 'c', mod: true, shift: true },
       // GitHub#434: "等前置…"
       { key: 'b', mod: true, shift: true },
+      // GitHub#442: ⌘1 … ⌘9 pick a tab from inside the discussion too
+      ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((k) => ({ key: k, mod: true, shift: false })),
     ]);
-    // one table: every forwarded key is a single lower-case key that resolves (outside any field) to a FRAME_IDS shortcut
+    // one table: every forwarded key is a single lower-case key or digit that resolves (outside any field) to a FRAME_IDS shortcut
     for (const f of FRAME_FORWARD) {
-      expect(f.key).toMatch(/^[a-z]$/);
+      expect(f.key).toMatch(/^[a-z1-9]$/);
       const id = resolve(key(f.key, { metaKey: f.mod, shiftKey: f.shift }), idle);
       expect(FRAME_IDS, JSON.stringify(f)).toContain(id);
     }
@@ -218,7 +233,12 @@ describe('keys on screen', () => {
     expect(keyText('helpClose', true)).toBe('Esc / ?');
     expect(keyText('newIssue', true)).toBe('C / ⌘N');
     expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
-    expect(keyText('viewGraph', true)).toBe('⌘3');
+    // GitHub#442: ⌘⇧1/2/3, and on macOS also ⌥⌘1/2/3 (macOS keeps ⌘⇧3 for its screenshot)
+    expect(keyText('viewGraph', true)).toBe('⌘⇧3 / ⌥⌘3');
+    expect(keyText('viewGraph', false)).toBe('Ctrl+Shift+3');
+    expect(keyText('viewBoard', true)).toBe('⌘⇧1 / ⌥⌘1');
+    expect(keyText('tabAt', true)).toBe('⌘1 … ⌘9');
+    expect(keyText('tabAt', false)).toBe('Ctrl+1 … Ctrl+9');
     // GitHub#413 / #433
     expect(keyText('closeIssue', true)).toBe('⌘⇧X');
     expect(keyText('closeIssue', false)).toBe('Ctrl+Shift+X');
@@ -227,5 +247,38 @@ describe('keys on screen', () => {
     expect(keyText('autopilot', true)).toBe('⌘⇧C');
     expect(keyText('autopilot', false)).toBe('Ctrl+Shift+C');
     expect(keyText('preview', false)).toBe('Ctrl+Shift+P');
+  });
+});
+
+describe('GitHub#442: ⌘1 … ⌘9 and ⌘⇧1/2/3', () => {
+  it('⌘N picks the tab at N: one shortcut, the digit that matched says which', () => {
+    for (let n = 1; n <= 9; n++) {
+      const hit = resolveKey(key(String(n), { metaKey: true, code: `Digit${n}` }), idle);
+      expect(hit?.id).toBe('tabAt');
+      expect(hit?.spec.key).toBe(String(n));
+      expect(resolveKey(key(String(n), { ctrlKey: true, code: `Digit${n}` }), { ...idle, mac: false })?.spec.key).toBe(String(n));
+    }
+    // ⌘0 is the menu's "实际大小", never a tab
+    expect(resolve(key('0', { metaKey: true, code: 'Digit0' }), idle)).toBeNull();
+  });
+  it('a digit is matched by the key itself: Shift and the layout do not change which key it is', () => {
+    // US: ⌘⇧1 reports "!"; some systems report "1"; a French layout reports "&" for ⌘1 and "1" for ⌘⇧1
+    expect(resolve(key('!', { metaKey: true, shiftKey: true, code: 'Digit1' }), idle)).toBe('viewBoard');
+    expect(resolve(key('1', { metaKey: true, shiftKey: true, code: 'Digit1' }), idle)).toBe('viewBoard');
+    expect(resolve(key('&', { metaKey: true, code: 'Digit1' }), idle)).toBe('tabAt');
+    expect(resolveKey(key('é', { ctrlKey: true, code: 'Digit2' }), { ...idle, mac: false })?.spec.key).toBe('2');
+    // the number pad counts as its digit
+    expect(resolveKey(key('3', { metaKey: true, code: 'Numpad3' }), idle)?.spec.key).toBe('3');
+    // no code reported (a forwarded key from the discussion frame): the key text decides
+    expect(resolveKey(key('4', { metaKey: true }), idle)?.spec.key).toBe('4');
+    // another key that reports a digit's text is not that digit
+    expect(resolve(key('1', { metaKey: true, code: 'KeyQ' }), idle)).toBeNull();
+  });
+  it('the macOS-only backup keys are nobody\'s elsewhere, and are not shown there', () => {
+    for (const d of ['1', '2', '3']) {
+      expect(resolve(key(d, { ctrlKey: true, altKey: true, code: `Digit${d}` }), { ...idle, mac: false }), d).toBeNull();
+      expect(resolve(key(d, { metaKey: true, altKey: true, code: `Digit${d}` }), idle), d).not.toBeNull();
+    }
+    expect(keyText('viewTable', false)).toBe('Ctrl+Shift+2');
   });
 });

@@ -10,7 +10,7 @@
 // stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
 // put both back, a few keys (GitHub#322: a bare R, "go to the reply box"; GitHub#433: the ⌘⇧ keys of
-// 关闭 issue / 交给 agent / 托管 — the list is FRAME_FORWARD, built from the shortcut table into this text;
+// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab — the list is FRAME_FORWARD, built from the shortcut table into this text;
 // every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
 // and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
@@ -235,4 +235,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU='";
+export const FRAME_SCRIPT_HASH = "'sha256-nLTC0PavcDJOeAHA30v1yeuCfJNrvRYrs23agDE97xs='";

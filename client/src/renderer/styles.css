@@ -203,6 +203,8 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .board-area { flex: 1; display: flex; min-height: 0; position: relative; }
 .below-bar { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .board-bars { flex: none; min-width: 0; }
+/* GitHub#442 (#260 before #397): while the floating detail is open the bars keep to its left */
+.board-bars.beside-detail { margin-right: var(--detail-space, 560px); }
 .board { flex: 1; min-width: 0; overflow: auto; padding: 4px 16px 16px; }
 .board-area > .board { flex: 1; min-width: 0; }
 .columns { display: flex; gap: 12px; align-items: flex-start; }
@@ -343,10 +345,11 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .tab-icon.tone-closed { color: var(--state-closed-fg); }
 .tab-icon.tone-done { color: var(--state-done-fg); }
 .tab-icon.tone-neutral { color: var(--state-neutral-fg); }
-.tab-icon.running .ring { stroke: var(--accent); opacity: 0.3; }
-.tab-icon.running .arc { stroke: var(--accent); }
-.tab-icon.running { animation: icon-spin 1.1s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .tab-icon.running { animation: none; } }
+/* GitHub#442: "an agent is working on it" — a still robot on a disc, the pair of "waiting for a human" (a spinner read as "still loading") */
+.tab-icon.running .disc { fill: var(--accent); }
+.tab-icon.running .robot { fill: #fff; }
+.tab-icon.running .eye { fill: var(--accent); }
+.tab-icon.running .antenna { stroke: #fff; }
 .tab-icon.waiting .disc { fill: var(--edge-open); }
 .tab-icon.waiting .person { fill: #fff; }
 .tab-dot { position: absolute; top: -3px; right: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--col); box-sizing: content-box; }
@@ -359,6 +362,20 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 /* ---- detail: fills its tab, the content centred (GitHub#397; it floated over the board before) ---- */
 .detail { flex: 1; display: flex; flex-direction: column; background: var(--surface); min-height: 0; overflow: auto; padding: 4px max(0px, calc((100% - 980px) / 2)) 12px; }
 .detail:focus { outline: none; }
+/* GitHub#442: the default way to open an item floats over the board, stuck to the right (GitHub#155 / #260, as before #397) */
+.detail.floating { position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; flex: none; padding: 0; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg); }
+.detail-resize { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 6; }
+.detail-resize:hover, .detail.resizing .detail-resize { background: var(--accent); opacity: 0.35; }
+.detail.resizing { user-select: none; }
+.detail.resizing iframe { pointer-events: none; }
+.detail-spacer { flex: 0 0 var(--detail-space, 560px); align-self: stretch; }
+/* GitHub#442: what can be done with an item (right click on a card / row / graph box) */
+.open-menu { position: fixed; z-index: 50; min-width: 220px; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); font-size: 13px; }
+.open-menu button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 10px; border: none; border-radius: 5px; background: none; text-align: left; color: var(--fg); }
+.open-menu button:hover, .open-menu button:focus-visible { background: var(--accent); color: #fff; outline: none; }
+.open-menu button .hint { color: var(--muted); }
+.open-menu button:hover .hint, .open-menu button:focus-visible .hint { color: inherit; opacity: 0.8; }
+.open-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 /* the panel scrolls as a whole: only the discussion stretches, nothing else is squeezed (clipped boxes would let the frame cover their buttons) */
 .detail > :not(.timeline) { flex-shrink: 0; }
 .detail-head { display: flex; gap: 8px; align-items: center; padding: 8px 12px 4px 16px; flex-wrap: wrap; }

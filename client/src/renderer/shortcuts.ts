@@ -12,8 +12,12 @@
 
 export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dialog' | 'picker' | 'help';
 
-/** `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere) */
-export type KeySpec = { key: string; mod?: boolean; shift?: boolean };
+/**
+ * `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere). `alt` = ⌥ / Alt held too.
+ * `macOnly`: this key exists on macOS only (GitHub#442: ⌥⌘1/2/3, because macOS keeps ⌘⇧3 for its own
+ * screenshot). A digit is matched by the key itself (`code`), not by what Shift / ⌥ / the layout turn it into.
+ */
+export type KeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean };
 
 export type ShortcutId =
   | 'search'
@@ -24,6 +28,7 @@ export type ShortcutId =
   | 'closeTab'
   | 'nextTab'
   | 'prevTab'
+  | 'tabAt'
   | 'sync'
   | 'settings'
   | 'help'
@@ -50,7 +55,10 @@ export type ShortcutId =
   | 'graphZoomOut'
   | 'settingsBack';
 
-export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string };
+/** `range`: the keys are one run (⌘1 … ⌘9), shown on screen as its first and last key */
+export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string; range?: boolean };
+
+const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 
 export const SCOPE_TITLE: Record<Scope, string> = {
   global: '已登录的任何页面',
@@ -69,15 +77,23 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步' },
   { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
   { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
-  // GitHub#372: the three layout buttons
-  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true }], label: '切到看板（在别的页面会先回到看板）' },
-  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true }], label: '切到表格（在别的页面会先回到看板）' },
-  { id: 'viewGraph', scope: 'global', keys: [{ key: '3', mod: true }], label: '切到依赖图（在别的页面会先回到看板）' },
+  // GitHub#372: the three layout buttons. GitHub#442: ⌘⇧1/2/3 (⌘1…⌘9 now pick a tab); on macOS also ⌥⌘1/2/3,
+  // since macOS takes ⌘⇧3 for its screenshot before the window sees it
+  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true, shift: true }, { key: '1', mod: true, alt: true, macOnly: true }], label: '切到看板（在别的页面会先回到看板）' },
+  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true, shift: true }, { key: '2', mod: true, alt: true, macOnly: true }], label: '切到表格（在别的页面会先回到看板）' },
+  {
+    id: 'viewGraph',
+    scope: 'global',
+    keys: [{ key: '3', mod: true, shift: true }, { key: '3', mod: true, alt: true, macOnly: true }],
+    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给截屏，用 ⌥⌘3）',
+  },
   // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
   // with no tab in front it closes the window, as before.
   { id: 'closeTab', scope: 'global', keys: [{ key: 'w', mod: true }], label: '关掉当前标签页（在首页时：macOS 关窗，别的系统不做事）' },
   { id: 'nextTab', scope: 'global', keys: [{ key: ']', mod: true, shift: true }], label: '下一个标签页' },
   { id: 'prevTab', scope: 'global', keys: [{ key: '[', mod: true, shift: true }], label: '上一个标签页' },
+  // GitHub#442: as in a browser — ⌘1 is the leftmost tab (首页), ⌘9 always the last one
+  { id: 'tabAt', scope: 'global', keys: DIGITS.map((key) => ({ key, mod: true })), range: true, label: '切到第几个标签页（1 是首页，9 是最后一个；只有首页时不做事）' },
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
@@ -115,6 +131,8 @@ export type KeyLike = {
   shiftKey: boolean;
   isComposing?: boolean;
   keyCode?: number;
+  /** the physical key ("Digit1"): what a digit is matched by */
+  code?: string;
 };
 
 /** what is on top: a layer takes every key, only its own shortcuts act */
@@ -123,7 +141,8 @@ export type Layer = 'none' | 'dialog' | 'picker' | 'help';
 export type Typing = 'none' | 'reply' | 'other';
 /** which page is showing (GitHub#369): the settings page has its own Esc; anything else is the board's keys */
 export type Page = 'board' | 'settings';
-export type KeyContext = { signedIn: boolean; layer: Layer; typing: Typing; page?: Page };
+/** `mac`: whether macOS-only keys count (default: this machine's answer, `isMac`) */
+export type KeyContext = { signedIn: boolean; layer: Layer; typing: Typing; page?: Page; mac?: boolean };
 
 /** an input method is building a character: its keys (Enter to pick, Esc to drop) are never ours */
 export function composing(e: KeyLike): boolean {
@@ -132,14 +151,18 @@ export function composing(e: KeyLike): boolean {
 
 const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
 
-export function matches(spec: KeySpec, e: KeyLike): boolean {
+export function matches(spec: KeySpec, e: KeyLike, mac: boolean = isMac()): boolean {
+  if (spec.macOnly && !mac) return false;
   const mod = e.metaKey || e.ctrlKey;
-  if (Boolean(spec.mod) !== mod || e.altKey) return false;
+  if (Boolean(spec.mod) !== mod || Boolean(spec.alt) !== e.altKey) return false;
   // '?' needs Shift on most layouts: it is part of the key, not a separate modifier
   if (spec.key === '?') return e.key === '?';
   if (Boolean(spec.shift) !== e.shiftKey) return false;
   // with Shift held a bracket key reports the brace on most layouts (GitHub#397: ⌘⇧] / ⌘⇧[)
   if (spec.shift && SHIFTED[spec.key]) return e.key === spec.key || e.key === SHIFTED[spec.key];
+  // GitHub#442: a digit is the key itself — ⇧1 reports "!" on a US layout, a French one needs Shift for any digit
+  // (no code reported — a key forwarded by the discussion frame: its text decides)
+  if (/^[0-9]$/.test(spec.key)) return typeof e.code === 'string' && e.code !== '' ? /^(Digit|Numpad)[0-9]$/.test(e.code) && e.code.slice(-1) === spec.key : e.key === spec.key;
   return spec.key.length === 1 ? e.key.toLowerCase() === spec.key : e.key === spec.key;
 }
 
@@ -156,6 +179,11 @@ export function matches(spec: KeySpec, e: KeyLike): boolean {
  * typing in one of its fields (the first Esc leaves the field, see SettingsView).
  */
 export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
+  return resolveKey(e, ctx)?.id ?? null;
+}
+
+/** `resolve`, with the key that matched (GitHub#442: ⌘1…⌘9 are one shortcut, the digit says which tab) */
+export function resolveKey(e: KeyLike, ctx: KeyContext): { id: ShortcutId; spec: KeySpec } | null {
   if (composing(e)) return null;
   if (!ctx.signedIn) return null;
   const allowed = (s: Shortcut, k: KeySpec): boolean => {
@@ -168,7 +196,8 @@ export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
     if (settings) return s.scope === 'global' || s.scope === 'settings';
     return s.scope === 'global' || s.scope === 'detail' || s.scope === 'graph';
   };
-  for (const s of SHORTCUTS) if (s.keys.some((k) => allowed(s, k) && matches(k, e))) return s.id;
+  const mac = ctx.mac ?? isMac();
+  for (const s of SHORTCUTS) for (const k of s.keys) if (allowed(s, k) && matches(k, e, mac)) return { id: s.id, spec: k };
   return null;
 }
 
@@ -194,6 +223,7 @@ const KEY_NAME: Record<string, string> = { Enter: '↩', Escape: 'Esc', ArrowUp:
 /** the keys of one spec as shown on screen, e.g. ['⌘', '↩'] or ['Ctrl', '↩'] */
 export function keyParts(spec: KeySpec, mac: boolean): string[] {
   const out: string[] = [];
+  if (spec.alt) out.push(mac ? '⌥' : 'Alt');
   if (spec.mod) out.push(mac ? '⌘' : 'Ctrl');
   if (spec.shift && spec.key !== '?') out.push(mac ? '⇧' : 'Shift');
   out.push(KEY_NAME[spec.key] ?? (spec.key.length === 1 ? spec.key.toUpperCase() : spec.key));
@@ -203,7 +233,14 @@ export function keyParts(spec: KeySpec, mac: boolean): string[] {
 /** one shortcut's keys as one short string (for tooltips): "⌘↩", "Ctrl+↩", "L" */
 export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
   const s = SHORTCUTS.find((x) => x.id === id)!;
-  return s.keys.map((k) => keyParts(k, mac).join(mac ? '' : '+')).join(' / ');
+  const one = (k: KeySpec) => keyParts(k, mac).join(mac ? '' : '+');
+  if (s.range) return `${one(s.keys[0])} … ${one(s.keys[s.keys.length - 1])}`;
+  return shownKeys(s, mac).map(one).join(' / ');
+}
+
+/** the keys of a shortcut that exist on this kind of machine */
+export function shownKeys(s: Shortcut, mac: boolean = isMac()): KeySpec[] {
+  return s.keys.filter((k) => mac || !k.macOnly);
 }
 
 /**
@@ -212,7 +249,7 @@ export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
  * built from this table into its text), and a forwarded key may only end in one of these ids
  * (keyboard.ts, frameKey) — every other key stays inside the frame (PR #171).
  */
-export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked'];
+export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt'];
 
 /** the keys of FRAME_IDS, as the frame script compares them: a lower-case single key, ⌘/Ctrl, Shift */
 export const FRAME_FORWARD: readonly { key: string; mod: boolean; shift: boolean }[] = FRAME_IDS.flatMap((id) =>

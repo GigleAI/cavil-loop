@@ -14,6 +14,7 @@ import {
   tabStatus,
   tabUnread,
   type TabSummary,
+  tabAt,
 } from '../../src/shared/tabs';
 import type { SourceStatus } from '../../src/shared/types';
 import { item } from './helpers';
@@ -149,5 +150,30 @@ describe('the list', () => {
     const s = summarize(item('o/r', 7, { title: 'T', labels: [{ name: 'doing/agent', color: 'fff' }], state: 'open', kind: 'issue' }));
     expect(s).toMatchObject({ key: 'o/r#7', repo: 'o/r', number: 7, title: 'T', labels: ['doing/agent'], state: 'open', kind: 'issue' });
     expect(normalizeTabs([{ key: s.key, item: s, seen: null }])).toHaveLength(1);
+  });
+});
+
+describe('GitHub#442: ⌘1 … ⌘9 — which tab', () => {
+  const keys = ['a', 'b', 'c'];
+  it('counts from the left with the home tab as 1; 9 is always the last tab', () => {
+    expect(tabAt(keys, 1)).toBe(HOME);
+    expect(tabAt(keys, 2)).toBe('a');
+    expect(tabAt(keys, 4)).toBe('c');
+    expect(tabAt(keys, 9)).toBe('c');
+    const many = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'];
+    expect(tabAt(many, 8)).toBe('7');
+    expect(tabAt(many, 9)).toBe('11');
+  });
+  it('a position past the last tab is nobody (the key does nothing)', () => {
+    expect(tabAt(keys, 5)).toBeNull();
+    expect(tabAt(keys, 8)).toBeNull();
+  });
+  it('only the home tab: 1 and 9 are the home tab', () => {
+    expect(tabAt([], 1)).toBe(HOME);
+    expect(tabAt([], 9)).toBe(HOME);
+    expect(tabAt([], 2)).toBeNull();
+  });
+  it('anything but 1 … 9 is nobody', () => {
+    for (const n of [0, 10, -1, 1.5, Number.NaN]) expect(tabAt(keys, n), String(n)).toBeNull();
   });
 });

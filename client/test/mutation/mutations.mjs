@@ -581,14 +581,14 @@ export const MUTATIONS = [
     from: '    const missing = unmappedNames(list, { unit: map, e2e: e2eTests() });\n    if (missing.length)',
     to: '    const missing = [];\n    if (missing.length)',
     expect: ['the baseline names every entry whose named test no longer exists'] },
-  // ---- GitHub#191 → GitHub#397: the detail is a tab now, nothing is "outside" it any more. What is left of the
-  // old rule is the mark on what opens an item: the middle button on it opens the item's tab in the background. ----
+  // ---- GitHub#191 → GitHub#397 → GitHub#442: the mark on what opens an item — the middle button on it opens the
+  // item's tab in the background (and the floating panel's "click outside" rule lets such a click switch items). ----
   { what: '中键开标签页：看板卡片没标「打开条目」', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
     from: "      data-key={it.key}\n      {...{ [OPENS_ITEM]: '' }}", to: '      data-key={it.key}',
-    expect: ['the board is the fixed home tab; an item opens in its own tab'] },
+    expect: ['GitHub#442: a click opens the floating panel'] },
   { what: '中键开标签页：表格行的标题格没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
     from: "              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}\n              {...{ [OPENS_ITEM]: '' }}", to: "              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}",
-    expect: ['the board is the fixed home tab; an item opens in its own tab'] },
+    expect: ['GitHub#442: a click opens the floating panel'] },
   // ---- GitHub#193: tick a task-list box in the detail ----
   { what: '勾选：写前现读的原文和看到的不一样也照写', file: 'src/data/actions.ts',
     from: "      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);\n", to: '',
@@ -615,7 +615,7 @@ export const MUTATIONS = [
     from: '    if (this.tasksInFlight.has(slot)) return', to: '    if (false) return',
     expect: ['two clicks on one comment at once: the second is refused at once, one read-change-write reaches GitHub'] },
   { what: '勾选：主窗口策略不放行框内脚本', file: 'src-tauri/tauri.conf.json', runner: 'e2e',
-    from: '"script-src": "\'self\' \'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU=\'",', to: '"script-src": "\'self\'",',
+    from: '"script-src": "\'self\' \'sha256-nLTC0PavcDJOeAHA30v1yeuCfJNrvRYrs23agDE97xs=\'",', to: '"script-src": "\'self\'",',
     expect: ['GitHub#193: the window\'s policy alone (tauri.conf.json; frame policy loosened in this test page): the frame script runs, nothing injected does', 'GitHub#193: both policies as shipped: the frame script runs and reports a ticked box, nothing injected does', 'GitHub#193: tick a choice in the detail — one character changes on GitHub; someone else\'s edit is never overwritten; read-only / offline boxes stay put; only the frame\'s own script runs'] },
   { what: '勾选：框内策略不放行框内脚本', file: 'src/renderer/detailHtml.ts', runner: 'e2e',
     from: "export const TIMELINE_CSP = FRAME_CSP.replace(\"script-src 'none'\", `script-src ${FRAME_SCRIPT_HASH}`);", to: 'export const TIMELINE_CSP = FRAME_CSP;',
@@ -625,11 +625,11 @@ export const MUTATIONS = [
     to: "export const TIMELINE_CSP = FRAME_CSP.replace(\"script-src 'none'\", \"script-src 'unsafe-inline'\");",
     expect: ['GitHub#193: the frame\'s own policy alone (window loosened in this test page): the frame script runs, nothing injected does'] },
   { what: '勾选：主窗口策略放行任意内嵌脚本（去掉哈希、加 unsafe-inline）', file: 'src-tauri/tauri.conf.json', runner: 'e2e',
-    from: '"script-src": "\'self\' \'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU=\'",', to: '"script-src": "\'self\' \'unsafe-inline\'",',
+    from: '"script-src": "\'self\' \'sha256-nLTC0PavcDJOeAHA30v1yeuCfJNrvRYrs23agDE97xs=\'",', to: '"script-src": "\'self\' \'unsafe-inline\'",',
     expect: ['GitHub#193: the window\'s policy alone (tauri.conf.json; frame policy loosened in this test page): the frame script runs, nothing injected does'] },
   { what: '勾选：两层策略都放行任意内嵌脚本', runner: 'e2e',
     edits: [
-      { file: 'src-tauri/tauri.conf.json', from: '"script-src": "\'self\' \'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU=\'",', to: '"script-src": "\'self\' \'unsafe-inline\'",' },
+      { file: 'src-tauri/tauri.conf.json', from: '"script-src": "\'self\' \'sha256-nLTC0PavcDJOeAHA30v1yeuCfJNrvRYrs23agDE97xs=\'",', to: '"script-src": "\'self\' \'unsafe-inline\'",' },
       { file: 'src/renderer/detailHtml.ts', from: "export const TIMELINE_CSP = FRAME_CSP.replace(\"script-src 'none'\", `script-src ${FRAME_SCRIPT_HASH}`);",
         to: "export const TIMELINE_CSP = FRAME_CSP.replace(\"script-src 'none'\", \"script-src 'unsafe-inline'\");" },
     ],

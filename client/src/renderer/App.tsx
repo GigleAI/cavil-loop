@@ -9,7 +9,8 @@ import { DetailPanel, draftDirty, type ResultNote, type TabDraft } from './Detai
 import { TabBar } from './TabBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { HOME, afterClose, stepTab } from '../shared/tabs';
+import { HOME, afterClose, stepTab, tabAt } from '../shared/tabs';
+import { OpenMenu, type OpenHow, type OpenMenuAt } from './OpenMenu';
 import type { WriteAction } from '../shared/actions';
 import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
@@ -19,12 +20,17 @@ import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
 import type { SettingsIntent } from './EmptyGuide';
 
+/** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
+const FLOAT = '\u0000float';
+
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
 export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [page, setPage] = useState<'board' | 'settings'>('board');
+  const pageRef = useRef(page);
+  pageRef.current = page;
   // GitHub#401: the empty board's buttons open Settings with the picker open, or the address box focused
   const [intent, setIntent] = useState<{ what: SettingsIntent; seq: number } | null>(null);
   const intentSeq = useRef(0);
@@ -85,7 +91,24 @@ export function App() {
     setActive(HOME);
     setAskClose(null);
     setOpening((o) => ({ n: o.n + 1, intent: null }));
+    setFloat(null);
+    floatDraft.current = null;
+    setMenu(null);
   }, [gen]);
+  // ---- GitHub#442: the floating detail, the default way to open an item ----
+  // It belongs to the home tab: it shows over the board on the right, and is drawn only while the home
+  // tab is in front (going to a tab and back finds it again — a new opening, its unsent text kept here).
+  const [float, setFloat] = useState<{ key: string; n: number; intent: OpenIntent | null } | null>(null);
+  const floatSeq = useRef(0);
+  const floatRef = useRef(float);
+  floatRef.current = float;
+  /** what the floating panel holds unsent, and for which item */
+  const floatDraft = useRef<{ key: string; draft: TabDraft } | null>(null);
+  const closeFloatNow = () => {
+    floatDraft.current = null;
+    setFloat(null);
+  };
+  const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
   const show = (key: string, intent: OpenIntent | null = null) => {
     if (key === frontRef.current && !intent) return;
@@ -97,35 +120,69 @@ export function App() {
   /** Open an item's tab (already open: that one). `background`: it does not come to the front. */
   const openTab = async (key: string, o: { background?: boolean; intent?: OpenIntent } = {}) => {
     const ok = await api().openTab(key);
-    if (!ok || o.background) return;
+    if (!ok) return;
+    // GitHub#442: the item was in the floating panel: it moves into its tab, with what it held unsent
+    if (floatRef.current?.key === key) {
+      const d = floatDraft.current;
+      if (d?.key === key && !drafts.current.has(key)) drafts.current.set(key, d.draft);
+      closeFloatNow();
+    }
+    if (o.background) return;
     setHelp(false);
     show(key, o.intent ?? null);
   };
-  /** A click with ⌘ / Ctrl held opens in the background, as in a browser. */
+  /**
+   * GitHub#442: open an item. `float` (a plain click, a notification, a notice's 打开 / 重试 / 去回复):
+   * the floating panel over the board — or, when the item already has a tab, that tab (one item never
+   * has two reply boxes). `front` (⌘ / Ctrl + click): its tab, in front. `back` (the middle button): its
+   * tab, behind.
+   */
+  const openItem = (key: string, how: OpenHow, intent: OpenIntent | null = null) => {
+    setMenu(null);
+    if (how === 'back') return void openTab(key, { background: true });
+    if (how === 'front' || keysRef.current.includes(key)) return void openTab(key, { intent: intent ?? undefined });
+    setHelp(false);
+    setPage('board');
+    show(HOME);
+    if (floatDraft.current?.key !== key) floatDraft.current = null;
+    setFloat({ key, n: ++floatSeq.current, intent });
+  };
+  /** A click with ⌘ / Ctrl held opens the item's tab in front (GitHub#442); a plain click, the floating panel. */
   const openFromClick = (key: string, intent?: OpenIntent) => {
     const ev = window.event;
-    const background = !intent && ev instanceof MouseEvent && (ev.metaKey || ev.ctrlKey);
-    void openTab(key, { background, intent });
+    const mod = !intent && ev instanceof MouseEvent && (ev.metaKey || ev.ctrlKey);
+    openItem(key, mod ? 'front' : 'float', intent ?? null);
   };
+  const openRef = useRef(openItem);
+  openRef.current = openItem;
+  const itemsRef = useRef(snap?.data.items ?? []);
+  itemsRef.current = snap?.data.items ?? [];
   const closeNow = (key: string) => {
-    drafts.current.delete(key);
     setAskClose(null);
+    if (key === FLOAT) return closeFloatNow();
+    drafts.current.delete(key);
     setActive(afterClose(keysRef.current, key, frontRef.current));
     void api().closeTab(key);
   };
   /** The tab's ×, the middle button, ⌘W: text that was not sent is never dropped without asking. */
   const closeTab = (key: string) => {
+    // GitHub#442: ⌘W on the home tab puts the floating panel away, asking first when it holds unsent text
+    if (key === FLOAT) {
+      if (draftDirty(floatDraft.current?.draft)) setAskClose(FLOAT);
+      else closeFloatNow();
+      return;
+    }
     if (draftDirty(drafts.current.get(key))) {
       show(key);
       setAskClose(key);
     } else closeNow(key);
   };
-  // a clicked notification (GitHub#169), a new issue just created: that item's tab, in front
+  // a clicked notification (GitHub#169), a new issue just created: that item, the way a click opens it (GitHub#442)
   const focus = snap?.state.focus ?? null;
   useEffect(() => {
     if (!focus) return;
     setPage('board');
-    void openTab(focus.key);
+    openItem(focus.key, 'float');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.seq]);
   // the middle button on anything that opens an item: its tab, in the background
@@ -136,10 +193,26 @@ export function App() {
       const key = opener?.closest<HTMLElement>('[data-key]')?.dataset.key;
       if (!key) return;
       e.preventDefault();
-      void api().openTab(key);
+      openRef.current(key, 'back');
+    };
+    // GitHub#442: a right click on anything that opens an item: what can be done with it
+    const menuAt = (e: MouseEvent) => {
+      if (!(e.target instanceof Element)) return;
+      const opener = e.target.closest(`[${OPENS_ITEM}]`);
+      const key = opener?.closest<HTMLElement>('[data-key]')?.dataset.key;
+      if (!key) return;
+      const url = itemsRef.current.find((i) => i.key === key)?.url;
+      // a box of the graph that is no item of the board (only its number is known): nothing to offer
+      if (!url) return;
+      e.preventDefault();
+      setMenu({ key, url, x: e.clientX, y: e.clientY });
     };
     window.addEventListener('auxclick', aux);
-    return () => window.removeEventListener('auxclick', aux);
+    window.addEventListener('contextmenu', menuAt);
+    return () => {
+      window.removeEventListener('auxclick', aux);
+      window.removeEventListener('contextmenu', menuAt);
+    };
   }, []);
   // the shell's "close" key (macOS: the menu's ⌘W): the tab in front, or — none in front — the window, as before
   const closeReq = snap ? snap.state.closeTabReq : null;
@@ -151,6 +224,7 @@ export function App() {
     closeSeen.current = closeReq;
     if (first || !changed) return;
     if (frontRef.current !== HOME) closeTab(frontRef.current);
+    else if (floatRef.current && pageRef.current === 'board') closeTab(FLOAT);
     else void Promise.resolve(api().closeWindow()).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeReq]);
@@ -193,10 +267,18 @@ export function App() {
       setPage('settings');
     },
     help: () => setKeysHelp(true),
-    // GitHub#397. With no tab in front the key is not ours (macOS: the shell closes the window, see above).
+    // GitHub#397. With no tab in front the key is not ours (macOS: the shell closes the window, see above) —
+    // unless the floating panel is open over the board: then it goes (GitHub#442).
     closeTab: () => {
-      if (front === HOME) return false;
-      closeTab(front);
+      if (front !== HOME) return void closeTab(front);
+      if (float && page === 'board') return void closeTab(FLOAT);
+      return false;
+    },
+    // GitHub#442: ⌘1 … ⌘9, as in a browser (⌘1 = 首页, ⌘9 = the last tab)
+    tabAt: (spec) => {
+      const to = tabAt(tabKeys, Number(spec.key));
+      if (to === null || !tabKeys.length) return false;
+      show(to);
     },
     nextTab: () => {
       if (!tabKeys.length) return false;
@@ -229,7 +311,8 @@ export function App() {
   const ready = snap?.state.phase === 'ready' && !help;
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
-      {ready && (
+      {/* GitHub#442: the tab bar shows only once a tab is open; the last one closed, it goes */}
+      {ready && tabs.length > 0 && (
         <TabBar
           tabs={tabs}
           active={front}
@@ -261,6 +344,25 @@ export function App() {
                 warn={warn}
                 onOpen={openFromClick}
                 detailKey={front === HOME ? null : front}
+                floatKey={front === HOME && float ? float.key : null}
+                floatPanel={
+                  front === HOME && float ? (
+                    <DetailPanel
+                      itemKey={float.key}
+                      state={snap.state}
+                      data={snap.data}
+                      float={{ onClose: closeFloatNow }}
+                      onHome={closeFloatNow}
+                      onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
+                      intent={float.intent}
+                      key={`${gen}:float:${float.key}:${float.n}`}
+                      draft={floatDraft.current?.key === float.key ? floatDraft.current.draft : null}
+                      onDraft={(d) => {
+                        if (accountGen.current === gen) floatDraft.current = { key: float.key, draft: d };
+                      }}
+                    />
+                  ) : null
+                }
                 leftNote={leftNote}
                 request={boardReq}
                 onRequestTaken={() => setBoardReq(null)}
@@ -291,6 +393,22 @@ export function App() {
             </div>
           )}
         </div>
+      )}
+      {askClose === FLOAT && float && (
+        <ConfirmDialog title="收起这个面板？" confirmLabel="收起，不要这些文字" danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(FLOAT)}>
+          <p data-testid="tab-close-question">面板里还有没发出的文字（回复、正在编辑的评论或标题）。收起后这些文字就没有了。</p>
+        </ConfirmDialog>
+      )}
+      {menu && (
+        <OpenMenu
+          at={menu}
+          onPick={(how) => openItem(menu.key, how)}
+          onWeb={() => {
+            setMenu(null);
+            void Promise.resolve(api().openExternal(menu.url)).catch(() => undefined);
+          }}
+          onClose={() => setMenu(null)}
+        />
       )}
       {askClose && tabKeys.includes(askClose) && (
         <ConfirmDialog title="关掉这个标签页？" confirmLabel="关掉，不要这些文字" danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(askClose)}>
