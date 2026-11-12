@@ -27,6 +27,21 @@ run right before / after the k-th comment on item n — GitHub#382; Flost_post_l
 label write takes effect and the caller still gets a failure — GitHub#341); F_post_label_<name> fails
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
 tokens.log records the GH_TOKEN each call ran with.
+CI 失败报告（GitHub#345）用到的几样，只在对应文件 / 请求出现时才起作用：
+  runs.json        {"<workflow 文件>": [ {id, created_at, status, conclusion, head_sha, head_branch, event,
+                   run_attempt, html_url, display_title, attempt1?: {status, conclusion}} ]}
+                   列表按 branch / event / created=A..B 筛，带 page 时按 per_page 分页；total_count 是真实条数，
+                   但和真接口一样最多只给前 FAKE_GH_RUNS_CAP（默认 1000）条
+  jobs.json        {"<run id>": [ {id, name, conclusion, html_url, steps:[{name, conclusion}]} ]}
+  annotations.json {"<job id>": [ {annotation_level, title, message} ]}
+  joblogs.json     {"<job id>": "原始日志文本"}
+  commit_pulls.json {"<sha>": [<PR 编号>…]}   commits/<sha>/pulls
+  repo_labels.json ["label", …]  有这个文件时，labels/<名字> 只认里面列出的（没有 = 都存在）
+  FAKE_GH_TIMELINE=1 时，经本程序发的评论、加摘标签、开关 issue 按发生顺序记进 timeline.json，
+  issues/<n>/timeline 按这个顺序返回（评论是 event=commented）；me_type 文件 = 当前账号的类型（默认 User）
+  issues 列表带 state= / creator= 参数时按它筛（不带时照旧只给 open）
+  F429_<key>：这个读返回 429（F429q_<key>：只对带 creator= 的列表请求）；F_<方法>_<key> / F403rl_<方法>_<key>：这个写失败 / 被限流
+  （key 同上；摘标签的 key 不带标签名：DELETE_issues_<n>_labels）；Fpage_<key>_<页码>：只让这一页失败
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
 hook_<POST|DELETE>_issues_<n>_labels_<k> runs right before the k-th label add / remove on item n,
 hook_after_POST_issues_<n>_labels_<k> right after the k-th label add took effect;
@@ -212,6 +227,36 @@ def sub_state(repo, sn):
     return None if it is None else it.get("state", "open")
 
 
+QUERY = {}
+if path and "?" in path:
+    from urllib.parse import parse_qsl
+    QUERY = dict(parse_qsl(path.split("?", 1)[1], keep_blank_values=True))
+
+
+def paged(lst):
+    """带 page 参数时按 per_page 切一页；不带时原样（--paginate 的调用方拿全部）"""
+    if "page" not in QUERY:
+        return lst
+    size = int(QUERY.get("per_page") or 30)
+    pg = int(QUERY.get("page") or 1)
+    return lst[(pg - 1) * size:pg * size]
+
+
+def me_type():
+    try:
+        return open(p("me_type")).read().strip() or "User"
+    except FileNotFoundError:
+        return "User"
+
+
+def tl_add(n, entry):
+    if os.environ.get("FAKE_GH_TIMELINE") != "1":
+        return
+    tl = load("timeline.json", {})
+    tl.setdefault(str(n), []).append(entry)
+    save("timeline.json", tl)
+
+
 def key_of(path):
     return path.replace("repos/" + REPO + "/", "").replace("/", "_")
 
@@ -234,7 +279,7 @@ def view(n):
 
 def as_issue(n):
     kind, it = view(n)
-    out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "updated_at") if k in it}
+    out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "updated_at", "created_at") if k in it}
     out.setdefault("title", "t")
     out.setdefault("updated_at", "2026-01-01T00:00:00Z")
     out["pull_request"] = {"url": "x", "merged_at": it.get("merged_at") or ("2026-01-01T00:00:00Z" if it.get("merged") else None)} if kind == "pr" else None
@@ -279,8 +324,10 @@ def append_event(n, ev, name):
     # 编号先后与发生先后一致，和真 GitHub 一样（GitHub#382：交人的写前核对按编号认先后）
     evs.setdefault(str(n), []).append(
         {"event": ev, "label": {"name": name},
-         "actor": {"login": me(), "type": "User"}, "created_at": now_iso()})
+         "actor": {"login": me(), "type": me_type()}, "created_at": now_iso()})
     save("events.json", evs)
+    tl_add(n, {"event": ev, "label": {"name": name}, "actor": {"login": me(), "type": me_type()},
+               "created_at": now_iso()})
 
 
 if path == "user":
@@ -325,6 +372,13 @@ if method == "GET":
         fail("gh: Resource not accessible by personal access token (HTTP 403)")
     if os.path.exists(p("F403rl_" + key)):
         fail("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+    if os.path.exists(p("F429_" + key)):
+        fail("gh: Too Many Requests (HTTP 429)")
+    # F429q_<key>：只让带 creator= 的那种列表请求返回 429（主轮询自己的快照请求不带，不受影响）
+    if "creator" in QUERY and os.path.exists(p("F429q_" + key)):
+        fail("gh: Too Many Requests (HTTP 429)")
+    if "page" in QUERY and os.path.exists(p("Fpage_%s_%s" % (key, QUERY["page"]))):
+        fail("HTTP 502: injected failure (%s page %s)" % (key, QUERY["page"]))
     cnt_file = p("count_" + key)
     c = int(open(cnt_file).read()) + 1 if os.path.exists(cnt_file) else 1
     open(cnt_file, "w").write(str(c))
@@ -334,9 +388,87 @@ if method == "GET":
         items = load("items.json", {})
         labels = load("labels.json", {})
 
+    if parts == ["issues"] and ("state" in QUERY or "creator" in QUERY):
+        want = QUERY.get("state", "open")
+        out = []
+        for n in sorted(items, key=int):
+            a = as_issue(n)
+            if want != "all" and a["state"] != want:
+                continue
+            if "creator" in QUERY and (a.get("user") or {}).get("login") != QUERY["creator"]:
+                continue
+            out.append(a)
+        emit(paged(out), pages=True)
     if parts == ["issues"]:
         emit([as_issue(n) for n in sorted(items, key=int)
               if as_issue(n)["state"] == "open"], pages=True)
+    # ── CI 失败报告（GitHub#345）──
+    if len(parts) == 4 and parts[:2] == ["actions", "workflows"] and parts[3] == "runs":
+        runs = load("runs.json", {}).get(parts[2])
+        if runs is None:
+            fail("HTTP 404: Not Found")
+        lo, _, hi = QUERY.get("created", "").partition("..")
+        sel = [r for r in runs
+               if (not QUERY.get("branch") or r.get("head_branch") == QUERY["branch"])
+               and (not QUERY.get("event") or r.get("event") == QUERY["event"])
+               and (not lo or r["created_at"] >= lo) and (not hi or r["created_at"] <= hi)]
+        sel.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
+        cap = int(os.environ.get("FAKE_GH_RUNS_CAP", "1000"))
+        emit({"total_count": len(sel), "workflow_runs": paged(sel[:cap])})
+    if len(parts) >= 3 and parts[:2] == ["actions", "runs"]:
+        run = None
+        for rs in load("runs.json", {}).values():
+            for r in rs:
+                if str(r["id"]) == parts[2]:
+                    run = dict(r)
+        if run is None:
+            fail("HTTP 404: Not Found")
+        if len(parts) == 3:
+            run.pop("attempt1", None)
+            emit(run)
+        if len(parts) == 5 and parts[3] == "attempts":
+            if parts[4] == "1":
+                run.update(run.pop("attempt1", None) or {})
+                run["run_attempt"] = 1
+            run.pop("attempt1", None)
+            emit(run)
+        if len(parts) == 6 and parts[3] == "attempts" and parts[5] == "jobs":
+            jobs = load("jobs.json", {}).get(parts[2], [])
+            emit({"total_count": len(jobs), "jobs": paged(jobs)})
+    if len(parts) == 3 and parts[0] == "check-runs" and parts[2] == "annotations":
+        emit(paged(load("annotations.json", {}).get(parts[1], [])), pages=True)
+    if len(parts) == 4 and parts[:2] == ["actions", "jobs"] and parts[3] == "logs":
+        txt = load("joblogs.json", {}).get(parts[2])
+        if txt is None:
+            fail("HTTP 404: Not Found")
+        sys.stdout.write(txt)
+        sys.exit(0)
+    if len(parts) == 3 and parts[0] == "commits" and parts[2] == "pulls":
+        out = []
+        for n in load("commit_pulls.json", {}).get(parts[1], []):
+            kind, it = view(n)
+            it.setdefault("merge_commit_sha", parts[1])
+            it.setdefault("merged_at", "2026-01-01T00:00:00Z" if it.get("merged") else None)
+            out.append(it)
+        emit(paged(out), pages=True)
+    if len(parts) == 2 and parts[0] == "labels":
+        from urllib.parse import unquote as _unq
+        known = load("repo_labels.json", None)
+        if known is not None and _unq(parts[1]) not in known:
+            fail("gh: Not Found (HTTP 404)")
+        emit({"name": _unq(parts[1])})
+    if len(parts) == 3 and parts[0] == "issues" and parts[2] == "timeline":
+        cm = {c["id"]: c for c in load("comments.json", {}).get(parts[1], [])}
+        out = []
+        for e in load("timeline.json", {}).get(parts[1], []):
+            if e.get("event") == "commented":
+                c = cm.get(e["id"])
+                if c:
+                    out.append({"event": "commented", "id": c["id"], "body": c["body"], "user": c["user"],
+                                "actor": c["user"], "created_at": c["created_at"]})
+            else:
+                out.append(e)
+        emit(paged(out), pages=True)
     if parts == ["pulls"]:
         out = []
         for n in sorted(items, key=int):
@@ -368,7 +500,7 @@ if method == "GET":
                 e["id"] = 5000 + i
         emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
-        emit(load("comments.json", {}).get(parts[1], []), pages=True)
+        emit(paged(load("comments.json", {}).get(parts[1], [])), pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "sub_issues":
         out = []
         for r, sn in sub_refs(parts[1]):
@@ -412,13 +544,22 @@ if method == "GET":
         emit({"state": "success", "statuses": c.get("statuses", [])})
     emit([], pages=True)
 
+# 写请求的失败 / 限流注入（GitHub#345）：F_<方法>_<key>、F403rl_<方法>_<key>；摘标签的 key 不带标签名
+if method != "GET":
+    _wkey = method + "_" + ("_".join(key.split("_")[:3]) if method == "DELETE" and len(parts) == 4 else key)
+    if os.path.exists(p("F403rl_" + _wkey)):
+        fail("gh: You have exceeded a secondary rate limit. (HTTP 403)")
+    if os.path.exists(p("F_" + _wkey)):
+        fail("HTTP 500: injected write failure (" + _wkey + ")")
+
 # 开 issue / 改 issue 状态（GitHub#289：配置提示 issue）。F_post_issue / F_patch_issue 让这两种写失败。
 if method == "POST" and parts == ["issues"]:
     if os.path.exists(p("F_post_issue")):
         fail("HTTP 500: injected issue create failure")
     n = str(max([int(k) for k in items] + [0]) + 1)
     items[n] = {"kind": "issue", "state": "open", "state_reason": None, "title": fields.get("title", ""),
-                "body": fields.get("body", ""), "user": {"login": me()}, "updated_at": now_iso()}
+                "body": fields.get("body", ""), "user": {"login": me()}, "updated_at": now_iso(),
+                "created_at": now_iso()}
     save("items.json", items)
     labels[n] = list(labels_add)
     save("labels.json", labels)
@@ -429,9 +570,15 @@ if method == "PATCH" and len(parts) == 2 and parts[0] == "issues":
         fail("HTTP 500: injected issue update failure")
     if parts[1] not in items:
         fail("HTTP 404: Not Found")
+    _was = items[parts[1]].get("state", "open")
     for k in ("state", "state_reason", "title", "body"):
         if k in fields:
             items[parts[1]][k] = fields[k]
+    if fields.get("state") == "open" and os.environ.get("FAKE_GH_TIMELINE") == "1":
+        items[parts[1]]["state_reason"] = "reopened"
+    if "state" in fields and fields["state"] != _was:
+        tl_add(parts[1], {"event": "closed" if fields["state"] == "closed" else "reopened",
+                          "actor": {"login": me(), "type": me_type()}, "created_at": now_iso()})
     items[parts[1]]["updated_at"] = now_iso()
     save("items.json", items)
     emit(as_issue(parts[1]))
@@ -466,6 +613,7 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
                 "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
+    tl_add(parts[1], {"event": "commented", "id": lst[-1]["id"]})
     _ah = p("hook_after_%s_%d" % (_ck, _c))
     if os.path.exists(_ah):
         subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)

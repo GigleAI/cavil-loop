@@ -171,6 +171,19 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .vbar label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .vbar label.inline select { color: var(--fg); }
 .vbar .vbar-count { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* GitHub#404: the flow numbers (运行中 / 等 agent / 等人处理), each a button that filters to its items */
+.tally { display: inline-flex; align-items: center; gap: 2px; }
+.tally-item { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.tally-item:hover:not(:disabled) { background: var(--hover); }
+.tally-item:disabled { cursor: default; }
+.tally-item b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tally-item.zero b { color: var(--muted); font-weight: 400; }
+.tally-item.on { background: var(--accent-subtle); border-color: var(--accent); color: var(--fg); }
+.tally-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.tally-item .dot.running { background: var(--state-open-bg); }
+.tally-item .dot.agent { background: var(--accent); }
+.tally-item .dot.human { background: var(--edge-open); }
+.tally-item.zero .dot { background: var(--border); }
 .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
 .toggle input { appearance: none; -webkit-appearance: none; width: 28px; height: 16px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex: none; }
 .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: left 0.12s; }
@@ -387,6 +400,9 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .settings-main label { display: flex; flex-direction: column; gap: 4px; }
 .settings-main label.row, .settings-main label.radio { flex-direction: row; }
 .settings-main .row label { flex: 1; min-width: 200px; }
+/* GitHub#404: the four flow labels, two by two */
+.settings-main .row.label-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.settings-main .row.label-grid label { min-width: 0; }
 .sources { list-style: none; padding: 0; margin: 8px 0 0; }
 .sources li { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border-muted); }
 .sources li:first-child { border-top: none; }
@@ -734,3 +750,22 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .gdot.done { background: var(--edge-done); }
 .gpop-actions { display: flex; gap: 8px; }
 .gpop-outside { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* GitHub#405: the new-issue dialog's labels / milestone / iteration in one fold, shut by default; the head line says what they are set to.
+   PR #410 review round 1: the head line wraps instead of squeezing — every part keeps its own width, never drawn over the next;
+   a long label name is cut with "…" (its full name on hover), a long milestone / iteration text breaks onto another line */
+.more-fields { border: 1px solid var(--border); border-radius: 6px; }
+.form .more-fields button.more-head { display: flex; justify-content: flex-start; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 4px 10px; border: 0; border-radius: 6px; background: none; text-align: left; white-space: normal; }
+.form .more-fields button.more-head:hover:not(:disabled) { background: var(--hover); }
+.more-head .icon { flex: none; color: var(--muted); transform: rotate(-90deg); transition: transform .12s; }
+.more-fields.open .more-head .icon { transform: none; }
+.more-title { flex: none; font-weight: 500; white-space: nowrap; }
+.more-sum { flex: 1 1 0; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 6px; min-width: 0; margin-left: auto; color: var(--muted); font-size: 12px; font-weight: normal; }
+.more-part { flex: 0 1 auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.more-part[data-tone='plain'] { color: var(--fg); }
+.more-sum .sep { flex: none; opacity: .6; }
+.more-part > [data-testid^='new-issue-more-'] { flex: 1 1 auto; min-width: 0; }
+.more-part:not([data-part='labels']) { flex-wrap: nowrap; }
+.more-sum .label { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.more-label-name { display: block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 10px; border-top: 1px solid var(--border-muted); }
