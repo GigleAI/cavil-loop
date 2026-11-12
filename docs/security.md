@@ -90,6 +90,14 @@ and the daemon logs a warning each round if a config that holds a token is
 group- or world-readable. This matters: the common `umask 0002` produces `0664`,
 which every local user can read.
 
+## Tokens do not stay in local logs (GitHub#342)
+
+A worker's environment holds a GitHub token, and an agent can print it verbatim; it then ends up in files that are kept for a long time — pane history, `poll.log`, the agent's own session records, codex's environment snapshots. Any process of the same user on the machine can read them, and the session records are the weekly report's data source, so they cannot simply be deleted.
+
+- The daemon replaces tokens with `REDACTED-<fingerprint>` before its own logs reach disk; it periodically replaces them in place in the agents' session records; codex workers no longer write environment snapshots. Scope, switches and the command that cleans old snapshots: [operations.md](operations.md#github-token-redaction-github342).
+- This reduces what reaches disk; it is not isolation: the token is still in the worker's environment, and processes of the same user can still read it. Only prefixed GitHub tokens are matched; ones the terminal wrapped, old-format ones and other secrets are out of scope (full list behind the link above).
+- The fingerprint is the first 12 hex characters of the token's sha256 and cannot be turned back into it; it only tells you which token showed up in a log — rotate it as you normally would.
+
 ## What **doesn't** trigger the daemon (even with stale labels + anonymous comments)
 
 Easy to worry about: you merge a PR, forget to flip `pending/agent` back to `pending/human`, an attacker drops a comment on that merged PR — will the worker fire? **No**, the daemon filters this out by default:
@@ -174,7 +182,7 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
 
 - **Who can connect**: the resident service listens on loopback only; the one way in is a `tailscale serve` HTTPS forward (tailnet only; a port with a public entry is refused). Every request is first looked up by the caller address the forwarding layer gives, with this machine's own Tailscale: not found, a failed lookup, or a public-entry mark is refused.
 - **Who can act**: only a device that exchanged a one-time pairing code (10 minutes, void after 5 wrong tries, made on this machine) for a key. After that every request is signed, and the caller's Tailscale identity must be the device that paired — a copied key does not work elsewhere. `remote-access.sh revoke` revokes a device at once.
-- **The worst it can do**: stop or start a project's poller (reversible at any time), and read the last 200 lines of `poll.log` (a token in there would be seen). It cannot disconnect a project, update the daemon, connect a new project, run an arbitrary command, or get `gh`'s sign-in.
+- **The worst it can do**: stop or start a project's poller (reversible at any time), and read the last 200 lines of `poll.log` (as it is on disk: GitHub tokens are redacted before the log is written, see above; the rest is visible). It cannot disconnect a project, update the daemon, connect a new project, run an arbitrary command, or get `gh`'s sign-in.
 - **Known limits**: other system users on the same machine can reach the loopback port (and can do nothing without a pairing code or a key); the device list holds the keys themselves (`~/.local/state/cavil-loop/remote-access/devices.json`, directory 700, file 600) — whoever can read that file has every paired device's rights.
 
 Commands and protocol: [Operations → Remote access](operations.md#remote-access-let-the-client-on-another-computer-see-this-machines-daemon-github387).

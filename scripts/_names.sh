@@ -33,6 +33,9 @@ CAVIL_LEGACY_STATE_HOME="$HOME/.local/state/coding-agent-poll"
 # 而且每个版本各是一个目录，放在那里不同版本就互不相斥了。也不按 cavil_pick 挑新旧——
 # 本机有的项目已迁、有的还没迁时，挑出来的会不是同一个文件。
 CAVIL_RETROSPECTIVE_LOCK="$CAVIL_STATE_HOME/retrospective.lock"
+# agent 撞用量上限后的「暂停派工」记录：整机共用，一个 (agent, 账号目录) 一个文件（GitHub#341）。
+# 同上，固定放在新名字的状态根目录下：同一账号的几个项目必须读到同一个文件。
+CAVIL_USAGE_LIMIT_DIR="$CAVIL_STATE_HOME/usage-limit"
 # 重测试排队（GitHub#343）：本账号下所有项目共用一把排队锁和一份运行记录目录，放法同上面
 # 那把复盘锁（固定在新名字的状态根目录，不随部署版本、不按新旧名挑）。不和复盘锁共用一个文件：
 # 复盘是「有人在跑就跳过」，这里是「排队等」。

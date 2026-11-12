@@ -1,0 +1,17 @@
+  （上文略）
+
+
+■ You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to
+purchase more credits or try again at Aug 20th, 2026 11:35 AM.
+
+
+  Approaching rate limits
+  Switch to gpt-5.6-luna for lower credit usage?
+
+› 1. Switch to gpt-5.6-luna                 Fast and affordable agentic coding
+                                            model.
+  2. Keep current model
+  3. Keep current model (never show again)  Hide future rate limit reminders
+                                            about switching models.
+
+  Press enter to confirm or esc to go back

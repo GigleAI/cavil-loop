@@ -56,6 +56,7 @@ export const DEFAULT_VIEW: ViewSettings = {
   prsUnderIssues: true,
   detailWidth: 560,
   detailFields: true,
+  codeWrap: false,
 };
 
 /** The floating detail panel: narrowest it can be dragged to, and the widest any saved value may be. */
@@ -104,7 +105,8 @@ export function isValidView(v: unknown): v is ViewSettings {
     (x.imported === null || (typeof x.imported === 'object' && Array.isArray(x.imported.notes))) &&
     typeof x.prsUnderIssues === 'boolean' &&
     validWidth(x.detailWidth) &&
-    typeof x.detailFields === 'boolean'
+    typeof x.detailFields === 'boolean' &&
+    typeof x.codeWrap === 'boolean'
   );
 }
 
@@ -134,5 +136,6 @@ export function normalizeView(raw: unknown): ViewSettings {
     prsUnderIssues: pick('prsUnderIssues', (v) => typeof v === 'boolean'),
     detailWidth: pick('detailWidth', validWidth),
     detailFields: pick('detailFields', (v) => typeof v === 'boolean'),
+    codeWrap: pick('codeWrap', (v) => typeof v === 'boolean'),
   };
 }
