@@ -6741,3 +6741,220 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();
   await app.close();
 });
+
+// ---- GitHub#381: code blocks in the discussion — copy, wrap long lines, syntax colours ----
+const CODE381 = JSON.parse(readFileSync(join(root, 'test', 'fixtures', 'codeblocks.github.json'), 'utf8')) as {
+  samples: Record<string, { markdown: string; html: string }>;
+  comments: { url: string; body: string; bodyHTML: string }[];
+};
+/** what the author typed between the fences of a one-block sample: the text "copy" must put on the clipboard */
+const fenced381 = (name: string) => CODE381.samples[name].markdown.replace(/^```[a-z]*\n/, '').replace(/\n```\n$/, '');
+
+test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the clipboard and says so (or says it failed); "换行" folds long lines everywhere and is remembered; GitHub\'s syntax marks are coloured, light and dark, in the discussion and the reply preview', async () => {
+  const w = env.fake.state.w;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  const TS = 'typescript: indentation, <, > and &';
+  const SH = 'shell with a language, a long line';
+  const PLAIN = 'no language';
+  w.comments.set('gigleai/cavil-loop#138', [
+    // a real comment as GitHub rendered it: a shell block, a block without a language, inline code, task boxes
+    { id: 'C_REAL', url: url('C_REAL'), createdAt: '2026-11-02T01:00:00Z', bodyHTML: CODE381.comments[0].bodyHTML, author: { login: 'user-2' } },
+    { id: 'C_CODE', url: url('C_CODE'), createdAt: '2026-11-03T01:00:00Z', bodyHTML: `<p>run <code class="notranslate">npm test</code></p>${CODE381.samples[SH].html}${CODE381.samples[TS].html}${CODE381.samples[PLAIN].html}`, author: { login: 'user-3' } },
+  ]);
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+  // the app is started three times here: everything is looked up on the window that is open now
+  let iframe = page.getByTestId('timeline-frame');
+  let frame = page.frameLocator('[data-testid="timeline-frame"]');
+  let blocks = frame.locator('details.entry[data-entry="C_CODE"] .cb');
+  let [sh, ts, plain] = [blocks.nth(0), blocks.nth(1), blocks.nth(2)];
+  const open = async () => {
+    iframe = page.getByTestId('timeline-frame');
+    frame = page.frameLocator('[data-testid="timeline-frame"]');
+    blocks = frame.locator('details.entry[data-entry="C_CODE"] .cb');
+    [sh, ts, plain] = [blocks.nth(0), blocks.nth(1), blocks.nth(2)];
+    await card(page, 138).click();
+    await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    await page.getByTestId('unfold-toggle').click();
+    await expect(iframe).toHaveAttribute('data-ready', 'yes');
+    await expect(frame.locator('details.entry[data-entry="C_CODE"] .cb').first()).toBeVisible();
+
+  };
+  await open();
+  const copyBtn = (b: Locator) => b.locator('button[data-code-copy]');
+  const wrapBtn = (b: Locator) => b.locator('button[data-code-wrap]');
+  /** what the clipboard really holds: pasted into the reply box with the keyboard, read back, box emptied again */
+  const pasted = async () => {
+    const box = page.getByTestId('reply-input');
+    await box.fill('');
+    await box.focus();
+    await page.keyboard.press('ControlOrMeta+V');
+    const v = await box.inputValue();
+    await box.fill('');
+    return v;
+  };
+
+  // ---- 1. every block has the two buttons, inline code has none; they show on hover / keyboard focus ----
+  await expect(blocks).toHaveCount(3);
+  await expect(frame.locator('details.entry[data-entry="C_REAL"] .cb')).toHaveCount(2);
+  await expect(frame.locator('button[data-code-copy]')).toHaveCount(5);
+  await expect(frame.locator('button[data-code-wrap]')).toHaveCount(5);
+  expect(await frame.locator('code').evaluateAll((cs) => cs.filter((c) => !c.closest('pre') && c.closest('.cb')).length)).toBe(0);
+  const barOpacity = (b: Locator) => b.locator('.cbar').evaluate((e) => getComputedStyle(e).opacity);
+  await page.getByTestId('reply-input').hover();
+  expect(await barOpacity(ts)).toBe('0');
+  await ts.locator('pre').hover();
+  expect(await barOpacity(ts)).toBe('1');
+  expect(await barOpacity(plain)).toBe('0');
+  await page.getByTestId('reply-input').hover();
+  await copyBtn(plain).focus();
+  expect(await barOpacity(plain)).toBe('1');
+  // the task boxes of the real comment are still there and numbered
+  await expect(frame.locator('details.entry[data-entry="C_REAL"] input[data-task]')).toHaveCount(2);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-buttons');
+
+  // ---- 2. copy: the clipboard holds the block's text, character for character — line breaks, a tab, <, > and & ----
+  expect(fenced381(TS)).toContain('\n\treturn');
+  expect(fenced381(TS)).toContain('a > b && c');
+  await copyBtn(ts).click();
+  await expect(copyBtn(ts)).toHaveText('已复制 ✓');
+  await expect(copyBtn(ts)).toHaveAttribute('data-state', 'ok');
+  expect(await pasted()).toBe(fenced381(TS));
+  await shot(page, '381-code-copied');
+  // a block without a language: indentation, the blank line in it; the line break GitHub adds at the end is not part of it
+  await plain.locator('pre').hover();
+  await copyBtn(plain).click();
+  await expect(copyBtn(plain)).toHaveText('已复制 ✓');
+  expect(await pasted()).toBe(fenced381(PLAIN));
+  expect(fenced381(PLAIN)).toContain('    indented    columns\n\nlast line');
+  // the long line, whole
+  await sh.locator('pre').hover();
+  await copyBtn(sh).click();
+  await expect(copyBtn(sh)).toHaveText('已复制 ✓');
+  const long = await pasted();
+  expect(long).toBe(fenced381(SH));
+  expect(long.split('\n')[2].length).toBeGreaterThan(300);
+  // the button goes back by itself, nothing is left selected, and nothing was reported to the window or sent to GitHub
+  await expect(copyBtn(ts)).toHaveText('复制', { timeout: 5000 });
+  await expect(copyBtn(ts)).not.toHaveAttribute('data-state');
+  expect(await frame.locator('body').evaluate(() => String(getSelection()))).toBe('');
+  expect(env.fake.writes()).toEqual([]);
+
+  // ---- 3. the clipboard refuses both ways: the button says so, the clipboard keeps what it had, the block stays selected ----
+  await frame.locator('body').evaluate(() => {
+    (window as any).__exec = document.execCommand;
+    document.execCommand = (() => false) as any;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) } });
+  });
+  await ts.locator('pre').hover();
+  await copyBtn(ts).click();
+  await expect(copyBtn(ts)).toHaveText('复制失败');
+  await expect(copyBtn(ts)).toHaveAttribute('data-state', 'fail');
+  expect((await frame.locator('body').evaluate(() => String(getSelection()))).trim()).toBe(fenced381(TS).trim());
+  expect(await pasted()).toBe(fenced381(SH));
+  await shot(page, '381-code-copy-failed');
+  // "select + copy" refused, the clipboard API takes it: copied
+  await frame.locator('body').evaluate(() => {
+    (window as any).__api = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t: string) => ((window as any).__api.push(t), Promise.resolve()) } });
+  });
+  await copyBtn(plain).click();
+  await expect(copyBtn(plain)).toHaveText('已复制 ✓');
+  expect(await frame.locator('body').evaluate(() => (window as any).__api)).toEqual([fenced381(PLAIN)]);
+  await frame.locator('body').evaluate(() => {
+    document.execCommand = (window as any).__exec;
+  });
+
+  // ---- 4. wrap: off at first (the long line scrolls sideways); one click folds every block, without drawing the frame again ----
+  const overflow = (b: Locator) => b.locator('pre').evaluate((p) => [p.scrollWidth > p.clientWidth, getComputedStyle(p).whiteSpace] as const);
+  const wrapped = () => frame.locator('body').evaluate((b) => b.hasAttribute('data-wrap'));
+  expect(await wrapped()).toBe(false);
+  expect(await overflow(sh)).toEqual([true, 'pre']);
+  await expect(wrapBtn(sh)).toHaveAttribute('aria-pressed', 'false');
+  const render = await iframe.getAttribute('data-render');
+  await sh.locator('pre').hover();
+  await wrapBtn(sh).click();
+  expect(await wrapped()).toBe(true);
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+  // every block, also in the other entry; every switch says "on"
+  expect(await frame.locator('pre').evaluateAll((ps) => ps.map((p) => getComputedStyle(p).whiteSpace))).toEqual(Array(5).fill('pre-wrap'));
+  expect(await frame.locator('button[data-code-wrap]').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-pressed')))).toEqual(Array(5).fill('true'));
+  expect(await iframe.getAttribute('data-render')).toBe(render);
+  // folded lines still copy as the one line they are
+  await copyBtn(sh).click();
+  await expect(copyBtn(sh)).toHaveText('已复制 ✓');
+  expect(await pasted()).toBe(fenced381(SH));
+  await sh.locator('pre').hover();
+  await shot(page, '381-code-wrapped');
+  // a new drawing of the frame keeps it
+  await page.getByTestId('unfold-toggle').click();
+  await expect(iframe).not.toHaveAttribute('data-render', render!);
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await wrapped()).toBe(true);
+  await page.getByTestId('unfold-toggle').click();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+
+  // ---- 5. remembered: the app closed and started again, another opening of the item ----
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await open();
+  expect(await wrapped()).toBe(true);
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+  await expect(wrapBtn(ts)).toHaveAttribute('aria-pressed', 'true');
+  // and off again, from any block
+  await ts.locator('pre').hover();
+  await wrapBtn(ts).click();
+  expect(await wrapped()).toBe(false);
+  expect(await overflow(sh)).toEqual([true, 'pre']);
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await open();
+  expect(await wrapped()).toBe(false);
+
+  // ---- 6. syntax colours: GitHub's marks, light and dark; a block without a language stays in the text colour ----
+  const colour = (l: Locator) => l.first().evaluate((e) => getComputedStyle(e).color);
+  const seen = async () => ({
+    keyword: await colour(ts.locator('.pl-k')),
+    comment: await colour(ts.locator('.pl-c')),
+    string: await colour(sh.locator('.pl-s')),
+    plain: await colour(plain.locator('code')),
+    text: await colour(frame.locator('body')),
+  });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  const light = await seen();
+  expect(light).toMatchObject({ keyword: 'rgb(207, 34, 46)', comment: 'rgb(89, 99, 110)', string: 'rgb(10, 48, 105)' });
+  expect(light.plain).toBe(light.text);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-light');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(() => colour(ts.locator('.pl-k'))).toBe('rgb(255, 123, 114)');
+  const dark = await seen();
+  expect(dark).toMatchObject({ keyword: 'rgb(255, 123, 114)', comment: 'rgb(145, 152, 161)', string: 'rgb(165, 214, 255)' });
+  expect(dark.plain).toBe(dark.text);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-dark');
+
+  // ---- 7. the reply preview: the same colours for the same marks, no buttons, nothing runs ----
+  w.markdownHtml = CODE381.samples[TS].html;
+  await page.getByTestId('reply-input').fill(CODE381.samples[TS].markdown);
+  await page.getByTestId('reply-preview-toggle').click();
+  const preview = page.frameLocator('[data-testid="reply-preview"]');
+  await expect(preview.locator('pre')).toBeVisible();
+  expect(await colour(preview.locator('.pl-k'))).toBe(dark.keyword);
+  expect(await colour(preview.locator('.pl-c'))).toBe(dark.comment);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect.poll(() => colour(preview.locator('.pl-k'))).toBe(light.keyword);
+  expect(await colour(preview.locator('.pl-c'))).toBe(light.comment);
+  await expect(preview.locator('button')).toHaveCount(0);
+  await expect(preview.locator('script')).toHaveCount(0);
+  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).not.toContain('allow-scripts');
+  await shot(page, '381-code-preview');
+  w.markdownHtml = null;
+  await app.close();
+});
+
