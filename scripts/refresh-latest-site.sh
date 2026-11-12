@@ -45,7 +45,7 @@ if [ "${FORCE:-0}" != "1" ] && [ "$head" = "$built" ] && tmux has-session -t "$S
     exit 0
 fi
 
-log "refresh-latest-site: 构建 $head（上次 ${built:-无}），build log → $BUILD_LOG"
+log "refresh-latest-site: 构建 ${head}（上次 ${built:-无}），build log → $BUILD_LOG"
 if ! ( cd "$PROJECT_ROOT" && eval "$BUILD_CMD" ) >> "$BUILD_LOG" 2>&1; then
     log "refresh-latest-site: ❌ build 失败（见 $BUILD_LOG 尾部），保留旧 session 不动"
     exit 1
@@ -60,11 +60,11 @@ tmux new-session -d -s "$SESSION" -c "$PROJECT_ROOT" \
 for _ in $(seq 1 30); do
     if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/"; then
         echo "$head" > "$STAMP"
-        log "refresh-latest-site: ✅ $SESSION @ http://127.0.0.1:$PORT （$head）"
+        log "refresh-latest-site: ✅ $SESSION @ http://127.0.0.1:$PORT （${head}）"
         exit 0
     fi
     sleep 1
 done
-log "refresh-latest-site: ❌ server 30s 未监听 :$PORT，pane 尾巴："
+log "refresh-latest-site: ❌ server 30s 未监听 :${PORT}，pane 尾巴："
 tmux capture-pane -t "$SESSION" -p 2>/dev/null | tail -5 | while IFS= read -r l; do log "  | $l"; done
 exit 1

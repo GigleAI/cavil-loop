@@ -112,7 +112,7 @@ preview_adopt_legacy() {
             inactive|failed) ;;
             unknown) "$log" "❌ preview :$port 查不到旧单元 $u 停没停（用户服务管理器连不上？），下次再搬"
                      return 1 ;;
-            *) "$log" "❌ preview :$port 旧单元 $u 停不下来（$st），下次再搬"
+            *) "$log" "❌ preview :$port 旧单元 $u 停不下来（${st}），下次再搬"
                return 1 ;;
         esac
     done
@@ -139,7 +139,7 @@ preview_adopt_legacy() {
     mv -f "$old" "$CAVIL_PREVIEW_ADOPT_BACKUP/$port.conf.adopted-$(date +%Y%m%d-%H%M%S)" || {
         "$log" "❌ preview :$port 旧登记收进备份失败，下次再收"; return 1; }
     rm -f "$rec"
-    "$log" "preview :$port 已从旧单元搬到 $new_u-preview@$port（$([ "$listen" = yes ] && echo 在听 || echo 原本没开，保持不开)；旧登记在 $CAVIL_PREVIEW_ADOPT_BACKUP）"
+    "$log" "preview :$port 已从旧单元搬到 $new_u-preview@${port}（$([ "$listen" = yes ] && echo 在听 || echo 原本没开，保持不开)；旧登记在 ${CAVIL_PREVIEW_ADOPT_BACKUP}）"
     return 0
 }
 

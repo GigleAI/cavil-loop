@@ -89,7 +89,7 @@ if [ -n "${CODING_AGENT_CONFIG:-}" ]; then
         [ -f "$MIG_PROGRESS" ] || continue
         [ -f "$CAVIL_LEGACY_CONFIG_HOME/$(basename "$MIG_PROGRESS" .inprogress).conf" ] || continue
         if grep -qxF "CFG=$CODING_AGENT_CONFIG" "$MIG_PROGRESS"; then
-            echo "[cavil-loop] 本项目正在迁到新名字（$MIG_PROGRESS），这一轮跳过；进度见 $CAVIL_STATE_HOME/migrate.log" >&2
+            echo "[cavil-loop] 本项目正在迁到新名字（${MIG_PROGRESS}），这一轮跳过；进度见 $CAVIL_STATE_HOME/migrate.log" >&2
             exit 0
         fi
     done

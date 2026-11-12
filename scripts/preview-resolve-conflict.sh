@@ -54,7 +54,7 @@ stop_units() {
         st="$(_padopt_state "$u")"
         case "$st" in
             inactive|failed) ;;
-            *) say "❌ $u 没停下来（$st），什么都没移走；处理好之后重跑同一条命令"; return 1 ;;
+            *) say "❌ $u 没停下来（${st}），什么都没移走；处理好之后重跑同一条命令"; return 1 ;;
         esac
     done
 }
@@ -138,13 +138,13 @@ swap() {
     case "$kept" in old) src="$b/new.conf"; keep_src="$b/old.conf" ;; new) src="$b/old.conf"; keep_src="$b/new.conf" ;;
         *) say "❌ $b/state 里没有记留下的是哪份，不认这份备份"; return 2 ;; esac
     if [ "$bport" != "$PORT" ]; then
-        say "❌ 这份备份是端口 :${bport:-?} 的，不是 :$PORT，不动"; return 2
+        say "❌ 这份备份是端口 :${bport:-?} 的，不是 :${PORT}，不动"; return 2
     fi
     [ -f "$src" ] && [ -f "$keep_src" ] || { say "❌ $b 里缺 old.conf / new.conf，不认这份备份"; return 2; }
     if [ "$(conf_port "$src")" != "$PORT" ]; then
-        say "❌ 要换上的登记里写的端口是 :$(conf_port "$src")，不是 :$PORT，不动"; return 2
+        say "❌ 要换上的登记里写的端口是 :$(conf_port "$src")，不是 :${PORT}，不动"; return 2
     fi
-    [ ! -f "$OLD" ] || { say "❌ 旧登记目录里还有 :$PORT（上次留旧的那份还没搬完）。等下一轮迁移搬完，或先跑 $0 $PORT 看现状"; return 1; }
+    [ ! -f "$OLD" ] || { say "❌ 旧登记目录里还有 :${PORT}（上次留旧的那份还没搬完）。等下一轮迁移搬完，或先跑 $0 $PORT 看现状"; return 1; }
     [ -f "$NEW" ] || { say "❌ 新登记目录里没有 :$PORT 的登记，不动；现状："; show; return 1; }
     target="$(sha_of "$src")"; cur="$(sha_of "$NEW")"
 
@@ -166,7 +166,7 @@ swap() {
             || { rm -f "${tmp:-}"; say "❌ 准备换上的登记写不出来，什么都没换（当前登记原样在，单元已停，重跑同一条命令即可）"; return 1; }
         mv -f "$tmp" "$NEW" \
             || { rm -f "$tmp"; say "❌ 换登记失败，当前登记原样在（单元已停），重跑同一条命令即可"; return 1; }
-        say "已换成 $(owner_of "$NEW") 的登记（换下来的那份复制在 $b）"
+        say "已换成 $(owner_of "$NEW") 的登记（换下来的那份复制在 ${b}）"
     else
         say "❌ :$PORT 现在的登记（$(owner_of "$NEW")）既不是这份备份当时留下的那份，也不是要换上的那份——"
         say "   处理完冲突之后有人重新注册过，或者这份备份不是这次的。不动"

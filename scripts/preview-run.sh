@@ -19,7 +19,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_names.sh"
 CONF="${2:-$CAVIL_LEGACY_CONFIG_HOME/preview/${PORT}.conf}"
 [ -n "${2:-}" ] || [ -f "$CONF" ] || CONF="$CAVIL_CONFIG_HOME/preview/${PORT}.conf"
 
-[ -f "$CONF" ] || { echo "preview conf 不存在：$CONF（先跑 preview-serve.sh <issue>）" >&2; exit 2; }
+[ -f "$CONF" ] || { echo "preview conf 不存在：${CONF}（先跑 preview-serve.sh <issue>）" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$CONF"
 

@@ -3,7 +3,7 @@
 #
 # 用法：
 #   bash scripts/poll-history.sh [-n 轮数] [--json] [--no-log] [--config <配置文件> | --state-dir <状态目录>]
-# 不给 --config / --state-dir 时：先看 $CODING_AGENT_CONFIG，再从当前目录往上找项目配置。
+# 不给 --config / --state-dir 时：先看 ${CODING_AGENT_CONFIG}，再从当前目录往上找项目配置。
 #
 # **只读**：不改任何记录文件。被强杀的轮次不会被补成正式记录（维护者在 #344 选的 A），这里拿它
 # 留下的进度文件对照进程列表，现场显示成「未正常结束」「还在跑」或「判断不了」。
@@ -207,7 +207,7 @@ if [ "$(printf '%s' "$MODEL" | jq -r '.last_snapshot != null')" = true ]; then
         FROM=$(printf '%s' "$MODEL" | jq -r '.last_snapshot.poll_log.from // 0')
         TO=$(printf '%s' "$MODEL" | jq -r '.last_snapshot.poll_log.to // 0')
         LOGF="$SD/poll.log"
-        echo "  那一轮在 poll.log 里的内容（字节 $FROM–$TO）："
+        echo "  那一轮在 poll.log 里的内容（字节 ${FROM}–${TO}）："
         if [ -f "$LOGF" ] && [ "$TO" -gt "$FROM" ] && [ "$(wc -c < "$LOGF")" -ge "$TO" ]; then
             tail -c "+$((FROM + 1))" "$LOGF" | head -c "$((TO - FROM))" | head -n 200 | sed 's/^/    /'
         elif [ "$TO" -le "$FROM" ]; then
