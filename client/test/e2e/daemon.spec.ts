@@ -132,9 +132,13 @@ test('all fine: the project row; stop, start and disconnect go out only after th
     { key: 'widget', action: 'start' },
   ]);
 
-  // the log and the config are handed to the system, not shown in the window
+  // "配置" is a form now (GitHub#388, test/e2e/daemon-config.spec.ts); its "用编辑器打开配置文件" still hands the file to the system
   await row.getByTestId('daemon-config').click();
+  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form');
+  await page.getByTestId('config-open-editor').click();
   await expect(row.getByTestId('daemon-note')).toContainText('已打开');
+  await page.getByTestId('config-cancel').click();
+  await expect(page.getByTestId('config-dialog')).toHaveCount(0);
 
   // disconnect
   await row.getByTestId('daemon-disconnect').click();

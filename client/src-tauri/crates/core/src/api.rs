@@ -146,6 +146,10 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "daemonDisconnect" => Ok(e.daemon().disconnect(s(&a, "key")?).await),
         "daemonOpen" => Ok(e.daemon().open(s(&a, "key")?, s(&a, "what")?).await),
         "daemonUpdate" => Ok(e.daemon().update().await),
+        // "配置" on a project (GitHub#388): the window names a project and settings; the back end runs the
+        // daemon's own project-config.sh, which decides where the file is and what may be changed
+        "daemonConfigGet" => Ok(e.daemon().config_get(s(&a, "key")?).await),
+        "daemonConfigSet" => Ok(e.daemon().config_set(s(&a, "key")?, s(&a, "rev")?, a.get("values").unwrap_or(&Value::Null)).await),
         // "接上 daemon" from the repository list (GitHub#315): the window names a repository, an agent and a folder;
         // the back end checks each of them again and runs the daemon's own setup.sh
         "daemonConnectInfo" => Ok(e.daemon().connect_info(s(&a, "repo")?).await),
