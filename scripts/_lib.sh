@@ -587,18 +587,37 @@ ci_failure_report_tick() {
 #   · 在不派工名单里（修复失败达到上限、交人还没做完）→ 不派，不管它身上是什么标签
 #   · 本机记录没有或读不懂（暂停中 / 还不知道是不是首次启用）→ 本功能开的报告一律不派；
 #     是不是报告看 issue 正文首行的标记，读不到这条 issue 也按不能派算
+# 本机记录能不能用，只有一个定义：ci_failure_report.py 的 load_state（state-check 子命令）。这里不另写
+# 一套判据——两边不一样时，损坏的记录会被这边当成正常、放开派工。按文件的修改时间和大小缓存，
+# 同一轮里文件没变就不重复起 python。读不出结论（python 起不来等）按不能用算。
+CI_REPORT_STATE_SIG=""
+CI_REPORT_STATE_OK=""
+ci_report_state_usable() {
+    local sf="$STATE_DIR/ci-failure-report.json" sig out
+    [ -f "$sf" ] || return 1
+    sig=$(stat -c '%Y.%s.%i' "$sf" 2>/dev/null) || return 1
+    if [ "$sig" != "$CI_REPORT_STATE_SIG" ]; then
+        out=$(CI_REPORT_REPO="$REPO" CI_REPORT_STATE_DIR="$STATE_DIR" \
+            python3 "$_LIB_DIR/ci_failure_report.py" state-check 2>/dev/null) || out=""
+        CI_REPORT_STATE_SIG="$sig"
+        CI_REPORT_STATE_OK="$out"
+    fi
+    [ "$CI_REPORT_STATE_OK" = ok ]
+}
+
 ci_report_dispatch_hold() {   # <issue 编号>
     ci_failure_report_enabled || return 1
-    local n="$1" sf="$STATE_DIR/ci-failure-report.json" hf="$STATE_DIR/ci-failure-report.hold" readable=0 item body
+    local n="$1" sf="$STATE_DIR/ci-failure-report.json" hf="$STATE_DIR/ci-failure-report.hold" usable=0 item body listed
     CI_REPORT_HOLD_REASON=""
-    if [ -f "$sf" ] && jq -e 'type == "object" and .v == 1 and (.handover | type == "object")' "$sf" >/dev/null 2>&1; then
-        readable=1
-        if jq -e --arg n "$n" '.handover[$n] != null' "$sf" >/dev/null 2>&1; then
+    if ci_report_state_usable; then
+        usable=1
+        # 记录可用却读不出名单（文件刚好在换）→ 按在名单里算
+        if ! listed=$(jq -r --arg n "$n" '.handover | has($n)' "$sf" 2>/dev/null) || [ "$listed" != false ]; then
             CI_REPORT_HOLD_REASON="修复失败次数已到上限、正在交人"
             return 0
         fi
     fi
-    if [ "$readable" = 1 ] && [ ! -f "$hf" ]; then
+    if [ "$usable" = 1 ] && [ ! -f "$hf" ]; then
         return 1
     fi
     if ! item=$(autopilot_snapshot_item issues "$n") || [ -z "$item" ]; then

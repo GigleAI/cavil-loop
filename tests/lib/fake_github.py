@@ -37,7 +37,7 @@ CI 失败报告（GitHub#345）用到的几样，只在对应文件 / 请求出�
   FAKE_GH_TIMELINE=1 时，经本程序发的评论、加摘标签、开关 issue 按发生顺序记进 timeline.json，
   issues/<n>/timeline 按这个顺序返回（评论是 event=commented）；me_type 文件 = 当前账号的类型（默认 User）
   issues 列表带 state= / creator= 参数时按它筛（不带时照旧只给 open）
-  F429_<key>：这个读返回 429；F_<方法>_<key> / F403rl_<方法>_<key>：这个写失败 / 被限流
+  F429_<key>：这个读返回 429（F429q_<key>：只对带 creator= 的列表请求）；F_<方法>_<key> / F403rl_<方法>_<key>：这个写失败 / 被限流
   （key 同上；摘标签的 key 不带标签名：DELETE_issues_<n>_labels）；Fpage_<key>_<页码>：只让这一页失败
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
 hook_<POST|DELETE>_issues_<n>_labels_<k> runs right before the k-th label add / remove on item n,
@@ -365,6 +365,9 @@ if method == "GET":
     if os.path.exists(p("F403rl_" + key)):
         fail("gh: API rate limit exceeded for user ID 1. (HTTP 403)")
     if os.path.exists(p("F429_" + key)):
+        fail("gh: Too Many Requests (HTTP 429)")
+    # F429q_<key>：只让带 creator= 的那种列表请求返回 429（主轮询自己的快照请求不带，不受影响）
+    if "creator" in QUERY and os.path.exists(p("F429q_" + key)):
         fail("gh: Too Many Requests (HTTP 429)")
     if "page" in QUERY and os.path.exists(p("Fpage_%s_%s" % (key, QUERY["page"]))):
         fail("HTTP 502: injected failure (%s page %s)" % (key, QUERY["page"]))

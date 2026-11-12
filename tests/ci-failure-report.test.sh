@@ -429,7 +429,39 @@ fresh; enable
 redrun 820 $((NOW - 60)) 3 requester-bot; tick; later
 jq --arg wf "$WF" '.workflows[$wf].pending["820"] = {created: .workflows[$wf].done["820"]} | del(.workflows[$wf].done["820"])' "$ST" > "$ST.t" && mv "$ST.t" "$ST"
 tick
-chk "同一次运行重新判断 → 认出已经开过，不开第二条" "$(n_issues),$(pending_n)" "1,0"
+chk "同一次运行重新判断 → 认出已经开过：不开第二条，也不追加「又一次失败」" "$(n_issues),$(n_comments 1),$(pending_n)" "1,0,0"
+chk "到达性 · 重新判断时确实读了任务和报告列表" "$([ "$(reads "actions/runs/820/attempts/1/jobs")" -ge 2 ] && echo yes)" "yes"
+# 同样的重试，落点是「原因未确认」报告
+fresh; enable
+mkrun 821 $((NOW - 60)) completed failure
+mkjob 821 8211 "shard 3/4" failure "Run shard 3/4"
+tick; later
+has "搭好：开的是原因未确认报告" "$(title_of 1)" "原因未确认"
+jq --arg wf "$WF" '.workflows[$wf].pending["821"] = {created: .workflows[$wf].done["821"]} | del(.workflows[$wf].done["821"])' "$ST" > "$ST.t" && mv "$ST.t" "$ST"
+tick
+chk "原因未确认报告同样：不开第二条、不追加评论" "$(n_issues),$(n_comments 1),$(pending_n)" "1,0,0"
+
+# 去重要读的评论列表读完之后、写之前，维护者把报告关成「不做」→ 不写、不记已处理
+fresh; enable
+redrun 825 $((NOW - 60)) 3 requester-bot; tick; later
+redrun 826 $((NOW - 60)) 3 requester-bot
+cat > "$GD/hook_issues_1_comments_1" <<SH
+echo maint > "$GD/me"; FAKE_GH_DIR="$GD" FAKE_GH_TIMELINE=1 "$SANDBOX/bin/gh" api -X PATCH "$R/issues/1" -f state=closed -f state_reason=not_planned >/dev/null; echo loop-bot > "$GD/me"
+SH
+R0=$(reads "api $R/issues/1\$"); tick
+chk "读评论期间报告被关成不做 → 没有追加评论，运行没被记为已处理" "$(state_of 1),$(n_comments 1),$(pending_n)" "closed,0,1"
+chk "到达性 · 评论列表读完之后确实又重读了一次 issue" "$([ "$(( $(reads "api $R/issues/1\$") - R0 ))" -ge 1 ] && [ "$(reads "issues/1/comments")" -ge 1 ] && echo yes)" "yes"
+later; tick
+chk "下一轮按当时的状态重新判断：原报告已关 → 另开一条，不写进已关的那条" "$(n_issues),$(n_comments 1),$(pending_n)" "2,0,0"
+# 同样的时点，报告正文的标记被改掉（不再是本功能的报告）
+fresh; enable
+redrun 827 $((NOW - 60)) 3 requester-bot; tick; later
+redrun 828 $((NOW - 60)) 3 requester-bot
+cat > "$GD/hook_issues_1_comments_1" <<SH
+jq '.["1"].body = "被人整段改写了"' "$GD/items.json" > "$GD/items.json.t" && mv "$GD/items.json.t" "$GD/items.json"
+SH
+tick
+chk "读评论期间正文标记被改掉 → 不往这条 issue 写评论" "$(n_comments 1)" "0"
 
 # 关闭原因三种
 fresh; enable
@@ -641,6 +673,58 @@ rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 # 没有任何报告、也没有记录 = 首次启用
 fresh; tick
 chk "没有报告也没有记录 → 首次启用，零写入" "$(writes),$([ -f "$ST" ] && echo yes)" "0,yes"
+
+section "【10b】记录结构损坏：检查和派工用同一个判据；列报告被限流也不放开派工"
+verdict_py() { CI_REPORT_REPO=x CI_REPORT_STATE_DIR="$W/state" python3 "$NEW/scripts/ci_failure_report.py" state-check; }
+verdict_sh() { env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$0/scripts/_lib.sh" >/dev/null 2>&1; ci_report_state_usable && echo ok || echo bad' "$NEW"; }
+fresh; enable
+GOOD=$(cat "$ST")
+for bad in '.workflows = "x"' '.v = 2' '.handover = []' '.workflows["tests.yml"].pending = 3' '.workflows["tests.yml"].frontier = "昨天"' 'del(.handover)'; do
+    printf '%s' "$GOOD" | jq "$bad" > "$ST"
+    chk "同一份坏记录（$bad）：检查和派工侧都判不可用" "$(verdict_py),$(verdict_sh)" "bad,bad"
+done
+echo 'not json{' > "$ST"; chk "不是 JSON：两边都判不可用" "$(verdict_py),$(verdict_sh)" "bad,bad"
+rm -f "$ST";            chk "文件不存在：两边都判不可用" "$(verdict_py),$(verdict_sh)" "bad,bad"
+printf '%s' "$GOOD" > "$ST"; chk "好的记录：两边都判可用" "$(verdict_py),$(verdict_sh)" "ok,ok"
+
+corrupt_case() {   # <入口>：结构损坏（仍是合法 JSON）+ 列报告被限流 → 这个入口不派这条报告
+    local mode="$1" extra=('CI_FAILURE_REPORT_DISPATCH=true')
+    case "$mode" in
+        greedy) extra+=('DISPATCH_MODE="greedy"') ;;
+        autopilot) extra+=('LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_REVIEW="pending/review"') ;;
+    esac
+    fresh "${extra[@]}"; enable
+    echo '{"maint":"admin"}' > "$GD/perms.json"
+    redrun 1050 $((NOW - 60)) 3 requester-bot; tick; later
+    case "$mode" in
+        label) mkissue 55 "pending/agent" ;;
+        greedy) ghx api -X DELETE "$R/issues/1/labels/pending%2Fagent" >/dev/null; mkissue 55 "" ;;
+        autopilot) ghx api -X DELETE "$R/issues/1/labels/pending%2Fagent" >/dev/null
+                   as maint User ghx api -X POST "$R/issues/1/labels" -f "labels[]=autopilot"
+                   mkissue 55 ""; as maint User ghx api -X POST "$R/issues/55/labels" -f "labels[]=autopilot" ;;
+    esac
+    local before; before=$(strip "$(labels_of 1)")
+    jq '.workflows = "坏了"' "$ST" > "$ST.t" && mv "$ST.t" "$ST"
+    touch "$GD/F429q_issues"                       # 检查去列报告时被限流
+    poll; later 60
+    chk "[$mode] 记录损坏 + 列报告被限流：这条报告没被派工" "$(session_of 1),$(strip "$(labels_of 1)")" "0,$before"
+    chk "[$mode] 旁证：正常条目确实被派工" "$(session_of 55),$(strip "$(labels_of 55)")" "1,doing/agent"
+    rm -f "$GD/F429q_issues"; later 1000; poll
+    chk "[$mode] 限流过后：判定为记录损坏并暂停，报告仍然不派" "$(jq -r .mode "$W/state/ci-failure-report.hold"),$(session_of 1)" "paused,0"
+    rm -f /tmp/cavil-loop-issue-55-* /tmp/cavil-loop-issue-1-* 2>/dev/null
+}
+for m in label greedy autopilot; do corrupt_case "$m"; done
+# 启动前那一处：候选收集之后记录才坏
+build label
+mkissue 55 "pending/agent"
+jq '.next_check = 99999999999' "$ST" > "$ST.t" && mv "$ST.t" "$ST"
+cat > "$GD/hook_POST_issues_55_labels_1" <<SH
+jq '.workflows = "坏了"' "$ST" > "$ST.t" && mv "$ST.t" "$ST"
+SH
+poll
+chk "[启动前] 收集之后记录才坏 → 启动前拦下" "$(session_of 1),$(labels_of 1)" "0,pending/agent"
+chk "[启动前] 旁证：同一轮正常条目被派工" "$(session_of 55)" "1"
+rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 
 section "【11】日志处理"
 san() { printf '%s' "$1" | python3 "$NEW/scripts/ci_failure_report.py" sanitize; }

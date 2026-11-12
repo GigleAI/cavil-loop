@@ -485,12 +485,12 @@ def write(method, path, fields, what):
 
 def comment_once(n, wf, body, expect_state="open", **mark):
     """Post `body` on report n unless a comment carrying this marker is already there."""
-    it = reread(n, wf)
-    if expect_state and it["state"] != expect_state:
-        raise Unknown("#%d 现在是 %s，和判断时不一样" % (n, it["state"]))
     for c in comments_of(n):
         if _marks(c["body"], **mark):
             return True
+    it = reread(n, wf)                   # nothing is read between this and the write
+    if expect_state and it["state"] != expect_state:
+        raise Unknown("#%d 现在是 %s，和判断时不一样" % (n, it["state"]))
     return write("POST", "repos/%s/issues/%d/comments" % (REPO, n), [("body", body)], "在 #%d 评论" % n)
 
 
@@ -764,6 +764,8 @@ def judge(st, wf, run, hub):
             if r == WAIT:
                 worst = WAIT
         return worst
+    if any(r["wf"] == wf and r["run"] == run["id"] for r in hub.reports()):
+        return DONE                      # a report was opened for this very run (a retry after that write)
     opens = [r for r in hub.reports() if r["wf"] == wf and r["state"] == "open"]
     if ev["complete"]:
         same = next((r for r in opens if r["kind"] == "normal" and r["sig"] == ev["sig"]), None)
@@ -906,11 +908,11 @@ def handover_step(st, key):
         return False                      # the announcing comment is still to be posted (run is pending)
 
     def look():
-        it = reread(n, wf)
         tl = get_pages("repos/%s/issues/%d/timeline" % (REPO, n))
         for ev in tl:
             if not isinstance(ev, dict):
                 raise Unknown("timeline of #%d: bad shape" % n)
+        it = reread(n, wf)               # the issue is read last: a write follows it directly
         return it, handover_status(tl, login(True), automation(), FLOW_LABELS)
 
     def leave(why):
@@ -1004,10 +1006,13 @@ def lost(kind):
                 return                      # paused and looked at recently: nothing to do this round
         except (TypeError, ValueError):
             pass
+    if held.get("mode") not in ("paused", "unknown"):
+        # on disk before anything is read: a rate limit or a timeout below must not leave the
+        # reports dispatchable (the dispatch side also judges the state file itself, see state-check)
+        write_json(HOLD_FILE, {"mode": "unknown", "at": iso(t)})
     try:
         reports = list_reports()
     except Unknown as e:
-        write_json(HOLD_FILE, {"mode": "unknown", "at": iso(t)})
         if held.get("mode") == "unknown":
             return                          # already said so
         say("⚠️ CI 失败报告：本机记录%s，而且现在读不到 GitHub 上的报告（%s）——不知道是不是第一次启用，"
@@ -1216,6 +1221,10 @@ def main():
     if not REPO or not STATE_DIR:
         print("缺 CI_REPORT_REPO / CI_REPORT_STATE_DIR（要经 ci-failure-report.sh 运行）")
         return 2
+    if cmd == "state-check":
+        # the one definition of "the local record is usable"; _lib.sh asks it for the dispatch hold
+        print("ok" if load_state()[0] is not None else "bad")
+        return 0
     if cmd == "restart":
         return restart()
     if cmd == "list":
