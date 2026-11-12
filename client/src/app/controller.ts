@@ -53,7 +53,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, searchCandidates, type Candidate } from '../data/blocked';
+import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
   applyDone,
@@ -63,15 +63,20 @@ import {
   factsOf,
   fingerprint,
   isOpComment,
+  layerRows,
   latestRefs,
   lostRefs,
   markComment,
+  parseRefQuery,
   planBlocked,
+  rankByNumber,
   refKey,
   repauseAllowed,
+  settledOf,
   type BlockedLabels,
   type BlockedRead,
   type Facts,
+  type NumberSettled,
   type Pick as BlockedPick,
   type Ref,
 } from '../shared/blocked';
@@ -326,6 +331,9 @@ interface SyncRun {
   reading: boolean;
   drop(): void;
 }
+
+/** GitHub#448: how long the picker reuses a repository's complete list of open items */
+const OPEN_CACHE_MS = 60_000;
 
 export class Controller {
   private state: AppState;
@@ -3536,25 +3544,72 @@ export class Controller {
     return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
   }
 
-  /** GitHub#434: the picker's search (the item's own repository; `owner/repo#N` another one). */
-  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }> {
+  /**
+   * GitHub#434 / #448: the picker's search (the item's own repository; `owner/repo#N` or an address
+   * another one). A number reads the item itself and every open item of the repository (to its last
+   * page), ranked by `rankByNumber`; an address reads that one item; text goes to GitHub's search.
+   * `error` with `ok: true`: part of the answer could not be read — `items` holds what could, never
+   * passed off as the whole.
+   */
+  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string; settled?: NumberSettled } | { ok: false; error: string }> {
     const item = this.findItem(key);
     if (!item) return { ok: false, error: '看板上找不到这一条' };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
     const q = text.trim();
-    const one = /^(?:([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+))?#?(\d+)$/.exec(q);
+    const parsed = parseRefQuery(q, this.deps.endpoints.web);
+    const self = { repo: item.repo.toLowerCase(), number: item.number };
+    const fail = (e: unknown) => `搜索失败：${(e as Error)?.message ?? String(e)}`;
+    const one = async (repo: string, n: number): Promise<Candidate | null> => {
+      try {
+        return await readCandidate(c.client, repo, n);
+      } catch (e) {
+        if (e instanceof GitHubError && e.status === 404) return null;
+        throw e;
+      }
+    };
+    if (parsed.kind === 'number') {
+      const repo = parsed.repo ?? self.repo;
+      const exactNo = /^0/.test(parsed.digits) ? null : Number(parsed.digits);
+      const [exact, list] = await Promise.allSettled([exactNo === null ? Promise.resolve(null) : one(repo, exactNo), this.openCandidates(c.client, repo)]);
+      // freshest first: the exact read settles its number over the list (read now or kept a minute) — a
+      // 404 or a closed answer hides that number's row in the list too (PR #452 review round 2)
+      const layers = [
+        { rows: exact.status === 'fulfilled' && exact.value ? [exact.value] : [], settled: { decided: exactNo !== null && exact.status === 'fulfilled' ? [refKey({ repo, number: exactNo })] : [], whole: null } },
+        { rows: list.status === 'fulfilled' ? list.value : [], settled: { decided: [], whole: list.status === 'fulfilled' ? repo : null } },
+      ];
+      const items = rankByNumber(layerRows(layers), repo, parsed.digits, self).map((x) => ({ ...x }));
+      // what was read, so the window puts its board copies of it under GitHub's answer
+      const settled: NumberSettled = settledOf(layers);
+      const errs: string[] = [];
+      if (exact.status === 'rejected') errs.push(fail(exact.reason));
+      if (list.status === 'rejected') errs.push(`搜索失败：开着的条目没读全（${(list.reason as Error)?.message ?? String(list.reason)}）`);
+      return errs.length ? { ok: true, items, error: errs.join('；'), settled } : { ok: true, items, settled };
+    }
     try {
       let found: Candidate[];
-      if (one) found = [await readCandidate(c.client, one[1] ?? item.repo, Number(one[2]))];
+      if (parsed.kind === 'url') found = [await one(parsed.repo, parsed.number)].filter((x): x is Candidate => x !== null);
       else if (q.length < 2) return { ok: true, items: [] };
       else found = await searchCandidates(c.client, item.repo, q);
-      const items = found.filter((x) => x.state === 'open' && !(x.repo === item.repo.toLowerCase() && x.number === item.number));
+      const items = found.filter((x) => x.state === 'open' && !(x.repo === self.repo && x.number === self.number));
       return { ok: true, items: items.map((x) => ({ ...x })) };
     } catch (e) {
-      if (one && e instanceof GitHubError && e.status === 404) return { ok: true, items: [] };
-      return { ok: false, error: `搜索失败：${(e as Error)?.message ?? String(e)}` };
+      return { ok: false, error: fail(e) };
     }
+  }
+
+  /** GitHub#448: a repository's open items read whole, kept a minute per sign-in session (a failed read is not kept). */
+  private openCache = new Map<string, { at: number; items: Candidate[] }>();
+  private async openCandidates(client: GitHubClient, repo: string): Promise<Candidate[]> {
+    const k = `${this.session}\n${repo.toLowerCase()}`;
+    const hit = this.openCache.get(k);
+    const now = this.now();
+    if (hit && now - hit.at >= 0 && now - hit.at < OPEN_CACHE_MS) return hit.items;
+    const session = this.session;
+    const items = await readOpenCandidates(client, repo);
+    for (const [key, v] of this.openCache) if (!key.startsWith(`${this.session}\n`) || now - v.at >= OPEN_CACHE_MS) this.openCache.delete(key);
+    if (session === this.session) this.openCache.set(k, { at: now, items });
+    return items;
   }
 
   /** GitHub#434: confirm in the dialog. Refused (nothing written) when GitHub no longer holds what was shown. */

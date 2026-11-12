@@ -6,7 +6,7 @@ import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
-import type { BlockedLabels, EntryState, Pick as BlockedPick, Ref } from './blocked';
+import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref } from './blocked';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 
@@ -127,8 +127,13 @@ export interface CavilApi {
   setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
   /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */
   blockedRead(key: string): Promise<BlockedView>;
-  /** GitHub#434: the picker's search in the item's repository — a number reads that one item, text searches open titles */
-  blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }>;
+  /**
+   * GitHub#434 / #448: the picker's search — a number lists the item with it and the open items whose
+   * number starts with it, an address that one item, text searches open titles. `error` with `ok: true`:
+   * part of the answer could not be read (`items` is what could). `settled` (a number search): what the
+   * answer decided, so the window drops its own out-of-date copies of those items (PR #452 review round 1).
+   */
+  blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string; settled?: NumberSettled } | { ok: false; error: string }>;
   /** GitHub#434: register the prerequisites; refused (with the item read again) when GitHub no longer holds what the dialog showed */
   blockedStart(req: BlockedStart): Promise<BlockedStartResult>;
   /** remember the merge method chosen for a PR in `repo` */
