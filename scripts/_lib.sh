@@ -588,21 +588,15 @@ ci_failure_report_tick() {
 #   · 本机记录没有或读不懂（暂停中 / 还不知道是不是首次启用）→ 本功能开的报告一律不派；
 #     是不是报告看 issue 正文首行的标记，读不到这条 issue 也按不能派算
 # 本机记录能不能用，只有一个定义：ci_failure_report.py 的 load_state（state-check 子命令）。这里不另写
-# 一套判据——两边不一样时，损坏的记录会被这边当成正常、放开派工。按文件的修改时间和大小缓存，
-# 同一轮里文件没变就不重复起 python。读不出结论（python 起不来等）按不能用算。
-CI_REPORT_STATE_SIG=""
-CI_REPORT_STATE_OK=""
+# 一套判据——两边不一样时，损坏的记录会被这边当成正常、放开派工。每次都现问、不缓存：按修改时间 /
+# 大小缓存的话，同一秒里原位改坏、长度不变的文件会沿用旧结论（PR #393 复审第 2 轮）；也不依赖 stat
+# 这类各平台参数不同的工具。读不出结论（python 起不来等）按不能用算。
 ci_report_state_usable() {
-    local sf="$STATE_DIR/ci-failure-report.json" sig out
+    local sf="$STATE_DIR/ci-failure-report.json" out
     [ -f "$sf" ] || return 1
-    sig=$(stat -c '%Y.%s.%i' "$sf" 2>/dev/null) || return 1
-    if [ "$sig" != "$CI_REPORT_STATE_SIG" ]; then
-        out=$(CI_REPORT_REPO="$REPO" CI_REPORT_STATE_DIR="$STATE_DIR" \
-            python3 "$_LIB_DIR/ci_failure_report.py" state-check 2>/dev/null) || out=""
-        CI_REPORT_STATE_SIG="$sig"
-        CI_REPORT_STATE_OK="$out"
-    fi
-    [ "$CI_REPORT_STATE_OK" = ok ]
+    out=$(CI_REPORT_REPO="$REPO" CI_REPORT_STATE_DIR="$STATE_DIR" \
+        python3 "$_LIB_DIR/ci_failure_report.py" state-check 2>/dev/null) || out=""
+    [ "$out" = ok ]
 }
 
 ci_report_dispatch_hold() {   # <issue 编号>

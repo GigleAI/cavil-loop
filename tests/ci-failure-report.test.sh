@@ -687,6 +687,46 @@ echo 'not json{' > "$ST"; chk "不是 JSON：两边都判不可用" "$(verdict_p
 rm -f "$ST";            chk "文件不存在：两边都判不可用" "$(verdict_py),$(verdict_sh)" "bad,bad"
 printf '%s' "$GOOD" > "$ST"; chk "好的记录：两边都判可用" "$(verdict_py),$(verdict_sh)" "ok,ok"
 
+# 同一个进程里先问过一次（好的），再原位改坏——同一秒、长度不变、inode 不变——必须立刻判不可用
+printf '%s' "$GOOD" > "$ST"
+cat > "$SANDBOX/inplace.py" <<'INPLACE'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+assert t.count('"v": 1') == 1
+f = open(p, "r+")
+f.write(t.replace('"v": 1', '"v": 2'))
+f.close()
+INPLACE
+out=$(env CODING_AGENT_CONFIG="$CONF" ST="$ST" FIX="$SANDBOX/inplace.py" bash -c '
+    source "$0/scripts/_lib.sh" >/dev/null 2>&1
+    ci_report_state_usable && a=ok || a=bad
+    ino1=$(ls -i "$ST" | cut -d" " -f1); sz1=$(wc -c < "$ST")
+    python3 "$FIX" "$ST"
+    ino2=$(ls -i "$ST" | cut -d" " -f1); sz2=$(wc -c < "$ST")
+    ci_report_state_usable && b=ok || b=bad
+    echo "$a,$b,$([ "$ino1" = "$ino2" ] && [ "$sz1" = "$sz2" ] && echo same-file-same-size)"' "$NEW")
+chk "同一进程：问过之后原位改坏（同 inode、同长度）→ 立刻判不可用" "$out" "ok,bad,same-file-same-size"
+# 系统的 stat 是不认 -c 的那种（BSD / macOS）：好的记录仍然判可用，不会把正常报告拦住
+mkdir -p "$SANDBOX/bsdbin"
+cat > "$SANDBOX/bsdbin/stat" <<'BSDSTAT'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = -c ] && { echo "stat: illegal option -- c" >&2; exit 1; }; done
+exec /usr/bin/stat "$@"
+BSDSTAT
+chmod +x "$SANDBOX/bsdbin/stat"
+printf '%s' "$GOOD" > "$ST"
+out=$(env CODING_AGENT_CONFIG="$CONF" BSD="$SANDBOX/bsdbin" bash -c '
+    source "$0/scripts/_lib.sh" >/dev/null 2>&1; PATH="$BSD:$PATH"
+    stat -c %Y / >/dev/null 2>&1 && s=gnu || s=bsd
+    ci_report_state_usable && echo "$s,ok" || echo "$s,bad"' "$NEW")
+chk "stat 不认 -c 的系统：好的记录照样判可用" "$out" "bsd,ok"
+fresh 'CI_FAILURE_REPORT_DISPATCH=true' "PATH=\"$SANDBOX/bsdbin:$SANDBOX/bin:\$PATH\""; enable
+redrun 1040 $((NOW - 60)) 3 requester-bot; tick; later
+poll
+chk "stat 不认 -c 的系统：带派工标签的正常报告照常被派工" "$(session_of 1),$(labels_of 1)" "1,doing/agent"
+rm -f /tmp/cavil-loop-issue-1-* 2>/dev/null
+
 corrupt_case() {   # <入口>：结构损坏（仍是合法 JSON）+ 列报告被限流 → 这个入口不派这条报告
     local mode="$1" extra=('CI_FAILURE_REPORT_DISPATCH=true')
     case "$mode" in
