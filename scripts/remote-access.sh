@@ -2,10 +2,11 @@
 # 远程入口的开关与配对（GitHub#387）：让配对过的桌面客户端经 Tailscale 看 / 停启这台机器上的 daemon。
 #
 # 用法：
-#   bash scripts/remote-access.sh pair              生成一个配对码（入口还没开就先打开）
+#   bash scripts/remote-access.sh pair              生成一个配对码（入口还没开就先打开；新码顶替旧码）
+#   bash scripts/remote-access.sh pair-cancel       作废等待中的配对码
 #   bash scripts/remote-access.sh enable [--port N] 打开入口：登记 Tailscale 转发 + 启动常驻服务
 #   bash scripts/remote-access.sh status            入口开没开、转发在不在、配对了几台设备
-#   bash scripts/remote-access.sh list              列出已配对设备
+#   bash scripts/remote-access.sh list [--machine]  列出已配对设备（--machine：给桌面客户端读的 DEVICE= 行）
 #   bash scripts/remote-access.sh revoke <设备名或编号>   撤销一台设备（立刻生效）
 #   bash scripts/remote-access.sh disable           关闭入口：停服务 + 撤掉转发（已配对设备清单保留）
 #
@@ -18,7 +19,9 @@
 #
 # 每一步只认已知结果：Tailscale / 后台任务状态读不到时不当成「没开」，什么都不动。
 # 退出码：0 = 成功；1 = 用法错误 / 没有这台设备；2 = 前提不满足或状态读不到，什么都没动；3 = 做了一半，输出里写明剩下什么。
-# enable / disable / pair / status 的最后一行固定是 RESULT=<...>。
+# enable / disable / pair / pair-cancel / status 的最后一行固定是 RESULT=<...>。
+# 给桌面客户端读的行（GitHub#387 简化配对）：status 另给 HOST= / PORT= / DEVICES=（数字，读不到是 unknown），
+# pair 另给 HOST= / CODE= / EXPIRES=（失效时刻，秒）。HOST= 只在读到机器名时出现。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -32,7 +35,7 @@ PY="$SCRIPT_DIR/remote-access/remote_access.py"
 OS="$(uname -s 2>/dev/null || true)"
 
 result() { echo "RESULT=$1"; exit "$2"; }
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
 # 常驻服务启动的是「稳定入口」下的脚本（按版本部署时它是指向当前版本的软链），不是本次运行所在的版本目录：
 # 版本目录会被清理，写死它的话入口过几天就起不来了。入口不存在（开发副本直接跑）才用脚本自己的位置。
@@ -283,9 +286,14 @@ svc_stop_and_remove() {
     return 0
 }
 
-device_count() {   # 「N 台」或「读不到」——清单读不懂时不报 0 台
+DEVICE_N=unknown
+device_count() {   # 「N 台」或「读不到」——清单读不懂时不报 0 台；数字同时留在 DEVICE_N（读不到 = unknown）
     local rows
-    if rows="$(python3 "$PY" list --state "$STATE" 2>/dev/null)"; then echo "$(printf '%s' "$rows" | grep -c . || true) 台"; else echo "读不到"; fi
+    if rows="$(python3 "$PY" list --state "$STATE" 2>/dev/null)"; then
+        DEVICE_N="$(printf '%s' "$rows" | grep -c . || true)"; echo "$DEVICE_N 台"
+    else
+        DEVICE_N=unknown; echo "读不到"
+    fi
 }
 
 cmd_enable() {
@@ -431,14 +439,27 @@ cmd_pair() {
         ts_identity
         state_load; state_require
     fi
-    local code
-    code="$(python3 "$PY" pair-code --state "$STATE")"
+    local made code expires host
+    made="$(python3 "$PY" pair-code --expiry --state "$STATE")" || { echo "配对码没能生成（写不进 $STATE）"; result failed 3; }
+    code="$(sed -n 1p <<<"$made")"; expires="$(sed -n 2p <<<"$made")"
+    host="$TS_HOST$( [ "$CUR_PORT" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$CUR_PORT" )"
     echo
     echo "在客户端「设置 → 远程 daemon → 添加远程 daemon」里填："
-    echo "  机器名：$TS_HOST$( [ "$CUR_PORT" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$CUR_PORT" )"
+    echo "  机器名：$host"
     echo "  配对码：${code:0:4} ${code:4:4}"
-    echo "配对码 10 分钟内有效，只能用一次；连续输错 5 次作废。"
+    echo "配对码 10 分钟内有效，只能用一次；连续输错 5 次作废；再生成一个会顶替这一个。"
+    echo "HOST=$host"
+    echo "CODE=$code"
+    echo "EXPIRES=$expires"
     result code 0
+}
+
+cmd_pair_cancel() {
+    command -v python3 >/dev/null 2>&1 || { echo "缺少程序：python3"; exit 2; }
+    if python3 "$PY" pair-cancel --state "$STATE"; then
+        echo "✓ 等待中的配对码已作废（没有的话什么都不用做）"; result cancelled 0
+    fi
+    echo "没能作废配对码（$STATE/pairing.json 删不掉）"; result failed 3
 }
 
 cmd_status() {
@@ -448,7 +469,9 @@ cmd_status() {
     echo "常驻服务：$SVC_STATE"
     if [ "$LEDGER" = bad ] || [ "$PORT_STATE" = bad ]; then
         state_bad_message
-        echo "已配对设备：$(device_count)"
+        device_count >/dev/null
+        echo "已配对设备：$( [ "$DEVICE_N" = unknown ] && echo 读不到 || echo "$DEVICE_N 台")"
+        echo "DEVICES=$DEVICE_N"
         result unknown 0
     fi
     local p="$CUR_PORT"
@@ -462,8 +485,12 @@ cmd_status() {
         TS_MAP=unknown
         echo "Tailscale：读不到机器名（没连上，或没开 HTTPS 证书功能）"
     fi
-    echo "已配对设备：$(device_count)"
+    device_count >/dev/null
+    echo "已配对设备：$( [ "$DEVICE_N" = unknown ] && echo 读不到 || echo "$DEVICE_N 台")"
     [ ${#OWNED[@]} -eq 0 ] || echo "本功能登记过转发的端口：${OWNED[*]}"
+    [ -z "$host" ] || echo "HOST=$host$( [ "$p" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$p" )"
+    echo "PORT=$p"
+    echo "DEVICES=$DEVICE_N"
     if [ "$SVC_STATE" = running ] && [ "$TS_MAP" = ours ]; then result open 0; fi
     if [ "$SVC_STATE" = unknown ] || [ "$TS_MAP" = unknown ]; then result unknown 0; fi
     # 清单里还有别的端口没撤（换端口或关闭没做完）就不算关干净
@@ -482,6 +509,11 @@ cmd_list() {
     command -v python3 >/dev/null 2>&1 || { echo "缺少程序：python3"; exit 2; }
     local rows
     if ! rows="$(python3 "$PY" list --state "$STATE")"; then echo "读不到已配对设备清单（$STATE/devices.json），不是「没有设备」"; exit 2; fi
+    if [ "${1:-}" = --machine ]; then
+        # 一台一行：DEVICE=<编号>\t<设备名>\t<Tailscale 设备>\t<配对时间>；最后一行 RESULT=ok（没有设备也是 ok，只有 RESULT 一行）
+        [ -z "$rows" ] || printf '%s\n' "$rows" | sed 's/^/DEVICE=/'
+        result ok 0
+    fi
     if [ -z "$rows" ]; then echo "还没有配对过的设备"; return 0; fi
     printf '%s\t%s\t%s\t%s\n' 编号 设备名 Tailscale设备 配对时间
     printf '%s\n' "$rows"
@@ -504,8 +536,9 @@ case "$sub" in
     enable)  cmd_enable "$@" ;;
     disable) cmd_disable ;;
     pair)    cmd_pair ;;
+    pair-cancel) cmd_pair_cancel ;;
     status)  cmd_status ;;
-    list)    cmd_list ;;
+    list)    cmd_list "$@" ;;
     revoke)  cmd_revoke "$@" ;;
     *)       usage ;;
 esac

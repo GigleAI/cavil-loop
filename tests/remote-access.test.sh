@@ -388,6 +388,31 @@ ra Linux -- pair
 chk_has "pair：入口没开时先打开，再给出机器名和配对码" "$rc $out" "机器名：box.tailnet.ts.net"
 chk "pair：最后一行是 RESULT=code，配对码是 8 位数字" "$(tail -1 <<<"$out") $(grep -cE '配对码：[0-9]{4} [0-9]{4}$' <<<"$out")" "RESULT=code 1"
 chk "pair 之后入口是开着的" "$(cat "$FAKE_SD/$UNIT.active") $(mapping | jq 'length')" "active 1"
+# 给桌面客户端读的行（GitHub#387 简化配对）：和给人看的那几行说的是同一件事
+code_shown="$(grep -oE '配对码：[0-9]{4} [0-9]{4}$' <<<"$out" | tr -dc 0-9)"
+exp="$(sed -n 's/^EXPIRES=//p' <<<"$out")"; now_s="$(date +%s)"
+chk "pair：CODE= 就是给人看的那个码，HOST= 就是那台机器名，EXPIRES= 在 10 分钟后" \
+    "$(sed -n 's/^CODE=//p' <<<"$out") $(sed -n 's/^HOST=//p' <<<"$out") $(( exp >= now_s + 590 && exp <= now_s + 610 ))" "$code_shown box.tailnet.ts.net 1"
+chk "pair：等待中的码只有一个，失效时刻和 EXPIRES= 一致" "$(jq -r .expires "$RA_STATE/pairing.json")" "$exp"
+ra Linux -- pair-cancel
+chk "pair-cancel：成功，等待中的码删掉了" "$rc $(tail -1 <<<"$out") $([ -e "$RA_STATE/pairing.json" ] && echo still)" "0 RESULT=cancelled "
+ra Linux -- pair-cancel
+chk "pair-cancel：没有等待中的码也算成功" "$rc $(tail -1 <<<"$out")" "0 RESULT=cancelled"
+ra Linux -- status
+chk "status：给客户端读的行（机器名、端口、配对台数）" "$(grep -E '^(HOST|PORT|DEVICES)=' <<<"$out" | tr '\n' ' ')$(tail -1 <<<"$out")" "HOST=box.tailnet.ts.net PORT=47387 DEVICES=0 RESULT=open"
+ra Linux -- list --machine
+chk "list --machine：没有设备时只有 RESULT=ok" "$rc $out" "0 RESULT=ok"
+jq -n '[{id:"0123456789abcdef", name:"MacBook", node:"n1", node_name:"macbook", key:"00", paired_at:1}]' > "$RA_STATE/devices.json"
+ra Linux -- list --machine
+chk "list --machine：一台一行 DEVICE=编号<tab>设备名<tab>Tailscale 设备<tab>时间" "$rc $(head -1 <<<"$out" | cut -f1-3 | tr '\t' '|') $(tail -1 <<<"$out")" "0 DEVICE=0123456789abcdef|MacBook|macbook RESULT=ok"
+ra Linux -- status
+chk "status：配对台数跟着清单走" "$(sed -n 's/^DEVICES=//p' <<<"$out")" 1
+echo '{not json' > "$RA_STATE/devices.json"
+ra Linux -- status
+chk "status：设备清单读不懂时 DEVICES=unknown，不是 0" "$(sed -n 's/^DEVICES=//p' <<<"$out") $(grep -c '已配对设备：读不到' <<<"$out")" "unknown 1"
+ra Linux -- list --machine
+chk "list --machine：清单读不懂时退出 2，没有 RESULT=ok" "$rc $(grep -c 'RESULT=ok' <<<"$out")" "2 0"
+rm -f "$RA_STATE/devices.json"
 jq -n '[{id:"aa", name:"kept-mac", node:"n1", node_name:"kept", key:"00", paired_at:1}]' > "$RA_STATE/devices.json"
 ra Linux FAKE_SD_MODE=fail -- disable
 chk "关闭时后台任务状态读不到：退出 2，转发和服务文件都还在" "$rc $(tail -1 <<<"$out") $(mapping | jq 'length') $([ -e "$H/.config/systemd/user/$UNIT" ] && echo unit)" "2 RESULT=unknown 1 unit"

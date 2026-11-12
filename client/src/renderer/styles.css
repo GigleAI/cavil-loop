@@ -773,3 +773,20 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .more-sum .label { flex: 0 1 auto; min-width: 0; max-width: 100%; }
 .more-label-name { display: block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .more-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 10px; border-top: 1px solid var(--border-muted); }
+/* GitHub#387: picking a machine from this computer's Tailscale; this machine's own remote switch */
+.remote-devices { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+button.remote-device { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid var(--border-muted); border-radius: 8px; padding: 8px 10px; background: var(--canvas); color: inherit; font: inherit; cursor: pointer; }
+button.remote-device.sel { border-color: var(--accent, #0969da); box-shadow: 0 0 0 1px var(--accent, #0969da); }
+button.remote-device.off { opacity: 0.55; }
+button.remote-device:disabled { cursor: default; opacity: 0.55; }
+.remote-device .remote-spacer { flex: 1; }
+.remote-pill.none { color: var(--muted); }
+.remote-switch-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.remote-switch-row .remote-spacer { flex: 1; }
+button.remote-switch { position: relative; width: 36px; height: 20px; border-radius: 10px; border: none; padding: 0; background: var(--border-muted); cursor: pointer; flex: none; }
+button.remote-switch[aria-checked='true'] { background: var(--state-open-fg); }
+button.remote-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.12s; }
+button.remote-switch[aria-checked='true']::after { left: 18px; }
+button.remote-switch:disabled { opacity: 0.5; cursor: default; }
+.remote-code-box { margin-top: 12px; border: 1px solid var(--border-muted); border-radius: 8px; padding: 12px 14px; }
+.remote-code-big { font: 600 32px var(--mono); letter-spacing: 6px; margin: 6px 0; user-select: all; }

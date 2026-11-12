@@ -99,10 +99,18 @@ def sha256_hex(data):
 
 
 def new_pair_code(state):
+    """→ (配对码, 失效时刻)。新码顶替旧码：同一时刻只有一个码能用。"""
     code = "".join(secrets.choice("0123456789") for _ in range(8))
+    expires = int(time.time()) + PAIR_TTL
     with state.lock():
-        state.write("pairing.json", {"hash": sha256_hex(code.encode()), "expires": int(time.time()) + PAIR_TTL, "tries": 0})
-    return code
+        state.write("pairing.json", {"hash": sha256_hex(code.encode()), "expires": expires, "tries": 0})
+    return code, expires
+
+
+def cancel_pair_code(state):
+    """作废等待中的配对码（没有也算成功：结果都是「现在没有能用的码」）。"""
+    with state.lock():
+        state.remove("pairing.json")
 
 
 def redeem_pair_code(state, code, node, node_name, name):
@@ -437,7 +445,8 @@ def serve(state, port, skill):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=["serve", "pair-code", "list", "revoke"])
+    ap.add_argument("command", choices=["serve", "pair-code", "pair-cancel", "list", "revoke"])
+    ap.add_argument("--expiry", action="store_true", help="pair-code：第二行给出失效时刻（秒）")
     ap.add_argument("--target", default="")
     ap.add_argument("--state", required=True)
     ap.add_argument("--port", type=int, default=0)
@@ -455,7 +464,12 @@ def main():
             ap.error("serve 需要 --skill")
         serve(state, a.port, a.skill)
     elif a.command == "pair-code":
-        print(new_pair_code(state))
+        code, expires = new_pair_code(state)
+        print(code)
+        if a.expiry:
+            print(expires)
+    elif a.command == "pair-cancel":
+        cancel_pair_code(state)
     elif a.command == "list":
         for d in state.devices():
             print("%s\t%s\t%s\t%s" % (d.get("id"), d.get("name"), d.get("node_name"), time.strftime("%Y-%m-%d %H:%M", time.localtime(d.get("paired_at", 0)))))

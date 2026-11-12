@@ -4,7 +4,8 @@
 #
 # install_fake_tailscale <目录>：在 <目录>/bin 写出 tailscale 和 sudo，状态放在 $FAKE_TS：
 #   status --json          $FAKE_TS/backend（默认 Running）、$FAKE_TS/certdomain（默认 box.tailnet.ts.net；
-#                          文件为空 = 没开证书功能）。FAKE_TS_STATUS=fail → 连不上（stderr + 退出 1）
+#                          文件为空 = 没开证书功能）、$FAKE_TS/peers.json（别的设备，原样放进 Peer；没有 = 没有别的设备）。
+#                          FAKE_TS_STATUS=fail → 连不上（stderr + 退出 1）；=garbage → 输出不是 JSON
 #   serve status --json    $FAKE_TS/serve.json（没有 = {}）。FAKE_TS_SERVE_STATUS=fail → 退出 1；=blank → 退出 0 但什么都不输出
 #   serve --bg --https=P T 往 serve.json 加一条；FAKE_TS_SERVE=deny → 「Access denied」退出 1；
 #                          FAKE_TS_SERVE=lie → 报成功但什么都不加
@@ -26,9 +27,11 @@ serve_json() { if [ -s "$S/serve.json" ]; then cat "$S/serve.json"; else echo '{
 case "${1:-}" in
     status)
         [ "${FAKE_TS_STATUS:-}" = fail ] && { echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2; exit 1; }
+        [ "${FAKE_TS_STATUS:-}" = garbage ] && { echo "not json"; exit 0; }
         h="$(host)"
-        jq -n --arg b "$(cat "$S/backend" 2>/dev/null || echo Running)" --arg h "$h" \
-            '{BackendState:$b, CertDomains:(if $h == "" then null else [$h] end), Self:{DNSName:($h + ".")}}' ;;
+        peers='null'; [ -s "$S/peers.json" ] && peers="$(cat "$S/peers.json")"
+        jq -n --arg b "$(cat "$S/backend" 2>/dev/null || echo Running)" --arg h "$h" --argjson p "$peers" \
+            '{BackendState:$b, CertDomains:(if $h == "" then null else [$h] end), Self:{DNSName:($h + ".")}, Peer:$p}' ;;
     serve)
         shift
         if [ "${1:-}" = status ]; then

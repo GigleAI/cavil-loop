@@ -5,13 +5,13 @@
 // and the two ways unpairing ends — confirmed by the machine, or left as "取消配对未完成".
 
 import { test, expect, type Page } from '@playwright/test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { connect, daemonWorld, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
 import { BOX, arrived, closeRemote, devices, installFakeTailscale, pairCode, remoteWorld, setHosts, type RemoteWorld } from '../support/remote-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -21,6 +21,7 @@ mkdirSync(screens, { recursive: true });
 let env: AppEnv;
 let w: DaemonWorld;
 let r: RemoteWorld;
+let path: string;
 const running: RunningApp[] = [];
 
 test.beforeEach(async () => {
@@ -29,7 +30,7 @@ test.beforeEach(async () => {
   w = daemonWorld(join(dir, 'machine'));
   installFakeTailscale(w);
   installByHand(w);
-  const path = pathFor(w);
+  path = pathFor(w);
   connect(w, 'widget', 'Linux', path);
   r = await remoteWorld(w, path);
 });
@@ -42,8 +43,9 @@ test.afterAll(async () => {
   await closeEngine();
 });
 
-async function openSection(): Promise<{ app: RunningApp; page: Page }> {
-  const app = await launchApp(env, { backendEnv: r.env });
+/** `local`: the app also runs on the machine itself (its 本机 daemon section, its Tailscale) */
+async function openSection(local = false): Promise<{ app: RunningApp; page: Page }> {
+  const app = await launchApp(env, { backendEnv: { ...(local ? daemonEnv(w, { os: 'Linux', path, extra: { FAKE_TS: r.ts } }) : {}), ...r.env } });
   running.push(app);
   const page = app.page;
   await page.getByTestId('oauth-settings-toggle').click();
@@ -246,4 +248,81 @@ test('"已在那台机器上取消": the revoke command shown really revokes the
   expect(devices(r)).toEqual([]);
   await host.getByTestId('remote-forget').click();
   await expect(page.getByTestId('remote-host')).toHaveCount(0);
+});
+
+// GitHub#387 round 7: pairing without a terminal
+test('pick the machine from this computer’s Tailscale: open ones first, how to open a closed one, offline cannot be picked', async () => {
+  writeFileSync(join(r.ts, 'certdomain'), 'me.tailnet.ts.net');
+  const peer = (name: string, online: boolean) => ({ HostName: name, DNSName: `${name}.tailnet.ts.net.`, OS: 'linux', Online: online });
+  writeFileSync(join(r.ts, 'peers.json'), JSON.stringify({ a: peer('shut', true), b: peer('box', true), c: peer('phone', false) }));
+  setHosts(r, { [BOX]: { resolves: ['100.64.0.5'], connect: `127.0.0.1:${r.frontPort}` }, 'shut.tailnet.ts.net': { resolves: ['100.64.0.6'], connect: '127.0.0.1:1' } });
+  const { app, page } = await openSection(true);
+  await page.getByTestId('remote-add').click();
+  const rows = page.getByTestId('remote-tailnet-device');
+  await expect(rows).toHaveCount(3, { timeout: 20_000 });
+  await expect(rows.nth(0)).toHaveAttribute('data-host', BOX);
+  await expect(rows.nth(0)).toHaveAttribute('data-remote', 'open');
+  await expect(rows.nth(1)).toHaveAttribute('data-remote', 'closed');
+  await expect(rows.nth(2)).toHaveAttribute('data-remote', 'offline');
+  // no name field to copy into while the list is there
+  await expect(page.getByTestId('remote-pair-host')).toHaveCount(0);
+  // a closed one: how to open it there, with the command
+  await rows.nth(1).click();
+  await expect(page.getByTestId('remote-not-open')).toHaveAttribute('data-remote', 'closed');
+  await expect(page.getByTestId('remote-not-open').getByTestId('remote-command')).toHaveText('bash ~/.agents/skills/cavil-loop/scripts/remote-access.sh pair');
+  // offline: cannot pair even with a code typed
+  await rows.nth(2).click();
+  await page.getByTestId('remote-pair-code').fill('1234 5678');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  // the open one: pick, type the code, paired
+  await rows.nth(0).click();
+  await expect(page.getByTestId('remote-not-open')).toHaveCount(0);
+  await page.screenshot({ path: join(screens, 'remote-9-pick.png') });
+  const code = pairCode(w, r);
+  await page.getByTestId('remote-pair-code').fill(code);
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('remote-host')).toHaveCount(1);
+  expect(sent(app, 'remotePair').map((c) => (c.args as { host: string }).host)).toEqual([BOX]);
+  expect(devices(r)).toHaveLength(1);
+  // "手动输入机器名" is still there
+  await page.getByTestId('remote-add').click();
+  await page.getByTestId('remote-pair-manual').click();
+  await expect(page.getByTestId('remote-pair-host')).toBeVisible();
+});
+
+test('this machine’s own switch: on, a code in the window, void it, the paired computers, off — no terminal', async () => {
+  const { page } = await openSection(true);
+  const block = page.getByTestId('local-remote');
+  await block.scrollIntoViewIfNeeded();
+  await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 30_000 });
+  const sw = page.getByTestId('local-remote-switch');
+  await expect(sw).toHaveAttribute('aria-checked', 'false');
+  await sw.click();
+  await expect(block).toHaveAttribute('data-state', 'open', { timeout: 60_000 });
+  await expect(sw).toHaveAttribute('aria-checked', 'true');
+  await page.getByTestId('local-remote-code-make').click();
+  const shown = page.getByTestId('local-remote-code');
+  await expect(shown).toHaveText(/^\d{4} \d{4}$/, { timeout: 30_000 });
+  await expect(page.getByTestId('local-remote-code-left')).toContainText('后失效');
+  await block.screenshot({ path: join(screens, 'remote-10-host-code.png') });
+  await page.screenshot({ path: join(screens, 'remote-11-host-page.png') });
+  const code = (await shown.textContent())!.replace(/\D/g, '');
+  const pending = JSON.parse(readFileSync(join(r.state, 'pairing.json'), 'utf8'));
+  expect(pending.hash).toBe((await import('node:crypto')).createHash('sha256').update(code).digest('hex'));
+  await page.getByTestId('local-remote-cancel').click();
+  await expect(page.getByTestId('local-remote-code-make')).toBeVisible({ timeout: 30_000 });
+  expect(existsSync(join(r.state, 'pairing.json'))).toBe(false);
+  // the paired computers (one paired by hand), revoke it after the confirmation
+  writeFileSync(join(r.state, 'devices.json'), JSON.stringify([{ id: '0123456789abcdef', name: 'MacBook', node: 'n1', node_name: 'macbook', key: '0'.repeat(64), paired_at: 1 }]));
+  await page.getByTestId('local-remote-devices').click();
+  await expect(page.getByTestId('local-remote-device')).toHaveCount(1, { timeout: 30_000 });
+  await page.getByTestId('local-remote-revoke').click();
+  await expect(page.getByTestId('local-remote-revoke-text')).toContainText('MacBook');
+  expect(devices(r)).toHaveLength(1);
+  await page.getByTestId('confirm-ok').click();
+  await expect(page.getByTestId('local-remote-devices-none')).toBeVisible({ timeout: 30_000 });
+  expect(devices(r)).toEqual([]);
+  await page.getByTestId('confirm-ok').click();
+  await sw.click();
+  await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 60_000 });
 });

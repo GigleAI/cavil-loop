@@ -1722,6 +1722,8 @@ bash "$RA" disable
 
 In order: open the entry; make a pairing code (`pair` opens the entry first when it is closed, so `pair` alone is usually enough); show the entry's state; list paired devices; revoke the one named `MacBook-Pro`; close the entry.
 
+**Without a terminal**: when this machine runs the desktop client too (a Mac), the same things are in its "设置 → 本机 daemon → 允许其他电脑远程连接" block — a switch that runs `enable` / `disable`, "生成配对码" that runs `pair` and shows the code in large digits with the time left, "作废这个码" (`pair-cancel`), and "已配对的电脑…" (`list` / `revoke`). The switch shows what `status` reads back afterwards; when that read fails it shows "状态未知" and offers no switch. On the other computer, "添加远程 daemon" lists the machines in that computer's Tailscale (`tailscale status --json`, read-only) and asks each online one once whether its remote entry answers on port 47387 — "已打开远程连接", "未打开远程连接" (the connection was refused), "不确定" (anything else: never shown as closed) or "不在线" — so the name is picked, not copied; "手动输入机器名" stays for a custom port or when the list cannot be read. The remote entry can only be opened on the machine itself: a server without a window still runs `pair` once there.
+
 **Pairing**: `pair` prints this machine's full name (ending in `.ts.net`) and an 8-digit code; type both into the client's "添加远程 daemon" dialog. A code lasts 10 minutes, works once, and is void after 5 wrong tries in a row. A successful pairing gives the client a key of its own (kept in its system keychain); this machine records it in `~/.local/state/cavil-loop/remote-access/devices.json` (directory 700, file 600).
 
 **Every command** ends with a `RESULT=<...>` line (except `list` / `revoke`):
@@ -1729,9 +1731,10 @@ In order: open the entry; make a pairing code (`pair` opens the entry first when
 | Command | What it does | Result |
 |---------|--------------|--------|
 | `enable [--port N]` | Registers the `tailscale serve` forward (HTTPS, tailnet only) → writes the background job file → starts the resident service. Default port 47387. On a port change, the forward this feature had on the old port is removed once the new one is up (cannot remove it: `partial`, exit 3, naming the port). A forward already on the port is never taken over, even one of the same shape (`port_taken`) | `enabled`; a missing requirement: `tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel` (the port has a public entry) / `port_taken` / `unknown` (job state unreadable), exit 2, nothing changed; `failed`, exit 3 |
-| `pair` | Runs `enable` first when the entry is closed, then makes a code | `code` |
-| `status` | Read-only | `open` / `closed` / `partial` / `unknown` |
-| `list` | Paired devices: id, name, Tailscale device name, time of pairing | — |
+| `pair` | Runs `enable` first when the entry is closed, then makes a code (a new code replaces the waiting one). Also prints `HOST=` / `CODE=` / `EXPIRES=` (epoch seconds) for the desktop client | `code` |
+| `pair-cancel` | Voids the waiting code (none waiting is also success) | `cancelled` |
+| `status` | Read-only. Also prints `HOST=` (only when the name was read), `PORT=` and `DEVICES=` (a number, `unknown` when the list cannot be read) for the desktop client | `open` / `closed` / `partial` / `unknown` |
+| `list [--machine]` | Paired devices: id, name, Tailscale device name, time of pairing. `--machine`: one `DEVICE=<id>\t<name>\t<device>\t<time>` line each, then `RESULT=ok` | — (`ok` with `--machine`) |
 | `revoke <name or id>` | Revokes one device, effective at once; exit 1 when there is no such device | — |
 | `disable` | Stops the service and removes its job file → removes the forward on every port this feature registered (after a port change too; other features' forwards are left alone) → drops a waiting pairing code. The list of paired devices is kept | `disabled`; unreadable state: exit 2, nothing changed; cannot stop or cannot remove the forward: exit 3 (`partial`), the output says what is left and which command to run |
 

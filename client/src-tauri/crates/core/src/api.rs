@@ -167,6 +167,8 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "remoteLog" => Ok(e.remote().log(s(&a, "id")?, s(&a, "key")?).await),
         "remoteUnpair" => Ok(e.remote().unpair(s(&a, "id")?, a.get("localOnly").and_then(|v| v.as_bool()).unwrap_or(false)).await),
         "remoteForget" => Ok(e.remote().forget(s(&a, "id")?).await),
+        "remoteTailnet" => Ok(e.remote().tailnet(e.daemon()).await),
+        "remoteHost" => Ok(e.daemon().remote_host(s(&a, "action")?, a.get("target").and_then(|v| v.as_str())).await),
         other => Err(format!("未知命令：{other}")),
     }
 }

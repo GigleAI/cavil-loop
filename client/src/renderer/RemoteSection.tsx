@@ -15,7 +15,7 @@ import { useLayer, useShortcuts } from './keyboard';
 import { MODAL } from './outsideClick';
 import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
-import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult } from '../shared/remote';
+import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, sortTailnet, tailnetPill, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult, type TailnetDevice, type TailnetList } from '../shared/remote';
 
 type Ask =
   | { kind: 'stop' | 'start'; e: RemoteEntry; p: DaemonProject }
@@ -188,6 +188,7 @@ export function RemoteSection() {
       </div>
       {pairing && (
         <PairDialog
+          paired={(list ?? []).map((e) => e.id)}
           onClose={() => setPairing(false)}
           onPaired={async (id) => {
             setPairing(false);
@@ -402,12 +403,36 @@ function Pending({ e, busy, note, onRetry, onForget }: { e: RemoteEntry; busy: b
   );
 }
 
-function PairDialog({ onClose, onPaired }: { onClose: () => void; onPaired: (id: string) => void }) {
+function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: () => void; onPaired: (id: string) => void }) {
   const [host, setHost] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ reason: string; text: string } | null>(null);
+  // this computer's Tailscale devices: null while reading
+  const [net, setNet] = useState<TailnetList | null>(null);
+  const [manual, setManual] = useState(false);
+  const alive = useRef(true);
   const digits = codeDigits(code);
+  const readNet = async () => {
+    setNet(null);
+    let r: TailnetList;
+    try {
+      r = await api().remoteTailnet();
+    } catch (e) {
+      r = { result: 'unreadable', output: (e as Error).message };
+    }
+    if (alive.current) setNet(r);
+  };
+  useEffect(() => {
+    alive.current = true;
+    void readNet();
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const devices = net?.result === 'ok' ? sortTailnet(net.devices) : [];
+  const picked = manual ? undefined : devices.find((d) => d.host === host);
+  const showManual = manual || net?.result === 'unreadable' || (net?.result === 'ok' && devices.length === 0);
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -421,8 +446,9 @@ function PairDialog({ onClose, onPaired }: { onClose: () => void; onPaired: (id:
       setBusy(false);
     }
   };
+  const isPaired = (h: string) => paired.some((p) => p.split(':')[0] === h);
   return (
-    <ConfirmDialog title="添加远程 daemon" confirmLabel={busy ? '正在配对…' : '配对'} busy={busy} disabled={host.trim() === '' || digits.length !== 8} dirty={host !== '' || code !== ''} onConfirm={submit} onCancel={onClose}>
+    <ConfirmDialog title="添加远程 daemon" confirmLabel={busy ? '正在配对…' : '配对'} busy={busy} disabled={host.trim() === '' || digits.length !== 8 || picked?.remote === 'offline'} dirty={host !== '' || code !== ''} onConfirm={submit} onCancel={onClose}>
       <div data-testid="remote-pair-dialog">
         {error && (
           <div className="banner error remote-inline" data-testid="remote-pair-error" data-reason={error.reason}>
@@ -430,27 +456,116 @@ function PairDialog({ onClose, onPaired }: { onClose: () => void; onPaired: (id:
             <span className="banner-text">没有配对：{error.text}</span>
           </div>
         )}
-        <ol className="remote-steps small">
-          <li>
-            在装着 daemon 的那台机器上运行（入口还没开时会先打开）：
-            <br />
-            <Command text={PAIR_COMMAND} />
-          </li>
-          <li>它会显示那台机器在 Tailscale 里的完整机器名（以 .ts.net 结尾）和一个 8 位配对码，10 分钟内有效、只能用一次。把两样填到下面。</li>
-        </ol>
+        {!showManual && (
+          <>
+            <p className="muted small">
+              下面是这台电脑的 Tailscale 里能看到的机器。选一台已打开远程连接的，再填它显示的配对码。
+              <button className="link" data-testid="remote-tailnet-again" disabled={net === null} onClick={() => void readNet()}>
+                {net === null ? '正在读取…' : '重新读取'}
+              </button>
+            </p>
+            {net === null && <p className="muted small" data-testid="remote-tailnet-loading">正在读取这台电脑的 Tailscale 设备，并逐台看远程连接开没开…</p>}
+            <div className="remote-devices" role="radiogroup" aria-label="Tailscale 里的机器" data-testid="remote-tailnet">
+              {devices.map((d) => {
+                const pill = tailnetPill(d);
+                const already = isPaired(d.host);
+                return (
+                  <button
+                    key={d.host}
+                    role="radio"
+                    aria-checked={host === d.host}
+                    className={`remote-device${host === d.host ? ' sel' : ''}${d.remote === 'offline' ? ' off' : ''}`}
+                    data-testid="remote-tailnet-device"
+                    data-host={d.host}
+                    data-remote={d.remote}
+                    disabled={already}
+                    title={d.why}
+                    onClick={() => setHost(d.host)}
+                  >
+                    <b>{d.name}</b>
+                    <span className={`remote-pill ${pill.tone}`}>{already ? '已在列表里' : pill.word}</span>
+                    {d.os && <span className="muted small">{d.os}</span>}
+                    <span className="remote-spacer" />
+                    <span className="muted small">{d.host}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {picked && picked.remote !== 'open' && <NotOpen d={picked} />}
+          </>
+        )}
+        {showManual && (
+          <>
+            {net?.result === 'unreadable' && (
+              <div className="banner warn remote-inline" data-testid="remote-tailnet-unreadable">
+                <Icon name="warn" />
+                <span className="banner-text">读不到这台电脑的 Tailscale 设备列表（{net.output}）。请手动输入机器名，或确认 Tailscale 已连上后重新读取。</span>
+              </div>
+            )}
+            {net?.result === 'ok' && devices.length === 0 && !manual && <p className="muted small">这台电脑的 Tailscale 里没有别的机器，请手动输入机器名。</p>}
+            <ol className="remote-steps small">
+              <li>
+                在那台机器上打开远程连接并生成配对码：装了本客户端的，在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」、点「生成配对码」；没有窗口的服务器，在它上面运行（入口还没开时会先打开）：
+                <br />
+                <Command text={PAIR_COMMAND} />
+              </li>
+              <li>把那台机器显示的完整机器名（以 .ts.net 结尾）和 8 位配对码填到下面。配对码 10 分钟内有效、只能用一次。</li>
+            </ol>
+            <label className="remote-field">
+              <span>机器名（Tailscale 里的完整名字，以 .ts.net 结尾）</span>
+              <input data-testid="remote-pair-host" value={host} placeholder="mybox.tailnet-name.ts.net" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setHost(e.target.value)} />
+            </label>
+          </>
+        )}
         <label className="remote-field">
-          <span>机器名（Tailscale 里的完整名字，以 .ts.net 结尾）</span>
-          <input data-testid="remote-pair-host" value={host} placeholder="mybox.tailnet-name.ts.net" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setHost(e.target.value)} />
-        </label>
-        <label className="remote-field">
-          <span>配对码</span>
+          <span>配对码{picked ? `（在 ${picked.name} 上显示的 8 位数字）` : ''}</span>
           <input data-testid="remote-pair-code" className="remote-code" value={code} placeholder="0000 0000" inputMode="numeric" spellCheck={false} onChange={(e) => setCode(e.target.value)} />
         </label>
         <p className="muted small">
-          只接受 .ts.net 机器名。发出配对码之前，先核对对面出示的是 Tailscale 发给那台机器的证书、且连接走的是 Tailscale 地址；任何一项对不上就不发送。配对成功后，这台电脑得到一把只属于它的钥匙，存在系统钥匙串里。
+          列表只读这台电脑的 Tailscale，再逐台问一声远程入口开没开，不发出这台电脑的任何信息。只接受 .ts.net 机器名。发出配对码之前，先核对对面出示的是 Tailscale 发给那台机器的证书、且连接走的是 Tailscale 地址；任何一项对不上就不发送。配对成功后，这台电脑得到一把只属于它的钥匙，存在系统钥匙串里。
         </p>
+        {(!showManual || (manual && devices.length > 0)) && (
+          <p className="small">
+            <button
+              className="link"
+              data-testid="remote-pair-manual"
+              onClick={() => {
+                setManual(!manual);
+                setHost('');
+              }}
+            >
+              {manual ? '从列表里选' : '手动输入机器名'}
+            </button>
+          </p>
+        )}
       </div>
     </ConfirmDialog>
+  );
+}
+
+/** The picked machine's remote entry is not (known to be) open: how to open it there — this computer cannot. */
+function NotOpen({ d }: { d: TailnetDevice }) {
+  if (d.remote === 'offline')
+    return (
+      <div className="banner warn remote-inline" data-testid="remote-not-open" data-remote="offline">
+        <Icon name="warn" />
+        <span className="banner-text">{d.name} 现在不在线（Tailscale 这样说），连不上它。等它上线后再试。</span>
+      </div>
+    );
+  return (
+    <div className="banner warn remote-inline" data-testid="remote-not-open" data-remote={d.remote}>
+      <Icon name="warn" />
+      <span className="banner-text">
+        {d.remote === 'unknown' ? `看不出 ${d.name} 的远程连接开没开${d.why ? `（${d.why}）` : ''}。已经打开的话，照样填配对码试试；` : `${d.name} 还没有打开远程连接。`}
+        远程入口只能在那台机器上打开——这台电脑没有办法替它打开（否则任何连得上的设备都能打开别人的入口）。
+        <br />
+        <b>那台机器装了本客户端：</b>在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」，点「生成配对码」。
+        <br />
+        <b>那台机器没有窗口（服务器）：</b>在它上面运行一次下面这条命令；它会打开入口并显示配对码。以后再加别的电脑，也只需要这一条。
+        <br />
+        <Command text={PAIR_COMMAND} />
+      </span>
+    </div>
   );
 }
 
@@ -528,7 +643,7 @@ function NoteBox({ id, note }: { id: string; note: Note }) {
   );
 }
 
-function Command({ text }: { text: string }) {
+export function Command({ text }: { text: string }) {
   const [copied, setCopied] = useState<boolean | null>(null);
   return (
     <span className="daemon-command">

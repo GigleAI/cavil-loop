@@ -7,7 +7,7 @@ import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, W
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
-import type { RemoteList, RemoteRead, RemoteResult } from './remote';
+import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 
 export interface Snapshot {
   state: AppState;
@@ -130,4 +130,9 @@ export interface CavilApi {
   remoteUnpair(id: string, localOnly: boolean): Promise<RemoteResult>;
   /** drop a "取消配对未完成" entry: the person revoked this computer on the machine itself */
   remoteForget(id: string): Promise<RemoteResult>;
+  /** the machines this computer's Tailscale knows, each looked at once: is its remote entry open */
+  remoteTailnet(): Promise<TailnetList>;
+  /** this machine as the one being connected to: its remote entry switch, a pairing code, the computers paired with it */
+  remoteHost(action: 'status'): Promise<HostStatus>;
+  remoteHost(action: Exclude<HostAction, 'status'>, target?: string): Promise<HostResult>;
 }

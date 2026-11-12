@@ -40,6 +40,8 @@ const T_PAIR: Duration = Duration::from_secs(20);
 /// the status script may take up to 90 s on the other machine, a stop / start up to 120 s
 const T_CALL: Duration = Duration::from_secs(150);
 const T_QUICK: Duration = Duration::from_secs(15);
+/// one "is the remote entry open" look at a machine in the device list
+const T_HELLO: Duration = Duration::from_secs(5);
 
 // ── where keys are kept ──
 
@@ -517,6 +519,53 @@ impl Remote {
         self.save(&list)
     }
 
+    /// The machines this computer's Tailscale knows, for picking one instead of typing its name
+    /// (GitHub#387, "pair without a terminal"). Read-only: `tailscale status --json` here, then one
+    /// unsigned `GET /v1/hello` to each online machine through the same checks as every other
+    /// request (Tailscale address, certificate for that name). Nothing about this computer is sent.
+    ///
+    /// Each machine's `remote` is `open` (the entry answered as ours), `closed` (the connection was
+    /// refused: nothing listens there), `unknown` (anything else — timed out, certificate, another
+    /// service; never shown as "closed") or `offline` (Tailscale says it is not online: not asked).
+    /// A device list that cannot be read is `unreadable`, never an empty list.
+    pub async fn tailnet(&self, daemon: &crate::daemon::Daemon) -> Value {
+        let path = match daemon.path().await {
+            Ok(p) => if cfg!(target_os = "macos") { format!("{p}:/Applications/Tailscale.app/Contents/MacOS") } else { p },
+            Err(m) => return json!({ "result": "unreadable", "output": m }),
+        };
+        let out = daemon.run(&path, "tailscale", &["status", "--json"], T_QUICK).await;
+        if !out.ok() {
+            return json!({ "result": "unreadable", "output": out.text() });
+        }
+        let Some(peers) = parse_tailnet(&out.stdout) else {
+            return json!({ "result": "unreadable", "output": "这台电脑的 Tailscale 给出的设备列表认不出" });
+        };
+        let probes = peers.into_iter().map(|mut p| async move {
+            if p["online"] == json!(true) {
+                let (state, why) = self.hello(p["host"].as_str().unwrap_or("")).await;
+                p["remote"] = json!(state);
+                if let Some(w) = why {
+                    p["why"] = json!(w);
+                }
+            } else {
+                p["remote"] = json!("offline");
+            }
+            p
+        });
+        let list: Vec<Value> = futures::future::join_all(probes).await;
+        json!({ "result": "ok", "devices": list })
+    }
+
+    async fn hello(&self, host: &str) -> (&'static str, Option<String>) {
+        let t = Target { host: host.to_string(), port: DEFAULT_PORT };
+        match self.send(&t, "GET", "/v1/hello", None, None, T_HELLO).await {
+            Ok(r) if r.status == 200 && r.body["service"] == "cavil-loop-remote" => ("open", None),
+            Ok(r) => ("unknown", Some(format!("这台机器的 {DEFAULT_PORT} 端口上不是远程入口（状态码 {}）", r.status))),
+            Err(Fail::Unreachable(m)) if m.to_lowercase().contains("refused") => ("closed", None),
+            Err(f) => ("unknown", Some(f.message())),
+        }
+    }
+
     pub fn list(&self) -> Value {
         json!({ "remotes": self.list_raw(), "persistent": self.keys.persistent() })
     }
@@ -733,6 +782,30 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// `tailscale status --json` → the other machines with a usable Tailscale name, sorted by name.
+/// None: not the shape Tailscale gives (then the list is unknown, not empty).
+pub fn parse_tailnet(text: &str) -> Option<Vec<Value>> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let me = v["Self"]["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+    let peers = match &v["Peer"] {
+        Value::Null => return Some(vec![]),
+        Value::Object(m) => m,
+        _ => return None,
+    };
+    let mut out = vec![];
+    for p in peers.values() {
+        let dns = p["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+        let Ok((host, _)) = parse_host(&dns) else { continue }; // not reachable by a Tailscale name: cannot be paired
+        if host == me {
+            continue;
+        }
+        let name = p["HostName"].as_str().filter(|s| !s.trim().is_empty()).map(str::to_string).unwrap_or_else(|| host.split('.').next().unwrap_or("").to_string());
+        out.push(json!({ "host": host, "name": name, "os": p["OS"].as_str().unwrap_or(""), "online": p["Online"].as_bool().unwrap_or(false) }));
+    }
+    out.sort_by(|a, b| a["host"].as_str().cmp(&b["host"].as_str()));
+    Some(out)
+}
+
 fn refused(reason: &str, m: &str) -> Value {
     json!({ "result": "refused", "reason": reason, "output": m })
 }
@@ -784,6 +857,25 @@ fn classify(e: ureq::Error) -> Fail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailnet_list() {
+        let js = r#"{"Self":{"DNSName":"me.tn.ts.net."},"Peer":{
+            "k1":{"HostName":"futurelab-01","DNSName":"futurelab-01.tn.ts.net.","OS":"linux","Online":true},
+            "k2":{"HostName":"phone","DNSName":"phone.tn.ts.net.","OS":"iOS","Online":false},
+            "k3":{"HostName":"odd","DNSName":"","OS":"linux","Online":true},
+            "k4":{"HostName":"me","DNSName":"me.tn.ts.net.","Online":true}}}"#;
+        let l = parse_tailnet(js).unwrap();
+        let hosts: Vec<&str> = l.iter().map(|p| p["host"].as_str().unwrap()).collect();
+        // sorted; no name = cannot be paired, left out; this computer left out
+        assert_eq!(hosts, ["futurelab-01.tn.ts.net", "phone.tn.ts.net"]);
+        assert_eq!(l[0]["online"], true);
+        assert_eq!(l[1]["online"], false);
+        // no peers at all is an empty list; a shape Tailscale does not give is unknown
+        assert_eq!(parse_tailnet(r#"{"Self":{}}"#).unwrap().len(), 0);
+        assert!(parse_tailnet(r#"{"Peer":[1]}"#).is_none());
+        assert!(parse_tailnet("not json").is_none());
+    }
 
     #[test]
     fn only_full_tailscale_names_are_accepted() {

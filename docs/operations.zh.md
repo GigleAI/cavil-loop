@@ -1460,6 +1460,8 @@ bash "$RA" disable
 
 依次是：打开入口；生成一个配对码（入口没开时 `pair` 会先打开，所以平时只跑 `pair` 就够）；看入口状态；列出已配对设备；撤销名叫 `MacBook-Pro` 的那台；关闭入口。
 
+**不用终端**：这台机器上也装了桌面客户端（Mac）时，上面这些在它的「设置 → 本机 daemon → 允许其他电脑远程连接」里都有——开关跑 `enable` / `disable`，「生成配对码」跑 `pair` 并用大字显示码和剩余时间，「作废这个码」跑 `pair-cancel`，「已配对的电脑…」跑 `list` / `revoke`。开关显示的是之后 `status` 读回的结果；读不到时显示「状态未知」，不提供开关。另一台电脑上，「添加远程 daemon」列出那台电脑 Tailscale 里的机器（`tailscale status --json`，只读），对在线的每一台在 47387 端口问一次远程入口在不在——「已打开远程连接」「未打开远程连接」（连接被拒绝）「不确定」（其余一切情况，不当成没开）「不在线」——机器名点选、不用抄；自定端口或列表读不到时仍可「手动输入机器名」。远程入口只能在那台机器上打开：没有窗口的服务器仍要在它上面跑一次 `pair`。
+
 **配对**：`pair` 打印这台机器的完整机器名（以 `.ts.net` 结尾）和一个 8 位配对码，在客户端「添加远程 daemon」里填这两样。配对码 10 分钟有效、只能用一次、连续输错 5 次作废。配对成功后客户端得到一把只属于它的钥匙（存在它的系统钥匙串里），这台机器把它记在 `~/.local/state/cavil-loop/remote-access/devices.json`（目录 700、文件 600）。
 
 **每条命令**的最后一行是 `RESULT=<...>`（`list` / `revoke` 除外）：
@@ -1467,9 +1469,10 @@ bash "$RA" disable
 | 命令 | 做什么 | 结果 |
 |------|--------|------|
 | `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387。换端口时，新端口起来之后撤掉本功能在旧端口上的转发（撤不掉：`partial`，退出 3，写明哪个端口）。端口上已有别的转发时不接管，哪怕形状一样（`port_taken`） | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
-| `pair` | 入口没开就先 `enable`，再生成配对码 | `code` |
-| `status` | 只读 | `open` / `closed` / `partial` / `unknown` |
-| `list` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间 | — |
+| `pair` | 入口没开就先 `enable`，再生成配对码（新码顶替等待中的码）。另给桌面客户端打印 `HOST=` / `CODE=` / `EXPIRES=`（失效时刻，秒） | `code` |
+| `pair-cancel` | 作废等待中的配对码（没有也算成功） | `cancelled` |
+| `status` | 只读。另给桌面客户端打印 `HOST=`（读到机器名时才有）、`PORT=`、`DEVICES=`（台数，清单读不懂是 `unknown`） | `open` / `closed` / `partial` / `unknown` |
+| `list [--machine]` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间。`--machine`：一台一行 `DEVICE=<编号>\t<设备名>\t<设备>\t<时间>`，最后 `RESULT=ok` | —（`--machine` 时 `ok`） |
 | `revoke <设备名或编号>` | 撤销一台设备，立刻生效；没有这台设备退出 1 | — |
 | `disable` | 停服务并移除后台任务文件 → 撤掉本功能登记过的每一个端口的转发（换过端口也一并撤，别的功能的转发不动）→ 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
 

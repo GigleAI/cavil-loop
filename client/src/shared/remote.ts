@@ -87,3 +87,80 @@ export function clock(epochSec: number): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+// ── picking a machine instead of typing its name ──
+
+/** one machine in this computer's Tailscale */
+export interface TailnetDevice {
+  host: string;
+  name: string;
+  os: string;
+  online: boolean;
+  /** open: its remote entry answered · closed: nothing listens there · unknown: could not tell (never "closed") · offline: not asked */
+  remote: 'open' | 'closed' | 'unknown' | 'offline';
+  why?: string;
+}
+export type TailnetList = { result: 'ok'; devices: TailnetDevice[] } | { result: 'unreadable'; output: string };
+
+/** What the pill of a machine in the list says. */
+export function tailnetPill(d: TailnetDevice): { word: string; tone: 'ok' | 'bad' | 'busy' | 'none' } {
+  switch (d.remote) {
+    case 'open':
+      return { word: '已打开远程连接', tone: 'ok' };
+    case 'closed':
+      return { word: '未打开远程连接', tone: 'none' };
+    case 'offline':
+      return { word: '不在线', tone: 'none' };
+    default:
+      return { word: '不确定', tone: 'busy' };
+  }
+}
+
+/** Open ones first, then could-not-tell, then closed, then offline; by name within each. */
+export function sortTailnet(list: TailnetDevice[]): TailnetDevice[] {
+  const rank = { open: 0, unknown: 1, closed: 2, offline: 3 } as const;
+  return [...list].sort((a, b) => rank[a.remote] - rank[b.remote] || a.host.localeCompare(b.host));
+}
+
+// ── this machine as the one being connected to ──
+
+export type HostAction = 'status' | 'enable' | 'disable' | 'code' | 'cancel' | 'devices' | 'revoke';
+
+/** open / closed / partial (half open or half closed) / unknown (could not read: the switch is not offered) / missing (daemon too old or not installed) */
+export interface HostStatus {
+  state: 'open' | 'closed' | 'partial' | 'unknown' | 'missing';
+  host?: string | null;
+  devices?: number | null;
+  output?: string;
+}
+
+export interface HostDevice {
+  id: string;
+  name: string;
+  node: string;
+  paired: string;
+}
+
+export interface HostResult {
+  result: string;
+  output?: string;
+  /** enable / disable: what a fresh read says afterwards */
+  status?: HostStatus;
+  code?: string;
+  /** epoch seconds */
+  expires?: number;
+  host?: string | null;
+  devices?: HostDevice[];
+}
+
+/** "4827 1930" */
+export function spacedCode(code: string): string {
+  return `${code.slice(0, 4)} ${code.slice(4)}`;
+}
+
+/** "9 分 42 秒" — what is left of a code; null once it has run out. */
+export function codeLeft(expires: number, nowSec: number): string | null {
+  const s = Math.floor(expires - nowSec);
+  if (s <= 0) return null;
+  return `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, '0')} 秒`;
+}

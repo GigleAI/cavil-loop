@@ -8,6 +8,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { connect, daemonEnv, daemonWorld, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
@@ -384,5 +386,117 @@ describe('unpairing', () => {
     expect(await b.call('remoteForget', { id: ID })).toEqual({ result: 'unpaired' });
     expect(await list(b)).toEqual([]);
     expect(keys()).toEqual({});
+  });
+});
+
+// GitHub#387 round 7 ("pair without a terminal"): picking the machine from this computer's
+// Tailscale instead of copying its name, and this machine's own switch / code / paired computers
+// run through the daemon's real remote-access.sh — the same command a server uses.
+describe('picking a machine from this computer’s Tailscale', () => {
+  const freePort = () =>
+    new Promise<number>((res) => {
+      const srv = createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close(() => res(p));
+      });
+    });
+  const peers = (list: Record<string, unknown>) => writeFileSync(join(r.ts, 'peers.json'), JSON.stringify(list));
+  const peer = (name: string, online: boolean) => ({ HostName: name, DNSName: `${name}.tailnet.ts.net.`, OS: 'linux', Online: online });
+
+  it('lists the machines and tells open / closed / could-not-tell / offline apart, sending nothing but one unsigned hello each', async () => {
+    const closed = await freePort();
+    // a machine whose certificate is for another name: could not tell, never "closed"
+    const wrong = await startFront(r, { cert: join(r.dir, 'box.pem'), key: join(r.dir, 'box.key') }, r.backendPort);
+    setHosts(r, {
+      [BOX]: { resolves: ['100.64.0.5'], connect: `127.0.0.1:${r.frontPort}` },
+      'shut.tailnet.ts.net': { resolves: ['100.64.0.6'], connect: `127.0.0.1:${closed}` },
+      'wrong.tailnet.ts.net': { resolves: ['100.64.0.8'], connect: `127.0.0.1:${wrong}` },
+    });
+    // this computer is "me" here (the stand-ins share one fake Tailscale); it is never listed
+    writeFileSync(join(r.ts, 'certdomain'), 'me.tailnet.ts.net');
+    peers({ a: peer('box', true), b: peer('shut', true), c: peer('wrong', true), d: peer('phone', false), e: peer('me', true) });
+    const b = backend({ local: { FAKE_TS: r.ts } });
+    const got = await b.call('remoteTailnet');
+    expect(got.result).toBe('ok');
+    const by = Object.fromEntries((got.devices as any[]).map((d) => [d.host, d.remote]));
+    expect(by).toEqual({ [BOX]: 'open', 'shut.tailnet.ts.net': 'closed', 'wrong.tailnet.ts.net': 'unknown', 'phone.tailnet.ts.net': 'offline' });
+    expect((got.devices as any[]).find((d) => d.host === 'wrong.tailnet.ts.net').why).toMatch(/证书/);
+    // what reached the open machine: one hello, no signature, nothing about this computer
+    const came = arrived(r);
+    expect(came.map((q) => `${q.method} ${q.path}`)).toEqual(['GET /v1/hello']);
+    expect(Object.keys(came[0].headers).filter((h) => /^x-cavil/i.test(h))).toEqual([]);
+    // the list pairs the same way as a typed name
+    expect(await pair(b, (got.devices as any[]).find((d) => d.remote === 'open').host)).toEqual({ result: 'paired', id: ID });
+  });
+
+  it('a device list that cannot be read is unreadable — never an empty list', async () => {
+    peers({ a: peer('box', true) });
+    expect(await backend({ local: { FAKE_TS: r.ts, FAKE_TS_STATUS: 'fail' } }).call('remoteTailnet')).toMatchObject({ result: 'unreadable', output: expect.stringMatching(/tailscaled/) });
+    expect(await backend({ local: { FAKE_TS: r.ts, FAKE_TS_STATUS: 'garbage' } }).call('remoteTailnet')).toMatchObject({ result: 'unreadable' });
+    // no daemon setting on this computer at all (no HOME to run from): unreadable too
+    expect(await backend().call('remoteTailnet')).toMatchObject({ result: 'unreadable' });
+    expect(arrived(r)).toEqual([]);
+    // and the readable case next to it: no other machine is an empty list, not unreadable
+    writeFileSync(join(r.ts, 'peers.json'), '');
+    expect(await backend({ local: { FAKE_TS: r.ts } }).call('remoteTailnet')).toEqual({ result: 'ok', devices: [] });
+  });
+});
+
+describe('this machine as the one being connected to', () => {
+  const host = (b: HarnessBackend, action: string, target?: string) => b.call('remoteHost', target === undefined ? { action } : { action, target });
+  const pairing = () => join(r.state, 'pairing.json');
+
+  it('switch on, a code that pairs, void a code, the paired computers, revoke, switch off — each read back', async () => {
+    const b = backend({ local: { FAKE_TS: r.ts } });
+    expect(await host(b, 'status')).toMatchObject({ state: 'closed', devices: 0 });
+    const on = await host(b, 'enable');
+    expect(on).toMatchObject({ result: 'enabled', status: { state: 'open', host: BOX, devices: 0 } });
+    expect(readFileSync(join(w.sd, 'cavil-loop-remote.service.active'), 'utf8').trim()).toBe('active');
+
+    // the code shown is the one the machine waits for, and it pairs
+    const c = await host(b, 'code');
+    expect(c).toMatchObject({ result: 'code', host: BOX });
+    expect(c.code).toMatch(/^\d{8}$/);
+    const now = Date.now() / 1000;
+    expect(c.expires).toBeGreaterThan(now + 590);
+    expect(c.expires).toBeLessThan(now + 610);
+    expect(JSON.parse(readFileSync(pairing(), 'utf8')).hash).toBe(createHash('sha256').update(c.code).digest('hex'));
+    const other = backend();
+    expect(await other.call('remotePair', { host: BOX, code: c.code })).toEqual({ result: 'paired', id: ID });
+
+    // a voided code no longer pairs
+    const c2 = await host(b, 'code');
+    expect(await host(b, 'cancel')).toMatchObject({ result: 'cancelled' });
+    expect(existsSync(pairing())).toBe(false);
+    expect(await backend().call('remotePair', { host: BOX, code: c2.code })).toMatchObject({ result: 'refused', reason: 'pairing_closed' });
+
+    // the paired computers, and revoking one: its key stops working at once
+    const d = await host(b, 'devices');
+    expect(d.result).toBe('ok');
+    expect(d.devices.map((x: any) => x.name)).toEqual(['test-client']);
+    expect(await host(b, 'status')).toMatchObject({ state: 'open', devices: 1 });
+    expect(await host(b, 'revoke', 'not-an-id')).toMatchObject({ result: 'refused' });
+    expect(devices(r)).toHaveLength(1);
+    expect(await host(b, 'revoke', d.devices[0].id)).toMatchObject({ result: 'ok' });
+    expect(devices(r)).toEqual([]);
+    expect(await other.call('remoteStatus', { id: ID })).toMatchObject({ state: 'revoked' });
+    expect(await host(b, 'revoke', d.devices[0].id)).toMatchObject({ result: 'not_found' });
+
+    const off = await host(b, 'disable');
+    expect(off).toMatchObject({ result: 'disabled', status: { state: 'closed' } });
+    expect(readFileSync(join(w.sd, 'cavil-loop-remote.service.active'), 'utf8').trim()).not.toBe('active');
+  });
+
+  it('cannot read the state: unknown, never closed; a device list it cannot read is not "none"; an old daemon is "missing"', async () => {
+    const b = backend({ local: { FAKE_TS: r.ts, FAKE_TS_SERVE_STATUS: 'fail' } });
+    expect(await host(b, 'status')).toMatchObject({ state: 'unknown' });
+    writeFileSync(join(r.state, 'devices.json'), '{not json');
+    const ok = backend({ local: { FAKE_TS: r.ts } });
+    expect(await host(ok, 'status')).toMatchObject({ state: 'closed', devices: null });
+    expect(await host(ok, 'devices')).toMatchObject({ result: 'unreadable' });
+    execFileSync('rm', ['-f', join(w.skill, 'scripts/remote-access.sh')]);
+    expect(await host(ok, 'status')).toMatchObject({ state: 'missing' });
+    expect(await host(ok, 'enable')).toMatchObject({ result: 'refused' });
   });
 });
