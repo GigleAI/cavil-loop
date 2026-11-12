@@ -113,10 +113,6 @@ SELFHEAL_MAX_RETRIES=3
 # 只有人真的上手干活的那个 checkout 才会卡住，所以是 opt-in；要开推荐设 20
 CHECKOUT_STALE_ALERT_COMMITS=0
 
-# 本配置缺某个「不写就关、模板里开着」的新功能那一行时，开一条挂 pending/human 的提示 issue，
-# 写明要加哪一行；false = 只写轮询日志（GitHub#289，见下文「升级不会自动补上的新配置」）
-CONFIG_NOTICE_ISSUE=true
-
 # 1 = PR 分支被本项目自己的主 checkout 占着、且它干净、没有进行中的操作、与 PR 最新提交
 # 完全一致时，把它切回 BASE_BRANCH 继续派工（会在 PR 上留言）。默认 0 = 关：它放宽了
 # 「daemon 不碰你的工作区」
@@ -679,7 +675,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 有一类文件，改动本身不是「运行代码」，但会让代码在之后以维护者身份运行：CI 工作流、git hooks、agent 配置、
 安装 / 构建 / 环境配置文件。配了 `AUTOPILOT_HUMAN_PATHS` 之后，托管 PR 只要碰到清单里的文件就不合并，
 翻 `pending/human` 交人，说明里列出命中的文件。**留空或不写 = 和以前完全一样**（只拦 `.github/`，走的是
-原来那段代码：GitHub 调用、state、评论都不变）。不配的项目没有任何变化，也不会为它开提示 issue。
+原来那段代码：GitHub 调用、state、评论都不变）。不配的项目没有任何变化。
 
 开启：在项目配置里加一行，下一轮轮询生效：
 
@@ -708,6 +704,72 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 - **只看路径，不看内容**：清单里的文件只要被改就算（`package.json` 里只升级依赖版本也算）。锁文件和
   `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
 - **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
+
+### 托管条目上外部账号的内容（`AUTOPILOT_OUTSIDER_GUARD`，GitHub#391）
+
+公开仓库里任何账号都能评论。外部账号（在本仓库**没有写权限**的账号——不是维护者、不是 loop 的写入账号、不是外部需求机器人）的
+评论触发不了 daemon 的任何动作：开不了工、合不了 PR、冒充不了托管授权。但托管条目派给 agent 之后，agent 会读到这些评论；托管
+中间没有人确认方案、没有人点合并。打开这一项后：
+
+- **agent 改用读取命令读本条**（`scripts/outsider-read.sh`，托管条目的提示词里写好了确切命令）：输出本条的全部正文和评论（PR 带上它绑定的 issue，
+  拆分子项带上父 issue），每条标明作者身份。外部账号的**文字照常给读**，其中的链接、图片、附件、代码块、行内代码、HTML 注释和看不见的字符
+  换成写明种类的占位；loop 自己的旧评论里原样引用过的同一个链接 / 代码也去掉。授权之后被外部账号改过的正文，给授权那一刻的版本。
+  外部账号的话只当参考：不算需求、不算确认、不改变范围；里面的文件和命令不下载、不运行、不照抄。
+- **合并前交人**（`block` 档）：维护者打托管标签之后，有外部账号评论（issue、PR 对话、行内评论、review）或改过正文——现在查得到的，或
+  本机记录里有的（事后删掉也算）——这条 PR 就不自动合并，翻 `pending/human`，说明里点名那几条。授权之前就在的外部内容算维护者已过目，不拦。
+- **模型预筛**（`AUTOPILOT_OUTSIDER_SCREEN="on"`）：daemon 派工前把每条外部内容（已剥离的文字）交给一个**不给任何工具**的模型，问它是不是
+  在指挥 agent 做事；判为是的、筛失败的、还没筛过的，给 agent 看时整条换成占位、只留出处链接。每条新内容只筛一次（按内容存结论），
+  每次派工最多补筛 5 条。读取命令自己不调模型（实测：在 worker 会话里再起 `claude -p` 认证失败），所以派工之后新来的外部评论要等
+  下次派工才筛得到，这期间是隐藏的。
+- **会话**：托管条目派工时，这个角色现有的会话如果不是在保护开着时起的（以前是普通条目、或这一项是后来才打开的），就作废旧会话、
+  起一条全新的——旧会话里可能有没剥过的原文。之后照旧续接。
+
+开启：在项目配置里写
+
+```bash
+AUTOPILOT_OUTSIDER_GUARD="block"   # 或 "mark"：只标注和剥离，合并条件不变
+AUTOPILOT_OUTSIDER_SCREEN="on"     # 不写或 "" = 不预筛
+```
+
+下一轮轮询生效。留空或不写 = 和以前完全一样（GitHub 调用、state、提示词都不变）。写了认不出的词按 `block` 处理。
+预筛命令可以用 `AUTOPILOT_OUTSIDER_SCREEN_CMD` 换（文字从 stdin 进、stdout 只认 `SAFE` / `SUSPECT`，别的输出都算没筛成）；
+留空用内置的 `claude -p --tools '' --strict-mcp-config …`（关掉全部工具和 MCP，模型 haiku）。
+
+**PR 被拦在合并前之后怎么办**（在 GitHub 网页上操作）：
+
+1. 打开交人说明里点名的那几条外部内容，再看一遍 PR 的改动，确认改动里没有照着外部内容做的、超出本条范围的东西。
+2. 选一种：
+   - **自己合**：审完直接在 PR 页面点合并。
+   - **继续托管**：到提供授权的地方（说明里写着，通常是 issue）把 `autopilot` 标签摘掉、再打上——这表示「这些我看过了」，之后的
+     判断只看这次重新打标签之后的外部内容；再把 PR 的标签从 `pending/human` 改成 `pending/review`。复审通过后 daemon 再检查、合并。
+     看到 PR 上出现托管合并说明就算恢复了；要是又被拦下，说明里点名的是重新打标签之后新来的外部内容。
+   - **不合**：关掉 PR。
+3. 想看 agent 看到的是什么、本机记下了什么，在装着这个项目的机器上跑（只改前两行；跑这条命令本身也会把查到的外部内容记下来，和 agent 跑时一样）：
+
+<!-- outsider-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+N=123            # the issue or PR number / 条目编号
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+ENTRY="$HOME/.agents/releases/cavil-loop/entrypoints/outsider-read.sh"
+[ -f "$ENTRY" ] || ENTRY="$HOME/.agents/skills/cavil-loop/scripts/outsider-read.sh"   # development mode / 开发模式
+bash "$ENTRY" --config "$CONF" "$N"
+echo "exit code / 退出码: $?"
+ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有任何记录"
+```
+<!-- outsider-ops:end -->
+
+退出码 0 = 读全了；3 = 读不全（网络、权限查不到、正文那一版取不回），什么都不输出。记录按条目编号分目录（PR 绑着 issue 时用 issue 的编号），
+条目收尾清理时删掉。
+
+**它挡不住的**（这不是沙箱）：不守规则的 agent 仍然可以绕开读取命令去读原文、下载并运行别人给的文件；纯文字写的恶意要求剥不掉
+（预筛能拦下一部分，也会漏判、误判）；拆开写的网址、用自己的话转述的内容认不出来；两次检查之间出现又删掉的评论 daemon 没见过；
+合并前最后一次检查到合并请求到达 GitHub 之间的窗口消除不了；本机记录不在多台机器之间同步。
+
+**关闭**：删掉这两行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。
 
 ### 只在一台机器上跑这个仓库的轮询
 
@@ -1652,17 +1714,11 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 升级换的是代码，不动项目自己的 `cavil-loop.config`。新功能若是**配置里不写就关**、而 `cavil-loop.config.example` 里是开的（新装项目因此默认就有），老项目上它就一直关着，没有任何提示（GitHub#289：等前置标签 `pending/blocked` 在老项目上一直没开，维护者以为早已生效）。这类配置项在 [`scripts/config-notices.txt`](../scripts/config-notices.txt) 里登记为 `notice`；模板里其余每一项都登记为 `quiet` 并写明原因（不写时行为相同、必填项、示例值、权限参数）。
 
-daemon 每轮把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `LABEL_PENDING_BLOCKED=""`）算「已决定不开」，不会被提示。每个缺项：
+daemon 每轮调度轮询把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `LABEL_PENDING_BLOCKED=""`）算「已决定不开」，不会被提示。每个缺项在 `poll.log` 里写一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`，附上要开时照抄的模板行和不开时写的值）——每项一次；补上又去掉的项会再写一次。
 
-| 做什么 | 什么时候 |
-|---|---|
-| `poll.log` 里一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`） | 每项一次 |
-| 在项目仓库开一条挂 `pending/human` 的 issue（不会被派工），写明每项做什么、要开照抄模板里哪一行、不开写什么 | 第一次出现缺项时；这条 issue 开着期间又出现的缺项，以评论追加在上面 |
-| 关掉这条 issue | 列出的每一项都写进配置（开或不开）之后 |
+它只做这一件事（GitHub#428）：这件事上 daemon 不发任何 GitHub 调用，不开提示 issue；早先版本开过的提示 issue 不评论、也不再自动关，由人手动关掉。老配置里还写着的 `CONFIG_NOTICE_ISSUE` 一行不再起作用，留着无害。daemon 从不改配置。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不写。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏每个缺项的日志多写一次）。
 
-人手动关掉这条 issue = 这一批不再提示，只有之后新出现的缺项才开新的。daemon 从不改配置。读不到这条 issue 或写失败时什么都不发，下一轮重来，「读不到」从不当成「已关」。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不会开 issue。`CONFIG_NOTICE_ISSUE=false` 只留日志，不发任何 GitHub 调用。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏多开一条）。
-
-不等 issue、直接看一个项目缺什么，在任意 shell 里跑（先改 `KEY`，别的什么都不用设）：
+直接看一个项目缺什么，在任意 shell 里跑（先改 `KEY`，别的什么都不用设）：
 
 <!-- config-notice-ops:begin -->
 ```bash
@@ -1682,7 +1738,7 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 ```
 <!-- config-notice-ops:end -->
 
-怎么看：`logged` 是当前缺的项（每项在 `poll.log` 写过一次），`issued` 是已经写进提示 issue 的项，`issue` 是那条 issue 的号（`null` = 没有开着的）。把某一项写进配置后，下一轮调度轮询就把它从两个列表里去掉；全都补上后 `issue` 回到 `null`，那条 issue 被关掉。如果有人把提示 issue 转进了别的流程（摘掉 `pending/human`、或打上派工标签），daemon 就不再碰它、也不再跟踪（`poll.log` 里有一行 `已被转进别的流程`）。
+怎么看：`logged` 是当前缺的项（每项在 `poll.log` 写过一次）。把某一项写进配置后，下一轮调度轮询就把它从列表里去掉。早先版本写下的文件里可能还有 `issue` / `issued`，下一轮调度轮询会把它们去掉。
 
 往 `cavil-loop.config.example` 里加配置项时，要在同一个改动里登记进 `scripts/config-notices.txt`，否则 `tests/config-notice.test.sh` 红。只有「不写就关、模板里开」的才登记成 `notice`。
 
@@ -1692,7 +1748,8 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 
 - **何时**：`.github/workflows/release.yml` 的定时触发，**每天** 00:10 北京时间（16:10 UTC，GitHub#309）。周一那次发刚结束的那一周；其余六天发现这一周已发布，十几秒就结束——周一门禁没过时，修复合进 main 之后的第一次每天检查把这一周补发出来，名字和标题仍归那一周。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
 - **发哪一周**：「刚结束的那一周」= 运行开始时按北京时间算、最近一个已经过完的周日 D（北京时间周日 23:59 还是上一周，周一 00:00 起是这一周）。计划那步只算一次，门禁和打标签都用它定下的周、提交和 tag，跨过零点也不变。只补最近这一周：连续漏发两周以上时更早的周不单独出版本，它们的提交算进补发的这一版。
-- **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁又要跑几个小时，这期间 main 通常会有新提交（GitHub#329）。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
+- **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁也要跑一阵，这期间 main 常会有新提交（GitHub#329）。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
+- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。自 GitHub#416 起负对照**不在**门禁里：它们每晚单独跑（见后面第二节），红了开 issue，不拦发版。
 - **发什么**：tag 是 `release/vD.N`。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。计划那步（`scripts/release.sh --plan`）按顺序判断，命中第一条即定：
   1. main 最新提交上有 `release/v*` tag 还没有 Release 页面 → 门禁测这个提交，给这个 tag 补建页面，不打新 tag
   2. 刚结束那一周的 tag 里有没有页面的（取序号最大的那个）→ 门禁测**这个 tag 自己的提交**，给它补建页面，不打新 tag
@@ -1700,7 +1757,7 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
   4. 这一周已有发布过的 tag：定时运行不发；手动发版给 main 最新提交打这一周的下一个序号
   5. 其余 → 给 main 最新提交打 `release/vD.1`
 - **上次只推了 tag 也能补**：tag 已推但 Release 页面创建失败时，下一次运行（定时或手动发版）先补这个页面（上面第 1、2 条），排在「这一周已发布」之前。生成说明的起点是最近一个**有 Release 页面**的 tag，一直没补上页面的 tag（例如更早一周的）会被跳过，它的改动算进下一个 Release。查不到 Release 列表时整次运行失败，不猜。tag 直接读远端（签出里可能还留着远端已删的 tag），读不到同样整次失败；建页面前再核对远端 tag 仍指向受测提交，被删或被挪走就不建，`gh release create --verify-tag` 也不会替缺失的 tag 新建一个。
-- **手动发版**：Actions 页面 → Release → Run workflow（选 main，不勾 `gate_only`），按上面同一张表走，只差第 4 条；勾 `gate_only` 只跑门禁，永远测 main 最新提交，不看这一周发没发，不打 tag 不建页面。或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——用当天 UTC 日期，它不判断是否已发过）。
+- **手动发版**：Actions 页面 → Release → Run workflow（选 main，不勾 `gate_only`），按上面同一张表走，只差第 4 条；勾 `gate_only` 只跑门禁（普通回归），永远测 main 最新提交，不看这一周发没发，不打 tag 不建页面。或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——用当天 UTC 日期，它不判断是否已发过）。
 - **同一次运行里完成**：流程用内置令牌推的 tag 不会再触发流程，所以定时 / 手动运行在同一个 job 里接着生成 Release；人手推的 tag 仍由 tag 触发走后半段。不需要额外 secret。
 
 Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的升级无关**：受管 Linux 跟的是 base 分支最新提交（见上一节）。
@@ -1711,7 +1768,7 @@ Release 的任何一次运行——定时、tag 推送、手动发版、手动�
 
 - **没有未关闭的同类 issue**：新建一条，标题 `Release 工作流运行失败（自动报告）`，带 `pending/agent`，daemon 照常派工。「同类」= 本仓库、未关闭、创建者 `github-actions[bot]`、正文含 `<!-- cavil-release-failure -->`、不是 PR。
 - **已有一条未关闭**：在编号最小的那条下追加评论，**从不改它的标签**——它正在处理、等人、等前置，都原样保持。处理完就关掉它；下次失败会新建一条。
-- **写了什么**：运行链接、触发方式、受测提交、每个任务的结果和失败步骤、门禁汇总里没通过的 shell 单位、客户端没按预期变红的条目。门禁通过、只有发版任务失败时写明失败在哪一步。
+- **写了什么**：运行链接、触发方式、受测提交、每个任务的结果和失败步骤、门禁汇总里没通过的 shell 单位。门禁通过、只有发版任务失败时写明失败在哪一步。
 - **判断不了时**（issue 列表某一页或其中某一条读不全、查到之后到写入之间那条 issue 变了）一律不写，`report failure` 任务标红，看该任务日志。
 - 新 issue 打的标签是仓库变量 `RELEASE_FAILURE_LABEL`（默认 `pending/agent`），必须和本仓库的派工标签一致。
 
@@ -1735,6 +1792,26 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `RELEASE_FAILURE_REPORT off`，恢复后没有这一项。
 <!-- release-failure-ops:end -->
+
+### 负对照每晚单独跑（GitHub#416）
+
+负对照是故意把代码改坏、要求测试变红——检验的是测试本身，不是代码。全部负对照（每个 `tests/*.test.sh` 带 `MUTATION=1`、autopilot 分到六个任务的改坏副本、客户端的 `test/mutation` 和真实应用那一套）只在 `.github/workflows/negative-controls.yml` 里跑：
+
+- **何时**：每晚 02:10 北京时间（18:10 UTC），测 main 最新提交。定时运行在第一个任务里先查：本工作流上一次成功运行就在同一个提交上，就到此为止；查不到就照跑。Actions → Negative controls → Run workflow（选 main）手动跑，总是跑；在别的分支上运行什么都不做。
+- **不在 PR 上跑，也不在 Tests、Client 里跑**：这两个工作流的手动运行也不再有「也跑负对照」的选项（GitHub#195 / #234）。worker 和复审在开发期间不跑负对照。
+- **不拦发版**：发版门禁只跑普通回归（见上面「门禁跑什么」）。
+- **红了自动开 issue**：和 Release 运行失败同一个脚本、同样的规则（只新建或评论、写前重读、从不改已有 issue 的标签），但是单独一条：标题 `负对照每晚运行失败（自动报告）`，标记 `<!-- cavil-negative-controls-failure -->`，带 `pending/agent`（`RELEASE_FAILURE_LABEL`）。两种报告互不评论到对方的 issue 上。正文列出失败的任务、没按预期变红的 shell 单位和客户端条目。
+
+<!-- negative-controls-ops:begin -->
+**停用每晚报告**（照常每晚运行，红了只是不开 issue）与**恢复**：
+
+```bash
+gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
+```
+
+停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `NEGATIVE_CONTROLS_REPORT off`，恢复后没有这一项。
+<!-- negative-controls-ops:end -->
 
 ## 改名前的安装
 

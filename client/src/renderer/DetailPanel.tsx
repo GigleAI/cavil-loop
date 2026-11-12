@@ -17,8 +17,7 @@ import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { Keys } from './ShortcutHelp';
-import { isMac, keyParts, keyText, SHORTCUTS } from './shortcuts';
+import { keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
@@ -722,7 +721,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -734,8 +733,9 @@ export function DetailPanel({
       else if (m.cavil === 'wrap' && typeof m.on === 'boolean') now.setWrap(m.on);
       else if (m.cavil === 'image') now.image(now.render, m.id, m.src);
       else if (m.cavil === 'reread') now.reread();
-      // GitHub#322: the frame passes on a bare R only; the window's own rules decide, and only "go to the reply box" may act
-      else if (m.cavil === 'key' && typeof m.key === 'string') frameKey(m.key);
+      // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
+      // own rules decide, and only those shortcuts may act (frameKey)
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -828,7 +828,16 @@ export function DetailPanel({
     };
     window.addEventListener('mouseup', done, true);
   };
+  /**
+   * GitHub#413: the three buttons next to "发送" (关闭 issue / 交给 agent / 托管), set further down
+   * once the item is known: each is the button's own handler when that button is showing and can be
+   * pressed, else undefined — so a key never does what the button would not.
+   */
+  const quickKeys = useRef<Partial<Record<'closeIssue' | 'handBack' | 'autopilot', () => void>>>({});
   useShortcuts({
+    closeIssue: () => quickKeys.current.closeIssue?.(),
+    handBack: () => quickKeys.current.handBack?.(),
+    autopilot: () => quickKeys.current.autopilot?.(),
     // folded fields come back first: the picker opens next to them (GitHub#260)
     labels: () => {
       if (pickBlocked) return;
@@ -938,6 +947,7 @@ export function DetailPanel({
     </aside>
   );
 
+  quickKeys.current = {};
   if (!item) {
     return shell(
       undefined,
@@ -967,6 +977,21 @@ export function DetailPanel({
   // the buttons need the detail read (labels can be changed on a closed item too: it may be waiting for a decision)
   const detailRead = Boolean(detail);
   const hb = state.handBack;
+  // GitHub#413: one condition per button, read by the button and by its key alike
+  const opBlocked = !canWrite || busy || Boolean(lock);
+  const pressCloseIssue = () => openAsk('closeIssue');
+  const pressHandBack = () => void startOp({ kind: 'handBack', key: item.key }, false);
+  const pressAutopilot = () => {
+    // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
+    if (!state.autopilotConfirm) return void runAutopilot();
+    setNoMoreAsk(false);
+    openAsk('autopilot');
+  };
+  quickKeys.current = {
+    closeIssue: issueOpen && !opBlocked ? pressCloseIssue : undefined,
+    handBack: detailRead && !opBlocked ? pressHandBack : undefined,
+    autopilot: detailRead && hb.autopilot && !opBlocked ? pressAutopilot : undefined,
+  };
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
   // GitHub#260: what goes behind the notices button in the head (see DetailNotices)
@@ -1451,50 +1476,54 @@ export function DetailPanel({
         )}
         <div className="row end">
           {issueOpen && (
-            <button className="danger" data-testid="close-issue" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy ?? '在 GitHub 上关闭这个 issue（先选原因）'} onClick={() => openAsk('closeIssue')}>
+            <button
+              className="danger"
+              data-testid="close-issue"
+              disabled={opBlocked}
+              title={offlineWhy ?? lockWhy ?? `在 GitHub 上关闭这个 issue（先选原因，${keyText('closeIssue')}）`}
+              onClick={pressCloseIssue}
+            >
               关闭 issue…
+              <kbd>{keyText('closeIssue')}</kbd>
             </button>
           )}
           <div className="spacer" />
-          <span className="small muted keys-hint">
-            按 <Keys parts={keyParts(SHORTCUTS.find((x) => x.id === 'send')!.keys[0], isMac())} /> 发送
-          </span>
+          {/* GitHub#433: every button with a key carries it itself, the same way */}
           <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={`预览（${keyText('preview')}）`} onClick={() => void togglePreview()}>
             {preview !== null ? '继续编辑' : '预览'}
+            <kbd>{keyText('preview')}</kbd>
           </button>
           {detailRead && (
             <span className="quick-actions" data-testid="quick-actions">
               <button
                 data-testid="hand-back"
-                disabled={!canWrite || busy || Boolean(lock)}
-                title={offlineWhy ?? lockWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改）`}
-                onClick={() => void startOp({ kind: 'handBack', key: item.key }, false)}
+                disabled={opBlocked}
+                title={offlineWhy ?? lockWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
+                onClick={pressHandBack}
               >
                 交给 agent
+                <kbd>{keyText('handBack')}</kbd>
               </button>
               {hb.autopilot && (
                 <button
                   data-testid="autopilot"
-                  disabled={!canWrite || busy || Boolean(lock)}
+                  disabled={opBlocked}
                   title={
                     offlineWhy ??
                     lockWhy ??
-                    `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}`
+                    `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
                   }
-                  onClick={() => {
-                    // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
-                    if (!state.autopilotConfirm) return void runAutopilot();
-                    setNoMoreAsk(false);
-                    openAsk('autopilot');
-                  }}
+                  onClick={pressAutopilot}
                 >
                   {state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）'}
+                  <kbd>{keyText('autopilot')}</kbd>
                 </button>
               )}
             </span>
           )}
           <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={`发送（${keyText('send')}）`} onClick={() => void send()}>
             发送
+            <kbd>{keyText('send')}</kbd>
           </button>
         </div>
       </section>

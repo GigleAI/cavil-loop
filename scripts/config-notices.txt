@@ -4,8 +4,8 @@
 #
 # 为什么要有：自动升级把新代码带到老项目，却不会改项目自己的配置。新功能若是「配置里不写就关」、
 # 模板里却是开的，老项目就一直关着，没有任何地方说一声（例：等前置标签，arkknights-tool#38）。
-# daemon 每轮把本项目配置加载完后仍「未设置」的 notice 项列出来，写轮询日志，并按 CONFIG_NOTICE_ISSUE
-# 在本项目仓库开一条提示 issue。写成空值（KEY=""）= 已决定不开，不算缺。
+# daemon 每轮把本项目配置加载完后仍「未设置」的 notice 项列出来，写轮询日志（GitHub#428 起只写日志，
+# 不再开提示 issue）。写成空值（KEY=""）= 已决定不开，不算缺。
 #
 # 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
 #   KEY | notice | 出处 | 不开时写的值 | 给维护者看的一段说明（一行）
@@ -38,6 +38,9 @@ LABEL_PENDING_MERGE | quiet | 不写这一行时的行为和模板里的值相�
 AUTOPILOT_MERGE_METHOD | quiet | 不写这一行时的行为和模板里的值相同
 AUTOPILOT_CHECKS_TIMEOUT_HOURS | quiet | 不写这一行时的行为和模板里的值相同
 AUTOPILOT_HUMAN_PATHS | quiet | 不写这一行时的行为和模板里的值相同
+AUTOPILOT_OUTSIDER_GUARD | notice | GigleAI/cavil-loop#391 | "" | 托管条目上外部账号（在本仓库没有写权限的账号）写的内容：worker 和复审改用读取命令读本条，每条标明作者，外部账号的文字照常给读，但里面的链接、附件、代码、HTML 注释和看不见的字符换成占位；写成 `"block"` 时还要求：维护者打托管标签之后有外部账号评论或改过正文的 PR 不自动合并，交 `pending/human` 并点名那几条。关着时外部账号的评论原样给 agent 读、和维护者的评论混在一起分不出来，托管 PR 照常自动合并。只对托管条目生效（没开托管的项目写空值即可），不需要建标签。
+AUTOPILOT_OUTSIDER_SCREEN | notice | GigleAI/cavil-loop#391 | "" | 外部账号的每条内容先交给一个不给任何工具的模型预筛：daemon 派工前问它这段话是不是在指挥 agent 做事，判为是的和还没筛过的，给 agent 看时整条换成占位、只留出处链接。每条新的外部评论多一次模型调用（默认用 claude 的 haiku，可用 `AUTOPILOT_OUTSIDER_SCREEN_CMD` 换）。要和 `AUTOPILOT_OUTSIDER_GUARD` 一起开；没开托管的项目写空值即可。
+AUTOPILOT_OUTSIDER_SCREEN_CMD | quiet | 不写这一行时的行为和模板里的值相同
 TRUSTED_REPOS | quiet | 不写这一行时的行为和模板里的值相同
 LABEL_PENDING_BLOCKED | notice | GigleAI/cavil-loop#157 | "" | 等前置标签：worker 遇到「要等别的 issue / PR 先完成」时挂上它等着，前置全部完成后 daemon 自动把条目翻回派工标签接着干；关着时 worker 只能翻 `pending/human`，前置完成后要人手动重新打派工标签。开的话还要在仓库建好 `pending/blocked` 标签（在仓库的 Labels 页面新建，或把这一行写进配置后重跑 setup.sh，它会按配置建标签）。要等别的仓库的条目，再加一行 `TRUSTED_REPOS="owner/repo"`（逗号分隔，只填信得过的仓库），否则写了别的仓库的前置会交人。
 BLOCKED_RECHECK_SECS | quiet | 不写这一行时的行为和模板里的值相同
@@ -125,6 +128,5 @@ POLL_RUN_LOG_SLOW_SECS | quiet | 不写这一行时的行为和模板里的值�
 POLL_FAIL_BACKOFF_MAX_SECS | quiet | 不写这一行时的行为和模板里的值相同
 POLL_DUE_SLACK_SECS | quiet | 不写这一行时的行为和模板里的值相同
 CHECKOUT_STALE_ALERT_COMMITS | quiet | 不写这一行时的行为和模板里的值相同
-CONFIG_NOTICE_ISSUE | quiet | 不写这一行时的行为和模板里的值相同
 AUTO_RELEASE_MAIN_CHECKOUT | quiet | 不写这一行时的行为和模板里的值相同
 LATEST_SITE_REFRESH | quiet | 不写这一行时的行为和模板里的值相同

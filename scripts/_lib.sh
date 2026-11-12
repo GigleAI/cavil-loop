@@ -54,6 +54,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
 # 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
 # shellcheck source=_heavy.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
+# 托管条目上外部账号的内容（GitHub#391）：读取命令、派工前检查、合并前交人共用这一份
+_OUTSIDER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_outsider.sh
+source "$_OUTSIDER_DIR/_outsider.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -417,6 +421,12 @@ AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
 # 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
 # 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
 AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# 外部账号内容的保护（GitHub#391，只对托管条目生效）。留空 / 不写 = 和以前逐字节一样。
+# mark = 读取命令标明作者、剥掉外人内容里的链接 / 附件 / 代码 / 隐藏文字；block = 再加「授权之后有外人内容就不自动合并」。
+# SCREEN=on 时外人内容先过一个不给任何工具的模型预筛（daemon 派工前跑，见 scripts/_outsider.sh）
+AUTOPILOT_OUTSIDER_GUARD="${AUTOPILOT_OUTSIDER_GUARD:-}"
+AUTOPILOT_OUTSIDER_SCREEN="${AUTOPILOT_OUTSIDER_SCREEN:-}"
+AUTOPILOT_OUTSIDER_SCREEN_CMD="${AUTOPILOT_OUTSIDER_SCREEN_CMD:-}"
 # `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
 # 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
 AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
@@ -4274,7 +4284,8 @@ autopilot_body_has_close() {   # 正文从 stdin
 autopilot_pr_kind() {   # <PR JSON> [正文]
     local pj="$1" n repo body by_line by_whole
     AUTOPILOT_PR_KIND=bad; AUTOPILOT_PR_N=""; AUTOPILOT_REASON=""
-    if [ "$#" -ge 2 ] && ! pj=$(printf '%s' "$pj" | jq -c --arg b "$2" '.body = $b' 2>/dev/null); then
+    # 正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+    if [ "$#" -ge 2 ] && ! pj=$( { printf '%s\n' "$pj"; printf '%s' "$2" | jq -Rs .; } | jq -cs '.[1] as $b | .[0] | .body = $b' 2>/dev/null); then
         AUTOPILOT_REASON="读不懂 PR 的内容"; return 0
     fi
     if n=$(autopilot_pr_binding "$pj"); then
@@ -4327,16 +4338,21 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
                   | select((.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean") | .nodes' 2>/dev/null); then
             AUTOPILOT_REASON="读不到 PR #$pr 正文的修改历史"; return 2
         fi
-        edits=$(jq -cn --argjson a "$edits" --argjson b "$nodes" '$a + $b')
+        # 修改历史、正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+        if ! edits=$(printf '%s\n%s\n' "$edits" "$nodes" | jq -cs '.[0] + .[1]' 2>/dev/null); then
+            AUTOPILOT_REASON="拼不起 PR #$pr 正文的修改历史"; return 2
+        fi
         # 倒序：已经读到早于打标签的那一版就够了
         printf '%s' "$nodes" | jq -e --arg t "$t" 'any(.[]; (.editedAt | type) == "string" and .editedAt < $t)' >/dev/null 2>&1 && break
         [ "$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.hasNextPage')" = true ] || break
         after=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.endCursor // ""')
         [ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }
     done
-    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" \
+    out=$(printf '%s\n%s\n' "$edits" "$(printf '%s' "$pj" | jq -c '(.body // "") | tostring | sub("\n+$"; "")' || echo '""')" | jq -cs --arg t "$t" \
               --arg created "$(printf '%s' "$pj" | jq -r '.created_at // ""')" '
-        if ($e | length) == 0 then {ok: [$cur]}
+        # 正文和改前一样去掉末尾换行（改前它经 $(…) 当参数传进来）
+        .[0] as $e | .[1] as $cur
+        | if ($e | length) == 0 then {ok: [$cur]}
         elif any($e[]; (.editedAt | type) != "string" or .editedAt == "") then {err: "unreadable"}
         else
           ([$e[] | select(.editedAt == $t)] + ([$e[] | select(.editedAt < $t)] | sort_by(.editedAt) | .[-1:])) as $c
@@ -4649,7 +4665,7 @@ autopilot_place_strip_copy() {   # <称呼>
 # 打托管标签的这个人算不算维护者授权：User 类型、不是 loop 的写入账号、不是外部需求机器人账号、有写权限。
 #   0 = 算（AUTOPILOT_ACTOR）；1 = 不算（AUTOPILOT_DENY / AUTOPILOT_REASON）；2 = 判不了
 autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写权限的仓库（跨仓库的父 issue，GitHub#233）]
-    local actor="$1" atype="$2" also="${3:-}" me perm
+    local actor="$1" atype="$2" also="${3:-}" me rc
     AUTOPILOT_ACTOR=""; AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     if [ -z "$actor" ] || [ "$actor" = null ]; then
         AUTOPILOT_REASON="标签记录里没有操作人"; return 2
@@ -4667,20 +4683,21 @@ autopilot_actor_check() {   # <操作人> <账号类型> [另一个也要有写�
     if [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then
         AUTOPILOT_DENY=actor-requester-bot; AUTOPILOT_REASON="托管标签是外部需求机器人账号 \`$actor\` 打的"; return 1
     fi
-    if ! perm=$(gh api "repos/$REPO/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-        AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2
-    fi
-    case "$perm" in
-        admin|write) ;;
-        *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 $perm 权限，需要写权限"; return 1 ;;
+    # 「是不是维护者」和外部内容那边共用一份判据（repo_maintainer_check，GitHub#391）
+    rc=0; repo_maintainer_check "$actor" "$atype" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) AUTOPILOT_DENY=actor-perm
+           AUTOPILOT_REASON="打托管标签的 \`$actor\` 在仓库里只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+        *) AUTOPILOT_REASON="查不到 \`$actor\` 在仓库里的权限"; return 2 ;;
     esac
     if [ -n "$also" ] && [ "$(requester_bot_lc "$also")" != "$(requester_bot_lc "$REPO")" ]; then
-        if ! perm=$(gh api "repos/$also/collaborators/$actor/permission" --jq '.permission // ""' 2>/dev/null) || [ -z "$perm" ]; then
-            AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2
-        fi
-        case "$perm" in
-            admin|write) ;;
-            *) AUTOPILOT_DENY=actor-perm; AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 $perm 权限，需要写权限"; return 1 ;;
+        rc=0; repo_maintainer_check "$actor" "$atype" "$also" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) AUTOPILOT_DENY=actor-perm
+               AUTOPILOT_REASON="打托管标签的 \`$actor\` 在 $also 只有 ${REPO_MAINTAINER_PERM:-none} 权限，需要写权限"; return 1 ;;
+            *) AUTOPILOT_REASON="查不到 \`$actor\` 在 $also 的权限"; return 2 ;;
         esac
     fi
     AUTOPILOT_ACTOR="$actor"
@@ -5197,7 +5214,7 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
         AP_PATHS_DETAIL="请求失败或空输出"; return 0
     fi
     out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
-        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        --argjson pj "$(printf '%s' "$pj" | jq -c '{changed_files}')" "$AUTOPILOT_PATHS_JQ"'
         ($pj.changed_files) as $n
         | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
           elif (type != "array") or (all(.[]; type == "array") | not)
@@ -5378,6 +5395,19 @@ autopilot_permit() {   # <state_file> <PR 编号>
         *) AP_REASON="读不到 PR #$pr 的改动文件列表"; return 0 ;;
     esac
     fi
+    # 外部账号的内容（GitHub#391，只在 block 档）：授权之后有外人写的评论 / 改过的正文——现在查得到的，或本机
+    # 记录里有的（事后删掉也算）——就不自动合并，交维护者过目。关着时这里一次调用都没有
+    if outsider_block_on; then
+        rc=0; outsider_permit_gate "$AP_N" "$ij" "$pr" "$pj" || rc=$?
+        case "$rc" in
+            0) ;;
+            1) AP_V=human; AP_STOP=outsider; AP_STOP_KEY="$OS_GATE_KEY"
+               AP_REASON="托管授权（${OS_AUTH_WHERE}）之后，有外部账号（在本仓库没有写权限的账号）写的内容：${OS_GATE_TEXT}。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
+               AP_NEXT="请维护者看过这些内容和 PR 的改动后选一种：① 自己审完直接合并；② 认为没问题、要继续托管——在 $(autopilot_auth_where) 上把 \`$LABEL_AUTOPILOT\` 摘掉再打上（表示这些内容已看过），再把本 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\`，重新走复审和合并；③ 不合，关掉 PR。"
+               return 0 ;;
+            *) AP_REASON="核对外部账号的内容时读不全（${OS_WHY:-内部步骤异常退出（退出码 ${rc}），原因没记下}）"; return 0 ;;
+        esac
+    fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
     rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?
     case "$rc" in
@@ -5461,14 +5491,25 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
         else where="本 issue "; fi
         body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head")
+        # 说明里照搬了 PR 正文的总结段，大小没有上限：经文件交给 jq 和 gh，不经命令行参数（GitHub#426）
+        local bf=""
+        if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+            [ -z "$bf" ] || rm -f "$bf"; bf=""
+            log "  ⚠️ 托管：PR #$pr 已合并，但写不出合并说明的临时文件；说明$( [ "$kind" = issue ] && echo "改由交接补发（短版）" || echo "这次没发")"
+        fi
         if [ "$kind" = issue ]; then
             # 合并后的交接（GitHub#233）：issue 留着、翻 pending/human 给人验收。先记下要做的事和评论全文，
             # 评论发不出去、标签没翻好，都由合并后的清理那一步（merged_issue_label → autopilot_merged_handoff）接着做
-            autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --arg b "$body" || true
+            if [ -n "$bf" ]; then
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --rawfile b "$bf" || true
+            else
+                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: ""}' --arg p "$pr" --arg n "$n" || true
+            fi
         fi
-        if run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -f "body=$body"; then
+        if [ -n "$bf" ] && run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -F "body=@$bf"; then
             [ "$kind" != issue ] || autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
         fi
+        [ -z "$bf" ] || rm -f "$bf"
         autopilot_state_set "$sf" 'del(.prs[$p])' --arg p "$pr" || true
         return 0
     fi
@@ -5522,7 +5563,16 @@ autopilot_merged_handoff() {   # <issue> <PR>
                 any(.[][]?; ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase) and ((.body // "") | contains($m)))' >/dev/null 2>&1; then
             body=$(autopilot_state_get "$sf" '.handoff[$p].body' --arg p "$pr")
             [ -n "$body" ] || body="## ✅ 托管：已自动合并 PR #$pr"$'\n\n'"$(autopilot_daemon_sig)"$'\n'"<!-- cavil-loop:autopilot-merged pr=$pr head= -->"
-            run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -f "body=$body" || return 1
+            # 正文经文件交给 gh，不经命令行参数（GitHub#426：说明里有 PR 的总结段，大小没有上限）
+            local bf
+            if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
+                [ -z "${bf:-}" ] || rm -f "$bf"
+                log "  ⚠️ 托管合并交接：写不出合并说明的临时文件，下轮再试"; return 1
+            fi
+            if ! run_gh "托管合并说明评论 (#${issue}，补发)" gh_write api -X POST "repos/$REPO/issues/$issue/comments" -F "body=@$bf"; then
+                rm -f "$bf"; return 1
+            fi
+            rm -f "$bf"
         fi
         autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
     fi
@@ -6975,26 +7025,20 @@ check_checkout_staleness() {
     return 0
 }
 
-# ── 配置缺新功能的设置：提示维护者（GitHub#289）──
+# ── 配置缺新功能的设置：提示维护者（GitHub#289；GitHub#428 起只写日志）──
 # 自动升级把新代码带到老项目，却不改项目的配置。「不写就关」而模板里开着的新功能（登记成
 # notice 的项，见 scripts/config-notices.txt）在老项目上就一直关着，没有任何信号——维护者以为
 # 早已生效（arkknights-tool#38：等前置标签）。这里每轮做一次纯本地比对（CONFIG_NOTICE_UNSET，
-# 在 source 配置之后立刻记下），缺项集合变了才对外动作：
-#   · 新出现的缺项 → 写一行轮询日志（每项一次）
-#   · CONFIG_NOTICE_ISSUE=true（默认）时：没有开着的提示 issue → 开一条挂 pending/human 的
-#     （greedy 模式也靠它才不被派工）；已有开着的 → 在上面评论新增的；缺项全补上 → 关掉它；
-#     人手动关掉 → 这一批不再提示，只有出现新缺项才开新的
+# 在 source 配置之后立刻记下）：新出现的缺项在轮询日志里写一行（每项一次；补上又去掉的项再写一次）。
+# 不发任何 GitHub 调用（GitHub#428：不再开提示 issue；哪些功能可开留给配置界面让人自己看）。
+# 早先版本开过的提示 issue 不读、不评论、不关；配置里还写着的 CONFIG_NOTICE_ISSUE 不再读取。
 # daemon 从不改配置。只在调度器经 poll-entry.sh 起的轮询里运行（POLL_SCHEDULED=1，agent-poll.sh
 # 开头从 poll-entry.sh 交来的 CAVIL_SCHEDULED_POLL 收下，并立刻 unset，worker 继承不到）：手动直接跑
-# agent-poll.sh 做试跑、worker 会话里跑、以及直接起 agent-poll.sh 的测试都不该往仓库里开 issue。
-# 不用 CODING_AGENT_RELEASE_ROOT 当判据：它是导出的，worker 会话里也有。
+# agent-poll.sh 做试跑、worker 会话里跑、以及直接起 agent-poll.sh 的测试都不写这行日志。
 #
 # 状态在 $STATE_DIR/config-notice.json（不进 state.json：删掉它只意味着「重新判断一次」，最坏
-# 多开一条提示）：{"issue": <号|null>, "logged": [已写过日志的项], "issued": [已在 issue 里提示过的项]}。
-# 读写规矩同其它 daemon 写入：写之前重读那条 issue（是否开着、是不是本功能开的、不是 PR），
-# 读不到 / 写失败 → 本轮不写、不记，下一轮重来；从不把「读不到」当成「已关」。
-CONFIG_NOTICE_ISSUE="${CONFIG_NOTICE_ISSUE:-true}"
-CONFIG_NOTICE_MARKER='<!-- cavil-config-notice -->'
+# 多写一行日志）：{"logged": [已写过日志的项]}。早先版本留下的 issue / issued 等字段读到就丢掉，
+# 不据此做任何事。
 
 config_notice_state_file() { printf '%s\n' "$STATE_DIR/config-notice.json"; }
 
@@ -7010,143 +7054,38 @@ config_notice_template_line() {   # <KEY>
     grep -m1 -E "^$1=" "$SKILL_DIR/cavil-loop.config.example" 2>/dev/null || true
 }
 
-# 一项缺项的说明（issue 正文和追加评论共用）
-config_notice_item_md() {   # <序号> <KEY>
-    local i="$1" key="$2" ref off text line
-    ref=$(config_notice_field "$key" 3); off=$(config_notice_field "$key" 4); text=$(config_notice_field "$key" 5)
-    line=$(config_notice_template_line "$key")
-    printf '### %s. `%s`%s\n\n%s\n\n' "$i" "$key" "${ref:+（${ref}）}" "$text"
-    if [ -n "$line" ]; then
-        printf '要开：在配置里加这一行（配置模板里的原文）\n\n```bash\n%s\n```\n\n' "$line"
-    fi
-    printf '不开：写成 `%s=%s`，daemon 就不再提示这一项。\n\n' "$key" "$off"
-}
-
 config_notice_log_line() {   # <KEY>
     local key="$1" line
     line=$(config_notice_template_line "$key")
     log "⚠️ 配置提示：本项目配置里没有 ${key}，这个新功能现在是关着的（$(config_notice_field "$key" 3)）。要开就在 $CONFIG_FILE 里加 ${line:-$key=...}；不开就写 $key=$(config_notice_field "$key" 4)"
 }
 
-config_notice_issue_body() {   # <KEY>...
-    local n=$# i=0 key
-    printf '%s\n## 本项目配置里缺 %s 项新功能的设置\n\n' "$CONFIG_NOTICE_MARKER" "$n"
-    printf 'cavil-loop 自动升级带来了新功能，但本项目的配置文件（`%s`，在 daemon 所在的机器 `%s` 上）里没有对应的行，下面这些功能现在是**关着**的。新装的项目从配置模板拷配置，这些功能默认是开的。\n\n' \
-        "$CONFIG_FILE" "$(hostname -s 2>/dev/null || hostname)"
-    printf '**要人做的事**：逐项决定开或不开，把对应的那一行写进配置文件（开：照抄下面的行；不开：写成空值）。daemon 只提示、不改配置；下一轮轮询发现每一项都写进去了，会自动关闭这条 issue。不想处理也可以直接关掉，同一批缺项不会再提示。\n\n'
-    for key in "$@"; do
-        i=$((i + 1))
-        config_notice_item_md "$i" "$key"
-    done
-    printf -- '---\n这条 issue 由 daemon 自动开。不想再收到这类提示：在配置里写 `CONFIG_NOTICE_ISSUE=false`（之后只写轮询日志）。\n'
-}
-
-# 重读提示 issue，判定能不能动它（评论 / 关闭之前各读一次，L41）。输出：
-#   ours     开着、正文带本功能标记、不是 PR，且标签正好是 daemon 开它时挂的那个保护标签
-#            （pending/human 在、没有任何别的流程标签）——只有这时才可以评论或关闭
-#   closed   已关（人手动关掉）
-#   foreign  不是本功能开的 issue，或是 PR
-#   handed   开着，但保护标签被摘、或挂上了别的流程标签（人把它转进了别的流程，如派给 worker）
-# 读不到、字段缺失、状态词不认识 → 返回 1（未知：本轮不写、不记）。
-config_notice_issue_state() {   # <号>
-    local out st pr mk labels flow l
-    out=$(run_gh_capture "读配置提示 issue #$1" gh api "repos/$REPO/issues/$1" \
-        --jq "[.state // \"\", (.pull_request != null | tostring), ((.body // \"\") | contains(\"$CONFIG_NOTICE_MARKER\") | tostring), (if (.labels | type) == \"array\" then ([.labels[].name] | join(\"\\n\")) + \"\\n\" | @base64 else \"-\" end)] | join(\" \")") \
-        || return 1
-    read -r st pr mk labels <<<"$out"
-    case "$pr/$mk" in true/*|false/false) printf 'foreign\n'; return 0 ;; false/true) ;; *) return 1 ;; esac
-    case "$st" in open) ;; closed) printf 'closed\n'; return 0 ;; *) return 1 ;; esac
-    [ -n "$labels" ] && [ "$labels" != - ] || return 1
-    labels=$(printf '%s' "$labels" | base64 -d 2>/dev/null) || return 1
-    printf '%s\n' "$labels" | grep -qxF -- "${LABEL_PENDING_HUMAN:-pending/human}" || { printf 'handed\n'; return 0; }
-    flow=$({ closed_done_flow_labels; printf '%s\n' "${LABEL_DONE:-}"; } | grep -vxF -- "${LABEL_PENDING_HUMAN:-pending/human}" | awk 'NF')
-    while IFS= read -r l; do
-        [ -n "$l" ] || continue
-        if printf '%s\n' "$flow" | grep -qxF -- "$l"; then printf 'handed\n'; return 0; fi
-    done <<<"$labels"
-    printf 'ours\n'
-}
-
 config_notice_tick() {
     [ "${POLL_SCHEDULED:-}" = 1 ] || return 0
-    local f missing st issue logged issued new_log new_iss k state num body changed=0
+    local f missing st logged new_log k changed=0
     f=$(config_notice_state_file)
     missing=$(printf '%s\n' $CONFIG_NOTICE_UNSET | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
     if [ -f "$f" ]; then
         if ! st=$(jq -ce 'if type == "object" then . else error("bad") end' "$f" 2>/dev/null); then
-            log "⚠️ 配置提示：$f 读不懂，按全新状态重来（最坏多开一条提示 issue）"
+            log "⚠️ 配置提示：$f 读不懂，按全新状态重来（最坏把缺项的日志多写一次）"
             st='{}'; changed=1
         fi
     else
         [ "$missing" = '[]' ] && return 0
         st='{}'; changed=1
     fi
-    issue=$(jq -r '.issue // empty | tostring' <<<"$st")
-    case "$issue" in ''|*[!0-9]*) issue="" ;; esac
-    # 补上又去掉的项要能再提示一次：已提示记录只保留仍然缺的
+    # 早先版本留下的字段（issue / issued …）：丢掉，哪怕这一轮没有新日志要写
+    [ "$(jq -c 'keys - ["logged"]' <<<"$st")" = '[]' ] || changed=1
+    # 补上又去掉的项要能再写一次：已写记录只保留仍然缺的
     logged=$(jq -c --argjson m "$missing" '[(.logged // [])[] | select(. as $k | $m | index($k))] | unique' <<<"$st")
-    issued=$(jq -c --argjson m "$missing" '[(.issued // [])[] | select(. as $k | $m | index($k))] | unique' <<<"$st")
     [ "$logged" = "$(jq -c '(.logged // []) | unique' <<<"$st")" ] || changed=1
-    [ "$issued" = "$(jq -c '(.issued // []) | unique' <<<"$st")" ] || changed=1
 
     new_log=$(jq -r --argjson l "$logged" '.[] | select(. as $k | $l | index($k) | not)' <<<"$missing")
     for k in $new_log; do config_notice_log_line "$k"; done
     if [ -n "$new_log" ]; then logged="$missing"; changed=1; fi
 
-    if [ "${CONFIG_NOTICE_ISSUE}" = true ]; then
-        new_iss=$(jq -r --argjson l "$issued" '.[] | select(. as $k | $l | index($k) | not)' <<<"$missing")
-        if [ -n "$issue" ] && { [ "$missing" = '[]' ] || [ -n "$new_iss" ]; }; then
-            if ! state=$(config_notice_issue_state "$issue"); then
-                state=unknown
-            fi
-            case "$state" in
-                ours)
-                    if [ "$missing" = '[]' ]; then
-                        if run_gh "关闭配置提示 issue #$issue" gh_write api -X PATCH "repos/$REPO/issues/$issue" \
-                                -f state=closed -f state_reason=completed; then
-                            log "配置提示：缺的设置都已写进配置，关闭提示 issue #$issue"
-                            issue=""; changed=1
-                        fi
-                    else
-                        local i=0 add=""
-                        for k in $new_iss; do i=$((i + 1)); add="$add$(config_notice_item_md "$i" "$k")"$'\n'; done
-                        body="$CONFIG_NOTICE_MARKER"$'\n'"## 配置里又多了 $i 项新功能的设置没写"$'\n\n'"做法和上面一样：逐项写进配置文件 \`$CONFIG_FILE\`（开或写成空值），每一项都写进去后 daemon 自动关闭这条 issue。"$'\n\n'"$add"
-                        if run_gh "在配置提示 issue #$issue 上追加新缺项" gh_write api -X POST \
-                                "repos/$REPO/issues/$issue/comments" -f "body=$body"; then
-                            log "配置提示：在提示 issue #$issue 上追加了 $(printf '%s ' $new_iss)"
-                            issued="$missing"; new_iss=""; changed=1
-                        fi
-                    fi
-                    ;;
-                closed|foreign|handed)
-                    # 人已经关掉、这个号已不是本功能的 issue、或人把它转进了别的流程：不评论、不关闭，
-                    # 从此不再跟踪它（否则每轮都要重读）。仍有新缺项时下面开一条新的
-                    [ "$state" = handed ] && log "配置提示：提示 issue #$issue 已被转进别的流程（保护标签变了），不再碰它"
-                    issue=""; changed=1
-                    ;;
-                *)  # 读不到：什么都不写、不记，下一轮再看
-                    new_iss=""
-                    ;;
-            esac
-        fi
-        if [ -z "$issue" ] && [ -n "$new_iss" ]; then
-            # shellcheck disable=SC2046
-            body=$(config_notice_issue_body $(jq -r '.[]' <<<"$missing"))
-            num=$(run_gh_capture "开配置提示 issue" gh_write api -X POST "repos/$REPO/issues" \
-                -f "title=[daemon] 本项目配置缺 $(jq 'length' <<<"$missing") 项新功能的设置" \
-                -f "body=$body" -f "labels[]=${LABEL_PENDING_HUMAN:-pending/human}" --jq '.number') || num=""
-            case "$num" in
-                ''|*[!0-9]*) ;;
-                *) issue="$num"; issued="$missing"; changed=1
-                   log "配置提示：本项目配置缺 $(jq -r 'join(" ")' <<<"$missing")，已开提示 issue #$num" ;;
-            esac
-        fi
-    fi
-
     [ "$changed" = 1 ] || return 0
-    jq -n --arg i "$issue" --argjson l "$logged" --argjson s "$issued" \
-        '{issue: (if $i == "" then null else ($i | tonumber) end), logged: $l, issued: $s}' > "$f.tmp" \
-        && mv "$f.tmp" "$f"
+    jq -n --argjson l "$logged" '{logged: $l}' > "$f.tmp" && mv "$f.tmp" "$f"
     return 0
 }
 
@@ -8014,6 +7953,11 @@ compose_prompt_template() {
                 printf '\n\n---\n\n'
                 autopilot_requester_bot_section
             fi
+            # 外部账号的内容（GitHub#391）：保护开着才加；关着时托管提示词和以前逐字节一样
+            if outsider_guard_on; then
+                printf '\n\n---\n\n'
+                outsider_prompt_section "$name"
+            fi
         fi
     } > "$out"
     log "prompt: base=$(basename "$base_tpl") + 增量=$(basename "$overlay")（合成 $(wc -l < "$out") 行）" 2>/dev/null || true
@@ -8055,6 +7999,13 @@ REQUESTER_BOT_NOTIFY_SCRIPT="$_LIB_DIR/notify-requester-bot.sh"
 _MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-requester-bot.sh"
 [ ! -f "$_MANAGED_REQUESTER_BOT" ] || REQUESTER_BOT_NOTIFY_SCRIPT="$_MANAGED_REQUESTER_BOT"
 REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
+
+# ── 托管条目读正文和评论的命令（GitHub#391，写进「外部账号的内容」规则段）──
+# 同上走长期入口；配置路径由这里给定
+OUTSIDER_READ_SCRIPT="$_LIB_DIR/outsider-read.sh"
+_MANAGED_OUTSIDER_READ="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/outsider-read.sh"
+[ ! -f "$_MANAGED_OUTSIDER_READ" ] || OUTSIDER_READ_SCRIPT="$_MANAGED_OUTSIDER_READ"
+OUTSIDER_READ_CMD="bash '$OUTSIDER_READ_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
@@ -8253,6 +8204,9 @@ agent_session_id_set() {   # <num> <agent> <role> <id>
     f="$(agent_session_file "$1" "$2" "$3")"
     mkdir -p "$AGENT_SESSION_DIR"
     printf '%s\n' "$4" > "$f"
+    # 这条全新会话是在外部内容保护开着时起的（GitHub#391）：记进 .guarded，之后的派工才能续接它。
+    # 只有 agent_session_plan 起全新会话时设这个标记（codex 的 id 起完才回捞，也经过这里）
+    if [ "${OUTSIDER_SESSION_MARK:-}" = 1 ]; then outsider_session_mark "$1" "$2" "$3" "$4"; fi
 }
 
 agent_session_id_forget() {   # <num> <agent> <role>
@@ -8265,9 +8219,10 @@ agent_session_id_forget() {   # <num> <agent> <role>
 #   <num>.<agent>.<role>.retired  已知属于这个角色、但已被换掉的 id（只增不删）
 #   <num>.<agent>.preexisting     本功能第一次管这条活时，cwd 里已经有的 id（可收养白名单）
 #   <num>.<agent>.unresolved      回捞失败的启动记录，仅供排查
+#   <num>.<agent>.<role>.guarded  在外部内容保护开着时起的 id（GitHub#391，只增不删）
 agent_session_is_aux_file() {   # <path>
     case "$1" in
-        *.retired|*.preexisting|*.unresolved) return 0 ;;
+        *.retired|*.preexisting|*.unresolved|*.guarded) return 0 ;;
     esac
     return 1
 }
@@ -8451,6 +8406,7 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
     AGENT_LAUNCH_KIND=""
     WORKER_SESSION_ID=""
     AGENT_SESSION_PRELAUNCH_IDS=""
+    OUTSIDER_SESSION_MARK=""
 
     # 每次起会话（新建 / 续接 / 续接失败重建，三个派工脚本全部经过这里）之前先补目录信任
     agent_prepare_trust "$cwd"
@@ -8460,6 +8416,21 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
         agent_session_preexisting_snapshot "$num" "$cwd"
     fi
 
+    # 外部内容保护开着的托管条目（GitHub#391）：旧会话里可能有没剥过的外人原文。这个角色现在登记的会话
+    # 不是在保护开着时起的（之前是普通条目、或配置后来才打开）就不续接、不收养，作废了起全新的；
+    # 是在保护下起的照旧续接
+    if outsider_session_guard_needed; then
+        id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
+        if [ "$force_new" != 1 ] && [ -n "$id" ] && outsider_session_is_guarded "$num" "$WORKER_AGENT" "$role" "$id" \
+           && agent_session_exists "$cwd" "$id"; then
+            WORKER_SESSION_ID="$id"
+            AGENT_LAUNCH_KIND="resume"
+            return 0
+        fi
+        [ -z "$id" ] || log "外部内容保护：#$num 的 $role 会话不是在保护开着时起的（或已不在），起一条全新的" 2>/dev/null || true
+        force_new=1
+        OUTSIDER_SESSION_MARK=1
+    fi
     if [ "$force_new" != 1 ]; then
         id="$(agent_session_id_get "$num" "$WORKER_AGENT" "$role")"
         if [ -n "$id" ]; then

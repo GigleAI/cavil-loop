@@ -27,6 +27,9 @@ export type ShortcutId =
   | 'labels'
   | 'milestone'
   | 'reply'
+  | 'closeIssue'
+  | 'handBack'
+  | 'autopilot'
   | 'hide'
   | 'send'
   | 'preview'
@@ -69,6 +72,12 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
   { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
+  // GitHub#413 / #433: the three buttons next to "发送". They take ⌘⇧ (Ctrl+Shift), so they also act
+  // from the reply box (a ⌘ key is never typing, see `resolve`) and are forwarded by the discussion
+  // frame (FRAME_FORWARD); the letters are the maintainer's choice in #433.
+  { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x', mod: true, shift: true }], label: '关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）' },
+  { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: '交给 agent（回复框、讨论区里也能按；回复框里的字不发出）' },
+  { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按）' },
   { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '收起面板（回复框里有没发出的文字时不收起）' },
   { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
   { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
@@ -77,7 +86,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
   { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
   { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
-  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 加入看板）' },
+  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 托管 / 加入看板）' },
   { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: '取消（新建 issue 里有字时不取消）' },
   { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: '上一个' },
   { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: '下一个' },
@@ -125,7 +134,8 @@ export function matches(spec: KeySpec, e: KeyLike): boolean {
  * takes every key and only its own shortcuts act; while typing, single keys are typing
  * (only the reply box's own keys and the ⌘ / Ctrl shortcuts act — judged on the key that
  * matched, not on the shortcut: GitHub#372 gave 新建 both C and ⌘N, and a C typed into a
- * field must stay a letter); otherwise the global,
+ * field must stay a letter; in the reply box the detail panel's ⌘ keys act too, GitHub#433 —
+ * in any other field they do not, a key in the search box must not close the item); otherwise the global,
  * detail-panel and graph keys (a graph key has no handler unless the graph is showing).
  * On the settings page (GitHub#369) its Esc takes the place of the board's keys, also while
  * typing in one of its fields (the first Esc leaves the field, see SettingsView).
@@ -136,7 +146,8 @@ export function resolve(e: KeyLike, ctx: KeyContext): ShortcutId | null {
   const allowed = (s: Shortcut, k: KeySpec): boolean => {
     if (ctx.layer !== 'none') return s.scope === ctx.layer;
     const modGlobal = s.scope === 'global' && Boolean(k.mod);
-    if (ctx.typing === 'reply') return s.scope === 'reply' || modGlobal;
+    // GitHub#433: a ⌘ key of the detail panel also acts from the reply box (the box belongs to the panel)
+    if (ctx.typing === 'reply') return s.scope === 'reply' || modGlobal || (s.scope === 'detail' && Boolean(k.mod));
     const settings = ctx.page === 'settings';
     if (ctx.typing === 'other') return modGlobal || (settings && s.scope === 'settings');
     if (settings) return s.scope === 'global' || s.scope === 'settings';
@@ -179,3 +190,16 @@ export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
   const s = SHORTCUTS.find((x) => x.id === id)!;
   return s.keys.map((k) => keyParts(k, mac).join(mac ? '' : '+')).join(' / ');
 }
+
+/**
+ * The shortcuts the isolated discussion frame passes on to the window (GitHub#322 / #433): go to the
+ * reply box, and the three buttons next to "发送". The frame script carries their keys (FRAME_FORWARD,
+ * built from this table into its text), and a forwarded key may only end in one of these ids
+ * (keyboard.ts, frameKey) — every other key stays inside the frame (PR #171).
+ */
+export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot'];
+
+/** the keys of FRAME_IDS, as the frame script compares them: a lower-case single key, ⌘/Ctrl, Shift */
+export const FRAME_FORWARD: readonly { key: string; mod: boolean; shift: boolean }[] = FRAME_IDS.flatMap((id) =>
+  SHORTCUTS.find((s) => s.id === id)!.keys.map((k) => ({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift) })),
+);

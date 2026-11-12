@@ -25,6 +25,7 @@
 | 用量上限的暂停记录，按 agent 和账号目录（GitHub#341） | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |
 | 单个项目的用量上限进度（GitHub#341） | `$STATE_DIR/usage-limit.json` | daemon，条目离开 `doing/agent` 时 | 不值得备份；转人工做到一半时别删（可能多出第二条留言） |
 | 轮询运行记录（每轮一条、快照；GitHub#344） | `$STATE_DIR/runlog/`（`rounds/`、`snapshots/`、`inflight/`、`acct/`），以及没走到「配置加载完」的轮询留在 `~/.local/state/cavil-loop/runlog/entry/` 的入口记录 | 轮询自己：只留最近 1000 条记录、20 份快照、64 份进度文件、200 条入口记录；任何时候手动删都安全 | 不值得备份 —— 只是诊断信息，没有任何逻辑读它 |
+| 托管条目上外部账号内容的记录（GitHub#391） | `$STATE_DIR/outsider/<条目编号>/`（每条外部内容的每个查到过的版本一个文件，只存指纹不存原文），预筛结论 `$STATE_DIR/outsider-screen/` | 条目收尾清理（`cleanup-issue.sh`）时删本条目的目录；预筛结论没人清 | 不值得备份；**托管条目还开着时别删**：删了，已删掉的外部评论就不再拦合并 |
 | 合并后复盘的全机锁 | `~/.local/state/cavil-loop/retrospective.lock`（每台机器一份，所有项目、所有部署版本共用；GitHub#165） | 没人；空文件，进程退出锁就释放 | 不值得备份 —— 没有复盘在跑时删了也安全 |
 | 内置价目里没有的模型、自动联网补来的单价 | `~/.cache/cavil-loop/fetched-prices.json`（另有 `unpriced/` 缺价标记、`price-fetch-state.json` 重试状态） | 没人；模型补上价后标记自动删 | 不值得备份 —— 删了只是下次再缺价时重新抓 |
 
