@@ -14,6 +14,10 @@ export function ConfirmDialog({
   busy,
   disabled,
   dirty,
+  actions,
+  footnote,
+  confirmKey,
+  wide,
   onConfirm,
   onCancel,
 }: {
@@ -25,6 +29,17 @@ export function ConfirmDialog({
   disabled?: boolean;
   /** has text the user typed that "cancel" would throw away */
   dirty?: boolean;
+  /**
+   * GitHub#450: more buttons in the action row, left of the confirm button (the new-issue dialog's
+   * 交给 agent / 托管). Given, the row is laid out like the detail panel's: 取消 on the left, the rest on the right.
+   */
+  actions?: ReactNode;
+  /** a line under the action row (why one of `actions` is greyed) */
+  footnote?: ReactNode;
+  /** the confirm button carries its key (⌘↩), the way the detail panel's buttons do */
+  confirmKey?: boolean;
+  /** a wider dialog (GitHub#450: four buttons in one row) */
+  wide?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -50,7 +65,7 @@ export function ConfirmDialog({
   return (
     <div className="modal-back" data-testid="confirm-dialog" onClick={busy ? undefined : onCancel}>
       <div
-        className="modal"
+        className={wide ? 'modal wide' : 'modal'}
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
@@ -67,14 +82,18 @@ export function ConfirmDialog({
             有没提交的内容，按 Esc 不会丢掉；点「取消」才会丢掉。
           </div>
         )}
-        <div className="row end">
+        <div className={actions ? 'row dialog-actions' : 'row end'}>
           <button data-testid="confirm-cancel" onClick={onCancel} disabled={busy} title="取消（Esc）">
             取消
           </button>
+          {actions && <div className="spacer" />}
+          {actions}
           <button data-testid="confirm-ok" className={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={busy || disabled} title={`${confirmLabel}（${keyText('confirm')}）`}>
             {busy ? '正在提交…' : confirmLabel}
+            {confirmKey && !busy && <kbd>{keyText('confirm')}</kbd>}
           </button>
         </div>
+        {footnote}
       </div>
     </div>
   );

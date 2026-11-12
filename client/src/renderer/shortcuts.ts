@@ -45,6 +45,8 @@ export type ShortcutId =
   | 'leaveReply'
   | 'confirm'
   | 'cancel'
+  | 'newIssueAgent'
+  | 'newIssueAutopilot'
   | 'pickerUp'
   | 'pickerDown'
   | 'pickerToggle'
@@ -115,6 +117,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
   { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 托管 / 加入看板）' },
   { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: '取消（新建 issue 里有字时不取消）' },
+  // GitHub#450: the new-issue dialog's two buttons, on the detail panel's keys for 交给 agent / 托管 (the
+  // detail panel cannot hear them while a dialog is on top). Only that dialog handles them: in any other
+  // dialog the key is left to the browser.
+  { id: 'newIssueAgent', scope: 'dialog', keys: [{ key: 'z', mod: true, shift: true }], label: '新建 issue：交给 agent（加上派工标签并创建；标题、正文里也能按）' },
+  { id: 'newIssueAutopilot', scope: 'dialog', keys: [{ key: 'c', mod: true, shift: true }], label: '新建 issue：托管（设置里开着确认时先弹确认框；标题、正文里也能按）' },
   { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: '上一个' },
   { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: '下一个' },
   { id: 'pickerToggle', scope: 'picker', keys: [{ key: 'Enter' }], label: '加上 / 去掉选中的那个' },

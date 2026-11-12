@@ -431,6 +431,11 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 /* ---- dialogs ---- */
 .modal-back { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .modal { width: 520px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow-lg); }
+.modal.wide { width: 600px; }
+/* GitHub#450: a dialog with more buttons than 取消 / 确认 (新建 issue): 取消 on the left, the rest on the right, in one row */
+.dialog-actions { flex-wrap: nowrap; margin-top: 14px; }
+.dialog-actions .quick-actions { flex-wrap: nowrap; }
+.dialog-footnote { text-align: right; }
 .modal h3 { margin: 0 0 12px; font-size: 16px; }
 .modal textarea { width: 100%; min-height: 80px; font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); resize: vertical; }
 .form { display: flex; flex-direction: column; gap: 10px; }
