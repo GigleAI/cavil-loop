@@ -236,7 +236,11 @@ runlog_begin() {
         set +e
         _runlog_inflight_write || exit 0
         # 记账文件只在这里占一次名额，之后只追加；没建成就整轮不记账（计数显示「未知」）。
-        _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID" "" || true
+        # 第一行是这一轮的标识；紧接着用追加的办法写一行 a——收尾时两行都在才认这份记账，
+        # 所以「这台机器上追加根本写不进去」（见 _runlog_acct）也会显示成未知，而不是 0 次调用。
+        if _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID" "h $RUNLOG_ID"; then
+            _runlog_acct a
+        fi
         rm -f "$RUNLOG_ENTRY_DIR/$RUNLOG_ID.json"
         _runlog_hook begin
     ) >/dev/null 2>&1 || true
@@ -245,26 +249,41 @@ runlog_begin() {
     gh() {
         local _runlog_rc=0
         command gh "$@" || _runlog_rc=$?
+        # 轻量检查那一次由 runlog_probe_note 统一记（它知道 HTTP 状态），这里不重复记。
+        if [ -n "${RUNLOG_NO_TALLY:-}" ]; then return "$_runlog_rc"; fi
         if [ "$_runlog_rc" = 0 ]; then _runlog_acct g0; else _runlog_acct g1; fi
         return "$_runlog_rc"
     }
     return 0
 }
 
-# 往本轮记账文件追加一行。文件不在（没建成 / 被别的轮次腾位删了）就不记——绝不在这里重建，
-# 重建等于绕过容量协议。超过上限不再追加，收尾时标「计数已封顶」。
+# 往本轮记账文件追加一行。超过上限不再追加，收尾时标「计数已封顶」。
+#
+# **绝不能把被删掉的记账文件重新建出来**（PR #390 复审第 1 轮）：`[ -f ] && printf >> 文件` 在检查
+# 和打开之间有空档，别的轮次腾位删掉它之后，`>>` 会建出一个只有后半段的新文件——收尾看到文件
+# 在，就把残缺的计数当成完整的，还绕过了容量协议。所以先**只读打开**（文件不在就失败，不会新建），
+# 拿到的描述符就是那一份文件本身；再经 /proc/self/fd 往这同一份文件追加。文件中途被删，追加的
+# 内容跟着那份已删除的文件走，路径不会再出现，收尾读不到 → 「未知」。
+# 没有 /proc 的系统（macOS）追加写不进去，开头那行 a 也就不在，整轮计数显示「未知」。
 _runlog_acct() {   # <一行>
     [ "$RUNLOG_STAGE" = round ] || return 0
-    local f="$RUNLOG_DIR/acct/$RUNLOG_ID" c
-    { [ -f "$f" ] && c=$(<"$f"); } 2>/dev/null || return 0
-    [ "${#c}" -lt "$RUNLOG_ACCT_MAX_BYTES" ] || return 0
-    printf '%s\n' "$1" >> "$f" 2>/dev/null || true
+    local f="$RUNLOG_DIR/acct/$RUNLOG_ID" c fd
+    { exec {fd}<"$f"; } 2>/dev/null || return 0
+    { c=$(<"/proc/self/fd/$fd"); } 2>/dev/null || c=""
+    _runlog_hook acct-append
+    if [ "${#c}" -lt "$RUNLOG_ACCT_MAX_BYTES" ]; then
+        { printf '%s\n' "$1" >> "/proc/self/fd/$fd"; } 2>/dev/null || true
+    fi
+    { exec {fd}<&-; } 2>/dev/null || true
     return 0
 }
 
 # 轻量检查（_lib.sh 的 pace_probe）拿到结果后调。它在节奏闸门的子 shell 里跑，改变量传不出来，
-# 所以写进记账文件。<经 timeout 转手> = 1 时那次请求绕过了上面的 gh 函数，在这里补记一次调用。
-runlog_probe_note() {   # <退出码> <HTTP 状态或空> <经 timeout 转手: 1/0>
+# 所以写进记账文件。这一次请求的「调用 / 失败」也只在这里记：不管它经没经 timeout 转手，口径都是
+# 「回了 200 或 304 算成功，其余算失败」——真 gh 对 304 也以 1 退出，按退出码记的话，装没装 timeout
+# 会让同一个 304 一边算失败一边算成功（PR #390 复审第 1 轮）。pace_probe 用 RUNLOG_NO_TALLY=1
+# 调那一次，上面的 gh 函数见到它就不记。
+runlog_probe_note() {   # <退出码> <HTTP 状态或空>
     [ "$RUNLOG_STAGE" = round ] || return 0
     local cls
     if [ "$1" = 124 ] || [ "$1" = 137 ]; then cls=timeout
@@ -276,9 +295,7 @@ runlog_probe_note() {   # <退出码> <HTTP 状态或空> <经 timeout 转手: 1
             *) cls=unreadable ;;
         esac
     fi
-    if [ "${3:-0}" = 1 ]; then
-        case "$cls" in 200|304) _runlog_acct g0 ;; *) _runlog_acct g1 ;; esac
-    fi
+    case "$cls" in 200|304) _runlog_acct g0 ;; *) _runlog_acct g1 ;; esac
     _runlog_acct "p $cls"
     return 0
 }
@@ -405,7 +422,8 @@ _runlog_finish() {   # <退出码>
 
     # 记账：文件不在 = 未知（null），绝不记成 0。
     acct="$RUNLOG_DIR/acct/$RUNLOG_ID"
-    if [ -f "$acct" ]; then
+    # 文件在还不够：第一行得是这一轮的标识，开头追加的那行 a 也得在。
+    if [ -f "$acct" ] && [ "$(head -n 1 "$acct")" = "h $RUNLOG_ID" ] && grep -qx 'a' "$acct"; then
         calls=$(grep -c '^g' "$acct"); calls="${calls:-0}"
         failed=$(grep -c '^g1' "$acct"); failed="${failed:-0}"
         probe=$(sed -n 's/^p //p' "$acct" | tail -n 1)

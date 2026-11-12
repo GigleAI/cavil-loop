@@ -233,6 +233,35 @@ echo 502 > "$GD/probe.mode"
 poll
 chk "检查回 502 → 记下状态码，出快照" "$(last_round | jq -r '"\(.probe)/\(.snapshot.state)"')" "http-502/written"
 
+# 同一个响应，本机有没有 timeout 这个命令，记出来的调用数 / 失败数 / 检查结果必须一样
+# （PR #390 复审第 1 轮：真 gh 对 304 以 1 退出，原来不经 timeout 时按退出码记成失败、经 timeout 时记成成功）
+mkdir -p "$SANDBOX/nobin"
+for d in /usr/local/bin /usr/bin /bin; do
+    for f in "$d"/*; do
+        b=${f##*/}
+        [ "$b" != timeout ] && [ ! -e "$SANDBOX/nobin/$b" ] && ln -s "$f" "$SANDBOX/nobin/$b"
+    done
+done 2>/dev/null
+probe_cases() {   # <项目名> <PATH 那一行>：依次回 200 / 304 / 读取失败 / 502，每种记下那一轮的结果
+    mkproj "$1" 'POLL_BACKOFF_LADDER="0:300"' 'POLL_IDLE_PROBE=true' "$2"
+    local m before i out=""
+    poll
+    for m in 200 304 dead 502; do
+        echo "$m" > "$GD/probe.mode"; before=$(calls_n)
+        for i in 1 2 3; do poll; [ -z "$(last_round | jq -r .probe)" ] || break; done
+        # 调用数减去「别的请求」（假 GitHub 收到的总数里除掉检查那一次）= 检查这一次记了几次调用
+        out+="$m:$(last_round | jq -r --argjson other "$(( $(calls_n) - before - 1 ))" '"\(.probe) 检查记了 \(.gh_calls - $other) 次调用 失败 \(.gh_failed)"') | "
+    done
+    printf '%s' "$out"
+}
+WITH_T=$(probe_cases p3w "PATH=\"$SANDBOX/bin:\$PATH\"")
+chk "有 timeout 时确实经它转手（对照有效）" "$(env PATH="$SANDBOX/bin:$PATH" bash -c 'command -v timeout >/dev/null && echo yes')" "yes"
+NO_T=$(probe_cases p3n "PATH=\"$SANDBOX/bin:$SANDBOX/nobin\"")
+chk "没有 timeout 的那个 PATH 里确实找不到它" "$(env PATH="$SANDBOX/bin:$SANDBOX/nobin" bash -c 'command -v timeout >/dev/null && echo yes || echo no')" "no"
+chk "四种响应都记到了，304 算成功、读取失败和 502 算失败，每次检查恰好记一次调用" "$WITH_T" \
+    "200:200 检查记了 1 次调用 失败 0 | 304:304 检查记了 1 次调用 失败 0 | dead:unreadable 检查记了 1 次调用 失败 1 | 502:http-502 检查记了 1 次调用 失败 1 | "
+chk "有没有 timeout，记出来的一模一样" "$NO_T" "$WITH_T"
+
 # ═════════ 4. 并发：每轮一条；慢步骤 / 卡死 ═════════
 section "【4】并发：第一轮还在跑时第二轮跳过，各一条记录"
 mkproj p4 'POLL_RUN_LOG_SLOW_SECS=1'
@@ -420,6 +449,28 @@ poll; chk "记账文件中途没了的一轮退出码 0" "$?" "0"
 chk "调用数记成未知（null），不是 0" "$(last_round | jq -r '"\(.outcome)/\(.gh_calls)/\(.gh_failed)"')" "ok/null/null"
 chk "那一轮其实发了请求" "$([ "$(calls_n)" -gt 0 ] && echo yes)" "yes"
 chk "查看命令显示「未知」" "$(history | grep -c '未知')" "1"
+
+# 记账文件在「已打开、还没追加」的空档里被删：追加不能把它重新建出来，计数仍是「未知」
+# （PR #390 复审第 1 轮：原来先查文件在不在、再用 >> 追加，被删之后 >> 会建出只有后半段的新文件）
+mkproj p7b
+mkfifo "$W/hold"
+# 之后每一次 GitHub 读请求到达时，记一笔「此刻记账目录里有几个文件、记账文件删了没有」
+for k in issues_1 issues_2 issues_3 pulls_1 pulls_2 pulls_3; do
+    printf '#!/usr/bin/env bash\necho "$(find "%s/acct" -mindepth 1 2>/dev/null | wc -l | tr -d " ") $([ -e "%s/deleted" ] && echo after || echo before)" >> "%s/samples"\n' "$RL" "$W" "$W" > "$GD/hook_$k"
+    chmod +x "$GD/hook_$k"
+done
+poll CAVIL_RUNLOG_TEST_HOLD="acct-append:$W/hold" & P1=$!
+wait_for "$W/hold.at.*" || echo "  （没等到停在追加之前）"
+chk "停在「已打开、还没追加」时记账文件还在" "$(count "$RL/acct")" "1"
+find "$RL/acct" -type f -delete; : > "$W/deleted"
+( while :; do echo go; done > "$W/hold" ) 2>/dev/null & FEED=$!     # 之后每一次追加都立刻放行
+wait "$P1"; rc=$?
+kill "$FEED" 2>/dev/null; wait "$FEED" 2>/dev/null
+chk "这一轮照常跑完，假 GitHub 确实收到了请求" "$rc/$([ "$(calls_n)" -gt 0 ] && echo yes)" "0/yes"
+chk "删掉之后还有请求发生（空档之后确实又追加过）" "$([ "$(grep -c ' after$' "$W/samples" 2>/dev/null)" -gt 0 ] && echo yes)" "yes"
+chk "删掉之后记账文件一次都没被重新建出来" "$(grep ' after$' "$W/samples" | awk '$1 != 0' | wc -l | tr -d ' ')" "0"
+chk "调用数是未知（null），没有把后半段当成完整计数" "$(last_round | jq -r '"\(.outcome)/\(.gh_calls)/\(.gh_failed)/\(.gh_capped)"')" "ok/null/null/0"
+chk "收尾后记账目录里没有多出来的文件" "$(count "$RL/acct")" "0"
 
 # ═════════ 8. 快照只放校验过的值 ═════════
 section "【8】快照只放校验过的值：未知字段、非法指纹、内联令牌都不进快照"

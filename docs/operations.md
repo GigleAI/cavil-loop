@@ -1921,8 +1921,10 @@ Things to know when reading it:
   with the step it stopped in, after checking the process list. When the process list cannot be trusted the
   command says "判断不了" (cannot tell) instead of guessing. Only the 64 most recent progress files are kept.
 - **GitHub calls** are the ones the poll process itself made (its subshells and the idle probe included), not
-  those of dispatch scripts or Python helpers. `未知` (unknown) means the round's tally file was gone — never
-  read it as zero; a trailing `+` means the tally hit its size cap.
+  those of dispatch scripts or Python helpers. A call counts as failed when `gh` exits non-zero; the idle probe
+  is the one exception — a `200` or `304` answer is a success there (the real `gh` exits 1 on `304`). `未知`
+  (unknown) means the round's tally file was gone — never read it as zero; a trailing `+` means the tally hit
+  its size cap. On a system without `/proc` (macOS) the tally cannot be appended to and always shows `未知`.
 - **If the entry script itself never ran** (a missing file, exit 127), nothing can be written here. The command
   then prints the `journalctl` line to look at instead.
 - Snapshots hold checked fields only: script name, line number, function name, step name, exit code, a few
