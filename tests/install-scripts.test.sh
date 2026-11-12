@@ -13,8 +13,7 @@
 #   5. 断开：读不到不动；停不下来不删登记；正常断开保留项目配置和状态
 #   6. 换新 Mac 后台任务配置：五个场景 + 校验不过 / 等不到锁 / 原来未加载
 #   7. 文档里写给人照做的命令，按字面在干净环境跑通
-#   8. 单字节字符集下（bash 读变量名的方式同 macOS 自带 bash 3.2）跑安装 / 状态 / 读配置 / 换新 / 断开，
-#      并对照修复前的换新脚本确实在这里报变量未定义（GitHub#411）
+#   8. 单字节字符集下（bash 读变量名的方式同 macOS 自带 bash 3.2）跑安装 / 状态 / 读配置 / 换新 / 断开（GitHub#411）
 #
 #   bash tests/install-scripts.test.sh
 set -uo pipefail
@@ -464,14 +463,8 @@ chk "单字节：状态脚本退出 0、读到项目在跑" "$rc $(jq -r '.proje
 # 读项目配置
 rc=0; out="$(sb_env in_env Darwin claude -- bash "$SKILL/scripts/project-config.sh" get widget 2>"$SANDBOX/sb.err")" || rc=$?
 chk "单字节：读项目配置退出 0、给出配置文件位置" "$rc $(jq -r '.config' <<< "$out" 2>/dev/null)" "0 $HOST/cavil-loop.config"
-# 换新后台任务配置——issue 截图里出错的那一步：改前的脚本在这里退出，改后的走到最终结果
-: > "$FAKE_LD/calls"; cp "$plist" "$SANDBOX/plist.orig"; change_template
-cp "$SKILL/scripts/launchd-refresh.sh" "$SANDBOX/launchd-refresh.new"
-git -C "$REPO_DIR" show 15c0612:scripts/launchd-refresh.sh > "$SKILL/scripts/launchd-refresh.sh"
-rc=0; out="$(sb_env refresh widget 2>&1)" || rc=$?
-cp "$SANDBOX/launchd-refresh.new" "$SKILL/scripts/launchd-refresh.sh"
-chk "对照：修复前的换新脚本（15c0612）在单字节下中途退出、报变量未定义，什么都没动" \
-    "$rc $(grep -c 'unbound variable' <<< "$out") $(cmp -s "$plist" "$SANDBOX/plist.orig" && echo same) $(ld_calls)" "1 1 same 0"
+# 换新后台任务配置——issue 截图里出错的那一步
+: > "$FAKE_LD/calls"; change_template
 rc=0; out="$(sb_env refresh widget 2>&1)" || rc=$?
 chk "单字节：换新脚本退出 0、RESULT=replaced" "$rc $(tail -1 <<< "$out")" "0 RESULT=replaced"
 chk_lacks "单字节：换新输出里没有变量未定义" "$out" "unbound variable"

@@ -106,7 +106,7 @@ class Scanner:
                     i = self.code(i + 2, b")")
                     continue
                 if self.d[i + 1:i + 2] == b"{":
-                    i = self.brace(i + 2)
+                    i = self.brace(i + 2, True)
                     continue
                 i = self._var(i)
                 continue
@@ -130,7 +130,7 @@ class Scanner:
                     i = self.code(i + 2, b")")
                     continue
                 if self.d[i + 1:i + 2] == b"{":
-                    i = self.brace(i + 2)
+                    i = self.brace(i + 2, True)
                     continue
                 i = self._var(i)
                 continue
@@ -140,8 +140,28 @@ class Scanner:
             i += 1
         return i
 
-    def brace(self, i):
-        """Inside ${...}, from just after '{'. Returns index after the matching '}'."""
+    def brace(self, i, in_dq):
+        """Inside ${...}, from just after '{'. Returns index after the matching '}'.
+
+        Whether a single quote inside the braces quotes depends on where the expansion sits
+        (measured on bash 5.2): outside double quotes it always quotes; inside double quotes
+        (or an unquoted here-doc body) it is an ordinary character after the default-value
+        operators (- = ? + with or without ':'), so "${x:+'$y'}" still expands $y, while after
+        the pattern operators (# % / ^ ,) it quotes as usual.
+        """
+        j = i
+        if self.d[j:j + 1] in (b"!", b"#") and self.d[j + 1:j + 2] not in (b"}", b""):
+            j += 1                                  # ${!name} / ${#name}
+        m = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-]").match(self.d, j)
+        if m:
+            j = m.end()
+        if self.d[j:j + 1] == b"[":                 # ${a[...]}
+            k = self.d.find(b"]", j)
+            j = self.n if k < 0 else k + 1
+        op = self.d[j:j + 2]
+        default_op = op[:1] in (b"-", b"=", b"?", b"+") or op in (b":-", b":=", b":?", b":+")
+        squote_literal = in_dq and default_op
+        i = j
         while i < self.n:
             c = self.d[i]
             if c == 0x5C:
@@ -152,7 +172,7 @@ class Scanner:
             if c == 0x22:
                 i = self.dquote(i + 1)
                 continue
-            if c == 0x27:
+            if c == 0x27 and not squote_literal:
                 k = self.d.find(b"'", i + 1)
                 i = self.n if k < 0 else k + 1
                 continue
@@ -161,7 +181,7 @@ class Scanner:
                     i = self.code(i + 2, b")")
                     continue
                 if self.d[i + 1:i + 2] == b"{":
-                    i = self.brace(i + 2)
+                    i = self.brace(i + 2, in_dq)
                     continue
                 i = self._var(i)
                 continue
@@ -232,7 +252,7 @@ class Scanner:
                 elif nx == b"(":
                     i = self.code(i + 2, b")")
                 elif nx == b"{":
-                    i = self.brace(i + 2)
+                    i = self.brace(i + 2, False)
                 else:
                     i = self._var(i)
                 at_word_start = False
