@@ -657,6 +657,40 @@ table.daemon-projects.remote-old { opacity: 0.55; }
 .connect-agent { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .modal.connect .row input.title-box { flex: 1; min-width: 0; }
 .modal.connect .daemon-output { max-height: 280px; }
+/* a project's "配置" (GitHub#388) */
+.modal.pcfg { width: 780px; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.pcfg-head { padding: 16px 20px 10px; border-bottom: 1px solid var(--border-muted); }
+.modal.pcfg .pcfg-head h3 { margin: 0 0 4px; }
+.pcfg-intro { margin-top: 6px; }
+.pcfg-body { padding: 4px 20px 12px; overflow: auto; min-height: 0; flex: 1; }
+.pcfg-form { border: 0; margin: 0; padding: 0; min-width: 0; }
+.pcfg-group { font-size: 12px; font-weight: 600; color: var(--muted); margin: 14px 0 2px; padding-bottom: 4px; border-bottom: 1px solid var(--border-muted); }
+.pcfg-note { margin: 6px 0; }
+.pcfg-row { display: flex; gap: 16px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border-muted); }
+.pcfg-row .what { flex: 1; min-width: 0; }
+.pcfg-row .ctl { flex: 0 0 250px; display: flex; flex-direction: column; gap: 3px; align-items: stretch; min-width: 0; }
+.pcfg-row .ctl select, .pcfg-row .ctl input.t { width: 100%; box-sizing: border-box; }
+.pcfg-row .ctl input.n { width: 90px; }
+.pcfg-num { display: flex; align-items: center; gap: 6px; }
+.pcfg-row.changed { background: var(--warn-bg); margin: 0 -20px; padding: 8px 20px; box-shadow: inset 3px 0 0 var(--warn-border); }
+.pcfg-row.bad { background: var(--err-bg); margin: 0 -20px; padding: 8px 20px; box-shadow: inset 3px 0 0 var(--err-fg); }
+.pcfg-was, .pcfg-pending { font-size: 12px; color: var(--warn-icon); }
+.pcfg-ro { font: 12px var(--mono); background: var(--canvas); border: 1px solid var(--border-muted); border-radius: 6px; padding: 4px 8px; overflow-wrap: anywhere; }
+.pcfg-pill { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); margin-right: 6px; }
+button.pcfg-switch { align-self: flex-start; border: none; background: transparent; padding: 0; gap: 8px; min-height: 22px; }
+button.pcfg-switch:hover:not(:disabled) { background: transparent; }
+.pcfg-switch i { width: 34px; height: 20px; border-radius: 10px; background: var(--border); position: relative; display: inline-block; }
+.pcfg-switch i::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: left 0.1s; }
+.pcfg-switch.on i { background: var(--primary-bg); }
+.pcfg-switch.on i::after { left: 16px; }
+.pcfg-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border-muted); background: var(--canvas); }
+.pcfg-foot .grow { flex: 1; }
+.pcfg-kept { padding: 6px 20px 0; }
+.modal.pcfg .banner { margin: 10px 0 4px; }
+.modal.pcfg .daemon-command { margin-top: 4px; }
+table.pcfg-changes { border-collapse: collapse; width: 100%; font-size: 13px; margin: 6px 0; }
+table.pcfg-changes th { text-align: left; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border-muted); padding: 5px 8px; }
+table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5px 8px; }
 
 /* ---- GitHub#350: dependency graph ---- */
 .graph-page { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 16px 16px; gap: 8px; }

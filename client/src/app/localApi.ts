@@ -75,6 +75,9 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     remoteLog: (id, key) => backend.call('remoteLog', { id: String(id), key: String(key) }),
     remoteUnpair: (id, localOnly) => backend.call('remoteUnpair', { id: String(id), localOnly: localOnly === true }),
     remoteForget: (id) => backend.call('remoteForget', { id: String(id) }),
+    daemonConfigGet: (key) => backend.call('daemonConfigGet', { key: String(key) }),
+    daemonConfigSet: (key, rev, values) =>
+      backend.call('daemonConfigSet', { key: String(key), rev: String(rev), values: Object.fromEntries(Object.entries(values ?? {}).map(([k, v]) => [String(k), String(v)])) }),
     daemonConnectInfo: (repo) => backend.call('daemonConnectInfo', { repo: String(repo) }),
     daemonPrecheck: (agent) => backend.call('daemonPrecheck', { agent: String(agent) }),
     daemonCheckDir: (repo, dir) => backend.call('daemonCheckDir', { repo: String(repo), dir: String(dir) }),

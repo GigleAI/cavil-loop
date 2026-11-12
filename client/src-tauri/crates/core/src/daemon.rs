@@ -148,7 +148,7 @@ impl Out {
     /// The outcome of a GitHub#313 script that ends with `RESULT=<word>`. No such line (killed,
     /// timed out, failed half-way) is "unconfirmed": what it changed is not known, so it is never
     /// mapped onto one of the script's own words — "failed" there means "restored", which nobody checked.
-    fn outcome(&self) -> (String, String) {
+    pub(crate) fn outcome(&self) -> (String, String) {
         match self.result_word() {
             Some(w) => (w, self.text()),
             None => (
@@ -166,7 +166,7 @@ impl Out {
     }
 
     /// the `RESULT=<word>` last line the GitHub#313 scripts print
-    fn result_word(&self) -> Option<String> {
+    pub(crate) fn result_word(&self) -> Option<String> {
         let line = self.stdout.lines().rev().find(|l| !l.trim().is_empty())?;
         let w = line.trim().strip_prefix("RESULT=")?;
         w.bytes().all(|b| b.is_ascii_lowercase() || b == b'_').then(|| w.to_string()).filter(|w| !w.is_empty())
@@ -310,6 +310,11 @@ impl Daemon {
     }
 
     pub(crate) async fn run(&self, path: &str, program: &str, args: &[&str], limit: Duration) -> Out {
+        self.run_input(path, program, args, None, limit).await
+    }
+
+    /// `input`: what the child reads on standard input (None: nothing, /dev/null)
+    pub(crate) async fn run_input(&self, path: &str, program: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Out {
         let home = match self.home() {
             Ok(h) => h.to_path_buf(),
             Err(e) => return Out { code: None, stdout: String::new(), stderr: e },
@@ -318,9 +323,22 @@ impl Daemon {
             return Out { code: None, stdout: String::new(), stderr: format!("找不到 {program}（PATH：{path}）") };
         };
         let mut c = tokio::process::Command::new(bin);
-        c.args(args).current_dir(&home).stdin(std::process::Stdio::null());
+        c.args(args).current_dir(&home);
+        c.stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() });
+        c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         self.prepare(&mut c, &home, path);
-        match tokio::time::timeout(limit, c.output()).await {
+        let text = input.map(str::to_string);
+        let work = async {
+            let mut child = c.spawn()?;
+            if let (Some(t), Some(mut stdin)) = (text, child.stdin.take()) {
+                use tokio::io::AsyncWriteExt;
+                // a child that exits without reading closes the pipe: its own output says why
+                let _ = stdin.write_all(t.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            }
+            child.wait_with_output().await
+        };
+        match tokio::time::timeout(limit, work).await {
             Ok(Ok(o)) => Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() },
             Ok(Err(e)) => Out { code: None, stdout: String::new(), stderr: format!("{program} 没能启动：{e}") },
             Err(_) => Out { code: None, stdout: String::new(), stderr: format!("{program} 超过 {} 秒没有结束，已停止", limit.as_secs()) },
@@ -329,6 +347,10 @@ impl Daemon {
 
     /// One of the daemon's own scripts, by its fixed path under the skill entry.
     pub(crate) async fn script(&self, path: &str, name: &str, args: &[&str], limit: Duration) -> Out {
+        self.script_input(path, name, args, None, limit).await
+    }
+
+    pub(crate) async fn script_input(&self, path: &str, name: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Out {
         let file = match self.entry() {
             Ok(e) => e.join("scripts").join(name),
             Err(m) => return Out { code: None, stdout: String::new(), stderr: m },
@@ -336,7 +358,7 @@ impl Daemon {
         let f = file.to_string_lossy().to_string();
         let mut all = vec![f.as_str()];
         all.extend_from_slice(args);
-        self.run(path, "bash", &all, limit).await
+        self.run_input(path, "bash", &all, input, limit).await
     }
 
     // ── status ──

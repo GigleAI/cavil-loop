@@ -5,7 +5,7 @@ import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { Handoff } from './handoff';
-import type { ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
+import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { RemoteList, RemoteRead, RemoteResult } from './remote';
 
 export interface Snapshot {
@@ -99,6 +99,13 @@ export interface CavilApi {
   daemonDisconnect(key: string): Promise<DaemonResult>;
   daemonOpen(key: string, what: 'log' | 'config'): Promise<DaemonResult>;
   daemonUpdate(): Promise<DaemonUpdate>;
+  /**
+   * "配置" on a project (GitHub#388): its everyday settings as the daemon's own script reads them, and a
+   * save of some of them. The window names a project and settings; where the file is and what may be
+   * changed is the daemon's answer, checked again by the back end right before the save.
+   */
+  daemonConfigGet(key: string): Promise<ConfigRead>;
+  daemonConfigSet(key: string, rev: string, values: Record<string, string>): Promise<ConfigSave>;
   /** "接上 daemon" (GitHub#315): the back end checks repository, agent and folder again before running setup.sh */
   daemonConnectInfo(repo: string): Promise<ConnectInfo>;
   daemonPrecheck(agent: string): Promise<Precheck2>;

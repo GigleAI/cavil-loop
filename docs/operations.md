@@ -1659,6 +1659,44 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 
 It renders the new plist with the same function `setup.sh` uses, checks it with `plutil -lint`, and compares it with the current file — identical means `RESULT=unchanged`. Otherwise it reads the job state (unreadable → stop, nothing touched); if the job is loaded it takes the project's poll lock (waits for the current poll to end, at most `CAVIL_REFRESH_LOCK_WAIT` seconds, default 300), boots it out and confirms it is gone; copies the old file to `$STATE_DIR/launchd-backup/`; swaps the new one in atomically; and loads it again if it was loaded before, reading back that it is loaded from that file. If loading fails it restores the backup and the previous state. The last line is `RESULT=` one of `replaced` / `unchanged` (exit 0), `unknown` / `lint_failed` / `lock_timeout` (exit 2, nothing touched), `not_found` / `not_macos` (exit 1), `failed` (exit 3, old file and state restored — only after reading both back), `needs_human` (exit 4: the restore failed or could not be confirmed — the output shows the error texts, where the original file is, and how to restore it by hand; a backup, if one was made, is kept). On Linux the unit files are symlinks to the templates and the deployer reloads them, so this script does not apply there.
 
+## Edit a project's settings from a script (GitHub#388)
+
+`scripts/project-config.sh` reads and changes the everyday settings of one connected project. The desktop client's "项目配置" dialog is built on it; a person can run it too. `myproject` is the instance key.
+
+<!-- project-config-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.mode == "edit") | "\(.name)=\(.value) editable=\(.editable)"'
+REV="$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .rev)"
+SAVED="$(printf '{"MAX_CONCURRENT_WORKERS":"2"}' | bash "$SKILL/scripts/project-config.sh" set myproject --rev "$REV")"
+printf '%s\n' "$SAVED" | tail -1
+bash "$SKILL/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "MAX_CONCURRENT_WORKERS") | "\(.name)=\(.value)"'
+BACKUP="$(printf '%s\n' "$SAVED" | sed -n 's/^DETAIL=//p' | jq -r .backup)"
+cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .real)"
+```
+<!-- project-config-ops:end -->
+
+In order: list the settings that can be changed with their current values; take the file's fingerprint; change one setting; print the result line; read the new value back; then put the pre-save version back from the backup the save made (the last two lines are the whole way back — nothing else was touched).
+
+**What it can read and change.** Only the settings registered in `scripts/config-fields.txt` (agent and model, concurrency, retry and round counts, the comment language, a few switches). Commands, hooks, tokens, URLs, directories and the project's names are not registered: they are never printed and cannot be set. Four settings that make the daemon do a new kind of thing — dispatch mode, the review gate, autopilot, waiting on a prerequisite — are shown only (`mode: "show"`). A registered setting is editable only when the config's code names it exactly once, and that one place is an unindented line of its own at the top level holding a plain literal. One written as arithmetic or with a variable, assigned twice, placed inside an `if`, a loop, a `case`, a function or a `{ }` group — on several lines or on one, indented or not, whether that branch runs or not — following another command (`cmd && KEY=…`), written some other way (`declare`, a bare `export`, `read`, `printf -v`, `${KEY:=…}`), or merely mentioned a second time anywhere else in the code comes back `editable: false` with the reason, and stays a job for a text editor. The same evidence decides whether a setting counts as missing from the file: only when the code never names it at all (comments do not count) may a save append a line for it. Where things sit is read from bash's own parse of the file, not from its indentation; when that parse cannot be read, every setting is show-only. One thing cannot be seen: a name put together at run time (`eval`, another file that is sourced) inside a branch that did not run. `value` is always what the daemon works with, separately from whether the line can be changed: a setting that is unset or empty after the config loads — no such line, an empty value, a branch that did not run — is reported with the daemon's default. `in_file: false` means the file's code never names the setting; saving it appends one line.
+
+**`get <key>`** prints one JSON object: `state` (`ok` / `unreadable` / `not_found`), `config`, `real` (the file after following symlinks), `rev` (fingerprint of that location plus the content) and `fields[]` — `name`, `group`, `mode`, `label`, `help`, `type` (`agent` / `model` / `int` / `bool` / `enum` / `label`, with `options`, `min` / `max`, `on` / `off` as the type needs), `value`, `default`, `in_file`, `editable`, `reason`. A config that cannot be loaded is `unreadable` with no values at all — never "nothing set".
+
+**`set <key> --rev <fingerprint>`** takes a JSON object of strings on standard input and writes all of it or none of it. It locks on the file's real location, works from a private copy of the file, validates every value against its registered type, changes only those lines (comments, quoting and every other byte stay), checks that the new file still loads and that no other variable moved, copies the pre-save version to `$STATE_DIR/config-backups/` (mode 600, the latest 10 kept), compares the file with `--rev` once more right before the swap, and renames the new file into place. The next-to-last line is `DETAIL=<json>` (`changes[]` with old and new values, `backup`), the last is `RESULT=`:
+
+| `RESULT` | Exit | Meaning |
+|---|---|---|
+| `saved` | 0 | written; reading it back right after the swap gave the new content |
+| `unchanged` | 0 | every value already was what the file says; nothing written |
+| `changed` | 2 | the file is not the one `--rev` was taken from (edited since the read, or during the save); nothing written — read again |
+| `invalid` / `not_editable` | 2 | a value does not fit its type / a setting is not registered, show-only, or not a plain literal; nothing written |
+| `busy` | 2 | another save holds the lock (`--lock-wait <seconds>`, default 15); nothing written |
+| `unreadable` / `verify_failed` / `backup_failed` / `write_failed` | 2 | the config does not load / the new file failed its check / the backup could not be written / a file operation failed; nothing written |
+| `not_found` | 1 | no such connected project |
+| `saved_then_changed` | 4 | the new file was swapped in, and something else rewrote the file before the read-back; the script leaves it as it is — read again and compare with the backup |
+
+**Do not edit the same file in an editor while saving.** The script cannot make an editor wait. It refuses to write when the file differs from `--rev` at its last check; after that check it cannot see anything: a version an editor stores between that check and the swap is replaced by the new file, and an editor that had the file open before the save and stores afterwards either overwrites the new values with its whole old copy or writes into the file that was just swapped out. In both cases the result may still be `saved`, and the lost edit cannot be recovered — the backup holds only the version from before the save. Once the new file is in place the script never writes the config again: no rollback, no automatic restore. The poller reads the config once at the start of each tick, and the swap is a rename, so it sees the whole old file or the whole new one; a running worker keeps the values it started with.
+
 ## Remote access: let the client on another computer see this machine's daemon (GitHub#387)
 
 When the daemon runs on one machine and the desktop client on another, the client's "设置 → 远程 daemon" section can list the projects this machine has connected and whether they are running, stop / start one project's poller, and show the last 200 lines of its poll log. **Tailscale only**, and only after pairing. It is off by default: without the commands below nothing listens on this machine and nothing is forwarded.
