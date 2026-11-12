@@ -1559,9 +1559,10 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   // click outside → away
   await btn.click();
   await expect(panel).toBeVisible();
-  // its right end: since GitHub#368 the count can go on ("· 另有 N 个子 issue 随父 issue 显示") to the left, under the open panel
-  const mc = (await page.getByTestId('match-count').boundingBox())!;
-  await page.getByTestId('match-count').click({ position: { x: mc.width - 4, y: mc.height / 2 } });
+  // an empty spot of the view bar (GitHub#404: its right end is the flow numbers, buttons that change the search)
+  const vs = (await page.getByTestId('open-view-panel').boundingBox())!;
+  await page.mouse.click(vs.x + vs.width + 40, vs.y + vs.height / 2);
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
   await expect(panel).toHaveCount(0);
   // Esc → away
   await btn.click();
@@ -5881,7 +5882,14 @@ async function dragRow(src: Locator, target: Locator) {
   // a group head: its group's body, not the (sticky) head itself: scrolling to a sticky row can leave it under the next group's head
   await target.evaluate((el: Element) => ((el.closest('.group-head') && el.closest('tbody')) || el).scrollIntoView({ block: 'center', inline: 'nearest' }));
   const b = (await target.boundingBox())!;
-  await page.mouse.move(b.x + Math.min(20, b.width / 2), b.y + b.height / 2, { steps: 6 });
+  const x = b.x + Math.min(20, b.width / 2);
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x, y, { steps: 6 });
+  // WebKit only drops where the last "drag over" was accepted, and the last step above can end on an
+  // element the pointer has only just entered: stay on it for two more moves before letting go — a hand
+  // always does (GitHub#378: on WebKit the release right after entering dropped nothing)
+  await page.mouse.move(x + 1, y);
+  await page.mouse.move(x, y);
   await page.mouse.up();
 }
 
@@ -6024,6 +6032,12 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
   const heads = async () => (await repoHeads(page)).map(([t]) => t);
   const saved = () => page.evaluate(async () => (await (window as any).cavil.get()).state.repoOrder as string[]);
+  /**
+   * What the back end has written to disk. The window queues setting writes to the back end; closing it
+   * while one is still queued loses it (PR #408 review round 2: under load a restart came back with an
+   * older order). A restart is only meaningful once the order is really stored, so every close waits here.
+   */
+  const stored = () => app.backend.call<{ settings: Record<string, unknown> }>('init', {}).then((r) => r.settings.repoOrder ?? null);
   /** the order on screen in the table (the slice list and the "all repositories" sections) and on the board (the swimlanes) */
   async function everywhere(want: string[]) {
     await layout('table');
@@ -6055,6 +6069,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await everywhere([B, A, C]);
 
   // ---- 4. a restart keeps it ----
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/aaa', 'gigleai/ccc']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -6080,6 +6095,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   // dropped on the lower half: after the target
   await dragRepo(lane(B), lane(C), true);
   await everywhere([A, C, B]);
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/aaa', 'gigleai/ccc', 'gigleai/bbb']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -6456,6 +6472,15 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4);
   await page.mouse.down();
   await page.mouse.move(rb.x + rb.width - 4, rb.y + rb.height - 4 + 80, { steps: 8 });
+  // Linux WebKit (what CI runs) draws no corner to drag on a text box — the macOS app's WebKit and
+  // Chromium do. On that one engine only, the engine's part (the box gets a new height while the button
+  // is held) is done here, between the same press and release, and what the app does with that height
+  // is checked; everywhere else the real drag must have changed the height by itself (GitHub#378).
+  const noCorner = process.platform === 'linux' && page.context().browser()?.browserType().name() === 'webkit';
+  if (noCorner) {
+    expect(await height()).toBe(small); // still true there: if Linux WebKit ever grows a corner, stop standing in for it
+    await reply.evaluate((el: HTMLElement, h: number) => { el.style.height = `${h}px`; }, small + 80);
+  }
   await page.mouse.up();
   const draggedH = await height();
   expect(draggedH).toBeGreaterThan(small + 40);

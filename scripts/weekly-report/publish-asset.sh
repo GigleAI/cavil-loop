@@ -37,7 +37,7 @@ NAME="${STEM}-rev-${REV}.${EXT}"
 
 # 发布前自查：含凭证样式就拒绝（退出码 1），原因照它的输出给。
 if ! check_out="$(node "$CHECK" "$FILE" 2>&1)"; then
-    echo "拒绝发布 $FILE：" >&2
+    echo "拒绝发布 ${FILE}：" >&2
     printf '%s\n' "$check_out" >&2
     exit 1
 fi
@@ -57,8 +57,8 @@ if ! printf '%s\n' "$check_out" | grep -q '^拿得到 '; then
     URL="$PRIV_URL/$SUBDIR/$NAME"
     code=$(curl -sk -o /dev/null -w '%{http_code}' "$URL")
     if [ "$code" != "200" ]; then
-        echo "内网地址不可达（HTTP $code）：$URL" >&2
-        echo "  文件已在 $PRIV_DIR/$SUBDIR/$NAME；检查 WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL 指的入口" >&2
+        echo "内网地址不可达（HTTP ${code}）：$URL" >&2
+        echo "  文件已在 $PRIV_DIR/$SUBDIR/${NAME}；检查 WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL 指的入口" >&2
         exit 1
     fi
     echo "不是图片 / 视频，没有公开发布；已放到只在内网可达的地址 → HTTP 200（$(du -h "$FILE" | cut -f1)）" >&2
@@ -83,7 +83,7 @@ cp "$FILE" "$ROOT_DIR/$SUBDIR/$NAME"
 URL="$ROOT_URL/$SUBDIR/$NAME"
 code=$(curl -sk -o /dev/null -w '%{http_code}' "$URL")
 if [ "$code" != "200" ]; then
-    echo "公网不可达（HTTP $code）：$URL" >&2
+    echo "公网不可达（HTTP ${code}）：$URL" >&2
     echo "  公网入口没开或路径没挂（tailscale funnel 用户可查: sudo tailscale serve status）" >&2
     exit 1
 fi

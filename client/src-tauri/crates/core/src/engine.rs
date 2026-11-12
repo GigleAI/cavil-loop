@@ -911,6 +911,23 @@ impl Engine {
         out
     }
 
+    /// GitHub#401: GitHub's page for the application this sign-in went through, where each
+    /// organisation's access is requested / granted: an OAuth app's own page, a GitHub App's
+    /// authorisations, or (no sign-in recorded) the list of authorised OAuth apps. Built here from
+    /// the Client ID the sign-in was made with — never from the one Settings holds for the next
+    /// sign-in — so the window never sees that ID (it stays one of SECRET_KEYS).
+    pub fn auth_page_url(&self) -> String {
+        let web = self.d.endpoints.web.trim_end_matches('/');
+        let signed_in = self.lock().grant.is_some();
+        match self.d.store.get_str(GRANT_CLIENT_ID).filter(|id| signed_in && !id.is_empty()) {
+            Some(id) if id.starts_with("Iv") => format!("{web}/settings/apps/authorizations"),
+            Some(id) if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') => {
+                format!("{web}/settings/connections/applications/{id}")
+            }
+            _ => format!("{web}/settings/applications"),
+        }
+    }
+
     pub async fn open_external(&self, url: &str) -> Result<(), String> {
         if !is_allowed_external(url, &self.d.endpoints) {
             return Err(format!("不打开非 GitHub 链接：{url}"));

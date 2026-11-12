@@ -438,3 +438,10 @@ export function projectCountsQuery(boards: { owner: string; number: number; isOr
   });
   return { query: `query CavilProjectCounts(${params.join(', ')}) {\n  ${parts.join('\n  ')}\n}`, variables };
 }
+
+// GitHub#401: the "从 GitHub 选" list — the account's own Projects, its organisations, and each
+// organisation's Projects, each its own request so one organisation refusing leaves the rest.
+const CHOICE_NODES = 'nodes { number title closed url } pageInfo { hasNextPage endCursor }';
+export const CHOICES_VIEWER_QUERY = `query CavilChoicesViewer($after: String) { viewer { login projectsV2(first: 50, after: $after) { ${CHOICE_NODES} } } }`;
+export const CHOICES_ORGS_QUERY = `query CavilChoicesOrgs($after: String) { viewer { organizations(first: 100, after: $after) { nodes { login } pageInfo { hasNextPage endCursor } } } }`;
+export const CHOICES_ORG_QUERY = `query CavilChoicesOrg($login: String!, $after: String) { organization(login: $login) { projectsV2(first: 50, after: $after) { ${CHOICE_NODES} } } }`;

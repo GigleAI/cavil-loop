@@ -19,6 +19,7 @@
 | Tmux 历史输出 | `$STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log`（append-only） | 没人；同一 issue 重起 session 续写同一份 | 文件即备份 |
 | Claude 对话历史（含 thinking + tool_use 全程） | `~/.claude/projects/<encoded-cwd>/*.jsonl` | **没人**；`AUTO_CLEANUP_ON_MERGE` 不动这里 | 文件即备份 |
 | 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
+| 派工提示词（每次派工渲染给 worker 的那份；GitHub#396） | `$STATE_DIR/prompts/<N>-new.md`、`<N>-cmt-<评论号>.md`、`<N>-pr-<PR号>.md`（目录 700，只有本账号能读） | 条目清理时（`cleanup-issue.sh`，含合并后自动清理）删掉这个编号的几份，交给它处理即可。要手动删，只删没有派工在进行的条目（不是 `doing/agent`，也没有正在跑的轮询）：派工过程中 worker 启动那一刻才读这个文件，codex 启动后核对会话归属还要再读一次，这时删掉，worker 会拿到空提示词启动 | 不值得备份 —— 派工一结束就不再读它，内容也完整留在 tmux 历史和 Claude 对话里。GitHub#396 之前写在 `/tmp/cavil-loop-*.md`，那些旧文件没人清，重启后自然消失 |
 | 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
 | 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json` | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
 | 用量上限的暂停记录，按 agent 和账号目录（GitHub#341） | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |

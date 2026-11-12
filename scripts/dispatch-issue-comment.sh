@@ -43,7 +43,8 @@ issue_title="$(github_issue_title "$ISSUE" || true)"
 # DISPATCH_PROMPT_KIND 由 agent-poll 按触发 label 指定（如 review 关卡用 "review"）；
 # 不设就是本路径的默认模板。
 TEMPLATE="$(compose_prompt_template "${DISPATCH_PROMPT_KIND:-issue-comment}")"
-PROMPT_FILE="/tmp/cavil-loop-issue-$ISSUE-cmt-$LATEST_COMMENT_ID.md"
+PROMPT_FILE="$(prompt_file_path cmt "$ISSUE" "$LATEST_COMMENT_ID")"
+prompt_dir_ensure || { log "派工 #$ISSUE：建不出提示词目录 $(prompt_dir)，本轮不派工"; exit 1; }
 if [ -n "$TEMPLATE" ]; then
     sed \
         -e "s|\${ISSUE}|$ISSUE|g" \
@@ -77,7 +78,7 @@ if [ -n "$TEMPLATE" ]; then
 else
     cat > "$PROMPT_FILE" <<EOF
 Issue #$ISSUE 有新评论。读 \`gh issue view $ISSUE --repo $REPO --comments\` 看最新一段，按内容判断：
-- 用户确认方案 → 进入开发阶段（实现 / 测试 / commit + push / 开 PR / Closes #$ISSUE）
+- 用户确认方案 → 进入开发阶段（实现 / 测试 / commit + push / 开 PR / Closes #${ISSUE}）
 - 用户要求改方案 → 修订设计、重发 issue comment、idle
 - 不明确 → 反问 + idle
 完成后翻 label（REST，绕 read:org）：
@@ -105,7 +106,7 @@ if session_alive "$TMUX_SESSION"; then
     elif [ "$_match" = 0 ]; then
         REUSE_SESSION=1
     else
-        log "issue #$ISSUE -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（$WORKER_SESSION_ROLE）"
+        log "issue #$ISSUE -> session worker/model/角色与请求不一致，原地换程序为 $WORKER_AGENT/${WORKER_MODEL:-default}（${WORKER_SESSION_ROLE}）"
     fi
 fi
 
@@ -131,7 +132,7 @@ if [ -d "$WORKTREE" ]; then
     # B1: 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
-    log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（$AGENT_LAUNCH_KIND）"
+    log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
     worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
     # B2: resume 可能续到异常 state（之前 worker 留下的 Rewind UI 等）然后立即退出

@@ -40,6 +40,8 @@ source "$TEST_DIR/lib/mutation.sh"
 source "$TEST_DIR/lib/parts.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 if [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] && ! mutation_on; then
     echo "REQUESTER_BOT_TEST_BAD_MUT 验证的是负对照的准备失败记账，要和 MUTATION=1 一起设" >&2; exit 2
 fi
@@ -422,7 +424,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$DX/bin/tmux"; chmod +x "$DX/bin/tmux"
 git init -q --bare "$DX/up.git"
 git clone -q "$DX/up.git" "$DX/seed" 2>/dev/null
 (cd "$DX/seed" && git -c user.email=t@x -c user.name=t commit -q --allow-empty -m init && git push -q origin HEAD:main) >/dev/null 2>&1
-# 编号取得很大：派工脚本会往 /tmp 写 prompt 文件，避开本机真实派工的文件名
+# 编号取得很大，避开本机真实派工的编号（提示词写在每次运行自己的状态目录里）
 N_CMT=987951; N_PR=987952; N_NEW=987953
 real_dispatch_suite() {   # <scripts 目录（未换桩的真脚本）>
     local SD="$1" W="$DX/run"
@@ -439,7 +441,6 @@ real_dispatch_suite() {   # <scripts 目录（未换桩的真脚本）>
     chk "真派工 · issue 评论派工摘掉等待标签" "$(labels_of "$W" $N_CMT)" "doing/agent"
     chk "真派工 · PR 评论派工摘掉等待标签" "$(labels_of "$W" $N_PR)" "doing/agent"
     chk "真派工 · 新 issue 派工摘掉等待标签" "$(labels_of "$W" $N_NEW)" "doing/agent"
-    rm -f /tmp/cavil-loop-issue-$N_CMT-* /tmp/cavil-loop-pr-$N_PR-* /tmp/cavil-loop-issue-$N_NEW-*
 }
 REAL_NEW="$SANDBOX/real-new"; rm -rf "$REAL_NEW"; mkdir -p "$REAL_NEW"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$REAL_NEW/"
 real_dispatch_suite "$REAL_NEW/scripts"
@@ -875,11 +876,12 @@ pr_dispatch_ws() {   # <scripts 目录> → 派工后建出来的工作区目录
 #50" "chore/ws"
     (cd "$W/project" && env HOME="$DX/home" FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" \
         timeout 120 bash "$SD/dispatch-pr-comment.sh" $N chore/ws 0) >/dev/null 2>&1
-    rm -f /tmp/cavil-loop-pr-$N-*
     # 假 tmux 一律报「会话在」，派工走「注入现有会话」那条路：选中的会话名就是工作编号的落点
     grep -oE "PR #$N -> [^ ]* ?[A-Za-z0-9_.-]+-issue[0-9]+" "$W/state/poll.log" | grep -oE '[A-Za-z0-9_.-]+-issue[0-9]+$' | head -1
 }
 REAL_OLD="$SANDBOX/real-old"; rm -rf "$REAL_OLD"; mkdir -p "$REAL_OLD"; cp -r "$SANDBOX/old-src/scripts" "$SANDBOX/old-src/prompts" "$REAL_OLD/"
+# 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$REAL_OLD" "$SANDBOX/real-old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
 if compat_skip "真 PR 派工 · 功能关闭时选中的会话与改动前" "$REAL_OLD" "$REAL_NEW" scripts prompts; then
     WS_NEW=$(pr_dispatch_ws "$REAL_NEW/scripts")
     chk "真 PR 派工 · 对拍不是两边都空" "$([ -n "$WS_NEW" ] && echo yes || echo no)" yes

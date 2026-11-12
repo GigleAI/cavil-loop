@@ -27,15 +27,15 @@ elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
     log "  origin/$BRANCH 已存在，签出"
     git fetch origin "$BRANCH"
 else
-    # 新分支从【最新的 upstream base】切，而不是可能过时的本地 $BASE_BRANCH：
+    # 新分支从【最新的 upstream base】切，而不是可能过时的本地 ${BASE_BRANCH}：
     # 先 fetch，基于 origin/$BASE_BRANCH 建分支。不碰主项目工作区（主 checkout
     # 常有未提交 WIP，绝不能 pull/reset/改 HEAD）——只更新 remote-tracking ref。
     if git fetch origin "$BASE_BRANCH" --quiet 2>/dev/null \
        && git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
-        log "  新建分支 $BRANCH ← origin/$BASE_BRANCH（已 fetch 取最新）"
+        log "  新建分支 $BRANCH ← origin/${BASE_BRANCH}（已 fetch 取最新）"
         git branch "$BRANCH" "origin/$BASE_BRANCH"
     else
-        log "  ⚠️ 取不到 origin/$BASE_BRANCH，回退本地 $BASE_BRANCH"
+        log "  ⚠️ 取不到 origin/${BASE_BRANCH}，回退本地 $BASE_BRANCH"
         git branch "$BRANCH" "$BASE_BRANCH"
     fi
 fi
@@ -53,8 +53,8 @@ else
     # daemon 刚为 issue 建的，被主 checkout 占着说明人正在上面干活（GitHub#141）。
     if find_branch_holder "$BRANCH" "$WORKTREE_DIR"; then
         CMP_REF=$(git rev-parse -q --verify "refs/remotes/origin/$BRANCH^{commit}" 2>/dev/null || true)
-        branch_holder_state "$BRANCH" "$CMP_REF" "origin/$BRANCH（本机最近一次 fetch）" "远端没有这个分支（本地提交全部未推送）"
-        log "  ⚠️ 分支 $BRANCH 已被$(branch_holder_who) 签出（git 报的路径：$BH_RAW）"
+        branch_holder_state "$BRANCH" "$CMP_REF" "origin/${BRANCH}（本机最近一次 fetch）" "远端没有这个分支（本地提交全部未推送）"
+        log "  ⚠️ 分支 $BRANCH 已被$(branch_holder_who) 签出（git 报的路径：${BH_RAW}）"
         log "     占用者现状：$BH_STATE_TEXT"
         log "     两个 worktree 共用一个分支 = 两个 worker 往同一分支提交，拒绝建 worktree"
         log "     怎么继续：$(branch_holder_next_step "$BASE_BRANCH")"

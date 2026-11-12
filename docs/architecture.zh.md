@@ -168,6 +168,13 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 而不会连「哪些评论看过了」那些游标一起清掉。退避中的每个 tick 仍然往 `poll.log` 写一行，
 写明现在在哪一档、还要等多久。
 
+有一件事故意放在这道闸门**之外**：base 分支的 CI 失败报告（`CI_FAILURE_REPORT_WORKFLOWS`，默认
+关闭，见 [operations.zh.md](operations.zh.md#base-分支测试工作流失败自动报告默认关闭)）。
+`agent-poll.sh` 在拿到轮询锁之后、闸门之前调它，所以主轮询退避时 `main` 变红也能在五分钟左右报出来；
+它在 `$STATE_DIR/ci-failure-report.json` 里有自己的五分钟间隔和失败退避，不读也不写 `state.json`，
+配置留空时什么都不做。放在锁里是因为它会改报告 issue 的标签，而且同一轮的每个派工入口都要查它的
+「不派工名单」。
+
 ## agent 撞到用量上限时（GitHub#341）
 
 可选（`ENABLE_USAGE_LIMIT_PAUSE`）。订阅的用量上限表现为 worker 窗格上的一条提示：会话还活着、标签还是 `doing/agent`，别的兜底都够不着（自愈要会话不在，回收要标签不在）。daemon 从窗格画面加这条会话自己的记录认出它，然后：① **这个 agent** 在解除时间之前不再派工——整台机器、按 agent 和账号目录记，别的 agent 照常；② 在被打断的条目上留言，把它从 `doing/agent` 换成 `pending/human`。会话本身不碰。解除之后由人把触发标签改回，下一次派工续接登记的原会话。细节、限制和手动解除见[运维文档](operations.zh.md#agent-撞到用量上限停派这个-agent被打断的条目转人工github341)。

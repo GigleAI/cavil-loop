@@ -272,7 +272,7 @@ if $PLAN; then
                 1) echo "❌ $t points at $c, which is not on main" >&2; exit 1 ;;
                 *) echo "❌ cannot tell whether $t ($c) is on main" >&2; exit 1 ;;
             esac
-            emit page "$c" "$t" "$t（$c）已有 tag 但还没有 Release 页面，先跑发版门禁再补建"
+            emit page "$c" "$t" "${t}（${c}）已有 tag 但还没有 Release 页面，先跑发版门禁再补建"
         fi
     done
     if [ "${#head_tags[@]}" -gt 0 ]; then
@@ -284,7 +284,7 @@ if $PLAN; then
         emit none "$target" "" "迭代 $week 已发布（${week_tags[0]% *}），本轮不发版"
     fi
     tag="release/v${week}.$((max_n + 1))"
-    emit new "$target" "$tag" "将发新版 $tag（$target），先跑发版门禁"
+    emit new "$target" "$tag" "将发新版 ${tag}（${target}），先跑发版门禁"
 fi
 
 # A tag is not a published release: the Release page may have failed after the

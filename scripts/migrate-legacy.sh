@@ -155,7 +155,7 @@ migrate_shared() {
         if [ -n "$target" ]; then
             mkdir -p "$(dirname "$CAVIL_SKILL_HOME")" && ln -s "$target" "$CAVIL_SKILL_HOME" || {
                 mlog "❌ 建立新技能入口 $CAVIL_SKILL_HOME 失败"; return 1; }
-            mlog "技能入口：新建 $CAVIL_SKILL_HOME -> $target（与旧入口指向同一处）"
+            mlog "技能入口：新建 $CAVIL_SKILL_HOME -> ${target}（与旧入口指向同一处）"
         fi
     fi
     # Claude Code 里的命令名：/coding-agent-work-loop → /cavil-loop。不留旧别名，否则技能列表里
@@ -180,7 +180,7 @@ migrate_shared() {
             rm -f "$t"
         fi
         mv "$old_dc" "$old_dc.migrated-$TS" || { mlog "❌ 旧部署器配置改名留底失败"; return 1; }
-        mlog "部署器配置：$old_dc → $new_dc（旧文件留作 deploy.conf.migrated-$TS）"
+        mlog "部署器配置：$old_dc → ${new_dc}（旧文件留作 deploy.conf.migrated-${TS}）"
     fi
     return 0
 }
@@ -197,7 +197,7 @@ migrate_previews() {
         case "$rc" in
             0) rm -f "$CAVIL_STATE_HOME/.migrate-note-preview-$port" 2>/dev/null ;;
             3) left=$((left+1))
-               mlog_throttled "preview-$port" "⛔ 预览端口 :$port 新旧两个登记目录各有一份、主人不同（$CAVIL_LEGACY_CONFIG_HOME/preview/$port.conf 与 $CAVIL_CONFIG_HOME/preview/$port.conf），不知道哪个是真的，两份都不动，等人处理（看现状：bash $SCRIPT_DIR/preview-resolve-conflict.sh $port）；旧技能入口因此暂时保留" ;;
+               mlog_throttled "preview-$port" "⛔ 预览端口 :$port 新旧两个登记目录各有一份、主人不同（$CAVIL_LEGACY_CONFIG_HOME/preview/$port.conf 与 $CAVIL_CONFIG_HOME/preview/$port.conf），不知道哪个是真的，两份都不动，等人处理（看现状：bash $SCRIPT_DIR/preview-resolve-conflict.sh ${port}）；旧技能入口因此暂时保留" ;;
             *) left=$((left+1))
                mlog_throttled "preview-$port" "预览端口 :$port 这次没搬完（原因见上一行），下一轮接着搬；旧技能入口暂时保留" ;;
         esac
@@ -227,12 +227,12 @@ finalize_shared() {
     done
     [ "$changed" -eq 0 ] || { [ "$SCHED" != systemd ] || sc daemon-reload >/dev/null 2>&1 || true; }
     rm -f "$CAVIL_LEGACY_SKILL_HOME"
-    mlog "所有项目都已迁完、旧预览都已搬到新单元：删除旧技能入口 $CAVIL_LEGACY_SKILL_HOME（原先经过它的单元链接已改走新入口）"
+    mlog "所有项目都已迁完、旧预览都已搬到新单元：删除旧技能入口 ${CAVIL_LEGACY_SKILL_HOME}（原先经过它的单元链接已改走新入口）"
 }
 
 link_unit() {   # <unit file name>：在单元目录建一个指向新技能入口的模板链接
     local f="$1" src="$CAVIL_SKILL_HOME/systemd/$1" dst="$SYS_DIR/$1"
-    [ -f "$src" ] || { mlog "❌ 当前技能版本里没有 $f（版本太旧？）"; return 1; }
+    [ -f "$src" ] || { mlog "❌ 当前技能版本里没有 ${f}（版本太旧？）"; return 1; }
     if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then return 0; fi
     if [ -e "$dst" ] && [ ! -L "$dst" ]; then mlog "⚠️ $dst 是手写的真文件，保留不动"; return 0; fi
     ln -sfn "$src" "$dst" || { mlog "❌ 链接 $f 失败"; return 1; }
@@ -261,7 +261,7 @@ migrate_key() {
         return 0
     fi
     if [ -e "$new_env" ] && [ ! -f "$progress" ]; then
-        mlog_throttled "conflict-$KEY" "⛔ 新旧两份环境文件都在（$new_env 与 $old_env），而且不是迁移留下的半成品：可能两套后台任务同时在跑，需要人工处理，自动迁移不动它"
+        mlog_throttled "conflict-$KEY" "⛔ 新旧两份环境文件都在（$new_env 与 ${old_env}），而且不是迁移留下的半成品：可能两套后台任务同时在跑，需要人工处理，自动迁移不动它"
         return 1
     fi
 
@@ -311,7 +311,7 @@ migrate_key() {
         busy="周报正在生成"
     fi
     if [ -n "$busy" ]; then
-        mlog_throttled "wait-$KEY" "暂不迁移：$busy；空闲后再迁"
+        mlog_throttled "wait-$KEY" "暂不迁移：${busy}；空闲后再迁"
         [ -z "$lock_fd" ] || eval "exec ${lock_fd}>&-"
         return 3
     fi
@@ -327,10 +327,10 @@ migrate_key() {
         if [ -f "$progress" ] && [ -d "$old_sd" ] && [ -d "$new_sd" ] && [ ! -e "$old_sd/state.json" ] \
            && [ -z "$(find "$old_sd" -mindepth 1 -maxdepth 1 ! -name poll.log ! -name poll.lock ! -name .tick 2>/dev/null)" ]; then
             [ ! -f "$old_sd/poll.log" ] || redact_stream < "$old_sd/poll.log" >> "$new_sd/poll.log" 2>/dev/null || true
-            rm -rf -- "$old_sd" && mlog "清掉迁移中途在旧位置冒出的空状态目录 $old_sd（只有日志，已并进新目录）"
+            rm -rf -- "$old_sd" && mlog "清掉迁移中途在旧位置冒出的空状态目录 ${old_sd}（只有日志，已并进新目录）"
         fi
         if [ -e "$old_sd" ] && [ -e "$new_sd" ]; then
-            mlog_throttled "bothsd-$KEY" "⛔ 新旧两个状态目录都在（$old_sd 与 $new_sd），不知道哪份是真的，停下等人处理"
+            mlog_throttled "bothsd-$KEY" "⛔ 新旧两个状态目录都在（$old_sd 与 ${new_sd}），不知道哪份是真的，停下等人处理"
             return 1
         fi
         tcfg="$(mktemp)"
@@ -375,7 +375,7 @@ migrate_key() {
                 launchctl print "gui/$(id -u)/$old_label" >/dev/null 2>&1 && echo "LAUNCHD_LOADED=yes" || echo "LAUNCHD_LOADED=no"
             fi
         } > "$p" && mv "$p" "$progress" || { rm -f "$p"; mlog "❌ 写进度文件失败"; return 1; }
-        mlog "开始迁移（旧环境文件 $old_env，项目配置 $cfg，状态目录 ${sd:-未设}）；原状态：$(grep -vE '^(TS|CFG)=' "$progress" | tr '\n' ' ')"
+        mlog "开始迁移（旧环境文件 ${old_env}，项目配置 ${cfg}，状态目录 ${sd:-未设}）；原状态：$(grep -vE '^(TS|CFG)=' "$progress" | tr '\n' ' ')"
     fi
     TS="$(env_value "$progress" TS)"
     local bk="$MIG_DIR/$KEY-$TS"
@@ -425,11 +425,11 @@ migrate_key() {
         rewrite_paths "$cfg" "$old_sd" "$new_sd" > "$tcfg" || { rm -f "$tcfg"; mlog "❌ 改写项目配置失败"; return 1; }
         if [ -e "$old_sd" ]; then
             mv "$old_sd" "$new_sd" || { rm -f "$tcfg"; mlog "❌ 搬状态目录失败"; return 1; }
-            mlog "状态目录：$old_sd → $new_sd（整目录改名，内容不变）"
+            mlog "状态目录：$old_sd → ${new_sd}（整目录改名，内容不变）"
         fi
         if ! cmp -s "$tcfg" "$cfg"; then
             install_text "$tcfg" "$cfg" || { rm -f "$tcfg"; mlog "❌ 写回项目配置 $cfg 失败（状态目录已在新位置，下次接着改）"; return 1; }
-            mlog "项目配置：$cfg 里的状态目录改成 $new_sd（原文件备份在 $bk）"
+            mlog "项目配置：$cfg 里的状态目录改成 ${new_sd}（原文件备份在 ${bk}）"
         fi
         rm -f "$tcfg"
         # 本项目自己的日志里也留一笔，翻 poll.log 的人能看到这里发生过什么
@@ -496,7 +496,7 @@ migrate_key() {
     # 旧环境文件最后才改名：它在，下次就还会回来把没做完的步骤补上。
     mv "$old_env" "$old_env.migrated-$TS" || { mlog "❌ 旧环境文件改名留底失败"; return 1; }
     mv "$progress" "$MIG_DIR/$KEY.done" 2>/dev/null || true
-    mlog "✅ 迁移完成：环境文件 $new_env，状态目录 ${new_sd:-$sd}，旧环境文件留作 $KEY.conf.migrated-$TS，备份在 $bk"
+    mlog "✅ 迁移完成：环境文件 ${new_env}，状态目录 ${new_sd:-$sd}，旧环境文件留作 $KEY.conf.migrated-${TS}，备份在 $bk"
     printf 'MIGRATED\t%s\t%s\n' "$KEY" "$cfg"
     [ -z "$lock_fd" ] || eval "exec ${lock_fd}>&-"
     finalize_shared

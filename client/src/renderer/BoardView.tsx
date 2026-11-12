@@ -21,6 +21,10 @@ import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
+import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
+import { FailureNote } from './FailureNote';
+import { emptyGuideOf } from '../shared/emptyGuide';
+import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
@@ -32,6 +36,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
+import { flowTally, litTally, tallyClick, tallyForget, TALLY_TEXT, type TallyEntry } from '../data/flowTally';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -274,7 +279,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
  * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
  * opens it by itself.
  */
-function SyncTroubleButton({ trouble, describe, retryOf }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null }) {
+function SyncTroubleButton({ trouble, describe, retryOf, appKind }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind'] }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
@@ -294,7 +299,7 @@ function SyncTroubleButton({ trouble, describe, retryOf }: { trouble: SyncTroubl
       >
         <Icon name="warn" />
       </button>
-      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} box={box} onClose={() => setOpen(false)} />}
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} onClose={() => setOpen(false)} />}
     </span>
   );
 }
@@ -303,12 +308,14 @@ function SyncTroublePanel({
   trouble,
   describe,
   retryOf,
+  appKind,
   box,
   onClose,
 }: {
   trouble: SyncTrouble;
   describe: (f: SyncTrouble['failed'][number]) => string;
   retryOf: (f: SyncTrouble['failed'][number]) => string | null;
+  appKind: AppState['signedInAppKind'];
   box: RefObject<HTMLSpanElement | null>;
   onClose: () => void;
 }) {
@@ -339,6 +346,8 @@ function SyncTroublePanel({
                     {retryOf(f)}
                   </small>
                 )}
+                {/* GitHub#401: the same explanation, buttons and GitHub's words as Settings and the empty board */}
+                <FailureNote failure={failureOf(f)} state={{ signedInAppKind: appKind }} testid="sync-trouble-failure" />
               </li>
             ))}
           </ul>
@@ -561,6 +570,7 @@ export function BoardView({
   onRequestTaken,
   onSettings,
   onKeysHelp,
+  tallySaved,
 }: {
   state: AppState;
   data: BoardData;
@@ -574,8 +584,10 @@ export function BoardView({
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
   request?: BoardRequest | null;
   onRequestTaken?: () => void;
-  onSettings: () => void;
+  onSettings: (intent?: SettingsIntent) => void;
   onKeysHelp?: () => void;
+  /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
+  tallySaved?: { current: string | null };
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -599,17 +611,39 @@ export function BoardView({
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // GitHub#350: the dependency graph of what the sources and search picked
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items) : null), [view.layout, data.items, items]);
+  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  const { running, agent, human } = state.handBack;
+  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
+  const ownSaved = useRef<string | null>(null);
+  const saved = tallySaved ?? ownSaved;
+  // the box changed some other way and no longer shows a number's query: the remembered search is void
+  useEffect(() => {
+    saved.current = tallyForget(saved.current, query, tally);
+  }, [query, tally, saved]);
+  const lit = litTally(query, tally);
+  const clickTally = (e: TallyEntry) => {
+    const next = tallyClick(query, saved.current, e, tally);
+    saved.current = next.saved;
+    if (next.query !== query) setQuery(next.query);
+  };
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
   const labelOf = (sourceKey: string) => {
     const s = state.sources.find((x) => x.key === sourceKey);
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
   };
+  // GitHub#401: the same words as Settings and the empty board's card (shared/readFailure.ts)
   const describeFailed = (f: (typeof failed)[number]) => {
     const shown = `显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-    // GitHub#374: the rate limit's own words already carry their brackets
-    return f.rateLimited ? `${labelOf(f.sourceKey)} 读取失败：${f.error}，${shown}` : `${labelOf(f.sourceKey)} 读取失败（${f.error}），${shown}`;
+    return `${labelOf(f.sourceKey)} 读取失败（${describeFailure(failureOf(f), now, state.signedInAppKind ?? 'oauth').title}），${shown}`;
   };
+  // GitHub#401: the empty board's card (add a source / why nothing was read)
+  const guide = emptyGuideOf(
+    state.sources,
+    view.selected,
+    sync.sources,
+    data.items.map((it) => it.sources),
+  );
   const canWrite = writesEnabled(sync) && state.sources.length > 0;
   // every opening of the detail panel is its own panel instance (its React key):
   // going to another item and back is a new opening, never the old one resumed
@@ -814,7 +848,7 @@ export function BoardView({
               <span className="sync-text">{headerText(sync, now)}</span>
             </span>
           )}
-          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} />}
+          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} />}
           {/* never greyed out while a round runs (GitHub#217): a click starts over */}
           <button
             className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
@@ -837,7 +871,7 @@ export function BoardView({
             <Icon name="plus" />
             新建 issue
           </button>
-          <button className="icon-btn" onClick={onSettings} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
+          <button className="icon-btn" onClick={() => onSettings()} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
             <Icon name="gear" />
           </button>
           {state.viewer && (
@@ -887,13 +921,36 @@ export function BoardView({
             <span data-testid="graph-count">
               显示 {graph.entries} 个有关系的条目 · 共 {data.items.length} 个条目
             </span>
-          ) : filtering ? (
-            <span data-testid="match-count">
-              显示 {table?.matchCount ?? items.length} / {data.items.length} 条
-              {table && table.pulledCount > 0 && <span data-testid="pulled-count"> · 另有 {table.pulledCount} 个子 issue 随父 issue 显示</span>}
+          ) : (
+            <span className="tally" data-testid="flow-tally">
+              {tally.map((e) => {
+                const on = lit === e.kind;
+                const tip = [
+                  `开着的条目里带 ${e.label} 标签的有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  `当前来源共 ${data.items.length} 个条目`,
+                  ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
+                  ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),
+                ].join('\n');
+                return (
+                  <button
+                    key={e.kind}
+                    type="button"
+                    className={`tally-item${on ? ' on' : ''}${e.count === 0 ? ' zero' : ''}`}
+                    data-testid="tally"
+                    data-kind={e.kind}
+                    aria-pressed={on}
+                    disabled={e.query === null}
+                    title={tip}
+                    onClick={() => clickTally(e)}
+                  >
+                    <i className={`dot ${e.kind}`} aria-hidden="true" />
+                    {TALLY_TEXT[e.kind]} <b data-testid="tally-count">{e.count}</b>
+                  </button>
+                );
+              })}
             </span>
-          ) : null}
-          <span data-testid="item-total" className={filtering || graph ? 'sr-only' : undefined}>
+          )}
+          <span data-testid="item-total" className="sr-only">
             {data.items.length} 个条目
           </span>
         </span>
@@ -947,14 +1004,14 @@ export function BoardView({
       {state.creates.map((j) => (
         <CreateBar key={j.id} job={j} onOpen={openItem} onDraft={(d) => setNewIssue({ draft: d })} />
       ))}
-      {view.layout === 'board' && board.notice && (
+      {view.layout === 'board' && board.notice && !guide && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}
         </div>
       )}
-      {state.sources.length === 0 && (
-        <div className="center muted" data-testid="empty">
-          还没有数据来源。<button className="link" onClick={onSettings}>去设置里添加 Project 或仓库</button>
+      {guide && (
+        <div className="center-guide" data-testid="empty">
+          <EmptyGuide guide={guide} state={state} labelOf={labelOf} onSettings={onSettings} />
         </div>
       )}
 

@@ -2,6 +2,7 @@
 // Nothing in here may import Node or Electron: the renderer bundles it.
 
 import type { MergePrefs } from './mergePrefs';
+import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
@@ -439,6 +440,8 @@ export interface SourceStatus {
   dataFrom: number | null;
   /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
+  /** GitHub#401: what kind of failure (shared/readFailure.ts); absent on a status saved before = shown as a plain failure */
+  failure?: ReadFailure;
   /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
   retry?: SourceRetry;
 }
@@ -496,7 +499,7 @@ export interface ImportInfo {
   notes: string[];
 }
 
-/** The labels the "hand to the agent" buttons use (follows the daemon's label names; editable in Settings). */
+/** The labels the "hand to the agent" buttons and the view bar's flow numbers use (follows the daemon's label names; editable in Settings). */
 export interface HandBackLabels {
   /** removed: the item waits for a human */
   human: string;
@@ -504,9 +507,11 @@ export interface HandBackLabels {
   agent: string;
   /** added by "autopilot (merge automatically)" before handing over (GitHub#205); '' = no such button */
   autopilot: string;
+  /** GitHub#404: the item is being worked on by an agent — counted as "运行中" in the view bar; '' = that number is not shown */
+  running: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent' };
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -578,6 +583,12 @@ export interface AppState {
   /** true when clientId is the built-in one (no override saved for this kind) */
   clientIdIsDefault: boolean;
   viewer: string | null;
+  /**
+   * GitHub#401: the kind of application the *current* sign-in went through (the back end tells it
+   * by the Client ID the sign-in was made with); null = not known yet. `appKind` above is what the
+   * next sign-in will use — the two differ once Settings changes it without signing in again.
+   */
+  signedInAppKind: AppKind | null;
   /** GitHub#395: the web base of the GitHub this client talks to (https://github.com in the app); release attachment images are recognised by it */
   githubWeb: string;
   sources: SourceConfig[];
@@ -650,4 +661,37 @@ export interface BoardData {
    * before relations were read, and no full read succeeded since). Not "these have no relations".
    */
   relationsUnknown?: string[];
+}
+
+/** GitHub#401: one Project the "从 GitHub 选" list offers */
+export interface ProjectChoice {
+  number: number;
+  title: string;
+  /** the Project's address, as "add source" takes it */
+  url: string;
+}
+
+/** GitHub#401: the Projects of one owner (the account itself, or one organisation) */
+export interface ChoiceGroup {
+  owner: string;
+  ownerType: 'org' | 'user';
+  /** read whole (every page); false = `failure` says why, and `projects` is empty */
+  ok: boolean;
+  projects: ProjectChoice[];
+  failure?: ReadFailure;
+  /** more pages than are read: only the first ones are listed */
+  truncated: boolean;
+}
+
+/** GitHub#401: what "从 GitHub 选" lists */
+export interface ProjectChoices {
+  /** false = nothing could be read (not even who is signed in): `failure` says why */
+  ok: boolean;
+  failure?: ReadFailure;
+  viewer?: string;
+  /** the account's own first, then each organisation */
+  groups: ChoiceGroup[];
+  /** the list of organisations could not be read: only the account's own Projects are there */
+  orgsFailure?: ReadFailure;
+  orgsTruncated?: boolean;
 }

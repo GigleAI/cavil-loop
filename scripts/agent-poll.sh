@@ -46,6 +46,12 @@ if [ -n "${CAVIL_MIGRATE_GATE_FD:-}" ]; then
     unset CAVIL_MIGRATE_GATE_FD
 fi
 
+# ── base 分支测试工作流失败报告（GitHub#345）──
+# 故意放在节奏闸门**之前**：它是闸门之外的一个独立定时项，有自己的 5 分钟间隔和失败退避，项目空闲、
+# 主轮询退避时也要按时查。它不读也不写 state.json、不碰快照目录；CI_FAILURE_REPORT_WORKFLOWS 留空时
+# 这里什么都不做。放在 flock 之后：它改报告的标签，和派工不能同时进行。
+ci_failure_report_tick
+
 # ── 轮询节奏闸门（issue #35）──
 # 长期没动静的项目渐进退避：闹钟照旧每分钟把这个脚本叫醒，这里决定被叫醒之后要不要
 # 真的去打 GitHub。判定和状态都在 _lib.sh 的 pace_* 那一段。
@@ -191,7 +197,7 @@ self_heal_one() {
     [ -n "$pending_label" ] || pending_label="$(pending_label_for_model "$model")"
     tries=$(selfheal_bump "$issue_n")
     if [ "$tries" -le "$cap" ]; then
-        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → $pending_label）"
+        log "🔄 self-heal: $kind #$n session=$sess 不存在 → 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
         pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
@@ -233,10 +239,10 @@ if [ -n "$zombie_issue_nums" ]; then
     done <<< "$zombie_issue_nums"
 fi
 if [ -n "$SELFHEAL_REQUESTER_BOT" ]; then
-    log "self-heal 跳过（挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
+    log "self-heal 跳过（挂着外部需求机器人等待标签 ${LABEL_PENDING_REQUESTER_BOT}，等机器人带回答复）:$SELFHEAL_REQUESTER_BOT"
 fi
 if [ -n "$SELFHEAL_BLOCKED" ]; then
-    log "self-heal 跳过（挂着等前置标签 $LABEL_PENDING_BLOCKED，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
+    log "self-heal 跳过（挂着等前置标签 ${LABEL_PENDING_BLOCKED}，等前置完成后自动接力）:$SELFHEAL_BLOCKED"
 fi
 if [ -n "$SELFHEAL_FOREIGN" ]; then
     log "self-heal 跳过（不是本机 $SELFHEAL_HOST_ID 派的，括号里是记录的归属）:$SELFHEAL_FOREIGN"
@@ -346,7 +352,7 @@ if [ "${PRIORITY_SOURCE:-label}" != "label" ]; then
                 *) PROJECT_PRIO[$_pn]=$_pr ;;
             esac
         done < "$_pp_out"
-        log_debug "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=$PRIORITY_SOURCE）"
+        log_debug "Project 优先级：读到 ${#PROJECT_PRIO[@]} 条（看板 ${_proj_desc:-?}，字段 ${PROJECT_PRIORITY_FIELD:-Priority}，source=${PRIORITY_SOURCE}）"
     else
         # 只取第一行错误：GraphQL 的 scope 报错会把同一句话重复三遍
         log "⚠️ Project 优先级读取失败，本轮回落到 label 排序：$(head -1 "$_pp_err" | cut -c1-160)"
@@ -378,6 +384,11 @@ collect_queue_rows() {
         [ -n "$num" ] || continue
         key="$kind:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
+        # CI 失败报告（GitHub#345）：交人没做完 / 本机记录丢失期间的报告不派，不管它挂着什么标签
+        if [ "$kind" = issue ] && ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            continue
+        fi
         queued_keys[$key]=1
         # review 轮次烧光的条目会**同时**挂着 pending/review + pending/human：留着
         # pending/review 是为了在看板上区分「审过了等人拍板」（只有 pending/human）和
@@ -394,11 +405,11 @@ collect_queue_rows() {
         # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
         # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
         if labels_have_requester_bot_wait "$labels_csv"; then
-            log "${kind} #${num} 挂着外部需求机器人等待标签 $LABEL_PENDING_REQUESTER_BOT，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
+            log "${kind} #${num} 挂着外部需求机器人等待标签 ${LABEL_PENDING_REQUESTER_BOT}，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
         # 等前置期间有人打了触发标签（GitHub#157）：同上，按触发标签派，派工时一并摘掉等前置标签
         if labels_have_blocked "$labels_csv"; then
-            log "${kind} #${num} 挂着等前置标签 $LABEL_PENDING_BLOCKED，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
+            log "${kind} #${num} 挂着等前置标签 ${LABEL_PENDING_BLOCKED}，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等前置标签"
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
@@ -436,7 +447,7 @@ dispatch_failed() {
         log "${kind} #${num} 派工失败（第 $tries/$cap 次，下轮重试）：$reason"
         return 0
     fi
-    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 $LABEL_PENDING_HUMAN（停止重试）：$reason"
+    log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 ${LABEL_PENDING_HUMAN}（停止重试）：$reason"
     notify_bounced_to_human "$num" \
         "daemon 连续 $tries 次没能把这条活派出去，为防止空转已停止重试。最后一次的错误：\`$(printf '%s' "$reason" | tr '`' "'")\`" \
         "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。"
@@ -461,7 +472,7 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
     [ "$rc" != 2 ] || return 1
     if [ "$rc" = 0 ]; then
         AP_FLAG=1; AP_ISSUE="$AUTOPILOT_ISSUE"; AP_PR="$AUTOPILOT_PR"; AP_WHERE="$(autopilot_auth_where)"
-        log "托管：$1 #$2 是托管条目（授权在 $AP_WHERE，$AUTOPILOT_ACTOR 打的），拼入托管规则"
+        log "托管：$1 #$2 是托管条目（授权在 ${AP_WHERE}，$AUTOPILOT_ACTOR 打的），拼入托管规则"
         if [ "$1" = pr ] && [ "$3" = review ]; then
             autopilot_remember_review "$STATE_FILE" "$2" || true
         fi
@@ -477,6 +488,12 @@ dispatch_one_issue() {
     if usage_limit_gate "$worker_agent" "issue #$num"; then return 0; fi
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
+
+    # 启动前再问一次（GitHub#345）：收集候选之后才进不派工名单的，也不能派
+    if ci_report_dispatch_hold "$num"; then
+        log "issue #$num 不派工：${CI_REPORT_HOLD_REASON}（CI 失败报告）"
+        return 0
+    fi
 
     # 已有 session → 用户确认方案后标 pending/agent，走 issue-comment 派工。
     # pending/agent 是用户明确意图信号（包括勾选 checkbox、编辑 comment 等不产生新 comment ID 的操作），
@@ -622,14 +639,19 @@ collect_queue_rows_greedy() {
             GREEDY_SKIPPED+=" ${kind}#${num}($blocked)"
             continue
         fi
+        if [ "$kind" = issue ] && ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            GREEDY_SKIPPED+=" ${kind}#${num}(CI 失败报告不派工)"
+            continue
+        fi
         # 没有任何挡工标签 = 自动续工。等外部需求机器人期间等待标签被提前摘掉、之后没人打派工标签的
         # 不续工（GitHub#162，requester_bot_wait_hold）；判不了本轮也不续工
         rc=0; requester_bot_wait_hold "$num" || rc=$?
         case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy：${kind} #${num} 不续工——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
                GREEDY_SKIPPED+=" ${kind}#${num}(等待已摘、无派工标签)"
                continue ;;
-            2) log "greedy：${kind} #${num} 本轮不续工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+            2) log "greedy：${kind} #${num} 本轮不续工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                continue ;;
         esac
         queued_keys[$key]=1
@@ -679,6 +701,10 @@ collect_autopilot_rows() {
         key="issue:$num"
         [ -z "${queued_keys[$key]:-}" ] || continue
         autopilot_labels_in_flow "$labels_csv" && continue
+        if ci_report_dispatch_hold "$num"; then
+            ci_report_hold_note "$num"
+            continue
+        fi
         if ! autopilot_enabled; then
             # 托管需要复审关卡把关；没配就不托管，说一次、交人
             if autopilot_notice_once "$STATE_FILE" "$num" no-review-gate "⚠️ **托管标签 \`$LABEL_AUTOPILOT\` 不生效：本项目没有开复审关卡**
@@ -702,9 +728,9 @@ collect_autopilot_rows() {
                 # 只挂托管标签 = 自动开工。等待标签被提前摘掉、之后没人打派工标签的不开工（GitHub#162）
                 rc=0; requester_bot_wait_hold "$num" || rc=$?
                 case "$rc" in
-                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
+                    0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：issue #$num 不自动开工——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
                        continue ;;
-                    2) log "托管：issue #$num 本轮不自动开工（$REQUESTER_BOT_WAIT_REASON），下轮再判"
+                    2) log "托管：issue #$num 本轮不自动开工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                        continue ;;
                 esac
                 queued_keys[$key]=1
@@ -714,12 +740,12 @@ collect_autopilot_rows() {
                 QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}issue${US}${num}${US}-${US}${LABEL_PENDING_AGENT_DEFAULT}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
                 ;;
             1)
-                log "托管：issue #$num 只挂着托管标签，但授权不成立（$AUTOPILOT_REASON）→ 不派工"
+                log "托管：issue #$num 只挂着托管标签，但授权不成立（${AUTOPILOT_REASON}）→ 不派工"
                 autopilot_note_denial "$STATE_FILE" "$num"
                 autopilot_state_set "$STATE_FILE" '.denied[$n] = $u' --arg n "$num" --arg u "$AUTOPILOT_JUDGE_REV|$updated" || true
                 ;;
             *)
-                log "托管：issue #$num 的托管授权判不了（$AUTOPILOT_REASON），下轮再看"
+                log "托管：issue #$num 的托管授权判不了（${AUTOPILOT_REASON}），下轮再看"
                 ;;
         esac
     done <<< "$raw"
@@ -741,6 +767,8 @@ if [ "${DISPATCH_MODE:-label}" = "greedy" ]; then
         log_debug "greedy 跳过（括号里是挡住它的 label）:$GREEDY_SKIPPED"
     fi
 fi
+
+ci_report_hold_flush
 
 if [ -n "$REVIEW_CAPPED" ]; then
     log_debug "review 轮次已用尽、挂着 $LABEL_PENDING_HUMAN 等人工（本轮不派工，摘掉该标签才恢复）:$REVIEW_CAPPED"

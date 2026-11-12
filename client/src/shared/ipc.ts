@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
@@ -25,11 +25,15 @@ export interface CavilApi {
   setClientId(id: string): Promise<void>;
   addSource(input: string): Promise<{ ok: boolean; error?: string }>;
   removeSource(key: string): Promise<void>;
+  /** GitHub#401: the Projects the account and its organisations have, read now ("从 GitHub 选") */
+  projectChoices(): Promise<ProjectChoices>;
   setView(patch: ViewPatch): Promise<void>;
   syncNow(): Promise<void>;
   /** refresh by hand (GitHub#217): a round reading GitHub is dropped and a new one starts at once */
   restartSync(): Promise<void>;
   openExternal(url: string): Promise<void>;
+  /** GitHub#401: GitHub's page for the app the current sign-in used (each organisation's access); the back end builds it */
+  openAuthPage(): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;
   /** the app updating itself (GitHub#184) */
   checkUpdate(): Promise<void>;

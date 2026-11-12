@@ -11,6 +11,7 @@ import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
+import type { SettingsIntent } from './EmptyGuide';
 
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
 export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
@@ -18,6 +19,9 @@ export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [page, setPage] = useState<'board' | 'settings'>('board');
+  // GitHub#401: the empty board's buttons open Settings with the picker open, or the address box focused
+  const [intent, setIntent] = useState<{ what: SettingsIntent; seq: number } | null>(null);
+  const intentSeq = useRef(0);
   const [help, setHelp] = useState(false);
   const openHelp = () => setHelp(true);
   useEffect(() => {
@@ -86,6 +90,8 @@ export function App() {
   });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
+  // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
+  const tallySaved = useRef<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -110,7 +116,7 @@ export function App() {
       ) : snap.state.phase === 'login' ? (
         <LoginView state={snap.state} onHelp={openHelp} />
       ) : page === 'settings' ? (
-        <SettingsView state={snap.state} data={snap.data} onBack={() => setPage('board')} onHelp={openHelp} />
+        <SettingsView state={snap.state} data={snap.data} onBack={() => setPage('board')} onHelp={openHelp} intent={intent} onIntentTaken={() => setIntent(null)} />
       ) : (
         <BoardView
           state={snap.state}
@@ -123,8 +129,12 @@ export function App() {
           onFocusTaken={() => setFocusReq(null)}
           request={boardReq}
           onRequestTaken={() => setBoardReq(null)}
-          onSettings={() => setPage('settings')}
+          onSettings={(what) => {
+            setIntent(what ? { what, seq: ++intentSeq.current } : null);
+            setPage('settings');
+          }}
           onKeysHelp={() => setKeysHelp(true)}
+          tallySaved={tallySaved}
         />
       )}
       {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}

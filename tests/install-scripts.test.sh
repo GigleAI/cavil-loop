@@ -13,6 +13,7 @@
 #   5. 断开：读不到不动；停不下来不删登记；正常断开保留项目配置和状态
 #   6. 换新 Mac 后台任务配置：五个场景 + 校验不过 / 等不到锁 / 原来未加载
 #   7. 文档里写给人照做的命令，按字面在干净环境跑通
+#   8. 单字节字符集下（bash 读变量名的方式同 macOS 自带 bash 3.2）跑安装 / 状态 / 读配置 / 换新 / 断开（GitHub#411）
 #
 #   bash tests/install-scripts.test.sh
 set -uo pipefail
@@ -430,6 +431,51 @@ rc=0; out="$(run_doc Darwin "$SANDBOX/install-scripts-mac-ops.sh")" || rc=$?
 restore_template
 chk "macOS 换新：空环境下跑完、退出 0、RESULT=replaced" "$rc $(tail -1 <<< "$out")" "0 RESULT=replaced"
 chk_has "macOS 换新：文件已换新" "$(cat "$H/Library/LaunchAgents/dev.luosky.cavil-loop.myproject.plist")" "<key>Nice</key>"
+
+echo "── 8. 单字节字符集下跑客户端会调的脚本（bash 读变量名的方式同 macOS 自带 bash 3.2，GitHub#411）──"
+# macOS 自带 bash 3.2 判断变量名到哪里结束时，把 UTF-8 中文的首字节也当成名字的一部分：
+# "$label：" 去找一个不存在的变量，set -u 下直接退出。Linux 的 bash 在单字节字符集（ISO-8859-1，
+# 0xEF 等是字母）里做同样的判断，所以在测试临时目录生成这样一个区域设置，靠 LOCPATH 指过去（不改系统）。
+# PYTHONUTF8：脚本里调的 python 在这个区域设置下会按 latin-1 输出中文而报错——那是测试环境的副作用，
+# Mac 上的真实区域设置是 UTF-8，不是本组要测的东西。
+LOC="$SANDBOX/locale"; mkdir -p "$LOC"
+loc_rc=0; localedef -i en_US -f ISO-8859-1 "$LOC/en_US.ISO-8859-1" > "$SANDBOX/localedef.out" 2>&1 || loc_rc=$?
+sb() { env LOCPATH="$LOC" LC_ALL=en_US.ISO-8859-1 PYTHONUTF8=1 "$@"; }
+probe_bad="$(sb bash -uc 'v=x; echo "$v：ok"' 2>&1)"; probe_good="$(sb bash -uc 'v=x; echo "${v}：ok"' 2>&1)"
+# localedef 对缺字符集定义以外的警告也给非零退出码，以复现与否为准；复现不了就判红，不悄悄跳过
+chk "区域设置生成成功，且复现了 macOS 的读法（不加花括号报错、加了正常）" \
+    "$(case "$probe_bad" in *"unbound variable"*) echo reproduced ;; *) echo "not-reproduced(localedef=$loc_rc)" ;; esac) $probe_good" \
+    "reproduced x：ok"
+[ "$probe_good" = "x：ok" ] || sed 's/^/     | /' "$SANDBOX/localedef.out"
+# 只导出给子进程：本 shell 自己换区域设置时还看不到刚导出的 LOCPATH，会打一行无害的警告，丢掉
+sb_env() { ( export LOCPATH="$LOC" PYTHONUTF8=1; { export LC_ALL=en_US.ISO-8859-1; } 2>/dev/null; "$@" ); }
+
+# 安装（setup.sh --yes）
+fresh_world; restore_template
+sb_env run_setup "$SKILL" Darwin --yes
+chk "单字节：setup.sh --yes 成功、后台任务已加载" \
+    "$(cat "$SANDBOX/setup.rc") $(cat "$FAKE_LD/dev.luosky.cavil-loop.widget.path" 2>/dev/null)" "0 $plist"
+chk_lacks "单字节：setup.sh 输出里没有变量未定义" "$(cat "$SANDBOX/setup.out")" "unbound variable"
+# 状态
+rc=0; out="$(sb_env status Darwin claude 2>"$SANDBOX/sb.err")" || rc=$?
+chk "单字节：状态脚本退出 0、读到项目在跑" "$rc $(jq -r '.projects[0].scheduler.state' <<< "$out" 2>/dev/null)" "0 running"
+[ "$(jq -r ".projects[0].scheduler.state" <<< "$out" 2>/dev/null)" = running ] || { head -c 600 <<< "$out"; head -5 "$SANDBOX/sb.err"; } | sed "s/^/     | /"
+# 读项目配置
+rc=0; out="$(sb_env in_env Darwin claude -- bash "$SKILL/scripts/project-config.sh" get widget 2>"$SANDBOX/sb.err")" || rc=$?
+chk "单字节：读项目配置退出 0、给出配置文件位置" "$rc $(jq -r '.config' <<< "$out" 2>/dev/null)" "0 $HOST/cavil-loop.config"
+# 换新后台任务配置——issue 截图里出错的那一步
+: > "$FAKE_LD/calls"; change_template
+rc=0; out="$(sb_env refresh widget 2>&1)" || rc=$?
+chk "单字节：换新脚本退出 0、RESULT=replaced" "$rc $(tail -1 <<< "$out")" "0 RESULT=replaced"
+chk_lacks "单字节：换新输出里没有变量未定义" "$out" "unbound variable"
+chk "单字节：新文件已换上，任务加载的就是新内容" \
+    "$(grep -c '<key>Nice</key>' "$plist") $(cmp -s "$FAKE_LD/dev.luosky.cavil-loop.widget.content" "$plist" && echo same)" "1 same"
+restore_template
+# 断开
+rc=0; out="$(sb_env disconnect Darwin widget 2>&1)" || rc=$?
+chk "单字节：断开退出 0、RESULT=disconnected、登记已撤" \
+    "$rc $(tail -1 <<< "$out") $([ -e "$H/.config/cavil-loop/widget.conf" ] && echo still)" "0 RESULT=disconnected "
+chk_lacks "单字节：断开输出里没有变量未定义" "$out" "unbound variable"
 
 echo
 compat_summary

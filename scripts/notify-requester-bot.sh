@@ -142,11 +142,11 @@ fi
 
 CUR_LABELS=$(printf '%s' "$ITEM_JSON" | jq -r '[.labels[].name] | join("\u001f")')
 has_label "$CUR_LABELS" "$LABEL_PENDING_HUMAN" \
-    && reject "#$NUM 挂着 $LABEL_PENDING_HUMAN（维护者在处理 / 复审轮次用尽），只交维护者"
+    && reject "#$NUM 挂着 ${LABEL_PENDING_HUMAN}（维护者在处理 / 复审轮次用尽），只交维护者"
 for n in $(printf '%s\n%s\n' "$NUM" "$ORIGIN" | awk '!seen[$0]++'); do
     rc=0; who=$(maintainer_took_over "$n") || rc=$?
     case "$rc" in
-        0) reject "#$n 由维护者 $who 手动标过 $LABEL_PENDING_HUMAN、之后没有维护者解除（摘掉它或重新打触发标签），只交维护者" ;;
+        0) reject "#$n 由维护者 $who 手动标过 ${LABEL_PENDING_HUMAN}、之后没有维护者解除（摘掉它或重新打触发标签），只交维护者" ;;
         2) reject "读不到 #$n 的标签历史，无法确认维护者是否接手过" ;;
     esac
 done
@@ -185,9 +185,9 @@ read_comment() {   # <评论编号> <输出文件>
 if [ "$MODE" = any ]; then
     TMPD=$(mktemp -d); trap 'rm -rf "$TMPD"' EXIT
     C_ID=$(my_latest_comment) || reject "读不到 #$NUM 的评论，无法核对交接评论"
-    [ -n "$C_ID" ] || reject "#$NUM 上没有本账号（$REQUESTER_BOT_ME）发的评论：非机器人条目要先发一条写明转给谁的交接评论"
+    [ -n "$C_ID" ] || reject "#$NUM 上没有本账号（${REQUESTER_BOT_ME}）发的评论：非机器人条目要先发一条写明转给谁的交接评论"
     rc=0; read_comment "$C_ID" "$TMPD/c0" || rc=$?
-    [ "$rc" = 0 ] || reject "读不到交接评论 $C_ID（或它不属于 #$NUM / 不是本账号发的）"
+    [ "$rc" = 0 ] || reject "读不到交接评论 ${C_ID}（或它不属于 #$NUM / 不是本账号发的）"
     rc=0; TARGET=$(python3 "$HANDOFF_PY" check "$TMPD/c0") || rc=$?
     # 叫醒成功后本账号最新的一条是叫醒记录（没有转交标记），所以复用旧交接评论也落在这里
     [ "$rc" = 0 ] || reject "本账号在 #$NUM 上最新的评论 $C_ID 不是合格的交接评论：${TARGET:-转交标记核对失败}（要单独一行 <!-- requester-bot-forward-to: <对象> -->；一条交接评论只能叫醒一次，再叫醒要先发新的）"
@@ -210,7 +210,7 @@ wake_once() {
     labels=$(read_item "$NUM") || { LAST_FAIL="读回失败"; return 1; }
     has_label "$labels" "$LABEL_PENDING_REQUESTER_BOT" || { LAST_FAIL="读回没有等待标签（实际：$(show_labels "$labels")）"; return 1; }
     for L in "${CLEAR_LABELS[@]}"; do
-        has_label "$labels" "$L" && { LAST_FAIL="读回仍有 $L（实际：$(show_labels "$labels")）"; return 1; }
+        has_label "$labels" "$L" && { LAST_FAIL="读回仍有 ${L}（实际：$(show_labels "$labels")）"; return 1; }
     done
     return 0
 }
@@ -309,36 +309,36 @@ WOKE=""
 if [ "$MODE" = any ]; then
     rc=0; wake_any_once || rc=$?
     if [ "$rc" = 0 ]; then
-        WOKE="#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，叫醒记录 $R_ID，转给：$TARGET"
+        WOKE="#$NUM 挂上 ${LABEL_PENDING_REQUESTER_BOT}；交接评论 ${C_ID}，挂标签事件 ${E_ID}，叫醒记录 ${R_ID}，转给：$TARGET"
     elif [ "$rc" = 1 ]; then
-        say "叫醒第 1 次失败：$LAST_FAIL，整体重试一次"
+        say "叫醒第 1 次失败：${LAST_FAIL}，整体重试一次"
         rc=0; wake_any_once || rc=$?
-        [ "$rc" != 0 ] || WOKE="重试后成功，#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT；交接评论 $C_ID，挂标签事件 $E_ID，叫醒记录 $R_ID，转给：$TARGET"
+        [ "$rc" != 0 ] || WOKE="重试后成功，#$NUM 挂上 ${LABEL_PENDING_REQUESTER_BOT}；交接评论 ${C_ID}，挂标签事件 ${E_ID}，叫醒记录 ${R_ID}，转给：$TARGET"
     fi
     [ "$rc" != 2 ] || NO_RETRY=1
 elif wake_once; then
     WOKE="#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT"
 else
-    say "叫醒第 1 次失败：$LAST_FAIL，整体重试一次"
+    say "叫醒第 1 次失败：${LAST_FAIL}，整体重试一次"
     if wake_once; then WOKE="重试后成功，#$NUM 挂上 $LABEL_PENDING_REQUESTER_BOT"; fi
 fi
 # 唯一的成功出口：交接已读回确认，才通知 webhook
 if [ -n "$WOKE" ]; then
-    say "✅ 已叫醒 $REQUESTER_BOT_ACCOUNT（$WOKE）"
+    say "✅ 已叫醒 ${REQUESTER_BOT_ACCOUNT}（${WOKE}）"
     requester_bot_webhook_notify "$NUM" "$ITEM_KIND"
     [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || say "$REQUESTER_BOT_WEBHOOK_RESULT"
     exit 0
 fi
 WAKE_FAIL="$LAST_FAIL"
 if [ -n "${NO_RETRY:-}" ]; then
-    say "叫醒失败：$WAKE_FAIL（这种情况不重试）→ 交还维护者"
+    say "叫醒失败：${WAKE_FAIL}（这种情况不重试）→ 交还维护者"
 else
     say "叫醒重试仍失败：$WAKE_FAIL → 交还维护者"
 fi
 if handback; then
-    say "⚠️ 叫醒失败（$WAKE_FAIL），已交还维护者：#$NUM 现在只挂 $LABEL_PENDING_HUMAN"
+    say "⚠️ 叫醒失败（${WAKE_FAIL}），已交还维护者：#$NUM 现在只挂 $LABEL_PENDING_HUMAN"
     exit 3
 fi
 FINAL=$(read_item "$NUM" 2>/dev/null) || FINAL=""
-say "❌ 叫醒失败（$WAKE_FAIL），交还维护者也失败（$LAST_FAIL）。实际读回的标签：${FINAL:+$(show_labels "$FINAL")}${FINAL:-读不到}"
+say "❌ 叫醒失败（${WAKE_FAIL}），交还维护者也失败（${LAST_FAIL}）。实际读回的标签：${FINAL:+$(show_labels "$FINAL")}${FINAL:-读不到}"
 exit 4
