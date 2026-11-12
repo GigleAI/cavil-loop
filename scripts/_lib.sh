@@ -4284,7 +4284,8 @@ autopilot_body_has_close() {   # 正文从 stdin
 autopilot_pr_kind() {   # <PR JSON> [正文]
     local pj="$1" n repo body by_line by_whole
     AUTOPILOT_PR_KIND=bad; AUTOPILOT_PR_N=""; AUTOPILOT_REASON=""
-    if [ "$#" -ge 2 ] && ! pj=$(printf '%s' "$pj" | jq -c --arg b "$2" '.body = $b' 2>/dev/null); then
+    # 正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+    if [ "$#" -ge 2 ] && ! pj=$( { printf '%s\n' "$pj"; printf '%s' "$2" | jq -Rs .; } | jq -cs '.[1] as $b | .[0] | .body = $b' 2>/dev/null); then
         AUTOPILOT_REASON="读不懂 PR 的内容"; return 0
     fi
     if n=$(autopilot_pr_binding "$pj"); then
@@ -4337,16 +4338,21 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
                   | select((.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean") | .nodes' 2>/dev/null); then
             AUTOPILOT_REASON="读不到 PR #$pr 正文的修改历史"; return 2
         fi
-        edits=$(jq -cn --argjson a "$edits" --argjson b "$nodes" '$a + $b')
+        # 修改历史、正文大小没有上限，走标准输入，不经命令行参数（单个参数 128 KB 上限，GitHub#426）
+        if ! edits=$(printf '%s\n%s\n' "$edits" "$nodes" | jq -cs '.[0] + .[1]' 2>/dev/null); then
+            AUTOPILOT_REASON="拼不起 PR #$pr 正文的修改历史"; return 2
+        fi
         # 倒序：已经读到早于打标签的那一版就够了
         printf '%s' "$nodes" | jq -e --arg t "$t" 'any(.[]; (.editedAt | type) == "string" and .editedAt < $t)' >/dev/null 2>&1 && break
         [ "$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.hasNextPage')" = true ] || break
         after=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.userContentEdits.pageInfo.endCursor // ""')
         [ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }
     done
-    out=$(jq -cn --argjson e "$edits" --arg t "$t" --arg cur "$(printf '%s' "$pj" | jq -r '.body // ""')" \
+    out=$(printf '%s\n%s\n' "$edits" "$(printf '%s' "$pj" | jq -c '(.body // "") | tostring | sub("\n+$"; "")' || echo '""')" | jq -cs --arg t "$t" \
               --arg created "$(printf '%s' "$pj" | jq -r '.created_at // ""')" '
-        if ($e | length) == 0 then {ok: [$cur]}
+        # 正文和改前一样去掉末尾换行（改前它经 $(…) 当参数传进来）
+        .[0] as $e | .[1] as $cur
+        | if ($e | length) == 0 then {ok: [$cur]}
         elif any($e[]; (.editedAt | type) != "string" or .editedAt == "") then {err: "unreadable"}
         else
           ([$e[] | select(.editedAt == $t)] + ([$e[] | select(.editedAt < $t)] | sort_by(.editedAt) | .[-1:])) as $c
@@ -5208,7 +5214,7 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
         AP_PATHS_DETAIL="请求失败或空输出"; return 0
     fi
     out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
-        --argjson pj "$pj" "$AUTOPILOT_PATHS_JQ"'
+        --argjson pj "$(printf '%s' "$pj" | jq -c '{changed_files}')" "$AUTOPILOT_PATHS_JQ"'
         ($pj.changed_files) as $n
         | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
           elif (type != "array") or (all(.[]; type == "array") | not)
@@ -5396,10 +5402,10 @@ autopilot_permit() {   # <state_file> <PR 编号>
         case "$rc" in
             0) ;;
             1) AP_V=human; AP_STOP=outsider; AP_STOP_KEY="$OS_GATE_KEY"
-               AP_REASON="托管授权（$OS_AUTH_WHERE）之后，有外部账号（在本仓库没有写权限的账号）写的内容：$OS_GATE_TEXT。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
+               AP_REASON="托管授权（${OS_AUTH_WHERE}）之后，有外部账号（在本仓库没有写权限的账号）写的内容：${OS_GATE_TEXT}。agent 可能读到过这些内容，改动没有经过维护者过目，托管不自动合并。"
                AP_NEXT="请维护者看过这些内容和 PR 的改动后选一种：① 自己审完直接合并；② 认为没问题、要继续托管——在 $(autopilot_auth_where) 上把 \`$LABEL_AUTOPILOT\` 摘掉再打上（表示这些内容已看过），再把本 PR 的标签改成 \`${LABEL_PENDING_REVIEW}\`，重新走复审和合并；③ 不合，关掉 PR。"
                return 0 ;;
-            *) AP_REASON="核对外部账号的内容时读不全（$OS_WHY）"; return 0 ;;
+            *) AP_REASON="核对外部账号的内容时读不全（${OS_WHY:-内部步骤异常退出（退出码 ${rc}），原因没记下}）"; return 0 ;;
         esac
     fi
     # 复审的测试重跑记录是一条普通评论：可以被编辑、被删除，每次都现读
