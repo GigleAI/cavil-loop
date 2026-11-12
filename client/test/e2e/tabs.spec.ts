@@ -373,26 +373,36 @@ test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail
   await page.waitForTimeout(800);
   expect(detailReads(A)).toBe(before);
 
-  // ⌘1 as a French layout reports it ("&", the Digit1 key): the window and the discussion agree
-  const french = { key: '&', code: 'Digit1', ctrlKey: true, shiftKey: false, bubbles: true, cancelable: true };
+  // ⌘1 … ⌘9: one event shape, sent once to the window and once inside the isolated discussion — the two must
+  // agree on every shape (code review rounds 1 and 2: the discussion went by the character, then dropped a key
+  // position that was not a digit and fell back to the character)
+  const shapes: { what: string; ev: Record<string, unknown>; home: boolean }[] = [
+    { what: 'US ⌘1', ev: { key: '1', code: 'Digit1', ctrlKey: true }, home: true },
+    { what: 'French ⌘1 ("&", the Digit1 key)', ev: { key: '&', code: 'Digit1', ctrlKey: true }, home: true },
+    { what: 'number pad ⌘1', ev: { key: '1', code: 'Numpad1', ctrlKey: true }, home: true },
+    { what: 'a key that is no digit typing "1"', ev: { key: '1', code: 'KeyQ', ctrlKey: true }, home: false },
+    { what: '"1" with no key position reported', ev: { key: '1', code: '', ctrlKey: true }, home: true },
+    { what: 'Digit2 typing "1" (the key position decides: the first tab)', ev: { key: '1', code: 'Digit2', ctrlKey: true }, home: false },
+    { what: '⌘⌥1 (Mac-only key, this is Linux)', ev: { key: '1', code: 'Digit1', ctrlKey: true, altKey: true }, home: false },
+    { what: 'a bare 1', ev: { key: '1', code: 'Digit1' }, home: false },
+  ];
+  const outcome = async (where: 'window' | 'discussion', ev: Record<string, unknown>) => {
+    await tab(page, A).click();
+    await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    const init = { bubbles: true, cancelable: true, ...ev };
+    if (where === 'window') await page.evaluate((e) => window.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    else await frame.locator('body').evaluate((b, e) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    await page.waitForTimeout(300);
+    return (await home(page).getAttribute('data-front')) === 'yes';
+  };
+  for (const s of shapes) {
+    const inWindow = await outcome('window', s.ev);
+    const inDiscussion = await outcome('discussion', s.ev);
+    expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: s.home, inDiscussion: s.home });
+  }
+  // and a digit that moves somewhere else is really carried out from the discussion: ⌘2 is the first tab (B; the tabs are B, A)
   await tab(page, A).click();
   await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-  await page.evaluate((ev) => window.dispatchEvent(new KeyboardEvent('keydown', ev)), french);
-  await expect(home(page)).toHaveAttribute('data-front', 'yes');
-  await tab(page, A).click();
-  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-  await frame.locator('body').evaluate((b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)), french);
-  await expect(home(page)).toHaveAttribute('data-front', 'yes');
-  // a digit that needs Shift on that layout (⌘⇧3 reported as "3" with Digit3) still is not a tab key: ⌘⇧3 is the graph
-  await tab(page, A).click();
-  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-  await frame.locator('body').evaluate(
-    (b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)),
-    { key: '3', code: 'Digit3', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true },
-  );
-  await page.waitForTimeout(300);
-  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
-  // the US shape of ⌘2 in the discussion: the first tab (B; the tabs are B, A)
   await frame.locator('body').evaluate(
     (b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)),
     { key: '2', code: 'Digit2', ctrlKey: true, shiftKey: false, bubbles: true, cancelable: true },

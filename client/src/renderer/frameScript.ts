@@ -214,14 +214,15 @@ export const FRAME_SCRIPT = `(function () {
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
-    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey;
-    var dg = typeof e.code === 'string' && /^(Digit|Numpad)[0-9]$/.test(e.code) ? e.code : '';
-    var k = dg ? dg.slice(-1) : e.key.toLowerCase();
+    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, k = e.key.toLowerCase();
+    var code = typeof e.code === 'string' ? e.code : '';
+    var dg = /^(Digit|Numpad)[0-9]$/.test(code) ? code.slice(-1) : '';
     for (var i = 0; i < fwd.length; i++) {
-      if (fwd[i].key !== k || fwd[i].mod !== mod || fwd[i].shift !== sh) continue;
+      var f = fwd[i];
+      if (f.mod !== mod || f.shift !== sh) continue;
+      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : k !== f.key) continue;
       e.preventDefault();
-      if (dg) send({ cavil: 'key', key: k, mod: mod, shift: sh, code: dg });
-      else send({ cavil: 'key', key: k, mod: mod, shift: sh });
+      send({ cavil: 'key', key: k, mod: mod, shift: sh, code: code });
       return;
     }
   });
@@ -238,4 +239,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-RY+QEwjVBYPsHcJ6gigds9+nwJb8bqiCK59TiIf7P+E='";
+export const FRAME_SCRIPT_HASH = "'sha256-1w5AK2CrJvT9phTGokE2TGUqDeF/RxTAdN0jIvReTtg='";

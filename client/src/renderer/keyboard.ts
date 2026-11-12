@@ -75,11 +75,17 @@ function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): Shortc
  * the shortcuts of FRAME_IDS (go to the reply box, 关闭 issue / 交给 agent / 托管) may act — every
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
-export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = undefined): boolean {
+export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = ''): boolean {
   if (typeof key !== 'string' || key.length !== 1 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
-  // GitHub#442: the physical key, for a digit (matched by it, as in the window); anything else is not taken
-  if (code !== undefined && (typeof code !== 'string' || !/^(Digit|Numpad)[0-9]$/.test(code))) return false;
-  return press({ key, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift, ...(code === undefined ? {} : { code }) }, 'none', FRAME_IDS) !== null;
+  // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
+  // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
+  if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;
+  return press(frameEvent(key, mod, shift, code), 'none', FRAME_IDS) !== null;
+}
+
+/** A key the discussion frame reported, as the window's event it stands for. */
+export function frameEvent(key: string, mod: boolean, shift: boolean, code: string): KeyLike {
+  return { key, code, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift };
 }
 
 /**

@@ -817,7 +817,7 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code);
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '');
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
