@@ -265,6 +265,12 @@ else
     log "active workers (doing/agent): 0 (max=${MAX_CONCURRENT_WORKERS:-1})"
 fi
 
+# ── 0a. 用量上限（GitHub#341，ENABLE_USAGE_LIMIT_PAUSE 不开时第一行就返回）──
+# 放在派工之前：这一轮认出来的上限，这一轮的派工就不再往那个 agent 上派。
+# 认上限、记暂停都在本机；只有「被打断的条目留言并转人工」写 GitHub，写之前逐步重读（见 _lib.sh）。
+usage_limit_tick || true
+if [ "$USAGE_LIMIT_ACTED" = 1 ]; then pace_mark_acted; fi
+
 # ── 0b. 完工 worker 回收 ──
 # 上面 §0 管「label 在但 session 没了」；这里管反方向的「session 还在但 label 没了」。
 # 放在 active_keys 算完之后，直接复用同一份 label 真值——口径跟并发闸门一致，也不多
@@ -440,7 +446,9 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
-    local d_rc d_out
+    local d_rc d_out ul_t0
+    # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
+    if usage_limit_gate "$worker_agent" "issue #$num"; then return 0; fi
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
 
@@ -463,12 +471,13 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        d_rc=0
+        d_rc=0; printf -v ul_t0 '%(%s)T' -1
         d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         if [ "$d_rc" = 0 ]; then
             dispatch_fail_reset "issue-$num"
+            usage_limit_note_dispatch "$num" "$ul_t0"
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         else
@@ -487,12 +496,13 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    d_rc=0
+    d_rc=0; printf -v ul_t0 '%(%s)T' -1
     d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "issue-$num"
+        usage_limit_note_dispatch "$num" "$ul_t0"
     else
         dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
     fi
@@ -507,7 +517,9 @@ dispatch_one_pr() {
     local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
-    local d_rc d_out
+    local d_rc d_out ul_t0
+    # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
+    if usage_limit_gate "$worker_agent" "PR #$prnum"; then return 0; fi
     issue_n=$(pr_to_issue_num "$prnum" "$branch")
     sess="$(tmux_session_name "$issue_n")"
 
@@ -544,12 +556,13 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    d_rc=0
+    d_rc=0; printf -v ul_t0 '%(%s)T' -1
     d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "pr-$prnum"
+        usage_limit_note_dispatch "$issue_n" "$ul_t0"
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
             "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -725,6 +738,7 @@ if [ -n "$QUEUE_SORTED" ]; then
         fi
     done < <(printf '%s\n' "$QUEUE_SORTED")
 fi
+usage_limit_skip_summary
 
 # ── 2b. 托管自动合并（GitHub#114）──
 # 放在派工之后、合并清理之前：这一轮合进去的 PR，这一轮的清理就能收尾（Done 标签、worktree）。
@@ -1002,6 +1016,10 @@ if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
     # 只管「下一轮跑不跑」；第一次发现新挂上的等待仍按原来的节奏（闸门在任何 GitHub 读取之前）。
     pace_cap=""
     if [ "${BLOCKED_WAITING:-0}" = 1 ]; then pace_cap="$BLOCKED_RECHECK_SECS"; fi
+    # 有 agent 在等用量上限解除、或有条目转人工还没做完（GitHub#341）：到点后一两分钟内要能恢复
+    if [ "${USAGE_LIMIT_WAITING:-0}" = 1 ] && { [ -z "$pace_cap" ] || [ "$pace_cap" -gt "$USAGE_LIMIT_PACE_SECS" ]; }; then
+        pace_cap="$USAGE_LIMIT_PACE_SECS"
+    fi
     pace_record_ok "$pace_active" "$pace_fp" "$pace_cap"
     if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
         log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"

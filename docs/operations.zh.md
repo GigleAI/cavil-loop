@@ -793,6 +793,64 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。「已合并」不等于「本机已部署」：前置是 loop 自身的改动时，
 被叫回来的 worker 先核对本机部署版本再用。不支持：github.com 以外的前置、环形依赖检测（互相等的两条都一直等）。
 
+## agent 撞到用量上限：停派这个 agent，被打断的条目转人工（GitHub#341）
+
+两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后，CLI 停在一条提示上：会话活着、条目还挂 `doing/agent`、名额占着——而新派给这个 agent 的会话一开口又撞一次。配置 `ENABLE_USAGE_LIMIT_PAUSE="true"` 后，daemon 每轮看一眼本机派出去、仍挂着 `doing/agent` 的会话，认出这条提示就做两件事，别的都不做：
+
+| 做什么 | 细节 |
+|---|---|
+| 这个 agent 在解除之前不再接新活 | 新 issue、issue 评论、PR 评论、复审、往已有会话里注入，凡是要用这个 agent 的都跳过；标签不动、不计派工失败，到解除时间自动恢复。别的 agent 照常。暂停是**整台机器、按 agent 和账号目录**记的（`~/.claude` / `CLAUDE_CONFIG_DIR`，`~/.codex` / `CODEX_HOME`）：同一个账号的几个项目会一起撞 |
+| 被打断的那一条交给人 | 留一条评论（哪个 agent、几点解除、标签改回哪个），然后加 `pending/human`、摘 `doing/agent`。daemon 不往会话里送字、不停程序、不关会话、不自己续接 |
+
+暂停开始时 `poll.log` 里有 `⏸ 用量上限：<agent> 撞到用量上限（…），暂停派工到 <时间>`，之后每轮列出被跳过的条目。
+
+**人要做的事。** 打开 daemon 留言的那个条目。到留言里写的解除时间之后，在右侧 Labels 里把 `pending/human` 换成留言指定的触发标签（`pending/agent`、复审标签……）。提前换也可以：daemon 会等到解除时间再派。重新派工时续接这个角色登记的原会话。到点后仍没被派、或又撞了上限，就让它留在 `pending/human`，看 daemon 的留言和 `poll.log`，不要来回切标签。
+
+**怎么认出撞上限。** 下面四样都成立才算，否则什么都不做（和没开这项一样）：
+
+- 工作窗格最后一块输出是 CLI 的上限提示，后面只跟着 CLI 自己画在它下面的行（规则在 `scripts/usage_limit.py`，照 `tests/fixtures/usage-limit/` 里的真实截屏写的）；「You've used 99% of your session limit」这类提醒、codex 的「You have N usage limit resets available」都不是
+- agent 空闲
+- 会话是这个条目、这个角色登记的那条，而且它的记录里，本次派工开始之后的模型回复、工具输出、派工说明都不含这句话
+- 连续两轮，屏幕和会话记录都没变
+
+解除时间读自提示本身（claude：钟点加时区，如 `resets 4:50pm (Asia/Singapore)`；codex：`try again at Aug 20th, 2026 11:35 AM`，按本机时区读）。读不出、或在 8 天以外的，改用固定等待 `USAGE_LIMIT_FALLBACK_SECS`（默认 3600 秒）；到点如果还在上限里，下一个撞上的 worker 会再被认出来。
+
+**要知道的限制。**
+
+- 这条提示只出现在窗格里，会话记录里没有对应的标记，所以来源核对是「记录里看不到这句话是模型或工具打出来的」，不是证明。认错的代价：一个条目被留言并转给人（把标签改回即可），这个 agent 暂停到屏幕上读出的那个时间（可以按下面的命令手动解除）。
+- 转人工不等于停止执行。现有的完工回收会在会话闲置满宽限时间后关掉它（对话保留，里面的后台命令随之结束）；带「到点自动继续」的 claude 可能到点自己接着干。
+- daemon 的三次写入（留言、加 `pending/human`、摘 `doing/agent`）之间每次都重读。条目、它的 PR（目标分支、最新提交、来源）、标签或本机会话变了，daemon 就**停手，不撤回任何已经写上去的东西**。所以条目可能同时挂着 `pending/human` 和 `doing/agent`：它仍占一个名额，直到人摘掉 `doing/agent`。读不到不算变了：daemon 等下一轮接着做。
+- CLI 一启动就退出的情况照原来的流程处理（没有以这种方式出现上限提示的真实样本）；**周**上限撞满的屏也没有真实样本——按同一结构匹配，没有实测过。
+- 只有暂停决定一轮派不派；`ENABLE_USAGE_LIMIT_PAUSE` 关着、留空或不写时，不多读一次 tmux 或 GitHub，也不留状态文件。
+
+**查看 / 手动解除暂停。** 暂停只在到点时结束，或者它的记录被删掉时结束——不会因为别的会话看起来在忙而提前结束。在 daemon 那台机器上任意 shell 里执行（第一段什么都不用填）：
+
+<!-- usage-limit-ops:begin -->
+```bash
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+# 1. look: which agents are paused on this machine, until when / 查看：本机哪些 agent 在暂停、到几点
+found=0
+for f in "$DIR"/*.json; do
+    [ -e "$f" ] || continue
+    found=1
+    jq -r '"\(.agent)  until \(.until | localtime | strftime("%Y-%m-%d %H:%M %Z"))  account=\(.account)  seen-on=\(.item)  time-from=\(.source)"' "$f" \
+        || echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"
+done
+[ "$found" = 1 ] || echo "no pause record on this machine / 本机没有暂停记录"
+```
+
+```bash
+# 2. lift a pause by hand: set AGENT, then run / 手动解除：先填 AGENT 再执行
+AGENT=claude
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+rm -f "$DIR/$AGENT"-*.json
+left=$(ls "$DIR" 2>/dev/null | grep -c "^$AGENT-" || true)
+echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
+```
+<!-- usage-limit-ops:end -->
+
+解除之后，下一轮轮询就会重新给这个 agent 派工；如果账号其实还在上限里，第一个撞上的 worker 会再被认出来、暂停重新出现（没有需要回退的东西）。项目自己的进度文件是 `$STATE_DIR/usage-limit.json`（各条目的派工开始时刻、做到一半的转人工）；转人工做到一半时别动它——那时删掉可能多出第二条留言。
+
 ## 外部需求机器人（可选，**默认关闭**）
 
 另一个 AI 助手（有自己的 GitHub 账号）直接给项目提需求时，agent 提问 / 汇报不翻 `pending/human`，
@@ -1129,6 +1187,7 @@ your-project/
 ~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # 空闲/故障退避状态；`rm` 掉 = 立刻回最快档
+├── usage-limit.json                    # 开了 ENABLE_USAGE_LIMIT_PAUSE 才有：各条目派工开始时刻 + 做到一半的转人工（GitHub#341）
 ├── poll.log                            # 滚动日志
 ├── poll.lock                           # flock
 └── sessions/                           # 每个 worker tmux session 的 pane 日志

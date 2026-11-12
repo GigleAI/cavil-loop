@@ -98,6 +98,14 @@ agent_session_exists() {
     [ -n "$(codex_rollout_path "$id")" ]
 }
 
+# ── 可选 hook：用量上限（GitHub#341，接口见 _common.sh「用量上限」）──
+# 屏幕规则在 scripts/usage_limit.py（codex 那一段），样本在 tests/fixtures/usage-limit/。
+AGENT_USAGE_LIMIT=codex
+agent_account_dir() { printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"; }
+agent_session_record() {   # <cwd> <session_id> → 这条会话的 rollout 文件（找不到输出空）
+    codex_rollout_path "${2:-}"
+}
+
 # 本 driver 能举证「某条会话是不是本次启动建的」。
 AGENT_SESSION_PROOF=1
 

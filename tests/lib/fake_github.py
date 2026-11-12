@@ -21,7 +21,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (F403_<key>: a
 permission 403, F403rl_<key>: a rate-limit 403 — GitHub#243) (key = path with
 '/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
-F_post_comment / F_post_labels / F_delete_labels make those writes fail; F_post_label_<name> fails
+F_post_comment / F_post_labels / F_delete_labels make those writes fail (Flost_<same> = the write takes
+effect and the caller still gets a failure, GitHub#341); F_post_label_<name> fails
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
 tokens.log records the GH_TOKEN each call ran with.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
@@ -441,6 +442,9 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
                 "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
+    # Flost_post_comment：评论已经发上去了，调用方却收到失败（GitHub#341：写成功但响应丢失）
+    if os.path.exists(p("Flost_post_comment")):
+        fail("HTTP 502: injected lost response (comment was created)")
     emit({"id": lst[-1]["id"]})
 
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "labels":
@@ -463,6 +467,8 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
     if os.path.exists(_ah):
         subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)
         cur = load("labels.json", {}).get(parts[1], [])
+    if os.path.exists(p("Flost_post_labels")):
+        fail("HTTP 502: injected lost response (labels were added)")
     emit([{"name": l} for l in cur])
 
 if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] == "labels":
@@ -478,6 +484,8 @@ if method == "DELETE" and len(parts) == 4 and parts[0] == "issues" and parts[2] 
     save("labels.json", labels)
     append_event(parts[1], "unlabeled", name)
     touch(parts[1])
+    if os.path.exists(p("Flost_delete_labels")):
+        fail("HTTP 502: injected lost response (label was removed)")
     emit({})
 
 if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "merge":

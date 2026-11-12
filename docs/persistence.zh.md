@@ -21,6 +21,8 @@
 | 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
 | 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
 | 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json` | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
+| 用量上限的暂停记录，按 agent 和账号目录（GitHub#341） | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |
+| 单个项目的用量上限进度（GitHub#341） | `$STATE_DIR/usage-limit.json` | daemon，条目离开 `doing/agent` 时 | 不值得备份；转人工做到一半时别删（可能多出第二条留言） |
 | 合并后复盘的全机锁 | `~/.local/state/cavil-loop/retrospective.lock`（每台机器一份，所有项目、所有部署版本共用；GitHub#165） | 没人；空文件，进程退出锁就释放 | 不值得备份 —— 没有复盘在跑时删了也安全 |
 | 内置价目里没有的模型、自动联网补来的单价 | `~/.cache/cavil-loop/fetched-prices.json`（另有 `unpriced/` 缺价标记、`price-fetch-state.json` 重试状态） | 没人；模型补上价后标记自动删 | 不值得备份 —— 删了只是下次再缺价时重新抓 |
 

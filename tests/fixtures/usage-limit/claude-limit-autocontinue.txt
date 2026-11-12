@@ -1,0 +1,16 @@
+● Bash(gh issue comment 32 --repo example/app --body-file "${BODY}.meta")
+  ⎿  You've hit your session limit · resets 1:30pm (Asia/Singapore)
+     Continuing automatically at 1:30pm · esc to cancel
+     /usage-credits to continue now
+
+● Usage limit reached · continuing automatically at 1:30pm · esc or type to cancel
+
+✻ Cogitated for 0s · done 12:10 PM
+
+──────────────────────────────────────── https://github.com/example/app/issues/32 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Usage limit reached · continuing automatically at 1:30pm · esc to cancel
+  ⚠ /usage-credits to continue now
+  dev@host:/work/app/issue-32 [Opus 5 (1M context)] #32
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

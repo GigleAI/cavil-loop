@@ -33,6 +33,9 @@ CAVIL_LEGACY_STATE_HOME="$HOME/.local/state/coding-agent-poll"
 # 而且每个版本各是一个目录，放在那里不同版本就互不相斥了。也不按 cavil_pick 挑新旧——
 # 本机有的项目已迁、有的还没迁时，挑出来的会不是同一个文件。
 CAVIL_RETROSPECTIVE_LOCK="$CAVIL_STATE_HOME/retrospective.lock"
+# agent 撞用量上限后的「暂停派工」记录：整机共用，一个 (agent, 账号目录) 一个文件（GitHub#341）。
+# 同上，固定放在新名字的状态根目录下：同一账号的几个项目必须读到同一个文件。
+CAVIL_USAGE_LIMIT_DIR="$CAVIL_STATE_HOME/usage-limit"
 
 # 项目根目录那份本地配置文件
 CAVIL_PROJECT_CONFIG_NAME="cavil-loop.config"

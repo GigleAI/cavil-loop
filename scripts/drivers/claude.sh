@@ -62,6 +62,16 @@ agent_session_list() {
     return 0
 }
 
+# ── 可选 hook：用量上限（GitHub#341，接口见 _common.sh「用量上限」）──
+# 屏幕规则在 scripts/usage_limit.py（claude 那一段），样本在 tests/fixtures/usage-limit/。
+AGENT_USAGE_LIMIT=claude
+# 用量额度跟着登录账号走，账号存在这个目录里：同一目录 = 同一个额度。
+agent_account_dir() { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; }
+agent_session_record() {   # <cwd> <session_id> → 这条会话的记录文件（不保证存在）
+    [ -n "${2:-}" ] || return 0
+    printf '%s/%s.jsonl\n' "$(claude_session_dir "$1")" "$2"
+}
+
 # busy 判据。2026-07-29 实测 claude 2.1.220：
 #   ✻ Waddling… (22m 31s · ↓ 30.4k tokens)     纯 thinking
 #   * Wrangling… (20m 21s · ↓ 16.3k tokens)    glyph 不固定（✻ ✽ ✶ ✢ *，别指望它）
