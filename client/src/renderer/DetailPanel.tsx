@@ -5,7 +5,7 @@ import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
-import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, escapeHtml, FRAME_CSP, type FrameView, type Unfold } from './detailHtml';
+import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
 import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
@@ -636,10 +636,18 @@ export function DetailPanel({
     if (tickOver) setPendingTick(null);
   }, [tickOver]);
   const canTick = canWrite && !busy && !waitingTick;
+  // GitHub#381: the "wrap long lines" switch of the code blocks. The frame flips itself at the click and
+  // reports it; kept in a ref (not state) so the report does not draw the frame again — the next drawing,
+  // whatever causes it, carries the switch. Remembered with the other view settings.
+  const wrapRef = useRef(state.view.codeWrap);
+  const setWrap = (on: boolean) => {
+    wrapRef.current = on;
+    void Promise.resolve(api().setView({ codeWrap: on })).catch(() => undefined);
+  };
   const frame = useMemo(() => {
     if (!detail) return { doc: '', render: '' };
     const render = `r${++renderSeq.current}`;
-    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick }), render };
+    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current }), render };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, unfold, isDark, canTick, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked]);
   const doc = frame.doc;
@@ -679,8 +687,8 @@ export function DetailPanel({
     setEditNote(null);
     setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
   };
-  const live = useRef({ tick, edit, render: frame.render, ids: [] as string[] });
-  live.current = { tick, edit, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  const live = useRef({ tick, edit, setWrap, render: frame.render, ids: [] as string[] });
+  live.current = { tick, edit, setWrap, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
   // One listener for the panel's whole life, in place before the first frame loads (a layout effect
   // runs right after the frame is inserted, before its document can run): a frame that loads fast
   // must not report before anyone listens.
@@ -689,7 +697,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; on?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -698,6 +706,7 @@ export function DetailPanel({
       if (m.cavil === 'ready') setReadyRender(now.render);
       else if (m.cavil === 'task') void now.tick(m.entry, m.index, m.checked);
       else if (m.cavil === 'edit') now.edit(m.entry);
+      else if (m.cavil === 'wrap' && typeof m.on === 'boolean') now.setWrap(m.on);
       // GitHub#322: the frame passes on a bare R only; the window's own rules decide, and only "go to the reply box" may act
       else if (m.cavil === 'key' && typeof m.key === 'string') frameKey(m.key);
     };
@@ -1334,7 +1343,7 @@ export function DetailPanel({
             title="预览"
             data-testid="reply-preview"
             sandbox={FRAME_SANDBOX}
-            srcDoc={`<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><body style="font:13px/1.5 sans-serif;margin:6px;color:${isDark ? '#e6edf3' : '#1f2328'};background:${isDark ? '#151b23' : '#ffffff'}">${preview}</body>`}
+            srcDoc={previewDocument(preview, isDark)}
           />
         )}
         {item.kind === 'pr' && pr && (
