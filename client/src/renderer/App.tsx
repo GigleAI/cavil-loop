@@ -114,6 +114,9 @@ export function App() {
     if (key === frontRef.current && !intent) return;
     // the keyboard leaves whatever the tab going behind had focused
     (document.activeElement as HTMLElement | null)?.blur?.();
+    // GitHub#442: the floating panel goes behind with the home tab; coming back is a new opening of it, which
+    // must not do its notice's 重试 / 去回复 a second time
+    if (key !== HOME) setFloat((f) => (f?.intent ? { ...f, intent: null } : f));
     setActive(key);
     if (key !== HOME) setOpening((o) => ({ n: o.n + 1, intent }));
   };
@@ -145,7 +148,8 @@ export function App() {
     setPage('board');
     show(HOME);
     if (floatDraft.current?.key !== key) floatDraft.current = null;
-    setFloat({ key, n: ++floatSeq.current, intent });
+    // the item the panel shows already: that opening stays (its unfolded entries, its scroll) — unless a notice asks something of it
+    setFloat((cur) => (cur?.key === key && !intent ? cur : { key, n: ++floatSeq.current, intent }));
   };
   /** A click with ⌘ / Ctrl held opens the item's tab in front (GitHub#442); a plain click, the floating panel. */
   const openFromClick = (key: string, intent?: OpenIntent) => {
