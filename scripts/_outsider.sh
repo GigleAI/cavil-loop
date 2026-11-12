@@ -41,6 +41,25 @@ outsider_screen_timeout() {
     local t="${OUTSIDER_SCREEN_TIMEOUT:-60}"
     if [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -ge 1 ] && [ "$t" -le 600 ]; then echo "$t"; else echo 60; fi
 }
+# 跑一步 jq，要处理的 JSON 从标准输入进。GitHub 读回来的内容（正文、评论、修改历史、整条列表）大小没有上限，
+# 一律不经命令行参数（--arg / --argjson）传：Linux 单个参数上限 128 KB，超过了 jq 连起都起不来，而公共库把
+# stderr 永久丢弃了，失败时一个字都不留（GitHub#426）。结果在 OS_JQ；失败 → OS_WHY 写明是哪一步、jq 的退出码和
+# 报错首行，return 2。报错首行从第一个引号处截断：jq 的报错会引用处理到的值，那可能是外人写的原文
+OS_JQ=""
+os_jq() {   # <步骤说明> <jq 参数…>   （标准输入：要处理的 JSON）
+    local what="$1" ef rc=0 msg=""; shift
+    OS_JQ=""
+    ef=$(mktemp 2>/dev/null) || ef=""
+    if [ -n "$ef" ]; then OS_JQ=$(jq "$@" 2>"$ef") || rc=$?
+    else OS_JQ=$(jq "$@" 2>/dev/null) || rc=$?; fi
+    if [ "$rc" != 0 ]; then
+        [ -z "$ef" ] || msg=$(head -n1 "$ef" 2>/dev/null | cut -d'"' -f1 | tr -cd '[:print:]' | cut -c1-160)
+        OS_WHY="${what}时出错（jq 退出码 ${rc}${msg:+：$msg}）"
+    fi
+    [ -z "$ef" ] || rm -f "$ef"
+    [ "$rc" = 0 ] || return 2
+}
+
 outsider_record_dir() { printf '%s/outsider/%s' "$STATE_DIR" "$1"; }
 outsider_screen_dir() { printf '%s/outsider-screen' "$STATE_DIR"; }
 
@@ -110,7 +129,8 @@ outsider_edits() {   # <仓库> <编号>
                   | select((.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean") | .nodes' 2>/dev/null); then
             OS_WHY="读不到 $repo#$num 正文的修改历史"; return 2
         fi
-        edits=$(jq -cn --argjson a "$edits" --argjson b "$nodes" '$a + $b')
+        os_jq "拼接 $repo#$num 正文的修改历史" -cs '.[0] + .[1]' < <(printf '%s\n%s\n' "$edits" "$nodes") || return 2
+        edits="$OS_JQ"
         [ "$(printf '%s' "$page" | jq -r '.data.repository.issueOrPullRequest.userContentEdits.pageInfo.hasNextPage')" = true ] || break
         after=$(printf '%s' "$page" | jq -r '.data.repository.issueOrPullRequest.userContentEdits.pageInfo.endCursor // ""')
         [ -n "$after" ] || { OS_WHY="$repo#$num 正文的修改历史分页读不全"; return 2; }
@@ -124,11 +144,12 @@ outsider_edits() {   # <仓库> <编号>
 outsider_body_entry() {   # <src> <仓库> <编号> <条目 JSON> <issue|pull>
     local src="$1" repo="$2" num="$3" item="$4" kind="$5" author atype role lg after=false text cur notes='[]' ent editor=""
     local created roles='{}' versions='[]'
+    os_jq "读 $repo#$num 的正文" -c '.body // ""' < <(printf '%s' "$item") || return 2
+    cur="$OS_JQ"; text="$cur"
     author=$(printf '%s' "$item" | jq -r '.user.login // ""')
     atype=$(printf '%s' "$item" | jq -r '.user.type // "User"')
     outsider_role "$author" "$atype" || return 2
     role="$OS_ROLE"
-    cur=$(printf '%s' "$item" | jq -c '.body // ""'); text="$cur"
     created=$(printf '%s' "$item" | jq -r '.created_at // ""')
     if [ -n "$OS_AUTH_T" ]; then
         outsider_edits "$repo" "$num" || return 2
@@ -145,16 +166,21 @@ outsider_body_entry() {   # <src> <仓库> <编号> <条目 JSON> <issue|pull>
                   | (.editor.login // "@ghost") | select($r[.] == "outsider") ] | first // ""') \
             || { OS_WHY="读不懂 $repo#$num 正文的修改历史"; return 2; }
         # 外人写过的各个版本（只记指纹，不展示）
-        versions=$(printf '%s' "$OS_EDITS" | jq -c --arg t "$OS_AUTH_T" --argjson r "$roles" '
+        os_jq "整理 $repo#$num 正文被外人改过的各个版本" -c --arg t "$OS_AUTH_T" --argjson r "$roles" '
             [ .[] | select($r[(.editor.login // "@ghost")] == "outsider" and (.diff | type) == "string" and .deletedAt == null)
-                  | {text: .diff, after_auth: ((.editedAt // "") >= $t)} ]')
+                  | {text: .diff, after_auth: ((.editedAt // "") >= $t)} ]' < <(printf '%s' "$OS_EDITS") || return 2
+        versions="$OS_JQ"
         if [ -n "$editor" ]; then
             after=true; role=outsider
             [ "$editor" != "@ghost" ] || editor="（已删除的账号）"
-            versions=$(jq -cn --argjson v "$versions" --argjson c "$cur" '$v + [{text: $c, after_auth: true}]')
-            text=$(printf '%s' "$OS_EDITS" | jq -c --arg t "$OS_AUTH_T" '
+            os_jq "给 $repo#$num 正文的版本补上现在这一版" -cs '.[0] + [{text: .[1], after_auth: true}]' \
+                < <(printf '%s\n%s\n' "$versions" "$cur") || return 2
+            versions="$OS_JQ"
+            os_jq "取 $repo#$num 正文授权那一刻的版本" -c --arg t "$OS_AUTH_T" '
                 [ .[] | select((.editedAt // "") < $t and (.editedAt // "") != "") ] | max_by(.editedAt)
-                | if . == null or .deletedAt != null or (.diff | type) != "string" then null else .diff end')
+                | if . == null or .deletedAt != null or (.diff | type) != "string" then null else .diff end' \
+                < <(printf '%s' "$OS_EDITS") || return 2
+            text="$OS_JQ"
             if [ "$text" = null ]; then
                 notes=$(jq -cn --arg e "$editor" '["授权之后被外部账号 @" + $e + " 改过，授权那一刻的版本从修改历史里取不回"]')
             else
@@ -162,13 +188,16 @@ outsider_body_entry() {   # <src> <仓库> <编号> <条目 JSON> <issue|pull>
             fi
         fi
     fi
-    ent=$(jq -cn --arg src "$src" --arg id "$repo#$num" --arg ref "$( [ "$repo" = "$REPO" ] && echo "#$num" || echo "$repo#$num")" \
+    # 正文、各个版本走标准输入（.[0] 已攒的条目、.[1] 正文、.[2] 说明、.[3] 各个版本），别的都是短字段
+    os_jq "整理 $repo#$num 的正文条目" -cs --arg src "$src" --arg id "$repo#$num" --arg ref "$( [ "$repo" = "$REPO" ] && echo "#$num" || echo "$repo#$num")" \
         --arg url "https://github.com/$repo/$( [ "$kind" = pull ] && echo pull || echo issues)/$num" \
         --arg author "$author" --arg role "$role" --arg at "$created" \
-        --argjson after "$after" --argjson text "$text" --argjson notes "$notes" --arg editor "$editor" --argjson versions "$versions" \
-        '{src: $src, id: $id, ref: $ref, url: $url, author: $author, editor: $editor, role: $role, at: $at, after_auth: $after,
-          text: $text, notes: $notes, versions: $versions}')
-    OS_ENTRIES=$(jq -cn --argjson a "$OS_ENTRIES" --argjson e "$ent" '$a + [$e]')
+        --argjson after "$after" --arg editor "$editor" \
+        '.[1] as $text | .[2] as $notes | .[3] as $versions
+         | .[0] + [{src: $src, id: $id, ref: $ref, url: $url, author: $author, editor: $editor, role: $role, at: $at, after_auth: $after,
+                    text: $text, notes: $notes, versions: $versions}]' \
+        < <(printf '%s\n%s\n%s\n%s\n' "$OS_ENTRIES" "$text" "$notes" "$versions") || return 2
+    OS_ENTRIES="$OS_JQ"
 }
 
 # 一个评论列表 → 追加到 OS_ENTRIES（按时间排）
@@ -203,7 +232,9 @@ outsider_list_entries() {   # <src> <仓库> <编号> <endpoint> <评论 | revie
                   notes: ( (if $c.path then ["在文件 " + $c.path + (if $c.line then " 第 \($c.line) 行" else "" end)] else [] end)
                          + (if $kind == "review" and $c.state then ["review 结论：" + $c.state] else [] end)) })
         | sort_by(.at)') || { OS_WHY="读不懂 $repo#$num 的评论"; return 2; }
-    OS_ENTRIES=$(jq -cn --argjson a "$OS_ENTRIES" --argjson e "$ents" '$a + $e')
+    os_jq "拼接 $repo#$num 的$( [ "$kind" = review ] && echo " review" || echo "评论")列表" -cs '.[0] + .[1]' \
+        < <(printf '%s\n%s\n' "$OS_ENTRIES" "$ents") || return 2
+    OS_ENTRIES="$OS_JQ"
 }
 
 # 扫描一个托管条目（授权已经判好、成立或明确不成立）：
@@ -231,20 +262,26 @@ outsider_scan_items() {
         outsider_list_entries pr-review-comment "$REPO" "$pr" "pulls/$pr/comments" comment || return 2
         outsider_list_entries pr-review "$REPO" "$pr" "pulls/$pr/reviews" review || return 2
         # PR 上三种评论按时间合在一起
-        OS_ENTRIES=$(jq -cn --argjson m "$mid" --argjson c "$OS_ENTRIES" '$m + ($c | sort_by(.at))')
+        os_jq "合并 PR #$pr 上的三种评论" -cs '.[0] + (.[1] | sort_by(.at))' \
+            < <(printf '%s\n%s\n' "$mid" "$OS_ENTRIES") || return 2
+        OS_ENTRIES="$OS_JQ"
         : "$before"
     fi
     if [ -n "$inum" ]; then wn="$inum"
     else wn=$(pr_to_issue_num "$pr" "$(printf '%s' "$pj" | jq -r '.head.ref // ""')" "$(printf '%s' "$pj" | jq -r '.body // ""')"); fi
     [ -n "$wn" ] || { OS_WHY="算不出条目编号"; return 2; }
     OS_WORK_NUM="$wn"
-    in=$(jq -cn --arg mode "$mode" --arg key "$OS_AUTH_KEY" --arg rd "$(outsider_record_dir "$wn")" \
+    os_jq "整理给外部内容处理程序的输入" -c --arg mode "$mode" --arg key "$OS_AUTH_KEY" --arg rd "$(outsider_record_dir "$wn")" \
         --argjson screen "$(outsider_screen_on && echo true || echo false)" --arg sd "$(outsider_screen_dir)" \
-        --arg sc "$(outsider_screen_cmd)" --argjson ents "$OS_ENTRIES" --argjson st "$(outsider_screen_timeout)" \
-        '{mode: $mode, auth_key: $key, record_dir: $rd, screen: $screen, screen_dir: $sd, screen_cmd: $sc, screen_timeout: $st, entries: $ents}')
-    if ! res=$(printf '%s' "$in" | python3 "$_OUTSIDER_DIR/outsider_content.py" run 2>/dev/null) \
-       || ! printf '%s' "$res" | jq -e '.gate | type == "array"' >/dev/null 2>&1; then
-        OS_WHY="外部内容处理程序出错"; return 2
+        --arg sc "$(outsider_screen_cmd)" --argjson st "$(outsider_screen_timeout)" \
+        '. as $ents | {mode: $mode, auth_key: $key, record_dir: $rd, screen: $screen, screen_dir: $sd, screen_cmd: $sc, screen_timeout: $st, entries: $ents}' \
+        < <(printf '%s' "$OS_ENTRIES") || return 2
+    in="$OS_JQ"
+    local prc=0
+    res=$(printf '%s' "$in" | python3 "$_OUTSIDER_DIR/outsider_content.py" run 2>/dev/null) || prc=$?
+    if [ "$prc" != 0 ]; then OS_WHY="外部内容处理程序出错（退出码 ${prc}）"; return 2; fi
+    if ! printf '%s' "$res" | jq -e '.gate | type == "array"' >/dev/null 2>&1; then
+        OS_WHY="外部内容处理程序的结果读不懂"; return 2
     fi
     OS_RES="$res"
     if [ "$(printf '%s' "$res" | jq -r '.ok')" != true ]; then
@@ -323,6 +360,7 @@ outsider_before_dispatch() {   # <编号>
     OS_DISPATCH_NOTE=""
     outsider_scan "$1" dispatch || rc=$?
     if [ "$rc" != 0 ]; then
+        [ -n "$OS_WHY" ] || OS_WHY="内部步骤异常退出（退出码 ${rc}），原因没记下"
         if [ -n "$OS_REC_FAIL" ]; then
             log "⚠️ 外部内容：#$1 的外部内容记录写不进 / 读不出（${OS_WHY}），本轮不派工"
             return 1

@@ -38,6 +38,8 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 rc=0; outsider_scan "$NUM" read "$OUT" || rc=$?
 if [ "$rc" != 0 ]; then
+    # 每一步失败都该写明原因；万一哪一步漏了，也不留一对空括号（GitHub#426）
+    [ -n "$OS_WHY" ] || OS_WHY="内部步骤异常退出（退出码 ${rc}），原因没记下"
     log "outsider-read #$NUM: 读不全（${OS_WHY}）" 2>/dev/null || true
     echo "❌ 读不全 #$NUM 的正文和评论：$OS_WHY"
     echo "什么都没有输出。重试一次；仍然失败就照规则停下交人，不要改用别的命令去读原文。"
