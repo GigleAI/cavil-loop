@@ -320,11 +320,16 @@ fresh "$ON"; happy; files '[{"filename":"client/package.json"}]'
 hook pulls_8_files 1 ': > F_pulls_8_files'
 tick
 chk "重判时文件列表请求失败 → 本轮不写" "$(writes)/$(has_label pending/human)" "0/no"
+chk "  → 到达性：第一次读到了命中、第二次读（重判）确实发出并失败" \
+    "$(files_reads)/$([ -e "$GD/F_pulls_8_files" ] && echo 开关已开 || echo 没开)/$(grep -cF '交人之前重判有变化（重判结果 unknown：读不全 PR #8 的改动文件列表（请求失败或空输出））' "$W/state/poll.log")" "2/开关已开/1"
 
 fresh "$ON"; happy; files '[{"filename":"client/package.json"}]'
 jhook pulls_8 2 labels.json '.["8"] += ["pending/human"]'
 tick
 chk "重判时人已在 PR 上挂了 pending/human → daemon 不发说明、不动标签" "$(writes)/$(comments_with '需人过目')" "0/0"
+# 到达性：第一次判定读了文件列表（命中）；重判读 PR 时标签已被挂上，停在读文件列表之前；两个标签都原样留着
+chk "  → 到达性：第一次命中、重判读到了人挂的标签并停下" \
+    "$(files_reads)/$(n_calls "^gh api $R/pulls/8\$")/$(has_label pending/human)/$(has_label pending/merge)/$(grep -cF '交人之前重判有变化（重判结果 halt_pr' "$W/state/poll.log")" "1/2/yes/yes/1"
 
 section "【7】决定时没命中、合并请求前一刻新推了清单里的文件 → 不合并"
 fresh "$ON"; happy
@@ -348,11 +353,38 @@ while IFS= read -r line; do
     tick
     chk "示例 $line：改 agent 配置的 PR 交人" "$(merged)/$(has_label pending/human)" "0/yes"
 done <<< "$EX_EN"
-# 开启 → 关掉（删掉这一行）：回到原来的行为
+# 开启 → 生效 → 关掉（删掉这一行）→ 恢复，全程同一份配置、同一份 state 和假 GitHub，不重建环境
 fresh "$ON"; happy; files '[{"filename":"client/package.json"}]'
-grep -v '^AUTOPILOT_HUMAN_PATHS=' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
 tick
-chk "删掉配置行之后：改 package.json 的 PR 又照常合并" "$(merged)" 1
+chk "生命周期 ① 开启后第一轮：改 package.json 的 PR #8 交人、没合并" "$(merged)/$(has_label pending/human)/$(has_label pending/merge)" "0/yes/no"
+# 第二个候选：issue 9 + PR 10，同样只改 package.json（不动已有的 state 和夹具，只往里加）
+jset items.json '.["9"] = {kind:"issue", state:"open", title:"t", body:"需求", user:{login:"maint"}, updated_at:"2026-01-01T00:00:00Z"}'
+jset labels.json '.["9"] = ["autopilot","pending/PR"]'
+ev 9 labeled autopilot maint
+jset items.json '.["10"] = {kind:"pr", state:"open", merged:false, draft:false, title:"t", body:"做了 Y。\n\nRefs #9",
+        user:{login:"loop-bot"}, updated_at:"2026-01-01T00:00:00Z", created_at:"2025-12-01T00:00:00Z",
+        head:{sha:$h, ref:"feature/issue-9", repo:{full_name:"example/ap"}}, base:{ref:"main"},
+        mergeable:true, mergeable_state:"clean"}' --arg h "$H2"
+jset labels.json '.["10"] = ["pending/merge","autopilot"]'
+ev 10 labeled autopilot loop-bot
+jq --arg h "$H2" '.autopilot.prs["10"] = {reviewed_head:$h, reviewed_at:"2026-01-01T00:00:00Z", reviewed_base:"main"}' \
+    "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+jset comments.json '.["10"] = [{id:950, user:{login:"loop-bot"}, created_at:"2026-06-01T00:00:00Z",
+        body:("## ✅ 复审通过\n\n<!-- autopilot-review-pass head=" + $h + " passed=12 failed=0 -->")}]' --arg h "$H2"
+jset files.json '.["10"] = [{"filename":"client/package.json"}]'
+merged10() { n_calls "^gh api -X PUT $R/pulls/10/merge "; }
+tick
+chk "生命周期 ② 仍开着：新候选 PR #10 也交人、没合并" "$(merged10)/$(labels_of 10)" "0/autopilot,pending/human"
+# 维护者想让 #10 按旧规则走：照文档删掉配置行，再把 #10 送回合并队列
+grep -v '^AUTOPILOT_HUMAN_PATHS=' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+chk "生命周期 ③ 配置行已删" "$(grep -c '^AUTOPILOT_HUMAN_PATHS=' "$CONF")" 0
+jset labels.json '.["10"] = ["pending/merge","autopilot"]'
+jq --arg h "$H2" '.autopilot.prs["10"] = {reviewed_head:$h, reviewed_at:"2026-01-01T00:00:00Z", reviewed_base:"main"}' \
+    "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+tick
+chk "生命周期 ④ 删掉之后：PR #10 按旧规则合并" "$(merged10)" 1
+chk "生命周期 ④ 已经交给人的 PR #8 仍在人手上：没合并、标签没动、没有新留言" \
+    "$(merged)/$(labels_of 8)/$(comments_with 'cavil-loop daemon')" "0/autopilot,pending/human/1"
 chk "模板里这一项是空值（不写和照抄模板行为一样）" "$(grep -cE '^AUTOPILOT_HUMAN_PATHS=""$' "$REPO_DIR/cavil-loop.config.example")" 1
 
 echo
