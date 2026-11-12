@@ -139,16 +139,20 @@ _child = None
 
 
 def _end_call(c):
-    """End one gh call and everything it started, and wait until none of it is left.
-
-    gh runs in a process group of its own (start_new_session), so the group can be stopped
-    without touching this process: killing gh alone leaves whatever it started running, and that
-    can still send the request after this process has moved on or exited (PR #393 review rounds
-    4 and 5). Standard library only, the same on Linux and macOS."""
-    try:
-        os.killpg(c.pid, signal.SIGKILL)
-    except OSError:
-        pass
+    """End the gh call in flight. Only the direct child is killed here; anything gh started stays
+    in this check's process group, which belongs to whoever launched the check (the poller's
+    ci_failure_report_tick, or ci-failure-report.sh when run by hand). That owner stops the whole
+    group and waits until it is empty before it returns, whether or not this process got to run
+    any clean-up of its own -- a SIGKILL, a stopped process or a hang all end the same way.
+    (Giving gh a group of its own let its requests outlive a check that was killed: PR #393 review
+    round 6.) The pipes are closed rather than drained: a descendant may hold them open, and this
+    process is about to end the round anyway."""
+    for f in (c.stdout, c.stderr):
+        try:
+            if f is not None:
+                f.close()
+        except Exception:
+            pass
     try:
         c.kill()
     except OSError:
@@ -157,19 +161,11 @@ def _end_call(c):
         c.wait(timeout=5)
     except Exception:
         pass
-    end = time.time() + 5
-    while time.time() < end:
-        try:
-            os.killpg(c.pid, 0)
-        except OSError:
-            return True
-        time.sleep(0.05)
-    return False
 
 
 def _on_stop(signum, _frame):
-    """Asked to stop: end the gh call in flight (its whole group) first, so no request outlives
-    this process."""
+    """Asked to stop: end the gh call in flight, then exit. The rest of the group is the owner's
+    to stop (see _end_call)."""
     c = _child
     if c is not None:
         _end_call(c)
@@ -199,8 +195,8 @@ def gh(method, path, fields=None, write=False, raw=False):
     if _deadline is not None:
         limit = max(5, min(limit, int(_deadline - time.time()) + 5))
     global _child
-    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                              start_new_session=True)
+    # gh stays in this check's process group on purpose (see _end_call)
+    _child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         try:
             out, errout = _child.communicate(timeout=limit)

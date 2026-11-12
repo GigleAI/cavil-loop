@@ -420,6 +420,57 @@ chk "人工入口被停：同一会话里的别的程序没被一起停掉，入
     "$(kill -0 "$BYSTANDER" 2>/dev/null && echo alive || echo gone),$rc,$(slow_alive)" "alive,143,0"
 kill "$BYSTANDER" 2>/dev/null; wait "$BYSTANDER" 2>/dev/null || true
 rm -f "$SLOWD/match"
+# 检查程序不能响应（冻住：SIGSTOP，自己的停止处理一行都跑不了），再停人工入口：入口只能靠整组强制结束。
+# gh 起的后代、gh、检查程序都必须结束，之后不再有请求（PR #393 复审第 6 轮）
+checker_pids() { pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | tr '\n' ' '; }
+wait_pids() { local i=0; while [ "$(grep -c . "$SLOWD/pids" 2>/dev/null)" -lt 2 ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$((i + 1)); done; }
+fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+redrun 565 $((NOW - 60)) 3 requester-bot
+: > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 12 > "$SLOWD/secs"
+env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" bash "$NEW/scripts/ci-failure-report.sh" > "$W/out" 2>&1 &
+HAND=$!
+wait_pids
+CK=$(checker_pids)
+[ -n "$CK" ] && kill -STOP $CK
+calls=$(grep -c . "$CALLS")
+kill -TERM "$HAND"; rc=0; wait "$HAND" || rc=$?
+chk "检查程序冻住、人工入口被停：确实冻住了检查程序，入口以被停的退出码结束" "$([ -n "$CK" ] && echo yes || echo no),$rc" "yes,143"
+chk "检查程序冻住、人工入口被停：返回时 gh、它起的后代、检查程序都已结束" "$(slow_alive),$(checker_pids | wc -w | tr -d ' ')" "0,0"
+sleep 13
+chk "检查程序冻住、人工入口被停：再等 13 秒也没有建出报告，假 GitHub 没收到新请求" "$(n_issues),$(grep -c . "$CALLS")" "0,$calls"
+rm -f "$SLOWD/match"
+later; tick
+chk "检查程序冻住、人工入口被停：下一次正常检查照常报告" "$(n_issues)" "1"
+# 主轮询那一侧：检查程序冻住（以及检查程序和入口脚本一起冻住）→ 兜底时限到，主轮询整组强制结束
+forced_poll() {   # <名字> <冻住谁：checker | both>
+    local name="$1" who="$2" ck en calls rc base
+    fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
+    mkissue 55 "pending/agent"
+    redrun 566 $((NOW - 60)) 3 requester-bot
+    base=$(n_issues)
+    : > "$SLOWD/pids"; printf '%s' '-X POST repos/[^ ]+/issues ' > "$SLOWD/match"; echo 12 > "$SLOWD/secs"
+    env CODING_AGENT_CONFIG="$CONF" CI_FAILURE_REPORT_NOW="$NOW" CI_FAILURE_REPORT_CALL_TIMEOUT=100 \
+        CI_FAILURE_REPORT_HARD_LIMIT=4 bash "$NEW/scripts/agent-poll.sh" > "$W/pollout" 2>&1 &
+    HAND=$!
+    wait_pids
+    ck=$(checker_pids); en=""
+    [ "$who" = both ] && en=$(pgrep -f -- "$NEW/scripts/ci-failure-report.sh" | tr '\n' ' ')
+    [ -n "$ck" ] && kill -STOP $ck $en
+    rc=0; wait "$HAND" || rc=$?
+    calls=$(grep -c . "$CALLS")
+    chk "$name：确实冻住了（$who），主轮询这一轮照常结束" "$([ -n "$ck" ] && { [ "$who" = checker ] || [ -n "$en" ]; } && echo yes || echo no),$rc" "yes,0"
+    has "$name：到上限被强制停掉" "$(cat "$W/state/poll.log")" "强制停掉"
+    chk "$name：主轮询返回时，gh、它起的后代、检查程序、入口脚本都已结束" \
+        "$(slow_alive),$(checker_pids | wc -w | tr -d ' '),$(pgrep -f -- "$NEW/scripts/ci-failure-report.sh" | wc -l | tr -d ' ')" "0,0,0"
+    chk "$name：这一轮普通条目照常派工" "$(session_of 55),$(labels_of 55)" "1,doing/agent"
+    sleep 13
+    chk "$name：再等 13 秒也没有建出报告，假 GitHub 没收到新请求" "$(n_issues),$(grep -c . "$CALLS")" "$base,$calls"
+    rm -f "$SLOWD/match" /tmp/cavil-loop-issue-55-* 2>/dev/null
+    later; poll
+    chk "$name：下一轮恢复，失败被报告" "$(n_issues)" "$((base + 1))"
+}
+forced_poll "检查程序冻住、主轮询兜底" checker
+forced_poll "检查程序和入口脚本都冻住、主轮询兜底" both
 # 人工入口正常跑完：结果照常、组里没有留下进程
 fresh "PATH=\"$SLOW:$SANDBOX/bin:\$PATH\""; enable
 redrun 564 $((NOW - 60)) 3 requester-bot
