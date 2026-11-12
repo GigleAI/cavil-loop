@@ -69,6 +69,9 @@ bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望 [$3]，实得 [$2]）"; fi; }
 yes_() { if "${@:2}"; then ok "$1"; else bad "$1"; fi; }
 no_()  { if "${@:2}"; then bad "$1"; else ok "$1"; fi; }
+# 测试自己造的运行编号：分组名由它而来，假 systemd 按「环境里带 FAKE_UNIT=<分组名>」在整机进程里找分组成员，
+# 所以编号前 8 位放本次运行的进程号——两份本测试同时跑时，各自造的分组不会把对方的进程认成自己的
+fixed_id() { printf '%08x%024x' "$$" "$1"; }
 wait_for() {   # <最多几秒> <命令…>：等到命令成功
     local i n=$(( $1 * 10 )); shift
     for ((i = 0; i < n; i++)); do "$@" && return 0; sleep 0.1; done
@@ -268,7 +271,7 @@ no_ "它的记录被删掉了" test -f "$ra"
 echo "── 5. 分组状态查不到 / 不认识：当作还在跑——不删记录、不放行、不停任何分组 ──"
 for fault in show-fail show-junk show-empty; do
     reset1
-    id="$(printf '%032x' $RANDOM)"
+    id="$(fixed_id $RANDOM)"
     printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/q\nproject=example/q\nitem=9\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
     touch "$FAKE/$fault"
     hw_bg b -- bash -c "$(job b 0.3)"; pb=$HW_PID
@@ -331,7 +334,7 @@ for way in $WAYS; do
 done
 # 记录读不到、但它的分组已经确认消失：这条运行了结了，删掉记录、照常放行
 reset1
-id="$(printf '%032x' 4242)"; echo "garbage" > "$RUNS/$id"
+id="$(fixed_id 4242)"; echo "garbage" > "$RUNS/$id"
 hw_bg b -- bash -c "$(job b 0.2)"; wait "$HW_PID"; rc=$?
 chk "读不到的记录、分组已消失：下一套照常跑完" "$rc" 0
 no_ "那条记录被删" test -e "$RUNS/$id"
@@ -486,7 +489,7 @@ yes_ "降级：打印了降级说明" grep -q "只排队这条命令本身" "$W/
 chk "降级：没有建分组" "$(calls run)" 0
 chk "降级：没有登记" "$(ls "$RUNS" | wc -l)" 0
 # 降级模式看不了分组：还留着登记着的运行时不能当它们不存在
-id="$(printf '%032x' 77)"
+id="$(fixed_id 77)"
 printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=\nproject=\nitem=\ngen=\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
 env HOME="$HH" CAVIL_HEAVY_MODE=degraded bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job c 0.1)" > "$W/c.out" 2>&1; rc=$?
 chk "降级但还有登记着的运行：退出码 70" "$rc" 70
@@ -795,7 +798,7 @@ for way in garbage bad-state wrong-unit no-statedir no-item blank-statedir no-ge
     wait_for 5 started t || bad "$way：测试没启动"
     rt="$(rec_of "$M/t.start")"; ut="$(field "$rt" unit)"
     # 另一个项目的一套（记录完整）：本条目的测试起来之后才登记，之后的清理和每轮检查都不该碰它
-    oid="$(printf '%032x' 9090)"
+    oid="$(fixed_id 9090)"
     env FAKE_UNIT="cavil-heavy-$oid.scope" sleep 300 & other=$!
     printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/other\nproject=example/other\nitem=%s\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=other\n' "$oid" "$N" "$(date +%s)" > "$RUNS/$oid"
     spoil "$way" "$rt"
@@ -823,7 +826,7 @@ for way in garbage bad-state wrong-unit no-statedir no-item blank-statedir no-ge
 done
 # 功能没开、也没清理过的项目，状态目录里只有一条读不到的记录（可能是这个条目的）：清理不能照旧直接删
 setup2 bad-off "HEAVY_STOP_WAIT_SECS=3"
-id="$(printf '%032x' 5151)"; echo garbage > "$RUNS/$id"
+id="$(fixed_id 5151)"; echo garbage > "$RUNS/$id"
 env FAKE_UNIT="cavil-heavy-$id.scope" sleep 300 & stray=$!
 cleanup_item "$NEW" --force; rc=$?
 yes_ "功能没开但有读不到的记录、它的分组还在：清理非 0 退出" test "$rc" -ne 0
@@ -1007,7 +1010,7 @@ mk_run() {   # <运行编号> <启动编号> <worker 进程号> <它的启动时
         "$1" "$PW/state" "$2" "$(date +%s)" > "$PRUNS/$1"
 }
 sleep 0.01 & gonepid=$!; wait "$gonepid"
-ID_DEAD=$(printf '%032x' 1); ID_LIVE=$(printf '%032x' 2)
+ID_DEAD=$(fixed_id 1); ID_LIVE=$(fixed_id 2)
 mk_run "$ID_DEAD" "$(printf '%032x' 11)" "$gonepid" 1; s_dead=$!
 mk_run "$ID_LIVE" "$(printf '%032x' 12)" "$$" "$mystart"; s_live=$!
 rm -f "$FAKE/calls"; faults_off
