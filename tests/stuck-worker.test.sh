@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # kind: e2e
+# parts: 3
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （约 11 分钟；没有负对照；STUCK_ONLY=9,13 只跑指定的组）
+# 跑法：bash tests/stuck-worker.test.sh        （三段合计约 14 分钟；没有负对照；STUCK_ONLY=9,13 只跑指定的组，13x = 第三段）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和
@@ -25,6 +26,7 @@ if [ -z "${STUCK_TEST_CLEAN_ENV:-}" ]; then
     keep=(STUCK_TEST_CLEAN_ENV=1 HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}" TZ=UTC)
     [ -n "${KEEP_SANDBOX:-}" ] && keep+=(KEEP_SANDBOX="$KEEP_SANDBOX")
     [ -n "${STUCK_ONLY:-}" ] && keep+=(STUCK_ONLY="$STUCK_ONLY")
+    [ -n "${TEST_PART:-}" ] && keep+=(TEST_PART="$TEST_PART")
     exec env -i "${keep[@]}" bash "${BASH_SOURCE[0]}" "$@"
 fi
 
@@ -32,6 +34,10 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# 分三段跑（tests/run.sh 每个单位限时 900 秒）：1 = 阶梯和判断（①–⑧、⑩–⑫），2 = 停住和恢复（⑨、⑬），
+# 3 = 恢复派工的失败与本机状态读失败（13x）
+# shellcheck source=lib/parts.sh
+source "$TEST_DIR/lib/parts.sh"
 
 if ! command -v tmux > /dev/null 2>&1; then
     echo "⏭ 本机没有 tmux，整份跳过"; exit 0
@@ -277,7 +283,10 @@ add_comment() {   # <编号>：有人留了一条评论（不动 updated_at：�
     "$FAKEBIN/jset" "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: (9000 + ([.[][]] | length)), body: "看一下", user: {login: "maint"}, created_at: "2026-01-02T00:00:00Z"}])' --arg n "$1"
 }
 touch_item() { "$FAKEBIN/jset" "$GD/items.json" '.[$n].updated_at = $t' --arg n "$1" --arg t "2026-02-01T00:00:${2:-01}Z"; }
-want() { [ -z "${STUCK_ONLY:-}" ] || [[ ",$STUCK_ONLY," == *",$1,"* ]]; }
+want() {
+    case "$1" in 9|13) part_on 2 || return 1 ;; 13x) part_on 3 || return 1 ;; *) part_on 1 || return 1 ;; esac
+    [ -z "${STUCK_ONLY:-}" ] || [[ ",$STUCK_ONLY," == *",$1,"* ]]
+}
 
 # ════════════════════════════════════════════════════════════════════════════
 if want 1; then
@@ -589,7 +598,7 @@ hlabel() {   # <编号> <add|rm> <标签> [谁]
     else
         ev=unlabeled; jset "$GD/labels.json" '.[$n] = ((.[$n] // []) - [$l])' --arg n "$n" --arg l "$l"
     fi
-    jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: (50000 + ([.[][]] | length)), event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
+    jset "$GD/events.json" '.[$n] = ((.[$n] // []) + [{event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
         --arg n "$n" --arg ev "$ev" --arg l "$l" --arg who "$who"
     HT=$((HT + 1))
     jset "$GD/items.json" '.[$n].updated_at = $t' --arg n "$n" --arg t "$(printf '2026-03-01T%02d:%02d:%02dZ' $((HT / 3600)) $((HT / 60 % 60)) $((HT % 60)))"
@@ -626,7 +635,7 @@ cat > "$FAKEBIN/hlabel" <<'SH'
 GD="$1"; n="$2"; op="$3"; l="$4"; who="${5:-maint}"; J="$(dirname "$0")/jset"
 if [ "$op" = add ]; then ev=labeled; "$J" "$GD/labels.json" '.[$n] = (((.[$n] // []) + [$l]) | unique)' --arg n "$n" --arg l "$l"
 else ev=unlabeled; "$J" "$GD/labels.json" '.[$n] = ((.[$n] // []) - [$l])' --arg n "$n" --arg l "$l"; fi
-"$J" "$GD/events.json" '.[$n] = ((.[$n] // []) + [{id: (50000 + ([.[][]] | length)), event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
+"$J" "$GD/events.json" '.[$n] = ((.[$n] // []) + [{event: $ev, label: {name: $l}, actor: {login: $who, type: "User"}}])' \
     --arg n "$n" --arg ev "$ev" --arg l "$l" --arg who "$who"
 "$J" "$GD/items.json" '.[$n].updated_at = "2026-04-01T00:00:00Z"' --arg n "$n"
 SH
@@ -733,7 +742,7 @@ tick 0
 chk "9d 说明发出去了" "$(ff "$N" posted)/$(notes_on "$N")" "yes/1"
 tick 0
 chk "9d 起点记在说明发出之后：不早于人刚才那次打标签" \
-    "$([ "$(ff "$N" base)" -ge "$(jq -r --arg n "$N" '[.[$n][] | select(.actor.login == "maint")] | last | .id' "$GD/events.json")" ] && echo yes || echo no)" "yes"
+    "$([ "$(ff "$N" base)" -ge "$(jq -r --arg n "$N" '[.[$n] | to_entries[] | select(.value.actor.login == "maint") | (5000 + .key)] | last' "$GD/events.json")" ] && echo yes || echo no)" "yes"
 tick 0; tick 10
 chk "9d 说明发出前打的标签不算：仍停住、不派工" "$(frozen "$N")/$(( $(disp "$N") - d0 ))/$(labels_of "$N")" "true/0/pending/agent"
 chk "9d 到达性：派工队列看到 pending/agent 并跳过" "$([ "$(plog "本轮不派工的条目.*issue#$N(pending/agent)")" -ge 1 ] && echo yes || echo no)" "yes"
@@ -1150,7 +1159,7 @@ chk "给的是关联 issue 的编号也找得到这条停住记录；整份身�
 fi
 
 
-if want 13 || want 13x; then
+if want 13x; then
 echo "【13】恢复派工失败时，普通失败兜底不介入：另外两条派工路径（各从「再失败一次就交人」开始）"
 bounced() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json"; }
 # issue 评论路径：会话不在、工作目录还在 → 重起会话；核对通过之后起会话失败
@@ -1393,7 +1402,8 @@ if ! compat_skip "功能关闭时的调用、state.json、标签与改动前" "$
         cp "$CALLS" "$TMP/off.$tag/calls"; cp "$GD/labels.json" "$TMP/off.$tag/labels"
         jq -S . "$STATE" > "$TMP/off.$tag/state"
         # 窗格编号、进程号每次起 server 都从头数，两边一致；抓的是参数原文
-        cp "$CTL/tmux.log" "$TMP/off.$tag/tmux"
+        # 两边脚本目录不同（日志脱敏管道里带着脚本的路径），换成同一个占位再比
+        sed "s|$root/|ROOT/|g" "$CTL/tmux.log" > "$TMP/off.$tag/tmux"
         echo "$(alive "$N")/$(labels_of "$N")/$(labels_of "$M")" > "$TMP/off.$tag/end"
         ROOT="$NEW"; STUCK_OFF=0
     }
