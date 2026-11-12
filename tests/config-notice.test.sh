@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # kind: e2e
-# 老项目配置缺新功能的设置时提示维护者 —— GitHub#289。
+# 老项目配置缺新功能的设置时提示维护者 —— GitHub#289；GitHub#428 起只写轮询日志、不碰 GitHub。
 #
 # 跑法：bash tests/config-notice.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py）+ 假 tmux，
 # HOME 指向临时目录。每一轮都**真的**起 agent-poll.sh 子进程（照调度入口 poll-entry.sh 的样子带上
-# 发布目录和调度标记，发布目录指向本测试自己的一份代码副本），开没开 issue、评论、关闭都从假 GitHub
-# 的条目、标签、调用记录和 $STATE_DIR/config-notice.json 里读，不读源码。
+# 发布目录和调度标记，发布目录指向本测试自己的一份代码副本），写没写日志从 poll.log、
+# $STATE_DIR/config-notice.json 里读，碰没碰 GitHub 从假 GitHub 的条目、标签、评论和调用记录里读，不读源码。
 #
 # 这块错了的方向都不报错：
-#   · 每轮都开 / 都评论 → 仓库被刷爆；从来不开 → 又回到「功能一直关着没人知道」
+#   · 又开 / 评论 / 关提示 issue → 维护者明确不要了（GitHub#428）；老配置里写着 CONFIG_NOTICE_ISSUE=true、
+#     或旧状态文件里记着一条开着的提示 issue，都不能把它叫回来
+#   · 日志每轮都写 → 刷屏；从来不写 → 又回到「功能一直关着没人知道」
 #   · 把空值（KEY=""，明确不开）当成缺 → 维护者关掉了还被追着提示
-#   · 把「读不到那条 issue」当成「已关」→ 重复开 issue；当成「开着」→ 往人关掉的 issue 上评论
-#   · 写失败也记成「已提示」→ 这一批永远没提示出去
-#   · 手动试跑 agent-poll.sh 也开 issue → 维护者调试一次就在仓库里留一条
-# 全部缺项都写了的项目、以及只写日志的项目，GitHub 调用和改动前（merge-base）逐条一致。
+#   · 手动试跑 agent-poll.sh 也写 → 调试一次就多一行
+# 「零调用」都配着「这一轮确实跑到了比对」（日志那一行）；缺项和不缺项的项目 GitHub 调用逐条一致，
+# 也和改动前（merge-base）只写日志时（CONFIG_NOTICE_ISSUE=false）逐条一致。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -130,42 +131,48 @@ nst() { jq -c "$1" "$NSTATE" 2>/dev/null || echo "无"; }
 comments_on() { jq -r --arg n "$1" '(.[$n] // []) | length' "$GD/comments.json"; }
 log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
 
-echo "【1】缺等前置那一行：开一条挂 pending/human 的提示 issue，正文写清楚做什么、写哪一行"
-fresh
-tick
-chk "开了一条 issue" "$(creates)/$(n_items)" "1/1"
-chk "挂 pending/human（不会被派工）" "$(labels_of 1)" "pending/human"
-body=$(item 1 .body)
-chk "正文带本功能的隐藏标记" "$(grep -c '<!-- cavil-config-notice -->' <<<"$body")" 1
-chk "正文点名缺的配置项" "$(grep -c '`LABEL_PENDING_BLOCKED`' <<<"$body")" 1
-chk "正文给出模板里的那一行原文" "$(grep -cx 'LABEL_PENDING_BLOCKED="pending/blocked"' <<<"$body")" 1
-chk "正文提到跨仓库要配 TRUSTED_REPOS、要建标签" \
-    "$(grep -c 'TRUSTED_REPOS' <<<"$body")/$(grep -c '建好 `pending/blocked` 标签' <<<"$body")" "1/1"
-chk "正文写了不开怎么写" "$(grep -c '写成 `LABEL_PENDING_BLOCKED=""`' <<<"$body")" 1
-chk "正文写了配置文件在哪" "$(grep -cF "$CONF" <<<"$body")" 1
-chk "标题说缺 1 项" "$(item 1 .title)" "[daemon] 本项目配置缺 1 项新功能的设置"
-chk "用写身份开的（gh_write）" "$(grep -c 'fake-token-for-test gh api -X POST repos/example/cn/issues ' "$GD/tokens.log")" 1
-chk "记下 issue 号和已提示的项" "$(nst '[.issue, .issued, .logged]')" '[1,["LABEL_PENDING_BLOCKED"],["LABEL_PENDING_BLOCKED"]]'
-chk "轮询日志写了一行" "$(log_has '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED')" 1
-tick
-chk "下一轮：零创建、不碰那条 issue" "$(creates)/$(on_issue 1)" "0/0"
-chk "日志不重复写" "$(log_has '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED')" 1
+# 提示 issue 的那几种动作：开、在某条上读 / 评论 / 关
+notice_calls() { n_calls "^gh api( -X [A-Z]+)? $R/issues( |/[0-9]+( |/comments))"; }
+calls_norm() { sed 's/[0-9]\{10,\}//g' "$CALLS"; }
+ticks_calls() { tick "$1"; calls_norm; tick "$1"; calls_norm; }   # 两轮的调用合在一起
+# 早先版本开的提示 issue：开着、带标记、挂 pending/human
+legacy_issue() {
+    jq '.["1"] = {kind:"issue", state:"open", title:"[daemon] 本项目配置缺 1 项新功能的设置", body:"<!-- cavil-config-notice -->\n## 本项目配置里缺 1 项新功能的设置", user:{login:"loop-bot"}}' \
+        "$GD/items.json" > "$GD/i.tmp" && mv "$GD/i.tmp" "$GD/items.json"
+    jq '.["1"] = ["pending/human"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
+}
 
-echo "【2】维护者写进配置（明确不开 = 空值）：下一轮关掉提示 issue，之后不再碰"
-conf_set 'LABEL_PENDING_BLOCKED=""'
-tick
-chk "关之前重读过、然后关掉" "$(n_calls "^gh api $R/issues/1 --jq")/$(n_calls "^gh api -X PATCH $R/issues/1 ")" "1/1"
-chk "issue 已关闭" "$(item 1 .state)" "closed"
-chk "状态里不再挂着 issue" "$(nst '[.issue, .issued]')" '[null,[]]'
-tick
-chk "再下一轮：零调用" "$(creates)/$(on_issue 1)" "0/0"
+echo "【1】缺等前置那一行：只写一行轮询日志，不开 issue；老配置里写着 CONFIG_NOTICE_ISSUE=true 也一样"
+for extra in "" "CONFIG_NOTICE_ISSUE=true"; do
+    what="${extra:-配置里没有开关那一行}"
+    fresh ${extra:+"$extra"}
+    : > "$SANDBOX/all.calls"
+    for _ in 1 2 3; do tick; cat "$CALLS" >> "$SANDBOX/all.calls"; done
+    chk "$what：三轮合计零创建、零提示 issue 调用、仓库里没有条目" \
+        "$(grep -cE "^gh api -X POST $R/issues " "$SANDBOX/all.calls")/$(grep -cE "^gh api( -X [A-Z]+)? $R/issues( |/[0-9]+( |/comments))" "$SANDBOX/all.calls")/$(n_items)" "0/0/0"
+    chk "$what：日志写了一行（这一轮确实跑到了比对），不重复写" "$(log_has '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED')" 1
+    chk "$what：日志给出模板里那一行和不开写什么" \
+        "$(log_has '里加 LABEL_PENDING_BLOCKED="pending/blocked"；不开就写 LABEL_PENDING_BLOCKED=""')" 1
+    chk "$what：状态只记日志" "$(nst .)" '{"logged":["LABEL_PENDING_BLOCKED"]}'
+    chk "$what：这一轮确实跑到了 GitHub" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
+done
+fresh 'CONFIG_NOTICE_ISSUE=true'; ticks_calls "$NEW" > "$SANDBOX/miss.calls"
+fresh 'LABEL_PENDING_BLOCKED=""'; ticks_calls "$NEW" > "$SANDBOX/full.calls"
+chk "缺项的项目和配置写全的项目：两轮合计 GitHub 调用逐条一致" "$(diff "$SANDBOX/miss.calls" "$SANDBOX/full.calls" >/dev/null && echo same || echo diff)" same
 
-echo "【2b】写成开（pending/blocked）同样算已决定"
-fresh
+echo "【2】写进配置（空值 = 明确不开，或开启值）：从记录里去掉；之后再删掉那一行，日志再写一次"
+for val in '""' '"pending/blocked"'; do
+    fresh
+    tick
+    conf_set "LABEL_PENDING_BLOCKED=$val"
+    tick
+    chk "写成 $val：记录清空、零提示 issue 调用" "$(nst .)/$(notice_calls)" '{"logged":[]}/0'
+    tick
+    chk "写成 $val：日志没有多写" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
+done
+sed -i '/^LABEL_PENDING_BLOCKED=/d' "$CONF"
 tick
-conf_set 'LABEL_PENDING_BLOCKED="pending/blocked"'
-tick
-chk "关掉提示 issue" "$(item 1 .state)" "closed"
+chk "删掉之后：日志再写一次、记录里又有它" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(nst .logged)" '2/["LABEL_PENDING_BLOCKED"]'
 
 echo "【2c】由 systemd 环境文件给的值也算已设置（三轮输入只差这一个环境变量，都走调度路径）"
 env_tick() {   # <环境变量赋值，空 = 不设>
@@ -175,164 +182,80 @@ env_tick() {   # <环境变量赋值，空 = 不设>
         bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
 }
 env_tick ""
-chk "环境里没有这一行：开提示 issue（证明这一组确实走进了比对）" "$(creates)/$(nst .issue)" "1/1"
+chk "环境里没有这一行：写日志（证明这一组确实走进了比对）" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(nst .logged)" '1/["LABEL_PENDING_BLOCKED"]'
 env_tick 'LABEL_PENDING_BLOCKED='
-chk "环境里给空值：不开、不写状态文件" "$(creates)/$(nst .)" "0/无"
+chk "环境里给空值：不写日志、不写状态文件" "$(log_has '配置提示')/$(nst .)" "0/无"
 chk "（这一轮确实跑到了 GitHub）" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
 env_tick 'LABEL_PENDING_BLOCKED=pending/blocked'
-chk "环境里给开启值：不开、不写状态文件" "$(creates)/$(nst .)" "0/无"
+chk "环境里给开启值：不写日志、不写状态文件" "$(log_has '配置提示')/$(nst .)" "0/无"
 
-echo "【2d】人把提示 issue 转进别的流程（摘了 pending/human、改打派工标签）：不关、不评论，不再跟踪"
-set_labels() { jq --arg n "$1" --arg l "$2" '.[$n] = ($l | split(",") | map(select(. != "")))' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"; }
+echo "【3】早先版本留下的提示 issue 和记录：不读、不评论、不关，记录里的旧字段丢掉"
+# 仍缺、旧记录里已写过日志：这一轮没有新日志要写，旧字段也要丢掉
 fresh
-tick
-set_labels 1 "pending/agent"
-conf_set 'LABEL_PENDING_BLOCKED=""'
-tick
-chk "关闭路径：重读过，但没关" "$(n_calls "^gh api $R/issues/1 --jq")/$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "1/0/open"
-chk "标签原样留着" "$(labels_of 1)" "pending/agent"
-chk "不再跟踪它" "$(nst .issue)" "null"
-tick
-chk "下一轮不再读它" "$(on_issue 1)" 0
-fresh
-tick
-set_labels 1 "doing/agent,pending/human"
+legacy_issue
+echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
 tick "$NEW2"
-chk "评论路径：保护标签还在但多了别的流程标签 → 不评论，另开一条" "$(comments_on 1)/$(creates)/$(item 1 .state)" "0/1/open"
+chk "出现新缺项：零创建、不碰那条 issue、零评论" "$(creates)/$(on_issue 1)/$(comments_on 1)" "0/0/0"
+chk "那条 issue 原样开着、标签不动" "$(item 1 .state)/$(labels_of 1)" "open/pending/human"
+chk "只为新缺项写一行日志（这一轮确实跑到了比对）" "$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "1/0"
+chk "记录只剩 logged" "$(nst .)" '{"logged":["DEMO_NEW_FEATURE","LABEL_PENDING_BLOCKED"]}'
 fresh
+legacy_issue
+echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
 tick
-set_labels 1 ""
-conf_set 'LABEL_PENDING_BLOCKED=""'
+chk "缺项没变、没有新日志：旧字段照样丢掉" "$(nst .)/$(log_has '配置提示')" '{"logged":["LABEL_PENDING_BLOCKED"]}/0'
+chk "不碰那条 issue" "$(on_issue 1)/$(item 1 .state)" "0/open"
+# 缺项都补上了：早先版本会关掉提示 issue，现在不关
+fresh 'LABEL_PENDING_BLOCKED=""'
+legacy_issue
+echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
 tick
-chk "保护标签被摘光：不关" "$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "0/open"
-fresh
+chk "缺项都补上：不重读、不关那条 issue" "$(on_issue 1)/$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "0/0/open"
+chk "记录清空、只剩 logged" "$(nst .)" '{"logged":[]}'
 tick
-set_labels 1 "pending/human,bug"
-conf_set 'LABEL_PENDING_BLOCKED=""'
-tick
-chk "只多了非流程标签（bug）：照常关" "$(item 1 .state)" "closed"
+chk "再下一轮：状态文件不再改写" "$(nst .)/$(on_issue 1)" '{"logged":[]}/0'
 
-echo "【3】人手动关掉提示 issue：同一批不重开、不再读它；出现新缺项才开新的一条（列全部缺项）"
-fresh
-tick
-jq '.["1"].state = "closed"' "$GD/items.json" > "$GD/i.tmp" && mv "$GD/i.tmp" "$GD/items.json"
-tick; tick
-chk "缺项没变：零创建、零读" "$(creates)/$(on_issue 1)" "0/0"
-tick "$NEW2"
-chk "新缺项：先重读旧 issue，发现已关，开新的" "$(n_calls "^gh api $R/issues/1 --jq")/$(creates)" "1/1"
-chk "没往人关掉的 issue 上评论" "$(comments_on 1)" 0
-body=$(item 2 .body)
-chk "新 issue 列出全部缺项" "$(grep -c '`LABEL_PENDING_BLOCKED`' <<<"$body")/$(grep -c '`DEMO_NEW_FEATURE`' <<<"$body")" "1/1"
-chk "新 issue 标题说缺 2 项" "$(item 2 .title)" "[daemon] 本项目配置缺 2 项新功能的设置"
-chk "状态指向新 issue" "$(nst '[.issue, .issued]')" '[2,["DEMO_NEW_FEATURE","LABEL_PENDING_BLOCKED"]]'
-chk "日志只为新缺项写一行" "$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "1/1"
-
-echo "【4】提示 issue 还开着时出现新缺项：在它上面追加评论，不开第二条"
+echo "【4】登记表里新加了一项：新缺项多写一行日志，仍不开 issue"
 fresh
 tick
 tick "$NEW2"
-chk "零创建、一条评论" "$(creates)/$(comments_on 1)" "0/1"
-cbody=$(jq -r '.["1"][0].body' "$GD/comments.json")
-chk "评论只讲新增的那一项" "$(grep -c '`DEMO_NEW_FEATURE`' <<<"$cbody")/$(grep -c '`LABEL_PENDING_BLOCKED`' <<<"$cbody")" "1/0"
-chk "评论给出模板里的那一行" "$(grep -cx 'DEMO_NEW_FEATURE="on"' <<<"$cbody")" 1
+chk "零创建、日志各一行" "$(creates)/$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "0/1/1"
+chk "日志给出模板里的那一行" "$(log_has '里加 DEMO_NEW_FEATURE="on"；')" 1
 tick "$NEW2"
-chk "再下一轮：不重复评论" "$(comments_on 1)/$(on_issue 1)" "1/0"
-conf_set 'DEMO_NEW_FEATURE=""'
-conf_set 'LABEL_PENDING_BLOCKED=""'
-tick "$NEW2"
-chk "两项都写进配置后关掉" "$(item 1 .state)" "closed"
+chk "再下一轮：不重复写" "$(log_has '没有 DEMO_NEW_FEATURE')" 1
 
-echo "【4b】改了名的设置（GitHub#356）：配置里只写着旧名字 = 没写，照常提示新名字；旧提示记录不拦这一次"
+echo "【4b】改了名的设置（GitHub#356）：配置里只写着旧名字 = 没写，照常提示新名字；旧记录里的旧名字不拦这一次"
 OLD_KEY="CONCURRENT_WORK_HINT"; NEW_KEY="ENABLE_CONCURRENT_WORK_HINT"
 only_old_name() { sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"; conf_set "$OLD_KEY=\"true\""; }
 fresh 'LABEL_PENDING_BLOCKED=""'
 only_old_name
 tick
-chk "只写旧名字：开一条提示 issue" "$(creates)/$(n_items)" "1/1"
-body=$(item 1 .body)
-chk "正文点名新名字、给出模板里新名字那一行" "$(grep -c "\`$NEW_KEY\`" <<<"$body")/$(grep -cx "$NEW_KEY=true" <<<"$body")" "1/1"
-chk "正文说明旧名字已不再生效" "$(grep -c "原来叫 \`$OLD_KEY\`，那个名字已不再生效" <<<"$body")" 1
-chk "记下的是新名字" "$(nst '.issued')" "[\"$NEW_KEY\"]"
+chk "只写旧名字：日志点名新名字、给出新名字那一行" "$(log_has "没有 ${NEW_KEY}，")/$(log_has "里加 $NEW_KEY=true；")" "1/1"
+chk "零创建；记下的是新名字" "$(creates)/$(nst .logged)" "0/[\"$NEW_KEY\"]"
 conf_set "$NEW_KEY=\"true\""
 tick
-chk "补上新名字那一行后关掉" "$(item 1 .state)" "closed"
-# 旧版本留下的提示记录：提示 issue 开着，记录里是旧名字
-fresh
-tick
-jq --arg k "$OLD_KEY" '.logged += [$k] | .issued += [$k]' "$NSTATE" > "$NSTATE.tmp" && mv "$NSTATE.tmp" "$NSTATE"
+chk "补上新名字那一行后清空" "$(nst .logged)" "[]"
+fresh 'LABEL_PENDING_BLOCKED=""'
+echo "{\"logged\":[\"$OLD_KEY\"]}" > "$NSTATE"
 sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"
 tick
-chk "旧记录 + 两个名字都没写：零创建、原 issue 上一条评论" "$(creates)/$(comments_on 1)" "0/1"
-cbody=$(jq -r '.["1"][0].body' "$GD/comments.json")
-chk "评论给出新名字那一行" "$(grep -cx "$NEW_KEY=true" <<<"$cbody")" 1
-chk "记录里只剩现在登记着的名字" "$(nst '.issued')" "[\"$NEW_KEY\",\"LABEL_PENDING_BLOCKED\"]"
-tick
-chk "再下一轮：不重复评论" "$(comments_on 1)/$(on_issue 1)" "1/0"
-conf_set "$NEW_KEY=\"\""
-conf_set 'LABEL_PENDING_BLOCKED=""'
-tick
-chk "都写进配置后关掉" "$(item 1 .state)" "closed"
+chk "旧记录里只有旧名字：照常为新名字写日志、记录里只剩新名字" "$(log_has "没有 ${NEW_KEY}，")/$(nst .logged)" "1/[\"$NEW_KEY\"]"
 
-echo "【5】读不到提示 issue：什么都不写、不记，恢复后补上"
+echo "【5】状态文件读不懂：写一行说明，按全新状态重来"
 fresh
+echo 'not json' > "$NSTATE"
 tick
-touch "$GD/F_issues_1"
-tick "$NEW2"
-chk "读失败那轮：零创建、零评论" "$(creates)/$(comments_on 1)" "0/0"
-chk "已提示记录没被改成包含新项" "$(nst .issued)" '["LABEL_PENDING_BLOCKED"]'
-rm -f "$GD/F_issues_1"
-tick "$NEW2"
-chk "恢复后：补上评论，仍不开第二条" "$(comments_on 1)/$(n_items)" "1/1"
+chk "说明一行 + 缺项日志一行" "$(log_has '读不懂，按全新状态重来')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "1/1"
+chk "状态改写成正常形状、零创建" "$(nst .)/$(creates)" '{"logged":["LABEL_PENDING_BLOCKED"]}/0'
 
-echo "【6】开 issue 失败：不记已提示，下一轮再开，且只开一条"
-fresh
-touch "$GD/F_post_issue"
-tick
-chk "失败那轮：没有 issue、状态里没记" "$(n_items)/$(nst '[.issue, .issued]')" '0/[null,[]]'
-chk "日志照写（日志不依赖 GitHub）" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
-rm -f "$GD/F_post_issue"
-tick; tick
-chk "恢复后只开了一条" "$(n_items)" 1
-
-echo "【7】评论失败、关闭失败：下一轮重来"
-fresh
-tick
-touch "$GD/F_post_comment"
-tick "$NEW2"
-chk "评论失败：没记已提示" "$(nst .issued)" '["LABEL_PENDING_BLOCKED"]'
-rm -f "$GD/F_post_comment"
-tick "$NEW2"
-chk "下一轮补上评论" "$(comments_on 1)" 1
-conf_set 'DEMO_NEW_FEATURE=""'; conf_set 'LABEL_PENDING_BLOCKED=""'
-touch "$GD/F_patch_issue"
-tick "$NEW2"
-chk "关闭失败：issue 仍记着、仍开着" "$(nst .issue)/$(item 1 .state)" "1/open"
-rm -f "$GD/F_patch_issue"
-tick "$NEW2"
-chk "下一轮关掉" "$(item 1 .state)/$(nst .issue)" "closed/null"
-
-echo "【8】状态里的号不是本功能开的（或是 PR）：不碰它，另开一条"
-fresh
-jq '.["1"] = {kind:"issue", state:"open", title:"别的事", body:"人写的", user:{login:"maint"}}' "$GD/items.json" > "$GD/i.tmp" && mv "$GD/i.tmp" "$GD/items.json"
-echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
-tick "$NEW2"
-chk "不在别人的 issue 上评论、另开一条" "$(comments_on 1)/$(creates)/$(item 1 .state)" "0/1/open"
-
-echo "【9】只写日志（CONFIG_NOTICE_ISSUE=false）：零 GitHub 写，日志每项一次"
-fresh 'CONFIG_NOTICE_ISSUE=false'
-tick; tick
-chk "零创建" "$(creates)" 0
-chk "日志一次" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
-chk "状态只记日志" "$(nst '[.issue, .logged, .issued]')" '[null,["LABEL_PENDING_BLOCKED"],[]]'
-
-echo "【10】不是调度器起的轮询：不提示、不写状态"
+echo "【10】不是调度器起的轮询：不写日志、不写状态"
 fresh
 : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
 chk "手动直接跑 agent-poll.sh：零创建、无状态文件、无日志" "$(creates)/$(nst .)/$(log_has '配置提示')" "0/无/0"
 chk "（这一轮确实跑到了 GitHub）" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
 # worker 会话里继承了调度入口导出的发布目录，但没有调度标记
 : > "$CALLS"; env CODING_AGENT_RELEASE_ROOT="$NEW" CODING_AGENT_CONFIG="$CONF" bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
-chk "worker 会话里跑（有发布目录、没调度标记）：零创建、无状态文件" "$(creates)/$(nst .)" "0/无"
+chk "worker 会话里跑（有发布目录、没调度标记）：无状态文件、无日志" "$(nst .)/$(log_has '配置提示')" "无/0"
 
 echo "【10b】调度标记不传给 daemon 的子进程（worker 继承不到）"
 fresh
@@ -340,28 +263,29 @@ export TMUX_ENV_LOG="$W/tmux-env.log"; : > "$TMUX_ENV_LOG"
 tick
 chk "子进程确实被调起过" "$([ -s "$TMUX_ENV_LOG" ] && echo yes || echo no)" yes
 chk "子进程都看不到调度标记" "$(sort -u "$TMUX_ENV_LOG" | tr '\n' ' ')" "none "
-chk "这一轮本身认得是调度器起的（开了 issue）" "$(creates)" 1
+chk "这一轮本身认得是调度器起的（写了日志）" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
 unset TMUX_ENV_LOG
 
-echo "【10c】经真实调度入口 poll-entry.sh：开提示 issue"
-fresh
+echo "【10c】经真实调度入口 poll-entry.sh：写日志，不开 issue"
+fresh 'CONFIG_NOTICE_ISSUE=true'
 : > "$CALLS"
 env -u CODING_AGENT_RELEASE_ROOT CAVIL_DEPLOY_CONF="$SANDBOX/no-deploy.conf" CAVIL_DEPLOY_ROOT="$SANDBOX/no-deploy" \
     CODING_AGENT_CONFIG="$CONF" PATH="$SANDBOX/bin:$PATH" bash "$NEW/scripts/poll-entry.sh" >/dev/null 2>&1
-chk "开了一条提示 issue" "$(creates)/$(labels_of 1)" "1/pending/human"
+chk "日志一行、零创建、零提示 issue 调用" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(creates)/$(notice_calls)" "1/0/0"
 
-echo "【11】和改动前逐条一致：配置都写全的项目、只写日志的项目"
-same_calls() {   # <描述> [配置行…]
-    local what="$1"; shift
+echo "【11】和改动前逐条一致：配置都写全的项目；缺项的项目对改动前只写日志的跑法"
+same_calls() {   # <描述> <改动前那份的配置行> <当前这份的配置行>
+    local what="$1" old_line="$2" new_line="$3"
     if ! compat_skip "$what" "$OLD" "$NEW" scripts; then
-        fresh "$@"; tick "$OLD"; tick "$OLD"; sed 's/[0-9]\{10,\}//g' "$CALLS" > "$SANDBOX/old.calls"
-        fresh "$@"; tick "$NEW"; tick "$NEW"; sed 's/[0-9]\{10,\}//g' "$CALLS" > "$SANDBOX/new.calls"
-        chk "$what：GitHub 调用逐条一致" "$(diff "$SANDBOX/old.calls" "$SANDBOX/new.calls" >/dev/null && echo same || echo diff)" same
+        fresh "$old_line"; ticks_calls "$OLD" > "$SANDBOX/old.calls"
+        fresh "$new_line"; ticks_calls "$NEW" > "$SANDBOX/new.calls"
+        chk "$what：两轮合计 GitHub 调用逐条一致" "$(diff "$SANDBOX/old.calls" "$SANDBOX/new.calls" >/dev/null && echo same || echo diff)" same
         chk "$what：确实发过调用（不是早退）" "$([ -s "$SANDBOX/new.calls" ] && echo yes || echo no)" yes
     fi
 }
-same_calls "配置全写了" 'LABEL_PENDING_BLOCKED=""'
-same_calls "只写日志" 'CONFIG_NOTICE_ISSUE=false'
+same_calls "配置全写了" 'LABEL_PENDING_BLOCKED=""' 'LABEL_PENDING_BLOCKED=""'
+same_calls "缺一项（改动前只写日志 / 当前写着开 issue 的老开关）" 'CONFIG_NOTICE_ISSUE=false' 'CONFIG_NOTICE_ISSUE=true'
+chk "缺一项：当前这份确实写了日志" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
 
 echo "【12】登记表：模板里每个配置项都登记了，登记的都在模板里，说明字段齐全"
 # 守的是以后：往模板里加新配置项却没决定老项目要不要被提示，这里就红。
@@ -458,26 +382,28 @@ chk "还没跑过：找到了配置和状态目录" "$(grep -cxF "config: $CONF"
 chk "还没跑过：说明没有状态文件，不报错" "$(grep -c '^no config-notice.json' <<<"$out")/$(grep -c 'No such file' <<<"$out")" "1/0"
 tick
 out=$(run_ops)
-chk "跑过一轮：列出缺项和 issue 号" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c '[.issue, .logged]')" '[1,["LABEL_PENDING_BLOCKED"]]'
+chk "跑过一轮：列出缺项" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":["LABEL_PENDING_BLOCKED"]}'
 chk "跑过一轮：日志里那一行也列出来" "$(grep -c '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED' <<<"$out")" 1
 conf_set 'LABEL_PENDING_BLOCKED=""'
 tick
 out=$(run_ops)
-chk "补上配置后：缺项清空、issue 回到 null，issue 已关" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c '[.issue, .logged, .issued]')/$(item 1 .state)" '[null,[],[]]/closed'
+chk "补上配置后：缺项清空" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":[]}'
+echo '{"issue":7,"logged":[],"issued":["LABEL_PENDING_BLOCKED"]}' > "$W/state/config-notice.json"
+tick
+out=$(run_ops)
+chk "早先版本写下的 issue / issued：下一轮调度轮询后不见了" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":[]}'
 
 echo "【开关写法】模板里的 true / false 不带引号，提示里照抄的那一行也不带（GitHub#403）"
 chk "模板里没有带引号的 true / false 赋值" "$(grep -cE '^[A-Z_]+="(true|false)"' "$REPO_DIR/cavil-loop.config.example" || true)" 0
 fresh 'LABEL_PENDING_BLOCKED=""'
 sed -i '/^ENABLE_USAGE_LIMIT_PAUSE=/d' "$CONF"
 tick
-body=$(item 1 .body)
-chk "恰好缺用量上限这一项：开了一条 issue" "$(creates)/$(n_items)/$(nst '.logged')" '1/1/["ENABLE_USAGE_LIMIT_PAUSE"]'
-chk "正文里要照抄的那一行不带引号" "$(grep -cxF 'ENABLE_USAGE_LIMIT_PAUSE=true' <<<"$body")/$(grep -cF 'ENABLE_USAGE_LIMIT_PAUSE="true"' <<<"$body")" "1/0"
-chk "轮询日志里的同一句也不带引号" "$(log_has '里加 ENABLE_USAGE_LIMIT_PAUSE=true；')/$(log_has 'ENABLE_USAGE_LIMIT_PAUSE="true"')" "1/0"
-# 老配置里带引号的写法照样算「已经写了」：补上之后缺项清空、issue 关闭
+chk "恰好缺用量上限这一项：只记它、零创建" "$(nst '.logged')/$(creates)" '["ENABLE_USAGE_LIMIT_PAUSE"]/0'
+chk "轮询日志里要照抄的那一行不带引号" "$(log_has '里加 ENABLE_USAGE_LIMIT_PAUSE=true；')/$(log_has 'ENABLE_USAGE_LIMIT_PAUSE="true"')" "1/0"
+# 老配置里带引号的写法照样算「已经写了」：补上之后缺项清空
 conf_set 'ENABLE_USAGE_LIMIT_PAUSE="true"'
 tick
-chk "配置里写带引号的旧写法：照样认，issue 已关" "$(nst '[.issue, .logged]')/$(item 1 .state)" '[null,[]]/closed'
+chk "配置里写带引号的旧写法：照样认，缺项清空" "$(nst '.logged')" '[]'
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
