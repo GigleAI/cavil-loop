@@ -10,6 +10,7 @@ import { ISSUE_RELATIONS_BATCH_QUERY, PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
 import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, type GqlRelationFields } from './relations';
 import { readViewerTies, type GqlViewerFields } from './viewerTies';
+import { readLoopBlocked } from './loopBlocked';
 
 export const STATUS_FIELD_NAME = 'Status';
 export const REPO_RECENT_DAYS = 14;
@@ -195,6 +196,8 @@ export async function fetchProject(
   client: GitHubClient,
   src: Extract<SourceConfig, { kind: 'project' }>,
   now: number,
+  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
+  loopLabel: string = '',
 ): Promise<SourceSnapshot> {
   let after: string | null = null;
   let meta: ProjectMeta | null = null;
@@ -255,6 +258,8 @@ export async function fetchProject(
     if (!p.items.pageInfo.endCursor) throw new GitHubError('graphql', 'Project 分页缺少游标');
     after = p.items.pageInfo.endCursor;
   }
+  // GitHub#429: part of the same read — a failure fails the source (its previous snapshot stays)
+  await readLoopBlocked(client, [...items.values()], loopLabel);
   return { sourceKey: src.key, fetchedAt: now, items: [...items.values()], project: meta! };
 }
 
@@ -333,6 +338,8 @@ export async function fetchRepo(
   now: number,
   /** tests: a smaller batch, to cross the batch boundary with the recorded items */
   batchSize: number = RELATION_BATCH_SIZE,
+  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
+  loopLabel: string = '',
 ): Promise<SourceSnapshot> {
   const repo = `${src.owner}/${src.name}`;
   const base = `/repos/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.name)}/issues`;
@@ -379,9 +386,11 @@ export async function fetchRepo(
     it.relations ??= noRelations();
     it.relationsAt = now;
   }
+  // GitHub#429: part of the same read — a failure fails the source (its previous snapshot stays)
+  await readLoopBlocked(client, [...items.values()], loopLabel);
   return { sourceKey: src.key, fetchedAt: now, items: [...items.values()] };
 }
 
-export function fetchSource(client: GitHubClient, src: SourceConfig, now: number): Promise<SourceSnapshot> {
-  return src.kind === 'project' ? fetchProject(client, src, now) : fetchRepo(client, src, now);
+export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: string = ''): Promise<SourceSnapshot> {
+  return src.kind === 'project' ? fetchProject(client, src, now, loopLabel) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel);
 }
