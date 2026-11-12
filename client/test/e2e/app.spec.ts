@@ -7097,3 +7097,136 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await app.close();
 });
 
+
+// ---- GitHub#398: a repository's GitHub page, one click from where the repository is shown ----
+
+test('GitHub#398: "open this repository on GitHub" on the board\'s swimlane heads, the table\'s repository sections and its repository list — one request with the repository\'s address each; folding, the slice filter and the dragged order stay as they were and still work', async () => {
+  const issue = (repo: string, n: number, title: string) => ({ number: n, node_id: `I_fixture_${repo}${n}`, title, state: 'open', html_url: `https://github.com/GigleAI/${repo}/issues/${n}`, updated_at: '2026-11-04T00:00:00Z', labels: [], assignees: [], milestone: null, user: { login: 'user-1' }, parent_issue_url: null, sub_issues_summary: null });
+  env.fake.state.repos.set('gigleai/aaa', [issue('aaa', 1, 'alpha')]);
+  env.fake.state.repos.set('gigleai/bbb', [issue('bbb', 1, 'beta')]);
+  const [A, B] = ['GigleAI/aaa', 'GigleAI/bbb'];
+
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  for (const r of [A, B]) {
+    await page.getByTestId('source-input').fill(r);
+    await page.getByTestId('source-add').click();
+  }
+  await page.getByTestId('back').click();
+  await page.getByTestId('search').fill('');
+  const layout = (l: 'board' | 'table') => page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
+  /** every address the app asked the system browser to open after sign-in, in order */
+  const base = existsSync(env.opened) ? readFileSync(env.opened, 'utf8').split('\n').filter(Boolean).length : 0;
+  const opened = () => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8').split('\n').filter(Boolean).slice(base) : []);
+  const want: string[] = [];
+  const expectOpened = async (url: string) => {
+    want.push(url);
+    await expect.poll(opened).toEqual(want);
+    await page.waitForTimeout(200); // a second request for the same click would have arrived by now
+    expect(opened()).toEqual(want);
+  };
+  const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
+  const slices = () => page.$$eval('[data-testid="slice"]', (s) => s.map((x) => x.getAttribute('data-value')).filter((v) => v));
+  const savedOrder = () => page.evaluate(async () => (await (window as any).cavil.get()).state.repoOrder as string[]);
+
+  // ---- 1. board: swimlane heads ----
+  await layout('board');
+  await page.getByTestId('swimlanes').check();
+  await expect.poll(lanes, { timeout: 15_000 }).toEqual([A, B]);
+  const lane = (r: string) => page.locator(`[data-testid="lane"][data-lane="${r}"]`);
+  const laneWeb = (r: string) => lane(r).getByTestId('repo-web');
+  await expect(page.locator('[data-testid="lane"] [data-testid="repo-web"]')).toHaveCount(2);
+  await expect(laneWeb(A)).toHaveAttribute('title', '在 GitHub 打开这个仓库');
+  await expect(laneWeb(A)).toHaveAttribute('aria-label', `在 GitHub 打开这个仓库：${A}`);
+  // the link is a button of its own next to the fold button, not inside it
+  expect(await laneWeb(A).evaluate((el) => !!el.closest('[data-testid="lane-toggle"]'))).toBe(false);
+  await laneWeb(A).click();
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(lane(A).getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'true'); // the click did not fold the lane
+  expect(await lanes()).toEqual([A, B]);
+  // the keyboard reaches it right after the fold button, and Enter opens the page
+  await lane(B).getByTestId('lane-toggle').focus();
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => [document.activeElement?.getAttribute('data-testid'), document.activeElement?.getAttribute('data-repo')])).toEqual(['repo-web', B]);
+  await page.keyboard.press('Enter');
+  await expectOpened('https://github.com/GigleAI/bbb');
+  await expect(lane(B).getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'true');
+  // folding still works, from the name and from the empty part of the row right of the link; a folded lane keeps its link
+  await lane(A).getByTestId('lane-toggle').click();
+  await expect(lane(A).getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await laneWeb(A).click();
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(lane(A).getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'false');
+  const row = (await lane(A).getByTestId('lane-head').boundingBox())!;
+  await page.mouse.click(row.x + row.width - 40, row.y + row.height / 2);
+  await expect(lane(A).getByTestId('lane-toggle')).toHaveAttribute('aria-expanded', 'true');
+  expect(opened()).toEqual(want);
+  // dragging a lane by its head still reorders (b above a), and the links follow their repositories
+  await dragRepo(lane(B).getByTestId('lane-toggle'), lane(A).getByTestId('lane-toggle'));
+  await expect.poll(lanes).toEqual([B, A]);
+  expect(await savedOrder()).toEqual(['gigleai/bbb', 'gigleai/aaa']);
+  await shot(page, '398-01-board-lanes');
+
+  // ---- 2. table: the repository sections ----
+  await layout('table');
+  await expect.poll(async () => (await repoHeads(page)).map(([t]) => t), { timeout: 15_000 }).toEqual([B, A]);
+  const section = (r: string) => page.locator(`[data-testid="repo-group"][data-title="${r}"]`);
+  await expect(page.locator('[data-testid="repo-head"] [data-testid="repo-web"]')).toHaveCount(2);
+  const rowsShown = () => page.locator('[data-testid="row"]').count();
+  const before = await rowsShown();
+  expect(before).toBeGreaterThan(0);
+  await section(A).getByTestId('repo-web').click();
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(section(A).getByTestId('repo-toggle')).toHaveAttribute('aria-label', '收起这个仓库'); // still unfolded
+  expect(await rowsShown()).toBe(before);
+  // the head still folds on a click anywhere else on it
+  await section(A).getByTestId('repo-head').click({ position: { x: 600, y: 10 } });
+  await expect(section(A).getByTestId('repo-toggle')).toHaveAttribute('aria-label', '展开这个仓库');
+  expect(await rowsShown()).toBeLessThan(before);
+  await section(A).getByTestId('repo-web').click(); // folded: the link stays and still only opens the page
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(section(A).getByTestId('repo-toggle')).toHaveAttribute('aria-label', '展开这个仓库');
+  await section(A).getByTestId('repo-head').click({ position: { x: 600, y: 10 } });
+  await expect(section(A).getByTestId('repo-toggle')).toHaveAttribute('aria-label', '收起这个仓库');
+
+  // ---- 3. table: the repository list on the left ----
+  const sliceRow = (r: string) => page.locator('.slice-row', { has: page.locator(`[data-testid="slice"][data-value="${r}"]`) });
+  const slice = (r: string) => page.locator(`[data-testid="slice"][data-value="${r}"]`);
+  await expect.poll(slices).toEqual([B, A]);
+  await expect(page.locator('[data-testid="slices"] [data-testid="repo-web"]')).toHaveCount(2); // "全部" has none
+  const shownAt = (r: string) => sliceRow(r).getByTestId('repo-web').evaluate((el) => getComputedStyle(el).opacity);
+  await page.mouse.move(700, 400);
+  expect(await shownAt(B)).toBe('0'); // not shown until the pointer or the focus is on its row
+  await sliceRow(B).hover();
+  await expect.poll(() => shownAt(B)).toBe('1');
+  expect(await shownAt(A)).toBe('0');
+  await sliceRow(B).getByTestId('repo-web').click();
+  await expectOpened('https://github.com/GigleAI/bbb');
+  await expect(page.locator('[data-testid="slice"][data-value=""]')).toHaveClass(/\bon\b/); // still "all repositories"
+  await expect(slice(B)).not.toHaveClass(/\bon\b/);
+  // keyboard: Tab from the slice lands on its link, which shows itself; Enter opens the page
+  await page.mouse.move(700, 400);
+  await slice(A).focus();
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => [document.activeElement?.getAttribute('data-testid'), document.activeElement?.getAttribute('data-repo')])).toEqual(['repo-web', A]);
+  expect(await shownAt(A)).toBe('1');
+  await page.keyboard.press('Enter');
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(slice(A)).not.toHaveClass(/\bon\b/);
+  await shot(page, '398-02-table');
+  // the slice still filters on a click, and its link still works when picked
+  await slice(A).click();
+  await expect(slice(A)).toHaveClass(/\bon\b/);
+  await sliceRow(A).getByTestId('repo-web').click();
+  await expectOpened('https://github.com/GigleAI/aaa');
+  await expect(slice(A)).toHaveClass(/\bon\b/);
+  await page.locator('[data-testid="slice"][data-value=""]').click();
+  // dragging in the list still reorders (a back above b)
+  await dragRepo(slice(A), slice(B));
+  await expect.poll(slices).toEqual([A, B]);
+  expect(await savedOrder()).toEqual(['gigleai/aaa', 'gigleai/bbb']);
+  expect(opened()).toEqual(want);
+  expect(want.length).toBe(8);
+  await app.close();
+});
