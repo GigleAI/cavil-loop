@@ -5,6 +5,11 @@ set -euo pipefail
 # exclusive side, so it cannot remove an old release in the resolve→lease gap.
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 运行记录（GitHub#344）：一进来就留一行「已启动」，这样「完全没跑起来」和「跑了没事做」分得开。
+# 主轮询加载完配置后会删掉它，留下来的都是没走到那一步的。写不成不影响这一轮。
+# shellcheck source=_runlog.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_runlog.sh" 2>/dev/null || true
+if declare -F runlog_entry_mark >/dev/null; then runlog_entry_mark; fi
 DEPLOY_CONF="${CAVIL_DEPLOY_CONF:-$(cavil_deploy_conf)}"
 [ ! -f "$DEPLOY_CONF" ] || { set -a; . "$DEPLOY_CONF"; set +a; }
 DEPLOY_ROOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}"

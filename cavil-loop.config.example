@@ -1166,6 +1166,30 @@ POLL_IDLE_PROBE=true
 # 不封顶（按阶梯原样）。
 POLL_IDLE_PROBE_MAX_SECS=600
 
+# Poll run log (GitHub#344). Every poll round writes one small record when it exits
+# (start / end, result, last step, candidates, dispatches, GitHub calls made by the poll
+# process and how many failed); a round that exits non-zero, cannot read GitHub, has its
+# idle probe time out, spends too long in one step or finds the previous round stuck also
+# saves a snapshot. Look at it with `scripts/poll-history.sh`. Records only — nothing in
+# the poller reads these files, and a failed write never affects a poll. No tokens, no
+# issue / comment text, no source lines. Lives in $STATE_DIR/runlog/.
+# "false" turns it off; leaving the line out = on.
+#
+# 轮询运行记录（GitHub#344）。每一轮轮询退出时写一条很小的记录（开始 / 结束时间、结果、走到的
+# 最后一步、候选数、派工数、轮询进程自己发的 GitHub 调用数和失败数）；非零退出、读不到 GitHub、
+# 轻量检查超时、某一步太慢、发现上一轮卡住的那一轮，另存一份快照。用 `scripts/poll-history.sh` 看。
+# 只记不判：轮询的任何判断都不读这些文件，写失败也不影响轮询。里面没有令牌、没有 issue / 评论
+# 正文、没有源码行。放在 $STATE_DIR/runlog/。
+# "false" = 关闭；不写这一行 = 开。
+ENABLE_POLL_RUN_LOG=true
+# How many round records / snapshots / in-flight progress files to keep, and how many
+# seconds one step may take before the round saves a "slow step" snapshot.
+# 保留多少条轮次记录 / 多少份快照 / 多少份进行中的进度文件；一步超过多少秒算「慢」并留快照。
+POLL_RUN_LOG_ROUNDS=1000
+POLL_RUN_LOG_SNAPSHOTS=20
+POLL_RUN_LOG_INFLIGHT=64
+POLL_RUN_LOG_SLOW_SECS=600
+
 # Failure backoff cap. Reading GitHub is not the same as having nothing to do,
 # so failures get their own ladder — it starts at POLL_INTERVAL_SECS, doubles on
 # each further failure, and is capped here — and it never advances the quiet

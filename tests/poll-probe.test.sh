@@ -264,7 +264,7 @@ off_run() {   # <根> <输出前缀>
     run_ticks "$1" $((T0 + 8 * DAY)) $((T0 + 8 * DAY + 1800)) >/dev/null
     printf '%s\n' '[[{"number":8,"updated_at":"2026-02-02T00:00:00Z","title":"todo","labels":[{"name":"pending/human"}]}]]' > "$SNAP_ISSUES"
     run_ticks "$1" $((T0 + 8 * DAY + 3600)) $((T0 + 8 * DAY + 3900)) >/dev/null
-    cp "$GH_COUNT" "$2.calls"; cp "$PACE" "$2.pace"; ls "$STATE" | grep -v '^poll.log$' > "$2.files"
+    cp "$GH_COUNT" "$2.calls"; cp "$PACE" "$2.pace"; ls "$STATE" | grep -v -e '^poll.log$' -e '^runlog$' > "$2.files"   # runlog：运行记录（GitHub#344），改动前没有
 }
 if ! compat_skip "关掉检查 vs 改动前" "$BASE" "$REPO_DIR" scripts; then
     export POLL_IDLE_PROBE=false
