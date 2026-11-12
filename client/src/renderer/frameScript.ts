@@ -214,6 +214,8 @@ export const FRAME_SCRIPT = `(function () {
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
+    // only a candidate is picked here (the same modifiers, and the key position — for a digit — or the character of
+    // a forwarded shortcut); the event goes on as it came, and the window decides it with its own rule
     var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, k = e.key.toLowerCase();
     var code = typeof e.code === 'string' ? e.code : '';
     var dg = /^(Digit|Numpad)[0-9]$/.test(code) ? code.slice(-1) : '';
@@ -222,7 +224,7 @@ export const FRAME_SCRIPT = `(function () {
       if (f.mod !== mod || f.shift !== sh) continue;
       if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : k !== f.key) continue;
       e.preventDefault();
-      send({ cavil: 'key', key: k, mod: mod, shift: sh, code: code });
+      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, code: code });
       return;
     }
   });
@@ -239,4 +241,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-1w5AK2CrJvT9phTGokE2TGUqDeF/RxTAdN0jIvReTtg='";
+export const FRAME_SCRIPT_HASH = "'sha256-KfUsZoexvH+b6A8Gos8vPaNmKxsNp5LSBBAXnym5/v8='";

@@ -76,7 +76,8 @@ function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): Shortc
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
 export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = ''): boolean {
-  if (typeof key !== 'string' || key.length !== 1 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
+  // the key as the frame's browser reported it: a character, or a named key (Ctrl+Numpad1 reports "End" — code review round 3)
+  if (typeof key !== 'string' || key.length < 1 || key.length > 32 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
   // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
   // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
   if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;

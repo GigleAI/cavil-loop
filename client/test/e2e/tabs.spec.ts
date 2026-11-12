@@ -376,38 +376,53 @@ test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail
   // ⌘1 … ⌘9: one event shape, sent once to the window and once inside the isolated discussion — the two must
   // agree on every shape (code review rounds 1 and 2: the discussion went by the character, then dropped a key
   // position that was not a digit and fell back to the character)
-  const shapes: { what: string; ev: Record<string, unknown>; home: boolean }[] = [
-    { what: 'US ⌘1', ev: { key: '1', code: 'Digit1', ctrlKey: true }, home: true },
-    { what: 'French ⌘1 ("&", the Digit1 key)', ev: { key: '&', code: 'Digit1', ctrlKey: true }, home: true },
-    { what: 'number pad ⌘1', ev: { key: '1', code: 'Numpad1', ctrlKey: true }, home: true },
-    { what: 'a key that is no digit typing "1"', ev: { key: '1', code: 'KeyQ', ctrlKey: true }, home: false },
-    { what: '"1" with no key position reported', ev: { key: '1', code: '', ctrlKey: true }, home: true },
-    { what: 'Digit2 typing "1" (the key position decides: the first tab)', ev: { key: '1', code: 'Digit2', ctrlKey: true }, home: false },
-    { what: '⌘⌥1 (Mac-only key, this is Linux)', ev: { key: '1', code: 'Digit1', ctrlKey: true, altKey: true }, home: false },
-    { what: 'a bare 1', ev: { key: '1', code: 'Digit1' }, home: false },
+  // (code review round 3: also what a real key press reports — Ctrl+number pad 1 is "End" on the Numpad1 key — and
+  // which tab ends up in front, not only "home or not")
+  type Shape = { what: string; ev?: Record<string, unknown>; press?: string; front: string };
+  const HOME_KEY = 'home';
+  const shapes: Shape[] = [
+    { what: 'US ⌘1', ev: { key: '1', code: 'Digit1', ctrlKey: true }, front: HOME_KEY },
+    { what: 'French ⌘1 ("&", the Digit1 key)', ev: { key: '&', code: 'Digit1', ctrlKey: true }, front: HOME_KEY },
+    { what: 'number pad ⌘1 with NumLock on ("1")', ev: { key: '1', code: 'Numpad1', ctrlKey: true }, front: HOME_KEY },
+    { what: 'number pad ⌘1 with NumLock off ("End")', ev: { key: 'End', code: 'Numpad1', ctrlKey: true }, front: HOME_KEY },
+    { what: 'a key that is no digit typing "1"', ev: { key: '1', code: 'KeyQ', ctrlKey: true }, front: K(A) },
+    { what: '"1" with no key position reported', ev: { key: '1', code: '', ctrlKey: true }, front: HOME_KEY },
+    { what: 'Digit2 typing "1" (the key position decides)', ev: { key: '1', code: 'Digit2', ctrlKey: true }, front: K(B) },
+    { what: 'a named key on no digit position ("End", the End key)', ev: { key: 'End', code: 'End', ctrlKey: true }, front: K(A) },
+    { what: '⌘⌥1 (Mac-only key, this is Linux)', ev: { key: '1', code: 'Digit1', ctrlKey: true, altKey: true }, front: K(A) },
+    { what: '⌘⇧1 is the layout key, never a tab key from the discussion', ev: { key: '!', code: 'Digit1', ctrlKey: true, shiftKey: true }, front: 'layout' },
+    { what: 'a bare 1', ev: { key: '1', code: 'Digit1' }, front: K(A) },
+    { what: 'composing (an input method)', ev: { key: '1', code: 'Digit1', ctrlKey: true, isComposing: true }, front: K(A) },
+    { what: 'real press: Ctrl+1', press: 'Control+1', front: HOME_KEY },
+    { what: 'real press: Ctrl+number pad 1', press: 'Control+Numpad1', front: HOME_KEY },
+    { what: 'real press: Ctrl+number pad 2', press: 'Control+Numpad2', front: K(B) },
+    { what: 'real press: Ctrl+9 (the last tab)', press: 'Control+9', front: K(A) },
   ];
-  const outcome = async (where: 'window' | 'discussion', ev: Record<string, unknown>) => {
+  const frontNow = async () => ((await home(page).getAttribute('data-front')) === 'yes' ? HOME_KEY : (await page.locator('[data-testid="tab"][data-front="yes"]').getAttribute('data-key'))!);
+  const outcome = async (where: 'window' | 'discussion', s: Shape) => {
     await tab(page, A).click();
     await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-    const init = { bubbles: true, cancelable: true, ...ev };
-    if (where === 'window') await page.evaluate((e) => window.dispatchEvent(new KeyboardEvent('keydown', e)), init);
-    else await frame.locator('body').evaluate((b, e) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    if (s.press) {
+      if (where === 'window') await detail(page).click({ position: { x: 5, y: 5 } });
+      else await frame.locator('body').click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press(s.press);
+    } else {
+      const init = { bubbles: true, cancelable: true, ...s.ev };
+      if (where === 'window') await page.evaluate((e) => window.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+      else await frame.locator('body').evaluate((b, e) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    }
     await page.waitForTimeout(300);
-    return (await home(page).getAttribute('data-front')) === 'yes';
+    return frontNow();
   };
   for (const s of shapes) {
-    const inWindow = await outcome('window', s.ev);
-    const inDiscussion = await outcome('discussion', s.ev);
-    expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: s.home, inDiscussion: s.home });
+    const inWindow = await outcome('window', s);
+    const inDiscussion = await outcome('discussion', s);
+    if (s.front === 'layout') {
+      // ⌘⇧1 in the window is "switch to the board layout" (it brings the home tab forward); the discussion forwards
+      // only ⌘1 … ⌘9, ⌘R and its own keys — so the tab stays. Two different shortcuts, judged by the one rule.
+      expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: HOME_KEY, inDiscussion: K(A) });
+    } else expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: s.front, inDiscussion: s.front });
   }
-  // and a digit that moves somewhere else is really carried out from the discussion: ⌘2 is the first tab (B; the tabs are B, A)
-  await tab(page, A).click();
-  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
-  await frame.locator('body').evaluate(
-    (b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)),
-    { key: '2', code: 'Digit2', ctrlKey: true, shiftKey: false, bubbles: true, cancelable: true },
-  );
-  await expect(tab(page, B)).toHaveAttribute('data-front', 'yes');
   await app.close();
 });
 
