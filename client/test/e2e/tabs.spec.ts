@@ -349,12 +349,33 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   // the board's own copy is still the open one: only the tab knows
   await expect(page.locator(`[data-testid="row"][data-key="${K(A)}"] [data-testid="row-state"]`).first()).toHaveAttribute('data-tone', 'open');
 
-  // reopened and handed to an agent on GitHub: coming forward checks it at once (no ten minutes to wait)
+  // its detail agrees with its tab, not with the board's cached copy (code review round 1): badge, close button, labels
+  await tab(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'done', { timeout: 15_000 });
+  await expect(detail(page).getByTestId('close-issue')).toHaveCount(0);
+  await home(page).click();
+
+  // reopened and handed to an agent on GitHub: coming forward checks it at once (no ten minutes to wait);
+  // the detail's labels and badge follow that check too
   change(A, { state: 'open', labels: ['doing/agent'] });
   await tab(page, A).click();
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'open', { timeout: 15_000 });
+  await expect(detail(page).locator('[data-testid="detail-label"][data-label="doing/agent"]')).toBeVisible();
   await expect(detail(page).getByTestId('reply-input')).toBeVisible();
+
+  // the list reads again: board, tab and detail say the same, from the board's copy
+  env.fake.state.failRepoPage.clear();
+  change(A, { state: 'closed', labels: [] });
+  await page.keyboard.press('Control+r');
+  await expect(tab(page, A)).toHaveAttribute('data-listed', 'yes', { timeout: 15_000 });
+  await expect(tab(page, A)).toHaveAttribute('data-status', 'done');
+  await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'done', { timeout: 15_000 });
+  await expect(detail(page).locator('[data-testid="detail-label"][data-label="doing/agent"]')).toHaveCount(0);
+  await home(page).click();
+  await expect(page.locator(`[data-testid="row"][data-key="${K(A)}"] [data-testid="row-state"]`).first()).toHaveAttribute('data-tone', 'done');
   await app.close();
 });
 
@@ -385,6 +406,49 @@ test('settings: the "running" label (GitHub#404) is the one a tab\'s status read
   await field.blur();
   await expect(tab(page, A)).toHaveAttribute('data-status', 'open');
   await expect(tab(page, B)).toHaveAttribute('data-status', 'open');
+  await app.close();
+});
+
+test('unsent text belongs to the account it was typed under: signing out and in again — the same account or another — never brings it back; within one account it stays', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  const reply = () => detail(page).getByTestId('reply-input');
+  const signOutAndIn = async (viewer: string) => {
+    await page.keyboard.press('Control+,');
+    await page.getByTestId('logout').click();
+    await expect(page.getByTestId('start-login')).toBeVisible({ timeout: 15_000 });
+    env.fake.state.viewer = viewer;
+    await page.getByTestId('start-login').click();
+    await expect(page.getByTestId('user-code')).toBeVisible();
+    env.fake.resolveGrant('approved');
+    await expect(page.getByTestId('viewer')).toHaveText(viewer, { timeout: 15_000 });
+    await page.getByTestId('back').click();
+    await page.keyboard.press('Control+2');
+    await expect(row(page, A)).toBeVisible({ timeout: 20_000 });
+  };
+  // within one account: kept across tabs
+  await row(page, A).click();
+  await reply().fill('typed as user-1');
+  await home(page).click();
+  await tab(page, A).click();
+  await expect(reply()).toHaveValue('typed as user-1');
+
+  // the same account again: gone (and no tab is left in front)
+  await signOutAndIn('user-1');
+  await expect(home(page)).toHaveAttribute('data-front', 'yes');
+  await row(page, A).click();
+  await expect(reply()).toHaveValue('');
+
+  // A → B → A: B never sees A's text, and A's does not come back either
+  await reply().fill('typed as user-1 again');
+  await signOutAndIn('user-2');
+  await row(page, A).click();
+  await expect(reply()).toHaveValue('');
+  await reply().fill('typed as user-2');
+  await signOutAndIn('user-1');
+  await row(page, A).click();
+  await expect(reply()).toHaveValue('');
   await app.close();
 });
 

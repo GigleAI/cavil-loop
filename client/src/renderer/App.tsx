@@ -59,6 +59,29 @@ export function App() {
   const [opening, setOpening] = useState<{ n: number; intent: OpenIntent | null }>({ n: 0, intent: null });
   const drafts = useRef(new Map<string, TabDraft>());
   const [askClose, setAskClose] = useState<string | null>(null);
+  // Everything the window keeps per tab belongs to the account it was typed under (code review round 1:
+  // a reply typed before a sign-out came back after signing in again, also as another account). Leaving
+  // "signed in" or another account showing ends this account's window state; a late report from a
+  // detail of the ended account (its draft) is dropped by its generation.
+  const account = snap?.state.phase === 'ready' ? `ready:${snap.state.viewer ?? ''}` : 'out';
+  const accountGen = useRef(0);
+  const lastAccount = useRef(account);
+  if (lastAccount.current !== account) {
+    const wasIn = lastAccount.current.startsWith('ready:');
+    const sameAccountKnownLater = wasIn && lastAccount.current === 'ready:' && account.startsWith('ready:');
+    lastAccount.current = account;
+    if (!sameAccountKnownLater) {
+      accountGen.current++;
+      drafts.current = new Map();
+    }
+  }
+  const gen = accountGen.current;
+  useEffect(() => {
+    if (gen === 0) return;
+    setActive(HOME);
+    setAskClose(null);
+    setOpening((o) => ({ n: o.n + 1, intent: null }));
+  }, [gen]);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
   const show = (key: string, intent: OpenIntent | null = null) => {
     if (key === frontRef.current && !intent) return;
@@ -246,15 +269,17 @@ export function App() {
           {front !== HOME && (
             <div className="tab-page" data-testid="tab-page-detail" data-front="yes">
               <DetailPanel
-                key={`${front}:${opening.n}`}
                 itemKey={front}
                 state={snap.state}
                 data={snap.data}
                 onHome={() => show(HOME)}
                 onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
                 intent={opening.intent}
+                key={`${gen}:${front}:${opening.n}`}
                 draft={drafts.current.get(front) ?? null}
-                onDraft={(d) => drafts.current.set(front, d)}
+                onDraft={(d) => {
+                  if (accountGen.current === gen) drafts.current.set(front, d);
+                }}
               />
             </div>
           )}

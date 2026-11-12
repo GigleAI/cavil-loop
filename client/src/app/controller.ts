@@ -525,8 +525,8 @@ export class Controller {
     const snaps = [...this.snapshots.values()].filter((s) => configured.includes(s.sourceKey));
     const selected = this.state.view.selected?.filter((k) => configured.includes(k)) ?? null;
     const merged0 = mergeSnapshots(snaps, selected);
-    // GitHub#397: an open tab's item the view does not hold (a source unticked, or no source lists it any more)
-    const tabItems = this.tabItemsOutside(merged0.items);
+    // GitHub#397: an open tab's item, when the view does not hold it or holds an older copy than the tab knows
+    const tabItems = this.tabItemsFresh(merged0.items);
     const merged = tabItems.length ? { ...merged0, tabItems } : merged0;
     if (!this.edits.size) return { ...merged, allProjects: this.allProjects(), boardRepos: this.boardRepos() };
     // GitHub#229: the changes on their way show on the item itself, the others beside it
@@ -1915,17 +1915,31 @@ export class Controller {
     this.storeTabs();
   }
 
-  /** The open tabs' items the view does not hold, whole (the detail needs more than the summary). */
-  private tabItemsOutside(shown: Item[]): Item[] {
+  /**
+   * The open tabs' items whole (the detail needs more than the summary), wherever the view's copy is
+   * missing or older than what the tab knows: an item no complete read carries, whose own check read a
+   * newer copy than the source that failed kept (plan review: the detail's badge showed the cached
+   * "open" while its tab said "closed"). The detail, its buttons and every change made from it take
+   * this copy first — one item, one answer. Memberships stay the cached copy's (a check reads no board).
+   */
+  private tabItemsFresh(shown: Item[]): Item[] {
     if (!this.tabList.length) return [];
     const out: Item[] = [];
     let all: Item[] | null = null;
     for (const t of this.tabList) {
-      if (shown.some((i) => i.key === t.key)) continue;
       all ??= this.cachedItems();
       const cached = all.find((i) => i.key === t.key) ?? null;
-      const it = listedNow(cached, this.state.sync.sources) ? cached : newestCopy([this.tabOwn.get(t.key), cached]);
-      if (it) out.push(it);
+      const inView = shown.find((i) => i.key === t.key) ?? null;
+      if (listedNow(cached, this.state.sync.sources)) {
+        if (!inView && cached) out.push(cached);
+        continue;
+      }
+      const own = this.tabOwn.get(t.key) ?? null;
+      const pick = newestCopy([own, cached]);
+      if (!pick) continue;
+      const it = pick === own && cached ? { ...own!, projects: cached.projects, sources: cached.sources } : pick;
+      if (inView && it === cached) continue;
+      out.push(it);
     }
     return out;
   }
@@ -2063,7 +2077,7 @@ export class Controller {
   private findItem(key: string) {
     const data = this.getBoardData();
     // GitHub#397: an open tab's item is still an item when the view (or every source) no longer lists it
-    return data.items.find((i) => i.key === key) ?? data.tabItems?.find((i) => i.key === key) ?? null;
+    return data.tabItems?.find((i) => i.key === key) ?? data.items.find((i) => i.key === key) ?? null;
   }
 
   /** The whole detail of one item, read from GitHub now (not cached). */
@@ -2234,7 +2248,7 @@ export class Controller {
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     const data = this.getBoardData();
     // (GitHub#397: an open tab's item the view does not hold is still an item)
-    const item = 'key' in action ? (data.items.find((i) => i.key === action.key) ?? data.tabItems?.find((i) => i.key === action.key) ?? null) : null;
+    const item = 'key' in action ? (data.tabItems?.find((i) => i.key === action.key) ?? data.items.find((i) => i.key === action.key) ?? null) : null;
     // GitHub#205: a new issue joins exactly the Projects ticked in the dialog; one the app does not know is refused before sending
     const known = this.allProjects();
     const wanted = action.kind === 'createIssue' ? (Array.isArray(action.projects) ? action.projects : null) : [];
@@ -2543,7 +2557,7 @@ export class Controller {
     if (!(await this.storeEdits())) return { result: await this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出') };
     if (!holds()) return notSent;
     const data = this.getBoardData();
-    const item = data.items.find((i) => i.key === action.key) ?? data.tabItems?.find((i) => i.key === action.key) ?? null;
+    const item = data.tabItems?.find((i) => i.key === action.key) ?? data.items.find((i) => i.key === action.key) ?? null;
     let outcome;
     try {
       outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });

@@ -657,6 +657,6 @@ export interface BoardData {
    * before relations were read, and no full read succeeded since). Not "these have no relations".
    */
   relationsUnknown?: string[];
-  /** GitHub#397: the open tabs' items that `items` does not hold (a source unticked, or no source lists them any more) */
+  /** GitHub#397: open tabs' items that `items` does not hold, or holds in an older copy than the tab's own check read (these win for the detail) */
   tabItems?: Item[];
 }

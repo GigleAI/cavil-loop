@@ -167,6 +167,26 @@ describe('an item no complete read carries is checked by itself', () => {
     expect(status(c)).toBe('waiting');
   });
 
+  it('the newer copy the check read is the one the detail and every change use; the board keeps its cached copy', async () => {
+    const c = await ready();
+    c.openTab(K(ISSUE));
+    breakSource();
+    setIssue({ state: 'closed', labels: ['doing/agent'] });
+    await round(c);
+    expect(status(c)).toBe('done');
+    const board = c.getBoardData().items.find((i) => i.key === K(ISSUE))!;
+    expect(board.state).toBe('open');
+    const fresh = c.getBoardData().tabItems!.find((i) => i.key === K(ISSUE))!;
+    expect(fresh).toMatchObject({ state: 'closed', labels: [{ name: 'doing/agent' }] });
+    // memberships are the cached copy's (a check reads no board)
+    expect(fresh.sources).toEqual(board.sources);
+    // a change made from the detail goes by that copy: the label is there, removing it is sent
+    const n = fake.log.length;
+    const r = await c.act({ kind: 'removeLabel', key: K(ISSUE), label: 'doing/agent' } as any);
+    expect(r.ok).toBe(true);
+    expect(fake.log.slice(n).some((l) => l.method === 'DELETE' && l.path.includes(`/issues/${ISSUE}/labels/doing%2Fagent`))).toBe(true);
+  });
+
   it('ended: every ten minutes, not before — and still after it ended: reopened, commented on', async () => {
     const c = await ready();
     c.openTab(K(ISSUE));

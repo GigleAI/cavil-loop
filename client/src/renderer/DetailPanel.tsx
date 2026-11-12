@@ -367,8 +367,9 @@ export function DetailPanel({
   /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
   onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
 }) {
-  // GitHub#397: a tab's item may be one the view does not hold (no source lists it any more): the controller hands it over whole
-  const item = data.items.find((i) => i.key === itemKey) ?? data.tabItems?.find((i) => i.key === itemKey) ?? null;
+  // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
+  // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
+  const item = data.tabItems?.find((i) => i.key === itemKey) ?? data.items.find((i) => i.key === itemKey) ?? null;
   // One panel instance = one opening (the board gives every opening its own
   // React key). Every late answer goes through `session` (openSession.ts):
   // after the opening ended, or once a newer call of the same kind started,
