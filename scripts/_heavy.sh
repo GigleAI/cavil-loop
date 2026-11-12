@@ -22,15 +22,35 @@ heavy_field() {   # <记录文件> <键>
 }
 
 # 读一条运行记录。运行记录的每一个消费者（排队、列表、清理、每轮检查）都只通过它读，不各自拿
-# heavy_field 的空字符串去猜——空字符串分不出「这个字段是空的」和「文件读不到」。
-#   返回 0  读到了，而且是认识的形状：HR_STATE（queued | running）、HR_UNIT、HR_STATEDIR、HR_PROJECT、
+# heavy_field 的空字符串去猜——空字符串分不出「这个字段写的就是空」和「文件读不到 / 这一行没有」。
+#
+#   返回 0  读到了，而且十个字段一个不缺、各自的值都合规：HR_STATE、HR_UNIT、HR_STATEDIR、HR_PROJECT、
 #           HR_ITEM、HR_GEN、HR_LAUNCH、HR_PID、HR_SINCE、HR_CMD 已填好
 #   返回 1  文件已经不在了（别人刚删掉）——这条运行已经了结，跳过即可
-#   返回 2  文件在，但读不到、或内容不认识（状态不是那两个词、分组名和文件名对不上、条目号不是数字）。
-#           **不能**当成「不在跑」「不是我的」：调用方按文件名推出分组名（heavy_unit_name）去查分组，
-#           只有分组确认消失才能删这条记录；分组还在或查不清时，它挡着排队、挡着删工作树，也不会被停。
+#   返回 2  文件在，但读不到、缺字段、字段重复、或值不合规。**不能**当成「不在跑」「不是我的」「手动
+#           运行」：调用方按文件名推出分组名（heavy_unit_name）去查分组，只有分组确认消失才能删这条
+#           记录；分组还在或查不清时，它挡着排队、挡着删工作树，也不会被停。
+#
+# 字段表（写的一方是 heavy-test.sh 的 write_record，十行每次都写全；这里逐行核对「这一行在不在」）：
+#
+#   字段      谁靠它做什么                           允许写成空吗
+#   state     排队：只有 running 挡人                不允许；只认 queued / running
+#   unit      所有人：停 / 查的是哪个分组            不允许；必须等于按文件名推出的分组名
+#   statedir  清理、每轮检查：是不是本项目的         只有「手动运行」可以空（见下）；否则必须是绝对路径
+#   item      清理：是不是这个条目的                 只有「手动运行」可以空；否则是数字
+#   gen       （排队命令自己核对代数，记录里留底）   只有「手动运行」可以空；否则是数字
+#   launch    每轮检查：起它的 worker 结束没有       可以空（派工时没拿到启动编号）；否则 32 位十六进制，
+#                                                    而且只能出现在有条目归属的记录里
+#   project   只用于显示                             可以空
+#   pid       只用于测试和排查                       不允许；数字
+#   since     只用于显示                             不允许；数字
+#   cmd       只用于显示                             可以空，但这一行必须在
+#
+# 「手动运行」= statedir、item、gen、launch 四行都在、而且都**明确写成空**。归属三项（statedir、item、gen）
+# 要么全有要么全空：只有一部分、或者哪一行干脆没有，都是返回 2——缺了归属的记录不能被推断成手动运行，
+# 也不能被推断成别的项目的。
 heavy_run_load() {   # <记录文件>
-    local f="$1" content line k
+    local f="$1" content line k v seen=" "
     HR_STATE=""; HR_UNIT=""; HR_STATEDIR=""; HR_PROJECT=""; HR_ITEM=""; HR_GEN=""
     HR_LAUNCH=""; HR_PID=""; HR_SINCE=""; HR_CMD=""
     if ! content="$(cat "$f" 2>/dev/null)"; then
@@ -38,23 +58,39 @@ heavy_run_load() {   # <记录文件>
         return 1
     fi
     while IFS= read -r line; do
-        k="${line%%=*}"
+        case "$line" in *=*) ;; *) [ -z "$line" ] && continue; return 2 ;; esac
+        k="${line%%=*}"; v="${line#*=}"
         case "$k" in
-            state) HR_STATE="${line#*=}" ;;
-            unit) HR_UNIT="${line#*=}" ;;
-            statedir) HR_STATEDIR="${line#*=}" ;;
-            project) HR_PROJECT="${line#*=}" ;;
-            item) HR_ITEM="${line#*=}" ;;
-            gen) HR_GEN="${line#*=}" ;;
-            launch) HR_LAUNCH="${line#*=}" ;;
-            pid) HR_PID="${line#*=}" ;;
-            since) HR_SINCE="${line#*=}" ;;
-            cmd) HR_CMD="${line#*=}" ;;
+            state|unit|statedir|project|item|gen|launch|pid|since|cmd) ;;
+            *) continue ;;      # 以后新加的字段：不认识的行不算错
+        esac
+        case "$seen" in *" $k "*) return 2 ;; esac      # 同一个字段出现两次：不知道该信哪个
+        seen="$seen$k "
+        case "$k" in
+            state) HR_STATE="$v" ;;
+            unit) HR_UNIT="$v" ;;
+            statedir) HR_STATEDIR="$v" ;;
+            project) HR_PROJECT="$v" ;;
+            item) HR_ITEM="$v" ;;
+            gen) HR_GEN="$v" ;;
+            launch) HR_LAUNCH="$v" ;;
+            pid) HR_PID="$v" ;;
+            since) HR_SINCE="$v" ;;
+            cmd) HR_CMD="$v" ;;
         esac
     done <<<"$content"
+    for k in state unit statedir project item gen launch pid since cmd; do
+        case "$seen" in *" $k "*) ;; *) return 2 ;; esac     # 这一行没有：不是「空」，是「不知道」
+    done
     case "$HR_STATE" in queued|running) ;; *) return 2 ;; esac
     [ "$HR_UNIT" = "$(heavy_unit_name "${f##*/}")" ] || return 2
-    [[ "$HR_ITEM" =~ ^[0-9]*$ ]] || return 2
+    [[ "$HR_PID" =~ ^[0-9]+$ && "$HR_SINCE" =~ ^[0-9]+$ ]] || return 2
+    if [ -z "$HR_STATEDIR" ] && [ -z "$HR_ITEM" ] && [ -z "$HR_GEN" ]; then
+        [ -z "$HR_LAUNCH" ] || return 2                      # 手动运行不会有 worker 启动编号
+    else
+        [[ "$HR_STATEDIR" == /* && "$HR_ITEM" =~ ^[0-9]+$ && "$HR_GEN" =~ ^[0-9]+$ ]] || return 2
+        [[ -z "$HR_LAUNCH" || "$HR_LAUNCH" =~ ^[0-9a-f]{32}$ ]] || return 2
+    fi
     return 0
 }
 

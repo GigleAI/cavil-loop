@@ -293,6 +293,29 @@ chk "上一套结束后下一套跑完" "$rc" 0
 yes_ "确实跑到了结束" ended next8
 no_ "上一套的记录随后被删" test -e "$rx"
 
+echo "── 9. 真实清理入口：本条目测试的运行记录缺了项目状态目录那一行 → 不删工作树；补回后先停后删 ──"
+N9=987345
+WT9="$D/wt/issue-$N9"
+gq -C "$D/proj" worktree add -q "$WT9" -b "feature/issue-$N9"
+hw_bg own9 CAVIL_HEAVY_ITEM="$N9" CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_STATE_DIR="$D/state" CAVIL_HEAVY_PROJECT=example/none -- bash -c "echo \$\$ > '$M/own9.main'; date +%s%N > '$M/own9.start'; sleep 300"
+p9=$HW_PID
+wait_for 10 started own9 || bad "本条目的测试没启动"
+r9="$(rec_of own9.main)"; u9="$(unit_of own9.main)"
+cp -p "$r9" "$TMP/r9.bak"
+sed -i '/^statedir=/d' "$r9"
+(cd "$D/proj" && HOME="$HH" CODING_AGENT_CONFIG="$D/config" timeout 120 bash "$REPO_DIR/scripts/cleanup-issue.sh" "$N9" --force) > "$D/cleanup9.out" 2>&1; rc=$?
+yes_ "清理非 0 退出" test "$rc" -ne 0
+yes_ "工作树保留" test -d "$WT9"
+yes_ "测试还在分组里（没被停，也没被丢下不管就删目录）" in_unit "$(cat "$M/own9.main")" "$u9"
+yes_ "那条记录还在" test -e "$r9"
+cp -p "$TMP/r9.bak" "$r9"
+(cd "$D/proj" && HOME="$HH" CODING_AGENT_CONFIG="$D/config" timeout 120 bash "$REPO_DIR/scripts/cleanup-issue.sh" "$N9" --force) > "$D/cleanup9.out" 2>&1; rc=$?
+chk "记录补回后清理成功" "$rc" 0
+yes_ "测试被停了" pid_gone "$(cat "$M/own9.main")"
+yes_ "分组消失了" unit_gone "$u9"
+no_ "工作树删了" test -d "$WT9"
+wait "$p9" 2>/dev/null
+
 echo
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

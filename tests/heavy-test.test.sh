@@ -267,7 +267,7 @@ echo "── 5. 分组状态查不到 / 不认识：当作还在跑——不删�
 for fault in show-fail show-junk show-empty; do
     reset1
     id="$(printf '%032x' $RANDOM)"
-    printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=\nproject=example/q\nitem=9\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
+    printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/q\nproject=example/q\nitem=9\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
     touch "$FAKE/$fault"
     hw_bg b -- bash -c "$(job b 0.3)"; pb=$HW_PID
     sleep 2.5
@@ -292,6 +292,9 @@ spoil() {   # <办法> <记录文件>
         bad-state) sed -i 's/^state=.*/state=finished/' "$2" ;;
         no-state) sed -i '/^state=/d' "$2" ;;
         wrong-unit) sed -i 's/^unit=.*/unit=cavil-heavy-00000000000000000000000000000000.scope/' "$2" ;;
+        no-*) sed -i "/^${1#no-}=/d" "$2" ;;                      # 整行没了（不是写成空）
+        blank-*) sed -i "s|^${1#blank-}=.*|${1#blank-}=|" "$2" ;;  # 这一行在，值是空
+        dup-*) sed -n "/^${1#dup-}=/p" "$2" >> "$2" ;;             # 同一个字段出现两次
     esac
 }
 unspoil() { chmod 600 "$1" 2>/dev/null; cp -p "$TMP/rec.bak" "$1"; }
@@ -341,6 +344,57 @@ chk "读不到的记录：--stop 按编号照样停得掉" "$rc" 0
 yes_ "测试被停了" wait_for 5 pid_gone "$(cat "$M/x.main")"
 no_ "记录被删" test -e "$rx"
 wait "$px" 2>/dev/null
+
+echo "── 5c. 运行记录逐字段核对：十个字段缺哪一行都算读不到；归属三项要么全有要么全空 ──"
+L=0123456789abcdef0123456789abcdef
+mystart="$(bash -c 'source "$1/scripts/_heavy.sh"; heavy_proc_start "$2"' _ "$NEW" "$$")"
+load_rc() { bash -c 'source "$1/scripts/_heavy.sh"; heavy_run_load "$2"; echo $?' _ "$NEW" "$1"; }
+reset1
+# 两条真记录：一条有条目归属，一条是手动运行——都由真的排队命令写出来
+printf 'pid=%s\nstart=%s\n' "$$" "$mystart" > "$TMP/launch.tmp"; mkdir -p "$SD/worker-launch"; cp "$TMP/launch.tmp" "$SD/worker-launch/$L"
+hw_bg own CAVIL_HEAVY_ITEM=5 CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_LAUNCH="$L" CAVIL_HEAVY_STATE_DIR="$SD" CAVIL_HEAVY_PROJECT=example/p -- bash -c "$(job own 300)"; pown=$HW_PID
+wait_for 5 started own || bad "有归属的那套没启动"
+rown="$(rec_of "$M/own.start")"
+cp "$rown" "$TMP/own.rec"; hw --stop "${rown##*/}" > /dev/null 2>&1; wait "$pown" 2>/dev/null
+hw_bg man -- bash -c "$(job man 300)"; pman=$HW_PID
+wait_for 5 started man || bad "手动的那套没启动"
+rman="$(rec_of "$M/man.start")"
+cp "$rman" "$TMP/man.rec"; hw --stop "${rman##*/}" > /dev/null 2>&1; wait "$pman" 2>/dev/null
+mkdir -p "$TMP/lt"
+try_rec() {   # <own|man> <办法> → 读取结果
+    local src="$TMP/$1.rec" id; id="$( [ "$1" = own ] && echo "${rown##*/}" || echo "${rman##*/}" )"
+    cp "$src" "$TMP/lt/$id"
+    [ "$2" = intact ] || { spoil "$2" "$TMP/lt/$id"; }
+    load_rc "$TMP/lt/$id"
+}
+chk "真的有归属记录：读得到" "$(try_rec own intact)" 0
+chk "真的手动运行记录：读得到" "$(try_rec man intact)" 0
+chk "手动运行记录里归属四项都写着空" "$(grep -cxE '(statedir|item|gen|launch)=' "$TMP/man.rec")" 4
+for fld in state unit statedir project item gen launch pid since cmd; do
+    chk "有归属的记录缺 $fld 这一行：读不到" "$(try_rec own "no-$fld")" 2
+    chk "手动运行的记录缺 $fld 这一行：读不到（不能推断成手动运行）" "$(try_rec man "no-$fld")" 2
+done
+for fld in statedir item gen; do
+    chk "有归属的记录把 $fld 写成空（归属只剩一部分）：读不到" "$(try_rec own "blank-$fld")" 2
+done
+chk "有归属的记录把启动编号写成空：仍读得到（派工时可以没拿到启动编号）" "$(try_rec own blank-launch)" 0
+chk "项目名、命令写成空：仍读得到（只用于显示）" "$(try_rec own blank-project)$(try_rec own blank-cmd)" 00
+for fld in state statedir item pid; do
+    chk "$fld 出现两次：读不到" "$(try_rec own "dup-$fld")" 2
+done
+chk "pid 不是数字：读不到" "$(cp "$TMP/own.rec" "$TMP/lt/${rown##*/}"; sed -i 's/^pid=.*/pid=abc/' "$TMP/lt/${rown##*/}"; load_rc "$TMP/lt/${rown##*/}")" 2
+chk "项目状态目录不是绝对路径：读不到" "$(cp "$TMP/own.rec" "$TMP/lt/${rown##*/}"; sed -i 's/^statedir=.*/statedir=relative\/dir/' "$TMP/lt/${rown##*/}"; load_rc "$TMP/lt/${rown##*/}")" 2
+chk "手动运行却带着启动编号：读不到" "$(cp "$TMP/man.rec" "$TMP/lt/${rman##*/}"; sed -i "s/^launch=.*/launch=$L/" "$TMP/lt/${rman##*/}"; load_rc "$TMP/lt/${rman##*/}")" 2
+chk "文件不在：算已经了结" "$(load_rc "$TMP/lt/does-not-exist")" 1
+# 排队命令这一头：环境里的归属只给了一部分，不能悄悄当成手动运行
+reset1
+env HOME="$HH" CAVIL_HEAVY_MODE=full CAVIL_HEAVY_ITEM=5 CAVIL_HEAVY_STATE_DIR="$SD" bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job part 0.1)" > "$W/part.out" 2>&1; rc=$?
+chk "环境里有条目号、没有代数：退出码 76" "$rc" 76
+no_ "没有启动" started part
+chk "没有登记" "$(ls "$RUNS" | wc -l)" 0
+env HOME="$HH" CAVIL_HEAVY_MODE=full CAVIL_HEAVY_ITEM=5 CAVIL_HEAVY_GEN=0 CAVIL_HEAVY_STATE_DIR=relative bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job part2 0.1)" > "$W/part2.out" 2>&1; rc=$?
+chk "项目状态目录不是绝对路径：退出码 76" "$rc" 76
+no_ "没有启动" started part2
 
 echo "── 6. 测试退出时留下后台子进程：收尾把整个分组停掉；分组外的进程不受影响 ──"
 reset1
@@ -392,8 +446,6 @@ run_item g2; chk "代数读不出：退出码 76" "$?" 76
 no_ "代数读不出：没有启动" started g2
 rm -f "$SD/item-gen/5"
 mkdir -p "$SD/worker-launch"
-L=0123456789abcdef0123456789abcdef
-mystart="$(bash -c 'source "$1/scripts/_heavy.sh"; heavy_proc_start "$2"' _ "$NEW" "$$")"
 printf 'pid=%s\nstart=%s\n' "$$" "$mystart" > "$SD/worker-launch/$L"
 run_item l1 CAVIL_HEAVY_LAUNCH="$L"; chk "起它的 worker 还在：照常跑" "$?" 0
 yes_ "worker 还在：确实跑了" ended l1
@@ -433,7 +485,7 @@ chk "降级：没有建分组" "$(calls run)" 0
 chk "降级：没有登记" "$(ls "$RUNS" | wc -l)" 0
 # 降级模式看不了分组：还留着登记着的运行时不能当它们不存在
 id="$(printf '%032x' 77)"
-printf 'state=running\nunit=cavil-heavy-%s.scope\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
+printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=\nproject=\nitem=\ngen=\nlaunch=\npid=1\nsince=%s\ncmd=old run\n' "$id" "$(date +%s)" > "$RUNS/$id"
 env HOME="$HH" CAVIL_HEAVY_MODE=degraded bash "$NEW/scripts/heavy-test.sh" -- bash -c "$(job c 0.1)" > "$W/c.out" 2>&1; rc=$?
 chk "降级但还有登记着的运行：退出码 70" "$rc" 70
 no_ "降级但还有登记着的运行：没有启动" started c
@@ -733,13 +785,17 @@ for fault in stop-fail show-fail show-junk show-fail-after; do
 done
 
 echo "── 16b. 清理 / 每轮检查碰到读不到的运行记录：不停它，也不能当它不存在去删工作树 ──"
-for way in garbage bad-state wrong-unit; do
+for way in garbage bad-state wrong-unit no-statedir no-item blank-statedir no-gen; do
     setup2 "bad-$way" "$ON" "HEAVY_STOP_WAIT_SECS=3"
     dispatch "$NEW" issue
     wait_for 5 test -s "$CTL/runs"
     hw2_bg t 300; pt=$HW_PID
     wait_for 5 started t || bad "$way：测试没启动"
     rt="$(rec_of "$M/t.start")"; ut="$(field "$rt" unit)"
+    # 另一个项目的一套（记录完整）：本条目的测试起来之后才登记，之后的清理和每轮检查都不该碰它
+    oid="$(printf '%032x' 9090)"
+    env FAKE_UNIT="cavil-heavy-$oid.scope" sleep 300 & other=$!
+    printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=/nonexistent/other\nproject=example/other\nitem=%s\ngen=0\nlaunch=\npid=1\nsince=%s\ncmd=other\n' "$oid" "$N" "$(date +%s)" > "$RUNS/$oid"
     spoil "$way" "$rt"
     sweep
     chk "$way：每轮检查没有停它" "$(calls stop)" 0
@@ -757,6 +813,10 @@ for way in garbage bad-state wrong-unit; do
     chk "$way：记录恢复后再清理成功" "$rc" 0
     no_ "$way：这次工作树删了" test -d "$WT"
     no_ "$way：测试停了" test -n "$(members "$ut")"
+    chk "$way：恢复后只停了本条目那一个分组" "$(grep '^stop ' "$FAKE/calls" | cut -d' ' -f2 | sort -u)" "$ut"
+    yes_ "$way：另一个项目同号条目的那套始终没被碰" kill -0 "$other"
+    yes_ "$way：它的记录还在" test -f "$RUNS/$oid"
+    kill -KILL "$other" 2>/dev/null; wait "$other" 2>/dev/null
     wait "$pt" 2>/dev/null
 done
 # 功能没开、也没清理过的项目，状态目录里只有一条读不到的记录（可能是这个条目的）：清理不能照旧直接删
@@ -939,7 +999,7 @@ PRUNS="$PW/home/.local/state/cavil-loop/heavy-test/runs"; mkdir -p "$PRUNS"
 mk_run() {   # <运行编号> <启动编号> <worker 进程号> <它的启动时间>
     env FAKE_UNIT="cavil-heavy-$1.scope" sleep 300 &
     printf 'pid=%s\nstart=%s\n' "$3" "$4" > "$PW/state/worker-launch/$2"
-    printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=%s\nproject=example/sm\nitem=42\ngen=0\nlaunch=%s\nsince=%s\ncmd=bash tests/run.sh\n' \
+    printf 'state=running\nunit=cavil-heavy-%s.scope\nstatedir=%s\nproject=example/sm\nitem=42\ngen=0\nlaunch=%s\npid=1\nsince=%s\ncmd=bash tests/run.sh\n' \
         "$1" "$PW/state" "$2" "$(date +%s)" > "$PRUNS/$1"
 }
 sleep 0.01 & gonepid=$!; wait "$gonepid"

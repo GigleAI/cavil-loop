@@ -100,8 +100,12 @@ cmd_stop() {
 # ── 条目归属 ──
 ITEM="${CAVIL_HEAVY_ITEM:-}"; GEN="${CAVIL_HEAVY_GEN:-}"
 LAUNCH="${CAVIL_HEAVY_LAUNCH:-}"; SDIR="${CAVIL_HEAVY_STATE_DIR:-}"
-if ! [[ "$ITEM" =~ ^[0-9]+$ && "$GEN" =~ ^[0-9]+$ && -n "$SDIR" ]]; then
-    ITEM=""; GEN=""; LAUNCH=""; SDIR=""
+# 归属要么完整、要么完全没有。四个变量一个都没给 = 人手动跑；给了就必须都合规——只给了一部分、
+# 或者值不对，不能悄悄当成手动运行（那等于把一套有主的测试变成没人管的），直接不跑。
+OWNER_BAD=0
+if [ -n "$ITEM$GEN$LAUNCH$SDIR" ]; then
+    [[ "$ITEM" =~ ^[0-9]+$ && "$GEN" =~ ^[0-9]+$ && "$SDIR" == /* ]] || OWNER_BAD=1
+    [[ -z "$LAUNCH" || "$LAUNCH" =~ ^[0-9a-f]{32}$ ]] || OWNER_BAD=1
 fi
 
 # 这次运行还能不能继续。返回 0 = 可以；1 = 不行（原因已打印）。必须在条目锁里调。
@@ -147,7 +151,7 @@ write_record() {   # <状态>
         printf 'state=%s\n' "$1"
         printf 'unit=%s\n' "$UNIT"
         printf 'statedir=%s\n' "$SDIR"
-        printf 'project=%s\n' "${CAVIL_HEAVY_PROJECT:-}"
+        printf 'project=%s\n' "$PROJECT_TEXT"
         printf 'item=%s\n' "$ITEM"
         printf 'gen=%s\n' "$GEN"
         printf 'launch=%s\n' "$LAUNCH"
@@ -156,6 +160,12 @@ write_record() {   # <状态>
         printf 'cmd=%s\n' "$CMD_TEXT"
     } > "$tmp"
     mv -f "$tmp" "$REC"
+    # 写完用读的那一方的规则读一遍：写出去的记录必须是别人认得的，否则它会被当成「读不到」挡住所有人
+    if ! heavy_run_load "$REC"; then
+        rm -f "$REC"
+        say "写出的运行记录没通过自己的核对，不跑"
+        return 1
+    fi
 }
 
 register_queued() {
@@ -228,6 +238,11 @@ run_inner() {
     : > "$RC_DIR/$RUN_ID.entered"
     UNIT="$(heavy_unit_name "$RUN_ID")"; REC="$RUNS/$RUN_ID"
     SINCE="$(date +%s)"; CMD_TEXT="$*"; CMD_TEXT="${CMD_TEXT//$'\n'/ }"
+    PROJECT_TEXT="${CAVIL_HEAVY_PROJECT:-}"; PROJECT_TEXT="${PROJECT_TEXT//$'\n'/ }"
+    if [ "$OWNER_BAD" = 1 ]; then
+        say "环境里的条目归属不完整或不合规（条目号、代数、项目状态目录、启动编号要么都不给，要么都对），不跑"
+        finish 76
+    fi
 
     # 1. 不在预期的分组里就不登记：记录只能由分组里的进程写
     cg="${CAVIL_HEAVY_CGROUP_OVERRIDE:-$(cat /proc/self/cgroup 2>/dev/null || true)}"
