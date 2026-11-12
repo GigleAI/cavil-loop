@@ -1068,6 +1068,59 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
+## Heavy tests: one at a time (optional, **off by default**, GitHub#343)
+
+Several workers running the full test suite at once stack memory and CPU until the machine stalls. With this on, the "heavy test" commands a project lists are let through one at a time under one system account, the rest wait; when an item is cleaned up, or the worker that started a test has ended, the tests it left behind are stopped.
+
+**Turn it on**: list the heavy commands in the project's `cavil-loop.config`, one per line:
+
+```bash
+HEAVY_TEST_COMMANDS="bash tests/run.sh"
+```
+
+From the next dispatch on, the worker prompt gets one more section telling the agent to run these as `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh`; a single test file needs no queue. Workers already running are not affected (their prompt was fixed at start).
+
+**How the queue works**
+
+- Each run goes into its own systemd scope (`cavil-heavy-<id>.scope`). The next run starts only when every "running" scope ahead of it has no process left — a killed wrapper, a test that closes inherited descriptors, a child that backgrounds itself or leaves the process group cannot release it early. While waiting it prints, every 30 seconds, which project and item it waits for and for how long.
+- When the test's main process exits, the wrapper stops its own scope, so background children left behind end with it.
+- Scope state is read from explicit answers only: "not found / inactive" means ended; a failed query, empty output or an unknown word counts as still running.
+- No first-come-first-served guarantee, only no overlap. `HEAVY_TEST_LOCK_WAIT=<seconds>` caps the wait (exit code 75); default 0 = wait as long as it takes.
+
+**What happens when an item ends**
+
+- Dispatch (create the worktree, start the worker, record this launch) and `cleanup-issue.sh` (stop the session, stop the tests, remove the worktree) each hold one per-item lock from start to end, so they run one after the other. When the lock cannot be taken (60 seconds by default), dispatch does nothing this round and leaves the label, and cleanup changes nothing and exits non-zero.
+- Every item has a generation, bumped by cleanup as soon as it holds the lock. A worker carries the generation it was started with, and a test checks it when it registers and again before it starts: on a mismatch (the item was cleaned after this worker started) it does not start, exit code 76. A worker dispatched after the cleanup gets the new generation and is not affected.
+- Cleanup first stops this item's queued and running heavy tests and removes the worktree only after their scopes are confirmed gone. Unknown state or a failed stop → the worktree is kept and the exit code is non-zero; the automatic post-merge cleanup then does not record the item as cleaned and retries next round, and the PR's `Done` label waits for the round in which cleanup succeeds.
+- Each worker launch records the worker's pid and start time. Every poll round checks them: when that process is gone (or the pid now belongs to another process) while a test it started is still queued or running, the whole scope is stopped. A worker that is alive, or one that cannot be identified, is left alone.
+
+**See who holds the queue, stop one run by hand**
+
+<!-- heavy-test-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/heavy-test.sh" -- sleep 120 &
+sleep 3
+bash "$SKILL/scripts/heavy-test.sh" --list
+RUN="$(bash "$SKILL/scripts/heavy-test.sh" --list | awk '$2 == "running" { print $1; exit }')"
+bash "$SKILL/scripts/heavy-test.sh" --stop "$RUN"
+wait
+bash "$SKILL/scripts/heavy-test.sh" --list
+```
+<!-- heavy-test-ops:end -->
+
+In order: start a run (`sleep 120` stands in for a real test command); list the registered runs (id, queued / running, scope state, project and item, command, age); take the id of the running one and stop it (its command exits with 143); list again, which should say there are no registered heavy tests. `--stop` removes the record only after the scope is confirmed gone, otherwise it reports an error and keeps the record.
+
+**Limits**
+
+- The full behavior needs Linux + cgroup v2 + a systemd user manager. Elsewhere (macOS) only the wrapper itself is queued: no scope, no record, no cleanup, and a notice is printed. When a systemd user manager exists but the scope cannot be created, the wrapper exits with 70 and does not run the test — it never degrades silently.
+- "Machine-wide" means one system account: the queue lock and the run records live under `~/.local/state/cavil-loop/` (`heavy-test.lock`, `heavy-test/runs/`); different accounts do not queue behind each other.
+- Only tests started through the wrapper are queued or stopped. A command the worker runs directly, a dev server, any other background process is neither queued nor stopped.
+- A test moved into its own scope is no longer under a memory cap set on the tmux pane's scope. Use `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"` (space-separated systemd properties) when a cap is needed; none by default.
+- A forced cleanup (`--force`) of an item whose worker is busy still stops that worker, as before; what the item lock guarantees is that cleanup never interleaves with a launch in progress.
+
+**Turn it off**: leave `HEAVY_TEST_COMMANDS` empty (or remove the line). Later dispatches no longer carry the section and no longer take the item lock. Workers started before that may still run tests through the wrapper; those queue as usual, and runs still registered are stopped at item cleanup and by the poll round exactly as before — nothing to do by hand; use `--stop` above to stop one right away. `item-locks/`, `item-gen/` and `worker-launch/` left in the project's state directory need not be removed.
+
 ## Prompt templates
 
 A prompt is **base + project delta**. The two files are looked up independently, and

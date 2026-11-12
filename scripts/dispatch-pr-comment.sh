@@ -6,6 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
+# 重测试排队开着时（GitHub#343），整个派工在条目锁里跑，和 cleanup-issue.sh 一先一后。锁按工作
+# 编号（工作树 / 会话用的那个号），不是 PR 编号；算不出来就不拿锁，下面的兜底照旧处理。
+if heavy_enabled; then
+    _lock_n="$(pr_to_issue_num "${1:?need PR number}" "${2:?need branch}")"
+    [ -z "$_lock_n" ] || item_lock_reexec "$_lock_n" "${BASH_SOURCE[0]}" "$@"
+fi
+
 # 派工时要一并摘掉的全部触发 label（含 LABEL_PENDING_AGENT_EXTRA 里的多机标签）。
 # 装配一次，下面五处 --remove 共用；漏掉任何一个都会让同一条活被反复重开。
 trigger_labels_array
@@ -42,6 +49,9 @@ if [ -z "$ISSUE_N" ]; then
         --remove "${TRIGGER_LABELS_ALL[@]}" || true
     exit 0
 fi
+
+# 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）；注入现有会话时用不上
+heavy_launch_prepare "$ISSUE_N" || exit 1
 
 WORKTREE="$(worktree_path "$ISSUE_N")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE_N")"
@@ -165,6 +175,7 @@ if [ -d "$WORKTREE" ]; then
     fi
 
     # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+    heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
     agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
     agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
@@ -299,6 +310,7 @@ done < <(tmux_env_args)
 # 工作目录是重建出来的，旧 session 可能还在：照样原地换程序，不删 session（GitHub#197）
 worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
+heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
 agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
 agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"

@@ -48,6 +48,9 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
+# shellcheck source=_heavy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -2246,6 +2249,8 @@ tmux_env_args() {
             echo "[cavil-loop]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
+    # 重测试排队（GitHub#343）：这次启动的条目、代数、启动编号；功能关着什么都不加
+    heavy_tmux_env_args
 }
 
 tmux_session_name() {
@@ -7100,6 +7105,214 @@ concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作�
     return 0
 }
 
+# ── 重测试排队 + 条目结束时清掉它的测试（GitHub#343）──
+# 项目在 HEAVY_TEST_COMMANDS 里列出哪些命令算「重测试」（每行一条），空 = 不限制、本段什么都不做。
+# 非空时：
+#   · worker 的提示词多一段，要求这些命令通过 scripts/heavy-test.sh 跑（同一账号下一次只放行一套，
+#     放行依据是上一套的进程分组已清空，规则见那个脚本和 _heavy.sh）；
+#   · 派工和清理整段拿着同一把「条目锁」，两者只能一先一后——清理不会删掉正在启动的 worker 的
+#     工作树，也不会误停清理之后才起的测试；
+#   · 每个条目一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前
+#     都在条目锁里核对，对不上就退出；清理在同一把锁里停掉本条目登记着的分组，确认消失才删工作树；
+#   · 每次起 worker 记一份启动记录（窗格进程号 + 进程启动时间），每轮轮询据此把「worker 已经
+#     结束、测试还在排队或运行」的分组停掉——不依赖 tmux 会话还在。
+# 判断全部在 _heavy.sh，wrapper 和这里用的是同一份。「读不到」从不当成「没有 / 已停」。
+HEAVY_TEST_COMMANDS="${HEAVY_TEST_COMMANDS:-}"
+HEAVY_TEST_LOCK_WAIT="${HEAVY_TEST_LOCK_WAIT:-0}"
+HEAVY_TEST_SCOPE_PROPERTIES="${HEAVY_TEST_SCOPE_PROPERTIES:-}"
+ITEM_LOCK_WAIT_SECS="${ITEM_LOCK_WAIT_SECS:-60}"
+# 清理时停一个分组后最多等多久确认它消失（秒）。systemd 那边 10 秒后会强杀，30 秒足够
+HEAVY_STOP_WAIT_SECS="${HEAVY_STOP_WAIT_SECS:-30}"
+# worker 在会话里跑的包装命令：托管安装走长期入口，发版切换后路径不失效（同用量 footer）
+HEAVY_TEST_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/heavy-test.sh"
+_MANAGED_HEAVY_TEST="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/heavy-test.sh"
+[ ! -f "$_MANAGED_HEAVY_TEST" ] || HEAVY_TEST_SCRIPT="$_MANAGED_HEAVY_TEST"
+
+heavy_enabled() { [ -n "${HEAVY_TEST_COMMANDS//[[:space:]]/}" ]; }
+
+# 派工 / 清理脚本的开头调：还没拿条目锁 → 在锁里把本脚本重跑一遍并以它的退出码退出；已经在锁里
+# （上一层传下来的标记）→ 返回 0 接着跑。锁由 flock 进程自己拿着（-o：不把描述符传给脚本），
+# 所以它不会顺着 tmux server 漏到 worker 手里——那样 worker 活着锁就一直不放。
+# 等不到锁退出码 75：派工那边标签不翻、下一轮重试；清理那边什么都没动。
+ITEM_LOCK_HELD_FOR=""
+item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
+    local n="$1" self="$2" lock rc=0
+    shift 2
+    if [ "${CAVIL_ITEM_LOCK_HELD:-}" = "$n" ]; then
+        unset CAVIL_ITEM_LOCK_HELD      # 不留在环境里：起 tmux server 时会被它整份抄走
+        ITEM_LOCK_HELD_FOR="$n"
+        return 0
+    fi
+    lock="$(heavy_item_lock_path "$STATE_DIR" "$n")"
+    mkdir -p "$(dirname "$lock")"
+    CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
+    if [ "$rc" = 75 ]; then
+        log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
+    fi
+    exit "$rc"
+}
+
+# 派工：定下这次启动的编号和代数，tmux_env_args 会把它们交给 worker。读不到代数 → 非 0，本轮不派。
+HEAVY_LAUNCH_ID=""; HEAVY_LAUNCH_ITEM=""; HEAVY_LAUNCH_GEN=""
+heavy_launch_prepare() {   # <条目号>
+    heavy_enabled || return 0
+    local g
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")），本轮不派工"
+        return 1
+    fi
+    HEAVY_LAUNCH_ID="$(tr -d '-' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    if ! [[ "$HEAVY_LAUNCH_ID" =~ ^[0-9a-f]{32}$ ]]; then
+        # 没有 /proc（macOS）：那里包装命令只排队、不登记，启动编号用不上
+        HEAVY_LAUNCH_ID=""
+    fi
+    HEAVY_LAUNCH_ITEM="$1"; HEAVY_LAUNCH_GEN="$g"
+}
+
+# 交给 worker 的环境变量（tmux -e 参数，NUL 分隔，格式同 tmux_env_args 的其余部分）。
+heavy_tmux_env_args() {
+    [ -n "$HEAVY_LAUNCH_ITEM" ] || return 0
+    printf -- '-e\0CAVIL_HEAVY_ITEM=%s\0' "$HEAVY_LAUNCH_ITEM"
+    printf -- '-e\0CAVIL_HEAVY_GEN=%s\0' "$HEAVY_LAUNCH_GEN"
+    printf -- '-e\0CAVIL_HEAVY_LAUNCH=%s\0' "$HEAVY_LAUNCH_ID"
+    printf -- '-e\0CAVIL_HEAVY_STATE_DIR=%s\0' "$STATE_DIR"
+    printf -- '-e\0CAVIL_HEAVY_PROJECT=%s\0' "$REPO"
+    printf -- '-e\0CAVIL_HEAVY_LOCK_WAIT=%s\0' "$HEAVY_TEST_LOCK_WAIT"
+    printf -- '-e\0CAVIL_HEAVY_SCOPE_PROPERTIES=%s\0' "$HEAVY_TEST_SCOPE_PROPERTIES"
+}
+
+# 起完 worker 之后调：记下这次启动的窗格进程号和它的启动时间。注入现有会话（没有新起程序）不调。
+# 认不出 worker 窗格 / 读不到进程 → 不写记录：这次启动起的测试只会被等，不会被每轮检查停掉。
+heavy_launch_record() {   # <tmux_session>
+    [ -n "$HEAVY_LAUNCH_ID" ] || return 0
+    local sess="$1" st pane pid dead start f tmp
+    read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in found|single) ;; *) st="" ;; esac
+    if [ -z "$st" ] || [ "$dead" = 1 ] || ! start="$(heavy_proc_start "$pid")"; then
+        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，没有记下这次启动（它起的重测试不会被自动停）"
+        return 0
+    fi
+    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
+    mkdir -p "$(dirname "$f")"
+    tmp="$f.tmp.$$"
+    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
+        "$pid" "$start" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# 本项目登记着的运行记录（可选只要某个条目的），一行一个文件路径。
+heavy_project_runs() {   # [条目号]
+    local f id
+    for f in "$CAVIL_HEAVY_TEST_RUNS"/*; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"; heavy_is_run_id "$id" || continue
+        [ "$(heavy_field "$f" statedir)" = "$STATE_DIR" ] || continue
+        if [ -n "${1:-}" ] && [ "$(heavy_field "$f" item)" != "$1" ]; then continue; fi
+        printf '%s\n' "$f"
+    done
+}
+
+# 清理这个条目要不要走条目锁 / 代数 / 停分组：功能开着，或者（功能后来关了但）它还有登记着的运行、
+# 或被清理过。三样都没有 = 这个项目从没用过，清理过程和以前一模一样。
+heavy_cleanup_needed() {   # <条目号>
+    heavy_enabled && return 0
+    [ -e "$(heavy_gen_file "$STATE_DIR" "$1")" ] && return 0
+    [ -n "$(heavy_project_runs "$1")" ]
+}
+
+# 清理：代数加一并落盘。在条目锁里调。读不出旧值 / 写不进去 → 非 0，调用方不继续清理。
+heavy_gen_bump() {   # <条目号>
+    local f g tmp
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")）"
+        return 1
+    fi
+    f="$(heavy_gen_file "$STATE_DIR" "$1")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf '%s\n' $((g + 1)) > "$tmp" && mv -f "$tmp" "$f" || { log "❌ 写不进 $f"; return 1; }
+}
+
+# 清理：停掉本条目登记着的全部运行（排队中和运行中），逐个确认分组消失。在条目锁里、代数加一之后调。
+# 任何一个查不清 / 停不掉 → 非 0，调用方保留工作树。
+heavy_stop_item_runs() {   # <条目号>
+    local f unit st rc=0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        unit="$(heavy_field "$f" unit)"
+        if [ "$unit" != "$(heavy_unit_name "${f##*/}")" ]; then
+            [ -e "$f" ] || continue
+            log "  ⚠️ 运行记录 $f 里的分组名不对，不认识就不动它"
+            rc=1; continue
+        fi
+        st="$(heavy_scope_state "$unit")"
+        case "$st" in
+            gone) rm -f "$f"; continue ;;
+            active) ;;
+            *) log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue ;;
+        esac
+        log "  停掉条目 #$1 的重测试：$unit（$(heavy_field "$f" state)，$(heavy_field "$f" cmd)）"
+        if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
+            rm -f "$f"
+        else
+            log "  ⚠️ 没能确认 $unit 已停（现在：$(heavy_scope_state "$unit")）"
+            rc=1
+        fi
+    done < <(heavy_project_runs "$1")
+    return "$rc"
+}
+
+# 每轮轮询：本项目登记着的运行里，分组已经消失的删记录；起它的 worker 已确认结束、分组还在的，
+# 整组停掉。worker 还在 / 认不清 / 没有启动记录的一律不动。再顺手删掉没人引用的、已结束的启动记录。
+# 没有任何记录时只是两次目录读。
+heavy_sweep_tick() {
+    local f unit launch d id used=" "
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        unit="$(heavy_field "$f" unit)"; launch="$(heavy_field "$f" launch)"
+        [ "$unit" = "$(heavy_unit_name "${f##*/}")" ] || continue
+        case "$(heavy_scope_state "$unit")" in
+            gone) rm -f "$f"; continue ;;
+            active) ;;
+            *) used="$used$launch "; continue ;;
+        esac
+        if [ -n "$launch" ] && [ "$(heavy_launch_state "$STATE_DIR" "$launch")" = ended ]; then
+            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$(heavy_field "$f" item)，$(heavy_field "$f" cmd)）"
+            if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
+            log "  ⚠️ 没能确认 $unit 已停，下一轮再试"
+        fi
+        used="$used$launch "
+    done < <(heavy_project_runs)
+    d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || continue
+        case "$used" in *" $id "*) continue ;; esac
+        [ "$(heavy_launch_state "$STATE_DIR" "$id")" = ended ] || continue
+        rm -f "$f"
+    done
+    return 0
+}
+
+# 提示词里追加的那一段（compose_prompt_template 在功能开着时加）。
+heavy_prompt_section() {
+    local f="$SKILL_DIR/prompts/heavy-test.md" text cmds="" line wrapper
+    # 路径不加引号（只在含特殊字符时由 %q 转义）：用量 footer 认测试命令时会把引号里的内容整个去掉，
+    # 加了引号它就看不出这是排队命令、后面跟的是哪条测试了（test_time.py 的 classify_segment）
+    printf -v wrapper '%q' "$HEAVY_TEST_SCRIPT"
+    [ -s "$f" ] || { log "⚠️ 重测试排队说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+        cmds="${cmds}${cmds:+$'\n'}bash $wrapper -- $line"
+    done <<<"$HEAVY_TEST_COMMANDS"
+    text="$(cat "$f")"
+    text="${text//@@HEAVY_TEST_COMMANDS@@/"$cmds"}"
+    text="${text//@@HEAVY_TEST_LIST@@/"bash $wrapper --list"}"
+    printf '%s\n' "$text"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -7113,7 +7326,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name"; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -7137,6 +7350,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
+        if heavy_enabled; then
+            printf '\n\n---\n\n'
+            heavy_prompt_section
         fi
         # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。

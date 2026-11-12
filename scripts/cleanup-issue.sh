@@ -21,6 +21,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 
 ISSUE="${1:?need issue number}"
+# 重测试排队（GitHub#343）：这个条目用过它的话，整个清理在条目锁里跑——和派工一先一后，
+# 不会删掉正在启动的 worker 的工作树。没用过的条目这几行什么都不做，清理过程和以前一样。
+HEAVY_CLEANUP=0
+if heavy_cleanup_needed "$ISSUE"; then
+    item_lock_reexec "$ISSUE" "${BASH_SOURCE[0]}" "$@"
+    HEAVY_CLEANUP=1
+fi
 shift || true
 
 FORCE=0
@@ -51,6 +58,14 @@ if session_alive "$TMUX_SESSION" && agent_is_busy "$TMUX_SESSION"; then
     log "session busy 但 --force：继续"
 fi
 
+# ── 1b. 重测试排队：条目的代数加一 ──
+# 从这一刻起，这个条目之前起的 worker 再来登记 / 再轮到的重测试都不会启动；之后重新派工拿到的是
+# 新代数，不受影响。读不出旧值 / 写不进去 → 什么都没动就退出。
+if [ "$HEAVY_CLEANUP" = 1 ] && ! heavy_gen_bump "$ISSUE"; then
+    echo "❌ 记不下条目 #$ISSUE 的清理代数，没有清理任何东西"
+    exit 1
+fi
+
 # ── 2. 项目级 cleanup hook ──
 if [ -n "${CLEANUP_HOOK:-}" ]; then
     hook="$CLEANUP_HOOK"
@@ -71,6 +86,14 @@ fi
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     log "killing tmux session $TMUX_SESSION"
     tmux kill-session -t "$TMUX_SESSION"
+fi
+
+# ── 3b. 重测试排队：停掉本条目还在排队 / 还在跑的重测试 ──
+# 先停、确认进程分组消失，再删工作树。查不清 / 停不掉 → 保留工作树，非 0 退出，下次清理再试。
+if [ "$HEAVY_CLEANUP" = 1 ] && ! heavy_stop_item_runs "$ISSUE"; then
+    log "cleanup-issue #$ISSUE: 本条目的重测试没能确认停掉，保留工作树"
+    echo "❌ 条目 #$ISSUE 的重测试没能确认停掉，工作树保留；看 bash $HEAVY_TEST_SCRIPT --list"
+    exit 1
 fi
 
 # ── 4. worktree ──

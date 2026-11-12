@@ -3,3 +3,4 @@
 # Every entry still runs locally: `bash tests/run.sh <name>`. A listed file that no
 # longer exists is an error, so this list cannot silently go stale.
 preview-socket-activation  Starts the real on-demand preview units: needs a running per-user systemd manager with the preview units installed by setup.sh. A hosted runner has neither, and without them the file skips itself and exits 0 — so it is excluded rather than left to look green.
+heavy-test-systemd  Runs every heavy test in a real systemd scope: needs a running per-user systemd manager (systemd-run --user --scope). A hosted runner has none, and without it the file skips itself and exits 0 — so it is excluded rather than left to look green. tests/heavy-test.test.sh covers the decisions with a stand-in and runs in CI.
