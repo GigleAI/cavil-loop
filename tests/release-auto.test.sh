@@ -129,6 +129,7 @@ check "impossible date → exit 2" "$(title release/v2026.13.40.1)" "rc=2"
 
 echo "== the workflow's own steps (run: blocks read out of release.yml)"
 WORKFLOW="${WORKFLOW:-$REPO_DIR/.github/workflows/release.yml}"
+NC_WORKFLOW="${NC_WORKFLOW:-$REPO_DIR/.github/workflows/negative-controls.yml}"
 step() {  # step [job] <name> → that step's run: script (job defaults to release)
     local job=release; [ $# -eq 2 ] && { job="$1"; shift; }
     python3 - "$WORKFLOW" "$job" "$1" <<'PY2'
@@ -143,7 +144,7 @@ step "Gate passed" > "$TMP/guard.sh"
 # The `needs` context a job sees in Actions: exactly the jobs its `needs:` declares, each with a
 # result (and the plan's outputs). <job> <space-separated job=result overrides>; default success.
 needs_json() {
-    python3 - "$WORKFLOW" "$1" "$2" "${PLAN_SHA:-}" "${PLAN_WORK:-}" "${PLAN_TAG:-}" "${PLAN_ACTION:-}" <<'PY3'
+    python3 - "${NEEDS_WF:-$WORKFLOW}" "$1" "$2" "${PLAN_SHA:-}" "${PLAN_WORK:-}" "${PLAN_TAG:-}" "${PLAN_ACTION:-}" <<'PY3'
 import json, sys, yaml
 wf, job, over, sha, work, tag, action = sys.argv[1:8]
 needs = yaml.safe_load(open(wf))["jobs"][job].get("needs", [])
@@ -332,10 +333,10 @@ fullrun
 check "next run plans the newer commit" "$PLAN_SHA" "$(git -C "$REMOTE" rev-parse main)"
 check "… and tags it .11" "$tag" "release/v$W.5"
 
-echo "-- the gate did not pass → no tag, no Release (GitHub#195)"
+echo "-- the gate did not pass → no tag, no Release (GitHub#195; the gate is the regression suite since GitHub#416)"
 commit twelve
 TAGS_BEFORE="$(remote_tags_all)"; PAGES_BEFORE="$(wc -l < "$GH_RELEASES")"
-for g in "gate-client=failure" "gate=failure" "gate-autopilot=failure" "gate-autopilot=skipped" "gate-client=cancelled"; do
+for g in "gate=failure" "gate=skipped" "gate=cancelled"; do
     GATE="$g" fullrun
     check "$g: plan asked for the gate" "$PLAN_WORK" true
     [ "$SUMMARY_RC" != 0 ] && ok "$g: release gate is red" || bad "$g: release gate is red"
@@ -539,7 +540,7 @@ check "Sunday: row 5, new tag for the week just ended" "$PLAN_ACTION:$PLAN_TAG" 
 check "Sunday: the gate tests main's tip" "$PLAN_SHA" "$B"
 [ "$GUARD_RC" != 0 ] && ok "Sunday: release job refuses" || bad "Sunday: release job refuses"
 check "Sunday: no tag" "$(tag_at release/v2026.11.08.1)" none
-EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-09 01:00')" GATE="gate-client=failure" fullrun
+EVENT=schedule CAVIL_RELEASE_NOW="$(at '2026-11-09 01:00')" GATE="gate=cancelled" fullrun
 check "Monday 01:00: still the 11-08 week" "$PLAN_TAG" "release/v2026.11.08.1"
 check "Monday: no tag" "$(tag_at release/v2026.11.08.1)" none
 
@@ -692,14 +693,20 @@ rf_repo() {  # a fresh fake repo: the dispatch label exists, no issues
     RF="$TMP/rf$((CLONES += 1))"; mkdir -p "$RF"
     echo '["pending/agent","doing/agent","pending/human","pending/blocked","needs-maintainer"]' > "$RF/repo_labels.json"
     echo '[]' > "$RF/issues.json"
+    rm -f "$RF/comments.json" "$RF/jobs.json"   # a name reused inside $( ) starts empty too
 }
 # The run's job list: every job of release.yml by its display name, success unless overridden.
 # rf_jobs "<display name>=<conclusion>[:<failed step>]" …
 rf_jobs() {
     python3 - "$@" > "$RF/jobs.json" <<'PYJ'
 import json, sys
-names = ["plan"] + [f"gate {k}/4" for k in range(1, 5)] + [f"gate autopilot {k}/6" for k in range(1, 7)] \
-    + ["gate client", "release gate", "release"]
+import os
+if os.environ.get("RF_KIND") == "negative-controls":
+    names = ["plan"] + [f"negative controls {k}/4" for k in range(1, 5)] \
+        + [f"negative controls autopilot {k}/6" for k in range(1, 7)] \
+        + ["negative controls client", "negative controls summary"]
+else:
+    names = ["plan"] + [f"gate {k}/4" for k in range(1, 5)] + ["release gate", "release"]
 over = {}
 for a in sys.argv[1:]:
     n, _, v = a.partition("=")
@@ -721,13 +728,15 @@ PYJ
 run_report() {
     : > "$RF/calls.log"
     [ -f "$RF/jobs.json" ] || rf_jobs
-    local needs; needs="$(PLAN_SHA="${RF_PLAN_SHA-$RF_SHA}" PLAN_WORK=true needs_json report-failure "$1")"
+    local needs wf="$WORKFLOW"
+    [ "${RF_KIND:-}" = negative-controls ] && wf="$NC_WORKFLOW"
+    needs="$(NEEDS_WF="$wf" PLAN_SHA="${RF_PLAN_SHA-$RF_SHA}" PLAN_WORK=true needs_json report-failure "$1")"
     set +e
     env -u GITHUB_STEP_SUMMARY PATH="$TMP/rfbin:$PATH" FAKE_GH_DIR="$RF" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=777 \
         GITHUB_RUN_ATTEMPT=1 GITHUB_SERVER_URL=https://github.com GITHUB_SHA=feedfacefeedfacefeedfacefeedfacefeedface \
         GITHUB_REF_NAME="${RF_REF_NAME:-main}" EVENT="${RF_EVENT:-schedule}" GATE_ONLY="${RF_GATE_ONLY:-}" \
-        NEEDS="$needs" SUMMARY_DIR="${RF_SUMMARY_DIR:-}" CLIENT_DIR="${RF_CLIENT_DIR:-}" \
-        python3 "$REPORT_PY" > "$TMP/rf-out" 2>&1
+        NEEDS="$needs" SUMMARY_DIR="${RF_SUMMARY_DIR:-}" CLIENT_DIR="${RF_CLIENT_DIR:-}" REPORT_KIND="${RF_KIND:-}" \
+        python3 "${RF_PY:-$REPORT_PY}" > "$TMP/rf-out" 2>&1
     RC=$?
     set -e
 }
@@ -773,7 +782,7 @@ check "the display name the script leaves out of its job table" "$(grep '^name' 
 
 echo "-- several runs on one repo: create once, then only comments whatever the labels became, then a new one after close"
 rf_repo
-rf_jobs "gate 3/4=failure:Negative controls, shard 3/4" "release gate=failure:Every shell shard passed exactly once"
+rf_jobs "gate 3/4=failure:Tests, shard 3/4" "release gate=failure:Every shell shard passed exactly once"
 run_report "gate=failure gate-summary=failure release=skipped"
 check "run 1: green" "$RC" 0
 check "run 1: one issue" "$(n_issues)" 1
@@ -784,7 +793,7 @@ has "<!-- cavil-release-failure -->" "$B" "run 1: body has the marker"
 has "$RUN_LINK" "$B" "run 1: body has the run link"
 has "$RF_SHA" "$B" "run 1: body has the tested commit"
 has "gate 3/4](" "$B" "run 1: names the failed job"
-has "「Negative controls, shard 3/4」" "$B" "run 1: names the failed step"
+has "「Tests, shard 3/4」" "$B" "run 1: names the failed step"
 lacks "report failure" "$B" "run 1: leaves its own job out"
 check "run 1: GitHub had to make no label" "$(rf_q "$RF/repo_labels.json" 'len(d)')" 5
 k=0
@@ -792,7 +801,7 @@ for L in '[{"name":"doing/agent"}]' '[{"name":"pending/human"}]' '[{"name":"pend
     k=$((k + 1))
     set_issue 1 "{\"labels\": $L}"
     before="$(labels_of 1)"
-    run_report "gate-client=failure gate-summary=failure release=skipped"
+    run_report "gate=failure gate-summary=failure release=skipped"
     check "run $((k + 1)) ($before): green" "$RC" 0
     check "run $((k + 1)) ($before): still one issue" "$(n_issues)" 1
     check "run $((k + 1)) ($before): one more comment" "$(n_comments 1)" "$k"
@@ -801,7 +810,7 @@ for L in '[{"name":"doing/agent"}]' '[{"name":"pending/human"}]' '[{"name":"pend
     check "run $((k + 1)) ($before): re-read right before writing" "$(gets_of 1)" 1
 done
 has "$RUN_LINK" "$(last_comment 1)" "comment has the run link"
-has "gate client](" "$(last_comment 1)" "comment names the failed job"
+has "gate 3/4](" "$(last_comment 1)" "comment names the failed job"
 set_issue 1 '{"state": "closed"}'
 run_report "release=failure"
 check "after close: a second issue" "$(n_issues)" 2
@@ -809,7 +818,7 @@ check "after close: it carries the dispatch label" "$(labels_of 2)" "pending/age
 check "after close: nothing written to the closed one" "$(n_comments 1)" 5
 
 echo "-- one run each: the body names what actually failed"
-rf_repo; rf_jobs "gate 2/4=failure:Negative controls, shard 2/4" "release gate=failure:Every shell shard passed exactly once"
+rf_repo; rf_jobs "gate 2/4=failure:Tests, shard 2/4" "release gate=failure:Every shell shard passed exactly once"
 mkdir -p "$RF/sum"
 printf '## ❌ 1 of 60 tests did not pass\n\n- ❌ run.test: fail\n\n| x |\n' > "$RF/sum/verify.md"
 printf '## 负对照汇总\n\n| x |\n\n没通过的单位：\n- ❌ `run.test (fail)`\n' > "$RF/sum/tally.md"
@@ -821,17 +830,6 @@ has '`run.test (fail)`' "$B" "shell only: and the tally's failed unit"
 lacks "### 客户端负对照" "$B" "shell only: no client section"
 has "$RF_SHA" "$B" "shell only: tested commit"
 
-rf_repo; rf_jobs "gate client=failure:Negative controls (vitest / back end / UI)" "release gate=failure:Every gate job passed"
-mkdir -p "$RF/cl"; printf '❌ 没变红：看板不可写时照样发修改\n' > "$RF/cl/not-red.txt"
-RF_CLIENT_DIR="$RF/cl" run_report "gate-client=failure gate-summary=failure release=skipped"
-B="$(body_of 1)"
-has "gate client](" "$B" "client only: names the job"
-has "- ❌ 没变红：看板不可写时照样发修改" "$B" "client only: lists the entry that did not go red"
-lacks "### shell 测试单位" "$B" "client only: no shell section without a summary"
-rf_repo; rf_jobs "gate client=failure:Negative controls (vitest / back end / UI)"
-run_report "gate-client=failure gate-summary=failure release=skipped"
-has "客户端没留下条目清单，见该任务日志（[任务日志](https://github.com/o/r/actions/runs/777/job/12)）" "$(body_of 1)" "client, no list: says so and links the job"
-
 rf_repo; rf_jobs "release=failure:Create GitHub Release"
 run_report "release=failure"
 B="$(body_of 1)"
@@ -839,7 +837,7 @@ has "门禁已通过，发版在『Create GitHub Release』失败" "$B" "release
 has "$RUN_LINK" "$B" "release only: run link"
 
 rf_repo; rf_jobs "plan=failure:Decide what this run does" "gate 1/4=skipped" "release=skipped"
-RF_PLAN_SHA="" run_report "plan=failure gate=skipped gate-autopilot=skipped gate-client=skipped gate-summary=skipped release=skipped"
+RF_PLAN_SHA="" run_report "plan=failure gate=skipped gate-summary=skipped release=skipped"
 B="$(body_of 1)"
 check "plan failed (no summary): still reported" "$(n_issues)" 1
 has "「Decide what this run does」" "$B" "plan failed: names the step"
@@ -853,12 +851,12 @@ has "手动发版" "$B" "manual release failed: says how it was started"
 has "『Cut tag (scheduled / manual)』" "$B" "manual release failed: names the step"
 lacks "诊断运行" "$B" "manual release: not called diagnostic"
 
-rf_repo; rf_jobs "gate autopilot 2/6=failure:autopilot negative controls, part 2/6" "release gate=failure:Every gate job passed" "release=skipped"
-RF_EVENT=workflow_dispatch RF_GATE_ONLY=true run_report "gate-autopilot=failure gate-summary=failure release=skipped"
+rf_repo; rf_jobs "gate 2/4=failure:Tests, shard 2/4" "release gate=failure:Every gate job passed" "release=skipped"
+RF_EVENT=workflow_dispatch RF_GATE_ONLY=true run_report "gate=failure gate-summary=failure release=skipped"
 B="$(body_of 1)"
 has "手动只跑门禁" "$B" "gate-only failed: says how it was started"
 has "诊断运行" "$B" "gate-only failed: marked diagnostic"
-has "gate autopilot 2/6](" "$B" "gate-only failed: names the job"
+has "gate 2/4](" "$B" "gate-only failed: names the job"
 has "$RF_SHA" "$B" "gate-only failed: tested commit"
 
 rf_repo; RF_EVENT=push RF_REF_NAME=release/v2026.11.08.1 run_report "gate=failure gate-summary=failure release=skipped"
@@ -867,7 +865,7 @@ has 'tag 推送（`release/v2026.11.08.1`）' "$(body_of 1)" "tag push failed: n
 rf_repo; run_report ""
 check "all passed: exit 0" "$RC" 0
 check "all passed: no call at all" "$(wc -l < "$RF/calls.log")" 0
-run_report "gate=cancelled gate-autopilot=cancelled gate-client=cancelled gate-summary=skipped release=skipped"
+run_report "gate=cancelled gate-summary=skipped release=skipped"
 check "cancelled: exit 0" "$RC" 0
 check "cancelled: no call at all" "$(wc -l < "$RF/calls.log")" 0
 
@@ -981,6 +979,262 @@ has "variable set RELEASE_FAILURE_REPORT --body off --repo GigleAI/cavil-loop" "
 has "variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it back on"
 has "vars.RELEASE_FAILURE_REPORT != 'off'" "$(grep '^if' "$TMP/rf-static")" "the job reads that variable"
 
+echo "-- docs: turning the nightly report off and on, run as written (GitHub#416)"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- negative-controls-ops:begin -->/,/<!-- negative-controls-ops:end -->/p' "$REPO_DIR/docs/$f" \
+        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/nc-ops-$f.sh"
+done
+check "both docs carry the same steps" "$(cmp -s "$TMP/nc-ops-operations.md.sh" "$TMP/nc-ops-operations.zh.md.sh" && echo same)" same
+[ -s "$TMP/nc-ops-operations.md.sh" ] && ok "the steps were found" || bad "the steps were found"
+: > "$OPS_LOG"
+set +e; (PATH="$TMP/opsbin:$PATH" bash -e "$TMP/nc-ops-operations.md.sh") > "$TMP/ops.out" 2>&1; RC=$?; set -e
+check "the steps run" "$RC" 0
+has "variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it off"
+has "variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it back on"
+lacks "RELEASE_FAILURE_REPORT" "$(cat "$OPS_LOG")" "leaves the release report's switch alone"
+
+
+echo "== the release kind's issues and comments are unchanged (GitHub#416: one script, two kinds)"
+# shellcheck source=lib/compat.sh
+source "$REPO_DIR/tests/lib/compat.sh"
+RF_BASE="$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD)"
+mkdir -p "$TMP/rf-old"; git -C "$REPO_DIR" archive "$RF_BASE" scripts | tar -x -C "$TMP/rf-old"
+rf_scene() {  # <scene> → the fake repo's issues, comments and the calls of one scene, for one script
+    rf_repo
+    case "$1" in
+        new) rf_jobs "gate 1/4=failure:Tests, shard 1/4"; run_report "gate=failure gate-summary=failure release=skipped" ;;
+        again) rf_jobs "release=failure:Create GitHub Release"; run_report "release=failure"; run_report "release=failure" ;;
+        nolabel) echo '["doing/agent"]' > "$RF/repo_labels.json"; RF_EVENT=workflow_dispatch RF_GATE_ONLY=true run_report "gate=failure" ;;
+    esac
+    echo "rc=$RC"; cat "$RF/issues.json"; echo; cat "$RF/comments.json" 2>/dev/null || echo "(no comments)"; echo; cat "$RF/calls.log"; cat "$TMP/rf-out"
+}
+if ! compat_skip "发版失败报告：issue、评论、调用与改动前" "$TMP/rf-old" "$REPO_DIR" scripts; then
+    for sc in new again nolabel; do
+        old="$(RF_PY="$TMP/rf-old/scripts/release_failure_report.py" rf_scene "$sc")"
+        new="$(rf_scene "$sc")"
+        new_k="$(RF_KIND=release rf_scene "$sc")"
+        check "release kind, scene $sc: same as before the change" "$([ -n "$old" ] && [ "$old" = "$new" ] && echo same)" same
+        check "release kind named explicitly, scene $sc: same as before" "$([ "$old" = "$new_k" ] && echo same)" same
+    done
+fi
+rf_repo; RF_KIND=bogus run_report "gate=failure"
+[ "$RC" != 0 ] && ok "unknown kind: red" || bad "unknown kind: red"
+check "unknown kind: no write" "$(writes)" 0
+
+echo "== the nightly negative controls (GitHub#416: .github/workflows/negative-controls.yml)"
+nc_step() {  # <job> <step name> → that step's run: script, matrix values filled in
+    python3 - "$NC_WORKFLOW" "$1" "$2" <<'PYN'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["steps"]
+s = next(s["run"] for s in steps if s.get("name") == sys.argv[3])
+print(s.replace("${{ matrix.shard }}", "1").replace("${{ matrix.part }}", "1"))
+PYN
+}
+wf_env() {  # <workflow> <job> → that job's env as shell assignments (matrix values filled in)
+    python3 - "$1" "$2" <<'PYE'
+import shlex, sys, yaml
+env = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]].get("env") or {}
+for k, v in env.items():
+    v = str(v).replace("${{ matrix.shard }}", "1").replace("${{ matrix.part }}", "1")
+    print(f"{k}={shlex.quote(v)}")
+PYE
+}
+
+echo "-- the plan step: main only; a scheduled run skips only a commit already green"
+nc_step plan "Decide whether to run" > "$TMP/nc-plan.sh"
+mkdir -p "$TMP/ncbin"
+cat > "$TMP/ncbin/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$NC_GH_LOG"
+[ -z "${NC_GH_FAIL:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }
+case "$*" in
+    "api repos/o/r/actions/workflows/negative-controls.yml/runs?branch=main&status=success&per_page=1 --jq "*) printf '%s\n' "$NC_LAST" ;;
+    *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
+SH
+chmod +x "$TMP/ncbin/gh"
+NC_TIP="$(git -C "$REMOTE" rev-parse main)"
+nc_plan() {  # EVENT / REF / NC_LAST / NC_GH_FAIL → $RC, $NC_RUN, $NC_SHA, gh calls in $TMP/nc-gh.log
+    fresh "$NC_TIP"; : > "$TMP/nc-gh.log"; : > "$TMP/output"
+    set +e
+    (cd "$WORK" && GITHUB_OUTPUT="$TMP/output" GITHUB_REPOSITORY=o/r EVENT="$1" REF="${2:-refs/heads/main}" \
+        NC_GH_LOG="$TMP/nc-gh.log" NC_LAST="${NC_LAST:-}" NC_GH_FAIL="${NC_GH_FAIL:-}" PATH="$TMP/ncbin:$PATH" \
+        bash -e "$TMP/nc-plan.sh") > "$TMP/out" 2>&1
+    RC=$?
+    set -e
+    NC_RUN="$(sed -n 's/^run=//p' "$TMP/output")"; NC_SHA="$(sed -n 's/^sha=//p' "$TMP/output")"
+}
+NC_LAST="$NC_TIP" nc_plan schedule
+check "scheduled, last success on this commit: step succeeds" "$RC" 0
+check "… does not run" "$NC_RUN" false
+check "… the lookup really happened" "$(wc -l < "$TMP/nc-gh.log")" 1
+NC_LAST=0000000000000000000000000000000000000000 nc_plan schedule
+check "scheduled, main moved since: runs" "$NC_RUN" true
+check "… on main's tip" "$NC_SHA" "$NC_TIP"
+NC_GH_FAIL=1 nc_plan schedule
+check "scheduled, lookup fails: step still succeeds" "$RC" 0
+check "… and runs" "$NC_RUN" true
+NC_LAST="" nc_plan schedule
+check "scheduled, never succeeded before: runs" "$NC_RUN" true
+NC_LAST="null" nc_plan schedule
+check "scheduled, lookup reads no commit id: runs" "$NC_RUN" true
+NC_LAST="$NC_TIP" nc_plan workflow_dispatch
+check "manual on main: runs even when already green" "$NC_RUN" true
+check "… without asking GitHub" "$(wc -l < "$TMP/nc-gh.log")" 0
+NC_LAST=0000000000000000000000000000000000000000 nc_plan workflow_dispatch refs/heads/feature/issue-1
+check "manual on another branch: does not run" "$NC_RUN" false
+NC_LAST=0000000000000000000000000000000000000000 nc_plan schedule refs/heads/other
+check "scheduled on another ref: does not run" "$NC_RUN" false
+
+echo "-- the jobs really start the negative controls (their own steps, with stand-ins for the test runners)"
+# A sandbox checkout whose test entry points only record how they were called and with which MUTATION.
+NCS="$TMP/nc-sandbox"; mkdir -p "$NCS/tests" "$NCS/client/test/tauri" "$NCS/stub"
+cat > "$NCS/tests/run.sh" <<'SH'
+echo "run.sh $* MUTATION=${MUTATION:-} SHARD=${AUTOPILOT_MUT_SHARD:-} ONLY=${AUTOPILOT_MUT_ONLY:-}" >> "$NC_REC"
+SH
+cat > "$NCS/client/test/tauri/mutations.sh" <<'SH'
+echo "tauri-mutations $* MUTATION=${MUTATION:-}" >> "$NC_REC"
+SH
+printf '#!/usr/bin/env bash\necho "npm $* MUTATION=${MUTATION:-}" >> "$NC_REC"\n' > "$NCS/stub/npm"
+printf '#!/usr/bin/env bash\n[ "$1" = -a ] && shift\nexec "$@"\n' > "$NCS/stub/xvfb-run"
+chmod +x "$NCS/stub/npm" "$NCS/stub/xvfb-run"
+nc_exec() {  # <workflow> <job> <step name> <dir inside the sandbox> → appends to $NC_REC
+    local wf="$1" job="$2" name="$3" dir="$4" envs
+    python3 - "$wf" "$job" "$name" > "$TMP/nc-step.sh" <<'PYX'
+import sys, yaml
+fill = lambda x: x.replace("${{ matrix.shard }}", "1").replace("${{ matrix.part }}", "1")
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["steps"]
+print(fill(next(s["run"] for s in steps if fill(s.get("name") or "") == sys.argv[3])))
+PYX
+    envs="$(wf_env "$wf" "$job")"
+    (cd "$NCS/$dir" && env -u MUTATION -u AUTOPILOT_MUT_SHARD -u AUTOPILOT_MUT_ONLY $envs RUNNER_TEMP="$TMP/nc-rt" \
+        NC_REC="$NC_REC" PATH="$NCS/stub:$PATH" bash -e "$TMP/nc-step.sh") >/dev/null 2>&1
+}
+export NC_REC="$TMP/nc-rec"; : > "$NC_REC"; mkdir -p "$TMP/nc-rt"
+nc_exec "$NC_WORKFLOW" shell "Negative controls, shard 1/4" .
+nc_exec "$NC_WORKFLOW" autopilot "autopilot negative controls, part 1/6" .
+nc_exec "$NC_WORKFLOW" client "Negative controls (vitest / back end / UI)" client
+nc_exec "$NC_WORKFLOW" client "Negative controls for the app shell (each rebuilds the real app)" client
+REC="$(cat "$NC_REC")"
+has "run.sh --ci --shard 1/4 --out $TMP/nc-rt/results MUTATION=1" "$REC" "shell job: runs its shard with negative controls on"
+has "ONLY=none-see-autopilot-job" "$REC" "shell job: leaves autopilot's broken copies to their own job"
+has "run.sh autopilot --out $TMP/nc-rt/results MUTATION=1 SHARD=1/6" "$REC" "autopilot job: runs its part of autopilot's negative controls"
+has "npm run test:mutation MUTATION=1" "$REC" "client job: runs the client's negative controls"
+has "tauri-mutations  MUTATION=1" "$REC" "client job: runs the real app's negative controls"
+python3 - "$NC_WORKFLOW" > "$TMP/nc-static" <<'PYW'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf.get("on", wf.get(True))
+jobs = wf["jobs"]
+r = jobs["report-failure"]
+needs = r["needs"] if isinstance(r["needs"], list) else [r["needs"]]
+print("needs-all", sorted(needs) == sorted(j for j in jobs if j != "report-failure"))
+print("if", r["if"])
+print("perms", sorted(f"{k}={v}" for k, v in r["permissions"].items()))
+print("kind", next(s["env"].get("REPORT_KIND") for s in r["steps"] if "release_failure_report.py" in (s.get("run") or "")))
+print("triggers", sorted(on))
+print("cron", on["schedule"][0]["cron"])
+print("run-gated", sorted(j for j in ("shell", "autopilot", "client") if "needs.plan.outputs.run == 'true'" in jobs[j]["if"]))
+s = jobs["summary"]
+print("summary-needs", sorted(s["needs"]))
+PYW
+NCST="$(cat "$TMP/nc-static")"
+has "triggers ['schedule', 'workflow_dispatch']" "$NCST" "runs on a schedule and by hand, never on a PR or push"
+has "cron 10 18 * * *" "$NCST" "nightly at 02:10 Beijing time"
+has "run-gated ['autopilot', 'client', 'shell']" "$NCST" "every negative-control job waits for the plan's go"
+has "needs-all True" "$NCST" "the report depends on every other job"
+has "!cancelled()" "$(grep '^if' "$TMP/nc-static")" "report: not on a cancelled run"
+has "contains(needs.*.result, 'failure')" "$(grep '^if' "$TMP/nc-static")" "report: on any failed job"
+has "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$(grep '^if' "$TMP/nc-static")" "report: its own off switch"
+has "perms ['actions=read', 'contents=read', 'issues=write']" "$NCST" "report: issue write + run read"
+has "kind negative-controls" "$NCST" "report: its own kind"
+has "summary-needs ['autopilot', 'client', 'plan', 'shell']" "$NCST" "summary waits for every job"
+
+echo "-- the summary: green only when every job passed"
+nc_step summary "Every job passed" > "$TMP/nc-sum.sh"
+for g in "shell=failure" "autopilot=failure" "client=failure" "client=skipped" "autopilot=cancelled"; do
+    NEEDS="$(NEEDS_WF="$NC_WORKFLOW" needs_json summary "$g")" runstep "$TMP/nc-sum.sh"
+    [ "$RC" != 0 ] && ok "$g: summary is red" || bad "$g: summary is red"
+done
+NEEDS="$(NEEDS_WF="$NC_WORKFLOW" needs_json summary "")" runstep "$TMP/nc-sum.sh"
+check "all passed: summary is green" "$RC" 0
+NEEDS='{"plan": {"result": "success"}}' runstep "$TMP/nc-sum.sh"
+[ "$RC" != 0 ] && ok "a job missing from needs: summary is red" || bad "a job missing from needs: summary is red"
+
+echo "-- no negative controls anywhere else: Tests and Client, manual runs included"
+for wf in tests client; do
+    python3 - "$REPO_DIR/.github/workflows/$wf.yml" > "$TMP/nc-$wf" <<'PYT'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf.get("on", wf.get(True))
+print("inputs", sorted(((on.get("workflow_dispatch") or {}).get("inputs") or {})))
+hits = []
+for jn, j in wf["jobs"].items():
+    for k, v in (j.get("env") or {}).items():
+        if k == "MUTATION":
+            hits.append(f"{jn}.env")
+    for s in j.get("steps") or []:
+        if "MUTATION" in (s.get("run") or "") or "MUTATION" in str(s.get("env") or ""):
+            hits.append(f"{jn}:{s.get('name')}")
+print("mutation", hits)
+PYT
+    check "$wf.yml: a manual run takes no options" "$(grep '^inputs' "$TMP/nc-$wf")" "inputs []"
+    check "$wf.yml: no job or step turns negative controls on" "$(grep '^mutation' "$TMP/nc-$wf")" "mutation []"
+done
+: > "$NC_REC"
+nc_exec "$REPO_DIR/.github/workflows/tests.yml" shard "Run shard 1/4" .
+has "run.sh --ci --shard 1/4 -j 2 --out $TMP/nc-rt/results MUTATION= " "$(cat "$NC_REC")" "tests.yml shard: really runs, negative controls off"
+nc_exec "$REPO_DIR/.github/workflows/release.yml" gate "Tests, shard 1/4" .
+has "run.sh --ci --shard 1/4 -j 2 --out $TMP/nc-rt/results MUTATION= " "$(cat "$NC_REC")" "release gate shard: the regression suite, negative controls off"
+
+echo "-- its failure report: its own issue, never the release one"
+export RF_KIND=negative-controls
+rf_repo; rf_jobs "negative controls 2/4=failure:Negative controls, shard 2/4" "negative controls summary=failure:Every shell shard passed exactly once"
+mkdir -p "$RF/sum"
+printf '## ❌ 1 of 60 tests did not pass\n\n- ❌ run.test: fail\n' > "$RF/sum/verify.md"
+printf '## 负对照汇总\n\n| x |\n\n没通过的单位：\n- ❌ `run.test (fail)`\n' > "$RF/sum/tally.md"
+RF_SUMMARY_DIR="$RF/sum" run_report "shell=failure summary=failure"
+check "nightly red: green job" "$RC" 0
+check "… one issue" "$(n_issues)" 1
+check "… with the dispatch label" "$(labels_of 1)" "pending/agent"
+B="$(body_of 1)"
+has "<!-- cavil-negative-controls-failure -->" "$B" "… its own marker"
+lacks "<!-- cavil-release-failure -->" "$B" "… not the release marker"
+check "… its own title" "$(rf_q "$RF/issues.json" 'd[0]["title"]')" "负对照每晚运行失败（自动报告）"
+has "## 负对照每晚运行失败" "$B" "… heading names the nightly run"
+has "定时（每晚）" "$B" "… says how it started"
+has "不新增负对照" "$B" "… tells the agent how to fix it"
+has "negative controls 2/4](" "$B" "… names the failed job"
+has '`run.test (fail)`' "$B" "… lists the unit that did not go red"
+has "$RF_SHA" "$B" "… tested commit"
+run_report "client=failure summary=failure"
+check "second red night: a comment, no new issue" "$(n_issues):$(n_comments 1)" "1:1"
+has "## 又一次负对照每晚运行失败" "$(last_comment 1)" "… comment heading names the nightly run"
+# the two kinds never cross
+RF_KIND=release run_report "gate=failure gate-summary=failure release=skipped"
+check "a release failure next to an open nightly issue: its own new issue" "$(n_issues)" 2
+check "… nothing added to the nightly one" "$(n_comments 1)" 1
+has "<!-- cavil-release-failure -->" "$(body_of 2)" "… with the release marker"
+run_report "shell=failure summary=failure"
+check "the next red night goes to the nightly issue" "$(n_comments 1):$(n_comments 2)" "2:0"
+
+rf_repo; rf_jobs "negative controls client=failure:Negative controls (vitest / back end / UI)" "negative controls summary=failure:Every job passed"
+mkdir -p "$RF/cl"; printf '❌ 没变红：看板不可写时照样发修改\n' > "$RF/cl/not-red.txt"
+RF_CLIENT_DIR="$RF/cl" run_report "client=failure summary=failure"
+B="$(body_of 1)"
+has "negative controls client](" "$B" "client only: names the job"
+has "- ❌ 没变红：看板不可写时照样发修改" "$B" "client only: lists the entry that did not go red"
+lacks "### shell 测试单位" "$B" "client only: no shell section without a summary"
+rf_repo; rf_jobs "negative controls client=failure:Negative controls (vitest / back end / UI)"
+run_report "client=failure summary=failure"
+has "客户端没留下条目清单，见该任务日志（[任务日志](https://github.com/o/r/actions/runs/777/job/12)）" "$(body_of 1)" "client, no list: says so and links the job"
+rf_repo; RF_EVENT=workflow_dispatch run_report "plan=failure shell=skipped autopilot=skipped client=skipped summary=skipped"
+has "- 触发：手动" "$(body_of 1)" "manual nightly run: says so"
+lacks "诊断运行" "$(body_of 1)" "… not called a gate-only run"
+rf_repo; run_report "shell=cancelled autopilot=cancelled client=cancelled summary=skipped"
+check "cancelled night: no call at all" "$(wc -l < "$RF/calls.log")" 0
+unset RF_KIND
+
 
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──
 # The whole file reruns against the broken copy (WORKFLOW=…) and must exit non-zero.
@@ -1005,10 +1259,10 @@ PY4
     }
     wf_mutant guard-ignores-gate 'if [ "$plan" != success ] || [ "$work" != true ] || [ "$gate" != success ]; then' 'if false; then'
     wf_mutant guard-ignores-gate-only 'if [ -n "$GATE_ONLY" ]; then echo' 'if false; then echo'
-    wf_mutant summary-skips-client 'for j in gate gate-autopilot gate-client; do' 'for j in gate gate-autopilot; do'
+    wf_mutant summary-skips-gate 'for j in gate; do' 'for j in ; do'
     wf_mutant summary-accepts-skipped '[ "$r" = success ] ||' '[ "$r" = success ] || [ "$r" = skipped ] ||'
     wf_mutant release-without-gate 'needs: [plan, gate-summary]' 'needs: [plan]'
-    wf_mutant summary-without-client 'needs: [plan, gate, gate-autopilot, gate-client]' 'needs: [plan, gate, gate-autopilot]'
+    wf_mutant summary-without-gate 'needs: [plan, gate]' 'needs: [plan]'
     wf_mutant cut-tags-head 'release.sh --cut "$PLAN_TAG" --at "$RELEASE_SHA" $page)' 'release.sh --cut "$PLAN_TAG" --at "$(git rev-parse HEAD)" $page)'
     echo
     mutation_summary "$0"

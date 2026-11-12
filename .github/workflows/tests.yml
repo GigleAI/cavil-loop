@@ -20,12 +20,9 @@ on:
       - '**'
       - '!client/**'
       - 'client/test/tauri/mutations.sh'
+  # No negative controls here, manual runs included: they run only in negative-controls.yml
+  # (GitHub#416).
   workflow_dispatch:
-    inputs:
-      mutation:
-        description: 'Also run the negative controls (MUTATION=1) — slow, tests the tests'
-        type: boolean
-        default: false
 
 # Fork PRs run with this read-only token and no secrets.
 permissions:
@@ -40,16 +37,14 @@ jobs:
   shard:
     name: shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.mutation && 90 || 30 }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     env:
-      MUTATION: ${{ inputs.mutation && '1' || '' }}
-      # Per-file limit. With negative controls requester-bot alone takes ~12 min
-      # on a dev box, and hosted runners are slower.
-      RUN_TEST_TIMEOUT: ${{ inputs.mutation && '2400' || '900' }}
+      # Per-file limit.
+      RUN_TEST_TIMEOUT: '900'
     steps:
       # Full history + origin/main: design-review-gate, requester-bot and
       # repair-unit-links compare against the merge-base with main. A shallow

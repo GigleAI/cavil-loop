@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Release workflow failed → open an issue, or comment on the open one of the same kind (GitHub#285).
+"""A workflow run failed → open an issue, or comment on the open one of the same kind (GitHub#285).
 
-Run by the `report failure` job of .github/workflows/release.yml after every run in which a job
-it depends on failed (scheduled, tag push, manual release, manual gate-only). It only ever does one
-of two writes, and never touches an existing issue's labels:
+Two kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416):
+  release            the `report failure` job of .github/workflows/release.yml (scheduled, tag push,
+                     manual release, manual gate-only)
+  negative-controls  the `report failure` job of .github/workflows/negative-controls.yml, the nightly
+                     run of every negative control
+The kinds differ only in the marker, the title and the wording; finding, re-reading and writing are
+the same code. It only ever does one of two writes, and never touches an existing issue's labels:
 
   find     list this repo's open issues created by the CI account (`github-actions[bot]`) whose body
            carries MARKER; page by page, every item checked for the fields the judgement uses.
@@ -22,6 +26,7 @@ All GitHub access goes through `gh api` (REST) with the job's token.
 Input (environment):
   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (default 1), GITHUB_SERVER_URL,
   GITHUB_SHA, GITHUB_REF_NAME   as Actions sets them
+  REPORT_KIND    release (default) or negative-controls; anything else → no write, exit 1
   EVENT          github.event_name
   GATE_ONLY      "true" for a manual gate-only run
   NEEDS          toJSON(needs) of the report job
@@ -41,11 +46,41 @@ import sys
 import tempfile
 import urllib.parse
 
-MARKER = "<!-- cavil-release-failure -->"
 CI_LOGIN = "github-actions[bot]"
 PER_PAGE = 100
 MAX_PAGES = 30
-TITLE = "Release 工作流运行失败（自动报告）"
+# Everything that differs between the kinds. The release kind's values are the ones this script
+# always had, so its issues, comments and markers stay exactly as before.
+KINDS = {
+    "release": {
+        "marker": "<!-- cavil-release-failure -->",
+        "title": "Release 工作流运行失败（自动报告）",
+        "noun": "发版",
+        "workflow": "Release 工作流",
+        "schedule": "定时（每周）",
+        "manual": "手动发版",
+        "client_key": "gate-client",
+        "client_job": "gate client",
+        "hint": None,
+    },
+    "negative-controls": {
+        "marker": "<!-- cavil-negative-controls-failure -->",
+        "title": "负对照每晚运行失败（自动报告）",
+        "noun": "负对照每晚",
+        "workflow": "Negative controls 工作流（每晚负对照）",
+        "schedule": "定时（每晚）",
+        "manual": "手动",
+        "client_key": "client",
+        "client_job": "negative controls client",
+        "hint": ("负对照没按预期变红，说明对应的测试已分辨不出那处改坏：修测试，"
+                 "或在被改坏的代码变了时把这个条目指向新代码；修好后只重跑这里点名的条目确认重新变红，"
+                 "不跑别的负对照、不新增负对照（GitHub#234）。发版不等这里（GitHub#416）。"),
+    },
+}
+KIND_NAME = os.environ.get("REPORT_KIND", "") or "release"
+KIND = KINDS.get(KIND_NAME, KINDS["release"])
+MARKER = KIND["marker"]
+TITLE = KIND["title"]
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "")
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
@@ -219,7 +254,8 @@ def shell_section():
 
 
 def client_section(needs, jobs):
-    res = needs.get("gate-client", {}).get("result") if isinstance(needs.get("gate-client"), dict) else None
+    key = KIND["client_key"]
+    res = needs.get(key, {}).get("result") if isinstance(needs.get(key), dict) else None
     if res != "failure":
         return []
     txt = read_text(os.environ.get("CLIENT_DIR", ""), "not-red.txt")
@@ -230,7 +266,7 @@ def client_section(needs, jobs):
     else:
         link = ""
         for j in jobs or []:
-            if j.get("name") == "gate client" and j.get("html_url"):
+            if j.get("name") == KIND["client_job"] and j.get("html_url"):
                 link = f"（[任务日志]({j['html_url']})）"
         out.append(f"客户端没留下条目清单，见该任务日志{link}。")
     out.append("")
@@ -239,11 +275,11 @@ def client_section(needs, jobs):
 
 def trigger_text():
     if EVENT == "schedule":
-        return "定时（每周）"
+        return KIND["schedule"]
     if EVENT == "push":
         return f"tag 推送（`{os.environ.get('GITHUB_REF_NAME', '')}`）"
     if EVENT == "workflow_dispatch":
-        return "手动只跑门禁" if GATE_ONLY else "手动发版"
+        return "手动只跑门禁" if GATE_ONLY else KIND["manual"]
     return EVENT or "?"
 
 
@@ -260,6 +296,8 @@ def report_text(needs, jobs):
     ]
     if EVENT == "workflow_dispatch" and GATE_ONLY:
         lines.append("- 这是诊断运行（只跑门禁，不打 tag、不发版）")
+    if KIND["hint"]:
+        lines += ["", KIND["hint"]]
     one = release_only_line(needs, jobs)
     if one:
         lines += ["", f"**{one}**"]
@@ -333,7 +371,7 @@ def still_target(n):
 
 
 def comment(n, others, report):
-    body = "## 又一次发版运行失败\n\n" + report
+    body = f"## 又一次{KIND['noun']}运行失败\n\n" + report
     if others:
         body += "\n其余同类 issue：" + "、".join(f"#{o}" for o in others) + "\n"
     try:
@@ -342,7 +380,7 @@ def comment(n, others, report):
         red(f"在 #{n} 下评论失败：{e.detail}")
         return
     print(f"已在同类 issue #{n} 下评论")
-    summary(f"发版失败已评论在 #{n}")
+    summary(f"{KIND['noun']}失败已评论在 #{n}")
 
 
 def create(report):
@@ -364,8 +402,8 @@ def create(report):
         print(f"新建前复查找到同类 issue #{again[0]}，改为评论")
         do_comment(again, report, retried=True)
         return
-    body = (MARKER + "\n## 发版运行失败\n\n"
-            "这条 issue 由 Release 工作流自动创建。之后的发版运行再失败，会作为评论追加在这里；"
+    body = (MARKER + f"\n## {KIND['noun']}运行失败\n\n"
+            f"这条 issue 由 {KIND['workflow']}自动创建。之后的{KIND['noun']}运行再失败，会作为评论追加在这里；"
             "关闭本 issue 后，下一次失败会新建一条。\n\n" + report)
     payload = {"title": TITLE, "body": body}
     if with_label:
@@ -384,20 +422,20 @@ def create(report):
     print(f"已新建 issue #{n}")
     if not with_label:
         red(f"本仓库没有派工标签 {LABEL}：issue #{n} 已建、派工标签没打上，需维护者手动打 {LABEL}")
-        summary(f"发版失败已新建 #{n}（没有派工标签）")
+        summary(f"{KIND['noun']}失败已新建 #{n}（没有派工标签）")
         return
     try:
         back = gh("GET", f"repos/{REPO}/issues/{n}")
         names = [l.get("name") for l in back.get("labels") or [] if isinstance(l, dict)]
     except (GhError, AttributeError) as e:
         red(f"issue #{n} 已建、读回失败，派工标签是否打上不知道，需维护者核对并手动打 {LABEL}：{getattr(e, 'detail', e)}")
-        summary(f"发版失败已新建 #{n}（读回失败）")
+        summary(f"{KIND['noun']}失败已新建 #{n}（读回失败）")
         return
     if LABEL not in names:
         red(f"issue #{n} 已建、派工标签没打上，需维护者手动打 {LABEL}")
-        summary(f"发版失败已新建 #{n}（派工标签没打上）")
+        summary(f"{KIND['noun']}失败已新建 #{n}（派工标签没打上）")
         return
-    summary(f"发版失败已新建 #{n}，已打 {LABEL}")
+    summary(f"{KIND['noun']}失败已新建 #{n}，已打 {LABEL}")
 
 
 def do_comment(found, report, retried=False):
@@ -431,6 +469,9 @@ def summary(line):
 def main():
     if not REPO or not RUN_ID:
         red("缺 GITHUB_REPOSITORY / GITHUB_RUN_ID")
+        return 1
+    if KIND_NAME not in KINDS:
+        red(f"REPORT_KIND={KIND_NAME!r} 不认识（只认 {' / '.join(KINDS)}），本次不写")
         return 1
     needs = read_needs()
     if needs is None:

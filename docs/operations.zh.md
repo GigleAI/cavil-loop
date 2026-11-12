@@ -1631,7 +1631,8 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 
 - **何时**：`.github/workflows/release.yml` 的定时触发，**每天** 00:10 北京时间（16:10 UTC，GitHub#309）。周一那次发刚结束的那一周；其余六天发现这一周已发布，十几秒就结束——周一门禁没过时，修复合进 main 之后的第一次每天检查把这一周补发出来，名字和标题仍归那一周。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
 - **发哪一周**：「刚结束的那一周」= 运行开始时按北京时间算、最近一个已经过完的周日 D（北京时间周日 23:59 还是上一周，周一 00:00 起是这一周）。计划那步只算一次，门禁和打标签都用它定下的周、提交和 tag，跨过零点也不变。只补最近这一周：连续漏发两周以上时更早的周不单独出版本，它们的提交算进补发的这一版。
-- **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁又要跑几个小时，这期间 main 通常会有新提交（GitHub#329）。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
+- **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁也要跑一阵，这期间 main 常会有新提交（GitHub#329）。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
+- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。自 GitHub#416 起负对照**不在**门禁里：它们每晚单独跑（见后面第二节），红了开 issue，不拦发版。
 - **发什么**：tag 是 `release/vD.N`。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。计划那步（`scripts/release.sh --plan`）按顺序判断，命中第一条即定：
   1. main 最新提交上有 `release/v*` tag 还没有 Release 页面 → 门禁测这个提交，给这个 tag 补建页面，不打新 tag
   2. 刚结束那一周的 tag 里有没有页面的（取序号最大的那个）→ 门禁测**这个 tag 自己的提交**，给它补建页面，不打新 tag
@@ -1639,7 +1640,7 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
   4. 这一周已有发布过的 tag：定时运行不发；手动发版给 main 最新提交打这一周的下一个序号
   5. 其余 → 给 main 最新提交打 `release/vD.1`
 - **上次只推了 tag 也能补**：tag 已推但 Release 页面创建失败时，下一次运行（定时或手动发版）先补这个页面（上面第 1、2 条），排在「这一周已发布」之前。生成说明的起点是最近一个**有 Release 页面**的 tag，一直没补上页面的 tag（例如更早一周的）会被跳过，它的改动算进下一个 Release。查不到 Release 列表时整次运行失败，不猜。tag 直接读远端（签出里可能还留着远端已删的 tag），读不到同样整次失败；建页面前再核对远端 tag 仍指向受测提交，被删或被挪走就不建，`gh release create --verify-tag` 也不会替缺失的 tag 新建一个。
-- **手动发版**：Actions 页面 → Release → Run workflow（选 main，不勾 `gate_only`），按上面同一张表走，只差第 4 条；勾 `gate_only` 只跑门禁，永远测 main 最新提交，不看这一周发没发，不打 tag 不建页面。或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——用当天 UTC 日期，它不判断是否已发过）。
+- **手动发版**：Actions 页面 → Release → Run workflow（选 main，不勾 `gate_only`），按上面同一张表走，只差第 4 条；勾 `gate_only` 只跑门禁（普通回归），永远测 main 最新提交，不看这一周发没发，不打 tag 不建页面。或在本机 main 上跑 `bash scripts/release.sh`（交互确认，行为不变——用当天 UTC 日期，它不判断是否已发过）。
 - **同一次运行里完成**：流程用内置令牌推的 tag 不会再触发流程，所以定时 / 手动运行在同一个 job 里接着生成 Release；人手推的 tag 仍由 tag 触发走后半段。不需要额外 secret。
 
 Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的升级无关**：受管 Linux 跟的是 base 分支最新提交（见上一节）。
@@ -1650,7 +1651,7 @@ Release 的任何一次运行——定时、tag 推送、手动发版、手动�
 
 - **没有未关闭的同类 issue**：新建一条，标题 `Release 工作流运行失败（自动报告）`，带 `pending/agent`，daemon 照常派工。「同类」= 本仓库、未关闭、创建者 `github-actions[bot]`、正文含 `<!-- cavil-release-failure -->`、不是 PR。
 - **已有一条未关闭**：在编号最小的那条下追加评论，**从不改它的标签**——它正在处理、等人、等前置，都原样保持。处理完就关掉它；下次失败会新建一条。
-- **写了什么**：运行链接、触发方式、受测提交、每个任务的结果和失败步骤、门禁汇总里没通过的 shell 单位、客户端没按预期变红的条目。门禁通过、只有发版任务失败时写明失败在哪一步。
+- **写了什么**：运行链接、触发方式、受测提交、每个任务的结果和失败步骤、门禁汇总里没通过的 shell 单位。门禁通过、只有发版任务失败时写明失败在哪一步。
 - **判断不了时**（issue 列表某一页或其中某一条读不全、查到之后到写入之间那条 issue 变了）一律不写，`report failure` 任务标红，看该任务日志。
 - 新 issue 打的标签是仓库变量 `RELEASE_FAILURE_LABEL`（默认 `pending/agent`），必须和本仓库的派工标签一致。
 
@@ -1674,6 +1675,26 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `RELEASE_FAILURE_REPORT off`，恢复后没有这一项。
 <!-- release-failure-ops:end -->
+
+### 负对照每晚单独跑（GitHub#416）
+
+负对照是故意把代码改坏、要求测试变红——检验的是测试本身，不是代码。全部负对照（每个 `tests/*.test.sh` 带 `MUTATION=1`、autopilot 分到六个任务的改坏副本、客户端的 `test/mutation` 和真实应用那一套）只在 `.github/workflows/negative-controls.yml` 里跑：
+
+- **何时**：每晚 02:10 北京时间（18:10 UTC），测 main 最新提交。定时运行在第一个任务里先查：本工作流上一次成功运行就在同一个提交上，就到此为止；查不到就照跑。Actions → Negative controls → Run workflow（选 main）手动跑，总是跑；在别的分支上运行什么都不做。
+- **不在 PR 上跑，也不在 Tests、Client 里跑**：这两个工作流的手动运行也不再有「也跑负对照」的选项（GitHub#195 / #234）。worker 和复审在开发期间不跑负对照。
+- **不拦发版**：发版门禁只跑普通回归（见上面「门禁跑什么」）。
+- **红了自动开 issue**：和 Release 运行失败同一个脚本、同样的规则（只新建或评论、写前重读、从不改已有 issue 的标签），但是单独一条：标题 `负对照每晚运行失败（自动报告）`，标记 `<!-- cavil-negative-controls-failure -->`，带 `pending/agent`（`RELEASE_FAILURE_LABEL`）。两种报告互不评论到对方的 issue 上。正文列出失败的任务、没按预期变红的 shell 单位和客户端条目。
+
+<!-- negative-controls-ops:begin -->
+**停用每晚报告**（照常每晚运行，红了只是不开 issue）与**恢复**：
+
+```bash
+gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
+```
+
+停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `NEGATIVE_CONTROLS_REPORT off`，恢复后没有这一项。
+<!-- negative-controls-ops:end -->
 
 ## 改名前的安装
 

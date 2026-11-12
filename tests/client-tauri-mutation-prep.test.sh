@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kind: meta
 # client/test/tauri/mutations.sh prepares what its entries read (GitHub#195 review round 2): the built
-# window (dist/) and the app's icons are not in git, and the weekly release gate starts from a clean
+# window (dist/) and the app's icons are not in git, and the nightly negative-controls run starts from a clean
 # checkout. The real script runs with a fake `node` that records every call and, for an entry,
 # records whether dist/ existed at that moment — no app is built, nothing is broken, no negative
 # control actually runs.

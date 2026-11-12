@@ -84,9 +84,10 @@
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
 │   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（只改 client/ 的不跑；检查名：测试）
-│   ├── release.yml            ← 每周发版，先过跑全部负对照的门禁（GitHub#195）
+│   ├── release.yml            ← 每周发版，先过跑 shell 普通回归的门禁（GitHub#195 / #416）
+│   ├── negative-controls.yml  ← 全部负对照，每晚在 main 上跑；红了新建 / 续报 issue（GitHub#416）
 │   └── client.yml             ← 桌面客户端：每次推送跑快测；合入 main 打 arm64 dmg；打标签 / 每周 / 手动时跑完整测试并打 dmg；client/v* Release
-├── .github/actions/client-setup/  ← 客户端测试环境，client.yml 和发版门禁共用
+├── .github/actions/client-setup/  ← 客户端测试环境，client.yml 和每晚负对照共用
 ├── client/                   ← 桌面看板客户端（Tauri：TS + React 界面 + Rust 后台；GitHub#135 / #151），见 client/README.md
 └── docs/
     ├── logo/                  ← README 顶部的 logo + GitHub 仓库分享卡片图，由 App 图标原图生成（GitHub#310）
@@ -324,7 +325,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   会加到同一组计数器上，这时报 `-`（「不单列」），任何合计都不加它，绝不混成一个数；各模式下都只数回归的文件（负对照开始前存下
   正式版计数、负对照结论记在 `mut_ran` / `mut_fail`）在调用时写 `REPORT_REGRESS_ONLY=1`——目前是 autopilot、requester-bot-wait、
   closed-issue-done、pending-human-conflict、release-auto、smoke 和 run.test。终端、`summary.md`、CI 作业摘要、`--verify`
-  的汇总都按类型分组，回归和负对照分两栏；发版门禁另用 `--tally` 把各路 shell 结果和六个 autopilot 作业的负对照加总。
+  的汇总都按类型分组，回归和负对照分两栏；每晚负对照运行另用 `--tally` 把各路 shell 结果和六个 autopilot 作业的负对照加总。
   `--kind unit,guard` 只跑这几类（可以和 `--ci` / `--shard` / `--list` / `--verify` 一起用）；`--quick` = 冒烟 + 单元 + 守卫 +
   测试框架自测，48 个单位，2026-11-07 用默认 `-j 8` 实测 33 秒（28 核开发机，负载约 4；其中最长的 `run.test` 占 28 秒）——开发中先跑它，再跑改到的文件。`tests/smoke.test.sh`（约 6 秒）用真实轮询跑一轮：新 issue
   被派工（翻 `doing/agent`、起 worker 会话、建 worktree）、PR 评论被派工、合并的 PR 打上 `Done`
@@ -352,8 +353,8 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
   它要本机正在运行的用户级 systemd 且装好了预览单元）。被排除的文件本机照常跑；清单里写了不存在的文件直接报错
 - **整个文件自己跳过算失败**，除非它在上面的清单里。约定：顶格以 `⏭` 开头的一行 = 「整个文件跳过」；
   缩进的 `⏭` = 文件里某一组跳过、其余照跑，只列出不判红。不这么做，CI 上某个依赖丢了，测试照样退出 0，检查一直绿、其实什么都没测
-- **负对照只在每周自动发版时跑，Mac 打包 PR 上不跑**（GitHub#195），见下文「负对照什么时候跑」那张表。
-  Actions → Tests → *Run workflow* 里的 `mutation` 勾选框仍可手动带 `MUTATION=1` 全部重跑
+- **负对照只在每晚的 `Negative controls` 工作流里跑，Mac 打包 PR 上不跑**（GitHub#195 / #416），见下文「负对照什么时候跑」那张表。
+  Tests 和 Client 的 *Run workflow* 都不再有「也跑负对照」的选项
 - **测试不能依赖开发机。** 第一次 CI 就抓到三处：假仓库的分支名跟着本机 `init.defaultBranch` 走（GitHub 机器默认是 `master`，
   要写 `git init -b main`）；夹具按北京时间写、`date` 却跟着本机时区（要固定 `TZ`）；结果目录放在仓库里，被扫全仓库的测试读到。
   新测试推上去之前，用 `TZ=UTC GIT_CONFIG_GLOBAL=<只含 user.name/email 的文件> bash tests/<名>.test.sh` 粗略模拟一台 GitHub 机器
@@ -368,7 +369,7 @@ bash tests/<name>.test.sh              # 默认回归：只跑正向用例，末
 MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 之前一样）
 ```
 
-#### 负对照什么时候跑（GitHub#195：只在每周自动发版时跑）
+#### 负对照什么时候跑（GitHub#416：只在每晚运行里跑）
 
 | 场景 | 默认回归 | 负对照 | Mac 打包 + Mac 检查 |
 |---|---|---|---|
@@ -378,12 +379,13 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 | `Client`：推到 `main` | 只跑快测（完整测试——Playwright、Linux 上的真实 App——留到打标签 / 每周那次） | 不跑 | 跑，**只打 arm64**，用更新签名密钥签名；全部通过后发成开发版（预发布 `client/vX.Y.(Z+1)-dev.N`，只留最近 10 个——GitHub#215） |
 | `Client`：`client/v*` 标签 | 快测 + 完整测试 | 不跑 | 跑 arm64 和 x64；有红就不发版 |
 | `Client`：每周（周日 16:40 UTC） | 快测 + 完整测试 | 不跑 | 只跑 **arm64**，打包坏了一周内能发现 |
-| `Release`（每周，或推 `release/v*` 标签） | — | **全部**：全部 `tests/*.test.sh` 带 `MUTATION=1`（4 份并行 + 托管测试拆成 6 份），加客户端两组（`test/mutation`、真实 App 的 `test/tauri/mutations.sh`），跑在这次要打标签的那个提交上；有红就不打标签、不建发版页 | — |
-| 手动 *Run workflow* | 照旧 | 原有的 `mutation` 勾选框（只在手动时）；`Release` 的 `gate_only` 只跑整套门禁、不打标签，用来试跑 | `Client`：跑，只打 arm64 |
+| `Release`（每周，或推 `release/v*` 标签） | 发版门禁：全部 shell 测试（4 份并行 + 「每个单元恰好通过一次」核对，和 `Tests` 一样），跑在这次要打标签的那个提交上；有红就不打标签、不建发版页 | 不跑 | — |
+| `Negative controls`（每晚 18:10 UTC，测 `main`；上一次绿的运行就在同一个提交上时跳过） | — | **全部**：全部 `tests/*.test.sh` 带 `MUTATION=1`（4 份并行 + 托管测试拆成 6 份），加客户端两组（`test/mutation`、真实 App 的 `test/tauri/mutations.sh`）；红了给 daemon 新建或续报 issue「负对照每晚运行失败（自动报告）」，从不拦发版 | — |
+| 手动 *Run workflow* | 照旧 | 只有 `Negative controls`（选 `main`）；`Tests`、`Client` 没有这个选项。`Release` 的 `gate_only` 只跑普通回归门禁、不打标签 | `Client`：跑，只打 arm64 |
 
-- **不再新增负对照**（GitHub#234）：shell 测试和 `client/` 都不再新写负对照。改动用普通测试覆盖，PR 的证据是默认回归，复审不要求负对照或打包结果。仓库里已有的留着，照旧在每周发版门禁里跑；某条因被改的代码变了而失效时，在同一个改动里改指向新代码；不新加
-- 负对照红了只挡每周发版：daemon 照样自动部署合并后的 `main`，客户端自己的 `client/v*` 发版也不等它，也没有人会收到提醒
-- 每周门禁全跑。维护者点名时仍可手动跑几项：`MUTATION=1 bash tests/<name>.test.sh`，或 `client/` 的 `npm run test:mutation -- --changed`，它按 GitHub#178 的规则挑相关项（新加或改过的、改坏位置在改过的文件里的、点名的测试所在文件改过的；测试公共部分改了就全挑），判断不了时退出 1，不会显示成「跑了 0 项、全过」
+- **不再新增负对照**（GitHub#234）：shell 测试和 `client/` 都不再新写负对照。改动用普通测试覆盖，PR 的证据是默认回归，复审不要求负对照或打包结果。仓库里已有的留着，照旧在每晚运行里跑；某条因被改的代码变了而失效时，在同一个改动里改指向新代码；不新加
+- 负对照红了什么都不挡（GitHub#416）：不挡发版，不挡 daemon 自动部署合并后的 `main`，也不挡客户端自己的 `client/v*` 发版。它新建或续报一条给 daemon 派工的 issue（`scripts/release_failure_report.py`，`REPORT_KIND=negative-controls`；自己的标记，从不写到发版失败那条上）
+- **PR 开发期间不跑**：worker 和复审在开发、复审时都不跑负对照，几项也不跑。唯一的例外是每晚报告开出的那条 issue：它的 worker 只重跑报告里点名的条目，确认它们重新变红。命令是 `MUTATION=1 bash tests/<name>.test.sh`，或 `client/` 的 `npm run test:mutation -- --changed`，它按 GitHub#178 的规则挑相关项（新加或改过的、改坏位置在改过的文件里的、点名的测试所在文件改过的；测试公共部分改了就全挑），判断不了时退出 1，不会显示成「跑了 0 项、全过」
 - **已有的负对照挂在开关下**，不进默认回归：每一项过一次 `tests/lib/mutation.sh` 的 `mutation_gate`（在主 shell 里调，别放进 `$( )`，否则计数传不回来）。默认模式下它只计数、不准备也不跑，所以「跳过 N 项」和「跑了 N 项」是同一个计数器
 - **准备失败照样红**：要改的原文找不到，只在开关打开时才查，查到仍让整套测试失败（`requester-bot` 的 `REQUESTER_BOT_TEST_BAD_MUT=1` 自检要和 `MUTATION=1` 一起设）
 - **默认回归自带到达性断言**：没有负对照兜着，只靠「没发生」撑着的断言（调用 0 次、状态没变、零写请求）在被测代码一开头就退出时也是绿的。这类断言旁边要有一条「确实发生了」的：派工数 > 0、假 GitHub 确实收到那条写请求、这一轮确实读过 PR 列表、确实走到了写前现读……
@@ -419,7 +421,7 @@ MUTATION=1 bash tests/<name>.test.sh   # 连负对照一起跑（和 GitHub#103 
 - 读 / 改一个项目的常用配置项（GitHub#388：`scripts/project-config.sh`、`scripts/config-fields.txt`，客户端的 `daemon_config.rs` / `ProjectConfigDialog.tsx`，`docs/operations{,.zh}.md` 里 `<!-- project-config-ops:begin -->` 之间的命令）→ `tests/project-config.test.sh`（约 30 秒；假 HOME 下跑真实脚本）和 `tests/project-config-poll.test.sh`（约 15 秒；真实保存前后各跑几轮真实 `agent-poll.sh`），表单一侧是 `client/test/unit/project-config.test.ts` 和 `client/test/e2e/daemon-config.spec.ts`。只有登记在 `config-fields.txt` 里的配置项会被读出来，只有登记成 `edit` 的能被写；**命令、钩子、令牌、网络地址、目录、各种名字一律不许登记**——窗口能填它们，就等于窗口能在本机跑任意命令、读凭据（测试按名字模式断言）。登记了的项只有在配置文件里「正好一行、不缩进、在最外层、普通字面值、且加载后的值就是它」时才可改，其余只显示并写明原因。「在不在最外层」看 bash 自己的解析结果——把整份文件包进一个函数体、用 `declare -f` 打印出来，最外层的赋值就是恰好缩进 4 格的那一行——绝不看文件自己的缩进：`if true; then … fi` 里不缩进的赋值曾被当成可改并被改写（PR #399 代码复审第 1 轮）。「能改」和「文件里没有、可以追加」用同一份证据判断：这个名字在那份规范格式的代码里作为一个完整的词出现几次（`mentions`）——零次且加载后没有值 = 没有；恰好一次且就是最外层那行赋值 = 可改；其余一律只显示。绝不能用「没有以 `KEY=` 开头的行」判断「没有」：写成一行的 `if false; then KEY=2; fi` 就没有这样的行，曾被报成没有，保存时在末尾追加了一行把它盖掉（第 2 轮）。解析结果读不出来时所有项只显示——不知道不等于没有。显示的值和能不能改是两回事：一律是 daemon 实际按它工作的值——加载后没设置或为空就是登记的默认值（`effective`），所以写在没执行的分支里的那一项显示默认值，不是空。每一行的「不写这一行时的值」必须是 daemon 实际用的：和 `config-notices.txt` + 模板对一遍，和真实加载 `_lib.sh`（空配置）对一遍，在用到的地方才补默认值的那几项（`${X:-n}`）和真实的使用方对一遍：并发数、两种重试上限、合并后清理、冲突提醒及其天数用真实轮询（真冲突、真 `merge-tree`），复盘交给模型程序的模型用真实的 `post-merge-retrospective.sh`（`tests/project_config_retro_test.py`）。登记的每个默认值都这样对过它的使用方；新加一行就要给它补上。改默认值时两边一起改。保存基于配置文件的一份私有副本（不是硬链接——那只是同一个可变文件的另一个名字），紧挨着改名再拿文件和调用方带来的指纹比一次，**改名换上之后不再写配置文件**：不回滚、不自动恢复（更早的设计会把「留底」放回去，结果盖掉了更新的外部保存——方案复审第 2 轮）。拦不住的事如实写明、不藏：编辑器在最后一次核对和改名之间存盘，或通过它早先打开的文件存盘，它的修改会丢，而结果仍可能是 `saved`；测试用包装真实 `cp` / `mv` 的办法把这些结果照现状钉住（脚本里没有测试开关）。「加载不了」是 `unreadable`、一个值都不给，绝不当成「什么都没设」；没有 `RESULT=` 行时客户端一侧是 `unconfirmed`——既不说「已保存」也不说「什么都没写」
 - `setup.sh` 建标签的默认颜色（GitHub#130，照抄本仓库 labels 页）→ `tests/setup-label-colors.test.sh`（约 1 秒；打开全部可选标签真跑 `setup.sh`，核对 14 个标签的名字和颜色）。GigleAI/cavil-loop 上的标签改色时，`setup.sh` 和测试里的期望表一起改
 - 老项目配置缺新功能的设置时提示（GitHub#289：`scripts/config-notices.txt`、`_lib.sh` 里紧跟 `source "$CONFIG_FILE"` 记下的 `CONFIG_NOTICE_UNSET`、`config_notice_tick`、`CONFIG_NOTICE_ISSUE`、`$STATE_DIR/config-notice.json`）→ `tests/config-notice.test.sh`（约 35 秒；照 `poll-entry.sh` 的样子真跑 `agent-poll.sh`，另经真实 `poll-entry.sh` 跑一轮，对有状态的假 GitHub）。`cavil-loop.config.example` 里每个配置项都要在登记表里登记成 `notice`（不写就关、模板里开）或 `quiet`（写原因），漏登记测试就红。「缺」= source 配置后立刻看仍未设置；空值是「已决定不开」。只在调度器起的轮询里运行：`poll-entry.sh` 只给 `agent-poll.sh` 这一个进程交 `CAVIL_SCHEDULED_POLL=1`，后者收进 `POLL_SCHEDULED` 并在做任何事之前 unset——别拿 `CODING_AGENT_RELEASE_ROOT` 当判据，worker 会话会继承它。所以测试、手动试跑、worker 会话里跑都不会开 issue；配置项都写了、或 `CONFIG_NOTICE_ISSUE=false` 时，轮询的 GitHub 调用与 merge-base 版本一致。评论或关闭提示 issue 之前先重读，必须仍开着、带标记、不是 PR，且标签正好是保护标签（`pending/human`，没有别的流程标签）——人转进别的流程的不碰、不再跟踪。`docs/operations{,.zh}.md` 里的查看步骤（`<!-- config-notice-ops:begin -->` 之间）由测试在空环境里按原样执行，两份保持一字不差
-- 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）。GitHub#195 起一次发版分三段：计划 → 发版门禁（仓库里全部负对照，shell 加客户端）→ 发版。计划那步定下一个提交，门禁测的是它，打标签那步只给这个提交打，期间 `main` 往前走了也不变。GitHub#309 起定时改成每天、计划那步是 `release.sh --plan`：一次定下刚结束的那一周（北京时间周一到周日）、受测提交、tag 名和动作（发新版 / 补页面 / 不动），打标签那步（`release.sh --cut <tag> --at <sha> [--page]`）只用这些，不再读时钟。缺 Release 页面的 tag 永远先补（门禁测它自己的提交），排在「这一周已发布」之前；只跑门禁不进这套判断，永远测 main 最新提交。测试用 `CAVIL_RELEASE_NOW` 固定时钟，逐条走判断表，并走一遍「建页失败 → 重跑补页 → 再重跑不动」的完整过程。「门禁过没过」从 `needs` 读两次——`gate-summary` 核每个门禁任务、发版任务第一步再核一次——门禁任务从 `needs` 里漏掉只会变红，不会被跳过。测试从 yml 里读出计划、汇总、发版核对、打标签这几步真跑，并注入每个门禁任务的结果（失败、跳过、取消、缺失、只跑门禁 → 零标签、零发版页）；`MUTATION=1` 用 7 份改坏的 yml 整份重跑。客户端门禁任务和 `client.yml` 共用 `.github/actions/client-setup`（Playwright 的 WebKit 在这里先装好，再跑第一个界面基线）。门禁从干净签出开始，所以每个使用方自己准备要读的东西：`client/test/tauri/mutations.sh` 在第一项之前先构建窗口（`dist/`）和 App 图标，且只在开关打开时 → `tests/client-tauri-mutation-prep.test.sh`（约 1 秒；真脚本配假 `node`，不构建、不改坏任何东西）失败报告（GitHub#285：`report failure` 任务、`scripts/release_failure_report.py`）在同一个文件里对有状态的假 GitHub（`tests/fixtures/release-failure-fake-gh.py`）在同一个假仓库上跑多轮：只会新建（派工标签放在那一次创建请求里）或评论，从不给已有 issue 写标签；列表某页或某条读不全、写前目标变了，一律不写、任务标红；文档里补标签 / 停用的步骤按字面执行。
+- 发版（每轮迭代自动发、`scripts/release.sh`、`.github/workflows/release.yml`）→ `tests/release-auto.test.sh`（流程文件里的步骤脚本是从 yml 里读出来真跑的）。GitHub#195 起一次发版分三段：计划 → 发版门禁 → 发版；GitHub#416 起门禁是 shell 普通回归（和 `Tests` 同样的分片和「恰好一次」核对），不再是负对照。计划那步定下一个提交，门禁测的是它，打标签那步只给这个提交打，期间 `main` 往前走了也不变。GitHub#309 起定时改成每天、计划那步是 `release.sh --plan`：一次定下刚结束的那一周（北京时间周一到周日）、受测提交、tag 名和动作（发新版 / 补页面 / 不动），打标签那步（`release.sh --cut <tag> --at <sha> [--page]`）只用这些，不再读时钟。缺 Release 页面的 tag 永远先补（门禁测它自己的提交），排在「这一周已发布」之前；只跑门禁不进这套判断，永远测 main 最新提交。测试用 `CAVIL_RELEASE_NOW` 固定时钟，逐条走判断表，并走一遍「建页失败 → 重跑补页 → 再重跑不动」的完整过程。「门禁过没过」从 `needs` 读两次——`gate-summary` 核每个门禁任务、发版任务第一步再核一次——门禁任务从 `needs` 里漏掉只会变红，不会被跳过。测试从 yml 里读出计划、汇总、发版核对、打标签这几步真跑，并注入每个门禁任务的结果（失败、跳过、取消、缺失、只跑门禁 → 零标签、零发版页）；`MUTATION=1` 用 7 份改坏的 yml 整份重跑。每晚负对照工作流（`.github/workflows/negative-controls.yml`）在同一个文件里测：计划那步（只测 main；定时运行只在上一次运行就是这个提交且为绿时跳过，查不到就照跑）、各任务自己的步骤配上测试入口的替身真跑（确实带 `MUTATION=1` 启动 shell 分片、autopilot 各份和客户端两组）、汇总，以及 `tests.yml`、`client.yml` 里没有任何输入、任务或步骤能打开负对照；失败报告的发版种类和合并基点的脚本逐字对拍。它的客户端任务和 `client.yml` 共用 `.github/actions/client-setup`（Playwright 的 WebKit 在这里先装好，再跑第一个界面基线）。这个任务从干净签出开始，所以每个使用方自己准备要读的东西：`client/test/tauri/mutations.sh` 在第一项之前先构建窗口（`dist/`）和 App 图标，且只在开关打开时 → `tests/client-tauri-mutation-prep.test.sh`（约 1 秒；真脚本配假 `node`，不构建、不改坏任何东西）失败报告（GitHub#285：`report failure` 任务、`scripts/release_failure_report.py`）在同一个文件里对有状态的假 GitHub（`tests/fixtures/release-failure-fake-gh.py`）在同一个假仓库上跑多轮：只会新建（派工标签放在那一次创建请求里）或评论，从不给已有 issue 写标签；列表某页或某条读不全、写前目标变了，一律不写、任务标红；文档里补标签 / 停用的步骤按字面执行。
 - 某次 GitHub 调用用哪把 token、worker 环境里进了什么 → `tests/write-token-split.test.sh`、`tests/secret-env-not-in-argv.test.sh`。
   daemon 侧**新增的写调用一律走 `gh_write`**，别用裸 `gh` —— 裸 `gh` 照样成功，只是署名换成了轮询身份
 - worker / 复审写「要人拍板」评论的规矩（固定骨架、不许出现代码里的名字）→ `tests/plain-language-prompts.test.sh`。骨架逐字抄在三份 worker 模板和本项目的 `review.extra.md` 里；「不许出现代码里的名字」那句另外还在 worker 的拍板问题规则和复审的打回依据（`review.template.md` 第 2Q 步）里。「交人评论自包含、链接只当出处」（GitHub#74）是同样四处「交人评论怎么写」的第 8 条，另在 `review.template.md` 交人那一步放一份，让没有 `review.extra.md` 的项目的复审也带上。「写明是人还是 agent，不用「你」「我」」（GitHub#237：评论和 PR 正文里不用第一、二人称，指人也不用「他」「她」；引用原话、代码、命令输出除外）是同样四处的第 10 条，另在 `review.template.md` 的 review 评论那一段放一份，打回依据在第 2R 步；agent 会照抄进评论的范例句（骨架范例、方案 / 修订版结尾句、拆分交人评论）也不带「你」「我」，daemon 自己发的评论同样照这条写（`tests/blocked-label.test.sh`、`tests/sub-issue-split.test.sh`、`tests/checkout-stale-alert.test.sh` 查实际发出的正文）。要改就每处一起改——测试会对拍拼好的 prompt，任何一处走样都会红

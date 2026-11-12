@@ -1908,7 +1908,8 @@ One release per iteration (GitHub#80). Iterations follow the cavil project board
 
 - **When**: the scheduled trigger in `.github/workflows/release.yml`, **every day** at 00:10 Beijing time (16:10 UTC, GitHub#309). Monday's run releases the week that just ended; the other six find it released and stop within seconds — or, when Monday's gate was red, the first daily run after the fix is on main releases that same week, under that week's name and title. GitHub may start scheduled runs minutes to tens of minutes late under load.
 - **Which week**: "the week that just ended" = the latest Sunday D that is over in Beijing time when the run starts (Sunday 23:59 Beijing is still the previous week; from Monday 00:00 it is this one). The plan step works it out once; the gate and the tag use the week, commit and tag it fixed, even across midnight. Only the latest week is caught up: when two or more weeks were missed, the earlier ones get no release of their own and their commits go into the one that is released.
-- **Which commit when main moves during a run**: a run can wait in the queue behind another Release run (only one runs at a time), and the gate takes hours; main usually gets new commits meanwhile (GitHub#329). The plan step takes main's tip as it is when the plan step runs — not the commit the run was triggered on — and the release step tags exactly the commit the gate tested, however far main has moved since. Only a checkout that is not on main's history at all is refused. Running `scripts/release.sh` by hand still requires the local main to equal `origin/main`.
+- **Which commit when main moves during a run**: a run can wait in the queue behind another Release run (only one runs at a time), and the gate takes a while; main often gets new commits meanwhile (GitHub#329). The plan step takes main's tip as it is when the plan step runs — not the commit the run was triggered on — and the release step tags exactly the commit the gate tested, however far main has moved since. Only a checkout that is not on main's history at all is refused. Running `scripts/release.sh` by hand still requires the local main to equal `origin/main`.
+- **What the gate runs**: the shell regression suite — the same four `tests/run.sh --ci` shards and exactly-once check as the Tests workflow on every PR — on the one commit the tag will point at. Any red, skipped or missing gate job means no tag and no page. The negative controls are **not** part of it since GitHub#416: they run every night on their own (next section but one) and a red one opens an issue instead of holding the release.
 - **What**: tag `release/vD.N`. The Release title carries the Monday–Sunday week the tag's date falls in, e.g. `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`. The plan step (`scripts/release.sh --plan`) decides in order, first match wins:
   1. a `release/v*` tag on main's tip has no Release page → gate that commit, create that tag's page, no new tag
   2. a tag of the week that just ended has no page (the highest such one) → gate **that tag's own commit**, create its page, no new tag
@@ -1916,7 +1917,7 @@ One release per iteration (GitHub#80). Iterations follow the cavil project board
   4. the week already has a released tag: a scheduled run releases nothing; a manual release tags main's tip with the week's next number
   5. otherwise → tag main's tip `release/vD.1`
 - **A tag without its page gets one later**: if the tag was pushed but creating the Release failed, the next run (scheduled or manual release) creates the missing page first (rules 1 and 2), before "this week is released" is looked at. The notes start at the nearest earlier tag that **has a Release page**; a tag that never got one (from an earlier week, say) is skipped, so its changes go into the next Release. If the list of Releases cannot be read, the run fails rather than guessing. Tags are read from the remote itself (a checkout can still hold a tag the remote has deleted), and a failed listing fails the run too. Right before the page is created the remote tag must still point at the tested commit — deleted or moved means no page — and `gh release create --verify-tag` never creates a missing tag.
-- **Manual release**: Actions → Release → Run workflow (on main, `gate_only` unticked) follows the same table, except rule 4; with `gate_only` ticked it only runs the gate, always on main's tip, whatever the week's state, and creates no tag and no page. Or run `bash scripts/release.sh` on a local main (interactive, unchanged — today's UTC date, and it does not check whether HEAD is already released).
+- **Manual release**: Actions → Release → Run workflow (on main, `gate_only` unticked) follows the same table, except rule 4; with `gate_only` ticked it only runs the gate (the regression suite), always on main's tip, whatever the week's state, and creates no tag and no page. Or run `bash scripts/release.sh` on a local main (interactive, unchanged — today's UTC date, and it does not check whether HEAD is already released).
 - **Within the same run**: a tag pushed with the built-in token does not trigger another workflow run, so scheduled / manual runs create the Release in the same job; tags pushed by a person still trigger the tag path. No extra secret is needed.
 
 A Release is a changelog and an `npx skills add` landing point; it **has nothing to do with how managed installs upgrade** — managed Linux follows the base branch tip (previous section).
@@ -1927,7 +1928,7 @@ Whenever a job of a Release run fails — scheduled, tag push, manual release or
 
 - **No open one of the same kind**: it creates an issue titled `Release 工作流运行失败（自动报告）`, labelled `pending/agent`, so the daemon dispatches it like any other. "Same kind" = this repo, open, created by `github-actions[bot]`, body carrying `<!-- cavil-release-failure -->`, not a PR.
 - **One is open**: it adds a comment to the lowest-numbered one and **never touches its labels** — whatever state it is in (being worked on, waiting for a human, waiting on a prerequisite), it stays there. Close it once the failure is dealt with; the next failure opens a new one.
-- **What it says**: the run link, how the run was started, the tested commit, every job's result with its failed steps, the shell units the gate summary did not pass, and the client entries that did not go red. When the gate passed and only the release job failed, it names the step.
+- **What it says**: the run link, how the run was started, the tested commit, every job's result with its failed steps, and the shell units the gate summary did not pass. When the gate passed and only the release job failed, it names the step.
 - **When it cannot tell** (a page of the issue list or one of its items cannot be read whole, the issue changed between the lookup and the write) it writes nothing and the `report failure` job goes red. Look at that job's log.
 - The label it puts on a new issue is the repository variable `RELEASE_FAILURE_LABEL` (default `pending/agent`); it must match this repo's dispatch label.
 
@@ -1951,6 +1952,26 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `RELEASE_FAILURE_REPORT off` while it is off, and nothing of that name once it is on again.
 <!-- release-failure-ops:end -->
+
+### Negative controls run every night (GitHub#416)
+
+A negative control breaks the code on purpose and requires the tests to go red — it tests the tests, not the code. All of them (every `tests/*.test.sh` with `MUTATION=1`, autopilot's broken copies over six jobs, the client's `test/mutation` and the real app's set) run in `.github/workflows/negative-controls.yml` and nowhere else:
+
+- **When**: every night at 02:10 Beijing time (18:10 UTC), on main's tip. A scheduled run stops at its first job when the last successful run of this workflow was on the same commit; if that cannot be looked up it runs. Actions → Negative controls → Run workflow (on main) runs it by hand, always. A run on any other branch does nothing.
+- **Not on pull requests, not in Tests or Client**: neither workflow has a "negative controls" option any more, manual runs included (GitHub#195 / #234). Workers and reviewers do not run them while developing.
+- **Does not hold a release**: the release gate is the regression suite only (see "What the gate runs" above).
+- **A red run opens an issue** the same way a failed Release run does (the same script, the same rules: only create or comment, re-read before writing, never touch an existing issue's labels) — but its own: titled `负对照每晚运行失败（自动报告）`, marker `<!-- cavil-negative-controls-failure -->`, labelled `pending/agent` (`RELEASE_FAILURE_LABEL`). The two kinds never comment on each other's issue. It lists the failed jobs, the shell units that did not go red and the client entries that did not go red.
+
+<!-- negative-controls-ops:begin -->
+**Turning the nightly report off** (the runs go on, a red one just opens no issue) and **back on**:
+
+```bash
+gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
+```
+
+Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `NEGATIVE_CONTROLS_REPORT off` while it is off, and nothing of that name once it is on again.
+<!-- negative-controls-ops:end -->
 
 ## Installations from before the rename
 
