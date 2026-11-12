@@ -3,7 +3,8 @@
 // (#346 ⊃ #349 #350; test/fixtures/record.mjs --relations). The table with "show hierarchy" on
 // (imported from the saved web view): a search that matches #346 only keeps its two sub-issues
 // under it, faded, and the view bar says how many were added; clearing the search puts the
-// table back as it was. Screenshots land in test-results/screens/.
+// table back as it was (since GitHub#404 the two counts sit in the view bar numbers' hover). Screenshots land in
+// test-results/screens/.
 
 import { test, expect, type Page } from '@playwright/test';
 import { mkdtempSync, mkdirSync } from 'node:fs';
@@ -60,8 +61,11 @@ test('GitHub#368: a matched parent keeps its sub-issues in the table, faded, cou
 
   // ---- a search that matches the parent only ----
   await page.getByTestId('search').fill('新增依赖图视图');
-  await expect(page.getByTestId('match-count')).toContainText('显示 1 /');
-  await expect(page.getByTestId('pulled-count')).toHaveText(' · 另有 2 个子 issue 随父 issue 显示');
+  // GitHub#404: the view bar no longer says it; the flow numbers' hover carries both counts
+  const tip = page.locator('[data-testid="tally"][data-kind="human"]');
+  await expect(tip).toHaveAttribute('title', /\n搜索命中 1 条\n另有 2 个子 issue 随父 issue 显示$/);
+  await expect(page.locator('.vbar')).not.toContainText('随父 issue 显示');
+  await expect(page.locator('.vbar')).not.toContainText('显示 1 /');
   await expect(row(page, 346)).toHaveAttribute('data-depth', '0');
   await expect(row(page, 346)).not.toHaveAttribute('data-pulled', '');
   for (const n of [349, 350]) {
@@ -89,12 +93,12 @@ test('GitHub#368: a matched parent keeps its sub-issues in the table, faded, cou
   await page.getByTestId('search').fill('依赖图视图');
   await expect(row(page, 350)).not.toHaveAttribute('data-pulled', '');
   await expect(row(page, 349)).toHaveAttribute('data-pulled', '');
-  await expect(page.getByTestId('pulled-count')).toHaveText(' · 另有 1 个子 issue 随父 issue 显示');
+  await expect(tip).toHaveAttribute('title', /\n另有 1 个子 issue 随父 issue 显示$/);
 
   // ---- search cleared: no pulled rows, no extra sentence ----
   await page.getByTestId('search').fill('');
-  await expect(page.getByTestId('match-count')).toHaveCount(0);
-  await expect(page.getByTestId('pulled-count')).toHaveCount(0);
+  await expect(tip).not.toHaveAttribute('title', /搜索命中|随父 issue/);
+  await expect(tip).toHaveAttribute('title', /当前来源共 \d+ 个条目$/);
   await expect(page.locator('[data-testid="row"][data-pulled]')).toHaveCount(0);
   await expect(row(page, 349)).toHaveAttribute('data-depth', '1');
   await page.screenshot({ path: join(screens, 'table-pulled-02-cleared.png') });

@@ -32,6 +32,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
+import { flowTally, litTally, tallyClick, tallyForget, TALLY_TEXT, type TallyEntry } from '../data/flowTally';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -561,6 +562,7 @@ export function BoardView({
   onRequestTaken,
   onSettings,
   onKeysHelp,
+  tallySaved,
 }: {
   state: AppState;
   data: BoardData;
@@ -576,6 +578,8 @@ export function BoardView({
   onRequestTaken?: () => void;
   onSettings: () => void;
   onKeysHelp?: () => void;
+  /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
+  tallySaved?: { current: string | null };
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -599,6 +603,21 @@ export function BoardView({
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // GitHub#350: the dependency graph of what the sources and search picked
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items) : null), [view.layout, data.items, items]);
+  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  const { running, agent, human } = state.handBack;
+  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
+  const ownSaved = useRef<string | null>(null);
+  const saved = tallySaved ?? ownSaved;
+  // the box changed some other way and no longer shows a number's query: the remembered search is void
+  useEffect(() => {
+    saved.current = tallyForget(saved.current, query, tally);
+  }, [query, tally, saved]);
+  const lit = litTally(query, tally);
+  const clickTally = (e: TallyEntry) => {
+    const next = tallyClick(query, saved.current, e, tally);
+    saved.current = next.saved;
+    if (next.query !== query) setQuery(next.query);
+  };
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
   const labelOf = (sourceKey: string) => {
@@ -887,13 +906,36 @@ export function BoardView({
             <span data-testid="graph-count">
               显示 {graph.entries} 个有关系的条目 · 共 {data.items.length} 个条目
             </span>
-          ) : filtering ? (
-            <span data-testid="match-count">
-              显示 {table?.matchCount ?? items.length} / {data.items.length} 条
-              {table && table.pulledCount > 0 && <span data-testid="pulled-count"> · 另有 {table.pulledCount} 个子 issue 随父 issue 显示</span>}
+          ) : (
+            <span className="tally" data-testid="flow-tally">
+              {tally.map((e) => {
+                const on = lit === e.kind;
+                const tip = [
+                  `开着的条目里带 ${e.label} 标签的有 ${e.count} 个 · ${e.query === null ? '标签名里有双引号，不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  `当前来源共 ${data.items.length} 个条目`,
+                  ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
+                  ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),
+                ].join('\n');
+                return (
+                  <button
+                    key={e.kind}
+                    type="button"
+                    className={`tally-item${on ? ' on' : ''}${e.count === 0 ? ' zero' : ''}`}
+                    data-testid="tally"
+                    data-kind={e.kind}
+                    aria-pressed={on}
+                    disabled={e.query === null}
+                    title={tip}
+                    onClick={() => clickTally(e)}
+                  >
+                    <i className={`dot ${e.kind}`} aria-hidden="true" />
+                    {TALLY_TEXT[e.kind]} <b data-testid="tally-count">{e.count}</b>
+                  </button>
+                );
+              })}
             </span>
-          ) : null}
-          <span data-testid="item-total" className={filtering || graph ? 'sr-only' : undefined}>
+          )}
+          <span data-testid="item-total" className="sr-only">
             {data.items.length} 个条目
           </span>
         </span>

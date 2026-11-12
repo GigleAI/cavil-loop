@@ -1551,9 +1551,10 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   // click outside → away
   await btn.click();
   await expect(panel).toBeVisible();
-  // its right end: since GitHub#368 the count can go on ("· 另有 N 个子 issue 随父 issue 显示") to the left, under the open panel
-  const mc = (await page.getByTestId('match-count').boundingBox())!;
-  await page.getByTestId('match-count').click({ position: { x: mc.width - 4, y: mc.height / 2 } });
+  // an empty spot of the view bar (GitHub#404: its right end is the flow numbers, buttons that change the search)
+  const vs = (await page.getByTestId('open-view-panel').boundingBox())!;
+  await page.mouse.click(vs.x + vs.width + 40, vs.y + vs.height / 2);
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
   await expect(panel).toHaveCount(0);
   // Esc → away
   await btn.click();
