@@ -434,6 +434,11 @@ describe('picking a machine from this computer’s Tailscale', () => {
     peers({ a: peer('box', true) });
     expect(await backend({ local: { FAKE_TS: r.ts, FAKE_TS_STATUS: 'fail' } }).call('remoteTailnet')).toMatchObject({ result: 'unreadable', output: expect.stringMatching(/tailscaled/) });
     expect(await backend({ local: { FAKE_TS: r.ts, FAKE_TS_STATUS: 'garbage' } }).call('remoteTailnet')).toMatchObject({ result: 'unreadable' });
+    // valid JSON that is not Tailscale's status shape, or Tailscale not running: still unreadable (PR #400 review round 7)
+    for (const raw of ['{"unexpected":true}', '{"BackendState":"Running","Self":{},"Peer":{"k":{"DNSName":"a.tailnet.ts.net."}}}', '{"BackendState":"Stopped","Self":{},"Peer":null}']) {
+      writeFileSync(join(r.ts, 'status.raw'), raw);
+      expect(await backend({ local: { FAKE_TS: r.ts, FAKE_TS_STATUS: 'raw' } }).call('remoteTailnet'), raw).toMatchObject({ result: 'unreadable' });
+    }
     // no daemon setting on this computer at all (no HOME to run from): unreadable too
     expect(await backend().call('remoteTailnet')).toMatchObject({ result: 'unreadable' });
     expect(arrived(r)).toEqual([]);
@@ -486,6 +491,53 @@ describe('this machine as the one being connected to', () => {
     const off = await host(b, 'disable');
     expect(off).toMatchObject({ result: 'disabled', status: { state: 'closed' } });
     expect(readFileSync(join(w.sd, 'cavil-loop-remote.service.active'), 'utf8').trim()).not.toBe('active');
+  });
+
+  // A code the window cannot read: it is voided, and "已作废" is said only when the void is confirmed
+  // (PR #400 review round 7). The real script makes a real waiting code; a thin wrapper in front of
+  // it spoils the CODE= line and, when asked, fails the void the way the real script reports a failure.
+  function spoilCode() {
+    const dir = join(w.skill, 'scripts');
+    execFileSync('mv', [join(dir, 'remote-access.sh'), join(dir, 'remote-access.real.sh')]);
+    writeFileSync(
+      join(dir, 'remote-access.sh'),
+      `#!/usr/bin/env bash
+echo "$*" >> "$FAKE_TS/wrapper-calls"
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1" in
+  pair) bash "$d/remote-access.real.sh" "$@" | grep -v '^RESULT='; echo CODE=12ab; echo RESULT=code ;;
+  pair-cancel) if [ "\${SPOIL_CANCEL:-}" = fail ]; then echo "删不掉"; echo RESULT=failed; exit 3; fi; exec bash "$d/remote-access.real.sh" "$@" ;;
+  *) exec bash "$d/remote-access.real.sh" "$@" ;;
+esac
+`,
+    );
+  }
+  const calls = () => readFileSync(join(r.ts, 'wrapper-calls'), 'utf8').trim().split('\n');
+
+  it('a code it cannot read is voided; "已作废" only when the void is confirmed', async () => {
+    spoilCode();
+    const b = backend({ local: { FAKE_TS: r.ts } });
+    expect(await host(b, 'enable')).toMatchObject({ result: 'enabled' });
+    const got = await host(b, 'code');
+    expect(got.result).toBe('failed');
+    expect(got.code).toBeUndefined();
+    expect(got.output).toContain('已作废');
+    expect(calls().slice(-2)).toEqual(['pair', 'pair-cancel']);
+    expect(existsSync(pairing())).toBe(false);
+  });
+
+  it('…and when the void fails, it says the code may still be waiting — never "已作废"', async () => {
+    spoilCode();
+    const b = backend({ local: { FAKE_TS: r.ts, SPOIL_CANCEL: 'fail' } });
+    expect(await host(b, 'enable')).toMatchObject({ result: 'enabled' });
+    const got = await host(b, 'code');
+    expect(got.result).toBe('failed');
+    expect(got.output).not.toContain('已作废');
+    expect(got.output).toContain('没能确认把它作废（作废结果：failed）');
+    expect(got.output).toContain('删不掉');
+    expect(calls().slice(-2)).toEqual(['pair', 'pair-cancel']);
+    // the waiting code really is still there — which is what the message says
+    expect(existsSync(pairing())).toBe(true);
   });
 
   it('cannot read the state: unknown, never closed; a device list it cannot read is not "none"; an old daemon is "missing"', async () => {

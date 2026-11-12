@@ -134,11 +134,18 @@ impl Daemon {
                             v["expires"] = json!(e);
                             v["host"] = json!(field(&out, "HOST").filter(|h| host_ok(h)));
                         }
-                        // a code the window cannot show is no code: void it rather than leave one waiting
+                        // a code the window cannot show is no code: void it rather than leave one waiting —
+                        // and say it is void only when the script says so (PR #400 review round 7)
                         _ => {
-                            let _ = self.script(&path, SCRIPT, &["pair-cancel"], T_SHORT).await;
+                            let (cw, ct) = self.script(&path, SCRIPT, &["pair-cancel"], T_SHORT).await.outcome();
                             v["result"] = json!("failed");
-                            v["output"] = json!(format!("配对码的格式认不出，已作废，请再生成一次。脚本输出：\n{text}"));
+                            v["output"] = json!(if cw == "cancelled" {
+                                format!("配对码的格式认不出，已作废，请再生成一次。脚本输出：\n{text}")
+                            } else {
+                                format!(
+                                    "配对码的格式认不出，而且没能确认把它作废（作废结果：{cw}）：这台机器上可能还有一个等着的配对码，10 分钟内仍能被用来配对。请点「生成配对码」换一个新码（新码会顶替它），或在这台机器上运行 bash ~/.agents/skills/cavil-loop/scripts/remote-access.sh pair-cancel。\n作废时的输出：\n{ct}\n出码时的输出：\n{text}"
+                                )
+                            });
                         }
                     }
                 }

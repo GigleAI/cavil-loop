@@ -537,8 +537,9 @@ impl Remote {
         if !out.ok() {
             return json!({ "result": "unreadable", "output": out.text() });
         }
-        let Some(peers) = parse_tailnet(&out.stdout) else {
-            return json!({ "result": "unreadable", "output": "这台电脑的 Tailscale 给出的设备列表认不出" });
+        let peers = match parse_tailnet(&out.stdout) {
+            Ok(p) => p,
+            Err(m) => return json!({ "result": "unreadable", "output": m }),
         };
         let probes = peers.into_iter().map(|mut p| async move {
             if p["online"] == json!(true) {
@@ -783,27 +784,41 @@ fn now_secs() -> u64 {
 }
 
 /// `tailscale status --json` → the other machines with a usable Tailscale name, sorted by name.
-/// None: not the shape Tailscale gives (then the list is unknown, not empty).
-pub fn parse_tailnet(text: &str) -> Option<Vec<Value>> {
-    let v: Value = serde_json::from_str(text).ok()?;
-    let me = v["Self"]["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
-    let peers = match &v["Peer"] {
-        Value::Null => return Some(vec![]),
-        Value::Object(m) => m,
-        _ => return None,
+///
+/// Only the shape Tailscale gives counts: an object with a `BackendState` word and a `Self`
+/// object; `Peer` absent or null (no other machine) or an object of machine objects, each with an
+/// `Online` true / false. Anything else is Err — the list is not known, never an empty one.
+/// Tailscale not running (`BackendState` other than `Running`) is Err too: its peer list is stale.
+pub fn parse_tailnet(text: &str) -> Result<Vec<Value>, String> {
+    const ODD: &str = "这台电脑的 Tailscale 给出的设备列表认不出";
+    let v: Value = serde_json::from_str(text).map_err(|_| ODD.to_string())?;
+    let (Some(state), Some(me)) = (v.get("BackendState").and_then(Value::as_str), v.get("Self").filter(|s| s.is_object())) else {
+        return Err(ODD.into());
+    };
+    if state != "Running" {
+        return Err(format!("这台电脑的 Tailscale 没有连上（状态：{state}）"));
+    }
+    let me = me["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+    let peers = match v.get("Peer") {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Object(m)) => m,
+        Some(_) => return Err(ODD.into()),
     };
     let mut out = vec![];
     for p in peers.values() {
+        let (Some(_), Some(online)) = (p.as_object(), p.get("Online").and_then(Value::as_bool)) else {
+            return Err(ODD.into()); // one machine that cannot be read makes the list not known
+        };
         let dns = p["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
         let Ok((host, _)) = parse_host(&dns) else { continue }; // not reachable by a Tailscale name: cannot be paired
         if host == me {
             continue;
         }
         let name = p["HostName"].as_str().filter(|s| !s.trim().is_empty()).map(str::to_string).unwrap_or_else(|| host.split('.').next().unwrap_or("").to_string());
-        out.push(json!({ "host": host, "name": name, "os": p["OS"].as_str().unwrap_or(""), "online": p["Online"].as_bool().unwrap_or(false) }));
+        out.push(json!({ "host": host, "name": name, "os": p["OS"].as_str().unwrap_or(""), "online": online }));
     }
     out.sort_by(|a, b| a["host"].as_str().cmp(&b["host"].as_str()));
-    Some(out)
+    Ok(out)
 }
 
 fn refused(reason: &str, m: &str) -> Value {
@@ -860,7 +875,7 @@ mod tests {
 
     #[test]
     fn tailnet_list() {
-        let js = r#"{"Self":{"DNSName":"me.tn.ts.net."},"Peer":{
+        let js = r#"{"BackendState":"Running","Self":{"DNSName":"me.tn.ts.net."},"Peer":{
             "k1":{"HostName":"futurelab-01","DNSName":"futurelab-01.tn.ts.net.","OS":"linux","Online":true},
             "k2":{"HostName":"phone","DNSName":"phone.tn.ts.net.","OS":"iOS","Online":false},
             "k3":{"HostName":"odd","DNSName":"","OS":"linux","Online":true},
@@ -871,10 +886,26 @@ mod tests {
         assert_eq!(hosts, ["futurelab-01.tn.ts.net", "phone.tn.ts.net"]);
         assert_eq!(l[0]["online"], true);
         assert_eq!(l[1]["online"], false);
-        // no peers at all is an empty list; a shape Tailscale does not give is unknown
-        assert_eq!(parse_tailnet(r#"{"Self":{}}"#).unwrap().len(), 0);
-        assert!(parse_tailnet(r#"{"Peer":[1]}"#).is_none());
-        assert!(parse_tailnet("not json").is_none());
+        // no other machine (Peer absent or null) is a real, empty list
+        assert_eq!(parse_tailnet(r#"{"BackendState":"Running","Self":{}}"#).unwrap().len(), 0);
+        assert_eq!(parse_tailnet(r#"{"BackendState":"Running","Self":{},"Peer":null}"#).unwrap().len(), 0);
+        assert_eq!(parse_tailnet(r#"{"BackendState":"Running","Self":{},"Peer":{}}"#).unwrap().len(), 0);
+        // anything not in Tailscale's shape is not known — never an empty list (PR #400 review round 7)
+        for bad in [
+            "not json",
+            r#"{"unexpected":true}"#,
+            r#"[]"#,
+            r#"{"Self":{},"Peer":null}"#,
+            r#"{"BackendState":"Running","Peer":null}"#,
+            r#"{"BackendState":"Running","Self":"x"}"#,
+            r#"{"BackendState":"Running","Self":{},"Peer":[1]}"#,
+            r#"{"BackendState":"Running","Self":{},"Peer":{"k":1}}"#,
+            r#"{"BackendState":"Running","Self":{},"Peer":{"k":{"DNSName":"a.tn.ts.net."}}}"#,
+        ] {
+            assert!(parse_tailnet(bad).is_err(), "{bad}");
+        }
+        // Tailscale not connected: its peer list is stale, not shown
+        assert!(parse_tailnet(r#"{"BackendState":"Stopped","Self":{},"Peer":{}}"#).unwrap_err().contains("Stopped"));
     }
 
     #[test]
