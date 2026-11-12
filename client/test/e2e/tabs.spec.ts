@@ -329,6 +329,78 @@ test('GitHub#442: the floating panel belongs to the home tab — a tab and back 
   await app.close();
 });
 
+test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail, the reply box and the discussion; a digit in the discussion goes by its key position, as in the window', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await row(page, B).click({ button: 'middle' });
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  // nothing changed on GitHub: a sync round alone would not read the detail again (its update time did not move)
+  const settle = async () => {
+    await expect(detail(page).getByTestId('detail-refresh')).toHaveAttribute('data-loading', 'no');
+    await page.waitForTimeout(300);
+  };
+  await settle();
+
+  // the detail's own blank space
+  let before = detailReads(A);
+  await detail(page).click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => detailReads(A)).toBeGreaterThan(before);
+  await settle();
+  // the reply box (a ⌘ key is never typing)
+  before = detailReads(A);
+  await detail(page).getByTestId('reply-input').click();
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => detailReads(A)).toBeGreaterThan(before);
+  await settle();
+  // the isolated discussion: its script passes ⌘R on
+  before = detailReads(A);
+  await frame.locator('body').click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+r');
+  await expect.poll(() => detailReads(A)).toBeGreaterThan(before);
+  await settle();
+  expect(await tabs(page).count()).toBe(2);
+
+  // the home tab keeps "sync now": no detail is mounted, no detail is read
+  await home(page).click();
+  before = detailReads(A);
+  await page.keyboard.press('Control+r');
+  await page.waitForTimeout(800);
+  expect(detailReads(A)).toBe(before);
+
+  // ⌘1 as a French layout reports it ("&", the Digit1 key): the window and the discussion agree
+  const french = { key: '&', code: 'Digit1', ctrlKey: true, shiftKey: false, bubbles: true, cancelable: true };
+  await tab(page, A).click();
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await page.evaluate((ev) => window.dispatchEvent(new KeyboardEvent('keydown', ev)), french);
+  await expect(home(page)).toHaveAttribute('data-front', 'yes');
+  await tab(page, A).click();
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await frame.locator('body').evaluate((b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)), french);
+  await expect(home(page)).toHaveAttribute('data-front', 'yes');
+  // a digit that needs Shift on that layout (⌘⇧3 reported as "3" with Digit3) still is not a tab key: ⌘⇧3 is the graph
+  await tab(page, A).click();
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  await frame.locator('body').evaluate(
+    (b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)),
+    { key: '3', code: 'Digit3', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true },
+  );
+  await page.waitForTimeout(300);
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  // the US shape of ⌘2 in the discussion: the first tab (B; the tabs are B, A)
+  await frame.locator('body').evaluate(
+    (b, ev) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', ev)),
+    { key: '2', code: 'Digit2', ctrlKey: true, shiftKey: false, bubbles: true, cancelable: true },
+  );
+  await expect(tab(page, B)).toHaveAttribute('data-front', 'yes');
+  await app.close();
+});
+
 test('more tabs than fit: the strip scrolls sideways, the home tab stays put, and the tab in front is brought into view', async () => {
   const app = await launchApp(env);
   const page = app.page;
@@ -493,7 +565,10 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   // the list reads again: board, tab and detail say the same, from the board's copy
   env.fake.state.failRepoPage.clear();
   change(A, { state: 'closed', labels: [] });
+  // "sync now" (past the failed source's wait): the home tab's ⌘R — in a detail tab ⌘R reads only that item (GitHub#442)
+  await home(page).click();
   await page.keyboard.press('Control+r');
+  await tab(page, A).click();
   await expect(tab(page, A)).toHaveAttribute('data-listed', 'yes', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-status', 'done');
   await expect(detail(page).getByTestId('detail-kind')).toHaveAttribute('data-tone', 'done', { timeout: 15_000 });
@@ -520,27 +595,31 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   await expect(d.getByTestId('pr-status')).toContainText('检查：进行中', { timeout: 15_000 });
   // the repository's list cannot be read: the PR is checked by itself from now on
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
-  await page.keyboard.press('Control+r');
+  // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
+  beat(app);
   await expect(tab(page, PR)).toHaveAttribute('data-listed', 'no', { timeout: 15_000 });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(0);
   await page.waitForTimeout(500);
   // still running, nothing on GitHub moved: each check reads the detail again (the GitHub#226 rule)
   const d0 = detailReads(PR);
   const i0 = itemReads(PR);
-  await page.keyboard.press('Control+r');
+  // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
+  beat(app);
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i0);
   await expect.poll(() => detailReads(PR), { timeout: 15_000 }).toBeGreaterThan(d0);
   // the checks finish — the PR's update time stays the same — and the next check shows it, nothing clicked
   pull.checks = 'SUCCESS';
   const i1 = itemReads(PR);
-  await page.keyboard.press('Control+r');
+  // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
+  beat(app);
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i1);
   await expect(d.getByTestId('pr-status')).toContainText('检查：全部通过', { timeout: 15_000 });
   // finished: checks no longer read the detail while nothing changes
   await page.waitForTimeout(500);
   const d2 = detailReads(PR);
   const i2 = itemReads(PR);
-  await page.keyboard.press('Control+r');
+  // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
+  beat(app);
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i2);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);
@@ -548,7 +627,8 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   await home(page).click();
   pull.checks = 'PENDING';
   const i3 = itemReads(PR);
-  await page.keyboard.press('Control+r');
+  // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
+  beat(app);
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i3);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);

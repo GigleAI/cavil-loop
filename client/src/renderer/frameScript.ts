@@ -10,7 +10,7 @@
 // stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
 // put both back, a few keys (GitHub#322: a bare R, "go to the reply box"; GitHub#433: the ⌘⇧ keys of
-// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab — the list is FRAME_FORWARD, built from the shortcut table into this text;
+// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab, and ⌘R, refresh (in a tab: this item; a digit goes by its key position, `code`) — the list is FRAME_FORWARD, built from the shortcut table into this text;
 // every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
 // and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
@@ -214,11 +214,14 @@ export const FRAME_SCRIPT = `(function () {
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
-    var k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey, sh = e.shiftKey;
+    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey;
+    var dg = typeof e.code === 'string' && /^(Digit|Numpad)[0-9]$/.test(e.code) ? e.code : '';
+    var k = dg ? dg.slice(-1) : e.key.toLowerCase();
     for (var i = 0; i < fwd.length; i++) {
       if (fwd[i].key !== k || fwd[i].mod !== mod || fwd[i].shift !== sh) continue;
       e.preventDefault();
-      send({ cavil: 'key', key: k, mod: mod, shift: sh });
+      if (dg) send({ cavil: 'key', key: k, mod: mod, shift: sh, code: dg });
+      else send({ cavil: 'key', key: k, mod: mod, shift: sh });
       return;
     }
   });
@@ -235,4 +238,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-nLTC0PavcDJOeAHA30v1yeuCfJNrvRYrs23agDE97xs='";
+export const FRAME_SCRIPT_HASH = "'sha256-RY+QEwjVBYPsHcJ6gigds9+nwJb8bqiCK59TiIf7P+E='";

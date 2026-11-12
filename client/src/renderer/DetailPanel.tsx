@@ -557,6 +557,13 @@ export function DetailPanel({
       .then((o) => mine() && setOpts((prev) => (o.error && prev && !prev.error ? prev : o)));
   }, [repo, session, optsRound]);
   const rereadOptions = () => setOptsRound((n) => n + 1);
+  /** The refresh button: read this item again, with its label / milestone lists (GitHub#229). */
+  const refreshHere = () => {
+    void load();
+    rereadOptions();
+    // GitHub#397: an item no complete read carries: its tab's own check too
+    if (inTab) void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
+  };
   // What the merge box starts with (GitHub#175): a hand pick of this opening while the repository
   // (as last read) still allows it, else the remembered one. Derived, never stored: a detail that
   // arrives late or is re-read cannot overwrite the pick, and a fallback is never remembered.
@@ -796,7 +803,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -810,7 +817,7 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false);
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -906,6 +913,9 @@ export function DetailPanel({
    * pressed, else undefined — so a key never does what the button would not.
    */
   const quickKeys = useRef<Partial<Record<'closeIssue' | 'handBack' | 'autopilot' | 'blocked', () => void>>>({});
+  // GitHub#442: ⌘R in a detail tab reads this item again — the refresh button's own action (the home tab, and
+  // the floating panel over it, keep the board's "sync now"). Mounted after the window's handler, so it wins.
+  useShortcuts(float ? {} : { sync: refreshHere });
   useShortcuts({
     closeIssue: () => quickKeys.current.closeIssue?.(),
     handBack: () => quickKeys.current.handBack?.(),
@@ -1193,12 +1203,7 @@ export function DetailPanel({
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
         <button
           className={`icon-btn${loading ? ' spinning' : ''}`}
-          onClick={() => {
-            void load();
-            rereadOptions();
-            // GitHub#397: an item no complete read carries: its tab's own check too
-            if (inTab) void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
-          }}
+          onClick={refreshHere}
           data-testid="detail-refresh"
           data-loading={loading ? 'yes' : 'no'}
           aria-label={loading ? '读取中…（点一下重新读取）' : '刷新这一条'}

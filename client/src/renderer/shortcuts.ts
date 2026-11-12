@@ -74,7 +74,7 @@ export const SCOPE_TITLE: Record<Scope, string> = {
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'search', scope: 'global', keys: [{ key: '/' }], label: '跳到搜索框（在别的页面会先回到看板）' },
   { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }, { key: 'n', mod: true }], label: '新建 issue（在别的页面会先回到看板）' },
-  { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步' },
+  { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步（详情标签页在前时：重新读这一条，同详情的刷新按钮）' },
   { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
   { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
   // GitHub#372: the three layout buttons. GitHub#442: ⌘⇧1/2/3 (⌘1…⌘9 now pick a tab); on macOS also ⌥⌘1/2/3,
@@ -249,7 +249,7 @@ export function shownKeys(s: Shortcut, mac: boolean = isMac()): KeySpec[] {
  * built from this table into its text), and a forwarded key may only end in one of these ids
  * (keyboard.ts, frameKey) — every other key stays inside the frame (PR #171).
  */
-export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt'];
+export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync'];
 
 /** the keys of FRAME_IDS, as the frame script compares them: a lower-case single key, ⌘/Ctrl, Shift */
 export const FRAME_FORWARD: readonly { key: string; mod: boolean; shift: boolean }[] = FRAME_IDS.flatMap((id) =>

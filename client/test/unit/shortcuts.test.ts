@@ -193,7 +193,7 @@ describe('resolve: who gets the key', () => {
     for (const k of ['l', 'm', 'r']) expect(resolve(key(k), { ...idle, typing: 'reply' }), k).toBeNull();
   });
   it('GitHub#433: the keys the discussion frame passes on are exactly those of FRAME_IDS, and each resolves to its own id', () => {
-    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt']);
+    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync']);
     expect([...FRAME_FORWARD]).toEqual([
       { key: 'r', mod: false, shift: false },
       { key: 'x', mod: true, shift: true },
@@ -203,6 +203,8 @@ describe('resolve: who gets the key', () => {
       { key: 'b', mod: true, shift: true },
       // GitHub#442: ⌘1 … ⌘9 pick a tab from inside the discussion too
       ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((k) => ({ key: k, mod: true, shift: false })),
+      // GitHub#442: ⌘R — in a detail tab it reads that item again
+      { key: 'r', mod: true, shift: false },
     ]);
     // one table: every forwarded key is a single lower-case key or digit that resolves (outside any field) to a FRAME_IDS shortcut
     for (const f of FRAME_FORWARD) {

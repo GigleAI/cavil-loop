@@ -75,9 +75,11 @@ function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): Shortc
  * the shortcuts of FRAME_IDS (go to the reply box, 关闭 issue / 交给 agent / 托管) may act — every
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
-export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false): boolean {
+export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = undefined): boolean {
   if (typeof key !== 'string' || key.length !== 1 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
-  return press({ key, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift }, 'none', FRAME_IDS) !== null;
+  // GitHub#442: the physical key, for a digit (matched by it, as in the window); anything else is not taken
+  if (code !== undefined && (typeof code !== 'string' || !/^(Digit|Numpad)[0-9]$/.test(code))) return false;
+  return press({ key, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift, ...(code === undefined ? {} : { code }) }, 'none', FRAME_IDS) !== null;
 }
 
 /**
