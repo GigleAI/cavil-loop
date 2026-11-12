@@ -71,7 +71,10 @@ function answersFor(it: Item, viewer: string): 'mine' | 'others' | 'nobody' {
   const asked = it.reviewRequested;
   if (asked === undefined || asked === null) return 'mine';
   if (asked.users.some((u) => sameLogin(u, viewer))) return 'mine';
-  return it.assignees.length || asked.users.length || asked.others ? 'others' : 'nobody';
+  if (it.assignees.length || asked.users.length || asked.others) return 'others';
+  // nobody answers for it, and the issues GitHub links to it were read but not whole: the
+  // account's issue may be among the ones not read
+  return it.closingIssues === null ? 'mine' : 'nobody';
 }
 
 /** Subscribed, or not known not to be (unknown never drops a reminder). */
@@ -83,7 +86,7 @@ const follows = (it: Item) => it.viewerSubscribed !== false;
  *   2. assigned to / review asked of somebody else → no, even when the account subscribes
  *      (handing an item to someone else hands its reminders over);
  *   3. nobody answers for it → a pull request follows the issues it is linked to (`linked`: the
- *      ones found in the data held; any of them concerning the account by these same rules is
+ *      ones found in the data held — named in its description, or linked on GitHub; any of them concerning the account by these same rules is
  *      enough); with none found, and for an issue: the account subscribes to it, or that is unknown.
  */
 export function concernsViewer(it: Item, viewer: string, linked: Item[] = []): boolean {
@@ -222,11 +225,12 @@ export class PendingTracker {
     const viewer = this.audience.viewer;
     if (this.audience.scope !== 'mine' || !viewer || pending.size === 0) return pending;
     const merged = new Map(mergeSnapshots(sources.flatMap((k) => this.held.get(k) ?? []), null).items.map((it) => [it.key, it] as const));
-    // pull request → the issues linked to it: the ones its description names, and the ones that list it
+    // pull request → the issues linked to it: the ones its description names, the ones GitHub lists
+    // for it (a repository list knows a sidebar link only this way), and the ones that list it
     const links = new Map<string, Set<string>>();
     const link = (pr: string, issue: string) => links.set(pr, (links.get(pr) ?? new Set()).add(issue));
     for (const it of merged.values()) {
-      if (it.kind === 'pr') for (const k of it.refIssues ?? []) link(it.key, k);
+      if (it.kind === 'pr') for (const k of [...(it.refIssues ?? []), ...(it.closingIssues ?? [])]) link(it.key, k);
       else for (const pr of it.linkedPrs ?? []) link(pr.key, it.key);
     }
     const out = new Map<string, Item>();

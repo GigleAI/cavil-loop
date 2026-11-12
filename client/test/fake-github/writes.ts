@@ -390,7 +390,11 @@ export function viewerFields(store: Store, kind: string, repo: string, number: n
     ...rr.users.map((login) => ({ requestedReviewer: { __typename: 'User', login } })),
     ...Array.from({ length: rr.teams ?? 0 }, () => ({ requestedReviewer: { __typename: 'Team' } })),
   ];
-  return { viewerSubscription: sub, reviewRequests: { totalCount: rr.total ?? nodes.length, nodes } };
+  // the issues GitHub lists as linked to the pull request (GitHub computes these live), the first 20
+  const c = findCopies(store, repo, number);
+  const closing = c ? closingIssuesOf(store, c) : [];
+  const shown = closing.slice(0, 20).map((x) => ({ number: x.number, repository: { nameWithOwner: x.repo } }));
+  return { viewerSubscription: sub, reviewRequests: { totalCount: rr.total ?? nodes.length, nodes }, closingIssuesReferences: { totalCount: closing.length, nodes: shown } };
 }
 
 /**

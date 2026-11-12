@@ -45,7 +45,7 @@ export function mergeSnapshots(snapshots: SourceSnapshot[], selected: string[] |
       // a repository list does not know linked pull requests; take them from the copy that does
       const linked = newer.linkedPrs ?? older.linkedPrs;
       // a snapshot cached before #349 has no relations: unknown, so the other copy's are taken
-      const { relations: _r, relationsAt: _t, viewerSubscribed: _s, reviewRequested: _q, viewerAt: _v, ...rest } = newer;
+      const { relations: _r, relationsAt: _t, viewerSubscribed: _s, reviewRequested: _q, closingIssues: _c, viewerAt: _v, ...rest } = newer;
       const from = newerRelations(newer, older);
       const rel = from ? { relations: from.relations!, ...(from.relationsAt !== undefined ? { relationsAt: from.relationsAt } : {}) } : {};
       byKey.set(it.key, { ...rest, linkedPrs: linked, ...rel, ...mergedViewerTies(prev, it), projects: memberships, sources });

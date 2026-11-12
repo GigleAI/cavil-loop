@@ -203,7 +203,15 @@ export interface Item {
    */
   reviewRequested?: ReviewRequested | null;
   /**
-   * GitHub#373: epoch ms of the read that brought the two fields above — the full read of the
+   * GitHub#373: pull requests — keys (`owner/repo#N`, sorted) of the issues GitHub lists as linked
+   * to it ("Development" in the sidebar, or a closing keyword): whose reminder a pull request
+   * nobody answers for is. An issue has none: known-empty. null = read, but not whole; absent =
+   * not read. Only reminders read it — which issue a PR is shown under goes by `linkedPrs` /
+   * `refIssues`, as before.
+   */
+  closingIssues?: string[] | null;
+  /**
+   * GitHub#373: epoch ms of the read that brought the three fields above — the full read of the
    * source, or the one-item re-read. Subscribing changes neither field's item `updatedAt`, so when
    * two sources hold the item, this — never `updatedAt` — says whose answer is newer.
    */

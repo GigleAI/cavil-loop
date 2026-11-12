@@ -24,13 +24,15 @@ export const RELATION_FIELDS = `
 
 /**
  * GitHub#373: how the signed-in account stands to an item — does it subscribe, and (pull requests)
- * who is asked to review. The one piece every read carries (the board read, the one-item re-read,
+ * who is asked to review and which issues GitHub lists as linked (a pull request nobody answers
+ * for reminds whoever its issue concerns). The one piece every read carries (the board read, the one-item re-read,
  * the repository batch), so they cannot ask for different things. `totalCount` tells a whole list
  * from one cut short.
  */
 export const VIEWER_ISSUE_FIELDS = 'viewerSubscription';
 export const REVIEW_REQUESTS_FIRST = 20;
-export const VIEWER_PR_FIELDS = `viewerSubscription reviewRequests(first: ${REVIEW_REQUESTS_FIRST}) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } }`;
+export const CLOSING_ISSUES_FIRST = 20;
+export const VIEWER_PR_FIELDS = `viewerSubscription reviewRequests(first: ${REVIEW_REQUESTS_FIRST}) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } } closingIssuesReferences(first: ${CLOSING_ISSUES_FIRST}) { totalCount nodes { number repository { nameWithOwner } } }`;
 
 const CONTENT_FIELDS = `
   __typename

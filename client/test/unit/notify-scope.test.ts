@@ -90,6 +90,9 @@ describe('who an item concerns (the three steps, first that applies)', () => {
     ['PR nobody answers for, no issue found: its own subscription', pr({ viewerSubscribed: true }), [], true],
     ['PR nobody answers for, no issue found, not subscribed', pr(), [], false],
     ['PR nobody answers for, what it names is another PR (not an issue): its own subscription', pr(), [pr({ assignees: [ME] })], false],
+    ['PR nobody answers for, the issues GitHub links to it were not read whole', pr({ closingIssues: null }), [], true],
+    ['PR nobody answers for, GitHub links no issue to it, not subscribed', pr({ closingIssues: [] }), [], false],
+    ['PR assigned to somebody else, its linked issues not read whole: the assignment decides', pr({ assignees: [OTHER], closingIssues: null }), [], false],
     ['PR assigned to somebody else, its issue is the account\'s: the PR\'s own assignment decides', pr({ assignees: [OTHER] }), [issue({ assignees: [ME] })], false],
   ];
   for (const [name, it_, linked, want] of rows) it(name, () => expect(concernsViewer(it_, ME, linked)).toBe(want));
@@ -134,6 +137,23 @@ describe('the two fields of one item held by two sources (never decided by the o
         expect(ties(got)).toEqual(want);
         expect(got.title).toBe('late');
       }
+    });
+  }
+
+  // the issues GitHub lists as linked to a pull request travel with the same read, by the same rules
+  const linkRows: [string, Pick<Item, 'closingIssues' | 'viewerAt'>, Pick<Item, 'closingIssues' | 'viewerAt'>, string[] | null | undefined][] = [
+    ['only one copy was asked', {}, { closingIssues: ['o/r#7'], viewerAt: 5 }, ['o/r#7']],
+    ['neither was asked', {}, {}, undefined],
+    ['read at different times: the later list, also when it is empty', { closingIssues: ['o/r#7'], viewerAt: 100 }, { closingIssues: [], viewerAt: 200 }, []],
+    ['read at different times: the later one not read whole', { closingIssues: ['o/r#7'], viewerAt: 100 }, { closingIssues: null, viewerAt: 200 }, null],
+    ['same time, different lists: every issue either names', { closingIssues: ['o/r#9'], viewerAt: 100 }, { closingIssues: ['o/r#7'], viewerAt: 100 }, ['o/r#7', 'o/r#9']],
+    ['same time, one not read whole', { closingIssues: null, viewerAt: 100 }, { closingIssues: ['o/r#7'], viewerAt: 100 }, null],
+  ];
+  for (const [name, x, y, want] of linkRows) {
+    it(`linked issues: ${name} — both orders`, () => {
+      const full = (t: Pick<Item, 'closingIssues' | 'viewerAt'>) => copy(t.viewerAt === undefined ? {} : { viewerSubscribed: false, reviewRequested: asked([]), viewerAt: t.viewerAt }, t.viewerAt === undefined ? {} : { closingIssues: t.closingIssues });
+      expect(merged(full(x), full(y)).closingIssues).toEqual(want);
+      expect(merged(full(y), full(x)).closingIssues).toEqual(want);
     });
   }
 
@@ -219,25 +239,28 @@ describe('the three readers bring the same answer (the board, the repository lis
     fake.state.w.reviewRequests.set(key(PR_A), { users: ['Zed', ME], teams: 1 });
     // more requests than the read returns: not read whole
     fake.state.w.reviewRequests.set(key(PR_B), { users: [ME], total: 30 });
-    const want: [number, boolean | null, ReviewRequested | null][] = [
-      [ISSUE_A, true, { users: [], others: false }],
-      [ISSUE_B, false, { users: [], others: false }],
-      [ISSUE_C, null, { users: [], others: false }],
-      [ISSUE_D, false, { users: [], others: false }],
-      [PR_A, true, { users: [ME, 'zed'], others: true }],
-      [PR_B, false, null],
+    // linked on GitHub only (nothing in the description): one issue for PR_A; more than a read returns for PR_B
+    fake.state.w.closingIssues.set(key(PR_A), [{ repo: REPO, number: ISSUE_E }]);
+    fake.state.w.closingIssues.set(key(PR_B), Array.from({ length: 25 }, (_, i) => ({ repo: 'Other/Repo', number: 1000 + i })));
+    const linkedOnBoard = (n: number) => rawBoard.filter((x: any) => x.content.__typename === 'Issue' && (x.content.closedByPullRequestsReferences?.nodes ?? []).some((r: any) => r.number === n)).map((x: any) => key(x.content.number));
+    const want: [number, boolean | null, ReviewRequested | null, string[] | null][] = [
+      [ISSUE_A, true, { users: [], others: false }, []],
+      [ISSUE_B, false, { users: [], others: false }, []],
+      [ISSUE_C, null, { users: [], others: false }, []],
+      [ISSUE_D, false, { users: [], others: false }, []],
+      [PR_A, true, { users: [ME, 'zed'], others: true }, [...new Set([key(ISSUE_E), ...linkedOnBoard(PR_A)])].sort()],
+      [PR_B, false, null, null],
     ];
     const board = await fetchProject(client(), boardSrc(), 111);
     const repo = await fetchRepo(client(), repoSrc(), 222);
-    for (const [n, sub, asked] of want) {
-      const [owner, name] = REPO.split('/');
-      void owner, void name;
+    for (const [n, sub, asked, links] of want) {
       const fresh = await fetchItem(client(), REPO, n, 333);
       const again = applyFreshItem([repo], fresh)[0];
       const got = { board: of(board, n), repo: of(repo, n), refresh: of(again, n) };
       for (const [reader, it_] of Object.entries(got)) {
         expect(it_.viewerSubscribed, `#${n} ${reader}`).toBe(sub);
         expect(it_.reviewRequested, `#${n} ${reader}`).toEqual(asked);
+        expect(it_.closingIssues, `#${n} ${reader}`).toEqual(links);
       }
       expect([got.board.viewerAt, got.repo.viewerAt, got.refresh.viewerAt], `#${n}`).toEqual([111, 222, 333]);
     }
@@ -313,6 +336,17 @@ describe('the tracker: only real changes notify, whichever source they come thro
     t.observe([snap('a', pr(1, { refIssues: [] })), snap('b', linking(1, [OTHER]))], ['a', 'b']);
     expect(t.count()).toBe(0);
     expect(nums(t.observe([snap('b', linking(2, [ME]))], ['a', 'b']).appeared)).toEqual([2]);
+  });
+
+  it('the PR is linked on GitHub only (its own list of linked issues, nothing in the description, the issue does not list it): the same; a list not read whole reminds', () => {
+    const t = mine();
+    t.observe([snap('a', pr(1, { refIssues: [], closingIssues: ['o/r#1'] })), snap('b', issue(1, { assignees: [OTHER], linkedPrs: null }))], ['a', 'b']);
+    expect(t.count()).toBe(0);
+    expect(nums(t.observe([snap('b', issue(2, { assignees: [ME], linkedPrs: null }))], ['a', 'b']).appeared)).toEqual([2]);
+    expect(t.observe([snap('b', issue(3, { assignees: [OTHER], linkedPrs: null }))], ['a', 'b']).appeared).toEqual([]);
+    expect(t.has('o/r#2')).toBe(false);
+    // the next read of the PR cannot list its issues whole: it may be the account's
+    expect(nums(t.observe([snap('a', pr(4, { refIssues: [], closingIssues: null }))], ['a', 'b']).appeared)).toEqual([2]);
   });
 
   it('a first read is history for what it carries: an item already assigned to the account is silent', () => {
@@ -545,6 +579,33 @@ describe('only a repository source: the reminders follow what the list itself do
     await tick(h);
     expect(h.items().slice(3)).toEqual([key(ISSUE_A)]);
     expect(h.badge()).toBe(3);
+  });
+
+  it('a PR linked to its issue only in GitHub\'s sidebar (no number in the description): the list read brings the link — the account\'s issue notifies the PR, somebody else\'s does not', async () => {
+    // GitHub links PR_A → ISSUE_A and PR_B → ISSUE_B; neither description names an issue, nobody answers for the PRs
+    for (const i of fake.state.repos.get('gigleai/cavil-loop')!) if (i.number === PR_A || i.number === PR_B) i.body = 'no issue number here';
+    fake.state.projects.clear();
+    fake.state.w.closingIssues.set(key(PR_A), [{ repo: REPO, number: ISSUE_A }]);
+    fake.state.w.closingIssues.set(key(PR_B), [{ repo: REPO, number: ISSUE_B }]);
+    change(ISSUE_A, FIXTURE_NOW - 3_600_000, { assignees: [ME] });
+    change(ISSUE_B, FIXTURE_NOW - 3_600_000, { assignees: [OTHER] });
+    const h = await started({ sources: [REPO], seed: MINE });
+    // "did happen": the repository read itself brought the link — the description names nothing, the issue lists nothing
+    expect(boardItem(h, PR_A)).toMatchObject({ refIssues: [], closingIssues: [key(ISSUE_A)], viewerSubscribed: false, assignees: [] });
+    expect(boardItem(h, PR_B)).toMatchObject({ refIssues: [], closingIssues: [key(ISSUE_B)], viewerSubscribed: false, assignees: [] });
+    expect(boardItem(h, ISSUE_A)!.linkedPrs).toBeNull();
+    const base = h.c.getState().pendingCount;
+    change(PR_A, h.clock.t, { label: true });
+    change(PR_B, h.clock.t, { label: true });
+    await tick(h);
+    expect(labelled(h, PR_B)).toBe(true);
+    expect(h.items()).toEqual([key(PR_A)]);
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(base + 1);
+    // the other issue is handed to the account: its PR follows
+    change(ISSUE_B, h.clock.t, { assignees: [ME] });
+    await tick(h);
+    expect(h.items()).toEqual([key(PR_A), key(PR_B)]);
   });
 
   it('the read by id fails: the source fails this round, nothing is notified, the data stays; the next good round notifies', async () => {
