@@ -7962,12 +7962,29 @@ stuck_fields() {
     printf '%s' "$1" | jq -er "($2) | if type == \"array\" then map(if . == null then \"\" else tostring end) | .[] else error(\"not an array\") end" 2>/dev/null
 }
 # 用法：stuck_entry_set <工作编号> '<对这条记录的 jq 表达式>' [--arg / --argjson …]
+# 所有对记录的写入都走这一个入口，写之前对写出的结果做同一道检查，不过就不写（返回 1）：
+#   · 记录里有条目类型 / 编号时，类型只能是 issue / pr，编号只能是数字
+#   · 停住的记录必须两样都有
+#   · 原来是停住的记录，类型和编号写完必须和原来一样
+# 调用方哪里取字段失败、把空值或错值传了进来，都写不坏一条停住记录（代码复审第 5 轮：了结遗留
+# 凭据时条目类型取失败，空类型覆盖了原记录，GitHub 和本机两条恢复途径都用不了了）。
+STUCK_ENTRY_OK_JQ='def okk: . == "issue" or . == "pr";
+    def okn: type == "string" and test("^[0-9]+$");
+    (($o.frozen // null) != null) as $wasf
+    | (if has("kind") and .kind != null and .kind != "" then (.kind | okk) else true end)
+      and (if has("num") and .num != null and .num != "" then (.num | okn) else true end)
+      and (if (.frozen // null) != null then ((.kind // "") | okk) and ((.num // "") | okn) else true end)
+      and (if $wasf then (.kind == $o.kind and .num == $o.num) else true end)'
 stuck_entry_set() {
     local n="$1" f="$2" tmp
     shift 2
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
-    if jq --arg k "$n" "$@" \
-        '.stuck_workers = (.stuck_workers // {}) | .stuck_workers[$k] = ((.stuck_workers[$k] // {}) | '"$f"')' \
+    if jq -e --arg k "$n" "$@" \
+        '.stuck_workers = (.stuck_workers // {})
+         | (.stuck_workers[$k] // {}) as $o
+         | ($o | '"$f"') as $r
+         | if ($r | type) == "object" and ($r | ('"$STUCK_ENTRY_OK_JQ"')) then .stuck_workers[$k] = $r
+           else error("refused") end' \
         "$STATE_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$STATE_FILE"
     else
@@ -8346,6 +8363,9 @@ stuck_new_token() {
 stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [身份串 JSON]
     local n="$1" kind="$2" num="$3" why="$4" doc="${5:-}" items
     local scope_read=ok
+    # 类型 / 编号不对 = 调用方没读对：什么都不写，原记录原样留着（写入口那道检查也会拦，这里先说清楚）
+    case "$kind" in issue|pr) ;; *) log "❌ 卡住检测：工作编号 $n 要停住时条目类型不对（[$kind]），这一轮什么都不写"; return 1 ;; esac
+    [[ "$num" =~ ^[0-9]+$ ]] || { log "❌ 卡住检测：工作编号 $n 要停住时编号不对（[$num]），这一轮什么都不写"; return 1; }
     [ -n "$doc" ] || doc=$(jq -r --arg k "$n" '(.stuck_workers // {})[$k].id // ""' "$STATE_FILE" 2>/dev/null) || { doc=""; scope_read=failed; }
     # 范围取不出（身份串在却解析失败）→ 记成「范围不明」：stuck_frozen 对任何条目都答「停住」，宁可多停
     local scope_unknown=false
@@ -8709,11 +8729,18 @@ stuck_release_finish() {   # <派工脚本退出码>
     IFS='|' read -r n token kind num <<< "$STUCK_REL"
     STUCK_REL=""
     file="$(stuck_release_file "$n")"
-    if ! e=$(stuck_entry_read "$n"); then
+    # 收尾要用的字段一次取全；取不出 = 这一轮不收尾，什么都不写（凭据如果在就留着，下一轮开头先了结）
+    local cev
+    local -a F=()
+    if e=$(stuck_entry_read "$n"); then
+        mapfile -t F < <(stuck_fields "$e" '[(.frozen.cand.label // ""), (.frozen.miss // 0),
+                (.frozen.cand.doc // "" | if . == "" then "" else (fromjson | .last.id) end)]') || F=()
+    fi
+    if [ "${#F[@]}" != 3 ] || ! [[ "${F[1]}" =~ ^[0-9]+$ ]]; then
         log "❌ 卡住检测：$kind #$num 派工后读不出本机的停住记录，这一轮不收尾（凭据如果在就留着，下一轮先了结）"
         return 1
     fi
-    x=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
+    x="${F[0]}"; cev="${F[2]}"
     if [ -e "$file" ] && { ! used=$(jq -r --arg t "$token" 'select(.token == $t) | .event' "$file" 2>/dev/null) || ! [[ "$used" =~ ^[0-9]+$ ]]; }; then
         # 凭据在、却读不出是不是这一次的：当作已用掉、结果不明，重新停住（凭据在停住落盘后才删）
         stuck_entry_set "$n" '.frozen.cand = null' || return 1
@@ -8727,14 +8754,14 @@ stuck_release_finish() {   # <派工脚本退出码>
             stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
             return 1
         fi
-        miss=$(( $(printf '%s' "$e" | jq -r '.frozen.miss // 0') + 1 ))
+        miss=$(( F[1] + 1 ))
         if [ "$miss" -lt "$STUCK_RELEASE_MISS_MAX" ]; then
             log "卡住检测：$kind #$num 派工脚本没走到派工前核对就退出了（退出码 $rc，第 $miss/$STUCK_RELEASE_MISS_MAX 次）→ 不算派工，继续停住，下一轮重新判断"
             stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false | .frozen.miss = $m' --argjson m "$miss" || true
             return 1
         fi
         # 同一条指令连着几次都起不了头：不再每轮空转，用掉这条指令，重新停住等人
-        ev=$(printf '%s' "$e" | jq -r '.frozen.cand.doc // "" | if . == "" then "" else (fromjson | .last.id) end' 2>/dev/null) || ev=""
+        ev="$cev"
         [[ "$ev" =~ ^[0-9]+$ ]] && { stuck_entry_set "$n" '.frozen.used = $ev' --argjson ev "$ev" || true; }
         stuck_freeze "$n" "$kind" "$num" "按人的恢复指令（\`$x\`）派工，连续 $miss 次都没能开始（派工脚本提前退出，退出码 $rc，原因见 daemon 机器的 poll.log）；任务没有送出"
         return 1
@@ -8790,23 +8817,32 @@ stuck_release_finish() {   # <派工脚本退出码>
 # 重新停住等人；凭据在这两件事都落进状态文件之后才删。记录已经不在（收尾成功、只差删凭据）→ 直接删。
 stuck_release_recover() {
     local f n e ev kind num fz
+    local -a F
     for f in "$STATE_DIR"/stuck-release/*.used; do
         [ -e "$f" ] || continue
         n="$(basename "$f" .used)"
-        # 读不出记录 = 不知道收没收尾：凭据留着，这一轮不处理（stuck_release_begin 见到凭据也不派）
-        if ! e=$(stuck_entry_read "$n") || ! fz=$(printf '%s' "$e" | jq -r '.frozen != null' 2>/dev/null); then
+        # 要用的字段一次取全再动手：记录读不出、字段取不出、类型 / 编号不对、凭据里的事件编号读不出，
+        # 都 = 不知道该怎么了结：记录和凭据都原样留着，这一轮什么都不写（stuck_release_begin 见到凭据也不派）
+        F=()
+        if e=$(stuck_entry_read "$n"); then
+            mapfile -t F < <(stuck_fields "$e" '[(.frozen != null), .kind, .num]') || F=()
+        fi
+        if [ "${#F[@]}" != 3 ] || { [ "${F[0]}" != true ] && [ "${F[0]}" != false ]; }; then
             log "卡住检测：读不出工作编号 $n 的停住记录，上一轮留下的派工凭据先留着，下一轮再了结"
             continue
         fi
+        fz="${F[0]}"; kind="${F[1]}"; num="${F[2]}"
         # 可靠读到「没有停住记录」= 上一轮已经成功收尾、只差删凭据
         if [ "$fz" != true ]; then rm -f "$f"; continue; fi
-        kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-        ev=$(jq -r '.event // ""' "$f" 2>/dev/null) || ev=""
-        if [[ "$ev" =~ ^[0-9]+$ ]]; then
-            stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$ev" || continue
-        else
-            stuck_entry_set "$n" '.frozen.cand = null' || continue
+        if ! { [ "$kind" = issue ] || [ "$kind" = pr ]; } || ! [[ "$num" =~ ^[0-9]+$ ]]; then
+            log "卡住检测：工作编号 $n 的停住记录缺条目类型或编号，上一轮留下的派工凭据先留着（要清掉请用 stuck-release.sh）"
+            continue
         fi
+        if ! ev=$(jq -er '.event | numbers' "$f" 2>/dev/null) || ! [[ "$ev" =~ ^[0-9]+$ ]]; then
+            log "卡住检测：工作编号 $n 上一轮留下的派工凭据读不出，先留着，下一轮再了结（一直读不出时用 stuck-release.sh 解除）"
+            continue
+        fi
+        stuck_entry_set "$n" '.frozen.used = $ev | .frozen.cand = null' --argjson ev "$ev" || continue
         stuck_freeze "$n" "$kind" "$num" "上一轮按人的恢复指令派工时，轮询在收尾之前中止了，结果没有留下。任务可能已送出，请先看会话 \`$(tmux_session_name "$n")\` 再决定" || continue
         rm -f "$f"
     done
@@ -8862,17 +8898,20 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
     if [ "$step" = human ]; then add="$LABEL_PENDING_HUMAN"; what="交人"; else add="$trig"; what="重派"; fi
     stuck_entry_set "$n" '.trigger = $t' --arg t "$trig" || return 0
     # 还没写 GitHub：记录读不出就这一轮不动手。读到的身份串留着，后面任何一步要停住时用它定范围
-    local id0
-    e=$(stuck_entry "$n") && id0=$(printf '%s' "$e" | jq -er '.id | select(type == "string" and . != "")' 2>/dev/null) || {
+    local id0 x
+    local -a F=()
+    if e=$(stuck_entry "$n"); then
+        mapfile -t F < <(stuck_fields "$e" '[(.id | if type == "string" then . else error("no id") end),
+                (.nudged_at // 0), (.restarted_at // 0), (.restarts // 0), (.since // 0)]') || F=()
+    fi
+    for x in "${F[@]:1}"; do [[ "$x" =~ ^[0-9]+$ ]] || F=(); done
+    if [ "${#F[@]}" != 5 ] || [ -z "${F[0]}" ]; then
         log "卡住检测：$kind #$num 动手前读不出本机记录 → 这一轮不动手"
         return 0
-    }
+    fi
+    id0="${F[0]}"; nudged="${F[1]}"; restarted="${F[2]}"; restarts="${F[3]}"; since="${F[4]}"
     STUCK_ACTED=1
     if [ "$step" = human ]; then
-        nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
-        restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
-        restarts=$(printf '%s' "$e" | jq -r '.restarts // 0')
-        since=$(printf '%s' "$e" | jq -r '.since // 0')
         now=$(pace_now); mins=0
         [ "$since" -gt 0 ] && mins=$(( (now - since) / 60 ))
         steps=""

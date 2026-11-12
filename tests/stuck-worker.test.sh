@@ -34,7 +34,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
-# 分三段跑（tests/run.sh 每个单位限时 900 秒）：1 = 阶梯和判断（①–⑧、⑩–⑫），2 = 停住和恢复（⑨、⑬），
+# 分三段跑（tests/run.sh 每个单位限时 900 秒）：1 = 阶梯和判断、交人前的说明（①–⑫），2 = 停住和恢复（⑬），
 # 3 = 恢复派工的失败与本机状态读失败（13x）
 # shellcheck source=lib/parts.sh
 source "$TEST_DIR/lib/parts.sh"
@@ -284,7 +284,7 @@ add_comment() {   # <编号>：有人留了一条评论（不动 updated_at：�
 }
 touch_item() { "$FAKEBIN/jset" "$GD/items.json" '.[$n].updated_at = $t' --arg n "$1" --arg t "2026-02-01T00:00:${2:-01}Z"; }
 want() {
-    case "$1" in 9|13) part_on 2 || return 1 ;; 13x) part_on 3 || return 1 ;; *) part_on 1 || return 1 ;; esac
+    case "$1" in 13) part_on 2 || return 1 ;; 13x) part_on 3 || return 1 ;; *) part_on 1 || return 1 ;; esac
     [ -z "${STUCK_ONLY:-}" ] || [[ ",$STUCK_ONLY," == *",$1,"* ]]
 }
 
@@ -1246,6 +1246,80 @@ chk "读失败 · 读得出之后的下一轮：指令记为已用掉、重新�
     "true/new/none/0/0"
 tick 5; tick 5
 chk "读失败 · 再过两轮：同一条指令始终没有再送任务" "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" "0/0"
+# 复审第 5 轮（代码）的复现：记录读得出，了结遗留凭据时从记录里「取字段」失败（条目类型、凭据里的事件编号）。
+# 取不出 ≠ 空值：记录（含条目类型）和凭据都原样留着、这一轮什么都不写；读得出之后照常了结，
+# 两条恢复途径（GitHub 上重新打派工标签、本机解卡命令）都还能用
+crash_left() {   # <名字>：摆出「派工过了核对、任务已送出、父进程在收尾前被杀」的样子
+    frozen_is "$1"; human_resume "$N" pending/agent doing/agent pending/agent
+    local g0 k; g0=$(got "$N")
+    touch "$GD/F_delete_labels"
+    k=$(( $(cat "$GD/count_DELETE_issues_${N}_labels" 2>/dev/null || echo 0) + 1 ))
+    printf 'kill -9 "$(cat %q)"\ntouch %q\n' "$W/poll.pid" "$GD/hook.ran" > "$GD/hook_DELETE_issues_${N}_labels_$k"
+    rm -f "$GD/hook.ran"
+    tick_killable 5
+    sleep 2
+    rm -f "$GD/F_delete_labels"
+    chk "$1 · 夹具：任务已送出、凭据在、记录停住且类型为 issue" \
+        "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(efield "$N" '.kind')/$(frozen "$N")" \
+        "yes/sent/file/issue/true"
+}
+rcv_field_fail() {   # <名字> <jq 故障的 glob> <日志里应出现的字样> <后续：github|local>
+    crash_left "$1"
+    local tok g1 d1 c1 rc
+    tok=$(ff "$N" token); g1=$(got "$N"); d1=$(disp "$N"); c1=$(cposts "$N")
+    printf '%s\n' "$2" > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+    tick 5
+    chk "$1 · 到达性：了结凭据时这一次取字段确实失败了" "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$([ "$(plog "$3")" -ge 1 ] && echo logged || echo silent)" "hit/logged"
+    chk "$1 · 这一轮：记录原样（类型 issue、编号、同一个记号、没记已用掉）、凭据还在，不派工、不送任务、不发说明" \
+        "$(efield "$N" '.kind')/$(efield "$N" '.num')/$([ "$(ff "$N" token)" = "$tok" ] && echo same || echo changed)/$(ff "$N" used)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))/$(( $(cposts "$N") - c1 ))" \
+        "issue/$N/same/null/file/0/0/0"
+    tick 5
+    chk "$1 · 读得出之后的下一轮：照常了结——记为已用掉、重新停住（类型仍是 issue）、凭据清掉，不派工、不送任务" \
+        "$(ff "$N" 'used != null')/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$(efield "$N" '.kind')/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" \
+        "true/new/issue/none/0/0"
+    if [ "$4" = github ]; then
+        tick 5; tick 5
+        chk "$1 · 新的停住说明发出" "$(ff "$N" posted)" "yes"
+        d1=$(disp "$N"); human_resume "$N" pending/agent doing/agent pending/agent
+        tick 5
+        chk "$1 · GitHub 途径：人重新打一次派工标签 → 派工一次，记录清掉" "$(( $(disp "$N") - d1 ))/$(labels_of "$N")/$(entry "$N")" "1/doing/agent/{}"
+    else
+        hlabel "$N" rm doing/agent
+        rc=0; release_cmd "$N" $'yes\n' || rc=$?
+        chk "$1 · 本机途径：解卡命令照常解除（退出码 0，记录清掉）" "$rc/$(entry "$N")/$(grep -c '已解除' "$W/release.out")" "0/{}/1"
+    fi
+}
+rcv_field_fail rcvkind '-er *.frozen != null), .kind, .num]*' '读不出工作编号 [0-9]* 的停住记录，上一轮留下的派工凭据先留着' github
+rcv_field_fail rcvkind2 '-er *.frozen != null), .kind, .num]*' '读不出工作编号 [0-9]* 的停住记录，上一轮留下的派工凭据先留着' local
+rcv_field_fail rcvev '-er .event | numbers*' '上一轮留下的派工凭据读不出' github
+# 派工后的收尾从记录里取字段失败：这一轮不收尾、什么都不写（凭据留着）；下一轮开头照常了结
+frozen_is finfld; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token); g0=$(got "$N")
+printf '%s\n' '-er *.frozen.cand.label // ""), (.frozen.miss*' > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+tick 5
+chk "收尾取字段失败 · 到达：任务已送出，收尾时取字段失败" \
+    "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(plog "#$N 派工后读不出本机的停住记录")" "hit/sent/1"
+chk "收尾取字段失败 · 这一轮：记录原样（类型 issue、同一个记号）、凭据还在" \
+    "$(efield "$N" '.kind')/$([ "$(ff "$N" token)" = "$tok" ] && echo same || echo changed)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)" "issue/same/file"
+g1=$(got "$N"); d1=$(disp "$N")
+tick 5
+chk "收尾取字段失败 · 下一轮开头照常了结：记为已用掉、重新停住、凭据清掉，不再派工" \
+    "$(ff "$N" 'used != null')/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$(efield "$N" '.kind')/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" \
+    "true/new/issue/none/0/0"
+# 写入口那道检查：调用方把空类型、错编号、换了类型交进来，停住记录都写不坏
+frozen_is wrchk
+cp "$STATE" "$W/state.before"
+wr() { (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh"; STATE_FILE="$STATE_DIR/state.json"; shift; "$@"' _ "$ROOT" "$@") > /dev/null 2>&1; }
+r0=0; wr true || r0=$?
+cp "$STATE" "$W/state.before"
+r1=0; wr stuck_entry_set "$N" '.kind = ""' || r1=$?
+r2=0; wr stuck_entry_set "$N" '.num = "x"' || r2=$?
+r3=0; wr stuck_entry_set "$N" '.kind = "pr"' || r3=$?
+r4=0; wr stuck_freeze "$N" "" "$N" "测试" || r4=$?
+chk "写入口检查（先加载一次库，之后再比）：空类型 / 错编号 / 换类型 / 空类型停住都拒写，状态文件逐字节不变" \
+    "$r0/$r1/$r2/$r3/$r4/$(cmp -s "$STATE" "$W/state.before" && echo same || echo changed)" "0/1/1/1/1/same"
+r5=0; wr stuck_entry_set "$N" '.frozen.tries = 1' || r5=$?
+chk "写入口检查 · 对照：正常字段照常写进去" "$r5/$(ff "$N" tries)/$(efield "$N" '.kind')" "0/1/issue"
 # 复审第 4 轮（代码）的复现：每轮遍历停住记录时读失败一次。读不出 ≠ 没有记录：停住记录要留着、
 # 这一轮不派工；读得出之后仍然要过恢复核对（这里人在那之前又挂了 pending/human → 不派）。
 # 三种读失败各一例：读单条记录、读记录清单、从读到的记录里取字段

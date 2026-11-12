@@ -109,7 +109,7 @@ if [ "${#F[@]}" != 3 ]; then
 fi
 kind="${F[0]}"; num="${F[1]}"; base="${F[2]}"
 case "$base" in ''|*[!0-9]*) base=0 ;; esac
-if [ -z "$kind" ] || [ -z "$num" ]; then
+if ! { [ "$kind" = issue ] || [ "$kind" = pr ]; } || ! [[ "$num" =~ ^[0-9]+$ ]]; then
     echo "停住记录不成形（缺条目类型或编号），什么都没改：$e"
     exit 1
 fi
