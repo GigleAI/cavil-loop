@@ -2413,7 +2413,7 @@ it will be dispatched — so tidy the labels on the page first.
 | 1 | bad usage / no such project / no record for this item |
 | 2 | the poll lock was not free within 2 minutes; run it again later |
 | 3 | after `yes` the second read failed or the item differs (labels, commit, base branch, …); run it again to release |
-| 4 | GitHub could not be read; run it again when it can |
+| 4 | GitHub (or the local state file) could not be read; run it again when it can |
 | 5 | `yes` was not entered |
 
 ### Dispatch fails every round for the same item

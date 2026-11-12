@@ -7652,17 +7652,23 @@ stuck_enabled() {
 }
 
 # ── 进度记录 ──
-stuck_entry() {   # <工作编号> → 这条的记录（没有 = {}）
-    jq -c --arg k "$1" '.stuck_workers[$k] // {}' "$STATE_FILE" 2>/dev/null || echo '{}'
-}
-# 严格读：状态文件读得出、结构也对，才输出这条记录（确实没有 = {}）；读不出 → 返回 1。
-# stuck_entry 读不出时给的是 {}，只能用在「读不出就当没有」无害的地方。凡是要凭「记录不在 /
-# 没停住」去删东西、放行派工的地方都用这个：读不出 ≠ 没有（硬规则 L36；代码复审第 3 轮：恢复时
-# 一次读取失败被当成「停住记录已经不在」，凭据被删，同一条指令又派了一遍）。
-stuck_entry_read() {   # <工作编号>
+# 读这条记录。状态文件读得出、结构也对，才输出（确实没有 = {}）；**读不出 → 返回 1，什么都不输出**。
+# 没有「读不出就当成空记录」的读法：本机状态读不出 ≠ 没有记录 / 没停住（硬规则 L36）。代码复审
+# 第 3、4 轮各有一处把一次读取失败当成了「记录不在」——一处删了派工凭据，一处删了停住记录，
+# 结果都是同一条恢复指令 / 停住的条目被当成普通派工放了出去。调用方读不出时一律停手：
+# 不删、不清零、不放行、不写 GitHub，留到下一轮。
+# 同一条规矩也管从记录里取字段：决定「删 / 放行 / 写」的字段用 stuck_fields 一次取全，取不出就停手；
+# 不要写 `[ "$(… | jq …)" = true ]` 这种 jq 失败时悄悄走到另一边的判断。
+stuck_entry() {   # <工作编号>
     jq -ce --arg k "$1" 'if type == "object" and ((.stuck_workers // {}) | type) == "object"
         then (((.stuck_workers // {})[$k] // {}) | if type == "object" then . else error("bad entry") end)
         else error("bad state") end' "$STATE_FILE" 2>/dev/null
+}
+stuck_entry_read() { stuck_entry "$@"; }
+# 从一段 JSON 里一次取出几个字段，每行一个（null / 缺失 = 空行）。jq 失败 → 返回 1。
+# 用法：stuck_fields '<JSON>' '<jq：输出一个数组>'；配合 mapfile -t 读。
+stuck_fields() {
+    printf '%s' "$1" | jq -er "($2) | if type == \"array\" then map(if . == null then \"\" else tostring end) | .[] else error(\"not an array\") end" 2>/dev/null
 }
 # 用法：stuck_entry_set <工作编号> '<对这条记录的 jq 表达式>' [--arg / --argjson …]
 stuck_entry_set() {
@@ -7690,7 +7696,10 @@ stuck_entry_del() {   # <工作编号>
 }
 # 空闲计时清零（阶梯进度保留）。没有记录、或本来就没在计时 → 不写文件。
 stuck_quiet_reset() {   # <工作编号>
-    [ "$(jq -r --arg k "$1" '(.stuck_workers[$k].since // 0) > 0' "$STATE_FILE" 2>/dev/null)" = true ] || return 0
+    # 读不出有没有在计时 → 照样清零（清零是保守的一边：少算空闲时间）
+    local on
+    on=$(jq -r --arg k "$1" '((.stuck_workers // {})[$k].since // 0) > 0' "$STATE_FILE" 2>/dev/null) || on=true
+    [ "$on" != false ] || return 0
     stuck_entry_set "$1" '.since = 0 | .id = "" | .fp = ""' || true
 }
 # 「认不出 / 读不出」每种原因只记一次日志，免得每轮刷屏。
@@ -7909,6 +7918,11 @@ stuck_verdict_items() {   # <身份串 JSON>
     tl=$(printf '%s' "$doc" | jq -r '.target.labels | join(",")')
     case ",$tl," in *",$LABEL_AGENT_DOING,"*) ;; *) STUCK_V_WHY="已经不挂 $LABEL_AGENT_DOING"; return 0 ;; esac
     if p=$(stuck_labels_protect target "$tl"); then STUCK_V_WHY="条目上挂着 $p"; return 0; fi
+    local brows
+    if ! brows=$(printf '%s' "$doc" | jq -er '[.bound[] | select(.state == "open")
+                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv] | join("\n")' 2>/dev/null); then
+        STUCK_V=unknown; STUCK_V_WHY="身份串里的关联条目读不出"; return 0
+    fi
     while IFS=$'\t' read -r bn b; do
         [ -n "$bn" ] || continue
         [ "$b" = "-" ] && b=""
@@ -7916,8 +7930,7 @@ stuck_verdict_items() {   # <身份串 JSON>
             STUCK_V_WHY="绑定的 #$bn 也挂着 $LABEL_AGENT_DOING，两条共用一个会话，分不清会话在给哪一条干活"; return 0 ;;
         esac
         if p=$(stuck_labels_protect bound "$b"); then STUCK_V_WHY="绑定的 #$bn 挂着 $p"; return 0; fi
-    done < <(printf '%s' "$doc" | jq -r '.bound[] | select(.state == "open")
-                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv')
+    done <<< "$brows"
     STUCK_V=stuck
     return 0
 }
@@ -8041,17 +8054,26 @@ stuck_new_token() {
 # 已经用掉的那条人工指令（.frozen.used）带过去：它永远不会再放行。
 stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [身份串 JSON]
     local n="$1" kind="$2" num="$3" why="$4" doc="${5:-}" items
-    [ -n "$doc" ] || doc=$(jq -r --arg k "$n" '.stuck_workers[$k].id // ""' "$STATE_FILE" 2>/dev/null) || doc=""
-    items=$(printf '%s' "$doc" | jq -c '[(.target.n // empty | tostring), (.bound[]?.n | tostring)]' 2>/dev/null) || items=""
-    [ -n "$items" ] || items='[]'
+    local scope_read=ok
+    [ -n "$doc" ] || doc=$(jq -r --arg k "$n" '(.stuck_workers // {})[$k].id // ""' "$STATE_FILE" 2>/dev/null) || { doc=""; scope_read=failed; }
+    # 范围取不出（身份串在却解析失败）→ 记成「范围不明」：stuck_frozen 对任何条目都答「停住」，宁可多停
+    local scope_unknown=false
+    [ "$scope_read" = ok ] || scope_unknown=true
+    if [ -n "$doc" ]; then
+        items=$(printf '%s' "$doc" | jq -ce '[(.target.n // empty | tostring), (.bound[]?.n | tostring)]' 2>/dev/null) \
+            || { items='[]'; scope_unknown=true; }
+    else
+        items='[]'
+    fi
     STUCK_ACTED=1
     log "🧊 卡住检测：$kind #$num 停住，交给人处理 —— $why（daemon 不再对这一条派工、改标签、结束会话或合并）"
     stuck_entry_set "$n" '.kind = $kind | .num = $num | .since = 0 | .id = "" | .fp = "" | .warned = ""
         | .frozen = {why: $why, at: $now, token: $token, posted: "no", comment: 0, tries: 0, base: null,
                      cand: null, miss: 0, key: "", settled: false, used: (.frozen.used // null),
+                     scope_unknown: ($su or (.frozen.scope_unknown // false)),
                      items: (([$num] + $items + (.frozen.items // [])) | unique)}' \
         --arg kind "$kind" --arg num "$num" --arg why "$why" --arg token "$(stuck_new_token)" \
-        --argjson now "$(pace_now)" --argjson items "$items" \
+        --argjson now "$(pace_now)" --argjson items "$items" --argjson su "$scope_unknown" \
         || { log "❌ 卡住检测：$kind #$num 的停住记录写不进 $STATE_FILE"; return 1; }
 }
 # 各环节因为停住而跳过时留一行（调试级别：停住可能持续几天，不每轮刷正式日志）
@@ -8065,7 +8087,8 @@ stuck_frozen() {   # <issue / PR 编号>
     local out
     stuck_enabled || return 1
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    out=$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null) | .frozen.items[]?] | index($n) != null' \
+    out=$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null)] as $f
+            | (any($f[]; .frozen.scope_unknown == true)) or ([$f[] | .frozen.items[]?] | index($n) != null)' \
         "$STATE_FILE" 2>/dev/null) || return 0
     [ "$out" != false ]
 }
@@ -8122,22 +8145,27 @@ stuck_release_ok() {   # <stuck_release_doc 的输出> <已用掉的事件编号
     local doc="$1" used="${2:-}" me x flow cur bn b
     me=$(write_identity_login); [ -n "$me" ] || return 1
     [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
-    [ "$(printf '%s' "$doc" | jq -r '.target.state == "open" and .target.merged != true and .last != null
-            and .last.op == "labeled" and (.last.actor // "") != ""')" = true ] || return 1
-    [ "$(printf '%s' "$doc" | jq -r '.last.actor')" != "$me" ] || return 1
-    [ "$(printf '%s' "$doc" | jq -r '.last.id')" != "$used" ] || return 1
-    x=$(printf '%s' "$doc" | jq -r '.last.label')
+    local -a F
+    mapfile -t F < <(stuck_fields "$doc" '[(.target.state == "open" and .target.merged != true and .last != null
+            and .last.op == "labeled" and ((.last.actor // "") != "")), .last.actor, .last.id, .last.label]') || return 1
+    [ "${#F[@]}" = 4 ] && [ "${F[0]}" = true ] && [ -n "${F[1]}" ] && [[ "${F[2]}" =~ ^[0-9]+$ ]] && [ -n "${F[3]}" ] || return 1
+    [ "${F[1]}" != "$me" ] || return 1
+    [ "${F[2]}" != "$used" ] || return 1
+    x="${F[3]}"
     printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" | grep -qxF -- "$x" || return 1
     flow=$(stuck_flow_labels)
-    cur=$(printf '%s' "$doc" | jq -r '.target.labels[]' | grep -xF -f <(printf '%s\n' "$flow") || true)
+    local labels brows
+    labels=$(printf '%s' "$doc" | jq -er '.target.labels | join("\n")' 2>/dev/null) || return 1
+    cur=$(printf '%s\n' "$labels" | grep -xF -f <(printf '%s\n' "$flow") || true)
     [ "$cur" = "$x" ] || return 1
+    brows=$(printf '%s' "$doc" | jq -er '[.bound[] | select(.state == "open")
+                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv] | join("\n")' 2>/dev/null) || return 1
     while IFS=$'\t' read -r bn b; do
         [ -n "$bn" ] || continue
         [ "$b" = "-" ] && b=""
         case ",$b," in *",$LABEL_AGENT_DOING,"*) return 1 ;; esac
         if stuck_labels_protect bound "$b" > /dev/null; then return 1; fi
-    done < <(printf '%s' "$doc" | jq -r '.bound[] | select(.state == "open")
-                | [(.n | tostring), ((.labels | join(",")) | if . == "" then "-" else . end)] | @tsv')
+    done <<< "$brows"
     printf '%s\n' "$x"
 }
 
@@ -8172,9 +8200,12 @@ stuck_note_body() {   # <工作编号> <kind> <num> <为什么> <记号> <stuck_
 #   · 请求失败计一次，满 STUCK_NOTE_MAX_TRIES 不再发
 stuck_frozen_note() {   # <工作编号> <kind> <num> <记录 JSON>
     local n="$1" kind="$2" num="$3" e="$4" token posted tries me rows hit a b body cid
-    token=$(printf '%s' "$e" | jq -r '.frozen.token // ""'); posted=$(printf '%s' "$e" | jq -r '.frozen.posted // "no"')
-    tries=$(printf '%s' "$e" | jq -r '.frozen.tries // 0')
-    [ -n "$token" ] || return 1
+    local -a F
+    mapfile -t F < <(stuck_fields "$e" '[.frozen.token, (.frozen.posted // "no"), (.frozen.tries // 0), (.frozen.why // "")]') || return 1
+    [ "${#F[@]}" = 4 ] || return 1
+    token="${F[0]}"; posted="${F[1]}"; tries="${F[2]}"
+    [ -n "$token" ] && [[ "$tries" =~ ^[0-9]+$ ]] || return 1
+    case "$posted" in no|unknown) ;; *) return 1 ;; esac
     me=$(write_identity_login); [ -n "$me" ] || return 1
     if [ "$posted" = unknown ]; then
         rows=$(gh api --paginate "repos/$REPO/issues/$num/comments" \
@@ -8190,8 +8221,8 @@ stuck_frozen_note() {   # <工作编号> <kind> <num> <记录 JSON>
     fi
     if [ "$tries" -ge "$STUCK_NOTE_MAX_TRIES" ]; then return 1; fi
     a=$(stuck_gather "$kind" "$num") || return 1
-    [ "$(printf '%s' "$a" | jq -r '.target.state')" = open ] || return 1
-    body=$(stuck_note_body "$n" "$kind" "$num" "$(printf '%s' "$e" | jq -r '.frozen.why // ""')" "$token" "$a")
+    [ "$(printf '%s' "$a" | jq -r '.target.state' 2>/dev/null)" = open ] || return 1
+    body=$(stuck_note_body "$n" "$kind" "$num" "${F[3]}" "$token" "$a")
     b=$(stuck_gather "$kind" "$num") || return 1
     if [ "$a" != "$b" ]; then
         log "卡住检测：$kind #$num 发停住说明前两次读到的不一样 → 这一轮不发"
@@ -8218,23 +8249,31 @@ stuck_frozen_note() {   # <工作编号> <kind> <num> <记录 JSON>
 # 停住的条目每轮做的事：发说明 → 记恢复起点 → 初筛人的恢复指令。用到 stuck_tick 里的 irow / prow。
 # 任何一步读不到：停在那一步，什么都不写，下一轮再试。
 stuck_frozen_tick() {   # <工作编号> <记录 JSON>
-    local n="$1" e="$2" kind num row base key it doc x pj
-    kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-    if [ -z "$kind" ] || [ -z "$num" ]; then stuck_entry_del "$n" || true; return 0; fi
+    local n="$1" e="$2" kind num row base key it doc x pj items posted used okey settled hascand merged
+    local -a F
+    # 这一轮要用的字段一次取全；取不出 = 读不出，这一轮什么都不做（不删、不发说明、不改起点）
+    mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen.posted // "no"), .frozen.base, .frozen.used,
+            (.frozen.key // ""), (.frozen.settled // false), (.frozen.cand != null), ((.frozen.items // []) | join(" "))]') || return 0
+    [ "${#F[@]}" = 9 ] || return 0
+    kind="${F[0]}"; num="${F[1]}"; posted="${F[2]}"; base="${F[3]}"; used="${F[4]}"
+    okey="${F[5]}"; settled="${F[6]}"; hascand="${F[7]}"; items="${F[8]}"
+    case "$kind" in issue|pr) ;; *) log "卡住检测：工作编号 $n 的停住记录缺条目类型，留着不动（要清掉请用 stuck-release.sh）"; return 0 ;; esac
+    [[ "$num" =~ ^[0-9]+$ ]] || return 0
     if [ "$kind" = issue ]; then row="${irow[$num]:-}"; else row="${prow[$num]:-}"; fi
     if [ -z "$row" ]; then
         # 不在打开的清单里。合并了的 PR 开不回来 → 记录清掉；只是关了的留着，重新打开后仍然停住
-        if [ "$kind" = pr ] && pj=$(stuck_gh_obj "pulls/$num") && [ "$(printf '%s' "$pj" | jq -r '.merged')" = true ]; then
+        if [ "$kind" = pr ] && pj=$(stuck_gh_obj "pulls/$num") && merged=$(printf '%s' "$pj" | jq -er '.merged | tostring' 2>/dev/null) \
+           && [ "$merged" = true ]; then
             log "卡住检测：PR #$num 已合并 → 停住记录清掉"
             stuck_entry_del "$n" || true
         fi
         return 0
     fi
-    if [ "$(printf '%s' "$e" | jq -r '.frozen.posted // "no"')" != yes ]; then
-        stuck_frozen_note "$n" "$kind" "$num" "$e" || return 0
-        e=$(stuck_entry "$n")
+    if [ "$posted" != yes ]; then
+        # 说明刚确认发出的这一轮到此为止，起点下一轮再记（那时重新读一遍记录）
+        stuck_frozen_note "$n" "$kind" "$num" "$e" || true
+        return 0
     fi
-    base=$(printf '%s' "$e" | jq -r '.frozen.base // ""')
     if ! [[ "$base" =~ ^[0-9]+$ ]]; then
         # 起点 = 说明确认发出之后第一次把标签事件读全时的最新编号。这之前人打的标签都不算
         base=$(stuck_max_id "issues/$num/events" '.[] | select(.event == "labeled" or .event == "unlabeled") | .id') || return 0
@@ -8248,17 +8287,15 @@ stuck_frozen_tick() {   # <工作编号> <记录 JSON>
     while IFS= read -r it; do
         [ -n "$it" ] || continue
         key="$key|$it@${irow[$it]:-}${prow[$it]:-}"
-    done < <(printf '%s' "$e" | jq -r '.frozen.items[]?')
-    if [ "$(printf '%s' "$e" | jq -r '.frozen.key // ""')" = "$key" ] \
-       && [ "$(printf '%s' "$e" | jq -r '.frozen.settled // false')" = true ] \
-       && [ "$(printf '%s' "$e" | jq -r '.frozen.cand == null')" = true ]; then
+    done < <(printf '%s\n' $items)
+    if [ "$okey" = "$key" ] && [ "$settled" = true ] && [ "$hascand" = false ]; then
         return 0
     fi
     if ! doc=$(stuck_release_doc "$kind" "$num" "$base"); then
         stuck_entry_set "$n" '.frozen.cand = null | .frozen.settled = false' || true
         return 0
     fi
-    if x=$(stuck_release_ok "$doc" "$(printf '%s' "$e" | jq -r '.frozen.used // ""')"); then
+    if x=$(stuck_release_ok "$doc" "$used"); then
         stuck_entry_set "$n" '.frozen.cand = {label: $x, doc: $doc} | .frozen.key = $key | .frozen.settled = true' \
             --arg x "$x" --arg doc "$doc" --arg key "$key" || true
         log_debug "卡住检测：$kind #$num 上有人的恢复指令（$x），交给派工前的最后一次核对"
@@ -8326,9 +8363,15 @@ stuck_release_gate() {
     local n token kind num e cdoc clabel base used doc x file tmp
     IFS='|' read -r n token kind num <<< "$STUCK_REL_CTX"
     STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
-    e=$(stuck_entry "$n")
-    cdoc=$(printf '%s' "$e" | jq -r '.frozen.cand.doc // ""'); clabel=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
-    base=$(printf '%s' "$e" | jq -r '.frozen.base // ""'); used=$(printf '%s' "$e" | jq -r '.frozen.used // ""')
+    local -a F=()
+    if e=$(stuck_entry "$n"); then
+        mapfile -t F < <(stuck_fields "$e" '[.frozen.cand.doc, .frozen.cand.label, .frozen.base, .frozen.used]') || F=()
+    fi
+    if [ "${#F[@]}" != 4 ]; then
+        log "卡住检测：$kind #$num 派工前读不出本机的停住记录 → 不派工，继续停住"
+        exit 76
+    fi
+    cdoc="${F[0]}"; clabel="${F[1]}"; base="${F[2]}"; used="${F[3]}"
     if [ -z "$cdoc" ] || [ -z "$clabel" ] || ! [[ "$base" =~ ^[0-9]+$ ]] \
        || ! doc=$(stuck_release_doc "$kind" "$num" "$base") || [ "$doc" != "$cdoc" ] \
        || ! x=$(stuck_release_ok "$doc" "$used") || [ "$x" != "$clabel" ]; then
@@ -8337,7 +8380,7 @@ stuck_release_gate() {
     fi
     file="$(stuck_release_file "$n")"
     if ! mkdir -p "$(dirname "$file")" || ! tmp=$(mktemp "$file.XXXXXX") \
-       || ! jq -cn --arg token "$token" --argjson ev "$(printf '%s' "$doc" | jq '.last.id')" '{token: $token, event: $ev}' > "$tmp" \
+       || ! jq -cen --arg token "$token" --arg doc "$doc" '{token: $token, event: ($doc | fromjson | .last.id | if type == "number" then . else error("no event id") end)}' > "$tmp" \
        || ! mv "$tmp" "$file"; then
         log "卡住检测：$kind #$num 记不下「恢复指令已用掉」→ 不派工，继续停住"
         exit 76
@@ -8527,8 +8570,13 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
     local steps nudged restarted restarts since mins body op lab first=1
     if [ "$step" = human ]; then add="$LABEL_PENDING_HUMAN"; what="交人"; else add="$trig"; what="重派"; fi
     stuck_entry_set "$n" '.trigger = $t' --arg t "$trig" || return 0
+    # 还没写 GitHub：记录读不出就这一轮不动手。读到的身份串留着，后面任何一步要停住时用它定范围
+    local id0
+    e=$(stuck_entry "$n") && id0=$(printf '%s' "$e" | jq -er '.id | select(type == "string" and . != "")' 2>/dev/null) || {
+        log "卡住检测：$kind #$num 动手前读不出本机记录 → 这一轮不动手"
+        return 0
+    }
     STUCK_ACTED=1
-    e=$(stuck_entry "$n")
     if [ "$step" = human ]; then
         nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
         restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
@@ -8546,7 +8594,7 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         if ! cid=$(run_gh_capture "卡住交人说明评论 ($kind #$num)" \
                 gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" --jq '.id') \
            || ! [[ "$cid" =~ ^[0-9]+$ ]]; then
-            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 准备把这一条交给人，但交人说明没能确认发出（可能已经发出）"
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 准备把这一条交给人，但交人说明没能确认发出（可能已经发出）" "$id0"
             return 0
         fi
         stuck_entry_set "$n" '.id = (.id | fromjson | .target.comment = $c | tojson)' --argjson c "$cid" || true
@@ -8557,11 +8605,11 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         if [ "$first" = 1 ]; then
             first=0
         elif ! stuck_step_gate "$n" "$kind" "$num"; then
-            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}的中途（$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 之前）复查，发现$STUCK_GATE_WHY"
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}的中途（$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 之前）复查，发现$STUCK_GATE_WHY" "$id0"
             return 0
         fi
         if ! stuck_label_write "$n" "$kind" "$num" "$op" "$lab"; then
-            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}时$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 没能确认成功（没写上、读不到标签记录，或同时有别的标签变化）"
+            stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 在${what}时$([ "$op" = labeled ] && echo 加 || echo 摘)标签 \`$lab\` 没能确认成功（没写上、读不到标签记录，或同时有别的标签变化）" "$id0"
             return 0
         fi
     done
@@ -8571,7 +8619,7 @@ stuck_step_run() {   # <工作编号> <kind> <num> <restart|human> <触发标签
         return 0
     fi
     if ! stuck_step_gate "$n" "$kind" "$num"; then
-        stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 已把标签翻回 \`$trig\`，在结束旧会话之前复查，发现$STUCK_GATE_WHY"
+        stuck_freeze "$n" "$kind" "$num" "worker 会话长时间没有动静，daemon 已把标签翻回 \`$trig\`，在结束旧会话之前复查，发现$STUCK_GATE_WHY" "$id0"
         return 0
     fi
     sess="$(tmux_session_name "$n")"
@@ -8614,16 +8662,34 @@ stuck_tick() {
     done <<< "$prows"
 
     # 1. 已有记录的：停住的走停住那一套（说明 / 起点 / 初筛），这一轮不再判它卡没卡住；
-    #    其余的，条目正常交接走了就清掉记录
+    #    其余的，条目正常交接走了就清掉记录。
+    #    记录清单读不出 → 整轮不判（不知道哪些条目停住着）；某一条读不出 → 这一条这一轮不动：
+    #    不删、不判卡没卡住。删记录之前必须是可靠读到「没停住、也不在等重派」。
+    local keys fz restarts trig
+    local -a F
+    if ! keys=$(jq -er 'if type == "object" and ((.stuck_workers // {}) | type) == "object"
+            then ((.stuck_workers // {}) | keys | join("\n")) else error("bad state") end' "$STATE_FILE" 2>/dev/null); then
+        log "卡住检测：读不出本机的记录清单，本轮不判"
+        return 0
+    fi
     while IFS= read -r n; do
         [ -n "$n" ] || continue
-        e=$(stuck_entry "$n")
-        kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-        if [ "$(printf '%s' "$e" | jq -r '.frozen != null')" = true ]; then
+        F=()
+        if e=$(stuck_entry "$n"); then
+            mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen != null), (.restarts // 0), .trigger]') || F=()
+        fi
+        if [ "${#F[@]}" != 5 ]; then
+            log "卡住检测：读不出工作编号 $n 的记录，这一轮不动它"
+            handled[$n]=1
+            continue
+        fi
+        kind="${F[0]}"; num="${F[1]}"; fz="${F[2]}"; restarts="${F[3]}"; trig="${F[4]}"
+        if [ "$fz" = true ]; then
             handled[$n]=1
             stuck_frozen_tick "$n" "$e" || true
             continue
         fi
+        if [ "$fz" != false ] || ! [[ "$restarts" =~ ^[0-9]+$ ]]; then handled[$n]=1; continue; fi
         [ -z "${doing[$n]:-}" ] || continue
         # 不挂 doing/agent 了。daemon 自己翻回去、还在等重派的（挂着记下的触发标签）留着；
         # 其余都是 worker 正常交接了、或条目关了 → 阶梯从头算
@@ -8634,11 +8700,11 @@ stuck_tick() {
             IFS=$'\t' read -r _ labels _ <<< "${prow[$num]}"
         fi
         [ "$labels" = "-" ] && labels=""
-        if [ "$(printf '%s' "$e" | jq -r '(.restarts // 0) > 0')" = true ]; then
-            case ",$labels," in *",$(printf '%s' "$e" | jq -r '.trigger // "?"'),"*) continue ;; esac
+        if [ "$restarts" -gt 0 ]; then
+            case ",$labels," in *",${trig:-?},"*) continue ;; esac
         fi
         stuck_entry_del "$n" || true
-    done < <(jq -r '(.stuck_workers // {}) | keys[]' "$STATE_FILE" 2>/dev/null)
+    done <<< "$keys"
 
     # 2. 挂着 doing/agent 的
     for n in "${!doing[@]}"; do
@@ -8662,7 +8728,9 @@ stuck_tick_one() {
     fi
     kind="${1%%:*}"; num="${1#*:}"
     # 只管本机派的（派工时无条件记了归属）；别的机器的、没记录的不碰，也不写任何状态
-    [ "$(jq -r --arg k "$n" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" = "$SELFHEAL_HOST_ID" ] || return 0
+    local owner
+    owner=$(jq -r --arg k "$n" '(.worker_hosts // {})[$k] // ""' "$STATE_FILE" 2>/dev/null) || return 0
+    [ "$owner" = "$SELFHEAL_HOST_ID" ] || return 0
     if [ "$kind" = issue ]; then
         IFS=$'\t' read -r upd labels <<< "${irow[$num]}"
     else
@@ -8700,9 +8768,16 @@ stuck_tick_one() {
     # 每轮零请求的变化线索。updated_at 只到秒，所以它只负责「发现变了就重新计时」；
     # 真正动手前比的是身份串（评论 / 事件编号、提交号…）
     fp="$kind:$num|$upd|$labels|${sha:-}|$bparts|$head|$(stuck_sample_key)"
-    e=$(stuck_entry "$n")
-    since=$(printf '%s' "$e" | jq -r '.since // 0'); seen=$(printf '%s' "$e" | jq -r '.seen // 0')
-    efp=$(printf '%s' "$e" | jq -r '.fp // ""')
+    # 这一条的进度一次取全；读不出 → 这一轮不判（不催、不重派、不重新计时）
+    local -a F=()
+    local eid
+    if e=$(stuck_entry "$n"); then
+        mapfile -t F < <(stuck_fields "$e" '[(.since // 0), (.seen // 0), (.fp // ""), (.restarts // 0), (.nudged_at // 0),
+                (.restarted_at // 0), (.frozen != null)]') || F=()
+    fi
+    if [ "${#F[@]}" != 7 ] || [ "${F[6]}" != false ]; then return 0; fi
+    since="${F[0]}"; seen="${F[1]}"; efp="${F[2]}"; restarts="${F[3]}"; nudged="${F[4]}"; restarted="${F[5]}"
+    for eid in "$since" "$seen" "$restarts" "$nudged" "$restarted"; do [[ "$eid" =~ ^[0-9]+$ ]] || return 0; done
     if [ "$since" -le 0 ] || [ "$efp" != "$fp" ] || [ $((now - seen)) -gt "$STUCK_WORKER_MAX_GAP_SECS" ]; then
         # 新的空闲周期：全部重读一遍，存下身份串
         if ! doc=$(stuck_doc "$kind" "$num" "$n"); then
@@ -8725,8 +8800,6 @@ stuck_tick_one() {
     fi
     stuck_entry_set "$n" '.seen = $now' --argjson now "$now" || return 0
 
-    restarts=$(printf '%s' "$e" | jq -r '.restarts // 0'); nudged=$(printf '%s' "$e" | jq -r '.nudged_at // 0')
-    restarted=$(printf '%s' "$e" | jq -r '.restarted_at // 0')
     due=0
     if [ "$restarts" -eq 0 ] && [ "$nudged" -eq 0 ]; then
         step=nudge
@@ -8752,11 +8825,13 @@ stuck_tick_one() {
         stuck_quiet_reset "$n"; return 0
     fi
     stuck_verdict "$doc"
-    if [ "$STUCK_V" != stuck ] || [ "$doc" != "$(printf '%s' "$e" | jq -r '.id // ""')" ]; then
+    eid=$(printf '%s' "$e" | jq -er '.id // ""' 2>/dev/null) || eid=""
+    if [ "$STUCK_V" != stuck ] || [ -z "$eid" ] || [ "$doc" != "$eid" ]; then
         log "卡住检测：$kind #$num 动手前复查和开始计时时不一样（${STUCK_V}${STUCK_V_WHY:+：$STUCK_V_WHY}）→ 不动手，重新计时"
         stuck_quiet_reset "$n"; return 0
     fi
-    stuck_step_run "$n" "$kind" "$num" "$step" "$(printf '%s' "$doc" | jq -r '.trigger')"
+    trig=$(printf '%s' "$doc" | jq -er '.trigger | select(type == "string" and . != "")' 2>/dev/null) || return 0
+    stuck_step_run "$n" "$kind" "$num" "$step" "$trig"
     return 0
 }
 

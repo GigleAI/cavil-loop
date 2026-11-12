@@ -21,7 +21,7 @@
 # 想要的样子，再运行。
 #
 # 退出码：0 = 已解除；1 = 用法错误 / 没有这个项目 / 没有停住记录；2 = 等锁超时；
-#        3 = 确认之后再读，读不全或和确认前不一样；4 = 读不到 GitHub；5 = 没有输入 yes。
+#        3 = 确认之后再读，读不全或和确认前不一样；4 = 读不到 GitHub 或本机状态文件；5 = 没有输入 yes。
 # 非 0 退出时什么都没改。
 set -euo pipefail
 
@@ -86,16 +86,28 @@ if ! flock -w "$LOCK_WAIT" 8; then
 fi
 
 # 2. 停住记录（按目标编号找；给的是关联条目的编号也认）
-n=$(jq -r --arg n "$NUM" '(.stuck_workers // {}) | to_entries[]
-        | select(.value.frozen != null and ((.value.num == $n) or ((.value.frozen.items // []) | index($n) != null)))
-        | .key' "$STATE_FILE" 2>/dev/null | head -1) || n=""
+# 读不出本机状态 ≠ 没有记录
+if ! n=$(jq -er --arg n "$NUM" 'if type == "object" and ((.stuck_workers // {}) | type) == "object"
+        then ([(.stuck_workers // {}) | to_entries[]
+               | select(.value.frozen != null and ((.value.num == $n) or ((.value.frozen.items // []) | index($n) != null)))
+               | .key] | first // "")
+        else error("bad state") end' "$STATE_FILE" 2>/dev/null); then
+    echo "读不出本机的状态文件 $STATE_FILE，不能解除。什么都没改。"
+    exit 4
+fi
 if [ -z "$n" ]; then
     echo "没有停住记录：#$NUM"
     exit 1
 fi
-e=$(stuck_entry "$n")
-kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
-base=$(printf '%s' "$e" | jq -r '.frozen.base // 0')
+F=()
+if e=$(stuck_entry "$n"); then
+    mapfile -t F < <(stuck_fields "$e" '[.kind, .num, (.frozen.base // 0)]') || F=()
+fi
+if [ "${#F[@]}" != 3 ]; then
+    echo "读不出本机的停住记录（$STATE_FILE），不能解除。什么都没改。"
+    exit 4
+fi
+kind="${F[0]}"; num="${F[1]}"; base="${F[2]}"
 case "$base" in ''|*[!0-9]*) base=0 ;; esac
 if [ -z "$kind" ] || [ -z "$num" ]; then
     echo "停住记录不成形（缺条目类型或编号），什么都没改：$e"

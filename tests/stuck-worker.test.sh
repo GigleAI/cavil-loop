@@ -1237,6 +1237,46 @@ chk "读失败 · 读得出之后的下一轮：指令记为已用掉、重新�
     "true/new/none/0/0"
 tick 5; tick 5
 chk "读失败 · 再过两轮：同一条指令始终没有再送任务" "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" "0/0"
+# 复审第 4 轮（代码）的复现：每轮遍历停住记录时读失败一次。读不出 ≠ 没有记录：停住记录要留着、
+# 这一轮不派工；读得出之后仍然要过恢复核对（这里人在那之前又挂了 pending/human → 不派）。
+# 三种读失败各一例：读单条记录、读记录清单、从读到的记录里取字段
+rdfail_loop() {   # <名字> <jq 故障的 glob> <日志里应出现的字样>
+    frozen_is "$1"; human_resume "$N" pending/agent doing/agent pending/agent
+    local g0 w0 d0 E0; g0=$(got "$N"); w0=$(lwrites "$N"); d0=$(disp "$N"); E0=$(ff "$N" token)
+    printf '%s\n' "$2" > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+    tick 5
+    chk "$1 · 到达性：遍历停住记录时这一次读取确实失败了" "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$([ "$(plog "$3")" -ge 1 ] && echo logged || echo silent)" "hit/logged"
+    chk "$1 · 读失败的这一轮：停住记录原样留着，不派工、不送任务、不写标签" \
+        "$(frozen "$N")/$([ "$(ff "$N" token)" = "$E0" ] && echo same || echo changed)/$(( $(disp "$N") - d0 ))/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))" "true/same/0/0/0"
+    # 读取恢复之前，人又把这一条暂停了：恢复核对必须还在
+    hlabel "$N" add pending/human
+    tick 5; tick 5
+    chk "$1 · 读取恢复后人已挂上 pending/human：仍过恢复核对，不派工、不送任务、不写标签，标签原样" \
+        "$(frozen "$N")/$(( $(disp "$N") - d0 ))/$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$(labels_of "$N")" "true/0/0/0/pending/agent,pending/human"
+    # 对照：人撤掉暂停、重新打一次派工标签 → 照常按恢复指令派
+    hlabel "$N" rm pending/human; hlabel "$N" rm pending/agent; hlabel "$N" add pending/agent
+    tick 5
+    chk "$1 · 对照：人重新授权后照常派工，记录清掉" "$(( $(disp "$N") - d0 ))/$(labels_of "$N")/$(entry "$N")" "1/doing/agent/{}"
+}
+rdfail_loop rdloop1 '-ce --arg k * if type == "object" and*' '读不出工作编号 [0-9]* 的记录'
+rdfail_loop rdloop2 '-er if type == "object" and ((.stuck_workers // {}) | type) == "object"*keys*' '读不出本机的记录清单'
+rdfail_loop rdloop3 '-er *.frozen != null), (.restarts // 0*' '读不出工作编号 [0-9]* 的记录'
+# 停住之后的各步（发说明、记起点、初筛）从记录里取字段失败：这一轮什么都不做，不重复发说明、不改起点
+frozen_is rdloop4
+c0=$(cposts "$N"); b0=$(ff "$N" base)
+printf '%s\n' '-er *.frozen.posted // "no"), .frozen.base*' > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+tick 5
+chk "停住处理取字段失败：到达；没有再发说明、起点没变、仍停住" \
+    "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$(( $(cposts "$N") - c0 ))/$([ "$(ff "$N" base)" = "$b0" ] && echo same || echo moved)/$(frozen "$N")" "hit/0/same/true"
+# 恢复判断里取「最后一条流程标签事件是谁做的」失败：不能当成通过
+frozen_is rdloop5; human_resume "$N" pending/agent doing/agent pending/agent
+g0=$(got "$N")
+printf '%s\n' '-er *.last.actor, .last.id, .last.label*' > "$CTL/jqfault"; touch "$CTL/jqfault.keep"; rm -f "$CTL/jqfault.hits"
+tick 5
+rm -f "$CTL/jqfault" "$CTL/jqfault.keep"
+chk "恢复判断取字段失败：到达；当作不成立，不派工、仍停住" "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$(( $(got "$N") - g0 ))/$(frozen "$N")" "hit/0/true"
+tick 5
+chk "恢复判断 · 对照：读得出之后照常派工" "$(labels_of "$N")/$(entry "$N")" "doing/agent/{}"
 # 派工前读不出本机的停住记录：不能把停住的条目当成普通派工放过去；读得出之后照常按恢复指令派
 frozen_is rdfail2; human_resume "$N" pending/agent doing/agent pending/agent
 g0=$(got "$N"); w0=$(lwrites "$N")
