@@ -341,10 +341,10 @@ def agent_record_candidates(cwd_prefix, claude_root, codex_root):
 # ── 扫描位置 ────────────────────────────────────────────────────────────────
 
 def load_state(path):
-    """{"files": {路径: {dev, ino, off, final, own, head, size, mtime}}}。
+    """{"files": {路径: {dev, ino, size, mtime, off, final, own, head, anchor}}}。
 
-    一个文件的扫描位置和「属不属于本项目」记在同一条里，都绑在文件身份（设备号 + inode）上：
-    路径上换了一个文件，两样一起作废、重新判断。读不出来的状态文件 = 从头来。
+    一个文件的扫描位置和「属不属于本项目」记在同一条里。什么时候可以不打开就跳过、什么时候
+    能接着上次的位置扫，各只有一处判断：_untouched / _resume_offset。读不出来的状态文件 = 从头来。
     """
     try:
         with open(path) as fh:
@@ -391,8 +391,49 @@ def _summary(stats):
         1 if stats.unfinished else 0, ",".join(sorted(stats.fingerprints))))
 
 
+ANCHOR = 4096
+RACY_SECS = 2      # 修改时间比这更新的文件，不靠修改时间判断「没动过」
+
+
+def _digest(data):
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 def _same_file(rec, info):
     return rec.get("ino") == info.st_ino and rec.get("dev") == info.st_dev
+
+
+def _untouched(rec, info):
+    """文件自上次记录以来一个字节都没被动过：同一个文件、长度和修改时间都没变。
+
+    只有这一个条件可以不打开文件就跳过。别的情况一律打开，由 _resume_offset 决定从哪扫。
+    """
+    return (_same_file(rec, info) and rec.get("mtime") is not None
+            and rec.get("size") == info.st_size and rec.get("mtime") == info.st_mtime_ns)
+
+
+def _resume_offset(rec, info, fd):
+    """上次的扫描位置还能不能接着用。能 → 返回它；不能 → 0（从头扫）。
+
+    这些文件正常情况下只会在末尾追加。接着扫的条件是「上次扫过的那一段原样还在」：
+      · 还是同一个文件（设备号 + inode）
+      · 变长了（追加）；长度没变而修改时间变了 = 被原地改写过，不是追加
+      · 开头一段和扫描位置前的一段，内容都和上次记下的一样
+    任何一条不成立都从头扫——多扫一遍没有副作用，少扫会漏。
+    """
+    off = rec.get("off")
+    if not isinstance(off, int) or not _same_file(rec, info):
+        return 0
+    size = rec.get("size", 0)
+    if info.st_size < size or off > info.st_size:
+        return 0
+    if info.st_size == size and rec.get("mtime") != info.st_mtime_ns:
+        return 0
+    if rec.get("head") != _digest(os.pread(fd, ANCHOR, 0)):
+        return 0
+    if rec.get("anchor") != _digest(os.pread(fd, min(ANCHOR, off), max(0, off - ANCHOR))):
+        return 0
+    return off
 
 
 def run_scan(argv):
@@ -441,13 +482,12 @@ def run_scan(argv):
         except OSError:
             continue
         rec = st["files"].get(path) or {}
-        # 不用打开就能跳过的：还是上次那个文件，而且（判过不属于本项目、之后没再写过 或 已经扫到末尾）
-        if _same_file(rec, info) and info.st_size >= rec.get("size", 0):
-            if cwd_of is not None and rec.get("own") is False \
-                    and rec.get("size") == info.st_size and rec.get("mtime") == info.st_mtime_ns:
+        # 唯一不打开就跳过的情况：文件一个字节没动过，而且上次已经处理完
+        # （判过不属于本项目，或已经扫到末尾）
+        if _untouched(rec, info):
+            if rec.get("own") is False:
                 continue
-            if rec.get("off") == info.st_size and (not final or rec.get("final")) \
-                    and (cwd_of is None or rec.get("own") is True):
+            if rec.get("off") == info.st_size and (not final or rec.get("final")):
                 continue
         try:
             fd = os.open(path, os.O_RDWR)
@@ -458,24 +498,21 @@ def run_scan(argv):
         try:
             # 以打开的这个文件为准：stat 和 open 之间路径上换了文件，也只按打开的这个判
             info = os.fstat(fd)
-            if not _same_file(rec, info) or info.st_size < rec.get("size", 0):
-                rec = {}        # 换了文件 / 被截短重写：扫描位置和归属一起作废
             own = None
             if cwd_of is not None:
-                # 每次打开都从这个文件里重读工作目录，不信上次的结论：同一个文件也可能被
-                # 原地重写成别的内容。开头那一段变了，扫描位置一起作废。
-                head = hashlib.sha256(os.pread(fd, 4096, 0)).hexdigest()[:16]
-                if rec.get("head") != head:
-                    rec = {}
+                # 每次打开都从这个文件里重读工作目录，不沿用上次的结论
                 cwd = cwd_of(fd)
                 if cwd is None:
+                    st["files"].pop(path, None)
                     continue        # 读不出工作目录：这次不算，也不记，下次再看
                 own = _under(cwd, prefix)
                 if not own:
-                    st["files"][path] = {"dev": info.st_dev, "ino": info.st_ino, "head": head,
-                                         "size": info.st_size, "mtime": info.st_mtime_ns, "own": False}
+                    st["files"][path] = {
+                        "dev": info.st_dev, "ino": info.st_ino, "own": False, "size": info.st_size,
+                        "mtime": info.st_mtime_ns if time.time() - info.st_mtime > RACY_SECS else None}
                     continue
-            off = rec.get("off", 0)
+            off = _resume_offset(rec, info, fd)
+            before = stats.replaced
             try:
                 new_off = scan_fd(fd, off, final, cwd_of is not None, stats, deadline)
             except OSError as e:
@@ -484,10 +521,16 @@ def run_scan(argv):
                 print("error=%s: %s" % (path, e.strerror or e), file=sys.stderr)
                 continue
             new = {"dev": info.st_dev, "ino": info.st_ino, "size": info.st_size, "off": new_off,
-                   "final": bool(final and new_off == info.st_size)}
+                   "final": bool(final and new_off == info.st_size),
+                   "head": _digest(os.pread(fd, ANCHOR, 0)),
+                   "anchor": _digest(os.pread(fd, min(ANCHOR, new_off), max(0, new_off - ANCHOR))),
+                   # 这一轮自己改过文件时不记修改时间：下一轮一定会再打开、从头核一遍，
+                   # 核完没有新的替换才记下，之后才允许不打开就跳过
+                   # 修改时间离现在太近也不记（文件系统的时间有粒度，同一刻里的再次改写看不出来）。
+                   "mtime": info.st_mtime_ns if stats.replaced == before
+                            and time.time() - info.st_mtime > RACY_SECS else None}
             if own is not None:
                 new["own"] = own
-                new["head"] = head
             st["files"][path] = new
         finally:
             os.close(fd)

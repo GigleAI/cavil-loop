@@ -461,6 +461,35 @@ chk "换成本项目的记录后被替换（没有因为判过「不是」而一
 theirs fourth > "$SW"; cp "$SW" "$TMP/sw.orig"; scan 2>/dev/null
 chk "同一个文件被截短重写成别的项目的记录：也不动" "$(cmp -s "$SW" "$TMP/sw.orig" && echo same)" "same"
 
+echo "【12d】同一个文件、长度不变地原地重写：不能因为「大小没变」就跳过"
+# 复审第 2 轮：先扫完，再把内容等长改写成带令牌的，之后连扫两轮都被跳过
+FILL="$(rep x ${#TP})"
+eqrec() { printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n%s{"type":"x","payload":{"output":"%s"}}\n' "$TMP/wt/issue-9" "$2" "$1"; }
+inplace() { python3 -c 'import os,sys; d=sys.stdin.buffer.read(); fd=os.open(sys.argv[1], os.O_WRONLY); assert os.fstat(fd).st_size==len(d); os.pwrite(fd, d, 0); os.close(fd)' "$1"; }
+PADBIG="$(printf '{"type":"pad","payload":{"output":"%s"}}\n' "$(rep p 6000)")"   # 让令牌落在开头 4KB 之后
+n=0
+for pad in "" "$PADBIG"; do
+    n=$((n+1)); EQ="$HOME/.codex/sessions/2026/09/14/rollout-2026-09-14T00-00-0$((3+n))-7d9e5509-1591-493b-80b9-7d93e3f5344$n.jsonl"
+    eqrec "$FILL" "$pad" > "$EQ"; INO=$(stat -c %i "$EQ"); SZ=$(wc -c < "$EQ")
+    touch -d '1 hour ago' "$EQ"              # 旧文件：修改时间离现在够远，才会被记成「没动过可以跳过」
+    scan 2>/dev/null; scan 2>/dev/null
+    chk "（第 $n 种）前提：扫完后这个文件已经记成可以不打开就跳过" \
+        "$(jq -r --arg p "$EQ" '.files[$p] | "\(.off == .size)|\(.mtime != null)"' "$TMP/state/redact-scan.json")" "true|true"
+    sleep 0.05; eqrec "$TP" "$pad" | inplace "$EQ"
+    chk "（第 $n 种：令牌在开头 4KB $([ -z "$pad" ] && echo 之内 || echo 之后)）前提：同一个文件、长度没变、里面现在有原文" \
+        "$([ "$(stat -c %i "$EQ")" = "$INO" ] && [ "$(wc -c < "$EQ")" = "$SZ" ] && has "$EQ" "$TP" && echo ok)" "ok"
+    scan 2>/dev/null
+    chk "　下一轮扫描就替换了" "$(has "$EQ" "$TP" && echo raw || echo clean)|$(has "$EQ" "$(want "$TP")" && echo fp)" "clean|fp"
+    cp "$EQ" "$TMP/eq.once"; scan 2>/dev/null; scan 2>/dev/null
+    chk "　再扫两轮字节不变" "$(cmp -s "$EQ" "$TMP/eq.once" && echo same)" "same"
+done
+# daemon 自己的日志走的是同一套判断：poll.log 被等长改写后也要重新扫
+EQL="$PANES/rdtest-issue95.log"
+T new-session -d -s rdtest-issue95 -x 80 -y 20 "sleep 60"      # 会话活着 = 文件还会写
+printf '一行\n%s\n' "$FILL" > "$EQL"; touch -d '1 hour ago' "$EQL"; scan 2>/dev/null; scan 2>/dev/null
+sleep 0.05; printf '一行\n%s\n' "$TP" | inplace "$EQL"; scan 2>/dev/null
+chk "窗格历史被等长改写后同样重新扫" "$(cat "$EQL" | tr '\n' '|')" "一行|$(want "$TP")|"
+
 echo "【13】开关：REDACT_AGENT_RECORDS 留空时不改 agent 的文件，daemon 自己的日志照常处理"
 printf '{"type":"user","cwd":"%s","message":{"content":"关着的时候 %s"}}\n' "$TMP/wt/issue-7" "$TS" >> "$CJ"
 cp "$CJ" "$TMP/cj.off"
