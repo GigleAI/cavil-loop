@@ -46,6 +46,30 @@
    "markdown": "<pre>raw   pre\n  second line</pre>\n",
    "html": "<pre class=\"notranslate\">raw   pre\n  second line</pre>"
   },
+  "with a language, a blank line before the closing fence": {
+   "markdown": "```bash\necho one\n\n```\n",
+   "html": "<div class=\"highlight highlight-source-shell\" dir=\"auto\"><pre class=\"notranslate\"><span class=\"pl-c1\">echo</span> one\n</pre></div>"
+  },
+  "with a language, no blank line at the end": {
+   "markdown": "```bash\necho one\n```\n",
+   "html": "<div class=\"highlight highlight-source-shell\" dir=\"auto\"><pre class=\"notranslate\"><span class=\"pl-c1\">echo</span> one</pre></div>"
+  },
+  "no language, a blank line before the closing fence": {
+   "markdown": "```\necho one\n\n```\n",
+   "html": "<pre class=\"notranslate\"><code class=\"notranslate\">echo one\n\n</code></pre>"
+  },
+  "no language, no blank line at the end": {
+   "markdown": "```\necho one\n```\n",
+   "html": "<pre class=\"notranslate\"><code class=\"notranslate\">echo one\n</code></pre>"
+  },
+  "raw <pre> ending in a line break": {
+   "markdown": "<pre>raw one\nraw two\n</pre>\n",
+   "html": "<pre class=\"notranslate\">raw one\nraw two\n</pre>"
+  },
+  "raw <pre> ending in two line breaks": {
+   "markdown": "<pre>raw one\n\n</pre>\n",
+   "html": "<pre class=\"notranslate\">raw one\n\n</pre>"
+  },
   "a block inside <details>": {
    "markdown": "<details><summary>log</summary>\n\n```text\nfolded away\n```\n\n</details>\n",
    "html": "<details><summary>log</summary>\n<pre lang=\"text\" class=\"notranslate\"><code class=\"notranslate\">folded away\n</code></pre>\n</details>"

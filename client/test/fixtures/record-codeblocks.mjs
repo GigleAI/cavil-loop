@@ -32,6 +32,14 @@ const SAMPLES = {
   'two blocks and inline code': 'first `inline`:\n\n```sh\necho one\n```\n\nthen:\n\n```\ntwo\n```\n',
   'a block inside a list item': '- item\n\n  ```js\n  const x = 1;\n  ```\n- [ ] a box after it\n',
   'raw <pre> written by hand': '<pre>raw   pre\n  second line</pre>\n',
+  // the end of a block (PR #386 review round 1): GitHub adds a line break after a block without a language,
+  // and none after one with a language or a hand-written <pre> — there a line break at the end is the author's
+  'with a language, a blank line before the closing fence': '```bash\necho one\n\n```\n',
+  'with a language, no blank line at the end': '```bash\necho one\n```\n',
+  'no language, a blank line before the closing fence': '```\necho one\n\n```\n',
+  'no language, no blank line at the end': '```\necho one\n```\n',
+  'raw <pre> ending in a line break': '<pre>raw one\nraw two\n</pre>\n',
+  'raw <pre> ending in two line breaks': '<pre>raw one\n\n</pre>\n',
   'a block inside <details>': '<details><summary>log</summary>\n\n```text\nfolded away\n```\n\n</details>\n',
 };
 

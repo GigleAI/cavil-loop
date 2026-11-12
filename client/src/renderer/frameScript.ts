@@ -12,7 +12,10 @@
 // put both back, and a bare R key (GitHub#322: "go to the reply box" — the one
 // key it passes on; every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
-// and reports nothing: the block's text goes to the clipboard inside the click (select + copy, the way that
+// and reports nothing: the block's text goes to the clipboard inside the click — all of it, less the one line
+// break GitHub's renderer adds after a block without a language (<pre> holding one <code> and nothing else; a
+// block with a language or a hand-written <pre> gets none, so a line break at its end is the author's and is
+// kept: PR #386 review round 1) — by select + copy, the way that
 // works in a frame that is not same-origin; the clipboard API after it), and when neither way works the button
 // says so and the block stays selected. It has no way to change anything on GitHub by
 // itself: the window decides, and the frame cannot reach the window's objects
@@ -81,7 +84,9 @@ export const FRAME_SCRIPT = `(function () {
     }, 2000);
   }
   function copy(pre, btn) {
-    var text = pre.textContent.replace(/\\n$/, ''), s = window.getSelection(), g = document.createRange(), ok = false;
+    var text = pre.textContent, c = pre.children.length === 1 ? pre.firstElementChild : null;
+    if (c && c.tagName === 'CODE' && c.textContent === text) text = text.replace(/\\n$/, '');
+    var s = window.getSelection(), g = document.createRange(), ok = false;
     g.selectNodeContents(pre);
     s.removeAllRanges();
     s.addRange(g);
@@ -111,4 +116,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-Bhg6SWd/FH9K+sDw96EZaoN/ZT+GlTXkfsunTng+ZoM='";
+export const FRAME_SCRIPT_HASH = "'sha256-i7hTzbr0V50tFWsw/0IJXDQod0kNEbZIMmM+yBC5vow='";
