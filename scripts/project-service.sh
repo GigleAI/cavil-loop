@@ -51,7 +51,7 @@ want_from=running; verb=停
 [ "$ACTION" = start ] && { want_from=stopped; verb=启; }
 if [ "$state" != "$want_from" ]; then
     case "$state" in running) shown=在跑 ;; stopped) shown=已停 ;; *) shown=读不到 ;; esac
-    echo "$KEY 现在的后台任务状态是「$shown」，没有执行「$verb」"
+    echo "$KEY 现在的后台任务状态是「${shown}」，没有执行「${verb}」"
     finish "$state" refused 2
 fi
 if ! [[ "$unit" =~ ^[A-Za-z0-9_.@-]+$ ]] || [[ "$unit" == -* ]]; then
@@ -73,7 +73,7 @@ case "$kind" in
             plist="$(jq -r '.plist // ""' <<<"$sched")"
             expect="$HOME/Library/LaunchAgents/$unit.plist"
             if [ "$plist" != "$expect" ] || [ ! -f "$expect" ]; then
-                echo "找不到 $KEY 的后台任务配置文件 $expect，没有执行"
+                echo "找不到 $KEY 的后台任务配置文件 ${expect}，没有执行"
                 finish "$state" refused 2
             fi
             launchctl bootstrap "gui/$uid" "$plist" 2>&1 || true
@@ -92,5 +92,5 @@ if after="$(read_sched)"; then
     case "$now" in running|stopped) ;; *) now=unknown ;; esac
 fi
 if [ "$now" = "$want" ]; then finish "$now" ok 0; fi
-echo "执行了「$verb」，但读回的状态是 $now"
+echo "执行了「${verb}」，但读回的状态是 $now"
 finish "$now" failed 3

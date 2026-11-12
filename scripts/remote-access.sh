@@ -343,13 +343,13 @@ cmd_enable() {
             fi
             ts_mapping "$p"
             if [ "$TS_MAP" != ours ]; then
-                echo "登记了转发，但读回的结果不对（$TS_MAP）。入口没有打开。"
+                echo "登记了转发，但读回的结果不对（${TS_MAP}）。入口没有打开。"
                 release_port "$p"
-                [ "$REL" = gone ] || [ "$REL" = foreign ] || echo "  没能确认撤掉（$REL），请手动核对：tailscale serve status；撤掉用 sudo tailscale serve --https=$p off"
+                [ "$REL" = gone ] || [ "$REL" = foreign ] || echo "  没能确认撤掉（${REL}），请手动核对：tailscale serve status；撤掉用 sudo tailscale serve --https=$p off"
                 result failed 3
             fi
-            echo "✓ 已登记转发：https://$TS_HOST:$p → 127.0.0.1:$p（仅本 Tailscale 网络）" ;;
-        ours) echo "✓ 转发已在：https://$TS_HOST:$p → 127.0.0.1:$p（仅本 Tailscale 网络）" ;;
+            echo "✓ 已登记转发：https://$TS_HOST:$p → 127.0.0.1:${p}（仅本 Tailscale 网络）" ;;
+        ours) echo "✓ 转发已在：https://$TS_HOST:$p → 127.0.0.1:${p}（仅本 Tailscale 网络）" ;;
     esac
     if ! { mkdir -p "$STATE" && chmod 700 "$STATE" && printf '%s\n' "$p" > "$STATE/port.tmp" && mv "$STATE/port.tmp" "$STATE/port"; } 2>/dev/null; then
         echo "记不下当前端口（$STATE/port 写不进去），入口没有打开。转发已登记并记在清单里，修好后重跑本命令，或用 disable 撤掉。"
@@ -359,7 +359,7 @@ cmd_enable() {
     svc_install_and_start "$p"
     svc_probe
     if [ "$SVC_STATE" != running ]; then
-        echo "常驻服务没有起来（状态：$SVC_STATE）。入口没有打开；转发已登记，可以直接重跑本命令，或用 disable 撤掉。"
+        echo "常驻服务没有起来（状态：${SVC_STATE}）。入口没有打开；转发已登记，可以直接重跑本命令，或用 disable 撤掉。"
         [ -n "${SVC_OUT:-}" ] && printf '%s\n' "$SVC_OUT" | sed 's/^/  /'
         result failed 3
     fi
@@ -372,10 +372,10 @@ cmd_enable() {
         case "$REL" in
             gone)    echo "✓ 已撤掉以前端口 $q 上的转发" ;;
             foreign) echo "以前的端口 $q 上现在是别的转发，没有动它" ;;
-            *)       echo "以前端口 $q 上的转发没能撤掉（$REL）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left="$left $q" ;;
+            *)       echo "以前端口 $q 上的转发没能撤掉（${REL}）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left="$left $q" ;;
         esac
     done
-    echo "远程入口已打开：$TS_HOST（端口 $p）。生成配对码：bash $0 pair"
+    echo "远程入口已打开：${TS_HOST}（端口 ${p}）。生成配对码：bash $0 pair"
     if [ "$LEDGER_UNSAVED" = 1 ]; then echo "端口清单没能写回（$STATE/ports），里面可能多记着已经撤掉的端口；修好权限后重跑本命令"; left="$left 清单"; fi
     if [ -n "$left" ]; then result partial 3; fi
     result enabled 0
@@ -399,7 +399,7 @@ cmd_disable() {
     if [ "$TS_MAP" = unknown ]; then echo "读不到 Tailscale 现有的转发设置，什么都没动"; result tailscale_unknown 2; fi
     local left=0 q released=0
     if ! svc_stop_and_remove; then
-        echo "常驻服务停不下来或确认不了（状态：$SVC_STATE）"
+        echo "常驻服务停不下来或确认不了（状态：${SVC_STATE}）"
         [ -n "${SVC_OUT:-}" ] && printf '%s\n' "$SVC_OUT" | sed 's/^/  /'
         left=1
     else
@@ -409,9 +409,9 @@ cmd_disable() {
     for q in ${OWNED[@]+"${OWNED[@]}"}; do
         release_port "$q"
         case "$REL" in
-            gone)    echo "✓ 已撤掉转发（端口 $q）"; released=1 ;;
+            gone)    echo "✓ 已撤掉转发（端口 ${q}）"; released=1 ;;
             foreign) echo "端口 $q 上现在是别的转发，没有动它" ;;
-            *)       echo "转发没能撤掉（端口 $q，$REL）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left=1 ;;
+            *)       echo "转发没能撤掉（端口 ${q}，${REL}）。请用管理员权限跑：sudo tailscale serve --https=$q off，再重跑本命令"; left=1 ;;
         esac
     done
     [ "$released" = 1 ] || [ "$left" = 1 ] || echo "没有本功能登记的转发，没有动 Tailscale 的设置"
@@ -440,7 +440,7 @@ cmd_pair() {
         state_load; state_require
     fi
     local made code expires host
-    made="$(python3 "$PY" pair-code --expiry --state "$STATE")" || { echo "配对码没能生成（写不进 $STATE）"; result failed 3; }
+    made="$(python3 "$PY" pair-code --expiry --state "$STATE")" || { echo "配对码没能生成（写不进 ${STATE}）"; result failed 3; }
     code="$(sed -n 1p <<<"$made")"; expires="$(sed -n 2p <<<"$made")"
     host="$TS_HOST$( [ "$CUR_PORT" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$CUR_PORT" )"
     echo
@@ -479,7 +479,7 @@ cmd_status() {
     if js="$(tailscale status --json 2>/dev/null)"; then host="$(jq -r '(.CertDomains // [])[0] // ""' <<<"$js" 2>/dev/null || true)"; fi
     if [ -n "$host" ]; then
         TS_HOST="$host"; ts_mapping "$p"
-        echo "机器名：$host（端口 $p）"
+        echo "机器名：${host}（端口 ${p}）"
         echo "Tailscale 转发：$TS_MAP"
     else
         TS_MAP=unknown
@@ -525,7 +525,7 @@ cmd_revoke() {
     local gone rc=0
     gone="$(python3 "$PY" revoke --state "$STATE" --target "$1")" || rc=$?
     case "$rc" in
-        0) printf '%s\n' "$gone" | while IFS=$'\t' read -r id name; do echo "✓ 已撤销：$name（$id），它的钥匙从现在起无效"; done ;;
+        0) printf '%s\n' "$gone" | while IFS=$'\t' read -r id name; do echo "✓ 已撤销：${name}（${id}），它的钥匙从现在起无效"; done ;;
         1) echo "没有叫「$1」的已配对设备。现有设备：bash $0 list"; exit 1 ;;
         *) echo "读不到已配对设备清单（$STATE/devices.json），没有撤销任何设备"; exit 2 ;;
     esac
