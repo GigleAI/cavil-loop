@@ -1,13 +1,14 @@
 import type { Iteration } from '../shared/types';
 import { iterationSections } from '../shared/filter';
+import { CURRENT_MARK } from '../data/newIssueFields';
+
+export { CURRENT_MARK };
 
 /** Today's date (local time) as YYYY-MM-DD — the board, the table and the pickers judge "current" by it. */
 export function localToday(now: number): string {
   const d = new Date(now);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-
-export const CURRENT_MARK = '（当前）';
 
 /**
  * The options of one Project's iteration picker (GitHub#231), used by the detail panel and the

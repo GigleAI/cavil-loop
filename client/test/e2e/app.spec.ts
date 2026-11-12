@@ -31,6 +31,13 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
+/** GitHub#405: the new-issue dialog keeps labels / milestone / iteration in a fold, shut when it opens */
+async function openMoreFields(page: Page) {
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'no');
+  await page.getByTestId('new-issue-more-toggle').click();
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'yes');
+}
+
 /** expected per-column counts straight from the recorded JSON */
 function rawCount(field: string, key: 'title' | 'name') {
   const out: Record<string, number> = {};
@@ -475,6 +482,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await page.getByTestId('write-entry').click();
   await page.getByTestId('new-issue-title').fill('客户端里建的 issue');
   await page.getByTestId('new-issue-body').fill('正文');
+  await openMoreFields(page);
   await page.getByTestId('new-issue-label-add').click();
   await page.locator('[data-testid="new-issue-label-picker"] [data-testid="picker-item"][data-name="pending/human"]').click();
   await page.keyboard.press('Escape');
@@ -3771,6 +3779,7 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   await page.getByTestId('write-entry').click();
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await page.getByTestId('new-issue-title').fill('只进仓库的 issue');
+  await openMoreFields(page);
   await page.getByTestId('new-issue-label-add').click();
   const picker = page.getByTestId('new-issue-label-picker');
   await expect(picker.locator('[data-testid="picker-item"]').first()).toBeVisible();
@@ -3783,6 +3792,13 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   await expect(chip).toBeVisible();
   expect(await chip.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
   await shot(page, '205-04-new-issue');
+  // GitHub#405: shut, the chosen label is on the fold's head line in the same colour
+  const chipColour = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+  await page.getByTestId('new-issue-more-toggle').click();
+  await expect(chip).toHaveCount(0);
+  const headChip = page.locator('[data-testid="new-issue-more-label"][data-label="pending/human"]');
+  await expect(headChip).toBeVisible();
+  expect(await headChip.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(chipColour);
   // untick the board: the new issue joins none
   await page.getByTestId('new-issue-project').uncheck();
   await expect(page.getByTestId('new-issue-projects-hint')).toContainText('不加入任何看板');
@@ -4008,6 +4024,10 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   await expect(line('group')).toContainText('当前没有勾选看板，不会设置状态');
   await expect(line(PROJECT_KEY)).toHaveCount(0);
   await expect(page.getByTestId('new-issue-projects').getByTestId('new-issue-preset')).toHaveAttribute('data-place', 'boards');
+  // GitHub#405: lines about the boards stay outside the fold — seen while it is shut
+  await expect(page.getByTestId('new-issue-more')).toHaveAttribute('data-open', 'no');
+  await expect(line('group')).toBeVisible();
+  expect(await page.getByTestId('new-issue-more').locator('[data-testid="new-issue-preset-line"]').count()).toBe(0);
   await board.check();
   await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
   await page.getByTestId('new-issue-title').fill('在 In progress 组里建的');
@@ -4054,6 +4074,8 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
     await expect(line('milestone')).toHaveCount(0);
     await expect(page.getByTestId('new-issue-preset')).toHaveCount(0);
     await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+    // GitHub#405: the group's milestone is said on the shut fold's head line
+    await expect(page.getByTestId('new-issue-more-milestone')).toHaveText('v1.2');
     const n = nextNumber();
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('detail')).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
@@ -4555,6 +4577,8 @@ test('GitHub#245: new issue — hand to the agent / autopilot when creating; the
   await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('读不到仓库 GigleAI/cavil-loop 的标签');
   await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('记住的选项不变');
   await expect(handoff).not.toContainText('没有标签');
+  // GitHub#405: the fold is shut; its head line says the label list could not be read
+  await expect(page.getByTestId('new-issue-more-labels')).toHaveText('标签读取失败');
   await shot(page, '245-02-new-issue-labels-unreadable');
   await createAndClose('读不到标签时建的');
   expect(creates().at(-1)).toEqual({ title: '读不到标签时建的', body: '', labels: [] });
@@ -6751,6 +6775,37 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await page.keyboard.press(`${MOD}+n`);
   const ms = page.getByTestId('new-issue-milestone');
   const it = page.getByTestId('new-issue-iteration');
+  // GitHub#405: the three sit in one fold, shut when the dialog opens: not on the page, their values on its head line
+  const fold = page.getByTestId('new-issue-more');
+  const toggle = page.getByTestId('new-issue-more-toggle');
+  const sumOf = (f: string) => page.getByTestId(`new-issue-more-${f}`);
+  /** the text of the option a picker holds — what the shut fold's head line must say */
+  const chosenText = (sel: typeof ms) => sel.evaluate((e: HTMLSelectElement) => e.options[e.selectedIndex]?.textContent ?? '');
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(ms).toHaveCount(0);
+  await expect(it).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-label-add')).toHaveCount(0);
+  await expect(sumOf('labels')).toHaveText('未选标签');
+  await expect(sumOf('milestone')).toHaveText('不设里程碑');
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  await expect(toggle).toContainText('标签、里程碑、迭代');
+  await shot(page, '405-01-new-issue-shut');
+  // no board ticked: no iteration picker, so the line and the title leave the iteration out
+  const board = page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`);
+  await board.uncheck();
+  await expect(sumOf('iteration')).toHaveCount(0);
+  await expect(toggle).toContainText('标签、里程碑');
+  await expect(toggle).not.toContainText('迭代');
+  await board.check();
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  // the keyboard opens it: Tab lands on the head, Enter opens; the three come in the order labels → milestone → iteration
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(fold).toHaveAttribute('data-open', 'yes');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const order = await fold.locator('[data-testid="new-issue-labels"], [data-testid="new-issue-milestone"], [data-testid="new-issue-iteration"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+  expect(order).toEqual(['new-issue-labels', 'new-issue-milestone', 'new-issue-iteration']);
+  expect(await chosenText(it)).toBe('当前迭代（Iteration 26）');
   await expect(ms).toBeEnabled();
   await expect(ms).toHaveValue('');
   expect(await ms.locator('option').evaluateAll((o) => o.map((x) => x.textContent))).toEqual(['不设里程碑', 'v1.2']);
@@ -6760,6 +6815,21 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await ms.selectOption('v1.2');
   await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
   await shot(page, '372-02-new-issue-picked');
+  await shot(page, '405-02-new-issue-open');
+  const itPicked = await chosenText(it);
+  expect(itPicked).toBe('Iteration 27（2026-11-16 起）');
+  // shut again (Space on the head): the head line says what the pickers held; created shut, the picks still go
+  await toggle.focus();
+  await page.keyboard.press(' ');
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(it).toHaveCount(0);
+  await expect(sumOf('milestone')).toHaveText('v1.2');
+  await expect(sumOf('iteration')).toHaveText(itPicked);
+  await shot(page, '405-03-new-issue-picked-shut');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(sumOf('iteration')).toHaveText(itPicked);
+  await shot(page, '405-04-new-issue-picked-shut-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
   const before = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect(dialog).toHaveCount(0);
@@ -6772,7 +6842,13 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await page.getByTestId('write-entry').click();
   await expect(title).toBeFocused();
   await title.fill('不设迭代');
+  // a new dialog: shut again, the picks of the last one gone
+  await expect(sumOf('iteration')).toHaveText('当前迭代（Iteration 26）');
+  await openMoreFields(page);
   await it.selectOption('none');
+  expect(await chosenText(it)).toBe('不设迭代');
+  await toggle.click();
+  await expect(sumOf('iteration')).toHaveText('不设迭代');
   const before2 = writes().length;
   await page.getByTestId('confirm-ok').click();
   await expect.poll(() => writes().slice(before2).map((w) => w[0])).toEqual(['POST', 'CavilAddProjectItem']);
@@ -6784,6 +6860,10 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   // ---- 7. the milestone list cannot be read: the picker is off, a plain issue is still created ----
   env.fake.state.w.failMilestones.add('gigleai/cavil-loop');
   await page.getByTestId('write-entry').click();
+  // shut: the head line says so, in red
+  await expect(sumOf('milestone')).toHaveText('里程碑读取失败');
+  await expect(sumOf('milestone')).toHaveClass(/err/);
+  await openMoreFields(page);
   await expect(ms).toHaveAttribute('data-read', 'error');
   await expect(ms).toBeDisabled();
   await title.fill('读不到里程碑也能建');
@@ -6798,6 +6878,7 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
   await page.getByTestId('write-entry').click();
   await title.fill('REFUSED_372');
+  await openMoreFields(page);
   await ms.selectOption('v1.2');
   await it.selectOption({ label: 'Iteration 27（2026-11-16 起）' });
   await page.getByTestId('confirm-ok').click();
@@ -6807,6 +6888,11 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect(title).toHaveValue('REFUSED_372');
   await expect(title).toBeFocused();
   expect(await title.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd])).toEqual([11, 11]);
+  // the draft comes back shut, its picks on the head line
+  await expect(fold).toHaveAttribute('data-open', 'no');
+  await expect(sumOf('milestone')).toHaveText('v1.2');
+  await expect(sumOf('iteration')).toHaveText('Iteration 27（2026-11-16 起）');
+  await openMoreFields(page);
   await expect(ms).toHaveValue('v1.2');
   await expect(it).toHaveValue(/Iteration 27/);
   await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();

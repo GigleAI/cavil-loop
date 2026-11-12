@@ -734,3 +734,16 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .gdot.done { background: var(--edge-done); }
 .gpop-actions { display: flex; gap: 8px; }
 .gpop-outside { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* GitHub#405: the new-issue dialog's labels / milestone / iteration in one fold, shut by default; the head line says what they are set to */
+.more-fields { border: 1px solid var(--border); border-radius: 6px; }
+.form .more-fields button.more-head { display: flex; justify-content: flex-start; gap: 8px; width: 100%; min-height: 34px; padding: 4px 10px; border: 0; border-radius: 6px; background: none; text-align: left; white-space: nowrap; }
+.form .more-fields button.more-head:hover:not(:disabled) { background: var(--hover); }
+.more-head .icon { flex: none; color: var(--muted); transform: rotate(-90deg); transition: transform .12s; }
+.more-fields.open .more-head .icon { transform: none; }
+.more-title { flex: none; font-weight: 500; }
+.more-sum { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: 12px; font-weight: normal; }
+.more-part { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.more-part[data-tone='plain'] { color: var(--fg); }
+.more-sum .sep { opacity: .6; }
+.more-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 10px; border-top: 1px solid var(--border-muted); }

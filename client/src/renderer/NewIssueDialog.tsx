@@ -24,7 +24,7 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
 import { IterationOptions, localToday } from './iterationOptions';
-import { isCurrentIteration } from '../shared/filter';
+import { currentIterationNames, foldSummary, iterationOptionLabel, iterationPickText, milestoneText } from '../data/newIssueFields';
 import { sortRepos } from '../shared/repoOrder';
 import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
 
@@ -93,6 +93,8 @@ export function NewIssueDialog({
   // a board is "added" when it is a source, whether or not it was read completely yet
   const configured = allProjects.length > 0 || (data.boardRepos ?? []).length > 0;
   const [pasted, setPasted] = useState<{ copied: boolean | null } | null>(null);
+  // GitHub#405: labels, milestone and iteration sit in one fold, shut every time the dialog opens
+  const [moreOpen, setMoreOpen] = useState(false);
   const isDark = useDarkMode();
   // GitHub#245: who the new issue is handed to. `picked` = clicked in this dialog (null = not touched):
   // only a choice made here and actually used for a created issue is remembered — a fallback to
@@ -148,9 +150,16 @@ export function NewIssueDialog({
   // the one the picker holds when it is not one of the offered (an ended iteration a group gave)
   const itKept = itNow.kind === 'set' && !itChoices.some((i) => i.id === itValue) ? { id: itValue, title: itNow.title, startDate: itNow.startDate, duration: 0 } : null;
   // what "当前迭代" means here: the one name when every ticked board agrees, else per board
-  const currents = [...new Set(ticked.filter((p) => p.viewerCanUpdate && p.hasIterationField && p.iterationFieldId).flatMap((p) => p.iterations.filter((i) => isCurrentIteration(i, today)).map((i) => i.title)))];
+  const currents = currentIterationNames(ticked, today);
   const msChoices = milestoneChoices(read);
   const msValue = msNow.kind === 'set' ? msNow.title : '';
+  // GitHub#405: the fold's head line — the iteration / milestone as the pickers show them (one function for both)
+  const fold = foldSummary({
+    labels,
+    labelsRead: !opts ? 'loading' : opts.error ? 'error' : 'ok',
+    milestone: milestoneText(read, msValue),
+    iteration: showIt ? iterationPickText(itValue, itChoices, itKept, currents, today) : null,
+  });
   // GitHub#231: what an iteration / status group sets is about the boards: said right under their boxes
   const boardPreview = preset.by === 'iteration' || preset.by === 'status';
   // GitHub#270: only what will not happen as the group says; the rest is in the title (nothing to say = no box).
@@ -168,6 +177,11 @@ export function NewIssueDialog({
       ))}
     </div>
     );
+  };
+
+  const toggleMore = () => {
+    if (moreOpen) setPicking(false);
+    setMoreOpen(!moreOpen);
   };
 
   const colorOf = (name: string) => opts?.labels.find((l) => l.name === name)?.color ?? '';
@@ -238,61 +252,6 @@ export function NewIssueDialog({
             onDismiss={() => setPasted(null)}
           />
         )}
-        <div>
-          标签
-          <div className="chosen-labels" data-testid="new-issue-labels">
-            {labels.map((n) => (
-              <span key={n} className="label" data-testid="new-issue-label-chip" data-label={n} style={labelStyle(colorOf(n), isDark)}>
-                {n}
-                <button className="label-x" data-testid="new-issue-label-remove" data-label={n} title={`去掉「${n}」`} onClick={() => toggleLabel(n)}>
-                  <Icon name="x" size={10} />
-                </button>
-              </span>
-            ))}
-            <span className="picker-anchor">
-              <button className="label-plus" data-testid="new-issue-label-add" disabled={!opts || Boolean(opts.error)} onClick={() => setPicking(!picking)}>
-                {opts ? '+ 加标签' : '读取标签…'}
-              </button>
-              {picking && opts && (
-                <LabelPicker
-                  title="选择标签"
-                  hint={repo}
-                  testid="new-issue-label-picker"
-                  disabled={false}
-                  items={opts.labels.map((l) => ({ name: l.name, color: l.color, checked: labels.includes(l.name) }))}
-                  onToggle={(l) => toggleLabel(l.name)}
-                  onClose={() => setPicking(false)}
-                />
-              )}
-            </span>
-            {opts?.error && <span className="err small">{opts.error}</span>}
-          </div>
-        </div>
-        <label>
-          里程碑
-          <select
-            data-testid="new-issue-milestone"
-            data-read={read.state}
-            value={read.state === 'loading' ? '' : msValue}
-            disabled={busy || read.state !== 'ok'}
-            title={read.state === 'error' ? `读不到仓库 ${repo} 的里程碑（${read.error}）` : undefined}
-            onChange={(e) => setMsPick(e.target.value ? { kind: 'set', title: e.target.value } : { kind: 'none' })}
-          >
-            {read.state === 'loading' ? (
-              <option value="">读取里程碑…</option>
-            ) : (
-              <>
-                <option value="">不设里程碑</option>
-                {msValue && !msChoices.includes(msValue) && <option value={msValue}>{msValue}</option>}
-                {msChoices.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </>
-            )}
-          </select>
-        </label>
         <div data-testid="new-issue-handoff" data-handoff={handoff} data-wanted={wanted}>
           建好后
           <div className="handoff-picks">
@@ -377,26 +336,129 @@ export function NewIssueDialog({
             ))}
           {box('boards')}
         </div>
-        {showIt && (
-          <label>
-            迭代（加到勾选的看板上）
-            <select
-              data-testid="new-issue-iteration"
-              value={itValue}
-              disabled={busy}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === 'auto' || v === 'none') return setItPick({ kind: v });
-                const it = itChoices.find((i) => i.id === v) ?? itKept;
-                if (it) setItPick({ kind: 'set', title: it.title, startDate: it.startDate });
-              }}
-            >
-              <option value="auto">当前迭代{currents.length === 1 ? `（${currents[0]}）` : '（按各看板）'}</option>
-              <option value="none">不设迭代</option>
-              <IterationOptions iterations={itChoices} chosen={itKept} today={today} label={(i) => `${i.title}（${i.startDate} 起）`} />
-            </select>
-          </label>
-        )}
+        <div className={`more-fields${moreOpen ? ' open' : ''}`} data-testid="new-issue-more" data-open={moreOpen ? 'yes' : 'no'}>
+          <button
+            type="button"
+            className="more-head"
+            data-testid="new-issue-more-toggle"
+            aria-expanded={moreOpen}
+            title={moreOpen ? `收起${fold.title}` : `展开${fold.title}`}
+            onClick={toggleMore}
+            // the dialog lets no plain Enter press one of its buttons (GitHub#192, ConfirmDialog); opening
+            // or shutting this fold sends nothing, so Enter does it here (and Space, as on any button)
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+                e.preventDefault();
+                toggleMore();
+              }
+            }}
+          >
+            <Icon name="chevron" size={14} />
+            <span className="more-title">{fold.title}</span>
+            {!moreOpen && (
+              <span className="more-sum" data-testid="new-issue-more-summary">
+                {fold.parts.map((part, i) => (
+                  <span key={part.kind === 'labels' ? 'labels' : part.field} className="more-part" data-part={part.kind === 'labels' ? 'labels' : part.field} data-tone={part.kind === 'text' ? part.tone : undefined}>
+                    {i > 0 && <span className="sep">·</span>}
+                    {part.kind === 'labels' ? (
+                      <>
+                        {part.names.map((n) => (
+                          <span key={n} className="label" data-testid="new-issue-more-label" data-label={n} style={labelStyle(colorOf(n), isDark)}>
+                            {n}
+                          </span>
+                        ))}
+                        {part.more > 0 && <span data-testid="new-issue-more-extra">+{part.more}</span>}
+                      </>
+                    ) : (
+                      <span className={part.tone === 'error' ? 'err' : undefined} data-testid={`new-issue-more-${part.field}`}>
+                        {part.text}
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </span>
+            )}
+          </button>
+          {moreOpen && (
+            <div className="more-body">
+                <div>
+                  标签
+                  <div className="chosen-labels" data-testid="new-issue-labels">
+                    {labels.map((n) => (
+                      <span key={n} className="label" data-testid="new-issue-label-chip" data-label={n} style={labelStyle(colorOf(n), isDark)}>
+                        {n}
+                        <button className="label-x" data-testid="new-issue-label-remove" data-label={n} title={`去掉「${n}」`} onClick={() => toggleLabel(n)}>
+                          <Icon name="x" size={10} />
+                        </button>
+                      </span>
+                    ))}
+                    <span className="picker-anchor">
+                      <button className="label-plus" data-testid="new-issue-label-add" disabled={!opts || Boolean(opts.error)} onClick={() => setPicking(!picking)}>
+                        {opts ? '+ 加标签' : '读取标签…'}
+                      </button>
+                      {picking && opts && (
+                        <LabelPicker
+                          title="选择标签"
+                          hint={repo}
+                          testid="new-issue-label-picker"
+                          disabled={false}
+                          items={opts.labels.map((l) => ({ name: l.name, color: l.color, checked: labels.includes(l.name) }))}
+                          onToggle={(l) => toggleLabel(l.name)}
+                          onClose={() => setPicking(false)}
+                        />
+                      )}
+                    </span>
+                    {opts?.error && <span className="err small">{opts.error}</span>}
+                  </div>
+                </div>
+                <label>
+                  里程碑
+                  <select
+                    data-testid="new-issue-milestone"
+                    data-read={read.state}
+                    value={read.state === 'loading' ? '' : msValue}
+                    disabled={busy || read.state !== 'ok'}
+                    title={read.state === 'error' ? `读不到仓库 ${repo} 的里程碑（${read.error}）` : undefined}
+                    onChange={(e) => setMsPick(e.target.value ? { kind: 'set', title: e.target.value } : { kind: 'none' })}
+                  >
+                    {read.state === 'loading' ? (
+                      <option value="">读取里程碑…</option>
+                    ) : (
+                      <>
+                        <option value="">不设里程碑</option>
+                        {msValue && !msChoices.includes(msValue) && <option value={msValue}>{msValue}</option>}
+                        {msChoices.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </label>
+                {showIt && (
+                  <label>
+                    迭代（加到勾选的看板上）
+                    <select
+                      data-testid="new-issue-iteration"
+                      value={itValue}
+                      disabled={busy}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === 'auto' || v === 'none') return setItPick({ kind: v });
+                        const it = itChoices.find((i) => i.id === v) ?? itKept;
+                        if (it) setItPick({ kind: 'set', title: it.title, startDate: it.startDate });
+                      }}
+                    >
+                      <option value="auto">{iterationPickText('auto', itChoices, itKept, currents, today)}</option>
+                      <option value="none">不设迭代</option>
+                      <IterationOptions iterations={itChoices} chosen={itKept} today={today} label={iterationOptionLabel} />
+                    </select>
+                  </label>
+                )}
+            </div>
+          )}
+        </div>
         <ResultBanner note={note} testid="new-issue-result" />
       </div>
     </ConfirmDialog>
