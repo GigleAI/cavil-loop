@@ -380,7 +380,9 @@ CONF
               timeout 60 bash "$code/scripts/agent-poll.sh" >/dev/null 2>&1 )
         echo $? > "$w/rc"
         # 每个 tick 目录名带 pid / 时间，只比稳定的那部分
-        (cd "$home" && find . -type f -o -type d | grep -vE 'tick|\.lock$|/sessions|/runlog(/|$)' | sort) > "$w/files.txt"   # runlog：运行记录（GitHub#344），改名前的代码没有
+        # redact-scan.*：令牌脱敏的扫描位置（GitHub#342），改名前的代码没有；它写在同一个状态目录里
+        # runlog：运行记录（GitHub#344），改名前的代码同样没有
+        (cd "$home" && find . -type f -o -type d | grep -vE 'tick|\.lock$|/sessions|/redact-scan\.(json|stamp)$|/runlog(/|$)' | sort) > "$w/files.txt"
         jq -S . "$home/.local/state/coding-agent-poll/legacy/state.json" > "$w/state.json" 2>/dev/null || echo none > "$w/state.json"
         sort "$w/gh.log" 2>/dev/null > "$w/gh.sorted" || : > "$w/gh.sorted"
         # 同一个工作区，派工时会拼出的指令里有没有项目自带的那段

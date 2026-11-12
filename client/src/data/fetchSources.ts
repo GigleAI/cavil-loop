@@ -6,9 +6,10 @@ import { parseStateReason } from '../shared/stateTone';
 import type { Item, ItemState, Iteration, LinkedPr, ProjectMembership, ProjectMeta, SavedView, SourceConfig, SourceSnapshot, ViewField } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
-import { PROJECT_ITEMS_QUERY } from './queries';
+import { ISSUE_RELATIONS_BATCH_QUERY, PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
-import { completeRelations, fetchRelationsBatch, noRelations, readRelations, type GqlRelationFields } from './relations';
+import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, type GqlRelationFields } from './relations';
+import { readViewerTies, type GqlViewerFields } from './viewerTies';
 
 export const STATUS_FIELD_NAME = 'Status';
 export const REPO_RECENT_DAYS = 14;
@@ -37,7 +38,7 @@ export interface GqlFieldValue {
   name?: string;
   field?: { id?: string; name?: string };
 }
-export interface GqlContent extends GqlRelationFields {
+export interface GqlContent extends GqlRelationFields, GqlViewerFields {
   __typename: 'Issue' | 'PullRequest' | 'DraftIssue';
   number?: number;
   title?: string;
@@ -151,6 +152,8 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
   const repo = c.repository.nameWithOwner;
   // a pull request has no parent, sub-issues or blocking relations on GitHub: known-empty
   const relations = c.__typename === 'PullRequest' ? noRelations() : readRelations(c);
+  // GitHub#373: taken only from a read that says when it went out (the time is what a merge goes by)
+  const ties = readAt !== undefined ? readViewerTies(c, c.__typename === 'PullRequest' ? 'pr' : 'issue', readAt) : null;
   return {
     key: itemKey(repo, c.number),
     nodeId: c.id ?? '',
@@ -173,6 +176,7 @@ export function contentToItem(c: GqlContent, projects: ProjectMembership[], sour
     linkedPrs: c.__typename === 'Issue' ? linkedPrs(c) : [],
     ...(c.__typename === 'PullRequest' ? { refIssues: bodyIssueRefs(c.body, repo, c.number) } : {}),
     ...(relations ? { relations, ...(readAt !== undefined ? { relationsAt: readAt } : {}) } : {}),
+    ...(ties ?? {}),
     projects,
     sources,
   };
@@ -323,6 +327,8 @@ export async function fetchRepo(
   client: GitHubClient,
   src: Extract<SourceConfig, { kind: 'repo' }>,
   now: number,
+  /** tests: a smaller batch, to cross the batch boundary with the recorded items */
+  batchSize: number = RELATION_BATCH_SIZE,
 ): Promise<SourceSnapshot> {
   const repo = `${src.owner}/${src.name}`;
   const base = `/repos/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.name)}/issues`;
@@ -342,13 +348,31 @@ export async function fetchRepo(
     }
   }
   // GitHub#349: the list says only how many relations an issue has; the ones that have any are
-  // read by node id, 100 a request. Part of the same read: a failure here fails the source.
-  const wanted = [...items.values()].filter((it) => related.get(it.key));
+  // read by node id. GitHub#373: nor does it say how the signed-in account stands to an item —
+  // every open issue / PR is read for that too (a closed one is never a to-do). One batch for
+  // both, 100 ids a request. Part of the same read: a failure here fails the source.
+  const wanted = [...items.values()].filter((it) => related.get(it.key) || it.state === 'open');
   const missingId = wanted.find((it) => !it.nodeId);
   if (missingId) throw new GitHubError('http', `${repo}#${missingId.number} 缺少读关系要用的 id`);
-  const relations = await fetchRelationsBatch(client, wanted.map((it) => ({ nodeId: it.nodeId, what: `${repo}#${it.number}` })));
+  const nodes = await fetchNodesBatch<GqlRelationFields & GqlViewerFields>(client, ISSUE_RELATIONS_BATCH_QUERY, wanted.map((it) => it.nodeId), batchSize);
+  for (let i = 0; i < wanted.length; i++) {
+    const it = wanted[i];
+    const node = nodes[i];
+    const what = `${repo}#${it.number}`;
+    if (!node || node.__typename !== (it.kind === 'pr' ? 'PullRequest' : 'Issue')) throw new GitHubError('graphql', `${what} 的关系没有读到`);
+    if (related.get(it.key)) {
+      const rel = readRelations(await completeRelations(client, node, what));
+      if (!rel) throw new GitHubError('graphql', `${what} 的关系没有读全`);
+      it.relations = rel;
+    }
+    if (it.state === 'open') {
+      const ties = readViewerTies(node, it.kind, now);
+      if (!ties) throw new GitHubError('graphql', `${what} 的订阅状态没有读到`);
+      Object.assign(it, ties);
+    }
+  }
   for (const it of items.values()) {
-    it.relations = related.get(it.key) ? relations.get(it.nodeId)! : noRelations();
+    it.relations ??= noRelations();
     it.relationsAt = now;
   }
   return { sourceKey: src.key, fetchedAt: now, items: [...items.values()] };

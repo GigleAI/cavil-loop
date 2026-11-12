@@ -892,6 +892,111 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
+## GitHub 令牌脱敏（GitHub#342）
+
+worker 的环境里有 GitHub 令牌。agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头），随后落进长期保留的文件。daemon 分三处处理，匹配规则只有一份（`scripts/redact_tokens.py`）：
+
+| 文件 | 谁写的 | 怎么处理 | 开关 |
+|---|---|---|---|
+| `poll.log`、窗格历史（`$STATE_DIR/sessions/*.log`） | daemon | **落盘前**替换：日志函数、清理钩子的输出、tmux 报错、秒退 / 信任框截屏、迁移时并入的旧日志、窗格历史的实时写入，都先过同一个入口 | 始终开着 |
+| claude / codex 的会话记录（`~/.claude/projects`、`~/.codex/sessions`） | agent 的 CLI | daemon 每 10 分钟扫一次，**原地**替换：只改令牌那几个字节，文件长度不变、不改名、不删、不留备份。只碰工作目录在本项目 `WORKTREE_BASE` 之下的会话 | `REDACT_AGENT_RECORDS`（默认开；留空 / `false` = 不改） |
+| codex 的环境快照（`~/.codex/shell_snapshots/*.sh`） | codex | 不事后改：daemon 起 codex worker 时关掉这项功能（`--disable shell_snapshot`），**不再产生新快照**。已有的旧快照用下面的命令清一次 | `CODEX_SHELL_SNAPSHOT`（默认 `off`；`on` = 保留 codex 的默认行为） |
+
+替换后的样子是 `REDACTED-<12 位指纹>`，后面用 `-` 补到和原令牌一样长。指纹是令牌 sha256 的前 12 位：推不回原文，同一把令牌在所有文件里指纹相同，可以用来认「是哪一把」：
+
+```bash
+printf '%s' "$GH_TOKEN" | sha256sum | cut -c1-12
+```
+
+每次扫描替换了东西，`poll.log` 里有一行 `令牌脱敏：N 个文件里替换了 M 处（指纹 …）`。扫描位置记在 `$STATE_DIR/redact-scan.json`、上次扫描时间在 `$STATE_DIR/redact-scan.stamp`；两个都删掉 = 下一轮从头扫一遍（已替换的不会再变）。
+
+**会话记录为什么敢原地改**：周报和用量 footer 都读这些文件，agent 的 CLI 还一直开着它追加。替换只动令牌所在的字节，换上的字符和令牌是同一类（字母、数字、`-`），所以任何时刻读到的每一行都是同样结构的 JSON；用来认领记录的字段（工作目录、会话编号、请求编号、时间、模型等）里的串即使长得像令牌也不改。`tests/token-redaction.test.sh` 在替换写到一半时跑真实的周报采集，结果与替换前逐字节相同。
+
+**不处理的范围**（原文可能仍在）：
+
+- 不带前缀的老格式令牌（2021 年前的 40 位十六进制）：和提交哈希无法区分，不认
+- 窗格历史是终端原始输出：令牌被终端折行、或中间夹了控制码时认不出（紧跟在颜色控制码后面的认得）
+- 升级前就在跑、且认不出 worker 窗格的会话（人分过屏、又没有窗格记录）：日志管道不会被换成过滤版，它之后写下的原文只能靠定期扫描事后替换
+- 工作目录不在 `WORKTREE_BASE` 之下的会话（人自己手动开的 claude / codex）、claude 的输入历史和文件改动备份、cursor / opencode 的记录
+- GitHub 令牌以外的密钥（例如 codex 快照里的其他登录令牌）
+- 替换脚本本身起不来时（例如本机没有 `python3`）：daemon 的日志入口只写一行 `令牌替换失败…已丢弃`，窗格历史不再写入——宁可缺记录，不落原文
+
+### 清理 codex 已有的环境快照
+
+升级后新起的 codex worker 不再写快照，但以前写下的还在，每一份都有 `GH_TOKEN` 原文。正在跑的 codex 执行命令时还会读它自己的快照，这时把令牌换掉，它后面的 `gh` 就全用假令牌了——所以清理脚本只在**本机当前用户没有任何 codex 进程**时才动手；有进程在跑、或进程清单读不到，它列出原因并退出，一个文件都不改。
+
+先让 codex worker 干完活（或停掉列出的进程），再原样运行：
+
+<!-- redact-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"    # the installed skill / 装好的 skill 目录
+SNAPS="$HOME/.codex/shell_snapshots"
+with_token() { grep -lE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}' "$SNAPS"/*.sh 2>/dev/null | wc -l; }
+echo "snapshots holding a token before / 清理前带令牌的快照: $(with_token)"
+if bash "$SKILL/scripts/redact-snapshots.sh" --check; then
+    bash "$SKILL/scripts/redact-snapshots.sh"
+fi
+echo "snapshots holding a token after / 清理后带令牌的快照: $(with_token)"
+```
+<!-- redact-ops:end -->
+
+看到 `完成：N 个快照文件，其中 M 个含令牌，共替换 K 处` 且最后一行是 0 就清完了。看到 `❌ 本机还有 codex 进程在跑` 说明什么都没改：等它列出的进程结束后重跑。替换不可撤销（没有备份），也不需要撤销：令牌本身没变，worker 的环境里照旧有它。`--check` 只检查、不改文件。
+
+## 重测试排队（可选，**默认关闭**，GitHub#343）
+
+多个条目的 worker 同时跑整套测试，内存和 CPU 会叠到整机卡死。配了这一项之后，项目里列出的「重测试」命令在同一个系统账号下一次只放行一套，其余排队；条目被清理、或起测试的 worker 结束后，它留下的测试会被停掉。
+
+**启用**：在项目的 `cavil-loop.config` 里列出算重测试的命令，每行一条：
+
+```bash
+HEAVY_TEST_COMMANDS="bash tests/run.sh"
+```
+
+下一次派工起，worker 的提示词多一段，要求这些命令写成 `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh` 来跑；只跑一个测试文件不用排队。已经在跑的 worker 不受影响（它们的提示词是启动时定的）。
+
+**怎么排的**
+
+- 每套测试放进 systemd 给它单独建的一个进程分组（`cavil-heavy-<编号>.scope`）。下一套要等前面每个「运行中」的分组里一个进程都不剩才开始——包装命令被强杀、被测程序关掉继承来的文件、子进程跑到后台或脱离进程组，都不会提前放行。等的时候每 30 秒打印一行在等哪个项目、哪个条目、跑了多久。
+- 测试主进程退出后，包装命令把自己的分组整个停掉，留下的后台子进程一起结束。
+- 分组状态只认明确的回答：「不存在 / 已停止」才算结束，查询失败、空输出、不认识的词一律当作还在跑。
+- 运行记录本身读不出来、或内容不认识（十个字段缺了哪一行、同一个字段出现两次、状态不是「排队中 / 运行中」、分组名和编号对不上、项目 / 条目 / 代数这三项归属只有一部分）时，同样不当它「没在跑」：按编号查它的分组，分组确认消失才删这条记录；分组还在就一直挡着后面的排队和本账号下条目的工作树清理，并在排队提示和轮询日志里指出是哪个文件。`--list` 里它显示为「读不到」，确认去向后用 `--stop <编号>` 停掉即可。
+- 不保证先到先得，只保证不重叠。`HEAVY_TEST_LOCK_WAIT=<秒>` 设排队上限，到时退出码 75；默认 0 = 一直等。
+
+**条目结束时怎么清**
+
+- 派工（建工作树、起 worker、记下这次启动）和 `cleanup-issue.sh`（停会话、停测试、删工作树）整段拿着同一把条目锁，只能一先一后。等不到锁（默认 60 秒）时，派工本轮不派、标签不动，清理什么都不动并以非 0 退出。
+- 每个条目有一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前都要核对：对不上（条目在这个 worker 启动之后被清理过）就不启动，退出码 76。清理之后重新派出的 worker 拿到的是新代数，不受影响。
+- 清理先停掉本条目还在排队 / 还在跑的重测试，确认分组消失后才删工作树。查不清或停不掉 → 保留工作树、非 0 退出；合并后的自动清理因此不记「已清理」，下一轮重试，PR 的 `Done` 标签也等到清理成功那一轮。
+- 每次起 worker 记下它的进程号和启动时间（起之前先登记，起来后补上进程号）。每轮轮询据此检查：worker 进程已经不在（或那个进程号现在是别的进程）而它起的测试还在排队 / 运行，就整组停掉。worker 还在、或认不清，都不停。确认结束的启动记录只盖章不删，所以那个 worker 留下的迟到请求再来排队也不会启动（退出码 76）；记录到条目清理时才删。
+
+**查看谁在占、手动停一套**
+
+<!-- heavy-test-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+IDF="$(mktemp)"
+bash "$SKILL/scripts/heavy-test.sh" --id-file "$IDF" -- sleep 120 &
+while [ ! -s "$IDF" ] && kill -0 $! 2>/dev/null; do sleep 0.2; done
+bash "$SKILL/scripts/heavy-test.sh" --list
+bash "$SKILL/scripts/heavy-test.sh" --stop "$(cat "$IDF")"
+wait
+bash "$SKILL/scripts/heavy-test.sh" --list
+rm -f "$IDF"
+```
+<!-- heavy-test-ops:end -->
+
+上面依次是：跑一套（这里用 `sleep 120` 代替真的测试命令），让它登记后把**自己的运行编号**写进一个临时文件；等到编号写出来；列出本账号下登记着的全部运行（编号、排队中 / 运行中、分组状态、项目和条目、命令、已多久）；按那个编号把刚才这一套停掉（它的命令以 143 退出）——它还在排队也一样停得掉；再列一次。别的条目的运行这时可能也在列表里，这几条命令不会碰它们：要停哪一套，一律拿编号指定，不要从列表里挑「第一条运行中的」——那很可能是别的条目的。平时只想停某一套时，先 `--list` 看清项目、条目和命令，再 `--stop <它的编号>`。`--stop` 只在确认分组已消失后才删记录；查不到分组状态时不发停止请求，报错并保留记录。
+
+**边界**
+
+- 完整效果需要 Linux + cgroup v2 + systemd 用户实例。明确没有这些的环境（不是 Linux、不是 cgroup v2、没装 `systemd-run` / `systemctl`、这个账号没有用户实例的 socket，例如 macOS）只排队包装命令本身：不建分组、不登记、不清理，运行时打印一行说明。用户实例在、只是这一次没问到，或建不出分组时，包装命令以 70 退出、不跑测试——不会悄悄降级，因为降级模式看不到已有的分组，上一套还在跑也会照样开始。降级模式下如果还留着登记着的运行，同样以 70 退出：确认它们都已结束后删掉 `~/.local/state/cavil-loop/heavy-test/runs/` 里的记录再重试。
+- 「整机」指同一个系统账号：排队锁和运行记录在 `~/.local/state/cavil-loop/` 下（`heavy-test.lock`、`heavy-test/runs/`），不同账号互不排队。
+- 只管通过包装命令起的测试。worker 直接跑、开发服务器、别的后台进程都不排队也不会被停。
+- 测试搬进自己的分组后，不再受 tmux 窗格分组上配的内存上限约束。需要上限时用 `HEAVY_TEST_SCOPE_PROPERTIES="MemoryMax=6G"`（空格分隔的 systemd 属性），默认不加。
+- 强制清理（`--force`）一个 worker 正在干活的条目，照旧会停掉那个 worker；条目锁保证的是清理不会和「正在启动」交错。
+
+**关掉**：把 `HEAVY_TEST_COMMANDS` 留空（或删掉这一行）。之后的派工不再带这一段、不再拿条目锁。关掉之前起的 worker 仍可能通过包装命令跑测试，它们照常排队；这些还登记着的运行在条目清理和每轮轮询时照样会被停掉，不需要手动处理，要立刻停就用上面的 `--stop`。项目状态目录里留下的 `item-locks/`、`item-gen/`、`worker-launch/` 不用删。
+
 ## Prompt 模板
 
 一份 prompt = **base + 项目增量**。两个文件各自独立查找，都支持 `origin/<base>` 直读

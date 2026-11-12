@@ -1837,6 +1837,77 @@ test('pending/human: nothing about the history at start, one notification per ne
   await app.close();
 });
 
+/** Assign an item on the fake GitHub (every copy), the way a maintainer does on GitHub. */
+function assignTo(n: number, logins: string[]) {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+  const now = new Date().toISOString();
+  for (const g of c.gql) ((g.assignees = { nodes: logins.map((login) => ({ login })) }), (g.updatedAt = now));
+  for (const r of c.rest) ((r.assignees = logins.map((login) => ({ login }))), (r.updated_at = now));
+}
+
+test('GitHub#373: "which items remind" in Settings — every pending item by default; "only mine" explains its rule, stays after a restart, and then only the account\'s items notify', async () => {
+  const [theirs, mine, later] = openUnlabelled();
+  for (const n of [theirs, mine, later]) assignTo(n, []);
+  let { app, page } = await launch(env);
+  await signInForReminders(page, ['GigleAI/cavil-loop']);
+  const notes = () => app.desktop.records.filter((a) => a.op === 'notify' && a.alert.kind === 'item').map((a) => a.alert.key);
+  // the default: every pending item, and the page says what the other choice is for
+  await expect(page.getByTestId('notify-scope-all')).toBeChecked();
+  await expect(page.getByTestId('notify-scope-mine')).not.toBeChecked();
+  await expect(page.getByTestId('notify-scope-note')).toContainText('每人都会收到全部待处理的通知');
+  await expect(page.getByTestId('pending-rule')).not.toContainText('和我有关');
+  await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
+  await shot(page, '22-notify-scope-all');
+  // "only mine": the account it means, and the three steps
+  await page.getByTestId('notify-scope-mine').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  await expect(page.getByTestId('notify-scope-all')).not.toBeChecked();
+  await expect(page.getByTestId('notify-scope')).toContainText(`只提醒和我（${env.fake.state.viewer}）有关的`);
+  for (const part of ['指派给我、或请我 review 的，提醒', '即使我在 GitHub 上订阅着也不提醒', '我订阅着就提醒', '按它关联的 issue 判断']) await expect(page.getByTestId('notify-scope-note')).toContainText(part);
+  await expect(page.getByTestId('pending-rule')).toContainText('并且和我有关时发一次系统通知');
+  await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
+  await shot(page, '23-notify-scope-mine');
+  // back and forth follows the click
+  await page.getByTestId('notify-scope-all').click();
+  await expect(page.getByTestId('notify-scope-all')).toBeChecked();
+  await expect(page.getByTestId('pending-rule')).not.toContainText('和我有关');
+  await page.getByTestId('notify-scope-mine').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  // the first complete read is in (the baseline): only then do labels count as new
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').length).toBeGreaterThan(0);
+
+  // somebody else's item and the account's both get the label: one notification, the account's
+  assignTo(theirs, ['someone-else']);
+  putPending(theirs);
+  assignTo(mine, [env.fake.state.viewer]);
+  putPending(mine);
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(notes).toEqual([`gigleai/cavil-loop#${mine}`]);
+  // "did happen": that round read the other one with its label and its assignee
+  await page.getByTestId('back').click();
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await page.getByTestId('search').fill(`#${theirs}`);
+  await expect(card(page, theirs).locator('.label', { hasText: 'pending/human' })).toBeVisible({ timeout: 10_000 });
+  await page.waitForTimeout(500);
+  expect(notes()).toEqual([`gigleai/cavil-loop#${mine}`]);
+  await app.close();
+
+  // after a restart the choice is still there, and still the one used
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
+  await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').length).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  expect(notes()).toEqual([]);
+  // handed to the account now: a long-labelled item becomes a notification
+  assignTo(theirs, [env.fake.state.viewer]);
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(notes).toEqual([`gigleai/cavil-loop#${theirs}`]);
+  await app.close();
+});
+
 test('notifications refused by the system: the board says so and how to allow them', async () => {
   const { app, page } = await launch(env);
   app.desktop.refuse = 'Notifications are not allowed for this application';
@@ -6741,3 +6812,288 @@ test('GitHub#372: ⌘1/2/3 switch the layout and ⌘N opens a new issue from any
   await expect(page.locator(`[data-testid="new-issue-project"][data-project="${PROJECT_KEY}"]`)).toBeChecked();
   await app.close();
 });
+
+// ---- GitHub#381: code blocks in the discussion — copy, wrap long lines, syntax colours ----
+const CODE381 = JSON.parse(readFileSync(join(root, 'test', 'fixtures', 'codeblocks.github.json'), 'utf8')) as {
+  samples: Record<string, { markdown: string; html: string }>;
+  comments: { url: string; body: string; bodyHTML: string }[];
+};
+/** what the author typed between the fences of a one-block sample: the text "copy" must put on the clipboard */
+const fenced381 = (name: string) => CODE381.samples[name].markdown.replace(/^```[a-z]*\n/, '').replace(/\n```\n$/, '');
+
+/** the cases about the end of a block, in the order they are shown */
+const EDGE381 = [
+  'with a language, a blank line before the closing fence',
+  'with a language, no blank line at the end',
+  'no language, a blank line before the closing fence',
+  'no language, no blank line at the end',
+  'raw <pre> ending in a line break',
+  'raw <pre> ending in two line breaks',
+];
+/**
+ * The sample comment on PR #386, block by block: what was typed, and what "copy" must give — the same as
+ * GitHub's own copy button on that block.
+ */
+const GH381: [string, string][] = [
+  ['```bash + a blank line before the closing fence', 'echo one\n'],
+  ['```bash, no blank line', 'echo one'],
+  ['``` (no language) + a blank line before the closing fence', 'echo one\n'],
+  ['``` (no language), no blank line', 'echo one'],
+  ['hand-written <pre> ending in a line break', 'raw one\nraw two\n'],
+  ['hand-written <pre> ending in two line breaks', 'raw one\n\n'],
+  ['hand-written <pre><code> ending in a line break (GitHub renders it exactly as block 4)', 'echo one'],
+  ['hand-written <pre><code>, no line break at the end', 'echo one'],
+  ['hand-written wrapper with a copy text of its own (GitHub drops it and writes the real one)', 'shown text'],
+];
+
+/** code blocks on screen: 2 in the real comment, 3 in C_CODE, the nine endings, the two odd ones, the six without a copy text */
+const BLOCKS381 = 2 + 3 + GH381.length + 2 + EDGE381.length;
+
+test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the clipboard and says so (or says it failed); "换行" folds long lines everywhere and is remembered; GitHub\'s syntax marks are coloured, light and dark, in the discussion and the reply preview', async () => {
+  const w = env.fake.state.w;
+  const url = (id: string) => `https://github.com/GigleAI/cavil-loop/issues/138#${id}`;
+  const TS = 'typescript: indentation, <, > and &';
+  const SH = 'shell with a language, a long line';
+  const PLAIN = 'no language';
+  w.comments.set('gigleai/cavil-loop#138', [
+    // a real comment as GitHub rendered it: a shell block, a block without a language, inline code, task boxes
+    { id: 'C_REAL', url: url('C_REAL'), createdAt: '2026-11-02T01:00:00Z', bodyHTML: CODE381.comments[0].bodyHTML, author: { login: 'user-2' } },
+    { id: 'C_GH', url: url('C_GH'), createdAt: '2026-11-01T02:00:00Z', bodyHTML: CODE381.comments[1].bodyHTML, author: { login: 'user-5' } },
+    // not GitHub's: a copy text that is not the shown text, and one that is two line breaks short of it
+    { id: 'C_ODD', url: url('C_ODD'), createdAt: '2026-11-01T03:00:00Z', bodyHTML: '<div data-snippet-clipboard-copy-content="rm -rf /"><pre><code>ls\n</code></pre></div><div data-snippet-clipboard-copy-content="ls"><pre><code>ls\n\n</code></pre></div>', author: { login: 'user-5' } },
+    { id: 'C_EDGE', url: url('C_EDGE'), createdAt: '2026-11-01T01:00:00Z', bodyHTML: EDGE381.map((n) => CODE381.samples[n].html).join('\n'), author: { login: 'user-4' } },
+    { id: 'C_CODE', url: url('C_CODE'), createdAt: '2026-11-03T01:00:00Z', bodyHTML: `<p>run <code class="notranslate">npm test</code></p>${CODE381.samples[SH].html}${CODE381.samples[TS].html}${CODE381.samples[PLAIN].html}`, author: { login: 'user-3' } },
+  ]);
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+  // the app is started three times here: everything is looked up on the window that is open now
+  let iframe = page.getByTestId('timeline-frame');
+  let frame = page.frameLocator('[data-testid="timeline-frame"]');
+  let blocks = frame.locator('details.entry[data-entry="C_CODE"] .cb');
+  let [sh, ts, plain] = [blocks.nth(0), blocks.nth(1), blocks.nth(2)];
+  const open = async () => {
+    iframe = page.getByTestId('timeline-frame');
+    frame = page.frameLocator('[data-testid="timeline-frame"]');
+    blocks = frame.locator('details.entry[data-entry="C_CODE"] .cb');
+    [sh, ts, plain] = [blocks.nth(0), blocks.nth(1), blocks.nth(2)];
+    await card(page, 138).click();
+    await expect(iframe).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    await page.getByTestId('unfold-toggle').click();
+    await expect(iframe).toHaveAttribute('data-ready', 'yes');
+    await expect(frame.locator('details.entry[data-entry="C_CODE"] .cb').first()).toBeVisible();
+
+  };
+  await open();
+  const copyBtn = (b: Locator) => b.locator('button[data-code-copy]');
+  const wrapBtn = (b: Locator) => b.locator('button[data-code-wrap]');
+  /** what the clipboard really holds: pasted into the reply box with the keyboard, read back, box emptied again */
+  const pasted = async () => {
+    const box = page.getByTestId('reply-input');
+    await box.fill('');
+    await box.focus();
+    await page.keyboard.press('ControlOrMeta+V');
+    const v = await box.inputValue();
+    await box.fill('');
+    return v;
+  };
+
+  // ---- 1. every block has the two buttons, inline code has none; they show on hover / keyboard focus ----
+  await expect(blocks).toHaveCount(3);
+  await expect(frame.locator('details.entry[data-entry="C_REAL"] .cb')).toHaveCount(2);
+  await expect(frame.locator('button[data-code-copy]')).toHaveCount(BLOCKS381);
+  await expect(frame.locator('button[data-code-wrap]')).toHaveCount(BLOCKS381);
+  expect(await frame.locator('code').evaluateAll((cs) => cs.filter((c) => !c.closest('pre') && c.closest('.cb')).length)).toBe(0);
+  const barOpacity = (b: Locator) => b.locator('.cbar').evaluate((e) => getComputedStyle(e).opacity);
+  await page.getByTestId('reply-input').hover();
+  expect(await barOpacity(ts)).toBe('0');
+  await ts.locator('pre').hover();
+  expect(await barOpacity(ts)).toBe('1');
+  expect(await barOpacity(plain)).toBe('0');
+  await page.getByTestId('reply-input').hover();
+  await copyBtn(plain).focus();
+  expect(await barOpacity(plain)).toBe('1');
+  // the task boxes of the real comment are still there and numbered
+  await expect(frame.locator('details.entry[data-entry="C_REAL"] input[data-task]')).toHaveCount(2);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-buttons');
+
+  // ---- 2. copy: the clipboard holds the block's text, character for character — line breaks, a tab, <, > and & ----
+  expect(fenced381(TS)).toContain('\n\treturn');
+  expect(fenced381(TS)).toContain('a > b && c');
+  await copyBtn(ts).click();
+  await expect(copyBtn(ts)).toHaveText('已复制 ✓');
+  await expect(copyBtn(ts)).toHaveAttribute('data-state', 'ok');
+  expect(await pasted()).toBe(fenced381(TS));
+  await shot(page, '381-code-copied');
+  // a block without a language: indentation, the blank line in it
+  await plain.locator('pre').hover();
+  await copyBtn(plain).click();
+  await expect(copyBtn(plain)).toHaveText('已复制 ✓');
+  // (this rendering is from GitHub's markdown endpoint, which gives no copy text: the line break at its end stays)
+  expect(await pasted()).toBe(`${fenced381(PLAIN)}\n`);
+  expect(fenced381(PLAIN)).toContain('    indented    columns\n\nlast line');
+  // the long line, whole
+  await sh.locator('pre').hover();
+  await copyBtn(sh).click();
+  await expect(copyBtn(sh)).toHaveText('已复制 ✓');
+  const long = await pasted();
+  expect(long).toBe(fenced381(SH));
+  expect(long.split('\n')[2].length).toBeGreaterThan(300);
+  // the button goes back by itself, nothing is left selected, and nothing was reported to the window or sent to GitHub
+  await expect(copyBtn(ts)).toHaveText('复制', { timeout: 5000 });
+  await expect(copyBtn(ts)).not.toHaveAttribute('data-state');
+  expect(await frame.locator('body').evaluate(() => String(getSelection()))).toBe('');
+  expect(env.fake.writes()).toEqual([]);
+
+  // ---- 2b. the end of a block (PR #386 review rounds 1 and 2): what is copied is what GitHub's own copy button
+  // copies. The nine blocks are one real comment as the discussion gets it (GitHub's copy text around each block) ----
+  const gh = frame.locator('details.entry[data-entry="C_GH"] .cb');
+  await expect(gh).toHaveCount(GH381.length);
+  const copyAll = async (blocks: Locator, n: number) => {
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      await blocks.nth(i).locator('pre').hover();
+      await copyBtn(blocks.nth(i)).click();
+      await expect(copyBtn(blocks.nth(i))).toHaveText('已复制 ✓');
+      out.push(await pasted());
+    }
+    return out;
+  };
+  expect(await copyAll(gh, GH381.length)).toEqual(GH381.map(([, text]) => text));
+  // 4 and 7 — a fence without a language, and a hand-written <pre><code> ending in a line break — are the same
+  // HTML from GitHub, byte for byte: no rule can copy them differently, and GitHub's own button does not either
+  const ghHtml = await gh.evaluateAll((bs) => bs.map((b) => b.parentElement!.outerHTML));
+  expect(ghHtml[6]).toBe(ghHtml[3]);
+  expect(ghHtml[3]).toContain('data-snippet-clipboard-copy-content="echo one"');
+  // GitHub gave no copy text (its markdown endpoint gives none; a hand-written <pre> never has one): everything
+  // the block shows is copied, nothing is taken off its end
+  const edge = frame.locator('details.entry[data-entry="C_EDGE"] .cb');
+  await expect(edge).toHaveCount(EDGE381.length);
+  expect(await edge.evaluateAll((bs) => bs.filter((b) => b.parentElement!.hasAttribute('data-snippet-clipboard-copy-content')).length)).toBe(0);
+  expect(await copyAll(edge, EDGE381.length)).toEqual(['echo one\n', 'echo one', 'echo one\n\n', 'echo one\n', 'raw one\nraw two\n', 'raw one\n\n']);
+  // a copy text that differs from what is shown by more than the last line break is not GitHub's (it strips the
+  // attribute from what people write — block 9 above): what is shown is copied
+  const odd = frame.locator('details.entry[data-entry="C_ODD"] .cb');
+  expect(await copyAll(odd, 2)).toEqual(['ls\n', 'ls\n\n']);
+
+  // ---- 3. the clipboard refuses both ways: the button says so, the clipboard keeps what it had, the block stays selected ----
+  await frame.locator('body').evaluate(() => {
+    (window as any).__exec = document.execCommand;
+    document.execCommand = (() => false) as any;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) } });
+  });
+  await ts.locator('pre').hover();
+  await copyBtn(ts).click();
+  await expect(copyBtn(ts)).toHaveText('复制失败');
+  await expect(copyBtn(ts)).toHaveAttribute('data-state', 'fail');
+  expect((await frame.locator('body').evaluate(() => String(getSelection()))).trim()).toBe(fenced381(TS).trim());
+  // still the last thing that was copied
+  expect(await pasted()).toBe('ls\n\n');
+  await shot(page, '381-code-copy-failed');
+  // "select + copy" refused, the clipboard API takes it: copied
+  await frame.locator('body').evaluate(() => {
+    (window as any).__api = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t: string) => ((window as any).__api.push(t), Promise.resolve()) } });
+  });
+  await copyBtn(plain).click();
+  await expect(copyBtn(plain)).toHaveText('已复制 ✓');
+  expect(await frame.locator('body').evaluate(() => (window as any).__api)).toEqual([`${fenced381(PLAIN)}\n`]);
+  await frame.locator('body').evaluate(() => {
+    document.execCommand = (window as any).__exec;
+  });
+
+  // ---- 4. wrap: off at first (the long line scrolls sideways); one click folds every block, without drawing the frame again ----
+  const overflow = (b: Locator) => b.locator('pre').evaluate((p) => [p.scrollWidth > p.clientWidth, getComputedStyle(p).whiteSpace] as const);
+  const wrapped = () => frame.locator('body').evaluate((b) => b.hasAttribute('data-wrap'));
+  expect(await wrapped()).toBe(false);
+  expect(await overflow(sh)).toEqual([true, 'pre']);
+  await expect(wrapBtn(sh)).toHaveAttribute('aria-pressed', 'false');
+  const render = await iframe.getAttribute('data-render');
+  await sh.locator('pre').hover();
+  await wrapBtn(sh).click();
+  expect(await wrapped()).toBe(true);
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+  // every block, also in the other entry; every switch says "on"
+  expect(await frame.locator('pre').evaluateAll((ps) => ps.map((p) => getComputedStyle(p).whiteSpace))).toEqual(Array(BLOCKS381).fill('pre-wrap'));
+  expect(await frame.locator('button[data-code-wrap]').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-pressed')))).toEqual(Array(BLOCKS381).fill('true'));
+  expect(await iframe.getAttribute('data-render')).toBe(render);
+  // folded lines still copy as the one line they are
+  await copyBtn(sh).click();
+  await expect(copyBtn(sh)).toHaveText('已复制 ✓');
+  expect(await pasted()).toBe(fenced381(SH));
+  await sh.locator('pre').hover();
+  await shot(page, '381-code-wrapped');
+  // a new drawing of the frame keeps it
+  await page.getByTestId('unfold-toggle').click();
+  await expect(iframe).not.toHaveAttribute('data-render', render!);
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await wrapped()).toBe(true);
+  await page.getByTestId('unfold-toggle').click();
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+
+  // ---- 5. remembered: the app closed and started again, another opening of the item ----
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await open();
+  expect(await wrapped()).toBe(true);
+  expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
+  await expect(wrapBtn(ts)).toHaveAttribute('aria-pressed', 'true');
+  // and off again, from any block
+  await ts.locator('pre').hover();
+  await wrapBtn(ts).click();
+  expect(await wrapped()).toBe(false);
+  expect(await overflow(sh)).toEqual([true, 'pre']);
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await open();
+  expect(await wrapped()).toBe(false);
+
+  // ---- 6. syntax colours: GitHub's marks, light and dark; a block without a language stays in the text colour ----
+  const colour = (l: Locator) => l.first().evaluate((e) => getComputedStyle(e).color);
+  const seen = async () => ({
+    keyword: await colour(ts.locator('.pl-k')),
+    comment: await colour(ts.locator('.pl-c')),
+    string: await colour(sh.locator('.pl-s')),
+    plain: await colour(plain.locator('code')),
+    text: await colour(frame.locator('body')),
+  });
+  await page.emulateMedia({ colorScheme: 'light' });
+  // a change of theme draws the frame again: wait for the new drawing before reading colours from it
+  await expect.poll(() => colour(ts.locator('.pl-k')).catch(() => '')).toBe('rgb(207, 34, 46)');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  const light = await seen();
+  expect(light).toMatchObject({ keyword: 'rgb(207, 34, 46)', comment: 'rgb(89, 99, 110)', string: 'rgb(10, 48, 105)' });
+  expect(light.plain).toBe(light.text);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-light');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(() => colour(ts.locator('.pl-k')).catch(() => '')).toBe('rgb(255, 123, 114)');
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
+  const dark = await seen();
+  expect(dark).toMatchObject({ keyword: 'rgb(255, 123, 114)', comment: 'rgb(145, 152, 161)', string: 'rgb(165, 214, 255)' });
+  expect(dark.plain).toBe(dark.text);
+  await ts.locator('pre').hover();
+  await shot(page, '381-code-dark');
+
+  // ---- 7. the reply preview: the same colours for the same marks, no buttons, nothing runs ----
+  w.markdownHtml = CODE381.samples[TS].html;
+  await page.getByTestId('reply-input').fill(CODE381.samples[TS].markdown);
+  await page.getByTestId('reply-preview-toggle').click();
+  const preview = page.frameLocator('[data-testid="reply-preview"]');
+  await expect(preview.locator('pre')).toBeVisible();
+  expect(await colour(preview.locator('.pl-k'))).toBe(dark.keyword);
+  expect(await colour(preview.locator('.pl-c'))).toBe(dark.comment);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect.poll(() => colour(preview.locator('.pl-k'))).toBe(light.keyword);
+  expect(await colour(preview.locator('.pl-c'))).toBe(light.comment);
+  await expect(preview.locator('button')).toHaveCount(0);
+  await expect(preview.locator('script')).toHaveCount(0);
+  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).not.toContain('allow-scripts');
+  await shot(page, '381-code-preview');
+  w.markdownHtml = null;
+  await app.close();
+});
+

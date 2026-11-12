@@ -48,6 +48,12 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 令牌脱敏入口（GitHub#342）：log() 和所有往 poll.log / 窗格历史追加内容的地方都用它
+# shellcheck source=_redact.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
+# 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
+# shellcheck source=_heavy.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
 
 find_config() {
     if [ -n "${CODING_AGENT_CONFIG:-}" ] && [ -f "$CODING_AGENT_CONFIG" ]; then
@@ -819,8 +825,14 @@ SESSION_LOG_DIR="${SESSION_LOG_DIR-$STATE_DIR/sessions}"
 # Skill 目录（scripts/ 的父目录）。Claude Code 注入 $CLAUDE_PLUGIN_ROOT 时优先它。
 SKILL_DIR="${CODING_AGENT_RELEASE_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 
+# 日志文字里出现 GitHub 令牌前缀时先替换再写（GitHub#342）：写文件和写 stderr（进 journal）
+# 用的是同一份替换后的文字。平常的日志行不含前缀，不多起进程。
 log() {
-    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $*" | tee -a "$LOG_FILE" >&2
+    local msg="$*"
+    case "$msg" in
+        *gh[pousr]_*|*github_pat_*) msg="$(printf '%s' "$msg" | redact_pipe)" ;;
+    esac
+    echo "[$(date -Iseconds)] [${TMUX_PREFIX}] $msg" | tee -a "$LOG_FILE" >&2   # redact-ok：上面已替换
 }
 
 # 默认仅输出常规日志；LOG_LEVEL=debug 额外显示排查用的例行明细。
@@ -2256,6 +2268,8 @@ tmux_env_args() {
             echo "[cavil-loop]       手动跑 daemon 请先 export $var=...（systemd 路径自动从 EnvironmentFile 注入）" >&2
         fi
     done
+    # 重测试排队（GitHub#343）：这次启动的条目、代数、启动编号；功能关着什么都不加
+    heavy_tmux_env_args
 }
 
 tmux_session_name() {
@@ -5969,27 +5983,27 @@ configure_tmux_session_display() {
     fi
 
     if [ -n "$desc" ] && ! tmux set-option -t "$sess" @desc "$desc" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @desc 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_model "$WORKER_MODEL" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_model 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_agent "$WORKER_AGENT" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_agent 失败（worker 继续运行）"
     fi
 
     if ! tmux set-option -t "$sess" @worker_role "$WORKER_SESSION_ROLE" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 设置 tmux session $sess 的 @worker_role 失败（worker 继续运行）"
     fi
 
     if ! tmux bind-key -T prefix s choose-tree -Zs -F "$tree_format" 2>&1 | \
-        sed 's/^/  [tmux] /' | tee -a "$LOG_FILE" >&2; then
+        sed 's/^/  [tmux] /' | redact_pipe | tee -a "$LOG_FILE" >&2; then
         log "  ⚠️ 配置 tmux prefix+s session 列表失败（worker 继续运行）"
     fi
 }
@@ -6225,7 +6239,7 @@ start_session_logging() {
     {
         printf '\n===== %s session=%s opened =====\n' \
             "$(date -Iseconds)" "$sess"
-    } >> "$log_path"
+    } >> "$log_path"   # redact-ok：固定文字 + 会话名
     # 日志挂在 worker 窗格上：人分屏后「当前窗格」可能是人的那个
     read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$sess")"
     case "$st" in
@@ -6234,15 +6248,31 @@ start_session_logging() {
             log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
             return 0 ;;
     esac
-    [ "$pipe" = 1 ] && return 0
+    session_log_pipe_ensure "$sess" "$tgt" "$pipe" "$log_path" || \
+        log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+}
+
+# 让 worker 窗格的日志管道是「带令牌过滤」的那种（GitHub#342）。返回 1 = 没挂上。
+#   已经挂着、会话上有 @redact_pipe 标记 → 什么都不做
+#   挂着但没有标记 = 升级前用 `cat` 挂的 → 换成过滤版（不带 -o 再挂一次是直接替换，不会关掉）
+#   没挂 → 挂上
+# 标记读不到时不换（下次再判）：读不到不等于没有。
+session_log_pipe_ensure() {   # <tmux_session> <worker 窗格> <已挂=1> <日志路径>
+    local sess="$1" tgt="$2" pipe="$3" log_path="$4" mark pipe_cmd
+    if [ "$pipe" = 1 ]; then
+        mark="$(tmux show-options -qv -t "=$sess:" @redact_pipe 2>/dev/null)" || return 0
+        [ "$mark" = 1 ] && return 0
+    fi
+    pipe_cmd="$(redact_pane_pipe_cmd "$log_path")"
     # pipe-pane 偶发失败几乎都是 `tmux new-session -d` 刚返回、pane 尚未就绪的 race，
     # 或 worker 进程已秒退 session 没了。先重试一次（0.3s 后），仍失败才报警——
     # 报警此时基本等价于"worker 启动即死"（详见 verify_fresh_session 的 capture）。
-    if ! tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null; then
+    if ! tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null; then
         sleep 0.3
-        tmux pipe-pane -t "$tgt" "cat >> '$log_path'" 2>/dev/null || \
-            log "  ⚠️ pipe-pane 失败：$sess → $log_path（session 可能已秒退）"
+        tmux pipe-pane -t "$tgt" "$pipe_cmd" 2>/dev/null || return 1
     fi
+    tmux set-option -t "=$sess:" @redact_pipe 1 2>/dev/null || true
+    return 0
 }
 
 # 起完 fresh session 后探活并 capture 秒退死因。
@@ -6267,7 +6297,7 @@ verify_fresh_session() {
             printf '\n===== %s session=%s 秒退，pane capture =====\n' \
                 "$(date -Iseconds)" "$sess"
             tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-        } | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
+        } | redact_pipe | tee -a "${log_path:-/dev/null}" | tail -25 | sed 's/^/      /' | tee -a "$LOG_FILE" >&2
         tmux kill-session -t "$sess" 2>/dev/null || true
         return 1
     fi
@@ -7216,6 +7246,263 @@ concurrent_work_fill() {   # <prompt 文件> <本次工作分支> <本次工作�
     return 0
 }
 
+# ── 重测试排队 + 条目结束时清掉它的测试（GitHub#343）──
+# 项目在 HEAVY_TEST_COMMANDS 里列出哪些命令算「重测试」（每行一条），空 = 不限制、本段什么都不做。
+# 非空时：
+#   · worker 的提示词多一段，要求这些命令通过 scripts/heavy-test.sh 跑（同一账号下一次只放行一套，
+#     放行依据是上一套的进程分组已清空，规则见那个脚本和 _heavy.sh）；
+#   · 派工和清理整段拿着同一把「条目锁」，两者只能一先一后——清理不会删掉正在启动的 worker 的
+#     工作树，也不会误停清理之后才起的测试；
+#   · 每个条目一个「代数」，清理一拿到锁就加一。worker 启动时带着当时的代数，测试登记和开跑前
+#     都在条目锁里核对，对不上就退出；清理在同一把锁里停掉本条目登记着的分组，确认消失才删工作树；
+#   · 每次起 worker 记一份启动记录（窗格进程号 + 进程启动时间），每轮轮询据此把「worker 已经
+#     结束、测试还在排队或运行」的分组停掉——不依赖 tmux 会话还在。
+# 判断全部在 _heavy.sh，wrapper 和这里用的是同一份。「读不到」从不当成「没有 / 已停」。
+HEAVY_TEST_COMMANDS="${HEAVY_TEST_COMMANDS:-}"
+HEAVY_TEST_LOCK_WAIT="${HEAVY_TEST_LOCK_WAIT:-0}"
+HEAVY_TEST_SCOPE_PROPERTIES="${HEAVY_TEST_SCOPE_PROPERTIES:-}"
+ITEM_LOCK_WAIT_SECS="${ITEM_LOCK_WAIT_SECS:-60}"
+# 清理时停一个分组后最多等多久确认它消失（秒）。systemd 那边 10 秒后会强杀，30 秒足够
+HEAVY_STOP_WAIT_SECS="${HEAVY_STOP_WAIT_SECS:-30}"
+# worker 在会话里跑的包装命令：托管安装走长期入口，发版切换后路径不失效（同用量 footer）
+HEAVY_TEST_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/heavy-test.sh"
+_MANAGED_HEAVY_TEST="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/heavy-test.sh"
+[ ! -f "$_MANAGED_HEAVY_TEST" ] || HEAVY_TEST_SCRIPT="$_MANAGED_HEAVY_TEST"
+
+heavy_enabled() { [ -n "${HEAVY_TEST_COMMANDS//[[:space:]]/}" ]; }
+
+# 派工 / 清理脚本的开头调：还没拿条目锁 → 在锁里把本脚本重跑一遍并以它的退出码退出；已经在锁里
+# （上一层传下来的标记）→ 返回 0 接着跑。锁由 flock 进程自己拿着（-o：不把描述符传给脚本），
+# 所以它不会顺着 tmux server 漏到 worker 手里——那样 worker 活着锁就一直不放。
+# 等不到锁退出码 75：派工那边标签不翻、下一轮重试；清理那边什么都没动。
+ITEM_LOCK_HELD_FOR=""
+item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
+    local n="$1" self="$2" lock rc=0
+    shift 2
+    if [ "${CAVIL_ITEM_LOCK_HELD:-}" = "$n" ]; then
+        unset CAVIL_ITEM_LOCK_HELD      # 不留在环境里：起 tmux server 时会被它整份抄走
+        ITEM_LOCK_HELD_FOR="$n"
+        return 0
+    fi
+    lock="$(heavy_item_lock_path "$STATE_DIR" "$n")"
+    mkdir -p "$(dirname "$lock")"
+    CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
+    if [ "$rc" = 75 ]; then
+        log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
+    fi
+    exit "$rc"
+}
+
+# 派工：定下这次启动的编号和代数，tmux_env_args 会把它们交给 worker。读不到代数 → 非 0，本轮不派。
+HEAVY_LAUNCH_ID=""; HEAVY_LAUNCH_ITEM=""; HEAVY_LAUNCH_GEN=""
+heavy_launch_prepare() {   # <条目号>
+    heavy_enabled || return 0
+    local g
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")），本轮不派工"
+        return 1
+    fi
+    HEAVY_LAUNCH_ID="$(tr -d '-' < /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    if ! [[ "$HEAVY_LAUNCH_ID" =~ ^[0-9a-f]{32}$ ]]; then
+        # 没有 /proc（macOS）：那里包装命令只排队、不登记，启动编号用不上
+        HEAVY_LAUNCH_ID=""
+    fi
+    HEAVY_LAUNCH_ITEM="$1"; HEAVY_LAUNCH_GEN="$g"
+}
+
+heavy_launch_write() {   # <进程号 | pending> <进程启动时间>
+    local f tmp
+    f="$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf 'pid=%s\nstart=%s\nitem=%s\ngen=%s\nat=%s\n' \
+        "$1" "$2" "$HEAVY_LAUNCH_ITEM" "$HEAVY_LAUNCH_GEN" "$(date +%s)" > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# 交给 worker 的环境变量（tmux -e 参数，NUL 分隔，格式同 tmux_env_args 的其余部分）。
+heavy_tmux_env_args() {
+    [ -n "$HEAVY_LAUNCH_ITEM" ] || return 0
+    # 这里只在真的要起 worker 时才会走到（注入现有会话不拼环境参数），而且在起之前：先登记这次启动
+    # （进程号待定）。worker 一起来就可能跑排队命令，那时记录必须已经在——排队命令对「没有记录的
+    # 启动编号」一律不放行。写不进去时 worker 照常起，只是它的重测试会被拒绝（不放行比乱放行安全）。
+    if [ -n "$HEAVY_LAUNCH_ID" ] && [ ! -e "$(heavy_launch_file "$STATE_DIR" "$HEAVY_LAUNCH_ID")" ]; then
+        heavy_launch_write pending "" || echo "[cavil-loop] WARN: 写不进这次启动的记录，这个 worker 的重测试会被排队命令拒绝" >&2
+    fi
+    printf -- '-e\0CAVIL_HEAVY_ITEM=%s\0' "$HEAVY_LAUNCH_ITEM"
+    printf -- '-e\0CAVIL_HEAVY_GEN=%s\0' "$HEAVY_LAUNCH_GEN"
+    printf -- '-e\0CAVIL_HEAVY_LAUNCH=%s\0' "$HEAVY_LAUNCH_ID"
+    printf -- '-e\0CAVIL_HEAVY_STATE_DIR=%s\0' "$STATE_DIR"
+    printf -- '-e\0CAVIL_HEAVY_PROJECT=%s\0' "$REPO"
+    printf -- '-e\0CAVIL_HEAVY_LOCK_WAIT=%s\0' "$HEAVY_TEST_LOCK_WAIT"
+    printf -- '-e\0CAVIL_HEAVY_SCOPE_PROPERTIES=%s\0' "$HEAVY_TEST_SCOPE_PROPERTIES"
+}
+
+# 起完 worker 之后调：把这次启动的记录补上窗格进程号和它的启动时间。
+# 认不出 worker 窗格 / 读不到进程 → 记录停在「进程号待定」：这次启动起的测试可以跑、只会被等，
+# 不会被每轮检查停掉。注入现有会话（没有新起程序）不调，那种情况也没有登记过新的启动。
+heavy_launch_record() {   # <tmux_session>
+    [ -n "$HEAVY_LAUNCH_ID" ] || return 0
+    local sess="$1" st pane pid dead start
+    read -r st pane pid dead _ <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in found|single) ;; *) st="" ;; esac
+    if [ -z "$st" ] || [ "$dead" = 1 ] || ! start="$(heavy_proc_start "$pid")"; then
+        log "  ⚠️ 读不到 $sess 的 worker 窗格进程，这次启动的进程号没记下（它起的重测试不会被自动停）"
+        return 0
+    fi
+    heavy_launch_write "$pid" "$start" || log "  ⚠️ 写不进这次启动的记录（它起的重测试不会被自动停）"
+}
+
+# 条目清理（代数已经加一）之后：这个条目以前的启动记录都用不上了——带旧代数的测试在核对代数那一步
+# 就被拦下，轮不到看启动记录。在条目锁里调。
+heavy_launch_forget_item() {   # <条目号>
+    local f d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        [[ "${f##*/}" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" item)" = "$1" ] || continue
+        rm -f "$f"
+    done
+}
+
+# 本账号下登记着的全部运行记录文件，一行一个路径（只看文件名，不读内容）。是不是本项目 / 本条目的，
+# 由调用方用 heavy_run_load 读过之后再问 heavy_run_is_mine——读不到的记录不能在这里被悄悄筛掉。
+heavy_run_files() {
+    local f
+    for f in "$CAVIL_HEAVY_TEST_RUNS"/*; do
+        [ -f "$f" ] || [ -L "$f" ] || continue
+        heavy_is_run_id "${f##*/}" || continue
+        printf '%s\n' "$f"
+    done
+}
+# 刚用 heavy_run_load 读过的那条记录是不是本项目的（可选：是不是这个条目的）。只在读成功（返回 0）之后问。
+heavy_run_is_mine() {   # [条目号]
+    [ "$HR_STATEDIR" = "$STATE_DIR" ] || return 1
+    [ -z "${1:-}" ] || [ "$HR_ITEM" = "$1" ]
+}
+
+# 清理这个条目要不要走条目锁 / 代数 / 停分组：功能开着，或者（功能后来关了但）它还有登记着的运行、
+# 或被清理过。三样都没有 = 这个项目从没用过，清理过程和以前一模一样。
+heavy_cleanup_needed() {   # <条目号>
+    heavy_enabled && return 0
+    [ -e "$(heavy_gen_file "$STATE_DIR" "$1")" ] && return 0
+    local f rc
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        rc=0; heavy_run_load "$f" || rc=$?
+        case "$rc" in
+            0) ! heavy_run_is_mine "$1" || return 0 ;;
+            2) return 0 ;;      # 读不到：可能就是这个条目的，不能当成没有
+        esac
+    done < <(heavy_run_files)
+    return 1
+}
+
+# 清理：代数加一并落盘。在条目锁里调。读不出旧值 / 写不进去 → 非 0，调用方不继续清理。
+heavy_gen_bump() {   # <条目号>
+    local f g tmp
+    if ! g="$(heavy_gen_read "$STATE_DIR" "$1")"; then
+        log "❌ 读不到条目 #$1 的清理记录（$(heavy_gen_file "$STATE_DIR" "$1")）"
+        return 1
+    fi
+    f="$(heavy_gen_file "$STATE_DIR" "$1")"
+    mkdir -p "$(dirname "$f")" || return 1
+    tmp="$f.tmp.$$"
+    printf '%s\n' $((g + 1)) > "$tmp" && mv -f "$tmp" "$f" || { log "❌ 写不进 $f"; return 1; }
+}
+
+# 清理：停掉本条目登记着的全部运行（排队中和运行中），逐个确认分组消失。在条目锁里、代数加一之后调。
+# 任何一个查不清 / 停不掉 → 非 0，调用方保留工作树。
+heavy_stop_item_runs() {   # <条目号>
+    local f unit st rc=0 lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        unit="$(heavy_unit_name "${f##*/}")"       # 分组名由文件名决定，记录读不到也推得出来
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine "$1"; then continue; fi
+        st="$(heavy_scope_state "$unit")"
+        if [ "$st" = gone ]; then rm -f "$f"; continue; fi
+        if [ "$lr" = 2 ]; then
+            # 读不到它是谁的：可能就是本条目的。不停它（也可能是别人的），但也不能当它不存在去删工作树
+            log "  ⚠️ 运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在（或查不清）：没法确认不是条目 #$1 的"
+            rc=1; continue
+        fi
+        if [ "$st" != active ]; then
+            log "  ⚠️ 查不清重测试分组 $unit 的状态，当它还在跑"; rc=1; continue
+        fi
+        log "  停掉条目 #$1 的重测试：$unit（$HR_STATE，$HR_CMD）"
+        # heavy_stop_unit 自己会再读一次状态：这一次读不出来就不发停止请求
+        if heavy_stop_unit "$unit" "$HEAVY_STOP_WAIT_SECS"; then
+            rm -f "$f"
+        else
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态；现在：$(heavy_scope_state "$unit")）"
+            rc=1
+        fi
+    done < <(heavy_run_files)
+    return "$rc"
+}
+
+# 每轮轮询：本项目登记着的运行里，分组已经消失的删记录；起它的 worker 已确认结束、分组还在的，
+# 整组停掉。worker 还在 / 认不清 / 没读到进程号的一律不动。
+# 已结束的启动记录**不删**，只盖上「已结束」：删了的话，这个启动编号再被拿来问就成了「没记录」，
+# 旧 worker 留下的迟到请求会被重新放行。记录到条目清理时才删（那时代数已变，旧请求过不了代数那一关）。
+# 没有任何记录时只是两次目录读。
+heavy_sweep_tick() {
+    local f unit d id lr
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        lr=0; heavy_run_load "$f" || lr=$?
+        [ "$lr" != 1 ] || continue
+        if [ "$lr" = 0 ] && ! heavy_run_is_mine; then continue; fi
+        unit="$(heavy_unit_name "${f##*/}")"
+        case "$(heavy_scope_state "$unit")" in
+            gone) rm -f "$f"; continue ;;       # 分组确认消失：不管记录读没读到，这条运行都了结了
+            active) ;;
+            *) continue ;;
+        esac
+        # 读不到的记录：不知道是谁的、谁起的，不停。它会挡着排队和本账号下的条目清理，所以每轮说一声
+        if [ "$lr" = 2 ]; then
+            log "⚠️ 重测试的运行记录 $f 读不出来或内容不认识，它的分组 $unit 还在：不动它（确认后可 heavy-test.sh --stop ${f##*/}）"
+            continue
+        fi
+        if [ -n "$HR_LAUNCH" ] && [ "$(heavy_launch_state "$STATE_DIR" "$HR_LAUNCH")" = ended ]; then
+            log "🧹 起它的 worker 已结束，停掉遗留的重测试：$unit（条目 #$HR_ITEM，$HR_CMD）"
+            if heavy_stop_unit "$unit" 15; then rm -f "$f"; continue; fi
+            log "  ⚠️ 没能确认 $unit 已停（或这一次查不到它的状态），下一轮再试"
+        fi
+    done < <(heavy_run_files)
+    d="$STATE_DIR/worker-launch"
+    [ -d "$d" ] || return 0
+    for f in "$d"/*; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"
+        [[ "$id" =~ ^[0-9a-f]{32}$ ]] || continue
+        [ "$(heavy_field "$f" ended)" = 1 ] && continue
+        [ "$(heavy_launch_state "$STATE_DIR" "$id")" = ended ] || continue
+        heavy_launch_mark_ended "$STATE_DIR" "$id"
+    done
+    return 0
+}
+
+# 提示词里追加的那一段（compose_prompt_template 在功能开着时加）。
+heavy_prompt_section() {
+    local f="$SKILL_DIR/prompts/heavy-test.md" text cmds="" line wrapper
+    # 路径不加引号（只在含特殊字符时由 %q 转义）：用量 footer 认测试命令时会把引号里的内容整个去掉，
+    # 加了引号它就看不出这是排队命令、后面跟的是哪条测试了（test_time.py 的 classify_segment）
+    printf -v wrapper '%q' "$HEAVY_TEST_SCRIPT"
+    [ -s "$f" ] || { log "⚠️ 重测试排队说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+        cmds="${cmds}${cmds:+$'\n'}bash $wrapper -- $line"
+    done <<<"$HEAVY_TEST_COMMANDS"
+    text="$(cat "$f")"
+    text="${text//@@HEAVY_TEST_COMMANDS@@/"$cmds"}"
+    text="${text//@@HEAVY_TEST_LIST@@/"bash $wrapper --list"}"
+    printf '%s\n' "$text"
+}
+
 compose_prompt_template() {
     local name="$1" base_tpl overlay out lessons project_lessons
     base_tpl="$(find_prompt_template "$name")"
@@ -7229,7 +7516,7 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name"; then echo "$base_tpl"; return; fi
+    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -7253,6 +7540,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
+        if heavy_enabled; then
+            printf '\n\n---\n\n'
+            heavy_prompt_section
         fi
         # 外部需求机器人交接规则（GitHub#95）放在**最末尾**、项目追加要求之后：项目整份替换了
         # 工具自带模板时也收得到；写进工具模板里的话，那种项目就漏了。功能关着什么都不加。
@@ -7332,6 +7624,101 @@ project_auto_add_tick() {
     local rc=0
     CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/project-auto-add.sh" || rc=$?
     [ "$rc" = 0 ] || log "⚠️ 自动加入 Project：同步脚本异常退出（退出码 $rc），本轮跳过，派工不受影响"
+    return 0
+}
+
+# ── 令牌脱敏：定期扫描（GitHub#342）──
+# daemon 自己写的日志在落盘前就替换了（log() / redact_pipe / 窗格历史的过滤管道）。这里补两件事：
+#   1. agent 自己写的会话记录（claude / codex 的对话记录）：CLI 写入时 daemon 插不上手，
+#      改为定期原地替换。只碰工作目录在本项目 WORKTREE_BASE 下的会话。
+#   2. 升级前已经落盘的窗格历史 / poll.log，以及升级前用 `cat` 挂着日志的活会话（换成过滤版）。
+# REDACT_AGENT_RECORDS 写成空值 / false 只关第 1 件；daemon 自己的日志始终处理。
+# 每 REDACT_SCAN_INTERVAL_SECS（默认 600）秒一次；一次最多跑 REDACT_SCAN_BUDGET_SECS（默认 20）秒，
+# 没扫完不记时间，下一轮接着扫（位置记在 $STATE_DIR/redact-scan.json）。
+# 这里的任何失败都只记日志，不影响派工。
+REDACT_AGENT_RECORDS="${REDACT_AGENT_RECORDS-true}"
+
+redact_agent_records_on() {
+    case "$(printf '%s' "${REDACT_AGENT_RECORDS:-}" | tr '[:upper:]' '[:lower:]')" in
+        ""|0|false|no|off) return 1 ;;
+    esac
+    return 0
+}
+
+redact_scan_tick() {
+    local stamp="$STATE_DIR/redact-scan.stamp" now last=0
+    local every="${REDACT_SCAN_INTERVAL_SECS:-600}"
+    [[ "$every" =~ ^[0-9]+$ ]] || every=600
+    now="$(date +%s)"
+    [ -f "$stamp" ] && last="$(cat "$stamp" 2>/dev/null || true)"
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    [ $((now - last)) -ge "$every" ] || return 0
+
+    # tmux 会话清单：成功读到才算数（「没有 server」也是成功读到：一个会话都没有）。
+    # 读不到时不给清单，扫描就不会把任何窗格历史当成「已经写完」。
+    local live="" live_ok=0 err list name
+    err="$(mktemp)"
+    if list="$(tmux list-sessions -F '#{session_name}' 2>"$err")"; then
+        live="$list"; live_ok=1
+    elif grep -qE '^(no server running on |error connecting to .*\(No such file or directory\))' "$err"; then
+        live_ok=1
+    fi
+    rm -f "$err"
+
+    # 升级前用 `cat` 挂着日志的本项目活会话：认得出 worker 窗格的换成过滤版
+    if [ "$live_ok" = 1 ] && [ -n "${SESSION_LOG_DIR:-}" ]; then
+        local st tgt pid dead pipe rest
+        while IFS= read -r name; do
+            # 只认本项目的 worker 会话：名字是「前缀-issue<编号>」，而且它的日志就在本项目的
+            # 日志目录里。别的项目的前缀可能以本项目的前缀开头（tutor / tutor-web），
+            # 认错了会把别人的日志管道改指到这里来。
+            rest="${name#"${TMUX_PREFIX}-${SESSION_NAME_PREFIX}"}"
+            [ "$rest" != "$name" ] && [[ "$rest" =~ ^[0-9]+$ ]] || continue
+            [ -f "$(session_log_path "$name")" ] || continue
+            read -r st tgt pid dead pipe <<<"$(worker_pane_lookup "$name")"
+            case "$st" in found|single) ;; *) continue ;; esac
+            [ "$pipe" = 1 ] || continue
+            session_log_pipe_ensure "$name" "$tgt" "$pipe" "$(session_log_path "$name")" || true
+        done <<<"$live"
+    fi
+
+    # 不加全机锁：几个项目的 daemon 同时扫到同一份会话记录也没关系——每一处都是「再读一次，
+    # 还是那个令牌才写」，写进去的又是同样的字节，谁先谁后结果一样。扫描位置各项目各记各的。
+    local args=(scan --state "$STATE_DIR/redact-scan.json"
+                --budget-secs "${REDACT_SCAN_BUDGET_SECS:-20}" --plain "$LOG_FILE")
+    local live_file=""
+    if [ -n "${SESSION_LOG_DIR:-}" ]; then
+        args+=(--pane-dir "$SESSION_LOG_DIR")
+        if [ "$live_ok" = 1 ]; then
+            live_file="$(mktemp)"
+            printf '%s\n' "$live" > "$live_file"
+            args+=(--live-sessions "$live_file")
+        fi
+    fi
+    if redact_agent_records_on && [ -n "${WORKTREE_BASE:-}" ]; then
+        args+=(--cwd-prefix "$WORKTREE_BASE"
+               --claude-root "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+               --codex-root "${CODEX_SESSIONS_DIR:-${CODEX_HOME:-$HOME/.codex}/sessions}")
+    fi
+    local out rc=0 line done=1
+    # 和上面各个入口用同一份脚本（_redact.sh 里定的路径），不另拼一个
+    out="$(python3 "$_REDACT_PY" "${args[@]}" 2>&1)" || rc=$?
+    [ -n "$live_file" ] && rm -f "$live_file"
+    if [ "$rc" != 0 ]; then
+        log "⚠️ 令牌脱敏：扫描异常退出（退出码 $rc），下一轮重试：$(printf '%s' "$out" | tail -1)"
+        return 0
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            error=*) log "⚠️ 令牌脱敏：${line#error=}（这个文件本轮没处理，下一轮重试）" ;;
+            files=*)
+                [[ "$line" == *" unfinished=1 "* ]] && done=0
+                if [[ "$line" =~ changed=([0-9]+)\ replaced=([0-9]+) ]] && [ "${BASH_REMATCH[2]}" -gt 0 ]; then
+                    log "令牌脱敏：${BASH_REMATCH[1]} 个文件里替换了 ${BASH_REMATCH[2]} 处（指纹 ${line##*fingerprints=}）"
+                fi ;;
+        esac
+    done <<<"$out"
+    [ "$done" = 1 ] && printf '%s\n' "$now" > "$stamp"
     return 0
 }
 
@@ -7571,7 +7958,7 @@ agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
             {
                 printf '\n===== %s session=%s 卡在目录信任框，pane capture =====\n' "$(date -Iseconds)" "$sess"
                 tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
-            } >> "${log_path:-/dev/null}" 2>/dev/null
+            } | redact_pipe >> "${log_path:-/dev/null}" 2>/dev/null
             tmux kill-session -t "$sess" 2>/dev/null || true
             return 0
         fi

@@ -15,6 +15,7 @@ import type { ItemDetail, TimelineEntry } from '../shared/actions';
 import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../shared/avatar';
 import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
+import { annotateCodeBlocks, codeCss } from './codeBlocks';
 
 /** the reply preview: no scripts at all */
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
@@ -102,14 +103,15 @@ export type Unfold = 'latest' | 'all' | 'none';
  * can be clicked only when the entry allows it (GitHub#193) and `canTick` (online,
  * no change in flight). A read-only entry says why under its text.
  */
-function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null): { html: string; note: string } {
+function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null, wrap: boolean): { html: string; note: string } {
   const t = e.tasks;
-  const html = annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending);
+  // GitHub#381: every code block gets its two buttons; the boxes are numbered first, exactly as before
+  const html = annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending), wrap);
   const note = t && !t.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(t.why)}</div>` : '';
   return { html, note };
 }
 
-function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null): string {
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false): string {
   const who = escapeHtml(e.author ?? '（已删除的账号）');
   const head =
     e.kind === 'body'
@@ -121,7 +123,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
   const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载；点「在网页上看」查看</div>` : '';
-  const tasks = bodyWithTasks(e, canTick, pending);
+  const tasks = bodyWithTasks(e, canTick, pending, wrap);
   // GitHub#205: only what GitHub says this account may change, only while a change can be sent
   const edit =
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
@@ -135,7 +137,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
       e.lineComments
         .map(
           (l) =>
-            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${l.bodyHtml}</div></div>`,
+            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${annotateCodeBlocks(l.bodyHtml, wrap)}</div></div>`,
         )
         .join('') +
       '</div>';
@@ -172,10 +174,12 @@ export interface TimelineOptions {
    */
   pending?: (PendingTick & { entryId: string }) | null;
   view?: FrameView | null;
+  /** GitHub#381: long lines of code blocks fold onto the next line (the user's switch; off = scroll sideways) */
+  wrap?: boolean;
 }
 
 export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
-  const { render = '', canTick = false, view = null, pending = null } = opts;
+  const { render = '', canTick = false, view = null, pending = null, wrap = false } = opts;
   const known = new Set(view?.known ?? []);
   const opened = new Set(view?.open ?? []);
   const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
@@ -188,7 +192,6 @@ export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfo
   // GitHub#181: same tokens as the window (styles.css): a softer rule between entries, a tinted head on the open one
   const line = dark ? '#2a313c' : '#e3e8ed';
   const canvas = dark ? '#0d1117' : '#f6f8fa';
-  const code = dark ? '#212830' : '#eef1f4';
   // GitHub#358: a box waiting for GitHub — grey, between "not ticked" and the accent of a confirmed tick
   const wait = dark ? '#656c76' : '#8c959f';
   const waitBg = dark ? '#262c36' : '#eaeef2';
@@ -211,10 +214,20 @@ a{color:${accent}}
 .entry.approved>.head{border-left:3px solid #1a7f37}.entry.changes_requested>.head{border-left:3px solid #cf222e}
 .md{padding:8px 12px;line-height:1.6}
 .md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
-.md code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:${code};padding:1px 4px;border-radius:4px}
-.md pre code{background:none;padding:0}
 .md img{max-width:100%}
-.md pre{overflow:auto;background:${canvas};padding:10px;border-radius:6px}
+${codeCss(dark, '.md ')}
+.cb{position:relative;margin:1em 0}
+.cb>pre{margin:0}
+body[data-wrap] .md pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.cbar{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0}
+.cb:hover>.cbar,.cb:focus-within>.cbar{opacity:1}
+.cbtn{font:12px/18px -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;color:${muted};background:${bg};border:1px solid ${border};border-radius:6px;padding:1px 8px;cursor:pointer}
+.cbtn:focus-visible{outline:2px solid ${accent};outline-offset:1px}
+.cbtn[data-code-wrap]::after{content:'：关'}
+body[data-wrap] .cbtn[data-code-wrap]::after{content:'：开'}
+body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
+.cbtn[data-state=ok]{color:${dark ? '#3fb950' : '#1a7f37'};border-color:${dark ? '#3fb950' : '#1a7f37'}}
+.cbtn[data-state=fail]{color:${dark ? '#f85149' : '#cf222e'};border-color:${dark ? '#f85149' : '#cf222e'}}
 .md table{border-collapse:collapse}.md td,.md th{border:1px solid ${border};padding:2px 6px}
 .lines{margin:4px 12px 10px 22px;border-left:2px solid ${line}}
 .line{padding:2px 8px}
@@ -235,8 +248,17 @@ a{color:${accent}}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
-</style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}">
-${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null)).join('\n')}
+</style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}"${wrap ? ' data-wrap=""' : ''}>
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap)).join('\n')}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
+}
+
+/**
+ * The reply preview as one document (GitHub's rendering of what was typed): no
+ * script, no buttons — only the code styles the discussion uses (GitHub#381),
+ * so a block is coloured the same in both.
+ */
+export function previewDocument(html: string, dark: boolean): string {
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><style>${codeCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${html}</body>`;
 }

@@ -291,6 +291,11 @@ runlog_step reap
 # 打 gh API。被回收的 session 本来就不在 active_keys 里，所以不影响本轮并发计数。
 reap_finished_workers active_keys
 
+# ── 0c. 遗留的重测试（GitHub#343）──
+# worker 已经结束（被上面回收、自己退出、会话没了都算）而它通过排队命令起的测试还在排队或还在跑：
+# 整组停掉。不依赖 tmux 会话还在；没有登记着的运行时只是两次目录读。
+heavy_sweep_tick
+
 runlog_step queue
 # ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
 # 待派工的条目常多于 MAX_CONCURRENT_WORKERS。以前是「按 label 分六趟扫，每趟内按
@@ -1004,6 +1009,10 @@ project_auto_add_tick
 # ── 3g. 配置缺新功能的设置 → 提示维护者（GitHub#289）──
 # 纯本地比对；缺项集合不变时一次 GitHub 调用都不发。只在调度器起的轮询里运行。
 config_notice_tick || true
+
+# ── 3h. 令牌脱敏的定期扫描（GitHub#342）──
+# 只动本机文件、不碰 GitHub，所以不标 PACE_ACTED；没到间隔时就是读一个时间文件。
+redact_scan_tick
 
 # ── 4. 缺价自动抓价（GitHub#51）──
 # 只动本机缓存、不碰 GitHub，所以不标 PACE_ACTED；没有缺价标记时就是一次 ls。
