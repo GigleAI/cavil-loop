@@ -29,14 +29,16 @@
 
 import type { IssueCloseReason, MergeMethod } from './actions';
 import { noticeTone, type NoticeFacts, type NoticeTone } from './noticeTone';
+import type { BlockedStepName, Facts, Pick, Ref } from './blocked';
 
-export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack';
-export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack'];
+export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' | 'blocked';
+export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack', 'blocked'];
 export function isOpKind(k: string): k is OpKind {
   return (OP_KINDS as readonly string[]).includes(k);
 }
 
-export type OpStepName = 'close' | 'comment' | 'merge' | 'addLabel' | 'removeLabel';
+/** GitHub#434: 'relation' = one native "Blocked by"; 'check' = a read, nothing sent (the registration is the newest one) */
+export type OpStepName = 'close' | 'comment' | 'merge' | 'addLabel' | 'removeLabel' | 'relation' | 'check';
 /** unsent: never went out; pending: sent, no answer yet; ok / refused: GitHub said so; unknown: sent, no clear answer */
 export type OpStepState = 'unsent' | 'pending' | 'ok' | 'refused' | 'unknown';
 
@@ -56,6 +58,31 @@ export interface OpStep {
   check?: OpCheck;
   /** GitHub#359: how often a person sent this step again */
   resent?: number;
+  /** GitHub#434: which step of "等前置…" this is (its label steps keep their addLabel / removeLabel names) */
+  blocked?: BlockedStepName;
+  /** GitHub#434: a 'relation' step: the prerequisite's key */
+  target?: string;
+}
+
+/**
+ * GitHub#434: what a "等前置…" record carries besides its steps. `basis` is what the person confirmed
+ * (the facts of the read the dialog showed); before every write the item is read again and must hold
+ * `basis` plus exactly what the steps done so far changed (shared/blocked.ts).
+ */
+export interface BlockedOpData {
+  /** this operation's id, written hidden into its registration (finds it again when the answer was lost) */
+  opId: string;
+  basis: Facts;
+  /** the waiting label's and the "等人处理" label's names when it started */
+  labels: { blocked: string; human: string };
+  /** the native relations to add, by key */
+  picks: Pick[];
+  /** the prerequisites the registration lists */
+  markRefs: Ref[];
+  /** the registration's comment, once posted (its numeric id) */
+  commentId?: number | null;
+  /** why it stopped (null = it did not), and whether the last full read showed the item paused */
+  stop?: { text: string; paused: 'yes' | 'unconfirmed' | 'none' } | null;
 }
 
 export type OpLabelRole = 'autopilot' | 'agent' | 'human';
@@ -154,6 +181,8 @@ export interface OpRecord {
   finishing?: boolean;
   /** GitHub#357: why the last "补做剩下的步骤" did nothing; cleared when the next one starts, and once nothing is left to finish */
   finishProblem?: string | null;
+  /** GitHub#434: a "等前置…" record */
+  blocked?: BlockedOpData;
 }
 
 /**
@@ -279,6 +308,8 @@ export function opText(r: OpRecord): string {
                 ? '，正在发评论…'
                 : '，附的评论没有发出（关闭的应答丢了，没敢接着发）';
     }
+  } else if (r.kind === 'blocked') {
+    head = blockedText(r);
   } else if (r.kind === 'merge') {
     head =
       m.state === 'pending'
@@ -316,6 +347,51 @@ export function opText(r: OpRecord): string {
   if (r.replyState === 'sending') head += '；正在用附的评论原文发回复…';
   if (r.replyState === 'unknown') head += '；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对';
   return head;
+}
+
+/** GitHub#434: how one step of "等前置…" reads */
+function blockedStepText(s: OpStep): string {
+  switch (s.blocked) {
+    case 'pause':
+    case 'repause':
+      return `挂「${s.label ?? ''}」暂停`;
+    case 'unpause':
+      return `摘「${s.label ?? ''}」恢复等待`;
+    case 'addBlocked':
+      return `挂「${s.label ?? ''}」`;
+    case 'relation':
+      return `把 ${s.target ?? ''} 设成「Blocked by」`;
+    case 'comment':
+      return '发登记评论';
+    case 'check':
+      return '核对登记';
+    default:
+      return s.name;
+  }
+}
+
+/** GitHub#434: the notice of a "等前置…" record. */
+function blockedText(r: OpRecord): string {
+  const b = r.blocked;
+  const u = r.steps.find((s) => s.state === 'unknown');
+  const pending = r.steps.find((s) => s.state === 'pending') ?? (r.running && r.steps[0].state === 'unsent' ? r.steps[0] : undefined);
+  const done = r.steps.filter((s) => s.state === 'ok' && s.blocked !== 'check').map(blockedStepText);
+  const refused = r.steps.find((s) => s.state === 'refused');
+  if (pending) return `正在登记前置：${blockedStepText(pending)}…`;
+  if (r.steps.every((s) => s.state === 'ok')) return `已登记前置：${done.join('、')}`;
+  const parts: string[] = [];
+  if (u) parts.push(`${blockedStepText(u)}发出后没有收到 GitHub 的应答，不确定有没有生效（${u.reason ?? ''}）`);
+  else if (refused) parts.push(`${blockedStepText(refused)}没有成功：${refused.reason ?? ''}`);
+  else if (b?.stop) parts.push(`停在「${blockedStepText(r.steps.find((s) => s.state === 'unsent') ?? r.steps[r.steps.length - 1])}」之前：${b.stop.text}`);
+  else {
+    const first = r.steps.find((s) => s.state === 'unsent');
+    if (first) parts.push(`没有${blockedStepText(first)}：${first.reason ?? '没有发出'}`);
+  }
+  parts.push(done.length ? `已做：${done.join('、')}` : 'GitHub 上什么都没改');
+  const paused = b?.stop?.paused;
+  if (paused === 'yes') parts.push(`已暂停：挂着「${b!.labels.human}」，daemon 不会按这份登记接着干。核对后点「等前置…」重新登记`);
+  else if (paused === 'unconfirmed') parts.push(`暂停状态未确认，daemon 可能按缺项的登记接着干，请到 GitHub 页面核对，或点「等前置…」重新登记`);
+  return `登记前置没有完成：${parts.join('；')}`;
 }
 
 export type OpTone = NoticeTone;
@@ -415,7 +491,8 @@ export function opButtons(r: OpRecord): OpButton[] {
   if (p === 'settling' && r.stuck) out.push('openWeb', 'unlock');
   if (p === 'settled') {
     const m = main(r);
-    if (m.state === 'refused' || m.state === 'unsent' || (r.halt?.redo && !r.steps.every((s) => s.state === 'ok'))) out.push('retry');
+    // GitHub#434: a "等前置…" that did not finish is done again from the dialog (read afresh)
+    if (m.state === 'refused' || m.state === 'unsent' || (r.halt?.redo && !r.steps.every((s) => s.state === 'ok')) || (r.kind === 'blocked' && !r.steps.every((s) => s.state === 'ok'))) out.push('retry');
     else if (finishSteps(r).length && !r.finishing) out.push('finish');
   }
   const left = opDraftLeft(r);
@@ -751,6 +828,8 @@ export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, op
  * when nothing else of the record is unknown or on its way.
  */
 export function opResendStep(r: OpRecord): number {
+  // GitHub#434: a "等前置…" step is never sent a second time from the notice (each write needs the whole permit)
+  if (r.kind === 'blocked') return -1;
   if (r.unlocked || r.running || r.checking || r.replyState) return -1;
   if (r.steps.some((s) => s.state === 'pending')) return -1;
   const i = r.steps.findIndex((s) => s.state === 'unknown');

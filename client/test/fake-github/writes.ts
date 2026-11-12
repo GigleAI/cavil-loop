@@ -32,6 +32,8 @@ export interface FakeComment {
   author: { login: string } | null;
   /** markdown source (GitHub#193): when set, bodyHTML is rendered from it */
   body?: string;
+  /** GitHub#434: the REST list's author_association (default COLLABORATOR) */
+  association?: string;
 }
 
 export interface FakeReview {
@@ -583,7 +585,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
       return send(200, w.labelEvents.get(gk) ?? []), true;
     }
     if (w.failCommentList) return send(502, { message: 'Server Error' }), true;
-    return send(200, (w.comments.get(gk) ?? []).map((x, i) => ({ id: i + 1, node_id: x.id, body: x.body ?? '', created_at: x.createdAt, user: x.author ? { login: x.author.login } : null }))), true;
+    return send(200, (w.comments.get(gk) ?? []).map((x, i) => ({ id: i + 1, node_id: x.id, body: x.body ?? '', created_at: x.createdAt, user: x.author ? { login: x.author.login } : null, author_association: x.association ?? 'COLLABORATOR' }))), true;
   }
   if (method === 'GET') return false;
 

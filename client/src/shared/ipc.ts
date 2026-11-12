@@ -6,12 +6,57 @@ import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
+import type { BlockedLabels, EntryState, Pick as BlockedPick, Ref } from './blocked';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 
 export interface Snapshot {
   state: AppState;
   data: BoardData;
 }
+
+/** GitHub#434: one prerequisite as the dialog shows it ('unknown' = its state could not be read) */
+export interface BlockedRefInfo {
+  repo: string;
+  number: number;
+  kind: 'issue' | 'pr' | null;
+  title: string;
+  state: 'open' | 'closed' | 'merged' | 'unknown';
+  url: string;
+}
+
+/**
+ * GitHub#434: what "等前置…" read about an item, read now in full. `fingerprint` names exactly this read:
+ * the start is refused (and the dialog refreshed) when GitHub no longer holds it.
+ */
+export type BlockedView =
+  | {
+      ok: true;
+      key: string;
+      repo: string;
+      number: number;
+      isPr: boolean;
+      entry: EntryState;
+      /** the prerequisites the daemon counts now: the newest registration of this wait, and the native "Blocked by" */
+      current: BlockedRefInfo[];
+      /** prerequisites of earlier registrations of this wait the newest one lost (open or not readable: ticked by default) */
+      lost: BlockedRefInfo[];
+      /** the newest registration's prerequisites, and the native "Blocked by" (what the plan is computed from) */
+      latest: Ref[];
+      native: Ref[];
+      fingerprint: string;
+      /** set: the dialog may not confirm, and says why (labels missing in the repository, ...) */
+      refuse: string | null;
+    }
+  | { ok: false; error: string };
+
+export interface BlockedStart {
+  key: string;
+  fingerprint: string;
+  picks: BlockedPick[];
+  restore: Ref[];
+}
+
+export type BlockedStartResult = { ok: true; id: string } | { ok: false; error: string; view?: BlockedView };
 
 export interface CavilApi {
   get(): Promise<Snapshot>;
@@ -77,6 +122,14 @@ export interface CavilApi {
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
+  /** GitHub#434: the two settings of "等前置…" */
+  setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
+  /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */
+  blockedRead(key: string): Promise<BlockedView>;
+  /** GitHub#434: the picker's search in the item's repository — a number reads that one item, text searches open titles */
+  blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }>;
+  /** GitHub#434: register the prerequisites; refused (with the item read again) when GitHub no longer holds what the dialog showed */
+  blockedStart(req: BlockedStart): Promise<BlockedStartResult>;
   /** remember the merge method chosen for a PR in `repo` */
   setMergeMethod(repo: string, method: MergeMethod): Promise<void>;
   /** fold / unfold one table group under one "group by" (GitHub#231) */

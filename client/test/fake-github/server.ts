@@ -3,6 +3,7 @@
 // Serves the recorded `cavil project` pages by default. Every request is
 // logged so tests can assert what the client actually asked for.
 
+import { handleBlockedRest } from './blocked';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -655,7 +656,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     }
 
     // ---- REST writes of #138, labels / milestones lists, markdown ----
-    if (url.pathname.startsWith('/api/') && ((req.method !== 'GET' && req.method !== 'HEAD') || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname))) {
+    // GitHub#434: one issue, its native "Blocked by", the issue search (test/fake-github/blocked.ts)
+    if (url.pathname.startsWith('/api/') && ((req.method !== 'GET' && req.method !== 'HEAD') || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname) || /\/repos\/[^/]+\/[^/]+\/issues\/\d+(\/dependencies\/blocked_by)?$/.test(url.pathname) || url.pathname === '/api/search/issues')) {
       const raw = req.method === 'GET' ? '' : await readBody(req);
       let parsed: any = undefined;
       try {
@@ -674,6 +676,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       if (lost) {
         lost.caught++;
         const run = () =>
+          handleBlockedRest(store, req.method ?? 'GET', url.pathname + url.search, parsed, () => {}) ||
           handleRest(
             store,
             req.method ?? 'GET',
@@ -695,7 +698,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       // the answer is computed (and a write applied) first, then held: a held
       // request carries the data of the moment it arrived, like a slow network
       const out: (() => void)[] = [];
-      const handled = handleRest(
+      const freeze = (st: number, b: unknown) => {
+        const frozen = b === undefined ? undefined : JSON.parse(JSON.stringify(b));
+        out.push(() => send(st, frozen));
+      };
+      const handled = handleBlockedRest(store, req.method ?? 'GET', url.pathname + url.search, parsed, freeze) || handleRest(
         store,
         req.method ?? 'GET',
         url.pathname + url.search,

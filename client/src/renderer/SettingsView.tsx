@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { DEFAULT_BLOCKED_LABELS } from '../shared/blocked';
 import { DEFAULT_HAND_BACK, type AppState, type BoardData } from '../shared/types';
 import { sourceLabel } from '../shared/sources';
 import { api } from './api';
@@ -195,7 +196,18 @@ export function SettingsView({
             托管标签（「托管」时加上；留空 = 不显示）
             <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
           </label>
+          <label>
+            等前置的标签（「等前置…」时加上；留空 = 不显示按钮）
+            <input data-testid="blocked-label" defaultValue={state.blockedLabels.blocked} onBlur={(e) => api().setBlockedLabels({ blocked: e.target.value })} />
+          </label>
+          <label>
+            其他流程标签（挂着时不让登记等前置；逗号分隔，* 结尾 = 前缀）
+            <input data-testid="blocked-flow" defaultValue={state.blockedLabels.flow} onBlur={(e) => api().setBlockedLabels({ flow: keepDefault(e.target, DEFAULT_BLOCKED_LABELS.flow) })} />
+          </label>
         </div>
+        <p className="muted small" data-testid="blocked-settings-note">
+          「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。
+        </p>
         <label className="row small">
           <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
           「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）
