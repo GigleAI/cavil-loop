@@ -442,3 +442,67 @@ export function confirmBlock(o: { picks: number; restore: number; current: numbe
   if (!o.picks && !o.restore && !o.current) return '还没有选前置';
   return null;
 }
+
+// ---- the picker's search text (GitHub#448) ----
+
+/**
+ * What the "等前置…" search box holds, read one way for both its users — the window (candidates from
+ * the board's copy, at once) and the back end (GitHub, after a pause in typing):
+ *   - `number`: `4`, `#4`, `owner/repo#4` — the item with that number first, then every open item of
+ *     that repository whose number starts with those digits (`repo` null = the item's own repository)
+ *   - `url`: an issue / pull request address on GitHub (`…/issues/444`, `…/pull/445`, with or without
+ *     the scheme, a trailing `/files`, `?…` or `#…`) — that one item, no prefix matching
+ *   - `text`: anything else, searched by title
+ */
+export type RefQuery = { kind: 'number'; repo: string | null; digits: string } | { kind: 'url'; repo: string; number: number } | { kind: 'text' };
+
+const OWNER_REPO = '([A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+)';
+const NUMBER_RE = new RegExp(`^(?:${OWNER_REPO}#|#)?([0-9]+)$`);
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** `https://github.com` and the configured web address (another host in tests), without the scheme */
+function webHosts(web: string): string[] {
+  const out = new Set(['github.com', 'www.github.com']);
+  const w = web.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/+$/, '');
+  if (w) out.add(w.toLowerCase());
+  return [...out];
+}
+
+export function parseRefQuery(text: string, web: string): RefQuery {
+  const q = text.trim();
+  const n = NUMBER_RE.exec(q);
+  if (n) return { kind: 'number', repo: n[1] ? n[1].toLowerCase() : null, digits: n[2] };
+  const bare = q.replace(/^[a-z]+:\/\//i, '');
+  for (const host of webHosts(web)) {
+    const m = new RegExp(`^${escapeRe(host)}/${OWNER_REPO}/(?:issues|pull)/([0-9]+)(?:[/?#].*)?$`, 'i').exec(bare);
+    if (m) return { kind: 'url', repo: m[1].toLowerCase(), number: Number(m[2]) };
+  }
+  return { kind: 'text' };
+}
+
+/** how many rows the picker lists for a number */
+export const NUMBER_PICK_LIMIT = 20;
+
+/**
+ * The rows a number search shows (GitHub#448), one rule for the window's board copy and the back end's
+ * GitHub answer: open items of `repo` (lower-cased) whose number starts with `digits`, not the item
+ * itself; the item with exactly that number first, the rest by number, largest first; at most
+ * NUMBER_PICK_LIMIT. Within `pool` the first copy of an item wins (callers put GitHub's before the board's).
+ */
+export function rankByNumber<T extends { repo: string; number: number; state: string }>(pool: readonly T[], repo: string, digits: string, self: Ref): T[] {
+  const r = repo.toLowerCase();
+  const exact = /^0/.test(digits) ? -1 : Number(digits);
+  const seen = new Set<string>();
+  const hits: T[] = [];
+  for (const x of pool) {
+    const k = refKey({ repo: x.repo.toLowerCase(), number: x.number });
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (x.repo.toLowerCase() !== r || x.state !== 'open') continue;
+    if (r === self.repo.toLowerCase() && x.number === self.number) continue;
+    if (!String(x.number).startsWith(digits)) continue;
+    hits.push(x);
+  }
+  hits.sort((a, b) => (a.number === exact ? -1 : b.number === exact ? 1 : b.number - a.number));
+  return hits.slice(0, NUMBER_PICK_LIMIT);
+}

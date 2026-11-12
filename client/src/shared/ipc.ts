@@ -127,8 +127,12 @@ export interface CavilApi {
   setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
   /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */
   blockedRead(key: string): Promise<BlockedView>;
-  /** GitHub#434: the picker's search in the item's repository — a number reads that one item, text searches open titles */
-  blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }>;
+  /**
+   * GitHub#434 / #448: the picker's search — a number lists the item with it and the open items whose
+   * number starts with it, an address that one item, text searches open titles. `error` with `ok: true`:
+   * part of the answer could not be read (`items` is what could).
+   */
+  blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string } | { ok: false; error: string }>;
   /** GitHub#434: register the prerequisites; refused (with the item read again) when GitHub no longer holds what the dialog showed */
   blockedStart(req: BlockedStart): Promise<BlockedStartResult>;
   /** remember the merge method chosen for a PR in `repo` */

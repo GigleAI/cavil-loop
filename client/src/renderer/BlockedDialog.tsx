@@ -1,12 +1,12 @@
-// GitHub#434: "等前置…" — pick what the item waits for (search the item's repository by number or
-// title), then register it the way the daemon reads it. The dialog only shows and picks: what is
+// GitHub#434: "等前置…" — pick what the item waits for (search the item's repository by number,
+// number prefix, address (GitHub#448) or title), then register it the way the daemon reads it. The dialog only shows and picks: what is
 // read, what is written and every check before a write are the controller's (blockedRead /
 // blockedSearch / blockedStart), the rules shared/blocked.ts.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { confirmBlock, planBlocked, planLines, refKey, type Pick, type Ref } from '../shared/blocked';
+import { confirmBlock, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type Pick, type Ref } from '../shared/blocked';
 import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
 
@@ -73,7 +73,8 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     return s;
   }, [picks, view, item.key]);
 
-  // the search: what the board already holds first (titles), then GitHub (after a pause in typing)
+  // the search: what the board already holds first, then GitHub (after a pause in typing). A number
+  // (or an address) is read the one way the back end reads it (shared/blocked.ts, GitHub#448)
   useEffect(() => {
     const q = text.trim();
     const my = ++seq.current;
@@ -83,13 +84,34 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       setSearching(false);
       return;
     }
-    const low = q.toLowerCase();
-    const local: Candidate[] = /^\d+$/.test(q)
-      ? []
-      : itemsRef.current
-          .filter((i) => i.repo.toLowerCase() === item.repo.toLowerCase() && i.state === 'open' && i.title.toLowerCase().includes(low))
-          .slice(0, 10)
-          .map((i) => ({ repo: i.repo.toLowerCase(), number: i.number, kind: i.kind, id: 0, title: i.title, state: 'open' as const, url: i.url }));
+    const parsed = parseRefQuery(q, state.githubWeb);
+    const self = { repo: item.repo.toLowerCase(), number: item.number };
+    const board = (repo: string): Candidate[] =>
+      itemsRef.current
+        .filter((i) => i.repo.toLowerCase() === repo)
+        .map((i) => ({ repo: i.repo.toLowerCase(), number: i.number, kind: i.kind, id: 0, title: i.title, state: i.state === 'open' ? ('open' as const) : ('closed' as const), url: i.url }));
+    let local: Candidate[];
+    let combine: (remote: Candidate[]) => Candidate[];
+    if (parsed.kind === 'number') {
+      const repo = parsed.repo ?? self.repo;
+      local = rankByNumber(board(repo), repo, parsed.digits, self);
+      // GitHub's copies first: they carry the ids a native relation needs, and their state is fresh
+      combine = (remote) => rankByNumber([...remote, ...local], repo, parsed.digits, self);
+    } else if (parsed.kind === 'url') {
+      local = board(parsed.repo).filter((c) => c.number === parsed.number && c.state === 'open' && refKey(c) !== refKey(self));
+      combine = (remote) => remote;
+    } else {
+      const low = q.toLowerCase();
+      local = board(self.repo)
+        .filter((c) => c.state === 'open' && c.title.toLowerCase().includes(low))
+        .slice(0, 10);
+      combine = (remote) => {
+        const byKey = new Map<string, Candidate>();
+        for (const x of local) byKey.set(refKey(x), x);
+        for (const x of remote) byKey.set(refKey(x), x);
+        return [...byKey.values()];
+      };
+    }
     setFound(local);
     setSearching(true);
     const t = setTimeout(() => {
@@ -99,15 +121,13 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
           if (my !== seq.current) return;
           setSearching(false);
           if (!r.ok) return setSearchErr(r.error);
-          // GitHub's answer carries the ids a native relation needs: it replaces the board's copy
-          const byKey = new Map<string, Candidate>();
-          for (const x of local) byKey.set(refKey(x), x);
-          for (const x of r.items) byKey.set(refKey(x), x);
-          setFound([...byKey.values()]);
+          // an answer read only in part: what was read is shown next to the reason, never as the whole
+          setFound(combine(r.items));
+          if (r.error) setSearchErr(r.error);
         });
     }, 300);
     return () => clearTimeout(t);
-  }, [text, item.key, item.repo]);
+  }, [text, item.key, item.repo, item.number, state.githubWeb]);
 
   const shown = found.filter((c) => !taken.has(refKey(c)));
   useEffect(() => setSel(0), [text]);
@@ -119,8 +139,10 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     // a board copy has no GitHub id: read the item itself (the same read a number search makes)
     if (!pick.id) {
       const r = await api().blockedSearch(item.key, `${c.repo}#${c.number}`);
-      if (!r.ok || !r.items.length) return setSearchErr(r.ok ? `${refName(c, item.repo)} 不是开着的` : r.error);
-      pick = r.items[0];
+      // a number search lists the numbers that start with it too: take the one that was clicked (GitHub#448)
+      const same = r.ok ? r.items.find((x) => refKey(x) === refKey(c)) : undefined;
+      if (!same) return setSearchErr(!r.ok ? r.error : r.error ?? `${refName(c, item.repo)} 不是开着的`);
+      pick = same;
     }
     setPicks((p) => (p.some((x) => refKey(x) === refKey(pick)) ? p : [...p, pick]));
     // a read for a board copy may come back after more was typed: what was typed since stays
@@ -252,10 +274,14 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                       </button>
                     ))}
                     {searching && <div className="small muted">正在搜 GitHub…</div>}
-                    {searchErr && <div className="small err">{searchErr}</div>}
+                    {searchErr && (
+                      <div className="small err" data-testid="blocked-search-err">
+                        {searchErr}
+                      </div>
+                    )}
                   </div>
                 )}
-                <div className="small muted">输入编号（如 429）直接定位；输入文字按标题搜。↑↓ 选，回车加入。别的仓库写成 owner/repo#编号——daemon 只认互通名单里的仓库，名单外的会交人。</div>
+                <div className="small muted">输入编号（如 429）直接定位，并列出编号以它开头的开着的条目；也可粘贴 issue / PR 网址；输入文字按标题搜。↑↓ 选，回车加入。别的仓库写成 owner/repo#编号——daemon 只认互通名单里的仓库，名单外的会交人。</div>
               </>
             )}
             {lines.length > 0 && (
