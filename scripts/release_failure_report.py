@@ -73,8 +73,9 @@ KINDS = {
         "client_key": "client",
         "client_job": "negative controls client",
         "hint": ("负对照没按预期变红，说明对应的测试已分辨不出那处改坏：修测试，"
-                 "或在被改坏的代码变了时把这个条目指向新代码；修好后只重跑这里点名的条目确认重新变红，"
-                 "不跑别的负对照、不新增负对照（GitHub#234）。发版不等这里（GitHub#416）。"),
+                 "或在被改坏的代码变了时把这个条目指向新代码。修复用普通回归验证；开发期间不跑负对照、"
+                 "不新增负对照，是否重新变红由合并后 main 上的下一次每晚运行确认（GitHub#234 / #416）。"
+                 "发版不等这里。"),
     },
 }
 KIND_NAME = os.environ.get("REPORT_KIND", "") or "release"

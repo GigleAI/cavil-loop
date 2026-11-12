@@ -979,19 +979,59 @@ has "variable set RELEASE_FAILURE_REPORT --body off --repo GigleAI/cavil-loop" "
 has "variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it back on"
 has "vars.RELEASE_FAILURE_REPORT != 'off'" "$(grep '^if' "$TMP/rf-static")" "the job reads that variable"
 
-echo "-- docs: turning the nightly report off and on, run as written (GitHub#416)"
+echo "-- docs: turning the nightly report off, checking, turning it on, checking — as written (GitHub#416)"
+# Each doc's block: the two bash lines (off, on) and the check command named in the text after them.
 for f in operations.md operations.zh.md; do
-    sed -n '/<!-- negative-controls-ops:begin -->/,/<!-- negative-controls-ops:end -->/p' "$REPO_DIR/docs/$f" \
-        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/nc-ops-$f.sh"
+    sed -n '/<!-- negative-controls-ops:begin -->/,/<!-- negative-controls-ops:end -->/p' "$REPO_DIR/docs/$f" > "$TMP/nc-ops-$f.md"
+    sed -n '/^```bash$/,/^```$/p' "$TMP/nc-ops-$f.md" | grep -v '^```' > "$TMP/nc-ops-$f.sh"
+    grep -o '`gh variable list[^`]*`' "$TMP/nc-ops-$f.md" | tr -d '`' > "$TMP/nc-ops-$f.check"
 done
 check "both docs carry the same steps" "$(cmp -s "$TMP/nc-ops-operations.md.sh" "$TMP/nc-ops-operations.zh.md.sh" && echo same)" same
-[ -s "$TMP/nc-ops-operations.md.sh" ] && ok "the steps were found" || bad "the steps were found"
-: > "$OPS_LOG"
-set +e; (PATH="$TMP/opsbin:$PATH" bash -e "$TMP/nc-ops-operations.md.sh") > "$TMP/ops.out" 2>&1; RC=$?; set -e
-check "the steps run" "$RC" 0
-has "variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it off"
-has "variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop" "$(cat "$OPS_LOG")" "turns it back on"
-lacks "RELEASE_FAILURE_REPORT" "$(cat "$OPS_LOG")" "leaves the release report's switch alone"
+check "both docs name the same check" "$(cmp -s "$TMP/nc-ops-operations.md.check" "$TMP/nc-ops-operations.zh.md.check" && echo same)" same
+check "two steps: off, then on" "$(wc -l < "$TMP/nc-ops-operations.md.sh")" 2
+check "one check command" "$(wc -l < "$TMP/nc-ops-operations.md.check")" 1
+# A gh stand-in that keeps the repository's variables, the way `gh variable` shows them (NAME<tab>VALUE<tab>UPDATED).
+mkdir -p "$TMP/varbin"
+cat > "$TMP/varbin/gh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = variable ] || { echo "unexpected: $*" >&2; exit 9; }
+repo=""; name=""; body=""; op="$2"; shift 2
+while [ $# -gt 0 ]; do case "$1" in
+    --repo) repo="$2"; shift 2 ;;
+    --body) body="$2"; shift 2 ;;
+    *) [ -z "$name" ] && name="$1" || { echo "unexpected: $1" >&2; exit 9; }; shift ;;
+esac; done
+[ "$repo" = GigleAI/cavil-loop ] || { echo "wrong repo: $repo" >&2; exit 9; }
+f="$VAR_STATE"; touch "$f"
+case "$op" in
+    set) [ -n "$name" ] && [ -n "$body" ] || exit 9
+         grep -v "^$name	" "$f" > "$f.t" || true; printf '%s\t%s\t2026-11-12T00:00:00Z\n' "$name" "$body" >> "$f.t"; mv "$f.t" "$f" ;;
+    delete) grep -q "^$name	" "$f" || { echo "HTTP 404: variable not found" >&2; exit 1; }
+            grep -v "^$name	" "$f" > "$f.t" || true; mv "$f.t" "$f" ;;
+    list) [ -z "$name" ] || exit 9; sort "$f" ;;
+    *) exit 9 ;;
+esac
+SH
+chmod +x "$TMP/varbin/gh"
+export VAR_STATE="$TMP/vars.tsv"
+printf 'RELEASE_FAILURE_REPORT\toff\t2026-11-01T00:00:00Z\n' > "$VAR_STATE"   # the other switch, set before
+vrun() { set +e; (PATH="$TMP/varbin:$PATH" bash -e -c "$1") > "$TMP/var.out" 2>&1; RC=$?; set -e; }
+has_var() { awk -F'\t' -v n="$1" -v v="$2" '$1 == n && $2 == v { f = 1 } END { exit !f }' "$TMP/var.out" && echo yes || echo no; }
+vrun "$(sed -n 1p "$TMP/nc-ops-operations.md.sh")"
+check "off: the first line runs" "$RC" 0
+vrun "$(cat "$TMP/nc-ops-operations.md.check")"
+check "check while off: runs" "$RC" 0
+check "check while off: shows NEGATIVE_CONTROLS_REPORT off" "$(has_var NEGATIVE_CONTROLS_REPORT off)" yes
+check "… the release report's switch untouched" "$(has_var RELEASE_FAILURE_REPORT off)" yes
+vrun "$(sed -n 2p "$TMP/nc-ops-operations.md.sh")"
+check "on: the second line runs" "$RC" 0
+vrun "$(cat "$TMP/nc-ops-operations.md.check")"
+check "check after on: runs" "$RC" 0
+check "check after on: NEGATIVE_CONTROLS_REPORT is gone" "$(grep -c '^NEGATIVE_CONTROLS_REPORT	' "$TMP/var.out" || true)" 0
+check "… the release report's switch still there" "$(has_var RELEASE_FAILURE_REPORT off)" yes
+check "the variable the steps set is the one the report job reads" \
+    "$(grep -c "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$NC_WORKFLOW")" 1
 
 
 echo "== the release kind's issues and comments are unchanged (GitHub#416: one script, two kinds)"
