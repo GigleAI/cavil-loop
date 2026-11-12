@@ -35,6 +35,8 @@ source "$TEST_DIR/lib/mutation.sh"
 source "$TEST_DIR/lib/parts.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -1836,16 +1838,15 @@ WORKER_AGENT_DEFAULT="claude"
 PATH="$SANDBOX/bin:\$PATH"
 GH_TOKEN="fake-token-for-test"
 CONF
-    # 编号按进程区分：派工脚本把提示词写到 /tmp 下按编号命名的文件，几个测试进程并行跑时不能撞名
+    # 编号取得很大，避开本机真实派工的编号（提示词写在本次运行自己的状态目录里）
     local N=$((900000 + $$ % 90000))
     export FAKE_GH_DIR="$W/gh"; mkdir -p "$W/gh"; for f in labels events comments; do echo '{}' > "$W/gh/$f.json"; done
     echo '{"'$N'":{"kind":"issue","state":"open","title":"托管测试","body":"x","user":{"login":"maint"}}}' > "$W/gh/items.json"
-    rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+    prompt_files_clear "$root" "$W/state"
     (cd "$W/project" && env DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE="$N" CODING_AGENT_CONFIG="$W/conf" \
         bash "$root/scripts/dispatch-new-issue.sh" "$N") >/dev/null 2>&1
     chk "派工脚本写出的提示词带托管规则（标记一路传到 worker）" \
-        "$(grep -c '^# 托管规则（本条是托管条目）' "/tmp/cavil-loop-issue-$N-prompt.md" 2>/dev/null || echo 0)" 1
-    rm -f "/tmp/cavil-loop-issue-$N-prompt.md"
+        "$(grep -c '^# 托管规则（本条是托管条目）' "$(prompt_file_of "$root" "$W/state" new "$N")" 2>/dev/null || echo 0)" 1
 }
 
 echo "=== 正式版 ==="

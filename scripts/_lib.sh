@@ -2299,6 +2299,42 @@ branch_name() {
     echo "${BRANCH_PREFIX}$1"
 }
 
+# ── 派工提示词文件（GitHub#396）──
+# 放在本项目自己的状态目录里，不放 /tmp：/tmp 下只按编号命名的文件是全机共用的——同机两个项目
+# 派到同一编号会互相覆盖，同机别的账号也读得到；测试用固定编号，两份同时跑时互相读删对方的提示词。
+# 文件名以工作编号开头，清理条目时 `<N>-*` 一条通配就能删干净（`39-*` 碰不到 `390-…`）。
+# 三个派工脚本都从这里取路径，测试也照这里的规则找文件（tests/lib/prompt-files.sh）。
+prompt_dir() {
+    printf '%s/prompts\n' "$STATE_DIR"
+}
+
+prompt_file_path() {   # <new|cmt|pr> <工作编号> [评论号 | PR 号]
+    local kind="$1" n="$2" x="${3:-}" d
+    d="$(prompt_dir)"
+    case "$kind" in
+        new) printf '%s/%s-new.md\n' "$d" "$n" ;;
+        cmt) printf '%s/%s-cmt-%s.md\n' "$d" "$n" "$x" ;;
+        pr)  printf '%s/%s-pr-%s.md\n' "$d" "$n" "$x" ;;
+        *)   return 2 ;;
+    esac
+}
+
+# 建目录并收紧成 700（mkdir -m 只管新建的那一层，已有目录靠 chmod）。失败就别派工：
+# 写不出提示词，worker 会拿到空提示词启动。
+prompt_dir_ensure() {
+    local d
+    d="$(prompt_dir)"
+    mkdir -p "$d" && chmod 700 "$d"
+}
+
+# 删一个条目的全部提示词（清理条目时调用）
+prompt_files_forget() {   # <工作编号>
+    local d
+    d="$(prompt_dir)"
+    [ -d "$d" ] || return 0
+    rm -f -- "$d/$1"-new.md "$d/$1"-cmt-*.md "$d/$1"-pr-*.md
+}
+
 # ── preview 端口与归属（GigleAI/GigleTutor-Web#1009）──
 # 端口 = BASE + issue；配了 PREVIEW_PORT_MODULO 就改成 BASE + issue % MODULO，
 # 让端口留在一个号段里（tutor：预览 4000–4999，不越界撞进 e2e 的 5000 段）。

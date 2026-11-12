@@ -34,6 +34,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 for dep in tmux git flock; do
     if ! command -v "$dep" > /dev/null 2>&1; then echo "⏭ 本机没有 $dep，整份跳过"; exit 0; fi
@@ -565,7 +567,7 @@ G="$TMP/git"; mkdir -p "$G"
 gq init -q --bare -b main "$G/up.git"
 gq clone -q "$G/up.git" "$G/seed"
 (cd "$G/seed" && echo x > f && gq add f && gq commit -qm init && gq push -q origin HEAD:main)
-# 编号取真实 issue 用不到的大数：派工脚本把提示词写到固定的 /tmp/cavil-loop-issue-<N>-*.md
+# 编号取真实 issue 用不到的大数，避开本机真实派工的编号（提示词写在各场景自己的状态目录里）
 N=987343
 SESS="hvtest-issue$N"
 
@@ -646,7 +648,7 @@ L1="$(wenv CAVIL_HEAVY_LAUNCH)"
 yes_ "worker 环境里有启动编号" test -n "$L1"
 chk "启动记录里是 worker 窗格的进程号" "$(field "$D/state/worker-launch/$L1" pid)" "$(pane_pid)"
 yes_ "派工结束后条目锁是空闲的（worker 还活着）" lock_free
-PROMPT="/tmp/cavil-loop-issue-$N-cmt-0.md"
+PROMPT="$(prompt_file_of "$NEW" "$D/state" cmt "$N" 0)"
 LINE="$(grep -m1 -E '^bash [^ ]*/scripts/heavy-test\.sh -- bash tests/run\.sh$' "$PROMPT")"
 chk "提示词里写了排队命令的整行写法" "$LINE" "bash $NEW/scripts/heavy-test.sh -- bash tests/run.sh"
 # 用量 footer 认测试命令的那份规则，拿提示词里这一行原样去认：必须还是「整套测试」，否则测试时间会悄悄少算
@@ -928,18 +930,20 @@ OLD="$TMP/old"; mkdir -p "$OLD" "$TMP/newcopy"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$OLD"
 cp -r "$REPO_DIR/prompts" "$OLD/"
 cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$TMP/newcopy/"
+# 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$OLD" "$TMP/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
 # 一种写法跑一遍：派工（issue / PR 入口）→ 清理。记下提示词、GitHub 调用、状态文件名、worker 环境
 run_off() {   # <根> <输出目录> [多出来的配置行…]
     local root="$1" out="$2" k; shift 2
     rm -rf "$out"; mkdir -p "$out"
     for k in issue pr; do
         setup2 "off-$k" "$@"
-        rm -f "/tmp/cavil-loop-issue-$N-cmt-0.md" "/tmp/cavil-loop-pr-$N-prompt.md"
+        prompt_files_clear "$root" "$D/state"
         T kill-session -t "=$SESS" 2>/dev/null
         dispatch "$root" "$k"; echo "rc=$?" > "$out/$k.rc"
         wait_for 5 test -s "$CTL/runs"
-        if [ "$k" = issue ]; then cp "/tmp/cavil-loop-issue-$N-cmt-0.md" "$out/$k.md" 2>/dev/null
-        else cp "/tmp/cavil-loop-pr-$N-prompt.md" "$out/$k.md" 2>/dev/null; fi
+        if [ "$k" = issue ]; then cp "$(prompt_file_of "$root" "$D/state" cmt "$N" 0)" "$out/$k.md" 2>/dev/null
+        else cp "$(prompt_file_of "$root" "$D/state" pr "$N")" "$out/$k.md" 2>/dev/null; fi
         # 只抹掉三样必然不同的东西：场景目录、被测脚本所在的根、footer 命令里的开始时刻
         sed -e "s|$D|<D>|g" -e "s|$root|<R>|g" -e 's|--start "[^"]*"|--start "<T>"|' "$out/$k.md" > "$out/$k.md.n" 2>/dev/null
         worker_env > "$out/$k.env"

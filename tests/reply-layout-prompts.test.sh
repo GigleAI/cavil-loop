@@ -27,6 +27,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -333,7 +335,7 @@ case "$1" in has-session) exit 1 ;; esac
 exit 0
 SH
 chmod +x "$DSB/bin/gh" "$DSB/bin/tmux"
-# 编号取得很大，避免撞上本机真实派工写在 /tmp 下的 prompt；按进程号错开，两份本测试同时跑也不会互相覆盖
+# 编号取得很大，避开本机真实派工的编号（提示词写在各自的状态目录里，两份本测试同时跑不会互相覆盖）
 N_NEW=$((900000000 + ($$ % 1000000) * 3)); N_CMT=$((N_NEW + 1)); N_PR=$((N_NEW + 2))
 dispatch_render() {   # $1 = 出图地址（可空）；$2 = 输出目录
     local url="$1" out="$2" w="$2.work" kind f
@@ -356,16 +358,16 @@ WEEKLY_REPORT_ASSET_ROOT_URL="$url"
 PATH="$DSB/bin:\$PATH"
 GH_TOKEN="fake-token-for-test"
 CONF
-    rm -f /tmp/cavil-loop-issue-$N_NEW-prompt.md /tmp/cavil-loop-issue-$N_CMT-cmt-0.md /tmp/cavil-loop-pr-$N_PR-prompt.md
+    prompt_files_clear "$REPO_DIR" "$w/state"
     local E=(env -u CODING_AGENT_RELEASE_ROOT -u WEEKLY_REPORT_ASSET_ROOT_URL HOME="$DSB/home" CODING_AGENT_CONFIG="$w/config")
     (cd "$w/project" && "${E[@]}" bash "$REPO_DIR/scripts/dispatch-new-issue.sh" "$N_NEW") >/dev/null 2>&1
     (cd "$w/project" && "${E[@]}" bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
-    mv /tmp/cavil-loop-issue-$N_CMT-cmt-0.md "$out/issue-comment.md" 2>/dev/null
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" cmt "$N_CMT" 0)" "$out/issue-comment.md" 2>/dev/null
     (cd "$w/project" && "${E[@]}" DISPATCH_PROMPT_KIND=review bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
-    mv /tmp/cavil-loop-issue-$N_CMT-cmt-0.md "$out/review.md" 2>/dev/null
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" cmt "$N_CMT" 0)" "$out/review.md" 2>/dev/null
     (cd "$w/project" && "${E[@]}" bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" "$N_PR" "feature/issue-$N_PR" 0) >/dev/null 2>&1
-    mv /tmp/cavil-loop-issue-$N_NEW-prompt.md "$out/new-issue.md" 2>/dev/null
-    mv /tmp/cavil-loop-pr-$N_PR-prompt.md "$out/pr-comment.md" 2>/dev/null
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" new "$N_NEW")" "$out/new-issue.md" 2>/dev/null
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" pr "$N_PR")" "$out/pr-comment.md" 2>/dev/null
 }
 URL="https://assets.example.invalid/review-assets"
 dispatch_render "$URL" "$TMP/r-url"

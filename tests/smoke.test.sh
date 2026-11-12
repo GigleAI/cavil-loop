@@ -65,7 +65,7 @@ section() { [ "$QUIET" = 1 ] || echo "$1"; }
 # 一个真的 origin（裸库）：派工要从它建 worktree 和分支
 git init -q --bare -b main "$SANDBOX/origin.git"
 git clone -q "$SANDBOX/origin.git" "$SANDBOX/seed" 2>/dev/null
-# 编号取得很大：派工脚本会往 /tmp 写 prompt 文件，避开本机真实派工的文件名
+# 编号取得很大，避开本机真实派工的编号
 N_ISSUE=986101; N_PR=986102; N_MERGED=986103
 # main 一个提交；PR 的提交放在 GitHub 那样的 refs/pull/<n>/head 上（PR 派工从那里取）
 (cd "$SANDBOX/seed" && git -c user.email=t@x -c user.name=t commit -q --allow-empty -m init && git push -q origin HEAD:main \
@@ -140,7 +140,6 @@ CONF
     chk "记为已清理" "$(jq -r --argjson n "$N_MERGED" '(.cleaned_prs // []) | index($n) != null' "$W/state/state.json" 2>/dev/null)" "true"
     chk "到达性 · 这一轮确实列了已合并 PR" "$(grep -c '^gh pr list .*--state merged' "$CALLS" 2>/dev/null || true)" "1"
 
-    rm -f /tmp/cavil-loop-issue-$N_ISSUE-* /tmp/cavil-loop-pr-$N_PR-* 2>/dev/null
 }
 
 T0=$(date +%s)

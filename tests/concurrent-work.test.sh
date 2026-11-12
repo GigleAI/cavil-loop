@@ -30,6 +30,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -84,6 +86,9 @@ git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$SANDBOX/old"
 cp -r "$REPO_DIR/prompts" "$SANDBOX/old/"
 cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$SANDBOX/new/"
 NEW="$SANDBOX/new"; OLD="$SANDBOX/old"
+# 旧脚本还写 /tmp 下的固定文件名时，改到本次运行自己的目录（GitHub#396）
+prompt_tree_isolate "$OLD" "$SANDBOX/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
+prompt_tree_isolate "$NEW" "$SANDBOX/new-prompts" || { echo "❌ 当前派工脚本认不出提示词写在哪"; exit 1; }
 
 # ── origin（裸库）──
 #   main:        init ── m2（多一个 main-only.txt）
@@ -111,7 +116,7 @@ git clone -q "$ORIGIN" "$SANDBOX/seed" 2>/dev/null
     git checkout -q main; git checkout -q -b feature/gone-base; echo g > g.txt; git add -A; git commit -qm g; git push -q origin feature/gone-base
 ) >/dev/null 2>&1
 
-# 编号取得很大：派工脚本往 /tmp 写 prompt 文件，避开本机真实派工和别的测试的文件名
+# 编号取得很大：避开本机真实派工的编号（提示词文件已在各自的状态目录 / 本次运行的目录里，不会和别的测试撞）
 N_NEW=934001; N_CMT=934002; N_PR=934003; N_SUB=934004; N_PARENT=934050
 R="repos/example/cw"
 
@@ -214,19 +219,24 @@ merge() { jq -s 'add' <(printf '%s' "$1") <(printf '%s' "$2"); }
 dispatch() {
     local root="$1" kind="$2" a="${3:-}" b="${4:-}" f name
     case "$kind" in
-        new) a="${a:-$N_NEW}"; f="/tmp/cavil-loop-issue-$a-prompt.md"; name="new-$a"; set -- dispatch-new-issue.sh "$a" ;;
-        sub) a="$N_SUB"; f="/tmp/cavil-loop-issue-$a-prompt.md"; name="sub-$a"; set -- dispatch-new-issue.sh "$a" ;;
-        cmt) a="${a:-$N_CMT}"; f="/tmp/cavil-loop-issue-$a-cmt-0.md"; name="cmt-$a"; set -- dispatch-issue-comment.sh "$a" 0 ;;
-        pr)  a="${a:-$N_PR}"; b="${b:-feature/issue-$N_PR}"; f="/tmp/cavil-loop-pr-$a-prompt.md"; name="pr-$a"; set -- dispatch-pr-comment.sh "$a" "$b" 0 ;;
+        new) a="${a:-$N_NEW}"; name="new-$a"; set -- dispatch-new-issue.sh "$a" ;;
+        sub) a="$N_SUB"; name="sub-$a"; set -- dispatch-new-issue.sh "$a" ;;
+        cmt) a="${a:-$N_CMT}"; name="cmt-$a"; set -- dispatch-issue-comment.sh "$a" 0 ;;
+        pr)  a="${a:-$N_PR}"; b="${b:-feature/issue-$N_PR}"; name="pr-$a"; set -- dispatch-pr-comment.sh "$a" "$b" 0 ;;
     esac
-    rm -f "$f" "/tmp/cavil-loop-issue-$a-prompt.md"
+    prompt_files_clear "$root" "$W/state"
     # 真实派工会把自己翻成 doing/agent；每次派工前把标签放回场景的初始状态，免得上一次的目标混进这一次的清单
     cp "$GD/labels.base" "$GD/labels.json"
     (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$root/scripts/$1" "${@:2}") >/dev/null 2>&1
     DISPATCH_RC=$?
+    case "$kind" in
+        new|sub) f="$(prompt_file_of "$root" "$W/state" new "$a")" ;;
+        cmt)     f="$(prompt_file_of "$root" "$W/state" cmt "$a" 0)" ;;
+        pr)      f="$(prompt_file_of "$root" "$W/state" pr "$a")" ;;
+    esac
     mkdir -p "$W/out"; OUT="$W/out/$name.md"; rm -f "$OUT"
     [ -s "$f" ] && sed -e "s|$root|<ROOT>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$OUT"
-    rm -f "$f" "/tmp/cavil-loop-issue-$a-prompt.md"
+    prompt_files_clear "$root" "$W/state"
 }
 # 提示词里「同时在进行的其他工作」那一段（从标题到文件结尾；本测试里它后面没有别的追加段）
 section() { awk '/^# 同时在进行的其他工作/ { f = 1 } f' "$1"; }

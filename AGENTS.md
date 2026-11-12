@@ -439,6 +439,16 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   `TZ`), and a results directory inside the checkout that a repo-wide grep then read. Before pushing a
   new test, `TZ=UTC GIT_CONFIG_GLOBAL=<file with only user.name/email> bash tests/<name>.test.sh`
   is a quick approximation of a runner
+- **Dispatch prompts live in the project's state directory** (GitHub#396: `prompt_file_path` in
+  `_lib.sh`, `$STATE_DIR/prompts/<N>-new.md` / `<N>-cmt-<id>.md` / `<N>-pr-<PR>.md`, mode 700, removed by
+  `cleanup-issue.sh`), not under `/tmp` — fixed `/tmp` names collided between projects on one machine and
+  between two copies of a test running at once. A test reads a prompt through `tests/lib/prompt-files.sh`
+  (`prompt_file_of` / `prompt_files_clear`), never by spelling a path. A test that runs an older checkout
+  of the dispatch scripts passes that tree through `prompt_tree_isolate <root> <dir>` first: an old-style
+  tree gets its one file-name line per script pointed at a directory of this run, a new-style tree is left
+  alone, and anything in between is an error — never a silent fall-back to `/tmp`. Guarded by
+  `tests/prompt-files.test.sh` (~1.5 min; real dispatch / cleanup, and the scripts of the fixed commit
+  `4f585de` through the isolation)
 - A green check is not a substitute for running what you touched locally before handing a PR on — it
   is the floor, not the review. `tests/run.sh` itself is covered by `tests/run.test.sh`
 
