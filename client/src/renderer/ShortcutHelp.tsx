@@ -1,6 +1,6 @@
 // The shortcut list (GitHub#192), drawn from the same table the keys act on (shortcuts.ts).
 import { useEffect, useRef } from 'react';
-import { SCOPE_TITLE, SHORTCUTS, isMac, keyParts, type Scope } from './shortcuts';
+import { SCOPE_TITLE, SHORTCUTS, isMac, keyParts, shownKeys, type Scope } from './shortcuts';
 import { useLayer, useShortcuts } from './keyboard';
 
 const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help'];
@@ -36,12 +36,21 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
                     <tr key={s.id} data-testid="shortcut-row" data-id={s.id}>
                       <td>{s.label}</td>
                       <td className="keys">
-                        {s.keys.map((k, i) => (
-                          <span key={i}>
-                            {i > 0 && <span className="muted"> / </span>}
-                            <Keys parts={keyParts(k, mac)} />
+                        {s.range ? (
+                          // GitHub#442: one run of keys (⌘1 … ⌘9), its first and last
+                          <span>
+                            <Keys parts={keyParts(s.keys[0], mac)} />
+                            <span className="muted"> … </span>
+                            <Keys parts={keyParts(s.keys[s.keys.length - 1], mac)} />
                           </span>
-                        ))}
+                        ) : (
+                          shownKeys(s, mac).map((k, i) => (
+                            <span key={i}>
+                              {i > 0 && <span className="muted"> / </span>}
+                              <Keys parts={keyParts(k, mac)} />
+                            </span>
+                          ))
+                        )}
                       </td>
                     </tr>
                   ))}

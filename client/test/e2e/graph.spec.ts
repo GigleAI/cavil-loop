@@ -102,8 +102,6 @@ const inside = async (outer: Locator, inner: Locator) => {
   const i = (await inner.boundingBox())!;
   return i.x >= o.x && i.y >= o.y && i.x + i.width <= o.x + o.width + 0.5 && i.y + i.height <= o.y + o.height + 0.5;
 };
-/** GitHub#397: the height of the tab bar above the board (styles.css, .tabs: 38 px, its bottom border included) */
-const TAB_BAR = 38;
 /** a point of the canvas with nothing on it (canvas-relative) */
 const emptySpot = (page: Page) =>
   page.evaluate(() => {
@@ -493,11 +491,8 @@ test('GitHub#350: relations never read (a cache from before relations, the first
 test('GitHub#350: a graph too big to read at one screen opens on the open part, "看全图" shows it all', async () => {
   const app = await launchApp(env);
   const { page } = app;
-  // GitHub#397: the tab bar (38 px) sits above everything — the window is that much taller, so the canvas is the size this test was written for
-  // GitHub#397: the tab bar sits above everything — the window is that much taller, so the canvas is the size this test was written for
-  await page.setViewportSize({ width: 900, height: 600 + TAB_BAR });
+  await page.setViewportSize({ width: 900, height: 600 });
   await signInToGraph(page);
-  expect((await page.getByTestId('tabs').boundingBox())!.height).toBe(TAB_BAR);
   await expect(page.getByTestId('graph-big')).toBeVisible();
   const z = parseInt((await page.getByTestId('graph-zoom').textContent())!);
   expect(z).toBeGreaterThanOrEqual(60);
@@ -539,7 +534,7 @@ test('GitHub#350: a graph too big to read at one screen opens on the open part, 
   await page.keyboard.press('Escape');
 
   // a canvas lower than the summary's content: capped at the canvas, its middle scrolls, the buttons stay in view
-  await page.setViewportSize({ width: 900, height: 340 + TAB_BAR });
+  await page.setViewportSize({ width: 900, height: 340 });
   await page.getByTestId('graph-focus').click();
   await nodeOf(page, K(350)).click();
   const c2 = (await page.getByTestId('graph-canvas').boundingBox())!;

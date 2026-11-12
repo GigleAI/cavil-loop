@@ -569,6 +569,8 @@ export function BoardView({
   warn,
   onOpen,
   detailKey,
+  floatKey = null,
+  floatPanel = null,
   leftNote = null,
   request = null,
   onRequestTaken,
@@ -582,7 +584,10 @@ export function BoardView({
   setQuery: (q: string) => void;
   parsed: ParsedFilter;
   warn: BoardWarnings;
-  /** GitHub#397: open this item in its detail tab (`intent`: to do this with one of its operations, GitHub#250) */
+  /**
+   * Open this item (`intent`: to do this with one of its operations, GitHub#250). GitHub#442: in the
+   * floating panel by default, in a tab with ⌘ / Ctrl held — the window decides (App).
+   */
   onOpen: (key: string, intent?: OpenIntent) => void;
   /**
    * GitHub#397: the item whose detail tab is in front; null = the home tab is. Behind a detail tab the
@@ -590,6 +595,9 @@ export function BoardView({
    * show (and to put away), not also the board's.
    */
   detailKey: string | null;
+  /** GitHub#442: the item the floating detail shows over the board (its notices are the panel's), and the panel itself */
+  floatKey?: string | null;
+  floatPanel?: ReactNode;
   /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
   leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
@@ -799,6 +807,8 @@ export function BoardView({
         {shown.map((c) => (
           <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />
         ))}
+        {/* the floating detail covers the right of the board: room to scroll any column out from under it (#155) */}
+        {floatKey && <div className="detail-spacer" data-testid="detail-spacer" aria-hidden="true" />}
       </div>
     );
   };
@@ -966,7 +976,7 @@ export function BoardView({
       </div>
       {/* everything under the view bar */}
       <div className="below-bar">
-      <div className="board-bars" data-testid="board-bars">
+      <div className={`board-bars${floatKey ? ' beside-detail' : ''}`} data-testid="board-bars">
       <WarnBar kind="filter-unsupported" warn={warn}>
         {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
       </WarnBar>
@@ -995,7 +1005,7 @@ export function BoardView({
       <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
       <EditsBar state={state} data={data} onOpen={openItem} />
       {state.ops
-        .filter((r) => !r.dismissed && r.key !== detailKey)
+        .filter((r) => !r.dismissed && r.key !== detailKey && r.key !== floatKey)
         .map((r) => (
           <OpNotice
             key={r.id}
@@ -1096,6 +1106,7 @@ export function BoardView({
       </div>
       )}
       </div>
+      {floatPanel}
       </div>
       {newIssue && (
         <NewIssueDialog

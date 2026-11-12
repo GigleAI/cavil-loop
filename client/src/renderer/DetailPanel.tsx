@@ -9,10 +9,12 @@ import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, esc
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
+import { usePanelWidth } from './panelWidth';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
+import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
 import { keyText } from './shortcuts';
@@ -36,6 +38,9 @@ const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
 const CARD_OWN_CLICK = 'button, select, a, input, textarea, label, summary, iframe, [tabindex], [contenteditable]';
 /** the reply box's least height: about four lines (also in styles.css, .reply textarea) */
 const REPLY_MIN_PX = 96;
+/** the floating panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
+const HIDE_LABEL = '收起 ›';
+const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
 
 /**
  * GitHub#397: what a tab's detail holds that was not sent yet. Only one detail is mounted (the tab
@@ -349,6 +354,7 @@ export function DetailPanel({
   state,
   data,
   onHome,
+  float = null,
   onLeftBehind,
   intent,
   draft,
@@ -357,8 +363,14 @@ export function DetailPanel({
   itemKey: string;
   state: AppState;
   data: BoardData;
-  /** Esc: back to the home tab (this tab stays open) */
+  /** Esc in a tab: back to the home tab (this tab stays open) */
   onHome: () => void;
+  /**
+   * GitHub#442: the detail floats over the board on the right (the default way to open an item, as before
+   * GitHub#397): its width is dragged by the left edge, a click outside it or Esc puts it away (`onClose`) —
+   * never while the reply box holds unsent text. null = the detail fills its own tab.
+   */
+  float?: { onClose: () => void } | null;
   /** GitHub#397: what this tab held unsent when it was last in front, and where changes to it are reported */
   draft?: TabDraft | null;
   onDraft?: (d: TabDraft) => void;
@@ -431,6 +443,8 @@ export function DetailPanel({
    * (sent twice otherwise). A send refused here puts it back: the box still holds it.
    */
   const [sendingReply, setSendingReply] = useState<string | null>(null);
+  /** GitHub#442: Esc was pressed in the floating panel while the reply box held unsent text: it stayed, say why */
+  const [escKept, setEscKept] = useState(false);
   useEffect(() => {
     const inFlight = sendingReply !== null && sendingReply === reply;
     onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit });
@@ -524,13 +538,15 @@ export function DetailPanel({
   // GitHub#397: this tab is in front. An item no complete read carries is checked now (once per
   // opening), and whatever `updatedAt` the tab shows is seen: the "something new" dot is for the
   // tabs that are not in front.
+  // GitHub#442: a floating panel is no tab — there is no tab to check or mark seen
+  const inTab = float === null;
   useEffect(() => {
-    void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
-  }, [itemKey]);
+    if (inTab) void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
+  }, [itemKey, inTab]);
   const shownAt = knownAt;
   useEffect(() => {
-    if (shownAt !== null) void Promise.resolve(api().seenTab(itemKey, shownAt)).catch(() => undefined);
-  }, [itemKey, shownAt]);
+    if (inTab && shownAt !== null) void Promise.resolve(api().seenTab(itemKey, shownAt)).catch(() => undefined);
+  }, [itemKey, shownAt, inTab]);
   // GitHub#229: the refresh button and "重试" read the labels / milestones again (a failed read used to stay until the panel closed)
   const [optsRound, setOptsRound] = useState(0);
   useEffect(() => {
@@ -541,6 +557,13 @@ export function DetailPanel({
       .then((o) => mine() && setOpts((prev) => (o.error && prev && !prev.error ? prev : o)));
   }, [repo, session, optsRound]);
   const rereadOptions = () => setOptsRound((n) => n + 1);
+  /** The refresh button: read this item again, with its label / milestone lists (GitHub#229). */
+  const refreshHere = () => {
+    void load();
+    rereadOptions();
+    // GitHub#397: an item no complete read carries: its tab's own check too
+    if (inTab) void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
+  };
   // What the merge box starts with (GitHub#175): a hand pick of this opening while the repository
   // (as last read) still allows it, else the remembered one. Derived, never stored: a detail that
   // arrives late or is re-read cannot overwrite the pick, and a fallback is never remembered.
@@ -780,7 +803,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -794,7 +817,7 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false);
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '');
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
@@ -820,6 +843,7 @@ export function DetailPanel({
       setReplyFromOp(null);
       setReply('');
       setPreview(null);
+      setEscKept(false);
       setPasted(null);
     }
   };
@@ -889,6 +913,9 @@ export function DetailPanel({
    * pressed, else undefined — so a key never does what the button would not.
    */
   const quickKeys = useRef<Partial<Record<'closeIssue' | 'handBack' | 'autopilot' | 'blocked', () => void>>>({});
+  // GitHub#442: ⌘R in a detail tab reads this item again — the refresh button's own action (the home tab, and
+  // the floating panel over it, keep the board's "sync now"). Mounted after the window's handler, so it wins.
+  useShortcuts(float ? {} : { sync: refreshHere });
   useShortcuts({
     closeIssue: () => quickKeys.current.closeIssue?.(),
     handBack: () => quickKeys.current.handBack?.(),
@@ -911,7 +938,15 @@ export function DetailPanel({
     // a key pressed inside the isolated discussion frame — PR #171, the maintainer chose to keep it
     // isolated; its one script reports ticked boxes and the view (GitHub#193) and a bare R (GitHub#322),
     // never any other key.)
-    hide: () => onHome(),
+    // GitHub#442: the floating panel's Esc puts it away — never while the reply box holds unsent text
+    hide: () => {
+      if (!float) return onHome();
+      if (reply.trim()) {
+        setEscKept(true);
+        return;
+      }
+      float.onClose();
+    },
     send: () => {
       if (!sendBlocked) void send();
     },
@@ -922,6 +957,47 @@ export function DetailPanel({
   });
 
   const panelRef = useRef<HTMLElement | null>(null);
+  // GitHub#442 (as GitHub#191 before #397): a click outside the floating panel puts it away (the rule is
+  // outsideClick.ts): not on a card or a row title (those switch items), not on the tab bar or an item's
+  // menu, not while a dialog was open, not with a reply typed.
+  const draftRef = useRef(reply);
+  draftRef.current = reply;
+  const closeRef = useRef(float?.onClose ?? null);
+  closeRef.current = float?.onClose ?? null;
+  const floating = float !== null;
+  useEffect(() => {
+    if (!floating) return;
+    let press: Press | null = null;
+    let release: Release | null = null;
+    const down = (e: PointerEvent) => {
+      press = pressAt(e, panelRef.current);
+      release = null;
+    };
+    // where the button really went up: the click's own target is the common ancestor of press and release
+    const up = (e: PointerEvent) => {
+      release = releaseAt(e, panelRef.current);
+    };
+    const click = (e: MouseEvent) => {
+      const p = press;
+      const r = releaseOfClick(e, release);
+      press = null;
+      release = null;
+      if (hidesPanel(p, r, draftRef.current)) closeRef.current?.();
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('click', click, true);
+    return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('click', click, true);
+    };
+  }, [floating]);
+  const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
+  // the board leaves this much room to scroll past the floating panel (BoardView's spacer)
+  useEffect(() => {
+    if (floating) document.documentElement.style.setProperty('--detail-space', `${width}px`);
+  }, [width, floating]);
   // ---- GitHub#250: this item's operations ----
   const myOps = state.ops.filter((r) => r.key === itemKey);
   const lock = opLockOf(state.ops, itemKey);
@@ -956,12 +1032,32 @@ export function DetailPanel({
     setDialogNote(null);
   };
 
-  const shell = (key: string | undefined, children: React.ReactNode) => (
+  const shell = (key: string | undefined, children: React.ReactNode) =>
     // tabIndex: a click on the panel's own blank space takes the keyboard back from the discussion frame,
     // whose keys never reach this window (another origin; its own script forwards no keys) — Esc works again after it
-    <section ref={panelRef} className="detail" data-testid="detail" data-key={key} tabIndex={-1}>
-      {children}
-    </section>
+    floating ? (
+      <aside
+        ref={panelRef}
+        className={`detail floating${dragging ? ' resizing' : ''}`}
+        data-testid="detail"
+        data-mode="float"
+        data-key={key}
+        style={{ width }}
+        data-width={width}
+        tabIndex={-1}
+      >
+        <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
+        {children}
+      </aside>
+    ) : (
+      <section ref={panelRef} className="detail" data-testid="detail" data-mode="tab" data-key={key} tabIndex={-1}>
+        {children}
+      </section>
+    );
+  const hideButton = float && (
+    <button className="ghost" onClick={float.onClose} data-testid="detail-close" title={HIDE_TITLE}>
+      {HIDE_LABEL}
+    </button>
   );
 
   quickKeys.current = {};
@@ -971,8 +1067,10 @@ export function DetailPanel({
       <>
         <div className="detail-head">
           <span className="muted" data-testid="detail-gone">
-            这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。
+            {floating ? '这一条已不在当前视图里' : '这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。'}
           </span>
+          {hideButton && <div className="spacer" />}
+          {hideButton}
         </div>
       </>,
     );
@@ -1105,12 +1203,7 @@ export function DetailPanel({
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
         <button
           className={`icon-btn${loading ? ' spinning' : ''}`}
-          onClick={() => {
-            void load();
-            rereadOptions();
-            // GitHub#397: an item no complete read carries: its tab's own check too
-            void Promise.resolve(api().checkTab(itemKey)).catch(() => undefined);
-          }}
+          onClick={refreshHere}
           data-testid="detail-refresh"
           data-loading={loading ? 'yes' : 'no'}
           aria-label={loading ? '读取中…（点一下重新读取）' : '刷新这一条'}
@@ -1118,6 +1211,7 @@ export function DetailPanel({
         >
           <Icon name="refresh" />
         </button>
+        {hideButton}
         </span>
       </div>
       <div className="detail-title-row">
@@ -1381,6 +1475,7 @@ export function DetailPanel({
           onChange={(e) => {
             setReply(e.target.value);
             if (!e.target.value.trim()) {
+              setEscKept(false);
               // emptied: what is sent next is not that operation's kept comment any more
               setReplyFromOp(null);
             }
@@ -1403,6 +1498,11 @@ export function DetailPanel({
             }}
             onDismiss={() => setPasted(null)}
           />
+        )}
+        {escKept && reply.trim() && (
+          <div className="banner warn draft-kept" data-testid="draft-esc-hint" ref={(el) => el?.scrollIntoView?.({ block: 'nearest' })}>
+            回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。
+          </div>
         )}
         {preview !== null && (
           <iframe

@@ -1,14 +1,14 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { FRAME_IDS, resolve, typingOf, type KeyLike, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
+import { FRAME_IDS, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
  * to the browser); anything else means "handled". Handlers are the buttons' own actions behind the
- * buttons' own enabled conditions.
+ * buttons' own enabled conditions. `spec` is the key that matched (GitHub#442: one shortcut, ⌘1…⌘9).
  */
-type Handler = () => boolean | void;
+type Handler = (spec: KeySpec) => boolean | void;
 
 /** per shortcut id, the handlers of the mounted components; the last mounted one acts */
 const handlers = new Map<ShortcutId, Handler[]>();
@@ -23,7 +23,7 @@ export function useShortcuts(map: Partial<Record<ShortcutId, Handler>>): void {
   useEffect(() => {
     const mine = new Map<ShortcutId, Handler>();
     for (const id of ids.split(',').filter(Boolean) as ShortcutId[]) {
-      const h: Handler = () => ref.current[id]?.();
+      const h: Handler = (spec) => ref.current[id]?.(spec);
       mine.set(id, h);
       const list = handlers.get(id) ?? [];
       list.push(h);
@@ -61,12 +61,12 @@ let pageNow: Page = 'board';
  * Both the window's own keydown listener and a key forwarded by the discussion frame go through here.
  */
 function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): ShortcutId | null {
-  const id = resolve(e, { signedIn: signedInNow, layer: topLayer(), typing, page: pageNow });
-  if (!id || (only && !only.includes(id))) return null;
-  const list = handlers.get(id);
+  const hit = resolveKey(e, { signedIn: signedInNow, layer: topLayer(), typing, page: pageNow });
+  if (!hit || (only && !only.includes(hit.id))) return null;
+  const list = handlers.get(hit.id);
   const h = list?.[list.length - 1];
   if (!h) return null;
-  return h() !== false ? id : null;
+  return h(hit.spec) !== false ? hit.id : null;
 }
 
 /**
@@ -75,9 +75,18 @@ function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): Shortc
  * the shortcuts of FRAME_IDS (go to the reply box, 关闭 issue / 交给 agent / 托管) may act — every
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
-export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false): boolean {
-  if (typeof key !== 'string' || key.length !== 1 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
-  return press({ key, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift }, 'none', FRAME_IDS) !== null;
+export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = ''): boolean {
+  // the key as the frame's browser reported it: a character, or a named key (Ctrl+Numpad1 reports "End" — code review round 3)
+  if (typeof key !== 'string' || key.length < 1 || key.length > 32 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
+  // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
+  // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
+  if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;
+  return press(frameEvent(key, mod, shift, code), 'none', FRAME_IDS) !== null;
+}
+
+/** A key the discussion frame reported, as the window's event it stands for. */
+export function frameEvent(key: string, mod: boolean, shift: boolean, code: string): KeyLike {
+  return { key, code, metaKey: mod, ctrlKey: false, altKey: false, shiftKey: shift };
 }
 
 /**

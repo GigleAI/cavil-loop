@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { HOME, TAB_STATUS_TEXT, tabStatus, tabUnread, type TabInfo, type TabLabels, type TabStatus } from '../shared/tabs';
 import { Icon, type IconName } from './Icons';
+import { KEEPS_PANEL } from './outsideClick';
 import { keyText } from './shortcuts';
 
 const ICON: Record<Exclude<TabStatus, 'running' | 'waiting' | 'blocked'>, { issue: IconName; pr: IconName; tone: string }> = {
@@ -18,10 +19,15 @@ const ICON: Record<Exclude<TabStatus, 'running' | 'waiting' | 'blocked'>, { issu
 /** The status icon of one tab: GitHub's own state icons, plus "an agent is working on it", "waiting for a human" and "waiting for a prerequisite" (a pause, GitHub#443). */
 export function TabStatusIcon({ status, kind }: { status: TabStatus; kind: 'issue' | 'pr' }) {
   if (status === 'running')
+    // GitHub#442: a still robot on a disc — the pair of "waiting for a human" below; a spinner read as "still loading"
     return (
-      <svg className="tab-icon running" viewBox="0 0 16 16" width={16} height={16} fill="none" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
-        <circle className="ring" cx="8" cy="8" r="5.6" />
-        <path className="arc" d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6" />
+      <svg className="tab-icon running" data-icon="robot" viewBox="0 0 16 16" width={16} height={16} aria-hidden="true">
+        <circle className="disc" cx="8" cy="8" r="7.5" />
+        <path className="antenna" d="M8 5V3.4" fill="none" strokeWidth={1.2} strokeLinecap="round" />
+        <circle className="robot" cx="8" cy="3.2" r="0.9" />
+        <rect className="robot" x="4.3" y="5.3" width="7.4" height="6.2" rx="1.8" />
+        <circle className="eye" cx="6.6" cy="8.3" r="0.95" />
+        <circle className="eye" cx="9.4" cy="8.3" r="0.95" />
       </svg>
     );
   if (status === 'waiting')
@@ -73,7 +79,8 @@ export function TabBar({
     strip.current?.querySelector('[data-front="yes"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }, [active, tabs.length]);
   return (
-    <div className="tabs" data-testid="tabs" role="tablist">
+    // a click on the tab bar leaves the home tab's floating detail as it is (GitHub#442)
+    <div className="tabs" data-testid="tabs" role="tablist" {...{ [KEEPS_PANEL]: '' }}>
       <button className={`tab tab-home${active === HOME ? ' on' : ''}`} role="tab" aria-selected={active === HOME} data-testid="tab-home" data-front={active === HOME ? 'yes' : 'no'} onClick={() => onPick(HOME)}>
         <Icon name="home" />
         <span className="tab-title">首页</span>

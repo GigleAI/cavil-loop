@@ -234,16 +234,17 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
   await new Promise((r) => setTimeout(r, 1500));
   expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
 
-  // GitHub#397: the shell's "close" key — on macOS the menu's ⌘W; here the very handler it runs, asked for by
-  // the test. A detail tab is in front (the clicked item's): that tab closes, the window stays where it is …
+  // GitHub#397 / #442: the shell's "close" key — on macOS the menu's ⌘W; here the very handler it runs, asked for by
+  // the test. The clicked notification opened the item in the floating panel over the board (GitHub#442): the
+  // panel goes, the window stays where it is …
   const closeAt = records().length;
   appendFileSync(control, 'close-key\n');
-  await until(async () => (await wd.exec<number>(`return document.querySelectorAll('[data-testid="detail"]').length`)) === 0, 'the tab in front closed', 10_000);
-  expect(await wd.exec<number>(`return document.querySelectorAll('[data-testid="tab"]').length`)).toBe(0);
-  expect(await wd.exec<string>(`return document.querySelector('[data-testid="tab-home"]').getAttribute('data-front')`)).toBe('yes');
+  await until(async () => (await wd.exec<number>(`return document.querySelectorAll('[data-testid="detail"]').length`)) === 0, 'the panel put away', 10_000);
+  // no tab was opened: no tab bar at all (GitHub#442)
+  expect(await wd.exec<number>(`return document.querySelectorAll('[data-testid="tabs"]').length`)).toBe(0);
   await new Promise((r) => setTimeout(r, 500));
   expect(records().slice(closeAt).filter((r) => r.op === 'closeWindow' || r.op === 'hidden')).toEqual([]);
-  // … and with the home tab in front it closes the window the way the close button does (here: hidden, not quit)
+  // … and with nothing in front of the board it closes the window the way the close button does (here: hidden, not quit)
   appendFileSync(control, 'close-key\n');
   await until(() => records().slice(closeAt).some((r) => r.op === 'hidden'), 'window hidden by the close key', 10_000);
   expect(records().slice(closeAt).filter((r) => r.op === 'closeKey')).toHaveLength(2);

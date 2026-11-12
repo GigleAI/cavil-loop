@@ -10,7 +10,7 @@
 // stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
 // put both back, a few keys (GitHub#322: a bare R, "go to the reply box"; GitHub#433: the ⌘⇧ keys of
-// 关闭 issue / 交给 agent / 托管 — the list is FRAME_FORWARD, built from the shortcut table into this text;
+// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab, and ⌘R, refresh (in a tab: this item; a digit goes by its key position, `code`) — the list is FRAME_FORWARD, built from the shortcut table into this text;
 // every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
 // and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
@@ -214,11 +214,17 @@ export const FRAME_SCRIPT = `(function () {
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
-    var k = e.key.toLowerCase(), mod = e.metaKey || e.ctrlKey, sh = e.shiftKey;
+    // only a candidate is picked here (the same modifiers, and the key position — for a digit — or the character of
+    // a forwarded shortcut); the event goes on as it came, and the window decides it with its own rule
+    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, k = e.key.toLowerCase();
+    var code = typeof e.code === 'string' ? e.code : '';
+    var dg = /^(Digit|Numpad)[0-9]$/.test(code) ? code.slice(-1) : '';
     for (var i = 0; i < fwd.length; i++) {
-      if (fwd[i].key !== k || fwd[i].mod !== mod || fwd[i].shift !== sh) continue;
+      var f = fwd[i];
+      if (f.mod !== mod || f.shift !== sh) continue;
+      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : k !== f.key) continue;
       e.preventDefault();
-      send({ cavil: 'key', key: k, mod: mod, shift: sh });
+      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, code: code });
       return;
     }
   });
@@ -235,4 +241,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-UCyobNnWVcKTT5A/EepHevkw1DwfzcKTjuYmCliwBEU='";
+export const FRAME_SCRIPT_HASH = "'sha256-KfUsZoexvH+b6A8Gos8vPaNmKxsNp5LSBBAXnym5/v8='";

@@ -222,3 +222,14 @@ export function stepTab(keys: string[], active: string, by: 1 | -1): string {
   const i = Math.max(0, all.indexOf(active));
   return all[(i + by + all.length) % all.length];
 }
+
+/**
+ * ⌘1 … ⌘9 (GitHub#442), as in a browser: `n` counts from the left, the home tab being 1; 9 is always
+ * the last tab. null = no such tab (the key does nothing then).
+ */
+export function tabAt(keys: string[], n: number): string | null {
+  if (!Number.isInteger(n) || n < 1 || n > 9) return null;
+  const all = [HOME, ...keys];
+  if (n === 9) return all[all.length - 1];
+  return all[n - 1] ?? null;
+}
