@@ -1559,9 +1559,10 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   // click outside → away
   await btn.click();
   await expect(panel).toBeVisible();
-  // its right end: since GitHub#368 the count can go on ("· 另有 N 个子 issue 随父 issue 显示") to the left, under the open panel
-  const mc = (await page.getByTestId('match-count').boundingBox())!;
-  await page.getByTestId('match-count').click({ position: { x: mc.width - 4, y: mc.height / 2 } });
+  // an empty spot of the view bar (GitHub#404: its right end is the flow numbers, buttons that change the search)
+  const vs = (await page.getByTestId('open-view-panel').boundingBox())!;
+  await page.mouse.click(vs.x + vs.width + 40, vs.y + vs.height / 2);
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
   await expect(panel).toHaveCount(0);
   // Esc → away
   await btn.click();
@@ -6024,6 +6025,12 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   const lanes = () => page.$$eval('[data-testid="lane"]', (s) => s.map((x) => x.getAttribute('data-lane')));
   const heads = async () => (await repoHeads(page)).map(([t]) => t);
   const saved = () => page.evaluate(async () => (await (window as any).cavil.get()).state.repoOrder as string[]);
+  /**
+   * What the back end has written to disk. The window queues setting writes to the back end; closing it
+   * while one is still queued loses it (PR #408 review round 2: under load a restart came back with an
+   * older order). A restart is only meaningful once the order is really stored, so every close waits here.
+   */
+  const stored = () => app.backend.call<{ settings: Record<string, unknown> }>('init', {}).then((r) => r.settings.repoOrder ?? null);
   /** the order on screen in the table (the slice list and the "all repositories" sections) and on the board (the swimlanes) */
   async function everywhere(want: string[]) {
     await layout('table');
@@ -6055,6 +6062,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await everywhere([B, A, C]);
 
   // ---- 4. a restart keeps it ----
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/aaa', 'gigleai/ccc']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -6080,6 +6088,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   // dropped on the lower half: after the target
   await dragRepo(lane(B), lane(C), true);
   await everywhere([A, C, B]);
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/aaa', 'gigleai/ccc', 'gigleai/bbb']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });

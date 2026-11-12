@@ -171,6 +171,19 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .vbar label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .vbar label.inline select { color: var(--fg); }
 .vbar .vbar-count { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* GitHub#404: the flow numbers (运行中 / 等 agent / 等人处理), each a button that filters to its items */
+.tally { display: inline-flex; align-items: center; gap: 2px; }
+.tally-item { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.tally-item:hover:not(:disabled) { background: var(--hover); }
+.tally-item:disabled { cursor: default; }
+.tally-item b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tally-item.zero b { color: var(--muted); font-weight: 400; }
+.tally-item.on { background: var(--accent-subtle); border-color: var(--accent); color: var(--fg); }
+.tally-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.tally-item .dot.running { background: var(--state-open-bg); }
+.tally-item .dot.agent { background: var(--accent); }
+.tally-item .dot.human { background: var(--edge-open); }
+.tally-item.zero .dot { background: var(--border); }
 .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
 .toggle input { appearance: none; -webkit-appearance: none; width: 28px; height: 16px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex: none; }
 .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: left 0.12s; }
@@ -387,6 +400,9 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .settings-main label { display: flex; flex-direction: column; gap: 4px; }
 .settings-main label.row, .settings-main label.radio { flex-direction: row; }
 .settings-main .row label { flex: 1; min-width: 200px; }
+/* GitHub#404: the four flow labels, two by two */
+.settings-main .row.label-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.settings-main .row.label-grid label { min-width: 0; }
 .sources { list-style: none; padding: 0; margin: 8px 0 0; }
 .sources li { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border-muted); }
 .sources li:first-child { border-top: none; }
