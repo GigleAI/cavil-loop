@@ -15,9 +15,12 @@ import { tempDir } from './helpers';
 const open: HarnessBackend[] = [];
 let w: DaemonWorld;
 
+// a fresh daemon world per case: the fake tools, a copy of this checkout's daemon files, a git commit and a
+// bare clone — a handful of child processes that a loaded box pushed past vitest's default 10 s hook limit
+// (GitHub#413 code review round 1)
 beforeEach(() => {
   w = daemonWorld(tempDir());
-});
+}, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
 });

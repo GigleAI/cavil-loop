@@ -167,6 +167,11 @@ describe('a temporary failure is asked again on the spot', () => {
     fake.state.answerOverride = null;
     c.addSource('https://github.com/orgs/GigleAI/projects/98');
     await c.settled();
+    // adding a source starts a round of its own (not awaited by addSource / settled): wait until it is over,
+    // or its read of #98 may go out after `n` and the restart below drops it and reads again — two
+    // requests that are not a retry (GitHub#413 code review round 1: failed 1 run in 3)
+    await c.syncNow();
+    expect(status(c, 'project:org/gigleai/98')).toMatchObject({ ok: false });
     const n = fake.log.length;
     await c.restartSync();
     const of98 = fake.log.slice(n).filter((e) => isBoardPage(e) && e.variables?.number === 98);
