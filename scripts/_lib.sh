@@ -7273,6 +7273,15 @@ stuck_enabled() {
 stuck_entry() {   # <工作编号> → 这条的记录（没有 = {}）
     jq -c --arg k "$1" '.stuck_workers[$k] // {}' "$STATE_FILE" 2>/dev/null || echo '{}'
 }
+# 严格读：状态文件读得出、结构也对，才输出这条记录（确实没有 = {}）；读不出 → 返回 1。
+# stuck_entry 读不出时给的是 {}，只能用在「读不出就当没有」无害的地方。凡是要凭「记录不在 /
+# 没停住」去删东西、放行派工的地方都用这个：读不出 ≠ 没有（硬规则 L36；代码复审第 3 轮：恢复时
+# 一次读取失败被当成「停住记录已经不在」，凭据被删，同一条指令又派了一遍）。
+stuck_entry_read() {   # <工作编号>
+    jq -ce --arg k "$1" 'if type == "object" and ((.stuck_workers // {}) | type) == "object"
+        then (((.stuck_workers // {})[$k] // {}) | if type == "object" then . else error("bad entry") end)
+        else error("bad state") end' "$STATE_FILE" 2>/dev/null
+}
 # 用法：stuck_entry_set <工作编号> '<对这条记录的 jq 表达式>' [--arg / --argjson …]
 stuck_entry_set() {
     local n="$1" f="$2" tmp
@@ -7287,8 +7296,9 @@ stuck_entry_set() {
     fi
 }
 stuck_entry_del() {   # <工作编号>
-    local tmp
-    [ "$(jq -r --arg k "$1" '(.stuck_workers // {}) | has($k)' "$STATE_FILE" 2>/dev/null)" = true ] || return 0
+    local tmp has
+    has=$(jq -r --arg k "$1" '(.stuck_workers // {}) | has($k)' "$STATE_FILE" 2>/dev/null) || return 1
+    [ "$has" = true ] || return 0
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
     if jq --arg k "$1" 'del(.stuck_workers[$k])' "$STATE_FILE" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$STATE_FILE"
@@ -7668,17 +7678,22 @@ stuck_skip_note() {   # <环节> <编号>
 }
 # 这一条（或把它当关联条目核对过的那一条）停住了吗。0 = 停住。只读本地记录，不发请求；
 # 功能关着恒为 1。每个会写条目 / 动会话的环节在动手前问这里。
+# 状态文件读不出 = 不知道 → 按停住算（返回 0）：这一轮各环节都不动它，读得出之后照常。
 stuck_frozen() {   # <issue / PR 编号>
+    local out
     stuck_enabled || return 1
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    [ "$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null) | .frozen.items[]?] | index($n) != null' \
-        "$STATE_FILE" 2>/dev/null)" = true ]
+    out=$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null) | .frozen.items[]?] | index($n) != null' \
+        "$STATE_FILE" 2>/dev/null) || return 0
+    [ "$out" != false ]
 }
 # 停住的条目里按工作编号问（自愈、会话回收用：它们手里是工作编号）
 stuck_frozen_work() {   # <工作编号>
     stuck_enabled || return 1
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    [ "$(jq -r --arg k "$1" '(.stuck_workers[$k].frozen // null) != null' "$STATE_FILE" 2>/dev/null)" = true ] && return 0
+    local out
+    out=$(jq -r --arg k "$1" '((.stuck_workers // {})[$k].frozen // null) != null' "$STATE_FILE" 2>/dev/null) || return 0
+    [ "$out" = false ] || return 0
     stuck_frozen "$1"
 }
 # 派工队列入队前问：0 = 别派。停住的条目只有一个例外——目标条目本身、触发标签正好是初筛候选
@@ -7883,10 +7898,21 @@ stuck_release_begin() {   # <issue|pr> <编号> <触发标签>
     STUCK_REL=""
     stuck_enabled || return 1
     [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] && [ -n "$3" ] || return 1
-    n=$(jq -r --arg kind "$1" --arg n "$2" --arg l "$3" \
-        '(.stuck_workers // {}) | to_entries[] | select(.value.frozen != null and .value.kind == $kind
-            and .value.num == $n and (.value.frozen.cand.label // "") == $l) | .key' "$STATE_FILE" 2>/dev/null | head -1)
-    [ -n "$n" ] || return 1
+    # 读不出状态 = 不知道这一条是不是停住的：不能当成普通派工放过去
+    if ! n=$(jq -r --arg kind "$1" --arg n "$2" --arg l "$3" \
+        '[(.stuck_workers // {}) | to_entries[] | select(.value.frozen != null and .value.kind == $kind
+            and .value.num == $n and (.value.frozen.cand.label // "") == $l) | .key] | first // ""' "$STATE_FILE" 2>/dev/null); then
+        log "卡住检测：$1 #$2 派工前读不出本机的停住记录，这一轮不派工"
+        return 2
+    fi
+    if [ -z "$n" ]; then
+        # 不是按恢复指令来的。停住着（或读不出）就不派；确实没停住才是普通派工
+        if stuck_frozen "$2"; then
+            log "卡住检测：$1 #$2 停住着、这次派工又不是按人的恢复指令来的，这一轮不派工"
+            return 2
+        fi
+        return 1
+    fi
     # 上一次按恢复指令派工留下的「已用掉」凭据还在（那一轮没收尾，这一轮开头的 stuck_release_recover
     # 也没能处理掉）：结果不明，这一轮不派工，更不能把凭据删掉重来
     if [ -e "$(stuck_release_file "$n")" ]; then
@@ -7967,7 +7993,10 @@ stuck_release_finish() {   # <派工脚本退出码>
     IFS='|' read -r n token kind num <<< "$STUCK_REL"
     STUCK_REL=""
     file="$(stuck_release_file "$n")"
-    e=$(stuck_entry "$n")
+    if ! e=$(stuck_entry_read "$n"); then
+        log "❌ 卡住检测：$kind #$num 派工后读不出本机的停住记录，这一轮不收尾（凭据如果在就留着，下一轮先了结）"
+        return 1
+    fi
     x=$(printf '%s' "$e" | jq -r '.frozen.cand.label // ""')
     if [ -e "$file" ] && { ! used=$(jq -r --arg t "$token" 'select(.token == $t) | .event' "$file" 2>/dev/null) || ! [[ "$used" =~ ^[0-9]+$ ]]; }; then
         # 凭据在、却读不出是不是这一次的：当作已用掉、结果不明，重新停住（凭据在停住落盘后才删）
@@ -8043,12 +8072,17 @@ stuck_release_finish() {   # <派工脚本退出码>
 # 核对、可能已经把任务送出去，而父进程没走到收尾（被杀、机器重启）。结果不明 → 这条指令记为已用掉，
 # 重新停住等人；凭据在这两件事都落进状态文件之后才删。记录已经不在（收尾成功、只差删凭据）→ 直接删。
 stuck_release_recover() {
-    local f n e ev kind num
+    local f n e ev kind num fz
     for f in "$STATE_DIR"/stuck-release/*.used; do
         [ -e "$f" ] || continue
         n="$(basename "$f" .used)"
-        e=$(stuck_entry "$n")
-        if [ "$(printf '%s' "$e" | jq -r '.frozen != null')" != true ]; then rm -f "$f"; continue; fi
+        # 读不出记录 = 不知道收没收尾：凭据留着，这一轮不处理（stuck_release_begin 见到凭据也不派）
+        if ! e=$(stuck_entry_read "$n") || ! fz=$(printf '%s' "$e" | jq -r '.frozen != null' 2>/dev/null); then
+            log "卡住检测：读不出工作编号 $n 的停住记录，上一轮留下的派工凭据先留着，下一轮再了结"
+            continue
+        fi
+        # 可靠读到「没有停住记录」= 上一轮已经成功收尾、只差删凭据
+        if [ "$fz" != true ]; then rm -f "$f"; continue; fi
         kind=$(printf '%s' "$e" | jq -r '.kind // ""'); num=$(printf '%s' "$e" | jq -r '.num // ""')
         ev=$(jq -r '.event // ""' "$f" 2>/dev/null) || ev=""
         if [[ "$ev" =~ ^[0-9]+$ ]]; then

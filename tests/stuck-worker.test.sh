@@ -113,6 +113,21 @@ if [ -s "$CTL/fault" ]; then
 fi
 exec "$REAL_TMUX" "\$@"
 SH
+# 被测脚本用的 jq：$CTL/jqfault 里写一个 glob，参数整串匹配上就返回 1（模拟一次本地状态读取失败）。
+# 默认只坏一次（命中后把故障文件删掉）；同时有 $CTL/jqfault.keep 时一直坏到测试把它撤掉。
+REAL_JQ="$(command -v jq)"
+cat > "$FAKEBIN/jq" <<SH
+#!/usr/bin/env bash
+if [ -s "$CTL/jqfault" ]; then
+    pat="\$(cat "$CTL/jqfault")"
+    if [[ "\$*" == \$pat ]]; then
+        echo hit >> "$CTL/jqfault.hits"
+        [ -e "$CTL/jqfault.keep" ] || rm -f "$CTL/jqfault"
+        exit 1
+    fi
+fi
+exec "$REAL_JQ" "\$@"
+SH
 chmod +x "$FAKEBIN"/*
 export PATH="$FAKEBIN:$PATH"
 
@@ -178,7 +193,7 @@ CONF
     echo '{}' > "$GD/items.json"; echo '{}' > "$GD/labels.json"; echo '{}' > "$GD/events.json"
     echo '{}' > "$GD/comments.json"; echo '{}' > "$GD/perms.json"; echo loop-bot > "$GD/me"
     echo '{"cleaned_prs":[],"cleaned_issues":[],"worker_hosts":{},"worker_trigger_labels":{},"worker_models":{}}' > "$STATE"
-    rm -f "$CTL"/screen.* "$CTL"/got.* "$CTL"/runs.* "$CTL"/die.* "$CTL/fault" "$CTL/fault.hits"; : > "$CTL/tmux.log"
+    rm -f "$CTL"/screen.* "$CTL"/got.* "$CTL"/runs.* "$CTL"/die.* "$CTL/fault" "$CTL/fault.hits" "$CTL"/jqfault*; : > "$CTL/tmux.log"
     # 等旧 server 真的退干净再起新的：否则新会话连到正在退出的 server 上，窗格编号也不从头数
     T kill-server >/dev/null 2>&1
     local i; for ((i = 0; i < 50; i++)); do T list-sessions >/dev/null 2>&1 || break; sleep 0.1; done
@@ -1196,6 +1211,51 @@ chk "轮询被杀 · 再过两轮：仍不派工，新的停住说明已发出" 
 d1=$(disp "$N"); human_resume "$N" pending/agent doing/agent pending/agent
 tick 5
 chk "轮询被杀 · 对照：人重新打一次派工标签 → 派工一次，记录清掉" "$(( $(disp "$N") - d1 ))/$(labels_of "$N")/$(entry "$N")" "1/doing/agent/{}"
+# 复审第 3 轮（代码）的复现：同一个「轮询被杀」的场景，下一轮了结凭据时读本机停住记录失败一次。
+# 读不出 ≠ 记录不在：凭据要留着、这一轮不派工；读得出之后照常了结
+frozen_is crash1b; human_resume "$N" pending/agent doing/agent pending/agent
+tok=$(ff "$N" token); g0=$(got "$N")
+touch "$GD/F_delete_labels"
+k=$(( $(cat "$GD/count_DELETE_issues_${N}_labels" 2>/dev/null || echo 0) + 1 ))
+printf 'kill -9 "$(cat %q)"\ntouch %q\n' "$W/poll.pid" "$GD/hook.ran" > "$GD/hook_DELETE_issues_${N}_labels_$k"
+rm -f "$GD/hook.ran"
+tick_killable 5
+sleep 2
+rm -f "$GD/F_delete_labels"
+chk "读失败 · 夹具：任务已送出、派工标签还在、凭据在、状态里没记「已用掉」" \
+    "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")/$(ff "$N" used)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)" \
+    "yes/sent/doing/agent,pending/agent/null/file"
+g1=$(got "$N"); d1=$(disp "$N")
+printf '%s\n' '-ce --arg k * if type == "object" and*' > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+tick 5
+chk "读失败 · 到达性：这一轮了结凭据时读停住记录确实失败了一次" "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$(plog "读不出工作编号 $N 的停住记录")" "hit/1"
+chk "读失败 · 这一轮：凭据还在、不派工、不送任务、仍停住" \
+    "$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))/$(frozen "$N")" "file/0/0/true"
+tick 5
+chk "读失败 · 读得出之后的下一轮：指令记为已用掉、重新停住、凭据清掉，仍不派工、不送任务" \
+    "$(ff "$N" 'used != null')/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)/$([ -e "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" \
+    "true/new/none/0/0"
+tick 5; tick 5
+chk "读失败 · 再过两轮：同一条指令始终没有再送任务" "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" "0/0"
+# 派工前读不出本机的停住记录：不能把停住的条目当成普通派工放过去；读得出之后照常按恢复指令派
+frozen_is rdfail2; human_resume "$N" pending/agent doing/agent pending/agent
+g0=$(got "$N"); w0=$(lwrites "$N")
+printf '%s\n' '*to_entries[] | select(.value.frozen != null and .value.kind*' > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
+tick 5
+chk "派工前读失败 · 到达性：走到了派工这一步，读停住记录失败" "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$(plog "#$N 派工前读不出本机的停住记录")" "hit/1"
+chk "派工前读失败：这一轮不派工（不送任务、不翻标签、没有普通失败计数），仍停住" \
+    "$(( $(got "$N") - g0 ))/$(( $(lwrites "$N") - w0 ))/$([ -e "$W/state/dispatch-fail/issue-$N" ] && echo counted || echo none)/$(frozen "$N")" "0/0/none/true"
+tick 5
+chk "派工前读失败 · 对照：读得出之后照常按恢复指令派工，记录清掉" "$(labels_of "$N")/$(entry "$N")/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)" "doing/agent/{}/sent"
+# 各环节问「停住了没有」时读不出：按停住算（这一轮不动它）
+frozen_is rdfail3; M=$((SEQ + 5))
+T kill-session -t "=$(sess_of "$N")"
+w0=$(lwrites "$N")
+printf '%s\n' '*.frozen.items*index($n)*' > "$CTL/jqfault"; touch "$CTL/jqfault.keep"; rm -f "$CTL/jqfault.hits"
+tick 5
+rm -f "$CTL/jqfault" "$CTL/jqfault.keep"
+chk "「停住了没有」读不出：自愈不翻标签、派工队列不派，标签原样" \
+    "$([ -s "$CTL/jqfault.hits" ] && echo hit || echo miss)/$(( $(lwrites "$N") - w0 ))/$(labels_of "$N")" "hit/0/doing/agent,pending/agent"
 # 凭据还在、状态写不进去的那种（这里直接摆出这个状态）：这一轮不派工，凭据不删
 frozen_is crash2; human_resume "$N" pending/agent doing/agent pending/agent
 mkdir -p "$W/state/stuck-release"
