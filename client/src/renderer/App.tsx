@@ -233,7 +233,7 @@ export function App() {
         <TabBar
           tabs={tabs}
           active={front}
-          labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running }}
+          labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
           onPick={(key) => show(key)}
           onClose={closeTab}
           onMove={(key, to) => void api().moveTab(key, to)}

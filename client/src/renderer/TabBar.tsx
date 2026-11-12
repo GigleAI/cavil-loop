@@ -6,7 +6,7 @@ import { HOME, TAB_STATUS_TEXT, tabStatus, tabUnread, type TabInfo, type TabLabe
 import { Icon, type IconName } from './Icons';
 import { keyText } from './shortcuts';
 
-const ICON: Record<Exclude<TabStatus, 'running' | 'waiting'>, { issue: IconName; pr: IconName; tone: string }> = {
+const ICON: Record<Exclude<TabStatus, 'running' | 'waiting' | 'blocked'>, { issue: IconName; pr: IconName; tone: string }> = {
   merged: { issue: 'pr-merged', pr: 'pr-merged', tone: 'done' },
   closed: { issue: 'pr-closed', pr: 'pr-closed', tone: 'closed' },
   done: { issue: 'issue-done', pr: 'pr-closed', tone: 'done' },
@@ -15,7 +15,7 @@ const ICON: Record<Exclude<TabStatus, 'running' | 'waiting'>, { issue: IconName;
   open: { issue: 'issue-open', pr: 'pr-open', tone: 'open' },
 };
 
-/** The status icon of one tab: GitHub's own state icons, plus "an agent is working on it" and "waiting for a human". */
+/** The status icon of one tab: GitHub's own state icons, plus "an agent is working on it", "waiting for a human" and "waiting for a prerequisite" (a pause, GitHub#443). */
 export function TabStatusIcon({ status, kind }: { status: TabStatus; kind: 'issue' | 'pr' }) {
   if (status === 'running')
     return (
@@ -30,6 +30,14 @@ export function TabStatusIcon({ status, kind }: { status: TabStatus; kind: 'issu
         <circle className="disc" cx="8" cy="8" r="7" />
         <circle className="person" cx="8" cy="6" r="2.2" />
         <path className="person" d="M3.9 12.4c.6-2 2.2-3 4.1-3s3.5 1 4.1 3" />
+      </svg>
+    );
+  if (status === 'blocked')
+    return (
+      <svg className="tab-icon blocked" viewBox="0 0 16 16" width={16} height={16} aria-hidden="true">
+        <circle className="disc" cx="8" cy="8" r="7" />
+        <rect className="bar" x="5.4" y="4.6" width="1.9" height="6.8" rx="0.5" />
+        <rect className="bar" x="8.7" y="4.6" width="1.9" height="6.8" rx="0.5" />
       </svg>
     );
   const i = ICON[status];

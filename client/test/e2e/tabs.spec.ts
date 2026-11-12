@@ -461,6 +461,45 @@ test('settings: the "running" label (GitHub#404) is the one a tab\'s status read
   await app.close();
 });
 
+test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, follows the rounds, and the waiting label is the one Settings holds', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  change(A, { labels: ['doing/agent'] });
+  change(B, { labels: ['pending/human'] });
+  change(C, { labels: ['pending/blocked'] });
+  for (const n of [A, B, C]) await row(page, n).click({ modifiers: ['Control'] });
+  beat(app);
+  await expect(tab(page, C)).toHaveAttribute('data-status', 'blocked', { timeout: 15_000 });
+  await expect(tab(page, A)).toHaveAttribute('data-status', 'running');
+  await expect(tab(page, B)).toHaveAttribute('data-status', 'waiting');
+  // the pause is drawn, and its words are what a pointer and a screen reader get
+  await expect(tab(page, C).locator('svg.tab-icon.blocked')).toHaveCount(1);
+  await expect(tab(page, C).getByTestId('tab-status')).toHaveAttribute('aria-label', '等前置完成');
+  expect(await tab(page, C).getAttribute('title')).toContain('等前置完成');
+  await shot(page, '443-01-blocked-pause');
+
+  // the prerequisite is done: the daemon swaps the waiting label for the dispatch label, the next round shows it
+  change(C, { labels: ['pending/agent'] });
+  beat(app);
+  await expect(tab(page, C)).toHaveAttribute('data-status', 'open', { timeout: 15_000 });
+  await expect(tab(page, C).locator('svg.tab-icon.blocked')).toHaveCount(0);
+
+  // another waiting label in Settings: the tabs follow it; emptied, there is no pause at all
+  change(C, { labels: ['on-hold'] });
+  beat(app);
+  await page.getByTestId('open-settings').click();
+  const field = page.getByTestId('hand-back-blocked');
+  await expect(field).toHaveValue('pending/blocked');
+  await field.fill('on-hold');
+  await field.blur();
+  await expect(tab(page, C)).toHaveAttribute('data-status', 'blocked', { timeout: 15_000 });
+  await field.fill('');
+  await field.blur();
+  await expect(tab(page, C)).toHaveAttribute('data-status', 'open');
+  await app.close();
+});
+
 test('unsent text belongs to the account it was typed under: signing out and in again — the same account or another — never brings it back; within one account it stays', async () => {
   const app = await launchApp(env);
   const page = app.page;
