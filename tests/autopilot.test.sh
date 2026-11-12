@@ -142,6 +142,11 @@ CONF
             --arg n "$1" --arg r "$2" --arg b "$3" --arg h "$4" --arg repo "${6:-example/ap}" \
             --arg m "${7:-true}" --arg ms "${8:-clean}" --arg ca "${MKPR_CREATED:-2025-12-01T00:00:00Z}"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$5"
+        # 真 GitHub 上挂着的标签都有打上它的那条记录；交人的写前核对（GitHub#382）要从记录里认「这一次入队」
+        case ",$5," in *",pending/merge,"*) mkpr_queue_ev "$1" ;; esac
+    }
+    mkpr_queue_ev() {   # <n>：复审把 PR 送进合并队列的那条记录
+        jset events.json '.[$n] = ((.[$n] // []) + [{event:"labeled", label:{name:"pending/merge"}, actor:{login:"loop-bot", type:"User"}, created_at:"2025-12-31T00:00:00Z"}])' --arg n "$1"
     }
     # 每条记录带时间（和真 GitHub 一样），按调用先后递增；daemon 自己写的标签记录用当前时间，一定更晚。
     # 要比 daemon 写的还晚（「daemon 交人之后，维护者重新授权」）就给 EV_AT 一个将来的时间
@@ -183,6 +188,9 @@ Refs #7" "$H1" "pending/merge,autopilot"
     has_label() { case ",$(labels_of "$1")," in *",$2,"*) echo yes ;; *) echo no ;; esac; }
     comments_with() { jq -r --arg n "$1" '(.[$n] // [])[].body' "$GD/comments.json" | grep -cF -- "$2" || true; }
     writes() { n_calls "^gh api -X (POST|PUT|DELETE|PATCH) "; }
+    off_rec() {   # <pr>：托管关掉后的收尾待办在不在（GitHub#382 起是一条带基准的记录，不再是 true）
+        jq -r --arg p "$1" '(.autopilot.prs[$p] // {}) | if has("off_handover") then "待办" else "" end' "$STATE" 2>/dev/null
+    }
     st() { jq -r --arg p "$1" "(.autopilot.prs[\$p] // {}) | $2 // \"\"" "$STATE" 2>/dev/null; }
     log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
 
@@ -306,12 +314,12 @@ Closes #7" "$H1" "pending/merge,autopilot"
     chk "issue 摘了托管标签 → 不合并" "$(merged 8)" 0
     chk "  → PR 交人，说明写已摘掉" "$(comments_with 8 '已摘掉（已叫停）')" 1
     fresh; happy
-    jset labels.json '.["7"] += ["pending/human"]'
+    jset labels.json '.["7"] += ["pending/human"]'; ev 7 labeled pending/human maint
     tick
     chk "issue 上打 pending/human → 不合并" "$(merged 8)" 0
     chk "  → PR 交人" "$(has_label 8 pending/human)" yes
     fresh; happy
-    jset labels.json '.["8"] += ["pending/human"]'
+    jset labels.json '.["8"] += ["pending/human"]'; ev 8 labeled pending/human maint
     tick
     chk "PR 上打 pending/human → 不合并" "$(merged 8)" 0
     chk "  → 摘掉 pending/merge" "$(has_label 8 pending/merge)" no
@@ -681,6 +689,7 @@ ROWS
     chk "PR 上的授权、等合并 → 合并" "$(merged 8)" 1
     fresh; pr_ready
     jset labels.json '.["8"] = ["pending/merge"]'; ev 8 unlabeled autopilot maint
+    ev 8 unlabeled pending/human maint; mkpr_queue_ev 8   # 标签记录和当前标签对得上（真 GitHub 的形状）
     review_rec 8 "$H1"; evidence 8 "$H1" 12 0
     tick
     chk "摘掉 PR 上的托管 → 等合并的 PR 交人、不合并" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
@@ -1103,7 +1112,7 @@ ROWS
     tick
     chk "PR 上摘掉托管标签 → 不合并、交人" "$(merged 8)/$(has_label 8 pending/human)" "0/yes"
     fresh; po_merge_ready
-    jset labels.json '.["8"] += ["pending/human"]'
+    jset labels.json '.["8"] += ["pending/human"]'; ev 8 labeled pending/human maint
     tick
     chk "PR 上打 pending/human → 不合并、摘 pending/merge" "$(merged 8)/$(has_label 8 pending/merge)" "0/no"
 
@@ -1606,12 +1615,19 @@ Refs #7" "$H1" "${1:-pending/review,autopilot}"
     touch "$GD/F_post_comment"
     tick
     chk "留言失败 → 标签已交接" "$(labels_of 8)" "autopilot,pending/human"
-    chk "  …交接记号还在（说明还欠着）" "$(st 8 .off_handover)" "true"
+    chk "  …交接记号还在（说明还欠着）" "$(off_rec 8)" "待办"
     rm -f "$GD/F_post_comment"; tick
     chk "  …恢复后下一轮补发留言（等合并标签已经没了也找得回来）" "$(comments_with 8 '托管已在配置里关掉')" 1
-    chk "  …补发后清掉记号" "$(st 8 .off_handover)" ""
+    chk "  …补发后清掉记号" "$(off_rec 8)" ""
     tick
     chk "  …再一轮零写入、不重复留言" "$(writes)/$(comments_with 8 '托管已在配置里关掉')" "0/1"
+
+    fresh "$OFF"; happy
+    touch "$GD/F_post_comment_lost"
+    tick
+    chk "留言已经发上去、却报失败（响应丢了）→ 待办还在" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "1/待办"
+    rm -f "$GD/F_post_comment_lost"; tick
+    chk "  …下一轮认出已发的留言：不重复发，只清待办" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)/$(n_calls "^gh api -X POST $R/issues/8/comments")" "1//0"
 
     fresh "$OFF"; happy
     touch "$GD/F_post_labels" "$GD/F_delete_labels" "$GD/F_post_comment"
@@ -1620,38 +1636,43 @@ Refs #7" "$H1" "${1:-pending/review,autopilot}"
     rm -f "$GD/F_post_labels"; tick
     chk "  …只恢复加标签：两个标签都在（摘还在失败），不留言" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/human,pending/merge/0"
     rm -f "$GD/F_delete_labels"; tick
-    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(st 8 .off_handover)" "autopilot,pending/human/true"
+    chk "  …再恢复摘标签：交接完成，留言仍欠着" "$(labels_of 8)/$(off_rec 8)" "autopilot,pending/human/待办"
     rm -f "$GD/F_post_comment"; tick
-    chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+    chk "  …最后恢复留言：补发一次" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "1/"
 
-    # 标签两步都写成功、紧接着的回读失败（PR #127 复审第 2 轮）：意图在动 GitHub 之前就记下了，下轮接着做
+    # 标签两步都写成功、紧接着的确认读失败（PR #127 复审第 2 轮）：待办在动 GitHub 之前就记下了，下轮接着做。
+    # 一轮收尾里 PR 的标签记录依次读 6 次（取基准、加标签前、加完确认、摘标签前、摘完确认、发说明前）；
+    # 假 GitHub 先看失败开关、再跑 hook：第 4 次读的 hook 里打开开关，第 5 次读（摘完确认）就失败
     fresh "$OFF"; happy
-    touch "$GD/F_issues_8"
+    printf 'touch %q\n' "$GD/F_issues_8_events" > "$GD/hook_issues_8_events_4"
     tick
-    chk "标签改好、回读失败 → 标签已是目标，交接记号在，没发说明" "$(labels_of 8)/$(st 8 .off_handover)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/human/true/0"
-    rm -f "$GD/F_issues_8"; tick
-    chk "  …恢复后下一轮补发说明一次、清掉记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+    chk "标签改好、确认读失败 → 标签已是目标，待办在，没发说明" "$(labels_of 8)/$(off_rec 8)/$(comments_with 8 '托管已在配置里关掉')" "autopilot,pending/human/待办/0"
+    rm -f "$GD/F_issues_8_events" "$GD/hook_issues_8_events_4"; tick
+    chk "  …恢复后下一轮认出那次摘标签是自己写成的，补发说明一次、清掉待办" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "1/"
 
     fresh "$OFF"; happy
     touch "$GD/F_issues_8_comments"
     tick
-    chk "读不到已有评论（判断不了发没发过）→ 不发" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "0/true"
+    chk "读不到已有评论（判断不了发没发过）→ 不发" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "0/待办"
     rm -f "$GD/F_issues_8_comments"; tick
-    chk "  …恢复后发一次" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+    chk "  …恢复后发一次" "$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "1/"
 
-    # 进程半路被杀 / 清记号失败：用状态直接摆出中间态
+    # 旧版留下的「true」记号没有基准（GitHub#382）：分不清是 daemon 中断还是人已接手，一律作废
     fresh "$OFF"; happy
-    jset labels.json '.["8"] = ["pending/human"]'
+    jset labels.json '.["8"] = ["pending/human"]'; ev 8 unlabeled pending/merge loop-bot; ev 8 labeled pending/human loop-bot
     jq '.autopilot.prs["8"].off_handover = true' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
     tick
-    chk "中间态：标签已交接、说明没发 → 补发一次、清记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)" "1/"
+    chk "旧版记号、PR 已不在合并队列 → 作废：不补发说明、零写入、记号清掉" "$(comments_with 8 '托管已在配置里关掉')/$(writes)/$(off_rec 8)" "0/0/"
+    chk "到达性 · 这一轮确实读了这个 PR 的现状" "$([ "$(n_calls "^gh api $R/pulls/8\$")" -gt 0 ] && echo yes || echo no)" yes
+    tick
+    chk "  …之后不再碰这个 PR" "$(writes)/$(n_calls "^gh api $R/pulls/8\$")" "0/0"
 
     fresh "$OFF"; happy
-    jset labels.json '.["8"] = ["pending/human"]'
-    jset comments.json '.["8"] = [{id:950, user:{login:"loop-bot"}, created_at:"2026-06-02T00:00:00Z", body:"托管已在配置里关掉（上一轮发的）\n<!-- autopilot-off-handover -->"}]'
     jq '.autopilot.prs["8"].off_handover = true' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
     tick
-    chk "中间态：说明已发、只是记号没清 → 不重复发，只清记号" "$(comments_with 8 '托管已在配置里关掉')/$(st 8 .off_handover)/$(n_calls "^gh api -X POST $R/issues/8/comments")" "1//0"
+    chk "旧版记号、PR 仍在合并队列 → 这一轮只作废，不写" "$(writes)/$(off_rec 8)/$(labels_of 8)" "0//autopilot,pending/merge"
+    tick
+    chk "  …下一轮当作新的一件事从头收尾：交人、说明一条、待办清掉" "$(labels_of 8)/$(comments_with 8 '托管已在配置里关掉')/$(off_rec 8)" "autopilot,pending/human/1/"
     chk "到达性 · 这一轮确实读了这个 PR 的评论" "$([ "$(n_calls "$R/issues/8/comments")" -gt 0 ] && echo yes || echo no)" yes
 
     fresh "$OFF"; happy
@@ -1916,7 +1937,7 @@ mutate permit-conflict _lib.sh '        conflict) AP_V=worker;' '        conflic
 # ── 合并前的第二次判定：整个不做 / 只在第二次跳过某一项 ──
 mutate reread-none _lib.sh "$SECOND_OLD" '    :
     if [ "$AP_V" != ok ]'
-mutate2 reread-pr-halt 'case ",$labels," in *",$LABEL_PENDING_HUMAN,"*) AP_V=halt_pr' 'case ",$labels,${AP_SECOND:+x}" in *",$LABEL_PENDING_HUMAN,") AP_V=halt_pr'
+mutate2 reread-pr-halt '[ -n "${AP_HANDOVER_MINE:-}" ] || { AP_V=halt_pr; return 0; }' '[ -n "${AP_HANDOVER_MINE:-}${AP_SECOND:-}" ] || { AP_V=halt_pr; return 0; }'
 mutate2 reread-issue-halt "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AP_V=human" "    if [ -z \"\${AP_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
         AP_V=human"
@@ -1946,14 +1967,18 @@ mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" 
 # ── 托管关掉之后的收尾（GitHub#124）──
 mutate off-sweep-not-called agent-poll.sh 'autopilot_off_sweep "$STATE_FILE" || true' ':'
 mutate off-sweep-any-pr _lib.sh '| .[][] | select($prs[(.number | tostring)] != null)' '| .[][]'
-mutate off-sweep-no-reread _lib.sh "        printf '%s' \"\$pj\" | jq -e '.state == \"open\" and (.merged | not)' >/dev/null 2>&1 || continue" '        :'
-mutate off-sweep-no-intent _lib.sh ' or ($prs[(.number | tostring)].off_handover // false)' ''
-mutate off-sweep-intent-late _lib.sh "        if [ \"\$(autopilot_state_get \"\$sf\" '.prs[\$p].off_handover // false' --arg p \"\$pr\")\" != true ]; then" '        if false; then' \
-    '        # ③ 交人说明只发一条' '        autopilot_state_set "$sf" '"'"'.prs[$p] = ((.prs[$p] // {}) + {off_handover: true})'"'"' --arg p "$pr" || true
-        # ③ 交人说明只发一条'
-mutate off-sweep-no-dedupe _lib.sh "        if ! printf '%s' \"\$cmts\" | jq -e --arg T \"\$AUTOPILOT_OFF_TAG\" 'any(.[][]?; (.body // \"\") | contains(\$T))' >/dev/null 2>&1; then" '        if true; then'
-# 「先摘后加」那个旧写法不再单列：交接记号在动 GitHub 之前就记下，摘完加失败的 PR 下一轮靠记号也找得回来
-mutate off-sweep-no-verify _lib.sh '*",$m,"*) log "托管已关：PR #$pr 回读仍挂着 $m，下轮再收尾"; continue ;;' '*",$m,"*) ;;'
+# GitHub#382 起收尾的每次写入都对着带基准的待办核对，下面几条指向的原文跟着换成新代码里的同一处：
+# 现读拦住（PR 已合并就不动）＝ 新待办的判定「开着、挂着等合并标签」
+mutate off-sweep-no-reread _lib.sh "            printf '%s' \"\$AF_FP\" | jq -e --arg M \"\$m\" '.pr.open and (.pr.labels | index(\$M) != null)' >/dev/null 2>&1 || continue" '            :'
+mutate off-sweep-no-intent _lib.sh ' or ($prs[(.number | tostring)] | has("off_handover"))' ''
+# 待写的那一步不在动 GitHub 之前记下：写成之后确认读失败，下一轮就认不出那次是自己写的，说明永远补不上
+mutate off-sweep-intent-late _lib.sh "    autopilot_state_set \"\$sf\" '.prs[\$p].off_handover.pending = {op: \$o, label: \$l}' --arg p \"\$pr\" --arg o \"\$op\" --arg l \"\$label\" \\
+        || { log \"托管已关：PR #\$pr 记不下待写的那一步，本轮不动\"; return 1; }" '    :'
+mutate off-sweep-no-dedupe _lib.sh "        if ! printf '%s' \"\$cmts\" | jq -e --arg T \"\$marker\" 'any(.[][]?; (.body // \"\") | contains(\$T))' >/dev/null 2>&1; then" '        if true; then'
+# 摘等合并标签有没有摘掉完全不核对（摘的结果、摘完的确认、发说明前的最终状态三处一起去掉）
+mutate off-sweep-no-verify _lib.sh '        autopilot_label_delete "$pr" "$label" || return 1' '        autopilot_label_delete "$pr" "$label" || true' \
+    '    if ! autopilot_fingerprint "$pr" || ! autopilot_fp_is_own_write "$(printf '"'"'%s'"'"' "$exp" | jq -cS .)" "$op" "$label"; then' '    if false; then' \
+    "            '.pr.open and (.pr.labels | index(\$M) == null) and (.pr.labels | index(\$H) != null)' >/dev/null 2>&1 || continue" "            '.pr.open' >/dev/null 2>&1 || continue"
 mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
 # ── PR 上的托管标签（GitHub#128）──
 # 两处合起来的授权判据

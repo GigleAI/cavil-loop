@@ -21,14 +21,19 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (F403_<key>: a
 permission 403, F403rl_<key>: a rate-limit 403 — GitHub#243) (key = path with
 '/' -> '_', e.g. F_issues_7_events).  F_merge_<code> makes the merge endpoint fail with that code;
-F_post_comment / F_post_labels / F_delete_labels make those writes fail (Flost_<same> = the write takes
-effect and the caller still gets a failure, GitHub#341); F_post_label_<name> fails
+F_post_comment / F_post_labels / F_delete_labels make those writes fail (F_post_comment_lost: the comment
+is created but the call reports failure; hook_POST_issues_<n>_comments_<k> / hook_after_POST_issues_<n>_comments_<k>
+run right before / after the k-th comment on item n — GitHub#382; Flost_post_labels / Flost_delete_labels: the
+label write takes effect and the caller still gets a failure — GitHub#341); F_post_label_<name> fails
 adding just that label, F_post_label_noop_<name> answers success without adding it; F_user fails `gh api user`.
 tokens.log records the GH_TOKEN each call ran with.
 Hooks: hook_<key>_<k> (a shell script) runs right before the k-th GET of that path is served;
 hook_<POST|DELETE>_issues_<n>_labels_<k> runs right before the k-th label add / remove on item n,
 hook_after_POST_issues_<n>_labels_<k> right after the k-th label add took effect;
 used to change GitHub between the daemon's check and its re-read.
+jq_<key> (GitHub#382): a jq filter applied to the answer of GET pulls/<n> / issues/<n> (drop a field, set an
+unknown state word). done_POST_issues_<n>_labels_<k> appears once the k-th label add on item n is fully saved —
+a test that kills the caller mid-request waits for it instead of sleeping.
 """
 import json, os, subprocess, sys, time
 
@@ -270,8 +275,10 @@ def touch(n):
 
 def append_event(n, ev, name):
     evs = load("events.json", {})
+    # 不存 id：读的时候统一按位置补（见 GET …/events），这样夹具手写的记录和 daemon 写出来的记录
+    # 编号先后与发生先后一致，和真 GitHub 一样（GitHub#382：交人的写前核对按编号认先后）
     evs.setdefault(str(n), []).append(
-        {"id": 50000 + sum(len(v) for v in evs.values()), "event": ev, "label": {"name": name},
+        {"event": ev, "label": {"name": name},
          "actor": {"login": me(), "type": "User"}, "created_at": now_iso()})
     save("events.json", evs)
 
@@ -337,14 +344,22 @@ if method == "GET":
             if kind == "pr" and it.get("state") == "open" and not it.get("merged"):
                 out.append(it)
         emit(out, pages=True)
+    # GitHub#382：jq_<key> 文件里的 jq 表达式套在这次 PR / issue 详情的响应上（删字段、改成不认识的状态词），
+    # 模拟「读到了、但响应不完整」
+    def shaped(data):
+        f = p("jq_" + key)
+        if not os.path.exists(f):
+            return data
+        r = subprocess.run(["jq", "-c", open(f).read()], input=json.dumps(data), capture_output=True, text=True)
+        return json.loads(r.stdout)
     if len(parts) == 2 and parts[0] == "pulls":
         if parts[1] not in items or items[parts[1]]["kind"] != "pr":
             fail("HTTP 404: Not Found")
-        emit(view(parts[1])[1])
+        emit(shaped(view(parts[1])[1]))
     if len(parts) == 2 and parts[0] == "issues":
         if parts[1] not in items:
             fail("HTTP 404: Not Found")
-        emit(as_issue(parts[1]))
+        emit(shaped(as_issue(parts[1])))
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
         # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
         evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
@@ -437,14 +452,25 @@ if method in ("POST", "DELETE") and len(parts) >= 3 and parts[0] == "issues" and
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
     if os.path.exists(p("F_post_comment")):
         fail("HTTP 500: injected comment failure")
+    # GitHub#382：hook_POST_issues_<n>_comments_<k> 在这个条目第 k 次发评论之前运行，hook_after_POST_issues_<n>_comments_<k>
+    # 在它已经生效之后运行；F_post_comment_lost = 评论已经发上去了、却向调用方报失败（响应丢了）
+    _ck = "POST_issues_%s_comments" % parts[1]
+    _cc = p("count_" + _ck)
+    _c = int(open(_cc).read()) + 1 if os.path.exists(_cc) else 1
+    open(_cc, "w").write(str(_c))
+    _ch = p("hook_%s_%d" % (_ck, _c))
+    if os.path.exists(_ch):
+        subprocess.run(["bash", _ch], check=False, stdin=subprocess.DEVNULL, timeout=30)
     cm = load("comments.json", {})
     lst = cm.setdefault(parts[1], [])
     lst.append({"id": 1000 + sum(len(v) for v in cm.values()), "body": fields.get("body", ""),
                 "user": {"login": me()}, "author_association": "COLLABORATOR", "created_at": now_iso()})
     save("comments.json", cm)
-    # Flost_post_comment：评论已经发上去了，调用方却收到失败（GitHub#341：写成功但响应丢失）
-    if os.path.exists(p("Flost_post_comment")):
-        fail("HTTP 502: injected lost response (comment was created)")
+    _ah = p("hook_after_%s_%d" % (_ck, _c))
+    if os.path.exists(_ah):
+        subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)
+    if os.path.exists(p("F_post_comment_lost")):
+        fail("HTTP 502: injected: comment was created but the response was lost")
     emit({"id": lst[-1]["id"]})
 
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "labels":
@@ -462,6 +488,8 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
             append_event(parts[1], "labeled", l)
     save("labels.json", labels)
     touch(parts[1])
+    # 这次写入已经全部落盘的记号（GitHub#382）：调用方被杀掉之后请求还在这里继续跑，测试等这个文件出现再看结果
+    open(p("done_%s_%d" % (_wk, _c)), "w").write("1")
     # hook_after_POST_issues_<n>_labels_<k>：第 k 次加标签已经生效之后运行（GitHub#233）
     _ah = p("hook_after_POST_issues_%s_labels_%d" % (parts[1], _c))
     if os.path.exists(_ah):

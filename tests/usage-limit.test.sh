@@ -570,9 +570,9 @@ posts_label() { grep -c -- "-X POST repos/example/ul/issues/$1/labels" "$CALLS" 
 # 一步里每圈重读一次条目（GET issues/<n>）：第 1 次记基线，第 2 次留言前，第 3 次加标签前，第 5 次摘标签前
 if want 6; then
 echo "【6】转人工三步的跨轮恢复与停手"
-arm; touch "$GD/Flost_post_comment"; poll
+arm; touch "$GD/F_post_comment_lost"; poll
 chk "留言成功但响应丢了：这一轮停在留言这一步" "$(ncomments 7) $(labels 7)" "1 doing/agent"
-rm -f "$GD/Flost_post_comment"; poll
+rm -f "$GD/F_post_comment_lost"; poll
 chk "下一轮认出是自己发的：不重复留言，做完" "$(ncomments 7) $(labels 7)" "1 pending/human"
 
 arm; touch "$GD/Flost_post_labels"; poll
