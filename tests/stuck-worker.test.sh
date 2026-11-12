@@ -1319,7 +1319,8 @@ r4=0; wr stuck_freeze "$N" "" "$N" "测试" || r4=$?
 chk "写入口检查（先加载一次库，之后再比）：空类型 / 错编号 / 换类型 / 空类型停住都拒写，状态文件逐字节不变" \
     "$r0/$r1/$r2/$r3/$r4/$(cmp -s "$STATE" "$W/state.before" && echo same || echo changed)" "0/1/1/1/1/same"
 # 主干后来加的「CI 失败报告」在子进程里写报告 issue：停住的条目名单由 stuck_frozen_items 交过去，
-# 写到名单里的条目时这一步按写失败处理（下一轮再试）；功能关着时名单为空、什么都不拦
+# 写到名单里的条目时这一步按写失败处理（下一轮再试）。名单是 none / all / 编号列表，永远不空；
+# 功能关着时是 none（报告入口那边干脆不设变量）。子进程拿到空值按全部停住（代码复审第 6 轮）
 fl=$(cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh"; STATE_FILE="$STATE_DIR/state.json" stuck_frozen_items' _ "$ROOT" 2>/dev/null)
 fl_off=$(cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" STUCK_WORKER_QUIET_SECS= bash -c 'source "$1/scripts/_lib.sh"; STUCK_WORKER_QUIET_SECS=""; STATE_FILE="$STATE_DIR/state.json" stuck_frozen_items' _ "$ROOT" 2>/dev/null)
 ciw() {   # <名单> <路径> → yes = 拦下
@@ -1328,11 +1329,11 @@ import importlib.util, sys
 s = importlib.util.spec_from_file_location("cfr", sys.argv[1]); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
 print("yes" if m.stuck_frozen(sys.argv[2]) else "no")' "$ROOT/scripts/ci_failure_report.py" "$2"
 }
-chk "CI 失败报告：停住的条目在名单里；功能关着名单为空" \
-    "$(printf '%s\n' $fl | grep -cx "$N")/[$fl_off]" "1/[]"
-chk "CI 失败报告：写到停住的条目（评论 / 标签 / 改状态）拦下，别的条目和新开报告不拦，名单为空不拦" \
-    "$(ciw "$fl" "repos/example/sw/issues/$N/comments")/$(ciw "$fl" "repos/example/sw/issues/$N/labels/x")/$(ciw "$fl" "repos/example/sw/issues/$N")/$(ciw "$fl" "repos/example/sw/issues/1$N/comments")/$(ciw "$fl" "repos/example/sw/issues")/$(ciw "" "repos/example/sw/issues/$N/comments")/$(ciw "all" "repos/example/sw/issues/7/comments")" \
-    "yes/yes/yes/no/no/no/yes"
+chk "CI 失败报告：停住的条目在名单里；功能关着名单是 none" \
+    "$(printf '%s\n' $fl | grep -cx "$N")/[$fl_off]" "1/[none]"
+chk "CI 失败报告：写到停住的条目（评论 / 标签 / 改状态）拦下，别的条目和新开报告不拦；none 不拦，空值按全部停住" \
+    "$(ciw "$fl" "repos/example/sw/issues/$N/comments")/$(ciw "$fl" "repos/example/sw/issues/$N/labels/x")/$(ciw "$fl" "repos/example/sw/issues/$N")/$(ciw "$fl" "repos/example/sw/issues/1$N/comments")/$(ciw "$fl" "repos/example/sw/issues")/$(ciw "none" "repos/example/sw/issues/$N/comments")/$(ciw "" "repos/example/sw/issues/$N/comments")/$(ciw "all" "repos/example/sw/issues/7/comments")" \
+    "yes/yes/yes/no/no/no/yes/yes"
 r5=0; wr stuck_entry_set "$N" '.frozen.tries = 1' || r5=$?
 chk "写入口检查 · 对照：正常字段照常写进去" "$r5/$(ff "$N" tries)/$(efield "$N" '.kind')" "0/1/issue"
 # 复审第 4 轮（代码）的复现：每轮遍历停住记录时读失败一次。读不出 ≠ 没有记录：停住记录要留着、
@@ -1389,7 +1390,7 @@ chk "派工前读失败 · 对照：读得出之后照常按恢复指令派工�
 frozen_is rdfail3; M=$((SEQ + 5))
 T kill-session -t "=$(sess_of "$N")"
 w0=$(lwrites "$N")
-printf '%s\n' '*.frozen.items*index($n)*' > "$CTL/jqfault"; touch "$CTL/jqfault.keep"; rm -f "$CTL/jqfault.hits"
+printf '%s\n' '-sre if length == 1 and*frozen.items*' > "$CTL/jqfault"; touch "$CTL/jqfault.keep"; rm -f "$CTL/jqfault.hits"
 tick 5
 rm -f "$CTL/jqfault" "$CTL/jqfault.keep"
 chk "「停住了没有」读不出：自愈不翻标签、派工队列不派，标签原样" \

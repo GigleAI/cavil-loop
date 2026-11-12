@@ -8632,35 +8632,58 @@ stuck_freeze() {   # <工作编号> <kind> <num> <停在哪一步、为什么> [
 stuck_skip_note() {   # <环节> <编号>
     log_debug "卡住检测：#$2 已停手 → 「$1」这一轮跳过它"
 }
+# 停住名单的唯一读法（stuck_frozen / stuck_frozen_items / stuck_frozen_work 都从这里取结论）。
+# 状态文件必须恰好是一个 JSON 对象、stuck_workers 是对象，才算「读到了」；否则一律「读不出」。
+# 结果放在 STUCK_FZ：none = 确实没有停住的条目；all = 范围不明或读不出（按全部停住算）；
+# 否则是停住的条目编号，空格分隔；STUCK_FZ_WORK = 停住记录的工作编号。功能关着 / 没有状态文件 = none。
+# 不能各自写 jq：空文件时 jq 成功退出却什么都不输出，原先一处把它读成「停住」、另一处读成
+# 「名单为空」，CI 失败报告就在状态不明时照写了 GitHub（代码复审第 6 轮）。
+stuck_frozen_scan() {
+    local out
+    STUCK_FZ=none; STUCK_FZ_WORK=""
+    stuck_enabled || return 0
+    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
+    out=$(jq -sre 'if length == 1 and (.[0] | type) == "object" and ((.[0].stuck_workers // {}) | type) == "object"
+            then [(.[0].stuck_workers // {}) | to_entries[] | select((.value | type) == "object" and .value.frozen != null)] as $f
+                 | if any($f[]; (.value.frozen | type) != "object" or .value.frozen.scope_unknown == true) then "all"
+                   else ([$f[] | .value.frozen.items[]? | tostring] | unique) as $i
+                        | (if ($i | length) == 0 then "none" else ($i | join(" ")) end)
+                          + "\t" + ([$f[] | .key] | join(" ")) end
+            else error("bad state") end' "$STATE_FILE" 2>/dev/null) || { STUCK_FZ=all; return 0; }
+    local items="${out%%$'\t'*}" work=""
+    [ "$items" = "$out" ] || work="${out#*$'\t'}"
+    case "$items" in
+        all) STUCK_FZ=all; return 0 ;;
+        none) [ -z "$work" ] || { STUCK_FZ=all; return 0; } ;;
+        ''|*[!0-9\ ]*) STUCK_FZ=all; return 0 ;;
+    esac
+    case "$work" in *[!0-9\ ]*) STUCK_FZ=all; return 0 ;; esac
+    STUCK_FZ="$items"; STUCK_FZ_WORK="$work"
+}
 # 这一条（或把它当关联条目核对过的那一条）停住了吗。0 = 停住。只读本地记录，不发请求；
 # 功能关着恒为 1。每个会写条目 / 动会话的环节在动手前问这里。
 # 状态文件读不出 = 不知道 → 按停住算（返回 0）：这一轮各环节都不动它，读得出之后照常。
 stuck_frozen() {   # <issue / PR 编号>
-    local out
-    stuck_enabled || return 1
-    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    out=$(jq -r --arg n "$1" '[(.stuck_workers // {})[] | select(.frozen != null)] as $f
-            | (any($f[]; .frozen.scope_unknown == true)) or ([$f[] | .frozen.items[]?] | index($n) != null)' \
-        "$STATE_FILE" 2>/dev/null) || return 0
-    [ "$out" != false ]
+    stuck_frozen_scan
+    case "$STUCK_FZ" in
+        none) return 1 ;;
+        all) return 0 ;;
+        *) case " $STUCK_FZ " in *" $1 "*) return 0 ;; esac; return 1 ;;
+    esac
 }
-# 停住的全部条目编号，空格分隔；范围不明或状态读不出 → 输出 all。功能关着 / 没有状态文件 → 什么都不输出。
-# 给跑在子进程里、自己不读 state.json 的环节用（CI 失败报告），判断和 stuck_frozen 是同一个。
+# 停住名单，给跑在子进程里、自己不读 state.json 的环节用（CI 失败报告）。判断和 stuck_frozen 同一个：
+# 输出 none / all / 编号列表，永远不输出空（子进程把空当成 all）。
 stuck_frozen_items() {
-    stuck_enabled || return 0
-    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 0
-    jq -r '[(.stuck_workers // {})[] | select(.frozen != null)] as $f
-        | if any($f[]; .frozen.scope_unknown == true) then "all"
-          else ([$f[] | .frozen.items[]?] | unique | join(" ")) end' "$STATE_FILE" 2>/dev/null || echo all
+    stuck_frozen_scan
+    printf '%s\n' "$STUCK_FZ"
 }
 # 停住的条目里按工作编号问（自愈、会话回收用：它们手里是工作编号）
 stuck_frozen_work() {   # <工作编号>
-    stuck_enabled || return 1
-    [ -n "${STATE_FILE:-}" ] && [ -f "$STATE_FILE" ] || return 1
-    local out
-    out=$(jq -r --arg k "$1" '((.stuck_workers // {})[$k].frozen // null) != null' "$STATE_FILE" 2>/dev/null) || return 0
-    [ "$out" = false ] || return 0
-    stuck_frozen "$1"
+    stuck_frozen_scan
+    case "$STUCK_FZ" in none) return 1 ;; all) return 0 ;; esac
+    case " $STUCK_FZ_WORK " in *" $1 "*) return 0 ;; esac
+    case " $STUCK_FZ " in *" $1 "*) return 0 ;; esac
+    return 1
 }
 # 派工队列入队前问：0 = 别派。停住的条目只有一个例外——目标条目本身、触发标签正好是初筛候选
 # 的那一枚（这里只挑候选，快照可能过时；放不放行由派工脚本里的 stuck_release_gate 现读决定）。

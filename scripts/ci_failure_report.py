@@ -542,12 +542,22 @@ def comments_of(n):
     return [c for c in cs if c["user"].get("login") == me]
 
 
-STUCK_FROZEN = os.environ.get("CI_REPORT_STUCK_FROZEN", "").split()
+# Items the stuck-worker check stopped on (GitHub#339), handed over by ci-failure-report.sh as
+# "none" / "all" / numbers. Unset = feature off. Set but empty or malformed = unknown → "all":
+# an empty list must never read as "nothing is stopped" (code review round 6).
+_SF = os.environ.get("CI_REPORT_STUCK_FROZEN")
+if _SF is None:
+    STUCK_FROZEN = []
+else:
+    STUCK_FROZEN = _SF.split()
+    if (not STUCK_FROZEN or (STUCK_FROZEN != ["none"] and STUCK_FROZEN != ["all"]
+                             and not all(x.isdigit() for x in STUCK_FROZEN))):
+        STUCK_FROZEN = ["all"]
 
 
 def stuck_frozen(path):
-    """Is this write aimed at an item the stuck-worker check stopped on (GitHub#339)? Empty = feature off."""
-    if not STUCK_FROZEN:
+    """Is this write aimed at an item the stuck-worker check stopped on?"""
+    if not STUCK_FROZEN or STUCK_FROZEN == ["none"]:
         return False
     m = re.match(r"repos/[^/]+/[^/]+/issues/(\d+)(/|$)", path)
     return bool(m) and ("all" in STUCK_FROZEN or m.group(1) in STUCK_FROZEN)

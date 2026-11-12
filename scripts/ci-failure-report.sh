@@ -44,8 +44,15 @@ run_py() {
     local wt=""
     [ -z "${WRITE_GH_TOKEN:-}" ] || wt="$WRITE_GH_TOKEN"
     # 卡住检测停住的条目（GitHub#339）：报告里写到它们的那一步这一轮不做（按写失败处理，下一轮再试）。
-    # 功能关着时为空，什么都不拦
-    export CI_REPORT_STUCK_FROZEN="$(STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}" stuck_frozen_items)"
+    # 名单是 none / all / 编号列表，和 stuck_frozen 同一个判断；取不出（空）按 all 交过去。
+    # 功能关着时不设这个变量，什么都不拦
+    unset CI_REPORT_STUCK_FROZEN
+    if stuck_enabled; then
+        local fz=""
+        fz=$(STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}" stuck_frozen_items) || fz=all
+        [ -n "$fz" ] || fz=all
+        export CI_REPORT_STUCK_FROZEN="$fz"
+    fi
     export CI_REPORT_REPO="$REPO" \
         CI_REPORT_STATE_DIR="$STATE_DIR" \
         CI_REPORT_BASE="${CI_FAILURE_REPORT_BRANCH:-main}" \
