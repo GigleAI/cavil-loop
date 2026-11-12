@@ -1624,8 +1624,8 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" 
   不乱猜。进度文件只留最近 64 份。
 - **GitHub 调用数**只算轮询进程自己发出的（含它的子 shell 和轻量检查那一次），不含派工脚本和 Python 辅助程序
   发的。`gh` 以非零退出就算一次失败；只有轻量检查那一次例外——回 `200` 或 `304` 算成功（真的 `gh` 对 `304`
-  也是以 1 退出）。显示「未知」是那一轮的记账文件没了——别当成 0；数字后面带 `+` 是记账到了大小上限。
-  没有 `/proc` 的系统（macOS）上记账追加不进去，调用数一律显示「未知」。
+  也是以 1 退出）。显示「未知」是那一轮的计数器没建成或读不回来——别当成 0；数字后面带 `+` 是数到了上限
+  （一轮 20000 次调用），真实次数不少于这个数。
 - **入口脚本自己都没被执行**（文件缺失、退出码 127）时，这里什么都记不下。查看命令这时会直接打印该看的
   `journalctl` 那一行。
 - 快照里只有校验过的字段：脚本名、行号、函数名、步骤名、退出码、少量校验过的配置值、节奏状态里的数字字段、
@@ -1640,7 +1640,8 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" 
 |---|---|---|
 | `$STATE_DIR/runlog/rounds/` | 每轮一条正式记录 | `POLL_RUN_LOG_ROUNDS`（1000） |
 | `$STATE_DIR/runlog/snapshots/` | 快照 | `POLL_RUN_LOG_SNAPSHOTS`（20） |
-| `$STATE_DIR/runlog/inflight/`、`acct/` | 进行中轮次的进度、调用记账 | 各 `POLL_RUN_LOG_INFLIGHT`（64） |
+| `$STATE_DIR/runlog/inflight/` | 进行中轮次的进度 | `POLL_RUN_LOG_INFLIGHT`（64） |
+| `$STATE_DIR/runlog/acct/` | 平时是空的：每一轮在这里建一份计数用的文件，打开之后立刻删掉 | `POLL_RUN_LOG_INFLIGHT`（64） |
 | `~/.local/state/cavil-loop/runlog/entry/` | 没走到「配置加载完」的那些轮询的入口记录（本机所有项目共用） | 200 |
 
 关掉并删除已有记录（要再打开，把 `ENABLE_POLL_RUN_LOG=false` 那一行删掉；下一轮轮询会重新建目录）：

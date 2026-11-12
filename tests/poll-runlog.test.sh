@@ -442,35 +442,36 @@ else
     echo "    ⏭ 以 root 运行，只读目录挡不住写入，这一组跳过"
 fi
 
-# 记账文件被别的轮次腾位删掉：调用数是「未知」，不是 0
+# 计数不靠往文件里写：轮次中途把计数目录清空、设成只读，调用数照样一次不差
+# （PR #390 复审第 1、2 轮：原来每次调用往记账文件追加一行，文件被删、被重建、中途写失败都会让计数悄悄变少）
 mkproj p7a
-printf '#!/usr/bin/env bash\nfind "%s/acct" -type f -delete\n' "$RL" > "$GD/hook_issues_1"; chmod +x "$GD/hook_issues_1"
-poll; chk "记账文件中途没了的一轮退出码 0" "$?" "0"
+printf '#!/usr/bin/env bash\nfind "%s/acct" -mindepth 1 -delete 2>/dev/null\nchmod a-w "%s/acct" "%s"\n: > "%s/tampered"\n' "$RL" "$RL" "$RL" "$W" > "$GD/hook_issues_1"; chmod +x "$GD/hook_issues_1"
+poll; rc=$?
+chmod u+w "$RL" "$RL/acct" 2>/dev/null
+chk "中途清空计数目录并设成只读的一轮退出码 0" "$rc" "0"
+chk "那次清空确实发生在这一轮中途，且之后还有请求" "$([ -e "$W/tampered" ] && [ "$(calls_n)" -gt 1 ] && echo yes)" "yes"
+chk "这一轮自己的记录因为目录只读没写成（对照有效）" "$(count "$RL/rounds")" "0"
+# 目录恢复可写之后再跑一轮，同样中途清空（但不设只读），这一轮的记录能写成，计数必须精确
+printf '#!/usr/bin/env bash\nfind "%s/acct" -mindepth 1 -delete 2>/dev/null\n' "$RL" > "$GD/hook_issues_1"
+rm -f "$GD/count_issues" "$GD/count_pulls"; before=$(calls_n)
+poll; chk "再跑一轮（中途清空计数目录）退出码 0" "$?" "0"
+chk "调用数 = 假 GitHub 这一轮实际收到的次数，不是未知也没变少" "$(last_round | jq -r '"\(.outcome)/\(.gh_calls)/\(.gh_failed)/\(.gh_capped)"')" "ok/$(( $(calls_n) - before ))/0/0"
+chk "计数目录里没有留下文件" "$(count "$RL/acct")" "0"
+
+# 计数器建不出来（计数目录的位置上是个文件）：调用数是「未知」，不是 0
+mkproj p7b
+mkdir -p "$RL"; : > "$RL/acct"
+poll; chk "计数器建不出来的一轮退出码 0" "$?" "0"
 chk "调用数记成未知（null），不是 0" "$(last_round | jq -r '"\(.outcome)/\(.gh_calls)/\(.gh_failed)"')" "ok/null/null"
 chk "那一轮其实发了请求" "$([ "$(calls_n)" -gt 0 ] && echo yes)" "yes"
 chk "查看命令显示「未知」" "$(history | grep -c '未知')" "1"
 
-# 记账文件在「已打开、还没追加」的空档里被删：追加不能把它重新建出来，计数仍是「未知」
-# （PR #390 复审第 1 轮：原来先查文件在不在、再用 >> 追加，被删之后 >> 会建出只有后半段的新文件）
-mkproj p7b
-mkfifo "$W/hold"
-# 之后每一次 GitHub 读请求到达时，记一笔「此刻记账目录里有几个文件、记账文件删了没有」
-for k in issues_1 issues_2 issues_3 pulls_1 pulls_2 pulls_3; do
-    printf '#!/usr/bin/env bash\necho "$(find "%s/acct" -mindepth 1 2>/dev/null | wc -l | tr -d " ") $([ -e "%s/deleted" ] && echo after || echo before)" >> "%s/samples"\n' "$RL" "$W" "$W" > "$GD/hook_$k"
-    chmod +x "$GD/hook_$k"
-done
-poll CAVIL_RUNLOG_TEST_HOLD="acct-append:$W/hold" & P1=$!
-wait_for "$W/hold.at.*" || echo "  （没等到停在追加之前）"
-chk "停在「已打开、还没追加」时记账文件还在" "$(count "$RL/acct")" "1"
-find "$RL/acct" -type f -delete; : > "$W/deleted"
-( while :; do echo go; done > "$W/hold" ) 2>/dev/null & FEED=$!     # 之后每一次追加都立刻放行
-wait "$P1"; rc=$?
-kill "$FEED" 2>/dev/null; wait "$FEED" 2>/dev/null
-chk "这一轮照常跑完，假 GitHub 确实收到了请求" "$rc/$([ "$(calls_n)" -gt 0 ] && echo yes)" "0/yes"
-chk "删掉之后还有请求发生（空档之后确实又追加过）" "$([ "$(grep -c ' after$' "$W/samples" 2>/dev/null)" -gt 0 ] && echo yes)" "yes"
-chk "删掉之后记账文件一次都没被重新建出来" "$(grep ' after$' "$W/samples" | awk '$1 != 0' | wc -l | tr -d ' ')" "0"
-chk "调用数是未知（null），没有把后半段当成完整计数" "$(last_round | jq -r '"\(.outcome)/\(.gh_calls)/\(.gh_failed)/\(.gh_capped)"')" "ok/null/null/0"
-chk "收尾后记账目录里没有多出来的文件" "$(count "$RL/acct")" "0"
+# 数到上限：标「计数已封顶」，查看命令在数字后面加 +
+mkproj p7c
+poll CAVIL_RUNLOG_TEST_TICKS=3
+chk "这一轮的请求比上限多（对照有效）" "$([ "$(calls_n)" -gt 4 ] && echo yes)" "yes"
+chk "数满了就标封顶，不冒充完整计数" "$(last_round | jq -r .gh_capped)" "1"
+chk "查看命令在调用数后面加 +" "$(history | grep -cE ' [0-9]+/[0-9]+\+ ')" "1"
 
 # ═════════ 8. 快照只放校验过的值 ═════════
 section "【8】快照只放校验过的值：未知字段、非法指纹、内联令牌都不进快照"

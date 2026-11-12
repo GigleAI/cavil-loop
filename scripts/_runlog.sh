@@ -15,7 +15,7 @@
 #
 # 目录（项目内的都在 $STATE_DIR/runlog/ 下）：
 #   inflight/<轮次>.json            进度：开始时间、当前步骤、走过的步骤
-#   acct/<轮次>                     本轮记账：每次 gh 调用一行、轻量检查结果一行
+#   acct/<轮次>                     计数用的刻度文件：建好、打开之后立刻删掉（见 _runlog_counters_open）
 #   rounds/<开始时间>-<轮次>.json   正式记录，退出时写一次
 #   snapshots/<轮次>-<原因>.json    快照
 #   $CAVIL_STATE_HOME/runlog/entry/<轮次>.json   入口记录（那时还不知道项目的状态目录）
@@ -51,7 +51,11 @@ RUNLOG_ERR_LINE=""
 RUNLOG_ERR_SRC=""
 RUNLOG_ERR_FUNC=""
 RUNLOG_ENTRY_DIR="$CAVIL_STATE_HOME/runlog/entry"
-RUNLOG_ACCT_MAX_BYTES=65536
+RUNLOG_TICKS=20000        # 刻度文件的字节数 = 一轮里最多数到多少次调用，数满就标「计数已封顶」
+RUNLOG_FD_CALLS=""        # 三个计数器：各是刻度文件上的一个只读描述符，读到哪儿 = 数到几
+RUNLOG_FD_FAILED=""
+RUNLOG_FD_PROBE=""
+RUNLOG_TICKS_SIZE=0
 
 # ── 测试专用的停顿点 ──
 # CAVIL_RUNLOG_TEST_KILL_AT=<点>：走到这一点就把轮询进程强杀（模拟断电 / OOM）。
@@ -149,11 +153,12 @@ _runlog_room() {   # <目录> <上限> <保留名>
 }
 
 # 带容量协议的写文件。返回 0 = 写成了，1 = 没写（腾不出位 / 写失败）。调用方都在子 shell 里。
-_runlog_put() {   # <目录> <上限> <文件名> <内容>
+_runlog_put() {   # <目录> <上限> <文件名> <内容> [raw]
     local dir="$1" cap="$2" name="$3" body tmp
     mkdir -p "$dir" || return 1
     _runlog_room "$dir" "$((cap - 1))" "$name" || return 1
-    body=$(_runlog_scrub "$4")
+    # 第五个参数 raw：内容是本文件自己生成的固定字符（计数用的刻度文件），不过脱敏——2 万字节过一遍要几十毫秒。
+    if [ "${5:-}" = raw ]; then body="$4"; else body=$(_runlog_scrub "$4"); fi
     tmp="$dir/.tmp.$$.$RANDOM$RANDOM"
     if ! printf '%s\n' "$body" > "$tmp"; then rm -f "$tmp"; return 1; fi
     _runlog_hook "tmp:${dir##*/}"
@@ -235,47 +240,77 @@ runlog_begin() {
     (
         set +e
         _runlog_inflight_write || exit 0
-        # 记账文件只在这里占一次名额，之后只追加；没建成就整轮不记账（计数显示「未知」）。
-        # 第一行是这一轮的标识；紧接着用追加的办法写一行 a——收尾时两行都在才认这份记账，
-        # 所以「这台机器上追加根本写不进去」（见 _runlog_acct）也会显示成未知，而不是 0 次调用。
-        if _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID" "h $RUNLOG_ID"; then
-            _runlog_acct a
-        fi
         rm -f "$RUNLOG_ENTRY_DIR/$RUNLOG_ID.json"
         _runlog_hook begin
     ) >/dev/null 2>&1 || true
-    # 数轮询进程自己发出的 gh 调用：原样执行、原样返回，只往记账文件追加一行。
+    _runlog_counters_open
+    # 数轮询进程自己发出的 gh 调用：原样执行、原样返回，只把计数器往前拨一格。
     # 不导出——派工子脚本和 tmux 看不到它（worker 会继承导出的东西，几小时后还在往这一轮记）。
     gh() {
         local _runlog_rc=0
         command gh "$@" || _runlog_rc=$?
         # 轻量检查那一次由 runlog_probe_note 统一记（它知道 HTTP 状态），这里不重复记。
         if [ -n "${RUNLOG_NO_TALLY:-}" ]; then return "$_runlog_rc"; fi
-        if [ "$_runlog_rc" = 0 ]; then _runlog_acct g0; else _runlog_acct g1; fi
+        _runlog_tick "$RUNLOG_FD_CALLS" 1
+        [ "$_runlog_rc" = 0 ] || _runlog_tick "$RUNLOG_FD_FAILED" 1
         return "$_runlog_rc"
     }
     return 0
 }
 
-# 往本轮记账文件追加一行。超过上限不再追加，收尾时标「计数已封顶」。
+# ── 计数器 ──
+# 调用数、失败数、轻量检查结果要在子 shell 里也数得到（`x=$(gh …)` 是子 shell，改变量传不出来），
+# 又不能靠「往文件里追加」：PR #390 复审两轮指出了三种丢了却看不出来的情形——追加把被腾位删掉
+# 的文件重新建出来、收尾校验之后文件被删而读成 0、中途某次追加写失败后又恢复。凡是每次调用都要
+# 写一次盘的记法，都得为每一次写的失败另留证据，而那份证据本身也是一次写。
 #
-# **绝不能把被删掉的记账文件重新建出来**（PR #390 复审第 1 轮）：`[ -f ] && printf >> 文件` 在检查
-# 和打开之间有空档，别的轮次腾位删掉它之后，`>>` 会建出一个只有后半段的新文件——收尾看到文件
-# 在，就把残缺的计数当成完整的，还绕过了容量协议。所以先**只读打开**（文件不在就失败，不会新建），
-# 拿到的描述符就是那一份文件本身；再经 /proc/self/fd 往这同一份文件追加。文件中途被删，追加的
-# 内容跟着那份已删除的文件走，路径不会再出现，收尾读不到 → 「未知」。
-# 没有 /proc 的系统（macOS）追加写不进去，开头那行 a 也就不在，整轮计数显示「未知」。
-_runlog_acct() {   # <一行>
-    [ "$RUNLOG_STAGE" = round ] || return 0
-    local f="$RUNLOG_DIR/acct/$RUNLOG_ID" c fd
-    { exec {fd}<"$f"; } 2>/dev/null || return 0
-    { c=$(<"/proc/self/fd/$fd"); } 2>/dev/null || c=""
-    _runlog_hook acct-append
-    if [ "${#c}" -lt "$RUNLOG_ACCT_MAX_BYTES" ]; then
-        { printf '%s\n' "$1" >> "/proc/self/fd/$fd"; } 2>/dev/null || true
+# 所以每次调用**不写任何东西**：轮次开始时建一份全是 x 的刻度文件，主 shell 在它上面开三个只读
+# 描述符，然后把文件删掉。数一次 = 从描述符里读走一个字节。读取位置属于「打开的文件」这个内核
+# 对象，fork 出来的子 shell 和主 shell 共用同一个，所以谁读都算数；并发读也不会数错（实测 300 个
+# 子 shell 同时读，位置恰好前进 300）。收尾时看每个描述符后面还剩多少字节，就知道读走了多少。
+# 文件已经删了，所以没有「被别的轮次腾位删掉」这回事；没有写，所以没有「写失败」这回事。
+#
+# 这三个描述符会被派工子脚本继承（只读、指向一份已删除的 2 万字节文件，子进程不会去读它）。
+# 它们不是锁，和 _lib.sh 开头要关掉的 fd 9 不是一回事。
+#
+# 建不出来 / 打不开 → 三个都留空，这一轮的调用数显示「未知」，不是 0。
+_runlog_counters_open() {
+    local f="$RUNLOG_DIR/acct/$RUNLOG_ID" a="" b="" c="" size
+    RUNLOG_FD_CALLS=""; RUNLOG_FD_FAILED=""; RUNLOG_FD_PROBE=""; RUNLOG_TICKS_SIZE=0
+    RUNLOG_TICKS=$(_runlog_int "${CAVIL_RUNLOG_TEST_TICKS:-}" 20000 1)   # 环境变量只有测试设（把上限调小）
+    ( set +e
+      _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID" \
+          "$(head -c "$RUNLOG_TICKS" /dev/zero | tr '\0' x)" raw
+    ) >/dev/null 2>&1 || return 0
+    size=$(_runlog_file_size "$f")
+    if [ "$size" -ge "$RUNLOG_TICKS" ] \
+       && { exec {a}<"$f"; } 2>/dev/null && { exec {b}<"$f"; } 2>/dev/null && { exec {c}<"$f"; } 2>/dev/null; then
+        RUNLOG_FD_CALLS=$a; RUNLOG_FD_FAILED=$b; RUNLOG_FD_PROBE=$c; RUNLOG_TICKS_SIZE=$size
+    else
+        [ -z "$a" ] || { exec {a}<&-; } 2>/dev/null || true
+        [ -z "$b" ] || { exec {b}<&-; } 2>/dev/null || true
     fi
-    { exec {fd}<&-; } 2>/dev/null || true
+    rm -f "$f" 2>/dev/null || true
     return 0
+}
+
+# 把一个计数器往前拨 <格数>。描述符为空（计数器没建成）就什么都不做。
+_runlog_tick() {   # <描述符> <格数>
+    [ -n "$1" ] || return 0
+    local _runlog_x
+    LC_ALL=C IFS= read -r -N "$2" -u "$1" _runlog_x 2>/dev/null || true
+    return 0
+}
+
+# 一个计数器数到了几：刻度文件总长减去描述符后面还剩的字节数。读不出来返回 1（没有输出）。
+# 会把描述符读到底，只在收尾时调一次。
+_runlog_counter_value() {   # <描述符>
+    [ -n "$1" ] && [ "$RUNLOG_TICKS_SIZE" -gt 0 ] || return 1
+    local rest
+    rest=$(wc -c <&"$1" 2>/dev/null) || return 1
+    rest="${rest//[!0-9]/}"
+    [ -n "$rest" ] && [ "$rest" -le "$RUNLOG_TICKS_SIZE" ] || return 1
+    printf '%s' "$((RUNLOG_TICKS_SIZE - rest))"
 }
 
 # 轻量检查（_lib.sh 的 pace_probe）拿到结果后调。它在节奏闸门的子 shell 里跑，改变量传不出来，
@@ -291,12 +326,18 @@ runlog_probe_note() {   # <退出码> <HTTP 状态或空>
         case "$2" in
             200|304) cls="$2" ;;
             "") cls=unreadable ;;
-            [0-9][0-9][0-9]) cls="http-$2" ;;
+            [1-5][0-9][0-9]) cls="http-$2" ;;
             *) cls=unreadable ;;
         esac
     fi
-    case "$cls" in 200|304) _runlog_acct g0 ;; *) _runlog_acct g1 ;; esac
-    _runlog_acct "p $cls"
+    _runlog_tick "$RUNLOG_FD_CALLS" 1
+    # 检查结果记在第三个计数器上：拨 1 格 = 超时，2 格 = 读不到，其余拨「HTTP 状态码」那么多格。
+    case "$cls" in
+        200|304) _runlog_tick "$RUNLOG_FD_PROBE" "$cls" ;;
+        timeout) _runlog_tick "$RUNLOG_FD_FAILED" 1; _runlog_tick "$RUNLOG_FD_PROBE" 1 ;;
+        http-*) _runlog_tick "$RUNLOG_FD_FAILED" 1; _runlog_tick "$RUNLOG_FD_PROBE" "${cls#http-}" ;;
+        *) _runlog_tick "$RUNLOG_FD_FAILED" 1; _runlog_tick "$RUNLOG_FD_PROBE" 2 ;;
+    esac
     return 0
 }
 
@@ -403,7 +444,7 @@ _runlog_holder() {
 }
 
 _runlog_finish() {   # <退出码>
-    local rc="$1" now dur outcome acct calls="null" failed="null" probe="" capped=0
+    local rc="$1" now dur outcome calls="null" failed="null" probe="" capped=0 n_calls n_failed n_probe
     local snap_reason="" snap_name="" snap='{"state":"none"}' where ref
     local holder="" holder_id="" holder_start="" holder_age="" extra="" f id
     now=$(_runlog_now)
@@ -421,14 +462,19 @@ _runlog_finish() {   # <退出码>
     fi
 
     # 记账：文件不在 = 未知（null），绝不记成 0。
-    acct="$RUNLOG_DIR/acct/$RUNLOG_ID"
-    # 文件在还不够：第一行得是这一轮的标识，开头追加的那行 a 也得在。
-    if [ -f "$acct" ] && [ "$(head -n 1 "$acct")" = "h $RUNLOG_ID" ] && grep -qx 'a' "$acct"; then
-        calls=$(grep -c '^g' "$acct"); calls="${calls:-0}"
-        failed=$(grep -c '^g1' "$acct"); failed="${failed:-0}"
-        probe=$(sed -n 's/^p //p' "$acct" | tail -n 1)
-        [ -z "$probe" ] || probe=$(_runlog_tok "$probe" '^(200|304|timeout|unreadable|http-[0-9]{3})$')
-        [ "$(_runlog_file_size "$acct")" -lt "$RUNLOG_ACCT_MAX_BYTES" ] || capped=1
+    # 三个计数器一次读齐、一起认：任何一个读不出来，整组都是未知，不逐个回填成 0。
+    if n_calls=$(_runlog_counter_value "$RUNLOG_FD_CALLS") && n_failed=$(_runlog_counter_value "$RUNLOG_FD_FAILED") \
+       && n_probe=$(_runlog_counter_value "$RUNLOG_FD_PROBE") && [ "$n_failed" -le "$n_calls" ]; then
+        calls=$n_calls; failed=$n_failed
+        [ "$n_calls" -lt "$RUNLOG_TICKS" ] || capped=1
+        case "$n_probe" in
+            0) probe="" ;;
+            1) probe=timeout ;;
+            2) probe=unreadable ;;
+            200|304) probe=$n_probe ;;
+            [1-5][0-9][0-9]) probe="http-$n_probe" ;;
+            *) probe=unreadable ;;
+        esac
     fi
 
     # 要不要快照。原因是固定词；名字由「轮次 + 原因」决定，同一轮同一原因重写也只有一份。
@@ -478,14 +524,14 @@ _runlog_finish() {   # <退出码>
     _runlog_put "$RUNLOG_DIR/rounds" "$(_runlog_int "${POLL_RUN_LOG_ROUNDS:-}" 1000 2)" "$RUNLOG_START-$RUNLOG_ID.json" \
         "{\"v\":1,\"id\":\"$RUNLOG_ID\",\"start\":$RUNLOG_START,\"end\":$now,\"secs\":$((now - RUNLOG_START)),\"outcome\":\"$outcome\",\"rc\":$rc,\"step\":\"$RUNLOG_STEP\",\"steps\":[$RUNLOG_STEPS],\"candidates\":$RUNLOG_CANDIDATES,\"dispatched\":$RUNLOG_DISPATCH_OK,\"dispatch_failed\":$RUNLOG_DISPATCH_FAIL,\"gh_calls\":$calls,\"gh_failed\":$failed,\"gh_capped\":$capped,\"probe\":\"$probe\",\"release\":\"$(_runlog_release)\",\"log_from\":$RUNLOG_LOG_FROM,\"log_to\":$(_runlog_file_size "${LOG_FILE:-/nonexistent}")$extra,\"snapshot\":$snap}"
     _runlog_hook record
-    rm -f "$RUNLOG_DIR/inflight/$RUNLOG_ID.json" "$acct"
+    rm -f "$RUNLOG_DIR/inflight/$RUNLOG_ID.json"
 
     # 顺手清掉「正式记录已写、进度文件没来得及删」的残留（那一轮在上面两行之间被杀了）。
     # 只是删除多余的进度文件，重复删无害；不替任何轮次写东西。
     for f in "$RUNLOG_DIR/inflight"/*.json; do
         [ -e "$f" ] || continue
         id="${f##*/}"; id="${id%.json}"
-        if compgen -G "$RUNLOG_DIR/rounds/*-$id.json" > /dev/null; then rm -f "$f" "$RUNLOG_DIR/acct/$id"; fi
+        if compgen -G "$RUNLOG_DIR/rounds/*-$id.json" > /dev/null; then rm -f "$f"; fi
     done
     return 0
 }

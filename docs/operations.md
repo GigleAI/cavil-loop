@@ -1923,8 +1923,8 @@ Things to know when reading it:
 - **GitHub calls** are the ones the poll process itself made (its subshells and the idle probe included), not
   those of dispatch scripts or Python helpers. A call counts as failed when `gh` exits non-zero; the idle probe
   is the one exception — a `200` or `304` answer is a success there (the real `gh` exits 1 on `304`). `未知`
-  (unknown) means the round's tally file was gone — never read it as zero; a trailing `+` means the tally hit
-  its size cap. On a system without `/proc` (macOS) the tally cannot be appended to and always shows `未知`.
+  (unknown) means the round could not set its counters up or read them back — never read it as zero; a
+  trailing `+` means the count reached its cap (20000 calls in one round) and the real number is at least that.
 - **If the entry script itself never ran** (a missing file, exit 127), nothing can be written here. The command
   then prints the `journalctl` line to look at instead.
 - Snapshots hold checked fields only: script name, line number, function name, step name, exit code, a few
@@ -1941,7 +1941,8 @@ briefly, by at most one file each):
 |---|---|---|
 | `$STATE_DIR/runlog/rounds/` | one record per round | `POLL_RUN_LOG_ROUNDS` (1000) |
 | `$STATE_DIR/runlog/snapshots/` | snapshots | `POLL_RUN_LOG_SNAPSHOTS` (20) |
-| `$STATE_DIR/runlog/inflight/`, `acct/` | progress and call tally of rounds in flight | `POLL_RUN_LOG_INFLIGHT` (64) each |
+| `$STATE_DIR/runlog/inflight/` | progress of rounds in flight | `POLL_RUN_LOG_INFLIGHT` (64) |
+| `$STATE_DIR/runlog/acct/` | normally empty: a round creates its counter file here, opens it and deletes it at once | `POLL_RUN_LOG_INFLIGHT` (64) |
 | `~/.local/state/cavil-loop/runlog/entry/` | entry records of polls that never loaded their config (all projects) | 200 |
 
 To turn it off and remove what was recorded (delete the `ENABLE_POLL_RUN_LOG=false` line again to turn it back
