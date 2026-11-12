@@ -1005,6 +1005,67 @@ label is seen within a minute, the project having just been active). `rm poll-pa
 loop itself, the resumed worker checks the locally deployed version before relying on it. Not supported: prerequisites on
 other hosts than github.com, cycle detection (two items waiting on each other both stay waiting).
 
+## Agent hit its usage limit: pause that agent, hand the interrupted item to a human (GitHub#341)
+
+Both agents run on flat-rate subscriptions with a usage limit per time window. When a worker hits it, the CLI stops on a notice: the session is alive, the item still says `doing/agent`, the slot stays taken — and every new session dispatched to that agent hits the limit on its first request. With `ENABLE_USAGE_LIMIT_PAUSE="true"` the daemon looks, every poll round, at the sessions this machine dispatched that still carry `doing/agent`, and when it recognises the notice it does two things and nothing else:
+
+| What | Detail |
+|---|---|
+| that agent gets no new work until the limit lifts | new issues, issue comments, PR comments, reviews and prompts injected into a live session are all skipped for that agent; labels stay as they are, nothing counts as a failed dispatch, and dispatch resumes by itself at the reset time. Other agents carry on. The pause is **machine-wide per agent and account directory** (`~/.claude` / `CLAUDE_CONFIG_DIR`, `~/.codex` / `CODEX_HOME`): projects sharing an account hit the limit together |
+| the interrupted item goes to a human | one comment (which agent, when the limit lifts, which label to put back), then `pending/human` is added and `doing/agent` removed. The daemon does not type into the session, stop its program, close it or resume it |
+
+`poll.log` says `⏸ 用量上限：<agent> 撞到用量上限（…），暂停派工到 <time>` when a pause starts and lists the skipped items each round after that.
+
+**What a human does.** Open the item the daemon commented on. After the time in the comment, replace `pending/human` with the trigger label the comment names (`pending/agent`, the review label, …) in the Labels box. Doing it earlier is fine: the daemon waits for the reset time before dispatching. The next dispatch resumes the role's registered conversation. If the item is not dispatched after the reset time, or hits the limit again, leave it on `pending/human` and read the daemon's comment and `poll.log` rather than flipping labels back and forth.
+
+**How the limit is recognised.** All four must hold, or nothing happens (exactly as with the switch off):
+
+- the last block on the worker pane is the CLI's limit notice, followed only by lines the CLI itself draws under it (rules in `scripts/usage_limit.py`, written from real pane captures in `tests/fixtures/usage-limit/`); reminders such as "You've used 99% of your session limit" or codex's "You have N usage limit resets available" are not it
+- the agent is idle
+- the session is the one registered for this item and role, and its record shows no model reply, tool output or dispatch prompt containing that sentence since this dispatch started
+- screen and session record are unchanged across two consecutive poll rounds
+
+The reset time is read from the notice (claude: time of day plus time zone, e.g. `resets 4:50pm (Asia/Singapore)`; codex: `try again at Aug 20th, 2026 11:35 AM`, read in the machine's time zone). A time that cannot be read, or lies more than 8 days ahead, becomes a fixed wait of `USAGE_LIMIT_FALLBACK_SECS` (default 3600); if the limit is still on after that, the next worker that hits it is recognised again.
+
+**Limits to know about.**
+
+- The notice exists only on the pane — nothing in the session record marks it — so the source check is "the record does not show the sentence being produced", not proof. A wrong call costs: one item is commented on and handed to a human (put the label back), and that agent is paused until the time read from the screen (lift it by hand, below).
+- Handing over does not stop the session. The existing reaper closes it after it has been idle for the grace period (the conversation is kept; background commands in it end), and a claude that offers "continuing automatically" may carry on by itself at the reset time.
+- Between the daemon's three writes (comment, add `pending/human`, remove `doing/agent`) everything is re-read. If the item, its PR (base branch, head commit, source), its labels or the local session changed, the daemon **stops and undoes nothing**. An item can therefore be left with both `pending/human` and `doing/agent`: it still takes a slot until a human removes `doing/agent`. A read that fails is not a change: the daemon waits and continues next round.
+- A CLI that exits at once on launch is handled as before (no real sample of a limit shown that way), and there is no real sample of a *weekly* limit screen — it is matched by the same structure, not verified.
+- Only the pause decides whether a round dispatches; `ENABLE_USAGE_LIMIT_PAUSE` off, empty or missing means no extra read of tmux or GitHub and no state file.
+
+**Look at / lift a pause by hand.** The pause ends only at its time, or when its record is deleted — never because another session looks busy. Run in any shell on the daemon's machine (nothing needs to be set for the first block):
+
+<!-- usage-limit-ops:begin -->
+```bash
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+# 1. look: which agents are paused on this machine, until when / 查看：本机哪些 agent 在暂停、到几点
+found=0
+for f in "$DIR"/*.json; do
+    [ -e "$f" ] || continue
+    found=1
+    row=$(jq -er '[.agent, (.until | floor | tostring), .account, .item, .source] | @tsv' "$f" 2>/dev/null) \
+        || { echo "unreadable, the daemon treats it as no pause / 读不出，daemon 按没有暂停处理: $f"; continue; }
+    IFS=$'\t' read -r agent until account item source <<<"$row"
+    when=$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z')   # GNU date / BSD date
+    echo "$agent  until $when  account=$account  seen-on=$item  time-from=$source"
+done
+[ "$found" = 1 ] || echo "no pause record on this machine / 本机没有暂停记录"
+```
+
+```bash
+# 2. lift a pause by hand: set AGENT, then run / 手动解除：先填 AGENT 再执行
+AGENT=claude
+DIR="$HOME/.local/state/cavil-loop/usage-limit"
+rm -f "$DIR/$AGENT"-*.json
+left=$(ls "$DIR" 2>/dev/null | grep -c "^$AGENT-" || true)
+echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
+```
+<!-- usage-limit-ops:end -->
+
+After lifting, the next poll round dispatches to that agent again; if the account is in fact still limited, the first worker to hit it is recognised and the pause comes back (there is nothing to roll back). A project's own progress file is `$STATE_DIR/usage-limit.json` (dispatch start times, and hand-overs in progress); leave it alone while a hand-over is in progress — deleting it then can produce a second comment.
+
 ## External requester bot (optional, **off by default**)
 
 When another AI assistant with its own GitHub account files requests directly, the agent's
@@ -1513,7 +1574,9 @@ your-project/
 ~/.local/state/cavil-loop/<project>/
 ├── state.json                          # { "seen_comments": ..., "cleaned_prs": ... }
 ├── poll-pace.json                      # idle/failure backoff state; `rm` it = back to full speed
+├── usage-limit.json                    # only with ENABLE_USAGE_LIMIT_PAUSE: dispatch start times + hand-overs in progress (GitHub#341)
 ├── poll.log                            # rolling log
+├── runlog/                             # run log: one record per poll round + snapshots (GitHub#344)
 ├── poll.lock                           # flock
 └── sessions/                           # tmux pane logs per worker
     └── <project>-issue<N>.log
@@ -2016,6 +2079,87 @@ Polling has up to 1 minute of latency. For instant:
 Worker selection now goes through a thin **driver layer** — no fork needed. Ordinary work uses `WORKER_AGENT=claude` by default; `WORKER_MODEL` is an optional model override for that path. When the optional review gate is enabled, review uses `REVIEW_WORKER_AGENT=codex` and `REVIEW_MODEL` independently. An empty model leaves selection to the driver's current default. Built-ins: `claude`, `opencode`, `codex`, `cursor`. To add your own agent, drop a `scripts/drivers/<name>.sh` (or project-level override at `<host>/.agents/skills/cavil-loop/drivers/<name>.sh`) — see [drivers.md](drivers.md) for the 5-function contract and a template.
 
 ## Troubleshooting
+
+### What did the last polls do? (run log, GitHub#344)
+
+`poll.log` only has what the code chose to log, and the poller's stderr goes to `/dev/null`. The run log is the
+other half: every poll round writes **one record** when it exits — start / end, how long, the result, the last
+step it reached, how many candidates it saw and dispatched, and how many GitHub calls it made and how many of
+those failed. A round that exits non-zero, cannot read GitHub, has its idle probe time out or fail, spends more
+than `POLL_RUN_LOG_SLOW_SECS` in one step, or finds the previous round stuck behind the lock also saves a
+**snapshot**. `poll-entry.sh` writes a "started" line before anything else, so "never got going" and "ran with
+nothing to do" look different.
+
+<!-- poll-history-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
+```
+<!-- poll-history-ops:end -->
+
+What it prints: the last rounds as a table; rounds that have a progress file but no record; entry records (the
+poll started but never got as far as loading the config, or exited before that with the exit code shown); and
+the latest snapshot with the matching slice of `poll.log`. `--json` gives the same data for a machine.
+
+| Result | Meaning |
+|---|---|
+| `ok` | ran to the end |
+| `pace-skip` | skipped by the idle / failure backoff (the idle probe result is in its own column) |
+| `lock-busy` | the previous round was still running; the note says which round holds the lock and for how long |
+| `github-unreadable` | could not read GitHub, stopped without dispatching (snapshot saved) |
+| `error` | exited non-zero (snapshot saved, with script name and line number) |
+| `early-exit` | exited 0 before reaching the end, by a path the run log has no name for |
+
+Things to know when reading it:
+
+- **A round that was killed outright** (power loss, OOM, `SIGKILL`) cannot write its record, and nothing writes
+  one for it afterwards. It leaves its progress file, which the command shows as "未正常结束" (did not finish)
+  with the step it stopped in, after checking the process list. When the process list cannot be trusted the
+  command says "判断不了" (cannot tell) instead of guessing. Only the 64 most recent progress files are kept.
+- **GitHub calls** are the ones the poll process itself made (its subshells and the idle probe included), not
+  those of dispatch scripts or Python helpers. A call counts as failed when `gh` exits non-zero; the idle probe
+  is the one exception — a `200` or `304` answer is a success there (the real `gh` exits 1 on `304`). `未知`
+  (unknown) means the round could not set its counters up or read them back — never read it as zero; a
+  trailing `+` means the count reached its cap (20000 calls in one round) and the real number is at least that.
+- **If the entry script itself never ran** (a missing file, exit 127), nothing can be written here. The command
+  then prints the `journalctl` line to look at instead.
+- Snapshots hold checked fields only: script name, line number, function name, step name, exit code, a few
+  validated config values, the pace state's numeric fields, and byte offsets into `poll.log` — no source text,
+  no command output, no issue or comment text. The same reason at the same place is saved once per hour.
+- Nothing in the poller reads these files; they decide nothing. A write that fails, or a full directory that
+  cannot be trimmed, only means one record fewer.
+
+Where the files are and how much is kept (each directory makes room before it adds a file, so the counts hold
+even when rounds keep getting killed mid-write; only rounds writing at the very same moment can exceed them
+briefly, by at most one file each):
+
+| Path | What | Kept |
+|---|---|---|
+| `$STATE_DIR/runlog/rounds/` | one record per round | `POLL_RUN_LOG_ROUNDS` (1000) |
+| `$STATE_DIR/runlog/snapshots/` | snapshots | `POLL_RUN_LOG_SNAPSHOTS` (20) |
+| `$STATE_DIR/runlog/inflight/` | progress of rounds in flight | `POLL_RUN_LOG_INFLIGHT` (64) |
+| `$STATE_DIR/runlog/acct/` | normally empty: a round creates its counter file here, opens it and deletes it at once | `POLL_RUN_LOG_INFLIGHT` (64) |
+| `~/.local/state/cavil-loop/runlog/entry/` | entry records of polls that never loaded their config (all projects) | 200 |
+
+To turn it off and remove what was recorded (delete the `ENABLE_POLL_RUN_LOG=false` line again to turn it back
+on; the next poll recreates the directory):
+
+<!-- poll-history-off-ops:begin -->
+```bash
+KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.config/coding-agent-work-loop/$KEY.conf"   # installed before the rename / 改名前装的
+CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
+STATE_DIR=$(bash -c 'source "$1" >/dev/null 2>&1; printf %s "$STATE_DIR"' _ "$CONF")
+[ -n "$STATE_DIR" ] || { echo "cannot read STATE_DIR from $CONF / 读不到 STATE_DIR"; exit 1; }
+echo 'ENABLE_POLL_RUN_LOG=false' >> "$CONF"
+rm -rf "$STATE_DIR/runlog"
+echo "run log off, records removed: $STATE_DIR/runlog / 已关闭并删除记录"
+```
+<!-- poll-history-off-ops:end -->
 
 ### poll.log went sparse — did the daemon die?
 

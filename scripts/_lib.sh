@@ -1432,15 +1432,19 @@ pace_probe_etag_write() {  # <文件> <ETag>
 # 检查才被看到。304 响应里 GitHub 给回的 ETag 去掉了 W/ 前缀（实测），所以 304 时沿用
 # 已存的，不覆盖。
 pace_probe() {
-    local etag out status new_etag
+    local etag out status new_etag p_rc=0
     PACE_PROBE_REASON=""
     etag=$(pace_probe_etag_read "$PROBE_ETAG_FILE")
     local -a cmd=(gh api -i --method GET)
     if [ -n "$etag" ]; then cmd+=(-H "If-None-Match: $etag"); fi
     cmd+=("repos/$REPO/issues" -f state=all -f sort=updated -f direction=desc -f per_page=1)
     if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30 "${cmd[@]}"); fi
-    out=$("${cmd[@]}" 2>/dev/null) || true
+    # RUNLOG_NO_TALLY：这一次调用的计数由下面的 runlog_probe_note 统一记，gh 计数函数不重复记。
+    out=$(RUNLOG_NO_TALLY=1 "${cmd[@]}" 2>/dev/null) || p_rc=$?
     status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r' | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+    # 运行记录（GitHub#344）：把这次检查的结果旁路记一笔——超时、读不到、各状态码分开。只记，
+    # 下面怎么放行一个字不变。
+    if declare -F runlog_probe_note >/dev/null; then runlog_probe_note "$p_rc" "$status"; fi
     case "$status" in
         304)
             if [ -n "$etag" ]; then return 0; fi
@@ -8432,5 +8436,594 @@ agent_session_forget_all() {   # <num>
         agent_session_is_aux_file "$f" && continue
         rm -f "$f"
     done
+    return 0
+}
+
+# ── 用量上限：撞上限的 agent 停派到解除，被打断的条目转人工（GitHub#341，可选，默认关闭）──
+#
+# 两个 agent 都跑在包月订阅上，有时段用量上限。worker 撞上之后界面停在一条提示上：会话活着、
+# 标签还是 doing/agent、名额占着，而新派出去的会话一开口又撞一次。开了 ENABLE_USAGE_LIMIT_PAUSE
+# 之后 daemon 每轮看一眼本机派出去、挂着 doing/agent 的会话，认出上限提示就做两件事，别的都不做：
+#
+#   1. 这个 agent 在解除时间之前不再派新活（整台机器、同一个账号目录共用一份暂停记录；别的 agent
+#      照常）。排队的条目标签不动、不计派工失败，到点自动恢复。
+#   2. 被打断的那一条：留言（哪个 agent、几点解除、标签改回哪个）→ 加 pending/human → 摘 doing/agent。
+#      不往会话里送字、不停进程、不关会话、不自己续接。
+#
+# 几条规矩（每一条都是方案复审里踩出来的，改之前先读 tests/usage-limit.test.sh 对应那组）：
+#   · 认定要四样齐：屏幕最后一块是上限提示（规则在 usage_limit.py，按真实截屏写的）、agent 空闲、
+#     会话是本项目登记的那条且它的记录里模型回复 / 工具输出都没有这句、连续两轮屏幕和记录都没变。
+#     任何一样读不到 = 证据不足 = 什么都不做（和没开这项功能一样）。
+#   · 暂停只按时刻结束，或由人删掉记录文件。不因为「别的会话在忙」提前结束：忙是按终端文字判的，
+#     证明不了额度恢复，还会被另一个账号的会话误清。
+#   · 转人工的三次写入，每一次之前都重读条目、PR、标签事件和本机会话，和认定时记下的那份整份比对。
+#     只允许多出 daemon 自己上一步写的标签（按标签事件的操作人和「先记意图再写」的记录认）。
+#     确认变了 → 停手，不补偿（不摘回标签、不补留言）；读不到 → 本轮不写，记录留着下一轮再来。
+#   · 这里不做任何会改并发名额的事：三步期间条目一直挂 doing/agent，摘掉之后名额才空出。
+ENABLE_USAGE_LIMIT_PAUSE="${ENABLE_USAGE_LIMIT_PAUSE:-}"
+USAGE_LIMIT_FALLBACK_SECS="${USAGE_LIMIT_FALLBACK_SECS:-3600}"
+case "$USAGE_LIMIT_FALLBACK_SECS" in ''|*[!0-9]*) USAGE_LIMIT_FALLBACK_SECS=3600 ;; esac
+if [ "$USAGE_LIMIT_FALLBACK_SECS" -lt 60 ] || [ "$USAGE_LIMIT_FALLBACK_SECS" -gt 604800 ]; then USAGE_LIMIT_FALLBACK_SECS=3600; fi
+USAGE_LIMIT_MAX_AHEAD=$((8 * 86400 + 3600))   # 比这还远的暂停不是本程序写的 → 当作没有
+USAGE_LIMIT_PACE_SECS=120                      # 有暂停 / 有没做完的转人工时，轮询最慢多久一轮
+USAGE_LIMIT_WRITE_TRIES=10                     # 同一条的写入累计失败这么多次就停手
+USAGE_LIMIT_MARK='agent-usage-limit'
+USAGE_LIMIT_WAITING=0
+USAGE_LIMIT_ACTED=0
+USAGE_LIMIT_SKIPPED=""
+USAGE_LIMIT_UNTIL=""
+USAGE_LIMIT_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/usage_limit.py"
+declare -A _USAGE_LIMIT_INFO=()
+declare -A _USAGE_LIMIT_PAUSE=()
+declare -A _USAGE_LIMIT_SAID=()
+
+usage_limit_enabled() {
+    case "$(printf '%s' "${ENABLE_USAGE_LIMIT_PAUSE:-}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# 当前时刻：和轮询节奏用同一个来源（测试用 POLL_FAKE_NOW 拨钟，样本屏上的解除时间是写死的）。
+usage_limit_now() { pace_now; }
+
+usage_limit_clock() {   # <epoch> → 给人看的本机时间
+    printf '%(%Y-%m-%d %H:%M %z)T' "$1"
+}
+
+usage_limit_file() { printf '%s\n' "$STATE_DIR/usage-limit.json"; }
+
+usage_limit_get() {   # <jq 表达式> [jq 参数…] → stdout（文件不在 / 读不出当空对象）
+    local f; f="$(usage_limit_file)"
+    if [ -s "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+        jq -r "${@:2}" "$1" "$f"
+    else
+        jq -rn "${@:2}" "{} | $1"
+    fi
+}
+
+usage_limit_put() {   # <jq 表达式> [jq 参数…]
+    local f tmp; f="$(usage_limit_file)"
+    tmp="$(mktemp "$f.XXXXXX")" || return 1
+    if [ -s "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+        jq "${@:2}" "$1" "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
+    else
+        jq -n "${@:2}" "{} | $1" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$f"
+}
+
+# 同一句话同一轮只说一次（暂停记录读不出这类，每个派工入口都会碰到）
+usage_limit_say_once() {   # <键> <日志>
+    [ -z "${_USAGE_LIMIT_SAID[$1]:-}" ] || return 0
+    _USAGE_LIMIT_SAID[$1]=1
+    log "$2"
+}
+
+# 这个 agent 支不支持认上限、账号目录在哪。设 UL_KIND / UL_ACCOUNT；不支持返回 1。
+# 放在子 shell 里加载它的 driver：轮询进程自己加载的是默认 worker 的 driver，复审可能是另一个 agent，
+# 在本进程里换 driver 会把默认 worker 的函数全盖掉。
+usage_limit_agent_info() {   # <agent>
+    local a="$1" out
+    if [ -z "${_USAGE_LIMIT_INFO[$a]+x}" ]; then
+        out="$( (
+            source_driver "$a" >/dev/null 2>&1 || exit 0
+            [ -n "${AGENT_USAGE_LIMIT:-}" ] || exit 0
+            declare -F agent_account_dir >/dev/null && declare -F agent_session_record >/dev/null || exit 0
+            printf '%s\t%s' "$AGENT_USAGE_LIMIT" "$(agent_account_dir)"
+        ) 2>/dev/null )" || out=""
+        _USAGE_LIMIT_INFO[$a]="$out"
+    fi
+    out="${_USAGE_LIMIT_INFO[$a]}"
+    UL_KIND="${out%%$'\t'*}"; UL_ACCOUNT="${out#*$'\t'}"
+    [ -n "$out" ] && [ -n "$UL_KIND" ] && [ -n "$UL_ACCOUNT" ] && [ "$UL_ACCOUNT" != "$out" ]
+}
+
+usage_limit_pause_file() {   # <agent> → 暂停记录文件（整机共用，一个 agent + 账号目录一个）
+    usage_limit_agent_info "$1" || return 1
+    local h
+    h="$(printf '%s' "$UL_ACCOUNT" | _pace_hash | cut -c1-12)"
+    printf '%s/%s-%s.json\n' "$CAVIL_USAGE_LIMIT_DIR" "$1" "$h"
+}
+
+# 这个 agent 现在是不是在暂停中。是 → 返回 0，USAGE_LIMIT_UNTIL = 解除时刻。
+# 读不出的记录按「没有暂停」：最坏是派出去再撞一次、再被认出来；按「暂停」处理则是整个项目悄悄停摆。
+usage_limit_paused() {   # <agent>
+    local a="$1" f until now
+    USAGE_LIMIT_UNTIL=""
+    if [ -z "${_USAGE_LIMIT_PAUSE[$a]+x}" ]; then
+        until=0
+        if f="$(usage_limit_pause_file "$a")" && [ -e "$f" ]; then
+            if until="$(jq -er '.until | select(type == "number") | floor' "$f" 2>/dev/null)"; then
+                now="$(usage_limit_now)"
+                if [ "$until" -le "$now" ]; then
+                    until=0
+                elif [ $((until - now)) -gt "$USAGE_LIMIT_MAX_AHEAD" ]; then
+                    usage_limit_say_once "far-$a" "⚠️ 用量上限：$a 的暂停记录 $f 写着 $(usage_limit_clock "$until")，超出合理范围，按「没有暂停」处理"
+                    until=0
+                fi
+            else
+                usage_limit_say_once "bad-$a" "⚠️ 用量上限：$a 的暂停记录 $f 读不出，按「没有暂停」处理"
+                until=0
+            fi
+        fi
+        _USAGE_LIMIT_PAUSE[$a]="$until"
+    fi
+    until="${_USAGE_LIMIT_PAUSE[$a]}"
+    [ "$until" -gt 0 ] || return 1
+    USAGE_LIMIT_UNTIL="$until"
+    return 0
+}
+
+# 记下暂停。只往后延：已经有一条更晚、仍有效的就留着它。几个项目的轮询会同时写，所以加锁、整文件替换。
+usage_limit_pause_set() {   # <agent> <解除时刻> <来源 screen|fallback> <哪个条目>
+    local a="$1" until="$2" src="$3" item="$4" f now rc=0
+    f="$(usage_limit_pause_file "$a")" || return 1
+    usage_limit_agent_info "$a" || return 1   # 上一行在子 shell 里，UL_ACCOUNT 要在本 shell 再取一次
+    mkdir -p "$CAVIL_USAGE_LIMIT_DIR" || return 1
+    now="$(usage_limit_now)"
+    (
+        flock -w 10 7 || exit 1
+        cur="$(jq -er '.until | select(type == "number") | floor' "$f" 2>/dev/null)" || cur=0
+        if [ "$cur" -ge "$until" ] && [ $((cur - now)) -le "$USAGE_LIMIT_MAX_AHEAD" ]; then exit 3; fi
+        tmp="$(mktemp "$f.XXXXXX")" || exit 1
+        jq -n --arg agent "$a" --arg account "$UL_ACCOUNT" --argjson until "$until" --arg source "$src" \
+              --arg item "$item" --argjson seen "$now" --arg host "$SELFHEAL_HOST_ID" \
+              '{agent: $agent, account: $account, until: $until, source: $source, item: $item, seen: $seen, host: $host}' \
+              > "$tmp" || { rm -f "$tmp"; exit 1; }
+        mv "$tmp" "$f"
+    ) 7>"$CAVIL_USAGE_LIMIT_DIR/.lock" || rc=$?
+    case "$rc" in
+        0) _USAGE_LIMIT_PAUSE[$a]="$until"; return 0 ;;
+        3) unset "_USAGE_LIMIT_PAUSE[$a]"; return 3 ;;   # 已有更晚的：没写，下次读文件为准
+        *) return 1 ;;
+    esac
+}
+
+# 派工前的闸门：这次派工要用的 agent 在暂停中 → 返回 0（调用方跳过这一条，什么都不改）。
+# 所有派工入口（新 issue、issue 评论、PR 评论、复审、往已有会话注入）都过这一个函数。
+usage_limit_gate() {   # <agent（空 = 默认 worker）> <条目称呼>
+    usage_limit_enabled || return 1
+    local a="${1:-$WORKER_AGENT_DEFAULT}"
+    usage_limit_paused "$a" || return 1
+    USAGE_LIMIT_SKIPPED+="${a}"$'\t'"${USAGE_LIMIT_UNTIL}"$'\t'"${2}"$'\n'
+    USAGE_LIMIT_WAITING=1
+    return 0
+}
+
+usage_limit_skip_summary() {
+    [ -n "$USAGE_LIMIT_SKIPPED" ] || return 0
+    local a until items
+    while IFS=$'\t' read -r a until; do
+        [ -n "$a" ] || continue
+        items="$(printf '%s' "$USAGE_LIMIT_SKIPPED" | awk -F'\t' -v a="$a" '$1 == a { printf "%s%s", (n++ ? "、" : ""), $3 }')"
+        log "⏸ 用量上限：$a 暂停派工到 $(usage_limit_clock "$until")，本轮跳过（标签不动、不计失败）：$items"
+    done < <(printf '%s' "$USAGE_LIMIT_SKIPPED" | cut -f1,2 | awk '!seen[$0]++')
+    return 0
+}
+
+# 派工成功后记下这次派工的开始时刻：核对会话记录时只看这之后的内容（之前几轮的对话里
+# 引用过这句话不算数）。功能关着时不写任何东西。
+usage_limit_note_dispatch() {   # <工作编号> <开始时刻>
+    usage_limit_enabled || return 0
+    usage_limit_put '.dispatched[$k] = $t' --arg k "$1" --argjson t "$2" || true
+}
+
+# 除了 doing/agent 之外的流程标签（JSON 数组）。条目上挂着其中任何一个 = 已经在别的流程里，不转人工。
+usage_limit_other_flow_labels() {
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_DONE" "$LABEL_PENDING_PR" "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_MERGE:-}" "${LABEL_PENDING_BLOCKED:-}" "${LABEL_PENDING_REQUESTER_BOT:-}" "${TRIGGER_LABELS_ALL[@]}" \
+        | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
+# 条目现在的样子（重读 GitHub）。stdout 一行 JSON；读不到 / 缺字段返回 2。
+usage_limit_item_doc() {   # <issue|pr> <编号>
+    local kind="$1" num="$2" ij pj doc
+    ij="$(gh api "repos/$REPO/issues/$num" 2>/dev/null)" || return 2
+    doc="$(printf '%s' "$ij" | jq -ce '
+        if (.state | type) != "string" or (.labels | type) != "array" then error("shape") else
+        {state: .state, is_pr: (.pull_request != null), labels: ([.labels[].name] | sort)} end' 2>/dev/null)" || return 2
+    if [ "$kind" = pr ]; then
+        pj="$(gh api "repos/$REPO/pulls/$num" 2>/dev/null)" || return 2
+        doc="$(printf '%s' "$pj" | jq -ce --argjson d "$doc" '
+            if (.base.ref | type) != "string" or (.head.sha | type) != "string" or (.head.ref | type) != "string"
+               or ((.merged // false) | type) != "boolean" then error("shape") else
+            $d + {merged: (.merged // false), base: .base.ref, head: .head.sha, ref: .head.ref,
+                  src: (.head.repo.full_name // "")} end' 2>/dev/null)" || return 2
+    fi
+    printf '%s\n' "$doc"
+}
+
+# 条目的标签事件（加 / 摘），按编号排好。读不到、缺编号或缺操作人返回 2。
+usage_limit_label_events() {   # <编号>
+    local ev
+    ev="$(gh api --paginate --slurp "repos/$REPO/issues/$1/events" 2>/dev/null)" || return 2
+    printf '%s' "$ev" | jq -ce '
+        if type != "array" or any(.[]; type != "array") then error("shape") else
+        [ .[][] | select(.event == "labeled" or .event == "unlabeled")
+          | {id: .id, e: .event, l: .label.name, a: .actor.login} ]
+        | if any(.[]; (.id | type) != "number" or (.l | type) != "string" or (.a | type) != "string")
+          then error("shape") else sort_by(.id) end end' 2>/dev/null || return 2
+}
+
+# 本机这一侧现在的样子：会话、登记的工作窗格、窗格里那个进程（进程号 + 启动时刻）、agent 与角色、
+# 这个角色登记的 agent 会话编号、派工归属、触发标签。
+# 窗格编号不变不等于还是撞上限的那个 worker：换 agent / 换角色 / 续接失败降级都是在**原窗格**里
+# 换程序（worker_session_launch 的 respawn-pane），角色登记的会话编号也会跟着换。所以进程和登记都
+# 进这份身份（代码复审第 1 轮：只比窗格编号时，新起的正常 worker 被当成旧的上限事件转给了人）。
+# 进程号会被系统复用，所以带上启动时刻；读不出启动时刻算读不到，不算「没变」。
+# stdout 一行 JSON。会话 / 窗格确定不在了返回 1；读不到返回 2。
+usage_limit_local_doc() {   # <工作编号>
+    local work="$1" sess st pane pid dead pipe agent role host trigger started sid rc=0
+    sess="$(tmux_session_name "$work")"
+    worker_session_exists "$sess" || rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    agent="$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null)" || return 2
+    role="$(tmux show-options -qv -t "=$sess:" @worker_role 2>/dev/null)" || return 2
+    [ -n "$agent" ] || agent="$WORKER_AGENT_DEFAULT"
+    [ -n "$role" ] || role="worker"
+    read -r st pane pid dead pipe <<<"$(worker_pane_lookup "$sess")"
+    case "$st" in
+        found|single) ;;
+        gone) return 1 ;;
+        *) return 2 ;;
+    esac
+    [ "$dead" = 0 ] || return 1
+    started="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')" || return 2
+    [ -n "$started" ] || return 2
+    sid="$(agent_session_id_get "$work" "$agent" "$role")" || return 2
+    host="$(jq -er --arg k "$work" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
+    trigger="$(jq -er --arg k "$work" '.worker_trigger_labels[$k] // ""' "$STATE_FILE" 2>/dev/null)" || return 2
+    jq -cn --arg sess "$sess" --arg pane "$pane" --arg agent "$agent" --arg role "$role" \
+           --arg host "$host" --arg trigger "$trigger" --arg pid "$pid" --arg started "$started" --arg sid "$sid" \
+           '{sess: $sess, pane: $pane, pid: $pid, started: $started, agent: $agent, role: $role, sid: $sid,
+             host: $host, trigger: $trigger}'
+}
+
+# 把 usage_limit_local_doc 的结果摊到 UL_PANE / UL_AGENT / UL_ROLE（那个函数总在 $( ) 里调，设不了全局）
+usage_limit_use_loc() {   # <local doc JSON>
+    UL_PANE="$(printf '%s' "$1" | jq -r '.pane // ""')"
+    UL_AGENT="$(printf '%s' "$1" | jq -r '.agent // ""')"
+    UL_ROLE="$(printf '%s' "$1" | jq -r '.role // ""')"
+    [ -n "$UL_PANE" ] && [ -n "$UL_AGENT" ]
+}
+
+# 看一眼这个会话的屏幕（和会话记录）。stdout 是 usage_limit.py 的那一行 JSON。
+#   返回 0 = 认定是上限（verdict=limit）；1 = 不是；2 = 像但证据不足 / 读不到（stdout 仍可能有 reason）
+# 要先调过 usage_limit_use_loc（用它设的 UL_PANE / UL_AGENT / UL_ROLE）。
+usage_limit_look() {   # <工作编号> [screen-only]
+    local work="$1" only="${2:-}" screen sfile info busy record sid wt since out verdict rc=1
+    screen="$(tmux capture-pane -p -t "$UL_PANE" 2>/dev/null)" || return 2
+    # 屏上根本没有这句话：绝大多数轮次到这里就结束，不加载 driver、不起 python、不读会话记录
+    case "$screen" in *"hit your "*) ;; *) return 1 ;; esac
+    usage_limit_agent_info "$UL_AGENT" || return 1
+    sid="$(agent_session_id_get "$work" "$UL_AGENT" "$UL_ROLE")"
+    wt="$(worktree_path "$work")"
+    info="$( (
+        source_driver "$UL_AGENT" >/dev/null 2>&1 || exit 1
+        b=0
+        if printf '%s\n' "$screen" | tail -"${AGENT_BUSY_TAIL}" | grep -qiE "$AGENT_BUSY_RE"; then b=1; fi
+        r=""
+        if [ -n "$sid" ]; then r="$(agent_session_record "$wt" "$sid")"; fi
+        printf '%s\t%s' "$b" "$r"
+    ) 2>/dev/null )" || return 2
+    busy="${info%%$'\t'*}"; record="${info#*$'\t'}"
+    [ "$busy" = 0 ] || return 1
+    sfile="$(mktemp)" || return 2
+    printf '%s\n' "$screen" > "$sfile"
+    since="$(usage_limit_get '.dispatched[$k] // 0' --arg k "$work")" || since=0
+    local -a args=(detect --agent "$UL_KIND" --screen "$sfile" --since "$since"
+                   --now "$(usage_limit_now)" --fallback "$USAGE_LIMIT_FALLBACK_SECS")
+    if [ -z "$only" ]; then
+        # 会话登记了但找不到记录文件：照样交给脚本，它会答「读不到」；没登记则不带这个参数
+        if [ -n "$sid" ]; then args+=(--record "${record:-/nonexistent/usage-limit-record}"); fi
+    fi
+    out="$(python3 -I "$USAGE_LIMIT_SCRIPT" "${args[@]}" 2>/dev/null)" || { rm -f "$sfile"; return 2; }
+    rm -f "$sfile"
+    verdict="$(printf '%s' "$out" | jq -er '.verdict' 2>/dev/null)" || return 2
+    printf '%s\n' "$out"
+    case "$verdict" in
+        limit) rc=0 ;;
+        no) rc=1 ;;
+        *) rc=2 ;;
+    esac
+    return "$rc"
+}
+
+usage_limit_comment_body() {   # <记录 JSON>
+    local rec="$1" agent role until src text trigger nonce when how role_cn
+    agent="$(printf '%s' "$rec" | jq -r '.agent')"; role="$(printf '%s' "$rec" | jq -r '.role')"
+    until="$(printf '%s' "$rec" | jq -r '.until')"; src="$(printf '%s' "$rec" | jq -r '.src')"
+    text="$(printf '%s' "$rec" | jq -r '.reset_text // ""')"; nonce="$(printf '%s' "$rec" | jq -r '.nonce')"
+    trigger="$(printf '%s' "$rec" | jq -r '.ident.local.trigger // ""')"
+    [ -n "$trigger" ] || trigger="$LABEL_PENDING_AGENT_DEFAULT"
+    case "$role" in review) role_cn="复审" ;; *) role_cn="开发" ;; esac
+    if [ "$src" = screen ]; then
+        when="$(usage_limit_clock "$until")（agent 界面上写的是「${text}」）"
+    else
+        when="$(usage_limit_clock "$until")（界面上读不出解除时间，按固定等待 $((USAGE_LIMIT_FALLBACK_SECS / 60)) 分钟估的；到点如果还在上限里，daemon 会再认出来、再顺延）"
+    fi
+    how="解除时间之后，把这一条的标签从 \`$LABEL_PENDING_HUMAN\` 改回 \`$trigger\`，daemon 会照常派工并续接原来的会话。提前改回也可以，daemon 会等到解除时间再派。"
+    printf '<!-- %s n=%s -->\n⚠️ **agent 撞到用量上限，这一条已转人工（`%s`）**\n\n- 撞上限的 agent：`%s`（%s）\n- 解除时间：%s\n- 在此之前 daemon 不再给这个 agent 派新活；排队的条目标签不动，到点自动恢复。\n\n**怎么继续**：%s\n\n<sub>cavil-loop daemon @ %s 自动留言</sub>' \
+        "$USAGE_LIMIT_MARK" "$nonce" "$LABEL_PENDING_HUMAN" "$agent" "$role_cn" "$when" "$how" \
+        "$(hostname -s 2>/dev/null || hostname)"
+}
+
+usage_limit_drop() {   # <键> <日志（空 = 不说）>
+    [ -z "${2:-}" ] || log "$2"
+    usage_limit_put 'del(.items[$k])' --arg k "$1" || true
+}
+
+# 停手：记录换成一块「这一屏已经处理过」的牌子（同一屏、同一份会话记录不再从头来一遍——否则
+# 留过言之后停手的条目，两轮后又会被认出来、再留一条）。条目离开 doing/agent、屏幕不再是上限提示、
+# 或会话记录又长了（= 之后又干过活、再撞的是新的一次）时，牌子自然作废。
+usage_limit_close() {   # <键> <日志>
+    [ -z "${2:-}" ] || log "$2"
+    usage_limit_put '.items[$k] = {step: -1, fp: (.items[$k].fp // ""), rsize: (.items[$k].rsize // -1)}' --arg k "$1" || true
+}
+
+# 转人工：从记录里的那一步接着做。每圈重读一遍、最多做一次写入，直到做完、停手或读不到。
+usage_limit_handoff() {   # <issue|pr> <编号>
+    local kind="$1" num="$2" key="$1:$2" name rec work step item loc evs me base_ev base_cm ident phase
+    local human="$LABEL_PENDING_HUMAN" doing="$LABEL_AGENT_DOING" out rc round tries cid body look
+    local UL_PANE="" UL_AGENT="" UL_ROLE=""
+    [ "$kind" = pr ] && name="PR #$num" || name="issue #$num"
+    USAGE_LIMIT_WAITING=1
+    for round in 1 2 3 4 5 6 7 8; do
+        rec="$(usage_limit_get '.items[$k] // empty | tojson' --arg k "$key")"
+        [ -n "$rec" ] || return 0
+        work="$(printf '%s' "$rec" | jq -r '.work')"
+        step="$(printf '%s' "$rec" | jq -r '.step')"
+        tries="$(printf '%s' "$rec" | jq -r '.tries // 0')"
+        if [ "$tries" -ge "$USAGE_LIMIT_WRITE_TRIES" ]; then
+            usage_limit_close "$key" "⚠️ 用量上限：$name 转人工的写入累计失败 $tries 次 → 停手，条目留在现在的标签上，请人工处理"
+            return 0
+        fi
+
+        # ── 重读：条目、本机会话、标签事件、写身份 ──
+        item="$(usage_limit_item_doc "$kind" "$num")" || {
+            log "  用量上限：$name 的条目读不到，本轮不写（转人工停在第 $step 步，下轮接着）"; return 0; }
+        rc=0; loc="$(usage_limit_local_doc "$work")" || rc=$?
+        if [ "$rc" = 2 ]; then
+            log "  用量上限：$name 的本机会话读不到（tmux），本轮不写（转人工停在第 $step 步，下轮接着）"; return 0
+        fi
+        [ "$rc" = 0 ] || loc='{"gone":true}'
+        evs="$(usage_limit_label_events "$num")" || {
+            log "  用量上限：$name 的标签事件读不到，本轮不写（转人工停在第 $step 步，下轮接着）"; return 0; }
+        me="$(write_identity_login)"
+        [ -n "$me" ] || { log "  用量上限：读不到 daemon 写身份的账号名，本轮不写（$name 转人工停在第 $step 步）"; return 0; }
+
+        ident="$(printf '%s' "$rec" | jq -c '.ident // empty')"
+        if [ -z "$ident" ]; then
+            # 第一次：记下认定时的样子和基线（之后的每一步都和它比）
+            if ! printf '%s' "$item" | jq -e --arg d "$doing" --argjson flow "$(usage_limit_other_flow_labels)" \
+                    '.state == "open" and (.merged // false) == false
+                     and (.labels | index($d)) != null and ((.labels - (.labels - $flow)) | length) == 0' >/dev/null 2>&1; then
+                usage_limit_close "$key" "用量上限：$name 不转人工——已关闭 / 已合并，或标签不是单独一个 $doing（现在是：$(printf '%s' "$item" | jq -r '.labels | join(", ")')）。暂停派工不受影响"
+                return 0
+            fi
+            if [ "$rc" != 0 ] || [ "$(printf '%s' "$loc" | jq -r '.host')" != "$SELFHEAL_HOST_ID" ]; then
+                usage_limit_close "$key" "用量上限：$name 不转人工——本机会话不在了，或派工归属不是本机"
+                return 0
+            fi
+            base_cm="$(gh api --paginate "repos/$REPO/issues/$num/comments" --jq '.[] | .id' 2>/dev/null | tail -n1)" || {
+                log "  用量上限：$name 的评论读不到，本轮不写（下轮接着）"; return 0; }
+            base_ev="$(printf '%s' "$evs" | jq -r '(map(.id) | max) // 0')"
+            usage_limit_put '.items[$k].ident = {item: $i, local: $l} | .items[$k].base_ev = $e | .items[$k].base_cm = $c' \
+                --arg k "$key" --argjson i "$item" --argjson l "$loc" --argjson e "$base_ev" --argjson c "${base_cm:-0}" || return 0
+            continue
+        fi
+        base_ev="$(printf '%s' "$rec" | jq -r '.base_ev')"; base_cm="$(printf '%s' "$rec" | jq -r '.base_cm')"
+
+        # ── 比对：除了 daemon 自己写的标签，别的必须和认定时一模一样 ──
+        phase="$(jq -rn --argjson id "$ident" --argjson item "$item" --argjson loc "$loc" --argjson evs "$evs" \
+                    --argjson base "$base_ev" --arg me "$me" --arg human "$human" --arg doing "$doing" '
+            ($id.item.labels) as $l0 | (($l0 + [$human]) | unique) as $l1 | ($l1 - [$doing]) as $l2
+            | [ $evs[] | select(.id > $base) | {e, l, a} ] as $new
+            | {e: "labeled", l: $human, a: $me} as $e1 | {e: "unlabeled", l: $doing, a: $me} as $e2
+            | if ($item | del(.labels)) != ($id.item | del(.labels)) then "changed:条目变了（开闭、合并、目标分支、最新提交或来源）"
+              # 三次写入都已经在 GitHub 上了：本机会话之后怎么样（比如被完工回收关掉）不再相干
+              elif $item.labels == $l2 and $new == [$e1, $e2] then "C"
+              elif $loc != $id.local then "changed:本机会话、工作窗格、窗格里的进程、agent、角色、登记的会话编号、派工归属或触发标签变了"
+              elif $item.labels == $l0 and $new == [] then "A"
+              elif $item.labels == $l1 and $new == [$e1] then "B"
+              else "changed:标签被改过（现在是：" + ($item.labels | join(", ")) + "）" end')" || return 0
+        case "$phase" in
+            changed:*)
+                usage_limit_close "$key" "用量上限：$name 转人工停手（做到第 $step 步）——${phase#changed:}。已经写上去的不撤回，之后不再写"
+                return 0 ;;
+        esac
+
+        case "$step:$phase" in
+            1:A)
+                # ① 留言。上一轮可能已经发出去、只是没收到回应：先按随机编号找
+                cid=""
+                if [ "$(printf '%s' "$rec" | jq -r '.c_tried // 0')" = 1 ]; then
+                    out="$(gh api --paginate --slurp "repos/$REPO/issues/$num/comments" 2>/dev/null)" || {
+                        log "  用量上限：$name 的评论读不到，本轮不写（下轮接着）"; return 0; }
+                    cid="$(printf '%s' "$out" | jq -er --argjson base "$base_cm" --arg me "$me" \
+                            --arg mark "<!-- $USAGE_LIMIT_MARK n=$(printf '%s' "$rec" | jq -r '.nonce') -->" '
+                        if type != "array" or any(.[]; type != "array") then error("shape") else
+                        [ .[][] | select(.id > $base and .user.login == $me and (.body | contains($mark))) | .id ] | (.[0] // "") end' \
+                        2>/dev/null)" || { log "  用量上限：$name 的评论读不全，本轮不写（下轮接着）"; return 0; }
+                fi
+                if [ -z "$cid" ]; then
+                    usage_limit_use_loc "$loc" || { log "  用量上限：$name 的本机会话读不全，本轮不写（下轮接着）"; return 0; }
+                    rc=0; look="$(usage_limit_look "$work" screen-only)" || rc=$?
+                    if [ "$rc" = 2 ] && [ -z "$look" ]; then
+                        log "  用量上限：$name 的屏幕读不到，本轮不写（下轮接着）"; return 0
+                    fi
+                    if [ "$(printf '%s' "$look" | jq -r '.fingerprint // ""' 2>/dev/null)" != "$(printf '%s' "$rec" | jq -r '.fp')" ]; then
+                        usage_limit_close "$key" "用量上限：$name 转人工停手——屏幕已经不是那条上限提示（agent 又动了）。什么都没写"
+                        return 0
+                    fi
+                    usage_limit_put '.items[$k].c_tried = 1' --arg k "$key" || return 0
+                    body="$(usage_limit_comment_body "$rec")"
+                    if ! out="$(gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" 2>&1)"; then
+                        log "  ⚠️ 用量上限：$name 留言失败，下轮再试：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                        usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                        return 0
+                    fi
+                    cid="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null)" || cid=""
+                    [ -n "$cid" ] || cid=0
+                fi
+                USAGE_LIMIT_ACTED=1
+                usage_limit_put '.items[$k].comment_id = $c | .items[$k].step = 2' --arg k "$key" --argjson c "$cid" || return 0
+                ;;
+            2:A)
+                # ② 加 pending/human（意图在进这一步时已经记下）
+                if ! out="$(gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$human" 2>&1)"; then
+                    log "  ⚠️ 用量上限：$name 加 $human 失败，下轮再核对：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                    usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                    return 0
+                fi
+                USAGE_LIMIT_ACTED=1
+                ;;
+            2:B)
+                usage_limit_put '.items[$k].step = 3' --arg k "$key" || return 0
+                ;;
+            3:B)
+                # ③ 摘 doing/agent。404 = 已经不在了，下一圈重读时自然会分清是谁摘的
+                if ! out="$(gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$doing" | jq -sRr @uri)" 2>&1)" \
+                   && ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+                    log "  ⚠️ 用量上限：$name 摘 $doing 失败，下轮再核对：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                    usage_limit_put '.items[$k].tries = ((.items[$k].tries // 0) + 1)' --arg k "$key" || true
+                    return 0
+                fi
+                USAGE_LIMIT_ACTED=1
+                ;;
+            3:C)
+                usage_limit_drop "$key" "⏸ 用量上限：$name 已留言并转人工（$doing → $human），会话原样留着；解除后由人把标签改回 $(printf '%s' "$ident" | jq -r '.local.trigger | if . == "" then "派工标签" else . end')"
+                return 0 ;;
+            *)
+                usage_limit_close "$key" "用量上限：$name 转人工停手（记录在第 $step 步，条目却已经是另一个样子）——标签不是 daemon 这一步写成的。之后不再写"
+                return 0 ;;
+        esac
+    done
+    return 0
+}
+
+# 每轮一次：先把没做完的转人工接着做，再看本机派出去、挂着 doing/agent 的会话。
+usage_limit_tick() {
+    usage_limit_enabled || return 0
+    local rows="" kind num branch labels work key rec rc look loc fp rsize until src text note seen_keys=" " n agent
+    local UL_PANE="" UL_AGENT="" UL_ROLE=""
+    local -A work_count=()
+
+    # 没做完的转人工：条目这一轮还挂不挂 doing/agent 都要接着核对（摘掉它的可能正是 daemon 自己）
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        usage_limit_handoff "${key%%:*}" "${key#*:}"
+        seen_keys+="$key "
+    done < <(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) >= 1) | .key')
+
+    rows+="$(snapshot_rows issue "$LABEL_AGENT_DOING" 2>/dev/null | awk -F'\t' '{print "issue\t" $1 "\t" $2}')"$'\n' || true
+    rows+="$(snapshot_rows pr "$LABEL_AGENT_DOING" 2>/dev/null | awk -F'\t' '{print "pr\t" $1 "\t" $2}')"$'\n' || true
+    # 同一个工作编号下 issue 和 PR 都挂着 doing/agent：分不清会话在干哪一条，都不碰
+    while IFS=$'\t' read -r kind num branch; do
+        [ -n "$num" ] || continue
+        if [ "$kind" = pr ]; then work="$(pr_to_issue_num "$num" "$branch")"; else work="$num"; fi
+        work_count[$work]=$(( ${work_count[$work]:-0} + 1 ))
+    done <<< "$rows"
+
+    while IFS=$'\t' read -r kind num branch; do
+        [ -n "$num" ] || continue
+        key="$kind:$num"
+        case "$seen_keys" in *" $key "*) continue ;; esac
+        seen_keys+="$key "
+        if [ "$kind" = pr ]; then work="$(pr_to_issue_num "$num" "$branch")"; n="PR #$num"; else work="$num"; n="issue #$num"; fi
+        rec="$(usage_limit_get '.items[$k] // empty | tojson' --arg k "$key")"
+        if [ "${work_count[$work]:-0}" -gt 1 ] \
+           || [ "$(jq -r --arg k "$work" '.worker_hosts[$k] // ""' "$STATE_FILE" 2>/dev/null)" != "$SELFHEAL_HOST_ID" ]; then
+            [ -z "$rec" ] || usage_limit_drop "$key" ""
+            continue
+        fi
+        rc=0; loc="$(usage_limit_local_doc "$work")" || rc=$?
+        look=""
+        if [ "$rc" = 0 ]; then usage_limit_use_loc "$loc" || rc=2; fi
+        if [ "$rc" = 0 ]; then look="$(usage_limit_look "$work")" || rc=$?; fi
+        case "$rc" in
+            0) ;;
+            1) [ -z "$rec" ] || usage_limit_drop "$key" ""
+               continue ;;
+            *) # 像上限但证据不足 / 读不到：什么都不做。同一个原因只说一次
+               note="$(printf '%s' "$look" | jq -r '.reason // ""' 2>/dev/null)" || note=""
+               if [ -n "$note" ] && [ "$(printf '%s' "${rec:-null}" | jq -r '.note? // ""' 2>/dev/null)" != "$note" ]; then
+                   log "用量上限：$n 的屏幕像是撞了上限，但证据不足（$note）→ 不暂停、不转人工"
+                   usage_limit_put '.items[$k] = {step: 0, note: $n}' --arg k "$key" --arg n "$note" || true
+               fi
+               continue ;;
+        esac
+        fp="$(printf '%s' "$look" | jq -r '.fingerprint')"; rsize="$(printf '%s' "$look" | jq -r '.record_size')"
+        if [ -n "$rec" ] && [ "$(printf '%s' "$rec" | jq -r '.step // 0')" = -1 ] \
+           && [ "$(printf '%s' "$rec" | jq -r '.fp // ""')" = "$fp" ] \
+           && [ "$(printf '%s' "$rec" | jq -r '.rsize // ""')" = "$rsize" ]; then
+            continue   # 这一屏已经处理过（转人工停手了）：不从头再来
+        fi
+        if [ -z "$rec" ] || [ "$(printf '%s' "$rec" | jq -r '.step // 0')" != 0 ] \
+           || [ "$(printf '%s' "$rec" | jq -r '.fp // ""')" != "$fp" ] \
+           || [ "$(printf '%s' "$rec" | jq -r '.rsize // ""')" != "$rsize" ]; then
+            # 第一次看到（或者和上一轮不一样）：记下，下一轮屏幕和会话记录都没变才算数
+            log "用量上限：$n 的屏幕最后一块是上限提示（$UL_AGENT），下一轮屏幕和会话记录都没变就认定"
+            usage_limit_put '.items[$k] = {step: 0, fp: $fp, rsize: $rs, seen: $t}' --arg k "$key" --arg fp "$fp" \
+                --argjson rs "$rsize" --argjson t "$(usage_limit_now)" || true
+            USAGE_LIMIT_WAITING=1
+            continue
+        fi
+        # 认定
+        agent="$UL_AGENT"
+        until="$(printf '%s' "$look" | jq -r '.reset_epoch')"; src="$(printf '%s' "$look" | jq -r '.reset_source')"
+        text="$(printf '%s' "$look" | jq -r '.reset_text // ""')"
+        rc=0; usage_limit_pause_set "$agent" "$until" "$src" "$REPO $n" || rc=$?
+        case "$rc" in
+            0) if [ "$src" = screen ]; then
+                   log "⏸ 用量上限：$agent 撞到用量上限（$n），暂停派工到 $(usage_limit_clock "$until")（读自界面「$text」，会话记录已核对）"
+               else
+                   log "⏸ 用量上限：$agent 撞到用量上限（$n），界面上读不出解除时间，按固定等待暂停派工到 $(usage_limit_clock "$until")"
+               fi ;;
+            3) ;;
+            *) log "  ⚠️ 用量上限：$agent 的暂停记录写不进去（$CAVIL_USAGE_LIMIT_DIR），本轮不转人工，下轮再试"
+               continue ;;
+        esac
+        USAGE_LIMIT_ACTED=1
+        usage_limit_put '.items[$k] = {step: 1, work: $w, agent: $a, role: $r, fp: $fp, rsize: $rs, until: $u, src: $s, reset_text: $x, nonce: $n}' \
+            --arg k "$key" --arg w "$work" --arg a "$agent" --arg r "$UL_ROLE" --arg fp "$fp" --argjson rs "$rsize" --argjson u "$until" \
+            --arg s "$src" --arg x "$text" --arg n "$(agent_session_new_uuid)" || continue
+        usage_limit_handoff "$kind" "$num"
+    done <<< "$rows"
+
+    # 已经不挂 doing/agent 的观察记录和「处理过」的牌子不留
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        case "$seen_keys" in *" $key "*) ;; *) usage_limit_drop "$key" "" ;; esac
+    done < <(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) <= 0) | .key')
+
+    # 本项目会用到的 agent 里有在暂停的：下一轮别退避得太远，到点好恢复
+    for agent in "$WORKER_AGENT_DEFAULT" "${REVIEW_WORKER_AGENT:-}" "${FABLE_WORKER_AGENT:-}"; do
+        [ -n "$agent" ] || continue
+        if usage_limit_paused "$agent"; then USAGE_LIMIT_WAITING=1; fi
+    done
+    if [ -n "$(usage_limit_get '(.items // {}) | to_entries[] | select((.value.step // 0) >= 0) | .key' | head -1)" ]; then USAGE_LIMIT_WAITING=1; fi
     return 0
 }

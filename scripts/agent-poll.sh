@@ -11,8 +11,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 派出去的 worker（tmux server）会继承环境，留着它，worker 里手动跑一次轮询也会被当成调度器。
 POLL_SCHEDULED="${CAVIL_SCHEDULED_POLL:-}"
 unset CAVIL_SCHEDULED_POLL
+# 运行记录（GitHub#344）：加载配置**之前**就挂好退出钩子——找不到配置这类「连 _lib.sh 都没过」
+# 的退出也要留一行。只记不判：下面所有 runlog_* 都永远返回 0，记录文件没有任何判断会读。
+# 文件不在（部署残缺）时退成空函数，轮询照常。
+# shellcheck source=_runlog.sh
+source "$SCRIPT_DIR/_runlog.sh" 2>/dev/null || true
+if declare -F runlog_early >/dev/null; then
+    runlog_early
+else
+    runlog_begin() { :; }; runlog_step() { :; }; runlog_locked() { :; }; runlog_outcome() { :; }
+    runlog_dispatch() { :; }; runlog_candidates() { :; }
+fi
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
+# 配置已加载：开始记这一轮（开关关着时这里删掉入口记录，之后什么都不做）。放在拿锁之前——
+# 「上一轮没跑完、这一轮跳过」也是一轮，也要有记录。
+runlog_begin
 
 STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/poll.lock"
@@ -21,8 +35,10 @@ LOCK_FILE="$STATE_DIR/poll.lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     log "上一轮还没跑完，跳过"
+    runlog_outcome lock-busy
     exit 0
 fi
+runlog_locked
 # poll-entry.sh 为旧安装迁移持着的共享锁（见那边的注释）：本项目的轮询锁已经拿到，迁移
 # 动不了本项目了，立刻放掉——不然它会被派工继承进 tmux server，迁移永远拿不到排他锁。
 if [ -n "${CAVIL_MIGRATE_GATE_FD:-}" ]; then
@@ -40,6 +56,7 @@ fi
 #     快照目录、不该留下除了那一行日志以外的任何痕迹。
 if pace_gate_says_skip; then
     log "$PACE_SKIP_MSG"
+    runlog_outcome pace-skip
     exit 0
 fi
 
@@ -117,6 +134,7 @@ remember_trigger_label() {
     mv "$tmp" "$STATE_FILE"
 }
 
+runlog_step self-heal
 # ── 0. Zombie label self-heal ──
 # label=doing/agent 但对应 tmux session 不存在 = 假阳性 active：worker 进程死掉时
 # 没机会自己翻 label 回 pending/human（worker crash / tmux server 重启 / 手动 kill
@@ -232,6 +250,7 @@ if ! active_list=$(list_active_workers); then
     # 故障单独一套节奏，且**不碰安静计时**：读不到 GitHub 不等于「没活干」。
     # 把它算成空闲会越错越慢，恢复也越拖越久（issue #35 §4）。
     pace_record_fail
+    runlog_outcome github-unreadable
     exit 0
 fi
 # 真·全局并发上限：active_keys 收所有在跑 worker 的 issue_n（每行第一个数字就是 key——
@@ -265,6 +284,13 @@ else
     log "active workers (doing/agent): 0 (max=${MAX_CONCURRENT_WORKERS:-1})"
 fi
 
+# ── 0a. 用量上限（GitHub#341，ENABLE_USAGE_LIMIT_PAUSE 不开时第一行就返回）──
+# 放在派工之前：这一轮认出来的上限，这一轮的派工就不再往那个 agent 上派。
+# 认上限、记暂停都在本机；只有「被打断的条目留言并转人工」写 GitHub，写之前逐步重读（见 _lib.sh）。
+usage_limit_tick || true
+if [ "$USAGE_LIMIT_ACTED" = 1 ]; then pace_mark_acted; fi
+
+runlog_step reap
 # ── 0b. 完工 worker 回收 ──
 # 上面 §0 管「label 在但 session 没了」；这里管反方向的「session 还在但 label 没了」。
 # 放在 active_keys 算完之后，直接复用同一份 label 真值——口径跟并发闸门一致，也不多
@@ -276,6 +302,7 @@ reap_finished_workers active_keys
 # 整组停掉。不依赖 tmux 会话还在；没有登记着的运行时只是两次目录读。
 heavy_sweep_tick
 
+runlog_step queue
 # ── 1 & 2. 派工队列（issue + PR 合成一个池，排序后统一取工）──
 # 待派工的条目常多于 MAX_CONCURRENT_WORKERS。以前是「按 label 分六趟扫，每趟内按
 # GitHub 列表默认序（创建时间倒序）」——谁先被扫到谁抢到 slot，实际效果是**新建的活
@@ -445,7 +472,9 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
 dispatch_one_issue() {
     local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local sess wt latest_id tmp
-    local d_rc d_out
+    local d_rc d_out ul_t0
+    # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
+    if usage_limit_gate "$worker_agent" "issue #$num"; then return 0; fi
     sess="$(tmux_session_name "$num")"
     wt="$(worktree_path "$num")"
 
@@ -468,12 +497,14 @@ dispatch_one_issue() {
         remember_worker_model "$num" "$model"
         remember_trigger_label "$num" "$trigger_label"
         remember_worker_host "$num"
-        d_rc=0
+        d_rc=0; printf -v ul_t0 '%(%s)T' -1
         d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
+        runlog_dispatch "$d_rc"
         if [ "$d_rc" = 0 ]; then
             dispatch_fail_reset "issue-$num"
+            usage_limit_note_dispatch "$num" "$ul_t0"
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
         else
@@ -492,12 +523,14 @@ dispatch_one_issue() {
     remember_worker_model "$num" "$model"
     remember_trigger_label "$num" "$trigger_label"
     remember_worker_host "$num"
-    d_rc=0
+    d_rc=0; printf -v ul_t0 '%(%s)T' -1
     d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    runlog_dispatch "$d_rc"
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "issue-$num"
+        usage_limit_note_dispatch "$num" "$ul_t0"
     else
         dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
     fi
@@ -512,7 +545,9 @@ dispatch_one_pr() {
     local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
-    local d_rc d_out
+    local d_rc d_out ul_t0
+    # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
+    if usage_limit_gate "$worker_agent" "PR #$prnum"; then return 0; fi
     issue_n=$(pr_to_issue_num "$prnum" "$branch")
     sess="$(tmux_session_name "$issue_n")"
 
@@ -549,12 +584,14 @@ dispatch_one_pr() {
     remember_worker_model "$issue_n" "$model"
     remember_trigger_label "$issue_n" "$trigger_label"
     remember_worker_host "$issue_n"
-    d_rc=0
+    d_rc=0; printf -v ul_t0 '%(%s)T' -1
     d_out=$(DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
+    runlog_dispatch "$d_rc"
     if [ "$d_rc" = 0 ]; then
         dispatch_fail_reset "pr-$prnum"
+        usage_limit_note_dispatch "$issue_n" "$ul_t0"
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
             "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
@@ -714,6 +751,8 @@ if [ -n "$QUEUE_ROWS" ]; then
     QUEUE_SORTED=$(printf '%s' "$QUEUE_ROWS" | sort -t"$US" -k1,1n -k2,2n -k3,3)
 fi
 
+runlog_candidates "$QUEUE_SORTED"
+runlog_step dispatch
 if [ -n "$QUEUE_SORTED" ]; then
     # 队列顺序整行打出来：并发满时到底谁插了谁的队，只看这一行就够
     queue_summary=$(printf '%s\n' "$QUEUE_SORTED" | awk -v FS="$US" '
@@ -730,7 +769,9 @@ if [ -n "$QUEUE_SORTED" ]; then
         fi
     done < <(printf '%s\n' "$QUEUE_SORTED")
 fi
+usage_limit_skip_summary
 
+runlog_step autopilot
 # ── 2b. 托管自动合并（GitHub#114）──
 # 放在派工之后、合并清理之前：这一轮合进去的 PR，这一轮的清理就能收尾（Done 标签、worktree）。
 # 条件与「为什么这样判」都在 _lib.sh 的 autopilot_merge_one 上面。托管关闭时直接返回。
@@ -743,6 +784,7 @@ autopilot_merge_tick "$STATE_FILE" || true
 autopilot_off_sweep "$STATE_FILE" || true
 if [ "$AUTOPILOT_ACTED" = 1 ]; then pace_mark_acted; fi
 
+runlog_step cleanup
 # ── 3. 自动 cleanup merged PRs ──
 # 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
 if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
@@ -955,6 +997,7 @@ if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
     closed_done_drain "$STATE_FILE" || true
 fi
 
+runlog_step followups
 # ── 3d. 等人审的 PR 与目标分支冲突（GitHub#86）──
 # 放在合并清理之后：这一轮刚合进去的提交，这一轮就能查到。逻辑和「为什么只在目标分支
 # 动了时才问」都在 _lib.sh 的 pending_human_conflict_tick 上面。
@@ -989,6 +1032,7 @@ redact_scan_tick
 # 只动本机缓存、不碰 GitHub，所以不标 PACE_ACTED；没有缺价标记时就是一次 ls。
 price_fetch_tick
 
+runlog_step pace-record
 # ── 5. 记录本轮节奏（issue #35）──
 # 必须放在最后：上面任何一段做了事都已经把 PACE_ACTED 标上了。
 #
@@ -1011,6 +1055,10 @@ if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
     # 只管「下一轮跑不跑」；第一次发现新挂上的等待仍按原来的节奏（闸门在任何 GitHub 读取之前）。
     pace_cap=""
     if [ "${BLOCKED_WAITING:-0}" = 1 ]; then pace_cap="$BLOCKED_RECHECK_SECS"; fi
+    # 有 agent 在等用量上限解除、或有条目转人工还没做完（GitHub#341）：到点后一两分钟内要能恢复
+    if [ "${USAGE_LIMIT_WAITING:-0}" = 1 ] && { [ -z "$pace_cap" ] || [ "$pace_cap" -gt "$USAGE_LIMIT_PACE_SECS" ]; }; then
+        pace_cap="$USAGE_LIMIT_PACE_SECS"
+    fi
     pace_record_ok "$pace_active" "$pace_fp" "$pace_cap"
     if [ "${PACE_TIER_SECS:-0}" -eq 0 ]; then
         log_debug "本轮节奏：不退避（已安静 $(pace_human_secs "${PACE_QUIET_SECS:-0}")），下个 tick 照跑"
@@ -1020,3 +1068,4 @@ if [ -n "${POLL_BACKOFF_LADDER:-}" ]; then
 fi
 
 log "===== poll done ====="
+runlog_outcome ok

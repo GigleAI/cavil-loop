@@ -43,6 +43,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 3. 对第 1 步 `projects[]` 里的每个项目：
    - `tail -20 $STATE_DIR/poll.log`（第 1 步输出里的 `state_dir`）
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
+   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR`——最近几轮轮询各干了什么（结果、最后一步、派工数、GitHub 调用数）、没正常结束的轮次、最近一份快照（GitHub#344，见 [docs/operations.zh.md](docs/operations.zh.md#最近几轮轮询都干了什么运行记录github344)）。只读
    - `jq . $STATE_DIR/config-notice.json`（有这个文件时）——本项目配置里缺的新功能设置：这些功能在本项目上是关着的，新装项目却是开的（GitHub#289，见 [docs/operations.zh.md](docs/operations.zh.md#升级不会自动补上的新配置)）。逐项列出缺的配置项和要开时写的那一行
 4. 汇总报告给用户
 
