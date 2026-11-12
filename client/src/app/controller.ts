@@ -535,7 +535,11 @@ export class Controller {
     const byKey = new Map<string, EditRecord[]>();
     for (const r of this.edits.values()) byKey.set(r.key, [...(byKey.get(r.key) ?? []), r]);
     const all = this.allProjects();
-    return { ...merged, items: merged.items.map((it) => (byKey.has(it.key) ? overlayItem(it, byKey.get(it.key)!, all) : it)), allProjects: all, boardRepos: this.boardRepos() };
+    // GitHub#397: a tab's own copy shows the same changes on their way as the board's copy (one item, one answer)
+    const overlay = (xs: Item[]) => xs.map((it) => (byKey.has(it.key) ? overlayItem(it, byKey.get(it.key)!, all) : it));
+    const out: BoardData = { ...merged, items: overlay(merged.items), allProjects: all, boardRepos: this.boardRepos() };
+    if (merged.tabItems) out.tabItems = overlay(merged.tabItems);
+    return out;
   }
 
   /**

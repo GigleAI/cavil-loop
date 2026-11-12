@@ -324,6 +324,63 @@ describe('an item no complete read carries is checked by itself', () => {
   });
 });
 
+describe('a change made from a tab shows on the tab\'s own copy too (code review round 3)', () => {
+  // The board's copy and the tab's copy are one item: the change on its way (its new value and its
+  // "saving" / "not saved" mark) is on both, whichever way the item came to need a copy of its own.
+  const isLabelPost = (l: LoggedRequest) => l.method === 'POST' && l.path.endsWith(`/issues/${ISSUE}/labels`);
+  const labelPosts = () => fake.log.filter(isLabelPost).length;
+  const tabCopy = (c: Controller) => c.getBoardData().tabItems?.find((i) => i.key === K(ISSUE)) ?? null;
+  /** what the detail shows: the tab's copy first, else the board's (the same lookup as the detail's) */
+  const shown = (c: Controller) => tabCopy(c) ?? c.getBoardData().items.find((i) => i.key === K(ISSUE)) ?? null;
+  const labelMark = (it: { edits?: { field: string; status: string }[] } | null) => it?.edits?.find((m) => m.field === 'label')?.status ?? null;
+  async function until(pred: () => boolean, what: string) {
+    for (let i = 0; i < 1000; i++) {
+      if (pred()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`timeout waiting for: ${what}`);
+  }
+
+  const ways: [string, (c: Controller) => Promise<void>][] = [
+    ['its source unticked in the view', async (c) => c.setView({ selected: [] })],
+    ['its source failed and its own check read a newer copy', async (c) => {
+      breakSource();
+      setIssue({ title: 'read by the tab itself' });
+      await round(c);
+      expect(tabCopy(c)?.title).toBe('read by the tab itself');
+    }],
+    ['its source removed', async (c) => c.removeSource(REPO_KEY)],
+  ];
+  for (const [way, apart] of ways) {
+    it(`${way}: the new label and "saving" while GitHub has not answered, then GitHub's answer; a refused one stays marked`, async () => {
+      const c = await ready();
+      c.openTab(K(ISSUE));
+      await apart(c);
+      // the tab holds a copy of its own (else this case would test the board's copy)
+      expect(tabCopy(c)).not.toBeNull();
+      const release = fake.holdWhen(isLabelPost);
+      const p = c.act({ kind: 'addLabel', key: K(ISSUE), label: 'bug', color: 'd73a4a' } as any);
+      try {
+        await until(() => labelPosts() === 1, 'the label write reached GitHub');
+        expect(tabCopy(c)!.labels.map((l) => l.name)).toContain('bug');
+        expect(labelMark(tabCopy(c))).toBe('saving');
+      } finally {
+        release();
+      }
+      expect((await p).ok).toBe(true);
+      expect(shown(c)!.labels.map((l) => l.name)).toContain('bug');
+      expect(labelMark(shown(c))).toBeNull();
+      // refused by GitHub: the tab keeps GitHub's labels and shows the change as not saved
+      fake.state.w.failLabel = 'x-fail';
+      const r = await c.act({ kind: 'addLabel', key: K(ISSUE), label: 'x-fail', color: '000000' } as any);
+      expect(r.ok).toBe(false);
+      expect(labelPosts()).toBe(2);
+      expect(shown(c)!.labels.map((l) => l.name)).not.toContain('x-fail');
+      expect(labelMark(shown(c))).toBe('failed');
+    });
+  }
+});
+
 describe('what can be opened', () => {
   it('an item of a source unticked in the view: its tab opens, and its detail gets the whole item', async () => {
     const c = await ready();
