@@ -15,7 +15,7 @@
 #   1. 按配置文件的真实位置（解析掉软链接）拿锁；等不到 → busy
 #   2. 把配置文件整份复制成一份私有副本，后面的核对、改值、备份全基于它；
 #      副本的指纹和 --rev 对不上 → changed（文件在读取之后被别处改过），不写
-#   3. 每个值按登记的类型校验 → invalid；不在登记表里 / 只显示 / 写成算式的项 → not_editable
+#   3. 每个值按登记的类型校验 → invalid；不在登记表里 / 只显示 / 写成算式 / 不在最外层的项 → not_editable
 #   4. 从副本生成新文件：只替换那一行的值，其余行逐字节不动；配置文件里没有的项追加一行
 #   5. 验证新文件：bash -n；重新加载后被改的项等于要写的值、其余所有变量和改之前相同 → 否则 verify_failed
 #   6. 副本存进项目状态目录 config-backups/（600，留最近 10 份），读回核对 → 否则 backup_failed
@@ -187,6 +187,41 @@ dump_vars() {
     ' _ "$f" "$HOST" "$@"
 }
 
+# ── 配置文件的结构：哪些赋值在最外层 ──
+# 不自己解析 shell：把整份文件包进一个函数体交给 bash 解析（只定义、不执行），再让它用 declare -f
+# 按自己的规范格式打印出来。那份格式里每条命令一行、每进一层结构（if / 循环 / case / 函数 / { } 组）
+# 多缩进 4 格，所以「最外层的赋值」= 恰好缩进 4 格、以 KEY= 开头的那一行。原文件怎么缩进、
+# 有没有缩进都不影响这个判断；写在 `cmd &&` 后面、续行里、here-doc 或多行字符串里的同名字样
+# 也都不会是这种行。解析不了 → NORM_OK=0，所有项一律只显示。
+NORM=""; NORM_OK=0
+load_structure() {   # <配置文件>
+    NORM_OK=0
+    NORM="$(env -i HOME="$HOME" PATH="$PATH" "$RUN_BASH" --noprofile --norc -c '
+        __pc_src="$(cat "$1")" || exit 3
+        eval "__pc_fn() {
+$__pc_src
+}" 2>/dev/null || exit 3
+        declare -f __pc_fn || exit 3
+        echo __pc_end__
+    ' _ "$1" 2>/dev/null)" || return 0
+    case "$NORM" in *__pc_end__) NORM_OK=1 ;; esac
+    return 0
+}
+# top_level_only <KEY>：规范格式里这一项恰好出现一次，而且在最外层
+top_level_only() {
+    local k="$1" all top
+    [ "$NORM_OK" = 1 ] || return 1
+    all="$(printf '%s\n' "$NORM" | grep -cE "^[[:space:]]*(export[[:space:]]+)?$k=" || true)"
+    top="$(printf '%s\n' "$NORM" | grep -cE "^    (export )?$k=" || true)"
+    [ "$all" = 1 ] && [ "$top" = 1 ]
+}
+
+# daemon 实际用的值：各处读这些配置项都是「没设置或为空 → 默认值」（${X:-默认}），这里同一条规则。
+# 和「配置文件里这一行能不能改」是两件事，分开算。
+effective() {   # <下标>
+    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"; else printf '%s' "${F_DEF[$1]}"; fi
+}
+
 V_SET=(); V_VAL=(); STATE_DIR_VAL=""
 read_values() {   # <配置文件> → 填 V_SET / V_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
     local parts=() p i=0 n=${#F_NAME[@]}
@@ -203,11 +238,12 @@ read_values() {   # <配置文件> → 填 V_SET / V_VAL（和 F_NAME 同下标�
 }
 
 # ── 一个配置项在文件里是怎么写的 ──
-# 结果放全局：W_KIND = literal（正好一行、普通字面值、且加载后的值就是它）/ absent（没有这一行、
-# 加载后也确实没有值）/ complex；W_LINE 行号、W_QUOTE 引号（" ' 或空）、W_WHY 不可改的原因。
+# 结果放全局：W_KIND = literal（正好一行、在最外层、普通字面值、且加载后的值就是它）/ absent（没有这一行、
+# 加载后也确实没有值）/ complex；W_LINE 行号、W_QUOTE 引号（" ' 或空）、W_LITERAL 这一行写的字面值、
+# W_WHY 不可改的原因。调用前先对同一个文件跑过 load_structure。
 inspect_field() {   # <配置文件> <下标>
     local file="$1" i="$2" k="${F_NAME[$2]}" hits count ln text re
-    W_KIND=complex; W_LINE=0; W_QUOTE=""; W_WHY=""
+    W_KIND=complex; W_LINE=0; W_QUOTE=""; W_WHY=""; W_LITERAL=""
     hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
     if [ -z "$hits" ]; then
         if [ "${V_SET[$i]}" = 0 ]; then W_KIND=absent
@@ -228,11 +264,17 @@ inspect_field() {   # <配置文件> <下标>
             [[ "$text" =~ $re ]] || return 0
         fi
     fi
+    # 不在最外层：在 if / 循环 / case / 函数 / { } 组里，或接在别的命令后面（看结构，不看缩进）
+    if ! top_level_only "$k"; then
+        if [ "$NORM_OK" = 1 ]; then W_WHY="配置文件里这一项的赋值写在条件、循环或函数里面，或接在别的命令后面"
+        else W_WHY="读不出配置文件的结构，判断不了这一行能不能安全地改"; fi
+        return 0
+    fi
     # 字面值和加载后的值不一样：后面还有别的写法改了它（条件赋值、+= ……）
     if [ "${V_SET[$i]}" != 1 ] || [ "${BASH_REMATCH[2]}" != "${V_VAL[$i]}" ]; then
         W_WHY="配置文件里这一行写的值和加载后实际的值不一样，别处还改了它"; return 0
     fi
-    W_KIND=literal; W_LINE="$ln"; W_WHY=""
+    W_KIND=literal; W_LINE="$ln"; W_WHY=""; W_LITERAL="${BASH_REMATCH[2]}"
 }
 
 # ── 按类型校验一个值；不合规时把原因放进 BAD_WHY ──
@@ -286,12 +328,13 @@ if [ "$MODE" = get ]; then
     rev="$(rev_of "$REAL" "$REAL")" || get_fail unreadable "读不了配置文件：$REAL" 2
     read_values "$REAL" || get_fail unreadable "配置文件加载失败（shell 语法错误，或加载中途退出）：$CONFIG" 2
     # 加载期间文件变了：读到的值和指纹可能对不上，让调用方重读
+    load_structure "$REAL"
     [ "$(rev_of "$REAL" "$REAL" || true)" = "$rev" ] || get_fail unreadable "读取期间配置文件被改了，请重新读取" 2
     fields=()
     for i in "${!F_NAME[@]}"; do
         inspect_field "$REAL" "$i"
-        in_file=true; value="${V_VAL[$i]}"; editable=false; why="$W_WHY"
-        if [ "$W_KIND" = absent ]; then in_file=false; value="${F_DEF[$i]}"; fi
+        in_file=true; value="$(effective "$i")"; editable=false; why="$W_WHY"
+        [ "$W_KIND" = absent ] && in_file=false
         if [ "${F_MODE[$i]}" = edit ]; then
             if [ "$W_KIND" = complex ]; then :
             elif valid_value "${F_TYPE[$i]}" "$value"; then editable=true
@@ -350,9 +393,10 @@ if ! read_values "$SNAP"; then
     echo "配置文件加载失败，什么都没写"
     finish unreadable 2
 fi
+load_structure "$SNAP"
 
 # 3. 逐项：登记了吗、能改吗、值合规吗
-E_IDX=(); E_KIND=(); E_LINE=(); E_QUOTE=(); E_OLD=(); E_NEW=()
+E_IDX=(); E_KIND=(); E_LINE=(); E_QUOTE=(); E_LIT=(); E_NEW=()
 changes=()
 for j in "${!W_NAMES[@]}"; do
     k="${W_NAMES[$j]}"; v="${W_VALUES[$j]}"
@@ -361,7 +405,7 @@ for j in "${!W_NAMES[@]}"; do
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
     fi
     inspect_field "$SNAP" "$i"
-    old="${V_VAL[$i]}"; [ "$W_KIND" = absent ] && old="${F_DEF[$i]}"
+    old="$(effective "$i")"
     if [ "$W_KIND" = complex ] || ! valid_value "${F_TYPE[$i]}" "$old"; then
         echo "$k 现在不能在这里改（${W_WHY:-现在的值不是标准写法}），什么都没写"
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
@@ -371,8 +415,8 @@ for j in "${!W_NAMES[@]}"; do
         DETAIL="$(jq -cn --arg k "$k" --arg why "$BAD_WHY" '{field:$k, reason:$why}')"; finish invalid 2
     fi
     # 文件里已经是这个值的不算改动（没写过的项即使等于默认值也算：写进去才是「已决定」）
-    if [ "$W_KIND" = literal ] && [ "$old" = "$v" ]; then continue; fi
-    E_IDX+=("$i"); E_KIND+=("$W_KIND"); E_LINE+=("$W_LINE"); E_QUOTE+=("$W_QUOTE"); E_OLD+=("$old"); E_NEW+=("$v")
+    if [ "$W_KIND" = literal ] && [ "$W_LITERAL" = "$v" ]; then continue; fi
+    E_IDX+=("$i"); E_KIND+=("$W_KIND"); E_LINE+=("$W_LINE"); E_QUOTE+=("$W_QUOTE"); E_LIT+=("$W_LITERAL"); E_NEW+=("$v")
     changes+=("$(jq -cn --arg k "$k" --arg label "${F_LABEL[$i]}" --arg old "$old" --arg new "$v" \
         --argjson added "$([ "$W_KIND" = absent ] && echo true || echo false)" \
         '{name:$k, label:$label, old:$old, new:$new, added:$added}')")
@@ -394,7 +438,7 @@ cp -p "$SNAP" "$NEW" 2>/dev/null || { echo "建不了临时文件 $NEW，什么�
                 k="${F_NAME[${E_IDX[$e]}]}"; q="${E_QUOTE[$e]}"
                 head="${line%%"$k="*}"; rest="${line#*"$k="}"
                 # rest = 旧值（带引号）+ 行尾注释；旧值是字面值，长度算得出来
-                oldlen=$(( ${#E_OLD[$e]} + ${#q} * 2 ))
+                oldlen=$(( ${#E_LIT[$e]} + ${#q} * 2 ))
                 line="$head$k=$q${E_NEW[$e]}$q${rest:$oldlen}"
             fi
         done

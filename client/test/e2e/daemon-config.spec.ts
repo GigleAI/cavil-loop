@@ -171,14 +171,27 @@ test('the file was edited elsewhere while the dialog was open: nothing is writte
   expect(lines('REVIEW_MAX_ROUNDS')).toEqual(['REVIEW_MAX_ROUNDS=9']);
 });
 
-test('what cannot be changed here has no input: arithmetic says why; a missing line is marked; the four switches are shown only', async () => {
+test('what cannot be changed here has no input: arithmetic and a line inside a condition say why and show the value in effect; a missing line is marked; the four switches are shown only', async () => {
   const { page } = await openSection(() => {
     const t = readFileSync(config, 'utf8');
     expect(t).toContain('\nBLOCKED_RECHECK_SECS=300\n');
     expect(t).toContain('\nPOLL_IDLE_PROBE=true\n');
-    writeFileSync(config, t.replace('\nBLOCKED_RECHECK_SECS=300\n', '\nBLOCKED_RECHECK_SECS=$((5 * 60))\n').replace('\nPOLL_IDLE_PROBE=true\n', '\n'));
+    expect(t).toContain('\nMAX_CONCURRENT_WORKERS=1\n');
+    writeFileSync(
+      config,
+      t
+        .replace('\nBLOCKED_RECHECK_SECS=300\n', '\nBLOCKED_RECHECK_SECS=$((5 * 60))\n')
+        .replace('\nPOLL_IDLE_PROBE=true\n', '\n')
+        // inside a condition that does not run, not indented: the daemon works with its default (1), and the line is not for the form to change
+        .replace('\nMAX_CONCURRENT_WORKERS=1\n', '\nif false; then\nMAX_CONCURRENT_WORKERS=2\nfi\n'),
+    );
   });
   await openDialog(page);
+  const cond = row(page, 'MAX_CONCURRENT_WORKERS');
+  await expect(cond).toHaveAttribute('data-editable', 'false');
+  await expect(cond.getByTestId('config-readonly')).toHaveText('1');
+  await expect(cond.getByTestId('config-why')).toContainText('条件');
+  await expect(input(page, 'MAX_CONCURRENT_WORKERS')).toHaveCount(0);
   const calc = row(page, 'BLOCKED_RECHECK_SECS');
   await expect(calc).toHaveAttribute('data-editable', 'false');
   await expect(calc.getByTestId('config-readonly')).toHaveText('300');
@@ -206,6 +219,7 @@ test('what cannot be changed here has no input: arithmetic says why; a missing l
   await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved');
   expect(lines('POLL_IDLE_PROBE')).toEqual(['POLL_IDLE_PROBE="false"']);
   expect(lines('BLOCKED_RECHECK_SECS')).toEqual(['BLOCKED_RECHECK_SECS=$((5 * 60))']);
+  expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
 });
 
 test('a config that does not load shows no values at all; "用编辑器打开配置文件" still hands the file to the system', async () => {

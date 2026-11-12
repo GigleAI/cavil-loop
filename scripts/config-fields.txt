@@ -17,8 +17,10 @@
 #   label          标签名：空 = 这个功能关着（只用于 show）
 #
 # 「不写这一行时的值」必须和 daemon 实际用的一致——有的在 _lib.sh 加载时定，有的在 agent-poll.sh
-# 用到的地方才补（${X:-默认}）。tests/project-config.test.sh 两类都对拍，改默认值时两边一起改。
-# edit 项只在配置文件里「正好一行、写成普通字面值」时可改；写成算式、引用变量、多处赋值的只显示。
+# 用到的地方才补（${X:-默认}）。两类都和真实的使用方对拍（tests/project-config.test.sh 第 7 节、
+# tests/project-config-poll.test.sh），新加一行就要补上它的对拍；改默认值时两边一起改。
+# edit 项只在配置文件里「正好一行、顶格、在最外层、写成普通字面值」时可改；写成算式、引用变量、多处赋值、
+# 写在 if / 循环 / case / 函数里的只显示。显示的值一律是 daemon 实际用的：没设置或为空 = 这里登记的默认值。
 #
 WORKER_AGENT | agent 与模型 | agent | claude | edit | 干活的 agent | 派工时用哪个 agent 程序写代码
 WORKER_MODEL | agent 与模型 | model | | edit | 干活用的模型 | 留空 = 用 agent 自己的默认模型

@@ -7,6 +7,8 @@
 #   1. get：值、配置文件里写没写、可不可改和原因；命令 / 钩子 / 令牌不出现；读不出不给值；改名前的旧安装
 #   2. set：只动那几行、注释和权限保留、备份等于原文件、没写过的项追加、末尾无换行、软链接、和原值一样
 #   3. 拒绝写入的每种情况文件不变，旁边各有一个合规的同样保存确实写进去了
+#   3b. 赋值写在 if / 循环 / case / 函数 / { } 组里、接在别的命令后面（缩进或不缩进、执行或没执行）→ 只显示，
+#       显示的是 daemon 实际用的值；写成空值的行显示默认值
 #   4. 保存进行中的外部写入：在真实的 cp / mv 前后插入一次外部修改（包装命令，脚本没有测试开关）
 #   5. 两次保存同时发生
 #   6. 备份是内容快照、只留最近 10 份
@@ -206,6 +208,58 @@ fresh_world
 RC=0; OUT="$(printf '{"MAX_CONCURRENT_WORKERS":"2"}' | run set widget)" || RC=$?
 chk "不带 --rev：不写" "$(tail -1 <<<"$OUT") $(grep -c '^MAX_CONCURRENT_WORKERS=1$' "$CONF")" "RESULT=invalid 1"
 
+echo "── 3b. 赋值在结构里面：看结构不看缩进；实际生效的值和「能不能改」分开算 ──"
+# 每个夹具：把并发数那一行换成一种写法。断言 get 给出的值、是否可改；强行保存被拒、文件不变；
+# 同一份文件里另一项最外层的字面值照常能改（可达性）。
+structure_case() {   # <标题> <期望值> <替换 MAX_CONCURRENT_WORKERS=1 的多行文本>
+    fresh_world
+    python3 - "$CONF" "$3" <<'PY'
+import sys
+p, block = sys.argv[1], sys.argv[2]
+t = open(p, encoding='utf-8').read()
+assert t.count('MAX_CONCURRENT_WORKERS=1\n') == 1
+open(p, 'w', encoding='utf-8').write(t.replace('MAX_CONCURRENT_WORKERS=1\n', block + '\n'))
+PY
+    local g before; g="$(run get widget)"; before="$(sum "$CONF")"
+    chk "$1：值 $2、只显示" "$(jq -r .state <<<"$g") $(field "$g" MAX_CONCURRENT_WORKERS)" "ok [\"$2\",true,false]"
+    save widget '{"MAX_CONCURRENT_WORKERS":"4"}'
+    chk "$1：强行保存 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+    save widget '{"REVIEW_MAX_ROUNDS":"7"}'
+    chk "$1：同一份文件里最外层的另一项照常能改" "$RESULT $(grep -c "^REVIEW_MAX_ROUNDS='7'\$" "$CONF")" "RESULT=saved 1"
+}
+NL=$'\n'
+structure_case "if 里、执行了、不缩进" 2 "if true; then${NL}MAX_CONCURRENT_WORKERS=2${NL}fi"
+structure_case "if 里、执行了、缩进" 2 "if true; then${NL}    MAX_CONCURRENT_WORKERS=2${NL}fi"
+structure_case "if 里、没执行、不缩进（daemon 实际按默认值 1 工作）" 1 "if false; then${NL}MAX_CONCURRENT_WORKERS=2${NL}fi"
+structure_case "if 里、没执行、缩进" 1 "if false; then${NL}    MAX_CONCURRENT_WORKERS=2${NL}fi"
+structure_case "else 分支里" 3 "if false; then${NL}:${NL}else${NL}MAX_CONCURRENT_WORKERS=3${NL}fi"
+structure_case "循环里" 2 "for _x in 1; do${NL}MAX_CONCURRENT_WORKERS=2${NL}done"
+structure_case "case 里" 2 "case x in${NL}x)${NL}MAX_CONCURRENT_WORKERS=2${NL};;${NL}esac"
+structure_case "{ } 组里" 2 "{${NL}MAX_CONCURRENT_WORKERS=2${NL}}"
+structure_case "函数里（调用了）" 2 "set_it() {${NL}MAX_CONCURRENT_WORKERS=2${NL}}${NL}set_it"
+structure_case "函数里（没调用）" 1 "set_it() {${NL}MAX_CONCURRENT_WORKERS=2${NL}}"
+structure_case "接在 && 后面的下一行" 2 "true &&${NL}MAX_CONCURRENT_WORKERS=2"
+structure_case "接在 || 后面的下一行（没执行）" 1 "true ||${NL}MAX_CONCURRENT_WORKERS=2"
+structure_case "here-doc 里的同名字样（不是赋值）" 1 ": <<DOC${NL}MAX_CONCURRENT_WORKERS=2${NL}DOC"
+structure_case "多行字符串里的同名字样（不是赋值）" 1 "NOTE=\"${NL}MAX_CONCURRENT_WORKERS=2${NL}\""
+structure_case "续行里（成了别的命令的参数）" 1 "true \\${NL}MAX_CONCURRENT_WORKERS=2"
+
+# 写成空值：各处都是「空 = 用默认值」，表单显示默认值；这一行是普通字面值，可以改
+fresh_world; sed -i 's/^MAX_CONCURRENT_WORKERS=1$/MAX_CONCURRENT_WORKERS=""/' "$CONF"
+G="$(run get widget)"
+chk "写成空值：显示 daemon 实际用的默认值 1，可改" "$(field "$G" MAX_CONCURRENT_WORKERS)" '["1",true,true]'
+save widget '{"MAX_CONCURRENT_WORKERS":"3"}'
+chk "写成空值的行改成 3：只换引号里的值" "$RESULT $(grep -c '^MAX_CONCURRENT_WORKERS="3"$' "$CONF") $(jq -c '[.changes[] | [.old,.new]]' <<<"$DETAIL")" 'RESULT=saved 1 [["1","3"]]'
+fresh_world; sed -i 's/^MAX_CONCURRENT_WORKERS=1$/MAX_CONCURRENT_WORKERS=""/' "$CONF"
+save widget '{"MAX_CONCURRENT_WORKERS":"1"}'
+chk "写成空值的行改成等于默认值的 1：也写进去（文件里原来不是这个值）" "$RESULT $(grep -c '^MAX_CONCURRENT_WORKERS="1"$' "$CONF")" 'RESULT=saved 1'
+# 只显示的项同样给实际生效的值
+fresh_world; sed -i 's/^DISPATCH_MODE="label"$/DISPATCH_MODE=""/' "$CONF"
+chk "只显示的项写成空值：显示默认值" "$(field "$(run get widget)" DISPATCH_MODE)" '["label",true,false]'
+# 配置文件整体解析不了结构时不会走到这里（加载就失败了）；最外层的字面值缩进与否：缩进的仍然只显示
+fresh_world; sed -i 's/^MAX_CONCURRENT_WORKERS=1$/  MAX_CONCURRENT_WORKERS=1/' "$CONF"
+chk "最外层但缩进了的行：只显示（只改顶格写的那种）" "$(field "$(run get widget)" MAX_CONCURRENT_WORKERS)" '["1",true,false]'
+
 echo "── 4. 保存进行中的外部写入（包装真实的 cp / mv）──"
 HK="$SANDBOX/hook"; mkdir -p "$HK"
 REAL_CP="$(command -v cp)"; REAL_MV="$(command -v mv)"
@@ -363,6 +417,17 @@ loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-lo
 ' _ "$REPO_DIR" $LIBKEYS 2>&1)"
 want="$(for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=%s\n' "$k" "$(col 4 "$k")"; done)"
 chk "真实加载公共库（配置里一项都不写）后的值 = 登记表的「不写时的值」（17 项）" "$loaded" "$want"
+# 每一项都写成空值：daemon 各处都是「空 = 用默认值」，表单显示值用的就是这条规则——同一份输入对拍
+for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=""\n' "$k"; done >> "$MIN/cavil-loop.config"
+loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
+    source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
+    shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
+    if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
+' _ "$REPO_DIR" $LIBKEYS 2>&1)"
+chk "这 17 项全写成空值后真实加载公共库：仍是登记表的默认值" "$loaded" "$want"
+mkdir -p "$H/.config/cavil-loop"; printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$MIN/proj" "$MIN/cavil-loop.config" > "$H/.config/cavil-loop/min.conf"
+shown="$(run get min | jq -r --arg ks "$LIBKEYS ENABLE_CONCURRENT_WORK_HINT" '. as $g | $ks | split(" ")[] | . as $k | "\($k)=\($g.fields[] | select(.name == $k) | .value)"')"
+chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$shown" "$loaded"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那四项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED; do col 5 "$k"; done | tr '\n' ' ')" "show show show show "
