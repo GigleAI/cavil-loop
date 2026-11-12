@@ -123,7 +123,7 @@ jq . ~/.claude/projects/<encoded-cwd>/*.jsonl
 
 ```bash
 # cavil-loop.config
-AUTO_CLEANUP_ON_MERGE="false"
+AUTO_CLEANUP_ON_MERGE=false
 ```
 
 之后想清就跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>`，flag 见 [operations.md](operations.zh.md)。

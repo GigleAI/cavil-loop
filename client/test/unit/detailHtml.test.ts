@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { blockedImages, FRAME_CSP, FRAME_SANDBOX, IMAGE_HOSTS, plainExcerpt, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
+import { blockedImages, FRAME_CSP, FRAME_SANDBOX, IMAGE_HOSTS, markReleaseImages, plainExcerpt, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from '../../src/renderer/frameScript';
 import { avatarUrl } from '../../src/shared/avatar';
 import type { TimelineEntry } from '../../src/shared/actions';
@@ -215,5 +215,63 @@ describe('detail: a box click waiting for GitHub (GitHub#358)', () => {
     const plain = boxes(timelineDocument(d, false, 'all', { canTick: false }));
     expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'GONE', index: 0, checked: true } }))).toEqual(plain);
     expect(boxes(timelineDocument(d, false, 'all', { canTick: false, pending: { entryId: 'R', index: 0, checked: true } }))).toEqual(plain);
+  });
+});
+
+// GitHub#395: release attachment images are fetched with the sign-in, never by the frame
+describe('release attachment images in the frame document', () => {
+  const WEB = 'https://github.com';
+  const REL = 'https://github.com/acme/app/releases/download/v1/home.png';
+  const body = (html: string, lineHtml = '<p>line</p>'): ItemDetail => {
+    const d = detail('a', 'f.ts');
+    d.timeline[0].bodyHtml = html;
+    d.timeline[0].lineComments![0].bodyHtml = lineHtml;
+    return d;
+  };
+
+  it('the image keeps everything but its src: the address moves to data-rel, so nothing is fetched while the document loads', () => {
+    const html = `<p><a target="_blank" href="${REL}"><img src="${REL}" alt="首页" style="max-width: 100%;"></a></p>`;
+    expect(markReleaseImages(html, WEB)).toBe(`<p><a target="_blank" href="${REL}"><img data-rel="${REL}" alt="首页" style="max-width: 100%;"></a></p>`);
+    // an address with an escaped character comes out escaped again, once
+    const amp = 'https://github.com/acme/app/releases/download/v1/a&amp;b.png';
+    expect(markReleaseImages(`<img alt="x" src="${amp}">`, WEB)).toBe(`<img alt="x" data-rel="${amp}">`);
+    // a tag with slashes, as GitHub writes it and escaped
+    const slashed = 'https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.2-dev.486/shot.png';
+    expect(markReleaseImages(`<img src="${slashed}" alt="s">`, WEB)).toBe(`<img data-rel="${slashed}" alt="s">`);
+    const escaped = slashed.replace('client/v', 'client%2Fv');
+    expect(markReleaseImages(`<img src="${escaped}" alt="s">`, WEB)).toBe(`<img data-rel="${escaped}" alt="s">`);
+    // single quotes, upper case tag
+    expect(markReleaseImages(`<IMG SRC='${REL}'>`, WEB)).toBe(`<IMG data-rel="${REL}">`);
+  });
+
+  it('every other image is left exactly as it is — and so is everything when the GitHub in use is not known', () => {
+    const others = [
+      '<img src="https://private-user-images.githubusercontent.com/1/2.png?jwt=x" alt="pasted">',
+      '<img src="https://camo.githubusercontent.com/abc/68747470" alt="proxied">',
+      '<img src="https://github.com/acme/app/raw/main/docs/releases/download/a.png" alt="a repo file">',
+      '<img src="https://github.com.evil.example/acme/app/releases/download/v1/home.png" alt="look-alike">',
+      '<img src="https://example.com/acme/app/releases/download/v1/home.png" alt="elsewhere">',
+      `<a href="${REL}">a link, not an image</a>`,
+      `<p>text that mentions ${REL} and src="${REL}"</p>`,
+    ].join('');
+    expect(markReleaseImages(others, WEB)).toBe(others);
+    const rel = `<img src="${REL}" alt="r">`;
+    expect(markReleaseImages(rel, undefined)).toBe(rel);
+    expect(markReleaseImages(rel, 'https://ghe.example.com')).toBe(rel);
+  });
+
+  it('in the document: the body and the line comments of an entry are both marked', () => {
+    const img = `<img src="${REL}" alt="r">`;
+    const doc = timelineDocument(body(`<p>${img}</p>`, `<p>${img}</p>`), false, 'all', { web: WEB });
+    expect(doc.match(/<img data-rel="https:\/\/github\.com\/acme\/app\/releases\/download\/v1\/home\.png" alt="r">/g)).toHaveLength(2);
+    expect(doc).not.toContain(`<img src="${REL}"`);
+  });
+
+  it('a discussion without such an image is the same document with or without the option; "offline" only marks the body', () => {
+    const d = body('<p><img src="https://camo.githubusercontent.com/abc/68747470" alt="p"> text</p>');
+    const plain = timelineDocument(d, false, 'all', { render: 'r1' });
+    expect(timelineDocument(d, false, 'all', { render: 'r1', web: WEB })).toBe(plain);
+    expect(timelineDocument(d, false, 'all', { render: 'r1', web: WEB, offline: true })).toBe(plain.replace('<body data-render="r1" data-scroll="0">', '<body data-render="r1" data-scroll="0" data-offline="">'));
+    expect(plain).toContain('<body data-render="r1" data-scroll="0">');
   });
 });

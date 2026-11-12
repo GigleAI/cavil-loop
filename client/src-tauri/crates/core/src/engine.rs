@@ -804,6 +804,9 @@ impl Engine {
     /// About the credential in use, without revealing it.
     pub async fn grant_info(&self) -> Value {
         let now = self.d.clock.now().await;
+        // GitHub#395: which kind of application this sign-in went through — by the Client ID it was made
+        // with (a GitHub App's starts with "Iv"), not by what the next sign-in is set to use. Only the kind crosses.
+        let github_app = self.d.store.get_str(GRANT_CLIENT_ID).map(|id| id.starts_with("Iv")).unwrap_or(false);
         let st = self.lock();
         match &st.grant {
             None => json!({ "signedIn": false, "gen": st.gen, "session": st.session }),
@@ -813,6 +816,7 @@ impl Engine {
                 "session": st.session,
                 "canRefresh": g.refresh_token.is_some(),
                 "expired": g.expires_at.map(|e| now >= e).unwrap_or(false),
+                "githubApp": github_app,
             }),
         }
     }
@@ -886,6 +890,25 @@ impl Engine {
         http::send(HttpRequest { method, url: req.url, headers: api_headers(&token, &extra), body: req.body })
             .await
             .map_err(RequestError::Network)
+    }
+
+    /// GitHub#395: one release attachment image, fetched with the credential of `session` (see
+    /// release_image.rs). The window gets the image or GitHub's answer — never the credential,
+    /// never the signed address of the file.
+    pub async fn release_image(&self, session: u64, asset_url: &str) -> Value {
+        let token = {
+            let st = self.lock();
+            match &st.grant {
+                Some(g) if st.session == session => g.access_token.clone(),
+                _ => return json!({ "error": "stale", "message": "还没有登录" }),
+            }
+        };
+        let out = crate::release_image::fetch(&self.d.endpoints, asset_url, api_headers(&token, &[])).await;
+        // the account changed while the file was on its way: the answer belongs to nobody
+        if self.lock().session != session {
+            return json!({ "error": "stale", "message": "还没有登录" });
+        }
+        out
     }
 
     pub async fn open_external(&self, url: &str) -> Result<(), String> {

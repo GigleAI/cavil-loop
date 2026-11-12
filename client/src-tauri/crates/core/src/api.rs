@@ -107,6 +107,8 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
                 Err(RequestError::Network(m)) => json!({ "error": "network", "message": m }),
             })
         }
+        // GitHub#395: a release attachment image of the discussion — only an attachment's API address is accepted
+        "releaseImage" => Ok(e.release_image(u(&a, "session")?, s(&a, "url")?).await),
         "setSetting" => {
             let k = s(&a, "key")?;
             if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {

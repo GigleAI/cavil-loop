@@ -33,6 +33,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     restartToUpdate: () => c.restartToUpdate(),
     loadDetail: (key) => c.loadDetail(String(key)),
     cachedDetail: async (key) => c.cachedDetail(String(key)),
+    loadImage: (src) => c.loadImage(String(src)),
     repoOptions: (repo, fresh) => c.repoOptions(String(repo), Boolean(fresh)),
     resendEdit: (id, force) => c.resendEdit(String(id), Boolean(force)),
     abandonEdit: (id) => c.abandonEdit(String(id)),

@@ -123,7 +123,7 @@ Want to turn it off (post-merge leaves everything in place, fully manual):
 
 ```bash
 # cavil-loop.config
-AUTO_CLEANUP_ON_MERGE="false"
+AUTO_CLEANUP_ON_MERGE=false
 ```
 
 Then run `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>` when you want to clean. Flags in [operations.md](operations.md).

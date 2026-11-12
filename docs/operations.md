@@ -68,13 +68,13 @@ WORKER_PASS_ENV="GH_TOKEN"
 # WRITE_GH_TOKEN=""
 
 # Auto-cleanup after merge (worktree + tmux)
-AUTO_CLEANUP_ON_MERGE="true"
+AUTO_CLEANUP_ON_MERGE=true
 
 # PRs waiting at pending/human that start conflicting with their base (GitHub#86).
 # Checked only when the base or the PR head moved. Updated within N days → one
 # comment + back to pending/agent for the worker to resolve; older / forks →
 # one reminder comment, label unchanged. 0 = remind only, never auto-fix.
-PENDING_HUMAN_CONFLICT_CHECK="true"
+PENDING_HUMAN_CONFLICT_CHECK=true
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS=2
 
 # Project-level cleanup hook (release ports, tear down tunnels, push metrics)
@@ -96,7 +96,7 @@ POLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"
 POLL_FORCE_SYNC_SECS=1800
 # Idle probe (GitHub#252): while backed off, each tick first sends one
 # conditional request (free when the answer is 304); if the repo changed, a full
-# poll runs now. "false" turns it off. While on, full polls are at most this far apart.
+# poll runs now. false turns it off. While on, full polls are at most this far apart.
 POLL_IDLE_PROBE=true
 POLL_IDLE_PROBE_MAX_SECS=600
 # Failure gets its own ladder (starts at POLL_INTERVAL_SECS, doubles each time,
@@ -1007,7 +1007,7 @@ other hosts than github.com, cycle detection (two items waiting on each other bo
 
 ## Agent hit its usage limit: pause that agent, hand the interrupted item to a human (GitHub#341)
 
-Both agents run on flat-rate subscriptions with a usage limit per time window. When a worker hits it, the CLI stops on a notice: the session is alive, the item still says `doing/agent`, the slot stays taken — and every new session dispatched to that agent hits the limit on its first request. With `ENABLE_USAGE_LIMIT_PAUSE="true"` the daemon looks, every poll round, at the sessions this machine dispatched that still carry `doing/agent`, and when it recognises the notice it does two things and nothing else:
+Both agents run on flat-rate subscriptions with a usage limit per time window. When a worker hits it, the CLI stops on a notice: the session is alive, the item still says `doing/agent`, the slot stays taken — and every new session dispatched to that agent hits the limit on its first request. With `ENABLE_USAGE_LIMIT_PAUSE=true` the daemon looks, every poll round, at the sessions this machine dispatched that still carry `doing/agent`, and when it recognises the notice it does two things and nothing else:
 
 | What | Detail |
 |---|---|
@@ -1078,7 +1078,7 @@ Leaving the five settings (`LABEL_PENDING_REQUESTER_BOT` / `REQUESTER_BOT_ACCOUN
 empty keeps today's behaviour byte-for-byte. The early names (`LABEL_PENDING_RELAY`, `RELAY_*`)
 are still read; for each setting the new name wins when it has a value. The webhook has three more
 settings (`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`); an empty URL sends nothing, and the
-config file must be mode 600. `REQUESTER_BOT_WAKE_ANY_ITEM="true"` (default false, GitHub#133) also lets
+config file must be mode 600. `REQUESTER_BOT_WAKE_ANY_ITEM=true` (default false, GitHub#133) also lets
 items the bot did not file wake it — see [requester-bot.md](requester-bot.md#a-maintainers-own-items-optional);
 merge / close notices still go to the bot's own requests only.
 
