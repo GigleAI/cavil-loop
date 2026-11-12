@@ -30,18 +30,24 @@ export function parseReleaseImage(src: string, web: string): ReleaseImageRef | n
   const root = base.pathname.replace(/\/+$/, '');
   if (!u.pathname.startsWith(`${root}/`)) return null;
   const parts = u.pathname.slice(root.length + 1).split('/');
-  // owner / repo / "releases" / "download" / tag / file
-  if (parts.length !== 6 || parts[2] !== 'releases' || parts[3] !== 'download') return null;
+  // owner / repo / "releases" / "download" / tag … / file — a tag may hold slashes (`client/v1.2`,
+  // GitHub writes them as they are; `client%2Fv1.2` is the same tag): the file is the last part,
+  // the tag everything between
+  if (parts.length < 6 || parts[2] !== 'releases' || parts[3] !== 'download' || parts.some((p) => p === '')) return null;
   let seg: string[];
   try {
     seg = parts.map((p) => decodeURIComponent(p));
   } catch {
     return null;
   }
-  const [owner, repo, , , tag, file] = seg;
+  const [owner, repo] = seg;
+  const file = seg[seg.length - 1];
+  const tag = seg.slice(4, -1).join('/');
   const name = /^[A-Za-z0-9._-]{1,100}$/;
   if (!name.test(owner) || !name.test(repo) || owner === '.' || owner === '..' || repo === '.' || repo === '..') return null;
-  if (!tag || !file || tag.includes('/') || file.includes('/')) return null;
+  // a file name holds no slash; a tag holds no empty, "." or ".." part (git refuses those names too)
+  if (file.includes('/') || file === '.' || file === '..') return null;
+  if (tag.split('/').some((t) => t === '' || t === '.' || t === '..')) return null;
   return { owner, repo, tag, file };
 }
 
@@ -86,4 +92,11 @@ export function imageFailureText(f: ImageFailure): string {
     case 'notImage':
       return '没取到：这个附件不是 PNG / JPEG / GIF / WebP 图片';
   }
+}
+
+/** Two addresses name the same attachment, whatever the escaping (`client/v1` and `client%2Fv1`, a space and %20). */
+export function sameReleaseImage(a: string, b: string, web: string): boolean {
+  const x = parseReleaseImage(a, web);
+  const y = parseReleaseImage(b, web);
+  return !!x && !!y && x.owner.toLowerCase() === y.owner.toLowerCase() && x.repo.toLowerCase() === y.repo.toLowerCase() && x.tag === y.tag && x.file === y.file;
 }

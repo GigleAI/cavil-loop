@@ -508,7 +508,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
             }
       return send(404, { message: 'Not Found' });
     }
-    const rel = req.method === 'GET' ? url.pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/releases(?:\/(tags)\/([^/]+)|\/(assets)\/(\d+))?$/) : null;
+    const rel = req.method === 'GET' ? url.pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/releases(?:\/(tags)\/(.+)|\/(assets)\/(\d+))?$/) : null;
     if (rel) {
       if (!authed()) return;
       await held();
@@ -522,7 +522,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
           id: a.id,
           name: a.name,
           url: `${fake.api}/repos/${rel[1]}/${rel[2]}/releases/assets/${a.id}`,
-          browser_download_url: `${fake.web}/${rel[1]}/${rel[2]}/releases/download/${encodeURIComponent(r.tag)}/${encodeURIComponent(a.name)}`,
+          browser_download_url: `${fake.web}/${rel[1]}/${rel[2]}/releases/download/${r.tag.split('/').map(encodeURIComponent).join('/')}/${encodeURIComponent(a.name)}`,
         })),
       });
       if (rel[3]) {

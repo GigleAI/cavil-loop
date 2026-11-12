@@ -7105,14 +7105,14 @@ test('GitHub#395: release attachment images are fetched with the sign-in and sho
   const TINY = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
   fake.state.releases.set('acme/private-app', [
     {
-      tag: 'pr-412-preview',
+      tag: 'preview/pr-412',
       assets: [
         { id: 11, name: 'home.png', bytes: PICTURE },
         { id: 12, name: 'map.png', bytes: PICTURE },
       ],
     },
   ]);
-  const rel = (file: string, repo = 'acme/private-app') => `${fake.web}/${repo}/releases/download/pr-412-preview/${file}`;
+  const rel = (file: string, repo = 'acme/private-app') => `${fake.web}/${repo}/releases/download/preview/pr-412/${file}`;
   const linked = (src: string, alt: string) => `<p><a target="_blank" rel="noopener noreferrer" href="${src}"><img src="${src}" alt="${alt}" style="max-width: 100%;"></a></p>`;
   const comment = (broken: string) => ({
     id: 'C_IMG',
@@ -7144,6 +7144,8 @@ test('GitHub#395: release attachment images are fetched with the sign-in and sho
   await expect(frame.locator('img[alt="首页截图"]')).toBeVisible({ timeout: 15_000 });
   expect(await natural('首页截图')).toBeGreaterThan(100);
   await expect(box('首页截图')).toHaveCount(0);
+  // the release's tag holds a slash (`preview/pr-412`), as this repo's own client releases do
+  expect(of('/api/repos/acme/private-app/releases/tags/preview/pr-412').map((l) => l.status)).toContain(200);
   expect(of('/api/repos/acme/private-app/releases/assets/11').map((l) => [l.status, Boolean(l.auth)])).toEqual([[302, true]]);
   expect(of('/web/release-assets/11').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
   // the window itself never asked for a release address

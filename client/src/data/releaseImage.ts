@@ -12,7 +12,7 @@
 // 403 / 404 "this sign-in cannot read it".
 
 import type { Backend } from '../backend/backend';
-import { parseReleaseImage, type ImageFailure, type ImageResult } from '../shared/images';
+import { parseReleaseImage, sameReleaseImage, type ImageFailure, type ImageResult } from '../shared/images';
 import { GitHubClient, GitHubError, MAX_LIMIT_WAIT_MS, RateLimitError, refusalOf, type Endpoints } from './github';
 
 /** GitHub gave no time with a rate limit: ask again after this */
@@ -26,20 +26,11 @@ interface Release {
   assets?: unknown;
 }
 
-/** the same address, whatever the escaping (GitHub writes a space as %20, a comment's author may not) */
-function sameAddress(a: string, b: string): boolean {
-  try {
-    return new URL(a).href === new URL(b).href;
-  } catch {
-    return false;
-  }
-}
-
-function assetOf(releases: Release[], src: string): string | null {
+function assetOf(releases: Release[], src: string, web: string): string | null {
   for (const r of releases) {
     if (!Array.isArray(r?.assets)) continue;
     for (const a of r.assets as Asset[]) {
-      if (typeof a?.browser_download_url === 'string' && typeof a.url === 'string' && sameAddress(a.browser_download_url, src)) return a.url;
+      if (typeof a?.browser_download_url === 'string' && typeof a.url === 'string' && sameReleaseImage(a.browser_download_url, src, web)) return a.url;
     }
   }
   return null;
@@ -78,15 +69,16 @@ export async function fetchReleaseImage(client: GitHubClient, backend: Backend, 
   try {
     let asset: string | null = null;
     try {
-      const release = await client.rest<Release>('GET', `${repo}/releases/tags/${encodeURIComponent(ref.tag)}`);
-      asset = release ? assetOf([release], src) : null;
+      // a tag's slashes stay slashes in the path (measured on GitHub: both forms answer; this is the one it writes itself)
+      const release = await client.rest<Release>('GET', `${repo}/releases/tags/${ref.tag.split('/').map(encodeURIComponent).join('/')}`);
+      asset = release ? assetOf([release], src, endpoints.web) : null;
     } catch (e) {
       // no release of that tag: a draft's attachments are only in the list (a rate limit is not a 404 — refusalOf said so)
       if (!(e instanceof GitHubError) || e instanceof RateLimitError || e.kind !== 'http' || e.status !== 404) throw e;
     }
     if (!asset) {
       const list = await client.rest<Release[]>('GET', `${repo}/releases?per_page=100`);
-      asset = Array.isArray(list) ? assetOf(list, src) : null;
+      asset = Array.isArray(list) ? assetOf(list, src, endpoints.web) : null;
     }
     if (!asset) return { ok: false, kind: 'denied' };
     const r = await backend.call<BackendImage>('releaseImage', { session, url: asset });

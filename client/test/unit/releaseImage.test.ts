@@ -12,7 +12,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type CannedAnswer, type FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
-import { APP_CONTENTS_NOTE, imageFailureText, parseReleaseImage, type ImageResult } from '../../src/shared/images';
+import { APP_CONTENTS_NOTE, imageFailureText, parseReleaseImage, sameReleaseImage, type ImageResult } from '../../src/shared/images';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const SVG = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
@@ -61,6 +61,8 @@ beforeEach(async () => {
       ],
     },
     { tag: 'untagged-0a1b2c', draft: true, assets: [{ id: 21, name: 'draft.png', bytes: PNG }] },
+    { tag: 'client/v0.5.2-dev.486', assets: [{ id: 41, name: 'shot.png', bytes: PNG }] },
+    { tag: 'untagged/x', draft: true, assets: [{ id: 42, name: 'draft2.png', bytes: PNG }] },
   ]);
   dir = tempDir();
   cache = new Cache(join(dir, 'cache.sqlite'));
@@ -85,9 +87,20 @@ describe('which addresses are release attachment images', () => {
   it('only <web>/<owner>/<repo>/releases/download/<tag>/<file> of the GitHub in use', () => {
     const web = 'https://github.com';
     expect(parseReleaseImage('https://github.com/acme/app/releases/download/v1.0/a%20b.png', web)).toEqual({ owner: 'acme', repo: 'app', tag: 'v1.0', file: 'a b.png' });
+    // a tag with slashes, as GitHub writes it (this repo's own client releases: `client/v0.5.2-dev.486`) and escaped
+    const slashed = { owner: 'GigleAI', repo: 'cavil-loop', tag: 'client/v0.5.2-dev.486', file: 'shot.png' };
+    expect(parseReleaseImage('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.2-dev.486/shot.png', web)).toEqual(slashed);
+    expect(parseReleaseImage('https://github.com/GigleAI/cavil-loop/releases/download/client%2Fv0.5.2-dev.486/shot.png', web)).toEqual(slashed);
+    expect(parseReleaseImage('https://github.com/acme/app/releases/download/a/b/c/x.png', web)).toEqual({ owner: 'acme', repo: 'app', tag: 'a/b/c', file: 'x.png' });
+    expect(sameReleaseImage('https://github.com/Acme/App/releases/download/client/v1/a%20b.png', 'https://github.com/acme/app/releases/download/client%2Fv1/a b.png', web)).toBe(true);
+    expect(sameReleaseImage('https://github.com/acme/app/releases/download/client/v1/a.png', 'https://github.com/acme/app/releases/download/client/v2/a.png', web)).toBe(false);
+    expect(sameReleaseImage('https://github.com/acme/app/releases/download/a/b/c.png', 'https://github.com/acme/app/releases/download/a/b%2Fc.png', web)).toBe(false);
     for (const no of [
       'https://github.com/acme/app/releases/download/v1',
-      'https://github.com/acme/app/releases/download/v1/a.png/x',
+      'https://github.com/acme/app/releases/download/v1//a.png',
+      'https://github.com/acme/app/releases/download/../a.png',
+      'https://github.com/acme/app/releases/download/v1/%2E%2E/a.png',
+      'https://github.com/acme/app/releases/download//a.png',
       'https://github.com/acme/app/releases/tag/v1',
       'https://github.com/acme/app/raw/main/a.png',
       'https://github.com.evil.example/acme/app/releases/download/v1/a.png',
@@ -128,6 +141,27 @@ describe('fetching', () => {
       '200 /api/repos/acme/app/releases?per_page=100',
       '302 /api/repos/acme/app/releases/assets/21',
     ]);
+  });
+
+  it('a release whose tag holds a slash (`client/v…`), written the way GitHub writes it or escaped: looked up, downloaded, shown', async () => {
+    // the address as the API hands it out: the slash is a slash
+    const listed = (await (await fetch(`${fake.api}/repos/acme/app/releases`, { headers: { Authorization: `Bearer ${FAKE_TOKEN}` } })).json()) as { assets: { browser_download_url: string }[] }[];
+    const written = listed.flatMap((r) => r.assets).find((a) => a.browser_download_url.endsWith('/shot.png'))!.browser_download_url;
+    expect(written).toBe(`${fake.web}/acme/app/releases/download/client/v0.5.2-dev.486/shot.png`);
+    fake.log.length = 0;
+    expect(await c.loadImage(written)).toEqual({ ok: true, dataUrl: `data:image/png;base64,${PNG.toString('base64')}` });
+    expect(requests('/api/repos/acme/app/releases').map((l) => `${l.status} ${l.path}`)).toEqual([
+      '200 /api/repos/acme/app/releases/tags/client/v0.5.2-dev.486',
+      '302 /api/repos/acme/app/releases/assets/41',
+    ]);
+    expect(requests('/web/release-assets/41').map((l) => [l.status, l.auth])).toEqual([[200, null]]);
+    // the same attachment with the slash escaped (a comment's author may write it so): one more fetch, the same image
+    const escaped = `${fake.web}/acme/app/releases/download/client%2Fv0.5.2-dev.486/shot.png`;
+    expect((await c.loadImage(escaped)).ok).toBe(true);
+    expect(requests('/releases/assets/41')).toHaveLength(2);
+    // a draft under a slashed tag: found in the list
+    expect((await c.loadImage(img('draft2.png', 'untagged/x'))).ok).toBe(true);
+    expect(requests('/web/release-assets/42')).toHaveLength(1);
   });
 
   it('not a release address, or no such attachment → not shown; nothing is downloaded', async () => {

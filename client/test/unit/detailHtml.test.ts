@@ -235,6 +235,11 @@ describe('release attachment images in the frame document', () => {
     // an address with an escaped character comes out escaped again, once
     const amp = 'https://github.com/acme/app/releases/download/v1/a&amp;b.png';
     expect(markReleaseImages(`<img alt="x" src="${amp}">`, WEB)).toBe(`<img alt="x" data-rel="${amp}">`);
+    // a tag with slashes, as GitHub writes it and escaped
+    const slashed = 'https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.2-dev.486/shot.png';
+    expect(markReleaseImages(`<img src="${slashed}" alt="s">`, WEB)).toBe(`<img data-rel="${slashed}" alt="s">`);
+    const escaped = slashed.replace('client/v', 'client%2Fv');
+    expect(markReleaseImages(`<img src="${escaped}" alt="s">`, WEB)).toBe(`<img data-rel="${escaped}" alt="s">`);
     // single quotes, upper case tag
     expect(markReleaseImages(`<IMG SRC='${REL}'>`, WEB)).toBe(`<IMG data-rel="${REL}">`);
   });
