@@ -352,6 +352,48 @@ test('GitHub#442: the floating panel belongs to the home tab — a tab and back 
   await app.close();
 });
 
+test('GitHub#457: the floating panel\'s 在标签页打开 makes the item a tab in front, with the panel\'s unsent text; the GitHub button still opens the page; a detail tab has no such button', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  // one tab behind already: the button adds the item's own tab, it does not take that one
+  await row(page, B).click({ button: 'middle' });
+  await expect(tabs(page)).toHaveCount(1);
+  await row(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  const toTab = detail(page).getByTestId('detail-open-tab');
+  await expect(toTab).toBeVisible();
+  await expect(toTab).toHaveText('在标签页打开');
+  // the two ways out sit next to each other and are told apart by their tooltips
+  await expect(toTab).toHaveAttribute('title', /新标签页/);
+  await expect(detail(page).getByTestId('detail-open-web')).toHaveAttribute('title', '在浏览器里打开 GitHub 网页');
+  await detail(page).getByTestId('detail-open-web').click();
+  await expect.poll(() => readOpened()).toContain(`https://github.com/${REPO}/issues/${A}`);
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+
+  await detail(page).getByTestId('reply-input').fill('浮窗里没发出的话');
+  await toTab.click();
+  await expect(tabs(page)).toHaveCount(2);
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  await expect(tab(page, B)).toHaveAttribute('data-front', 'no');
+  await expect(detail(page)).toHaveCount(1);
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page)).toHaveAttribute('data-mode', 'tab');
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('浮窗里没发出的话');
+  // in a tab: no 在标签页打开, the old link to the page stays as it was
+  await expect(detail(page).getByTestId('detail-open-tab')).toHaveCount(0);
+  await expect(detail(page).getByTestId('detail-open-web')).toHaveAttribute('title', '在网页打开');
+  // the panel went into the tab: home shows no panel any more
+  await home(page).click();
+  await expect(detail(page)).toHaveCount(0);
+  // the item has a tab now: a plain click goes to that tab, never a second one
+  await row(page, A).click();
+  await expect(tabs(page)).toHaveCount(2);
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('浮窗里没发出的话');
+  await app.close();
+});
+
 test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail, the reply box and the discussion; a digit in the discussion goes by its key position, as in the window', async () => {
   const app = await launchApp(env);
   const page = app.page;
