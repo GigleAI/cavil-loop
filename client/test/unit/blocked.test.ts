@@ -19,6 +19,7 @@ import {
   flowLabelsOf,
   latestRefs,
   lostRefs,
+  dropSettled,
   markComment,
   NUMBER_PICK_LIMIT,
   parseRefQuery,
@@ -346,5 +347,26 @@ describe('GitHub#448: the picker reads a number, a number prefix and an address 
 
   it('a leading zero is a prefix only (no item is numbered 04)', () => {
     expect(nums(rankByNumber([c(4), c(40)], SELF, '04', SELF448))).toEqual([]);
+  });
+});
+
+describe('PR #452 review round 1: board copies of what GitHub\'s answer settled are dropped before ranking', () => {
+  const b = (number: number, repo = SELF) => ({ repo, number, state: 'open' });
+  const keys = (xs: { repo: string; number: number }[]) => xs.map((x) => `${x.repo}#${x.number}`);
+  it('an exact number read now (closed or missing) and a repository read whole settle their board copies; nothing else', () => {
+    const local = [b(11), b(110), b(11, 'other/repo')];
+    expect(keys(dropSettled(local, { decided: [`${SELF}#11`], whole: null }))).toEqual([`${SELF}#110`, 'other/repo#11']);
+    expect(keys(dropSettled(local, { decided: [], whole: 'GigleAI/Cavil-Loop' }))).toEqual(['other/repo#11']);
+    // a read that failed settles nothing: the board's rows stay
+    expect(keys(dropSettled(local, { decided: [], whole: null }))).toEqual(keys(local));
+    expect(keys(dropSettled(local, undefined))).toEqual(keys(local));
+  });
+  it('ranked together the way the window does: GitHub said #11 is closed, the board\'s open copy does not come back', () => {
+    const remote: { repo: string; number: number; state: string }[] = [];
+    const local = [b(11), b(110)];
+    const settled = { decided: [`${SELF}#11`], whole: null };
+    expect(rankByNumber([...remote, ...dropSettled(local, settled)], SELF, '11', { repo: SELF, number: 448 }).map((x) => x.number)).toEqual([110]);
+    // without the settled part (the round-1 code) the stale copy was ranked first
+    expect(rankByNumber([...remote, ...local], SELF, '11', { repo: SELF, number: 448 }).map((x) => x.number)).toEqual([11, 110]);
   });
 });

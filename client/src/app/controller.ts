@@ -74,6 +74,7 @@ import {
   type BlockedLabels,
   type BlockedRead,
   type Facts,
+  type NumberSettled,
   type Pick as BlockedPick,
   type Ref,
 } from '../shared/blocked';
@@ -3548,7 +3549,7 @@ export class Controller {
    * `error` with `ok: true`: part of the answer could not be read — `items` holds what could, never
    * passed off as the whole.
    */
-  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string } | { ok: false; error: string }> {
+  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string; settled?: NumberSettled } | { ok: false; error: string }> {
     const item = this.findItem(key);
     if (!item) return { ok: false, error: '看板上找不到这一条' };
     const c = await this.clientForCall(false);
@@ -3573,10 +3574,15 @@ export class Controller {
       if (exact.status === 'fulfilled' && exact.value) pool.push(exact.value);
       if (list.status === 'fulfilled') pool.push(...list.value);
       const items = rankByNumber(pool, repo, parsed.digits, self).map((x) => ({ ...x }));
+      // what was read now, so the window's out-of-date copies of it go (a closed item is not in `items`)
+      const settled: NumberSettled = {
+        decided: exactNo !== null && exact.status === 'fulfilled' ? [refKey({ repo, number: exactNo })] : [],
+        whole: list.status === 'fulfilled' ? repo : null,
+      };
       const errs: string[] = [];
       if (exact.status === 'rejected') errs.push(fail(exact.reason));
       if (list.status === 'rejected') errs.push(`搜索失败：开着的条目没读全（${(list.reason as Error)?.message ?? String(list.reason)}）`);
-      return errs.length ? { ok: true, items, error: errs.join('；') } : { ok: true, items };
+      return errs.length ? { ok: true, items, error: errs.join('；'), settled } : { ok: true, items, settled };
     }
     try {
       let found: Candidate[];

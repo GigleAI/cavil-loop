@@ -506,3 +506,22 @@ export function rankByNumber<T extends { repo: string; number: number; state: st
   hits.sort((a, b) => (a.number === exact ? -1 : b.number === exact ? 1 : b.number - a.number));
   return hits.slice(0, NUMBER_PICK_LIMIT);
 }
+
+/**
+ * What a number search's GitHub answer settled (GitHub#448, PR #452 review round 1): `decided` — items
+ * read now one by one (the exact number; closed or missing ones are not in the rows), `whole` — a
+ * repository whose open items were read to the last page. A board copy inside either is out of date
+ * and is dropped before the board's rows and GitHub's are ranked together; anything else the board
+ * holds stays (a read that failed settles nothing).
+ */
+export interface NumberSettled {
+  decided: string[];
+  whole: string | null;
+}
+
+export function dropSettled<T extends Ref>(local: readonly T[], settled: NumberSettled | undefined): T[] {
+  if (!settled) return [...local];
+  const decided = new Set(settled.decided);
+  const whole = settled.whole?.toLowerCase() ?? null;
+  return local.filter((x) => x.repo.toLowerCase() !== whole && !decided.has(refKey({ repo: x.repo.toLowerCase(), number: x.number })));
+}

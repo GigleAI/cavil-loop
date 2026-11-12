@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
-import { confirmBlock, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type Pick, type Ref } from '../shared/blocked';
+import { confirmBlock, dropSettled, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type NumberSettled, type Pick, type Ref } from '../shared/blocked';
 import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
 
@@ -91,12 +91,13 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
         .filter((i) => i.repo.toLowerCase() === repo)
         .map((i) => ({ repo: i.repo.toLowerCase(), number: i.number, kind: i.kind, id: 0, title: i.title, state: i.state === 'open' ? ('open' as const) : ('closed' as const), url: i.url }));
     let local: Candidate[];
-    let combine: (remote: Candidate[]) => Candidate[];
+    let combine: (remote: Candidate[], settled?: NumberSettled) => Candidate[];
     if (parsed.kind === 'number') {
       const repo = parsed.repo ?? self.repo;
       local = rankByNumber(board(repo), repo, parsed.digits, self);
-      // GitHub's copies first: they carry the ids a native relation needs, and their state is fresh
-      combine = (remote) => rankByNumber([...remote, ...local], repo, parsed.digits, self);
+      // GitHub's copies first: they carry the ids a native relation needs, and their state is fresh; a
+      // board copy of what GitHub's answer settled (a closed exact number, the whole repository) goes
+      combine = (remote, settled) => rankByNumber([...remote, ...dropSettled(local, settled)], repo, parsed.digits, self);
     } else if (parsed.kind === 'url') {
       local = board(parsed.repo).filter((c) => c.number === parsed.number && c.state === 'open' && refKey(c) !== refKey(self));
       combine = (remote) => remote;
@@ -122,7 +123,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
           setSearching(false);
           if (!r.ok) return setSearchErr(r.error);
           // an answer read only in part: what was read is shown next to the reason, never as the whole
-          setFound(combine(r.items));
+          setFound(combine(r.items, r.settled));
           if (r.error) setSearchErr(r.error);
         });
     }, 300);
