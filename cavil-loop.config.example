@@ -217,6 +217,18 @@ LABEL_PENDING_MERGE="pending/merge"
 AUTOPILOT_MERGE_METHOD="squash"
 # 自动检查超过几小时还没跑完就交人
 AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
+# Files a human must look at before an autopilot merge (GitHub#337): CI, git hooks, agent configuration,
+# install / build / environment files — changes that make code run later as the maintainer. An autopilot PR
+# touching a listed file goes to pending/human with a note naming the files. Empty = exactly the previous
+# behaviour (only .github/ is refused). Space- or comma-separated; leading / = repo root only, none = any
+# depth; trailing / = directory; `default` = the built-in list (see docs/operations.md). Examples:
+#   AUTOPILOT_HUMAN_PATHS="default"
+#   AUTOPILOT_HUMAN_PATHS="default /deploy/ /setup.sh"
+# 合并前必须人过目的文件（GitHub#337）：CI、git hooks、agent 配置、安装 / 构建 / 环境配置这类「之后会以维护者身份
+# 运行代码」的文件。托管 PR 碰到清单里的文件就翻 pending/human 交人，说明里列出文件。留空 = 和以前完全一样
+# （只拦 .github/）。空格或逗号分隔；开头 / = 只认仓库根目录，不写 = 任何深度；末尾 / = 目录；`default` = 内置清单
+# （见 docs/operations.zh.md）。写法读不懂的条目不会被跳过：那时每次托管合并都交人，直到改好。
+AUTOPILOT_HUMAN_PATHS=""
 # Trusted repos (GitHub#233), comma-separated owner/repo. A listed repo may hold the parent issue of a split
 # sub-issue (its maintainer-added autopilot label authorizes the sub-issue here; whoever added it needs write
 # access in both repos), and may hold prerequisites for pending/blocked (`<!-- agent-blocked-by: owner/repo#N -->`).
@@ -297,6 +309,44 @@ REDACT_AGENT_RECORDS="true"
 # "on" = 保留 codex 的默认行为（令牌会继续写进快照）。已有的旧快照用 scripts/redact-snapshots.sh 清理，
 # 见 docs/operations.md。
 CODEX_SHELL_SNAPSHOT="off"
+
+# ── Queue heavy tests machine-wide / 重测试整机排队（默认关闭，GitHub#343）──
+# One command per line: the commands that count as a "heavy test" in this project (the full suite).
+# Empty = off: prompts, dispatch, cleanup and local processes are exactly as before. When set:
+#   · every worker prompt gets one more section telling the agent to run these commands through
+#     scripts/heavy-test.sh (`bash …/heavy-test.sh -- <command>`); a single test file needs no queue;
+#   · under one system account only one such run is let through at a time, the rest wait and print who
+#     they are waiting for. Each run lives in its own systemd scope and the next one starts only when
+#     that scope has no process left — a killed wrapper, a closed descriptor or a detached child cannot
+#     release it early. Needs Linux + cgroup v2 + a systemd user manager; elsewhere (macOS) only the
+#     wrapper itself is queued and a notice is printed;
+#   · dispatch and cleanup-issue.sh take one per-item lock, so they never interleave; cleaning an item
+#     first bumps its generation, then stops this item's queued / running heavy tests, and removes the
+#     worktree only after their scopes are confirmed gone (otherwise the worktree is kept and the
+#     cleanup retried). The poller also stops heavy tests whose worker process has ended.
+# Only runs started through the wrapper are queued or stopped. See docs/operations.md → "Heavy tests".
+#
+# 每行一条命令：本项目里算「重测试」的命令（整套测试）。留空 = 关闭，提示词、派工、清理、本地进程都和
+# 以前一样。填了之后：
+#   · worker 的提示词多一段，要求这些命令通过 scripts/heavy-test.sh 跑（`bash …/heavy-test.sh -- <命令>`）；
+#     只跑一个测试文件不用排队；
+#   · 同一个系统账号下同一时间只放行一套，其余排队并打印在等谁。每套测试在自己的 systemd 进程分组里，
+#     分组里一个进程都不剩才放行下一套——包装命令被强杀、被测程序关掉继承的文件、子进程脱离进程组都不会
+#     提前放行。需要 Linux + cgroup v2 + systemd 用户实例；其余环境（macOS）只排队包装命令本身，并打印说明；
+#   · 派工和 cleanup-issue.sh 拿同一把「条目锁」，一先一后不交错；清理先把条目的代数加一，再停掉本条目
+#     还在排队 / 还在跑的重测试，确认分组消失后才删工作树（停不干净就保留工作树、下次再试）。每轮轮询还会
+#     停掉「起它的 worker 进程已经结束」的重测试。
+# 只管通过包装命令起的测试。详见 docs/operations.zh.md →「重测试排队」。
+# 例 / e.g.：HEAVY_TEST_COMMANDS="bash tests/run.sh"
+HEAVY_TEST_COMMANDS=""
+# Give up queueing after this many seconds (exit code 75); 0 = wait as long as it takes.
+# 排队最多等多少秒（到时退出码 75）；0 = 一直等。
+HEAVY_TEST_LOCK_WAIT=0
+# Extra systemd properties for each heavy-test scope, space separated, e.g. "MemoryMax=6G". A test moved
+# into its own scope is no longer under a memory cap set on the tmux pane's scope. Empty = none.
+# 给每套重测试的进程分组加的 systemd 属性，空格分隔，例如 "MemoryMax=6G"。测试搬进自己的分组后，不再受
+# tmux 窗格分组上配的内存上限约束。留空 = 不加。
+HEAVY_TEST_SCOPE_PROPERTIES=""
 
 # ── Optional external requester bot / 外部需求机器人（默认关闭，GitHub#95 / #97 / #100）──
 # For projects where another AI assistant with its own GitHub account (the "requester bot")

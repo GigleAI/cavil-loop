@@ -9,6 +9,7 @@ agent-trust-paths 54
 autopilot:1/3 108
 autopilot:2/3 70
 autopilot:3/3 82
+autopilot-human-paths 110
 autopilot-ops 25
 autopilot-split 43
 blocked-label 49
@@ -93,3 +94,5 @@ worker-selection 1
 write-token-split 1
 session-switch-keeps-client 74
 token-redaction 35
+heavy-test 150
+heavy-test-systemd 35

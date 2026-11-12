@@ -37,6 +37,7 @@ LABEL_AUTOPILOT | quiet | 不写这一行时的行为和模板里的值相同
 LABEL_PENDING_MERGE | quiet | 不写这一行时的行为和模板里的值相同
 AUTOPILOT_MERGE_METHOD | quiet | 不写这一行时的行为和模板里的值相同
 AUTOPILOT_CHECKS_TIMEOUT_HOURS | quiet | 不写这一行时的行为和模板里的值相同
+AUTOPILOT_HUMAN_PATHS | quiet | 不写这一行时的行为和模板里的值相同
 TRUSTED_REPOS | quiet | 不写这一行时的行为和模板里的值相同
 LABEL_PENDING_BLOCKED | notice | GigleAI/cavil-loop#157 | "" | 等前置标签：worker 遇到「要等别的 issue / PR 先完成」时挂上它等着，前置全部完成后 daemon 自动把条目翻回派工标签接着干；关着时 worker 只能翻 `pending/human`，前置完成后要人手动重新打派工标签。开的话还要在仓库建好 `pending/blocked` 标签（在仓库的 Labels 页面新建，或把这一行写进配置后重跑 setup.sh，它会按配置建标签）。要等别的仓库的条目，再加一行 `TRUSTED_REPOS="owner/repo"`（逗号分隔，只填信得过的仓库），否则写了别的仓库的前置会交人。
 BLOCKED_RECHECK_SECS | quiet | 不写这一行时的行为和模板里的值相同
@@ -89,6 +90,9 @@ PREVIEW_READY_TIMEOUT | quiet | 不写这一行时的行为和模板里的值相
 PREVIEW_TAILSCALE_SERVE | quiet | 不写这一行时的行为和模板里的值相同
 PREVIEW_URL_HOST | quiet | 不写这一行时的行为和模板里的值相同
 PR_CREATED_HOOK | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_COMMANDS | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_LOCK_WAIT | quiet | 不写这一行时的行为和模板里的值相同
+HEAVY_TEST_SCOPE_PROPERTIES | quiet | 不写这一行时的行为和模板里的值相同
 MAX_CONCURRENT_WORKERS | quiet | 不写这一行时的行为和模板里的值相同
 DISPATCH_MODE | quiet | 不写这一行时的行为和模板里的值相同
 GREEDY_SKIP_LABELS | quiet | 不写这一行时的行为和模板里的值相同

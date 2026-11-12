@@ -155,7 +155,9 @@ boundary is drawn so that nothing a worker or a comment can do is enough:
 - **Stop is always one action away**: remove the label from, or add `pending/human` to, the issue
   or the PR. Everything the decision relied on is re-read right before the merge call; any change, or
   anything unreadable, means no merge this round
-- **Never merged automatically**: changes under `.github/` (Actions / repo automation), PRs from
+- **Never merged automatically**: changes under `.github/` (Actions / repo automation; with
+  `AUTOPILOT_HUMAN_PATHS` set, also every other listed file that makes code run later — hooks, agent
+  configuration, install / build files, GitHub#337, see [operations](operations.md#files-a-human-must-look-at-before-an-autopilot-merge-autopilot_human_paths-github337)), PRs from
   forks, drafts, anything GitHub's own rules refuse (the daemon does not bypass branch protection).
   Requests filed by the requester bot can be on autopilot (GitHub#162), but only a maintainer adding
   the label by hand authorizes it — the bot account's own label does not count; the requester's

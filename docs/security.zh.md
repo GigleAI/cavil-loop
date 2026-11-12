@@ -148,7 +148,9 @@ endpoint，label 筛选在本地做。状态过滤写在取数那一步，所以
 - **只合复审看过的那份改动**：派复审时记下提交号和目标分支，合并接口带上提交号；之后有新推送或改投别的分支，都回去重审
 - **叫停永远只差一步**：摘掉 issue 或 PR 上的标签，或在 issue / PR 上打 `pending/human`。判定依据的每一项在调合并接口前
   都重读一遍，任何变化、任何读不到，本轮都不合
-- **永远不自动合并**：改了 `.github/`（Actions / 仓库自动化）、fork 来的 PR、草稿、GitHub 自己的规则拒绝的
+- **永远不自动合并**：改了 `.github/`（Actions / 仓库自动化；配了 `AUTOPILOT_HUMAN_PATHS` 时还包括清单里其他
+  「之后会运行代码」的文件——hooks、agent 配置、安装 / 构建文件，GitHub#337，见
+  [operations](operations.zh.md#合并前必须人过目的文件autopilot_human_pathsgithub337)）、fork 来的 PR、草稿、GitHub 自己的规则拒绝的
   （daemon 不绕分支保护）。外部需求机器人提的需求可以托管（GitHub#162），但授权必须是维护者亲手打的标签，
   机器人账号自己打的不算；提需求方的确认照常要，daemon 合并前的检查一条不少
 - **明说的局限**：复审评论里的「重跑过测试」记录和 worker 是同一个账号写的；daemon 能核对它存在、写的是复审过的
