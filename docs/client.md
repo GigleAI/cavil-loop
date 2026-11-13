@@ -1,0 +1,172 @@
+# Cavil Loop client guide
+
+> **English** · [中文](client.zh.md)
+
+The Cavil Loop client is a desktop app (macOS) for managing GitHub issues and pull requests. It puts several repositories and GitHub Project boards into one window: each issue sits together with its linked PRs, items are split into columns or groups by iteration / status / milestone, and the parent and blocking relations between issues are drawn as a dependency graph — across repositories too.
+
+**It works on its own**: all it needs is a GitHub account. It does not need this repository's daemon, it does not need a GitHub Project, and it needs no command-line programs. When you want an AI to take on work, connect the repository to the daemon as described in [the last section](#optional-connect-the-daemon).
+
+![The board: columns by status, each PR under its linked issue](client-screens/board.png)
+
+> This page covers what the app shows and does. The rules for changing its code, and how it is built, are in the developer notes [client/README.md](../client/README.md) (Chinese). **The interface is Chinese only for now** (switching between Chinese and English is in progress in [#466](https://github.com/GigleAI/cavil-loop/issues/466)), so button names below are given in Chinese with their meaning in brackets.
+
+## Contents
+
+- [What you need](#what-you-need)
+- [First run (the client on its own)](#first-run-the-client-on-its-own)
+- [Sources](#sources)
+- [Board](#board)
+- [Table](#table)
+- [Dependency graph](#dependency-graph)
+- [Search, filters and view settings](#search-filters-and-view-settings)
+- [Details, the floating panel and tabs](#details-the-floating-panel-and-tabs)
+- [Making changes from the client](#making-changes-from-the-client)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Network, credentials and offline use](#network-credentials-and-offline-use)
+- [Updates](#updates)
+- [Optional: connect the daemon](#optional-connect-the-daemon)
+- [In progress](#in-progress)
+
+## What you need
+
+- A GitHub account that can see the repositories you want to manage.
+- A Mac with macOS 14 or later. For now there is only an Apple-silicon package, and only development builds (see [Updates](#updates)); on an Intel Mac you have to build it yourself (the "开发" (development) section of the developer notes).
+
+## First run (the client on its own)
+
+1. **Download**: open this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page, find the newest entry whose tag starts with `client/v` (for now `client/vX.Y.Z-dev.N`, marked Pre-release) and download its `.dmg`.
+2. **Install**: open the dmg and drag the app into Applications. macOS blocks the first launch; allow it in one of the two ways the dmg window describes: System Settings → Privacy & Security → "Open Anyway", or double-click "复制放行命令" (copy the allow command) in the dmg and run the copied command in Terminal.
+3. **Sign in**: open the app and click "用 GitHub 登录" (sign in with GitHub). The app shows a short code; enter it on the browser page that opens and approve. This is the client's own sign-in; the credential goes into the macOS keychain.
+4. **Add a source**: the gear at the top right opens Settings → "数据来源" (sources). Type `owner/repo` (or the repository's URL), or a GitHub Project's URL, and click "添加" (add); or click "从 GitHub 选…" (pick from GitHub) to choose among the repositories and Projects you can see.
+5. **Back to the board**: click "返回看板" (back to board). After a few seconds the repository's open issues and PRs are on the board.
+
+That is all the client needs. **With repositories only, no Project**: iteration and status are stored in a Project, not in the repository, so with the default "columns by iteration" every card lands in one column. Switch to columns by milestone in "视图设置" (view settings), or use the table grouped by repository / milestone; once you create a Project, add it under sources too.
+
+![Settings → sources: one Project and one repository](client-screens/settings-sources.png)
+
+## Sources
+
+- **Two kinds**: a GitHub Project (`github.com/orgs/<org>/projects/<number>` or `github.com/users/<user>/projects/<number>`) and a repository (`owner/repo`). Add as many as you like; the top bar has a checkbox per source, and an unchecked source is hidden for the moment.
+- **One item, one entry**: an issue that is in several sources is merged into one by `repo#number`. Iteration and status belong to each Project, so when two Projects disagree the item shows once in each column; the milestone belongs to the repository.
+- **Importing a saved web view**: when you add a Project, the client reads one view saved on its GitHub page (the one in the URL if it ends in `/views/N`, else the first) and copies its layout, grouping, sort, columns and filter. This happens once; later changes on the web page are not followed. Whatever cannot be copied (grouping by a custom field, the roadmap layout, …) is listed at the top of the view.
+- **An organization's Project cannot be read**: usually the organization restricts third-party apps and an owner has to approve. The developer notes explain it step by step in "[读不到组织的 Project 怎么办](../client/README.md#读不到组织的-project-怎么办401)" (when an organization's Project cannot be read).
+- **Syncing**: while the app is open it syncs about once a minute; the top bar shows when it last checked. The refresh button or ⌘R syncs now. A source is either read in full and replaces the local copy, or the previous round's copy stays — a failed read never makes items "disappear".
+
+## Board
+
+- **Columns**: by iteration (default), status or milestone. By iteration, ended iterations are folded into the leftmost column (click to open it); items without an iteration go to "无迭代" (no iteration).
+- **Swimlanes per repository** ("按仓库分泳道"): one row per repository, each scrolling sideways and folding on its own; the button next to a repository's name opens it in the browser.
+- **PRs under their linked issue** (a switch in view settings, on by default): "linked" means GitHub's linked pull requests in the issue sidebar, plus any issue a PR body names with `Closes` / `Fixes` / `Resolves` / `Refs #N`. The PR is indented with "↳" and sits in the issue's column.
+- **Dragging a card** to another column changes its iteration / status / milestone; dragging it to "no iteration" clears it.
+- **On a card**: repository and number, title, labels, iteration, author and assignee avatars, and which board a Project value comes from.
+
+## Table
+
+![The table: grouped by repository, then by iteration; PRs under their issue, sub-issues indented with their progress](client-screens/table.png)
+
+- **Groups**: iteration / status / milestone / repository / none. With "左侧按仓库切片" (repository list on the left) on, the left side lists repositories; with "全部" (all) picked, the table is split by repository first, then by the grouping above.
+- **Columns**: title, labels, linked PR, sub-issue progress, updated, iteration, status, milestone, author, assignees … pick them in view settings; drag a header's right edge to resize.
+- **Sub-issues are indented under their parent**, and the parent's row shows "N / M" done.
+- **Editing in a cell**: click a labels, iteration, status or milestone cell to change it; when grouped by iteration / status / milestone, a whole row can be dragged to another group.
+- **Folding**: every group folds; neighbouring folded groups merge into one row "已收起 N 组 · 共 M 条" (N groups folded · M items). What is folded is remembered on this machine.
+- **New issue**: every group ends with "＋ 新建 issue" (new issue), which creates the issue with that group's iteration / status / milestone already set.
+
+## Dependency graph
+
+![The dependency graph: parents drawn as boxes, blocking relations as arrows](client-screens/graph.png)
+
+The third view button. Only issues with a relation are drawn (those with a parent, with sub-issues, blocking or blocked); the number left out is shown at the bottom left.
+
+- **Boxes**: a parent issue is a box with its sub-issues inside in GitHub's order, its header saying "N / M 子项完成" (N of M sub-issues done); a sub-issue with sub-issues of its own is a box inside the box.
+- **Arrows** point from the blocking item to the blocked one: thick amber while the blocker is open, thin grey once it is closed. Nodes say "被 N 项挡住" (blocked by N) or "挡住后面 N 项" (blocking N).
+- **Where relations come from**: the parent / sub-issue relations and "Blocked by" registered in GitHub's sidebar; in addition, for an open issue carrying the "waiting for prerequisites" label (default `pending/blocked`), the prerequisite registration for the daemon in its comments (only one written by the repository's owner, an organization member or a collaborator), drawn next to "Blocked by".
+- **Across repositories**: when the other end of a relation is in another repository that is not among your sources, it is still drawn, dashed and marked "不在当前来源中" (not in the current sources), and can be opened on GitHub; an end hidden by the search is drawn faded.
+- **Moving around**: drag to pan, scroll to zoom; "适应窗口" (fit, `F`) fits the whole graph, "进行中" (in progress) jumps to the first group that still has an open issue; the minimap at the bottom right can be clicked and dragged. Click a node for a summary, double-click to open its details.
+
+## Search, filters and view settings
+
+- **The search box** uses GitHub's web syntax and filters the synced data locally as you type:
+  - plain text matches title, number (`135` / `#135`) and label names, including the middle of a Chinese word;
+  - `label:` `status:` `milestone:` `assignee:` `author:` `repo:` `project:` `iteration:` `is:` `no:` `has:` (e.g. `is:open`, `is:pr`, `no:milestone`), a leading `-` excludes, `@me` is you, `@current` / `@next` / `@previous` are iterations;
+  - anything not supported (iteration comparisons and ranges, for example) is listed in a yellow bar above the board and ignored — it never turns into "0 results".
+- A new install starts with the search `-Status:done -label:Done` (finished items hidden); clear the box to see everything.
+- **Flow numbers in the top bar**: by default "运行中 / 等 agent / 等人处理 / 未处理" (running / waiting for the agent / waiting for a human / untouched), each counting the open items of the checked sources that carry its label. Click a number to filter on that label; click it again to get your previous search back. Which numbers are shown and what each counts is set in Settings → "顶栏计数" (top-bar numbers).
+- **View settings**: column / grouping mode, sort (including "Project 里的顺序", the Project's own order), which columns to show, PRs under issues, sub-issues indented. The search text and view settings are remembered across restarts.
+
+## Details, the floating panel and tabs
+
+![Details floating on the right of the board](client-screens/detail.png)
+
+- **Click** a card, a table row's title or a graph node and its details float on the right of the board (drag the left edge to widen): body, discussion, labels, assignees, iteration, status, milestone; a PR also has its checks and the merge button. Click outside, press Esc or click "收起 ›" (hide) to close it.
+- **⌘-click** (or right-click → "在新标签页打开" (open in new tab), or "在标签页打开" (open in tab) at the top right of the panel) opens the item as a tab, details filling the window. The top row of the window is then a tab bar whose "首页" (home) is the board / table / graph; ⌘1 … ⌘9 switch tabs, ⌘W closes the current one. Open tabs come back after a restart.
+- Unsent text in a reply box stays with its tab / panel when you switch away and back; closing a tab that holds unsent text asks first.
+
+## Making changes from the client
+
+Changes go straight to GitHub, and the item is read back afterwards:
+
+- Labels (`L`), milestone (`M`), a Project's iteration and status: the new value shows at once and is marked until GitHub confirms it; you can resend or drop it.
+- Reply (⌘↩ sends, ⌘⇧P previews), edit your comments and the body, tick the task lists in a body.
+- New issue (`C`): pick the repository, optionally set labels, milestone, iteration and which boards it joins.
+- Close an issue (pick the reason, optionally add a comment), close or merge a PR: each needs one more click in a confirmation dialog. When it succeeds the tab / panel it was started from closes, and the result is shown at the top of the window.
+- Offline, every change is greyed out; nothing is queued or retried.
+
+## Keyboard shortcuts
+
+Keys follow GitHub's web pages where they can. Press `?` for the full list (also in the "快捷键" (shortcuts) section of the developer notes). The common ones:
+
+| Keys | Does |
+|---|---|
+| `/` | jump to the search box |
+| `C` | new issue |
+| ⌘R | sync now (in a detail tab: re-read that item) |
+| ⌘, | open settings |
+| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 (⌘⇧1 / ⌘⇧2 work too) | board / table / dependency graph |
+| ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
+| ⌘W | close the current tab |
+| `L` / `M` / `R` in details | labels / milestone / jump to the reply box |
+| ⌘↩ | send a reply, confirm a dialog |
+| ⌘= / ⌘- / ⌘0 | zoom in / out / actual size |
+
+## Network, credentials and offline use
+
+- **By default the client talks to GitHub only**: syncing and changes go to `api.github.com` / `github.com`. A few other addresses are GitHub's own too: avatars (`avatars.githubusercontent.com`), images in discussions (GitHub's attachment addresses and image proxy), repository files (`raw.githubusercontent.com`), Release attachments quoted in a discussion, and — when the app updates itself — `release-assets.githubusercontent.com` / `objects.githubusercontent.com`, where GitHub redirects the package download.
+- **Only after you pair a remote daemon** (see [Optional: connect the daemon](#optional-connect-the-daemon)) does it also connect to the one Tailscale machine you named: only a full `*.ts.net` machine name is accepted, its addresses must all be Tailscale addresses, and it must present a valid HTTPS certificate for that name; this connection carries no GitHub credential. Without a pairing there is no such connection.
+- **Credentials**: the sign-in credential is kept in the macOS keychain and used only by the app's back end; the pages in the window cannot read it. Signing out removes the credential and the local cache.
+- **Offline**: the last synced data stays readable, the top bar says how old it is, and changes are greyed out.
+
+## Updates
+
+- The app checks for, downloads and installs updates itself; Settings lists what changed in each version.
+- "更新渠道" (update channel) is one of: **正式版** (stable — none released yet) or **开发版** (development — a new one can appear with every client change merged into main, and may be unstable). Switching from development back to stable never downgrades; it waits for the next stable version above the current one.
+
+## Optional: connect the daemon
+
+The other thing in this repository is the daemon: label an issue `pending/agent` and an AI on your machine (Claude Code, Codex, …) picks it up, does the work and reports back on the issue / PR. The client can install the daemon for you and connect a repository to it; after that you can hand items to the AI from the client. **Without the daemon, everything above works the same.**
+
+1. **Install the programs the daemon needs first** (the client only checks what is missing, it does not install them): `git`, `gh`, `tmux`, `jq`, `flock`, `bash` 4 or later (macOS ships 3.2), and the agent program you will use (such as `claude`). With Homebrew: `brew install gh tmux jq flock bash`. Then run `gh auth login` once in Terminal — the daemon uses `gh`'s sign-in, not the client's.
+2. **Install the daemon**: Settings → "本机 daemon" (local daemon) → "安装" (install). It clones this repository from github.com into `~/.agents/skills/cavil-loop`; the checklist below it says which programs are still missing — install them and click "重新检查" (check again). Later, "更新 daemon" (update daemon) updates it.
+3. **Connect the repository**: back in sources, click "接上 daemon" (connect) on the repository's row: pick an existing local copy of the repository or let it clone one, pick the agent; once the pre-check passes, click "开始" (start). It runs the daemon's own setup script (project config, the `pending/agent` and other labels in the repository, the background poller), showing the output as it runs.
+4. **Hand over the first item**: create an issue and click "交给 agent" (hand to the agent) in its details (or add the `pending/agent` label). The daemon picks it up within about a minute and the label becomes `doing/agent`; when it is done the label becomes `pending/human` and the client sends a system notification.
+
+What the client adds once the daemon is connected:
+
+- **Hand to the agent / autopilot / wait for prerequisites**: three buttons in the details (⌘⇧Z / ⌘⇧C / ⌘⇧B). "交给 agent" adds the dispatch label; "托管" (autopilot) also adds the autopilot label, and the agent takes the item from proposal through development, review and merge; "等前置" (wait for prerequisites) records which issues / PRs this one waits for. If the reply box holds text, it is posted as a comment first, then the labels change.
+- **Notifications**: an open item newly labeled with the "waiting for a human" label (default `pending/human`) triggers a system notification, and the Dock badge counts the ones not yet seen. In Settings → "提醒" (notifications) you can switch to "只提醒和我有关的" (only those that concern me: assigned to you, review requested from you, or — with nobody assigned — ones you are subscribed to on GitHub), useful when several people share a repository.
+- **Flow labels**: Settings → the "交给 agent" section sets which label means running / hand to the agent / waiting for a human / autopilot / waiting for prerequisites (keep them the same as the daemon's config); buttons, top-bar numbers, notifications and tab icons follow.
+- **Project settings**: Settings → "本机 daemon" → the project's "配置…" (configure) opens a form for the everyday settings: which agent, which model, how many workers at once, and so on.
+- **Remote daemon**: when the daemon runs on another computer, pair with it over Tailscale and see its state, stop / start it and read its log under Settings → "远程 daemon" (remote daemon). If that computer has the client too, turn on "允许其他电脑远程连接" (allow other computers to connect) under its "本机 daemon" to get a pairing code. The network boundary is described in [Network, credentials and offline use](#network-credentials-and-offline-use).
+
+How the daemon itself works: the repository's [README](../README.md).
+
+## In progress
+
+Client issues still open when this guide was written (2026-11-13); the issue pages have the current state:
+
+- Chinese / English switching: [#466](https://github.com/GigleAI/cavil-loop/issues/466), in four steps — [#471](https://github.com/GigleAI/cavil-loop/issues/471) (language setting, top bar, settings, sign-in, menu, notifications), [#472](https://github.com/GigleAI/cavil-loop/issues/472) (board, table, graph, details, tabs, new issue), [#473](https://github.com/GigleAI/cavil-loop/issues/473) (local and remote daemon, updates, project settings), [#474](https://github.com/GigleAI/cavil-loop/issues/474) (finishing touches and this guide)
+- "Hand to the agent" and "autopilot" right in the new-issue window, with shortcuts: [#450](https://github.com/GigleAI/cavil-loop/issues/450)
+- A spinner and a result message after "重新读取" / "重新同步" (re-read / re-sync): [#455](https://github.com/GigleAI/cavil-loop/issues/455)
+- "Waiting for a human" also counts closed items still labeled `pending/human`: [#462](https://github.com/GigleAI/cavil-loop/issues/462)
+- Closed issues / PRs hidden by default: [#464](https://github.com/GigleAI/cavil-loop/issues/464)
+- A slimmer top bar, merged into the window's title bar: [#467](https://github.com/GigleAI/cavil-loop/issues/467)
+- Client tests leaving temporary directories behind: [#469](https://github.com/GigleAI/cavil-loop/issues/469) (affects development only, not use)
