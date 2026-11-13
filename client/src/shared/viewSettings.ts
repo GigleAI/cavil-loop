@@ -1,8 +1,9 @@
 // View settings: defaults, validation, and reading what an older build saved.
 // Pure; shared by the controller and the renderer.
 
-import type { ColumnMode, GroupBy, Layout, SortField, TableColumn, TableSettings, ViewSettings } from './types';
+import type { ColumnMode, GroupBy, Layout, ShowClosed, ShowClosedKey, SortField, TableColumn, TableSettings, ViewSettings } from './types';
 import { DEFAULT_QUERY, DEFAULT_TABLE_COLUMNS, NOT_IN_API } from './viewImport';
+import { onlyDoneHiders } from './filter';
 
 export { DEFAULT_QUERY };
 
@@ -45,6 +46,35 @@ export function validWidths(v: unknown): v is Partial<Record<TableColumn, number
   );
 }
 
+/** GitHub#464: the views that keep a "显示已关闭" switch of their own */
+export const SHOW_CLOSED_KEYS: readonly ShowClosedKey[] = ['board', 'table', 'graph', 'running', 'agent', 'human', 'unlabeled'];
+export const DEFAULT_SHOW_CLOSED: ShowClosed = { board: false, table: false, graph: false, running: false, agent: false, human: false, unlabeled: false };
+
+function validShowClosed(v: unknown): v is ShowClosed {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const keys = Object.keys(v);
+  return keys.length === SHOW_CLOSED_KEYS.length && SHOW_CLOSED_KEYS.every((k) => typeof (v as Record<string, unknown>)[k] === 'boolean');
+}
+
+/** Each switch that was saved as true / false; anything else (missing, not a boolean) is off. */
+function normalizeShowClosed(v: unknown): ShowClosed {
+  const r = (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  return Object.fromEntries(SHOW_CLOSED_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : false])) as ShowClosed;
+}
+
+/**
+ * GitHub#464: a search saved by a build from before the switch (its settings carry no `showClosed`).
+ * A search made of nothing but the words that only hid finished items (GitHub#298's default
+ * `-Status:done -label:Done`, a web view's `-label:Done -status:Done`, …) is emptied — the switch does
+ * that now; a flow number's old click query (`is:open label:"…"` / `is:open no:label`) becomes the new
+ * one, so the number stays lit. Any other search is kept as it was.
+ */
+export function migrateQuery(query: string): string {
+  if (onlyDoneHiders(query)) return '';
+  const m = query.trim().match(/^is:open (label:"[^"]+"|no:label)$/);
+  return m ? m[1] : query;
+}
+
 export const DEFAULT_VIEW: ViewSettings = {
   mode: 'iteration',
   swimlanes: false,
@@ -57,6 +87,7 @@ export const DEFAULT_VIEW: ViewSettings = {
   detailWidth: 560,
   detailFields: true,
   codeWrap: false,
+  showClosed: DEFAULT_SHOW_CLOSED,
 };
 
 /** The floating detail panel: narrowest it can be dragged to, and the widest any saved value may be. */
@@ -68,7 +99,7 @@ function validWidth(v: unknown): v is number {
 }
 
 /** A change from the UI: any top-level setting, and any part of the table settings. */
-export type ViewPatch = Partial<Omit<ViewSettings, 'table'>> & { table?: Partial<TableSettings> };
+export type ViewPatch = Partial<Omit<ViewSettings, 'table' | 'showClosed'>> & { table?: Partial<TableSettings>; showClosed?: Partial<ShowClosed> };
 
 function validTable(t: unknown): t is TableSettings {
   const x = t as TableSettings;
@@ -106,7 +137,8 @@ export function isValidView(v: unknown): v is ViewSettings {
     typeof x.prsUnderIssues === 'boolean' &&
     validWidth(x.detailWidth) &&
     typeof x.detailFields === 'boolean' &&
-    typeof x.codeWrap === 'boolean'
+    typeof x.codeWrap === 'boolean' &&
+    validShowClosed(x.showClosed)
   );
 }
 
@@ -125,17 +157,20 @@ export function normalizeView(raw: unknown): ViewSettings {
     hierarchy: tpick('hierarchy', (v) => typeof v === 'boolean'),
     widths: tpick('widths', validWidths),
   };
+  // GitHub#464: settings saved before the switch existed have no `showClosed`: their search is migrated once
+  const query = pick('query', (v) => typeof v === 'string');
   return {
     mode: pick('mode', (v) => MODES.includes(v)),
     swimlanes: pick('swimlanes', (v) => typeof v === 'boolean'),
     selected: pick('selected', (v) => v === null || (Array.isArray(v) && v.every((k: any) => typeof k === 'string'))),
     layout: pick('layout', (v) => LAYOUTS.includes(v)),
-    query: pick('query', (v) => typeof v === 'string'),
+    query: 'showClosed' in r ? query : migrateQuery(query),
     table,
     imported: pick('imported', (v) => v === null || (typeof v === 'object' && Array.isArray(v.notes))),
     prsUnderIssues: pick('prsUnderIssues', (v) => typeof v === 'boolean'),
     detailWidth: pick('detailWidth', validWidth),
     detailFields: pick('detailFields', (v) => typeof v === 'boolean'),
     codeWrap: pick('codeWrap', (v) => typeof v === 'boolean'),
+    showClosed: normalizeShowClosed(r.showClosed),
   };
 }

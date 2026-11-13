@@ -3,7 +3,9 @@
 // the real back end behind the loopback bridge, the fake GitHub serving the board recorded from the
 // real cavil project. The expected numbers are counted here straight from the items the window holds,
 // with a rule written out in this file (open, whole label name, any case) — not with the app's function.
-// GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `is:open no:label`.
+// GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `no:label`.
+// GitHub#464: the click queries carry no `is:open`; the lit number's own "显示已关闭" switch (off) keeps
+// the list to open items, so a click still lists exactly the counted ones.
 // Screenshots land in test-results/screens/.
 
 import { test, expect, type Page } from '@playwright/test';
@@ -73,8 +75,9 @@ async function ready(page: Page) {
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/11');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
-  await expect(page.getByTestId('table')).toBeVisible();
+  // the saved web view is imported (table); its filter only hid finished items, so the box stays empty (GitHub#464)
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('');
 }
 
 async function shot(page: Page, name: string) {
@@ -96,9 +99,10 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   const now = async () => ({ running: await countOf(page, 'running'), agent: await countOf(page, 'agent'), human: await countOf(page, 'human') });
   expect(await now()).toEqual(want);
   await expect(tally(page, 'running')).toContainText(`运行中 ${want.running}`);
-  await expect(tally(page, 'human')).toHaveAttribute('title', new RegExp(`^开着的条目里带 pending/human 标签的有 ${want.human} 个 · 点一下只看这些\\n当前来源共 ${(await items(page)).length} 个条目\\n搜索命中 \\d+ 条`));
+  // GitHub#464: the imported view brings no search any more (its filter only hid finished items), so no "搜索命中" line
+  await expect(tally(page, 'human')).toHaveAttribute('title', new RegExp(`^开着的条目里带 pending/human 标签的有 ${want.human} 个 · 点一下只看这些\\n当前来源共 ${(await items(page)).length} 个条目$`));
   // the old sentence is gone, with or without a search
-  await expect(bar).not.toContainText('显示');
+  await expect(bar.locator('.vbar-count')).not.toContainText('显示'); // (the "显示已关闭" switch is elsewhere on the bar, GitHub#464)
   // the total is kept only for screen readers (and as the hover's second line)
   await expect(page.getByTestId('item-total')).toHaveClass('sr-only');
   await shot(page, 'flow-tally-01-searching');
@@ -117,7 +121,7 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- a search, click 运行中, click again: the search comes back whole ----
   await page.getByTestId('search').fill('新增依赖图视图');
   await tally(page, 'running').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"doing/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('title', /再点一下回到之前的搜索/);
   await expect(shown(page)).toHaveCount(want.running);
@@ -137,7 +141,7 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- switching numbers keeps the first search ----
   await tally(page, 'running').click();
   await tally(page, 'human').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"pending/human"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'false');
   await tally(page, 'human').click();
@@ -154,14 +158,14 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- a hand edit voids it: typed back to a number's query, a click gives an empty box ----
   await tally(page, 'running').click();
   await page.getByTestId('search').fill('bug');
-  await page.getByTestId('search').fill('is:open label:"doing/agent"');
+  await page.getByTestId('search').fill('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await tally(page, 'running').click();
   await expect(page.getByTestId('search')).toHaveValue('');
 
   // ---- an empty box: click, click again → empty ----
   await tally(page, 'agent').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"pending/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/agent"');
   await tally(page, 'agent').click();
   await expect(page.getByTestId('search')).toHaveValue('');
 
@@ -261,9 +265,9 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
   await expect(u.getByTestId('tally-count')).toHaveText('1');
   await shot(page, 'flow-tally-05-unlabeled');
 
-  // click: the box says `is:open no:label`, lit, and the list is exactly the counted items
+  // click: the box says `no:label`, lit, and the list is exactly the counted items
   await u.click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await expect(page.getByTestId('search')).toHaveValue('no:label');
   await expect(u).toHaveAttribute('aria-pressed', 'true');
   await expect(u).toHaveAttribute('title', /再点一下回到之前的搜索/);
   await expect(shown(page)).toHaveCount(want.length);
@@ -275,10 +279,10 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
 
   // switching to another number and back keeps the first search; the lit one again gives it back
   await tally(page, 'running').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"doing/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(u).toHaveAttribute('aria-pressed', 'false');
   await u.click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await expect(page.getByTestId('search')).toHaveValue('no:label');
   await u.click();
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
   await expect(u).toHaveAttribute('aria-pressed', 'false');

@@ -68,14 +68,17 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   }
   await expect(page.getByTestId('source-row')).toHaveCount(sources.length);
   await page.getByTestId('back').click();
-  // adding the Project imported its saved web view (table, -label:Done -status:Done): wait for it, then look at the graph of everything
-  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imported its saved web view (table): wait for it, then look at the graph of everything
+  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
   // saved (the box saves 300 ms after typing stops), so a restart opens on the same search
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query)).toBe('');
   await expect.poll(() => sourcesStatus(page), { timeout: 20_000 }).toEqual(sources.map(() => true));
   await page.locator('[data-testid="layout"] button[data-value="graph"]').click();
   await expect(page.getByTestId('graph')).toBeVisible();
+  // GitHub#464: the graph of everything, closed items included (its own "显示已关闭" switch, saved)
+  await page.getByTestId('show-closed').check();
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed.graph)).toBe(true);
 }
 
 /** per configured source: has the latest round read it whole */

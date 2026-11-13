@@ -2,13 +2,16 @@
 // Counting and the click query must pick the same items, and "等人处理" must be the reminders' own
 // rule (isPending) — checked here on the same items through all three paths.
 // GitHub#418: the fourth number "未处理" (open, no label at all) — its count and its click query
-// `is:open no:label` must pick the same items too.
+// `no:label` must pick the same items too.
+// GitHub#464: the click queries carry no `is:open` any more — what a click lists is the query through
+// the ordinary filter and then, with the number's "显示已关闭" switch off (the default), open items only
+// (`openOnly`). That list must equal the count; with the switch on the closed ones come too.
 
 import { describe, expect, it } from 'vitest';
-import { flowTally, litTally, tallyClick, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
+import { flowTally, litTally, showClosedKey, tallyClick, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
 import { mergeSnapshots } from '../../src/data/merge';
 import { isPending } from '../../src/data/pending';
-import { applyFilter, parseFilter } from '../../src/shared/filter';
+import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
 import { DEFAULT_HAND_BACK, type Item } from '../../src/shared/types';
 import { item } from './helpers';
 
@@ -28,9 +31,15 @@ const ITEMS: Item[] = [
   item(R, 11, { kind: 'pr', isDraft: true }), // a draft PR with no label: open, so "未处理"
   item(R, 12, { state: 'closed', stateReason: 'not_planned' }), // closed, no label: never counted
   item(R, 13, { kind: 'pr', state: 'merged' }), // merged, no label: never counted
+  item(R, 14, { labels: L('pending/agent'), state: 'closed', stateReason: 'not_planned' }), // closed: never counted
 ];
 const counts = (e: TallyEntry[]) => Object.fromEntries(e.map((x) => [x.kind, x.count]));
 const today = '2026-11-12';
+/** what a click lists: the query, then open only while the number's switch is off (BoardView does exactly this) */
+const listed = (items: Item[], q: string, showClosed = false) => {
+  const hit = applyFilter(items, parseFilter(q), { viewer: null, today, projects: [] });
+  return (showClosed ? hit : openOnly(hit)).map((i) => i.number);
+};
 
 describe('flowTally', () => {
   it('counts open issues and PRs per flow label, whole name, any case, closed / merged left out', () => {
@@ -42,9 +51,13 @@ describe('flowTally', () => {
   it('the count, the click query and the reminders rule pick the same items', () => {
     for (const labels of [DEFAULT_HAND_BACK, { ...DEFAULT_HAND_BACK, running: ' DOING/AGENT ', human: 'Pending/Human' }]) {
       for (const e of flowTally(ITEMS, labels).filter((x) => x.kind !== 'unlabeled')) {
-        const viaQuery = applyFilter(ITEMS, parseFilter(e.query!), { viewer: null, today, projects: [] }).map((i) => i.number);
+        const viaQuery = listed(ITEMS, e.query!);
         const viaRule = ITEMS.filter((i) => isPending(i, e.label)).map((i) => i.number);
         expect(viaQuery, e.kind).toEqual(viaRule);
+        // the number's own switch on: the closed / merged ones carrying the label come too
+        const withClosed = ITEMS.filter((i) => i.labels.some((l) => l.name.toLowerCase() === e.label.toLowerCase())).map((i) => i.number);
+        expect(listed(ITEMS, e.query!, true), e.kind).toEqual(withClosed);
+        expect(withClosed.length, e.kind).toBeGreaterThan(viaRule.length);
         expect(viaRule.length, e.kind).toBe(e.count);
         expect(e.count, e.kind).toBeGreaterThan(0);
       }
@@ -83,14 +96,15 @@ describe('flowTally', () => {
       expect(e.query, name).not.toBeNull();
       const parsed = parseFilter(e.query!);
       expect(parsed.unsupported, name).toEqual([]);
-      expect(applyFilter(items, parsed, { viewer: null, today, projects: [] }).map((i) => i.number), name).toEqual([1]);
+      expect(listed(items, e.query!), name).toEqual([1]);
+      expect(listed(items, e.query!, true), name).toEqual([1, 4]);
     }
   });
 
   it('labels with spaces / commas still make a working query; a double quote makes none', () => {
     const items = [item(R, 1, { labels: L('wait for, me') }), item(R, 2, { labels: L('x') })];
     const q = tallyQuery(' wait for, me ')!;
-    expect(q).toBe('is:open label:"wait for, me"');
+    expect(q).toBe('label:"wait for, me"');
     expect(applyFilter(items, parseFilter(q), { viewer: null, today, projects: [] }).map((i) => i.number)).toEqual([1]);
     expect(tallyQuery('say "hi"')).toBeNull();
     expect(tallyQuery('')).toBeNull();
@@ -104,7 +118,7 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
   it('counts open issues and draft / ready PRs with no label; any label, closed or merged leaves it out', () => {
     expect(bare(ITEMS)).toEqual([10, 11]);
     const u = unlabeledTally(ITEMS);
-    expect(u).toEqual({ kind: 'unlabeled', label: '', count: 2, query: 'is:open no:label' });
+    expect(u).toEqual({ kind: 'unlabeled', label: '', count: 2, query: 'no:label' });
     // one label of any kind is enough to leave: a classification label, the autopilot label, a flow label
     for (const name of ['bug', 'autopilot', 'pending/agent']) {
       expect(unlabeledTally([item(R, 1, { labels: L(name) }), item(R, 2, {})]).count, name).toBe(1);
@@ -114,8 +128,9 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
   it('the count and the click query pick the same items, through the real filter', () => {
     for (const items of [ITEMS, ITEMS.slice(0, 9), [], [item(R, 1, { kind: 'pr' }), item(R, 2, { kind: 'pr', state: 'closed' })]]) {
       const u = unlabeledTally(items);
-      const viaQuery = applyFilter(items, parseFilter(u.query!), { viewer: null, today, projects: [] }).map((i) => i.number);
+      const viaQuery = listed(items, u.query!);
       expect(viaQuery).toEqual(bare(items));
+      expect(listed(items, u.query!, true)).toEqual(items.filter((i) => i.labels.length === 0).map((i) => i.number));
       expect(u.count).toBe(viaQuery.length);
     }
     expect(parseFilter(UNLABELED_QUERY).unsupported).toEqual([]);
@@ -149,7 +164,7 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
     expect(litTally(s.query, E)).toBe('unlabeled');
     s = tallyClick(s.query, s.saved, human, E);
-    expect(s).toEqual({ query: 'is:open label:"pending/human"', saved: '新增依赖图视图' });
+    expect(s).toEqual({ query: 'label:"pending/human"', saved: '新增依赖图视图' });
     s = tallyClick(s.query, s.saved, u, E);
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
     expect(tallyClick(s.query, s.saved, u, E)).toEqual({ query: '新增依赖图视图', saved: null });
@@ -161,8 +176,8 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
 describe('a click on a number', () => {
   const E = flowTally(ITEMS, DEFAULT_HAND_BACK);
   const [running, agent, human] = E;
-  const RUN = 'is:open label:"doing/agent"';
-  const HUM = 'is:open label:"pending/human"';
+  const RUN = 'label:"doing/agent"';
+  const HUM = 'label:"pending/human"';
 
   it('lit = the box says exactly that number\'s query (surrounding spaces ignored)', () => {
     expect(litTally(RUN, E)).toBe('running');
@@ -188,7 +203,7 @@ describe('a click on a number', () => {
 
   it('an empty box: click, click again → empty', () => {
     let s = tallyClick('', null, agent, E);
-    expect(s).toEqual({ query: 'is:open label:"pending/agent"', saved: '' });
+    expect(s).toEqual({ query: 'label:"pending/agent"', saved: '' });
     expect(tallyClick(s.query, s.saved, agent, E)).toEqual({ query: '', saved: null });
   });
 
@@ -211,5 +226,21 @@ describe('a click on a number', () => {
     const e = flowTally([], { ...DEFAULT_HAND_BACK, running: 'a"b' });
     expect(e[0].query).toBeNull();
     expect(tallyClick('foo', 'x', e[0], e)).toEqual({ query: 'foo', saved: 'x' });
+  });
+});
+
+describe('GitHub#464: which "显示已关闭" switch is in effect', () => {
+  it('the lit number\'s own, whatever the layout; else the layout\'s', () => {
+    for (const layout of ['board', 'table', 'graph'] as const) {
+      expect(showClosedKey(layout, null)).toBe(layout);
+      for (const k of ['running', 'agent', 'human', 'unlabeled'] as const) expect(showClosedKey(layout, k)).toBe(k);
+    }
+  });
+
+  it('the old `is:open` click queries no longer light a number (a saved one is migrated, see view settings)', () => {
+    const E = flowTally(ITEMS, DEFAULT_HAND_BACK);
+    expect(litTally('is:open label:"pending/human"', E)).toBeNull();
+    expect(litTally('label:"pending/human"', E)).toBe('human');
+    expect(litTally('no:label', E)).toBe('unlabeled');
   });
 });

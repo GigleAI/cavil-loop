@@ -5,15 +5,20 @@
 // reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
 //
 // GitHub#418: a fourth number, "未处理" — open items of the ticked sources carrying no label at all. Its
-// click query is the fixed `is:open no:label`, and the count goes through that very query's filter
-// (`applyFilter`), so the number and the list a click shows are one rule, not two.
+// click query is the fixed `no:label`, and the count goes through that very query's filter
+// (`applyFilter`) over the open items (`openOnly`, the rule the "显示已关闭" switch applies while off),
+// so the number and the list a click shows are one rule, not two.
 //
-// A number can be clicked: the search box becomes `is:open label:"<label>"` (the same items, through
-// the ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
+// A number can be clicked: the search box becomes `label:"<label>"` (the same items, through the
+// ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
+// GitHub#464: the click queries no longer carry `is:open` — whether closed items are listed too is the
+// lit number's own "显示已关闭" switch (`showClosedKey`), off by default, so the default list is still
+// exactly the counted items.
 
 import type { HandBackLabels, Item } from '../shared/types';
 import { isPending } from './pending';
-import { applyFilter, parseFilter } from '../shared/filter';
+import { applyFilter, openOnly, parseFilter } from '../shared/filter';
+import type { Layout, ShowClosedKey } from '../shared/types';
 
 export type TallyKind = 'running' | 'agent' | 'human' | 'unlabeled';
 
@@ -29,12 +34,12 @@ export interface TallyEntry {
 
 export const TALLY_TEXT: Record<TallyKind, string> = { running: '运行中', agent: '等 agent', human: '等人处理', unlabeled: '未处理' };
 
-/** GitHub#418: the "未处理" number's search — open and no label at all */
-export const UNLABELED_QUERY = 'is:open no:label';
+/** GitHub#418: the "未处理" number's search — no label at all (open only while its switch is off, GitHub#464) */
+export const UNLABELED_QUERY = 'no:label';
 
 /**
- * `is:open label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
- * parser, not by guessing which characters are safe: the query must read back as exactly "open" plus
+ * `label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
+ * parser, not by guessing which characters are safe: the query must read back as exactly
  * this one whole label, nothing ignored — a double quote breaks the quoting, and a leading `<` / `>`
  * is a comparison the filter drops (PR #408 review round 1: the number said 1, the click showed every
  * open item).
@@ -42,13 +47,12 @@ export const UNLABELED_QUERY = 'is:open no:label';
 export function tallyQuery(label: string): string | null {
   const l = label.trim();
   if (l === '' || l.includes('"')) return null;
-  const q = `is:open label:"${l}"`;
+  const q = `label:"${l}"`;
   const { clauses, unsupported } = parseFilter(q);
-  const [open, lab] = clauses;
+  const [lab] = clauses;
   const ok =
     unsupported.length === 0 &&
-    clauses.length === 2 &&
-    open.kind === 'field' && open.field === 'is' && !open.negated && open.values.length === 1 && open.values[0].toLowerCase() === 'open' &&
+    clauses.length === 1 &&
     lab.kind === 'field' && lab.field === 'label' && !lab.negated && lab.values.length === 1 && lab.values[0] === l;
   return ok ? q : null;
 }
@@ -76,7 +80,7 @@ export function flowTally(items: Item[], labels: Pick<HandBackLabels, 'running' 
  * counted items. Items come merged by key (`mergeSnapshots`), so one carried by two sources counts once.
  */
 export function unlabeledTally(items: Item[]): TallyEntry {
-  const count = applyFilter(items, parseFilter(UNLABELED_QUERY), { viewer: null, today: '', projects: [] }).length;
+  const count = applyFilter(openOnly(items), parseFilter(UNLABELED_QUERY), { viewer: null, today: '', projects: [] }).length;
   return { kind: 'unlabeled', label: '', count, query: UNLABELED_QUERY };
 }
 
@@ -104,4 +108,12 @@ export function tallyClick(current: string, saved: string | null, target: TallyE
 /** The box was changed some other way: once it no longer shows a number's query, the remembered text is void. */
 export function tallyForget(saved: string | null, current: string, entries: TallyEntry[]): string | null {
   return litTally(current, entries) === null ? null : saved;
+}
+
+/**
+ * GitHub#464: which "显示已关闭" switch is in effect — the lit number's own while one is lit (whatever
+ * the layout), else the layout's. The view bar's switch and the list both ask this, nothing else.
+ */
+export function showClosedKey(layout: Layout, lit: TallyKind | null): ShowClosedKey {
+  return lit ?? layout;
 }

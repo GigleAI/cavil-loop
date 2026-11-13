@@ -540,6 +540,13 @@ export interface HandBackLabels {
 
 export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
 
+/**
+ * GitHub#464: the "显示已关闭" switch, one per view — the three layouts, and each flow number of the view bar
+ * while it is lit (its own switch, whichever layout is showing). false = only open items are listed.
+ */
+export type ShowClosedKey = Layout | 'running' | 'agent' | 'human' | 'unlabeled';
+export type ShowClosed = Record<ShowClosedKey, boolean>;
+
 export interface ViewSettings {
   mode: ColumnMode;
   swimlanes: boolean;
@@ -558,6 +565,8 @@ export interface ViewSettings {
   detailFields: boolean;
   /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */
   codeWrap: boolean;
+  /** GitHub#464: per view, whether closed / merged items are listed too (all false by default) */
+  showClosed: ShowClosed;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';

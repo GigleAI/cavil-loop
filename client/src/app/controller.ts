@@ -1401,7 +1401,12 @@ export class Controller {
 
   /** A change made by the user. Invalid values are ignored as a whole. */
   setView(patch: ViewPatch): void {
-    const merged = { ...this.state.view, ...patch, table: { ...this.state.view.table, ...(patch.table ?? {}) } };
+    const merged = {
+      ...this.state.view,
+      ...patch,
+      table: { ...this.state.view.table, ...(patch.table ?? {}) },
+      showClosed: { ...this.state.view.showClosed, ...(patch.showClosed ?? {}) },
+    };
     if (!isValidView(merged)) return;
     const view: ViewSettings = merged;
     const touched = Object.keys(patch).flatMap((k) => (k === 'table' ? Object.keys(patch.table ?? {}).map((t) => `table.${t}`) : [k]));

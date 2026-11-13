@@ -12,7 +12,8 @@ import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
 import type { AppState } from '../../src/shared/types';
-import { DEFAULT_QUERY } from '../../src/shared/viewSettings';
+import { DEFAULT_QUERY, DEFAULT_SHOW_CLOSED } from '../../src/shared/viewSettings';
+import { flowTally, litTally } from '../../src/data/flowTally';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -317,7 +318,7 @@ describe('sync and cache', () => {
     expect(c.getState().view.query).toBe('label:bug');
     c.addSource(PROJECT_URL);
     await c.syncNow();
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done', imported: { viewNumber: 1, viewName: 'Pending' } });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '', imported: { viewNumber: 1, viewName: 'Pending' } });
     expect(c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' } });
   });
 
@@ -327,7 +328,7 @@ describe('sync and cache', () => {
     c.addSource(`${PROJECT_URL}/views/1`);
     await c.start();
     await c.syncNow();
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '' });
     // someone edits the saved view on github.com; the client keeps what it imported
     const pages = fake.state.projects.get('org/gigleai/11')!;
     const edited = pages.map((p: any) => ({
@@ -337,7 +338,7 @@ describe('sync and cache', () => {
     fake.state.projects.set('org/gigleai/11', edited);
     await c.syncNow();
     expect(c.getBoardData().projects[0].views[0]).toMatchObject({ filter: 'is:open' }); // the round did read the edit
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '' });
   });
 
   it('settings changed by the user survive a restart; removing and re-adding the Project imports again', async () => {
@@ -360,7 +361,7 @@ describe('sync and cache', () => {
     second.c.removeSource('project:org/gigleai/11');
     second.c.addSource(`${PROJECT_URL}/views/1`);
     await second.c.syncNow();
-    expect(second.c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(second.c.getState().view).toMatchObject({ layout: 'table', query: '' });
     expect(second.c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' }, slice: null, sliceByRepo: true, hierarchy: true });
   });
 
@@ -415,13 +416,43 @@ describe('sync and cache', () => {
     });
 
     it('a saved search text is kept as it is on start, the empty one included', async () => {
-      const base = { mode: 'iteration', swimlanes: false, selected: null };
+      // saved by this build (it carries the switches): never migrated, `is:open` included
+      const base = { mode: 'iteration', swimlanes: false, selected: null, showClosed: {} };
       const empty = await make({ seed: { view: { ...base, query: '' } } });
       expect(empty.c.getState().view.query).toBe('');
       const own = await make({ seed: { view: { ...base, query: 'is:open' } } });
       expect(own.c.getState().view.query).toBe('is:open');
       const broken = await make({ seed: { view: { ...base, query: 7 } } });
       expect(broken.c.getState().view.query).toBe(DEFAULT_QUERY);
+    });
+
+    it('GitHub#464: a search saved by an older build: only-hides-finished emptied, an old number query renewed, the rest kept; once saved again it stays', async () => {
+      const base = { mode: 'iteration', swimlanes: false, selected: null };
+      const cases: [string, string][] = [
+        ['-Status:done -label:Done', ''],
+        ['-label:Done -status:Done', ''],
+        ['is:open', ''],
+        ['is:open label:"pending/human"', 'label:"pending/human"'],
+        ['is:open no:label', 'no:label'],
+        ['-label:Done label:bug', '-label:Done label:bug'],
+        ['bug', 'bug'],
+      ];
+      for (const [saved, now] of cases) {
+        const old = await make({ seed: { view: { ...base, query: saved } } });
+        expect(old.c.getState().view.query, saved).toBe(now);
+        expect(old.c.getState().view.showClosed, saved).toEqual(DEFAULT_SHOW_CLOSED);
+        old.c.stopTimer();
+      }
+      // a number lit by an old build is still lit after the upgrade
+      const lit = await make({ seed: { view: { ...base, query: 'is:open label:"pending/human"' } } });
+      const tally = flowTally([], lit.c.getState().handBack);
+      expect(litTally(lit.c.getState().view.query, tally)).toBe('human');
+      // once this build saved the view, `is:open` typed by hand is kept over a restart
+      const first = await make({ seed: { view: { ...base, query: '-Status:done -label:Done' } } });
+      first.c.setView({ query: 'is:open' });
+      first.c.stopTimer();
+      const second = await make({ credentials: first.credentials });
+      expect(second.c.getState().view.query).toBe('is:open');
     });
 
     it('a view without a filter still empties any other search text: an earlier import, an own text, an empty box', async () => {
@@ -464,6 +495,28 @@ describe('sync and cache', () => {
       await c.syncNow();
       expect(c.getState().view).toMatchObject({ layout: 'table', query: DEFAULT_QUERY, imported: { viewNumber: 1 } });
     });
+  });
+
+  it('GitHub#464: each view keeps its own "显示已关闭" switch: a change touches only that one, survives a restart, a bad saved value falls back alone', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);
+    first.c.setView({ showClosed: { board: true } });
+    first.c.setView({ showClosed: { human: true } });
+    first.c.setView({ showClosed: { board: false, table: true } });
+    first.c.setView({ showClosed: { graph: 'yes' as any } }); // refused whole
+    first.c.setView({ showClosed: { nope: true } as any }); // unknown view: refused whole
+    const want = { ...DEFAULT_SHOW_CLOSED, table: true, human: true };
+    expect(first.c.getState().view.showClosed).toEqual(want);
+    first.c.stopTimer();
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().view.showClosed).toEqual(want);
+    second.c.stopTimer();
+    const base = { mode: 'iteration', swimlanes: false, selected: null, query: '' };
+    const broken = await make({ seed: { view: { ...base, showClosed: { board: true, table: 1, human: 'x', agent: true, extra: true } } } });
+    expect(broken.c.getState().view.showClosed).toEqual({ ...DEFAULT_SHOW_CLOSED, board: true, agent: true });
+    broken.c.stopTimer();
+    const notObject = await make({ seed: { view: { ...base, showClosed: [true] } } });
+    expect(notObject.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);
   });
 
   it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {

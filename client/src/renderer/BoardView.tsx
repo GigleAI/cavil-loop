@@ -18,7 +18,7 @@ import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
-import { applyFilter, type ParsedFilter } from '../shared/filter';
+import { applyFilter, openOnly, statesStated, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
 import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
@@ -36,7 +36,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { flowTally, litTally, tallyClick, tallyForget, TALLY_TEXT, type TallyEntry } from '../data/flowTally';
+import { flowTally, litTally, showClosedKey, tallyClick, tallyForget, TALLY_TEXT, type TallyEntry } from '../data/flowTally';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -616,10 +616,19 @@ export function BoardView({
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
-  const items = useMemo(
-    () => applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }),
-    [data, parsed, state.viewer, today],
-  );
+  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  const { running, agent, human } = state.handBack;
+  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
+  const lit = litTally(query, tally);
+  // GitHub#464: the "显示已关闭" switch in effect (the lit number's, else the layout's); a search that
+  // says open / closed / merged itself decides instead, and the switch is greyed out
+  const closedKey = showClosedKey(view.layout, lit);
+  const statesInSearch = statesStated(parsed);
+  const hideClosed = !statesInSearch && !view.showClosed[closedKey];
+  const items = useMemo(() => {
+    const hit = applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects });
+    return hideClosed ? openOnly(hit) : hit;
+  }, [data, parsed, state.viewer, today, hideClosed]);
   const board = useMemo(
     () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
     [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder],
@@ -635,16 +644,12 @@ export function BoardView({
   // GitHub#429: plus the loop's own prerequisite registrations, read under the waiting label setting
   const loopLabel = state.handBack.blocked;
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
-  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
-  const { running, agent, human } = state.handBack;
-  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
   const ownSaved = useRef<string | null>(null);
   const saved = tallySaved ?? ownSaved;
   // the box changed some other way and no longer shows a number's query: the remembered search is void
   useEffect(() => {
     saved.current = tallyForget(saved.current, query, tally);
   }, [query, tally, saved]);
-  const lit = litTally(query, tally);
   const clickTally = (e: TallyEntry) => {
     const next = tallyClick(query, saved.current, e, tally);
     saved.current = next.saved;
@@ -929,6 +934,25 @@ export function BoardView({
             </label>
           </>
         )}
+        <label
+          className={`toggle${statesInSearch ? ' disabled' : ''}`}
+          data-testid="show-closed-toggle"
+          data-view={closedKey}
+          title={
+            statesInSearch
+              ? '搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准'
+              : `打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的和近 14 天更新过的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。`
+          }
+        >
+          <input
+            type="checkbox"
+            data-testid="show-closed"
+            checked={statesInSearch ? false : view.showClosed[closedKey]}
+            disabled={statesInSearch}
+            onChange={(e) => api().setView({ showClosed: { [closedKey]: e.target.checked } })}
+          />
+          显示已关闭{lit ? `（${TALLY_TEXT[lit]}）` : ''}
+        </label>
         {view.layout !== 'graph' && (
           <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
             <Icon name="sliders" />
