@@ -7651,13 +7651,17 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(reply).toHaveValue('已看过xAP');
   expect(env.fake.writes()).toEqual([]);
 
-  // ---- 4. Ctrl+Shift+Z from the reply box (text in it): the hand-back write, the text stays; while it is held the keys do nothing more ----
+  // ---- 4. Ctrl+Shift+Z from the reply box (text in it): GitHub#451 — the text goes out first as a comment, then the
+  // hand-back write; the box is emptied (the operation keeps the text); while it is held the keys do nothing more ----
   await reply.focus();
+  await expect(page.getByTestId('hand-back')).toHaveText('评论并交给 agentCtrl+Shift+Z');
+  await expect(page.getByTestId('autopilot')).toHaveText('评论并托管（自动合并）…Ctrl+Shift+C');
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /^先把回复框里的字作为评论发出，发成功后再加上「pending\/agent」/);
   const release = env.fake.holdWhen((e) => e.method === 'DELETE' && e.path.includes('/issues/137/labels/'));
   await page.keyboard.press(HAND);
-  await expect.poll(() => writes().length).toBe(2);
+  await expect.poll(() => writes().length).toBe(3);
   await expect(page.getByTestId('hand-back')).toBeDisabled();
-  await expect(reply).toHaveValue('已看过xAP');
+  await expect(reply).toHaveValue('');
   await page.keyboard.press(HAND);
   await page.keyboard.press(CLOSE);
   await page.keyboard.press(AUTO);
@@ -7665,8 +7669,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(dialog).toHaveCount(0);
   release();
   await settled();
-  expect(writes()).toEqual(handBackWrites(137));
-  await expect(reply).toHaveValue('已看过xAP'); // the key does not send the reply
+  expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '已看过xAP' }], ...handBackWrites(137)]);
+  await expect(page.getByTestId('hand-back')).toHaveText('交给 agentCtrl+Shift+Z');
 
   // ---- 5. Ctrl+Shift+C from the empty reply box with "ask first" on: the autopilot dialog; Esc cancels; Ctrl+↩ confirms the same write as the button ----
   await expect(page.getByTestId('hand-back')).toBeEnabled();
@@ -7781,5 +7785,66 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.waitForTimeout(300);
   await expect(dialog).toHaveCount(0);
   expect(writes()).toHaveLength(before);
+  await app.close();
+});
+
+test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and posts it before any label; a refused comment leaves every label alone and comes back to the reply box', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  const reply = page.getByTestId('reply-input');
+  const dialog = page.getByTestId('confirm-dialog');
+  const notice = () => detail.locator('[data-testid="op-notice"]').last();
+  const comment = (n: number, body: string) => ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/comments`, { body }];
+  const autopilotWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
+    ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
+  ];
+
+  // ---- 1. the dialog quotes what will be posted; cancel sends nothing and keeps the text ----
+  await reply.fill('补充：只改客户端\n第二行');
+  await expect(page.getByTestId('autopilot')).toHaveText('评论并托管（自动合并）…Ctrl+Shift+C');
+  await page.getByTestId('autopilot').click();
+  await expect(dialog.locator('h3')).toHaveText('评论并托管 issue #138？');
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await expect(page.getByTestId('autopilot-explain-labels')).toContainText('评论发成功后，再加上标签');
+  await shot(page, '451-01-autopilot-with-comment');
+  await page.getByTestId('confirm-cancel').click();
+  expect(env.fake.writes()).toEqual([]);
+  await expect(reply).toHaveValue('补充：只改客户端\n第二行');
+
+  // ---- 2. refused comment: it reached GitHub, no label request after it; the text is kept and goes back into the box ----
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await page.getByTestId('autopilot').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(reply).toHaveValue('');
+  await expect(notice()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
+  await openNotices(page);
+  await expect(notice().getByTestId('op-notice-text')).toContainText('评论没有发出去');
+  await expect(notice().getByTestId('op-notice-text')).toContainText('标签都没动');
+  await shot(page, '451-02-comment-refused');
+  // "重新托管…" quotes the comment this operation kept, not the (now empty) reply box; cancelled, nothing sent
+  await notice().getByTestId('op-retry').click();
+  await expect(dialog.locator('h3')).toHaveText('评论并托管 issue #138？');
+  await expect(page.getByTestId('autopilot-explain-comment')).toHaveText('先发出上一次没发出去的评论：');
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await page.getByTestId('confirm-cancel').click();
+  expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
+  await openNotices(page);
+  await notice().getByTestId('op-to-reply').click();
+  await expect(reply).toHaveValue('补充：只改客户端\n第二行');
+
+  // ---- 3. allowed again: the kept text goes out first, then the three label writes, in that order ----
+  env.fake.state.w.readOnlyRepos.clear();
+  const before = writes().length;
+  await page.getByTestId('autopilot').click();
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual([comment(138, '补充：只改客户端\n第二行'), ...autopilotWrites(138)]);
+  await expect(reply).toHaveValue('');
   await app.close();
 });
