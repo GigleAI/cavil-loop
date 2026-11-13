@@ -11,7 +11,7 @@
 import { spawn, spawnSync, execFileSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, type DaemonWorld } from './daemon-world';
+import { REPO, keepTmp, type DaemonWorld } from './daemon-world';
 
 export const BOX = 'box.tailnet.ts.net';
 export const CLIENT_IP = '100.64.0.7';
@@ -103,7 +103,7 @@ export async function remoteWorld(w: DaemonWorld, path: string, serverEnv: Recor
   writeFileSync(r.log, '');
   addDevice(r, CLIENT_IP, 'nCLIENT', 'test-client');
   const server = spawn('python3', [join(w.skill, 'scripts/remote-access/remote_access.py'), 'serve', '--state', state, '--port', '0', '--skill', w.skill], {
-    env: { HOME: w.home, PATH: path, TZ: 'UTC', FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld, FAKE_TS: ts, ...serverEnv },
+    env: { ...keepTmp(), HOME: w.home, PATH: path, TZ: 'UTC', FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld, FAKE_TS: ts, ...serverEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   r.procs.push(server);

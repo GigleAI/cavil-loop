@@ -101,6 +101,45 @@ npm start                      # tauri dev：本机跑起来（Linux 要装 libw
 npm run dist:mac               # Mac 上：打 .app 和 dmg（要 dmgbuild：pip install dmgbuild）
 ```
 
+### 测试的临时文件（#469）
+
+上面五个测试命令都经 `scripts/with-tmp.mjs` 启动：每次运行在系统临时目录（Linux 一般是 `/tmp`，Mac 是 `$TMPDIR` 给的 `/var/folders/…`）里建一个自己的 `cavil-client-run-…`，把 `TMPDIR` 指过去，测试建的临时目录全落在里面；跑完（通过、失败、Ctrl-C 都算）整个删掉。直接跑 `npx vitest run …`、`npx playwright test …` 时由测试框架的启动钩子做同样的事。
+
+- 「还有没有人在用」靠锁判断：运行的命令和它起的所有子进程都握着这个目录的锁，锁没人握着才删。只有启动程序被强杀、里面的测试进程还活着时，目录会留到它们退出，之后哪次跑测试再删
+- 建目录和回收旧目录排在同一把总锁后面：系统临时目录里会一直有一个空文件 `.cavil-client-runs.lock`，所有运行共用，**不要删**
+- 要本机有 `perl`（Linux 发行版和 macOS 自带；Node 自己没有文件锁）。没有时启动程序报错退出，不会退回到系统临时目录里跑
+- 再按一次 Ctrl-C：启动程序不等了、直接退出，目录留给下次跑测试时删
+- CI 上（`CI` 有值）跑完还会检查一次：系统临时目录里多出名字以 `cavil-` 开头的条目，这一步就变红
+- 已知限制：不经 `npm run …`、直接跑测试框架时，锁只由测试框架的主进程那边握着，主进程被强杀后还活着的测试子进程用的目录可能被下一次运行删掉；自己变成后台服务、关掉所有继承文件的程序拿不到锁（本仓库测试里没有这种程序）
+
+查有没有留下：前后各数一次，数字不变就对（总锁文件以点开头，不算在内）：
+
+```bash
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cavil-*' | wc -l
+```
+
+**清理以前版本留下的旧目录**（`cavil-client-test-*`、`cavil-e2e-*`、`cavil-driver-*`、`cavil-dev-release-*` 等，旧版测试直接建在系统临时目录、从不删除）。新机制不碰它们，要人在合适的时候跑一次。只删 2 小时以前、此刻没有进程打开的；本机正在跑的新版测试的 `cavil-client-run-…` 不在其中。照顺序一段一段跑：
+
+<!-- tmp-cleanup-ops:begin -->
+```bash
+T="${TMPDIR:-/tmp}"; T="${T%/}"; L="$HOME/cavil-old-tmp"
+# 1. 确认本机没有客户端测试在跑：应该什么都不输出；有输出就等它们跑完再来
+ps -eo pid=,args= | grep -E 'node_modules/(\.bin/)?(vitest|playwright)|[c]avil-harness|[w]ith-tmp\.mjs|[t]est/mutation/run\.' | cut -c1-160
+# 2. 只列不删：2 小时以前的旧目录，去掉此刻有进程打开着的；最后两行是个数和前几个名字
+lsof -n -Fn > "$L.open" 2>/dev/null; [ -s "$L.open" ] || echo '读不到哪些文件开着（没有 lsof？），停下，不要往下跑'
+find "$T" -maxdepth 1 -name 'cavil-*' ! -name 'cavil-client-run-*' ! -name 'cavil-client-new-*' ! -name 'cavil-client-del-*' -mmin +120 > "$L.all"
+awk -v t="$T/" 'NR == FNR { if (index($0, "n" t) == 1) { p = substr($0, length(t) + 2); sub(/\/.*/, "", p); busy[t p] = 1 } next } !($0 in busy)' "$L.open" "$L.all" > "$L.list"
+wc -l < "$L.list"; head -5 "$L.list"
+# 3. 删（目录多时要几分钟）
+tr '\n' '\0' < "$L.list" | xargs -0 rm -rf
+# 4. 再数一次：剩下的是 2 小时以内的、此刻开着的、新版测试正在用的
+find "$T" -maxdepth 1 -name 'cavil-*' | wc -l
+rm -f "$L.open" "$L.all" "$L.list"
+```
+<!-- tmp-cleanup-ops:end -->
+
+第 2 步输出「读不到哪些文件开着」就停下，不要跑第 3 步。删错了没法恢复，但这些都是测试的临时目录，删掉只会让一个还在跑的旧版测试失败，重跑即可。
+
 ## 规则（改代码前读）
 
 - **GitHub 是唯一数据源**：缓存只从 GitHub 往下写。一个来源要么整个读成功、整条覆盖本地，要么沿用上一轮——任何一页失败都不能把半份结果写进去，否则「读失败」会看起来像「条目消失」。GitHub#229 的「先显示的修改」不进这份缓存：它们另存一行（见下文「修改先显示」），只叠在界面上；看板数据仍只装 GitHub 读回来的值。

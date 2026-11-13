@@ -7,4 +7,5 @@ export default defineConfig({
   workers: 1,
   reporter: [['list']],
   outputDir: 'test-results/tauri',
+  globalSetup: './test/tauri/global-setup.ts',
 });

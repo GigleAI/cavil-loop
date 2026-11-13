@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
@@ -159,12 +159,15 @@ function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown>
   const out = join(dir, 'dist-release');
   mkdirSync(out);
   writeFileSync(join(dir, 'notes.md'), '开发版\n');
+  // the script's own temp dir, so what it leaves behind can be listed (GitHub#469)
+  const tmp = join(dir, 'tmp');
+  mkdirSync(tmp);
   const build = (v: string) => {
     for (const f of files(v)) writeFileSync(join(out, f), `${f} bytes`);
   };
   const run = (v: string, extra: string[] = []) => {
     const r = spawnSync(process.execPath, [script, '--version', v, '--sha', SHA, '--dir', out, '--notes-file', join(dir, 'notes.md'), ...extra], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: state },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: state, TMPDIR: tmp },
       encoding: 'utf8',
     });
     return { code: r.status, out: r.stdout + r.stderr };
@@ -175,7 +178,7 @@ function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown>
     s.fail.push(...f);
     writeFileSync(state, JSON.stringify(s));
   };
-  return { build, run, read, fail: fail2, stateFile: state };
+  return { build, run, read, fail: fail2, stateFile: state, tmp };
 }
 
 const writes = (calls: string[][]) =>
@@ -183,6 +186,22 @@ const writes = (calls: string[][]) =>
 const published = (s: { releases: Rel[] }, tag: string) => s.releases.find((r) => r.tag_name === tag && !r.draft);
 
 describe('publishing a development build (GitHub#215)', () => {
+  it('the release notes file is removed whether the create worked or failed (GitHub#469)', () => {
+    const ok = world([pub('client/v0.5.0')]);
+    ok.build('0.5.1-dev.387');
+    const r = ok.run('0.5.1-dev.387');
+    expect(r.code, r.out).toBe(0);
+    // the notes did reach gh (the fake read them from the file), and the file's folder is gone
+    expect(ok.read().releases.find((x) => x.tag_name === 'client/v0.5.1-dev.387')?.body).toContain('开发版');
+    expect(readdirSync(ok.tmp)).toEqual([]);
+    const bad = world([pub('client/v0.5.0')], ['create']);
+    bad.build('0.5.1-dev.387');
+    const f = bad.run('0.5.1-dev.387');
+    expect(f.code).toBe(1);
+    expect(bad.read().calls.some((c) => c[1] === 'create')).toBe(true);
+    expect(readdirSync(bad.tmp)).toEqual([]);
+  });
+
   it('a new one: created as a draft with every file, then published as a pre-release (never Latest), and read back', () => {
     const w = world([pub('release/v2026.11.01.1'), pub('client/v0.5.0'), devRel('0.5.1-dev.380')]);
     w.build('0.5.1-dev.387');

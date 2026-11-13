@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { appendLine, connect, daemonEnv, daemonWorld, dropWorlds, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const open: HarnessBackend[] = [];
@@ -23,6 +23,7 @@ beforeEach(() => {
 }, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
+  dropWorlds();
 });
 
 function backend(os: Os, path: string, extra?: Record<string, string>, opened?: string[]) {

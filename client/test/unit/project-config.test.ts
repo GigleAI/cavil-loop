@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { canEdit, configGroups, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
@@ -87,6 +87,7 @@ describe('the back end and the daemon\'s real script', () => {
   });
   afterEach(async () => {
     await Promise.all(open.splice(0).map((b) => b.close()));
+    dropWorlds();
   });
   function backend(os: Os = 'Darwin', p = path) {
     const b = new HarnessBackend({

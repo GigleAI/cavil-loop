@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { addTool, appendLine, connect, daemonEnv, daemonWorld, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, systemTool, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { addTool, appendLine, connect, daemonEnv, daemonWorld, dropWorlds, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, systemTool, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -30,6 +30,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await Promise.all(running.splice(0).map((a) => a.close()));
   await env.fake.close();
+  dropWorlds();
 });
 test.afterAll(async () => {
   await closeEngine();
