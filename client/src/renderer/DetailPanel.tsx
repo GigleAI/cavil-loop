@@ -22,6 +22,7 @@ import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
+import { sendHolds, sendSlot, sendTakeable } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
@@ -761,7 +762,7 @@ export function DetailPanel({
    * box shows what was asked for in grey and no box takes a click; a refused / failed write takes it
    * back at once. `written`: GitHub answered yes — only the re-read is still awaited.
    */
-  const [pendingTick, setPendingTick] = useState<{ entryId: string; index: number; checked: boolean; written: boolean } | null>(null);
+  const [pendingTick, setPendingTick] = useState<{ entryId: string; index: number; checked: boolean; written: boolean; /** GitHub#489: its send record */ send?: string } | null>(null);
   // the re-read ended (landed or failed) and no other change is in flight: the frame shows what GitHub holds
   // again — decided while rendering, so the read that lands draws the frame once, not grey first and then again
   const tickOver = Boolean(pendingTick?.written) && !loading && !busy;
@@ -799,25 +800,40 @@ export function DetailPanel({
       return;
     }
     setPendingTick({ entryId: e.id, index, checked, written: false });
-    const r = await run(
-      { kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source },
-      checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
-    );
-    if (!r.here) return;
-    // refused or failed: the box goes back to what is on screen at once, and `run` reads again, so it
-    // ends up showing what GitHub holds now (a re-read with the same content does not redraw by itself)
-    if (!r.ok) {
+    // GitHub#489: the controller sends it; the box stays grey until it is answered and read again (the effect below)
+    const s = await api().startSend({ kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source });
+    if (!session.current()) return;
+    if (!s.ok || !s.id) {
+      // refused before anything went out: the box goes back to what is on screen at once
+      setPendingTick(null);
+      setRedraw((n) => n + 1);
+      setNote({ kind: 'error', text: s.error ?? '没有修改' });
+      return;
+    }
+    const id = s.id;
+    setPendingTick((p) => (p && p.entryId === e.id && p.index === index ? { ...p, send: id } : p));
+  };
+  // GitHub#489: the box's send got its answer. Written: the grey stays until the re-read after it has ended
+  // (`tickOver`); refused / not sure: the box goes back to what is on screen at once, and the detail is read
+  // again (the effect on `sendSig`), so it ends up showing what GitHub holds now
+  const tickSend = pendingTick?.send ? state.sends.find((r) => r.id === pendingTick.send) : undefined;
+  const tickAnswer = pendingTick?.send && !pendingTick.written ? (tickSend ? tickSend.state : 'ok') : null;
+  useEffect(() => {
+    if (!tickAnswer || tickAnswer === 'sending') return;
+    if (tickAnswer === 'ok') setPendingTick((p) => (p ? { ...p, written: true } : p));
+    else {
       setPendingTick(null);
       setRedraw((n) => n + 1);
     }
-    // written: the grey stays until the re-read `run` started has ended (the effect above)
-    else setPendingTick((p) => (p ? { ...p, written: true } : p));
-  };
+  }, [tickAnswer]);
   // What the listener below reads: the latest values of this render, set before the frame can load.
   /** GitHub#205: "edit" was clicked in the frame. Opened only for an entry GitHub said this account may change. */
   const edit = (entryId: unknown) => {
     const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
     if (!e || e.editSource === undefined || !canWrite || busy || editing) return;
+    // GitHub#489: its last change is on its way or not sure: a second one could be overwritten by a late answer
+    const held = state.sends.find((r) => sendHolds(r) && sendSlot(r.action) === `entry:${e.id}`);
+    if (held) return void setNote({ kind: 'error', text: '这一条上一次的修改还没有结果（或还不确定有没有保存上），先看窗口上方的提示' });
     setEditNote(null);
     setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
   };
@@ -893,17 +909,29 @@ export function DetailPanel({
   const pickBlocked = !item || !canWrite || !opts;
   const send = async () => {
     if (!item) return;
-    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
-    setSendingReply(reply);
-    const r = await run({ kind: 'comment', key: item.key, body: reply, ...(replyFromOp ? { draftOf: replyFromOp } : {}) }, '评论已发出');
-    if (r.here) setSendingReply(null);
-    if (r.ok && r.here) {
+    const cleared = () => {
       setReplyFromOp(null);
       setReply('');
       setPreview(null);
       setEscKept(false);
       setPasted(null);
+    };
+    if (!replyFromOp) {
+      // GitHub#489: the controller sends it; the box is empty at once and the panel is free (closed, switched,
+      // another item — the result is said in the window's notice area). Only a refusal before it was recorded
+      // (nothing sent) is said here, and the text stays in the box.
+      const text = reply;
+      const s = await api().startSend({ kind: 'comment', key: item.key, body: text });
+      if (!s.ok) return void setNote({ kind: 'error', text: s.error ?? '没有发送' });
+      setNote(null);
+      cleared();
+      return;
     }
+    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
+    setSendingReply(reply);
+    const r = await run({ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }, '评论已发出');
+    if (r.here) setSendingReply(null);
+    if (r.ok && r.here) cleared();
   };
   const togglePreview = async () => {
     if (!item) return;
@@ -1068,6 +1096,51 @@ export function DetailPanel({
     seenSig.current = opSig;
     void load(true);
   }, [opSig, load]);
+  // ---- GitHub#489: this item's replies / edits / ticked boxes, sent by the controller ----
+  const mySends = state.sends.filter((r) => r.key === itemKey);
+  // one of them got an answer or was proven: read the detail again, so the panel shows what GitHub holds now.
+  // A record that changed state or is gone counts (a quiet one — a box, a title — that went through is
+  // forgotten at once); one that only started does not
+  const sendSig = mySends.map((r) => `${r.id}:${r.state}`).join('|');
+  const seenSendSig = useRef(sendSig);
+  useEffect(() => {
+    const before = seenSendSig.current;
+    if (sendSig === before) return;
+    seenSendSig.current = sendSig;
+    const now = new Set(sendSig.split('|'));
+    if (before && before.split('|').some((x) => !now.has(x))) void load(true);
+  }, [sendSig, load]);
+  // refused for sure (nothing changed on GitHub): its text goes back into this item's edit box — the reply
+  // box at once, a body / comment / title by opening its editor again (only while no editor is open, and
+  // once the discussion is read: the editor needs the entry). Taken once per record (`taken`), whichever
+  // panel shows the item first; the controller then says 「原文已放回…」 and offers no second send.
+  const taken = useRef(new Set<string>());
+  const takeSig = mySends
+    .filter(sendTakeable)
+    .map((r) => r.id)
+    .join('|');
+  useEffect(() => {
+    for (const r of mySends) {
+      if (!sendTakeable(r) || taken.current.has(r.id)) continue;
+      const a = r.action;
+      if (a.kind === 'comment') {
+        const body = a.body;
+        setReply((cur) => (cur.trim() ? `${cur}\n\n${body}` : body));
+      } else if (a.kind === 'editTitle') {
+        if (editing || titleEdit) continue;
+        setTitleNote(null);
+        setTitleEdit({ seen: a.seenTitle, text: a.title });
+      } else if (a.kind === 'editEntry') {
+        const e = detail?.timeline.find((x) => x.id === a.entryId && (x.kind === 'body' || x.kind === 'comment'));
+        if (editing || titleEdit || !e) continue;
+        setEditNote(null);
+        setEditing({ entryId: a.entryId, kind: e.kind as 'body' | 'comment', url: e.url, source: a.seenSource, text: a.body });
+      } else continue;
+      taken.current.add(r.id);
+      void api().sendReturned(r.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeSig, detail, editing === null, titleEdit === null]);
   // opened from a notice above the board (GitHub#250): do what was asked there, once
   const intentDone = useRef(false);
   useEffect(() => {
@@ -1138,6 +1211,9 @@ export function DetailPanel({
   // GitHub#299: the title as this opening last read it from GitHub, else the board's copy (which may
   // be a round behind — e.g. right after a title change was refused because someone else changed it)
   const shownTitle = detail && fromCache === null ? detail.title : item.title;
+  const titleSending = mySends.find((r) => r.state === 'sending' && r.action.kind === 'editTitle') ?? null;
+  /** GitHub#489: the title keeps another change from going out while its last one is on its way or not sure */
+  const titleHeld = mySends.some((r) => sendHolds(r) && sendSlot(r.action) === `title:${itemKey}`);
   const pr = detail?.pr ?? null;
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
@@ -1290,15 +1366,24 @@ export function DetailPanel({
         </span>
       </div>
       <div className="detail-title-row">
-        <h3 className="detail-title" data-testid="detail-title">{shownTitle}</h3>
+        {/* GitHub#489: a title on its way shows at once, marked, until GitHub answered */}
+        <h3 className="detail-title" data-testid="detail-title" data-saving={titleSending ? 'yes' : 'no'}>
+          {titleSending?.action.kind === 'editTitle' ? titleSending.action.title.trim() : shownTitle}
+          {titleSending && (
+            <span className="saving" data-testid="title-saving">
+              <span className="spin" aria-hidden="true" />
+              {EDIT_WORDS.saving}
+            </span>
+          )}
+        </h3>
         {/* GitHub#299: only where GitHub said this account may change the item */}
         {detail?.canEdit === true && (
           <button
             className="icon-btn"
             data-testid="detail-edit-title"
             aria-label="编辑标题"
-            title={canWrite && !busy && !editing ? '编辑标题' : (offlineWhy ?? '有修改在途时不能编辑')}
-            disabled={!canWrite || busy || !!editing}
+            title={canWrite && !busy && !editing && !titleHeld ? '编辑标题' : (offlineWhy ?? '有修改在途（或上一次还不确定有没有保存上）时不能编辑')}
+            disabled={!canWrite || busy || !!editing || titleHeld}
             onClick={() => {
               setTitleNote(null);
               setTitleEdit({ seen: shownTitle, text: shownTitle });
@@ -1801,13 +1886,14 @@ export function DetailPanel({
             if (pasted?.where === 'edit') setPasted(null);
           }}
           onConfirm={async () => {
-            const r = await run({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source }, editing.kind === 'body' ? '正文已保存' : '评论已保存');
-            if (!r.here) return;
-            if (r.ok) {
-              setEditing(null);
-              setEditNote(null);
-              if (pasted?.where === 'edit') setPasted(null);
-            } else setEditNote(noteOf(r, ''));
+            // GitHub#489: the controller saves it; the editor closes at once. Only a refusal before it was
+            // recorded (nothing sent) is said here, and the editor stays with the text
+            const s = await api().startSend({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source });
+            if (!session.current()) return;
+            if (!s.ok) return void setEditNote({ kind: 'error', text: s.error ?? '没有保存' });
+            setEditing(null);
+            setEditNote(null);
+            if (pasted?.where === 'edit') setPasted(null);
           }}
         >
           <textarea
@@ -1844,12 +1930,12 @@ export function DetailPanel({
           dirty={titleEdit.text !== titleEdit.seen}
           onCancel={() => setTitleEdit(null)}
           onConfirm={async () => {
-            const r = await run({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen }, '标题已保存');
-            if (!r.here) return;
-            if (r.ok) {
-              setTitleEdit(null);
-              setTitleNote(null);
-            } else setTitleNote(noteOf(r, ''));
+            // GitHub#489: as an edit above — the controller saves it, the dialog closes at once
+            const s = await api().startSend({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen });
+            if (!session.current()) return;
+            if (!s.ok) return void setTitleNote({ kind: 'error', text: s.error ?? '没有保存' });
+            setTitleEdit(null);
+            setTitleNote(null);
           }}
         >
           {/* not in a form: a plain Enter submits nothing — only the button or ⌘↩ (as in every dialog) */}

@@ -40,6 +40,9 @@ async function showClosedEverywhere(page: Page) {
   await page.waitForTimeout(500);
 }
 
+/** GitHub#489: a reply / edit / ticked box's notice in the window's notice area (the newest first) */
+const sendNotice = (page: Page) => page.locator('[data-testid="notice-area"] [data-testid="send-notice"]');
+
 async function shot(page: Page, name: string) {
   await page.waitForTimeout(150);
   await page.screenshot({ path: join(screens, `${name}.png`) });
@@ -456,7 +459,9 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await detail.getByTestId('reply-preview-toggle').click();
   await expect(page.frameLocator('[data-testid="reply-preview"]').locator('body')).toContainText('看过了');
   await detail.getByTestId('reply-send').click();
-  await expect(page.getByTestId('action-result')).toContainText('评论已发出');
+  // GitHub#489: the box is empty at once; the result is said in the window's notice area
+  await expect(detail.getByTestId('reply-input')).toHaveValue('');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('评论已发出');
   await expect(frame.locator('details.entry').first()).toContainText('看过了');
   await shot(page, '22-replied');
   await detail.getByTestId('hand-back').click();
@@ -755,7 +760,10 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await roundTrip();
   await detail.getByTestId('reply-input').fill('NEW_UNSENT_DRAFT_AFTER_RETURN');
   releaseSend();
-  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：评论已发出');
+  // GitHub#489: the controller sent it — said once, in the window's notice area, about #138
+  await expect(sendNotice(page).first()).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('评论已发出');
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0);
   await expect(detail.getByTestId('reply-input')).toHaveValue('NEW_UNSENT_DRAFT_AFTER_RETURN');
   await expect(detail.getByTestId('reply-send')).toBeEnabled(); // the new opening is not left "busy"
   await expect(page.getByTestId('action-result')).toHaveCount(0);
@@ -3168,14 +3176,14 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
 
   // ---- 3. ⌘↩ sends (the send button's own action); blank text: nothing, like the greyed button ----
   await page.keyboard.press(`${MOD}+Enter`);
-  await expect(page.getByTestId('action-result')).toHaveText('评论已发出');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('评论已发出');
   expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: 'lmc/?r' }]]);
   await expect(reply).toHaveValue('');
   await reply.fill('   ');
   await page.keyboard.press(`${MOD}+Enter`);
   await page.waitForTimeout(500);
   expect(writes()).toHaveLength(1);
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok'); // no "empty comment" refusal either
+  await expect(page.getByTestId('action-result')).toHaveCount(0); // no "empty comment" refusal either
   // ⌘⇧P: preview and back
   await reply.fill('**PREVIEW_KEY**');
   await page.keyboard.press(`${MOD}+Shift+KeyP`);
@@ -3346,8 +3354,9 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   // ---- 3. tick A: GitHub gets the comment with exactly that box changed ----
   await expect(box('C_Q', 0)).toBeEnabled();
   await box('C_Q', 0).click();
-  await expect(page.getByTestId('action-result')).toHaveText('已勾上，GitHub 上已更新');
+  // GitHub#489: the box shows it itself — nothing is said when it simply went through
   const ticked = QUESTION193.replace('- [ ] **A.', '- [x] **A.');
+  await expect.poll(() => sourceOfQ()).toBe(ticked);
   expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: ticked }]]);
   expect(sourceOfQ()).toBe(ticked);
   // re-read: A shown ticked, B not; the entries opened before are still open; hand back is offered
@@ -3368,8 +3377,9 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   // the window still shows the old text: B unticked
   await expect(box('C_Q', 1)).not.toBeChecked();
   await box('C_Q', 1).click();
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
-  await expect(page.getByTestId('action-result')).toHaveText(TASK_CHANGED193);
+  // GitHub#489: the refusal is said in the window's notice area
+  await expect(sendNotice(page).first()).toHaveAttribute('data-kind', 'error');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText(`勾选没有保存上：${TASK_CHANGED193}`);
   expect(env.fake.writes()).toHaveLength(1);
   expect(sourceOfQ()).toBe(theirs);
   // read again: what GitHub holds now
@@ -3384,8 +3394,7 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   await page.waitForTimeout(500);
   expect(env.fake.writes()).toHaveLength(1);
   await inFrame.evaluate((r) => parent.postMessage({ cavil: 'task', render: r, entry: 'C_Q', index: 0, checked: false, view: { open: [], scroll: 0 } }, '*'), render);
-  await expect(page.getByTestId('action-result')).toHaveText('已取消勾选，GitHub 上已更新');
-  expect(env.fake.writes()).toHaveLength(2);
+  await expect.poll(() => env.fake.writes().length).toBe(2);
   expect(sourceOfQ()).toBe(theirs.replace('- [x] **A.', '- [ ] **A.'));
 
   // ---- 6. offline: every box greys out, nothing sent ----
@@ -3455,7 +3464,8 @@ test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirme
   await expect(box('C_OLD', 0)).not.toBeChecked();
   const before = source('C_Q')!;
   release();
-  await expect(page.getByTestId('action-result')).toHaveText('已勾上，GitHub 上已更新');
+  // GitHub#489: nothing is said when it simply went through — the box itself shows it
+  await expect.poll(() => writes().length).toBe(1);
   // confirmed and read again: blue, nothing waiting, every box takes clicks again; GitHub got that one write, one character
   await expect(waiting()).toHaveCount(0);
   await expect(box('C_Q', 0)).toBeChecked();
@@ -3479,7 +3489,7 @@ test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirme
   expect(greyEmpty).not.toBe(blue);
   await expect(box('C_OLD', 1)).toBeDisabled();
   release();
-  await expect(page.getByTestId('action-result')).toHaveText('已取消勾选，GitHub 上已更新');
+  await expect.poll(() => env.fake.writes().length).toBe(2);
   await expect(waiting()).toHaveCount(0);
   await expect(box('C_Q', 1)).not.toBeChecked();
   await expect(box('C_Q', 1)).toBeEnabled();
@@ -3490,7 +3500,7 @@ test('GitHub#358: a clicked box shows grey at once and blue once GitHub confirme
   const theirs = source('C_OLD')!.replace('— 自动', '— 自动（改过）');
   w.comments.get('gigleai/cavil-loop#138')!.find((c) => c.id === 'C_OLD')!.body = theirs;
   await box('C_OLD', 0).click();
-  await expect(page.getByTestId('action-result')).toHaveText(TASK_CHANGED193);
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText(`勾选没有保存上：${TASK_CHANGED193}`);
   await expect(frame.locator('details.entry[data-entry="C_OLD"] .md')).toContainText('自动（改过）');
   await expect(waiting()).toHaveCount(0);
   await expect(box('C_OLD', 0)).not.toBeChecked();
@@ -4082,7 +4092,9 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await shot(page, '205-07-edit');
   const b2 = writes().length;
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toContainText('评论已保存');
+  // GitHub#489: the editor closes at once; the result is said in the window's notice area
+  await expect(page.getByTestId('edit-input')).toHaveCount(0);
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('正文 / 评论的修改已保存');
   expect(writes().slice(b2)).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_MINE', body: '改过的文字' }]]);
   await expect(frame.locator('details.entry[data-entry="C_MINE"]')).toContainText('改过的文字');
   // somebody changed it on the web while it was being edited: refused, the typed text stays in the box, theirs on GitHub
@@ -4091,7 +4103,9 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await page.getByTestId('edit-input').fill('我的新版本');
   const digest = env.fake.digest();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('edit-result')).toContainText('被别人改过');
+  // GitHub#489: refused (nothing written) — said in the notice area, and the editor opens again with the typed text
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toContainText('被别人改过');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toContainText('原文已放回编辑框');
   await expect(page.getByTestId('edit-input')).toHaveValue('我的新版本');
   expect(env.fake.digest()).toBe(digest);
   await page.getByTestId('confirm-cancel').click();
@@ -5298,25 +5312,29 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await open(144);
   await page.getByTestId('reply-input').fill('看过了 256');
   await page.getByTestId('reply-send').click();
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
+  // GitHub#489: in the notice area
+  const said = sendNotice(page).first();
+  await expect(said).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(said).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
-  await expect(page.getByTestId('action-result')).toBeVisible();
+  await expect(said).toBeVisible();
   await ff(1_100);
-  await expect(page.getByTestId('action-result')).toHaveCount(0);
-  // above the board: a comment answered after its panel was put away
+  await expect(sendNotice(page)).toHaveCount(0);
+  // the same notice when its panel was put away before GitHub answered
   const holdSend = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/144/comments'));
   await page.getByTestId('reply-input').fill('再看一遍 256');
   await page.getByTestId('reply-send').click();
   await expect.poll(() => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/144/comments')).length).toBe(2);
   await page.getByTestId('detail-close').click();
+  await expect(sendNotice(page).first()).toHaveAttribute('data-kind', 'busy');
   holdSend();
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
+  await expect(sendNotice(page).first()).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await page.mouse.move(5, 5);
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
+  await expect(sendNotice(page).first()).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
-  await expect(page.getByTestId('board-action-result')).toBeVisible();
+  await expect(sendNotice(page).first()).toBeVisible();
   await ff(1_100);
+  await expect(sendNotice(page)).toHaveCount(0);
   await expect(page.getByTestId('board-action-result')).toHaveCount(0);
 
   // ---- 6. restart: what went away stays away, what stayed is still there ----
@@ -5600,18 +5618,19 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   const headH = () => detail.locator('.detail-head').evaluate((e) => Math.round(e.getBoundingClientRect().height));
   const headH0 = await headH();
 
-  // ---- 2. a write made here: the success is a short line in the head, the discussion does not move ----
-  // (GitHub#488: a field change says nothing — the field shows it; a comment still says its result here)
+  // ---- 2. a write made here: nothing in the head, the discussion does not move ----
+  // (GitHub#488: a field change says nothing — the field shows it; GitHub#489: a comment says its result in the
+  // window's notice area)
   const w2 = writes().length;
   await pickLabel(page, 'pending/PR');
   await savedQuietly(page, sentTo('POST', `/issues/${prN}/labels`), w2);
   await detail.getByTestId('reply-input').fill('看过了 260');
   await detail.getByTestId('reply-send').click();
-  await expect(detail.locator('.detail-head [data-testid="action-result"]')).toContainText('评论已发出');
-  await expect(detail.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('评论已发出');
+  await expect(detail.getByTestId('action-result')).toHaveCount(0);
   await expect(detail.getByTestId('detail-notices-toggle')).toHaveCount(0);
-  // the line sits in the head: the head keeps its height (a comment adds to the discussion itself — its tools row
-  // shows from the second entry on — so its place is taken again below, once the comment is in)
+  // the head keeps its height (a comment adds to the discussion itself — its tools row shows from the second
+  // entry on — so its place is taken again below, once the comment is in)
   expect(await headH()).toBe(headH0);
   await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('body')).toContainText('看过了 260');
   const inPanel0 = await inPanel();
@@ -5628,19 +5647,26 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await page.waitForTimeout(500);
   await expect(toggle).toHaveCount(0);
   await expect(detail.getByTestId('action-result')).toHaveCount(0);
-  // a refused comment: GitHub's answer behind the notices button
+  // a refused comment (GitHub#489): said in the notice area, the text back in the reply box, nothing in the panel
   env.fake.state.w.failComment = true;
   await detail.getByTestId('reply-input').fill('被拒 260');
   await detail.getByTestId('reply-send').click();
+  await expect(sendNotice(page).first()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(detail.getByTestId('reply-input')).toHaveValue('被拒 260');
+  env.fake.state.w.failComment = false;
+  await expect(toggle).toHaveCount(0);
+  // a failed read of the shown detail is the panel's own: behind the notices button
+  env.fake.state.w.failDetail.add(`gigleai/cavil-loop#${prN}`);
+  await detail.getByTestId('detail-refresh').click();
   await expect(toggle).toHaveAttribute('data-tone', 'error', { timeout: 15_000 });
   await expect(toggle).toHaveAttribute('data-count', '1');
-  env.fake.state.w.failComment = false;
-  await expect(detail.getByTestId('action-result')).toBeHidden();
+  env.fake.state.w.failDetail.clear();
+  await expect(detail.getByTestId('detail-error')).toBeHidden();
   expect(await inPanel()).toBe(inPanel0);
   // a click shows them, with their own buttons; Esc puts them away, the panel stays
   await toggle.click();
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
-  await expect(detail.getByTestId('action-result')).toHaveAttribute('data-kind', 'error');
+  await expect(detail.getByTestId('detail-error')).toBeVisible();
   await expect(page.locator('[data-testid="notice-area"] [data-testid="edit-issue"][data-field="label"]')).toHaveAttribute('data-edit', 'failed');
   expect(await inPanel()).toBe(inPanel0);
   await shot(page, '260-02-notices-open');
@@ -6014,23 +6040,26 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
 
   // ---- 3. ⌘↩ saves (the button's own action): one PATCH, the detail, the card and the table row show it ----
   await input.press(`${MOD}+Enter`);
-  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
+  // GitHub#489: the dialog closes at once; the title shows the new one (marked 保存中… until GitHub answered); nothing else is said
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  await expect.poll(() => writes().length).toBe(1);
+  await expect(detail.getByTestId('detail-title')).toHaveAttribute('data-saving', 'no');
   expect(writes()).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/138', { title: '客户端能改标题了' }]]);
   expect(onGitHub(138)).toBe('客户端能改标题了');
   await expect(detail.getByTestId('detail-title')).toHaveText('客户端能改标题了');
   await expect(card(page, 138)).toContainText('客户端能改标题了');
-  // the plain success note puts itself away (5 s, as every other one)
-  await page.mouse.move(2, 2);
-  await expect(page.getByTestId('action-result')).toHaveCount(0, { timeout: 9_000 });
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await expect(sendNotice(page)).toHaveCount(0);
 
-  // ---- 4. changed on the web while being edited: refused, the dialog stays with the typed text, theirs on GitHub ----
+  // ---- 4. changed on the web while being edited: refused, nothing written; said in the notice area (GitHub#489),
+  // the dialog opens again with the typed text, theirs on GitHub ----
   await detail.getByTestId('detail-edit-title').click();
   retitle(138, '别人刚改的标题');
   await input.fill('又一版');
   const digest = fake.digest();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('edit-title-result')).toContainText('被别人改过');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toContainText('被别人改过');
+  await expect(sendNotice(page).first().getByTestId('send-notice-text')).toContainText('原文已放回标题输入框');
   await expect(input).toHaveValue('又一版');
   expect(fake.digest()).toBe(digest);
   expect(onGitHub(138)).toBe('别人刚改的标题');
@@ -6042,8 +6071,7 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
   await expect(input).toHaveValue('别人刚改的标题');
   await input.fill('又一版');
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
-  expect(onGitHub(138)).toBe('又一版');
+  await expect.poll(() => onGitHub(138)).toBe('又一版');
   await page.getByTestId('detail-close').click();
 
   // ---- 5. a PR, saved with the button, shown in the table ----
@@ -6053,7 +6081,7 @@ test('GitHub#299: the title of an issue / PR is edited from the detail; a plain 
   await input.fill('PR 的新标题');
   const b5 = writes().length;
   await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('action-result')).toHaveText('标题已保存');
+  await expect.poll(() => writes().length).toBe(b5 + 1);
   expect(writes().slice(b5)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/146', { title: 'PR 的新标题' }]]);
   await page.getByTestId('detail-close').click();
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
@@ -6633,22 +6661,30 @@ test('GitHub#323 (PR #327 review round 1) → GitHub#488: a field change made in
   await page.getByTestId('detail-close').click();
   await expect(page.getByTestId('detail')).toHaveCount(0);
   release();
-  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  // GitHub#489: the comment's result is in the notice area too; its text waits for #137's reply box
+  const failed = page.locator('[data-testid="notice-area"] [data-testid="send-notice"][data-key="gigleai/cavil-loop#137"]');
+  await expect(failed).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(failed.getByTestId('send-notice-text')).toContainText('打开这一条时会放回回复框');
+  await expect(bar).toHaveCount(0);
   env.fake.state.w.failComment = false;
-  const kept = await bar.textContent();
   // a field change of #137 made and answered inside its detail (said in the notice area), then abandoned
   await card(page, 137).getByTestId('card-title').click();
+  await expect(page.getByTestId('reply-input')).toHaveValue('留在看板上的失败评论');
+  await expect(failed.getByTestId('send-notice-text')).toContainText('原文已放回回复框');
+  const kept = await failed.getByTestId('send-notice-text').textContent();
   env.fake.state.w.dropWrites = true;
   await pickLabel(page, 'Done');
   await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
   env.fake.state.w.dropWrites = false;
-  await expect(bar).toHaveText(kept ?? '');
+  await expect(failed.getByTestId('send-notice-text')).toHaveText(kept ?? '');
   await editsBar.getByTestId('edits-abandon-all').click();
   await expect(editsBar).toHaveCount(0);
+  await page.getByTestId('reply-input').fill('');
   await putAway();
   await page.waitForTimeout(500);
-  await expect(bar).toHaveText(kept ?? '');
-  await bar.getByTestId('board-action-result-close').click();
+  await expect(failed.getByTestId('send-notice-text')).toHaveText(kept ?? '');
+  await failed.getByTestId('send-dismiss').click();
+  await expect(failed).toHaveCount(0);
   await expect(bar).toHaveCount(0);
   await app.close();
 });
@@ -7004,7 +7040,8 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments'))).toBe(true);
   await page.getByTestId('detail-close').click();
   holdReply();
-  const result = page.getByTestId('board-action-result');
+  // GitHub#489: in the window's notice area
+  const result = page.locator('[data-testid="notice-area"] [data-testid="send-notice"]').first();
   await expect(result).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await expect(result).toHaveClass(/\bok\b/);
   expect(await mark(result)).toBe('check');

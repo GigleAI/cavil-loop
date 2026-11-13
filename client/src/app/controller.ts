@@ -26,7 +26,7 @@ import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, readItemSnapshot, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -55,6 +55,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
+import { isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
 import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
@@ -201,6 +202,8 @@ export interface ControllerDeps {
 export const EDITS_KEY = '__edits__';
 /** GitHub#250: the row of the snapshot table that holds the close / merge / autopilot / hand-back operations (not a source). */
 export const OPS_KEY = '__ops__';
+/** GitHub#489: the row of the snapshot table that holds the replies / edits / ticked boxes (shared/sends.ts; not a source). */
+export const SENDS_KEY = '__sends__';
 /** GitHub#250: the operations started from the window: one action of one of the five kinds */
 export type OpAction = Extract<WriteAction, { kind: OpKind }>;
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
@@ -477,6 +480,12 @@ export class Controller {
   // ---- GitHub#250 ----
   /** close / merge / autopilot / hand-back operations (shared/ops.ts), stored under OPS_KEY */
   private ops = new Map<string, OpRecord>();
+  /** GitHub#489: replies / edits / ticked boxes sent for the window (shared/sends.ts), stored under SENDS_KEY */
+  private sends = new Map<string, SendRecord>();
+  private sendsStored = false;
+  private sendSeq = 0;
+  /** GitHub#489: a send's job (its request, or a check) is running in this run of the app */
+  private sendJobs = new Map<string, Promise<void>>();
   private opsStored = false;
   private opSeq = 0;
   /** an operation's requests and re-reads, while they run */
@@ -557,10 +566,12 @@ export class Controller {
       editsResending: [],
       creates: [],
       ops: [],
+      sends: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
       else if (s.sourceKey === OPS_KEY) this.loadOps(s);
+      else if (s.sourceKey === SENDS_KEY) this.loadSends(s);
       else this.snapshots.set(s.sourceKey, s);
     }
     this.tabList = normalizeTabs(this.cache.getSetting<unknown>(TABS, null));
@@ -893,7 +904,10 @@ export class Controller {
     this.watchTimers.clear();
     this.resending.clear();
     this.resendQueue.clear();
-    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [] };
+    // GitHub#489: and its replies / edits (their row went with the cache)
+    this.sends.clear();
+    this.sendsStored = false;
+    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -1755,6 +1769,8 @@ export class Controller {
       await this.catchUpReads(session);
       // GitHub#359: and check again what an operation's answer that never came left open
       this.catchUpChecks(session);
+      // GitHub#489: and what a reply's / an edit's
+      this.catchUpSends(session);
     }
     if (round.authFailed) {
       // A GitHub App token can be refreshed once before the credential is declared dead —
@@ -2406,8 +2422,8 @@ export class Controller {
     if (action.kind !== 'toggleTask' && action.kind !== 'editEntry' && action.kind !== 'editTitle') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     // (GitHub#299: a title the same way, by its item)
-    const slot = action.kind === 'editTitle' ? `title:${action.key}` : action.entryId;
-    if (this.tasksInFlight.has(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
+    const slot = sendSlot(action)!;
+    if (this.tasksInFlight.has(slot) || this.sendHolding(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
     this.tasksInFlight.add(slot);
     try {
       return await this.actNow(action);
@@ -4927,6 +4943,281 @@ export class Controller {
     }
     this.opsStored = true;
     this.state = { ...this.state, ops: [...this.ops.values()] };
+  }
+
+  // ---- GitHub#489: replies, edited bodies / comments / titles, ticked boxes ------------------------------
+
+  /** a send (or an earlier write through `act`) still keeps this entry / title from another change */
+  private sendHolding(slot: string): boolean {
+    return [...this.sends.values()].some((r) => sendHolds(r) && sendSlot(r.action) === slot);
+  }
+
+  /**
+   * A reply / an edit / a ticked box, sent for the window: it returns at once with the record's id (the
+   * panel empties its box, closes its editor, and is free to go); the request, the answer, the re-read and
+   * the checks are the controller's. Refused at once, nothing kept, when it cannot go out at all.
+   */
+  startSend(action: SendAction): { ok: boolean; error: string | null; id?: string } {
+    const refuse = (error: string) => ({ ok: false, error });
+    if (!action || typeof action !== 'object' || !['comment', 'editEntry', 'editTitle', 'toggleTask'].includes(action.kind)) return refuse('不认识的修改');
+    if ((action as { draftOf?: unknown }).draftOf !== undefined) return refuse('带操作草稿的回复不走这里');
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    const item = this.findItem(action.key);
+    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    if (action.kind === 'comment' && !action.body.trim()) return refuse('评论是空的，没有发送');
+    const slot = sendSlot(action);
+    if (slot && (this.tasksInFlight.has(slot) || this.sendHolding(slot))) return refuse('这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改');
+    const id = `send-${++this.sendSeq}`;
+    const rec: SendRecord = {
+      id,
+      key: item.key,
+      repo: item.repo,
+      number: item.number,
+      action,
+      startedAt: this.stamp(),
+      state: 'sending',
+      sentAt: null,
+      answeredAt: null,
+      reason: null,
+      warning: null,
+      proof: null,
+      returned: false,
+      unlocked: false,
+      dismissed: false,
+    };
+    // a newer change of the same entry (or a newer reply) puts an older refusal whose text went back away
+    for (const r of [...this.sends.values()])
+      if (r.key === rec.key && r.state === 'refused' && r.returned && sendSlot(r.action) === slot && r.action.kind === action.kind) this.sends.set(r.id, { ...r, dismissed: true });
+    this.sends.set(id, rec);
+    this.pruneSends();
+    this.sendsChanged();
+    void this.launchSend(id, this.runSend(id));
+    return { ok: true, error: null, id };
+  }
+
+  /** A send's job: kept in sendJobs until it is through (stored included), so nothing else of it starts meanwhile. */
+  private launchSend(id: string, run: Promise<void>): Promise<void> {
+    const job: Promise<void> = run
+      .catch(() => undefined)
+      .then(() => this.storeSends())
+      .then(() => {
+        if (this.sendJobs.get(id) === job) this.sendJobs.delete(id);
+      });
+    this.sendJobs.set(id, job);
+    return job;
+  }
+
+  private patchSend(id: string, patch: Partial<SendRecord>): SendRecord | null {
+    const r = this.sends.get(id);
+    if (!r) return null;
+    const next = { ...r, ...patch };
+    this.sends.set(id, next);
+    this.pruneSends();
+    this.sendsChanged();
+    return next;
+  }
+
+  /** The send itself: on disk first, every check that can refuse it, the request, its answer, the re-read. */
+  private async runSend(id: string): Promise<void> {
+    const start = this.sends.get(id);
+    if (!start) return;
+    const session = this.session;
+    const mine = () => session === this.session && this.sends.get(id) !== undefined;
+    const notSent = (reason: string) => {
+      if (mine()) this.patchSend(id, { state: 'refused', reason, answeredAt: this.stamp() });
+    };
+    // 1. "sending" on disk before anything goes out (a restart then finds it, and knows it was not sent)
+    if (!(await this.storeSends())) return notSent('没能存到本机，没有发出');
+    if (!mine()) return;
+    const c = await this.clientForCall(true);
+    if ('error' in c) return notSent(c.error);
+    if (c.session !== session || !mine()) return;
+    const item = this.findItem(start.key);
+    if (!item) return notSent('看板上找不到这一条（可能刚被同步掉了），没有发出');
+    // 2. every check before the write (each read that fails: nothing was sent)
+    let prepared: Awaited<ReturnType<typeof prepareSend>>;
+    try {
+      prepared = await prepareSend(c.client, start.action, item, { proofs: true });
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      return notSent(explainError(e, start.action.kind));
+    }
+    if (!mine()) return;
+    if (!prepared.write) {
+      this.patchSend(id, { state: 'ok', reason: 'GitHub 上已经是这样，没有再发', answeredAt: this.stamp(), proof: prepared.proof, dismissed: sendQuiet(start.action) });
+      return;
+    }
+    // 3. what proves it, and the moment it goes out, on disk too (not stored = not sent)
+    this.patchSend(id, { proof: prepared.proof, sentAt: this.stamp() });
+    if (!(await this.storeSends())) {
+      if (mine()) this.patchSend(id, { sentAt: null });
+      return notSent('没能存到本机，没有发出');
+    }
+    if (!mine()) return;
+    // 4. the write
+    let warning: string | null = null;
+    try {
+      warning = await prepared.write();
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      if (!mine()) return;
+      if (refusedForSure(e)) this.patchSend(id, { state: 'refused', reason: explainError(e, start.action.kind), answeredAt: this.stamp() });
+      else {
+        this.patchSend(id, { state: 'unknown', reason: unknownReason(e), answeredAt: this.stamp() });
+        await this.storeSends();
+        // checked once at once; then with every sync round
+        await this.checkSend(id, c);
+      }
+      return;
+    }
+    if (!mine()) return;
+    // a quiet one (a ticked box, a title) that simply went through has nothing left to say: forgotten at once
+    this.patchSend(id, { state: 'ok', answeredAt: this.stamp(), warning, dismissed: !warning && sendQuiet(start.action) });
+    await this.storeSends();
+    // the item read again, like any change
+    const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
+    if (c.session === this.session) this.scheduleFollowUp(c.session);
+    if (read.problem && mine()) this.patchSend(id, { warning: [warning, read.problem].filter(Boolean).join('；') });
+  }
+
+  /** Read what proves an unknown send (reads only, nothing is sent). */
+  private async checkSend(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'unknown') return;
+    this.patchSend(id, { checking: true, checkProblem: null });
+    let problem: string | null = null;
+    let found = false;
+    try {
+      const ev = await readSendEvidence(c.client, r.action, r.repo, r.number);
+      if (c.session !== this.session) return;
+      const now = this.sends.get(id);
+      if (!now || now.state !== 'unknown') return;
+      const out = sendProve(now, { login: this.state.viewer, ...ev });
+      problem = out.missing;
+      found = out.record.state === 'ok';
+      this.sends.set(id, out.record);
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      problem = `读不到 GitHub 上现在的内容（${(e as Error)?.message ?? String(e)}）`;
+    }
+    if (c.session !== this.session) return;
+    const end = this.sends.get(id);
+    if (!end) return;
+    this.patchSend(id, { checking: false, checks: (end.checks ?? 0) + 1, checkProblem: found ? null : problem });
+    await this.storeSends();
+    if (found) {
+      await this.refreshOne(c.client, c.session, end.repo, end.number);
+      if (c.session === this.session) this.scheduleFollowUp(c.session);
+    }
+  }
+
+  /** 「再查一次」: check an unknown send now (reads only). */
+  async sendRecheck(id: string): Promise<WriteResult> {
+    const r = this.sends.get(id);
+    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
+    if (r.state !== 'unknown') return { ok: true, error: null, warning: null };
+    if (this.sendJobs.has(id) || r.checking) return { ok: false, error: '正在查证，稍等', warning: null };
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error, warning: null };
+    await this.launchSend(id, this.checkSend(id, c));
+    const end = this.sends.get(id);
+    return end?.state === 'ok' ? { ok: true, error: null, warning: null } : { ok: false, error: end?.checkProblem ?? '还没查到（原来那次请求仍可能稍后生效）', warning: null };
+  }
+
+  /** 「再发一次」: a send refused for sure whose text no panel took back goes out again (all its checks again). */
+  async sendResend(id: string): Promise<WriteResult> {
+    const r = this.sends.get(id);
+    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
+    if (r.state !== 'refused' || r.returned) return { ok: false, error: '这一条不能再发（原文已放回编辑框，或结果还不确定）', warning: null };
+    if (this.sendJobs.has(id)) return { ok: false, error: '正在发送，稍等', warning: null };
+    const slot = sendSlot(r.action);
+    if (slot && (this.tasksInFlight.has(slot) || [...this.sends.values()].some((x) => x.id !== id && sendHolds(x) && sendSlot(x.action) === slot)))
+      return { ok: false, error: '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再试', warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    this.patchSend(id, { state: 'sending', reason: null, sentAt: null, answeredAt: null, warning: null, proof: null, dismissed: false, checks: 0, checkProblem: null });
+    await this.launchSend(id, this.runSend(id));
+    const end = this.sends.get(id);
+    return end?.state === 'ok' ? { ok: true, error: null, warning: end.warning } : { ok: false, error: end?.reason ?? '没有发出', warning: null };
+  }
+
+  /** The panel that shows the item put a refused send's text back into its edit box. */
+  sendReturned(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.returned) return;
+    this.patchSend(id, { returned: true });
+    void this.storeSends();
+  }
+
+  /** "已核对，解除锁定" on an unknown send: local only; the text stays in the notice until it is put away. */
+  sendUnlock(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'unknown') return;
+    this.patchSend(id, { unlocked: true });
+    void this.storeSends();
+  }
+
+  /** ×: only when the notice may be put away (never on its way, never unknown and still locked) */
+  sendDismiss(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state === 'sending' || (r.state === 'unknown' && !r.unlocked)) return;
+    // a refused text no panel took back yet: putting it away is not losing it — it goes back to the box when the item is opened
+    this.patchSend(id, { dismissed: true });
+    void this.storeSends();
+  }
+
+  /** every sync round that reached GitHub: the unknown sends are checked again (reads only) */
+  private catchUpSends(session: number): void {
+    for (const r of [...this.sends.values()]) {
+      if (session !== this.session || !this.signedIn) return;
+      if (r.state !== 'unknown' || r.checking || this.sendJobs.has(r.id)) continue;
+      void this.launchSend(r.id, this.checkSend(r.id, { client: this.client(session), session }));
+    }
+  }
+
+  /** Records put away with nothing left to hold are forgotten. */
+  private pruneSends(): void {
+    for (const r of [...this.sends.values()]) if (sendDisposable(r)) this.sends.delete(r.id);
+  }
+
+  private sendsChanged(): void {
+    this.set({ sends: [...this.sends.values()] });
+  }
+
+  /** One row of the snapshot table, this session only. false = not stored. */
+  private async storeSends(): Promise<boolean> {
+    const session = this.session;
+    // what is running in this run of the app is not kept
+    const list = [...this.sends.values()].map(({ checking: _c, ...r }) => r);
+    try {
+      if (!list.length) {
+        if (this.sendsStored) {
+          this.sendsStored = false;
+          this.cache.deleteSnapshot(SENDS_KEY);
+        }
+        return session === this.session;
+      }
+      const row = { sourceKey: SENDS_KEY, fetchedAt: this.now(), items: [], sends: list } as unknown as SourceSnapshot;
+      const ok = await this.writeSnapshots(session, [row]);
+      if (ok) this.sendsStored = true;
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The stored records as the last run left them: one on its way then has no answer now, and nothing is sent again. */
+  private loadSends(row: SourceSnapshot): void {
+    const raw = (row as unknown as { sends?: unknown }).sends;
+    const list = Array.isArray(raw) ? raw.filter(isSendRecord).map(sendAfterRestart) : [];
+    for (const r of list) {
+      this.sends.set(r.id, r);
+      this.stampAt = Math.max(this.stampAt, r.startedAt, r.sentAt ?? 0, r.answeredAt ?? 0);
+      const n = Number(/^send-(\d+)$/.exec(r.id)?.[1] ?? 0);
+      if (n > this.sendSeq) this.sendSeq = n;
+    }
+    this.sendsStored = true;
+    this.state = { ...this.state, sends: [...this.sends.values()] };
   }
 }
 
