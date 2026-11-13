@@ -77,9 +77,11 @@ jobs:
       - name: Run shard ${{ matrix.shard }}/8
         # Results go outside the checkout: some tests scan the whole repo tree
         # (requester-bot greps it for retired wording) and would read their own logs.
-        # -j 2: hosted runners have 4 vCPUs; two units at a time per shard (GitHub#211).
+        # -j 3: hosted runners have 4 vCPUs; three units at a time per shard (GitHub#211 used 2; GitHub#495
+        # measured both on 8 shards and picked the one with less runner time — the runners are shared and
+        # often all busy, so time per job is what the other PRs wait on).
         # tests/run.test.sh reads this command and runs it as written: keep it on one line.
-        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/8 -j 2 --out "$RUNNER_TEMP/results" ${CHANGED_FROM:+--changed-from "$CHANGED_FROM"}
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/8 -j 3 --out "$RUNNER_TEMP/results" ${CHANGED_FROM:+--changed-from "$CHANGED_FROM"}
 
       - name: Upload results and logs
         if: always()
