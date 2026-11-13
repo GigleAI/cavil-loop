@@ -1,8 +1,9 @@
 // "待处理" reminders (GigleAI/cavil-loop#139, rebuilt on the Tauri client in #169,
-// narrowed in #251): notifications and the Dock badge. Since #251 only an open
-// item is a to-do, what a source already has on its first read is history (no
-// notification, no summary, never unread), and the badge is only the unread
-// count. Three layers:
+// narrowed in #251, widened again in #462): notifications and the Dock badge.
+// Since #462 the label alone makes a to-do, open or closed (an autopilot item is
+// closed when its pull request merges and keeps the label for a human to look);
+// what a source already has on its first read is history (no notification, no
+// summary, never unread), and the badge is only the unread count. Three layers:
 //   - the controller against the fake GitHub over real HTTP, with the real Rust
 //     back end as a child process (real sync rounds, real pagination failures,
 //     real SQLite), labels changed on the fake between rounds the way a
@@ -14,7 +15,7 @@
 // recording every test puts the label on one open item that both sources carry
 // (SEEDED), so there is always an open pending item and a cross-source one,
 // whatever the board looked like on recording day. The recording's own labelled
-// items are closed / merged: the history #251 stops counting.
+// items are closed / merged: since #462 they count (silently — a first read).
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -207,11 +208,18 @@ const [SEEDED, OPEN_NEW, OPEN_NEW2] = openFree;
 const pickProj = (pred: (c: any) => boolean) => rawProject.find((x: any) => pred(x.content) && !projPending(x) && !rawRepo.some((i: any) => i.number === x.content.number))!.content.number as number;
 const CLOSED_ISSUE = pickProj((c) => c.__typename === 'Issue' && c.state === 'CLOSED');
 const MERGED_PR = pickProj((c) => c.__typename === 'PullRequest' && c.merged);
-/** labelled in the recording but closed / merged: history, never counted (GitHub#251) */
+/** labelled in the recording but closed / merged: counted since GitHub#462 (#251 had left them out) */
 const HISTORY = rawProject.filter((x: any) => projPending(x) && x.content.state !== 'OPEN').length + rawRepo.filter((i: any) => repoPending(i) && i.state !== 'open').length;
-/** pending (open + labelled) in the Project / the repository source after seeding */
-const P = rawProject.filter((x: any) => projPending(x) && x.content.state === 'OPEN').length + 1;
-const R = rawRepo.filter((i: any) => repoPending(i) && i.state === 'open').length + 1;
+/**
+ * pending (labelled, open or closed — GitHub#462) in the Project / the repository source / both after
+ * seeding. The repository source reads every closed item carrying the label, however old.
+ */
+const projKeys = new Set<string>(rawProject.filter(projPending).map((x: any) => `${x.content.repository.nameWithOwner.toLowerCase()}#${x.content.number}`));
+const repoKeys = new Set<string>(rawRepo.filter(repoPending).map((i: any) => `${REPO.toLowerCase()}#${i.number}`));
+const P = projKeys.size + 1;
+const R = repoKeys.size + 1;
+/** both sources: one entry per item */
+const U = new Set([...projKeys, ...repoKeys]).size + 1;
 /**
  * A label some open item carries, other than the pending one (for "another label name"), and on
  * none of the items these tests label: renaming to it must really take those out of "pending".
@@ -252,7 +260,7 @@ afterEach(async () => {
 });
 
 describe('pending reminders against the fake GitHub', () => {
-  it('start: nothing is notified or summarised, the badge stays 0 (the window was never in front), closed / merged history is not counted', async () => {
+  it('start: nothing is notified or summarised, the badge stays 0 (the window was never in front), closed / merged labelled items are counted silently (GitHub#462)', async () => {
     const h = await signedIn({ sources: [PROJECT_URL, REPO] });
     await h.c.start();
     await h.c.desktopSettled();
@@ -263,14 +271,15 @@ describe('pending reminders against the fake GitHub', () => {
     expect(labelledOnBoard(h, SEEDED)).toBe(true);
     expect(h.alerts).toEqual([]);
     expect(h.badge()).toBe(0);
-    expect(h.c.getState().pendingCount).toBe(P);
+    expect(h.c.getState().pendingCount).toBe(U);
+    expect(HISTORY).toBeGreaterThan(0); // the closed / merged ones are among them
     // a quiet round changes nothing
     await tick(h);
     expect(h.alerts).toEqual([]);
     expect(h.badge()).toBe(0);
   });
 
-  it('from nothing to pending: an open issue is notified exactly once; a closed issue and a merged PR are not', async () => {
+  it('from nothing to pending: an open issue, a closed issue and a merged PR are each notified exactly once (GitHub#462)', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
@@ -280,35 +289,45 @@ describe('pending reminders against the fake GitHub', () => {
     await tick(h);
     // "did happen": this round read all three with the label
     expect([OPEN_NEW, CLOSED_ISSUE, MERGED_PR].every((n) => labelledOnBoard(h, n))).toBe(true);
-    expect(h.items()).toEqual([key(OPEN_NEW)]);
-    const a = h.alerts[0] as Extract<Alert, { kind: 'item' }>;
+    expect([...h.items()].sort()).toEqual([key(OPEN_NEW), key(CLOSED_ISSUE), key(MERGED_PR)].sort());
+    const a = h.alerts.find((x) => x.kind === 'item' && x.key === key(OPEN_NEW)) as Extract<Alert, { kind: 'item' }>;
     expect(a.title).toBe(`待处理：${REPO}#${OPEN_NEW}`);
     expect(a.url).toContain(`/issues/${OPEN_NEW}`);
-    expect(h.badge()).toBe(1);
-    expect(h.c.getState().pendingCount).toBe(P + 1);
+    expect(h.badge()).toBe(3);
+    expect(h.c.getState().pendingCount).toBe(P + 3);
     // still pending next round: no second notification
     await tick(h);
     await tick(h);
-    expect(h.items()).toEqual([key(OPEN_NEW)]);
+    expect(h.items()).toHaveLength(3);
   });
 
-  it('a labelled closed issue reopened is notified once; closed again before anyone looked, it is no longer unread', async () => {
+  it('a closed issue given the label is notified once; reopened and closed again with the label on, it is the same to-do (GitHub#462)', async () => {
     const h = await signedIn({ sources: [PROJECT_URL] });
     await h.c.start();
     await h.c.desktopSettled();
     setLabel(CLOSED_ISSUE, true, h.clock);
     await tick(h);
     expect(labelledOnBoard(h, CLOSED_ISSUE)).toBe(true);
-    expect(h.items()).toEqual([]);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(P + 1);
     setOpen(CLOSED_ISSUE, true, h.clock);
     await tick(h);
+    // "did happen": the round read it open
+    expect(h.c.getBoardData().items.find((i) => i.key === key(CLOSED_ISSUE))?.state).toBe('open');
     expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
     expect(h.badge()).toBe(1);
     setOpen(CLOSED_ISSUE, false, h.clock);
     await tick(h);
+    expect(h.c.getBoardData().items.find((i) => i.key === key(CLOSED_ISSUE))?.state).toBe('closed');
+    expect(h.badge()).toBe(1);
+    expect(h.c.getState().pendingCount).toBe(P + 1);
+    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
+    // the label coming off is what ends it
+    setLabel(CLOSED_ISSUE, false, h.clock);
+    await tick(h);
     expect(h.badge()).toBe(0);
     expect(h.c.getState().pendingCount).toBe(P);
-    expect(h.items()).toEqual([key(CLOSED_ISSUE)]);
   });
 
   it('label removed and put back → notified again; the removal itself is silent', async () => {
@@ -418,7 +437,8 @@ describe('pending reminders against the fake GitHub', () => {
     await h.c.syncNow();
     await h.c.desktopSettled();
     expect(labelledOnBoard(h, CLOSED_ISSUE)).toBe(true);
-    expect(h.c.getState().pendingCount).toBe(R + 1);
+    // what the Project carries pending (its closed labelled items too, GitHub#462) joins in, silently
+    expect(h.c.getState().pendingCount).toBe(U + 1);
     expect(h.alerts).toEqual([]);
     expect(h.badge()).toBe(0);
     // and from then on it is a normal source
@@ -446,7 +466,7 @@ describe('pending reminders against the fake GitHub', () => {
     setOpen(CLOSED_ISSUE, true, h.clock);
     await h.c.start();
     await h.c.desktopSettled();
-    expect(h.c.getState().pendingCount).toBe(P + 1);
+    expect(h.c.getState().pendingCount).toBe(U + 1);
     h.c.removeSource(PROJECT_KEY);
     await h.c.desktopSettled();
     expect(h.c.getState().pendingCount).toBe(R);
@@ -657,21 +677,61 @@ describe('the tracker on its own', () => {
   const snap = (sourceKey: string, ...items: ReturnType<typeof item>[]): SourceSnapshot => ({ sourceKey, fetchedAt: 0, items });
   const pend = (n: number, extra = {}) => item('o/r', n, { labels: [{ name: LABEL, color: '' }], ...extra });
 
-  it('only open items are pending: a closed issue and a merged / closed PR never are; a draft PR is; reopened counts as new', () => {
+  it('the label alone decides (GitHub#462): a closed issue, a merged / closed PR, a draft PR and an open issue all are; closing or reopening is not new; no label is never pending', () => {
     const t = new PendingTracker(LABEL);
     t.observe([snap('a')], ['a']);
     const ch = t.observe(
-      [snap('a', pend(1, { state: 'closed' }), pend(2, { state: 'merged', kind: 'pr' }), pend(3, { state: 'closed', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5))],
+      [
+        snap(
+          'a',
+          pend(1, { state: 'closed' }),
+          pend(2, { state: 'merged', kind: 'pr' }),
+          pend(3, { state: 'closed', kind: 'pr' }),
+          pend(4, { kind: 'pr', isDraft: true }),
+          pend(5),
+          item('o/r', 6, { state: 'closed' }),
+          item('o/r', 7, { state: 'closed', labels: [{ name: 'Done', color: '' }] }),
+        ),
+      ],
       ['a'],
     );
-    expect(ch.appeared.map((i) => i.number).sort()).toEqual([4, 5]);
-    expect(t.count()).toBe(2);
-    expect(t.has('o/r#1')).toBe(false);
+    expect(ch.appeared.map((i) => i.number).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(t.count()).toBe(5);
+    expect(t.has('o/r#1')).toBe(true);
+    expect(t.has('o/r#6')).toBe(false);
+    expect(t.has('o/r#7')).toBe(false);
+    // #1 reopened with its label, #5 closed with it: the same to-dos, nothing new, nothing gone
+    const next = t.observe([snap('a', pend(1), pend(2, { state: 'merged', kind: 'pr' }), pend(3, { state: 'closed', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5, { state: 'closed' }))], ['a']);
+    expect(next.appeared).toEqual([]);
+    expect(t.count()).toBe(5);
     expect(t.has('o/r#5')).toBe(true);
-    // #1 reopened with its label: new; #5 closed: drops out, silently
-    const next = t.observe([snap('a', pend(1), pend(2, { state: 'merged', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5, { state: 'closed' }))], ['a']);
-    expect(next.appeared.map((i) => i.number)).toEqual([1]);
-    expect(t.has('o/r#5')).toBe(false);
+    // the label off #1: it drops out, silently
+    const off = t.observe([snap('a', item('o/r', 1), pend(2, { state: 'merged', kind: 'pr' }), pend(3, { state: 'closed', kind: 'pr' }), pend(4, { kind: 'pr', isDraft: true }), pend(5, { state: 'closed' }))], ['a']);
+    expect(off.appeared).toEqual([]);
+    expect(t.has('o/r#1')).toBe(false);
+    expect(t.count()).toBe(4);
+  });
+
+  it('a repository read under another pending label is a baseline, like a first read (GitHub#462: it brings in old closed items)', () => {
+    const t = new PendingTracker(LABEL);
+    const rs = (label: string | undefined, ...items: ReturnType<typeof item>[]): SourceSnapshot => ({ ...snap('a', ...items), ...(label === undefined ? {} : { pendingLabel: label }) });
+    // a snapshot from before the closed list existed, then the first read with it: the old closed one is history
+    t.observe([rs(undefined, pend(1))], ['a']);
+    const up = t.observe([rs(LABEL, pend(1), pend(2, { state: 'closed' }))], ['a']);
+    expect(up.appeared).toEqual([]);
+    expect(t.count()).toBe(2);
+    // the same label next round: a new one is notified as usual
+    const later = t.observe([rs(LABEL, pend(1), pend(2, { state: 'closed' }), pend(3, { state: 'closed' }))], ['a']);
+    expect(later.appeared.map((i) => i.number)).toEqual([3]);
+    // renamed in Settings: recounted silently, and the read under the new name is a baseline too
+    const other = (n: number, extra = {}) => item('o/r', n, { labels: [{ name: 'waiting', color: '' }], ...extra });
+    t.relabel('waiting', new Map([['a', rs(LABEL, pend(1), other(4))]]));
+    expect(t.count()).toBe(1);
+    const renamed = t.observe([rs('waiting', other(4), other(5, { state: 'closed' }))], ['a']);
+    expect(renamed.appeared).toEqual([]);
+    expect(t.count()).toBe(2);
+    const after = t.observe([rs('waiting', other(4), other(5, { state: 'closed' }), other(6))], ['a']);
+    expect(after.appeared.map((i) => i.number)).toEqual([6]);
   });
 
   it('a first read is only a baseline: at start, and for a source added next to one that already had its baseline', () => {

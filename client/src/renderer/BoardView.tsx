@@ -945,7 +945,8 @@ export function BoardView({
               {tally.map((e) => {
                 const on = lit === e.kind;
                 const tip = [
-                  `开着的条目里${e.kind === 'unlabeled' ? '一个标签都没有' : `带 ${e.label} 标签`}的有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  // GitHub#462: "等人处理" counts closed items carrying the label too
+                  `${e.kind === 'human' ? `带 ${e.label} 标签的条目（开着的和已关闭的都算）` : `开着的条目里${e.kind === 'unlabeled' ? '一个标签都没有' : `带 ${e.label} 标签`}的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
                   `当前来源共 ${data.items.length} 个条目`,
                   ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),

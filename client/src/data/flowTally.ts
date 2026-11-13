@@ -1,18 +1,21 @@
-// GitHub#404: the view bar's "运行中 / 等 agent / 等人处理" — how many open issues / PRs of the ticked
+// GitHub#404: the view bar's "运行中 / 等 agent / 等人处理" — how many issues / PRs of the ticked
 // sources carry each flow label, whatever the search box says.
 //
-// Counting goes through `isPending` (open + carries the label, case-insensitive): the very rule the
-// reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
+// "等人处理" counts through `isPending` (carries the label, open or closed — GitHub#462): the very rule
+// the reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
+// "运行中" / "等 agent" count open items only: work in progress is open by definition.
 //
 // GitHub#418: a fourth number, "未处理" — open items of the ticked sources carrying no label at all. Its
 // click query is the fixed `is:open no:label`, and the count goes through that very query's filter
 // (`applyFilter`), so the number and the list a click shows are one rule, not two.
 //
-// A number can be clicked: the search box becomes `is:open label:"<label>"` (the same items, through
-// the ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
+// A number can be clicked: the search box becomes `label:"<label>"` for "等人处理" and
+// `is:open label:"<label>"` for the other two (the same items, through the ordinary filter; a label
+// the filter cannot carry is shown but not clickable), and clicking the lit number again puts back
+// what the box said before.
 
 import type { HandBackLabels, Item } from '../shared/types';
-import { isPending } from './pending';
+import { hasLabel, isPending } from './pending';
 import { applyFilter, parseFilter } from '../shared/filter';
 
 export type TallyKind = 'running' | 'agent' | 'human' | 'unlabeled';
@@ -21,7 +24,7 @@ export interface TallyEntry {
   kind: TallyKind;
   /** the label as set in Settings (trimmed); '' for "unlabeled", which counts items with no label */
   label: string;
-  /** open items carrying it */
+  /** items carrying it: open ones only, except "等人处理", which counts closed ones too (GitHub#462) */
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
@@ -33,23 +36,23 @@ export const TALLY_TEXT: Record<TallyKind, string> = { running: '运行中', age
 export const UNLABELED_QUERY = 'is:open no:label';
 
 /**
- * `is:open label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
- * parser, not by guessing which characters are safe: the query must read back as exactly "open" plus
- * this one whole label, nothing ignored — a double quote breaks the quoting, and a leading `<` / `>`
- * is a comparison the filter drops (PR #408 review round 1: the number said 1, the click showed every
- * open item).
+ * The query a number's click puts in the search box: `is:open label:"<label>"` (open = true), or
+ * `label:"<label>"` alone (open = false, "等人处理" — GitHub#462: closed items with the label count
+ * too); null for a label the search syntax cannot carry. Decided by the real parser, not by guessing
+ * which characters are safe: the query must read back as exactly ("open" plus) this one whole label,
+ * nothing ignored — a double quote breaks the quoting, and a leading `<` / `>` is a comparison the
+ * filter drops (PR #408 review round 1: the number said 1, the click showed every open item).
  */
-export function tallyQuery(label: string): string | null {
+export function tallyQuery(label: string, open: boolean = true): string | null {
   const l = label.trim();
   if (l === '' || l.includes('"')) return null;
-  const q = `is:open label:"${l}"`;
+  const q = `${open ? 'is:open ' : ''}label:"${l}"`;
   const { clauses, unsupported } = parseFilter(q);
-  const [open, lab] = clauses;
-  const ok =
-    unsupported.length === 0 &&
-    clauses.length === 2 &&
-    open.kind === 'field' && open.field === 'is' && !open.negated && open.values.length === 1 && open.values[0].toLowerCase() === 'open' &&
-    lab.kind === 'field' && lab.field === 'label' && !lab.negated && lab.values.length === 1 && lab.values[0] === l;
+  if (unsupported.length !== 0 || clauses.length !== (open ? 2 : 1)) return null;
+  const isOpen = (c: (typeof clauses)[number]) =>
+    c.kind === 'field' && c.field === 'is' && !c.negated && c.values.length === 1 && c.values[0].toLowerCase() === 'open';
+  const isLabel = (c: (typeof clauses)[number]) => c.kind === 'field' && c.field === 'label' && !c.negated && c.values.length === 1 && c.values[0] === l;
+  const ok = open ? isOpen(clauses[0]) && isLabel(clauses[1]) : isLabel(clauses[0]);
   return ok ? q : null;
 }
 
@@ -66,7 +69,12 @@ export function flowTally(items: Item[], labels: Pick<HandBackLabels, 'running' 
   return order
     .map(([kind, raw]) => ({ kind, label: raw.trim() }))
     .filter((e) => e.label !== '')
-    .map((e): TallyEntry => ({ ...e, count: items.filter((it) => isPending(it, e.label)).length, query: tallyQuery(e.label) }))
+    .map((e): TallyEntry => {
+      // GitHub#462: "等人处理" is the reminders' rule (open or closed); the other two count open items only
+      const human = e.kind === 'human';
+      const counts = (it: Item) => (human ? isPending(it, e.label) : it.state === 'open' && hasLabel(it, e.label));
+      return { ...e, count: items.filter(counts).length, query: tallyQuery(e.label, !human) };
+    })
     .concat(unlabeledTally(items));
 }
 

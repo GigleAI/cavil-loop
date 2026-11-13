@@ -1705,9 +1705,9 @@ function openUnlabelled(): number[] {
 }
 
 // GitHub#251: the badge is only the unread count; what the sources already have at start is
-// history (no summary, no notification, not unread); closed / merged items never remind; the
-// settings page no longer lists or counts what is pending.
-test('pending/human: nothing about the history at start, one notification per new open label at the next beat, none for a merged PR, badge, label setting, a click opens the item', async () => {
+// history (no summary, no notification, not unread); the settings page no longer lists or counts
+// what is pending. GitHub#462: closed / merged items carrying the label remind too.
+test('pending/human: nothing about the history at start, one notification per new label at the next beat (a merged PR too), badge, label setting, a click opens the item', async () => {
   // history: the recording's labelled items are closed / merged; one open issue carries the label too
   const [seeded, fresh] = openUnlabelled();
   putPending(seeded);
@@ -1748,7 +1748,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
-  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的不提醒');
+  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
   await expect(page.getByTestId('launch-at-login')).not.toBeChecked();
@@ -1758,15 +1758,17 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('launch-at-login')).toBeChecked();
   await shot(page, '20-pending-settings');
 
-  // a merged PR and an open issue get the label on GitHub → exactly one notification, the open one's, at the next beat
+  // a merged PR and an open issue get the label on GitHub → one notification each at the next beat (GitHub#462)
   putPending(mergedPr);
   putPending(fresh);
   await page.getByTestId('back').click();
   app.desktop.push({ kind: 'tick' });
-  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual([`gigleai/cavil-loop#${fresh}`]);
-  const itemNote = notes().find((a) => a.kind === 'item');
+  await expect
+    .poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key).sort())
+    .toEqual([`gigleai/cavil-loop#${fresh}`, `gigleai/cavil-loop#${mergedPr}`].sort());
+  const itemNote = notes().find((a) => a.kind === 'item' && a.key === `gigleai/cavil-loop#${fresh}`);
   expect(itemNote.title).toBe(`待处理：GigleAI/cavil-loop#${fresh}`);
-  await expect.poll(badge).toBe(1);
+  await expect.poll(badge).toBe(2);
   // "did happen": that round read the merged PR with its label
   await page.getByTestId('search').fill(`#${mergedPr}`);
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
@@ -1774,12 +1776,12 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('search').fill('');
   app.desktop.push({ kind: 'tick' });
   await page.waitForTimeout(800);
-  expect(notes()).toHaveLength(1);
+  expect(notes()).toHaveLength(2);
 
-  // GitHub#328: the notified item's detail was read ahead, once, with nobody opening it (and none for the merged PR)
+  // GitHub#328: each notified item's detail was read ahead, once, with nobody opening it
   const detailReads = (n: number) => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === n);
   await expect.poll(() => detailReads(fresh).filter((l) => l.status === 200).length).toBe(1);
-  expect(detailReads(mergedPr)).toHaveLength(0);
+  await expect.poll(() => detailReads(mergedPr).filter((l) => l.status === 200).length).toBe(1);
 
   // a click on that notification opens the item in the app (also from the settings page):
   // what was read ahead shows at once, while the panel's own read is still held
@@ -1810,8 +1812,8 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
   await page.waitForTimeout(300);
-  expect(badge()).toBeLessThanOrEqual(1);
-  expect(notes()).toHaveLength(1);
+  expect(badge()).toBeLessThanOrEqual(2);
+  expect(notes()).toHaveLength(2);
 
   // the user switches to the window (the shell reports the focus): the badge cleared; the delivered
   // notifications stay (GitHub#369)

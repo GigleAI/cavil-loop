@@ -32,6 +32,11 @@ export interface SyncRound {
   held: boolean;
 }
 
+/** GitHub#462: does this snapshot carry the closed items with this pending label? (a board reads every item) */
+export function pendingKnown(src: SourceConfig, snap: SourceSnapshot, label: string): boolean {
+  return src.kind !== 'repo' || (snap.pendingLabel ?? '') === label.trim();
+}
+
 /**
  * One sync round. Each source is read completely or not at all: a source
  * whose read failed anywhere (any page) keeps its previous snapshot as-is,
@@ -55,6 +60,8 @@ export async function syncRound(
   onSourceDone: () => void = () => {},
   /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
   loopLabel: string = '',
+  /** GitHub#462: the pending ("等人处理") label setting; '' = a repository's closed items carrying it are not read */
+  pendingLabel: string = '',
 ): Promise<SyncRound> {
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
@@ -107,7 +114,9 @@ export async function syncRound(
     // relations are unknown (GitHub#349: cached before they were read): "nothing changed" must
     // not keep that snapshot, only a full read can fill them in
     // GitHub#429: nor for one whose loop registrations were read under another label setting (or not at all)
-    const usable = prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) && loopKnown(prev.items, loopLabel) ? old : null;
+    // GitHub#462: nor for a repository snapshot whose closed pending items were read for another label (or not at all)
+    const usable =
+      prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) && loopKnown(prev.items, loopLabel) && pendingKnown(src, prev, pendingLabel) ? old : null;
     let checked: CheckResult | null = null;
     if (checking) {
       try {
@@ -124,7 +133,7 @@ export async function syncRound(
       checks.set(src.key, { ...checked.record, snapshotAt: usable.snapshotAt, fullAt: usable.fullAt });
       return { kind: 'unchanged' };
     }
-    const snap = await fetchSource(client, src, now, loopLabel);
+    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel);
     // the tags were taken before this read began: a change in between is seen again next round
     if (checked) checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: now });
     return { kind: 'read', snap };

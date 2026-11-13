@@ -1,6 +1,7 @@
 // GitHub#404: the view bar's three flow numbers and what a click on one does to the search box.
 // Counting and the click query must pick the same items, and "等人处理" must be the reminders' own
-// rule (isPending) — checked here on the same items through all three paths.
+// rule (isPending: the label, open or closed — GitHub#462) — checked here on the same items through
+// all three paths. "运行中" / "等 agent" count open items only.
 // GitHub#418: the fourth number "未处理" (open, no label at all) — its count and its click query
 // `is:open no:label` must pick the same items too.
 
@@ -17,9 +18,11 @@ const R = 'o/r';
 const ITEMS: Item[] = [
   item(R, 1, { labels: L('doing/agent') }),
   item(R, 2, { labels: L('Doing/Agent') }), // GitHub label names are case-insensitive
-  item(R, 3, { labels: L('doing/agent'), state: 'closed', stateReason: 'completed' }), // closed: never counted
+  item(R, 3, { labels: L('doing/agent'), state: 'closed', stateReason: 'completed' }), // closed: not "运行中"
   item(R, 4, { labels: L('pending/human'), kind: 'pr' }),
-  item(R, 5, { labels: L('pending/human'), kind: 'pr', state: 'merged' }), // merged: never counted
+  item(R, 5, { labels: L('pending/human'), kind: 'pr', state: 'merged' }), // merged: still "等人处理" (GitHub#462)
+  item(R, 14, { labels: L('Pending/Human'), state: 'closed', stateReason: 'completed' }), // closed: still "等人处理" (GitHub#462)
+  item(R, 15, { labels: L('pending/agent'), state: 'closed', stateReason: 'completed' }), // closed: not "等 agent"
   item(R, 6, { labels: L('pending/human', 'pending/agent') }), // two flow labels at once: counted under both
   item(R, 7, { labels: L('pending/agent'), kind: 'pr', isDraft: true }), // a draft PR is open
   item(R, 8, { labels: L('bug') }),
@@ -30,20 +33,23 @@ const ITEMS: Item[] = [
   item(R, 13, { kind: 'pr', state: 'merged' }), // merged, no label: never counted
 ];
 const counts = (e: TallyEntry[]) => Object.fromEntries(e.map((x) => [x.kind, x.count]));
+/** the rule written out: the reminders' own for "等人处理", open + labelled for the other two */
+const rule = (e: TallyEntry) => (i: Item) => (e.kind === 'human' ? isPending(i, e.label) : i.state === 'open' && isPending(i, e.label));
 const today = '2026-11-12';
 
 describe('flowTally', () => {
-  it('counts open issues and PRs per flow label, whole name, any case, closed / merged left out', () => {
+  it('counts issues and PRs per flow label, whole name, any case; closed / merged count for "等人处理" only (GitHub#462)', () => {
     const e = flowTally(ITEMS, DEFAULT_HAND_BACK);
     expect(e.map((x) => x.kind)).toEqual(['running', 'agent', 'human', 'unlabeled']);
-    expect(counts(e)).toEqual({ running: 2, agent: 2, human: 2, unlabeled: 2 });
+    expect(counts(e)).toEqual({ running: 2, agent: 2, human: 4, unlabeled: 2 });
+    expect(ITEMS.filter(rule(e[2])).map((i) => i.number).sort((a, b) => a - b)).toEqual([4, 5, 6, 14]);
   });
 
   it('the count, the click query and the reminders rule pick the same items', () => {
     for (const labels of [DEFAULT_HAND_BACK, { ...DEFAULT_HAND_BACK, running: ' DOING/AGENT ', human: 'Pending/Human' }]) {
       for (const e of flowTally(ITEMS, labels).filter((x) => x.kind !== 'unlabeled')) {
         const viaQuery = applyFilter(ITEMS, parseFilter(e.query!), { viewer: null, today, projects: [] }).map((i) => i.number);
-        const viaRule = ITEMS.filter((i) => isPending(i, e.label)).map((i) => i.number);
+        const viaRule = ITEMS.filter(rule(e)).map((i) => i.number);
         expect(viaQuery, e.kind).toEqual(viaRule);
         expect(viaRule.length, e.kind).toBe(e.count);
         expect(e.count, e.kind).toBeGreaterThan(0);
@@ -54,7 +60,7 @@ describe('flowTally', () => {
   it('an empty running label leaves "运行中" out; the other two are still there', () => {
     const e = flowTally(ITEMS, { ...DEFAULT_HAND_BACK, running: '  ' });
     expect(e.map((x) => x.kind)).toEqual(['agent', 'human', 'unlabeled']);
-    expect(counts(e)).toEqual({ agent: 2, human: 2, unlabeled: 2 });
+    expect(counts(e)).toEqual({ agent: 2, human: 4, unlabeled: 2 });
   });
 
   it('zero is shown as zero (the number stays in place)', () => {
@@ -73,17 +79,21 @@ describe('flowTally', () => {
         item(R, 4, { labels: L(name), state: 'closed', stateReason: 'completed' }),
         item(R, 5, { labels: L(`${name}x`) }),
       ];
+      // the same name as "运行中" (open only: #1) and as "等人处理" (open or closed: #1 and #4)
       const [e] = flowTally(items, { running: name, agent: 'pending/agent', human: 'pending/human' });
-      expect(e.count, name).toBe(1);
-      expect(items.filter((i) => isPending(i, e.label)).map((i) => i.number), name).toEqual([1]);
-      if (unclickable.has(name)) {
-        expect(e.query, name).toBeNull();
-        continue;
+      const h = flowTally(items, { running: '', agent: 'pending/agent', human: name }).find((x) => x.kind === 'human')!;
+      for (const [x, want] of [[e, [1]], [h, [1, 4]]] as const) {
+        expect(x.count, `${x.kind} ${name}`).toBe(want.length);
+        expect(items.filter(rule(x)).map((i) => i.number), `${x.kind} ${name}`).toEqual(want);
+        if (unclickable.has(name)) {
+          expect(x.query, `${x.kind} ${name}`).toBeNull();
+          continue;
+        }
+        expect(x.query, `${x.kind} ${name}`).not.toBeNull();
+        const parsed = parseFilter(x.query!);
+        expect(parsed.unsupported, `${x.kind} ${name}`).toEqual([]);
+        expect(applyFilter(items, parsed, { viewer: null, today, projects: [] }).map((i) => i.number), `${x.kind} ${name}`).toEqual(want);
       }
-      expect(e.query, name).not.toBeNull();
-      const parsed = parseFilter(e.query!);
-      expect(parsed.unsupported, name).toEqual([]);
-      expect(applyFilter(items, parsed, { viewer: null, today, projects: [] }).map((i) => i.number), name).toEqual([1]);
     }
   });
 
@@ -92,8 +102,11 @@ describe('flowTally', () => {
     const q = tallyQuery(' wait for, me ')!;
     expect(q).toBe('is:open label:"wait for, me"');
     expect(applyFilter(items, parseFilter(q), { viewer: null, today, projects: [] }).map((i) => i.number)).toEqual([1]);
+    expect(tallyQuery(' wait for, me ', false)).toBe('label:"wait for, me"');
     expect(tallyQuery('say "hi"')).toBeNull();
+    expect(tallyQuery('say "hi"', false)).toBeNull();
     expect(tallyQuery('')).toBeNull();
+    expect(tallyQuery('', false)).toBeNull();
   });
 });
 
@@ -149,7 +162,7 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
     expect(litTally(s.query, E)).toBe('unlabeled');
     s = tallyClick(s.query, s.saved, human, E);
-    expect(s).toEqual({ query: 'is:open label:"pending/human"', saved: '新增依赖图视图' });
+    expect(s).toEqual({ query: 'label:"pending/human"', saved: '新增依赖图视图' });
     s = tallyClick(s.query, s.saved, u, E);
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
     expect(tallyClick(s.query, s.saved, u, E)).toEqual({ query: '新增依赖图视图', saved: null });
@@ -162,7 +175,8 @@ describe('a click on a number', () => {
   const E = flowTally(ITEMS, DEFAULT_HAND_BACK);
   const [running, agent, human] = E;
   const RUN = 'is:open label:"doing/agent"';
-  const HUM = 'is:open label:"pending/human"';
+  // GitHub#462: "等人处理" lists closed items too — no `is:open`
+  const HUM = 'label:"pending/human"';
 
   it('lit = the box says exactly that number\'s query (surrounding spaces ignored)', () => {
     expect(litTally(RUN, E)).toBe('running');
