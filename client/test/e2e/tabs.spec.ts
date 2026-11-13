@@ -501,6 +501,82 @@ test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail
   await app.close();
 });
 
+test('GitHub#492: on a Mac ⌃⌘1/2/3 switch the layout — in the window; in the discussion they are no tab key, ⌘N / ⌃N / ⌘R still act there', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  // the window as on a Mac: its rule is the macOS one (the discussion's script asks no platform)
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
+  await page.reload();
+  await signIn(page);
+  await row(page, B).click({ button: 'middle' });
+  await row(page, A).click({ modifiers: ['Meta'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const HOME_KEY = 'home';
+  const layoutNow = () => page.locator('[data-testid="layout"] button.on').getAttribute('data-value');
+  const frontNow = async () => ((await home(page).getAttribute('data-front')) === 'yes' ? HOME_KEY : (await page.locator('[data-testid="tab"][data-front="yes"]').getAttribute('data-key'))!);
+  const send = async (where: 'window' | 'discussion', ev: Record<string, unknown>) => {
+    await tab(page, A).click();
+    await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    const init = { bubbles: true, cancelable: true, ...ev };
+    if (where === 'window') await page.evaluate((e) => window.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    else await frame.locator('body').evaluate((b, e) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    await page.waitForTimeout(300);
+    return frontNow();
+  };
+  // the button says the new key
+  await home(page).click();
+  await expect(page.locator('[data-testid="layout"] button[data-value="graph"]')).toHaveAttribute('title', '依赖图（⌃⌘3）');
+  await expect(page.locator('[data-testid="layout"] button[data-value="table"]')).toHaveAttribute('title', '表格（⌃⌘2）');
+
+  // the window: ⌃⌘2 / ⌃⌘3 / ⌃⌘1 switch the layout and bring the home tab forward
+  for (const [d, layout] of [['2', 'table'], ['3', 'graph'], ['1', 'board']] as const) {
+    expect(await send('window', { key: d, code: `Digit${d}`, metaKey: true, ctrlKey: true }), `window ⌃⌘${d}`).toBe(HOME_KEY);
+    expect(await layoutNow(), `window ⌃⌘${d}`).toBe(layout);
+  }
+  // the old keys still act, unnamed
+  expect(await send('window', { key: '™', code: 'Digit2', metaKey: true, altKey: true })).toBe(HOME_KEY);
+  expect(await layoutNow()).toBe('table');
+  expect(await send('window', { key: '!', code: 'Digit1', metaKey: true, shiftKey: true })).toBe(HOME_KEY);
+  expect(await layoutNow()).toBe('board');
+
+  // one shape, sent to the window and inside the discussion
+  type Shape = { what: string; ev: Record<string, unknown>; window: string; discussion: string };
+  const shapes: Shape[] = [
+    // before GitHub#492 the discussion reported "⌘ or ⌃" only and the window read it back as ⌘2: tab B came forward
+    { what: '⌃⌘2', ev: { key: '2', code: 'Digit2', metaKey: true, ctrlKey: true }, window: HOME_KEY, discussion: K(A) },
+    { what: '⌃⌘1', ev: { key: '1', code: 'Digit1', metaKey: true, ctrlKey: true }, window: HOME_KEY, discussion: K(A) },
+    { what: '⌘2', ev: { key: '2', code: 'Digit2', metaKey: true }, window: K(B), discussion: K(B) },
+    { what: '⌘1', ev: { key: '1', code: 'Digit1', metaKey: true }, window: HOME_KEY, discussion: HOME_KEY },
+    { what: '⌃2 (a lone ⌃ is the ⌘ key, as before)', ev: { key: '2', code: 'Digit2', ctrlKey: true }, window: K(B), discussion: K(B) },
+    { what: '⌃⌘9 (no ⌃⌘ key of its own: nothing)', ev: { key: '9', code: 'Digit9', metaKey: true, ctrlKey: true }, window: K(A), discussion: K(A) },
+  ];
+  for (const s of shapes) {
+    const inWindow = await send('window', s.ev);
+    const inDiscussion = await send('discussion', s.ev);
+    expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: s.window, inDiscussion: s.discussion });
+  }
+
+  // ⌘R in the discussion reads the item again; ⌃⌘R is nobody's
+  const settle = async () => {
+    await expect(detail(page).getByTestId('detail-refresh')).toHaveAttribute('data-loading', 'no');
+    await page.waitForTimeout(300);
+  };
+  await tab(page, A).click();
+  await settle();
+  let before = detailReads(A);
+  await send('discussion', { key: 'r', code: 'KeyR', metaKey: true });
+  await expect.poll(() => detailReads(A)).toBeGreaterThan(before);
+  await settle();
+  before = detailReads(A);
+  await send('discussion', { key: 'r', code: 'KeyR', metaKey: true, ctrlKey: true });
+  await page.waitForTimeout(800);
+  expect(detailReads(A)).toBe(before);
+  await app.close();
+});
+
 test('more tabs than fit: the strip scrolls sideways, the home tab stays put, and the tab in front is brought into view', async () => {
   const app = await launchApp(env);
   const page = app.page;

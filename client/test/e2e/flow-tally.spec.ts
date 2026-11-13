@@ -3,7 +3,9 @@
 // the real back end behind the loopback bridge, the fake GitHub serving the board recorded from the
 // real cavil project. The expected numbers are counted here straight from the items the window holds,
 // with a rule written out in this file (open, whole label name, any case) — not with the app's function.
-// GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `is:open no:label`.
+// GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `no:label`.
+// GitHub#464: the click queries carry no `is:open`; the lit number's own "显示已关闭" switch (off) keeps
+// the list to open items, so a click still lists exactly the counted ones.
 // GitHub#468: the numbers are a table in Settings (顶栏计数): rows that follow a flow label count as before,
 // rows with a condition of their own count and click through that one text; kept across a restart.
 // Screenshots land in test-results/screens/.
@@ -14,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
-import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -75,8 +77,9 @@ async function ready(page: Page) {
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/11');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
-  await expect(page.getByTestId('table')).toBeVisible();
+  // the saved web view is imported (table); its filter only hid finished items, so the box stays empty (GitHub#464)
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('');
 }
 
 async function shot(page: Page, name: string) {
@@ -98,9 +101,10 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   const now = async () => ({ running: await countOf(page, 'running'), agent: await countOf(page, 'agent'), human: await countOf(page, 'human') });
   expect(await now()).toEqual(want);
   await expect(tally(page, 'running')).toContainText(`运行中 ${want.running}`);
-  await expect(tally(page, 'human')).toHaveAttribute('title', new RegExp(`^带 pending/human 标签的条目（开着的和已关闭的都算）有 ${want.human} 个 · 点一下只看这些\\n当前来源共 ${(await items(page)).length} 个条目\\n搜索命中 \\d+ 条`));
+  // GitHub#464: the imported view brings no search any more (its filter only hid finished items), so no "搜索命中" line
+  await expect(tally(page, 'human')).toHaveAttribute('title', new RegExp(`^带 pending/human 标签的条目（开着的和已关闭的都算）有 ${want.human} 个 · 点一下只看这些\\n当前来源共 ${(await items(page)).length} 个条目$`));
   // the old sentence is gone, with or without a search
-  await expect(bar).not.toContainText('显示');
+  await expect(bar.locator('.vbar-count')).not.toContainText('显示'); // (the "显示已关闭" switch is elsewhere on the bar, GitHub#464)
   // the total is kept only for screen readers (and as the hover's second line)
   await expect(page.getByTestId('item-total')).toHaveClass('sr-only');
   await shot(page, 'flow-tally-01-searching');
@@ -119,7 +123,7 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- a search, click 运行中, click again: the search comes back whole ----
   await page.getByTestId('search').fill('新增依赖图视图');
   await tally(page, 'running').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"doing/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('title', /再点一下回到之前的搜索/);
   await expect(shown(page)).toHaveCount(want.running);
@@ -156,14 +160,14 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- a hand edit voids it: typed back to a number's query, a click gives an empty box ----
   await tally(page, 'running').click();
   await page.getByTestId('search').fill('bug');
-  await page.getByTestId('search').fill('is:open label:"doing/agent"');
+  await page.getByTestId('search').fill('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await tally(page, 'running').click();
   await expect(page.getByTestId('search')).toHaveValue('');
 
   // ---- an empty box: click, click again → empty ----
   await tally(page, 'agent').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"pending/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/agent"');
   await tally(page, 'agent').click();
   await expect(page.getByTestId('search')).toHaveValue('');
 
@@ -263,9 +267,9 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
   await expect(u.getByTestId('tally-count')).toHaveText('1');
   await shot(page, 'flow-tally-05-unlabeled');
 
-  // click: the box says `is:open no:label`, lit, and the list is exactly the counted items
+  // click: the box says `no:label`, lit, and the list is exactly the counted items
   await u.click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await expect(page.getByTestId('search')).toHaveValue('no:label');
   await expect(u).toHaveAttribute('aria-pressed', 'true');
   await expect(u).toHaveAttribute('title', /再点一下回到之前的搜索/);
   await expect(shown(page)).toHaveCount(want.length);
@@ -277,10 +281,10 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
 
   // switching to another number and back keeps the first search; the lit one again gives it back
   await tally(page, 'running').click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open label:"doing/agent"');
+  await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(u).toHaveAttribute('aria-pressed', 'false');
   await u.click();
-  await expect(page.getByTestId('search')).toHaveValue('is:open no:label');
+  await expect(page.getByTestId('search')).toHaveValue('no:label');
   await u.click();
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
   await expect(u).toHaveAttribute('aria-pressed', 'false');
@@ -291,6 +295,13 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
 });
 
 const state = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state);
+/**
+ * What the back end has stored (its own read, not the window's). The window applies a setting at once and
+ * writes it to the back end in order a moment later; a test that "quits" kills the back end outright, so
+ * before a restart it waits for the back end to hold what the window shows (PR #500 review round 3: a
+ * restart right after the window showed the new table found the table of three changes earlier).
+ */
+const stored = async (app: RunningApp) => ((await app.backend.call('init')) as { settings: Record<string, unknown> }).settings;
 const rowOf = (page: Page, id: string) => page.locator(`[data-testid="tally-row"][data-id="${id}"]`);
 const barOrder = (page: Page) => page.getByTestId('tally').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
 
@@ -306,7 +317,7 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
   await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
   await expect(section.getByTestId('tally-row')).toHaveCount(4);
   await expect(rowOf(page, 'human').getByTestId('tally-flow')).toHaveText('跟随流程标签：开着、带 pending/human 标签的');
-  await expect(rowOf(page, 'unlabeled').getByTestId('tally-query')).toHaveValue('is:open no:label');
+  await expect(rowOf(page, 'unlabeled').getByTestId('tally-query')).toHaveValue('no:label');
   await shot(page, 'flow-tally-07-tally-settings');
   await page.emulateMedia({ colorScheme: 'dark' });
   await shot(page, 'flow-tally-07-tally-settings-dark');
@@ -355,10 +366,8 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
   // the reminders are not the table's
   expect((await state(page)).pendingCount).toBe(pendingBefore);
 
-  // restart: the same table. Every save reached the back end first (PR #484 review round 4: the saves wait in one
-  // queue behind the sync rounds' writes; a fixed pause lost the last ones on a busy machine and the restart read
-  // an older table)
-  await page.evaluate(() => (window as any).cavil.settled());
+  // restart: the same table — once the back end holds it
+  await expect.poll(async () => (((await stored(app)).tallies as { id: string }[] | undefined) ?? []).map((d) => d.id)).toEqual([id, 'running', 'agent', 'human']);
   await app.close();
   app = await launchApp(env);
   page = app.page;
@@ -412,8 +421,8 @@ test('GitHub#468: a row following a label the search box cannot carry counts exa
   await page.getByTestId('hand-back-human').fill('pending/human');
   await page.getByTestId('hand-back-human').blur();
   await row.getByTestId('tally-to-query').click();
-  // GitHub#462: the "等人处理" row's own query has no `is:open` — it keeps counting the closed ones
-  await expect(row.getByTestId('tally-query')).toHaveValue('label:"pending/human"');
+  // GitHub#462 + #464: the "等人处理" row counts closed items too; as a condition of its own that is written out
+  await expect(row.getByTestId('tally-query')).toHaveValue('label:"pending/human" is:open,closed');
   await page.getByTestId('back').click();
   await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/human', true)));
   await expect(tally(page, 'human')).toBeEnabled();

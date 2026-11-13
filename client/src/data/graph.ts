@@ -20,6 +20,7 @@
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { loopCandidate } from './loopBlocked';
+import { issuePrLinks } from './prNest';
 import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
@@ -252,4 +253,39 @@ export function nodeTone(n: GraphNode): StateTone {
 }
 export function nodeBadge(n: GraphNode): string {
   return badgeText(n.kind, n.state, n.stateReason, n.isDraft);
+}
+
+/** GitHub#483: one linked pull request as the graph's summary lists it */
+export interface SummaryPr {
+  key: string;
+  number: number;
+  url: string;
+  state: ItemState;
+  /** the PR as the sources hold it (title, draft mark, labels); null = in no ticked source: only GitHub's link is known */
+  item: Item | null;
+  /** github = GitHub's "Linked pull requests"; body = only the PR's description names the issue */
+  via: 'github' | 'body';
+  /** the state's colour and words: the same rule as the board card, the table and the graph's nodes */
+  tone: StateTone;
+  badge: string;
+}
+
+/**
+ * GitHub#483: the pull requests the summary of an issue node lists — exactly the table's "linked PRs"
+ * column (`issuePrLinks`, same order, same state), each with its item from `all` when a source holds it.
+ * null = not known (a repository source does not carry GitHub's links and no PR here names the issue),
+ * never "none" (that is an empty list). Only issues in a source have one: what GitHub said about an
+ * end outside the sources carries no links, and a PR node has none of its own.
+ */
+export function summaryPrs(n: GraphNode, all: Item[]): SummaryPr[] | null {
+  if (n.kind !== 'issue' || n.item === null) return null;
+  const links = issuePrLinks(n.item, all);
+  if (links === null) return null;
+  const byKey = new Map(all.map((i) => [i.key, i]));
+  return links.map((l) => {
+    const pr = byKey.get(l.key);
+    const item = pr && pr.kind === 'pr' ? pr : null;
+    const draft = item ? item.isDraft : null;
+    return { key: l.key, number: l.number, url: l.url, state: l.state, item, via: l.via, tone: stateTone('pr', l.state, null, draft), badge: badgeText('pr', l.state, null, draft) };
+  });
 }

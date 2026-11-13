@@ -6,24 +6,31 @@
 // "运行中" / "等 agent" count open items only: work in progress is open by definition.
 //
 // GitHub#418: a fourth number, "未处理" — open items of the ticked sources carrying no label at all. Its
-// click query is the fixed `is:open no:label`, and the count goes through that very query's filter
-// (`applyFilter`), so the number and the list a click shows are one rule, not two.
+// click query is the fixed `no:label`, and the count goes through that very query's filter
+// (`applyFilter`) over the open items (`openOnly`, the rule the "显示已关闭" switch applies while off),
+// so the number and the list a click shows are one rule, not two.
 //
-// A number can be clicked: the search box becomes `label:"<label>"` for "等人处理" and
-// `is:open label:"<label>"` for the other two (the same items, through the ordinary filter; a label
-// the filter cannot carry is shown but not clickable), and clicking the lit number again puts back
-// what the box said before.
+// A number can be clicked: the search box becomes `label:"<label>"` (the same items, through the
+// ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit
+// number again puts back what the box said before.
+// GitHub#464: no click query carries `is:open` — whether closed items are listed too is the lit
+// number's own "显示已关闭" switch (`showClosedKey`). It starts as the number counts: off for "运行中" /
+// "等 agent" / "未处理" (open only), on for "等人处理" (closed ones count too, GitHub#462) — so the
+// default list is exactly the counted items, and each number can still be switched by itself.
 
 // GitHub#468: the numbers are a table set in Settings (shared/tallies.ts). A "跟随流程标签" row counts
 // exactly as above (the "等人处理" label through isPending, the other two open + label; click through
 // `flowQuery`); a "自己写条件" row counts through its own search text and the board's filter, with the
 // same context the board uses (viewer, today, projects), and a click puts that same text in the box.
 // With the table never changed the bar is what it was.
+// GitHub#464: every number has its own "显示已关闭" switch (keyed by the row's id); a query row counts what
+// its click lists with that switch off — open items only, unless its condition names the state itself.
 
 import type { HandBackLabels, Item, TallyColor, TallyDef, TallyFlow } from '../shared/types';
 import type { FilterContext } from '../shared/filter';
 import { hasLabel, isPending } from './pending';
-import { applyFilter, parseFilter } from '../shared/filter';
+import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
+import type { Layout, ShowClosedKey } from '../shared/types';
 import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies } from '../shared/tallies';
 
 export { UNLABELED_QUERY };
@@ -86,9 +93,33 @@ export function flowCounts(flow: TallyFlow, it: Item, label: string): boolean {
   return flow === 'human' ? isPending(it, label) : it.state === 'open' && hasLabel(it, label);
 }
 
-/** A flow row's click query, picking the same items `flowCounts` counts (GitHub#462: "等人处理" has no `is:open`). */
-export function flowQuery(flow: TallyFlow, label: string): string | null {
-  return tallyQuery(label, flow !== 'human');
+/**
+ * A flow row's click query. GitHub#464: never `is:open` — with the number's own "显示已关闭" switch as it
+ * starts (`showClosedDefault`) the list is exactly what `flowCounts` counts.
+ */
+export function flowQuery(_flow: TallyFlow, label: string): string | null {
+  return tallyQuery(label, false);
+}
+
+/**
+ * The condition a flow row becomes when it is turned into "自己写条件" (GitHub#468), picking the same items
+ * `flowCounts` counts under the query rows' own rule (open items only unless the condition names the
+ * state, GitHub#464): `label:"<label>"` for "运行中" / "等 agent"; for "等人处理", which counts closed
+ * items too (GitHub#462), the state is written out — `label:"<label>" is:open,closed`. Null when the label
+ * cannot be written in the search syntax.
+ */
+export function flowCondition(flow: TallyFlow, label: string): string | null {
+  const q = tallyQuery(label, false);
+  if (q === null) return null;
+  return flow === 'human' ? `${q} is:open,closed` : q;
+}
+
+/**
+ * GitHub#464: how a number's "显示已关闭" switch starts, until it is switched: on for a row following
+ * "等人处理" (it counts closed items too, GitHub#462), off for every other number.
+ */
+export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boolean {
+  return entry?.flow === 'human';
 }
 
 /**
@@ -109,7 +140,11 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: P
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
-      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count: applyFilter(items, parseFilter(q), ctx).length, query: q });
+      // GitHub#464: what a click lists while that number's "显示已关闭" switch is off (the default): open items
+      // only, unless the condition itself says open / closed / merged — the same rule BoardView applies
+      const parsed = parseFilter(q);
+      const pool = statesStated(parsed) ? items : openOnly(items);
+      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count: applyFilter(pool, parsed, ctx).length, query: q });
     }
   }
   return out;
@@ -132,29 +167,54 @@ export function unlabeledTally(items: Item[]): TallyEntry {
   return tallyEntries(items, defaultTallies().filter((d) => d.id === 'unlabeled'), { running: '', agent: '', human: '' })[0];
 }
 
-/** Which number the search box is showing right now (its text is exactly that number's query), if any. */
-export function litTally(query: string, entries: TallyEntry[]): TallyKind | null {
-  // two rows with the same click text: the first one is lit
+/**
+ * Which number the search box is showing right now (its text is exactly that number's query), if any.
+ * GitHub#464: two numbers can have the same click text (no click query carries `is:open` any more, so
+ * "运行中" and "等人处理" set to one label read the same) — then `pick`, the number last clicked (kept by
+ * the window), says which one is lit; without it (after a restart, or the text typed by hand) the first
+ * one in the bar's order is. Each of them keeps its own "显示已关闭" switch either way.
+ */
+export function litTally(query: string, entries: TallyEntry[], pick: TallyKind | null = null): TallyKind | null {
   const q = query.trim();
-  return entries.find((e) => e.query !== null && e.query === q)?.kind ?? null;
+  const same = entries.filter((e) => e.query !== null && e.query === q);
+  if (same.length === 0) return null;
+  return same.find((e) => e.kind === pick)?.kind ?? same[0].kind;
 }
 
 /**
  * A click on one number. `saved` is the search text from before the first number was clicked
- * (null = none). Rules:
+ * (null = none); `pick` the number last clicked (see `litTally`). Rules:
  *  - the clicked number is lit → back to `saved` (empty when there is none), and `saved` is used up;
- *  - another number is lit → switch to the clicked one, `saved` stays as it was;
+ *  - another number is lit → switch to the clicked one, `saved` stays as it was (also when the two
+ *    share one click text: the box stays, the lit number and its switch change);
  *  - none is lit → remember the box as it is, then switch.
+ * The answer's `pick` is the number lit afterwards (null = none).
  */
-export function tallyClick(current: string, saved: string | null, target: TallyEntry, entries: TallyEntry[]): { query: string; saved: string | null } {
-  if (target.query === null) return { query: current, saved };
-  const lit = litTally(current, entries);
-  if (lit === target.kind) return { query: saved ?? '', saved: null };
-  if (lit !== null) return { query: target.query, saved };
-  return { query: target.query, saved: current };
+export function tallyClick(
+  current: string,
+  saved: string | null,
+  target: TallyEntry,
+  entries: TallyEntry[],
+  pick: TallyKind | null = null,
+): { query: string; saved: string | null; pick: TallyKind | null } {
+  const lit = litTally(current, entries, pick);
+  if (target.query === null) return { query: current, saved, pick: lit };
+  if (lit === target.kind) return { query: saved ?? '', saved: null, pick: null };
+  if (lit !== null) return { query: target.query, saved, pick: target.kind };
+  return { query: target.query, saved: current, pick: target.kind };
 }
 
 /** The box was changed some other way: once it no longer shows a number's query, the remembered text is void. */
 export function tallyForget(saved: string | null, current: string, entries: TallyEntry[]): string | null {
   return litTally(current, entries) === null ? null : saved;
+}
+
+/**
+ * GitHub#464: which "显示已关闭" switch is in effect — the lit number's own while one is lit (whatever
+ * the layout), else the layout's. The view bar's switch and the list both ask this, nothing else.
+ */
+export function showClosedKey(layout: Layout, lit: TallyKind | null): ShowClosedKey {
+  if (lit === null) return layout;
+  // a number's id never takes a layout's switch (ids made in Settings are `t-…`; this only guards a hand-edited one)
+  return (['board', 'table', 'graph'] as string[]).includes(lit) ? `tally:${lit}` : lit;
 }
