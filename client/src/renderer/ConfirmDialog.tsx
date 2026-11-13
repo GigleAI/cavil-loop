@@ -23,7 +23,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: {
-  title: string;
+  title: ReactNode;
   children?: ReactNode;
   confirmLabel: string;
   danger?: boolean;

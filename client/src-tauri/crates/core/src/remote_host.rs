@@ -8,7 +8,7 @@
 // is the only thing that says what happened; no such line is "unconfirmed", never "closed" or
 // "no devices". What the window shows after a change is what a fresh `status` reads back.
 
-use crate::daemon::{refused, Daemon, Out, BUSY, T_SHORT, T_STATUS};
+use crate::daemon::{busy, refused, refused_s, Daemon, Out, T_SHORT, T_STATUS};
 use serde_json::{json, Value};
 
 const SCRIPT: &str = "remote-access.sh";
@@ -103,7 +103,7 @@ impl Daemon {
                 }
             }
             "enable" | "disable" | "code" | "cancel" | "revoke" => {
-                let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
+                let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
                 let args: Vec<&str> = match action {
                     "enable" => vec!["enable"],
                     "disable" => vec!["disable"],

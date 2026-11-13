@@ -16,7 +16,8 @@
 //     project for that folder.
 // The child environment is the same allow-list as the rest of daemon.rs.
 
-use crate::daemon::{find_project, parse_status, refused, tail, which, Daemon, Out, BUSY, T_NET, T_SHORT, T_STATUS};
+use crate::daemon::{busy, code_word, find_project, not_found, not_started, outside, parse_status_s, plain, put_said, refused_s, tail, timed_out, which, Daemon, Out, Ran, T_NET, T_SHORT, T_STATUS};
+use crate::i18n::{tr, Said};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,9 @@ pub struct Jobs {
 
 struct Job {
     output: String,
+    /// GitHub#473: who wrote each stretch of `output`, in order and covering all of it — (end byte,
+    /// None = the client's own words, Some(source) = a program's output or another outside text)
+    runs: Vec<(usize, Option<&'static str>)>,
     cut: bool,
     done: bool,
     outcome: Value,
@@ -116,33 +120,36 @@ pub enum ExistingConfig {
 }
 
 /// `project_check` of the status script's output, for `dir`; anything else is an error (never "no config").
-pub fn parse_project_check(st: &Value, dir: &str) -> Result<ExistingConfig, String> {
+pub fn parse_project_check(st: &Value, dir: &str) -> Result<ExistingConfig, Said> {
     let pc = &st["project_check"];
     if pc["dir"].as_str() != Some(dir) {
-        return Err("状态脚本没有给出这个目录的项目配置（daemon 可能早于 GitHub#315，请先更新 daemon）".into());
+        return Err(plain(tr("状态脚本没有给出这个目录的项目配置（daemon 可能早于 GitHub#315，请先更新 daemon）", &[])));
     }
     let path = pc["config"].as_str().unwrap_or("").to_string();
     match pc["config_state"].as_str() {
         Some("none") => Ok(ExistingConfig::None),
         Some("ok") => match (pc["repo"].as_str(), pc["worker_agent"].as_str()) {
             (Some(r), Some(a)) if !path.is_empty() => Ok(ExistingConfig::Read { path, repo: r.to_string(), agent: a.to_string() }),
-            _ => Err("状态脚本给出的项目配置缺字段".into()),
+            _ => Err(plain(tr("状态脚本给出的项目配置缺字段", &[]))),
         },
         Some("unreadable") => Ok(ExistingConfig::Unreadable(path)),
-        _ => Err("状态脚本给出的项目配置状态认不出".into()),
+        _ => Err(plain(tr("状态脚本给出的项目配置状态认不出", &[]))),
     }
 }
 
 /// Whether an existing config fits the chosen repository. Ok(Some((path, agent))): it does, and the
 /// daemon will use that agent; Ok(None): no config; Err: it names another repository, or cannot be read.
-pub fn config_verdict(c: &ExistingConfig, owner: &str, name: &str) -> Result<Option<(String, String)>, String> {
+pub fn config_verdict(c: &ExistingConfig, owner: &str, name: &str) -> Result<Option<(String, String)>, Said> {
     match c {
         ExistingConfig::None => Ok(None),
-        ExistingConfig::Unreadable(p) => Err(format!("{p} 已有项目配置，但 daemon 读不出它，没有接上；请先修好这个文件")),
+        ExistingConfig::Unreadable(p) => Err(Said::new("{p} 已有项目配置，但 daemon 读不出它，没有接上；请先修好这个文件", &[("p", p)], "user")),
         ExistingConfig::Read { path, repo, agent } => {
             if repo.to_lowercase() != format!("{}/{}", owner.to_lowercase(), name.to_lowercase()) {
-                let shown = if repo.is_empty() { "（没写）".to_string() } else { repo.clone() };
-                return Err(format!("{path} 已有项目配置，里面的仓库是 {shown}，不是 {owner}/{name}；setup.sh 会沿用这份配置，接上的会是那个仓库，所以没有接上。请先改那个文件里的 REPO，或换一个目录"));
+                let shown = if repo.is_empty() { plain(tr("（没写）", &[])) } else { outside(repo, "daemon") };
+                return Err(Said::compose(
+                    "{path} 已有项目配置，里面的仓库是 {shown}，不是 {repo}；setup.sh 会沿用这份配置，接上的会是那个仓库，所以没有接上。请先改那个文件里的 REPO，或换一个目录",
+                    &[("path", &outside(path, "user")), ("shown", &shown), ("repo", &outside(&format!("{owner}/{name}"), "github"))],
+                ));
             }
             Ok(Some((path.clone(), agent.clone())))
         }
@@ -160,10 +167,13 @@ pub fn pick_key(dir: &Path, owner: &str, name: &str, taken: &[(String, Option<St
 
 impl Daemon {
     /// The agents the daemon knows: one driver file each under scripts/drivers (not the `_` helpers).
-    pub(crate) fn drivers(&self) -> Result<Vec<String>, String> {
-        let dir = self.entry()?.join("scripts/drivers");
+    pub(crate) fn drivers(&self) -> Result<Vec<String>, Said> {
+        let dir = self.entry_s()?.join("scripts/drivers");
         let mut out = vec![];
-        for e in std::fs::read_dir(&dir).map_err(|e| format!("读不到 daemon 的 agent 列表（{}）：{e}", dir.display()))?.flatten() {
+        let list = std::fs::read_dir(&dir).map_err(|e| {
+            Said::compose("读不到 daemon 的 agent 列表（{d}）：{e}", &[("d", &outside(&dir.to_string_lossy(), "user")), ("e", &outside(&e.to_string(), "system"))])
+        })?;
+        for e in list.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
             let Some(a) = n.strip_suffix(".sh") else { continue };
             if a.is_empty() || a.starts_with('_') || !a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
@@ -180,7 +190,7 @@ impl Daemon {
             out.insert(0, c);
         }
         if out.is_empty() {
-            return Err(format!("{} 里没有 agent", dir.display()));
+            return Err(Said::new("{d} 里没有 agent", &[("d", &dir.to_string_lossy())], "user"));
         }
         Ok(out)
     }
@@ -189,19 +199,19 @@ impl Daemon {
 
     /// `{result:"ok", repo, agents, connected:[{key, host, state}], candidates:[dir], clone_parent}`
     pub async fn connect_info(&self, repo: &str) -> Value {
-        let Some((owner, name)) = parse_repo(repo) else { return refused("仓库名不合规") };
+        let Some((owner, name)) = parse_repo(repo) else { return refused_s(&bad_repo()) };
         let want = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
         let agents = match self.drivers() {
             Ok(a) => a,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let st = match self.status_ok(&path).await {
+        let st = match self.status_ok_s(&path).await {
             Ok(s) => s,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let connected: Vec<Value> = st["projects"]
             .as_array()
@@ -210,9 +220,9 @@ impl Daemon {
             .filter(|p| p["repo"].as_str().map(str::to_lowercase).as_deref() == Some(want.as_str()))
             .map(|p| json!({ "key": p["key"], "host": p["host"], "state": p["scheduler"]["state"] }))
             .collect();
-        let home = match self.home() {
+        let home = match self.home_s() {
             Ok(h) => h.to_path_buf(),
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let candidates = find_copies(&home, &want);
         let github = home.join("github");
@@ -232,25 +242,26 @@ impl Daemon {
     pub async fn precheck(&self, agent: &str) -> Value {
         match self.drivers() {
             Ok(d) if d.iter().any(|a| a == agent) => {}
-            Ok(_) => return refused(&format!("daemon 里没有叫 {agent} 的 agent")),
-            Err(m) => return refused(&m),
+            Ok(_) => return refused_s(&no_agent(agent)),
+            Err(m) => return refused_s(&m),
         }
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         self.precheck_on(&path, agent).await
     }
 
     async fn precheck_on(&self, path: &str, agent: &str) -> Value {
-        let out = self.script(path, "install-status.sh", &["--agent", agent], T_STATUS).await;
-        let st = match parse_status(&out) {
+        let out = self.script_s(path, "install-status.sh", &["--agent", agent], T_STATUS).await;
+        let unreadable = |m: &Said| put_said(json!({ "result": "unreadable", "agent": agent, "ready": false }), "output", m);
+        let st = match parse_status_s(&out) {
             Ok(s) => s,
-            Err(m) => return json!({ "result": "unreadable", "agent": agent, "ready": false, "output": m }),
+            Err(m) => return unreadable(&m),
         };
         let check = &st["agent_check"];
         if check["state"] == "no_driver" || !check["missing"].is_array() {
-            return json!({ "result": "unreadable", "agent": agent, "ready": false, "output": format!("状态脚本认不出 agent {agent}") });
+            return unreadable(&plain(tr("状态脚本认不出 agent {agent}", &[("agent", agent)])));
         }
         let missing: Vec<Value> = check["missing"].as_array().cloned().unwrap_or_default();
         let gh = st["gh"]["logged_in"].as_bool();
@@ -269,72 +280,79 @@ impl Daemon {
     /// The window asks whether a typed / picked folder will do.
     /// `{result:"ok", dir, config:{path, agent|null}|null}` / refused with the reason
     pub async fn check_dir_request(&self, repo: &str, dir: &str) -> Value {
-        let Some((owner, name)) = parse_repo(repo) else { return refused("仓库名不合规") };
-        let path = match self.path().await {
+        let Some((owner, name)) = parse_repo(repo) else { return refused_s(&bad_repo()) };
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let d = match self.check_dir(&path, &owner, &name, dir).await {
             Ok(d) => d,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         match self.project_config(&path, &d).await.and_then(|c| config_verdict(&c, &owner, &name)) {
             Ok(c) => json!({ "result": "ok", "dir": d.to_string_lossy(), "config": c.map(|(p, a)| json!({ "path": p, "agent": a })) }),
-            Err(m) => refused(&m),
+            Err(m) => refused_s(&m),
         }
     }
 
     /// The daemon's reading of the project config in `dir` (`install-status.sh --project`).
-    pub(crate) async fn project_config(&self, path: &str, dir: &Path) -> Result<ExistingConfig, String> {
+    pub(crate) async fn project_config(&self, path: &str, dir: &Path) -> Result<ExistingConfig, Said> {
         let d = dir.to_string_lossy().to_string();
-        let out = self.script(path, "install-status.sh", &["--project", &d], T_STATUS).await;
-        let st = parse_status(&out).map_err(|r| format!("读不到这个目录里的项目配置：{r}"))?;
+        let out = self.script_s(path, "install-status.sh", &["--project", &d], T_STATUS).await;
+        let st = parse_status_s(&out).map_err(|r| Said::compose("读不到这个目录里的项目配置：{r}", &[("r", &r)]))?;
         parse_project_check(&st, &d)
     }
 
     /// An existing git repository's top level whose origin is github.com/<owner>/<name>.
-    pub(crate) async fn check_dir(&self, path: &str, owner: &str, name: &str, dir: &str) -> Result<PathBuf, String> {
+    pub(crate) async fn check_dir(&self, path: &str, owner: &str, name: &str, dir: &str) -> Result<PathBuf, Said> {
         let want = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
+        let repo = outside(&format!("{owner}/{name}"), "github");
         let p = Path::new(dir.trim());
         if dir.trim().is_empty() {
-            return Err("还没选本地目录".into());
+            return Err(plain(tr("还没选本地目录", &[])));
         }
         if !p.is_absolute() {
-            return Err(format!("{dir} 不是完整路径（要从 / 开始）"));
+            return Err(Said::new("{dir} 不是完整路径（要从 / 开始）", &[("dir", dir)], "user"));
         }
         if !p.is_dir() {
-            return Err(format!("{dir} 不存在，或不是目录"));
+            return Err(Said::new("{dir} 不存在，或不是目录", &[("dir", dir)], "user"));
         }
-        let real = std::fs::canonicalize(p).map_err(|e| format!("读不到 {dir}：{e}"))?;
+        let real = std::fs::canonicalize(p).map_err(|e| Said::compose("读不到 {dir}：{e}", &[("dir", &outside(dir, "user")), ("e", &outside(&e.to_string(), "system"))]))?;
         let r = real.to_string_lossy().to_string();
-        let top = self.run(path, "git", &["-C", &r, "rev-parse", "--show-toplevel"], T_SHORT).await;
+        let here = outside(&r, "user");
+        let top = self.run_s(path, "git", &["-C", &r, "rev-parse", "--show-toplevel"], T_SHORT).await;
         if !top.ok() || top.stdout.trim().is_empty() {
-            return Err(if real.join(".git").exists() { format!("{r} 读不出 git 仓库信息：{}", top.text()) } else { format!("{r} 不是 git 仓库（里面没有 .git）") });
+            return Err(if real.join(".git").exists() {
+                Said::compose("{r} 读不出 git 仓库信息：{e}", &[("r", &here), ("e", &top.said("system"))])
+            } else {
+                Said::new("{r} 不是 git 仓库（里面没有 .git）", &[("r", &r)], "user")
+            });
         }
         let top_real = std::fs::canonicalize(top.stdout.trim()).unwrap_or_else(|_| PathBuf::from(top.stdout.trim()));
         if top_real != real {
-            return Err(format!("{r} 在 git 仓库 {} 里面，要选仓库最上层的那个目录", top_real.display()));
+            return Err(Said::new("{r} 在 git 仓库 {top} 里面，要选仓库最上层的那个目录", &[("r", &r), ("top", &top_real.to_string_lossy())], "user"));
         }
         // the remote as written in the repository's config (not rewritten by url.*.insteadOf)
         let origin = self.run(path, "git", &["-C", &r, "config", "--get", "remote.origin.url"], T_SHORT).await;
         let url = origin.stdout.trim().to_string();
         if !origin.ok() || url.is_empty() {
-            return Err(format!("{r} 没有 origin 远端，认不出它是不是 {owner}/{name}"));
+            return Err(Said::compose("{r} 没有 origin 远端，认不出它是不是 {repo}", &[("r", &here), ("repo", &repo)]));
         }
         match github_repo_of(&url) {
             Some(got) if got == want => Ok(real),
-            Some(got) => Err(format!("{r} 的 origin 是 {got}，不是 {owner}/{name}")),
-            None => Err(format!("{r} 的 origin（{url}）不是 github.com 上的仓库")),
+            Some(got) => Err(Said::compose("{r} 的 origin 是 {got}，不是 {repo}", &[("r", &here), ("got", &outside(&got, "github")), ("repo", &repo)])),
+            None => Err(Said::compose("{r} 的 origin（{url}）不是 github.com 上的仓库", &[("r", &here), ("url", &outside(&url, "user"))])),
         }
     }
 
     /// The system's folder picker. `{result:"ok", path|null}` (null: cancelled)
     pub async fn pick_folder(&self, start: Option<String>) -> Value {
-        let Some(p) = &self.picker else { return refused("这里弹不出选择框，请直接填写路径") };
+        let Some(p) = &self.picker else { return refused_s(&plain(tr("这里弹不出选择框，请直接填写路径", &[]))) };
         let start = start.filter(|s| Path::new(s).is_absolute() && Path::new(s).is_dir());
         match p.pick_folder(start).await {
             Ok(path) => json!({ "result": "ok", "path": path }),
-            Err(m) => refused(&m),
+            // the picker words its own failure (the app: through tr())
+            Err(m) => refused_s(&plain(m)),
         }
     }
 
@@ -343,39 +361,39 @@ impl Daemon {
     /// Start connecting `repo` with `agent`, from the folder `dir` or a fresh clone into `clone_into`.
     /// `{result:"started", job}` / refused (nothing ran)
     pub async fn connect(self: Arc<Self>, repo: &str, agent: &str, dir: Option<&str>, clone_into: Option<&str>) -> Value {
-        let Some((owner, name)) = parse_repo(repo) else { return refused("仓库名不合规") };
+        let Some((owner, name)) = parse_repo(repo) else { return refused_s(&bad_repo()) };
         match self.drivers() {
             Ok(d) if d.iter().any(|a| a == agent) => {}
-            Ok(_) => return refused(&format!("daemon 里没有叫 {agent} 的 agent")),
-            Err(m) => return refused(&m),
+            Ok(_) => return refused_s(&no_agent(agent)),
+            Err(m) => return refused_s(&m),
         }
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let source = match (dir.map(str::trim).filter(|d| !d.is_empty()), clone_into.map(str::trim).filter(|d| !d.is_empty())) {
             (Some(d), None) => match self.check_dir(&path, &owner, &name, d).await {
                 Ok(real) => Source::Existing(real),
-                Err(m) => return refused(&m),
+                Err(m) => return refused_s(&m),
             },
             (None, Some(c)) => {
                 let parent = Path::new(c);
                 if !parent.is_absolute() || !parent.is_dir() {
-                    return refused(&format!("克隆位置 {c} 不存在，或不是完整路径"));
+                    return refused_s(&Said::new("克隆位置 {c} 不存在，或不是完整路径", &[("c", c)], "user"));
                 }
                 let parent = match std::fs::canonicalize(parent) {
                     Ok(p) => p,
-                    Err(e) => return refused(&format!("读不到 {c}：{e}")),
+                    Err(e) => return refused_s(&Said::compose("读不到 {dir}：{e}", &[("dir", &outside(c, "user")), ("e", &outside(&e.to_string(), "system"))])),
                 };
                 let target = parent.join(&name);
                 if target.exists() || target.symlink_metadata().is_ok() {
-                    return refused(&format!("{} 已经存在，不克隆到那里（是这个仓库的话，直接选它）", target.display()));
+                    return refused_s(&Said::new("{t} 已经存在，不克隆到那里（是这个仓库的话，直接选它）", &[("t", &target.to_string_lossy())], "user"));
                 }
                 Source::Clone(parent, target)
             }
-            _ => return refused("要么选一个本地目录，要么选克隆位置"),
+            _ => return refused_s(&plain(tr("要么选一个本地目录，要么选克隆位置", &[]))),
         };
-        let Ok(guard) = self.busy.clone().try_lock_owned() else { return refused(BUSY) };
+        let Ok(guard) = self.busy.clone().try_lock_owned() else { return refused_s(&busy()) };
         let id = {
             let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
             jobs.next += 1;
@@ -387,7 +405,7 @@ impl Daemon {
                 let k = done.remove(0);
                 jobs.all.remove(&k);
             }
-            jobs.all.insert(id, Job { output: String::new(), cut: false, done: false, outcome: Value::Null });
+            jobs.all.insert(id, Job { output: String::new(), runs: vec![], cut: false, done: false, outcome: Value::Null });
             id
         };
         let me = self.clone();
@@ -407,67 +425,109 @@ impl Daemon {
     /// What a job printed from byte `from` on, and its outcome once done.
     pub fn connect_poll(&self, job: u64, from: usize) -> Value {
         let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(j) = jobs.all.get(&job) else { return refused("没有这个任务") };
+        let Some(j) = jobs.all.get(&job) else { return refused_s(&plain(tr("没有这个任务", &[]))) };
         let mut start = from.min(j.output.len());
         while !j.output.is_char_boundary(start) {
             start -= 1;
         }
+        // the same text in stretches, each marked with who wrote it (the client: `from` null)
+        let mut pieces = vec![];
+        let mut at = 0;
+        for (end, from) in &j.runs {
+            if *end > start && *end > at {
+                let s = at.max(start);
+                pieces.push(json!({ "text": &j.output[s..*end], "from": from }));
+            }
+            at = *end;
+        }
         json!({
             "result": "ok",
             "output": &j.output[start..],
+            "pieces": pieces,
             "next": j.output.len(),
             "done": j.done,
             "outcome": j.outcome,
         })
     }
 
-    fn say(&self, job: u64, text: &str) {
+    /// `from`: None = the client's own words; Some(source) = outside text (a program's output, a path)
+    fn say(&self, job: u64, text: &str, from: Option<&'static str>) {
         let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
         let Some(j) = jobs.all.get_mut(&job) else { return };
-        if j.cut {
+        if j.cut || text.is_empty() {
             return;
         }
+        let push = |j: &mut Job, t: &str, from: Option<&'static str>| {
+            j.output.push_str(t);
+            match j.runs.last_mut() {
+                Some((end, f)) if *f == from => *end = j.output.len(),
+                _ => j.runs.push((j.output.len(), from)),
+            }
+        };
         if j.output.len() + text.len() > JOB_OUTPUT_LIMIT {
-            j.output.push_str("\n…（输出太长，后面的不再显示）\n");
+            push(j, &tr("\n…（输出太长，后面的不再显示）\n", &[]), None);
             j.cut = true;
             return;
         }
-        j.output.push_str(text);
+        push(j, text, from);
     }
 
-    fn line(&self, job: u64, text: &str) {
-        self.say(job, &format!("{text}\n"));
+    /// One line of the client's own words, its outside parts marked.
+    fn line(&self, job: u64, said: &Said) {
+        let mut rest = said.template.as_str();
+        while let Some(open) = rest.find('{') {
+            let close = rest[open..].find('}').map(|c| open + c);
+            let name = close.map(|c| &rest[open + 1..c]);
+            match name.and_then(|n| said.parts.iter().find(|(k, _, _)| k == n)) {
+                Some((_, v, f)) => {
+                    self.say(job, &rest[..open], None);
+                    self.say(job, v, Some(*f));
+                    rest = &rest[close.unwrap() + 1..];
+                }
+                None => {
+                    self.say(job, &rest[..=open], None);
+                    rest = &rest[open + 1..];
+                }
+            }
+        }
+        self.say(job, rest, None);
+        self.say(job, "\n", None);
     }
 
     async fn connect_job(&self, job: u64, path: &str, owner: &str, name: &str, agent: &str, source: Source) -> Value {
-        let failed = |m: String| json!({ "result": "failed", "output": m });
+        let failed = |m: Said| put_said(json!({ "result": "failed" }), "output", &m);
+        let repo = outside(&format!("{owner}/{name}"), "github");
         // 1. the folder: as given, or a fresh clone
         let dir = match source {
             Source::Existing(d) => {
-                self.line(job, &format!("本地目录：{}", d.display()));
+                self.line(job, &Said::new("本地目录：{d}", &[("d", &d.to_string_lossy())], "user"));
                 d
             }
             Source::Clone(parent, target) => {
                 let url = format!("https://github.com/{owner}/{name}.git");
-                self.line(job, &format!("$ git clone {url} {}", target.display()));
+                // the command line as it runs: the client's words (no translation), the folder is the person's
+                self.say(job, &format!("$ git clone {url} "), None);
+                self.say(job, &target.to_string_lossy(), Some("user"));
+                self.say(job, "\n", None);
                 // clone next to it, then rename: a clone that fails half-way never looks like a copy
                 let tmp = parent.join(format!(".{name}.cloning-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&tmp);
                 let t = tmp.to_string_lossy().to_string();
-                let out = self.run_stream(job, path, "git", &["clone", "--progress", &url, &t], &[], &parent, T_NET).await;
+                let out = self.run_stream(job, path, "git", &["clone", "--progress", &url, &t], &[], &parent, T_NET, "system").await;
                 if !out.ok() {
                     let _ = std::fs::remove_dir_all(&tmp);
-                    return failed(format!("克隆失败（{}）", code_word(&out)));
+                    return failed(Said::compose("克隆失败（{code}）", &[("code", &code_word(out.code))]));
                 }
+                let t_s = target.to_string_lossy().to_string();
                 if target.exists() || target.symlink_metadata().is_ok() {
                     let _ = std::fs::remove_dir_all(&tmp);
-                    return failed(format!("克隆期间 {} 被别的程序建出来了，没有放进去", target.display()));
+                    return failed(Said::new("克隆期间 {t} 被别的程序建出来了，没有放进去", &[("t", &t_s)], "user"));
                 }
                 if let Err(e) = std::fs::rename(&tmp, &target) {
                     let _ = std::fs::remove_dir_all(&tmp);
-                    return failed(format!("克隆好了，但放不到 {}：{e}", target.display()));
+                    return failed(Said::compose("克隆好了，但放不到 {d}：{e}", &[("d", &outside(&t_s, "user")), ("e", &outside(&e.to_string(), "system"))]));
                 }
-                match self.check_dir(path, owner, name, &target.to_string_lossy()).await {
+                match self.check_dir(path, owner, name, &t_s).await {
                     Ok(d) => d,
                     Err(m) => return failed(m),
                 }
@@ -477,31 +537,34 @@ impl Daemon {
         match self.project_config(path, &dir).await.and_then(|c| config_verdict(&c, owner, name)) {
             Err(m) => return failed(m),
             Ok(Some((f, a))) if a != agent => {
-                return failed(format!("{f} 已有项目配置，daemon 读到里面的 agent 是 {a}，和这次选的 {agent} 不一样；setup.sh 不会改它。要换 agent 请先改那个文件，或这次选 {a}"));
+                return failed(Said::compose(
+                    "{f} 已有项目配置，daemon 读到里面的 agent 是 {a}，和这次选的 {agent} 不一样；setup.sh 不会改它。要换 agent 请先改那个文件，或这次选 {a}",
+                    &[("f", &outside(&f, "user")), ("a", &outside(&a, "daemon")), ("agent", &plain(agent.to_string()))],
+                ));
             }
             Ok(_) => {}
         }
         // 3. what is missing, asked again now
-        self.line(job, &format!("检查 {agent} 需要的程序…"));
+        self.line(job, &plain(tr("检查 {agent} 需要的程序…", &[("agent", agent)])));
         let pre = self.precheck_on(path, agent).await;
         if pre["ready"] != true {
             let why = if pre["result"] != "ok" {
-                pre["output"].as_str().unwrap_or("读不到").to_string()
+                crate::daemon::said_from_json(&pre["outputSaid"]).unwrap_or_else(|| plain(pre["output"].as_str().map(str::to_string).unwrap_or_else(|| tr("读不到", &[]))))
             } else {
                 let miss: Vec<&str> = pre["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let mut w = vec![];
                 if !miss.is_empty() {
-                    w.push(format!("缺 {}", miss.join("、")));
+                    w.push(Said::new("缺 {list}", &[("list", &miss.join(&tr("、", &[])))], "daemon"));
                 }
                 if pre["gh_logged_in"] != true {
-                    w.push("gh 没有登录".into());
+                    w.push(plain(tr("gh 没有登录", &[])));
                 }
-                w.join("；")
+                join_with(&w, &tr("；", &[]))
             };
-            return json!({ "result": "blocked", "output": format!("没有接上：{why}") });
+            return put_said(json!({ "result": "blocked" }), "output", &Said::compose("没有接上：{why}", &[("why", &why)]));
         }
         // 4. the instance key, and whether this folder is connected already
-        let st = match self.status_ok(path).await {
+        let st = match self.status_ok_s(path).await {
             Ok(s) => s,
             Err(m) => return failed(m),
         };
@@ -509,52 +572,66 @@ impl Daemon {
         let projects: Vec<&Value> = st["projects"].as_array().into_iter().flatten().collect();
         let want = format!("{}/{}", owner.to_lowercase(), name.to_lowercase());
         let same_repo = |p: &Value| p["repo"].as_str().map(str::to_lowercase).as_deref() == Some(want.as_str());
+        let shown_repo = |p: &Value| p["repo"].as_str().map(|r| outside(r, "daemon")).unwrap_or_else(|| plain(tr("读不出", &[])));
         if let Some(p) = projects.iter().find(|p| p["host"].as_str() == Some(here.as_str())) {
+            let k = outside(p["key"].as_str().unwrap_or(""), "user");
             if !same_repo(p) {
-                return failed(format!("这个目录已经作为 {}（仓库 {}）接上了，不是 {owner}/{name}，什么都没动", p["key"].as_str().unwrap_or(""), p["repo"].as_str().unwrap_or("读不出")));
+                return failed(Said::compose("这个目录已经作为 {key}（仓库 {got}）接上了，不是 {repo}，什么都没动", &[("key", &k), ("got", &shown_repo(p)), ("repo", &repo)]));
             }
-            return json!({ "result": "connected", "already": true, "key": p["key"], "state": p["scheduler"]["state"], "dir": here, "output": format!("这个目录已经接上了（{}），什么都没动", p["key"].as_str().unwrap_or("")) });
+            let v = json!({ "result": "connected", "already": true, "key": p["key"], "state": p["scheduler"]["state"], "dir": here });
+            return put_said(v, "output", &Said::compose("这个目录已经接上了（{key}），什么都没动", &[("key", &k)]));
         }
         let taken: Vec<(String, Option<String>)> =
             projects.iter().filter_map(|p| Some((p["key"].as_str()?.to_string(), p["host"].as_str().map(str::to_string)))).collect();
         let Some(key) = pick_key(&dir, owner, name, &taken) else {
-            return failed(format!("项目名 {} 和 {owner}-{name} 都已经被别的项目用了（或不合规），没有接上", dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()));
+            let base = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            return failed(Said::new("项目名 {a} 和 {b} 都已经被别的项目用了（或不合规），没有接上", &[("a", &base), ("b", &format!("{owner}-{name}"))], "user"));
         };
         // 5. the daemon's own setup.sh
-        let setup = match self.entry() {
+        let setup = match self.entry_s() {
             Ok(e) => e.join("setup.sh"),
             Err(m) => return failed(m),
         };
         let s = setup.to_string_lossy().to_string();
-        self.line(job, &format!("$ WORKER_AGENT={agent} bash {s} --yes {here} {key}"));
-        let home = match self.home() {
+        // the command line as it runs (the client's words, never translated: it is a command); the paths and key are this machine's
+        self.say(job, &format!("$ WORKER_AGENT={agent} bash "), None);
+        self.say(job, &s, Some("user"));
+        self.say(job, " --yes ", None);
+        self.say(job, &format!("{here} {key}"), Some("user"));
+        self.say(job, "\n", None);
+        let home = match self.home_s() {
             Ok(h) => h.to_path_buf(),
             Err(m) => return failed(m),
         };
-        let out = self.run_stream(job, path, "bash", &[&s, "--yes", &here, &key], &[("WORKER_AGENT", agent)], &home, T_SETUP).await;
+        let out = self.run_stream(job, path, "bash", &[&s, "--yes", &here, &key], &[("WORKER_AGENT", agent)], &home, T_SETUP, "daemon").await;
         if !out.ok() {
-            return failed(format!("setup.sh 没有成功（{}），没有接上", code_word(&out)));
+            return failed(Said::compose("setup.sh 没有成功（{code}），没有接上", &[("code", &code_word(out.code))]));
         }
         // 6. read back: only what the status script lists counts
-        let after = match self.status_ok(path).await {
+        let k = outside(&key, "user");
+        let after = match self.status_ok_s(path).await {
             Ok(s) => s,
-            Err(m) => return failed(format!("setup.sh 跑完了，但{m}")),
+            Err(m) => return failed(Said::compose("setup.sh 跑完了，但{m}", &[("m", &m)])),
         };
         match find_project(&after, &key).filter(|p| p["host"].as_str() == Some(here.as_str())) {
-            Some(p) if !same_repo(p) => failed(format!("setup.sh 跑完了，但 daemon 登记的 {key} 是仓库 {}，不是 {owner}/{name}；没有确认接上，请在下面「本机 daemon」里断开它", p["repo"].as_str().unwrap_or("读不出"))),
-            Some(p) => json!({ "result": "connected", "already": false, "key": key, "state": p["scheduler"]["state"], "dir": here, "output": format!("已接上：{key}") }),
-            None => failed(format!("setup.sh 跑完了，但本机状态里找不到 {key}（{here}），没有确认接上")),
+            Some(p) if !same_repo(p) => failed(Said::compose(
+                "setup.sh 跑完了，但 daemon 登记的 {key} 是仓库 {got}，不是 {repo}；没有确认接上，请在下面「本机 daemon」里断开它",
+                &[("key", &k), ("got", &shown_repo(p)), ("repo", &repo)],
+            )),
+            Some(p) => put_said(json!({ "result": "connected", "already": false, "key": key, "state": p["scheduler"]["state"], "dir": here }), "output", &Said::compose("已接上：{key}", &[("key", &k)])),
+            None => failed(Said::compose("setup.sh 跑完了，但本机状态里找不到 {key}（{here}），没有确认接上", &[("key", &k), ("here", &outside(&here, "user"))])),
         }
     }
 
     /// Run a program and keep its output (stdout and stderr, as they come) in the job.
     #[allow(clippy::too_many_arguments)]
-    async fn run_stream(&self, job: u64, path: &str, program: &str, args: &[&str], extra: &[(&str, &str)], cwd: &Path, limit: Duration) -> Out {
-        let home = match self.home() {
+    /// `from`: whose output it is (the window marks it so: git's is the system's, setup.sh's the daemon's)
+    async fn run_stream(&self, job: u64, path: &str, program: &str, args: &[&str], extra: &[(&str, &str)], cwd: &Path, limit: Duration, from: &'static str) -> Ran {
+        let home = match self.home_s() {
             Ok(h) => h.to_path_buf(),
             Err(e) => return self.not_run(job, e),
         };
-        let Some(bin) = which(program, path) else { return self.not_run(job, format!("找不到 {program}（PATH：{path}）")) };
+        let Some(bin) = which(program, path) else { return self.not_run(job, not_found(program, path)) };
         let mut c = tokio::process::Command::new(bin);
         c.args(args).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         self.prepare(&mut c, &home, path);
@@ -563,10 +640,10 @@ impl Daemon {
         }
         let mut child = match c.spawn() {
             Ok(ch) => ch,
-            Err(e) => return self.not_run(job, format!("{program} 没能启动：{e}")),
+            Err(e) => return self.not_run(job, not_started(program, &e.to_string())),
         };
         let (Some(mut so), Some(mut se)) = (child.stdout.take(), child.stderr.take()) else {
-            return self.not_run(job, format!("{program} 没能启动：拿不到输出"));
+            return self.not_run(job, plain(tr("{program} 没能启动：拿不到输出", &[("program", program)])));
         };
         let pump = async {
             let mut a = [0u8; 4096];
@@ -579,39 +656,38 @@ impl Daemon {
                 tokio::select! {
                     n = so.read(&mut a), if !so_done => match n {
                         Ok(0) | Err(_) => so_done = true,
-                        Ok(n) => { keep_o.extend_from_slice(&a[..n]); self.say(job, &take_utf8(&mut part_o, &a[..n])); }
+                        Ok(n) => { keep_o.extend_from_slice(&a[..n]); self.say(job, &take_utf8(&mut part_o, &a[..n]), Some(from)); }
                     },
                     n = se.read(&mut b), if !se_done => match n {
                         Ok(0) | Err(_) => se_done = true,
-                        Ok(n) => { keep_e.extend_from_slice(&b[..n]); self.say(job, &take_utf8(&mut part_e, &b[..n])); }
+                        Ok(n) => { keep_e.extend_from_slice(&b[..n]); self.say(job, &take_utf8(&mut part_e, &b[..n]), Some(from)); }
                     },
                 }
             }
             for rest in [part_o, part_e] {
                 if !rest.is_empty() {
-                    self.say(job, &String::from_utf8_lossy(&rest));
+                    self.say(job, &String::from_utf8_lossy(&rest), Some(from));
                 }
             }
             let status = child.wait().await;
             (status, keep_o, keep_e)
         };
         match tokio::time::timeout(limit, pump).await {
-            Ok((status, o, e)) => Out {
-                code: status.ok().and_then(|s| s.code()),
-                stdout: tail(&String::from_utf8_lossy(&o), crate::daemon::OUTPUT_LIMIT),
-                stderr: tail(&String::from_utf8_lossy(&e), crate::daemon::OUTPUT_LIMIT),
+            Ok((status, o, e)) => Ran {
+                out: Out {
+                    code: status.ok().and_then(|s| s.code()),
+                    stdout: tail(&String::from_utf8_lossy(&o), crate::daemon::OUTPUT_LIMIT),
+                    stderr: tail(&String::from_utf8_lossy(&e), crate::daemon::OUTPUT_LIMIT),
+                },
+                note: None,
             },
-            Err(_) => {
-                let m = format!("{program} 超过 {} 秒没有结束，已停止", limit.as_secs());
-                self.line(job, &m);
-                Out { code: None, stdout: String::new(), stderr: m }
-            }
+            Err(_) => self.not_run(job, timed_out(program, limit)),
         }
     }
 
-    fn not_run(&self, job: u64, m: String) -> Out {
+    fn not_run(&self, job: u64, m: Said) -> Ran {
         self.line(job, &m);
-        Out { code: None, stdout: String::new(), stderr: m }
+        Ran::not_run(m)
     }
 }
 
@@ -621,11 +697,19 @@ enum Source {
     Clone(PathBuf, PathBuf),
 }
 
-fn code_word(o: &Out) -> String {
-    match o.code {
-        Some(c) => format!("退出码 {c}"),
-        None => "没有正常结束".into(),
-    }
+/// "仓库名不合规"
+fn bad_repo() -> Said {
+    plain(tr("仓库名不合规", &[]))
+}
+
+/// "daemon 里没有叫 X 的 agent"
+fn no_agent(agent: &str) -> Said {
+    Said::new("daemon 里没有叫 {agent} 的 agent", &[("agent", agent)], "user")
+}
+
+/// several messages with `sep` between them, their outside parts kept apart
+fn join_with(parts: &[Said], sep: &str) -> Said {
+    crate::daemon::join_sep(parts, sep)
 }
 
 /// The complete UTF-8 text of `pending + bytes`; an incomplete last character stays in `pending`.
@@ -755,9 +839,9 @@ mod tests {
         let c = parse_project_check(&read("Acme/Widget", "codex"), d).unwrap();
         assert_eq!(config_verdict(&c, "acme", "widget"), Ok(Some(("/h/github/widget/cavil-loop.config".into(), "codex".into()))));
         let other = parse_project_check(&read("acme/other", "claude"), d).unwrap();
-        assert!(config_verdict(&other, "acme", "widget").unwrap_err().contains("acme/other"));
+        assert!(config_verdict(&other, "acme", "widget").unwrap_err().text().contains("acme/other"));
         let empty = parse_project_check(&read("", "claude"), d).unwrap();
-        assert!(config_verdict(&empty, "acme", "widget").unwrap_err().contains("没写"));
+        assert!(config_verdict(&empty, "acme", "widget").unwrap_err().text().contains("没写"));
         let bad = parse_project_check(&st(json!({ "dir": d, "config": "/x", "config_state": "unreadable" })), d).unwrap();
         assert!(config_verdict(&bad, "acme", "widget").is_err());
         // no answer for this folder (an older daemon, or another folder) is never "no config"

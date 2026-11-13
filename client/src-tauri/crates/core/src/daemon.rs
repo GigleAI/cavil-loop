@@ -19,6 +19,7 @@
 //   - the network: `git clone` from the fixed GitHub URL, `git fetch` only
 //     from a github.com remote.
 
+use crate::i18n::{tr, Said};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -116,7 +117,7 @@ impl FileOpener for SystemFileOpener {
         } else {
             std::process::Command::new("xdg-open")
         };
-        cmd.arg(path).spawn().map(|_| ()).map_err(|e| format!("打不开文件：{e}"))
+        cmd.arg(path).spawn().map(|_| ()).map_err(|e| tr("打不开文件：{e}", &[("e", &e.to_string())]))
     }
 }
 
@@ -149,20 +150,8 @@ impl Out {
     /// timed out, failed half-way) is "unconfirmed": what it changed is not known, so it is never
     /// mapped onto one of the script's own words — "failed" there means "restored", which nobody checked.
     pub(crate) fn outcome(&self) -> (String, String) {
-        match self.result_word() {
-            Some(w) => (w, self.text()),
-            None => (
-                "unconfirmed".into(),
-                format!(
-                    "脚本没有给出最终结果（{}），中途可能已经改动了文件或后台任务，没有确认恢复。脚本输出：\n{}",
-                    match self.code {
-                        Some(c) => format!("退出码 {c}"),
-                        None => "没有正常结束".into(),
-                    },
-                    self.text()
-                ),
-            ),
-        }
+        let (w, said) = outcome_of(self, None);
+        (w, said.text())
     }
 
     /// the `RESULT=<word>` last line the GitHub#313 scripts print
@@ -171,6 +160,96 @@ impl Out {
         let w = line.trim().strip_prefix("RESULT=")?;
         w.bytes().all(|b| b.is_ascii_lowercase() || b == b'_').then(|| w.to_string()).filter(|w| !w.is_empty())
     }
+}
+
+/// GitHub#473: what a GitHub#313 script ended with, its words for the person — the script's own output
+/// as is (from the daemon), or the client's note when it did not run (`note`).
+fn outcome_of(out: &Out, note: Option<&Said>) -> (String, Said) {
+    let shown = match note {
+        Some(n) => n.clone(),
+        None => Said::outside(&out.text(), "daemon"),
+    };
+    match out.result_word() {
+        Some(w) => (w, shown),
+        None => (
+            "unconfirmed".into(),
+            Said::compose(
+                "脚本没有给出最终结果（{code}），中途可能已经改动了文件或后台任务，没有确认恢复。脚本输出：\n{out}",
+                &[("code", &code_word(out.code)), ("out", &shown)],
+            ),
+        ),
+    }
+}
+
+/// "退出码 1" / "没有正常结束"
+pub(crate) fn code_word(code: Option<i32>) -> Said {
+    Said::plain(match code {
+        Some(c) => tr("退出码 {c}", &[("c", &c.to_string())]),
+        None => tr("没有正常结束", &[]),
+    })
+}
+
+/// outside text as one message part (GitHub#473)
+pub(crate) fn outside(text: &str, from: &'static str) -> Said {
+    Said::outside(text, from)
+}
+
+/// the client's own words, already in the window's language
+pub(crate) fn plain(text: String) -> Said {
+    Said::plain(text)
+}
+
+/// A command as it ran (Deref: everything an `Out` has), with the client's own note when it did not
+/// run at all (not found, did not start, timed out): that note is the client's words, not the
+/// program's, so it is never shown as the program's output.
+pub(crate) struct Ran {
+    pub out: Out,
+    pub note: Option<Said>,
+}
+
+impl std::ops::Deref for Ran {
+    type Target = Out;
+    fn deref(&self) -> &Out {
+        &self.out
+    }
+}
+
+impl Ran {
+    pub(crate) fn not_run(note: Said) -> Ran {
+        Ran { out: Out { code: None, stdout: String::new(), stderr: note.text() }, note: Some(note) }
+    }
+    /// what it said: the program's output as is (marked as coming from `from`), or the client's note
+    pub(crate) fn said(&self, from: &'static str) -> Said {
+        match &self.note {
+            Some(n) => n.clone(),
+            None => Said::outside(&self.out.text(), from),
+        }
+    }
+    pub(crate) fn outcome_said(&self) -> (String, Said) {
+        outcome_of(&self.out, self.note.as_ref())
+    }
+}
+
+/// `v` with `key` = the message as one string and `<key>Said` = the message with its outside parts marked
+pub(crate) fn put_said(mut v: Value, key: &str, s: &Said) -> Value {
+    v[key] = Value::String(s.text());
+    v[format!("{key}Said")] = s.to_json();
+    v
+}
+
+/// "找不到 git（PATH：…）"
+pub(crate) fn not_found(program: &str, path: &str) -> Said {
+    Said::compose("找不到 {program}（PATH：{path}）", &[("program", &plain(program.to_string())), ("path", &outside(path, "system"))])
+}
+
+/// "git 没能启动：<the system's words>"
+pub(crate) fn not_started(program: &str, e: &str) -> Said {
+    Said::compose("{program} 没能启动：{e}", &[("program", &plain(program.to_string())), ("e", &outside(e, "system"))])
+}
+
+/// "git 超过 60 秒没有结束，已停止"
+pub(crate) fn timed_out(program: &str, limit: Duration) -> Said {
+    Said::plain(tr("{program} 超过 {n} 秒没有结束，已停止", &[("program", program), ("n", &limit.as_secs().to_string())]))
 }
 
 pub(crate) fn tail(s: &str, n: usize) -> String {
@@ -238,7 +317,10 @@ pub trait FolderPicker: Send + Sync {
     async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String>;
 }
 
-pub(crate) const BUSY: &str = "另一个 daemon 操作还没结束，等它结束再试";
+/// one changing operation at a time: the answer to a second one
+pub(crate) fn busy() -> Said {
+    Said::plain(tr("另一个 daemon 操作还没结束，等它结束再试", &[]))
+}
 
 impl Daemon {
     pub fn new(cfg: Config, opener: Arc<dyn FileOpener>) -> Daemon {
@@ -251,12 +333,20 @@ impl Daemon {
     }
 
     pub(crate) fn home(&self) -> Result<&Path, String> {
-        self.cfg.home.as_deref().ok_or_else(|| "读不到本机用户目录（HOME），无法检查 daemon".to_string())
+        self.home_s().map_err(|s| s.text())
+    }
+
+    pub(crate) fn home_s(&self) -> Result<&Path, Said> {
+        self.cfg.home.as_deref().ok_or_else(|| Said::plain(tr("读不到本机用户目录（HOME），无法检查 daemon", &[])))
+    }
+
+    pub(crate) fn entry(&self) -> Result<PathBuf, String> {
+        self.entry_s().map_err(|s| s.text())
     }
 
     /// The stable skill entry: the new name, else the one from before the rename (scripts/_names.sh cavil_pick).
-    pub(crate) fn entry(&self) -> Result<PathBuf, String> {
-        let h = self.home()?;
+    pub(crate) fn entry_s(&self) -> Result<PathBuf, Said> {
+        let h = self.home_s()?;
         let new = h.join(".agents/skills/cavil-loop");
         let old = h.join(".agents/skills/coding-agent-work-loop");
         let there = |p: &Path| p.exists() || p.symlink_metadata().is_ok();
@@ -264,7 +354,11 @@ impl Daemon {
     }
 
     pub(crate) async fn path(&self) -> Result<String, String> {
-        let home = self.home()?.to_path_buf();
+        self.path_s().await.map_err(|s| s.text())
+    }
+
+    pub(crate) async fn path_s(&self) -> Result<String, Said> {
+        let home = self.home_s()?.to_path_buf();
         Ok(match &self.cfg.path {
             PathSource::Fixed(p) => p.clone(),
             PathSource::Login => compose_path(&self.login_path(&home).await, &home),
@@ -310,17 +404,21 @@ impl Daemon {
     }
 
     pub(crate) async fn run(&self, path: &str, program: &str, args: &[&str], limit: Duration) -> Out {
-        self.run_input(path, program, args, None, limit).await
+        self.run_input_s(path, program, args, None, limit).await.out
+    }
+
+    pub(crate) async fn run_s(&self, path: &str, program: &str, args: &[&str], limit: Duration) -> Ran {
+        self.run_input_s(path, program, args, None, limit).await
     }
 
     /// `input`: what the child reads on standard input (None: nothing, /dev/null)
-    pub(crate) async fn run_input(&self, path: &str, program: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Out {
-        let home = match self.home() {
+    pub(crate) async fn run_input_s(&self, path: &str, program: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Ran {
+        let home = match self.home_s() {
             Ok(h) => h.to_path_buf(),
-            Err(e) => return Out { code: None, stdout: String::new(), stderr: e },
+            Err(e) => return Ran::not_run(e),
         };
         let Some(bin) = which(program, path) else {
-            return Out { code: None, stdout: String::new(), stderr: format!("找不到 {program}（PATH：{path}）") };
+            return Ran::not_run(not_found(program, path));
         };
         let mut c = tokio::process::Command::new(bin);
         c.args(args).current_dir(&home);
@@ -339,122 +437,141 @@ impl Daemon {
             child.wait_with_output().await
         };
         match tokio::time::timeout(limit, work).await {
-            Ok(Ok(o)) => Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() },
-            Ok(Err(e)) => Out { code: None, stdout: String::new(), stderr: format!("{program} 没能启动：{e}") },
-            Err(_) => Out { code: None, stdout: String::new(), stderr: format!("{program} 超过 {} 秒没有结束，已停止", limit.as_secs()) },
+            Ok(Ok(o)) => Ran { out: Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }, note: None },
+            Ok(Err(e)) => Ran::not_run(not_started(program, &e.to_string())),
+            Err(_) => Ran::not_run(timed_out(program, limit)),
         }
     }
 
     /// One of the daemon's own scripts, by its fixed path under the skill entry.
     pub(crate) async fn script(&self, path: &str, name: &str, args: &[&str], limit: Duration) -> Out {
-        self.script_input(path, name, args, None, limit).await
+        self.script_input_s(path, name, args, None, limit).await.out
     }
 
-    pub(crate) async fn script_input(&self, path: &str, name: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Out {
-        let file = match self.entry() {
+    pub(crate) async fn script_s(&self, path: &str, name: &str, args: &[&str], limit: Duration) -> Ran {
+        self.script_input_s(path, name, args, None, limit).await
+    }
+
+    pub(crate) async fn script_input_s(&self, path: &str, name: &str, args: &[&str], input: Option<&str>, limit: Duration) -> Ran {
+        let file = match self.entry_s() {
             Ok(e) => e.join("scripts").join(name),
-            Err(m) => return Out { code: None, stdout: String::new(), stderr: m },
+            Err(m) => return Ran::not_run(m),
         };
         let f = file.to_string_lossy().to_string();
         let mut all = vec![f.as_str()];
         all.extend_from_slice(args);
-        self.run_input(path, "bash", &all, input, limit).await
+        self.run_input_s(path, "bash", &all, input, limit).await
     }
 
     // ── status ──
 
     /// `{state: "missing", entry}` / `{state: "unreadable", reason, entry}` / `{state: "ok", entry, status}`
     pub async fn status(&self) -> Value {
-        let entry = match self.entry() {
+        let unreadable = |reason: &Said, entry: Value| put_said(json!({ "state": "unreadable", "entry": entry }), "reason", reason);
+        let entry = match self.entry_s() {
             Ok(e) => e,
-            Err(m) => return json!({ "state": "unreadable", "reason": m, "entry": Value::Null }),
+            Err(m) => return unreadable(&m, Value::Null),
         };
         let e = entry.to_string_lossy().to_string();
         if !entry.exists() && entry.symlink_metadata().is_err() {
             return json!({ "state": "missing", "entry": e });
         }
         if !entry.exists() {
-            return json!({ "state": "unreadable", "reason": format!("{e} 是一个指向不存在位置的链接"), "entry": e });
+            return unreadable(&Said::new("{e} 是一个指向不存在位置的链接", &[("e", &e)], "user"), json!(e));
         }
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return json!({ "state": "unreadable", "reason": m, "entry": e }),
+            Err(m) => return unreadable(&m, json!(e)),
         };
         if !has_status_script(&entry) {
             // a daemon from before GitHub#313: say what kind of install it is, so a checkout can be updated from here (GitHub#320)
             let form = self.outdated_form(&entry, &path).await;
-            let reason = format!("{e} 里没有状态脚本 scripts/install-status.sh：这份 daemon 版本太旧（早于 GitHub#313），客户端读不出它的状态");
-            return json!({ "state": "unreadable", "reason": reason, "entry": e, "outdated": form.to_json() });
+            let reason = Said::new("{e} 里没有状态脚本 scripts/install-status.sh：这份 daemon 版本太旧（早于 GitHub#313），客户端读不出它的状态", &[("e", &e)], "user");
+            let mut v = unreadable(&reason, json!(e));
+            v["outdated"] = form.to_json();
+            return v;
         }
-        let out = self.script(&path, "install-status.sh", &[], T_STATUS).await;
-        match parse_status(&out) {
+        let out = self.script_s(&path, "install-status.sh", &[], T_STATUS).await;
+        match parse_status_s(&out) {
             Ok(st) => json!({ "state": "ok", "entry": e, "status": st }),
             Err(reason) => match parse_precheck(&out) {
                 // the status script could only check the common tools (jq missing): show those, still unreadable
                 Some(pre) => {
                     let said = out.stderr.trim();
-                    let reason = if said.is_empty() { reason } else { tail(said, 2000) };
-                    json!({ "state": "unreadable", "reason": reason, "entry": e, "precheck": pre })
+                    let reason = if said.is_empty() { reason } else { outside(&tail(said, 2000), "daemon") };
+                    let mut v = unreadable(&reason, json!(e));
+                    v["precheck"] = pre;
+                    v
                 }
-                None => json!({ "state": "unreadable", "reason": reason, "entry": e }),
+                None => unreadable(&reason, json!(e)),
             },
         }
     }
 
     pub(crate) async fn status_ok(&self, path: &str) -> Result<Value, String> {
-        let out = self.script(path, "install-status.sh", &[], T_STATUS).await;
-        parse_status(&out).map_err(|r| format!("读不到本机 daemon 状态，没有执行：{r}"))
+        self.status_ok_s(path).await.map_err(|s| s.text())
+    }
+
+    pub(crate) async fn status_ok_s(&self, path: &str) -> Result<Value, Said> {
+        let out = self.script_s(path, "install-status.sh", &[], T_STATUS).await;
+        parse_status_s(&out).map_err(|r| Said::compose("读不到本机 daemon 状态，没有执行：{r}", &[("r", &r)]))
     }
 
     // ── install ──
 
     pub async fn install(&self) -> Value {
-        let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
-        let entry = match self.entry() {
+        let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
+        let entry = match self.entry_s() {
             Ok(e) => e,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
+        let failed = |m: &Said| put_said(json!({ "result": "failed" }), "output", m);
         if entry.exists() || entry.symlink_metadata().is_ok() {
-            return json!({ "result": "existing", "entry": entry.to_string_lossy(), "output": "本机已经装了 daemon，沿用现有的，什么都没动" });
+            return put_said(json!({ "result": "existing", "entry": entry.to_string_lossy() }), "output", &plain(tr("本机已经装了 daemon，沿用现有的，什么都没动", &[])));
         }
-        let home = match self.home() {
+        let home = match self.home_s() {
             Ok(h) => h.to_path_buf(),
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let skills = entry.parent().unwrap_or(&home).to_path_buf();
         if let Err(e) = std::fs::create_dir_all(&skills) {
-            return json!({ "result": "failed", "output": format!("建不出目录 {}：{e}", skills.display()) });
+            return failed(&Said::compose("建不出目录 {d}：{e}", &[("d", &outside(&skills.to_string_lossy(), "user")), ("e", &outside(&e.to_string(), "system"))]));
         }
         // clone next to it, then rename: a clone that fails half-way never looks like an install
         let tmp = skills.join(format!(".cavil-loop.cloning-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let t = tmp.to_string_lossy().to_string();
-        let out = self.run(&path, "git", &["clone", "--quiet", &self.cfg.clone_url, &t], T_NET).await;
+        let out = self.run_s(&path, "git", &["clone", "--quiet", &self.cfg.clone_url, &t], T_NET).await;
         if !out.ok() {
             let _ = std::fs::remove_dir_all(&tmp);
-            return json!({ "result": "failed", "output": format!("从 {} 克隆失败：\n{}", self.cfg.clone_url, out.text()) });
+            return failed(&Said::compose("从 {url} 克隆失败：\n{out}", &[("url", &plain(self.cfg.clone_url.clone())), ("out", &out.said("system"))]));
         }
         if let Err(e) = std::fs::rename(&tmp, &entry) {
             let _ = std::fs::remove_dir_all(&tmp);
-            return json!({ "result": "failed", "output": format!("克隆好了，但放不到 {}：{e}", entry.display()) });
+            return failed(&Said::compose("克隆好了，但放不到 {d}：{e}", &[("d", &outside(&entry.to_string_lossy(), "user")), ("e", &outside(&e.to_string(), "system"))]));
         }
-        let mut lines = vec![format!("已从 {} 克隆到 {}", self.cfg.clone_url, entry.display())];
+        let entry_s = entry.to_string_lossy().to_string();
+        let mut lines = vec![Said::compose("已从 {url} 克隆到 {d}", &[("url", &plain(self.cfg.clone_url.clone())), ("d", &outside(&entry_s, "user"))])];
         // the Claude Code skill link, as in the README (an existing one is left alone)
         let link = home.join(".claude/skills/cavil-loop");
+        let link_s = link.to_string_lossy().to_string();
         if link.symlink_metadata().is_ok() {
-            lines.push(format!("{} 已存在，没有改动", link.display()));
+            lines.push(Said::new("{l} 已存在，没有改动", &[("l", &link_s)], "user"));
         } else {
             let made = std::fs::create_dir_all(home.join(".claude/skills")).and_then(|_| symlink(&entry, &link));
             match made {
-                Ok(()) => lines.push(format!("已建软链 {} → {}", link.display(), entry.display())),
-                Err(e) => lines.push(format!("软链 {} 没建成：{e}（只影响在 Claude Code 里直接用这个 skill，不影响 daemon）", link.display())),
+                Ok(()) => lines.push(Said::new("已建软链 {l} → {d}", &[("l", &link_s), ("d", &entry_s)], "user")),
+                Err(e) => lines.push(Said::compose(
+                    "软链 {l} 没建成：{e}（只影响在 Claude Code 里直接用这个 skill，不影响 daemon）",
+                    &[("l", &outside(&link_s, "user")), ("e", &outside(&e.to_string(), "system"))],
+                )),
             }
         }
-        json!({ "result": "installed", "entry": entry.to_string_lossy(), "output": lines.join("\n") })
+        put_said(json!({ "result": "installed", "entry": entry_s }), "output", &join_lines(&lines))
     }
 
     // ── one project: stop / start / disconnect / open ──
@@ -462,136 +579,138 @@ impl Daemon {
     /// `action`: "stop" | "start"
     pub async fn service(&self, key: &str, action: &str) -> Value {
         if !valid_key(key) {
-            return refused("项目名不合规");
+            return refused_s(&bad_key());
         }
         if action != "stop" && action != "start" {
-            return refused("未知操作");
+            return refused_s(&plain(tr("未知操作", &[])));
         }
-        let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
-        let path = match self.path().await {
+        let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let st = match self.status_ok(&path).await {
+        let st = match self.status_ok_s(&path).await {
             Ok(s) => s,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let Some(p) = find_project(&st, key) else { return refused(&format!("本机没有接入项目 {key}")) };
+        let Some(p) = find_project(&st, key) else { return refused_s(&no_project(key)) };
         let sched = &p["scheduler"];
         let state = sched["state"].as_str().unwrap_or("unknown");
         let want_from = if action == "stop" { "running" } else { "stopped" };
         if state != want_from {
             let shown = match state {
-                "running" => "在跑",
-                "stopped" => "已停",
-                _ => "读不到",
+                "running" => tr("在跑", &[]),
+                "stopped" => tr("已停", &[]),
+                _ => tr("读不到", &[]),
             };
-            return refused(&format!("{key} 现在的后台任务状态是「{shown}」，没有执行「{}」", if action == "stop" { "停" } else { "启" }));
+            let act = if action == "stop" { tr("停", &[]) } else { tr("启", &[]) };
+            return refused_s(&Said::compose(
+                "{key} 现在的后台任务状态是「{shown}」，没有执行「{act}」",
+                &[("key", &outside(key, "user")), ("shown", &plain(shown)), ("act", &plain(act))],
+            ));
         }
         let unit = sched["unit"].as_str().unwrap_or("");
+        let bad_unit = || refused_s(&plain(tr("状态脚本给出的后台任务名不合规，没有执行", &[])));
         if !valid_unit(unit) {
-            return refused("状态脚本给出的后台任务名不合规，没有执行");
+            return bad_unit();
         }
         let out = match sched["kind"].as_str() {
             Some("systemd") => {
                 if !unit.ends_with(".timer") {
-                    return refused("状态脚本给出的后台任务名不合规，没有执行");
+                    return bad_unit();
                 }
-                self.run(&path, "systemctl", &["--user", action, unit], T_SHORT).await
+                self.run_s(&path, "systemctl", &["--user", action, unit], T_SHORT).await
             }
             Some("launchd") => {
                 let uid = self.run(&path, "id", &["-u"], T_SHORT).await;
                 let uid = uid.stdout.trim().to_string();
                 if uid.is_empty() || !uid.bytes().all(|b| b.is_ascii_digit()) {
-                    return refused("读不到本机用户编号（id -u），没有执行");
+                    return refused_s(&plain(tr("读不到本机用户编号（id -u），没有执行", &[])));
                 }
                 if action == "stop" {
-                    self.run(&path, "launchctl", &["bootout", &format!("gui/{uid}/{unit}")], T_SHORT).await
+                    self.run_s(&path, "launchctl", &["bootout", &format!("gui/{uid}/{unit}")], T_SHORT).await
                 } else {
                     let plist = p["scheduler"]["plist"].as_str().unwrap_or("");
-                    let expect = match self.home() {
+                    let expect = match self.home_s() {
                         Ok(h) => h.join("Library/LaunchAgents").join(format!("{unit}.plist")),
-                        Err(m) => return refused(&m),
+                        Err(m) => return refused_s(&m),
                     };
                     if Path::new(plist) != expect || !expect.is_file() {
-                        return refused(&format!("找不到 {key} 的后台任务配置文件 {}，没有执行", expect.display()));
+                        return refused_s(&Said::new("找不到 {key} 的后台任务配置文件 {f}，没有执行", &[("key", key), ("f", &expect.to_string_lossy())], "user"));
                     }
-                    self.run(&path, "launchctl", &["bootstrap", &format!("gui/{uid}"), plist], T_SHORT).await
+                    self.run_s(&path, "launchctl", &["bootstrap", &format!("gui/{uid}"), plist], T_SHORT).await
                 }
             }
-            _ => return refused("认不出这台机器的后台任务管理器，没有执行"),
+            _ => return refused_s(&plain(tr("认不出这台机器的后台任务管理器，没有执行", &[]))),
         };
         // read back: only the state the status script now reports counts
         let want = if action == "stop" { "stopped" } else { "running" };
         let after = self.status_ok(&path).await.ok();
         let now = after.as_ref().and_then(|s| find_project(s, key)).and_then(|p| p["scheduler"]["state"].as_str().map(str::to_string)).unwrap_or_else(|| "unknown".into());
-        json!({
-            "result": if now == want { "ok" } else { "failed" },
-            "state": now,
-            "output": out.text(),
-        })
+        put_said(json!({ "result": if now == want { "ok" } else { "failed" }, "state": now }), "output", &out.said("system"))
     }
 
     pub async fn disconnect(&self, key: &str) -> Value {
         if !valid_key(key) {
-            return refused("项目名不合规");
+            return refused_s(&bad_key());
         }
-        let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
-        let path = match self.path().await {
+        let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let out = self.script(&path, "disconnect-project.sh", &[key], T_SHORT).await;
-        let (result, output) = out.outcome();
-        json!({ "result": result, "code": out.code, "output": output })
+        let out = self.script_s(&path, "disconnect-project.sh", &[key], T_SHORT).await;
+        let (result, output) = out.outcome_said();
+        put_said(json!({ "result": result, "code": out.code }), "output", &output)
     }
 
     /// `what`: "log" (the project's poll.log) | "config" (its config file), both from the status script
     pub async fn open(&self, key: &str, what: &str) -> Value {
         if !valid_key(key) {
-            return refused("项目名不合规");
+            return refused_s(&bad_key());
         }
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let st = match self.status_ok(&path).await {
+        let st = match self.status_ok_s(&path).await {
             Ok(s) => s,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let Some(p) = find_project(&st, key) else { return refused(&format!("本机没有接入项目 {key}")) };
+        let Some(p) = find_project(&st, key) else { return refused_s(&no_project(key)) };
         let file = match what {
             "log" => p["state_dir"].as_str().map(|d| Path::new(d).join("poll.log")),
             "config" => p["config"].as_str().map(PathBuf::from),
-            _ => return refused("未知操作"),
+            _ => return refused_s(&plain(tr("未知操作", &[]))),
         };
-        let Some(file) = file.filter(|f| f.is_absolute()) else { return refused("状态脚本没有给出这个文件的位置") };
+        let Some(file) = file.filter(|f| f.is_absolute()) else { return refused_s(&plain(tr("状态脚本没有给出这个文件的位置", &[]))) };
         if !file.is_file() {
-            return refused(&format!("文件不存在：{}", file.display()));
+            return refused_s(&Said::new("文件不存在：{f}", &[("f", &file.to_string_lossy())], "user"));
         }
         match self.opener.open_file(&file.to_string_lossy(), what).await {
             Ok(()) => json!({ "result": "ok", "path": file.to_string_lossy() }),
-            Err(m) => refused(&m),
+            // the opener words its own failure (the app: through tr(), the system's words inside)
+            Err(m) => refused_s(&plain(m)),
         }
     }
 
     // ── update ──
 
     pub async fn update(&self) -> Value {
-        let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
-        let path = match self.path().await {
+        let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
-        let entry = match self.entry() {
+        let entry = match self.entry_s() {
             Ok(e) => e,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         // a daemon from before the status script (GitHub#320): judged again here, never taken from the window
         if entry.exists() && !has_status_script(&entry) {
             let dir = match self.outdated_form(&entry, &path).await {
                 Form::Checkout(dir) => dir,
-                other => return refused(&other.refusal()),
+                other => return refused_s(&other.refusal()),
             };
             let d = dir.to_string_lossy().to_string();
             let (before, after, output) = match self.fast_forward(&path, &d).await {
@@ -600,99 +719,95 @@ impl Daemon {
             };
             if !has_status_script(&entry) {
                 // pulled, but what it follows still has no status script (another branch, an old fork)
-                let branch = self.run(&path, "git", &["-C", &d, "rev-parse", "--abbrev-ref", "HEAD"], T_SHORT).await;
-                let branch = if branch.ok() { branch.stdout.trim().to_string() } else { format!("读不出（{}）", branch.text()) };
-                return json!({ "result": "still_old", "before": before, "after": after, "branch": branch, "output": output, "refresh": [] });
+                let branch = self.run_s(&path, "git", &["-C", &d, "rev-parse", "--abbrev-ref", "HEAD"], T_SHORT).await;
+                let branch = if branch.ok() { outside(branch.stdout.trim(), "system") } else { Said::compose("读不出（{e}）", &[("e", &branch.said("system"))]) };
+                let v = json!({ "result": "still_old", "before": before, "after": after, "refresh": [] });
+                return put_said(put_said(v, "branch", &branch), "output", &output);
             }
             let refresh = self.refresh_mac(&path).await;
-            return json!({ "result": if before == after { "current" } else { "updated" }, "before": before, "after": after, "output": output, "refresh": refresh });
+            return put_said(json!({ "result": if before == after { "current" } else { "updated" }, "before": before, "after": after, "refresh": refresh }), "output", &output);
         }
-        let st = match self.status_ok(&path).await {
+        let st = match self.status_ok_s(&path).await {
             Ok(s) => s,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         let d = &st["daemon"];
         let form = d["form"].as_str().unwrap_or("");
         if form == "managed" {
-            return json!({ "result": "managed", "version": d["version"], "output": "这份 daemon 是受管安装，会自己跟着主干自动更新，不需要在这里更新" });
+            return put_said(json!({ "result": "managed", "version": d["version"] }), "output", &plain(tr("这份 daemon 是受管安装，会自己跟着主干自动更新，不需要在这里更新", &[])));
         }
         if form != "checkout" {
-            return refused("这份 daemon 不是 git 代码目录，不能在这里更新");
+            return refused_s(&plain(tr("这份 daemon 不是 git 代码目录，不能在这里更新", &[])));
         }
-        let Some(dir) = d["target"].as_str().filter(|t| Path::new(t).is_absolute()) else { return refused("状态脚本没有给出 daemon 的位置") };
+        let Some(dir) = d["target"].as_str().filter(|t| Path::new(t).is_absolute()) else { return refused_s(&plain(tr("状态脚本没有给出 daemon 的位置", &[]))) };
         let (before, after, output) = match self.fast_forward(&path, dir).await {
             Ok(r) => r,
             Err(blocked) => return blocked,
         };
         let refresh = self.refresh_mac(&path).await;
-        json!({
-            "result": if before == after { "current" } else { "updated" },
-            "before": before,
-            "after": after,
-            "output": output,
-            "refresh": refresh,
-        })
+        put_said(json!({ "result": if before == after { "current" } else { "updated" }, "before": before, "after": after, "refresh": refresh }), "output", &output)
     }
 
     /// The one fast-forward both update paths use: no local changes, an origin branch upstream, origin on
     /// github.com, fetch, `merge --ff-only`. Ok: (HEAD before, HEAD after, git's words); Err: the "blocked" result.
-    async fn fast_forward(&self, path: &str, dir: &str) -> Result<(String, String, String), Value> {
+    async fn fast_forward(&self, path: &str, dir: &str) -> Result<(String, String, Said), Value> {
         let run_git = |args: Vec<&str>, limit: Duration| {
             let mut all = vec!["-C", dir];
             all.extend(args);
             let all: Vec<String> = all.into_iter().map(str::to_string).collect();
             async move {
                 let a: Vec<&str> = all.iter().map(String::as_str).collect();
-                self.run(path, "git", &a, limit).await
+                self.run_s(path, "git", &a, limit).await
             }
         };
-        let blocked = |step: &str, out: &Out| json!({ "result": "blocked", "step": step, "output": out.text() });
+        // `step` is the client's words; `output` git's, as is
+        let blocked = |step: String, out: &Ran| put_said(json!({ "result": "blocked", "step": step }), "output", &out.said("system"));
 
         let dirty = run_git(vec!["status", "--porcelain", "--untracked-files=no"], T_SHORT).await;
         if !dirty.ok() {
-            return Err(blocked("读不到代码目录的状态", &dirty));
+            return Err(blocked(tr("读不到代码目录的状态", &[]), &dirty));
         }
         if !dirty.stdout.trim().is_empty() {
-            return Err(blocked("代码目录里有没提交的改动，没有更新", &dirty));
+            return Err(blocked(tr("代码目录里有没提交的改动，没有更新", &[]), &dirty));
         }
         let upstream = run_git(vec!["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], T_SHORT).await;
         if !upstream.ok() || !upstream.stdout.trim().starts_with("origin/") {
-            return Err(blocked("当前分支没有跟踪 origin 上的分支，没有更新", &upstream));
+            return Err(blocked(tr("当前分支没有跟踪 origin 上的分支，没有更新", &[]), &upstream));
         }
         let remote = run_git(vec!["remote", "get-url", "origin"], T_SHORT).await;
         if !remote.ok() || !github_remote(remote.stdout.trim(), &self.cfg.extra_remotes) {
-            return Err(blocked("origin 不是 github.com 上的仓库，客户端只从 github.com 拉取，没有更新", &remote));
+            return Err(blocked(tr("origin 不是 github.com 上的仓库，客户端只从 github.com 拉取，没有更新", &[]), &remote));
         }
         let before = run_git(vec!["rev-parse", "HEAD"], T_SHORT).await.stdout.trim().to_string();
         let fetch = run_git(vec!["fetch", "--quiet", "origin"], T_NET).await;
         if !fetch.ok() {
-            return Err(blocked("拉取失败", &fetch));
+            return Err(blocked(tr("拉取失败", &[]), &fetch));
         }
         let merge = run_git(vec!["merge", "--ff-only", "@{upstream}"], T_SHORT).await;
         if !merge.ok() {
-            return Err(blocked("不能快进（本地有分叉的提交，或会覆盖本地文件），没有更新", &merge));
+            return Err(blocked(tr("不能快进（本地有分叉的提交，或会覆盖本地文件），没有更新", &[]), &merge));
         }
         let after = run_git(vec!["rev-parse", "HEAD"], T_SHORT).await.stdout.trim().to_string();
         let output = [fetch.text(), merge.text()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
-        Ok((before, after, output))
+        Ok((before, after, outside(&output, "system")))
     }
 
     /// Every macOS project's launchd plist, one after another; one failing does not stop the rest.
     async fn refresh_mac(&self, path: &str) -> Vec<Value> {
         let mut refresh = vec![];
-        match self.status_ok(path).await {
+        match self.status_ok_s(path).await {
             Ok(st2) => {
                 for p in st2["projects"].as_array().into_iter().flatten() {
                     if p["scheduler"]["kind"].as_str() != Some("launchd") {
                         continue;
                     }
                     let Some(key) = p["key"].as_str().filter(|k| valid_key(k)) else { continue };
-                    let out = self.script(path, "launchd-refresh.sh", &[key], T_REFRESH).await;
-                    let (result, output) = out.outcome();
-                    refresh.push(json!({ "key": key, "result": result, "code": out.code, "output": output }));
+                    let out = self.script_s(path, "launchd-refresh.sh", &[key], T_REFRESH).await;
+                    let (result, output) = out.outcome_said();
+                    refresh.push(put_said(json!({ "key": key, "result": result, "code": out.code }), "output", &output));
                 }
             }
-            Err(m) => refresh.push(json!({ "key": Value::Null, "result": "unknown", "code": Value::Null, "output": m })),
+            Err(m) => refresh.push(put_said(json!({ "key": Value::Null, "result": "unknown", "code": Value::Null }), "output", &m)),
         }
         refresh
     }
@@ -714,14 +829,21 @@ impl Daemon {
     /// them readable. A `.git` that git then does not confirm, a folder that cannot be read, git missing
     /// or failing — all "unknown", which offers nothing (the status script would say "directory" there).
     pub(crate) async fn outdated_form(&self, entry: &Path, path: &str) -> Form {
+        let at = |p: &Path, e: &std::io::Error| [("p", outside(&p.to_string_lossy(), "user")), ("e", outside(&e.to_string(), "system"))];
         let target = match std::fs::canonicalize(entry) {
             Ok(t) => t,
-            Err(e) => return Form::Unknown(format!("解析不了 {} 指向的位置：{e}", entry.display())),
+            Err(e) => {
+                let [a, b] = at(entry, &e);
+                return Form::Unknown(Said::compose("解析不了 {p} 指向的位置：{e}", &[(a.0, &a.1), (b.0, &b.1)]));
+            }
         };
         match std::fs::metadata(&target) {
             Ok(m) if m.is_dir() => {}
-            Ok(_) => return Form::Unknown(format!("{} 不是目录", target.display())),
-            Err(e) => return Form::Unknown(format!("读不了 {}：{e}", target.display())),
+            Ok(_) => return Form::Unknown(Said::new("{p} 不是目录", &[("p", &target.to_string_lossy())], "user")),
+            Err(e) => {
+                let [a, b] = at(&target, &e);
+                return Form::Unknown(Said::compose("读不了 {p}：{e}", &[(a.0, &a.1), (b.0, &b.1)]));
+            }
         }
         if let Some(rel) = self.releases_root() {
             let canon = std::fs::canonicalize(&rel).ok();
@@ -737,19 +859,22 @@ impl Daemon {
                     break;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Form::Unknown(format!("读不了 {}：{e}", dir.join(".git").display())),
+                Err(e) => {
+                    let [a, b] = at(&dir.join(".git"), &e);
+                    return Form::Unknown(Said::compose("读不了 {p}：{e}", &[(a.0, &a.1), (b.0, &b.1)]));
+                }
             }
         }
         if !marked {
             return Form::Directory(target);
         }
         let t = target.to_string_lossy().to_string();
-        let out = self.run(path, "git", &["-C", &t, "rev-parse", "--is-inside-work-tree"], T_SHORT).await;
+        let out = self.run_s(path, "git", &["-C", &t, "rev-parse", "--is-inside-work-tree"], T_SHORT).await;
         if out.ok() && out.stdout.trim() == "true" {
             Form::Checkout(target)
         } else {
-            let said = out.text();
-            Form::Unknown(format!("{} 里有 git 的标记，但 git 没有确认它是代码目录：{}", t, if said.is_empty() { "没有输出".into() } else { said }))
+            let said = if out.note.is_none() && out.text().is_empty() { plain(tr("没有输出", &[])) } else { out.said("system") };
+            Form::Unknown(Said::compose("{p} 里有 git 的标记，但 git 没有确认它是代码目录：{e}", &[("p", &outside(&t, "user")), ("e", &said)]))
         }
     }
 }
@@ -760,7 +885,7 @@ pub(crate) enum Form {
     Checkout(PathBuf),
     Managed(PathBuf),
     Directory(PathBuf),
-    Unknown(String),
+    Unknown(Said),
 }
 
 impl Form {
@@ -769,16 +894,16 @@ impl Form {
             Form::Checkout(t) => json!({ "form": "checkout", "target": t.to_string_lossy() }),
             Form::Managed(t) => json!({ "form": "managed", "target": t.to_string_lossy() }),
             Form::Directory(t) => json!({ "form": "directory", "target": t.to_string_lossy() }),
-            Form::Unknown(e) => json!({ "form": "unknown", "error": e }),
+            Form::Unknown(e) => put_said(json!({ "form": "unknown" }), "error", e),
         }
     }
 
-    fn refusal(&self) -> String {
+    fn refusal(&self) -> Said {
         match self {
-            Form::Checkout(_) => String::new(),
-            Form::Managed(_) => "这份 daemon 是受管安装，不能在这里更新".into(),
-            Form::Directory(_) => "这份 daemon 不是 git 代码目录，也不是受管安装，客户端更新不了它".into(),
-            Form::Unknown(e) => format!("读不出这份 daemon 是哪种安装，没有更新：{e}"),
+            Form::Checkout(_) => plain(String::new()),
+            Form::Managed(_) => plain(tr("这份 daemon 是受管安装，不能在这里更新", &[])),
+            Form::Directory(_) => plain(tr("这份 daemon 不是 git 代码目录，也不是受管安装，客户端更新不了它", &[])),
+            Form::Unknown(e) => Said::compose("读不出这份 daemon 是哪种安装，没有更新：{e}", &[("e", e)]),
         }
     }
 }
@@ -787,8 +912,59 @@ fn has_status_script(entry: &Path) -> bool {
     entry.join("scripts/install-status.sh").is_file()
 }
 
+/// Nothing ran; `output` says why. (The words are the caller's; `refused_s` also marks the outside parts.)
 pub(crate) fn refused(m: &str) -> Value {
     json!({ "result": "refused", "output": m })
+}
+
+/// Nothing ran: `output` the reason as one string, `outputSaid` with its outside parts marked (GitHub#473)
+pub(crate) fn refused_s(m: &Said) -> Value {
+    put_said(json!({ "result": "refused" }), "output", m)
+}
+
+/// "项目名不合规"
+pub(crate) fn bad_key() -> Said {
+    plain(tr("项目名不合规", &[]))
+}
+
+/// "本机没有接入项目 <key>"
+pub(crate) fn no_project(key: &str) -> Said {
+    Said::new("本机没有接入项目 {key}", &[("key", key)], "user")
+}
+
+/// Several messages, one per line, their outside parts kept apart.
+pub(crate) fn join_lines(lines: &[Said]) -> Said {
+    join_sep(lines, "\n")
+}
+
+/// A message read back from its JSON (`put_said`'s `<key>Said`); None for anything malformed.
+pub(crate) fn said_from_json(v: &Value) -> Option<Said> {
+    const FROM: [&str; 5] = ["github", "daemon", "remote", "system", "user"];
+    let template = v["template"].as_str()?.to_string();
+    let mut parts = vec![];
+    for p in v["parts"].as_array()? {
+        let from = FROM.iter().find(|f| p["from"].as_str() == Some(**f))?;
+        parts.push((p["name"].as_str()?.to_string(), p["text"].as_str()?.to_string(), *from));
+    }
+    Some(Said { template, parts })
+}
+
+/// Several messages with `sep` (the client's own words) between them, their outside parts kept apart.
+pub(crate) fn join_sep(lines: &[Said], sep: &str) -> Said {
+    let mut all = Said::default();
+    for (i, l) in lines.iter().enumerate() {
+        let mut t = l.template.clone();
+        for (k, v, from) in &l.parts {
+            let renamed = format!("l{i}_{k}");
+            t = t.replace(&format!("{{{k}}}"), &format!("{{{renamed}}}"));
+            all.parts.push((renamed, v.clone(), *from));
+        }
+        if i > 0 {
+            all.template.push_str(sep);
+        }
+        all.template.push_str(&t);
+    }
+    all
 }
 
 /// The one test of "this is a status the client understands" — for the local status script and for
@@ -797,15 +973,19 @@ pub(crate) fn status_shape(v: &Value) -> bool {
     v["version"] == 1 && v["projects"].is_array()
 }
 
-pub(crate) fn parse_status(out: &Out) -> Result<Value, String> {
+/// The status script's answer, or why it is not one (the script's own words kept apart).
+pub(crate) fn parse_status_s(out: &Ran) -> Result<Value, Said> {
     if !out.ok() {
-        let t = out.text();
-        return Err(format!("状态脚本{}：{}", match out.code { Some(c) => format!("退出码 {c}"), None => "没有正常结束".into() }, if t.is_empty() { "没有输出".into() } else { t }));
+        let shown = if out.note.is_none() && out.text().is_empty() { plain(tr("没有输出", &[])) } else { out.said("daemon") };
+        return Err(Said::compose("状态脚本{code}：{out}", &[("code", &code_word(out.code)), ("out", &shown)]));
     }
     match serde_json::from_str::<Value>(out.stdout.trim()) {
         Ok(v) if status_shape(&v) => Ok(v),
-        Ok(v) => Err(format!("状态脚本输出的格式认不出（version = {}），客户端可能需要更新", v["version"])),
-        Err(e) => Err(format!("状态脚本输出的不是 JSON（{e}）：{}", tail(out.stdout.trim(), 2000))),
+        Ok(v) => Err(Said::new("状态脚本输出的格式认不出（version = {v}），客户端可能需要更新", &[("v", &v["version"].to_string())], "daemon")),
+        Err(e) => Err(Said::compose(
+            "状态脚本输出的不是 JSON（{e}）：{out}",
+            &[("e", &outside(&e.to_string(), "system")), ("out", &outside(&tail(out.stdout.trim(), 2000), "daemon"))],
+        )),
     }
 }
 
@@ -849,7 +1029,7 @@ pub(crate) fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
 }
 #[cfg(not(unix))]
 pub(crate) fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "只支持 macOS / Linux"))
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, tr("只支持 macOS / Linux", &[])))
 }
 
 #[cfg(test)]

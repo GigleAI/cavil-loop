@@ -2,9 +2,6 @@
 # 这些文件里的中文暂时不受源码扫描检查；子项 ②（#472）③（#473）迁完一个文件就删掉它那一行，
 # 收尾子项 ④（#474）把这份名单整个删掉。名单里的文件已经没有中文可迁时，检查会要求删掉那一行。
 src-tauri/crates/core/src/api.rs
-src-tauri/crates/core/src/daemon.rs
-src-tauri/crates/core/src/daemon_config.rs
-src-tauri/crates/core/src/daemon_connect.rs
 src-tauri/crates/core/src/engine.rs
 src-tauri/crates/core/src/http.rs
 src-tauri/crates/core/src/platform.rs
@@ -35,8 +32,6 @@ src/data/taskList.ts
 src/renderer/BlockedDialog.tsx
 src/renderer/BoardView.tsx
 src/renderer/ConfirmDialog.tsx
-src/renderer/ConnectDialog.tsx
-src/renderer/DaemonSection.tsx
 src/renderer/DetailPanel.tsx
 src/renderer/EmptyGuide.tsx
 src/renderer/FailureNote.tsx
@@ -48,7 +43,6 @@ src/renderer/NewIssueDialog.tsx
 src/renderer/NoticeArea.tsx
 src/renderer/OpNotice.tsx
 src/renderer/OpenMenu.tsx
-src/renderer/ProjectConfigDialog.tsx
 src/renderer/ProjectPicker.tsx
 src/renderer/RemoteHostBlock.tsx
 src/renderer/RemoteSection.tsx
@@ -70,7 +64,6 @@ src/renderer/reread.ts
 src/renderer/shortcuts.ts
 src/shared/agentMetrics.ts
 src/shared/blocked.ts
-src/shared/daemon.ts
 src/shared/handoff.ts
 src/shared/images.ts
 src/shared/noticeTone.ts
