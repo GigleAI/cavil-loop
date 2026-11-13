@@ -156,6 +156,11 @@ export interface TimelineEntry {
   tasks?: TaskEntry;
   /** GitHub#205: the markdown source, present only when GitHub says this account may change it (body / comment) */
   editSource?: string;
+  /**
+   * GitHub#503: this round's total time in seconds, from the usage record on the last line of
+   * the markdown source (body / comment only); absent when there is no valid record.
+   */
+  wallSecs?: number;
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }
