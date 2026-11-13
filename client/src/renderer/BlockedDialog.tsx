@@ -42,7 +42,16 @@ function RefChip({ r, selfRepo, testid, onRemove, fresh }: { r: BlockedRefInfo; 
 export function BlockedDialog({ item, state, items, onClose }: { item: Item; state: AppState; items: Item[]; onClose: () => void }) {
   const [view, setView] = useState<BlockedView | null>(null);
   const [warn, setWarn] = useState<string | null>(null);
-  const [picks, setPicks] = useState<Candidate[]>([]);
+  const [picks, setPicksState] = useState<Candidate[]>([]);
+  // GitHub#523: the picks as of now, not as of the last render — "登记前置" waits for an item still being read
+  // into the list and then registers what the list holds by then
+  const picksRef = useRef<Candidate[]>([]);
+  const setPicks = (f: (p: Candidate[]) => Candidate[]) => {
+    picksRef.current = f(picksRef.current);
+    setPicksState(picksRef.current);
+  };
+  // the adds whose read has not come back yet; each one says whether its item went into the list
+  const adding = useRef(new Set<Promise<boolean>>());
   const [restore, setRestore] = useState<Set<string>>(new Set());
   const [text, setText] = useState('');
   const [found, setFound] = useState<Candidate[]>([]);
@@ -138,8 +147,14 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
   const shown = found.filter((c) => !taken.has(refKey(c)));
   useEffect(() => setSel(0), [text]);
 
-  const add = async (c: Candidate) => {
-    if (taken.has(refKey(c))) return;
+  const add = (c: Candidate) => {
+    const run = addOne(c);
+    adding.current.add(run);
+    void run.finally(() => adding.current.delete(run));
+    return run;
+  };
+  const addOne = async (c: Candidate): Promise<boolean> => {
+    if (taken.has(refKey(c))) return true;
     const typed = textRef.current;
     let pick = c;
     // a board copy has no GitHub id: read the item itself (the same read a number search makes)
@@ -147,12 +162,16 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       const r = await api().blockedSearch(item.key, `${c.repo}#${c.number}`);
       // a number search lists the numbers that start with it too: take the one that was clicked (GitHub#448)
       const same = r.ok ? r.items.find((x) => refKey(x) === refKey(c)) : undefined;
-      if (!same) return setSearchErr(!r.ok ? r.error : r.error ?? t('{ref} 不是开着的', { ref: refName(c, item.repo) }));
+      if (!same) {
+        setSearchErr(!r.ok ? r.error : r.error ?? t('{ref} 不是开着的', { ref: refName(c, item.repo) }));
+        return false;
+      }
       pick = same;
     }
     setPicks((p) => (p.some((x) => refKey(x) === refKey(pick)) ? p : [...p, pick]));
     // a read for a board copy may come back after more was typed: what was typed since stays
     if (textRef.current === typed) setText('');
+    return true;
   };
 
   const restoreRefs: Ref[] = view?.ok ? view.lost.filter((r) => restore.has(refKey(r))).map((r) => ({ repo: r.repo, number: r.number })) : [];
@@ -165,7 +184,15 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
   const confirm = async () => {
     if (!view?.ok || busy) return;
     setBusy(true);
-    const r = await api().blockedStart({ key: item.key, fingerprint: view.fingerprint, picks, restore: restoreRefs });
+    // GitHub#523: an item picked a moment ago may still be being read (a board copy is read from GitHub before it goes
+    // into the list): wait for it and register it too. One that could not be read stops here with its reason shown —
+    // registering without it would drop what was just picked.
+    const pending = [...adding.current];
+    if (pending.length > 0 && (await Promise.all(pending)).includes(false)) {
+      setBusy(false);
+      return;
+    }
+    const r = await api().blockedStart({ key: item.key, fingerprint: view.fingerprint, picks: picksRef.current, restore: restoreRefs });
     setBusy(false);
     if (r.ok) return onClose();
     setWarn(r.error);

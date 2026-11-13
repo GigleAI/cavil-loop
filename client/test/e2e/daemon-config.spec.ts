@@ -13,6 +13,10 @@ import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+// GitHub#523: reading and saving run the real config script (bash parses the file, compares fingerprints, rewrites
+// it); on a loaded machine that takes longer than the default 5 s. Waits for what the script answered get this
+// limit — the condition is the same, the wait ends as soon as the answer is on screen.
+const SCRIPT = { timeout: 30_000 };
 const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
 
@@ -60,7 +64,7 @@ async function openSection(prepare?: () => void): Promise<{ app: RunningApp; pag
 
 const openDialog = async (page: Page) => {
   await page.locator('[data-testid=daemon-project][data-key=widget]').getByTestId('daemon-config').click();
-  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form');
+  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form', SCRIPT);
 };
 const row = (page: Page, name: string) => page.locator(`[data-testid=config-row][data-name=${name}]`);
 const input = (page: Page, name: string) => page.getByTestId(`config-input-${name}`);
@@ -97,7 +101,7 @@ test('the form shows the config\'s values; changing two and saving writes exactl
 
   await page.getByTestId('config-save').click();
   const result = page.getByTestId('config-result');
-  await expect(result).toHaveAttribute('data-kind', 'saved');
+  await expect(result).toHaveAttribute('data-kind', 'saved', SCRIPT);
   await expect(result).toContainText('已保存 2 项');
   await expect(page.locator('[data-testid=config-change][data-name=WORKER_AGENT]')).toContainText('claude');
   await expect(page.locator('[data-testid=config-change][data-name=WORKER_AGENT]')).toContainText('codex');
@@ -141,7 +145,7 @@ test('a value that does not fit is marked, "保存" stays off and nothing is sen
   await input(page, 'WORKER_MODEL').fill('');
   await expect(page.getByTestId('config-pending')).toHaveText('已改 1 项，还没保存');
   await page.getByTestId('config-save').click();
-  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved');
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
   expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=3']);
 });
 
@@ -155,19 +159,19 @@ test('the file was edited elsewhere while the dialog was open: nothing is writte
   expect(outside).toContain('REVIEW_MAX_ROUNDS=9');
   await page.getByTestId('config-save').click();
   const result = page.getByTestId('config-result');
-  await expect(result).toHaveAttribute('data-kind', 'conflict');
+  await expect(result).toHaveAttribute('data-kind', 'conflict', SCRIPT);
   await expect(result).toContainText('没有保存，配置文件一个字都没动');
   await expect(page.getByTestId('config-sent')).toContainText('同时最多几个 worker → 2');
   expect(readFileSync(config, 'utf8')).toBe(outside);
   await shot(page, '5-conflict');
 
   await page.getByTestId('config-reload').click();
-  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form');
+  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form', SCRIPT);
   // the outside edit is what the form shows now, and the typed change is still there
   await expect(input(page, 'REVIEW_MAX_ROUNDS')).toHaveValue('9');
   await expect(input(page, 'MAX_CONCURRENT_WORKERS')).toHaveValue('2');
   await page.getByTestId('config-save').click();
-  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved');
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
   expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   expect(lines('REVIEW_MAX_ROUNDS')).toEqual(['REVIEW_MAX_ROUNDS=9']);
 });
@@ -217,7 +221,7 @@ test('what cannot be changed here has no input: arithmetic and a line inside a c
   // saving the setting the file did not have appends its line
   await input(page, 'POLL_IDLE_PROBE').click();
   await page.getByTestId('config-save').click();
-  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved');
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
   expect(lines('POLL_IDLE_PROBE')).toEqual(['POLL_IDLE_PROBE="false"']);
   expect(lines('BLOCKED_RECHECK_SECS')).toEqual(['BLOCKED_RECHECK_SECS=$((5 * 60))']);
   expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
@@ -226,7 +230,7 @@ test('what cannot be changed here has no input: arithmetic and a line inside a c
 test('a config that does not load shows no values at all; "用编辑器打开配置文件" still hands the file to the system', async () => {
   const { page } = await openSection(() => writeFileSync(config, readFileSync(config, 'utf8') + 'if then fi (\n'));
   await page.locator('[data-testid=daemon-project][data-key=widget]').getByTestId('daemon-config').click();
-  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'failed');
+  await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'failed', SCRIPT);
   await expect(page.getByTestId('config-read-failed')).toContainText('读不出这个项目的配置');
   await expect(page.getByTestId('config-row')).toHaveCount(0);
   await expect(page.getByTestId('config-save')).toHaveCount(0);

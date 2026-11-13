@@ -1044,11 +1044,17 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
    * round started by signing in was sometimes still running here).
    */
   const idle = () => expect.poll(async () => (await syncOf(page)).syncing, { timeout: 15_000 }).toBe(false);
-  /** one round from the shell's beat, waited until the detail read it started has answered */
+  /**
+   * one round, waited until the detail read it started has answered. GitHub#523: asked for directly, not by the
+   * shell's beat — a beat that comes while a round is running starts none, and a round is not always shown as
+   * syncing yet (its first steps, before it reads GitHub, say nothing), so "idle, then the beat" still lost the
+   * round now and then on a loaded machine. Asked for while one runs, a round is queued behind it and starts once
+   * it has ended — with the clock already moved, so its time mark is new either way.
+   */
   const round = async () => {
     await idle();
     const n = reads().length;
-    app.desktop.push({ kind: 'tick' });
+    await page.evaluate(() => void (window as any).cavil.syncNow());
     await expect.poll(() => reads().length).toBeGreaterThan(n);
     await expect.poll(() => reads()[n]?.status ?? 0).toBeGreaterThanOrEqual(200);
     await expect(page.getByTestId('detail-refresh')).toBeEnabled();
@@ -7020,11 +7026,21 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   expect(green).toBe('rgb(218, 251, 225)');
   await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', /counting|paused/);
   await shot(page, '357-02-merged-green');
+  // GitHub#523: the window's clock still runs on its own here, so the 5 s were counted from the moment the bar
+  // turned green — under load the screenshot and the checks above took more than a second, and "still there
+  // after 4 s" saw it gone. Make the count start from a known moment instead: the pointer on the bar holds it,
+  // stop the clock, and leaving the bar starts the 5 s from zero; from then on only the fast-forwards move time.
+  await onBoard(146).hover();
+  await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
   await page.mouse.move(5, 5);
+  await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(146)).toBeVisible();
   await ff(1_200);
   await expect(onBoard(146)).toHaveCount(0);
+  // the rest of this test waits on the app's own retries (3 s, 10 s, 30 s apart) in real time
+  await page.clock.resume();
   expect(env.fake.writes().filter((w) => w.method === 'PUT' && w.path.endsWith('/pulls/146/merge'))).toHaveLength(1);
 
   // ---- 2. a close whose answer never came: being checked (blue, "正在查证") → the app's own checks could not read (GitHub#359: yellow,
@@ -7537,6 +7553,10 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await open();
   const copyBtn = (b: Locator) => b.locator('button[data-code-copy]');
   const wrapBtn = (b: Locator) => b.locator('button[data-code-wrap]');
+  const wrapStored = async (on: boolean) => {
+    await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.codeWrap)).toBe(on);
+    await page.evaluate(() => (window as any).cavil.settled());
+  };
   /** what the clipboard really holds: pasted into the reply box with the keyboard, read back, box emptied again */
   const pasted = async () => {
     const box = page.getByTestId('reply-input');
@@ -7684,6 +7704,10 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
 
   // ---- 5. remembered: the app closed and started again, another opening of the item ----
+  // GitHub#523: the switch is stored by a message from the discussion frame to the window, then a write to the back
+  // end; the test's "quit" kills the back end outright, so wait until the window holds the new value and every write
+  // has gone out (a real window being closed is only hidden, its writes go on)
+  await wrapStored(true);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -7696,6 +7720,7 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await wrapBtn(ts).click();
   expect(await wrapped()).toBe(false);
   expect(await overflow(sh)).toEqual([true, 'pre']);
+  await wrapStored(false);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
