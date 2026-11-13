@@ -7,6 +7,7 @@ import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, W
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
 import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref } from './blocked';
+import type { SendAction } from './sends';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 
@@ -126,6 +127,24 @@ export interface CavilApi {
   opUnlock(id: string): Promise<void>;
   opDismiss(id: string, dismissed: boolean): Promise<void>;
   opDropDraft(id: string): Promise<void>;
+  /**
+   * GitHub#489: a reply / an edited body, comment or title / a ticked box, sent in the background (the
+   * panel is free at once); refused at once, nothing sent, when it cannot go out. Progress: `state.sends`.
+   */
+  startSend(action: SendAction): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** 「再发一次」: a send refused for sure whose text no panel took back */
+  sendResend(id: string): Promise<WriteResult>;
+  /** 「再查一次」: check an unknown send (reads only) */
+  sendRecheck(id: string): Promise<WriteResult>;
+  /** the panel put a refused send's text back into its edit box */
+  sendReturned(id: string): Promise<void>;
+  /** that text left the edit box without being sent from it (emptied, the editor cancelled) */
+  sendDropped(id: string): Promise<void>;
+  /** the box holding that taken-back text now holds this (kept with the record, so a restart gives back the latest) */
+  sendDraft(id: string, text: string): Promise<void>;
+  /** "已核对，解除锁定" on an unknown send (local only) */
+  sendUnlock(id: string): Promise<void>;
+  sendDismiss(id: string): Promise<void>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;

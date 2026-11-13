@@ -7,6 +7,7 @@ import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
+import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
 import type { Picks } from './actions';
 
@@ -716,6 +717,8 @@ export interface AppState {
   creates: CreateJob[];
   /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */
   ops: OpRecord[];
+  /** GitHub#489: replies / edits / ticked boxes sent for the window, oldest first (see shared/sends.ts) */
+  sends: SendRecord[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

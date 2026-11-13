@@ -22,6 +22,7 @@
 // Nothing is retried or queued: one request, its answer is the result.
 
 import type { CreateBoard } from '../shared/types';
+import type { SendAction, SendProof } from '../shared/sends';
 import { ISSUE_CLOSE_REASONS, type CreatePlan, type IssueCloseReason, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
@@ -474,6 +475,95 @@ async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreateP
     throw new ActionRefused(`里程碑「${want.title}」已经不在仓库 ${repo} 里（或被改了名），没有新建；请关掉对话框重开`);
 }
 
+/** what the one write of a send answered: a warning when GitHub's answer does not show what was written; a reply's new comment */
+export interface SendWritten {
+  warning: string | null;
+  commentId?: string | null;
+}
+
+/**
+ * GitHub#489: a reply / an edit / a ticked box, made ready to send. Everything that can refuse it is
+ * checked here — each read that fails throws, and then nothing was sent. `write` is the one request
+ * that changes GitHub (null: GitHub already holds it, nothing to send); it returns a warning when
+ * GitHub's answer does not show what was written. `proof` is what proves it when that answer never
+ * comes. `proofs`: a reply reads the comments already there first (only a send record needs them).
+ */
+export async function prepareSend(client: GitHubClient, action: SendAction, it: Item, opts: { proofs?: boolean } = {}): Promise<{ write: (() => Promise<SendWritten>) | null; proof: SendProof }> {
+  switch (action.kind) {
+    case 'comment': {
+      if (!action.body.trim()) throw new ActionRefused('评论是空的，没有发送');
+      let before: string[] | null = null;
+      if (opts.proofs) {
+        try {
+          before = (await readItemRecords(client, it.repo, it.number)).comments.map((x) => x.id);
+        } catch (e) {
+          // sent anyway; if its answer never comes it can only be checked by a person
+          if (e instanceof GitHubError && e.kind === 'auth') throw e;
+        }
+      }
+      // the new comment's node id from GitHub's answer: that comment is this send's (PR #510 review round 1)
+      const write = async (): Promise<SendWritten> => {
+        const r = await client.rest<{ node_id?: unknown }>('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.body });
+        return { warning: null, commentId: typeof r?.node_id === 'string' && r.node_id ? r.node_id : null };
+      };
+      return { write, proof: { kind: 'comment', before } };
+    }
+    case 'toggleTask': {
+      if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
+      if (typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你看到的原文，请刷新详情后再勾');
+      const now = await readTaskSource(client, action.entryId);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);
+      const next = flipTask(now.body, action.index, action.checked);
+      if (next === null) throw new ActionRefused(TASK_CHANGED);
+      return {
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, next)) === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
+        proof: { kind: 'source', want: next },
+      };
+    }
+    case 'editEntry': {
+      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你改的是哪一条、原文是什么，请刷新详情后再改');
+      const now = await readTaskSource(client, action.entryId);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);
+      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused('评论不能改成空的，没有修改（要删掉请去网页）');
+      const proof = { kind: 'source' as const, want: action.body };
+      if (action.body === now.body) return { write: null, proof };
+      return {
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, action.body)) === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
+        proof,
+      };
+    }
+    case 'editTitle': {
+      if (typeof action.title !== 'string' || typeof action.seenTitle !== 'string') throw new ActionRefused('不知道你改的标题、原来的标题是什么，请刷新详情后再改');
+      // GitHub keeps a title without its outer spaces: what is sent is what it will hold
+      const title = action.title.trim();
+      if (!title) throw new ActionRefused('标题不能为空，没有修改');
+      const now = await readTitle(client, it.repo, it.number);
+      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
+      if (now.title !== action.seenTitle) throw new ActionRefused(TITLE_CHANGED);
+      const proof = { kind: 'title' as const, want: title };
+      if (title === now.title) return { write: null, proof };
+      return {
+        write: async () => {
+          const written = await client.rest<{ title?: unknown }>('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { title });
+          return { warning: written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对' };
+        },
+        proof,
+      };
+    }
+  }
+}
+
+/** GitHub#489: what GitHub holds now that proves (or not) a send whose answer never came. Throws when it could not be read. */
+export async function readSendEvidence(client: GitHubClient, action: SendAction, repo: string, number: number): Promise<{ comments?: ItemRecords['comments']; source?: string; title?: string }> {
+  if (action.kind === 'comment') return { comments: (await readItemRecords(client, repo, number)).comments };
+  if (action.kind === 'editTitle') return { title: (await readTitle(client, repo, number)).title };
+  return { source: (await readTaskSource(client, action.entryId)).body };
+}
+
 export async function performAction(client: GitHubClient, action: WriteAction, ctx: ActionContext): Promise<ActionOutcome> {
   switch (action.kind) {
     case 'addLabel': {
@@ -532,46 +622,14 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'closeIssue':
       // GitHub#250: these run step by step in the controller (closeStep / commentStep / mergeStep / labels), never here
       throw new ActionRefused('这类操作走后台的逐步执行，不在这里发送');
-    case 'toggleTask': {
-      const it = needItem(ctx);
-      if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
-      if (typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你看到的原文，请刷新详情后再勾');
-      const now = await readTaskSource(client, action.entryId);
-      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);
-      const next = flipTask(now.body, action.index, action.checked);
-      if (next === null) throw new ActionRefused(TASK_CHANGED);
-      const written = await writeTaskSource(client, now.kind, action.entryId, next);
-      const warning = written === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
-      return { touched: [[it.repo, it.number]], warning };
-    }
-    case 'editEntry': {
-      const it = needItem(ctx);
-      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你改的是哪一条、原文是什么，请刷新详情后再改');
-      const now = await readTaskSource(client, action.entryId);
-      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);
-      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused('评论不能改成空的，没有修改（要删掉请去网页）');
-      if (action.body === now.body) return { touched: [], warning: null };
-      const written = await writeTaskSource(client, now.kind, action.entryId, action.body);
-      const warning = written === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对';
-      return { touched: [[it.repo, it.number]], warning };
-    }
+    case 'toggleTask':
+    case 'editEntry':
     case 'editTitle': {
+      // GitHub#489: the same read-before-write a send record makes (prepareSend), done and written here at once
       const it = needItem(ctx);
-      if (typeof action.title !== 'string' || typeof action.seenTitle !== 'string') throw new ActionRefused('不知道你改的标题、原来的标题是什么，请刷新详情后再改');
-      // GitHub keeps a title without its outer spaces: what is sent is what it will hold
-      const title = action.title.trim();
-      if (!title) throw new ActionRefused('标题不能为空，没有修改');
-      const now = await readTitle(client, it.repo, it.number);
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.title !== action.seenTitle) throw new ActionRefused(TITLE_CHANGED);
-      if (title === now.title) return { touched: [], warning: null };
-      const written = await client.rest<{ title?: unknown }>('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { title });
-      const warning = written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对';
-      return { touched: [[it.repo, it.number]], warning };
+      const p = await prepareSend(client, action, it);
+      if (!p.write) return { touched: [], warning: null };
+      return { touched: [[it.repo, it.number]], warning: (await p.write()).warning };
     }
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');

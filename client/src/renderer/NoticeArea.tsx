@@ -1,5 +1,6 @@
 // GitHub#488: the window's one notice area. Every result the controller holds — an operation (close,
-// merge, 托管, 交给 agent, 等前置), a new issue on its way or what came of it, changes not saved — is
+// merge, 托管, 交给 agent, 等前置), a new issue on its way or what came of it, changes not saved, and
+// (GitHub#489) a reply / an edited body, comment or title / a ticked box — is
 // said here, under the tab bar and above every page, whichever page / tab / panel is showing. Nowhere
 // else says them (not the detail, not above the board), so each is said exactly once. What each notice
 // says and which buttons it has are unchanged: the same components and the same rules as before.
@@ -15,6 +16,8 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { copyText } from './pasteImage';
 import { OpNotice } from './OpNotice';
+import { SendNotice } from './SendNotice';
+import { sendShown } from '../shared/sends';
 import { EditIssues } from './DetailPanel';
 import type { OpenIntent } from './BoardView';
 import type { OpenHow } from './OpenMenu';
@@ -59,6 +62,11 @@ export function NoticeArea({
         />
       ),
     });
+  }
+  // GitHub#489: replies / edits / ticked boxes
+  for (const r of state.sends) {
+    if (!sendShown(r)) continue;
+    entries.push({ id: `send:${r.id}`, order: r.startedAt, node: <SendNotice key={`send:${r.id}`} r={r} onOpen={openFloat} /> });
   }
   for (const j of state.creates) {
     // GitHub#258: created, only boards not ticked still being watched: nothing to say

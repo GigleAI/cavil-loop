@@ -709,7 +709,8 @@ export function handleRest(store: Store, method: string, path: string, body: any
     list.push({ id, url: `https://github.com/${c.repo}/issues/${c.number}#issuecomment-${list.length + 1}`, createdAt: w.clock(), bodyHTML: `<p>${String(body?.body ?? '')}</p>`, author: { login: actor }, body: String(body?.body ?? ''), authorAssociation: 'COLLABORATOR' });
     w.comments.set(ikey, list);
     touch(store, c);
-    return send(201, { id }), true;
+    // GitHub answers with the new comment, its GraphQL node id included (what the comments read lists as `id`)
+    return send(201, { id, node_id: id }), true;
   }
   if (im[1] === 'pulls' && c.kind !== 'PullRequest') return send(404, { message: 'Not Found' }), true;
   if (im[1] === 'pulls' && method === 'PUT' && sub === '/merge') {

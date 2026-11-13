@@ -30,6 +30,7 @@
 import type { IssueCloseReason, MergeMethod } from './actions';
 import { noticeTone, type NoticeFacts, type NoticeTone } from './noticeTone';
 import type { BlockedStepName, Facts, Pick, Ref } from './blocked';
+import { commentProves } from './sends';
 
 export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' | 'blocked';
 export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack', 'blocked'];
@@ -621,7 +622,7 @@ export function opProveFromRecords(
   if (r.replyState === 'unknown') {
     const reply = r.reply;
     if (!reply || !reply.before) missing.push('用附的评论原文发的回复：发送前没读到这一条原有的评论，无法区分新旧，只能人工核对');
-    else if (records.comments.some((c) => !reply.before!.includes(c.id) && c.author === login && c.body === reply.body))
+    else if (commentProves(records.comments, reply.before, login, reply.body))
       record = { ...record, replyState: null, reply: null, commentUsed: true };
     else missing.push('评论列表里没有用附的评论原文发的那条回复（可能还没出现）');
   }
@@ -635,7 +636,7 @@ export function opProveFromRecords(
     const before = r.before;
     const found =
       s.name === 'comment'
-        ? records.comments.some((c) => !before.comments.includes(c.id) && c.author === login && c.body === (r.draft.comment ?? ''))
+        ? commentProves(records.comments, before.comments, login, r.draft.comment ?? '')
         : records.labelEvents.some((e) => !before.events.includes(e.id) && e.actor === login && e.label === s.label && e.event === (s.name === 'addLabel' ? 'labeled' : 'unlabeled'));
     if (found) record = opProveStep(record, i, s.name === 'comment' ? '在评论列表里找到了这次发出的评论' : '在 GitHub 的标签记录里找到了这一步');
     else if (s.name === 'comment') missing.push('评论列表里没有这次发出的评论（可能还没出现）');
