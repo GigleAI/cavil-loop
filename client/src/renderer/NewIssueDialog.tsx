@@ -336,7 +336,8 @@ export function NewIssueDialog({
                     disabled={!p.viewerCanUpdate}
                     onChange={(e) => setManual(e.target.checked ? [...projects.filter((x) => x !== p.key), p.key] : projects.filter((x) => x !== p.key))}
                   />
-                  {tNode('「{name}」', { name: <Verbatim from="github">{p.title}</Verbatim> })}
+                  {/* one run of text: the label lays out its children with gaps */}
+                  <span>{tNode('「{name}」', { name: <Verbatim from="github">{p.title}</Verbatim> })}</span>
                   {!p.viewerCanUpdate && <span className="small muted">{t('（这个账号不能修改它）')}</span>}
                 </label>
               ))}
