@@ -11,6 +11,7 @@ autopilot:2/3 70
 autopilot:3/3 82
 autopilot-handover 260
 autopilot-human-paths 110
+autopilot-merge-close 40
 autopilot-ops 25
 autopilot-outsider 240
 autopilot-split 43
@@ -39,6 +40,7 @@ fake-gh-server 5
 footer-ci-wait 5
 footer-test-time 20
 greedy-dispatch 1
+later-label 7
 migrate-legacy 11
 open-snapshot 1
 paginated-latest-id 1

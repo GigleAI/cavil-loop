@@ -301,6 +301,20 @@ BLOCKED_RECHECK_SECS=300
 # 判定已定、写 GitHub 连续失败多少次就放弃（留在等前置标签上、记日志，要人处理）
 BLOCKED_MAX_TRIES=10
 
+# ── Parked for later / 暂缓标签（GitHub#463）──
+# For items a human has decided not to work on for now. The daemon never picks up an item carrying it on
+# its own: greedy dispatch skips it, and so does autopilot's "label only" pickup. It only stops the
+# automatic pickup — putting a trigger label (pending/agent …) on it by hand dispatches it as usual. It
+# is not "waiting for a human" either. To find parked items search `label:pending/later` (GitHub's issue
+# list, a Project view, the desktop client). Leave it empty to keep the previous behaviour exactly (the
+# blocking list is unchanged). setup.sh creates the label.
+#
+# 给人决定「暂时不做」的条目用。挂着它的条目 daemon 不会自己捞去开工：greedy 兜底趟跳过它，托管的
+# 「只挂托管标签就派」也跳过它。只挡自动捞取——有人亲手打了派工标签（pending/agent 等）照常派工。
+# 它也不算「等人处理」。要找暂缓的条目就搜 `label:pending/later`（GitHub 的 issue 列表、Project 视图、
+# 桌面客户端都行）。留空 = 关闭，挡工名单和以前一样。setup.sh 会按这个名字建标签。
+LABEL_PENDING_LATER="pending/later"
+
 # ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340）──
 # With true, every worker dispatch (new issue, issue comment, PR comment, split sub-issue) gets one more
 # section: the other open items labelled doing/agent, the review label (when set) or pending/PR — number,
@@ -992,7 +1006,8 @@ MAX_CONCURRENT_WORKERS=1
 #                      happens: the safest default.
 #   greedy           — every OPEN issue / PR is dispatched unless a blocking label
 #                      stops it. Built-in blockers: pending/human, doing/agent,
-#                      Done, pending/PR, pending/review (that one has its own pass).
+#                      Done, pending/PR, pending/review (that one has its own pass),
+#                      and the waiting / merge / blocked / parked labels when set.
 #                      Extend with GREEDY_SKIP_LABELS below.
 # The two are not either/or: in greedy mode the label passes still run FIRST, so
 # fable / review labels keep choosing their own model and agent — greedy only
@@ -1006,7 +1021,8 @@ MAX_CONCURRENT_WORKERS=1
 #                   什么都不标 = 什么都不做，最安全的默认值。
 #   greedy      —— **所有开着的** issue / PR，只要没被挡工 label 挡住就一律派工。
 #                   内置挡工 label：pending/human、doing/agent、Done、pending/PR、
-#                   pending/review（它有自己那一趟）。要加自己的见下面 GREEDY_SKIP_LABELS。
+#                   pending/review（它有自己那一趟），以及配了的等待 / 等合并 / 等前置 / 暂缓标签。
+#                   要加自己的见下面 GREEDY_SKIP_LABELS。
 # 两种不是二选一：greedy 模式下 label 那几趟**照样先跑**，所以 fable / review 这些带
 # 模型和 agent 选择的 label 仍然生效；greedy 只是最后兜底把剩下的用默认 agent/模型收进来。
 # ⚠️ greedy 下任何人新开一个 issue（公开仓里包括匿名外部用户）都会立刻烧一个 worker 的

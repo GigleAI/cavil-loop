@@ -188,7 +188,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
   }
   // a folded entry is one line (who, when, what kind, the start of its text); the browser's own
   // <details> opens it — no script involved (FRAME_SCRIPT only reports boxes and the view)
-  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${dur}<span class="excerpt"> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}${tools}</details>`;
+  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${dur}<span class="excerpt" data-find-skip> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}${tools}</details>`;
 }
 
 /** Is entry `i` (newest first) unfolded? By default only the newest is — with no comments that is the opening post. */
@@ -261,6 +261,8 @@ a{color:${accent}}
 .entry.body{border-style:dashed;border-color:${border}}
 .entry.approved>.head{border-left:3px solid #1a7f37}.entry.changes_requested>.head{border-left:3px solid #cf222e}
 .md{padding:8px 12px;line-height:1.6}
+::highlight(cavil-find){background:${dark ? '#5c4a00' : '#fff3a3'};color:inherit}
+::highlight(cavil-find-cur){background:#ff9632;color:#1f2328}
 .md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
 .md img{max-width:100%}
 ${codeCss(dark, '.md ')}

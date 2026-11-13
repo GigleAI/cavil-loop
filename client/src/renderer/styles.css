@@ -91,7 +91,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--primary-bg); color: #fff; border-color: rgba(31, 35, 40, 0.15); }
 button.primary:hover:not(:disabled) { background: var(--primary-bg); filter: brightness(1.06); }
-button.blue { background: var(--accent); border-color: transparent; color: #fff; }
 button.danger { background: transparent; color: var(--err-fg); border-color: var(--border); }
 button.danger:hover:not(:disabled) { background: var(--err-bg); border-color: var(--err-border); }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
@@ -686,10 +685,10 @@ button.icon-btn.notices-btn.on { background: var(--hover); border-color: var(--b
 .notices-panel[hidden] { display: none; }
 .detail .notices-panel .banner, .detail .notices-panel .op-draft-line { margin: 0; }
 button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
-/* GitHub#457: the floating panel's 在标签页打开 — the accent fill marks it as the way that stays in the app */
-button.blue.open-tab-btn { padding: 0 10px; gap: 5px; }
-button.blue.open-tab-btn.icon-only { width: 28px; padding: 0; }
-button.blue.open-tab-btn:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+/* GitHub#457: the floating panel's 在标签页打开 — words next to an icon; GitHub#505: an ordinary button like the
+   ones beside it (colours, border, hover all from the plain button rules), only its spacing is its own */
+button.open-tab-btn { padding: 0 10px; gap: 5px; }
+button.open-tab-btn.icon-only { width: 28px; padding: 0; }
 /* GitHub#260: the head is two groups. The facts (badge, number, people, success line) give way first and
    are cut short; the buttons never shrink, and on a panel too narrow for both they take a line of their own */
 .detail-head { position: relative; flex-wrap: wrap; row-gap: 4px; }
@@ -972,8 +971,11 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .reread-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 .reread-ok .icon { color: var(--ok-icon); }
 
-/* GitHub#447: the notices of closes that put their tab / floating panel away — above every page, under the tab bar */
-.op-strip { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); }
+/* GitHub#488: the window's one notice area (every operation, new issue and unsaved change) — above every page, under the tab bar */
+.notice-area { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); max-height: 45vh; overflow-y: auto; }
+.notice-area .notice-more { display: block; margin: -2px 16px 8px; font-size: 12px; }
+.notice-edits .edit-issues { margin-left: 32px; }
+.edit-issues-about { margin-right: 4px; font-weight: 600; }
 /* GitHub#487: the "快捷键" section of the settings page */
 .set-keys-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sk-group { font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 2px; }
@@ -987,3 +989,21 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .sk-table .sk-err { margin: 0; }
 .chg { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; margin-left: 6px; }
 .modal.shortcuts .shortcut-edit { margin-right: auto; }
+
+/* GitHub#502: find text on the page (⌘F). The bar floats over the page's top right; matches are drawn with
+   the CSS highlight API (findInPage.ts), never by changing the page. */
+.find-bar { position: fixed; right: 16px; z-index: 60; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 6px 0 10px; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); color: var(--fg); font-size: 13px; }
+.find-box { display: flex; align-items: center; gap: 6px; width: 260px; max-width: calc(100vw - 160px); height: 28px; padding: 0 8px; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent); border-radius: 6px; background: var(--canvas); color: var(--icon); }
+.find-box.none { border-color: var(--err-fg); box-shadow: 0 0 0 1px var(--err-fg); background: var(--err-bg); }
+.find-box input { flex: 1; min-width: 0; border: none !important; background: transparent !important; padding: 0 !important; min-height: 0 !important; outline: none; color: var(--fg); }
+.find-count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.find-box.none .find-count { color: var(--err-fg); }
+.find-sep { width: 1px; height: 20px; background: var(--border-muted); margin: 0 2px; }
+.find-btn { width: 28px; height: 28px; padding: 0; border: none; background: transparent; border-radius: 6px; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.find-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.find-btn:disabled { opacity: 0.45; cursor: default; }
+.find-btn.up svg { transform: rotate(180deg); }
+::highlight(cavil-find) { background-color: var(--find-hl); color: inherit; }
+::highlight(cavil-find-cur) { background-color: #ff9632; color: #1f2328; }
+:root { --find-hl: #fff3a3; }
+@media (prefers-color-scheme: dark) { :root { --find-hl: #5c4a00; } }

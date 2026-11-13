@@ -124,7 +124,11 @@ describe('a change shows at once and does not hold anything else', () => {
     expect(itemOf(c, 137).labels.map((l) => l.name)).toContain('bug');
     expect(milestoneWrites()).toHaveLength(1);
     release();
-    expect((await p).ok).toBe(true);
+    const done = await p;
+    expect(done.ok).toBe(true);
+    // GitHub#488: recorded, so the window says nothing about it (the field shows it)
+    expect(done.held).toBe(true);
+    expect(other.held).toBe(true);
     expect(milestoneOnGitHub()).toBe('v2');
     expect(markOf(c, 'milestone')).toBeNull();
     expect(itemOf(c).milestone?.title).toBe('v2');
@@ -140,6 +144,8 @@ describe('GitHub refused: the change stays, marked, and can be sent again', () =
     fake.state.w.failLabel = 'x-fail';
     const r = await c.act({ kind: 'addLabel', key: K(N), label: 'x-fail', color: '000000' });
     expect(r.ok).toBe(false);
+    // GitHub#488: the record holds it (the notice area says it), the caller does not say it again
+    expect(r.held).toBe(true);
     const m = markOf(c, 'label')!;
     expect(m.status).toBe('failed');
     expect(m.failure).toMatch(/GitHub/);
@@ -155,6 +161,24 @@ describe('GitHub refused: the change stays, marked, and can be sent again', () =
     expect(markOf(c, 'label')).toBeNull();
     expect(itemOf(c).labels.map((l) => l.name)).toContain('x-fail');
     expect(c.getState().editsNeedingAction).toBe(0);
+  });
+});
+
+describe('GitHub#488: which field-change answers the window still says itself', () => {
+  it('refused before anything was recorded (the item is not on the board): not held — the caller says why; nothing sent', async () => {
+    const { c } = await ready();
+    const w0 = fake.writes().length;
+    const r = await c.act({ kind: 'addLabel', key: 'gigleai/cavil-loop#99999', label: 'bug' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/找不到/);
+    expect(r.held).toBeUndefined();
+    expect(c.getState().editsNeedingAction).toBe(0);
+    expect(fake.writes().length).toBe(w0);
+    // the same kind of change on an item that is there is held (reachability of the branch above)
+    const ok = await c.act({ kind: 'addLabel', key: K(N), label: 'bug', color: 'd73a4a' });
+    expect(ok.ok).toBe(true);
+    expect(ok.held).toBe(true);
+    expect(fake.writes().length).toBe(w0 + 1);
   });
 });
 
