@@ -1609,6 +1609,121 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   await app.close();
 });
 
+test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, then say what came of it; all read → a short green note (GitHub#455)', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  const btn = page.getByTestId('sync-trouble');
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  await btn.click();
+  const panel = page.getByTestId('sync-trouble-panel');
+  const retry = panel.getByTestId('failure-retry');
+  const resync = page.getByTestId('sync-trouble-resync');
+  const running = page.getByTestId('sync-trouble-running');
+  const result = page.getByTestId('sync-trouble-result');
+  await expect(retry).toHaveText('重新读取');
+  await expect(running).toHaveCount(0);
+  await expect(result).toHaveCount(0);
+  const reads = () => env.fake.log.filter((e) => e.operation === 'CavilProjectItems').length;
+
+  // 1. held at GitHub: both buttons say they are reading, at once, and stay clickable
+  let release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  let n = reads();
+  await retry.click();
+  await expect(retry).toHaveText('正在重新读取…');
+  await expect(retry).toHaveAttribute('data-running', 'yes');
+  await expect(retry).toBeEnabled();
+  await expect(resync).toHaveText('正在重新同步…');
+  await expect(resync).toBeEnabled();
+  await expect(running).toContainText(/^\d\d:\d\d:\d\d 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。$/);
+  await expect.poll(reads).toBeGreaterThan(n);
+  await shot(page, '455-reread-running');
+
+  // 2. answered, still failing: the outcome, to the second; the buttons are back
+  release();
+  await expect(result).toContainText(/^\d\d:\d\d:\d\d 重新读取完毕：这个来源仍然读取失败（原因见上）。$/, { timeout: 15_000 });
+  await expect(result).toHaveAttribute('data-kind', 'failed');
+  await expect(running).toHaveCount(0);
+  await expect(retry).toHaveText('重新读取');
+  await expect(resync).toHaveText('重新同步');
+  await expect(panel).toBeVisible();
+  await shot(page, '455-reread-still-failing');
+
+  // 3. clicked again while it reads: the round starts over, one outcome only (the last click's), and it really read again
+  release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  n = reads();
+  await resync.click();
+  await expect(result).toHaveCount(0);
+  await expect(running).toBeVisible();
+  await expect.poll(reads).toBeGreaterThan(n);
+  const second = reads();
+  await resync.click();
+  await expect(running).toBeVisible();
+  release();
+  await expect(result).toHaveCount(1, { timeout: 15_000 });
+  await expect(result).toContainText('这个来源仍然读取失败');
+  expect(reads()).toBeGreaterThan(second);
+  await expect(running).toHaveCount(0);
+
+  // 4. the panel put away and opened again: the old outcome is gone
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+  await btn.click();
+  await expect(result).toHaveCount(0);
+
+  // 5. the source reads again: ⚠️ and panel go, a green note says so for about 5 seconds
+  env.fake.state.failProjectPage.clear();
+  await resync.click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  const ok = page.getByTestId('sync-reread-ok');
+  await expect(ok).toHaveText('已重新读取，所有来源都读到了');
+  await shot(page, '455-reread-ok');
+  await expect(ok).toHaveCount(0, { timeout: 10_000 });
+
+  // 6. recovered by the refresh button (not from the panel): no green note
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  env.fake.state.failProjectPage.clear();
+  await page.getByTestId('refresh').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await expect(ok).toHaveCount(0);
+
+  await app.close();
+});
+
+test('Settings: a failed source\'s "重新读取" spins while it runs and says what came of it, on its own (GitHub#455)', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  const row = page.getByTestId('source-row');
+  await expect(row.locator('.kind')).not.toContainText(' 0 个条目', { timeout: 15_000 });
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.evaluate(() => (window as any).cavil.restartSync());
+  const rowRetry = row.getByTestId('failure-retry');
+  await expect(rowRetry).toHaveText('重新读取', { timeout: 15_000 });
+  const release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  await rowRetry.click();
+  await expect(rowRetry).toHaveText('正在重新读取…');
+  await expect(row.getByTestId('failure-reread-running')).toContainText('开始重新读取');
+  release();
+  await expect(row.getByTestId('failure-reread-result')).toContainText('重新读取完毕：这个来源仍然读取失败', { timeout: 15_000 });
+  await expect(rowRetry).toHaveText('重新读取');
+  env.fake.state.failProjectPage.clear();
+  await rowRetry.click();
+  await expect(row.getByTestId('source-failure')).toHaveCount(0, { timeout: 15_000 });
+  await app.close();
+});
+
 test('yellow bars: a closed "unsupported words" bar comes back when an import in settings changes the filter and changes it back', async () => {
   env.fake.state.projects.set('org/gigleai/21', projectWithView('updated:>2026-01-01'));
   env.fake.state.projects.set('org/gigleai/22', projectWithView('-label:Done'));
