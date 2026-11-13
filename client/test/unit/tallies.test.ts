@@ -72,7 +72,7 @@ describe('a row that follows a flow label (review round 1 of the design: labels 
       expect(e.count).toBe(2);
       expect(carryingAny(items, name)).toEqual([1, 3]);
       expect(e.query).toBeNull();
-      expect(tallyClick('foo', null, e, [e])).toEqual({ query: 'foo', saved: null });
+      expect(tallyClick('foo', null, e, [e])).toEqual({ query: 'foo', saved: null, pick: null });
       const [r] = tallyEntries(items, [flow('r', 'running')], { ...labels, running: name });
       expect(r.count).toBe(1);
       expect(carrying(items, name)).toEqual([1]);
@@ -96,7 +96,7 @@ describe('a row that follows a flow label (review round 1 of the design: labels 
   it('an empty label leaves that row out; a clickable one clicks to the same items it counts', () => {
     expect(tallyEntries(ITEMS, [flow('r', 'running')], { ...DEFAULT_HAND_BACK, running: ' ' })).toEqual([]);
     const [e] = tallyEntries(ITEMS, [flow('r', 'running')], DEFAULT_HAND_BACK);
-    expect(e.query).toBe('is:open label:"doing/agent"');
+    expect(e.query).toBe('label:"doing/agent"');
     expect(applyFilter(ITEMS, parseFilter(e.query!), { viewer: null, today, projects: [] }).map((i) => i.number)).toEqual(carrying(ITEMS, 'doing/agent'));
   });
 });
@@ -143,7 +143,7 @@ describe('a row with a condition of its own', () => {
 describe('改成自己写条件 / 改回跟随流程标签', () => {
   it('a label the syntax can carry becomes its exact query; one it cannot becomes empty, never a query that counts something else', () => {
     const labels = { running: 'doing/agent', agent: '>待处理', human: 'say "hi"' };
-    expect(toQueryRow(flow('r', 'running'), labels).source).toEqual({ kind: 'query', query: 'is:open label:"doing/agent"', from: 'running' });
+    expect(toQueryRow(flow('r', 'running'), labels).source).toEqual({ kind: 'query', query: 'label:"doing/agent"', from: 'running' });
     expect(toQueryRow(flow('a', 'agent'), labels).source).toEqual({ kind: 'query', query: '', from: 'agent' });
     expect(toQueryRow(flow('h', 'human'), labels).source).toEqual({ kind: 'query', query: '', from: 'human' });
     // the converted row counts the same items as the flow row it came from
@@ -151,14 +151,15 @@ describe('改成自己写条件 / 改回跟随流程标签', () => {
     const before = tallyEntries(items, [flow('r', 'running')], labels)[0];
     const after = tallyEntries(items, [toQueryRow(flow('r', 'running'), labels)], labels)[0];
     expect([after.count, after.query]).toEqual([before.count, before.query]);
-    // GitHub#462: "等人处理" converts to its click query without `is:open`, and still counts the closed ones
+    // GitHub#462: "等人处理" still counts the closed ones after the conversion
     const plain = { ...labels, human: 'pending/human' };
     const withClosed = [item(R, 1, { labels: L('pending/human') }), item(R, 2, { labels: L('pending/human'), state: 'closed' }), item(R, 3, {})];
-    expect(toQueryRow(flow('h', 'human'), plain).source).toEqual({ kind: 'query', query: 'label:"pending/human"', from: 'human' });
+    // GitHub#464: a condition of one's own counts open items only unless it names the state, so "等人处理"'s says it
+    expect(toQueryRow(flow('h', 'human'), plain).source).toEqual({ kind: 'query', query: 'label:"pending/human" is:open,closed', from: 'human' });
     const hBefore = tallyEntries(withClosed, [flow('h', 'human')], plain)[0];
     const hAfter = tallyEntries(withClosed, [toQueryRow(flow('h', 'human'), plain)], plain)[0];
-    expect([hAfter.count, hAfter.query]).toEqual([2, 'label:"pending/human"']);
-    expect([hAfter.count, hAfter.query]).toEqual([hBefore.count, hBefore.query]);
+    expect([hAfter.count, hAfter.query]).toEqual([2, 'label:"pending/human" is:open,closed']);
+    expect(hAfter.count).toBe(hBefore.count);
     // an empty converted row is left off the bar rather than counting everything
     expect(tallyEntries(items, [toQueryRow(flow('a', 'agent'), labels)], labels)).toEqual([]);
     expect(tallyQuery('>待处理')).toBeNull();

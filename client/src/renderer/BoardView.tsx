@@ -18,7 +18,7 @@ import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
-import { applyFilter, type ParsedFilter } from '../shared/filter';
+import { applyFilter, openOnly, parseFilter, statesStated, type ParsedFilter } from '../shared/filter';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
 import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
@@ -37,7 +37,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, tallyClick, tallyEntries, tallyForget, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
+import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
 import { effectiveTallies } from '../shared/tallies';
 
 function useNow(ms = 15_000) {
@@ -606,6 +606,8 @@ export function BoardView({
   onSettings,
   onKeysHelp,
   tallySaved,
+  tallyPick: pickProp,
+  onTallyPick,
 }: {
   state: AppState;
   data: BoardData;
@@ -638,16 +640,40 @@ export function BoardView({
   onKeysHelp?: () => void;
   /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
   tallySaved?: { current: string | null };
+  /** GitHub#464: the number last clicked (kept by the window) — tells numbers with the same click text apart */
+  tallyPick?: string | null;
+  onTallyPick?: (kind: string | null) => void;
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
-  const items = useMemo(
-    () => applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }),
-    [data, parsed, state.viewer, today],
+  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
+  const { running, agent, human } = state.handBack;
+  const tallyDefs = state.tallies;
+  const tally = useMemo(
+    () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
+    [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
   );
+  // a window without its own memory (tests mounting the board alone) keeps the pick here
+  const [ownPick, setOwnPick] = useState<string | null>(null);
+  const pick = onTallyPick ? (pickProp ?? null) : ownPick;
+  const setPick = onTallyPick ?? setOwnPick;
+  const lit = litTally(query, tally, pick);
+  const litEntry = tally.find((e) => e.kind === lit) ?? null;
+  // GitHub#464: the "显示已关闭" switch in effect (the lit number's, else the layout's); a search that
+  // says open / closed / merged itself decides instead, and the switch is greyed out
+  const closedKey = showClosedKey(view.layout, lit);
+  const statesInSearch = statesStated(parsed);
+  // a number not switched yet starts as it counts (on for "等人处理", GitHub#462); a layout is always stored
+  const closedOn = view.showClosed[closedKey] ?? showClosedDefault(litEntry);
+  const hideClosed = !statesInSearch && !closedOn;
+  const items = useMemo(() => {
+    const hit = applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects });
+    return hideClosed ? openOnly(hit) : hit;
+  }, [data, parsed, state.viewer, today, hideClosed]);
   const board = useMemo(
     () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
     [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder],
@@ -663,24 +689,18 @@ export function BoardView({
   // GitHub#429: plus the loop's own prerequisite registrations, read under the waiting label setting
   const loopLabel = state.handBack.blocked;
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
-  // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
-  // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
-  const { running, agent, human } = state.handBack;
-  const tallyDefs = state.tallies;
-  const tally = useMemo(
-    () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
-    [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
-  );
   const ownSaved = useRef<string | null>(null);
   const saved = tallySaved ?? ownSaved;
   // the box changed some other way and no longer shows a number's query: the remembered search is void
   useEffect(() => {
     saved.current = tallyForget(saved.current, query, tally);
-  }, [query, tally, saved]);
-  const lit = litTally(query, tally);
+    // no number shown any more: the remembered pick is void too (a later text typed by hand starts from the first)
+    if (litTally(query, tally) === null && pick !== null) setPick(null);
+  }, [query, tally, saved, pick, setPick]);
   const clickTally = (e: TallyEntry) => {
-    const next = tallyClick(query, saved.current, e, tally);
+    const next = tallyClick(query, saved.current, e, tally, pick);
     saved.current = next.saved;
+    setPick(next.pick);
     if (next.query !== query) setQuery(next.query);
   };
   const failed = sync.sources.filter((s) => !s.ok);
@@ -987,6 +1007,25 @@ export function BoardView({
             </label>
           </>
         )}
+        <label
+          className={`toggle${statesInSearch ? ' disabled' : ''}`}
+          data-testid="show-closed-toggle"
+          data-view={closedKey}
+          title={
+            statesInSearch
+              ? '搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准'
+              : `打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。`
+          }
+        >
+          <input
+            type="checkbox"
+            data-testid="show-closed"
+            checked={statesInSearch ? false : closedOn}
+            disabled={statesInSearch}
+            onChange={(e) => api().setView({ showClosed: { [closedKey]: e.target.checked } })}
+          />
+          显示已关闭{litEntry ? `（${litEntry.name}）` : ''}
+        </label>
         {view.layout !== 'graph' && (
           <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
             <Icon name="sliders" />
@@ -1004,7 +1043,7 @@ export function BoardView({
                 const on = lit === e.kind;
                 const tip = [
                   // GitHub#462: a row following the "等人处理" label counts closed items carrying it too
-                  `${e.source === 'flow' ? (e.flow === 'human' ? `带 ${e.label} 标签的条目（开着的和已关闭的都算）` : `开着的条目里带 ${e.label} 标签的`) : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  `${e.source === 'flow' ? (e.flow === 'human' ? `带 ${e.label} 标签的条目（开着的和已关闭的都算）` : `开着的条目里带 ${e.label} 标签的`) : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `${statesStated(parseFilter(e.query!)) ? '' : '开着的条目里'}符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
                   `当前来源共 ${data.items.length} 个条目`,
                   ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),
@@ -1097,6 +1136,7 @@ export function BoardView({
       {graph ? (
         <GraphView
           model={graph}
+          items={data.items}
           sources={state.sources
             .filter((s) => selected.has(s.key))
             .map((s): GraphSourceInfo => ({

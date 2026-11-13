@@ -20,6 +20,7 @@ import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
+import { setCustomKeys, type CustomKeys } from './shortcuts';
 import type { SettingsIntent } from './EmptyGuide';
 
 /** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
@@ -314,6 +315,8 @@ export function App() {
   const keysOn = signedIn;
   // GitHub#369: the settings page has its own Esc (back to the board), only while it is the page showing
   const onSettings = signedIn && !help && page === 'settings' && front === HOME;
+  // GitHub#487: the keys changed on this machine, for every key decision and tooltip drawn below
+  setCustomKeys(snap?.state.shortcutKeys as CustomKeys | undefined);
   useKeyboard(keysOn, onSettings ? 'settings' : 'board');
   const [keysHelp, setKeysHelp] = useState(false);
   const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
@@ -371,6 +374,9 @@ export function App() {
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
   // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
   const tallySaved = useRef<string | null>(null);
+  // GitHub#464: the view-bar number last clicked — tells two numbers with one click text apart (state: a switch
+  // between them leaves the box as it is, and the lit number and its "显示已关闭" switch must still follow)
+  const [tallyPick, setTallyPick] = useState<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -454,6 +460,8 @@ export function App() {
                 }}
                 onKeysHelp={() => setKeysHelp(true)}
                 tallySaved={tallySaved}
+                tallyPick={tallyPick}
+                onTallyPick={setTallyPick}
               />
             )}
           </div>
@@ -499,7 +507,18 @@ export function App() {
           <p data-testid="tab-close-question">这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。</p>
         </ConfirmDialog>
       )}
-      {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
+      {keysOn && keysHelp && (
+        <ShortcutHelp
+          onClose={() => setKeysHelp(false)}
+          onEdit={() => {
+            setKeysHelp(false);
+            setHelp(false);
+            show(HOME);
+            setIntent({ what: 'keys', seq: ++intentSeq.current });
+            setPage('settings');
+          }}
+        />
+      )}
     </div>
   );
 }

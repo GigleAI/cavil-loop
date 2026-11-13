@@ -10,7 +10,7 @@
 // stops taking clicks, until the window renders the frame again), a click on an entry's "edit" button (GitHub#205: which entry),
 // which entries are unfolded / how far the frame is scrolled, so a re-read can
 // put both back, a few keys (GitHub#322: a bare R, "go to the reply box"; GitHub#433: the ⌘⇧ keys of
-// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab, and ⌘R, refresh (in a tab: this item; a digit goes by its key position, `code`) — the list is FRAME_FORWARD, built from the shortcut table into this text;
+// 关闭 issue / 交给 agent / 托管; GitHub#442: ⌘1 … ⌘9, pick a tab, and ⌘R, refresh (in a tab: this item; a digit goes by its key position, `code`) — the list is FRAME_FORWARD, built from the shortcut table into this text, replaced by the keys in effect on this machine when the window sends them (GitHub#487);
 // every other key stays in the frame, PR #171), and the "wrap long lines" switch of the code
 // blocks (GitHub#381: on or off — the window remembers it). The "copy" button of a code block is handled here
 // and reports nothing: the block's text goes to the clipboard inside the click. Which text: everything the
@@ -32,8 +32,9 @@
 // (no allow-same-origin) nor the network (connect-src 'none').
 //
 // Change the text → change FRAME_SCRIPT_HASH and the hash in tauri.conf.json
-// (test/unit/taskList.test.ts checks all three agree). Changing the keys of FRAME_IDS in the shortcut
-// table changes the text too.
+// (test/unit/taskList.test.ts checks all three agree). Changing the default keys of FRAME_IDS in the shortcut
+// table changes the text too; keys changed on this machine (GitHub#487) do not — the window sends them in a
+// `{ cavil: 'keys' }` message, for this rendering, from its parent, and only a list of plain entries is taken.
 
 import { FRAME_FORWARD } from './shortcuts';
 
@@ -203,29 +204,43 @@ export const FRAME_SCRIPT = `(function () {
     if (!t || t.tagName !== 'IMG' || !t.closest('.md')) return;
     if (t.hasAttribute('data-rel') ? t.hasAttribute('data-shown') : !!t.getAttribute('src')) box(t, 'failed', '图片没加载出来');
   }, true);
+  var fwd = ${JSON.stringify(FRAME_FORWARD)};
   window.addEventListener('message', function (e) {
     var m = e.data;
-    if (e.source !== parent || !m || m.cavil !== 'image' || m.render !== render) return;
+    if (e.source !== parent || !m || m.render !== render) return;
+    if (m.cavil === 'keys') {
+      // the keys in effect on this machine (GitHub#487): only a list of plain entries replaces the defaults
+      var list = m.fwd, ok = Array.isArray(list) && list.length <= 64;
+      for (var n = 0; ok && n < list.length; n++) {
+        var x = list[n];
+        ok = !!x && typeof x.key === 'string' && x.key.length >= 1 && x.key.length <= 16 && typeof x.mod === 'boolean' && typeof x.shift === 'boolean' && typeof x.alt === 'boolean';
+      }
+      if (ok) fwd = list.map(function (x) { return { key: x.key.toLowerCase(), mod: x.mod, shift: x.shift, alt: x.alt }; });
+      return;
+    }
+    if (m.cavil !== 'image') return;
     var img = imgs[m.id];
     if (!img || !img.hasAttribute('data-rel')) return;
     if (m.ok === true && typeof m.data === 'string' && /^data:image\\/(png|jpeg|gif|webp);base64,/.test(m.data)) show(img, m.data);
     else box(img, m.state === 'limited' ? 'limited' : 'failed', String(m.why || '没取到'), m.until);
   });
-  var fwd = ${JSON.stringify(FRAME_FORWARD)};
   document.addEventListener('keydown', function (e) {
-    if (e.isComposing || e.keyCode === 229 || e.altKey || typeof e.key !== 'string') return;
-    // only a candidate is picked here (the same modifiers, and the key position — for a digit — or the character of
-    // a forwarded shortcut); the event goes on as it came, and the window decides it with its own rule
-    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, k = e.key.toLowerCase();
+    if (e.isComposing || e.keyCode === 229 || typeof e.key !== 'string') return;
+    // only a candidate is picked here (the same modifiers, and the key position — for a digit, or a letter with ⌥ — or
+    // the character of a forwarded shortcut); the event goes on as it came, and the window decides it with its own rule
+    var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, alt = e.altKey, k = e.key.toLowerCase();
     var code = typeof e.code === 'string' ? e.code : '';
     var dg = /^(Digit|Numpad)[0-9]$/.test(code) ? code.slice(-1) : '';
+    var lt = /^Key[A-Z]$/.test(code) ? code.slice(-1).toLowerCase() : '';
     for (var i = 0; i < fwd.length; i++) {
       var f = fwd[i];
-      if (f.mod !== mod || f.shift !== sh) continue;
-      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : k !== f.key) continue;
+      if (f.mod !== mod || f.shift !== sh || f.alt !== alt) continue;
+      // with Shift held a bracket reports its brace ("}" for "]"), as the window's own rule says
+      var kk = sh && (k === '}' || k === '{') ? (k === '}' ? ']' : '[') : k;
+      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : alt && lt && /^[a-z]$/.test(f.key) ? lt !== f.key : kk !== f.key) continue;
       e.preventDefault();
-      // GitHub#492: ⌘ and ⌃ as they were held, so the window tells ⌃⌘1 from ⌘1 by its own rule
-      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, code: code, meta: !!e.metaKey, ctrl: !!e.ctrlKey });
+      // GitHub#492: ⌘ and ⌃ as they were held, so the window tells ⌃⌘1 from ⌘1 by its own rule; GitHub#487: ⌥ too
+      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code, meta: !!e.metaKey, ctrl: !!e.ctrlKey });
       return;
     }
   });
@@ -242,4 +257,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-DZaMGJUSv1RsUm/8QlWNqwRBJt8mrul1ZKwlPOszdYk='";
+export const FRAME_SCRIPT_HASH = "'sha256-yXXTmrZ2Vu8uHuEAmvWhS+leekRfoXXoFCaCbvIjI4s='";
