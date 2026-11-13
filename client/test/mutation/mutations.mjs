@@ -1138,9 +1138,11 @@ export const MUTATIONS = [
   { what: '交接（GitHub#245）：托管只加托管标签，不加派工标签', file: 'src/shared/handoff.ts',
     from: '  return auto ? [auto, agent] : null;', to: '  return auto ? [auto] : null;',
     expect: ['labels by the names in Settings', 'autopilot: one create request'] },
-  { what: '交接（GitHub#245）：到网页继续新建时不带交接标签（两条路标签不一致）', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
-    from: 'newIssueOnWeb(\'https://github.com\', repo, title, body, mergeLabels(handoffLabels, labels))', to: 'newIssueOnWeb(\'https://github.com\', repo, title, body, labels)',
-    expect: ['GitHub#245: new issue'] },
+  // GitHub#450 removed the hand-over choice (and with it the web page's hand-over labels this entry used to break): re-pointed
+  // at the new dialog's rule — under the autopilot confirmation the two hand-over keys must do nothing
+  { what: '交接（GitHub#450）：托管确认框开着时，底下新建对话框的 ⌘⇧Z / ⌘⇧C 照样创建', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
+    from: '    if (asking || !canHand(h)) return;', to: '    if (!canHand(h)) return;',
+    expect: ['GitHub#450: new issue'] },
   { what: '交接（GitHub#245，PR #249 复审第 1 轮）：标签被丢和看板失败同时发生时，提示只剩看板', file: 'src/app/controller.ts',
     from: '  if (labelsNote) parts.push(labelsNote);\n', to: '',
     expect: ['dropped labels and a refused board are both said'] },
