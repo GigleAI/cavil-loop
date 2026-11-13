@@ -63,6 +63,7 @@ async function signedIn(checking = false): Promise<Harness> {
     },
     setBadge: async () => {},
     clearNotifications: async () => {},
+    clearItemNotifications: async () => {},
     loginItem: async () => false,
     setLoginItem: async () => {},
     nextEvent: () => new Promise<DesktopEvent>(() => {}),

@@ -396,7 +396,7 @@ export function SettingsView({
           <span data-testid="notification-keep-rule">
             {state.clearAllOnActivate
               ? t('已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。')
-              : t('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。')}
+              : t('系统通知不会因为切到 App 而收起：打开哪一条（点它的通知，或在窗口里点开），就收起关于这一条的通知，其余留在通知中心。')}
           </span>
         </p>
         <label className="row small">

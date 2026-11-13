@@ -217,7 +217,7 @@
   "macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标不受影响。": "macOS did not let Cavil Loop show a notification ({why}). Open \"System Settings → Notifications → Cavil Loop\" and turn on \"Allow notifications\". The badge is not affected.",
   "Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。": "The Dock badge is just the unread count: one more for each new pending item while the window is not in front; switching to the app clears it. An item whose label is removed or that is closed before you look is no longer unread.",
   "已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。": "The option below is on: switching to the app removes all of this app's notifications. Clicking one brings the window to the front, so the others are removed too.",
-  "系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。": "Notifications are not removed by switching to the app: clicking one removes only that one; the rest stay in Notification Center.",
+  "系统通知不会因为切到 App 而收起：打开哪一条（点它的通知，或在窗口里点开），就收起关于这一条的通知，其余留在通知中心。": "Notifications are not removed by switching to the app: opening an item (from its notification or in the window) removes the notifications about that item; the rest stay in Notification Center.",
   "切到 App 时收起全部系统通知（勾上后，点一条通知时其余也会一起收起）": "Remove all notifications when switching to the app (when on, clicking one removes the others too)",
   "开机自动启动（在后台运行，不弹窗口）": "Open at login (runs in the background, no window)",
   "关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。": "After the window is closed the app keeps syncing and reminding in the background (the Dock icon stays); to quit completely use \"Quit\" in the menu or ⌘Q.",

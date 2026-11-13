@@ -989,6 +989,8 @@ export class Controller {
   private unread = new Set<string>();
   /** the window is in front (the shell says so); while it is, new items are seen as they come */
   private active = false;
+  /** GitHub#522: the item whose detail is in front of the window now (floating panel or a detail tab), null = none */
+  private shownItem: string | null = null;
   /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
   private labelVersion = 0;
 
@@ -1040,6 +1042,27 @@ export class Controller {
     this.set({ unreadCount: 0 });
     this.badge();
     if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+  }
+
+  /**
+   * GitHub#522: the window shows this item's detail in front (the floating panel opened it, or its
+   * tab came to the front) — null: none. Shown while the window is in front = seen: the item is no
+   * longer unread, and its own notifications still in Notification Center are taken back (every one
+   * about it, of this start of the app or an earlier one); notifications about other items stay.
+   * A window not in front sees nothing yet: that happens when it comes to the front.
+   * Called on every opening, also of the item shown already: what came since is taken back too.
+   */
+  showingItem(key: unknown): void {
+    this.shownItem = typeof key === 'string' && key !== '' ? key : null;
+    if (this.shownItem && this.active) this.itemSeen(this.shownItem);
+  }
+
+  private itemSeen(key: string): void {
+    if (this.unread.delete(key)) {
+      this.set({ unreadCount: this.unreadNow() });
+      this.badge();
+    }
+    this.toDesktop((d) => d.clearItemNotifications(key))?.catch(() => {});
   }
 
   private badge(): void {
@@ -1270,7 +1293,11 @@ export class Controller {
   onDesktopEvent(ev: DesktopEvent): void {
     if (ev.kind === 'active' || ev.kind === 'inactive') {
       this.active = ev.kind === 'active';
-      if (this.active) this.markRead();
+      if (this.active) {
+        this.markRead();
+        // GitHub#522: the detail in front is looked at again now that the window is
+        if (this.shownItem) this.itemSeen(this.shownItem);
+      }
       return;
     }
     if (ev.kind === 'tick') {

@@ -447,7 +447,7 @@ export const MUTATIONS = [
     from: '    if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});', to: '',
     expect: ['pending/human: nothing about the history at start'] },
   { what: '切到窗口不清未读', file: 'src/app/controller.ts',
-    from: '      if (this.active) this.markRead();', to: '',
+    from: '      if (this.active) {\n        this.markRead();', to: '      if (this.active) {',
     expect: ['switching to the window clears the badge and keeps the notifications'] },
   { what: '计未读时把不再待处理的条目删掉（改标签名再改回来，没看过的也丢了）', file: 'src/app/controller.ts',
     from: '    for (const k of this.unread) if (this.pending.has(k)) n++;\n    return n;',

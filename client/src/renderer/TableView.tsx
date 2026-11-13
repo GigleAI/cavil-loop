@@ -318,6 +318,7 @@ export function TableView({
   repoOrder = [],
   table: built,
   pinnedLabels,
+  openKey = null,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -343,6 +344,8 @@ export function TableView({
   table?: Table;
   /** labels the cell's label picker keeps near the top, right after what the item carries (GitHub#496) */
   pinnedLabels?: readonly string[];
+  /** GitHub#522: the item the floating detail shows: its row is marked */
+  openKey?: string | null;
 }) {
   const dark = useDarkMode();
   const tb = view.table;
@@ -507,7 +510,8 @@ export function TableView({
             data-depth={r.depth}
             data-under={r.under ?? undefined}
             data-pulled={r.pulled ? '' : undefined}
-            className={[dragRow === r.id ? 'dragging' : '', r.pulled ? 'pulled' : ''].filter(Boolean).join(' ') || undefined}
+            data-open-item={openKey !== null && r.item.key === openKey ? 'yes' : undefined}
+            className={[dragRow === r.id ? 'dragging' : '', r.pulled ? 'pulled' : '', openKey !== null && r.item.key === openKey ? 'open-item' : ''].filter(Boolean).join(' ') || undefined}
             // GitHub#368: a row shown only because an issue above it matched the search
             title={r.pulled ? tKey(PULLED_TITLE) : undefined}
             // an open cell editor keeps its text box / dropdowns usable: that row does not drag; nor does a pulled row (it sits in its parent's group, not its own)

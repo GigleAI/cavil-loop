@@ -201,6 +201,11 @@ export interface CavilApi {
   moveTab(key: string, to: number): Promise<void>;
   /** the tab is in front and shows the item as of `updatedAt` (its "something new" dot goes) */
   seenTab(key: string, updatedAt: string): Promise<void>;
+  /**
+   * GitHub#522: this item's detail is in front (floating panel opened it, or its tab came to the front);
+   * null = no detail in front. Seen while the window is in front: its notifications are taken back.
+   */
+  showingItem(key: string | null): Promise<void>;
   /** the tab came to the front, or its refresh button: an item no complete read carries is checked now */
   checkTab(key: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
