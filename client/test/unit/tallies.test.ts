@@ -30,35 +30,52 @@ const ITEMS: Item[] = [
   item(R, 6, { kind: 'pr', state: 'merged', author: 'bob' }),
   item(R, 7, { labels: L('bug') }),
 ];
-const flow = (id: string, f: 'running' | 'agent' | 'human', extra: Partial<TallyDef> = {}): TallyDef => ({ id, name: id, color: 'blue', source: { kind: 'flow', flow: f }, ...extra });
+const flow = (id: string, f: 'running' | 'agent' | 'human' | 'later', extra: Partial<TallyDef> = {}): TallyDef => ({ id, name: id, color: 'blue', source: { kind: 'flow', flow: f }, ...extra });
 const query = (id: string, q: string, extra: Partial<TallyDef> = {}): TallyDef => ({ id, name: id, color: 'purple', source: { kind: 'query', query: q }, ...extra });
 
+// GitHub#514: two parked items — one open (counted by "稍后处理"), one closed (not)
+const PARKED: Item[] = [...ITEMS, item(R, 8, { labels: L('pending/later') }), item(R, 9, { labels: L('Pending/Later'), state: 'closed', stateReason: 'not_planned' })];
+
 describe('the default table', () => {
-  it('is the bar as it was: names, order, colours, and the same numbers as the old fixed rules', () => {
+  it('GitHub#514: 未处理 → 等人处理 → 等 agent → 运行中 → 稍后处理; the older four keep their ids, names and colours, and count by the old fixed rules', () => {
     expect(DEFAULT_TALLIES.map((d) => [d.id, d.name, d.color, d.source.kind])).toEqual([
-      ['running', '运行中', 'green', 'flow'],
-      ['agent', '等 agent', 'blue', 'flow'],
-      ['human', '等人处理', 'orange', 'flow'],
       ['unlabeled', '未处理', 'ring', 'query'],
+      ['human', '等人处理', 'orange', 'flow'],
+      ['agent', '等 agent', 'blue', 'flow'],
+      ['running', '运行中', 'green', 'flow'],
+      ['later', '稍后处理', 'purple', 'flow'],
     ]);
-    const e = tallyEntries(ITEMS, defaultTallies(), DEFAULT_HAND_BACK);
+    expect(DEFAULT_TALLIES.find((d) => d.id === 'later')!.source).toEqual({ kind: 'flow', flow: 'later' });
+    const e = tallyEntries(PARKED, defaultTallies(), DEFAULT_HAND_BACK);
     expect(e.map((x) => [x.kind, x.count])).toEqual([
-      ['running', carrying(ITEMS, 'doing/agent').length],
-      ['agent', carrying(ITEMS, 'pending/agent').length],
-      ['human', carryingAny(ITEMS, 'pending/human').length],
-      ['unlabeled', ITEMS.filter((i) => i.state === 'open' && i.labels.length === 0).length],
+      ['unlabeled', PARKED.filter((i) => i.state === 'open' && i.labels.length === 0).length],
+      ['human', carryingAny(PARKED, 'pending/human').length],
+      ['agent', carrying(PARKED, 'pending/agent').length],
+      ['running', carrying(PARKED, 'doing/agent').length],
+      ['later', carrying(PARKED, 'pending/later').length],
     ]);
-    // #3 is closed and carries pending/human: "等人处理" counts it (GitHub#462)
-    expect(e.map((x) => x.count)).toEqual([1, 1, 2, 1]);
-    expect(e).toEqual(flowTally(ITEMS, DEFAULT_HAND_BACK));
+    // #3 is closed and carries pending/human: "等人处理" counts it (GitHub#462); the closed parked #9 is not counted
+    expect(e.map((x) => x.count)).toEqual([1, 2, 1, 1, 1]);
+    expect(e).toEqual(flowTally(PARKED, DEFAULT_HAND_BACK));
+  });
+
+  it('GitHub#514: "稍后处理" follows the parked label — renamed (any case), and left out when it is empty', () => {
+    const later = (hb: typeof DEFAULT_HAND_BACK) => tallyEntries(PARKED, defaultTallies(), hb).find((x) => x.kind === 'later');
+    expect(later(DEFAULT_HAND_BACK)!).toMatchObject({ label: 'pending/later', count: 1, query: 'label:"pending/later"', flow: 'later', color: 'purple' });
+    expect(later({ ...DEFAULT_HAND_BACK, later: 'bug' })!).toMatchObject({ label: 'bug', count: carrying(PARKED, 'bug').length });
+    expect(carrying(PARKED, 'bug').length).toBeGreaterThan(0);
+    expect(later({ ...DEFAULT_HAND_BACK, later: '' })).toBeUndefined();
+    expect(later({ ...DEFAULT_HAND_BACK, later: '  ' })).toBeUndefined();
+    // the others are not touched by it
+    expect(tallyEntries(PARKED, defaultTallies(), { ...DEFAULT_HAND_BACK, later: '' }).map((x) => x.kind)).toEqual(['unlabeled', 'human', 'agent', 'running']);
   });
 
   it('a copy is handed out: editing it does not change the default', () => {
     const a = defaultTallies();
-    a[0].name = 'x';
-    (a[3].source as { query: string }).query = 'y';
-    expect(defaultTallies()[0].name).toBe('运行中');
-    expect(defaultTallies()[3].source).toEqual({ kind: 'query', query: UNLABELED_QUERY });
+    a[1].name = 'x';
+    (a[0].source as { query: string }).query = 'y';
+    expect(defaultTallies()[1].name).toBe('等人处理');
+    expect(defaultTallies()[0].source).toEqual({ kind: 'query', query: UNLABELED_QUERY });
   });
 });
 
@@ -66,7 +83,7 @@ describe('a row that follows a flow label (review round 1 of the design: labels 
   for (const name of ['>待处理', 'say "hi"', '<x', 'a"b']) {
     it(`"${name}": counted exactly (not every item, not 0), not clickable`, () => {
       const items = [item(R, 1, { labels: L(name) }), item(R, 2, { labels: L('bug') }), item(R, 3, { labels: L(name), state: 'closed' })];
-      const labels = { running: '', agent: 'pending/agent', human: name };
+      const labels = { running: '', agent: 'pending/agent', human: name, later: '' };
       // "等人处理" counts the closed #3 too (GitHub#462); "运行中" only the open #1
       const [e] = tallyEntries(items, [flow('h', 'human')], labels);
       expect(e.count).toBe(2);
@@ -142,7 +159,7 @@ describe('a row with a condition of its own', () => {
 
 describe('改成自己写条件 / 改回跟随流程标签', () => {
   it('a label the syntax can carry becomes its exact query; one it cannot becomes empty, never a query that counts something else', () => {
-    const labels = { running: 'doing/agent', agent: '>待处理', human: 'say "hi"' };
+    const labels = { running: 'doing/agent', agent: '>待处理', human: 'say "hi"', later: '' };
     expect(toQueryRow(flow('r', 'running'), labels).source).toEqual({ kind: 'query', query: 'label:"doing/agent"', from: 'running' });
     expect(toQueryRow(flow('a', 'agent'), labels).source).toEqual({ kind: 'query', query: '', from: 'agent' });
     expect(toQueryRow(flow('h', 'human'), labels).source).toEqual({ kind: 'query', query: '', from: 'human' });

@@ -220,7 +220,8 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .vbar .vbar-count { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 /* GitHub#404: the flow numbers (运行中 / 等 agent / 等人处理), each a button that filters to its items */
 .tally { display: inline-flex; align-items: center; gap: 2px; }
-.tally-item { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+/* GitHub#514: five numbers by default — kept compact so the view bar stays on one line at 1280 px (board layout) */
+.tally-item { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 0 5px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .tally-item:hover:not(:disabled) { background: var(--hover); }
 .tally-item:disabled { cursor: default; }
 .tally-item b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -256,6 +257,12 @@ button.tally-swatch[aria-pressed='true'] { outline: 2px solid var(--accent); out
 .tally-row-note.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
 .tally-row-note.bad { color: var(--err-fg); }
 .tally-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+/* GitHub#514: Settings' live preview of the view bar — the bar's own numbers, only shown, not clicked */
+.tally-preview { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: space-between; margin: 10px 0 4px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--ctl); }
+.tally.preview .tally-item:disabled { cursor: default; opacity: 1; color: var(--muted); }
+.tally.preview .tally-item:hover { background: none; }
+/* a number the bar cannot click looks the same in the preview */
+.tally.preview .tally-item.unclickable { opacity: 0.5; }
 .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
 .toggle input { appearance: none; -webkit-appearance: none; width: 28px; height: 16px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex: none; }
 .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: left 0.12s; }
@@ -560,6 +567,13 @@ label.radio { display: inline-flex; gap: 6px; align-items: center; }
 .notify-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 12px; }
 .notify-scope-title { font-weight: 600; }
 .notify-scope-note { margin: 2px 0 0 20px; }
+/* GitHub#514: a card's longer explanation, folded at its bottom; a field's one-line purpose under it */
+.set-more { margin-top: 10px; }
+.set-more > summary { cursor: pointer; width: fit-content; }
+.set-more-body { margin-top: 6px; line-height: 1.6; }
+.settings-main .field-hint { color: var(--muted); font-size: 12px; font-weight: 400; }
+.account-row { align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 0 4px; }
+.account-login { border-top: 1px solid var(--border-muted); margin-top: 10px; }
 .advanced { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .advanced label { display: flex; flex-direction: column; gap: 4px; align-self: stretch; }
 

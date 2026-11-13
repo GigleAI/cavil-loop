@@ -10,6 +10,8 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
+import { SettingsMore } from './SettingsMore';
+import { t } from '../shared/i18n';
 import { codeLeft, remoteName, spacedCode, type HostDevice, type HostResult, type HostStatus } from '../shared/remote';
 
 type Code = { code: string; expires: number; host: string | null };
@@ -188,7 +190,10 @@ export function RemoteHostBlock() {
           )}
         </div>
       )}
-      <p className="muted small">打开 = 只在本 Tailscale 网络里开一个入口，配对过的电脑能看这台机器的 daemon、停 / 启项目、看日志。关掉开关 = 关闭入口；已配对的电脑保留，重新打开后还能连。打开时如果 Tailscale 要求管理员权限，会在这里说明怎么做。</p>
+      {/* GitHub#514: the longer explanation, folded */}
+      <SettingsMore title={t('打开、关掉远程连接会怎样')} testid="local-remote-more">
+        {t('打开 = 只在本 Tailscale 网络里开一个入口，配对过的电脑能看这台机器的 daemon、停 / 启项目、看日志。关掉开关 = 关闭入口；已配对的电脑保留，重新打开后还能连。打开时如果 Tailscale 要求管理员权限，会在这里说明怎么做。')}
+      </SettingsMore>
       {devices && <DevicesDialog onClose={() => setDevices(false)} onChanged={() => void read()} />}
     </div>
   );

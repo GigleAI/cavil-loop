@@ -21,6 +21,7 @@ import { KeepLang, SourceName, Verbatim } from './Verbatim';
 import { tNode } from './tNode';
 import { TallySettings } from './TallySettings';
 import { ShortcutSettings } from './ShortcutSettings';
+import { SettingsMore } from './SettingsMore';
 
 const sections = (): { id: string; icon: IconName; title: ReactNode }[] => [
   // GitHub#471: first, and named in both languages — found by someone who cannot read the current one
@@ -28,7 +29,8 @@ const sections = (): { id: string; icon: IconName; title: ReactNode }[] => [
   // GitHub#516
   { id: 'set-theme', icon: 'contrast', title: t('外观') },
   { id: 'set-sources', icon: 'project', title: t('数据来源') },
-  { id: 'set-hand-back', icon: 'tag', title: t('交给 agent') },
+  // GitHub#514: named like the card's own title
+  { id: 'set-hand-back', icon: 'tag', title: t('流程标签') },
   // GitHub#468: the view-bar numbers
   { id: 'set-tallies', icon: 'sliders', title: t('顶栏计数') },
   { id: 'set-pending', icon: 'bell', title: t('提醒') },
@@ -40,8 +42,8 @@ const sections = (): { id: string; icon: IconName; title: ReactNode }[] => [
   { id: 'set-daemon', icon: 'gear', title: t('本机 daemon') },
   // daemons on other machines, over Tailscale (GitHub#387)
   { id: 'set-remote', icon: 'gear', title: t('远程 daemon') },
+  // GitHub#514: the sign-in method is part of the account card
   { id: 'set-account', icon: 'user', title: t('账号') },
-  { id: 'set-login', icon: 'key', title: t('登录方式') },
 ];
 
 /** "语言 · Language" — the current language's word first (GitHub#471; both are kept as they are) */
@@ -215,7 +217,7 @@ export function SettingsView({
 
       <section id="set-sources">
         <h3>{t('数据来源')}</h3>
-        <p className="muted small">{t('GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目、最近 14 天内有更新的，以及已关闭但还带着「等人处理的标签」的。')}</p>
+        <p className="muted small">{t('贴 GitHub Project 网址，或写「组织/仓库名」。')}</p>
         <div className="row">
           <input
             ref={inputBox}
@@ -293,94 +295,104 @@ export function SettingsView({
           })}
           {state.sources.length === 0 && <li className="muted">{t('还没有添加来源')}</li>}
         </ul>
+        <SettingsMore title={t('读哪些条目')} testid="sources-more">
+          {t('仓库读全部开着的条目、最近 14 天内有更新的，以及已关闭但还带着「等人处理的标签」的。GitHub Project 读它里面的全部条目。')}
+        </SettingsMore>
       </section>
 
       <section id="set-hand-back" data-testid="hand-back-settings">
-        <h3>{t('流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）')}</h3>
-        <p className="muted small">
-          {t('顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」：前两个数开着的条目里带这个标签的，「等人处理」开着的和已关闭的都数。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。')}
+        <h3>{t('流程标签')}</h3>
+        <p className="muted small">{t('要和 daemon 配置里的标签名一致。')}</p>
+        <div className="row label-grid">
+          <label>
+            {t('运行中')}
+            <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
+            <span className="field-hint">{t('顶栏「运行中」、标签页的运行图标；留空 = 不用')}</span>
+          </label>
+          <label>
+            {t('等人处理')}
+            <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
+            <span className="field-hint">{t('提醒、顶栏「等人处理」；「交给 agent」时去掉')}</span>
+          </label>
+          <label>
+            {t('暂缓')}
+            <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
+            <span className="field-hint">{t('顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做')}</span>
+          </label>
+          <label>
+            {t('交给 agent')}
+            <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: keepDefault(e.target, DEFAULT_HAND_BACK.agent) })} />
+            <span className="field-hint">{t('「交给 agent」时加上')}</span>
+          </label>
+          <label>
+            {t('托管')}
+            <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
+            <span className="field-hint">{t('「托管」时加上；留空 = 不显示「托管」按钮')}</span>
+          </label>
+          <label>
+            {t('等前置')}
+            <input data-testid="hand-back-blocked" defaultValue={state.handBack.blocked} onBlur={(e) => api().setHandBack({ blocked: e.target.value })} />
+            <span className="field-hint">{t('「等前置…」时加上，关系图读它的登记；留空 = 不用')}</span>
+          </label>
+          <label>
+            {t('其他流程标签')}
+            <input data-testid="blocked-flow" defaultValue={state.blockedLabels.flow} onBlur={(e) => api().setBlockedLabels({ flow: keepDefault(e.target, DEFAULT_BLOCKED_LABELS.flow) })} />
+            <span className="field-hint">{t('挂着时「等前置…」置灰；逗号分隔，* 结尾 = 前缀')}</span>
+          </label>
+        </div>
+        <label className="row small" title={t('在确认框里勾过「不再提示」会关掉这一项，在这里勾回来')}>
+          <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
+          {t('「托管」前先弹确认框')}
+        </label>
+        <SettingsMore title={t('这些标签各用在哪')} testid="hand-back-more">
+          {t('顶栏右侧的数在下面「顶栏计数」里设置；跟随流程标签的数按这里的标签名数：跟随「等人处理」的开着的和已关闭的都数，其余的只数开着的。「运行中」「暂缓」留空，跟随它的数就不显示（标签页上的「正在运行」图标也认「运行中」这一格，留空就不显示这个状态）；「等人处理」「交给 agent」留空会恢复成默认值。')}
           <br />
           {t('详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。')}
           <br />
           {tNode('{graph}：开着的 issue 挂着「等前置的标签」时，读它评论里 loop 的前置登记，和 GitHub 的「Blocked by」一起画成依赖线（默认 pending/blocked，要和 daemon 配置一致）。只认仓库所有者 / 成员 / 协作者写的登记。', { graph: <b>{t('关系图')}</b> })}
-        </p>
-        <div className="row label-grid">
-          <label>
-            {t('运行中的标签（留空 = 跟随它的数不显示）')}
-            <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
-          </label>
-          <label>
-            {t('等人处理的标签（去掉）')}
-            <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
-          </label>
-          <label>
-            {t('暂缓的标签（标签选择器里排在等人处理的标签后面；留空 = 不置顶）')}
-            <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
-          </label>
-          <label>
-            {t('交给 agent 的标签（加上）')}
-            <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: keepDefault(e.target, DEFAULT_HAND_BACK.agent) })} />
-          </label>
-          <label>
-            {t('托管标签（「托管」时加上；留空 = 不显示）')}
-            <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
-          </label>
-          <label>
-            {t('等前置的标签（关系图按它读 loop 的前置登记，「等前置…」时加上；留空 = 两样都不做）')}
-            <input data-testid="hand-back-blocked" defaultValue={state.handBack.blocked} onBlur={(e) => api().setHandBack({ blocked: e.target.value })} />
-          </label>
-          <label>
-            {t('其他流程标签（挂着时不让登记等前置；逗号分隔，* 结尾 = 前缀）')}
-            <input data-testid="blocked-flow" defaultValue={state.blockedLabels.flow} onBlur={(e) => api().setBlockedLabels({ flow: keepDefault(e.target, DEFAULT_BLOCKED_LABELS.flow) })} />
-          </label>
-        </div>
-        <p className="muted small" data-testid="blocked-settings-note">
-          {t('「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。')}
-        </p>
-        <label className="row small">
-          <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
-          {t('「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）')}
-        </label>
+          <br />
+          <span data-testid="blocked-settings-note">
+            {t('「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。')}
+          </span>
+          <br />
+          {t('「托管」前的确认框：在确认框里勾过「不再提示」会关掉上面那一项，在这里勾回来。')}
+        </SettingsMore>
       </section>
 
-      <TallySettings state={state} />
+      <TallySettings state={state} data={data} />
 
       <section id="set-pending" data-testid="pending-settings">
         <h3>{t('提醒')}</h3>
         <p className="muted small" data-testid="pending-rule">
-          {state.notifyScope === 'mine' ? (
-            tNode('issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已有的算历史，不通知、不计数。', {
+          {state.notifyScope === 'mine'
+            ? tNode('条目新挂上 {label}、并且和我有关时发一次系统通知（已关闭、已合并的也算）。', {
               label: (
                 <b data-testid="pending-label">
                   <Verbatim from="user">{state.handBack.human}</Verbatim>
                 </b>
               ),
             })
-          ) : (
-            tNode('issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）时发一次系统通知；已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。', {
+            : tNode('条目新挂上 {label} 时发一次系统通知（已关闭、已合并的也算）。', {
               label: (
                 <b data-testid="pending-label">
                   <Verbatim from="user">{state.handBack.human}</Verbatim>
                 </b>
               ),
-            })
-          )}
+            })}
         </p>
         {/* GitHub#373: several people on one repository — each is reminded of their own items only */}
         <div className="notify-scope" role="radiogroup" aria-label={t('提醒哪些条目')} data-testid="notify-scope">
           <div className="small notify-scope-title">{t('提醒哪些条目')}</div>
           <label className="radio small">
             <input type="radio" name="notify-scope" data-testid="notify-scope-all" checked={state.notifyScope === 'all'} onChange={() => api().setNotifyScope('all')} />
-            {t('全部待处理（所有人共用的待办都提醒）')}
+            {t('全部待处理')}
           </label>
           <label className="radio small">
             <input type="radio" name="notify-scope" data-testid="notify-scope-mine" checked={state.notifyScope === 'mine'} onChange={() => api().setNotifyScope('mine')} />
             <span>{tNode('只提醒和我（{viewer}）有关的', { viewer: <b>{state.viewer ? <Verbatim from="github">{state.viewer}</Verbatim> : '…'}</b> })}</span>
           </label>
           <p className="muted small notify-scope-note" data-testid="notify-scope-note">
-            {state.notifyScope === 'mine'
-              ? t('「和我有关」：① 指派给我、或请我 review 的，提醒；② 已指派给别人、或只请了别人 review 的，即使我在 GitHub 上订阅着也不提醒；③ 谁都没指派、也没请人 review 的，我订阅着就提醒（开过、评论过、被 @ 过会自动订阅；条目页右侧 Subscribe 可手动加减）。PR 本身谁都没指派时，按它关联的 issue 判断。')
-              : t('一个仓库有几个人一起用时，每人都会收到全部待处理的通知；改成下面一项就只收自己的。')}
+            {state.notifyScope === 'mine' ? t('指派给我、请我 review 的提醒；谁都没指派的，我订阅着才提醒。') : t('几个人一起用一个仓库时，选下面一项就只收自己的。')}
           </p>
         </div>
         {state.notifyProblem && (
@@ -389,16 +401,6 @@ export function SettingsView({
             <span>{tNode('macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标不受影响。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })}</span>
           </div>
         )}
-        <p className="note small" data-testid="pending-how-to-clear">
-          {t('Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。')}
-          <br />
-          {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box below */}
-          <span data-testid="notification-keep-rule">
-            {state.clearAllOnActivate
-              ? t('已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。')
-              : t('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。')}
-          </span>
-        </p>
         <label className="row small">
           <input
             type="checkbox"
@@ -406,8 +408,11 @@ export function SettingsView({
             checked={state.clearAllOnActivate}
             onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
           />
-          {t('切到 App 时收起全部系统通知（勾上后，点一条通知时其余也会一起收起）')}
+          {t('切到 App 时收起全部系统通知')}
         </label>
+        <p className="muted small" data-testid="pending-how-to-clear">
+          {t('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。')}
+        </p>
         {state.launchAtLogin !== null && (
           <label className="row small">
             <input
@@ -423,6 +428,30 @@ export function SettingsView({
           // same platforms as launch at login (v1: macOS)
           <p className="muted small">{t('关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。')}</p>
         )}
+        <SettingsMore title={t('提醒规则')} testid="pending-more">
+          <span data-testid="pending-rule-full">
+            {state.notifyScope === 'mine'
+              ? tNode('issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已有的算历史，不通知、不计数。', {
+                  label: <Verbatim from="user">{state.handBack.human}</Verbatim>,
+                })
+              : tNode('issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）时发一次系统通知；已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。', {
+                  label: <Verbatim from="user">{state.handBack.human}</Verbatim>,
+                })}
+          </span>
+          <br />
+          {t('「和我有关」：① 指派给我、或请我 review 的，提醒；② 已指派给别人、或只请了别人 review 的，即使我在 GitHub 上订阅着也不提醒；③ 谁都没指派、也没请人 review 的，我订阅着就提醒（开过、评论过、被 @ 过会自动订阅；条目页右侧 Subscribe 可手动加减）。PR 本身谁都没指派时，按它关联的 issue 判断。')}
+          <br />
+          {t('一个仓库有几个人一起用时，选「全部待处理」每人都会收到全部待处理的通知；选「只提醒和我有关的」就只收自己的。')}
+          <br />
+          {t('Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。')}
+          <br />
+          {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box above */}
+          <span data-testid="notification-keep-rule">
+            {state.clearAllOnActivate
+              ? t('已勾选「切到 App 时收起全部系统通知」：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。')
+              : t('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。')}
+          </span>
+        </SettingsMore>
       </section>
 
       <ShortcutSettings state={state} />
@@ -435,24 +464,26 @@ export function SettingsView({
 
       <section id="set-account">
         <h3>{t('账号')}</h3>
-        <p>
-          {tNode('已登录：{viewer}', {
-            viewer: (
-              <b data-testid="viewer">
-                <Verbatim from="github">{state.viewer ?? '…'}</Verbatim>
-              </b>
-            ),
-          })}
-        </p>
-        <button data-testid="logout" onClick={() => api().logout()}>
-          {t('退出登录（同时删除钥匙串里的凭据）')}
-        </button>
-      </section>
-
-      <section id="set-login">
-        <h3>{t('登录方式')}</h3>
-        <AppKindPicker state={state} onHelp={onHelp} />
-        <p className="muted small">{t('改了以后，下次登录生效；现在登录着的账号不受影响。')}</p>
+        <div className="row account-row">
+          <span>
+            {tNode('已登录：{viewer}', {
+              viewer: (
+                <b data-testid="viewer">
+                  <Verbatim from="github">{state.viewer ?? '…'}</Verbatim>
+                </b>
+              ),
+            })}
+          </span>
+          <button data-testid="logout" onClick={() => api().logout()}>
+            {t('退出登录')}
+          </button>
+          <span className="muted small">{t('会删除钥匙串里的凭据')}</span>
+        </div>
+        {/* GitHub#514: the sign-in method, inside the account card (it was a card of its own) */}
+        <div id="set-login" className="account-login">
+          <AppKindPicker state={state} onHelp={onHelp} />
+          <p className="muted small">{t('登录方式改了，下次登录生效；现在登录着的账号不受影响。')}</p>
+        </div>
       </section>
       </div>
       </div>
