@@ -1919,7 +1919,7 @@ mutate2() {   # <名字> <原文> <替换后>：只在合并前的第二次判�
 mutate binding-no-body _lib.sh 'if [ "$by_line" != "$n" ]; then' 'if false; then'
 mutate binding-no-fork _lib.sh 'if [ -z "$repo" ] || [ "$(requester_bot_lc "$repo")" != "$(requester_bot_lc "$REPO")" ]; then' 'if false; then'
 mutate auth-loop-actor _lib.sh 'if [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$me")" ]; then' 'if false; then'
-mutate auth-no-perm _lib.sh '        admin|write) ;;' '        *) ;;'
+mutate auth-no-perm _outsider.sh '            admin|write) return 0 ;;' '            *) return 0 ;;'
 mutate auth-last-event _lib.sh '        true:labeled|false:unlabeled|false:) ;;' '        true:labeled|true:unlabeled|false:unlabeled|false:) ;;'
 mutate auth-unknown-ok _lib.sh '    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    autopilot_place_read "$num" "$ij" "issue #$num" || { AUTOPILOT_ACTOR=x; return 0; }'
 mutate evidence-failed _lib.sh 'select(.h == $h and (.f | tonumber) == 0 and (.p | tonumber) > 0)' 'select(.h == $h)'
