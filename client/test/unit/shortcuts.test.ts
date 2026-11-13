@@ -2,7 +2,7 @@
 // the shortcut list both read SHORTCUTS. These cases pin the rules; the window tests
 // (test/e2e/app.spec.ts, "GitHub#192: …") press the real keys and check what GitHub received.
 import { describe, expect, it } from 'vitest';
-import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, resolveKey, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
+import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, resolveKey, shownKeys, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
 
 const key = (k: string, o: Partial<KeyLike> = {}): KeyLike => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o });
 const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none', mac: true };
@@ -235,10 +235,14 @@ describe('keys on screen', () => {
     expect(keyText('helpClose', true)).toBe('Esc / ?');
     expect(keyText('newIssue', true)).toBe('C / ⌘N');
     expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
-    // GitHub#442: ⌘⇧1/2/3, and on macOS also ⌥⌘1/2/3 (macOS keeps ⌘⇧3 for its screenshot)
-    expect(keyText('viewGraph', true)).toBe('⌘⇧3 / ⌥⌘3');
+    // GitHub#442: ⌘⇧1/2/3, and on macOS also ⌥⌘1/2/3 (macOS keeps ⌘⇧3 for its screenshot);
+    // GitHub#465: on macOS ⌥⌘ is named first and ⌘⇧3 is not named at all
+    expect(keyText('viewGraph', true)).toBe('⌥⌘3');
     expect(keyText('viewGraph', false)).toBe('Ctrl+Shift+3');
-    expect(keyText('viewBoard', true)).toBe('⌘⇧1 / ⌥⌘1');
+    expect(keyText('viewBoard', true)).toBe('⌥⌘1 / ⌘⇧1');
+    expect(keyText('viewTable', true)).toBe('⌥⌘2 / ⌘⇧2');
+    expect(keyText('viewBoard', false)).toBe('Ctrl+Shift+1');
+    expect(keyText('viewTable', false)).toBe('Ctrl+Shift+2');
     expect(keyText('tabAt', true)).toBe('⌘1 … ⌘9');
     expect(keyText('tabAt', false)).toBe('Ctrl+1 … Ctrl+9');
     // GitHub#413 / #433
@@ -282,5 +286,31 @@ describe('GitHub#442: ⌘1 … ⌘9 and ⌘⇧1/2/3', () => {
       expect(resolve(key(d, { metaKey: true, altKey: true, code: `Digit${d}` }), idle), d).not.toBeNull();
     }
     expect(keyText('viewTable', false)).toBe('Ctrl+Shift+2');
+  });
+});
+
+describe('GitHub#465: macOS takes ⌘⇧3 for its screenshot', () => {
+  const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none' };
+  const graph = SHORTCUTS.find((s) => s.id === 'viewGraph')!;
+  const shown = (mac: boolean) => shownKeys(graph, mac).map((k) => keyParts(k, mac).join(mac ? '' : '+'));
+  it('the list and the tooltip name only ⌥⌘3 on macOS, only Ctrl+Shift+3 elsewhere', () => {
+    expect(shown(true)).toEqual(['⌥⌘3']);
+    expect(shown(false)).toEqual(['Ctrl+Shift+3']);
+    expect(graph.label).toContain('⌥⌘3');
+  });
+  it('⌘⇧3 still switches to the graph on macOS (once the person frees it in System Settings), and ⌥⌘3 too', () => {
+    // a US layout reports "#" for ⇧3, "£" for ⌥3: the key position decides
+    expect(resolve(key('#', { metaKey: true, shiftKey: true, code: 'Digit3' }), { ...idle, mac: true })).toBe('viewGraph');
+    expect(resolve(key('£', { metaKey: true, altKey: true, code: 'Digit3' }), { ...idle, mac: true })).toBe('viewGraph');
+    // elsewhere: Ctrl+Shift+3 as before, Ctrl+Alt+3 still nobody's
+    expect(resolve(key('#', { ctrlKey: true, shiftKey: true, code: 'Digit3' }), { ...idle, mac: false })).toBe('viewGraph');
+    expect(resolve(key('3', { ctrlKey: true, altKey: true, code: 'Digit3' }), { ...idle, mac: false })).toBeNull();
+  });
+  it('a key hidden on macOS is still shown everywhere else, and every shortcut keeps at least one key on screen', () => {
+    for (const s of SHORTCUTS) {
+      for (const k of s.keys) if (k.macHidden) expect(shownKeys(s, false), s.id).toContain(k);
+      expect(shownKeys(s, true).length, s.id).toBeGreaterThan(0);
+      expect(shownKeys(s, false).length, s.id).toBeGreaterThan(0);
+    }
   });
 });
