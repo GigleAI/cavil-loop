@@ -16,6 +16,7 @@ import { FailureNote } from './FailureNote';
 import type { SettingsIntent } from './EmptyGuide';
 import { failureOf } from '../shared/readFailure';
 import { TallySettings } from './TallySettings';
+import { ShortcutSettings } from './ShortcutSettings';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
@@ -23,6 +24,8 @@ const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   // GitHub#468: the view-bar numbers
   { id: 'set-tallies', icon: 'sliders', title: '顶栏计数' },
   { id: 'set-pending', icon: 'bell', title: '提醒' },
+  // GitHub#487
+  { id: 'set-keys', icon: 'keyboard', title: '快捷键' },
   // only in a build that updates itself (GitHub#184); the section is not there otherwise
   { id: 'set-update', icon: 'refresh', title: '更新' },
   // the local cavil-loop daemon (GitHub#314)
@@ -61,6 +64,12 @@ export function SettingsView({
   const inputBox = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!intent) return;
+    // GitHub#487: from the shortcut list's "在设置里改快捷键"
+    if (intent.what === 'keys') {
+      document.getElementById('set-keys')?.scrollIntoView({ block: 'start' });
+      onIntentTaken?.();
+      return;
+    }
     if (intent.what === 'pick') setPicking(true);
     else inputBox.current?.focus();
     document.getElementById('set-sources')?.scrollIntoView({ block: 'start' });
@@ -297,6 +306,8 @@ export function SettingsView({
           <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
         )}
       </section>
+
+      <ShortcutSettings state={state} />
 
       <UpdateSection update={state.update} />
 

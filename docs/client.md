@@ -121,12 +121,19 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 | `C` | new issue |
 | ⌘R | sync now (in a detail tab: re-read that item) |
 | ⌘, | open settings |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 (⌘⇧1 / ⌘⇧2 work too) | board / table / dependency graph |
+| ⌃⌘1 / ⌃⌘2 / ⌃⌘3 (Control and Command together; the earlier ⌥⌘1/2/3 and ⌘⇧1/2 still work) | board / table / dependency graph |
 | ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
 | ⌘W | close the current tab |
 | `L` / `M` / `R` in details | labels / milestone / jump to the reply box |
 | ⌘↩ | send a reply, confirm a dialog |
 | ⌘= / ⌘- / ⌘0 | zoom in / out / actual size |
+
+**Your own keys** ([#487](https://github.com/GigleAI/cavil-loop/issues/487)): Settings → "快捷键" (shortcuts), click "改" (change) on a row and press the new key; Esc cancels. One action gets one key, and its old keys stop working (for example "new issue" has `C` and ⌘N by default; after a change neither creates an issue any more). Changed rows are marked "已改" (changed); "恢复默认" (restore default) puts the old keys back, and "全部恢复默认" (restore all) at the top of the section does it for every row. The shortcut list (`?`) marks changed keys the same way, and its "在设置里改快捷键 →" (change shortcuts in Settings) link goes straight to the section. Changes stay on this computer.
+
+- **A clash is not saved**: when the new key is the key of another action that works at the same time, nothing is saved and the clash is named. Restoring one action whose default key another action now has is refused the same way: change or restore that other action first.
+- **Fixed keys**: Esc, ↩, the arrows, ⌘1 … ⌘9, ⌘W and the zoom keys. Keys the system or text editing uses are not taken either (⌘Q / ⌘H / ⌘M, ⌘C / ⌘V / ⌘X / ⌘A / ⌘Z, and ⌘⇧3 / ⌘⇧4 / ⌘⇧5 on macOS). "Preview" in the reply box and the two buttons of the new-issue window need a key with ⌘.
+- **A single key without ⌘** works only while the cursor is not in a text field; a detail action changed to such a key does nothing in the reply box or the discussion.
+- A saved key that cannot be used when the app starts (say a newer version gives another action the same default key) is set back to its default, and the settings page names it and says why.
 
 ## Network, credentials and offline use
 

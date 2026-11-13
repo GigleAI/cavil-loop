@@ -16,10 +16,10 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 | | 是什么 | 需要什么 | 从哪开始 |
 |---|---|---|---|
-| **daemon**（以 Agent Skill 形式安装） | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。这张表以下讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
+| **daemon** | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。这张表以下讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
 | **Cavil Loop 桌面客户端** | 可以单独使用的 GitHub issue / PR 客户端：issue 和关联的 PR 放在一起，按迭代 / 里程碑分组，把 issue 之间的依赖画成图（可跨仓库）。也能替人安装 daemon、把条目交给它。 | 一个 GitHub 账号、一台 Mac——不需要 daemon、不需要 GitHub Project、不需要命令行程序 | [客户端使用说明](docs/client.zh.md) |
 
-两样东西互不依赖，可以只用其中一样。
+两样东西互不依赖，可以只用其中一样；搭配使用更佳。
 
 ## 它是什么
 
@@ -180,7 +180,7 @@ Linux 默认你登出就停所有后台服务，这条让它在你不在的时�
 
 ### 也可以从桌面客户端开始（macOS）
 
-不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板预览版)，在它的设置页里完成第 1、2 步：
+不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板)，在它的设置页里完成第 1、2 步：
 
 1. 先装好[依赖](#依赖)并 `gh auth login`——客户端只检查缺什么，不替人装系统软件。
 2. 下载安装客户端，用 GitHub 账号登录（浏览器里输入短码授权）。
@@ -234,7 +234,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 ---
 
-## 客户端（桌面看板，预览版）
+## 客户端（桌面看板）
 
 Cavil Loop 桌面客户端（`client/`，macOS）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口：
 

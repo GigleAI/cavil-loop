@@ -1,6 +1,6 @@
 // The shortcut list (GitHub#192), drawn from the same table the keys act on (shortcuts.ts).
 import { useEffect, useRef } from 'react';
-import { SCOPE_TITLE, SHORTCUTS, isMac, keyParts, shownKeys, type Scope } from './shortcuts';
+import { SCOPE_TITLE, activeShortcuts, isCustom, isMac, keyParts, shownKeys, type Scope } from './shortcuts';
 import { useLayer, useShortcuts } from './keyboard';
 
 const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help'];
@@ -15,7 +15,8 @@ export function Keys({ parts }: { parts: string[] }) {
   );
 }
 
-export function ShortcutHelp({ onClose }: { onClose: () => void }) {
+/** `onEdit` (GitHub#487): "在设置里改快捷键" — the settings page, at its shortcut section */
+export function ShortcutHelp({ onClose, onEdit }: { onClose: () => void; onEdit?: () => void }) {
   useLayer('help');
   useShortcuts({ helpClose: onClose });
   const box = useRef<HTMLDivElement>(null);
@@ -32,7 +33,9 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
               <h4>{SCOPE_TITLE[scope]}</h4>
               <table>
                 <tbody>
-                  {SHORTCUTS.filter((s) => s.scope === scope).map((s) => (
+                  {activeShortcuts()
+                    .filter((s) => s.scope === scope)
+                    .map((s) => (
                     <tr key={s.id} data-testid="shortcut-row" data-id={s.id}>
                       <td>{s.label}</td>
                       <td className="keys">
@@ -51,6 +54,7 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
                             </span>
                           ))
                         )}
+                        {isCustom(s.id) && <span className="chg">已改</span>}
                       </td>
                     </tr>
                   ))}
@@ -63,6 +67,11 @@ export function ShortcutHelp({ onClose }: { onClose: () => void }) {
           单个字母的快捷键只在光标不在输入框里时生效；输入法正在拼字时，快捷键一律不响应。放大 / 缩小 / 实际大小在「缩放」菜单里（⌘= / ⌘- / ⌘0）。点过讨论区之后，键盘停在讨论区里，先点一下讨论区以外的地方。
         </p>
         <div className="row end">
+          {onEdit && (
+            <button className="link shortcut-edit" data-testid="shortcut-help-edit" onClick={onEdit}>
+              在设置里改快捷键 →
+            </button>
+          )}
           <button data-testid="shortcut-help-close" onClick={onClose}>
             知道了
           </button>
