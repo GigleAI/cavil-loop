@@ -63,6 +63,8 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setTableFold: async (groupBy, key, folded) => c.setTableFold(groupBy, key, folded),
     setLaneFold: async (lane, folded) => c.setLaneFold(lane, folded),
     setAutopilotConfirm: async (on) => c.setAutopilotConfirm(on),
+    setShortcutKey: async (id, spec) => c.setShortcutKey(id, spec),
+    resetShortcutKeys: async () => c.resetShortcutKeys(),
     setClearAllOnActivate: async (on) => c.setClearAllOnActivate(on),
     setNotifyScope: async (scope) => c.setNotifyScope(scope),
     setUiLanguage: async (setting) => c.setUiLanguage(setting),

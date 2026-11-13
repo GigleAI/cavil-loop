@@ -4,8 +4,8 @@
 // only draws and handles the pointer.
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import type { SourceStatus } from '../shared/types';
-import { boxProgress, nodeBadge, nodeTone, type GraphModel, type GraphNode } from '../data/graph';
+import type { Item, SourceStatus } from '../shared/types';
+import { boxProgress, nodeBadge, nodeTone, summaryPrs, type GraphModel, type GraphNode, type SummaryPr } from '../data/graph';
 import { edgePath, fitView, focusOpen, keepAnchor, layoutGraph, zoomAt, BOX_HEAD, type GraphLayout, type Rect, type Viewport } from '../data/graphLayout';
 import { api } from './api';
 import { labelStyle } from './colors';
@@ -43,6 +43,8 @@ export interface GraphSourceInfo {
 
 interface Props {
   model: GraphModel;
+  /** GitHub#483: every item of the ticked sources, searched or not — the summary's linked PRs come from it */
+  items: Item[];
   sources: GraphSourceInfo[];
   syncing: boolean;
   now: number;
@@ -53,7 +55,7 @@ interface Props {
 }
 
 
-export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow, keys = true }: Props) {
+export function GraphView({ model, items, sources, syncing, now, dark, onOpen: openNow, keys = true }: Props) {
   // one function for the whole life of the view, so a node whose look did not change is not redrawn
   const openRef = useRef(openNow);
   openRef.current = openNow;
@@ -270,7 +272,7 @@ export function GraphView({ model, sources, syncing, now, dark, onOpen: openNow,
           </div>
         )}
         {layout && view && selected && size && (
-          <Summary n={selected} model={model} r={layout.rects.get(selected.key)!} view={view} size={size} refOf={refOf} dark={dark} onOpen={onOpen} onClose={() => setSel(null)} />
+          <Summary n={selected} model={model} items={items} r={layout.rects.get(selected.key)!} view={view} size={size} refOf={refOf} dark={dark} onOpen={onOpen} onClose={() => setSel(null)} />
         )}
         {model.nodes.size > 0 && (
           <div className="glegend">
@@ -484,6 +486,7 @@ const BoxView = memo(
 function Summary({
   n,
   model,
+  items,
   r,
   view,
   size,
@@ -494,6 +497,7 @@ function Summary({
 }: {
   n: GraphNode;
   model: GraphModel;
+  items: Item[];
   r: Rect;
   view: Viewport;
   size: { w: number; h: number };
@@ -528,6 +532,7 @@ function Summary({
   const blocked = model.edges.filter((e) => e.from === n.key).map((e) => model.nodes.get(e.to)!);
   const parent = n.parent ? model.nodes.get(n.parent)! : (n.item?.relations?.parent ?? null);
   const line = (x: { repo: string; number: number; title: string }) => `${refOf(x as GraphNode)} ${x.title}`;
+  const prs = useMemo(() => summaryPrs(n, items), [n, items]);
   return (
     <div className="gpop" ref={pop} data-testid="graph-summary" data-key={n.key} style={{ left: x, top: y, width: W, maxHeight: maxH }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
       <div className="gpop-head">
@@ -583,6 +588,22 @@ function Summary({
               <div className="gpop-rel">{line(parent)}</div>
             </div>
           )}
+          {n.kind === 'issue' && (
+            <div className="gpop-sec" data-testid="graph-summary-prs">
+              <div className="muted small">关联 PR</div>
+              {prs === null ? (
+                <div className="muted small" data-testid="graph-summary-prs-unknown">
+                  仓库来源读不到 GitHub 关联的 PR
+                </div>
+              ) : prs.length === 0 ? (
+                <div className="muted small" data-testid="graph-summary-prs-none">
+                  没有关联 PR
+                </div>
+              ) : (
+                prs.map((p) => <SummaryPrLine key={p.key} p={p} dark={dark} onOpen={onOpen} />)
+              )}
+            </div>
+          )}
         </>
       )}
       </div>
@@ -598,6 +619,47 @@ function Summary({
       </div>
       {n.item && <div className="small muted">双击节点也可直接打开详情</div>}
     </div>
+  );
+}
+
+/** GitHub#483: one linked PR in the summary; a click opens its detail when a source holds it, else GitHub */
+function SummaryPrLine({ p, dark, onOpen }: { p: SummaryPr; dark: boolean; onOpen: (key: string) => void }) {
+  const inSource = p.item !== null;
+  const open = () => (inSource ? onOpen(p.key) : void api().openExternal(p.url));
+  return (
+    <button
+      type="button"
+      className="gpop-pr"
+      data-testid="graph-summary-pr"
+      data-key={p.key}
+      data-via={p.via}
+      data-tone={p.tone}
+      data-in-source={inSource ? 'yes' : 'no'}
+      title={inSource ? '打开这个 PR 的详情（合并、冲突、检查、评审状态在详情底部）' : '这个 PR 不在当前来源里，在 GitHub 打开'}
+      {...(inSource ? { [OPENS_ITEM]: '' } : {})}
+      onClick={open}
+    >
+      <span className={`kind pr ${p.tone}`}>
+        <Icon name={itemIcon('pr', p.state, null)} size={14} />
+      </span>
+      <span className="gpop-pr-main">
+        <span className="gpop-pr-title">
+          <span className="gpop-pr-num">#{p.number}</span> {p.item?.title ?? ''}
+        </span>
+        <span className="gpop-pr-meta">
+          <span className={`kind pr ${p.tone}`} data-testid="graph-summary-pr-state">
+            {p.badge}
+          </span>
+          {(p.item?.labels ?? []).map((l) => (
+            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+              {l.name}
+            </span>
+          ))}
+          {p.via === 'body' && <span className="muted">· PR 正文引用</span>}
+          {!inSource && <span className="muted">· 不在当前来源中</span>}
+        </span>
+      </span>
+    </button>
   );
 }
 

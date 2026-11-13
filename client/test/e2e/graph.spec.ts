@@ -640,3 +640,102 @@ test('GitHub#429: the loop registrations in comments are drawn as arrows; the se
   await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(3, { timeout: 20_000 });
   await app.close();
 });
+
+test('GitHub#483: the summary of an issue lists its linked PRs — state, draft, labels, where the link comes from; a click opens the PR', async () => {
+  // the recording holds no PR in its sources: two are added to the repository list (#351 names #350 in
+  // its description, #72 is the PR GitHub links to #70); #69, linked to #67, stays in no source
+  const now = new Date().toISOString();
+  const pr = (number: number, o: { state: 'open' | 'closed'; merged?: boolean; draft: boolean; body: string; labels: [string, string][]; title: string }) => ({
+    number,
+    node_id: `PR_fixture_${number}`,
+    title: o.title,
+    state: o.state,
+    draft: o.draft,
+    body: o.body,
+    html_url: `https://github.com/GigleAI/cavil-loop/pull/${number}`,
+    updated_at: now,
+    labels: o.labels.map(([name, color]) => ({ name, color })),
+    assignees: [],
+    milestone: null,
+    user: { login: 'luosky' },
+    pull_request: { merged_at: o.merged ? now : null },
+  });
+  env.fake.state.repos.get('gigleai/cavil-loop')!.push(
+    pr(351, { state: 'open', draft: true, body: 'Refs #350', labels: [['pending/review', 'c5def5']], title: '客户端：依赖图视图' }),
+    pr(72, { state: 'closed', merged: true, draft: false, body: 'Closes #70', labels: [['Done', '444444']], title: '新安装改名' }),
+  );
+  const app = await launchApp(env);
+  const { page } = app;
+  await signInToGraph(page);
+  const pop = page.getByTestId('graph-summary');
+  const prs = pop.getByTestId('graph-summary-prs');
+  const line = (n: number) => pop.locator(`[data-testid="graph-summary-pr"][data-key="${K(n)}"]`);
+
+  // ---- a PR in the sources, named only by its description: draft, its labels, "PR 正文引用"; opening the summary reads nothing ----
+  const before = env.fake.log.length;
+  await nodeOf(page, K(350)).click();
+  await expect(pop).toHaveAttribute('data-key', K(350));
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(1);
+  await expect(line(351)).toHaveAttribute('data-in-source', 'yes');
+  await expect(line(351)).toHaveAttribute('data-via', 'body');
+  await expect(line(351)).toHaveAttribute('data-tone', 'neutral');
+  await expect(line(351).getByTestId('graph-summary-pr-state')).toHaveText('草稿');
+  await expect(line(351)).toContainText('#351 客户端：依赖图视图');
+  await expect(line(351)).toContainText('pending/review');
+  await expect(line(351)).toContainText('PR 正文引用');
+  await page.waitForTimeout(300);
+  expect(env.fake.log.slice(before).map((e) => `${e.method} ${e.path} ${e.operation ?? ''}`)).toEqual([]);
+  await shot(page, 'graph-04-linked-prs');
+  // a click on the line: the PR's detail (the merge / checks / review state is there)
+  await line(351).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', K(351));
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // ---- GitHub's link, the PR in a source too: merged, one line although its description names #70 as well ----
+  await nodeOf(page, K(70)).click();
+  await expect(pop).toHaveAttribute('data-key', K(70));
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(1);
+  await expect(line(72)).toHaveAttribute('data-via', 'github');
+  await expect(line(72)).toHaveAttribute('data-tone', 'done');
+  await expect(line(72).getByTestId('graph-summary-pr-state')).toHaveText('已合并');
+  await expect(line(72)).toContainText('新安装改名');
+  await expect(line(72)).not.toContainText('PR 正文引用');
+  await shot(page, 'graph-05-linked-pr-merged');
+
+  // ---- a PR in no source: GitHub's number and state, a click opens it on GitHub ----
+  await nodeOf(page, K(67)).click();
+  await expect(pop).toHaveAttribute('data-key', K(67));
+  await expect(line(69)).toHaveAttribute('data-in-source', 'no');
+  await expect(line(69)).toHaveAttribute('data-tone', 'closed');
+  await expect(line(69).getByTestId('graph-summary-pr-state')).toHaveText('已关闭');
+  await expect(line(69)).toContainText('不在当前来源中');
+  await line(69).click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop/pull/69\n');
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // ---- none: said so ----
+  await nodeOf(page, K(349)).click();
+  await expect(pop).toHaveAttribute('data-key', K(349));
+  await expect(prs.getByTestId('graph-summary-prs-none')).toHaveText('没有关联 PR');
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(0);
+
+  // ---- an issue in no source: no list at all ----
+  await nodeOf(page, OUTSIDE_PARENT).click();
+  await expect(pop).toHaveAttribute('data-key', OUTSIDE_PARENT);
+  await expect(prs).toHaveCount(0);
+
+  // ---- the repository alone does not know GitHub's links: "unknown", never "none" ----
+  await page.getByTestId('graph-canvas').click({ position: await emptySpot(page) });
+  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await page.getByTestId('graph-fit').click();
+  await nodeOf(page, K(314)).click();
+  await expect(pop).toHaveAttribute('data-key', K(314));
+  await expect(prs.getByTestId('graph-summary-prs-unknown')).toHaveText('仓库来源读不到 GitHub 关联的 PR');
+  await expect(prs.getByTestId('graph-summary-prs-none')).toHaveCount(0);
+  // while the PR in the same source still names its issue
+  await nodeOf(page, K(350)).click();
+  await expect(line(351)).toHaveAttribute('data-via', 'body');
+  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await app.close();
+});

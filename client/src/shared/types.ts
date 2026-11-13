@@ -627,6 +627,13 @@ export interface SyncState {
 export type AppKind = 'oauth' | 'github-app';
 export const APP_KINDS: readonly AppKind[] = ['oauth', 'github-app'];
 
+/** GitHub#487: one changed shortcut key: the key, and which of ⌘ / Ctrl, Shift, ⌥ / Alt are held with it */
+export type ShortcutKeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean };
+/** GitHub#487: a saved key left out when the settings were read: which shortcut, its name, why */
+export type ShortcutKeyDropped = { id: string; name: string; why: string };
+/** GitHub#487: a key change: saved, or refused with the reason (nothing changed) */
+export type ShortcutKeyResult = { ok: true } | { ok: false; why: string };
+
 export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
@@ -669,6 +676,10 @@ export interface AppState {
   laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** GitHub#487: the shortcut keys changed on this machine (by shortcut id; one key each), already repaired — the table in effect never has a conflict */
+  shortcutKeys: Record<string, ShortcutKeySpec>;
+  /** GitHub#487: saved keys that could not be used when the settings were read, and why (shown until that shortcut is changed or restored) */
+  shortcutDropped: ShortcutKeyDropped[];
   /** GitHub#369: switching to the window takes back every delivered notification; false (default) = they stay, a click takes back only that one */
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */

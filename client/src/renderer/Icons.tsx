@@ -27,6 +27,8 @@ const PATHS = {
   tag: <><path d="M2.5 2.5h5.2l6 6-5.2 5.2-6-6z" /><circle cx="5.3" cy="5.3" r=".8" fill="currentColor" /></>,
   user: <><circle cx="8" cy="5.5" r="2.8" /><path d="M2.5 14c.6-2.8 2.9-4.3 5.5-4.3s4.9 1.5 5.5 4.3" /></>,
   key: <><circle cx="5" cy="11" r="2.8" /><path d="M7 9l6.5-6.5M11 5l1.8 1.8" /></>,
+  // GitHub#487: the settings page's "快捷键"
+  keyboard: <><rect x="1.5" y="4" width="13" height="8.5" rx="1.5" /><path d="M4 7h.1M6.5 7h.1M9 7h.1M11.5 7h.1M5 9.8h6" /></>,
   bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3z" /><path d="M6.5 14.5h3" /></>,
   back: <path d="M10 3L5 8l5 5" />,
   // GitHub#397: the home tab

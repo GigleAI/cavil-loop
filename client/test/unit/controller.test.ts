@@ -537,6 +537,49 @@ describe('sync and cache', () => {
     expect(broken.c.getState().autopilotConfirm).toBe(true);
   });
 
+  it('GitHub#487: changed shortcut keys survive a restart and a Project import; a refused change writes nothing; a broken saved value is repaired on read, not written back', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().shortcutKeys).toEqual({});
+    expect(first.c.getState().shortcutDropped).toEqual([]);
+    expect(first.c.setShortcutKey('handBack', { key: 'a', mod: true, shift: true })).toEqual({ ok: true });
+    // ⌘⇧B is 等前置's: refused, nothing changes
+    const refused = first.c.setShortcutKey('autopilot', { key: 'b', mod: true, shift: true });
+    expect(refused.ok).toBe(false);
+    expect(first.c.setShortcutKey('hide', { key: 'q' }).ok).toBe(false); // fixed
+    expect(first.c.setShortcutKey('newIssue', { key: 'i', mod: true, shift: true })).toEqual({ ok: true });
+    expect(first.c.setShortcutKey('search', { key: 'c' })).toEqual({ ok: true });
+    // putting 新建 back would give C to two shortcuts: refused
+    const back = first.c.setShortcutKey('newIssue', null);
+    expect(back.ok).toBe(false);
+    if (!back.ok) expect(back.why).toContain('「跳到搜索框」');
+    const kept = { handBack: { key: 'a', mod: true, shift: true }, newIssue: { key: 'i', mod: true, shift: true }, search: { key: 'c' } };
+    expect(first.c.getState().shortcutKeys).toEqual(kept);
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().shortcutKeys).toEqual(kept); // …and left the keys alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().shortcutKeys).toEqual(kept);
+    second.c.resetShortcutKeys();
+    expect(second.c.getState().shortcutKeys).toEqual({});
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().shortcutKeys).toEqual({});
+
+    // 新建 broken, 搜索 on C: 新建 back to its defaults, so 搜索's C goes too; both named, nothing written back
+    const seed = { shortcutKeys: { newIssue: { key: 9 }, search: { key: 'c' }, labels: { key: 'k', mod: true } } };
+    const broken = await make({ seed });
+    expect(broken.c.getState().shortcutKeys).toEqual({ labels: { key: 'k', mod: true } });
+    expect(broken.c.getState().shortcutDropped.map((d) => d.id)).toEqual(['newIssue', 'search']);
+    expect((broken.c as any).cache.getSetting('shortcutKeys', null)).toEqual(seed.shortcutKeys);
+    // changing or restoring one of them takes it off the list, and writes the repaired keys
+    expect(broken.c.setShortcutKey('search', null)).toEqual({ ok: true });
+    expect(broken.c.getState().shortcutDropped.map((d) => d.id)).toEqual(['newIssue']);
+    expect((broken.c as any).cache.getSetting('shortcutKeys', null)).toEqual({ labels: { key: 'k', mod: true } });
+  });
+
   it('GitHub#369: "切到 App 时收起全部系统通知" is off by default, survives a restart, and a broken saved value reads as off', async () => {
     const first = await loggedIn();
     expect(first.c.getState().clearAllOnActivate).toBe(false);

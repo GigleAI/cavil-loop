@@ -20,6 +20,7 @@ import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
+import { setCustomKeys, type CustomKeys } from './shortcuts';
 import type { SettingsIntent } from './EmptyGuide';
 import { t } from '../shared/i18n';
 
@@ -320,6 +321,8 @@ export function App() {
   const keysOn = signedIn;
   // GitHub#369: the settings page has its own Esc (back to the board), only while it is the page showing
   const onSettings = signedIn && !help && page === 'settings' && front === HOME;
+  // GitHub#487: the keys changed on this machine, for every key decision and tooltip drawn below
+  setCustomKeys(snap?.state.shortcutKeys as CustomKeys | undefined);
   useKeyboard(keysOn, onSettings ? 'settings' : 'board');
   const [keysHelp, setKeysHelp] = useState(false);
   const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
@@ -505,7 +508,18 @@ export function App() {
           <p data-testid="tab-close-question">{t('这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。')}</p>
         </ConfirmDialog>
       )}
-      {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
+      {keysOn && keysHelp && (
+        <ShortcutHelp
+          onClose={() => setKeysHelp(false)}
+          onEdit={() => {
+            setKeysHelp(false);
+            setHelp(false);
+            show(HOME);
+            setIntent({ what: 'keys', seq: ++intentSeq.current });
+            setPage('settings');
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -52,6 +52,7 @@ src/renderer/RemoteHostBlock.tsx
 src/renderer/RemoteSection.tsx
 src/renderer/RepoWebLink.tsx
 src/renderer/ShortcutHelp.tsx
+src/renderer/ShortcutSettings.tsx
 src/renderer/TabBar.tsx
 src/renderer/TableView.tsx
 src/renderer/UpdateViews.tsx
