@@ -4601,6 +4601,43 @@ test('GitHub#450: new issue — 交给 agent / 托管 are buttons that create at
   await keyAuto();
   await nothing(4);
   await expect(dialogs).toHaveCount(2);
+  // PR #459 review round 1: the keyboard cannot reach the covered dialog — Shift+Tab then Space right after it
+  // opened stays in the confirmation (which Space then presses: 取消, nothing created, the draft kept) …
+  const focusIn = () => page.evaluate(() => {
+    const d = document.activeElement?.closest('[data-testid="confirm-dialog"]');
+    return d ? (d.querySelector('[data-testid="new-issue-autopilot-explain"]') ? 'confirm' : 'covered') : 'outside';
+  });
+  await expect(dialogs.first()).toHaveAttribute('data-covered', 'yes');
+  // the keyboard starts on the confirmation's 取消; the reviewer's path — Shift+Tab, Space — only ticks "不再提示"
+  await expect(dialogs.last().getByTestId('confirm-cancel')).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  expect(await focusIn()).toBe('confirm');
+  await page.keyboard.press('Space');
+  await expect(page.getByTestId('new-issue-autopilot-no-more-ask')).toBeChecked();
+  await nothing(4);
+  await expect(dialogs).toHaveCount(2);
+  await page.getByTestId('new-issue-autopilot-no-more-ask').uncheck();
+  // … round and round both ways, never out of it
+  for (const k of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
+    await page.keyboard.press(k);
+    expect(await focusIn(), k).toBe('confirm');
+  }
+  // the covered 创建 cannot even be given the focus
+  await page.getByTestId('confirm-ok').first().evaluate((b) => (b as HTMLElement).focus());
+  expect(await focusIn()).toBe('confirm');
+  await nothing(4);
+  await expect(dialogs).toHaveCount(2);
+  // Space on the confirmation's 取消: back to the dialog, nothing created, the typed title still there, the title has the keyboard
+  await dialogs.last().getByTestId('confirm-cancel').focus();
+  await page.keyboard.press('Space');
+  await expect(dialogs).toHaveCount(1);
+  await nothing(4);
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('托管的');
+  await expect(page.getByTestId('new-issue-title')).toBeFocused();
+  await expect(dialogs.first()).not.toHaveAttribute('data-covered', 'yes');
+  // open it again for the "不再提示" case below
+  await keyAuto();
+  await expect(dialogs).toHaveCount(2);
   // cancelled with "不再提示" ticked: nothing created, the tick not kept, the typed text still there
   await page.getByTestId('new-issue-autopilot-no-more-ask').check();
   await dialogs.last().getByTestId('confirm-cancel').click();

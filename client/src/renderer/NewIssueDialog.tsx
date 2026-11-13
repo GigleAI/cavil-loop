@@ -102,6 +102,13 @@ export function NewIssueDialog({
   // GitHub#450: the autopilot confirmation (same switch as the detail panel's 托管), and its "不再提示"
   const [asking, setAsking] = useState(false);
   const [noMoreAsk, setNoMoreAsk] = useState(false);
+  // the covered dialog is inert until the confirmation is gone: the title takes the keyboard back only after that
+  const backToTitle = useRef(false);
+  useEffect(() => {
+    if (asking || !backToTitle.current) return;
+    backToTitle.current = false;
+    titleBox.current?.focus();
+  }, [asking]);
   const hb = state.handBack;
 
   // every pick of a repository is a read of its own: only the latest one may land. Compared by
@@ -177,7 +184,10 @@ export function NewIssueDialog({
   // GitHub#450: the one way an issue is created here — 创建 (no hand-over), 交给 agent, 托管 — and when it may be
   const canCreate = Boolean(repo && title.trim() && preview.plan && !preview.blocked && !busy);
   const canHand = (h: HandOver) => canCreate && checks[h]?.state === 'ok';
-  const create = async (handoff: 'none' | HandOver): Promise<boolean> => {
+  // `confirmed`: sent by the autopilot confirmation itself. While that confirmation is on top, nothing of the
+  // covered dialog creates anything (PR #459 review round 1: a covered button reached by the keyboard did)
+  const create = async (handoff: 'none' | HandOver, confirmed = false): Promise<boolean> => {
+    if (asking && !(confirmed && handoff === 'autopilot')) return false;
     if (!canCreate || (handoff !== 'none' && !canHand(handoff)) || !preview.plan) return false;
     // GitHub#229: the dialog does not wait for GitHub — the outcome shows above the board,
     // the new issue opens once it exists; only a refusal before anything went out keeps it open
@@ -227,6 +237,7 @@ export function NewIssueDialog({
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
       onConfirm={() => void create('none')}
+      covered={asking}
       wide
       confirmKey
       actions={
@@ -478,18 +489,19 @@ export function NewIssueDialog({
     {asking && (
       <ConfirmDialog
         title="托管新 issue？"
+        focusCancel
         confirmLabel="确认托管并创建"
         busy={busy}
         disabled={!canHand('autopilot')}
         onCancel={() => {
           // nothing created, "不再提示" not kept; back to the dialog with everything typed
           setAsking(false);
-          titleBox.current?.focus();
+          backToTitle.current = true;
         }}
         onConfirm={async () => {
           // the tick counts only with this button, as in the detail panel
           if (noMoreAsk) void Promise.resolve(api().setAutopilotConfirm(false)).catch(() => undefined);
-          const ok = await create('autopilot');
+          const ok = await create('autopilot', true);
           if (!ok) setAsking(false);
         }}
       >
