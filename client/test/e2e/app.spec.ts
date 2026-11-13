@@ -8079,7 +8079,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
     await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
     await blur(page);
   };
-  const settled = () => expect(detail.locator('[data-testid="op-notice"]').last()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
+  const settled = () => expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
 
   // ---- 1. Settings → 快捷键: the section is in the contents; 交给 agent → Ctrl+Shift+A ----
   await page.getByTestId('open-settings').click();
