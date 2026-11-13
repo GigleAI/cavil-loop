@@ -3,18 +3,21 @@
 // (a custom field as grouping / sort / column, the roadmap layout, …) is
 // named in `notes` — never silently dropped. The filter text is taken as-is:
 // words the search box does not understand get the usual yellow bar. One
-// exception (GitHub#298): an empty filter keeps the default search text.
+// exception (GitHub#464): the words that only hide finished items
+// (`-status:done`, `-label:done`, `is:open`) are left out — the view bar's
+// "显示已关闭" switch does that now.
 
+import { dropDoneHiders } from './filter';
 import type { GroupBy, ImportInfo, ProjectMeta, SavedView, SortField, TableColumn, ViewField, ViewSettings } from './types';
 
 export const DEFAULT_TABLE_COLUMNS: TableColumn[] = ['title', 'assignees', 'labels', 'linkedPrs', 'subIssues', 'updated', 'iteration'];
 
 /**
- * GitHub#298: the search text a client starts with — items whose Project
- * status is Done, or that carry the `Done` label, are hidden. Only settings
- * that never saved a search text get it; a saved one (even empty) is kept.
+ * The search text a client starts with. GitHub#298 had it hide finished items
+ * (`-Status:done -label:Done`); since GitHub#464 it is empty and the view bar's
+ * "显示已关闭" switch (off by default) keeps closed / merged items out instead.
  */
-export const DEFAULT_QUERY = '-Status:done -label:Done';
+export const DEFAULT_QUERY = '';
 
 export const STATUS_FIELD = 'Status';
 
@@ -139,8 +142,7 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
   if (skipped.length) notes.push(`这些列本客户端不支持，未显示：${skipped.join('、')}`);
 
   const imported: ImportInfo = { sourceKey: project.key, viewNumber: view.number, viewName: view.name, notes };
-  // GitHub#298: a view with no filter does not wipe the default search text
-  // (only that exact text — any other search text is replaced as before)
-  const query = view.filter.trim() === '' && current.query === DEFAULT_QUERY ? DEFAULT_QUERY : view.filter;
+  // GitHub#464: the words that only hid finished items are left to the switch; the rest as written
+  const query = dropDoneHiders(view.filter);
   return { layout, query, mode, swimlanes, table, imported };
 }

@@ -2,7 +2,7 @@
 // what happens to words this client does not support.
 
 import { describe, expect, it } from 'vitest';
-import { applyFilter, parseFilter, type FilterContext } from '../../src/shared/filter';
+import { applyFilter, dropDoneHiders, onlyDoneHiders, openOnly, parseFilter, statesStated, type FilterContext } from '../../src/shared/filter';
 import { DEFAULT_QUERY } from '../../src/shared/viewSettings';
 import type { Item } from '../../src/shared/types';
 import { item, iter, member, project } from './helpers';
@@ -29,9 +29,10 @@ const ctx: FilterContext = { viewer: 'alice', today: TODAY, projects: [A, B] };
 const nums = (q: string, c: FilterContext = ctx) => applyFilter(ITEMS, parseFilter(q), c).map((i) => i.number);
 
 describe('filter syntax', () => {
-  it('GitHub#298: the default search text hides status Done (any case) and the Done label, keeps the rest, needs no yellow bar', () => {
-    expect(DEFAULT_QUERY).toBe('-Status:done -label:Done');
-    expect(parseFilter(DEFAULT_QUERY).unsupported).toEqual([]);
+  it('GitHub#464: the default search text is empty; the old GitHub#298 words still mean what they did', () => {
+    expect(DEFAULT_QUERY).toBe('');
+    const old = '-Status:done -label:Done';
+    expect(parseFilter(old).unsupported).toEqual([]);
     const done: Item[] = [
       item('x/d', 10, { title: 'status Done' }, [member(A, null, 'Done')]),
       item('x/d', 11, { title: 'label Done', labels: L('Done') }, [member(A, null, 'Todo')]),
@@ -40,9 +41,47 @@ describe('filter syntax', () => {
       item('x/d', 14, { title: 'repository only' }, []),
       item('x/d', 15, { title: 'Done in one Project only' }, [member(A, null, 'Todo'), member(B, null, 'Done')]),
     ];
-    const kept = applyFilter([...ITEMS, ...done], parseFilter(DEFAULT_QUERY), ctx).map((i) => i.number);
+    const kept = applyFilter([...ITEMS, ...done], parseFilter(old), ctx).map((i) => i.number);
     // 2 is Done on Alpha, 3 is Done on Beta; 10 / 15 Done somewhere, 11 / 12 carry the label (names compare case-insensitively)
     expect(kept).toEqual([1, 4, 5, 13, 14]);
+  });
+
+  it('GitHub#464: does the search itself say open / closed / merged?', () => {
+    for (const q of ['is:open', 'is:closed', 'is:merged', '-is:open', 'IS:Closed', 'is:issue,closed', 'bug is:open label:x', '-is:merged,pr'])
+      expect(statesStated(parseFilter(q)), q).toBe(true);
+    for (const q of ['', 'is:issue', 'is:pr', '-is:pr', 'open', 'label:closed', 'is:draft', '"is:open"', 'no:label'])
+      expect(statesStated(parseFilter(q)), q).toBe(false);
+  });
+
+  it('GitHub#464: open only = what `is:open` keeps', () => {
+    expect(openOnly(ITEMS).map((i) => i.number)).toEqual(nums('is:open'));
+    expect(openOnly(ITEMS).map((i) => i.number)).toEqual([1, 4, 5]);
+  });
+
+  it('GitHub#464: the words that only hid finished items are dropped, every other word kept as written', () => {
+    const cases: [string, string, boolean][] = [
+      // input, without those words, consisted only of them
+      ['-Status:done -label:Done', '', true],
+      ['-label:Done -status:Done', '', true],
+      ['-status:DONE', '', true],
+      ['is:open', '', true],
+      ['IS:OPEN -label:"Done"', '', true],
+      ['-label:Done label:bug', 'label:bug', false],
+      ['bug   -status:done  label:"a b"', 'bug label:"a b"', false],
+      ['-label:done,bug', '-label:done,bug', false], // more than "done" alone
+      ['is:open,pr', 'is:open,pr', false],
+      ['-is:open', '-is:open', false],
+      ['label:done', 'label:done', false], // not negated: it asks for Done
+      ['status:done', 'status:done', false],
+      ['-status:"In progress"', '-status:"In progress"', false],
+      ['done', 'done', false],
+      ['', '', false],
+      ['   ', '', false],
+    ];
+    for (const [q, rest, only] of cases) {
+      expect(dropDoneHiders(q), q).toBe(rest);
+      expect(onlyDoneHiders(q), q).toBe(only);
+    }
   });
 
   it('empty query keeps everything', () => {

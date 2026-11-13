@@ -26,6 +26,20 @@ async function launch(env: Env) {
   return { app, page: app.page };
 }
 
+/**
+ * GitHub#464: closed / merged items are hidden unless a view's "显示已关闭" switch is on. Most tests here were
+ * written for a client that listed them once the search was cleared, and they count or click closed items
+ * (#128, #137, #138 …): their sign-in turns every view's switch on. The tests of the switch's own default
+ * (the first test, the imported table view, test/e2e/show-closed.spec.ts) do not call this.
+ */
+async function showClosedEverywhere(page: Page) {
+  const all = { board: true, table: true, graph: true, running: true, agent: true, human: true, unlabeled: true };
+  await page.evaluate((v) => (window as any).cavil.setView({ showClosed: v }), all);
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed)).toEqual(all);
+  // (settings reach the back end's files a moment later; a test that "quits" next kills the back end outright)
+  await page.waitForTimeout(500);
+}
+
 async function shot(page: Page, name: string) {
   await page.waitForTimeout(150);
   await page.screenshot({ path: join(screens, `${name}.png`) });
@@ -120,8 +134,9 @@ test('browser login → board; restart skips login; sources; three column modes;
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   expect(readFileSync(env.cred, 'utf8')).toMatch(/^gho_/);
-  // GitHub#298: a new install starts with the default search text
-  await expect(page.getByTestId('search')).toHaveValue('-Status:done -label:Done');
+  // GitHub#464: a new install starts with an empty search box; the "显示已关闭" switch (off) keeps closed items out
+  await expect(page.getByTestId('search')).toHaveValue('');
+  await expect(page.getByTestId('show-closed')).not.toBeChecked();
 
   // add a Project and a repository
   await page.getByTestId('open-settings').click();
@@ -136,12 +151,14 @@ test('browser login → board; restart skips login; sources; three column modes;
   await shot(page, '03-settings');
   await page.getByTestId('back').click();
 
-  // the Project brought its first saved web view along ("Pending": table, -label:Done -status:Done);
-  // this test is about the board, so switch back to it and clear the filter
+  // the Project brought its first saved web view along ("Pending": table, -label:Done -status:Done — words
+  // that only hid finished items, left to the "显示已关闭" switch since GitHub#464, so the box stays empty);
+  // this test is about the board and counts every item on it, so switch back to it and show the closed ones too
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  await expect(page.getByTestId('search')).toHaveValue('');
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await page.getByTestId('search').fill('');
+  await page.getByTestId('show-closed').check();
 
   // iteration (default): each iteration column holds what the Project says, a PR counted where its issue is (GitHub#275)
   // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
@@ -319,11 +336,19 @@ async function signInWithSources(page: Page, iteration25 = '13') {
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  // adding the Project imported its saved web view (#137: table, -label:Done -status:Done);
-  // these tests are about the board, so switch back to it and clear the filter
+  // adding the Project imported its saved web view (#137: table);
+  // these tests are about the board and count every item on it, so switch back to it, clear the filter
+  // and show the closed ones in every view (GitHub#464)
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await page.getByTestId('search').fill('');
+  // the board's and the table's own switches, through the window (each layout keeps its own)
+  await page.getByTestId('show-closed').check();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('show-closed').check();
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await expect(page.getByTestId('show-closed')).toBeChecked();
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed)).toMatchObject({ board: true, table: true });
   // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe(iteration25);
 }
@@ -1050,7 +1075,12 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   // no setting touched: the table equals what the view shows on GitHub —
   // same items as GitHub's own filter, grouped by the recorded iteration values
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done');
+  // GitHub#464: the view's filter only hid finished items — the box stays empty and the switch (off) keeps
+  // closed items out; to compare with GitHub's own result for that filter, write it back with the switch on
+  await expect(page.getByTestId('search')).toHaveValue('');
+  await expect(page.getByTestId('show-closed')).not.toBeChecked();
+  await page.getByTestId('show-closed').check();
+  await page.getByTestId('search').fill('-label:Done -status:Done');
   const server = filterResults.find((r) => r.query === '-label:Done -status:Done')!.server;
   const iter = rawIteration();
   const want: Record<string, number> = {};
@@ -1161,7 +1191,9 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   await page.getByTestId('open-settings').click();
   await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`); // a table grouped by iteration
   await page.getByTestId('source-add').click();
-  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('-label:Done -status:Done');
+  // the view's filter (-label:Done -status:Done) only hid finished items: left to the switch (GitHub#464)
+  await expect.poll(() => importedView(page), { timeout: 15_000 }).toBe(1);
+  expect(await savedQuery(page)).toBe('');
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/24');
   await page.getByTestId('source-add').click();
   await page.getByTestId('source-input').fill('GigleAI/zeta');
@@ -1228,6 +1260,8 @@ test('a saved board view sorted by update time: the board shows each column newe
   await page.getByTestId('back').click();
 
   await expect(page.getByTestId('search')).toHaveValue('-label:nightly-failure', { timeout: 15_000 });
+  // the Done column holds closed items: show them (GitHub#464)
+  await showClosedEverywhere(page);
   await expect(page.locator('[data-testid="column"][data-title="Done"]')).toBeVisible();
   const updated = new Map<string, string>();
   for (const p of loadCavilProjectPages())
@@ -1424,10 +1458,13 @@ async function signIn(page: Page) {
   await expect(page.getByTestId('user-code')).toBeVisible();
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await showClosedEverywhere(page);
 }
 
 /** the saved search text as the main process holds it (the box saves 300 ms after typing stops) */
 const savedQuery = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query as string);
+/** which saved web view was imported (null = none yet) — the import's own mark, since GitHub#464 leaves its filter out of the box */
+const importedView = (page: Page) => page.evaluate(async () => ((await (window as any).cavil.get()).state.view.imported?.viewNumber ?? null) as number | null);
 
 /** a copy of the recorded Project whose only saved web view uses `filter` */
 function projectWithView(filter: string) {
@@ -1452,7 +1489,9 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  await expect.poll(() => importedView(page), { timeout: 15_000 }).toBe(1);
+  // GitHub#464: the import leaves the view's filter (it only hid finished items) out of the box; write it back to search
+  await page.getByTestId('search').fill('-label:Done -status:Done');
 
   // offline with an unsupported word in the box: two bars; × closes only the one clicked
   await page.getByTestId('search').fill(`-label:Done ${UNSUPPORTED}`);
@@ -1521,7 +1560,9 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  await expect.poll(() => importedView(page), { timeout: 15_000 }).toBe(1);
+  // GitHub#464: the import leaves the view's filter (it only hid finished items) out of the box; write it back to search
+  await page.getByTestId('search').fill('-label:Done -status:Done');
   await expect(page.getByTestId('sync-trouble')).toHaveCount(0);
 
   // a source fails while filtering: no full-width bar, a ⚠️ left of refresh, not opened by itself
@@ -1616,7 +1657,9 @@ test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, 
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  await expect.poll(() => importedView(page), { timeout: 15_000 }).toBe(1);
+  // GitHub#464: the import leaves the view's filter (it only hid finished items) out of the box; write it back to search
+  await page.getByTestId('search').fill('-label:Done -status:Done');
   env.fake.state.failProjectPage.set(P11, 1);
   await page.getByTestId('refresh').click();
   const btn = page.getByTestId('sync-trouble');
@@ -1726,7 +1769,7 @@ test('Settings: a failed source\'s "重新读取" spins while it runs and says w
 
 test('yellow bars: a closed "unsupported words" bar comes back when an import in settings changes the filter and changes it back', async () => {
   env.fake.state.projects.set('org/gigleai/21', projectWithView('updated:>2026-01-01'));
-  env.fake.state.projects.set('org/gigleai/22', projectWithView('-label:Done'));
+  env.fake.state.projects.set('org/gigleai/22', projectWithView('label:bug')); // (a filter that only hides Done would be left out, GitHub#464)
   env.fake.state.projects.set('org/gigleai/23', projectWithView('updated:>2026-01-01'));
   const { app, page } = await launch(env);
   await signIn(page);
@@ -1749,7 +1792,7 @@ test('yellow bars: a closed "unsupported words" bar comes back when an import in
   await page.getByTestId('open-settings').click();
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/22');
   await page.getByTestId('source-add').click();
-  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('-label:Done');
+  await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('label:bug');
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/23');
   await page.getByTestId('source-add').click();
   await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('updated:>2026-01-01');
@@ -1795,6 +1838,7 @@ async function signInForReminders(page: Page, sources: string[]) {
   await expect(page.getByTestId('user-code')).toBeVisible();
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await showClosedEverywhere(page);
   await page.getByTestId('open-settings').click();
   for (const s of sources) {
     await page.getByTestId('source-input').fill(s);

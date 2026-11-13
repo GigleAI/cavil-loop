@@ -54,9 +54,10 @@ test('GitHub#368: a matched parent keeps its sub-issues in the table, faded, cou
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/11');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  // the saved web view is imported: table, "show hierarchy" on, its own search
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
-  await expect(page.getByTestId('table')).toBeVisible();
+  // the saved web view is imported: table, "show hierarchy" on; its filter only hid finished items,
+  // which the "显示已关闭" switch does now (GitHub#464), so the box stays empty
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('search')).toHaveValue('');
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.table.hierarchy)).toBe(true);
 
   // ---- a search that matches the parent only ----

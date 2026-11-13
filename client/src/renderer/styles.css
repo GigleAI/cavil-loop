@@ -214,6 +214,8 @@ button.tally-swatch[aria-pressed='true'] { outline: 2px solid var(--accent); out
 .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: left 0.12s; }
 .toggle input:checked { background: var(--accent); }
 .toggle input:checked::after { left: 14px; }
+.toggle.disabled { opacity: 0.5; cursor: not-allowed; }
+.toggle.disabled input { cursor: not-allowed; }
 .hint { padding: 0 16px 6px; }
 
 /* ---- page with a back button (settings, help) ---- */
