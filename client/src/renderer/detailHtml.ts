@@ -17,6 +17,7 @@ import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
 import { annotateCodeBlocks, codeCss } from './codeBlocks';
 import { parseReleaseImage } from '../shared/images';
+import { formatDuration, withoutFooter } from '../shared/agentMetrics';
 
 /** the reply preview: no scripts at all */
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
@@ -153,17 +154,26 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
       : e.kind === 'review'
         ? `<b>${who}</b> · ${escapeHtml(REVIEW_STATE[e.reviewState ?? ''] ?? e.reviewState ?? '评审')} · ${escapeHtml(when(e.at))}`
         : `<b>${who}</b> · ${escapeHtml(when(e.at))}`;
-  const excerpt = plainExcerpt(e.bodyHtml) || (e.lineComments?.length ? `${e.lineComments.length} 条逐行评论` : '（没有文字）');
-  const link = e.url ? ` · <a href="${escapeHtml(e.url)}">在网页上看</a>` : '';
+  // GitHub#503: with a usage record, the preview leaves out the footer's own line
+  const excerpt = plainExcerpt(e.wallSecs !== undefined ? withoutFooter(e.bodyHtml) : e.bodyHtml) || (e.lineComments?.length ? `${e.lineComments.length} 条逐行评论` : '（没有文字）');
+  // GitHub#503: the head carries the round's total time where the web link used to be;
+  // the link to this one entry on the web sits at the bottom of the unfolded entry
+  const dur =
+    e.wallSecs !== undefined
+      ? ` · <span class="dur" data-wall="${e.wallSecs}" title="这一轮 agent 的总耗时（取自评论末尾的用量记录）">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`
+      : '';
+  const webLink = e.url ? `<a class="web" href="${escapeHtml(e.url)}">在网页上看这一条</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
-  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载；点「在网页上看」查看</div>` : '';
+  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载${webLink ? `；${webLink}` : ''}</div>` : '';
   const tasks = bodyWithTasks(e, canTick, pending, wrap, web);
   // GitHub#205: only what GitHub says this account may change, only while a change can be sent
-  const edit =
+  const editBtn =
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
-      ? `<div class="tools"><button type="button" class="edit" data-edit${canTick ? '' : ' disabled title="离线或有修改在途时不能编辑"'}>编辑</button></div>`
+      ? `<button type="button" class="edit" data-edit${canTick ? '' : ' disabled title="离线或有修改在途时不能编辑"'}>编辑</button>`
       : '';
-  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note + edit;
+  // below everything the entry holds (a review's line comments included)
+  const tools = webLink || editBtn ? `<div class="tools">${webLink}${editBtn}</div>` : '';
+  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note;
   let lines = '';
   if (e.lineComments?.length) {
     lines =
@@ -178,7 +188,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
   }
   // a folded entry is one line (who, when, what kind, the start of its text); the browser's own
   // <details> opens it — no script involved (FRAME_SCRIPT only reports boxes and the view)
-  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${link}<span class="excerpt" data-find-skip> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}</details>`;
+  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${dur}<span class="excerpt" data-find-skip> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}${tools}</details>`;
 }
 
 /** Is entry `i` (newest first) unfolded? By default only the newest is — with no comments that is the opening post. */
@@ -288,6 +298,9 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
+.tools .web{font-size:12px;margin-right:10px}
+.tools .web:last-child{margin-right:0}
+.blocked .web{margin-left:2px}
 .imgbox{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;box-sizing:border-box;max-width:100%;min-height:40px;margin:2px 0;padding:8px 12px;border:1px dashed ${border};border-radius:6px;background:${canvas};color:${muted};font-size:12px;line-height:1.5}
 .imgbox .alt{color:${fg};font-weight:600}
 .imgbox .acts{margin-left:auto;display:flex;gap:10px;align-items:center}
