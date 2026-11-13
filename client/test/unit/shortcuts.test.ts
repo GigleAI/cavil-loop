@@ -298,7 +298,7 @@ describe('GitHub#465: macOS takes ⌘⇧3 for its screenshot', () => {
     expect(shown(false)).toEqual(['Ctrl+Shift+3']);
     expect(graph.label).toContain('⌥⌘3');
   });
-  it('⌘⇧3 still switches to the graph on macOS (once the person frees it in System Settings), and ⌥⌘3 too', () => {
+  it('⌘⇧3 is still acted on on macOS when it reaches the window (not shown, not dropped), and ⌥⌘3 too', () => {
     // a US layout reports "#" for ⇧3, "£" for ⌥3: the key position decides
     expect(resolve(key('#', { metaKey: true, shiftKey: true, code: 'Digit3' }), { ...idle, mac: true })).toBe('viewGraph');
     expect(resolve(key('£', { metaKey: true, altKey: true, code: 'Digit3' }), { ...idle, mac: true })).toBe('viewGraph');

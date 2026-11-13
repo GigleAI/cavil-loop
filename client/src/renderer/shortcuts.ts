@@ -16,7 +16,7 @@ export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dial
  * `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere). `alt` = ⌥ / Alt held too.
  * `macOnly`: this key exists on macOS only (GitHub#442: ⌥⌘1/2/3, because macOS keeps ⌘⇧3 for its own
  * screenshot). `macHidden`: still acted on everywhere, but not shown on macOS (GitHub#465: ⌘⇧3 — by default
- * the system takes it for the screenshot and the window never sees it; it works once the person turns that off).
+ * the system takes it for the screenshot and the window never sees it; should it ever arrive, it still acts).
  * A digit is matched by the key itself (`code`), not by what Shift / ⌥ / the layout turn it into.
  */
 export type KeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean; macHidden?: boolean };
@@ -88,7 +88,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     id: 'viewGraph',
     scope: 'global',
     keys: [{ key: '3', mod: true, alt: true, macOnly: true }, { key: '3', mod: true, shift: true, macHidden: true }],
-    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给整屏截图，窗口收不到，这里用 ⌥⌘3；在系统设置里关掉那个截图快捷键后 ⌘⇧3 也能用）',
+    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给整屏截图，窗口收不到，这里用 ⌥⌘3）',
   },
   // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
   // with no tab in front it closes the window, as before.
