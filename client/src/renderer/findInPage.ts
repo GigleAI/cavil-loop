@@ -106,6 +106,29 @@ function keepPlace(next: Entry[], old: Entry | null, oldIndex: number): number {
   return Math.min(Math.max(oldIndex, 0), next.length - 1);
 }
 
+/**
+ * Without highlight support the current match is shown as the selection. Find remembers the selection it made
+ * (where it starts and ends) and takes it away again — on close, when nothing matches, when the current match
+ * moves into a frame — but only while the selection is still exactly that one: text the person selected
+ * afterwards is left alone (code review round 1 on PR #508).
+ */
+let ownSel: { sc: Node; so: number; ec: Node; eo: number } | null = null;
+function selectOwn(r: Range): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(r);
+  ownSel = { sc: r.startContainer, so: r.startOffset, ec: r.endContainer, eo: r.endOffset };
+}
+function dropOwnSelection(): void {
+  const mine = ownSel;
+  ownSel = null;
+  const sel = window.getSelection();
+  if (!mine || !sel || sel.rangeCount !== 1) return;
+  const r = sel.getRangeAt(0);
+  if (r.startContainer === mine.sc && r.startOffset === mine.so && r.endContainer === mine.ec && r.endOffset === mine.eo) sel.removeAllRanges();
+}
+
 /** look again (query changed, page changed, a frame answered); `scroll`: bring the current match into view */
 function redo(scroll: boolean, fresh: boolean): void {
   if (!view.open) return;
@@ -131,11 +154,12 @@ function paint(scroll: boolean): void {
     hl.set(HL, new H(...win.filter((e) => e !== now).map((e) => e.range)));
     if (now?.kind === 'win') hl.set(HL_CUR, new H(now.range));
     else hl.delete(HL_CUR);
-  } else if (scroll && now?.kind === 'win') {
+  } else if (now?.kind !== 'win') {
+    // no highlight support and the current match is not in the window (none, or in a frame): the selection find made goes
+    dropOwnSelection();
+  } else if (scroll) {
     // no highlight support (WebKit before macOS 14.2): the current match is selected instead
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(now.range);
+    selectOwn(now.range);
   }
   if (now?.kind === 'win') {
     const d = now.range.startContainer.parentElement;
@@ -154,6 +178,7 @@ function paint(scroll: boolean): void {
 }
 
 function clearPaint(): void {
+  dropOwnSelection();
   const hl = highlights();
   hl?.delete(HL);
   hl?.delete(HL_CUR);

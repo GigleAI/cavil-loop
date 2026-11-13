@@ -305,3 +305,81 @@ test('a dialog on top keeps its Esc while find is open', async () => {
   await expect(page.getByTestId('shortcut-help')).toHaveCount(0);
   await expect(bar(page)).toBeVisible();
 });
+
+test('without highlight support the current match is selected instead — and find takes that selection away again (closed, nothing found, moved), in the window and in the discussion; a selection the person made is left alone', async () => {
+  retitle(A, 'Wombat in the title');
+  env.fake.state.w.comments.set(K(A), [
+    { id: 'IC_new', url: `https://github.com/${REPO}/issues/${A}#issuecomment-2`, createdAt: '2026-01-03T00:00:00Z', bodyHTML: '<p>a WOMBAT here</p>', author: { login: 'user-3' } },
+  ]);
+  const app = await launchApp(env);
+  const { page } = app;
+  // a web engine without the highlight API (WebKit before macOS 14.2): for the window and every frame, before any script
+  await page.context().addInitScript(() => {
+    Object.defineProperty(window, 'Highlight', { value: undefined, configurable: true, writable: true });
+  });
+  await page.reload();
+  await signIn(page);
+  // the range itself: with the keyboard in a text field Chromium's Selection.toString() reports that field instead
+  const sel = () => page.evaluate(() => { const s = getSelection(); return s && s.rangeCount ? s.getRangeAt(0).toString() : ''; });
+
+  // the window: selected while current, gone when nothing is found, back, gone on close
+  await page.keyboard.press('ControlOrMeta+f');
+  await input(page).fill('wombat');
+  await expectCount(page, 1, 1);
+  expect(await page.evaluate(() => typeof (window as unknown as { Highlight?: unknown }).Highlight)).toBe('undefined');
+  await page.keyboard.press('Enter');
+  await expect.poll(sel).toBe('Wombat');
+  await input(page).fill('wombatz');
+  await expect(count(page)).toHaveText('没有找到');
+  await expect.poll(sel).toBe('');
+  await input(page).fill('wombat');
+  await expectCount(page, 1, 1);
+  await page.keyboard.press('Enter');
+  await expect.poll(sel).toBe('Wombat');
+  await page.keyboard.press('Escape');
+  await expect(bar(page)).toHaveCount(0);
+  await expect.poll(sel).toBe('');
+
+  // a selection the person makes after find selected its match is not taken away on close
+  await page.keyboard.press('ControlOrMeta+f');
+  await input(page).fill('wombat');
+  await page.keyboard.press('Enter');
+  await expect.poll(sel).toBe('Wombat');
+  await page.evaluate(() => {
+    const t = document.querySelector('[data-testid="search"]')!.closest('header')!.querySelector('h1, .brand, span') ?? document.body;
+    const r = document.createRange();
+    r.selectNodeContents(t);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(r);
+  });
+  const mine = await sel();
+  expect(mine).not.toBe('Wombat');
+  await page.getByTestId('find-close').click();
+  await expect(bar(page)).toHaveCount(0);
+  expect(await sel()).toBe(mine);
+
+  // the discussion: its match selected inside it; moving back to the window's match, and closing, take it away
+  await row(page, A).click();
+  const f = await frameOf(page);
+  expect(await f.evaluate(() => typeof (window as unknown as { Highlight?: unknown }).Highlight)).toBe('undefined');
+  const fsel = () => f.evaluate(() => { const s = getSelection(); return s && s.rangeCount ? s.getRangeAt(0).toString() : ''; });
+  await page.keyboard.press('ControlOrMeta+f');
+  await input(page).fill('wombat');
+  // the row title and the panel heading in the window, one in the discussion
+  await expectCount(page, 1, 3);
+  // the discussion sits after both window matches: the third one is in it
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await expectCount(page, 3, 3);
+  await expect.poll(fsel).toBe('WOMBAT');
+  // the next one wraps to the window: the discussion's selection goes
+  await page.keyboard.press('Enter');
+  await expectCount(page, 1, 3);
+  await expect.poll(fsel).toBe('');
+  await page.keyboard.press('Shift+Enter');
+  await expectCount(page, 3, 3);
+  await expect.poll(fsel).toBe('WOMBAT');
+  await page.keyboard.press('Escape');
+  await expect(bar(page)).toHaveCount(0);
+  await expect.poll(fsel).toBe('');
+});

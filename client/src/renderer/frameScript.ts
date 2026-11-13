@@ -212,12 +212,21 @@ export const FRAME_SCRIPT = `(function () {
   // matches is the current one; the frame finds (the same rule as the window, frameFind.ts), highlights,
   // unfolds and scrolls to the current one, and answers how many it found
   ${FRAME_FIND_JS}
-  var findOn = false;
+  var findOn = false, ownSel = null;
+  // without highlight support the current match is the selection; find takes away only the selection it made
+  // itself (still exactly that one), when find closes or the current match is no longer in this frame
+  function dropOwn() {
+    var mine = ownSel, sel = window.getSelection();
+    ownSel = null;
+    if (!mine || !sel || sel.rangeCount !== 1) return;
+    var r = sel.getRangeAt(0);
+    if (r.startContainer === mine[0] && r.startOffset === mine[1] && r.endContainer === mine[2] && r.endOffset === mine[3]) sel.removeAllRanges();
+  }
   function findSet(m) {
     findOn = m.open === true;
     var hl = window.CSS && CSS.highlights && typeof Highlight === 'function' ? CSS.highlights : null;
     if (hl) { hl.delete('cavil-find'); hl.delete('cavil-find-cur'); }
-    if (!findOn) return;
+    if (!findOn) { dropOwn(); return; }
     var q = typeof m.q === 'string' && m.q.length <= 1000 ? m.q : '';
     var list = cavilFind(document.body, q), all = hl ? new Highlight() : null, cur = null;
     for (var i = 0; i < list.length; i++) {
@@ -233,10 +242,15 @@ export const FRAME_SCRIPT = `(function () {
       var el = cur.startContainer.parentElement;
       for (var d = el && el.closest('details:not([open])'); d; d = d.parentElement ? d.parentElement.closest('details:not([open])') : null) d.open = true;
       if (m.scroll === true) {
-        if (!hl) { var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(cur); }
+        if (!hl) {
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(cur);
+          ownSel = [cur.startContainer, cur.startOffset, cur.endContainer, cur.endOffset];
+        }
         if (el) el.scrollIntoView({ block: 'center', inline: 'nearest' });
       }
-    }
+    } else if (!hl) dropOwn();
     send({ cavil: 'found', q: q, n: list.length });
   }
   window.addEventListener('message', function (e) {
@@ -298,4 +312,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-aDMsuCzovOit/wx11haYDomQfao0xA73FvhahmHaAzc='";
+export const FRAME_SCRIPT_HASH = "'sha256-vt4ilgyVFr2NStBc3meRXrkXuLdn1eP6ZhJe+jWL6WU='";
