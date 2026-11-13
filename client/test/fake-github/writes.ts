@@ -617,6 +617,9 @@ export function handleRest(store: Store, method: string, path: string, body: any
       state: 'open',
       html_url: `https://github.com/${repo}/issues/${number}`,
       updated_at: w.clock(),
+      // GitHub#490: as GitHub answers — who opened it and when (what the look for a lost create filters on)
+      created_at: w.clock(),
+      user: { login: actor },
       labels: (w.dropIssueLabels.has(key) ? [] : (body.labels ?? [])).map((n: string) => ({ name: n, color: colors.get(n) ?? 'ededed' })),
       assignees: [],
       milestone: null as null | { number: number; title: string; due_on: string | null },

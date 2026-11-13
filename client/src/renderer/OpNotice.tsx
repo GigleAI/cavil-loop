@@ -3,56 +3,68 @@
 // send gate uses), in the panel and above the board alike.
 
 import { useState } from 'react';
-import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
+import { AUTO_DISMISS_MS, opActions, opAutoDismissable, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpRecord, type OpRetry } from '../shared/ops';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
 import { Icon } from './Icons';
-import { copyText } from './pasteImage';
+import { itemPageUrl, WebButton } from './NoticeButtons';
 
-const RETRY_LABEL: Record<OpRecord['kind'], string> = {
-  closeIssue: '重新关闭…',
-  closePr: '重新关闭…',
-  merge: '重新合并…',
-  autopilot: '重新托管…',
+/** GitHub#490: 「重试」 says what it does again; the redo goes out at once (no dialog) */
+const REDO_LABEL: Record<OpRecord['kind'], string> = {
+  closeIssue: '重新关闭',
+  closePr: '重新关闭',
+  merge: '重新合并',
+  autopilot: '重新托管',
   handBack: '重新交给 agent',
   // GitHub#434: opens the dialog again, read afresh
   blocked: '等前置…（重新登记）',
 };
 
+function retryLabel(r: OpRecord, retry: OpRetry): string {
+  switch (retry) {
+    case 'redo':
+    case 'blocked':
+      return REDO_LABEL[r.kind];
+    case 'finish':
+      return '补做剩下的步骤';
+    case 'sendComment':
+      return '再发评论';
+    case 'resend':
+      return '重发…';
+    case 'recheck':
+      return '再查一次';
+  }
+}
+
 export function opItemUrl(r: OpRecord): string {
-  // GitHub sends /issues/N of a PR on to the PR itself
-  return `https://github.com/${r.repo}/issues/${r.number}`;
+  return itemPageUrl(r.repo, r.number);
 }
 
 export function OpNotice({
   r,
   prefix,
-  onRetry,
-  onToReply,
+  onBlocked,
   onOpen,
 }: {
   r: OpRecord;
   /** above the board: which item it is about */
   prefix?: string;
-  /** the dialog again, with the draft restored */
-  onRetry: (r: OpRecord) => void;
-  /** the kept comment into the reply box */
-  onToReply: (r: OpRecord) => void;
+  /** a "等前置…" that did not finish: its dialog again (on the item) */
+  onBlocked: (r: OpRecord) => void;
   /** above the board: open the item */
   onOpen?: (key: string) => void;
 }) {
   const [problem, setProblem] = useState<string | null>(null);
-  const [copied, setCopied] = useState<boolean | null>(null);
   const [working, setWorking] = useState(false);
-  // GitHub#359: "仍要重发…" asks first, saying what a second send can cause
+  // GitHub#359: "重发…" asks first, saying what a second send can cause
   const [asking, setAsking] = useState(false);
   const confirm = opResendConfirm(r);
   const tone = opTone(r);
   const phase = opPhase(r);
-  const buttons = opButtons(r);
+  // GitHub#490: at most one retry, one way out and ×, from the one rule
+  const a = opActions(r);
   const left = opDraftLeft(r);
-  const has = (b: OpButton) => buttons.includes(b);
   // GitHub#357: the tone is the class (styles.css), decided by shared/noticeTone.ts alone
   // GitHub#256: a fully successful notice puts itself away after 5 s, exactly like the ×
   const auto = useAutoDismiss(opAutoDismissable(r), AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
@@ -66,11 +78,33 @@ export function OpNotice({
       setWorking(false);
     }
   };
+  const retry = (x: OpRetry) => {
+    switch (x) {
+      case 'redo':
+        return void run(() => api().opRedo(r.id));
+      case 'blocked':
+        return onBlocked(r);
+      case 'finish':
+        return void run(() => api().opFinish(r.id));
+      case 'sendComment':
+        return void run(() => api().opSendComment(r.id));
+      case 'resend':
+        return setAsking(true);
+      case 'recheck':
+        return void run(() => api().opRecheck(r.id));
+    }
+  };
   return (
-    <div className={`banner ${tone} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} {...auto}>
+    <div className={`banner ${tone} op-notice`} data-testid="op-notice" data-kind={tone} data-phase={phase} data-op={r.id} data-key={r.key} data-retry={a.retry ?? ''} data-fallback={a.fallback ?? ''} {...auto}>
       {tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name={tone === 'ok' || tone === 'info' ? 'check' : 'warn'} />}
       <span className="banner-text">
-        {prefix && <b>{prefix}</b>}
+        {prefix && onOpen ? (
+          <button className="link" data-testid="op-open" onClick={() => onOpen(r.key)}>
+            <b>{prefix}</b>
+          </button>
+        ) : (
+          prefix && <b>{prefix}</b>
+        )}
         <span data-testid="op-notice-text">{opText(r)}</span>
         {left?.comment !== undefined && phase !== 'waiting' && (
           <span className="op-draft" data-testid="op-draft-comment">
@@ -78,57 +112,21 @@ export function OpNotice({
           </span>
         )}
         <span className="op-buttons">
-          {onOpen && (
-            <button className="link" data-testid="op-open" onClick={() => onOpen(r.key)}>
-              打开
+          {a.retry && (
+            <button className="link" data-testid="op-retry" data-retry={a.retry} disabled={working} onClick={() => retry(a.retry!)}>
+              {retryLabel(r, a.retry)}
             </button>
           )}
-          {has('resend') && (
-            <button className="link" data-testid="op-resend" disabled={working} onClick={() => setAsking(true)}>
-              仍要重发…
-            </button>
-          )}
-          {has('openWeb') && (
-            <button className="link" data-testid="op-open-web" onClick={() => void api().openExternal(opItemUrl(r))}>
-              去 GitHub 页面核对
-            </button>
-          )}
-          {has('unlock') && (
-            <button className="link" data-testid="op-unlock" title="在 GitHub 页面核对过以后再点：只解开这里的锁定，不会往 GitHub 发任何请求" onClick={() => void api().opUnlock(r.id)}>
-              已核对，解除锁定
-            </button>
-          )}
-          {has('retry') && (
-            <button className="link" data-testid="op-retry" onClick={() => onRetry(r)}>
-              {RETRY_LABEL[r.kind]}
-            </button>
-          )}
-          {has('finish') && (
-            <button className="link" data-testid="op-finish" disabled={working} onClick={() => void run(() => api().opFinish(r.id))}>
-              补做剩下的步骤
-            </button>
-          )}
-          {has('copy') && left?.comment !== undefined && (
-            <button
-              className="link"
-              data-testid="op-copy"
-              onClick={() => {
-                const text = left.comment ?? '';
-                void copyText(text).then(setCopied);
-              }}
-            >
-              {copied === true ? '已复制' : copied === false ? '复制失败' : '复制原文'}
-            </button>
-          )}
-          {has('toReply') && (
-            <button className="link" data-testid="op-to-reply" onClick={() => onToReply(r)}>
-              放进回复框
-            </button>
-          )}
-          {has('dropDraft') && (
-            <button className="link" data-testid="op-drop-draft" title="丢掉以后找不回来" onClick={() => void api().opDropDraft(r.id)}>
-              丢掉草稿
-            </button>
+          {a.fallback && (
+            <WebButton
+              kind={a.fallback}
+              url={opItemUrl(r)}
+              copy={a.copy}
+              webOpened={a.webOpened}
+              onOpened={() => void api().opWebOpened(r.id)}
+              onUnlock={() => void api().opUnlock(r.id)}
+              testid="op-fallback"
+            />
           )}
         </span>
         {/* GitHub#357: what the record itself says ("这次没能查证 / 补做：…") is not said twice */}
@@ -158,8 +156,14 @@ export function OpNotice({
           </div>
         </ConfirmDialog>
       )}
-      {has('dismiss') && (
-        <button className="banner-close" aria-label="关掉提示" title={left ? '关掉提示（草稿还留着，可以从这一条的详情里找回）' : '关掉提示'} data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
+      {a.close && (
+        <button
+          className="banner-close"
+          aria-label="关掉提示"
+          title={a.toBox ? '关掉提示（没发出的附带评论放回这一条的回复框）' : '关掉提示'}
+          data-testid="op-dismiss"
+          onClick={() => void api().opClose(r.id)}
+        >
           <Icon name="x" />
         </button>
       )}

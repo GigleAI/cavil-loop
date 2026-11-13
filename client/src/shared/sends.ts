@@ -76,6 +76,8 @@ export interface SendRecord {
   commentId?: string | null;
   /** a person unlocked it after checking GitHub (unknown only) */
   unlocked: boolean;
+  /** GitHub#490: 「到 GitHub 上核对」 opened the page (unknown only): the same place now offers the unlock */
+  webOpened?: boolean;
   dismissed: boolean;
   /** a check is running in this run of the app (not kept over a restart) */
   checking?: boolean;
@@ -214,6 +216,33 @@ export function sendButtons(r: SendRecord): SendButton[] {
   // PR #510 review round 2: unlocked = a person checked GitHub; the app no longer checks it (only × is left)
   if (r.state === 'unknown') return r.checking || r.unlocked ? [] : ['recheck', 'unlock'];
   return [];
+}
+
+/**
+ * GitHub#490: what the notice offers — at most one retry, one way out and × (from `sendButtons` / `sendClosable`):
+ *   refused for sure → 「再发一次」 + 「放回编辑框」 (opens the item; the panel showing it takes the text back);
+ *   no answer → 「再查一次」 (a read) + 「到 GitHub 上核对」 in two steps: the first opens the page and copies the
+ *   text (never into an edit box), the second — only once the page opened — is the unlock. No × until then.
+ */
+export type SendRetry = 'resend' | 'recheck';
+export type SendFallback = 'toBox' | 'checkWeb';
+export interface SendActions {
+  retry: SendRetry | null;
+  fallback: SendFallback | null;
+  close: boolean;
+  copy: string | null;
+  webOpened: boolean;
+}
+export function sendActions(r: SendRecord): SendActions {
+  const b = sendButtons(r);
+  const text = sendText(r.action);
+  return {
+    retry: b.includes('resend') ? 'resend' : b.includes('recheck') ? 'recheck' : null,
+    fallback: b.includes('resend') && text !== null ? 'toBox' : b.includes('unlock') ? 'checkWeb' : null,
+    close: sendClosable(r),
+    copy: r.state === 'unknown' ? text : null,
+    webOpened: r.webOpened === true,
+  };
 }
 
 export type SendTone = 'busy' | 'ok' | 'warn' | 'error';
@@ -368,6 +397,7 @@ export function isSendRecord(x: unknown): x is SendRecord {
     (r.draft === undefined || typeof r.draft === 'string') &&
     (r.commentId === undefined || r.commentId === null || typeof r.commentId === 'string') &&
     typeof r.unlocked === 'boolean' &&
+    (r.webOpened === undefined || typeof r.webOpened === 'boolean') &&
     typeof r.dismissed === 'boolean'
   );
 }

@@ -400,7 +400,7 @@ function SyncTroublePanel({
 }
 
 /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
-export type OpenIntent = { opId: string; what: 'retry' | 'toReply' };
+export type OpenIntent = { opId: string; what: 'retry' };
 
 export function BoardView({
   state,

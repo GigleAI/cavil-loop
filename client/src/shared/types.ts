@@ -9,7 +9,7 @@ import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
-import type { Picks } from './actions';
+import type { CreatePlan, Picks } from './actions';
 
 /**
  * The app updating itself (GitHub#184), as the shell reports it (src-tauri/crates/core/src/update.rs
@@ -359,7 +359,9 @@ export interface CreateJob {
   /** unknown: same-title issues this account opened in this repository lately (links only) */
   candidates?: { number: number; url: string; createdAt: string }[];
   /** what was typed, for "copy" (unknown) and "reopen the draft" (failed) */
-  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean; picks?: Picks };
+  draft: { repo: string; title: string; body: string; labels: string[]; projects: string[]; handoff?: Handoff; handoffPicked?: boolean; picks?: Picks; plan?: CreatePlan };
+  /** GitHub#490, unknown: the moment the look for same-title issues starts from (a minute before the request) */
+  sentAt?: string;
   /** GitHub#357: "再试加入看板" is being carried out (set before its first wait, cleared on every way out) */
   retrying?: boolean;
   /**

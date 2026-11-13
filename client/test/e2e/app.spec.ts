@@ -4468,8 +4468,10 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   const unsure = page.locator('[data-testid="create-bar"][data-status="unknown"]');
   await expect(unsure).toContainText('不确定「UNSURE_229」有没有建好');
-  await expect(unsure.getByTestId('create-reopen')).toHaveCount(0);
-  await expect(unsure.getByTestId('create-copy')).toBeVisible();
+  // GitHub#490: 「再查一次」 (looks again, never creates) + 「到 GitHub 上看最近建的 issue」 — nothing on it creates again
+  await expect(unsure.getByTestId('create-retry')).toHaveText('再查一次');
+  await expect(unsure.getByTestId('create-fallback')).toHaveText('到 GitHub 上看最近建的 issue');
+  await expect(unsure.locator('.op-buttons button')).toHaveCount(2);
   await shot(page, '229-07-create-unsure');
   await unsure.getByTestId('create-bar-close').click();
   env.fake.state.w.dropWrites = false;
@@ -4483,7 +4485,7 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
   await expect(refused).toContainText('没能新建「REFUSED_229」');
   await shot(page, '229-08-create-refused');
-  await refused.getByTestId('create-reopen').click();
+  await refused.getByTestId('create-fallback').click();
   await expect(page.getByTestId('new-issue-title')).toHaveValue('REFUSED_229');
   await expect(page.getByTestId('new-issue-body')).toHaveValue('正文 229');
   expect(env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues')).toHaveLength(1);
@@ -4735,7 +4737,7 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   await shot(page, '250-02-closed');
   await page.getByTestId('detail-close').click();
 
-  // ---- 2. refused by GitHub: the reason is said; "重新关闭" brings back the reason and the comment ----
+  // ---- 2. refused by GitHub: the reason is said; GitHub#490: 「重新关闭」 does it again at once with the reason and the comment (no dialog) ----
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
   await open(139);
   await page.getByTestId('close-issue').click();
@@ -4750,14 +4752,12 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   expect(writes().filter((w) => String(w[1]).includes('/issues/139/comments'))).toEqual([]);
   env.fake.state.w.readOnlyRepos.clear();
   await openNotices(page);
+  // one retry and one way out, nothing else (GitHub#490)
+  await expect(notice.getByTestId('op-retry')).toHaveText('重新关闭');
+  await expect(notice.getByTestId('op-fallback')).toHaveText('到 GitHub 上处理');
+  await expect(notice.locator('.op-buttons button')).toHaveCount(2);
   await notice.getByTestId('op-retry').click();
-  await expect(dialog).toBeVisible();
-  await expect(page.getByTestId('close-reason-not_planned')).toBeChecked();
-  await expect(page.getByTestId('close-comment')).toHaveValue('不做了');
-  await page.getByTestId('confirm-ok').click();
   await expect(dialog).toHaveCount(0);
-  // GitHub#447: this time GitHub took it: the panel (the opening it was sent from) puts itself away; the result is in the strip on top
-  await expect(detail).toHaveCount(0, { timeout: 15_000 });
   const n139 = page.locator('[data-testid="op-notice"][data-key="gigleai/cavil-loop#139"]');
   await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#139"]').getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（不计划），评论已发出');
   expect(writes().filter((w) => String(w[1]).includes('/issues/139'))).toEqual([
@@ -5000,7 +5000,7 @@ test('GitHub#450: new issue — 交给 agent / 托管 are buttons that create at
   await keyAgent();
   const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
   await expect(refused).toContainText('没能新建「被拒的交接」');
-  await refused.getByTestId('create-reopen').click();
+  await refused.getByTestId('create-fallback').click();
   await expect(page.getByTestId('new-issue-title')).toHaveValue('被拒的交接');
   await expect(page.getByTestId('new-issue-draft-handoff')).toHaveAttribute('data-handoff', 'agent');
   await expect(page.getByTestId('new-issue-draft-handoff')).toContainText('上次是按「交给 agent」建的，没有建成');
@@ -5010,14 +5010,14 @@ test('GitHub#450: new issue — 交给 agent / 托管 are buttons that create at
   await page.getByTestId('confirm-ok').click();
   const refusedPlain = page.locator('[data-testid="create-bar"][data-status="failed"]').filter({ hasText: '被拒的普通' });
   await expect(refusedPlain).toBeVisible();
-  await refusedPlain.getByTestId('create-reopen').click();
+  await refusedPlain.getByTestId('create-fallback').click();
   await expect(page.getByTestId('new-issue-title')).toHaveValue('被拒的普通');
   await expect(page.getByTestId('new-issue-draft-handoff')).toHaveCount(0);
   w.readOnlyRepos.delete(REPO_KEY);
   await app.close();
 });
 
-test('GitHub#250 (PR #255 code review round 1): a reply built from a kept comment, its answer arriving after the panel was put away, finishes that draft — no second copy on GitHub', async () => {
+test('GitHub#250 (PR #255 code review round 1) / GitHub#490: the comment of a refused close, given back to the reply box by ×, its answer arriving after the panel was put away — no second copy on GitHub', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const c0 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
   for (const g of c0.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
@@ -5041,27 +5041,29 @@ test('GitHub#250 (PR #255 code review round 1): a reply built from a kept commen
   await page.getByTestId('confirm-ok').click();
   await expect(notice).toHaveAttribute('data-kind', 'error');
   env.fake.state.w.readOnlyRepos.clear();
-  // into the reply box, sent; GitHub keeps it but holds the answer
+  // GitHub#490: × puts the notice away and gives the comment (surely not sent) back to the reply box
   await openNotices(page);
-  await notice.getByTestId('op-to-reply').click();
+  await notice.getByTestId('op-dismiss').click();
   await expect(page.getByTestId('reply-input')).toHaveValue('恢复原文');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]')).toHaveCount(0);
+  // sent from there; GitHub keeps it but holds the answer
   const release = env.fake.holdWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137/comments');
   await page.getByTestId('reply-send').click();
   await expect.poll(() => (env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).length).toBe(1);
   // the panel is put away before the answer comes
   await page.getByTestId('detail-close').click();
   release();
-  await expect(page.getByTestId('board-action-result')).toContainText('评论已发出');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="send-notice"]').first().getByTestId('send-notice-text')).toContainText('评论已发出', { timeout: 15_000 });
   // opened again: the kept comment is gone with its draft; nothing offers to send it again
   await open();
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-to-reply"]')).toHaveCount(0);
+  await expect(page.getByTestId('reply-input')).toHaveValue('');
   await expect(page.locator('[data-testid="op-draft-comment"]')).toHaveCount(0);
   await expect(page.locator('[data-testid="op-draft-line"]')).toHaveCount(0);
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['恢复原文']);
   await app.close();
 });
 
-test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comment loses its answer — no "重新关闭" carrying the comment again, one comment on GitHub', async () => {
+test('GitHub#250 (PR #255 code review round 2) / GitHub#490: the comment of a refused close, given back to the reply box and sent from there, loses its answer — nothing carries it again, one comment on GitHub', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   const c0 = findCopies(store, 'GigleAI/cavil-loop', 137)!;
   for (const g of c0.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
@@ -5081,29 +5083,27 @@ test('GitHub#250 (PR #255 code review round 2): the reply made from a kept comme
   await openNotices(page);
   await expect(notice.getByTestId('op-retry')).toBeVisible();
   env.fake.state.w.readOnlyRepos.clear();
-  await notice.getByTestId('op-to-reply').click();
-  const lost = env.fake.dropAnswerWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137/comments');
+  await notice.getByTestId('op-dismiss').click();
+  await expect(page.getByTestId('reply-input')).toHaveValue('未知回复再次关闭');
+  // GitHub takes the request but carries it out only later; the connection drops at once
+  const lost = env.fake.lateWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/137/comments');
   await page.getByTestId('reply-send').click();
-  await expect(notice).toHaveAttribute('data-phase', 'unknown');
+  const said = page.locator('[data-testid="notice-area"] [data-testid="send-notice"]').first();
+  await expect(said).toHaveAttribute('data-state', 'unknown', { timeout: 15_000 });
   lost.stop();
   expect(lost.caught()).toBe(1);
-  await expect(notice.getByTestId('op-notice-text')).toContainText('用附的评论原文发的回复不确定有没有发出');
-  await expect(notice.getByTestId('op-retry')).toHaveCount(0);
-  await expect(notice.getByTestId('op-to-reply')).toHaveCount(0);
-  await openNotices(page);
-  await expect(notice.getByTestId('op-copy')).toBeVisible();
-  await expect(page.getByTestId('close-issue')).toBeDisabled();
+  // not sure: only 「再查一次」 and 「到 GitHub 上核对」, the text only in the notice, the box empty, no ×
+  await expect(said.getByTestId('send-retry')).toHaveText('再查一次');
+  await expect(said.getByTestId('send-fallback')).toHaveText('到 GitHub 上核对');
+  await expect(said.getByTestId('send-dismiss')).toHaveCount(0);
+  await expect(page.getByTestId('reply-input')).toHaveValue('');
+  // the close record is gone with its draft: nothing offers to close with that comment again
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]')).toHaveCount(0);
   await shot(page, '250-04-reply-unknown');
-  // GitHub#359: there is no "check again" button — the next sync round checks by itself: the comment list shows a
-  // new comment with that text — the comment is done, "重新关闭" comes back without it
-  await expect(notice.getByTestId('op-recheck')).toHaveCount(0);
-  await page.getByTestId('refresh').click();
-  await openNotices(page);
-  await expect(notice.getByTestId('op-retry')).toBeVisible();
-  await notice.getByTestId('op-retry').click();
-  await expect(page.getByTestId('close-comment')).toHaveValue('');
-  await expect(page.getByTestId('close-reason-completed')).toBeChecked();
-  await page.getByTestId('confirm-cancel').click();
+  // it lands; the next check finds the comment: done, exactly one on GitHub
+  lost.land();
+  await said.getByTestId('send-retry').click();
+  await expect(said).toHaveAttribute('data-state', 'ok', { timeout: 15_000 });
   expect((env.fake.state.w.comments.get('gigleai/cavil-loop#137') ?? []).map((x) => x.body)).toEqual(['未知回复再次关闭']);
   await app.close();
 });
@@ -5128,20 +5128,22 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   const notice = page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first();
   await openNotices(page);
   // checked by itself (at once, then three more times): in the end still "not sure", never "it was not added"
-  await expect(notice.getByTestId('op-resend')).toBeVisible({ timeout: 60_000 });
+  await expect(notice.getByTestId('op-retry')).toHaveAttribute('data-retry', 'resend', { timeout: 60_000 });
   await expect(notice).toHaveAttribute('data-phase', 'unknown');
   await expect(notice.getByTestId('op-notice-text')).toContainText('「pending/agent」不确定有没有加上');
   await expect(notice.getByTestId('op-notice-text')).toContainText('到现在还没查到；原来那次请求仍可能稍后生效');
-  await expect(notice.getByTestId('op-unlock')).toBeVisible();
-  await expect(notice.getByTestId('op-recheck')).toHaveCount(0);
-  await expect(notice.getByTestId('op-open-web')).toHaveCount(0);
+  // GitHub#490: 「重发…」 + 「到 GitHub 上核对」 (two steps), nothing else, no ×
+  await expect(notice.getByTestId('op-retry')).toHaveText('重发…');
+  await expect(notice.getByTestId('op-fallback')).toHaveText('到 GitHub 上核对');
+  await expect(notice.locator('.op-buttons button')).toHaveCount(2);
+  await expect(notice.getByTestId('op-dismiss')).toHaveCount(0);
   await expect(detail.getByTestId('hand-back')).toBeDisabled();
   expect(late.caught()).toBe(1);
   expect(adds()).toBe(1);
   await shot(page, '359-01-not-sure');
   // the dialog says what a second send can cause; cancel sends nothing
   late.stop();
-  await notice.getByTestId('op-resend').click();
+  await notice.getByTestId('op-retry').click();
   const dialog = page.getByTestId('confirm-dialog');
   await expect(dialog).toContainText('再发一次「加上 pending/agent」？');
   await expect(dialog.getByTestId('op-resend-confirm')).toContainText('仍可能稍后生效');
@@ -5150,10 +5152,10 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   await shot(page, '359-02-confirm');
   await dialog.getByTestId('confirm-cancel').click();
   await expect(dialog).toHaveCount(0);
-  await expect(notice.getByTestId('op-resend')).toBeVisible();
+  await expect(notice.getByTestId('op-retry')).toHaveAttribute('data-retry', 'resend');
   expect(adds()).toBe(1);
   // confirm: sent again, and the step left goes out by itself
-  await notice.getByTestId('op-resend').click();
+  await notice.getByTestId('op-retry').click();
   await page.getByTestId('confirm-dialog').getByTestId('confirm-ok').click();
   await expect.poll(() => adds()).toBe(2);
   await expect.poll(() => labels()).toEqual(['pending/agent']);
@@ -7000,7 +7002,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   await expect.poll(() => late.caught()).toBe(1);
   await expect(inDetail(138).getByTestId('op-notice-text')).toContainText('；正在查证…');
   await looks(inDetail(138), 'busy', 'spin');
-  await expect(inDetail(138).getByTestId('op-recheck')).toHaveCount(0);
+  await expect(inDetail(138).getByTestId('op-retry')).toHaveCount(0);
   await page.getByTestId('detail-close').click();
   await looks(onBoard(138), 'busy', 'spin');
   await shot(page, '357-03-checking-blue');
@@ -7013,8 +7015,10 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   expect(checkReads).toBeGreaterThan(0);
   // (the hold above only counted until it was released) the later checks did read again
   expect(env.fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === 138).length).toBeGreaterThan(2);
-  await expect(onBoard(138).getByTestId('op-recheck')).toHaveCount(0);
-  await expect(onBoard(138).getByTestId('op-unlock')).toBeVisible();
+  // GitHub#490: 「再查一次」 (reads only) + 「到 GitHub 上核对」, no ×
+  await expect(onBoard(138).getByTestId('op-retry')).toHaveAttribute('data-retry', 'recheck');
+  await expect(onBoard(138).getByTestId('op-fallback')).toHaveText('到 GitHub 上核对');
+  await expect(onBoard(138).getByTestId('op-dismiss')).toHaveCount(0);
   await shot(page, '357-04-check-could-not-read-yellow');
   // GitHub answers now, and the close has landed: the next round checks by itself and proves it (and catches up
   // the re-read that failed earlier); then it is a plain success
@@ -7045,9 +7049,9 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   const joins = () => env.fake.log.filter((e) => e.operation === 'CavilAddProjectItem').length;
   const j0 = joins();
   const releaseJoin = holdFirst((e) => e.operation === 'CavilAddProjectItem');
-  await bar.getByTestId('create-retry-projects').click();
+  await bar.getByTestId('create-retry').click();
   await expect(bar.getByTestId('create-retrying')).toBeVisible();
-  await expect(bar.getByTestId('create-retry-projects')).toHaveCount(0);
+  await expect(bar.getByTestId('create-retry')).toHaveCount(0);
   await looks(bar, 'busy', 'spin');
   await expect.poll(joins).toBe(j0 + 1);
   await shot(page, '357-05-retry-blue');
@@ -7064,7 +7068,7 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   // once more, the board takes it now
   env.fake.state.w.readOnlyProjects.delete('org/gigleai/11');
   const releaseJoin2 = holdFirst((e) => e.operation === 'CavilAddProjectItem');
-  await bar.getByTestId('create-retry-projects').click();
+  await bar.getByTestId('create-retry').click();
   await expect(bar.getByTestId('create-retrying')).toBeVisible();
   await expect(bar.getByTestId('create-retry-error')).toHaveCount(0);
   await looks(bar, 'busy', 'spin');
@@ -7321,7 +7325,7 @@ test('GitHub#372 / #442: ⌘⇧1/2/3 (⌘1/2/3 before GitHub#442) switch the lay
   await page.getByTestId('confirm-ok').click();
   const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
   await expect(refused).toContainText('没能新建「REFUSED_372」');
-  await refused.getByTestId('create-reopen').click();
+  await refused.getByTestId('create-fallback').click();
   await expect(title).toHaveValue('REFUSED_372');
   await expect(title).toBeFocused();
   expect(await title.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd])).toEqual([11, 11]);
@@ -8365,23 +8369,17 @@ test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and p
   await expect(notice().getByTestId('op-notice-text')).toContainText('评论没有发出去');
   await expect(notice().getByTestId('op-notice-text')).toContainText('标签都没动');
   await shot(page, '451-02-comment-refused');
-  // "重新托管…" quotes the comment this operation kept, not the (now empty) reply box; cancelled, nothing sent
-  await notice().getByTestId('op-retry').click();
-  await expect(dialog.locator('h3')).toHaveText('评论并托管 issue #138？');
-  await expect(page.getByTestId('autopilot-explain-comment')).toHaveText('先发出上一次没发出去的评论：');
-  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
-  await page.getByTestId('confirm-cancel').click();
-  expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
-  await openNotices(page);
-  await notice().getByTestId('op-to-reply').click();
-  await expect(reply).toHaveValue('补充：只改客户端\n第二行');
+  // GitHub#490: 「重新托管」 + 「到 GitHub 上处理」, nothing else
+  await expect(notice().getByTestId('op-retry')).toHaveText('重新托管');
+  await expect(notice().getByTestId('op-fallback')).toHaveText('到 GitHub 上处理');
+  await expect(notice().locator('.op-buttons button')).toHaveCount(2);
 
-  // ---- 3. allowed again: the kept text goes out first, then the three label writes, in that order ----
+  // ---- 3. allowed again: 「重新托管」 goes out at once (no dialog) with the comment this operation kept, not the
+  //         (now empty) reply box — the text first, then the three label writes, in that order ----
   env.fake.state.w.readOnlyRepos.clear();
   const before = writes().length;
-  await page.getByTestId('autopilot').click();
-  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
-  await page.getByTestId('confirm-ok').click();
+  await notice().getByTestId('op-retry').click();
+  await expect(dialog).toHaveCount(0);
   await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual([comment(138, '补充：只改客户端\n第二行'), ...autopilotWrites(138)]);
   await expect(reply).toHaveValue('');
   await app.close();

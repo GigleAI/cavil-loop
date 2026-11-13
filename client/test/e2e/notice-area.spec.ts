@@ -200,7 +200,7 @@ test('GitHub#488: a new issue GitHub refuses is said in the notice area; 重新�
   await row(page, A).click({ modifiers: ['Control'] });
   await expect(detail(page)).toHaveAttribute('data-mode', 'tab');
   await expect(refused).toBeVisible();
-  await refused.getByTestId('create-reopen').click();
+  await refused.getByTestId('create-fallback').click();
   await expect(page.getByTestId('new-issue-title')).toHaveValue('被拒的新 issue');
   await expect(page.getByTestId('create-bar')).toHaveCount(0);
   await app.close();

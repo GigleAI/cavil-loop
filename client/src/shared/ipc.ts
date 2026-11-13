@@ -111,6 +111,10 @@ export interface CavilApi {
   startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }>;
   dismissCreate(id: number): Promise<void>;
   retryCreateProjects(id: number): Promise<WriteResult>;
+  /** GitHub#490, 「再查一次」 of a new issue not known to be created (reads only) */
+  createLook(id: number): Promise<WriteResult>;
+  /** GitHub#490, 「重试」 of a new issue surely not created: the same draft again */
+  createRetry(id: number): Promise<{ ok: boolean; error: string | null; job?: number }>;
   /** GitHub#258: a board that took the new issue in by itself holds another value: set the group's value there (read again first) */
   applyCreateWatch(id: number, projectKey: string): Promise<WriteResult>;
   /**
@@ -127,6 +131,16 @@ export interface CavilApi {
   opUnlock(id: string): Promise<void>;
   opDismiss(id: string, dismissed: boolean): Promise<void>;
   opDropDraft(id: string): Promise<void>;
+  /** GitHub#490, 「重试」 of an operation refused for sure: the same operation again with the same choices, no dialog */
+  opRedo(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** GitHub#490, 「再查一次」: check an operation whose answer never came (reads only) */
+  opRecheck(id: string): Promise<WriteResult>;
+  /** GitHub#490: the attached comment that surely did not go out, sent as a reply */
+  opSendComment(id: string): Promise<{ ok: boolean; error: string | null; id?: string }>;
+  /** GitHub#490: 「到 GitHub 上核对」 opened the page (unlocks nothing) */
+  opWebOpened(id: string): Promise<void>;
+  /** GitHub#490, ×: put away; a comment that surely did not go out goes back into the reply box */
+  opClose(id: string): Promise<void>;
   /**
    * GitHub#489: a reply / an edited body, comment or title / a ticked box, sent in the background (the
    * panel is free at once); refused at once, nothing sent, when it cannot go out. Progress: `state.sends`.
@@ -145,6 +159,8 @@ export interface CavilApi {
   /** "已核对，解除锁定" on an unknown send (local only) */
   sendUnlock(id: string): Promise<void>;
   sendDismiss(id: string): Promise<void>;
+  /** GitHub#490: 「到 GitHub 上核对」 of an unknown send opened the page (unlocks nothing) */
+  sendWebOpened(id: string): Promise<void>;
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
