@@ -18,6 +18,7 @@ import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Releas
 import { frameFindEscape, frameKey, useLayer, useShortcuts } from './keyboard';
 import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
+import { pinnedLabels } from '../shared/pickOrder';
 import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
@@ -1518,6 +1519,7 @@ export function DetailPanel({
                   title="设置标签"
                   hint={item.repo}
                   testid="label-picker"
+                  pinned={pinnedLabels(state.handBack)}
                   disabled={!canWrite}
                   items={[
                     ...opts.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),

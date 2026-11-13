@@ -60,6 +60,12 @@ export interface BlockedStart {
 
 export type BlockedStartResult = { ok: true; id: string } | { ok: false; error: string; view?: BlockedView };
 
+/** GitHub#467: `overlay` = the page's top row is the window's title bar (macOS); `fullscreen` = its window buttons are hidden */
+export interface WindowFrame {
+  overlay: boolean;
+  fullscreen: boolean;
+}
+
 export interface CavilApi {
   get(): Promise<Snapshot>;
   subscribe(cb: (s: Snapshot) => void): () => void;
@@ -193,6 +199,18 @@ export interface CavilApi {
   checkTab(key: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
   closeWindow(): Promise<void>;
+  /**
+   * Resolves once every setting changed so far has been written by the back end (the writes go out in
+   * order behind the cache's other writes). The UI tests wait on it before restarting the app, so a
+   * restart reads what was saved rather than racing a write still queued behind a sync round.
+   */
+  settled(): Promise<void>;
+  /** GitHub#467: how the window's top row sits (macOS: the title bar; elsewhere, and when it cannot be read: the system's own) */
+  windowFrame(): Promise<WindowFrame>;
+  /** GitHub#467: an empty part of the top row pressed (macOS): move the window */
+  startDrag(): Promise<void>;
+  /** GitHub#467: an empty part of the top row double-clicked (macOS): zoom the window, or put it back */
+  toggleZoom(): Promise<void>;
   /**
    * The local cavil-loop daemon (GitHub#314). Fixed requests only: the back end reads the daemon's
    * status script again before acting and decides every path, unit and command itself.
