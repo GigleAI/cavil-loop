@@ -132,6 +132,19 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'helpClose', scope: 'help', keys: [{ key: 'Escape' }, { key: '?', shift: true }], label: '关掉本列表' },
 ];
 
+/**
+ * With Shift held a bracket key reports the brace on most layouts (GitHub#397: ⌘⇧] / ⌘⇧[). One table for every
+ * place that has to know: `matches` accepts both, and a changed key is kept with the bracket (GitHub#487: the
+ * recorder sees "}", the default table says "]" + Shift — the same key press, so the same key everywhere).
+ */
+const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
+const UNSHIFTED: Record<string, string> = Object.fromEntries(Object.entries(SHIFTED).map(([a, b]) => [b, a]));
+
+/** a key with Shift held, in the one form the tables use: "}" + Shift is "]" + Shift */
+function shiftBase(key: string, shift: boolean): string {
+  return shift && UNSHIFTED[key] ? UNSHIFTED[key] : key;
+}
+
 // ---- GitHub#487: keys changed on this machine ----
 //
 // SHORTCUTS stays the default table. The keys the user changed (one key per shortcut, replacing all of its
@@ -191,12 +204,12 @@ export function canonicalKey(raw: unknown): CustomKey | null {
   const r = raw as Record<string, unknown>;
   if (typeof r.key !== 'string' || r.key === '' || r.key.length > 16) return null;
   for (const f of ['mod', 'shift', 'alt']) if (r[f] !== undefined && typeof r[f] !== 'boolean') return null;
-  const key = r.key;
-  if (key.length === 1 ? key !== key.toLowerCase() || /\s/.test(key) : false) return null;
-  const out: CustomKey = { key };
-  if (r.mod) out.mod = true;
+  if (r.key.length === 1 ? r.key !== r.key.toLowerCase() || /\s/.test(r.key) : false) return null;
   // '?' is Shift + / on most layouts: Shift is part of the key (see `matches`)
-  if (r.shift || key === '?') out.shift = true;
+  const shift = Boolean(r.shift) || r.key === '?';
+  const out: CustomKey = { key: shiftBase(r.key, shift) };
+  if (r.mod) out.mod = true;
+  if (shift) out.shift = true;
   if (r.alt) out.alt = true;
   return out;
 }
@@ -250,7 +263,10 @@ function together(a: Scope, b: Scope): boolean {
 
 /** the same key press: what `matches` would tell apart (a digit by itself, '?' with its Shift) */
 function sameKey(a: KeySpec, b: KeySpec): boolean {
-  const norm = (k: KeySpec) => `${k.key === '?' ? '?' : k.key.toLowerCase()}|${Boolean(k.mod)}|${Boolean(k.shift) || k.key === '?'}|${Boolean(k.alt)}`;
+  const norm = (k: KeySpec) => {
+    const shift = Boolean(k.shift) || k.key === '?';
+    return `${shiftBase(k.key === '?' ? '?' : k.key.toLowerCase(), shift)}|${Boolean(k.mod)}|${shift}|${Boolean(k.alt)}`;
+  };
   return norm(a) === norm(b);
 }
 
@@ -412,7 +428,6 @@ export function composing(e: KeyLike): boolean {
   return e.isComposing === true || e.keyCode === 229;
 }
 
-const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
 
 export function matches(spec: KeySpec, e: KeyLike, mac: boolean = isMac()): boolean {
   if (spec.macOnly && !mac) return false;
@@ -516,12 +531,26 @@ export function shownKeys(s: Shortcut, mac: boolean = isMac()): KeySpec[] {
  */
 export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync'];
 
+/**
+ * Which keys may come from the discussion frame (GitHub#487): a key with ⌘ / Ctrl, or the key of 跳到回复框
+ * (GitHub#322: a bare R from the discussion). A shortcut changed to a key without ⌘ does not act from there —
+ * as the settings page says; the frame is not given the key, and the window refuses it should it come anyway.
+ */
+export function frameAllowed(id: ShortcutId, spec: KeySpec): boolean {
+  return FRAME_IDS.includes(id) && (Boolean(spec.mod) || id === 'reply');
+}
+
 /** one forwarded key, as the frame script compares it: a lower-case single key (or a named one), ⌘/Ctrl, Shift, ⌥/Alt */
 export type FrameKey = { key: string; mod: boolean; shift: boolean; alt: boolean };
 
 /** the keys of FRAME_IDS in `table`, as the frame script compares them */
 export function frameForward(table: readonly Shortcut[] = active): FrameKey[] {
-  return FRAME_IDS.flatMap((id) => table.find((s) => s.id === id)!.keys.map((k) => ({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift), alt: Boolean(k.alt) })));
+  return FRAME_IDS.flatMap((id) =>
+    table
+      .find((s) => s.id === id)!
+      .keys.filter((k) => frameAllowed(id, k))
+      .map((k) => ({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift), alt: Boolean(k.alt) })),
+  );
 }
 
 /**

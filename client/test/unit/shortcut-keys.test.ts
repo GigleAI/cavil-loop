@@ -11,6 +11,7 @@ import {
   canonicalKey,
   changeKey,
   customizable,
+  frameAllowed,
   frameForward,
   isCustom,
   keyProblem,
@@ -282,6 +283,10 @@ describe('the rule holds whatever the order of changes', () => {
       ...['g', 'j', 'o', 't', 'u', 'y'].map((k) => ({ key: k })),
       ...['d', 'e', 'g', 'h', 'j', 'o', 'u', 'y'].map((k) => ({ key: k, ...MS })),
       ...['g', 'j', 'o', 'u'].map((k) => ({ key: k, mod: true })),
+      // PR #498 review round 1: the brace a Shift+bracket press reports, and the bracket itself
+      { key: '}', ...MS },
+      { key: ']', ...MS },
+      { key: '{', ...MS },
     ];
     // mulberry32: the same sequence on every run
     let seed = 487;
@@ -307,6 +312,7 @@ describe('the rule holds whatever the order of changes', () => {
         expect(JSON.stringify(keys)).toBe(before);
       }
       expect(keysConflicts(keys, true)).toEqual([]);
+      if (i % 50 === 0) expect(clashes(keys, true), `step ${i}`).toEqual([]);
       // what is saved reads back unchanged
       expect(repairKeys(JSON.parse(JSON.stringify(keys)), true).keys).toEqual(keys);
     }
@@ -337,5 +343,118 @@ describe('recording a key press', () => {
       const spec = recordedKey(p)!;
       expect(matches(spec, p, false), JSON.stringify(p)).toBe(true);
     }
+  });
+});
+
+// ---- PR #498 review round 1 ----
+
+/** US-layout characters with Shift held (what the browser reports as `key`) */
+const US_SHIFT: Record<string, string> = { '1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(', '0': ')', ']': '}', '[': '{', '/': '?', '=': '+', '-': '_', ',': '<', '.': '>', ';': ':' };
+const US_CODE: Record<string, string> = { ']': 'BracketRight', '[': 'BracketLeft', '/': 'Slash', '?': 'Slash', '=': 'Equal', '-': 'Minus', ',': 'Comma', '.': 'Period', ';': 'Semicolon', Enter: 'Enter', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown' };
+
+/** the key press a spec stands for, as a browser on a US layout reports it (`key` and `code`), with ⌘ or Ctrl */
+function pressOf(k: { key: string; mod?: boolean; shift?: boolean; alt?: boolean }, ctrl: boolean): KeyLike {
+  const shift = Boolean(k.shift) || k.key === '?';
+  const base = k.key === '?' ? '/' : k.key;
+  const letter = /^[a-z]$/.test(base);
+  const digit = /^[0-9]$/.test(base);
+  const code = letter ? `Key${base.toUpperCase()}` : digit ? `Digit${base}` : (US_CODE[base] ?? base);
+  const typed = k.alt && letter ? 'ß' : shift ? (letter ? base.toUpperCase() : (US_SHIFT[base] ?? base)) : base;
+  return { key: typed, code, metaKey: Boolean(k.mod) && !ctrl, ctrlKey: Boolean(k.mod) && ctrl, shiftKey: shift, altKey: Boolean(k.alt) };
+}
+
+/**
+ * Where each shortcut's key may act, written out from the rules on their own (client/README.md, "谁接键") — not
+ * from the conflict checker: the board with nothing focused, the reply box, another text field, the settings
+ * page, each layer on top.
+ */
+const PLACES: { name: string; acts: (scope: string, mod: boolean) => boolean }[] = [
+  { name: 'board', acts: (s) => s === 'global' || s === 'detail' || s === 'graph' },
+  { name: 'reply box', acts: (s, mod) => s === 'reply' || (mod && (s === 'global' || s === 'detail')) },
+  { name: 'other field', acts: (s, mod) => mod && s === 'global' },
+  { name: 'settings', acts: (s) => s === 'global' || s === 'settings' },
+  { name: 'settings field', acts: (s, mod) => s === 'settings' || (mod && s === 'global') },
+  ...(['dialog', 'picker', 'help'] as const).map((layer) => ({ name: layer, acts: (s: string) => s === layer })),
+];
+
+/**
+ * Every real key press of the table in effect that two different shortcuts would both take in one place — found
+ * by pressing each key of each shortcut (US layout, ⌘ and Ctrl) and asking `matches` of every other shortcut.
+ */
+function clashes(keys: CustomKeys, mac: boolean): string[] {
+  const table = tableFor(keys);
+  const out: string[] = [];
+  for (const s of table)
+    for (const k of s.keys) {
+      if (k.macOnly && !mac) continue;
+      for (const ctrl of [false, true]) {
+        const e = pressOf(k, ctrl);
+        for (const place of PLACES) {
+          const hit = new Set<string>();
+          for (const t of table) for (const tk of t.keys) if (place.acts(t.scope, Boolean(tk.mod)) && matches(tk, e, mac)) hit.add(t.id);
+          // the shortcut list closes with the key that opens it, by design
+          if (hit.has('help') && hit.has('helpClose')) hit.delete('helpClose');
+          if (hit.size > 1) out.push(`${place.name}: ${JSON.stringify(e.key)}${e.shiftKey ? '+Shift' : ''}${e.ctrlKey || e.metaKey ? '+Mod' : ''} → ${[...hit].sort().join(', ')}`);
+        }
+      }
+    }
+  return [...new Set(out)];
+}
+
+describe('PR #498 review round 1: one key press, one shortcut — checked by pressing the keys, not by the checker', () => {
+  it('the default table: no real key press is taken by two shortcuts in one place, on macOS and elsewhere', () => {
+    expect(clashes({}, true)).toEqual([]);
+    expect(clashes({}, false)).toEqual([]);
+  });
+  it('跳到搜索框 → Ctrl+Shift+] as recorded ("}"): refused, it is 下一个标签页; the same as written with "]"', () => {
+    const e = { key: '}', code: 'BracketRight', ctrlKey: true, metaKey: false, shiftKey: true, altKey: false };
+    const rec = recordedKey(e)!;
+    for (const spec of [rec, { key: '}', mod: true, shift: true }, { key: ']', mod: true, shift: true }]) {
+      const r = changeKey({}, 'search', spec, false);
+      expect(r.ok, JSON.stringify(spec)).toBe(false);
+      if (!r.ok) expect(r.why).toContain('「下一个标签页」');
+      // had it been saved anyway, the press would go to two shortcuts — which the press check sees
+      expect(clashes({ search: spec } as CustomKeys, false).length, JSON.stringify(spec)).toBeGreaterThan(0);
+    }
+  });
+  it('a saved "}" + Shift reads back as "]" + Shift: a clash with 下一个标签页 is found and left out; where nothing else takes it, it is kept, as "]"', () => {
+    const r = repairKeys({ search: { key: '}', mod: true, shift: true } }, false);
+    expect(r.keys).toEqual({});
+    expect(r.dropped.map((d) => d.id)).toEqual(['search']);
+    expect(r.dropped[0].why).toContain('「下一个标签页」');
+    // 新建对话框的「交给 agent」only acts inside that dialog: free there
+    const kept = repairKeys({ newIssueAgent: { key: '}', mod: true, shift: true } }, false);
+    expect(kept.keys).toEqual({ newIssueAgent: { key: ']', mod: true, shift: true } });
+    // and that key still acts on the real press
+    setCustomKeys(kept.keys);
+    expect(resolve({ key: '}', code: 'BracketRight', ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, { ...idle, mac: false, layer: 'dialog' })).toBe('newIssueAgent');
+  });
+  it('a free key is still taken after the change (no false clash)', () => {
+    expect(changeKey({}, 'newIssueAgent', { key: '}', mod: true, shift: true }, false).ok).toBe(true);
+    expect(changeKey({}, 'search', { key: 'k', mod: true }, false).ok).toBe(true);
+  });
+});
+
+describe('PR #498 review round 1: a key without ⌘ never comes from the discussion frame (except 跳到回复框)', () => {
+  it('交给 agent → A: the frame is not given A; the window would refuse it anyway', () => {
+    const keys = ok(changeKey({}, 'handBack', { key: 'a' }, true));
+    setCustomKeys(keys);
+    expect(frameForward().some((f) => f.key === 'a')).toBe(false);
+    expect(frameAllowed('handBack', { key: 'a' })).toBe(false);
+    // still acts from the panel itself
+    expect(resolve(key('a'), idle)).toBe('handBack');
+  });
+  it('交给 agent → ⌘⇧A: forwarded; 跳到回复框 keeps its bare key, changed or not', () => {
+    setCustomKeys(ok(changeKey({}, 'handBack', { key: 'a', ...MS }, true)));
+    expect(frameForward()).toContainEqual({ key: 'a', mod: true, shift: true, alt: false });
+    expect(frameForward()).toContainEqual({ key: 'r', mod: false, shift: false, alt: false });
+    setCustomKeys(ok(changeKey({}, 'reply', { key: 'j' }, true)));
+    expect(frameForward()).toContainEqual({ key: 'j', mod: false, shift: false, alt: false });
+    expect(frameAllowed('reply', { key: 'j' })).toBe(true);
+  });
+  it('nothing changed: the frame gets exactly the default list it always had', () => {
+    setCustomKeys({});
+    expect(frameForward()).toEqual(FRAME_FORWARD);
+    expect(FRAME_FORWARD.filter((f) => !f.mod).map((f) => f.key)).toEqual(['r']);
   });
 });

@@ -235,7 +235,9 @@ export const FRAME_SCRIPT = `(function () {
     for (var i = 0; i < fwd.length; i++) {
       var f = fwd[i];
       if (f.mod !== mod || f.shift !== sh || f.alt !== alt) continue;
-      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : alt && lt && /^[a-z]$/.test(f.key) ? lt !== f.key : k !== f.key) continue;
+      // with Shift held a bracket reports its brace ("}" for "]"), as the window's own rule says
+      var kk = sh && (k === '}' || k === '{') ? (k === '}' ? ']' : '[') : k;
+      if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : alt && lt && /^[a-z]$/.test(f.key) ? lt !== f.key : kk !== f.key) continue;
       e.preventDefault();
       send({ cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code });
       return;
@@ -254,4 +256,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-mYlIgmaDsZ8mae2KKRMHZ08cX1gVaJwjE1IJBbSa/Sk='";
+export const FRAME_SCRIPT_HASH = "'sha256-DMyQWP4FgYRSmKRIs1PEdGxNGsbHOhPgF/G41bso8xs='";

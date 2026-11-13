@@ -8015,7 +8015,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
 // has is refused, and so is putting a shortcut back when its default key is taken; it survives a restart.
 test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did (panel, discussion frame), the old key no longer does; conflicts and a blocked restore are refused; kept after a restart', async () => {
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
-  for (const n of [137, 138]) {
+  for (const n of [137, 138, 139]) {
     const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
     for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
     for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
@@ -8058,6 +8058,13 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   await expect(row('handBack')).toHaveAttribute('data-custom', 'yes');
   await expect(page.getByTestId('shortcut-problem')).toHaveCount(0);
   await shot(page, '487-02-changed');
+
+  // PR #498 review round 1: Ctrl+Shift+] (the browser reports "}") for 跳到搜索框 is 下一个标签页's key: refused
+  await row('search').getByTestId('shortcut-change').click();
+  await page.keyboard.press('Control+Shift+BracketRight');
+  await expect(page.getByTestId('shortcut-problem')).toContainText('「下一个标签页」');
+  await page.keyboard.press('Escape');
+  await expect(row('search').getByTestId('shortcut-setting-keys')).toHaveText('/');
 
   // ---- 2. the blocked restore of the review: 新建 → Ctrl+Shift+I, 搜索 → C, then restore 新建: refused, both stay ----
   await row('newIssue').getByTestId('shortcut-change').click();
@@ -8106,12 +8113,37 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(138));
   await settled();
 
+  // ---- 4b. PR #498 review round 1: changed to a key without Ctrl (G), it does nothing from the discussion, as the
+  // settings page says; from the panel itself it hands back ----
+  await page.getByTestId('open-settings').click();
+  await row('handBack').getByTestId('shortcut-change').click();
+  await page.keyboard.press('g');
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('G已改');
+  await expect(row('handBack').getByTestId('shortcut-plain-note')).toHaveText('不带 Ctrl 的键在回复框、讨论区里按不生效');
+  await page.getByTestId('back').click();
+  await open(139);
+  await summary.click({ position: { x: 40, y: 10 } });
+  await summary.click({ position: { x: 40, y: 10 } });
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('timeline-frame');
+  before = writes().length;
+  await page.keyboard.press('g');
+  await page.waitForTimeout(600);
+  expect(writes()).toHaveLength(before);
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#139');
+  // R (跳到回复框) still comes from the discussion, as before
+  await page.keyboard.press('r');
+  await expect(page.getByTestId('reply-input')).toBeFocused();
+  await blur(page);
+  await page.keyboard.press('g');
+  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(139));
+  await settled();
+
   // ---- 5. the shortcut list marks it, and leads to the settings section ----
   await blur(page);
   await page.keyboard.press('Shift+?');
   const help = page.getByTestId('shortcut-help');
   await expect(help.locator('[data-testid="shortcut-row"][data-id="handBack"]')).toContainText('已改');
-  await expect(help.locator('[data-testid="shortcut-row"][data-id="handBack"] kbd')).toHaveText(['Ctrl', 'Shift', 'A']);
+  await expect(help.locator('[data-testid="shortcut-row"][data-id="handBack"] kbd')).toHaveText(['G']);
   await shot(page, '487-04-help');
   await help.getByTestId('shortcut-help-edit').click();
   await expect(page.getByTestId('shortcut-settings')).toBeInViewport();
@@ -8121,7 +8153,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
-  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftA已改');
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('G已改');
   await page.getByTestId('shortcut-reset-all').click();
   await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftZ');
   await expect(row('handBack')).toHaveAttribute('data-custom', 'no');

@@ -124,7 +124,11 @@ export function ShortcutSettings({ state }: { state: AppState }) {
                     <tr key={s.id} className={rec ? 'recording' : ''} data-testid="shortcut-setting" data-id={s.id} data-custom={custom ? 'yes' : 'no'}>
                       <td>
                         {shortcutName(s.id)}
-                        {custom && scope === 'detail' && own && !own.mod && <div className="muted small">不带 {mac ? '⌘' : 'Ctrl'} 的键在回复框、讨论区里按不生效</div>}
+                        {custom && scope === 'detail' && own && !own.mod && (
+                          <div className="muted small" data-testid="shortcut-plain-note">
+                            {s.id === 'reply' ? `不带 ${mac ? '⌘' : 'Ctrl'} 的键在回复框里按是打字` : `不带 ${mac ? '⌘' : 'Ctrl'} 的键在回复框、讨论区里按不生效`}
+                          </div>
+                        )}
                       </td>
                       <td className="k" data-testid="shortcut-setting-keys">
                         {rec ? (

@@ -1,7 +1,7 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { FRAME_IDS, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
+import { frameAllowed, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
@@ -60,9 +60,9 @@ let pageNow: Page = 'board';
  * One key press, decided by `resolve` and run by the mounted handler: the id that acted, or null.
  * Both the window's own keydown listener and a key forwarded by the discussion frame go through here.
  */
-function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): ShortcutId | null {
+function press(e: KeyLike, typing: Typing, only?: (id: ShortcutId, spec: KeySpec) => boolean): ShortcutId | null {
   const hit = resolveKey(e, { signedIn: signedInNow, layer: topLayer(), typing, page: pageNow });
-  if (!hit || (only && !only.includes(hit.id))) return null;
+  if (!hit || (only && !only(hit.id, hit.spec))) return null;
   const list = handlers.get(hit.id);
   const h = list?.[list.length - 1];
   if (!h) return null;
@@ -81,7 +81,8 @@ export function frameKey(key: unknown, mod: unknown = false, shift: unknown = fa
   // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
   // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
   if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;
-  return press(frameEvent(key, mod, shift, code, alt), 'none', FRAME_IDS) !== null;
+  // GitHub#487: only what the frame may forward — the same rule that built its list (`frameAllowed`)
+  return press(frameEvent(key, mod, shift, code, alt), 'none', frameAllowed) !== null;
 }
 
 /** A key the discussion frame reported, as the window's event it stands for (GitHub#487: ⌥ / Alt too). */
