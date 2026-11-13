@@ -634,9 +634,9 @@ D=$(mutate done-uses-class scripts/_lib.sh \
     [ "$REQUESTER_BOT_ORIGIN_CLASS" != linked-other ] || { rc=0; REQUESTER_BOT_ORIGIN="$REQUESTER_BOT_LINKED"; }
     case "$rc" in') && neg "合并后通知改用新分类" done_suite "$D"
 D=$(mutate origin-rc scripts/_lib.sh \
-    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 $REQUESTER_BOT_ACCOUNT）"
+    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 ${REQUESTER_BOT_ACCOUNT}）"
         return 1' \
-    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 $REQUESTER_BOT_ACCOUNT）"
+    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 ${REQUESTER_BOT_ACCOUNT}）"
         requester_bot_wake_any_item && { REQUESTER_BOT_ORIGIN="$origin"; return 0; }
         return 1') && neg "开关打开时来源判定直接返回「是」" origin_suite "$D"
 D=$(mutate no-prompt scripts/_lib.sh \

@@ -414,8 +414,8 @@ mutate hold-cached _lib.sh '    requester_bot_enabled || return 1
     if ! rows=' '    requester_bot_enabled || return 1
     grep -qx "$n" "$STATE_DIR/hold-cache" 2>/dev/null && return 0
     if ! rows=' '    # 日志去重（不影响上面的结论）' '    echo "$n" >> "$STATE_DIR/hold-cache"'
-mutate takeover-hold-cached _lib.sh '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"
-                return 0' '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——$REQUESTER_BOT_WAIT_REASON，等有人打派工标签"'
+mutate takeover-hold-cached _lib.sh '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
+                return 0' '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"'
 # 判定规则版本（代码复审第 2 轮）：两份记录各去掉一次，升级场景必须变红
 mutate judge-rev-takeover-ignored _lib.sh '        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"' '        key="$upd|$n|$iupd"'
 mutate judge-rev-denied-ignored agent-poll.sh ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]' ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$updated" ]' \

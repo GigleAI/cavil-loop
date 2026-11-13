@@ -23,6 +23,7 @@ import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './war
 import { useLayer, useShortcuts } from './keyboard';
 import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
 import { FailureNote } from './FailureNote';
+import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
@@ -280,8 +281,16 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
  * outside or Esc puts them away. Mounted only while there is trouble, so a later failure never
  * opens it by itself.
  */
-function SyncTroubleButton({ trouble, describe, retryOf, appKind }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind'] }) {
+/** GitHub#455: how long "已重新读取，所有来源都读到了" stays next to refresh */
+const REREAD_OK_MS = 5000;
+
+function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind']; reread: Reread }) {
   const [open, setOpen] = useState(false);
+  // GitHub#455: the outcome line stays until the next click or until the panel is put away
+  const close = () => {
+    setOpen(false);
+    reread.clear();
+  };
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
   const label = trouble.incomplete
@@ -296,11 +305,11 @@ function SyncTroubleButton({ trouble, describe, retryOf, appKind }: { trouble: S
         aria-label={label}
         aria-expanded={open}
         title={label}
-        onClick={() => setOpen(!open)}
+        onClick={() => (open ? close() : setOpen(true))}
       >
         <Icon name="warn" />
       </button>
-      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} onClose={() => setOpen(false)} />}
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} reread={reread} onClose={close} />}
     </span>
   );
 }
@@ -311,6 +320,7 @@ function SyncTroublePanel({
   retryOf,
   appKind,
   box,
+  reread,
   onClose,
 }: {
   trouble: SyncTrouble;
@@ -318,8 +328,13 @@ function SyncTroublePanel({
   retryOf: (f: SyncTrouble['failed'][number]) => string | null;
   appKind: AppState['signedInAppKind'];
   box: RefObject<HTMLSpanElement | null>;
+  /** GitHub#455: the one reread both buttons start; the panel shows it running and what it came to */
+  reread: Reread;
   onClose: () => void;
 }) {
+  const rs = reread.state;
+  const running = rs.phase === 'running';
+  const result = rs.phase === 'done' ? rereadResultText(rs) : null;
   // on top while open: Esc is ours (the same layer the label picker uses)
   useLayer('picker');
   useShortcuts({ pickerClose: onClose });
@@ -348,7 +363,7 @@ function SyncTroublePanel({
                   </small>
                 )}
                 {/* GitHub#401: the same explanation, buttons and GitHub's words as Settings and the empty board */}
-                <FailureNote failure={failureOf(f)} state={{ signedInAppKind: appKind }} testid="sync-trouble-failure" />
+                <FailureNote failure={failureOf(f)} state={{ signedInAppKind: appKind }} reread={reread} testid="sync-trouble-failure" />
               </li>
             ))}
           </ul>
@@ -364,10 +379,22 @@ function SyncTroublePanel({
           有来源这次没读全，筛选结果可能不全。
         </div>
       )}
+      {running && (
+        <div className="reread-line running" data-testid="sync-trouble-running" role="status">
+          <span className="spin" aria-hidden="true" />
+          <span>{rereadRunningText(rs.startedAt)}</span>
+        </div>
+      )}
+      {result && (
+        <div className="reread-line bad" data-testid="sync-trouble-result" data-kind={rs.phase === 'done' ? rs.outcome.kind : undefined} role="status">
+          <Icon name="warn" />
+          <span>{result}</span>
+        </div>
+      )}
       <div className="trouble-foot">
-        <button data-testid="sync-trouble-resync" onClick={() => void api().restartSync()}>
-          <Icon name="refresh" />
-          重新同步
+        <button className={running ? 'reread-busy' : undefined} data-testid="sync-trouble-resync" data-running={running ? 'yes' : 'no'} onClick={reread.run}>
+          {running ? <span className="spin" aria-hidden="true" /> : <Icon name="refresh" />}
+          {running ? '正在重新同步…' : '重新同步'}
         </button>
       </div>
     </div>
@@ -670,6 +697,25 @@ export function BoardView({
   };
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
+  // GitHub#455: a reread started from the ⚠️ panel; kept here so its outcome outlives the panel (all read → ⚠️ and panel go).
+  // The green note is not a state of its own: it is shown exactly while the reread's latest outcome is "all read"
+  // (and nothing failed since), and its timer puts that outcome back to idle. A new click replaces the outcome, so an
+  // old note can never come back (PR #458 review round 1: a separate "shown" value outlived the timer that cleared it).
+  const reread = useReread();
+  const rereadOk = reread.state.phase === 'done' && reread.state.outcome.kind === 'ok' ? reread.state.at : null;
+  useEffect(() => {
+    if (rereadOk === null) return;
+    const t = setTimeout(() => reread.clear(), REREAD_OK_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rereadOk]);
+  // something failed again after it: that "all read" is over for good, not just hidden until the next recovery
+  const troubleNow = trouble !== null;
+  useEffect(() => {
+    if (rereadOk !== null && troubleNow) reread.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rereadOk, troubleNow]);
+  const okShown = rereadOk !== null && !troubleNow;
   const labelOf = (sourceKey: string) => {
     const s = state.sources.find((x) => x.key === sourceKey);
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
@@ -887,7 +933,13 @@ export function BoardView({
                   <span className="sync-text">{headerText(sync, now)}</span>
                 </span>
               )}
-              {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} />}
+              {okShown && (
+                <span className="reread-ok" data-testid="sync-reread-ok" role="status">
+                  <Icon name="check" />
+                  {REREAD_OK_TEXT}
+                </span>
+              )}
+              {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} reread={reread} />}
               {/* never greyed out while a round runs (GitHub#217): a click starts over */}
               <button
                 className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
@@ -979,7 +1031,8 @@ export function BoardView({
               {tally.map((e) => {
                 const on = lit === e.kind;
                 const tip = [
-                  `${e.source === 'flow' ? `开着的条目里带 ${e.label} 标签的` : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  // GitHub#462: a row following the "等人处理" label counts closed items carrying it too
+                  `${e.source === 'flow' ? (e.flow === 'human' ? `带 ${e.label} 标签的条目（开着的和已关闭的都算）` : `开着的条目里带 ${e.label} 标签的`) : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
                   `当前来源共 ${data.items.length} 个条目`,
                   ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),

@@ -517,11 +517,15 @@ if mutation_gate; then
     # 会话日志不先看有没有 pipe，又用回 pipe-pane -o（它是开关，会把已有日志关掉）
     expect_red "日志开关没先判断" "换程序后的两次启动都写进同一份会话日志" '
 import sys; p=sys.argv[1]; s=open(p).read()
-old="    [ \x22$pipe\x22 = 1 ] && return 0\n"
-assert old in s
+old="""    if [ "$pipe" = 1 ]; then
+        mark="$(tmux show-options -qv -t "=$sess:" @redact_pipe 2>/dev/null)" || return 0
+        [ "$mark" = 1 ] && return 0
+    fi
+"""
+assert s.count(old) == 1
 s=s.replace(old, "", 1)
 old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
-assert old2 in s
+assert s.count(old2) == 1
 s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
 open(p,"w").write(s)' pr
 fi
@@ -566,14 +570,14 @@ import sys; p=sys.argv[1]; s=open(p).read()
 old="""    case "$st" in
         found|single) ;;
         *)
-            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 $st），本次不碰会话日志"
+            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 ${st}），本次不碰会话日志"
             return 0 ;;
     esac
-    [ "$pipe" = 1 ] && return 0"""
-assert old in s
-s=s.replace(old, "    [ \x22$pipe\x22 = 1 ] && return 0\n    tgt=\x22=$sess:\x22", 1)
+"""
+assert s.count(old) == 1
+s=s.replace(old, "    [ \x22$st\x22 = found ] || [ \x22$st\x22 = single ] || tgt=\x22=$sess:\x22\n", 1)
 old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
-assert old2 in s
+assert s.count(old2) == 1
 s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
 open(p,"w").write(s)' issue log_fault_scenario
 fi
@@ -581,9 +585,13 @@ if mutation_gate; then
     # 身份读不到时当成默认值（改动前的写法）
     expect_red "身份读不到当默认" "故障·身份读不到·原 worker 还活着" '
 import sys; p=sys.argv[1]; s=open(p).read()
+head="tmux_session_matches_worker() {"
+assert s.count(head) == 1
+a=s.index(head); b=s.index("\n}\n", a)
+body=s[a:b]
 old="2>/dev/null)\x22 || return 2"
-assert s.count(old) == 3
-s=s.replace(old, "2>/dev/null || true)\x22")
+assert body.count(old) == 3
+s=s[:a]+body.replace(old, "2>/dev/null || true)\x22")+s[b:]
 open(p,"w").write(s)' pr fault_scenario
 fi
 if mutation_gate; then

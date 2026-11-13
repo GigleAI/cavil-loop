@@ -545,8 +545,8 @@ mutate "失败也推进同步时间" s_isolation_write "$PAA" \
 mutate "首次也只扫最近时间窗口" s_first_enable "$PAA" \
     '[ "${INITIAL[$k]}" = 1 ] && need_open=1' ':'
 mutate "首次全量失败也写已完成" s_initial_retry "$PAA" \
-    'paa_warn_once "$k" "$why，同步时间不推进，下一轮重试"' \
-    'paa_set ".projects[\$k].initial_done = true" --arg k "$k"; paa_warn_once "$k" "$why，同步时间不推进，下一轮重试"'
+    'paa_warn_once "$k" "${why}，同步时间不推进，下一轮重试"' \
+    'paa_set ".projects[\$k].initial_done = true" --arg k "$k"; paa_warn_once "$k" "${why}，同步时间不推进，下一轮重试"'
 mutate "开启时间改成每次重试的当前时间" s_restart "$PAA" \
     '[ -n "$(paa_get "$k" enabled_at)" ] || paa_set' 'paa_set'
 mutate "读身份看不见 Project 仍去写" s_read_blind "$PAA" \

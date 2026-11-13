@@ -174,7 +174,10 @@ describe('resolve: who gets the key', () => {
       expect(resolve(key(k.toLowerCase(), { metaKey: true }), idle), k).not.toBe(id);
       expect(resolve(ev(k, { metaKey: true, altKey: true }), idle), k).toBeNull();
       // a layer on top takes them; the settings page has no detail keys; never while composing
-      for (const layer of ['dialog', 'picker', 'help'] as const) expect(resolve(ev(k, { metaKey: true }), { ...idle, layer }), layer).toBeNull();
+      // (GitHub#450: in a dialog ⌘⇧Z / ⌘⇧C are the new-issue dialog's own two buttons, never the detail panel's)
+      const inDialog = k === 'Z' ? 'newIssueAgent' : k === 'C' ? 'newIssueAutopilot' : null;
+      expect(resolve(ev(k, { metaKey: true }), { ...idle, layer: 'dialog' }), 'dialog').toBe(inDialog);
+      for (const layer of ['picker', 'help'] as const) expect(resolve(ev(k, { metaKey: true }), { ...idle, layer }), layer).toBeNull();
       expect(resolve(ev(k, { metaKey: true }), { ...idle, page: 'settings' })).toBeNull();
       expect(resolve(ev(k, { metaKey: true, isComposing: true }), idle)).toBeNull();
       expect(resolve(ev(k, { ctrlKey: true, keyCode: 229 }), { ...idle, typing: 'reply' })).toBeNull();
@@ -191,6 +194,33 @@ describe('resolve: who gets the key', () => {
     expect(resolve(key('P', { metaKey: true, shiftKey: true }), { ...idle, typing: 'reply' })).toBe('preview');
     // the other detail keys stay letters in the reply box
     for (const k of ['l', 'm', 'r']) expect(resolve(key(k), { ...idle, typing: 'reply' }), k).toBeNull();
+  });
+  it('GitHub#450: in a dialog ⌘⇧Z / ⌘⇧C are the new-issue dialog\'s 交给 agent / 托管 — also while typing in its title or body; nowhere else', () => {
+    const ev = (k: string, o: Partial<KeyLike> = {}) => key(k, { shiftKey: true, ...o });
+    const dialog: KeyContext = { ...idle, layer: 'dialog' };
+    for (const [k, id] of [
+      ['Z', 'newIssueAgent'],
+      ['C', 'newIssueAutopilot'],
+    ] as const) {
+      for (const o of [{ metaKey: true }, { ctrlKey: true }])
+        for (const kk of [k, k.toLowerCase()])
+          for (const typing of ['none', 'other', 'reply'] as const) expect(resolve(ev(kk, o), { ...dialog, typing }), `${kk} ${typing}`).toBe(id);
+      // without Shift / without ⌘ / with Alt / while composing: not these
+      expect(resolve(key(k.toLowerCase(), { metaKey: true }), dialog)).toBeNull();
+      expect(resolve(ev(k), { ...dialog, typing: 'other' })).toBeNull();
+      expect(resolve(ev(k, { metaKey: true, altKey: true }), dialog)).toBeNull();
+      expect(resolve(ev(k, { metaKey: true, isComposing: true }), dialog)).toBeNull();
+      // with no dialog the same keys are still the detail panel's
+      expect(resolve(ev(k, { metaKey: true }), idle)).toBe(k === 'Z' ? 'handBack' : 'autopilot');
+    }
+    // ⌘↩ still confirms (创建), Esc still cancels
+    expect(resolve(key('Enter', { metaKey: true }), { ...dialog, typing: 'other' })).toBe('confirm');
+    expect(keyText('newIssueAgent', true)).toBe('⌘⇧Z');
+    expect(keyText('newIssueAutopilot', false)).toBe('Ctrl+Shift+C');
+    // the two keys are the detail panel's 交给 agent / 托管 keys, from the same table
+    const keysOf = (id: string) => JSON.stringify(SHORTCUTS.find((s) => s.id === id)!.keys);
+    expect(keysOf('newIssueAgent')).toBe(keysOf('handBack'));
+    expect(keysOf('newIssueAutopilot')).toBe(keysOf('autopilot'));
   });
   it('GitHub#433: the keys the discussion frame passes on are exactly those of FRAME_IDS, and each resolves to its own id', () => {
     expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync']);

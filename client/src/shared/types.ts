@@ -439,6 +439,11 @@ export interface SourceSnapshot {
   fetchedAt: number;
   items: Item[];
   project?: ProjectMeta;
+  /**
+   * GitHub#462, repository sources: the pending label the "closed items carrying it" list was read
+   * for ('' = not read; absent = a snapshot from before that list existed). A board reads every item.
+   */
+  pendingLabel?: string;
 }
 
 export interface SourceTimes {
