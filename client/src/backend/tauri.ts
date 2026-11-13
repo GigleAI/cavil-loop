@@ -28,6 +28,9 @@ export const tauriDesktop: Desktop = {
   dismissInstalledUpdate: (version) => invoke('desktop_update_dismiss_installed', { version }),
   restartToUpdate: () => invoke('desktop_update_restart'),
   closeWindow: () => invoke('desktop_close_window'),
+  windowFrame: () => invoke('desktop_window_frame'),
+  startDrag: () => invoke('desktop_start_drag'),
+  toggleZoom: () => invoke('desktop_toggle_zoom'),
 };
 
 /** Tell the shell the window is up. true = this is the packaged-app smoke test: it reports and quits. */

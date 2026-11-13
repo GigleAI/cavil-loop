@@ -32,6 +32,9 @@ const PATHS = {
   // GitHub#397: the home tab
   home: <path d="M2.5 7.5L8 2.5l5.5 5v6h-3.6v-3.8H6.1v3.8H2.5z" />,
   chevron: <path d="M4 6l4 4 4-4" />,
+  // GitHub#467: the tab strip's "more tabs this way" arrows
+  'chevron-left': <path d="M10 3.5L5.5 8l4.5 4.5" />,
+  'chevron-right': <path d="M6 3.5l4.5 4.5L6 12.5" />,
   pencil: <><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /><path d="M9 4l3 3" /></>,
   // item states (same shapes as GitHub's: circle + dot, circle + tick, circle + slash, branch, merge)
   'issue-open': <><circle cx="8" cy="8" r="6.25" /><circle cx="8" cy="8" r="1.3" fill="currentColor" /></>,

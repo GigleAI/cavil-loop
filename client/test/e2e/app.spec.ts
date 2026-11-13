@@ -13,6 +13,15 @@ import { launchApp, closeEngine, type AppEnv } from './bridge';
 import { findCopies, gqlContent, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
 
+/** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
+async function showSource(page: Page, selector: string, on: boolean) {
+  await page.getByTestId('open-settings').click();
+  const sw = page.locator(`[data-testid="source-shown"]${selector}`);
+  if (on) await sw.check();
+  else await sw.uncheck();
+  await page.getByTestId('back').click();
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
@@ -2252,7 +2261,8 @@ async function headerFits(page: Page, where: string) {
     const doc = document.scrollingElement!;
     if (doc.scrollWidth > window.innerWidth) out.push(`page scrolls sideways: ${doc.scrollWidth} > ${window.innerWidth}`);
     let rows = 0;
-    for (const row of document.querySelectorAll('.hdr, .vbar')) {
+    // GitHub#467: the window's one top row, then the board's view bar
+    for (const row of document.querySelectorAll('.topbar, .topbar-tools, .vbar')) {
       rows++;
       const box = row.getBoundingClientRect();
       if (row.scrollWidth > row.clientWidth + 1) out.push(`${row.className} scrolls: ${row.scrollWidth} > ${row.clientWidth}`);
@@ -2267,7 +2277,7 @@ async function headerFits(page: Page, where: string) {
     }
     return { rows, out };
   });
-  expect(r.rows, `${where}: both header rows are there`).toBe(2);
+  expect(r.rows, `${where}: the top row, its tools and the view bar are there`).toBe(3);
   expect(r.out, where).toEqual([]);
 }
 
@@ -2315,7 +2325,7 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await app.close();
 });
 
-test('GitHub#181 many sources: at 1024 and 1280 px every source in the top bar can be reached with the wheel, is readable, and really switches what the board shows', async () => {
+test('GitHub#181 / #467 many sources: the top row fits at 720, 1024 and 1280 px; each source\'s 在看板显示 switch in Settings really switches what the board shows', async () => {
   // 20 repositories, one open issue each, so switching one source changes the count by exactly one
   const sample = env.fake.state.repos.get('gigleai/cavil-loop')!.find((i) => i.state === 'open' && !i.pull_request)!;
   const names = Array.from({ length: 20 }, (_, i) => `GigleAI/many-source-${i + 1}`);
@@ -2349,59 +2359,31 @@ test('GitHub#181 many sources: at 1024 and 1280 px every source in the top bar c
   const total = page.getByTestId('item-total');
   await expect(total).toHaveText('20 个条目', { timeout: 15_000 });
 
-  const strip = page.getByTestId('source-pick');
-  for (const width of [1024, 1280]) {
+  // GitHub#467: the sources are no longer in the top row; however many there are, it fits
+  for (const width of [720, 1024, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await headerFits(page, `board, ${width} px, 20 sources`);
-    // the strip really overflows here, so this is not "everything fits anyway"
-    expect(await strip.evaluate((el) => el.scrollWidth > el.clientWidth), `${width} px: strip overflows`).toBe(true);
-    await strip.evaluate((el) => (el.scrollLeft = 0));
-
-    for (const [k, name] of [names[names.length - 1], names[10]].entries()) {
-      const key = `repo:${name.toLowerCase()}`;
-      const chip = strip.locator('label.src-chip', { has: page.locator(`input[data-key="${key}"]`) });
-      // a plain mouse wheel over the strip, as a user without a trackpad would do, until the chip is fully in view
-      const box = (await strip.boundingBox())!;
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      for (let i = 0; i < 40; i++) {
-        const inView = await chip.evaluate((c) => {
-          const s = c.parentElement!.getBoundingClientRect();
-          const r = c.getBoundingClientRect();
-          return r.left >= s.left - 0.5 && r.right <= s.right + 0.5;
-        });
-        if (inView) break;
-        await page.mouse.wheel(0, k === 0 ? 120 : -120);
-        await page.waitForTimeout(30);
-      }
-      // fully inside the strip, the name readable (not squeezed away), and the checkbox is what a click there hits
-      const seen = await chip.evaluate((c) => {
-        const s = c.parentElement!.getBoundingClientRect();
-        const r = c.getBoundingClientRect();
-        const input = c.querySelector('input')!.getBoundingClientRect();
-        const hit = document.elementFromPoint(input.left + input.width / 2, input.top + input.height / 2);
-        const nameEl = c.querySelector('.src-name') as HTMLElement;
-        return {
-          inside: r.left >= s.left - 0.5 && r.right <= s.right + 0.5,
-          hitsOwnBox: hit === c.querySelector('input'),
-          nameWidth: nameEl.getBoundingClientRect().width,
-          nameText: nameEl.textContent,
-        };
-      });
-      expect(seen.inside, `${width} px: ${name} scrolled into view with the wheel`).toBe(true);
-      expect(seen.hitsOwnBox, `${width} px: a click on ${name}'s box hits that box`).toBe(true);
-      expect(seen.nameText).toBe(name);
-      expect(seen.nameWidth, `${width} px: ${name}'s name is not squeezed away`).toBeGreaterThan(100);
-
-      // a real click switches the source off and on again, and the board follows
-      const box2 = (await chip.locator('input').boundingBox())!;
-      await page.mouse.click(box2.x + box2.width / 2, box2.y + box2.height / 2);
-      await expect(chip.locator('input')).not.toBeChecked();
-      await expect(total).toHaveText('19 个条目');
-      await expect(page.getByText(`item from ${name}`)).toHaveCount(0);
-      await page.mouse.click(box2.x + box2.width / 2, box2.y + box2.height / 2);
-      await expect(chip.locator('input')).toBeChecked();
-      await expect(total).toHaveText('20 个条目');
-    }
+  }
+  for (const name of [names[names.length - 1], names[10]]) {
+    const key = `repo:${name.toLowerCase()}`;
+    await page.getByTestId('open-settings').click();
+    const sw = page.locator(`[data-testid="source-shown"][data-key="${key}"]`);
+    const rowOf = page.locator(`[data-testid="source-row"][data-key="${key}"]`);
+    await expect(sw).toBeChecked();
+    await sw.click();
+    await expect(sw).not.toBeChecked();
+    // switched off: still listed (and read), faded, and said so
+    await expect(rowOf).toHaveAttribute('data-shown', 'no');
+    await expect(rowOf.getByTestId('source-hidden-note')).toBeVisible();
+    await page.getByTestId('back').click();
+    await expect(total).toHaveText('19 个条目');
+    await expect(page.getByText(`item from ${name}`)).toHaveCount(0);
+    await page.getByTestId('open-settings').click();
+    await sw.click();
+    await expect(sw).toBeChecked();
+    await expect(rowOf).toHaveAttribute('data-shown', 'yes');
+    await page.getByTestId('back').click();
+    await expect(total).toHaveText('20 个条目');
   }
   await shot(page, '53-look-many-sources-1280');
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -2565,7 +2547,7 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   await expect(detail).toHaveCount(0);
   // the top bar is outside too
   await open(137);
-  await page.locator('.hdr').click({ position: { x: 4, y: 4 } });
+  await page.getByTestId('topbar').click({ position: { x: 4, y: 4 } });
   await expect(detail).toHaveCount(0);
   // pressed just above the panel's top edge, let go just inside it (2px): the panel stays
   // (the click itself goes to the common ancestor; PR #199 review round 1)
@@ -3784,7 +3766,7 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   const { app, page } = await launch(env);
   await signInWithSources(page);
   // narrowed to the Project: it starts ticked
-  await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').uncheck();
+  await showSource(page, '[data-key^="repo:"]', false);
   await page.getByTestId('write-entry').click();
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   await page.getByTestId('new-issue-title').fill('只进仓库的 issue');
@@ -3819,7 +3801,7 @@ test('GitHub#205: new issue — coloured label picker; boards ticked one by one,
   // the new issue opened in the detail: put it away first (a click outside it only does that, GitHub#191)
   await page.getByTestId('detail-close').click();
   // every source shown again: the same board starts ticked — the top filter plays no part (GitHub#231)
-  await page.locator('[data-testid="source-pick"] input[data-key^="repo:"]').check();
+  await showSource(page, '[data-key^="repo:"]', true);
   await page.getByTestId('write-entry').click();
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
   // an image pasted into the body: said, not dropped silently; the web page carries on with what was typed
@@ -4350,7 +4332,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   expect(cellOptions).toEqual(detailOptions.map(({ id, part }) => ({ id, part })));
 
   // ---- 5. only the repository shown at the top: a new issue still starts on the board holding its items ----
-  await page.locator('[data-testid="source-pick"] input[data-key^="project:"]').uncheck();
+  await showSource(page, '[data-key^="project:"]', false);
   await page.getByTestId('write-entry').click();
   await expect(page.getByTestId('new-issue-repo')).toHaveValue('GigleAI/cavil-loop');
   await expect(page.getByTestId('new-issue-project')).toBeChecked();
@@ -4366,7 +4348,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await expect(page.getByTestId('autopilot-confirm')).not.toBeChecked();
   await page.getByTestId('autopilot-confirm').check();
   await page.getByTestId('back').click();
-  await page.locator('[data-testid="source-pick"] input[data-key^="project:"]').check();
+  await showSource(page, '[data-key^="project:"]', true);
   await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-title"]').first().click();
   await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…Ctrl+Shift+C');
   await app.close();

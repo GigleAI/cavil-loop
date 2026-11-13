@@ -374,6 +374,40 @@ pub async fn desktop_close_window<R: Runtime>(app: AppHandle<R>) -> Result<(), S
     Ok(())
 }
 
+/// GitHub#467: the top row of the window is the title bar on macOS (the page is drawn under it, the
+/// system's title text is hidden, the three window buttons sit in the row — main.rs). `overlay`:
+/// the page has to leave room for those buttons and do the dragging itself; `fullscreen`: the
+/// buttons are hidden, so is their room. Elsewhere the system's title bar stays: both false.
+#[tauri::command]
+pub async fn desktop_window_frame<R: Runtime>(app: AppHandle<R>) -> Value {
+    let overlay = cfg!(target_os = "macos");
+    let fullscreen = overlay && app.get_webview_window("main").and_then(|w| w.is_fullscreen().ok()).unwrap_or(false);
+    json!({ "overlay": overlay, "fullscreen": fullscreen })
+}
+
+/// GitHub#467: a press on an empty part of the top row moves the window (macOS, where that row is the
+/// title bar). Only this one window operation is offered to the page.
+#[tauri::command]
+pub async fn desktop_start_drag<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("main") {
+        w.start_dragging().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// GitHub#467: a double click on an empty part of the top row zooms the window or puts it back, as a
+/// double click on a macOS title bar does.
+#[tauri::command]
+pub async fn desktop_toggle_zoom<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "toggleZoom" }));
+    if let Some(w) = app.get_webview_window("main") {
+        let r = if w.is_maximized().map_err(|e| e.to_string())? { w.unmaximize() } else { w.maximize() };
+        r.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn desktop_next_event<R: Runtime>(app: AppHandle<R>) -> Value {
     let d = app.state::<Desktop>();

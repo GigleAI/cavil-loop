@@ -110,6 +110,7 @@ import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
+import type { WindowFrame } from '../shared/ipc';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
@@ -2107,6 +2108,24 @@ export class Controller {
   /** The shell's "close" key found no tab in front: close the window the way its close button does. */
   async closeWindow(): Promise<void> {
     await this.deps.desktop?.closeWindow().catch(() => undefined);
+  }
+
+  /**
+   * GitHub#467: how the window's top row sits. Anything unreadable (no shell, a failed or malformed
+   * answer) is the system's own title bar: the page then leaves no room and moves nothing itself,
+   * which is never worse than before this row existed.
+   */
+  async windowFrame(): Promise<WindowFrame> {
+    const f = await this.deps.desktop?.windowFrame().catch(() => null);
+    return { overlay: f?.overlay === true, fullscreen: f?.overlay === true && f.fullscreen === true };
+  }
+
+  async startDrag(): Promise<void> {
+    await this.deps.desktop?.startDrag().catch(() => undefined);
+  }
+
+  async toggleZoom(): Promise<void> {
+    await this.deps.desktop?.toggleZoom().catch(() => undefined);
   }
 
   /** GitHub#434: the other flow labels (empty = the default). The waiting label is `handBack.blocked` (setHandBack). */

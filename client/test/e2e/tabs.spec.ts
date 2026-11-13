@@ -497,11 +497,20 @@ test('more tabs than fit: the strip scrolls sideways, the home tab stays put, an
   await signIn(page);
   for (const n of [A, B, C]) await row(page, n).click({ button: 'middle' });
   await expect(tabs(page)).toHaveCount(3);
-  await page.setViewportSize({ width: 340, height: 700 });
+  // GitHub#467: the narrowest the window gets (src-tauri: MIN_W); the tabs share the one top row with the tools
+  await page.setViewportSize({ width: 720, height: 700 });
   const strip = page.getByTestId('tab-strip');
   expect(await strip.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(true);
-  // the bar itself stays as wide as the window: only the strip inside it scrolls
-  expect(await page.getByTestId('tabs').evaluate((e) => e.scrollWidth <= e.clientWidth && e.getBoundingClientRect().right <= window.innerWidth + 0.5)).toBe(true);
+  // the row itself stays as wide as the window: only the strip inside it scrolls, and every tool is still on screen
+  expect(await page.getByTestId('topbar').evaluate((e) => e.scrollWidth <= e.clientWidth && e.getBoundingClientRect().right <= window.innerWidth + 0.5)).toBe(true);
+  expect(await page.getByTestId('tabs').evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  for (const id of ['search', 'refresh', 'write-entry', 'open-settings']) {
+    const b = (await page.getByTestId(id).boundingBox())!;
+    expect(b.x + b.width <= 720 + 0.5, id).toBe(true);
+  }
+  // nothing out of sight on the left yet: only the right edge has an arrow (GitHub#467)
+  await expect(page.getByTestId('tab-arrow-left')).toHaveCount(0);
+  await expect(page.getByTestId('tab-arrow-right')).toBeVisible();
   const inStrip = async (n: number) => {
     const s = (await strip.boundingBox())!;
     const t = (await tab(page, n).boundingBox())!;
@@ -520,6 +529,19 @@ test('more tabs than fit: the strip scrolls sideways, the home tab stays put, an
   await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
   await expect.poll(() => inStrip(A)).toBe(true);
   await shot(page, '397-08-many-tabs-narrow');
+  // GitHub#467: the right arrow scrolls the strip towards the last tab; then the left one shows and brings it back
+  await expect(page.getByTestId('tab-arrow-right')).toBeVisible();
+  await page.getByTestId('tab-arrow-right').click();
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBeGreaterThan(0);
+  await expect(page.getByTestId('tab-arrow-left')).toBeVisible();
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  await page.getByTestId('tab-arrow-left').click();
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBe(0);
+  await expect(page.getByTestId('tab-arrow-left')).toHaveCount(0);
+  // the mouse wheel moves it sideways too
+  await strip.hover();
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBeGreaterThan(0);
   await app.close();
 });
 
