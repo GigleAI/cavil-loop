@@ -86,7 +86,7 @@ export function handoffProblem(repo: string, check: HandoffCheck): string {
     case 'loading':
       return `正在读取仓库 ${repo} 的标签…`;
     case 'error':
-      return `读不到仓库 ${repo} 的标签，暂时不能确认标签在不在；本次只能建普通 issue，记住的选项不变（${check.error}）`;
+      return `读不到仓库 ${repo} 的标签，暂时不能确认标签在不在（${check.error}）`;
     case 'missing':
       return `仓库 ${repo} 没有标签${check.missing.map((n) => `「${n}」`).join('、')}`;
     case 'unset':

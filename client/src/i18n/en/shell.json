@@ -187,7 +187,6 @@
   "返回看板": "Back to board",
   "只保存在这台电脑上": "Saved on this computer only",
   "设置目录": "Settings contents",
-  "GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目，加上最近 14 天内有更新的。": "Paste a GitHub Project's address; write a repository as \"owner/name\". A repository brings every open item, plus those updated in the last 14 days.",
   "https://github.com/orgs/GigleAI/projects/11  或  GigleAI/cavil-loop": "https://github.com/orgs/GigleAI/projects/11  or  GigleAI/cavil-loop",
   "添加": "Add",
   "从 GitHub 选…": "Pick from GitHub…",
@@ -205,8 +204,6 @@
   "其他流程标签（挂着时不让登记等前置；逗号分隔，* 结尾 = 前缀）": "Other flow labels (while one is on, no prerequisite can be recorded; comma-separated, a trailing * = prefix)",
   "「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。": "\"Wait for…\": pick the issues / PRs this item waits for, record them the way the daemon reads them, then add the waiting-for-prerequisite label; once all are done the daemon switches back to the hand-to-agent label. The button is greyed out while the item carries any of the \"other flow labels\" (except the waiting-for-human label above and the waiting label itself): with those the daemon does not handle prerequisites, so a record would have no effect. Must match the daemon's config.",
   "「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）": "Ask before \"Autopilot\" (ticking \"Don't ask again\" in that dialog turns this off; tick it here to turn it back on)",
-  "开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的不提醒。App 启动或新加来源时已有的算历史，不通知、不计数。": "One notification when an open issue / PR newly gets the waiting-for-human label (the field above, now {label}) and concerns me; an item that already has the label and later comes to concern me (assigned to me, my review requested) also counts as new. Closed and merged items are not reminded of. Whatever is there when the app starts or a source is added is history: no notification, not counted.",
-  "开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。": "One notification when an open issue / PR newly gets the waiting-for-human label (the field above, now {label}); closed and merged items are not reminded of. Items that already carry the label when the app starts or a source is added are history: no notification, not counted.",
   "提醒哪些条目": "Which items to remind of",
   "全部待处理（所有人共用的待办都提醒）": "Everything pending (remind of the shared to-dos of everyone)",
   "只提醒和我（{viewer}）有关的": "Only what concerns me ({viewer})",
@@ -247,7 +244,6 @@
   },
   "顶栏计数": "View-bar counts",
   "流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）": "Flow labels (used by \"Hand to agent\", \"Autopilot\", reminders, the loop prerequisites in the dependency view, and the rows below under \"View-bar counts\" that follow a flow label)",
-  "顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」，数开着的条目里带这个标签的。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。": "The counts on the right of the top bar are set below under \"View-bar counts\"; the default \"Running / Waiting for agent / Waiting for human\" follow the running label, the hand-to-agent label and the waiting-for-human label here, counting open items that carry them. With the running label empty, the counts following it are not shown (the \"running\" icon on tabs reads this field too and is not shown either); the other two fields go back to their defaults when left empty.",
   "运行中的标签（留空 = 跟随它的数不显示）": "Running label (empty = the counts following it are not shown)",
   "绿": "Green",
   "蓝": "Blue",
@@ -257,7 +253,6 @@
   "灰": "Gray",
   "空心圆": "Hollow circle",
   "顶栏右侧的每个数各对应下面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目，不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。": "Each count on the right of the top bar is one row below, shown in this order, with this name and colour; it counts items of the ticked sources, whatever the search box says. Clicking a count puts the row's condition in the search box to show only those; clicking again goes back to the previous search.",
-  "「跟随流程标签」的行按上面「流程标签」里的标签名直接数开着的条目（和提醒用同一条规则），标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。": "A \"follows a flow label\" row counts open items carrying that label from \"Flow labels\" above (the rule reminders use) and follows the label when it is renamed. A condition of your own is written like the search box (e.g. {a}, {b}).",
   "系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。": "Notifications and the Dock badge still count the waiting-for-human label, whatever is set here.",
   "保存的顶栏计数读不出，现在显示的是默认的四个数；在这里改动一次就会重新保存。": "The saved view-bar counts cannot be read; the four default counts are shown. Any change here saves them again.",
   "名称": "Name",
@@ -304,5 +299,14 @@
   "续期失败": "Renewal failed",
   "续期失败：GitHub 的回应里没有新令牌": "Renewal failed: GitHub's answer has no new token",
   "用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用": "To sign in with a GitHub App, enter its Client ID first (this version has no built-in GitHub App), or switch back to the default OAuth app",
-  "还没有配置 OAuth 应用的 Client ID，请先在下方填写": "No OAuth app Client ID is set yet; enter it below first"
+  "还没有配置 OAuth 应用的 Client ID，请先在下方填写": "No OAuth app Client ID is set yet; enter it below first",
+  "带 {label} 标签的条目（开着的和已关闭的都算）有 {n} 个": {
+    "one": "{n} item has the {label} label (open and closed both count)",
+    "other": "{n} items have the {label} label (open and closed both count)"
+  },
+  "GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目、最近 14 天内有更新的，以及已关闭但还带着「等人处理的标签」的。": "Paste a GitHub Project's address; write a repository as \"owner/name\". A repository brings every open item, those updated in the last 14 days, and closed ones still carrying the waiting-for-human label.",
+  "顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」：前两个数开着的条目里带这个标签的，「等人处理」开着的和已关闭的都数。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。": "The counts on the right of the top bar are set below under \"View-bar counts\"; the default \"Running / Waiting for agent / Waiting for human\" follow the running label, the hand-to-agent label and the waiting-for-human label here: the first two count open items carrying their label, \"Waiting for human\" counts open and closed ones. With the running label empty, the counts following it are not shown (the \"running\" icon on tabs reads this field too and is not shown either); the other two fields go back to their defaults when left empty.",
+  "issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已有的算历史，不通知、不计数。": "One notification when an issue / PR newly gets the waiting-for-human label (the field above, now {label}) and concerns me; an item that already has the label and later comes to concern me (assigned to me, my review requested) also counts as new. Closed and merged items are reminded of too (an autopilot item is closed once merged and keeps the label for a person to look at); closing or reopening with the label on does not remind again. Whatever is there when the app starts or a source is added is history: no notification, not counted.",
+  "issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 {label}）时发一次系统通知；已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。": "One notification when an issue / PR newly gets the waiting-for-human label (the field above, now {label}); closed and merged items are reminded of too (an autopilot item is closed once merged and keeps the label for a person to look at); closing or reopening with the label on does not remind again. Items that already carry the label when the app starts or a source is added are history: no notification, not counted.",
+  "「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），另外两个只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。": "A \"follows a flow label\" row counts by the label name under \"Flow labels\" above: a row following the waiting-for-human label counts open and closed items (the rule reminders use), the other two only open ones; it follows the label when it is renamed. A condition of your own is written like the search box (e.g. {a}, {b})."
 }

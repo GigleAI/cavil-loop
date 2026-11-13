@@ -736,6 +736,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       if (!issues || state.deniedRepos.get(login())?.has(key)) return send(404, { message: 'Not Found' });
       const st = url.searchParams.get('state') ?? 'open';
       const since = url.searchParams.get('since');
+      // GitHub#462: `labels` is a comma-separated list; an item must carry every one of them (any case), as on GitHub
+      const wantLabels = (url.searchParams.get('labels') ?? '').split(',').map((l) => l.trim().toLowerCase()).filter(Boolean);
       const per = Math.min(Number(url.searchParams.get('per_page') ?? 30), state.restPageSize);
       const page = Number(url.searchParams.get('page') ?? 1);
       if (state.failRepoPage.get(key) === page) return send(502, { message: 'Server Error' });
@@ -744,6 +746,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const all = issues
         .filter((i) => st === 'all' || i.state === st)
         .filter((i) => !since || i.updated_at >= since)
+        .filter((i) => wantLabels.every((w) => i.labels.some((l: { name: string } | string) => (typeof l === 'string' ? l : l.name).toLowerCase() === w)))
         .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
       const slice = all.slice((page - 1) * per, page * per);
       const headers: Record<string, string> = {};

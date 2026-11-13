@@ -958,7 +958,8 @@ export function BoardView({
                 const on = lit === e.kind;
                 const named = tallyName(e);
                 const tip = [
-                  `${e.source === 'flow' ? t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count }) : e.query === UNLABELED_QUERY ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : t('符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
+                  // GitHub#462: a row following the "等人处理" label counts closed items carrying it too
+                  `${e.source === 'flow' ? (e.flow === 'human' ? t('带 {label} 标签的条目（开着的和已关闭的都算）有 {n} 个', { label: e.label, n: e.count }) : t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count })) : e.query === UNLABELED_QUERY ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : t('符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),

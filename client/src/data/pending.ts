@@ -1,20 +1,25 @@
-// "待处理" (items waiting for a human): every open item of every configured
-// source that carries the pending label (`pending/human` by default).
+// "待处理" (items waiting for a human): every item of every configured source
+// that carries the pending label (`pending/human` by default), open or closed.
 // Notifications and the Dock badge are both computed from the sets kept here,
 // so they can never disagree.
 //
 // The rules (GigleAI/cavil-loop#139, narrowed by #251):
-//   - only an open issue / PR (a draft PR is open) is a to-do: a closed issue or
-//     a closed / merged PR never counts, whatever its labels;
+//   - the label alone decides (GitHub#462, reversing #251's "open only"): an
+//     autopilot item is closed when its pull request merges and keeps the label
+//     to remind a human to look at it, so a closed issue / closed or merged PR
+//     carrying it counts as well; the label coming off is what ends the to-do;
 //   - only a source read completely this round takes part in the comparison;
 //     a source whose read failed (offline, revoked credential, a page failing
 //     mid-pagination) keeps last round's set as-is — no "new", no "removed";
 //   - a source's first complete read in this run (app start, a newly added
 //     source, a new account) is only its baseline: what it already has is
-//     history, it is neither notified nor summarised nor unread (#251);
+//     history, it is neither notified nor summarised nor unread (#251); so is a
+//     repository's first read under another pending label (GitHub#462: it brings
+//     in closed items that carried the label all along);
 //   - one item is one entry (`owner/repo#N`), whichever sources carry it;
 //   - an item that was not pending last round and is now → one notification;
-//     a label removed and put back, or a labelled item reopened, counts as new again.
+//     a label removed and put back counts as new again; an item closing or reopening
+//     with the label on is the same to-do, not a new one.
 
 //
 // GitHub#373 — which pending items remind is a second question, asked of the same sets:
@@ -44,9 +49,9 @@ export function hasLabel(item: Item, label: string): boolean {
   return want !== '' && item.labels.some((l) => l.name.toLowerCase() === want);
 }
 
-/** A to-do: open (a draft PR is open) and carrying the label (#251: closed / merged never counts). */
+/** A to-do: carrying the label, open or closed (GitHub#462: a closed item with the label still waits for a human). */
 export function isPending(item: Item, label: string): boolean {
-  return item.state === 'open' && hasLabel(item, label);
+  return hasLabel(item, label);
 }
 
 export function normalizeLabel(label: string): string {
@@ -172,7 +177,12 @@ export class PendingTracker {
     const first: string[] = [];
     for (const snap of fresh) {
       if (!configured.includes(snap.sourceKey)) continue;
-      if (!this.bySource.has(snap.sourceKey)) first.push(snap.sourceKey);
+      // GitHub#462: a repository read for another pending label than the one held (the label was
+      // renamed in Settings, or the snapshot is from before closed items were read) brings in closed
+      // items that were pending all along — a baseline, like a first read
+      const held = this.held.get(snap.sourceKey);
+      const relisted = held !== undefined && (held.pendingLabel ?? '') !== (snap.pendingLabel ?? '');
+      if (!this.bySource.has(snap.sourceKey) || relisted) first.push(snap.sourceKey);
       this.bySource.set(snap.sourceKey, this.pendingOf(snap));
       this.held.set(snap.sourceKey, snap);
     }
@@ -243,7 +253,7 @@ export class PendingTracker {
   }
 }
 
-/** Text of the notification for one item (shared by the app and its tests). Only open items are pending. */
+/** Text of the notification for one item (shared by the app and its tests). */
 export function itemAlertText(it: Pick<Item, 'repo' | 'number' | 'kind' | 'title'>): { title: string; body: string } {
   const kind = it.kind === 'pr' ? 'PR' : 'issue';
   return { title: t('待处理：{repo}#{number}', { repo: it.repo, number: it.number }), body: `${kind} · ${it.title}` };

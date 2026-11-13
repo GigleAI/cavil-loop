@@ -125,10 +125,12 @@ describe('login (OAuth device flow)', () => {
     expect(s.login.verificationUri).toBe(`${fake.web}/login/device`);
     await c.openVerification();
     expect(opened).toEqual([`${fake.web}/login/device`]);
-    // still pending for a few polls: no token yet
-    await new Promise((r) => setTimeout(r, 30));
+    // still pending for a few polls: no token yet. Waited for by what is seen (the first token poll reached
+    // GitHub), not by a fixed 30 ms: measured 0–11 ms from here, which a fully loaded box can exceed (PR #459 review round 2)
+    const polls = () => fake.log.filter((l) => l.path === '/web/login/oauth/access_token').length;
+    for (let i = 0; i < 1500 && polls() === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(polls()).toBeGreaterThan(0);
     expect(c.getState().phase).toBe('login');
-    expect(fake.log.filter((l) => l.path === '/web/login/oauth/access_token').length).toBeGreaterThan(0);
     const g = fake.resolveGrant('approved');
     await p;
     expect(c.getState().phase).toBe('ready');
