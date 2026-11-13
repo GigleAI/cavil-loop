@@ -178,7 +178,8 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .vbar .vbar-count { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 /* GitHub#404: the flow numbers (运行中 / 等 agent / 等人处理), each a button that filters to its items */
 .tally { display: inline-flex; align-items: center; gap: 2px; }
-.tally-item { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+/* GitHub#514: five numbers by default — kept compact so the view bar stays on one line at 1280 px (board layout) */
+.tally-item { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 0 5px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .tally-item:hover:not(:disabled) { background: var(--hover); }
 .tally-item:disabled { cursor: default; }
 .tally-item b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }

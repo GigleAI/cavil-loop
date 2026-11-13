@@ -437,6 +437,29 @@ const shapeOf = (page: Page, testid: string) =>
 test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s own numbers, changed at once by every edit; the parked label drives "稍后处理"', async () => {
   const { page } = await launchApp(env);
   await ready(page);
+  // five numbers by default still leave the view bar on one line in the board layout (its widest: 分列 + 泳道 switches),
+  // at the window size the app opens with — a second line pushes the board down. With the repository added too, as
+  // people use it, "等人处理" has two digits (the case that wrapped with the numbers' old spacing).
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await expect(page.getByTestId('source-row')).toHaveCount(2);
+  await page.getByTestId('back').click();
+  await expect.poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.sync.sources as { ok: boolean }[]).map((s) => s.ok)), { timeout: 20_000 }).toEqual([true, true]);
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await expect(page.getByTestId('tally')).toHaveCount(5);
+  // and keeps room to spare: a count one digit longer must not wrap it (measured: 46 px spare now; 6 px with the
+  // numbers' old spacing, which wrapped as soon as "等人处理" reached two digits)
+  const room = await page.locator('.vbar').evaluate((v) => {
+    const cs = getComputedStyle(v);
+    const kids = [...v.children];
+    const used = kids.reduce((a, k) => a + k.getBoundingClientRect().width, 0) + (kids.length - 1) * parseFloat(cs.columnGap) + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    return v.clientWidth - used;
+  });
+  expect(room).toBeGreaterThanOrEqual(30);
+  const tops = await page.locator('.vbar > *').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => r.top + r.height / 2));
+  expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(8);
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   // the bar as the board shows it, before Settings is opened
   const bar = await shapeOf(page, 'tally');
   expect(bar.map((x) => x[0])).toEqual(['unlabeled', 'human', 'agent', 'running', 'later']);

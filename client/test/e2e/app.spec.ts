@@ -1938,8 +1938,10 @@ test('pending/human: nothing about the history at start, one notification per ne
 
   // the settings page: how reminders work, no list, no counts
   await page.getByTestId('open-settings').click();
-  await expect(page.getByTestId('pending-how-to-clear')).toContainText('「未读数」');
-  await expect(page.getByTestId('pending-how-to-clear')).toContainText('切到 App 就清零');
+  // GitHub#514: one line on the card, the whole rule in the card's fold
+  await expect(page.getByTestId('pending-how-to-clear')).toHaveText('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。');
+  await expect(page.getByTestId('pending-more')).toContainText('「未读数」');
+  await expect(page.getByTestId('pending-more')).toContainText('切到 App 就清零');
   // GitHub#369: the back button names its key
   await expect(page.getByTestId('back-key')).toHaveText('Esc');
   // GitHub#369: switching to the app keeps the notifications; a click takes back only that one; the box is off
@@ -1947,7 +1949,8 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
-  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也提醒');
+  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也算');
+  await expect(page.getByTestId('pending-rule-full')).toContainText('已关闭、已合并的也提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
   await expect(page.getByTestId('launch-at-login')).not.toBeChecked();
@@ -2026,7 +2029,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   // including what a click leaves behind then (PR #370 review round 1: never "the rest stay" while ticked)
   await page.getByTestId('clear-all-on-activate').click();
   await expect(page.getByTestId('clear-all-on-activate')).toBeChecked();
-  await expect(page.getByTestId('notification-keep-rule')).toHaveText('已勾选下面一项：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。');
+  await expect(page.getByTestId('notification-keep-rule')).toHaveText('已勾选「切到 App 时收起全部系统通知」：切到 App 时本 App 的系统通知全部收起。点一条通知会把窗口带到前台，所以其余通知也会随之全部收起。');
   await expect(page.getByTestId('pending-how-to-clear')).not.toContainText('其余留在通知中心');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '21-pending-settings-ticked');
@@ -2065,7 +2068,8 @@ test('GitHub#373: "which items remind" in Settings — every pending item by def
   // the default: every pending item, and the page says what the other choice is for
   await expect(page.getByTestId('notify-scope-all')).toBeChecked();
   await expect(page.getByTestId('notify-scope-mine')).not.toBeChecked();
-  await expect(page.getByTestId('notify-scope-note')).toContainText('每人都会收到全部待处理的通知');
+  await expect(page.getByTestId('notify-scope-note')).toHaveText('几个人一起用一个仓库时，选下面一项就只收自己的。');
+  await expect(page.getByTestId('pending-more')).toContainText('每人都会收到全部待处理的通知');
   await expect(page.getByTestId('pending-rule')).not.toContainText('和我有关');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '22-notify-scope-all');
@@ -2074,7 +2078,9 @@ test('GitHub#373: "which items remind" in Settings — every pending item by def
   await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
   await expect(page.getByTestId('notify-scope-all')).not.toBeChecked();
   await expect(page.getByTestId('notify-scope')).toContainText(`只提醒和我（${env.fake.state.viewer}）有关的`);
-  for (const part of ['指派给我、或请我 review 的，提醒', '即使我在 GitHub 上订阅着也不提醒', '我订阅着就提醒', '按它关联的 issue 判断']) await expect(page.getByTestId('notify-scope-note')).toContainText(part);
+  await expect(page.getByTestId('notify-scope-note')).toHaveText('指派给我、请我 review 的提醒；谁都没指派的，我订阅着才提醒。');
+  // GitHub#514: the three steps in full, in the card's fold
+  for (const part of ['指派给我、或请我 review 的，提醒', '即使我在 GitHub 上订阅着也不提醒', '我订阅着就提醒', '按它关联的 issue 判断']) await expect(page.getByTestId('pending-more')).toContainText(part);
   await expect(page.getByTestId('pending-rule')).toContainText('并且和我有关时发一次系统通知');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   await shot(page, '23-notify-scope-mine');
