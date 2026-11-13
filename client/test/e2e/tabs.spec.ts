@@ -894,9 +894,9 @@ async function closeIssueHere(page: Page, comment = '') {
 /** the close requests (PATCH) of one item that reached the fake, with what it answered */
 const closes = (kind: 'issues' | 'pulls', n: number) => env.fake.log.filter((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`)).map((l) => l.status);
 const holdClose = (kind: 'issues' | 'pulls', n: number) => env.fake.holdWhen((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`));
-const strip = (page: Page) => page.getByTestId('op-strip');
+const strip = (page: Page) => page.getByTestId('notice-area');
 /** an item's operation notice in the strip above every page / above the board */
-const inStrip = (page: Page, n: number) => page.locator(`[data-testid="op-strip"] [data-testid="op-notice"][data-key="${K(n)}"]`);
+const inStrip = (page: Page, n: number) => page.locator(`[data-testid="notice-area"] [data-testid="op-notice"][data-key="${K(n)}"]`);
 const aboveBoard = (page: Page, n: number) => page.locator(`[data-testid="board-bars"] [data-testid="op-notice"][data-key="${K(n)}"]`);
 const held = (page: Page) => detail(page).getByTestId('auto-close-held');
 
@@ -947,15 +947,18 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   await expect(inStrip(page, C)).toBeVisible();
   expect(closes('issues', C)).toEqual([200]);
 
-  // ---- 3. GitHub refuses the close: the tab stays, nothing in the strip ----
+  // ---- 3. GitHub refuses the close: the tab stays; GitHub#488: the refusal is said in the notice area (it used to be in the tab) ----
   store.w.readOnlyRepos.add('gigleai/cavil-loop');
   await closeIssueHere(page);
   await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([403]);
   await page.waitForTimeout(500);
   await expect(tab(page, B)).toHaveCount(1);
   await expect(detail(page)).toHaveAttribute('data-key', K(B));
-  await expect(inStrip(page, B)).toHaveCount(0);
+  await expect(inStrip(page, B)).toHaveAttribute('data-kind', 'error');
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
   store.w.readOnlyRepos.delete('gigleai/cavil-loop');
+  await inStrip(page, B).getByTestId('op-dismiss').click();
+  await expect(inStrip(page, B)).toHaveCount(0);
 
   // ---- 4. text not sent yet in the tab: closed on GitHub, the tab stays and says why (× puts the line away) ----
   await detail(page).getByTestId('reply-input').fill('half a reply');
@@ -965,7 +968,9 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   expect(closes('issues', B)).toEqual([403, 200]);
   await expect(tab(page, B)).toHaveCount(1);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('half a reply');
-  await expect(inStrip(page, B)).toHaveCount(0);
+  // GitHub#488: the close's result is in the notice area like every other (it used to be in the tab)
+  await expect(inStrip(page, B).getByTestId('op-notice-text')).toHaveText(`issue #${B} 已关闭（已完成）`);
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
   await shot(page, '447-02-tab-kept-unsent-text');
   await held(page).getByTestId('auto-close-held-dismiss').click();
   await expect(held(page)).toHaveCount(0);
@@ -1020,7 +1025,7 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   expect(closes('issues', A)).toEqual([200]);
   await shot(page, '447-04-float-closed');
 
-  // ---- 2. the panel moved to another item while waiting: the other item stays; the result is the board's, as before ----
+  // ---- 2. the panel moved to another item while waiting: the other item stays; the result in the notice area (GitHub#488: one place for all) ----
   await row(page, B).click();
   let release = holdClose('issues', B);
   await closeIssueHere(page);
@@ -1028,10 +1033,10 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await expect(detail(page)).toHaveAttribute('data-key', K(C));
   release();
   await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([200]);
-  await expect(aboveBoard(page, B)).toBeVisible({ timeout: 15_000 });
+  await expect(inStrip(page, B)).toBeVisible({ timeout: 15_000 });
   await expect(detail(page)).toHaveAttribute('data-key', K(C));
   await expect(detail(page)).toHaveAttribute('data-mode', 'float');
-  await expect(inStrip(page, B)).toHaveCount(0);
+  await expect(aboveBoard(page, B)).toHaveCount(0);
 
   // ---- 3. the item moved into a tab while waiting: its tab stays ----
   release = holdClose('issues', C);
@@ -1075,10 +1080,11 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await page.waitForTimeout(6_500);
   await expect(inStrip(page, F)).toBeVisible();
   store().w.failComment = false;
-  // its 放进回复框 opens the item again: the notice is the detail's now, not twice
+  // its 放进回复框 opens the item again; GitHub#488: the notice stays in the notice area, never also in the detail
   await inStrip(page, F).getByTestId('op-to-reply').click();
   await expect(detail(page)).toHaveAttribute('data-key', K(F));
-  await expect(inStrip(page, F)).toHaveCount(0);
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
+  expect(await page.locator(`[data-testid="op-notice"][data-key="${K(F)}"]`).count()).toBeLessThanOrEqual(1);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('做完了');
   await detail(page).getByTestId('reply-input').fill('');
   await detail(page).getByTestId('detail-close').click();
