@@ -1036,8 +1036,17 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
   await page.clock.setFixedTime(local(9, 0));
   await page.reload();
   await page.waitForSelector('[data-testid="app-root"]');
+  /**
+   * Nothing syncing. The open detail reads again only for a round with a new time mark, and a beat that
+   * comes while a round is running starts none (GitHub#324): the clock is moved, and the beat sent, only
+   * once every earlier round has ended — otherwise a round still running when the clock moved ends with
+   * the same mark as the beat's own, and the detail never reads (PR #520 review round 1: under load the
+   * round started by signing in was sometimes still running here).
+   */
+  const idle = () => expect.poll(async () => (await syncOf(page)).syncing, { timeout: 15_000 }).toBe(false);
   /** one round from the shell's beat, waited until the detail read it started has answered */
   const round = async () => {
+    await idle();
     const n = reads().length;
     app.desktop.push({ kind: 'tick' });
     await expect.poll(() => reads().length).toBeGreaterThan(n);
@@ -1051,9 +1060,11 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
   const frameEl = page.getByTestId('timeline-frame');
   await expect(frameEl).toHaveAttribute('data-ready', 'yes');
   const render0 = await frameEl.getAttribute('data-render');
+  await idle();
   await page.clock.setFixedTime(local(9, 5));
   await round(); // succeeds, same content
   await expect(frameEl).toHaveAttribute('data-render', render0!);
+  await idle();
   await page.clock.setFixedTime(local(9, 10));
   env.fake.state.w.failDetail.add(`gigleai/cavil-loop#${prN}`);
   await round(); // fails
