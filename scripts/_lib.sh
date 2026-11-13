@@ -335,6 +335,12 @@ requester_bot_wait_hold() {   # <编号>
     return 0
 }
 
+# ── 暂缓标签（GitHub#463，可选，默认关闭）──
+# 给「暂时不处理」的条目用：挂着它的条目 greedy 兜底趟不收，托管的「只挂托管标签就派」也因此不收
+# （都走 greedy_skip_label_list）。只挡自动捞取：有人打了派工标签（pending/agent 等）照常派。
+# 留空 = 功能关闭，挡工名单和以前一样。
+LABEL_PENDING_LATER="${LABEL_PENDING_LATER:-}"
+
 # ── 等前置标签（GitHub#157，可选，默认关闭）──
 # 一条活卡在「别的 issue / PR 还没完成」上（不是卡在要人拍板；前置可以在本仓库，也可以在别的仓库，
 # GitHub#243）时，worker 挂这个标签并登记
@@ -504,6 +510,7 @@ esac
 #   等待标签       在等外部需求机器人带回答复（GitHub#95）；有人打了触发标签才由 label 趟按原流程收
 #   pending/merge  托管条目复审已通过、等 daemon 合并（GitHub#114；托管关闭时为空、不挡）
 #   等前置标签     在等本仓库别的 issue / PR 完成（GitHub#157；功能关闭时为空、不挡）
+#   暂缓标签       人决定暂时不做（GitHub#463；功能关闭时为空、不挡）
 # GREEDY_SKIP_LABELS 是项目自定义的**追加**项（逗号分隔），比如 "blocked,discussion"。
 greedy_skip_label_list() {
     printf '%s\n' \
@@ -514,7 +521,8 @@ greedy_skip_label_list() {
         "${LABEL_PENDING_REVIEW:-}" \
         "${LABEL_PENDING_REQUESTER_BOT:-}" \
         "${LABEL_PENDING_MERGE:-}" \
-        "${LABEL_PENDING_BLOCKED:-}"
+        "${LABEL_PENDING_BLOCKED:-}" \
+        "${LABEL_PENDING_LATER:-}"
     if [ -n "${GREEDY_SKIP_LABELS:-}" ]; then
         printf '%s\n' "${GREEDY_SKIP_LABELS}" | tr ',' '\n'
     fi

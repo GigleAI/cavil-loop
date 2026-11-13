@@ -129,6 +129,7 @@ AUTO_RELEASE_MAIN_CHECKOUT=0
 # 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # greedy 下额外的挡工 label（逗号分隔，追加在内置五个之后）
+LABEL_PENDING_LATER="pending/later"  # 暂缓：greedy / 托管都不自动捞它开工；留空 = 关闭
 GREEDY_SCAN_LIMIT=100
 
 # 第一排序键从哪儿来：label = priority/p* 标签；project = GitHub 的 Priority 字段；both = 前者优先、缺了回落标签
@@ -999,6 +1000,29 @@ issue 就是等它合并；只有正文写 `Refs #N` 的老托管 PR，issue 合
 新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
 1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。「已合并」不等于「本机已部署」：前置是 loop 自身的改动时，
 被叫回来的 worker 先核对本机部署版本再用。不支持：github.com 以外的前置、环形依赖检测（互相等的两条都一直等）。
+
+## 暂缓：`pending/later`（GitHub#463）
+
+给人决定「暂时不做」的条目用。配了 `LABEL_PENDING_LATER`（示例配置写的是 `pending/later`；配置里没这一行或写成空值 = 关闭，
+挡工名单和以前一样）后，挂着它的条目 daemon 不会自己捞去开工：
+
+| 条目 | daemon 做什么 |
+|---|---|
+| 只挂着暂缓标签（greedy 模式下的兜底趟） | 跳过，不派工 |
+| 挂着托管标签 + 暂缓标签（托管的「只挂托管标签就派」） | 跳过，不派工 |
+| 挂着暂缓标签，又有人打了派工标签（`pending/agent` 等） | 照常派工——它只挡自动捞取，派工标签是明确的「开干」 |
+
+它不是「等人处理」：客户端顶栏「等人处理 N」不数它；因为挂了标签，它也不再出现在客户端的「未处理」里。
+daemon 不会自己摘它：重新开工时，人摘掉 `pending/later` 就行（greedy 模式下一轮就收），或直接打 `pending/agent`。
+
+**建标签**：把这一行写进配置后重跑 `setup.sh`，它会按配置建标签；或在仓库的 Labels 页面手动新建。
+
+**找暂缓的条目**：
+
+| 想看什么 | GitHub 仓库 Issues 页面 | GitHub Project 视图 | 桌面客户端 |
+|---|---|---|---|
+| 暂缓的 | `label:pending/later` | `label:pending/later` | `label:pending/later` |
+| 进行中、排除暂缓的 | `is:open -label:pending/later` | `is:open -label:pending/later` | `is:open -label:pending/later` |
 
 ## agent 撞到用量上限：停派这个 agent，被打断的条目转人工（GitHub#341）
 
