@@ -176,6 +176,12 @@ export interface CavilApi {
   checkTab(key: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
   closeWindow(): Promise<void>;
+  /**
+   * Resolves once every setting changed so far has been written by the back end (the writes go out in
+   * order behind the cache's other writes). The UI tests wait on it before restarting the app, so a
+   * restart reads what was saved rather than racing a write still queued behind a sync round.
+   */
+  settled(): Promise<void>;
   /** GitHub#467: how the window's top row sits (macOS: the title bar; elsewhere, and when it cannot be read: the system's own) */
   windowFrame(): Promise<WindowFrame>;
   /** GitHub#467: an empty part of the top row pressed (macOS): move the window */

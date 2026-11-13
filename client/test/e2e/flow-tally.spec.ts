@@ -355,7 +355,10 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
   // the reminders are not the table's
   expect((await state(page)).pendingCount).toBe(pendingBefore);
 
-  // restart: the same table
+  // restart: the same table. Every save reached the back end first (PR #484 review round 4: the saves wait in one
+  // queue behind the sync rounds' writes; a fixed pause lost the last ones on a busy machine and the restart read
+  // an older table)
+  await page.evaluate(() => (window as any).cavil.settled());
   await app.close();
   app = await launchApp(env);
   page = app.page;

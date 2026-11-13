@@ -868,8 +868,9 @@ test('the tabs are kept on this machine: a restart brings them back behind the h
   await row(page, A).click({ modifiers: ['Control'] });
   await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
   expect(await order(page)).toEqual([B, A]);
-  // (the list is written to the back end right after the click; the test's "quit" kills the back end outright)
-  await page.waitForTimeout(500);
+  // (the list is written to the back end right after the click; the test's "quit" kills the back end outright, so
+  // wait until every write has gone out — PR #484 review round 4: a fixed 500 ms lost one on a busy machine)
+  await page.evaluate(() => (window as any).cavil.settled());
   await app.close();
 
   app = await launchApp(env);
