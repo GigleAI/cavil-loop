@@ -50,6 +50,13 @@ impl std::fmt::Display for StoreError {
     }
 }
 
+impl StoreError {
+    /// as a message: the client's prefix in the window's language, the database's own words in the hole
+    pub fn said(&self) -> crate::i18n::Said {
+        crate::i18n::Said::new("本地存储出错：{e}", &[("e", &self.raw)], "system")
+    }
+}
+
 impl std::error::Error for StoreError {}
 
 impl From<StoreError> for String {

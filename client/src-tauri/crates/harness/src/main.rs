@@ -23,6 +23,7 @@
 
 mod update;
 
+use cavil_core::i18n::Said;
 use async_trait::async_trait;
 use cavil_core::api::dispatch;
 use cavil_core::http::{is_loopback, Endpoints};
@@ -59,15 +60,16 @@ impl CredentialStore for RemoteStore {
     fn persistent(&self) -> bool {
         self.1
     }
-    async fn get(&self) -> Result<Option<String>, String> {
-        let v = self.0.call("cred.get", Value::Null).await?;
+    // the test's stand-in for the system: what it says is the system's own words
+    async fn get(&self) -> Result<Option<String>, Said> {
+        let v = self.0.call("cred.get", Value::Null).await.map_err(|e| Said::outside(&e, "system"))?;
         Ok(v.as_str().map(str::to_string))
     }
-    async fn set(&self, token: &str) -> Result<(), String> {
-        self.0.call("cred.set", json!({ "value": token })).await.map(|_| ())
+    async fn set(&self, token: &str) -> Result<(), Said> {
+        self.0.call("cred.set", json!({ "value": token })).await.map(|_| ()).map_err(|e| Said::outside(&e, "system"))
     }
-    async fn clear(&self) -> Result<(), String> {
-        self.0.call("cred.clear", Value::Null).await.map(|_| ())
+    async fn clear(&self) -> Result<(), Said> {
+        self.0.call("cred.clear", Value::Null).await.map(|_| ()).map_err(|e| Said::outside(&e, "system"))
     }
 }
 
@@ -244,12 +246,13 @@ async fn main() {
                     let rt = a.get("refreshToken").and_then(|v| v.as_str()).unwrap_or("");
                     Ok(match cavil_core::device::refresh_grant(e.endpoints(), id, rt, clk.as_ref()).await {
                         Ok(g) => json!({ "ok": g.access_token }),
-                        Err(f) => json!({ "reason": f.reason.as_str(), "message": f.message }),
+                        Err(f) => json!({ "reason": f.reason.as_str(), "message": f.full() }),
                     })
                 }
-                ("test.cred.get", Some(k)) => k.get().await.map(|v| json!(v)),
-                ("test.cred.set", Some(k)) => k.set(a.get("value").and_then(|v| v.as_str()).unwrap_or("")).await.map(|_| Value::Null),
-                ("test.cred.clear", Some(k)) => k.clear().await.map(|_| Value::Null),
+                // the adapter's message as one string, and as worded (the client's prefix apart from the system's words)
+                ("test.cred.get", Some(k)) => k.get().await.map(|v| json!(v)).map_err(|m| json!({ "text": m.text(), "said": m.to_json() }).to_string()),
+                ("test.cred.set", Some(k)) => k.set(a.get("value").and_then(|v| v.as_str()).unwrap_or("")).await.map(|_| Value::Null).map_err(|m| json!({ "text": m.text(), "said": m.to_json() }).to_string()),
+                ("test.cred.clear", Some(k)) => k.clear().await.map(|_| Value::Null).map_err(|m| json!({ "text": m.text(), "said": m.to_json() }).to_string()),
                 _ => dispatch(&e, &cmd, a).await,
             };
             let reply = match res {

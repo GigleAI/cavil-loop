@@ -42,13 +42,12 @@ pub fn credential_tag(token: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn not_deleted_message(reason: Option<&Said>, err: &str) -> Said {
+pub fn not_deleted_message(reason: Option<&Said>, err: &Said) -> Said {
     with_reason(
         reason,
-        Said::new(
+        Said::compose(
             "本机保存的旧登录凭据没能删除（{e}），它可能还留在钥匙串里。App 不会再用它自动登录；你可以直接重新登录（会覆盖它），或在「钥匙串访问」里搜「Cavil Loop」手动删除",
             &[("e", err)],
-            "system",
         ),
     )
 }
@@ -299,7 +298,7 @@ impl Engine {
     }
 
     /// Delete the stored credential. Never fails: the error is returned for the caller to show.
-    async fn clear_stored(creds: Arc<dyn CredentialStore>) -> Option<String> {
+    async fn clear_stored(creds: Arc<dyn CredentialStore>) -> Option<Said> {
         creds.clear().await.err()
     }
 
@@ -309,7 +308,7 @@ impl Engine {
         let raw = match self.d.credentials.get().await {
             Ok(v) => v,
             // keychain unreadable: not "signed out" (nothing is deleted), just cannot use it now
-            Err(e) => return StartOut::Login { reason: Some(Said::new("读取本机保存的登录凭据失败（{e}），请重新登录", &[("e", &e)], "system")), wiped: false },
+            Err(e) => return StartOut::Login { reason: Some(Said::compose("读取本机保存的登录凭据失败（{e}），请重新登录", &[("e", &e)])), wiped: false },
         };
         let Some(stored) = decode_grant(raw.as_deref()) else {
             return StartOut::Login { reason: None, wiped: false };
@@ -336,7 +335,7 @@ impl Engine {
             }
             let mut reason = err.map(|e| not_deleted_message(None, &e));
             if let Err(e) = wipe {
-                let wiped = Said::new("本地缓存没能清空（{e}）", &[("e", &e.raw)], "system");
+                let wiped = Said::compose("本地缓存没能清空（{e}）", &[("e", &e.said())]);
                 reason = Some(match reason {
                     Some(r) => and_then(&r, &wiped),
                     None => wiped,
@@ -354,7 +353,7 @@ impl Engine {
                 // another account's data may still be on disk: do not sign in on top of it
                 Err(e) => {
                     return StartOut::Login {
-                        reason: Some(Said::new("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录", &[("e", &e.raw)], "system")),
+                        reason: Some(Said::compose("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录", &[("e", &e.said())])),
                         wiped: true,
                     }
                 }
@@ -451,8 +450,8 @@ impl Engine {
             }
             // nothing stored is trusted while the new credential is being written
             // (as before: only the database's / the keychain's own words)
-            me.set_trusted(&[]).map_err(|e| Said::outside(&String::from(e), "system"))?;
-            me.d.credentials.set(&encode_grant(&grant)).await.map_err(|e| Said::outside(&e, "system"))?;
+            me.set_trusted(&[]).map_err(|e| e.said())?;
+            me.d.credentials.set(&encode_grant(&grant)).await?;
             // The decision and everything it records happen under the state lock, the same
             // lock a cancel or sign-out takes first: either this login commits before them (and
             // a cancel of it then signs it out), or they win and nothing of it is recorded.
@@ -460,7 +459,7 @@ impl Engine {
             // GitHub App token is refreshed with that app, whatever the setting says later),
             // whose cache this is (another account's data goes), the viewer.
             // Err: the outside text of what refused (the database's or the keychain's own words)
-            let outcome: Result<FinishOut, String> = {
+            let outcome: Result<FinishOut, StoreError> = {
                 let mut st = me.lock();
                 if run != st.login_run {
                     Ok(FinishOut::Stale { login_reason: None })
@@ -479,7 +478,7 @@ impl Engine {
                         ],
                         !same_owner,
                     ) {
-                        Err(e) => Err(e.raw),
+                        Err(e) => Err(e),
                         Ok(()) => {
                             // a sign-out marker from before is superseded by this trusted sign-in (if it
                             // cannot be removed, the next start only asks to sign in again: the safe direction)
@@ -511,8 +510,8 @@ impl Engine {
                 Err(e) => {
                     let left = Engine::clear_stored(me.d.credentials.clone()).await;
                     Err(match left {
-                        None => Said::new("登录没能保存到本机（{e}），已撤销这次登录，请重试", &[("e", &e)], "system"),
-                        Some(d) => not_deleted_message(Some(&Said::new("登录没能保存到本机（{e}）", &[("e", &e)], "system")), &d),
+                        None => Said::compose("登录没能保存到本机（{e}），已撤销这次登录，请重试", &[("e", &e.said())]),
+                        Some(d) => not_deleted_message(Some(&Said::compose("登录没能保存到本机（{e}）", &[("e", &e.said())])), &d),
                     })
                 }
             }
@@ -589,14 +588,13 @@ impl Engine {
             Durable::Yes => None,
             Durable::Marker(db) => Some(with_reason(
                 reason.as_ref(),
-                Said::new("退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录", &[("db", &db.raw)], "system"),
+                Said::compose("退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录", &[("db", &db.said())]),
             )),
             Durable::No(db, m) => Some(with_reason(
                 reason.as_ref(),
-                Said::new(
+                Said::compose(
                     "退出没能保存到本机（数据库：{db}；备用标记：{m}）。正在删除钥匙串里的凭据；删除成功前关掉 App，下次启动可能会自动登录回去",
-                    &[("db", &db.raw), ("m", &m.raw)],
-                    "system",
+                    &[("db", &db.said()), ("m", &m.said())],
                 ),
             )),
         };
@@ -611,10 +609,9 @@ impl Engine {
                     // nothing on disk says "signed out" and the credential is still there
                     Some(e) if undurable => Some(with_reason(
                         reason.as_ref(),
-                        Said::new(
+                        Said::compose(
                             "退出没能保存到本机，钥匙串里的凭据也没能删除（{e}）。下次启动可能会自动登录回去：请在「钥匙串访问」里搜「Cavil Loop」手动删除",
                             &[("e", &e)],
-                            "system",
                         ),
                     )),
                     Some(e) => Some(match &note {
@@ -754,7 +751,7 @@ impl Engine {
             let saved = match me.d.credentials.set(&encode_grant(&next)).await {
                 Ok(()) => true,
                 Err(e) => {
-                    me.lock().unsaved_problem = Some(e);
+                    me.lock().unsaved_problem = Some(e.text());
                     false
                 }
             };
@@ -821,7 +818,7 @@ impl Engine {
             }
             if let Err(e) = me.d.credentials.set(&encode_grant(&grant)).await {
                 let mut st = me.lock();
-                st.unsaved_problem = Some(e);
+                st.unsaved_problem = Some(e.text());
                 return Some(Some(unsaved_message(st.unsaved_problem.as_deref())));
             }
             // check and record trust under one lock: a sign-out cannot slip in between

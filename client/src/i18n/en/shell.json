@@ -323,5 +323,9 @@
   "退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录": "Writing the local database failed while signing out ({db}); a fallback marker makes sure the next start does not sign in automatically",
   "退出没能保存到本机（数据库：{db}；备用标记：{m}）。正在删除钥匙串里的凭据；删除成功前关掉 App，下次启动可能会自动登录回去": "The sign-out could not be saved on this computer (database: {db}; fallback marker: {m}). The credential is being deleted from the keychain; if the app is closed before that succeeds, the next start may sign in again",
   "退出没能保存到本机，钥匙串里的凭据也没能删除（{e}）。下次启动可能会自动登录回去：请在「钥匙串访问」里搜「Cavil Loop」手动删除": "The sign-out could not be saved on this computer, and the credential could not be deleted from the keychain either ({e}). The next start may sign in again: search for \"Cavil Loop\" in Keychain Access and delete it there",
-  "本地存储出错：{e}": "Local storage error: {e}"
+  "本地存储出错：{e}": "Local storage error: {e}",
+  "读取钥匙串失败：{e}": "Reading the keychain failed: {e}",
+  "写入钥匙串失败：{e}": "Writing the keychain failed: {e}",
+  "删除钥匙串条目失败：{e}": "Deleting the keychain entry failed: {e}",
+  "凭据格式不符合预期，未保存": "The credential has an unexpected format; not saved"
 }

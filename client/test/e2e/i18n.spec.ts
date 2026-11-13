@@ -329,7 +329,11 @@ test("GitHub#471 (PR #480 review round 2): what the sign-in page says when this 
   await page.getByTestId('logout').click();
   const reason = page.getByTestId('login-reason');
   await expect(reason).toContainText('The old sign-in credential saved on this computer could not be deleted (', { timeout: 15_000 });
+  // the marked part is the system's own words only: none of the client's sentence is inside it
   await expect(reason.locator('[data-verbatim="system"]')).toHaveCount(1);
+  const os = (await reason.locator('[data-verbatim="system"]').textContent()) ?? '';
+  expect(os).toMatch(/EISDIR|directory/);
+  expect(os).not.toMatch(/credential|keychain|could not|[\u4e00-\u9fff]/);
   expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
   await shot(page, '471-10-signout-not-deleted-en');
   rmSync(env.cred, { recursive: true, force: true });
@@ -342,14 +346,27 @@ test("GitHub#471 (PR #480 review round 2): what the sign-in page says when this 
   const banner = page.getByTestId('login-error');
   await expect(banner).toHaveAttribute('data-status', 'error', { timeout: 15_000 });
   // the save step was really reached and really failed: the database's own words are in the message
-  await expect(banner).toHaveText('Sign-in did not complete. The sign-in could not be saved on this computer (test storage unavailable); it has been undone, try again');
+  await expect(banner).toHaveText('Sign-in did not complete. The sign-in could not be saved on this computer (Local storage error: test storage unavailable); it has been undone, try again');
+  // only the database's own words are marked; the client's prefix is its own words
+  await expect(banner.locator('[data-verbatim]')).toHaveCount(1);
   await expect(banner.locator('[data-verbatim="system"]')).toHaveText('test storage unavailable');
   expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
   await shot(page, '471-11-signin-not-saved-en');
+  allow();
+
+  // the trust list refused (the first write of a sign-in): the store's prefix in English, its words marked
+  const allowTrust = refuseSetting('trustedCredentials');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(banner).toHaveText('Sign-in did not complete. Local storage error: test storage unavailable', { timeout: 15_000 });
+  await expect(banner.locator('[data-verbatim]')).toHaveCount(1);
+  await expect(banner.locator('[data-verbatim="system"]')).toHaveText('test storage unavailable');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await expect(page.getByTestId('board')).toHaveCount(0);
+  allowTrust();
   // undone: still signed out, and nothing of it is trusted (a restart does not sign in)
   await expect(page.getByTestId('start-login')).toBeVisible();
-  await expect(page.getByTestId('board')).toHaveCount(0);
-  allow();
   await app.close();
   const again = await launchApp(env, { locale: 'en-US' });
   await expect(again.page.getByTestId('start-login')).toHaveText('Sign in with GitHub', { timeout: 15_000 });
@@ -372,7 +389,15 @@ test('GitHub#471 (PR #480 review round 2): the same refusals in Chinese read exa
   await page.getByTestId('start-login').click();
   await expect(page.getByTestId('user-code')).toBeVisible();
   env.fake.resolveGrant('approved');
-  await expect(page.getByTestId('login-error')).toHaveText('登录没有完成。 登录没能保存到本机（test storage unavailable），已撤销这次登录，请重试', { timeout: 15_000 });
+  // word for word what this build said before the language work (PR #480 review round 2 quotes it)
+  await expect(page.getByTestId('login-error')).toHaveText('登录没有完成。 登录没能保存到本机（本地存储出错：test storage unavailable），已撤销这次登录，请重试', { timeout: 15_000 });
   allow();
+  // the trust list refused (an earlier write of the same sign-in): before, the banner was the store's own line
+  const allowTrust = refuseSetting('trustedCredentials');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('login-error')).toHaveText('登录没有完成。 本地存储出错：test storage unavailable', { timeout: 15_000 });
+  allowTrust();
   await app.close();
 });
