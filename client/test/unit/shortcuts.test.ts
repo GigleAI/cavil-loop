@@ -32,7 +32,9 @@ const ctxFor = (scope: Scope): KeyContext =>
       ? { ...idle, page: 'settings' }
       : scope === 'reply'
         ? { ...idle, typing: 'reply' }
-        : { ...idle, layer: scope };
+        : scope === 'find'
+          ? { ...idle, typing: 'find' }
+          : { ...idle, layer: scope };
 
 describe('the shortcut table', () => {
   it('every key of every shortcut reaches that shortcut in its own place, with ⌘ and with Ctrl', () => {
@@ -225,18 +227,22 @@ describe('resolve: who gets the key', () => {
     expect(keysOf('newIssueAutopilot')).toBe(keysOf('autopilot'));
   });
   it('GitHub#433: the keys the discussion frame passes on are exactly those of FRAME_IDS, and each resolves to its own id', () => {
-    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync']);
+    expect([...FRAME_IDS]).toEqual(['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync', 'find', 'findNext', 'findPrev']);
     expect([...FRAME_FORWARD]).toEqual([
-      { key: 'r', mod: false, shift: false },
-      { key: 'x', mod: true, shift: true },
-      { key: 'z', mod: true, shift: true },
-      { key: 'c', mod: true, shift: true },
+      { key: 'r', mod: false, shift: false, alt: false },
+      { key: 'x', mod: true, shift: true, alt: false },
+      { key: 'z', mod: true, shift: true, alt: false },
+      { key: 'c', mod: true, shift: true, alt: false },
       // GitHub#434: "等前置…"
-      { key: 'b', mod: true, shift: true },
+      { key: 'b', mod: true, shift: true, alt: false },
       // GitHub#442: ⌘1 … ⌘9 pick a tab from inside the discussion too
-      ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((k) => ({ key: k, mod: true, shift: false })),
+      ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((k) => ({ key: k, mod: true, shift: false, alt: false })),
       // GitHub#442: ⌘R — in a detail tab it reads that item again
-      { key: 'r', mod: true, shift: false },
+      { key: 'r', mod: true, shift: false, alt: false },
+      // GitHub#502: ⌘F / ⌘G / ⇧⌘G — find on the page from inside the discussion too
+      { key: 'f', mod: true, shift: false, alt: false },
+      { key: 'g', mod: true, shift: false, alt: false },
+      { key: 'g', mod: true, shift: true, alt: false },
     ]);
     // one table: every forwarded key is a single lower-case key or digit that resolves (outside any field) to a FRAME_IDS shortcut
     for (const f of FRAME_FORWARD) {
@@ -247,7 +253,7 @@ describe('resolve: who gets the key', () => {
     // and every key of every FRAME_IDS shortcut is forwarded
     for (const id of FRAME_IDS)
       for (const k of SHORTCUTS.find((s) => s.id === id)!.keys)
-        expect(FRAME_FORWARD).toContainEqual({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift) });
+        expect(FRAME_FORWARD).toContainEqual({ key: k.key, mod: Boolean(k.mod), shift: Boolean(k.shift), alt: Boolean(k.alt) });
   });
   it('matches: ⌘ and Ctrl both count as the modifier', () => {
     expect(matches({ key: 'r', mod: true }, key('r', { ctrlKey: true }))).toBe(true);

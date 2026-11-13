@@ -828,8 +828,8 @@ mutant "评论不记进度（重试时重复评论）" scripts/_lib.sh "        
 mutant "self-heal 不跳过等前置" scripts/agent-poll.sh '    if labels_have_blocked "$labels_csv"; then
         SELFHEAL_BLOCKED' '    if false; then
         SELFHEAL_BLOCKED' flow
-mutant "greedy 不挡等前置" scripts/_lib.sh '        "${LABEL_PENDING_MERGE:-}" \
-        "${LABEL_PENDING_BLOCKED:-}"' '        "${LABEL_PENDING_MERGE:-}"' flow
+mutant "greedy 不挡等前置" scripts/_lib.sh '        "${LABEL_PENDING_BLOCKED:-}" \
+        "${LABEL_PENDING_LATER:-}"' '        "${LABEL_PENDING_LATER:-}"' flow
 mutant "派工不摘等前置标签" scripts/_lib.sh '[ -z "$LABEL_PENDING_BLOCKED" ] || BLOCKED_DISPATCH_CLEAR=("$LABEL_PENDING_BLOCKED")' ':' flow
 mutant "功能关着也写状态" scripts/_lib.sh '    BLOCKED_WAITING=0; BLOCKED_ACTED=0
     blocked_enabled || return 0' '    BLOCKED_WAITING=0; BLOCKED_ACTED=0

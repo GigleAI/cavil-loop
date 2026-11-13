@@ -1,7 +1,8 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { FRAME_IDS, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
+import { findEscape, findEscapeFromFrame } from './findInPage';
+import { composing, frameAllowed, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
@@ -60,9 +61,9 @@ let pageNow: Page = 'board';
  * One key press, decided by `resolve` and run by the mounted handler: the id that acted, or null.
  * Both the window's own keydown listener and a key forwarded by the discussion frame go through here.
  */
-function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): ShortcutId | null {
+function press(e: KeyLike, typing: Typing, only?: (id: ShortcutId, spec: KeySpec) => boolean): ShortcutId | null {
   const hit = resolveKey(e, { signedIn: signedInNow, layer: topLayer(), typing, page: pageNow });
-  if (!hit || (only && !only.includes(hit.id))) return null;
+  if (!hit || (only && !only(hit.id, hit.spec))) return null;
   const list = handlers.get(hit.id);
   const h = list?.[list.length - 1];
   if (!h) return null;
@@ -75,23 +76,29 @@ function press(e: KeyLike, typing: Typing, only?: readonly ShortcutId[]): Shortc
  * the shortcuts of FRAME_IDS (go to the reply box, 关闭 issue / 交给 agent / 托管) may act — every
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
-export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = '', meta?: unknown, ctrl?: unknown): boolean {
+export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = '', meta?: unknown, ctrl?: unknown, alt: unknown = false): boolean {
   // the key as the frame's browser reported it: a character, or a named key (Ctrl+Numpad1 reports "End" — code review round 3)
-  if (typeof key !== 'string' || key.length < 1 || key.length > 32 || typeof mod !== 'boolean' || typeof shift !== 'boolean') return false;
+  if (typeof key !== 'string' || key.length < 1 || key.length > 32 || typeof mod !== 'boolean' || typeof shift !== 'boolean' || typeof alt !== 'boolean') return false;
   // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
   // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
   if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;
-  return press(frameEvent(key, mod, shift, code, meta, ctrl), 'none', FRAME_IDS) !== null;
+  // GitHub#487: only what the frame may forward — the same rule that built its list (`frameAllowed`)
+  return press(frameEvent(key, mod, shift, code, meta, ctrl, alt), 'none', frameAllowed) !== null;
+}
+
+/** GitHub#502: a plain Esc the discussion frame handed over because find is open: it only ever closes find */
+export function frameFindEscape(): void {
+  if (signedInNow) findEscapeFromFrame(topLayer() !== 'none');
 }
 
 /**
  * A key the discussion frame reported, as the window's event it stands for. GitHub#492: the frame also reports ⌘ and ⌃
  * one by one (⌃⌘1 is not ⌘1 on macOS); they are taken only when both are booleans and agree with `mod` — otherwise the
- * key stands for ⌘ alone, as before.
+ * key stands for ⌘ alone, as before. GitHub#487: ⌥ / Alt too.
  */
-export function frameEvent(key: string, mod: boolean, shift: boolean, code: string, meta?: unknown, ctrl?: unknown): KeyLike {
+export function frameEvent(key: string, mod: boolean, shift: boolean, code: string, meta?: unknown, ctrl?: unknown, alt: boolean = false): KeyLike {
   const held = typeof meta === 'boolean' && typeof ctrl === 'boolean' && (meta || ctrl) === mod;
-  return { key, code, metaKey: held ? (meta as boolean) : mod, ctrlKey: held ? (ctrl as boolean) : false, altKey: false, shiftKey: shift };
+  return { key, code, metaKey: held ? (meta as boolean) : mod, ctrlKey: held ? (ctrl as boolean) : false, altKey: alt, shiftKey: shift };
 }
 
 /**
@@ -104,6 +111,9 @@ export function useKeyboard(signedIn: boolean, page: Page = 'board'): void {
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      // GitHub#502: while the find bar is open, a plain Esc closes it first (before 回到首页 / 离开回复框 / 回到看板);
+      // a dialog, picker or the shortcut list on top keeps its own Esc
+      if (signedInNow && !composing(e) && findEscape(e, topLayer() !== 'none')) return void e.preventDefault();
       if (press(e, typingOf(document.activeElement))) e.preventDefault();
     };
     window.addEventListener('keydown', listener);

@@ -564,6 +564,14 @@ export interface TallyDef {
   color: TallyColor;
   source: TallySource;
 }
+/**
+ * GitHub#464: the "显示已关闭" switch, one per view — the three layouts (`board` / `table` / `graph`), and each
+ * number of the view bar while it is lit, by its row's id (the default rows: `running` / `agent` / `human` /
+ * `unlabeled`; a number made in Settings has its own, GitHub#468). false = only open items are listed; a number
+ * not switched yet has no entry and starts as it counts (on for "等人处理", which counts closed items too).
+ */
+export type ShowClosedKey = string;
+export type ShowClosed = Record<ShowClosedKey, boolean>;
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -583,6 +591,8 @@ export interface ViewSettings {
   detailFields: boolean;
   /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */
   codeWrap: boolean;
+  /** GitHub#464: per view, whether closed / merged items are listed too (all false by default) */
+  showClosed: ShowClosed;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';
@@ -622,6 +632,13 @@ export interface SyncState {
 /** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */
 export type AppKind = 'oauth' | 'github-app';
 export const APP_KINDS: readonly AppKind[] = ['oauth', 'github-app'];
+
+/** GitHub#487: one changed shortcut key: the key, and which of ⌘ / Ctrl, Shift, ⌥ / Alt are held with it */
+export type ShortcutKeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean };
+/** GitHub#487: a saved key left out when the settings were read: which shortcut, its name, why */
+export type ShortcutKeyDropped = { id: string; name: string; why: string };
+/** GitHub#487: a key change: saved, or refused with the reason (nothing changed) */
+export type ShortcutKeyResult = { ok: true } | { ok: false; why: string };
 
 export interface AppState {
   phase: 'loading' | 'login' | 'ready';
@@ -663,6 +680,10 @@ export interface AppState {
   laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** GitHub#487: the shortcut keys changed on this machine (by shortcut id; one key each), already repaired — the table in effect never has a conflict */
+  shortcutKeys: Record<string, ShortcutKeySpec>;
+  /** GitHub#487: saved keys that could not be used when the settings were read, and why (shown until that shortcut is changed or restored) */
+  shortcutDropped: ShortcutKeyDropped[];
   /** GitHub#369: switching to the window takes back every delivered notification; false (default) = they stay, a click takes back only that one */
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */

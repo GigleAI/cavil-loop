@@ -14,7 +14,7 @@
 daemon 只在 PR 和 issue 能对上时才合并，对不上就交人。所以：
 
 - PR 从工作分支 `@@BRANCH@@` 开，不要换分支名。
-- PR 正文**只写一个** `Refs #@@ISSUE@@`，**不写**任何关闭关键词（`Closes` / `Fixes` / `Resolves` 都不写，也不写别的 `Refs`）——不管上文让你写什么。托管合并后 issue 要留给维护者验收、关闭；正文带关闭关键词的 PR daemon 不合并，会交回你改。拆出来的子项也一样（写 `Refs #<子项编号>`，`Part of #<父 issue>` 照写）。
+- PR 正文写**一个** `Closes #@@ISSUE@@`，不关闭别的 issue（别的 `Closes` / `Fixes` / `Resolves` 都不写）——不管上文让你写什么。合并时 GitHub 关掉 issue，daemon 在 issue 上发合并说明、打 `@@LABEL_DONE@@` 并挂 `@@LABEL_PENDING_HUMAN@@` 提醒维护者看；等这个 issue 的下游条目随之开工。拆出来的子项也一样（写 `Closes #<子项编号>`，`Part of #<父 issue>` 照写，不写 `Closes #<父 issue>`）。
 - PR 正文里放一段**总结**，daemon 合并后原样搬进 issue 上的合并说明，给维护者一眼看清楚。开头一行、结尾一行是这两个标记（原样写），中间三个折叠块，各写几句白话：
 
   ```markdown
@@ -41,7 +41,7 @@ daemon 只在 PR 和 issue 能对上时才合并，对不上就交人。所以�
 
 ## daemon 打回时
 
-PR 上出现「托管：合并前检查没过，已交回 worker」或「托管：重新交复审」的 daemon 评论，按评论里写的原因修（检查没过就修到通过，冲突就按上文「交出 PR 前：先查和主干有没有冲突」处理；原因是正文还有关闭关键词，就只把那一处改成 `Refs #@@ISSUE@@`，正文其他内容不动），修完照常推送、把 PR 交回复审 `@@LABEL_PENDING_REVIEW@@`。
+PR 上出现「托管：合并前检查没过，已交回 worker」或「托管：重新交复审」的 daemon 评论，按评论里写的原因修（检查没过就修到通过，冲突就按上文「交出 PR 前：先查和主干有没有冲突」处理），修完照常推送、把 PR 交回复审 `@@LABEL_PENDING_REVIEW@@`。
 
 ## 仍然停下交人（翻 `@@LABEL_PENDING_HUMAN@@`）
 

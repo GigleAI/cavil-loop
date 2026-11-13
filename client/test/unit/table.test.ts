@@ -99,17 +99,20 @@ describe('recorded cavil project: importing its saved view "Pending"', () => {
     const { view, note } = pickView(data.projects[0], 1);
     expect(note).toBeNull();
     const patch = importView(view!, data.projects[0], DEFAULT_VIEW, note);
-    expect(patch).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    // GitHub#464: the view's filter only hides finished items — that is the "显示已关闭" switch's job now
+    expect(view!.filter).toBe('-label:Done -status:Done');
+    expect(patch).toMatchObject({ layout: 'table', query: '' });
     expect(patch.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' } });
     expect(patch.table.columns).toEqual(['title', 'labels', 'linkedPrs', 'subIssues', 'updated', 'iteration']);
     expect(patch.imported!.notes).toEqual([]);
 
-    const parsed = parseFilter(patch.query);
+    // the rest of the import (grouping, order, columns) on the items the web view's own filter picks
+    const parsed = parseFilter(view!.filter);
     expect(parsed.unsupported).toEqual([]);
     const filtered = applyFilter(data.items, parsed, { viewer: null, today: FIXTURE_TODAY, projects: data.projects });
     const table = buildTable(filtered, data.projects, patch.table, FIXTURE_TODAY);
     // items: exactly what GitHub's own filter returned for this view's filter
-    expect([...keysOf(table)].sort()).toEqual(serverResults.find((x) => x.query === patch.query)!.server);
+    expect([...keysOf(table)].sort()).toEqual(serverResults.find((x) => x.query === view!.filter)!.server);
 
     // groups and their counts, from the raw recorded iteration values
     const r = raw();
@@ -364,16 +367,17 @@ describe('importing saved views', () => {
     for (const word of ['路线图', 'Priority', 'Estimate', '2 级排序', 'Start date']) expect(notes).toContain(word);
   });
 
-  it('GitHub#298: an empty filter keeps the default search text only; anything else is replaced as before', () => {
+  it('GitHub#464: the filter is taken as written, without the words that only hid finished items', () => {
     const at = (query: string) => ({ ...DEFAULT_VIEW, query });
-    expect(importView(view({ filter: '' }), P, at(DEFAULT_QUERY), null).query).toBe(DEFAULT_QUERY);
-    expect(importView(view({ filter: '   ' }), P, at(DEFAULT_QUERY), null).query).toBe(DEFAULT_QUERY);
+    expect(DEFAULT_QUERY).toBe('');
+    expect(importView(view({ filter: '' }), P, at(DEFAULT_QUERY), null).query).toBe('');
+    expect(importView(view({ filter: '   ' }), P, at(DEFAULT_QUERY), null).query).toBe('');
+    expect(importView(view({ filter: '-label:Done -status:Done' }), P, at(DEFAULT_QUERY), null).query).toBe('');
+    expect(importView(view({ filter: 'is:open -Status:done' }), P, at('label:x'), null).query).toBe('');
+    expect(importView(view({ filter: '-label:Done label:bug' }), P, at(DEFAULT_QUERY), null).query).toBe('label:bug');
     expect(importView(view({ filter: 'label:bug' }), P, at(DEFAULT_QUERY), null).query).toBe('label:bug');
+    expect(importView(view({ filter: 'is:closed' }), P, at(DEFAULT_QUERY), null).query).toBe('is:closed');
     expect(importView(view({ filter: '' }), P, at('label:bug'), null).query).toBe('');
-    expect(importView(view({ filter: '' }), P, at(''), null).query).toBe('');
-    // only that exact text: a hand-edited variant is an ordinary search text
-    expect(importView(view({ filter: '' }), P, at('-status:done -label:done'), null).query).toBe('');
-    expect(importView(view({ filter: '' }), P, at(`${DEFAULT_QUERY} `), null).query).toBe('');
   });
 
   it('a view without sort = the Project order; slices and hierarchy (not in the API) go back to on, the picked slice is reset', () => {

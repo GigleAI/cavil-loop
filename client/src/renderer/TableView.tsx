@@ -12,7 +12,7 @@ import { OPENS_ITEM } from './outsideClick';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
-import { noteOf, type ResultNote } from './DetailPanel';
+import { resultNote, type ResultNote } from './DetailPanel';
 import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
 import { useRepoDrag } from './repoDrag';
@@ -399,7 +399,9 @@ export function TableView({
       n.delete(item.key);
       return n;
     });
-    onNote?.(noteOf(r, `${item.repo}#${item.number}：${okText}`), a);
+    // GitHub#488: a recorded field change is said by the cell and the window's notice area, not here
+    const said = resultNote(r, `${item.repo}#${item.number}：${okText}`);
+    if (said) onNote?.(said, a);
   };
 
   // ---- column widths (GitHub#205): dragged on the head's right edge, kept in the view settings; double-click = default ----
