@@ -545,6 +545,26 @@ export interface HandBackLabels {
 
 export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
 
+/** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows */
+export type TallyFlow = 'running' | 'agent' | 'human';
+/** GitHub#468: the colours a view-bar number's dot can take ('ring' = the hollow circle) */
+export type TallyColor = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'ring';
+/**
+ * GitHub#468: what a view-bar number counts.
+ *  - flow: open items carrying that flow label (whole name, any case) — the reminders' own rule; the label
+ *    is read from `handBack` every time, so the row follows the label setting
+ *  - query: the items a search condition picks (the search box's own filter); a click puts that text in
+ *    the box. `from` = the flow label the row was turned from, so it can be turned back
+ */
+export type TallySource = { kind: 'flow'; flow: TallyFlow } | { kind: 'query'; query: string; from?: TallyFlow };
+/** GitHub#468: one number of the view bar, as set in Settings */
+export interface TallyDef {
+  id: string;
+  name: string;
+  color: TallyColor;
+  source: TallySource;
+}
+
 export interface ViewSettings {
   mode: ColumnMode;
   swimlanes: boolean;
@@ -629,6 +649,10 @@ export interface AppState {
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
   handBack: HandBackLabels;
+  /** GitHub#468: the view-bar numbers as set in Settings; null = the default table */
+  tallies: TallyDef[] | null;
+  /** GitHub#468: a saved table could not be read (not a list, a row it does not know) — the default is shown */
+  talliesBroken: boolean;
   /** GitHub#434: the waiting label of "等前置…" and the other flow labels (kept on this machine) */
   blockedLabels: BlockedLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */

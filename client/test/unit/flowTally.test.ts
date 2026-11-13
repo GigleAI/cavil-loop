@@ -117,7 +117,7 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
   it('counts open issues and draft / ready PRs with no label; any label, closed or merged leaves it out', () => {
     expect(bare(ITEMS)).toEqual([10, 11]);
     const u = unlabeledTally(ITEMS);
-    expect(u).toEqual({ kind: 'unlabeled', label: '', count: 2, query: 'is:open no:label' });
+    expect(u).toEqual({ kind: 'unlabeled', name: '未处理', color: 'ring', source: 'query', flow: null, label: '', count: 2, query: 'is:open no:label' });
     // one label of any kind is enough to leave: a classification label, the autopilot label, a flow label
     for (const name of ['bug', 'autopilot', 'pending/agent']) {
       expect(unlabeledTally([item(R, 1, { labels: L(name) }), item(R, 2, {})]).count, name).toBe(1);

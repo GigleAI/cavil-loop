@@ -140,7 +140,8 @@ export interface OpRecord {
    * proves nothing about this request. null = that read failed: such a step can never be proven
    * automatically (a person checks and unlocks). Absent = the operation has no step needing it.
    */
-  before?: { comments: string[]; events: string[]; labels?: string[] } | null;
+  /** GitHub#451: `state` — open / closed / merged as read then (absent in a record from before it) */
+  before?: { comments: string[]; events: string[]; labels?: string[]; state?: 'open' | 'closed' | 'merged' } | null;
   /**
    * GitHub#359, this run of the app only (never kept over a restart): the steps not sent yet may go
    * out by themselves once the unknown one is proven (set when the sending stopped at an unknown
@@ -278,6 +279,27 @@ function labelText(s: OpStep, checks = 0): string {
   }
 }
 
+/** GitHub#451: how the comment a hand-over / autopilot sends first reads */
+function commentText(s: OpStep): string {
+  switch (s.state) {
+    case 'ok':
+      return '已发出评论';
+    case 'refused':
+      return `评论没有发出去：${s.reason ?? ''}`;
+    case 'unknown':
+      return '评论不确定有没有发出';
+    case 'pending':
+      return '正在发评论…';
+    case 'unsent':
+      return `还没发评论${s.reason ? `：${s.reason}` : ''}`;
+  }
+}
+
+/** a step of a hand-over / autopilot: its comment (GitHub#451) or one of its labels */
+function handStepText(s: OpStep, checks = 0): string {
+  return s.name === 'comment' ? commentText(s) : labelText(s, checks);
+}
+
 /** The notice of a record: every step that did not simply succeed is named, nothing is left out. */
 export function opText(r: OpRecord): string {
   // created, its first request not marked sent yet: it reads as on its way
@@ -324,15 +346,20 @@ export function opText(r: OpRecord): string {
               ? `没有合并 ${w}：${m.reason ?? '没有发出'}`
               : `${w} 已合并`;
   } else {
-    const verb = r.kind === 'autopilot' ? '托管' : '交给 agent';
+    // GitHub#451: a hand-over carrying the reply box's text sends it first ("评论并…")
+    const commented = m.name === 'comment';
+    const verb = `${commented ? '评论并' : ''}${r.kind === 'autopilot' ? '托管' : '交给 agent'}`;
     const allOk = r.steps.every((s) => s.state === 'ok');
     const u = r.steps.find((s) => s.state === 'unknown');
-    if (m.state === 'pending') head = `正在${verb}…`;
+    if (m.state === 'pending') head = commented ? `正在${verb}：先发评论，发出后再改标签…` : `正在${verb}…`;
     else if (r.checking && u && !r.steps.some((s) => s.state === 'pending'))
-      head = `正在${verb}…「${u.label ?? ''}」发出后没有收到 GitHub 的应答，正在自动核对有没有${u.name === 'addLabel' ? '加上' : '摘掉'}（第 ${(r.checks ?? 0) + 1} 次）`;
-    else if (m.state === 'refused' || m.state === 'unsent') head = `没有${verb}：${labelText(m)}`;
-    else if (allOk) head = r.kind === 'autopilot' ? `已托管：${r.steps.map((s) => labelText(s)).join('、')}` : `已交给 agent：${r.steps.map((s) => labelText(s)).join('、')}`;
-    else head = `${verb}没有全部完成：${r.steps.map((s) => labelText(s, r.checks ?? 0)).join('；')}`;
+      head =
+        u.name === 'comment'
+          ? `正在${verb}…评论发出后没有收到 GitHub 的应答，正在自动核对有没有发出（第 ${(r.checks ?? 0) + 1} 次）；标签还没动`
+          : `正在${verb}…「${u.label ?? ''}」发出后没有收到 GitHub 的应答，正在自动核对有没有${u.name === 'addLabel' ? '加上' : '摘掉'}（第 ${(r.checks ?? 0) + 1} 次）`;
+    else if (m.state === 'refused' || m.state === 'unsent') head = `没有${verb}：${handStepText(m)}${commented ? '，标签都没动' : ''}`;
+    else if (allOk) head = `已${verb}：${r.steps.map((s) => handStepText(s)).join('、')}`;
+    else head = `${verb}没有全部完成：${r.steps.map((s) => handStepText(s, r.checks ?? 0)).join('；')}`;
   }
   const p = opPhase(r);
   const labelOp = r.kind === 'autopilot' || r.kind === 'handBack';
@@ -794,7 +821,13 @@ export type OpPermit =
  *   - the step's wanted state is not there yet (else: done, nothing to send);
  *   - auto: within OP_AUTO_MS, in the run that started it (`r.auto`).
  */
-export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend'; now: number; autoMs?: number }): OpPermit {
+/**
+ * `mode: 'follow'` (GitHub#451): every label step of a hand-over that sent a comment first — the comment
+ * proves only that the text went out, not that the item stayed as it was while it (and each label after it)
+ * was on its way;
+ * the same judgement, without the "same run / within 10 minutes" part (it is the click's own send).
+ */
+export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend' | 'follow'; now: number; autoMs?: number }): OpPermit {
   const s = r.steps[index];
   if (!s || !isLabelStep(s)) return { ok: false, why: 'halt', text: '这一步不是改标签' };
   if (opts.mode === 'auto') {
@@ -803,7 +836,10 @@ export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, op
   }
   const news = opNewEvents(r, snap);
   if (news === null || !snap) return { ok: false, why: 'unread', text: '没能完整读到这一条现在的状态和标签记录' };
-  if (snap.state !== 'open') return { ok: false, why: 'halt', text: '这一条已经关闭', redo: true };
+  // GitHub#451: after a hand-over's comment, what stops it is a change while the comment was on its way —
+  // a hand-over of an item that was already closed is allowed (as without a comment); unknown = must be open
+  const wasState = opts.mode === 'follow' ? r.before?.state : undefined;
+  if (snap.state !== (wasState ?? 'open')) return { ok: false, why: 'halt', text: snap.state === 'open' ? '这一条被重新打开了' : '这一条已经关闭', redo: true };
   const allowed = new Map<string, number>();
   for (const d of r.steps) {
     if (d === s || d.state !== 'ok' || !isLabelStep(d)) continue;

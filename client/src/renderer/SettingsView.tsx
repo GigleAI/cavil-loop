@@ -15,10 +15,13 @@ import { ProjectPicker } from './ProjectPicker';
 import { FailureNote } from './FailureNote';
 import type { SettingsIntent } from './EmptyGuide';
 import { failureOf } from '../shared/readFailure';
+import { TallySettings } from './TallySettings';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
   { id: 'set-hand-back', icon: 'tag', title: '交给 agent' },
+  // GitHub#468: the view-bar numbers
+  { id: 'set-tallies', icon: 'sliders', title: '顶栏计数' },
   { id: 'set-pending', icon: 'bell', title: '提醒' },
   // only in a build that updates itself (GitHub#184); the section is not there otherwise
   { id: 'set-update', icon: 'refresh', title: '更新' },
@@ -176,9 +179,9 @@ export function SettingsView({
       </section>
 
       <section id="set-hand-back" data-testid="hand-back-settings">
-        <h3>流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）</h3>
+        <h3>流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）</h3>
         <p className="muted small">
-          顶栏右侧的「运行中 / 等 agent / 等人处理」三个数，分别数开着的条目里带「运行中的标签」「交给 agent 的标签」的，以及带「等人处理的标签」的（已关闭的也算）。运行中的标签留空，就不显示「运行中」这个数（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
+          顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」：前两个数开着的条目里带这个标签的，「等人处理」开着的和已关闭的都数。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
           <br />
           详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
           <br />
@@ -186,7 +189,7 @@ export function SettingsView({
         </p>
         <div className="row label-grid">
           <label>
-            运行中的标签（留空 = 不显示「运行中」这个数）
+            运行中的标签（留空 = 跟随它的数不显示）
             <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
           </label>
           <label>
@@ -218,6 +221,8 @@ export function SettingsView({
           「托管」前先弹确认框（在确认框里勾过「不再提示」会关掉这一项，在这里勾回来）
         </label>
       </section>
+
+      <TallySettings state={state} />
 
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
