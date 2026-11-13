@@ -105,8 +105,13 @@ test('⌘F opens the find bar and finds text on the page: count, next / previous
   const { page } = await launchApp(env);
   await signIn(page);
   const search = page.getByTestId('search');
-  // adding the Project imports its saved web view (its filter replaces the search): wait for that first
-  await expect(search).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imports its saved web view: wait for that first. Since GitHub#464 its filter
+  // (-label:Done -status:Done, only hiding finished items) is left out of the box, so wait on the
+  // import's own mark and check the box stayed empty
+  await expect
+    .poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.view.imported?.viewNumber ?? null) as number | null), { timeout: 15_000 })
+    .toBe(1);
+  await expect(search).toHaveValue('');
   await expect
     .poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.sync.sources as { ok: boolean }[]).map((x) => x.ok)), { timeout: 20_000 })
     .toEqual([true, true]);
