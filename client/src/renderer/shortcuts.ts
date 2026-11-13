@@ -137,12 +137,17 @@ export const SHORTCUTS: readonly Shortcut[] = [
  * place that has to know: `matches` accepts both, and a changed key is kept with the bracket (GitHub#487: the
  * recorder sees "}", the default table says "]" + Shift — the same key press, so the same key everywhere).
  */
-const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
-const UNSHIFTED: Record<string, string> = Object.fromEntries(Object.entries(SHIFTED).map(([a, b]) => [b, a]));
+// Maps, not plain objects: a saved key named "constructor" / "toString" / "__proto__" must find nothing here
+// (PR #498 review round 2: a plain object handed back an inherited function as the key)
+const SHIFTED: ReadonlyMap<string, string> = new Map([
+  [']', '}'],
+  ['[', '{'],
+]);
+const UNSHIFTED: ReadonlyMap<string, string> = new Map([...SHIFTED].map(([a, b]) => [b, a]));
 
 /** a key with Shift held, in the one form the tables use: "}" + Shift is "]" + Shift */
 function shiftBase(key: string, shift: boolean): string {
-  return shift && UNSHIFTED[key] ? UNSHIFTED[key] : key;
+  return (shift && UNSHIFTED.get(key)) || key;
 }
 
 // ---- GitHub#487: keys changed on this machine ----
@@ -437,7 +442,8 @@ export function matches(spec: KeySpec, e: KeyLike, mac: boolean = isMac()): bool
   if (spec.key === '?') return e.key === '?';
   if (Boolean(spec.shift) !== e.shiftKey) return false;
   // with Shift held a bracket key reports the brace on most layouts (GitHub#397: ⌘⇧] / ⌘⇧[)
-  if (spec.shift && SHIFTED[spec.key]) return e.key === spec.key || e.key === SHIFTED[spec.key];
+  const brace = spec.shift ? SHIFTED.get(spec.key) : undefined;
+  if (brace) return e.key === spec.key || e.key === brace;
   // GitHub#442: a digit is the key itself — ⇧1 reports "!" on a US layout, a French one needs Shift for any digit
   // (no code reported — a key forwarded by the discussion frame: its text decides)
   if (/^[0-9]$/.test(spec.key)) return typeof e.code === 'string' && e.code !== '' ? /^(Digit|Numpad)[0-9]$/.test(e.code) && e.code.slice(-1) === spec.key : e.key === spec.key;
@@ -506,7 +512,7 @@ export function keyParts(spec: KeySpec, mac: boolean): string[] {
   if (spec.alt) out.push(mac ? '⌥' : 'Alt');
   if (spec.mod) out.push(mac ? '⌘' : 'Ctrl');
   if (spec.shift && spec.key !== '?') out.push(mac ? '⇧' : 'Shift');
-  out.push(KEY_NAME[spec.key] ?? (spec.key.length === 1 ? spec.key.toUpperCase() : spec.key));
+  out.push((Object.prototype.hasOwnProperty.call(KEY_NAME, spec.key) ? KEY_NAME[spec.key] : undefined) ?? (spec.key.length === 1 ? spec.key.toUpperCase() : spec.key));
   return out;
 }
 

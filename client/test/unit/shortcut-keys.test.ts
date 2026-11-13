@@ -458,3 +458,22 @@ describe('PR #498 review round 1: a key without ⌘ never comes from the discuss
     expect(FRAME_FORWARD.filter((f) => !f.mod).map((f) => f.key)).toEqual(['r']);
   });
 });
+
+describe('PR #498 review round 2: a saved key named like a built-in property is just a bad key', () => {
+  it('constructor / toString / __proto__ / hasOwnProperty, with and without Shift: left out with a reason, no exception', () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'])
+      for (const shift of [true, false]) {
+        const r = repairKeys({ labels: { key: name, shift }, search: { key: 'k', mod: true } }, false);
+        expect(r.keys, `${name} ${shift}`).toEqual({ search: { key: 'k', mod: true } });
+        expect(r.dropped.map((d) => d.id)).toEqual(['labels']);
+        expect(r.dropped[0].why.length).toBeGreaterThan(3);
+        const c = changeKey({}, 'labels', { key: name, shift }, false);
+        expect(c.ok, `${name} ${shift}`).toBe(false);
+      }
+  });
+  it('the brace still becomes the bracket, and a usable key is still kept', () => {
+    expect(canonicalKey({ key: '}', mod: true, shift: true })).toEqual({ key: ']', mod: true, shift: true });
+    expect(canonicalKey({ key: '{', shift: true })).toEqual({ key: '[', shift: true });
+    expect(repairKeys({ newIssueAgent: { key: '}', mod: true, shift: true } }, false).keys).toEqual({ newIssueAgent: { key: ']', mod: true, shift: true } });
+  });
+});
