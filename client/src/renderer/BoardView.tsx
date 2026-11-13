@@ -1,6 +1,7 @@
 import { badgeText, stateTone } from '../shared/stateTone';
 import { UpdateInstalledBar, UpdateReadyBar } from './UpdateViews';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
@@ -9,7 +10,6 @@ import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropP
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
-import brandIcon from '../../build/icon.png';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
@@ -24,6 +24,7 @@ import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Re
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
+import { pinnedLabels } from '../shared/pickOrder';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
@@ -418,6 +419,8 @@ export function BoardView({
   onSettings,
   onKeysHelp,
   tallySaved,
+  tools = null,
+  onFront,
   tallyPick: pickProp,
   onTallyPick,
 }: {
@@ -449,6 +452,16 @@ export function BoardView({
   onKeysHelp?: () => void;
   /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
   tallySaved?: { current: string | null };
+  /**
+   * GitHub#467: the window's top row, where the board draws its tools (search, sync state, refresh, new
+   * issue, settings, the account) — they stay there while a detail tab is in front. null: not drawn yet.
+   */
+  tools?: HTMLElement | null;
+  /**
+   * GitHub#467: bring the board to the front (a tool used while a detail tab is in front). `keepFocus`:
+   * the search box is being typed in — it stays focused (and open) for the next key.
+   */
+  onFront?: (keepFocus?: boolean) => void;
   /** GitHub#464: the number last clicked (kept by the window) — tells numbers with the same click text apart */
   tallyPick?: string | null;
   onTallyPick?: (kind: string | null) => void;
@@ -458,6 +471,9 @@ export function BoardView({
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
+  // GitHub#496: the table's label picker keeps these near the top, like the detail panel's
+  const { autopilot: pinA, human: pinH, agent: pinG } = state.handBack;
+  const pinned = useMemo(() => pinnedLabels({ autopilot: pinA, human: pinH, agent: pinG }), [pinA, pinH, pinG]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   const { running, agent, human } = state.handBack;
@@ -555,6 +571,8 @@ export function BoardView({
   // false = closed; true = the plain dialog; a seed = from a table group's "+" (GitHub#214)
   const [newIssue, setNewIssue] = useState<boolean | GroupSeed | { draft: CreateJob['draft'] }>(false);
   const searchBox = useRef<HTMLInputElement>(null);
+  // GitHub#467: the search box is small until it is used (focused), then wide; leaving it keeps what it holds
+  const [searchOpen, setSearchOpen] = useState(false);
   // GitHub#323: the bar's note, and the field change a failed one is about (it goes once that change is over)
   const [shownNote, setShownNote] = useState<{ note: ResultNote; watch: NoteEdit[] } | null>(null);
   const note = shownNote?.note ?? null;
@@ -578,12 +596,15 @@ export function BoardView({
   useEffect(() => {
     if (!request) return;
     if (request.kind === 'search') {
-      searchBox.current?.focus();
-      searchBox.current?.select();
+      // GitHub#467: the box lives in the window's top row; coming back from a page without that row it is
+      // drawn a moment after the board — the request waits for it (it is taken once the box is there)
+      if (!searchBox.current) return;
+      searchBox.current.focus();
+      searchBox.current.select();
     } else if (request.draft) setNewIssue({ draft: request.draft });
     else if (canWrite) setNewIssue(true);
     onRequestTaken?.();
-  }, [request?.seq]);
+  }, [request?.seq, tools]);
   const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
   const [choice, setChoice] = useState(0);
   const dragging = useRef<{ card: Card; from: string } | null>(null);
@@ -649,13 +670,6 @@ export function BoardView({
   const filtering = isFiltering(parsed);
   const hasText = parsed.clauses.some((c) => c.kind === 'text');
 
-  const toggle = (key: string) => {
-    const next = new Set(selected);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    api().setView({ selected: state.sources.map((s) => s.key).filter((k) => next.has(k)) });
-  };
-
   const ended = board.columns.filter((c) => c.ended);
   const shown = board.columns.filter((c) => !c.ended);
   // GitHub#297: with swimlanes, a column is at most half of the board's visible height, and never so tall
@@ -703,94 +717,112 @@ export function BoardView({
 
   return (
     <div className="board-page" data-testid="board">
-      {/* top row: what you are looking at (sources, search), sync state, new issue, settings */}
-      <header className="hdr">
-        <div className="brand">
-          <img src={brandIcon} alt="" />
-          Cavil Loop
-        </div>
-        {state.sources.length > 0 && <div className="vsep" />}
-        <div
-          className="sources-pick"
-          data-testid="source-pick"
-          // a mouse wheel only scrolls up and down; turn it sideways so a plain mouse reaches every source
-          onWheel={(e) => {
-            const el = e.currentTarget;
-            if (e.deltaX === 0 && e.deltaY !== 0 && el.scrollWidth > el.clientWidth) el.scrollLeft += e.deltaY;
-          }}
-        >
-          {state.sources.map((s) => (
-            <label key={s.key} className={`src-chip${selected.has(s.key) ? ' on' : ''}`} title={sourceLabel(s, titles.get(s.key))}>
-              <input type="checkbox" data-key={s.key} checked={selected.has(s.key)} onChange={() => toggle(s.key)} />
-              <Icon name={s.kind === 'project' ? 'project' : 'repo'} size={14} />
-              <span className="src-name">{sourceLabel(s, titles.get(s.key))}</span>
-            </label>
-          ))}
-        </div>
-        <div className="search">
-          <Icon name="search" />
-          <input
-            data-testid="search"
-            ref={searchBox}
-            type="search"
-            value={query}
-            aria-label="搜索或筛选"
-            placeholder="搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me（按 / 跳到这里）"
-            title="写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me"
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-        <div className="hdr-right">
-          {/* GitHub#324: the oldest check, not "GitHub answered"; the hover has every source's two times */}
-          {headerText(sync, now) !== null && (
-            <span
-              className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
-              data-testid="sync-status"
-              title={hoverLines(sync, labelOf, now).join('\n')}
+      {/* GitHub#467: the tools live in the window's one top row (TopBar), also while a detail tab is in front */}
+      {tools &&
+        createPortal(
+          <>
+            <div
+              className={`search${searchOpen ? ' open' : ' mini'}`}
+              data-testid="search-box"
+              data-open={searchOpen ? 'yes' : 'no'}
+              // a press anywhere on the small box opens it (the icon too, not only the text)
+              onMouseDown={(e) => {
+                if (e.target === searchBox.current) return;
+                e.preventDefault();
+                searchBox.current?.focus();
+              }}
             >
-              <span className="dot" />
-              <span className="sync-text">{headerText(sync, now)}</span>
-            </span>
-          )}
-          {okShown && (
-            <span className="reread-ok" data-testid="sync-reread-ok" role="status">
-              <Icon name="check" />
-              {REREAD_OK_TEXT}
-            </span>
-          )}
-          {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} reread={reread} />}
-          {/* never greyed out while a round runs (GitHub#217): a click starts over */}
-          <button
-            className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
-            data-testid="refresh"
-            data-syncing={sync.syncing ? 'yes' : 'no'}
-            aria-label={sync.syncing ? '同步中…（点一下重新同步）' : '刷新'}
-            title={sync.syncing ? `同步中…（点一下：放弃这一轮，重新同步，${keyText('sync')}）` : `刷新（马上同步一轮，${keyText('sync')}）`}
-            onClick={() => api().restartSync()}
-          >
-            <Icon name="refresh" />
-          </button>
-          <button
-            className="primary"
-            data-testid="write-entry"
-            disabled={!canWrite}
-            title={writesEnabled(sync) ? (state.sources.length ? `新建 issue（${keyText('newIssue')}）` : '先添加数据来源') : '离线时不能修改'}
-            data-offline={writesEnabled(sync) ? 'no' : 'yes'}
-            onClick={() => setNewIssue(true)}
-          >
-            <Icon name="plus" />
-            新建 issue
-          </button>
-          <button className="icon-btn" onClick={() => onSettings()} data-testid="open-settings" aria-label="设置" title={`设置（${keyText('settings')}）`}>
-            <Icon name="gear" />
-          </button>
-          {state.viewer && (
-            <span className="viewer" title={`已登录 ${state.viewer}`}>
-              <Avatar login={state.viewer} size={28} />
-            </span>
-          )}
-        </div>
-      </header>
+              <Icon name="search" />
+              <input
+                data-testid="search"
+                ref={searchBox}
+                type="search"
+                value={query}
+                aria-label="搜索或筛选"
+                placeholder={searchOpen ? '搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me' : `搜索（${keyText('search')}）`}
+                title="写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me"
+                onFocus={() => setSearchOpen(true)}
+                onBlur={() => setSearchOpen(false)}
+                onKeyDown={(e) => {
+                  // Esc folds the box away and keeps its text (a search field's own Esc would empty it)
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    searchBox.current?.blur();
+                  }
+                }}
+                onChange={(e) => {
+                  // GitHub#467: typed in while a detail tab is in front: the board comes to the front to show the result
+                  onFront?.(true);
+                  setQuery(e.target.value);
+                }}
+              />
+            </div>
+            <div className="hdr-right">
+              {/* GitHub#324: the oldest check, not "GitHub answered"; the hover has every source's two times */}
+              {headerText(sync, now) !== null && (
+                <span
+                  className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
+                  data-testid="sync-status"
+                  title={hoverLines(sync, labelOf, now).join('\n')}
+                >
+                  <span className="dot" />
+                  <span className="sync-text">{headerText(sync, now)}</span>
+                </span>
+              )}
+              {okShown && (
+                <span className="reread-ok" data-testid="sync-reread-ok" role="status">
+                  <Icon name="check" />
+                  {REREAD_OK_TEXT}
+                </span>
+              )}
+              {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} reread={reread} />}
+              {/* never greyed out while a round runs (GitHub#217): a click starts over */}
+              <button
+                className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
+                data-testid="refresh"
+                data-syncing={sync.syncing ? 'yes' : 'no'}
+                aria-label={sync.syncing ? '同步中…（点一下重新同步）' : '刷新'}
+                title={sync.syncing ? `同步中…（点一下：放弃这一轮，重新同步，${keyText('sync')}）` : `刷新（马上同步一轮，${keyText('sync')}）`}
+                onClick={() => api().restartSync()}
+              >
+                <Icon name="refresh" />
+              </button>
+              <button
+                className="primary icon-only"
+                data-testid="write-entry"
+                aria-label="新建 issue"
+                disabled={!canWrite}
+                title={writesEnabled(sync) ? (state.sources.length ? `新建 issue（${keyText('newIssue')}）` : '先添加数据来源') : '离线时不能修改'}
+                data-offline={writesEnabled(sync) ? 'no' : 'yes'}
+                onClick={() => {
+                  onFront?.();
+                  setNewIssue(true);
+                }}
+              >
+                <Icon name="plus" />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => {
+                  onFront?.();
+                  onSettings();
+                }}
+                data-testid="open-settings"
+                aria-label="设置"
+                title={`设置（${keyText('settings')}）`}
+              >
+                <Icon name="gear" />
+              </button>
+              {state.viewer && (
+                <span className="viewer" title={`已登录 ${state.viewer}`}>
+                  <Avatar login={state.viewer} size={28} />
+                </span>
+              )}
+            </div>
+          </>,
+          tools,
+        )}
 
       {/* second row: how this view is laid out */}
       <div className="vbar">
@@ -966,6 +998,7 @@ export function BoardView({
           onDropPlan={applyPlan}
           repoOrder={state.repoOrder}
           table={table ?? undefined}
+          pinnedLabels={pinned}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

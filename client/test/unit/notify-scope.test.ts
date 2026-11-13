@@ -493,6 +493,9 @@ async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknow
     dismissInstalledUpdate: async () => {},
     restartToUpdate: async () => {},
     closeWindow: async () => {},
+    windowFrame: async () => ({ overlay: false, fullscreen: false }),
+    startDrag: async () => {},
+    toggleZoom: async () => {},
   };
   const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);

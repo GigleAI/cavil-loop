@@ -7,6 +7,7 @@ import { LoginView } from './LoginView';
 import { BoardView, type BoardWarnings, type OpenIntent } from './BoardView';
 import { DetailPanel, draftDirty, type ResultNote, type TabDraft } from './DetailPanel';
 import { TabBar } from './TabBar';
+import { TopBar, useWindowFrame } from './TopBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { HOME, afterClose, autoCloseVerdict, stepTab, tabAt } from '../shared/tabs';
@@ -138,10 +139,11 @@ export function App() {
   const [held, setHeld] = useState<({ id: string } & CloseOrigin)[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
-  const show = (key: string, intent: OpenIntent | null = null) => {
+  /** `keepFocus` (GitHub#467): the keys are being typed into the window's top row, which does not go behind — leave its focus */
+  const show = (key: string, intent: OpenIntent | null = null, keepFocus = false) => {
     if (key === frontRef.current && !intent) return;
     // the keyboard leaves whatever the tab going behind had focused
-    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (!keepFocus) (document.activeElement as HTMLElement | null)?.blur?.();
     // GitHub#442: the floating panel goes behind with the home tab; coming back is a new opening of it, which
     // must not do its notice's 重试 / 去回复 a second time
     if (key !== HOME) setFloat((f) => (f?.intent ? { ...f, intent: null } : f));
@@ -388,22 +390,37 @@ export function App() {
   };
 
   const ready = snap?.state.phase === 'ready' && !help;
+  // GitHub#467: the window's one top row; the board draws its tools into it (`tools`)
+  const frame = useWindowFrame();
+  const [tools, setTools] = useState<HTMLDivElement | null>(null);
   // the find bar belongs to the signed-in pages: leaving them (sign-out, the app-kind page) closes it
   useEffect(() => {
     if (!ready) closeFind();
   }, [ready]);
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
-      {/* GitHub#442: the tab bar shows only once a tab is open; the last one closed, it goes */}
-      {ready && tabs.length > 0 && (
-        <TabBar
-          tabs={tabs}
-          active={front}
-          labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
-          onPick={(key) => show(key)}
-          onClose={closeTab}
-          onMove={(key, to) => void api().moveTab(key, to)}
+      {/* GitHub#467: one top row for the whole window (on macOS it is the title bar). The tabs show in it
+          only once a tab is open; the last one closed, they go (GitHub#442). Signed out, starting, or on the
+          app-kind page: only the empty row the window is moved by, and only where the row is the title bar. */}
+      {ready ? (
+        <TopBar
+          frame={frame}
+          onTools={setTools}
+          tabs={
+            tabs.length > 0 ? (
+              <TabBar
+                tabs={tabs}
+                active={front}
+                labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
+                onPick={(key) => show(key)}
+                onClose={closeTab}
+                onMove={(key, to) => void api().moveTab(key, to)}
+              />
+            ) : null
+          }
         />
+      ) : (
+        frame.overlay && <TopBar frame={frame} tabs={null} plain />
       )}
       {/* GitHub#488: every result the controller holds (closes, merges, 托管, 交给 agent, 等前置, new issues,
           changes not saved) is said here once, above every page — never also in a detail or above the board */}
@@ -460,6 +477,8 @@ export function App() {
                 }}
                 onKeysHelp={() => setKeysHelp(true)}
                 tallySaved={tallySaved}
+                tools={tools}
+                onFront={(keepFocus) => show(HOME, null, keepFocus)}
                 tallyPick={tallyPick}
                 onTallyPick={setTallyPick}
               />

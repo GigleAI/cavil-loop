@@ -37,5 +37,8 @@ export function bridgeDesktop(): Desktop {
     dismissInstalledUpdate: (version) => d('dismissInstalledUpdate', { version }),
     restartToUpdate: () => d('restartToUpdate'),
     closeWindow: () => d('closeWindow'),
+    windowFrame: () => d('windowFrame'),
+    startDrag: () => d('startDrag'),
+    toggleZoom: () => d('toggleZoom'),
   };
 }

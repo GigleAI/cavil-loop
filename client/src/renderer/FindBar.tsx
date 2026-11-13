@@ -6,11 +6,8 @@ import { closeFind, findView, setFindQuery, stepFind, subscribeFind } from './fi
 import { useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
 
-/** under the board's header when it is showing, else at the top of the page area */
+/** at the top of the page area, just under the window's top row (GitHub#467: the board has no header of its own) */
 function topOf(): number {
-  const hdr = document.querySelector('.tab-page[data-front="yes"] header.hdr');
-  const r = hdr?.getBoundingClientRect();
-  if (r && r.height > 0) return Math.round(r.bottom) + 6;
   const pages = document.querySelector('.tab-pages');
   return pages ? Math.round(pages.getBoundingClientRect().top) + 8 : 8;
 }

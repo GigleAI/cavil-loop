@@ -77,9 +77,35 @@ export function TabBar({
   const [over, setOver] = useState<string | null>(null);
   // more tabs than fit: the strip scrolls sideways (the wheel moves it), and the tab in front is kept in view
   const strip = useRef<HTMLDivElement>(null);
+  // GitHub#467: which side has tabs scrolled out of sight — that edge fades and gets its arrow
+  const [hidden, setHidden] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const measure = () => {
+    const el = strip.current;
+    if (!el) return;
+    const next = overflowOf(el.scrollLeft, el.clientWidth, el.scrollWidth);
+    setHidden((cur) => (cur.left === next.left && cur.right === next.right ? cur : next));
+  };
   useEffect(() => {
     strip.current?.querySelector('[data-front="yes"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    measure();
   }, [active, tabs.length]);
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  /** one arrow click: most of what is visible, so the tab at the edge stays in sight */
+  const page = (dir: -1 | 1) => {
+    const el = strip.current;
+    if (el) el.scrollBy?.({ left: dir * Math.max(120, el.clientWidth * 0.8), behavior: 'smooth' });
+  };
   return (
     // a click on the tab bar leaves the home tab's floating detail as it is (GitHub#442)
     <div className="tabs" data-testid="tabs" role="tablist" {...{ [KEEPS_PANEL]: '' }}>
@@ -88,94 +114,127 @@ export function TabBar({
         <span className="tab-title">首页</span>
       </button>
       {tabs.length > 0 && <span className="tab-sep" aria-hidden="true" />}
-      <div
-        className="tab-strip"
-        data-testid="tab-strip"
-        ref={strip}
-        onWheel={(e) => {
-          if (e.deltaY !== 0 && e.deltaX === 0 && strip.current) strip.current.scrollLeft += e.deltaY;
-        }}
-      >
-        {tabs.map((t, i) => {
-          const on = t.key === active;
-          const status = tabStatus(t.item, labels);
-          const unread = tabUnread(t, on);
-          const words = `${TAB_STATUS_TEXT[status]}${unread ? ' · 有新动静' : ''}`;
-          return (
-            <div
-              key={t.key}
-              className={`tab${on ? ' on' : ''}${over === t.key ? ' drop' : ''}`}
-              role="tab"
-              aria-selected={on}
-              tabIndex={0}
-              data-testid="tab"
-              data-key={t.key}
-              data-front={on ? 'yes' : 'no'}
-              data-status={status}
-              data-unread={unread ? 'yes' : 'no'}
-              data-listed={t.listed ? 'yes' : 'no'}
-              title={`${t.item.repo}#${t.item.number} ${t.item.title}\n${words}`}
-              onClick={() => onPick(t.key)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
+      <div className={`tab-scroll${hidden.left ? ' more-left' : ''}${hidden.right ? ' more-right' : ''}`}>
+        {hidden.left && (
+          <button className="tab-arrow left" data-testid="tab-arrow-left" aria-label="往左看更多标签页" title="往左看更多标签页" tabIndex={-1} onClick={() => page(-1)}>
+            <Icon name="chevron-left" size={14} />
+          </button>
+        )}
+        <div
+          className="tab-strip"
+          data-testid="tab-strip"
+          ref={strip}
+          onScroll={measure}
+          onWheel={(e) => {
+            if (e.deltaY !== 0 && e.deltaX === 0 && strip.current) strip.current.scrollLeft += e.deltaY;
+          }}
+          // GitHub#467: a tab dragged to an edge of the strip scrolls it, so every place can be reached
+          onDragOver={(e) => {
+            const el = strip.current;
+            if (!el || !dragged.current) return;
+            const r = el.getBoundingClientRect();
+            if (e.clientX < r.left + EDGE) el.scrollLeft -= EDGE_STEP;
+            else if (e.clientX > r.right - EDGE) el.scrollLeft += EDGE_STEP;
+          }}
+        >
+          {tabs.map((t, i) => {
+            const on = t.key === active;
+            const status = tabStatus(t.item, labels);
+            const unread = tabUnread(t, on);
+            const words = `${TAB_STATUS_TEXT[status]}${unread ? ' · 有新动静' : ''}`;
+            return (
+              <div
+                key={t.key}
+                className={`tab${on ? ' on' : ''}${over === t.key ? ' drop' : ''}`}
+                role="tab"
+                aria-selected={on}
+                tabIndex={0}
+                data-testid="tab"
+                data-key={t.key}
+                data-front={on ? 'yes' : 'no'}
+                data-status={status}
+                data-unread={unread ? 'yes' : 'no'}
+                data-listed={t.listed ? 'yes' : 'no'}
+                title={`${t.item.repo}#${t.item.number} ${t.item.title}\n${words}`}
+                onClick={() => onPick(t.key)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onPick(t.key);
+                  }
+                }}
+                // the middle button closes, as in a browser
+                onAuxClick={(e) => {
+                  if (e.button !== 1) return;
                   e.preventDefault();
-                  onPick(t.key);
-                }
-              }}
-              // the middle button closes, as in a browser
-              onAuxClick={(e) => {
-                if (e.button !== 1) return;
-                e.preventDefault();
-                onClose(t.key);
-              }}
-              draggable
-              onDragStart={(e) => {
-                dragged.current = t.key;
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', t.key);
-              }}
-              onDragOver={(e) => {
-                if (!dragged.current || dragged.current === t.key) return;
-                e.preventDefault();
-                setOver(t.key);
-              }}
-              onDragLeave={() => setOver((cur) => (cur === t.key ? null : cur))}
-              onDrop={(e) => {
-                e.preventDefault();
-                const from = dragged.current;
-                dragged.current = null;
-                setOver(null);
-                if (from && from !== t.key) onMove(from, i);
-              }}
-              onDragEnd={() => {
-                dragged.current = null;
-                setOver(null);
-              }}
-            >
-              <span className="tab-status" data-testid="tab-status" role="img" aria-label={words}>
-                <TabStatusIcon status={status} kind={t.item.kind} />
-                {unread && <span className="tab-dot" data-testid="tab-dot" />}
-              </span>
-              <span className="tab-title" data-testid="tab-title">
-                {t.item.title}
-              </span>
-              <span className="tab-ref">#{t.item.number}</span>
-              <button
-                className="tab-x"
-                data-testid="tab-close"
-                aria-label={`关掉标签页 #${t.item.number}`}
-                title={on ? `关掉这个标签页（${keyText('closeTab')}）` : '关掉这个标签页'}
-                onClick={(e) => {
-                  e.stopPropagation();
                   onClose(t.key);
                 }}
+                draggable
+                onDragStart={(e) => {
+                  dragged.current = t.key;
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', t.key);
+                }}
+                onDragOver={(e) => {
+                  if (!dragged.current || dragged.current === t.key) return;
+                  e.preventDefault();
+                  setOver(t.key);
+                }}
+                onDragLeave={() => setOver((cur) => (cur === t.key ? null : cur))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const from = dragged.current;
+                  dragged.current = null;
+                  setOver(null);
+                  if (from && from !== t.key) onMove(from, i);
+                }}
+                onDragEnd={() => {
+                  dragged.current = null;
+                  setOver(null);
+                }}
               >
-                <Icon name="x" size={12} />
-              </button>
-            </div>
-          );
-        })}
+                <span className="tab-status" data-testid="tab-status" role="img" aria-label={words}>
+                  <TabStatusIcon status={status} kind={t.item.kind} />
+                  {unread && <span className="tab-dot" data-testid="tab-dot" />}
+                </span>
+                <span className="tab-title" data-testid="tab-title">
+                  {t.item.title}
+                </span>
+                <span className="tab-ref">#{t.item.number}</span>
+                <button
+                  className="tab-x"
+                  data-testid="tab-close"
+                  aria-label={`关掉标签页 #${t.item.number}`}
+                  title={on ? `关掉这个标签页（${keyText('closeTab')}）` : '关掉这个标签页'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose(t.key);
+                  }}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {hidden.right && (
+          <button className="tab-arrow right" data-testid="tab-arrow-right" aria-label="往右看更多标签页" title="往右看更多标签页" tabIndex={-1} onClick={() => page(1)}>
+            <Icon name="chevron-right" size={14} />
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+/** how close to an edge of the strip a dragged tab has to be to scroll it, and how far one step goes (px) */
+const EDGE = 32;
+const EDGE_STEP = 12;
+
+/**
+ * GitHub#467: which sides of the strip have tabs out of sight. A pixel of slack either way: a strip
+ * scrolled by a fraction (zoom, a trackpad) is not "one more tab hidden".
+ */
+export function overflowOf(scrollLeft: number, clientWidth: number, scrollWidth: number): { left: boolean; right: boolean } {
+  return { left: scrollLeft > 1, right: scrollLeft + clientWidth < scrollWidth - 1 };
 }
