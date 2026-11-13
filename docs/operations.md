@@ -696,11 +696,12 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
     issue that sat on `pending/human`) is removed as before. Order is the position in the event history, never the
     timestamp (closing on merge and adding the reminder often share a second). The history is read for every
     issue closed as completed, with or without `pending/human`; unreadable, an event without an id, or history that
-    contradicts the labels (no "closed" event, or the reminder state the history implies — last added or last removed — does not match the
-    label) → nothing written,
+    contradicts the labels (no "closed" event, or the state the history implies — last closed or reopened, reminder last added or removed —
+    does not match what was read) → nothing written,
     retried next round.
     The sweep also writes one label at a time, judges twice before each write and checks the reading after each one: a
-    reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten.
+    reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten, and nothing
+    else in that poll round touches the issue again (the retry queue waits for the next round).
   - **Finding what to look at**:
 
     | Looking for | Repository Issues page | GitHub Project view |

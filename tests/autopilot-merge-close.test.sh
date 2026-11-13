@@ -415,6 +415,26 @@ rm -f "$GD/F_issues_7_events"
 tick
 chk "收敛：Done + 人挂的提醒、pending/PR 摘掉、交接完成" "$(labels_of 7)/$(handoff 8)" "Done,autopilot,pending/human/none"
 
+section "【5c5】清扫：issue 读到已关闭，记录里最后却是重开（响应互相矛盾）→ 判不了，零写入、留队"
+fresh
+mkissue 75 "pending/PR" closed
+ev 75 reopened - maint
+tick
+chk "零写入、留队、标签原样" "$(label_writes 75)/$(queued 75)/$(labels_of 75)" "0/1/pending/PR"
+chk "  → 到达性：确实读了事件记录" "$( [ "$(event_reads 75)" -gt 0 ] && echo read)" read
+
+section "【5c6】交接：issue 读到已关闭，记录里关闭之后又有重开 → 判不了，交接记录留着、不写标签"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
+tick
+ev 7 reopened - maint                 # 记录说重开了，issue 读到的却还是已关闭
+rm -f "$GD/F_issues_7_events"
+tick
+chk "零标签写入、交接记录还在、在重试队列" "$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "0/rec/true"
+
 section "【3d】清扫：daemon 摘掉旧提醒之后、下一次读之前，人又挂上再摘掉 → 停手（只留已写成的那次）；下一轮收敛"
 fresh
 mkissue 74 "pending/human,pending/PR" closed
@@ -443,11 +463,11 @@ e.setdefault('7', []).extend([{'event': 'labeled', 'label': {'name': 'pending/hu
 json.dump(e, open('events.json', 'w'))
 PY"
 tick
-# 停手之后同一轮的重试队列从头现读再判（新的基线）：人挂上又摘掉过 → 收尾时不再挂提醒
-chk "加 Done 之后发现人的新事件 → 那一圈停手" "$(grep -c '托管合并交接：issue #7 在 daemon 两次写标签之间有变化' "$W/state/poll.log")" 1
-chk "同一轮重试队列从头再判：摘 pending/PR、交接完成，没有挂提醒" "$(labels_of 7)/$(handoff 8)/$(n_calls "^gh api -X POST $R/issues/7/labels -f labels\\[\\]=pending/human")" "Done,autopilot/none/0"
+chk "第 1 轮：只写了加 Done、之后整轮停手（重试队列和关闭清扫都不再碰它）" "$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "1/rec/true"
+chk "  → 停手的原因写进日志" "$(grep -c '托管合并交接：issue #7 在 daemon 两次写标签之间有变化' "$W/state/poll.log")" 1
 tick
-chk "再一轮：零写入" "$(label_writes 7)" 0
+chk "第 2 轮：从头现读再判：摘 pending/PR、交接完成，人摘掉过的提醒不再挂" "$(labels_of 7)/$(handoff 8)/$(mqueued 7)" "Done,autopilot/none/false"
+chk "  → 两轮都没有加 pending/human 的请求" "$(n_calls "^gh api -X POST $R/issues/7/labels -f labels\\[\\]=pending/human")" 0
 
 # ── 【6】GitHub 晚一步关 / 不会关 ──
 section "【6】合并时 GitHub 还没关掉 issue → 交接等着（零标签写入）；关掉之后收敛"
