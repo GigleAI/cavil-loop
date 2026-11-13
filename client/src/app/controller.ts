@@ -6,7 +6,8 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
+import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -530,6 +531,7 @@ export class Controller {
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
+      ...this.loadTallies(),
       blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null), handBack.blocked),
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
@@ -2133,6 +2135,23 @@ export class Controller {
     const flow = typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow;
     this.cache.setSetting(BLOCKED_LABELS, { flow });
     this.set({ blockedLabels: { blocked: this.state.handBack.blocked, flow } });
+  }
+
+  /** GitHub#468: the view-bar numbers as saved; a value that is not a whole valid table shows the default and says so */
+  private loadTallies(): { tallies: TallyDef[] | null; talliesBroken: boolean } {
+    const { tallies, broken } = normalizeTallies(this.cache.getSetting<unknown>(TALLIES_SETTING, null));
+    return { tallies, talliesBroken: broken };
+  }
+
+  /**
+   * GitHub#468: save the view-bar numbers. `null` = back to the default table. A table that does not read
+   * back as valid (from a window of another version, say) is refused whole: nothing is saved.
+   */
+  setTallies(next: TallyDef[] | null): void {
+    const { tallies, broken } = normalizeTallies(next);
+    if (broken) return;
+    this.cache.setSetting(TALLIES_SETTING, tallies);
+    this.set({ tallies, talliesBroken: false });
   }
 
   setHandBack(patch: Partial<HandBackLabels>): void {

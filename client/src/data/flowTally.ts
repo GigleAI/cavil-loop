@@ -11,26 +11,45 @@
 // A number can be clicked: the search box becomes `is:open label:"<label>"` (the same items, through
 // the ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
 
-import type { HandBackLabels, Item } from '../shared/types';
+// GitHub#468: the numbers are a table set in Settings (shared/tallies.ts). A "跟随流程标签" row counts
+// exactly as above (isPending, click through `tallyQuery`); a "自己写条件" row counts through its own
+// search text and the board's filter, with the same context the board uses (viewer, today, projects),
+// and a click puts that same text in the box. With the table never changed the bar is what it was.
+
+import type { HandBackLabels, Item, TallyColor, TallyDef } from '../shared/types';
+import type { FilterContext } from '../shared/filter';
 import { isPending } from './pending';
 import { applyFilter, parseFilter } from '../shared/filter';
+import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies } from '../shared/tallies';
 
-export type TallyKind = 'running' | 'agent' | 'human' | 'unlabeled';
+export { UNLABELED_QUERY };
+
+/** a row's id ('running' / 'agent' / 'human' / 'unlabeled' for the default rows) */
+export type TallyKind = string;
 
 export interface TallyEntry {
+  /** the row's id — the default rows keep the names the view bar always used */
   kind: TallyKind;
-  /** the label as set in Settings (trimmed); '' for "unlabeled", which counts items with no label */
+  /** the name shown */
+  name: string;
+  color: TallyColor;
+  /** which kind of row: follows a flow label, or a search condition of its own */
+  source: 'flow' | 'query';
+  /** a flow row: the label as set in Settings (trimmed); '' for a query row */
   label: string;
-  /** open items carrying it */
+  /** the items it picks */
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
 }
 
-export const TALLY_TEXT: Record<TallyKind, string> = { running: '运行中', agent: '等 agent', human: '等人处理', unlabeled: '未处理' };
+/** the default rows' names (kept for callers that name a default number) */
+export const TALLY_TEXT: Record<'running' | 'agent' | 'human' | 'unlabeled', string> = Object.fromEntries(DEFAULT_TALLIES.map((d) => [d.id, d.name])) as Record<
+  'running' | 'agent' | 'human' | 'unlabeled',
+  string
+>;
 
-/** GitHub#418: the "未处理" number's search — open and no label at all */
-export const UNLABELED_QUERY = 'is:open no:label';
+const NO_CONTEXT: FilterContext = { viewer: null, today: '', projects: [] };
 
 /**
  * `is:open label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
@@ -54,34 +73,48 @@ export function tallyQuery(label: string): string | null {
 }
 
 /**
- * The numbers, in display order ("未处理" last). "运行中" is left out when its label is empty (Settings: empty = not
- * shown); the other two always have a label — saving them empty puts the default back.
+ * GitHub#468: the numbers of a table, in its order. A row is left out when its name is empty, when it
+ * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
+ * condition is empty (that would be "every item", not a number).
  */
-export function flowTally(items: Item[], labels: Pick<HandBackLabels, 'running' | 'agent' | 'human'>): TallyEntry[] {
-  const order: [TallyKind, string][] = [
-    ['running', labels.running],
-    ['agent', labels.agent],
-    ['human', labels.human],
-  ];
-  return order
-    .map(([kind, raw]) => ({ kind, label: raw.trim() }))
-    .filter((e) => e.label !== '')
-    .map((e): TallyEntry => ({ ...e, count: items.filter((it) => isPending(it, e.label)).length, query: tallyQuery(e.label) }))
-    .concat(unlabeledTally(items));
+export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: Pick<HandBackLabels, 'running' | 'agent' | 'human'>, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
+  const out: TallyEntry[] = [];
+  for (const d of defs) {
+    const name = d.name.trim();
+    if (name === '') continue;
+    if (d.source.kind === 'flow') {
+      const label = labels[d.source.flow].trim();
+      if (label === '') continue;
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', label, count: items.filter((it) => isPending(it, label)).length, query: tallyQuery(label) });
+    } else {
+      const q = d.source.query.trim();
+      if (q === '') continue;
+      out.push({ kind: d.id, name, color: d.color, source: 'query', label: '', count: applyFilter(items, parseFilter(q), ctx).length, query: q });
+    }
+  }
+  return out;
 }
 
 /**
- * GitHub#418: "未处理" — always shown, last. Counted through the real filter with its own click query
+ * The default table's numbers ("未处理" last). "运行中" is left out when its label is empty (Settings: empty = not
+ * shown); the other two always have a label — saving them empty puts the default back.
+ */
+export function flowTally(items: Item[], labels: Pick<HandBackLabels, 'running' | 'agent' | 'human'>): TallyEntry[] {
+  return tallyEntries(items, defaultTallies(), labels);
+}
+
+/**
+ * GitHub#418: "未处理" — the default table's last row. Counted through the real filter with its own click query
  * (no context is needed: `is` and `no:label` read nothing but the item), so a click lists exactly the
  * counted items. Items come merged by key (`mergeSnapshots`), so one carried by two sources counts once.
  */
 export function unlabeledTally(items: Item[]): TallyEntry {
-  const count = applyFilter(items, parseFilter(UNLABELED_QUERY), { viewer: null, today: '', projects: [] }).length;
-  return { kind: 'unlabeled', label: '', count, query: UNLABELED_QUERY };
+  return tallyEntries(items, defaultTallies().filter((d) => d.id === 'unlabeled'), { running: '', agent: '', human: '' })[0];
 }
 
 /** Which number the search box is showing right now (its text is exactly that number's query), if any. */
 export function litTally(query: string, entries: TallyEntry[]): TallyKind | null {
+  // two rows with the same click text: the first one is lit
   const q = query.trim();
   return entries.find((e) => e.query !== null && e.query === q)?.kind ?? null;
 }

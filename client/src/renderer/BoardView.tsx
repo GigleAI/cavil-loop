@@ -36,7 +36,8 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { flowTally, litTally, tallyClick, tallyForget, TALLY_TEXT, type TallyEntry } from '../data/flowTally';
+import { litTally, tallyClick, tallyEntries, tallyForget, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
+import { effectiveTallies } from '../shared/tallies';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -645,8 +646,13 @@ export function BoardView({
   const loopLabel = state.handBack.blocked;
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   const { running, agent, human } = state.handBack;
-  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
+  const tallyDefs = state.tallies;
+  const tally = useMemo(
+    () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
+    [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
+  );
   const ownSaved = useRef<string | null>(null);
   const saved = tallySaved ?? ownSaved;
   // the box changed some other way and no longer shows a number's query: the remembered search is void
@@ -970,7 +976,7 @@ export function BoardView({
               {tally.map((e) => {
                 const on = lit === e.kind;
                 const tip = [
-                  `开着的条目里${e.kind === 'unlabeled' ? '一个标签都没有' : `带 ${e.label} 标签`}的有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
+                  `${e.source === 'flow' ? `开着的条目里带 ${e.label} 标签的` : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
                   `当前来源共 ${data.items.length} 个条目`,
                   ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),
@@ -987,8 +993,8 @@ export function BoardView({
                     title={tip}
                     onClick={() => clickTally(e)}
                   >
-                    <i className={`dot ${e.kind}`} aria-hidden="true" />
-                    {TALLY_TEXT[e.kind]} <b data-testid="tally-count">{e.count}</b>
+                    <i className={`dot c-${e.color}`} aria-hidden="true" />
+                    {e.name} <b data-testid="tally-count">{e.count}</b>
                   </button>
                 );
               })}

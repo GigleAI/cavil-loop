@@ -484,6 +484,57 @@ describe('pending reminders against the fake GitHub', () => {
     expect(h.badge()).toBe(0);
   });
 
+  it('GitHub#468: the view-bar table is saved and survives a restart; changing it never moves the reminders or the badge', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    expect(h.c.getState().tallies).toBeNull();
+    expect(h.c.getState().talliesBroken).toBe(false);
+    const count = h.c.getState().pendingCount;
+    expect(count).toBe(P);
+    const badges = h.badges.length;
+    // the "等人处理" row turned into a condition of its own, then removed; a new row added
+    const table = [
+      { id: 'mine', name: '我的', color: 'purple' as const, source: { kind: 'query' as const, query: 'is:open author:@me' } },
+      { id: 'human', name: '等人处理', color: 'orange' as const, source: { kind: 'query' as const, query: 'is:open label:bug', from: 'human' as const } },
+    ];
+    h.c.setTallies(table);
+    await h.c.desktopSettled();
+    expect(h.c.getState().tallies).toEqual(table);
+    h.c.setTallies([table[0]]);
+    await h.c.desktopSettled();
+    expect(h.c.getState().pendingCount).toBe(count);
+    expect(h.badges.length).toBe(badges);
+    await tick(h);
+    expect(h.alerts).toEqual([]);
+    // a table that does not read back as valid is refused whole
+    h.c.setTallies([table[0], table[0]]);
+    await h.c.desktopSettled();
+    expect(h.c.getState().tallies).toEqual([table[0]]);
+    // a restart reads the saved table
+    const h2 = await signedIn({ sources: [PROJECT_URL] });
+    expect(h2.c.getState().tallies).toEqual([table[0]]);
+    expect(h2.c.getState().talliesBroken).toBe(false);
+    // back to the default: null is kept, and read back as null
+    h2.c.setTallies(null);
+    await h2.c.desktopSettled();
+    const h3 = await signedIn({ sources: [PROJECT_URL] });
+    expect(h3.c.getState().tallies).toBeNull();
+  });
+
+  it('GitHub#468: a saved table that cannot be read shows the default and says so', async () => {
+    for (const bad of ['x', [{ id: 'a', name: 'a', color: 'pink', source: { kind: 'query', query: 'is:open' } }]]) {
+      const h = await signedIn({ sources: [PROJECT_URL], seed: { tallies: bad } });
+      expect(h.c.getState().tallies, JSON.stringify(bad)).toBeNull();
+      expect(h.c.getState().talliesBroken, JSON.stringify(bad)).toBe(true);
+      // saving any valid table clears the flag
+      h.c.setTallies([]);
+      await h.c.desktopSettled();
+      expect(h.c.getState().tallies).toEqual([]);
+      expect(h.c.getState().talliesBroken).toBe(false);
+    }
+  });
+
   it('a configured label name survives a restart and is the one used', async () => {
     const h = await signedIn({ sources: [PROJECT_URL], seed: { handBack: { human: OTHER.name, agent: 'pending/agent' } } });
     await h.c.start();
