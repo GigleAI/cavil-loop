@@ -8,6 +8,7 @@ use crate::engine::{BeginOut, Engine, FinishOut, RequestError, StartOut};
 use crate::http::HttpRequest;
 use crate::i18n::Said;
 use crate::store::{BACKEND_ONLY_KEYS, SECRET_KEYS};
+use crate::theme::Theme;
 use crate::zoom;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -115,6 +116,13 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             let l = s(&a, "lang")?;
             let lang = crate::i18n::Lang::parse(l).ok_or_else(|| crate::i18n::tr("不认识的语言：{lang}", &[("lang", l)]))?;
             crate::i18n::set_lang(lang);
+            Ok(Value::Null)
+        }
+        // GitHub#516: the window's light / dark; the shell (src-tauri/src/main.rs) passes it on to the native
+        // window. Checked here, so a word the shell does not know never reaches it.
+        "setTheme" => {
+            let v = s(&a, "theme")?;
+            Theme::parse(v).ok_or_else(|| crate::i18n::tr("不认识的外观：{theme}", &[("theme", v)]))?;
             Ok(Value::Null)
         }
         "setSetting" => {

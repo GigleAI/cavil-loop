@@ -52,6 +52,7 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 - **An organization's Project cannot be read**: usually the organization restricts third-party apps and an owner has to approve. The developer notes explain it step by step in "[读不到组织的 Project 怎么办](../client/README.md#读不到组织的-project-怎么办401)" (when an organization's Project cannot be read).
 - **Syncing**: while the app is open it syncs about once a minute; the top bar shows when it last checked. The refresh button or ⌘R syncs now. A source is either read in full and replaces the local copy, or the previous round's copy stays — a failed read never makes items "disappear".
 - **The window's top row**: one row at the top of the window — logo, open tabs, search box, sync status, refresh, new (➕), settings, account; all of it stays while a detail tab is in front. The search box is small until used (it still shows the current search); click it or press `/` to widen it. On macOS this row is the window's title bar: the traffic lights sit at its left, drag an empty part to move the window, double-click it to zoom.
+- **Light / dark** ([#516](https://github.com/GigleAI/cavil-loop/issues/516)): Settings → "外观" (appearance) offers three choices: "跟随系统" (follow the system, the default — the window switches when the system does), "浅色" (light) and "深色" (dark). The choice takes effect at once for the board, table, graph, details and discussions and label colours, and on macOS for the title bar and menus too; it is kept on this computer and survives a restart.
 
 ## Board
 
