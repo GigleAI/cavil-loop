@@ -1097,6 +1097,7 @@ export function BoardView({
       {graph ? (
         <GraphView
           model={graph}
+          items={data.items}
           sources={state.sources
             .filter((s) => selected.has(s.key))
             .map((s): GraphSourceInfo => ({
