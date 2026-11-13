@@ -30,10 +30,13 @@ impl Lang {
 }
 
 /// The English tables, by area — the same files, in the same order, as the window's EN_TABLES.
-pub const TABLES: [(&str, &str); 3] = [
+pub const TABLES: [(&str, &str); 6] = [
     ("shell", include_str!("../../../../src/i18n/en/shell.json")),
     ("board", include_str!("../../../../src/i18n/en/board.json")),
     ("daemon", include_str!("../../../../src/i18n/en/daemon.json")),
+    ("remote", include_str!("../../../../src/i18n/en/remote.json")),
+    ("update", include_str!("../../../../src/i18n/en/update.json")),
+    ("session", include_str!("../../../../src/i18n/en/session.json")),
 ];
 
 enum EnText {
