@@ -35,16 +35,22 @@ concurrency:
 
 jobs:
   shard:
-    name: shard ${{ matrix.shard }}/4
+    name: shard ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # 8 shards (GitHub#495): with 4, the slowest shard took ~17 minutes while the others idled.
+        # The count is read from this line by tests/run.test.sh; --verify below needs no number.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       # Per-file limit.
       RUN_TEST_TIMEOUT: '900'
+      # On a pull request: compare with the base branch, so a docs / test-file-only change runs only
+      # what it can reach (tests/run.sh, "Changed-file selection"). Pushes to main and manual runs
+      # leave it empty and run everything. The summary job computes the same selection again.
+      CHANGED_FROM: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
     steps:
       # Full history + origin/main: design-review-gate, requester-bot and
       # repair-unit-links compare against the merge-base with main. A shallow
@@ -58,6 +64,8 @@ jobs:
         run: |
           git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base HEAD origin/main
+          if [ -n "$CHANGED_FROM" ]; then git rev-parse --verify -q "$CHANGED_FROM" >/dev/null \
+              || git fetch --no-tags origin "${CHANGED_FROM#origin/}:refs/remotes/$CHANGED_FROM" || true; fi
 
       # Everything else (git, jq, python3, node, flock, systemctl, timeout) is on
       # the runner image already.
@@ -66,11 +74,12 @@ jobs:
           command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
           tmux -V
 
-      - name: Run shard ${{ matrix.shard }}/4
+      - name: Run shard ${{ matrix.shard }}/8
         # Results go outside the checkout: some tests scan the whole repo tree
         # (requester-bot greps it for retired wording) and would read their own logs.
         # -j 2: hosted runners have 4 vCPUs; two units at a time per shard (GitHub#211).
-        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/4 -j 2 --out "$RUNNER_TEMP/results"
+        # tests/run.test.sh reads this command and runs it as written: keep it on one line.
+        run: bash tests/run.sh --ci --shard ${{ matrix.shard }}/8 -j 2 --out "$RUNNER_TEMP/results" ${CHANGED_FROM:+--changed-from "$CHANGED_FROM"}
 
       - name: Upload results and logs
         if: always()
@@ -90,8 +99,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CHANGED_FROM: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
     steps:
+      # Full history: with CHANGED_FROM set, --verify recomputes the selection from the same merge-base.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Missing artifacts (a shard that never started) must not stop the check
       # below: it is the step that reports which tests have no result.
@@ -104,7 +118,7 @@ jobs:
       - name: Every expected test passed exactly once
         run: |
           rc=0; mkdir -p results
-          bash tests/run.sh --ci --verify results || rc=$?
+          bash tests/run.sh --ci --verify results ${CHANGED_FROM:+--changed-from "$CHANGED_FROM"} || rc=$?
           if [ "${{ needs.shard.result }}" != success ]; then
             echo "::error::shard jobs ended with '${{ needs.shard.result }}'"
             rc=1

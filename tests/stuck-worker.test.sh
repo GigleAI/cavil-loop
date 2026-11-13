@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # kind: e2e
-# parts: 3
+# parts: 6
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （三段合计约 14 分钟；没有负对照；STUCK_ONLY=9,13 只跑指定的组，13x = 第三段）
+# 跑法：bash tests/stuck-worker.test.sh        （六段合计约 22 分钟（CI 上实测）；没有负对照；STUCK_ONLY=9,13 只跑指定的组，13x = 恢复派工失败那组）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和
@@ -34,8 +34,10 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
-# 分三段跑（tests/run.sh 每个单位限时 900 秒）：1 = 阶梯和判断、交人前的说明（①–⑫），2 = 停住和恢复（⑬），
-# 3 = 恢复派工的失败与本机状态读失败（13x）
+# 分六段跑（tests/run.sh 每个单位限时 900 秒；GitHub#495 起按 CI 上的时长配平，每段约 3–5 分钟）：
+#   1 = 阶梯和判断（①–⑦、⑩–⑫）  2 = 动手前复查（⑧）+ 人恢复、派工前现读、本机解卡命令（⑬ 的三节）
+#   3 = 写入异常与停住说明（⑨）  4 = 恢复指令只用一次、停住期间各环节跳过（⑬ 的另两节）
+#   5 / 6 = 恢复派工的失败与本机状态读失败（13x 的前后两半）
 # shellcheck source=lib/parts.sh
 source "$TEST_DIR/lib/parts.sh"
 
@@ -283,9 +285,22 @@ add_comment() {   # <编号>：有人留了一条评论（不动 updated_at：�
     "$FAKEBIN/jset" "$GD/comments.json" '.[$n] = ((.[$n] // []) + [{id: (9000 + ([.[][]] | length)), body: "看一下", user: {login: "maint"}, created_at: "2026-01-02T00:00:00Z"}])' --arg n "$1"
 }
 touch_item() { "$FAKEBIN/jset" "$GD/items.json" '.[$n].updated_at = $t' --arg n "$1" --arg t "2026-02-01T00:00:${2:-01}Z"; }
+# 组 → 段（GitHub#495 起 6 段，按 CI 上的实测时长配平）。13 / 13x 是外层：任一子段要跑就进去；
+# 13a / 13b / 13xa / 13xb 是里面的子段。STUCK_ONLY 只认组号（13 含 13a、13b；13x 含 13xa、13xb）。
 want() {
-    case "$1" in 13) part_on 2 || return 1 ;; 13x) part_on 3 || return 1 ;; *) part_on 1 || return 1 ;; esac
-    [ -z "${STUCK_ONLY:-}" ] || [[ ",$STUCK_ONLY," == *",$1,"* ]]
+    case "$1" in
+        1|2|3|4|5|6|7|10|11|12) part_on 1 || return 1 ;;
+        8|13a) part_on 2 || return 1 ;;
+        9)     part_on 3 || return 1 ;;
+        13b)   part_on 4 || return 1 ;;
+        13xa)  part_on 5 || return 1 ;;
+        13xb)  part_on 6 || return 1 ;;
+        13)    part_on 2 || part_on 4 || return 1 ;;
+        13x)   part_on 5 || part_on 6 || return 1 ;;
+        *) echo "want：不认识的组 [$1]" >&2; exit 2 ;;
+    esac
+    local g="$1"; case "$g" in 13a|13b) g=13 ;; 13xa|13xb) g=13x ;; esac
+    [ -z "${STUCK_ONLY:-}" ] || [[ ",$STUCK_ONLY," == *",$g,"* ]]
 }
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -884,6 +899,7 @@ release_cmd() {   # <编号> <喂给确认提示的输入> [额外环境…] →
 }
 
 if want 13; then
+if want 13a; then
 echo "【13】人恢复：说明之后打上的派工标签，要到派工那一刻仍然有效"
 # 13a 各种「不算恢复」，最后一步才是有效的恢复
 frozen_pr rel1
@@ -942,6 +958,8 @@ T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force
 tick 5
 chk "13b 正向对照 · 新建路径：起了会话、换成 doing/agent、停住记录清掉" "$(alive "$N")/$(labels_of "$N")/$(entry "$N")" "yes/doing/agent/{}"
 
+fi
+if want 13b; then
 echo "【13】恢复指令只用一次：用掉之后派工没确认成功 → 重新停住，同一条指令不再派工；不进普通失败兜底"
 # after_freeze <名字> <目标> <说明里应有的字样>：这一轮之后 → 重新停住（新记号）、指令已用掉；
 # 再跑两轮：不再派工、不起新进程、不再送任务，派工标签还在也一样
@@ -1141,6 +1159,8 @@ tick 5
 chk "13d⑦ 对照 · 解除后：冲突检查和托管环节重新处理这条 PR" \
     "$rc/$([ "$(plog "#$P 已停手")" -ge 1 ] && echo y || echo n)/$(jq -r --arg n "$P" '((.pr_conflict // {}) | has($n)) or ((.autopilot // {}) | tostring | contains($n))' "$STATE")" "0/y/true"
 
+fi
+if want 13a; then
 echo "【13】本机解卡命令（照文档里那段命令的字面跑，环境只有 HOME 和 PATH）"
 chk "两份文档里的命令段一字不差" "$(diff <(OPS_BLOCK "$REPO_DIR/docs/operations.md") <(OPS_BLOCK "$REPO_DIR/docs/operations.zh.md") >/dev/null && echo same || echo differ)/$([ -n "$(OPS_BLOCK "$REPO_DIR/docs/operations.zh.md")" ] && echo found || echo empty)" "same/found"
 # 说明一直发不出去的那种停住：没有起点，只能本机解卡
@@ -1195,12 +1215,14 @@ done
 rc=0; release_cmd "$N" $'yes\n' || rc=$?
 chk "给的是关联 issue 的编号也找得到这条停住记录；整份身份里有 PR 的分支、提交、来源" \
     "$rc/$(grep -c '"base": "release"' "$W/release.out")/$(grep -c '"head":' "$W/release.out")/$(grep -c '"src": "example/sw"' "$W/release.out")" "0/1/1/1"
+fi   # 13a
 fi
 
 
 if want 13x; then
 echo "【13】恢复派工失败时，普通失败兜底不介入：另外两条派工路径（各从「再失败一次就交人」开始）"
 bounced() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json"; }
+if want 13xa; then
 # issue 评论路径：会话不在、工作目录还在 → 重起会话；核对通过之后起会话失败
 frozen_is nob1; human_resume "$N" pending/agent doing/agent pending/agent
 T kill-session -t "=$(sess_of "$N")"
@@ -1229,6 +1251,7 @@ chk "新建路径：没有普通的转人工留言、没翻 pending/human、失�
     "0/pending/agent/2/true/new"
 r0=$(runs "$N"); d0=$(disp "$N"); tick 5; tick 5
 chk "新建路径：之后两轮不再派工、不起新进程" "$(( $(disp "$N") - d0 ))/$(( $(runs "$N") - r0 ))" "0/0"
+fi
 # 复审第 2 轮（代码）的复现：任务已经送进会话，轮询进程在收尾之前被杀掉；派工标签因为摘失败还留着。
 # 下一轮没有任何新的人工操作 → 不能凭同一条指令再派一遍
 tick_killable() {   # 跑一轮，把轮询进程的进程号记在 $W/poll.pid（不套 timeout：要杀的就是它本身）
@@ -1236,6 +1259,7 @@ tick_killable() {   # 跑一轮，把轮询进程的进程号记在 $W/poll.pid�
     (cd "$W/project" && env CODING_AGENT_CONFIG="$CONF" POLL_FAKE_NOW="$NOW" POLL_PID_FILE="$W/poll.pid" \
         bash -c 'echo $$ > "$POLL_PID_FILE"; exec bash "$0"' "$ROOT/scripts/agent-poll.sh") > "$W/poll.out" 2>&1
 }
+if want 13xa; then
 frozen_is crash1; human_resume "$N" pending/agent doing/agent pending/agent
 tok=$(ff "$N" token); g0=$(got "$N")
 touch "$GD/F_delete_labels"
@@ -1285,6 +1309,7 @@ chk "读失败 · 读得出之后的下一轮：指令记为已用掉、重新�
     "true/new/none/0/0"
 tick 5; tick 5
 chk "读失败 · 再过两轮：同一条指令始终没有再送任务" "$(( $(disp "$N") - d1 ))/$(( $(got "$N") - g1 ))" "0/0"
+fi
 # 复审第 5 轮（代码）的复现：记录读得出，了结遗留凭据时从记录里「取字段」失败（条目类型、凭据里的事件编号）。
 # 取不出 ≠ 空值：记录（含条目类型）和凭据都原样留着、这一轮什么都不写；读得出之后照常了结，
 # 两条恢复途径（GitHub 上重新打派工标签、本机解卡命令）都还能用
@@ -1328,8 +1353,11 @@ rcv_field_fail() {   # <名字> <jq 故障的 glob> <日志里应出现的字样
         chk "$1 · 本机途径：解卡命令照常解除（退出码 0，记录清掉）" "$rc/$(entry "$N")/$(grep -c '已解除' "$W/release.out")" "0/{}/1"
     fi
 }
+if want 13xa; then
 rcv_field_fail rcvkind '-er *.frozen != null), .kind, .num]*' '读不出工作编号 [0-9]* 的停住记录，上一轮留下的派工凭据先留着' github
 rcv_field_fail rcvkind2 '-er *.frozen != null), .kind, .num]*' '读不出工作编号 [0-9]* 的停住记录，上一轮留下的派工凭据先留着' local
+fi
+if want 13xb; then
 rcv_field_fail rcvev '-er .event | numbers*' '上一轮留下的派工凭据读不出' github
 # 派工后的收尾从记录里取字段失败：这一轮不收尾、什么都不写（凭据留着）；下一轮开头照常了结
 frozen_is finfld; human_resume "$N" pending/agent doing/agent pending/agent
@@ -1466,6 +1494,7 @@ mk_issue "$N" pending/agent; : > "$CTL/die.issue-$N"
 tick 5
 rm -f "$CTL/die.issue-$N"
 chk "对照 · 没停住的新 issue 秒退：照原规则留言并翻 pending/human" "$(bounced "$N")/$(labels_of "$N")" "1/pending/human"
+fi   # 13xb
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

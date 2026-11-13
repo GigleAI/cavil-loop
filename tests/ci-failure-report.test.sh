@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: e2e
+# parts: 3
 # base 分支测试工作流失败 → 自动开 / 续报告 issue —— GitHub#345。
 #
 # 跑法：bash tests/ci-failure-report.test.sh
@@ -24,6 +25,10 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# 分三段跑（GitHub#495，按 CI 上的时长配平）：1 = 【1】–【5b】，2 = 【5c】（停掉检查时的进程链），3 = 【6】–【14】。
+# 【10】起用到【9】里定义的场景函数，所以 6–14 不再拆
+# shellcheck source=lib/parts.sh
+source "$TEST_DIR/lib/parts.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -185,6 +190,7 @@ mkpr() {   # <n> <合并提交 sha> <正文>：一个已合并进 main 的 PR
 enable() { tick; later; }   # 首次启用那一轮
 
 # ══════════════════════════════════════════════════════════════════════════════
+if part_on 1; then
 section "【1】首次启用不补历史；之后新的失败开报告"
 fresh
 redrun 100 $((T0 - 3600)) 3 requester-bot
@@ -340,6 +346,8 @@ sleep 1
 chk "检查程序没有留下孤儿进程" "$(pgrep -f -- "$NEW/scripts/ci_failure_report.py tick" | wc -l | tr -d ' ')" "0"
 rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 
+fi
+if part_on 2; then
 section "【5c】检查被停掉时：gh 和它起的进程一个不留，返回之后不再有写入"
 # gh 客户端一侧的替身：命中的调用交给它起的一个后代进程去做——后代先等，再向假 GitHub 发真正的请求；
 # 替身自己只等这个后代。所以只停 gh 本身不够：后代还活着，就会在之后把请求发出去。请求还没发出去
@@ -494,6 +502,8 @@ sleep 9
 chk "主轮询被停：再等 9 秒也没有建出报告" "$(n_issues)" "0"
 rm -f "$SLOWD/match"
 
+fi
+if part_on 3; then
 section "【6】同因看失败的测试；证据不完整进「原因未确认」"
 fresh; enable
 redrun 600 $((NOW - 60)) 3 requester-bot; tick; later
@@ -1107,6 +1117,7 @@ s = importlib.util.spec_from_file_location("cfr", sys.argv[1]); m = importlib.ut
 print("yes" if m.stuck_frozen("repos/example/ci/issues/1/comments") else "no", end="")' "$NEW/scripts/ci_failure_report.py"; }
 chk "子进程读名单：空值 / 乱写按全部停住，none 不拦，变量不在不拦" \
     "$(sfz '')/$(sfz 'x 1')/$(sfz none)/$(sfz all)/$(sfz '1 2')/$(sfz '9')/$(unset CI_REPORT_STUCK_FROZEN; sfz)" "yes/yes/no/yes/yes/no/no"
+fi
 
 compat_summary
 echo

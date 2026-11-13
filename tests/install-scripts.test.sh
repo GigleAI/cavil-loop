@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # 给客户端用的安装脚本接口（GitHub#313）：setup.sh 的无人值守开关、只读状态脚本、断开项目脚本、
 # 换新 Mac 后台任务配置脚本。
 #

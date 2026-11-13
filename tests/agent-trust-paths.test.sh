@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # 目录信任（GitHub#108）：派工 / 部署前给 agent 预写 folder-trust 记录，起会话后认出确认框。
 #
 # 跑法：bash tests/agent-trust-paths.test.sh            （默认回归，约 1 分钟）

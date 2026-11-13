@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # 远程入口（GitHub#387）：开关与配对脚本、常驻服务、daemon 侧的停 / 启脚本。
 #
 # 全部在假 HOME + 假 systemctl / launchctl / uname / tailscale 下跑**真实**脚本和真实服务进程；
