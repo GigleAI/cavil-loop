@@ -119,7 +119,7 @@ export function SettingsView({
       <div className="settings-main">
       <section id="set-sources">
         <h3>数据来源</h3>
-        <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目，加上最近 14 天内有更新的。</p>
+        <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目、最近 14 天内有更新的，以及已关闭但还带着「等人处理的标签」的。</p>
         <div className="row">
           <input
             ref={inputBox}
@@ -181,7 +181,7 @@ export function SettingsView({
       <section id="set-hand-back" data-testid="hand-back-settings">
         <h3>流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）</h3>
         <p className="muted small">
-          顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」，数开着的条目里带这个标签的。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
+          顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」：前两个数开着的条目里带这个标签的，「等人处理」开着的和已关闭的都数。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
           <br />
           详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
           <br />
@@ -229,11 +229,11 @@ export function SettingsView({
         <p className="muted small" data-testid="pending-rule">
           {state.notifyScope === 'mine' ? (
             <>
-              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的不提醒。App 启动或新加来源时已有的算历史，不通知、不计数。
+              issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已有的算历史，不通知、不计数。
             </>
           ) : (
             <>
-              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+              issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
             </>
           )}
         </p>
