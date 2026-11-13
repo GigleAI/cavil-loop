@@ -101,9 +101,17 @@ const beat = (app: RunningApp) => app.desktop.push({ kind: 'tick' });
  * on a busy machine, so a test that sends one beat after a change first waits until no round runs — then that beat is
  * the one that starts a round, and the round reads the change.
  */
-async function beatWhenIdle(app: RunningApp, page: Page) {
+async function beatWhenIdle(app: RunningApp, page: Page, o: { repoRead?: boolean } = {}) {
   await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 30_000 });
+  const before = env.fake.log.length;
   beat(app);
+  // and that beat really started a round: the repository's item list was asked for again (PR #484 review: show it, not
+  // only the state it should lead to). `repoRead: false`: the repository waits after a failed read, so a round does not
+  // ask for it — the caller shows the round by what that round does read (an item checked by itself)
+  if (o.repoRead === false) return;
+  await expect
+    .poll(() => env.fake.log.slice(before).some((l) => /^\/api\/repos\/[^/]+\/[^/]+\/issues(\?|$)/.test(l.path)), { timeout: 15_000 })
+    .toBe(true);
 }
 
 test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the right-click menu a tab; the tab bar shows only once a tab is open; ⌘1 … ⌘9 pick a tab; tabs close by ×, the key and the shell', async () => {
@@ -181,7 +189,7 @@ test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the ri
   // the running icon (GitHub#449): a bright stretch of edge goes round a square — really moving, one lap in 2 s;
   // the icon itself does not spin (GitHub#442: a spinner read as "still loading")
   change(A, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   const icon = tab(page, A).locator('.tab-icon.running');
   await expect(icon).toHaveAttribute('data-icon', 'frame-run');
@@ -736,7 +744,7 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   // the repository's list cannot be read any more: the board keeps its copy, which is no news of the item
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
   change(A, { state: 'closed' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-listed', 'no');
   expect(itemReads(A)).toBeGreaterThan(0);
@@ -794,7 +802,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   // the repository's list cannot be read: the PR is checked by itself from now on
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, PR)).toHaveAttribute('data-listed', 'no', { timeout: 15_000 });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(0);
   await page.waitForTimeout(500);
@@ -802,14 +810,14 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   const d0 = detailReads(PR);
   const i0 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i0);
   await expect.poll(() => detailReads(PR), { timeout: 15_000 }).toBeGreaterThan(d0);
   // the checks finish — the PR's update time stays the same — and the next check shows it, nothing clicked
   pull.checks = 'SUCCESS';
   const i1 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i1);
   await expect(d.getByTestId('pr-status')).toContainText('检查：全部通过', { timeout: 15_000 });
   // finished: checks no longer read the detail while nothing changes
@@ -817,7 +825,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   const d2 = detailReads(PR);
   const i2 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i2);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);
@@ -826,7 +834,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   pull.checks = 'PENDING';
   const i3 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i3);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);
@@ -841,7 +849,7 @@ test('settings: the "running" label (GitHub#404) is the one a tab\'s status read
   change(B, { labels: ['doing/agent'] });
   await row(page, A).click({ button: 'middle' });
   await row(page, B).click({ button: 'middle' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, B)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-status', 'open');
 
@@ -872,7 +880,7 @@ test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, fo
   change(C, { labels: ['pending/blocked'] });
   // in the background (GitHub#442: ⌘ / Ctrl + click brings the tab forward; the middle button keeps home in front)
   for (const n of [A, B, C]) await row(page, n).click({ button: 'middle' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, C)).toHaveAttribute('data-status', 'blocked', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running');
   await expect(tab(page, B)).toHaveAttribute('data-status', 'waiting');
@@ -884,13 +892,13 @@ test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, fo
 
   // the prerequisite is done: the daemon swaps the waiting label for the dispatch label, the next round shows it
   change(C, { labels: ['pending/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, C)).toHaveAttribute('data-status', 'open', { timeout: 15_000 });
   await expect(tab(page, C).locator('svg.tab-icon.blocked')).toHaveCount(0);
 
   // another waiting label in Settings: the tabs follow it; emptied, there is no pause at all
   change(C, { labels: ['on-hold'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await page.getByTestId('open-settings').click();
   const field = page.getByTestId('hand-back-blocked');
   await expect(field).toHaveValue('pending/blocked');
@@ -1105,7 +1113,7 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   // ---- 6. closed elsewhere (on GitHub, by the daemon): the tab is not put away, only its icon follows ----
   await row(page, D).click({ modifiers: ['Control'] });
   change(D, { state: 'closed' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, D)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, D)).toHaveCount(1);
   await app.close();
