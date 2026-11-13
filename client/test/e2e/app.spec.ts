@@ -26,6 +26,20 @@ async function launch(env: Env) {
   return { app, page: app.page };
 }
 
+/**
+ * GitHub#464: closed / merged items are hidden unless a view's "显示已关闭" switch is on. Most tests here were
+ * written for a client that listed them once the search was cleared, and they count or click closed items
+ * (#128, #137, #138 …): their sign-in turns every view's switch on. The tests of the switch's own default
+ * (the first test, the imported table view, test/e2e/show-closed.spec.ts) do not call this.
+ */
+async function showClosedEverywhere(page: Page) {
+  const all = { board: true, table: true, graph: true, running: true, agent: true, human: true, unlabeled: true };
+  await page.evaluate((v) => (window as any).cavil.setView({ showClosed: v }), all);
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed)).toEqual(all);
+  // (settings reach the back end's files a moment later; a test that "quits" next kills the back end outright)
+  await page.waitForTimeout(500);
+}
+
 async function shot(page: Page, name: string) {
   await page.waitForTimeout(150);
   await page.screenshot({ path: join(screens, `${name}.png`) });
@@ -324,11 +338,17 @@ async function signInWithSources(page: Page, iteration25 = '13') {
   await page.getByTestId('back').click();
   // adding the Project imported its saved web view (#137: table);
   // these tests are about the board and count every item on it, so switch back to it, clear the filter
-  // and show the closed ones too (GitHub#464)
+  // and show the closed ones in every view (GitHub#464)
   await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await page.getByTestId('search').fill('');
+  // the board's and the table's own switches, through the window (each layout keeps its own)
   await page.getByTestId('show-closed').check();
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('show-closed').check();
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await expect(page.getByTestId('show-closed')).toBeChecked();
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed)).toMatchObject({ board: true, table: true });
   // 12 items say Iteration 25; PR #129 (no iteration) is shown under its issue there (GitHub#275)
   await expect.poll(() => countOf(page, 'Iteration 25'), { timeout: 15_000 }).toBe(iteration25);
 }
@@ -1240,8 +1260,8 @@ test('a saved board view sorted by update time: the board shows each column newe
   await page.getByTestId('back').click();
 
   await expect(page.getByTestId('search')).toHaveValue('-label:nightly-failure', { timeout: 15_000 });
-  // the Done column holds closed items: show them (the board's "显示已关闭" switch, GitHub#464)
-  await page.getByTestId('show-closed').check();
+  // the Done column holds closed items: show them (GitHub#464)
+  await showClosedEverywhere(page);
   await expect(page.locator('[data-testid="column"][data-title="Done"]')).toBeVisible();
   const updated = new Map<string, string>();
   for (const p of loadCavilProjectPages())
@@ -1438,6 +1458,7 @@ async function signIn(page: Page) {
   await expect(page.getByTestId('user-code')).toBeVisible();
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await showClosedEverywhere(page);
 }
 
 /** the saved search text as the main process holds it (the box saves 300 ms after typing stops) */
@@ -1700,6 +1721,7 @@ async function signInForReminders(page: Page, sources: string[]) {
   await expect(page.getByTestId('user-code')).toBeVisible();
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await showClosedEverywhere(page);
   await page.getByTestId('open-settings').click();
   for (const s of sources) {
     await page.getByTestId('source-input').fill(s);
@@ -1788,8 +1810,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   expect(itemNote.title).toBe(`待处理：GigleAI/cavil-loop#${fresh}`);
   await expect.poll(badge).toBe(1);
   // "did happen": that round read the merged PR with its label
-  // (merged: the search names the state, so the board's "显示已关闭" switch stays out of it, GitHub#464)
-  await page.getByTestId('search').fill(`#${mergedPr} is:merged`);
+  await page.getByTestId('search').fill(`#${mergedPr}`);
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
   await expect(card(page, mergedPr).locator('.label', { hasText: 'pending/human' })).toBeVisible({ timeout: 10_000 });
   await page.getByTestId('search').fill('');

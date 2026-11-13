@@ -74,11 +74,15 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   // saved (the box saves 300 ms after typing stops), so a restart opens on the same search
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query)).toBe('');
   await expect.poll(() => sourcesStatus(page), { timeout: 20_000 }).toEqual(sources.map(() => true));
+  // GitHub#464: the graph of everything, closed items included — its own "显示已关闭" switch, on before the
+  // graph is first drawn (where it opens and whether it is "too big" are decided then), and saved
+  await page.evaluate(() => (window as any).cavil.setView({ showClosed: { graph: true } }));
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed.graph)).toBe(true);
   await page.locator('[data-testid="layout"] button[data-value="graph"]').click();
   await expect(page.getByTestId('graph')).toBeVisible();
-  // GitHub#464: the graph of everything, closed items included (its own "显示已关闭" switch, saved)
-  await page.getByTestId('show-closed').check();
-  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed.graph)).toBe(true);
+  await expect(page.getByTestId('show-closed')).toBeChecked();
+  // (settings reach the back end's files a moment later; a test that "quits" next kills the back end outright)
+  await page.waitForTimeout(500);
 }
 
 /** per configured source: has the latest round read it whole */
