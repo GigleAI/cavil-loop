@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLayer, useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
+import { t } from '../shared/i18n';
 
 /**
  * A modal question. Nothing is sent to GitHub until "confirm" is clicked (or ⌘↩, which clicks it).
@@ -23,7 +24,8 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: {
-  title: string;
+  /** a string, or a sentence with outside text marked in it (tNode + Verbatim) */
+  title: ReactNode;
   children?: ReactNode;
   confirmLabel: string;
   danger?: boolean;
@@ -91,17 +93,17 @@ export function ConfirmDialog({
         {children}
         {kept && dirty && (
           <div className="small warn-text" data-testid="dialog-esc-hint">
-            有没提交的内容，按 Esc 不会丢掉；点「取消」才会丢掉。
+            {t('有没提交的内容，按 Esc 不会丢掉；点「取消」才会丢掉。')}
           </div>
         )}
         <div className={actions ? 'row dialog-actions' : 'row end'}>
-          <button data-testid="confirm-cancel" ref={cancelBtn} onClick={onCancel} disabled={busy} title="取消（Esc）">
-            取消
+          <button data-testid="confirm-cancel" ref={cancelBtn} onClick={onCancel} disabled={busy} title={t('取消（Esc）')}>
+            {t('取消')}
           </button>
           {actions && <div className="spacer" />}
           {actions}
-          <button data-testid="confirm-ok" className={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={busy || disabled} title={`${confirmLabel}（${keyText('confirm')}）`}>
-            {busy ? '正在提交…' : confirmLabel}
+          <button data-testid="confirm-ok" className={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={busy || disabled} title={t('{label}（{key}）', { label: confirmLabel, key: keyText('confirm') })}>
+            {busy ? t('正在提交…') : confirmLabel}
             {confirmKey && !busy && <kbd>{keyText('confirm')}</kbd>}
           </button>
         </div>

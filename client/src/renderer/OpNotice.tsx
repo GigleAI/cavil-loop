@@ -2,7 +2,9 @@
 // says and which buttons it offers come from shared/ops.ts alone (the same functions the
 // send gate uses), in the panel and above the board alike.
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { t, tKey, zhKey } from '../shared/i18n';
+import { Verbatim } from './Verbatim';
 import { AUTO_DISMISS_MS, opAutoDismissable, opButtons, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpButton, type OpRecord } from '../shared/ops';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAutoDismiss } from './autoDismiss';
@@ -10,14 +12,15 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { copyText } from './pasteImage';
 
+/** Chinese keys, shown through tKey() */
 const RETRY_LABEL: Record<OpRecord['kind'], string> = {
-  closeIssue: '重新关闭…',
-  closePr: '重新关闭…',
-  merge: '重新合并…',
-  autopilot: '重新托管…',
-  handBack: '重新交给 agent',
+  closeIssue: zhKey('重新关闭…'),
+  closePr: zhKey('重新关闭…'),
+  merge: zhKey('重新合并…'),
+  autopilot: zhKey('重新托管…'),
+  handBack: zhKey('重新交给 agent'),
   // GitHub#434: opens the dialog again, read afresh
-  blocked: '等前置…（重新登记）',
+  blocked: zhKey('等前置…（重新登记）'),
 };
 
 export function opItemUrl(r: OpRecord): string {
@@ -34,7 +37,7 @@ export function OpNotice({
 }: {
   r: OpRecord;
   /** above the board: which item it is about */
-  prefix?: string;
+  prefix?: ReactNode;
   /** the dialog again, with the draft restored */
   onRetry: (r: OpRecord) => void;
   /** the kept comment into the reply box */
@@ -61,7 +64,7 @@ export function OpNotice({
     setProblem(null);
     try {
       const out = await f();
-      if (out && !out.ok) setProblem(out.error ?? '没有成功');
+      if (out && !out.ok) setProblem(out.error ?? t('没有成功'));
     } finally {
       setWorking(false);
     }
@@ -74,38 +77,41 @@ export function OpNotice({
         <span data-testid="op-notice-text">{opText(r)}</span>
         {left?.comment !== undefined && phase !== 'waiting' && (
           <span className="op-draft" data-testid="op-draft-comment">
-            附的评论原文：<q>{left.comment}</q>
+            {t('附的评论原文：')}
+            <q>
+              <Verbatim from="user">{left.comment}</Verbatim>
+            </q>
           </span>
         )}
         <span className="op-buttons">
           {onOpen && (
             <button className="link" data-testid="op-open" onClick={() => onOpen(r.key)}>
-              打开
+              {t('打开')}
             </button>
           )}
           {has('resend') && (
             <button className="link" data-testid="op-resend" disabled={working} onClick={() => setAsking(true)}>
-              仍要重发…
+              {t('仍要重发…')}
             </button>
           )}
           {has('openWeb') && (
             <button className="link" data-testid="op-open-web" onClick={() => void api().openExternal(opItemUrl(r))}>
-              去 GitHub 页面核对
+              {t('去 GitHub 页面核对')}
             </button>
           )}
           {has('unlock') && (
-            <button className="link" data-testid="op-unlock" title="在 GitHub 页面核对过以后再点：只解开这里的锁定，不会往 GitHub 发任何请求" onClick={() => void api().opUnlock(r.id)}>
-              已核对，解除锁定
+            <button className="link" data-testid="op-unlock" title={t('在 GitHub 页面核对过以后再点：只解开这里的锁定，不会往 GitHub 发任何请求')} onClick={() => void api().opUnlock(r.id)}>
+              {t('已核对，解除锁定')}
             </button>
           )}
           {has('retry') && (
             <button className="link" data-testid="op-retry" onClick={() => onRetry(r)}>
-              {RETRY_LABEL[r.kind]}
+              {tKey(RETRY_LABEL[r.kind])}
             </button>
           )}
           {has('finish') && (
             <button className="link" data-testid="op-finish" disabled={working} onClick={() => void run(() => api().opFinish(r.id))}>
-              补做剩下的步骤
+              {t('补做剩下的步骤')}
             </button>
           )}
           {has('copy') && left?.comment !== undefined && (
@@ -117,17 +123,17 @@ export function OpNotice({
                 void copyText(text).then(setCopied);
               }}
             >
-              {copied === true ? '已复制' : copied === false ? '复制失败' : '复制原文'}
+              {copied === true ? t('已复制') : copied === false ? t('复制失败') : t('复制原文')}
             </button>
           )}
           {has('toReply') && (
             <button className="link" data-testid="op-to-reply" onClick={() => onToReply(r)}>
-              放进回复框
+              {t('放进回复框')}
             </button>
           )}
           {has('dropDraft') && (
-            <button className="link" data-testid="op-drop-draft" title="丢掉以后找不回来" onClick={() => void api().opDropDraft(r.id)}>
-              丢掉草稿
+            <button className="link" data-testid="op-drop-draft" title={t('丢掉以后找不回来')} onClick={() => void api().opDropDraft(r.id)}>
+              {t('丢掉草稿')}
             </button>
           )}
         </span>
@@ -142,7 +148,7 @@ export function OpNotice({
       {asking && confirm && (
         <ConfirmDialog
           title={confirm.title}
-          confirmLabel="仍要重发"
+          confirmLabel={t('仍要重发')}
           busy={working}
           onCancel={() => setAsking(false)}
           onConfirm={() => {
@@ -159,7 +165,7 @@ export function OpNotice({
         </ConfirmDialog>
       )}
       {has('dismiss') && (
-        <button className="banner-close" aria-label="关掉提示" title={left ? '关掉提示（草稿还留着，可以从这一条的详情里找回）' : '关掉提示'} data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
+        <button className="banner-close" aria-label={t('关掉提示')} title={left ? t('关掉提示（草稿还留着，可以从这一条的详情里找回）') : t('关掉提示')} data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
           <Icon name="x" />
         </button>
       )}

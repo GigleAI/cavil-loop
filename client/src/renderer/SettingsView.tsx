@@ -317,7 +317,7 @@ export function SettingsView({
           <label>
             {t('暂缓')}
             <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
-            <span className="field-hint">{t('顶栏「稍后处理」；留空 = 不显示这个数')}</span>
+            <span className="field-hint">{t('顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做')}</span>
           </label>
           <label>
             {t('交给 agent')}

@@ -5,7 +5,8 @@
 import { useEffect, useState } from 'react';
 import type { AppState } from '../shared/types';
 import { api } from './api';
-import { t } from '../shared/i18n';
+import { t, tKey } from '../shared/i18n';
+import { tNode } from './tNode';
 import { Icon } from './Icons';
 import { Keys } from './ShortcutHelp';
 import { SettingsMore } from './SettingsMore';
@@ -62,7 +63,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
             setProblem(null);
           } else setProblem({ id, why: r.why });
         })
-        .catch(() => setProblem({ id, why: '没有保存上，再按一次试试' }));
+        .catch(() => setProblem({ id, why: t('没有保存上，再按一次试试') }));
     };
     window.addEventListener('keydown', on, true);
     return () => window.removeEventListener('keydown', on, true);
@@ -71,7 +72,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
     setRecording(null);
     void Promise.resolve(api().setShortcutKey(id, null))
       .then((r) => setProblem(r.ok ? null : { id, why: r.why }))
-      .catch(() => setProblem({ id, why: '没有保存上，再点一次试试' }));
+      .catch(() => setProblem({ id, why: t('没有保存上，再点一次试试') }));
   };
   const table = activeShortcuts();
   const anyCustom = Object.keys(state.shortcutKeys).length > 0;
@@ -88,7 +89,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
             void Promise.resolve(api().resetShortcutKeys()).catch(() => undefined);
           }}
         >
-          全部恢复默认
+          {t('全部恢复默认')}
         </button>
       </div>
       <p className="muted small">{t('点「改」后按下新键，只在这台电脑生效。')}</p>
@@ -105,13 +106,15 @@ export function ShortcutSettings({ state }: { state: AppState }) {
         <div className="banner warn" data-testid="shortcut-dropped">
           <Icon name="warn" />
           <span>
-            上次保存的快捷键里有 {state.shortcutDropped.length} 项这次不能用，已按默认处理：
-            {state.shortcutDropped.map((d, i) => (
-              <span key={`${d.id}:${i}`} data-testid="shortcut-dropped-item" data-id={d.id}>
-                {i > 0 && '；'}「{d.name}」（{d.why}）
-              </span>
-            ))}
-            。这一项改过或恢复后，这条提示消失。
+            {tNode('上次保存的快捷键里有 {n} 项这次不能用，已按默认处理：{list}。这一项改过或恢复后，这条提示消失。', {
+              n: state.shortcutDropped.length,
+              list: state.shortcutDropped.map((d, i) => (
+                <span key={`${d.id}:${i}`} data-testid="shortcut-dropped-item" data-id={d.id}>
+                  {i > 0 && t('；')}
+                  {t('「{name}」（{why}）', { name: d.name, why: d.why })}
+                </span>
+              )),
+            })}
           </span>
         </div>
       )}
@@ -120,7 +123,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
         if (!rows.length) return null;
         return (
           <div key={scope}>
-            <div className="sk-group">{SCOPE_TITLE[scope]}</div>
+            <div className="sk-group">{tKey(SCOPE_TITLE[scope])}</div>
             <table className="sk-table">
               <tbody>
                 {rows.map((s) => {
@@ -136,14 +139,14 @@ export function ShortcutSettings({ state }: { state: AppState }) {
                         {shortcutName(s.id)}
                         {custom && scope === 'detail' && own && !own.mod && (
                           <div className="muted small" data-testid="shortcut-plain-note">
-                            {s.id === 'reply' ? `不带 ${mac ? '⌘' : 'Ctrl'} 的键在回复框里按是打字` : `不带 ${mac ? '⌘' : 'Ctrl'} 的键在回复框、讨论区里按不生效`}
+                            {s.id === 'reply' ? t('不带 {mod} 的键在回复框里按是打字', { mod: mac ? '⌘' : 'Ctrl' }) : t('不带 {mod} 的键在回复框、讨论区里按不生效', { mod: mac ? '⌘' : 'Ctrl' })}
                           </div>
                         )}
                       </td>
                       <td className="k" data-testid="shortcut-setting-keys">
                         {rec ? (
                           <span className="rec" data-testid="shortcut-recording">
-                            请按新的按键…<kbd>Esc</kbd> 取消
+                            {tNode('请按新的按键…{esc} 取消', { esc: <kbd>Esc</kbd> })}
                           </span>
                         ) : s.range ? (
                           <span>
@@ -159,7 +162,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
                             </span>
                           ))
                         )}
-                        {custom && !rec && <span className="chg">已改</span>}
+                        {custom && !rec && <span className="chg">{t('已改')}</span>}
                       </td>
                       <td className="a">
                         {!can ? (
@@ -168,16 +171,16 @@ export function ShortcutSettings({ state }: { state: AppState }) {
                           </span>
                         ) : rec ? (
                           <button className="link" data-testid="shortcut-cancel" onClick={() => (setRecording(null), setProblem(null))}>
-                            取消
+                            {t('取消')}
                           </button>
                         ) : (
                           <>
                             <button className="link" data-testid="shortcut-change" onClick={() => (setProblem(null), setRecording(s.id))}>
-                              改
+                              {t('改')}
                             </button>
                             {custom && (
                               <button className="link" data-testid="shortcut-restore" onClick={() => restore(s.id)}>
-                                恢复默认
+                                {t('恢复默认')}
                               </button>
                             )}
                           </>

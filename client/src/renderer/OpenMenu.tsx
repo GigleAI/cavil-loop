@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { useLayer, useShortcuts } from './keyboard';
 import { KEEPS_PANEL } from './outsideClick';
 import { isMac } from './shortcuts';
+import { t } from '../shared/i18n';
 
 export type OpenHow = 'float' | 'front' | 'back';
 
@@ -41,7 +42,7 @@ export function OpenMenu({ at, onPick, onWeb, onClose }: { at: OpenMenuAt; onPic
   const H = 150;
   const left = Math.max(4, Math.min(at.x, window.innerWidth - W - 4));
   const top = Math.max(4, Math.min(at.y, window.innerHeight - H - 4));
-  const mod = isMac() ? '⌘ 单击' : 'Ctrl+单击';
+  const mod = isMac() ? t('⌘ 单击') : t('Ctrl+单击');
   const item = (how: OpenHow, text: string, hint: string) => (
     <button role="menuitem" data-testid={`open-menu-${how}`} onClick={() => onPick(how)}>
       <span>{text}</span>
@@ -59,12 +60,12 @@ export function OpenMenu({ at, onPick, onWeb, onClose }: { at: OpenMenuAt; onPic
       {...{ [KEEPS_PANEL]: '' }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {item('float', '在浮窗打开', '单击')}
-      {item('front', '在新标签页打开', mod)}
-      {item('back', '在后台标签页打开', '中键')}
+      {item('float', t('在浮窗打开'), t('单击'))}
+      {item('front', t('在新标签页打开'), mod)}
+      {item('back', t('在后台标签页打开'), t('中键'))}
       <hr />
       <button role="menuitem" data-testid="open-menu-web" onClick={onWeb}>
-        <span>在 GitHub 网页上看</span>
+        <span>{t('在 GitHub 网页上看')}</span>
       </button>
     </div>
   );

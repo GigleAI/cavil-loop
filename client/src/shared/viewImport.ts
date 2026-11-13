@@ -8,6 +8,7 @@
 // "显示已关闭" switch does that now.
 
 import { dropDoneHiders } from './filter';
+import { t } from './i18n';
 import type { GroupBy, ImportInfo, ProjectMeta, SavedView, SortField, TableColumn, ViewField, ViewSettings } from './types';
 
 export const DEFAULT_TABLE_COLUMNS: TableColumn[] = ['title', 'assignees', 'labels', 'linkedPrs', 'subIssues', 'updated', 'iteration'];
@@ -69,11 +70,11 @@ function sortOf(f: ViewField): SortField | null {
 
 /** The view to import: `/views/N` when given and present, else the first one. */
 export function pickView(project: ProjectMeta, wanted: number | undefined): { view: SavedView | null; note: string | null } {
-  if (project.views.length === 0) return { view: null, note: `「${project.title}」在网页上没有存好的视图，没有可导入的设置` };
+  if (project.views.length === 0) return { view: null, note: t('「{project}」在网页上没有存好的视图，没有可导入的设置', { project: project.title }) };
   if (wanted === undefined) return { view: project.views[0], note: null };
   const v = project.views.find((x) => x.number === wanted);
   if (v) return { view: v, note: null };
-  return { view: project.views[0], note: `「${project.title}」没有编号为 ${wanted} 的视图，改为导入第一个视图「${project.views[0].name}」` };
+  return { view: project.views[0], note: t('「{project}」没有编号为 {number} 的视图，改为导入第一个视图「{view}」', { project: project.title, number: wanted, view: project.views[0].name }) };
 }
 
 export type ImportPatch = Pick<ViewSettings, 'layout' | 'query' | 'mode' | 'swimlanes' | 'table' | 'imported'>;
@@ -86,7 +87,7 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
   const notes: string[] = extraNote ? [extraNote] : [];
   let layout: ViewSettings['layout'] = 'table';
   if (view.layout === 'BOARD_LAYOUT') layout = 'board';
-  else if (view.layout !== 'TABLE_LAYOUT') notes.push('路线图布局本客户端不支持，已改用表格');
+  else if (view.layout !== 'TABLE_LAYOUT') notes.push(t('路线图布局本客户端不支持，已改用表格'));
 
   const table = { ...current.table, ...NOT_IN_API, slice: null };
   let mode = current.mode;
@@ -100,7 +101,7 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
       if (got) table.groupBy = got;
       else {
         table.groupBy = 'none';
-        notes.push(`按「${g.name}」分组本客户端不支持，已改为不分组`);
+        notes.push(t('按「{field}」分组本客户端不支持，已改为不分组', { field: g.name }));
       }
     }
   } else {
@@ -108,14 +109,21 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
     if (col) {
       const got = groupOf(col);
       if (got === 'iteration' || got === 'status' || got === 'milestone') mode = got;
-      else notes.push(`看板按「${col.name}」分列本客户端不支持，保留按${mode === 'iteration' ? '迭代' : mode === 'status' ? '状态' : '里程碑'}分列`);
+      else
+        notes.push(
+          mode === 'iteration'
+            ? t('看板按「{field}」分列本客户端不支持，保留按迭代分列', { field: col.name })
+            : mode === 'status'
+              ? t('看板按「{field}」分列本客户端不支持，保留按状态分列', { field: col.name })
+              : t('看板按「{field}」分列本客户端不支持，保留按里程碑分列', { field: col.name }),
+        );
     }
     const lane = view.groupBy[0];
     if (!lane) swimlanes = false;
     else if (groupOf(lane) === 'repo') swimlanes = true;
     else {
       swimlanes = false;
-      notes.push(`按「${lane.name}」分泳道本客户端不支持，已改为不分泳道`);
+      notes.push(t('按「{field}」分泳道本客户端不支持，已改为不分泳道', { field: lane.name }));
     }
   }
 
@@ -125,9 +133,14 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
   else {
     const f = sortOf(s.field);
     if (f) table.sort = { field: f, dir: s.direction === 'ASC' ? 'asc' : 'desc' };
-    else notes.push(`按「${s.field.name}」排序本客户端不支持，保留按${table.sort.field === 'updated' ? '更新时间' : '原设置'}排序`);
+    else
+      notes.push(
+        table.sort.field === 'updated'
+          ? t('按「{field}」排序本客户端不支持，保留按更新时间排序', { field: s.field.name })
+          : t('按「{field}」排序本客户端不支持，保留按原设置排序', { field: s.field.name }),
+      );
   }
-  if (view.sortBy.length > 1) notes.push(`网页视图有 ${view.sortBy.length} 级排序，本客户端只用第一级`);
+  if (view.sortBy.length > 1) notes.push(t('网页视图有 {n} 级排序，本客户端只用第一级', { n: view.sortBy.length }));
 
   const columns: TableColumn[] = [];
   const skipped: string[] = [];
@@ -139,7 +152,7 @@ export function importView(view: SavedView, project: ProjectMeta, current: ViewS
   }
   if (!columns.includes('title')) columns.unshift('title');
   table.columns = columns;
-  if (skipped.length) notes.push(`这些列本客户端不支持，未显示：${skipped.join('、')}`);
+  if (skipped.length) notes.push(t('这些列本客户端不支持，未显示：{fields}', { fields: skipped.join(t('、')) }));
 
   const imported: ImportInfo = { sourceKey: project.key, viewNumber: view.number, viewName: view.name, notes };
   // GitHub#464: the words that only hid finished items are left to the switch; the rest as written

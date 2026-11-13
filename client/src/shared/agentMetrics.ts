@@ -9,6 +9,8 @@
 // "某测试耗时 5054ms" as 5054 minutes). GitHub's rendered HTML drops comments,
 // so the record can only come from the source.
 
+import { outsideWords } from './i18n';
+
 const RECORD = /^<!--\s*agent-metrics\s+(.*?)-->$/;
 
 /**
@@ -50,7 +52,9 @@ export function formatDuration(secs: number): string {
 
 // Where the footer starts in GitHub's HTML: its summary fold (GitHub#90 on) or, in the
 // GitHub#88 layout comments still carry, a paragraph starting with the same words.
-const FOOTER_START = /<details\b[^>]*>\s*<summary\b[^>]*>\s*⏱️\s*耗时：|<p\b[^>]*>\s*⏱️\s*耗时：/g;
+// The footer's first word is the daemon's own (it writes in one language), never the window's.
+const FOOTER_WORD = outsideWords('耗时：');
+const FOOTER_START = new RegExp(`<details\\b[^>]*>\\s*<summary\\b[^>]*>\\s*⏱️\\s*${FOOTER_WORD}|<p\\b[^>]*>\\s*⏱️\\s*${FOOTER_WORD}`, 'g');
 
 /**
  * GitHub's HTML of a comment without its usage footer (for the one-line preview): cut at

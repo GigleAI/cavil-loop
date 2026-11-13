@@ -330,9 +330,7 @@
   "顶栏「运行中」、标签页的运行图标；留空 = 不用": "The \"Running\" count and the running icon on tabs; empty = not used",
   "提醒、顶栏「等人处理」；「交给 agent」时去掉": "Reminders and the \"Waiting for human\" count; removed on \"Hand to agent\"",
   "暂缓": "Parked",
-  "顶栏「稍后处理」；留空 = 不显示这个数": "The \"Later\" count; empty = that count is not shown",
   "「交给 agent」时加上": "Added by \"Hand to agent\"",
-  "托管": "Autopilot",
   "「托管」时加上；留空 = 不显示「托管」按钮": "Added by \"Autopilot\"; empty = no \"Autopilot\" button",
   "等前置": "Waiting for prerequisites",
   "「等前置…」时加上，关系图读它的登记；留空 = 不用": "Added by \"Wait for…\"; the dependency view reads its registrations; empty = not used",
@@ -374,5 +372,6 @@
   "哪些键固定、单个键何时生效": "Which keys are fixed, and when a single key works",
   "一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{first} … {last}、{close} 和缩放键是固定的，不能改。不带 {mod} 的单个键只在光标不在输入框里时生效。": "Changing an action to a key stops its old keys from working. Esc, ↩, the arrow keys, {first} … {last}, {close} and the zoom keys are fixed and cannot be changed. A single key without {mod} works only while the cursor is not in a text box.",
   "固定的键，不能改": "A fixed key; it cannot be changed",
-  "固定": "Fixed"
+  "固定": "Fixed",
+  "顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做": "The \"Later\" count, and right after the waiting-for-human label in label pickers; empty = neither"
 }

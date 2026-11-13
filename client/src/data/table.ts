@@ -18,6 +18,7 @@ import { isCurrentIteration } from '../shared/filter';
 import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan, iterationColumnKey, type DropPlan } from './board';
 import { itemSorter } from './sort';
 import { repoComparator } from '../shared/repoOrder';
+import { t, tKey, zhKey } from '../shared/i18n';
 import { listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
 
 export const GROUP_NONE_KEY = 'none';
@@ -112,10 +113,10 @@ export function iterationRange(it: Iteration): string {
 }
 
 const NONE_TITLE: Record<Exclude<GroupBy, 'none'>, string> = {
-  iteration: '无迭代',
-  status: '无状态',
-  milestone: '无里程碑',
-  repo: '无仓库',
+  iteration: zhKey('无迭代'),
+  status: zhKey('无状态'),
+  milestone: zhKey('无里程碑'),
+  repo: zhKey('无仓库'),
 };
 
 /** Sorts after every value's order (they all start with '1' or '2'). */
@@ -138,7 +139,7 @@ function groupsOf(item: Item, by: GroupBy, projects: Map<string, ProjectMeta>, t
     const order = due ? `1${due}` : '2';
     const cur = seeds.get(key);
     if (cur && order < cur.order) cur.order = order;
-    return [seed({ key, title: item.milestone.title, subtitle: due ? `截止 ${due.slice(0, 10)}` : null, current: false, empty: false, order, preset: { by: 'milestone', title: item.milestone.title } })];
+    return [seed({ key, title: item.milestone.title, subtitle: due ? t('截止 {date}', { date: due.slice(0, 10) }) : null, current: false, empty: false, order, preset: { by: 'milestone', title: item.milestone.title } })];
   }
   const members = item.projects.filter((m) => projects.has(m.projectKey));
   const keys = new Set<string>();
@@ -393,7 +394,7 @@ function groupItems(
   };
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
-    return [{ key, title: '全部', subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section, rows: lay(items, key) }];
+    return [{ key, title: zhKey('全部'), subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section, rows: lay(items, key) }];
   }
   const mode = boardMode(settings.groupBy);
   // GitHub#294: each row carries what a drag changes, by the board's own rule for that column
@@ -424,7 +425,12 @@ function groupColumn(by: GroupBy, seedKey: string): string | null {
   return by === 'iteration' ? COL_NO_ITERATION : by === 'status' ? COL_NO_STATUS : COL_NO_MILESTONE;
 }
 
-export const REFUSE_OTHER_REPO = '只能拖到同一个仓库下的分组';
+export const REFUSE_OTHER_REPO = zhKey('只能拖到同一个仓库下的分组');
+
+/** a group the client names itself ("全部", the group without a value): its title is a zhKey; every other title is GitHub's */
+export function isOwnGroup(g: Pick<Group, 'preset'>): boolean {
+  return g.preset.by === 'none';
+}
 
 /**
  * Dropping a table row on a group (GitHub#294): the board's drop rule, with
@@ -435,7 +441,7 @@ export const REFUSE_OTHER_REPO = '只能拖到同一个仓库下的分组';
 export function tableDropPlan(row: Row, from: Group, to: Group, by: GroupBy, projects: ProjectMeta[]): DropPlan {
   const mode = boardMode(by);
   if (!mode || !from.column || !to.column || from.key === to.key) return { kind: 'none' };
-  if (from.section !== to.section) return { kind: 'refuse', reason: REFUSE_OTHER_REPO };
+  if (from.section !== to.section) return { kind: 'refuse', reason: tKey(REFUSE_OTHER_REPO) };
   return dropPlan(row, from.column, { key: to.column }, mode, projects);
 }
 

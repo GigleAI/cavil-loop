@@ -20,6 +20,7 @@
 //   - reads that do not carry the field (not on that Project, the detail read)
 //     never reach here; a failed read changes nothing.
 //
+import { t, tKey, zhKey } from '../shared/i18n';
 import type { EditMark, Item, ProjectMeta } from '../shared/types';
 
 // Times are the controller's stamps (milliseconds, strictly increasing), so
@@ -204,7 +205,7 @@ export function afterRestart(r: EditRecord): EditRecord {
     ...r,
     reqs: r.reqs.flatMap((q): EditRequest[] => (q.answer === 'queued' ? [] : q.answer === 'waiting' ? [{ ...q, answer: 'unknown' }] : [q])),
     // a target that never went out is not on GitHub: say so
-    failure: r.failure ?? (r.reqs.find((q) => q.id === r.targetReq)?.answer === 'queued' ? { kind: 'rejected', reason: 'App 在发出之前关闭了，这次修改没有发出' } : null),
+    failure: r.failure ?? (r.reqs.find((q) => q.id === r.targetReq)?.answer === 'queued' ? { kind: 'rejected', reason: zhKey('App 在发出之前关闭了，这次修改没有发出') } : null),
   };
 }
 
@@ -251,13 +252,13 @@ export function fieldValue(item: Item, field: EditField): EditValue | undefined 
 function valueText(field: EditField, v: EditValue, projects: ProjectMeta[]): string {
   switch (field.kind) {
     case 'label':
-      return v ? `有「${field.label}」` : `没有「${field.label}」`;
+      return v ? t('有「{label}」', { label: field.label }) : t('没有「{label}」', { label: field.label });
     case 'milestone':
-      return typeof v === 'string' ? v : '（无里程碑）';
+      return typeof v === 'string' ? v : t('（无里程碑）');
     case 'status':
-      return typeof v === 'string' ? v : '（无状态）';
+      return typeof v === 'string' ? v : t('（无状态）');
     case 'iteration': {
-      if (typeof v !== 'string') return '（无迭代）';
+      if (typeof v !== 'string') return t('（无迭代）');
       const p = projects.find((x) => x.key === field.projectKey);
       return p?.iterations.find((i) => i.id === v)?.title ?? v;
     }
@@ -265,7 +266,7 @@ function valueText(field: EditField, v: EditValue, projects: ProjectMeta[]): str
 }
 
 export function targetText(r: EditRecord, projects: ProjectMeta[]): string {
-  if (r.field.kind === 'label') return r.target ? `加上「${r.field.label}」` : `去掉「${r.field.label}」`;
+  if (r.field.kind === 'label') return r.target ? t('加上「{label}」', { label: r.field.label }) : t('去掉「{label}」', { label: r.field.label });
   return valueText(r.field, r.target, projects);
 }
 
@@ -284,13 +285,13 @@ export function markOf(r: EditRecord, projects: ProjectMeta[]): EditMark {
     failure: !r.failure
       ? null
       : r.failure.kind === 'rejected'
-        ? r.failure.reason
-        : `读到的值（${valueText(r.field, r.failure.value, projects)}）和你之前一次没确认的修改相同，可能被它改回去了`,
+        ? tKey(r.failure.reason)
+        : t('读到的值（{value}）和你之前一次没确认的修改相同，可能被它改回去了', { value: valueText(r.field, r.failure.value, projects) }),
     hold: !r.hold
       ? null
       : r.hold.kind === 'changed'
-        ? { kind: 'changed', text: `你改之后有人改成了「${valueText(r.field, r.hold.value, projects)}」，没有重新发送；确认要用你的值覆盖就点「仍然覆盖」` }
-        : { kind: 'unreadable', text: `读不到 GitHub 现在的值（${r.hold.reason}），没法确认有没有人改过` },
+        ? { kind: 'changed', text: t('你改之后有人改成了「{value}」，没有重新发送；确认要用你的值覆盖就点「仍然覆盖」', { value: valueText(r.field, r.hold.value, projects) }) }
+        : { kind: 'unreadable', text: t('读不到 GitHub 现在的值（{reason}），没法确认有没有人改过', { reason: r.hold.reason }) },
   };
 }
 

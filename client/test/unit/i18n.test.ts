@@ -91,6 +91,14 @@ describe('the source scan itself', () => {
     expect(r.findings.map((f) => f.line)).toEqual([11]);
     expect([...r.keys.keys()].sort()).toEqual(['分钟', '刷新', '同步中…（{n}）', '已登录：{v}', '设置'].sort());
   });
+  it('GitHub#472: outsideWords( literals (the daemon\'s words, words written to GitHub) are neither findings nor keys; only its first literal, and only a plain one', () => {
+    const r = ts(`const a = outsideWords('耗时：');\nconst b = outsideWords('在等 {list}').replace('{list}', '、');\nconst c = x.outsideWords('你好');`);
+    expect(r.findings.map((f) => f.line)).toEqual([2, 3]);
+    expect([...r.keys.keys()]).toEqual([]);
+    expect(ts('const a = outsideWords(`在等 ${x}`);').badCalls).toHaveLength(1);
+    // the marker never stands in for t(): the same literal in a t( is still a key needing English
+    expect([...ts(`const a = t('耗时：');`).keys.keys()]).toEqual(['耗时：']);
+  });
   it('a key that is not a plain literal is reported', () => {
     expect(ts('const a = t(`共 ${n} 个`);').badCalls).toHaveLength(1);
     expect(ts('const a = t(name);').badCalls).toHaveLength(1);
@@ -174,6 +182,70 @@ describe('the source scan over the client', () => {
       'src-tauri/src/main.rs',
       'src-tauri/src/mac.rs',
       'src-tauri/src/desktop.rs',
+    ])
+      expect(listed, f).not.toContain(f);
+  });
+
+  it("sub-issue ②'s areas (#472: board, table, dependency view, detail, tabs, new issue, dialogs, notices, shortcuts) are migrated", () => {
+    for (const f of [
+      'src/data/actions.ts',
+      'src/data/autoJoin.ts',
+      'src/data/blocked.ts',
+      'src/data/board.ts',
+      'src/data/changeCheck.ts',
+      'src/data/detail.ts',
+      'src/data/edits.ts',
+      'src/data/fetchSources.ts',
+      'src/data/github.ts',
+      'src/data/groupPreset.ts',
+      'src/data/itemRefresh.ts',
+      'src/data/loopBlocked.ts',
+      'src/data/newIssueFields.ts',
+      'src/data/projectChoices.ts',
+      'src/data/relations.ts',
+      'src/data/table.ts',
+      'src/data/taskList.ts',
+      'src/renderer/BlockedDialog.tsx',
+      'src/renderer/BoardView.tsx',
+      'src/renderer/ConfirmDialog.tsx',
+      'src/renderer/DetailPanel.tsx',
+      'src/renderer/EmptyGuide.tsx',
+      'src/renderer/FailureNote.tsx',
+      'src/renderer/FindBar.tsx',
+      'src/renderer/GraphView.tsx',
+      'src/renderer/KindBadge.tsx',
+      'src/renderer/LabelPicker.tsx',
+      'src/renderer/NewIssueDialog.tsx',
+      'src/renderer/NoticeArea.tsx',
+      'src/renderer/OpNotice.tsx',
+      'src/renderer/OpenMenu.tsx',
+      'src/renderer/ProjectPicker.tsx',
+      'src/renderer/RepoWebLink.tsx',
+      'src/renderer/SendNotice.tsx',
+      'src/renderer/ShortcutHelp.tsx',
+      'src/renderer/ShortcutSettings.tsx',
+      'src/renderer/TabBar.tsx',
+      'src/renderer/TableView.tsx',
+      'src/renderer/ViewSettingsPanel.tsx',
+      'src/renderer/codeBlocks.ts',
+      'src/renderer/detailHtml.ts',
+      'src/renderer/frameScript.ts',
+      'src/renderer/iterationOptions.tsx',
+      'src/renderer/pasteImage.ts',
+      'src/renderer/prStatus.ts',
+      'src/renderer/reread.ts',
+      'src/renderer/shortcuts.ts',
+      'src/shared/agentMetrics.ts',
+      'src/shared/blocked.ts',
+      'src/shared/handoff.ts',
+      'src/shared/images.ts',
+      'src/shared/noticeTone.ts',
+      'src/shared/ops.ts',
+      'src/shared/readFailure.ts',
+      'src/shared/sends.ts',
+      'src/shared/stateTone.ts',
+      'src/shared/tabs.ts',
+      'src/shared/viewImport.ts',
     ])
       expect(listed, f).not.toContain(f);
   });

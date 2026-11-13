@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import type { IssueStateReason, ItemKind, ItemState } from './types';
 
 /**
@@ -28,17 +29,17 @@ export function stateTone(kind: ItemKind, state: ItemState, reason: IssueStateRe
   return reason === 'not_planned' || reason === 'duplicate' ? 'neutral' : 'done';
 }
 
-const STATE_TEXT: Record<ItemState, string> = { open: '开', closed: '已关闭', merged: '已合并' };
-const REASON_TEXT: Partial<Record<IssueStateReason, string>> = { not_planned: '（不计划）', duplicate: '（重复）' };
+const stateText = (state: ItemState): string => (state === 'open' ? t('开') : state === 'closed' ? t('已关闭') : t('已合并'));
 
 /**
  * The state's words, next to its colour: the detail badge, the board card and the
  * settings page's pending list all show these (draft / close reason included).
  */
 export function badgeText(kind: ItemKind, state: ItemState, reason: IssueStateReason | null | undefined, isDraft: boolean | null): string {
-  if (kind === 'pr' && state === 'open' && isDraft === true) return '草稿';
-  if (kind === 'issue' && state === 'closed' && reason) return STATE_TEXT.closed + (REASON_TEXT[reason] ?? '');
-  return STATE_TEXT[state];
+  if (kind === 'pr' && state === 'open' && isDraft === true) return t('草稿');
+  if (kind === 'issue' && state === 'closed' && reason === 'not_planned') return t('已关闭（不计划）');
+  if (kind === 'issue' && state === 'closed' && reason === 'duplicate') return t('已关闭（重复）');
+  return stateText(state);
 }
 
 const REASONS: IssueStateReason[] = ['completed', 'not_planned', 'duplicate', 'reopened'];

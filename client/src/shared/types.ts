@@ -544,7 +544,7 @@ export interface HandBackLabels {
   running: string;
   /** GitHub#429: the daemon's "waiting for a prerequisite" label — the graph reads the loop's registration on open issues carrying it; '' = not read */
   blocked: string;
-  /** GitHub#514: the daemon's "parked for later" label (LABEL_PENDING_LATER) — counted as "稍后处理" in the view bar; '' = that number is not shown */
+  /** GitHub#513 / #514: the daemon's parked label (`LABEL_PENDING_LATER`) — label pickers list it right after `human`, and the view bar counts it as "稍后处理"; '' = neither */
   later: string;
 }
 

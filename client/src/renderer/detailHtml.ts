@@ -14,7 +14,8 @@
 import type { ItemDetail, TimelineEntry } from '../shared/actions';
 import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../shared/avatar';
 import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
-import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from './frameScript';
+import { FRAME_SCRIPT, FRAME_SCRIPT_HASH, frameWords } from './frameScript';
+import { t, tKey, zhKey } from '../shared/i18n';
 import { annotateCodeBlocks, codeCss } from './codeBlocks';
 import { parseReleaseImage } from '../shared/images';
 import { formatDuration, withoutFooter } from '../shared/agentMetrics';
@@ -82,15 +83,21 @@ export function blockedImages(html: string): number {
   return n;
 }
 
+/** a CSS string literal holding `s` (the frame's own words in `content:`) */
+function cssString(s: string): string {
+  return `'${s.replace(/[\\'\n]/g, (c) => (c === '\n' ? '\\a ' : `\\${c}`))}'`;
+}
+
 export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
+// Chinese keys, shown with tKey
 const REVIEW_STATE: Record<string, string> = {
-  APPROVED: '批准',
-  CHANGES_REQUESTED: '要求修改',
-  COMMENTED: '评审意见',
-  DISMISSED: '已撤销的评审',
+  APPROVED: zhKey('批准'),
+  CHANGES_REQUESTED: zhKey('要求修改'),
+  COMMENTED: zhKey('评审意见'),
+  DISMISSED: zhKey('已撤销的评审'),
 };
 
 function when(iso: string): string {
@@ -139,41 +146,49 @@ export type Unfold = 'latest' | 'all' | 'none';
  * no change in flight). A read-only entry says why under its text.
  */
 function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null, wrap: boolean, web?: string): { html: string; note: string } {
-  const t = e.tasks;
+  const tasks = e.tasks;
   // GitHub#381: every code block gets its two buttons; the boxes are numbered first, exactly as before
-  const html = markReleaseImages(annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && t?.clickable === true, pending), wrap), web);
-  const note = t && !t.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(t.why)}</div>` : '';
+  const html = markReleaseImages(annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && tasks?.clickable === true, pending), wrap), web);
+  const note = tasks && !tasks.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(tKey(tasks.why))}</div>` : '';
   return { html, note };
 }
 
 function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string): string {
-  const who = escapeHtml(e.author ?? '（已删除的账号）');
+  // the login is GitHub's; "deleted account" is the client's own words
+  const who = e.author ? `<b data-verbatim="github">${escapeHtml(e.author)}</b>` : `<b>${escapeHtml(t('（已删除的账号）'))}</b>`;
+  const at = escapeHtml(when(e.at));
+  const state = e.reviewState ?? '';
+  const stateText = Object.prototype.hasOwnProperty.call(REVIEW_STATE, state) ? escapeHtml(tKey(REVIEW_STATE[state])) : e.reviewState ? `<span data-verbatim="github">${escapeHtml(e.reviewState)}</span>` : escapeHtml(t('评审'));
   const head =
     e.kind === 'body'
-      ? `<b>${who}</b> 发起 · ${escapeHtml(when(e.at))} · 正文`
+      ? escapeHtml(t('{who} 发起 · {at} · 正文')).replace('{who}', () => who).replace('{at}', () => at)
       : e.kind === 'review'
-        ? `<b>${who}</b> · ${escapeHtml(REVIEW_STATE[e.reviewState ?? ''] ?? e.reviewState ?? '评审')} · ${escapeHtml(when(e.at))}`
-        : `<b>${who}</b> · ${escapeHtml(when(e.at))}`;
+        ? `${who} · ${stateText} · ${at}`
+        : `${who} · ${at}`;
   // GitHub#503: with a usage record, the preview leaves out the footer's own line
-  const excerpt = plainExcerpt(e.wallSecs !== undefined ? withoutFooter(e.bodyHtml) : e.bodyHtml) || (e.lineComments?.length ? `${e.lineComments.length} 条逐行评论` : '（没有文字）');
+  // GitHub#472: the excerpt is GitHub's words, marked as such; only the client's own fallbacks are not
+  const quoted = plainExcerpt(e.wallSecs !== undefined ? withoutFooter(e.bodyHtml) : e.bodyHtml);
+  const excerpt = quoted
+    ? `<span data-verbatim="github">${escapeHtml(quoted)}</span>`
+    : escapeHtml(e.lineComments?.length ? t('{n} 条逐行评论', { n: e.lineComments.length }) : t('（没有文字）'));
   // GitHub#503: the head carries the round's total time where the web link used to be;
   // the link to this one entry on the web sits at the bottom of the unfolded entry
   const dur =
     e.wallSecs !== undefined
-      ? ` · <span class="dur" data-wall="${e.wallSecs}" title="这一轮 agent 的总耗时（取自评论末尾的用量记录）">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`
+      ? ` · <span class="dur" data-wall="${e.wallSecs}" title="${escapeHtml(t('这一轮 agent 的总耗时（取自评论末尾的用量记录）'))}">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`
       : '';
-  const webLink = e.url ? `<a class="web" href="${escapeHtml(e.url)}">在网页上看这一条</a>` : '';
+  const webLink = e.url ? `<a class="web" href="${escapeHtml(e.url)}">${escapeHtml(t('在网页上看这一条'))}</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
-  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">有 ${blocked} 张图片不在 GitHub 的地址上，客户端不加载${webLink ? `；${webLink}` : ''}</div>` : '';
+  const note = blocked ? `<div class="blocked" data-blocked="${blocked}">${escapeHtml(webLink ? t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载；{link}', { n: blocked }) : t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载', { n: blocked })).replace('{link}', () => webLink)}</div>` : '';
   const tasks = bodyWithTasks(e, canTick, pending, wrap, web);
   // GitHub#205: only what GitHub says this account may change, only while a change can be sent
   const editBtn =
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
-      ? `<button type="button" class="edit" data-edit${canTick ? '' : ' disabled title="离线或有修改在途时不能编辑"'}>编辑</button>`
+      ? `<button type="button" class="edit" data-edit${canTick ? '' : ` disabled title="${escapeHtml(t('离线或有修改在途时不能编辑'))}"`}>${escapeHtml(t('编辑'))}</button>`
       : '';
   // below everything the entry holds (a review's line comments included)
   const tools = webLink || editBtn ? `<div class="tools">${webLink}${editBtn}</div>` : '';
-  const body = (e.bodyHtml.trim() ? `<div class="md">${tasks.html}</div>` : '') + tasks.note + note;
+  const body = (e.bodyHtml.trim() ? `<div class="md" data-verbatim="github">${tasks.html}</div>` : '') + tasks.note + note;
   let lines = '';
   if (e.lineComments?.length) {
     lines =
@@ -181,14 +196,14 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
       e.lineComments
         .map(
           (l) =>
-            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code>${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b>${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md">${markReleaseImages(annotateCodeBlocks(l.bodyHtml, wrap), web)}</div></div>`,
+            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code data-verbatim="github">${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b data-verbatim="github">${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md" data-verbatim="github">${markReleaseImages(annotateCodeBlocks(l.bodyHtml, wrap), web)}</div></div>`,
         )
         .join('') +
       '</div>';
   }
   // a folded entry is one line (who, when, what kind, the start of its text); the browser's own
   // <details> opens it — no script involved (FRAME_SCRIPT only reports boxes and the view)
-  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${dur}<span class="excerpt" data-find-skip> · ${escapeHtml(excerpt)}</span></summary>${body}${lines}${tools}</details>`;
+  return `<details class="entry ${e.kind}${e.reviewState ? ` ${escapeHtml(e.reviewState.toLowerCase())}` : ''}" data-entry="${escapeHtml(e.id)}" data-kind="${e.kind}"${open ? ' open' : ''}><summary class="head">${avatarHtml(e.author, 20)}${head}${dur}<span class="excerpt" data-find-skip> · ${excerpt}</span></summary>${body}${lines}${tools}</details>`;
 }
 
 /** Is entry `i` (newest first) unfolded? By default only the newest is — with no comments that is the opening post. */
@@ -243,7 +258,7 @@ export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfo
   // GitHub#358: a box waiting for GitHub — grey, between "not ticked" and the accent of a confirmed tick
   const wait = dark ? '#656c76' : '#8c959f';
   const waitBg = dark ? '#262c36' : '#eaeef2';
-  return `<!doctype html><html><head><meta charset="utf-8">
+  return `<!doctype html><html data-words="${escapeHtml(JSON.stringify(frameWords()))}"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${TIMELINE_CSP}">
 <base target="_blank">
 <style>
@@ -273,8 +288,8 @@ body[data-wrap] .md pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .cb:hover>.cbar,.cb:focus-within>.cbar{opacity:1}
 .cbtn{font:12px/18px -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;color:${muted};background:${bg};border:1px solid ${border};border-radius:6px;padding:1px 8px;cursor:pointer}
 .cbtn:focus-visible{outline:2px solid ${accent};outline-offset:1px}
-.cbtn[data-code-wrap]::after{content:'：关'}
-body[data-wrap] .cbtn[data-code-wrap]::after{content:'：开'}
+.cbtn[data-code-wrap]::after{content:${cssString(t('：关'))}}
+body[data-wrap] .cbtn[data-code-wrap]::after{content:${cssString(t('：开'))}}
 body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 .cbtn[data-state=ok]{color:${dark ? '#3fb950' : '#1a7f37'};border-color:${dark ? '#3fb950' : '#1a7f37'}}
 .cbtn[data-state=fail]{color:${dark ? '#f85149' : '#cf222e'};border-color:${dark ? '#f85149' : '#cf222e'}}

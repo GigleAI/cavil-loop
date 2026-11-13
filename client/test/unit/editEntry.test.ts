@@ -305,4 +305,28 @@ describe('GitHub#404: the running label next to the hand-back labels', () => {
     const again = await ready();
     expect(again.getState().handBack.blocked).toBe('waiting');
   });
+
+  it('GitHub#513: the parked label — default pending/later, renamed (trimmed), saved empty stays empty, kept across a restart; the others untouched', async () => {
+    const c = await ready();
+    expect(c.getState().handBack.later).toBe('pending/later');
+    c.setHandBack({ later: ' parked ' });
+    expect(c.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, later: 'parked' });
+    c.setHandBack({ agent: 'go' });
+    expect(c.getState().handBack.later).toBe('parked');
+    c.setHandBack({ later: '  ' });
+    expect(c.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, agent: 'go', later: '' });
+    await c.settled();
+    const again = await ready();
+    expect(again.getState().handBack).toEqual({ ...DEFAULT_HAND_BACK, agent: 'go', later: '' });
+    again.setHandBack({ later: 'pending/later' });
+    expect(again.getState().handBack.later).toBe('pending/later');
+  });
+
+  it('GitHub#513: settings saved before the parked label existed (or with a value that is not text) get pending/later', async () => {
+    const cache = new Cache(join(dir, 'cache.sqlite'));
+    cache.setSetting('handBack', { human: 'wait', agent: 'go', autopilot: '', running: '', blocked: '', later: 7 });
+    cache.close();
+    const c = await ready();
+    expect(c.getState().handBack).toEqual({ human: 'wait', agent: 'go', autopilot: '', running: '', blocked: '', later: 'pending/later' });
+  });
 });
