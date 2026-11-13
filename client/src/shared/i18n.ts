@@ -162,6 +162,17 @@ export function zhKey<T extends string>(zh: T): T {
   return zh;
 }
 
+/**
+ * GitHub#472: Chinese that is not the window's text and so is never translated — words of the daemon's
+ * that the client looks for in what the daemon wrote (its usage footer), and words the client writes
+ * to GitHub next to the daemon's marker, for the daemon and the people on GitHub to read in the one
+ * language the daemon uses. Never shown as the window's own words. The source scan lets exactly these
+ * literals through (test/i18n/scan.ts).
+ */
+export function outsideWords<T extends string>(zh: T): T {
+  return zh;
+}
+
 /** a key marked with zhKey, in the window's language (anything else: as written) */
 export function tKey(zh: string): string {
   return EN.has(zh) ? translate(current, zh) : zh;

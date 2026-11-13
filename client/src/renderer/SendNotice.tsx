@@ -8,6 +8,8 @@ import { AUTO_DISMISS_MS } from '../shared/ops';
 import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
 import { Icon } from './Icons';
+import { t } from '../shared/i18n';
+import { Verbatim } from './Verbatim';
 
 export function SendNotice({ r, onOpen }: { r: SendRecord; onOpen: (key: string) => void }) {
   const [working, setWorking] = useState(false);
@@ -21,7 +23,7 @@ export function SendNotice({ r, onOpen }: { r: SendRecord; onOpen: (key: string)
     setProblem(null);
     try {
       const out = await f();
-      if (!out.ok) setProblem(out.error ?? '没有成功');
+      if (!out.ok) setProblem(out.error ?? t('没有成功'));
     } finally {
       setWorking(false);
     }
@@ -33,29 +35,33 @@ export function SendNotice({ r, onOpen }: { r: SendRecord; onOpen: (key: string)
       <span className="banner-text">
         <button className="link" data-testid="send-open" onClick={() => onOpen(r.key)}>
           <b>
-            {r.repo}#{r.number}：
+            <Verbatim from="github">{r.repo}</Verbatim>#{r.number}
+            {t('：')}
           </b>
         </button>
         <span data-testid="send-notice-text">{said}</span>
         {text !== null && (
           <span className="op-draft" data-testid="send-text">
-            原文：<q>{text}</q>
+            {t('原文：')}
+            <q>
+              <Verbatim from="user">{text}</Verbatim>
+            </q>
           </span>
         )}
         <span className="op-buttons">
           {buttons.includes('resend') && (
             <button className="link" data-testid="send-resend" disabled={working} onClick={() => void go(() => api().sendResend(r.id))}>
-              再发一次
+              {t('再发一次')}
             </button>
           )}
           {buttons.includes('recheck') && (
-            <button className="link" data-testid="send-recheck" disabled={working} title="只读一次 GitHub 上现在的内容，不会再发" onClick={() => void go(() => api().sendRecheck(r.id))}>
-              再查一次
+            <button className="link" data-testid="send-recheck" disabled={working} title={t('只读一次 GitHub 上现在的内容，不会再发')} onClick={() => void go(() => api().sendRecheck(r.id))}>
+              {t('再查一次')}
             </button>
           )}
           {buttons.includes('unlock') && (
-            <button className="link" data-testid="send-unlock" title="在 GitHub 页面核对过以后再点：只解开这里的锁定，不会往 GitHub 发任何请求；原文仍留在这里" onClick={() => void api().sendUnlock(r.id)}>
-              已核对，解除锁定
+            <button className="link" data-testid="send-unlock" title={t('在 GitHub 页面核对过以后再点：只解开这里的锁定，不会往 GitHub 发任何请求；原文仍留在这里')} onClick={() => void api().sendUnlock(r.id)}>
+              {t('已核对，解除锁定')}
             </button>
           )}
         </span>
@@ -67,7 +73,7 @@ export function SendNotice({ r, onOpen }: { r: SendRecord; onOpen: (key: string)
         )}
       </span>
       {sendClosable(r) && (
-        <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="send-dismiss" onClick={() => void api().sendDismiss(r.id)}>
+        <button className="banner-close" aria-label={t('关掉提示')} title={t('关掉提示')} data-testid="send-dismiss" onClick={() => void api().sendDismiss(r.id)}>
           <Icon name="x" />
         </button>
       )}

@@ -6,7 +6,7 @@ import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shar
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
 import { retryByHand, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
-import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
+import { buildBoard, dropPlan, isOwnColumn, writesEnabled, type Card, type Column, type ColumnSub, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
@@ -37,7 +37,7 @@ import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
 import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyName, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
 import { effectiveTallies } from '../shared/tallies';
-import { t } from '../shared/i18n';
+import { getLang, t, tKey } from '../shared/i18n';
 import { SourceName, Verbatim, verbatimParts } from './Verbatim';
 import { tNode } from './tNode';
 
@@ -92,7 +92,7 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
       <div className="card-head">
         <span className={`kind ${it.kind} ${tone}`} data-testid="card-state" data-tone={tone}>
           {card.under && (
-            <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+            <span className="nest-mark" title={t('关联到上面这个 issue 的 PR')}>
               ↳{' '}
             </span>
           )}
@@ -100,15 +100,15 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
           {it.kind === 'pr' ? 'PR' : 'Issue'} · {badgeText(it.kind, it.state, it.stateReason, it.isDraft ?? null)}
         </span>
         <span className="ref card-repo">
-          {it.repo} #{it.number}
+          <Verbatim from="github">{it.repo}</Verbatim> #{it.number}
         </span>
         <span className="spacer" />
         {it.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed') && (
-          <span className="edit-flag" data-testid="card-edit-flag" title="有修改没保存上或没确认，打开看详情">
-            <Icon name="warn" size={12} /> 修改未保存
+          <span className="edit-flag" data-testid="card-edit-flag" title={t('有修改没保存上或没确认，打开看详情')}>
+            <Icon name="warn" size={12} /> {t('修改未保存')}
           </span>
         )}
-        <span className="card-author" data-testid="card-author" title={`作者 ${it.author ?? "（已删除的账号）"}`}>
+        <span className="card-author" data-testid="card-author" title={it.author ? t('作者 {who}', { who: it.author }) : t('作者 {who}', { who: t('（已删除的账号）') })} {...verbatimParts('github', [it.author])}>
           <Avatar login={it.author} size={20} />
         </span>
       </div>
@@ -121,19 +121,20 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
           ops.open(it.key);
         }}
       >
-        {it.title}
+        <Verbatim from="github">{it.title}</Verbatim>
       </a>
       <div className="labels" onClick={(e) => e.stopPropagation()}>
         {it.labels.map((l) => (
           <span key={l.name} className={`label${it.edits?.some((m) => m.label === l.name && ['saving', 'verifying', 'observing'].includes(m.status)) ? ' pending' : ''}`} style={labelStyle(l.color, ops.dark)}>
-            {l.name}
+            <Verbatim from="github">{l.name}</Verbatim>
             {ops.canWrite && (
               <button
                 className="label-x"
                 data-testid="card-label-remove"
                 data-label={l.name}
-                title={`去掉「${l.name}」`}
-                onClick={() => void ops.act({ kind: 'removeLabel', key: it.key, label: l.name }, `${it.repo}#${it.number}：已去掉标签「${l.name}」`)}
+                title={t('去掉「{label}」', { label: l.name })}
+                {...verbatimParts('github', [l.name])}
+                onClick={() => void ops.act({ kind: 'removeLabel', key: it.key, label: l.name }, t('{repo}#{number}：{what}', { repo: it.repo, number: it.number, what: t('已去掉标签「{label}」', { label: l.name }) }))}
               >
                 ×
               </button>
@@ -150,50 +151,52 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
               onChange={(e) => {
                 const v = e.target.value;
                 setAdding(null);
-                if (v) void ops.act({ kind: 'addLabel', key: it.key, label: v }, `${it.repo}#${it.number}：已加上标签「${v}」`);
+                if (v) void ops.act({ kind: 'addLabel', key: it.key, label: v }, t('{repo}#{number}：{what}', { repo: it.repo, number: it.number, what: t('已加上标签「{label}」', { label: v }) }));
               }}
             >
-              <option value="">{adding.error ?? '选一个标签'}</option>
+              <option value="">{adding.error ?? t('选一个标签')}</option>
               {adding.labels
                 .filter((l) => !it.labels.some((x) => x.name === l.name))
                 .map((l) => (
-                  <option key={l.name} value={l.name}>
+                  <option key={l.name} value={l.name} data-verbatim="github">
                     {l.name}
                   </option>
                 ))}
             </select>
           ) : (
-            <button className="label-plus" data-testid="card-label-add" title="加标签" onClick={async () => setAdding(await ops.labelsOf(it.repo))}>
+            <button className="label-plus" data-testid="card-label-add" title={t('加标签')} onClick={async () => setAdding(await ops.labelsOf(it.repo))}>
               +
             </button>
           ))}
       </div>
       <div className="meta">
         {iterations.length > 0 && (
-          <span title="迭代">
+          <span title={t('迭代')}>
             <Icon name="iteration" size={14} />
-            {[...new Set(iterations)].join('、')}
+            <Verbatim from="github">{[...new Set(iterations)].join(t('、'))}</Verbatim>
           </span>
         )}
         {it.milestone && (
-          <span title="里程碑">
+          <span title={t('里程碑')}>
             <Icon name="milestone" size={14} />
-            {it.milestone.title}
+            <Verbatim from="github">{it.milestone.title}</Verbatim>
           </span>
         )}
         {it.assignees.length > 0 && (
-          <span className="people" data-testid="card-assignees" title={`负责人 ${it.assignees.join('、')}`}>
+          <span className="people" data-testid="card-assignees" title={t('负责人 {who}', { who: it.assignees.join(t('、')) })} {...verbatimParts('github', it.assignees)}>
             {it.assignees.map((a) => (
               <span key={a} className="person">
                 <Avatar login={a} size={18} />
-                {a}
+                <Verbatim from="github">{a}</Verbatim>
               </span>
             ))}
           </span>
         )}
         {ops.showProjects && it.projects.length > 0 && (
           <span data-testid="card-projects">
-            {mode !== 'milestone' && card.projectTitles.length ? '本列来自 ' + card.projectTitles.join('、') : '在 ' + it.projects.map((p) => p.projectTitle).join('、')}
+            {mode !== 'milestone' && card.projectTitles.length
+              ? tNode('本列来自 {boards}', { boards: <Verbatim from="github">{card.projectTitles.join(t('、'))}</Verbatim> })
+              : tNode('在 {boards}', { boards: <Verbatim from="github">{it.projects.map((p) => p.projectTitle).join(t('、'))}</Verbatim> })}
           </span>
         )}
       </div>
@@ -244,17 +247,29 @@ function ColumnView({ col, cards, mode, ops, onDrop }: { col: Column; cards: Car
       }}
     >
       <div className="column-head">
-        <b>{col.title}</b> <span className="count" data-testid="column-count">{cards.length}</span>
-        {col.subtitle && <div className="small muted sub">{col.subtitle}</div>}
+        <b>{isOwnColumn(col.key) ? tKey(col.title) : <Verbatim from="github">{col.title}</Verbatim>}</b> <span className="count" data-testid="column-count">{cards.length}</span>
+        {col.sub && (
+          <div className="small muted sub">
+            <ColumnSubLine sub={col.sub} />
+          </div>
+        )}
       </div>
       <div className="column-body">
         {cards.map((c) => (
           <CardView key={c.id} card={c} mode={mode} col={col.key} ops={ops} />
         ))}
-        {cards.length === 0 && <div className="empty-note">没有条目{ops.canWrite ? ' · 可把卡片拖到这里' : ''}</div>}
+        {cards.length === 0 && <div className="empty-note">{ops.canWrite ? t('没有条目 · 可把卡片拖到这里') : t('没有条目')}</div>}
       </div>
     </div>
   );
+}
+
+/** the line under a column's title; the Project titles shown as is */
+function ColumnSubLine({ sub }: { sub: ColumnSub }) {
+  if (sub.kind === 'due') return <>{t('截止 {date}', { date: sub.date })}</>;
+  if (sub.kind === 'noDue') return <>{t('无截止日期')}</>;
+  if (!sub.projects.length) return <>{t('{date} 起', { date: sub.date })}</>;
+  return <>{tNode('{date} 起 · {projects}', { date: sub.date, projects: <Verbatim from="github">{sub.projects.join(t('、'))}</Verbatim> })}</>;
 }
 
 /** The yellow bars' "×" (GitHub#153): the window decides what is shown, the board only asks. */
@@ -270,7 +285,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
     <div className="banner warn closable" data-testid={kind}>
       <Icon name="warn" />
       <span className="banner-text">{children}</span>
-      <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid={`${kind}-close`} onClick={() => warn.close(kind)}>
+      <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid={`${kind}-close`} onClick={() => warn.close(kind)}>
         <Icon name="x" />
       </button>
     </div>
@@ -286,7 +301,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
 /** GitHub#455: how long "已重新读取，所有来源都读到了" stays next to refresh */
 const REREAD_OK_MS = 5000;
 
-function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => string; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind']; reread: Reread }) {
+function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => ReactNode; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind']; reread: Reread }) {
   const [open, setOpen] = useState(false);
   // GitHub#455: the outcome line stays until the next click or until the panel is put away
   const close = () => {
@@ -326,7 +341,7 @@ function SyncTroublePanel({
   onClose,
 }: {
   trouble: SyncTrouble;
-  describe: (f: SyncTrouble['failed'][number]) => string;
+  describe: (f: SyncTrouble['failed'][number]) => ReactNode;
   retryOf: (f: SyncTrouble['failed'][number]) => string | null;
   appKind: AppState['signedInAppKind'];
   box: RefObject<HTMLSpanElement | null>;
@@ -348,12 +363,12 @@ function SyncTroublePanel({
     return () => document.removeEventListener('mousedown', out);
   }, [box, onClose]);
   return (
-    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label="同步不完整">
+    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label={t('同步不完整')}>
       {trouble.incomplete && (
         <>
           <div className="trouble-head">
             <Icon name="warn" />
-            同步不完整
+            {t('同步不完整')}
           </div>
           <ul data-testid="sync-trouble-incomplete">
             {trouble.failed.map((f) => (
@@ -378,7 +393,7 @@ function SyncTroublePanel({
       )}
       {trouble.filterIncomplete && (
         <div className="trouble-filter" data-testid="sync-trouble-filter">
-          有来源这次没读全，筛选结果可能不全。
+          {t('有来源这次没读全，筛选结果可能不全。')}
         </div>
       )}
       {running && (
@@ -396,7 +411,7 @@ function SyncTroublePanel({
       <div className="trouble-foot">
         <button className={running ? 'reread-busy' : undefined} data-testid="sync-trouble-resync" data-running={running ? 'yes' : 'no'} onClick={reread.run}>
           {running ? <span className="spin" aria-hidden="true" /> : <Icon name="refresh" />}
-          {running ? '正在重新同步…' : '重新同步'}
+          {running ? t('正在重新同步…') : t('重新同步')}
         </button>
       </div>
     </div>
@@ -503,14 +518,18 @@ export function BoardView({
     const hit = applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects });
     return hideClosed ? openOnly(hit) : hit;
   }, [data, parsed, state.viewer, today, hideClosed]);
+  // the column / group lines are worded when built: built again when the language changes
+  const lang = getLang();
   const board = useMemo(
     () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
-    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang],
   );
   // GitHub#368: built once here, so the view bar's counts and the table come from the same result
   const table = useMemo(
     () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items) : null),
-    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, lang],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -558,9 +577,16 @@ export function BoardView({
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
   };
   // GitHub#401: the same words as Settings and the empty board's card (shared/readFailure.ts)
-  const describeFailed = (f: (typeof failed)[number]) => {
-    const shown = `显示的是${f.dataFrom ? ` ${ago(f.dataFrom, now)}` : '空'}的数据`;
-    return `${labelOf(f.sourceKey)} 读取失败（${describeFailure(failureOf(f), now, state.signedInAppKind ?? 'oauth').title}），${shown}`;
+  /** a source's name for the page: its GitHub parts shown as is */
+  const nameOf = (sourceKey: string): ReactNode => {
+    const s = state.sources.find((x) => x.key === sourceKey);
+    return s ? <SourceName source={s} title={titles.get(s.key)} /> : <Verbatim from="github">{sourceKey}</Verbatim>;
+  };
+  const describeFailed = (f: (typeof failed)[number]): ReactNode => {
+    const why = describeFailure(failureOf(f), now, state.signedInAppKind ?? 'oauth').title;
+    return f.dataFrom
+      ? tNode('{source} 读取失败（{why}），显示的是 {ago}的数据', { source: nameOf(f.sourceKey), why, ago: ago(f.dataFrom, now) })
+      : tNode('{source} 读取失败（{why}），显示的是空的数据', { source: nameOf(f.sourceKey), why });
   };
   // GitHub#401: the empty board's card (add a source / why nothing was read)
   const guide = emptyGuideOf(
@@ -629,14 +655,14 @@ export function BoardView({
       if (!r.ok) {
         setBusy(false);
         const done = actions.indexOf(a);
-        if (!r.held) setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
+        if (!r.held) setNote({ kind: 'error', text: done ? t('前 {n} 项已改好；{error}', { n: done, error: `${r.error}` }) : `${r.error}` }, a);
         return;
       }
       if (!r.held) allHeld = false;
       if (r.warning) warn.push(r.warning);
     }
     setBusy(false);
-    if (!allHeld || warn.length) setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
+    if (!allHeld || warn.length) setNote(noteOf({ ok: true, error: null, warning: warn.join(t('；')) || null }, okText));
   };
   const ops: CardOps = {
     // GitHub#229: a change shows on the card at once; the board does not wait for GitHub's answer
@@ -664,7 +690,7 @@ export function BoardView({
   };
   /** what a drop decided, for a card on the board and a row in the table alike (GitHub#294) */
   const applyPlan = (plan: DropPlan) => {
-    if (plan.kind === 'refuse') setNote({ kind: 'error', text: `没有修改：${plan.reason}` });
+    if (plan.kind === 'refuse') setNote({ kind: 'error', text: t('没有修改：{reason}', { reason: plan.reason }) });
     else if (plan.kind === 'do') void runAll(plan.actions, plan.summary);
     else if (plan.kind === 'confirm') {
       setChoice(0);
@@ -706,8 +732,8 @@ export function BoardView({
             ended.map((c) => <ColumnView key={c.key} col={c} cards={pick(c)} mode={board.mode} ops={ops} onDrop={onDrop} />)
           ) : (
             <button className="column ended-group" data-testid="ended-group" onClick={() => setShowEnded(true)}>
-              已结束的迭代（{ended.length} 个 · {ended.reduce((n, c) => n + pick(c).length, 0)} 张）
-              <div className="small muted">点开展开</div>
+              {t('已结束的迭代（{n} 个 · {cards} 张）', { n: ended.length, cards: ended.reduce((n, c) => n + pick(c).length, 0) })}
+              <div className="small muted">{t('点开展开')}</div>
             </button>
           ))}
         {shown.map((c) => (
@@ -932,14 +958,24 @@ export function BoardView({
       <div className="below-bar">
       <div className={`board-bars${floatKey ? ' beside-detail' : ''}`} data-testid="board-bars">
       <WarnBar kind="filter-unsupported" warn={warn}>
-        {parsed.unsupported.map((t) => `「${t}」`).join('')}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。
+        {tNode('{words}本客户端不支持，已忽略，结果可能比 GitHub 网页上多。', {
+          words: (
+            <>
+              {parsed.unsupported.map((w, i) => (
+                <span key={i}>{tNode('「{name}」', { name: <Verbatim from="user">{w}</Verbatim> })}</span>
+              ))}
+            </>
+          ),
+        })}
       </WarnBar>
-      {hasText && <div className="small muted hint">文字只搜标题、编号和标签名，不搜正文和评论。</div>}
+      {hasText && <div className="small muted hint">{t('文字只搜标题、编号和标签名，不搜正文和评论。')}</div>}
       {view.imported && view.imported.notes.length > 0 && (
         <div className="banner info" data-testid="import-notes">
-          导入网页视图{view.imported.viewName ? `「${view.imported.viewName}」` : ''}时，有些设置本客户端做不到：{view.imported.notes.join('；')}
+          {view.imported.viewName
+            ? tNode('导入网页视图「{view}」时，有些设置本客户端做不到：{notes}', { view: <Verbatim from="github">{view.imported.viewName}</Verbatim>, notes: view.imported.notes.join(t('；')) })
+            : t('导入网页视图时，有些设置本客户端做不到：{notes}', { notes: view.imported.notes.join(t('；')) })}
           <button className="link" data-testid="import-notes-dismiss" onClick={() => api().setView({ imported: { ...view.imported!, notes: [] } })}>
-            知道了
+            {t('知道了')}
           </button>
         </div>
       )}
@@ -948,23 +984,25 @@ export function BoardView({
       <UpdateReadyBar update={state.update} />
       <UpdateInstalledBar update={state.update} />
       <WarnBar kind="offline" warn={warn}>
-        {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · {offlineDataText(sync, now)} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
+        {sync.offlineReason
+          ? tNode('离线：{why} · {data} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。', { why: <Verbatim from="system">{sync.offlineReason}</Verbatim>, data: offlineDataText(sync, now) })
+          : t('离线 · {data} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。', { data: offlineDataText(sync, now) })}
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
         {sync.problem}
       </WarnBar>
       <WarnBar kind="board-notify-problem" warn={warn}>
-        macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
+        {tNode('macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })}
       </WarnBar>
       <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
       {view.layout === 'board' && board.notice && !guide && (
         <div className="banner info" data-testid="board-notice">
-          {board.notice}
+          {tKey(board.notice)}
         </div>
       )}
       {guide && (
         <div className="center-guide" data-testid="empty">
-          <EmptyGuide guide={guide} state={state} labelOf={labelOf} onSettings={onSettings} />
+          <EmptyGuide guide={guide} state={state} labelOf={nameOf} onSettings={onSettings} />
         </div>
       )}
 
@@ -979,6 +1017,7 @@ export function BoardView({
             .map((s): GraphSourceInfo => ({
               key: s.key,
               label: labelOf(s.key),
+              name: nameOf(s.key),
               status: sync.sources.find((x) => x.sourceKey === s.key) ?? null,
               unknown: (data.relationsUnknown ?? []).includes(s.key),
               unknownItems: data.items.filter((i) => i.relations === undefined && i.sources.includes(s.key)).length,
@@ -1000,7 +1039,7 @@ export function BoardView({
           onOpen={openItem}
           onNote={setNote}
           canCreate={canWrite}
-          createTitle={writesEnabled(sync) ? (state.sources.length ? '在这一组新建 issue，带上这一组的字段' : '先添加数据来源') : '离线时不能修改'}
+          createTitle={writesEnabled(sync) ? (state.sources.length ? t('在这一组新建 issue，带上这一组的字段') : t('先添加数据来源')) : t('离线时不能修改')}
           onNewInGroup={(g) => setNewIssue({ preset: g.preset, title: g.title, items: g.rows.map((r) => r.item) })}
           folds={state.tableFolds}
           onDropPlan={applyPlan}
@@ -1023,7 +1062,7 @@ export function BoardView({
                     className="lane-head"
                     data-testid="lane-toggle"
                     aria-expanded={!isFolded}
-                    title={`${isFolded ? '点一下展开这个仓库' : '点一下收起这个仓库'}；拖动调整仓库顺序`}
+                    title={isFolded ? t('点一下展开这个仓库；拖动调整仓库顺序') : t('点一下收起这个仓库；拖动调整仓库顺序')}
                     onClick={() => void Promise.resolve(api().setLaneFold(lane, !isFolded)).catch(() => undefined)}
                     {...laneDrag.props(lane)}
                   >
@@ -1031,7 +1070,7 @@ export function BoardView({
                       {isFolded ? '▸' : '▾'}
                     </span>
                     <Icon name="repo" size={14} />
-                    <span className="lane-name">{lane}</span>
+                    <span className="lane-name"><Verbatim from="github">{lane}</Verbatim></span>
                     <span className="count" data-testid="lane-count">
                       {count}
                     </span>
@@ -1059,13 +1098,13 @@ export function BoardView({
       )}
       {confirm && (
         <ConfirmDialog
-          title="加入看板？"
-          confirmLabel="加入并设置"
+          title={t('加入看板？')}
+          confirmLabel={t('加入并设置')}
           busy={busy}
           onCancel={() => setConfirm(null)}
           onConfirm={async () => {
             const c = confirm.choices[choice];
-            await runAll([c.action], `已加入看板「${c.projectTitle}」`);
+            await runAll([c.action], t('已加入看板「{board}」', { board: c.projectTitle }));
             setConfirm(null);
           }}
         >
@@ -1073,7 +1112,7 @@ export function BoardView({
           {confirm.choices.length > 1 && (
             <select data-testid="confirm-project" value={choice} onChange={(e) => setChoice(Number(e.target.value))}>
               {confirm.choices.map((c, i) => (
-                <option key={c.projectKey} value={i}>
+                <option key={c.projectKey} value={i} data-verbatim="github">
                   {c.projectTitle}
                 </option>
               ))}

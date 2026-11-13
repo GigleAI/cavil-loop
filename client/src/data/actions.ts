@@ -43,6 +43,7 @@ import {
 import { flipTask } from './taskList';
 import { pickMilestone } from './groupPreset';
 import { checkHandoff, droppedLabels, handoffProblem, HANDOFFS, mergeLabels } from '../shared/handoff';
+import { t, tKey, zhKey } from '../shared/i18n';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -88,9 +89,9 @@ export function createBoard(p: ProjectMeta, state: CreateBoard['state'], reason:
 }
 
 export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nodeId: string, iterationId: string | null, status: string | null): Promise<unknown | null> {
-  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
-  if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
-  if (!nodeId) throw new ActionRefused('不知道新 issue 在 GitHub 上的编号，不能补加；请到网页上加进看板');
+  if (!p.projectId) throw new ActionRefused(t('这个看板的数据是旧版本缓存的，请先刷新一次'));
+  if (!p.viewerCanUpdate) throw new ActionRefused(t('你在看板「{board}」上没有修改权限（GitHub 说这个账号不能改它）', { board: p.title }));
+  if (!nodeId) throw new ActionRefused(t('不知道新 issue 在 GitHub 上的编号，不能补加；请到网页上加进看板'));
   checkFieldValues(p, iterationId, status);
   return joinProject(client, p, nodeId, iterationId, status);
 }
@@ -100,12 +101,12 @@ export async function joinCreatedIssue(client: GitHubClient, p: ProjectMeta, nod
  * (`itemId`: its item there). Refused before sending when the board cannot take it now.
  */
 export async function setCreatedField(client: GitHubClient, p: ProjectMeta, itemId: string, iterationId: string | null, status: string | null): Promise<void> {
-  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
-  if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改这个看板');
+  if (!p.projectId) throw new ActionRefused(t('这个看板的数据是旧版本缓存的，请先刷新一次'));
+  if (!p.viewerCanUpdate) throw new ActionRefused(t('这个账号不能修改这个看板'));
   checkFieldValues(p, iterationId, status);
   if (iterationId !== null) await setField(client, p, itemId, 'iteration', iterationId);
   else if (status !== null) await setField(client, p, itemId, 'status', status);
-  else throw new ActionRefused('不知道要设哪个字段');
+  else throw new ActionRefused(t('不知道要设哪个字段'));
 }
 
 /**
@@ -147,42 +148,43 @@ function repoPath(repo: string): string {
 /** What to tell the user when GitHub refused (or could not be reached). Nothing was changed by the refused request. */
 export function explainError(e: unknown, kind: WriteAction['kind']): string {
   if (e instanceof ActionRefused) return e.message;
-  if (!(e instanceof GitHubError)) return `出错：${(e as Error)?.message ?? String(e)}`;
-  const gh = e.message.replace(/^GitHub 返回 HTTP \d+：?/, '');
-  if (e.kind === 'network') return `连不上 GitHub，没有修改（${e.message}）`;
-  if (e.kind === 'auth') return 'GitHub 凭据失效，没有修改；请重新登录';
+  if (!(e instanceof GitHubError)) return t('出错：{message}', { message: (e as Error)?.message ?? String(e) });
+  // GitHub's own words of a refused answer (refusalOf keeps them apart from the client's sentence)
+  const gh = e.said ?? e.message;
+  if (e.kind === 'network') return t('连不上 GitHub，没有修改（{message}）', { message: e.message });
+  if (e.kind === 'auth') return t('GitHub 凭据失效，没有修改；请重新登录');
   if (e.kind === 'graphql') {
-    if (/permission|not accessible|resource not accessible|insufficient/i.test(e.message)) return `没有权限修改这个看板（GitHub：${e.message}）`;
-    return `GitHub 拒绝了这次修改：${e.message}`;
+    if (/permission|not accessible|resource not accessible|insufficient/i.test(e.message)) return t('没有权限修改这个看板（GitHub：{gh}）', { gh: e.message });
+    return t('GitHub 拒绝了这次修改：{gh}', { gh: e.message });
   }
   const st = e.status ?? 0;
   if (kind === 'merge') {
-    if (st === 409) return `PR 在你查看之后有了新提交，GitHub 拒绝合并；请刷新详情、看过新提交再决定（GitHub：${gh || '提交已变'}）`;
-    if (st === 405) return `GitHub 不允许现在合并：${gh || '检查没过或分支保护规则不满足'}`;
+    if (st === 409) return t('PR 在你查看之后有了新提交，GitHub 拒绝合并；请刷新详情、看过新提交再决定（GitHub：{gh}）', { gh: gh || t('提交已变') });
+    if (st === 405) return t('GitHub 不允许现在合并：{gh}', { gh: gh || t('检查没过或分支保护规则不满足') });
   }
-  if (st === 403) return `没有权限（GitHub：${gh || 'Forbidden'}）`;
-  if (st === 404) return `找不到，或当前账号没有权限（GitHub：${gh || 'Not Found'}）`;
-  if (st === 410) return `这个仓库关闭了 issue 功能（GitHub：${gh}）`;
-  if (st === 422) return `GitHub 不接受这次修改：${gh || '内容无效'}`;
+  if (st === 403) return t('没有权限（GitHub：{gh}）', { gh: gh || 'Forbidden' });
+  if (st === 404) return t('找不到，或当前账号没有权限（GitHub：{gh}）', { gh: gh || 'Not Found' });
+  if (st === 410) return t('这个仓库关闭了 issue 功能（GitHub：{gh}）', { gh });
+  if (st === 422) return t('GitHub 不接受这次修改：{gh}', { gh: gh || t('内容无效') });
   return e.message;
 }
 
 function needItem(ctx: ActionContext): Item {
-  if (!ctx.item) throw new ActionRefused('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+  if (!ctx.item) throw new ActionRefused(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
   return ctx.item;
 }
 
 function projectOf(ctx: ActionContext, key: string): ProjectMeta {
   const p = ctx.projects.find((x) => x.key === key);
-  if (!p) throw new ActionRefused('这个看板不在当前来源里，请刷新后再试');
-  if (!p.projectId) throw new ActionRefused('这个看板的数据是旧版本缓存的，请先刷新一次');
-  if (!p.viewerCanUpdate) throw new ActionRefused(`你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）`);
+  if (!p) throw new ActionRefused(t('这个看板不在当前来源里，请刷新后再试'));
+  if (!p.projectId) throw new ActionRefused(t('这个看板的数据是旧版本缓存的，请先刷新一次'));
+  if (!p.viewerCanUpdate) throw new ActionRefused(t('你在看板「{board}」上没有修改权限（GitHub 说这个账号不能改它）', { board: p.title }));
   return p;
 }
 
 function membershipOf(item: Item, p: ProjectMeta) {
   const m = item.projects.find((x) => x.projectKey === p.key);
-  if (!m || !m.itemId) throw new ActionRefused(`这一条不在看板「${p.title}」上`);
+  if (!m || !m.itemId) throw new ActionRefused(t('这一条不在看板「{board}」上', { board: p.title }));
   return m;
 }
 
@@ -201,25 +203,25 @@ export async function listRepoOptions(client: GitHubClient, repo: string): Promi
 
 async function setField(client: GitHubClient, p: ProjectMeta, itemId: string, field: 'iteration' | 'status', value: string | null) {
   const fieldId = field === 'iteration' ? p.iterationFieldId : p.statusFieldId;
-  if (!fieldId) throw new ActionRefused(`看板「${p.title}」没有${field === 'iteration' ? '迭代' : '状态'}字段`);
+  if (!fieldId) throw new ActionRefused(field === 'iteration' ? t('看板「{board}」没有迭代字段', { board: p.title }) : t('看板「{board}」没有状态字段', { board: p.title }));
   if (value === null) {
     await client.graphql(CLEAR_FIELD_MUTATION, { projectId: p.projectId, itemId, fieldId });
     return;
   }
   if (field === 'iteration') {
-    if (!p.iterations.some((i) => i.id === value)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
+    if (!p.iterations.some((i) => i.id === value)) throw new ActionRefused(t('看板「{board}」没有这个迭代', { board: p.title }));
     await client.graphql(SET_ITERATION_MUTATION, { projectId: p.projectId, itemId, fieldId, iterationId: value });
   } else {
     const opt = p.statusOptionIds.find((o) => o.name === value);
-    if (!opt) throw new ActionRefused(`看板「${p.title}」的状态里没有「${value}」`);
+    if (!opt) throw new ActionRefused(t('看板「{board}」的状态里没有「{status}」', { board: p.title, status: value }));
     await client.graphql(SET_STATUS_MUTATION, { projectId: p.projectId, itemId, fieldId, optionId: opt.id });
   }
 }
 
 /** The iteration / status a Project item is about to get still exist in that Project (as last synced). */
 function checkFieldValues(p: ProjectMeta, iterationId: string | null, status: string | null): void {
-  if (iterationId !== null && !p.iterations.some((i) => i.id === iterationId)) throw new ActionRefused(`看板「${p.title}」没有这个迭代`);
-  if (status !== null && !p.statusOptionIds.some((o) => o.name === status)) throw new ActionRefused(`看板「${p.title}」的状态里没有「${status}」`);
+  if (iterationId !== null && !p.iterations.some((i) => i.id === iterationId)) throw new ActionRefused(t('看板「{board}」没有这个迭代', { board: p.title }));
+  if (status !== null && !p.statusOptionIds.some((o) => o.name === status)) throw new ActionRefused(t('看板「{board}」的状态里没有「{status}」', { board: p.title, status }));
 }
 
 /**
@@ -254,7 +256,7 @@ export async function removeLabel(client: GitHubClient, repo: string, number: nu
 /** Close an issue (with its reason) or a PR. */
 export async function closeStep(client: GitHubClient, it: Item, reason: IssueCloseReason | undefined): Promise<void> {
   if (it.kind === 'issue') {
-    if (!reason || !ISSUE_CLOSE_REASONS.includes(reason)) throw new ActionRefused('未知的关闭原因');
+    if (!reason || !ISSUE_CLOSE_REASONS.includes(reason)) throw new ActionRefused(t('未知的关闭原因'));
     await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'closed', state_reason: reason });
   } else {
     await client.rest('PATCH', `${repoPath(it.repo)}/pulls/${it.number}`, { state: 'closed' });
@@ -267,8 +269,8 @@ export async function commentStep(client: GitHubClient, it: Item, body: string):
 
 /** Merge exactly the commit the user saw (GitHub refuses when the PR moved). */
 export async function mergeStep(client: GitHubClient, it: Item, method: MergeMethod, headOid: string): Promise<void> {
-  if (!/^[0-9a-f]{40}$/.test(headOid)) throw new ActionRefused('不知道你看到的是哪个提交，请刷新详情后再合并');
-  if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(method)) throw new ActionRefused('未知的合并方式');
+  if (!/^[0-9a-f]{40}$/.test(headOid)) throw new ActionRefused(t('不知道你看到的是哪个提交，请刷新详情后再合并'));
+  if (!(['merge', 'squash', 'rebase'] as MergeMethod[]).includes(method)) throw new ActionRefused(t('未知的合并方式'));
   await client.rest('PUT', `${repoPath(it.repo)}/pulls/${it.number}/merge`, { merge_method: method, sha: headOid });
 }
 
@@ -284,7 +286,7 @@ export async function readItemRecords(client: GitHubClient, repo: string, number
   type Node = { id: string; body?: string; author?: { login?: string } | null; actor?: { login?: string } | null; label?: { name?: string } | null; __typename?: string };
   const data = await client.graphql<{ repository: { issueOrPullRequest: { comments?: { nodes: Node[] }; timelineItems?: { nodes: Node[] } } | null } | null }>(OP_RECORDS_QUERY, { owner, name, number });
   const it = data.repository?.issueOrPullRequest;
-  if (!it || !it.comments || !it.timelineItems) throw new GitHubError('graphql', `读不到 ${repo}#${number} 的评论和标签记录`);
+  if (!it || !it.comments || !it.timelineItems) throw new GitHubError('graphql', t('读不到 {item} 的评论和标签记录', { item: `${repo}#${number}` }));
   return {
     comments: it.comments.nodes.filter((n) => n?.id).map((n) => ({ id: n.id, author: n.author?.login ?? null, body: n.body ?? '' })),
     labelEvents: it.timelineItems.nodes
@@ -322,7 +324,7 @@ export async function readItemSnapshot(client: GitHubClient, repo: string, numbe
   for (let page = 0; page < SNAPSHOT_PAGES; page++) {
     const data: { repository: { issueOrPullRequest: It | null } | null } = await client.graphql(OP_SNAPSHOT_QUERY, { owner, name, number, before });
     const it: It | null | undefined = data.repository?.issueOrPullRequest;
-    if (!it || !it.comments || !it.timelineItems || !it.labels || typeof it.state !== 'string') throw new GitHubError('graphql', `读不到 ${repo}#${number} 的状态、标签和标签记录`);
+    if (!it || !it.comments || !it.timelineItems || !it.labels || typeof it.state !== 'string') throw new GitHubError('graphql', t('读不到 {item} 的状态、标签和标签记录', { item: `${repo}#${number}` }));
     if (!first) first = it;
     const nodes = it.timelineItems.nodes
       .filter((n) => n?.id && (n.__typename === 'LabeledEvent' || n.__typename === 'UnlabeledEvent'))
@@ -374,17 +376,17 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
       const data: { repository: { pullRequest: { closingIssuesReferences: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { number: number; repository: { nameWithOwner: string } }[] } } | null } | null } =
         await client.graphql(CLOSING_ISSUES_QUERY, { owner, name, number: pr.number, after });
       const conn = data.repository?.pullRequest?.closingIssuesReferences;
-      if (!conn) throw new GitHubError('graphql', `找不到 ${pr.repo}#${pr.number}`);
+      if (!conn) throw new GitHubError('graphql', t('找不到 {item}', { item: `${pr.repo}#${pr.number}` }));
       for (const n of conn.nodes ?? []) found.push(itemKey(n.repository.nameWithOwner, n.number));
       if (!conn.pageInfo?.hasNextPage) break;
       const next = conn.pageInfo.endCursor;
       // "there is more" without a way to get it: the list is not complete
-      if (!next || seen.has(next)) throw new GitHubError('graphql', 'GitHub 说还有下一页，但没有给出翻页位置');
+      if (!next || seen.has(next)) throw new GitHubError('graphql', t('GitHub 说还有下一页，但没有给出翻页位置'));
       seen.add(next);
       after = next;
     }
   } catch (e) {
-    problem = `修改已生效，但没读全这个 PR 关联的 issue（${(e as Error).message}），稍后的同步会更新`;
+    problem = t('修改已生效，但没读全这个 PR 关联的 issue（{why}），稍后的同步会更新', { why: (e as Error).message });
   }
   for (const it of issues.values()) if (it.linkedPrs?.some((l) => l.key === pr.key)) found.push(it.key);
   const items: [string, number][] = [];
@@ -398,14 +400,14 @@ export async function relatedIssues(client: GitHubClient, pr: Item, cached: Item
   return { items, problem };
 }
 
-/** What an edit is refused with when the body / comment changed on GitHub since the edit started (GitHub#205). */
-export const EDIT_CHANGED = '这一条在你编辑期间被别人改过，没有保存（你的文字还在编辑框里）；请复制留底后重新打开详情再改';
+/** What an edit is refused with when the body / comment changed on GitHub since the edit started (GitHub#205). Shown through tKey. */
+export const EDIT_CHANGED = zhKey('这一条在你编辑期间被别人改过，没有保存（你的文字还在编辑框里）；请复制留底后重新打开详情再改');
 
-/** What a title change is refused with when the title changed on GitHub since the edit started (GitHub#299). */
-export const TITLE_CHANGED = '标题在你编辑期间被别人改过，没有保存（你的文字还在输入框里）；请复制留底后重新打开详情再改';
+/** What a title change is refused with when the title changed on GitHub since the edit started (GitHub#299). Shown through tKey. */
+export const TITLE_CHANGED = zhKey('标题在你编辑期间被别人改过，没有保存（你的文字还在输入框里）；请复制留底后重新打开详情再改');
 
-/** What a ticked box is refused with when the body / comment changed since the click was made on it. */
-export const TASK_CHANGED = '这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾';
+/** What a ticked box is refused with when the body / comment changed since the click was made on it. Shown through tKey. */
+export const TASK_CHANGED = zhKey('这一条刚被改过（和你看到的不一样了），没有修改；已重新读取，请看过后再勾');
 
 interface TaskSource {
   kind: 'IssueComment' | 'Issue' | 'PullRequest';
@@ -420,12 +422,12 @@ async function readTaskSource(client: GitHubClient, id: string): Promise<TaskSou
   type Ref = { number?: number; repository?: { nameWithOwner?: string } };
   const d = await client.graphql<{ node: ({ __typename?: string; body?: unknown; viewerCanUpdate?: unknown; issue?: Ref } & Ref) | null }>(TASK_SOURCE_QUERY, { id });
   const n = d.node;
-  if (!n) throw new ActionRefused('GitHub 上找不到这一条评论（可能已被删除），没有修改');
+  if (!n) throw new ActionRefused(t('GitHub 上找不到这一条评论（可能已被删除），没有修改'));
   const kind = n.__typename;
-  if (kind !== 'IssueComment' && kind !== 'Issue' && kind !== 'PullRequest') throw new ActionRefused('这不是正文或评论，没有修改');
+  if (kind !== 'IssueComment' && kind !== 'Issue' && kind !== 'PullRequest') throw new ActionRefused(t('这不是正文或评论，没有修改'));
   const ref = kind === 'IssueComment' ? n.issue : n;
   if (typeof n.body !== 'string' || typeof n.viewerCanUpdate !== 'boolean' || typeof ref?.number !== 'number' || typeof ref.repository?.nameWithOwner !== 'string')
-    throw new GitHubError('graphql', 'GitHub 的回应缺少原文、权限或所属条目，没有修改');
+    throw new GitHubError('graphql', t('GitHub 的回应缺少原文、权限或所属条目，没有修改'));
   return { kind, body: n.body, canUpdate: n.viewerCanUpdate, repo: ref.repository.nameWithOwner, number: ref.number };
 }
 
@@ -437,9 +439,9 @@ async function readTitle(client: GitHubClient, repo: string, number: number): Pr
     { owner, name, number },
   );
   const n = d.repository?.issueOrPullRequest;
-  if (!n) throw new ActionRefused('GitHub 上找不到这一条（可能已被删除或转移），没有修改');
+  if (!n) throw new ActionRefused(t('GitHub 上找不到这一条（可能已被删除或转移），没有修改'));
   if ((n.__typename !== 'Issue' && n.__typename !== 'PullRequest') || n.number !== number || typeof n.title !== 'string' || typeof n.viewerCanUpdate !== 'boolean')
-    throw new GitHubError('graphql', 'GitHub 的回应缺少标题或权限，没有修改');
+    throw new GitHubError('graphql', t('GitHub 的回应缺少标题或权限，没有修改'));
   return { title: n.title, canUpdate: n.viewerCanUpdate };
 }
 
@@ -459,20 +461,20 @@ async function writeTaskSource(client: GitHubClient, kind: TaskSource['kind'], i
 async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreatePlan, joining: ProjectMeta[]): Promise<void> {
   const shown = plan.projects.map((x) => x.projectKey).sort();
   const now = joining.map((p) => p.key).sort();
-  if (shown.length !== now.length || shown.some((k, i) => k !== now[i])) throw new ActionRefused('勾选的看板在打开对话框后变了，没有新建；请关掉对话框重开');
+  if (shown.length !== now.length || shown.some((k, i) => k !== now[i])) throw new ActionRefused(t('勾选的看板在打开对话框后变了，没有新建；请关掉对话框重开'));
   for (const entry of plan.projects) {
     const p = joining.find((x) => x.key === entry.projectKey)!;
     try {
       checkFieldValues(p, entry.iterationId, entry.status);
     } catch (e) {
-      throw new ActionRefused(`${(e as Error).message}（打开对话框后变了），没有新建；请关掉对话框重开`);
+      throw new ActionRefused(t('{why}（打开对话框后变了），没有新建；请关掉对话框重开', { why: (e as Error).message }));
     }
   }
   if (!plan.milestone) return;
   const want = plan.milestone;
   const ms = await client.restList<{ number: number; title: string }>(`${repoPath(repo)}/milestones?state=all&per_page=100`);
   if (!ms.some((m) => m.number === want.number && m.title === want.title))
-    throw new ActionRefused(`里程碑「${want.title}」已经不在仓库 ${repo} 里（或被改了名），没有新建；请关掉对话框重开`);
+    throw new ActionRefused(t('里程碑「{milestone}」已经不在仓库 {repo} 里（或被改了名），没有新建；请关掉对话框重开', { milestone: want.title, repo }));
 }
 
 /** what the one write of a send answered: a warning when GitHub's answer does not show what was written; a reply's new comment */
@@ -491,7 +493,7 @@ export interface SendWritten {
 export async function prepareSend(client: GitHubClient, action: SendAction, it: Item, opts: { proofs?: boolean } = {}): Promise<{ write: (() => Promise<SendWritten>) | null; proof: SendProof }> {
   switch (action.kind) {
     case 'comment': {
-      if (!action.body.trim()) throw new ActionRefused('评论是空的，没有发送');
+      if (!action.body.trim()) throw new ActionRefused(t('评论是空的，没有发送'));
       let before: string[] | null = null;
       if (opts.proofs) {
         try {
@@ -509,47 +511,47 @@ export async function prepareSend(client: GitHubClient, action: SendAction, it: 
       return { write, proof: { kind: 'comment', before } };
     }
     case 'toggleTask': {
-      if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
-      if (typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你看到的原文，请刷新详情后再勾');
+      if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused(t('不知道点的是哪一个勾选框，没有修改'));
+      if (typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused(t('不知道你看到的原文，请刷新详情后再勾'));
       const now = await readTaskSource(client, action.entryId);
-      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.body !== action.seenSource) throw new ActionRefused(TASK_CHANGED);
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused(t('这条评论不属于当前这一条，没有修改'));
+      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));
+      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));
       const next = flipTask(now.body, action.index, action.checked);
-      if (next === null) throw new ActionRefused(TASK_CHANGED);
+      if (next === null) throw new ActionRefused(tKey(TASK_CHANGED));
       return {
-        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, next)) === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, next)) === next ? null : t('GitHub 返回的内容和要写的不一致，请刷新详情核对') }),
         proof: { kind: 'source', want: next },
       };
     }
     case 'editEntry': {
-      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused('不知道你改的是哪一条、原文是什么，请刷新详情后再改');
+      if (typeof action.body !== 'string' || typeof action.seenSource !== 'string' || !action.entryId) throw new ActionRefused(t('不知道你改的是哪一条、原文是什么，请刷新详情后再改'));
       const now = await readTaskSource(client, action.entryId);
-      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.body !== action.seenSource) throw new ActionRefused(EDIT_CHANGED);
-      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused('评论不能改成空的，没有修改（要删掉请去网页）');
+      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused(t('这条评论不属于当前这一条，没有修改'));
+      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));
+      if (now.body !== action.seenSource) throw new ActionRefused(tKey(EDIT_CHANGED));
+      if (now.kind === 'IssueComment' && !action.body.trim()) throw new ActionRefused(t('评论不能改成空的，没有修改（要删掉请去网页）'));
       const proof = { kind: 'source' as const, want: action.body };
       if (action.body === now.body) return { write: null, proof };
       return {
-        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, action.body)) === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, action.body)) === action.body ? null : t('GitHub 返回的内容和要写的不一致，请刷新详情核对') }),
         proof,
       };
     }
     case 'editTitle': {
-      if (typeof action.title !== 'string' || typeof action.seenTitle !== 'string') throw new ActionRefused('不知道你改的标题、原来的标题是什么，请刷新详情后再改');
+      if (typeof action.title !== 'string' || typeof action.seenTitle !== 'string') throw new ActionRefused(t('不知道你改的标题、原来的标题是什么，请刷新详情后再改'));
       // GitHub keeps a title without its outer spaces: what is sent is what it will hold
       const title = action.title.trim();
-      if (!title) throw new ActionRefused('标题不能为空，没有修改');
+      if (!title) throw new ActionRefused(t('标题不能为空，没有修改'));
       const now = await readTitle(client, it.repo, it.number);
-      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');
-      if (now.title !== action.seenTitle) throw new ActionRefused(TITLE_CHANGED);
+      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));
+      if (now.title !== action.seenTitle) throw new ActionRefused(tKey(TITLE_CHANGED));
       const proof = { kind: 'title' as const, want: title };
       if (title === now.title) return { write: null, proof };
       return {
         write: async () => {
           const written = await client.rest<{ title?: unknown }>('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { title });
-          return { warning: written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对' };
+          return { warning: written?.title === title ? null : t('GitHub 返回的标题和要写的不一致，请刷新详情核对') };
         },
         proof,
       };
@@ -584,7 +586,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           `${repoPath(it.repo)}/milestones?state=all&per_page=100`,
         );
         const pick = pickMilestone(ms, action.title);
-        if (!pick) throw new ActionRefused(`仓库 ${it.repo} 没有名为「${action.title}」的里程碑；客户端不新建里程碑，没有修改`);
+        if (!pick) throw new ActionRefused(t('仓库 {repo} 没有名为「{milestone}」的里程碑；客户端不新建里程碑，没有修改', { repo: it.repo, milestone: action.title }));
         number = pick.number;
       }
       await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { milestone: number });
@@ -602,16 +604,16 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'addToProject': {
       const it = needItem(ctx);
       const p = projectOf(ctx, action.projectKey);
-      if (!it.nodeId) throw new ActionRefused('这一条的数据是旧版本缓存的，请先刷新一次');
+      if (!it.nodeId) throw new ActionRefused(t('这一条的数据是旧版本缓存的，请先刷新一次'));
       // check everything that can be checked before the first write
       checkFieldValues(p, action.iterationId, action.status);
       const fieldError = await joinProject(client, p, it.nodeId, action.iterationId, action.status);
-      const warning = fieldError === null ? null : `已加入看板「${p.title}」，但设置字段没有成功：${explainError(fieldError, action.kind)}`;
+      const warning = fieldError === null ? null : t('已加入看板「{board}」，但设置字段没有成功：{why}', { board: p.title, why: explainError(fieldError, action.kind) });
       return { touched: [[it.repo, it.number]], warning };
     }
     case 'comment': {
       const it = needItem(ctx);
-      if (!action.body.trim()) throw new ActionRefused('评论是空的，没有发送');
+      if (!action.body.trim()) throw new ActionRefused(t('评论是空的，没有发送'));
       await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.body });
       return { touched: [[it.repo, it.number]], warning: null };
     }
@@ -621,7 +623,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'closePr':
     case 'closeIssue':
       // GitHub#250: these run step by step in the controller (closeStep / commentStep / mergeStep / labels), never here
-      throw new ActionRefused('这类操作走后台的逐步执行，不在这里发送');
+      throw new ActionRefused(t('这类操作走后台的逐步执行，不在这里发送'));
     case 'toggleTask':
     case 'editEntry':
     case 'editTitle': {
@@ -632,10 +634,10 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       return { touched: [[it.repo, it.number]], warning: (await p.write()).warning };
     }
     case 'createIssue': {
-      if (!action.title.trim()) throw new ActionRefused('标题不能为空');
-      if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused('请选择仓库');
+      if (!action.title.trim()) throw new ActionRefused(t('标题不能为空'));
+      if (!/^[^/\s]+\/[^/\s]+$/.test(action.repo)) throw new ActionRefused(t('请选择仓库'));
       const handoff = action.handoff ?? 'none';
-      if (!HANDOFFS.includes(handoff)) throw new ActionRefused('不知道建好后交给谁，没有新建');
+      if (!HANDOFFS.includes(handoff)) throw new ActionRefused(t('不知道建好后交给谁，没有新建'));
       const plan = action.plan;
       if (plan) await checkCreatePlan(client, action.repo, plan, ctx.createInProjects);
       // GitHub#245: the hand-over labels are checked against the repository's labels read right now —
@@ -647,10 +649,10 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
           names = (await client.restList<{ name: string }>(`${repoPath(action.repo)}/labels?per_page=100`)).map((l) => l.name);
         } catch (e) {
           if (e instanceof GitHubError && e.kind === 'auth') throw e; // the credential: handled like any other call
-          throw new ActionRefused(`读不到仓库 ${action.repo} 的标签，暂时不能确认标签在不在，没有新建：${explainError(e, 'createIssue')}`);
+          throw new ActionRefused(t('读不到仓库 {repo} 的标签，暂时不能确认标签在不在，没有新建：{why}', { repo: action.repo, why: explainError(e, 'createIssue') }));
         }
         const check = checkHandoff(handoff, ctx.handBack, { state: 'ok', names });
-        if (check.state !== 'ok') throw new ActionRefused(`${handoffProblem(action.repo, check)}，没有新建`);
+        if (check.state !== 'ok') throw new ActionRefused(t('{why}，没有新建', { why: handoffProblem(action.repo, check) }));
         handoffLabels = check.labels;
       }
       const labels = mergeLabels(handoffLabels, action.labels);
@@ -666,7 +668,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
         if (refusedForSure(e)) throw e;
         throw new CreateUnanswered((e as Error)?.message ?? String(e));
       }
-      if (!created || typeof created.number !== 'number') throw new CreateUnanswered('GitHub 的回应里没有新 issue');
+      if (!created || typeof created.number !== 'number') throw new CreateUnanswered(t('GitHub 的回应里没有新 issue'));
       // GitHub drops the labels of an account without write access to the repository, without an error: said, never silent
       const dropped = Array.isArray(created.labels) ? droppedLabels(labels, created.labels.map((l) => l.name)) : [];
       const droppedHandoff = dropped.some((n) => handoffLabels.some((h) => h.toLowerCase() === n.toLowerCase()));
@@ -676,26 +678,31 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       for (const p of ctx.createInProjects) {
         const entry = plan?.projects.find((x) => x.projectKey === p.key);
         try {
-          if (!p.viewerCanUpdate) throw new ActionRefused('这个账号不能修改它');
+          if (!p.viewerCanUpdate) throw new ActionRefused(t('这个账号不能修改它'));
           const fieldError = await joinProject(client, p, created.node_id, entry?.iterationId ?? null, entry?.status ?? null);
           if (fieldError !== null) {
-            fields.push(`「${p.title}」（${explainError(fieldError, 'addToProject')}）`);
+            fields.push(t('「{board}」（{why}）', { board: p.title, why: explainError(fieldError, 'addToProject') }));
             boards.push(createBoard(p, 'fieldsFailed', explainError(fieldError, 'addToProject'), entry));
           }
         } catch (e) {
-          failed.push(`「${p.title}」（${explainError(e, 'addToProject')}）`);
+          failed.push(t('「{board}」（{why}）', { board: p.title, why: explainError(e, 'addToProject') }));
           boards.push(createBoard(p, 'missing', explainError(e, 'addToProject'), entry));
         }
       }
-      const labelsNote = dropped.length ? `GitHub 没有加上标签${dropped.map((n) => `「${n}」`).join('、')}（这个账号可能没有该仓库的写权限）${droppedHandoff ? '，还没有交给 agent' : ''}` : '';
+      const droppedNames = dropped.map((n) => t('「{name}」', { name: n })).join(t('、'));
+      const labelsNote = !dropped.length
+        ? ''
+        : droppedHandoff
+          ? t('GitHub 没有加上标签{labels}（这个账号可能没有该仓库的写权限），还没有交给 agent', { labels: droppedNames })
+          : t('GitHub 没有加上标签{labels}（这个账号可能没有该仓库的写权限）', { labels: droppedNames });
       const problems = [
         labelsNote,
-        failed.length ? `没能加入看板 ${failed.join('、')}` : '',
-        fields.length ? `已加入看板但字段没设上 ${fields.join('、')}` : '',
+        failed.length ? t('没能加入看板 {boards}', { boards: failed.join(t('、')) }) : '',
+        fields.length ? t('已加入看板但字段没设上 {boards}', { boards: fields.join(t('、')) }) : '',
       ].filter(Boolean);
       return {
         touched: [[action.repo, created.number]],
-        warning: problems.length ? `issue #${created.number} 已建好，但${problems.join('；')}` : null,
+        warning: problems.length ? t('issue #{number} 已建好，但{problems}', { number: created.number, problems: problems.reduce((a, b) => t('{a}；{b}', { a, b })) }) : null,
         createdKey: itemKey(action.repo, created.number),
         boards,
         createdNodeId: created.node_id,

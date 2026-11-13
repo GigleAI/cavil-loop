@@ -3,6 +3,7 @@
 // (what the create request carries, checked again from a fresh read): pure, no Node, no GitHub.
 
 import type { HandBackLabels } from './types';
+import { t } from './i18n';
 
 export type Handoff = 'none' | 'agent' | 'autopilot';
 export const HANDOFFS: readonly Handoff[] = ['none', 'agent', 'autopilot'];
@@ -73,9 +74,9 @@ export function droppedLabels(sent: string[], got: string[]): string[] {
 /** The dialog's line under the choice: which labels go on, what happens next. */
 export function handoffSummary(h: Handoff, labels: string[]): string {
   if (h === 'none' || !labels.length) return '';
-  const list = labels.map((n) => `「${n}」`).join('和');
-  if (h === 'agent') return `会加上标签${list}，建好后 daemon 派给 agent`;
-  return `会加上标签${list}：agent 从方案到合并不再等人确认，复审和检查通过后由 daemon 自动合并。要叫停，在网页上去掉「${labels[0]}」`;
+  const list = labels.map((n) => t('「{name}」', { name: n })).join(t('和'));
+  if (h === 'agent') return t('会加上标签{list}，建好后 daemon 派给 agent', { list });
+  return t('会加上标签{list}：agent 从方案到合并不再等人确认，复审和检查通过后由 daemon 自动合并。要叫停，在网页上去掉「{first}」', { list, first: labels[0] });
 }
 
 /** Why `h` cannot be used now, for the line next to it; '' when it can. */
@@ -84,12 +85,12 @@ export function handoffProblem(repo: string, check: HandoffCheck): string {
     case 'ok':
       return '';
     case 'loading':
-      return `正在读取仓库 ${repo} 的标签…`;
+      return t('正在读取仓库 {repo} 的标签…', { repo });
     case 'error':
-      return `读不到仓库 ${repo} 的标签，暂时不能确认标签在不在（${check.error}）`;
+      return t('读不到仓库 {repo} 的标签，暂时不能确认标签在不在（{error}）', { repo, error: check.error });
     case 'missing':
-      return `仓库 ${repo} 没有标签${check.missing.map((n) => `「${n}」`).join('、')}`;
+      return t('仓库 {repo} 没有标签{names}', { repo, names: check.missing.map((n) => t('「{name}」', { name: n })).join(t('、')) });
     case 'unset':
-      return '设置里没有填托管标签';
+      return t('设置里没有填托管标签');
   }
 }

@@ -9,6 +9,7 @@
 // same comments and compares.
 
 import { itemKey } from './sources';
+import { outsideWords, t } from './i18n';
 
 /** GitHub#434: the labels of "等前置…" (Settings → 流程标签). */
 export interface BlockedLabels {
@@ -193,7 +194,8 @@ export function roundMarks(comments: readonly MarkComment[], round: Round, selfR
 export function markComment(refs: readonly Ref[], selfRepo: string, resume: string, opId: string): string {
   const list = refs.map((r) => refText(r, selfRepo));
   return [
-    `在等 ${list.join('、')} 完成，全部完成后 daemon 自动翻回 ${resume} 接着干（由 Cavil Loop 客户端登记）。`,
+    // written to GitHub for the daemon and the people there, in the daemon's language (not the window's)
+    outsideWords('在等 {list} 完成，全部完成后 daemon 自动翻回 {resume} 接着干（由 Cavil Loop 客户端登记）。').replace('{list}', () => list.join(outsideWords('、'))).replace('{resume}', () => resume),
     '',
     `${BLOCKED_MARK} ${list.join(' ')} resume=${resume} -->`,
     `<!-- ${OP_MARK}${opId} -->`,
@@ -351,17 +353,17 @@ export function applyDone(f: Facts, step: { name: BlockedStepName; target?: stri
  * (the operation put the waiting label on) matches any id other than the one the dialog saw.
  */
 export function factsDiffer(expected: Facts, now: Facts, basisRoundId: number | null): string | null {
-  if (now.state !== expected.state) return now.state === 'open' ? '这一条的状态变了' : '这一条已经关闭';
+  if (now.state !== expected.state) return now.state === 'open' ? t('这一条的状态变了') : t('这一条已经关闭');
   const er = expected.round;
   const roundSame = er.id === '*' ? now.round.last === 'labeled' && now.round.id !== null && now.round.id !== basisRoundId && now.round.since === er.since : now.round.last === er.last && now.round.id === er.id && now.round.since === er.since;
-  if (!roundSame) return '等前置标签这期间被摘掉或重新挂过（换了一轮等待）';
+  if (!roundSame) return t('等前置标签这期间被摘掉或重新挂过（换了一轮等待）');
   if (JSON.stringify(now.flow) !== JSON.stringify(expected.flow)) {
     const added = now.flow.filter((x) => !expected.flow.includes(x));
     const gone = expected.flow.filter((x) => !now.flow.includes(x));
-    return `流程标签变了（${[...added.map((x) => `多了「${x}」`), ...gone.map((x) => `少了「${x}」`)].join('、')}）`;
+    return t('流程标签变了（{changes}）', { changes: [...added.map((x) => t('多了「{name}」', { name: x })), ...gone.map((x) => t('少了「{name}」', { name: x }))].join(t('、')) });
   }
-  if (JSON.stringify(now.marks) !== JSON.stringify(expected.marks)) return '这期间前置登记评论有新增或被改动';
-  if (JSON.stringify(now.native) !== JSON.stringify(expected.native)) return '这期间侧栏「Blocked by」变了';
+  if (JSON.stringify(now.marks) !== JSON.stringify(expected.marks)) return t('这期间前置登记评论有新增或被改动');
+  if (JSON.stringify(now.native) !== JSON.stringify(expected.native)) return t('这期间侧栏「Blocked by」变了');
   return null;
 }
 
@@ -372,16 +374,16 @@ export function factsDiffer(expected: Facts, now: Facts, basisRoundId: number | 
  */
 export function repauseAllowed(expected: Facts, now: Facts, basisRoundId: number | null, human: string): { ok: true } | { ok: false; why: string } {
   const h = human.toLowerCase();
-  if (now.state !== 'open') return { ok: false, why: '这一条已经关闭' };
+  if (now.state !== 'open') return { ok: false, why: t('这一条已经关闭') };
   const er = expected.round;
   const roundSame = er.id === '*' ? now.round.last === 'labeled' && now.round.id !== null && now.round.id !== basisRoundId && now.round.since === er.since : now.round.last === er.last && now.round.id === er.id && now.round.since === er.since;
-  if (!roundSame) return { ok: false, why: '等前置标签这期间被摘掉或重新挂过' };
+  if (!roundSame) return { ok: false, why: t('等前置标签这期间被摘掉或重新挂过') };
   const a = now.flow.filter((x) => x !== h);
   const b = expected.flow.filter((x) => x !== h);
-  if (JSON.stringify(a) !== JSON.stringify(b)) return { ok: false, why: '这一条的流程标签变了，可能已被转去别的流程' };
-  if (now.flow.includes(h)) return { ok: false, why: '「等人处理」标签仍在，不用补' };
-  if (!expected.marks.every((x) => now.marks.includes(x)) || !expected.native.every((x) => now.native.includes(x))) return { ok: false, why: '登记或侧栏关系少了，不是单纯的交错登记' };
-  if (now.marks.length === expected.marks.length && now.native.length === expected.native.length) return { ok: false, why: '没有看到别人的新登记' };
+  if (JSON.stringify(a) !== JSON.stringify(b)) return { ok: false, why: t('这一条的流程标签变了，可能已被转去别的流程') };
+  if (now.flow.includes(h)) return { ok: false, why: t('「等人处理」标签仍在，不用补') };
+  if (!expected.marks.every((x) => now.marks.includes(x)) || !expected.native.every((x) => now.native.includes(x))) return { ok: false, why: t('登记或侧栏关系少了，不是单纯的交错登记') };
+  if (now.marks.length === expected.marks.length && now.native.length === expected.native.length) return { ok: false, why: t('没有看到别人的新登记') };
   return { ok: true };
 }
 
@@ -396,22 +398,22 @@ export function planLines(plan: Plan, selfRepo: string, names: { human: string; 
   for (const s of plan.steps) {
     switch (s.name) {
       case 'pause':
-        out.push(`加上「${names.human}」暂停等待（daemon 看到它就不按任何一份登记接着干）`);
+        out.push(t('加上「{label}」暂停等待（daemon 看到它就不按任何一份登记接着干）', { label: names.human }));
         break;
       case 'relation':
-        out.push(`在 GitHub 上把 ${s.target ? refText(parseKey(s.target), selfRepo) : ''} 设成本条的「Blocked by」（侧栏 Relationships 里看得到）`);
+        out.push(t('在 GitHub 上把 {ref} 设成本条的「Blocked by」（侧栏 Relationships 里看得到）', { ref: s.target ? refText(parseKey(s.target), selfRepo) : '' }));
         break;
       case 'comment':
-        out.push(`发一条登记评论，列出 ${plan.markRefs.map((r) => refText(r, selfRepo)).join('、')}（daemon 只认最新一条登记，已有的会一起写进去）`);
+        out.push(t('发一条登记评论，列出 {refs}（daemon 只认最新一条登记，已有的会一起写进去）', { refs: plan.markRefs.map((r) => refText(r, selfRepo)).join(t('、')) }));
         break;
       case 'check':
-        out.push('再读一遍：本轮最新登记就是这一条、期间没有别人的新登记');
+        out.push(t('再读一遍：本轮最新登记就是这一条、期间没有别人的新登记'));
         break;
       case 'addBlocked':
-        out.push(`加上标签「${names.blocked}」`);
+        out.push(t('加上标签「{label}」', { label: names.blocked }));
         break;
       case 'unpause':
-        out.push(`去掉「${names.human}」，开始 / 恢复等前置`);
+        out.push(t('去掉「{label}」，开始 / 恢复等前置', { label: names.human }));
         break;
       default:
         break;
@@ -438,8 +440,8 @@ export function planWrites(plan: Plan): BlockedStepPlan[] {
  * wait for (the daemon would hand it straight to a person). null = may; else why not.
  */
 export function confirmBlock(o: { picks: number; restore: number; current: number; plan: Plan }): string | null {
-  if (!planWrites(o.plan).length) return o.picks || o.restore ? '选的前置都已经登记过了，没有修改' : '没有要补做的，也没有选新的前置';
-  if (!o.picks && !o.restore && !o.current) return '还没有选前置';
+  if (!planWrites(o.plan).length) return o.picks || o.restore ? t('选的前置都已经登记过了，没有修改') : t('没有要补做的，也没有选新的前置');
+  if (!o.picks && !o.restore && !o.current) return t('还没有选前置');
   return null;
 }
 

@@ -6,13 +6,14 @@
 import type { Iteration, ProjectMeta } from '../shared/types';
 import { isCurrentIteration } from '../shared/filter';
 import type { MilestoneRead } from './groupPreset';
+import { t, tKey, zhKey } from '../shared/i18n';
 
 /** what marks a current iteration among a picker's options */
-export const CURRENT_MARK = '（当前）';
+export const CURRENT_MARK = zhKey('（当前）');
 
 /** one iteration in the new-issue dialog's picker, before the mark */
 export function iterationOptionLabel(it: Iteration): string {
-  return `${it.title}（${it.startDate} 起）`;
+  return t('{title}（{date} 起）', { title: it.title, date: it.startDate });
 }
 
 /**
@@ -26,7 +27,7 @@ export function currentIterationNames(ticked: ProjectMeta[], today: string): str
 
 /** "当前迭代": the one name when there is exactly one, otherwise "按各看板" (each board its own, or none) */
 export function autoIterationText(currents: string[]): string {
-  return `当前迭代${currents.length === 1 ? `（${currents[0]}）` : '（按各看板）'}`;
+  return currents.length === 1 ? t('当前迭代（{name}）', { name: currents[0] }) : t('当前迭代（按各看板）');
 }
 
 /**
@@ -35,18 +36,18 @@ export function autoIterationText(currents: string[]): string {
  */
 export function iterationPickText(value: string, choices: Iteration[], kept: Iteration | null, currents: string[], today: string): string {
   if (value === 'auto') return autoIterationText(currents);
-  if (value === 'none') return '不设迭代';
+  if (value === 'none') return t('不设迭代');
   const it = choices.find((i) => i.id === value);
-  if (it) return iterationOptionLabel(it) + (isCurrentIteration(it, today) ? CURRENT_MARK : '');
+  if (it) return iterationOptionLabel(it) + (isCurrentIteration(it, today) ? tKey(CURRENT_MARK) : '');
   if (kept && kept.id === value) return kept.title;
   return '';
 }
 
 /** what the milestone picker shows, by the same read: still reading / unreadable / the value */
 export function milestoneText(read: MilestoneRead, value: string): { text: string; tone: 'plain' | 'muted' | 'error' } {
-  if (read.state === 'loading') return { text: '读取里程碑…', tone: 'muted' };
-  if (read.state === 'error') return { text: '里程碑读取失败', tone: 'error' };
-  return value ? { text: value, tone: 'plain' } : { text: '不设里程碑', tone: 'muted' };
+  if (read.state === 'loading') return { text: t('读取里程碑…'), tone: 'muted' };
+  if (read.state === 'error') return { text: t('里程碑读取失败'), tone: 'error' };
+  return value ? { text: value, tone: 'plain' } : { text: t('不设里程碑'), tone: 'muted' };
 }
 
 /** how many chosen labels the folded line shows by name before "+N" */
@@ -73,10 +74,10 @@ export function foldSummary(input: {
 }): { title: string; parts: FoldPart[] } {
   const parts: FoldPart[] = [];
   if (input.labels.length) parts.push({ kind: 'labels', names: input.labels.slice(0, FOLD_LABELS_SHOWN), more: Math.max(0, input.labels.length - FOLD_LABELS_SHOWN) });
-  else if (input.labelsRead === 'loading') parts.push({ kind: 'text', field: 'labels', text: '读取标签…', tone: 'muted' });
-  else if (input.labelsRead === 'error') parts.push({ kind: 'text', field: 'labels', text: '标签读取失败', tone: 'error' });
-  else parts.push({ kind: 'text', field: 'labels', text: '未选标签', tone: 'muted' });
+  else if (input.labelsRead === 'loading') parts.push({ kind: 'text', field: 'labels', text: t('读取标签…'), tone: 'muted' });
+  else if (input.labelsRead === 'error') parts.push({ kind: 'text', field: 'labels', text: t('标签读取失败'), tone: 'error' });
+  else parts.push({ kind: 'text', field: 'labels', text: t('未选标签'), tone: 'muted' });
   parts.push({ kind: 'text', field: 'milestone', ...input.milestone });
   if (input.iteration !== null) parts.push({ kind: 'text', field: 'iteration', text: input.iteration, tone: 'plain' });
-  return { title: input.iteration !== null ? '标签、里程碑、迭代' : '标签、里程碑', parts };
+  return { title: input.iteration !== null ? t('标签、里程碑、迭代') : t('标签、里程碑'), parts };
 }

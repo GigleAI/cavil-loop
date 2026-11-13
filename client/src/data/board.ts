@@ -6,6 +6,7 @@ import type { WriteAction } from '../shared/actions';
 import { itemSorter } from './sort';
 import { nestPrs, prFollow } from './prNest';
 import { repoComparator } from '../shared/repoOrder';
+import { t, zhKey } from '../shared/i18n';
 
 export const COL_UNBOARDED = 'unboarded';
 export const COL_NO_ITERATION = 'iteration:none';
@@ -31,9 +32,27 @@ export interface Column {
   title: string;
   /** extra line under the title, e.g. which Project an unmerged iteration belongs to */
   subtitle: string | null;
+  /** the same line as data, so the window words it in its own language and shows the Project titles as is */
+  sub: ColumnSub | null;
   /** iteration columns only: the iteration is over (folded into one group by the UI) */
   ended: boolean;
   cards: Card[];
+}
+
+/** the line under a column's title: when an iteration starts (and whose it is), a milestone's due date */
+export type ColumnSub = { kind: 'from'; date: string; projects: string[] } | { kind: 'due'; date: string } | { kind: 'noDue' };
+
+/** a column's own line as text (Project titles joined in), in the current language */
+export function columnSubText(sub: ColumnSub | null): string | null {
+  if (!sub) return null;
+  if (sub.kind === 'due') return t('截止 {date}', { date: sub.date });
+  if (sub.kind === 'noDue') return t('无截止日期');
+  return sub.projects.length ? t('{date} 起 · {projects}', { date: sub.date, projects: sub.projects.join(t('、')) }) : t('{date} 起', { date: sub.date });
+}
+
+/** the columns the client names itself (their title is a zhKey); every other title is GitHub's (an iteration, a status option, a milestone) */
+export function isOwnColumn(key: string): boolean {
+  return key === COL_UNBOARDED || key === COL_NO_ITERATION || key === COL_NO_STATUS || key === COL_NO_MILESTONE;
 }
 
 export interface Board {
@@ -45,7 +64,7 @@ export interface Board {
   lanes: string[] | null;
 }
 
-export const NOTICE_NO_ITERATION_FIELD = '所选 Project 都没有迭代字段，已改按状态分列';
+export const NOTICE_NO_ITERATION_FIELD = zhKey('所选 Project 都没有迭代字段，已改按状态分列');
 
 function addDays(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00Z`);
@@ -128,11 +147,15 @@ function followIssues(
   return follow;
 }
 
+function withSub(sub: ColumnSub | null): { subtitle: string | null; sub: ColumnSub | null } {
+  return { subtitle: columnSubText(sub), sub };
+}
+
 function finish(
   seeds: Map<string, ColumnSeed>,
   placements: Map<string, Card[]>,
   order: (a: Item, b: Item) => number,
-  subtitleFor: (s: ColumnSeed) => string | null,
+  subtitleFor: (s: ColumnSeed) => ColumnSub | null,
   nest: Nest,
 ): Column[] {
   return [...seeds.values()]
@@ -140,7 +163,7 @@ function finish(
     .map((s) => ({
       key: s.key,
       title: s.title,
-      subtitle: subtitleFor(s),
+      ...withSub(subtitleFor(s)),
       ended: s.ended,
       cards: arrangeCards(placements.get(s.key) ?? [], order, nest),
     }));
@@ -251,7 +274,7 @@ export function buildBoard(
   };
   const hasUnboarded = items.some((it) => !it.projects.some((m) => selectedProjects.has(m.projectKey)));
   if (mode !== 'milestone' && hasUnboarded) {
-    seed({ key: COL_UNBOARDED, title: '未加入看板', sort: '', rank: RANK_UNBOARDED, ended: false });
+    seed({ key: COL_UNBOARDED, title: zhKey('未加入看板'), sort: '', rank: RANK_UNBOARDED, ended: false });
   }
 
   let columns: Column[];
@@ -265,7 +288,7 @@ export function buildBoard(
         }
       }
     }
-    seed({ key: COL_NO_ITERATION, title: '无迭代', sort: '', rank: RANK_NONE, ended: false });
+    seed({ key: COL_NO_ITERATION, title: zhKey('无迭代'), sort: '', rank: RANK_NONE, ended: false });
     standing = new Set(seeds.keys());
     for (const item of items) {
       placeByMembership(
@@ -298,8 +321,7 @@ export function buildBoard(
     settle(onBoard);
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
-      const range = `${s.sort} 起`;
-      return (titleCount.get(s.title) ?? 0) > 1 ? `${range} · ${[...s.projects].join('、')}` : range;
+      return { kind: 'from', date: s.sort, projects: (titleCount.get(s.title) ?? 0) > 1 ? [...s.projects] : [] };
     }, nest);
   } else if (mode === 'status') {
     let order = 0;
@@ -310,7 +332,7 @@ export function buildBoard(
         else seed({ key, title: o, sort: '', rank: RANK_REGULAR, ended: false }, p.title);
       }
     }
-    seed({ key: COL_NO_STATUS, title: '无状态', sort: '', rank: RANK_NONE, ended: false });
+    seed({ key: COL_NO_STATUS, title: zhKey('无状态'), sort: '', rank: RANK_NONE, ended: false });
     standing = new Set(seeds.keys());
     for (const item of items) {
       placeByMembership(
@@ -331,7 +353,7 @@ export function buildBoard(
     columns = finish(seeds, placements, cardOrder, () => null, nest);
   } else {
     // Milestones belong to repositories: same title across repositories = one column.
-    seed({ key: COL_NO_MILESTONE, title: '无里程碑', sort: '', rank: RANK_NONE, ended: false });
+    seed({ key: COL_NO_MILESTONE, title: zhKey('无里程碑'), sort: '', rank: RANK_NONE, ended: false });
     standing = new Set(seeds.keys());
     for (const item of items) {
       if (!item.milestone) {
@@ -351,7 +373,7 @@ export function buildBoard(
     settle(() => true);
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
-      return s.sort.startsWith('0') ? `截止 ${s.sort.slice(1, 11)}` : '无截止日期';
+      return s.sort.startsWith('0') ? { kind: 'due', date: s.sort.slice(1, 11) } : { kind: 'noDue' };
     }, nest);
   }
   // keep the "none" columns only when they hold something; a column that only
@@ -393,12 +415,12 @@ export function dropPlan(card: Pick<Card, 'item' | 'projectKeys' | 'projectTitle
   if (from === to.key) return { kind: 'none' };
   const it = card.item;
   const meta = (k: string) => projects.find((p) => p.key === k);
-  if (to.key === COL_UNBOARDED) return { kind: 'refuse', reason: '客户端不把条目移出看板；要移出请在网页上操作' };
+  if (to.key === COL_UNBOARDED) return { kind: 'refuse', reason: t('客户端不把条目移出看板；要移出请在网页上操作') };
 
   if (mode === 'milestone') {
-    if (to.key === COL_NO_MILESTONE) return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title: null }], summary: `去掉 ${it.repo}#${it.number} 的里程碑` };
+    if (to.key === COL_NO_MILESTONE) return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title: null }], summary: t('去掉 {repo}#{number} 的里程碑', { repo: it.repo, number: it.number }) };
     const title = to.key.slice('milestone:'.length);
-    return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title }], summary: `把 ${it.repo}#${it.number} 的里程碑改成「${title}」` };
+    return { kind: 'do', actions: [{ kind: 'setMilestone', key: it.key, title }], summary: t('把 {repo}#{number} 的里程碑改成「{title}」', { repo: it.repo, number: it.number, title }) };
   }
 
   const iteration = mode === 'iteration' ? iterationOfColumn(to.key) : null;
@@ -406,17 +428,26 @@ export function dropPlan(card: Pick<Card, 'item' | 'projectKeys' | 'projectTitle
   const status = mode === 'status' && !clear ? to.key.slice('status:'.length) : null;
   const pickIteration = (p: ProjectMeta) => (iteration ? p.iterations.find((x) => x.title === iteration.title && x.startDate === iteration.startDate) : undefined);
   const has = (p: ProjectMeta) => (mode === 'iteration' ? Boolean(pickIteration(p)) : p.statusOptions.includes(status ?? ''));
-  const what = mode === 'iteration' ? `迭代「${iteration?.title ?? ''}」` : `状态「${status ?? ''}」`;
+  const name = mode === 'iteration' ? (iteration?.title ?? '') : (status ?? '');
+  const isIt = mode === 'iteration';
+  const quoted = (titles: string[]) => titles.map((x) => t('「{name}」', { name: x })).join(t('、'));
 
   if (card.projectKeys.length === 0) {
-    if (clear) return { kind: 'refuse', reason: '这一条不在所选看板上，没有可清空的值' };
+    if (clear) return { kind: 'refuse', reason: t('这一条不在所选看板上，没有可清空的值') };
     const candidates = projects.filter((p) => has(p));
-    if (!candidates.length) return { kind: 'refuse', reason: `所选看板里没有${what}` };
+    if (!candidates.length) return { kind: 'refuse', reason: isIt ? t('所选看板里没有迭代「{name}」', { name }) : t('所选看板里没有状态「{name}」', { name }) };
     const writable = candidates.filter((p) => p.viewerCanUpdate);
-    if (!writable.length) return { kind: 'refuse', reason: `你在看板${candidates.map((p) => `「${p.title}」`).join('、')}上没有修改权限` };
+    if (!writable.length) return { kind: 'refuse', reason: t('你在看板{boards}上没有修改权限', { boards: quoted(candidates.map((p) => p.title)) }) };
     return {
       kind: 'confirm',
-      question: `${it.repo}#${it.number} 还没加入看板。加入看板${writable.length === 1 ? `「${writable[0].title}」` : ''}并设为${what}？`,
+      question:
+        writable.length === 1
+          ? isIt
+            ? t('{repo}#{number} 还没加入看板。加入看板「{board}」并设为迭代「{name}」？', { repo: it.repo, number: it.number, board: writable[0].title, name })
+            : t('{repo}#{number} 还没加入看板。加入看板「{board}」并设为状态「{name}」？', { repo: it.repo, number: it.number, board: writable[0].title, name })
+          : isIt
+            ? t('{repo}#{number} 还没加入看板。加入看板并设为迭代「{name}」？', { repo: it.repo, number: it.number, name })
+            : t('{repo}#{number} 还没加入看板。加入看板并设为状态「{name}」？', { repo: it.repo, number: it.number, name }),
       choices: writable.map((p) => ({
         projectKey: p.key,
         projectTitle: p.title,
@@ -428,12 +459,20 @@ export function dropPlan(card: Pick<Card, 'item' | 'projectKeys' | 'projectTitle
   const actions: WriteAction[] = [];
   for (const k of card.projectKeys) {
     const p = meta(k);
-    if (!p) return { kind: 'refuse', reason: '这张卡所在的看板不在当前来源里，请刷新' };
-    if (!p.viewerCanUpdate) return { kind: 'refuse', reason: `你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它）` };
-    if (!clear && !has(p)) return { kind: 'refuse', reason: `看板「${p.title}」没有${what}` };
+    if (!p) return { kind: 'refuse', reason: t('这张卡所在的看板不在当前来源里，请刷新') };
+    if (!p.viewerCanUpdate) return { kind: 'refuse', reason: t('你在看板「{board}」上没有修改权限（GitHub 说这个账号不能改它）', { board: p.title }) };
+    if (!clear && !has(p)) return { kind: 'refuse', reason: isIt ? t('看板「{board}」没有迭代「{name}」', { board: p.title, name }) : t('看板「{board}」没有状态「{name}」', { board: p.title, name }) };
     if (mode === 'iteration') actions.push({ kind: 'setIteration', key: it.key, projectKey: k, iterationId: clear ? null : pickIteration(p)!.id });
     else actions.push({ kind: 'setStatus', key: it.key, projectKey: k, status: clear ? null : status });
   }
-  const where = card.projectTitles.map((t) => `「${t}」`).join('、');
-  return { kind: 'do', actions, summary: clear ? `清空 ${it.repo}#${it.number} 在看板${where}上的${mode === 'iteration' ? '迭代' : '状态'}` : `把 ${it.repo}#${it.number} 在看板${where}上改成${what}` };
+  const where = quoted(card.projectTitles);
+  const ref = { repo: it.repo, number: it.number, where, name };
+  const summary = clear
+    ? isIt
+      ? t('清空 {repo}#{number} 在看板{where}上的迭代', ref)
+      : t('清空 {repo}#{number} 在看板{where}上的状态', ref)
+    : isIt
+      ? t('把 {repo}#{number} 在看板{where}上改成迭代「{name}」', ref)
+      : t('把 {repo}#{number} 在看板{where}上改成状态「{name}」', ref);
+  return { kind: 'do', actions, summary };
 }

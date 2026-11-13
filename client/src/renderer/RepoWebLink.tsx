@@ -5,8 +5,10 @@
 import { repoWebUrl } from '../shared/repoWeb';
 import { api } from './api';
 import { Icon } from './Icons';
+import { t } from '../shared/i18n';
+import { verbatimParts } from './Verbatim';
 
-export const REPO_WEB_TITLE = '在 GitHub 打开这个仓库';
+export const repoWebTitle = (): string => t('在 GitHub 打开这个仓库');
 
 export function RepoWebLink({ repo, className }: { repo: string; className?: string }) {
   const url = repoWebUrl(repo);
@@ -17,8 +19,9 @@ export function RepoWebLink({ repo, className }: { repo: string; className?: str
       className={`icon-btn repo-web${className ? ` ${className}` : ''}`}
       data-testid="repo-web"
       data-repo={repo}
-      aria-label={`${REPO_WEB_TITLE}：${repo}`}
-      title={REPO_WEB_TITLE}
+      aria-label={t('在 GitHub 打开这个仓库：{repo}', { repo })}
+      {...verbatimParts('github', [repo])}
+      title={repoWebTitle()}
       draggable={false}
       onClick={(e) => {
         e.stopPropagation();

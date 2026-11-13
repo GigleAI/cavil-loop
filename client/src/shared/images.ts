@@ -5,6 +5,7 @@
 // loaded by the window itself (a private repo answers 404 without the sign-in; a public one
 // redirects to a host outside the image policy). The client fetches it with the sign-in instead
 // (src/data/releaseImage.ts); every other image is loaded by the window as before.
+import { t, zhKey } from './i18n';
 
 export interface ReleaseImageRef {
   owner: string;
@@ -74,23 +75,23 @@ function clock(ms: number): string {
 }
 
 /** The app needs this to download a private repo's release attachment when signed in through a GitHub App. */
-export const APP_CONTENTS_NOTE = '用 GitHub App 登录时，需要那个 App 有读取仓库内容（Contents）的权限';
+export const APP_CONTENTS_NOTE = zhKey('用 GitHub App 登录时，需要那个 App 有读取仓库内容（Contents）的权限');
 
 /** The line shown in the image's place. Only "denied" speaks of permissions; a rate limit never does. */
 export function imageFailureText(f: ImageFailure): string {
   switch (f.kind) {
     case 'limited':
-      return `GitHub 限流，${clock(f.until)} 之后可以再试`;
+      return t('GitHub 限流，{time} 之后可以再试', { time: clock(f.until) });
     case 'denied':
-      return `没取到：当前登录读不到这个仓库的发布附件${f.app ? `；${APP_CONTENTS_NOTE}` : ''}`;
+      return f.app ? t('没取到：当前登录读不到这个仓库的发布附件；用 GitHub App 登录时，需要那个 App 有读取仓库内容（Contents）的权限') : t('没取到：当前登录读不到这个仓库的发布附件');
     case 'unreachable':
-      return '没取到：连不上 GitHub';
+      return t('没取到：连不上 GitHub');
     case 'auth':
-      return '没取到：登录已失效，请重新登录';
+      return t('没取到：登录已失效，请重新登录');
     case 'tooLarge':
-      return '没取到：图片超过 10 MB';
+      return t('没取到：图片超过 10 MB');
     case 'notImage':
-      return '没取到：这个附件不是 PNG / JPEG / GIF / WebP 图片';
+      return t('没取到：这个附件不是 PNG / JPEG / GIF / WebP 图片');
   }
 }
 
