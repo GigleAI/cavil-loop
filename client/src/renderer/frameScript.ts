@@ -40,9 +40,34 @@
 
 import { FRAME_FIND_JS } from './frameFind';
 import { FRAME_FORWARD } from './shortcuts';
+import { t } from '../shared/i18n';
+
+/**
+ * The frame's own words, in the window's language: FRAME_SCRIPT is fixed (its hash is in two
+ * policies), so it reads them from the root element's `data-words` (frameWords(), put there by
+ * timelineDocument) instead of carrying them.
+ */
+export function frameWords(): Record<string, string> {
+  return {
+    rereading: t('正在重新读取…'),
+    copied: t('已复制 ✓'),
+    copyFailed: t('复制失败'),
+    copy: t('复制'),
+    image: t('图片'),
+    reload: t('重新加载'),
+    onWeb: t('在网页上看'),
+    offlineReload: t('离线时不能重新加载'),
+    fetching: t('正在用登录信息取图…'),
+    notLoaded: t('图片没加载出来'),
+    notGot: t('没取到'),
+  };
+}
 
 export const FRAME_SCRIPT = `(function () {
   var b = document.body, render = b.getAttribute('data-render');
+  var words = {};
+  try { words = JSON.parse(document.documentElement.getAttribute('data-words') || '{}') || {}; } catch (e) { words = {}; }
+  function w(k) { return typeof words[k] === 'string' ? words[k] : k; }
   function view() {
     var open = [], d = document.querySelectorAll('details.entry[open]');
     for (var i = 0; i < d.length; i++) open.push(d[i].getAttribute('data-entry'));
@@ -79,7 +104,7 @@ export const FRAME_SCRIPT = `(function () {
       if (!img || t.disabled) return;
       if (img.hasAttribute('data-rel')) ask(img);
       else {
-        box(img, 'loading', '正在重新读取…');
+        box(img, 'loading', w('rereading'));
         send({ cavil: 'reread' });
       }
       return;
@@ -105,11 +130,11 @@ export const FRAME_SCRIPT = `(function () {
   });
   function copied(btn, ok) {
     btn.setAttribute('data-state', ok ? 'ok' : 'fail');
-    btn.textContent = ok ? '已复制 ✓' : '复制失败';
+    btn.textContent = ok ? w('copied') : w('copyFailed');
     clearTimeout(btn.cavilTimer);
     btn.cavilTimer = setTimeout(function () {
       btn.removeAttribute('data-state');
-      btn.textContent = '复制';
+      btn.textContent = w('copy');
     }, 2000);
   }
   function copy(pre, btn, block) {
@@ -160,21 +185,21 @@ export const FRAME_SCRIPT = `(function () {
     clearTimeout(x.cavilTimer);
     x.setAttribute('data-state', state);
     x.textContent = '';
-    add(x, 'span', 'alt', img.getAttribute('alt') || '图片');
+    add(x, 'span', 'alt', img.getAttribute('alt') || w('image'));
     add(x, 'span', 'why', why);
     if (state === 'loading') return;
-    var acts = add(x, 'span', 'acts', ''), btn = add(acts, 'button', '', '重新加载');
+    var acts = add(x, 'span', 'acts', ''), btn = add(acts, 'button', '', w('reload'));
     btn.type = 'button';
     btn.setAttribute('data-img-reload', id);
     var src = img.getAttribute('data-rel') || img.getAttribute('src') || '';
     if (/^https?:/.test(src)) {
-      var a = add(acts, 'a', '', '在网页上看');
+      var a = add(acts, 'a', '', w('onWeb'));
       a.href = src;
       a.target = '_blank';
     }
     if (offline) {
       btn.disabled = true;
-      btn.title = '离线时不能重新加载';
+      btn.title = w('offlineReload');
     } else if (state === 'limited') {
       var wait = Number(until) - Date.now();
       if (wait > 0) {
@@ -195,7 +220,7 @@ export const FRAME_SCRIPT = `(function () {
     img.src = data;
   }
   function ask(img) {
-    box(img, 'loading', '正在用登录信息取图…');
+    box(img, 'loading', w('fetching'));
     send({ cavil: 'image', id: img.getAttribute('data-img'), src: img.getAttribute('data-rel') });
   }
   function want() {
@@ -205,7 +230,7 @@ export const FRAME_SCRIPT = `(function () {
   document.addEventListener('error', function (e) {
     var t = e.target;
     if (!t || t.tagName !== 'IMG' || !t.closest('.md')) return;
-    if (t.hasAttribute('data-rel') ? t.hasAttribute('data-shown') : !!t.getAttribute('src')) box(t, 'failed', '图片没加载出来');
+    if (t.hasAttribute('data-rel') ? t.hasAttribute('data-shown') : !!t.getAttribute('src')) box(t, 'failed', w('notLoaded'));
   }, true);
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
   // GitHub#502: find on the page. The window says whether find is open, the query and which of this frame's
@@ -271,7 +296,7 @@ export const FRAME_SCRIPT = `(function () {
     var img = imgs[m.id];
     if (!img || !img.hasAttribute('data-rel')) return;
     if (m.ok === true && typeof m.data === 'string' && /^data:image\\/(png|jpeg|gif|webp);base64,/.test(m.data)) show(img, m.data);
-    else box(img, m.state === 'limited' ? 'limited' : 'failed', String(m.why || '没取到'), m.until);
+    else box(img, m.state === 'limited' ? 'limited' : 'failed', String(m.why || w('notGot')), m.until);
   });
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || typeof e.key !== 'string') return;
@@ -312,4 +337,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-vt4ilgyVFr2NStBc3meRXrkXuLdn1eP6ZhJe+jWL6WU='";
+export const FRAME_SCRIPT_HASH = "'sha256-bEZYheZphWQ3rJ6nArX8YS2QrxNf6yiztl4Plus+5oQ='";

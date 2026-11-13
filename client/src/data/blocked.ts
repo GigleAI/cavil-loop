@@ -6,6 +6,7 @@
 import type { BlockedRead, MarkComment, Pick, Ref, RestEvent } from '../shared/blocked';
 import { roundMarks, roundOf } from '../shared/blocked';
 import { GitHubClient, GitHubError } from './github';
+import { t } from '../shared/i18n';
 
 /** a comment as GitHub's REST list gives it */
 export interface RestComment {
@@ -46,7 +47,7 @@ function stateOf(i: RestIssue): 'open' | 'closed' | 'merged' {
 }
 
 function candidateOf(repo: string, i: RestIssue): Candidate {
-  if (typeof i.id !== 'number' || typeof i.number !== 'number' || typeof i.state !== 'string') throw new GitHubError('http', `${repo} 的条目缺字段`);
+  if (typeof i.id !== 'number' || typeof i.number !== 'number' || typeof i.state !== 'string') throw new GitHubError('http', t('{repo} 的条目缺字段', { repo }));
   return { repo: repo.toLowerCase(), number: i.number, kind: i.pull_request ? 'pr' : 'issue', id: i.id, title: i.title ?? '', state: stateOf(i), url: i.html_url ?? '' };
 }
 
@@ -58,7 +59,7 @@ function repoOfUrl(url: string | undefined): string | null {
 /** GitHub#434: one item, by repository and number (the picker's "编号" search, and a prerequisite's state). */
 export async function readCandidate(client: GitHubClient, repo: string, number: number): Promise<Candidate> {
   const i = await client.rest<RestIssue>('GET', `${repoPath(repo)}/issues/${number}`);
-  if (!i) throw new GitHubError('http', `读不到 ${repo}#${number}`);
+  if (!i) throw new GitHubError('http', t('读不到 {item}', { item: `${repo}#${number}` }));
   return candidateOf(repo, i);
 }
 
@@ -66,7 +67,7 @@ export async function readCandidate(client: GitHubClient, repo: string, number: 
 export async function searchCandidates(client: GitHubClient, repo: string, text: string): Promise<Candidate[]> {
   const q = `repo:${repo} is:open in:title ${text.replace(/"/g, ' ')}`;
   const r = await client.rest<{ items?: RestIssue[] }>('GET', `/search/issues?q=${encodeURIComponent(q)}&per_page=20`);
-  if (!r || !Array.isArray(r.items)) throw new GitHubError('http', 'GitHub 搜索的回应不完整');
+  if (!r || !Array.isArray(r.items)) throw new GitHubError('http', t('GitHub 搜索的回应不完整'));
   return r.items.map((i) => candidateOf(repoOfUrl(i.repository_url) ?? repo, i));
 }
 
@@ -92,14 +93,14 @@ export async function readBlocked(client: GitHubClient, repo: string, number: nu
     client.restList<RestComment>(`${base}/comments?per_page=100`),
     client.restList<RestIssue>(`${base}/dependencies/blocked_by?per_page=100`),
   ]);
-  if (!item || typeof item.state !== 'string' || !Array.isArray(item.labels)) throw new GitHubError('http', `读不到 ${repo}#${number} 的状态和标签`);
+  if (!item || typeof item.state !== 'string' || !Array.isArray(item.labels)) throw new GitHubError('http', t('读不到 {item} 的状态和标签', { item: `${repo}#${number}` }));
   const labels = item.labels.map((l) => (typeof l === 'string' ? l : (l?.name ?? '')));
-  if (labels.some((l) => !l)) throw new GitHubError('http', `${repo}#${number} 的标签缺名字`);
-  for (const e of events) if (typeof e?.id !== 'number' || typeof e.event !== 'string') throw new GitHubError('http', `${repo}#${number} 的标签记录缺字段`);
-  for (const c of comments) if (typeof c?.id !== 'number' || typeof c.created_at !== 'string') throw new GitHubError('http', `${repo}#${number} 的评论缺字段`);
+  if (labels.some((l) => !l)) throw new GitHubError('http', t('{item} 的标签缺名字', { item: `${repo}#${number}` }));
+  for (const e of events) if (typeof e?.id !== 'number' || typeof e.event !== 'string') throw new GitHubError('http', t('{item} 的标签记录缺字段', { item: `${repo}#${number}` }));
+  for (const c of comments) if (typeof c?.id !== 'number' || typeof c.created_at !== 'string') throw new GitHubError('http', t('{item} 的评论缺字段', { item: `${repo}#${number}` }));
   const native: Ref[] = deps.map((d) => {
     const r = repoOfUrl(d.repository_url);
-    if (!r || typeof d.number !== 'number') throw new GitHubError('http', `${repo}#${number} 的「Blocked by」缺字段`);
+    if (!r || typeof d.number !== 'number') throw new GitHubError('http', t('{item} 的「Blocked by」缺字段', { item: `${repo}#${number}` }));
     return { repo: r, number: d.number };
   });
   const round = roundOf(events, blocked);

@@ -2,6 +2,7 @@
 // of comments and reviews), and order it newest first. The rendered HTML is
 // GitHub's own (bodyHTML); it is only ever shown inside the isolated view.
 
+import { t, zhKey } from '../shared/i18n';
 import type { ItemDetail, MergeMethod, PrStatus, TaskEntry, TimelineEntry } from '../shared/actions';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -96,7 +97,7 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
   let first: GqlDetail | null = null;
   let mergeMethods: MergeMethod[] = [];
   for (let page = 0; withComments || withReviews; page++) {
-    if (page >= MAX_PAGES) throw new GitHubError('http', `评论分页超过 ${MAX_PAGES} 页，已停止`);
+    if (page >= MAX_PAGES) throw new GitHubError('http', t('评论分页超过 {n} 页，已停止', { n: MAX_PAGES }));
     const data: GqlDetailResponse = await client.graphql<GqlDetailResponse>(ITEM_DETAIL_QUERY, {
       owner,
       name,
@@ -107,7 +108,7 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
       withReviews,
     });
     const it = data.repository?.issueOrPullRequest;
-    if (!data.repository || !it) throw new GitHubError('graphql', `找不到 ${repo}#${number}（不存在，或当前账号没有权限）`);
+    if (!data.repository || !it) throw new GitHubError('graphql', t('找不到 {repo}#{number}（不存在，或当前账号没有权限）', { repo, number }));
     if (!first) {
       first = it;
       const r = data.repository;
@@ -118,20 +119,20 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
       ];
     }
     if (withComments) {
-      if (!it.comments) throw new GitHubError('graphql', 'GitHub 回应缺少评论列表');
+      if (!it.comments) throw new GitHubError('graphql', t('GitHub 回应缺少评论列表'));
       comments.push(...it.comments.nodes);
       withComments = it.comments.pageInfo.hasNextPage;
       commentsAfter = it.comments.pageInfo.endCursor;
-      if (withComments && !commentsAfter) throw new GitHubError('graphql', '评论分页缺少游标');
+      if (withComments && !commentsAfter) throw new GitHubError('graphql', t('评论分页缺少游标'));
     }
     if (withReviews) {
       // an issue has no reviews: the PR branch of the query is simply absent
       if (it.__typename === 'PullRequest') {
-        if (!it.reviews) throw new GitHubError('graphql', 'GitHub 回应缺少评审列表');
+        if (!it.reviews) throw new GitHubError('graphql', t('GitHub 回应缺少评审列表'));
         reviews.push(...it.reviews.nodes);
         withReviews = it.reviews.pageInfo.hasNextPage;
         reviewsAfter = it.reviews.pageInfo.endCursor;
-        if (withReviews && !reviewsAfter) throw new GitHubError('graphql', '评审分页缺少游标');
+        if (withReviews && !reviewsAfter) throw new GitHubError('graphql', t('评审分页缺少游标'));
       } else withReviews = false;
     }
   }
@@ -140,10 +141,10 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
     let page = r.comments;
     const all = [...page.nodes];
     for (let n = 0; page.pageInfo.hasNextPage; n++) {
-      if (n >= MAX_PAGES) throw new GitHubError('http', `逐行评论分页超过 ${MAX_PAGES} 页，已停止`);
-      if (!page.pageInfo.endCursor) throw new GitHubError('graphql', '逐行评论分页缺少游标');
+      if (n >= MAX_PAGES) throw new GitHubError('http', t('逐行评论分页超过 {n} 页，已停止', { n: MAX_PAGES }));
+      if (!page.pageInfo.endCursor) throw new GitHubError('graphql', t('逐行评论分页缺少游标'));
       const d: { node: { comments?: Page<GqlLineComment> } | null } = await client.graphql(REVIEW_COMMENTS_QUERY, { id: r.id, after: page.pageInfo.endCursor });
-      if (!d.node?.comments) throw new GitHubError('graphql', '读不到评审的逐行评论');
+      if (!d.node?.comments) throw new GitHubError('graphql', t('读不到评审的逐行评论'));
       page = d.node.comments;
       all.push(...page.nodes);
     }
@@ -159,8 +160,8 @@ export async function fetchRawDetail(client: GitHubClient, repo: string, number:
  */
 export function taskEntry(html: string, source: unknown, canUpdate: unknown): TaskEntry | undefined {
   if (!renderedTaskBoxes(html).length) return undefined;
-  if (typeof source !== 'string' || typeof canUpdate !== 'boolean') return { clickable: false, why: '没读到这一条的原文或修改权限，勾选框只读' };
-  if (!canUpdate) return { clickable: false, why: 'GitHub 说你没有权限改这一条，勾选框只读' };
+  if (typeof source !== 'string' || typeof canUpdate !== 'boolean') return { clickable: false, why: zhKey('没读到这一条的原文或修改权限，勾选框只读') };
+  if (!canUpdate) return { clickable: false, why: zhKey('GitHub 说你没有权限改这一条，勾选框只读') };
   const plan = planTasks(source, html);
   if (!plan.ok) return { clickable: false, why: plan.why };
   return { clickable: true, source };
@@ -181,7 +182,7 @@ function wallSecs(source: unknown): { wallSecs: number } | Record<string, never>
 }
 
 /** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
-const REVIEW_TASKS: TaskEntry = { clickable: false, why: '评审意见里的勾选框只能在网页上勾' };
+const REVIEW_TASKS: TaskEntry = { clickable: false, why: zhKey('评审意见里的勾选框只能在网页上勾') };
 
 const desc = (a: { at: string }, b: { at: string }) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0);
 

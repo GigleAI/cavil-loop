@@ -6,6 +6,9 @@ import { useEffect, useState } from 'react';
 import type { AppState } from '../shared/types';
 import { describeFailure, type FailureAction, type ReadFailure } from '../shared/readFailure';
 import { api } from './api';
+import { t } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim } from './Verbatim';
 import { rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
 
 const hhmm = (ms: number) => {
@@ -57,7 +60,7 @@ export function FailureNote({
   const running = rr?.state.phase === 'running';
   const lines = rr !== null && !shared;
   const rs = rr?.state;
-  const t = describeFailure(failure, Date.now(), state.signedInAppKind ?? 'oauth');
+  const said = describeFailure(failure, Date.now(), state.signedInAppKind ?? 'oauth');
   const button = (a: FailureAction) => {
     switch (a) {
       case 'retry':
@@ -71,36 +74,36 @@ export function FailureNote({
             onClick={() => (onRetry ? onRetry() : rr!.run())}
           >
             {running && <span className="spin" aria-hidden="true" />}
-            {waiting && t.retryAt !== undefined ? `重新读取（${hhmm(t.retryAt)} 后可用）` : running ? '正在重新读取…' : '重新读取'}
+            {waiting && said.retryAt !== undefined ? t('重新读取（{time} 后可用）', { time: hhmm(said.retryAt) }) : running ? t('正在重新读取…') : t('重新读取')}
           </button>
         );
       case 'authPage':
         return (
           <button key={a} data-testid="failure-auth-page" onClick={openAuthPage}>
-            打开 GitHub 授权页
+            {t('打开 GitHub 授权页')}
           </button>
         );
       case 'ssoPage':
         return (
           <button key={a} data-testid="failure-sso-page" onClick={() => void api().openExternal(failure.ssoUrl!)}>
-            去 GitHub 授权单点登录
+            {t('去 GitHub 授权单点登录')}
           </button>
         );
       case 'relogin':
         return (
           <button key={a} data-testid="failure-relogin" onClick={() => void api().logout()}>
-            重新登录
+            {t('重新登录')}
           </button>
         );
     }
   };
   return (
     <div className="failure-note" data-testid={testid} data-kind={failure.kind}>
-      <b data-testid="failure-title">{t.title}</b>
+      <b data-testid="failure-title">{said.title}</b>
       <div className="failure-body" data-testid="failure-body">
-        {t.body}
+        {said.body}
       </div>
-      {t.actions.length > 0 && <div className="failure-actions">{t.actions.map(button)}</div>}
+      {said.actions.length > 0 && <div className="failure-actions">{said.actions.map(button)}</div>}
       {lines && rs?.phase === 'running' && (
         <div className="reread-line running" data-testid="failure-reread-running" role="status">
           <span className="spin" aria-hidden="true" />
@@ -114,7 +117,7 @@ export function FailureNote({
       )}
       {failure.raw && (
         <div className="failure-raw" data-testid="failure-raw">
-          错误原文：{failure.raw}
+          {tNode('错误原文：{raw}', { raw: <Verbatim from="github">{failure.raw}</Verbatim> })}
         </div>
       )}
     </div>

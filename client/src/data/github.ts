@@ -3,6 +3,7 @@
 // links that point anywhere else are refused so the token never leaves them.
 
 import type { FailureInput } from '../shared/readFailure';
+import { t, tKey, zhKey } from '../shared/i18n';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -35,6 +36,8 @@ export interface GitHubErrorMeta {
 
 export class GitHubError extends Error {
   meta: GitHubErrorMeta = {};
+  /** GitHub's own words of a refused answer ('' = it gave none); undefined = not a refused answer (GitHub#472: kept apart from the client's sentence) */
+  said?: string;
   constructor(
     readonly kind: GitHubErrorKind,
     message: string,
@@ -93,7 +96,8 @@ export function failureInput(e: unknown): FailureInput {
   };
 }
 
-export const RATE_LIMIT_MESSAGE = 'GitHub 限流（这个账号的查询额度暂时用完了）';
+/** a key: shown through tKey when the error is made */
+export const RATE_LIMIT_MESSAGE = zhKey('GitHub 限流（这个账号的查询额度暂时用完了）');
 
 /** A rate-limit answer, or null: 403 / 429 with the quota at 0, a retry-after, or GitHub's own words for it. */
 export function rateLimitOf(res: Response, detail: string): RateLimitError | null {
@@ -110,14 +114,18 @@ export function rateLimitOf(res: Response, detail: string): RateLimitError | nul
  * credential, a rate limit (a 403 is not "no access" before this said so), or GitHub's own error.
  */
 export async function refusalOf(res: Response): Promise<GitHubError> {
-  if (res.status === 401) return new GitHubError('auth', 'GitHub 凭据无效（可能已被撤销或过期）', 401);
+  if (res.status === 401) return new GitHubError('auth', t('GitHub 凭据无效（可能已被撤销或过期）'), 401);
   let detail = '';
   try {
     detail = ((await res.json()) as { message?: string }).message ?? '';
   } catch {
     /* body not JSON */
   }
-  const e = rateLimitOf(res, detail) ?? new GitHubError('http', `GitHub 返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+  let e: GitHubError | null = rateLimitOf(res, detail);
+  if (!e) {
+    e = new GitHubError('http', detail ? t('GitHub 返回 HTTP {status}：{detail}', { status: res.status, detail }) : t('GitHub 返回 HTTP {status}', { status: res.status }), res.status);
+    e.said = detail;
+  }
   e.meta = headerMeta(res);
   return e;
 }
@@ -127,7 +135,7 @@ function limitError(res: Response, status: number | undefined): RateLimitError {
   const after = Number(res.headers.get('retry-after'));
   const resetAt = Number.isFinite(reset) && reset > 0 ? reset * 1000 : null;
   const retryAfterMs = res.headers.get('retry-after') !== null && Number.isFinite(after) && after >= 0 ? after * 1000 : null;
-  return new RateLimitError(RATE_LIMIT_MESSAGE, status, resetAt, retryAfterMs, true);
+  return new RateLimitError(tKey(RATE_LIMIT_MESSAGE), status, resetAt, retryAfterMs, true);
 }
 
 /** GitHub's GraphQL error words for "something broke on our side, ask again" (not a wrong query). */
@@ -167,7 +175,7 @@ export class ReadGate {
 
   /** throws the "rate limited" error, without sending, while closed */
   check(): void {
-    if (this.until !== null && this.now() < this.until) throw new RateLimitError(RATE_LIMIT_MESSAGE, undefined, this.until, null, false);
+    if (this.until !== null && this.now() < this.until) throw new RateLimitError(tKey(RATE_LIMIT_MESSAGE), undefined, this.until, null, false);
   }
 
   /** a rate-limit answer arrived: closed until GitHub's time, or 1, 2, 4, 8, 10 min when it gave none (never past an hour) */
@@ -255,7 +263,7 @@ export class GitHubClient {
 
   private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
     if (this.cancelled?.aborted) {
-      const given = new GitHubError('network', '已放弃这一轮同步');
+      const given = new GitHubError('network', t('已放弃这一轮同步'));
       given.meta.cancelled = true;
       throw given;
     }
@@ -274,7 +282,7 @@ export class GitHubClient {
         signal: init.signal ?? timeoutSignal(30_000),
       });
     } catch (e) {
-      throw new GitHubError('network', `无法连接 GitHub：${(e as Error).message}`);
+      throw new GitHubError('network', t('无法连接 GitHub：{why}', { why: (e as Error).message }));
     }
     if (res.status === 401) throw await refusalOf(res);
     if (notModifiedOk && res.status === 304) return res;
@@ -301,7 +309,7 @@ export class GitHubClient {
     try {
       body = (await res.json()) as typeof body;
     } catch (e) {
-      throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+      throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
     }
     if (body.errors && body.errors.length) {
       if (body.errors.some((e) => e.type === 'RATE_LIMITED')) {
@@ -310,11 +318,11 @@ export class GitHubClient {
         throw limited;
       }
       const transient = body.errors.every((e) => !e.type && TRANSIENT_GRAPHQL.test(e.message));
-      const err = new GitHubError('graphql', body.errors.map((e) => e.message).join('；'), undefined, transient);
+      const err = new GitHubError('graphql', body.errors.map((e) => e.message).reduce((a, b) => t('{a}；{b}', { a, b })), undefined, transient);
       err.meta = { ...headerMeta(res), gqlTypes: body.errors.map((e) => e.type).filter((t): t is string => typeof t === 'string') };
       throw err;
     }
-    if (!body.data) throw new GitHubError('graphql', 'GitHub 回应缺少 data');
+    if (!body.data) throw new GitHubError('graphql', t('GitHub 回应缺少 data'));
     return body.data;
   }
 
@@ -333,7 +341,7 @@ export class GitHubClient {
     try {
       return JSON.parse(text) as T;
     } catch (e) {
-      throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+      throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
     }
   }
 
@@ -357,21 +365,21 @@ export class GitHubClient {
    */
   async conditional(method: 'GET' | 'HEAD', pathOrUrl: string, etag: string | null): Promise<ConditionalAnswer> {
     const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : `${this.endpoints.api}${pathOrUrl}`;
-    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', `拒绝跟随指向其他主机的链接：${url}`);
+    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的链接：{url}', { url }));
     const res = await this.again(() => this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true));
     const tag = res.headers.get('etag');
     const next = nextLink(res.headers.get('link'));
     // an answer without a version tag says nothing checkable — "not modified" included (PR #272 review round 1)
-    if ((res.status === 304 || res.status === 200) && !tag) throw new GitHubError('http', `变化检查：HTTP ${res.status} 的回答没有版本标记`, res.status);
+    if ((res.status === 304 || res.status === 200) && !tag) throw new GitHubError('http', t('变化检查：HTTP {status} 的回答没有版本标记', { status: res.status }), res.status);
     if (res.status === 304) return { status: 304, etag: tag!, next, body: null };
     // only a plain 200 says "this is the current version"; any other success is not checkable
-    if (res.status !== 200) throw new GitHubError('http', `变化检查收到意外的 HTTP ${res.status}`, res.status);
+    if (res.status !== 200) throw new GitHubError('http', t('变化检查收到意外的 HTTP {status}', { status: res.status }), res.status);
     let body: unknown = null;
     if (method === 'GET') {
       try {
         body = await res.json();
       } catch (e) {
-        throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+        throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
       }
     }
     return { status: 200, etag: tag!, next, body };
@@ -383,16 +391,16 @@ export class GitHubClient {
     let url: string | null = `${this.endpoints.api}${path}`;
     const origin = new URL(this.endpoints.api).origin;
     while (url) {
-      if (new URL(url).origin !== origin) throw new GitHubError('http', `拒绝跟随指向其他主机的分页链接：${url}`);
+      if (new URL(url).origin !== origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的分页链接：{url}', { url }));
       const at: string = url;
       const res = await this.again(() => this.send(at, { method: 'GET' }));
       let page: unknown;
       try {
         page = await res.json();
       } catch (e) {
-        throw new GitHubError('network', `GitHub 回应不完整：${(e as Error).message}`);
+        throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
       }
-      if (!Array.isArray(page)) throw new GitHubError('http', `GitHub 列表接口回应不是数组：${path}`);
+      if (!Array.isArray(page)) throw new GitHubError('http', t('GitHub 列表接口回应不是数组：{path}', { path }));
       out.push(...(page as T[]));
       url = nextLink(res.headers.get('link'));
     }

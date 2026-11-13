@@ -13,6 +13,9 @@ import { Icon, itemIcon } from './Icons';
 import { OPENS_ITEM } from './outsideClick';
 import { useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
+import { getLang, t } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim } from './Verbatim';
 
 /** what the view showed last, kept for this run only (a restart opens at the default view) */
 let memory: { view: Viewport; rects: Map<string, Rect>; structure: string; bigBar: boolean; aspect: number } | null = null;
@@ -27,13 +30,15 @@ const ZOOM_STEP = 1.2;
 export function clockText(ms: number, now: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, '0');
-  const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return new Date(now).toDateString() === d.toDateString() ? t : `${d.getMonth() + 1}月${d.getDate()}日 ${t}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return new Date(now).toDateString() === d.toDateString() ? time : t('{month}月{day}日 {time}', { month: d.getMonth() + 1, day: d.getDate(), time });
 }
 
 export interface GraphSourceInfo {
   key: string;
   label: string;
+  /** the same name for the page, its GitHub parts shown as is */
+  name: ReactNode;
   status: SourceStatus | null;
   /** its relations are unknown (cached before relations were read, no full read since) */
   unknown: boolean;
@@ -183,7 +188,7 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
   const allUnknown = model.nodes.size === 0 && unknownSources.length > 0 && model.unknown > 0 && model.entries === 0 && model.noRelation === 0;
   const retry = (
     <button className="small-btn" data-testid="graph-retry" onClick={() => api().restartSync()} disabled={false}>
-      重试
+      {t('重试')}
     </button>
   );
 
@@ -202,40 +207,46 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
         .filter((s) => !s.unknown && s.status && !s.status.ok)
         .map((s) => (
           <GraphBar key={s.key} testid="graph-stale" source={s.key}>
-            「{s.label}」这一轮读取失败（{s.status!.error ?? '原因不明'}）。
-            {s.status!.dataFrom ? (
-              <>
-                图上是 <b data-testid="graph-stale-time">{clockText(s.status!.dataFrom, now)}</b> 读到的数据，
-              </>
-            ) : (
-              '这个来源还没有读到过数据，'
-            )}
-            每分钟自动重试。
+            {s.status!.dataFrom
+              ? tNode('「{source}」这一轮读取失败（{why}）。图上是 {time} 读到的数据，每分钟自动重试。', {
+                  source: s.name,
+                  why: s.status!.error ?? t('原因不明'),
+                  time: <b data-testid="graph-stale-time">{clockText(s.status!.dataFrom, now)}</b>,
+                })
+              : tNode('「{source}」这一轮读取失败（{why}）。这个来源还没有读到过数据，每分钟自动重试。', { source: s.name, why: s.status!.error ?? t('原因不明') })}
             {retry}
           </GraphBar>
         ))}
       {unknownSources.map((s) => (
         <GraphBar key={s.key} testid="graph-unknown" source={s.key}>
-          <b>「{s.label}」的父子 / 阻塞关系还没有读到过</b>（
-          {s.status && !s.status.ok && s.status.error ? `本机缓存是升级前写的，之后的读取失败：${s.status.error}` : syncing ? '本机缓存是升级前写的，正在读取' : '本机缓存是升级前写的，还没有整份读取过'}
-          ）。这个来源的 {s.unknownItems} 个条目<b>关系未知</b>，没有画在图上——不代表它们之间没有关系。
+          {tNode('{head}（{why}）。这个来源的 {n} 个条目{unknown}，没有画在图上——不代表它们之间没有关系。', {
+            head: <b>{tNode('「{source}」的父子 / 阻塞关系还没有读到过', { source: s.name })}</b>,
+            why:
+              s.status && !s.status.ok && s.status.error
+                ? t('本机缓存是升级前写的，之后的读取失败：{error}', { error: s.status.error })
+                : syncing
+                  ? t('本机缓存是升级前写的，正在读取')
+                  : t('本机缓存是升级前写的，还没有整份读取过'),
+            n: s.unknownItems,
+            unknown: <b>{t('关系未知')}</b>,
+          })}
           {retry}
         </GraphBar>
       ))}
       <div className="graph-canvas" ref={canvas} data-testid="graph-canvas" onPointerDown={onPointerDown} onClick={(e) => !moved.current && !(e.target as Element).closest('.gpop') && setSel(null)}>
         {allUnknown ? (
           <div className="center muted" data-testid="graph-all-unknown">
-            所有来源的父子 / 阻塞关系都还没有读到过，画不出图——这不代表条目之间没有关系。读取成功后会自动画出。
+            {t('所有来源的父子 / 阻塞关系都还没有读到过，画不出图——这不代表条目之间没有关系。读取成功后会自动画出。')}
           </div>
         ) : model.nodes.size === 0 ? (
           <div className="center muted" data-testid="graph-empty">
-            当前来源和筛选下，没有带父子 / 阻塞关系的 issue。
+            {t('当前来源和筛选下，没有带父子 / 阻塞关系的 issue。')}
           </div>
         ) : null}
         {layout && view && model.nodes.size > 0 && (
           <div className="graph-world" data-testid="graph-world" data-scale={view.scale.toFixed(3)} style={{ transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})` }}>
             {boxes.map((n) => (
-              <BoxView key={n.key} n={n} r={layout.rects.get(n.key)!} dark={dark} progress={boxProgress(model, n.key)} refText={refOf(n)} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
+              <BoxView key={n.key} lang={getLang()} n={n} r={layout.rects.get(n.key)!} dark={dark} progress={boxProgress(model, n.key)} refText={refOf(n)} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
             ))}
             <svg className="graph-edges" width={layout.width} height={layout.height} data-testid="graph-edges">
               <defs>
@@ -267,7 +278,7 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
               })}
             </svg>
             {leaves.map((n) => (
-              <NodeView key={n.key} n={n} r={layout.rects.get(n.key)!} refText={refOf(n)} dark={dark} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
+              <NodeView key={n.key} lang={getLang()} n={n} r={layout.rects.get(n.key)!} refText={refOf(n)} dark={dark} selected={sel === n.key} onPick={pick} onOpen={onOpen} />
             ))}
           </div>
         )}
@@ -281,38 +292,39 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
                 <path d="M1,5 H27" className="gedge open" />
                 <path d="M26,1 L33,5 L26,9 z" className="garrow open" />
               </svg>
-              阻塞者未完成
+              {t('阻塞者未完成')}
             </span>
             <span className="gleg">
               <svg width="34" height="10" aria-hidden="true">
                 <path d="M1,5 H28" className="gedge done" />
                 <path d="M28,2 L33,5 L28,8 z" className="garrow done" />
               </svg>
-              阻塞者已完成
+              {t('阻塞者已完成')}
             </span>
             <span className="gleg">
-              <span className="gleg-box" />框 = 父 issue，框里是它的子 issue
+              <span className="gleg-box" />
+              {t('框 = 父 issue，框里是它的子 issue')}
             </span>
           </div>
         )}
         {model.nodes.size > 0 && (
           <div className="gtools">
             <div className="seg">
-              <button data-testid="graph-focus" onClick={focus} title="停在有未关闭 issue 的那一组">
-                进行中
+              <button data-testid="graph-focus" onClick={focus} title={t('停在有未关闭 issue 的那一组')}>
+                {t('进行中')}
               </button>
-              <button data-testid="graph-fit" onClick={fit} title={`整张图放进窗口（${keyText('graphFit')}）`}>
-                适应窗口
+              <button data-testid="graph-fit" onClick={fit} title={t('整张图放进窗口（{key}）', { key: keyText('graphFit') })}>
+                {t('适应窗口')}
               </button>
             </div>
             <div className="seg">
-              <button data-testid="graph-zoom-out" aria-label="缩小" title={`缩小（${keyText('graphZoomOut')}）`} onClick={() => zoom(1 / ZOOM_STEP)}>
+              <button data-testid="graph-zoom-out" aria-label={t('缩小')} title={t('缩小（{key}）', { key: keyText('graphZoomOut') })} onClick={() => zoom(1 / ZOOM_STEP)}>
                 −
               </button>
               <span className="gzoom" data-testid="graph-zoom">
                 {view ? Math.round(view.scale * 100) : 100}%
               </span>
-              <button data-testid="graph-zoom-in" aria-label="放大" title={`放大（${keyText('graphZoomIn')}）`} onClick={() => zoom(ZOOM_STEP)}>
+              <button data-testid="graph-zoom-in" aria-label={t('放大')} title={t('放大（{key}）', { key: keyText('graphZoomIn') })} onClick={() => zoom(ZOOM_STEP)}>
                 +
               </button>
             </div>
@@ -320,21 +332,21 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
         )}
         {bigBar && view && (
           <div className="gbar" data-testid="graph-big">
-            整张图放进窗口后字太小，现在停在进行中的部分（{Math.round(view.scale * 100)}%）。
+            {t('整张图放进窗口后字太小，现在停在进行中的部分（{pct}%）。', { pct: Math.round(view.scale * 100) })}
             <button className="small-btn" data-testid="graph-show-all" onClick={fit}>
-              看全图
+              {t('看全图')}
             </button>
           </div>
         )}
         {(model.noRelation > 0 || model.unknown > 0) && (
           <div className="gcounts" data-testid="graph-counts">
             {model.noRelation > 0 && (
-              <span data-testid="graph-hidden">另有 {model.noRelation} 个条目没有父子 / 阻塞关系，未显示（在看板 / 表格里看）</span>
+              <span data-testid="graph-hidden">{t('另有 {n} 个条目没有父子 / 阻塞关系，未显示（在看板 / 表格里看）', { n: model.noRelation })}</span>
             )}
             {model.noRelation > 0 && model.unknown > 0 && ' · '}
             {model.unknown > 0 && (
               <b className="gunknown" data-testid="graph-unknown-count">
-                {model.unknown} 个条目关系未知
+                {t('{n} 个条目关系未知', { n: model.unknown })}
               </b>
             )}
           </div>
@@ -369,25 +381,29 @@ function Badges({ n }: { n: GraphNode }) {
     <>
       {n.blockedByOpen > 0 && (
         <span className="gbadge blocked" data-testid="graph-blocked-by">
-          被 {n.blockedByOpen} 项挡住
+          {t('被 {n} 项挡住', { n: n.blockedByOpen })}
         </span>
       )}
       {n.blockingAhead > 0 && (
         <span className="gbadge ahead" data-testid="graph-blocking-ahead">
-          挡住后面 {n.blockingAhead} 项
+          {t('挡住后面 {n} 项', { n: n.blockingAhead })}
         </span>
       )}
     </>
   );
 }
 
-const OUTSIDE = (
-  <span className="gtag" data-testid="graph-outside">
-    不在当前来源中
-  </span>
-);
+function Outside() {
+  return (
+    <span className="gtag" data-testid="graph-outside">
+      {t('不在当前来源中')}
+    </span>
+  );
+}
 
 interface NodeProps {
+  /** the window's language: a node is drawn again when it changes */
+  lang: string;
   n: GraphNode;
   r: Rect;
   refText: string;
@@ -421,27 +437,27 @@ const NodeView = memo(
       <div className={`gnode${n.dim ? ' dim' : ''}${n.item ? '' : ' outside'}${selected ? ' selected' : ''}`} style={place(r)} {...nodeAttrs(n, selected, onPick, onOpen)}>
         <div className="gnode-head">
           <StateMark n={n} />
-          <span className="ref" title={`${n.repo} #${n.number}`}>
+          <span className="ref" title={`${n.repo} #${n.number}`} data-verbatim="github">
             {refText}
           </span>
           <span className="spacer" />
           <Badges n={n} />
         </div>
-        <div className="gnode-title" title={n.title} data-testid="graph-node-title">
+        <div className="gnode-title" title={n.title} data-testid="graph-node-title" data-verbatim="github">
           {n.title}
         </div>
         <div className="labels gnode-labels">
           {n.item?.labels.map((l) => (
-            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+            <span key={l.name} className="label" style={labelStyle(l.color, dark)} data-verbatim="github">
               {l.name}
             </span>
           ))}
-          {!n.item && OUTSIDE}
+          {!n.item && <Outside />}
         </div>
       </div>
     );
   },
-  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.dark === b.dark && a.selected === b.selected && a.onOpen === b.onOpen,
+  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.dark === b.dark && a.selected === b.selected && a.onOpen === b.onOpen && a.lang === b.lang,
 );
 
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
@@ -453,34 +469,34 @@ const BoxView = memo(
         <div className={`gbox-head${selected ? ' selected' : ''}`} style={{ height: BOX_HEAD }} {...nodeAttrs(n, selected, onPick, onOpen)}>
           <div className="gbox-row">
           <StateMark n={n} />
-          <span className="ref" title={`${n.repo} #${n.number}`}>
+          <span className="ref" title={`${n.repo} #${n.number}`} data-verbatim="github">
             {refText}
           </span>
-          <span className="gbox-title" title={n.title} data-testid="graph-node-title">
+          <span className="gbox-title" title={n.title} data-testid="graph-node-title" data-verbatim="github">
             {n.title}
           </span>
           <span className="spacer" />
           <Badges n={n} />
           {progress && (
             <span className="gprogress" data-testid="graph-box-progress">
-              {progress.completed} / {progress.total} 子项完成
+              {t('{done} / {total} 子项完成', { done: progress.completed, total: progress.total })}
             </span>
           )}
           </div>
           {/* the same labels row as a plain node: a parent's flow label is on the graph, not only in its summary */}
           <div className="labels gnode-labels">
             {n.item?.labels.map((l) => (
-              <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+              <span key={l.name} className="label" style={labelStyle(l.color, dark)} data-verbatim="github">
                 {l.name}
               </span>
             ))}
-            {!n.item && OUTSIDE}
+            {!n.item && <Outside />}
           </div>
         </div>
       </div>
     );
   },
-  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.dark === b.dark && a.selected === b.selected && a.progress?.completed === b.progress?.completed && a.progress?.total === b.progress?.total && a.onOpen === b.onOpen,
+  (a, b) => a.n.look === b.n.look && a.n.key === b.n.key && sameRect(a.r, b.r) && a.refText === b.refText && a.dark === b.dark && a.selected === b.selected && a.progress?.completed === b.progress?.completed && a.progress?.total === b.progress?.total && a.onOpen === b.onOpen && a.lang === b.lang,
 );
 
 function Summary({
@@ -538,66 +554,68 @@ function Summary({
       <div className="gpop-head">
         <StateMark n={n} />
         <span className="ref">
-          {n.repo} #{n.number}
+          <Verbatim from="github">{n.repo}</Verbatim> #{n.number}
         </span>
         <span className="spacer" />
-        <button className="banner-close" aria-label="关闭摘要" data-testid="graph-summary-close" onClick={onClose}>
+        <button className="banner-close" aria-label={t('关闭摘要')} data-testid="graph-summary-close" onClick={onClose}>
           <Icon name="x" />
         </button>
       </div>
       <div className="gpop-body" data-testid="graph-summary-body">
       <div className="gpop-title" data-testid="graph-summary-title">
-        {n.title}
+        <Verbatim from="github">{n.title}</Verbatim>
       </div>
       {n.item && n.item.labels.length > 0 && (
         <div className="labels">
           {n.item.labels.map((l) => (
-            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+            <span key={l.name} className="label" style={labelStyle(l.color, dark)} data-verbatim="github">
               {l.name}
             </span>
           ))}
         </div>
       )}
-      {!n.item && <div className="small muted gpop-outside">{OUTSIDE} GitHub 读关系时顺带给的基本信息；这个仓库没有添加为来源，没有读它的标签和详情。</div>}
+      {!n.item && <div className="small muted gpop-outside"><Outside /> {t('GitHub 读关系时顺带给的基本信息；这个仓库没有添加为来源，没有读它的标签和详情。')}</div>}
       {n.item && (
         <>
           {blockers.length > 0 && (
             <div className="gpop-sec" data-testid="graph-summary-blockers">
-              <div className="muted small">被挡住</div>
+              <div className="muted small">{t('被挡住')}</div>
               {blockers.map((b) => (
                 <div key={b.n.key} className="gpop-rel">
                   <span className={`gdot ${b.open ? 'open' : 'done'}`} />
-                  {line(b.n)}（{b.open ? '未完成' : '已完成'}）
+                  {b.open ? tNode('{item}（未完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> }) : tNode('{item}（已完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> })}
                 </div>
               ))}
             </div>
           )}
           {blocked.length > 0 && (
             <div className="gpop-sec" data-testid="graph-summary-blocking">
-              <div className="muted small">挡住</div>
+              <div className="muted small">{t('挡住')}</div>
               {blocked.map((b) => (
                 <div key={b.key} className="gpop-rel">
-                  {line(b)}
+                  <Verbatim from="github">{line(b)}</Verbatim>
                 </div>
               ))}
             </div>
           )}
           {parent && (
             <div className="gpop-sec" data-testid="graph-summary-parent">
-              <div className="muted small">父 issue</div>
-              <div className="gpop-rel">{line(parent)}</div>
+              <div className="muted small">{t('父 issue')}</div>
+              <div className="gpop-rel">
+                <Verbatim from="github">{line(parent)}</Verbatim>
+              </div>
             </div>
           )}
           {n.kind === 'issue' && (
             <div className="gpop-sec" data-testid="graph-summary-prs">
-              <div className="muted small">关联 PR</div>
+              <div className="muted small">{t('关联 PR')}</div>
               {prs === null ? (
                 <div className="muted small" data-testid="graph-summary-prs-unknown">
-                  仓库来源读不到 GitHub 关联的 PR
+                  {t('仓库来源读不到 GitHub 关联的 PR')}
                 </div>
               ) : prs.length === 0 ? (
                 <div className="muted small" data-testid="graph-summary-prs-none">
-                  没有关联 PR
+                  {t('没有关联 PR')}
                 </div>
               ) : (
                 prs.map((p) => <SummaryPrLine key={p.key} p={p} dark={dark} onOpen={onOpen} />)
@@ -610,14 +628,14 @@ function Summary({
       <div className="row gpop-actions">
         {n.item && (
           <button className="primary" data-testid="graph-summary-open" {...{ [OPENS_ITEM]: '' }} onClick={() => onOpen(n.key)}>
-            打开详情
+            {t('打开详情')}
           </button>
         )}
         <button data-testid="graph-summary-web" onClick={() => void api().openExternal(n.url)}>
-          在 GitHub 打开
+          {t('在 GitHub 打开')}
         </button>
       </div>
-      {n.item && <div className="small muted">双击节点也可直接打开详情</div>}
+      {n.item && <div className="small muted">{t('双击节点也可直接打开详情')}</div>}
     </div>
   );
 }
@@ -635,7 +653,7 @@ function SummaryPrLine({ p, dark, onOpen }: { p: SummaryPr; dark: boolean; onOpe
       data-via={p.via}
       data-tone={p.tone}
       data-in-source={inSource ? 'yes' : 'no'}
-      title={inSource ? '打开这个 PR 的详情（合并、冲突、检查、评审状态在详情底部）' : '这个 PR 不在当前来源里，在 GitHub 打开'}
+      title={inSource ? t('打开这个 PR 的详情（合并、冲突、检查、评审状态在详情底部）') : t('这个 PR 不在当前来源里，在 GitHub 打开')}
       {...(inSource ? { [OPENS_ITEM]: '' } : {})}
       onClick={open}
     >
@@ -644,19 +662,19 @@ function SummaryPrLine({ p, dark, onOpen }: { p: SummaryPr; dark: boolean; onOpe
       </span>
       <span className="gpop-pr-main">
         <span className="gpop-pr-title">
-          <span className="gpop-pr-num">#{p.number}</span> {p.item?.title ?? ''}
+          <span className="gpop-pr-num">#{p.number}</span> <Verbatim from="github">{p.item?.title ?? ''}</Verbatim>
         </span>
         <span className="gpop-pr-meta">
           <span className={`kind pr ${p.tone}`} data-testid="graph-summary-pr-state">
             {p.badge}
           </span>
           {(p.item?.labels ?? []).map((l) => (
-            <span key={l.name} className="label" style={labelStyle(l.color, dark)}>
+            <span key={l.name} className="label" style={labelStyle(l.color, dark)} data-verbatim="github">
               {l.name}
             </span>
           ))}
-          {p.via === 'body' && <span className="muted">· PR 正文引用</span>}
-          {!inSource && <span className="muted">· 不在当前来源中</span>}
+          {p.via === 'body' && <span className="muted">· {t('PR 正文引用')}</span>}
+          {!inSource && <span className="muted">· {t('不在当前来源中')}</span>}
         </span>
       </span>
     </button>

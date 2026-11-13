@@ -6,6 +6,7 @@
 import type { Item, LoopBlocked, ProjectMeta, SourceSnapshot } from '../shared/types';
 import { readLoopBlocked } from './loopBlocked';
 import { GitHubClient, GitHubError } from './github';
+import { t } from '../shared/i18n';
 import { contentToItem, readMembership, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
 import { ITEM_REFRESH_QUERY } from './queries';
 
@@ -32,7 +33,7 @@ export async function fetchItem(client: GitHubClient, repo: string, number: numb
     { owner, name, number },
   );
   const c = data.repository?.issueOrPullRequest;
-  if (!c) throw new GitHubError('graphql', `找不到 ${repo}#${number}`);
+  if (!c) throw new GitHubError('graphql', t('找不到 {item}', { item: `${repo}#${number}` }));
   // GitHub#349: the same relation fields as a full read, read to the last page the same way —
   // a re-read that cannot finish them fails as a whole (the item keeps what the cache holds)
   const content = await withRelations(client, c);

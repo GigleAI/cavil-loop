@@ -5,6 +5,7 @@ import { Icon } from './Icons';
 import { closeFind, findView, setFindQuery, stepFind, subscribeFind } from './findInPage';
 import { useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
+import { t } from '../shared/i18n';
 
 /** at the top of the page area, just under the window's top row (GitHub#467: the board has no header of its own) */
 function topOf(): number {
@@ -32,7 +33,7 @@ export function FindBar() {
   }, [v.open, v.focusSeq]);
   if (!v.open) return null;
   const none = v.query !== '' && v.total === 0 && !v.pending;
-  const count = v.query === '' ? '' : v.total > 0 ? `${v.pos} / ${v.total}` : v.pending ? '…' : '没有找到';
+  const count = v.query === '' ? '' : v.total > 0 ? `${v.pos} / ${v.total}` : v.pending ? '…' : t('没有找到');
   return (
     <div className="find-bar" data-testid="find-bar" data-find-skip="" role="search" style={{ top }}>
       <div className={`find-box${none ? ' none' : ''}`}>
@@ -41,8 +42,8 @@ export function FindBar() {
           ref={input}
           data-testid="find-input"
           data-keys="find"
-          aria-label="在页面上查找"
-          placeholder="在页面上查找"
+          aria-label={t('在页面上查找')}
+          placeholder={t('在页面上查找')}
           maxLength={1000}
           value={v.query}
           spellCheck={false}
@@ -53,13 +54,13 @@ export function FindBar() {
         </span>
       </div>
       <span className="find-sep" />
-      <button className="find-btn up" data-testid="find-prev" title={`上一处（⇧↩ / ${keyText('findPrev')}）`} aria-label="上一处" disabled={v.total === 0} onClick={() => stepFind(-1)}>
+      <button className="find-btn up" data-testid="find-prev" title={t('上一处（⇧↩ / {key}）', { key: keyText('findPrev') })} aria-label={t('上一处')} disabled={v.total === 0} onClick={() => stepFind(-1)}>
         <Icon name="chevron" />
       </button>
-      <button className="find-btn" data-testid="find-next" title={`下一处（↩ / ${keyText('findNext')}）`} aria-label="下一处" disabled={v.total === 0} onClick={() => stepFind(1)}>
+      <button className="find-btn" data-testid="find-next" title={t('下一处（↩ / {key}）', { key: keyText('findNext') })} aria-label={t('下一处')} disabled={v.total === 0} onClick={() => stepFind(1)}>
         <Icon name="chevron" />
       </button>
-      <button className="find-btn" data-testid="find-close" title="关闭（Esc）" aria-label="关闭查找" onClick={() => closeFind()}>
+      <button className="find-btn" data-testid="find-close" title={t('关闭（Esc）')} aria-label={t('关闭查找')} onClick={() => closeFind()}>
         <Icon name="x" />
       </button>
     </div>

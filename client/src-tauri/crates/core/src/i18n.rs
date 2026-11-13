@@ -30,9 +30,13 @@ impl Lang {
 }
 
 /// The English tables, by area — the same files, in the same order, as the window's EN_TABLES.
-pub const TABLES: [(&str, &str); 3] = [
+pub const TABLES: [(&str, &str); 7] = [
     ("shell", include_str!("../../../../src/i18n/en/shell.json")),
     ("board", include_str!("../../../../src/i18n/en/board.json")),
+    ("detail", include_str!("../../../../src/i18n/en/detail.json")),
+    ("dialogs", include_str!("../../../../src/i18n/en/dialogs.json")),
+    ("notice", include_str!("../../../../src/i18n/en/notice.json")),
+    ("actions", include_str!("../../../../src/i18n/en/actions.json")),
     ("daemon", include_str!("../../../../src/i18n/en/daemon.json")),
 ];
 

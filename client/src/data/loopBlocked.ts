@@ -15,6 +15,7 @@ import { parseStateReason } from '../shared/stateTone';
 import { itemKey } from '../shared/sources';
 import type { Item, RelatedIssue } from '../shared/types';
 import { GitHubClient, GitHubError } from './github';
+import { t } from '../shared/i18n';
 import { LOOP_BLOCKED_BATCH_QUERY, LOOP_BLOCKED_MORE_QUERY, LOOP_END_QUERY } from './queries';
 import { fetchNodesBatch } from './relations';
 import { countingMarks, parseMark, type MarkComment, type MarkEnd } from '../shared/blocked';
@@ -58,14 +59,15 @@ interface GqlLoopNode {
 }
 
 const whole = <T,>(p: GqlPage<T> | null | undefined, what: string): GqlPage<T> => {
-  if (!p || !Array.isArray(p.nodes) || !p.pageInfo) throw new GitHubError('graphql', `${what} 没有读全`);
-  if (p.pageInfo.hasPreviousPage && !p.pageInfo.startCursor) throw new GitHubError('graphql', `${what} 分页缺少游标`);
+  if (!p || !Array.isArray(p.nodes) || !p.pageInfo) throw new GitHubError('graphql', t('{item} 的前置登记没有读全', { item: what }));
+  if (p.pageInfo.hasPreviousPage && !p.pageInfo.startCursor) throw new GitHubError('graphql', t('{item} 的前置登记分页缺少游标', { item: what }));
   return p;
 };
 
 /** One issue's registration, from the first (newest) pages the batch brought; older pages read as needed. */
 async function readOne(client: GitHubClient, it: Item, node: GqlLoopNode, label: string): Promise<MarkEnd[]> {
-  const what = `${it.repo}#${it.number} 的前置登记`;
+  // the item, as the messages below name it
+  const what = `${it.repo}#${it.number}`;
   // 1. when the waiting label was last removed: newest page first, walking back until found
   let events = whole(node.timelineItems, what);
   let since: string | null = null;
@@ -73,12 +75,12 @@ async function readOne(client: GitHubClient, it: Item, node: GqlLoopNode, label:
     for (let i = events.nodes.length - 1; i >= 0 && since === null; i--) {
       const e = events.nodes[i];
       if (e?.__typename === 'UnlabeledEvent' && e.label?.name === label) {
-        if (!e.createdAt) throw new GitHubError('graphql', `${what}：摘标签记录缺少时间`);
+        if (!e.createdAt) throw new GitHubError('graphql', t('{item} 的前置登记：摘标签记录缺少时间', { item: what }));
         since = e.createdAt;
       }
     }
     if (since !== null || !events.pageInfo.hasPreviousPage) break;
-    if (page >= MAX_PAGES) throw new GitHubError('http', `${what}：标签记录分页超过 ${MAX_PAGES} 页，已停止`);
+    if (page >= MAX_PAGES) throw new GitHubError('http', t('{item} 的前置登记：标签记录分页超过 {n} 页，已停止', { item: what, n: MAX_PAGES }));
     const more = await client.graphql<{ node: GqlLoopNode | null }>(LOOP_BLOCKED_MORE_QUERY, { id: it.nodeId, comments: false, commentsBefore: null, events: true, eventsBefore: events.pageInfo.startCursor });
     events = whole(more.node?.timelineItems, what);
   }
@@ -88,12 +90,12 @@ async function readOne(client: GitHubClient, it: Item, node: GqlLoopNode, label:
   const all: MarkComment[] = [];
   for (let n = 0; ; n++) {
     for (const c of page.nodes) {
-      if (!c) throw new GitHubError('graphql', `${what}：有评论没有读到`);
+      if (!c) throw new GitHubError('graphql', t('{item} 的前置登记：有评论没有读到', { item: what }));
       all.push({ id: c.databaseId, body: c.body ?? '', createdAt: c.createdAt ?? '', authorAssociation: c.authorAssociation ?? '' });
     }
     const oldest = page.nodes[0]?.createdAt ?? '';
     if (!page.pageInfo.hasPreviousPage || (from !== '' && oldest !== '' && oldest <= from)) break;
-    if (n >= MAX_PAGES) throw new GitHubError('http', `${what}：评论分页超过 ${MAX_PAGES} 页，已停止`);
+    if (n >= MAX_PAGES) throw new GitHubError('http', t('{item} 的前置登记：评论分页超过 {n} 页，已停止', { item: what, n: MAX_PAGES }));
     const more = await client.graphql<{ node: GqlLoopNode | null }>(LOOP_BLOCKED_MORE_QUERY, { id: it.nodeId, comments: true, commentsBefore: page.pageInfo.startCursor, events: false, eventsBefore: null });
     page = whole(more.node?.comments, what);
   }
@@ -165,7 +167,7 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
   if (!label) return;
   const wanted = items.filter((it) => loopCandidate(it, label));
   const missingId = wanted.find((it) => !it.nodeId);
-  if (missingId) throw new GitHubError('http', `${missingId.repo}#${missingId.number} 缺少读前置登记要用的 id`);
+  if (missingId) throw new GitHubError('http', t('{item} 缺少读前置登记要用的 id', { item: `${missingId.repo}#${missingId.number}` }));
   const nodes = wanted.length ? await fetchNodesBatch<GqlLoopNode>(client, LOOP_BLOCKED_BATCH_QUERY, wanted.map((it) => it.nodeId)) : [];
   const known = new Map(items.map((it) => [it.key, it]));
   const ends = new Map<string, RelatedIssue | null>();
@@ -173,7 +175,7 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
   for (let i = 0; i < wanted.length; i++) {
     const it = wanted[i];
     const node = nodes[i];
-    if (!node || node.__typename !== 'Issue') throw new GitHubError('graphql', `${it.repo}#${it.number} 的前置登记没有读到`);
+    if (!node || node.__typename !== 'Issue') throw new GitHubError('graphql', t('{item} 的前置登记没有读到', { item: `${it.repo}#${it.number}` }));
     const marks = await readOne(client, it, node, label);
     const out: RelatedIssue[] = [];
     for (const m of marks) {
