@@ -8534,3 +8534,83 @@ test('GitHub#496: label pickers (detail, table cell, new issue) list the checked
   await shot(page, '496-02-new-issue-picker');
   await app.close();
 });
+
+// ---- GitHub#513: pending/later is pinned right after pending/human, in all three pickers, and follows Settings ----
+
+test('GitHub#513: label pickers (detail, table cell, new issue) pin the parked label right after pending/human; renamed in Settings it follows, emptied it is not pinned', async () => {
+  const N = 140;
+  const C = (name: string, color: string) => ({ name, color });
+  // the repository's labels, in GitHub's order: the parked label was created last, so without the pin it is listed last
+  const repoLabels = [C('doing/agent', 'c2e0c6'), C('Done', '555555'), C('autopilot', 'e4572e'), C('pending/PR', 'ededed'), C('pending/human', 'fbca04'), C('parked', 'cccccc'), C('pending/agent', '0e8a16'), C('enhancement', 'a2eeef'), C('pending/later', 'bfdadc')];
+  env.fake.state.w.repoLabels.set('gigleai/cavil-loop', repoLabels);
+  // the item carries nothing, so the pinned labels lead in every picker
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === N) r.labels = [];
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === N) node.content.labels.nodes = [];
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const names = (picker: Locator) => picker.getByTestId('picker-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-name')));
+  const detail = page.getByTestId('detail');
+  const row = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${N}"]`).first();
+
+  /** open the label picker in each of the three places and return what each lists, in order */
+  const allThree = async () => {
+    // 1. detail (the floating panel over the board)
+    await card(page, N).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${N}`);
+    await expect(detail.getByTestId('label-add')).toBeEnabled({ timeout: 15_000 });
+    await detail.getByTestId('label-add').click();
+    const picker = detail.getByTestId('label-picker');
+    await expect(picker).toBeVisible();
+    const inDetail = await names(picker);
+    await page.keyboard.press('Escape');
+    await expect(picker).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(detail).toHaveCount(0);
+    // 2. the table's label cell
+    await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.locator('[data-testid="cell"][data-col="labels"]').click();
+    const cell = row.getByTestId('cell-label-picker');
+    await expect(cell).toBeVisible();
+    const inTable = await names(cell);
+    await page.keyboard.press('Escape');
+    await expect(cell).toHaveCount(0);
+    await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+    // 3. new issue
+    await page.getByTestId('write-entry').click();
+    await openMoreFields(page);
+    await page.getByTestId('new-issue-label-add').click();
+    const np = page.getByTestId('new-issue-label-picker');
+    await expect(np).toBeVisible();
+    const inNew = await names(np);
+    await page.keyboard.press('Escape');
+    await expect(np).toHaveCount(0);
+    await page.getByTestId('confirm-cancel').click();
+    await expect(page.getByTestId('new-issue')).toHaveCount(0);
+    return { detail: inDetail, table: inTable, newIssue: inNew };
+  };
+  const same = (list: string[]) => ({ detail: list, table: list, newIssue: list });
+  const setLater = async (value: string) => {
+    await page.getByTestId('open-settings').click();
+    await page.getByTestId('hand-back-later').fill(value);
+    await page.getByTestId('hand-back-later').blur();
+    await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.later)).toBe(value);
+    await page.getByTestId('back').click();
+  };
+
+  // ---- default: pending/later right after pending/human ----
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'pending/later', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'parked', 'enhancement']));
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('hand-back-later')).toHaveValue('pending/later');
+  await page.getByTestId('back').click();
+
+  // ---- renamed: the new name takes the place, pending/later goes back where the repository has it ----
+  await setLater('parked');
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'parked', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'enhancement', 'pending/later']));
+
+  // ---- empty: nothing pinned in its place (the order before GitHub#513) ----
+  await setLater('');
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'parked', 'enhancement', 'pending/later']));
+  expect(writes()).toEqual([]);
+  await app.close();
+});

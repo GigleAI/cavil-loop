@@ -544,9 +544,11 @@ export interface HandBackLabels {
   running: string;
   /** GitHub#429: the daemon's "waiting for a prerequisite" label — the graph reads the loop's registration on open issues carrying it; '' = not read */
   blocked: string;
+  /** GitHub#513: the daemon's parked label (`LABEL_PENDING_LATER`) — label pickers list it right after `human`; '' = not pinned */
+  later: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked', later: 'pending/later' };
 
 /** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows */
 export type TallyFlow = 'running' | 'agent' | 'human';
