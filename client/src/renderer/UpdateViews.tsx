@@ -6,6 +6,7 @@ import type { UpdateNotes, UpdateStatus } from '../shared/types';
 import { api } from './api';
 import { Icon } from './Icons';
 import { useLayer, useShortcuts } from './keyboard';
+import { t } from '../shared/i18n';
 
 const MB = 1_000_000;
 const mb = (n: number) => (n / MB).toFixed(1);
@@ -148,7 +149,7 @@ export function UpdateSection({ update }: { update: UpdateStatus | null }) {
   const busy = update.phase !== 'idle' || !!update.problem;
   return (
     <section id="set-update" data-testid="update-settings">
-      <h3>更新</h3>
+      <h3>{t('更新')}</h3>
       <p className="small">
         当前版本 <b data-testid="update-current">{update.current}</b>
       </p>

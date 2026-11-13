@@ -18,6 +18,7 @@ function keychain(dir: string, bin: string) {
     set: (value: string) => b.call('test.cred.set', { value }),
     clear: () => b.call('test.cred.clear'),
     close: () => b.close(),
+    backend: b,
   };
 }
 
@@ -77,6 +78,62 @@ describe('MacKeychainStore', () => {
     chmodSync(bin, 0o755);
     const s = keychain(dir, bin);
     await expect(s.get()).rejects.toThrow(/钥匙串/);
+    await s.close();
+  });
+
+  // GitHub#471 (PR #480 review round 3): the store's failure is a message — what the client tried, in
+  // the window's language, with only `security`'s own words in the hole the window marks as outside text
+  it('a read / write / delete failure: the client\'s words follow the language, the marked part is exactly what security said', async () => {
+    const dir = tempDir();
+    const bin = join(dir, 'security');
+    writeFileSync(bin, '#!/usr/bin/env bash\n[ "$1" = "-i" ] && cat >/dev/null\necho "security: access denied" >&2\nexit 36\n');
+    chmodSync(bin, 0o755);
+    const s = keychain(dir, bin);
+    const failure = async (op: () => Promise<unknown>) => {
+      try {
+        await op();
+      } catch (e) {
+        return JSON.parse((e as Error).message) as { text: string; said: { template: string; parts: { name: string; text: string; from: string }[] } };
+      }
+      throw new Error('expected a failure');
+    };
+    const zh = await failure(() => s.get());
+    expect(zh.text).toBe('读取钥匙串失败：security: access denied');
+    await s.backend.call('setLanguage', { lang: 'en' });
+    const cases: [() => Promise<unknown>, string][] = [
+      [() => s.get(), 'Reading the keychain failed: {e}'],
+      [() => s.set('gho_' + 'a'.repeat(36)), 'Writing the keychain failed: {e}'],
+      [() => s.clear(), 'Deleting the keychain entry failed: {e}'],
+    ];
+    for (const [op, template] of cases) {
+      const f = await failure(op);
+      expect(f.said.template).toBe(template);
+      expect(f.said.parts).toEqual([{ name: 'e', text: 'security: access denied', from: 'system' }]);
+      expect(f.text).toBe(template.replace('{e}', 'security: access denied'));
+    }
+    // the client's own refusal has no outside part at all
+    const shape = await failure(() => s.set('not a token'));
+    expect(shape.said.parts).toEqual([]);
+    expect(shape.text).toBe('The credential has an unexpected format; not saved');
+    await s.close();
+  });
+
+  it('start-up cannot read the keychain: the reason is English around security\'s words, and only those are marked', async () => {
+    const dir = tempDir();
+    const bin = join(dir, 'security');
+    writeFileSync(bin, '#!/usr/bin/env bash\necho "security: access denied" >&2\nexit 36\n');
+    chmodSync(bin, 0o755);
+    const s = keychain(dir, bin);
+    await s.backend.call('init');
+    const zh = await s.backend.call<any>('start');
+    // in Chinese, word for word as before the language work
+    expect(zh.reason).toBe('读取本机保存的登录凭据失败（读取钥匙串失败：security: access denied），请重新登录');
+    await s.backend.call('setLanguage', { lang: 'en' });
+    const en = await s.backend.call<any>('start');
+    expect(en.phase).toBe('login');
+    expect(en.reason).toBe('The sign-in credential saved on this computer could not be read (Reading the keychain failed: security: access denied); sign in again');
+    expect(en.reasonSaid.parts).toEqual([{ name: 'e_e', text: 'security: access denied', from: 'system' }]);
+    expect(en.reasonSaid.template).toBe('The sign-in credential saved on this computer could not be read (Reading the keychain failed: {e_e}); sign in again');
     await s.close();
   });
 });

@@ -75,6 +75,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     resetShortcutKeys: async () => c.resetShortcutKeys(),
     setClearAllOnActivate: async (on) => c.setClearAllOnActivate(on),
     setNotifyScope: async (scope) => c.setNotifyScope(scope),
+    setUiLanguage: async (setting) => c.setUiLanguage(setting),
     reorderRepos: async (shown, next) => c.reorderRepos(shown, next),
     resetRepoOrder: async () => c.resetRepoOrder(),
     setNewIssueHandoff: async (h) => c.setNewIssueHandoff(h),

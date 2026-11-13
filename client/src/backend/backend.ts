@@ -29,7 +29,8 @@ export interface FreshOut {
   result: FreshResult;
   /** absent: leave the shown problem; null: clear it */
   problem?: string | null;
-  signedOut?: { session: number; reason: string };
+  /** `reasonSaid`: the reason with its outside parts marked (GitHub#471) */
+  signedOut?: { session: number; reason: string; reasonSaid?: unknown };
   /** GitHub#270: with 'unreachable' only — why GitHub could not be used for the refresh */
   reason?: string;
 }

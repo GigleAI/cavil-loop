@@ -1,4 +1,5 @@
 import type { SourceConfig } from './types';
+import { t } from './i18n';
 
 const NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/;
 
@@ -46,7 +47,7 @@ export function parseSource(input: string): SourceConfig | null {
 
 export function sourceLabel(s: SourceConfig, projectTitle?: string): string {
   if (s.kind === 'repo') return `${s.owner}/${s.name}`;
-  return projectTitle ? `${projectTitle}（${s.owner} #${s.number}）` : `${s.owner} Project #${s.number}`;
+  return projectTitle ? t('{title}（{owner} #{number}）', { title: projectTitle, owner: s.owner, number: s.number }) : `${s.owner} Project #${s.number}`;
 }
 
 export function itemKey(repo: string, number: number): string {

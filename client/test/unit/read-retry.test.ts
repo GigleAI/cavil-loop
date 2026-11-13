@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
 import { RATE_LIMIT_MESSAGE } from '../../src/data/github';
-import { clockAt, hoverLines, retryText, RETRY_BY_HAND } from '../../src/renderer/syncTimes';
+import { clockAt, hoverLines, retryText, retryByHand } from '../../src/renderer/syncTimes';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -220,7 +220,7 @@ describe('a source that keeps failing waits longer each time', () => {
     expect(retryText(st, now)).toBe(line);
     expect(hoverLines(c.getState().sync, label, now)).toContain(`看板：${line}`);
     expect(retryText(status(c, REPO_KEY), now)).toBeNull();
-    expect(RETRY_BY_HAND).toContain('重新同步');
+    expect(retryByHand()).toContain('重新同步');
 
     // GitHub is fine again: the board is read at its next turn, then it is back to every round
     fake.state.failProjectPage.clear();

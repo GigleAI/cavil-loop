@@ -497,7 +497,7 @@ impl Remote {
     }
 
     fn save(&self, list: &[Value]) -> Result<(), String> {
-        self.store.set_setting(REMOTES, &Value::Array(list.to_vec()))
+        self.store.set_setting(REMOTES, &Value::Array(list.to_vec())).map_err(String::from)
     }
 
     fn find(&self, id: &str) -> Option<Value> {

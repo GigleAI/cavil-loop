@@ -32,6 +32,7 @@ import { hasLabel, isPending } from './pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
 import type { Layout, ShowClosedKey } from '../shared/types';
 import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies } from '../shared/tallies';
+import { tKey } from '../shared/i18n';
 
 export { UNLABELED_QUERY };
 
@@ -54,6 +55,17 @@ export interface TallyEntry {
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
+}
+
+/**
+ * GitHub#471: the name a number shows. A default row still carrying its default name is the client's
+ * own word and follows the interface language; any other name is what the user typed in Settings and
+ * is shown as written (`own` = true).
+ */
+export function tallyName(e: Pick<TallyEntry, 'kind' | 'name'>): { text: string; own: boolean } {
+  const d = DEFAULT_TALLIES.find((x) => x.id === e.kind);
+  if (!d || d.name !== e.name) return { text: e.name, own: true };
+  return { text: tKey(d.name), own: false };
 }
 
 /** the default rows' names (kept for callers that name a default number) */

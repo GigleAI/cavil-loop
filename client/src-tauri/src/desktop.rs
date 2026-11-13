@@ -347,7 +347,7 @@ pub fn desktop_set_login_item<R: Runtime>(app: AppHandle<R>, on: bool) -> Result
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err("这个系统还不支持开机自动启动".into())
+        Err(cavil_core::i18n::tr("这个系统还不支持开机自动启动", &[]))
     }
 }
 
