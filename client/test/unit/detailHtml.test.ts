@@ -182,7 +182,7 @@ describe('detail: folded entries (GitHub#155)', () => {
   it('a folded entry still carries its whole content (the browser only hides it) and a one-line preview of its text', () => {
     const doc = timelineDocument(withTimeline(timeline), false);
     expect(doc).toContain('<p>the opening post</p>');
-    expect(doc).toContain('<span class="excerpt"> · the opening post</span>');
+    expect(doc).toContain('<span class="excerpt" data-find-skip> · the opening post</span>');
   });
 
   it('the preview is plain text, escaped again, and cut at 80 characters', () => {
@@ -190,7 +190,7 @@ describe('detail: folded entries (GitHub#155)', () => {
     expect(plainExcerpt('<p>' + '字'.repeat(100) + '</p>')).toBe('字'.repeat(80) + '…');
     expect(plainExcerpt('&#99999999;')).toBe('');
     const doc = timelineDocument(withTimeline([entry('C', 'comment', '2026-11-03T00:00:00Z', '<p>&lt;img src=x onerror=alert(1)&gt;</p>')]), false);
-    expect(doc).toContain('<span class="excerpt"> · &lt;img src=x onerror=alert(1)&gt;</span>');
+    expect(doc).toContain('<span class="excerpt" data-find-skip> · &lt;img src=x onerror=alert(1)&gt;</span>');
     expect(doc).not.toContain('<img src=x');
   });
 
