@@ -140,10 +140,11 @@ export function App() {
   const [held, setHeld] = useState<({ id: string } & CloseOrigin)[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
-  const show = (key: string, intent: OpenIntent | null = null) => {
+  /** `keepFocus` (GitHub#467): the keys are being typed into the window's top row, which does not go behind — leave its focus */
+  const show = (key: string, intent: OpenIntent | null = null, keepFocus = false) => {
     if (key === frontRef.current && !intent) return;
     // the keyboard leaves whatever the tab going behind had focused
-    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (!keepFocus) (document.activeElement as HTMLElement | null)?.blur?.();
     // GitHub#442: the floating panel goes behind with the home tab; coming back is a new opening of it, which
     // must not do its notice's 重试 / 去回复 a second time
     if (key !== HOME) setFloat((f) => (f?.intent ? { ...f, intent: null } : f));
@@ -471,7 +472,7 @@ export function App() {
                 onKeysHelp={() => setKeysHelp(true)}
                 tallySaved={tallySaved}
                 tools={tools}
-                onFront={() => show(HOME)}
+                onFront={(keepFocus) => show(HOME, null, keepFocus)}
               />
             )}
           </div>

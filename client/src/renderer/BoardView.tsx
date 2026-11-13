@@ -618,8 +618,11 @@ export function BoardView({
    * issue, settings, the account) — they stay there while a detail tab is in front. null: not drawn yet.
    */
   tools?: HTMLElement | null;
-  /** GitHub#467: bring the board to the front (a tool used while a detail tab is in front) */
-  onFront?: () => void;
+  /**
+   * GitHub#467: bring the board to the front (a tool used while a detail tab is in front). `keepFocus`:
+   * the search box is being typed in — it stays focused (and open) for the next key.
+   */
+  onFront?: (keepFocus?: boolean) => void;
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -867,7 +870,7 @@ export function BoardView({
                 }}
                 onChange={(e) => {
                   // GitHub#467: typed in while a detail tab is in front: the board comes to the front to show the result
-                  onFront?.();
+                  onFront?.(true);
                   setQuery(e.target.value);
                 }}
               />

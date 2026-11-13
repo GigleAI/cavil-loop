@@ -137,12 +137,32 @@ test('a detail tab in front keeps the tools: typing a search or ➕ brings the b
   for (const id of ['search', 'refresh', 'write-entry', 'open-settings']) await expect(topbar(page).getByTestId(id)).toBeVisible();
   await shot(page, '467-03-detail');
 
-  // typing in the search box: the board comes forward with the result
-  await page.getByTestId('search').click();
+  // typing in the search box: the board comes forward with the result, and every key lands in the box
+  // (PR #484 code review round 1: the switch to the board used to take the focus after the first key)
+  const search = page.getByTestId('search');
+  const box = page.getByTestId('search-box');
+  const words = findCopies(env.fake.state, REPO, A)!.rest[0].title as string;
+  await search.click();
   await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'no');
-  await page.keyboard.type(`${A}`);
-  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  await page.keyboard.press('ControlOrMeta+A');
+  let typed = '';
+  for (const ch of words) {
+    await page.keyboard.type(ch);
+    typed += ch;
+    await expect(search).toHaveValue(typed);
+    await expect(search).toBeFocused();
+    await expect(box).toHaveAttribute('data-open', 'yes');
+    await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  }
   await expect(row(page, A)).toBeVisible();
+  await expect(row(page, B)).toHaveCount(0);
+  // the shortcut way back (switching tabs) still leaves the keys to the page, as before
+  await page.locator(`[data-testid="tab"][data-key="${K(A)}"]`).click();
+  await expect(search).not.toBeFocused();
+  await expect(box).toHaveAttribute('data-open', 'no');
+  await expect(search).toHaveValue(words);
+  await page.getByTestId('tab-home').click();
+  await page.getByTestId('search').fill('');
 
   // ➕ from a detail tab: the board and its dialog
   await page.locator(`[data-testid="tab"][data-key="${K(A)}"]`).click();
