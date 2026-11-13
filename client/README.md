@@ -122,7 +122,8 @@ find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cavil-*' | wc -l
 
 <!-- tmp-cleanup-ops:begin -->
 ```bash
-T="${TMPDIR:-/tmp}"; T="${T%/}"; L="$HOME/cavil-old-tmp"
+T="$(cd "${TMPDIR:-/tmp}" && pwd -P)" || T=""; L="$HOME/cavil-old-tmp"
+[ -n "$T" ] || echo '读不到临时目录的真实路径，停下，不要往下跑'
 # 1. 确认本机没有客户端测试在跑：应该什么都不输出；有输出就等它们跑完再来
 ps -eo pid=,args= | grep -E 'node_modules/(\.bin/)?(vitest|playwright)|[c]avil-harness|[w]ith-tmp\.mjs|[t]est/mutation/run\.' | cut -c1-160
 # 2. 只列不删：2 小时以前的旧目录，去掉此刻有进程打开着的；最后两行是个数和前几个名字
@@ -138,7 +139,7 @@ rm -f "$L.open" "$L.all" "$L.list"
 ```
 <!-- tmp-cleanup-ops:end -->
 
-第 2 步输出「读不到哪些文件开着」就停下，不要跑第 3 步。删错了没法恢复，但这些都是测试的临时目录，删掉只会让一个还在跑的旧版测试失败，重跑即可。
+临时目录用的是真实路径（`pwd -P`，例如 Mac 上的 `/tmp` 实际是 `/private/tmp`），因为 `lsof` 报的也是真实路径，两边不一致就认不出哪些目录开着。开头输出「读不到临时目录的真实路径」或第 2 步输出「读不到哪些文件开着」就停下，不要跑第 3 步。删错了没法恢复，但这些都是测试的临时目录，删掉只会让一个还在跑的旧版测试失败，重跑即可。
 
 ## 规则（改代码前读）
 

@@ -87,8 +87,11 @@ const runDirs = (sys: string) => readdirSync(sys).filter((n) => n.startsWith('ca
 /** A run whose folder nobody holds any more (launcher and command killed): a leftover for the next run. */
 async function leftover(sys: string, d: string): Promise<string> {
   const mark = join(d, `left-${Math.random()}`);
-  const r = launch(sys, `echo "$TMPDIR" > ${JSON.stringify(mark)}; mkdir "$TMPDIR/cavil-client-test-x"; touch "$TMPDIR/cavil-client-test-x/f"; exec sleep 60`);
-  await until('the run to start', () => existsSync(mark) && readFileSync(mark, 'utf8').endsWith('\n'));
+  // the mark is published (renamed into place) only after the folder's content exists, so the kill
+  // below can never come before it (PR #493 code review round 1)
+  const r = launch(sys, `mkdir "$TMPDIR/cavil-client-test-x" && touch "$TMPDIR/cavil-client-test-x/f" && echo "$TMPDIR" > ${JSON.stringify(`${mark}.part`)} && mv ${JSON.stringify(`${mark}.part`)} ${JSON.stringify(mark)}; exec sleep 60`);
+  await until('the run to start', () => existsSync(mark));
+  expect(existsSync(join(readFileSync(mark, 'utf8').trim(), 'cavil-client-test-x', 'f'))).toBe(true);
   process.kill(-r.child.pid!, 'SIGKILL');
   await r.done;
   const dir = readFileSync(mark, 'utf8').trim();
@@ -148,7 +151,7 @@ describe('a test run in its own temp folder (GitHub#469)', () => {
     const mark = join(d, 'm');
     const stop = join(d, 'stop');
     // the command starts a writer the way the negative-control runner starts tests (detached: own session)
-    const writer = `require('child_process').spawn('sh', ['-c', 'echo $$ > "$0.pid"; while [ ! -e "$1" ]; do date +%s%N > "$TMPDIR/w"; sleep 0.05; done', process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' }).unref()`;
+    const writer = `require('child_process').spawn('sh', ['-c', 'date +%s%N > "$TMPDIR/w"; echo $$ > "$0.pid"; while [ ! -e "$1" ]; do date +%s%N > "$TMPDIR/w"; sleep 0.05; done', process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' }).unref()`;
     const r = launch(sys, `${sq(process.execPath)} -e ${sq(writer)} ${JSON.stringify(mark)} ${JSON.stringify(stop)}; echo "$$ $TMPDIR" > ${JSON.stringify(mark)}; exec sleep 60`);
     await until('the writer', () => existsSync(`${mark}.pid`) && existsSync(mark) && readFileSync(mark, 'utf8').endsWith('\n'));
     const [cmdPid, dir] = readFileSync(mark, 'utf8').trim().split(' ');
@@ -293,8 +296,11 @@ describe('a test run in its own temp folder (GitHub#469)', () => {
     expect(leftovers(sys)).toEqual(found);
   });
 
-  it("the README's clean-up of older versions' folders, run as written in a bare environment: removes only old folders nobody has open", async () => {
+  for (const via of ['direct', 'symlink'] as const) it(`the README's clean-up of older versions' folders, run as written in a bare environment (temp dir ${via === 'direct' ? 'as is' : 'reached through a symlink, as /tmp → /private/tmp on a Mac'}): removes only old folders nobody has open`, async () => {
     const { d, sys } = world();
+    // what TMPDIR says; lsof reports the physical path, so the steps must compare physical paths (PR #493 code review round 1)
+    const named = via === 'direct' ? sys : join(d, 'alias');
+    if (via === 'symlink') symlinkSync(sys, named);
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     const block = /<!-- tmp-cleanup-ops:begin -->\n```bash\n([\s\S]*?)\n```\n<!-- tmp-cleanup-ops:end -->/.exec(readme);
     expect(block, 'the clean-up block in client/README.md').not.toBeNull();
@@ -312,13 +318,13 @@ describe('a test run in its own temp folder (GitHub#469)', () => {
     mk('other-old', 3);
     writeFileSync(join(sys, MASTER), '');
     // a process with a file open in one of the old folders (its working directory)
-    const holder = spawn('sleep', ['60'], { cwd: join(sys, 'cavil-e2e-daemon-open', 'inner'), stdio: 'ignore' });
+    const holder = spawn('sleep', ['60'], { cwd: join(named, 'cavil-e2e-daemon-open', 'inner'), stdio: 'ignore' });
     started.push(holder);
     await until('the holder', () => holder.pid !== undefined);
     await sleep(100);
     const home = join(d, 'home');
     mkdirSync(home);
-    const r = spawnSync('bash', ['-c', block![1]], { env: { HOME: home, PATH: process.env.PATH!, LANG: process.env.LANG ?? 'C.UTF-8', TMPDIR: sys }, encoding: 'utf8', maxBuffer: 64 << 20 });
+    const r = spawnSync('bash', ['-c', block![1]], { env: { HOME: home, PATH: process.env.PATH!, LANG: process.env.LANG ?? 'C.UTF-8', TMPDIR: named }, encoding: 'utf8', maxBuffer: 64 << 20 });
     holder.kill('SIGKILL');
     expect(r.status, `${r.error ?? r.signal ?? ''} ${r.stdout}${r.stderr}`).toBe(0);
     expect(r.stdout).not.toContain('停下');
@@ -330,6 +336,18 @@ describe('a test run in its own temp folder (GitHub#469)', () => {
     expect(existsSync(join(sys, 'cavil-e2e-daemon-open', 'inner', 'f'))).toBe(true);
     expect(readdirSync(home)).toEqual([]);
   }, 30_000);
+
+  it("the README's clean-up stops when the temp dir's real path cannot be read: nothing removed", () => {
+    const { d, sys } = world();
+    const block = /<!-- tmp-cleanup-ops:begin -->\n```bash\n([\s\S]*?)\n```\n<!-- tmp-cleanup-ops:end -->/.exec(readFileSync(join(root, 'README.md'), 'utf8'))!;
+    mkdirSync(join(sys, 'cavil-client-test-old'));
+    utimesSync(join(sys, 'cavil-client-test-old'), new Date(Date.now() - 3 * 3600_000), new Date(Date.now() - 3 * 3600_000));
+    const home = join(d, 'home');
+    mkdirSync(home);
+    const r = spawnSync('bash', ['-c', block[1]], { env: { HOME: home, PATH: process.env.PATH!, LANG: process.env.LANG ?? 'C.UTF-8', TMPDIR: join(d, 'missing') }, encoding: 'utf8', maxBuffer: 64 << 20 });
+    expect(r.stdout + r.stderr).toContain('停下');
+    expect(existsSync(join(sys, 'cavil-client-test-old'))).toBe(true);
+  });
 
   it('a command started inside a run starts no second folder', async () => {
     const { d, sys } = world();
