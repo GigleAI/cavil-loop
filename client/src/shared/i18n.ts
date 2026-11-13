@@ -16,6 +16,10 @@
 
 import shell from '../i18n/en/shell.json' with { type: 'json' };
 import board from '../i18n/en/board.json' with { type: 'json' };
+import detail from '../i18n/en/detail.json' with { type: 'json' };
+import dialogs from '../i18n/en/dialogs.json' with { type: 'json' };
+import notice from '../i18n/en/notice.json' with { type: 'json' };
+import actions from '../i18n/en/actions.json' with { type: 'json' };
 import daemon from '../i18n/en/daemon.json' with { type: 'json' };
 
 export type Lang = 'zh' | 'en';
@@ -30,7 +34,7 @@ export const LANG_SETTING = 'uiLanguage';
 export const DEFAULT_LANG_SETTING: LangSetting = 'zh';
 
 /** the English tables by area (file name without .json); the checks read them one by one */
-export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, daemon } as Record<string, Record<string, EnText>>;
+export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, detail, dialogs, notice, actions, daemon } as Record<string, Record<string, EnText>>;
 
 /** the tables as one, as the window and the back end look them up */
 function mergeTables(): Map<string, EnText> {
