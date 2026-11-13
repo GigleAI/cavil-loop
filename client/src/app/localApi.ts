@@ -76,6 +76,10 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     seenTab: async (key, updatedAt) => c.seenTab(String(key), String(updatedAt)),
     checkTab: (key) => c.checkTabs(String(key)),
     closeWindow: () => c.closeWindow(),
+    settled: () => c.settled(),
+    windowFrame: () => c.windowFrame(),
+    startDrag: () => c.startDrag(),
+    toggleZoom: () => c.toggleZoom(),
     // GitHub#314: straight to the back end, which runs every command (the controller has no part in it)
     daemonStatus: () => backend.call('daemonStatus'),
     daemonInstall: () => backend.call('daemonInstall'),

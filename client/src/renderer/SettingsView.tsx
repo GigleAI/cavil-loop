@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_BLOCKED_LABELS } from '../shared/blocked';
 import { DEFAULT_HAND_BACK, type AppState, type BoardData } from '../shared/types';
-import { sourceLabel } from '../shared/sources';
+import { shownOnBoard, sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { UpdateSection } from './UpdateViews';
@@ -155,8 +155,16 @@ export function SettingsView({
         <ul className="sources" data-testid="source-list">
           {state.sources.map((s) => {
             const st = state.sync.sources.find((x) => x.sourceKey === s.key);
+            // GitHub#467: the board leaves a switched-off source out (it stays here, and keeps being read)
+            const shown = state.view.selected === null || state.view.selected.includes(s.key);
             return (
-              <li key={s.key} data-testid="source-row" data-key={s.key} className={st && !st.ok ? 'failed' : undefined}>
+              <li
+                key={s.key}
+                data-testid="source-row"
+                data-key={s.key}
+                data-shown={shown ? 'yes' : 'no'}
+                className={[st && !st.ok ? 'failed' : '', shown ? '' : 'off'].filter(Boolean).join(' ') || undefined}
+              >
                 <span className="src-icon">
                   <Icon name={s.kind === 'project' ? 'project' : 'repo'} />
                 </span>
@@ -164,6 +172,7 @@ export function SettingsView({
                   <b>{sourceLabel(s, titles.get(s.key))}</b>
                   <span className="kind">
                     {s.kind === 'project' ? 'GitHub Project' : '仓库'} · {data.items.filter((it) => it.sources.includes(s.key)).length} 个条目
+                    {!shown && <span data-testid="source-hidden-note"> · 看板上暂不显示</span>}
                   </span>
                 </span>
                 {st && !st.ok && (
@@ -171,6 +180,16 @@ export function SettingsView({
                     读取失败
                   </span>
                 )}
+                <label className="toggle small" title="关掉后看板上暂时不显示这个来源的条目；来源不删，照常同步">
+                  <input
+                    type="checkbox"
+                    data-testid="source-shown"
+                    data-key={s.key}
+                    checked={shown}
+                    onChange={(e) => api().setView({ selected: shownOnBoard(state.sources, state.view.selected, s.key, e.target.checked) })}
+                  />
+                  在看板显示
+                </label>
                 {s.kind === 'repo' && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
                 <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   删除

@@ -17,6 +17,15 @@ import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { Cache } from '../support/cache';
 import type { Item } from '../../src/shared/types';
 
+/** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
+async function showSource(page: Page, selector: string, on: boolean) {
+  await page.getByTestId('open-settings').click();
+  const sw = page.locator(`[data-testid="source-shown"]${selector}`);
+  if (on) await sw.check();
+  else await sw.uncheck();
+  await page.getByTestId('back').click();
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
@@ -246,13 +255,13 @@ test('GitHub#350: boxes, arrows and their colours, the three kinds of "not in th
   await page.getByTestId('search').fill('');
 
   // ---- the repository alone: #313 is in no source — still in #311's box, dashed ----
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'yes');
   await expect(nodeOf(page, K(313)).getByTestId('graph-outside')).toHaveText('不在当前来源中');
   expect(await inside(boxOf(page, K(311)), nodeOf(page, K(313)))).toBe(true);
   await expect(nodeOf(page, K(314))).toHaveAttribute('data-outside', 'no');
   await expect(nodeOf(page, OUTSIDE_PARENT)).toHaveCount(0);
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'no');
 
   // ---- the shortcut list names the graph's keys ----
@@ -735,7 +744,7 @@ test('GitHub#483: the summary of an issue lists its linked PRs — state, draft,
 
   // ---- the repository alone does not know GitHub's links: "unknown", never "none" ----
   await page.getByTestId('graph-canvas').click({ position: await emptySpot(page) });
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
   await page.getByTestId('graph-fit').click();
   await nodeOf(page, K(314)).click();
   await expect(pop).toHaveAttribute('data-key', K(314));
@@ -744,6 +753,6 @@ test('GitHub#483: the summary of an issue lists its linked PRs — state, draft,
   // while the PR in the same source still names its issue
   await nodeOf(page, K(350)).click();
   await expect(line(351)).toHaveAttribute('data-via', 'body');
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await app.close();
 });

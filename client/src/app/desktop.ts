@@ -4,6 +4,7 @@
 // None of this touches the GitHub credential.
 
 import type { UpdateStatus } from '../shared/types';
+import type { WindowFrame } from '../shared/ipc';
 
 export type { UpdateStatus };
 
@@ -58,4 +59,11 @@ export interface Desktop {
   restartToUpdate(): Promise<void>;
   /** GitHub#397: close the window the way its close button does (macOS: it hides, the app keeps running) */
   closeWindow(): Promise<void>;
+  /** GitHub#467: how the window's top row sits (macOS: it is the title bar — room for the window buttons, and the page moves the window) */
+  windowFrame(): Promise<WindowFrame>;
+  /** GitHub#467: a press on an empty part of the top row (macOS): the window follows the pointer */
+  startDrag(): Promise<void>;
+  /** GitHub#467: a double click on an empty part of the top row (macOS): zoom the window, or put it back */
+  toggleZoom(): Promise<void>;
 }
+

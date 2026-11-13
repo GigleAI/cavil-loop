@@ -46,11 +46,12 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 
 ## Sources
 
-- **Two kinds**: a GitHub Project (`github.com/orgs/<org>/projects/<number>` or `github.com/users/<user>/projects/<number>`) and a repository (`owner/repo`). Add as many as you like; the top bar has a checkbox per source, and an unchecked source is hidden for the moment.
+- **Two kinds**: a GitHub Project (`github.com/orgs/<org>/projects/<number>` or `github.com/users/<user>/projects/<number>`) and a repository (`owner/repo`). Add as many as you like. Settings → "数据来源" (sources) lists each one; switching its "在看板显示" (show on board) off hides its items from the board for the moment (the source keeps syncing; its row fades and says "看板上暂不显示" (hidden from the board)).
 - **One item, one entry**: an issue that is in several sources is merged into one by `repo#number`. Iteration and status belong to each Project, so when two Projects disagree the item shows once in each column; the milestone belongs to the repository.
 - **Importing a saved web view**: when you add a Project, the client reads one view saved on its GitHub page (the one in the URL if it ends in `/views/N`, else the first) and copies its layout, grouping, sort, columns and filter. This happens once; later changes on the web page are not followed. Whatever cannot be copied (grouping by a custom field, the roadmap layout, …) is listed at the top of the view.
 - **An organization's Project cannot be read**: usually the organization restricts third-party apps and an owner has to approve. The developer notes explain it step by step in "[读不到组织的 Project 怎么办](../client/README.md#读不到组织的-project-怎么办401)" (when an organization's Project cannot be read).
 - **Syncing**: while the app is open it syncs about once a minute; the top bar shows when it last checked. The refresh button or ⌘R syncs now. A source is either read in full and replaces the local copy, or the previous round's copy stays — a failed read never makes items "disappear".
+- **The window's top row**: one row at the top of the window — logo, open tabs, search box, sync status, refresh, new (➕), settings, account; all of it stays while a detail tab is in front. The search box is small until used (it still shows the current search); click it or press `/` to widen it. On macOS this row is the window's title bar: the traffic lights sit at its left, drag an empty part to move the window, double-click it to zoom.
 
 ## Board
 
@@ -102,7 +103,7 @@ The third view button. Only issues with a relation are drawn (those with a paren
 ![Details floating on the right of the board](client-screens/detail.png)
 
 - **Click** a card or a table row's title and its details float on the right of the board (drag the left edge to widen): body, discussion, labels, assignees, iteration, status, milestone; a PR also has its checks and the merge button. Click outside, press Esc or click "收起 ›" (hide) to close it. The dependency graph differs: a click on a node only shows its summary; a double-click, or "打开详情" (open details) in the summary, opens this panel; a node outside the current sources has only the summary and "open on GitHub", no details.
-- **⌘-click** (or right-click → "在新标签页打开" (open in new tab), or "在标签页打开" (open in tab) at the top right of the panel) opens the item as a tab, details filling the window. The top row of the window is then a tab bar whose "首页" (home) is the board / table / graph; ⌘1 … ⌘9 switch tabs, ⌘W closes the current one. Open tabs come back after a restart.
+- **⌘-click** (or right-click → "在新标签页打开" (open in new tab), or "在标签页打开" (open in tab) at the top right of the panel) opens the item as a tab, details filling the window. The tabs sit in the window's top row (right of the logo), "首页" (home) being the board / table / graph, and scroll sideways when there are more than fit; ⌘1 … ⌘9 switch tabs, ⌘W closes the current one. Open tabs come back after a restart.
 - Unsent text in a reply box stays with its tab / panel when you switch away and back; closing a tab that holds unsent text asks first.
 
 ## Making changes from the client
@@ -179,5 +180,4 @@ Client issues still open when this guide was written (2026-11-13); the issue pag
 - Chinese / English switching: [#466](https://github.com/GigleAI/cavil-loop/issues/466), in four steps — [#471](https://github.com/GigleAI/cavil-loop/issues/471) (language setting, top bar, settings, sign-in, menu, notifications), [#472](https://github.com/GigleAI/cavil-loop/issues/472) (board, table, graph, details, tabs, new issue), [#473](https://github.com/GigleAI/cavil-loop/issues/473) (local and remote daemon, updates, project settings), [#474](https://github.com/GigleAI/cavil-loop/issues/474) (finishing touches and this guide)
 - "Hand to the agent" and "autopilot" right in the new-issue window, with shortcuts: [#450](https://github.com/GigleAI/cavil-loop/issues/450)
 - A spinner and a result message after "重新读取" / "重新同步" (re-read / re-sync): [#455](https://github.com/GigleAI/cavil-loop/issues/455)
-- A slimmer top bar, merged into the window's title bar: [#467](https://github.com/GigleAI/cavil-loop/issues/467)
 - Client tests leaving temporary directories behind: [#469](https://github.com/GigleAI/cavil-loop/issues/469) (affects development only, not use)
