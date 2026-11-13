@@ -8,6 +8,7 @@
 
 use crate::grant::{grant_from_response, TokenGrant};
 use crate::http::{send, Endpoints, HttpRequest};
+use crate::i18n::tr;
 use crate::platform::Clock;
 use serde_json::{Map, Value};
 
@@ -34,14 +35,31 @@ impl Failure {
     }
 }
 
+/// GitHub#471: what went wrong, in two parts — the client's own explanation (in the window's
+/// language, `tr`) and the outside text it is about (GitHub's words, the network error), as is.
 #[derive(Debug, Clone)]
 pub struct FlowError {
     pub reason: Failure,
     pub message: String,
+    pub detail: Option<String>,
+}
+
+impl FlowError {
+    /// both parts as one line, for the places that show a single text
+    pub fn full(&self) -> String {
+        match &self.detail {
+            Some(d) => tr("{text}：{detail}", &[("text", &self.message), ("detail", d)]),
+            None => self.message.clone(),
+        }
+    }
 }
 
 fn fail(reason: Failure, message: impl Into<String>) -> FlowError {
-    FlowError { reason, message: message.into() }
+    FlowError { reason, message: message.into(), detail: None }
+}
+
+fn fail_with(reason: Failure, message: String, detail: String) -> FlowError {
+    FlowError { reason, message, detail: Some(detail) }
 }
 
 #[derive(Clone, Debug)]
@@ -71,19 +89,19 @@ async fn post_form(url: String, pairs: &[(&str, &str)]) -> Result<Map<String, Va
         body: Some(form(pairs)),
     })
     .await
-    .map_err(|e| fail(Failure::Unreachable, format!("无法连接 GitHub：{e}")))?;
+    .map_err(|e| fail_with(Failure::Unreachable, tr("无法连接 GitHub", &[]), e.to_string()))?;
     // 5xx / 429 first, whatever the body says: GitHub is not answering properly,
     // which is never a verdict on the credential (a 503 can carry {"error": …}).
     if res.status >= 500 || res.status == 429 {
-        return Err(fail(Failure::Unreachable, format!("GitHub 暂时不可用（HTTP {}）", res.status)));
+        return Err(fail(Failure::Unreachable, tr("GitHub 暂时不可用（HTTP {status}）", &[("status", &res.status.to_string())])));
     }
     let body = match serde_json::from_str::<Value>(&res.body) {
         Ok(Value::Object(m)) => m,
-        _ => return Err(fail(Failure::Error, format!("GitHub 的回应无法解析（HTTP {}）", res.status))),
+        _ => return Err(fail(Failure::Error, tr("GitHub 的回应无法解析（HTTP {status}）", &[("status", &res.status.to_string())]))),
     };
     let ok = (200..300).contains(&res.status);
     if !ok && !truthy(body.get("error")) {
-        return Err(fail(Failure::Error, format!("GitHub 返回 HTTP {}", res.status)));
+        return Err(fail(Failure::Error, tr("GitHub 返回 HTTP {status}", &[("status", &res.status.to_string())])));
     }
     Ok(body)
 }
@@ -121,15 +139,15 @@ pub async fn request_device_code(endpoints: &Endpoints, client_id: &str, clock: 
     if truthy(body.get("error")) {
         let desc = if truthy(body.get("error_description")) { text(body.get("error_description")) } else { text(body.get("error")) };
         if body.get("error").and_then(|v| v.as_str()) == Some("device_flow_disabled") {
-            return Err(fail(Failure::Error, format!("这个 OAuth 应用没有开启 Device Flow：{desc}")));
+            return Err(fail_with(Failure::Error, tr("这个 OAuth 应用没有开启 Device Flow", &[]), desc));
         }
-        return Err(fail(Failure::Error, format!("GitHub 拒绝了授权请求：{desc}")));
+        return Err(fail_with(Failure::Error, tr("GitHub 拒绝了授权请求", &[]), desc));
     }
     let dc = text(body.get("device_code"));
     let uc = text(body.get("user_code"));
     let vu = text(body.get("verification_uri"));
     if dc.is_empty() || uc.is_empty() || vu.is_empty() {
-        return Err(fail(Failure::Error, "GitHub 回应缺少设备码"));
+        return Err(fail(Failure::Error, tr("GitHub 回应缺少设备码", &[])));
     }
     let now = clock.now().await;
     Ok(DeviceCode {
@@ -153,10 +171,10 @@ pub async fn poll_for_token(
     loop {
         clock.sleep(interval * 1000).await;
         if cancelled() {
-            return Err(fail(Failure::Cancelled, "已取消登录"));
+            return Err(fail(Failure::Cancelled, tr("已取消登录", &[])));
         }
         if clock.now().await >= code.expires_at {
-            return Err(fail(Failure::Expired, "短码已过期，请重新开始登录"));
+            return Err(fail(Failure::Expired, tr("短码已过期，请重新开始登录", &[])));
         }
         let body = match post_form(
             format!("{}/login/oauth/access_token", endpoints.web),
@@ -174,7 +192,7 @@ pub async fn poll_for_token(
             Err(e) => return Err(e),
         };
         if cancelled() {
-            return Err(fail(Failure::Cancelled, "已取消登录"));
+            return Err(fail(Failure::Cancelled, tr("已取消登录", &[])));
         }
         if let Some(g) = grant_from_response(&body, clock.now().await) {
             return Ok(g);
@@ -188,17 +206,16 @@ pub async fn poll_for_token(
                 };
                 continue;
             }
-            Some("expired_token") => return Err(fail(Failure::Expired, "短码已过期，请重新开始登录")),
-            Some("access_denied") => return Err(fail(Failure::Denied, "你在 GitHub 页面上拒绝了授权")),
+            Some("expired_token") => return Err(fail(Failure::Expired, tr("短码已过期，请重新开始登录", &[]))),
+            Some("access_denied") => return Err(fail(Failure::Denied, tr("你在 GitHub 页面上拒绝了授权", &[]))),
             _ => {
-                let d = if truthy(body.get("error_description")) {
-                    text(body.get("error_description"))
-                } else if truthy(body.get("error")) {
-                    text(body.get("error"))
-                } else {
-                    "未知错误".into()
-                };
-                return Err(fail(Failure::Error, format!("授权失败：{d}")));
+                if truthy(body.get("error_description")) {
+                    return Err(fail_with(Failure::Error, tr("授权失败", &[]), text(body.get("error_description"))));
+                }
+                if truthy(body.get("error")) {
+                    return Err(fail_with(Failure::Error, tr("授权失败", &[]), text(body.get("error"))));
+                }
+                return Err(fail(Failure::Error, tr("授权失败：未知错误", &[])));
             }
         }
     }
@@ -222,10 +239,10 @@ pub async fn refresh_grant(endpoints: &Endpoints, client_id: &str, refresh_token
     }
     let desc = || if truthy(body.get("error_description")) { text(body.get("error_description")) } else { text(body.get("error")) };
     if body.get("error").and_then(|v| v.as_str()) == Some(REFRESH_TOKEN_REJECTED) {
-        return Err(fail(Failure::Expired, format!("GitHub 不再接受续期：{}", desc())));
+        return Err(fail_with(Failure::Expired, tr("GitHub 不再接受续期", &[]), desc()));
     }
     if truthy(body.get("error")) {
-        return Err(fail(Failure::Error, format!("续期失败：{}", desc())));
+        return Err(fail_with(Failure::Error, tr("续期失败", &[]), desc()));
     }
-    Err(fail(Failure::Error, "续期失败：GitHub 的回应里没有新令牌"))
+    Err(fail(Failure::Error, tr("续期失败：GitHub 的回应里没有新令牌", &[])))
 }

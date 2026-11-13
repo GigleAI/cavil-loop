@@ -134,14 +134,15 @@ pub enum StartOut {
 
 pub enum BeginOut {
     Waiting { run: u64, user_code: String, verification_uri: String },
-    Failed { status: &'static str, message: String },
+    /// `detail`: the outside text the explanation is about (GitHub#471), shown as is
+    Failed { status: &'static str, message: String, detail: Option<String> },
     Stale,
 }
 
 #[derive(Clone)]
 pub enum FinishOut {
     Ok { session: u64, viewer: Option<String>, wiped: bool },
-    Failed { status: &'static str, message: String },
+    Failed { status: &'static str, message: String, detail: Option<String> },
     /// cancelled / signed out / a newer login meanwhile: whoever did that already said so
     Stale { login_reason: Option<String> },
 }
@@ -366,7 +367,7 @@ impl Engine {
                 if run != self.lock().login_run {
                     return BeginOut::Stale;
                 }
-                BeginOut::Failed { status: failure_status(e.reason), message: e.message }
+                BeginOut::Failed { status: failure_status(e.reason), message: e.message, detail: e.detail }
             }
             Ok(code) => {
                 let mut st = self.lock();
@@ -402,7 +403,7 @@ impl Engine {
                 if run != self.lock().login_run || e.reason == Failure::Cancelled {
                     return FinishOut::Stale { login_reason: None };
                 }
-                return FinishOut::Failed { status: failure_status(e.reason), message: e.message };
+                return FinishOut::Failed { status: failure_status(e.reason), message: e.message, detail: e.detail };
             }
         };
         // Who is this? Asked with the token in memory only: nothing is persisted
@@ -493,7 +494,7 @@ impl Engine {
                 if run != self.lock().login_run {
                     return FinishOut::Stale { login_reason: None };
                 }
-                FinishOut::Failed { status: "error", message }
+                FinishOut::Failed { status: "error", message, detail: None }
             }
         }
     }
@@ -683,11 +684,11 @@ impl Engine {
             Err(e) => {
                 return match e.reason {
                     Failure::Expired => self.sign_out_from_refresh(current(&self)),
-                    Failure::Unreachable => FreshOut { reason: Some(e.message), ..FreshOut::of(Fresh::Unreachable) },
+                    Failure::Unreachable => FreshOut { reason: Some(e.full()), ..FreshOut::of(Fresh::Unreachable) },
                     _ => FreshOut {
                         result: Fresh::Failed,
                         problem: current(&self).then(|| {
-                            Some(format!("登录续期没有成功（{}），会在下一轮自动重试；一直失败的话请退出后重新登录", e.message))
+                            Some(format!("登录续期没有成功（{}），会在下一轮自动重试；一直失败的话请退出后重新登录", e.full()))
                         }),
                         signed_out: None,
                         reason: None,

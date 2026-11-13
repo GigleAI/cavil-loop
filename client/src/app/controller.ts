@@ -11,7 +11,7 @@ import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
-import { DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang } from '../shared/i18n';
+import { t, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
@@ -719,8 +719,8 @@ export class Controller {
     const run = ++this.loginRun;
     const problem = !clientId
       ? this.state.appKind === 'github-app'
-        ? '用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用'
-        : '还没有配置 OAuth 应用的 Client ID，请先在下方填写'
+        ? t('用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用')
+        : t('还没有配置 OAuth 应用的 Client ID，请先在下方填写')
       : // never sign in through a different kind of app than the page describes
         clientIdKindProblem(this.state.appKind, clientId);
     if (problem) {
@@ -730,22 +730,22 @@ export class Controller {
       return;
     }
     this.set({ login: { status: 'requesting', userCode: null, verificationUri: null, message: null } });
-    const fail = (status: string, message: string) =>
+    const fail = (status: string, message: string, detail?: string | null) =>
       this.set({
-        login: { status: status === 'denied' ? 'denied' : status === 'expired' ? 'expired' : 'error', userCode: null, verificationUri: null, message },
+        login: { status: status === 'denied' ? 'denied' : status === 'expired' ? 'expired' : 'error', userCode: null, verificationUri: null, message, detail: detail ?? null },
       });
     try {
       await this.loginCancels;
       if (run !== this.loginRun) return;
-      const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string }>('loginBegin', { clientId });
+      const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string; detail?: string | null }>('loginBegin', { clientId });
       if (run !== this.loginRun || begun.status === 'stale') return;
-      if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '');
+      if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '', begun.detail);
       this.pendingRun = begun.run ?? null;
       this.set({ login: { status: 'waiting', userCode: begun.userCode!, verificationUri: begun.verificationUri!, message: null } });
       // The back end polls GitHub, asks who this is, and stores + trusts the
       // credential as one step of its credential queue: a cancel / sign-out /
       // newer login meanwhile makes this login stale there, whatever happens here.
-      const done = await this.backend.call<{ status: string; session?: number; viewer?: string | null; wiped?: boolean; message?: string; loginReason?: string | null }>(
+      const done = await this.backend.call<{ status: string; session?: number; viewer?: string | null; wiped?: boolean; message?: string; detail?: string | null; loginReason?: string | null }>(
         'loginFinish',
         { run: begun.run },
       );
@@ -754,7 +754,7 @@ export class Controller {
         return;
       }
       if (done.status !== 'ok') {
-        if (run === this.loginRun) fail(done.status, done.message ?? '');
+        if (run === this.loginRun) fail(done.status, done.message ?? '', done.detail);
         return;
       }
       if (run !== this.loginRun) {

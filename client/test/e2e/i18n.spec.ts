@@ -239,3 +239,68 @@ test('GitHub#471: the sign-in page and its help page in English', async () => {
   await shot(page, '471-07-login-help-en');
   await app.close();
 });
+
+test("GitHub#471 (PR #480 review round 1): sign-in failures in English — declined, expired, GitHub's own reason, a refused request; GitHub's words shown as written, the reason never twice", async () => {
+  const app = await launchApp(env, { locale: 'en-US' });
+  const page = app.page;
+  await signIn(page);
+  await page.getByTestId('lang-en').check();
+  await saved(app, 'en');
+  await page.getByTestId('logout').click();
+  const banner = page.getByTestId('login-error');
+  const attempt = async () => {
+    await page.getByTestId('start-login').click();
+    await expect(page.getByTestId('user-code')).toBeVisible();
+  };
+
+  // declined on GitHub: one sentence, in English
+  await attempt();
+  env.fake.resolveGrant('denied');
+  await expect(banner).toHaveAttribute('data-status', 'denied', { timeout: 15_000 });
+  await expect(banner).toHaveText('You declined the authorization on GitHub.');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await shot(page, '471-08-login-denied-en');
+
+  // the code expired
+  await attempt();
+  env.fake.resolveGrant('expired');
+  await expect(banner).toHaveAttribute('data-status', 'expired', { timeout: 15_000 });
+  await expect(banner).toHaveText('The code has expired.');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+
+  // GitHub gives a reason of its own (here in Chinese): the explanation in English, GitHub's words as written
+  env.fake.state.tokenAnswers.push({ kind: 'poll', status: 200, body: { error: 'odd_failure', error_description: '组织不允许这个应用' } });
+  await attempt();
+  await expect(banner).toHaveAttribute('data-status', 'error', { timeout: 15_000 });
+  await expect(banner).toHaveText('Sign-in did not complete. Authorization failed: 组织不允许这个应用');
+  await expect(banner.locator('[data-verbatim="github"]')).toHaveText('组织不允许这个应用');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await shot(page, '471-09-login-github-reason-en');
+
+  // the request for a code refused (a Client ID GitHub does not know)
+  if (!(await page.getByTestId('client-id').isVisible())) await page.getByTestId('oauth-settings-toggle').click();
+  await page.getByTestId('client-id').fill('Ov23liNotKnownHere00');
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(banner).toHaveAttribute('data-status', 'error', { timeout: 15_000 });
+  await expect(banner).toHaveText('Sign-in did not complete. GitHub refused the authorization request: The client_id is not valid.');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await app.close();
+});
+
+test('GitHub#471 (PR #480 review round 1): the same failures in Chinese read as before, without the reason said twice', async () => {
+  const app = await launchApp(env, { locale: 'en-US' });
+  const page = app.page;
+  await signIn(page);
+  await page.getByTestId('logout').click();
+  const banner = page.getByTestId('login-error');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('denied');
+  await expect(banner).toHaveText('你在 GitHub 页面上拒绝了授权。', { timeout: 15_000 });
+  env.fake.state.tokenAnswers.push({ kind: 'poll', status: 200, body: { error: 'odd_failure', error_description: 'org policy' } });
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  await expect(banner).toHaveText('登录没有完成。 授权失败：org policy', { timeout: 15_000 });
+  await app.close();
+});

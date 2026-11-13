@@ -587,7 +587,10 @@ export interface LoginState {
   status: LoginStatus;
   userCode: string | null;
   verificationUri: string | null;
+  /** why it did not work: the client's own explanation (in the window's language) */
   message: string | null;
+  /** GitHub#471: the outside text the explanation is about (GitHub's words, a network error), shown as is */
+  detail?: string | null;
 }
 
 export interface SyncState {

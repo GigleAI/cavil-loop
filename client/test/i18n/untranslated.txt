@@ -5,7 +5,6 @@ src-tauri/crates/core/src/api.rs
 src-tauri/crates/core/src/daemon.rs
 src-tauri/crates/core/src/daemon_config.rs
 src-tauri/crates/core/src/daemon_connect.rs
-src-tauri/crates/core/src/device.rs
 src-tauri/crates/core/src/engine.rs
 src-tauri/crates/core/src/http.rs
 src-tauri/crates/core/src/platform.rs

@@ -39,12 +39,12 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             BeginOut::Waiting { run, user_code, verification_uri } => {
                 json!({ "status": "waiting", "run": run, "userCode": user_code, "verificationUri": verification_uri })
             }
-            BeginOut::Failed { status, message } => json!({ "status": status, "message": message }),
+            BeginOut::Failed { status, message, detail } => json!({ "status": status, "message": message, "detail": detail }),
             BeginOut::Stale => json!({ "status": "stale" }),
         }),
         "loginFinish" => Ok(match e.login_finish(u(&a, "run")?).await {
             FinishOut::Ok { session, viewer, wiped } => json!({ "status": "ok", "session": session, "viewer": viewer, "wiped": wiped }),
-            FinishOut::Failed { status, message } => json!({ "status": status, "message": message }),
+            FinishOut::Failed { status, message, detail } => json!({ "status": status, "message": message, "detail": detail }),
             FinishOut::Stale { login_reason } => json!({ "status": "stale", "loginReason": login_reason }),
         }),
         "loginCancel" => Ok(match e.cancel_login(a.get("run").and_then(|v| v.as_u64())) {

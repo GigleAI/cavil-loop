@@ -59,7 +59,14 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
 
       {(login.status === 'denied' || login.status === 'expired' || login.status === 'error') && (
         <div className="banner error" data-testid="login-error" data-status={login.status}>
-          {failureText(login.status)} {login.message}
+          {failureText(login.status)}
+          {/* denied / expired: the words above already say it all (the back end's message repeats them) */}
+          {login.status === 'error' && login.message && (
+            <>
+              {' '}
+              {login.detail ? tNode('{text}：{detail}', { text: login.message, detail: <Verbatim from="github">{login.detail}</Verbatim> }) : login.message}
+            </>
+          )}
         </div>
       )}
 
