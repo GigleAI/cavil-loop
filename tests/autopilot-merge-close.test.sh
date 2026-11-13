@@ -550,6 +550,37 @@ chk "合并了、交接没记「合并即关」" "$(merged 8)/$(handoff 8)" "1/n
 chk "issue 开着、pending/human、摘 pending/PR" "$(issue_state 7)/$(labels_of 7)" "open/autopilot,pending/human"
 chk "说明是「满意就关闭」那一版" "$(comments_with 7 '要人做的：看过之后满意就关闭本 issue')" 1
 
+section "【7b】老的 Refs 交接：发说明之后第一次读到的 issue 状态词不认识、下一次恢复（同一轮里）→ 和改动前一样，同一轮重试就收尾"
+fresh
+ready "Refs #7
+
+$SUMMARY"
+cat > "$GD/hook_after_POST_issues_7_comments_1" <<'HOOK'
+set -e
+cd "$(dirname "$0")"
+c=$(cat count_issues_7)
+printf '%s' '.state = "weird"' > jq_issues_7
+printf 'rm -f "%s/jq_issues_7"\n' "$PWD" > "hook_issues_7_$((c + 2))"
+HOOK
+tick
+chk "同一轮收尾：issue 开着、pending/human、pending/PR 摘掉，交接记录清掉、出队" \
+    "$(label_writes 7)/$(labels_of 7)/$(handoff 8)/$(mqueued 7)" "2/autopilot,pending/human/none/false"
+chk "  → 到达性：不认识的状态词确实读到过、同一轮里也确实恢复了" \
+    "$(grep -c '状态异常' "$W/state/poll.log" | awk '{print ($1>0)?"seen":"no"}')/$( [ -f "$GD/jq_issues_7" ] && echo still || echo cleared)" "seen/cleared"
+
+section "【7c】交接记录是哪一种：缺 closes / false → 老交接；true → 合并即关；形状不对 / 读不出 → 判不了"
+fresh
+mode_of() {   # <state.json 内容>
+    printf '%s' "$1" > "$STATE"
+    env CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/_lib.sh" >/dev/null 2>&1; autopilot_handoff_mode 8' _ "$SCRIPTS" 2>/dev/null
+}
+chk "记录没有 closes 字段" "$(mode_of '{"autopilot":{"handoff":{"8":{"issue":"7","body":""}}}}')" refs
+chk "closes 是 false" "$(mode_of '{"autopilot":{"handoff":{"8":{"issue":"7","closes":false}}}}')" refs
+chk "closes 是 true" "$(mode_of '{"autopilot":{"handoff":{"8":{"issue":"7","closes":true}}}}')" closes
+chk "closes 是别的值" "$(mode_of '{"autopilot":{"handoff":{"8":{"issue":"7","closes":"yes"}}}}')" unknown
+chk "记录不是对象" "$(mode_of '{"autopilot":{"handoff":{"8":"x"}}}')" unknown
+chk "状态文件读不出" "$(mode_of '{not json')" unknown
+
 # ── 【7】和改动前一致 ──
 section "【7】Refs 写法、非托管 PR、人在 pending/human 状态下直接关 issue：写入与改动前逐字一致"
 same_scene() {

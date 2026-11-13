@@ -5777,13 +5777,29 @@ autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <
 # 临时字段；记录读不出也按合并即关处理）只要这一轮没有收尾成功，不管是读不到、对不上、有人改动还是写失败，
 # 这个 issue 都整轮停手：同一轮后面的重试队列和关闭清扫都不再接着写，下一轮从头现读再判。老的 Refs 交接照旧
 autopilot_merged_handoff() {   # <issue> <PR>
-    local rc closes sf="${STATE_FILE:-$STATE_DIR/state.json}"
+    local rc
     autopilot_merged_handoff_run "$@"; rc=$?
     if [ "$rc" -ne 0 ]; then
-        closes=$(autopilot_state_get "$sf" '.handoff[$p].closes // false' --arg p "$2" 2>/dev/null) || closes=unreadable
-        [ "$closes" = false ] || issue_halt_round "$1"
+        case "$(autopilot_handoff_mode "$2")" in
+            closes|unknown) issue_halt_round "$1" ;;
+        esac
     fi
     return "$rc"
+}
+
+# 交接记录是哪一种（三种结果，不能混）：closes = 记录写着合并即关；refs = 有记录、没写 closes 或写的是 false（老的
+# Refs 交接）；unknown = 状态文件读不出 / 记录形状不对。不走 autopilot_state_get：它外面套的 `// ""` 会把 false
+# 变成空串，「是 false」和「读不到」就分不开了（PR #478 复审第 5 轮）
+autopilot_handoff_mode() {   # <PR>
+    local sf="${STATE_FILE:-$STATE_DIR/state.json}" out
+    out=$(jq -r --arg p "$1" '
+        (.autopilot.handoff // {})[$p] as $h
+        | if $h == null then "refs"
+          elif ($h | type) != "object" then "unknown"
+          elif $h.closes == true then "closes"
+          elif ($h.closes == null or $h.closes == false) then "refs"
+          else "unknown" end' "$sf" 2>/dev/null) || out=unknown
+    case "$out" in closes|refs) printf '%s\n' "$out" ;; *) printf 'unknown\n' ;; esac
 }
 
 autopilot_merged_handoff_run() {   # <issue> <PR>
