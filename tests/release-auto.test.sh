@@ -1071,12 +1071,16 @@ print(s.replace("${{ matrix.shard }}", "1").replace("${{ matrix.part }}", "1"))
 PYN
 }
 wf_env() {  # <workflow> <job> → that job's env as shell assignments (matrix values filled in)
+    # Any other ${{ … }} expression is read as it evaluates on a push to main or a manual run: empty, and an
+    # empty value is left out (tests.yml's CHANGED_FROM is set only on a pull request, GitHub#495).
     python3 - "$1" "$2" <<'PYE'
-import shlex, sys, yaml
+import re, shlex, sys, yaml
 env = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]].get("env") or {}
 for k, v in env.items():
     v = str(v).replace("${{ matrix.shard }}", "1").replace("${{ matrix.part }}", "1")
-    print(f"{k}={shlex.quote(v)}")
+    v = re.sub(r"\$\{\{.*?\}\}", "", v)
+    if v:
+        print(f"{k}={shlex.quote(v)}")
 PYE
 }
 
@@ -1147,7 +1151,7 @@ steps = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["steps"]
 print(fill(next(s["run"] for s in steps if fill(s.get("name") or "") == sys.argv[3])))
 PYX
     envs="$(wf_env "$wf" "$job")"
-    (cd "$NCS/$dir" && env -u MUTATION -u AUTOPILOT_MUT_SHARD -u AUTOPILOT_MUT_ONLY $envs RUNNER_TEMP="$TMP/nc-rt" \
+    (cd "$NCS/$dir" && env -u MUTATION -u AUTOPILOT_MUT_SHARD -u AUTOPILOT_MUT_ONLY -u CHANGED_FROM $envs RUNNER_TEMP="$TMP/nc-rt" \
         NC_REC="$NC_REC" PATH="$NCS/stub:$PATH" bash -e "$TMP/nc-step.sh") >/dev/null 2>&1
 }
 export NC_REC="$TMP/nc-rec"; : > "$NC_REC"; mkdir -p "$TMP/nc-rt"
@@ -1222,8 +1226,8 @@ PYT
     check "$wf.yml: no job or step turns negative controls on" "$(grep '^mutation' "$TMP/nc-$wf")" "mutation []"
 done
 : > "$NC_REC"
-nc_exec "$REPO_DIR/.github/workflows/tests.yml" shard "Run shard 1/4" .
-has "run.sh --ci --shard 1/4 -j 2 --out $TMP/nc-rt/results MUTATION= " "$(cat "$NC_REC")" "tests.yml shard: really runs, negative controls off"
+nc_exec "$REPO_DIR/.github/workflows/tests.yml" shard "Run shard 1/8" .
+has "run.sh --ci --shard 1/8 -j 3 --out $TMP/nc-rt/results MUTATION= " "$(cat "$NC_REC")" "tests.yml shard: really runs, negative controls off"
 nc_exec "$REPO_DIR/.github/workflows/release.yml" gate "Tests, shard 1/4" .
 has "run.sh --ci --shard 1/4 -j 2 --out $TMP/nc-rt/results MUTATION= " "$(cat "$NC_REC")" "release gate shard: the regression suite, negative controls off"
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # kind: e2e
+# parts: 3
 # 托管交人：几次写入之间维护者改了状态时，daemon 察觉并停手 —— GitHub#382。
 #
-# 跑法：bash tests/autopilot-handover.test.sh
+# 跑法：bash tests/autopilot-handover.test.sh   （三段：【1】–【3】、【4】–【7】、【7b】–【10】，GitHub#495）
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py）+ 假 tmux，HOME 指向
 # 临时目录。每一轮都**真的**起 agent-poll.sh 子进程；「写了什么、停在哪」都从假 GitHub 的调用记录和状态里读，
 # 不读源码。不带负对照（GitHub#234 起不新增）。
@@ -23,6 +24,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
+# shellcheck source=lib/parts.sh
+source "$TEST_DIR/lib/parts.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -204,6 +207,7 @@ shape_hook() {   # <hook 文件名> <key> <jq 表达式>：到那个时刻才开
 #   5 重判  6 核对 →【加 pending/human】  7 确认自己的写入  8 重判  9 核对 →【摘 pending/merge】
 # hook pulls_8_<k> = 第 k 次读之前改状态。读和紧跟着的写之间没有读，那是消除不了的窗口，不在这里注入。
 
+if part_on 1; then
 # ─────────────────────────────────────────────────────────────────────────
 section "【1】稳定情况：每种交人原因都在同一轮完成三次写入（说明 → 加 pending/human → 摘 pending/merge）"
 stable() {   # <说明> <原因代号> <说明里的一句话> [交人后的标签] [这一轮的写入顺序]
@@ -324,6 +328,8 @@ chk "同一提交重新入队后仍是草稿 → 交人完成，说明标记的�
 fresh; draft; hook pulls_8_2 requeue; hook pulls_8_3 undraft; tick
 chk "重新入队之后、重做判定之前又改成不是草稿 → 零写入" "$(writes)" 0
 
+fi
+if part_on 2; then
 # ─────────────────────────────────────────────────────────────────────────
 section "【4】说明发出之后、加 pending/human 之前维护者改了状态 → 不加、不摘"
 for a in close unqueue add-human add-other push rebase body requeue undraft; do
@@ -431,6 +437,8 @@ unk "标签记录和当前标签对不上（挂着 pending/merge，记录里最�
 unk "标签记录里编号重复" \
     'cp "$GD/events.json" "$GD/events.keep"; jset events.json ".[\"8\"][0].id = 7 | .[\"8\"][1].id = 7"' 'cp "$GD/events.keep" "$GD/events.json"'
 
+fi
+if part_on 3; then
 # ─────────────────────────────────────────────────────────────────────────
 section "【7b】读到了、但响应不完整（缺字段、不认识的状态词）→ 同样是分不清：不写，待办留着（代码复审第 1 轮）"
 # 字段规则只有一处（autopilot_fp_place），三条流程各用同一组坏响应过一遍
@@ -627,6 +635,7 @@ fresh; happy; jset checks.json '.[$h] = {check_runs:[{name:"unit",status:"comple
 chk "到达性 · 检查没过 → 交回 worker（不是交人）" "$(labels_of 8)/$(comments_with 'cavil-loop:autopilot-handover')" "autopilot,pending/agent/0"
 fresh; happy; jset items.json '.["8"].head.sha = $h' --arg h "$H2"; tick
 chk "到达性 · 复审之后有新提交 → 重新交复审（不是交人）" "$(labels_of 8)" "autopilot,pending/review"
+fi
 
 echo
 compat_summary

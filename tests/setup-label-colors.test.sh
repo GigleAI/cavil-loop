@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # setup.sh 建 GitHub 标签时的默认颜色（GitHub#130，前一次同类漂移是 #52）。
 #
 # 默认配色照抄本仓库 GigleAI/cavil-loop 的 labels 页。这里真跑安装入口（隔离 HOME、

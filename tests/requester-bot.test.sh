@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: e2e
+# reads: repo
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
 # 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时只有一条实等默认的 10 秒，
