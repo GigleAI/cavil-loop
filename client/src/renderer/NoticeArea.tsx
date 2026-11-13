@@ -23,6 +23,9 @@ import type { OpenIntent } from './BoardView';
 import type { OpenHow } from './OpenMenu';
 import { noticeOrder } from './noticeOrder';
 import { KEEPS_PANEL } from './outsideClick';
+import { t, translate, zhKey } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim } from './Verbatim';
 
 /** how many notices show before the rest fold behind 「还有 N 条」 */
 export const NOTICE_SHOWN = 3;
@@ -55,7 +58,12 @@ export function NoticeArea({
         <OpNotice
           key={`op:${r.id}`}
           r={r}
-          prefix={`${r.repo}#${r.number}：`}
+          prefix={
+            <>
+              <Verbatim from="github">{r.repo}</Verbatim>#{r.number}
+              {t('：')}
+            </>
+          }
           onOpen={openFloat}
           onRetry={(x: OpRecord) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
           onToReply={(x: OpRecord) => open(x.key, 'float', { opId: x.id, what: 'toReply' })}
@@ -80,11 +88,11 @@ export function NoticeArea({
   const more = order.length - NOTICE_SHOWN;
   const shown = all || more <= 0 ? order : order.slice(0, NOTICE_SHOWN);
   return (
-    <div className="notice-area" data-testid="notice-area" data-count={order.length} role="region" aria-label="操作结果" {...{ [KEEPS_PANEL]: '' }}>
+    <div className="notice-area" data-testid="notice-area" data-count={order.length} role="region" aria-label={t('操作结果')} {...{ [KEEPS_PANEL]: '' }}>
       {shown.map((id) => byId.get(id)!.node)}
       {more > 0 && (
         <button className="link notice-more" data-testid="notice-more" data-more={more} aria-expanded={all} onClick={() => setAll(!all)}>
-          {all ? '收起，只看最新 3 条' : `还有 ${more} 条`}
+          {all ? t('收起，只看最新 3 条') : t('还有 {n} 条', { n: more })}
         </button>
       )}
     </div>
@@ -118,7 +126,8 @@ function EditsNotice({ state, data, onOpen }: { state: AppState; data: BoardData
           resending={state.editsResending}
           about={
             <button className="link edit-issues-about" data-testid="edit-issues-item" data-key={i.key} onClick={() => onOpen(i.key)}>
-              {i.repo}#{i.number}：
+              <Verbatim from="github">{i.repo}</Verbatim>#{i.number}
+              {t('：')}
             </button>
           }
         />
@@ -154,28 +163,25 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
     <div className={`banner ${tone}`} data-testid="edits-bar" data-count={state.editsNeedingAction} data-kind={tone}>
       {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <span className="banner-text">
-        有 {state.editsNeedingAction} 处修改没保存上或没确认保存到 GitHub
-        {sending && <span data-testid="edits-bar-sending">；正在重新发送…</span>}
-        {items.length > 0 && (
-          <>
-            （
-            {items.map((i, n) => (
+        {t('有 {n} 处修改没保存上或没确认保存到 GitHub', { n: state.editsNeedingAction })}
+        {sending && <span data-testid="edits-bar-sending">{t('；正在重新发送…')}</span>}
+        {items.length > 0 &&
+          tNode('（{items}；下面逐条列出两边的值）', {
+            items: items.map((i, n) => (
               <span key={i.key}>
-                {n > 0 && '、'}
+                {n > 0 && t('、')}
                 <button className="link" data-testid="edits-bar-item" onClick={() => onOpen(i.key)}>
-                  {i.repo.split('/')[1]} #{i.number}
+                  <Verbatim from="github">{i.repo.split('/')[1]}</Verbatim> #{i.number}
                 </button>
               </span>
-            ))}
-            ；下面逐条列出两边的值）
-          </>
-        )}
-        。{' '}
+            )),
+          })}
+        {t('。')}{' '}
         <button className="link" data-testid="edits-resend-all" disabled={working || sending || !writesEnabled(state.sync)} onClick={() => void go(() => api().resendAllEdits())}>
-          全部重新发送
+          {t('全部重新发送')}
         </button>
         <button className="link" data-testid="edits-abandon-all" disabled={working} onClick={() => void go(() => api().abandonAllEdits())}>
-          全部放弃
+          {t('全部放弃')}
         </button>
         {result && (
           <span className="small" data-testid="edits-bar-result">
@@ -198,7 +204,7 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
   const working = job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
   const failures = createFailures(job);
   const close = (
-    <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
+    <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
       <Icon name="x" />
     </button>
   );
@@ -208,7 +214,7 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
     return (
       <div className={`banner ${tone}`} data-testid="create-bar" data-status="running" data-kind={tone}>
         <span className="spin" aria-hidden="true" />
-        <span className="banner-text">正在新建「{job.title}」… 建好后自动打开它</span>
+        <span className="banner-text">{tNode('正在新建「{title}」… 建好后自动打开它', { title: <Verbatim from="user">{job.title}</Verbatim> })}</span>
       </div>
     );
   if (job.status === 'partial')
@@ -216,19 +222,21 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
       <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="partial" data-kind={tone}>
         {mark}
         <span className="banner-text">
-          <b>#{job.number} 已建好</b>，{job.message?.replace(/^issue #\d+ 已建好，但/, '但') ?? ''}{' '}
+          <b>{t('#{number} 已建好', { number: job.number ?? '' })}</b>
+          {t('，')}
+          {createdButRest(job.message, job.number)}{' '}
           <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
-            打开 #{job.number}
+            {t('打开 #{number}', { number: job.number ?? '' })}
           </button>
           {(job.boards ?? []).some((b) => b.state === 'missing') &&
             (job.retrying ? (
               <span className="small muted" data-testid="create-retrying">
                 {' '}
-                正在再试加入看板…
+                {t('正在再试加入看板…')}
               </span>
             ) : (
               <button className="link" data-testid="create-retry-projects" disabled={working} onClick={() => void api().retryCreateProjects(job.id)}>
-                再试加入看板
+                {t('再试加入看板')}
               </button>
             ))}
           {(job.watch ?? [])
@@ -242,13 +250,13 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
                 disabled={working}
                 onClick={() => void api().applyCreateWatch(job.id, w.projectKey)}
               >
-                在「{w.title}」改成「{w.label}」
+                {tNode('在「{board}」改成「{value}」', { board: <Verbatim from="github">{w.title}</Verbatim>, value: <Verbatim from="github">{w.label}</Verbatim> })}
               </button>
             ))}
           {failures.length > 0 && !working && (
             <span className="small err" data-testid="create-retry-error">
               {' '}
-              {failures.join('；')}
+              {failures.join(t('；'))}
             </span>
           )}
         </span>
@@ -260,25 +268,26 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
       <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="unknown" data-kind={tone}>
         {mark}
         <span className="banner-text">
-          <b>不确定「{job.title}」有没有建好</b>：{job.message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。
-          {job.looking && <span data-testid="create-looking">正在查最近建的同标题 issue…</span>}
-          {job.lookError && !job.looking && <span data-testid="create-look-error">没能查到最近建的 issue：{job.lookError}。</span>}{' '}
+          <b>{tNode('不确定「{title}」有没有建好', { title: <Verbatim from="user">{job.title}</Verbatim> })}</b>
+          {t('：{message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。', { message: job.message ?? '' })}
+          {job.looking && <span data-testid="create-looking">{t('正在查最近建的同标题 issue…')}</span>}
+          {job.lookError && !job.looking && <span data-testid="create-look-error">{t('没能查到最近建的 issue：{problem}。', { problem: job.lookError })}</span>}{' '}
           <button className="link" data-testid="create-web" onClick={() => void api().openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)}>
-            在网页上看我最近建的 issue
+            {t('在网页上看我最近建的 issue')}
           </button>
           <button
             className="link"
             data-testid="create-copy"
             onClick={() => void copyText(`${job.draft.title}\n\n${job.draft.body}`).then((ok) => setCopied(Boolean(ok)))}
           >
-            {copied ? '已复制' : '复制草稿内容'}
+            {copied ? t('已复制') : t('复制草稿内容')}
           </button>
           {job.candidates && (
             <span className="small muted" data-testid="create-candidates">
               {' '}
               {job.candidates.length
-                ? '最近 10 分钟你在这个仓库建的同标题 issue（仅供查看）：'
-                : '没找到最近 10 分钟你在这个仓库建的同标题 issue（原请求仍可能稍后完成）'}
+                ? t('最近 10 分钟你在这个仓库建的同标题 issue（仅供查看）：')
+                : t('没找到最近 10 分钟你在这个仓库建的同标题 issue（原请求仍可能稍后完成）')}
               {job.candidates.map((c) => (
                 <a key={c.number} href={c.url} data-testid="create-candidate" onClick={(e) => (e.preventDefault(), void api().openExternal(c.url))}>
                   {' '}
@@ -295,7 +304,7 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
     <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="failed" data-kind={tone}>
       <Icon name="warn" />
       <span className="banner-text">
-        没能新建「{job.title}」：{job.message}。{' '}
+        {tNode('没能新建「{title}」：{message}。', { title: <Verbatim from="user">{job.title}</Verbatim>, message: job.message ?? '' })}{' '}
         <button
           className="link"
           data-testid="create-reopen"
@@ -304,10 +313,25 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
             void api().dismissCreate(job.id);
           }}
         >
-          重新打开草稿
+          {t('重新打开草稿')}
         </button>
       </span>
       {close}
     </div>
   );
+}
+
+/**
+ * GitHub#472: the bar already says "#N 已建好，"; of the controller's / the create step's message
+ * (`issue #N 已建好，但{problems}`, worded in either language — it may predate a switch) only the
+ * "但…" part follows. Any other message is shown whole.
+ */
+const CREATED_BUT = zhKey('issue #{number} 已建好，但{problems}');
+export function createdButRest(message: string | null | undefined, number: number | null | undefined): string {
+  if (!message) return '';
+  for (const l of ['zh', 'en'] as const) {
+    const head = translate(l, CREATED_BUT, { number: number ?? '', problems: '' });
+    if (message.startsWith(head)) return t('但{problems}', { problems: message.slice(head.length) });
+  }
+  return message;
 }

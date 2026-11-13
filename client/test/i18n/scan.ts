@@ -24,7 +24,7 @@ export interface ScanResult {
   keys: Map<string, number[]>;
   /** a t( / tr( whose first argument is not a plain literal */
   badCalls: Finding[];
-  /** Rust: the literals marked `not_text(…)` — format marks matched, never shown (GitHub#473) */
+  /** the literals marked `outsideWords(…)` (window) / `not_text(…)` (back end): never shown as the client's text (GitHub#472 / #473) */
   notText: Finding[];
 }
 
@@ -50,10 +50,12 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const findings: Finding[] = [];
   const badCalls: Finding[] = [];
   const notText: Finding[] = [];
-  /** the call just read is not_text( : its literal is a format mark, not a key */
-  let wantData = false;
   const keys = new Map<string, number[]>();
   const fns = lang === 'ts' ? ['t', 'tNode', 'zhKey'] : ['tr'];
+  // GitHub#472 / #473: words that are not text anyone is shown — the window's `outsideWords` (src/shared/i18n.ts),
+  // the back end's `not_text` (crates/core/src/i18n.rs, marks the updater matches): their literal is neither a
+  // key nor a finding, but must still be a plain literal; each one is listed in `notText`
+  const outsideFns = lang === 'ts' ? ['outsideWords'] : ['not_text'];
   const fn = fns.join(' / ');
   let i = 0;
   let line = 1;
@@ -62,6 +64,8 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   /** a t( was just read: the next literal is its key */
   let wantKey = false;
   let wantKeyLine = 0;
+  /** the literal wanted is outsideWords( … )'s, not a key */
+  let wantOutside = false;
   /** the identifier read last (`fn tr(` / `function t(` define, they do not call) */
   let lastWord = '';
   // template literals: each entry = the brace depth inside its ${ } where it resumes
@@ -77,13 +81,14 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   };
   const literal = (raw: string, at: number, plain: boolean) => {
     const value = plain ? unescape(raw) : raw;
+    if (wantKey && wantOutside) {
+      wantKey = false;
+      wantOutside = false;
+      if (testDepth < 0) notText.push({ line: at, text: value });
+      return;
+    }
     if (wantKey) {
       wantKey = false;
-      if (wantData) {
-        wantData = false;
-        if (testDepth < 0) notText.push({ line: at, text: value });
-        return;
-      }
       if (testDepth < 0) {
         const l = keys.get(value) ?? [];
         l.push(at);
@@ -97,7 +102,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const keyNotLiteral = () => {
     if (wantKey) {
       wantKey = false;
-      wantData = false;
+      wantOutside = false;
       if (testDepth < 0) badCalls.push({ line: wantKeyLine, text: `${fn}( 的第一个参数不是字面量` });
     }
   };
@@ -283,8 +288,8 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
       lastWord = word;
       // Rust: Said::new( / Said::compose( take a key too (crates/core/src/i18n.rs)
       const saidCall = lang === 'rust' && (word === 'new' || word === 'compose') && src.slice(i - word.length - 6, i - word.length) === 'Said::';
-      const dataCall = lang === "rust" && word === "not_text" && before !== "." && !IDENT.test(before);
-      if ((saidCall || dataCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
+      const outsideCall = outsideFns.includes(word) && before !== '.' && !IDENT.test(before);
+      if ((saidCall || outsideCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
         let k = i;
         while (k < src.length && /\s/.test(src[k])) k++;
         if (src[k] === '(') {
@@ -296,7 +301,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
           }
           i = m;
           wantKey = true;
-          wantData = dataCall;
+          wantOutside = outsideCall;
           wantKeyLine = line;
           prev = '(';
           continue;

@@ -19,6 +19,7 @@
 
 import type { SourceConfig } from '../shared/types';
 import { GitHubClient, GitHubError, RateLimitError } from './github';
+import { t } from '../shared/i18n';
 import { projectCountsQuery } from './queries';
 
 /** A source is read in full at least this often, whatever the check says. */
@@ -70,17 +71,17 @@ async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | n
   let fields: PageTag;
   let changed = false;
   if (fa.status === 304) {
-    if (!oldFields) throw new GitHubError('http', '变化检查：字段列表回了 304，但没有上一次的记录');
+    if (!oldFields) throw new GitHubError('http', t('变化检查：字段列表回了 304，但没有上一次的记录'));
     const m = /[?&]fields=([^&]*)/.exec(old!.pages[0]?.url ?? '');
-    if (!m) throw new GitHubError('http', '变化检查：上一次的记录缺字段');
+    if (!m) throw new GitHubError('http', t('变化检查：上一次的记录缺字段'));
     fieldIds = decodeURIComponent(m[1]);
     fields = oldFields;
   } else {
-    if (!Array.isArray(fa.body)) throw new GitHubError('http', '变化检查：字段列表不是数组');
+    if (!Array.isArray(fa.body)) throw new GitHubError('http', t('变化检查：字段列表不是数组'));
     // GitHub allows 50 fields; a second page would mean the ids below are incomplete
-    if (fa.next) throw new GitHubError('http', '变化检查：字段列表超过一页');
+    if (fa.next) throw new GitHubError('http', t('变化检查：字段列表超过一页'));
     const ids = (fa.body as { id?: unknown }[]).map((f) => f.id).filter((id): id is number | string => typeof id === 'number' || typeof id === 'string');
-    if (ids.length === 0) throw new GitHubError('http', '变化检查：字段列表为空');
+    if (ids.length === 0) throw new GitHubError('http', t('变化检查：字段列表为空'));
     fieldIds = ids.join(',');
     fields = { url: fieldsUrl, etag: fa.etag };
     changed = true;
@@ -89,12 +90,12 @@ async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | n
   const pages: PageTag[] = [];
   let url: string | null = `${boardBase(src)}/items?per_page=100&fields=${encodeURIComponent(fieldIds)}`;
   for (let i = 0; url; i++) {
-    if (i >= MAX_CHECK_PAGES) throw new GitHubError('http', `变化检查：看板超过 ${MAX_CHECK_PAGES} 页`);
+    if (i >= MAX_CHECK_PAGES) throw new GitHubError('http', t('变化检查：看板超过 {max} 页', { max: MAX_CHECK_PAGES }));
     const was: PageTag | undefined = old?.pages[i];
     const prior: PageTag | null = was && was.url === url ? was : null;
     const a = await client.conditional('HEAD', url, prior?.etag ?? null);
     if (a.status === 304) {
-      if (!prior) throw new GitHubError('http', '变化检查：条目列表回了 304，但没有上一次的记录');
+      if (!prior) throw new GitHubError('http', t('变化检查：条目列表回了 304，但没有上一次的记录'));
       pages.push(prior);
       // a 304 has no "next" link: the same page leads to the same next page as last time
       url = old!.pages[i + 1]?.url ?? null;
@@ -113,7 +114,7 @@ async function checkRepo(client: GitHubClient, src: Repo, old: SourceCheck | nul
   const prior = old?.pages.length === 1 && old.pages[0].url === url ? old.pages[0] : null;
   const a = await client.conditional('HEAD', url, prior?.etag ?? null);
   if (a.status === 304) {
-    if (!prior) throw new GitHubError('http', '变化检查：仓库回了 304，但没有上一次的记录');
+    if (!prior) throw new GitHubError('http', t('变化检查：仓库回了 304，但没有上一次的记录'));
     return { unchanged: true, record: { pages: [prior], fields: null, count: null } };
   }
   return { unchanged: false, record: { pages: [{ url, etag: a.etag }], fields: null, count: null } };

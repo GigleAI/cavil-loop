@@ -20,6 +20,9 @@ import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
+import { t } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim, verbatimParts } from './Verbatim';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
 import { LabelPicker } from './LabelPicker';
 import { pinnedLabels } from '../shared/pickOrder';
@@ -80,10 +83,10 @@ export function NewIssueDialog({
   // a draft given back keeps its title, the caret at its end. Only once, when the dialog opens.
   const titleBox = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    const t = titleBox.current;
-    if (!t) return;
-    t.focus();
-    t.setSelectionRange(t.value.length, t.value.length);
+    const el = titleBox.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
   }, []);
   const allProjects = data.allProjects ?? data.projects;
   // GitHub#231: the same rule for both ways in (the "新建" button and a table group's "+"): the board
@@ -231,8 +234,8 @@ export function NewIssueDialog({
   return (
     <>
     <ConfirmDialog
-      title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
-      confirmLabel="创建"
+      title={group ? tNode('新建 issue · 加到「{name}」', { name: <Verbatim from="github">{group.title}</Verbatim> }) : t('新建 issue')}
+      confirmLabel={t('创建')}
       busy={busy}
       disabled={!repo || !title.trim() || Boolean(preview.blocked)}
       dirty={Boolean(title.trim() || body.trim())}
@@ -246,7 +249,7 @@ export function NewIssueDialog({
           {choices.map((h) => {
             const c = checks[h];
             const why = handoffProblem(repo, c);
-            const text = h === 'agent' ? '交给 agent' : state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）';
+            const text = h === 'agent' ? t('交给 agent') : state.autopilotConfirm ? t('托管（自动合并）…') : t('托管（自动合并）');
             const key = keyText(h === 'agent' ? 'newIssueAgent' : 'newIssueAutopilot');
             return (
               <button
@@ -254,7 +257,7 @@ export function NewIssueDialog({
                 data-testid={`new-issue-${h}`}
                 data-state={c.state}
                 disabled={!canHand(h)}
-                title={why || `${handoffSummary(h, c.state === 'ok' ? c.labels : [])}（${key}）`}
+                title={why || t('{label}（{key}）', { label: handoffSummary(h, c.state === 'ok' ? c.labels : []), key })}
                 onClick={() => press(h)}
               >
                 {text}
@@ -272,10 +275,10 @@ export function NewIssueDialog({
     >
       <div className="form" data-testid="new-issue">
         <label>
-          仓库
+          {t('仓库')}
           <select data-testid="new-issue-repo" value={repo} onChange={(e) => setRepo(e.target.value)}>
             {repos.map((r) => (
-              <option key={r} value={r}>
+              <option key={r} value={r} {...verbatimParts('github', [r])}>
                 {r}
               </option>
             ))}
@@ -283,11 +286,11 @@ export function NewIssueDialog({
         </label>
         {box('repo')}
         <label>
-          标题
+          {t('标题')}
           <input data-testid="new-issue-title" ref={titleBox} value={title} onChange={(e) => setTitle(e.target.value)} />
         </label>
         <label>
-          正文
+          {t('正文')}
           <textarea
             data-testid="new-issue-body"
             value={body}
@@ -302,7 +305,7 @@ export function NewIssueDialog({
         {pasted && (
           <PasteImageNotice
             copied={pasted.copied}
-            webLabel="到 GitHub 网页上继续新建"
+            webLabel={t('到 GitHub 网页上继续新建')}
             webBlocked=""
             onWeb={() => {
               // the web page's new-issue form, filled with what was typed here (GitHub#450: the labels picked here only)
@@ -316,11 +319,11 @@ export function NewIssueDialog({
           // GitHub#450: a draft given back keeps its text, not a pressed button — say which one it was, so a
           // ⌘↩ does not quietly turn it into a plain issue
           <div className="small muted" data-testid="new-issue-draft-handoff" data-handoff={draft.handoff}>
-            上次是按「{draft.handoff === 'agent' ? '交给 agent' : '托管（自动合并）'}」建的，没有建成；要照旧交接，再按下面对应的按钮
+            {t('上次是按「{button}」建的，没有建成；要照旧交接，再按下面对应的按钮', { button: draft.handoff === 'agent' ? t('交给 agent') : t('托管（自动合并）') })}
           </div>
         )}
         <div data-testid="new-issue-projects">
-          建好后加入这些看板
+          {t('建好后加入这些看板')}
           {allProjects.length ? (
             <div className="project-picks">
               {allProjects.map((p) => (
@@ -333,26 +336,27 @@ export function NewIssueDialog({
                     disabled={!p.viewerCanUpdate}
                     onChange={(e) => setManual(e.target.checked ? [...projects.filter((x) => x !== p.key), p.key] : projects.filter((x) => x !== p.key))}
                   />
-                  「{p.title}」
-                  {!p.viewerCanUpdate && <span className="small muted">（这个账号不能修改它）</span>}
+                  {/* one run of text: the label lays out its children with gaps */}
+                  <span>{tNode('「{name}」', { name: <Verbatim from="github">{p.title}</Verbatim> })}</span>
+                  {!p.viewerCanUpdate && <span className="small muted">{t('（这个账号不能修改它）')}</span>}
                 </label>
               ))}
               <span className="small muted" data-testid="new-issue-projects-hint">
-                {projects.length ? `会加入 ${projects.length} 个看板` : '一个都不勾 = 不加入任何看板'}
+                {projects.length ? t('会加入 {n} 个看板', { n: projects.length }) : t('一个都不勾 = 不加入任何看板')}
               </span>
             </div>
           ) : configured ? (
             // boards are added but none was read completely yet: not "no board added" (PR #241 review round 1)
             <p className="small muted" data-testid="new-issue-projects-none-synced">
-              已添加的看板都还没同步完，现在没法勾选；同步完后这里会列出来
+              {t('已添加的看板都还没同步完，现在没法勾选；同步完后这里会列出来')}
             </p>
           ) : (
-            <p className="small muted" data-testid="new-issue-projects-none">还没有添加看板来源，建好后不加入任何看板</p>
+            <p className="small muted" data-testid="new-issue-projects-none">{t('还没有添加看板来源，建好后不加入任何看板')}</p>
           )}
           {manual === null &&
             defaults.unsynced.map((b) => (
               <div key={b.key} className="small muted" data-testid="new-issue-project-unsynced" data-project={b.key}>
-                看板「{b.title}」还没同步完，默认勾选没把它算进去
+                {tNode('看板「{name}」还没同步完，默认勾选没把它算进去', { name: <Verbatim from="github">{b.title}</Verbatim> })}
               </div>
             ))}
           {box('boards')}
@@ -363,7 +367,7 @@ export function NewIssueDialog({
             className="more-head"
             data-testid="new-issue-more-toggle"
             aria-expanded={moreOpen}
-            title={moreOpen ? `收起${fold.title}` : `展开${fold.title}`}
+            title={moreOpen ? t('收起{what}', { what: fold.title }) : t('展开{what}', { what: fold.title })}
             onClick={toggleMore}
             // the dialog lets no plain Enter press one of its buttons (GitHub#192, ConfirmDialog); opening
             // or shutting this fold sends nothing, so Enter does it here (and Space, as on any button)
@@ -384,19 +388,21 @@ export function NewIssueDialog({
                     {part.kind === 'labels' ? (
                       <>
                         {part.names.map((n) => (
-                          <span key={n} className="label" data-testid="new-issue-more-label" data-label={n} title={n} style={labelStyle(colorOf(n), isDark)}>
-                            <span className="more-label-name">{n}</span>
+                          <span key={n} className="label" data-testid="new-issue-more-label" data-label={n} title={n} style={labelStyle(colorOf(n), isDark)} {...verbatimParts('github', [n])}>
+                            <span className="more-label-name">
+                              <Verbatim from="github">{n}</Verbatim>
+                            </span>
                           </span>
                         ))}
                         {part.more > 0 && (
-                          <span data-testid="new-issue-more-extra" title={labels.slice(part.names.length).join('、')}>
+                          <span data-testid="new-issue-more-extra" title={labels.slice(part.names.length).join(t('、'))} {...verbatimParts('github', labels.slice(part.names.length))}>
                             +{part.more}
                           </span>
                         )}
                       </>
                     ) : (
                       <span className={part.tone === 'error' ? 'err' : undefined} data-testid={`new-issue-more-${part.field}`}>
-                        {part.text}
+                        {part.field === 'milestone' && part.tone === 'plain' ? <Verbatim from="github">{part.text}</Verbatim> : part.text}
                       </span>
                     )}
                   </span>
@@ -407,23 +413,23 @@ export function NewIssueDialog({
           {moreOpen && (
             <div className="more-body">
                 <div>
-                  标签
+                  {t('标签')}
                   <div className="chosen-labels" data-testid="new-issue-labels">
                     {labels.map((n) => (
                       <span key={n} className="label" data-testid="new-issue-label-chip" data-label={n} style={labelStyle(colorOf(n), isDark)}>
-                        {n}
-                        <button className="label-x" data-testid="new-issue-label-remove" data-label={n} title={`去掉「${n}」`} onClick={() => toggleLabel(n)}>
+                        <Verbatim from="github">{n}</Verbatim>
+                        <button className="label-x" data-testid="new-issue-label-remove" data-label={n} title={t('去掉「{name}」', { name: n })} {...verbatimParts('github', [n])} onClick={() => toggleLabel(n)}>
                           <Icon name="x" size={10} />
                         </button>
                       </span>
                     ))}
                     <span className="picker-anchor">
                       <button className="label-plus" data-testid="new-issue-label-add" disabled={!opts || Boolean(opts.error)} onClick={() => setPicking(!picking)}>
-                        {opts ? '+ 加标签' : '读取标签…'}
+                        {opts ? t('+ 加标签') : t('读取标签…')}
                       </button>
                       {picking && opts && (
                         <LabelPicker
-                          title="选择标签"
+                          title={t('选择标签')}
                           hint={repo}
                           testid="new-issue-label-picker"
                           pinned={pinnedLabels(hb)}
@@ -434,28 +440,37 @@ export function NewIssueDialog({
                         />
                       )}
                     </span>
-                    {opts?.error && <span className="err small">{opts.error}</span>}
+                    {opts?.error && (
+                      <span className="err small">
+                        <Verbatim from="github">{opts.error}</Verbatim>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <label>
-                  里程碑
+                  {t('里程碑')}
                   <select
                     data-testid="new-issue-milestone"
                     data-read={read.state}
                     value={read.state === 'loading' ? '' : msValue}
                     disabled={busy || read.state !== 'ok'}
-                    title={read.state === 'error' ? `读不到仓库 ${repo} 的里程碑（${read.error}）` : undefined}
+                    title={read.state === 'error' ? t('读不到仓库 {repo} 的里程碑（{error}）', { repo, error: read.error }) : undefined}
+                    {...(read.state === 'error' ? verbatimParts('github', [repo, read.error]) : {})}
                     onChange={(e) => setMsPick(e.target.value ? { kind: 'set', title: e.target.value } : { kind: 'none' })}
                   >
                     {read.state === 'loading' ? (
-                      <option value="">读取里程碑…</option>
+                      <option value="">{t('读取里程碑…')}</option>
                     ) : (
                       <>
-                        <option value="">不设里程碑</option>
-                        {msValue && !msChoices.includes(msValue) && <option value={msValue}>{msValue}</option>}
-                        {msChoices.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
+                        <option value="">{t('不设里程碑')}</option>
+                        {msValue && !msChoices.includes(msValue) && (
+                          <option value={msValue} {...verbatimParts('github', [msValue])}>
+                            {msValue}
+                          </option>
+                        )}
+                        {msChoices.map((m) => (
+                          <option key={m} value={m} {...verbatimParts('github', [m])}>
+                            {m}
                           </option>
                         ))}
                       </>
@@ -464,7 +479,7 @@ export function NewIssueDialog({
                 </label>
                 {showIt && (
                   <label>
-                    迭代（加到勾选的看板上）
+                    {t('迭代（加到勾选的看板上）')}
                     <select
                       data-testid="new-issue-iteration"
                       value={itValue}
@@ -477,7 +492,7 @@ export function NewIssueDialog({
                       }}
                     >
                       <option value="auto">{iterationPickText('auto', itChoices, itKept, currents, today)}</option>
-                      <option value="none">不设迭代</option>
+                      <option value="none">{t('不设迭代')}</option>
                       <IterationOptions iterations={itChoices} chosen={itKept} today={today} label={iterationOptionLabel} />
                     </select>
                   </label>
@@ -490,9 +505,9 @@ export function NewIssueDialog({
     </ConfirmDialog>
     {asking && (
       <ConfirmDialog
-        title="托管新 issue？"
+        title={t('托管新 issue？')}
         focusCancel
-        confirmLabel="确认托管并创建"
+        confirmLabel={t('确认托管并创建')}
         busy={busy}
         disabled={!canHand('autopilot')}
         onCancel={() => {
@@ -508,17 +523,13 @@ export function NewIssueDialog({
         }}
       >
         <div data-testid="new-issue-autopilot-explain">
-          <p>
-            建好后会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>。
-          </p>
-          <p>agent 接手，从方案到合并不再等人确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
-          <p>
-            要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
-          </p>
+          <p>{tNode('建好后会加上标签 {autopilot} 和 {agent}。', { autopilot: <code><Verbatim from="user">{hb.autopilot}</Verbatim></code>, agent: <code><Verbatim from="user">{hb.agent}</Verbatim></code> })}</p>
+          <p>{t('agent 接手，从方案到合并不再等人确认；独立复审通过、检查通过后由 daemon 自动合并。')}</p>
+          <p>{tNode('要叫停，在网页上去掉 {autopilot} 标签。只有维护者亲手加的托管标签才算数。', { autopilot: <code><Verbatim from="user">{hb.autopilot}</Verbatim></code> })}</p>
         </div>
         <label className="row small">
           <input type="checkbox" data-testid="new-issue-autopilot-no-more-ask" checked={noMoreAsk} disabled={busy} onChange={(e) => setNoMoreAsk(e.target.checked)} />
-          不再提示，以后点「托管」直接执行（设置里可改回）
+          {t('不再提示，以后点「托管」直接执行（设置里可改回）')}
         </label>
       </ConfirmDialog>
     )}

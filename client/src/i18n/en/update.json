@@ -28,7 +28,6 @@
   "开发版跟着 main 走，每次合并都可能有新版，可能不稳定。切回正式版不会降级，会等下一个比当前高的正式版。": "Development builds follow main: every merge may bring a new version, and it may be unstable. Switching back to Release does not downgrade; it waits for the next release newer than the current version.",
   "已装好 {version}，重启后生效；之后按所选渠道检查": "{version} is installed and takes effect after a restart; later checks follow the chosen channel",
   "新版 {version} 已下载，重启后生效。": "Version {version} is downloaded and takes effect after a restart.",
-  "关闭提示": "Close this notice",
   "已从 {from} 更新到 {to}。": "Updated from {from} to {to}.",
   "看更新了什么": "See what changed",
   "这一版没有带更新用的公钥，不能自动更新，请手动下载新版": "This build carries no public key for updates, so it cannot update itself; please download the new version by hand",

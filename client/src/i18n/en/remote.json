@@ -70,7 +70,6 @@
   "版本 {v}": "version {v}",
   "{ago}读取": "read {ago}",
   " · 上次读到：{at}": " · last read: {at}",
-  "正在读取…": "Reading…",
   "取消配对…": "Unpair…",
   "{why}。下面是上次读到的内容，不能操作。": "{why}. Below is what was read last time; no actions.",
   "那台机器上还没有接入任何项目。": "No project is connected on that machine yet.",
@@ -129,7 +128,6 @@
   "已配对的电脑…": "Paired computers…",
   "读不到这台机器的远程连接是开是关，所以没有提供开关（不当成「关着」）。": "Whether remote access is on or off on this machine could not be read, so no switch is offered (it is not taken as \"off\"). ",
   "远程连接只开了一半（上次打开或关闭没做完）。选一个把它做完：": "Remote access is only half open (the last turn on or off did not finish). Pick one to finish it: ",
-  "打开": "Turn on",
   "在另一台电脑的「设置 → 远程 daemon → 添加远程 daemon」里选 {name}，填这个配对码：": "On the other computer, in Settings → Remote daemon → Add a remote daemon, pick {name} and enter this pairing code:",
   "{left}后失效 · 只能用一次 · 连续填错 5 次作废 · 再生成一个会顶替这一个": "expires in {left} · works once · void after 5 wrong tries · a new code replaces this one",
   "作废这个码": "Void this code",
@@ -161,5 +159,7 @@
   "已打开远程连接": "remote access open",
   "未打开远程连接": "remote access not open",
   "不在线": "offline",
-  "不确定": "not sure"
+  "不确定": "not sure",
+  "打开||开关": "Turn on",
+  "关闭||开关": "Turn off"
 }

@@ -17,6 +17,7 @@
 
 import type { CreateWatch, ProjectMembership, ProjectMeta } from '../shared/types';
 import { GitHubError, type GitHubClient } from './github';
+import { t } from '../shared/i18n';
 import { readMembership, type GqlFieldValue } from './fetchSources';
 import { CREATED_ITEM_BOARDS_QUERY, PROJECT_WORKFLOWS_QUERY } from './queries';
 
@@ -68,7 +69,7 @@ interface GqlWatchItem {
 export async function readCreatedBoards(client: GitHubClient, nodeId: string, boards: ProjectMeta[]): Promise<Map<string, BoardSighting>> {
   const data = await client.graphql<{ node: { projectItems?: { totalCount?: number; nodes?: GqlWatchItem[] } } | null }>(CREATED_ITEM_BOARDS_QUERY, { id: nodeId });
   const conn = data.node?.projectItems;
-  if (!conn || !Array.isArray(conn.nodes) || typeof conn.totalCount !== 'number') throw new GitHubError('graphql', 'GitHub 的回应里没有这条 issue 所在的看板');
+  if (!conn || !Array.isArray(conn.nodes) || typeof conn.totalCount !== 'number') throw new GitHubError('graphql', t('GitHub 的回应里没有这条 issue 所在的看板'));
   const complete = conn.totalCount <= conn.nodes.length;
   const out = new Map<string, BoardSighting>();
   for (const p of boards) {
@@ -111,17 +112,33 @@ export async function autoAddSurelyOff(client: GitHubClient, p: ProjectMeta): Pr
 
 /** The notice's words for one board that is not (or not surely) finished; null = nothing to say. */
 export function watchProblem(w: CreateWatch): string | null {
-  const what = w.iterationId !== null ? '迭代' : '状态';
-  const head = `看板「${w.title}」`;
+  const iter = w.iterationId !== null;
+  const p = { board: w.title, label: w.label };
   switch (w.state) {
-    case 'human':
-      return `${head}自动收进了这条，${what}是「${w.seen ?? '空'}」，没有自动改成「${w.label}」`;
-    case 'failed':
-      return `${head}自动收进了这条，没能把${what}设成「${w.label}」（${w.reason ?? '未知原因'}）`;
-    case 'unverified':
-      return `${head}上已把${what}设成「${w.label}」，没能确认最后是否保持（${w.reason ?? '读不到'}）`;
-    case 'unread':
-      return `读不到这条在不在${head}上（${w.reason ?? '读不到'}），没能确认是否需要补设${what}`;
+    case 'human': {
+      const seen = w.seen ?? t('空');
+      return iter
+        ? t('看板「{board}」自动收进了这条，迭代是「{seen}」，没有自动改成「{label}」', { ...p, seen })
+        : t('看板「{board}」自动收进了这条，状态是「{seen}」，没有自动改成「{label}」', { ...p, seen });
+    }
+    case 'failed': {
+      const why = w.reason ?? t('未知原因');
+      return iter
+        ? t('看板「{board}」自动收进了这条，没能把迭代设成「{label}」（{why}）', { ...p, why })
+        : t('看板「{board}」自动收进了这条，没能把状态设成「{label}」（{why}）', { ...p, why });
+    }
+    case 'unverified': {
+      const why = w.reason ?? t('读不到');
+      return iter
+        ? t('看板「{board}」上已把迭代设成「{label}」，没能确认最后是否保持（{why}）', { ...p, why })
+        : t('看板「{board}」上已把状态设成「{label}」，没能确认最后是否保持（{why}）', { ...p, why });
+    }
+    case 'unread': {
+      const why = w.reason ?? t('读不到');
+      return iter
+        ? t('读不到这条在不在看板「{board}」上（{why}），没能确认是否需要补设迭代', { board: w.title, why })
+        : t('读不到这条在不在看板「{board}」上（{why}），没能确认是否需要补设状态', { board: w.title, why });
+    }
     default:
       return null;
   }

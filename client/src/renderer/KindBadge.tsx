@@ -1,5 +1,6 @@
 import type { IssueStateReason, ItemKind, ItemState } from '../shared/types';
 import { badgeText, stateTone } from '../shared/stateTone';
+import { t } from '../shared/i18n';
 
 /**
  * The type badge at the top of the detail panel (GitHub#172): an issue and a PR
@@ -52,7 +53,7 @@ export function KindBadge({
   const tone = stateTone(kind, state, reason, isDraft);
   const text = badgeText(kind, state, reason, isDraft);
   return (
-    <span className={`kind-badge ${tone}`} role="img" aria-label={`${NAME[kind]}，${text}`} data-testid="detail-kind" data-kind={kind} data-tone={tone}>
+    <span className={`kind-badge ${tone}`} role="img" aria-label={t('{kind}，{state}', { kind: NAME[kind], state: text })} data-testid="detail-kind" data-kind={kind} data-tone={tone}>
       {kind === 'pr' ? <PrIcon /> : <IssueIcon />}
       <span className="kind-name">{NAME[kind]}</span>
       <span className="kind-sep">·</span>

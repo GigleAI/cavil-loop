@@ -352,7 +352,7 @@ function Control({ f, value, onChange }: { f: ConfigField; value: string; onChan
     return (
       <button type="button" role="switch" aria-checked={on} aria-label={f.label} {...label} className={`pcfg-switch${on ? ' on' : ''}`} data-testid={id} data-on={String(on)} onClick={() => onChange(on ? (f.off ?? '') : (f.on ?? ''))}>
         <i />
-        {on ? t('开') : t('关')}
+        {on ? t('开||开关') : t('关||开关')}
       </button>
     );
   }

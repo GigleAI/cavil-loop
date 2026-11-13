@@ -1,6 +1,7 @@
 import type { Iteration } from '../shared/types';
 import { iterationSections } from '../shared/filter';
 import { CURRENT_MARK } from '../data/newIssueFields';
+import { t } from '../shared/i18n';
 
 export { CURRENT_MARK };
 
@@ -31,26 +32,27 @@ export function IterationOptions({
 }) {
   const s = iterationSections(iterations, today);
   const opt = (it: Iteration, current: boolean) => (
-    <option key={it.id} value={it.id} data-section={current ? 'current' : undefined}>
+    // an option holds text only: the iteration's name (GitHub's) cannot be wrapped on its own, so the option is marked
+    <option key={it.id} value={it.id} data-section={current ? 'current' : undefined} data-verbatim="github">
       {label(it)}
       {current ? CURRENT_MARK : ''}
     </option>
   );
   return (
     <>
-      {chosen && !iterations.some((i) => i.id === chosen.id) && <option value={chosen.id}>{chosen.title}</option>}
+      {chosen && !iterations.some((i) => i.id === chosen.id) && <option value={chosen.id} data-verbatim="github">{chosen.title}</option>}
       {s.current.length > 0 && (
-        <optgroup label="当前" data-section="current">
+        <optgroup label={t('当前')} data-section="current">
           {s.current.map((it) => opt(it, true))}
         </optgroup>
       )}
       {s.upcoming.length > 0 && (
-        <optgroup label="即将开始" data-section="upcoming">
+        <optgroup label={t('即将开始')} data-section="upcoming">
           {s.upcoming.map((it) => opt(it, false))}
         </optgroup>
       )}
       {s.ended.length > 0 && (
-        <optgroup label="已结束" data-section="ended">
+        <optgroup label={t('已结束')} data-section="ended">
           {s.ended.map((it) => opt(it, false))}
         </optgroup>
       )}

@@ -2,6 +2,7 @@
 import { useEffect, useRef } from 'react';
 import { SCOPE_TITLE, activeShortcuts, isCustom, isMac, keyParts, shownKeys, type Scope } from './shortcuts';
 import { useLayer, useShortcuts } from './keyboard';
+import { t, tKey } from '../shared/i18n';
 
 const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help', 'find'];
 
@@ -26,18 +27,18 @@ export function ShortcutHelp({ onClose, onEdit }: { onClose: () => void; onEdit?
   return (
     <div className="modal-back" data-testid="shortcut-help" onClick={onClose}>
       <div className="modal shortcuts" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
-        <h3>键盘快捷键</h3>
+        <h3>{t('键盘快捷键')}</h3>
         <div className="shortcut-groups">
           {ORDER.map((scope) => (
             <section key={scope}>
-              <h4>{SCOPE_TITLE[scope]}</h4>
+              <h4>{tKey(SCOPE_TITLE[scope])}</h4>
               <table>
                 <tbody>
                   {activeShortcuts()
                     .filter((s) => s.scope === scope)
                     .map((s) => (
                     <tr key={s.id} data-testid="shortcut-row" data-id={s.id}>
-                      <td>{s.label}</td>
+                      <td>{tKey(s.label)}</td>
                       <td className="keys">
                         {s.range ? (
                           // GitHub#442: one run of keys (⌘1 … ⌘9), its first and last
@@ -54,7 +55,7 @@ export function ShortcutHelp({ onClose, onEdit }: { onClose: () => void; onEdit?
                             </span>
                           ))
                         )}
-                        {isCustom(s.id) && <span className="chg">已改</span>}
+                        {isCustom(s.id) && <span className="chg">{t('已改')}</span>}
                       </td>
                     </tr>
                   ))}
@@ -64,16 +65,16 @@ export function ShortcutHelp({ onClose, onEdit }: { onClose: () => void; onEdit?
           ))}
         </div>
         <p className="small muted">
-          单个字母的快捷键只在光标不在输入框里时生效；输入法正在拼字时，快捷键一律不响应。放大 / 缩小 / 实际大小在「缩放」菜单里（⌘= / ⌘- / ⌘0）。点过讨论区之后，键盘停在讨论区里，先点一下讨论区以外的地方。
+          {t('单个字母的快捷键只在光标不在输入框里时生效；输入法正在拼字时，快捷键一律不响应。放大 / 缩小 / 实际大小在「缩放」菜单里（⌘= / ⌘- / ⌘0）。点过讨论区之后，键盘停在讨论区里，先点一下讨论区以外的地方。')}
         </p>
         <div className="row end">
           {onEdit && (
             <button className="link shortcut-edit" data-testid="shortcut-help-edit" onClick={onEdit}>
-              在设置里改快捷键 →
+              {t('在设置里改快捷键 →')}
             </button>
           )}
           <button data-testid="shortcut-help-close" onClick={onClose}>
-            知道了
+            {t('知道了')}
           </button>
         </div>
       </div>

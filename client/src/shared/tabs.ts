@@ -5,6 +5,7 @@
 
 import type { IssueStateReason, Item, ItemKind, ItemState, SourceStatus } from './types';
 import type { OpRecord } from './ops';
+import { zhKey } from './i18n';
 
 /** What a tab shows of its item without opening it. */
 export interface TabSummary {
@@ -92,15 +93,15 @@ export function tabStatus(it: Pick<TabSummary, 'kind' | 'state' | 'stateReason' 
 }
 
 export const TAB_STATUS_TEXT: Record<TabStatus, string> = {
-  merged: '已合并',
-  closed: '已关闭（没合并）',
-  done: '已关闭（完成）',
-  skipped: '已关闭（不做 / 重复）',
-  waiting: '等待人处理',
-  blocked: '等前置完成',
-  running: '正在运行',
-  draft: '草稿',
-  open: '打开',
+  merged: zhKey('已合并'),
+  closed: zhKey('已关闭（没合并）'),
+  done: zhKey('已关闭（完成）'),
+  skipped: zhKey('已关闭（不做 / 重复）'),
+  waiting: zhKey('等待人处理'),
+  blocked: zhKey('等前置完成'),
+  running: zhKey('正在运行'),
+  draft: zhKey('草稿'),
+  open: zhKey('打开'),
 };
 
 /** A tab that was not looked at since its item changed (the blue dot). Never on the tab in front. */

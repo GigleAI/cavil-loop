@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppState } from '../shared/types';
 import { api } from './api';
+import { t, tKey, translate, zhKey } from '../shared/i18n';
 
 /** what a reread by hand came to, judged from the state after it */
 export type RereadOutcome =
@@ -19,12 +20,21 @@ export type RereadOutcome =
   /** the sync itself went wrong, or the app is no longer signed in */
   | { kind: 'error'; message: string };
 
+/**
+ * The controller's "the round itself went wrong" problem (`t(ROUND_ERROR, { why })`), in either language
+ * (it may have been worded before the language was switched)
+ */
+export const ROUND_ERROR = zhKey('同步出错：{why}');
+function isRoundError(problem: string | null | undefined): boolean {
+  return typeof problem === 'string' && (['zh', 'en'] as const).some((l) => problem.startsWith(translate(l, ROUND_ERROR, { why: '' })));
+}
+
 /** The one judgement. Never "ok" unless the app is signed in, online, every source read whole and no round error stands. */
 export function rereadOutcome(state: Pick<AppState, 'phase' | 'sync'>): RereadOutcome {
-  if (state.phase !== 'ready') return { kind: 'error', message: '已不在登录状态' };
+  if (state.phase !== 'ready') return { kind: 'error', message: t('已不在登录状态') };
   const s = state.sync;
   // the round's own failure (controller: a round that threw) — not hidden behind "ok"
-  if (s.problem?.startsWith('同步出错')) return { kind: 'error', message: s.problem };
+  if (isRoundError(s.problem)) return { kind: 'error', message: s.problem! };
   if (s.offline) return { kind: 'offline' };
   const failed = s.sources.filter((x) => !x.ok).map((x) => x.sourceKey);
   return failed.length ? { kind: 'failed', keys: failed } : { kind: 'ok' };
@@ -41,31 +51,31 @@ export function clockSec(at: number): string {
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
-export const REREAD_RUNNING_HINT = '连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。';
-
 /** the line while it runs */
 export function rereadRunningText(startedAt: number): string {
-  return `${clockSec(startedAt)} 开始重新读取，${REREAD_RUNNING_HINT}`;
+  return t('{time} 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。', { time: clockSec(startedAt) });
 }
 
 /** the line after it; null = nothing to say here (all read: the failure it was about is gone) */
 export function rereadResultText(r: { at: number; outcome: RereadOutcome }): string | null {
-  const t = clockSec(r.at);
+  const time = clockSec(r.at);
   switch (r.outcome.kind) {
     case 'ok':
       return null;
     case 'failed':
       return r.outcome.keys.length === 1
-        ? `${t} 重新读取完毕：这个来源仍然读取失败（原因见上）。`
-        : `${t} 重新读取完毕：${r.outcome.keys.length} 个来源仍然读取失败（原因见上）。`;
+        ? t('{time} 重新读取完毕：这个来源仍然读取失败（原因见上）。', { time })
+        : t('{time} 重新读取完毕：{n} 个来源仍然读取失败（原因见上）。', { time, n: r.outcome.keys.length });
     case 'offline':
-      return `${t} 重新读取完毕：仍然连不上 GitHub。`;
+      return t('{time} 重新读取完毕：仍然连不上 GitHub。', { time });
     case 'error':
-      return `${t} 重新读取没有完成：${r.outcome.message}`;
+      return t('{time} 重新读取没有完成：{message}', { time, message: r.outcome.message });
   }
 }
 
-export const REREAD_OK_TEXT = '已重新读取，所有来源都读到了';
+/** kept as the Chinese key: show it with tKey(REREAD_OK_TEXT), or call rereadOkText() */
+export const REREAD_OK_TEXT = zhKey('已重新读取，所有来源都读到了');
+export const rereadOkText = (): string => tKey(REREAD_OK_TEXT);
 
 export interface Reread {
   state: RereadState;

@@ -160,11 +160,11 @@ export function RemoteHostBlock() {
           <span className="banner-text">
             {t('远程连接只开了一半（上次打开或关闭没做完）。选一个把它做完：')}
             <button className="link" disabled={!!busy} data-testid="local-remote-finish-enable" onClick={() => void act('enable')}>
-              {t('打开')}
+              {t('打开||开关')}
             </button>
             {' · '}
             <button className="link" disabled={!!busy} data-testid="local-remote-finish-disable" onClick={() => void act('disable')}>
-              {t('关闭')}
+              {t('关闭||开关')}
             </button>
           </span>
         </div>

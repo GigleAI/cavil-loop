@@ -41,8 +41,6 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
-/** the parts of Settings still in Chinese until sub-issue ② (#472): a source's read failure and the shortcut section's rows */
-const SETTINGS_LATER = ['[data-testid="source-failure"]', /* the shortcut section's rows and buttons (its heading is checked): with the shortcut list, sub-issue ② (#472) */ '#set-keys > :not(.set-keys-head)', '#set-keys .set-keys-head > :not(h3)'];
 /** the settings page as this sub-issue migrated it */
 const SETTINGS = ['.settings > .toolbar', '[data-testid="settings-nav"]', '.settings-main section'];
 
@@ -99,7 +97,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await expect(page.getByTestId('pending-label')).toHaveText('等人/处理');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await saved(app, 'en');
-  expect(await chineseIn(page, SETTINGS, SETTINGS_LATER)).toEqual([]);
+  expect(await chineseIn(page, SETTINGS)).toEqual([]);
   // the check sees what it should: the user's Chinese label is there, inside its as-is marker
   expect(await page.locator('[data-testid="pending-label"] [data-verbatim="user"]').textContent()).toBe('等人/处理');
   await section.screenshot({ path: join(screens, '471-02-language-en.png') });

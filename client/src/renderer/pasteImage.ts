@@ -5,6 +5,8 @@
 // dropping it, the box says so and offers to carry on writing on the web page, where the
 // image can be pasted.
 
+import { t } from '../shared/i18n';
+
 /** A paste that carries an image and no text: the box would get nothing (a screenshot). */
 export function isImageOnlyPaste(data: Pick<DataTransfer, 'items' | 'types'> | null): boolean {
   if (!data) return false;
@@ -23,7 +25,7 @@ export function newIssueOnWeb(web: string, repo: string, title: string, body: st
   return `${web}/${repo}/issues/new${s ? `?${s}` : ''}`;
 }
 
-export const PASTE_IMAGE_NOTE = '客户端不能把图片上传到 GitHub（GitHub 没有给第三方程序的上传接口），这张图没有贴进来。';
+export const pasteImageNote = (): string => t('客户端不能把图片上传到 GitHub（GitHub 没有给第三方程序的上传接口），这张图没有贴进来。');
 
 /** Put the typed text on the clipboard for the web page; false when the system refused. */
 export async function copyText(text: string): Promise<boolean> {

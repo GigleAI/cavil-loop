@@ -314,6 +314,10 @@ export function SettingsView({
             <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
           </label>
           <label>
+            {t('暂缓的标签（标签选择器里排在等人处理的标签后面；留空 = 不置顶）')}
+            <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
+          </label>
+          <label>
             {t('交给 agent 的标签（加上）')}
             <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: keepDefault(e.target, DEFAULT_HAND_BACK.agent) })} />
           </label>

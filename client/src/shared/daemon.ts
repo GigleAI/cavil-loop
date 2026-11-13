@@ -377,8 +377,8 @@ export function fieldProblem(f: ConfigField, v: string): string | null {
  */
 export function valueWords(f: ConfigField, v: string): Words {
   const as = (x: string): Words => ({ zh: '{v}', params: { v: x }, outside: { v: 'daemon' } });
-  if (f.type === 'label') return v === '' ? { zh: zhKey('关') } : { zh: zhKey('开，标签 {v}'), params: { v }, outside: { v: 'daemon' } };
-  if (f.type === 'bool') return v === f.on ? { zh: zhKey('开') } : v === f.off ? { zh: zhKey('关') } : as(v);
+  if (f.type === 'label') return v === '' ? { zh: zhKey('关||开关') } : { zh: zhKey('开，标签 {v}'), params: { v }, outside: { v: 'daemon' } };
+  if (f.type === 'bool') return v === f.on ? { zh: zhKey('开||开关') } : v === f.off ? { zh: zhKey('关||开关') } : as(v);
   if (f.type === 'enum') {
     const o = (f.options ?? []).find((x) => x.value === v);
     return o && o.label && o.label !== v ? { zh: zhKey('{label}（{v}）'), params: { label: o.label, v }, outside: { label: 'daemon', v: 'daemon' } } : as(v);

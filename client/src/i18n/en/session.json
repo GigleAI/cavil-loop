@@ -5,7 +5,6 @@
   "新的登录凭据没能存进钥匙串（{e}）。这次运行照常可用，App 会每轮重试保存；在保存成功前退出 App，下次启动需要重新登录": "The new sign-in credential could not be saved in the keychain ({e}). This run works as usual and the app retries saving every round; quitting the app before it is saved means signing in again at the next start",
   "未知错误": "unknown error",
   "本地缓存写入失败（{m}），这一轮的结果没有保存": "Writing the local cache failed ({m}); this round's results were not saved",
-  "还没有登录": "Not signed in yet",
   "缺少参数 {k}": "Missing parameter {k}",
   "缺参数 {k}": "Missing parameter {k}",
   "这个设置只能由登录流程写：{k}": "Only the sign-in may write this setting: {k}",

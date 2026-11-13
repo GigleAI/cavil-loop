@@ -16,6 +16,10 @@
 
 import shell from '../i18n/en/shell.json' with { type: 'json' };
 import board from '../i18n/en/board.json' with { type: 'json' };
+import detail from '../i18n/en/detail.json' with { type: 'json' };
+import dialogs from '../i18n/en/dialogs.json' with { type: 'json' };
+import notice from '../i18n/en/notice.json' with { type: 'json' };
+import actions from '../i18n/en/actions.json' with { type: 'json' };
 import daemon from '../i18n/en/daemon.json' with { type: 'json' };
 import remote from '../i18n/en/remote.json' with { type: 'json' };
 import update from '../i18n/en/update.json' with { type: 'json' };
@@ -33,7 +37,7 @@ export const LANG_SETTING = 'uiLanguage';
 export const DEFAULT_LANG_SETTING: LangSetting = 'zh';
 
 /** the English tables by area (file name without .json); the checks read them one by one */
-export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, daemon, remote, update, session } as Record<string, Record<string, EnText>>;
+export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, detail, dialogs, notice, actions, daemon, remote, update, session } as Record<string, Record<string, EnText>>;
 
 /** the tables as one, as the window and the back end look them up */
 function mergeTables(): Map<string, EnText> {
@@ -166,11 +170,24 @@ export function enEntry(zh: string): EnText | undefined {
 }
 
 /** the pure rule t() applies, for one language (the back end applies the same) */
+/**
+ * GitHub#473: one Chinese text that means two things (「开」 an open issue / a switch that is on) is two keys:
+ * the Chinese, then `||` and a word saying which one (`t('开||开关')`). Only the part before `||` is ever
+ * shown in Chinese; the English table has one line per key. The back end reads keys the same way.
+ */
+export const CONTEXT_MARK = '||';
+
+/** what a key reads as in Chinese: everything before its context mark */
+export function shownZh(key: string): string {
+  const at = key.indexOf(CONTEXT_MARK);
+  return at < 0 ? key : key.slice(0, at);
+}
+
 export function translate(lang: Lang, zh: string, params?: Params): string {
-  if (lang === 'zh') return fill(zh, params);
+  if (lang === 'zh') return fill(shownZh(zh), params);
   const en = EN.get(zh);
   // a missing English line shows the Chinese rather than nothing; the table check catches it
-  if (en === undefined) return fill(zh, params);
+  if (en === undefined) return fill(shownZh(zh), params);
   if (typeof en === 'string') return fill(en, params);
   const n = params?.n;
   return fill(Number(n) === 1 ? en.one : en.other, params);
@@ -182,6 +199,17 @@ export function translate(lang: Lang, zh: string, params?: Params): string {
  * English); `tKey` shows it in the window's language.
  */
 export function zhKey<T extends string>(zh: T): T {
+  return zh;
+}
+
+/**
+ * GitHub#472: Chinese that is not the window's text and so is never translated — words of the daemon's
+ * that the client looks for in what the daemon wrote (its usage footer), and words the client writes
+ * to GitHub next to the daemon's marker, for the daemon and the people on GitHub to read in the one
+ * language the daemon uses. Never shown as the window's own words. The source scan lets exactly these
+ * literals through (test/i18n/scan.ts).
+ */
+export function outsideWords<T extends string>(zh: T): T {
   return zh;
 }
 

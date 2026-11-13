@@ -6,6 +6,8 @@ import { HOME, TAB_STATUS_TEXT, tabStatus, tabUnread, type TabInfo, type TabLabe
 import { Icon, type IconName } from './Icons';
 import { KEEPS_PANEL } from './outsideClick';
 import { keyText } from './shortcuts';
+import { t, tKey } from '../shared/i18n';
+import { Verbatim, verbatimParts } from './Verbatim';
 
 const ICON: Record<Exclude<TabStatus, 'running' | 'waiting' | 'blocked'>, { issue: IconName; pr: IconName; tone: string }> = {
   merged: { issue: 'pr-merged', pr: 'pr-merged', tone: 'done' },
@@ -111,12 +113,12 @@ export function TabBar({
     <div className="tabs" data-testid="tabs" role="tablist" {...{ [KEEPS_PANEL]: '' }}>
       <button className={`tab tab-home${active === HOME ? ' on' : ''}`} role="tab" aria-selected={active === HOME} data-testid="tab-home" data-front={active === HOME ? 'yes' : 'no'} onClick={() => onPick(HOME)}>
         <Icon name="home" />
-        <span className="tab-title">首页</span>
+        <span className="tab-title">{t('首页')}</span>
       </button>
       {tabs.length > 0 && <span className="tab-sep" aria-hidden="true" />}
       <div className={`tab-scroll${hidden.left ? ' more-left' : ''}${hidden.right ? ' more-right' : ''}`}>
         {hidden.left && (
-          <button className="tab-arrow left" data-testid="tab-arrow-left" aria-label="往左看更多标签页" title="往左看更多标签页" tabIndex={-1} onClick={() => page(-1)}>
+          <button className="tab-arrow left" data-testid="tab-arrow-left" aria-label={t('往左看更多标签页')} title={t('往左看更多标签页')} tabIndex={-1} onClick={() => page(-1)}>
             <Icon name="chevron-left" size={14} />
           </button>
         )}
@@ -137,56 +139,57 @@ export function TabBar({
             else if (e.clientX > r.right - EDGE) el.scrollLeft += EDGE_STEP;
           }}
         >
-          {tabs.map((t, i) => {
-            const on = t.key === active;
-            const status = tabStatus(t.item, labels);
-            const unread = tabUnread(t, on);
-            const words = `${TAB_STATUS_TEXT[status]}${unread ? ' · 有新动静' : ''}`;
+          {tabs.map((tab, i) => {
+            const on = tab.key === active;
+            const status = tabStatus(tab.item, labels);
+            const unread = tabUnread(tab, on);
+            const words = unread ? t('{status} · 有新动静', { status: tKey(TAB_STATUS_TEXT[status]) }) : tKey(TAB_STATUS_TEXT[status]);
             return (
               <div
-                key={t.key}
-                className={`tab${on ? ' on' : ''}${over === t.key ? ' drop' : ''}`}
+                key={tab.key}
+                className={`tab${on ? ' on' : ''}${over === tab.key ? ' drop' : ''}`}
                 role="tab"
                 aria-selected={on}
                 tabIndex={0}
                 data-testid="tab"
-                data-key={t.key}
+                data-key={tab.key}
                 data-front={on ? 'yes' : 'no'}
                 data-status={status}
                 data-unread={unread ? 'yes' : 'no'}
-                data-listed={t.listed ? 'yes' : 'no'}
-                title={`${t.item.repo}#${t.item.number} ${t.item.title}\n${words}`}
-                onClick={() => onPick(t.key)}
+                data-listed={tab.listed ? 'yes' : 'no'}
+                title={`${tab.item.repo}#${tab.item.number} ${tab.item.title}\n${words}`}
+                {...verbatimParts('github', [tab.item.repo, tab.item.title])}
+                onClick={() => onPick(tab.key)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    onPick(t.key);
+                    onPick(tab.key);
                   }
                 }}
                 // the middle button closes, as in a browser
                 onAuxClick={(e) => {
                   if (e.button !== 1) return;
                   e.preventDefault();
-                  onClose(t.key);
+                  onClose(tab.key);
                 }}
                 draggable
                 onDragStart={(e) => {
-                  dragged.current = t.key;
+                  dragged.current = tab.key;
                   e.dataTransfer.effectAllowed = 'move';
-                  e.dataTransfer.setData('text/plain', t.key);
+                  e.dataTransfer.setData('text/plain', tab.key);
                 }}
                 onDragOver={(e) => {
-                  if (!dragged.current || dragged.current === t.key) return;
+                  if (!dragged.current || dragged.current === tab.key) return;
                   e.preventDefault();
-                  setOver(t.key);
+                  setOver(tab.key);
                 }}
-                onDragLeave={() => setOver((cur) => (cur === t.key ? null : cur))}
+                onDragLeave={() => setOver((cur) => (cur === tab.key ? null : cur))}
                 onDrop={(e) => {
                   e.preventDefault();
                   const from = dragged.current;
                   dragged.current = null;
                   setOver(null);
-                  if (from && from !== t.key) onMove(from, i);
+                  if (from && from !== tab.key) onMove(from, i);
                 }}
                 onDragEnd={() => {
                   dragged.current = null;
@@ -194,21 +197,21 @@ export function TabBar({
                 }}
               >
                 <span className="tab-status" data-testid="tab-status" role="img" aria-label={words}>
-                  <TabStatusIcon status={status} kind={t.item.kind} />
+                  <TabStatusIcon status={status} kind={tab.item.kind} />
                   {unread && <span className="tab-dot" data-testid="tab-dot" />}
                 </span>
                 <span className="tab-title" data-testid="tab-title">
-                  {t.item.title}
+                  <Verbatim from="github">{tab.item.title}</Verbatim>
                 </span>
-                <span className="tab-ref">#{t.item.number}</span>
+                <span className="tab-ref">#{tab.item.number}</span>
                 <button
                   className="tab-x"
                   data-testid="tab-close"
-                  aria-label={`关掉标签页 #${t.item.number}`}
-                  title={on ? `关掉这个标签页（${keyText('closeTab')}）` : '关掉这个标签页'}
+                  aria-label={t('关掉标签页 #{number}', { number: tab.item.number })}
+                  title={on ? t('关掉这个标签页（{key}）', { key: keyText('closeTab') }) : t('关掉这个标签页')}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onClose(t.key);
+                    onClose(tab.key);
                   }}
                 >
                   <Icon name="x" size={12} />
@@ -218,7 +221,7 @@ export function TabBar({
           })}
         </div>
         {hidden.right && (
-          <button className="tab-arrow right" data-testid="tab-arrow-right" aria-label="往右看更多标签页" title="往右看更多标签页" tabIndex={-1} onClick={() => page(1)}>
+          <button className="tab-arrow right" data-testid="tab-arrow-right" aria-label={t('往右看更多标签页')} title={t('往右看更多标签页')} tabIndex={-1} onClick={() => page(1)}>
             <Icon name="chevron-right" size={14} />
           </button>
         )}
