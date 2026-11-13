@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { Controller } from '../app/controller';
 import { localApi } from '../app/localApi';
+import { applyTheme } from './colors';
 import type { Backend, BackendInit } from '../backend/backend';
 import type { Desktop } from '../app/desktop';
 import './styles.css';
@@ -32,6 +33,9 @@ async function boot() {
   // UI-test builds get their beats from the test, so no round fires by itself during a test.
   const controller = new Controller({ backend, endpoints: init.endpoints, desktop }, init);
   window.cavil = localApi(controller, backend);
+  // GitHub#516: light / dark is marked on the page before the first screen, and follows every change
+  applyTheme(controller.getState().theme);
+  controller.onChange(() => applyTheme(controller.getState().theme));
   createRoot(document.getElementById('root')!).render(<App />);
   // the packaged-app smoke test: the views mounted and the back end answered through IPC
   for (let i = 0; i < 100 && !document.querySelector('[data-testid="app-root"]'); i++) await new Promise((r) => setTimeout(r, 100));
