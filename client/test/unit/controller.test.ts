@@ -504,16 +504,17 @@ describe('sync and cache', () => {
     first.c.setView({ showClosed: { human: true } });
     first.c.setView({ showClosed: { board: false, table: true } });
     first.c.setView({ showClosed: { graph: 'yes' as any } }); // refused whole
-    first.c.setView({ showClosed: { nope: true } as any }); // unknown view: refused whole
-    const want = { ...DEFAULT_SHOW_CLOSED, table: true, human: true };
+    first.c.setView({ showClosed: { 't-abc': true } }); // a number made in Settings (GitHub#468) has its own
+    first.c.setView({ showClosed: { '': true } }); // no name: refused whole
+    const want = { ...DEFAULT_SHOW_CLOSED, table: true, human: true, 't-abc': true };
     expect(first.c.getState().view.showClosed).toEqual(want);
     first.c.stopTimer();
     const second = await make({ credentials: first.credentials });
     expect(second.c.getState().view.showClosed).toEqual(want);
     second.c.stopTimer();
     const base = { mode: 'iteration', swimlanes: false, selected: null, query: '' };
-    const broken = await make({ seed: { view: { ...base, showClosed: { board: true, table: 1, human: 'x', agent: true, extra: true } } } });
-    expect(broken.c.getState().view.showClosed).toEqual({ ...DEFAULT_SHOW_CLOSED, board: true, agent: true });
+    const broken = await make({ seed: { view: { ...base, showClosed: { board: true, table: 1, human: 'x', agent: true, 't-x': true, 't-y': 'no' } } } });
+    expect(broken.c.getState().view.showClosed).toEqual({ ...DEFAULT_SHOW_CLOSED, board: true, agent: true, 't-x': true });
     broken.c.stopTimer();
     const notObject = await make({ seed: { view: { ...base, showClosed: [true] } } });
     expect(notObject.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);

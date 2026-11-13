@@ -46,20 +46,30 @@ export function validWidths(v: unknown): v is Partial<Record<TableColumn, number
   );
 }
 
-/** GitHub#464: the views that keep a "显示已关闭" switch of their own */
+/** GitHub#464: the views that always have a "显示已关闭" switch: the layouts and the default numbers (a number made in Settings adds its own id) */
 export const SHOW_CLOSED_KEYS: readonly ShowClosedKey[] = ['board', 'table', 'graph', 'running', 'agent', 'human', 'unlabeled'];
 export const DEFAULT_SHOW_CLOSED: ShowClosed = { board: false, table: false, graph: false, running: false, agent: false, human: false, unlabeled: false };
+/** at most this many switches are kept (layouts, numbers, and numbers since removed in Settings) */
+export const SHOW_CLOSED_MAX = 64;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 function validShowClosed(v: unknown): v is ShowClosed {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
-  const keys = Object.keys(v);
-  return keys.length === SHOW_CLOSED_KEYS.length && SHOW_CLOSED_KEYS.every((k) => typeof (v as Record<string, unknown>)[k] === 'boolean');
+  if (!isPlainObject(v)) return false;
+  const entries = Object.entries(v);
+  return entries.length <= SHOW_CLOSED_MAX && entries.every(([k, b]) => k !== '' && typeof b === 'boolean') && SHOW_CLOSED_KEYS.every((k) => k in v);
 }
 
-/** Each switch that was saved as true / false; anything else (missing, not a boolean) is off. */
+/** Each switch that was saved as true / false (the first SHOW_CLOSED_MAX); anything else is off / dropped. */
 function normalizeShowClosed(v: unknown): ShowClosed {
-  const r = (typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
-  return Object.fromEntries(SHOW_CLOSED_KEYS.map((k) => [k, typeof r[k] === 'boolean' ? r[k] : false])) as ShowClosed;
+  const out: ShowClosed = { ...DEFAULT_SHOW_CLOSED };
+  if (!isPlainObject(v)) return out;
+  for (const [k, b] of Object.entries(v)) {
+    if (k === '' || typeof b !== 'boolean') continue;
+    if (!(k in out) && Object.keys(out).length >= SHOW_CLOSED_MAX) continue;
+    out[k] = b;
+  }
+  return out;
 }
 
 /**

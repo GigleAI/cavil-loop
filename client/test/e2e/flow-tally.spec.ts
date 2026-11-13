@@ -6,6 +6,8 @@
 // GitHub#418: a fourth number, "未处理" — open items with no label at all; its click is `no:label`.
 // GitHub#464: the click queries carry no `is:open`; the lit number's own "显示已关闭" switch (off) keeps
 // the list to open items, so a click still lists exactly the counted ones.
+// GitHub#468: the numbers are a table in Settings (顶栏计数): rows that follow a flow label count as before,
+// rows with a condition of their own count and click through that one text; kept across a restart.
 // Screenshots land in test-results/screens/.
 
 import { test, expect, type Page } from '@playwright/test';
@@ -182,7 +184,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await ready(page);
   await page.getByTestId('open-settings').click();
   const section = page.getByTestId('hand-back-settings');
-  await expect(section.locator('h3')).toHaveText('流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）');
+  await expect(section.locator('h3')).toHaveText('流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）');
   await expect(page.getByTestId('hand-back-running')).toHaveValue('doing/agent');
   await section.scrollIntoViewIfNeeded();
   await page.evaluate(() => document.getElementById('set-hand-back')!.scrollIntoView({ block: 'start' }));
@@ -290,4 +292,129 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
   // the board layout shows it too
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await expect(u.getByTestId('tally-count')).toHaveText('1');
+});
+
+const state = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state);
+const rowOf = (page: Page, id: string) => page.locator(`[data-testid="tally-row"][data-id="${id}"]`);
+const barOrder = (page: Page) => page.getByTestId('tally').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
+
+test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of its own, rename, recolour, move, delete; kept across a restart; the reminders do not move', async () => {
+  let app = await launchApp(env);
+  let page = app.page;
+  await ready(page);
+  const pendingBefore = (await state(page)).pendingCount;
+  await expect.poll(() => barOrder(page)).toEqual(['running', 'agent', 'human', 'unlabeled']);
+
+  await page.getByTestId('open-settings').click();
+  const section = page.getByTestId('tally-settings');
+  await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
+  await expect(section.getByTestId('tally-row')).toHaveCount(4);
+  await expect(rowOf(page, 'human').getByTestId('tally-flow')).toHaveText('跟随流程标签：开着、带 pending/human 标签的');
+  await expect(rowOf(page, 'unlabeled').getByTestId('tally-query')).toHaveValue('no:label');
+  await shot(page, 'flow-tally-07-tally-settings');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'flow-tally-07-tally-settings-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  // add a number: open issues waiting for a prerequisite
+  await section.getByTestId('tally-add').click();
+  await expect(section.getByTestId('tally-row')).toHaveCount(5);
+  const added = section.getByTestId('tally-row').last();
+  const id = (await added.getAttribute('data-id'))!;
+  await added.getByTestId('tally-name').fill('等前置');
+  await added.getByTestId('tally-name').blur();
+  await rowOf(page, id).getByTestId('tally-query').fill('is:open is:issue label:"pending/blocked"');
+  await rowOf(page, id).getByTestId('tally-query').blur();
+  await rowOf(page, id).locator('[data-testid="tally-color"][data-color="red"]').click();
+  await expect(rowOf(page, id).locator('[data-testid="tally-color"][data-color="red"]')).toHaveAttribute('aria-pressed', 'true');
+  // an unsupported word is named under the row
+  await expect(rowOf(page, id).getByTestId('tally-unsupported')).toHaveCount(0);
+  // move it to the top, delete "未处理"
+  for (let i = 0; i < 4; i++) await rowOf(page, id).getByTestId('tally-up').click();
+  await rowOf(page, 'unlabeled').getByTestId('tally-remove').click();
+  await expect.poll(async () => ((await state(page)).tallies ?? []).map((d: any) => d.id)).toEqual([id, 'running', 'agent', 'human']);
+  await shot(page, 'flow-tally-08-tally-settings-edited');
+
+  // the bar follows the table; the count is what a click lists (written out here: open issues carrying pending/blocked)
+  await page.getByTestId('back').click();
+  await expect.poll(() => barOrder(page)).toEqual([id, 'running', 'agent', 'human']);
+  const mine = (await items(page)).filter((i) => i.state === 'open' && i.kind === 'issue' && i.labels.some((l) => l.name.toLowerCase() === 'pending/blocked'));
+  expect(mine.length).toBeGreaterThan(0);
+  expect(mine.length).toBeLessThan((await items(page)).filter((i) => i.state === 'open').length);
+  const t = tally(page, id);
+  await expect(t).toContainText(`等前置 ${mine.length}`);
+  await expect(t.locator('.dot')).toHaveClass(/c-red/);
+  await expect(t).toHaveAttribute('title', new RegExp(`^符合「is:open is:issue label:"pending/blocked"」的有 ${mine.length} 个 · 点一下只看这些`));
+  await page.getByTestId('search').fill('新增依赖图视图');
+  await t.click();
+  await expect(page.getByTestId('search')).toHaveValue('is:open is:issue label:"pending/blocked"');
+  await expect(t).toHaveAttribute('aria-pressed', 'true');
+  await expect(shown(page)).toHaveCount(mine.length);
+  expect((await shown(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-key')))).sort()).toEqual(mine.map((i) => i.key).sort());
+  await shot(page, 'flow-tally-09-own-number-on');
+  await t.click();
+  await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+  // the flow rows still count as before
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/human')));
+  // the reminders are not the table's
+  expect((await state(page)).pendingCount).toBe(pendingBefore);
+
+  // restart: the same table
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => barOrder(page), { timeout: 15_000 }).toEqual([id, 'running', 'agent', 'human']);
+  await expect(tally(page, id)).toContainText(`等前置 ${mine.length}`);
+
+  // back to the default
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('tally-reset').click();
+  await expect.poll(async () => (await state(page)).tallies).toBeNull();
+  await page.getByTestId('back').click();
+  await expect.poll(() => barOrder(page)).toEqual(['running', 'agent', 'human', 'unlabeled']);
+  // every row removed: no number at all
+  await page.getByTestId('open-settings').click();
+  for (let i = 0; i < 4; i++) await page.getByTestId('tally-settings').getByTestId('tally-remove').first().click();
+  await expect(page.getByTestId('tally-empty')).toBeVisible();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('tally')).toHaveCount(0);
+  await app.close();
+});
+
+test('GitHub#468: a row following a label the search box cannot carry counts exactly; "改成自己写条件" leaves it empty and says why; back to following', async () => {
+  const { page } = await launchApp(env);
+  await ready(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('hand-back-human').fill('>待处理');
+  await page.getByTestId('hand-back-human').blur();
+  const row = rowOf(page, 'human');
+  await expect(row.getByTestId('tally-flow')).toHaveText('跟随流程标签：开着、带 >待处理 标签的');
+  await expect(row.getByTestId('tally-note')).toContainText('写不进搜索框');
+  await page.getByTestId('back').click();
+  // counted exactly (the recorded board has none carrying it), not every open item; not clickable
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(await expected(page, '>待处理')));
+  expect(await expected(page, '>待处理')).toBe(0);
+  await expect(tally(page, 'human')).toBeDisabled();
+
+  // turned into a condition of its own: nothing is guessed
+  await page.getByTestId('open-settings').click();
+  await row.getByTestId('tally-to-query').click();
+  await expect(row.getByTestId('tally-query')).toHaveValue('');
+  await expect(row.getByTestId('tally-note')).toContainText('没法自动转换');
+  await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
+  await shot(page, 'flow-tally-10-cannot-convert');
+  await page.getByTestId('back').click();
+  await expect(tally(page, 'human')).toHaveCount(0);
+
+  // back to following; then with a plain label the conversion is exact and counts the same
+  await page.getByTestId('open-settings').click();
+  await row.getByTestId('tally-to-flow').click();
+  await page.getByTestId('hand-back-human').fill('pending/human');
+  await page.getByTestId('hand-back-human').blur();
+  await row.getByTestId('tally-to-query').click();
+  await expect(row.getByTestId('tally-query')).toHaveValue('label:"pending/human"');
+  await page.getByTestId('back').click();
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/human')));
+  await expect(tally(page, 'human')).toBeEnabled();
 });

@@ -8,10 +8,10 @@
 // (`openOnly`). That list must equal the count; with the switch on the closed ones come too.
 
 import { describe, expect, it } from 'vitest';
-import { flowTally, litTally, showClosedKey, tallyClick, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
+import { flowTally, litTally, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
 import { mergeSnapshots } from '../../src/data/merge';
 import { isPending } from '../../src/data/pending';
-import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
+import { applyFilter, openOnly, parseFilter, statesStated } from '../../src/shared/filter';
 import { DEFAULT_HAND_BACK, type Item } from '../../src/shared/types';
 import { item } from './helpers';
 
@@ -118,7 +118,7 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
   it('counts open issues and draft / ready PRs with no label; any label, closed or merged leaves it out', () => {
     expect(bare(ITEMS)).toEqual([10, 11]);
     const u = unlabeledTally(ITEMS);
-    expect(u).toEqual({ kind: 'unlabeled', label: '', count: 2, query: 'no:label' });
+    expect(u).toEqual({ kind: 'unlabeled', name: '未处理', color: 'ring', source: 'query', label: '', count: 2, query: 'no:label' });
     // one label of any kind is enough to leave: a classification label, the autopilot label, a flow label
     for (const name of ['bug', 'autopilot', 'pending/agent']) {
       expect(unlabeledTally([item(R, 1, { labels: L(name) }), item(R, 2, {})]).count, name).toBe(1);
@@ -230,11 +230,29 @@ describe('a click on a number', () => {
 });
 
 describe('GitHub#464: which "显示已关闭" switch is in effect', () => {
-  it('the lit number\'s own, whatever the layout; else the layout\'s', () => {
+  it('the lit number\'s own (by its row id, a number made in Settings too), whatever the layout; else the layout\'s', () => {
     for (const layout of ['board', 'table', 'graph'] as const) {
       expect(showClosedKey(layout, null)).toBe(layout);
-      for (const k of ['running', 'agent', 'human', 'unlabeled'] as const) expect(showClosedKey(layout, k)).toBe(k);
+      for (const k of ['running', 'agent', 'human', 'unlabeled', 't-abc'] as const) expect(showClosedKey(layout, k)).toBe(k);
+      // a (hand-edited) row id equal to a layout name never shares that layout's switch
+      expect(showClosedKey(layout, 'board')).toBe('tally:board');
     }
+  });
+
+  it('a condition of one\'s own counts what its click lists with the switch off: open only, unless the condition names the state', () => {
+    const defs = [
+      { id: 't-1', name: 'human', color: 'gray' as const, source: { kind: 'query' as const, query: 'label:"pending/human"' } },
+      { id: 't-2', name: 'closed human', color: 'gray' as const, source: { kind: 'query' as const, query: 'is:closed label:"pending/human"' } },
+      { id: 't-3', name: 'all human', color: 'gray' as const, source: { kind: 'query' as const, query: 'label:"pending/human" is:open,closed' } },
+    ];
+    const E = tallyEntries(ITEMS, defs, DEFAULT_HAND_BACK);
+    for (const e of E) {
+      const parsed = parseFilter(e.query!);
+      const hit = applyFilter(ITEMS, parsed, { viewer: null, today, projects: [] });
+      const shown = statesStated(parsed) ? hit : openOnly(hit);
+      expect(e.count, e.name).toBe(shown.length);
+    }
+    expect(E.map((e) => e.count)).toEqual([2, 1, 3]); // #4 #6 open, #5 merged
   });
 
   it('the old `is:open` click queries no longer light a number (a saved one is migrated, see view settings)', () => {
