@@ -322,7 +322,7 @@ ls ~/.claude/projects/-$(echo $WORKTREE | tr / -)/
 
 `bash tests/run.sh` 跑全部（`-j 1` 一个接一个时，本机有负载约 15 分钟，2026-11-07 实测 926 秒；默认 `-j` 同时跑几个单位）；`bash tests/run.sh 名字...` 按名字跑几个（文件名去掉 `.test.sh`；
 拆了段的文件可以写 `名字:K/N` 只跑一段）；`--list` 列出调度单位。GitHub Actions（`.github/workflows/tests.yml`）对每个 PR、每次推送 `main` 跑同一个脚本（只改了 `client/` 的不跑——这些测试都不读它，`client/test/tauri/mutations.sh` 例外）：
-八个并行任务（GitHub#495 之前是四个）各跑 `tests/run.sh --ci --shard K/8 -j 2`，再由一个名叫 **测试** 的任务汇总（`--verify`）——
+八个并行任务（GitHub#495 之前是四个、`-j 2`）各跑 `tests/run.sh --ci --shard K/8 -j 3`，再由一个名叫 **测试** 的任务汇总（`--verify`）——
 只有每个该跑的调度单位在各路里恰好通过一次，它才是绿的。要设「合并必需检查」就勾这一条。
 每个文件的完整日志存成运行附件，失败的直接打印全文。
 

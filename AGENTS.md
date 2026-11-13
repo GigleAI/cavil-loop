@@ -372,7 +372,7 @@ point `HOME` at a temp dir, and **run the real scripts** — no network, no read
 `bash tests/run.sh` runs them all (with `-j 1` ~15 min on a busy dev box, 926 s measured on 2026-11-07; the default `-j` runs several units at once); `bash tests/run.sh NAME...` runs a few
 by name (file name without `.test.sh`; `NAME:K/N` for one part of a split file); `--list` prints the units. GitHub Actions
 (`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main` (except changes that only touch `client/`, which none of these tests read — `client/test/tauri/mutations.sh` still counts):
-`tests/run.sh --ci --shard K/8 -j 2` on eight parallel jobs (four until GitHub#495), then one job named **测试** that is green only
+`tests/run.sh --ci --shard K/8 -j 3` on eight parallel jobs (four with `-j 2` until GitHub#495), then one job named **测试** that is green only
 when every expected unit passed exactly once across the shards (`--verify`). That is the check to
 require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
 
