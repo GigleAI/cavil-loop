@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices, TallyDef } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices, ShortcutKeyResult, ShortcutKeySpec, TallyDef } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
@@ -146,6 +146,10 @@ export interface CavilApi {
   setLaneFold(lane: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** GitHub#487: change one shortcut's key, or (`spec` null) put it back to its defaults; refused when the table would have a conflict */
+  setShortcutKey(id: string, spec: ShortcutKeySpec | null): Promise<ShortcutKeyResult>;
+  /** GitHub#487: every shortcut back to its default keys */
+  resetShortcutKeys(): Promise<void>;
   /** whether switching to the window takes back every delivered notification (GitHub#369) */
   setClearAllOnActivate(on: boolean): Promise<void>;
   /** which pending items remind: every one, or only the signed-in account's (GitHub#373) */

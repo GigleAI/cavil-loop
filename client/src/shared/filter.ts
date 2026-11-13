@@ -238,6 +238,49 @@ export function applyFilter(items: Item[], parsed: ParsedFilter, ctx: FilterCont
   );
 }
 
+/**
+ * GitHub#464: does the search itself say open / closed / merged (`is:open`, `-is:closed`, `is:merged`, …)?
+ * Then the "显示已关闭" switch stays out of it: the search decides, or `is:closed` with the switch off
+ * would always list nothing. Judged on the parsed clauses, so an unsupported word is not counted.
+ */
+export function statesStated(parsed: ParsedFilter): boolean {
+  return parsed.clauses.some((c) => c.kind === 'field' && c.field === 'is' && c.values.some((v) => ['open', 'closed', 'merged'].includes(v.toLowerCase())));
+}
+
+/** GitHub#464: what the switch lets through while it is off — open items only (the same rule as `is:open`). */
+export function openOnly(items: Item[]): Item[] {
+  return items.filter((it) => it.state === 'open');
+}
+
+/**
+ * GitHub#464: one search word whose only job was to hide finished items — `-status:done`, `-label:done`
+ * (any case, quoted or not) or `is:open`. The switch does that now, so an imported web view's filter and
+ * an old saved search lose these words. Judged by the parser on the word alone: a word that carries
+ * anything more (`-label:done,bug`, `is:open,pr`) is kept.
+ */
+function hidesDone(token: string): boolean {
+  const { clauses, unsupported } = parseFilter(token);
+  if (unsupported.length || clauses.length !== 1) return false;
+  const c = clauses[0];
+  if (c.kind !== 'field' || c.values.length !== 1) return false;
+  const v = c.values[0].toLowerCase();
+  if (c.field === 'is') return !c.negated && v === 'open';
+  return (c.field === 'status' || c.field === 'label') && c.negated && v === 'done';
+}
+
+/** GitHub#464: the search without the words that only hid finished items; every other word as written, in order. */
+export function dropDoneHiders(input: string): string {
+  return tokenize(input)
+    .filter((t) => !hidesDone(t))
+    .join(' ');
+}
+
+/** GitHub#464: the search consists of nothing but those words (and at least one of them). */
+export function onlyDoneHiders(input: string): boolean {
+  const tokens = tokenize(input);
+  return tokens.length > 0 && tokens.every(hidesDone);
+}
+
 /** Iteration whose window contains `today` (exported for the table's "Current" mark). */
 export function isCurrentIteration(it: Iteration, today: string): boolean {
   return it.startDate <= today && today < addDays(it.startDate, it.duration);

@@ -17,12 +17,11 @@ import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { isMac, keyText } from './shortcuts';
+import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
-import { AUTO_DISMISS_MS, opAutoDismissable, opDraftLeft, opLockOf, opReusableDraft, opText, opTone, type OpRecord } from '../shared/ops';
-import { OpNotice } from './OpNotice';
+import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
@@ -66,6 +65,16 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
   if (!r.ok) return { kind: 'error', text: `${r.error ?? '没有成功'}` };
   if (r.warning) return { kind: 'warn', text: `${okText}。注意：${r.warning}` };
   return { kind: 'ok', text: okText };
+}
+
+/**
+ * GitHub#488: what a write's caller still says itself. A field change the controller recorded (`held`) is
+ * said by the field (saved) and by the window's notice area (failed / not confirmed): nothing here, unless
+ * it went through with a warning (a re-read that failed). Anything else: as `noteOf`.
+ */
+export function resultNote(r: WriteResult, okText: string): ResultNote | null {
+  if (r.held && (!r.ok || !r.warning)) return null;
+  return noteOf(r, okText);
 }
 
 /** how long a plain success note stays when its bar opts in (GitHub#256; 5 s since GitHub#279) */
@@ -132,7 +141,7 @@ function at(ms: number): string {
  * reads GitHub first and is held back when somebody changed it (or it could not be read):
  * then only an explicit "overwrite anyway" / "send anyway" sends it.
  */
-export function EditIssues({ marks, canWrite, resending }: { marks: EditMark[]; canWrite: boolean; resending: readonly string[] }) {
+export function EditIssues({ marks, canWrite, resending, about }: { marks: EditMark[]; canWrite: boolean; resending: readonly string[]; /** GitHub#488: in the notice area — which item, and the way to open it */ about?: React.ReactNode }) {
   const [working, setWorking] = useState<string | null>(null);
   const open = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
   if (!open.length) return null;
@@ -151,6 +160,7 @@ export function EditIssues({ marks, canWrite, resending }: { marks: EditMark[]; 
     <div className={`banner ${tone} edit-issues`} data-testid="edit-issues" data-kind={tone}>
       {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <div className="banner-text">
+        {about}
         <b>{open.length} 处修改{open.some((m) => m.status === 'failed') ? '没保存上' : '没确认'}</b>
         {sending && <span data-testid="edit-issues-sending">；正在重新发送…</span>}
         {open.map((m) => (
@@ -243,26 +253,6 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
     <span className="head-note" data-testid="action-result" data-kind={note.kind} title={note.text} role="status" {...auto}>
       <Icon name="check" size={13} />
       <span className="head-note-text">{note.text}</span>
-    </span>
-  );
-}
-
-/**
- * GitHub#260: an operation that fully succeeded (the one rule, opAutoDismissable) is said in the head like a
- * plain success, and puts itself away after 5 s exactly like its × (GitHub#256) — never hidden behind the
- * notices button, where it would count down and go without being seen.
- */
-function HeadOp({ r }: { r: OpRecord }) {
-  const auto = useAutoDismiss(true, AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
-  return (
-    <span className="head-note" data-testid="op-notice" data-kind={opTone(r)} data-op={r.id} data-key={r.key} title={opText(r)} role="status" {...auto}>
-      <Icon name="check" size={13} />
-      <span className="head-note-text" data-testid="op-notice-text">
-        {opText(r)}
-      </span>
-      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
-        <Icon name="x" size={12} />
-      </button>
     </span>
   );
 }
@@ -739,11 +729,13 @@ export function DetailPanel({
     } finally {
       setChanging((n) => n - 1);
     }
+    // GitHub#488: a recorded change says nothing here (the field and the notice area do)
+    const said = resultNote(r, okText);
     if (!session.current()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
+      if (said) onLeftBehind(resultNote(r, `${label}：${okText}`)!, action);
       return r;
     }
-    setNote(noteOf(r, okText));
+    if (said) setNote(said);
     // read again either way, so the panel shows what GitHub holds now
     void load(!r.ok);
     return r;
@@ -863,7 +855,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -877,11 +869,17 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '');
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl, m.alt ?? false);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
+  // GitHub#487: the frame forwards the keys in effect on this machine — sent once it is ready, and again when they change
+  const fwdKeys = JSON.stringify(frameForward());
+  useEffect(() => {
+    if (readyRender !== frame.render) return;
+    frameRef.current?.contentWindow?.postMessage({ cavil: 'keys', render: frame.render, fwd: JSON.parse(fwdKeys) }, '*');
+  }, [readyRender, frame.render, fwdKeys]);
   // GitHub#260: the labels / milestone / board fields can be folded away; remembered on this machine
   const [fieldsShown, setFieldsShown] = useState(state.view.detailFields);
   const showFields = (v: boolean) => {
@@ -1178,23 +1176,16 @@ export function DetailPanel({
   };
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
-  // GitHub#260: what goes behind the notices button in the head (see DetailNotices)
-  const headOps = myOps.filter((r) => opAutoDismissable(r));
-  const liveOps = myOps.filter((r) => !r.dismissed && !opAutoDismissable(r));
+  // GitHub#260: what goes behind the notices button in the head (see DetailNotices). GitHub#488: the
+  // results the controller holds (this item's operations, its changes not saved) are said in the window's
+  // notice area alone — here only what is this panel's own: a failed read, a note of a write made here,
+  // and the way back to a kept draft of an operation whose notice was put away
   const draftOps = myOps.filter((r) => r.dismissed && opDraftLeft(r));
-  const openMarks = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
   const noteIn = note !== null && note.kind !== 'ok';
   const loadErrIn = Boolean(loadError && detail);
-  const noticeCount = liveOps.length + draftOps.length + openMarks.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
-  const opTones = liveOps.map((r) => opTone(r));
+  const noticeCount = draftOps.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
   // GitHub#357: the button follows the same facts as the notices behind it
-  const noticeTone: NoticeTone = opTones.includes('busy') || openMarks.some((m) => state.editsResending.includes(m.id))
-    ? 'busy'
-    : opTones.includes('error') || openMarks.length > 0 || loadErrIn || note?.kind === 'error'
-      ? 'error'
-      : opTones.includes('warn') || note?.kind === 'warn' || draftOps.length > 0
-        ? 'warn'
-        : 'ok';
+  const noticeTone: NoticeTone = loadErrIn || note?.kind === 'error' ? 'error' : note?.kind === 'warn' || draftOps.length > 0 ? 'warn' : 'ok';
 
   return shell(
     item.key,
@@ -1222,9 +1213,6 @@ export function DetailPanel({
           )}
         </span>
         {note?.kind === 'ok' && <HeadNote note={note} onExpire={() => setNote(null)} />}
-        {headOps.map((r) => (
-          <HeadOp key={r.id} r={r} />
-        ))}
         </span>
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
@@ -1278,9 +1266,6 @@ export function DetailPanel({
                 <span className="banner-text">{loadError}</span>
               </div>
             )}
-            {liveOps.map((r) => (
-              <OpNotice key={r.id} r={r} onRetry={retryOp} onToReply={toReply} />
-            ))}
             {draftOps.map((r) => (
               <div key={r.id} className="detail-stale small op-draft-line">
                 <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
@@ -1288,7 +1273,6 @@ export function DetailPanel({
                 </button>
               </div>
             ))}
-            <EditIssues marks={marks} canWrite={canWrite} resending={state.editsResending} />
           </DetailNotices>
         )}
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}

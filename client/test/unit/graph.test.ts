@@ -10,7 +10,7 @@ import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { mergeSnapshots } from '../../src/data/merge';
 import { buildGraph, boxProgress, type GraphModel } from '../../src/data/graph';
 import { BOX_HEAD, BOX_PAD, MIN_SCALE, edgePath, fitView, focusOpen, keepAnchor, layoutGraph, READABLE_SCALE, zoomAt, type Rect } from '../../src/data/graphLayout';
-import { applyFilter, parseFilter } from '../../src/shared/filter';
+import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
 import { parseSource } from '../../src/shared/sources';
 import type { Item, SourceConfig, SourceSnapshot } from '../../src/shared/types';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub, type FakeGitHub } from '../fake-github/server';
@@ -168,6 +168,37 @@ describe('the search picks first; the other ends it hid stay, faded', () => {
     expect(g.nodes.has(K(169))).toBe(false);
     expect(g.nodes.has(K(350))).toBe(true);
     expect([...g.nodes.values()].every((n) => !n.dim)).toBe(true);
+  });
+});
+
+describe('GitHub#464: the "显示已关闭" switch off = open items only (openOnly), the graph keeps the closed ends they need', () => {
+  it('a closed blocker and a closed sub-issue of open items are drawn faded; a closed parent too; unrelated closed ones stay out; switch on: all drawn plain', async () => {
+    await setState(349, 'closed');
+    const items = merged(await board(), await repo());
+    const g = buildGraph(items, openOnly(items));
+    // #350 (open) is blocked by the closed #349: drawn faded, the arrow is there; #346 (open) keeps its closed child
+    expect(node(g, 350).dim).toBe(false);
+    expect(node(g, 349).dim).toBe(true);
+    expect(edge(g, 349, 350)).toEqual({ from: K(349), to: K(350), open: false });
+    expect(node(g, 346).dim).toBe(false);
+    expect(nums(node(g, 346).children)).toEqual([349, 350]);
+    // #169 blocks #181, both closed, nothing open needs them
+    expect(g.nodes.has(K(169))).toBe(false);
+    expect(g.nodes.has(K(181))).toBe(false);
+    // switch on: everything read is picked, nothing is faded
+    const all = buildGraph(items, items);
+    expect(all.nodes.has(K(169)) && all.nodes.has(K(181))).toBe(true);
+    expect([K(349), K(169), K(181)].every((k) => !all.nodes.get(k)!.dim)).toBe(true);
+  });
+
+  it('a closed parent of open sub-issues is drawn faded, its box whole', async () => {
+    await setState(346, 'closed');
+    const items = merged(await board(), await repo());
+    const g = buildGraph(items, openOnly(items));
+    expect(node(g, 346).dim).toBe(true);
+    expect(nums(node(g, 346).children)).toEqual([349, 350]);
+    for (const c of [349, 350]) expect(node(g, c)).toMatchObject({ dim: false, parent: K(346) });
+    expect(g.nodes.has(K(169))).toBe(false);
   });
 });
 

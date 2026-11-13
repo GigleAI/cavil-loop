@@ -297,16 +297,16 @@ Refs #10|example/ap|正文引用了两个 issue（Refs 不唯一）" \
 
 Refs #3" "$H1" "pending/merge,autopilot"
     tick
-    # GitHub#233：绑定照旧成立（Fixes: #7 绑 #7，Refs 不关 issue），但正文带关闭关键词，合并时 issue 会被关掉 → 交回 worker 改成 Refs
-    chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 不合并，交回 worker 改写" "$(merged 8)/$(has_label 8 pending/agent)" "0/yes"
-    chk "  → 打回说明里写了改成 Refs #7" "$(comments_with 8 '改成 `Refs #7`')" 1
+    # GitHub#461：正文带关闭关键词的托管 PR 照合（合并即关 issue）；Fixes: #7 绑 #7，Refs #3 不关 issue
+    chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 合并，不交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "1/no"
+    chk "  → 交接记下「合并即关」" "$(jq -r '.autopilot.handoff["8"].closes // false' "$STATE")" true
     fresh; happy
     mkpr 8 feature/issue-7 "做了 X。
 
 Closes #7" "$H1" "pending/merge,autopilot"
     tick
-    chk "老写法 Closes #7（绑定照旧成立）→ 不合并，交回 worker" "$(merged 8)/$(has_label 8 pending/agent)/$(has_label 8 pending/merge)" "0/yes/no"
-    chk "  → 记一次打回" "$(st 8 .bounces)" 1
+    chk "Closes #7 → 合并" "$(merged 8)/$(has_label 8 pending/agent)" "1/no"
+    chk "  → 没记打回" "$(st 8 .bounces)" ""
 
     # ── 【4】叫停 ──
     section "【4】叫停：issue 摘托管标签、issue / PR 任一处打 pending/human"
@@ -1785,7 +1785,8 @@ prompts_check() {
         # shellcheck disable=SC2086
         n=$(compose "$root" "$name" $on)
         chk "$name：拼入 worker 的托管规则" "$(printf '%s' "$n" | grep -c '^# 托管规则（本条是托管条目）')" 1
-        chk "$name：写明只写一个 Refs #7、不写关闭关键词、分支 feature/issue-7" "$(printf '%s' "$n" | grep -cF '**只写一个** `Refs #7`，**不写**任何关闭关键词')/$(printf '%s' "$n" | grep -c '`feature/issue-7`')" "1/1"
+        chk "$name：写明写一个 Closes #7、不关闭别的、分支 feature/issue-7" "$(printf '%s' "$n" | grep -cF '写**一个** `Closes #7`，不关闭别的 issue')/$(printf '%s' "$n" | grep -c '`feature/issue-7`')" "1/1"
+        chk "$name：Done 占位换掉了" "$(printf '%s' "$n" | grep -c '打 `Done` 并挂 `pending/human`')" 1
         chk "$name：没有复审那份" "$(printf '%s' "$n" | grep -c 'autopilot-review-pass')" 0
         chk "$name：没有没换掉的占位" "$(printf '%s' "$n" | grep -c '@@')" 0
     done
