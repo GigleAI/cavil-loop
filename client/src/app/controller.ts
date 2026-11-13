@@ -55,7 +55,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { isSameTextMark, SAME_TEXT_MARK_MS, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
+import { isSameTextMark, SAME_TEXT_MARK_MS, sameTextUnclear, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
 import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
@@ -4676,11 +4676,21 @@ export class Controller {
         if (snap) {
           if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
           else {
-            // PR #510 review round 1: a comment that already is a reply's of the reply box proves nothing here
+            // PR #510 review rounds 1–3: the same rule as a reply's proof — a comment another send owns proves nothing,
+            // and a text another request may still land with (on its way / not sure / unlocked with a mark) is not proven
             const owned = new Set([...this.sends.values()].map((x) => x.commentId).filter((x): x is string => !!x));
-            const out = opProveFromRecords(now, { ...snap, comments: snap.comments.filter((x) => !owned.has(x.id)) }, login);
+            const blind = new Set<string>();
+            for (const body of [now.draft.comment, now.reply?.body]) {
+              if (!body) continue;
+              const unclear = sameTextUnclear(now.key, body, now.id, [...this.sends.values()], [...this.ops.values()], this.liveMarks());
+              if (unclear) {
+                blind.add(body);
+                problems.push(unclear);
+              }
+            }
+            const out = opProveFromRecords(now, { ...snap, comments: snap.comments.filter((x) => !owned.has(x.id) && !blind.has(x.body)) }, login);
             now = out.record;
-            problems.push(...out.missing);
+            problems.push(...out.missing.filter((m) => !m.includes('评论列表里没有') || !blind.size));
           }
           now = opProveFromSnapshot(now, view);
         }
@@ -5149,7 +5159,7 @@ export class Controller {
       if (c.session !== this.session) return;
       const now = this.sends.get(id);
       if (!now || now.state !== 'unknown') return;
-      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()], this.liveMarks());
+      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()], this.liveMarks(), [...this.ops.values()]);
       problem = out.missing;
       found = out.record.state === 'ok';
       this.sends.set(id, out.record);

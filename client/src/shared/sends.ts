@@ -20,6 +20,7 @@
 //     late answer would overwrite it. A reply locks nothing.
 
 import type { WriteAction } from './actions';
+import type { OpRecord } from './ops';
 
 export type SendKind = 'comment' | 'editEntry' | 'editTitle' | 'toggleTask';
 export const SEND_KINDS: readonly SendKind[] = ['comment', 'editEntry', 'editTitle', 'toggleTask'];
@@ -144,6 +145,27 @@ export function isSameTextMark(x: unknown): x is SameTextMark {
   return typeof m.key === 'string' && typeof m.body === 'string' && typeof m.until === 'number';
 }
 
+/**
+ * PR #510 review rounds 1–3: the one rule for "may a new comment of this text on this item prove the request of
+ * `selfId`?", asked by every comment proof — a reply of the reply box, an operation's attached comment, and a reply
+ * made from an operation's kept comment. A same-text comment could also be another request's when:
+ *   - another reply of that text there is on its way or not sure (and not unlocked);
+ *   - an operation of that item is sending / not sure of that text as its attached comment or as a reply (not unlocked);
+ *   - a person unlocked such a request earlier and its same-text mark still stands (it may land late).
+ * Then nothing is proven automatically; the reason is said. null = clear.
+ */
+export function sameTextUnclear(key: string, body: string, selfId: string, sends: readonly SendRecord[], ops: readonly OpRecord[], marks: readonly SameTextMark[]): string | null {
+  const why = '这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对';
+  if (sends.some((o) => o.id !== selfId && o.key === key && o.action.kind === 'comment' && o.action.body === body && !o.unlocked && (o.state === 'sending' || o.state === 'unknown'))) return why;
+  for (const o of ops) {
+    if (o.id === selfId || o.key !== key || o.unlocked) continue;
+    if ((o.replyState === 'sending' || o.replyState === 'unknown') && o.reply?.body === body) return why;
+    if (o.draft.comment === body && o.steps.some((s) => s.name === 'comment' && (s.state === 'pending' || s.state === 'unknown' || (s.state === 'unsent' && o.running)))) return why;
+  }
+  if (marks.some((m) => m.key === key && m.body === body)) return why;
+  return null;
+}
+
 /** refused: the text may go back into the item's edit box (the panel that shows it takes it) */
 export function sendTakeable(r: SendRecord): boolean {
   return r.state === 'refused' && !r.returned && !r.dropped && sendText(r.action) !== null;
@@ -258,7 +280,13 @@ export interface SendEvidence {
 }
 
 /** An unknown send against what was read: proven → ok; otherwise unchanged with what is missing. */
-export function sendProve(r: SendRecord, ev: SendEvidence, others: readonly SendRecord[] = [], marks: readonly SameTextMark[] = []): { record: SendRecord; missing: string | null } {
+export function sendProve(
+  r: SendRecord,
+  ev: SendEvidence,
+  others: readonly SendRecord[] = [],
+  marks: readonly SameTextMark[] = [],
+  ops: readonly OpRecord[] = [],
+): { record: SendRecord; missing: string | null } {
   if (r.state !== 'unknown') return { record: r, missing: null };
   // PR #510 review round 2: unlocked by a person = settled by hand; never proven (or given a comment) by the app
   if (r.unlocked) return { record: r, missing: '已由人核对后解除锁定，不再自动核对' };
@@ -274,7 +302,8 @@ export function sendProve(r: SendRecord, ev: SendEvidence, others: readonly Send
     // found could be either one's; and a comment that already is another send's proves nothing here
     const body = r.action.body;
     const same = others.filter((o) => o.id !== r.id && o.key === r.key && o.action.kind === 'comment' && o.action.body === body);
-    if (same.some((o) => o.state === 'sending' || o.state === 'unknown') || marks.some((m) => m.key === r.key && m.body === body)) return { record: r, missing: '这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对' };
+    const unclear = sameTextUnclear(r.key, body, r.id, others, ops, marks);
+    if (unclear) return { record: r, missing: unclear };
     const taken = new Set(same.map((o) => o.commentId).filter((x): x is string => !!x));
     const free = ev.comments.filter((c) => !taken.has(c.id));
     if (!commentProves(free, p.before, ev.login, body)) return { record: r, missing: null };

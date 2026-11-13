@@ -15,6 +15,7 @@ import {
   sendShown,
   sendSlot,
   sendTakeable,
+  sameTextUnclear,
   sendTakeText,
   sendTone,
   type SendAction,
@@ -136,6 +137,34 @@ describe('what proves an unknown send', () => {
     expect(sendProve(r, { login: 'me', comments: list }, [], [{ key: K, body: '原文', until: 9 }])).toMatchObject({ record: { state: 'unknown' }, missing: expect.stringContaining('分不清') });
     // another item's or another text's mark does not count
     expect(sendProve(r, { login: 'me', comments: list }, [], [{ key: 'x/y#1', body: '原文', until: 9 }, { key: K, body: '别的', until: 9 }]).record.state).toBe('ok');
+  });
+
+  it('PR #510 review round 3: one rule for every comment proof — replies, attached comments, replies from a kept comment', () => {
+    const op = (patch: Record<string, unknown>) => ({ id: 'op-1', key: K, unlocked: false, running: false, replyState: null, reply: null, draft: {}, steps: [], ...patch }) as unknown as OpRecord;
+    const clear = (sends: SendRecord[], ops: OpRecord[], marks: { key: string; body: string; until: number }[] = []) => sameTextUnclear(K, '原文', 'self', sends, ops, marks);
+    expect(clear([], [])).toBeNull();
+    // a reply on its way / not sure / unlocked
+    expect(clear([rec(reply, { id: 'a' })], [])).not.toBeNull();
+    expect(clear([rec(reply, { id: 'a', state: 'unknown' })], [])).not.toBeNull();
+    expect(clear([rec(reply, { id: 'a', state: 'unknown', unlocked: true })], [])).toBeNull();
+    expect(clear([rec(reply, { id: 'a', state: 'ok' })], [])).toBeNull();
+    // itself never counts
+    expect(sameTextUnclear(K, '原文', 'a', [rec(reply, { id: 'a', state: 'unknown' })], [], [])).toBeNull();
+    // an operation's attached comment pending / not sure / about to go out; unlocked does not count
+    for (const st of ['pending', 'unknown'] as const) expect(clear([], [op({ draft: { comment: '原文' }, steps: [{ name: 'comment', state: st }] })])).not.toBeNull();
+    expect(clear([], [op({ running: true, draft: { comment: '原文' }, steps: [{ name: 'comment', state: 'unsent' }] })])).not.toBeNull();
+    expect(clear([], [op({ unlocked: true, draft: { comment: '原文' }, steps: [{ name: 'comment', state: 'unknown' }] })])).toBeNull();
+    expect(clear([], [op({ draft: { comment: '原文' }, steps: [{ name: 'comment', state: 'ok' }] })])).toBeNull();
+    // a reply made from an operation's kept comment
+    expect(clear([], [op({ replyState: 'unknown', reply: { body: '原文', before: [] } })])).not.toBeNull();
+    // a mark; another item / text does not count
+    expect(clear([], [], [{ key: K, body: '原文', until: 9 }])).not.toBeNull();
+    expect(clear([rec({ ...reply, body: '别的' }, { id: 'a', state: 'unknown' })], [op({ key: 'x/y#1', draft: { comment: '原文' }, steps: [{ name: 'comment', state: 'unknown' }] })], [{ key: K, body: '别的', until: 9 }])).toBeNull();
+    // the reply's proof uses it: an operation's not-sure same text blocks it
+    const r = rec(reply, { id: 'self', state: 'unknown', proof: { kind: 'comment', before: ['old'] } });
+    const list = [{ id: 'n', author: 'me', body: '原文' }];
+    expect(sendProve(r, { login: 'me', comments: list }, [], [], [op({ draft: { comment: '原文' }, steps: [{ name: 'comment', state: 'unknown' }] })]).record.state).toBe('unknown');
+    expect(sendProve(r, { login: 'me', comments: list }, [], [], []).record.state).toBe('ok');
   });
 
   it('PR #510 review round 2: what goes back into the box is its latest text', () => {

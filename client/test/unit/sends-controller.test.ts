@@ -34,7 +34,9 @@ async function ready() {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 3_600_000 });
+  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 3_600_000,
+    // GitHub#359: only the check made at once (as in the operation tests)
+    opCheckDelaysMs: [] });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -375,6 +377,54 @@ describe('PR #510 review round 1', () => {
     expect(commentsOnGitHub().filter((x) => x.body === '交回说明')).toHaveLength(1);
     expect(await c.sendRecheck(s.id!)).toMatchObject({ ok: false });
     expect(sendOf(c, s.id!).state).toBe('unknown');
+  });
+
+  it('PR #510 review round 3: a reply unlocked by a person, then an operation\'s attached comment of the same text that is not sure: the reply landing late never proves the operation\'s comment, also after a restart; a different text is proven', async () => {
+    let c = await ready();
+    const lateA = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const a = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同一段说明' });
+    await idle(c);
+    lateA.stop();
+    expect(sendOf(c, a.id!).state).toBe('unknown');
+    // while A is not sure, an operation carrying the same text is refused
+    expect(c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '同一段说明' }).ok).toBe(false);
+    c.sendUnlock(a.id!);
+    c.sendDismiss(a.id!);
+    await idle(c);
+    // B: hand back with the same text; its comment's answer is lost and it does not land
+    const lateB = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const b = c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '同一段说明' });
+    expect(b.ok).toBe(true);
+    const opB = () => c.getState().ops.find((x) => x.id === b.id)!;
+    for (let i = 0; i < 1000 && !(opB().steps[0].state === 'unknown' && !opB().checking && !opB().running); i++) await new Promise((r) => setTimeout(r, 10));
+    lateB.stop();
+    expect(opB().steps[0]).toMatchObject({ name: 'comment', state: 'unknown' });
+    // A lands now: a new same-text comment by this account — not B's
+    lateA.land();
+    expect(commentsOnGitHub().filter((x) => x.body === '同一段说明')).toHaveLength(1);
+    await c.opRecheck(b.id!);
+    expect(opB().steps[0].state).toBe('unknown');
+    expect(opB().checkProblem).toContain('分不清');
+    // labels were not touched after the unproven comment
+    expect(fake.writes().filter((w) => w.path.endsWith(`/issues/${ISSUE}/labels`) || w.path.includes(`/issues/${ISSUE}/labels/`))).toHaveLength(0);
+    // a restart: the mark is still there
+    c = await restart(c);
+    await c.opRecheck(b.id!);
+    expect(c.getState().ops.find((x) => x.id === b.id)!.steps[0].state).toBe('unknown');
+    // the sibling: another text's operation comment whose answer is lost and that lands is proven as before
+    const issue2 = 139;
+    for (const k of fake.state.repos.get('gigleai/cavil-loop')!) if (k.number === issue2) Object.assign(k, { state: 'open', state_reason: null });
+    for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === issue2) Object.assign(node.content, { state: 'OPEN', stateReason: null });
+    await c.syncNow();
+    const lateD = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${issue2}/comments`);
+    const d = c.startOp({ kind: 'handBack', key: K(issue2), comment: '另一段说明' });
+    expect(d.ok).toBe(true);
+    const opD = () => c.getState().ops.find((x) => x.id === d.id)!;
+    for (let i = 0; i < 1000 && !(opD().steps[0].state === 'unknown' && !opD().checking && !opD().running); i++) await new Promise((r) => setTimeout(r, 10));
+    lateD.stop();
+    lateD.land();
+    await c.opRecheck(d.id!);
+    expect(opD().steps[0].state).toBe('ok');
   });
 
   it('PR #510 review round 2: a taken-back reply changed in the box comes back as changed after a restart; emptied, it is let go', async () => {
