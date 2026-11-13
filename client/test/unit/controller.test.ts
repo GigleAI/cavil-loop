@@ -426,34 +426,6 @@ describe('sync and cache', () => {
       expect(broken.c.getState().view.query).toBe(DEFAULT_QUERY);
     });
 
-    it('GitHub#464: a search saved by an older build: only-hides-finished emptied, an old number query renewed, the rest kept; once saved again it stays', async () => {
-      const base = { mode: 'iteration', swimlanes: false, selected: null };
-      const cases: [string, string][] = [
-        ['-Status:done -label:Done', ''],
-        ['-label:Done -status:Done', ''],
-        ['is:open', ''],
-        ['is:open label:"pending/human"', 'label:"pending/human"'],
-        ['is:open no:label', 'no:label'],
-        ['-label:Done label:bug', '-label:Done label:bug'],
-        ['bug', 'bug'],
-      ];
-      for (const [saved, now] of cases) {
-        const old = await make({ seed: { view: { ...base, query: saved } } });
-        expect(old.c.getState().view.query, saved).toBe(now);
-        expect(old.c.getState().view.showClosed, saved).toEqual(DEFAULT_SHOW_CLOSED);
-        old.c.stopTimer();
-      }
-      // a number lit by an old build is still lit after the upgrade
-      const lit = await make({ seed: { view: { ...base, query: 'is:open label:"pending/human"' } } });
-      const tally = flowTally([], lit.c.getState().handBack);
-      expect(litTally(lit.c.getState().view.query, tally)).toBe('human');
-      // once this build saved the view, `is:open` typed by hand is kept over a restart
-      const first = await make({ seed: { view: { ...base, query: '-Status:done -label:Done' } } });
-      first.c.setView({ query: 'is:open' });
-      first.c.stopTimer();
-      const second = await make({ credentials: first.credentials });
-      expect(second.c.getState().view.query).toBe('is:open');
-    });
 
     it('a view without a filter still empties any other search text: an earlier import, an own text, an empty box', async () => {
       const { c } = await loggedIn();
@@ -497,27 +469,27 @@ describe('sync and cache', () => {
     });
   });
 
-  it('GitHub#464: each view keeps its own "显示已关闭" switch: a change touches only that one, survives a restart, a bad saved value falls back alone', async () => {
-    const first = await loggedIn();
+  it('GitHub#464: an older build\'s search is migrated once on start (each wording: viewSettings.test.ts) — a lit number stays lit; each view keeps its own "显示已关闭" switch; both survive a restart', async () => {
+    // saved by a build from before the switches, with a flow number lit
+    const first = await make({ seed: { view: { mode: 'iteration', swimlanes: false, selected: null, query: 'is:open label:"pending/human"' } } });
+    expect(first.c.getState().view.query).toBe('label:"pending/human"');
+    expect(litTally(first.c.getState().view.query, flowTally([], first.c.getState().handBack))).toBe('human');
     expect(first.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);
+    // a change touches only the switch it names; a number made in Settings (GitHub#468) has its own
     first.c.setView({ showClosed: { board: true } });
     first.c.setView({ showClosed: { human: true } });
     first.c.setView({ showClosed: { board: false, table: true } });
+    first.c.setView({ showClosed: { 't-abc': true } });
     first.c.setView({ showClosed: { graph: 'yes' as any } }); // refused whole
-    first.c.setView({ showClosed: { 't-abc': true } }); // a number made in Settings (GitHub#468) has its own
     first.c.setView({ showClosed: { '': true } }); // no name: refused whole
     const want = { ...DEFAULT_SHOW_CLOSED, table: true, human: true, 't-abc': true };
     expect(first.c.getState().view.showClosed).toEqual(want);
+    // `is:open` typed by hand in this build is not migrated again
+    first.c.setView({ query: 'is:open' });
     first.c.stopTimer();
     const second = await make({ credentials: first.credentials });
     expect(second.c.getState().view.showClosed).toEqual(want);
-    second.c.stopTimer();
-    const base = { mode: 'iteration', swimlanes: false, selected: null, query: '' };
-    const broken = await make({ seed: { view: { ...base, showClosed: { board: true, table: 1, human: 'x', agent: true, 't-x': true, 't-y': 'no' } } } });
-    expect(broken.c.getState().view.showClosed).toEqual({ ...DEFAULT_SHOW_CLOSED, board: true, agent: true, 't-x': true });
-    broken.c.stopTimer();
-    const notObject = await make({ seed: { view: { ...base, showClosed: [true] } } });
-    expect(notObject.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);
+    expect(second.c.getState().view.query).toBe('is:open');
   });
 
   it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {
