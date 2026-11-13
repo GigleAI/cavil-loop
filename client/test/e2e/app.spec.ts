@@ -183,7 +183,8 @@ test('browser login → board; restart skips login; sources; three column modes;
   const repoOnly = env.fake.state.repos
     .get('gigleai/cavil-loop')!
     .filter((r) => (r.state === 'open' || Date.parse(r.updated_at) >= Date.now() - 14 * 86_400_000) && !projectKeys.has(r.number)).length;
-  expect(got['未加入看板'] ?? 0).toBe(repoOnly);
+  // the repository is a second source: its first full read can land after the Project's (PR #484, a busy machine)
+  await expect.poll(async () => (await columnCounts(page))['未加入看板'] ?? 0, { timeout: 15_000 }).toBe(repoOnly);
   await shot(page, '04-by-iteration');
 
   await page.getByTestId('mode').selectOption('status');
