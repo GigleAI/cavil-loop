@@ -116,6 +116,13 @@ fn fill(text: &str, params: &[(&str, &str)]) -> String {
     out
 }
 
+/// GitHub#473: Chinese that is never shown — a mark of a format another program writes and this
+/// code only matches (the headings of a release page). The source scan lets exactly these through
+/// and test/unit/i18n.test.ts pins the whole list; never wrap words that reach the screen.
+pub const fn not_text(s: &'static str) -> &'static str {
+    s
+}
+
 /// The window's `translate`: one language, one key, its values.
 pub fn translate(l: Lang, zh: &str, params: &[(&str, &str)]) -> String {
     if l == Lang::Zh {

@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use cavil_core::http::Endpoints;
 use cavil_core::platform::SystemClock;
 use cavil_core::store::Store;
-use cavil_core::update::{self, Backend, Channel, Failure, Found, Timings, Updater};
+use cavil_core::i18n::tr;
+use cavil_core::update::{self, Backend, Channel, Failure, Found, Timings, Updater, Why, Words};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,7 +45,9 @@ pub enum Mode {
 }
 
 /// What the window says when the app has no public key to check update packages with.
-pub const NO_KEY: &str = "这一版没有带更新用的公钥，不能自动更新，请手动下载新版";
+pub fn no_key() -> String {
+    tr("这一版没有带更新用的公钥，不能自动更新，请手动下载新版", &[])
+}
 
 pub struct Facts {
     pub macos: bool,
@@ -87,7 +90,7 @@ fn failure(e: tauri_plugin_updater::Error) -> Failure {
 
 #[async_trait]
 impl<R: Runtime> Backend for PluginBackend<R> {
-    async fn releases(&self) -> Result<Vec<Value>, String> {
+    async fn releases(&self) -> Result<Vec<Value>, Why> {
         update::fetch_releases(&self.endpoints).await
     }
 
@@ -108,7 +111,7 @@ impl<R: Runtime> Backend for PluginBackend<R> {
     }
 
     async fn download(&self, found: &Found, got: Box<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Result<Vec<u8>, Failure> {
-        let u = self.updates.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Invalid("没有这个更新".into()))?;
+        let u = self.updates.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Gone)?;
         let mut sum = 0u64;
         // verifies the signature before it returns the bytes
         u.download(
@@ -123,7 +126,7 @@ impl<R: Runtime> Backend for PluginBackend<R> {
     }
 
     async fn install(&self, found: &Found, bytes: Vec<u8>) -> Result<(), Failure> {
-        let u = self.updates.lock().unwrap().remove(&found.id).ok_or(Failure::Invalid("没有这个更新".into()))?;
+        let u = self.updates.lock().unwrap().remove(&found.id).ok_or(Failure::Gone)?;
         // verifies the signature again, then swaps the app bundle (may ask for an administrator's password)
         tokio::task::spawn_blocking(move || u.install(bytes)).await.map_err(|e| Failure::Install(e.to_string()))?.map_err(failure)?;
         clear_quarantine(&self.app);
@@ -165,7 +168,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, store: Arc<Store>, endpoints: Endpo
             pubkey = k.clone();
         }
     }
-    let problem = if pubkey.is_empty() { problem.or(Some(NO_KEY.into())) } else { problem };
+    let given: Option<Words> = problem.map(|p| Arc::new(move || p.clone()) as Words);
+    let problem = if pubkey.is_empty() { given.or_else(|| Some(Arc::new(no_key) as Words)) } else { given };
     let backend = Arc::new(PluginBackend { app: app.clone(), endpoints: endpoints.clone(), pubkey, seq: AtomicU64::new(1), updates: Mutex::new(HashMap::new()) });
     let h = app.clone();
     let changed = Box::new(move |status: Value| {
@@ -213,36 +217,36 @@ pub fn desktop_update_check<R: Runtime>(app: AppHandle<R>) {
 
 #[tauri::command]
 pub fn desktop_update_set_auto<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
-    slot(&app).ok_or("这个版本不自动更新")?.set_auto(on)
+    slot(&app).ok_or_else(|| tr("这个版本不自动更新", &[]))?.set_auto(on)
 }
 
 /// Choose the update channel ("stable" / "dev", GitHub#215), then look on it at once. A round
 /// running now drops what it found and starts over on the new channel.
 #[tauri::command]
 pub fn desktop_update_set_channel<R: Runtime>(app: AppHandle<R>, channel: String) -> Result<(), String> {
-    let u = slot(&app).ok_or("这个版本不自动更新")?;
-    u.set_channel(Channel::parse(&channel).ok_or("不认识的更新渠道")?)?;
+    let u = slot(&app).ok_or_else(|| tr("这个版本不自动更新", &[]))?;
+    u.set_channel(Channel::parse(&channel).ok_or_else(|| tr("不认识的更新渠道", &[]))?)?;
     tauri::async_runtime::spawn(async move { u.check_now().await });
     Ok(())
 }
 
 #[tauri::command]
 pub fn desktop_update_dismiss<R: Runtime>(app: AppHandle<R>, version: String) -> Result<(), String> {
-    slot(&app).ok_or("这个版本不自动更新")?.dismiss(&version)
+    slot(&app).ok_or_else(|| tr("这个版本不自动更新", &[]))?.dismiss(&version)
 }
 
 /// The "updated to `version`" notice was closed (GitHub#348).
 #[tauri::command]
 pub fn desktop_update_dismiss_installed<R: Runtime>(app: AppHandle<R>, version: String) -> Result<(), String> {
-    slot(&app).ok_or("这个版本不自动更新")?.dismiss_installed(&version)
+    slot(&app).ok_or_else(|| tr("这个版本不自动更新", &[]))?.dismiss_installed(&version)
 }
 
 /// Quit and start the new version (only once it is in place).
 #[tauri::command]
 pub fn desktop_update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let u = slot(&app).ok_or("这个版本不自动更新")?;
+    let u = slot(&app).ok_or_else(|| tr("这个版本不自动更新", &[]))?;
     if u.status()["phase"] != "ready" {
-        return Err("新版还没装好".into());
+        return Err(tr("新版还没装好", &[]));
     }
     restart_now(&app)
 }

@@ -38,7 +38,7 @@ import { RepoWebLink } from './RepoWebLink';
 import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyName, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
 import { effectiveTallies } from '../shared/tallies';
 import { t } from '../shared/i18n';
-import { SourceName, Verbatim, verbatimParts } from './Verbatim';
+import { SaidText, SourceName, Verbatim, verbatimParts } from './Verbatim';
 import { tNode } from './tNode';
 
 function useNow(ms = 15_000) {
@@ -951,7 +951,7 @@ export function BoardView({
         {sync.offlineReason ? `离线：${sync.offlineReason}` : '离线'} · {offlineDataText(sync, now)} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
-        {sync.problem}
+        {sync.problemSaid ? <SaidText said={sync.problemSaid} /> : sync.problem}
       </WarnBar>
       <WarnBar kind="board-notify-problem" warn={warn}>
         macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。

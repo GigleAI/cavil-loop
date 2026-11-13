@@ -24,6 +24,8 @@ export interface ScanResult {
   keys: Map<string, number[]>;
   /** a t( / tr( whose first argument is not a plain literal */
   badCalls: Finding[];
+  /** Rust: the literals marked `not_text(…)` — format marks matched, never shown (GitHub#473) */
+  notText: Finding[];
 }
 
 type Lang = 'ts' | 'rust';
@@ -47,6 +49,9 @@ function unescape(raw: string): string {
 export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResult {
   const findings: Finding[] = [];
   const badCalls: Finding[] = [];
+  const notText: Finding[] = [];
+  /** the call just read is not_text( : its literal is a format mark, not a key */
+  let wantData = false;
   const keys = new Map<string, number[]>();
   const fns = lang === 'ts' ? ['t', 'tNode', 'zhKey'] : ['tr'];
   const fn = fns.join(' / ');
@@ -74,6 +79,11 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
     const value = plain ? unescape(raw) : raw;
     if (wantKey) {
       wantKey = false;
+      if (wantData) {
+        wantData = false;
+        if (testDepth < 0) notText.push({ line: at, text: value });
+        return;
+      }
       if (testDepth < 0) {
         const l = keys.get(value) ?? [];
         l.push(at);
@@ -87,6 +97,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const keyNotLiteral = () => {
     if (wantKey) {
       wantKey = false;
+      wantData = false;
       if (testDepth < 0) badCalls.push({ line: wantKeyLine, text: `${fn}( 的第一个参数不是字面量` });
     }
   };
@@ -272,7 +283,8 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
       lastWord = word;
       // Rust: Said::new( / Said::compose( take a key too (crates/core/src/i18n.rs)
       const saidCall = lang === 'rust' && (word === 'new' || word === 'compose') && src.slice(i - word.length - 6, i - word.length) === 'Said::';
-      if ((saidCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
+      const dataCall = lang === "rust" && word === "not_text" && before !== "." && !IDENT.test(before);
+      if ((saidCall || dataCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
         let k = i;
         while (k < src.length && /\s/.test(src[k])) k++;
         if (src[k] === '(') {
@@ -284,6 +296,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
           }
           i = m;
           wantKey = true;
+          wantData = dataCall;
           wantKeyLine = line;
           prev = '(';
           continue;
@@ -315,7 +328,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
     prev = c;
     i++;
   }
-  return { findings: mergeLines(findings), keys, badCalls };
+  return { findings: mergeLines(findings), keys, badCalls, notText };
 }
 
 /** one finding per line: JSX text arrives a character at a time */
