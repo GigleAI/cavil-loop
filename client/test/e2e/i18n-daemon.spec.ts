@@ -146,6 +146,10 @@ test('GitHub#473: a project\'s settings in English — the settings\' Chinese na
   const names = await dlg.locator('[data-testid=config-row] .what b [data-verbatim=daemon]').allTextContents();
   expect(names.length).toBeGreaterThan(3);
   expect(names.some((n) => /[一-鿿]/.test(n))).toBe(true);
+  // a switch reads On / Off — never "Open", the English of 开 for an issue (one Chinese text, two meanings)
+  const switches = await dlg.locator('.pcfg-switch').allTextContents();
+  expect(switches.length).toBeGreaterThan(0);
+  for (const s of switches) expect(['On', 'Off']).toContain(s.trim());
   expect(await chineseIn(page, ['[data-testid="config-dialog"]'])).toEqual([]);
   await dlg.locator('.modal').screenshot({ path: join(screens, '473-config-en.png') });
   await dlg.getByTestId('config-cancel').click();
