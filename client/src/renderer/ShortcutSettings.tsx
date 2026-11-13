@@ -8,6 +8,7 @@ import { api } from './api';
 import { t } from '../shared/i18n';
 import { Icon } from './Icons';
 import { Keys } from './ShortcutHelp';
+import { SettingsMore } from './SettingsMore';
 import { SCOPE_TITLE, activeShortcuts, composing, customizable, isCustom, isMac, keyParts, shortcutName, shownKeys, type CustomKey, type Scope, type ShortcutId } from './shortcuts';
 
 const ORDER: Scope[] = ['global', 'detail', 'graph', 'reply', 'dialog', 'settings', 'picker', 'help', 'find'];
@@ -90,10 +91,12 @@ export function ShortcutSettings({ state }: { state: AppState }) {
           全部恢复默认
         </button>
       </div>
-      <p className="muted small">
-        点「改」后按下新的按键。改了只在这台电脑上生效；一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{mac ? '⌘' : 'Ctrl+'}1 …{' '}
-        {mac ? '⌘' : 'Ctrl+'}9、{mac ? '⌘' : 'Ctrl+'}W 和缩放键是固定的。不带 {mac ? '⌘' : 'Ctrl'} 的单个键只在光标不在输入框里时生效。
-      </p>
+      <p className="muted small">点「改」后按下新键，只在这台电脑生效。</p>
+      {/* GitHub#514: the longer rules, folded */}
+      <SettingsMore title="哪些键固定、单个键何时生效" testid="keys-more">
+        一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{mac ? '⌘' : 'Ctrl+'}1 …{' '}
+        {mac ? '⌘' : 'Ctrl+'}9、{mac ? '⌘' : 'Ctrl+'}W 和缩放键是固定的，不能改。不带 {mac ? '⌘' : 'Ctrl'} 的单个键只在光标不在输入框里时生效。
+      </SettingsMore>
       {state.shortcutDropped.length > 0 && (
         <div className="banner warn" data-testid="shortcut-dropped">
           <Icon name="warn" />
@@ -156,7 +159,9 @@ export function ShortcutSettings({ state }: { state: AppState }) {
                       </td>
                       <td className="a">
                         {!can ? (
-                          <span className="fixed">固定，不能改</span>
+                          <span className="fixed" title="固定的键，不能改">
+                            固定
+                          </span>
                         ) : rec ? (
                           <button className="link" data-testid="shortcut-cancel" onClick={() => (setRecording(null), setProblem(null))}>
                             取消

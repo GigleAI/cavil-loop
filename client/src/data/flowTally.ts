@@ -25,13 +25,15 @@
 // With the table never changed the bar is what it was.
 // GitHub#464: every number has its own "显示已关闭" switch (keyed by the row's id); a query row counts what
 // its click lists with that switch off — open items only, unless its condition names the state itself.
+// GitHub#514: a fifth flow label, the parked one ("稍后处理", default pending/later), counted like "运行中" /
+// "等 agent" (open items only); the default table is 未处理 → 等人处理 → 等 agent → 运行中 → 稍后处理.
 
 import type { HandBackLabels, Item, TallyColor, TallyDef, TallyFlow } from '../shared/types';
 import type { FilterContext } from '../shared/filter';
 import { hasLabel, isPending } from './pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
 import type { Layout, ShowClosedKey } from '../shared/types';
-import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies } from '../shared/tallies';
+import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies, effectiveTallies } from '../shared/tallies';
 import { tKey } from '../shared/i18n';
 
 export { UNLABELED_QUERY };
@@ -73,6 +75,14 @@ export const TALLY_TEXT: Record<'running' | 'agent' | 'human' | 'unlabeled', str
   'running' | 'agent' | 'human' | 'unlabeled',
   string
 >;
+
+/** the flow labels a "跟随流程标签" row can follow (GitHub#514: the parked label too) */
+export type TallyLabels = Pick<HandBackLabels, TallyFlow>;
+
+/** the flow labels out of the settings, for the view bar and Settings' preview alike (one place, GitHub#514) */
+export function tallyLabels(hb: HandBackLabels): TallyLabels {
+  return { running: hb.running, agent: hb.agent, human: hb.human, later: hb.later };
+}
 
 const NO_CONTEXT: FilterContext = { viewer: null, today: '', projects: [] };
 
@@ -139,7 +149,7 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
  */
-export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: Pick<HandBackLabels, 'running' | 'agent' | 'human'>, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
+export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
   const out: TallyEntry[] = [];
   for (const d of defs) {
     const name = d.name.trim();
@@ -163,20 +173,29 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: P
 }
 
 /**
- * The default table's numbers ("未处理" last). "运行中" is left out when its label is empty (Settings: empty = not
+ * GitHub#514: the numbers the view bar shows — the table in effect (saved, or the default), the flow labels of
+ * the settings and the board's filter context. The view bar and Settings' live preview both take theirs from
+ * here, so the two cannot show different numbers.
+ */
+export function viewBarTallies(items: Item[], saved: TallyDef[] | null, handBack: HandBackLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
+  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx);
+}
+
+/**
+ * The default table's numbers. "运行中" / "稍后处理" are left out when their label is empty (Settings: empty = not
  * shown); the other two always have a label — saving them empty puts the default back.
  */
-export function flowTally(items: Item[], labels: Pick<HandBackLabels, 'running' | 'agent' | 'human'>): TallyEntry[] {
+export function flowTally(items: Item[], labels: TallyLabels): TallyEntry[] {
   return tallyEntries(items, defaultTallies(), labels);
 }
 
 /**
- * GitHub#418: "未处理" — the default table's last row. Counted through the real filter with its own click query
+ * GitHub#418: "未处理" — the default table's "no label" row (first since GitHub#514). Counted through the real filter with its own click query
  * (no context is needed: `is` and `no:label` read nothing but the item), so a click lists exactly the
  * counted items. Items come merged by key (`mergeSnapshots`), so one carried by two sources counts once.
  */
 export function unlabeledTally(items: Item[]): TallyEntry {
-  return tallyEntries(items, defaultTallies().filter((d) => d.id === 'unlabeled'), { running: '', agent: '', human: '' })[0];
+  return tallyEntries(items, defaultTallies().filter((d) => d.id === 'unlabeled'), { running: '', agent: '', human: '', later: '' })[0];
 }
 
 /**

@@ -9,6 +9,7 @@
 // that could register the job twice.
 
 import { RemoteHostBlock } from './RemoteHostBlock';
+import { SettingsMore } from './SettingsMore';
 import { noticeTone } from '../shared/noticeTone';
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
@@ -118,9 +119,11 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
   return (
     <section id="set-daemon" data-testid="daemon-settings">
       <h3>{t('本机 daemon')}</h3>
-      <p className="muted small">
-        daemon 是在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。
-      </p>
+      <p className="muted small">在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。</p>
+      {/* GitHub#514: the longer explanation, folded */}
+      <SettingsMore title="客户端会对它做什么" testid="daemon-more">
+        这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。
+      </SettingsMore>
       <Summary status={status} checking={checking} busy={busy} update={update} onUpdate={doUpdate} onCheck={check} onInstall={() => run('install', () => api().daemonInstall(), (r) => r.result === 'installed' || r.result === 'existing', (r) => r.output ?? '已安装')} />
       {notes.install && <Note id="install" note={notes.install} />}
       {status?.state === 'ok' && (
