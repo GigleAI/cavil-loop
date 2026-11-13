@@ -11,7 +11,8 @@
 #      （按 GitHub 生成锚点的规则算），同一页内的 #锚点 也一样
 #   2. docs/client-screens/ 里的每张图都被中英两份说明引用，两份引用的图一模一样；两份 README 引用的图也一样
 #   3. 中英两份说明的 ## 章节数相同，「正在开发中」一节列的 issue 编号相同
-#   4. 网络边界的说法：四份对外文档（两份 README、两份说明）都写到了配对远程 daemon 后的 Tailscale 连接
+#   4. 网络边界的说法：四份对外文档（两份 README、两份说明）都写到远程 daemon 的三段连接（打开添加窗口就探测
+#      每台在线设备、只连选定 / 已配对的机器、不带 GitHub 凭据），且没有「配对前没有任何连接」的旧说法
 # 另把检查器喂一份坏文档（断链、错锚点、缺图），它必须报错——证明上面的「全过」不是什么都没查。
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -135,10 +136,21 @@ d_en=$(dev_issues "$REPO_DIR/docs/client.md" '## In progress')
 d_zh=$(dev_issues "$REPO_DIR/docs/client.zh.md" '## 正在开发中')
 if [ -n "$d_en" ] && [ "$d_en" = "$d_zh" ]; then ok "「正在开发中」两份列的 issue 相同（$(printf '%s\n' "$d_en" | wc -l) 个）"; else bad "「正在开发中」两份列的 issue 不同：en=[$d_en] zh=[$d_zh]"; fi
 
-echo "== 4. 网络边界写到远程 daemon"
-for f in README.md README.zh.md docs/client.md docs/client.zh.md; do
-    if grep -q 'Tailscale' "$REPO_DIR/$f"; then ok "$f 写了配对远程 daemon 后的 Tailscale 连接"; else bad "$f 没写配对远程 daemon 后的 Tailscale 连接"; fi
-done
+echo "== 4. 网络边界写到远程 daemon（GitHub#475 PR #485 复审第 1 轮：未配对时打开添加窗口也会探测在线设备）"
+# 每份页面都要写到三段：打开添加窗口时探测每台在线设备、只连选定 / 已配对的机器、不带 GitHub 凭据；
+# 不得再出现「只有配对后才连」这类绝对说法。
+net_check() { # file  probe-phrase  picked-phrase  cred-phrase
+    local f="$REPO_DIR/$1" miss=""
+    grep -q "$2" "$f" || miss="$miss「$2」"
+    grep -q "$3" "$f" || miss="$miss「$3」"
+    grep -q "$4" "$f" || miss="$miss「$4」"
+    if [ -z "$miss" ]; then ok "$1 写了添加窗口的探测、只连选定 / 已配对的机器、不带 GitHub 凭据"; else bad "$1 缺：$miss"; fi
+    if grep -qiE '只有人主动配对|没配对时没有|only after you pair' "$f"; then bad "$1 还有「配对前没有任何连接」的旧说法"; else ok "$1 没有「配对前没有任何连接」的旧说法"; fi
+}
+net_check README.zh.md       '每台在线设备' '选定的那一台' '不带 GitHub 凭据'
+net_check docs/client.zh.md  '每台在线设备' '选定的那一台' '不带 GitHub 凭据'
+net_check README.md          'every online device' 'the one machine you picked' 'never with a GitHub credential'
+net_check docs/client.md     'every online device' 'the one machine picked' 'carries a GitHub credential'
 
 echo
 report_counts "$PASS" "$FAIL"

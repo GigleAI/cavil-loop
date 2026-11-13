@@ -249,7 +249,7 @@ Cavil Loop 桌面客户端（`client/`，macOS）是一个**可以单独使用**
 |---|---|---|
 | ![看板](docs/client-screens/board.png) | ![表格](docs/client-screens/table.png) | ![依赖图](docs/client-screens/graph.png) |
 
-登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人主动配对了远程 daemon，才会另外连接人指定的那台 Tailscale 机器，这条连接不带 GitHub 凭据。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
+登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 
 安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的 dmg），还没有正式版，也没有 Intel 的包。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。** 改代码的规则在开发文档 [client/README.md](client/README.md)。
 
