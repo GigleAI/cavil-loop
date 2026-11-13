@@ -338,5 +338,15 @@
   "搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准": "The search box already names the open / closed state (is:open, is:closed, is:merged); the search box decides",
   "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately.",
   "显示已关闭": "Show closed",
-  "（{name}）": " ({name})"
+  "（{name}）": " ({name})",
+  "复制失败，原文仍在这里": "Copy failed; the text is still here",
+  "没能打开 GitHub 页面：{reason}": "Could not open the GitHub page: {reason}",
+  "只解开这里的锁定，不会往 GitHub 发任何请求": "Only releases the lock here; nothing is sent to GitHub",
+  "已在 GitHub 上核对过，解除锁定": "Checked on GitHub, release the lock",
+  "先把原文复制到剪贴板，再打开这一条的 GitHub 页面": "Copies the text to the clipboard first, then opens this item's GitHub page",
+  "打开这一条的 GitHub 页面": "Opens this item's GitHub page",
+  "到 GitHub 上核对": "Check on GitHub",
+  "到 GitHub 上处理": "Handle it on GitHub",
+  "原文已复制": "Text copied",
+  "；": "; "
 }
