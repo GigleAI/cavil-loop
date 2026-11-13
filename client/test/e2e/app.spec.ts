@@ -2498,6 +2498,62 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await app.close();
 });
 
+test('GitHub#505: 在标签页打开 in the floating panel is a plain button like the GitHub one beside it — same fill and border, no filter, readable — at rest and under the pointer, light and dark', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await page.getByTestId('mode').selectOption('status');
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  const openTab = detail.getByTestId('detail-open-tab');
+  const openWeb = detail.getByTestId('detail-open-web');
+  await expect(openTab).toBeVisible();
+  await expect(openTab).toHaveText('在标签页打开');
+  await expect(openWeb).toBeVisible();
+  type Look = { bg: string; border: string; filter: string; color: string; ratio: number; hovered: boolean };
+  const look = (l: typeof openTab) =>
+    l.evaluate((b): Look => {
+      const cs = getComputedStyle(b);
+      const rgb = (v: string) => v.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+      const lum = (c: number[]) => {
+        const f = (v: number) => {
+          const x = v / 255;
+          return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+      };
+      const [hi, lo] = [lum(rgb(cs.color)), lum(rgb(cs.backgroundColor))].sort((p, q) => q - p);
+      return { bg: cs.backgroundColor, border: cs.borderTopColor, filter: cs.filter, color: cs.color, ratio: (hi + 0.05) / (lo + 0.05), hovered: b.matches(':hover') };
+    });
+  const seen: Record<string, Look> = {};
+  for (const scheme of ['light', 'dark'] as const) {
+    await schemeSettled(page, scheme, `GitHub#505 ${scheme}`);
+    // at rest: the pointer is far from both buttons
+    await page.mouse.move(5, 700);
+    const [tab, web] = [await look(openTab), await look(openWeb)];
+    expect(tab.hovered, `${scheme}: not under the pointer`).toBe(false);
+    expect({ bg: tab.bg, border: tab.border, filter: tab.filter }, `${scheme}, at rest`).toEqual({ bg: web.bg, border: web.border, filter: 'none' });
+    expect(tab.ratio, `${scheme}, at rest: ${tab.color} on ${tab.bg}`).toBeGreaterThanOrEqual(4.5);
+    seen[`${scheme} rest`] = tab;
+    // under the pointer: each button is really hovered, and they still look alike
+    await openTab.hover();
+    await expect.poll(async () => (await look(openTab)).hovered).toBe(true);
+    const tabHover = await look(openTab);
+    await openWeb.hover();
+    await expect.poll(async () => (await look(openWeb)).hovered).toBe(true);
+    const webHover = await look(openWeb);
+    expect({ bg: tabHover.bg, border: tabHover.border, filter: tabHover.filter }, `${scheme}, hovered`).toEqual({ bg: webHover.bg, border: webHover.border, filter: 'none' });
+    expect(tabHover.ratio, `${scheme}, hovered: ${tabHover.color} on ${tabHover.bg}`).toBeGreaterThanOrEqual(4.5);
+    seen[`${scheme} hover`] = tabHover;
+    await page.mouse.move(5, 700);
+    await shot(page, `505-open-tab-${scheme}`);
+  }
+  // the two schemes really differ (the check above ran in both, not twice in one)
+  expect(seen['light rest'].bg).not.toBe(seen['dark rest'].bg);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await app.close();
+});
+
 test('GitHub#181 many sources: at 1024 and 1280 px every source in the top bar can be reached with the wheel, is readable, and really switches what the board shows', async () => {
   // 20 repositories, one open issue each, so switching one source changes the count by exactly one
   const sample = env.fake.state.repos.get('gigleai/cavil-loop')!.find((i) => i.state === 'open' && !i.pull_request)!;
