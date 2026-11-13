@@ -570,15 +570,16 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   `Closes #N`，合进默认分支时 GitHub 关掉 issue，等它的下游条目（`pending/blocked`）随之开工。合并后 daemon 在 issue 上发
   一条说明——外面一句话结论和「要人做什么」，背景 / 采用的方案 / 排除的方案和原因照搬 worker 写在 PR 正文里的总结段
   （`<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->`），合并依据折叠在最后——然后给已关闭的 issue 打
-  `Done`、挂 `pending/human`、摘 `pending/PR` 等流程标签。人看过满意就**只摘掉 `pending/human`**（`Done` 留着，摘掉后 daemon
-  不会加回）；要返工就重开 issue → 摘掉 `Done` 和 `pending/human` → 打 `pending/agent`。合并时 GitHub 还没关掉 issue 就下一轮
+  `Done`、挂 `pending/human`、摘 `pending/PR` 等流程标签。人看过满意就**只摘掉 `pending/human`**（`Done` 留着；关闭之后挂上过、
+  又被摘掉的提醒，daemon 按事件记录认出来，不会加回）；要返工就重开 issue → 摘掉 `Done` 和 `pending/human` → 打 `pending/agent`。合并时 GitHub 还没关掉 issue 就下一轮
   再看；人在交接之前重开了 issue，按下一条「issue 留着」那一套走。交接一次只写一个标签，每写一个之前现读 issue 和它的事件
   记录判定两次，写完一步回来，状态、标签集合、最后一次关闭和最后一次挂上 `pending/human` 的位置必须正好是「上一次 + daemon
   刚写成的这一步」，否则本轮停手；读不到下轮再试，说明按标记去重。
   - **关闭清扫留着关闭之后挂上的提醒**：「已关闭（已完成）的 issue 打 `Done`、摘掉流程标签」那一趟（GitHub#159）看 issue
     的事件记录——`pending/human` 最后一次「加上」排在最后一次「关闭」之后，就是关闭后的提醒，不摘；排在关闭之前的（人在
     `pending/human` 状态下直接关掉）照旧摘掉。先后按事件在记录里的顺序比，不比时间（合并关 issue 和挂提醒常在同一秒）。
-    记录读不到、缺编号、和现状对不上（挂着却找不到「加上」那一次），本轮不写、留队下轮再判。清扫同样一次只写一个标签、
+    每个已完成关闭的 issue 都要读这份记录（挂不挂 `pending/human` 都一样）；记录读不到、缺编号、和现状对不上（没有关闭事件，
+    或挂着 `pending/human` 却找不到「加上」那一次），本轮不写、留队下轮再判。清扫同样一次只写一个标签、
     每写一个之前判两次、写完一步核对依据，判定之后人重新挂了提醒或重开了 issue，本轮停手、不按旧结论接着写。
   - **怎么找要看的条目**：
 

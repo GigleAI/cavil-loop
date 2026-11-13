@@ -310,7 +310,7 @@ rm -f "$GD/F_issues_26_events"
 tick
 chk "恢复后：关闭之后挂的提醒留着、其余收敛、出队" "$(labels_of 26)/$(queued 26)" "Done,pending/human/无"
 
-section "【5b】合并后交接读不到事件记录 → 交接不写标签、留在合并后重试队列；恢复后完成"
+section "【5b】合并后交接读不到事件记录 → issue 零标签写入（交接和清扫都不写）、留在重试队列；恢复后完成"
 fresh; : > "$GD/merge_closes"
 ready "Closes #7
 
@@ -318,12 +318,64 @@ $SUMMARY"
 # 合并之后才读不到（合并前的授权判断也读这份记录）：发合并说明之前打开故障
 hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
 tick
-chk "合并了、说明发了，交接没挂 pending/human、在重试队列" "$(merged 8)/$(comments_with 7 'autopilot-merged pr=8 ')/$(has_label 7 pending/human)/$(mqueued 7)" "1/1/no/true"
-# 同一轮的关闭清扫照常收敛（issue 上还没有提醒，不用读事件记录）：摘 pending/PR、加 Done
-chk "  → 同一轮的关闭清扫：摘 pending/PR、加 Done" "$(labels_of 7)" "Done,autopilot"
+chk "合并了、说明发了，issue 7 零标签写入、在两个重试队列里" "$(merged 8)/$(comments_with 7 'autopilot-merged pr=8 ')/$(label_writes 7)/$(mqueued 7)/$(queued 7)" "1/1/0/true/1"
+chk "  → 标签原样" "$(labels_of 7)" "autopilot,pending/PR"
 rm -f "$GD/F_issues_7_events"
 tick
-chk "恢复后：Done + pending/human、出队、说明没重发" "$(labels_of 7)/$(mqueued 7)/$(comments_with 7 'autopilot-merged pr=8 ')" "Done,autopilot,pending/human/false/1"
+chk "恢复后：Done + pending/human、两个队列都出队、说明没重发" "$(labels_of 7)/$(mqueued 7)/$(queued 7)/$(comments_with 7 'autopilot-merged pr=8 ')" "Done,autopilot,pending/human/false/无/1"
+
+section "【5b2】交接停在读不到事件时，人在关闭后挂上又摘掉 pending/human → 恢复后不加回"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
+tick
+jset labels.json '.["7"] += ["pending/human"]'; ev 7 labeled pending/human maint
+jset labels.json '.["7"] -= ["pending/human"]'; ev 7 unlabeled pending/human maint
+rm -f "$GD/F_issues_7_events"
+tick
+chk "恢复后：没加回 pending/human；Done 加上、pending/PR 摘掉、交接记录清掉" "$(has_label 7 pending/human)/$(labels_of 7)/$(handoff 8)" "no/Done,autopilot/none"
+chk "  → 这一轮没有加 pending/human 的请求" "$(n_calls "^gh api -X POST $R/issues/7/labels -f labels\[\]=pending/human")" 0
+tick
+chk "再一轮：仍然没加回" "$(has_label 7 pending/human)/$(label_writes 7)" "no/0"
+
+section "【5b3】对照：同形场景、人没动 → 恢复后照常挂上 pending/human"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
+tick
+rm -f "$GD/F_issues_7_events"
+tick
+chk "挂上 pending/human" "$(labels_of 7)" "Done,autopilot,pending/human"
+
+section "【5b4】清扫：没挂提醒的已关闭 issue，读不到事件记录 → 零写入、留队；恢复后收敛"
+fresh
+mkissue 71 "pending/PR" closed
+: > "$GD/F_issues_71_events"
+tick
+chk "第 1 轮：零写入、留队、标签原样" "$(label_writes 71)/$(queued 71)/$(labels_of 71)" "0/1/pending/PR"
+chk "  → 到达性：确实去读了事件记录" "$( [ "$(event_reads 71)" -gt 0 ] && echo read)" read
+rm -f "$GD/F_issues_71_events"
+tick
+chk "恢复后：摘 pending/PR、加 Done、出队" "$(labels_of 71)/$(queued 71)" "Done/无"
+
+section "【5b5】清扫：没挂提醒，两次判定之间被重开又关上 → 本轮不写；下一轮收敛"
+fresh
+mkissue 72 "pending/PR" closed
+hook hook_issues_72_2 "python3 - <<'PY'
+import json
+e = json.load(open('events.json')); a = {'login': 'maint', 'type': 'User'}
+e.setdefault('72', []).extend([{'event': 'reopened', 'actor': a, 'created_at': '2026-01-01T00:00:00Z'},
+                               {'event': 'closed', 'actor': a, 'created_at': '2026-01-01T00:00:00Z'}])
+json.dump(e, open('events.json', 'w'))
+PY"
+tick
+chk "第 1 轮：零写入、留队" "$(label_writes 72)/$(queued 72)" "0/1"
+tick
+chk "第 2 轮：收敛到 Done、出队" "$(labels_of 72)/$(queued 72)" "Done/无"
 
 section "【5c】挂着 pending/human 却找不到「加上」它的记录 → 判不了，零写入"
 fresh

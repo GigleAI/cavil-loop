@@ -681,7 +681,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   copied verbatim from the summary section the worker wrote in the PR body (`<!-- autopilot-summary:begin -->` to
   `<!-- autopilot-summary:end -->`), the merge evidence folded at the end — then adds `Done` and `pending/human` to the
   closed issue and removes `pending/PR` and other flow labels. When satisfied, the human **only removes
-  `pending/human`** (`Done` stays; the daemon does not add it back); for rework: reopen the issue → remove `Done` and
+  `pending/human`** (`Done` stays; a reminder added after the close and then removed is recognised from the event
+  history and not added back); for rework: reopen the issue → remove `Done` and
   `pending/human` → add `pending/agent`. If GitHub has not closed the issue yet the daemon looks again next round; if a
   human reopened it before the hand-over, the "issue stays open" path below applies. The hand-over writes one label at
   a time, judges twice from fresh reads of the issue and its event history before each write, and after each write
@@ -692,8 +693,10 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
     `Done` and strips their flow labels (GitHub#159) reads the event history — if the last "added `pending/human`" comes
     after the last "closed", it is the post-close reminder and stays; one added before the close (a human closing an
     issue that sat on `pending/human`) is removed as before. Order is the position in the event history, never the
-    timestamp (closing on merge and adding the reminder often share a second). History unreadable, an event without an
-    id, or history that contradicts the labels (on the issue but no "added" event) → nothing written, retried next round.
+    timestamp (closing on merge and adding the reminder often share a second). The history is read for every
+    issue closed as completed, with or without `pending/human`; unreadable, an event without an id, or history that
+    contradicts the labels (no "closed" event, or `pending/human` on the issue but no "added" event) → nothing written,
+    retried next round.
     The sweep also writes one label at a time, judges twice before each write and checks the reading after each one: a
     reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten.
   - **Finding what to look at**:

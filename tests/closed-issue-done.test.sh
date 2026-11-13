@@ -342,7 +342,7 @@ HOOK
     done
 
     # ── 【11】合并路径不变 ──
-    section "【11】PR 合并带关 issue：合并路径的调用与改动前逐条一致（只多出新队列那一次重读）"
+    section "【11】PR 合并带关 issue：合并路径的调用与改动前逐条一致（只多出新队列的重读和事件记录读取）"
     local old_calls new_calls
     merged_scene() {
         fresh 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_AGENT_EXTRA="pending/agent/05"'
@@ -358,15 +358,15 @@ Closes #30" "pending/human,pending/merge"
     if [ "$csame" = 0 ]; then
     merged_scene
     : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$SANDBOX/old/scripts/agent-poll.sh" >/dev/null 2>&1
-    old_calls=$(grep -v -- '--jq .*state_reason' "$CALLS")
+    old_calls=$(grep -v -e '--jq .*state_reason' -e '^gh api --paginate --slurp repos/example/cd/issues/3[0-3]/events$' "$CALLS")
     old_labels=$(jq -cS . "$GD/labels.json")
     old_state=$(jq -cS 'del(.closed_done_queue)' "$STATE")
     fi
     merged_scene
     tick
-    new_calls=$(grep -v -- '--jq .*state_reason' "$CALLS")
+    new_calls=$(grep -v -e '--jq .*state_reason' -e '^gh api --paginate --slurp repos/example/cd/issues/3[0-3]/events$' "$CALLS")
     if [ "$csame" = 0 ]; then
-    chk "调用记录（去掉新队列的重读）逐条一致" "$([ "$old_calls" = "$new_calls" ] && echo same || diff <(echo "$old_calls") <(echo "$new_calls") | head -5 | tr '\n' ' ')" same
+    chk "调用记录（去掉新队列的重读、事件记录读取）逐条一致" "$([ "$old_calls" = "$new_calls" ] && echo same || diff <(echo "$old_calls") <(echo "$new_calls") | head -5 | tr '\n' ' ')" same
     chk "最终标签一致" "$(jq -cS . "$GD/labels.json")" "$old_labels"
     chk "state.json（去掉新队列字段）一致" "$(jq -cS 'del(.closed_done_queue)' "$STATE")" "$old_state"
     fi
