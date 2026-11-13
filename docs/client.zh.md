@@ -89,8 +89,12 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS）�
   - 文字匹配标题、编号（`135` / `#135`）、标签名，中文词中间也能搜到；
   - `label:` `status:` `milestone:` `assignee:` `author:` `repo:` `project:` `iteration:` `is:` `no:` `has:`（如 `is:open`、`is:pr`、`no:milestone`），前面加 `-` 表示排除，`@me` 指自己，`@current` / `@next` / `@previous` 指当前 / 下一个 / 上一个迭代；
   - 不支持的写法（比如迭代的比较和区间）会在看板上方用黄条列出来并忽略，不会变成「0 条结果」。
-- 新装的客户端默认搜索 `-Status:done -label:Done`（不显示已完成的条目）；清空搜索框就看全部。
-- **顶栏的流程数字**：默认是「运行中 / 等 agent / 等人处理 / 未处理」，各自数勾选的来源里开着的条目有几条带对应标签。点一个数，搜索框换成那个标签的筛选；再点一次回到原来的搜索。显示哪几个数、各自数什么，在设置 →「顶栏计数」里改。
+- **「显示已关闭」开关**：新装的客户端搜索框是空的。视图栏「视图设置」左边的「显示已关闭」开关关着时只列开着的 issue / PR，打开后已关闭、已合并的也列出来。开关每个视图各记一份：看板、表格、依赖图各一份（默认关）；顶栏的数点亮时用这个数自己的那份（开关文字后面写着是哪个数，比如「显示已关闭（等人处理）」），一开始跟着这个数怎么数——「等人处理」开，其他关——之后可以单独拨。都会记住，重开 App 还在。
+  - 搜索框里自己写了 `is:open` / `is:closed` / `is:merged` 时以搜索框为准，开关变灰。
+  - 依赖图关着开关时，开着的条目要用到的已关闭父项、前置、子项仍淡显画出来，只是和开着的条目都无关的已关闭条目不出现。
+  - 开关只管已经读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。
+  - 原来按 Project 的 Done 列 / `Done` 标签挡、现在按开 / 关挡：开着却已拖进 Done 列的条目会显示出来，想继续挡就在搜索框写 `-status:done`。导入 Project 网页视图时，只用来挡已完成条目的写法（`-status:done`、`-label:done`、`is:open`）不放进搜索框；旧版存下的、整句只由这几个写法组成的搜索词，升级后清空。
+- **顶栏的流程数字**：默认是「运行中 / 等 agent / 等人处理 / 未处理」，各自数勾选的来源里有几条带对应标签：「等人处理」开着的和已关闭的都数（托管 PR 合并时 issue 会关掉、留着 `pending/human` 提醒人看），其余只数开着的。点一个数，搜索框换成那个标签的筛选（`label:"…"`），列表按这个数自己的「显示已关闭」开关显示，所以默认正好是数到的那些；再点一次回到原来的搜索。显示哪几个数、各自数什么，在设置 →「顶栏计数」里改。
 - **视图设置**：分列 / 分组方式、排序（含「Project 里的顺序」）、显示哪些列、PR 是否跟在 issue 下、子 issue 是否缩进。搜索文字和视图设置都会记住，重开 App 还在。
 
 ## 详情、浮窗和标签页
@@ -166,7 +170,5 @@ daemon 本身的工作方式见仓库首页 [README](../README.zh.md)。
 - 中英文切换：[#466](https://github.com/GigleAI/cavil-loop/issues/466)，分成四步 [#471](https://github.com/GigleAI/cavil-loop/issues/471)（语言设置、顶栏、设置目录、登录、菜单、通知）、[#472](https://github.com/GigleAI/cavil-loop/issues/472)（看板、表格、依赖图、详情、标签页、新建 issue）、[#473](https://github.com/GigleAI/cavil-loop/issues/473)（本机与远程 daemon、更新、项目配置）、[#474](https://github.com/GigleAI/cavil-loop/issues/474)（收尾与说明文档）
 - 新建 issue 的窗口里直接「交给 agent」「托管」，并配快捷键：[#450](https://github.com/GigleAI/cavil-loop/issues/450)
 - 点「重新读取」「重新同步」后有转圈和结果提示：[#455](https://github.com/GigleAI/cavil-loop/issues/455)
-- 「等人处理」也数已关闭但仍挂着 `pending/human` 的条目：[#462](https://github.com/GigleAI/cavil-loop/issues/462)
-- 默认不显示已关闭的 issue / PR：[#464](https://github.com/GigleAI/cavil-loop/issues/464)
 - 顶栏精简，并合进窗口标题栏：[#467](https://github.com/GigleAI/cavil-loop/issues/467)
 - 客户端测试不清理临时目录：[#469](https://github.com/GigleAI/cavil-loop/issues/469)（只影响开发，不影响使用）
