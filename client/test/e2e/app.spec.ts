@@ -2366,7 +2366,8 @@ async function lowContrast(page: Page) {
         if (c[3] >= 1) break;
       }
       let acc: C = parse(getComputedStyle(document.documentElement).backgroundColor);
-      if (acc[3] < 1) acc = over(acc, matchMedia('(prefers-color-scheme: dark)').matches ? [13, 17, 23, 1] : [255, 255, 255, 1]);
+      // GitHub#516: the look the window shows is the page's mark (Settings may hold it against the system)
+      if (acc[3] < 1) acc = over(acc, document.documentElement.dataset.theme === 'dark' ? [13, 17, 23, 1] : [255, 255, 255, 1]);
       for (const l of layers.reverse()) acc = over(l, acc);
       return acc;
     };
@@ -2520,6 +2521,36 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await page.getByTestId('open-settings').click();
   await expect(page.getByTestId('settings')).toBeVisible();
   await readableBoth(page, 'settings', 20);
+
+  // GitHub#516: the same check with light / dark chosen in Settings against the system's — settings, board, detail
+  // (Settings is open here; each round ends back in it)
+  for (const [choice, system] of [
+    ['dark', 'light'],
+    ['light', 'dark'],
+  ] as const) {
+    await page.emulateMedia({ colorScheme: system });
+    await page.getByTestId(`theme-${choice}`).check();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', choice);
+    for (const where of ['settings', 'board', 'detail'] as const) {
+      if (where === 'board') {
+        await page.getByTestId('back').click();
+        await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+      }
+      if (where === 'detail') {
+        await card(page, 138).click();
+        await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+      }
+      const r = await lowContrast(page);
+      expect(r.checked, `${where} (${choice} chosen, system ${system}): text was found`).toBeGreaterThan(where === 'settings' ? 20 : 100);
+      expect(r.bad, `${where} (${choice} chosen, system ${system})`).toEqual([]);
+      await shot(page, `52-look-${where}-chosen-${choice}`);
+    }
+    await page.getByTestId('detail-close').click();
+    await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+    await page.getByTestId('open-settings').click();
+  }
+  await page.getByTestId('theme-system').check();
+  await page.emulateMedia({ colorScheme: 'light' });
   await app.close();
 });
 
