@@ -7,7 +7,7 @@
 // last status that was read greyed out and no actions — never "no projects" or "stopped".
 // Unpairing counts only when the machine confirmed it; otherwise the row stays as "取消配对未完成".
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -15,14 +15,33 @@ import { useLayer, useShortcuts } from './keyboard';
 import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
 import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, sortTailnet, tailnetPill, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult, type TailnetDevice, type TailnetList } from '../shared/remote';
-import { t } from '../shared/i18n';
+import { readSaid, t } from '../shared/i18n';
+import { SaidText, Verbatim, verbatimParts } from './Verbatim';
+import { tNode } from './tNode';
 
 type Ask =
   | { kind: 'stop' | 'start'; e: RemoteEntry; p: DaemonProject }
   /** `reason`: the machine could not confirm just now — what the offline question shows */
-  | { kind: 'unpair'; e: RemoteEntry; offline: boolean; reason?: string };
+  | { kind: 'unpair'; e: RemoteEntry; offline: boolean; reason?: string; reasonSaid?: unknown };
 
-type Note = { ok: boolean; text: string };
+/** `text`: the note as one string (empty = no note); `show`: how it is drawn (outside words marked, GitHub#473) */
+type Note = { ok: boolean; text: string; show?: ReactNode };
+
+/**
+ * What the back end said (GitHub#473): its own words in the window's language, what came from
+ * outside — the other machine, Tailscale, the system — marked and shown as written. `text` is the
+ * same message as one string, used only when no marked form came (an older back end, a local error).
+ */
+export function BackendText({ text, said }: { text: string | undefined; said?: unknown }) {
+  const s = readSaid(said);
+  return s ? <SaidText said={s} /> : <>{text}</>;
+}
+
+/** a note from a back-end result: its marked output when there is one */
+function outNote(ok: boolean, r: { output?: string; outputSaid?: unknown; result: string }): Note {
+  const text = r.output || r.result;
+  return { ok, text, show: r.output ? <BackendText text={r.output} said={r.outputSaid} /> : <Verbatim from="system">{r.result}</Verbatim> };
+}
 
 export function RemoteSection() {
   const [list, setList] = useState<RemoteEntry[] | null>(null);
@@ -88,10 +107,10 @@ export function RemoteSection() {
     setBusy(id);
     try {
       const r = await f();
-      if (alive.current) note(id, { ok: okWhen(r), text: okWhen(r) ? okText(r) : r.output || r.result });
+      if (alive.current) note(id, okWhen(r) ? { ok: true, text: okText(r) } : outNote(false, r));
       return r;
     } catch (e) {
-      if (alive.current) note(id, { ok: false, text: (e as Error).message });
+      if (alive.current) note(id, { ok: false, text: (e as Error).message, show: <Verbatim from="system">{(e as Error).message}</Verbatim> });
       return null;
     } finally {
       if (alive.current) setBusy(null);
@@ -111,7 +130,8 @@ export function RemoteSection() {
       note(e.id, null);
       await load(false);
     } else if (!quiet) {
-      note(e.id, { ok: false, text: `还是没能让那台机器确认撤销：${r.output || r.result}` });
+      const why = outNote(false, r);
+      note(e.id, { ok: false, text: t('还是没能让那台机器确认撤销：{why}', { why: why.text }), show: tNode('还是没能让那台机器确认撤销：{why}', { why: why.show }) });
     }
   };
 
@@ -131,16 +151,16 @@ export function RemoteSection() {
       setBusy(null);
       if (r.result === 'unconfirmed') {
         // the machine did not confirm: say what that means before anything changes here
-        setAsk({ kind: 'unpair', e: a.e, offline: true, reason: r.output });
+        setAsk({ kind: 'unpair', e: a.e, offline: true, reason: r.output, reasonSaid: r.outputSaid });
         return;
       }
-      if (r.result === 'unpaired') note(a.e.id, r.output ? { ok: true, text: r.output } : null);
-      else if (r.result !== 'pending') note(a.e.id, { ok: false, text: r.output || r.result });
+      if (r.result === 'unpaired') note(a.e.id, r.output ? outNote(true, r) : null);
+      else if (r.result !== 'pending') note(a.e.id, outNote(false, r));
       await load(false);
       return;
     }
     const id = `${a.e.id} ${a.p.key}`;
-    const r = await act(id, () => api().remoteService(a.e.id, a.p.key, a.kind as 'stop' | 'start'), (r) => r.result === 'ok', (r) => `${a.kind === 'stop' ? '已停' : '已启动'}（现在：${schedWord(r.state)}）`);
+    const r = await act(id, () => api().remoteService(a.e.id, a.p.key, a.kind as 'stop' | 'start'), (r) => r.result === 'ok', (r) => (a.kind === 'stop' ? t('已停（现在：{state}）', { state: schedWord(r.state) }) : t('已启动（现在：{state}）', { state: schedWord(r.state) })));
     if (r) await read(a.e.id);
   };
 
@@ -148,11 +168,11 @@ export function RemoteSection() {
     <section id="set-remote" data-testid="remote-settings">
       <h3>{t('远程 daemon')}</h3>
       <p className="muted small">
-        看和管理另一台机器上的 daemon。只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。
+        {t('看和管理另一台机器上的 daemon。只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。')}
       </p>
       {list && list.length === 0 && (
         <p className="muted small" data-testid="remote-empty">
-          还没有配对任何远程机器。
+          {t('还没有配对任何远程机器。')}
         </p>
       )}
       {list?.map((e) =>
@@ -160,8 +180,7 @@ export function RemoteSection() {
           <Pending key={e.id} e={e} busy={busy === e.id} note={notes[e.id]} onRetry={() => retryRevoke(e, false)} onForget={async () => {
             // the row is dropped only once the back end says so: a failure keeps its reason on screen
             // (act already put it there) through the list read that follows
-            const r = await act(e.id, () => api().remoteForget(e.id), (r) => r.result === 'unpaired', (r) => r.output ?? '');
-            if (!alive.current) return;
+            const r = await act(e.id, () => api().remoteForget(e.id), (r) => r.result === 'unpaired', (r) => r.output ?? '');            if (!alive.current) return;
             if (r?.result === 'unpaired') note(e.id, null);
             await load(false);
           }} />
@@ -181,12 +200,12 @@ export function RemoteSection() {
       )}
       {!persistent && (
         <p className="muted small" data-testid="remote-not-kept">
-          这个系统上配对用的钥匙只保存到 App 退出为止，下次打开要重新配对。
+          {t('这个系统上配对用的钥匙只保存到 App 退出为止，下次打开要重新配对。')}
         </p>
       )}
       <div className="row">
         <button className="primary" data-testid="remote-add" onClick={() => setPairing(true)}>
-          添加远程 daemon…
+          {t('添加远程 daemon…')}
         </button>
       </div>
       {pairing && (
@@ -203,23 +222,23 @@ export function RemoteSection() {
       {log && <LogDialog e={log.e} projectKey={log.key} onClose={() => setLog(null)} />}
       {ask && ask.kind !== 'unpair' && (
         <ConfirmDialog
-          title={ask.kind === 'stop' ? `停掉 ${remoteName(ask.e.host)} 上 ${ask.p.key} 的后台轮询？` : `启动 ${remoteName(ask.e.host)} 上 ${ask.p.key} 的后台轮询？`}
-          confirmLabel={ask.kind === 'stop' ? '停' : '启动'}
+          title={ask.kind === 'stop' ? t('停掉 {host} 上 {key} 的后台轮询？', { host: remoteName(ask.e.host), key: ask.p.key }) : t('启动 {host} 上 {key} 的后台轮询？', { host: remoteName(ask.e.host), key: ask.p.key })}
+          confirmLabel={ask.kind === 'stop' ? t('停') : t('启动')}
           danger={ask.kind === 'stop'}
           onConfirm={confirm}
           onCancel={() => setAsk(null)}
         >
           <p className="small" data-testid="remote-confirm-text">
             {ask.kind === 'stop'
-              ? '停掉以后那台机器上的 daemon 不再替这个项目读 GitHub、不再派工；正在跑的 worker 不受影响。随时可以在这里再启动。'
-              : '启动以后那台机器上的 daemon 按配置定时读这个项目的 GitHub 并派工。'}
+              ? t('停掉以后那台机器上的 daemon 不再替这个项目读 GitHub、不再派工；正在跑的 worker 不受影响。随时可以在这里再启动。')
+              : t('启动以后那台机器上的 daemon 按配置定时读这个项目的 GitHub 并派工。')}
           </p>
         </ConfirmDialog>
       )}
       {ask && ask.kind === 'unpair' && (
         <ConfirmDialog
-          title={`取消和 ${remoteName(ask.e.host)} 的配对？`}
-          confirmLabel={ask.offline ? '只在这台电脑上取消' : '取消配对'}
+          title={t('取消和 {host} 的配对？', { host: remoteName(ask.e.host) })}
+          confirmLabel={ask.offline ? t('只在这台电脑上取消') : t('取消配对')}
           danger
           onConfirm={confirm}
           onCancel={() => setAsk(null)}
@@ -229,14 +248,15 @@ export function RemoteSection() {
               <div className="banner warn remote-inline">
                 <Icon name="warn" />
                 <span className="banner-text">
-                  现在没能让那台机器确认，<b>它上面的授权这次撤销不了</b>。{ask.reason && <span data-testid="remote-unpair-reason">（{ask.reason}）</span>}
+                  {tNode('现在没能让那台机器确认，{b}。', { b: <b>{t('它上面的授权这次撤销不了')}</b> })}
+                  {ask.reason && <span data-testid="remote-unpair-reason">{tNode('（{why}）', { why: <BackendText text={ask.reason} said={ask.reasonSaid} /> })}</span>}
                 </span>
               </div>
-              <p className="small">继续的话：这台电脑不再连接它，并在列表里保留一行「取消配对未完成」，直到那台机器确认撤销（恢复连接后自动重试），或者在那台机器上手动撤销。</p>
+              <p className="small">{t('继续的话：这台电脑不再连接它，并在列表里保留一行「取消配对未完成」，直到那台机器确认撤销（恢复连接后自动重试），或者在那台机器上手动撤销。')}</p>
             </div>
           ) : (
             <p className="small" data-testid="remote-unpair-text" data-offline="false">
-              会先让那台机器撤销这台电脑的授权，那台机器确认后，这台电脑才删除自己的钥匙。之后要再连它，需要重新配对。
+              {t('会先让那台机器撤销这台电脑的授权，那台机器确认后，这台电脑才删除自己的钥匙。之后要再连它，需要重新配对。')}
             </p>
           )}
         </ConfirmDialog>
@@ -256,39 +276,42 @@ function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog }: { e: R
   return (
     <div className="remote-host" data-testid="remote-host" data-id={e.id} data-state={live ? 'ok' : reading ? 'reading' : failed ? 'failed' : 'idle'}>
       <div className="remote-head">
-        <b>{remoteName(e.host)}</b>
+        <b>
+          <Verbatim from="user">{remoteName(e.host)}</Verbatim>
+        </b>
         <span className={`remote-pill ${pill.tone}`} data-testid="remote-pill">
           {pill.word}
         </span>
         <span className="muted small">
-          {e.host}
+          <Verbatim from="user">{e.host}</Verbatim>
           {live && (
             <>
-              {' · 版本 '}
-              <b data-testid="remote-version">{live.status.daemon.version ? live.status.daemon.version.slice(0, 12) : '读不出'}</b>
               {' · '}
-              {live.status.daemon.form === 'managed' ? '自动更新' : live.status.daemon.form === 'checkout' ? '手动更新' : '不能在这里更新'}
+              {tNode('版本 {v}', {
+                v: <b data-testid="remote-version">{live.status.daemon.version ? <Verbatim from="remote">{live.status.daemon.version.slice(0, 12)}</Verbatim> : t('读不出')}</b>,
+              })}
               {' · '}
-              {ago(live.at, now)}读取
+              {live.status.daemon.form === 'managed' ? t('自动更新') : live.status.daemon.form === 'checkout' ? t('手动更新') : t('不能在这里更新')}
+              {' · '}
+              {t('{ago}读取', { ago: ago(live.at, now) })}
             </>
           )}
-          {!live && at !== undefined && <span data-testid="remote-last-at">{` · 上次读到：${clock(at)}`}</span>}
+          {!live && at !== undefined && <span data-testid="remote-last-at">{t(' · 上次读到：{at}', { at: clock(at) })}</span>}
         </span>
         <span className="remote-spacer" />
         <button className="ghost" data-testid="remote-reload" disabled={reading || !!busy} onClick={onRead}>
           <Icon name="refresh" />
-          {reading ? '正在读取…' : '重新读取'}
+          {reading ? t('正在读取…') : t('重新读取')}
         </button>
         <button data-testid="remote-unpair" disabled={!!busy} onClick={() => onAsk({ kind: 'unpair', e, offline: !live })}>
-          取消配对…
+          {t('取消配对…')}
         </button>
       </div>
       {failed && (
         <div className="banner error remote-inline" data-testid="remote-problem" data-kind={failed.state}>
           <Icon name="warn" />
           <span className="banner-text">
-            {failed.message}
-            {shown && '。下面是上次读到的内容，不能操作。'}
+            {shown ? tNode('{why}。下面是上次读到的内容，不能操作。', { why: <BackendText text={failed.message} said={failed.messageSaid} /> }) : <BackendText text={failed.message} said={failed.messageSaid} />}
           </span>
         </div>
       )}
@@ -296,17 +319,17 @@ function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog }: { e: R
       {shown &&
         (shown.projects.length === 0 ? (
           <p className="muted small" data-testid="remote-projects-empty">
-            那台机器上还没有接入任何项目。
+            {t('那台机器上还没有接入任何项目。')}
           </p>
         ) : (
           <table className={`daemon-projects${live ? '' : ' remote-old'}`} data-testid="remote-projects" data-live={String(!!live)}>
             <thead>
               <tr>
-                <th>项目</th>
-                <th>仓库 / 目录（在那台机器上）</th>
+                <th>{t('项目')}</th>
+                <th>{t('仓库 / 目录（在那台机器上）')}</th>
                 <th>agent</th>
-                <th>状态</th>
-                <th>上次轮询</th>
+                <th>{t('状态')}</th>
+                <th>{t('上次轮询')}</th>
                 <th />
               </tr>
             </thead>
@@ -318,39 +341,41 @@ function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog }: { e: R
                 return (
                   <tr key={p.key} data-testid="remote-project" data-key={p.key} data-state={state}>
                     <td>
-                      <b>{p.key}</b>
+                      <b>
+                        <Verbatim from="remote">{p.key}</Verbatim>
+                      </b>
                     </td>
                     <td>
-                      <div>{p.repo ?? <span className="muted">读不出</span>}</div>
+                      <div>{p.repo ? <Verbatim from="remote">{p.repo}</Verbatim> : <span className="muted">{t('读不出')}</span>}</div>
                       <div className="muted small">
-                        <code>{p.host ?? '—'}</code>
+                        <code>{p.host ? <Verbatim from="remote">{p.host}</Verbatim> : '—'}</code>
                       </div>
                     </td>
-                    <td>{worker ? worker.agent : <span className="muted">读不出</span>}</td>
+                    <td>{worker ? <Verbatim from="remote">{worker.agent}</Verbatim> : <span className="muted">{t('读不出')}</span>}</td>
                     <td className="nowrap" data-testid="remote-project-state">
                       <span className={!live ? 'muted' : state === 'running' ? 'ok-mark' : state === 'unknown' ? 'err' : 'muted'}>
                         {schedWord(state)}
-                        {!live && '（上次读到）'}
+                        {!live && t('（上次读到）')}
                       </span>
                     </td>
-                    <td className="small nowrap">{p.last_poll ? (live ? ago(p.last_poll.epoch, now) : clock(p.last_poll.epoch)) : <span className="muted">还没轮询过</span>}</td>
+                    <td className="small nowrap">{p.last_poll ? (live ? ago(p.last_poll.epoch, now) : clock(p.last_poll.epoch)) : <span className="muted">{t('还没轮询过')}</span>}</td>
                     <td className="daemon-actions">
                       {live && state === 'running' && (
                         <button data-testid="remote-stop" disabled={!!busy} onClick={() => onAsk({ kind: 'stop', e, p })}>
-                          停
+                          {t('停')}
                         </button>
                       )}
                       {live && state === 'stopped' && (
                         <button data-testid="remote-start" disabled={!!busy} onClick={() => onAsk({ kind: 'start', e, p })}>
-                          启
+                          {t('启')}
                         </button>
                       )}
                       {live && (
                         <button className="ghost" data-testid="remote-log" disabled={!!busy} onClick={() => onLog(p.key)}>
-                          日志
+                          {t('日志')}
                         </button>
                       )}
-                      {busy === id && <div className="muted small">正在执行…</div>}
+                      {busy === id && <div className="muted small">{t('正在执行…')}</div>}
                       {notes[id] && <NoteBox id={id} note={notes[id]} />}
                     </td>
                   </tr>
@@ -369,11 +394,15 @@ function Pending({ e, busy, note, onRetry, onForget }: { e: RemoteEntry; busy: b
   return (
     <div className="remote-host" data-testid="remote-host" data-id={e.id} data-state="pending">
       <div className="remote-head">
-        <b>{remoteName(e.host)}</b>
+        <b>
+          <Verbatim from="user">{remoteName(e.host)}</Verbatim>
+        </b>
         <span className="remote-pill bad" data-testid="remote-pill">
-          取消配对未完成
+          {t('取消配对未完成')}
         </span>
-        <span className="muted small">{e.host}</span>
+        <span className="muted small">
+          <Verbatim from="user">{e.host}</Verbatim>
+        </span>
         <span className="remote-spacer" />
         <button
           data-testid="remote-retry"
@@ -387,16 +416,16 @@ function Pending({ e, busy, note, onRetry, onForget }: { e: RemoteEntry; busy: b
             }
           }}
         >
-          {trying ? '正在重试…' : '再试一次'}
+          {trying ? t('正在重试…') : t('再试一次')}
         </button>
         <button className="ghost" data-testid="remote-forget" disabled={busy || trying} onClick={onForget}>
-          已在那台机器上取消，移除此行
+          {t('已在那台机器上取消，移除此行')}
         </button>
       </div>
       <div className="banner warn remote-inline" data-testid="remote-pending">
         <Icon name="warn" />
         <span className="banner-text">
-          这台电脑已不再连接它，但<b>那台机器上的授权还没有撤销</b>（取消时没能得到它的确认）。恢复连接后点「再试一次」，或在那台机器上运行：
+          {tNode('这台电脑已不再连接它，但{b}（取消时没能得到它的确认）。恢复连接后点「再试一次」，或在那台机器上运行：', { b: <b>{t('那台机器上的授权还没有撤销')}</b> })}
           <br />
           <Command text={cmd} />
         </span>
@@ -410,7 +439,7 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
   const [host, setHost] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ reason: string; text: string } | null>(null);
+  const [error, setError] = useState<{ reason: string; text: string; said?: unknown } | null>(null);
   // this computer's Tailscale devices: null while reading
   const [net, setNet] = useState<TailnetList | null>(null);
   const [manual, setManual] = useState(false);
@@ -442,7 +471,7 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
     try {
       const r = await api().remotePair(host, digits);
       if (r.result === 'paired' && r.id) return onPaired(r.id);
-      setError({ reason: r.reason ?? 'failed', text: r.output || r.result });
+      setError({ reason: r.reason ?? 'failed', text: r.output || r.result, said: r.output ? r.outputSaid : undefined });
     } catch (e) {
       setError({ reason: 'local', text: (e as Error).message });
     } finally {
@@ -451,24 +480,24 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
   };
   const isPaired = (h: string) => paired.some((p) => p.split(':')[0] === h);
   return (
-    <ConfirmDialog title="添加远程 daemon" confirmLabel={busy ? '正在配对…' : '配对'} busy={busy} disabled={host.trim() === '' || digits.length !== 8 || picked?.remote === 'offline'} dirty={host !== '' || code !== ''} onConfirm={submit} onCancel={onClose}>
+    <ConfirmDialog title={t('添加远程 daemon')} confirmLabel={busy ? t('正在配对…') : t('配对')} busy={busy} disabled={host.trim() === '' || digits.length !== 8 || picked?.remote === 'offline'} dirty={host !== '' || code !== ''} onConfirm={submit} onCancel={onClose}>
       <div data-testid="remote-pair-dialog">
         {error && (
           <div className="banner error remote-inline" data-testid="remote-pair-error" data-reason={error.reason}>
             <Icon name="warn" />
-            <span className="banner-text">没有配对：{error.text}</span>
+            <span className="banner-text">{tNode('没有配对：{why}', { why: error.said ? <BackendText text={error.text} said={error.said} /> : <Verbatim from="system">{error.text}</Verbatim> })}</span>
           </div>
         )}
         {!showManual && (
           <>
             <p className="muted small">
-              下面是这台电脑的 Tailscale 里能看到的机器。选一台已打开远程连接的，再填它显示的配对码。
+              {t('下面是这台电脑的 Tailscale 里能看到的机器。选一台已打开远程连接的，再填它显示的配对码。')}
               <button className="link" data-testid="remote-tailnet-again" disabled={net === null} onClick={() => void readNet()}>
-                {net === null ? '正在读取…' : '重新读取'}
+                {net === null ? t('正在读取…') : t('重新读取')}
               </button>
             </p>
-            {net === null && <p className="muted small" data-testid="remote-tailnet-loading">正在读取这台电脑的 Tailscale 设备，并逐台看远程连接开没开…</p>}
-            <div className="remote-devices" role="radiogroup" aria-label="Tailscale 里的机器" data-testid="remote-tailnet">
+            {net === null && <p className="muted small" data-testid="remote-tailnet-loading">{t('正在读取这台电脑的 Tailscale 设备，并逐台看远程连接开没开…')}</p>}
+            <div className="remote-devices" role="radiogroup" aria-label={t('Tailscale 里的机器')} data-testid="remote-tailnet">
               {devices.map((d) => {
                 const pill = tailnetPill(d);
                 const already = isPaired(d.host);
@@ -483,13 +512,22 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
                     data-remote={d.remote}
                     disabled={already}
                     title={d.why}
+                    {...whyParts(d)}
                     onClick={() => setHost(d.host)}
                   >
-                    <b>{d.name}</b>
-                    <span className={`remote-pill ${pill.tone}`}>{already ? '已在列表里' : pill.word}</span>
-                    {d.os && <span className="muted small">{d.os}</span>}
+                    <b>
+                      <Verbatim from="system">{d.name}</Verbatim>
+                    </b>
+                    <span className={`remote-pill ${pill.tone}`}>{already ? t('已在列表里') : pill.word}</span>
+                    {d.os && (
+                      <span className="muted small">
+                        <Verbatim from="system">{d.os}</Verbatim>
+                      </span>
+                    )}
                     <span className="remote-spacer" />
-                    <span className="muted small">{d.host}</span>
+                    <span className="muted small">
+                      <Verbatim from="system">{d.host}</Verbatim>
+                    </span>
                   </button>
                 );
               })}
@@ -502,30 +540,30 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
             {net?.result === 'unreadable' && (
               <div className="banner warn remote-inline" data-testid="remote-tailnet-unreadable">
                 <Icon name="warn" />
-                <span className="banner-text">读不到这台电脑的 Tailscale 设备列表（{net.output}）。请手动输入机器名，或确认 Tailscale 已连上后重新读取。</span>
+                <span className="banner-text">{tNode('读不到这台电脑的 Tailscale 设备列表（{why}）。请手动输入机器名，或确认 Tailscale 已连上后重新读取。', { why: <BackendText text={net.output} said={net.outputSaid} /> })}</span>
               </div>
             )}
-            {net?.result === 'ok' && devices.length === 0 && !manual && <p className="muted small">这台电脑的 Tailscale 里没有别的机器，请手动输入机器名。</p>}
+            {net?.result === 'ok' && devices.length === 0 && !manual && <p className="muted small">{t('这台电脑的 Tailscale 里没有别的机器，请手动输入机器名。')}</p>}
             <ol className="remote-steps small">
               <li>
-                在那台机器上打开远程连接并生成配对码：装了本客户端的，在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」、点「生成配对码」；没有窗口的服务器，在它上面运行（入口还没开时会先打开）：
+                {t('在那台机器上打开远程连接并生成配对码：装了本客户端的，在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」、点「生成配对码」；没有窗口的服务器，在它上面运行（入口还没开时会先打开）：')}
                 <br />
                 <Command text={PAIR_COMMAND} />
               </li>
-              <li>把那台机器显示的完整机器名（以 .ts.net 结尾）和 8 位配对码填到下面。配对码 10 分钟内有效、只能用一次。</li>
+              <li>{t('把那台机器显示的完整机器名（以 .ts.net 结尾）和 8 位配对码填到下面。配对码 10 分钟内有效、只能用一次。')}</li>
             </ol>
             <label className="remote-field">
-              <span>机器名（Tailscale 里的完整名字，以 .ts.net 结尾）</span>
+              <span>{t('机器名（Tailscale 里的完整名字，以 .ts.net 结尾）')}</span>
               <input data-testid="remote-pair-host" value={host} placeholder="mybox.tailnet-name.ts.net" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(e) => setHost(e.target.value)} />
             </label>
           </>
         )}
         <label className="remote-field">
-          <span>配对码{picked ? `（在 ${picked.name} 上显示的 8 位数字）` : ''}</span>
+          <span>{picked ? tNode('配对码（在 {name} 上显示的 8 位数字）', { name: <Verbatim from="system">{picked.name}</Verbatim> }) : t('配对码')}</span>
           <input data-testid="remote-pair-code" className="remote-code" value={code} placeholder="0000 0000" inputMode="numeric" spellCheck={false} onChange={(e) => setCode(e.target.value)} />
         </label>
         <p className="muted small">
-          列表只读这台电脑的 Tailscale，再逐台问一声远程入口开没开，不发出这台电脑的任何信息。只接受 .ts.net 机器名。发出配对码之前，先核对对面出示的是 Tailscale 发给那台机器的证书、且连接走的是 Tailscale 地址；任何一项对不上就不发送。配对成功后，这台电脑得到一把只属于它的钥匙，存在系统钥匙串里。
+          {t('列表只读这台电脑的 Tailscale，再逐台问一声远程入口开没开，不发出这台电脑的任何信息。只接受 .ts.net 机器名。发出配对码之前，先核对对面出示的是 Tailscale 发给那台机器的证书、且连接走的是 Tailscale 地址；任何一项对不上就不发送。配对成功后，这台电脑得到一把只属于它的钥匙，存在系统钥匙串里。')}
         </p>
         {(!showManual || (manual && devices.length > 0)) && (
           <p className="small">
@@ -537,7 +575,7 @@ function PairDialog({ paired, onClose, onPaired }: { paired: string[]; onClose: 
                 setHost('');
               }}
             >
-              {manual ? '从列表里选' : '手动输入机器名'}
+              {manual ? t('从列表里选') : t('手动输入机器名')}
             </button>
           </p>
         )}
@@ -552,19 +590,25 @@ function NotOpen({ d }: { d: TailnetDevice }) {
     return (
       <div className="banner warn remote-inline" data-testid="remote-not-open" data-remote="offline">
         <Icon name="warn" />
-        <span className="banner-text">{d.name} 现在不在线（Tailscale 这样说），连不上它。等它上线后再试。</span>
+        <span className="banner-text">{tNode('{name} 现在不在线（Tailscale 这样说），连不上它。等它上线后再试。', { name: <Verbatim from="system">{d.name}</Verbatim> })}</span>
       </div>
     );
   return (
     <div className="banner warn remote-inline" data-testid="remote-not-open" data-remote={d.remote}>
       <Icon name="warn" />
       <span className="banner-text">
-        {d.remote === 'unknown' ? `看不出 ${d.name} 的远程连接开没开${d.why ? `（${d.why}）` : ''}。已经打开的话，照样填配对码试试；` : `${d.name} 还没有打开远程连接。`}
-        远程入口只能在那台机器上打开——这台电脑没有办法替它打开（否则任何连得上的设备都能打开别人的入口）。
+        {d.remote === 'unknown'
+          ? d.why
+            ? tNode('看不出 {name} 的远程连接开没开（{why}）。已经打开的话，照样填配对码试试；', { name: <Verbatim from="system">{d.name}</Verbatim>, why: <BackendText text={d.why} said={d.whySaid} /> })
+            : tNode('看不出 {name} 的远程连接开没开。已经打开的话，照样填配对码试试；', { name: <Verbatim from="system">{d.name}</Verbatim> })
+          : tNode('{name} 还没有打开远程连接。', { name: <Verbatim from="system">{d.name}</Verbatim> })}
+        {t('远程入口只能在那台机器上打开——这台电脑没有办法替它打开（否则任何连得上的设备都能打开别人的入口）。')}
         <br />
-        <b>那台机器装了本客户端：</b>在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」，点「生成配对码」。
+        <b>{t('那台机器装了本客户端：')}</b>
+        {t('在它的「设置 → 本机 daemon」里打开「允许其他电脑远程连接」，点「生成配对码」。')}
         <br />
-        <b>那台机器没有窗口（服务器）：</b>在它上面运行一次下面这条命令；它会打开入口并显示配对码。以后再加别的电脑，也只需要这一条。
+        <b>{t('那台机器没有窗口（服务器）：')}</b>
+        {t('在它上面运行一次下面这条命令；它会打开入口并显示配对码。以后再加别的电脑，也只需要这一条。')}
         <br />
         <Command text={PAIR_COMMAND} />
       </span>
@@ -603,33 +647,33 @@ function LogDialog({ e, projectKey, onClose }: { e: RemoteEntry; projectKey: str
     <div className="modal-back" data-testid="remote-log-dialog" onClick={onClose}>
       <div className="modal remote-log" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(ev) => ev.stopPropagation()}>
         <h3>
-          日志 · {remoteName(e.host)} / {projectKey}
+          {tNode('日志 · {host} / {key}', { host: <Verbatim from="user">{remoteName(e.host)}</Verbatim>, key: <Verbatim from="remote">{projectKey}</Verbatim> })}
         </h3>
         <p className="muted small">
-          那台机器上这个项目轮询日志的最后 200 行（只读）。
+          {t('那台机器上这个项目轮询日志的最后 200 行（只读）。')}
           <button className="link" data-testid="remote-log-again" disabled={loading} onClick={fetchLog}>
-            {loading ? '正在读取…' : '再读一次'}
+            {loading ? t('正在读取…') : t('再读一次')}
           </button>
         </p>
         {got && got.result !== 'ok' && (
           <div className="banner error remote-inline" data-testid="remote-log-error">
             <Icon name="warn" />
-            <span className="banner-text">没读到日志：{got.output || got.result}</span>
+            <span className="banner-text">{tNode('没读到日志：{why}', { why: outNote(false, got).show })}</span>
           </div>
         )}
         {got && got.result === 'ok' && !got.exists && (
           <p className="muted small" data-testid="remote-log-none">
-            这个项目还没有轮询日志（{got.path}）。
+            {tNode('这个项目还没有轮询日志（{path}）。', { path: <Verbatim from="remote">{got.path}</Verbatim> })}
           </p>
         )}
         {got && got.result === 'ok' && got.exists && (
           <pre className="daemon-output small" data-testid="remote-log-text">
-            {got.text}
+            <Verbatim from="remote">{got.text}</Verbatim>
           </pre>
         )}
         <div className="row end">
           <button data-testid="remote-log-close" onClick={onClose}>
-            关闭
+            {t('关闭')}
           </button>
         </div>
       </div>
@@ -641,7 +685,7 @@ function NoteBox({ id, note }: { id: string; note: Note }) {
   if (!note.text) return null;
   return (
     <pre className={`daemon-output small${note.ok ? '' : ' err'}`} data-testid="remote-note" data-for={id} data-ok={String(note.ok)}>
-      {note.text}
+      {note.show ?? note.text}
     </pre>
   );
 }
@@ -652,8 +696,17 @@ export function Command({ text }: { text: string }) {
     <span className="daemon-command">
       <code data-testid="remote-command">{text}</code>
       <button className="ghost small" data-testid="remote-copy" onClick={async () => setCopied(await copyText(text))}>
-        {copied === null ? '复制' : copied ? '已复制' : '复制失败，请手动选中'}
+        {copied === null ? t('复制') : copied ? t('已复制') : t('复制失败，请手动选中')}
       </button>
     </span>
   );
+}
+
+/** a machine's hover text (`why`) names outside words: the language check takes exactly those out */
+function whyParts(d: TailnetDevice): Record<string, string> {
+  if (!d.why) return {};
+  const s = readSaid(d.whySaid);
+  // no marked form: the whole hover text came as one string, taken as outside text
+  if (!s) return verbatimParts('system', [d.why]);
+  return verbatimParts(s.parts[0]?.from ?? 'system', s.parts.map((p) => p.text));
 }

@@ -19,6 +19,7 @@
 // "Could not reach / could not verify" never becomes "no projects" or "stopped": every failure is
 // reported with its reason, and the last status that was read is kept, marked as old.
 
+use crate::i18n::{tr, Said};
 use crate::store::Store;
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -50,9 +51,9 @@ const T_HELLO: Duration = Duration::from_secs(5);
 pub trait KeyStore: Send + Sync {
     /// true when a key survives an app restart
     fn persistent(&self) -> bool;
-    async fn get(&self, account: &str) -> Result<Option<String>, String>;
-    async fn set(&self, account: &str, key: &str) -> Result<(), String>;
-    async fn clear(&self, account: &str) -> Result<(), String>;
+    async fn get(&self, account: &str) -> Result<Option<String>, Said>;
+    async fn set(&self, account: &str, key: &str) -> Result<(), Said>;
+    async fn clear(&self, account: &str) -> Result<(), Said>;
 }
 
 fn key_shape(key: &str) -> bool {
@@ -72,14 +73,14 @@ impl KeyStore for MemoryKeys {
     fn persistent(&self) -> bool {
         false
     }
-    async fn get(&self, account: &str) -> Result<Option<String>, String> {
+    async fn get(&self, account: &str) -> Result<Option<String>, Said> {
         Ok(self.0.lock().unwrap().get(account).cloned())
     }
-    async fn set(&self, account: &str, key: &str) -> Result<(), String> {
+    async fn set(&self, account: &str, key: &str) -> Result<(), Said> {
         self.0.lock().unwrap().insert(account.into(), key.into());
         Ok(())
     }
-    async fn clear(&self, account: &str) -> Result<(), String> {
+    async fn clear(&self, account: &str) -> Result<(), Said> {
         self.0.lock().unwrap().remove(account);
         Ok(())
     }
@@ -89,18 +90,18 @@ impl KeyStore for MemoryKeys {
 pub struct FileKeys(pub PathBuf);
 
 impl FileKeys {
-    fn load(&self) -> Result<serde_json::Map<String, Value>, String> {
+    fn load(&self) -> Result<serde_json::Map<String, Value>, Said> {
         match std::fs::read_to_string(&self.0) {
-            Ok(s) => serde_json::from_str(&s).map_err(|e| format!("钥匙文件读不懂：{e}")),
+            Ok(s) => serde_json::from_str(&s).map_err(|e| Said::new("钥匙文件读不懂：{e}", &[("e", &e.to_string())], "system")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(sys(e)),
         }
     }
-    fn save(&self, m: &serde_json::Map<String, Value>) -> Result<(), String> {
+    fn save(&self, m: &serde_json::Map<String, Value>) -> Result<(), Said> {
         if let Some(d) = self.0.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(d).map_err(sys)?;
         }
-        std::fs::write(&self.0, serde_json::to_string(m).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        std::fs::write(&self.0, serde_json::to_string(m).map_err(sys)?).map_err(sys)
     }
 }
 
@@ -109,15 +110,15 @@ impl KeyStore for FileKeys {
     fn persistent(&self) -> bool {
         true
     }
-    async fn get(&self, account: &str) -> Result<Option<String>, String> {
+    async fn get(&self, account: &str) -> Result<Option<String>, Said> {
         Ok(self.load()?.get(account).and_then(|v| v.as_str()).map(str::to_string))
     }
-    async fn set(&self, account: &str, key: &str) -> Result<(), String> {
+    async fn set(&self, account: &str, key: &str) -> Result<(), Said> {
         let mut m = self.load()?;
         m.insert(account.into(), Value::String(key.into()));
         self.save(&m)
     }
-    async fn clear(&self, account: &str) -> Result<(), String> {
+    async fn clear(&self, account: &str) -> Result<(), Said> {
         let mut m = self.load()?;
         m.remove(account);
         self.save(&m)
@@ -141,19 +142,19 @@ impl KeyStore for MacKeys {
     fn persistent(&self) -> bool {
         true
     }
-    async fn get(&self, account: &str) -> Result<Option<String>, String> {
+    async fn get(&self, account: &str) -> Result<Option<String>, Said> {
         let out = tokio::process::Command::new(&self.bin)
             .args(["find-generic-password", "-s", crate::platform::KEYCHAIN_SERVICE, "-a", account, "-w"])
             .output()
             .await
-            .map_err(|e| format!("读取钥匙串失败：{e}"))?;
+            .map_err(|e| Said::new("读取钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         match out.status.code() {
             Some(0) => Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|t| !t.is_empty())),
             Some(44) => Ok(None),
-            c => Err(format!("读取钥匙串失败：exit {}", c.map(|c| c.to_string()).unwrap_or_else(|| "?".into()))),
+            c => Err(Said::new("读取钥匙串失败：{e}", &[("e", &format!("exit {}", c.map(|c| c.to_string()).unwrap_or_else(|| "?".into())))], "system")),
         }
     }
-    async fn set(&self, account: &str, key: &str) -> Result<(), String> {
+    async fn set(&self, account: &str, key: &str) -> Result<(), Said> {
         use tokio::io::AsyncWriteExt;
         let mut child = tokio::process::Command::new(&self.bin)
             .arg("-i")
@@ -161,29 +162,30 @@ impl KeyStore for MacKeys {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| format!("写入钥匙串失败：{e}"))?;
+            .map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         // account and key are shape-checked by the caller: nothing here needs quoting
-        let line = format!("add-generic-password -U -s \"{}\" -a \"{account}\" -l \"Cavil Loop (远程 daemon)\" -w \"{key}\"\n", crate::platform::KEYCHAIN_SERVICE);
+        let label = tr("Cavil Loop (远程 daemon)", &[]);
+        let line = format!("add-generic-password -U -s \"{}\" -a \"{account}\" -l \"{label}\" -w \"{key}\"\n", crate::platform::KEYCHAIN_SERVICE);
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(line.as_bytes()).await.map_err(|e| format!("写入钥匙串失败：{e}"))?;
+            stdin.write_all(line.as_bytes()).await.map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         }
-        let out = child.wait_with_output().await.map_err(|e| format!("写入钥匙串失败：{e}"))?;
+        let out = child.wait_with_output().await.map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() && !stderr.to_lowercase().contains("error") {
             Ok(())
         } else {
-            Err(format!("写入钥匙串失败：{}", stderr.trim()))
+            Err(Said::new("写入钥匙串失败：{e}", &[("e", stderr.trim())], "system"))
         }
     }
-    async fn clear(&self, account: &str) -> Result<(), String> {
+    async fn clear(&self, account: &str) -> Result<(), Said> {
         let out = tokio::process::Command::new(&self.bin)
             .args(["delete-generic-password", "-s", crate::platform::KEYCHAIN_SERVICE, "-a", account])
             .output()
             .await
-            .map_err(|e| format!("删除钥匙串条目失败：{e}"))?;
+            .map_err(|e| Said::new("删除钥匙串条目失败：{e}", &[("e", &e.to_string())], "system"))?;
         match out.status.code() {
             Some(0) | Some(44) => Ok(()),
-            c => Err(format!("删除钥匙串条目失败：exit {}", c.map(|c| c.to_string()).unwrap_or_else(|| "?".into()))),
+            c => Err(Said::new("删除钥匙串条目失败：{e}", &[("e", &format!("exit {}", c.map(|c| c.to_string()).unwrap_or_else(|| "?".into())))], "system")),
         }
     }
 }
@@ -195,13 +197,13 @@ pub fn parse_host(input: &str) -> Result<(String, u16), String> {
     let t = input.trim().trim_end_matches('.').to_ascii_lowercase();
     let t = t.strip_prefix("https://").unwrap_or(&t).trim_end_matches('/').to_string();
     let (host, port) = match t.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok().filter(|p| *p >= 1024).ok_or_else(|| "端口不对（要在 1024–65535 之间）".to_string())?),
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok().filter(|p| *p >= 1024).ok_or_else(|| tr("端口不对（要在 1024–65535 之间）", &[]))?),
         None => (t, DEFAULT_PORT),
     };
     let label_ok = |l: &str| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     let labels: Vec<&str> = host.split('.').collect();
     if host.len() > 253 || labels.len() < 4 || !host.ends_with(".ts.net") || !labels.iter().all(|l| label_ok(l)) {
-        return Err("只接受 Tailscale 里的完整机器名（以 .ts.net 结尾，例如 mybox.tailnet-name.ts.net），不接受 IP 地址或别的域名".into());
+        return Err(tr("只接受 Tailscale 里的完整机器名（以 .ts.net 结尾，例如 mybox.tailnet-name.ts.net），不接受 IP 地址或别的域名", &[]));
     }
     Ok((host, port))
 }
@@ -221,19 +223,29 @@ pub fn is_tailscale_addr(ip: &IpAddr) -> bool {
 }
 
 /// The one rule about what a name resolved to: at least one address, every one a Tailscale address.
-fn check_resolved(host: &str, addrs: &[IpAddr]) -> Result<(), String> {
+fn check_resolved(host: &str, addrs: &[IpAddr]) -> Result<(), Said> {
     if addrs.is_empty() {
-        return Err(format!("{host} 解析不出地址"));
+        return Err(no_address(host));
     }
     if let Some(bad) = addrs.iter().find(|a| !is_tailscale_addr(a)) {
-        return Err(format!("{host} 解析到的不是 Tailscale 地址（{bad}）"));
+        return Err(Said::compose("{host} 解析到的不是 Tailscale 地址（{bad}）", &[("host", &Said::outside(host, "user")), ("bad", &Said::outside(&bad.to_string(), "system"))]));
     }
     Ok(())
 }
 
+/// "<name> does not resolve": the name is the one the person typed or picked
+fn no_address(host: &str) -> Said {
+    Said::new("{host} 解析不出地址", &[("host", host)], "user")
+}
+
+/// an error of the system / a library, in its own words
+fn sys(e: impl std::fmt::Display) -> Said {
+    Said::outside(&e.to_string(), "system")
+}
+
 thread_local! {
     /// why this thread's lookup was refused (ureq resolves on the calling thread)
-    static REFUSED: RefCell<Option<String>> = const { RefCell::new(None) };
+    static REFUSED: RefCell<Option<Said>> = const { RefCell::new(None) };
 }
 
 /// Test mode: what a name "resolves to" and where the stand-in for that machine really listens.
@@ -252,9 +264,10 @@ struct TailnetResolver {
 }
 
 impl TailnetResolver {
-    fn refuse(m: String) -> ureq::Error {
-        REFUSED.with(|r| *r.borrow_mut() = Some(m.clone()));
-        ureq::Error::Io(std::io::Error::other(m))
+    fn refuse(m: Said) -> ureq::Error {
+        let text = m.text();
+        REFUSED.with(|r| *r.borrow_mut() = Some(m));
+        ureq::Error::Io(std::io::Error::other(text))
     }
 }
 
@@ -264,7 +277,7 @@ impl Resolver for TailnetResolver {
         let mut out = self.empty();
         match &self.test {
             None => {
-                let found = DefaultResolver::default().resolve(uri, config, timeout).map_err(|e| Self::refuse(format!("{host} 解析不出地址（{e}）")))?;
+                let found = DefaultResolver::default().resolve(uri, config, timeout).map_err(|e| Self::refuse(Said::compose("{host} 解析不出地址（{e}）", &[("host", &Said::outside(&host, "user")), ("e", &sys(e))])))?;
                 let ips: Vec<IpAddr> = found.iter().map(|a| a.ip()).collect();
                 check_resolved(&host, &ips).map_err(Self::refuse)?;
                 for a in found.iter() {
@@ -276,9 +289,9 @@ impl Resolver for TailnetResolver {
                 let entry = &table[&host];
                 let ips: Vec<IpAddr> = entry["resolves"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect()).unwrap_or_default();
                 check_resolved(&host, &ips).map_err(Self::refuse)?;
-                let to: SocketAddr = entry["connect"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Self::refuse(format!("{host} 解析不出地址")))?;
+                let to: SocketAddr = entry["connect"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Self::refuse(no_address(&host)))?;
                 if !to.ip().is_loopback() {
-                    return Err(Self::refuse("测试模式只允许连本机回环地址".into()));
+                    return Err(Self::refuse(Said::plain(tr("测试模式只允许连本机回环地址", &[]))));
                 }
                 out.push(to);
             }
@@ -325,10 +338,10 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn random_hex(n: usize) -> Result<String, String> {
+fn random_hex(n: usize) -> Result<String, Said> {
     use std::io::Read;
     let mut b = vec![0u8; n];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| format!("取不到随机数：{e}"))?;
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| Said::new("取不到随机数：{e}", &[("e", &e.to_string())], "system"))?;
     Ok(hex(&b))
 }
 
@@ -353,12 +366,12 @@ struct Reply {
 
 enum Fail {
     /// the name does not lead to a Tailscale address: nothing was connected
-    NotTailscale(String),
+    NotTailscale(Said),
     /// the other end could not prove it is that machine (certificate)
-    Identity(String),
+    Identity(Said),
     /// no answer (not reachable, timed out, cut off)
-    Unreachable(String),
-    Local(String),
+    Unreachable(Said),
+    Local(Said),
 }
 
 impl Fail {
@@ -370,11 +383,11 @@ impl Fail {
             Fail::Local(_) => "local",
         }
     }
-    fn message(&self) -> String {
+    fn message(&self) -> Said {
         match self {
-            Fail::NotTailscale(m) => format!("无法确认这条连接经过 Tailscale：{m}。请确认这台电脑的 Tailscale 已连上。没有发出任何内容"),
-            Fail::Identity(m) => format!("对面没能证明自己是这台机器（证书核对不过：{m}）。没有发出任何内容"),
-            Fail::Unreachable(m) => format!("连不上这台机器：{m}。请确认这台电脑和那台机器的 Tailscale 都已连上，且那台机器上的远程入口在运行"),
+            Fail::NotTailscale(m) => Said::compose("无法确认这条连接经过 Tailscale：{m}。请确认这台电脑的 Tailscale 已连上。没有发出任何内容", &[("m", m)]),
+            Fail::Identity(m) => Said::compose("对面没能证明自己是这台机器（证书核对不过：{m}）。没有发出任何内容", &[("m", m)]),
+            Fail::Unreachable(m) => Said::compose("连不上这台机器：{m}。请确认这台电脑和那台机器的 Tailscale 都已连上，且那台机器上的远程入口在运行", &[("m", m)]),
             Fail::Local(m) => m.clone(),
         }
     }
@@ -413,16 +426,16 @@ impl Remote {
         }
         let name = name.unwrap_or_else(|| {
             let out = if os == "macos" { std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output() } else { std::process::Command::new("hostname").output() };
-            out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Cavil Loop 客户端".into())
+            out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| tr("Cavil Loop 客户端", &[]))
         });
         Remote::new(store, keys, test, name)
     }
 
-    fn agent(&self, limit: Duration) -> Result<ureq::Agent, String> {
+    fn agent(&self, limit: Duration) -> Result<ureq::Agent, Said> {
         let roots = match &self.test {
             None => RootCerts::WebPki,
             Some(t) => {
-                let pem = std::fs::read(&t.ca_file).map_err(|e| format!("读不到测试用的证书：{e}"))?;
+                let pem = std::fs::read(&t.ca_file).map_err(|e| Said::new("读不到测试用的证书：{e}", &[("e", &e.to_string())], "system"))?;
                 let certs: Vec<ureq::tls::Certificate<'static>> = ureq::tls::parse_pem(&pem)
                     .filter_map(|i| match i {
                         Ok(ureq::tls::PemItem::Certificate(c)) => Some(c),
@@ -469,24 +482,24 @@ impl Remote {
                 b = b.header(*k, v.as_str());
             }
             let run = if method == "GET" {
-                b.body(()).map_err(|e| Fail::Local(e.to_string())).and_then(|r| agent.run(r).map_err(classify))
+                b.body(()).map_err(|e| Fail::Local(sys(e))).and_then(|r| agent.run(r).map_err(classify))
             } else {
-                b.body(body_text.clone()).map_err(|e| Fail::Local(e.to_string())).and_then(|r| agent.run(r).map_err(classify))
+                b.body(body_text.clone()).map_err(|e| Fail::Local(sys(e))).and_then(|r| agent.run(r).map_err(classify))
             };
             let mut res = run?;
             let status = res.status().as_u16();
             let sig = res.headers().get("X-Cavil-Signature").and_then(|v| v.to_str().ok()).map(str::to_string);
-            let text = res.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string().map_err(|e| Fail::Unreachable(format!("回复没有收全（{e}）")))?;
+            let text = res.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string().map_err(|e| Fail::Unreachable(Said::new("回复没有收全（{e}）", &[("e", &e.to_string())], "system")))?;
             Ok((status, sig, text))
         })
         .await
-        .map_err(|e| Fail::Local(e.to_string()))??;
+        .map_err(|e| Fail::Local(sys(e)))??;
         let (status, sig, text) = res;
         let signed = match (&key, &sig) {
             (Some(k), Some(sig)) => same(&hmac_hex(k, ["resp", &nonce, &status.to_string(), &sha256_hex(text.as_bytes())].join("\n").as_bytes()), sig),
             _ => false,
         };
-        let body = serde_json::from_str::<Value>(&text).map_err(|_| Fail::Unreachable(format!("{path_owned} 的回复不是 JSON（状态码 {status}）")))?;
+        let body = serde_json::from_str::<Value>(&text).map_err(|_| Fail::Unreachable(Said::plain(tr("{path} 的回复不是 JSON（状态码 {status}）", &[("path", &path_owned), ("status", &status.to_string())]))))?;
         Ok(Reply { status, body, signed })
     }
 
@@ -496,15 +509,15 @@ impl Remote {
         self.store.get_setting(REMOTES).and_then(|v| v.as_array().cloned()).unwrap_or_default()
     }
 
-    fn save(&self, list: &[Value]) -> Result<(), String> {
-        self.store.set_setting(REMOTES, &Value::Array(list.to_vec())).map_err(String::from)
+    fn save(&self, list: &[Value]) -> Result<(), Said> {
+        self.store.set_setting(REMOTES, &Value::Array(list.to_vec())).map_err(|e| e.said())
     }
 
     fn find(&self, id: &str) -> Option<Value> {
         self.list_raw().into_iter().find(|r| r["id"].as_str() == Some(id))
     }
 
-    async fn update(&self, id: &str, f: impl FnOnce(&mut Value)) -> Result<(), String> {
+    async fn update(&self, id: &str, f: impl FnOnce(&mut Value)) -> Result<(), Said> {
         let _g = self.writing.lock().await;
         let mut list = self.list_raw();
         if let Some(r) = list.iter_mut().find(|r| r["id"].as_str() == Some(id)) {
@@ -513,7 +526,7 @@ impl Remote {
         self.save(&list)
     }
 
-    async fn remove(&self, id: &str) -> Result<(), String> {
+    async fn remove(&self, id: &str) -> Result<(), Said> {
         let _g = self.writing.lock().await;
         let list: Vec<Value> = self.list_raw().into_iter().filter(|r| r["id"].as_str() != Some(id)).collect();
         self.save(&list)
@@ -531,22 +544,24 @@ impl Remote {
     pub async fn tailnet(&self, daemon: &crate::daemon::Daemon) -> Value {
         let path = match daemon.path().await {
             Ok(p) => if cfg!(target_os = "macos") { format!("{p}:/Applications/Tailscale.app/Contents/MacOS") } else { p },
-            Err(m) => return json!({ "result": "unreadable", "output": m }),
+            // the local daemon's own words (crate::daemon), already in the window's language
+            Err(m) => return unreadable(&Said::plain(m)),
         };
         let out = daemon.run(&path, "tailscale", &["status", "--json"], T_QUICK).await;
         if !out.ok() {
-            return json!({ "result": "unreadable", "output": out.text() });
+            return unreadable(&sys(out.text()));
         }
-        let peers = match parse_tailnet(&out.stdout) {
+        let peers = match parse_tailnet_said(&out.stdout) {
             Ok(p) => p,
-            Err(m) => return json!({ "result": "unreadable", "output": m }),
+            Err(m) => return unreadable(&m),
         };
         let probes = peers.into_iter().map(|mut p| async move {
             if p["online"] == json!(true) {
                 let (state, why) = self.hello(p["host"].as_str().unwrap_or("")).await;
                 p["remote"] = json!(state);
                 if let Some(w) = why {
-                    p["why"] = json!(w);
+                    p["why"] = json!(w.text());
+                    p["whySaid"] = w.to_json();
                 }
             } else {
                 p["remote"] = json!("offline");
@@ -557,12 +572,12 @@ impl Remote {
         json!({ "result": "ok", "devices": list })
     }
 
-    async fn hello(&self, host: &str) -> (&'static str, Option<String>) {
+    async fn hello(&self, host: &str) -> (&'static str, Option<Said>) {
         let t = Target { host: host.to_string(), port: DEFAULT_PORT };
         match self.send(&t, "GET", "/v1/hello", None, None, T_HELLO).await {
             Ok(r) if r.status == 200 && r.body["service"] == "cavil-loop-remote" => ("open", None),
-            Ok(r) => ("unknown", Some(format!("这台机器的 {DEFAULT_PORT} 端口上不是远程入口（状态码 {}）", r.status))),
-            Err(Fail::Unreachable(m)) if m.to_lowercase().contains("refused") => ("closed", None),
+            Ok(r) => ("unknown", Some(Said::plain(tr("这台机器的 {port} 端口上不是远程入口（状态码 {status}）", &[("port", &DEFAULT_PORT.to_string()), ("status", &r.status.to_string())])))),
+            Err(Fail::Unreachable(m)) if m.text().to_lowercase().contains("refused") => ("closed", None),
             Err(f) => ("unknown", Some(f.message())),
         }
     }
@@ -573,21 +588,21 @@ impl Remote {
 
     /// A paired machine and its key, ready to sign; Err = a refusal to show.
     async fn paired(&self, id: &str) -> Result<(Target, Signer), Value> {
-        let Some(r) = self.find(id) else { return Err(refused("no_remote", "没有这台远程机器")) };
+        let Some(r) = self.find(id) else { return Err(refused("no_remote", &own(tr("没有这台远程机器", &[])))) };
         if r["state"] != "paired" {
-            return Err(refused("pending_revoke", "这台机器正在取消配对，不再读取或操作它"));
+            return Err(refused("pending_revoke", &own(tr("这台机器正在取消配对，不再读取或操作它", &[]))));
         }
         self.signer_of(&r).await
     }
 
     async fn signer_of(&self, r: &Value) -> Result<(Target, Signer), Value> {
         let (Some(host), Some(port), Some(device), Some(id)) = (r["host"].as_str(), r["port"].as_u64(), r["device"].as_str(), r["id"].as_str()) else {
-            return Err(refused("local", "这台远程机器的记录不完整，请取消配对后重新配对"));
+            return Err(refused("local", &own(tr("这台远程机器的记录不完整，请取消配对后重新配对", &[]))));
         };
         let key = match self.keys.get(id).await {
             Ok(Some(k)) if key_shape(&k) => unhex(&k).unwrap_or_default(),
-            Ok(_) => return Err(refused("no_key", "这台电脑上找不到这台机器的钥匙（可能被删掉了），请取消配对后重新配对")),
-            Err(e) => return Err(refused("local", &format!("读不到这台机器的钥匙：{e}"))),
+            Ok(_) => return Err(refused("no_key", &own(tr("这台电脑上找不到这台机器的钥匙（可能被删掉了），请取消配对后重新配对", &[])))),
+            Err(e) => return Err(refused("local", &Said::compose("读不到这台机器的钥匙：{e}", &[("e", &e)]))),
         };
         Ok((Target { host: host.to_string(), port: port as u16 }, Signer { device: device.to_string(), key }))
     }
@@ -597,18 +612,18 @@ impl Remote {
     pub async fn pair(&self, host_input: &str, code: &str) -> Value {
         let (host, port) = match parse_host(host_input) {
             Ok(v) => v,
-            Err(m) => return refused("bad_host", &m),
+            Err(m) => return refused("bad_host", &own(m)),
         };
         let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
         if code.len() != 8 || !code.bytes().all(|b| b.is_ascii_digit()) {
-            return refused("bad_code", "配对码是 8 位数字");
+            return refused("bad_code", &own(tr("配对码是 8 位数字", &[])));
         }
         let id = format!("{host}:{port}");
         if !account_shape(&id) {
-            return refused("bad_host", "机器名不合规");
+            return refused("bad_host", &own(tr("机器名不合规", &[])));
         }
         if self.find(&id).is_some() {
-            return refused("exists", "这台机器已经在列表里了；要重新配对，先取消配对");
+            return refused("exists", &own(tr("这台机器已经在列表里了；要重新配对，先取消配对", &[])));
         }
         let t = Target { host: host.clone(), port };
         let reply = match self.send(&t, "POST", "/v1/pair", Some(json!({ "code": code, "name": self.device_name })), None, T_PAIR).await {
@@ -619,17 +634,22 @@ impl Remote {
             return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
         }
         let (Some(device), Some(key)) = (reply.body["id"].as_str(), reply.body["key"].as_str()) else {
-            return refused("failed", "对面的回复里没有钥匙，没有配对");
+            return refused("failed", &own(tr("对面的回复里没有钥匙，没有配对", &[])));
         };
         if reply.body["version"] != 1 || !key_shape(key) || device.is_empty() || device.len() > 64 || !device.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return refused("failed", "对面的回复格式认不出，没有配对（客户端可能需要更新）");
+            return refused("failed", &own(tr("对面的回复格式认不出，没有配对（客户端可能需要更新）", &[])));
         }
         let signer = Signer { device: device.to_string(), key: unhex(key).unwrap_or_default() };
         // the key first, the list second: a listed machine always has its key
         if let Err(e) = self.keys.set(&id, key).await {
             // tell the machine to forget the key it just made; if that fails too, say so
             let undone = matches!(self.send(&t, "POST", "/v1/unpair", None, Some(&signer), T_QUICK).await, Ok(r) if r.status == 200 && r.signed);
-            return refused("local", &format!("钥匙没能存下来（{e}），没有配对。{}", if undone { "那台机器上的授权已撤销" } else { "那台机器上已经登记了这台电脑，请在那台机器上撤销一次" }));
+            let m = if undone {
+                Said::compose("钥匙没能存下来（{e}），没有配对。那台机器上的授权已撤销", &[("e", &e)])
+            } else {
+                Said::compose("钥匙没能存下来（{e}），没有配对。那台机器上已经登记了这台电脑，请在那台机器上撤销一次", &[("e", &e)])
+            };
+            return refused("local", &m);
         }
         let entry = json!({ "id": id, "host": host, "port": port, "device": device, "state": "paired", "paired_at": now_secs(), "last": Value::Null });
         let saved = {
@@ -641,7 +661,7 @@ impl Remote {
         if let Err(e) = saved {
             let _ = self.send(&t, "POST", "/v1/unpair", None, Some(&signer), T_QUICK).await;
             let _ = self.keys.clear(&id).await;
-            return refused("local", &format!("配对记录没能存下来（{e}），没有配对"));
+            return refused("local", &Said::compose("配对记录没能存下来（{e}），没有配对", &[("e", &e)]));
         }
         json!({ "result": "paired", "id": id })
     }
@@ -652,34 +672,34 @@ impl Remote {
     pub async fn status(&self, id: &str) -> Value {
         let (t, s) = match self.paired(id).await {
             Ok(v) => v,
-            Err(r) => return json!({ "state": r["reason"], "message": r["output"] }),
+            Err(r) => return json!({ "state": r["reason"], "message": r["output"], "messageSaid": r["outputSaid"] }),
         };
         let reply = match self.send(&t, "GET", "/v1/status", None, Some(&s), T_CALL).await {
             Ok(r) => r,
-            Err(f) => return json!({ "state": f.kind(), "message": f.message() }),
+            Err(f) => return failed_read(f.kind(), &f.message()),
         };
         if let Some(problem) = unbelievable(&reply) {
             return problem;
         }
         if reply.status != 200 {
-            return json!({ "state": reply.body["error"].as_str().unwrap_or("failed"), "message": said(&reply) });
+            return failed_read(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
         }
         let st = &reply.body["status"];
         if !crate::daemon::status_shape(st) {
-            return json!({ "state": "unreadable", "message": format!("那台机器返回的状态格式认不出（version = {}），客户端或那台机器的 daemon 可能需要更新", st["version"]) });
+            return failed_read("unreadable", &Said::new("那台机器返回的状态格式认不出（version = {v}），客户端或那台机器的 daemon 可能需要更新", &[("v", &st["version"].to_string())], "remote"));
         }
         let at = now_secs();
         let kept = self.update(id, |r| r["last"] = json!({ "at": at, "status": st })).await;
-        json!({ "state": "ok", "status": st, "at": at, "kept": kept.err() })
+        json!({ "state": "ok", "status": st, "at": at, "kept": kept.as_ref().err().map(Said::text), "keptSaid": kept.as_ref().err().map(Said::to_json) })
     }
 
     /// `action`: "stop" | "start"
     pub async fn service(&self, id: &str, key: &str, action: &str) -> Value {
         if !crate::daemon::valid_key(key) {
-            return refused("local", "项目名不合规");
+            return refused("local", &own(tr("项目名不合规", &[])));
         }
         if action != "stop" && action != "start" {
-            return refused("local", "未知操作");
+            return refused("local", &own(tr("未知操作", &[])));
         }
         let (t, s) = match self.paired(id).await {
             Ok(v) => v,
@@ -689,12 +709,19 @@ impl Remote {
         let reply = match self.send(&t, "POST", &path, None, Some(&s), T_CALL).await {
             Ok(r) => r,
             // no answer after a connection was made: the request may or may not have been carried out — say so instead of guessing
-            Err(f @ Fail::Unreachable(_)) => return json!({ "result": "unknown", "reason": f.kind(), "state": "unknown", "output": format!("{}。这次「{}」有没有执行不确定，请重新读取状态", f.message(), if action == "stop" { "停" } else { "启" }) }),
+            Err(f @ Fail::Unreachable(_)) => {
+                let m = if action == "stop" {
+                    Said::compose("{m}。这次「停」有没有执行不确定，请重新读取状态", &[("m", &f.message())])
+                } else {
+                    Said::compose("{m}。这次「启」有没有执行不确定，请重新读取状态", &[("m", &f.message())])
+                };
+                return json!({ "result": "unknown", "reason": f.kind(), "state": "unknown", "output": m.text(), "outputSaid": m.to_json() });
+            }
             // refused before anything was sent
             Err(f) => return refused(f.kind(), &f.message()),
         };
         if let Some(problem) = unbelievable(&reply) {
-            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
+            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"], "outputSaid": problem["messageSaid"] });
         }
         if reply.status != 200 {
             return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
@@ -704,12 +731,14 @@ impl Remote {
             Some(s @ ("running" | "stopped")) => s,
             _ => "unknown",
         };
-        json!({ "result": if matches!(result, "ok" | "failed" | "refused" | "not_found") { result } else { "failed" }, "state": state, "output": reply.body["output"].as_str().unwrap_or("") })
+        let output = reply.body["output"].as_str().unwrap_or("");
+        // the machine's own words (its scripts' output), shown as it sent them
+        json!({ "result": if matches!(result, "ok" | "failed" | "refused" | "not_found") { result } else { "failed" }, "state": state, "output": output, "outputSaid": Said::outside(output, "remote").to_json() })
     }
 
     pub async fn log(&self, id: &str, key: &str) -> Value {
         if !crate::daemon::valid_key(key) {
-            return refused("local", "项目名不合规");
+            return refused("local", &own(tr("项目名不合规", &[])));
         }
         let (t, s) = match self.paired(id).await {
             Ok(v) => v,
@@ -720,7 +749,7 @@ impl Remote {
             Err(f) => return refused(f.kind(), &f.message()),
         };
         if let Some(problem) = unbelievable(&reply) {
-            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
+            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"], "outputSaid": problem["messageSaid"] });
         }
         if reply.status != 200 {
             return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
@@ -734,15 +763,15 @@ impl Remote {
     /// the entry go. `local_only` (after the person was told what it means): stop using the key,
     /// keep the entry as "pending_revoke" and the key for the later revocation.
     pub async fn unpair(&self, id: &str, local_only: bool) -> Value {
-        let Some(r) = self.find(id) else { return refused("no_remote", "没有这台远程机器") };
+        let Some(r) = self.find(id) else { return refused("no_remote", &own(tr("没有这台远程机器", &[]))) };
         let confirmed = self.ask_revoke(&r).await;
         match confirmed {
             Ok(()) => self.forget_local(id).await,
             Err(why) if local_only => match self.update(id, |r| r["state"] = json!("pending_revoke")).await {
-                Ok(()) => json!({ "result": "pending", "reason": why["reason"], "output": why["output"] }),
-                Err(e) => refused("local", &format!("没能记下「取消配对未完成」（{e}），什么都没改")),
+                Ok(()) => json!({ "result": "pending", "reason": why["reason"], "output": why["output"], "outputSaid": why["outputSaid"] }),
+                Err(e) => refused("local", &Said::compose("没能记下「取消配对未完成」（{e}），什么都没改", &[("e", &e)])),
             },
-            Err(why) => json!({ "result": "unconfirmed", "reason": why["reason"], "output": why["output"] }),
+            Err(why) => json!({ "result": "unconfirmed", "reason": why["reason"], "output": why["output"], "outputSaid": why["outputSaid"] }),
         }
     }
 
@@ -750,8 +779,8 @@ impl Remote {
     pub async fn forget(&self, id: &str) -> Value {
         match self.find(id) {
             Some(r) if r["state"] == "pending_revoke" => self.forget_local(id).await,
-            Some(_) => refused("local", "这台机器还在配对中；要移除它，先取消配对"),
-            None => refused("no_remote", "没有这台远程机器"),
+            Some(_) => refused("local", &own(tr("这台机器还在配对中；要移除它，先取消配对", &[]))),
+            None => refused("no_remote", &own(tr("没有这台远程机器", &[]))),
         }
     }
 
@@ -762,7 +791,7 @@ impl Remote {
             return Ok(());
         }
         if reply.status == 401 && reply.body["error"] == "revoked" {
-            return Err(refused("revoked_unsigned", "对面说这台电脑没有配对（可能已在那台机器上撤销），但这句话没有签名，无法确认是不是那台机器说的"));
+            return Err(refused("revoked_unsigned", &own(tr("对面说这台电脑没有配对（可能已在那台机器上撤销），但这句话没有签名，无法确认是不是那台机器说的", &[]))));
         }
         Err(refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply)))
     }
@@ -770,11 +799,14 @@ impl Remote {
     async fn forget_local(&self, id: &str) -> Value {
         // the entry first: a key without an entry is harmless, an entry without a key is confusing
         if let Err(e) = self.remove(id).await {
-            return refused("local", &format!("没能从列表里移除（{e}）"));
+            return refused("local", &Said::compose("没能从列表里移除（{e}）", &[("e", &e)]));
         }
         match self.keys.clear(id).await {
             Ok(()) => json!({ "result": "unpaired" }),
-            Err(e) => json!({ "result": "unpaired", "output": format!("已取消配对，但这台电脑上的钥匙没能删除（{e}）；它已经没有用了，可以在「钥匙串访问」里搜「Cavil Loop」手动删除") }),
+            Err(e) => {
+                let m = Said::compose("已取消配对，但这台电脑上的钥匙没能删除（{e}）；它已经没有用了，可以在「钥匙串访问」里搜「Cavil Loop」手动删除", &[("e", &e)]);
+                json!({ "result": "unpaired", "output": m.text(), "outputSaid": m.to_json() })
+            }
         }
     }
 }
@@ -790,24 +822,29 @@ fn now_secs() -> u64 {
 /// `Online` true / false. Anything else is Err — the list is not known, never an empty one.
 /// Tailscale not running (`BackendState` other than `Running`) is Err too: its peer list is stale.
 pub fn parse_tailnet(text: &str) -> Result<Vec<Value>, String> {
-    const ODD: &str = "这台电脑的 Tailscale 给出的设备列表认不出";
-    let v: Value = serde_json::from_str(text).map_err(|_| ODD.to_string())?;
+    parse_tailnet_said(text).map_err(|e| e.text())
+}
+
+fn parse_tailnet_said(text: &str) -> Result<Vec<Value>, Said> {
+    let odd = || Said::plain(tr("这台电脑的 Tailscale 给出的设备列表认不出", &[]));
+    let v: Value = serde_json::from_str(text).map_err(|_| odd())?;
     let (Some(state), Some(me)) = (v.get("BackendState").and_then(Value::as_str), v.get("Self").filter(|s| s.is_object())) else {
-        return Err(ODD.into());
+        return Err(odd());
     };
     if state != "Running" {
-        return Err(format!("这台电脑的 Tailscale 没有连上（状态：{state}）"));
+        // Tailscale's own word for its state
+        return Err(Said::new("这台电脑的 Tailscale 没有连上（状态：{state}）", &[("state", state)], "system"));
     }
     let me = me["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
     let peers = match v.get("Peer") {
         None | Some(Value::Null) => return Ok(vec![]),
         Some(Value::Object(m)) => m,
-        Some(_) => return Err(ODD.into()),
+        Some(_) => return Err(odd()),
     };
     let mut out = vec![];
     for p in peers.values() {
         let (Some(_), Some(online)) = (p.as_object(), p.get("Online").and_then(Value::as_bool)) else {
-            return Err(ODD.into()); // one machine that cannot be read makes the list not known
+            return Err(odd()); // one machine that cannot be read makes the list not known
         };
         let dns = p["DNSName"].as_str().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
         let Ok((host, _)) = parse_host(&dns) else { continue }; // not reachable by a Tailscale name: cannot be paired
@@ -821,15 +858,31 @@ pub fn parse_tailnet(text: &str) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-fn refused(reason: &str, m: &str) -> Value {
-    json!({ "result": "refused", "reason": reason, "output": m })
+/// A refusal: `output` is the message as one string (what it always was), `outputSaid` the same
+/// message with the outside parts marked (GitHub#473), for the window to draw.
+fn refused(reason: &str, m: &Said) -> Value {
+    json!({ "result": "refused", "reason": reason, "output": m.text(), "outputSaid": m.to_json() })
+}
+
+/// A read that gave no status: why, as one string and marked.
+fn failed_read(state: &str, m: &Said) -> Value {
+    json!({ "state": state, "message": m.text(), "messageSaid": m.to_json() })
+}
+
+fn unreadable(m: &Said) -> Value {
+    json!({ "result": "unreadable", "output": m.text(), "outputSaid": m.to_json() })
+}
+
+/// the client's own words, nothing from outside in them
+fn own(m: String) -> Said {
+    Said::plain(m)
 }
 
 /// What the machine said went wrong, in its words.
-fn said(r: &Reply) -> String {
+fn said(r: &Reply) -> Said {
     match r.body["message"].as_str() {
-        Some(m) if !m.is_empty() => format!("那台机器的回答：{m}"),
-        _ => format!("那台机器回了状态码 {}", r.status),
+        Some(m) if !m.is_empty() => Said::new("那台机器的回答：{m}", &[("m", m)], "remote"),
+        _ => Said::plain(tr("那台机器回了状态码 {status}", &[("status", &r.status.to_string())])),
     }
 }
 
@@ -839,13 +892,13 @@ fn unbelievable(r: &Reply) -> Option<Value> {
         return None;
     }
     if r.status == 401 && r.body["error"] == "revoked" {
-        return Some(json!({ "state": "revoked", "message": "那台机器说这台电脑没有配对（配对可能已在那台机器上被撤销）。要继续使用，请取消配对后重新配对" }));
+        return Some(failed_read("revoked", &own(tr("那台机器说这台电脑没有配对（配对可能已在那台机器上被撤销）。要继续使用，请取消配对后重新配对", &[]))));
     }
     if r.status == 200 {
-        return Some(json!({ "state": "mismatch", "message": "对面的回复没有配对钥匙的签名：它不是配对过的那台机器，没有采信它返回的内容" }));
+        return Some(failed_read("mismatch", &own(tr("对面的回复没有配对钥匙的签名：它不是配对过的那台机器，没有采信它返回的内容", &[]))));
     }
     // an unsigned refusal (made before the machine knew which device asked): show its words, as unverified
-    Some(json!({ "state": r.body["error"].as_str().unwrap_or("failed"), "message": format!("{}（这句话没有签名）", said(r)) }))
+    Some(failed_read(r.body["error"].as_str().unwrap_or("failed"), &Said::compose("{m}（这句话没有签名）", &[("m", &said(r))])))
 }
 
 fn classify(e: ureq::Error) -> Fail {
@@ -853,17 +906,17 @@ fn classify(e: ureq::Error) -> Fail {
         return Fail::NotTailscale(m);
     }
     match e {
-        ureq::Error::Tls(m) => Fail::Identity(m.to_string()),
-        ureq::Error::Rustls(m) => Fail::Identity(m.to_string()),
-        ureq::Error::Timeout(_) => Fail::Unreachable("超时".into()),
+        ureq::Error::Tls(m) => Fail::Identity(sys(m)),
+        ureq::Error::Rustls(m) => Fail::Identity(sys(m)),
+        ureq::Error::Timeout(_) => Fail::Unreachable(Said::plain(tr("超时", &[]))),
         other => {
             // rustls reports a certificate it does not accept through the connection's io error
             let m = other.to_string();
             let l = m.to_lowercase();
             if l.contains("certificate") || l.contains("unknownissuer") || l.contains("notvalidforname") {
-                Fail::Identity(m)
+                Fail::Identity(sys(m))
             } else {
-                Fail::Unreachable(m)
+                Fail::Unreachable(sys(m))
             }
         }
     }

@@ -9,8 +9,6 @@ src-tauri/crates/core/src/engine.rs
 src-tauri/crates/core/src/http.rs
 src-tauri/crates/core/src/platform.rs
 src-tauri/crates/core/src/release_image.rs
-src-tauri/crates/core/src/remote.rs
-src-tauri/crates/core/src/remote_host.rs
 src-tauri/crates/core/src/store.rs
 src-tauri/crates/core/src/update.rs
 src-tauri/src/updater.rs
@@ -50,8 +48,6 @@ src/renderer/OpNotice.tsx
 src/renderer/OpenMenu.tsx
 src/renderer/ProjectConfigDialog.tsx
 src/renderer/ProjectPicker.tsx
-src/renderer/RemoteHostBlock.tsx
-src/renderer/RemoteSection.tsx
 src/renderer/RepoWebLink.tsx
 src/renderer/SendNotice.tsx
 src/renderer/ShortcutHelp.tsx
@@ -76,7 +72,6 @@ src/shared/images.ts
 src/shared/noticeTone.ts
 src/shared/ops.ts
 src/shared/readFailure.ts
-src/shared/remote.ts
 src/shared/sends.ts
 src/shared/stateTone.ts
 src/shared/tabs.ts
