@@ -430,6 +430,54 @@ describe('one round: check, download, install (GitHub#184)', () => {
   });
 });
 
+describe('GitHub#473: the updater words its own part in the window\'s language, the outside words as written', () => {
+  it('English: the last round, the problems and the refusals; switching back re-words the same round in Chinese', async () => {
+    srv.publish('0.5.1');
+    const b = harness();
+    await b.call('setLanguage', { lang: 'en' });
+    await start(b);
+    // the release list fails: all the back end's own words
+    srv.failPage = 1;
+    let st: any = await b.call('test.update.check');
+    expect(st.last).toMatchObject({ ok: false, message: 'Check failed: GitHub answered HTTP 502', said: { template: 'Check failed: GitHub answered HTTP 502', parts: [] } });
+    // putting it in place fails: the installer's words in their hole, exactly as it said them
+    srv.failPage = null;
+    await b.call('test.update.failInstall', { on: true });
+    st = await b.call('test.update.check');
+    expect(st.last).toMatchObject({
+      ok: false,
+      message: 'Installing 0.5.1 failed: 没有权限写入（测试要求失败）',
+      said: { template: 'Installing 0.5.1 failed: {e_e}', parts: [{ name: 'e_e', text: '没有权限写入（测试要求失败）', from: 'system' }] },
+    });
+    // back to Chinese: the same round, worded as before
+    await b.call('setLanguage', { lang: 'zh' });
+    st = await b.call('test.update.status');
+    expect(st.last).toMatchObject({ message: '安装 0.5.1 失败：没有权限写入（测试要求失败）', said: { template: '安装 0.5.1 失败：{e_e}' } });
+  });
+
+  it('English on a machine with no development builds: why, and the refusal; Chinese as before', async () => {
+    const b = harness();
+    await b.call('setLanguage', { lang: 'en' });
+    const st: any = await start(b, { devSupported: false, target: 'darwin-x86_64' });
+    expect(st.devUnavailable).toBe('Development builds exist for Apple silicon only; this Mac can only use Release');
+    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: 'Development builds exist for Apple silicon only; this Mac can only use Release' });
+    await b.call('setLanguage', { lang: 'zh' });
+    expect(((await b.call('test.update.status')) as any).devUnavailable).toBe('开发版只有 Apple 芯片的包，这台 Mac 只能用正式版');
+  });
+
+  it('a stalled download in English: the client\'s own words, no outside part', async () => {
+    srv.publish('0.5.1');
+    srv.pkgMode = 'stall';
+    const b = harness();
+    await b.call('setLanguage', { lang: 'en' });
+    await start(b);
+    const round = b.call('test.update.check');
+    await expect.poll(() => b.updates.some((s) => s.phase === 'downloading' && s.got > 0)).toBe(true);
+    await clock.advance(61_000);
+    expect(await round).toMatchObject({ last: { ok: false, message: 'Downloading 0.5.1 failed: No data received for 60 seconds', said: { parts: [] } } });
+  });
+});
+
 describe('when it looks (GitHub#184)', () => {
   it('one round at a time: a second request while one runs starts nothing; once the new version is in place, no more rounds', async () => {
     srv.publish('0.5.1');
