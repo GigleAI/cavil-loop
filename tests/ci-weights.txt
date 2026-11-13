@@ -33,6 +33,7 @@ config-notice 34
 conflict-check-prompts 1
 design-review-gate 51
 dispatch-backoff 1
+client-docs 1
 doc-diagrams 1
 fake-gh-server 5
 footer-ci-wait 5

@@ -843,7 +843,7 @@ export const MUTATIONS = [
     from: '    if (this.round?.reading) this.round.drop();\n', to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache', 'three clicks in a row while a round reads: one new round, not three'] },
   { what: '被放弃的那一轮还接着翻下一页', file: 'src/data/github.ts',
-    from: "    if (this.cancelled?.aborted) throw new GitHubError('network', '已放弃这一轮同步');\n", to: '',
+    from: "    if (this.cancelled?.aborted) {\n      const given = new GitHubError('network', '已放弃这一轮同步');\n      given.meta.cancelled = true;\n      throw given;\n    }\n", to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache'] },
   { what: '续期登录、写缓存中途也被手动刷新打断', file: 'src/app/controller.ts',
     from: '    if (this.round?.reading) this.round.drop();', to: '    if (this.round) this.round.drop();',
