@@ -6,7 +6,7 @@
 # the right yardstick for the split. The two units CI does not run keep their dev-box numbers. A unit
 # missing here counts as 5 s; a stale number only makes one shard a little slower, never skips or
 # repeats a test.
-# autopilot-merge-close came with GitHub#461 after that run: its dev-box number, until a CI run measures it.
+# autopilot-merge-close (GitHub#461) and later-label (GitHub#463) came after that run: their dev-box numbers, until a CI run measures them.
 agent-trust-paths 69
 autopilot-handover:1/3 106
 autopilot-handover:2/3 136
@@ -47,6 +47,7 @@ greedy-dispatch 1
 heavy-test 173
 heavy-test-systemd 35
 install-scripts 32
+later-label 7
 migrate-legacy 20
 open-snapshot 1
 paginated-latest-id 2

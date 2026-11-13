@@ -491,6 +491,9 @@ requester_bot_label="$(cavil_pick_setting "$(config_value LABEL_PENDING_REQUESTE
 # 等前置标签（GitHub#157）：配了 LABEL_PENDING_BLOCKED 才建它。
 blocked_label="$(config_value LABEL_PENDING_BLOCKED)"
 [ -n "$blocked_label" ] && label_defs+=("$blocked_label|2dcdd0|等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干")
+# 暂缓标签（GitHub#463）：配了 LABEL_PENDING_LATER 才建它。
+later_label="$(config_value LABEL_PENDING_LATER)"
+[ -n "$later_label" ] && label_defs+=("$later_label|c5def5|暂缓：暂时不做，daemon 不自动捞它开工；打派工标签照常派")
 # 托管标签（GitHub#114）默认关闭；配了 LABEL_AUTOPILOT 才建它和「等 daemon 合并」标签。
 autopilot_label="$(config_value LABEL_AUTOPILOT)"
 if [ -n "$autopilot_label" ]; then

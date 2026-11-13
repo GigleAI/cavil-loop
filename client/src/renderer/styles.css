@@ -990,3 +990,21 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .sk-table .sk-err { margin: 0; }
 .chg { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; margin-left: 6px; }
 .modal.shortcuts .shortcut-edit { margin-right: auto; }
+
+/* GitHub#502: find text on the page (⌘F). The bar floats over the page's top right; matches are drawn with
+   the CSS highlight API (findInPage.ts), never by changing the page. */
+.find-bar { position: fixed; right: 16px; z-index: 60; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 6px 0 10px; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); color: var(--fg); font-size: 13px; }
+.find-box { display: flex; align-items: center; gap: 6px; width: 260px; max-width: calc(100vw - 160px); height: 28px; padding: 0 8px; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent); border-radius: 6px; background: var(--canvas); color: var(--icon); }
+.find-box.none { border-color: var(--err-fg); box-shadow: 0 0 0 1px var(--err-fg); background: var(--err-bg); }
+.find-box input { flex: 1; min-width: 0; border: none !important; background: transparent !important; padding: 0 !important; min-height: 0 !important; outline: none; color: var(--fg); }
+.find-count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.find-box.none .find-count { color: var(--err-fg); }
+.find-sep { width: 1px; height: 20px; background: var(--border-muted); margin: 0 2px; }
+.find-btn { width: 28px; height: 28px; padding: 0; border: none; background: transparent; border-radius: 6px; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.find-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.find-btn:disabled { opacity: 0.45; cursor: default; }
+.find-btn.up svg { transform: rotate(180deg); }
+::highlight(cavil-find) { background-color: var(--find-hl); color: inherit; }
+::highlight(cavil-find-cur) { background-color: #ff9632; color: #1f2328; }
+:root { --find-hl: #fff3a3; }
+@media (prefers-color-scheme: dark) { :root { --find-hl: #5c4a00; } }

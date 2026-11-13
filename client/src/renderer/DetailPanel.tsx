@@ -15,7 +15,8 @@ import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
-import { frameKey, useLayer, useShortcuts } from './keyboard';
+import { frameFindEscape, frameKey, useLayer, useShortcuts } from './keyboard';
+import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
 import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
@@ -855,7 +856,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { q?: unknown; n?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -870,10 +871,23 @@ export function DetailPanel({
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
       else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl, m.alt ?? false);
+      // GitHub#502: find on the page — the frame's count for a query, and a plain Esc while find is open
+      else if (m.cavil === 'found') findFrameFound(findHost.current, m.q, m.n);
+      else if (m.cavil === 'findEsc') frameFindEscape();
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
+  // GitHub#502: this panel's discussion frame takes part in find on the page (findInPage.ts); what is sent is
+  // always for the rendering on screen, and it is told where find stands each time a rendering is ready
+  const findHost = useRef<FrameHost>({
+    el: () => frameRef.current,
+    post: (f) => frameRef.current?.contentWindow?.postMessage({ cavil: 'find', render: live.current.render, open: f.open, q: f.q, cur: f.cur, scroll: f.scroll }, '*'),
+  });
+  useEffect(() => addFindFrame(findHost.current), []);
+  useEffect(() => {
+    if (readyRender === frame.render) findFrameReady(findHost.current);
+  }, [readyRender, frame.render]);
   // GitHub#487: the frame forwards the keys in effect on this machine — sent once it is ready, and again when they change
   const fwdKeys = JSON.stringify(frameForward());
   useEffect(() => {

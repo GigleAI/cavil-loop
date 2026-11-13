@@ -142,6 +142,7 @@ AUTO_RELEASE_MAIN_CHECKOUT=0
 # unless a blocking label stops it
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # extra blocking labels for greedy (comma-separated)
+LABEL_PENDING_LATER="pending/later"  # parked: never picked up automatically (greedy / autopilot); empty = off
 GREEDY_SCAN_LIMIT=100
 
 # Where sort key #1 comes from: label = priority/p* labels; project = GitHub's Priority
@@ -1238,6 +1239,32 @@ label is seen within a minute, the project having just been active). `rm poll-pa
 "Merged" is not "deployed here": when the prerequisite is a change to this
 loop itself, the resumed worker checks the locally deployed version before relying on it. Not supported: prerequisites on
 other hosts than github.com, cycle detection (two items waiting on each other both stay waiting).
+
+## Parked for later: `pending/later` (GitHub#463)
+
+For items a human has decided not to work on for now. Set `LABEL_PENDING_LATER` (the example config uses `pending/later`;
+a config without the line, or with it empty, keeps the blocking list exactly as before) and the daemon never picks up an
+item carrying it on its own:
+
+| Item | Daemon does |
+|---|---|
+| carries only the parked label (greedy mode's catch-all pass) | skips it, no dispatch |
+| carries the autopilot label + the parked label (autopilot's "label only" pickup) | skips it, no dispatch |
+| carries the parked label and someone adds a trigger label (`pending/agent` …) | dispatches as usual — it only stops the automatic pickup; a trigger label is an explicit "go" |
+
+It is not "waiting for a human": the client's "等人处理" (waiting for a human) count does not include it; carrying a label,
+it also leaves the client's "未处理" (untriaged) list. The daemon never removes it: to resume, a human removes
+`pending/later` (greedy mode picks the item up next round) or adds `pending/agent`.
+
+**Creating the label**: put the line into the config and rerun `setup.sh`, which creates the labels the config names; or
+create it on the repository's Labels page.
+
+**Finding parked items**:
+
+| Looking for | Repository Issues page | GitHub Project view | Desktop client |
+|---|---|---|---|
+| Parked | `label:pending/later` | `label:pending/later` | `label:pending/later` |
+| In progress, parked ones left out | `is:open -label:pending/later` | `is:open -label:pending/later` | `is:open -label:pending/later` |
 
 ## Agent hit its usage limit: pause that agent, hand the interrupted item to a human (GitHub#341)
 
