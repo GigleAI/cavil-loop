@@ -655,6 +655,10 @@ button.icon-btn.notices-btn.on { background: var(--hover); border-color: var(--b
 .notices-panel[hidden] { display: none; }
 .detail .notices-panel .banner, .detail .notices-panel .op-draft-line { margin: 0; }
 button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
+/* GitHub#457: the floating panel's 在标签页打开 — the accent fill marks it as the way that stays in the app */
+button.blue.open-tab-btn { padding: 0 10px; gap: 5px; }
+button.blue.open-tab-btn.icon-only { width: 28px; padding: 0; }
+button.blue.open-tab-btn:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
 /* GitHub#260: the head is two groups. The facts (badge, number, people, success line) give way first and
    are cut short; the buttons never shrink, and on a panel too narrow for both they take a line of their own */
 .detail-head { position: relative; flex-wrap: wrap; row-gap: 4px; }

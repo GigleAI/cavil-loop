@@ -431,7 +431,7 @@ export function App() {
                       itemKey={float.key}
                       state={snap.state}
                       data={snap.data}
-                      float={{ onClose: closeFloatNow }}
+                      float={{ onClose: closeFloatNow, onOpenTab: () => void openTab(float.key) }}
                       onHome={closeFloatNow}
                       onLeftBehind={(note, about) => setLeftNote((cur) => ({ note, about, seq: (cur?.seq ?? 0) + 1 }))}
                       intent={float.intent}

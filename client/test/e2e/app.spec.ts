@@ -5342,13 +5342,16 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await toggle.click();
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
   const panel = (await detail.boundingBox())!;
-  for (const id of ['detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
+  for (const id of ['detail-open-tab', 'detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
     const b = (await detail.getByTestId(id).boundingBox())!;
     expect(b.x, id).toBeGreaterThanOrEqual(panel.x);
     expect(b.x + b.width, id).toBeLessThanOrEqual(panel.x + panel.width);
   }
   expect(await detail.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
   await shot(page, '260-02b-narrow-notices');
+  // GitHub#457: that narrow, 在标签页打开 keeps its icon and tooltip, without the words
+  await expect(detail.getByTestId('detail-open-tab')).toHaveText('');
+  await expect(detail.getByTestId('detail-open-tab')).toHaveAttribute('aria-label', '在标签页打开');
   // the buttons in it still work at that width
   await expect(detail.getByTestId('edit-resend')).toBeVisible();
   await page.keyboard.press('Escape');

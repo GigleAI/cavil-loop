@@ -17,7 +17,7 @@ import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { keyText } from './shortcuts';
+import { isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
@@ -368,6 +368,9 @@ function clock(ms: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** GitHub#457: below this floating-panel width, 在标签页打开 shows its icon only */
+const OPEN_TAB_WORDS_MIN = 440;
+
 export function DetailPanel({
   itemKey,
   state,
@@ -390,8 +393,10 @@ export function DetailPanel({
    * GitHub#442: the detail floats over the board on the right (the default way to open an item, as before
    * GitHub#397): its width is dragged by the left edge, a click outside it or Esc puts it away (`onClose`) —
    * never while the reply box holds unsent text. null = the detail fills its own tab.
+   * `onOpenTab` (GitHub#457): the head's 在标签页打开 — the same way in as ⌘ / Ctrl + click on the item's row,
+   * so the panel's unsent text goes along into the tab.
    */
-  float?: { onClose: () => void } | null;
+  float?: { onClose: () => void; onOpenTab?: () => void } | null;
   /** GitHub#397: what this tab held unsent when it was last in front, and where changes to it are reported */
   draft?: TabDraft | null;
   onDraft?: (d: TabDraft) => void;
@@ -1193,9 +1198,36 @@ export function DetailPanel({
         </span>
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
-        <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
-          <Icon name="ext" />
-        </button>
+        {/* GitHub#457: in the floating panel, the way into a tab of this app sits next to the way out to the
+            browser — a filled button with words for the one, the GitHub mark for the other */}
+        {float?.onOpenTab ? (
+          <>
+            {/* on a narrow panel the words go (the icon and the tooltip stay), so the buttons keep to one line inside it */}
+            <button
+              className={`blue open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
+              onClick={float.onOpenTab}
+              data-testid="detail-open-tab"
+              aria-label="在标签页打开"
+              title={`在本应用的新标签页里打开（${isMac() ? '⌘' : 'Ctrl'} + 单击同效）`}
+            >
+              <Icon name="open-tab" />
+              {width >= OPEN_TAB_WORDS_MIN && '在标签页打开'}
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => api().openExternal(item.url)}
+              data-testid="detail-open-web"
+              aria-label="在浏览器里打开 GitHub 网页"
+              title="在浏览器里打开 GitHub 网页"
+            >
+              <Icon name="github" />
+            </button>
+          </>
+        ) : (
+          <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
+            <Icon name="ext" />
+          </button>
+        )}
         <button
           className={`icon-btn fields-btn${fieldsShown ? ' on' : ''}`}
           data-testid="fields-toggle"
