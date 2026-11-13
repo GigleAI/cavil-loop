@@ -1,1 +1,21 @@
-{}
+{
+  "登录续期出错（{e}），会在下一轮自动重试": "Renewing the sign-in went wrong ({e}); it is retried next round",
+  "登录续期没有成功（{e}），会在下一轮自动重试；一直失败的话请退出后重新登录": "Renewing the sign-in did not work ({e}); it is retried next round. If it keeps failing, sign out and sign in again",
+  "本地数据库写入失败（{e}）。这次运行照常可用；下次启动可能需要重新登录，离线时可能看不到缓存": "Writing to the local database failed ({e}). This run works as usual; the next start may ask to sign in again, and offline the cached data may not show",
+  "新的登录凭据没能存进钥匙串（{e}）。这次运行照常可用，App 会每轮重试保存；在保存成功前退出 App，下次启动需要重新登录": "The new sign-in credential could not be saved in the keychain ({e}). This run works as usual and the app retries saving every round; quitting the app before it is saved means signing in again at the next start",
+  "未知错误": "unknown error",
+  "本地缓存写入失败（{m}），这一轮的结果没有保存": "Writing the local cache failed ({m}); this round's results were not saved",
+  "还没有登录": "Not signed in yet",
+  "缺少参数 {k}": "Missing parameter {k}",
+  "缺参数 {k}": "Missing parameter {k}",
+  "这个设置只能由登录流程写：{k}": "Only the sign-in may write this setting: {k}",
+  "未知的缩放：{step}": "Unknown zoom step: {step}",
+  "未知命令：{other}": "Unknown command: {other}",
+  "拒绝发往 GitHub 接口以外的请求：{url}": "Refused a request that does not go to GitHub's API: {url}",
+  "不支持的请求方法：{method}": "Request method not supported: {method}",
+  "不打开非 GitHub 链接：{url}": "Links outside GitHub are not opened: {url}",
+  "{e}（已自动重试 {n} 次）": { "one": "{e} (retried automatically {n} time)", "other": "{e} (retried automatically {n} times)" },
+  "测试模式只允许把 GitHub 地址指向本机回环地址": "Test mode only lets the GitHub addresses point at this computer's loopback address",
+  "不是 Release 附件的接口地址：{url}": "Not the API address of a release attachment: {url}",
+  "快照缺少 {field}": "The snapshot has no {field}"
+}

@@ -101,7 +101,7 @@ impl Fresh {
 pub struct FreshOut {
     pub result: Fresh,
     /// None = leave the shown problem as it is; Some(None) = clear it; Some(Some(m)) = show m
-    pub problem: Option<Option<String>>,
+    pub problem: Option<Option<Said>>,
     /// the refresh ended the sign-in (session after the sign-out, reason)
     pub signed_out: Option<(u64, Said)>,
     /// why GitHub could not be used (set with `Unreachable` only): shown with "offline" (GitHub#270)
@@ -129,7 +129,7 @@ struct State {
     pending_code: Option<(u64, String, DeviceCode)>,
     /// the grant in use was refreshed but could not be written to the credential store
     unsaved_grant: bool,
-    unsaved_problem: Option<String>,
+    unsaved_problem: Option<Said>,
     /// GitHub login the cached snapshots belong to (None = nobody: the cache must be empty)
     owner: Option<String>,
     /// the one refresh in flight: GitHub rotates refresh tokens, a second refresh with the same one would fail
@@ -723,7 +723,7 @@ impl Engine {
                     _ => FreshOut {
                         result: Fresh::Failed,
                         problem: current(&self).then(|| {
-                            Some(format!("登录续期没有成功（{}），会在下一轮自动重试；一直失败的话请退出后重新登录", e.full()))
+                            Some(Said::compose("登录续期没有成功（{e}），会在下一轮自动重试；一直失败的话请退出后重新登录", &[("e", &e.said())]))
                         }),
                         signed_out: None,
                         reason: None,
@@ -751,7 +751,7 @@ impl Engine {
             let saved = match me.d.credentials.set(&encode_grant(&next)).await {
                 Ok(()) => true,
                 Err(e) => {
-                    me.lock().unsaved_problem = Some(e.text());
+                    me.lock().unsaved_problem = Some(e);
                     false
                 }
             };
@@ -777,7 +777,7 @@ impl Engine {
                 }
             }
             let problem = if !saved {
-                Some(unsaved_message(st.unsaved_problem.as_deref()))
+                Some(unsaved_message(st.unsaved_problem.as_ref()))
             } else {
                 db_problem.map(db_problem_message)
             };
@@ -796,7 +796,7 @@ impl Engine {
     }
 
     /// A refreshed grant that could not be stored: try again (same queue and session rules as any credential write).
-    pub async fn save_unsaved(self: &Arc<Self>) -> Option<Option<String>> {
+    pub async fn save_unsaved(self: &Arc<Self>) -> Option<Option<Said>> {
         let (grant, session) = {
             let st = self.lock();
             if !st.unsaved_grant {
@@ -818,8 +818,8 @@ impl Engine {
             }
             if let Err(e) = me.d.credentials.set(&encode_grant(&grant)).await {
                 let mut st = me.lock();
-                st.unsaved_problem = Some(e.text());
-                return Some(Some(unsaved_message(st.unsaved_problem.as_deref())));
+                st.unsaved_problem = Some(e);
+                return Some(Some(unsaved_message(st.unsaved_problem.as_ref())));
             }
             // check and record trust under one lock: a sign-out cannot slip in between
             let mut st = me.lock();
@@ -866,13 +866,13 @@ impl Engine {
 
     /// GitHub said who the token belongs to. Data of anybody else goes first.
     /// Ok(None) = session over; Err = the database refused (nothing of the round may land).
-    pub fn adopt_viewer(&self, session: u64, login: &str) -> Result<Option<bool>, String> {
+    pub fn adopt_viewer(&self, session: u64, login: &str) -> Result<Option<bool>, StoreError> {
         let mut st = self.lock();
         if st.session != session {
             return Ok(None);
         }
         let Some(token) = st.grant.as_ref().map(|g| g.access_token.clone()) else { return Ok(None) };
-        self.adopt_account(&mut st, Some(login), Some(&token)).map(Some).map_err(String::from)
+        self.adopt_account(&mut st, Some(login), Some(&token)).map(Some)
     }
 
     /// Write snapshots read in `session`; refused (false) when that session is over.
@@ -909,12 +909,12 @@ impl Engine {
             }
         };
         if !http::under(&self.d.endpoints.api, &req.url) {
-            return Err(RequestError::Refused(format!("拒绝发往 GitHub 接口以外的请求：{}", req.url)));
+            return Err(RequestError::Refused(tr("拒绝发往 GitHub 接口以外的请求：{url}", &[("url", &req.url)])));
         }
         let method = req.method.to_ascii_uppercase();
         // HEAD: the change check before a sync read (GitHub#261) asks for headers only
         if !matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PATCH" | "PUT" | "DELETE") {
-            return Err(RequestError::Refused(format!("不支持的请求方法：{method}")));
+            return Err(RequestError::Refused(tr("不支持的请求方法：{method}", &[("method", &method)])));
         }
         let extra: Vec<(String, String)> = req
             .headers
@@ -937,13 +937,13 @@ impl Engine {
             let st = self.lock();
             match &st.grant {
                 Some(g) if st.session == session => g.access_token.clone(),
-                _ => return json!({ "error": "stale", "message": "还没有登录" }),
+                _ => return json!({ "error": "stale", "message": tr("还没有登录", &[]) }),
             }
         };
         let out = crate::release_image::fetch(&self.d.endpoints, asset_url, api_headers(&token, &[])).await;
         // the account changed while the file was on its way: the answer belongs to nobody
         if self.lock().session != session {
-            return json!({ "error": "stale", "message": "还没有登录" });
+            return json!({ "error": "stale", "message": tr("还没有登录", &[]) });
         }
         out
     }
@@ -967,7 +967,7 @@ impl Engine {
 
     pub async fn open_external(&self, url: &str) -> Result<(), String> {
         if !is_allowed_external(url, &self.d.endpoints) {
-            return Err(format!("不打开非 GitHub 链接：{url}"));
+            return Err(tr("不打开非 GitHub 链接：{url}", &[("url", url)]));
         }
         self.d.opener.open(url).await
     }
@@ -997,14 +997,15 @@ fn failure_status(f: Failure) -> &'static str {
     }
 }
 
-fn db_problem_message(e: StoreError) -> String {
-    format!("本地数据库写入失败（{e}）。这次运行照常可用；下次启动可能需要重新登录，离线时可能看不到缓存")
+fn db_problem_message(e: StoreError) -> Said {
+    Said::compose("本地数据库写入失败（{e}）。这次运行照常可用；下次启动可能需要重新登录，离线时可能看不到缓存", &[("e", &e.said())])
 }
 
-fn unsaved_message(problem: Option<&str>) -> String {
-    format!(
-        "新的登录凭据没能存进钥匙串（{}）。这次运行照常可用，App 会每轮重试保存；在保存成功前退出 App，下次启动需要重新登录",
-        problem.unwrap_or("未知错误")
+fn unsaved_message(problem: Option<&Said>) -> Said {
+    let unknown = Said::plain(tr("未知错误", &[]));
+    Said::compose(
+        "新的登录凭据没能存进钥匙串（{e}）。这次运行照常可用，App 会每轮重试保存；在保存成功前退出 App，下次启动需要重新登录",
+        &[("e", problem.unwrap_or(&unknown))],
     )
 }
 
@@ -1047,7 +1048,8 @@ impl FreshOut {
         let mut m = serde_json::Map::new();
         m.insert("result".into(), Value::String(self.result.as_str().into()));
         if let Some(p) = &self.problem {
-            m.insert("problem".into(), p.clone().map(Value::String).unwrap_or(Value::Null));
+            m.insert("problem".into(), p.as_ref().map(|s| Value::String(s.text())).unwrap_or(Value::Null));
+            m.insert("problemSaid".into(), p.as_ref().map(Said::to_json).unwrap_or(Value::Null));
         }
         if let Some((s, r)) = &self.signed_out {
             m.insert("signedOut".into(), json!({ "session": s, "reason": r.text(), "reasonSaid": r.to_json() }));

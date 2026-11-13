@@ -6,18 +6,18 @@
 
 use crate::engine::{BeginOut, Engine, FinishOut, RequestError, StartOut};
 use crate::http::HttpRequest;
-use crate::i18n::Said;
+use crate::i18n::{tr, Said};
 use crate::store::{BACKEND_ONLY_KEYS, SECRET_KEYS};
 use crate::zoom;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn s<'a>(a: &'a Value, k: &str) -> Result<&'a str, String> {
-    a.get(k).and_then(|v| v.as_str()).ok_or_else(|| format!("缺少参数 {k}"))
+    a.get(k).and_then(|v| v.as_str()).ok_or_else(|| tr("缺少参数 {k}", &[("k", k)]))
 }
 
 fn u(a: &Value, k: &str) -> Result<u64, String> {
-    a.get(k).and_then(|v| v.as_u64()).ok_or_else(|| format!("缺少参数 {k}"))
+    a.get(k).and_then(|v| v.as_u64()).ok_or_else(|| tr("缺少参数 {k}", &[("k", k)]))
 }
 
 pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, String> {
@@ -81,13 +81,16 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         }
         "saveUnsaved" => Ok(match e.save_unsaved().await {
             None => json!({}),
-            Some(p) => json!({ "problem": p }),
+            Some(p) => json!({ "problem": p.as_ref().map(Said::text), "problemSaid": p.as_ref().map(Said::to_json) }),
         }),
         "grantInfo" => Ok(e.grant_info().await),
         "adoptViewer" => Ok(match e.adopt_viewer(u(&a, "session")?, s(&a, "login")?) {
             Ok(None) => json!({ "stale": true }),
             Ok(Some(wiped)) => json!({ "wiped": wiped }),
-            Err(m) => json!({ "stale": true, "problem": format!("本地缓存写入失败（{m}），这一轮的结果没有保存") }),
+            Err(m) => {
+                let p = Said::compose("本地缓存写入失败（{m}），这一轮的结果没有保存", &[("m", &m.said())]);
+                json!({ "stale": true, "problem": p.text(), "problemSaid": p.to_json() })
+            }
         }),
         "request" => {
             let session = u(&a, "session")?;
@@ -103,7 +106,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             };
             Ok(match e.request(session, req).await {
                 Ok(r) => json!({ "status": r.status, "headers": r.headers, "body": r.body }),
-                Err(RequestError::Stale) => json!({ "error": "stale", "message": "还没有登录" }),
+                Err(RequestError::Stale) => json!({ "error": "stale", "message": tr("还没有登录", &[]) }),
                 Err(RequestError::Refused(m)) => json!({ "error": "refused", "message": m }),
                 Err(RequestError::Network(m)) => json!({ "error": "network", "message": m }),
             })
@@ -120,7 +123,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "setSetting" => {
             let k = s(&a, "key")?;
             if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {
-                return Err(format!("这个设置只能由登录流程写：{k}"));
+                return Err(tr("这个设置只能由登录流程写：{k}", &[("k", k)]));
             }
             e.store().set_setting(k, a.get("value").unwrap_or(&Value::Null))?;
             Ok(Value::Null)
@@ -128,7 +131,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "replaceSnapshots" => {
             let snaps = match a.get("snapshots") {
                 Some(Value::Array(v)) => v.clone(),
-                _ => return Err("缺少参数 snapshots".into()),
+                _ => return Err(tr("缺少参数 {k}", &[("k", "snapshots")])),
             };
             Ok(json!({ "written": e.replace_snapshots(u(&a, "session")?, &snaps)? }))
         }
@@ -148,7 +151,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             if step == "get" {
                 return Ok(json!({ "percent": zoom::saved(e.store()) }));
             }
-            let step = zoom::Step::parse(step).ok_or_else(|| format!("未知的缩放：{step}"))?;
+            let step = zoom::Step::parse(step).ok_or_else(|| tr("未知的缩放：{step}", &[("step", step)]))?;
             let (percent, kept) = zoom::apply(e.store(), step);
             Ok(json!({ "percent": percent, "kept": kept.err() }))
         }
@@ -170,7 +173,7 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "daemonCheckDir" => Ok(e.daemon().check_dir_request(s(&a, "repo")?, s(&a, "dir")?).await),
         "daemonPickFolder" => Ok(e.daemon().pick_folder(a.get("start").and_then(|v| v.as_str()).map(str::to_string)).await),
         "daemonConnect" => Ok(e.daemon_arc().connect(s(&a, "repo")?, s(&a, "agent")?, a.get("dir").and_then(|v| v.as_str()), a.get("cloneInto").and_then(|v| v.as_str())).await),
-        "daemonConnectPoll" => Ok(e.daemon().connect_poll(a.get("job").and_then(|v| v.as_u64()).ok_or_else(|| "缺参数 job".to_string())?, a.get("from").and_then(|v| v.as_u64()).unwrap_or(0) as usize)),
+        "daemonConnectPoll" => Ok(e.daemon().connect_poll(a.get("job").and_then(|v| v.as_u64()).ok_or_else(|| tr("缺参数 {k}", &[("k", "job")]))?, a.get("from").and_then(|v| v.as_u64()).unwrap_or(0) as usize)),
         // a daemon on another machine (GitHub#387): the window names a machine from the list and a
         // project; the back end holds the key, checks the connection and signs the request
         "remoteList" => Ok(e.remote().list()),
@@ -182,6 +185,6 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "remoteForget" => Ok(e.remote().forget(s(&a, "id")?).await),
         "remoteTailnet" => Ok(e.remote().tailnet(e.daemon()).await),
         "remoteHost" => Ok(e.daemon().remote_host(s(&a, "action")?, a.get("target").and_then(|v| v.as_str())).await),
-        other => Err(format!("未知命令：{other}")),
+        other => Err(tr("未知命令：{other}", &[("other", other)])),
     }
 }

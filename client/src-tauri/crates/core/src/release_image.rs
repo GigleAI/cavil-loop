@@ -122,7 +122,7 @@ fn file_out(body: Option<Vec<u8>>) -> Value {
 /// Steps 2–5. `api_headers` already carries the credential; the caller checked the session and `is_asset_url`.
 pub async fn fetch(endpoints: &Endpoints, asset_url: &str, mut api_headers: Vec<(String, String)>) -> Value {
     if !is_asset_url(endpoints, asset_url) {
-        return json!({ "error": "refused", "message": format!("不是 Release 附件的接口地址：{asset_url}") });
+        return json!({ "error": "refused", "message": crate::i18n::tr("不是 Release 附件的接口地址：{url}", &[("url", asset_url)]) });
     }
     for h in api_headers.iter_mut() {
         if h.0.eq_ignore_ascii_case("accept") {
