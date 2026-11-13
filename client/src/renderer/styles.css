@@ -972,8 +972,11 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .reread-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 .reread-ok .icon { color: var(--ok-icon); }
 
-/* GitHub#447: the notices of closes that put their tab / floating panel away — above every page, under the tab bar */
-.op-strip { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); }
+/* GitHub#488: the window's one notice area (every operation, new issue and unsaved change) — above every page, under the tab bar */
+.notice-area { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); max-height: 45vh; overflow-y: auto; }
+.notice-area .notice-more { display: block; margin: -2px 16px 8px; font-size: 12px; }
+.notice-edits .edit-issues { margin-left: 32px; }
+.edit-issues-about { margin-right: 4px; font-weight: 600; }
 /* GitHub#487: the "快捷键" section of the settings page */
 .set-keys-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sk-group { font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 2px; }

@@ -321,6 +321,17 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 
 This means the worktree/tmux/branch "N" **isn't necessarily** the same as `feature/issue-N`'s number — it can be the PR number too. Safe on GitHub because issue/PR share one numeric namespace; not portable to GitLab (issues + MRs use separate iids) — for cross-platform support see the platform adapter discussion in issue tracker.
 
+### Desktop client actions: the window changes first, the controller does the work, results are said in one place (GitHub#482)
+
+Any action in `client/` that writes to GitHub follows these four rules:
+
+1. **The window changes first**: whatever can show its result at once is changed on screen right away and marked 「保存中…」 (saving) — nobody waits on a button that does nothing.
+2. **Anything that waits goes to the controller**: a request that waits for GitHub is sent, awaited, checked and finished by the controller (`client/src/app/controller.ts`), not by the panel / tab component that started it. Closing, leaving or switching that component neither stops the request nor hides its result.
+3. **Results are said only in the window's notice area**: running, done and failed all go to the one notice area at the top of the window (`client/src/renderer/NoticeArea.tsx`, under the tab bar, above every page); no other part of the window says them. A change whose result is already visible (label, milestone, status, iteration, a ticked task) says nothing when it succeeds; a success notice goes away by itself after 5 s, a failure stays until the person closes it.
+4. **A failure offers only "retry" and one way out, and what "retry" means follows how sure the outcome is**: surely not sent, or refused — retry does it again with the same choices; no answer — retry only reads again (read-only), only the label steps the existing rules allow may be re-sent (「重发…」), and only after saying what a late request can still cause; an uncertain new issue is never created again automatically. "Not found" is not "did not happen". The way out is one path the person can finish by hand (handle it on GitHub, reopen the draft, give up and take GitHub's value …), one per kind of failure; opening the web page is not the person having checked — a lock is lifted only when they explicitly press 「已核对」. Text not sent is kept by the program, never by asking the person to save it.
+
+Today (since GitHub#488): the results the controller already holds — close, merge, 托管, 交给 agent, 等前置, new issue, changes not saved — appear only in the notice area — a label / milestone / status / iteration change made anywhere says nothing else (the controller marks its result `held`; only a refusal before it was recorded is said where it was made); the detail head's 「⚠ N」 keeps only that item's own matters (a failed read, the result of a comment etc. sent there, the way back to a kept draft). Moving comments / body / title / task edits to the controller is GitHub#482's second sub-issue, cutting failure buttons down per rule 4 is the third — until then their current buttons and rules stay.
+
 ## Common task flows
 
 ### Edit daemon logic (agent-poll.sh / dispatch-*.sh)
