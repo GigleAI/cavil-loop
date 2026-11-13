@@ -333,6 +333,15 @@ function restToItem(repo: string, r: RestIssue, srcKey: string): Item {
 }
 
 /**
+ * GitHub#462: the closed items carrying `label`, as one REST list. A name GitHub's `labels` parameter
+ * can carry whole is asked for directly; one with a comma (the parameter's separator) cannot, so every
+ * closed item is read and the caller keeps the ones carrying the whole name.
+ */
+export function closedPendingPath(base: string, label: string): string {
+  return label.includes(',') ? `${base}?state=closed&per_page=100` : `${base}?state=closed&labels=${encodeURIComponent(label)}&per_page=100`;
+}
+
+/**
  * Every open issue / PR, plus everything (open or closed) updated in the last 14 days, plus
  * (GitHub#462) every closed one carrying the pending label (`pendingLabel`, '' = not read): those
  * still wait for a human however long ago they last changed. The snapshot says which label that
@@ -356,9 +365,11 @@ export async function fetchRepo(
   const [open, recent, closedPending] = await Promise.all([
     client.restList<RestIssue>(`${base}?state=open&per_page=100`),
     client.restList<RestIssue>(`${base}?state=all&since=${encodeURIComponent(since)}&per_page=100`),
-    // GitHub's `labels` takes a comma-separated list (all of them): a name with a comma in it cannot be
-    // asked for whole — the answer is then filtered here to the items really carrying it
-    pending ? client.restList<RestIssue>(`${base}?state=closed&labels=${encodeURIComponent(pending)}&per_page=100`) : Promise.resolve([] as RestIssue[]),
+    // GitHub's `labels` takes a comma-separated list (items carrying all of them): a name with a comma
+    // in it cannot be asked for whole — GitHub would answer for its parts and never return an item
+    // carrying the whole name (PR #481 review round 1). Such a name reads every closed item instead;
+    // either answer is filtered here to the items really carrying the whole name.
+    pending ? client.restList<RestIssue>(closedPendingPath(base, pending)) : Promise.resolve([] as RestIssue[]),
   ]);
   const items = new Map<string, Item>();
   const related = new Map<string, boolean>();

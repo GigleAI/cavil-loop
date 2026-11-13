@@ -275,16 +275,44 @@ describe('the read itself', () => {
     expect(snap.pendingLabel).toBe(LABEL);
   });
 
-  it('GitHub answers the label list with an item that does not carry the label whole (a name with a comma): it is left out', async () => {
-    const [OLD, OTHER] = closedFree();
+  it('a name with a comma (PR #481 review round 1): GitHub cannot be asked for it whole — every closed item is read, the one carrying the whole name is in, one carrying its parts is not', async () => {
+    const [OLD, OTHER, FREE] = closedFree();
     setIssue(OLD, { label: 'a,b', ageDays: REPO_RECENT_DAYS * 3 });
     setIssue(OTHER, { label: null, ageDays: REPO_RECENT_DAYS * 3 });
-    // GitHub reads `labels=a,b` as "a and b": an item with both `a` and `b`, but not `a,b`, comes back
+    setIssue(FREE, { label: null, ageDays: REPO_RECENT_DAYS * 3 });
+    // GitHub reads `labels=a,b` as "a and b": an item with both `a` and `b`, but not `a,b`
     const o = repoList().find((x: any) => x.number === OTHER);
     o.labels = [...o.labels, { name: 'a', color: '' }, { name: 'b', color: '' }];
+    // more closed items than one page: the whole list is followed to its end
+    fake.state.restPageSize = 2;
+    const sent = fake.log.length;
     const snap = await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b');
-    // "did happen": the list was asked for
-    expect(fake.log.some((e) => e.path.includes(`labels=${encodeURIComponent('a,b')}`))).toBe(true);
+    const asked = fake.log.slice(sent).filter((e) => e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.path.includes('state=closed'));
+    // "did happen": the closed list was read, without a `labels` parameter, page after page
+    expect(asked.length).toBeGreaterThan(1);
+    expect(asked.every((e) => !e.path.includes('labels=') && e.status === 200)).toBe(true);
+    expect(snap.items.find((i) => i.key === key(OLD))?.state).toBe('closed');
     expect(snap.items.some((i) => i.key === key(OTHER))).toBe(false);
+    expect(snap.items.some((i) => i.key === key(FREE))).toBe(false);
+    expect(snap.pendingLabel).toBe('a,b');
+  });
+
+  it('a name without a comma is asked for directly: GitHub returns only the items carrying it', async () => {
+    const sent = fake.log.length;
+    await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', LABEL);
+    const asked = fake.log.slice(sent).filter((e) => e.path.includes('state=closed'));
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((e) => e.path.includes(`labels=${encodeURIComponent(LABEL)}`))).toBe(true);
+  });
+
+  it('the whole closed list failing mid-way (a name with a comma) fails the read: nothing half is returned', async () => {
+    const [OLD] = closedFree();
+    setIssue(OLD, { label: 'a,b', ageDays: REPO_RECENT_DAYS * 3 });
+    fake.state.restPageSize = 2;
+    fake.state.answerOverride = (e) => (e.path.includes('state=closed') && /[?&]page=2(&|$)/.test(e.path) ? { status: 502, body: { message: 'Server Error' } } : null);
+    const sent = fake.log.length;
+    await expect(fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b')).rejects.toThrow();
+    // "did happen": the second page was asked for and refused
+    expect(fake.log.slice(sent).some((e) => e.path.includes('state=closed') && e.status === 502)).toBe(true);
   });
 });
