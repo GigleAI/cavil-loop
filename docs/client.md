@@ -121,7 +121,7 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 | `C` | new issue |
 | ⌘R | sync now (in a detail tab: re-read that item) |
 | ⌘, | open settings |
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 (⌘⇧1 / ⌘⇧2 work too) | board / table / dependency graph |
+| ⌃⌘1 / ⌃⌘2 / ⌃⌘3 (Control and Command together; the earlier ⌥⌘1/2/3 and ⌘⇧1/2 still work) | board / table / dependency graph |
 | ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
 | ⌘W | close the current tab |
 | `L` / `M` / `R` in details | labels / milestone / jump to the reply box |

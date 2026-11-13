@@ -3,6 +3,7 @@
 // (test/e2e/app.spec.ts, "GitHub#192: …") press the real keys and check what GitHub received.
 import { describe, expect, it } from 'vitest';
 import { FRAME_FORWARD, FRAME_IDS, SHORTCUTS, keyParts, keyText, matches, resolve, resolveKey, shownKeys, type KeyContext, type KeyLike, type KeySpec, type Scope } from '../../src/renderer/shortcuts';
+import { frameEvent } from '../../src/renderer/keyboard';
 
 const key = (k: string, o: Partial<KeyLike> = {}): KeyLike => ({ key: k, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o });
 const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none', mac: true };
@@ -15,8 +16,9 @@ const eventOf = (spec: KeySpec, mod: 'meta' | 'ctrl' = 'meta'): KeyLike => {
   const k =
     spec.key === '?' ? '?' : digit ? (spec.shift ? (SHIFTED_DIGIT[spec.key] ?? spec.key) : spec.alt ? (ALT_DIGIT[spec.key] ?? spec.key) : spec.key) : spec.shift && spec.key.length === 1 ? spec.key.toUpperCase() : spec.key;
   return key(k, {
-    metaKey: Boolean(spec.mod) && mod === 'meta',
-    ctrlKey: Boolean(spec.mod) && mod === 'ctrl',
+    // a ⌃⌘ key (GitHub#492) is both held, whichever one the caller names
+    metaKey: Boolean(spec.mod) && (mod === 'meta' || Boolean(spec.ctrl)),
+    ctrlKey: (Boolean(spec.mod) && mod === 'ctrl') || Boolean(spec.ctrl),
     shiftKey: Boolean(spec.shift),
     altKey: Boolean(spec.alt),
     ...(digit ? { code: `Digit${spec.key}` } : {}),
@@ -265,12 +267,11 @@ describe('keys on screen', () => {
     expect(keyText('helpClose', true)).toBe('Esc / ?');
     expect(keyText('newIssue', true)).toBe('C / ⌘N');
     expect(keyText('newIssue', false)).toBe('C / Ctrl+N');
-    // GitHub#442: ⌘⇧1/2/3, and on macOS also ⌥⌘1/2/3 (macOS keeps ⌘⇧3 for its screenshot);
-    // GitHub#465: on macOS ⌥⌘ is named first and ⌘⇧3 is not named at all
-    expect(keyText('viewGraph', true)).toBe('⌥⌘3');
+    // GitHub#442: ⌘⇧1/2/3 elsewhere; GitHub#492: on macOS only ⌃⌘1/2/3 is named (⌥⌘ and ⌘⇧ still act, unnamed)
+    expect(keyText('viewGraph', true)).toBe('⌃⌘3');
     expect(keyText('viewGraph', false)).toBe('Ctrl+Shift+3');
-    expect(keyText('viewBoard', true)).toBe('⌥⌘1 / ⌘⇧1');
-    expect(keyText('viewTable', true)).toBe('⌥⌘2 / ⌘⇧2');
+    expect(keyText('viewBoard', true)).toBe('⌃⌘1');
+    expect(keyText('viewTable', true)).toBe('⌃⌘2');
     expect(keyText('viewBoard', false)).toBe('Ctrl+Shift+1');
     expect(keyText('viewTable', false)).toBe('Ctrl+Shift+2');
     expect(keyText('tabAt', true)).toBe('⌘1 … ⌘9');
@@ -323,10 +324,11 @@ describe('GitHub#465: macOS takes ⌘⇧3 for its screenshot', () => {
   const idle: KeyContext = { signedIn: true, layer: 'none', typing: 'none' };
   const graph = SHORTCUTS.find((s) => s.id === 'viewGraph')!;
   const shown = (mac: boolean) => shownKeys(graph, mac).map((k) => keyParts(k, mac).join(mac ? '' : '+'));
-  it('the list and the tooltip name only ⌥⌘3 on macOS, only Ctrl+Shift+3 elsewhere', () => {
-    expect(shown(true)).toEqual(['⌥⌘3']);
+  it('the list and the tooltip name only ⌃⌘3 on macOS (GitHub#492), only Ctrl+Shift+3 elsewhere', () => {
+    expect(shown(true)).toEqual(['⌃⌘3']);
     expect(shown(false)).toEqual(['Ctrl+Shift+3']);
-    expect(graph.label).toContain('⌥⌘3');
+    // the label names no key: the key caps beside it come from the table
+    expect(graph.label).not.toMatch(/⌥⌘|⌘⇧|⌃⌘/);
   });
   it('⌘⇧3 is still acted on on macOS when it reaches the window (not shown, not dropped), and ⌥⌘3 too', () => {
     // a US layout reports "#" for ⇧3, "£" for ⌥3: the key position decides
@@ -338,9 +340,70 @@ describe('GitHub#465: macOS takes ⌘⇧3 for its screenshot', () => {
   });
   it('a key hidden on macOS is still shown everywhere else, and every shortcut keeps at least one key on screen', () => {
     for (const s of SHORTCUTS) {
-      for (const k of s.keys) if (k.macHidden) expect(shownKeys(s, false), s.id).toContain(k);
+      for (const k of s.keys) if (k.macHidden && !k.macOnly) expect(shownKeys(s, false), s.id).toContain(k);
       expect(shownKeys(s, true).length, s.id).toBeGreaterThan(0);
       expect(shownKeys(s, false).length, s.id).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('GitHub#492: ⌃⌘1/2/3 are the layout keys on macOS', () => {
+  const mac: KeyContext = { signedIn: true, layer: 'none', typing: 'none', mac: true };
+  const other: KeyContext = { ...mac, mac: false };
+  const LAYOUT = [['1', 'viewBoard'], ['2', 'viewTable'], ['3', 'viewGraph']] as const;
+  it('on macOS ⌃⌘N switches the layout — never "the tab at N", from a field and the reply box too', () => {
+    for (const [d, id] of LAYOUT)
+      for (const ctx of [mac, { ...mac, typing: 'other' as const }, { ...mac, typing: 'reply' as const }, { ...mac, page: 'settings' as const }])
+        expect(resolveKey(key(d, { metaKey: true, ctrlKey: true, code: `Digit${d}` }), ctx)?.id, `⌃⌘${d} ${JSON.stringify(ctx)}`).toBe(id);
+  });
+  it('the old keys still act on macOS, unnamed; plain ⌘N still picks a tab', () => {
+    for (const [d, id] of LAYOUT) {
+      expect(resolve(key(ALT_DIGIT[d], { metaKey: true, altKey: true, code: `Digit${d}` }), mac), `⌥⌘${d}`).toBe(id);
+      expect(resolve(key(SHIFTED_DIGIT[d], { metaKey: true, shiftKey: true, code: `Digit${d}` }), mac), `⌘⇧${d}`).toBe(id);
+      expect(resolveKey(key(d, { metaKey: true, code: `Digit${d}` }), mac)?.id, `⌘${d}`).toBe('tabAt');
+      // a lone ⌃ still counts as the ⌘ key on macOS, as before
+      expect(resolveKey(key(d, { ctrlKey: true, code: `Digit${d}` }), mac)?.id, `⌃${d}`).toBe('tabAt');
+    }
+  });
+  it('⌃⌘ is a key of its own on macOS: no plain ⌘ shortcut takes it', () => {
+    for (const d of ['4', '5', '9']) expect(resolve(key(d, { metaKey: true, ctrlKey: true, code: `Digit${d}` }), mac), `⌃⌘${d}`).toBeNull();
+    expect(resolve(key('r', { metaKey: true, ctrlKey: true }), mac)).toBeNull();
+    expect(resolve(key('n', { metaKey: true, ctrlKey: true }), mac)).toBeNull();
+    expect(resolve(key('Z', { metaKey: true, ctrlKey: true, shiftKey: true }), mac)).toBeNull();
+    // with Shift or ⌥ as well, it is neither the new key nor an old one
+    expect(resolve(key('!', { metaKey: true, ctrlKey: true, shiftKey: true, code: 'Digit1' }), mac)).toBeNull();
+    expect(resolve(key('¡', { metaKey: true, ctrlKey: true, altKey: true, code: 'Digit1' }), mac)).toBeNull();
+  });
+  it('elsewhere nothing changes: Ctrl+Shift+N is the layout, Ctrl + Super + N stays what it was', () => {
+    for (const [d, id] of LAYOUT) {
+      expect(resolve(key(SHIFTED_DIGIT[d], { ctrlKey: true, shiftKey: true, code: `Digit${d}` }), other)).toBe(id);
+      expect(resolveKey(key(d, { metaKey: true, ctrlKey: true, code: `Digit${d}` }), other)?.id).toBe('tabAt');
+    }
+    expect(resolve(key('r', { metaKey: true, ctrlKey: true }), other)).toBe('sync');
+  });
+  it('the key caps read ⌃⌘N on macOS', () => {
+    expect(keyParts({ key: '1', mod: true, ctrl: true, macOnly: true }, true)).toEqual(['⌃', '⌘', '1']);
+    for (const [d, id] of LAYOUT) {
+      const s = SHORTCUTS.find((x) => x.id === id)!;
+      expect(shownKeys(s, true).map((k) => keyParts(k, true).join('')), id).toEqual([`⌃⌘${d}`]);
+      expect(shownKeys(s, false).map((k) => keyParts(k, false).join('+')), id).toEqual([`Ctrl+Shift+${d}`]);
+    }
+  });
+});
+
+describe('GitHub#492: a key the discussion frame reports keeps ⌘ and ⌃ apart', () => {
+  const mac: KeyContext = { signedIn: true, layer: 'none', typing: 'none', mac: true };
+  it('⌃⌘1 from the frame is ⌃⌘1, never ⌘1; ⌘1 / ⌃1 stay the tab key', () => {
+    expect(resolve(frameEvent('1', true, false, 'Digit1', true, true), mac)).toBe('viewBoard');
+    expect(resolve(frameEvent('1', true, false, 'Digit1', true, false), mac)).toBe('tabAt');
+    expect(resolve(frameEvent('1', true, false, 'Digit1', false, true), mac)).toBe('tabAt');
+    expect(resolve(frameEvent('r', true, false, 'KeyR', true, true), mac)).toBeNull();
+  });
+  it('a message without the two (or with values that disagree with "⌘ or ⌃") stands for ⌘ alone, as before', () => {
+    for (const [meta, ctrl] of [[undefined, undefined], ['yes', true], [true, undefined], [false, false]] as const) {
+      const e = frameEvent('1', true, false, 'Digit1', meta, ctrl);
+      expect({ meta: e.metaKey, ctrl: e.ctrlKey }, `${meta} ${ctrl}`).toEqual({ meta: true, ctrl: false });
+    }
+    expect(frameEvent('1', false, false, 'Digit1', true, true)).toMatchObject({ metaKey: false, ctrlKey: false });
   });
 });

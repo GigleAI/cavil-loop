@@ -75,19 +75,24 @@ function press(e: KeyLike, typing: Typing, only?: (id: ShortcutId, spec: KeySpec
  * the shortcuts of FRAME_IDS (go to the reply box, 关闭 issue / 交给 agent / 托管) may act — every
  * other key stays inside the frame (PR #171: the maintainer chose to keep it isolated).
  */
-export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = '', alt: unknown = false): boolean {
+export function frameKey(key: unknown, mod: unknown = false, shift: unknown = false, code: unknown = '', meta?: unknown, ctrl?: unknown, alt: unknown = false): boolean {
   // the key as the frame's browser reported it: a character, or a named key (Ctrl+Numpad1 reports "End" — code review round 3)
   if (typeof key !== 'string' || key.length < 1 || key.length > 32 || typeof mod !== 'boolean' || typeof shift !== 'boolean' || typeof alt !== 'boolean') return false;
   // GitHub#442: the frame reports the physical key as it got it ('' = none reported). It is judged by the very rule
   // a key pressed in the window is (`matches`): a digit goes by its key position, never by the character it typed
   if (typeof code !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(code)) return false;
   // GitHub#487: only what the frame may forward — the same rule that built its list (`frameAllowed`)
-  return press(frameEvent(key, mod, shift, code, alt), 'none', frameAllowed) !== null;
+  return press(frameEvent(key, mod, shift, code, meta, ctrl, alt), 'none', frameAllowed) !== null;
 }
 
-/** A key the discussion frame reported, as the window's event it stands for (GitHub#487: ⌥ / Alt too). */
-export function frameEvent(key: string, mod: boolean, shift: boolean, code: string, alt: boolean = false): KeyLike {
-  return { key, code, metaKey: mod, ctrlKey: false, altKey: alt, shiftKey: shift };
+/**
+ * A key the discussion frame reported, as the window's event it stands for. GitHub#492: the frame also reports ⌘ and ⌃
+ * one by one (⌃⌘1 is not ⌘1 on macOS); they are taken only when both are booleans and agree with `mod` — otherwise the
+ * key stands for ⌘ alone, as before. GitHub#487: ⌥ / Alt too.
+ */
+export function frameEvent(key: string, mod: boolean, shift: boolean, code: string, meta?: unknown, ctrl?: unknown, alt: boolean = false): KeyLike {
+  const held = typeof meta === 'boolean' && typeof ctrl === 'boolean' && (meta || ctrl) === mod;
+  return { key, code, metaKey: held ? (meta as boolean) : mod, ctrlKey: held ? (ctrl as boolean) : false, altKey: alt, shiftKey: shift };
 }
 
 /**

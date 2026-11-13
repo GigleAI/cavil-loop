@@ -88,7 +88,7 @@ describe('one table for every place that uses a key', () => {
     const keys = ok(changeKey({}, 'labels', { key: 'a', alt: true, mod: true }, true));
     setCustomKeys(keys);
     expect(resolve(key('å', { code: 'KeyA', altKey: true, metaKey: true }), idle)).toBe('labels');
-    expect(resolve(frameEvent('å', true, false, 'KeyA', true), idle)).toBe('labels');
+    expect(resolve(frameEvent('å', true, false, 'KeyA', undefined, undefined, true), idle)).toBe('labels');
     expect(resolve(key('l'), idle)).toBeNull();
     expect(keyText('labels', true)).toBe('⌥⌘A');
   });
@@ -353,13 +353,15 @@ const US_SHIFT: Record<string, string> = { '1': '!', '2': '@', '3': '#', '4': '$
 const US_CODE: Record<string, string> = { ']': 'BracketRight', '[': 'BracketLeft', '/': 'Slash', '?': 'Slash', '=': 'Equal', '-': 'Minus', ',': 'Comma', '.': 'Period', ';': 'Semicolon', Enter: 'Enter', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown' };
 
 /** the key press a spec stands for, as a browser on a US layout reports it (`key` and `code`), with ⌘ or Ctrl */
-function pressOf(k: { key: string; mod?: boolean; shift?: boolean; alt?: boolean }, ctrl: boolean): KeyLike {
+function pressOf(k: { key: string; mod?: boolean; ctrl?: boolean; shift?: boolean; alt?: boolean }, ctrl: boolean): KeyLike {
   const shift = Boolean(k.shift) || k.key === '?';
   const base = k.key === '?' ? '/' : k.key;
   const letter = /^[a-z]$/.test(base);
   const digit = /^[0-9]$/.test(base);
   const code = letter ? `Key${base.toUpperCase()}` : digit ? `Digit${base}` : (US_CODE[base] ?? base);
   const typed = k.alt && letter ? 'ß' : shift ? (letter ? base.toUpperCase() : (US_SHIFT[base] ?? base)) : base;
+  // GitHub#492: a ⌃⌘ key is both held
+  if (k.ctrl) return { key: typed, code, metaKey: true, ctrlKey: true, shiftKey: shift, altKey: Boolean(k.alt) };
   return { key: typed, code, metaKey: Boolean(k.mod) && !ctrl, ctrlKey: Boolean(k.mod) && ctrl, shiftKey: shift, altKey: Boolean(k.alt) };
 }
 
@@ -475,5 +477,31 @@ describe('PR #498 review round 2: a saved key named like a built-in property is 
     expect(canonicalKey({ key: '}', mod: true, shift: true })).toEqual({ key: ']', mod: true, shift: true });
     expect(canonicalKey({ key: '{', shift: true })).toEqual({ key: '[', shift: true });
     expect(repairKeys({ newIssueAgent: { key: '}', mod: true, shift: true } }, false).keys).toEqual({ newIssueAgent: { key: ']', mod: true, shift: true } });
+  });
+});
+
+describe('GitHub#492 merged in: ⌃⌘ is a key of its own on macOS', () => {
+  it('recorded with both held, saved with ctrl, matched by that press only (macOS)', () => {
+    const e = { key: 'k', code: 'KeyK', metaKey: true, ctrlKey: true, shiftKey: false, altKey: false };
+    const spec = recordedKey(e)!;
+    expect(spec).toEqual({ key: 'k', mod: true, ctrl: true });
+    const keys = ok(changeKey({}, 'labels', spec, true));
+    expect(keys).toEqual({ labels: { key: 'k', mod: true, ctrl: true } });
+    setCustomKeys(keys);
+    expect(resolve(e, idle)).toBe('labels');
+    expect(resolve({ ...e, ctrlKey: false }, idle)).toBeNull();
+    expect(keyText('labels', true)).toBe('⌃⌘K');
+  });
+  it('⌃⌘1 is 切到看板 on macOS: taken by another shortcut is refused; ⌘K and ⌃⌘K may be two shortcuts on macOS, not elsewhere', () => {
+    const r = changeKey({}, 'labels', { key: '1', mod: true, ctrl: true }, true);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.why).toContain('「切到看板」');
+    const both = ok(changeKey(ok(changeKey({}, 'labels', { key: 'k', mod: true }, true)), 'milestone', { key: 'k', mod: true, ctrl: true }, true));
+    expect(clashes(both, true)).toEqual([]);
+    expect(changeKey({ labels: { key: 'k', mod: true } }, 'milestone', { key: 'k', mod: true, ctrl: true }, false).ok).toBe(false);
+  });
+  it('macOS keeps ⌃⌘Q / ⌃⌘F for itself', () => {
+    expect(changeKey({}, 'labels', { key: 'q', mod: true, ctrl: true }, true).ok).toBe(false);
+    expect(changeKey({}, 'labels', { key: 'f', mod: true, ctrl: true }, true).ok).toBe(false);
   });
 });

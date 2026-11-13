@@ -239,7 +239,8 @@ export const FRAME_SCRIPT = `(function () {
       var kk = sh && (k === '}' || k === '{') ? (k === '}' ? ']' : '[') : k;
       if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : alt && lt && /^[a-z]$/.test(f.key) ? lt !== f.key : kk !== f.key) continue;
       e.preventDefault();
-      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code });
+      // GitHub#492: ⌘ and ⌃ as they were held, so the window tells ⌃⌘1 from ⌘1 by its own rule; GitHub#487: ⌥ too
+      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code, meta: !!e.metaKey, ctrl: !!e.ctrlKey });
       return;
     }
   });
@@ -256,4 +257,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-DMyQWP4FgYRSmKRIs1PEdGxNGsbHOhPgF/G41bso8xs='";
+export const FRAME_SCRIPT_HASH = "'sha256-yXXTmrZ2Vu8uHuEAmvWhS+leekRfoXXoFCaCbvIjI4s='";

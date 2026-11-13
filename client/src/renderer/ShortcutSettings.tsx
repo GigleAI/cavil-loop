@@ -25,6 +25,8 @@ export function recordedKey(e: { key: string; code?: string; metaKey: boolean; c
   else if (key.length === 1) key = key.toLowerCase();
   const out: CustomKey = { key };
   if (e.metaKey || e.ctrlKey) out.mod = true;
+  // GitHub#492: ⌃ and ⌘ held together are a key of their own on macOS
+  if (e.metaKey && e.ctrlKey) out.ctrl = true;
   if (e.shiftKey) out.shift = true;
   if (e.altKey) out.alt = true;
   return out;
