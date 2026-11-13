@@ -60,11 +60,26 @@ async function signIn(page: Page, sources: string[] = [PROJECT_URL, REPO]) {
 
 const row = (page: Page, n: number) => page.locator(`[data-testid="row"][data-key="${K(n)}"] [data-testid="title-cell"]`).first();
 const B = 142;
-/** the board's "N 个条目" once the sync round has settled */
-async function settledTotal(page: Page): Promise<string> {
-  await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 20_000 });
+/**
+ * The board's "N 个条目" once every source has been read in full and nothing is syncing. "Nothing is
+ * syncing" alone is not enough: right after sign-in the second source may not have had its first full
+ * read yet (PR #484 code review round 2 — 149, then 150 three seconds later). The sync status's hover
+ * says per source whether it has been read in full ("还没有读到过" = not yet).
+ */
+async function settledTotal(page: Page, sources = 2): Promise<string> {
+  await expect
+    .poll(
+      async () => {
+        const syncing = await page.getByTestId('refresh').getAttribute('data-syncing');
+        const hover = (await page.getByTestId('sync-status').getAttribute('title')) ?? '';
+        return syncing === 'no' && !hover.includes('还没有读到过') && (hover.match(/整份读取/g) ?? []).length === sources;
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
   return (await page.getByTestId('item-total').textContent()) ?? '';
 }
+
 const topbar = (page: Page) => page.getByTestId('topbar');
 const width = (page: Page, testid: string) => page.getByTestId(testid).evaluate((e) => e.getBoundingClientRect().width);
 /** what the window asked of the shell's desktop side, by op */
