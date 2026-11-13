@@ -126,23 +126,23 @@ export function sendTakeText(r: SendRecord): string | null {
 }
 
 /**
- * PR #510 review round 2: an unknown reply (or an operation's attached comment / reply) a person unlocked after
- * checking GitHub is no longer checked by the app; its request may still land, so for a while no other send of the
- * same text on that item may take a new comment of that text as its own evidence. Kept on disk, also after the
- * record itself is gone.
+ * PR #510 review rounds 2–4: an unknown reply (or an operation's attached comment / reply) a person unlocked after
+ * checking GitHub is no longer checked by the app, and its request may still land. From then on no other request of
+ * the same text on that item may take a new comment of that text as its own evidence — for good: no time limit (a
+ * limit is crossed by a check that merely runs late, review round 4), kept on disk, also after every record and notice
+ * is gone; only signing out (the cache of that account) drops it. What it costs: a later request of that text there
+ * whose answer is lost is settled by a person, never automatically. `at`: when the mark was set (information only).
  */
 export interface SameTextMark {
   key: string;
   body: string;
-  /** controller stamp until which it holds */
-  until: number;
+  at: number;
 }
-/** how long such a mark holds */
-export const SAME_TEXT_MARK_MS = 24 * 3600_000;
+/** a stored mark (older stores wrote `until` instead of `at`: still a mark, no limit any more) */
 export function isSameTextMark(x: unknown): x is SameTextMark {
   if (!x || typeof x !== 'object') return false;
   const m = x as Record<string, unknown>;
-  return typeof m.key === 'string' && typeof m.body === 'string' && typeof m.until === 'number';
+  return typeof m.key === 'string' && typeof m.body === 'string' && (typeof m.at === 'number' || typeof m.until === 'number');
 }
 
 /**

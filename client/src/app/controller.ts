@@ -55,7 +55,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { isSameTextMark, SAME_TEXT_MARK_MS, sameTextUnclear, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
+import { isSameTextMark, sameTextUnclear, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
 import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
@@ -5255,14 +5255,14 @@ export class Controller {
   }
 
   /** the same-text marks still in force */
+  /** every same-text mark of this account: they never expire (shared/sends.ts, review round 4) */
   private liveMarks(): SameTextMark[] {
-    const now = this.now();
-    return this.sameText.filter((m) => m.until > now);
+    return this.sameText;
   }
 
   private addSameTextMark(key: string, body: string): void {
-    const until = this.now() + SAME_TEXT_MARK_MS;
-    this.sameText = [...this.liveMarks().filter((m) => !(m.key === key && m.body === body)), { key, body, until }];
+    if (this.sameText.some((m) => m.key === key && m.body === body)) return;
+    this.sameText = [...this.sameText, { key, body, at: this.now() }];
   }
 
   /**
@@ -5342,7 +5342,7 @@ export class Controller {
       if (n > this.sendSeq) this.sendSeq = n;
     }
     const marks = (row as unknown as { marks?: unknown }).marks;
-    this.sameText = Array.isArray(marks) ? marks.filter(isSameTextMark) : [];
+    this.sameText = Array.isArray(marks) ? marks.filter(isSameTextMark).map((m) => ({ key: m.key, body: m.body, at: typeof m.at === 'number' ? m.at : 0 })) : [];
     this.sendsStored = true;
     this.state = { ...this.state, sends: [...this.sends.values()] };
   }

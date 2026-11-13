@@ -19,6 +19,8 @@ const REPO = 'GigleAI/cavil-loop';
 const K = (n: number) => `gigleai/cavil-loop#${n}`;
 const ISSUE = 138;
 
+/** the controller's clock (PR #510 review round 4 moves it on); the back end keeps the fixture time */
+let clock = FIXTURE_NOW;
 let fake: FakeGitHub;
 let dir: string;
 let caches: Cache[] = [];
@@ -34,7 +36,7 @@ async function ready() {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 3_600_000,
+  const c = await Controller.create({ backend: harness, endpoints, now: () => clock, defaultClientId: '', followUpSyncMs: 3_600_000,
     // GitHub#359: only the check made at once (as in the operation tests)
     opCheckDelaysMs: [] });
   controllers.push(c);
@@ -86,6 +88,7 @@ async function restart(c: Controller): Promise<Controller> {
 }
 
 beforeEach(async () => {
+  clock = FIXTURE_NOW;
   fake = await startFakeGitHub();
   dir = tempDir();
 });
@@ -425,6 +428,50 @@ describe('PR #510 review round 1', () => {
     lateD.land();
     await c.opRecheck(d.id!);
     expect(opD().steps[0].state).toBe('ok');
+  });
+
+  it('PR #510 review round 4: the mark has no time limit — B checked two days later (after a restart), with A landed meanwhile, stays not sure; B landing too changes nothing', async () => {
+    let c = await ready();
+    const lateA = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const a = c.startSend({ kind: 'comment', key: K(ISSUE), body: '迟到的同一句' });
+    await idle(c);
+    lateA.stop();
+    c.sendUnlock(a.id!);
+    c.sendDismiss(a.id!);
+    await idle(c);
+    // B: the same text, answer lost, not landed
+    const lateB = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const b = c.startSend({ kind: 'comment', key: K(ISSUE), body: '迟到的同一句' });
+    expect(b.ok).toBe(true);
+    await idle(c);
+    lateB.stop();
+    expect(sendOf(c, b.id!).state).toBe('unknown');
+    // A lands within a minute; the app is off for two days
+    lateA.land();
+    expect(commentsOnGitHub().filter((x) => x.body === '迟到的同一句')).toHaveLength(1);
+    await idle(c);
+    c.stopTimer();
+    clock = FIXTURE_NOW + 48 * 3600_000;
+    c = await ready();
+    // (the first sync round after the restart checks B by itself)
+    await idle(c);
+    expect(sendOf(c, b.id!)).toMatchObject({ state: 'unknown', checkProblem: expect.stringContaining('分不清') });
+    // B checked by hand now: A's comment is not B's
+    expect(await c.sendRecheck(b.id!)).toMatchObject({ ok: false, error: expect.stringContaining('分不清') });
+    expect(sendOf(c, b.id!).state).toBe('unknown');
+    // B lands as well: still not decided automatically (a person checks and unlocks)
+    lateB.land();
+    expect(commentsOnGitHub().filter((x) => x.body === '迟到的同一句')).toHaveLength(2);
+    expect(await c.sendRecheck(b.id!)).toMatchObject({ ok: false });
+    expect(sendOf(c, b.id!).state).toBe('unknown');
+    expect(posts()).toHaveLength(2);
+    // the sibling: another text on the same item, answer lost and landed two days on, is proven as before
+    const lateD = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const d = c.startSend({ kind: 'comment', key: K(ISSUE), body: '另一句' });
+    await idle(c);
+    lateD.stop();
+    lateD.land();
+    expect(await c.sendRecheck(d.id!)).toMatchObject({ ok: true });
   });
 
   it('PR #510 review round 2: a taken-back reply changed in the box comes back as changed after a restart; emptied, it is let go', async () => {
