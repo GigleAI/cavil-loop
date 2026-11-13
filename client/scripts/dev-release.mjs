@@ -25,7 +25,7 @@
 //   node scripts/dev-release.mjs --version 0.5.1-dev.387 --sha <commit> --dir dist-release \
 //        --notes-file notes.md [--keep 10] [--repo GigleAI/cavil-loop]
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -356,9 +356,15 @@ function main() {
           ? `发版页带上 ${got.notes} 条更新说明${got.titles ? `、补上 ${got.titles} 个没写更新说明的提交标题` : ''}（相对 ${base.slice(0, 7)}）`
           : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : got ? '发版说明没有新增条目，也没有没写说明的 App 改动' : '比不出发版说明的变化'}`,
       );
-      const body = join(mkdtempSync(join(tmpdir(), 'cavil-dev-release-')), 'notes.md');
-      writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), got?.lines));
-      gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', body]);
+      // the notes go through a file of their own, removed whether the create worked or not (GitHub#469)
+      const bodyDir = mkdtempSync(join(tmpdir(), 'cavil-dev-release-'));
+      try {
+        const body = join(bodyDir, 'notes.md');
+        writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), got?.lines));
+        gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', body]);
+      } finally {
+        rmSync(bodyDir, { recursive: true, force: true });
+      }
     } else {
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
     }

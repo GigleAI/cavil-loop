@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { connect, daemonEnv, daemonWorld, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, keepTmp, pathFor, type DaemonWorld } from '../support/daemon-world';
 import { BOX, arrived, closeRemote, devices, installFakeTailscale, pairCode, remoteWorld, setHosts, type RemoteWorld } from '../support/remote-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -39,6 +39,7 @@ test.afterEach(async () => {
   await Promise.all(running.splice(0).map((a) => a.close()));
   await closeRemote(r);
   await env.fake.close();
+  dropWorlds();
 });
 test.afterAll(async () => {
   await closeEngine();
@@ -244,7 +245,7 @@ test('"已在那台机器上取消": the revoke command shown really revokes the
   // run the command the window shows, on "that machine", as written (~ is its HOME)
   const cmd = await host.getByTestId('remote-command').innerText();
   const { spawnSync } = await import('node:child_process');
-  const out = spawnSync('bash', ['-c', cmd], { env: { HOME: w.home, PATH: pathFor(w), FAKE_TS: r.ts, FAKE_SD: w.sd, FAKE_LD: w.ld }, encoding: 'utf8' });
+  const out = spawnSync('bash', ['-c', cmd], { env: { ...keepTmp(), HOME: w.home, PATH: pathFor(w), FAKE_TS: r.ts, FAKE_SD: w.sd, FAKE_LD: w.ld }, encoding: 'utf8' });
   expect(out.stdout).toContain('已撤销');
   expect(devices(r)).toEqual([]);
   await host.getByTestId('remote-forget').click();

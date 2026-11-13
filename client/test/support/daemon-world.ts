@@ -7,9 +7,14 @@
 //
 // The PATH each back end gets is built from symlinks, so a test can take a
 // tool away ("缺 tmux") even when the machine has it.
+//
+// A machine is ~2300 files: every test file that makes them calls `dropWorlds()` once it is done
+// with them (GitHub#469).
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +43,7 @@ const git = (cwd: string, ...args: string[]) =>
 
 /** A fake machine in `dir`, with the daemon not installed yet. */
 export function daemonWorld(dir: string): DaemonWorld {
+  worlds.push(dir);
   const fakes = join(dir, 'fakes');
   const r = spawnSync('bash', ['-c', 'source "$1/tests/fixtures/install-fakes.sh" && install_fakes "$2"', '_', REPO, fakes]);
   if (r.status !== 0) throw new Error(`install_fakes failed: ${r.stderr}`);
@@ -61,15 +67,24 @@ export function daemonWorld(dir: string): DaemonWorld {
 }
 
 let pathSeq = 0;
+const SYSTEM_DIRS = ['/usr/bin', '/bin', '/usr/local/bin'];
+
 /**
  * A PATH with the fakes, the given agents' programs and the system's tools — minus `missing`.
- * Everything is a symlink in one fresh folder, so a missing tool is really gone.
+ * Each tool is a symlink, so a missing tool is really gone. Two folders, fakes first: the fakes and
+ * agents (a dozen links) in a fresh folder of this machine, and the system's tools (~1500 links) in
+ * one folder per `missing` set shared by every case of this run (GitHub#469: building those per call
+ * left millions of files behind). The first folder is the one `wrapTool` / `addTool` change.
  */
 export function pathFor(w: DaemonWorld, o: { agents?: string[]; missing?: string[] } = {}): string {
   const bin = join(w.dir, `path-${++pathSeq}`);
   mkdirSync(bin);
   const missing = new Set(o.missing ?? []);
-  const from = [join(w.fakes, 'bin'), ...(o.agents ?? ['claude']).map((a) => join(w.fakes, `agents-${a}`)), '/usr/bin', '/bin', '/usr/local/bin'];
+  linkAll(bin, [join(w.fakes, 'bin'), ...(o.agents ?? ['claude']).map((a) => join(w.fakes, `agents-${a}`))], missing);
+  return `${bin}:${systemPath(missing)}`;
+}
+
+function linkAll(bin: string, from: string[], missing: Set<string>): void {
   for (const d of from) {
     if (!existsSync(d)) continue;
     for (const name of readdirSync(d)) {
@@ -81,8 +96,48 @@ export function pathFor(w: DaemonWorld, o: { agents?: string[]; missing?: string
       }
     }
   }
-  return bin;
 }
+
+/** The system's tools minus `missing`, built once per run (in this run's temp folder) and shared. */
+function systemPath(missing: Set<string>): string {
+  const key = createHash('sha256').update([...missing].sort().join('\0')).digest('hex').slice(0, 12);
+  const dir = join(tmpdir(), `cavil-client-syspath-${key}`);
+  if (existsSync(dir)) return dir;
+  // built aside and renamed into place, so a case in another worker never sees a half-built folder
+  const part = mkdtempSync(`${dir}.part-`);
+  linkAll(part, SYSTEM_DIRS, missing);
+  try {
+    renameSync(part, dir);
+  } catch {
+    rmSync(part, { recursive: true, force: true });
+    if (!existsSync(dir)) throw new Error(`could not build ${dir}`);
+  }
+  return dir;
+}
+
+/** The folder of a `pathFor` PATH where a case's own changes go (it comes first). */
+const ownBin = (path: string) => path.split(':')[0];
+
+/** A tool as a `pathFor` PATH finds it. */
+function findTool(path: string, name: string): string | null {
+  for (const d of path.split(':')) if (existsSync(join(d, name))) return join(d, name);
+  return null;
+}
+
+const worlds: string[] = [];
+/**
+ * Remove every machine made since the last call (GitHub#469): a machine is ~2300 files, so each test
+ * file calls this when a case (or, for one built in beforeAll, the file) is done with it.
+ */
+export function dropWorlds(): void {
+  for (const d of worlds.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/**
+ * TMPDIR as this process has it, for a child started with an environment of its own: without it
+ * the child's temp files land in the system temp dir instead of this run's folder (GitHub#469).
+ */
+export const keepTmp = (): Record<string, string> => (process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {});
 
 /** The back end's environment for this machine (test mode switches, GitHub#314). */
 export function daemonEnv(w: DaemonWorld, o: { os: Os; path: string; extra?: Record<string, string>; opened?: string }): Record<string, string> {
@@ -108,7 +163,7 @@ export function connect(w: DaemonWorld, key: string, os: Os, path: string, env: 
   git(host, 'init', '-q', '-b', 'main');
   git(host, 'commit', '-q', '--allow-empty', '-m', 'init');
   const r = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], {
-    env: { HOME: w.home, PATH: path, FAKE_UNAME: os, FAKE_SD: w.sd, FAKE_LD: w.ld, ...env },
+    env: { ...keepTmp(), HOME: w.home, PATH: path, FAKE_UNAME: os, FAKE_SD: w.sd, FAKE_LD: w.ld, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (r.status !== 0) throw new Error(`setup.sh failed (${r.status}):\n${r.stdout}\n${r.stderr}`);
@@ -133,23 +188,25 @@ export function appendLine(file: string, after: string, line: string): void {
   writeFileSync(file, t.replace(after, `${after}\n${line}`));
 }
 
-/** Put a wrapper in front of one tool of a `pathFor` folder; `$REAL` in the script is the real tool. */
-export function wrapTool(pathDir: string, name: string, script: string): void {
-  const link = join(pathDir, name);
-  const real = realpathSync(link);
-  rmSync(link);
+/** Put a wrapper in front of one tool of a `pathFor` PATH (in its own folder); `$REAL` in the script is the real tool. */
+export function wrapTool(path: string, name: string, script: string): void {
+  const found = findTool(path, name);
+  if (!found) throw new Error(`no ${name} on ${path}`);
+  const real = realpathSync(found);
+  const link = join(ownBin(path), name);
+  rmSync(link, { force: true });
   writeFileSync(link, `#!/bin/bash\nREAL=${JSON.stringify(real)}\n${script}\n`);
   chmodSync(link, 0o755);
 }
 
-/** Give a `pathFor` folder a tool back (as the person installing it would). */
-export function addTool(pathDir: string, name: string, from: string): void {
-  symlinkSync(from, join(pathDir, name));
+/** Give a `pathFor` PATH a tool back (as the person installing it would). */
+export function addTool(path: string, name: string, from: string): void {
+  symlinkSync(from, join(ownBin(path), name));
 }
 
 /** The machine's real copy of a tool. */
 export function systemTool(name: string): string {
-  for (const d of ['/usr/bin', '/bin', '/usr/local/bin']) if (existsSync(join(d, name))) return join(d, name);
+  for (const d of SYSTEM_DIRS) if (existsSync(join(d, name))) return join(d, name);
   throw new Error(`no ${name} on this machine`);
 }
 

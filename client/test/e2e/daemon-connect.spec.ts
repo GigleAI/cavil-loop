@@ -15,7 +15,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { daemonEnv, daemonWorld, githubRewrite, installByHand, localCopy, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { daemonEnv, daemonWorld, dropWorlds, githubRewrite, installByHand, localCopy, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -35,6 +35,7 @@ test.beforeEach(async () => {
 test.afterEach(async () => {
   await Promise.all(running.splice(0).map((a) => a.close()));
   await env.fake.close();
+  dropWorlds();
 });
 test.afterAll(async () => {
   await closeEngine();
