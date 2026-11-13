@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices, ShortcutKeyResult, ShortcutKeySpec, TallyDef } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
@@ -58,6 +58,12 @@ export interface BlockedStart {
 }
 
 export type BlockedStartResult = { ok: true; id: string } | { ok: false; error: string; view?: BlockedView };
+
+/** GitHub#467: `overlay` = the page's top row is the window's title bar (macOS); `fullscreen` = its window buttons are hidden */
+export interface WindowFrame {
+  overlay: boolean;
+  fullscreen: boolean;
+}
 
 export interface CavilApi {
   get(): Promise<Snapshot>;
@@ -123,6 +129,8 @@ export interface CavilApi {
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
+  /** GitHub#468: the view-bar numbers; null = back to the default table */
+  setTallies(tallies: TallyDef[] | null): Promise<void>;
   /** GitHub#434: the other flow labels of "等前置…" (the waiting label is set with setHandBack) */
   setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
   /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */
@@ -144,6 +152,10 @@ export interface CavilApi {
   setLaneFold(lane: string, folded: boolean): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
+  /** GitHub#487: change one shortcut's key, or (`spec` null) put it back to its defaults; refused when the table would have a conflict */
+  setShortcutKey(id: string, spec: ShortcutKeySpec | null): Promise<ShortcutKeyResult>;
+  /** GitHub#487: every shortcut back to its default keys */
+  resetShortcutKeys(): Promise<void>;
   /** whether switching to the window takes back every delivered notification (GitHub#369) */
   setClearAllOnActivate(on: boolean): Promise<void>;
   /** which pending items remind: every one, or only the signed-in account's (GitHub#373) */
@@ -168,6 +180,18 @@ export interface CavilApi {
   checkTab(key: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
   closeWindow(): Promise<void>;
+  /**
+   * Resolves once every setting changed so far has been written by the back end (the writes go out in
+   * order behind the cache's other writes). The UI tests wait on it before restarting the app, so a
+   * restart reads what was saved rather than racing a write still queued behind a sync round.
+   */
+  settled(): Promise<void>;
+  /** GitHub#467: how the window's top row sits (macOS: the title bar; elsewhere, and when it cannot be read: the system's own) */
+  windowFrame(): Promise<WindowFrame>;
+  /** GitHub#467: an empty part of the top row pressed (macOS): move the window */
+  startDrag(): Promise<void>;
+  /** GitHub#467: an empty part of the top row double-clicked (macOS): zoom the window, or put it back */
+  toggleZoom(): Promise<void>;
   /**
    * The local cavil-loop daemon (GitHub#314). Fixed requests only: the back end reads the daemon's
    * status script again before acting and decides every path, unit and command itself.

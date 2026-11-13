@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: e2e
+# reads: repo
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
 # 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时只有一条实等默认的 10 秒，
@@ -1472,10 +1473,10 @@ D=$(mutate done-no-hook scripts/_lib.sh \
     '    :') && neg "结果通知 · 不调 webhook" done_suite "$D"
 D=$(mutate done-hook-retry scripts/_lib.sh \
     '    requester_bot_webhook_notify "$origin" issue
-    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #$origin：$REQUESTER_BOT_WEBHOOK_RESULT"
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #${origin}：$REQUESTER_BOT_WEBHOOK_RESULT"
     return 0' \
     '    requester_bot_webhook_notify "$origin" issue
-    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #$origin：$REQUESTER_BOT_WEBHOOK_RESULT"
+    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #${origin}：$REQUESTER_BOT_WEBHOOK_RESULT"
     case "$REQUESTER_BOT_WEBHOOK_RESULT" in *失败*) return 1 ;; esac
     return 0') && neg "结果通知 · webhook 失败当成要重试" done_retry_suite "$D"
 D=$(mutate done-closed-after-merged scripts/_lib.sh \

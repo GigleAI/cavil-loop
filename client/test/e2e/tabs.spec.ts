@@ -95,6 +95,24 @@ const itemReads = (n: number) => env.fake.log.filter((l) => l.operation === 'Cav
 const readOpened = () => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '');
 /** one sync round, the way the shell's beat starts it */
 const beat = (app: RunningApp) => app.desktop.push({ kind: 'tick' });
+/**
+ * PR #484 review round 4 / 6: a beat that arrives while a round is still running is swallowed by design (GitHub#324:
+ * the next beat starts the next round, 60 s later in the app). Right after sign-in the first rounds can still be running
+ * on a busy machine, so a test that sends one beat after a change first waits until no round runs — then that beat is
+ * the one that starts a round, and the round reads the change.
+ */
+async function beatWhenIdle(app: RunningApp, page: Page, o: { repoRead?: boolean } = {}) {
+  await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 30_000 });
+  const before = env.fake.log.length;
+  beat(app);
+  // and that beat really started a round: the repository's item list was asked for again (PR #484 review: show it, not
+  // only the state it should lead to). `repoRead: false`: the repository waits after a failed read, so a round does not
+  // ask for it — the caller shows the round by what that round does read (an item checked by itself)
+  if (o.repoRead === false) return;
+  await expect
+    .poll(() => env.fake.log.slice(before).some((l) => /^\/api\/repos\/[^/]+\/[^/]+\/issues(\?|$)/.test(l.path)), { timeout: 15_000 })
+    .toBe(true);
+}
 
 test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the right-click menu a tab; the tab bar shows only once a tab is open; ⌘1 … ⌘9 pick a tab; tabs close by ×, the key and the shell', async () => {
   const app = await launchApp(env);
@@ -171,7 +189,7 @@ test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the ri
   // the running icon (GitHub#449): a bright stretch of edge goes round a square — really moving, one lap in 2 s;
   // the icon itself does not spin (GitHub#442: a spinner read as "still loading")
   change(A, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   const icon = tab(page, A).locator('.tab-icon.running');
   await expect(icon).toHaveAttribute('data-icon', 'frame-run');
@@ -491,17 +509,102 @@ test('GitHub#442: ⌘R in a detail tab reads that item again — from the detail
   await app.close();
 });
 
+test('GitHub#492: on a Mac ⌃⌘1/2/3 switch the layout — in the window; in the discussion they are no tab key, ⌘N / ⌃N / ⌘R still act there', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  // the window as on a Mac: its rule is the macOS one (the discussion's script asks no platform)
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
+  await page.reload();
+  await signIn(page);
+  await row(page, B).click({ button: 'middle' });
+  await row(page, A).click({ modifiers: ['Meta'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  const frameEl = page.getByTestId('timeline-frame');
+  await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const HOME_KEY = 'home';
+  const layoutNow = () => page.locator('[data-testid="layout"] button.on').getAttribute('data-value');
+  const frontNow = async () => ((await home(page).getAttribute('data-front')) === 'yes' ? HOME_KEY : (await page.locator('[data-testid="tab"][data-front="yes"]').getAttribute('data-key'))!);
+  const send = async (where: 'window' | 'discussion', ev: Record<string, unknown>) => {
+    await tab(page, A).click();
+    await expect(frameEl).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    const init = { bubbles: true, cancelable: true, ...ev };
+    if (where === 'window') await page.evaluate((e) => window.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    else await frame.locator('body').evaluate((b, e) => b.ownerDocument.dispatchEvent(new KeyboardEvent('keydown', e)), init);
+    await page.waitForTimeout(300);
+    return frontNow();
+  };
+  // the button says the new key
+  await home(page).click();
+  await expect(page.locator('[data-testid="layout"] button[data-value="graph"]')).toHaveAttribute('title', '依赖图（⌃⌘3）');
+  await expect(page.locator('[data-testid="layout"] button[data-value="table"]')).toHaveAttribute('title', '表格（⌃⌘2）');
+
+  // the window: ⌃⌘2 / ⌃⌘3 / ⌃⌘1 switch the layout and bring the home tab forward
+  for (const [d, layout] of [['2', 'table'], ['3', 'graph'], ['1', 'board']] as const) {
+    expect(await send('window', { key: d, code: `Digit${d}`, metaKey: true, ctrlKey: true }), `window ⌃⌘${d}`).toBe(HOME_KEY);
+    expect(await layoutNow(), `window ⌃⌘${d}`).toBe(layout);
+  }
+  // the old keys still act, unnamed
+  expect(await send('window', { key: '™', code: 'Digit2', metaKey: true, altKey: true })).toBe(HOME_KEY);
+  expect(await layoutNow()).toBe('table');
+  expect(await send('window', { key: '!', code: 'Digit1', metaKey: true, shiftKey: true })).toBe(HOME_KEY);
+  expect(await layoutNow()).toBe('board');
+
+  // one shape, sent to the window and inside the discussion
+  type Shape = { what: string; ev: Record<string, unknown>; window: string; discussion: string };
+  const shapes: Shape[] = [
+    // before GitHub#492 the discussion reported "⌘ or ⌃" only and the window read it back as ⌘2: tab B came forward
+    { what: '⌃⌘2', ev: { key: '2', code: 'Digit2', metaKey: true, ctrlKey: true }, window: HOME_KEY, discussion: K(A) },
+    { what: '⌃⌘1', ev: { key: '1', code: 'Digit1', metaKey: true, ctrlKey: true }, window: HOME_KEY, discussion: K(A) },
+    { what: '⌘2', ev: { key: '2', code: 'Digit2', metaKey: true }, window: K(B), discussion: K(B) },
+    { what: '⌘1', ev: { key: '1', code: 'Digit1', metaKey: true }, window: HOME_KEY, discussion: HOME_KEY },
+    { what: '⌃2 (a lone ⌃ is the ⌘ key, as before)', ev: { key: '2', code: 'Digit2', ctrlKey: true }, window: K(B), discussion: K(B) },
+    { what: '⌃⌘9 (no ⌃⌘ key of its own: nothing)', ev: { key: '9', code: 'Digit9', metaKey: true, ctrlKey: true }, window: K(A), discussion: K(A) },
+  ];
+  for (const s of shapes) {
+    const inWindow = await send('window', s.ev);
+    const inDiscussion = await send('discussion', s.ev);
+    expect({ what: s.what, inWindow, inDiscussion }).toEqual({ what: s.what, inWindow: s.window, inDiscussion: s.discussion });
+  }
+
+  // ⌘R in the discussion reads the item again; ⌃⌘R is nobody's
+  const settle = async () => {
+    await expect(detail(page).getByTestId('detail-refresh')).toHaveAttribute('data-loading', 'no');
+    await page.waitForTimeout(300);
+  };
+  await tab(page, A).click();
+  await settle();
+  let before = detailReads(A);
+  await send('discussion', { key: 'r', code: 'KeyR', metaKey: true });
+  await expect.poll(() => detailReads(A)).toBeGreaterThan(before);
+  await settle();
+  before = detailReads(A);
+  await send('discussion', { key: 'r', code: 'KeyR', metaKey: true, ctrlKey: true });
+  await page.waitForTimeout(800);
+  expect(detailReads(A)).toBe(before);
+  await app.close();
+});
+
 test('more tabs than fit: the strip scrolls sideways, the home tab stays put, and the tab in front is brought into view', async () => {
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
   for (const n of [A, B, C]) await row(page, n).click({ button: 'middle' });
   await expect(tabs(page)).toHaveCount(3);
-  await page.setViewportSize({ width: 340, height: 700 });
+  // GitHub#467: the narrowest the window gets (src-tauri: MIN_W); the tabs share the one top row with the tools
+  await page.setViewportSize({ width: 720, height: 700 });
   const strip = page.getByTestId('tab-strip');
   expect(await strip.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(true);
-  // the bar itself stays as wide as the window: only the strip inside it scrolls
-  expect(await page.getByTestId('tabs').evaluate((e) => e.scrollWidth <= e.clientWidth && e.getBoundingClientRect().right <= window.innerWidth + 0.5)).toBe(true);
+  // the row itself stays as wide as the window: only the strip inside it scrolls, and every tool is still on screen
+  expect(await page.getByTestId('topbar').evaluate((e) => e.scrollWidth <= e.clientWidth && e.getBoundingClientRect().right <= window.innerWidth + 0.5)).toBe(true);
+  expect(await page.getByTestId('tabs').evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  for (const id of ['search', 'refresh', 'write-entry', 'open-settings']) {
+    const b = (await page.getByTestId(id).boundingBox())!;
+    expect(b.x + b.width <= 720 + 0.5, id).toBe(true);
+  }
+  // nothing out of sight on the left yet: only the right edge has an arrow (GitHub#467)
+  await expect(page.getByTestId('tab-arrow-left')).toHaveCount(0);
+  await expect(page.getByTestId('tab-arrow-right')).toBeVisible();
   const inStrip = async (n: number) => {
     const s = (await strip.boundingBox())!;
     const t = (await tab(page, n).boundingBox())!;
@@ -520,6 +623,19 @@ test('more tabs than fit: the strip scrolls sideways, the home tab stays put, an
   await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
   await expect.poll(() => inStrip(A)).toBe(true);
   await shot(page, '397-08-many-tabs-narrow');
+  // GitHub#467: the right arrow scrolls the strip towards the last tab; then the left one shows and brings it back
+  await expect(page.getByTestId('tab-arrow-right')).toBeVisible();
+  await page.getByTestId('tab-arrow-right').click();
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBeGreaterThan(0);
+  await expect(page.getByTestId('tab-arrow-left')).toBeVisible();
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  await page.getByTestId('tab-arrow-left').click();
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBe(0);
+  await expect(page.getByTestId('tab-arrow-left')).toHaveCount(0);
+  // the mouse wheel moves it sideways too
+  await strip.hover();
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => strip.evaluate((e) => e.scrollLeft)).toBeGreaterThan(0);
   await app.close();
 });
 
@@ -577,7 +693,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   expect(readsA).toBeGreaterThan(0);
 
   change(A, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-unread', 'yes');
   await expect(tab(page, A).getByTestId('tab-dot')).toBeVisible();
@@ -586,7 +702,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   await page.waitForTimeout(400);
   expect(detailReads(A)).toBe(readsA);
   change(A, { labels: ['pending/human'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'waiting', { timeout: 15_000 });
   await shot(page, '397-05-waiting');
   // (a new "waiting for a human" is a notification, and the app reads that item's detail ahead of the click — GitHub#328;
@@ -594,7 +710,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   await page.waitForTimeout(400);
   const readsA2 = detailReads(A);
   change(A, { state: 'closed', title: 'closed while its tab was behind' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, A).getByTestId('tab-title')).toHaveText('closed while its tab was behind');
   await shot(page, '397-06-closed');
@@ -604,7 +720,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   expect(itemReads(A)).toBe(0);
   // the tab in front never shows the dot, whatever changes
   change(B, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, B)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, B)).toHaveAttribute('data-unread', 'no');
 
@@ -628,7 +744,7 @@ test('an item no source lists any more: its tab still follows GitHub (closed, re
   // the repository's list cannot be read any more: the board keeps its copy, which is no news of the item
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
   change(A, { state: 'closed' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-listed', 'no');
   expect(itemReads(A)).toBeGreaterThan(0);
@@ -686,7 +802,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   // the repository's list cannot be read: the PR is checked by itself from now on
   env.fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, PR)).toHaveAttribute('data-listed', 'no', { timeout: 15_000 });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(0);
   await page.waitForTimeout(500);
@@ -694,14 +810,14 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   const d0 = detailReads(PR);
   const i0 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i0);
   await expect.poll(() => detailReads(PR), { timeout: 15_000 }).toBeGreaterThan(d0);
   // the checks finish — the PR's update time stays the same — and the next check shows it, nothing clicked
   pull.checks = 'SUCCESS';
   const i1 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i1);
   await expect(d.getByTestId('pr-status')).toContainText('检查：全部通过', { timeout: 15_000 });
   // finished: checks no longer read the detail while nothing changes
@@ -709,7 +825,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   const d2 = detailReads(PR);
   const i2 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i2);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);
@@ -718,7 +834,7 @@ test('an unlisted PR whose checks are still running: each own check is a round f
   pull.checks = 'PENDING';
   const i3 = itemReads(PR);
   // a sync round (GitHub#442: ⌘R in a detail tab reads only that item now)
-  beat(app);
+  await beatWhenIdle(app, page, { repoRead: false });
   await expect.poll(() => itemReads(PR), { timeout: 15_000 }).toBeGreaterThan(i3);
   await page.waitForTimeout(800);
   expect(detailReads(PR)).toBe(d2);
@@ -733,7 +849,7 @@ test('settings: the "running" label (GitHub#404) is the one a tab\'s status read
   change(B, { labels: ['doing/agent'] });
   await row(page, A).click({ button: 'middle' });
   await row(page, B).click({ button: 'middle' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, B)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-status', 'open');
 
@@ -764,7 +880,7 @@ test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, fo
   change(C, { labels: ['pending/blocked'] });
   // in the background (GitHub#442: ⌘ / Ctrl + click brings the tab forward; the middle button keeps home in front)
   for (const n of [A, B, C]) await row(page, n).click({ button: 'middle' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, C)).toHaveAttribute('data-status', 'blocked', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running');
   await expect(tab(page, B)).toHaveAttribute('data-status', 'waiting');
@@ -776,13 +892,13 @@ test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, fo
 
   // the prerequisite is done: the daemon swaps the waiting label for the dispatch label, the next round shows it
   change(C, { labels: ['pending/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, C)).toHaveAttribute('data-status', 'open', { timeout: 15_000 });
   await expect(tab(page, C).locator('svg.tab-icon.blocked')).toHaveCount(0);
 
   // another waiting label in Settings: the tabs follow it; emptied, there is no pause at all
   change(C, { labels: ['on-hold'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await page.getByTestId('open-settings').click();
   const field = page.getByTestId('hand-back-blocked');
   await expect(field).toHaveValue('pending/blocked');
@@ -846,8 +962,9 @@ test('the tabs are kept on this machine: a restart brings them back behind the h
   await row(page, A).click({ modifiers: ['Control'] });
   await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
   expect(await order(page)).toEqual([B, A]);
-  // (the list is written to the back end right after the click; the test's "quit" kills the back end outright)
-  await page.waitForTimeout(500);
+  // (the list is written to the back end right after the click; the test's "quit" kills the back end outright, so
+  // wait until every write has gone out — PR #484 review round 4: a fixed 500 ms lost one on a busy machine)
+  await page.evaluate(() => (window as any).cavil.settled());
   await app.close();
 
   app = await launchApp(env);
@@ -894,9 +1011,9 @@ async function closeIssueHere(page: Page, comment = '') {
 /** the close requests (PATCH) of one item that reached the fake, with what it answered */
 const closes = (kind: 'issues' | 'pulls', n: number) => env.fake.log.filter((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`)).map((l) => l.status);
 const holdClose = (kind: 'issues' | 'pulls', n: number) => env.fake.holdWhen((l) => l.method === 'PATCH' && l.path.endsWith(`/repos/${REPO}/${kind}/${n}`));
-const strip = (page: Page) => page.getByTestId('op-strip');
+const strip = (page: Page) => page.getByTestId('notice-area');
 /** an item's operation notice in the strip above every page / above the board */
-const inStrip = (page: Page, n: number) => page.locator(`[data-testid="op-strip"] [data-testid="op-notice"][data-key="${K(n)}"]`);
+const inStrip = (page: Page, n: number) => page.locator(`[data-testid="notice-area"] [data-testid="op-notice"][data-key="${K(n)}"]`);
 const aboveBoard = (page: Page, n: number) => page.locator(`[data-testid="board-bars"] [data-testid="op-notice"][data-key="${K(n)}"]`);
 const held = (page: Page) => detail(page).getByTestId('auto-close-held');
 
@@ -947,15 +1064,18 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   await expect(inStrip(page, C)).toBeVisible();
   expect(closes('issues', C)).toEqual([200]);
 
-  // ---- 3. GitHub refuses the close: the tab stays, nothing in the strip ----
+  // ---- 3. GitHub refuses the close: the tab stays; GitHub#488: the refusal is said in the notice area (it used to be in the tab) ----
   store.w.readOnlyRepos.add('gigleai/cavil-loop');
   await closeIssueHere(page);
   await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([403]);
   await page.waitForTimeout(500);
   await expect(tab(page, B)).toHaveCount(1);
   await expect(detail(page)).toHaveAttribute('data-key', K(B));
-  await expect(inStrip(page, B)).toHaveCount(0);
+  await expect(inStrip(page, B)).toHaveAttribute('data-kind', 'error');
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
   store.w.readOnlyRepos.delete('gigleai/cavil-loop');
+  await inStrip(page, B).getByTestId('op-dismiss').click();
+  await expect(inStrip(page, B)).toHaveCount(0);
 
   // ---- 4. text not sent yet in the tab: closed on GitHub, the tab stays and says why (× puts the line away) ----
   await detail(page).getByTestId('reply-input').fill('half a reply');
@@ -965,7 +1085,9 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   expect(closes('issues', B)).toEqual([403, 200]);
   await expect(tab(page, B)).toHaveCount(1);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('half a reply');
-  await expect(inStrip(page, B)).toHaveCount(0);
+  // GitHub#488: the close's result is in the notice area like every other (it used to be in the tab)
+  await expect(inStrip(page, B).getByTestId('op-notice-text')).toHaveText(`issue #${B} 已关闭（已完成）`);
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
   await shot(page, '447-02-tab-kept-unsent-text');
   await held(page).getByTestId('auto-close-held-dismiss').click();
   await expect(held(page)).toHaveCount(0);
@@ -996,7 +1118,7 @@ test('GitHub#447: a close in a tab puts the tab away once GitHub took it — the
   // ---- 6. closed elsewhere (on GitHub, by the daemon): the tab is not put away, only its icon follows ----
   await row(page, D).click({ modifiers: ['Control'] });
   change(D, { state: 'closed' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, D)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, D)).toHaveCount(1);
   await app.close();
@@ -1020,7 +1142,7 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   expect(closes('issues', A)).toEqual([200]);
   await shot(page, '447-04-float-closed');
 
-  // ---- 2. the panel moved to another item while waiting: the other item stays; the result is the board's, as before ----
+  // ---- 2. the panel moved to another item while waiting: the other item stays; the result in the notice area (GitHub#488: one place for all) ----
   await row(page, B).click();
   let release = holdClose('issues', B);
   await closeIssueHere(page);
@@ -1028,10 +1150,10 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await expect(detail(page)).toHaveAttribute('data-key', K(C));
   release();
   await expect.poll(() => closes('issues', B), { timeout: 15_000 }).toEqual([200]);
-  await expect(aboveBoard(page, B)).toBeVisible({ timeout: 15_000 });
+  await expect(inStrip(page, B)).toBeVisible({ timeout: 15_000 });
   await expect(detail(page)).toHaveAttribute('data-key', K(C));
   await expect(detail(page)).toHaveAttribute('data-mode', 'float');
-  await expect(inStrip(page, B)).toHaveCount(0);
+  await expect(aboveBoard(page, B)).toHaveCount(0);
 
   // ---- 3. the item moved into a tab while waiting: its tab stays ----
   release = holdClose('issues', C);
@@ -1075,10 +1197,11 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await page.waitForTimeout(6_500);
   await expect(inStrip(page, F)).toBeVisible();
   store().w.failComment = false;
-  // its 放进回复框 opens the item again: the notice is the detail's now, not twice
+  // its 放进回复框 opens the item again; GitHub#488: the notice stays in the notice area, never also in the detail
   await inStrip(page, F).getByTestId('op-to-reply').click();
   await expect(detail(page)).toHaveAttribute('data-key', K(F));
-  await expect(inStrip(page, F)).toHaveCount(0);
+  await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
+  expect(await page.locator(`[data-testid="op-notice"][data-key="${K(F)}"]`).count()).toBeLessThanOrEqual(1);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('做完了');
   await detail(page).getByTestId('reply-input').fill('');
   await detail(page).getByTestId('detail-close').click();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_BLOCKED_LABELS } from '../shared/blocked';
 import { DEFAULT_HAND_BACK, type AppState, type BoardData } from '../shared/types';
-import { sourceLabel } from '../shared/sources';
+import { shownOnBoard, sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
 import { UpdateSection } from './UpdateViews';
@@ -15,11 +15,17 @@ import { ProjectPicker } from './ProjectPicker';
 import { FailureNote } from './FailureNote';
 import type { SettingsIntent } from './EmptyGuide';
 import { failureOf } from '../shared/readFailure';
+import { TallySettings } from './TallySettings';
+import { ShortcutSettings } from './ShortcutSettings';
 
 const SECTIONS: { id: string; icon: IconName; title: string }[] = [
   { id: 'set-sources', icon: 'project', title: '数据来源' },
   { id: 'set-hand-back', icon: 'tag', title: '交给 agent' },
+  // GitHub#468: the view-bar numbers
+  { id: 'set-tallies', icon: 'sliders', title: '顶栏计数' },
   { id: 'set-pending', icon: 'bell', title: '提醒' },
+  // GitHub#487
+  { id: 'set-keys', icon: 'keyboard', title: '快捷键' },
   // only in a build that updates itself (GitHub#184); the section is not there otherwise
   { id: 'set-update', icon: 'refresh', title: '更新' },
   // the local cavil-loop daemon (GitHub#314)
@@ -58,6 +64,12 @@ export function SettingsView({
   const inputBox = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!intent) return;
+    // GitHub#487: from the shortcut list's "在设置里改快捷键"
+    if (intent.what === 'keys') {
+      document.getElementById('set-keys')?.scrollIntoView({ block: 'start' });
+      onIntentTaken?.();
+      return;
+    }
     if (intent.what === 'pick') setPicking(true);
     else inputBox.current?.focus();
     document.getElementById('set-sources')?.scrollIntoView({ block: 'start' });
@@ -116,7 +128,7 @@ export function SettingsView({
       <div className="settings-main">
       <section id="set-sources">
         <h3>数据来源</h3>
-        <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目，加上最近 14 天内有更新的。</p>
+        <p className="muted small">GitHub Project 贴网址；仓库写「组织/仓库名」。仓库读全部开着的条目、最近 14 天内有更新的，以及已关闭但还带着「等人处理的标签」的。</p>
         <div className="row">
           <input
             ref={inputBox}
@@ -143,8 +155,16 @@ export function SettingsView({
         <ul className="sources" data-testid="source-list">
           {state.sources.map((s) => {
             const st = state.sync.sources.find((x) => x.sourceKey === s.key);
+            // GitHub#467: the board leaves a switched-off source out (it stays here, and keeps being read)
+            const shown = state.view.selected === null || state.view.selected.includes(s.key);
             return (
-              <li key={s.key} data-testid="source-row" data-key={s.key} className={st && !st.ok ? 'failed' : undefined}>
+              <li
+                key={s.key}
+                data-testid="source-row"
+                data-key={s.key}
+                data-shown={shown ? 'yes' : 'no'}
+                className={[st && !st.ok ? 'failed' : '', shown ? '' : 'off'].filter(Boolean).join(' ') || undefined}
+              >
                 <span className="src-icon">
                   <Icon name={s.kind === 'project' ? 'project' : 'repo'} />
                 </span>
@@ -152,6 +172,7 @@ export function SettingsView({
                   <b>{sourceLabel(s, titles.get(s.key))}</b>
                   <span className="kind">
                     {s.kind === 'project' ? 'GitHub Project' : '仓库'} · {data.items.filter((it) => it.sources.includes(s.key)).length} 个条目
+                    {!shown && <span data-testid="source-hidden-note"> · 看板上暂不显示</span>}
                   </span>
                 </span>
                 {st && !st.ok && (
@@ -159,6 +180,16 @@ export function SettingsView({
                     读取失败
                   </span>
                 )}
+                <label className="toggle small" title="关掉后看板上暂时不显示这个来源的条目；来源不删，照常同步">
+                  <input
+                    type="checkbox"
+                    data-testid="source-shown"
+                    data-key={s.key}
+                    checked={shown}
+                    onChange={(e) => api().setView({ selected: shownOnBoard(state.sources, state.view.selected, s.key, e.target.checked) })}
+                  />
+                  在看板显示
+                </label>
                 {s.kind === 'repo' && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
                 <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   删除
@@ -176,9 +207,9 @@ export function SettingsView({
       </section>
 
       <section id="set-hand-back" data-testid="hand-back-settings">
-        <h3>流程标签（顶栏的三个数、「交给 agent」「托管」、关系图的 loop 前置登记都用这几个）</h3>
+        <h3>流程标签（「交给 agent」「托管」、提醒、关系图的 loop 前置登记，以及下面「顶栏计数」里跟随流程标签的行都用这几个）</h3>
         <p className="muted small">
-          顶栏右侧的「运行中 / 等 agent / 等人处理」三个数，分别数开着的条目里带「运行中的标签」「交给 agent 的标签」「等人处理的标签」的。运行中的标签留空，就不显示「运行中」这个数（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
+          顶栏右侧的数在下面「顶栏计数」里设置；默认的「运行中 / 等 agent / 等人处理」三个数跟随这里的「运行中的标签」「交给 agent 的标签」「等人处理的标签」：前两个数开着的条目里带这个标签的，「等人处理」开着的和已关闭的都数。运行中的标签留空，跟随它的数就不显示（标签页上的「正在运行」图标也认这一格，留空就不显示这个状态）；另外两格留空会恢复成默认值。
           <br />
           详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。
           <br />
@@ -186,7 +217,7 @@ export function SettingsView({
         </p>
         <div className="row label-grid">
           <label>
-            运行中的标签（留空 = 不显示「运行中」这个数）
+            运行中的标签（留空 = 跟随它的数不显示）
             <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
           </label>
           <label>
@@ -219,16 +250,18 @@ export function SettingsView({
         </label>
       </section>
 
+      <TallySettings state={state} />
+
       <section id="set-pending" data-testid="pending-settings">
         <h3>提醒</h3>
         <p className="muted small" data-testid="pending-rule">
           {state.notifyScope === 'mine' ? (
             <>
-              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的不提醒。App 启动或新加来源时已有的算历史，不通知、不计数。
+              issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）、并且和我有关时发一次系统通知；已挂着标签的条目后来变得和我有关（指派给我、请我 review），也算新来一条。已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已有的算历史，不通知、不计数。
             </>
           ) : (
             <>
-              开着的 issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的不提醒。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
+              issue / PR 新挂上「等人处理的标签」（上面那一格，现在是 <b data-testid="pending-label">{state.handBack.human}</b>）时发一次系统通知；已关闭、已合并的也提醒（托管的条目合并后就关闭了，留着标签等人看），带着标签关闭或重新打开不再提醒一次。App 启动或新加来源时已经带着标签的条目算历史，不通知、不计数。
             </>
           )}
         </p>
@@ -292,6 +325,8 @@ export function SettingsView({
           <p className="muted small">关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。</p>
         )}
       </section>
+
+      <ShortcutSettings state={state} />
 
       <UpdateSection update={state.update} />
 

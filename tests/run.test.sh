@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: meta
+# reads: repo
 # 统一测试入口 tests/run.sh 的守卫（GitHub#117：PR 上自动跑测试）。
 #
 # 跑法：bash tests/run.test.sh            默认回归
@@ -185,19 +186,23 @@ mkfx "$FX" pass:newcomer
 chk "新加的测试文件不用登记就进了某一路" "$(part_union "$RUNSH" 3 | tr ' ' '\n' | grep -c '^newcomer=1$')" "1"
 chk "分 1 路时就是全部" "$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --ci --list --shard 1/1 | wc -l)" "8"
 
-echo "【2】真实 tests/：4 路并集正好是全部调度单位减去排除清单"
+echo "【2】真实 tests/：按 tests.yml 的路数分，并集正好是全部调度单位减去排除清单"
+# 路数从 .github/workflows/tests.yml 的 matrix 读（GitHub#495 起是 8 路），不在这里另写一个数
+NS=$(sed -n 's/^ *shard: *\[\([0-9, ]*\)\].*/\1/p' "$REPO_DIR/.github/workflows/tests.yml" | tr ',' '\n' | grep -c '[0-9]')
+chk "从 tests.yml 读到了路数" "$([ "$NS" -ge 2 ] && echo yes || echo "[$NS]")" yes
+
 # 调度单位（GitHub#211）：没声明 parts 的文件是一个单位；声明了「# parts: N」的是 名字:1/N … 名字:N/N
 expected=$(cd "$TEST_DIR" && for f in *.test.sh; do n=${f%.test.sh}; grep -qE "^$n[[:space:]]" ci-exclude.txt && continue
     p=$(sed -n 's/^# parts: *\([0-9][0-9]*\) *$/\1/p' "$f" | head -1)
     if [ -n "$p" ] && [ "$p" -gt 1 ]; then for k in $(seq 1 "$p"); do echo "$n:$k/$p"; done; else echo "$n"; fi
 done | LC_ALL=C sort | paste -sd' ')
-got=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | LC_ALL=C sort | paste -sd' ')
+got=$(for k in $(seq 1 "$NS"); do bash "$RUNSH" --ci --list --shard "$k/$NS"; done | awk '{print $2}' | LC_ALL=C sort | paste -sd' ')
 chk "并集 = 全部 − 排除" "$got" "$expected"
-chk "没有单位出现两次" "$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
+chk "没有单位出现两次" "$(for k in $(seq 1 "$NS"); do bash "$RUNSH" --ci --list --shard "$k/$NS"; done | awk '{print $2}' | sort | uniq -d | wc -l)" "0"
 chk "清单里确有测试（不是两边都空）" "$([ "$(echo "$got" | wc -w)" -gt 40 ] && echo yes || echo no)" "yes"
-chk "最慢的两个文件确实拆了段（autopilot 3 段、requester-bot 2 段）" \
-    "$(echo "$got" | tr ' ' '\n' | grep -cE '^(autopilot:[123]/3|requester-bot:[12]/2)$')" 5
-# 四路各自的参考时间合计（拆段文件的一行参考时间平分到各段，单独写了「名字:K/N」的以它为准——和 run.sh 同一规则）
+chk "最慢的几个文件确实拆了段（autopilot 3、requester-bot 2、stuck-worker 6、autopilot-handover 3、ci-failure-report 3 段）" \
+    "$(echo "$got" | tr ' ' '\n' | grep -cE '^(autopilot:[123]/3|requester-bot:[12]/2|stuck-worker:[1-6]/6|autopilot-handover:[123]/3|ci-failure-report:[123]/3)$')" 17
+# 各路的参考时间合计（拆段文件的一行参考时间平分到各段，单独写了「名字:K/N」的以它为准——和 run.sh 同一规则）
 unit_weight() {   # <单位>
     local u="$1" f="${1%%:*}" p w
     w=$(awk -v n="$u" '$1 == n {print $2; f=1} END {if (!f) print ""}' "$TEST_DIR/ci-weights.txt")
@@ -205,13 +210,13 @@ unit_weight() {   # <单位>
     w=$(awk -v n="$f" '$1 == n {print $2; f=1} END {if (!f) print 5}' "$TEST_DIR/ci-weights.txt")
     if [ "$u" != "$f" ]; then p=${u##*/}; awk -v w="$w" -v p="$p" 'BEGIN {printf "%.3f\n", w / p}'; else echo "$w"; fi
 }
-shard_total() { bash "$RUNSH" --ci --list --shard "$1/4" | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | awk '{s += $1} END {printf "%.3f\n", s + 0}'; }
-totals=$(for k in 1 2 3 4; do shard_total "$k"; done | paste -sd' ')
-max_unit=$(for k in 1 2 3 4; do bash "$RUNSH" --ci --list --shard "$k/4"; done | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | sort -g | tail -1)
+shard_total() { bash "$RUNSH" --ci --list --shard "$1/$NS" | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | awk '{s += $1} END {printf "%.3f\n", s + 0}'; }
+totals=$(for k in $(seq 1 "$NS"); do shard_total "$k"; done | paste -sd' ')
+max_unit=$(for k in $(seq 1 "$NS"); do bash "$RUNSH" --ci --list --shard "$k/$NS"; done | awk '{print $2}' | while read -r u; do unit_weight "$u"; done | sort -g | tail -1)
 # 先放最重的、每个放进当前最轻的那一路：最重一路和最轻一路之差不会超过最重的那个单位
-chk "四路负载均衡：最重一路 − 最轻一路 ≤ 最重的单个调度单位（$totals；最重单位 $max_unit 秒）" \
+chk "各路负载均衡：最重一路 − 最轻一路 ≤ 最重的单个调度单位（${totals}；最重单位 ${max_unit} 秒）" \
     "$(echo "$totals" | tr ' ' '\n' | sort -g | awk -v m="$max_unit" 'NR == 1 {lo = $1} {hi = $1} END {print (hi - lo <= m + 0.001) ? "yes" : "no"}')" yes
-chk "到达性 · 确实读到了各路的参考时间" "$(echo "$totals" | awk '{print ($1 > 0 && $4 > 0) ? "yes" : "no"}')" yes
+chk "到达性 · 确实读到了各路的参考时间" "$(echo "$totals" | awk '{print ($1 > 0 && $NF > 0) ? "yes" : "no"}')" yes
 chk "排除清单里的 preview-socket-activation 不在 --ci 清单" "$(bash "$RUNSH" --ci --list | awk '$2=="preview-socket-activation"' | wc -l)" "0"
 
 echo "【3】全绿：退出 0、真的跑了、排除项没跑但有记录"
@@ -461,6 +466,192 @@ chk "三处汇总的合计行相同：--tally（$s_line）" "$t_line" "$s_line"
 chk "  合计行确有内容" "$([ -n "$s_line" ] && echo yes || echo no)" "yes"
 
 # ══ 负对照：改坏入口脚本的副本，对应场景必须变红 ════════════════════════════════
+echo "【19】只改文档 / 只改测试文件的改动：只跑它够得着的；读不出改动就全跑；汇总复算并核对各路记下的清单（GitHub#495）"
+# 一个真的 git 仓库（带本地「远端」），tests/ 里是假测试，tests/run.sh 是被测的那份。
+# 读文件的方式各不同：提到 README.md / operations.md / docs/deep/、文件头声明 # reads: repo、什么都没提。
+WF="$REPO_DIR/.github/workflows/tests.yml"
+SG="$TMP/sel/g"
+selq() { git -C "$SG" -c user.name=t -c user.email=t@t "$@"; }
+sel_fixture() {   # 主干：全部假测试 + 几份文档 / 脚本 / 模板；推到本地远端
+    rm -rf "$TMP/sel"; mkdir -p "$TMP/sel"
+    git init -q --bare -b main "$TMP/sel/origin.git"
+    git init -q -b main "$SG"
+    FX_KIND=guard mkfx "$SG/tests" pass:g1
+    FX_KIND=meta mkfx "$SG/tests" pass:m1
+    FX_KIND=e2e mkfx "$SG/tests" pass:e_heavy
+    mkfx "$SG/tests" pass:u_readme pass:u_ops pass:u_deep pass:u_plain pass:u_repo
+    echo '# 读 README.md 里的一段' >> "$SG/tests/u_readme.test.sh"
+    echo '# 读 docs/${f}，f 取 operations.md 和 operations.zh.md' >> "$SG/tests/u_ops.test.sh"
+    echo '# 读 docs/deep/ 下的每一份' >> "$SG/tests/u_deep.test.sh"
+    sed -i '2a # reads: repo' "$SG/tests/u_repo.test.sh"
+    echo '# 跑 scripts/x.sh' >> "$SG/tests/e_heavy.test.sh"
+    cp "$RUNSH" "$SG/tests/run.sh"
+    mkdir -p "$SG/docs/deep" "$SG/scripts" "$SG/prompts"
+    echo readme > "$SG/README.md"; echo ops > "$SG/docs/operations.md"; echo ops > "$SG/docs/operations.zh.md"
+    echo deep > "$SG/docs/deep/a.md"; echo 'echo x' > "$SG/scripts/x.sh"; echo tpl > "$SG/prompts/p.md"
+    printf 'ran/\nresults/\n' > "$SG/.gitignore"
+    selq add -A; selq commit -qm main
+    selq remote add origin "$TMP/sel/origin.git"; selq push -q origin main
+    selq checkout -qb pr
+}
+sel_edit() {   # <path>... → 改（不存在就新建）并提交一次
+    local p; for p in "$@"; do mkdir -p "$SG/$(dirname "$p")"; echo "edit $RANDOM" >> "$SG/$p"; done
+    selq add -A; selq commit -qm "edit $*"
+}
+sel_list() {   # [ref] → 这次 --changed-from 选中的单位（排好序、空格分隔）
+    (cd "$SG" && CAVIL_TEST_RUNS_LOG="$TMP/sel/runs.jsonl" bash tests/run.sh --ci --list --changed-from "${1:-origin/main}" 2>/dev/null) \
+        | awk '{print $2}' | LC_ALL=C sort | paste -sd' '
+}
+ALL8="e_heavy g1 m1 u_deep u_ops u_plain u_readme u_repo"
+sel_case() {   # <说明> <期望> <改动…>   每例从主干重新切分支
+    local what="$1" want="$2"; shift 2
+    sel_fixture; sel_edit "$@"; chk "$what" "$(sel_list)" "$want"
+}
+sel_case "只改 README.md → 守卫 / 自测类 + 提到它的 + 声明读全仓库的" "g1 m1 u_readme u_repo" README.md
+sel_case "只改 docs/operations.zh.md → 带上按文件名（operations.md）读它的" "g1 m1 u_ops u_repo" docs/operations.zh.md
+sel_case "只改 docs/deep/a.md → 带上读整个 docs/deep/ 的" "g1 m1 u_deep u_repo" docs/deep/a.md
+sel_case "只改一个测试文件 → 加上它自己" "g1 m1 u_plain u_repo" tests/u_plain.test.sh
+sel_case "README + 一个脚本 → 全跑" "$ALL8" README.md scripts/x.sh
+sel_case "只改派工模板（prompts/ 下的 .md）→ 全跑" "$ALL8" prompts/p.md
+sel_case "加了一个 tests/lib/ 下的文件 → 全跑" "$ALL8" tests/lib/new.sh
+sel_case "改 tests/run.sh 本身 → 全跑" "$ALL8" tests/run.sh
+sel_fixture; sel_edit scripts/x.sh; sel_edit README.md
+chk "先一个提交改脚本、最后一个提交只改 README → 仍全跑（看整个分支，不是最后一个提交）" "$(sel_list)" "$ALL8"
+sel_fixture; selq mv docs/deep/a.md docs/b.md; selq commit -qm mv
+chk "改名：旧名字也算（读 docs/deep/ 的被带上）" "$(sel_list)" "g1 m1 u_deep u_repo"
+sel_fixture; selq rm -q tests/u_plain.test.sh; selq commit -qm rm
+chk "删掉一个测试文件 → 只剩守卫 / 自测类和声明读全仓库的" "$(sel_list)" "g1 m1 u_repo"
+sel_fixture
+chk "分支和主干一样（没有改动）→ 全跑" "$(sel_list)" "$ALL8"
+sel_fixture; sel_edit README.md
+chk "比较的分支不存在（共同祖先取不到）→ 全跑" "$(sel_list origin/nope)" "$ALL8"
+chk "取不到时说明原因" "$(cd "$SG" && bash tests/run.sh --ci --list --changed-from origin/nope 2>&1 >/dev/null | grep -c 'full — no merge-base')" 1
+chk "不给 --changed-from → 照旧全跑" "$( (cd "$SG" && CAVIL_TEST_RUNS_LOG="$TMP/sel/runs.jsonl" bash tests/run.sh --ci --list) | awk '{print $2}' | LC_ALL=C sort | paste -sd' ')" "$ALL8"
+cp -r "$SG" "$TMP/sel/nogit"; rm -rf "$TMP/sel/nogit/.git"
+chk "不在 git 仓库里 → 全跑" "$( (cd "$TMP/sel/nogit" && bash tests/run.sh --ci --list --changed-from origin/main 2>/dev/null) | wc -l | tr -d ' ')" 8
+chk "--changed-from 和点名混用 → 报错" "$( (cd "$SG" && bash tests/run.sh --changed-from origin/main g1 >/dev/null 2>&1); echo $?)" 2
+sed -i 's/^# reads: repo$/# reads: everything/' "$SG/tests/u_repo.test.sh"
+chk "# reads: 只认 repo，写错直接报错" "$( (cd "$SG" && bash tests/run.sh --list >/dev/null 2>&1); echo $?)" 2
+
+# 照 tests.yml 的原文跑：每一路那行命令、路数、汇总那行命令都从 yml 里读出来，不另抄一份
+yml_n=$(sed -n 's/^ *shard: *\[\([0-9, ]*\)\].*/\1/p' "$WF" | tr ',' '\n' | grep -c '[0-9]')
+yml_shard=$(grep -E '^ *run: bash tests/run.sh --ci --shard ' "$WF" | sed 's/^ *run: //')
+yml_verify=$(grep -E 'bash tests/run.sh --ci --verify results' "$WF" | sed 's/^ *//; s/ *|| rc=\$?$//')
+chk "从 tests.yml 读到了路数、每一路的命令和汇总命令" \
+    "$([ "$yml_n" -ge 2 ] && [ -n "$yml_shard" ] && [ -n "$yml_verify" ] && echo yes || echo no)" yes
+chk "每一路的命令把比较基点交给 run.sh" "$(grep -c -- '--changed-from "$CHANGED_FROM"' <<< "$yml_shard")" 1
+yml_run() {   # 在 $SG 里按 yml 跑满 yml_n 路，结果收进 $TMP/sel/results/shard-K；$1 = CHANGED_FROM 的值
+    rm -rf "$TMP/sel/rt" "$TMP/sel/results" "$SG/ran"; mkdir -p "$TMP/sel/results" "$SG/ran"
+    local k
+    for k in $(seq 1 "$yml_n"); do
+        (cd "$SG" && CHANGED_FROM="$1" RUNNER_TEMP="$TMP/sel/rt/$k" CAVIL_TEST_RUNS_LOG="$TMP/sel/runs.jsonl" \
+            bash -c "${yml_shard//'${{ matrix.shard }}'/$k}") > "$TMP/sel/shard-$k.out" 2>&1 || echo "shard $k rc=$?" >> "$TMP/sel/shard-fail"
+        cp -r "$TMP/sel/rt/$k/results" "$TMP/sel/results/shard-$k"
+    done
+}
+yml_verify_rc() {   # $1 = CHANGED_FROM 的值 → 汇总的退出码；输出在 $OUTF
+    local rc=0; (cd "$SG" && rm -rf results && cp -r "$TMP/sel/results" results && CHANGED_FROM="$1" bash -c "$yml_verify") > "$OUTF" 2>&1 || rc=$?
+    echo "$rc"
+}
+sel_fixture; sel_edit README.md; rm -f "$TMP/sel/shard-fail"
+yml_run origin/main
+chk "README-only：每一路都正常退出" "$(cat "$TMP/sel/shard-fail" 2>/dev/null)" ""
+chk "README-only：真跑了的正是选中的那几个，别的一个没启动" "$(ls "$SG/ran" | LC_ALL=C sort | paste -sd' ')" "g1 m1 u_readme u_repo"
+chk "README-only：每一路记下的清单逐字相同" "$(cat "$TMP"/sel/results/shard-*/selection.txt | sort | uniq -c | awk '{print $1}' | sort -u | paste -sd' ')" "$yml_n"
+chk "README-only：记下的是「部分」" "$(grep -c '^mode partial$' "$TMP/sel/results/shard-1/selection.txt")" 1
+chk "README-only：照 yml 跑汇总 → 绿" "$(yml_verify_rc origin/main)" 0
+chk "README-only：汇总写明只跑了够得着的" "$(grep -c 'only what this change can reach' "$OUTF")" 1
+chk "README-only：汇总数到 4 个通过" "$(grep -c 'All 4 tests passed' "$OUTF")" 1
+chk "汇总没拿到比较基点 → 红（少跑了没法核对）" "$(yml_verify_rc '')" 1
+chk "  并说明原因" "$(grep -c 'was not given it' "$OUTF")" "$yml_n"
+f=$(ls "$TMP"/sel/results/shard-*/selection.txt | head -1); cp "$f" "$TMP/sel/sel.bak"; sed -i '/^unit u_readme$/d' "$f"
+chk "有一路记下的清单少了一项 → 红" "$(yml_verify_rc origin/main)" 1
+cp "$TMP/sel/sel.bak" "$f"; rm "$f"
+chk "有一路没留清单 → 红" "$(yml_verify_rc origin/main)" 1
+chk "  并说明是哪一路" "$(grep -c 'no selection.txt' "$OUTF")" 1
+cp "$TMP/sel/sel.bak" "$f"
+chk "清单恢复后 → 又是绿（上面的红只因为清单）" "$(yml_verify_rc origin/main)" 0
+sel_edit scripts/x.sh; rm -f "$TMP/sel/shard-fail"; yml_run origin/main
+chk "再改一个脚本：每一路都正常退出" "$(cat "$TMP/sel/shard-fail" 2>/dev/null)" ""
+chk "再改一个脚本：全部都跑了" "$(ls "$SG/ran" | LC_ALL=C sort | paste -sd' ')" "$ALL8"
+vrc=$(yml_verify_rc origin/main); chk "再改一个脚本：汇总 → 绿，且写明全跑的原因" "$vrc$(grep -c 'full run — scripts/x.sh is not' "$OUTF")" 01
+rm -f "$TMP/sel/shard-fail"; yml_run ''
+chk "push 到主干（不给基点）：全部都跑了，汇总绿，各路不留清单" \
+    "$(ls "$SG/ran" | wc -l | tr -d ' ') $(yml_verify_rc '') $(ls "$TMP"/sel/results/shard-*/selection.txt 2>/dev/null | wc -l | tr -d ' ')" "8 0 0"
+chk "各路没拿基点、汇总却拿了 → 红" "$(yml_verify_rc origin/main)" 1
+
+# 真实 tests/：本 PR 的整个工作树当主干、分支只改 README.md，按 yml 的路数列出每一路会跑什么，
+# 和下面另写的一份 Python 规则对拍（两份实现，同一份输入）
+RT="$TMP/real"; rm -rf "$RT"; mkdir -p "$RT"
+(cd "$REPO_DIR" && git ls-files -co --exclude-standard -z | tar -c --null -T - 2>/dev/null) | tar -x -C "$RT"
+git -C "$RT" init -q -b main; git -C "$RT" -c user.name=t -c user.email=t@t add -A
+git -C "$RT" -c user.name=t -c user.email=t@t commit -qm snapshot
+git -C "$RT" branch -q base; git -C "$RT" checkout -qb pr
+echo "readme edit" >> "$RT/README.md"; git -C "$RT" -c user.name=t -c user.email=t@t commit -qam readme
+chk "真实工作树快照：分支和基点之间只差 README.md" "$(git -C "$RT" diff --name-only base HEAD)" "README.md"
+real_got=$(for k in $(seq 1 "$yml_n"); do (cd "$RT" && bash tests/run.sh --ci --list --shard "$k/$yml_n" --changed-from base 2>/dev/null); done \
+    | awk '{print $2}' | LC_ALL=C sort)
+real_want=$(python3 - "$RT/tests" README.md <<'PYS'
+import os, re, sys
+tests, changed = sys.argv[1], sys.argv[2:]
+excl = set()
+for line in open(os.path.join(tests, "ci-exclude.txt"), encoding="utf-8"):
+    line = line.strip()
+    if line and not line.startswith("#"):
+        excl.add(line.split()[0].removesuffix(".test.sh"))
+def keys(p):
+    out = [p]
+    if p.endswith(".md"):
+        s = p[:-3]
+        s = s[:-3] if s.endswith(".zh") else s
+        b = s.rsplit("/", 1)[-1]
+        out += [s, b + ".md", b + ".zh.md", b + "{"]
+    if p.count("/") >= 2:
+        out.append(p.rsplit("/", 1)[0] + "/")
+    return out
+ks = [k for p in changed for k in keys(p)]
+units = []
+for f in sorted(os.listdir(tests)):
+    if not f.endswith(".test.sh"):
+        continue
+    n = f[: -len(".test.sh")]
+    if n in excl:
+        continue
+    text = open(os.path.join(tests, f), encoding="utf-8", errors="replace").read()
+    kind = re.search(r"^# kind: *(\S+)", text, re.M).group(1)
+    keep = (kind in ("guard", "smoke", "meta") or re.search(r"^# reads: repo *$", text, re.M)
+            or any(k in text for k in ks))
+    if not keep:
+        continue
+    m = re.search(r"^# parts: *(\d+) *$", text, re.M)
+    p = int(m.group(1)) if m else 1
+    units += [n] if p <= 1 else [f"{n}:{k}/{p}" for k in range(1, p + 1)]
+print("\n".join(sorted(units)))
+PYS
+)
+chk "真实 tests/：README-only 时各路合起来 = 另写的规则算出的清单" "$(paste -sd' ' <<< "$real_got")" "$(LC_ALL=C sort <<< "$real_want" | paste -sd' ')"
+chk "  各路之间没有重复" "$(sort <<< "$real_got" | uniq -d | wc -l | tr -d ' ')" 0
+chk "  确实少跑了（比全部少一半以上）" \
+    "$(awk -v a="$(wc -l <<< "$real_got")" -v b="$(cd "$RT" && bash tests/run.sh --ci --list | wc -l)" 'BEGIN { print (a > 0 && a * 2 < b) ? "yes" : "no" }')" yes
+chk "  守卫类一个不少" "$(cd "$RT/tests" && grep -l '^# kind: guard' *.test.sh | sed 's/\.test\.sh$//' | while read -r n; do grep -qxF "$n" <<< "$real_got" || echo "$n"; done | paste -sd,)" ""
+
+# 扫整个仓库的测试（git ls-files、对仓库根目录递归 grep / find / os.walk、仓库根下的通配）必须声明
+# # reads: repo：它们读什么不会写出文件名，只改文档时按「提到了哪个文件」挑不中它们
+undeclared=$(cd "$TEST_DIR" && for f in *.test.sh; do
+    grep -qE 'git ls-files|(grep -[A-Za-z]*[rR][A-Za-z]*|find|rglob|os\.walk)[^#]*\$\{?(REPO_DIR|ROOT)\b|\$\{?REPO_DIR\}?"?/\*|\$\{?REPO_DIR\}?/docs"' "$f" || continue
+    grep -qxE '# reads: repo *' "$f" || echo "${f%.test.sh}"
+done | paste -sd,)
+chk "扫整个仓库的测试都声明了 # reads: repo" "$undeclared" ""
+chk "  到达性 · 确实认出了这样的测试（不是一个都没扫到）" "$(cd "$TEST_DIR" && grep -lxE '# reads: repo *' *.test.sh | wc -l | tr -d ' ' | awk '{print ($1 >= 5) ? "yes" : "no"}')" yes
+# 用变量拼文档路径（docs/${f}）读文档的，文件里得照原样写出它读的文件名，按名字才挑得中
+noname=$(cd "$TEST_DIR" && for f in *.test.sh; do
+    grep -qE 'docs/\$' "$f" || continue
+    grep -qxE '# reads: repo *' "$f" && continue
+    named=0; for d in "$REPO_DIR"/docs/*.md; do grep -qF "$(basename "$d")" "$f" && { named=1; break; }; done
+    [ "$named" = 1 ] || echo "${f%.test.sh}"
+done | paste -sd,)
+chk "用 docs/\$变量 读文档的测试都写出了文档的文件名" "$noname" ""
+
 echo "【负对照】"
 mutant() {  # $1 名字  $2 python 替换：旧 → 新（必须恰好命中一次）
     local dst="$TMP/mut-$1.sh"

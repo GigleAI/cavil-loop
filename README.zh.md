@@ -12,6 +12,15 @@
 
 Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说「I don't want to be human」的赛昂人。这个项目取的就是这个意思：agent 不必扮成人，但和它协作就像和一个真人同事一起工作——你把 issue 派给它，它交回设计方案和 PR，你来 review。
 
+## 本仓库有两样东西
+
+| | 是什么 | 需要什么 | 从哪开始 |
+|---|---|---|---|
+| **daemon** | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。这张表以下讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
+| **Cavil Loop 桌面客户端** | 可以单独使用的 GitHub issue / PR 客户端：issue 和关联的 PR 放在一起，按迭代 / 里程碑分组，把 issue 之间的依赖画成图（可跨仓库）。也能替人安装 daemon、把条目交给它。 | 一个 GitHub 账号、一台 Mac——不需要 daemon、不需要 GitHub Project、不需要命令行程序 | [客户端使用说明](docs/client.zh.md) |
+
+两样东西互不依赖，可以只用其中一样；搭配使用更佳。
+
 ## 它是什么
 
 ![在 GitHub 上给 Agent 建 issue，review PR](./docs/github_project.png)
@@ -171,7 +180,7 @@ Linux 默认你登出就停所有后台服务，这条让它在你不在的时�
 
 ### 也可以从桌面客户端开始（macOS）
 
-不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板预览版)，在它的设置页里完成第 1、2 步：
+不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板)，在它的设置页里完成第 1、2 步：
 
 1. 先装好[依赖](#依赖)并 `gh auth login`——客户端只检查缺什么，不替人装系统软件。
 2. 下载安装客户端，用 GitHub 账号登录（浏览器里输入短码授权）。
@@ -179,7 +188,7 @@ Linux 默认你登出就停所有后台服务，这条让它在你不在的时�
 4. 设置 →「本机 daemon」：点「安装」（等于上面第 1 步的手动安装）。
 5. 回到「数据来源」，在仓库那一行点「接上 daemon」：选本机已有的目录或让它克隆一份、选 agent、预检通过后点「开始」（等于上面第 2 步的 `setup.sh`）。
 
-之后给 issue 打 `pending/agent` 就会被接走。下载地址和每一步的细节见 [client/README.md](client/README.md#第一次用从安装到接上第一个仓库)。
+之后给 issue 打 `pending/agent` 就会被接走。下载地址和每一步的细节见[客户端使用说明](docs/client.zh.md#可选接上-daemon)。
 
 ## 依赖
 
@@ -225,11 +234,24 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 ---
 
-## 客户端（桌面看板，预览版）
+## 客户端（桌面看板）
 
-`client/` 是一个可选的本地 macOS App，把多个 GitHub Project 和仓库合进一个看板：按迭代（默认）/ 状态 / 里程碑分列，可按仓库分泳道；断网时照样能看上次同步的内容。登录走浏览器授权（GitHub OAuth 设备授权），凭据存进 macOS 钥匙串。它只和 GitHub 通信，daemon 也不依赖它。设置页还能检查、安装本机 daemon，并从来源列表把仓库接上它（「接上 daemon」：找到或克隆本地目录、选 agent、预检缺什么，再代跑 daemon 自带的 `setup.sh --yes`，输出边跑边显示）。为此客户端会在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
+Cavil Loop 桌面客户端（`client/`，macOS）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口：
 
-看板上可以搜索筛选、改标签 / 迭代 / 状态 / 里程碑、新建 issue、回复评论、合并 PR，`pending/human` 有新条目时发系统通知。只加仓库、不加 Project 也能用（没有迭代 / 状态，见 client/README.md）。安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的 dmg），还没有正式版，也没有 Intel 的包。安装和初始流程：[client/README.md](client/README.md#第一次用从安装到接上第一个仓库)。
+- **看板**：按迭代 / 状态 / 里程碑分列，可按仓库分泳道；PR 跟在它关联的 issue 下面。
+- **表格**：按仓库 / 迭代 / 状态 / 里程碑分组，子 issue 缩进在父 issue 下并显示完成进度，格子里直接改。
+- **依赖图**：父 issue 画成框、子 issue 在框里，阻塞关系画成箭头；关系另一头在别的仓库、不在当前来源里也照样画出来。
+- **搜索**沿用 GitHub 网页写法，可导入 Project 网页上存的视图，断网时照样能看上次同步的内容。
+- **修改直接发给 GitHub**：标签、迭代、状态、里程碑、回复、新建 issue、关闭、合并；详情浮在看板右侧，也能开成标签页。
+- **接上 daemon（可选）**：在设置里安装 daemon、把仓库接上去，一个按钮把条目交给 agent 或托管，`pending/human` 有新条目时发系统通知。
+
+| 看板 | 表格 | 依赖图 |
+|---|---|---|
+| ![看板](docs/client-screens/board.png) | ![表格](docs/client-screens/table.png) | ![依赖图](docs/client-screens/graph.png) |
+
+登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
+
+安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：目前只有开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release，只有 Apple 芯片的 dmg），还没有正式版，也没有 Intel 的包。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。** 改代码的规则在开发文档 [client/README.md](client/README.md)。
 
 ---
 
@@ -237,6 +259,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 | 文档 | 内容 |
 |------|------|
+| [docs/client.md](docs/client.zh.md) | 桌面客户端：不装 daemon 的安装和第一次用、看板 / 表格 / 依赖图、搜索、修改、快捷键、网络边界、接上 daemon、正在开发的功能 |
 | [docs/architecture.md](docs/architecture.zh.md) | 标签状态机的五种状态、PR↔Issue 闭环关系（一个 PR / 拆 sub-issue）、为什么这么设计 |
 | [docs/collaboration.md](docs/collaboration.zh.md) | 多人 + 多 agent 协作：用 label 后缀（`pending/agent/PM`、`pending/human/Alex` …）走 PM → Dev → QA 接力 |
 | [docs/requester-bot.md](docs/requester-bot.zh.md) | 对接外部需求机器人（以 grokbot 为例）：对接步骤、机器人那边要照做的约定、排查 |

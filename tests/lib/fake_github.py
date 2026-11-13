@@ -20,6 +20,7 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
   items 里的 parent_issue_url 原样带进 issue（GitHub#233）；repos/<owner>__<repo>/ 子目录 = 另一个仓库的同一套状态
   calls.log       one line per call: "gh <argv...>"
   me              login of the token (default loop-bot)
+  merge_closes    (GitHub#461) present = merging a PR closes the issues its body closes (completed) + a "closed" event
 
 Failure injection: a file F_<key> makes matching reads fail with HTTP 502 (F403_<key>: a
 permission 403, F403rl_<key>: a rate-limit 403 — GitHub#243) (key = path with
@@ -471,6 +472,10 @@ if method == "GET":
             fail("HTTP 404: Not Found")
         sys.stdout.write(txt)
         sys.exit(0)
+    if not parts:
+        # 仓库本身（GitHub#461 读默认分支）：default_branch 文件写别的分支名，没有 = main
+        _db = open(p("default_branch")).read().strip() if os.path.exists(p("default_branch")) else "main"
+        emit({"full_name": REPO, "default_branch": _db})
     if len(parts) == 3 and parts[0] == "commits" and parts[2] == "pulls":
         out = []
         for n in load("commit_pulls.json", {}).get(parts[1], []):
@@ -705,6 +710,20 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
     it["merged"] = True
     it["state"] = "closed"
     save("items.json", items)
+    # merge_closes 文件存在时（GitHub#461）：和真 GitHub 合进默认分支一样，正文里关闭关键词指向的本仓库 issue
+    # 随合并关掉（state_reason = completed），并记一条 closed 事件。没有这个文件时照旧不动 issue
+    if os.path.exists(p("merge_closes")):
+        import re as _re
+        _evs = load("events.json", {})
+        for _m in _re.finditer(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)", it.get("body") or ""):
+            _n = _m.group(1)
+            if _n in items and items[_n].get("kind") == "issue" and items[_n].get("state", "open") != "closed":
+                items[_n]["state"] = "closed"
+                items[_n]["state_reason"] = "completed"
+                _evs.setdefault(_n, []).append({"event": "closed", "actor": {"login": me(), "type": me_type()},
+                                                "created_at": now_iso()})
+        save("items.json", items)
+        save("events.json", _evs)
     emit({"merged": True, "sha": "m" * 40})
 
 emit({})

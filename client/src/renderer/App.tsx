@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../shared/ipc';
-import type { Layout } from '../shared/types';
+import type { CreateJob, Layout } from '../shared/types';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
 import { LoginView } from './LoginView';
 import { BoardView, type BoardWarnings, type OpenIntent } from './BoardView';
 import { DetailPanel, draftDirty, type ResultNote, type TabDraft } from './DetailPanel';
 import { TabBar } from './TabBar';
+import { TopBar, useWindowFrame } from './TopBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
 import { HOME, afterClose, autoCloseVerdict, stepTab, tabAt } from '../shared/tabs';
-import { OpNotice } from './OpNotice';
+import { NoticeArea } from './NoticeArea';
 import { OpenMenu, type OpenHow, type OpenMenuAt } from './OpenMenu';
 import type { WriteAction } from '../shared/actions';
-import type { OpRecord } from '../shared/ops';
 import { SettingsView } from './SettingsView';
 import { AppKindHelp } from './AppKindHelp';
 import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
+import { FindBar } from './FindBar';
+import { closeFind, openFind, stepFind } from './findInPage';
+import { setCustomKeys, type CustomKeys } from './shortcuts';
 import type { SettingsIntent } from './EmptyGuide';
 
 /** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
@@ -33,7 +36,7 @@ const FLOAT = '\u0000float';
 type CloseOrigin = { where: 'tab'; key: string; life: number } | { where: 'float'; key: string; n: number };
 
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
-export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number };
+export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number; /** GitHub#488: a failed create's 重新打开草稿 (from the notice area) */ draft?: CreateJob['draft'] };
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -113,7 +116,6 @@ export function App() {
     floatDraft.current = null;
     setMenu(null);
     closeOrigins.current = new Map();
-    setPutAway([]);
     setHeld([]);
   }, [gen]);
   // ---- GitHub#442: the floating detail, the default way to open an item ----
@@ -133,16 +135,15 @@ export function App() {
   // ---- GitHub#447: a close made in a tab / the floating panel puts it away once GitHub took it ----
   /** the closes started from a detail of this account and not decided yet: operation id → where */
   const closeOrigins = useRef(new Map<string, CloseOrigin>());
-  /** closes whose detail was put away: their notices show in the strip above every page, not above the board */
-  const [putAway, setPutAway] = useState<string[]>([]);
   /** closes that went through while their place held unsent text: the place stayed and says why */
   const [held, setHeld] = useState<({ id: string } & CloseOrigin)[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
-  const show = (key: string, intent: OpenIntent | null = null) => {
+  /** `keepFocus` (GitHub#467): the keys are being typed into the window's top row, which does not go behind — leave its focus */
+  const show = (key: string, intent: OpenIntent | null = null, keepFocus = false) => {
     if (key === frontRef.current && !intent) return;
     // the keyboard leaves whatever the tab going behind had focused
-    (document.activeElement as HTMLElement | null)?.blur?.();
+    if (!keepFocus) (document.activeElement as HTMLElement | null)?.blur?.();
     // GitHub#442: the floating panel goes behind with the home tab; coming back is a new opening of it, which
     // must not do its notice's 重试 / 去回复 a second time
     if (key !== HOME) setFloat((f) => (f?.intent ? { ...f, intent: null } : f));
@@ -218,7 +219,6 @@ export function App() {
       if (v === 'wait') continue;
       closeOrigins.current.delete(id);
       if (v === 'close') {
-        setPutAway((l) => (l.includes(id) ? l : [...l, id]));
         if (o.where === 'tab') closeNow(o.key);
         else closeFloatNow();
       } else if (v === 'hold') setHeld((h) => [...h.filter((x) => x.id !== id), { id, ...o }]);
@@ -229,12 +229,6 @@ export function App() {
   const ops = snap?.state.ops;
   useEffect(() => {
     settleRef.current();
-    // a put-away close whose record is gone or was put away itself leaves the strip for good
-    const live = ops ?? [];
-    setPutAway((l) => {
-      const next = l.filter((id) => live.some((r) => r.id === id && !r.dismissed));
-      return next.length === l.length ? l : next;
-    });
   }, [ops]);
   /** a detail of this account (`g`) started a close from `o` */
   const closeStarted = (g: number, o: CloseOrigin) => (id: string) => {
@@ -314,15 +308,17 @@ export function App() {
   const keysOn = signedIn;
   // GitHub#369: the settings page has its own Esc (back to the board), only while it is the page showing
   const onSettings = signedIn && !help && page === 'settings' && front === HOME;
+  // GitHub#487: the keys changed on this machine, for every key decision and tooltip drawn below
+  setCustomKeys(snap?.state.shortcutKeys as CustomKeys | undefined);
   useKeyboard(keysOn, onSettings ? 'settings' : 'board');
   const [keysHelp, setKeysHelp] = useState(false);
   const [boardReq, setBoardReq] = useState<BoardRequest | null>(null);
   const reqSeq = useRef(0);
-  const toBoard = (kind: BoardRequest['kind']) => {
+  const toBoard = (kind: BoardRequest['kind'], draft?: CreateJob['draft']) => {
     setHelp(false);
     show(HOME);
     setPage('board');
-    setBoardReq({ kind, seq: ++reqSeq.current });
+    setBoardReq({ kind, seq: ++reqSeq.current, ...(draft ? { draft } : {}) });
   };
   const toLayout = (layout: Layout) => {
     setHelp(false);
@@ -366,11 +362,18 @@ export function App() {
       if (!tabKeys.length) return false;
       show(stepTab(tabKeys, front, -1));
     },
+    // GitHub#502: find text on the page — never the board's search box; ⌘G / ⇧⌘G only while the bar is open
+    find: () => openFind(),
+    findNext: () => stepFind(1),
+    findPrev: () => stepFind(-1),
   });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
   // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
   const tallySaved = useRef<string | null>(null);
+  // GitHub#464: the view-bar number last clicked — tells two numbers with one click text apart (state: a switch
+  // between them leaves the box as it is, and the lit number and its "显示已关闭" switch must still follow)
+  const [tallyPick, setTallyPick] = useState<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -387,20 +390,41 @@ export function App() {
   };
 
   const ready = snap?.state.phase === 'ready' && !help;
+  // GitHub#467: the window's one top row; the board draws its tools into it (`tools`)
+  const frame = useWindowFrame();
+  const [tools, setTools] = useState<HTMLDivElement | null>(null);
+  // the find bar belongs to the signed-in pages: leaving them (sign-out, the app-kind page) closes it
+  useEffect(() => {
+    if (!ready) closeFind();
+  }, [ready]);
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
-      {/* GitHub#442: the tab bar shows only once a tab is open; the last one closed, it goes */}
-      {ready && tabs.length > 0 && (
-        <TabBar
-          tabs={tabs}
-          active={front}
-          labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
-          onPick={(key) => show(key)}
-          onClose={closeTab}
-          onMove={(key, to) => void api().moveTab(key, to)}
+      {/* GitHub#467: one top row for the whole window (on macOS it is the title bar). The tabs show in it
+          only once a tab is open; the last one closed, they go (GitHub#442). Signed out, starting, or on the
+          app-kind page: only the empty row the window is moved by, and only where the row is the title bar. */}
+      {ready ? (
+        <TopBar
+          frame={frame}
+          onTools={setTools}
+          tabs={
+            tabs.length > 0 ? (
+              <TabBar
+                tabs={tabs}
+                active={front}
+                labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
+                onPick={(key) => show(key)}
+                onClose={closeTab}
+                onMove={(key, to) => void api().moveTab(key, to)}
+              />
+            ) : null
+          }
         />
+      ) : (
+        frame.overlay && <TopBar frame={frame} tabs={null} plain />
       )}
-      {ready && <PutAwayStrip ops={snap!.state.ops} ids={putAway} showing={[front === HOME ? null : front, front === HOME && float && page === 'board' ? float.key : null]} open={openItem} />}
+      {/* GitHub#488: every result the controller holds (closes, merges, 托管, 交给 agent, 等前置, new issues,
+          changes not saved) is said here once, above every page — never also in a detail or above the board */}
+      {ready && <NoticeArea state={snap!.state} data={snap!.data} open={openItem} onDraft={(d) => toBoard('newIssue', d)} />}
       {!snap || snap.state.phase === 'loading' ? (
         <div className="center muted">正在启动…</div>
       ) : help ? (
@@ -424,7 +448,6 @@ export function App() {
                 onOpen={openFromClick}
                 detailKey={front === HOME ? null : front}
                 floatKey={front === HOME && float ? float.key : null}
-                shownAbove={putAway}
                 floatPanel={
                   front === HOME && float ? (
                     <DetailPanel
@@ -454,6 +477,10 @@ export function App() {
                 }}
                 onKeysHelp={() => setKeysHelp(true)}
                 tallySaved={tallySaved}
+                tools={tools}
+                onFront={(keepFocus) => show(HOME, null, keepFocus)}
+                tallyPick={tallyPick}
+                onTallyPick={setTallyPick}
               />
             )}
           </div>
@@ -499,7 +526,19 @@ export function App() {
           <p data-testid="tab-close-question">这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。</p>
         </ConfirmDialog>
       )}
-      {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
+      {ready && <FindBar />}
+      {keysOn && keysHelp && (
+        <ShortcutHelp
+          onClose={() => setKeysHelp(false)}
+          onEdit={() => {
+            setKeysHelp(false);
+            setHelp(false);
+            show(HOME);
+            setIntent({ what: 'keys', seq: ++intentSeq.current });
+            setPage('settings');
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -513,30 +552,4 @@ function heldFor(
   const same = (x: CloseOrigin) => x.where === o.where && x.key === o.key && (x.where === 'tab' ? o.where === 'tab' && x.life === o.life : o.where === 'float' && x.n === o.n);
   if (!held.some(same)) return null;
   return { onDismiss: () => setHeld((h) => h.filter((x) => !same(x))) };
-}
-
-/**
- * GitHub#447: the notices of closes that put their tab / floating panel away. They show here, above
- * every page (under the tab bar; at the top of the window when no tab is open), so the result is seen
- * wherever the window went — the next tab's detail, the board, or the tab the person was on when the
- * answer came. The same notice as above the board (its text, buttons and 5 s rule); the board leaves
- * these out, and an item open in front (its detail or the floating panel) shows its own.
- */
-function PutAwayStrip({ ops, ids, showing, open }: { ops: OpRecord[]; ids: string[]; showing: (string | null)[]; open: (key: string, how: OpenHow, intent?: OpenIntent | null) => void }) {
-  const list = ops.filter((r) => ids.includes(r.id) && !r.dismissed && !showing.includes(r.key));
-  if (!list.length) return null;
-  return (
-    <div className="op-strip" data-testid="op-strip">
-      {list.map((r) => (
-        <OpNotice
-          key={r.id}
-          r={r}
-          prefix={`${r.repo}#${r.number}：`}
-          onOpen={(key) => open(key, 'float')}
-          onRetry={(x) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
-          onToReply={(x) => open(x.key, 'float', { opId: x.id, what: 'toReply' })}
-        />
-      ))}
-    </div>
-  );
 }

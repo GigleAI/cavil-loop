@@ -17,6 +17,15 @@ import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { Cache } from '../support/cache';
 import type { Item } from '../../src/shared/types';
 
+/** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
+async function showSource(page: Page, selector: string, on: boolean) {
+  await page.getByTestId('open-settings').click();
+  const sw = page.locator(`[data-testid="source-shown"]${selector}`);
+  if (on) await sw.check();
+  else await sw.uncheck();
+  await page.getByTestId('back').click();
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
@@ -68,14 +77,19 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   }
   await expect(page.getByTestId('source-row')).toHaveCount(sources.length);
   await page.getByTestId('back').click();
-  // adding the Project imported its saved web view (table, -label:Done -status:Done): wait for it, then look at the graph of everything
-  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imported its saved web view (table): wait for it, then look at the graph of everything
+  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
   // saved (the box saves 300 ms after typing stops), so a restart opens on the same search
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query)).toBe('');
   await expect.poll(() => sourcesStatus(page), { timeout: 20_000 }).toEqual(sources.map(() => true));
+  // GitHub#464: the graph of everything, closed items included — its own "显示已关闭" switch, on before the
+  // graph is first drawn (where it opens and whether it is "too big" are decided then), and saved
+  await page.evaluate(() => (window as any).cavil.setView({ showClosed: { graph: true } }));
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed.graph)).toBe(true);
   await page.locator('[data-testid="layout"] button[data-value="graph"]').click();
   await expect(page.getByTestId('graph')).toBeVisible();
+  await expect(page.getByTestId('show-closed')).toBeChecked();
 }
 
 /** per configured source: has the latest round read it whole */
@@ -241,13 +255,13 @@ test('GitHub#350: boxes, arrows and their colours, the three kinds of "not in th
   await page.getByTestId('search').fill('');
 
   // ---- the repository alone: #313 is in no source — still in #311's box, dashed ----
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'yes');
   await expect(nodeOf(page, K(313)).getByTestId('graph-outside')).toHaveText('不在当前来源中');
   expect(await inside(boxOf(page, K(311)), nodeOf(page, K(313)))).toBe(true);
   await expect(nodeOf(page, K(314))).toHaveAttribute('data-outside', 'no');
   await expect(nodeOf(page, OUTSIDE_PARENT)).toHaveCount(0);
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'no');
 
   // ---- the shortcut list names the graph's keys ----
@@ -431,6 +445,9 @@ test('GitHub#350: relations never read (a cache from before relations, the first
   // a first run reads everything; then the cache is put back the way a version before #349 wrote it
   let app: RunningApp = await launchApp(env);
   await signInToGraph(app.page);
+  // the graph's "显示已关闭" switch reaches the back end a moment after the window shows it; a test "quits" by
+  // killing the back end, so restart once the back end holds it
+  await expect.poll(async () => ((await app.backend.call('init')) as { settings: Record<string, any> }).settings.view?.showClosed?.graph).toBe(true);
   await app.close();
   const strip = (keys: string[]) => {
     const cache = new Cache(join(env.userData, 'cache.sqlite'));
@@ -638,5 +655,104 @@ test('GitHub#429: the loop registrations in comments are drawn as arrows; the se
   await page.getByTestId('hand-back-blocked').blur();
   await page.getByTestId('back').click();
   await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(3, { timeout: 20_000 });
+  await app.close();
+});
+
+test('GitHub#483: the summary of an issue lists its linked PRs — state, draft, labels, where the link comes from; a click opens the PR', async () => {
+  // the recording holds no PR in its sources: two are added to the repository list (#351 names #350 in
+  // its description, #72 is the PR GitHub links to #70); #69, linked to #67, stays in no source
+  const now = new Date().toISOString();
+  const pr = (number: number, o: { state: 'open' | 'closed'; merged?: boolean; draft: boolean; body: string; labels: [string, string][]; title: string }) => ({
+    number,
+    node_id: `PR_fixture_${number}`,
+    title: o.title,
+    state: o.state,
+    draft: o.draft,
+    body: o.body,
+    html_url: `https://github.com/GigleAI/cavil-loop/pull/${number}`,
+    updated_at: now,
+    labels: o.labels.map(([name, color]) => ({ name, color })),
+    assignees: [],
+    milestone: null,
+    user: { login: 'luosky' },
+    pull_request: { merged_at: o.merged ? now : null },
+  });
+  env.fake.state.repos.get('gigleai/cavil-loop')!.push(
+    pr(351, { state: 'open', draft: true, body: 'Refs #350', labels: [['pending/review', 'c5def5']], title: '客户端：依赖图视图' }),
+    pr(72, { state: 'closed', merged: true, draft: false, body: 'Closes #70', labels: [['Done', '444444']], title: '新安装改名' }),
+  );
+  const app = await launchApp(env);
+  const { page } = app;
+  await signInToGraph(page);
+  const pop = page.getByTestId('graph-summary');
+  const prs = pop.getByTestId('graph-summary-prs');
+  const line = (n: number) => pop.locator(`[data-testid="graph-summary-pr"][data-key="${K(n)}"]`);
+
+  // ---- a PR in the sources, named only by its description: draft, its labels, "PR 正文引用"; opening the summary reads nothing ----
+  const before = env.fake.log.length;
+  await nodeOf(page, K(350)).click();
+  await expect(pop).toHaveAttribute('data-key', K(350));
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(1);
+  await expect(line(351)).toHaveAttribute('data-in-source', 'yes');
+  await expect(line(351)).toHaveAttribute('data-via', 'body');
+  await expect(line(351)).toHaveAttribute('data-tone', 'neutral');
+  await expect(line(351).getByTestId('graph-summary-pr-state')).toHaveText('草稿');
+  await expect(line(351)).toContainText('#351 客户端：依赖图视图');
+  await expect(line(351)).toContainText('pending/review');
+  await expect(line(351)).toContainText('PR 正文引用');
+  await page.waitForTimeout(300);
+  expect(env.fake.log.slice(before).map((e) => `${e.method} ${e.path} ${e.operation ?? ''}`)).toEqual([]);
+  await shot(page, 'graph-04-linked-prs');
+  // a click on the line: the PR's detail (the merge / checks / review state is there)
+  await line(351).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', K(351));
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // ---- GitHub's link, the PR in a source too: merged, one line although its description names #70 as well ----
+  await nodeOf(page, K(70)).click();
+  await expect(pop).toHaveAttribute('data-key', K(70));
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(1);
+  await expect(line(72)).toHaveAttribute('data-via', 'github');
+  await expect(line(72)).toHaveAttribute('data-tone', 'done');
+  await expect(line(72).getByTestId('graph-summary-pr-state')).toHaveText('已合并');
+  await expect(line(72)).toContainText('新安装改名');
+  await expect(line(72)).not.toContainText('PR 正文引用');
+  await shot(page, 'graph-05-linked-pr-merged');
+
+  // ---- a PR in no source: GitHub's number and state, a click opens it on GitHub ----
+  await nodeOf(page, K(67)).click();
+  await expect(pop).toHaveAttribute('data-key', K(67));
+  await expect(line(69)).toHaveAttribute('data-in-source', 'no');
+  await expect(line(69)).toHaveAttribute('data-tone', 'closed');
+  await expect(line(69).getByTestId('graph-summary-pr-state')).toHaveText('已关闭');
+  await expect(line(69)).toContainText('不在当前来源中');
+  await line(69).click();
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('https://github.com/GigleAI/cavil-loop/pull/69\n');
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+
+  // ---- none: said so ----
+  await nodeOf(page, K(349)).click();
+  await expect(pop).toHaveAttribute('data-key', K(349));
+  await expect(prs.getByTestId('graph-summary-prs-none')).toHaveText('没有关联 PR');
+  await expect(prs.getByTestId('graph-summary-pr')).toHaveCount(0);
+
+  // ---- an issue in no source: no list at all ----
+  await nodeOf(page, OUTSIDE_PARENT).click();
+  await expect(pop).toHaveAttribute('data-key', OUTSIDE_PARENT);
+  await expect(prs).toHaveCount(0);
+
+  // ---- the repository alone does not know GitHub's links: "unknown", never "none" ----
+  await page.getByTestId('graph-canvas').click({ position: await emptySpot(page) });
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
+  await page.getByTestId('graph-fit').click();
+  await nodeOf(page, K(314)).click();
+  await expect(pop).toHaveAttribute('data-key', K(314));
+  await expect(prs.getByTestId('graph-summary-prs-unknown')).toHaveText('仓库来源读不到 GitHub 关联的 PR');
+  await expect(prs.getByTestId('graph-summary-prs-none')).toHaveCount(0);
+  // while the PR in the same source still names its issue
+  await nodeOf(page, K(350)).click();
+  await expect(line(351)).toHaveAttribute('data-via', 'body');
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await app.close();
 });

@@ -23,6 +23,22 @@
 #                                        the autopilot jobs, whose parts run in six jobs)
 #   --out DIR                            where results.tsv and logs/<unit>.log go
 #                                        (default: a fresh temp dir, printed at the end)
+#   --changed-from REF                   run only what this change can affect (GitHub#495; PR runs
+#                                        in CI pass it, see "Changed-file selection" below); combines
+#                                        with --ci / --shard / --list / --verify / --kind
+#
+# Changed-file selection (GitHub#495). With --changed-from REF the change is "every file that differs
+# between git merge-base REF HEAD and HEAD" — the whole branch, never just its last commit. When every
+# such file is a leaf file the run keeps only:
+#   · every unit of the kinds guard, smoke and meta;
+#   · every file that declares "# reads: repo" (it scans the whole tree, so it cannot name what it reads);
+#   · every changed test file that still exists;
+#   · every file whose text names a changed leaf file (see leaf_keys).
+# Leaf files: anything under docs/; any *.md outside prompts/ and .agents/ (those are dispatch templates);
+# tests/<name>.test.sh. One other file in the change — a script, a template, the config example, tests/lib,
+# a fixture, a workflow — means the full run. So does anything that cannot be read: no merge-base, a diff
+# that fails, an empty diff. The selection is written to selection.txt next to results.tsv, and --verify
+# given the same REF recomputes it and requires every shard to have recorded exactly that.
 #
 # MUTATION=1 is passed through untouched: each test file reads it itself.
 #
@@ -99,6 +115,7 @@ default_jobs() {
 
 ORIG_ARGS="$*"
 CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""; KIND_OPT=""; QUICK=0; TALLY=0
+CHANGED_FROM=""; CHANGED_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --ci) CI_MODE=1 ;;
@@ -113,6 +130,8 @@ while [ $# -gt 0 ]; do
         --kind=*) KIND_OPT="${1#--kind=}" ;;
         --quick) QUICK=1 ;;
         --tally) TALLY=1 ;;
+        --changed-from) [ $# -ge 2 ] || die "--changed-from needs a git ref"; CHANGED_FROM="$2"; CHANGED_SET=1; shift ;;
+        --changed-from=*) CHANGED_FROM="${1#--changed-from=}"; CHANGED_SET=1 ;;
         -j|--jobs) [ $# -ge 2 ] || die "$1 needs a number"; JOBS="$2"; shift ;;
         -j*) JOBS="${1#-j}" ;;
         --jobs=*) JOBS="${1#--jobs=}" ;;
@@ -150,6 +169,11 @@ if [ -n "$SHARD" ]; then
     [ ${#NAMES[@]} -eq 0 ] || die "--shard and explicit test names don't mix"
 fi
 [ ${#WANT_KIND[@]} -eq 0 ] || [ ${#NAMES[@]} -eq 0 ] || die "--kind / --quick and explicit test names don't mix"
+if [ "$CHANGED_SET" = 1 ]; then
+    [ -n "$CHANGED_FROM" ] || die "--changed-from needs a git ref"
+    [ ${#NAMES[@]} -eq 0 ] || die "--changed-from and explicit test names don't mix"
+    [ "$TALLY" = 0 ] || die "--tally adds up what is there; --changed-from doesn't apply"
+fi
 
 # ── what exists ────────────────────────────────────────────────────────────────
 discover() {
@@ -163,7 +187,7 @@ mapfile -t ALL < <(discover)
 [ ${#ALL[@]} -gt 0 ] || die "no *.test.sh in $TESTS_DIR"
 
 # Header declarations. Same pattern as tests/lib/parts.sh reads; anything else means 1 part.
-declare -A PARTS=() SERIAL=() KIND=()
+declare -A PARTS=() SERIAL=() KIND=() READS_REPO=()
 for n in "${ALL[@]}"; do
     kl=$(grep -cE '^# kind:' "$TESTS_DIR/$n.test.sh" || true)
     [ "$kl" -eq 1 ] || die "$n.test.sh: needs exactly one '# kind: <kind>' header line, found $kl (kinds: $KINDS_ALL)"
@@ -174,6 +198,13 @@ for n in "${ALL[@]}"; do
     [ -z "$p" ] || [ "$p" -ge 1 ] || die "$n.test.sh: '# parts: $p' must be at least 1"
     PARTS[$n]="${p:-1}"
     grep -qE '^# parallel: no *$' "$TESTS_DIR/$n.test.sh" && SERIAL[$n]=1
+    # "# reads: repo" — scans the whole tree, so a change to any leaf file may matter to it (GitHub#495)
+    rl=$(grep -cE '^# reads:' "$TESTS_DIR/$n.test.sh" || true)
+    if [ "$rl" -gt 0 ]; then
+        grep -qxE '# reads: repo *' "$TESTS_DIR/$n.test.sh" && [ "$rl" -eq 1 ] \
+            || die "$n.test.sh: the only '# reads:' header there is is exactly one '# reads: repo' line"
+        READS_REPO[$n]=1
+    fi
 done
 
 units_of() {   # <file name> → its units, one per line
@@ -213,14 +244,86 @@ weight_of() {   # <unit>
     else printf '%s' "${WEIGHT[$f]:-$DEFAULT_WEIGHT}"; fi
 }
 
-# The set a run is about: every unit, minus the exclusions under --ci.
+# ── changed-file selection (GitHub#495) ───────────────────────────────────────
+# CHANGE_MODE: "" (no --changed-from) / full / partial. CHANGE_WHY says why, CHANGE_BASE is the merge-base.
+# Every failure to read the change ends in "full": never fewer tests because something could not be read.
+CHANGE_MODE=""; CHANGE_WHY=""; CHANGE_BASE=""; CHANGED_FILES=()
+declare -A CHANGE_KEEP=()
+is_leaf() {   # <repo-relative path> → 0 when a change to it alone does not need the full run
+    case "$1" in
+        prompts/*|.agents/*) return 1 ;;
+        docs/*) return 0 ;;
+        tests/*/*) return 1 ;;
+        tests/*.test.sh) return 0 ;;
+        *.md) return 0 ;;
+    esac
+    return 1
+}
+leaf_keys() {   # <path> → the strings whose presence in a test file means it reads that file
+    local p="$1" s b
+    printf '%s\n' "$p"
+    case "$p" in
+        *.md)   # docs/operations.zh.md → docs/operations, operations.md, operations.zh.md, operations{
+            s="${p%.md}"; s="${s%.zh}"; b="${s##*/}"
+            printf '%s\n' "$s" "$b.md" "$b.zh.md" "$b{" ;;
+        tests/*.test.sh) printf '%s\n' "${p#tests/}" ;;
+    esac
+    # deeper than one directory: the directory itself, for a test that reads all of it (docs/images/…)
+    case "$p" in */*/*) printf '%s/\n' "${p%/*}" ;; esac
+}
+change_full() { CHANGE_MODE=full; CHANGE_WHY="$1"; }
+compute_change() {
+    local top here out p f k
+    if ! top=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null) || [ -z "$top" ]; then
+        change_full "not a git checkout: $REPO_DIR"; return
+    fi
+    here=$(cd "$REPO_DIR" && pwd -P); top=$(cd "$top" && pwd -P)
+    [ "$here" = "$top" ] || { change_full "$REPO_DIR is not the top of its git checkout"; return; }
+    if ! CHANGE_BASE=$(git -C "$REPO_DIR" merge-base "$CHANGED_FROM" HEAD 2>/dev/null) \
+        || ! [[ "$CHANGE_BASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        CHANGE_BASE=""; change_full "no merge-base between $CHANGED_FROM and HEAD"; return
+    fi
+    # --no-renames: a rename lists both names, so the old one is judged too
+    out=$(mktemp "${TMPDIR:-/tmp}/run-changed.XXXXXX") || { change_full "no temp file for the diff"; return; }
+    if ! git -C "$REPO_DIR" diff --name-only --no-renames -z "$CHANGE_BASE" HEAD > "$out" 2>/dev/null; then
+        rm -f "$out"; change_full "git diff $CHANGE_BASE HEAD failed"; return
+    fi
+    mapfile -d '' -t CHANGED_FILES < "$out"; rm -f "$out"
+    [ ${#CHANGED_FILES[@]} -gt 0 ] || { change_full "no file differs from the merge-base"; return; }
+    for p in "${CHANGED_FILES[@]}"; do
+        is_leaf "$p" || { change_full "$p is not a docs / test-file-only change"; return; }
+    done
+    CHANGE_MODE=partial; CHANGE_WHY="only docs / test files changed (${#CHANGED_FILES[@]} file(s))"
+    local -a keys=()
+    for p in "${CHANGED_FILES[@]}"; do
+        mapfile -t -O "${#keys[@]}" keys < <(leaf_keys "$p")
+        case "$p" in tests/*.test.sh) f="${p#tests/}"; f="${f%.test.sh}"; [ -n "${PARTS[$f]+x}" ] && CHANGE_KEEP[$f]=1 ;; esac
+    done
+    for f in "${ALL[@]}"; do
+        case "${KIND[$f]}" in guard|smoke|meta) CHANGE_KEEP[$f]=1; continue ;; esac
+        [ -z "${READS_REPO[$f]+x}" ] || { CHANGE_KEEP[$f]=1; continue; }
+        for k in "${keys[@]}"; do
+            if grep -qF -- "$k" "$TESTS_DIR/$f.test.sh"; then CHANGE_KEEP[$f]=1; break; fi
+        done
+    done
+}
+[ "$CHANGED_SET" = 0 ] || compute_change
+
+# The set a run is about: every unit, minus the exclusions under --ci (and, with --changed-from on a
+# docs / test-file-only change, minus what that change cannot reach).
 selected() {
     local n
     for n in "${ALL[@]}"; do
         if [ "$CI_MODE" = 1 ] && [ -n "${EXCLUDED[$n]+x}" ]; then continue; fi
         if [ ${#WANT_KIND[@]} -gt 0 ] && [ -z "${WANT_KIND[${KIND[$n]}]+x}" ]; then continue; fi
+        if [ "$CHANGE_MODE" = partial ] && [ -z "${CHANGE_KEEP[$n]+x}" ]; then continue; fi
         units_of "$n"
     done
+}
+# What a shard records and --verify recomputes: the base, the mode and every selected unit.
+selection_record() {
+    printf 'base %s\nmode %s\n' "${CHANGE_BASE:--}" "$CHANGE_MODE"
+    selected | sed 's/^/unit /'
 }
 
 # "<shard> <unit>" for every selected unit, in name order.
@@ -296,7 +399,11 @@ counts_report() {
         }'
 }
 
+change_note() {   # one line for humans, on stderr in --list (stdout stays "<shard> <unit>")
+    [ -z "$CHANGE_MODE" ] || echo "changed-from $CHANGED_FROM: $CHANGE_MODE — $CHANGE_WHY"
+}
 if [ "$LIST" = 1 ]; then
+    change_note >&2
     if [ -n "$SHARD" ]; then assign | awk -v k="$SHARD_K" '$1 == k'; else assign; fi
     exit 0
 fi
@@ -335,6 +442,23 @@ if [ -n "$VERIFY" ]; then
             if [[ "${mr:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs	$mr	$ms	$mf"; else CNT[$name]="$NOCOUNTS"; fi
         done < <(to_us "$rf")
     done < <(find "$VERIFY" -name results.tsv -type f -print0)
+    # Selections (GitHub#495): one selection.txt next to every results.tsv, all identical, and equal to
+    # what this --verify computes from the same --changed-from. A selection that narrows the set may only
+    # count when this --verify was told the base too — otherwise "fewer tests ran" could never be checked.
+    nres=0; nsel=0; sel_want=$(selection_record)
+    while IFS= read -r -d '' rf; do
+        nres=$((nres + 1)); sf="$(dirname "$rf")/selection.txt"
+        if [ -f "$sf" ]; then
+            nsel=$((nsel + 1))
+            if [ "$CHANGED_SET" = 0 ]; then
+                problems+=("${sf#"$VERIFY"/}: a shard ran with --changed-from, but --verify was not given it"); bad=1
+            elif [ "$(cat "$sf")" != "$sel_want" ]; then
+                problems+=("${sf#"$VERIFY"/}: recorded selection differs from the one computed here ($CHANGE_MODE)"); bad=1
+            fi
+        elif [ "$CHANGED_SET" = 1 ]; then
+            problems+=("$(dirname "${rf#"$VERIFY"/}"): no selection.txt (the shard did not run with --changed-from)"); bad=1
+        fi
+    done < <(find "$VERIFY" -name results.tsv -type f -print0)
     declare -A EXPECT=()
     for n in $(selected); do EXPECT[$n]=1; done
     for n in $(selected); do
@@ -353,6 +477,11 @@ if [ -n "$VERIFY" ]; then
     {
         if [ "$bad" = 0 ]; then echo "## ✅ All $passed tests passed"; else echo "## ❌ $((total - passed)) of $total tests did not pass"; fi
         echo
+        if [ -n "$CHANGE_MODE" ]; then
+            if [ "$CHANGE_MODE" = partial ]; then echo "Selection: **only what this change can reach** — $CHANGE_WHY. Full run on main, in the release gate and nightly."
+            else echo "Selection: full run — $CHANGE_WHY"; fi
+            echo
+        fi
         if [ ${#problems[@]} -gt 0 ]; then
             for p in "${problems[@]}"; do echo "- ❌ $p"; done; echo
         fi
@@ -401,6 +530,8 @@ RUN=("${UNIQ[@]}")
 if [ -z "$OUT" ]; then OUT=$(mktemp -d "${TMPDIR:-/tmp}/cavil-tests.XXXXXX"); fi
 mkdir -p "$OUT/logs"
 RESULTS="$OUT/results.tsv"; : > "$RESULTS"
+rm -f "$OUT/selection.txt"
+[ -z "$CHANGE_MODE" ] || selection_record > "$OUT/selection.txt"
 RUNSTATE="$OUT/.running"; rm -rf "$RUNSTATE"; mkdir -p "$RUNSTATE"
 
 TIMEOUT_CMD=(); command -v timeout >/dev/null 2>&1 && TIMEOUT_CMD=(timeout "$TIMEOUT_SECS")
@@ -585,6 +716,7 @@ if [ -z "${CAVIL_TEST_RUN_ID:-}" ] && { [ -z "${RUN_TESTS_DIR:-}" ] || [ -n "${C
     trap run_record_end EXIT
 fi
 
+change_note
 echo "Running ${#RUN[@]} unit(s)${SHARD:+ (shard $SHARD)}, up to $JOBS at a time${MUTATION:+, with MUTATION=$MUTATION}; logs in $OUT/logs"
 [ ${#PAR[@]} -eq 0 ] || run_pool "$JOBS" "${PAR[@]}"
 # Files marked "# parallel: no" run alone, after everything else has finished.

@@ -18,17 +18,21 @@ import {
 import { defaultBoards } from '../data/newIssueBoards';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useShortcuts } from './keyboard';
+import { keyText } from './shortcuts';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
 import { LabelPicker } from './LabelPicker';
+import { pinnedLabels } from '../shared/pickOrder';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
 import { IterationOptions, localToday } from './iterationOptions';
 import { currentIterationNames, foldSummary, iterationOptionLabel, iterationPickText, milestoneText } from '../data/newIssueFields';
 import { sortRepos } from '../shared/repoOrder';
-import { checkHandoff, handoffProblem, handoffSummary, mergeLabels, type Handoff, type HandoffCheck, type LabelRead } from '../shared/handoff';
+import { checkHandoff, handoffProblem, handoffSummary, type HandoffCheck, type LabelRead } from '../shared/handoff';
 
-const HANDOFF_TITLES: Record<Handoff, string> = { none: '只建 issue', agent: '交给 agent', autopilot: '托管（自动合并）' };
+/** GitHub#450: the two buttons that create the issue and hand it over at once */
+type HandOver = 'agent' | 'autopilot';
 
 /** Repositories a new issue can go to: the repository sources plus every repository seen on the board, in the saved repository order (GitHub#304). */
 export function knownRepos(state: AppState, data: BoardData): string[] {
@@ -96,11 +100,16 @@ export function NewIssueDialog({
   // GitHub#405: labels, milestone and iteration sit in one fold, shut every time the dialog opens
   const [moreOpen, setMoreOpen] = useState(false);
   const isDark = useDarkMode();
-  // GitHub#245: who the new issue is handed to. `picked` = clicked in this dialog (null = not touched):
-  // only a choice made here and actually used for a created issue is remembered — a fallback to
-  // "只建 issue" because the labels are unknown / missing never overwrites what was remembered
-  // a draft given back after a failed create keeps the hand-over picked for it
-  const [picked, setPicked] = useState<Handoff | null>(draft?.handoffPicked && draft.handoff ? draft.handoff : null);
+  // GitHub#450: the autopilot confirmation (same switch as the detail panel's 托管), and its "不再提示"
+  const [asking, setAsking] = useState(false);
+  const [noMoreAsk, setNoMoreAsk] = useState(false);
+  // the covered dialog is inert until the confirmation is gone: the title takes the keyboard back only after that
+  const backToTitle = useRef(false);
+  useEffect(() => {
+    if (asking || !backToTitle.current) return;
+    backToTitle.current = false;
+    titleBox.current?.focus();
+  }, [asking]);
   const hb = state.handBack;
 
   // every pick of a repository is a read of its own: only the latest one may land. Compared by
@@ -124,15 +133,9 @@ export function NewIssueDialog({
   }, [repo]);
   const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
   const labelRead: LabelRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', names: opts.labels.map((l) => l.name) };
-  const choices: Handoff[] = hb.autopilot.trim() ? ['none', 'agent', 'autopilot'] : ['none', 'agent'];
-  const checks = Object.fromEntries(choices.map((h) => [h, checkHandoff(h, hb, labelRead)])) as Record<Handoff, HandoffCheck>;
-  const wanted = picked ?? state.newIssueHandoff;
-  const wantedCheck = checks[wanted] ?? checkHandoff(wanted, hb, labelRead);
-  // still reading: the wanted choice stays shown (creating waits); unknown / missing / unset: this time a plain issue
-  const handoff: Handoff = wantedCheck.state === 'ok' || wantedCheck.state === 'loading' ? wanted : 'none';
-  const handoffWaits = handoff !== 'none' && wantedCheck.state === 'loading';
-  const handoffLabels = wantedCheck.state === 'ok' && handoff !== 'none' ? wantedCheck.labels : [];
-  const fellBack = handoff !== wanted ? handoffProblem(repo, wantedCheck) : '';
+  // GitHub#450: 交给 agent / 托管 are buttons that create at once; each is usable only when its labels are known to be there
+  const choices: HandOver[] = hb.autopilot.trim() ? ['agent', 'autopilot'] : ['agent'];
+  const checks = Object.fromEntries(choices.map((h) => [h, checkHandoff(h, hb, labelRead)])) as Record<HandOver, HandoffCheck>;
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
   // GitHub#258: the boards left unticked are watched for taking the issue in by themselves
@@ -179,6 +182,44 @@ export function NewIssueDialog({
     );
   };
 
+  // GitHub#450: the one way an issue is created here — 创建 (no hand-over), 交给 agent, 托管 — and when it may be
+  const canCreate = Boolean(repo && title.trim() && preview.plan && !preview.blocked && !busy);
+  const canHand = (h: HandOver) => canCreate && checks[h]?.state === 'ok';
+  // `confirmed`: sent by the autopilot confirmation itself. While that confirmation is on top, nothing of the
+  // covered dialog creates anything (PR #459 review round 1: a covered button reached by the keyboard did)
+  const create = async (handoff: 'none' | HandOver, confirmed = false): Promise<boolean> => {
+    if (asking && !(confirmed && handoff === 'autopilot')) return false;
+    if (!canCreate || (handoff !== 'none' && !canHand(handoff)) || !preview.plan) return false;
+    // GitHub#229: the dialog does not wait for GitHub — the outcome shows above the board,
+    // the new issue opens once it exists; only a refusal before anything went out keeps it open
+    setBusy(true);
+    // GitHub#450: nothing is remembered any more — each button says what it does
+    const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff, handoffPicked: false, plan: preview.plan, picks: { iteration: showIt ? itPick : null, milestone: msPick } });
+    setBusy(false);
+    if (r.ok) {
+      onClose();
+      return true;
+    }
+    setNote(noteOf({ ok: false, error: r.error, warning: null }, ''));
+    return false;
+  };
+  const press = (h: HandOver) => {
+    if (asking || !canHand(h)) return;
+    if (h === 'autopilot' && state.autopilotConfirm) {
+      setNoMoreAsk(false);
+      return setAsking(true);
+    }
+    void create(h);
+  };
+  // the keys only press these buttons; while the autopilot confirmation is on top neither does anything
+  // (both dialogs are "a dialog" to the keyboard, and these handlers stay registered under it)
+  useShortcuts({
+    newIssueAgent: () => press('agent'),
+    newIssueAutopilot: () => {
+      if (choices.includes('autopilot')) press('autopilot');
+    },
+  });
+
   const toggleMore = () => {
     if (moreOpen) setPicking(false);
     setMoreOpen(!moreOpen);
@@ -188,25 +229,46 @@ export function NewIssueDialog({
   const toggleLabel = (name: string) => setLabels((ls) => (ls.includes(name) ? ls.filter((x) => x !== name) : [...ls, name]));
 
   return (
+    <>
     <ConfirmDialog
       title={group ? `新建 issue · 加到「${group.title}」` : '新建 issue'}
       confirmLabel="创建"
       busy={busy}
-      disabled={!repo || !title.trim() || Boolean(preview.blocked) || handoffWaits}
+      disabled={!repo || !title.trim() || Boolean(preview.blocked)}
       dirty={Boolean(title.trim() || body.trim())}
       onCancel={onClose}
-      onConfirm={async () => {
-        if (!preview.plan) return;
-        // GitHub#229: the dialog does not wait for GitHub — the outcome shows above the board,
-        // the new issue opens once it exists; only a refusal before anything went out keeps it open
-        setBusy(true);
-        const used = handoff;
-        // remembered by the app once the issue exists, and only when picked by hand here (GitHub#245)
-        const r = await api().startCreate({ kind: 'createIssue', repo, title, body, labels, projects: ticked.map((p) => p.key), handoff: used, handoffPicked: picked !== null && picked === used, plan: preview.plan, picks: { iteration: showIt ? itPick : null, milestone: msPick } });
-        setBusy(false);
-        if (r.ok) return onClose();
-        setNote(noteOf({ ok: false, error: r.error, warning: null }, ''));
-      }}
+      onConfirm={() => void create('none')}
+      covered={asking}
+      wide
+      confirmKey
+      actions={
+        <span className="quick-actions" data-testid="new-issue-handoff">
+          {choices.map((h) => {
+            const c = checks[h];
+            const why = handoffProblem(repo, c);
+            const text = h === 'agent' ? '交给 agent' : state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）';
+            const key = keyText(h === 'agent' ? 'newIssueAgent' : 'newIssueAutopilot');
+            return (
+              <button
+                key={h}
+                data-testid={`new-issue-${h}`}
+                data-state={c.state}
+                disabled={!canHand(h)}
+                title={why || `${handoffSummary(h, c.state === 'ok' ? c.labels : [])}（${key}）`}
+                onClick={() => press(h)}
+              >
+                {text}
+                <kbd>{key}</kbd>
+              </button>
+            );
+          })}
+        </span>
+      }
+      footnote={[...new Set(choices.filter((h) => checks[h].state !== 'ok' && checks[h].state !== 'loading').map((h) => handoffProblem(repo, checks[h])))].map((why) => (
+        <div key={why} className="small muted dialog-footnote" data-testid="new-issue-handoff-why">
+          {why}
+        </div>
+      ))}
     >
       <div className="form" data-testid="new-issue">
         <label>
@@ -241,63 +303,22 @@ export function NewIssueDialog({
           <PasteImageNotice
             copied={pasted.copied}
             webLabel="到 GitHub 网页上继续新建"
-            // the same wait as 创建: a hand-over whose labels are still being read is not sent as "no labels"
-            webBlocked={handoffWaits ? handoffProblem(repo, wantedCheck) : ''}
+            webBlocked=""
             onWeb={() => {
-              if (handoffWaits) return;
-              // the web page's new-issue form, filled with what was typed here
-              void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, mergeLabels(handoffLabels, labels)));
+              // the web page's new-issue form, filled with what was typed here (GitHub#450: the labels picked here only)
+              void api().openExternal(newIssueOnWeb('https://github.com', repo, title, body, labels));
               setPasted({ copied: null });
             }}
             onDismiss={() => setPasted(null)}
           />
         )}
-        <div data-testid="new-issue-handoff" data-handoff={handoff} data-wanted={wanted}>
-          建好后
-          <div className="handoff-picks">
-            {choices.map((h) => {
-              const c = checks[h];
-              const usable = c.state === 'ok' || (c.state === 'loading' && h === wanted);
-              return (
-                <label key={h} title={handoffProblem(repo, c)}>
-                  <input
-                    type="radio"
-                    name="new-issue-handoff"
-                    data-testid="new-issue-handoff-choice"
-                    data-choice={h}
-                    data-state={c.state}
-                    checked={handoff === h}
-                    disabled={busy || !usable}
-                    onChange={() => setPicked(h)}
-                  />
-                  {HANDOFF_TITLES[h]}
-                </label>
-              );
-            })}
+        {draft?.handoff && draft.handoff !== 'none' && (
+          // GitHub#450: a draft given back keeps its text, not a pressed button — say which one it was, so a
+          // ⌘↩ does not quietly turn it into a plain issue
+          <div className="small muted" data-testid="new-issue-draft-handoff" data-handoff={draft.handoff}>
+            上次是按「{draft.handoff === 'agent' ? '交给 agent' : '托管（自动合并）'}」建的，没有建成；要照旧交接，再按下面对应的按钮
           </div>
-          {handoffSummary(handoff, handoffLabels) && (
-            <div className="small muted" data-testid="new-issue-handoff-summary">
-              {handoffSummary(handoff, handoffLabels)}
-            </div>
-          )}
-          {handoffWaits && (
-            <div className="small muted" data-testid="new-issue-handoff-wait">
-              {handoffProblem(repo, wantedCheck)}
-            </div>
-          )}
-          {!fellBack &&
-            !handoffWaits &&
-            [...new Set(choices.filter((h) => h !== handoff && checks[h].state !== 'ok' && checks[h].state !== 'loading').map((h) => handoffProblem(repo, checks[h])))].map((why) => (
-              <div key={why} className="small muted" data-testid="new-issue-handoff-why">
-                {why}
-              </div>
-            ))}
-          {fellBack && (
-            <div className="small muted" data-testid="new-issue-handoff-fallback" data-reason={wantedCheck.state}>
-              {wantedCheck.state === 'error' ? fellBack : `${fellBack}，本次只建普通 issue，记住的「${HANDOFF_TITLES[wanted]}」不变`}
-            </div>
-          )}
-        </div>
+        )}
         <div data-testid="new-issue-projects">
           建好后加入这些看板
           {allProjects.length ? (
@@ -405,6 +426,7 @@ export function NewIssueDialog({
                           title="选择标签"
                           hint={repo}
                           testid="new-issue-label-picker"
+                          pinned={pinnedLabels(hb)}
                           disabled={false}
                           items={opts.labels.map((l) => ({ name: l.name, color: l.color, checked: labels.includes(l.name) }))}
                           onToggle={(l) => toggleLabel(l.name)}
@@ -466,5 +488,40 @@ export function NewIssueDialog({
         <ResultBanner note={note} testid="new-issue-result" />
       </div>
     </ConfirmDialog>
+    {asking && (
+      <ConfirmDialog
+        title="托管新 issue？"
+        focusCancel
+        confirmLabel="确认托管并创建"
+        busy={busy}
+        disabled={!canHand('autopilot')}
+        onCancel={() => {
+          // nothing created, "不再提示" not kept; back to the dialog with everything typed
+          setAsking(false);
+          backToTitle.current = true;
+        }}
+        onConfirm={async () => {
+          // the tick counts only with this button, as in the detail panel
+          if (noMoreAsk) void Promise.resolve(api().setAutopilotConfirm(false)).catch(() => undefined);
+          const ok = await create('autopilot', true);
+          if (!ok) setAsking(false);
+        }}
+      >
+        <div data-testid="new-issue-autopilot-explain">
+          <p>
+            建好后会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>。
+          </p>
+          <p>agent 接手，从方案到合并不再等人确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
+          <p>
+            要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
+          </p>
+        </div>
+        <label className="row small">
+          <input type="checkbox" data-testid="new-issue-autopilot-no-more-ask" checked={noMoreAsk} disabled={busy} onChange={(e) => setNoMoreAsk(e.target.checked)} />
+          不再提示，以后点「托管」直接执行（设置里可改回）
+        </label>
+      </ConfirmDialog>
+    )}
+    </>
   );
 }

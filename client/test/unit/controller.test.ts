@@ -12,7 +12,8 @@ import { writesEnabled } from '../../src/data/board';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
 import type { AppState } from '../../src/shared/types';
-import { DEFAULT_QUERY } from '../../src/shared/viewSettings';
+import { DEFAULT_QUERY, DEFAULT_SHOW_CLOSED } from '../../src/shared/viewSettings';
+import { flowTally, litTally } from '../../src/data/flowTally';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -125,10 +126,12 @@ describe('login (OAuth device flow)', () => {
     expect(s.login.verificationUri).toBe(`${fake.web}/login/device`);
     await c.openVerification();
     expect(opened).toEqual([`${fake.web}/login/device`]);
-    // still pending for a few polls: no token yet
-    await new Promise((r) => setTimeout(r, 30));
+    // still pending for a few polls: no token yet. Waited for by what is seen (the first token poll reached
+    // GitHub), not by a fixed 30 ms: measured 0–11 ms from here, which a fully loaded box can exceed (PR #459 review round 2)
+    const polls = () => fake.log.filter((l) => l.path === '/web/login/oauth/access_token').length;
+    for (let i = 0; i < 1500 && polls() === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(polls()).toBeGreaterThan(0);
     expect(c.getState().phase).toBe('login');
-    expect(fake.log.filter((l) => l.path === '/web/login/oauth/access_token').length).toBeGreaterThan(0);
     const g = fake.resolveGrant('approved');
     await p;
     expect(c.getState().phase).toBe('ready');
@@ -317,7 +320,7 @@ describe('sync and cache', () => {
     expect(c.getState().view.query).toBe('label:bug');
     c.addSource(PROJECT_URL);
     await c.syncNow();
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done', imported: { viewNumber: 1, viewName: 'Pending' } });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '', imported: { viewNumber: 1, viewName: 'Pending' } });
     expect(c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' } });
   });
 
@@ -327,7 +330,7 @@ describe('sync and cache', () => {
     c.addSource(`${PROJECT_URL}/views/1`);
     await c.start();
     await c.syncNow();
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '' });
     // someone edits the saved view on github.com; the client keeps what it imported
     const pages = fake.state.projects.get('org/gigleai/11')!;
     const edited = pages.map((p: any) => ({
@@ -337,7 +340,7 @@ describe('sync and cache', () => {
     fake.state.projects.set('org/gigleai/11', edited);
     await c.syncNow();
     expect(c.getBoardData().projects[0].views[0]).toMatchObject({ filter: 'is:open' }); // the round did read the edit
-    expect(c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(c.getState().view).toMatchObject({ layout: 'table', query: '' });
   });
 
   it('settings changed by the user survive a restart; removing and re-adding the Project imports again', async () => {
@@ -360,7 +363,7 @@ describe('sync and cache', () => {
     second.c.removeSource('project:org/gigleai/11');
     second.c.addSource(`${PROJECT_URL}/views/1`);
     await second.c.syncNow();
-    expect(second.c.getState().view).toMatchObject({ layout: 'table', query: '-label:Done -status:Done' });
+    expect(second.c.getState().view).toMatchObject({ layout: 'table', query: '' });
     expect(second.c.getState().view.table).toMatchObject({ groupBy: 'iteration', sort: { field: 'updated', dir: 'desc' }, slice: null, sliceByRepo: true, hierarchy: true });
   });
 
@@ -415,7 +418,8 @@ describe('sync and cache', () => {
     });
 
     it('a saved search text is kept as it is on start, the empty one included', async () => {
-      const base = { mode: 'iteration', swimlanes: false, selected: null };
+      // saved by this build (it carries the switches): never migrated, `is:open` included
+      const base = { mode: 'iteration', swimlanes: false, selected: null, showClosed: {} };
       const empty = await make({ seed: { view: { ...base, query: '' } } });
       expect(empty.c.getState().view.query).toBe('');
       const own = await make({ seed: { view: { ...base, query: 'is:open' } } });
@@ -423,6 +427,7 @@ describe('sync and cache', () => {
       const broken = await make({ seed: { view: { ...base, query: 7 } } });
       expect(broken.c.getState().view.query).toBe(DEFAULT_QUERY);
     });
+
 
     it('a view without a filter still empties any other search text: an earlier import, an own text, an empty box', async () => {
       const { c } = await loggedIn();
@@ -464,6 +469,29 @@ describe('sync and cache', () => {
       await c.syncNow();
       expect(c.getState().view).toMatchObject({ layout: 'table', query: DEFAULT_QUERY, imported: { viewNumber: 1 } });
     });
+  });
+
+  it('GitHub#464: an older build\'s search is migrated once on start (each wording: viewSettings.test.ts) — a lit number stays lit; each view keeps its own "显示已关闭" switch; both survive a restart', async () => {
+    // saved by a build from before the switches, with a flow number lit
+    const first = await make({ seed: { view: { mode: 'iteration', swimlanes: false, selected: null, query: 'is:open label:"pending/human"' } } });
+    expect(first.c.getState().view.query).toBe('label:"pending/human"');
+    expect(litTally(first.c.getState().view.query, flowTally([], first.c.getState().handBack))).toBe('human');
+    expect(first.c.getState().view.showClosed).toEqual(DEFAULT_SHOW_CLOSED);
+    // a change touches only the switch it names; a number made in Settings (GitHub#468) has its own
+    first.c.setView({ showClosed: { board: true } });
+    first.c.setView({ showClosed: { human: true } });
+    first.c.setView({ showClosed: { board: false, table: true } });
+    first.c.setView({ showClosed: { 't-abc': true } });
+    first.c.setView({ showClosed: { graph: 'yes' as any } }); // refused whole
+    first.c.setView({ showClosed: { '': true } }); // no name: refused whole
+    const want = { ...DEFAULT_SHOW_CLOSED, table: true, human: true, 't-abc': true };
+    expect(first.c.getState().view.showClosed).toEqual(want);
+    // `is:open` typed by hand in this build is not migrated again
+    first.c.setView({ query: 'is:open' });
+    first.c.stopTimer();
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().view.showClosed).toEqual(want);
+    expect(second.c.getState().view.query).toBe('is:open');
   });
 
   it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {
@@ -533,6 +561,49 @@ describe('sync and cache', () => {
     const broken = await make({ seed: { tableFolds: { iteration: 'none', status: [3, 'status:Todo', 'status:Todo'], nope: ['x'] }, autopilotConfirm: 'off' } });
     expect(broken.c.getState().tableFolds).toEqual({ status: ['status:Todo'] });
     expect(broken.c.getState().autopilotConfirm).toBe(true);
+  });
+
+  it('GitHub#487: changed shortcut keys survive a restart and a Project import; a refused change writes nothing; a broken saved value is repaired on read, not written back', async () => {
+    const first = await loggedIn();
+    expect(first.c.getState().shortcutKeys).toEqual({});
+    expect(first.c.getState().shortcutDropped).toEqual([]);
+    expect(first.c.setShortcutKey('handBack', { key: 'a', mod: true, shift: true })).toEqual({ ok: true });
+    // ⌘⇧B is 等前置's: refused, nothing changes
+    const refused = first.c.setShortcutKey('autopilot', { key: 'b', mod: true, shift: true });
+    expect(refused.ok).toBe(false);
+    expect(first.c.setShortcutKey('hide', { key: 'q' }).ok).toBe(false); // fixed
+    expect(first.c.setShortcutKey('newIssue', { key: 'i', mod: true, shift: true })).toEqual({ ok: true });
+    expect(first.c.setShortcutKey('search', { key: 'c' })).toEqual({ ok: true });
+    // putting 新建 back would give C to two shortcuts: refused
+    const back = first.c.setShortcutKey('newIssue', null);
+    expect(back.ok).toBe(false);
+    if (!back.ok) expect(back.why).toContain('「跳到搜索框」');
+    const kept = { handBack: { key: 'a', mod: true, shift: true }, newIssue: { key: 'i', mod: true, shift: true }, search: { key: 'c' } };
+    expect(first.c.getState().shortcutKeys).toEqual(kept);
+    first.c.addSource(`${PROJECT_URL}/views/1`);
+    await first.c.start();
+    await first.c.syncNow();
+    expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
+    expect(first.c.getState().shortcutKeys).toEqual(kept); // …and left the keys alone
+    first.c.stopTimer();
+
+    const second = await make({ credentials: first.credentials });
+    expect(second.c.getState().shortcutKeys).toEqual(kept);
+    second.c.resetShortcutKeys();
+    expect(second.c.getState().shortcutKeys).toEqual({});
+    const third = await make({ credentials: first.credentials });
+    expect(third.c.getState().shortcutKeys).toEqual({});
+
+    // 新建 broken, 搜索 on C: 新建 back to its defaults, so 搜索's C goes too; both named, nothing written back
+    const seed = { shortcutKeys: { newIssue: { key: 9 }, search: { key: 'c' }, labels: { key: 'k', mod: true } } };
+    const broken = await make({ seed });
+    expect(broken.c.getState().shortcutKeys).toEqual({ labels: { key: 'k', mod: true } });
+    expect(broken.c.getState().shortcutDropped.map((d) => d.id)).toEqual(['newIssue', 'search']);
+    expect((broken.c as any).cache.getSetting('shortcutKeys', null)).toEqual(seed.shortcutKeys);
+    // changing or restoring one of them takes it off the list, and writes the repaired keys
+    expect(broken.c.setShortcutKey('search', null)).toEqual({ ok: true });
+    expect(broken.c.getState().shortcutDropped.map((d) => d.id)).toEqual(['newIssue']);
+    expect((broken.c as any).cache.getSetting('shortcutKeys', null)).toEqual({ labels: { key: 'k', mod: true } });
   });
 
   it('GitHub#369: "切到 App 时收起全部系统通知" is off by default, survives a restart, and a broken saved value reads as off', async () => {

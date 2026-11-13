@@ -129,6 +129,7 @@ AUTO_RELEASE_MAIN_CHECKOUT=0
 # 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # greedy 下额外的挡工 label（逗号分隔，追加在内置五个之后）
+LABEL_PENDING_LATER="pending/later"  # 暂缓：greedy / 托管都不自动捞它开工；留空 = 关闭
 GREEDY_SCAN_LIMIT=100
 
 # 第一排序键从哪儿来：label = priority/p* 标签；project = GitHub 的 Priority 字段；both = 前者优先、缺了回落标签
@@ -566,13 +567,38 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
   所有「摘掉」里最晚的一次，授权来自晚于停止线、维护者亲手打的那一次）。父 issue 摘标签、打 `pending/human`、关闭，
   整组子项一起停；只停一个子项就在那个子项上打 `pending/human`。读不到父 issue / 它的标签记录 = 判不了：本轮不派工、
   不写任何东西，下轮再判（不按普通流程派出去）。子项全部关闭后父 issue 翻 `pending/human`，由人关闭。
-- **合并后 issue 留给人关**（GitHub#233）：托管 PR 的正文只写 `Refs #N`、不写关闭关键词，GitHub 合并时不会关 issue。
-  合并后 daemon 在 issue 上发一条说明——外面一句话结论和「要人做什么」，背景 / 采用的方案 / 排除的方案和原因照搬
-  worker 写在 PR 正文里的总结段（`<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->`），合并依据折叠在
-  最后——然后把 issue 翻 `pending/human`、摘 `pending/PR`。人看过满意就关闭（关成「已完成」照常自动打 `Done`），要返工就打
-  `pending/agent`。合并之后、交接之前 issue 上已经挂了任何流程标签（派工、进行中、复审、等前置、等人……），说明新一轮已经
-  开始，交接一个标签都不动、只补说明。交接每次写之前现读 issue，状态或标签集合变了本轮不写；读不到下轮再试，说明按标记去重。
-  ⚠️ 正文还带关闭关键词的托管 PR（包括以前开的 `Closes #N` 写法）合并前会被交回 worker，只把那一处改成 `Refs #N`。
+- **合并即关 issue，挂 `pending/human` 提醒人看**（GitHub#461，起初 GitHub#233 是「issue 留给人关」）：托管 PR 的正文写
+  `Closes #N`，合进默认分支时 GitHub 关掉 issue，等它的下游条目（`pending/blocked`）随之开工。合并后 daemon 在 issue 上发
+  一条说明——外面一句话结论和「要人做什么」，背景 / 采用的方案 / 排除的方案和原因照搬 worker 写在 PR 正文里的总结段
+  （`<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->`），合并依据折叠在最后——然后给已关闭的 issue 打
+  `Done`、挂 `pending/human`、摘 `pending/PR` 等流程标签。人看过满意就**只摘掉 `pending/human`**（`Done` 留着；关闭之后挂上过、
+  又被摘掉的提醒，daemon 按事件记录认出来，不会加回）；要返工就重开 issue → 摘掉 `Done` 和 `pending/human` → 打 `pending/agent`。合并时 GitHub 还没关掉 issue 就下一轮
+  再看；人在交接之前重开了 issue，按下一条「issue 留着」那一套走。交接一次只写一个标签，每写一个之前现读 issue 和它的事件
+  记录判定两次，写完一步回来，状态、标签集合、最后一次关闭和最后一次挂上 `pending/human` 的位置必须正好是「上一次 + daemon
+  刚写成的这一步」（事件只能多出 daemon 这一步自己的那一条），否则本轮停手；读不到下轮再试，说明按标记去重。
+  - **关闭清扫留着关闭之后挂上的提醒**：「已关闭（已完成）的 issue 打 `Done`、摘掉流程标签」那一趟（GitHub#159）看 issue
+    的事件记录——`pending/human` 最后一次「加上」排在最后一次「关闭」之后，就是关闭后的提醒，不摘；排在关闭之前的（人在
+    `pending/human` 状态下直接关掉）照旧摘掉。先后按事件在记录里的顺序比，不比时间（合并关 issue 和挂提醒常在同一秒）。
+    每个已完成关闭的 issue 都要读这份记录（挂不挂 `pending/human` 都一样）；记录读不到、缺编号、和现状对不上（没有关闭事件，
+    或记录推出的状态——最后一次是关闭还是重开、提醒最后一次是加上还是摘掉——和现在读到的对不上），本轮不写、留队下轮再判。
+    这一轮只要没收尾成功（读不到、对不上、判定之后或两次写之间有人动过、写失败），这个 issue 整轮都不再碰（同一轮后面的重试也不接手），下一轮从头再判。清扫同样一次只写一个标签、
+    每写一个之前判两次、写完一步核对依据，判定之后人重新挂了提醒或重开了 issue，本轮停手、不按旧结论接着写。
+  - **怎么找要看的条目**：
+
+    | 想看什么 | 仓库 Issues 页面 | GitHub Project 视图 |
+    |---|---|---|
+    | 要人看的（含合并后已关闭的） | `label:pending/human` | `label:pending/human`（不写 `is:open`） |
+    | 还在进行的 | `is:open` | `is:open` |
+    | 进行中 + 要人看的 | `is:issue (is:open OR (is:closed label:pending/human))` | 写不出（不支持跨条件的「或」和括号） |
+
+    桌面客户端搜索框的默认条件 `-Status:done -label:Done` 会藏掉这类已关闭、带 `Done` 的条目，要从顶栏「等人处理」进；
+    Project 视图的筛选写了 `-Status:done` 时同理，另存一个只写 `label:pending/human` 的视图。
+- **issue 留着的老写法**：正文只写 `Refs #N`、不写关闭关键词的托管 PR（改动前开的那些）照合，GitHub 合并时不关 issue：
+  daemon 发说明后把 issue 翻 `pending/human`、摘 `pending/PR`，人看过满意就关闭（关成「已完成」照常自动打 `Done`），要返工就打
+  `pending/agent`。合进的不是默认分支（GitHub 不会按关键词关 issue）的 `Closes #N` PR 也走这一套。合并之后、交接之前 issue
+  上已经挂了任何流程标签（派工、进行中、复审、等前置、等人……），说明新一轮已经开始，交接一个标签都不动、只补说明。
+  交接每次写之前现读 issue，状态或标签集合变了本轮不写；读不到下轮再试，说明按标记去重。
+  维护者手动合并的托管 PR 不特殊处理：和普通 PR 一样，`Closes #N` 带关的 issue 打 `Done`。
 - **互通名单**（`TRUSTED_REPOS`，GitHub#233，默认空）：逗号分隔的 `owner/repo`。名单里的仓库 ① 可以当拆分子项的父 issue
   所在仓库：父 issue 上维护者亲手打的托管标签授权本仓库的子项，打标签的人在**两个仓库**都要有写权限；② 可以当等前置的
   前置所在仓库（见下面「等前置」）。跨仓库读不到（父 issue、标签记录、权限）一律判不了，本轮不写。名单外的仓库照旧不认。
@@ -616,8 +642,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 
 | 检查 | 不成立 → |
 |---|---|
-| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`，正文只引用一个 `Refs #N`、没有关闭关键词；或正文只关闭 `#N`，逐行和整段两种读法一致），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
-| 绑 issue 的 PR 正文里没有会让 GitHub 合并时关掉本仓库 issue 的关键词（GitHub#233：合并后 issue 留给人关） | 交回 worker 改成 `Refs #N` |
+| PR 来自本仓库，并且要么绑 issue（分支正好是 `BRANCH_PREFIX<N>`，正文只关闭 `#N`，逐行和整段两种读法一致；或正文只引用一个 `Refs #N`、没有关闭关键词），要么正文一个本仓库关闭关键词都没有（以 PR 为准，GitHub#142） | `pending/human` |
 | 以 PR 为准时：授权只看 PR（下一行去掉 issue 那一处），而且打标签那一刻的 PR 正文（修改历史里那一版）也合上一行的条件 | `pending/human` |
 | 授权：issue `#N` 或 PR 上**现在挂着**托管标签，那一处最后一次「加上托管标签」的操作人是 `User` 类型、有 `write` / `admin` 权限，且不是 loop 的写入账号、不是 `REQUESTER_BOT_ACCOUNT`；**并且这次加上晚于 issue 和 PR 两处所有的「摘掉」**（见下面「两处的标签怎么合起来算」） | `pending/human` |
 | PR 自己挂着托管标签（绑 issue 的 PR 由 daemon 从 issue 复制过来，见上文；GitHub#190） | 本轮判不了（连续 `AUTOPILOT_UNKNOWN_MAX` 轮 → `pending/human`） |
@@ -958,8 +983,8 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 条目也认；daemon 读那个仓库里的状态，完成口径和本仓库一样。裸 `#N` 永远指本仓库，本仓库同号的条目不会触发它。名单外的
 仓库交人，评论写明怎么把它加进名单——名单为空时所有 `owner/repo#N` 都走这条（GitHub#243 之前，名单外的 `owner/repo#N`
 会被误读成本仓库的 `#N`）。别的仓库只用轮询身份读、daemon 从不往那边写；私有仓库要轮询令牌有读权限，否则它回 404，
-条目交人、评论写明是哪个前置、令牌缺什么权限。⚠️ 托管合并后 issue 留给人关，所以等一个托管 issue 实际等的是**人验收
-关闭它**；想在代码合并时就接着做，前置写那个 PR。
+条目交人、评论写明是哪个前置、令牌缺什么权限。托管 PR 写 `Closes #N`，合并即关 issue（GitHub#461），等一个托管
+issue 就是等它合并；只有正文写 `Refs #N` 的老托管 PR，issue 合并后留着、等人验收关闭，想在代码合并时就接着做，前置写那个 PR。
 
 **交人之后怎么恢复等待**：daemon 的评论里写了步骤——改前置（「Blocked by」里去掉失败的那个、加上新的，等 PR 就发一条新登记），
 **摘掉 `pending/human`**，重新挂 `pending/blocked`。`pending/human` 还在时 daemon 按叫停处理，永远不会自动继续。
@@ -975,6 +1000,29 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 新挂上的条目仍按空闲退避：项目安静了一周时，手动挂上的标签最长约 30 分钟才被看到（worker 自己挂的，项目刚活跃过，
 1 分钟内就看到）。`rm poll-pace.json` 立刻回到全速。「已合并」不等于「本机已部署」：前置是 loop 自身的改动时，
 被叫回来的 worker 先核对本机部署版本再用。不支持：github.com 以外的前置、环形依赖检测（互相等的两条都一直等）。
+
+## 暂缓：`pending/later`（GitHub#463）
+
+给人决定「暂时不做」的条目用。配了 `LABEL_PENDING_LATER`（示例配置写的是 `pending/later`；配置里没这一行或写成空值 = 关闭，
+挡工名单和以前一样）后，挂着它的条目 daemon 不会自己捞去开工：
+
+| 条目 | daemon 做什么 |
+|---|---|
+| 只挂着暂缓标签（greedy 模式下的兜底趟） | 跳过，不派工 |
+| 挂着托管标签 + 暂缓标签（托管的「只挂托管标签就派」） | 跳过，不派工 |
+| 挂着暂缓标签，又有人打了派工标签（`pending/agent` 等） | 照常派工——它只挡自动捞取，派工标签是明确的「开干」 |
+
+它不是「等人处理」：客户端顶栏「等人处理 N」不数它；因为挂了标签，它也不再出现在客户端的「未处理」里。
+daemon 不会自己摘它：重新开工时，人摘掉 `pending/later` 就行（greedy 模式下一轮就收），或直接打 `pending/agent`。
+
+**建标签**：把这一行写进配置后重跑 `setup.sh`，它会按配置建标签；或在仓库的 Labels 页面手动新建。
+
+**找暂缓的条目**：
+
+| 想看什么 | GitHub 仓库 Issues 页面 | GitHub Project 视图 | 桌面客户端 |
+|---|---|---|---|
+| 暂缓的 | `label:pending/later` | `label:pending/later` | `label:pending/later` |
+| 进行中、排除暂缓的 | `is:open -label:pending/later` | `is:open -label:pending/later` | `is:open -label:pending/later` |
 
 ## agent 撞到用量上限：停派这个 agent，被打断的条目转人工（GitHub#341）
 

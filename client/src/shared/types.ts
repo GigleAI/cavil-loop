@@ -439,6 +439,11 @@ export interface SourceSnapshot {
   fetchedAt: number;
   items: Item[];
   project?: ProjectMeta;
+  /**
+   * GitHub#462, repository sources: the pending label the "closed items carrying it" list was read
+   * for ('' = not read; absent = a snapshot from before that list existed). A board reads every item.
+   */
+  pendingLabel?: string;
 }
 
 export interface SourceTimes {
@@ -540,6 +545,34 @@ export interface HandBackLabels {
 
 export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
 
+/** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows */
+export type TallyFlow = 'running' | 'agent' | 'human';
+/** GitHub#468: the colours a view-bar number's dot can take ('ring' = the hollow circle) */
+export type TallyColor = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'ring';
+/**
+ * GitHub#468: what a view-bar number counts.
+ *  - flow: open items carrying that flow label (whole name, any case) — the reminders' own rule; the label
+ *    is read from `handBack` every time, so the row follows the label setting
+ *  - query: the items a search condition picks (the search box's own filter); a click puts that text in
+ *    the box. `from` = the flow label the row was turned from, so it can be turned back
+ */
+export type TallySource = { kind: 'flow'; flow: TallyFlow } | { kind: 'query'; query: string; from?: TallyFlow };
+/** GitHub#468: one number of the view bar, as set in Settings */
+export interface TallyDef {
+  id: string;
+  name: string;
+  color: TallyColor;
+  source: TallySource;
+}
+/**
+ * GitHub#464: the "显示已关闭" switch, one per view — the three layouts (`board` / `table` / `graph`), and each
+ * number of the view bar while it is lit, by its row's id (the default rows: `running` / `agent` / `human` /
+ * `unlabeled`; a number made in Settings has its own, GitHub#468). false = only open items are listed; a number
+ * not switched yet has no entry and starts as it counts (on for "等人处理", which counts closed items too).
+ */
+export type ShowClosedKey = string;
+export type ShowClosed = Record<ShowClosedKey, boolean>;
+
 export interface ViewSettings {
   mode: ColumnMode;
   swimlanes: boolean;
@@ -558,6 +591,8 @@ export interface ViewSettings {
   detailFields: boolean;
   /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */
   codeWrap: boolean;
+  /** GitHub#464: per view, whether closed / merged items are listed too (all false by default) */
+  showClosed: ShowClosed;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';
@@ -598,6 +633,13 @@ export interface SyncState {
 export type AppKind = 'oauth' | 'github-app';
 export const APP_KINDS: readonly AppKind[] = ['oauth', 'github-app'];
 
+/** GitHub#487: one changed shortcut key: the key, and which of ⌘ / Ctrl, Shift, ⌥ / Alt are held with it */
+export type ShortcutKeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean };
+/** GitHub#487: a saved key left out when the settings were read: which shortcut, its name, why */
+export type ShortcutKeyDropped = { id: string; name: string; why: string };
+/** GitHub#487: a key change: saved, or refused with the reason (nothing changed) */
+export type ShortcutKeyResult = { ok: true } | { ok: false; why: string };
+
 export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
@@ -624,6 +666,10 @@ export interface AppState {
   /** whether the platform layer can persist credentials (false on unsupported platforms) */
   credentialsPersistent: boolean;
   handBack: HandBackLabels;
+  /** GitHub#468: the view-bar numbers as set in Settings; null = the default table */
+  tallies: TallyDef[] | null;
+  /** GitHub#468: a saved table could not be read (not a list, a row it does not know) — the default is shown */
+  talliesBroken: boolean;
   /** GitHub#434: the waiting label of "等前置…" and the other flow labels (kept on this machine) */
   blockedLabels: BlockedLabels;
   /** the merge method last chosen, per repository and overall (GitHub#175) */
@@ -634,6 +680,10 @@ export interface AppState {
   laneFolds: LaneFolds;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
+  /** GitHub#487: the shortcut keys changed on this machine (by shortcut id; one key each), already repaired — the table in effect never has a conflict */
+  shortcutKeys: Record<string, ShortcutKeySpec>;
+  /** GitHub#487: saved keys that could not be used when the settings were read, and why (shown until that shortcut is changed or restored) */
+  shortcutDropped: ShortcutKeyDropped[];
   /** GitHub#369: switching to the window takes back every delivered notification; false (default) = they stay, a click takes back only that one */
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */

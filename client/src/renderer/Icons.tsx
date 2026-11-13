@@ -27,11 +27,16 @@ const PATHS = {
   tag: <><path d="M2.5 2.5h5.2l6 6-5.2 5.2-6-6z" /><circle cx="5.3" cy="5.3" r=".8" fill="currentColor" /></>,
   user: <><circle cx="8" cy="5.5" r="2.8" /><path d="M2.5 14c.6-2.8 2.9-4.3 5.5-4.3s4.9 1.5 5.5 4.3" /></>,
   key: <><circle cx="5" cy="11" r="2.8" /><path d="M7 9l6.5-6.5M11 5l1.8 1.8" /></>,
+  // GitHub#487: the settings page's "快捷键"
+  keyboard: <><rect x="1.5" y="4" width="13" height="8.5" rx="1.5" /><path d="M4 7h.1M6.5 7h.1M9 7h.1M11.5 7h.1M5 9.8h6" /></>,
   bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3z" /><path d="M6.5 14.5h3" /></>,
   back: <path d="M10 3L5 8l5 5" />,
   // GitHub#397: the home tab
   home: <path d="M2.5 7.5L8 2.5l5.5 5v6h-3.6v-3.8H6.1v3.8H2.5z" />,
   chevron: <path d="M4 6l4 4 4-4" />,
+  // GitHub#467: the tab strip's "more tabs this way" arrows
+  'chevron-left': <path d="M10 3.5L5.5 8l4.5 4.5" />,
+  'chevron-right': <path d="M6 3.5l4.5 4.5L6 12.5" />,
   pencil: <><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /><path d="M9 4l3 3" /></>,
   // item states (same shapes as GitHub's: circle + dot, circle + tick, circle + slash, branch, merge)
   'issue-open': <><circle cx="8" cy="8" r="6.25" /><circle cx="8" cy="8" r="1.3" fill="currentColor" /></>,

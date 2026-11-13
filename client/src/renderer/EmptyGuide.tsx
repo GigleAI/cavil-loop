@@ -7,7 +7,8 @@ import { failureOf } from '../shared/readFailure';
 import { Icon } from './Icons';
 import { FailureNote, openAuthPage } from './FailureNote';
 
-export type SettingsIntent = 'pick' | 'add';
+/** GitHub#487: 'keys' = the shortcut list's "在设置里改快捷键" */
+export type SettingsIntent = 'pick' | 'add' | 'keys';
 
 export function EmptyGuide({ guide, state, labelOf, onSettings }: { guide: NonNullable<Guide>; state: AppState; labelOf: (key: string) => string; onSettings: (intent?: SettingsIntent) => void }) {
   if (guide.kind === 'add')

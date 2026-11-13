@@ -6,12 +6,14 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
+import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
+import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
@@ -110,6 +112,7 @@ import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
+import type { WindowFrame } from '../shared/ipc';
 
 export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
 export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
@@ -267,6 +270,8 @@ const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
+/** GitHub#487: the shortcut keys changed on this machine, its own key (an imported view never touches it) */
+const SHORTCUT_KEYS = 'shortcutKeys';
 /** GitHub#434: the two settings of "等前置…" */
 const BLOCKED_LABELS = 'blockedLabels';
 
@@ -529,11 +534,14 @@ export class Controller {
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
+      ...this.loadTallies(),
       blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null), handBack.blocked),
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
+      // GitHub#487: what was saved, made usable; reading never writes it back (the next change writes the repaired keys)
+      ...((r) => ({ shortcutKeys: r.keys as Record<string, ShortcutKeySpec>, shortcutDropped: r.dropped }))(repairKeys(this.cache.getSetting<unknown>(SHORTCUT_KEYS, null))),
       clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
       notifyScope,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
@@ -1401,7 +1409,12 @@ export class Controller {
 
   /** A change made by the user. Invalid values are ignored as a whole. */
   setView(patch: ViewPatch): void {
-    const merged = { ...this.state.view, ...patch, table: { ...this.state.view.table, ...(patch.table ?? {}) } };
+    const merged = {
+      ...this.state.view,
+      ...patch,
+      table: { ...this.state.view.table, ...(patch.table ?? {}) },
+      showClosed: { ...this.state.view.showClosed, ...(patch.showClosed ?? {}) },
+    };
     if (!isValidView(merged)) return;
     const view: ViewSettings = merged;
     const touched = Object.keys(patch).flatMap((k) => (k === 'table' ? Object.keys(patch.table ?? {}).map((t) => `table.${t}`) : [k]));
@@ -1668,6 +1681,8 @@ export class Controller {
         progress();
       },
       this.state.handBack.blocked,
+      // GitHub#462: a repository's closed items carrying the pending label are read too
+      this.state.handBack.human,
     );
     run.reading = false;
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
@@ -1878,6 +1893,24 @@ export class Controller {
     this.badge();
     this.state = { ...this.state, ...this.pendingNow() };
     this.set({ notifyScope: scope });
+  }
+
+  /**
+   * GitHub#487: change one shortcut's key, or put it back to its defaults (`spec` null). The whole table in effect
+   * is checked (`changeKey`); refused = nothing written, nothing changed, the reason handed back.
+   */
+  setShortcutKey(id: unknown, spec: unknown): ShortcutKeyResult {
+    const r = changeKey(this.state.shortcutKeys as CustomKeys, id, spec);
+    if (!r.ok) return { ok: false, why: r.why };
+    this.cache.setSetting(SHORTCUT_KEYS, r.keys);
+    this.set({ shortcutKeys: r.keys as Record<string, ShortcutKeySpec>, shortcutDropped: this.state.shortcutDropped.filter((d) => d.id !== id) });
+    return { ok: true };
+  }
+
+  /** GitHub#487: every shortcut back to its default keys (the defaults have no conflict, so this always works) */
+  resetShortcutKeys(): void {
+    this.cache.setSetting(SHORTCUT_KEYS, {});
+    this.set({ shortcutKeys: {}, shortcutDropped: [] });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */
@@ -2109,11 +2142,46 @@ export class Controller {
     await this.deps.desktop?.closeWindow().catch(() => undefined);
   }
 
+  /**
+   * GitHub#467: how the window's top row sits. Anything unreadable (no shell, a failed or malformed
+   * answer) is the system's own title bar: the page then leaves no room and moves nothing itself,
+   * which is never worse than before this row existed.
+   */
+  async windowFrame(): Promise<WindowFrame> {
+    const f = await this.deps.desktop?.windowFrame().catch(() => null);
+    return { overlay: f?.overlay === true, fullscreen: f?.overlay === true && f.fullscreen === true };
+  }
+
+  async startDrag(): Promise<void> {
+    await this.deps.desktop?.startDrag().catch(() => undefined);
+  }
+
+  async toggleZoom(): Promise<void> {
+    await this.deps.desktop?.toggleZoom().catch(() => undefined);
+  }
+
   /** GitHub#434: the other flow labels (empty = the default). The waiting label is `handBack.blocked` (setHandBack). */
   setBlockedLabels(patch: Partial<BlockedLabels>): void {
     const flow = typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow;
     this.cache.setSetting(BLOCKED_LABELS, { flow });
     this.set({ blockedLabels: { blocked: this.state.handBack.blocked, flow } });
+  }
+
+  /** GitHub#468: the view-bar numbers as saved; a value that is not a whole valid table shows the default and says so */
+  private loadTallies(): { tallies: TallyDef[] | null; talliesBroken: boolean } {
+    const { tallies, broken } = normalizeTallies(this.cache.getSetting<unknown>(TALLIES_SETTING, null));
+    return { tallies, talliesBroken: broken };
+  }
+
+  /**
+   * GitHub#468: save the view-bar numbers. `null` = back to the default table. A table that does not read
+   * back as valid (from a window of another version, say) is refused whole: nothing is saved.
+   */
+  setTallies(next: TallyDef[] | null): void {
+    const { tallies, broken } = normalizeTallies(next);
+    if (broken) return;
+    this.cache.setSetting(TALLIES_SETTING, tallies);
+    this.set({ tallies, talliesBroken: false });
   }
 
   setHandBack(patch: Partial<HandBackLabels>): void {
@@ -2136,7 +2204,8 @@ export class Controller {
       this.badge();
       this.state = { ...this.state, ...this.pendingNow() };
     }
-    const reread = next.blocked !== this.state.handBack.blocked;
+    // GitHub#462: a repository's closed items carrying the new pending label are not held yet — read them now
+    const reread = next.blocked !== this.state.handBack.blocked || next.human !== this.state.handBack.human;
     // GitHub#434: "等前置…" uses the same waiting label
     this.set({ handBack: next, blockedLabels: { ...this.state.blockedLabels, blocked: next.blocked } });
     // GitHub#429: the registrations held were read under the old label — the graph shows them as
@@ -2582,7 +2651,8 @@ export class Controller {
     const reqId = ++this.editSeq;
     this.setEdit(id, startEdit(prev, { id, key: item.key, repo: item.repo, number: item.number, field, base: shown ?? null }, value, reqId));
     this.editsChanged();
-    return this.sendEdit(id, reqId, action);
+    // GitHub#488: from here on the record holds the outcome (the notice area says a failure, the field a success)
+    return { ...(await this.sendEdit(id, reqId, action)), held: true };
   }
 
   private fieldOf(action: FieldAction, item: Item): EditField {
