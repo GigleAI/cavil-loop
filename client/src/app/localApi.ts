@@ -54,6 +54,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     previewMarkdown: (repo, text) => c.previewMarkdown(String(repo), String(text)),
     act: (action) => c.act(action),
     setHandBack: async (patch) => c.setHandBack(patch ?? {}),
+    setTallies: async (tallies) => c.setTallies(tallies ?? null),
     setBlockedLabels: async (patch) => c.setBlockedLabels(patch ?? {}),
     blockedRead: (key) => c.blockedRead(String(key)),
     blockedSearch: (key, text) => c.blockedSearch(String(key), String(text)),

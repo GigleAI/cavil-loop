@@ -120,6 +120,20 @@ export function translate(lang: Lang, zh: string, params?: Params): string {
   return fill(Number(n) === 1 ? en.one : en.other, params);
 }
 
+/**
+ * A Chinese key kept as data rather than shown at once — a default that is saved as the user's own
+ * value once they edit it (the default view-bar names). The checks treat it as a key (it needs its
+ * English); `tKey` shows it in the window's language.
+ */
+export function zhKey<T extends string>(zh: T): T {
+  return zh;
+}
+
+/** a key marked with zhKey, in the window's language (anything else: as written) */
+export function tKey(zh: string): string {
+  return EN.has(zh) ? translate(current, zh) : zh;
+}
+
 /** the client's own words, in the language the window shows */
 export function t(zh: string, params?: Params): string {
   return translate(current, zh, params);

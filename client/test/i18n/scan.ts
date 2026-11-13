@@ -48,7 +48,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const findings: Finding[] = [];
   const badCalls: Finding[] = [];
   const keys = new Map<string, number[]>();
-  const fns = lang === 'ts' ? ['t', 'tNode'] : ['tr'];
+  const fns = lang === 'ts' ? ['t', 'tNode', 'zhKey'] : ['tr'];
   const fn = fns.join(' / ');
   let i = 0;
   let line = 1;

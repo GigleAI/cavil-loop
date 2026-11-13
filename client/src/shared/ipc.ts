@@ -1,7 +1,7 @@
 // The one API the views get (`window.cavil`, src/app/localApi.ts). The
 // credential never reaches it: the views only see state and board data.
 
-import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices } from './types';
+import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices, TallyDef } from './types';
 import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
@@ -124,6 +124,8 @@ export interface CavilApi {
   previewMarkdown(repo: string, text: string): Promise<{ ok: boolean; html?: string; error?: string }>;
   act(action: WriteAction): Promise<WriteResult>;
   setHandBack(patch: Partial<HandBackLabels>): Promise<void>;
+  /** GitHub#468: the view-bar numbers; null = back to the default table */
+  setTallies(tallies: TallyDef[] | null): Promise<void>;
   /** GitHub#434: the other flow labels of "等前置…" (the waiting label is set with setHandBack) */
   setBlockedLabels(patch: Partial<BlockedLabels>): Promise<void>;
   /** GitHub#434: read an item for the "等前置…" dialog (every list in full) */

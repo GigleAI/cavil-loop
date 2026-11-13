@@ -36,9 +36,10 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { flowTally, litTally, tallyClick, tallyForget, tallyText, type TallyEntry } from '../data/flowTally';
+import { litTally, tallyClick, tallyEntries, tallyForget, tallyName, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
+import { effectiveTallies } from '../shared/tallies';
 import { t } from '../shared/i18n';
-import { SourceName, verbatimParts } from './Verbatim';
+import { SourceName, Verbatim, verbatimParts } from './Verbatim';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -639,8 +640,13 @@ export function BoardView({
   const loopLabel = state.handBack.blocked;
   const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
+  // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   const { running, agent, human } = state.handBack;
-  const tally = useMemo(() => flowTally(data.items, { running, agent, human }), [data.items, running, agent, human]);
+  const tallyDefs = state.tallies;
+  const tally = useMemo(
+    () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
+    [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
+  );
   const ownSaved = useRef<string | null>(null);
   const saved = tallySaved ?? ownSaved;
   // the box changed some other way and no longer shows a number's query: the remembered search is void
@@ -950,8 +956,9 @@ export function BoardView({
             <span className="tally" data-testid="flow-tally">
               {tally.map((e) => {
                 const on = lit === e.kind;
+                const named = tallyName(e);
                 const tip = [
-                  `${e.kind === 'unlabeled' ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
+                  `${e.source === 'flow' ? t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count }) : e.query === UNLABELED_QUERY ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : t('符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
@@ -966,11 +973,11 @@ export function BoardView({
                     aria-pressed={on}
                     disabled={e.query === null}
                     title={tip}
-                    {...verbatimParts('user', [e.label])}
+                    {...verbatimParts('user', [e.label, e.source === 'query' ? e.query : null, named.own ? e.name : null])}
                     onClick={() => clickTally(e)}
                   >
-                    <i className={`dot ${e.kind}`} aria-hidden="true" />
-                    {tallyText(e.kind)} <b data-testid="tally-count">{e.count}</b>
+                    <i className={`dot c-${e.color}`} aria-hidden="true" />
+                    {named.own ? <Verbatim from="user">{named.text}</Verbatim> : named.text} <b data-testid="tally-count">{e.count}</b>
                   </button>
                 );
               })}

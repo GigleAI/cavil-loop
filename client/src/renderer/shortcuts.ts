@@ -15,9 +15,11 @@ export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dial
 /**
  * `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere). `alt` = ⌥ / Alt held too.
  * `macOnly`: this key exists on macOS only (GitHub#442: ⌥⌘1/2/3, because macOS keeps ⌘⇧3 for its own
- * screenshot). A digit is matched by the key itself (`code`), not by what Shift / ⌥ / the layout turn it into.
+ * screenshot). `macHidden`: still acted on everywhere, but not shown on macOS (GitHub#465: ⌘⇧3 — by default
+ * the system takes it for the screenshot and the window never sees it; should it ever arrive, it still acts).
+ * A digit is matched by the key itself (`code`), not by what Shift / ⌥ / the layout turn it into.
  */
-export type KeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean };
+export type KeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean; macHidden?: boolean };
 
 export type ShortcutId =
   | 'search'
@@ -78,14 +80,15 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
   { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
   // GitHub#372: the three layout buttons. GitHub#442: ⌘⇧1/2/3 (⌘1…⌘9 now pick a tab); on macOS also ⌥⌘1/2/3,
-  // since macOS takes ⌘⇧3 for its screenshot before the window sees it
-  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true, shift: true }, { key: '1', mod: true, alt: true, macOnly: true }], label: '切到看板（在别的页面会先回到看板）' },
-  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true, shift: true }, { key: '2', mod: true, alt: true, macOnly: true }], label: '切到表格（在别的页面会先回到看板）' },
+  // since macOS takes ⌘⇧3 for its screenshot before the window sees it. GitHub#465: on macOS the ⌥⌘ key comes
+  // first (it is what tooltips and the list name first), and ⌘⇧3 is not shown there — it stays acted on
+  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true, alt: true, macOnly: true }, { key: '1', mod: true, shift: true }], label: '切到看板（在别的页面会先回到看板）' },
+  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true, alt: true, macOnly: true }, { key: '2', mod: true, shift: true }], label: '切到表格（在别的页面会先回到看板）' },
   {
     id: 'viewGraph',
     scope: 'global',
-    keys: [{ key: '3', mod: true, shift: true }, { key: '3', mod: true, alt: true, macOnly: true }],
-    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给截屏，用 ⌥⌘3）',
+    keys: [{ key: '3', mod: true, alt: true, macOnly: true }, { key: '3', mod: true, shift: true, macHidden: true }],
+    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给整屏截图，窗口收不到，这里用 ⌥⌘3）',
   },
   // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
   // with no tab in front it closes the window, as before.
@@ -238,9 +241,9 @@ export function keyText(id: ShortcutId, mac: boolean = isMac()): string {
   return shownKeys(s, mac).map(one).join(' / ');
 }
 
-/** the keys of a shortcut that exist on this kind of machine */
+/** the keys of a shortcut shown on this kind of machine (GitHub#465: not the ones macOS keeps for itself) */
 export function shownKeys(s: Shortcut, mac: boolean = isMac()): KeySpec[] {
-  return s.keys.filter((k) => mac || !k.macOnly);
+  return s.keys.filter((k) => (mac ? !k.macHidden : !k.macOnly));
 }
 
 /**
