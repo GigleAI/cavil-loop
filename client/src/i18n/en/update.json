@@ -1,5 +1,4 @@
 {
-  "正在检查…": "Checking…",
   "正在下载 {version}（{got} / {total} MB）": "Downloading {version} ({got} / {total} MB)",
   "正在下载 {version}（{got} MB）": "Downloading {version} ({got} MB)",
   "正在安装 {version}": "Installing {version}",

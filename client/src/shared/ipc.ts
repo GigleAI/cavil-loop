@@ -235,7 +235,7 @@ export interface CavilApi {
   daemonConnectInfo(repo: string): Promise<ConnectInfo>;
   daemonPrecheck(agent: string): Promise<Precheck2>;
   daemonCheckDir(repo: string, dir: string): Promise<DirCheck>;
-  daemonPickFolder(start?: string): Promise<{ result: string; path?: string | null; output?: string }>;
+  daemonPickFolder(start?: string): Promise<{ result: string; path?: string | null; output?: string; outputSaid?: unknown }>;
   daemonConnect(o: { repo: string; agent: string; dir?: string; cloneInto?: string }): Promise<DaemonResult & { job?: number }>;
   daemonConnectPoll(job: number, from: number): Promise<ConnectPoll>;
   /**
