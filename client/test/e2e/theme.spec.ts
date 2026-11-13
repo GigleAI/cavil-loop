@@ -190,9 +190,16 @@ test('GitHub#516: the section in English; a stored value this version does not k
   await third.close();
 });
 
-/** every colour token the stylesheet sets on the page root, with the value it has right now */
-const tokens = (page: Page) =>
-  page.evaluate(() => {
+/** every colour token the stylesheet sets on the page root, with the value it has right now; `unmarked`: as the page is before the window marks it (the stylesheet is in, the script has not run yet) */
+const tokens = (page: Page, unmarked = false) =>
+  page.evaluate((unmarked) => {
+    // GitHub#523: the window marks the page again on every controller change (a sync round, a timer), so
+    // under load a change can land between taking the mark off and reading — taking it off and reading are
+    // one synchronous step here, nothing of the window's can run in between
+    if (unmarked) {
+      delete document.documentElement.dataset.theme;
+      if ('theme' in document.documentElement.dataset) throw new Error('the page is still marked');
+    }
     const names = new Set<string>();
     const walk = (rules: CSSRuleList) => {
       for (const r of Array.from(rules)) {
@@ -205,10 +212,8 @@ const tokens = (page: Page) =>
     const out: Record<string, string> = { 'color-scheme': cs.colorScheme, 'body background': getComputedStyle(document.body).backgroundColor };
     for (const n of [...names].sort()) out[n] = cs.getPropertyValue(n).trim();
     return out;
-  });
+  }, unmarked);
 
-/** the page as it is before the window marks it: the stylesheet is in, the script has not run yet */
-const unmark = (page: Page) => page.evaluate(() => delete document.documentElement.dataset.theme);
 const mark = (page: Page, look: string) => page.evaluate((l) => (document.documentElement.dataset.theme = l), look);
 
 test('GitHub#516 (PR #518 review round 1): before the page is marked, a dark system paints the whole first screen dark — every token as the dark look gives it — and a light system light', async () => {
@@ -224,9 +229,7 @@ test('GitHub#516 (PR #518 review round 1): before the page is marked, a dark sys
   expect(dark['color-scheme']).toBe('dark');
 
   // unmarked on a dark system: what is painted — the body's canvas, native controls, every token — is the dark look
-  await unmark(page);
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
-  expect(await tokens(page)).toEqual(dark);
+  expect(await tokens(page, true)).toEqual(dark);
   await page.screenshot({ path: join(screens, '516-05-unmarked-dark-system.png') });
 
   // unmarked on a light system: the light look, the same as marked light (switching the system re-marks the
@@ -237,8 +240,6 @@ test('GitHub#516 (PR #518 review round 1): before the page is marked, a dark sys
   const light = await tokens(page);
   expect(light['body background']).toBe(CANVAS.light);
   expect(light['color-scheme']).toBe('light');
-  await unmark(page);
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
-  expect(await tokens(page)).toEqual(light);
+  expect(await tokens(page, true)).toEqual(light);
   await app.close();
 });
