@@ -530,6 +530,8 @@ export class Controller {
     if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // GitHub#429: saved before the waiting label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
+    // GitHub#513: a setting saved before the parked label existed
+    if (typeof handBack.later !== 'string') handBack.later = DEFAULT_HAND_BACK.later;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
@@ -2217,6 +2219,8 @@ export class Controller {
       running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
       // GitHub#429: empty is a choice — the graph then draws GitHub's own relations only
       blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.handBack.blocked,
+      // GitHub#513: empty is a choice — label pickers then pin no parked label
+      later: typeof patch.later === 'string' ? patch.later.trim() : this.state.handBack.later,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently

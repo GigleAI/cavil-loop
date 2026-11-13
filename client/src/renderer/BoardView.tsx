@@ -472,8 +472,10 @@ export function BoardView({
   const { view, sync } = state;
   const today = localToday(now);
   // GitHub#496: the table's label picker keeps these near the top, like the detail panel's
-  const { autopilot: pinA, human: pinH, agent: pinG } = state.handBack;
-  const pinned = useMemo(() => pinnedLabels({ autopilot: pinA, human: pinH, agent: pinG }), [pinA, pinH, pinG]);
+  // GitHub#513: built from the whole setting, like the detail panel and new issue (pending/later included);
+  // the list is kept while the names stay the same
+  const pinKey = pinnedLabels(state.handBack).join('\n');
+  const pinned = useMemo(() => pinKey.split('\n'), [pinKey]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   const { running, agent, human } = state.handBack;
