@@ -116,7 +116,7 @@ export const MUTATIONS = [
     expect: ['GitHub refuses the refresh token'] },
   { what: '连不上 GitHub 也当成续期被拒（误退出登录）', file: 'src-tauri/crates/core/src/engine.rs',
     // since #270 the answer also carries why GitHub could not be reached (GitHub#284)
-    from: 'Failure::Unreachable => FreshOut { reason: Some(e.message), ..FreshOut::of(Fresh::Unreachable) },',
+    from: 'Failure::Unreachable => FreshOut { reason: Some(e.full()), ..FreshOut::of(Fresh::Unreachable) },',
     to: 'Failure::Unreachable => self.sign_out_from_refresh(current(&self)),',
     expect: ['GitHub unreachable at refresh time'] },
   { what: '续期后不更新缓存绑定（离线重启丢缓存）', file: 'src-tauri/crates/core/src/engine.rs',
