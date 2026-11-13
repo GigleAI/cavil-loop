@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import { SCOPE_TITLE, activeShortcuts, isCustom, isMac, keyParts, shownKeys, type Scope } from './shortcuts';
 import { useLayer, useShortcuts } from './keyboard';
 
-const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help'];
+const ORDER: Scope[] = ['global', 'dialog', 'detail', 'graph', 'settings', 'reply', 'picker', 'help', 'find'];
 
 export function Keys({ parts }: { parts: string[] }) {
   return (
