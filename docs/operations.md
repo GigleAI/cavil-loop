@@ -687,7 +687,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   human reopened it before the hand-over, the "issue stays open" path below applies. The hand-over writes one label at
   a time, judges twice from fresh reads of the issue and its event history before each write, and after each write
   requires the state, label set and the positions of the last close and the last `pending/human` add to be exactly
-  "the previous reading + the step the daemon just wrote" — anything else stops the round; unreadable = retried next
+  "the previous reading + the step the daemon just wrote" (the only new event allowed is the daemon's own for that
+  step) — anything else stops the round; unreadable = retried next
   round; the comment is de-duplicated by its marker.
   - **The closed-issue sweep keeps a reminder added after the close**: the pass that gives issues closed as completed
     `Done` and strips their flow labels (GitHub#159) reads the event history — if the last "added `pending/human`" comes
@@ -695,7 +696,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
     issue that sat on `pending/human`) is removed as before. Order is the position in the event history, never the
     timestamp (closing on merge and adding the reminder often share a second). The history is read for every
     issue closed as completed, with or without `pending/human`; unreadable, an event without an id, or history that
-    contradicts the labels (no "closed" event, or `pending/human` on the issue but no "added" event) → nothing written,
+    contradicts the labels (no "closed" event, or the reminder state the history implies — last added or last removed — does not match the
+    label) → nothing written,
     retried next round.
     The sweep also writes one label at a time, judges twice before each write and checks the reading after each one: a
     reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten.

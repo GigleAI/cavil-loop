@@ -383,6 +383,72 @@ mkissue 27 "pending/PR" closed; jset labels.json '.["27"] += ["pending/human"]'
 tick
 chk "零写入、留队" "$(label_writes 27)/$(queued 27)" "0/1"
 
+section "【5c2】记录说提醒已摘掉、标签却还挂着（响应互相矛盾）→ 判不了，零写入、留队"
+fresh
+mkissue 73 "pending/human,pending/PR" closed
+ev 73 unlabeled pending/human maint
+tick
+chk "零写入、留队、标签原样" "$(label_writes 73)/$(queued 73)/$(labels_of 73)" "0/1/pending/PR,pending/human"
+chk "  → 到达性：确实读了事件记录" "$( [ "$(event_reads 73)" -gt 0 ] && echo read)" read
+
+section "【5c3】交接：记录说关闭后挂了提醒、之后没摘，标签却不在 → 判不了，交接记录留着、不写标签"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
+tick
+ev 7 labeled pending/human maint      # 事件有、标签没有
+rm -f "$GD/F_issues_7_events"
+tick
+chk "零标签写入、交接记录还在、在重试队列" "$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "0/rec/true"
+
+section "【5c4】对照：同样的记录、标签和记录一致（挂着）→ 交接照常收敛、提醒留着"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
+tick
+ev 7 labeled pending/human maint; jset labels.json '.["7"] += ["pending/human"]'
+rm -f "$GD/F_issues_7_events"
+tick
+chk "收敛：Done + 人挂的提醒、pending/PR 摘掉、交接完成" "$(labels_of 7)/$(handoff 8)" "Done,autopilot,pending/human/none"
+
+section "【3d】清扫：daemon 摘掉旧提醒之后、下一次读之前，人又挂上再摘掉 → 停手（只留已写成的那次）；下一轮收敛"
+fresh
+mkissue 74 "pending/human,pending/PR" closed
+hook hook_issues_74_3 "python3 - <<'PY'
+import json
+e = json.load(open('events.json')); a = {'login': 'maint', 'type': 'User'}
+e.setdefault('74', []).extend([{'event': 'labeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'},
+                               {'event': 'unlabeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'}])
+json.dump(e, open('events.json', 'w'))
+PY"
+tick
+chk "第 1 轮：只写了那一次摘除、留队" "$(label_writes 74)/$(queued 74)/$(labels_of 74)" "1/1/pending/PR"
+tick
+chk "第 2 轮：收敛到 Done、出队" "$(labels_of 74)/$(queued 74)" "Done/无"
+
+section "【4d】交接：daemon 加上 Done 之后、下一步之前，人挂上又摘掉提醒 → 停手；下一轮收尾、不再挂提醒"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+hook hook_after_POST_issues_7_labels_1 "python3 - <<'PY'
+import json
+e = json.load(open('events.json')); a = {'login': 'maint', 'type': 'User'}
+e.setdefault('7', []).extend([{'event': 'labeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'},
+                              {'event': 'unlabeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'}])
+json.dump(e, open('events.json', 'w'))
+PY"
+tick
+# 停手之后同一轮的重试队列从头现读再判（新的基线）：人挂上又摘掉过 → 收尾时不再挂提醒
+chk "加 Done 之后发现人的新事件 → 那一圈停手" "$(grep -c '托管合并交接：issue #7 在 daemon 两次写标签之间有变化' "$W/state/poll.log")" 1
+chk "同一轮重试队列从头再判：摘 pending/PR、交接完成，没有挂提醒" "$(labels_of 7)/$(handoff 8)/$(n_calls "^gh api -X POST $R/issues/7/labels -f labels\\[\\]=pending/human")" "Done,autopilot/none/0"
+tick
+chk "再一轮：零写入" "$(label_writes 7)" 0
+
 # ── 【6】GitHub 晚一步关 / 不会关 ──
 section "【6】合并时 GitHub 还没关掉 issue → 交接等着（零标签写入）；关掉之后收敛"
 fresh

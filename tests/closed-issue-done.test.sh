@@ -239,6 +239,7 @@ CONF
     # 重读之后、删除之前有人先摘掉了它
     cat > "$GD/hook_issues_16_1" <<HOOK
 jq '.["16"] = ["pending/x"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
+jq '.["16"] += [{event:"unlabeled", label:{name:"pending/human"}, actor:{login:"maint", type:"User"}, created_at:"2026-01-01T00:00:00Z"}]' "$GD/events.json" > "$GD/e.tmp" && mv "$GD/e.tmp" "$GD/events.json"
 HOOK
     tick
     chk "Done 加上" "$(labels_of 16)" "Done,pending/x"
