@@ -2884,8 +2884,9 @@ sub_issue_rollup_parent() {   # <父号> <state_file> [触发的子号]
 # 由调用方入 merged_label_queue 下轮再判。**读不到绝不能当成 OPEN**：那会给已关闭的 issue
 # 打上「待人工」，而 PR 已记入 cleaned_prs，没有第二次机会纠正。
 # 摘旧标签仍走 gh_label_flip 的 `|| true`（与此前行为一致：「本来就不在」是常态）。
-# 本轮已经因为「判定之后 / 两次写之间有人动过」停手的 issue（GitHub#461，PR #478 复审第 3 轮）：同一次轮询里
-# 后面的入口（合并后标签重试队列、关闭清扫）一律不再碰它，下一轮从头现读再判。只在本进程内有效，不落盘
+# 本轮已经停手的 issue（GitHub#461，PR #478 复审第 3、4 轮）：合并即关的交接或关闭清扫这一轮没定下来——读不到、
+# 对不上、有人改动、写失败——同一次轮询里后面的入口（合并后标签重试队列、关闭清扫）一律不再碰它，下一轮从头现读
+# 再判。记号由两个入口函数在返回失败时统一打上，不靠某个分支记得打。只在本进程内有效，不落盘
 ISSUE_HALTED_THIS_ROUND=" "
 issue_halt_round() { ISSUE_HALTED_THIS_ROUND="${ISSUE_HALTED_THIS_ROUND}$1 "; }
 issue_halted_round() { case "$ISSUE_HALTED_THIS_ROUND" in *" $1 "*) return 0 ;; esac; return 1; }
@@ -3011,18 +3012,27 @@ closed_done_enqueue() {
 # 一次只写一个标签，每写一个之前都现读判定两次（closed_done_judge），结论、依据、下一步都不变才写；写完回到开头，
 # 新读到的依据必须正好等于「上一次的依据 + daemon 自己刚确认写成的那一步」，否则停手、留队下轮从头判——
 # 判定之后人重新挂了提醒、重开了 issue、动了别的标签，都不会被按旧结论接着写。
+# 清扫入口：没有定下来（return 1）一律整轮停手（GitHub#461，PR #478 复审第 4 轮）——读不到、对不上、有人改动、
+# 写失败都一样，同一轮里不再有别的入口接着写这个 issue
 closed_done_label() {
-    local issue="$1" step=0 v id next kind lab out expect="" prev_ev="" removed=() added=no
-    if issue_halted_round "$issue"; then
-        log "  issue #$issue 本轮已因有人改动而停手，关闭清扫留到下一轮"; return 1
+    local rc
+    if issue_halted_round "$1"; then
+        log "  issue #$1 本轮已因有人改动而停手，关闭清扫留到下一轮"; return 1
     fi
+    closed_done_label_run "$@"; rc=$?
+    [ "$rc" -eq 0 ] || issue_halt_round "$1"
+    return "$rc"
+}
+
+closed_done_label_run() {
+    local issue="$1" step=0 v id next kind lab out expect="" prev_ev="" removed=() added=no
     while [ "$step" -lt 16 ]; do
         step=$((step + 1))
         closed_done_judge "$issue"
         if [ -n "$expect" ] && [ "$CD_V" != unknown ] \
            && { [ "$CD_CMP" != "$expect" ] || ! closed_reminder_ev_after "$prev_ev" "$CD_HEV" "$kind" "$lab"; }; then
             log "  issue #$issue 在 daemon 两次写标签之间有变化（${CD_CMP}${CD_HEV:+ / $CD_HEV}），本轮停手，下轮从头判"
-            issue_halt_round "$issue"; return 1
+            return 1
         fi
         case "$CD_V" in
             unknown) log "  ⚠️ ${CD_MSG}，下轮再判"; return 1 ;;
@@ -3037,7 +3047,7 @@ closed_done_label() {
         closed_done_judge "$issue"
         if [ "$CD_V|$CD_CMP|$CD_HEV|$CD_NEXT" != "$v" ]; then
             log "  issue #$issue 判定之后有变化（重判 ${CD_V}${CD_MSG:+：$CD_MSG}），本轮不写，下轮再判"
-            issue_halt_round "$issue"; return 1
+            return 1
         fi
         kind="${next%%:*}"; lab="${next#*:}"
         case "$kind" in
@@ -5763,7 +5773,20 @@ autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <
 # 判定只有一个（autopilot_handoff_judge），每次写标签之前都现读重判一次，结论和依据（状态 + 标签集合 + 本机
 # 记下的「pending/human 是 daemon 自己加的」）都没变才写。摘标签只认 2xx / 404 为成功，其余失败交接记录留着，
 # 下轮接着收敛。返回 0 = 定了（记录已清）；1 = 下轮再试。
+# 交接入口（GitHub#461，PR #478 复审第 4 轮）：合并即关的交接（交接记录里有 closes——稳定依据，不看某次判定留下的
+# 临时字段；记录读不出也按合并即关处理）只要这一轮没有收尾成功，不管是读不到、对不上、有人改动还是写失败，
+# 这个 issue 都整轮停手：同一轮后面的重试队列和关闭清扫都不再接着写，下一轮从头现读再判。老的 Refs 交接照旧
 autopilot_merged_handoff() {   # <issue> <PR>
+    local rc closes sf="${STATE_FILE:-$STATE_DIR/state.json}"
+    autopilot_merged_handoff_run "$@"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+        closes=$(autopilot_state_get "$sf" '.handoff[$p].closes // false' --arg p "$2" 2>/dev/null) || closes=unreadable
+        [ "$closes" = false ] || issue_halt_round "$1"
+    fi
+    return "$rc"
+}
+
+autopilot_merged_handoff_run() {   # <issue> <PR>
     local issue="$1" pr="$2" sf="${STATE_FILE:-$STATE_DIR/state.json}" body comments me v id
     # 1. 合并说明：还没确认发出去就先查有没有（按标记），没有再发。说明在任何结论下都要有，所以先做
     if [ "$(autopilot_state_get "$sf" '.handoff[$p].commented // false' --arg p "$pr")" != true ]; then
@@ -5797,8 +5820,7 @@ autopilot_merged_handoff() {   # <issue> <PR>
         # 合并即关的交接（GitHub#461）：写完一步回来，依据必须正好是「上一次 + daemon 刚写成的这一步」，否则停手
         if [ -n "$expect" ] && [ "$AH_V" != unknown ] \
            && { [ "$AH_CMP" != "$expect" ] || ! closed_reminder_ev_after "$prev_ev" "$AH_HEV" "$kind" "$lab"; }; then
-            log "  托管合并交接：issue #$issue 在 daemon 两次写标签之间有变化，本轮停手，下轮从头判"
-            issue_halt_round "$issue"; return 1
+            log "  托管合并交接：issue #$issue 在 daemon 两次写标签之间有变化，本轮停手，下轮从头判"; return 1
         fi
         v="$AH_V"; id="$AH_ID|$AH_NEXT"; next="$AH_NEXT"
         case "$v" in
@@ -5815,8 +5837,6 @@ autopilot_merged_handoff() {   # <issue> <PR>
         autopilot_handoff_judge "$issue" "$pr"
         if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then
             log "  托管合并交接：issue #$issue 判定之后有变化（重判 $AH_V${AH_REASON:+：$AH_REASON}），本轮不写"
-            # 合并即关的交接（记录里有 closes）才算全轮停手；老的 Refs 交接照旧，下面的重试照常进行
-            [ -z "$AH_CMP" ] || issue_halt_round "$issue"
             return 1
         fi
         # 写的是第一次判定定下的那一步（两次一致时它和第二次的相同）

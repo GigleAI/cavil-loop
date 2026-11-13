@@ -318,7 +318,7 @@ $SUMMARY"
 # 合并之后才读不到（合并前的授权判断也读这份记录）：发合并说明之前打开故障
 hook hook_after_POST_issues_7_comments_1 ': > F_issues_7_events'
 tick
-chk "合并了、说明发了，issue 7 零标签写入、在两个重试队列里" "$(merged 8)/$(comments_with 7 'autopilot-merged pr=8 ')/$(label_writes 7)/$(mqueued 7)/$(queued 7)" "1/1/0/true/1"
+chk "合并了、说明发了，issue 7 零标签写入、在两个重试队列里（清扫这一轮跳过它，不算一次重试）" "$(merged 8)/$(comments_with 7 'autopilot-merged pr=8 ')/$(label_writes 7)/$(mqueued 7)/$(queued 7)" "1/1/0/true/0"
 chk "  → 标签原样" "$(labels_of 7)" "autopilot,pending/PR"
 rm -f "$GD/F_issues_7_events"
 tick
@@ -414,6 +414,64 @@ ev 7 labeled pending/human maint; jset labels.json '.["7"] += ["pending/human"]'
 rm -f "$GD/F_issues_7_events"
 tick
 chk "收敛：Done + 人挂的提醒、pending/PR 摘掉、交接完成" "$(labels_of 7)/$(handoff 8)" "Done,autopilot,pending/human/none"
+
+section "【4e】交接加上 Done、人随后又加又摘提醒，下一次读到的 issue 状态词不认识、再下一次恢复（同一轮里）→ 整轮停手"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+cat > "$GD/round4-relabel.py" <<'PY'
+import json
+e = json.load(open('events.json')); a = {'login': 'maint', 'type': 'User'}
+e.setdefault('7', []).extend([{'event': 'labeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'},
+                              {'event': 'unlabeled', 'label': {'name': 'pending/human'}, 'actor': a, 'created_at': '2026-01-01T00:00:00Z'}])
+json.dump(e, open('events.json', 'w'))
+PY
+cat > "$GD/hook_after_POST_issues_7_labels_1" <<'HOOK'
+set -e
+cd "$(dirname "$0")"
+python3 round4-relabel.py
+c=$(cat count_issues_7)
+printf '%s' '.state = "weird"' > jq_issues_7
+printf 'rm -f "%s/jq_issues_7"\n' "$PWD" > "hook_issues_7_$((c + 2))"
+HOOK
+tick
+chk "第 1 轮：只写了加 Done，之后整轮停手（同一轮里状态读回正常也不接着写）" "$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "1/rec/true"
+chk "  → 不认识的状态词确实读到过；之后这一轮没再读这个 issue（恢复要等下一次读）" "$(grep -c '状态异常\|对不上' "$W/state/poll.log" | awk '{print ($1>0)?"seen":"no"}')/$( [ -f "$GD/jq_issues_7" ] && echo still || echo cleared)" "seen/still"
+tick
+chk "  → 第 2 轮的读取恢复了正常" "$( [ -f "$GD/jq_issues_7" ] && echo still || echo cleared)" cleared
+chk "第 2 轮：收尾，人摘掉过的提醒不再挂" "$(labels_of 7)/$(handoff 8)/$(mqueued 7)" "Done,autopilot/none/false"
+
+section "【4f】交接加上 Done 之后，下一次读到的事件缺编号、再下一次恢复（同一轮里）→ 整轮停手"
+fresh; : > "$GD/merge_closes"
+ready "Closes #7
+
+$SUMMARY"
+cat > "$GD/round4-badid.py" <<'PY'
+import json
+e = json.load(open('events.json'))
+e.setdefault('7', []).append({'id': None, 'event': 'labeled', 'label': {'name': 'pending/human'}, 'actor': {'login': 'maint', 'type': 'User'}})
+json.dump(e, open('events.json', 'w'))
+PY
+cat > "$GD/round4-fixid.py" <<'PY'
+import json
+e = json.load(open('events.json'))
+e['7'] = [x for x in e['7'] if not ('id' in x and x['id'] is None)]
+json.dump(e, open('events.json', 'w'))
+PY
+cat > "$GD/hook_after_POST_issues_7_labels_1" <<'HOOK'
+set -e
+cd "$(dirname "$0")"
+c=$(cat count_issues_7_events)
+printf 'cd "%s"; python3 round4-badid.py\n' "$PWD" > "hook_issues_7_events_$((c + 1))"
+printf 'cd "%s"; python3 round4-fixid.py\n' "$PWD" > "hook_issues_7_events_$((c + 2))"
+HOOK
+tick
+chk "第 1 轮：只写了加 Done，之后整轮停手（同一轮里事件读回正常也不接着写）" "$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "1/rec/true"
+chk "  → 缺编号的事件确实读到过；之后这一轮没再读事件记录（恢复要等下一次读）" "$(jq -r '[.["7"][] | select(has("id") and .id == null)] | length' "$GD/events.json")" 1
+tick
+chk "  → 第 2 轮的读取恢复了正常" "$(jq -r '[.["7"][] | select(has("id") and .id == null)] | length' "$GD/events.json")" 0
+chk "第 2 轮：收尾，提醒照常挂上（人没动过）" "$(labels_of 7)/$(handoff 8)" "Done,autopilot,pending/human/none"
 
 section "【5c5】清扫：issue 读到已关闭，记录里最后却是重开（响应互相矛盾）→ 判不了，零写入、留队"
 fresh

@@ -701,7 +701,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
     retried next round.
     The sweep also writes one label at a time, judges twice before each write and checks the reading after each one: a
     reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten, and nothing
-    else in that poll round touches the issue again (the retry queue waits for the next round).
+    else in that poll round touches the issue again (the retry queue waits for the next round) — the same holds for any
+    round that did not finish: unreadable, contradicting or a failed write.
   - **Finding what to look at**:
 
     | Looking for | Repository Issues page | GitHub Project view |
