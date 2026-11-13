@@ -863,7 +863,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -877,7 +877,7 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '');
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);

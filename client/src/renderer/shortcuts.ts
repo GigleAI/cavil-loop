@@ -14,12 +14,14 @@ export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dial
 
 /**
  * `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere). `alt` = ⌥ / Alt held too.
+ * `ctrl`: ⌃ held together with ⌘ (GitHub#492: ⌃⌘1/2/3). On macOS ⌘ and ⌃ held together are a key of their own:
+ * only a `ctrl` key matches them, a plain ⌘ key does not (⌃⌘1 is not ⌘1). Used with `macOnly` only.
  * `macOnly`: this key exists on macOS only (GitHub#442: ⌥⌘1/2/3, because macOS keeps ⌘⇧3 for its own
  * screenshot). `macHidden`: still acted on everywhere, but not shown on macOS (GitHub#465: ⌘⇧3 — by default
  * the system takes it for the screenshot and the window never sees it; should it ever arrive, it still acts).
  * A digit is matched by the key itself (`code`), not by what Shift / ⌥ / the layout turn it into.
  */
-export type KeySpec = { key: string; mod?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean; macHidden?: boolean };
+export type KeySpec = { key: string; mod?: boolean; ctrl?: boolean; shift?: boolean; alt?: boolean; macOnly?: boolean; macHidden?: boolean };
 
 export type ShortcutId =
   | 'search'
@@ -64,6 +66,15 @@ export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: s
 
 const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 
+/** a layout button's keys (GitHub#492): ⌃⌘N on macOS (shown), ⌥⌘N there too (not shown), ⌘⇧N everywhere (not shown on macOS) */
+function layoutKeys(key: string): KeySpec[] {
+  return [
+    { key, mod: true, ctrl: true, macOnly: true },
+    { key, mod: true, alt: true, macOnly: true, macHidden: true },
+    { key, mod: true, shift: true, macHidden: true },
+  ];
+}
+
 export const SCOPE_TITLE: Record<Scope, string> = {
   global: '已登录的任何页面',
   detail: '详情标签页（光标不在输入框里时）',
@@ -82,16 +93,12 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
   { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
   // GitHub#372: the three layout buttons. GitHub#442: ⌘⇧1/2/3 (⌘1…⌘9 now pick a tab); on macOS also ⌥⌘1/2/3,
-  // since macOS takes ⌘⇧3 for its screenshot before the window sees it. GitHub#465: on macOS the ⌥⌘ key comes
-  // first (it is what tooltips and the list name first), and ⌘⇧3 is not shown there — it stays acted on
-  { id: 'viewBoard', scope: 'global', keys: [{ key: '1', mod: true, alt: true, macOnly: true }, { key: '1', mod: true, shift: true }], label: '切到看板（在别的页面会先回到看板）' },
-  { id: 'viewTable', scope: 'global', keys: [{ key: '2', mod: true, alt: true, macOnly: true }, { key: '2', mod: true, shift: true }], label: '切到表格（在别的页面会先回到看板）' },
-  {
-    id: 'viewGraph',
-    scope: 'global',
-    keys: [{ key: '3', mod: true, alt: true, macOnly: true }, { key: '3', mod: true, shift: true, macHidden: true }],
-    label: '切到依赖图（在别的页面会先回到看板；macOS 默认把 ⌘⇧3 留给整屏截图，窗口收不到，这里用 ⌥⌘3）',
-  },
+  // since macOS takes ⌘⇧3 for its screenshot before the window sees it. GitHub#492: on macOS the key is ⌃⌘1/2/3 —
+  // the only one shown there; ⌥⌘1/2/3 and ⌘⇧1/2/3 are still acted on, just not named (GitHub#465 hid ⌘⇧3 first).
+  // Elsewhere Ctrl+Shift+1/2/3 as before (Ctrl + the Windows / Super key + a digit belongs to the desktop there).
+  { id: 'viewBoard', scope: 'global', keys: layoutKeys('1'), label: '切到看板（在别的页面会先回到看板）' },
+  { id: 'viewTable', scope: 'global', keys: layoutKeys('2'), label: '切到表格（在别的页面会先回到看板）' },
+  { id: 'viewGraph', scope: 'global', keys: layoutKeys('3'), label: '切到依赖图（在别的页面会先回到看板）' },
   // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
   // with no tab in front it closes the window, as before.
   { id: 'closeTab', scope: 'global', keys: [{ key: 'w', mod: true }], label: '关掉当前标签页（在首页时：macOS 关窗，别的系统不做事）' },
@@ -163,6 +170,9 @@ const SHIFTED: Record<string, string> = { ']': '}', '[': '{' };
 
 export function matches(spec: KeySpec, e: KeyLike, mac: boolean = isMac()): boolean {
   if (spec.macOnly && !mac) return false;
+  // GitHub#492: ⌘ and ⌃ held together are their own key on macOS — only a ⌃⌘ key takes them (⌃⌘1 is not ⌘1)
+  const both = e.metaKey && e.ctrlKey;
+  if (spec.ctrl ? !both : mac && both) return false;
   const mod = e.metaKey || e.ctrlKey;
   if (Boolean(spec.mod) !== mod || Boolean(spec.alt) !== e.altKey) return false;
   // '?' needs Shift on most layouts: it is part of the key, not a separate modifier
@@ -233,8 +243,9 @@ const KEY_NAME: Record<string, string> = { Enter: '↩', Escape: 'Esc', ArrowUp:
 /** the keys of one spec as shown on screen, e.g. ['⌘', '↩'] or ['Ctrl', '↩'] */
 export function keyParts(spec: KeySpec, mac: boolean): string[] {
   const out: string[] = [];
+  if (spec.ctrl) out.push(mac ? '⌃' : 'Ctrl');
   if (spec.alt) out.push(mac ? '⌥' : 'Alt');
-  if (spec.mod) out.push(mac ? '⌘' : 'Ctrl');
+  if (spec.mod) out.push(mac ? '⌘' : spec.ctrl ? 'Meta' : 'Ctrl');
   if (spec.shift && spec.key !== '?') out.push(mac ? '⇧' : 'Shift');
   out.push(KEY_NAME[spec.key] ?? (spec.key.length === 1 ? spec.key.toUpperCase() : spec.key));
   return out;
