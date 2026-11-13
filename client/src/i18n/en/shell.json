@@ -313,7 +313,6 @@
   },
   "搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me": "Search titles, numbers, labels, or use GitHub syntax: label:bug assignee:@me",
   "搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准": "The search box already names the open / closed state (is:open, is:closed, is:merged); the search box decides",
-  "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately.",
   "显示已关闭": "Show closed",
   "（{name}）": " ({name})",
   "流程标签": "Flow labels",
@@ -361,5 +360,6 @@
   "「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），其余的只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。": "A \"follows a flow label\" row counts by the label name under \"Flow labels\" above: a row following the waiting-for-human label counts open and closed items (the rule reminders use), the others only open ones; it follows the label when it is renamed. A condition of your own is written like the search box (e.g. {a}, {b}).",
   "一个数都不留 = 顶栏不显示计数。系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。": "No rows left = the top bar shows no counts. System notifications and the Dock badge still count the waiting-for-human label, whatever is set here.",
   "暂缓的标签": "parked label",
-  "稍后处理": "Later"
+  "稍后处理": "Later",
+  "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏每个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately."
 }
