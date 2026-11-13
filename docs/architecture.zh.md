@@ -12,7 +12,7 @@
 | `pending/PR` | worker（开 PR 时） | issue 工作已转 PR 跟踪；去看 PR |
 | `Done` | daemon（auto-cleanup） | PR 合并后标 PR；issue 在**关闭为「已完成」**时标（被 `Closes #N` 带关，或你在网页上手动关闭并选「已完成」，同时摘掉残留的流程标签，GitHub#159）。issue 关不关始终由你决定，daemon 不会去关 issue；以「不做了 / 重复」关闭的不标 |
 
-可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，`pending/blocked`（GitHub#157，配了 `LABEL_PENDING_BLOCKED` 时）= 「在等别的 issue / PR（本仓库的，或互通名单里别的仓库的，GitHub#243），前置全部完成后 daemon 自动翻回 `pending/agent`」，以及 issue（或已开好的 PR，GitHub#128）上的托管「模式标签」本身（daemon 从不摘维护者打的；它只把 issue 上的托管标签复制到绑定的 PR 上，授权没了再收回自己补的那份，GitHub#190；托管 issue 合并后不关、翻 `pending/human` 留给人关，拆出的子项继承父 issue 的托管，GitHub#233）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
+可选的另外几个：`pending/review`（复审关卡，见 [operations](operations.zh.md#交叉-review-关卡可选默认关闭)）；配了托管标签（GitHub#114）时，PR 上的 `pending/merge` = 「复审已通过，等 daemon 检查后合并」，`pending/blocked`（GitHub#157，配了 `LABEL_PENDING_BLOCKED` 时）= 「在等别的 issue / PR（本仓库的，或互通名单里别的仓库的，GitHub#243），前置全部完成后 daemon 自动翻回 `pending/agent`」，`pending/later`（GitHub#463，配了 `LABEL_PENDING_LATER` 时）= 「暂缓：daemon 不自动捞它开工，打派工标签照常派」，以及 issue（或已开好的 PR，GitHub#128）上的托管「模式标签」本身（daemon 从不摘维护者打的；它只把 issue 上的托管标签复制到绑定的 PR 上，授权没了再收回自己补的那份，GitHub#190；托管 issue 合并即关，打 `Done` 并挂 `pending/human` 提醒人看，GitHub#461；拆出的子项继承父 issue 的托管，GitHub#233）——见 [operations](operations.zh.md#托管标签可选默认关闭)。
 
 ### 关于 PR↔Issue 闭环关系：worker 在设计阶段就决定
 

@@ -122,6 +122,12 @@ export interface WriteResult {
   warning: string | null;
   /** createIssue: the new item's key */
   createdKey?: string;
+  /**
+   * GitHub#488: a label / milestone / status / iteration change the controller recorded — its outcome is
+   * held in the list of changes and said in the window's notice area (failed, not confirmed) or by the
+   * field itself (saved). Unset: refused before anything was recorded, the caller says why.
+   */
+  held?: boolean;
 }
 
 export interface RepoOptions {

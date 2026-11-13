@@ -4,7 +4,7 @@
 #
 # 默认配色照抄本仓库 GigleAI/cavil-loop 的 labels 页。这里真跑安装入口（隔离 HOME、
 # 假 gh / systemctl / claude），把所有可选标签都打开，记下它实际发出的每一条建标签请求，
-# 断言恰好是下面这 14 个标签、名字和颜色逐个对上——不是只数个数，也不读源码文本。
+# 断言恰好是下面这 15 个标签、名字和颜色逐个对上——不是只数个数，也不读源码文本。
 #
 #   bash tests/setup-label-colors.test.sh              默认回归
 #   MUTATION=1 bash tests/setup-label-colors.test.sh   另跑负对照：两处改色各退回旧值，必须变红
@@ -24,7 +24,7 @@ chk() {
     else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
 }
 
-# 期望的 14 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）照抄本仓库 labels 页的 2dcdd0（GitHub#435）。等外部需求机器人那个标签的名字由下面的配置指定。
+# 期望的 15 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）照抄本仓库 labels 页的 2dcdd0（GitHub#435）。暂缓标签 pending/later（GitHub#463）是 c5def5，本仓库 labels 页建它时用同一个颜色。等外部需求机器人那个标签的名字由下面的配置指定。
 EXPECTED='Done|586069
 autopilot|ff401e
 doing/agent|c2e0c6
@@ -33,6 +33,7 @@ pending/agent|d4c5f9
 pending/agent/fable|8250df
 pending/blocked|2dcdd0
 pending/human|fbca04
+pending/later|c5def5
 pending/merge|5319e7
 pending/review|1d76db
 priority/p0|b60205
@@ -105,8 +106,8 @@ PY
 suite() {   # <skill 目录>
     local got; got=$(run_setup "$1")
     chk "安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
-    chk "建标签请求一共 14 条" "$(printf '%s\n' "$got" | grep -c '|')" 14
-    chk "14 个标签的名字和颜色逐个对上" "$got" "$EXPECTED"
+    chk "建标签请求一共 15 条" "$(printf '%s\n' "$got" | grep -c '|')" 15
+    chk "15 个标签的名字和颜色逐个对上" "$got" "$EXPECTED"
     local name color
     while IFS='|' read -r name color; do
         chk "· $name 的颜色" "$(printf '%s\n' "$got" | awk -F'|' -v n="$name" '$1==n{print $2}')" "$color"
