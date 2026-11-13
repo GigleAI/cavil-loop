@@ -97,7 +97,7 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   // ---- switch on: the closed ones come too, and it is saved ----
   await box(page).check();
   await expect.poll(() => rowKeys(page)).toEqual([...openHuman, ...closedHuman].sort());
-  await expect.poll(async () => (await viewState(page)).showClosed).toMatchObject({ table: true, board: false, graph: false, human: false });
+  await expect.poll(async () => (await viewState(page)).showClosed).toEqual({ table: true, board: false, graph: false });
   await shot(page, 'show-closed-02-table-on');
 
   // ---- the board has its own, still off: the closed ones are not there ----

@@ -1657,7 +1657,9 @@ test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, 
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  await expect.poll(() => importedView(page), { timeout: 15_000 }).toBe(1);
+  // GitHub#464: the import leaves the view's filter (it only hid finished items) out of the box; write it back to search
+  await page.getByTestId('search').fill('-label:Done -status:Done');
   env.fake.state.failProjectPage.set(P11, 1);
   await page.getByTestId('refresh').click();
   const btn = page.getByTestId('sync-trouble');
