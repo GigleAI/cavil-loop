@@ -371,6 +371,9 @@ export function App() {
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
   // GitHub#404: the search from before a view-bar number was clicked (kept here: the board unmounts on the settings page)
   const tallySaved = useRef<string | null>(null);
+  // GitHub#464: the view-bar number last clicked — tells two numbers with one click text apart (state: a switch
+  // between them leaves the box as it is, and the lit number and its "显示已关闭" switch must still follow)
+  const [tallyPick, setTallyPick] = useState<string | null>(null);
   const parsed = useMemo(() => parseFilter(query), [query]);
   const sync = snap?.state.sync;
   const notifyProblem = snap?.state.notifyProblem ?? null;
@@ -454,6 +457,8 @@ export function App() {
                 }}
                 onKeysHelp={() => setKeysHelp(true)}
                 tallySaved={tallySaved}
+                tallyPick={tallyPick}
+                onTallyPick={setTallyPick}
               />
             )}
           </div>

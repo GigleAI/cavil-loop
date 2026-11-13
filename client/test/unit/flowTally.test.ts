@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { flowCondition, flowTally, litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyQuery, unlabeledTally, UNLABELED_QUERY, type TallyEntry } from '../../src/data/flowTally';
 import { mergeSnapshots } from '../../src/data/merge';
+import { defaultTallies } from '../../src/shared/tallies';
 import { isPending } from '../../src/data/pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../../src/shared/filter';
 import { DEFAULT_HAND_BACK, type Item } from '../../src/shared/types';
@@ -41,6 +42,11 @@ const counts = (e: TallyEntry[]) => Object.fromEntries(e.map((x) => [x.kind, x.c
 /** the rule written out: the reminders' own for "等人处理", open + labelled for the other two */
 const rule = (e: TallyEntry) => (i: Item) => (e.kind === 'human' ? isPending(i, e.label) : i.state === 'open' && isPending(i, e.label));
 const today = '2026-11-12';
+/** a click's effect on the box and the remembered search (which number is lit after it: the GitHub#464 cases below) */
+const click = (...a: Parameters<typeof tallyClick>) => {
+  const { pick: _p, ...rest } = tallyClick(...a);
+  return rest;
+};
 /** what a click lists: the query, then open only while the number's switch is off (BoardView does exactly this) */
 const listed = (items: Item[], q: string, showClosed = false) => {
   const hit = applyFilter(items, parseFilter(q), { viewer: null, today, projects: [] });
@@ -180,14 +186,14 @@ describe('GitHub#418: 未处理 (open, no label at all)', () => {
     const E = flowTally(ITEMS, DEFAULT_HAND_BACK);
     const u = E.find((x) => x.kind === 'unlabeled')!;
     const human = E.find((x) => x.kind === 'human')!;
-    let s = tallyClick('新增依赖图视图', null, u, E);
+    let s = click('新增依赖图视图', null, u, E);
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
     expect(litTally(s.query, E)).toBe('unlabeled');
-    s = tallyClick(s.query, s.saved, human, E);
+    s = click(s.query, s.saved, human, E);
     expect(s).toEqual({ query: 'label:"pending/human"', saved: '新增依赖图视图' });
-    s = tallyClick(s.query, s.saved, u, E);
+    s = click(s.query, s.saved, u, E);
     expect(s).toEqual({ query: UNLABELED_QUERY, saved: '新增依赖图视图' });
-    expect(tallyClick(s.query, s.saved, u, E)).toEqual({ query: '新增依赖图视图', saved: null });
+    expect(click(s.query, s.saved, u, E)).toEqual({ query: '新增依赖图视图', saved: null });
     // its query never reads as one of the label numbers' queries
     expect(E.filter((x) => x.query === UNLABELED_QUERY).map((x) => x.kind)).toEqual(['unlabeled']);
   });
@@ -207,37 +213,37 @@ describe('a click on a number', () => {
   });
 
   it('a search, click, click again: the search comes back whole', () => {
-    let s = tallyClick('新增依赖图视图', null, running, E);
+    let s = click('新增依赖图视图', null, running, E);
     expect(s).toEqual({ query: RUN, saved: '新增依赖图视图' });
-    s = tallyClick(s.query, s.saved, running, E);
+    s = click(s.query, s.saved, running, E);
     expect(s).toEqual({ query: '新增依赖图视图', saved: null });
   });
 
   it('switching numbers keeps the first search; clicking the lit one brings it back', () => {
-    let s = tallyClick('新增依赖图视图', null, running, E);
-    s = tallyClick(s.query, s.saved, human, E);
+    let s = click('新增依赖图视图', null, running, E);
+    s = click(s.query, s.saved, human, E);
     expect(s).toEqual({ query: HUM, saved: '新增依赖图视图' });
-    s = tallyClick(s.query, s.saved, human, E);
+    s = click(s.query, s.saved, human, E);
     expect(s).toEqual({ query: '新增依赖图视图', saved: null });
   });
 
   it('an empty box: click, click again → empty', () => {
-    let s = tallyClick('', null, agent, E);
+    let s = click('', null, agent, E);
     expect(s).toEqual({ query: 'label:"pending/agent"', saved: '' });
-    expect(tallyClick(s.query, s.saved, agent, E)).toEqual({ query: '', saved: null });
+    expect(click(s.query, s.saved, agent, E)).toEqual({ query: '', saved: null });
   });
 
   it('a lit number with nothing remembered (e.g. after a restart) → empty', () => {
-    expect(tallyClick(RUN, null, running, E)).toEqual({ query: '', saved: null });
+    expect(click(RUN, null, running, E)).toEqual({ query: '', saved: null });
   });
 
   it('a hand edit that leaves the numbers voids the remembered search', () => {
-    const s = tallyClick('foo', null, running, E);
+    const s = click('foo', null, running, E);
     // the box is typed into: no longer a number's query
     const saved = tallyForget(s.saved, 'bar', E);
     expect(saved).toBeNull();
     // later typed back to a number's query by hand: clicking it does not resurrect "foo"
-    expect(tallyClick(HUM, saved, human, E)).toEqual({ query: '', saved: null });
+    expect(click(HUM, saved, human, E)).toEqual({ query: '', saved: null });
     // while it still shows a number's query, the memory stays
     expect(tallyForget('foo', HUM, E)).toBe('foo');
   });
@@ -245,7 +251,7 @@ describe('a click on a number', () => {
   it('a label that cannot be written as a query does nothing on click', () => {
     const e = flowTally([], { ...DEFAULT_HAND_BACK, running: 'a"b' });
     expect(e[0].query).toBeNull();
-    expect(tallyClick('foo', 'x', e[0], e)).toEqual({ query: 'foo', saved: 'x' });
+    expect(click('foo', 'x', e[0], e)).toEqual({ query: 'foo', saved: 'x' });
   });
 });
 
@@ -300,5 +306,58 @@ describe('GitHub#464: which "显示已关闭" switch is in effect', () => {
     expect(litTally('is:open label:"pending/human"', E)).toBeNull();
     expect(litTally('label:"pending/human"', E)).toBe('human');
     expect(litTally('no:label', E)).toBe('unlabeled');
+  });
+});
+
+describe('GitHub#464: two numbers with the same click text (PR #500 review round 1)', () => {
+  // "运行中" and "等人处理" both set to pending/human: no click query carries `is:open`, so both read `label:"pending/human"`
+  const labels = { running: 'pending/human', agent: 'pending/agent', human: 'pending/human' };
+  const items = [item(R, 1, { labels: L('pending/human') }), item(R, 2, { labels: L('pending/human'), state: 'closed', stateReason: 'completed' })];
+  const E = tallyEntries(items, defaultTallies(), labels);
+  const byKind = (k: string) => E.find((e) => e.kind === k)!;
+  /** the whole chain the board runs: lit number → its switch (as it starts) → the list */
+  const shown = (query: string, pick: string | null) => {
+    const lit = litTally(query, E, pick);
+    const entry = E.find((e) => e.kind === lit) ?? null;
+    return { lit, key: showClosedKey('table', lit), list: listed(items, query, showClosedDefault(entry)) };
+  };
+
+  it('the counts differ (open only / closed too) while the click text is the same', () => {
+    expect([byKind('running').count, byKind('human').count]).toEqual([1, 2]);
+    expect(byKind('running').query).toBe(byKind('human').query);
+  });
+
+  it('a click on "等人处理" lights it, with its own switch, and lists what it counts', () => {
+    const s = tallyClick('', null, byKind('human'), E, null);
+    expect(s).toEqual({ query: 'label:"pending/human"', saved: '', pick: 'human' });
+    expect(shown(s.query, s.pick)).toEqual({ lit: 'human', key: 'human', list: [1, 2] });
+  });
+
+  it('a click on "运行中" lights it instead: same box, its own switch, open only', () => {
+    const s = tallyClick('', null, byKind('running'), E, null);
+    expect(shown(s.query, s.pick)).toEqual({ lit: 'running', key: 'running', list: [1] });
+  });
+
+  it('switching between the two keeps the box and the remembered search; clicking the lit one gives it back', () => {
+    let s = tallyClick('bug', null, byKind('human'), E, null);
+    s = tallyClick(s.query, s.saved, byKind('running'), E, s.pick);
+    expect(s).toEqual({ query: 'label:"pending/human"', saved: 'bug', pick: 'running' });
+    expect(shown(s.query, s.pick).key).toBe('running');
+    s = tallyClick(s.query, s.saved, byKind('human'), E, s.pick);
+    expect(s).toEqual({ query: 'label:"pending/human"', saved: 'bug', pick: 'human' });
+    expect(shown(s.query, s.pick).key).toBe('human');
+    expect(tallyClick(s.query, s.saved, byKind('human'), E, s.pick)).toEqual({ query: 'bug', saved: null, pick: null });
+  });
+
+  it('nothing remembered (after a restart, or the text typed by hand): the first in the bar\'s order, and a click on the other still reaches it', () => {
+    expect(shown('label:"pending/human"', null).lit).toBe('running');
+    const s = tallyClick('label:"pending/human"', null, byKind('human'), E, null);
+    expect(s.pick).toBe('human');
+    expect(shown(s.query, s.pick)).toEqual({ lit: 'human', key: 'human', list: [1, 2] });
+  });
+
+  it('a remembered pick that does not show this text is ignored', () => {
+    expect(litTally('label:"pending/agent"', E, 'human')).toBe('agent');
+    expect(litTally('bug', E, 'human')).toBeNull();
   });
 });

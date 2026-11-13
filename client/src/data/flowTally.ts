@@ -167,26 +167,41 @@ export function unlabeledTally(items: Item[]): TallyEntry {
   return tallyEntries(items, defaultTallies().filter((d) => d.id === 'unlabeled'), { running: '', agent: '', human: '' })[0];
 }
 
-/** Which number the search box is showing right now (its text is exactly that number's query), if any. */
-export function litTally(query: string, entries: TallyEntry[]): TallyKind | null {
-  // two rows with the same click text: the first one is lit
+/**
+ * Which number the search box is showing right now (its text is exactly that number's query), if any.
+ * GitHub#464: two numbers can have the same click text (no click query carries `is:open` any more, so
+ * "运行中" and "等人处理" set to one label read the same) — then `pick`, the number last clicked (kept by
+ * the window), says which one is lit; without it (after a restart, or the text typed by hand) the first
+ * one in the bar's order is. Each of them keeps its own "显示已关闭" switch either way.
+ */
+export function litTally(query: string, entries: TallyEntry[], pick: TallyKind | null = null): TallyKind | null {
   const q = query.trim();
-  return entries.find((e) => e.query !== null && e.query === q)?.kind ?? null;
+  const same = entries.filter((e) => e.query !== null && e.query === q);
+  if (same.length === 0) return null;
+  return same.find((e) => e.kind === pick)?.kind ?? same[0].kind;
 }
 
 /**
  * A click on one number. `saved` is the search text from before the first number was clicked
- * (null = none). Rules:
+ * (null = none); `pick` the number last clicked (see `litTally`). Rules:
  *  - the clicked number is lit → back to `saved` (empty when there is none), and `saved` is used up;
- *  - another number is lit → switch to the clicked one, `saved` stays as it was;
+ *  - another number is lit → switch to the clicked one, `saved` stays as it was (also when the two
+ *    share one click text: the box stays, the lit number and its switch change);
  *  - none is lit → remember the box as it is, then switch.
+ * The answer's `pick` is the number lit afterwards (null = none).
  */
-export function tallyClick(current: string, saved: string | null, target: TallyEntry, entries: TallyEntry[]): { query: string; saved: string | null } {
-  if (target.query === null) return { query: current, saved };
-  const lit = litTally(current, entries);
-  if (lit === target.kind) return { query: saved ?? '', saved: null };
-  if (lit !== null) return { query: target.query, saved };
-  return { query: target.query, saved: current };
+export function tallyClick(
+  current: string,
+  saved: string | null,
+  target: TallyEntry,
+  entries: TallyEntry[],
+  pick: TallyKind | null = null,
+): { query: string; saved: string | null; pick: TallyKind | null } {
+  const lit = litTally(current, entries, pick);
+  if (target.query === null) return { query: current, saved, pick: lit };
+  if (lit === target.kind) return { query: saved ?? '', saved: null, pick: null };
+  if (lit !== null) return { query: target.query, saved, pick: target.kind };
+  return { query: target.query, saved: current, pick: target.kind };
 }
 
 /** The box was changed some other way: once it no longer shows a number's query, the remembered text is void. */

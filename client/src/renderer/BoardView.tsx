@@ -606,6 +606,8 @@ export function BoardView({
   onSettings,
   onKeysHelp,
   tallySaved,
+  tallyPick: pickProp,
+  onTallyPick,
 }: {
   state: AppState;
   data: BoardData;
@@ -638,6 +640,9 @@ export function BoardView({
   onKeysHelp?: () => void;
   /** GitHub#404: the search text from before a flow number was clicked; kept by the window so the settings page does not lose it */
   tallySaved?: { current: string | null };
+  /** GitHub#464: the number last clicked (kept by the window) — tells numbers with the same click text apart */
+  tallyPick?: string | null;
+  onTallyPick?: (kind: string | null) => void;
 }) {
   const now = useNow();
   const [showEnded, setShowEnded] = useState(false);
@@ -652,7 +657,11 @@ export function BoardView({
     () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
     [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
   );
-  const lit = litTally(query, tally);
+  // a window without its own memory (tests mounting the board alone) keeps the pick here
+  const [ownPick, setOwnPick] = useState<string | null>(null);
+  const pick = onTallyPick ? (pickProp ?? null) : ownPick;
+  const setPick = onTallyPick ?? setOwnPick;
+  const lit = litTally(query, tally, pick);
   const litEntry = tally.find((e) => e.kind === lit) ?? null;
   // GitHub#464: the "显示已关闭" switch in effect (the lit number's, else the layout's); a search that
   // says open / closed / merged itself decides instead, and the switch is greyed out
@@ -685,10 +694,13 @@ export function BoardView({
   // the box changed some other way and no longer shows a number's query: the remembered search is void
   useEffect(() => {
     saved.current = tallyForget(saved.current, query, tally);
-  }, [query, tally, saved]);
+    // no number shown any more: the remembered pick is void too (a later text typed by hand starts from the first)
+    if (litTally(query, tally) === null && pick !== null) setPick(null);
+  }, [query, tally, saved, pick, setPick]);
   const clickTally = (e: TallyEntry) => {
-    const next = tallyClick(query, saved.current, e, tally);
+    const next = tallyClick(query, saved.current, e, tally, pick);
     saved.current = next.saved;
+    setPick(next.pick);
     if (next.query !== query) setQuery(next.query);
   };
   const failed = sync.sources.filter((s) => !s.ok);

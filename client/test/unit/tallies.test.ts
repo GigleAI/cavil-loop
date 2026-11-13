@@ -72,7 +72,7 @@ describe('a row that follows a flow label (review round 1 of the design: labels 
       expect(e.count).toBe(2);
       expect(carryingAny(items, name)).toEqual([1, 3]);
       expect(e.query).toBeNull();
-      expect(tallyClick('foo', null, e, [e])).toEqual({ query: 'foo', saved: null });
+      expect(tallyClick('foo', null, e, [e])).toEqual({ query: 'foo', saved: null, pick: null });
       const [r] = tallyEntries(items, [flow('r', 'running')], { ...labels, running: name });
       expect(r.count).toBe(1);
       expect(carrying(items, name)).toEqual([1]);

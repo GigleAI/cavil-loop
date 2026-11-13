@@ -184,3 +184,63 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await expect(box(page)).not.toBeChecked();
   await app.close();
 });
+
+test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one label read the same click text — each still lights itself and keeps its own switch', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await ready(page);
+  // the running label set to the same one as "等人处理"
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('hand-back-running').fill('pending/human');
+  await page.getByTestId('hand-back-running').blur();
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.running)).toBe('pending/human');
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('table')).toBeVisible();
+
+  const all = await items(page);
+  const carrying = all.filter(human);
+  const openOnes = carrying.filter((i) => i.state === 'open').map((i) => i.key).sort();
+  const everyOne = carrying.map((i) => i.key).sort();
+  // the recording has closed ones carrying it, so the two lists differ
+  expect(everyOne.length).toBeGreaterThan(openOnes.length);
+  await expect(tally(page, 'running').getByTestId('tally-count')).toHaveText(String(openOnes.length));
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(everyOne.length));
+
+  // "等人处理": lit, its own switch (on as it starts), everything it counts
+  await tally(page, 'human').click();
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
+  await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'true');
+  await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle(page)).toHaveAttribute('data-view', 'human');
+  await expect(toggle(page)).toHaveText('显示已关闭（等人处理）');
+  await expect(box(page)).toBeChecked();
+  await expect.poll(() => rowKeys(page)).toEqual(everyOne);
+
+  // "运行中": the same box, but it is the one lit now, with its own switch (off): open ones only
+  await tally(page, 'running').click();
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
+  await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
+  await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle(page)).toHaveAttribute('data-view', 'running');
+  await expect(box(page)).not.toBeChecked();
+  await expect.poll(() => rowKeys(page)).toEqual(openOnes);
+  // switching it does not touch "等人处理"'s
+  await box(page).check();
+  await expect.poll(async () => (await viewState(page)).showClosed.running).toBe(true);
+  expect((await viewState(page)).showClosed.human).toBeUndefined();
+
+  // back to "等人处理": its switch as it was; clicking it again gives the empty box back
+  await tally(page, 'human').click();
+  await expect(toggle(page)).toHaveAttribute('data-view', 'human');
+  await expect(box(page)).toBeChecked();
+  await tally(page, 'human').click();
+  await expect(page.getByTestId('search')).toHaveValue('');
+  await expect(toggle(page)).toHaveAttribute('data-view', 'table');
+
+  // the settings page in between keeps which one was clicked
+  await tally(page, 'human').click();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('back').click();
+  await expect(toggle(page)).toHaveAttribute('data-view', 'human');
+  await app.close();
+});
