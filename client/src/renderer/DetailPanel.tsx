@@ -1144,17 +1144,41 @@ export function DetailPanel({
         if (editing || titleEdit) continue;
         setTitleNote(null);
         setTitleEdit({ seen: a.seenTitle, text: a.title });
+        titleFrom.current = r.id;
       } else if (a.kind === 'editEntry') {
         const e = detail?.timeline.find((x) => x.id === a.entryId && (x.kind === 'body' || x.kind === 'comment'));
         if (editing || titleEdit || !e) continue;
         setEditNote(null);
         setEditing({ entryId: a.entryId, kind: e.kind as 'body' | 'comment', url: e.url, source: a.seenSource, text: a.body });
+        editFrom.current = r.id;
       } else continue;
       taken.current.add(r.id);
       void api().sendReturned(r.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [takeSig, detail, editing === null, titleEdit === null]);
+  // PR #510 review round 1: until it is sent again, a taken-back text is kept by its record too (the box is not
+  // on disk: a restart gives it back again). Once it leaves the box without being sent from there — the reply
+  // box no longer holds it after it did in this opening, the editor it reopened is cancelled — the record lets
+  // it go. (Sending it again is seen by the controller itself: the newer send takes the old record over.)
+  const editFrom = useRef<string | null>(null);
+  const titleFrom = useRef<string | null>(null);
+  const inBox = useRef(new Set<string>());
+  useEffect(() => {
+    for (const r of mySends) {
+      if (r.state !== 'refused' || !r.returned || r.dropped || r.action.kind !== 'comment') continue;
+      if (reply.includes(r.action.body)) inBox.current.add(r.id);
+      else if (inBox.current.has(r.id)) {
+        inBox.current.delete(r.id);
+        void api().sendDropped(r.id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reply, takeSig]);
+  const dropFrom = (ref: { current: string | null }) => {
+    if (ref.current) void api().sendDropped(ref.current);
+    ref.current = null;
+  };
   // opened from a notice above the board (GitHub#250): do what was asked there, once
   const intentDone = useRef(false);
   useEffect(() => {
@@ -1897,6 +1921,7 @@ export function DetailPanel({
           dirty={editing.text !== editing.source}
           onCancel={() => {
             setEditing(null);
+            dropFrom(editFrom);
             if (pasted?.where === 'edit') setPasted(null);
           }}
           onConfirm={async () => {
@@ -1907,6 +1932,7 @@ export function DetailPanel({
             if (!s.ok) return void setEditNote({ kind: 'error', text: s.error ?? '没有保存' });
             setEditing(null);
             setEditNote(null);
+            editFrom.current = null;
             if (pasted?.where === 'edit') setPasted(null);
           }}
         >
@@ -1942,7 +1968,10 @@ export function DetailPanel({
           busy={busy}
           disabled={!titleEdit.text.trim() || titleEdit.text.trim() === titleEdit.seen}
           dirty={titleEdit.text !== titleEdit.seen}
-          onCancel={() => setTitleEdit(null)}
+          onCancel={() => {
+            setTitleEdit(null);
+            dropFrom(titleFrom);
+          }}
           onConfirm={async () => {
             // GitHub#489: as an edit above — the controller saves it, the dialog closes at once
             const s = await api().startSend({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen });
@@ -1950,6 +1979,7 @@ export function DetailPanel({
             if (!s.ok) return void setTitleNote({ kind: 'error', text: s.error ?? '没有保存' });
             setTitleEdit(null);
             setTitleNote(null);
+            titleFrom.current = null;
           }}
         >
           {/* not in a form: a plain Enter submits nothing — only the button or ⌘↩ (as in every dialog) */}

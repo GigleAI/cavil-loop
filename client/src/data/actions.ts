@@ -475,6 +475,12 @@ async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreateP
     throw new ActionRefused(`里程碑「${want.title}」已经不在仓库 ${repo} 里（或被改了名），没有新建；请关掉对话框重开`);
 }
 
+/** what the one write of a send answered: a warning when GitHub's answer does not show what was written; a reply's new comment */
+export interface SendWritten {
+  warning: string | null;
+  commentId?: string | null;
+}
+
 /**
  * GitHub#489: a reply / an edit / a ticked box, made ready to send. Everything that can refuse it is
  * checked here — each read that fails throws, and then nothing was sent. `write` is the one request
@@ -482,7 +488,7 @@ async function checkCreatePlan(client: GitHubClient, repo: string, plan: CreateP
  * GitHub's answer does not show what was written. `proof` is what proves it when that answer never
  * comes. `proofs`: a reply reads the comments already there first (only a send record needs them).
  */
-export async function prepareSend(client: GitHubClient, action: SendAction, it: Item, opts: { proofs?: boolean } = {}): Promise<{ write: (() => Promise<string | null>) | null; proof: SendProof }> {
+export async function prepareSend(client: GitHubClient, action: SendAction, it: Item, opts: { proofs?: boolean } = {}): Promise<{ write: (() => Promise<SendWritten>) | null; proof: SendProof }> {
   switch (action.kind) {
     case 'comment': {
       if (!action.body.trim()) throw new ActionRefused('评论是空的，没有发送');
@@ -495,7 +501,12 @@ export async function prepareSend(client: GitHubClient, action: SendAction, it: 
           if (e instanceof GitHubError && e.kind === 'auth') throw e;
         }
       }
-      return { write: async () => (await commentStep(client, it, action.body), null), proof: { kind: 'comment', before } };
+      // the new comment's node id from GitHub's answer: that comment is this send's (PR #510 review round 1)
+      const write = async (): Promise<SendWritten> => {
+        const r = await client.rest<{ node_id?: unknown }>('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body: action.body });
+        return { warning: null, commentId: typeof r?.node_id === 'string' && r.node_id ? r.node_id : null };
+      };
+      return { write, proof: { kind: 'comment', before } };
     }
     case 'toggleTask': {
       if (!Number.isInteger(action.index) || action.index < 0 || typeof action.checked !== 'boolean') throw new ActionRefused('不知道点的是哪一个勾选框，没有修改');
@@ -507,7 +518,7 @@ export async function prepareSend(client: GitHubClient, action: SendAction, it: 
       const next = flipTask(now.body, action.index, action.checked);
       if (next === null) throw new ActionRefused(TASK_CHANGED);
       return {
-        write: async () => ((await writeTaskSource(client, now.kind, action.entryId, next)) === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对'),
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, next)) === next ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
         proof: { kind: 'source', want: next },
       };
     }
@@ -521,7 +532,7 @@ export async function prepareSend(client: GitHubClient, action: SendAction, it: 
       const proof = { kind: 'source' as const, want: action.body };
       if (action.body === now.body) return { write: null, proof };
       return {
-        write: async () => ((await writeTaskSource(client, now.kind, action.entryId, action.body)) === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对'),
+        write: async () => ({ warning: (await writeTaskSource(client, now.kind, action.entryId, action.body)) === action.body ? null : 'GitHub 返回的内容和要写的不一致，请刷新详情核对' }),
         proof,
       };
     }
@@ -538,7 +549,7 @@ export async function prepareSend(client: GitHubClient, action: SendAction, it: 
       return {
         write: async () => {
           const written = await client.rest<{ title?: unknown }>('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { title });
-          return written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对';
+          return { warning: written?.title === title ? null : 'GitHub 返回的标题和要写的不一致，请刷新详情核对' };
         },
         proof,
       };
@@ -618,7 +629,7 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
       const it = needItem(ctx);
       const p = await prepareSend(client, action, it);
       if (!p.write) return { touched: [], warning: null };
-      return { touched: [[it.repo, it.number]], warning: await p.write() };
+      return { touched: [[it.repo, it.number]], warning: (await p.write()).warning };
     }
     case 'createIssue': {
       if (!action.title.trim()) throw new ActionRefused('标题不能为空');

@@ -132,6 +132,8 @@ export interface CavilApi {
   sendRecheck(id: string): Promise<WriteResult>;
   /** the panel put a refused send's text back into its edit box */
   sendReturned(id: string): Promise<void>;
+  /** that text left the edit box without being sent from it (emptied, the editor cancelled) */
+  sendDropped(id: string): Promise<void>;
   /** "已核对，解除锁定" on an unknown send (local only) */
   sendUnlock(id: string): Promise<void>;
   sendDismiss(id: string): Promise<void>;

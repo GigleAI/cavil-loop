@@ -3480,6 +3480,9 @@ export class Controller {
     if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
+    // PR #510 review round 1: the same text sent from the reply box is still without a result (the two could not be told apart)
+    const opComment = (action as { comment?: unknown }).comment;
+    if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作');
     const step = (name: OpStep['name'], label?: string, role?: OpStep['role']): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null, ...(role ? { role } : {}) });
     let steps: OpStep[];
     let draft: OpRecord['draft'] = {};
@@ -4647,7 +4650,9 @@ export class Controller {
         if (snap) {
           if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
           else {
-            const out = opProveFromRecords(now, snap, login);
+            // PR #510 review round 1: a comment that already is a reply's of the reply box proves nothing here
+            const owned = new Set([...this.sends.values()].map((x) => x.commentId).filter((x): x is string => !!x));
+            const out = opProveFromRecords(now, { ...snap, comments: snap.comments.filter((x) => !owned.has(x.id)) }, login);
             now = out.record;
             problems.push(...out.missing);
           }
@@ -4789,6 +4794,8 @@ export class Controller {
     if (!rec) return this.actNow(plain);
     const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
     if (rec.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有再发');
+    // PR #510 review round 1: the same text sent from the reply box is still without a result
+    if (this.sendCommentPending(rec.key, action.body)) return refuse('同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发');
     if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(`这次操作还没结清，附带评论先不发：${opText(rec)}`);
     if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
     if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
@@ -4967,7 +4974,10 @@ export class Controller {
     if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
     if (action.kind === 'comment' && !action.body.trim()) return refuse('评论是空的，没有发送');
     const slot = sendSlot(action);
-    if (slot && (this.tasksInFlight.has(slot) || this.sendHolding(slot))) return refuse('这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改');
+    if (this.tasksInFlight.has(slot) || this.sendHolding(slot))
+      return refuse(action.kind === 'comment' ? '同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发' : '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改');
+    // PR #510 review round 1: the same text as an operation's reply / attached comment that is on its way or not sure
+    if (action.kind === 'comment' && this.opCommentPending(item.key, action.body)) return refuse('同样的一段评论正由关闭 / 交给 agent 等操作发出，还没有结果，等它有了结果再发');
     const id = `send-${++this.sendSeq}`;
     const rec: SendRecord = {
       id,
@@ -4986,9 +4996,13 @@ export class Controller {
       unlocked: false,
       dismissed: false,
     };
-    // a newer change of the same entry (or a newer reply) puts an older refusal whose text went back away
-    for (const r of [...this.sends.values()])
-      if (r.key === rec.key && r.state === 'refused' && r.returned && sendSlot(r.action) === slot && r.action.kind === action.kind) this.sends.set(r.id, { ...r, dismissed: true });
+    // a newer send carrying an older refusal's text (the same entry / title, or a reply that holds the old one)
+    // takes it over: the old record puts itself away with its text
+    for (const r of [...this.sends.values()]) {
+      if (r.key !== rec.key || r.state !== 'refused' || r.dropped || r.action.kind !== action.kind) continue;
+      const carries = r.action.kind === 'comment' && action.kind === 'comment' ? action.body.includes(r.action.body) : sendSlot(r.action) === slot;
+      if (carries) this.sends.set(r.id, { ...r, dismissed: true, dropped: true });
+    }
     this.sends.set(id, rec);
     this.pruneSends();
     this.sendsChanged();
@@ -5057,8 +5071,11 @@ export class Controller {
     if (!mine()) return;
     // 4. the write
     let warning: string | null = null;
+    let commentId: string | null = null;
     try {
-      warning = await prepared.write();
+      const w = await prepared.write();
+      warning = w.warning;
+      commentId = w.commentId ?? null;
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       if (!mine()) return;
@@ -5073,7 +5090,7 @@ export class Controller {
     }
     if (!mine()) return;
     // a quiet one (a ticked box, a title) that simply went through has nothing left to say: forgotten at once
-    this.patchSend(id, { state: 'ok', answeredAt: this.stamp(), warning, dismissed: !warning && sendQuiet(start.action) });
+    this.patchSend(id, { state: 'ok', answeredAt: this.stamp(), warning, dismissed: !warning && sendQuiet(start.action), ...(start.action.kind === 'comment' ? { commentId } : {}) });
     await this.storeSends();
     // the item read again, like any change
     const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
@@ -5093,7 +5110,7 @@ export class Controller {
       if (c.session !== this.session) return;
       const now = this.sends.get(id);
       if (!now || now.state !== 'unknown') return;
-      const out = sendProve(now, { login: this.state.viewer, ...ev });
+      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()]);
       problem = out.missing;
       found = out.record.state === 'ok';
       this.sends.set(id, out.record);
@@ -5129,10 +5146,10 @@ export class Controller {
   async sendResend(id: string): Promise<WriteResult> {
     const r = this.sends.get(id);
     if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
-    if (r.state !== 'refused' || r.returned) return { ok: false, error: '这一条不能再发（原文已放回编辑框，或结果还不确定）', warning: null };
+    if (r.state !== 'refused' || r.returned || r.dropped) return { ok: false, error: '这一条不能再发（原文已放回编辑框，或结果还不确定）', warning: null };
     if (this.sendJobs.has(id)) return { ok: false, error: '正在发送，稍等', warning: null };
     const slot = sendSlot(r.action);
-    if (slot && (this.tasksInFlight.has(slot) || [...this.sends.values()].some((x) => x.id !== id && sendHolds(x) && sendSlot(x.action) === slot)))
+    if (this.tasksInFlight.has(slot) || [...this.sends.values()].some((x) => x.id !== id && sendHolds(x) && sendSlot(x.action) === slot) || (r.action.kind === 'comment' && this.opCommentPending(r.key, r.action.body)))
       return { ok: false, error: '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再试', warning: null };
     if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
     this.patchSend(id, { state: 'sending', reason: null, sentAt: null, answeredAt: null, warning: null, proof: null, dismissed: false, checks: 0, checkProblem: null });
@@ -5147,6 +5164,32 @@ export class Controller {
     if (!r || r.state !== 'refused' || r.returned) return;
     this.patchSend(id, { returned: true });
     void this.storeSends();
+  }
+
+  /**
+   * PR #510 review round 1: the text a panel took back left its box without being sent from there (the box
+   * was emptied, the editor cancelled): the record no longer keeps it, and a restart does not bring it back.
+   */
+  sendDropped(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.dropped) return;
+    this.patchSend(id, { dropped: true });
+    void this.storeSends();
+  }
+
+  /** an operation of this item is sending exactly this text as a reply or its attached comment, or does not know whether it went out */
+  private opCommentPending(key: string, body: string): boolean {
+    return [...this.ops.values()].some(
+      (o) =>
+        o.key === key &&
+        (((o.replyState === 'sending' || o.replyState === 'unknown') && o.reply?.body === body) ||
+          (o.draft.comment === body && o.steps.some((s) => s.name === 'comment' && (s.state === 'pending' || s.state === 'unknown' || (s.state === 'unsent' && o.running))))),
+    );
+  }
+
+  /** a reply of the controller with this text on this item is on its way or not sure */
+  private sendCommentPending(key: string, body: string): boolean {
+    return this.sendHolding(sendSlot({ kind: 'comment', key, body }));
   }
 
   /** "已核对，解除锁定" on an unknown send: local only; the text stays in the notice until it is put away. */

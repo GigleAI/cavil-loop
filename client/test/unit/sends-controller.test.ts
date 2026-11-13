@@ -142,7 +142,8 @@ describe('a reply', () => {
     c.sendReturned(s.id!);
     const back = sendOf(c, s.id!);
     expect(sendTakeable(back)).toBe(false);
-    expect(sendKeepsText(back)).toBe(false);
+    // PR #510 review round 1: still kept by the record until it is sent again or leaves the box
+    expect(sendKeepsText(back)).toBe(true);
     expect(sendButtons(back)).toEqual([]);
     expect(sendNoticeText(back)).toContain('原文已放回回复框');
     expect(posts()).toHaveLength(1);
@@ -237,6 +238,108 @@ describe('a reply', () => {
     expect(posts()).toHaveLength(0);
     // the sibling: a real one does go out
     c.startSend({ kind: 'comment', key: K(ISSUE), body: '真的' });
+    await idle(c);
+    expect(posts()).toHaveLength(1);
+  });
+});
+
+describe('PR #510 review round 1', () => {
+  it('a refused text back in the reply box survives a restart (the box is not on disk); once it left the box unsent it does not come back', async () => {
+    let c = await ready();
+    fake.state.w.failComment = true;
+    const s = c.startSend({ kind: 'comment', key: K(ISSUE), body: '重启后还要能找回' });
+    await idle(c);
+    fake.state.w.failComment = false;
+    // the panel took it back, and the notice was put away
+    c.sendReturned(s.id!);
+    c.sendDismiss(s.id!);
+    await idle(c);
+    expect(sendShown(sendOf(c, s.id!))).toBe(false);
+    expect(storedSends()?.find((x) => x.id === s.id)).toMatchObject({ state: 'refused', returned: true });
+    c = await restart(c);
+    // offered to the reply box again
+    expect(sendTakeable(sendOf(c, s.id!))).toBe(true);
+    // taken again, then the box was emptied without sending it: let go, also after another restart
+    c.sendReturned(s.id!);
+    c.sendDropped(s.id!);
+    await idle(c);
+    expect(c.getState().sends.find((x) => x.id === s.id)).toBeUndefined();
+    c = await restart(c);
+    expect(c.getState().sends.find((x) => x.id === s.id)).toBeUndefined();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('sent again from the box: the newer send takes the refused record over — gone once it went through, one comment', async () => {
+    const c = await ready();
+    fake.state.w.failComment = true;
+    const s = c.startSend({ kind: 'comment', key: K(ISSUE), body: '第一版' });
+    await idle(c);
+    fake.state.w.failComment = false;
+    c.sendReturned(s.id!);
+    const again = c.startSend({ kind: 'comment', key: K(ISSUE), body: '前面加一句\n\n第一版' });
+    expect(again.ok).toBe(true);
+    await idle(c);
+    expect(c.getState().sends.find((x) => x.id === s.id)).toBeUndefined();
+    expect(sendOf(c, again.id!).state).toBe('ok');
+    expect(commentsOnGitHub().filter((x) => (x.body ?? '').includes('第一版'))).toHaveLength(1);
+  });
+
+  it('the same text twice on one item: the second is refused while the first is not settled; another text goes out', async () => {
+    const c = await ready();
+    const release = fake.hold(`/issues/${ISSUE}/comments`);
+    const a = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同一句话' });
+    expect(a.ok).toBe(true);
+    expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '同一句话' })).toMatchObject({ ok: false, error: expect.stringContaining('同样的一段评论') });
+    const b = c.startSend({ kind: 'comment', key: K(ISSUE), body: '另一句话' });
+    expect(b.ok).toBe(true);
+    release();
+    await idle(c);
+    expect(posts()).toHaveLength(2);
+    expect(commentsOnGitHub().filter((x) => x.body === '同一句话')).toHaveLength(1);
+    // settled: the same text may go again
+    expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '同一句话' }).ok).toBe(true);
+    await idle(c);
+    expect(posts()).toHaveLength(3);
+  });
+
+  it('one comment proves one send: an unknown send (unlocked) is not proven by a later same-text send that went through; its own late one does', async () => {
+    const c = await ready();
+    const late = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const a = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' });
+    await idle(c);
+    late.stop();
+    expect(sendOf(c, a.id!).state).toBe('unknown');
+    // still open: the same text is refused
+    expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' }).ok).toBe(false);
+    // a person checked GitHub and unlocked it; the same text goes out again and is answered
+    c.sendUnlock(a.id!);
+    const b = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' });
+    expect(b.ok).toBe(true);
+    await idle(c);
+    const rb = sendOf(c, b.id!);
+    expect(rb.state).toBe('ok');
+    expect(rb.commentId).toBeTruthy();
+    expect(commentsOnGitHub().filter((x) => x.body === '同文')).toHaveLength(1);
+    // the first one's check finds only the second one's comment: still not sure
+    expect(await c.sendRecheck(a.id!)).toMatchObject({ ok: false });
+    expect(sendOf(c, a.id!).state).toBe('unknown');
+    // the first one lands late: its own comment proves it
+    late.land();
+    expect(commentsOnGitHub().filter((x) => x.body === '同文')).toHaveLength(2);
+    expect(await c.sendRecheck(a.id!)).toMatchObject({ ok: true });
+    const ra = sendOf(c, a.id!);
+    expect(ra.state).toBe('ok');
+    expect(ra.commentId).not.toBe(rb.commentId);
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('an operation\'s attached comment and a reply of the same text are never in flight together', async () => {
+    const c = await ready();
+    const release = fake.hold(`/issues/${ISSUE}/comments`);
+    expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '收尾说明' }).ok).toBe(true);
+    // an operation carrying the same text is refused before anything goes out
+    expect(c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '收尾说明' })).toMatchObject({ ok: false, error: expect.stringContaining('同样的一段评论') });
+    release();
     await idle(c);
     expect(posts()).toHaveLength(1);
   });

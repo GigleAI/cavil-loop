@@ -150,3 +150,41 @@ test('GitHub#489: a reply — the box empties at once and the panel may go; refu
   await shot(page, '489-04-proven-after-restart');
   await app.close();
 });
+
+test('PR #510 review round 1: a refused reply back in the box comes back after a restart; emptied without sending, it does not', async () => {
+  let app = await launchApp(env);
+  let page = app.page;
+  await signIn(page);
+  await openItem(page);
+  env.fake.state.w.failComment = true;
+  await reply(page, '重启也别丢');
+  await expect(said(page).first()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('重启也别丢');
+  env.fake.state.w.failComment = false;
+  await said(page).first().getByTestId('send-dismiss').click();
+  await expect(said(page)).toHaveCount(0);
+
+  // ---- restart: the box (in memory) is gone; the text goes back into it again when the item is opened ----
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('Control+Shift+2');
+  await openItem(page);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('重启也别丢');
+
+  // ---- emptied without sending: let go — not back after the next restart ----
+  await detail(page).getByTestId('reply-input').fill('');
+  await page.waitForTimeout(500);
+  await page.keyboard.press('Escape');
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('Control+Shift+2');
+  await openItem(page);
+  await page.waitForTimeout(800);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('');
+  expect(onGitHub('重启也别丢')).toBe(0);
+  await app.close();
+});

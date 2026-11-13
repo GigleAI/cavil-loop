@@ -3,7 +3,7 @@
 // shared/sends.ts alone; this only draws them.
 
 import { useState } from 'react';
-import { sendAutoDismiss, sendButtons, sendClosable, sendKeepsText, sendNoticeText, sendText, sendTone, type SendRecord } from '../shared/sends';
+import { sendAutoDismiss, sendButtons, sendClosable, sendNoticeText, sendShowsText, sendText, sendTone, type SendRecord } from '../shared/sends';
 import { AUTO_DISMISS_MS } from '../shared/ops';
 import { useAutoDismiss } from './autoDismiss';
 import { api } from './api';
@@ -14,7 +14,7 @@ export function SendNotice({ r, onOpen }: { r: SendRecord; onOpen: (key: string)
   const [problem, setProblem] = useState<string | null>(null);
   const tone = sendTone(r);
   const buttons = sendButtons(r);
-  const text = sendKeepsText(r) ? sendText(r.action) : null;
+  const text = sendShowsText(r) ? sendText(r.action) : null;
   const auto = useAutoDismiss(sendAutoDismiss(r), AUTO_DISMISS_MS, () => void api().sendDismiss(r.id), r.id);
   const go = async (f: () => Promise<{ ok: boolean; error: string | null }>) => {
     setWorking(true);

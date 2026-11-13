@@ -37,7 +37,9 @@ describe('the states', () => {
       ['ok', rec(reply, { state: 'ok' }), { tone: 'ok', buttons: [], close: true, holds: false, keeps: false, take: false }],
       ['ok with a warning', rec(reply, { state: 'ok', warning: '重读失败' }), { tone: 'warn', buttons: [], close: true, holds: false, keeps: false, take: false }],
       ['refused', rec(reply, { state: 'refused' }), { tone: 'error', buttons: ['resend'], close: true, holds: false, keeps: true, take: true }],
-      ['refused, text back in the box', rec(reply, { state: 'refused', returned: true }), { tone: 'error', buttons: [], close: true, holds: false, keeps: false, take: false }],
+      // PR #510 review round 1: back in the box, the record still keeps the text (the box is not on disk)
+      ['refused, text back in the box', rec(reply, { state: 'refused', returned: true }), { tone: 'error', buttons: [], close: true, holds: false, keeps: true, take: false }],
+      ['refused, text left the box unsent', rec(reply, { state: 'refused', returned: true, dropped: true }), { tone: 'error', buttons: [], close: true, holds: false, keeps: false, take: false }],
       ['unknown', rec(reply, { state: 'unknown' }), { tone: 'warn', buttons: ['recheck', 'unlock'], close: false, holds: true, keeps: true, take: false }],
       ['unknown, checking', rec(reply, { state: 'unknown', checking: true }), { tone: 'busy', buttons: [], close: false, holds: true, keeps: true, take: false }],
       ['unknown, unlocked', rec(reply, { state: 'unknown', unlocked: true }), { tone: 'warn', buttons: ['recheck'], close: true, holds: false, keeps: true, take: false }],
@@ -47,8 +49,9 @@ describe('the states', () => {
       expect({ name, tone: sendTone(r), buttons: sendButtons(r), close: sendClosable(r), holds: sendHolds(r), keeps: sendKeepsText(r), take: sendTakeable(r) }).toEqual({ name, ...want });
   });
 
-  it('slots: a reply holds nothing; an edit / a tick its entry; a title its item', () => {
-    expect(sendSlot(reply)).toBeNull();
+  it('slots: a reply holds the same text on the same item; an edit / a tick its entry; a title its item', () => {
+    expect(sendSlot(reply)).toBe(`comment:${K}\n原文`);
+    expect(sendSlot({ ...reply, body: '别的' })).not.toBe(sendSlot(reply));
     expect(sendSlot(edit)).toBe('entry:IC_1');
     expect(sendSlot(tick)).toBe('entry:IC_1');
     expect(sendSlot(title)).toBe(`title:${K}`);
@@ -66,10 +69,12 @@ describe('the states', () => {
     expect(sendShown(rec(reply, { dismissed: true }))).toBe(false);
   });
 
-  it('forgotten once put away — except a refused text no panel took back yet', () => {
+  it('forgotten once put away — except a refused text that has not left its box unsent (or was never taken back)', () => {
     expect(sendDisposable(rec(reply, { state: 'ok', dismissed: true }))).toBe(true);
     expect(sendDisposable(rec(reply, { state: 'unknown', unlocked: true, dismissed: true }))).toBe(true);
-    expect(sendDisposable(rec(reply, { state: 'refused', returned: true, dismissed: true }))).toBe(true);
+    expect(sendDisposable(rec(reply, { state: 'refused', returned: true, dismissed: true }))).toBe(false);
+    expect(sendDisposable(rec(reply, { state: 'refused', returned: true, dropped: true, dismissed: true }))).toBe(true);
+    expect(sendDisposable(rec(tick, { state: 'refused', dismissed: true }))).toBe(true);
     expect(sendDisposable(rec(reply, { state: 'refused', dismissed: true }))).toBe(false);
     expect(sendDisposable(rec(reply, { state: 'unknown', dismissed: true }))).toBe(false);
   });
@@ -102,6 +107,24 @@ describe('what proves an unknown send', () => {
     }
   });
 
+  it('PR #510 review round 1: one comment proves one send — not one another send of the same text owns, and nothing while another one is still open', () => {
+    const before = ['old'];
+    const r = rec(reply, { id: 'send-2', state: 'unknown', proof: { kind: 'comment', before } });
+    const theirs = rec(reply, { id: 'send-1', state: 'ok', commentId: 'n1' });
+    const list = [{ id: 'old', author: 'me', body: '原文' }, { id: 'n1', author: 'me', body: '原文' }];
+    // the only new same-text comment is the other send's: not this one's
+    expect(sendProve(r, { login: 'me', comments: list }, [theirs, r]).record.state).toBe('unknown');
+    // its own lands too: proven by that one, which it now owns
+    const out = sendProve(r, { login: 'me', comments: [...list, { id: 'n2', author: 'me', body: '原文' }] }, [theirs, r]);
+    expect(out.record).toMatchObject({ state: 'ok', commentId: 'n2' });
+    // another same-text send of this item is still open: the comment found could be either one's
+    const open = rec(reply, { id: 'send-3', state: 'unknown' });
+    expect(sendProve(r, { login: 'me', comments: [...list, { id: 'n2', author: 'me', body: '原文' }] }, [theirs, open, r])).toMatchObject({ record: { state: 'unknown' }, missing: expect.stringContaining('分不清') });
+    // other text or another item does not count
+    const other = rec({ ...reply, body: '别的' }, { id: 'send-4', state: 'unknown' });
+    expect(sendProve(r, { login: 'me', comments: [...list, { id: 'n2', author: 'me', body: '原文' }] }, [theirs, other, r]).record.state).toBe('ok');
+  });
+
   it('an edit / a tick / a title: GitHub now holds exactly what was wanted', () => {
     const e = rec(edit, { state: 'unknown', proof: { kind: 'source', want: '新' } });
     expect(sendProve(e, { login: 'me', source: '旧' }).record.state).toBe('unknown');
@@ -118,6 +141,9 @@ describe('a restart', () => {
     expect(sendAfterRestart(rec(reply, { sentAt: 5 }))).toMatchObject({ state: 'unknown' });
     expect(sendAfterRestart(rec(reply))).toMatchObject({ state: 'refused', reason: expect.stringContaining('没有发出') });
     expect(sendTakeable(sendAfterRestart(rec(reply)))).toBe(true);
+    // PR #510 review round 1: back in a box that is gone with the last run → offered to the box again; let go → not
+    expect(sendTakeable(sendAfterRestart(rec(reply, { state: 'refused', returned: true })))).toBe(true);
+    expect(sendTakeable(sendAfterRestart(rec(reply, { state: 'refused', returned: true, dropped: true })))).toBe(false);
     const done = rec(reply, { state: 'ok', checking: true });
     expect(sendAfterRestart(done)).toMatchObject({ state: 'ok', checking: false });
   });
@@ -130,5 +156,8 @@ describe('a restart', () => {
     expect(isSendRecord({ ...rec(reply), action: { kind: 'merge', key: K } })).toBe(false);
     expect(isSendRecord({ ...rec(reply), proof: { kind: 'comment', before: [1] } })).toBe(false);
     expect(isSendRecord({ ...rec(reply), returned: undefined })).toBe(false);
+    expect(isSendRecord(rec(reply, { dropped: true, commentId: 'IC_1' }))).toBe(true);
+    expect(isSendRecord({ ...rec(reply), dropped: 'yes' })).toBe(false);
+    expect(isSendRecord({ ...rec(reply), commentId: 5 })).toBe(false);
   });
 });

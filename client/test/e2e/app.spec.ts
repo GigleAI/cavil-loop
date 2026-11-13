@@ -6681,10 +6681,12 @@ test('GitHub#323 (PR #327 review round 1) → GitHub#488: a field change made in
   await expect(failed.getByTestId('send-notice-text')).toHaveText(kept ?? '');
   await editsBar.getByTestId('edits-abandon-all').click();
   await expect(editsBar).toHaveCount(0);
+  // the box emptied without sending: the text is let go (PR #510 review round 1), the refusal itself stays
   await page.getByTestId('reply-input').fill('');
+  await expect(failed.getByTestId('send-notice-text')).toHaveText((kept ?? '').replace('。原文已放回回复框', ''));
   await putAway();
   await page.waitForTimeout(500);
-  await expect(failed.getByTestId('send-notice-text')).toHaveText(kept ?? '');
+  await expect(failed.getByTestId('send-notice-text')).toHaveText((kept ?? '').replace('。原文已放回回复框', ''));
   await failed.getByTestId('send-dismiss').click();
   await expect(failed).toHaveCount(0);
   await expect(bar).toHaveCount(0);
