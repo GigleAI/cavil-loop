@@ -965,3 +965,16 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 
 /* GitHub#447: the notices of closes that put their tab / floating panel away — above every page, under the tab bar */
 .op-strip { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); }
+/* GitHub#487: the "快捷键" section of the settings page */
+.set-keys-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sk-group { font-size: 12px; color: var(--muted); font-weight: 600; margin: 14px 0 2px; }
+.sk-table { width: 100%; border-collapse: collapse; margin: 4px 0 10px; }
+.sk-table td { padding: 6px 4px; border-top: 1px solid var(--border-muted); vertical-align: middle; }
+.sk-table td.k { width: 210px; white-space: nowrap; }
+.sk-table td.a { width: 170px; text-align: right; white-space: nowrap; }
+.sk-table tr.recording td { background: var(--accent-subtle); }
+.sk-table .fixed { font-size: 12px; color: var(--muted); }
+.sk-table .rec { display: inline-flex; align-items: center; gap: 6px; border: 1.5px dashed var(--accent); background: var(--accent-subtle); border-radius: 6px; padding: 2px 10px; color: var(--fg); font-size: 12px; }
+.sk-table .sk-err { margin: 0; }
+.chg { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 6px; margin-left: 6px; }
+.modal.shortcuts .shortcut-edit { margin-right: auto; }

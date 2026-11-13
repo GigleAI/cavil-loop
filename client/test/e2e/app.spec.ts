@@ -8010,6 +8010,124 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await app.close();
 });
 
+// GitHub#487: keys changed in Settings → 快捷键. The new key acts (from the panel and from inside the discussion
+// frame), the old one does not; the button, the tooltip and the shortcut list show it; a key another shortcut
+// has is refused, and so is putting a shortcut back when its default key is taken; it survives a restart.
+test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did (panel, discussion frame), the old key no longer does; conflicts and a blocked restore are refused; kept after a restart', async () => {
+  const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
+  for (const n of [137, 138]) {
+    const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
+    for (const g of c.gql) Object.assign(g, { state: 'OPEN', stateReason: null });
+    for (const r of c.rest) Object.assign(r, { state: 'open', state_reason: null });
+  }
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+  const detail = page.getByTestId('detail');
+  const frame = page.frameLocator('[data-testid="timeline-frame"]');
+  const row = (id: string) => page.locator(`[data-testid="shortcut-setting"][data-id="${id}"]`);
+  const handBackWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
+    ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
+  ];
+  const open = async (n: number) => {
+    await page.getByTestId('search').fill(`#${n}`);
+    if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
+    await card(page, n).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
+    await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+    await blur(page);
+  };
+  const settled = () => expect(detail.locator('[data-testid="op-notice"]').last()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
+
+  // ---- 1. Settings → 快捷键: the section is in the contents; 交给 agent → Ctrl+Shift+A ----
+  await page.getByTestId('open-settings').click();
+  await expect(page.locator('.settings-nav a', { hasText: '快捷键' })).toHaveCount(1);
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftZ');
+  await expect(row('hide').getByTestId('shortcut-change')).toHaveCount(0); // Esc is fixed
+  await row('handBack').getByTestId('shortcut-change').click();
+  await expect(row('handBack').getByTestId('shortcut-recording')).toBeVisible();
+  // ⌘⇧B is 等前置's: refused, said so, still recording; the window's own shortcuts did not act meanwhile
+  await page.keyboard.press('Control+Shift+B');
+  await expect(page.getByTestId('shortcut-problem')).toContainText('「等前置」');
+  await expect(row('handBack').getByTestId('shortcut-recording')).toBeVisible();
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await shot(page, '487-01-conflict-refused');
+  await page.keyboard.press('Control+Shift+A');
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftA已改');
+  await expect(row('handBack')).toHaveAttribute('data-custom', 'yes');
+  await expect(page.getByTestId('shortcut-problem')).toHaveCount(0);
+  await shot(page, '487-02-changed');
+
+  // ---- 2. the blocked restore of the review: 新建 → Ctrl+Shift+I, 搜索 → C, then restore 新建: refused, both stay ----
+  await row('newIssue').getByTestId('shortcut-change').click();
+  await page.keyboard.press('Control+Shift+I');
+  await expect(row('newIssue')).toHaveAttribute('data-custom', 'yes');
+  await row('search').getByTestId('shortcut-change').click();
+  await page.keyboard.press('c');
+  await expect(row('search').getByTestId('shortcut-setting-keys')).toHaveText('C已改');
+  await row('newIssue').getByTestId('shortcut-restore').click();
+  await expect(page.getByTestId('shortcut-problem')).toContainText('恢复不了');
+  await expect(page.getByTestId('shortcut-problem')).toContainText('「跳到搜索框」');
+  await expect(row('newIssue').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftI已改');
+  await shot(page, '487-03-restore-refused');
+  // in the other order it works
+  await row('search').getByTestId('shortcut-restore').click();
+  await row('newIssue').getByTestId('shortcut-restore').click();
+  await expect(row('newIssue').getByTestId('shortcut-setting-keys')).toHaveText('C / CtrlN');
+  await expect(row('search').getByTestId('shortcut-setting-keys')).toHaveText('/');
+  await page.getByTestId('back').click();
+
+  // ---- 3. the button, its tooltip and the shortcut list say Ctrl+Shift+A ----
+  await open(137);
+  await expect(page.getByTestId('hand-back')).toHaveText('交给 agentCtrl+Shift+A');
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /（标签名在设置里改，Ctrl\+Shift\+A）$/);
+  // the old key does nothing now
+  let before = writes().length;
+  await page.keyboard.press('Control+Shift+Z');
+  await page.waitForTimeout(400);
+  expect(writes()).toHaveLength(before);
+  // the new key hands back, the button's own writes
+  await page.keyboard.press('Control+Shift+A');
+  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(137));
+  await settled();
+
+  // ---- 4. from inside the discussion frame: the window sent it the new keys ----
+  await open(138);
+  const summary = frame.locator('details.entry > summary').first();
+  await summary.click({ position: { x: 40, y: 10 } });
+  await summary.click({ position: { x: 40, y: 10 } });
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('timeline-frame');
+  before = writes().length;
+  await page.keyboard.press('Control+Shift+Z');
+  await page.waitForTimeout(400);
+  expect(writes()).toHaveLength(before);
+  await page.keyboard.press('Control+Shift+A');
+  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(138));
+  await settled();
+
+  // ---- 5. the shortcut list marks it, and leads to the settings section ----
+  await blur(page);
+  await page.keyboard.press('Shift+?');
+  const help = page.getByTestId('shortcut-help');
+  await expect(help.locator('[data-testid="shortcut-row"][data-id="handBack"]')).toContainText('已改');
+  await expect(help.locator('[data-testid="shortcut-row"][data-id="handBack"] kbd')).toHaveText(['Ctrl', 'Shift', 'A']);
+  await shot(page, '487-04-help');
+  await help.getByTestId('shortcut-help-edit').click();
+  await expect(page.getByTestId('shortcut-settings')).toBeInViewport();
+
+  // ---- 6. a restart keeps it; 全部恢复默认 puts Ctrl+Shift+Z back ----
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftA已改');
+  await page.getByTestId('shortcut-reset-all').click();
+  await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftZ');
+  await expect(row('handBack')).toHaveAttribute('data-custom', 'no');
+  await app.close();
+});
+
 test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and posts it before any label; a refused comment leaves every label alone and comes back to the reply box', async () => {
   const { app, page } = await launch(env);
   await signInWithSources(page);

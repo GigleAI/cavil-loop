@@ -17,7 +17,7 @@ import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { isMac, keyText } from './shortcuts';
+import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
@@ -863,7 +863,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -877,11 +877,17 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '');
+      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.alt ?? false);
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
+  // GitHub#487: the frame forwards the keys in effect on this machine — sent once it is ready, and again when they change
+  const fwdKeys = JSON.stringify(frameForward());
+  useEffect(() => {
+    if (readyRender !== frame.render) return;
+    frameRef.current?.contentWindow?.postMessage({ cavil: 'keys', render: frame.render, fwd: JSON.parse(fwdKeys) }, '*');
+  }, [readyRender, frame.render, fwdKeys]);
   // GitHub#260: the labels / milestone / board fields can be folded away; remembered on this machine
   const [fieldsShown, setFieldsShown] = useState(state.view.detailFields);
   const showFields = (v: boolean) => {
