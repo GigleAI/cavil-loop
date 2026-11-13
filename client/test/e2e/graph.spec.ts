@@ -81,8 +81,6 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   await page.locator('[data-testid="layout"] button[data-value="graph"]').click();
   await expect(page.getByTestId('graph')).toBeVisible();
   await expect(page.getByTestId('show-closed')).toBeChecked();
-  // (settings reach the back end's files a moment later; a test that "quits" next kills the back end outright)
-  await page.waitForTimeout(500);
 }
 
 /** per configured source: has the latest round read it whole */
@@ -438,6 +436,9 @@ test('GitHub#350: relations never read (a cache from before relations, the first
   // a first run reads everything; then the cache is put back the way a version before #349 wrote it
   let app: RunningApp = await launchApp(env);
   await signInToGraph(app.page);
+  // the graph's "显示已关闭" switch reaches the back end a moment after the window shows it; a test "quits" by
+  // killing the back end, so restart once the back end holds it
+  await expect.poll(async () => ((await app.backend.call('init')) as { settings: Record<string, any> }).settings.view?.showClosed?.graph).toBe(true);
   await app.close();
   const strip = (keys: string[]) => {
     const cache = new Cache(join(env.userData, 'cache.sqlite'));

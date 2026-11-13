@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
-import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -295,6 +295,13 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
 });
 
 const state = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state);
+/**
+ * What the back end has stored (its own read, not the window's). The window applies a setting at once and
+ * writes it to the back end in order a moment later; a test that "quits" kills the back end outright, so
+ * before a restart it waits for the back end to hold what the window shows (PR #500 review round 3: a
+ * restart right after the window showed the new table found the table of three changes earlier).
+ */
+const stored = async (app: RunningApp) => ((await app.backend.call('init')) as { settings: Record<string, unknown> }).settings;
 const rowOf = (page: Page, id: string) => page.locator(`[data-testid="tally-row"][data-id="${id}"]`);
 const barOrder = (page: Page) => page.getByTestId('tally').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
 
@@ -359,7 +366,8 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
   // the reminders are not the table's
   expect((await state(page)).pendingCount).toBe(pendingBefore);
 
-  // restart: the same table
+  // restart: the same table — once the back end holds it
+  await expect.poll(async () => (((await stored(app)).tallies as { id: string }[] | undefined) ?? []).map((d) => d.id)).toEqual([id, 'running', 'agent', 'human']);
   await app.close();
   app = await launchApp(env);
   page = app.page;

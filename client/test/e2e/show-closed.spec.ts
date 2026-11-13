@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
-import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -38,6 +38,8 @@ test.afterAll(async () => {
 });
 
 const items = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).data.items as Item[]);
+/** what the back end has stored (its own read): the window writes settings to it a moment after showing them */
+const storedView = async (app: RunningApp) => (((await app.backend.call('init')) as { settings: Record<string, any> }).settings.view ?? {}) as Record<string, any>;
 const viewState = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.view);
 const human = (i: Item) => i.labels.some((l) => l.name.toLowerCase() === 'pending/human');
 const rowKeys = (page: Page) => page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.map((r) => r.getAttribute('data-key')!).sort());
@@ -172,7 +174,12 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   // ---- a restart keeps every switch ----
   // the layouts are always stored; of the numbers only the one switched ("等人处理", off now)
   await expect.poll(async () => (await viewState(page)).showClosed).toEqual({ board: false, table: true, graph: false, human: false });
-  await page.waitForTimeout(500);
+  // a test "quits" by killing the back end: restart once the back end holds them, not just the window
+  // (the search box too: it is saved 300 ms after typing stops, and a leftover `is:open` would grey the switch out)
+  await expect.poll(async () => {
+    const v = await storedView(app);
+    return { showClosed: v.showClosed, query: v.query };
+  }).toEqual({ showClosed: { board: false, table: true, graph: false, human: false }, query: '' });
   await app.close();
   app = await launchApp(env);
   page = app.page;
