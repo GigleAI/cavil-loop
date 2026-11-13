@@ -1957,7 +1957,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('back-key')).toHaveText('Esc');
   // GitHub#369: switching to the app keeps the notifications; a click takes back only that one; the box is off
   await expect(page.getByTestId('clear-all-on-activate')).not.toBeChecked();
-  await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。');
+  await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：打开哪一条（点它的通知，或在窗口里点开），就收起关于这一条的通知，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
   await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也算');

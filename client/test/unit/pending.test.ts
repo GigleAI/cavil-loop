@@ -47,6 +47,8 @@ interface Harness {
   alerts: Alert[];
   badges: number[];
   cleared: number[];
+  /** GitHub#522: one item's notifications taken back, by key, in order */
+  itemCleared: string[];
   opened: string[];
   clock: { t: number };
   loginItem: { on: boolean | null; sets: boolean[] };
@@ -73,6 +75,8 @@ async function signedIn(
   const badges: number[] = [];
   /** each take-back of the delivered notifications, as how many badges had been set by then */
   const cleared: number[] = [];
+  /** GitHub#522: each take-back of one item's notifications, by its key */
+  const itemCleared: string[] = [];
   const opened: string[] = [];
   const loginItem = { on: opts.loginItem === undefined ? false : opts.loginItem, sets: [] as boolean[] };
   const endpoints = { api: fake.api, web: fake.web };
@@ -87,6 +91,7 @@ async function signedIn(
     },
     setBadge: async (n) => void badges.push(n),
     clearNotifications: async () => void cleared.push(badges.length),
+    clearItemNotifications: async (k) => void itemCleared.push(k),
     loginItem: async () => loginItem.on,
     setLoginItem: async (on) => {
       loginItem.sets.push(on);
@@ -114,6 +119,7 @@ async function signedIn(
     alerts,
     badges,
     cleared,
+    itemCleared,
     opened,
     clock,
     loginItem,
@@ -670,6 +676,63 @@ describe('the badge is only the unread count (GitHub#185, #251)', () => {
     await h.c.desktopSettled();
     expect(h.badge()).toBe(0);
     expect(h.cleared).toHaveLength(1);
+  });
+
+  it('GitHub#522: an item shown in front while the window is in front takes back its own notifications only — on every opening; shown while the window is behind, once it comes to the front', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
+    await tick(h);
+    expect([...h.items()].sort()).toEqual([key(OPEN_NEW), key(OPEN_NEW2)].sort());
+    expect(h.badge()).toBe(2);
+    // shown while the window is behind (e.g. a tab restored at start): nobody looked yet — nothing is taken back
+    h.c.showingItem(key(OPEN_NEW));
+    await h.c.desktopSettled();
+    expect(h.itemCleared).toEqual([]);
+    expect(h.badge()).toBe(2);
+    // the window comes to the front with that item in front: badge 0, and that item's notifications go — only its
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.badge()).toBe(0);
+    expect(h.itemCleared).toEqual([key(OPEN_NEW)]);
+    expect(h.cleared).toEqual([]);
+    // another item opened while in front: its own, and only its
+    h.c.showingItem(key(OPEN_NEW2));
+    await h.c.desktopSettled();
+    expect(h.itemCleared).toEqual([key(OPEN_NEW), key(OPEN_NEW2)]);
+    // the same item opened again: taken back again (a notification may have come since)
+    h.c.showingItem(key(OPEN_NEW2));
+    await h.c.desktopSettled();
+    expect(h.itemCleared).toEqual([key(OPEN_NEW), key(OPEN_NEW2), key(OPEN_NEW2)]);
+    // nothing in front: nothing taken back, also not when the window comes back to the front
+    h.c.showingItem(null);
+    h.c.showingItem('' as any);
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    h.c.onDesktopEvent({ kind: 'active' });
+    await h.c.desktopSettled();
+    expect(h.itemCleared).toHaveLength(3);
+    expect(h.cleared).toEqual([]);
+  });
+
+  it('GitHub#522: an unread item opened while the window is in front is read — the badge counts only the others', async () => {
+    const h = await signedIn({ sources: [PROJECT_URL] });
+    await h.c.start();
+    await h.c.desktopSettled();
+    h.c.onDesktopEvent({ kind: 'inactive' });
+    setLabel(OPEN_NEW, true, h.clock);
+    setLabel(OPEN_NEW2, true, h.clock);
+    await tick(h);
+    expect(h.c.getState().unreadCount).toBe(2);
+    // in front (the shell said so) without the switch having read everything: only the shown one is read
+    (h.c as any).active = true;
+    h.c.showingItem(key(OPEN_NEW));
+    await h.c.desktopSettled();
+    expect(h.c.getState().unreadCount).toBe(1);
+    expect(h.badge()).toBe(1);
+    expect(h.itemCleared).toEqual([key(OPEN_NEW)]);
   });
 
   it('a settings change brings no unread item; renaming the label and back keeps what was unread', async () => {

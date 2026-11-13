@@ -40,6 +40,7 @@ import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
 import { SourceName, Verbatim, verbatimParts } from './Verbatim';
 import { tNode } from './tNode';
+import { isShown, revealBeside } from './reveal';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -66,6 +67,8 @@ interface CardOps {
   /** the "本列来自 …" line: only when two or more Projects are picked (only then can it be either) */
   showProjects: boolean;
   dark: boolean;
+  /** GitHub#522: the item the floating detail shows: its card is marked */
+  openKey: string | null;
 }
 
 function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
@@ -76,9 +79,10 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
     <div
-      className={`card${card.under ? ' nested' : ''}`}
+      className={`card${card.under ? ' nested' : ''}${ops.openKey === it.key ? ' open-item' : ''}`}
       data-testid="card"
       data-key={it.key}
+      data-open-item={ops.openKey === it.key ? 'yes' : undefined}
       {...{ [OPENS_ITEM]: '' }}
       data-under={card.under ?? undefined}
       draggable={ops.canWrite}
@@ -431,6 +435,7 @@ export function BoardView({
   onOpen,
   detailKey,
   floatKey = null,
+  floatOpening = null,
   floatPanel = null,
   leftNote = null,
   request = null,
@@ -461,6 +466,8 @@ export function BoardView({
   detailKey: string | null;
   /** GitHub#442: the item the floating detail shows over the board, and the panel itself */
   floatKey?: string | null;
+  /** GitHub#522: which opening of the floating panel this is (changes with every opening): the board scrolls to its item once per opening */
+  floatOpening?: number | null;
   floatPanel?: ReactNode;
   /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
   leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
@@ -684,6 +691,7 @@ export function BoardView({
     dragStart: (card, from) => (dragging.current = { card, from }),
     showProjects: pickedProjects >= 2,
     dark,
+    openKey: floatKey,
   };
   const onDrop = (col: Column) => {
     const d = dragging.current;
@@ -726,6 +734,20 @@ export function BoardView({
     ro.observe(el);
     return () => ro.disconnect();
   }, [withLanes, laneShape]);
+  // GitHub#522: once per opening of the floating detail, its item is brought into view left of the panel —
+  // as soon as it is drawn (a notification clicked before the data was read: when it arrives; in a folded
+  // lane: when unfolded). Never again for that opening: a later render must not pull the board back.
+  const areaRef = useRef<HTMLDivElement>(null);
+  const revealed = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (floatKey === null || floatOpening === null || revealed.current === floatOpening) return;
+    const area = areaRef.current;
+    const el = area?.querySelector<HTMLElement>('[data-open-item="yes"]');
+    if (!area || !el || !isShown(el)) return;
+    revealed.current = floatOpening;
+    const panel = area.closest('[data-testid="board"]')?.querySelector('.detail.floating');
+    revealBeside(el, panel ? panel.getBoundingClientRect().left : null);
+  });
   const renderRow = (lane: string | null) => {
     const pick = (c: Column) => (lane ? c.cards.filter((x) => x.lane === lane) : c.cards);
     return (
@@ -993,7 +1015,7 @@ export function BoardView({
       )}
 
       </div>
-      <div className="board-area">
+      <div className="board-area" ref={areaRef}>
       {graph ? (
         <GraphView
           model={graph}
@@ -1032,6 +1054,7 @@ export function BoardView({
           repoOrder={state.repoOrder}
           table={table ?? undefined}
           pinnedLabels={pinned}
+          openKey={floatKey}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

@@ -295,6 +295,10 @@ button.tally-swatch[aria-pressed='true'] { outline: 2px solid var(--accent); out
 table.items tr.dragging { opacity: 0.5; }
 /* GitHub#368: a sub-issue shown only because an issue above it matched the search */
 table.items tr.pulled > td { opacity: 0.55; }
+/* GitHub#522: the row the floating detail shows */
+table.items tr.open-item { scroll-margin: 48px 0 16px; }
+table.items tr.open-item > td { background-color: var(--accent-subtle); }
+table.items tr.open-item > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 table.items tbody.drop-over td, table.items tbody.drop-over .group-head td { background-color: var(--accent-subtle); }
 table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outline-offset: 1px; border-radius: 4px; }
 .column-head { padding: 10px 12px 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
@@ -319,6 +323,9 @@ table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outli
 .card:hover { border-color: var(--border); }
 .card[draggable='true'] { cursor: grab; }
 .card.nested { margin-left: 14px; position: relative; }
+/* GitHub#522: the card the floating detail shows */
+.card.open-item { scroll-margin: 16px; }
+.card.open-item, .card.open-item:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-subtle); background: linear-gradient(var(--accent-subtle), var(--accent-subtle)), var(--raised); }
 .card.nested::before { content: ''; position: absolute; left: -10px; top: -9px; height: 26px; width: 8px; border-left: 1.5px solid var(--border); border-bottom: 1.5px solid var(--border); border-bottom-left-radius: 6px; }
 .card-head { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
 .card-head .ref { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

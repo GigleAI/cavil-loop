@@ -84,6 +84,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     closeTab: async (key) => c.closeTab(String(key)),
     moveTab: async (key, to) => c.moveTab(String(key), Number(to)),
     seenTab: async (key, updatedAt) => c.seenTab(String(key), String(updatedAt)),
+    showingItem: async (key) => c.showingItem(key),
     checkTab: (key) => c.checkTabs(String(key)),
     closeWindow: () => c.closeWindow(),
     settled: () => c.settled(),

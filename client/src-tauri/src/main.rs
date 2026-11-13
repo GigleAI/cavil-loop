@@ -487,6 +487,7 @@ fn main() {
             desktop::desktop_notify,
             desktop::desktop_badge,
             desktop::desktop_clear_notifications,
+            desktop::desktop_clear_item_notifications,
             desktop::desktop_login_item,
             desktop::desktop_set_login_item,
             desktop::desktop_next_event,
