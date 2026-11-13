@@ -25,6 +25,7 @@ use cavil_core::engine::is_allowed_external;
 use cavil_core::i18n::tr;
 use cavil_core::platform::{select, FileStore, MacKeychainStore, MemoryStore, Opener, StoreKind, SystemClock};
 use cavil_core::store::Store;
+use cavil_core::theme::Theme;
 use cavil_core::{Deps, Engine};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -57,15 +58,30 @@ impl Opener for SystemOpener {
     }
 }
 
+/// GitHub#516: the theme a `setTheme` call named (already checked by the back end)
+fn args_theme(args: &Value) -> Option<Theme> {
+    args.get("theme").and_then(Value::as_str).and_then(Theme::parse)
+}
+
 /// The window's only way into the back end.
 #[tauri::command]
-#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 async fn backend(app: tauri::AppHandle, state: tauri::State<'_, AppState>, cmd: String, args: Option<Value>) -> Result<Value, String> {
+    // GitHub#516: read before the call takes the arguments; used only once the back end accepted them
+    let theme = if cmd == "setTheme" { args.as_ref().and_then(args_theme) } else { None };
     let out = dispatch(&state.engine, &cmd, args.unwrap_or(Value::Null)).await?;
     // GitHub#471: the menu is the back end's words too — built again in the language just set
     #[cfg(target_os = "macos")]
     if cmd == "setLanguage" {
         let _ = app_menu(&app).and_then(|m| app.set_menu(m)).map(|_| ());
+    }
+    // GitHub#516: the native window (title bar, menus, native controls) takes the window's light / dark;
+    // "system" hands it back to the system. The back end has already refused any other word.
+    if let Some(t) = theme {
+        app.set_theme(match t {
+            Theme::System => None,
+            Theme::Light => Some(tauri::Theme::Light),
+            Theme::Dark => Some(tauri::Theme::Dark),
+        });
     }
     Ok(out)
 }

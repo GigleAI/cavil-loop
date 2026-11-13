@@ -7,6 +7,7 @@ import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { Lang, LangSetting, Said } from './i18n';
+import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
@@ -699,6 +700,10 @@ export interface AppState {
   uiLanguage: LangSetting;
   /** the language the window shows now ('auto' resolved against the system's preferred languages) */
   lang: Lang;
+  /** GitHub#516: light / dark as chosen in Settings (kept on this machine); 'system' when nothing is set */
+  uiTheme: ThemeSetting;
+  /** what the window shows now ('system' resolved against the system's light / dark) */
+  theme: Theme;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */

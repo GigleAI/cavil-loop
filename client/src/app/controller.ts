@@ -11,6 +11,7 @@ import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
+import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
 import { readSaid, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
@@ -189,6 +190,8 @@ export interface ControllerDeps {
   desktop?: Desktop;
   /** GitHub#471: the system's preferred languages, for "跟随系统" (tests simulate a system; default: the window's) */
   languages?: () => readonly string[];
+  /** GitHub#516: the system's light / dark, for "跟随系统" (tests simulate a system; default: the window's media query) */
+  scheme?: SystemScheme;
   /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
   observeMs?: number;
   observeFirstMs?: number;
@@ -362,6 +365,8 @@ export class Controller {
    * reset time, across rounds. Of one session: another account starts with it open.
    */
   private readGate: ReadGate;
+  /** GitHub#516: the system's light / dark (followed for as long as the window lives) */
+  private scheme: SystemScheme;
   /** GitHub#374: per source (as the addition `epoch`), its failures in a row and when it is read again automatically */
   private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
   /** the session the gate and the failures belong to */
@@ -543,6 +548,13 @@ export class Controller {
     const lang = resolveLang(uiLanguage, this.systemLanguages());
     setLang(lang);
     if (lang !== 'zh') this.tellBackendLanguage(lang);
+    // GitHub#516: light / dark, likewise decided before anything is drawn; nothing set (or a value
+    // this version does not know) follows the system, as before. The native window follows the
+    // system by itself: it is told only when the choice is light or dark.
+    this.scheme = deps.scheme ?? windowScheme();
+    const uiTheme = normalizeThemeSetting(this.cache.getSetting<unknown>(THEME_SETTING, DEFAULT_THEME_SETTING));
+    const theme = resolveTheme(uiTheme, this.systemDark());
+    if (uiTheme !== 'system') this.tellBackendTheme(uiTheme);
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
@@ -570,6 +582,8 @@ export class Controller {
       notifyScope,
       uiLanguage,
       lang,
+      uiTheme,
+      theme,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -594,6 +608,12 @@ export class Controller {
     }
     this.tabList = normalizeTabs(this.cache.getSetting<unknown>(TABS, null));
     this.refreshDerived();
+    // GitHub#516: "跟随系统" follows the system while the window is open
+    try {
+      this.scheme.watch(() => this.systemSchemeChanged());
+    } catch {
+      // cannot follow: the window keeps what it showed at the start
+    }
   }
 
   getState(): AppState {
@@ -1962,6 +1982,43 @@ export class Controller {
     setLang(lang);
     if (changed) this.tellBackendLanguage(lang);
     if (setting !== this.state.uiLanguage || changed) this.set({ uiLanguage: setting, lang });
+  }
+
+  /** the system's light / dark ("跟随系统"); unreadable = cannot tell, which is light */
+  private systemDark(): boolean | null {
+    try {
+      return this.scheme.dark();
+    } catch {
+      return null;
+    }
+  }
+
+  /** the native window (title bar, menus) follows the window's choice; a refusal changes nothing on this side */
+  private tellBackendTheme(setting: ThemeSetting): void {
+    void this.cache.enqueue(() => this.backend.call('setTheme', { theme: setting })).catch(() => undefined);
+  }
+
+  /** the system switched light / dark: only "跟随系统" follows it */
+  private systemSchemeChanged(): void {
+    if (this.state.uiTheme !== 'system') return;
+    const theme = resolveTheme('system', this.systemDark());
+    if (theme !== this.state.theme) this.set({ theme });
+  }
+
+  /**
+   * GitHub#516: light / dark — 'system' (default), 'light' or 'dark'. Takes effect at once: the
+   * whole window re-renders from the new state, the back end is told (the native title bar and
+   * menus), and the choice is kept on this machine. Anything but the three words is ignored.
+   */
+  setUiTheme(setting: unknown): void {
+    if (setting !== 'system' && setting !== 'light' && setting !== 'dark') return;
+    const theme = resolveTheme(setting, this.systemDark());
+    if (setting === this.state.uiTheme && theme === this.state.theme) return;
+    if (setting !== this.state.uiTheme) {
+      this.cache.setSetting(THEME_SETTING, setting);
+      this.tellBackendTheme(setting);
+    }
+    this.set({ uiTheme: setting, theme });
   }
 
   /**
