@@ -3436,11 +3436,11 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   await expect(box('C_Q', 0)).toBeChecked();
   await expect(box('C_Q', 1)).not.toBeChecked();
   await expect(iframe).toHaveAttribute('data-ready', 'yes');
-  expect(await frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))).toEqual([
-    'C_Q',
-    'C_INJ',
-    'C_RO',
-  ]);
+  // the frame may still be redrawn once more after the re-read (a read inside it then loses its page): ask
+  // again until the open entries can be read, never take a lost read for an answer
+  await expect
+    .poll(() => frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry'))).catch(() => null))
+    .toEqual(['C_Q', 'C_INJ', 'C_RO']);
   await expect(page.getByTestId('hand-back')).toBeVisible();
   await shot(page, '61-task-ticked');
 

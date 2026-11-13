@@ -392,7 +392,8 @@ exec bash "$d/remote-access.real.sh" "$@"
   );
   writeFileSync(join(r.state, 'devices.json'), JSON.stringify([{ id: '0123456789abcdef', name: 'MacBook', node: 'n1', node_name: 'macbook', key: '0'.repeat(64), paired_at: 1 }]));
   const { page } = await openSection(true);
-  await page.getByTestId('local-remote').scrollIntoViewIfNeeded();
+  // the block may be drawn again while its first status read lands: scroll again until it holds still
+  await expect(async () => page.getByTestId('local-remote').scrollIntoViewIfNeeded({ timeout: 2_000 })).toPass({ timeout: 20_000 });
   await page.getByTestId('local-remote-devices').click();
   await expect(page.getByTestId('local-remote-device')).toHaveCount(1, { timeout: 30_000 });
   await page.getByTestId('local-remote-revoke').click();
