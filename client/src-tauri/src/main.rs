@@ -22,6 +22,7 @@ mod mac;
 use async_trait::async_trait;
 use cavil_core::api::dispatch;
 use cavil_core::engine::is_allowed_external;
+use cavil_core::i18n::tr;
 use cavil_core::platform::{select, FileStore, MacKeychainStore, MemoryStore, Opener, StoreKind, SystemClock};
 use cavil_core::store::Store;
 use cavil_core::{Deps, Engine};
@@ -52,14 +53,21 @@ impl Opener for SystemOpener {
             return writeln!(file, "{url}").map_err(|e| e.to_string());
         }
         let program = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
-        std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| format!("打不开浏览器：{e}"))
+        std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))
     }
 }
 
 /// The window's only way into the back end.
 #[tauri::command]
-async fn backend(state: tauri::State<'_, AppState>, cmd: String, args: Option<Value>) -> Result<Value, String> {
-    dispatch(&state.engine, &cmd, args.unwrap_or(Value::Null)).await
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+async fn backend(app: tauri::AppHandle, state: tauri::State<'_, AppState>, cmd: String, args: Option<Value>) -> Result<Value, String> {
+    let out = dispatch(&state.engine, &cmd, args.unwrap_or(Value::Null)).await?;
+    // GitHub#471: the menu is the back end's words too — built again in the language just set
+    #[cfg(target_os = "macos")]
+    if cmd == "setLanguage" {
+        let _ = app_menu(&app).and_then(|m| app.set_menu(m)).map(|_| ());
+    }
+    Ok(out)
 }
 
 /// The window is up. Under `--smoke-test` (the packaged-app check): it mounted and
@@ -113,10 +121,10 @@ fn is_app_url(url: &url::Url) -> bool {
 
 // The menu is the macOS app's; it is built on every system so that the other ones compile it too.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const ZOOM_ITEMS: [(&str, &str, &str); 3] = [
-    ("zoom-in", "放大", "CmdOrCtrl+="),
-    ("zoom-out", "缩小", "CmdOrCtrl+-"),
-    ("zoom-reset", "实际大小", "CmdOrCtrl+0"),
+const ZOOM_ITEMS: [(&str, fn() -> String, &str); 3] = [
+    ("zoom-in", || tr("放大", &[]), "CmdOrCtrl+="),
+    ("zoom-out", || tr("缩小", &[]), "CmdOrCtrl+-"),
+    ("zoom-reset", || tr("实际大小", &[]), "CmdOrCtrl+0"),
 ];
 
 /// The id of the menu's own "close" item (GitHub#397).
@@ -140,7 +148,7 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         authors: config.bundle.publisher.clone().map(|p| vec![p]),
         ..Default::default()
     };
-    let close = MenuItem::with_id(app, CLOSE_TAB_ID, "关闭标签页", true, Some("CmdOrCtrl+W"))?;
+    let close = MenuItem::with_id(app, CLOSE_TAB_ID, tr("关闭标签页", &[]), true, Some("CmdOrCtrl+W"))?;
     let menu = Menu::with_items(
         app,
         &[
@@ -187,10 +195,10 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     )?;
     let items = ZOOM_ITEMS
         .iter()
-        .map(|(id, text, key)| MenuItem::with_id(app, *id, *text, true, Some(*key)))
+        .map(|(id, text, key)| MenuItem::with_id(app, *id, text(), true, Some(*key)))
         .collect::<tauri::Result<Vec<_>>>()?;
     let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
-    menu.append(&Submenu::with_items(app, "缩放", true, &refs)?)?;
+    menu.append(&Submenu::with_items(app, tr("缩放", &[]), true, &refs)?)?;
     Ok(menu)
 }
 
@@ -398,7 +406,7 @@ fn main() {
             if notify_check {
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let alert = json!({ "kind": "summary", "title": "Cavil Loop 通知检查", "body": "打包检查发出的一条测试通知" });
+                    let alert = json!({ "kind": "summary", "title": tr("Cavil Loop 通知检查", &[]), "body": tr("打包检查发出的一条测试通知", &[]) });
                     let line = match desktop::desktop_notify(h.clone(), alert).await {
                         // accepted = the system took the request without an error; whether it was on screen is not known here
                         Ok(v) if v["ok"] == true => "CAVIL_NOTIFY_OK accepted by the system (on screen or not: not known)".to_string(),
@@ -491,7 +499,7 @@ impl cavil_core::daemon::FolderPicker for DialogPicker {
     async fn pick_folder(&self, start: Option<String>) -> Result<Option<String>, String> {
         use tauri_plugin_dialog::DialogExt;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut d = self.0.dialog().file().set_title("选本地目录");
+        let mut d = self.0.dialog().file().set_title(tr("选本地目录", &[]));
         if let Some(s) = start {
             d = d.set_directory(s);
         }
@@ -499,9 +507,9 @@ impl cavil_core::daemon::FolderPicker for DialogPicker {
             let _ = tx.send(p);
         });
         match rx.await {
-            Ok(Some(p)) => p.into_path().map(|p| Some(p.to_string_lossy().to_string())).map_err(|e| format!("选中的位置读不出路径：{e}")),
+            Ok(Some(p)) => p.into_path().map(|p| Some(p.to_string_lossy().to_string())).map_err(|e| tr("选中的位置读不出路径：{e}", &[("e", &e.to_string())])),
             Ok(None) => Ok(None),
-            Err(_) => Err("选择框没有给出结果".into()),
+            Err(_) => Err(tr("选择框没有给出结果", &[])),
         }
     }
 }

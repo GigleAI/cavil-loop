@@ -15,6 +15,7 @@ import { useLayer, useShortcuts } from './keyboard';
 import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
 import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, sortTailnet, tailnetPill, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult, type TailnetDevice, type TailnetList } from '../shared/remote';
+import { t } from '../shared/i18n';
 
 type Ask =
   | { kind: 'stop' | 'start'; e: RemoteEntry; p: DaemonProject }
@@ -145,7 +146,7 @@ export function RemoteSection() {
 
   return (
     <section id="set-remote" data-testid="remote-settings">
-      <h3>远程 daemon</h3>
+      <h3>{t('远程 daemon')}</h3>
       <p className="muted small">
         看和管理另一台机器上的 daemon。只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。
       </p>

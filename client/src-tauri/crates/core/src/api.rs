@@ -109,6 +109,13 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         }
         // GitHub#395: a release attachment image of the discussion — only an attachment's API address is accepted
         "releaseImage" => Ok(e.release_image(u(&a, "session")?, s(&a, "url")?).await),
+        // GitHub#471: the language of the back end's own words (menu, messages); the window decides it
+        "setLanguage" => {
+            let l = s(&a, "lang")?;
+            let lang = crate::i18n::Lang::parse(l).ok_or_else(|| crate::i18n::tr("不认识的语言：{lang}", &[("lang", l)]))?;
+            crate::i18n::set_lang(lang);
+            Ok(Value::Null)
+        }
         "setSetting" => {
             let k = s(&a, "key")?;
             if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {

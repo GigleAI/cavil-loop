@@ -14,6 +14,7 @@
 //   both, so it never states a fixed lifetime for either.
 
 import type { AppKind } from './types';
+import { t } from './i18n';
 
 /**
  * GitHub App Client IDs start with "Iv" (Iv1.… / Iv23li…); OAuth app IDs do
@@ -26,61 +27,62 @@ export function clientIdKindProblem(kind: AppKind, clientId: string): string | n
   if (!v) return null;
   const isAppId = /^Iv/.test(v);
   if (kind === 'github-app' && !isAppId) {
-    return '这个 Client ID 不是 GitHub App 的（GitHub App 的以 Iv 开头，例如 Iv23li…）。它是 OAuth 应用的：要用它，请把登录方式改回「OAuth 应用」。';
+    return t('这个 Client ID 不是 GitHub App 的（GitHub App 的以 Iv 开头，例如 Iv23li…）。它是 OAuth 应用的：要用它，请把登录方式改回「OAuth 应用」。');
   }
   if (kind === 'oauth' && isAppId) {
-    return '这个 Client ID 是 GitHub App 的（以 Iv 开头）。要用它，请把登录方式改成「GitHub App」。';
+    return t('这个 Client ID 是 GitHub App 的（以 Iv 开头）。要用它，请把登录方式改成「GitHub App」。');
   }
   return null;
 }
 
 /** The permission line under the choice; never promises more than is known. */
 export function permissionText(kind: AppKind, clientId: string): string {
-  if (clientIdKindProblem(kind, clientId)) return '所填的 Client ID 和登录方式对不上，登录前请先改好。';
+  if (clientIdKindProblem(kind, clientId)) return t('所填的 Client ID 和登录方式对不上，登录前请先改好。');
   return kind === 'github-app'
-    ? '用 GitHub App 时，权限由那个 App 登记时勾选的决定，登录时没法再收窄；GitHub 授权页上列的才算数。本应用这一版只读取看板数据。'
-    : 'GitHub 授权页上会列出：repo（仓库读写，含代码与设置）、read:org、project——OAuth 应用读私有仓库只能要整个 repo。本应用这一版只读取看板数据。';
+    ? t('用 GitHub App 时，权限由那个 App 登记时勾选的决定，登录时没法再收窄；GitHub 授权页上列的才算数。本应用这一版只读取看板数据。')
+    : t('GitHub 授权页上会列出：repo（仓库读写，含代码与设置）、read:org、project——OAuth 应用读私有仓库只能要整个 repo。本应用这一版只读取看板数据。');
 }
 
-export const APP_KIND_FACTS: { topic: string; oauth: string; app: string }[] = [
+/** the comparison table of the "what is the difference" page, in the window's language */
+export const appKindFacts = (): { topic: string; oauth: string; app: string }[] => [
   {
-    topic: '第一次用，要谁点头',
-    oauth: '你在浏览器里点「授权」就行。只有组织开了「第三方应用访问限制」时，要组织管理员批准一次；批准前看不到这个组织的私有仓库和 Project。',
-    app: '组织管理员（或仓库所有者）要先把这个 App 安装到组织、选好允许哪些仓库，然后你再点「授权」。',
+    topic: t('第一次用，要谁点头'),
+    oauth: t('你在浏览器里点「授权」就行。只有组织开了「第三方应用访问限制」时，要组织管理员批准一次；批准前看不到这个组织的私有仓库和 Project。'),
+    app: t('组织管理员（或仓库所有者）要先把这个 App 安装到组织、选好允许哪些仓库，然后你再点「授权」。'),
   },
   {
-    topic: '向你申请的权限',
-    oauth: '本应用申请 repo（你能访问的全部仓库读写，包括代码和设置）、read:org、project。GitHub 给 OAuth 应用的权限分得粗：要读私有仓库的 issue，就只能要整个 repo。',
-    app: '由建 App 的人登记时逐项勾选，可以只勾 Issues、Pull requests、Projects 而不给代码权限——但给了什么取决于那个 App 的设置，登录时没法再收窄，以 GitHub 授权页上列的为准。',
+    topic: t('向你申请的权限'),
+    oauth: t('本应用申请 repo（你能访问的全部仓库读写，包括代码和设置）、read:org、project。GitHub 给 OAuth 应用的权限分得粗：要读私有仓库的 issue，就只能要整个 repo。'),
+    app: t('由建 App 的人登记时逐项勾选，可以只勾 Issues、Pull requests、Projects 而不给代码权限——但给了什么取决于那个 App 的设置，登录时没法再收窄，以 GitHub 授权页上列的为准。'),
   },
   {
-    topic: '实际能看到哪些',
-    oauth: '你本人能看到的，在上面申请的范围内。',
-    app: '三者都满足才行：你本人能看到的、App 登记的权限允许的、App 被安装到的仓库。',
+    topic: t('实际能看到哪些'),
+    oauth: t('你本人能看到的，在上面申请的范围内。'),
+    app: t('三者都满足才行：你本人能看到的、App 登记的权限允许的、App 被安装到的仓库。'),
   },
   {
-    topic: '登录凭据多久过期',
-    oauth: '看应用的设置：开了「令牌过期」的会过期（本应用会自动续期）；没开的不过期，直到你撤销。',
-    app: '看 App 的设置：默认开着「令牌过期」（8 小时，本应用会自动续期），建 App 的人也可以关掉，关掉就不过期。',
+    topic: t('登录凭据多久过期'),
+    oauth: t('看应用的设置：开了「令牌过期」的会过期（本应用会自动续期）；没开的不过期，直到你撤销。'),
+    app: t('看 App 的设置：默认开着「令牌过期」（8 小时，本应用会自动续期），建 App 的人也可以关掉，关掉就不过期。'),
   },
   {
-    topic: '凭据万一泄露',
-    oauth: '拿到的人能以你的名义做 repo 权限范围内的一切（包括推代码）。令牌会过期的，单拿到令牌只能用到过期；连续期凭据一起拿到，或者令牌不过期，就能一直用，直到你撤销。',
-    app: '拿到的人能做的不超过那个 App 登记的权限。过期规则同左：单拿到会过期的令牌只能用到过期；连续期凭据一起拿到，或者令牌不过期，就能一直用，直到你撤销。',
+    topic: t('凭据万一泄露'),
+    oauth: t('拿到的人能以你的名义做 repo 权限范围内的一切（包括推代码）。令牌会过期的，单拿到令牌只能用到过期；连续期凭据一起拿到，或者令牌不过期，就能一直用，直到你撤销。'),
+    app: t('拿到的人能做的不超过那个 App 登记的权限。过期规则同左：单拿到会过期的令牌只能用到过期；连续期凭据一起拿到，或者令牌不过期，就能一直用，直到你撤销。'),
   },
   {
-    topic: '怎么撤销',
-    oauth: 'GitHub 网页 → 头像 → Settings → Applications → Authorized OAuth Apps。',
-    app: 'GitHub 网页 → 头像 → Settings → Applications → Authorized GitHub Apps；组织管理员也可以直接卸载这个 App。',
+    topic: t('怎么撤销'),
+    oauth: t('GitHub 网页 → 头像 → Settings → Applications → Authorized OAuth Apps。'),
+    app: t('GitHub 网页 → 头像 → Settings → Applications → Authorized GitHub Apps；组织管理员也可以直接卸载这个 App。'),
   },
   {
-    topic: '这一版的支持',
-    oauth: '已内置，直接点「用 GitHub 登录」。',
-    app: '预览：还没有内置的 GitHub App，要填你自己（或组织）建的 GitHub App 的 Client ID（以 Iv 开头），那个 App 要勾上「Enable Device Flow」。填的 ID 和所选方式对不上时不让登录。',
+    topic: t('这一版的支持'),
+    oauth: t('已内置，直接点「用 GitHub 登录」。'),
+    app: t('预览：还没有内置的 GitHub App，要填你自己（或组织）建的 GitHub App 的 Client ID（以 Iv 开头），那个 App 要勾上「Enable Device Flow」。填的 ID 和所选方式对不上时不让登录。'),
   },
 ];
 
-export const APP_KIND_ADVICE: string[] = [
-  '大多数情况用默认的 OAuth 应用：不用等组织管理员安装，登录就能用。',
-  '想把权限压到最小（例如不给代码权限），或者组织不允许 OAuth 应用访问时，用 GitHub App——前提是那个 App 只勾了需要的权限。',
+export const appKindAdvice = (): string[] => [
+  t('大多数情况用默认的 OAuth 应用：不用等组织管理员安装，登录就能用。'),
+  t('想把权限压到最小（例如不给代码权限），或者组织不允许 OAuth 应用访问时，用 GitHub App——前提是那个 App 只勾了需要的权限。'),
 ];

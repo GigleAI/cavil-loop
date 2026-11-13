@@ -6,6 +6,7 @@ import type { MergePrefs } from './mergePrefs';
 import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
+import type { Lang, LangSetting } from './i18n';
 import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
 import type { Picks } from './actions';
@@ -638,6 +639,10 @@ export interface AppState {
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */
   notifyScope: NotifyScope;
+  /** GitHub#471: the interface language as chosen in Settings (kept on this machine); 'zh' when nothing is set */
+  uiLanguage: LangSetting;
+  /** the language the window shows now ('auto' resolved against the system's preferred languages) */
+  lang: Lang;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */

@@ -73,7 +73,7 @@ pub fn setup(on_click: impl Fn(String) + Send + Sync + 'static) {
     // App Nap would suspend a windowless app: the sync beat, and so the reminders, would stop.
     let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
         NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
-        &NSString::from_str("Cavil Loop 在后台同步并提醒待处理条目"),
+        &NSString::from_str(&cavil_core::i18n::tr("Cavil Loop 在后台同步并提醒待处理条目", &[])),
     );
     // kept for the life of the process: ending the activity would let App Nap back in
     std::mem::forget(activity);
@@ -157,7 +157,7 @@ pub fn clear_delivered_one(id: &str) {
 /// (e.g. "Notifications are not allowed for this application").
 pub async fn notify(id: &str, title: &str, body: &str) -> Result<(), String> {
     if !bundled() {
-        return Err("未打包的开发版不能发系统通知".into());
+        return Err(cavil_core::i18n::tr("未打包的开发版不能发系统通知", &[]));
     }
     // the answer itself is not needed: a refusal comes back from the request below, in the system's words
     let asked = ask_permission();
@@ -165,6 +165,6 @@ pub async fn notify(id: &str, title: &str, body: &str) -> Result<(), String> {
     let answered = add_request(id, title, body);
     match tokio::time::timeout(std::time::Duration::from_secs(15), answered).await {
         Ok(Ok(r)) => r,
-        _ => Err("系统没有回应这条通知（等了 15 秒）".into()),
+        _ => Err(cavil_core::i18n::tr("系统没有回应这条通知（等了 15 秒）", &[])),
     }
 }

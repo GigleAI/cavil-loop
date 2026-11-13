@@ -1168,7 +1168,8 @@ describe('cancel, then sign in at once', () => {
 
 describe('what the app says about the two methods', () => {
   it('never promises a GitHub App cannot touch code, never states a fixed lifetime, and says nothing reassuring for a mismatched ID', async () => {
-    const { APP_KIND_FACTS, permissionText } = await import('../../src/shared/appKind');
+    const { appKindFacts, permissionText } = await import('../../src/shared/appKind');
+    const APP_KIND_FACTS = appKindFacts();
     const all = [permissionText('github-app', 'Iv23liSomeApp0000000'), permissionText('oauth', 'Ov23liSomeApp0000000'), ...APP_KIND_FACTS.flatMap((r) => [r.oauth, r.app])].join('\n');
     expect(all).not.toMatch(/碰不到代码|看不到也改不了代码/);
     expect(all).not.toMatch(/最多 8 小时/);

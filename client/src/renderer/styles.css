@@ -468,6 +468,8 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .app-kind .row { flex-wrap: wrap; }
 label.radio { display: inline-flex; gap: 6px; align-items: center; }
 /* GitHub#373: which pending items remind — two choices, one under the other, the rule below */
+/* GitHub#471: the language choices, one per line like the reminder choices */
+.lang-choices { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 2px; }
 .notify-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 12px; }
 .notify-scope-title { font-weight: 600; }
 .notify-scope-note { margin: 2px 0 0 20px; }

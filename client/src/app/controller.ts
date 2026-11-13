@@ -10,6 +10,7 @@ import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardDa
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
+import { DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
@@ -181,6 +182,8 @@ export interface ControllerDeps {
   defaultGithubAppClientId?: string;
   /** notifications, Dock badge, launch at login, sync beat (none: nothing is shown, the counting still runs) */
   desktop?: Desktop;
+  /** GitHub#471: the system's preferred languages, for "跟随系统" (tests simulate a system; default: the window's) */
+  languages?: () => readonly string[];
   /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
   observeMs?: number;
   observeFirstMs?: number;
@@ -514,6 +517,13 @@ export class Controller {
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
+    // GitHub#471: the language is decided before anything is drawn; nothing set (or a value this
+    // version does not know) is Chinese, as before. The back end starts in Chinese: it is told only
+    // when the window shows something else.
+    const uiLanguage = normalizeLangSetting(this.cache.getSetting<unknown>(LANG_SETTING, DEFAULT_LANG_SETTING));
+    const lang = resolveLang(uiLanguage, this.systemLanguages());
+    setLang(lang);
+    if (lang !== 'zh') this.tellBackendLanguage(lang);
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
@@ -536,6 +546,8 @@ export class Controller {
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
       notifyScope,
+      uiLanguage,
+      lang,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -1878,6 +1890,35 @@ export class Controller {
     this.badge();
     this.state = { ...this.state, ...this.pendingNow() };
     this.set({ notifyScope: scope });
+  }
+
+  /** the system's preferred languages ("跟随系统"); unreadable = none, which is Chinese */
+  private systemLanguages(): readonly string[] {
+    try {
+      return (this.deps.languages ?? preferredLanguages)();
+    } catch {
+      return [];
+    }
+  }
+
+  /** the back end's words (menu, its messages) follow the window's; a refusal changes nothing on this side */
+  private tellBackendLanguage(lang: Lang): void {
+    void this.cache.enqueue(() => this.backend.call('setLanguage', { lang })).catch(() => undefined);
+  }
+
+  /**
+   * GitHub#471: the interface language — 'zh' (default), 'en', or 'auto' (the system's). Takes
+   * effect at once: the whole window re-renders from the new state, the back end is told, and the
+   * choice is kept on this machine. Anything but the three words is ignored.
+   */
+  setUiLanguage(setting: unknown): void {
+    if (setting !== 'zh' && setting !== 'en' && setting !== 'auto') return;
+    const lang = resolveLang(setting, this.systemLanguages());
+    if (setting !== this.state.uiLanguage) this.cache.setSetting(LANG_SETTING, setting);
+    const changed = lang !== this.state.lang;
+    setLang(lang);
+    if (changed) this.tellBackendLanguage(lang);
+    if (setting !== this.state.uiLanguage || changed) this.set({ uiLanguage: setting, lang });
   }
 
   /** GitHub#231: "托管" asks first (true) or not ("不再提示", false). Anything but a boolean is ignored. */

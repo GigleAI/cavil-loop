@@ -30,6 +30,7 @@ const PATHS = {
   bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.5H3z" /><path d="M6.5 14.5h3" /></>,
   back: <path d="M10 3L5 8l5 5" />,
   // GitHub#397: the home tab
+  globe: <><circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c1.8 1.7 2.6 3.7 2.6 6S9.8 12.3 8 14M8 2C6.2 3.7 5.4 5.7 5.4 8s.8 4.3 2.6 6" /></>,
   home: <path d="M2.5 7.5L8 2.5l5.5 5v6h-3.6v-3.8H6.1v3.8H2.5z" />,
   chevron: <path d="M4 6l4 4 4-4" />,
   pencil: <><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /><path d="M9 4l3 3" /></>,

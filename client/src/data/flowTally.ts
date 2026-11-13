@@ -14,6 +14,7 @@
 import type { HandBackLabels, Item } from '../shared/types';
 import { isPending } from './pending';
 import { applyFilter, parseFilter } from '../shared/filter';
+import { t } from '../shared/i18n';
 
 export type TallyKind = 'running' | 'agent' | 'human' | 'unlabeled';
 
@@ -27,7 +28,7 @@ export interface TallyEntry {
   query: string | null;
 }
 
-export const TALLY_TEXT: Record<TallyKind, string> = { running: '运行中', agent: '等 agent', human: '等人处理', unlabeled: '未处理' };
+export const tallyText = (kind: TallyKind): string => ({ running: t('运行中'), agent: t('等 agent'), human: t('等人处理'), unlabeled: t('未处理') })[kind];
 
 /** GitHub#418: the "未处理" number's search — open and no label at all */
 export const UNLABELED_QUERY = 'is:open no:label';

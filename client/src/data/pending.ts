@@ -28,6 +28,7 @@
 
 import type { Item, NotifyScope, SourceSnapshot } from '../shared/types';
 import { mergeSnapshots } from './merge';
+import { t } from '../shared/i18n';
 
 
 export const DEFAULT_PENDING_LABEL = 'pending/human';
@@ -245,5 +246,5 @@ export class PendingTracker {
 /** Text of the notification for one item (shared by the app and its tests). Only open items are pending. */
 export function itemAlertText(it: Pick<Item, 'repo' | 'number' | 'kind' | 'title'>): { title: string; body: string } {
   const kind = it.kind === 'pr' ? 'PR' : 'issue';
-  return { title: `待处理：${it.repo}#${it.number}`, body: `${kind} · ${it.title}` };
+  return { title: t('待处理：{repo}#{number}', { repo: it.repo, number: it.number }), body: `${kind} · ${it.title}` };
 }

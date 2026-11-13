@@ -21,6 +21,7 @@ import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismiss
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
 import type { SettingsIntent } from './EmptyGuide';
+import { t } from '../shared/i18n';
 
 /** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
 const FLOAT = '\u0000float';
@@ -47,6 +48,11 @@ export function App() {
   const intentSeq = useRef(0);
   const [help, setHelp] = useState(false);
   const openHelp = () => setHelp(true);
+  // GitHub#471: the page says which language it is in (screen readers, hyphenation, fonts)
+  const lang = snap?.state.lang;
+  useEffect(() => {
+    if (lang) document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+  }, [lang]);
   useEffect(() => {
     let alive = true;
     const off = api().subscribe((s) => alive && setSnap(s));
@@ -402,7 +408,7 @@ export function App() {
       )}
       {ready && <PutAwayStrip ops={snap!.state.ops} ids={putAway} showing={[front === HOME ? null : front, front === HOME && float && page === 'board' ? float.key : null]} open={openItem} />}
       {!snap || snap.state.phase === 'loading' ? (
-        <div className="center muted">正在启动…</div>
+        <div className="center muted">{t('正在启动…')}</div>
       ) : help ? (
         <AppKindHelp onBack={() => setHelp(false)} />
       ) : snap.state.phase === 'login' ? (
@@ -479,8 +485,8 @@ export function App() {
         </div>
       )}
       {askClose === FLOAT && float && (
-        <ConfirmDialog title="收起这个面板？" confirmLabel="收起，不要这些文字" danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(FLOAT)}>
-          <p data-testid="tab-close-question">面板里还有没发出的文字（回复、正在编辑的评论或标题）。收起后这些文字就没有了。</p>
+        <ConfirmDialog title={t('收起这个面板？')} confirmLabel={t('收起，不要这些文字')} danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(FLOAT)}>
+          <p data-testid="tab-close-question">{t('面板里还有没发出的文字（回复、正在编辑的评论或标题）。收起后这些文字就没有了。')}</p>
         </ConfirmDialog>
       )}
       {menu && (
@@ -495,8 +501,8 @@ export function App() {
         />
       )}
       {askClose && tabKeys.includes(askClose) && (
-        <ConfirmDialog title="关掉这个标签页？" confirmLabel="关掉，不要这些文字" danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(askClose)}>
-          <p data-testid="tab-close-question">这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。</p>
+        <ConfirmDialog title={t('关掉这个标签页？')} confirmLabel={t('关掉，不要这些文字')} danger onCancel={() => setAskClose(null)} onConfirm={() => closeNow(askClose)}>
+          <p data-testid="tab-close-question">{t('这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。')}</p>
         </ConfirmDialog>
       )}
       {keysOn && keysHelp && <ShortcutHelp onClose={() => setKeysHelp(false)} />}
@@ -531,7 +537,7 @@ function PutAwayStrip({ ops, ids, showing, open }: { ops: OpRecord[]; ids: strin
         <OpNotice
           key={r.id}
           r={r}
-          prefix={`${r.repo}#${r.number}：`}
+          prefix={t('{repo}#{number}：', { repo: r.repo, number: r.number })}
           onOpen={(key) => open(key, 'float')}
           onRetry={(x) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
           onToReply={(x) => open(x.key, 'float', { opId: x.id, what: 'toReply' })}

@@ -4,6 +4,7 @@
 // The one thing the client adds is a copyable install command per missing
 // program — it never decides on its own which programs are needed.
 
+import { t } from './i18n';
 export type SchedState = 'running' | 'stopped' | 'unknown';
 
 export interface DaemonAgent {
@@ -167,11 +168,11 @@ export const refreshOk = (r: string) => r === 'replaced' || r === 'unchanged';
 /** "3 分钟前" */
 export function ago(epochSec: number, nowMs: number): string {
   const mins = Math.floor((nowMs / 1000 - epochSec) / 60);
-  if (mins < 1) return '不到 1 分钟前';
-  if (mins < 60) return `${mins} 分钟前`;
+  if (mins < 1) return t('不到 1 分钟前');
+  if (mins < 60) return t('{n} 分钟前', { n: mins });
   const h = Math.floor(mins / 60);
-  if (h < 48) return `${h} 小时前`;
-  return `${Math.floor(h / 24)} 天前`;
+  if (h < 48) return t('{n} 小时前', { n: h });
+  return t('{n} 天前', { n: Math.floor(h / 24) });
 }
 
 /** what the window may ask; the back end checks every argument again */

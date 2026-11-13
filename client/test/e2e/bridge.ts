@@ -126,7 +126,7 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string> } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const desktop = fakeDesktop();
   const backend = new HarnessBackend({
@@ -213,7 +213,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 } });
+  const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 }, ...(opts.locale ? { locale: opts.locale } : {}) });
   // Nothing leaves the machine. Every request the window makes outside the bridge is recorded;
   // the hosts the app may load images from (github.com / api.github.com, and GitHub's avatar
   // host since #155, its image hosts since #205, a repo's raw files since #267) get a 1×1 PNG,
