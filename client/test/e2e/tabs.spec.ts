@@ -95,6 +95,16 @@ const itemReads = (n: number) => env.fake.log.filter((l) => l.operation === 'Cav
 const readOpened = () => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '');
 /** one sync round, the way the shell's beat starts it */
 const beat = (app: RunningApp) => app.desktop.push({ kind: 'tick' });
+/**
+ * PR #484 review round 4 / 6: a beat that arrives while a round is still running is swallowed by design (GitHub#324:
+ * the next beat starts the next round, 60 s later in the app). Right after sign-in the first rounds can still be running
+ * on a busy machine, so a test that sends one beat after a change first waits until no round runs — then that beat is
+ * the one that starts a round, and the round reads the change.
+ */
+async function beatWhenIdle(app: RunningApp, page: Page) {
+  await expect(page.getByTestId('refresh')).toHaveAttribute('data-syncing', 'no', { timeout: 30_000 });
+  beat(app);
+}
 
 test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the right-click menu a tab; the tab bar shows only once a tab is open; ⌘1 … ⌘9 pick a tab; tabs close by ×, the key and the shell', async () => {
   const app = await launchApp(env);
@@ -599,7 +609,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   expect(readsA).toBeGreaterThan(0);
 
   change(A, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, A)).toHaveAttribute('data-unread', 'yes');
   await expect(tab(page, A).getByTestId('tab-dot')).toBeVisible();
@@ -608,7 +618,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   await page.waitForTimeout(400);
   expect(detailReads(A)).toBe(readsA);
   change(A, { labels: ['pending/human'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'waiting', { timeout: 15_000 });
   await shot(page, '397-05-waiting');
   // (a new "waiting for a human" is a notification, and the app reads that item's detail ahead of the click — GitHub#328;
@@ -616,7 +626,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   await page.waitForTimeout(400);
   const readsA2 = detailReads(A);
   change(A, { state: 'closed', title: 'closed while its tab was behind' });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, A)).toHaveAttribute('data-status', 'done', { timeout: 15_000 });
   await expect(tab(page, A).getByTestId('tab-title')).toHaveText('closed while its tab was behind');
   await shot(page, '397-06-closed');
@@ -626,7 +636,7 @@ test('the status icon follows the sync rounds; a tab behind shows a dot when its
   expect(itemReads(A)).toBe(0);
   // the tab in front never shows the dot, whatever changes
   change(B, { labels: ['doing/agent'] });
-  beat(app);
+  await beatWhenIdle(app, page);
   await expect(tab(page, B)).toHaveAttribute('data-status', 'running', { timeout: 15_000 });
   await expect(tab(page, B)).toHaveAttribute('data-unread', 'no');
 
