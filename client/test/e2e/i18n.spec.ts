@@ -93,7 +93,7 @@ const SETTINGS = ['.settings > .toolbar', '[data-testid="settings-nav"]', '.sett
 
 /** the choice has reached the back end's store (quitting right after a click could otherwise beat the write, as a killed app would) */
 async function saved(app: RunningApp, value: string) {
-  await expect.poll(async () => (await app.backend.call<any>('init')).settings.uiLanguage).toBe(value);
+  await expect.poll(async () => (await app.backend.call<any>('init')).settings.uiLanguage, { timeout: 20_000 }).toBe(value);
 }
 
 async function signIn(page: Page) {

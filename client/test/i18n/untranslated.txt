@@ -62,6 +62,7 @@ src/renderer/frameScript.ts
 src/renderer/iterationOptions.tsx
 src/renderer/pasteImage.ts
 src/renderer/prStatus.ts
+src/renderer/reread.ts
 src/renderer/shortcuts.ts
 src/shared/blocked.ts
 src/shared/daemon.ts

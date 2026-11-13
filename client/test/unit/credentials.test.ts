@@ -137,4 +137,3 @@ describe('MacKeychainStore', () => {
     await s.close();
   });
 });
-
