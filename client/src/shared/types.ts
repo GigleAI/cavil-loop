@@ -439,6 +439,11 @@ export interface SourceSnapshot {
   fetchedAt: number;
   items: Item[];
   project?: ProjectMeta;
+  /**
+   * GitHub#462, repository sources: the pending label the "closed items carrying it" list was read
+   * for ('' = not read; absent = a snapshot from before that list existed). A board reads every item.
+   */
+  pendingLabel?: string;
 }
 
 export interface SourceTimes {
@@ -562,7 +567,8 @@ export interface TallyDef {
 /**
  * GitHub#464: the "显示已关闭" switch, one per view — the three layouts (`board` / `table` / `graph`), and each
  * number of the view bar while it is lit, by its row's id (the default rows: `running` / `agent` / `human` /
- * `unlabeled`; a number made in Settings has its own, GitHub#468). false or missing = only open items are listed.
+ * `unlabeled`; a number made in Settings has its own, GitHub#468). false = only open items are listed; a number
+ * not switched yet has no entry and starts as it counts (on for "等人处理", which counts closed items too).
  */
 export type ShowClosedKey = string;
 export type ShowClosed = Record<ShowClosedKey, boolean>;

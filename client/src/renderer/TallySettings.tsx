@@ -4,7 +4,7 @@
 
 import type { AppState, TallyColor, TallyDef, TallyFlow } from '../shared/types';
 import { effectiveTallies, TALLY_COLORS, TALLY_FLOW_TEXT, TALLY_MAX } from '../shared/tallies';
-import { tallyQuery } from '../data/flowTally';
+import { flowCondition } from '../data/flowTally';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
 
@@ -17,11 +17,15 @@ function newId(taken: Set<string>): string {
   }
 }
 
-/** "改成自己写条件": the label's own query when it can be written exactly, otherwise empty (never a query that counts something else) */
+/**
+ * "改成自己写条件": the label's own query — the one a click on the row puts in the box, so the number
+ * stays the same ("等人处理" has no `is:open`, GitHub#462) — when it can be written exactly, otherwise
+ * empty (never a query that counts something else)
+ */
 export function toQueryRow(d: TallyDef, labels: Record<TallyFlow, string>): TallyDef {
   if (d.source.kind !== 'flow') return d;
   const flow = d.source.flow;
-  return { ...d, source: { kind: 'query', query: tallyQuery(labels[flow]) ?? '', from: flow } };
+  return { ...d, source: { kind: 'query', query: flowCondition(flow, labels[flow]) ?? '', from: flow } };
 }
 
 export function TallySettings({ state }: { state: AppState }) {
@@ -43,7 +47,7 @@ export function TallySettings({ state }: { state: AppState }) {
       <p className="muted small">
         顶栏右侧的每个数各对应下面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目，不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。
         <br />
-        「跟随流程标签」的行按上面「流程标签」里的标签名直接数开着的条目（和提醒用同一条规则），标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：<code>is:open label:"bug"</code>、<code>is:pr author:@me</code>）。
+        「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），另外两个只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：<code>is:open label:"bug"</code>、<code>is:pr author:@me</code>）。
         <br />
         系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。
       </p>
@@ -95,7 +99,7 @@ export function TallySettings({ state }: { state: AppState }) {
                         改成自己写条件
                       </button>
                       {label === '' && <div className="tally-row-note muted" data-testid="tally-note">{TALLY_FLOW_TEXT[src.flow]}留空，这一行不显示在顶栏</div>}
-                      {label !== '' && tallyQuery(label) === null && (
+                      {label !== '' && flowCondition(src.flow, label) === null && (
                         <div className="tally-row-note muted" data-testid="tally-note">
                           这个标签名写不进搜索框（含双引号，或以 &lt; &gt; 开头）：照样计数，但点数字不能筛选
                         </div>
@@ -112,7 +116,7 @@ export function TallySettings({ state }: { state: AppState }) {
                         onBlur={(e) => e.target.value !== src.query && patch(i, { ...d, source: { ...src, query: e.target.value } })}
                       />
                       {src.query.trim() === '' &&
-                        (src.from && fromLabel !== '' && tallyQuery(fromLabel) === null ? (
+                        (src.from && fromLabel !== '' && flowCondition(src.from, fromLabel) === null ? (
                           <div className="tally-row-note warn" data-testid="tally-note">
                             标签名「{fromLabel}」写不进搜索条件（含双引号，或以 &lt; &gt; 开头），没法自动转换。改回「跟随流程标签」可以照常计数（点数字不能筛选，和以前一样）。
                           </div>

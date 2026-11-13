@@ -18,6 +18,8 @@ const R = 'o/r';
 const today = '2026-11-13';
 /** open + carries the label, whole name, any case — written out here */
 const carrying = (items: Item[], label: string) => items.filter((i) => i.state === 'open' && i.labels.some((l) => l.name.toLowerCase() === label.trim().toLowerCase())).map((i) => i.number);
+/** GitHub#462: the "等人处理" rule — carries the label, open or closed */
+const carryingAny = (items: Item[], label: string) => items.filter((i) => i.labels.some((l) => l.name.toLowerCase() === label.trim().toLowerCase())).map((i) => i.number);
 
 const ITEMS: Item[] = [
   item(R, 1, { labels: L('doing/agent'), author: 'alice' }),
@@ -43,10 +45,11 @@ describe('the default table', () => {
     expect(e.map((x) => [x.kind, x.count])).toEqual([
       ['running', carrying(ITEMS, 'doing/agent').length],
       ['agent', carrying(ITEMS, 'pending/agent').length],
-      ['human', carrying(ITEMS, 'pending/human').length],
+      ['human', carryingAny(ITEMS, 'pending/human').length],
       ['unlabeled', ITEMS.filter((i) => i.state === 'open' && i.labels.length === 0).length],
     ]);
-    expect(e.map((x) => x.count)).toEqual([1, 1, 1, 1]);
+    // #3 is closed and carries pending/human: "等人处理" counts it (GitHub#462)
+    expect(e.map((x) => x.count)).toEqual([1, 1, 2, 1]);
     expect(e).toEqual(flowTally(ITEMS, DEFAULT_HAND_BACK));
   });
 
@@ -61,16 +64,21 @@ describe('the default table', () => {
 
 describe('a row that follows a flow label (review round 1 of the design: labels the search syntax cannot carry)', () => {
   for (const name of ['>待处理', 'say "hi"', '<x', 'a"b']) {
-    it(`"${name}": counted exactly (1, not every open item, not 0), not clickable`, () => {
+    it(`"${name}": counted exactly (not every item, not 0), not clickable`, () => {
       const items = [item(R, 1, { labels: L(name) }), item(R, 2, { labels: L('bug') }), item(R, 3, { labels: L(name), state: 'closed' })];
       const labels = { running: '', agent: 'pending/agent', human: name };
+      // "等人处理" counts the closed #3 too (GitHub#462); "运行中" only the open #1
       const [e] = tallyEntries(items, [flow('h', 'human')], labels);
-      expect(e.count).toBe(1);
-      expect(carrying(items, name)).toEqual([1]);
+      expect(e.count).toBe(2);
+      expect(carryingAny(items, name)).toEqual([1, 3]);
       expect(e.query).toBeNull();
       expect(tallyClick('foo', null, e, [e])).toEqual({ query: 'foo', saved: null });
+      const [r] = tallyEntries(items, [flow('r', 'running')], { ...labels, running: name });
+      expect(r.count).toBe(1);
+      expect(carrying(items, name)).toEqual([1]);
+      expect(r.query).toBeNull();
       // the default table counts it the same way
-      expect(tallyEntries(items, defaultTallies(), labels).find((x) => x.kind === 'human')!.count).toBe(1);
+      expect(tallyEntries(items, defaultTallies(), labels).find((x) => x.kind === 'human')!.count).toBe(2);
     });
   }
 
@@ -78,7 +86,7 @@ describe('a row that follows a flow label (review round 1 of the design: labels 
     const saved = normalizeTallies([query('mine', 'is:open author:@me'), flow('h', 'human', { name: '待我', color: 'red' })]).tallies!;
     for (const human of ['pending/human', 'pending/agent', 'Doing/Agent', 'bug']) {
       const e = tallyEntries(ITEMS, saved, { ...DEFAULT_HAND_BACK, human }).find((x) => x.kind === 'h')!;
-      expect(e.count, human).toBe(carrying(ITEMS, human).length);
+      expect(e.count, human).toBe(carryingAny(ITEMS, human).length);
       expect(e.count, human).toBeGreaterThan(0);
       expect(e.label).toBe(human);
       expect([e.name, e.color]).toEqual(['待我', 'red']);
@@ -143,6 +151,15 @@ describe('改成自己写条件 / 改回跟随流程标签', () => {
     const before = tallyEntries(items, [flow('r', 'running')], labels)[0];
     const after = tallyEntries(items, [toQueryRow(flow('r', 'running'), labels)], labels)[0];
     expect([after.count, after.query]).toEqual([before.count, before.query]);
+    // GitHub#462: "等人处理" still counts the closed ones after the conversion
+    const plain = { ...labels, human: 'pending/human' };
+    const withClosed = [item(R, 1, { labels: L('pending/human') }), item(R, 2, { labels: L('pending/human'), state: 'closed' }), item(R, 3, {})];
+    // GitHub#464: a condition of one's own counts open items only unless it names the state, so "等人处理"'s says it
+    expect(toQueryRow(flow('h', 'human'), plain).source).toEqual({ kind: 'query', query: 'label:"pending/human" is:open,closed', from: 'human' });
+    const hBefore = tallyEntries(withClosed, [flow('h', 'human')], plain)[0];
+    const hAfter = tallyEntries(withClosed, [toQueryRow(flow('h', 'human'), plain)], plain)[0];
+    expect([hAfter.count, hAfter.query]).toEqual([2, 'label:"pending/human" is:open,closed']);
+    expect(hAfter.count).toBe(hBefore.count);
     // an empty converted row is left off the bar rather than counting everything
     expect(tallyEntries(items, [toQueryRow(flow('a', 'agent'), labels)], labels)).toEqual([]);
     expect(tallyQuery('>待处理')).toBeNull();

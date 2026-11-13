@@ -1,8 +1,9 @@
-// GitHub#404: the view bar's "运行中 / 等 agent / 等人处理" — how many open issues / PRs of the ticked
+// GitHub#404: the view bar's "运行中 / 等 agent / 等人处理" — how many issues / PRs of the ticked
 // sources carry each flow label, whatever the search box says.
 //
-// Counting goes through `isPending` (open + carries the label, case-insensitive): the very rule the
-// reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
+// "等人处理" counts through `isPending` (carries the label, open or closed — GitHub#462): the very rule
+// the reminders and the Dock badge use, so "等人处理 5" and the pending reminders cannot disagree.
+// "运行中" / "等 agent" count open items only: work in progress is open by definition.
 //
 // GitHub#418: a fourth number, "未处理" — open items of the ticked sources carrying no label at all. Its
 // click query is the fixed `no:label`, and the count goes through that very query's filter
@@ -10,21 +11,24 @@
 // so the number and the list a click shows are one rule, not two.
 //
 // A number can be clicked: the search box becomes `label:"<label>"` (the same items, through the
-// ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit number again puts back what the box said before.
-// GitHub#464: the click queries no longer carry `is:open` — whether closed items are listed too is the
-// lit number's own "显示已关闭" switch (`showClosedKey`), off by default, so the default list is still
-// exactly the counted items.
+// ordinary filter; a label the filter cannot carry is shown but not clickable), and clicking the lit
+// number again puts back what the box said before.
+// GitHub#464: no click query carries `is:open` — whether closed items are listed too is the lit
+// number's own "显示已关闭" switch (`showClosedKey`). It starts as the number counts: off for "运行中" /
+// "等 agent" / "未处理" (open only), on for "等人处理" (closed ones count too, GitHub#462) — so the
+// default list is exactly the counted items, and each number can still be switched by itself.
 
 // GitHub#468: the numbers are a table set in Settings (shared/tallies.ts). A "跟随流程标签" row counts
-// exactly as above (isPending, click through `tallyQuery`); a "自己写条件" row counts through its own
-// search text and the board's filter, with the same context the board uses (viewer, today, projects),
-// and a click puts that same text in the box. With the table never changed the bar is what it was.
+// exactly as above (the "等人处理" label through isPending, the other two open + label; click through
+// `flowQuery`); a "自己写条件" row counts through its own search text and the board's filter, with the
+// same context the board uses (viewer, today, projects), and a click puts that same text in the box.
+// With the table never changed the bar is what it was.
 // GitHub#464: every number has its own "显示已关闭" switch (keyed by the row's id); a query row counts what
 // its click lists with that switch off — open items only, unless its condition names the state itself.
 
-import type { HandBackLabels, Item, TallyColor, TallyDef } from '../shared/types';
+import type { HandBackLabels, Item, TallyColor, TallyDef, TallyFlow } from '../shared/types';
 import type { FilterContext } from '../shared/filter';
-import { isPending } from './pending';
+import { hasLabel, isPending } from './pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
 import type { Layout, ShowClosedKey } from '../shared/types';
 import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies } from '../shared/tallies';
@@ -42,9 +46,11 @@ export interface TallyEntry {
   color: TallyColor;
   /** which kind of row: follows a flow label, or a search condition of its own */
   source: 'flow' | 'query';
+  /** a flow row: which flow label it follows; null for a query row */
+  flow: TallyFlow | null;
   /** a flow row: the label as set in Settings (trimmed); '' for a query row */
   label: string;
-  /** the items it picks */
+  /** the items it picks (a flow row: open ones only, except "等人处理", which counts closed ones too — GitHub#462) */
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
@@ -59,23 +65,61 @@ export const TALLY_TEXT: Record<'running' | 'agent' | 'human' | 'unlabeled', str
 const NO_CONTEXT: FilterContext = { viewer: null, today: '', projects: [] };
 
 /**
- * `label:"<label>"`, or null for a label the search syntax cannot carry. Decided by the real
- * parser, not by guessing which characters are safe: the query must read back as exactly
- * this one whole label, nothing ignored — a double quote breaks the quoting, and a leading `<` / `>`
- * is a comparison the filter drops (PR #408 review round 1: the number said 1, the click showed every
- * open item).
+ * The query a number's click puts in the search box: `is:open label:"<label>"` (open = true), or
+ * `label:"<label>"` alone (open = false, "等人处理" — GitHub#462: closed items with the label count
+ * too); null for a label the search syntax cannot carry. Decided by the real parser, not by guessing
+ * which characters are safe: the query must read back as exactly ("open" plus) this one whole label,
+ * nothing ignored — a double quote breaks the quoting, and a leading `<` / `>` is a comparison the
+ * filter drops (PR #408 review round 1: the number said 1, the click showed every open item).
  */
-export function tallyQuery(label: string): string | null {
+export function tallyQuery(label: string, open: boolean = true): string | null {
   const l = label.trim();
   if (l === '' || l.includes('"')) return null;
-  const q = `label:"${l}"`;
+  const q = `${open ? 'is:open ' : ''}label:"${l}"`;
   const { clauses, unsupported } = parseFilter(q);
-  const [lab] = clauses;
-  const ok =
-    unsupported.length === 0 &&
-    clauses.length === 1 &&
-    lab.kind === 'field' && lab.field === 'label' && !lab.negated && lab.values.length === 1 && lab.values[0] === l;
+  if (unsupported.length !== 0 || clauses.length !== (open ? 2 : 1)) return null;
+  const isOpen = (c: (typeof clauses)[number]) =>
+    c.kind === 'field' && c.field === 'is' && !c.negated && c.values.length === 1 && c.values[0].toLowerCase() === 'open';
+  const isLabel = (c: (typeof clauses)[number]) => c.kind === 'field' && c.field === 'label' && !c.negated && c.values.length === 1 && c.values[0] === l;
+  const ok = open ? isOpen(clauses[0]) && isLabel(clauses[1]) : isLabel(clauses[0]);
   return ok ? q : null;
+}
+
+/**
+ * GitHub#462: does a flow row count this item? "等人处理" is the reminders' own rule (`isPending`: the
+ * label, open or closed); "运行中" / "等 agent" count open items only — work in progress is open.
+ */
+export function flowCounts(flow: TallyFlow, it: Item, label: string): boolean {
+  return flow === 'human' ? isPending(it, label) : it.state === 'open' && hasLabel(it, label);
+}
+
+/**
+ * A flow row's click query. GitHub#464: never `is:open` — with the number's own "显示已关闭" switch as it
+ * starts (`showClosedDefault`) the list is exactly what `flowCounts` counts.
+ */
+export function flowQuery(_flow: TallyFlow, label: string): string | null {
+  return tallyQuery(label, false);
+}
+
+/**
+ * The condition a flow row becomes when it is turned into "自己写条件" (GitHub#468), picking the same items
+ * `flowCounts` counts under the query rows' own rule (open items only unless the condition names the
+ * state, GitHub#464): `label:"<label>"` for "运行中" / "等 agent"; for "等人处理", which counts closed
+ * items too (GitHub#462), the state is written out — `label:"<label>" is:open,closed`. Null when the label
+ * cannot be written in the search syntax.
+ */
+export function flowCondition(flow: TallyFlow, label: string): string | null {
+  const q = tallyQuery(label, false);
+  if (q === null) return null;
+  return flow === 'human' ? `${q} is:open,closed` : q;
+}
+
+/**
+ * GitHub#464: how a number's "显示已关闭" switch starts, until it is switched: on for a row following
+ * "等人处理" (it counts closed items too, GitHub#462), off for every other number.
+ */
+export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boolean {
+  return entry?.flow === 'human';
 }
 
 /**
@@ -89,9 +133,10 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: P
     const name = d.name.trim();
     if (name === '') continue;
     if (d.source.kind === 'flow') {
-      const label = labels[d.source.flow].trim();
+      const flow = d.source.flow;
+      const label = labels[flow].trim();
       if (label === '') continue;
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', label, count: items.filter((it) => isPending(it, label)).length, query: tallyQuery(label) });
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: items.filter((it) => flowCounts(flow, it, label)).length, query: flowQuery(flow, label) });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
@@ -99,7 +144,7 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: P
       // only, unless the condition itself says open / closed / merged — the same rule BoardView applies
       const parsed = parseFilter(q);
       const pool = statesStated(parsed) ? items : openOnly(items);
-      out.push({ kind: d.id, name, color: d.color, source: 'query', label: '', count: applyFilter(pool, parsed, ctx).length, query: q });
+      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count: applyFilter(pool, parsed, ctx).length, query: q });
     }
   }
   return out;

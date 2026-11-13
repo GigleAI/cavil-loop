@@ -457,6 +457,11 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 /* ---- dialogs ---- */
 .modal-back { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .modal { width: 520px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow-lg); }
+.modal.wide { width: 600px; }
+/* GitHub#450: a dialog with more buttons than 取消 / 确认 (新建 issue): 取消 on the left, the rest on the right, in one row */
+.dialog-actions { flex-wrap: nowrap; margin-top: 14px; }
+.dialog-actions .quick-actions { flex-wrap: nowrap; }
+.dialog-footnote { text-align: right; }
 .modal h3 { margin: 0 0 12px; font-size: 16px; }
 /* GitHub#451: the comment "评论并托管" sends first, quoted as typed */
 .modal blockquote.op-comment { margin: 6px 0 10px; padding: 6px 10px; border-left: 3px solid var(--border); background: var(--canvas); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
@@ -950,6 +955,15 @@ button.remote-switch:disabled { opacity: 0.5; cursor: default; }
 .blocked-result.sel { background: var(--accent-subtle); }
 .blocked-sum { background: var(--ctl); border: 1px solid var(--border-muted); border-radius: 8px; padding: 8px 12px; }
 .blocked-sum ol { margin: 4px 0; padding-left: 20px; }
+/* GitHub#455: "重新读取" / "重新同步" say that they are reading, then what came of it */
+button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--info-bg); border-color: var(--info-border); color: var(--fg); }
+.reread-line { display: flex; align-items: flex-start; gap: 6px; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; line-height: 1.5; color: var(--fg); }
+.reread-line > .spin, .reread-line > .icon { flex: none; margin-top: 3px; }
+.reread-line.running { background: var(--info-bg); border: 1px solid var(--info-border); }
+.reread-line.bad { background: var(--err-bg); border: 1px solid var(--err-border); }
+.reread-line.bad > .icon { color: var(--err-fg); }
+.reread-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.reread-ok .icon { color: var(--ok-icon); }
 
 /* GitHub#447: the notices of closes that put their tab / floating panel away — above every page, under the tab bar */
 .op-strip { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); }

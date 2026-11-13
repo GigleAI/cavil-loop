@@ -12,6 +12,15 @@
 
 Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be human." That is the idea here: the agent does not need to pretend to be human, yet working with it feels like working with a real colleague — you hand it issues, it comes back with design proposals and PRs, and you review them.
 
+## Two things in this repository
+
+| | What it is | What it needs | Start here |
+|---|---|---|---|
+| **The daemon** (installed as an Agent Skill) | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
+| **The Cavil Loop desktop client** | A GitHub issue / PR client that works on its own: issues together with their linked PRs, grouped by iteration / milestone, and a dependency graph of issues (across repositories). It can also install the daemon and hand items to it. | A GitHub account and a Mac — no daemon, no GitHub Project, no command-line tools | [Client guide](docs/client.md) |
+
+Each one works without the other.
+
 ## What it is
 
 ![create issues and review PRs from AI agent in github](./docs/github_project.png)
@@ -173,7 +182,7 @@ Instead of the commands above, install the [desktop client](#client-desktop-boar
 4. Settings → "本机 daemon" (local daemon): click "安装" (install) — the same as the manual install in step 1 above.
 5. Back in the sources list, click "接上 daemon" (connect) on the repository's row: pick an existing local copy or let it clone one, pick the agent, and click "开始" (start) once the pre-check passes — the same as `setup.sh` in step 2 above.
 
-From then on, an issue labeled `pending/agent` gets picked up. Where to download and the details of each step are in [client/README.md](client/README.md) (Chinese; the client's interface is Chinese too).
+From then on, an issue labeled `pending/agent` gets picked up. Where to download and the details of each step are in the [client guide](docs/client.md#optional-connect-the-daemon) (the client's interface is Chinese for now).
 
 ## Dependencies
 
@@ -214,9 +223,22 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 ## Client (desktop board, preview)
 
-`client/` is an optional local macOS app that puts several GitHub Projects and repositories into one board: columns by iteration (default) / status / milestone, optional swimlanes per repository, and the last synced data stays readable offline. You sign in through the browser (GitHub OAuth device flow); the credential goes into the macOS keychain. It talks only to GitHub, and the daemon does not need it. Settings can also check and install the local daemon and connect a repository from the source list ("接上 daemon": find or clone the local copy, pick the agent, check what is missing, then run the daemon's own `setup.sh --yes` and show its output live). For that the client runs the daemon's own scripts on this machine and a few fixed `git` / `systemctl` / `launchctl` commands; the window can send only fixed requests, the back end checks every argument, and the client's own GitHub credential is never handed to the daemon — it keeps using `gh`'s own sign-in.
+The Cavil Loop desktop client (`client/`, macOS) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window:
 
-The board has search and filters, editing (labels, iteration, status, milestone), new issues, replies, merging PRs, and a system notification when something new lands on `pending/human`. It works with repositories alone, without any Project (no iteration / status then — see client/README.md). Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: for now only development builds (tags `client/vX.Y.Z-dev.N`, marked Pre-release, Apple-silicon dmg only) — no stable release and no Intel package yet. Install and first run: [client/README.md](client/README.md).
+- **Board** with columns by iteration / status / milestone, optional swimlanes per repository; each PR sits under the issue it links to.
+- **Table** grouped by repository / iteration / status / milestone, sub-issues indented under their parent with their progress, cells editable in place.
+- **Dependency graph**: parent issues drawn as boxes around their sub-issues, arrows from blocking to blocked issues, items from repositories outside your sources still drawn.
+- **Search** in GitHub's web syntax, saved web views imported from a Project, the last synced data readable offline.
+- **Changes** sent straight to GitHub: labels, iteration, status, milestone, replies, new issues, closing and merging; details float over the board or open as tabs.
+- **With the daemon** (optional): install it and connect a repository from Settings, hand an item to the agent or put it on autopilot with one button, and get a system notification when something lands on `pending/human`.
+
+| Board | Table | Dependency graph |
+|---|---|---|
+| ![Board](docs/client-screens/board.png) | ![Table](docs/client-screens/table.png) | ![Dependency graph](docs/client-screens/graph.png) |
+
+You sign in through the browser (GitHub's device flow); the credential goes into the macOS keychain. By default the client talks only to GitHub (`api.github.com`, `github.com` and GitHub's own avatar, image, file and release-download addresses); Tailscale machines are contacted only when you use the remote-daemon settings: opening the "add remote daemon" window asks every online device on your tailnet whether its remote entry is open, pairing talks to the one machine you picked, and afterwards only paired machines are contacted — always over HTTPS to `*.ts.net` names, never with a GitHub credential (details in the [client guide](docs/client.md#network-credentials-and-offline-use)). When it installs or connects the daemon, it runs the daemon's own scripts and a few fixed `git` / `systemctl` / `launchctl` commands on this machine; the window can send only fixed requests, the back end checks every argument, and the client's credential is never handed to the daemon, which keeps using `gh`'s own sign-in.
+
+Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: for now only development builds (tags `client/vX.Y.Z-dev.N`, marked Pre-release, Apple-silicon dmg only) — no stable release and no Intel package yet. **Install, first run and every feature: [docs/client.md](docs/client.md).** The developer notes are in [client/README.md](client/README.md) (Chinese).
 
 ---
 
@@ -224,6 +246,7 @@ The board has search and filters, editing (labels, iteration, status, milestone)
 
 | Doc | About |
 |-----|-------|
+| [docs/client.md](docs/client.md) | The desktop client: install and first run without the daemon, board / table / dependency graph, search, editing, shortcuts, network boundary, connecting the daemon, features in progress |
 | [docs/architecture.md](docs/architecture.md) | Five-state label machine, PR↔Issue closure (one PR, or split into sub-issues), why the design works this way |
 | [docs/collaboration.md](docs/collaboration.md) | Multi-human + multi-agent workflows: PM → Dev → QA handoff via label suffixes (`pending/agent/PM`, `pending/human/Alex`, …) |
 | [docs/requester-bot.md](docs/requester-bot.md) | Hooking up an external requester bot (grokbot as the example): integration steps, what the bot does on its side, troubleshooting |

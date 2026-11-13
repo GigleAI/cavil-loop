@@ -1650,6 +1650,121 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   await app.close();
 });
 
+test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, then say what came of it; all read → a short green note (GitHub#455)', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  const btn = page.getByTestId('sync-trouble');
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  await btn.click();
+  const panel = page.getByTestId('sync-trouble-panel');
+  const retry = panel.getByTestId('failure-retry');
+  const resync = page.getByTestId('sync-trouble-resync');
+  const running = page.getByTestId('sync-trouble-running');
+  const result = page.getByTestId('sync-trouble-result');
+  await expect(retry).toHaveText('重新读取');
+  await expect(running).toHaveCount(0);
+  await expect(result).toHaveCount(0);
+  const reads = () => env.fake.log.filter((e) => e.operation === 'CavilProjectItems').length;
+
+  // 1. held at GitHub: both buttons say they are reading, at once, and stay clickable
+  let release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  let n = reads();
+  await retry.click();
+  await expect(retry).toHaveText('正在重新读取…');
+  await expect(retry).toHaveAttribute('data-running', 'yes');
+  await expect(retry).toBeEnabled();
+  await expect(resync).toHaveText('正在重新同步…');
+  await expect(resync).toBeEnabled();
+  await expect(running).toContainText(/^\d\d:\d\d:\d\d 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。$/);
+  await expect.poll(reads).toBeGreaterThan(n);
+  await shot(page, '455-reread-running');
+
+  // 2. answered, still failing: the outcome, to the second; the buttons are back
+  release();
+  await expect(result).toContainText(/^\d\d:\d\d:\d\d 重新读取完毕：这个来源仍然读取失败（原因见上）。$/, { timeout: 15_000 });
+  await expect(result).toHaveAttribute('data-kind', 'failed');
+  await expect(running).toHaveCount(0);
+  await expect(retry).toHaveText('重新读取');
+  await expect(resync).toHaveText('重新同步');
+  await expect(panel).toBeVisible();
+  await shot(page, '455-reread-still-failing');
+
+  // 3. clicked again while it reads: the round starts over, one outcome only (the last click's), and it really read again
+  release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  n = reads();
+  await resync.click();
+  await expect(result).toHaveCount(0);
+  await expect(running).toBeVisible();
+  await expect.poll(reads).toBeGreaterThan(n);
+  const second = reads();
+  await resync.click();
+  await expect(running).toBeVisible();
+  release();
+  await expect(result).toHaveCount(1, { timeout: 15_000 });
+  await expect(result).toContainText('这个来源仍然读取失败');
+  expect(reads()).toBeGreaterThan(second);
+  await expect(running).toHaveCount(0);
+
+  // 4. the panel put away and opened again: the old outcome is gone
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+  await btn.click();
+  await expect(result).toHaveCount(0);
+
+  // 5. the source reads again: ⚠️ and panel go, a green note says so for about 5 seconds
+  env.fake.state.failProjectPage.clear();
+  await resync.click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  const ok = page.getByTestId('sync-reread-ok');
+  await expect(ok).toHaveText('已重新读取，所有来源都读到了');
+  await shot(page, '455-reread-ok');
+  await expect(ok).toHaveCount(0, { timeout: 10_000 });
+
+  // 6. recovered by the refresh button (not from the panel): no green note
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.getByTestId('refresh').click();
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  env.fake.state.failProjectPage.clear();
+  await page.getByTestId('refresh').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await expect(ok).toHaveCount(0);
+
+  await app.close();
+});
+
+test('Settings: a failed source\'s "重新读取" spins while it runs and says what came of it, on its own (GitHub#455)', async () => {
+  const { app, page } = await launch(env);
+  await signIn(page);
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  const row = page.getByTestId('source-row');
+  await expect(row.locator('.kind')).not.toContainText(' 0 个条目', { timeout: 15_000 });
+  env.fake.state.failProjectPage.set(P11, 1);
+  await page.evaluate(() => (window as any).cavil.restartSync());
+  const rowRetry = row.getByTestId('failure-retry');
+  await expect(rowRetry).toHaveText('重新读取', { timeout: 15_000 });
+  const release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  await rowRetry.click();
+  await expect(rowRetry).toHaveText('正在重新读取…');
+  await expect(row.getByTestId('failure-reread-running')).toContainText('开始重新读取');
+  release();
+  await expect(row.getByTestId('failure-reread-result')).toContainText('重新读取完毕：这个来源仍然读取失败', { timeout: 15_000 });
+  await expect(rowRetry).toHaveText('重新读取');
+  env.fake.state.failProjectPage.clear();
+  await rowRetry.click();
+  await expect(row.getByTestId('source-failure')).toHaveCount(0, { timeout: 15_000 });
+  await app.close();
+});
+
 test('yellow bars: a closed "unsupported words" bar comes back when an import in settings changes the filter and changes it back', async () => {
   env.fake.state.projects.set('org/gigleai/21', projectWithView('updated:>2026-01-01'));
   env.fake.state.projects.set('org/gigleai/22', projectWithView('label:bug')); // (a filter that only hides Done would be left out, GitHub#464)
@@ -1747,9 +1862,9 @@ function openUnlabelled(): number[] {
 }
 
 // GitHub#251: the badge is only the unread count; what the sources already have at start is
-// history (no summary, no notification, not unread); closed / merged items never remind; the
-// settings page no longer lists or counts what is pending.
-test('pending/human: nothing about the history at start, one notification per new open label at the next beat, none for a merged PR, badge, label setting, a click opens the item', async () => {
+// history (no summary, no notification, not unread); the settings page no longer lists or counts
+// what is pending. GitHub#462: closed / merged items carrying the label remind too.
+test('pending/human: nothing about the history at start, one notification per new label at the next beat (a merged PR too), badge, label setting, a click opens the item', async () => {
   // history: the recording's labelled items are closed / merged; one open issue carries the label too
   const [seeded, fresh] = openUnlabelled();
   putPending(seeded);
@@ -1790,7 +1905,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：点哪条通知，就只收起被点的那一条，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
-  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的不提醒');
+  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
   await expect(page.getByTestId('launch-at-login')).not.toBeChecked();
@@ -1800,15 +1915,17 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('launch-at-login')).toBeChecked();
   await shot(page, '20-pending-settings');
 
-  // a merged PR and an open issue get the label on GitHub → exactly one notification, the open one's, at the next beat
+  // a merged PR and an open issue get the label on GitHub → one notification each at the next beat (GitHub#462)
   putPending(mergedPr);
   putPending(fresh);
   await page.getByTestId('back').click();
   app.desktop.push({ kind: 'tick' });
-  await expect.poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key)).toEqual([`gigleai/cavil-loop#${fresh}`]);
-  const itemNote = notes().find((a) => a.kind === 'item');
+  await expect
+    .poll(() => notes().filter((a) => a.kind === 'item').map((a) => a.key).sort())
+    .toEqual([`gigleai/cavil-loop#${fresh}`, `gigleai/cavil-loop#${mergedPr}`].sort());
+  const itemNote = notes().find((a) => a.kind === 'item' && a.key === `gigleai/cavil-loop#${fresh}`);
   expect(itemNote.title).toBe(`待处理：GigleAI/cavil-loop#${fresh}`);
-  await expect.poll(badge).toBe(1);
+  await expect.poll(badge).toBe(2);
   // "did happen": that round read the merged PR with its label
   await page.getByTestId('search').fill(`#${mergedPr}`);
   if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').click();
@@ -1816,12 +1933,12 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('search').fill('');
   app.desktop.push({ kind: 'tick' });
   await page.waitForTimeout(800);
-  expect(notes()).toHaveLength(1);
+  expect(notes()).toHaveLength(2);
 
-  // GitHub#328: the notified item's detail was read ahead, once, with nobody opening it (and none for the merged PR)
+  // GitHub#328: each notified item's detail was read ahead, once, with nobody opening it
   const detailReads = (n: number) => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === n);
   await expect.poll(() => detailReads(fresh).filter((l) => l.status === 200).length).toBe(1);
-  expect(detailReads(mergedPr)).toHaveLength(0);
+  await expect.poll(() => detailReads(mergedPr).filter((l) => l.status === 200).length).toBe(1);
 
   // a click on that notification opens the item in the app (also from the settings page):
   // what was read ahead shows at once, while the panel's own read is still held
@@ -1852,8 +1969,8 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
   await page.waitForTimeout(300);
-  expect(badge()).toBeLessThanOrEqual(1);
-  expect(notes()).toHaveLength(1);
+  expect(badge()).toBeLessThanOrEqual(2);
+  expect(notes()).toHaveLength(2);
 
   // the user switches to the window (the shell reports the focus): the badge cleared; the delivered
   // notifications stay (GitHub#369)
@@ -2853,7 +2970,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await page.keyboard.press('?');
   await expect(help).toBeVisible();
   expect(await help.getByTestId('shortcut-row').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-id')))).toEqual([
-    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'closeTab', 'nextTab', 'prevTab', 'tabAt', 'confirm', 'cancel', 'labels', 'milestone', 'reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'hide',
+    'search', 'newIssue', 'sync', 'settings', 'help', 'viewBoard', 'viewTable', 'viewGraph', 'closeTab', 'nextTab', 'prevTab', 'tabAt', 'confirm', 'cancel', 'newIssueAgent', 'newIssueAutopilot', 'labels', 'milestone', 'reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'hide',
     'graphFit', 'graphZoomIn', 'graphZoomOut', 'settingsBack', 'send', 'preview', 'leaveReply', 'pickerUp', 'pickerDown', 'pickerToggle', 'pickerClose', 'helpClose',
   ]);
   await shot(page, '60-shortcut-list');
@@ -4573,145 +4690,250 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   await app.close();
 });
 
-test('GitHub#245: new issue — hand to the agent / autopilot when creating; the choice is remembered; unknown labels are "cannot read", never "has none"', async () => {
-  let { app, page } = await launch(env);
+test('GitHub#450: new issue — 交给 agent / 托管 are buttons that create at once, pressed by ⌘⇧Z / ⌘⇧C from the title too; greyed buttons and a covered dialog take no key', async () => {
+  const { app, page } = await launch(env);
   await signInWithSources(page);
   const w = env.fake.state.w;
   const REPO_KEY = 'gigleai/cavil-loop';
   w.repoLabels.set(REPO_KEY, ['bug', 'autopilot', 'pending/agent', 'pending/human'].map((name) => ({ name, color: 'ededed' })));
-  const choice = (h: string) => page.locator(`[data-testid="new-issue-handoff-choice"][data-choice="${h}"]`);
-  const handoff = page.getByTestId('new-issue-handoff');
+  const agentBtn = page.getByTestId('new-issue-agent');
+  const autoBtn = page.getByTestId('new-issue-autopilot');
+  const dialogs = page.getByTestId('confirm-dialog');
   const creates = () => writes().filter((x) => x[0] === 'POST' && x[1] === '/api/repos/GigleAI/cavil-loop/issues').map((x) => x[2]);
-  const open = async () => {
+  /** opens the dialog; unless the label read is held on purpose, waits for it to land (a key before that does nothing, by design) */
+  const open = async (title = '', held = false) => {
     await page.getByTestId('write-entry').click();
     await expect(page.getByTestId('new-issue')).toBeVisible();
+    if (!held) await expect(agentBtn).not.toHaveAttribute('data-state', 'loading');
+    if (title) await page.getByTestId('new-issue-title').fill(title);
   };
-  const createAndClose = async (title: string) => {
-    await page.getByTestId('new-issue-title').fill(title);
-    await page.getByTestId('confirm-ok').click();
-    await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+  /** the dialog closed and GitHub got exactly one more create request, this one */
+  const created = async (n: number, want: unknown) => {
+    await expect(dialogs).toHaveCount(0);
+    await expect.poll(() => creates().length).toBe(n);
+    expect(creates().at(-1)).toEqual(want);
     await page.getByTestId('detail-close').click();
   };
+  /** a key that must create nothing: give it time, then the count is unchanged */
+  const nothing = async (n: number) => {
+    await page.waitForTimeout(300);
+    expect(creates().length).toBe(n);
+  };
+  const keyAgent = () => page.keyboard.press(`${MOD}+Shift+Z`);
+  const keyAuto = () => page.keyboard.press(`${MOD}+Shift+C`);
 
-  // ---- 1. first time: "只建 issue"; the plain request is exactly as before ----
+  // ---- 1. no "建好后" choice any more; the row is 取消 · 交给 agent · 托管 · 创建, each with its key ----
   await open();
-  await expect(choice('none')).toBeChecked();
-  await expect(choice('agent')).toBeEnabled();
-  await expect(choice('autopilot')).toBeEnabled();
-  await expect(page.getByTestId('new-issue-handoff-summary')).toHaveCount(0);
-  await createAndClose('普通');
-  expect(creates()).toEqual([{ title: '普通', body: '', labels: [] }]);
+  await expect(page.locator('[data-testid="new-issue"] input[type="radio"]')).toHaveCount(0);
+  await expect(agentBtn).toContainText('交给 agent');
+  await expect(agentBtn.locator('kbd')).toHaveText(/(⌘⇧Z|Ctrl\+Shift\+Z)/);
+  await expect(autoBtn).toContainText('托管（自动合并）…');
+  await expect(autoBtn.locator('kbd')).toHaveText(/(⌘⇧C|Ctrl\+Shift\+C)/);
+  await expect(page.getByTestId('confirm-ok').locator('kbd')).toHaveCount(1);
+  // nothing typed yet: the two buttons are grey and their keys do nothing
+  await expect(agentBtn).toBeDisabled();
+  await expect(autoBtn).toBeDisabled();
+  await page.getByTestId('new-issue-title').focus();
+  await keyAgent();
+  await keyAuto();
+  await nothing(0);
+  await expect(dialogs).toHaveCount(1);
+  await page.getByTestId('new-issue-title').fill('普通');
+  await expect(agentBtn).toBeEnabled();
+  await expect(autoBtn).toBeEnabled();
+  await shot(page, '450-01-new-issue-buttons');
+  // ⌘↩ from the title: a plain issue, exactly as before
+  await page.keyboard.press(`${MOD}+Enter`);
+  await created(1, { title: '普通', body: '', labels: [] });
 
-  // ---- 2. autopilot: said what happens; one create request with both labels; remembered ----
-  await open();
-  await choice('autopilot').check();
-  await expect(page.getByTestId('new-issue-handoff-summary')).toContainText('会加上标签「autopilot」和「pending/agent」');
-  await expect(page.getByTestId('new-issue-handoff-summary')).toContainText('要叫停，在网页上去掉「autopilot」');
-  await shot(page, '245-01-new-issue-autopilot');
-  await createAndClose('托管的');
-  expect(creates().at(-1)).toEqual({ title: '托管的', body: '', labels: ['autopilot', 'pending/agent'] });
-  await open();
-  await expect(choice('autopilot')).toBeChecked();
-  // ---- 3. changed, then cancelled: not remembered ----
-  await choice('agent').check();
-  await page.getByTestId('confirm-cancel').click();
-  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-  await open();
-  await expect(choice('autopilot')).toBeChecked();
-  await page.getByTestId('confirm-cancel').click();
+  // ---- 2. ⌘⇧Z typed in the title: created at once with the agent label; the button does the same ----
+  await open('键交给 agent');
+  await keyAgent();
+  await created(2, { title: '键交给 agent', body: '', labels: ['pending/agent'] });
+  await open('点交给 agent');
+  await page.getByTestId('new-issue-body').fill('正文里');
+  await agentBtn.click();
+  await created(3, { title: '点交给 agent', body: '正文里', labels: ['pending/agent'] });
+  // nothing is remembered: the next plain 创建 carries no hand-over label
+  await open('又一个普通的');
+  await page.getByTestId('confirm-ok').click();
+  await created(4, { title: '又一个普通的', body: '', labels: [] });
 
-  // ---- 4. the label list cannot be read: "读不到", never "没有标签"; a plain issue does not overwrite the choice ----
+  // ---- 3. 托管 with "托管前确认" on (the default): the confirmation first; under it the two keys do nothing ----
+  await open('托管的');
+  await page.getByTestId('new-issue-body').focus();
+  await keyAuto();
+  await expect(dialogs).toHaveCount(2);
+  await expect(page.getByTestId('new-issue-autopilot-explain')).toContainText('建好后会加上标签 autopilot 和 pending/agent');
+  await shot(page, '450-02-new-issue-autopilot-confirm');
+  await nothing(4);
+  await keyAgent();
+  await keyAuto();
+  await nothing(4);
+  await expect(dialogs).toHaveCount(2);
+  // PR #459 review round 1: the keyboard cannot reach the covered dialog — Shift+Tab then Space right after it
+  // opened stays in the confirmation (which Space then presses: 取消, nothing created, the draft kept) …
+  const focusIn = () => page.evaluate(() => {
+    const d = document.activeElement?.closest('[data-testid="confirm-dialog"]');
+    return d ? (d.querySelector('[data-testid="new-issue-autopilot-explain"]') ? 'confirm' : 'covered') : 'outside';
+  });
+  await expect(dialogs.first()).toHaveAttribute('data-covered', 'yes');
+  // the keyboard starts on the confirmation's 取消; the reviewer's path — Shift+Tab, Space — only ticks "不再提示"
+  await expect(dialogs.last().getByTestId('confirm-cancel')).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  expect(await focusIn()).toBe('confirm');
+  await page.keyboard.press('Space');
+  await expect(page.getByTestId('new-issue-autopilot-no-more-ask')).toBeChecked();
+  await nothing(4);
+  await expect(dialogs).toHaveCount(2);
+  await page.getByTestId('new-issue-autopilot-no-more-ask').uncheck();
+  // … round and round both ways, never out of it
+  for (const k of ['Tab', 'Tab', 'Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
+    await page.keyboard.press(k);
+    expect(await focusIn(), k).toBe('confirm');
+  }
+  // the covered 创建 cannot even be given the focus
+  await page.getByTestId('confirm-ok').first().evaluate((b) => (b as HTMLElement).focus());
+  expect(await focusIn()).toBe('confirm');
+  await nothing(4);
+  await expect(dialogs).toHaveCount(2);
+  // Space on the confirmation's 取消: back to the dialog, nothing created, the typed title still there, the title has the keyboard
+  await dialogs.last().getByTestId('confirm-cancel').focus();
+  await page.keyboard.press('Space');
+  await expect(dialogs).toHaveCount(1);
+  await nothing(4);
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('托管的');
+  await expect(page.getByTestId('new-issue-title')).toBeFocused();
+  await expect(dialogs.first()).not.toHaveAttribute('data-covered', 'yes');
+  // open it again for the "不再提示" case below
+  await keyAuto();
+  await expect(dialogs).toHaveCount(2);
+  // cancelled with "不再提示" ticked: nothing created, the tick not kept, the typed text still there
+  await page.getByTestId('new-issue-autopilot-no-more-ask').check();
+  await dialogs.last().getByTestId('confirm-cancel').click();
+  await expect(dialogs).toHaveCount(1);
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('托管的');
+  await nothing(4);
+  await expect(autoBtn).toContainText('…');
+  // the keys work again once it is gone
+  await keyAgent();
+  await created(5, { title: '托管的', body: '', labels: ['pending/agent'] });
+  // confirmed: exactly one create, with both labels; ⌘↩ inside it confirms it
+  await open('确认托管的');
+  await autoBtn.click();
+  await expect(dialogs).toHaveCount(2);
+  await page.keyboard.press(`${MOD}+Enter`);
+  await created(6, { title: '确认托管的', body: '', labels: ['autopilot', 'pending/agent'] });
+  await nothing(6);
+  // confirmed with "不再提示": the setting is switched off …
+  await open('不再提示');
+  await keyAuto();
+  await page.getByTestId('new-issue-autopilot-no-more-ask').check();
+  await dialogs.last().getByTestId('confirm-ok').click();
+  await created(7, { title: '不再提示', body: '', labels: ['autopilot', 'pending/agent'] });
+  // … so 托管 now creates at once, with no confirmation and no "…"
+  await open('直接托管');
+  await expect(autoBtn).toHaveText(/^托管（自动合并）(⌘⇧C|Ctrl\+Shift\+C)$/);
+  await keyAuto();
+  await created(8, { title: '直接托管', body: '', labels: ['autopilot', 'pending/agent'] });
+
+  // ---- 4. the label list cannot be read: both grey, "读不到" said (never "没有标签"); 创建 still works ----
   w.failLabels.add(REPO_KEY);
-  await open();
-  await expect(handoff).toHaveAttribute('data-handoff', 'none');
-  await expect(handoff).toHaveAttribute('data-wanted', 'autopilot');
-  await expect(choice('none')).toBeChecked();
-  await expect(choice('autopilot')).toBeDisabled();
-  await expect(choice('agent')).toBeDisabled();
-  await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('读不到仓库 GigleAI/cavil-loop 的标签');
-  await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('记住的选项不变');
-  await expect(handoff).not.toContainText('没有标签');
-  // GitHub#405: the fold is shut; its head line says the label list could not be read
+  await open('读不到标签');
+  await expect(agentBtn).toBeDisabled();
+  await expect(autoBtn).toBeDisabled();
+  await expect(page.getByTestId('new-issue-handoff-why')).toContainText('读不到仓库 GigleAI/cavil-loop 的标签');
+  await expect(page.getByTestId('new-issue-handoff-why')).not.toContainText('没有标签');
   await expect(page.getByTestId('new-issue-more-labels')).toHaveText('标签读取失败');
-  await shot(page, '245-02-new-issue-labels-unreadable');
-  await createAndClose('读不到标签时建的');
-  expect(creates().at(-1)).toEqual({ title: '读不到标签时建的', body: '', labels: [] });
+  await shot(page, '450-03-new-issue-labels-unreadable');
+  await keyAgent();
+  await keyAuto();
+  await nothing(8);
+  await page.getByTestId('confirm-ok').click();
+  await created(9, { title: '读不到标签', body: '', labels: [] });
   w.failLabels.delete(REPO_KEY);
-  await open();
-  await expect(choice('autopilot')).toBeChecked();
-  await page.getByTestId('confirm-cancel').click();
 
-  // ---- 5. the repository really lacks the label: that choice cannot be picked; the fallback keeps the choice too ----
+  // ---- 5. the repository really lacks the autopilot label: only 托管 is grey, with why; 交给 agent works ----
   w.repoLabels.set(REPO_KEY, ['bug', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
-  await open();
-  await expect(choice('autopilot')).toBeDisabled();
-  await expect(choice('agent')).toBeEnabled();
-  await expect(choice('none')).toBeChecked();
-  await expect(page.getByTestId('new-issue-handoff-fallback')).toHaveAttribute('data-reason', 'missing');
-  await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('仓库 GigleAI/cavil-loop 没有标签「autopilot」');
-  await expect(page.getByTestId('new-issue-handoff-fallback')).toContainText('记住的「托管（自动合并）」不变');
-  await createAndClose('缺标签时建的');
-  expect(creates().at(-1)).toEqual({ title: '缺标签时建的', body: '', labels: [] });
-  // picked by hand here: "交给 agent" is used and remembered
-  await open();
-  await choice('agent').check();
-  await expect(page.getByTestId('new-issue-handoff-why')).toContainText('没有标签「autopilot」');
-  await createAndClose('交给 agent 的');
-  expect(creates().at(-1)).toEqual({ title: '交给 agent 的', body: '', labels: ['pending/agent'] });
+  await open('缺托管标签');
+  await expect(autoBtn).toBeDisabled();
+  await expect(autoBtn).toHaveAttribute('data-state', 'missing');
+  await expect(agentBtn).toBeEnabled();
+  await expect(page.getByTestId('new-issue-handoff-why')).toHaveText('仓库 GigleAI/cavil-loop 没有标签「autopilot」');
+  await keyAuto();
+  await nothing(9);
+  await keyAgent();
+  await created(10, { title: '缺托管标签', body: '', labels: ['pending/agent'] });
 
-  // ---- 6. still reading: the remembered choice stays, creating waits until the labels are in ----
+  // ---- 6. still reading the labels: 交给 agent waits (grey, its key does nothing), then works; 创建 does not wait ----
   w.repoLabels.set(REPO_KEY, ['bug', 'autopilot', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
   const release = env.fake.hold('/labels');
-  await open();
-  await expect(choice('agent')).toBeChecked();
-  await page.getByTestId('new-issue-title').fill('等标签');
-  await expect(page.getByTestId('new-issue-handoff-wait')).toContainText('正在读取仓库 GigleAI/cavil-loop 的标签');
-  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
-  // the web page waits the same way (PR #249 review round 1): no page opened without the hand-over labels
+  await open('等标签', true);
+  await expect(agentBtn).toHaveAttribute('data-state', 'loading');
+  await expect(agentBtn).toBeDisabled();
+  await expect(agentBtn).toHaveAttribute('title', '正在读取仓库 GigleAI/cavil-loop 的标签…');
+  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+  await keyAgent();
+  await nothing(10);
+  // the web page carries only the labels picked here (there is no hand-over choice to carry)
   await page.getByTestId('new-issue-body').fill('看图');
   await pasteImage(page, '[data-testid="new-issue-body"]');
-  const openedBefore = existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '';
-  await expect(page.getByTestId('paste-image-web')).toBeDisabled();
-  await page.getByTestId('paste-image-web').click({ force: true });
-  await page.waitForTimeout(300);
-  expect(existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '').toBe(openedBefore);
-  release();
-  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
-  await expect(choice('agent')).toBeChecked();
-  // read: the web page gets the same labels as the create request would
   await expect(page.getByTestId('paste-image-web')).toBeEnabled();
   await page.getByTestId('paste-image-web').click();
-  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toContain('&labels=pending%2Fagent\n');
+  await expect.poll(() => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8') : '')).toMatch(/title=%E7%AD%89%E6%A0%87%E7%AD%BE&body=%E7%9C%8B%E5%9B%BE\n/);
+  release();
+  await expect(agentBtn).toBeEnabled();
+  await agentBtn.click();
+  await created(11, { title: '等标签', body: '看图', labels: ['pending/agent'] });
+
+  // ---- 7. another dialog (关闭 issue): ⌘⇧Z / ⌘⇧C are nobody's there — no label write, no new issue ----
+  await page.getByTestId('search').fill('#139');
+  await card(page, 139).click();
+  await page.getByTestId('close-issue').click();
+  await expect(dialogs).toHaveCount(1);
+  const before = writes().length;
+  await keyAgent();
+  await keyAuto();
+  await page.waitForTimeout(300);
+  expect(writes().length).toBe(before);
+  await expect(dialogs).toHaveCount(1);
   await page.getByTestId('confirm-cancel').click();
-  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-
-  // ---- 7. remembered across a restart; the table group's "+" uses the same choice ----
-  await app.close();
-  ({ app, page } = await launch(env));
-  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
-  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  await page.getByTestId('open-view-panel').click();
-  await page.getByTestId('group-by').selectOption('status');
-  const add = page.locator('[data-testid="group"][data-title="In progress"]').getByTestId('group-add');
-  await expect(add).toBeEnabled({ timeout: 15_000 });
-  await add.click();
-  await expect(choice('agent')).toBeChecked();
-  await page.getByTestId('new-issue-title').fill('组里交给 agent');
-  await page.getByTestId('confirm-ok').click();
-  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-  // the dialog closes before GitHub answers (GitHub#229): wait for the request
-  await expect.poll(() => creates().at(-1)).toEqual({ title: '组里交给 agent', body: '', labels: ['pending/agent'] });
-
-  // ---- 8. no autopilot label in Settings: no "托管" choice; a remembered autopilot falls back without being lost ----
   await page.getByTestId('detail-close').click();
+  await page.getByTestId('search').fill('');
+
+  // ---- 8. no autopilot label in Settings: no 托管 button and ⌘⇧C does nothing; ⌘⇧Z still creates ----
   await page.getByTestId('open-settings').click();
   await page.getByTestId('hand-back-autopilot').fill('');
   await page.getByTestId('hand-back-autopilot').blur();
   await page.getByTestId('back').click();
-  await open();
-  await expect(choice('autopilot')).toHaveCount(0);
-  await expect(choice('agent')).toBeChecked();
+  await open('没有托管');
+  await expect(autoBtn).toHaveCount(0);
+  await keyAuto();
+  await nothing(11);
+  await keyAgent();
+  await created(12, { title: '没有托管', body: '', labels: ['pending/agent'] });
+
+  // ---- 9. refused for sure after 交给 agent: the draft comes back saying which button it was; a plain one says nothing ----
+  w.readOnlyRepos.add(REPO_KEY);
+  await open('被拒的交接');
+  await expect(agentBtn).toBeEnabled();
+  await keyAgent();
+  const refused = page.locator('[data-testid="create-bar"][data-status="failed"]');
+  await expect(refused).toContainText('没能新建「被拒的交接」');
+  await refused.getByTestId('create-reopen').click();
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('被拒的交接');
+  await expect(page.getByTestId('new-issue-draft-handoff')).toHaveAttribute('data-handoff', 'agent');
+  await expect(page.getByTestId('new-issue-draft-handoff')).toContainText('上次是按「交给 agent」建的，没有建成');
   await page.getByTestId('confirm-cancel').click();
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('被拒的普通');
+  await page.getByTestId('confirm-ok').click();
+  const refusedPlain = page.locator('[data-testid="create-bar"][data-status="failed"]').filter({ hasText: '被拒的普通' });
+  await expect(refusedPlain).toBeVisible();
+  await refusedPlain.getByTestId('create-reopen').click();
+  await expect(page.getByTestId('new-issue-title')).toHaveValue('被拒的普通');
+  await expect(page.getByTestId('new-issue-draft-handoff')).toHaveCount(0);
+  w.readOnlyRepos.delete(REPO_KEY);
   await app.close();
 });
 

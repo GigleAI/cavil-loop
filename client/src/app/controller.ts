@@ -1675,6 +1675,8 @@ export class Controller {
         progress();
       },
       this.state.handBack.blocked,
+      // GitHub#462: a repository's closed items carrying the pending label are read too
+      this.state.handBack.human,
     );
     run.reading = false;
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
@@ -2160,7 +2162,8 @@ export class Controller {
       this.badge();
       this.state = { ...this.state, ...this.pendingNow() };
     }
-    const reread = next.blocked !== this.state.handBack.blocked;
+    // GitHub#462: a repository's closed items carrying the new pending label are not held yet — read them now
+    const reread = next.blocked !== this.state.handBack.blocked || next.human !== this.state.handBack.human;
     // GitHub#434: "等前置…" uses the same waiting label
     this.set({ handBack: next, blockedLabels: { ...this.state.blockedLabels, blocked: next.blocked } });
     // GitHub#429: the registrations held were read under the old label — the graph shows them as

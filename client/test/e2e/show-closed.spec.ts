@@ -117,23 +117,26 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await expect(box(page)).toBeChecked();
   await page.getByTestId('search').fill('');
 
-  // ---- "等人处理" lit: its own switch (off) — the list is exactly the counted items ----
+  // ---- "等人处理" lit: its own switch, which starts on — the number counts closed items too (GitHub#462),
+  // so the list is exactly the counted items ----
   await tally(page, 'human').click();
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(toggle(page)).toHaveAttribute('data-view', 'human');
   await expect(toggle(page)).toHaveText('显示已关闭（等人处理）');
-  await expect(box(page)).not.toBeChecked();
-  await expect.poll(() => rowKeys(page)).toEqual(openHuman);
-  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(openHuman.length));
-  await box(page).check();
-  await expect.poll(() => rowKeys(page)).toEqual([...openHuman, ...closedHuman].sort());
-  // the number itself still counts open items only
-  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(openHuman.length));
+  await expect(box(page)).toBeChecked();
+  const allHuman = [...openHuman, ...closedHuman].sort();
+  await expect.poll(() => rowKeys(page)).toEqual(allHuman);
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(allHuman.length));
   await shot(page, 'show-closed-04-human-on');
+  // switched off by itself: only the open ones; the number does not change
+  await box(page).uncheck();
+  await expect.poll(() => rowKeys(page)).toEqual(openHuman);
+  await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(allHuman.length));
+  await expect.poll(async () => (await viewState(page)).showClosed.human).toBe(false);
   // the same lit number on the board uses the same switch
   await layout(page, 'board');
   await expect(toggle(page)).toHaveAttribute('data-view', 'human');
-  await expect(box(page)).toBeChecked();
+  await expect(box(page)).not.toBeChecked();
   await layout(page, 'table');
 
   // ---- another number lit: its own switch, off ----
@@ -167,7 +170,8 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await expect(box(page)).not.toBeChecked();
 
   // ---- a restart keeps every switch ----
-  await expect.poll(async () => (await viewState(page)).showClosed).toEqual({ board: false, table: true, graph: false, running: false, agent: false, human: true, unlabeled: false });
+  // the layouts are always stored; of the numbers only the one switched ("等人处理", off now)
+  await expect.poll(async () => (await viewState(page)).showClosed).toEqual({ board: false, table: true, graph: false, human: false });
   await page.waitForTimeout(500);
   await app.close();
   app = await launchApp(env);
@@ -177,6 +181,6 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await layout(page, 'table');
   await expect(box(page)).toBeChecked();
   await tally(page, 'human').click();
-  await expect(box(page)).toBeChecked();
+  await expect(box(page)).not.toBeChecked();
   await app.close();
 });

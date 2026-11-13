@@ -422,8 +422,8 @@ mutate no-drain agent-poll.sh '    closed_done_drain "$STATE_FILE" || true' '   
 mutate finish-deletes _lib.sh '        if closed_done_label "$issue"; then
             closed_done_finish "$issue" "$state_file"' '        if closed_done_label "$issue"; then
             jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
-mutate giveup-deletes _lib.sh '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
-            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
+mutate giveup-deletes _lib.sh '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
+            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
             jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
 mutate enqueue-resets _lib.sh '{($i): ((.closed_done_queue // {})[$i] // 0)}' '{($i): 0}'
 mutate no-forget agent-poll.sh '                closed_done_forget "$issnum" "$STATE_FILE"

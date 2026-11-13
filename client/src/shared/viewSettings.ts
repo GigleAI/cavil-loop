@@ -46,9 +46,13 @@ export function validWidths(v: unknown): v is Partial<Record<TableColumn, number
   );
 }
 
-/** GitHub#464: the views that always have a "显示已关闭" switch: the layouts and the default numbers (a number made in Settings adds its own id) */
-export const SHOW_CLOSED_KEYS: readonly ShowClosedKey[] = ['board', 'table', 'graph', 'running', 'agent', 'human', 'unlabeled'];
-export const DEFAULT_SHOW_CLOSED: ShowClosed = { board: false, table: false, graph: false, running: false, agent: false, human: false, unlabeled: false };
+/**
+ * GitHub#464: the views whose "显示已关闭" switch is always stored: the three layouts, off by default. A
+ * number's switch is stored once it is switched (by the row's id); until then it starts as the number
+ * counts (`showClosedDefault` in data/flowTally.ts: on for "等人处理", off for the others).
+ */
+export const SHOW_CLOSED_KEYS: readonly ShowClosedKey[] = ['board', 'table', 'graph'];
+export const DEFAULT_SHOW_CLOSED: ShowClosed = { board: false, table: false, graph: false };
 /** at most this many switches are kept (layouts, numbers, and numbers since removed in Settings) */
 export const SHOW_CLOSED_MAX = 64;
 
