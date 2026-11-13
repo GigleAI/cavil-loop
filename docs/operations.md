@@ -674,18 +674,48 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
   `pending/human` to it or closing it stops every sub-issue; to stop just one, add `pending/human` to that sub-issue.
   The parent or its label history unreadable = undecidable: not dispatched this round, nothing written (never
   dispatched as a normal item). Once every sub-issue is closed the parent goes to `pending/human` for a human to close.
-- **The issue stays open after the merge** (GitHub#233): an autopilot PR body says only `Refs #N` and no closing
-  keyword, so GitHub does not close the issue on merge. After merging, the daemon comments on the issue — one visible
+- **The merge closes the issue, which keeps `pending/human` as a reminder** (GitHub#461; GitHub#233 had left it open):
+  an autopilot PR body says `Closes #N`, so merging into the default branch makes GitHub close the issue, and items
+  waiting on it (`pending/blocked`) start right away. After merging, the daemon comments on the issue — one visible
   line of conclusion plus what the human needs to do; background / chosen approach / ruled-out approaches and why
   copied verbatim from the summary section the worker wrote in the PR body (`<!-- autopilot-summary:begin -->` to
-  `<!-- autopilot-summary:end -->`), the merge evidence folded at the end — and flips the issue to `pending/human`,
-  removing `pending/PR`. The human closes it when satisfied (closing as *completed* adds `Done` as usual) or adds
-  `pending/agent` for rework. If any flow label (dispatch, in progress, review, waiting, pending/human…) is already on
-  the issue by the time of the hand-over, a new round has started: no label is touched, only the comment is posted if
-  missing. Every write re-reads the issue first and writes nothing if its state or label set changed; unreadable =
-  retried next round; the comment is de-duplicated by its marker. ⚠️ A bound autopilot PR whose body still has a
-  closing keyword (including older `Closes #N` PRs) is handed back to the worker before merging, to change just that
-  line to `Refs #N`.
+  `<!-- autopilot-summary:end -->`), the merge evidence folded at the end — then adds `Done` and `pending/human` to the
+  closed issue and removes `pending/PR` and other flow labels. When satisfied, the human **only removes
+  `pending/human`** (`Done` stays; the daemon does not add it back); for rework: reopen the issue → remove `Done` and
+  `pending/human` → add `pending/agent`. If GitHub has not closed the issue yet the daemon looks again next round; if a
+  human reopened it before the hand-over, the "issue stays open" path below applies. The hand-over writes one label at
+  a time, judges twice from fresh reads of the issue and its event history before each write, and after each write
+  requires the state, label set and the positions of the last close and the last `pending/human` add to be exactly
+  "the previous reading + the step the daemon just wrote" — anything else stops the round; unreadable = retried next
+  round; the comment is de-duplicated by its marker.
+  - **The closed-issue sweep keeps a reminder added after the close**: the pass that gives issues closed as completed
+    `Done` and strips their flow labels (GitHub#159) reads the event history — if the last "added `pending/human`" comes
+    after the last "closed", it is the post-close reminder and stays; one added before the close (a human closing an
+    issue that sat on `pending/human`) is removed as before. Order is the position in the event history, never the
+    timestamp (closing on merge and adding the reminder often share a second). History unreadable, an event without an
+    id, or history that contradicts the labels (on the issue but no "added" event) → nothing written, retried next round.
+    The sweep also writes one label at a time, judges twice before each write and checks the reading after each one: a
+    reminder re-added or the issue reopened after the judgement stops the round instead of being overwritten.
+  - **Finding what to look at**:
+
+    | Looking for | Repository Issues page | GitHub Project view |
+    |---|---|---|
+    | Waiting for a human (including closed after merge) | `label:pending/human` | `label:pending/human` (no `is:open`) |
+    | Still in progress | `is:open` | `is:open` |
+    | In progress + waiting for a human | `is:issue (is:open OR (is:closed label:pending/human))` | not expressible (no cross-field OR, no parentheses) |
+
+    The desktop client's default search `-Status:done -label:Done` hides these closed `Done` items; open them from the
+    "等人处理" (waiting for a human) count in the top bar. Same for a Project view whose filter has `-Status:done`: save a
+    separate view with just `label:pending/human`.
+- **The older "issue stays open" form**: an autopilot PR whose body only says `Refs #N` with no closing keyword (PRs
+  opened before this change) still merges, and GitHub does not close the issue: after the comment the daemon flips the
+  issue to `pending/human`, removing `pending/PR`; the human closes it when satisfied (closing as *completed* adds
+  `Done` as usual) or adds `pending/agent` for rework. A `Closes #N` PR merged into a branch other than the default one
+  (GitHub does not close issues then) takes this path too. If any flow label (dispatch, in progress, review, waiting,
+  pending/human…) is already on the issue by the time of the hand-over, a new round has started: no label is touched,
+  only the comment is posted if missing. Every write re-reads the issue first and writes nothing if its state or label
+  set changed; unreadable = retried next round; the comment is de-duplicated by its marker. An autopilot PR merged by
+  a maintainer by hand gets no special treatment: like any PR, the issue its `Closes #N` closed gets `Done`.
 - **Trusted repos** (`TRUSTED_REPOS`, GitHub#233, empty by default): comma-separated `owner/repo`. A listed repo
   ① may hold the parent of a split sub-issue: a maintainer's own autopilot label on that parent authorizes this
   repo's sub-issue, and whoever added it needs write access in **both** repos; ② may hold a prerequisite for
@@ -760,8 +790,7 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
 
 | Check | Fails → |
 |---|---|
-| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly, and the body references only one `Refs #N` with no closing keyword, or closes exactly `#N`, read per line and as a whole, both must agree) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
-| A bound PR's body has no keyword that would make GitHub close an issue of this repo on merge (GitHub#233: the issue stays open for a human) | handed back to the worker to change it to `Refs #N` |
+| The PR is from this repo and either bound (branch `BRANCH_PREFIX<N>` exactly, and the body closes exactly `#N`, read per line and as a whole, both must agree, or references only one `Refs #N` with no closing keyword) or PR-only (the body has no closing keyword for an issue of this repo, GitHub#142) | `pending/human` |
 | PR-only: authorization comes from the PR alone (drop the issue side of the next row), and the PR description at label time (that revision in the edit history) also meets the previous row | `pending/human` |
 | Authorization: the label is **currently on** issue `#N` or the PR, the last "added the autopilot label" event there was by a `User` with `write`/`admin` who is not the loop's write account and not `REQUESTER_BOT_ACCOUNT`, **and that event is later than every "removed" event on both the issue and the PR** (see "How the two places combine" below) | `pending/human` |
 | The PR itself carries the autopilot label (for a bound PR the daemon copies it from the issue, see above; GitHub#190) | undecidable this round (→ `pending/human` after `AUTOPILOT_UNKNOWN_MAX` rounds) |
@@ -1176,9 +1205,10 @@ always means this repo, so an item here with the same number never triggers it. 
 human with a comment saying how to add them — with the list empty that is every `owner/repo#N` (until GitHub#243 an
 unlisted `owner/repo#N` was misread as this repo's `#N`). Another repo is only ever read, with the polling identity — the
 daemon never writes there; a private repo needs that token to have read access, otherwise it answers 404 and the item is
-handed to a human naming the prerequisite and the token's missing access. ⚠️ After an autopilot merge the issue stays open for a
-human, so waiting on an autopilot issue really waits for **a human to close it**; to continue as soon as the code is
-merged, name the PR as the prerequisite.
+handed to a human naming the prerequisite and the token's missing access. An autopilot PR says `Closes #N`, so the merge
+closes the issue (GitHub#461) and waiting on an autopilot issue means waiting for its merge; only for an older autopilot PR
+that says `Refs #N` does the issue stay open until a human closes it — to continue as soon as that code is merged, name
+the PR as the prerequisite.
 
 **Recovering after a hand-off**: the daemon's comment lists the steps — fix the prerequisites (remove the failed one from
 *Blocked by*, add the new one, or post a new marker for a PR), **remove `pending/human`**, put `pending/blocked` back. While

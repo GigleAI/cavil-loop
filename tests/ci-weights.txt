@@ -11,6 +11,7 @@ autopilot:2/3 70
 autopilot:3/3 82
 autopilot-handover 260
 autopilot-human-paths 110
+autopilot-merge-close 40
 autopilot-ops 25
 autopilot-outsider 240
 autopilot-split 43

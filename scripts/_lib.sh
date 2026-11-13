@@ -2992,62 +2992,157 @@ closed_done_enqueue() {
 # 「打成了」= Done 已在、且每个该摘的流程标签都确认摘掉——只有 Done 不算（摘除失败时 Done 可能
 # 已经加上，下一轮还得补摘）。不用 gh_label_flip：它对每个摘除都 `|| true`，分不清
 # 「本来就不在」（404，算成功）和真失败；旧调用方保持原样。
+#
+# 关闭之后挂上的 pending/human 留着（GitHub#461）：托管 PR 合并即关 issue，daemon 随后挂 pending/human 提醒人看；
+# 清扫要认出它，不能和「人在 pending/human 状态下直接关掉」的旧标签一起摘。先后看 issue 事件记录里的顺序
+# （closed_reminder_facts），不比秒级时间：合并关 issue 和 daemon 挂提醒常在同一秒。
+#
+# 一次只写一个标签，每写一个之前都现读判定两次（closed_done_judge），结论、依据、下一步都不变才写；写完回到开头，
+# 新读到的依据必须正好等于「上一次的依据 + daemon 自己刚确认写成的那一步」，否则停手、留队下轮从头判——
+# 判定之后人重新挂了提醒、重开了 issue、动了别的标签，都不会被按旧结论接着写。
 closed_done_label() {
-    local issue="$1" info st reason
-    info=$(run_gh_capture "读取 issue #$issue 状态" \
+    local issue="$1" step=0 v id next kind lab out expect="" exp_h="" removed=() added=no
+    while [ "$step" -lt 16 ]; do
+        step=$((step + 1))
+        closed_done_judge "$issue"
+        if [ -n "$expect" ] && [ "$CD_V" != unknown ] \
+           && { [ "$CD_CMP" != "$expect" ] || { [ "$exp_h" != "*" ] && [ "$CD_HEV" != "$exp_h" ]; }; }; then
+            log "  issue #$issue 在 daemon 两次写标签之间有变化（${CD_CMP}${CD_HEV:+ / $CD_HEV}），本轮停手，下轮从头判"
+            return 1
+        fi
+        case "$CD_V" in
+            unknown) log "  ⚠️ ${CD_MSG}，下轮再判"; return 1 ;;
+            skip) [ -z "$CD_MSG" ] || log "  $CD_MSG"; return 0 ;;
+            finished)
+                if [ "$added" = yes ] || [ ${#removed[@]} -gt 0 ]; then
+                    log "  issue #$issue 手动关闭（已完成）→ $LABEL_DONE${removed[*]:+，摘掉 ${removed[*]}}${CD_KEEP:+；保留关闭之后挂上的 $LABEL_PENDING_HUMAN}"
+                fi
+                return 0 ;;
+        esac
+        v="$CD_V|$CD_CMP|$CD_HEV|$CD_NEXT"; next="$CD_NEXT"
+        closed_done_judge "$issue"
+        if [ "$CD_V|$CD_CMP|$CD_HEV|$CD_NEXT" != "$v" ]; then
+            log "  issue #$issue 判定之后有变化（重判 ${CD_V}${CD_MSG:+：$CD_MSG}），本轮不写，下轮再判"
+            return 1
+        fi
+        kind="${next%%:*}"; lab="${next#*:}"
+        case "$kind" in
+            del)
+                if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$issue/labels/$(printf '%s' "$lab" | jq -sRr @uri)" 2>&1) \
+                   && ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+                    log "  ⚠️ issue #$issue 摘 $lab 失败: $out"
+                    return 1
+                fi
+                removed+=("$lab") ;;
+            add)
+                if ! out=$(gh_write api -X POST "repos/$REPO/issues/$issue/labels" -f "labels[]=$lab" 2>&1); then
+                    log "  ⚠️ issue #$issue 加 $lab 失败: $out"
+                    return 1
+                fi
+                added=yes ;;
+            *) log "  ⚠️ issue #$issue 下一步读不懂（${next}）"; return 1 ;;
+        esac
+        # 下一圈应当看到的依据：只多出 daemon 刚写成的这一步。摘的是 pending/human 时它的事件不再读（标签不在了）
+        expect=$(closed_done_cmp_after "$CD_CMP" "$kind" "$lab") || { log "  ⚠️ issue #$issue 算不出写后的依据"; return 1; }
+        if [ "$lab" = "$LABEL_PENDING_HUMAN" ]; then exp_h="*"; else exp_h="$CD_HEV"; fi
+    done
+    log "  ⚠️ issue #$issue 收敛步数超出上限，下轮再试"
+    return 1
+}
+
+# 读 issue 的事件记录，看 pending/human 最后一次「加上」和最后一次「关闭」谁在前（GitHub#461）。
+# 先后按事件在记录里的位置比（GitHub 按发生先后给出，分页拼接后不变），不比时间戳。
+# stdout：<最后一次关闭的事件 id 或 -> <最后一次加上 pending/human 的事件 id 或 -> <after|before|->
+# （after = 加上排在关闭之后）；return 1 = 读不到，或用到的事件缺编号。
+closed_reminder_facts() {   # <issue>
+    local ev
+    ev=$(gh api --paginate --slurp "repos/$REPO/issues/$1/events" 2>/dev/null) || return 1
+    [ -n "$ev" ] || return 1
+    printf '%s' "$ev" | jq -er --arg H "$LABEL_PENDING_HUMAN" '
+        [.[] | if type == "array" then .[] else error("page") end] | to_entries as $e
+        | ([$e[] | select(.value.event == "closed")] | last) as $c
+        | ([$e[] | select(.value.event == "labeled" and ((.value.label.name // "") == $H))] | last) as $h
+        | if ($c != null and ($c.value.id | type) != "number") or ($h != null and ($h.value.id | type) != "number") then error("id")
+          else "\(if $c == null then "-" else $c.value.id end) \(if $h == null then "-" else $h.value.id end) \(
+                if $c == null or $h == null then "-" elif $h.key > $c.key then "after" else "before" end)" end' 2>/dev/null
+}
+
+# 清扫的纯判定（不写任何东西）：现读 issue（挂着 pending/human 时连事件记录一起读）。
+#   CD_V    unknown 读不到 / 缺字段 / 对不上（CD_MSG 是原因）；skip 不归清扫管或不该打（重新打开、不做了、PR）；
+#           finished 已经是目标状态；write 还要写，CD_NEXT = 下一步（del:<标签> / add:<标签>），一次一个
+#   CD_CMP  状态 | 关闭原因 | 排好序的标签集合 | 最后一次关闭的事件 id——两次判定、写前写后都逐字比较
+#   CD_HEV  pending/human 最后一次加上的事件 id 和它在关闭之前还是之后（不挂 pending/human 时为空）
+#   CD_KEEP 非空 = pending/human 是关闭之后挂上的，留着
+closed_done_judge() {   # <issue>
+    local issue="$1" info st reason labs facts c h rel L has_done=0 stale=()
+    CD_V=unknown; CD_NEXT=""; CD_CMP=""; CD_HEV=""; CD_KEEP=""; CD_MSG=""
+    if ! info=$(run_gh_capture "读取 issue #$issue 状态" \
         gh api "repos/$REPO/issues/$issue" \
-        --jq '{s: (.state // ""), r: (.state_reason // ""), pr: (.pull_request != null), l: [(.labels // [])[].name]}') \
-        || return 1
+        --jq '{s: (.state // ""), r: (.state_reason // ""), pr: (.pull_request != null), l: [(.labels // [])[].name]}'); then
+        CD_MSG="读不到 issue #$issue"; return 0
+    fi
     st=$(printf '%s' "$info" | jq -r '.s' 2>/dev/null) || st=""
     reason=$(printf '%s' "$info" | jq -r '.r' 2>/dev/null) || reason=""
+    labs=$(printf '%s' "$info" | jq -c '.l | sort' 2>/dev/null) || labs=""
     if [ "$(printf '%s' "$info" | jq -r '.pr' 2>/dev/null)" = true ]; then
-        return 0   # PR 不归这条路管（合并的 PR 由 § 3 打）
+        CD_V=skip; return 0   # PR 不归这条路管（合并的 PR 由 § 3 打）
     fi
+    CD_CMP="$st|$reason|$labs"
     case "$st" in
         open)
-            log "  issue #$issue 已重新打开，不打 $LABEL_DONE"
-            return 0 ;;
+            CD_V=skip; CD_MSG="issue #$issue 已重新打开，不打 $LABEL_DONE"; return 0 ;;
         closed) ;;
         *)
-            log "  ⚠️ issue #$issue 状态读不出来（'$st'），下轮再判"
-            return 1 ;;
+            CD_MSG="issue #$issue 状态读不出来（'$st'）"; return 0 ;;
     esac
     case "$reason" in
         completed) ;;
         not_planned|duplicate)
-            log "  issue #$issue 以「${reason}」关闭，不打 $LABEL_DONE"
-            return 0 ;;
+            CD_V=skip; CD_MSG="issue #$issue 以「${reason}」关闭，不打 $LABEL_DONE"; return 0 ;;
         *)
             # 读不到 / 为空 / 没见过的原因：绝不当成「已完成」
-            log "  ⚠️ issue #$issue 关闭原因未知（'$reason'），不打标签，下轮再判"
-            return 1 ;;
+            CD_MSG="issue #$issue 关闭原因未知（'$reason'），不打标签"; return 0 ;;
     esac
-
-    local L out ok=1 has_done=0 stale=()
-    printf '%s' "$info" | jq -e --arg d "$LABEL_DONE" '.l | index($d)' >/dev/null 2>&1 && has_done=1
+    if [ -z "$labs" ]; then CD_MSG="issue #$issue 的标签读不懂"; return 0; fi
+    _cd_has() { printf '%s' "$labs" | jq -e --arg L "$1" 'index($L) != null' >/dev/null 2>&1; }
+    if [ -n "$LABEL_PENDING_HUMAN" ] && _cd_has "$LABEL_PENDING_HUMAN"; then
+        if ! facts=$(closed_reminder_facts "$issue"); then
+            CD_MSG="读不到 issue #$issue 的事件记录（或事件缺编号）"; unset -f _cd_has; return 0
+        fi
+        read -r c h rel <<< "$facts"
+        if [ "$c" = - ] || [ "$h" = - ]; then
+            # 已关闭却没有关闭事件，或挂着 pending/human 却找不到加上它的那一次：记录和现状对不上
+            CD_MSG="issue #$issue 的事件记录和现状对不上（关闭事件 ${c}、加上 $LABEL_PENDING_HUMAN 的事件 ${h}）"
+            unset -f _cd_has; return 0
+        fi
+        CD_CMP="$CD_CMP|$c"; CD_HEV="$h $rel"
+        [ "$rel" != after ] || CD_KEEP=yes
+    fi
+    _cd_has "$LABEL_DONE" && has_done=1
     while IFS= read -r L; do
         [ -n "$L" ] || continue
-        printf '%s' "$info" | jq -e --arg L "$L" '.l | index($L)' >/dev/null 2>&1 && stale+=("$L")
+        [ -z "$CD_KEEP" ] || [ "$L" != "$LABEL_PENDING_HUMAN" ] || continue
+        _cd_has "$L" && stale+=("$L")
     done < <(closed_done_flow_labels)
-    if [ "$has_done" = 1 ] && [ ${#stale[@]} -eq 0 ]; then
-        return 0
+    unset -f _cd_has
+    if [ ${#stale[@]} -gt 0 ]; then
+        CD_V=write; CD_NEXT="del:${stale[0]}"
+    elif [ "$has_done" = 0 ]; then
+        CD_V=write; CD_NEXT="add:$LABEL_DONE"
+    else
+        CD_V=finished
     fi
-    for L in "${stale[@]}"; do
-        if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$issue/labels/$(printf '%s' "$L" | jq -sRr @uri)" 2>&1); then
-            if printf '%s' "$out" | grep -q 'HTTP 404'; then continue; fi
-            log "  ⚠️ issue #$issue 摘 $L 失败: $out"
-            ok=0
-        fi
-    done
-    if [ "$has_done" = 0 ]; then
-        if ! out=$(gh_write api -X POST "repos/$REPO/issues/$issue/labels" -f "labels[]=$LABEL_DONE" 2>&1); then
-            log "  ⚠️ issue #$issue 加 $LABEL_DONE 失败: $out"
-            ok=0
-        fi
-    fi
-    [ "$ok" = 1 ] || return 1
-    log "  issue #$issue 手动关闭（已完成）→ $LABEL_DONE${stale[*]:+，摘掉 ${stale[*]}}"
-    return 0
+}
+
+# daemon 写成一步之后应当看到的 CD_CMP：标签集合里只多 / 少这一个；摘的是 pending/human 时，关闭事件那一段不再读
+closed_done_cmp_after() {   # <CD_CMP> <del|add> <标签>
+    local st reason labs c rest
+    IFS='|' read -r st reason rest <<< "$1"
+    labs="${rest%%|*}"; c=""; [ "$rest" = "$labs" ] || c="${rest#*|}"
+    labs=$(printf '%s' "$labs" | jq -c --arg L "$3" --arg k "$2" \
+        'if $k == "del" then map(select(. != $L)) else (. + [$L] | unique) end | sort' 2>/dev/null) || return 1
+    [ "$3" != "$LABEL_PENDING_HUMAN" ] || [ "$2" != del ] || c=""
+    printf '%s|%s|%s%s\n' "$st" "$reason" "$labs" "${c:+|$c}"
 }
 
 # 标签这件事结束了：本机清理已经成功（记进 cleaned_issues，§ 4 不会再入队）就删记录，
@@ -5395,13 +5490,8 @@ autopilot_permit() {   # <state_file> <PR 编号>
         return 0
     fi
     AP_BODY=$(printf '%s' "$pj" | jq -r '.body // ""'); AP_TITLE=$(printf '%s' "$pj" | jq -r '.title // ""')
-    # 托管合并后 issue 留给人验收、关闭（GitHub#233）：正文里还有会让 GitHub 合并时关掉本仓库 issue 的关键词，
-    # 就不合，交回 worker 改成只引用。合并前那次现读重判同样走到这里，改回去照样拦下
-    if [ "$AP_KIND" = issue ] && printf '%s' "$AP_BODY" | autopilot_body_has_close; then
-        AP_V=worker
-        AP_REASON="PR 正文写着关闭关键词（如 \`Closes #$AP_N\`），合并时 GitHub 会自动关掉 issue；托管合并后 issue 要留给人验收、关闭。请只把正文里的关闭写法改成 \`Refs #$AP_N\`（只写这一个，正文其他内容不动）"
-        return 0
-    fi
+    # 正文写 `Closes #N`（绑定只认关闭 #N 这一个）还是 `Refs #N` 都合（GitHub#461）：前者合并时 GitHub 关掉 issue，
+    # daemon 打 Done 并挂 pending/human 提醒人看（autopilot_handoff_judge）；后者 issue 留着、翻 pending/human 给人关
     AP_HEAD=$(printf '%s' "$pj" | jq -r '.head.sha // ""')
     AP_BASE=$(printf '%s' "$pj" | jq -r '.base.ref // ""')
     AP_REF=$(printf '%s' "$pj" | jq -r '.head.ref // ""')
@@ -5541,7 +5631,14 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         elif [ "$AUTOPILOT_AUTH_KIND" = pr ]; then where=" PR #$pr 上"
         elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
         else where="本 issue "; fi
-        body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head")
+        # 合并会不会让 GitHub 关掉 issue（GitHub#461）：正文写着关闭关键词（绑定已保证只关 #N），且合进的是默认分支——
+        # GitHub 只在合进默认分支时按关键词关 issue。默认分支读不到时按「会关」记：交接会等 GitHub 关掉它
+        local closes="" defb
+        if [ "$kind" = issue ] && printf '%s' "$AP_BODY" | autopilot_body_has_close; then
+            defb=$(gh api "repos/$REPO" --jq '.default_branch // ""' 2>/dev/null) || defb=""
+            if [ -z "$defb" ] || [ "$defb" = "$base" ]; then closes=closes; fi
+        fi
+        body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head" "$closes")
         # 说明里照搬了 PR 正文的总结段，大小没有上限：经文件交给 jq 和 gh，不经命令行参数（GitHub#426）
         local bf=""
         if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
@@ -5551,10 +5648,13 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
         if [ "$kind" = issue ]; then
             # 合并后的交接（GitHub#233）：issue 留着、翻 pending/human 给人验收。先记下要做的事和评论全文，
             # 评论发不出去、标签没翻好，都由合并后的清理那一步（merged_issue_label → autopilot_merged_handoff）接着做
+            # closes = true：合并会关掉 issue，交接收敛到「已关闭 + Done + pending/human」（GitHub#461）；没有这个字段的记录照旧
             if [ -n "$bf" ]; then
-                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: $b}' --arg p "$pr" --arg n "$n" --rawfile b "$bf" || true
+                autopilot_state_set "$sf" '.handoff[$p] = ({issue: $n, body: $b} + (if $c == "" then {} else {closes: true} end))' \
+                    --arg p "$pr" --arg n "$n" --rawfile b "$bf" --arg c "$closes" || true
             else
-                autopilot_state_set "$sf" '.handoff[$p] = {issue: $n, body: ""}' --arg p "$pr" --arg n "$n" || true
+                autopilot_state_set "$sf" '.handoff[$p] = ({issue: $n, body: ""} + (if $c == "" then {} else {closes: true} end))' \
+                    --arg p "$pr" --arg n "$n" --arg c "$closes" || true
             fi
         fi
         if [ -n "$bf" ] && run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -F "body=@$bf"; then
@@ -5578,12 +5678,15 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
 # 读的是 autopilot_permit 刚现读的 PR 正文（AP_BODY）和标题（AP_TITLE）。最后一行是标记，重发前按它去重。
 AUTOPILOT_SUMMARY_BEGIN='<!-- autopilot-summary:begin -->'
 AUTOPILOT_SUMMARY_END='<!-- autopilot-summary:end -->'
-autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <授权在哪（给人看）> <完整提交号>
-    local pr="$1" kind="$2" short="$3" base="$4" where="$5" head="$6" summary todo
+autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <授权在哪（给人看）> <完整提交号> [closes]
+    local pr="$1" kind="$2" short="$3" base="$4" where="$5" head="$6" closes="${7:-}" summary todo
     summary=$(printf '%s\n' "$AP_BODY" | awk -v b="$AUTOPILOT_SUMMARY_BEGIN" -v e="$AUTOPILOT_SUMMARY_END" '
         index($0, e) { on = 0 } on { print } index($0, b) { on = 1; found = 1 }' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
     [ -n "$summary" ] || summary="⚠️ PR #$pr 的正文里没有总结段（背景 / 采用的方案 / 排除的方案和原因），细节请看 PR #${pr}。"
-    if [ "$kind" = issue ]; then
+    if [ "$kind" = issue ] && [ "$closes" = closes ]; then
+        # 合并即关（GitHub#461）：issue 已随合并关闭，daemon 打 Done、挂 pending/human 提醒人看
+        todo="要人做的：本 issue 已随合并关闭，挂着 \`$LABEL_PENDING_HUMAN\` 提醒人看。看过满意就摘掉 \`$LABEL_PENDING_HUMAN\`（\`$LABEL_DONE\` 留着）；要返工就重开本 issue、摘掉 \`$LABEL_DONE\` 和 \`$LABEL_PENDING_HUMAN\`、打 \`$LABEL_PENDING_AGENT_DEFAULT\`。"
+    elif [ "$kind" = issue ]; then
         todo="要人做的：看过之后满意就关闭本 issue（关成「已完成」会自动打 \`$LABEL_DONE\`）；要返工就打 \`$LABEL_PENDING_AGENT_DEFAULT\`。"
     else
         todo="本条不需要人做任何事；要撤回就在 GitHub 上 revert 这个 PR。"
@@ -5629,16 +5732,21 @@ autopilot_merged_handoff() {   # <issue> <PR>
     fi
     # 2. 一次只写一个标签：每一步都现读判定两次（结论、依据、下一步都不变才写），写完回到循环开头重新判。
     #    这样加完 Done / pending/human 之后、摘下一个标签之前，有人重开 issue、新一轮开工，下一圈就停手
-    local step=0 kind lab next
+    local step=0 kind lab next expect="" exp_h=""
     while [ "$step" -lt 12 ]; do
         step=$((step + 1))
         autopilot_handoff_judge "$issue" "$pr"
+        # 合并即关的交接（GitHub#461）：写完一步回来，依据必须正好是「上一次 + daemon 刚写成的这一步」，否则停手
+        if [ -n "$expect" ] && [ "$AH_V" != unknown ] \
+           && { [ "$AH_CMP" != "$expect" ] || { [ "$exp_h" != "*" ] && [ "$AH_HEV" != "$exp_h" ]; }; }; then
+            log "  托管合并交接：issue #$issue 在 daemon 两次写标签之间有变化，本轮停手，下轮从头判"; return 1
+        fi
         v="$AH_V"; id="$AH_ID|$AH_NEXT"; next="$AH_NEXT"
         case "$v" in
             unknown) log "  ⚠️ 托管合并交接：${AH_REASON}，下轮再试"; return 1 ;;
             finished)
                 autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
-                log "  PR #$pr → Done；托管 issue #$issue 交接完成（$( [ "$AH_STATE" = closed ] && echo "已关闭 → $LABEL_DONE" || echo "留给人验收 → $LABEL_PENDING_HUMAN")）"
+                log "  PR #$pr → Done；托管 issue #$issue 交接完成（$( if [ "$AH_STATE" = closed ] && [ -n "$AH_CMP" ]; then echo "随合并关闭 → $LABEL_DONE + $LABEL_PENDING_HUMAN"; elif [ "$AH_STATE" = closed ]; then echo "已关闭 → $LABEL_DONE"; else echo "留给人验收 → $LABEL_PENDING_HUMAN"; fi)）"
                 return 0 ;;
             superseded)
                 autopilot_state_set "$sf" 'del(.handoff[$p])' --arg p "$pr" || true
@@ -5660,6 +5768,10 @@ autopilot_merged_handoff() {   # <issue> <PR>
             del) autopilot_handoff_converge "$issue" "" "$lab" || return 1 ;;
             *) log "  ⚠️ 托管合并交接：issue #$issue 下一步读不懂（${AH_NEXT}）"; return 1 ;;
         esac
+        if [ -n "$AH_CMP" ]; then
+            expect=$(autopilot_handoff_cmp_after "$AH_CMP" "$kind" "$lab") || { log "  ⚠️ 托管合并交接：算不出写后的依据"; return 1; }
+            if [ "$lab" = "$LABEL_PENDING_HUMAN" ]; then exp_h="*"; else exp_h="$AH_HEV"; fi
+        fi
     done
     log "  ⚠️ 托管合并交接：issue #$issue 收敛步数超出上限，下轮再试"
     return 1
@@ -5673,8 +5785,8 @@ autopilot_merged_handoff() {   # <issue> <PR>
 # AH_NEXT = 下一个要写的标签（add:<标签> / del:<标签>），一次只写一个
 # AH_ID = 状态 | 排好序的标签集合 | daemon 自己加没加过 pending/human，两次判定逐字比较
 autopilot_handoff_judge() {   # <issue> <PR>
-    local issue="$1" pr="$2" sf="${STATE_FILE:-$STATE_DIR/state.json}" ij st labs mine rest
-    AH_V=unknown; AH_ID=""; AH_REASON=""; AH_NEXT=""; AH_STATE=""
+    local issue="$1" pr="$2" sf="${STATE_FILE:-$STATE_DIR/state.json}" ij st labs mine rest closes facts c h rel
+    AH_V=unknown; AH_ID=""; AH_REASON=""; AH_NEXT=""; AH_STATE=""; AH_CMP=""; AH_HEV=""
     if ! ij=$(gh api "repos/$REPO/issues/$issue" 2>/dev/null) \
        || ! printf '%s' "$ij" | jq -e '(.state | type) == "string" and (.labels | type) == "array"' >/dev/null 2>&1; then
         AH_REASON="读不到 issue #${issue}（或缺字段）"; return 0
@@ -5684,6 +5796,40 @@ autopilot_handoff_judge() {   # <issue> <PR>
     mine=no; [ "$(autopilot_state_get "$sf" '.handoff[$p].human_added // false' --arg p "$pr")" = true ] && mine=yes
     AH_ID="$st|$labs$( [ "$mine" = yes ] && echo '|human-by-daemon')"
     _ah_has() { printf '%s' "$labs" | jq -e --arg L "$1" 'index($L) != null' >/dev/null 2>&1; }
+    closes=no; [ "$(autopilot_state_get "$sf" '.handoff[$p].closes // false' --arg p "$pr")" = true ] && closes=yes
+    if [ "$closes" = yes ]; then
+        # 合并即关（GitHub#461）：每次判定都连事件记录一起读，最后一次关闭和最后一次加上 pending/human 的位置进依据串
+        if ! facts=$(closed_reminder_facts "$issue"); then
+            AH_REASON="读不到 issue #$issue 的事件记录（或事件缺编号）"; AH_V=unknown; unset -f _ah_has; return 0
+        fi
+        read -r c h rel <<< "$facts"
+        AH_ID="$AH_ID|ev:$c,$h,$rel"; AH_CMP="$st|$labs|$c"; AH_HEV="$h $rel"
+        if [ "$st" = open ] && [ "$c" = - ]; then
+            # 还没关过：GitHub 按关键词关 issue 有时稍晚于合并，下一轮再看（被人重开过的照下面打开的分支走）
+            AH_REASON="GitHub 还没随合并关掉 issue #$issue"; AH_V=unknown; unset -f _ah_has; return 0
+        fi
+        if [ "$st" = closed ]; then
+            AH_V=done
+            if [ "$c" = - ] || { _ah_has "$LABEL_PENDING_HUMAN" && [ "$h" = - ]; }; then
+                AH_V=unknown; AH_REASON="issue #$issue 的事件记录和现状对不上（关闭事件 ${c}、加上 $LABEL_PENDING_HUMAN 的事件 ${h}）"
+            elif ! _ah_has "$LABEL_DONE"; then AH_NEXT="add:$LABEL_DONE"
+            else
+                AH_NEXT=$(printf '%s' "$labs" | jq -r --argjson r "$(autopilot_handoff_done_remove)" --arg H "$LABEL_PENDING_HUMAN" \
+                    'first(.[] | select(. != $H) | select(. as $l | $r | index($l))) // ""' 2>/dev/null)
+                if [ -n "$AH_NEXT" ]; then AH_NEXT="del:$AH_NEXT"
+                elif _ah_has "$LABEL_PENDING_HUMAN"; then
+                    # 关闭之后挂上的提醒（daemon 自己加的，或人加的）就是目标；关闭之前就挂着的旧标签，清扫会摘掉它，
+                    # 所以先摘、下一圈重新挂一次。daemon 自己挂过的不再动（之后又被关过一次，是人的事）
+                    if [ "$rel" = after ] || [ "$mine" = yes ]; then AH_V=finished; else AH_NEXT="del:$LABEL_PENDING_HUMAN"; fi
+                elif [ "$mine" = yes ]; then
+                    AH_V=finished   # daemon 挂过、现在没了：人看过、摘掉了，不加回
+                else
+                    AH_NEXT="add:$LABEL_PENDING_HUMAN"
+                fi
+            fi
+            unset -f _ah_has; return 0
+        fi
+    fi
     case "$st" in
         closed)
             AH_V=done
@@ -5712,6 +5858,16 @@ autopilot_handoff_judge() {   # <issue> <PR>
         *) AH_REASON="issue #$issue 状态异常（'$st'）" ;;
     esac
     unset -f _ah_has
+}
+
+# 合并即关的交接写成一步之后应当看到的 AH_CMP（状态 | 标签集合 | 最后一次关闭的事件 id）：标签只多 / 少这一个
+autopilot_handoff_cmp_after() {   # <AH_CMP> <del|add> <标签>
+    local st rest labs c
+    IFS='|' read -r st rest <<< "$1"
+    c="${rest##*|}"; labs="${rest%|*}"
+    labs=$(printf '%s' "$labs" | jq -c --arg L "$3" --arg k "$2" \
+        'if $k == "del" then map(select(. != $L)) else (. + [$L] | unique) end | sort' 2>/dev/null) || return 1
+    printf '%s|%s|%s\n' "$st" "$labs" "$c"
 }
 
 # 关闭的托管 issue 收敛到 Done 时要摘的标签（JSON 数组）
@@ -7377,6 +7533,7 @@ autopilot_handoff_section() {   # <模板名>
     text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
     text="${text//@@LABEL_PENDING_AGENT@@/"$LABEL_PENDING_AGENT_DEFAULT"}"
     text="${text//@@LABEL_AGENT_DOING@@/"$LABEL_AGENT_DOING"}"
+    text="${text//@@LABEL_DONE@@/"$LABEL_DONE"}"
     printf '%s\n' "$text"
 }
 

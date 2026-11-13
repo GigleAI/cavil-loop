@@ -112,6 +112,11 @@ CONF
                 title:"t", body:"需求", user:{login:"maint"}, updated_at:"2026-01-01T00:00:00Z"}' \
             --arg n "$1" --arg s "$3" --arg r "${4:--}"
         jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$2"
+        # 真 GitHub 上每个挂着的标签都有打上它的那条记录，关闭也有一条（GitHub#461：清扫按记录里的先后认
+        # 「关闭之后挂上的 pending/human」）。夹具里的标签都是关闭之前打上的
+        jset events.json '.[$n] = ([$l | split(",")[] | select(. != "") | {event:"labeled", label:{name:.}, actor:{login:"maint", type:"User"}, created_at:"2026-01-01T00:00:00Z"}]
+                + (if $s == "closed" then [{event:"closed", actor:{login:"maint", type:"User"}, created_at:"2026-01-01T00:00:00Z"}] else [] end))' \
+            --arg n "$1" --arg l "$2" --arg s "$3"
     }
     mkmerged() {   # <n> <分支> <正文> <labels_csv>
         jset items.json '.[$n] = {kind:"pr", state:"closed", merged:true, title:"t", body:$b,
@@ -128,7 +133,8 @@ CONF
     n_calls() { grep -cE -- "$1" "$CALLS" 2>/dev/null || true; }
     labels_of() { jq -r --arg n "$1" '(.[$n] // []) | sort | join(",")' "$GD/labels.json"; }
     writes_on() { n_calls "^gh api -X (POST|PUT|DELETE|PATCH) $R/issues/$1/"; }
-    reread() { n_calls "^gh api $R/issues/$1 --jq .*state_reason"; }
+    # 「这一轮重读过没有」：0 / 1。GitHub#461 起一次只写一个标签、每写一个之前读两次，次数随要写的标签数变
+    reread() { [ "$(n_calls "^gh api $R/issues/$1 --jq .*state_reason")" -gt 0 ] && echo 1 || echo 0; }
     queued() { jq -r --arg i "$1" '(.closed_done_queue // {}) | if has($i) then .[$i] | tostring else "无" end' "$STATE" 2>/dev/null; }
     cleaned() { jq -r --argjson i "$1" '(.cleaned_issues // []) | index($i) != null' "$STATE" 2>/dev/null; }
     log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
@@ -214,17 +220,17 @@ CONF
     chk "恢复后出队" "$(queued 14)" "无"
 
     # ── 【5】部分失败跨两轮 ──
-    section "【5】第 1 轮摘 pending/human 报错、加 Done 成功 → 留队；第 2 轮只补摘、不重复加"
+    section "【5】第 1 轮摘 pending/human 报错 → 停手（一次只写一个标签，GitHub#461）、留队；第 2 轮摘掉再加 Done"
     fresh
     mkissue 15 "pending/human" closed completed
     touch "$GD/F_delete_labels"
     tick
-    chk "第 1 轮：Done 已加上、pending/human 还在" "$(labels_of 15)" "Done,pending/human"
+    chk "第 1 轮：pending/human 还在、没往下加 Done" "$(labels_of 15)" "pending/human"
     chk "第 1 轮：留队" "$(queued 15)" 1
     rm -f "$GD/F_delete_labels"
     tick
-    chk "第 2 轮：补摘掉 pending/human" "$(labels_of 15)" "Done"
-    chk "第 2 轮：没再加 Done" "$(n_calls "^gh api -X POST $R/issues/15/labels ")" 0
+    chk "第 2 轮：摘掉 pending/human、加上 Done" "$(labels_of 15)" "Done"
+    chk "第 2 轮：Done 只加了一次" "$(n_calls "^gh api -X POST $R/issues/15/labels ")" 1
     chk "第 2 轮：出队" "$(queued 15)" "无"
 
     section "【5b】摘的标签本来就不在（404）算成功"
@@ -404,15 +410,17 @@ mutate unknown-as-completed _lib.sh '        completed) ;;
         not_planned|duplicate)' '        *) ;;
         not_planned|duplicate)'
 mutate no-reread-state _lib.sh '        open)
-            log "  issue #$issue 已重新打开' '        openx)
-            log "  issue #$issue 已重新打开'
-mutate fast-path-done-only _lib.sh 'if [ "$has_done" = 1 ] && [ ${#stale[@]} -eq 0 ]; then' 'if [ "$has_done" = 1 ]; then'
-mutate delete-fail-ok _lib.sh '            ok=0
-        fi
-    done' '        fi
-    done'
-mutate add-fail-ok _lib.sh '            log "  ⚠️ issue #$issue 加 $LABEL_DONE 失败: $out"
-            ok=0' '            log "  ⚠️ issue #$issue 加 $LABEL_DONE 失败: $out"'
+            CD_V=skip; CD_MSG="issue #$issue 已重新打开' '        openx)
+            CD_V=skip; CD_MSG="issue #$issue 已重新打开'
+mutate fast-path-done-only _lib.sh '    if [ ${#stale[@]} -gt 0 ]; then
+        CD_V=write; CD_NEXT="del:${stale[0]}"' '    if false; then
+        CD_V=write; CD_NEXT="del:${stale[0]}"'
+mutate delete-fail-ok _lib.sh '                    log "  ⚠️ issue #$issue 摘 $lab 失败: $out"
+                    return 1' '                    log "  ⚠️ issue #$issue 摘 $lab 失败: $out"
+                    return 0'
+mutate add-fail-ok _lib.sh '                    log "  ⚠️ issue #$issue 加 $lab 失败: $out"
+                    return 1' '                    log "  ⚠️ issue #$issue 加 $lab 失败: $out"
+                    return 0'
 mutate no-custom-trigger _lib.sh '        trigger_labels_all
         printf' '        printf'
 mutate dequeue-before-write _lib.sh '        if closed_done_label "$issue"; then' '        closed_done_label "$issue"; if true; then'
@@ -422,8 +430,8 @@ mutate no-drain agent-poll.sh '    closed_done_drain "$STATE_FILE" || true' '   
 mutate finish-deletes _lib.sh '        if closed_done_label "$issue"; then
             closed_done_finish "$issue" "$state_file"' '        if closed_done_label "$issue"; then
             jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
-mutate giveup-deletes _lib.sh '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
-            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 $LABEL_DONE、摘掉流程标签）"
+mutate giveup-deletes _lib.sh '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
+            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
             jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
 mutate enqueue-resets _lib.sh '{($i): ((.closed_done_queue // {})[$i] // 0)}' '{($i): 0}'
 mutate no-forget agent-poll.sh '                closed_done_forget "$issnum" "$STATE_FILE"

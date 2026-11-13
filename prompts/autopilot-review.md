@@ -8,7 +8,7 @@
 
 ## A 类（代码）通过
 
-1. **核对 PR 正文**：正文只引用 `Refs #<issue>`、不带任何关闭关键词（`Closes` / `Fixes` / `Resolves`）；有 `<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->` 的总结段，背景 / 采用的方案 / 排除的方案和原因三块都写了，不熟代码的人读得懂。缺了或写不清就判不通过，要 worker 补。这段会原样贴到 issue 上给维护者看。
+1. **核对 PR 正文**：正文只关闭这一个 issue（`Closes #<issue>`；以前开的 PR 只写 `Refs #<issue>`、不带关闭关键词的也行），不关闭别的 issue；有 `<!-- autopilot-summary:begin -->` 到 `<!-- autopilot-summary:end -->` 的总结段，背景 / 采用的方案 / 排除的方案和原因三块都写了，不熟代码的人读得懂。缺了或写不清就判不通过，要 worker 补。这段会原样贴到 issue 上给维护者看。
 2. **亲手重跑测试**：跑与改动相关的测试（项目文档点名的那些），看实际输出。有失败就不能判通过。
 3. **翻 `@@LABEL_PENDING_MERGE@@`**（不是 `@@LABEL_PENDING_HUMAN@@`）：REST 翻 `@@LABEL_PENDING_MERGE@@`，摘 `@@LABEL_PENDING_REVIEW@@` 和 `@@LABEL_AGENT_DOING@@`。daemon 之后会核对授权、提交、自动检查和冲突，全部满足才合并。
 4. **通过评论里写测试记录**：正文写明跑了哪些命令、各自通过 / 失败数；并在正文最后（用量 footer 之前）单独放一行机器记录，daemon 只认这一行：
