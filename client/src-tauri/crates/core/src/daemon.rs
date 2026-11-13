@@ -146,9 +146,10 @@ impl Out {
         }
         tail(&t, OUTPUT_LIMIT)
     }
-    /// The outcome of a GitHub#313 script that ends with `RESULT=<word>`. No such line (killed,
-    /// timed out, failed half-way) is "unconfirmed": what it changed is not known, so it is never
-    /// mapped onto one of the script's own words — "failed" there means "restored", which nobody checked.
+    /// The outcome of a GitHub#313 script that ends with `RESULT=<word>`, as one string (the tests' view of
+    /// `outcome_of`). No such line (killed, timed out, failed half-way) is "unconfirmed": what it changed is
+    /// not known, so it is never mapped onto one of the script's own words.
+    #[cfg(test)]
     pub(crate) fn outcome(&self) -> (String, String) {
         let (w, said) = outcome_of(self, None);
         (w, said.text())
@@ -910,11 +911,6 @@ impl Form {
 
 fn has_status_script(entry: &Path) -> bool {
     entry.join("scripts/install-status.sh").is_file()
-}
-
-/// Nothing ran; `output` says why. (The words are the caller's; `refused_s` also marks the outside parts.)
-pub(crate) fn refused(m: &str) -> Value {
-    json!({ "result": "refused", "output": m })
 }
 
 /// Nothing ran: `output` the reason as one string, `outputSaid` with its outside parts marked (GitHub#473)

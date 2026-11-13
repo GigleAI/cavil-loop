@@ -7,6 +7,7 @@
 // afterwards. A read that fails is "状态未知" with the switch not offered, never "off".
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useBackendLangRound } from './backendLang';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -45,13 +46,14 @@ export function RemoteHostBlock() {
     setSt(r);
     setReading(false);
   };
+  const round = useBackendLangRound();
   useEffect(() => {
     alive.current = true;
     void read();
     return () => {
       alive.current = false;
     };
-  }, []);
+  }, [round]);
   useEffect(() => {
     if (!code) return;
     const t = setInterval(() => setNow(Date.now() / 1000), 1000);

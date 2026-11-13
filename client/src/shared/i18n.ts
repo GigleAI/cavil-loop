@@ -74,6 +74,30 @@ export function setLang(lang: Lang): void {
   current = lang;
 }
 
+/**
+ * GitHub#473: how many times the back end has taken a new language (it words its own messages in
+ * the language it last got). Parts of the window that hold a status the back end worded — the
+ * local / remote daemon sections — read it again when this changes, so a status read before the
+ * switch does not stay in the old language.
+ */
+let backendRound = 0;
+const backendListeners = new Set<() => void>();
+
+export function backendLangRound(): number {
+  return backendRound;
+}
+
+/** the back end has answered `setLanguage` */
+export function noteBackendLang(): void {
+  backendRound++;
+  for (const f of [...backendListeners]) f();
+}
+
+export function onBackendLang(f: () => void): () => void {
+  backendListeners.add(f);
+  return () => backendListeners.delete(f);
+}
+
 /** a stored setting as this version reads it: anything it does not know is Chinese */
 export function normalizeLangSetting(raw: unknown): LangSetting {
   return raw === 'zh' || raw === 'en' || raw === 'auto' ? raw : DEFAULT_LANG_SETTING;

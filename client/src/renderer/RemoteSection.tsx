@@ -8,6 +8,7 @@
 // Unpairing counts only when the machine confirmed it; otherwise the row stays as "取消配对未完成".
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useBackendLangRound } from './backendLang';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -95,13 +96,14 @@ export function RemoteSection() {
     }
   };
 
+  const round = useBackendLangRound();
   useEffect(() => {
     alive.current = true;
     void load(true);
     return () => {
       alive.current = false;
     };
-  }, []);
+  }, [round]);
 
   const act = async (id: string, f: () => Promise<RemoteResult>, okWhen: (r: RemoteResult) => boolean, okText: (r: RemoteResult) => string): Promise<RemoteResult | null> => {
     setBusy(id);

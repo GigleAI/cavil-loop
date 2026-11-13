@@ -473,7 +473,10 @@ describe('GitHub#473: the updater words its own part in the window\'s language, 
     await start(b);
     const round = b.call('test.update.check');
     await expect.poll(() => b.updates.some((s) => s.phase === 'downloading' && s.got > 0)).toBe(true);
-    await clock.advance(61_000);
+    // the same steps as the Chinese case above: the stall clock runs from the last chunk the back end took in
+    await clock.advance(59_000);
+    expect(((await b.call('test.update.status')) as any).phase).toBe('downloading');
+    await clock.advance(2_000);
     expect(await round).toMatchObject({ last: { ok: false, message: 'Downloading 0.5.1 failed: No data received for 60 seconds', said: { parts: [] } } });
   });
 });

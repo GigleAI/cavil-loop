@@ -14,6 +14,7 @@
 import { RemoteHostBlock } from './RemoteHostBlock';
 import { noticeTone } from '../shared/noticeTone';
 import { useEffect, useRef, useState } from 'react';
+import { useBackendLangRound } from './backendLang';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -60,13 +61,14 @@ export function useDaemonStatus(): DaemonState {
       if (alive.current) setChecking(false);
     }
   };
+  const round = useBackendLangRound();
   useEffect(() => {
     alive.current = true;
     void check();
     return () => {
       alive.current = false;
     };
-  }, []);
+  }, [round]);
   return { status, checking, check };
 }
 
