@@ -51,10 +51,9 @@ test.afterAll(async () => {
 /**
  * Parts of these regions that belong to another sub-issue of #466 (removed when those are merged):
  * the confirmation dialog's own buttons and hint (ConfirmDialog, sub-issue ② #472 — the label of its
- * confirm button is this area's and is asserted separately), and the scheduler word of a project
- * (`schedWord`, the local daemon's wording in shared/daemon.ts, sub-issue ③'s other part).
+ * confirm button is this area's and is asserted separately).
  */
-const LATER = ['[data-testid="confirm-cancel"]', '[data-testid="confirm-ok"]', '[data-testid="dialog-esc-hint"]', '[data-testid="remote-project-state"]'];
+const LATER = ['[data-testid="confirm-cancel"]', '[data-testid="confirm-ok"]', '[data-testid="dialog-esc-hint"]'];
 
 async function openEnglish(): Promise<{ app: RunningApp; page: Page }> {
   const app = await launchApp(env, { backendEnv: { ...daemonEnv(w, { os: 'Linux', path, extra: { FAKE_TS: r.ts } }), ...r.env } });

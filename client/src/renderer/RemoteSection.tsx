@@ -222,7 +222,7 @@ export function RemoteSection() {
       {log && <LogDialog e={log.e} projectKey={log.key} onClose={() => setLog(null)} />}
       {ask && ask.kind !== 'unpair' && (
         <ConfirmDialog
-          title={ask.kind === 'stop' ? t('停掉 {host} 上 {key} 的后台轮询？', { host: remoteName(ask.e.host), key: ask.p.key }) : t('启动 {host} 上 {key} 的后台轮询？', { host: remoteName(ask.e.host), key: ask.p.key })}
+          title={ask.kind === 'stop' ? tNode('停掉 {host} 上 {key} 的后台轮询？', { host: <Verbatim from="user">{remoteName(ask.e.host)}</Verbatim>, key: <Verbatim from="remote">{ask.p.key}</Verbatim> }) : tNode('启动 {host} 上 {key} 的后台轮询？', { host: <Verbatim from="user">{remoteName(ask.e.host)}</Verbatim>, key: <Verbatim from="remote">{ask.p.key}</Verbatim> })}
           confirmLabel={ask.kind === 'stop' ? t('停') : t('启动')}
           danger={ask.kind === 'stop'}
           onConfirm={confirm}
@@ -237,7 +237,7 @@ export function RemoteSection() {
       )}
       {ask && ask.kind === 'unpair' && (
         <ConfirmDialog
-          title={t('取消和 {host} 的配对？', { host: remoteName(ask.e.host) })}
+          title={tNode('取消和 {host} 的配对？', { host: <Verbatim from="user">{remoteName(ask.e.host)}</Verbatim> })}
           confirmLabel={ask.offline ? t('只在这台电脑上取消') : t('取消配对')}
           danger
           onConfirm={confirm}

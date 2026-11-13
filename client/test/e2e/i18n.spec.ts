@@ -41,8 +41,8 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
-/** the parts of Settings still in Chinese until sub-issue ③ (#473) — the local / remote daemon and update sections' contents, "接上 daemon" — and ② (#472) — the shortcut section's rows */
-const SETTINGS_LATER = ['#set-update > :not(h3)', '#set-daemon > :not(h3)', '#set-remote > :not(h3)', '[data-testid^="connect-"]', '[data-testid="source-failure"]', /* the shortcut section's rows and buttons (its heading is checked): with the shortcut list, sub-issue ② (#472) */ '#set-keys > :not(.set-keys-head)', '#set-keys .set-keys-head > :not(h3)'];
+/** the parts of Settings still in Chinese until sub-issue ② (#472): a source's read failure and the shortcut section's rows */
+const SETTINGS_LATER = ['[data-testid="source-failure"]', /* the shortcut section's rows and buttons (its heading is checked): with the shortcut list, sub-issue ② (#472) */ '#set-keys > :not(.set-keys-head)', '#set-keys .set-keys-head > :not(h3)'];
 /** the settings page as this sub-issue migrated it */
 const SETTINGS = ['.settings > .toolbar', '[data-testid="settings-nav"]', '.settings-main section'];
 

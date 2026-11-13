@@ -267,7 +267,7 @@ function DevicesDialog({ onClose, onChanged }: { onClose: () => void; onChanged:
   };
   if (ask)
     return (
-      <ConfirmDialog title={t('撤销 {name}？', { name: ask.name })} confirmLabel={busy ? t('正在撤销…') : t('撤销')} danger busy={busy} onConfirm={() => void revoke(ask)} onCancel={() => setAsk(null)}>
+      <ConfirmDialog title={tNode('撤销 {name}？', { name: <Verbatim from="daemon">{ask.name}</Verbatim> })} confirmLabel={busy ? t('正在撤销…') : t('撤销')} danger busy={busy} onConfirm={() => void revoke(ask)} onCancel={() => setAsk(null)}>
         <p className="small" data-testid="local-remote-revoke-text">
           {tNode('撤销后 {name} 的钥匙立刻失效，它再也读不到、也操作不了这台机器；要再连，得重新配对。', { name: <Verbatim from="daemon">{ask.name}</Verbatim> })}
         </p>

@@ -164,8 +164,20 @@ describe('the source scan over the client', () => {
     expect(r.badCalls).toHaveLength(1);
   });
 
-  it("GitHub#473: the update and sign-in renewal areas are migrated (they are not on the list)", () => {
+  it("GitHub#473: the local / remote daemon, update and sign-in renewal areas are migrated (they are not on the list)", () => {
     for (const f of [
+      'src/renderer/DaemonSection.tsx',
+      'src/renderer/ConnectDialog.tsx',
+      'src/renderer/ProjectConfigDialog.tsx',
+      'src/shared/daemon.ts',
+      'src-tauri/crates/core/src/daemon.rs',
+      'src-tauri/crates/core/src/daemon_config.rs',
+      'src-tauri/crates/core/src/daemon_connect.rs',
+      'src/renderer/RemoteSection.tsx',
+      'src/renderer/RemoteHostBlock.tsx',
+      'src/shared/remote.ts',
+      'src-tauri/crates/core/src/remote.rs',
+      'src-tauri/crates/core/src/remote_host.rs',
       'src/renderer/UpdateViews.tsx',
       'src-tauri/crates/core/src/update.rs',
       'src-tauri/src/updater.rs',

@@ -63,8 +63,6 @@ async function openEnglish(os: Os, path: string, extra: Record<string, string> =
 
 /** the local daemon section, its heading included */
 const SECTION = ['#set-daemon'];
-/** inside it but migrated with the remote daemon (another part of #473): this machine's remote entry */
-const LATER = ['[data-testid="local-remote"]'];
 
 test("GitHub#473: Settings → local daemon in English — the projects table, the checklist and the stop confirmation; this machine's names as written", async () => {
   const path = pathFor(w);
@@ -79,7 +77,7 @@ test("GitHub#473: Settings → local daemon in English — the projects table, t
   await expect(row.getByTestId('daemon-log')).toHaveText('Log');
   await expect(row.getByTestId('daemon-config')).toHaveText('Settings…');
   await expect(page.getByTestId('daemon-check').first()).toContainText(/All common tools are there|Missing/);
-  expect(await chineseIn(page, SECTION, LATER)).toEqual([]);
+  expect(await chineseIn(page, SECTION)).toEqual([]);
   // the stop confirmation: its title names the project as written, the rest is English
   await row.getByTestId('daemon-stop').click();
   await expect(page.locator('.modal h3')).toHaveText('Stop the background polling of widget?');
