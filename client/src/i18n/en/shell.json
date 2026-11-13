@@ -368,5 +368,11 @@
   "一个数都不留 = 顶栏不显示计数。系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。": "No rows left = the top bar shows no counts. System notifications and the Dock badge still count the waiting-for-human label, whatever is set here.",
   "暂缓的标签": "parked label",
   "稍后处理": "Later",
-  "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏每个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately."
+  "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏每个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately.",
+  "设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空": "The \"Waiting for human\" and \"Hand to agent\" label names under \"Flow labels\" in Settings cannot be empty",
+  "点「改」后按下新键，只在这台电脑生效。": "Click \"Change\", then press the new key; it applies on this computer only.",
+  "哪些键固定、单个键何时生效": "Which keys are fixed, and when a single key works",
+  "一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{first} … {last}、{close} 和缩放键是固定的，不能改。不带 {mod} 的单个键只在光标不在输入框里时生效。": "Changing an action to a key stops its old keys from working. Esc, ↩, the arrow keys, {first} … {last}, {close} and the zoom keys are fixed and cannot be changed. A single key without {mod} works only while the cursor is not in a text box.",
+  "固定的键，不能改": "A fixed key; it cannot be changed",
+  "固定": "Fixed"
 }

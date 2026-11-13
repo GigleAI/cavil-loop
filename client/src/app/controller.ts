@@ -3646,7 +3646,7 @@ export class Controller {
       case 'autopilot':
       case 'handBack': {
         const { human, agent, autopilot } = this.state.handBack;
-        if (!human.trim() || !agent.trim()) return refuse('设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空');
+        if (!human.trim() || !agent.trim()) return refuse(t('设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空'));
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
         // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
         // not go out (or whose answer never came) leaves every label alone: never handed over without it

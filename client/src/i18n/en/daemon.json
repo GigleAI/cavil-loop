@@ -1,1 +1,12 @@
-{}
+{
+  "自动检查并在后台下载更新": "Check for updates and download them in the background",
+  "打开 App 时查一次，一直开着的话每 6 小时查一次。": "Checked when the app opens, and every 6 hours while it stays open.",
+  "在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。": "The background program on this computer that works on issues / PRs (cavil-loop).",
+  "客户端会对它做什么": "What the client does with it",
+  "这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。": "This checks whether it is installed, what is missing, which projects it serves and whether it runs. The client only runs the daemon's own scripts on this computer; it installs no system software for you and never hands the client's GitHub sign-in to it.",
+  "通过 Tailscale 看和管理另一台机器上的 daemon。": "See and manage the daemon on another machine, over Tailscale.",
+  "怎么配对、会不会发出 GitHub 登录": "How pairing works, and whether the GitHub sign-in leaves this computer",
+  "只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。": "Over Tailscale only: make a pairing code on that machine first, then pair here. This computer needs no daemon, and the client's GitHub sign-in is never sent to that machine.",
+  "打开、关掉远程连接会怎样": "What turning remote access on or off does",
+  "打开 = 只在本 Tailscale 网络里开一个入口，配对过的电脑能看这台机器的 daemon、停 / 启项目、看日志。关掉开关 = 关闭入口；已配对的电脑保留，重新打开后还能连。打开时如果 Tailscale 要求管理员权限，会在这里说明怎么做。": "On = one entry opened inside this Tailscale network only; paired computers can see this machine's daemon, stop / start projects and read logs. Off = the entry is closed; paired computers are kept and can connect again once it is back on. If Tailscale asks for administrator rights when turning it on, this says what to do."
+}

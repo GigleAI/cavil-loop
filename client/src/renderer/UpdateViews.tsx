@@ -176,10 +176,10 @@ export function UpdateSection({ update }: { update: UpdateStatus | null }) {
       )}
       <label className="row small">
         <input type="checkbox" data-testid="update-auto" checked={update.auto} disabled={!!update.problem} onChange={(e) => api().setAutoUpdate(e.target.checked)} />
-        自动检查并在后台下载更新
+        {t('自动检查并在后台下载更新')}
       </label>
       <p className="muted small" data-testid="update-auto-note">
-        打开 App 时查一次，一直开着的话每 6 小时查一次。
+        {t('打开 App 时查一次，一直开着的话每 6 小时查一次。')}
       </p>
       <ChannelPicker update={update} />
     </section>
