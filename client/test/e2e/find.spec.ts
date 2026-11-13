@@ -105,8 +105,12 @@ test('⌘F opens the find bar and finds text on the page: count, next / previous
   const { page } = await launchApp(env);
   await signIn(page);
   const search = page.getByTestId('search');
-  // adding the Project imports its saved web view (its filter replaces the search): wait for that first
-  await expect(search).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imports its saved web view: wait for that first (its own mark — since GitHub#464 the
+  // view's "-label:Done -status:Done" only hid finished items, is left to 显示已关闭, and the box stays empty)
+  await expect
+    .poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.view.imported?.viewNumber ?? null) as number | null), { timeout: 15_000 })
+    .not.toBeNull();
+  await expect(search).toHaveValue('');
   await expect
     .poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.sync.sources as { ok: boolean }[]).map((x) => x.ok)), { timeout: 20_000 })
     .toEqual([true, true]);

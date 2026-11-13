@@ -1231,12 +1231,12 @@ export function DetailPanel({
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
         {/* GitHub#457: in the floating panel, the way into a tab of this app sits next to the way out to the
-            browser — a filled button with words for the one, the GitHub mark for the other */}
+            browser — a button with words for the one, the GitHub mark for the other (GitHub#505: same plain style) */}
         {float?.onOpenTab ? (
           <>
             {/* on a narrow panel the words go (the icon and the tooltip stay), so the buttons keep to one line inside it */}
             <button
-              className={`blue open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
+              className={`open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
               onClick={float.onOpenTab}
               data-testid="detail-open-tab"
               aria-label="在标签页打开"
