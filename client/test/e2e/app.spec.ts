@@ -8363,3 +8363,120 @@ test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and p
   await expect(reply).toHaveValue('');
   await app.close();
 });
+
+// ---- GitHub#496: the label picker lists what the item carries first, then autopilot / pending/human / pending/agent ----
+
+test('GitHub#496: label pickers (detail, table cell, new issue) list the checked labels first, then the pinned flow labels; a click only moves the tick, reopening re-sorts', async () => {
+  const N = 140;
+  const C = (name: string, color: string) => ({ name, color });
+  // the repository's labels, in GitHub's order; pending/agent is in the list this time
+  const repoLabels = [C('doing/agent', 'c2e0c6'), C('Done', '555555'), C('autopilot', 'e4572e'), C('pending/PR', 'ededed'), C('pending/human', 'fbca04'), C('priority/p2', 'c5def5'), C('pending/agent', '0e8a16'), C('pending/review', 'fbca04'), C('enhancement', 'a2eeef')];
+  env.fake.state.w.repoLabels.set('gigleai/cavil-loop', repoLabels);
+  const carried = [C('pending/review', 'fbca04'), C('enhancement', 'a2eeef')];
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === N) r.labels = carried;
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === N) node.content.labels.nodes = carried;
+  env.fake.state.w.milestones.set('gigleai/cavil-loop', [
+    { number: 1, title: 'v1', state: 'open', due_on: null },
+    { number: 2, title: 'v2', state: 'open', due_on: null },
+  ]);
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const names = (picker: Locator) => picker.getByTestId('picker-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-name')));
+  const ticks = (picker: Locator) => picker.locator('[data-testid="picker-item"][data-checked="yes"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-name')));
+  const REST = ['doing/agent', 'Done', 'pending/PR', 'priority/p2'];
+
+  // ---- 1. detail ----
+  const detail = page.getByTestId('detail');
+  await card(page, N).click();
+  await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${N}`);
+  await expect(detail.getByTestId('label-add')).toBeEnabled({ timeout: 15_000 });
+  await detail.getByTestId('label-add').click();
+  const picker = detail.getByTestId('label-picker');
+  await expect(picker).toBeVisible();
+  const opened = ['pending/review', 'enhancement', 'autopilot', 'pending/human', 'pending/agent', ...REST];
+  expect(await names(picker)).toEqual(opened);
+  expect(await picker.locator('[data-testid="picker-item"][data-active="yes"]').getAttribute('data-name')).toBe('pending/review');
+  await shot(page, '496-01-detail-picker');
+  // a click takes the tick off / puts it on; no row moves while the picker is open
+  const before = writes().length;
+  await picker.locator('[data-name="enhancement"]').click();
+  await expect(picker.locator('[data-name="enhancement"]')).toHaveAttribute('data-checked', 'no');
+  await picker.locator('[data-name="Done"]').click();
+  await expect(picker.locator('[data-name="Done"]')).toHaveAttribute('data-checked', 'yes');
+  await expect.poll(() => writes().slice(before).map(([m, p]) => `${m} ${p}`)).toEqual([
+    `DELETE /api/repos/GigleAI/cavil-loop/issues/${N}/labels/enhancement`,
+    `POST /api/repos/GigleAI/cavil-loop/issues/${N}/labels`,
+  ]);
+  expect(await names(picker)).toEqual(opened);
+  // the filter keeps the order
+  await picker.getByTestId('picker-filter').fill('pending/');
+  expect(await names(picker)).toEqual(['pending/review', 'pending/human', 'pending/agent', 'pending/PR']);
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+  // reopened: sorted by what it carries now
+  await detail.getByTestId('label-add').click();
+  await expect(picker).toBeVisible();
+  const now = ['Done', 'pending/review', 'autopilot', 'pending/human', 'pending/agent', 'doing/agent', 'pending/PR', 'priority/p2', 'enhancement'];
+  expect(await names(picker)).toEqual(now);
+  expect(await ticks(picker)).toEqual(['Done', 'pending/review']);
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+
+  // ---- 2. the milestone picker: the current one first ----
+  await blur(page);
+  await page.keyboard.press('m');
+  const ms = detail.getByTestId('milestone-picker');
+  await expect(ms).toBeVisible();
+  expect(await names(ms)).toEqual(['v1', 'v2']);
+  await page.keyboard.type('v2');
+  await page.keyboard.press('Enter');
+  await expect(ms).toHaveCount(0);
+  await expect(detail.getByTestId('milestone-select')).toHaveValue('v2');
+  await page.keyboard.press('m');
+  await expect(ms).toBeVisible();
+  expect(await names(ms)).toEqual(['v2', 'v1']);
+  await page.keyboard.press('Escape');
+  await expect(ms).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+
+  // ---- 3. the table cell: the same order ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  const row = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${N}"]`).first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await row.locator('[data-testid="cell"][data-col="labels"]').click();
+  const cell = row.getByTestId('cell-label-picker');
+  await expect(cell).toBeVisible();
+  expect(await names(cell)).toEqual(now);
+  await cell.locator('[data-name="pending/human"]').click();
+  await expect(cell.locator('[data-name="pending/human"]')).toHaveAttribute('data-checked', 'yes');
+  expect(await names(cell)).toEqual(now);
+  await page.keyboard.press('Escape');
+  await expect(cell).toHaveCount(0);
+  await row.locator('[data-testid="cell"][data-col="labels"]').click();
+  await expect(cell).toBeVisible();
+  // pending/human is checked now: among the checked ones, the pinned label comes first
+  expect(await names(cell)).toEqual(['pending/human', 'Done', 'pending/review', 'autopilot', 'pending/agent', 'doing/agent', 'pending/PR', 'priority/p2', 'enhancement']);
+  await page.keyboard.press('Escape');
+  await expect(cell).toHaveCount(0);
+
+  // ---- 4. new issue: nothing chosen yet, so the pinned labels lead ----
+  await page.getByTestId('write-entry').click();
+  await page.getByTestId('new-issue-title').fill('标签顺序');
+  await openMoreFields(page);
+  await page.getByTestId('new-issue-label-add').click();
+  const np = page.getByTestId('new-issue-label-picker');
+  await expect(np).toBeVisible();
+  const fresh = ['autopilot', 'pending/human', 'pending/agent', ...REST, 'pending/review', 'enhancement'];
+  expect(await names(np)).toEqual(fresh);
+  await np.locator('[data-name="enhancement"]').click();
+  await expect(np.locator('[data-name="enhancement"]')).toHaveAttribute('data-checked', 'yes');
+  expect(await names(np)).toEqual(fresh);
+  await page.keyboard.press('Escape');
+  await expect(np).toHaveCount(0);
+  await page.getByTestId('new-issue-label-add').click();
+  await expect(np).toBeVisible();
+  expect(await names(np)).toEqual(['enhancement', 'autopilot', 'pending/human', 'pending/agent', ...REST, 'pending/review']);
+  await shot(page, '496-02-new-issue-picker');
+  await app.close();
+});

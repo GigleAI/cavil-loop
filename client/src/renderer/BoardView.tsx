@@ -24,6 +24,7 @@ import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Re
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
+import { pinnedLabels } from '../shared/pickOrder';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
@@ -458,6 +459,9 @@ export function BoardView({
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
+  // GitHub#496: the table's label picker keeps these near the top, like the detail panel's
+  const { autopilot: pinA, human: pinH, agent: pinG } = state.handBack;
+  const pinned = useMemo(() => pinnedLabels({ autopilot: pinA, human: pinH, agent: pinG }), [pinA, pinH, pinG]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   const { running, agent, human } = state.handBack;
@@ -966,6 +970,7 @@ export function BoardView({
           onDropPlan={applyPlan}
           repoOrder={state.repoOrder}
           table={table ?? undefined}
+          pinnedLabels={pinned}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>
