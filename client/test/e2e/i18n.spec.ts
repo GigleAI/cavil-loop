@@ -306,13 +306,34 @@ test('GitHub#471 (PR #480 review round 1): the same failures in Chinese read as 
   await app.close();
 });
 
-/** the database refuses one setting from now on (a trigger in the real file the back end uses) */
-function refuseSetting(key: string): () => void {
+/**
+ * SQL straight on the file the back end uses, on a short-lived connection that waits for the back
+ * end's own writes (a sign-out still writing holds the lock for a moment) instead of failing on them,
+ * and is closed whatever happens (PR #480 review round 5: without the wait the trigger setup itself
+ * failed with "database is locked" before the path under test was reached).
+ */
+function onFile<T>(run: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(join(env.userData, 'cache.sqlite'));
-  db.exec(`CREATE TRIGGER refuse_${key} BEFORE INSERT ON setting WHEN new.k = '${key}' BEGIN SELECT RAISE(ABORT, 'test storage unavailable'); END;`);
-  return () => {
-    db.exec(`DROP TRIGGER refuse_${key};`);
+  try {
+    db.exec('PRAGMA busy_timeout = 10000');
+    return run(db);
+  } finally {
     db.close();
+  }
+}
+
+const triggerCount = (name: string) =>
+  onFile((db) => (db.prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name = ?`).get(name) as { n: number }).n);
+
+/** the database refuses one setting from now on (a trigger in the real file); returns the undo */
+function refuseSetting(key: string): () => void {
+  const name = `refuse_${key}`;
+  onFile((db) => db.exec(`CREATE TRIGGER ${name} BEFORE INSERT ON setting WHEN new.k = '${key}' BEGIN SELECT RAISE(ABORT, 'test storage unavailable'); END;`));
+  // it is really in place before the step that should hit it
+  expect(triggerCount(name)).toBe(1);
+  return () => {
+    onFile((db) => db.exec(`DROP TRIGGER IF EXISTS ${name};`));
+    expect(triggerCount(name)).toBe(0);
   };
 }
 
