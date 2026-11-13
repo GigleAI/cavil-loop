@@ -67,6 +67,16 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
   return { kind: 'ok', text: okText };
 }
 
+/**
+ * GitHub#488: what a write's caller still says itself. A field change the controller recorded (`held`) is
+ * said by the field (saved) and by the window's notice area (failed / not confirmed): nothing here, unless
+ * it went through with a warning (a re-read that failed). Anything else: as `noteOf`.
+ */
+export function resultNote(r: WriteResult, okText: string): ResultNote | null {
+  if (r.held && (!r.ok || !r.warning)) return null;
+  return noteOf(r, okText);
+}
+
 /** how long a plain success note stays when its bar opts in (GitHub#256; 5 s since GitHub#279) */
 export const NOTE_AUTO_DISMISS_MS = 5_000;
 
@@ -719,11 +729,13 @@ export function DetailPanel({
     } finally {
       setChanging((n) => n - 1);
     }
+    // GitHub#488: a recorded change says nothing here (the field and the notice area do)
+    const said = resultNote(r, okText);
     if (!session.current()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
+      if (said) onLeftBehind(resultNote(r, `${label}：${okText}`)!, action);
       return r;
     }
-    setNote(noteOf(r, okText));
+    if (said) setNote(said);
     // read again either way, so the panel shows what GitHub holds now
     void load(!r.ok);
     return r;

@@ -577,18 +577,21 @@ export function BoardView({
   const runAll = async (actions: WriteAction[], okText: string) => {
     setBusy(true);
     let warn: string[] = [];
+    // GitHub#488: field changes the controller recorded are said by the card and the window's notice area
+    let allHeld = true;
     for (const a of actions) {
       const r = await api().act(a);
       if (!r.ok) {
         setBusy(false);
         const done = actions.indexOf(a);
-        setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
+        if (!r.held) setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
         return;
       }
+      if (!r.held) allHeld = false;
       if (r.warning) warn.push(r.warning);
     }
     setBusy(false);
-    setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
+    if (!allHeld || warn.length) setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
   };
   const ops: CardOps = {
     // GitHub#229: a change shows on the card at once; the board does not wait for GitHub's answer

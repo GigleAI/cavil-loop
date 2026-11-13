@@ -359,6 +359,20 @@ async function openNotices(page: Page) {
 }
 
 const card = (page: Page, n: number) => page.locator(`[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`).first();
+/**
+ * GitHub#488: a field change GitHub took (label / milestone / status / iteration) is said by the field itself:
+ * once the write reached GitHub, no result note in the detail or above the board, nothing in the notice area
+ */
+async function savedQuietly(page: Page, sent: (w: unknown[]) => boolean, from = 0) {
+  await expect.poll(() => writes().slice(from).some(sent), { timeout: 15_000 }).toBe(true);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0);
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="edit-issue"]')).toHaveCount(0);
+}
+const sentTo = (method: string, tail: string) => (w: unknown[]) => w[0] === method && String(w[1]).endsWith(tail);
+const sentOp = (op: string) => (w: unknown[]) => w[0] === op;
+
 const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
 
 test('detail newest first in an isolated view; labels, status, drag, reply + hand back, merge / refused merge, new issue; offline greys it all', async () => {
@@ -393,19 +407,23 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(frame.locator('details.entry')).toHaveCount(3);
 
   // ---- labels: add in the detail, remove on the card ----
+  let w0 = writes().length;
   await pickLabel(page, 'Done');
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
+  await savedQuietly(page, sentTo('POST', '/issues/138/labels'), w0);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toBeVisible();
   await card(page, 138).hover();
+  w0 = writes().length;
   await card(page, 138).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
+  await savedQuietly(page, sentTo('DELETE', '/issues/138/labels/Done'), w0);
   await expect(card(page, 138).locator('.label', { hasText: 'Done' })).toHaveCount(0);
 
   // ---- status and milestone in the detail ----
+  w0 = writes().length;
   await detail.getByTestId('status-select').selectOption('In progress');
-  await expect(page.getByTestId('action-result')).toContainText('状态已改');
+  await savedQuietly(page, sentOp('CavilSetStatus'), w0);
+  w0 = writes().length;
   await detail.getByTestId('milestone-select').selectOption('v1');
-  await expect(page.getByTestId('action-result')).toContainText('里程碑改成「v1」');
+  await savedQuietly(page, sentTo('PATCH', '/issues/138'), w0);
   await shot(page, '21-detail-fields');
 
   // ---- reply with preview, then hand back to the agent ----
@@ -425,7 +443,6 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   // ---- drag a card to another iteration: only that Project's value changes ----
   const before137 = writes().length;
   await card(page, 137).dragTo(page.locator('[data-testid="column"][data-title="Iteration 26"]'));
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(page.locator('[data-testid="column"][data-title="Iteration 26"] [data-testid="card"][data-key="gigleai/cavil-loop#137"]')).toBeVisible();
   // GitHub#229: the card moves before GitHub answers — wait for the write itself
   await expect.poll(() => writes().slice(before137).map((w) => w[0])).toEqual(['CavilSetIteration']);
@@ -627,7 +644,10 @@ test('a slow answer for the item you left never lands on the one you are looking
   await expect(frame.locator('body')).toContainText('BODY_138');
   await page.getByTestId('reply-input').fill('写给 138 的草稿');
   releaseWrite();
-  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#137：已加上标签「Done」');
+  // GitHub#488: the change is said by the card (it shows the label), no note in the new item nor above the board
+  await expect(card(page, 137).locator('.label', { hasText: 'Done' })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0);
   await expect(page.getByTestId('action-result')).toHaveCount(0);
   await expect(page.getByTestId('reply-input')).toHaveValue('写给 138 的草稿');
   await expect(frame.locator('body')).toContainText('BODY_138');
@@ -724,7 +744,7 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_NEW</p>');
   // a change made meanwhile re-reads the detail: that newer read must win
   await pickLabel(page, 'pending/PR');
-  await expect(page.getByTestId('action-result')).toContainText('pending/PR');
+  await expect(detail.locator('[data-testid="detail-label"][data-label="pending/PR"]')).toHaveAttribute('data-edit', '', { timeout: 15_000 });
   await expect(frame.locator('body')).toContainText('BODY_REFRESH_NEW');
   releaseRefresh();
   await page.waitForTimeout(300);
@@ -750,7 +770,9 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   await card(page, 138).click();
   await detail.getByTestId('reply-input').fill('DRAFT_AFTER_REOPEN');
   releaseLabel();
-  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：已加上标签「Done」');
+  await expect(detail.locator('[data-testid="detail-label"][data-label="Done"]')).toHaveAttribute('data-edit', '', { timeout: 15_000 });
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('board-action-result')).toHaveCount(0);
   await expect(detail.getByTestId('reply-input')).toHaveValue('DRAFT_AFTER_REOPEN');
   await expect(page.getByTestId('action-result')).toHaveCount(0);
   await shot(page, '30-round-trip');
@@ -873,8 +895,10 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
     await page.waitForTimeout(400);
     await expect(frame.locator('body')).not.toContainText(`BODY_BEFORE_CHANGE_${tag}`); // it never landed
     releaseWrite();
-    await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', ok ? 'ok' : 'error');
+    // GitHub#488: a refused field change is said in the window's notice area, a saved one by the field alone
+    if (!ok) await expect(page.locator('[data-testid="notice-area"] [data-testid="edit-issue"]').first()).toHaveAttribute('data-edit', 'failed');
     await expect(frame.locator('body')).toContainText(`BODY_AFTER_CHANGE_${tag}`); // the read after the change, both ways
+    await expect(page.getByTestId('action-result')).toHaveCount(0);
     await page.waitForTimeout(400);
     await expect(frame.locator('body')).toContainText(`BODY_AFTER_CHANGE_${tag}`);
     await expect(frame.locator('body')).not.toContainText(`BODY_BEFORE_CHANGE_${tag}`);
@@ -898,8 +922,8 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
   await round();
   expect(reads(138).length).toBe(reads2);
   releaseWrite();
-  await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(frame.locator('body')).toContainText('BODY_DURING_WRITE');
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
   expect(reads(138).length).toBe(reads2 + 1);
   await app.close();
 });
@@ -3187,7 +3211,7 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   await page.keyboard.type('v1');
   await page.keyboard.press('Enter');
   await expect(ms).toHaveCount(0);
-  await expect(page.getByTestId('action-result')).toHaveText('里程碑改成「v1」');
+  await savedQuietly(page, sentTo('PATCH', '/issues/137'), before + 2);
   expect(writes().slice(before + 2).map(([m, p]) => [m, p])).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137']]);
 
   // ---- 7. a dialog on top takes every key: nothing behind it reacts ----
@@ -3850,7 +3874,7 @@ test('GitHub#205: table cells change labels / status in place; columns can be re
   const before = writes().length;
   await row.locator('[data-testid="cell"][data-col="labels"]').click();
   await row.locator('[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="Done"]').click();
-  await expect(page.getByTestId('board-action-result')).toContainText('GigleAI/cavil-loop#138：已加上标签「Done」');
+  await savedQuietly(page, sentTo('POST', '/issues/138/labels'), before);
   await page.keyboard.press('Escape');
   await expect(row.locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
   expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['Done'] }]]);
@@ -3865,7 +3889,7 @@ test('GitHub#205: table cells change labels / status in place; columns can be re
   const b2 = writes().length;
   await statusCell.click();
   await statusCell.getByTestId('cell-status').selectOption('In progress');
-  await expect(page.getByTestId('board-action-result')).toContainText('状态已改');
+  await savedQuietly(page, sentOp('CavilSetStatus'), b2);
   expect(writes().slice(b2).map((w) => w[0])).toEqual(['CavilSetStatus']);
   await expect(statusCell).toContainText('In progress');
   await shot(page, '205-02-table-edited');
@@ -4097,7 +4121,7 @@ test('GitHub#205 (PR #220 review round 1): an item shown in two groups (two boar
     await expect(page.getByTestId('cell-label-picker')).toHaveCount(1);
     await expect(rows.nth(i).getByTestId('cell-label-picker')).toHaveCount(1);
     await rows.nth(i).locator(`[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="${label}"]`).click();
-    await expect(page.getByTestId('board-action-result')).toContainText(`GigleAI/cavil-loop#138：已加上标签「${label}」`);
+    await savedQuietly(page, sentTo('POST', '/issues/138/labels'), before);
     expect(writes().slice(before)).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: [label] }]]);
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('cell-label-picker')).toHaveCount(0);
@@ -5226,18 +5250,23 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   for (const n of [146, 136, 141]) await expect(onBoard(n)).toBeVisible();
   await shot(page, '256-01-kept-notices');
 
-  // ---- 5. result bars: a plain success goes after 5 s ----
+  // ---- 5. result bars: a plain success goes after 5 s (GitHub#488: a field change says nothing — a comment still does) ----
   await open(144);
-  await pickLabel(page, 'Done');
+  await page.getByTestId('reply-input').fill('看过了 256');
+  await page.getByTestId('reply-send').click();
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await expect(page.getByTestId('action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(page.getByTestId('action-result')).toBeVisible();
   await ff(1_100);
   await expect(page.getByTestId('action-result')).toHaveCount(0);
+  // above the board: a comment answered after its panel was put away
+  const holdSend = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/144/comments'));
+  await page.getByTestId('reply-input').fill('再看一遍 256');
+  await page.getByTestId('reply-send').click();
+  await expect.poll(() => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith('/issues/144/comments')).length).toBe(2);
   await page.getByTestId('detail-close').click();
-  await card(page, 144).hover();
-  await card(page, 144).locator('[data-testid="card-label-remove"][data-label="Done"]').click();
+  holdSend();
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await page.mouse.move(5, 5);
   await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-auto-dismiss', 'counting');
@@ -5521,25 +5550,47 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(page.getByTestId('detail-cached')).toHaveCount(0, { timeout: 15_000 });
   expect(await discussionTop()).toBe(t0);
 
-  // ---- 2. a change made here: the success is a short line in the head, the discussion does not move ----
+  // the discussion's place inside the panel (GitHub#488: the notice area above every page may shift the whole window)
+  // (against the panel's own head: the panel's content may scroll when the window above it changes height)
+  const inPanel = async () => (await discussionTop()) - (await topOf('[data-testid="detail"] .detail-head'));
+  const headH = () => detail.locator('.detail-head').evaluate((e) => Math.round(e.getBoundingClientRect().height));
+  const headH0 = await headH();
+
+  // ---- 2. a write made here: the success is a short line in the head, the discussion does not move ----
+  // (GitHub#488: a field change says nothing — the field shows it; a comment still says its result here)
+  const w2 = writes().length;
   await pickLabel(page, 'pending/PR');
-  await expect(detail.locator('.detail-head [data-testid="action-result"]')).toContainText('已加上标签「pending/PR」');
+  await savedQuietly(page, sentTo('POST', `/issues/${prN}/labels`), w2);
+  await detail.getByTestId('reply-input').fill('看过了 260');
+  await detail.getByTestId('reply-send').click();
+  await expect(detail.locator('.detail-head [data-testid="action-result"]')).toContainText('评论已发出');
   await expect(detail.getByTestId('action-result')).toHaveAttribute('data-kind', 'ok');
   await expect(detail.getByTestId('detail-notices-toggle')).toHaveCount(0);
-  expect(await discussionTop()).toBe(t0);
+  // the line sits in the head: the head keeps its height (a comment adds to the discussion itself — its tools row
+  // shows from the second entry on — so its place is taken again below, once the comment is in)
+  expect(await headH()).toBe(headH0);
+  await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('body')).toContainText('看过了 260');
+  const inPanel0 = await inPanel();
 
   // ---- 3. a change GitHub refuses: GitHub's answer behind the notices button in the head (counted), never above the
   // discussion; GitHub#488: the change kept to send again is in the window's notice area (it shifts the whole window
   // down, the panel's own layout does not move) ----
-  const inPanel = async () => (await discussionTop()) - (await topOf('[data-testid="detail"]'));
-  const inPanel0 = t0 - vbarBottom;
   env.fake.state.w.failLabel = 'pending/human';
   await pickLabel(page, 'pending/human');
-  const toggle = detail.getByTestId('detail-notices-toggle');
-  await expect(toggle).toHaveAttribute('data-tone', 'error', { timeout: 15_000 });
-  await expect(toggle).toHaveAttribute('data-count', '1'); // GitHub's answer (the change kept to send again is in the notice area)
-  await expect(page.getByTestId('notice-area').getByTestId('edit-issues')).toBeVisible();
+  await expect(page.getByTestId('notice-area').getByTestId('edit-issues')).toBeVisible({ timeout: 15_000 });
   await expect(detail.getByTestId('edit-issues')).toHaveCount(0);
+  // a refused field change: nothing in the panel at all (said once, in the notice area)
+  const toggle = detail.getByTestId('detail-notices-toggle');
+  await page.waitForTimeout(500);
+  await expect(toggle).toHaveCount(0);
+  await expect(detail.getByTestId('action-result')).toHaveCount(0);
+  // a refused comment: GitHub's answer behind the notices button
+  env.fake.state.w.failComment = true;
+  await detail.getByTestId('reply-input').fill('被拒 260');
+  await detail.getByTestId('reply-send').click();
+  await expect(toggle).toHaveAttribute('data-tone', 'error', { timeout: 15_000 });
+  await expect(toggle).toHaveAttribute('data-count', '1');
+  env.fake.state.w.failComment = false;
   await expect(detail.getByTestId('action-result')).toBeHidden();
   expect(await inPanel()).toBe(inPanel0);
   // a click shows them, with their own buttons; Esc puts them away, the panel stays
@@ -5582,7 +5633,8 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(page.getByTestId('notice-area').getByTestId('edit-resend')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(detail.getByTestId('detail-notices')).toBeHidden();
-  // the close button really is reachable: a click puts the panel away
+  // the close button really is reachable: a click puts the panel away (the refused comment's text cleared first)
+  await detail.getByTestId('reply-input').fill('');
   await detail.getByTestId('detail-close').click();
   await expect(detail).toHaveCount(0);
   await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
@@ -6169,8 +6221,8 @@ test('GitHub#294: drag a table row to another group — the board\'s drop: set, 
   // ---- 1. onto another iteration's group: one iteration write, the row moves there ----
   const b1 = writes().length;
   await dragRow(row.locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
-  await expect(page.getByTestId('board-action-result')).toHaveAttribute('data-kind', 'ok');
-  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  // GitHub#488: said by the row moving, no result note
+  await savedQuietly(page, sentOp('CavilSetIteration'), b1);
   await expect(rowIn(T, K)).toBeVisible();
   await expect(rowIn(from, K)).toHaveCount(0);
   await expect.poll(() => writes().slice(b1).map((w) => w[0])).toEqual(['CavilSetIteration']);
@@ -6187,8 +6239,9 @@ test('GitHub#294: drag a table row to another group — the board\'s drop: set, 
 
   // ---- 3. onto a folded group's head, and onto a name in "已收起 N 组" ----
   await group(T).getByTestId('group-toggle').click();
+  const b25 = writes().length;
   await dragRow(rowIn('无迭代', K).locator('[data-testid="row-ref"]'), group(T).getByTestId('group-head'));
-  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${T}」`);
+  await savedQuietly(page, sentOp('CavilSetIteration'), b25);
   await expect.poll(async () => (await rowIn('无迭代', K).count())).toBe(0);
   await group(T).getByTestId('group-toggle').click();
   await expect(rowIn(T, K)).toBeVisible();
@@ -6204,7 +6257,7 @@ test('GitHub#294: drag a table row to another group — the board\'s drop: set, 
   const target = run.locator(`[data-testid="fold-run-group"]`, { hasText: g2 });
   const b3 = writes().length;
   await dragRow(rowIn(T, K).locator('[data-testid="row-ref"]'), target);
-  await expect(page.getByTestId('board-action-result')).toContainText(`迭代「${g2}」`);
+  await savedQuietly(page, sentOp('CavilSetIteration'), b3);
   await expect.poll(() => writes().slice(b3).map((w) => w[0])).toEqual(['CavilSetIteration']);
   await expect(rowIn(T, K)).toHaveCount(0);
   await target.click();
@@ -6397,14 +6450,17 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await app.close();
 });
 
-test('GitHub#323: the red result bar above the board has an × and goes by itself once the field change it is about is over (resent, abandoned, seen on GitHub); a newer bar is not taken away by an older change', async () => {
+test('GitHub#323 → GitHub#488: a field change from the table that GitHub did not take says nothing above the board — it is said once, in the notice area, and goes with the change (resent, abandoned, seen on GitHub); a success says nothing', async () => {
   const { app, page } = await launch(env);
   await signInWithSources(page);
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   const row = (n: number) => page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${n}"]`).first();
   await expect(row(138)).toBeVisible({ timeout: 15_000 });
   const bar = page.getByTestId('board-action-result');
-  const editsBar = page.getByTestId('edits-bar');
+  const editsBar = page.locator('[data-testid="notice-area"] [data-testid="edits-bar"]');
+  const issue = (n: number) => page.locator(`[data-testid="notice-area"] [data-testid="edit-issues-item"][data-key="gigleai/cavil-loop#${n}"]`);
+  /** #n's own list in the notice area (the checks are per item: another item's record has its own life) */
+  const itsList = (n: number) => page.locator('[data-testid="notice-area"] [data-testid="edit-issues"]', { has: page.locator(`[data-testid="edit-issues-item"][data-key="gigleai/cavil-loop#${n}"]`) });
   const addLabel = async (n: number, label: string) => {
     await row(n).locator('[data-testid="cell"][data-col="labels"]').click();
     await row(n).locator(`[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="${label}"]`).click();
@@ -6419,85 +6475,61 @@ test('GitHub#323: the red result bar above the board has an × and goes by itsel
   const unsure = async (n: number, label: string) => {
     env.fake.state.w.dropWrites = true;
     await addLabel(n, label);
-    await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
-    await expect(bar).toContainText('不确定改没改上');
-    await expect(editsBar).toBeVisible();
+    await expect(issue(n)).toBeVisible({ timeout: 15_000 });
+    await expect(itsList(n).locator('[data-testid="edit-issue"][data-edit="unconfirmed"]')).toHaveCount(1);
     env.fake.state.w.dropWrites = false;
+    // said once: in the notice area, never also above the board
+    await expect(bar).toHaveCount(0);
+    await expect(page.getByTestId('edits-bar')).toHaveCount(1);
   };
 
-  // 1. no answer from GitHub: a red bar with an ×; the × only puts the bar away — the change stays in the list
+  // 1. no answer from GitHub: in the notice area; 全部放弃 → gone, nothing sent
   await unsure(138, 'Done');
-  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
-  await shot(page, '323-01-red-bar-with-close');
+  await shot(page, '488-323-01-unsure-in-notice-area');
   const w0 = env.fake.writes().length;
-  await bar.getByTestId('board-action-result-close').click();
-  await expect(bar).toHaveCount(0);
-  await expect(editsBar).toHaveAttribute('data-count', '1');
-  expect(env.fake.writes().length).toBe(w0);
   await editsBar.getByTestId('edits-abandon-all').click();
   await expect(editsBar).toHaveCount(0);
+  expect(env.fake.writes().length).toBe(w0);
 
-  // 2. resent and accepted: the bar goes by itself
+  // 2. resent and accepted: gone by itself, the label on the row
   await unsure(138, 'Done');
-  await editsBar.getByTestId('edits-resend-all').click();
-  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await itsList(138).getByTestId('edit-resend').click();
+  await expect(issue(138)).toHaveCount(0, { timeout: 15_000 });
   await expect(bar).toHaveCount(0);
   await expect(row(138).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
 
-  // 3. abandoned: the bar goes by itself
-  await unsure(138, 'pending/PR');
-  await editsBar.getByTestId('edits-abandon-all').click();
-  await expect(editsBar).toHaveCount(0);
-  await expect(bar).toHaveCount(0);
-
-  // 4. the change turns out to be on GitHub (a refresh reads it): the bar goes by itself
+  // 3. the change turns out to be on GitHub (a refresh reads it): gone by itself
   await unsure(137, 'Done');
   labelOnGitHub(137, 'Done');
   await page.getByTestId('refresh').click();
-  await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
+  await expect(issue(137)).toHaveCount(0, { timeout: 15_000 });
   await expect(bar).toHaveCount(0);
 
-  // 5. refused for sure: red, closable; abandoned → gone by itself
+  // 4. refused for sure: in the notice area as 没保存上, nothing above the board; abandoned → gone
   env.fake.state.w.failLabel = 'pending/PR';
   await addLabel(137, 'pending/PR');
-  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
-  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
-  await expect(editsBar).toHaveAttribute('data-count', '1');
-  await editsBar.getByTestId('edits-abandon-all').click();
-  await expect(editsBar).toHaveCount(0);
+  await expect(itsList(137).locator('[data-testid="edit-issue"]')).toHaveAttribute('data-edit', 'failed', { timeout: 15_000 });
   await expect(bar).toHaveCount(0);
-
-  // 6. a newer bar is about another change: the older change being over leaves it alone
-  // (the refusal is by label name, so #144's change uses another label and goes through when resent)
-  await unsure(144, 'Done');
-  await addLabel(137, 'pending/PR'); // still refused: this bar replaces the one about #144
-  await expect(bar).not.toContainText('不确定改没改上', { timeout: 15_000 });
-  await expect(bar).toHaveAttribute('data-kind', 'error');
-  await expect(editsBar).toHaveAttribute('data-count', '2');
-  const barText = await bar.textContent();
-  await editsBar.getByTestId('edits-resend-all').click(); // #144 goes through, #137 is refused again
-  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
-  await expect(row(144).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'Done' })).toBeVisible();
-  await page.waitForTimeout(500);
-  await expect(bar).toHaveText(barText ?? '');
+  await itsList(137).getByTestId('edit-abandon').click();
+  await expect(issue(137)).toHaveCount(0);
   env.fake.state.w.failLabel = null;
-  await editsBar.getByTestId('edits-abandon-all').click();
-  await expect(bar).toHaveCount(0);
 
-  // 7. a plain success still goes after 5 s on its own, and has an × too
+  // 5. a plain success: the cell shows it, nothing is said anywhere
+  const w5 = writes().length;
   await addLabel(144, 'pending/PR');
-  await expect(bar).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
-  await expect(bar.getByTestId('board-action-result-close')).toBeVisible();
-  await bar.getByTestId('board-action-result-close').click();
+  await expect.poll(() => writes().slice(w5).some(sentTo('POST', '/issues/144/labels')), { timeout: 15_000 }).toBe(true);
+  await expect(row(144).locator('[data-testid="cell"][data-col="labels"] .label', { hasText: 'pending/PR' })).toBeVisible();
+  await page.waitForTimeout(500);
   await expect(bar).toHaveCount(0);
+  await expect(issue(144)).toHaveCount(0);
   await app.close();
 });
 
-test('GitHub#323 (PR #327 review round 1): a field change made in the detail and answered after the detail was closed or moved on — its red bar on the board goes with the change too; a failed comment left behind is not taken away by an unrelated change', async () => {
+test('GitHub#323 (PR #327 review round 1) → GitHub#488: a field change made in the detail and answered after the detail was closed or moved on is said in the notice area only, never above the board; a failed comment left behind is not taken away by an unrelated change', async () => {
   const { app, page } = await launch(env);
   await signInWithSources(page);
   const bar = page.getByTestId('board-action-result');
-  const editsBar = page.getByTestId('edits-bar');
+  const editsBar = page.locator('[data-testid="notice-area"] [data-testid="edits-bar"]');
   const labelPosts = (n: number) => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith(`/issues/${n}/labels`)).length;
   /** in #n's detail: add `label`, GitHub holds the answer; returns the release */
   const addHeld = async (n: number, label: string) => {
@@ -6516,25 +6548,27 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
     await expect(page.getByTestId('detail')).toHaveCount(0);
   };
 
-  // 1. the detail is closed before GitHub refuses: the red bar lands on the board; abandoned → it goes by itself
+  // 1. the detail is closed before GitHub refuses: said in the notice area, nothing above the board; abandoned → it goes
   env.fake.state.w.failLabel = 'pending/PR';
   let release = await addHeld(139, 'pending/PR');
   await page.getByTestId('detail-close').click();
   await expect(page.getByTestId('detail')).toHaveCount(0);
   release();
-  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
-  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveCount(0);
   await editsBar.getByTestId('edits-abandon-all').click();
   await expect(editsBar).toHaveCount(0);
-  await expect(bar).toHaveCount(0);
 
-  // 2. another item is opened before GitHub refuses: the same; resent and accepted → it goes by itself
+  // 2. another item is opened before GitHub refuses: the same, and nothing in the item now open; resent and accepted → it goes
   release = await addHeld(139, 'pending/PR');
   await card(page, 138).click();
   await expect(page.getByTestId('detail')).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
   release();
-  await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
-  await expect(editsBar).toHaveAttribute('data-count', '1');
+  await expect(editsBar).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await expect(bar).toHaveCount(0);
+  await expect(page.getByTestId('action-result')).toHaveCount(0);
   env.fake.state.w.failLabel = null;
   await editsBar.getByTestId('edits-resend-all').click();
   await expect(editsBar).toHaveCount(0, { timeout: 15_000 });
@@ -6558,7 +6592,7 @@ test('GitHub#323 (PR #327 review round 1): a field change made in the detail and
   await expect(bar).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   env.fake.state.w.failComment = false;
   const kept = await bar.textContent();
-  // a field change of #137 made and answered inside its detail (its note stays in the panel), then abandoned
+  // a field change of #137 made and answered inside its detail (said in the notice area), then abandoned
   await card(page, 137).getByTestId('card-title').click();
   env.fake.state.w.dropWrites = true;
   await pickLabel(page, 'Done');
@@ -6915,17 +6949,17 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   expect(joins()).toBe(j0 + 2);
 
   // ---- 4. the green of a result bar, in both schemes: readable, and green in dark too ----
-  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
-  const row = page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"]').first();
-  await expect(row).toBeVisible({ timeout: 15_000 });
-  // the labels column may be switched off in the imported view
-  await page.getByTestId('open-view-panel').click();
-  const labelsCol = page.locator('[data-testid="columns-pick"] input[data-col="labels"]');
-  if (!(await labelsCol.isChecked())) await labelsCol.check();
-  await page.getByTestId('open-view-panel').click();
-  await row.locator('[data-testid="cell"][data-col="labels"]').click();
-  await row.locator('[data-testid="cell-label-picker"] [data-testid="picker-item"][data-name="Done"]').click();
-  await page.keyboard.press('Escape');
+  // (GitHub#488: a field change no longer says anything above the board — a comment answered after its panel
+  // was put away still does)
+  await page.getByTestId('search').fill('#137');
+  await card(page, 137).click();
+  await expect(page.getByTestId('detail')).toHaveAttribute('data-key', KEY(137));
+  const holdReply = env.fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith('/issues/137/comments'));
+  await page.getByTestId('reply-input').fill('看过了 357');
+  await page.getByTestId('reply-send').click();
+  await expect.poll(() => env.fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/137/comments'))).toBe(true);
+  await page.getByTestId('detail-close').click();
+  holdReply();
   const result = page.getByTestId('board-action-result');
   await expect(result).toHaveAttribute('data-kind', 'ok', { timeout: 15_000 });
   await expect(result).toHaveClass(/\bok\b/);

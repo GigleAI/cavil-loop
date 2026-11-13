@@ -83,9 +83,22 @@ export function NoticeArea({
   );
 }
 
+/**
+ * The items with a change not saved / not confirmed, each once: the board data can carry one item in several
+ * rows (two iterations, two Projects), its changes are the same record (said once, GitHub#488).
+ */
+export function itemsWithIssues(data: BoardData): BoardData['items'] {
+  const seen = new Set<string>();
+  return data.items.filter((i) => {
+    if (seen.has(i.key) || !i.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed')) return false;
+    seen.add(i.key);
+    return true;
+  });
+}
+
 /** the changes not saved: the bar for all of them, then each item's own list */
 function EditsNotice({ state, data, onOpen }: { state: AppState; data: BoardData; onOpen: (key: string) => void }) {
-  const items = data.items.filter((i) => i.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed'));
+  const items = itemsWithIssues(data);
   return (
     <div className="notice-edits" data-testid="notice-edits">
       <EditsBar state={state} data={data} onOpen={onOpen} />
@@ -115,7 +128,7 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
   const [working, setWorking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   if (!state.editsNeedingAction) return null;
-  const items = data.items.filter((i) => i.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed'));
+  const items = itemsWithIssues(data);
   const go = async (fn: () => Promise<{ ok: boolean; error: string | null } | void>) => {
     setWorking(true);
     setResult(null);
