@@ -17,6 +17,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ProjectConfigDialog } from './ProjectConfigDialog';
 import { copyText } from './pasteImage';
 import { ago, checklist, toolRows, refreshOk, refreshWord, schedWord, type DaemonProject, type DaemonResult, type DaemonStatus, type DaemonUpdate, type LocalStatus, type Outdated, type CheckRow } from '../shared/daemon';
+import { t } from '../shared/i18n';
 
 type Ask = { kind: 'stop' | 'start' | 'disconnect'; p: DaemonProject };
 
@@ -116,7 +117,7 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
 
   return (
     <section id="set-daemon" data-testid="daemon-settings">
-      <h3>本机 daemon</h3>
+      <h3>{t('本机 daemon')}</h3>
       <p className="muted small">
         daemon 是在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。
       </p>

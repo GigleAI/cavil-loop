@@ -55,7 +55,7 @@ pub fn saved(store: &Store) -> u32 {
 pub fn apply(store: &Store, step: Step) -> (u32, Result<(), String>) {
     let level = next(saved(store), step);
     let kept = store.set_setting(SETTING, &json!(level));
-    (level, kept)
+    (level, kept.map_err(String::from))
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+[
+  { "lang": "zh", "key": "刷新", "params": {}, "expect": "刷新" },
+  { "lang": "en", "key": "刷新", "params": {}, "expect": "Refresh" },
+  { "lang": "zh", "key": "{n} 分钟前", "params": { "n": "1" }, "expect": "1 分钟前" },
+  { "lang": "en", "key": "{n} 分钟前", "params": { "n": "1" }, "expect": "1 minute ago" },
+  { "lang": "en", "key": "{n} 分钟前", "params": { "n": "2" }, "expect": "2 minutes ago" },
+  { "lang": "en", "key": "{n} 分钟前", "params": { "n": "0" }, "expect": "0 minutes ago" },
+  { "lang": "en", "key": "{n} 天前", "params": { "n": "1.0" }, "expect": "1.0 day ago" },
+  { "lang": "en", "key": "已登录 {viewer}", "params": { "viewer": "octocat" }, "expect": "Signed in as octocat" },
+  { "lang": "en", "key": "已登录 {viewer}", "params": {}, "expect": "Signed in as {viewer}" },
+  { "lang": "en", "key": "{source}：整份读取 {read} · 上次检查 {checked}", "params": { "source": "GigleAI/cavil-loop", "read": "a", "checked": "{read}" }, "expect": "GigleAI/cavil-loop: fully read a · last checked {read}" },
+  { "lang": "en", "key": "不认识的语言：{lang}", "params": { "lang": "fr" }, "expect": "Unknown language: fr" },
+  { "lang": "en", "key": "这一句不在任何对照表里：{x}", "params": { "x": "1" }, "expect": "这一句不在任何对照表里：1" },
+  { "lang": "zh", "key": "{{n}} 个{n}", "params": { "n": "3" }, "expect": "{3} 个3" },
+  { "lang": "en", "key": "关闭标签页", "params": {}, "expect": "Close Tab" },
+  { "lang": "en", "key": "同步不完整：{n} 个来源读取失败（点开看详情）", "params": { "n": "1" }, "expect": "Sync incomplete: 1 source failed to read (click for details)" }
+]

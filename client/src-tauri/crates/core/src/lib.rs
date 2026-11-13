@@ -9,6 +9,7 @@ pub mod device;
 pub mod engine;
 pub mod grant;
 pub mod http;
+pub mod i18n;
 pub mod platform;
 pub mod release_image;
 pub mod remote;

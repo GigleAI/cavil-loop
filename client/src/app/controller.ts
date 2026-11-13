@@ -11,6 +11,7 @@ import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
+import { readSaid, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
@@ -118,8 +119,9 @@ import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 import type { WindowFrame } from '../shared/ipc';
 
-export const REASON_REVOKED = 'GitHub 凭据已失效（可能被撤销或已过期），请重新登录';
-export const REASON_REFRESH_ENDED = '登录已到期，GitHub 不再接受续期，请重新登录';
+/** sign-out reasons (keys: shown through tKey in the window's language) */
+export const REASON_REVOKED = zhKey('GitHub 凭据已失效（可能被撤销或已过期），请重新登录');
+export const REASON_REFRESH_ENDED = zhKey('登录已到期，GitHub 不再接受续期，请重新登录');
 /** the back end refreshes this long before the access token expires (src-tauri/crates/core/src/engine.rs) */
 /**
  * GitHub#270: the one way the offline flag is written. The flag and its reason travel together,
@@ -188,6 +190,8 @@ export interface ControllerDeps {
   defaultGithubAppClientId?: string;
   /** notifications, Dock badge, launch at login, sync beat (none: nothing is shown, the counting still runs) */
   desktop?: Desktop;
+  /** GitHub#471: the system's preferred languages, for "跟随系统" (tests simulate a system; default: the window's) */
+  languages?: () => readonly string[];
   /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
   observeMs?: number;
   observeFirstMs?: number;
@@ -535,6 +539,13 @@ export class Controller {
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
+    // GitHub#471: the language is decided before anything is drawn; nothing set (or a value this
+    // version does not know) is Chinese, as before. The back end starts in Chinese: it is told only
+    // when the window shows something else.
+    const uiLanguage = normalizeLangSetting(this.cache.getSetting<unknown>(LANG_SETTING, DEFAULT_LANG_SETTING));
+    const lang = resolveLang(uiLanguage, this.systemLanguages());
+    setLang(lang);
+    if (lang !== 'zh') this.tellBackendLanguage(lang);
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
@@ -560,6 +571,8 @@ export class Controller {
       ...((r) => ({ shortcutKeys: r.keys as Record<string, ShortcutKeySpec>, shortcutDropped: r.dropped }))(repairKeys(this.cache.getSetting<unknown>(SHORTCUT_KEYS, null))),
       clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
       notifyScope,
+      uiLanguage,
+      lang,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -675,10 +688,10 @@ export class Controller {
   async start(): Promise<void> {
     void this.readLoginItem();
     void this.readUpdate();
-    const r = await this.backend.call<{ phase: 'login' | 'ready'; reason?: string | null; session?: number; wiped: boolean }>('start');
+    const r = await this.backend.call<{ phase: 'login' | 'ready'; reason?: string | null; reasonSaid?: unknown; session?: number; wiped: boolean }>('start');
     if (r.wiped) this.dropMirror();
     if (r.phase === 'login') {
-      this.set({ phase: 'login', loginReason: r.reason ?? null });
+      this.set({ phase: 'login', loginReason: r.reason ?? null, loginReasonSaid: readSaid(r.reasonSaid) });
       return;
     }
     this.session = r.session!;
@@ -731,8 +744,8 @@ export class Controller {
     const run = ++this.loginRun;
     const problem = !clientId
       ? this.state.appKind === 'github-app'
-        ? '用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用'
-        : '还没有配置 OAuth 应用的 Client ID，请先在下方填写'
+        ? t('用 GitHub App 登录要先填它的 Client ID（这一版还没有内置的 GitHub App），或改回默认的 OAuth 应用')
+        : t('还没有配置 OAuth 应用的 Client ID，请先在下方填写')
       : // never sign in through a different kind of app than the page describes
         clientIdKindProblem(this.state.appKind, clientId);
     if (problem) {
@@ -742,31 +755,31 @@ export class Controller {
       return;
     }
     this.set({ login: { status: 'requesting', userCode: null, verificationUri: null, message: null } });
-    const fail = (status: string, message: string) =>
+    const fail = (status: string, message: string, said?: unknown) =>
       this.set({
-        login: { status: status === 'denied' ? 'denied' : status === 'expired' ? 'expired' : 'error', userCode: null, verificationUri: null, message },
+        login: { status: status === 'denied' ? 'denied' : status === 'expired' ? 'expired' : 'error', userCode: null, verificationUri: null, message, said: readSaid(said) },
       });
     try {
       await this.loginCancels;
       if (run !== this.loginRun) return;
-      const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string }>('loginBegin', { clientId });
+      const begun = await this.backend.call<{ status: string; run?: number; userCode?: string; verificationUri?: string; message?: string; said?: unknown }>('loginBegin', { clientId });
       if (run !== this.loginRun || begun.status === 'stale') return;
-      if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '');
+      if (begun.status !== 'waiting') return fail(begun.status, begun.message ?? '', begun.said);
       this.pendingRun = begun.run ?? null;
       this.set({ login: { status: 'waiting', userCode: begun.userCode!, verificationUri: begun.verificationUri!, message: null } });
       // The back end polls GitHub, asks who this is, and stores + trusts the
       // credential as one step of its credential queue: a cancel / sign-out /
       // newer login meanwhile makes this login stale there, whatever happens here.
-      const done = await this.backend.call<{ status: string; session?: number; viewer?: string | null; wiped?: boolean; message?: string; loginReason?: string | null }>(
+      const done = await this.backend.call<{ status: string; session?: number; viewer?: string | null; wiped?: boolean; message?: string; said?: unknown; loginReason?: string | null; loginReasonSaid?: unknown }>(
         'loginFinish',
         { run: begun.run },
       );
       if (done.status === 'stale') {
-        if (done.loginReason) this.set({ loginReason: done.loginReason });
+        if (done.loginReason) this.set({ loginReason: done.loginReason, loginReasonSaid: readSaid(done.loginReasonSaid) });
         return;
       }
       if (done.status !== 'ok') {
-        if (run === this.loginRun) fail(done.status, done.message ?? '');
+        if (run === this.loginRun) fail(done.status, done.message ?? '', done.said);
         return;
       }
       if (run !== this.loginRun) {
@@ -784,6 +797,7 @@ export class Controller {
       this.set({
         phase: 'ready',
         loginReason: null,
+        loginReasonSaid: null,
         login: { status: 'idle', userCode: null, verificationUri: null, message: null },
       });
       await this.syncNow();
@@ -796,10 +810,10 @@ export class Controller {
     const run = this.pendingRun;
     this.pendingRun = null;
     const sent = this.backend
-      .call<{ signedOut?: { session: number; message?: string | null } }>('loginCancel', run !== null ? { run } : {})
+      .call<{ signedOut?: { session: number; message?: string | null; said?: unknown } }>('loginCancel', run !== null ? { run } : {})
       .then(async (r) => {
         // the attempt had already committed: the back end signed it out
-        if (r?.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.message ?? null);
+        if (r?.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.message ?? null, readSaid(r.signedOut.said));
       })
       .catch(() => {});
     this.loginCancels = this.loginCancels.then(() => sent);
@@ -822,12 +836,14 @@ export class Controller {
     // sign us in again, and drops the cache, in one transaction; only then does
     // the page switch. The keychain delete runs after that (see logoutResult).
     // `message`: the sign-out could not be made fully durable — never shown as a clean sign-out
-    const { session, message } = await this.backend.call<{ session: number; message?: string | null }>('logout', { reason });
-    await this.applySignedOut(session, message ?? reason);
+    // the reason is the client's own words: in the window's language, for the back end to word around
+    const shown = reason === null ? null : tKey(reason);
+    const { session, message, said } = await this.backend.call<{ session: number; message?: string | null; said?: unknown }>('logout', { reason: shown });
+    await this.applySignedOut(session, message ?? shown, message ? readSaid(said) : null);
   }
 
   /** The back end signed out (asked to here, or because a refresh ended the sign-in): switch the page, then report a failed delete. */
-  private async applySignedOut(session: number, reason: string | null): Promise<void> {
+  private async applySignedOut(session: number, reason: string | null, reasonSaid: Said | null = null): Promise<void> {
     if (session <= this.signedOutAt) return;
     this.signedOutAt = session;
     this.session = session;
@@ -841,14 +857,15 @@ export class Controller {
     this.set({
       phase: 'login',
       loginReason: reason,
+      loginReasonSaid: reasonSaid,
       viewer: null,
       signedInAppKind: null,
       sync: { ...this.state.sync, problem: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
-    const r = await this.backend.call<{ message: string | null; current: boolean }>('logoutResult', { session });
+    const r = await this.backend.call<{ message: string | null; said?: unknown; current: boolean }>('logoutResult', { session });
     // only while nothing newer happened (a new login commits after this delete, in the same queue)
-    if (r.message && r.current && session === this.session) this.set({ loginReason: r.message });
+    if (r.message && r.current && session === this.session) this.set({ loginReason: r.message, loginReasonSaid: readSaid(r.said) });
   }
 
   /** The back end refreshes when due (single flight); this side shows what came of it. */
@@ -865,7 +882,7 @@ export class Controller {
       this.setProblem(`登录续期出错（${(e as Error).message}），会在下一轮自动重试`);
       return { result: 'failed', reason: null };
     }
-    if (r.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.reason);
+    if (r.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.reason, readSaid(r.signedOut.reasonSaid));
     if (r.problem !== undefined && this.signedIn) this.setProblem(r.problem);
     return { result: r.result, reason: typeof r.reason === 'string' ? r.reason : null };
   }
@@ -1919,6 +1936,35 @@ export class Controller {
     this.badge();
     this.state = { ...this.state, ...this.pendingNow() };
     this.set({ notifyScope: scope });
+  }
+
+  /** the system's preferred languages ("跟随系统"); unreadable = none, which is Chinese */
+  private systemLanguages(): readonly string[] {
+    try {
+      return (this.deps.languages ?? preferredLanguages)();
+    } catch {
+      return [];
+    }
+  }
+
+  /** the back end's words (menu, its messages) follow the window's; a refusal changes nothing on this side */
+  private tellBackendLanguage(lang: Lang): void {
+    void this.cache.enqueue(() => this.backend.call('setLanguage', { lang })).catch(() => undefined);
+  }
+
+  /**
+   * GitHub#471: the interface language — 'zh' (default), 'en', or 'auto' (the system's). Takes
+   * effect at once: the whole window re-renders from the new state, the back end is told, and the
+   * choice is kept on this machine. Anything but the three words is ignored.
+   */
+  setUiLanguage(setting: unknown): void {
+    if (setting !== 'zh' && setting !== 'en' && setting !== 'auto') return;
+    const lang = resolveLang(setting, this.systemLanguages());
+    if (setting !== this.state.uiLanguage) this.cache.setSetting(LANG_SETTING, setting);
+    const changed = lang !== this.state.lang;
+    setLang(lang);
+    if (changed) this.tellBackendLanguage(lang);
+    if (setting !== this.state.uiLanguage || changed) this.set({ uiLanguage: setting, lang });
   }
 
   /**
