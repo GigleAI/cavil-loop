@@ -495,6 +495,8 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .settings-main h3 { font-size: 14px; margin: 12px 0 4px; }
 .settings-main label { display: flex; flex-direction: column; gap: 4px; }
 .settings-main label.row, .settings-main label.radio { flex-direction: row; }
+/* GitHub#467: a source row's 在看板显示 switch: the switch and its words side by side, never wrapped */
+.settings-main .sources label.toggle { flex-direction: row; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
 .settings-main .row label { flex: 1; min-width: 200px; }
 /* GitHub#404: the four flow labels, two by two */
 .settings-main .row.label-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
