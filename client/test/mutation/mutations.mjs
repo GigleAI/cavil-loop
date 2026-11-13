@@ -881,7 +881,7 @@ export const MUTATIONS = [
     to: '[&str; 3] = ["private-user-images.githubusercontent.com", "user-images.githubusercontent.com", "camo.githubusercontent.com"];',
     expect: ['GitHub#205: an image in the discussion'] },
   { what: '托管：不加托管标签，只交给 agent', file: 'src/app/controller.ts',
-    from: "        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []), ", to: "        steps = [",
+    from: "          ...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []),\n", to: '',
     expect: ['autopilot: the autopilot label first, then the agent label'] },
   { what: '托管：托管标签留空时照样发（加一个空名字的标签）', file: 'src/app/controller.ts',
     from: "        if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');\n", to: '',

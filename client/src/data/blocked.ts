@@ -71,6 +71,16 @@ export async function searchCandidates(client: GitHubClient, repo: string, text:
 }
 
 /**
+ * GitHub#448: every open issue / PR of `repo`, read to the last page (the picker's number prefix:
+ * GitHub has no "number starts with" search). A page that fails, or an item without its fields,
+ * throws — a part of the list is never handed on as the whole.
+ */
+export async function readOpenCandidates(client: GitHubClient, repo: string): Promise<Candidate[]> {
+  const list = await client.restList<RestIssue>(`${repoPath(repo)}/issues?state=open&per_page=100`);
+  return list.map((i) => candidateOf(repo, i));
+}
+
+/**
  * GitHub#434: everything "等前置…" decides on, read now in full. `blocked`: the waiting label's name
  * (its events make the current wait). Throws when any part could not be read whole.
  */

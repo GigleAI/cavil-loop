@@ -17,7 +17,7 @@ import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
 import { frameKey, useLayer, useShortcuts } from './keyboard';
 import { LabelPicker } from './LabelPicker';
-import { keyText } from './shortcuts';
+import { isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
@@ -267,6 +267,25 @@ function HeadOp({ r }: { r: OpRecord }) {
   );
 }
 
+/**
+ * GitHub#447: the close went through, but this tab / panel holds text not sent yet, so it was not put
+ * away by itself. Stays until its × (it says something the person has to act on: send or clear, then close).
+ */
+function HeldLine({ floating, onDismiss }: { floating: boolean; onDismiss: () => void }) {
+  const text = floating
+    ? '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。'
+    : '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。';
+  return (
+    <div className="detail-held small" data-testid="auto-close-held" data-mode={floating ? 'float' : 'tab'} role="status">
+      <Icon name="warn" size={13} />
+      <span className="detail-held-text">{text}</span>
+      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="auto-close-held-dismiss" onClick={onDismiss}>
+        <Icon name="x" size={12} />
+      </button>
+    </div>
+  );
+}
+
 /** the notices button: the plain blue of a remark shows as the quiet check it always was */
 export type NoticeTone = 'busy' | 'error' | 'warn' | 'ok';
 
@@ -349,6 +368,9 @@ function clock(ms: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** GitHub#457: below this floating-panel width, 在标签页打开 shows its icon only */
+const OPEN_TAB_WORDS_MIN = 440;
+
 export function DetailPanel({
   itemKey,
   state,
@@ -359,6 +381,8 @@ export function DetailPanel({
   intent,
   draft,
   onDraft,
+  onCloseStarted,
+  autoCloseHeld = null,
 }: {
   itemKey: string;
   state: AppState;
@@ -369,8 +393,10 @@ export function DetailPanel({
    * GitHub#442: the detail floats over the board on the right (the default way to open an item, as before
    * GitHub#397): its width is dragged by the left edge, a click outside it or Esc puts it away (`onClose`) —
    * never while the reply box holds unsent text. null = the detail fills its own tab.
+   * `onOpenTab` (GitHub#457): the head's 在标签页打开 — the same way in as ⌘ / Ctrl + click on the item's row,
+   * so the panel's unsent text goes along into the tab.
    */
-  float?: { onClose: () => void } | null;
+  float?: { onClose: () => void; onOpenTab?: () => void } | null;
   /** GitHub#397: what this tab held unsent when it was last in front, and where changes to it are reported */
   draft?: TabDraft | null;
   onDraft?: (d: TabDraft) => void;
@@ -379,6 +405,13 @@ export function DetailPanel({
   /** a change made on an item the panel has since left: its result goes to the board instead */
   /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
   onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
+  /**
+   * GitHub#447: a close of this item (issue or PR) was started from this opening; the window puts the
+   * opening away once GitHub took it (and keeps it when it holds unsent text)
+   */
+  onCloseStarted?: (opId: string) => void;
+  /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
+  autoCloseHeld?: { onDismiss: () => void } | null;
 }) {
   // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
   // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
@@ -596,9 +629,35 @@ export function DetailPanel({
     setRetryFrom(null);
     setDialogNote(null);
     setNote(null);
+    if ((action.kind === 'closeIssue' || action.kind === 'closePr') && r.id) onCloseStarted?.(r.id);
     return true;
   };
-  const runAutopilot = () => startOp({ kind: 'autopilot', key: item!.key }, ask === 'autopilot');
+  /**
+   * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
+   * once it went out. A dialog opened again from a notice ("重新托管…") carries that operation's kept
+   * comment instead, never the reply box's. Blank = labels only, as before.
+   */
+  const handOffComment = (): { comment: string; fromBox: boolean } => {
+    const rec = retryFrom ? state.ops.find((x) => x.id === retryFrom) : undefined;
+    if (rec) return { comment: opReusableDraft(rec)?.comment ?? '', fromBox: false };
+    return { comment: reply.trim() ? reply : '', fromBox: true };
+  };
+  const handOff = async (kind: 'handBack' | 'autopilot', inDialog: boolean): Promise<boolean> => {
+    const { comment, fromBox } = handOffComment();
+    const withComment = comment.trim() ? { comment, ...(fromBox && replyFromOp ? { draftOf: replyFromOp } : {}) } : {};
+    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog);
+    // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
+    if (ok && fromBox && comment.trim()) {
+      setReply((cur) => (cur === comment ? '' : cur));
+      setReplyFromOp(null);
+      session.supersede('preview');
+      setPreview(null);
+      setEscKept(false);
+      setPasted(null);
+    }
+    return ok;
+  };
+  const runAutopilot = () => handOff('autopilot', ask === 'autopilot');
   /** the dialog of an operation again, its draft restored (GitHub#250) */
   const retryOp = (r: OpRecord) => {
     // never a comment a reply made from it may already have posted (code review round 2)
@@ -625,7 +684,8 @@ export function DetailPanel({
     } else {
       void (async () => {
         setRetryFrom(r.id);
-        const res = await api().startOp({ kind: 'handBack', key: r.key }, r.id);
+        // GitHub#451: the comment it did not get out goes with it again
+        const res = await api().startOp({ kind: 'handBack', key: r.key, ...(d.comment?.trim() ? { comment: d.comment } : {}) }, r.id);
         if (!session.current()) return;
         setRetryFrom(null);
         setNote(res.ok ? null : { kind: 'error', text: res.error ?? '没有发送' });
@@ -1093,7 +1153,11 @@ export function DetailPanel({
   // GitHub#413: one condition per button, read by the button and by its key alike
   const opBlocked = !canWrite || busy || Boolean(lock);
   const pressCloseIssue = () => openAsk('closeIssue');
-  const pressHandBack = () => void startOp({ kind: 'handBack', key: item.key }, false);
+  const pressHandBack = () => void handOff('handBack', false);
+  // GitHub#451: the reply box's text goes out first — the buttons and the 托管 dialog say so
+  const boxComment = reply.trim() ? reply : '';
+  const handOffFirst = boxComment ? '先把回复框里的字作为评论发出，发成功后再' : '';
+  const dialogComment = ask === 'autopilot' ? handOffComment().comment : '';
   const pressAutopilot = () => {
     // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
     if (!state.autopilotConfirm) return void runAutopilot();
@@ -1164,9 +1228,36 @@ export function DetailPanel({
         </span>
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
-        <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
-          <Icon name="ext" />
-        </button>
+        {/* GitHub#457: in the floating panel, the way into a tab of this app sits next to the way out to the
+            browser — a filled button with words for the one, the GitHub mark for the other */}
+        {float?.onOpenTab ? (
+          <>
+            {/* on a narrow panel the words go (the icon and the tooltip stay), so the buttons keep to one line inside it */}
+            <button
+              className={`blue open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
+              onClick={float.onOpenTab}
+              data-testid="detail-open-tab"
+              aria-label="在标签页打开"
+              title={`在本应用的新标签页里打开（${isMac() ? '⌘' : 'Ctrl'} + 单击同效）`}
+            >
+              <Icon name="open-tab" />
+              {width >= OPEN_TAB_WORDS_MIN && '在标签页打开'}
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => api().openExternal(item.url)}
+              data-testid="detail-open-web"
+              aria-label="在浏览器里打开 GitHub 网页"
+              title="在浏览器里打开 GitHub 网页"
+            >
+              <Icon name="github" />
+            </button>
+          </>
+        ) : (
+          <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
+            <Icon name="ext" />
+          </button>
+        )}
         <button
           className={`icon-btn fields-btn${fieldsShown ? ' on' : ''}`}
           data-testid="fields-toggle"
@@ -1233,6 +1324,7 @@ export function DetailPanel({
           </button>
         )}
       </div>
+      {autoCloseHeld && <HeldLine floating={floating} onDismiss={autoCloseHeld.onDismiss} />}
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
           显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
@@ -1624,24 +1716,26 @@ export function DetailPanel({
               <button
                 data-testid="hand-back"
                 disabled={opBlocked}
-                title={offlineWhy ?? lockWhy ?? `加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
+                data-comment={boxComment ? 'yes' : 'no'}
+                title={offlineWhy ?? lockWhy ?? `${handOffFirst}加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
                 onClick={pressHandBack}
               >
-                交给 agent
+                {boxComment ? '评论并交给 agent' : '交给 agent'}
                 <kbd>{keyText('handBack')}</kbd>
               </button>
               {hb.autopilot && (
                 <button
                   data-testid="autopilot"
+                  data-comment={boxComment ? 'yes' : 'no'}
                   disabled={opBlocked}
                   title={
                     offlineWhy ??
                     lockWhy ??
-                    `加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
+                    `${handOffFirst}加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
                   }
                   onClick={pressAutopilot}
                 >
-                  {state.autopilotConfirm ? '托管（自动合并）…' : '托管（自动合并）'}
+                  {`${boxComment ? '评论并' : ''}托管（自动合并）${state.autopilotConfirm ? '…' : ''}`}
                   <kbd>{keyText('autopilot')}</kbd>
                 </button>
               )}
@@ -1673,7 +1767,7 @@ export function DetailPanel({
       {blockedOpen && <BlockedDialog item={item} state={state} items={data.items} onClose={() => setBlockedOpen(false)} />}
       {ask === 'autopilot' && (
         <ConfirmDialog
-          title={`托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
+          title={`${dialogComment ? '评论并' : ''}托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
           confirmLabel="确认托管"
           busy={busy}
           onCancel={cancelAsk}
@@ -1685,9 +1779,21 @@ export function DetailPanel({
         >
           <ResultBanner note={dialogNote} testid="dialog-result" />
           <div data-testid="autopilot-explain">
-            <p data-testid="autopilot-explain-labels">
-              会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
-            </p>
+            {dialogComment ? (
+              <>
+                <p data-testid="autopilot-explain-comment">{retryFrom ? '先发出上一次没发出去的评论：' : '先发出回复框里的评论：'}</p>
+                <blockquote className="op-comment" data-testid="autopilot-comment">
+                  {dialogComment}
+                </blockquote>
+                <p data-testid="autopilot-explain-labels">
+                  评论发成功后，再加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。评论没发成功就什么标签都不动，这段话留着可以放回回复框。
+                </p>
+              </>
+            ) : (
+              <p data-testid="autopilot-explain-labels">
+                会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
+              </p>
+            )}
             <p data-testid="autopilot-explain-then">agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
             <p data-testid="autopilot-explain-stop">
               要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。

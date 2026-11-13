@@ -180,13 +180,35 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .tally-item.zero b { color: var(--muted); font-weight: 400; }
 .tally-item.on { background: var(--accent-subtle); border-color: var(--accent); color: var(--fg); }
 .tally-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.tally-item .dot.running { background: var(--state-open-bg); }
-.tally-item .dot.agent { background: var(--accent); }
-.tally-item .dot.human { background: var(--edge-open); }
+/* GitHub#468: a number's colour is set in Settings (the defaults: 运行中 green, 等 agent blue, 等人处理 orange, 未处理 ring);
+   the same classes colour the swatches there. Every colour is a theme token, so light and dark both follow. */
+.tally-item .dot.c-green, .tally-swatch.c-green { background: var(--state-open-bg); }
+.tally-item .dot.c-blue, .tally-swatch.c-blue { background: var(--accent); }
+.tally-item .dot.c-orange, .tally-swatch.c-orange { background: var(--edge-open); }
+.tally-item .dot.c-red, .tally-swatch.c-red { background: var(--state-closed-bg); }
+.tally-item .dot.c-purple, .tally-swatch.c-purple { background: var(--state-done-bg); }
+.tally-item .dot.c-gray, .tally-swatch.c-gray { background: var(--state-neutral-bg); }
 .tally-item.zero .dot { background: var(--border); }
 /* GitHub#418: "未处理" (no label at all) — a hollow ring, set apart from the three flow dots */
-.tally-item .dot.unlabeled { background: transparent; box-shadow: inset 0 0 0 1.5px var(--icon); }
-.tally-item.zero .dot.unlabeled { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border); }
+.tally-item .dot.c-ring, .tally-swatch.c-ring { background: transparent; box-shadow: inset 0 0 0 1.5px var(--icon); }
+.tally-item.zero .dot.c-ring { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border); }
+/* GitHub#468: the "顶栏计数" table in Settings */
+.tally-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.tally-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 6px; border-bottom: 1px solid var(--border-muted); }
+.tally-table td { padding: 6px; border-bottom: 1px solid var(--border-muted); vertical-align: top; }
+.tally-table td.tally-name { width: 150px; }
+.tally-table td.tally-name input { width: 100%; }
+.tally-table td.tally-cond input { width: 100%; font-family: var(--mono); font-size: 12px; }
+.tally-table td.tally-moves { white-space: nowrap; width: 1%; }
+.tally-flow { display: inline-block; line-height: 1.6; padding: 3px 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--ctl); color: var(--muted); font-size: 12px; }
+.tally-flow b { color: var(--fg); font-family: var(--mono); }
+.tally-swatches { display: inline-flex; gap: 6px; align-items: center; padding-top: 6px; }
+button.tally-swatch { flex: none; width: 14px; height: 14px; min-width: 0; min-height: 0; border-radius: 50%; border: 0; padding: 0; cursor: pointer; }
+button.tally-swatch[aria-pressed='true'] { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tally-row-note { margin-top: 4px; font-size: 12px; }
+.tally-row-note.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 4px 8px; }
+.tally-row-note.bad { color: var(--err-fg); }
+.tally-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
 .toggle input { appearance: none; -webkit-appearance: none; width: 28px; height: 16px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex: none; }
 .toggle input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: left 0.12s; }
@@ -345,11 +367,13 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .tab-icon.tone-closed { color: var(--state-closed-fg); }
 .tab-icon.tone-done { color: var(--state-done-fg); }
 .tab-icon.tone-neutral { color: var(--state-neutral-fg); }
-/* GitHub#442: "an agent is working on it" — a still robot on a disc, the pair of "waiting for a human" (a spinner read as "still loading") */
-.tab-icon.running .disc { fill: var(--accent); }
-.tab-icon.running .robot { fill: #fff; }
-.tab-icon.running .eye { fill: var(--accent); }
-.tab-icon.running .antenna { stroke: #fff; }
+/* GitHub#449: "an agent is working on it" — a short bright stretch of edge going round a hollow square, one lap in 2 s
+   (a square path and no disc: GitHub#442 dropped a spinner because it read as "still loading") */
+.tab-icon.running .track { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0.25; }
+.tab-icon.running .seg { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 24 76; animation: tab-running 2s linear infinite; }
+.tab-icon.running .core { fill: var(--accent); }
+@keyframes tab-running { to { stroke-dashoffset: -100; } }
+@media (prefers-reduced-motion: reduce) { .tab-icon.running .seg { animation: none; } }
 .tab-icon.waiting .disc { fill: var(--edge-open); }
 .tab-icon.waiting .person { fill: #fff; }
 .tab-icon.blocked .disc { fill: var(--state-neutral-fg); }
@@ -432,6 +456,8 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .modal-back { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .modal { width: 520px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: var(--shadow-lg); }
 .modal h3 { margin: 0 0 12px; font-size: 16px; }
+/* GitHub#451: the comment "评论并托管" sends first, quoted as typed */
+.modal blockquote.op-comment { margin: 6px 0 10px; padding: 6px 10px; border-left: 3px solid var(--border); background: var(--canvas); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
 .modal textarea { width: 100%; min-height: 80px; font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); resize: vertical; }
 .form { display: flex; flex-direction: column; gap: 10px; }
 .form label { display: flex; flex-direction: column; gap: 4px; font-weight: 500; }
@@ -639,6 +665,10 @@ button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(-
 .detail-head .head-note { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 240px; font-size: 12px; color: var(--state-open-fg); }
 .detail-head .head-note .icon { flex: none; }
 .detail-head .head-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* GitHub#447: a close that went through but left the tab / panel open because of unsent text: a line under the head until its × */
+.detail-held { display: flex; align-items: flex-start; gap: 6px; padding: 6px 10px; margin: 4px 0 6px; border: 1px solid var(--warn-border); border-radius: 6px; background: var(--warn-bg); color: var(--fg); }
+.detail-held > .icon { flex: none; margin-top: 2px; color: var(--warn-icon); }
+.detail-held-text { flex: 1; min-width: 0; }
 button.icon-btn.notices-btn { width: auto; min-width: 28px; padding: 0 6px; gap: 4px; display: inline-flex; align-items: center; }
 button.icon-btn.notices-btn.tone-error, button.icon-btn.notices-btn.tone-error:hover:not(:disabled) { color: var(--err-fg); }
 button.icon-btn.notices-btn.tone-warn, button.icon-btn.notices-btn.tone-warn:hover:not(:disabled) { color: var(--warn-icon); }
@@ -649,6 +679,10 @@ button.icon-btn.notices-btn.on { background: var(--hover); border-color: var(--b
 .notices-panel[hidden] { display: none; }
 .detail .notices-panel .banner, .detail .notices-panel .op-draft-line { margin: 0; }
 button.icon-btn.fields-btn.on { color: var(--fg); background: var(--hover); }
+/* GitHub#457: the floating panel's 在标签页打开 — the accent fill marks it as the way that stays in the app */
+button.blue.open-tab-btn { padding: 0 10px; gap: 5px; }
+button.blue.open-tab-btn.icon-only { width: 28px; padding: 0; }
+button.blue.open-tab-btn:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
 /* GitHub#260: the head is two groups. The facts (badge, number, people, success line) give way first and
    are cut short; the buttons never shrink, and on a panel too narrow for both they take a line of their own */
 .detail-head { position: relative; flex-wrap: wrap; row-gap: 4px; }
@@ -923,3 +957,6 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .reread-line.bad > .icon { color: var(--err-fg); }
 .reread-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg); background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
 .reread-ok .icon { color: var(--ok-icon); }
+
+/* GitHub#447: the notices of closes that put their tab / floating panel away — above every page, under the tab bar */
+.op-strip { flex: none; padding-top: 8px; background: var(--canvas); border-bottom: 1px solid var(--border); }

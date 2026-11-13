@@ -6,7 +6,8 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
+import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
@@ -53,7 +54,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, searchCandidates, type Candidate } from '../data/blocked';
+import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
   applyDone,
@@ -63,15 +64,20 @@ import {
   factsOf,
   fingerprint,
   isOpComment,
+  layerRows,
   latestRefs,
   lostRefs,
   markComment,
+  parseRefQuery,
   planBlocked,
+  rankByNumber,
   refKey,
   repauseAllowed,
+  settledOf,
   type BlockedLabels,
   type BlockedRead,
   type Facts,
+  type NumberSettled,
   type Pick as BlockedPick,
   type Ref,
 } from '../shared/blocked';
@@ -327,6 +333,9 @@ interface SyncRun {
   drop(): void;
 }
 
+/** GitHub#448: how long the picker reuses a repository's complete list of open items */
+const OPEN_CACHE_MS = 60_000;
+
 export class Controller {
   private state: AppState;
   private snapshots = new Map<string, SourceSnapshot>();
@@ -521,6 +530,7 @@ export class Controller {
       sync: { syncing: false, ...offlineFields(false, null), lastOnlineAt: null, dataFrom: null, checkedFrom: null, times: [], progress: null, sources: [], problem: null },
       credentialsPersistent: init.persistent,
       handBack,
+      ...this.loadTallies(),
       blockedLabels: normalizeBlockedLabels(this.cache.getSetting<unknown>(BLOCKED_LABELS, null), handBack.blocked),
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
@@ -2108,6 +2118,23 @@ export class Controller {
     this.set({ blockedLabels: { blocked: this.state.handBack.blocked, flow } });
   }
 
+  /** GitHub#468: the view-bar numbers as saved; a value that is not a whole valid table shows the default and says so */
+  private loadTallies(): { tallies: TallyDef[] | null; talliesBroken: boolean } {
+    const { tallies, broken } = normalizeTallies(this.cache.getSetting<unknown>(TALLIES_SETTING, null));
+    return { tallies, talliesBroken: broken };
+  }
+
+  /**
+   * GitHub#468: save the view-bar numbers. `null` = back to the default table. A table that does not read
+   * back as valid (from a window of another version, say) is refused whole: nothing is saved.
+   */
+  setTallies(next: TallyDef[] | null): void {
+    const { tallies, broken } = normalizeTallies(next);
+    if (broken) return;
+    this.cache.setSetting(TALLIES_SETTING, tallies);
+    this.set({ tallies, talliesBroken: false });
+  }
+
   setHandBack(patch: Partial<HandBackLabels>): void {
     const next: HandBackLabels = {
       human: (patch.human ?? this.state.handBack.human).trim() || DEFAULT_HAND_BACK.human,
@@ -3437,10 +3464,26 @@ export class Controller {
         const { human, agent, autopilot } = this.state.handBack;
         if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
+        // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
+        // not go out (or whose answer never came) leaves every label alone: never handed over without it
+        const comment = typeof action.comment === 'string' ? action.comment : '';
+        if (comment.trim()) draft = { comment };
         // the autopilot label first (the daemon must see it when it picks the item up); add before remove
-        steps = [...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []), step('addLabel', agent, 'agent'), step('removeLabel', human, 'human')];
+        steps = [
+          ...(comment.trim() ? [step('comment')] : []),
+          ...(action.kind === 'autopilot' ? [step('addLabel', autopilot, 'autopilot')] : []),
+          step('addLabel', agent, 'agent'),
+          step('removeLabel', human, 'human'),
+        ];
         break;
       }
+    }
+    // GitHub#451: the reply box carried an earlier operation's kept comment — it moves into this one (that
+    // record no longer offers it), never while a reply made from it may still be on its way or unproven
+    const draftOf = (action.kind === 'autopilot' || action.kind === 'handBack') && draft.comment !== undefined && typeof action.draftOf === 'string' ? this.ops.get(action.draftOf) : undefined;
+    if (draftOf && draftOf.key === item.key) {
+      if (draftOf.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有发送');
+      if (opPhase(draftOf) === 'waiting' || opPhase(draftOf) === 'unknown') return refuse(`上一次操作还没结清，附带评论先不发：${opText(draftOf)}`);
     }
     const id = `op-${++this.opSeq}`;
     const rec: OpRecord = {
@@ -3464,6 +3507,7 @@ export class Controller {
     // a draft taken from an earlier record (its "重新关闭 / 合并 / 托管") now lives here
     const from = opts.from ? this.ops.get(opts.from) : undefined;
     if (from) this.setOp({ ...from, draftDropped: true, dismissed: true });
+    if (draftOf && draftOf.key === item.key && draftOf.id !== from?.id && this.ops.has(draftOf.id)) this.setOp({ ...this.ops.get(draftOf.id)!, commentUsed: true });
     this.setOp(rec);
     this.pruneOps();
     this.opsChanged();
@@ -3536,25 +3580,72 @@ export class Controller {
     return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
   }
 
-  /** GitHub#434: the picker's search (the item's own repository; `owner/repo#N` another one). */
-  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[] } | { ok: false; error: string }> {
+  /**
+   * GitHub#434 / #448: the picker's search (the item's own repository; `owner/repo#N` or an address
+   * another one). A number reads the item itself and every open item of the repository (to its last
+   * page), ranked by `rankByNumber`; an address reads that one item; text goes to GitHub's search.
+   * `error` with `ok: true`: part of the answer could not be read — `items` holds what could, never
+   * passed off as the whole.
+   */
+  async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string; settled?: NumberSettled } | { ok: false; error: string }> {
     const item = this.findItem(key);
     if (!item) return { ok: false, error: '看板上找不到这一条' };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
     const q = text.trim();
-    const one = /^(?:([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+))?#?(\d+)$/.exec(q);
+    const parsed = parseRefQuery(q, this.deps.endpoints.web);
+    const self = { repo: item.repo.toLowerCase(), number: item.number };
+    const fail = (e: unknown) => `搜索失败：${(e as Error)?.message ?? String(e)}`;
+    const one = async (repo: string, n: number): Promise<Candidate | null> => {
+      try {
+        return await readCandidate(c.client, repo, n);
+      } catch (e) {
+        if (e instanceof GitHubError && e.status === 404) return null;
+        throw e;
+      }
+    };
+    if (parsed.kind === 'number') {
+      const repo = parsed.repo ?? self.repo;
+      const exactNo = /^0/.test(parsed.digits) ? null : Number(parsed.digits);
+      const [exact, list] = await Promise.allSettled([exactNo === null ? Promise.resolve(null) : one(repo, exactNo), this.openCandidates(c.client, repo)]);
+      // freshest first: the exact read settles its number over the list (read now or kept a minute) — a
+      // 404 or a closed answer hides that number's row in the list too (PR #452 review round 2)
+      const layers = [
+        { rows: exact.status === 'fulfilled' && exact.value ? [exact.value] : [], settled: { decided: exactNo !== null && exact.status === 'fulfilled' ? [refKey({ repo, number: exactNo })] : [], whole: null } },
+        { rows: list.status === 'fulfilled' ? list.value : [], settled: { decided: [], whole: list.status === 'fulfilled' ? repo : null } },
+      ];
+      const items = rankByNumber(layerRows(layers), repo, parsed.digits, self).map((x) => ({ ...x }));
+      // what was read, so the window puts its board copies of it under GitHub's answer
+      const settled: NumberSettled = settledOf(layers);
+      const errs: string[] = [];
+      if (exact.status === 'rejected') errs.push(fail(exact.reason));
+      if (list.status === 'rejected') errs.push(`搜索失败：开着的条目没读全（${(list.reason as Error)?.message ?? String(list.reason)}）`);
+      return errs.length ? { ok: true, items, error: errs.join('；'), settled } : { ok: true, items, settled };
+    }
     try {
       let found: Candidate[];
-      if (one) found = [await readCandidate(c.client, one[1] ?? item.repo, Number(one[2]))];
+      if (parsed.kind === 'url') found = [await one(parsed.repo, parsed.number)].filter((x): x is Candidate => x !== null);
       else if (q.length < 2) return { ok: true, items: [] };
       else found = await searchCandidates(c.client, item.repo, q);
-      const items = found.filter((x) => x.state === 'open' && !(x.repo === item.repo.toLowerCase() && x.number === item.number));
+      const items = found.filter((x) => x.state === 'open' && !(x.repo === self.repo && x.number === self.number));
       return { ok: true, items: items.map((x) => ({ ...x })) };
     } catch (e) {
-      if (one && e instanceof GitHubError && e.status === 404) return { ok: true, items: [] };
-      return { ok: false, error: `搜索失败：${(e as Error)?.message ?? String(e)}` };
+      return { ok: false, error: fail(e) };
     }
+  }
+
+  /** GitHub#448: a repository's open items read whole, kept a minute per sign-in session (a failed read is not kept). */
+  private openCache = new Map<string, { at: number; items: Candidate[] }>();
+  private async openCandidates(client: GitHubClient, repo: string): Promise<Candidate[]> {
+    const k = `${this.session}\n${repo.toLowerCase()}`;
+    const hit = this.openCache.get(k);
+    const now = this.now();
+    if (hit && now - hit.at >= 0 && now - hit.at < OPEN_CACHE_MS) return hit.items;
+    const session = this.session;
+    const items = await readOpenCandidates(client, repo);
+    for (const [key, v] of this.openCache) if (!key.startsWith(`${this.session}\n`) || now - v.at >= OPEN_CACHE_MS) this.openCache.delete(key);
+    if (session === this.session) this.openCache.set(k, { at: now, items });
+    return items;
   }
 
   /** GitHub#434: confirm in the dialog. Refused (nothing written) when GitHub no longer holds what was shown. */
@@ -3942,7 +4033,7 @@ export class Controller {
       try {
         // GitHub#359: the labels too — the label records made later must add up to the labels read then
         const rec = await readItemSnapshot(c.client, item.repo, item.number, null);
-        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels };
+        before = { comments: rec.comments.map((x) => x.id), events: rec.labelEvents.map((x) => x.id), labels: rec.labels, state: rec.state };
       } catch {
         // sent anyway; a step of it whose answer never comes can then only be checked by a person
       }
@@ -4001,8 +4092,13 @@ export class Controller {
       const again = opts.resend === i && r.steps[i].state === 'unknown';
       if (r.steps[i].state !== 'unsent' && !again) continue;
       if (i > 0 && r.steps[i - 1].state !== 'ok') break;
-      if (opts.gated) {
-        const mode = again ? ('resend' as const) : ('auto' as const);
+      // GitHub#451: the first label after a hand-over's comment is judged on a fresh read like a send nobody
+      // clicked — the item may have been closed, or its labels changed, while the comment was on its way
+      // (code review round 2: every label after it, not only the first — a maintainer may stop it while any of them is on its way)
+      const follow = !opts.gated && !again && i > 0 && r.steps.slice(0, i).some((x) => x.name === 'comment') && (r.kind === 'autopilot' || r.kind === 'handBack');
+      const rightAfter = follow && r.steps[i - 1].name === 'comment';
+      if (opts.gated || follow) {
+        const mode = again ? ('resend' as const) : follow ? ('follow' as const) : ('auto' as const);
         // judged twice: on the read the decision was made on (when there is one), and on one made right now
         const snaps: (OpSnapshot | null)[] = decided !== undefined ? [decided] : [];
         decided = undefined;
@@ -4024,7 +4120,29 @@ export class Controller {
           }
           // could not be read: nothing is sent now, the next check / round judges again. Anything else ends "by
           // itself" for the steps left; a step a person wanted sent again just stays "not sure" (its verdict says why)
-          const halt = no.why === 'unread' ? (again ? { checkProblem: no.text } : {}) : again ? {} : { halt: { text: no.text, redo: no.redo === true }, auto: false };
+          const halt =
+            follow
+              ? {
+                  halt: {
+                    text:
+                      no.why === 'unread'
+                        ? rightAfter
+                          ? '评论发出后没能完整读到这一条现在的状态，没敢接着改标签'
+                          : '改标签途中没能完整读到这一条现在的状态，没敢接着改'
+                        : rightAfter
+                          ? `评论发出期间${no.text.replace(/^这期间/, '')}`
+                          : no.text,
+                    redo: no.redo === true,
+                  },
+                  auto: false,
+                }
+              : no.why === 'unread'
+                ? again
+                  ? { checkProblem: no.text }
+                  : {}
+                : again
+                  ? {}
+                  : { halt: { text: no.text, redo: no.redo === true }, auto: false };
           this.setOp(opCheckSteps({ ...now, ...halt }, snaps[snaps.length - 1]));
           this.opsChanged();
           await this.storeOps();

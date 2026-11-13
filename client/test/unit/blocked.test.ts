@@ -19,8 +19,15 @@ import {
   flowLabelsOf,
   latestRefs,
   lostRefs,
+  layerRows,
   markComment,
+  NUMBER_PICK_LIMIT,
+  SETTLES_NOTHING,
+  settledOf,
+  type NumberSettled,
+  parseRefQuery,
   planBlocked,
+  rankByNumber,
   planLines,
   refKey,
   repauseAllowed,
@@ -282,5 +289,113 @@ describe('PR #441 code review round 1', () => {
     expect(confirmBlock({ picks: 0, restore: 0, current: 0, plan: plan({ kind: 'human' }, []) })).toMatch(/还没有选前置/);
     // something picked: as before
     expect(confirmBlock({ picks: 1, restore: 0, current: 0, plan: p2 })).toBeNull();
+  });
+});
+
+describe('GitHub#448: the picker reads a number, a number prefix and an address one way', () => {
+  const WEB = 'https://github.com';
+  it('numbers: bare, with #, with owner/repo (case folded); the repository needs the #', () => {
+    expect(parseRefQuery('4', WEB)).toEqual({ kind: 'number', repo: null, digits: '4' });
+    expect(parseRefQuery(' #44 ', WEB)).toEqual({ kind: 'number', repo: null, digits: '44' });
+    expect(parseRefQuery('GigleAI/cavil-loop#4', WEB)).toEqual({ kind: 'number', repo: 'gigleai/cavil-loop', digits: '4' });
+    expect(parseRefQuery('gigleai/cavil-loop#', WEB)).toEqual({ kind: 'text' });
+    // the old pattern read this as repo "acme/demo1", number 2
+    expect(parseRefQuery('acme/demo12', WEB)).toEqual({ kind: 'text' });
+    expect(parseRefQuery('cavil-loop#4', WEB)).toEqual({ kind: 'text' });
+    expect(parseRefQuery('前置', WEB)).toEqual({ kind: 'text' });
+  });
+
+  it('addresses: issues and pull, with or without the scheme, any trailing part; another host is text', () => {
+    const want = (repo: string, number: number) => ({ kind: 'url', repo, number });
+    expect(parseRefQuery('https://github.com/GigleAI/cavil-loop/issues/444', WEB)).toEqual(want('gigleai/cavil-loop', 444));
+    expect(parseRefQuery('github.com/gigleai/cavil-loop/pull/445/files', WEB)).toEqual(want('gigleai/cavil-loop', 445));
+    expect(parseRefQuery('HTTPS://WWW.GitHub.com/a/b/issues/7/', WEB)).toEqual(want('a/b', 7));
+    expect(parseRefQuery('https://github.com/a/b/issues/7?x=1', WEB)).toEqual(want('a/b', 7));
+    expect(parseRefQuery('https://github.com/a/b/issues/7#issuecomment-123', WEB)).toEqual(want('a/b', 7));
+    expect(parseRefQuery('http://127.0.0.1:5555/web/a/b/pull/9', 'http://127.0.0.1:5555/web')).toEqual(want('a/b', 9));
+    expect(parseRefQuery('https://example.com/a/b/issues/7', WEB)).toEqual({ kind: 'text' });
+    expect(parseRefQuery('https://github.com/a/b/issues/7x', WEB)).toEqual({ kind: 'text' });
+    expect(parseRefQuery('https://github.com/a/b/discussions/7', WEB)).toEqual({ kind: 'text' });
+    expect(parseRefQuery('https://github.com/orgs/a/projects/11', WEB)).toEqual({ kind: 'text' });
+  });
+
+  const SELF448 = { repo: SELF, number: 448 };
+  const c = (number: number, state = 'open', repo = SELF) => ({ repo, number, state });
+  const nums = (xs: { number: number }[]) => xs.map((x) => x.number);
+
+  it('the exact number first, then the prefix matches largest first; open only, never the item itself, one copy each', () => {
+    const pool = [c(4, 'closed'), c(448), c(444), c(447), c(45, 'merged'), c(41), c(4, 'open', 'other/repo'), c(14), c(447)];
+    expect(nums(rankByNumber(pool, SELF, '4', SELF448))).toEqual([447, 444, 41]);
+    expect(nums(rankByNumber([c(4), ...pool], SELF, '4', SELF448))).toEqual([4, 447, 444, 41]);
+    expect(nums(rankByNumber(pool, SELF, '44', SELF448))).toEqual([447, 444]);
+    // another repository's item with the same number is its own
+    expect(nums(rankByNumber(pool, 'other/repo', '4', SELF448))).toEqual([4]);
+    // the item itself is excluded in its own repository only
+    expect(nums(rankByNumber([c(448, 'open', 'other/repo')], 'Other/Repo', '448', SELF448))).toEqual([448]);
+  });
+
+  it('the first copy wins (GitHub before the board): a closed fresh copy hides the board\'s open one', () => {
+    expect(nums(rankByNumber([c(447, 'closed'), c(447)], SELF, '4', SELF448))).toEqual([]);
+    expect(nums(rankByNumber([c(447), c(447, 'closed')], SELF, '4', SELF448))).toEqual([447]);
+  });
+
+  it(`at most ${NUMBER_PICK_LIMIT}, cut after ranking (the largest numbers stay, whatever order the pool came in)`, () => {
+    const pool = Array.from({ length: 150 }, (_, i) => c(4000 + i)).reverse();
+    const shuffled = [...pool.filter((_, i) => i % 2), ...pool.filter((_, i) => !(i % 2))];
+    const got = nums(rankByNumber([c(4), ...shuffled], SELF, '4', SELF448));
+    expect(got).toHaveLength(NUMBER_PICK_LIMIT);
+    expect(got[0]).toBe(4);
+    expect(got.slice(1)).toEqual(Array.from({ length: NUMBER_PICK_LIMIT - 1 }, (_, i) => 4149 - i));
+  });
+
+  it('a leading zero is a prefix only (no item is numbered 04)', () => {
+    expect(nums(rankByNumber([c(4), c(40)], SELF, '04', SELF448))).toEqual([]);
+  });
+});
+
+describe('PR #452 review rounds 1–2: which source an item\'s row comes from — the freshest word on it wins', () => {
+  type Row = { repo: string; number: number; state: string };
+  const r = (number: number, state = 'open', repo = SELF): Row => ({ repo, number, state });
+  const SELF_ITEM = { repo: SELF, number: 448 };
+  const nums = (xs: { number: number }[]) => xs.map((x) => x.number);
+  const exactLayer = (outcome: 'open' | 'closed' | 'missing' | 'failed', n = 11) => ({
+    rows: outcome === 'open' ? [r(n)] : outcome === 'closed' ? [r(n, 'closed')] : [],
+    settled: { decided: outcome === 'failed' ? [] : [`${SELF}#${n}`], whole: null },
+  });
+  const listLayer = (outcome: 'ok' | 'failed', rows: Row[]) => ({ rows: outcome === 'ok' ? rows : [], settled: { decided: [], whole: outcome === 'ok' ? SELF : null } });
+  // the list is a minute old: it still holds #11 open and #110 open
+  const stale = [r(11), r(110)];
+
+  // every outcome of the exact read × the list, as the back end layers them (the board is the window's)
+  const cases: [string, 'open' | 'closed' | 'missing' | 'failed', 'ok' | 'failed', number[]][] = [
+    ['exact open, list ok', 'open', 'ok', [11, 110]],
+    ['exact closed, list (stale) ok', 'closed', 'ok', [110]],
+    ['exact missing (404), list (stale) ok — round 2', 'missing', 'ok', [110]],
+    ['exact read failed, list ok: the list\'s word stands', 'failed', 'ok', [11, 110]],
+    ['exact open, list failed', 'open', 'failed', [11]],
+    ['exact missing, list failed', 'missing', 'failed', []],
+  ];
+  for (const [name, exact, list, want] of cases)
+    it(`back end: ${name}`, () => {
+      const layers = [exactLayer(exact), listLayer(list, stale)];
+      expect(nums(rankByNumber(layerRows(layers), SELF, '11', SELF_ITEM))).toEqual(want);
+    });
+
+  it('window: GitHub\'s answer over the board — what the answer settled hides the board copy; a failed read settles nothing; other repositories are untouched', () => {
+    const board = [r(11), r(110), r(11, 'open', 'other/repo')];
+    const win = (answer: Row[], settled: NumberSettled) => layerRows([{ rows: answer, settled }, { rows: board, settled: SETTLES_NOTHING }]);
+    // the exact number settled (closed / missing): the board's open #11 does not come back — round 1
+    expect(nums(rankByNumber(win([], { decided: [`${SELF}#11`], whole: null }), SELF, '11', SELF_ITEM))).toEqual([110]);
+    // the whole repository settled: only GitHub's rows of it
+    expect(nums(rankByNumber(win([r(111)], { decided: [], whole: SELF }), SELF, '11', SELF_ITEM))).toEqual([111]);
+    // nothing settled (both reads failed): the board's rows stay
+    expect(nums(rankByNumber(win([], SETTLES_NOTHING), SELF, '11', SELF_ITEM))).toEqual([11, 110]);
+    expect(nums(rankByNumber(win([], { decided: [`${SELF}#11`], whole: SELF }), 'other/repo', '11', SELF_ITEM))).toEqual([11]);
+  });
+
+  it('end to end through both layers: the back end\'s settled set is everything its layers settled', () => {
+    const layers = [exactLayer('missing'), listLayer('ok', stale)];
+    expect(settledOf(layers)).toEqual({ decided: [`${SELF}#11`], whole: SELF });
+    expect(settledOf([exactLayer('failed'), listLayer('failed', stale)])).toEqual(SETTLES_NOTHING);
   });
 });

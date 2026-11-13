@@ -16,18 +16,20 @@ const ICON: Record<Exclude<TabStatus, 'running' | 'waiting' | 'blocked'>, { issu
   open: { issue: 'issue-open', pr: 'pr-open', tone: 'open' },
 };
 
-/** The status icon of one tab: GitHub's own state icons, plus "an agent is working on it", "waiting for a human" and "waiting for a prerequisite" (a pause, GitHub#443). */
+/** The square the "running" icon's bright stretch goes round, starting at the top-left. */
+const FRAME = 'M4 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z';
+
+/** The status icon of one tab: GitHub's own state icons, plus "an agent is working on it" (a stretch of edge going round a square, GitHub#449), "waiting for a human" and "waiting for a prerequisite" (a pause, GitHub#443). */
 export function TabStatusIcon({ status, kind }: { status: TabStatus; kind: 'issue' | 'pr' }) {
   if (status === 'running')
-    // GitHub#442: a still robot on a disc — the pair of "waiting for a human" below; a spinner read as "still loading"
+    // GitHub#449: a hollow square with a short bright stretch of its edge going round it (one lap in 2 s),
+    // a small solid square in the middle. Still under "reduce motion": the stretch rests at the top-left.
+    // Not a spinner (GitHub#442: one read as "still loading"): the path is a square and there is no disc.
     return (
-      <svg className="tab-icon running" data-icon="robot" viewBox="0 0 16 16" width={16} height={16} aria-hidden="true">
-        <circle className="disc" cx="8" cy="8" r="7.5" />
-        <path className="antenna" d="M8 5V3.4" fill="none" strokeWidth={1.2} strokeLinecap="round" />
-        <circle className="robot" cx="8" cy="3.2" r="0.9" />
-        <rect className="robot" x="4.3" y="5.3" width="7.4" height="6.2" rx="1.8" />
-        <circle className="eye" cx="6.6" cy="8.3" r="0.95" />
-        <circle className="eye" cx="9.4" cy="8.3" r="0.95" />
+      <svg className="tab-icon running" data-icon="frame-run" viewBox="0 0 16 16" width={16} height={16} aria-hidden="true">
+        <path className="track" d={FRAME} />
+        <path className="seg" d={FRAME} pathLength={100} />
+        <rect className="core" x="6" y="6" width="4" height="4" rx="1" />
       </svg>
     );
   if (status === 'waiting')

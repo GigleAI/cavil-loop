@@ -2598,16 +2598,20 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await shot(page, '51-close-issue-confirm');
   expect(env.fake.writes()).toEqual([]);
   await page.getByTestId('confirm-ok').click();
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last()).toHaveAttribute('data-kind', 'ok');
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（不计划），评论已发出');
+  // GitHub#447: GitHub took the close: the panel puts itself away, the result shows in the strip at the top of the window
+  const stripped = (n: number) => page.locator(`[data-testid="op-strip"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
+  await expect(detail).toHaveCount(0, { timeout: 15_000 });
+  await expect(stripped(137)).toHaveAttribute('data-kind', 'ok');
+  await expect(stripped(137).getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（不计划），评论已发出');
   expect(writes()).toEqual([
     ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'not_planned' }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '不做了' }],
   ]);
   // badge, card and table row all grey (GitHub: not planned), and the close entry is gone
+  await expect(card(page, 137).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
+  await open(137);
   await expect(badge).toHaveAttribute('data-tone', 'neutral');
   await expect(badge).toHaveText('Issue·已关闭（不计划）');
-  await expect(card(page, 137).getByTestId('card-state')).toHaveAttribute('data-tone', 'neutral');
   await expect(page.getByTestId('close-issue')).toHaveCount(0);
   await shot(page, '52-issue-closed');
   await hide.click();
@@ -2620,8 +2624,10 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
   await open(139);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）');
+  await expect(detail).toHaveCount(0, { timeout: 15_000 });
+  await expect(stripped(139).getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（已完成）');
   expect(writes().slice(2)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
+  await open(139);
   await expect(badge).toHaveAttribute('data-tone', 'done');
   await hide.click();
 
@@ -3209,7 +3215,9 @@ test('GitHub#192: shortcuts in the detail — reply ⌘↩, Esc never drops a dr
   // ⌘↩ confirms: the close goes out
   await page.getByTestId('close-issue').click();
   await page.keyboard.press(`${MOD}+Enter`);
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]').last().getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）');
+  // GitHub#447: GitHub took it: the panel puts itself away, the result shows in the strip at the top of the window
+  await expect(detail).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator('[data-testid="op-strip"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#137"]').getByTestId('op-notice-text')).toHaveText('issue #137 已关闭（已完成）');
   expect(writes().slice(n)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/137', { state: 'closed', state_reason: 'completed' }]]);
   await app.close();
 });
@@ -4624,14 +4632,17 @@ test('GitHub#250: "确认关闭" closes the dialog at once while GitHub has not 
   await expect(page.getByTestId('close-comment')).toHaveValue('不做了');
   await page.getByTestId('confirm-ok').click();
   await expect(dialog).toHaveCount(0);
-  await expect(noticeText).toHaveText('issue #139 已关闭（不计划），评论已发出');
+  // GitHub#447: this time GitHub took it: the panel (the opening it was sent from) puts itself away; the result is in the strip on top
+  await expect(detail).toHaveCount(0, { timeout: 15_000 });
+  const n139 = page.locator('[data-testid="op-notice"][data-key="gigleai/cavil-loop#139"]');
+  await expect(page.locator('[data-testid="op-strip"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#139"]').getByTestId('op-notice-text')).toHaveText('issue #139 已关闭（不计划），评论已发出');
   expect(writes().filter((w) => String(w[1]).includes('/issues/139'))).toEqual([
     ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'not_planned' }],
     ['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'not_planned' }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/139/comments', { body: '不做了' }],
   ]);
-  // the refused one handed its draft on: one notice left for #139
-  await expect(page.locator('[data-testid="detail"] [data-testid="op-notice"]')).toHaveCount(1);
+  // the refused one handed its draft on: one notice left for #139 in the whole window
+  await expect(n139).toHaveCount(1);
   await app.close();
 });
 
@@ -4960,11 +4971,20 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
     await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${n}`);
     await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
   };
-  const closeIt = async (n: number) => {
+  // GitHub#447: a close GitHub takes puts the panel away. This test is about the notice in the panel, so the panel
+  // holds a reply while the close is sent (it then stays, and says why) and the reply is cleared once it was kept.
+  const keepOpen = () => page.getByTestId('reply-input').fill('留着面板');
+  const keptOpen = async (closed = true) => {
+    if (closed) await expect(page.getByTestId('auto-close-held')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('reply-input').fill('');
+  };
+  const closeIt = async (n: number, closed = true) => {
     await open(n);
+    await keepOpen();
     await page.getByTestId('close-issue').click();
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
+    await keptOpen(closed);
   };
   const inDetail = (n: number) => page.locator(`[data-testid="detail"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
   const onBoard = (n: number) => page.locator(`[data-testid="op-notice"][data-key="gigleai/cavil-loop#${n}"]`);
@@ -5045,9 +5065,11 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
 
   // ---- 3b. PR #259 review round 1: the window loses focus first, then a notice comes up — it starts paused ----
   await open(135);
+  await keepOpen();
   await windowFocus(page, false);
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
+  await keptOpen();
   await expect(inDetail(135).getByTestId('op-notice-text')).toHaveText('issue #135 已关闭（已完成）', { timeout: 15_000 });
   await page.mouse.move(5, 5);
   await expect(inDetail(135)).toHaveAttribute('data-auto-dismiss', 'paused');
@@ -5077,16 +5099,18 @@ test('GitHub#256: a fully successful notice puts itself away after 5 s (GitHub#2
   await page.getByTestId('detail-close').click();
 
   env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
-  await closeIt(136);
+  await closeIt(136, false);
   await expect(inDetail(136)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   env.fake.state.w.readOnlyRepos.clear();
   await page.getByTestId('detail-close').click();
 
   env.fake.state.w.failComment = true;
   await open(141);
+  await keepOpen();
   await page.getByTestId('close-issue').click();
   await page.getByTestId('close-comment').fill('做完了');
   await page.getByTestId('confirm-ok').click();
+  await keptOpen();
   await expect(inDetail(141).getByTestId('op-notice-text')).toContainText('附的评论没有发出去', { timeout: 15_000 });
   env.fake.state.w.failComment = false;
   await page.getByTestId('detail-close').click();
@@ -5151,8 +5175,9 @@ test('GitHub#296: a missed "pointer left" / "focus left" / "window back" never k
     await page.getByTestId('close-issue').click();
     await page.getByTestId('confirm-ok').click();
     await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-    await page.getByTestId('detail-close').click();
-    await page.mouse.move(5, 5);
+    // GitHub#447: GitHub took the close: the panel puts itself away; the notice shows in the strip at the top
+    await expect(page.getByTestId('detail')).toHaveCount(0, { timeout: 15_000 });
+    await page.mouse.move(600, 600);
     await expect(onBoard(n).getByTestId('op-notice-text')).toHaveText(`issue #${n} 已关闭（已完成）`, { timeout: 15_000 });
     await expect(onBoard(n)).toHaveAttribute('data-auto-dismiss', 'counting');
   };
@@ -5254,7 +5279,8 @@ test('GitHub#279: the close worked but the re-read right after it failed — a y
   await page.getByTestId('close-issue').click();
   await page.getByTestId('confirm-ok').click();
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  // GitHub#447: GitHub took the close: the panel puts itself away; the notice shows in the strip at the top
+  await expect(page.getByTestId('detail')).toHaveCount(0, { timeout: 15_000 });
   const notice = page.locator(`[data-testid="op-notice"][data-key="${ITEM}"]`);
   await expect(notice.getByTestId('op-notice-text')).toContainText('重读这一条失败', { timeout: 15_000 });
   expect(refreshes()).toBeGreaterThan(0);
@@ -5431,13 +5457,16 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await toggle.click();
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
   const panel = (await detail.boundingBox())!;
-  for (const id of ['detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
+  for (const id of ['detail-open-tab', 'detail-open-web', 'fields-toggle', 'detail-notices-toggle', 'detail-refresh', 'detail-close', 'detail-notices']) {
     const b = (await detail.getByTestId(id).boundingBox())!;
     expect(b.x, id).toBeGreaterThanOrEqual(panel.x);
     expect(b.x + b.width, id).toBeLessThanOrEqual(panel.x + panel.width);
   }
   expect(await detail.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
   await shot(page, '260-02b-narrow-notices');
+  // GitHub#457: that narrow, 在标签页打开 keeps its icon and tooltip, without the words
+  await expect(detail.getByTestId('detail-open-tab')).toHaveText('');
+  await expect(detail.getByTestId('detail-open-tab')).toHaveAttribute('aria-label', '在标签页打开');
   // the buttons in it still work at that width
   await expect(detail.getByTestId('edit-resend')).toBeVisible();
   await page.keyboard.press('Escape');
@@ -7737,13 +7766,17 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(reply).toHaveValue('已看过xAP');
   expect(env.fake.writes()).toEqual([]);
 
-  // ---- 4. Ctrl+Shift+Z from the reply box (text in it): the hand-back write, the text stays; while it is held the keys do nothing more ----
+  // ---- 4. Ctrl+Shift+Z from the reply box (text in it): GitHub#451 — the text goes out first as a comment, then the
+  // hand-back write; the box is emptied (the operation keeps the text); while it is held the keys do nothing more ----
   await reply.focus();
+  await expect(page.getByTestId('hand-back')).toHaveText('评论并交给 agentCtrl+Shift+Z');
+  await expect(page.getByTestId('autopilot')).toHaveText('评论并托管（自动合并）…Ctrl+Shift+C');
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /^先把回复框里的字作为评论发出，发成功后再加上「pending\/agent」/);
   const release = env.fake.holdWhen((e) => e.method === 'DELETE' && e.path.includes('/issues/137/labels/'));
   await page.keyboard.press(HAND);
-  await expect.poll(() => writes().length).toBe(2);
+  await expect.poll(() => writes().length).toBe(3);
   await expect(page.getByTestId('hand-back')).toBeDisabled();
-  await expect(reply).toHaveValue('已看过xAP');
+  await expect(reply).toHaveValue('');
   await page.keyboard.press(HAND);
   await page.keyboard.press(CLOSE);
   await page.keyboard.press(AUTO);
@@ -7751,8 +7784,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(dialog).toHaveCount(0);
   release();
   await settled();
-  expect(writes()).toEqual(handBackWrites(137));
-  await expect(reply).toHaveValue('已看过xAP'); // the key does not send the reply
+  expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '已看过xAP' }], ...handBackWrites(137)]);
+  await expect(page.getByTestId('hand-back')).toHaveText('交给 agentCtrl+Shift+Z');
 
   // ---- 5. Ctrl+Shift+C from the empty reply box with "ask first" on: the autopilot dialog; Esc cancels; Ctrl+↩ confirms the same write as the button ----
   await expect(page.getByTestId('hand-back')).toBeEnabled();
@@ -7832,10 +7865,11 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.keyboard.press('Control+Enter');
   await expect(dialog).toHaveCount(0);
   await expect.poll(() => writes().slice(before)).toEqual([['PATCH', '/api/repos/GigleAI/cavil-loop/issues/139', { state: 'closed', state_reason: 'completed' }]]);
-  await settled();
+  // GitHub#447: GitHub took it: the panel puts itself away, the result is in the strip at the top of the window
+  await expect(detail).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator('[data-testid="op-strip"] [data-testid="op-notice"][data-key="gigleai/cavil-loop#139"]')).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
 
   // ---- 9. no autopilot label in Settings: no button, so Ctrl+Shift+C does nothing (from the frame neither); Ctrl+Shift+Z from the frame still hands back ----
-  await page.getByTestId('detail-close').click();
   await page.getByTestId('open-settings').click();
   await page.getByTestId('hand-back-autopilot').fill('');
   await page.getByTestId('hand-back-autopilot').blur();
@@ -7866,5 +7900,66 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.waitForTimeout(300);
   await expect(dialog).toHaveCount(0);
   expect(writes()).toHaveLength(before);
+  await app.close();
+});
+
+test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and posts it before any label; a refused comment leaves every label alone and comes back to the reply box', async () => {
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  await card(page, 138).click();
+  const detail = page.getByTestId('detail');
+  const reply = page.getByTestId('reply-input');
+  const dialog = page.getByTestId('confirm-dialog');
+  const notice = () => detail.locator('[data-testid="op-notice"]').last();
+  const comment = (n: number, body: string) => ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/comments`, { body }];
+  const autopilotWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
+    ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
+  ];
+
+  // ---- 1. the dialog quotes what will be posted; cancel sends nothing and keeps the text ----
+  await reply.fill('补充：只改客户端\n第二行');
+  await expect(page.getByTestId('autopilot')).toHaveText('评论并托管（自动合并）…Ctrl+Shift+C');
+  await page.getByTestId('autopilot').click();
+  await expect(dialog.locator('h3')).toHaveText('评论并托管 issue #138？');
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await expect(page.getByTestId('autopilot-explain-labels')).toContainText('评论发成功后，再加上标签');
+  await shot(page, '451-01-autopilot-with-comment');
+  await page.getByTestId('confirm-cancel').click();
+  expect(env.fake.writes()).toEqual([]);
+  await expect(reply).toHaveValue('补充：只改客户端\n第二行');
+
+  // ---- 2. refused comment: it reached GitHub, no label request after it; the text is kept and goes back into the box ----
+  env.fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
+  await page.getByTestId('autopilot').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(reply).toHaveValue('');
+  await expect(notice()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
+  await openNotices(page);
+  await expect(notice().getByTestId('op-notice-text')).toContainText('评论没有发出去');
+  await expect(notice().getByTestId('op-notice-text')).toContainText('标签都没动');
+  await shot(page, '451-02-comment-refused');
+  // "重新托管…" quotes the comment this operation kept, not the (now empty) reply box; cancelled, nothing sent
+  await notice().getByTestId('op-retry').click();
+  await expect(dialog.locator('h3')).toHaveText('评论并托管 issue #138？');
+  await expect(page.getByTestId('autopilot-explain-comment')).toHaveText('先发出上一次没发出去的评论：');
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await page.getByTestId('confirm-cancel').click();
+  expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
+  await openNotices(page);
+  await notice().getByTestId('op-to-reply').click();
+  await expect(reply).toHaveValue('补充：只改客户端\n第二行');
+
+  // ---- 3. allowed again: the kept text goes out first, then the three label writes, in that order ----
+  env.fake.state.w.readOnlyRepos.clear();
+  const before = writes().length;
+  await page.getByTestId('autopilot').click();
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('补充：只改客户端\n第二行');
+  await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual([comment(138, '补充：只改客户端\n第二行'), ...autopilotWrites(138)]);
+  await expect(reply).toHaveValue('');
   await app.close();
 });
