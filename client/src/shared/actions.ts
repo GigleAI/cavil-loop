@@ -122,6 +122,12 @@ export interface WriteResult {
   warning: string | null;
   /** createIssue: the new item's key */
   createdKey?: string;
+  /**
+   * GitHub#488: a label / milestone / status / iteration change the controller recorded — its outcome is
+   * held in the list of changes and said in the window's notice area (failed, not confirmed) or by the
+   * field itself (saved). Unset: refused before anything was recorded, the caller says why.
+   */
+  held?: boolean;
 }
 
 export interface RepoOptions {
@@ -156,6 +162,11 @@ export interface TimelineEntry {
   tasks?: TaskEntry;
   /** GitHub#205: the markdown source, present only when GitHub says this account may change it (body / comment) */
   editSource?: string;
+  /**
+   * GitHub#503: this round's total time in seconds, from the usage record on the last line of
+   * the markdown source (body / comment only); absent when there is no valid record.
+   */
+  wallSecs?: number;
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }

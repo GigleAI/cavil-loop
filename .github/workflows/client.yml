@@ -5,7 +5,7 @@ name: Client
 # daemon's tests or its weekly release.
 #
 # What runs when:
-#   every PR push                 quick tests: typecheck, cargo, vitest (a few minutes)
+#   every PR push                 quick tests: typecheck + cargo, vitest in two halves, in parallel (a few minutes)
 #   push to main                  quick tests + the Mac arm64 build (dmg + its checks), then the
 #                                 development build is published as a pre-release (GitHub#215)
 #   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
@@ -47,22 +47,65 @@ defaults:
     working-directory: client
 
 jobs:
-  test:
-    name: client quick tests (Linux)
+  # The quick tests run as three parallel jobs (GitHub#495: one after another they took ~10 minutes):
+  # type check + the back end's cargo tests, and vitest in two halves. `test` below is the one check
+  # the later jobs wait on; it is green only when all three are.
+  test-rust:
+    name: client quick tests — type check + back end (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/client-setup
+        with:
+          ui: 'false'
+      - name: Type check
+        run: npm run typecheck
+      - name: Back end unit tests (cargo)
+        run: npm run test:rust
+
+  test-vitest:
+    name: client quick tests — vitest ${{ matrix.shard }}/2 (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
         with:
           # the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
       - uses: ./.github/actions/client-setup
-      - name: Type check
-        run: npm run typecheck
-      - name: Back end unit tests (cargo)
-        run: npm run test:rust
-      - name: Unit tests (vitest, real back end as a child process)
-        run: npm test
+        with:
+          ui: 'false'
+          webkit: 'false'
+      # `npm test` is `vitest run && bash test/mutation/run.sh`: the two halves of the first, and the
+      # second (it only counts the negative controls it skips) once, in half 1.
+      - name: Unit tests (vitest ${{ matrix.shard }}/2, real back end as a child process)
+        run: npx vitest run --shard=${{ matrix.shard }}/2
+      - name: Negative controls skipped by default (count only)
+        if: matrix.shard == 1
+        run: bash test/mutation/run.sh
+
+  test:
+    name: client quick tests (Linux)
+    needs: [test-rust, test-vitest]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Both quick-test jobs passed
+        working-directory: .
+        env:
+          RUST: ${{ needs.test-rust.result }}
+          VITEST: ${{ needs.test-vitest.result }}
+        run: |
+          echo "type check + back end: $RUST; vitest: $VITEST"
+          [ "$RUST" = success ] && [ "$VITEST" = success ]
 
   # Playwright + the real app on Linux. Each builds the whole app, so only on a client/v* tag,
   # the weekly run and a manual run — not on pull requests, not on pushes to main.

@@ -4,7 +4,7 @@
 
 import type { AppState, TallyColor, TallyDef, TallyFlow } from '../shared/types';
 import { effectiveTallies, TALLY_COLORS, tallyFlowText, TALLY_MAX } from '../shared/tallies';
-import { flowQuery, tallyName } from '../data/flowTally';
+import { flowCondition, tallyName } from '../data/flowTally';
 import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
@@ -28,7 +28,7 @@ function newId(taken: Set<string>): string {
 export function toQueryRow(d: TallyDef, labels: Record<TallyFlow, string>): TallyDef {
   if (d.source.kind !== 'flow') return d;
   const flow = d.source.flow;
-  return { ...d, source: { kind: 'query', query: flowQuery(flow, labels[flow]) ?? '', from: flow } };
+  return { ...d, source: { kind: 'query', query: flowCondition(flow, labels[flow]) ?? '', from: flow } };
 }
 
 export function TallySettings({ state }: { state: AppState }) {
@@ -109,7 +109,7 @@ export function TallySettings({ state }: { state: AppState }) {
                         {t('改成自己写条件')}
                       </button>
                       {label === '' && <div className="tally-row-note muted" data-testid="tally-note">{t('{which}留空，这一行不显示在顶栏', { which: tallyFlowText(src.flow) })}</div>}
-                      {label !== '' && flowQuery(src.flow, label) === null && (
+                      {label !== '' && flowCondition(src.flow, label) === null && (
                         <div className="tally-row-note muted" data-testid="tally-note">
                           {t('这个标签名写不进搜索框（含双引号，或以 < > 开头）：照样计数，但点数字不能筛选')}
                         </div>
@@ -126,7 +126,7 @@ export function TallySettings({ state }: { state: AppState }) {
                         onBlur={(e) => e.target.value !== src.query && patch(i, { ...d, source: { ...src, query: e.target.value } })}
                       />
                       {src.query.trim() === '' &&
-                        (src.from && fromLabel !== '' && flowQuery(src.from, fromLabel) === null ? (
+                        (src.from && fromLabel !== '' && flowCondition(src.from, fromLabel) === null ? (
                           <div className="tally-row-note warn" data-testid="tally-note">
                             {tNode('标签名「{label}」写不进搜索条件（含双引号，或以 < > 开头），没法自动转换。改回「跟随流程标签」可以照常计数（点数字不能筛选，和以前一样）。', {
                               label: <Verbatim from="user">{fromLabel}</Verbatim>,

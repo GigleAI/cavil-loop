@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # 给客户端用的安装脚本接口（GitHub#313）：setup.sh 的无人值守开关、只读状态脚本、断开项目脚本、
 # 换新 Mac 后台任务配置脚本。
 #
@@ -126,12 +127,17 @@ OLD_SRC="$SANDBOX/src-old"; make_skill "$OLD_SRC" "$BASE_REV"
 use_skill() { rm -rf "$SKILL" "$SKILL.git"; cp -a "$1" "$SKILL"; cp -a "$1.git" "$SKILL.git"; git -C "$SKILL" remote set-url origin "$SKILL.git"; }
 
 echo "── 1. 不带 --yes：setup.sh 与合入基点（${BASE_REV:0:10}）逐字节一致 ──"
+LATER_LINE='  ✓ 建 label: pending/later'
 if ! compat_skip "setup.sh 不带 --yes" "$OLD_SRC" "$NEW_SRC" setup.sh scripts launchd systemd; then
     for os in Linux Darwin; do
         for ans in n y; do
             fresh_world; use_skill "$OLD_SRC"; run_setup "$SKILL" "$os" "$ans"; old="$(snapshot)"
             fresh_world; use_skill "$NEW_SRC"; run_setup "$SKILL" "$os" "$ans"; new="$(snapshot)"
-            chk "$os / 答 $ans：输出、退出码、落盘文件、调度器状态与改前一致" "$new" "$old"
+            # 唯一允许的差异：配置模板开了暂缓标签（GitHub#463），本版 setup.sh 按配置建它，多一行建标签输出。
+            # 两边都去掉这一行再比（合入之后改前的副本也会建它），并单独断言本版确实建了
+            chk "$os / 答 $ans：按模板里的暂缓标签建了它" "$(printf '%s\n' "$new" | grep -cxF "$LATER_LINE")" 1
+            chk "$os / 答 $ans：输出、退出码、落盘文件、调度器状态与改前一致" \
+                "$(printf '%s\n' "$new" | grep -vxF "$LATER_LINE")" "$(printf '%s\n' "$old" | grep -vxF "$LATER_LINE")"
             chk "$os / 答 $ans：安装本身成功" "$(cat "$SANDBOX/setup.rc")" 0
         done
     done

@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { appendLine, connect, daemonEnv, daemonWorld, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { appendLine, connect, daemonEnv, daemonWorld, dropWorlds, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const open: HarnessBackend[] = [];
@@ -23,7 +23,9 @@ beforeEach(() => {
 }, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
-});
+  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+  dropWorlds();
+}, 60_000);
 
 function backend(os: Os, path: string, extra?: Record<string, string>, opened?: string[]) {
   const b = new HarnessBackend({

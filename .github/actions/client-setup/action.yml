@@ -5,6 +5,14 @@ description: >
   (the weekly release gate's client negative controls, GitHub#195), so both start from the same setup.
   Playwright's browser is installed here, before anything that can open the UI: the negative-control
   runner starts a UI baseline first.
+# Both inputs default to the full setup; only client.yml's quick-test jobs turn parts off (GitHub#495).
+inputs:
+  ui:
+    description: "'false' skips what only the UI suites use: tauri-driver and Playwright's WebKit"
+    default: 'true'
+  webkit:
+    description: "'false' skips the system WebKit libraries (only the Tauri app crate links them; the test harness does not)"
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -28,12 +36,14 @@ runs:
     # system WebKit for the app's own Linux build (smoke test below)
     # The downloaded packages are kept between runs: the runner's package mirror sometimes
     # crawls (25 MB of WebKit at a few KB/s), and a cached run hardly touches it.
-    - uses: actions/cache@v4
+    - if: inputs.webkit != 'false'
+      uses: actions/cache@v4
       with:
         path: ~/apt-archives
         key: apt-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-webkit-v1
         restore-keys: apt-${{ runner.os }}-${{ env.ImageOS }}-
     - name: System libraries for the Tauri window
+      if: inputs.webkit != 'false'
       shell: bash
       run: |
         mkdir -p "$HOME/apt-archives/partial"
@@ -54,11 +64,13 @@ runs:
         command -v WebKitWebDriver
         sudo chown -R "$USER" "$HOME/apt-archives"
     # WebDriver for the real Tauri window (test/tauri); kept in the cache between runs
-    - uses: actions/cache@v4
+    - if: inputs.ui != 'false'
+      uses: actions/cache@v4
       with:
         path: ~/.tauri-driver
         key: tauri-driver-2-${{ runner.os }}
     - name: tauri-driver
+      if: inputs.ui != 'false'
       shell: bash
       run: |
         [ -x "$HOME/.tauri-driver/bin/tauri-driver" ] || cargo install tauri-driver --locked --root "$HOME/.tauri-driver"
@@ -68,6 +80,7 @@ runs:
       working-directory: client
       run: npm ci
     - name: Playwright WebKit
+      if: inputs.ui != 'false'
       shell: bash
       working-directory: client
       run: npx playwright install --with-deps webkit

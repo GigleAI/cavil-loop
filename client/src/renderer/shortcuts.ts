@@ -10,7 +10,7 @@
 // A shortcut only presses a button for you: every handler is the button's own
 // handler, behind the same "is it enabled" condition (see the call sites).
 
-export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dialog' | 'picker' | 'help';
+export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dialog' | 'picker' | 'help' | 'find';
 
 /**
  * `mod` = ⌘ on macOS, Ctrl elsewhere (both are accepted everywhere). `alt` = ⌥ / Alt held too.
@@ -59,7 +59,13 @@ export type ShortcutId =
   | 'graphFit'
   | 'graphZoomIn'
   | 'graphZoomOut'
-  | 'settingsBack';
+  | 'settingsBack'
+  | 'find'
+  | 'findNext'
+  | 'findPrev'
+  | 'findBarNext'
+  | 'findBarPrev'
+  | 'findBarClose';
 
 /** `range`: the keys are one run (⌘1 … ⌘9), shown on screen as its first and last key */
 export type Shortcut = { id: ShortcutId; scope: Scope; keys: KeySpec[]; label: string; range?: boolean };
@@ -84,6 +90,7 @@ export const SCOPE_TITLE: Record<Scope, string> = {
   dialog: '对话框里',
   picker: '标签 / 里程碑选择框',
   help: '本列表',
+  find: '查找栏里',
 };
 
 export const SHORTCUTS: readonly Shortcut[] = [
@@ -137,6 +144,14 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'pickerToggle', scope: 'picker', keys: [{ key: 'Enter' }], label: '加上 / 去掉选中的那个' },
   { id: 'pickerClose', scope: 'picker', keys: [{ key: 'Escape' }], label: '收起选择框' },
   { id: 'helpClose', scope: 'help', keys: [{ key: 'Escape' }, { key: '?', shift: true }], label: '关掉本列表' },
+  // GitHub#502: find text on the page (findInPage.ts), not the board's search box. ⌘F / ⌘G / ⇧⌘G act everywhere,
+  // the discussion frame included (FRAME_IDS); ↩ / ⇧↩ / Esc act while the keyboard is in the bar (typing 'find').
+  { id: 'find', scope: 'global', keys: [{ key: 'f', mod: true }], label: '在页面上查找文字（不动搜索框；查找栏已开着时：回到查找栏并选中里面的字）' },
+  { id: 'findNext', scope: 'global', keys: [{ key: 'g', mod: true }], label: '查找：下一处（查找栏开着时；讨论区里也能按）' },
+  { id: 'findPrev', scope: 'global', keys: [{ key: 'g', mod: true, shift: true }], label: '查找：上一处（查找栏开着时；讨论区里也能按）' },
+  { id: 'findBarNext', scope: 'find', keys: [{ key: 'Enter' }], label: '下一处' },
+  { id: 'findBarPrev', scope: 'find', keys: [{ key: 'Enter', shift: true }], label: '上一处' },
+  { id: 'findBarClose', scope: 'find', keys: [{ key: 'Escape' }], label: '关掉查找栏、去掉高亮（查找栏开着时，在页面上、讨论区里按 Esc 也是先关它）' },
 ];
 
 /**
@@ -191,6 +206,9 @@ export const FIXED_KEYS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
   'pickerToggle',
   'pickerClose',
   'helpClose',
+  'findBarNext',
+  'findBarPrev',
+  'findBarClose',
 ]);
 
 export function customizable(id: unknown): id is ShortcutId {
@@ -268,7 +286,8 @@ export function tableFor(keys: CustomKeys): Shortcut[] {
 /** whether shortcuts of these two scopes can act on the same key press (see `resolveKey`) */
 function together(a: Scope, b: Scope): boolean {
   if (a === b) return true;
-  const layers: Scope[] = ['dialog', 'picker', 'help'];
+  // the find bar's keys act only while the keyboard is in the bar, where no other plain key acts
+  const layers: Scope[] = ['dialog', 'picker', 'help', 'find'];
   if (layers.includes(a) || layers.includes(b)) return false;
   if (a === 'global' || b === 'global') return true;
   const pair = [a, b].sort().join(' ');
@@ -435,8 +454,8 @@ export type KeyLike = {
 
 /** what is on top: a layer takes every key, only its own shortcuts act */
 export type Layer = 'none' | 'dialog' | 'picker' | 'help';
-/** where the keyboard is: the reply box, another text field / select, or nowhere that takes text */
-export type Typing = 'none' | 'reply' | 'other';
+/** where the keyboard is: the reply box, the find bar (GitHub#502), another text field / select, or nowhere that takes text */
+export type Typing = 'none' | 'reply' | 'find' | 'other';
 /** which page is showing (GitHub#369): the settings page has its own Esc; anything else is the board's keys */
 export type Page = 'board' | 'settings';
 /** `mac`: whether macOS-only keys count (default: this machine's answer, `isMac`) */
@@ -494,6 +513,8 @@ export function resolveKey(e: KeyLike, ctx: KeyContext): { id: ShortcutId; spec:
     const modGlobal = s.scope === 'global' && Boolean(k.mod);
     // GitHub#433: a ⌘ key of the detail panel also acts from the reply box (the box belongs to the panel)
     if (ctx.typing === 'reply') return s.scope === 'reply' || modGlobal || (s.scope === 'detail' && Boolean(k.mod));
+    // GitHub#502: in the find bar its own keys (↩ / ⇧↩ / Esc) and the ⌘ / Ctrl keys of any page
+    if (ctx.typing === 'find') return s.scope === 'find' || modGlobal;
     const settings = ctx.page === 'settings';
     if (ctx.typing === 'other') return modGlobal || (settings && s.scope === 'settings');
     if (settings) return s.scope === 'global' || s.scope === 'settings';
@@ -509,6 +530,7 @@ export function typingOf(el: Element | null): Typing {
   if (!el) return 'none';
   const h = el as HTMLElement;
   if (h.dataset?.keys === 'reply') return 'reply';
+  if (h.dataset?.keys === 'find') return 'find';
   if (h.tagName === 'TEXTAREA' || h.tagName === 'SELECT' || h.isContentEditable) return 'other';
   if (h.tagName === 'INPUT') {
     const t = (h as HTMLInputElement).type;
@@ -553,7 +575,7 @@ export function shownKeys(s: Shortcut, mac: boolean = isMac()): KeySpec[] {
  * built from this table into its text), and a forwarded key may only end in one of these ids
  * (keyboard.ts, frameKey) — every other key stays inside the frame (PR #171).
  */
-export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync'];
+export const FRAME_IDS: readonly ShortcutId[] = ['reply', 'closeIssue', 'handBack', 'autopilot', 'blocked', 'tabAt', 'sync', 'find', 'findNext', 'findPrev'];
 
 /**
  * Which keys may come from the discussion frame (GitHub#487): a key with ⌘ / Ctrl, or the key of 跳到回复框

@@ -14,19 +14,24 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { daemonEnv, daemonWorld, githubRepo, githubRewrite, installByHand, localCopy, originOf, pathFor, type DaemonWorld, type Os } from '../support/daemon-world';
+import { daemonEnv, daemonWorld, dropWorlds, githubRepo, keepTmp, githubRewrite, installByHand, localCopy, originOf, pathFor, type DaemonWorld, type Os } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const REPO = 'acme/widget'; // what the fake gh answers for `gh repo view` (tests/fixtures/install-fakes.sh)
 const open: HarnessBackend[] = [];
 let w: DaemonWorld;
 
+// a fresh machine per case (fake tools, a copy of this checkout's daemon files, a git commit and a
+// bare clone): on a loaded box this passes vitest's default 10 s hook limit, as in daemon.test.ts
+// (GitHub#413 code review round 1; seen again in PR #493 code review round 2)
 beforeEach(() => {
   w = daemonWorld(tempDir());
-});
+}, 60_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
-});
+  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+  dropWorlds();
+}, 60_000);
 
 function backend(os: Os, path: string, extra: Record<string, string> = {}, pickFolder?: (s: string | null) => string | null) {
   const b = new HarnessBackend({
@@ -261,7 +266,7 @@ describe('connecting (Linux, systemd)', () => {
     // registered by hand while its config said acme/other; the config was later edited to acme/widget
     oldConfig(host, 'acme/other', 'WORKER_AGENT="claude"');
     const { spawnSync } = await import('node:child_process');
-    const by = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], { env: { HOME: w.home, PATH: path, FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld } });
+    const by = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], { env: { ...keepTmp(), HOME: w.home, PATH: path, FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld } });
     expect(by.status).toBe(0);
     const b = backend('Linux', path);
     expect(project(await b.call('daemonStatus'), 'widget').repo).toBe('acme/other');
@@ -343,7 +348,7 @@ describe('the opposite-dependency pair: the precheck agrees with setup.sh', () =
     expect(await b.call('daemonPrecheck', { agent: 'codex' })).toMatchObject({ ready: false, missing: ['codex'] });
     // setup.sh itself, run by hand with the same choice, agrees: it stops on the missing codex
     const { spawnSync } = await import('node:child_process');
-    const by = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], { env: { HOME: w.home, PATH: path, WORKER_AGENT: 'codex', FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld } });
+    const by = spawnSync('bash', [join(w.skill, 'setup.sh'), '--yes', host], { env: { ...keepTmp(), HOME: w.home, PATH: path, WORKER_AGENT: 'codex', FAKE_UNAME: 'Linux', FAKE_SD: w.sd, FAKE_LD: w.ld } });
     expect(by.status).toBe(1);
     expect(String(by.stdout)).toContain('缺少依赖：codex');
   });

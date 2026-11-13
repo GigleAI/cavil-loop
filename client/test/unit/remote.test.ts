@@ -4,15 +4,15 @@
 // requests that actually arrived, the paired-device list, the scheduler — not from the back
 // end's word. A case that says "nothing was sent" sits next to one where the same thing is sent.
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, keepTmp, pathFor, type DaemonWorld } from '../support/daemon-world';
 import { BOX, CLIENT_IP, addDevice, arrived, closeRemote, devices, installFakeTailscale, makeCert, pairCode, remoteWorld, setHosts, startFront, type RemoteWorld } from '../support/remote-world';
 import { FAKE_TOKEN, tempDir } from './helpers';
 
@@ -38,6 +38,11 @@ beforeAll(() => {
   snapshot = `${w.dir}.tar`;
   execFileSync('tar', ['-cf', snapshot, '-C', w.dir, '.']);
 }, 60_000);
+// the machine and its copy go when the file is done (GitHub#469)
+afterAll(() => {
+  dropWorlds();
+  if (snapshot) rmSync(snapshot, { force: true });
+});
 
 /** A fresh copy of the machine, and the remote-access service on it. */
 async function world(serverEnv: Record<string, string> = {}) {
@@ -320,7 +325,7 @@ describe('after pairing, when the other end is not the paired machine any more',
     expect(await b.call('remoteStatus', { id: ID })).toMatchObject({ state: 'device_mismatch' });
     writeFileSync(r.callerFile, CLIENT_IP);
     expect((await b.call('remoteStatus', { id: ID })).state).toBe('ok');
-    const out = spawnSync('bash', [join(w.skill, 'scripts/remote-access.sh'), 'revoke', 'test-client'], { env: { HOME: w.home, PATH: path, FAKE_TS: r.ts, FAKE_SD: w.sd, FAKE_LD: w.ld }, encoding: 'utf8' });
+    const out = spawnSync('bash', [join(w.skill, 'scripts/remote-access.sh'), 'revoke', 'test-client'], { env: { ...keepTmp(), HOME: w.home, PATH: path, FAKE_TS: r.ts, FAKE_SD: w.sd, FAKE_LD: w.ld }, encoding: 'utf8' });
     expect(out.stdout).toContain('已撤销');
     const st = await b.call('remoteStatus', { id: ID });
     expect(st).toMatchObject({ state: 'revoked' });

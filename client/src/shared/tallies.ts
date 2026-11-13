@@ -19,8 +19,8 @@ export const TALLY_COLORS: readonly TallyColor[] = ['green', 'blue', 'orange', '
 export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human'];
 /** at most this many numbers: the view bar has room for no more */
 export const TALLY_MAX = 8;
-/** the "未处理" number's search — open and no label at all (GitHub#418) */
-export const UNLABELED_QUERY = 'is:open no:label';
+/** the "未处理" number's search — no label at all (GitHub#418); open only while its "显示已关闭" switch is off (GitHub#464) */
+export const UNLABELED_QUERY = 'no:label';
 /** the setting's key */
 export const TALLIES_SETTING = 'tallies';
 

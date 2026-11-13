@@ -7,6 +7,7 @@ import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { ITEM_DETAIL_QUERY, REVIEW_COMMENTS_QUERY } from './queries';
 import { planTasks, renderedTaskBoxes } from './taskList';
+import { wallSecsOf } from '../shared/agentMetrics';
 
 const MAX_PAGES = 50;
 
@@ -173,6 +174,12 @@ export function editSource(source: unknown, canUpdate: unknown): { editSource: s
   return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};
 }
 
+/** GitHub#503: the round's total time, only when the source ends with a valid usage record. */
+function wallSecs(source: unknown): { wallSecs: number } | Record<string, never> {
+  const n = wallSecsOf(source);
+  return n === undefined ? {} : { wallSecs: n };
+}
+
 /** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
 const REVIEW_TASKS: TaskEntry = { clickable: false, why: '评审意见里的勾选框只能在网页上勾' };
 
@@ -188,7 +195,7 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   const out: TimelineEntry[] = [];
   for (const c of raw.comments) {
     const tasks = taskEntry(c.bodyHTML, c.body, c.viewerCanUpdate);
-    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(c.body, c.viewerCanUpdate) });
+    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(c.body, c.viewerCanUpdate), ...wallSecs(c.body) });
   }
   for (const r of raw.reviews) {
     if (r.state === 'PENDING') continue;
@@ -217,7 +224,7 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   }
   out.sort(desc);
   const tasks = taskEntry(it.bodyHTML, it.body, it.viewerCanUpdate);
-  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(it.body, it.viewerCanUpdate) });
+  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(it.body, it.viewerCanUpdate), ...wallSecs(it.body) });
   return out;
 }
 

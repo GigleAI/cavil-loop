@@ -371,6 +371,14 @@ fn main() {
                     });
                     NewWindowResponse::Deny
                 });
+            // GitHub#467: on macOS the page's top row is the title bar — the page is drawn under it, the
+            // title text is hidden and the three window buttons sit in that 52 px row, centred
+            // (src/renderer/TopBar.tsx leaves them room and moves the window). Elsewhere: the system's title bar.
+            #[cfg(target_os = "macos")]
+            let win = win
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(18.0, 19.0));
             // where it was; a kept place that is no longer on any screen: centred; nothing kept: the system's choice, as before
             let win = match place.pos {
                 Some((x, y)) => win.position(x, y),
@@ -467,6 +475,9 @@ fn main() {
             desktop::desktop_set_login_item,
             desktop::desktop_next_event,
             desktop::desktop_close_window,
+            desktop::desktop_window_frame,
+            desktop::desktop_start_drag,
+            desktop::desktop_toggle_zoom,
             updater::desktop_update_status,
             updater::desktop_update_check,
             updater::desktop_update_set_auto,

@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 import { canEdit, configGroups, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
@@ -78,16 +78,20 @@ describe('the back end and the daemon\'s real script', () => {
   let host: string;
   let config: string;
 
+  // a fresh machine, the daemon cloned and a project connected with the real setup.sh per case: on
+  // a loaded box this passes vitest's default 10 s hook limit (PR #493 code review round 2)
   beforeEach(() => {
     w = daemonWorld(tempDir());
     installByHand(w);
     path = pathFor(w);
     host = connect(w, 'widget', 'Darwin', path);
     config = join(host, 'cavil-loop.config');
-  });
+  }, 60_000);
   afterEach(async () => {
     await Promise.all(open.splice(0).map((b) => b.close()));
-  });
+    // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+    dropWorlds();
+  }, 60_000);
   function backend(os: Os = 'Darwin', p = path) {
     const b = new HarnessBackend({
       db: join(w.dir, `cache-${open.length}.sqlite`),

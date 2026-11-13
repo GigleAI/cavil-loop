@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: guard
+# reads: repo
 # 脚本里「$变量 后面直接跟中文」的写法（GitHub#411）。
 #
 # macOS 自带的 bash 3.2 判断变量名到哪里结束时，把 UTF-8 中文的首字节也算进名字：

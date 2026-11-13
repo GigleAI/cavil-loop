@@ -15,7 +15,6 @@
   },
   "有来源这次没读全，筛选结果可能不全（点开看详情）": "A source was not read completely this time; filter results may be incomplete (click for details)",
   "搜索或筛选": "Search or filter",
-  "搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me（按 / 跳到这里）": "Search titles, numbers, labels, or use GitHub syntax: label:bug assignee:@me (press / to jump here)",
   "写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me": "Same syntax as on GitHub: label:bug -status:Done iteration:@current assignee:@me",
   "同步中…（点一下重新同步）": "Syncing… (click to sync again)",
   "刷新": "Refresh",
@@ -105,7 +104,6 @@
   "关掉这个标签页？": "Close this tab?",
   "关掉，不要这些文字": "Close and discard the text",
   "这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。": "This tab has text that was not sent (a reply, or a comment or title being edited). Closing the tab discards it.",
-  "{repo}#{number}：": "{repo}#{number}: ",
   "返回": "Back",
   "OAuth 应用和 GitHub App 有什么不同": "How an OAuth app and a GitHub App differ",
   "两种都是用你的 GitHub 账号登录、以你本人的身份读写，能看到的永远不会超过你本人在 GitHub 上能看到的。": "Both sign in with your GitHub account and read and write as you; they never see more than you can see on GitHub yourself.",
@@ -327,5 +325,18 @@
   "读取钥匙串失败：{e}": "Reading the keychain failed: {e}",
   "写入钥匙串失败：{e}": "Writing the keychain failed: {e}",
   "删除钥匙串条目失败：{e}": "Deleting the keychain entry failed: {e}",
-  "凭据格式不符合预期，未保存": "The credential has an unexpected format; not saved"
+  "凭据格式不符合预期，未保存": "The credential has an unexpected format; not saved",
+  "关掉后看板上暂时不显示这个来源的条目；来源不删，照常同步": "When off, this source's items are hidden from the board for now; the source is kept and still syncs",
+  "在看板显示": "Show on board",
+  "看板上暂不显示": "hidden from the board for now",
+  "搜索（{key}）": "Search ({key})",
+  "开着的条目里符合「{query}」的有 {n} 个": {
+    "one": "{n} open item matches \"{query}\"",
+    "other": "{n} open items match \"{query}\""
+  },
+  "搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me": "Search titles, numbers, labels, or use GitHub syntax: label:bug assignee:@me",
+  "搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准": "The search box already names the open / closed state (is:open, is:closed, is:merged); the search box decides",
+  "打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。": "When on, closed and merged items are shown too — only items already read: a repository source reads every open item, items updated in the last 14 days and closed items carrying a \"waiting for human\" label; a Project source reads every item on its board.\nThe board, the table, the dependency graph and each lit top-bar number remember it separately.",
+  "显示已关闭": "Show closed",
+  "（{name}）": " ({name})"
 }

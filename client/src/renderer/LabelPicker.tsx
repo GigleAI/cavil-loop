@@ -2,7 +2,10 @@
 // the chosen one, Esc to put it away. Every Enter (or click) is one change, sent at once through the
 // panel's own add / remove (never "write the whole list": that would wipe a label someone else just
 // added). While a change is being sent, or offline, the list is greyed and Enter does nothing.
+// GitHub#496: what the item carried when the picker opened is listed first, then the `pinned` labels;
+// the order is fixed while it is open (a click only moves the tick), see shared/pickOrder.ts.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { pickOrder } from '../shared/pickOrder';
 import { useLayer, useShortcuts } from './keyboard';
 
 export type PickItem = { name: string; color?: string; checked: boolean };
@@ -13,6 +16,7 @@ export function LabelPicker({
   items,
   disabled,
   testid,
+  pinned,
   onToggle,
   onClose,
 }: {
@@ -22,16 +26,21 @@ export function LabelPicker({
   /** sending, or offline: nothing can be changed right now */
   disabled: boolean;
   testid: string;
+  /** names kept near the top, right after what is checked (GitHub#496); missing from `items` = not listed */
+  pinned?: readonly string[];
   onToggle: (item: PickItem) => void;
   onClose: () => void;
 }) {
   useLayer('picker');
   const [filter, setFilter] = useState('');
   const [active, setActive] = useState(0);
+  // taken once, when the picker opens: a click while it is open must not move rows (GitHub#496)
+  const [checkedAtOpen] = useState(() => new Set(items.filter((i) => i.checked).map((i) => i.name)));
+  const ordered = useMemo(() => pickOrder(items, checkedAtOpen, pinned), [items, checkedAtOpen, pinned]);
   const shown = useMemo(() => {
     const f = filter.trim().toLowerCase();
-    return f ? items.filter((i) => i.name.toLowerCase().includes(f)) : items;
-  }, [items, filter]);
+    return f ? ordered.filter((i) => i.name.toLowerCase().includes(f)) : ordered;
+  }, [ordered, filter]);
   const at = Math.min(active, Math.max(0, shown.length - 1));
   const input = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLDivElement>(null);

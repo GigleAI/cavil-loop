@@ -46,11 +46,12 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 
 ## Sources
 
-- **Two kinds**: a GitHub Project (`github.com/orgs/<org>/projects/<number>` or `github.com/users/<user>/projects/<number>`) and a repository (`owner/repo`). Add as many as you like; the top bar has a checkbox per source, and an unchecked source is hidden for the moment.
+- **Two kinds**: a GitHub Project (`github.com/orgs/<org>/projects/<number>` or `github.com/users/<user>/projects/<number>`) and a repository (`owner/repo`). Add as many as you like. Settings → "数据来源" (sources) lists each one; switching its "在看板显示" (show on board) off hides its items from the board for the moment (the source keeps syncing; its row fades and says "看板上暂不显示" (hidden from the board)).
 - **One item, one entry**: an issue that is in several sources is merged into one by `repo#number`. Iteration and status belong to each Project, so when two Projects disagree the item shows once in each column; the milestone belongs to the repository.
 - **Importing a saved web view**: when you add a Project, the client reads one view saved on its GitHub page (the one in the URL if it ends in `/views/N`, else the first) and copies its layout, grouping, sort, columns and filter. This happens once; later changes on the web page are not followed. Whatever cannot be copied (grouping by a custom field, the roadmap layout, …) is listed at the top of the view.
 - **An organization's Project cannot be read**: usually the organization restricts third-party apps and an owner has to approve. The developer notes explain it step by step in "[读不到组织的 Project 怎么办](../client/README.md#读不到组织的-project-怎么办401)" (when an organization's Project cannot be read).
 - **Syncing**: while the app is open it syncs about once a minute; the top bar shows when it last checked. The refresh button or ⌘R syncs now. A source is either read in full and replaces the local copy, or the previous round's copy stays — a failed read never makes items "disappear".
+- **The window's top row**: one row at the top of the window — logo, open tabs, search box, sync status, refresh, new (➕), settings, account; all of it stays while a detail tab is in front. The search box is small until used (it still shows the current search); click it or press `/` to widen it. On macOS this row is the window's title bar: the traffic lights sit at its left, drag an empty part to move the window, double-click it to zoom.
 
 ## Board
 
@@ -89,8 +90,12 @@ The third view button. Only issues with a relation are drawn (those with a paren
   - plain text matches title, number (`135` / `#135`) and label names, including the middle of a Chinese word;
   - `label:` `status:` `milestone:` `assignee:` `author:` `repo:` `project:` `iteration:` `is:` `no:` `has:` (e.g. `is:open`, `is:pr`, `no:milestone`), a leading `-` excludes, `@me` is you, `@current` / `@next` / `@previous` are iterations;
   - anything not supported (iteration comparisons and ranges, for example) is listed in a yellow bar above the board and ignored — it never turns into "0 results".
-- A new install starts with the search `-Status:done -label:Done` (finished items hidden); clear the box to see everything.
-- **Flow numbers in the top bar**: by default "运行中 / 等 agent / 等人处理 / 未处理" (running / waiting for the agent / waiting for a human / untouched), each counting the open items of the checked sources that carry its label. Click a number to filter on that label; click it again to get your previous search back. Which numbers are shown and what each counts is set in Settings → "顶栏计数" (top-bar numbers).
+- **The "显示已关闭" (show closed) switch**: a new install starts with an empty search box. The switch left of "视图设置" (view settings) on the view bar lists only open issues / PRs while it is off; on, closed and merged ones are listed too. Each view keeps its own: the board, the table and the dependency graph one each (off by default); while a top-bar number is lit, that number's own (the switch says whose, e.g. "显示已关闭（等人处理）"), which starts the way the number counts — on for "等人处理" (waiting for a human), off for the others — and can be switched by itself afterwards. All of them are remembered across restarts.
+  - When the search box itself says `is:open` / `is:closed` / `is:merged`, the search box decides and the switch is greyed out.
+  - In the dependency graph with the switch off, closed parents, blockers and sub-issues that open items need are still drawn, faded; closed items unrelated to any open one are left out.
+  - The switch only covers items already read: a repository source reads every open item, those updated in the last 14 days and the closed ones carrying the "waiting for a human" label; a Project source reads every item on the board.
+  - Items used to be hidden by the Project's Done column / the `Done` label; now they are hidden by open / closed. An item that is open but sits in the Done column shows up; to keep hiding it, write `-status:done` in the search box. When a Project's saved web view is imported, words that only hid finished items (`-status:done`, `-label:done`, `is:open`) are left out of the search box; a search saved by an older version made only of those words is emptied on upgrade.
+- **Flow numbers in the top bar**: by default "运行中 / 等 agent / 等人处理 / 未处理" (running / waiting for the agent / waiting for a human / untouched), each counting the items of the checked sources that carry its label: "等人处理" counts open and closed ones (an autopilot PR's merge closes the issue and leaves `pending/human` on it for a human to look at), the others open ones only. Click a number to filter on that label (`label:"…"`); the list follows that number's own "显示已关闭" switch, so by default it is exactly the items counted. Click it again to get your previous search back. Which numbers are shown and what each counts is set in Settings → "顶栏计数" (top-bar numbers).
 - **View settings**: column / grouping mode, sort (including "Project 里的顺序", the Project's own order), which columns to show, PRs under issues, sub-issues indented. The search text and view settings are remembered across restarts.
 
 ## Details, the floating panel and tabs
@@ -98,7 +103,7 @@ The third view button. Only issues with a relation are drawn (those with a paren
 ![Details floating on the right of the board](client-screens/detail.png)
 
 - **Click** a card or a table row's title and its details float on the right of the board (drag the left edge to widen): body, discussion, labels, assignees, iteration, status, milestone; a PR also has its checks and the merge button. Click outside, press Esc or click "收起 ›" (hide) to close it. The dependency graph differs: a click on a node only shows its summary; a double-click, or "打开详情" (open details) in the summary, opens this panel; a node outside the current sources has only the summary and "open on GitHub", no details.
-- **⌘-click** (or right-click → "在新标签页打开" (open in new tab), or "在标签页打开" (open in tab) at the top right of the panel) opens the item as a tab, details filling the window. The top row of the window is then a tab bar whose "首页" (home) is the board / table / graph; ⌘1 … ⌘9 switch tabs, ⌘W closes the current one. Open tabs come back after a restart.
+- **⌘-click** (or right-click → "在新标签页打开" (open in new tab), or "在标签页打开" (open in tab) at the top right of the panel) opens the item as a tab, details filling the window. The tabs sit in the window's top row (right of the logo), "首页" (home) being the board / table / graph, and scroll sideways when there are more than fit; ⌘1 … ⌘9 switch tabs, ⌘W closes the current one. Open tabs come back after a restart.
 - Unsent text in a reply box stays with its tab / panel when you switch away and back; closing a tab that holds unsent text asks first.
 
 ## Making changes from the client
@@ -106,6 +111,7 @@ The third view button. Only issues with a relation are drawn (those with a paren
 Changes go straight to GitHub, and the item is read back afterwards:
 
 - Labels (`L`), milestone (`M`), a Project's iteration and status: the new value shows at once and is marked until GitHub confirms it; you can resend or drop it.
+- When the label picker opens, the labels the item already carries are ticked at the top, followed by `autopilot`, `pending/human`, `pending/agent` (the label names set for "hand to the agent" in Settings; ones the repository lacks are not listed), then the rest in the repository's order. While it is open a click only moves the tick, never the rows; closing and reopening sorts again. The milestone picker lists the current milestone first.
 - Reply (⌘↩ sends, ⌘⇧P previews), edit your comments and the body, tick the task lists in a body.
 - New issue (`C`): pick the repository, optionally set labels, milestone, iteration and which boards it joins.
 - Close an issue (pick the reason, optionally add a comment), close or merge a PR: each needs one more click in a confirmation dialog. When it succeeds the tab / panel it was started from closes, and the result is shown at the top of the window.
@@ -124,6 +130,7 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 | ⌃⌘1 / ⌃⌘2 / ⌃⌘3 (Control and Command together; the earlier ⌥⌘1/2/3 and ⌘⇧1/2 still work) | board / table / dependency graph |
 | ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
 | ⌘W | close the current tab |
+| ⌘F | find text on the page (the detail's discussion included; the search box is not touched); ↩ / ⇧↩ or ⌘G / ⌘⇧G next / previous, Esc closes |
 | `L` / `M` / `R` in details | labels / milestone / jump to the reply box |
 | ⌘↩ | send a reply, confirm a dialog |
 | ⌘= / ⌘- / ⌘0 | zoom in / out / actual size |
@@ -173,7 +180,4 @@ Client issues still open when this guide was written (2026-11-13); the issue pag
 - Chinese / English switching: [#466](https://github.com/GigleAI/cavil-loop/issues/466), in four steps — [#471](https://github.com/GigleAI/cavil-loop/issues/471) (language setting, top bar, settings, sign-in, menu, notifications), [#472](https://github.com/GigleAI/cavil-loop/issues/472) (board, table, graph, details, tabs, new issue), [#473](https://github.com/GigleAI/cavil-loop/issues/473) (local and remote daemon, updates, project settings), [#474](https://github.com/GigleAI/cavil-loop/issues/474) (finishing touches and this guide)
 - "Hand to the agent" and "autopilot" right in the new-issue window, with shortcuts: [#450](https://github.com/GigleAI/cavil-loop/issues/450)
 - A spinner and a result message after "重新读取" / "重新同步" (re-read / re-sync): [#455](https://github.com/GigleAI/cavil-loop/issues/455)
-- "Waiting for a human" also counts closed items still labeled `pending/human`: [#462](https://github.com/GigleAI/cavil-loop/issues/462)
-- Closed issues / PRs hidden by default: [#464](https://github.com/GigleAI/cavil-loop/issues/464)
-- A slimmer top bar, merged into the window's title bar: [#467](https://github.com/GigleAI/cavil-loop/issues/467)
 - Client tests leaving temporary directories behind: [#469](https://github.com/GigleAI/cavil-loop/issues/469) (affects development only, not use)

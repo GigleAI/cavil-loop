@@ -66,8 +66,9 @@ async function start(env: AppEnv, search: string, settingsShot?: string) {
   await expect(page.getByTestId('source-row')).toHaveCount(2);
   if (settingsShot) await shot(page, settingsShot);
   await page.getByTestId('back').click();
-  // adding the Project imports its saved web view (its filter replaces the search): wait for it, then set ours
-  await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imports its saved web view: wait for it, then set ours (its filter only hid finished
+  // items, so since GitHub#464 the box stays empty and the import is seen on the view settings instead)
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.imported?.viewNumber ?? null), { timeout: 15_000 }).toBe(1);
   await page.getByTestId('search').fill(search);
   await expect
     .poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.sync.sources as { ok: boolean }[]).map((s) => s.ok)), { timeout: 20_000 })

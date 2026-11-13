@@ -17,6 +17,15 @@ import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { Cache } from '../support/cache';
 import type { Item } from '../../src/shared/types';
 
+/** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
+async function showSource(page: Page, selector: string, on: boolean) {
+  await page.getByTestId('open-settings').click();
+  const sw = page.locator(`[data-testid="source-shown"]${selector}`);
+  if (on) await sw.check();
+  else await sw.uncheck();
+  await page.getByTestId('back').click();
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
@@ -68,14 +77,19 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   }
   await expect(page.getByTestId('source-row')).toHaveCount(sources.length);
   await page.getByTestId('back').click();
-  // adding the Project imported its saved web view (table, -label:Done -status:Done): wait for it, then look at the graph of everything
-  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('search')).toHaveValue('-label:Done -status:Done', { timeout: 15_000 });
+  // adding the Project imported its saved web view (table): wait for it, then look at the graph of everything
+  if (sources.includes(PROJECT_URL)) await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
   // saved (the box saves 300 ms after typing stops), so a restart opens on the same search
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.query)).toBe('');
   await expect.poll(() => sourcesStatus(page), { timeout: 20_000 }).toEqual(sources.map(() => true));
+  // GitHub#464: the graph of everything, closed items included — its own "显示已关闭" switch, on before the
+  // graph is first drawn (where it opens and whether it is "too big" are decided then), and saved
+  await page.evaluate(() => (window as any).cavil.setView({ showClosed: { graph: true } }));
+  await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.showClosed.graph)).toBe(true);
   await page.locator('[data-testid="layout"] button[data-value="graph"]').click();
   await expect(page.getByTestId('graph')).toBeVisible();
+  await expect(page.getByTestId('show-closed')).toBeChecked();
 }
 
 /** per configured source: has the latest round read it whole */
@@ -241,13 +255,13 @@ test('GitHub#350: boxes, arrows and their colours, the three kinds of "not in th
   await page.getByTestId('search').fill('');
 
   // ---- the repository alone: #313 is in no source — still in #311's box, dashed ----
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'yes');
   await expect(nodeOf(page, K(313)).getByTestId('graph-outside')).toHaveText('不在当前来源中');
   expect(await inside(boxOf(page, K(311)), nodeOf(page, K(313)))).toBe(true);
   await expect(nodeOf(page, K(314))).toHaveAttribute('data-outside', 'no');
   await expect(nodeOf(page, OUTSIDE_PARENT)).toHaveCount(0);
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await expect(nodeOf(page, K(313))).toHaveAttribute('data-outside', 'no');
 
   // ---- the shortcut list names the graph's keys ----
@@ -431,6 +445,9 @@ test('GitHub#350: relations never read (a cache from before relations, the first
   // a first run reads everything; then the cache is put back the way a version before #349 wrote it
   let app: RunningApp = await launchApp(env);
   await signInToGraph(app.page);
+  // the graph's "显示已关闭" switch reaches the back end a moment after the window shows it; a test "quits" by
+  // killing the back end, so restart once the back end holds it
+  await expect.poll(async () => ((await app.backend.call('init')) as { settings: Record<string, any> }).settings.view?.showClosed?.graph).toBe(true);
   await app.close();
   const strip = (keys: string[]) => {
     const cache = new Cache(join(env.userData, 'cache.sqlite'));
@@ -727,7 +744,7 @@ test('GitHub#483: the summary of an issue lists its linked PRs — state, draft,
 
   // ---- the repository alone does not know GitHub's links: "unknown", never "none" ----
   await page.getByTestId('graph-canvas').click({ position: await emptySpot(page) });
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).uncheck();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, false);
   await page.getByTestId('graph-fit').click();
   await nodeOf(page, K(314)).click();
   await expect(pop).toHaveAttribute('data-key', K(314));
@@ -736,6 +753,6 @@ test('GitHub#483: the summary of an issue lists its linked PRs — state, draft,
   // while the PR in the same source still names its issue
   await nodeOf(page, K(350)).click();
   await expect(line(351)).toHaveAttribute('data-via', 'body');
-  await page.locator(`[data-testid="source-pick"] input[data-key="${PROJECT_KEY}"]`).check();
+  await showSource(page, `[data-key="${PROJECT_KEY}"]`, true);
   await app.close();
 });

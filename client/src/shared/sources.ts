@@ -53,3 +53,15 @@ export function sourceLabel(s: SourceConfig, projectTitle?: string): string {
 export function itemKey(repo: string, number: number): string {
   return `${repo.toLowerCase()}#${number}`;
 }
+
+/**
+ * GitHub#467: which sources the board shows (`selected`: null = every one) and the list to keep after
+ * one of them is switched on or off — the settings page's "在看板显示" (before: the board's top-row
+ * check boxes). Kept in the order of the sources; a key no longer among them is dropped.
+ */
+export function shownOnBoard(sources: readonly { key: string }[], selected: readonly string[] | null, key: string, on: boolean): string[] {
+  const shown = new Set(selected ?? sources.map((s) => s.key));
+  if (on) shown.add(key);
+  else shown.delete(key);
+  return sources.map((s) => s.key).filter((k) => shown.has(k));
+}

@@ -8,6 +8,7 @@ import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { Lang, LangSetting, Said } from './i18n';
 import type { OpRecord } from './ops';
+import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
 import type { Picks } from './actions';
 
@@ -565,6 +566,14 @@ export interface TallyDef {
   color: TallyColor;
   source: TallySource;
 }
+/**
+ * GitHub#464: the "显示已关闭" switch, one per view — the three layouts (`board` / `table` / `graph`), and each
+ * number of the view bar while it is lit, by its row's id (the default rows: `running` / `agent` / `human` /
+ * `unlabeled`; a number made in Settings has its own, GitHub#468). false = only open items are listed; a number
+ * not switched yet has no entry and starts as it counts (on for "等人处理", which counts closed items too).
+ */
+export type ShowClosedKey = string;
+export type ShowClosed = Record<ShowClosedKey, boolean>;
 
 export interface ViewSettings {
   mode: ColumnMode;
@@ -584,6 +593,8 @@ export interface ViewSettings {
   detailFields: boolean;
   /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */
   codeWrap: boolean;
+  /** GitHub#464: per view, whether closed / merged items are listed too (all false by default) */
+  showClosed: ShowClosed;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';
@@ -716,6 +727,8 @@ export interface AppState {
   creates: CreateJob[];
   /** GitHub#250: close / merge / autopilot / hand-back operations, oldest first (see shared/ops.ts) */
   ops: OpRecord[];
+  /** GitHub#489: replies / edits / ticked boxes sent for the window, oldest first (see shared/sends.ts) */
+  sends: SendRecord[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

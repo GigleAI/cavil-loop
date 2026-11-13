@@ -27,7 +27,7 @@ import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, readItemRecords, readItemSnapshot, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -56,6 +56,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
+import { isSameTextMark, sameTextUnclear, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
 import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
@@ -113,6 +114,7 @@ import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
+import type { WindowFrame } from '../shared/ipc';
 
 /** sign-out reasons (keys: shown through tKey in the window's language) */
 export const REASON_REVOKED = zhKey('GitHub 凭据已失效（可能被撤销或已过期），请重新登录');
@@ -205,6 +207,8 @@ export interface ControllerDeps {
 export const EDITS_KEY = '__edits__';
 /** GitHub#250: the row of the snapshot table that holds the close / merge / autopilot / hand-back operations (not a source). */
 export const OPS_KEY = '__ops__';
+/** GitHub#489: the row of the snapshot table that holds the replies / edits / ticked boxes (shared/sends.ts; not a source). */
+export const SENDS_KEY = '__sends__';
 /** GitHub#250: the operations started from the window: one action of one of the five kinds */
 export type OpAction = Extract<WriteAction, { kind: OpKind }>;
 /** GitHub#229: how many item details are kept for a fast re-open (this run only, never on disk). */
@@ -481,6 +485,16 @@ export class Controller {
   // ---- GitHub#250 ----
   /** close / merge / autopilot / hand-back operations (shared/ops.ts), stored under OPS_KEY */
   private ops = new Map<string, OpRecord>();
+  /** GitHub#489: replies / edits / ticked boxes sent for the window (shared/sends.ts), stored under SENDS_KEY */
+  private sends = new Map<string, SendRecord>();
+  private sendsStored = false;
+  private sendSeq = 0;
+  /** GitHub#489: a send's job (its request, or a check) is running in this run of the app */
+  private sendJobs = new Map<string, Promise<void>>();
+  /** PR #510 review round 2: same-text marks of unknown replies / attached comments a person unlocked (shared/sends.ts) */
+  private sameText: SameTextMark[] = [];
+  /** the box's latest text is written to disk a moment after the typing stops */
+  private sendDraftTimer: ReturnType<typeof setTimeout> | null = null;
   private opsStored = false;
   private opSeq = 0;
   /** an operation's requests and re-reads, while they run */
@@ -570,10 +584,12 @@ export class Controller {
       editsResending: [],
       creates: [],
       ops: [],
+      sends: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
       else if (s.sourceKey === OPS_KEY) this.loadOps(s);
+      else if (s.sourceKey === SENDS_KEY) this.loadSends(s);
       else this.snapshots.set(s.sourceKey, s);
     }
     this.tabList = normalizeTabs(this.cache.getSetting<unknown>(TABS, null));
@@ -910,7 +926,13 @@ export class Controller {
     this.watchTimers.clear();
     this.resending.clear();
     this.resendQueue.clear();
-    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [] };
+    // GitHub#489: and its replies / edits (their row went with the cache)
+    this.sends.clear();
+    this.sameText = [];
+    if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
+    this.sendDraftTimer = null;
+    this.sendsStored = false;
+    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -1425,7 +1447,12 @@ export class Controller {
 
   /** A change made by the user. Invalid values are ignored as a whole. */
   setView(patch: ViewPatch): void {
-    const merged = { ...this.state.view, ...patch, table: { ...this.state.view.table, ...(patch.table ?? {}) } };
+    const merged = {
+      ...this.state.view,
+      ...patch,
+      table: { ...this.state.view.table, ...(patch.table ?? {}) },
+      showClosed: { ...this.state.view.showClosed, ...(patch.showClosed ?? {}) },
+    };
     if (!isValidView(merged)) return;
     const view: ViewSettings = merged;
     const touched = Object.keys(patch).flatMap((k) => (k === 'table' ? Object.keys(patch.table ?? {}).map((t) => `table.${t}`) : [k]));
@@ -1767,6 +1794,8 @@ export class Controller {
       await this.catchUpReads(session);
       // GitHub#359: and check again what an operation's answer that never came left open
       this.catchUpChecks(session);
+      // GitHub#489: and what a reply's / an edit's
+      this.catchUpSends(session);
     }
     if (round.authFailed) {
       // A GitHub App token can be refreshed once before the credential is declared dead —
@@ -2182,6 +2211,24 @@ export class Controller {
     await this.deps.desktop?.closeWindow().catch(() => undefined);
   }
 
+  /**
+   * GitHub#467: how the window's top row sits. Anything unreadable (no shell, a failed or malformed
+   * answer) is the system's own title bar: the page then leaves no room and moves nothing itself,
+   * which is never worse than before this row existed.
+   */
+  async windowFrame(): Promise<WindowFrame> {
+    const f = await this.deps.desktop?.windowFrame().catch(() => null);
+    return { overlay: f?.overlay === true, fullscreen: f?.overlay === true && f.fullscreen === true };
+  }
+
+  async startDrag(): Promise<void> {
+    await this.deps.desktop?.startDrag().catch(() => undefined);
+  }
+
+  async toggleZoom(): Promise<void> {
+    await this.deps.desktop?.toggleZoom().catch(() => undefined);
+  }
+
   /** GitHub#434: the other flow labels (empty = the default). The waiting label is `handBack.blocked` (setHandBack). */
   setBlockedLabels(patch: Partial<BlockedLabels>): void {
     const flow = typeof patch.flow === 'string' ? patch.flow.trim() || DEFAULT_BLOCKED_LABELS.flow : this.state.blockedLabels.flow;
@@ -2447,8 +2494,8 @@ export class Controller {
     if (action.kind !== 'toggleTask' && action.kind !== 'editEntry' && action.kind !== 'editTitle') return this.actNow(action);
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     // (GitHub#299: a title the same way, by its item)
-    const slot = action.kind === 'editTitle' ? `title:${action.key}` : action.entryId;
-    if (this.tasksInFlight.has(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
+    const slot = sendSlot(action)!;
+    if (this.tasksInFlight.has(slot) || this.sendHolding(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
     this.tasksInFlight.add(slot);
     try {
       return await this.actNow(action);
@@ -2673,7 +2720,8 @@ export class Controller {
     const reqId = ++this.editSeq;
     this.setEdit(id, startEdit(prev, { id, key: item.key, repo: item.repo, number: item.number, field, base: shown ?? null }, value, reqId));
     this.editsChanged();
-    return this.sendEdit(id, reqId, action);
+    // GitHub#488: from here on the record holds the outcome (the notice area says a failure, the field a success)
+    return { ...(await this.sendEdit(id, reqId, action)), held: true };
   }
 
   private fieldOf(action: FieldAction, item: Item): EditField {
@@ -3504,6 +3552,9 @@ export class Controller {
     if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
+    // PR #510 review round 1: the same text sent from the reply box is still without a result (the two could not be told apart)
+    const opComment = (action as { comment?: unknown }).comment;
+    if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作');
     const step = (name: OpStep['name'], label?: string, role?: OpStep['role']): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null, ...(role ? { role } : {}) });
     let steps: OpStep[];
     let draft: OpRecord['draft'] = {};
@@ -4671,9 +4722,21 @@ export class Controller {
         if (snap) {
           if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
           else {
-            const out = opProveFromRecords(now, snap, login);
+            // PR #510 review rounds 1–3: the same rule as a reply's proof — a comment another send owns proves nothing,
+            // and a text another request may still land with (on its way / not sure / unlocked with a mark) is not proven
+            const owned = new Set([...this.sends.values()].map((x) => x.commentId).filter((x): x is string => !!x));
+            const blind = new Set<string>();
+            for (const body of [now.draft.comment, now.reply?.body]) {
+              if (!body) continue;
+              const unclear = sameTextUnclear(now.key, body, now.id, [...this.sends.values()], [...this.ops.values()], this.liveMarks());
+              if (unclear) {
+                blind.add(body);
+                problems.push(unclear);
+              }
+            }
+            const out = opProveFromRecords(now, { ...snap, comments: snap.comments.filter((x) => !owned.has(x.id) && !blind.has(x.body)) }, login);
             now = out.record;
-            problems.push(...out.missing);
+            problems.push(...out.missing.filter((m) => !m.includes('评论列表里没有') || !blind.size));
           }
           now = opProveFromSnapshot(now, view);
         }
@@ -4773,7 +4836,15 @@ export class Controller {
     if (!r || r.unlocked) return;
     const p = opPhase(r);
     if (p !== 'unknown' && !(p === 'settling' && r.stuck)) return;
+    // PR #510 review round 2: an attached comment / a reply from it whose answer never came may still land: no reply of
+    // the same text here may take that comment as its own evidence for a while
+    const pending = [
+      ...(r.steps.some((s) => s.name === 'comment' && s.state === 'unknown') && r.draft.comment ? [r.draft.comment] : []),
+      ...(r.replyState === 'unknown' && r.reply?.body ? [r.reply.body] : []),
+    ];
+    for (const body of pending) this.addSameTextMark(r.key, body);
     this.patchOp(id, { unlocked: true, dismissed: false });
+    if (pending.length) void this.storeSends();
   }
 
   /** Put a notice away (a record still locking cannot be), or show it again. */
@@ -4813,6 +4884,8 @@ export class Controller {
     if (!rec) return this.actNow(plain);
     const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
     if (rec.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有再发');
+    // PR #510 review round 1: the same text sent from the reply box is still without a result
+    if (this.sendCommentPending(rec.key, action.body)) return refuse('同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发');
     if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(`这次操作还没结清，附带评论先不发：${opText(rec)}`);
     if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
     if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
@@ -4967,6 +5040,357 @@ export class Controller {
     }
     this.opsStored = true;
     this.state = { ...this.state, ops: [...this.ops.values()] };
+  }
+
+  // ---- GitHub#489: replies, edited bodies / comments / titles, ticked boxes ------------------------------
+
+  /** a send (or an earlier write through `act`) still keeps this entry / title from another change */
+  private sendHolding(slot: string): boolean {
+    return [...this.sends.values()].some((r) => sendHolds(r) && sendSlot(r.action) === slot);
+  }
+
+  /**
+   * A reply / an edit / a ticked box, sent for the window: it returns at once with the record's id (the
+   * panel empties its box, closes its editor, and is free to go); the request, the answer, the re-read and
+   * the checks are the controller's. Refused at once, nothing kept, when it cannot go out at all.
+   */
+  startSend(action: SendAction): { ok: boolean; error: string | null; id?: string } {
+    const refuse = (error: string) => ({ ok: false, error });
+    if (!action || typeof action !== 'object' || !['comment', 'editEntry', 'editTitle', 'toggleTask'].includes(action.kind)) return refuse('不认识的修改');
+    if ((action as { draftOf?: unknown }).draftOf !== undefined) return refuse('带操作草稿的回复不走这里');
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
+    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    const item = this.findItem(action.key);
+    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    if (action.kind === 'comment' && !action.body.trim()) return refuse('评论是空的，没有发送');
+    const slot = sendSlot(action);
+    if (this.tasksInFlight.has(slot) || this.sendHolding(slot))
+      return refuse(action.kind === 'comment' ? '同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发' : '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改');
+    // PR #510 review round 1: the same text as an operation's reply / attached comment that is on its way or not sure
+    if (action.kind === 'comment' && this.opCommentPending(item.key, action.body)) return refuse('同样的一段评论正由关闭 / 交给 agent 等操作发出，还没有结果，等它有了结果再发');
+    const id = `send-${++this.sendSeq}`;
+    const rec: SendRecord = {
+      id,
+      key: item.key,
+      repo: item.repo,
+      number: item.number,
+      action,
+      startedAt: this.stamp(),
+      state: 'sending',
+      sentAt: null,
+      answeredAt: null,
+      reason: null,
+      warning: null,
+      proof: null,
+      returned: false,
+      unlocked: false,
+      dismissed: false,
+    };
+    // a newer send carrying an older refusal's text (the same entry / title, or a reply that holds the old one)
+    // takes it over: the old record puts itself away with its text
+    for (const r of [...this.sends.values()]) {
+      if (r.key !== rec.key || r.state !== 'refused' || r.dropped || r.action.kind !== action.kind) continue;
+      // a reply: the reply box goes out whole, so a refusal whose text went back into it (and may have been changed
+      // there since, PR #510 review round 2) is carried by any reply of the item; one still waiting in its notice only
+      // when its text is in the new one
+      const carries =
+        r.action.kind === 'comment' && action.kind === 'comment' ? (r.returned ? true : action.body.includes(r.action.body)) : sendSlot(r.action) === slot;
+      if (carries) this.sends.set(r.id, { ...r, dismissed: true, dropped: true });
+    }
+    this.sends.set(id, rec);
+    this.pruneSends();
+    this.sendsChanged();
+    void this.launchSend(id, this.runSend(id));
+    return { ok: true, error: null, id };
+  }
+
+  /** A send's job: kept in sendJobs until it is through (stored included), so nothing else of it starts meanwhile. */
+  private launchSend(id: string, run: Promise<void>): Promise<void> {
+    const job: Promise<void> = run
+      .catch(() => undefined)
+      .then(() => this.storeSends())
+      .then(() => {
+        if (this.sendJobs.get(id) === job) this.sendJobs.delete(id);
+      });
+    this.sendJobs.set(id, job);
+    return job;
+  }
+
+  private patchSend(id: string, patch: Partial<SendRecord>): SendRecord | null {
+    const r = this.sends.get(id);
+    if (!r) return null;
+    const next = { ...r, ...patch };
+    this.sends.set(id, next);
+    this.pruneSends();
+    this.sendsChanged();
+    return next;
+  }
+
+  /** The send itself: on disk first, every check that can refuse it, the request, its answer, the re-read. */
+  private async runSend(id: string): Promise<void> {
+    const start = this.sends.get(id);
+    if (!start) return;
+    const session = this.session;
+    const mine = () => session === this.session && this.sends.get(id) !== undefined;
+    const notSent = (reason: string) => {
+      if (mine()) this.patchSend(id, { state: 'refused', reason, answeredAt: this.stamp() });
+    };
+    // 1. "sending" on disk before anything goes out (a restart then finds it, and knows it was not sent)
+    if (!(await this.storeSends())) return notSent('没能存到本机，没有发出');
+    if (!mine()) return;
+    const c = await this.clientForCall(true);
+    if ('error' in c) return notSent(c.error);
+    if (c.session !== session || !mine()) return;
+    const item = this.findItem(start.key);
+    if (!item) return notSent('看板上找不到这一条（可能刚被同步掉了），没有发出');
+    // 2. every check before the write (each read that fails: nothing was sent)
+    let prepared: Awaited<ReturnType<typeof prepareSend>>;
+    try {
+      prepared = await prepareSend(c.client, start.action, item, { proofs: true });
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      return notSent(explainError(e, start.action.kind));
+    }
+    if (!mine()) return;
+    if (!prepared.write) {
+      this.patchSend(id, { state: 'ok', reason: 'GitHub 上已经是这样，没有再发', answeredAt: this.stamp(), proof: prepared.proof, dismissed: sendQuiet(start.action) });
+      return;
+    }
+    // 3. what proves it, and the moment it goes out, on disk too (not stored = not sent)
+    this.patchSend(id, { proof: prepared.proof, sentAt: this.stamp() });
+    if (!(await this.storeSends())) {
+      if (mine()) this.patchSend(id, { sentAt: null });
+      return notSent('没能存到本机，没有发出');
+    }
+    if (!mine()) return;
+    // 4. the write
+    let warning: string | null = null;
+    let commentId: string | null = null;
+    try {
+      const w = await prepared.write();
+      warning = w.warning;
+      commentId = w.commentId ?? null;
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      if (!mine()) return;
+      if (refusedForSure(e)) this.patchSend(id, { state: 'refused', reason: explainError(e, start.action.kind), answeredAt: this.stamp() });
+      else {
+        this.patchSend(id, { state: 'unknown', reason: unknownReason(e), answeredAt: this.stamp() });
+        await this.storeSends();
+        // checked once at once; then with every sync round
+        await this.checkSend(id, c);
+      }
+      return;
+    }
+    if (!mine()) return;
+    // a quiet one (a ticked box, a title) that simply went through has nothing left to say: forgotten at once
+    this.patchSend(id, { state: 'ok', answeredAt: this.stamp(), warning, dismissed: !warning && sendQuiet(start.action), ...(start.action.kind === 'comment' ? { commentId } : {}) });
+    await this.storeSends();
+    // the item read again, like any change
+    const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
+    if (c.session === this.session) this.scheduleFollowUp(c.session);
+    if (read.problem && mine()) this.patchSend(id, { warning: [warning, read.problem].filter(Boolean).join('；') });
+  }
+
+  /** Read what proves an unknown send (reads only, nothing is sent). */
+  private async checkSend(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
+    const r = this.sends.get(id);
+    // PR #510 review round 2: a person unlocked it after checking GitHub — the app no longer checks it
+    if (!r || r.state !== 'unknown' || r.unlocked) return;
+    this.patchSend(id, { checking: true, checkProblem: null });
+    let problem: string | null = null;
+    let found = false;
+    try {
+      const ev = await readSendEvidence(c.client, r.action, r.repo, r.number);
+      if (c.session !== this.session) return;
+      const now = this.sends.get(id);
+      if (!now || now.state !== 'unknown') return;
+      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()], this.liveMarks(), [...this.ops.values()]);
+      problem = out.missing;
+      found = out.record.state === 'ok';
+      this.sends.set(id, out.record);
+    } catch (e) {
+      if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
+      problem = `读不到 GitHub 上现在的内容（${(e as Error)?.message ?? String(e)}）`;
+    }
+    if (c.session !== this.session) return;
+    const end = this.sends.get(id);
+    if (!end) return;
+    this.patchSend(id, { checking: false, checks: (end.checks ?? 0) + 1, checkProblem: found ? null : problem });
+    await this.storeSends();
+    if (found) {
+      await this.refreshOne(c.client, c.session, end.repo, end.number);
+      if (c.session === this.session) this.scheduleFollowUp(c.session);
+    }
+  }
+
+  /** 「再查一次」: check an unknown send now (reads only). */
+  async sendRecheck(id: string): Promise<WriteResult> {
+    const r = this.sends.get(id);
+    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
+    if (r.state !== 'unknown') return { ok: true, error: null, warning: null };
+    if (r.unlocked) return { ok: false, error: '已由人核对后解除锁定，不再自动核对', warning: null };
+    if (this.sendJobs.has(id) || r.checking) return { ok: false, error: '正在查证，稍等', warning: null };
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { ok: false, error: c.error, warning: null };
+    await this.launchSend(id, this.checkSend(id, c));
+    const end = this.sends.get(id);
+    return end?.state === 'ok' ? { ok: true, error: null, warning: null } : { ok: false, error: end?.checkProblem ?? '还没查到（原来那次请求仍可能稍后生效）', warning: null };
+  }
+
+  /** 「再发一次」: a send refused for sure whose text no panel took back goes out again (all its checks again). */
+  async sendResend(id: string): Promise<WriteResult> {
+    const r = this.sends.get(id);
+    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
+    if (r.state !== 'refused' || r.returned || r.dropped) return { ok: false, error: '这一条不能再发（原文已放回编辑框，或结果还不确定）', warning: null };
+    if (this.sendJobs.has(id)) return { ok: false, error: '正在发送，稍等', warning: null };
+    const slot = sendSlot(r.action);
+    if (this.tasksInFlight.has(slot) || [...this.sends.values()].some((x) => x.id !== id && sendHolds(x) && sendSlot(x.action) === slot) || (r.action.kind === 'comment' && this.opCommentPending(r.key, r.action.body)))
+      return { ok: false, error: '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再试', warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    this.patchSend(id, { state: 'sending', reason: null, sentAt: null, answeredAt: null, warning: null, proof: null, dismissed: false, checks: 0, checkProblem: null });
+    await this.launchSend(id, this.runSend(id));
+    const end = this.sends.get(id);
+    return end?.state === 'ok' ? { ok: true, error: null, warning: end.warning } : { ok: false, error: end?.reason ?? '没有发出', warning: null };
+  }
+
+  /** The panel that shows the item put a refused send's text back into its edit box. */
+  sendReturned(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.returned) return;
+    this.patchSend(id, { returned: true });
+    void this.storeSends();
+  }
+
+  /**
+   * PR #510 review round 1: the text a panel took back left its box without being sent from there (the box
+   * was emptied, the editor cancelled): the record no longer keeps it, and a restart does not bring it back.
+   */
+  sendDropped(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.dropped) return;
+    this.patchSend(id, { dropped: true });
+    void this.storeSends();
+  }
+
+  /** an operation of this item is sending exactly this text as a reply or its attached comment, or does not know whether it went out */
+  private opCommentPending(key: string, body: string): boolean {
+    return [...this.ops.values()].some(
+      (o) =>
+        o.key === key &&
+        // unlocked by a person after checking GitHub: no longer holds the text (its same-text mark guards the evidence)
+        !o.unlocked &&
+        (((o.replyState === 'sending' || o.replyState === 'unknown') && o.reply?.body === body) ||
+          (o.draft.comment === body && o.steps.some((s) => s.name === 'comment' && (s.state === 'pending' || s.state === 'unknown' || (s.state === 'unsent' && o.running))))),
+    );
+  }
+
+  /** a reply of the controller with this text on this item is on its way or not sure */
+  private sendCommentPending(key: string, body: string): boolean {
+    return this.sendHolding(sendSlot({ kind: 'comment', key, body }));
+  }
+
+  /** "已核对，解除锁定" on an unknown send: local only; the text stays in the notice until it is put away. */
+  sendUnlock(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'unknown') return;
+    // PR #510 review round 2: its request may still land: no other reply of the same text here may take that comment as its own
+    if (r.action.kind === 'comment') this.addSameTextMark(r.key, r.action.body);
+    this.patchSend(id, { unlocked: true });
+    void this.storeSends();
+  }
+
+  /** the same-text marks still in force */
+  /** every same-text mark of this account: they never expire (shared/sends.ts, review round 4) */
+  private liveMarks(): SameTextMark[] {
+    return this.sameText;
+  }
+
+  private addSameTextMark(key: string, body: string): void {
+    if (this.sameText.some((m) => m.key === key && m.body === body)) return;
+    this.sameText = [...this.sameText, { key, body, at: this.now() }];
+  }
+
+  /**
+   * PR #510 review round 2: a taken-back text as its edit box holds it now (the person changed it there): kept on
+   * disk with the record, so a restart gives back the latest text. Written a moment after the typing stops.
+   */
+  sendDraft(id: string, text: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.dropped || typeof text !== 'string' || r.draft === text) return;
+    this.sends.set(id, { ...r, draft: text });
+    this.sendsChanged();
+    if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
+    this.sendDraftTimer = setTimeout(() => {
+      this.sendDraftTimer = null;
+      void this.storeSends();
+    }, 300);
+  }
+
+  /** ×: only when the notice may be put away (never on its way, never unknown and still locked) */
+  sendDismiss(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state === 'sending' || (r.state === 'unknown' && !r.unlocked)) return;
+    // a refused text no panel took back yet: putting it away is not losing it — it goes back to the box when the item is opened
+    this.patchSend(id, { dismissed: true });
+    void this.storeSends();
+  }
+
+  /** every sync round that reached GitHub: the unknown sends are checked again (reads only) */
+  private catchUpSends(session: number): void {
+    for (const r of [...this.sends.values()]) {
+      if (session !== this.session || !this.signedIn) return;
+      if (r.state !== 'unknown' || r.unlocked || r.checking || this.sendJobs.has(r.id)) continue;
+      void this.launchSend(r.id, this.checkSend(r.id, { client: this.client(session), session }));
+    }
+  }
+
+  /** Records put away with nothing left to hold are forgotten. */
+  private pruneSends(): void {
+    for (const r of [...this.sends.values()]) if (sendDisposable(r)) this.sends.delete(r.id);
+  }
+
+  private sendsChanged(): void {
+    this.set({ sends: [...this.sends.values()] });
+  }
+
+  /** One row of the snapshot table, this session only. false = not stored. */
+  private async storeSends(): Promise<boolean> {
+    const session = this.session;
+    // what is running in this run of the app is not kept
+    const list = [...this.sends.values()].map(({ checking: _c, ...r }) => r);
+    const marks = this.liveMarks();
+    try {
+      if (!list.length && !marks.length) {
+        if (this.sendsStored) {
+          this.sendsStored = false;
+          this.cache.deleteSnapshot(SENDS_KEY);
+        }
+        return session === this.session;
+      }
+      const row = { sourceKey: SENDS_KEY, fetchedAt: this.now(), items: [], sends: list, marks } as unknown as SourceSnapshot;
+      const ok = await this.writeSnapshots(session, [row]);
+      if (ok) this.sendsStored = true;
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The stored records as the last run left them: one on its way then has no answer now, and nothing is sent again. */
+  private loadSends(row: SourceSnapshot): void {
+    const raw = (row as unknown as { sends?: unknown }).sends;
+    const list = Array.isArray(raw) ? raw.filter(isSendRecord).map(sendAfterRestart) : [];
+    for (const r of list) {
+      this.sends.set(r.id, r);
+      this.stampAt = Math.max(this.stampAt, r.startedAt, r.sentAt ?? 0, r.answeredAt ?? 0);
+      const n = Number(/^send-(\d+)$/.exec(r.id)?.[1] ?? 0);
+      if (n > this.sendSeq) this.sendSeq = n;
+    }
+    const marks = (row as unknown as { marks?: unknown }).marks;
+    this.sameText = Array.isArray(marks) ? marks.filter(isSameTextMark).map((m) => ({ key: m.key, body: m.body, at: typeof m.at === 'number' ? m.at : 0 })) : [];
+    this.sendsStored = true;
+    this.state = { ...this.state, sends: [...this.sends.values()] };
   }
 }
 

@@ -152,10 +152,10 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
 
   // the board: the top bar and the view bar in English, the items' Chinese titles as they are on GitHub
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('write-entry')).toContainText('New issue');
+  await expect(page.getByTestId('write-entry')).toHaveAttribute('aria-label', 'New issue');
   await expect(page.getByTestId('open-view-panel')).toContainText('View settings');
   await expect(page.locator('[data-testid="tally"][data-kind="human"]')).toContainText('Waiting for human');
-  expect(await chineseIn(page, ['header.hdr', '.vbar'])).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="topbar"]', '.vbar'])).toEqual([]);
   await shot(page, '471-04-board-en');
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
   await expect(page.locator('[data-testid="row"]').first()).toBeVisible({ timeout: 20_000 });
@@ -164,7 +164,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await shot(page, '471-05-table-en');
   for (const l of ['table', 'graph'] as const) {
     await page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
-    expect(await chineseIn(page, ['header.hdr', '.vbar']), l).toEqual([]);
+    expect(await chineseIn(page, ['[data-testid="topbar"]', '.vbar']), l).toEqual([]);
   }
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   // the shortcut list's button and the hover of the sync state
@@ -175,8 +175,8 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await app.close();
   app = await launchApp(env, { locale: 'zh-CN' });
   page = app.page;
-  await expect(page.getByTestId('write-entry')).toContainText('New issue', { timeout: 15_000 });
-  expect(await chineseIn(page, ['header.hdr', '.vbar'])).toEqual([]);
+  await expect(page.getByTestId('write-entry')).toHaveAttribute('aria-label', 'New issue', { timeout: 15_000 });
+  expect(await chineseIn(page, ['[data-testid="topbar"]', '.vbar'])).toEqual([]);
 
   // back to Chinese: everything as it was
   await page.getByTestId('open-settings').click();
@@ -184,7 +184,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await expect(page.locator('.settings .toolbar h2')).toHaveText('设置');
   await expect(page.getByTestId('language-title')).toHaveText('语言 · Language');
   await page.getByTestId('back').click();
-  await expect(page.getByTestId('write-entry')).toContainText('新建 issue');
+  await expect(page.getByTestId('write-entry')).toHaveAttribute('aria-label', '新建 issue');
   await app.close();
 });
 

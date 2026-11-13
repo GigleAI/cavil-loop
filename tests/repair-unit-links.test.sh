@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # GitHub#109: `systemctl enable` resolves the template symlink to the end, so an
 # instance timer link points into one releases/<sha>/; the deployer later deletes
 # that release and the timer silently vanishes. This checks the repair

@@ -15,14 +15,16 @@ import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
-import { frameKey, useLayer, useShortcuts } from './keyboard';
+import { frameFindEscape, frameKey, useLayer, useShortcuts } from './keyboard';
+import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
+import { pinnedLabels } from '../shared/pickOrder';
 import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
-import { AUTO_DISMISS_MS, opAutoDismissable, opDraftLeft, opLockOf, opReusableDraft, opText, opTone, type OpRecord } from '../shared/ops';
-import { OpNotice } from './OpNotice';
+import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
+import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
@@ -66,6 +68,16 @@ export function noteOf(r: WriteResult, okText: string): ResultNote {
   if (!r.ok) return { kind: 'error', text: `${r.error ?? '没有成功'}` };
   if (r.warning) return { kind: 'warn', text: `${okText}。注意：${r.warning}` };
   return { kind: 'ok', text: okText };
+}
+
+/**
+ * GitHub#488: what a write's caller still says itself. A field change the controller recorded (`held`) is
+ * said by the field (saved) and by the window's notice area (failed / not confirmed): nothing here, unless
+ * it went through with a warning (a re-read that failed). Anything else: as `noteOf`.
+ */
+export function resultNote(r: WriteResult, okText: string): ResultNote | null {
+  if (r.held && (!r.ok || !r.warning)) return null;
+  return noteOf(r, okText);
 }
 
 /** how long a plain success note stays when its bar opts in (GitHub#256; 5 s since GitHub#279) */
@@ -132,7 +144,7 @@ function at(ms: number): string {
  * reads GitHub first and is held back when somebody changed it (or it could not be read):
  * then only an explicit "overwrite anyway" / "send anyway" sends it.
  */
-export function EditIssues({ marks, canWrite, resending }: { marks: EditMark[]; canWrite: boolean; resending: readonly string[] }) {
+export function EditIssues({ marks, canWrite, resending, about }: { marks: EditMark[]; canWrite: boolean; resending: readonly string[]; /** GitHub#488: in the notice area — which item, and the way to open it */ about?: React.ReactNode }) {
   const [working, setWorking] = useState<string | null>(null);
   const open = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
   if (!open.length) return null;
@@ -151,6 +163,7 @@ export function EditIssues({ marks, canWrite, resending }: { marks: EditMark[]; 
     <div className={`banner ${tone} edit-issues`} data-testid="edit-issues" data-kind={tone}>
       {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <div className="banner-text">
+        {about}
         <b>{open.length} 处修改{open.some((m) => m.status === 'failed') ? '没保存上' : '没确认'}</b>
         {sending && <span data-testid="edit-issues-sending">；正在重新发送…</span>}
         {open.map((m) => (
@@ -243,26 +256,6 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
     <span className="head-note" data-testid="action-result" data-kind={note.kind} title={note.text} role="status" {...auto}>
       <Icon name="check" size={13} />
       <span className="head-note-text">{note.text}</span>
-    </span>
-  );
-}
-
-/**
- * GitHub#260: an operation that fully succeeded (the one rule, opAutoDismissable) is said in the head like a
- * plain success, and puts itself away after 5 s exactly like its × (GitHub#256) — never hidden behind the
- * notices button, where it would count down and go without being seen.
- */
-function HeadOp({ r }: { r: OpRecord }) {
-  const auto = useAutoDismiss(true, AUTO_DISMISS_MS, () => void api().opDismiss(r.id, true), r.id);
-  return (
-    <span className="head-note" data-testid="op-notice" data-kind={opTone(r)} data-op={r.id} data-key={r.key} title={opText(r)} role="status" {...auto}>
-      <Icon name="check" size={13} />
-      <span className="head-note-text" data-testid="op-notice-text">
-        {opText(r)}
-      </span>
-      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="op-dismiss" onClick={() => void api().opDismiss(r.id, true)}>
-        <Icon name="x" size={12} />
-      </button>
     </span>
   );
 }
@@ -739,11 +732,13 @@ export function DetailPanel({
     } finally {
       setChanging((n) => n - 1);
     }
+    // GitHub#488: a recorded change says nothing here (the field and the notice area do)
+    const said = resultNote(r, okText);
     if (!session.current()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
+      if (said) onLeftBehind(resultNote(r, `${label}：${okText}`)!, action);
       return r;
     }
-    setNote(noteOf(r, okText));
+    if (said) setNote(said);
     // read again either way, so the panel shows what GitHub holds now
     void load(!r.ok);
     return r;
@@ -769,7 +764,7 @@ export function DetailPanel({
    * box shows what was asked for in grey and no box takes a click; a refused / failed write takes it
    * back at once. `written`: GitHub answered yes — only the re-read is still awaited.
    */
-  const [pendingTick, setPendingTick] = useState<{ entryId: string; index: number; checked: boolean; written: boolean } | null>(null);
+  const [pendingTick, setPendingTick] = useState<{ entryId: string; index: number; checked: boolean; written: boolean; /** GitHub#489: its send record */ send?: string } | null>(null);
   // the re-read ended (landed or failed) and no other change is in flight: the frame shows what GitHub holds
   // again — decided while rendering, so the read that lands draws the frame once, not grey first and then again
   const tickOver = Boolean(pendingTick?.written) && !loading && !busy;
@@ -807,25 +802,40 @@ export function DetailPanel({
       return;
     }
     setPendingTick({ entryId: e.id, index, checked, written: false });
-    const r = await run(
-      { kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source },
-      checked ? '已勾上，GitHub 上已更新' : '已取消勾选，GitHub 上已更新',
-    );
-    if (!r.here) return;
-    // refused or failed: the box goes back to what is on screen at once, and `run` reads again, so it
-    // ends up showing what GitHub holds now (a re-read with the same content does not redraw by itself)
-    if (!r.ok) {
+    // GitHub#489: the controller sends it; the box stays grey until it is answered and read again (the effect below)
+    const s = await api().startSend({ kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source });
+    if (!session.current()) return;
+    if (!s.ok || !s.id) {
+      // refused before anything went out: the box goes back to what is on screen at once
+      setPendingTick(null);
+      setRedraw((n) => n + 1);
+      setNote({ kind: 'error', text: s.error ?? '没有修改' });
+      return;
+    }
+    const id = s.id;
+    setPendingTick((p) => (p && p.entryId === e.id && p.index === index ? { ...p, send: id } : p));
+  };
+  // GitHub#489: the box's send got its answer. Written: the grey stays until the re-read after it has ended
+  // (`tickOver`); refused / not sure: the box goes back to what is on screen at once, and the detail is read
+  // again (the effect on `sendSig`), so it ends up showing what GitHub holds now
+  const tickSend = pendingTick?.send ? state.sends.find((r) => r.id === pendingTick.send) : undefined;
+  const tickAnswer = pendingTick?.send && !pendingTick.written ? (tickSend ? tickSend.state : 'ok') : null;
+  useEffect(() => {
+    if (!tickAnswer || tickAnswer === 'sending') return;
+    if (tickAnswer === 'ok') setPendingTick((p) => (p ? { ...p, written: true } : p));
+    else {
       setPendingTick(null);
       setRedraw((n) => n + 1);
     }
-    // written: the grey stays until the re-read `run` started has ended (the effect above)
-    else setPendingTick((p) => (p ? { ...p, written: true } : p));
-  };
+  }, [tickAnswer]);
   // What the listener below reads: the latest values of this render, set before the frame can load.
   /** GitHub#205: "edit" was clicked in the frame. Opened only for an entry GitHub said this account may change. */
   const edit = (entryId: unknown) => {
     const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
     if (!e || e.editSource === undefined || !canWrite || busy || editing) return;
+    // GitHub#489: its last change is on its way or not sure: a second one could be overwritten by a late answer
+    const held = state.sends.find((r) => sendHolds(r) && sendSlot(r.action) === `entry:${e.id}`);
+    if (held) return void setNote({ kind: 'error', text: '这一条上一次的修改还没有结果（或还不确定有没有保存上），先看窗口上方的提示' });
     setEditNote(null);
     setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
   };
@@ -863,7 +873,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { q?: unknown; n?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -878,10 +888,23 @@ export function DetailPanel({
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
       else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl, m.alt ?? false);
+      // GitHub#502: find on the page — the frame's count for a query, and a plain Esc while find is open
+      else if (m.cavil === 'found') findFrameFound(findHost.current, m.q, m.n);
+      else if (m.cavil === 'findEsc') frameFindEscape();
     };
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, []);
+  // GitHub#502: this panel's discussion frame takes part in find on the page (findInPage.ts); what is sent is
+  // always for the rendering on screen, and it is told where find stands each time a rendering is ready
+  const findHost = useRef<FrameHost>({
+    el: () => frameRef.current,
+    post: (f) => frameRef.current?.contentWindow?.postMessage({ cavil: 'find', render: live.current.render, open: f.open, q: f.q, cur: f.cur, scroll: f.scroll }, '*'),
+  });
+  useEffect(() => addFindFrame(findHost.current), []);
+  useEffect(() => {
+    if (readyRender === frame.render) findFrameReady(findHost.current);
+  }, [readyRender, frame.render]);
   // GitHub#487: the frame forwards the keys in effect on this machine — sent once it is ready, and again when they change
   const fwdKeys = JSON.stringify(frameForward());
   useEffect(() => {
@@ -901,17 +924,29 @@ export function DetailPanel({
   const pickBlocked = !item || !canWrite || !opts;
   const send = async () => {
     if (!item) return;
-    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
-    setSendingReply(reply);
-    const r = await run({ kind: 'comment', key: item.key, body: reply, ...(replyFromOp ? { draftOf: replyFromOp } : {}) }, '评论已发出');
-    if (r.here) setSendingReply(null);
-    if (r.ok && r.here) {
+    const cleared = () => {
       setReplyFromOp(null);
       setReply('');
       setPreview(null);
       setEscKept(false);
       setPasted(null);
+    };
+    if (!replyFromOp) {
+      // GitHub#489: the controller sends it; the box is empty at once and the panel is free (closed, switched,
+      // another item — the result is said in the window's notice area). Only a refusal before it was recorded
+      // (nothing sent) is said here, and the text stays in the box.
+      const text = reply;
+      const s = await api().startSend({ kind: 'comment', key: item.key, body: text });
+      if (!s.ok) return void setNote({ kind: 'error', text: s.error ?? '没有发送' });
+      setNote(null);
+      cleared();
+      return;
     }
+    // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
+    setSendingReply(reply);
+    const r = await run({ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }, '评论已发出');
+    if (r.here) setSendingReply(null);
+    if (r.ok && r.here) cleared();
   };
   const togglePreview = async () => {
     if (!item) return;
@@ -1076,6 +1111,82 @@ export function DetailPanel({
     seenSig.current = opSig;
     void load(true);
   }, [opSig, load]);
+  // ---- GitHub#489: this item's replies / edits / ticked boxes, sent by the controller ----
+  const mySends = state.sends.filter((r) => r.key === itemKey);
+  // one of them got an answer or was proven: read the detail again, so the panel shows what GitHub holds now.
+  // A record that changed state or is gone counts (a quiet one — a box, a title — that went through is
+  // forgotten at once); one that only started does not
+  const sendSig = mySends.map((r) => `${r.id}:${r.state}`).join('|');
+  const seenSendSig = useRef(sendSig);
+  useEffect(() => {
+    const before = seenSendSig.current;
+    if (sendSig === before) return;
+    seenSendSig.current = sendSig;
+    const now = new Set(sendSig.split('|'));
+    if (before && before.split('|').some((x) => !now.has(x))) void load(true);
+  }, [sendSig, load]);
+  // refused for sure (nothing changed on GitHub): its text goes back into this item's edit box — the reply
+  // box at once, a body / comment / title by opening its editor again (only while no editor is open, and
+  // once the discussion is read: the editor needs the entry). Taken once per record (`taken`), whichever
+  // panel shows the item first; the controller then says 「原文已放回…」 and offers no second send.
+  const taken = useRef(new Set<string>());
+  const takeSig = mySends
+    .filter(sendTakeable)
+    .map((r) => r.id)
+    .join('|');
+  useEffect(() => {
+    for (const r of mySends) {
+      if (!sendTakeable(r) || taken.current.has(r.id)) continue;
+      const a = r.action;
+      // PR #510 review round 2: the box's latest text when it was changed there before a restart
+      const text = sendTakeText(r) ?? '';
+      if (a.kind === 'comment') {
+        // several refusals that went into one box come back as that one box: not twice
+        setReply((cur) => (cur.includes(text) ? cur : cur.trim() ? `${cur}\n\n${text}` : text));
+      } else if (a.kind === 'editTitle') {
+        if (editing || titleEdit) continue;
+        setTitleNote(null);
+        setTitleEdit({ seen: a.seenTitle, text });
+        titleFrom.current = r.id;
+      } else if (a.kind === 'editEntry') {
+        const e = detail?.timeline.find((x) => x.id === a.entryId && (x.kind === 'body' || x.kind === 'comment'));
+        if (editing || titleEdit || !e) continue;
+        setEditNote(null);
+        setEditing({ entryId: a.entryId, kind: e.kind as 'body' | 'comment', url: e.url, source: a.seenSource, text });
+        editFrom.current = r.id;
+      } else continue;
+      taken.current.add(r.id);
+      void api().sendReturned(r.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeSig, detail, editing === null, titleEdit === null]);
+  // PR #510 review rounds 1–2: until it is sent again, a taken-back text is kept by its record — as the box holds
+  // it now (the box is not on disk: a restart gives back the latest text). The record lets it go only when the
+  // box is emptied or the editor it reopened is cancelled; sending it again is seen by the controller itself
+  // (the newer send takes the old record over).
+  const editFrom = useRef<string | null>(null);
+  const titleFrom = useRef<string | null>(null);
+  const lastReply = useRef(reply);
+  useEffect(() => {
+    if (reply === lastReply.current) return;
+    lastReply.current = reply;
+    for (const r of mySends) {
+      if (r.state !== 'refused' || !r.returned || r.dropped || r.action.kind !== 'comment') continue;
+      if (!reply.trim()) void api().sendDropped(r.id);
+      else void api().sendDraft(r.id, reply);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reply]);
+  useEffect(() => {
+    if (editFrom.current && editing) void api().sendDraft(editFrom.current, editing.text);
+  }, [editing?.text]);
+  useEffect(() => {
+    if (titleFrom.current && titleEdit) void api().sendDraft(titleFrom.current, titleEdit.text);
+  }, [titleEdit?.text]);
+  const dropFrom = (ref: { current: string | null }) => {
+    if (ref.current) void api().sendDropped(ref.current);
+    ref.current = null;
+  };
   // opened from a notice above the board (GitHub#250): do what was asked there, once
   const intentDone = useRef(false);
   useEffect(() => {
@@ -1146,6 +1257,9 @@ export function DetailPanel({
   // GitHub#299: the title as this opening last read it from GitHub, else the board's copy (which may
   // be a round behind — e.g. right after a title change was refused because someone else changed it)
   const shownTitle = detail && fromCache === null ? detail.title : item.title;
+  const titleSending = mySends.find((r) => r.state === 'sending' && r.action.kind === 'editTitle') ?? null;
+  /** GitHub#489: the title keeps another change from going out while its last one is on its way or not sure */
+  const titleHeld = mySends.some((r) => sendHolds(r) && sendSlot(r.action) === `title:${itemKey}`);
   const pr = detail?.pr ?? null;
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
@@ -1184,23 +1298,16 @@ export function DetailPanel({
   };
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
-  // GitHub#260: what goes behind the notices button in the head (see DetailNotices)
-  const headOps = myOps.filter((r) => opAutoDismissable(r));
-  const liveOps = myOps.filter((r) => !r.dismissed && !opAutoDismissable(r));
+  // GitHub#260: what goes behind the notices button in the head (see DetailNotices). GitHub#488: the
+  // results the controller holds (this item's operations, its changes not saved) are said in the window's
+  // notice area alone — here only what is this panel's own: a failed read, a note of a write made here,
+  // and the way back to a kept draft of an operation whose notice was put away
   const draftOps = myOps.filter((r) => r.dismissed && opDraftLeft(r));
-  const openMarks = marks.filter((m) => m.status === 'failed' || m.status === 'unconfirmed');
   const noteIn = note !== null && note.kind !== 'ok';
   const loadErrIn = Boolean(loadError && detail);
-  const noticeCount = liveOps.length + draftOps.length + openMarks.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
-  const opTones = liveOps.map((r) => opTone(r));
+  const noticeCount = draftOps.length + (noteIn ? 1 : 0) + (loadErrIn ? 1 : 0);
   // GitHub#357: the button follows the same facts as the notices behind it
-  const noticeTone: NoticeTone = opTones.includes('busy') || openMarks.some((m) => state.editsResending.includes(m.id))
-    ? 'busy'
-    : opTones.includes('error') || openMarks.length > 0 || loadErrIn || note?.kind === 'error'
-      ? 'error'
-      : opTones.includes('warn') || note?.kind === 'warn' || draftOps.length > 0
-        ? 'warn'
-        : 'ok';
+  const noticeTone: NoticeTone = loadErrIn || note?.kind === 'error' ? 'error' : note?.kind === 'warn' || draftOps.length > 0 ? 'warn' : 'ok';
 
   return shell(
     item.key,
@@ -1228,19 +1335,16 @@ export function DetailPanel({
           )}
         </span>
         {note?.kind === 'ok' && <HeadNote note={note} onExpire={() => setNote(null)} />}
-        {headOps.map((r) => (
-          <HeadOp key={r.id} r={r} />
-        ))}
         </span>
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
         {/* GitHub#457: in the floating panel, the way into a tab of this app sits next to the way out to the
-            browser — a filled button with words for the one, the GitHub mark for the other */}
+            browser — a button with words for the one, the GitHub mark for the other (GitHub#505: same plain style) */}
         {float?.onOpenTab ? (
           <>
             {/* on a narrow panel the words go (the icon and the tooltip stay), so the buttons keep to one line inside it */}
             <button
-              className={`blue open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
+              className={`open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
               onClick={float.onOpenTab}
               data-testid="detail-open-tab"
               aria-label="在标签页打开"
@@ -1284,9 +1388,6 @@ export function DetailPanel({
                 <span className="banner-text">{loadError}</span>
               </div>
             )}
-            {liveOps.map((r) => (
-              <OpNotice key={r.id} r={r} onRetry={retryOp} onToReply={toReply} />
-            ))}
             {draftOps.map((r) => (
               <div key={r.id} className="detail-stale small op-draft-line">
                 <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
@@ -1294,7 +1395,6 @@ export function DetailPanel({
                 </button>
               </div>
             ))}
-            <EditIssues marks={marks} canWrite={canWrite} resending={state.editsResending} />
           </DetailNotices>
         )}
         {/* clickable while reading too (GitHub#217): a newer read supersedes the one in flight */}
@@ -1312,15 +1412,24 @@ export function DetailPanel({
         </span>
       </div>
       <div className="detail-title-row">
-        <h3 className="detail-title" data-testid="detail-title">{shownTitle}</h3>
+        {/* GitHub#489: a title on its way shows at once, marked, until GitHub answered */}
+        <h3 className="detail-title" data-testid="detail-title" data-saving={titleSending ? 'yes' : 'no'}>
+          {titleSending?.action.kind === 'editTitle' ? titleSending.action.title.trim() : shownTitle}
+          {titleSending && (
+            <span className="saving" data-testid="title-saving">
+              <span className="spin" aria-hidden="true" />
+              {EDIT_WORDS.saving}
+            </span>
+          )}
+        </h3>
         {/* GitHub#299: only where GitHub said this account may change the item */}
         {detail?.canEdit === true && (
           <button
             className="icon-btn"
             data-testid="detail-edit-title"
             aria-label="编辑标题"
-            title={canWrite && !busy && !editing ? '编辑标题' : (offlineWhy ?? '有修改在途时不能编辑')}
-            disabled={!canWrite || busy || !!editing}
+            title={canWrite && !busy && !editing && !titleHeld ? '编辑标题' : (offlineWhy ?? '有修改在途（或上一次还不确定有没有保存上）时不能编辑')}
+            disabled={!canWrite || busy || !!editing || titleHeld}
             onClick={() => {
               setTitleNote(null);
               setTitleEdit({ seen: shownTitle, text: shownTitle });
@@ -1410,6 +1519,7 @@ export function DetailPanel({
                   title="设置标签"
                   hint={item.repo}
                   testid="label-picker"
+                  pinned={pinnedLabels(state.handBack)}
                   disabled={!canWrite}
                   items={[
                     ...opts.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
@@ -1820,16 +1930,19 @@ export function DetailPanel({
           dirty={editing.text !== editing.source}
           onCancel={() => {
             setEditing(null);
+            dropFrom(editFrom);
             if (pasted?.where === 'edit') setPasted(null);
           }}
           onConfirm={async () => {
-            const r = await run({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source }, editing.kind === 'body' ? '正文已保存' : '评论已保存');
-            if (!r.here) return;
-            if (r.ok) {
-              setEditing(null);
-              setEditNote(null);
-              if (pasted?.where === 'edit') setPasted(null);
-            } else setEditNote(noteOf(r, ''));
+            // GitHub#489: the controller saves it; the editor closes at once. Only a refusal before it was
+            // recorded (nothing sent) is said here, and the editor stays with the text
+            const s = await api().startSend({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source });
+            if (!session.current()) return;
+            if (!s.ok) return void setEditNote({ kind: 'error', text: s.error ?? '没有保存' });
+            setEditing(null);
+            setEditNote(null);
+            editFrom.current = null;
+            if (pasted?.where === 'edit') setPasted(null);
           }}
         >
           <textarea
@@ -1864,14 +1977,18 @@ export function DetailPanel({
           busy={busy}
           disabled={!titleEdit.text.trim() || titleEdit.text.trim() === titleEdit.seen}
           dirty={titleEdit.text !== titleEdit.seen}
-          onCancel={() => setTitleEdit(null)}
+          onCancel={() => {
+            setTitleEdit(null);
+            dropFrom(titleFrom);
+          }}
           onConfirm={async () => {
-            const r = await run({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen }, '标题已保存');
-            if (!r.here) return;
-            if (r.ok) {
-              setTitleEdit(null);
-              setTitleNote(null);
-            } else setTitleNote(noteOf(r, ''));
+            // GitHub#489: as an edit above — the controller saves it, the dialog closes at once
+            const s = await api().startSend({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen });
+            if (!session.current()) return;
+            if (!s.ok) return void setTitleNote({ kind: 'error', text: s.error ?? '没有保存' });
+            setTitleEdit(null);
+            setTitleNote(null);
+            titleFrom.current = null;
           }}
         >
           {/* not in a form: a plain Enter submits nothing — only the button or ⌘↩ (as in every dialog) */}
