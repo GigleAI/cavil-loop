@@ -23,7 +23,7 @@ import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
-import { sendHolds, sendSlot, sendTakeable } from '../shared/sends';
+import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
@@ -1137,19 +1137,21 @@ export function DetailPanel({
     for (const r of mySends) {
       if (!sendTakeable(r) || taken.current.has(r.id)) continue;
       const a = r.action;
+      // PR #510 review round 2: the box's latest text when it was changed there before a restart
+      const text = sendTakeText(r) ?? '';
       if (a.kind === 'comment') {
-        const body = a.body;
-        setReply((cur) => (cur.trim() ? `${cur}\n\n${body}` : body));
+        // several refusals that went into one box come back as that one box: not twice
+        setReply((cur) => (cur.includes(text) ? cur : cur.trim() ? `${cur}\n\n${text}` : text));
       } else if (a.kind === 'editTitle') {
         if (editing || titleEdit) continue;
         setTitleNote(null);
-        setTitleEdit({ seen: a.seenTitle, text: a.title });
+        setTitleEdit({ seen: a.seenTitle, text });
         titleFrom.current = r.id;
       } else if (a.kind === 'editEntry') {
         const e = detail?.timeline.find((x) => x.id === a.entryId && (x.kind === 'body' || x.kind === 'comment'));
         if (editing || titleEdit || !e) continue;
         setEditNote(null);
-        setEditing({ entryId: a.entryId, kind: e.kind as 'body' | 'comment', url: e.url, source: a.seenSource, text: a.body });
+        setEditing({ entryId: a.entryId, kind: e.kind as 'body' | 'comment', url: e.url, source: a.seenSource, text });
         editFrom.current = r.id;
       } else continue;
       taken.current.add(r.id);
@@ -1157,24 +1159,29 @@ export function DetailPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [takeSig, detail, editing === null, titleEdit === null]);
-  // PR #510 review round 1: until it is sent again, a taken-back text is kept by its record too (the box is not
-  // on disk: a restart gives it back again). Once it leaves the box without being sent from there — the reply
-  // box no longer holds it after it did in this opening, the editor it reopened is cancelled — the record lets
-  // it go. (Sending it again is seen by the controller itself: the newer send takes the old record over.)
+  // PR #510 review rounds 1–2: until it is sent again, a taken-back text is kept by its record — as the box holds
+  // it now (the box is not on disk: a restart gives back the latest text). The record lets it go only when the
+  // box is emptied or the editor it reopened is cancelled; sending it again is seen by the controller itself
+  // (the newer send takes the old record over).
   const editFrom = useRef<string | null>(null);
   const titleFrom = useRef<string | null>(null);
-  const inBox = useRef(new Set<string>());
+  const lastReply = useRef(reply);
   useEffect(() => {
+    if (reply === lastReply.current) return;
+    lastReply.current = reply;
     for (const r of mySends) {
       if (r.state !== 'refused' || !r.returned || r.dropped || r.action.kind !== 'comment') continue;
-      if (reply.includes(r.action.body)) inBox.current.add(r.id);
-      else if (inBox.current.has(r.id)) {
-        inBox.current.delete(r.id);
-        void api().sendDropped(r.id);
-      }
+      if (!reply.trim()) void api().sendDropped(r.id);
+      else void api().sendDraft(r.id, reply);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reply, takeSig]);
+  }, [reply]);
+  useEffect(() => {
+    if (editFrom.current && editing) void api().sendDraft(editFrom.current, editing.text);
+  }, [editing?.text]);
+  useEffect(() => {
+    if (titleFrom.current && titleEdit) void api().sendDraft(titleFrom.current, titleEdit.text);
+  }, [titleEdit?.text]);
   const dropFrom = (ref: { current: string | null }) => {
     if (ref.current) void api().sendDropped(ref.current);
     ref.current = null;

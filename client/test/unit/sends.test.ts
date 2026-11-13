@@ -15,6 +15,7 @@ import {
   sendShown,
   sendSlot,
   sendTakeable,
+  sendTakeText,
   sendTone,
   type SendAction,
   type SendRecord,
@@ -42,7 +43,8 @@ describe('the states', () => {
       ['refused, text left the box unsent', rec(reply, { state: 'refused', returned: true, dropped: true }), { tone: 'error', buttons: [], close: true, holds: false, keeps: false, take: false }],
       ['unknown', rec(reply, { state: 'unknown' }), { tone: 'warn', buttons: ['recheck', 'unlock'], close: false, holds: true, keeps: true, take: false }],
       ['unknown, checking', rec(reply, { state: 'unknown', checking: true }), { tone: 'busy', buttons: [], close: false, holds: true, keeps: true, take: false }],
-      ['unknown, unlocked', rec(reply, { state: 'unknown', unlocked: true }), { tone: 'warn', buttons: ['recheck'], close: true, holds: false, keeps: true, take: false }],
+      // PR #510 review round 2: unlocked = settled by a person; the app no longer checks it
+      ['unknown, unlocked', rec(reply, { state: 'unknown', unlocked: true }), { tone: 'warn', buttons: [], close: true, holds: false, keeps: true, take: false }],
       ['refused tick (no text)', rec(tick, { state: 'refused' }), { tone: 'error', buttons: ['resend'], close: true, holds: false, keeps: false, take: false }],
     ];
     for (const [name, r, want] of rows)
@@ -123,6 +125,24 @@ describe('what proves an unknown send', () => {
     // other text or another item does not count
     const other = rec({ ...reply, body: '别的' }, { id: 'send-4', state: 'unknown' });
     expect(sendProve(r, { login: 'me', comments: [...list, { id: 'n2', author: 'me', body: '原文' }] }, [theirs, other, r]).record.state).toBe('ok');
+  });
+
+  it('PR #510 review round 2: an unlocked send is never proven; a same-text mark of the item keeps any other from being proven', () => {
+    const before = ['old'];
+    const list = [{ id: 'old', author: 'me', body: '原文' }, { id: 'n', author: 'me', body: '原文' }];
+    const r = rec(reply, { state: 'unknown', proof: { kind: 'comment', before } });
+    expect(sendProve(r, { login: 'me', comments: list }).record.state).toBe('ok');
+    expect(sendProve({ ...r, unlocked: true }, { login: 'me', comments: list }).record.state).toBe('unknown');
+    expect(sendProve(r, { login: 'me', comments: list }, [], [{ key: K, body: '原文', until: 9 }])).toMatchObject({ record: { state: 'unknown' }, missing: expect.stringContaining('分不清') });
+    // another item's or another text's mark does not count
+    expect(sendProve(r, { login: 'me', comments: list }, [], [{ key: 'x/y#1', body: '原文', until: 9 }, { key: K, body: '别的', until: 9 }]).record.state).toBe('ok');
+  });
+
+  it('PR #510 review round 2: what goes back into the box is its latest text', () => {
+    expect(sendTakeText(rec(reply, { state: 'refused' }))).toBe('原文');
+    expect(sendTakeText(rec(reply, { state: 'refused', draft: '原' }))).toBe('原');
+    expect(isSendRecord(rec(reply, { draft: '原' }))).toBe(true);
+    expect(isSendRecord({ ...rec(reply), draft: 1 })).toBe(false);
   });
 
   it('an edit / a tick / a title: GitHub now holds exactly what was wanted', () => {

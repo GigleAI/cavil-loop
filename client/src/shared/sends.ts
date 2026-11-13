@@ -64,6 +64,11 @@ export interface SendRecord {
    */
   dropped?: boolean;
   /**
+   * PR #510 review round 2: what that edit box holds now (the person may have changed the text after it went
+   * back), kept on disk with the record; a restart gives back this, not the old text. Absent = the text as sent.
+   */
+  draft?: string;
+  /**
    * A reply: the comment that is this send's (GitHub's answer to the request, or the one that proved it).
    * One comment belongs to one send: another send of the same text never takes it as its evidence.
    */
@@ -114,6 +119,31 @@ export function sendShowsText(r: SendRecord): boolean {
   return r.state === 'unknown' || (r.state === 'refused' && !r.returned && !r.dropped);
 }
 
+/** the text a panel takes back into its box: the box's latest text when the person changed it there (PR #510 review round 2) */
+export function sendTakeText(r: SendRecord): string | null {
+  return r.draft ?? sendText(r.action);
+}
+
+/**
+ * PR #510 review round 2: an unknown reply (or an operation's attached comment / reply) a person unlocked after
+ * checking GitHub is no longer checked by the app; its request may still land, so for a while no other send of the
+ * same text on that item may take a new comment of that text as its own evidence. Kept on disk, also after the
+ * record itself is gone.
+ */
+export interface SameTextMark {
+  key: string;
+  body: string;
+  /** controller stamp until which it holds */
+  until: number;
+}
+/** how long such a mark holds */
+export const SAME_TEXT_MARK_MS = 24 * 3600_000;
+export function isSameTextMark(x: unknown): x is SameTextMark {
+  if (!x || typeof x !== 'object') return false;
+  const m = x as Record<string, unknown>;
+  return typeof m.key === 'string' && typeof m.body === 'string' && typeof m.until === 'number';
+}
+
 /** refused: the text may go back into the item's edit box (the panel that shows it takes it) */
 export function sendTakeable(r: SendRecord): boolean {
   return r.state === 'refused' && !r.returned && !r.dropped && sendText(r.action) !== null;
@@ -159,7 +189,8 @@ export type SendButton = 'resend' | 'recheck' | 'unlock';
 /** the one action of the notice (GitHub#489: 「再发一次」 only when refused, 「再查一次」 only when unknown), and the way out of a lock */
 export function sendButtons(r: SendRecord): SendButton[] {
   if (r.state === 'refused') return r.returned || r.dropped ? [] : ['resend'];
-  if (r.state === 'unknown') return r.checking ? [] : r.unlocked ? ['recheck'] : ['recheck', 'unlock'];
+  // PR #510 review round 2: unlocked = a person checked GitHub; the app no longer checks it (only × is left)
+  if (r.state === 'unknown') return r.checking || r.unlocked ? [] : ['recheck', 'unlock'];
   return [];
 }
 
@@ -227,8 +258,10 @@ export interface SendEvidence {
 }
 
 /** An unknown send against what was read: proven → ok; otherwise unchanged with what is missing. */
-export function sendProve(r: SendRecord, ev: SendEvidence, others: readonly SendRecord[] = []): { record: SendRecord; missing: string | null } {
+export function sendProve(r: SendRecord, ev: SendEvidence, others: readonly SendRecord[] = [], marks: readonly SameTextMark[] = []): { record: SendRecord; missing: string | null } {
   if (r.state !== 'unknown') return { record: r, missing: null };
+  // PR #510 review round 2: unlocked by a person = settled by hand; never proven (or given a comment) by the app
+  if (r.unlocked) return { record: r, missing: '已由人核对后解除锁定，不再自动核对' };
   const p = r.proof;
   const ok = (how: string) => ({ record: { ...r, state: 'ok' as const, reason: how, checkProblem: null }, missing: null });
   if (!p) return { record: r, missing: '没有记下能证明它的东西，只能人工核对' };
@@ -241,7 +274,7 @@ export function sendProve(r: SendRecord, ev: SendEvidence, others: readonly Send
     // found could be either one's; and a comment that already is another send's proves nothing here
     const body = r.action.body;
     const same = others.filter((o) => o.id !== r.id && o.key === r.key && o.action.kind === 'comment' && o.action.body === body);
-    if (same.some((o) => o.state === 'sending' || o.state === 'unknown')) return { record: r, missing: '这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对' };
+    if (same.some((o) => o.state === 'sending' || o.state === 'unknown') || marks.some((m) => m.key === r.key && m.body === body)) return { record: r, missing: '这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对' };
     const taken = new Set(same.map((o) => o.commentId).filter((x): x is string => !!x));
     const free = ev.comments.filter((c) => !taken.has(c.id));
     if (!commentProves(free, p.before, ev.login, body)) return { record: r, missing: null };
@@ -303,6 +336,7 @@ export function isSendRecord(x: unknown): x is SendRecord {
     isProof(r.proof) &&
     typeof r.returned === 'boolean' &&
     (r.dropped === undefined || typeof r.dropped === 'boolean') &&
+    (r.draft === undefined || typeof r.draft === 'string') &&
     (r.commentId === undefined || r.commentId === null || typeof r.commentId === 'string') &&
     typeof r.unlocked === 'boolean' &&
     typeof r.dismissed === 'boolean'

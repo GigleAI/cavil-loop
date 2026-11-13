@@ -55,7 +55,7 @@ import {
   type OpStep,
 } from '../shared/ops';
 import { fetchRawDetail, toDetail } from '../data/detail';
-import { isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
+import { isSameTextMark, SAME_TEXT_MARK_MS, type SameTextMark, isSendRecord, sendAfterRestart, sendDisposable, sendHolds, sendProve, sendQuiet, sendSlot, type SendAction, type SendRecord } from '../shared/sends';
 import { addBlockedBy, postComment, readBlocked, readCandidate, readComments, readOpenCandidates, searchCandidates, type Candidate } from '../data/blocked';
 import {
   DEFAULT_BLOCKED_LABELS,
@@ -486,6 +486,10 @@ export class Controller {
   private sendSeq = 0;
   /** GitHub#489: a send's job (its request, or a check) is running in this run of the app */
   private sendJobs = new Map<string, Promise<void>>();
+  /** PR #510 review round 2: same-text marks of unknown replies / attached comments a person unlocked (shared/sends.ts) */
+  private sameText: SameTextMark[] = [];
+  /** the box's latest text is written to disk a moment after the typing stops */
+  private sendDraftTimer: ReturnType<typeof setTimeout> | null = null;
   private opsStored = false;
   private opSeq = 0;
   /** an operation's requests and re-reads, while they run */
@@ -906,6 +910,9 @@ export class Controller {
     this.resendQueue.clear();
     // GitHub#489: and its replies / edits (their row went with the cache)
     this.sends.clear();
+    this.sameText = [];
+    if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
+    this.sendDraftTimer = null;
     this.sendsStored = false;
     this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [] };
     this.pending.reset();
@@ -4754,7 +4761,15 @@ export class Controller {
     if (!r || r.unlocked) return;
     const p = opPhase(r);
     if (p !== 'unknown' && !(p === 'settling' && r.stuck)) return;
+    // PR #510 review round 2: an attached comment / a reply from it whose answer never came may still land: no reply of
+    // the same text here may take that comment as its own evidence for a while
+    const pending = [
+      ...(r.steps.some((s) => s.name === 'comment' && s.state === 'unknown') && r.draft.comment ? [r.draft.comment] : []),
+      ...(r.replyState === 'unknown' && r.reply?.body ? [r.reply.body] : []),
+    ];
+    for (const body of pending) this.addSameTextMark(r.key, body);
     this.patchOp(id, { unlocked: true, dismissed: false });
+    if (pending.length) void this.storeSends();
   }
 
   /** Put a notice away (a record still locking cannot be), or show it again. */
@@ -5000,7 +5015,11 @@ export class Controller {
     // takes it over: the old record puts itself away with its text
     for (const r of [...this.sends.values()]) {
       if (r.key !== rec.key || r.state !== 'refused' || r.dropped || r.action.kind !== action.kind) continue;
-      const carries = r.action.kind === 'comment' && action.kind === 'comment' ? action.body.includes(r.action.body) : sendSlot(r.action) === slot;
+      // a reply: the reply box goes out whole, so a refusal whose text went back into it (and may have been changed
+      // there since, PR #510 review round 2) is carried by any reply of the item; one still waiting in its notice only
+      // when its text is in the new one
+      const carries =
+        r.action.kind === 'comment' && action.kind === 'comment' ? (r.returned ? true : action.body.includes(r.action.body)) : sendSlot(r.action) === slot;
       if (carries) this.sends.set(r.id, { ...r, dismissed: true, dropped: true });
     }
     this.sends.set(id, rec);
@@ -5101,7 +5120,8 @@ export class Controller {
   /** Read what proves an unknown send (reads only, nothing is sent). */
   private async checkSend(id: string, c: { client: GitHubClient; session: number }): Promise<void> {
     const r = this.sends.get(id);
-    if (!r || r.state !== 'unknown') return;
+    // PR #510 review round 2: a person unlocked it after checking GitHub — the app no longer checks it
+    if (!r || r.state !== 'unknown' || r.unlocked) return;
     this.patchSend(id, { checking: true, checkProblem: null });
     let problem: string | null = null;
     let found = false;
@@ -5110,7 +5130,7 @@ export class Controller {
       if (c.session !== this.session) return;
       const now = this.sends.get(id);
       if (!now || now.state !== 'unknown') return;
-      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()]);
+      const out = sendProve(now, { login: this.state.viewer, ...ev }, [...this.sends.values()], this.liveMarks());
       problem = out.missing;
       found = out.record.state === 'ok';
       this.sends.set(id, out.record);
@@ -5134,6 +5154,7 @@ export class Controller {
     const r = this.sends.get(id);
     if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
     if (r.state !== 'unknown') return { ok: true, error: null, warning: null };
+    if (r.unlocked) return { ok: false, error: '已由人核对后解除锁定，不再自动核对', warning: null };
     if (this.sendJobs.has(id) || r.checking) return { ok: false, error: '正在查证，稍等', warning: null };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
@@ -5182,6 +5203,8 @@ export class Controller {
     return [...this.ops.values()].some(
       (o) =>
         o.key === key &&
+        // unlocked by a person after checking GitHub: no longer holds the text (its same-text mark guards the evidence)
+        !o.unlocked &&
         (((o.replyState === 'sending' || o.replyState === 'unknown') && o.reply?.body === body) ||
           (o.draft.comment === body && o.steps.some((s) => s.name === 'comment' && (s.state === 'pending' || s.state === 'unknown' || (s.state === 'unsent' && o.running))))),
     );
@@ -5196,8 +5219,37 @@ export class Controller {
   sendUnlock(id: string): void {
     const r = this.sends.get(id);
     if (!r || r.state !== 'unknown') return;
+    // PR #510 review round 2: its request may still land: no other reply of the same text here may take that comment as its own
+    if (r.action.kind === 'comment') this.addSameTextMark(r.key, r.action.body);
     this.patchSend(id, { unlocked: true });
     void this.storeSends();
+  }
+
+  /** the same-text marks still in force */
+  private liveMarks(): SameTextMark[] {
+    const now = this.now();
+    return this.sameText.filter((m) => m.until > now);
+  }
+
+  private addSameTextMark(key: string, body: string): void {
+    const until = this.now() + SAME_TEXT_MARK_MS;
+    this.sameText = [...this.liveMarks().filter((m) => !(m.key === key && m.body === body)), { key, body, until }];
+  }
+
+  /**
+   * PR #510 review round 2: a taken-back text as its edit box holds it now (the person changed it there): kept on
+   * disk with the record, so a restart gives back the latest text. Written a moment after the typing stops.
+   */
+  sendDraft(id: string, text: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'refused' || r.dropped || typeof text !== 'string' || r.draft === text) return;
+    this.sends.set(id, { ...r, draft: text });
+    this.sendsChanged();
+    if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
+    this.sendDraftTimer = setTimeout(() => {
+      this.sendDraftTimer = null;
+      void this.storeSends();
+    }, 300);
   }
 
   /** ×: only when the notice may be put away (never on its way, never unknown and still locked) */
@@ -5213,7 +5265,7 @@ export class Controller {
   private catchUpSends(session: number): void {
     for (const r of [...this.sends.values()]) {
       if (session !== this.session || !this.signedIn) return;
-      if (r.state !== 'unknown' || r.checking || this.sendJobs.has(r.id)) continue;
+      if (r.state !== 'unknown' || r.unlocked || r.checking || this.sendJobs.has(r.id)) continue;
       void this.launchSend(r.id, this.checkSend(r.id, { client: this.client(session), session }));
     }
   }
@@ -5232,15 +5284,16 @@ export class Controller {
     const session = this.session;
     // what is running in this run of the app is not kept
     const list = [...this.sends.values()].map(({ checking: _c, ...r }) => r);
+    const marks = this.liveMarks();
     try {
-      if (!list.length) {
+      if (!list.length && !marks.length) {
         if (this.sendsStored) {
           this.sendsStored = false;
           this.cache.deleteSnapshot(SENDS_KEY);
         }
         return session === this.session;
       }
-      const row = { sourceKey: SENDS_KEY, fetchedAt: this.now(), items: [], sends: list } as unknown as SourceSnapshot;
+      const row = { sourceKey: SENDS_KEY, fetchedAt: this.now(), items: [], sends: list, marks } as unknown as SourceSnapshot;
       const ok = await this.writeSnapshots(session, [row]);
       if (ok) this.sendsStored = true;
       return ok;
@@ -5259,6 +5312,8 @@ export class Controller {
       const n = Number(/^send-(\d+)$/.exec(r.id)?.[1] ?? 0);
       if (n > this.sendSeq) this.sendSeq = n;
     }
+    const marks = (row as unknown as { marks?: unknown }).marks;
+    this.sameText = Array.isArray(marks) ? marks.filter(isSameTextMark) : [];
     this.sendsStored = true;
     this.state = { ...this.state, sends: [...this.sends.values()] };
   }

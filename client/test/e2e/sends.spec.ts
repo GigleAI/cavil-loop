@@ -151,7 +151,7 @@ test('GitHub#489: a reply — the box empties at once and the panel may go; refu
   await app.close();
 });
 
-test('PR #510 review round 1: a refused reply back in the box comes back after a restart; emptied without sending, it does not', async () => {
+test('PR #510 review rounds 1–2: a refused reply back in the box comes back after a restart, as last changed there; emptied without sending, it does not', async () => {
   let app = await launchApp(env);
   let page = app.page;
   await signIn(page);
@@ -172,6 +172,17 @@ test('PR #510 review round 1: a refused reply back in the box comes back after a
   await page.keyboard.press('Control+Shift+2');
   await openItem(page);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('重启也别丢');
+
+  // ---- PR #510 review round 2: changed in the box (a character deleted, a line added), then a restart: the latest text comes back ----
+  await detail(page).getByTestId('reply-input').fill('重启也别\n再补一句');
+  await page.waitForTimeout(800);
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press('Control+Shift+2');
+  await openItem(page);
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('重启也别\n再补一句');
 
   // ---- emptied without sending: let go — not back after the next restart ----
   await detail(page).getByTestId('reply-input').fill('');

@@ -56,6 +56,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     sendRecheck: (id) => c.sendRecheck(String(id)),
     sendReturned: async (id) => c.sendReturned(String(id)),
     sendDropped: async (id) => c.sendDropped(String(id)),
+    sendDraft: async (id, text) => c.sendDraft(String(id), String(text)),
     sendUnlock: async (id) => c.sendUnlock(String(id)),
     sendDismiss: async (id) => c.sendDismiss(String(id)),
     previewMarkdown: (repo, text) => c.previewMarkdown(String(repo), String(text)),

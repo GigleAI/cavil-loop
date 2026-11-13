@@ -11,7 +11,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
-import { sendButtons, sendClosable, sendHolds, sendKeepsText, sendNoticeText, sendShown, sendTakeable, sendTone, type SendRecord } from '../../src/shared/sends';
+import { sendButtons, sendClosable, sendHolds, sendKeepsText, sendNoticeText, sendShown, sendTakeable, sendTakeText, sendTone, type SendRecord } from '../../src/shared/sends';
 import type { ItemDetail } from '../../src/shared/actions';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
@@ -302,35 +302,115 @@ describe('PR #510 review round 1', () => {
     expect(posts()).toHaveLength(3);
   });
 
-  it('one comment proves one send: an unknown send (unlocked) is not proven by a later same-text send that went through; its own late one does', async () => {
-    const c = await ready();
-    const late = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+  it('PR #510 review round 2: once unlocked, an unknown reply is no longer checked, and its same-text mark outlives every record — a later same-text reply that is not sure is never proven by another one\'s comment, also after a restart', async () => {
+    let c = await ready();
+    const lateA = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
     const a = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' });
     await idle(c);
-    late.stop();
+    lateA.stop();
     expect(sendOf(c, a.id!).state).toBe('unknown');
     // still open: the same text is refused
     expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' }).ok).toBe(false);
-    // a person checked GitHub and unlocked it; the same text goes out again and is answered
+    // a person checked GitHub and unlocked it: no more checks of it, its text stays until ×
     c.sendUnlock(a.id!);
+    expect(await c.sendRecheck(a.id!)).toMatchObject({ ok: false, error: expect.stringContaining('不再自动核对') });
+    // the same text goes out again and is answered; its notice goes (as after the 5 s): its record is forgotten
     const b = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' });
-    expect(b.ok).toBe(true);
     await idle(c);
-    const rb = sendOf(c, b.id!);
-    expect(rb.state).toBe('ok');
-    expect(rb.commentId).toBeTruthy();
+    expect(sendOf(c, b.id!).state).toBe('ok');
+    c.sendDismiss(b.id!);
+    c.sendDismiss(a.id!);
+    await idle(c);
+    expect(c.getState().sends.filter((x) => x.id === a.id || x.id === b.id)).toEqual([]);
     expect(commentsOnGitHub().filter((x) => x.body === '同文')).toHaveLength(1);
-    // the first one's check finds only the second one's comment: still not sure
-    expect(await c.sendRecheck(a.id!)).toMatchObject({ ok: false });
-    expect(sendOf(c, a.id!).state).toBe('unknown');
-    // the first one lands late: its own comment proves it
-    late.land();
+    // a restart in between: the mark is on disk
+    c = await restart(c);
+    // a third one of the same text whose answer is lost and that does not land
+    const lateC = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const third = c.startSend({ kind: 'comment', key: K(ISSUE), body: '同文' });
+    await idle(c);
+    lateC.stop();
+    expect(sendOf(c, third.id!).state).toBe('unknown');
+    // the first one's request lands now: a new same-text comment that is not the third one's — never taken as proof
+    lateA.land();
     expect(commentsOnGitHub().filter((x) => x.body === '同文')).toHaveLength(2);
-    expect(await c.sendRecheck(a.id!)).toMatchObject({ ok: true });
-    const ra = sendOf(c, a.id!);
-    expect(ra.state).toBe('ok');
-    expect(ra.commentId).not.toBe(rb.commentId);
-    expect(posts()).toHaveLength(2);
+    expect(await c.sendRecheck(third.id!)).toMatchObject({ ok: false, error: expect.stringContaining('分不清') });
+    expect(sendOf(c, third.id!).state).toBe('unknown');
+    // the sibling: a reply of other text whose answer is lost and that lands is proven as before
+    const lateD = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const d = c.startSend({ kind: 'comment', key: K(ISSUE), body: '别的话' });
+    await idle(c);
+    lateD.stop();
+    lateD.land();
+    expect(await c.sendRecheck(d.id!)).toMatchObject({ ok: true });
+    expect(posts()).toHaveLength(4);
+  });
+
+  it('PR #510 review round 2: an operation\'s attached comment that is not sure, unlocked by a person, marks its text too', async () => {
+    let c = await ready();
+    const late = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const op = c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '交回说明' });
+    expect(op.ok).toBe(true);
+    for (let i = 0; i < 500 && c.getState().ops.find((x) => x.id === op.id)?.steps[0].state !== 'unknown'; i++) await new Promise((r) => setTimeout(r, 10));
+    late.stop();
+    const r = c.getState().ops.find((x) => x.id === op.id)!;
+    expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'unknown' });
+    // while it is not sure, a reply of the same text is refused
+    expect(c.startSend({ kind: 'comment', key: K(ISSUE), body: '交回说明' }).ok).toBe(false);
+    // (unlocking is offered once its own checks are through)
+    for (let i = 0; i < 1000 && !c.getState().ops.find((x) => x.id === op.id)?.unlocked; i++) {
+      c.opUnlock(op.id!);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(c.getState().ops.find((x) => x.id === op.id)?.unlocked).toBe(true);
+    await idle(c);
+    c = await restart(c);
+    // a reply of the same text whose answer is lost; the operation's comment lands: not taken as the reply's
+    const lateR = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
+    const s = c.startSend({ kind: 'comment', key: K(ISSUE), body: '交回说明' });
+    expect(s.ok).toBe(true);
+    await idle(c);
+    lateR.stop();
+    late.land();
+    expect(commentsOnGitHub().filter((x) => x.body === '交回说明')).toHaveLength(1);
+    expect(await c.sendRecheck(s.id!)).toMatchObject({ ok: false });
+    expect(sendOf(c, s.id!).state).toBe('unknown');
+  });
+
+  it('PR #510 review round 2: a taken-back reply changed in the box comes back as changed after a restart; emptied, it is let go', async () => {
+    let c = await ready();
+    fake.state.w.failComment = true;
+    const s = c.startSend({ kind: 'comment', key: K(ISSUE), body: 'abc' });
+    await idle(c);
+    fake.state.w.failComment = false;
+    c.sendReturned(s.id!);
+    // the person deletes a character in the box
+    c.sendDraft(s.id!, 'ab');
+    await new Promise((r) => setTimeout(r, 400));
+    await idle(c);
+    c = await restart(c);
+    const back = sendOf(c, s.id!);
+    expect(sendTakeable(back)).toBe(true);
+    expect(sendTakeText(back)).toBe('ab');
+    // an edited body likewise
+    commentOn(ISSUE, 'IC_d', '原文');
+    fake.state.w.comments.get(`gigleai/cavil-loop#${ISSUE}`)!.find((x) => x.id === 'IC_d')!.body = '原文';
+    const e = c.startSend({ kind: 'editEntry', key: K(ISSUE), entryId: 'IC_d', body: '我的版本', seenSource: '别人看到的' });
+    await idle(c);
+    expect(sendOf(c, e.id!).state).toBe('refused');
+    c.sendReturned(e.id!);
+    c.sendDraft(e.id!, '我的版本，又改了一句');
+    await new Promise((r) => setTimeout(r, 400));
+    await idle(c);
+    c = await restart(c);
+    expect(sendTakeText(sendOf(c, e.id!))).toBe('我的版本，又改了一句');
+    // emptied: let go
+    c.sendReturned(s.id!);
+    c.sendDropped(s.id!);
+    c.sendDismiss(s.id!);
+    await idle(c);
+    expect(c.getState().sends.find((x) => x.id === s.id)).toBeUndefined();
+    expect(posts()).toHaveLength(1);
   });
 
   it('an operation\'s attached comment and a reply of the same text are never in flight together', async () => {

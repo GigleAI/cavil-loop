@@ -134,6 +134,8 @@ export interface CavilApi {
   sendReturned(id: string): Promise<void>;
   /** that text left the edit box without being sent from it (emptied, the editor cancelled) */
   sendDropped(id: string): Promise<void>;
+  /** the box holding that taken-back text now holds this (kept with the record, so a restart gives back the latest) */
+  sendDraft(id: string, text: string): Promise<void>;
   /** "已核对，解除锁定" on an unknown send (local only) */
   sendUnlock(id: string): Promise<void>;
   sendDismiss(id: string): Promise<void>;
