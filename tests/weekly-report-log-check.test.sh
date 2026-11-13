@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: unit
+# reads: repo
 # 从本机日志重算金额：什么时候重算、什么时候沿用原值、哪些能进「去重合计」。
 #
 # 跑法：bash tests/weekly-report-log-check.test.sh

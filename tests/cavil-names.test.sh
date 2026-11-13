@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kind: install
+# reads: repo
 # 新旧两套名字（GigleAI/cavil-loop#70）的守卫。
 #
 # 跑法：bash tests/cavil-names.test.sh   （约 20 秒：要真的跑两次 setup.sh 和三轮轮询）

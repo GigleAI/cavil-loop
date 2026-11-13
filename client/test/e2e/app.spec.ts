@@ -1387,7 +1387,7 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   await expect(frame.locator('details.entry[data-entry="C2"] .md')).toBeHidden();
   await expect(frame.locator('details.entry[data-entry="C3"] .md')).toBeVisible();
   await shot(page, '40-detail-folded');
-  // (near the start of the line: the middle of it may be the "在网页上看" link)
+  // (near the start of the line, on the folded head itself)
   await frame.locator('details.entry[data-entry="C1"] > summary').click({ position: { x: 40, y: 10 } });
   await expect(frame.locator('details.entry[data-entry="C1"] .md')).toBeVisible();
   // the keyboard is now inside the isolated discussion: Esc stays there and does not close the panel
