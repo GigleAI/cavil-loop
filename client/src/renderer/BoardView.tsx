@@ -3,7 +3,6 @@ import { UpdateInstalledBar, UpdateReadyBar } from './UpdateViews';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
-import { copyText } from './pasteImage';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
 import { RETRY_BY_HAND, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
@@ -13,9 +12,7 @@ import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { createFailures, createTone, editsTone } from '../shared/noticeTone';
 import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
-import { OpNotice } from './OpNotice';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, openOnly, parseFilter, statesStated, type ParsedFilter } from '../shared/filter';
@@ -401,190 +398,6 @@ function SyncTroublePanel({
   );
 }
 
-/**
- * GitHub#229: changes that need the user (not saved / not confirmed), also the ones left
- * from the last run. Each item's own list (both values side by side) is in its detail.
- */
-function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; onOpen: (key: string) => void }) {
-  const [working, setWorking] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  if (!state.editsNeedingAction) return null;
-  const items = data.items.filter((i) => i.edits?.some((m) => m.status === 'failed' || m.status === 'unconfirmed'));
-  const go = async (fn: () => Promise<{ ok: boolean; error: string | null } | void>) => {
-    setWorking(true);
-    setResult(null);
-    try {
-      const r = await fn();
-      if (r && !r.ok) setResult(r.error);
-    } finally {
-      setWorking(false);
-    }
-  };
-  // GitHub#357: blue while a resend a person asked for is running (the controller's fact, the same one the detail reads)
-  const sending = state.editsResending.length > 0;
-  const tone = editsTone(sending);
-  return (
-    <div className={`banner ${tone}`} data-testid="edits-bar" data-count={state.editsNeedingAction} data-kind={tone}>
-      {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
-      <span className="banner-text">
-        有 {state.editsNeedingAction} 处修改没保存上或没确认保存到 GitHub
-        {sending && <span data-testid="edits-bar-sending">；正在重新发送…</span>}
-        {items.length > 0 && (
-          <>
-            （
-            {items.map((i, n) => (
-              <span key={i.key}>
-                {n > 0 && '、'}
-                <button className="link" data-testid="edits-bar-item" onClick={() => onOpen(i.key)}>
-                  {i.repo.split('/')[1]} #{i.number}
-                </button>
-              </span>
-            ))}
-            ；打开可逐条看两边的值）
-          </>
-        )}
-        。{' '}
-        <button className="link" data-testid="edits-resend-all" disabled={working || sending || !writesEnabled(state.sync)} onClick={() => void go(() => api().resendAllEdits())}>
-          全部重新发送
-        </button>
-        <button className="link" data-testid="edits-abandon-all" disabled={working} onClick={() => void go(() => api().abandonAllEdits())}>
-          全部放弃
-        </button>
-        {result && (
-          <span className="small" data-testid="edits-bar-result">
-            {' '}
-            {result}
-          </span>
-        )}
-      </span>
-    </div>
-  );
-}
-
-/** GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back. */
-function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: string) => void; onDraft: (d: CreateJob['draft']) => void }) {
-  const [copied, setCopied] = useState(false);
-  // GitHub#357: the colour, "running" and why the last attempt failed all come from the job itself
-  // (shared/noticeTone.ts), never from this bar's own memory of a click
-  const tone = createTone(job);
-  const mark = tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />;
-  const working = job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
-  const failures = createFailures(job);
-  const close = (
-    <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
-      <Icon name="x" />
-    </button>
-  );
-  // GitHub#258: created, only boards not ticked still being watched: nothing to say
-  if (job.status === 'watching') return null;
-  if (job.status === 'running')
-    return (
-      <div className={`banner ${tone}`} data-testid="create-bar" data-status="running" data-kind={tone}>
-        <span className="spin" aria-hidden="true" />
-        <span className="banner-text">正在新建「{job.title}」… 建好后自动打开它</span>
-      </div>
-    );
-  if (job.status === 'partial')
-    return (
-      <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="partial" data-kind={tone}>
-        {mark}
-        <span className="banner-text">
-          <b>#{job.number} 已建好</b>，{job.message?.replace(/^issue #\d+ 已建好，但/, '但') ?? ''}{' '}
-          <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
-            打开 #{job.number}
-          </button>
-          {(job.boards ?? []).some((b) => b.state === 'missing') &&
-            (job.retrying ? (
-              <span className="small muted" data-testid="create-retrying">
-                {' '}
-                正在再试加入看板…
-              </span>
-            ) : (
-              <button className="link" data-testid="create-retry-projects" disabled={working} onClick={() => void api().retryCreateProjects(job.id)}>
-                再试加入看板
-              </button>
-            ))}
-          {(job.watch ?? [])
-            .filter((w) => w.state === 'human')
-            .map((w) => (
-              <button
-                key={w.projectKey}
-                className="link"
-                data-testid="create-watch-apply"
-                data-project={w.projectKey}
-                disabled={working}
-                onClick={() => void api().applyCreateWatch(job.id, w.projectKey)}
-              >
-                在「{w.title}」改成「{w.label}」
-              </button>
-            ))}
-          {failures.length > 0 && !working && (
-            <span className="small err" data-testid="create-retry-error">
-              {' '}
-              {failures.join('；')}
-            </span>
-          )}
-        </span>
-        {close}
-      </div>
-    );
-  if (job.status === 'unknown')
-    return (
-      <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="unknown" data-kind={tone}>
-        {mark}
-        <span className="banner-text">
-          <b>不确定「{job.title}」有没有建好</b>：{job.message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。
-          {job.looking && <span data-testid="create-looking">正在查最近建的同标题 issue…</span>}
-          {job.lookError && !job.looking && <span data-testid="create-look-error">没能查到最近建的 issue：{job.lookError}。</span>}{' '}
-          <button className="link" data-testid="create-web" onClick={() => void api().openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)}>
-            在网页上看我最近建的 issue
-          </button>
-          <button
-            className="link"
-            data-testid="create-copy"
-            onClick={() => void copyText(`${job.draft.title}\n\n${job.draft.body}`).then((ok) => setCopied(Boolean(ok)))}
-          >
-            {copied ? '已复制' : '复制草稿内容'}
-          </button>
-          {job.candidates && (
-            <span className="small muted" data-testid="create-candidates">
-              {' '}
-              {job.candidates.length
-                ? '最近 10 分钟你在这个仓库建的同标题 issue（仅供查看）：'
-                : '没找到最近 10 分钟你在这个仓库建的同标题 issue（原请求仍可能稍后完成）'}
-              {job.candidates.map((c) => (
-                <a key={c.number} href={c.url} data-testid="create-candidate" onClick={(e) => (e.preventDefault(), void api().openExternal(c.url))}>
-                  {' '}
-                  #{c.number}
-                </a>
-              ))}
-            </span>
-          )}
-        </span>
-        {close}
-      </div>
-    );
-  return (
-    <div className={`banner ${tone} closable`} data-testid="create-bar" data-status="failed" data-kind={tone}>
-      <Icon name="warn" />
-      <span className="banner-text">
-        没能新建「{job.title}」：{job.message}。{' '}
-        <button
-          className="link"
-          data-testid="create-reopen"
-          onClick={() => {
-            onDraft(job.draft);
-            void api().dismissCreate(job.id);
-          }}
-        >
-          重新打开草稿
-        </button>
-      </span>
-      {close}
-    </div>
-  );
-}
-
 /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
 export type OpenIntent = { opId: string; what: 'retry' | 'toReply' };
 
@@ -599,7 +412,6 @@ export function BoardView({
   detailKey,
   floatKey = null,
   floatPanel = null,
-  shownAbove = [],
   leftNote = null,
   request = null,
   onRequestTaken,
@@ -624,15 +436,12 @@ export function BoardView({
   onOpen: (key: string, intent?: OpenIntent) => void;
   /**
    * GitHub#397: the item whose detail tab is in front; null = the home tab is. Behind a detail tab the
-   * board stays mounted, but its keys are not its own — and that item's notices are the detail's to
-   * show (and to put away), not also the board's.
+   * board stays mounted, but its keys are not its own.
    */
   detailKey: string | null;
-  /** GitHub#442: the item the floating detail shows over the board (its notices are the panel's), and the panel itself */
+  /** GitHub#442: the item the floating detail shows over the board, and the panel itself */
   floatKey?: string | null;
   floatPanel?: ReactNode;
-  /** GitHub#447: operations the window shows in its own strip above every page (a close that put its detail away) — not also here */
-  shownAbove?: readonly string[];
   /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
   leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
   /** a shortcut that needs the board (GitHub#192): done once, then handed back */
@@ -788,7 +597,8 @@ export function BoardView({
       if (!searchBox.current) return;
       searchBox.current.focus();
       searchBox.current.select();
-    } else if (canWrite) setNewIssue(true);
+    } else if (request.draft) setNewIssue({ draft: request.draft });
+    else if (canWrite) setNewIssue(true);
     onRequestTaken?.();
   }, [request?.seq, tools]);
   const [confirm, setConfirm] = useState<Extract<DropPlan, { kind: 'confirm' }> | null>(null);
@@ -804,18 +614,21 @@ export function BoardView({
   const runAll = async (actions: WriteAction[], okText: string) => {
     setBusy(true);
     let warn: string[] = [];
+    // GitHub#488: field changes the controller recorded are said by the card and the window's notice area
+    let allHeld = true;
     for (const a of actions) {
       const r = await api().act(a);
       if (!r.ok) {
         setBusy(false);
         const done = actions.indexOf(a);
-        setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
+        if (!r.held) setNote({ kind: 'error', text: `${done ? `前 ${done} 项已改好；` : ''}${r.error}` }, a);
         return;
       }
+      if (!r.held) allHeld = false;
       if (r.warning) warn.push(r.warning);
     }
     setBusy(false);
-    setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
+    if (!allHeld || warn.length) setNote(noteOf({ ok: true, error: null, warning: warn.join('；') || null }, okText));
   };
   const ops: CardOps = {
     // GitHub#229: a change shows on the card at once; the board does not wait for GitHub's answer
@@ -1132,22 +945,6 @@ export function BoardView({
         macOS 没有让 Cavil Loop 弹出通知（{state.notifyProblem}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。
       </WarnBar>
       <ResultBanner note={note} testid="board-action-result" onExpire={() => setNote(null)} onClose={() => setNote(null)} />
-      <EditsBar state={state} data={data} onOpen={openItem} />
-      {state.ops
-        .filter((r) => !r.dismissed && r.key !== detailKey && r.key !== floatKey && !shownAbove.includes(r.id))
-        .map((r) => (
-          <OpNotice
-            key={r.id}
-            r={r}
-            prefix={`${r.repo}#${r.number}：`}
-            onOpen={openItem}
-            onRetry={(x) => onOpen(x.key, { opId: x.id, what: 'retry' })}
-            onToReply={(x) => onOpen(x.key, { opId: x.id, what: 'toReply' })}
-          />
-        ))}
-      {state.creates.map((j) => (
-        <CreateBar key={j.id} job={j} onOpen={openItem} onDraft={(d) => setNewIssue({ draft: d })} />
-      ))}
       {view.layout === 'board' && board.notice && !guide && (
         <div className="banner info" data-testid="board-notice">
           {board.notice}

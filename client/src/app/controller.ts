@@ -2651,7 +2651,8 @@ export class Controller {
     const reqId = ++this.editSeq;
     this.setEdit(id, startEdit(prev, { id, key: item.key, repo: item.repo, number: item.number, field, base: shown ?? null }, value, reqId));
     this.editsChanged();
-    return this.sendEdit(id, reqId, action);
+    // GitHub#488: from here on the record holds the outcome (the notice area says a failure, the field a success)
+    return { ...(await this.sendEdit(id, reqId, action)), held: true };
   }
 
   private fieldOf(action: FieldAction, item: Item): EditField {
