@@ -676,20 +676,25 @@ export function BoardView({
   };
   const failed = sync.sources.filter((s) => !s.ok);
   const trouble = syncTrouble(sync, parsed);
-  // GitHub#455: a reread started from the ⚠️ panel; kept here so its outcome outlives the panel (all read → ⚠️ and panel go)
+  // GitHub#455: a reread started from the ⚠️ panel; kept here so its outcome outlives the panel (all read → ⚠️ and panel go).
+  // The green note is not a state of its own: it is shown exactly while the reread's latest outcome is "all read"
+  // (and nothing failed since), and its timer puts that outcome back to idle. A new click replaces the outcome, so an
+  // old note can never come back (PR #458 review round 1: a separate "shown" value outlived the timer that cleared it).
   const reread = useReread();
   const rereadOk = reread.state.phase === 'done' && reread.state.outcome.kind === 'ok' ? reread.state.at : null;
-  const [okShown, setOkShown] = useState<number | null>(null);
   useEffect(() => {
     if (rereadOk === null) return;
-    setOkShown(rereadOk);
-    const t = setTimeout(() => {
-      setOkShown((v) => (v === rereadOk ? null : v));
-      reread.clear();
-    }, REREAD_OK_MS);
+    const t = setTimeout(() => reread.clear(), REREAD_OK_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rereadOk]);
+  // something failed again after it: that "all read" is over for good, not just hidden until the next recovery
+  const troubleNow = trouble !== null;
+  useEffect(() => {
+    if (rereadOk !== null && troubleNow) reread.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rereadOk, troubleNow]);
+  const okShown = rereadOk !== null && !troubleNow;
   const labelOf = (sourceKey: string) => {
     const s = state.sources.find((x) => x.key === sourceKey);
     return s ? sourceLabel(s, titles.get(s.key)) : sourceKey;
@@ -905,7 +910,7 @@ export function BoardView({
               <span className="sync-text">{headerText(sync, now)}</span>
             </span>
           )}
-          {okShown !== null && !trouble && (
+          {okShown && (
             <span className="reread-ok" data-testid="sync-reread-ok" role="status">
               <Icon name="check" />
               {REREAD_OK_TEXT}

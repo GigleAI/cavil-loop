@@ -275,3 +275,92 @@ test('no connection: "连不上 GitHub", only "重新读取", nothing about auth
   await expect(note.getByTestId('failure-relogin')).toHaveCount(0);
   await shot(page, 'settings-offline');
 });
+
+test('empty board card: "重新读取" spins while it runs and says what came of it; read once approved → the card goes (GitHub#455)', async () => {
+  env.fake.state.restrictedOrgs.set('gigleai', { kind: 'oauth' });
+  env.fake.state.memberOrgs.set('user-1', ['GigleAI']);
+  const page = await signIn();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  const card = page.getByTestId('empty-guide');
+  await expect(card).toHaveAttribute('data-kind', 'failed', { timeout: 15_000 });
+  const retry = card.getByTestId('failure-retry');
+  await expect(retry).toHaveText('重新读取');
+  const reads = () => env.fake.log.filter((e) => e.operation === 'CavilProjectItems').length;
+
+  // held at GitHub: the card's own button spins, says when it started, and really reads
+  const release = env.fake.holdWhen((e) => e.operation === 'CavilProjectItems');
+  const n = reads();
+  await retry.click();
+  await expect(retry).toHaveText('正在重新读取…');
+  await expect(retry).toHaveAttribute('data-running', 'yes');
+  await expect(card.getByTestId('failure-reread-running')).toContainText(/^\d\d:\d\d:\d\d 开始重新读取，/);
+  await expect.poll(reads).toBeGreaterThan(n);
+  // answered, still refused: the outcome in the card, to the second
+  release();
+  await expect(card.getByTestId('failure-reread-result')).toHaveText(/^\d\d:\d\d:\d\d 重新读取完毕：这个来源仍然读取失败（原因见上）。$/, { timeout: 15_000 });
+  await expect(card.getByTestId('failure-reread-running')).toHaveCount(0);
+  await expect(retry).toHaveText('重新读取');
+  await shot(page, '455-card-still-failing');
+
+  // approved: the card goes
+  env.fake.state.restrictedOrgs.delete('gigleai');
+  await retry.click();
+  await expect(card).toHaveCount(0, { timeout: 15_000 });
+});
+
+test('the green "all read" note never comes back: a panel reread that recovers, then fails again within 5 s, then a recovery by the refresh button (GitHub#455, PR #458 review round 1)', async () => {
+  env.fake.state.memberOrgs.set('user-1', ['GigleAI']);
+  const page = await signIn();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('source-input').fill(PROJECT_URL);
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('empty-guide')).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId('sync-trouble')).toHaveCount(0, { timeout: 15_000 });
+  const btn = page.getByTestId('sync-trouble');
+  const ok = page.getByTestId('sync-reread-ok');
+  // refused at once (no retry wait), so every step fits in the note's 5 seconds
+  const fail = async () => {
+    env.fake.state.restrictedOrgs.set('gigleai', { kind: 'oauth' });
+    await page.getByTestId('refresh').click();
+    await expect(btn).toBeVisible({ timeout: 15_000 });
+  };
+
+  // 1. the panel reread recovers: the note
+  await fail();
+  await btn.click();
+  env.fake.state.restrictedOrgs.delete('gigleai');
+  await page.getByTestId('sync-trouble-resync').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await expect(ok).toBeVisible();
+  // 2. within the 5 seconds: fails again, and a panel reread fails too
+  await fail();
+  await expect(ok).toHaveCount(0);
+  await btn.click();
+  await page.getByTestId('sync-trouble-resync').click();
+  await expect(page.getByTestId('sync-trouble-result')).toContainText('仍然读取失败', { timeout: 15_000 });
+  // 3. recovered by the refresh button: no note, now or later
+  env.fake.state.restrictedOrgs.delete('gigleai');
+  await page.getByTestId('refresh').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await expect(ok).toHaveCount(0);
+  await page.waitForTimeout(6500);
+  await expect(ok).toHaveCount(0);
+
+  // 4. the same order without the second panel reread (only an automatic failure in between): no note either
+  await fail();
+  await btn.click();
+  env.fake.state.restrictedOrgs.delete('gigleai');
+  await page.getByTestId('sync-trouble-resync').click();
+  await expect(ok).toBeVisible({ timeout: 15_000 });
+  await fail();
+  env.fake.state.restrictedOrgs.delete('gigleai');
+  await page.getByTestId('refresh').click();
+  await expect(btn).toHaveCount(0, { timeout: 15_000 });
+  await expect(ok).toHaveCount(0);
+  await page.waitForTimeout(6500);
+  await expect(ok).toHaveCount(0);
+});
