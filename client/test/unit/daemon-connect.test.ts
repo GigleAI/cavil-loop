@@ -21,13 +21,17 @@ const REPO = 'acme/widget'; // what the fake gh answers for `gh repo view` (test
 const open: HarnessBackend[] = [];
 let w: DaemonWorld;
 
+// a fresh machine per case (fake tools, a copy of this checkout's daemon files, a git commit and a
+// bare clone): on a loaded box this passes vitest's default 10 s hook limit, as in daemon.test.ts
+// (GitHub#413 code review round 1; seen again in PR #493 code review round 2)
 beforeEach(() => {
   w = daemonWorld(tempDir());
-});
+}, 60_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
+  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
   dropWorlds();
-});
+}, 60_000);
 
 function backend(os: Os, path: string, extra: Record<string, string> = {}, pickFolder?: (s: string | null) => string | null) {
   const b = new HarnessBackend({

@@ -23,8 +23,9 @@ beforeEach(() => {
 }, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
+  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
   dropWorlds();
-});
+}, 60_000);
 
 function backend(os: Os, path: string, extra?: Record<string, string>, opened?: string[]) {
   const b = new HarnessBackend({
