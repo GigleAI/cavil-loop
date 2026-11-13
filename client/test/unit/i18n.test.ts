@@ -104,6 +104,9 @@ describe('the source scan itself', () => {
     );
     expect(r.findings.map((f) => f.line)).toEqual([2, 5]);
     expect([...r.keys.keys()]).toEqual(['放大']);
+    const said = scan(`fn s() -> Said { Said::compose("{a}；{b}", &[]); Said::new("没能保存（{e}）", &[("e", x)], "system") }\nfn n() { let v = Vec::new("中文"); }`, 'rust', KEEP);
+    expect([...said.keys.keys()].sort()).toEqual(['没能保存（{e}）', '{a}；{b}'].sort());
+    expect(said.findings.map((f) => f.line)).toEqual([2]);
   });
 });
 

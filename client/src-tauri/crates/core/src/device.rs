@@ -8,7 +8,7 @@
 
 use crate::grant::{grant_from_response, TokenGrant};
 use crate::http::{send, Endpoints, HttpRequest};
-use crate::i18n::tr;
+use crate::i18n::{tr, Said};
 use crate::platform::Clock;
 use serde_json::{Map, Value};
 
@@ -42,24 +42,32 @@ pub struct FlowError {
     pub reason: Failure,
     pub message: String,
     pub detail: Option<String>,
+    /// where `detail` comes from (the window's VERBATIM_SOURCES): GitHub's words, or the system's
+    pub detail_from: &'static str,
 }
 
 impl FlowError {
     /// both parts as one line, for the places that show a single text
     pub fn full(&self) -> String {
+        self.said().text()
+    }
+
+    /// as a message for the window: the explanation, GitHub's / the system's words in a hole
+    pub fn said(&self) -> Said {
         match &self.detail {
-            Some(d) => tr("{text}：{detail}", &[("text", &self.message), ("detail", d)]),
-            None => self.message.clone(),
+            Some(d) => Said { template: tr("{text}：{detail}", &[("text", &self.message)]), parts: vec![("detail".into(), d.clone(), self.detail_from)] },
+            None => Said::plain(self.message.clone()),
         }
     }
 }
 
 fn fail(reason: Failure, message: impl Into<String>) -> FlowError {
-    FlowError { reason, message: message.into(), detail: None }
+    FlowError { reason, message: message.into(), detail: None, detail_from: "github" }
 }
 
+/// `detail`: GitHub's own words
 fn fail_with(reason: Failure, message: String, detail: String) -> FlowError {
-    FlowError { reason, message, detail: Some(detail) }
+    FlowError { reason, message, detail: Some(detail), detail_from: "github" }
 }
 
 #[derive(Clone, Debug)]
@@ -89,7 +97,7 @@ async fn post_form(url: String, pairs: &[(&str, &str)]) -> Result<Map<String, Va
         body: Some(form(pairs)),
     })
     .await
-    .map_err(|e| fail_with(Failure::Unreachable, tr("无法连接 GitHub", &[]), e.to_string()))?;
+    .map_err(|e| FlowError { detail_from: "system", ..fail_with(Failure::Unreachable, tr("无法连接 GitHub", &[]), e.to_string()) })?;
     // 5xx / 429 first, whatever the body says: GitHub is not answering properly,
     // which is never a verdict on the credential (a 503 can carry {"error": …}).
     if res.status >= 500 || res.status == 429 {

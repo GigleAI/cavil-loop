@@ -133,6 +133,66 @@ pub fn tr(zh: &str, params: &[(&str, &str)]) -> String {
     translate(lang(), zh, params)
 }
 
+/// GitHub#471 (PR #480 review round 2): a message of the back end's own words with holes for text
+/// from outside (an error of the system / the keychain / the database, GitHub's words). `template`
+/// is translated with the holes kept as `{name}`; `parts` fill them and are shown as written. The
+/// window draws the template in its language and each part inside its "as is" marker
+/// (`<Said>`, src/renderer/Verbatim.tsx); `text()` is the same message as one string.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Said {
+    pub template: String,
+    /// (hole name, outside text, where it comes from: one of the window's VERBATIM_SOURCES)
+    pub parts: Vec<(String, String, &'static str)>,
+}
+
+impl Said {
+    /// `zh`: the Chinese key with `{name}` holes; every hole is one of `parts` (all from `from`)
+    pub fn new(zh: &str, parts: &[(&str, &str)], from: &'static str) -> Said {
+        Said { template: translate(lang(), zh, &[]), parts: parts.iter().map(|(k, v)| (k.to_string(), v.to_string(), from)).collect() }
+    }
+
+    /// nothing but outside text (no words of the client's own around it)
+    pub fn outside(text: &str, from: &'static str) -> Said {
+        Said { template: "{e}".into(), parts: vec![("e".into(), text.to_string(), from)] }
+    }
+
+    /// the client's own words with no outside text in them (already in the window's language)
+    pub fn plain(text: String) -> Said {
+        Said { template: text, parts: vec![] }
+    }
+
+    /// `zh` with each `{name}` replaced by a whole message (`pieces`); their holes are renamed so
+    /// they cannot collide
+    pub fn compose(zh: &str, pieces: &[(&str, &Said)]) -> Said {
+        let mut parts = vec![];
+        let mut fills: Vec<(String, String)> = vec![];
+        for (name, piece) in pieces {
+            let mut t = piece.template.clone();
+            for (k, v, from) in &piece.parts {
+                let renamed = format!("{name}_{k}");
+                t = t.replace(&format!("{{{k}}}"), &format!("{{{renamed}}}"));
+                parts.push((renamed, v.clone(), *from));
+            }
+            fills.push((name.to_string(), t));
+        }
+        let refs: Vec<(&str, &str)> = fills.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        Said { template: translate(lang(), zh, &refs), parts }
+    }
+
+    /// the message as one string (the template with every hole filled)
+    pub fn text(&self) -> String {
+        let refs: Vec<(&str, &str)> = self.parts.iter().map(|(k, v, _)| (k.as_str(), v.as_str())).collect();
+        fill(&self.template, &refs)
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "template": self.template,
+            "parts": self.parts.iter().map(|(k, v, from)| serde_json::json!({ "name": k, "text": v, "from": from })).collect::<Vec<_>>(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +230,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn said_reads_as_one_string_and_keeps_outside_text_apart() {
+        // (the language is process-wide and other tests run alongside: Chinese only here, English in the UI tests)
+        let save = Said::new("登录没能保存到本机（{e}）", &[("e", "disk full")], "system");
+        assert_eq!(save.text(), "登录没能保存到本机（disk full）");
+        assert_eq!(save.template, "登录没能保存到本机（{e}）");
+        // a reason in front, then two messages: holes renamed, text as the old format! wording
+        let r = Said::plain("登录已取消".into());
+        let both = Said::compose("{reason}。{rest}", &[("reason", &r), ("rest", &save)]);
+        assert_eq!(both.text(), "登录已取消。登录没能保存到本机（disk full）");
+        assert_eq!(both.parts, vec![("rest_e".to_string(), "disk full".to_string(), "system")]);
+        let joined = Said::compose("{a}；{b}", &[("a", &both), ("b", &Said::outside("{x} as written", "github"))]);
+        assert_eq!(joined.text(), "登录已取消。登录没能保存到本机（disk full）；{x} as written");
+        assert_eq!(joined.parts.len(), 2);
+        // outside text is never read as a hole, whatever braces it carries
+        assert_eq!(Said::new("没能删除（{e}）", &[("e", "{e}{rest_e}")], "system").text(), "没能删除（{e}{rest_e}）");
+        assert_eq!(translate(Lang::En, "登录没能保存到本机（{e}）", &[("e", "disk full")]), "The sign-in could not be saved on this computer (disk full)");
     }
 
     #[test]

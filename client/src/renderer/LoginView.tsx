@@ -5,8 +5,8 @@ import { permissionText } from '../shared/appKind';
 import { Icon } from './Icons';
 import brandIcon from '../../build/icon.png';
 import { t } from '../shared/i18n';
+import { SaidText, Verbatim } from './Verbatim';
 import { tNode } from './tNode';
-import { Verbatim } from './Verbatim';
 
 const failureText = (status: string): string =>
   ({
@@ -30,7 +30,7 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
 
       {state.loginReason && (
         <div className="banner warn" data-testid="login-reason">
-          {state.loginReason}
+          <span className="banner-text">{state.loginReasonSaid ? <SaidText said={state.loginReasonSaid} /> : state.loginReason}</span>
         </div>
       )}
 
@@ -66,7 +66,7 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
             {login.status === 'error' && login.message && (
               <>
                 {' '}
-                {login.detail ? tNode('{text}：{detail}', { text: login.message, detail: <Verbatim from="github">{login.detail}</Verbatim> }) : login.message}
+                {login.said ? <SaidText said={login.said} /> : login.message}
               </>
             )}
           </span>

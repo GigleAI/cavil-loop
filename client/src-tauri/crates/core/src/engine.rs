@@ -20,6 +20,8 @@ use crate::device::{self, DeviceCode, Failure};
 use crate::grant::{decode_grant, encode_grant, TokenGrant};
 use crate::http::{self, Endpoints, HttpRequest};
 use crate::platform::{Clock, CredentialStore, Opener};
+use crate::i18n::{tr, Said};
+use crate::store::StoreError;
 use crate::store::{Store, CACHE_CREDENTIAL, CACHE_OWNER, GRANT_CLIENT_ID, SECRET_KEYS, TRUSTED, VIEWER};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use serde_json::{json, Value};
@@ -27,7 +29,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub const REASON_REFRESH_ENDED: &str = "登录已到期，GitHub 不再接受续期，请重新登录";
+/// the sign-out reason when GitHub no longer renews the login, in the window's language
+pub fn reason_refresh_ended() -> String {
+    tr("登录已到期，GitHub 不再接受续期，请重新登录", &[])
+}
 /// refresh this long before the access token expires
 pub const REFRESH_MARGIN_MS: i64 = 5 * 60_000;
 
@@ -37,11 +42,28 @@ pub fn credential_tag(token: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn not_deleted_message(reason: Option<&str>, err: &str) -> String {
-    format!(
-        "{}本机保存的旧登录凭据没能删除（{err}），它可能还留在钥匙串里。App 不会再用它自动登录；你可以直接重新登录（会覆盖它），或在「钥匙串访问」里搜「Cavil Loop」手动删除",
-        reason.map(|r| format!("{r}。")).unwrap_or_default()
+pub fn not_deleted_message(reason: Option<&Said>, err: &str) -> Said {
+    with_reason(
+        reason,
+        Said::new(
+            "本机保存的旧登录凭据没能删除（{e}），它可能还留在钥匙串里。App 不会再用它自动登录；你可以直接重新登录（会覆盖它），或在「钥匙串访问」里搜「Cavil Loop」手动删除",
+            &[("e", err)],
+            "system",
+        ),
     )
+}
+
+/// GitHub#471: "<reason>。<rest>" — a sign-out's reason in front of what else went wrong
+fn with_reason(reason: Option<&Said>, rest: Said) -> Said {
+    match reason {
+        Some(r) => Said::compose("{reason}。{rest}", &[("reason", r), ("rest", &rest)]),
+        None => rest,
+    }
+}
+
+/// "<a>；<b>": two messages one after the other
+fn and_then(a: &Said, b: &Said) -> Said {
+    Said::compose("{a}；{b}", &[("a", a), ("b", b)])
 }
 
 pub struct Deps {
@@ -82,7 +104,7 @@ pub struct FreshOut {
     /// None = leave the shown problem as it is; Some(None) = clear it; Some(Some(m)) = show m
     pub problem: Option<Option<String>>,
     /// the refresh ended the sign-in (session after the sign-out, reason)
-    pub signed_out: Option<(u64, String)>,
+    pub signed_out: Option<(u64, Said)>,
     /// why GitHub could not be used (set with `Unreachable` only): shown with "offline" (GitHub#270)
     pub reason: Option<String>,
 }
@@ -95,7 +117,7 @@ impl FreshOut {
 
 type SharedFresh = Shared<BoxFuture<'static, FreshOut>>;
 /// a queued keychain delete: None = done, Some(message) = failed, what to tell the user
-type SharedDone = Shared<BoxFuture<'static, Option<String>>>;
+type SharedDone = Shared<BoxFuture<'static, Option<Said>>>;
 
 struct State {
     /// the signed-in credential (None = signed out)
@@ -128,23 +150,23 @@ pub struct Engine {
 }
 
 pub enum StartOut {
-    Login { reason: Option<String>, wiped: bool },
+    Login { reason: Option<Said>, wiped: bool },
     Ready { session: u64, wiped: bool },
 }
 
 pub enum BeginOut {
     Waiting { run: u64, user_code: String, verification_uri: String },
     /// `detail`: the outside text the explanation is about (GitHub#471), shown as is
-    Failed { status: &'static str, message: String, detail: Option<String> },
+    Failed { status: &'static str, said: Said },
     Stale,
 }
 
 #[derive(Clone)]
 pub enum FinishOut {
     Ok { session: u64, viewer: Option<String>, wiped: bool },
-    Failed { status: &'static str, message: String, detail: Option<String> },
+    Failed { status: &'static str, said: Said },
     /// cancelled / signed out / a newer login meanwhile: whoever did that already said so
-    Stale { login_reason: Option<String> },
+    Stale { login_reason: Option<Said> },
 }
 
 impl Engine {
@@ -230,7 +252,7 @@ impl Engine {
         job
     }
 
-    fn set_trusted(&self, tokens: &[&str]) -> Result<(), String> {
+    fn set_trusted(&self, tokens: &[&str]) -> Result<(), StoreError> {
         let tags: Vec<Value> = tokens.iter().map(|t| Value::String(credential_tag(t))).collect();
         self.d.store.set_setting(TRUSTED, &Value::Array(tags))
     }
@@ -245,7 +267,7 @@ impl Engine {
     /// The cache may only hold data read by `login`; another (or unknown) account wipes it first.
     /// Ok(true) = wiped. Err = the database refused: nothing about the account change is
     /// certain on disk, so the caller must not let data land or be shown on its strength.
-    fn adopt_account(&self, st: &mut State, login: Option<&str>, token: Option<&str>) -> Result<bool, String> {
+    fn adopt_account(&self, st: &mut State, login: Option<&str>, token: Option<&str>) -> Result<bool, StoreError> {
         let tag = match (login, token) {
             (Some(_), Some(t)) => Value::String(credential_tag(t)),
             _ => Value::Null,
@@ -287,7 +309,7 @@ impl Engine {
         let raw = match self.d.credentials.get().await {
             Ok(v) => v,
             // keychain unreadable: not "signed out" (nothing is deleted), just cannot use it now
-            Err(e) => return StartOut::Login { reason: Some(format!("读取本机保存的登录凭据失败（{e}），请重新登录")), wiped: false },
+            Err(e) => return StartOut::Login { reason: Some(Said::new("读取本机保存的登录凭据失败（{e}），请重新登录", &[("e", &e)], "system")), wiped: false },
         };
         let Some(stored) = decode_grant(raw.as_deref()) else {
             return StartOut::Login { reason: None, wiped: false };
@@ -314,7 +336,11 @@ impl Engine {
             }
             let mut reason = err.map(|e| not_deleted_message(None, &e));
             if let Err(e) = wipe {
-                reason = Some(format!("{}本地缓存没能清空（{e}）", reason.map(|r| format!("{r}；")).unwrap_or_default()));
+                let wiped = Said::new("本地缓存没能清空（{e}）", &[("e", &e.raw)], "system");
+                reason = Some(match reason {
+                    Some(r) => and_then(&r, &wiped),
+                    None => wiped,
+                });
             }
             return StartOut::Login { reason, wiped: true };
         }
@@ -328,7 +354,7 @@ impl Engine {
                 // another account's data may still be on disk: do not sign in on top of it
                 Err(e) => {
                     return StartOut::Login {
-                        reason: Some(format!("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录")),
+                        reason: Some(Said::new("本地缓存没能清空（{e}），为免显示别的账号的数据，这次没有自动登录；可以重新登录", &[("e", &e.raw)], "system")),
                         wiped: true,
                     }
                 }
@@ -345,14 +371,14 @@ impl Engine {
     /// `run`: the attempt the window means. If that attempt already committed (its "signed in"
     /// was on the way when the user cancelled), it is signed out here: a cancelled login never
     /// survives, whatever the window manages to do afterwards. Returns that sign-out.
-    pub fn cancel_login(self: &Arc<Self>, run: Option<u64>) -> Option<(u64, Option<String>)> {
+    pub fn cancel_login(self: &Arc<Self>, run: Option<u64>) -> Option<(u64, Option<Said>)> {
         let committed = {
             let mut st = self.lock();
             st.login_run += 1;
             st.pending_code = None;
             run.is_some() && st.committed_run == run && st.grant.is_some()
         };
-        committed.then(|| self.logout(Some("登录已取消")))
+        committed.then(|| self.logout(Some(&tr("登录已取消", &[]))))
     }
 
     pub async fn login_begin(self: &Arc<Self>, client_id: &str) -> BeginOut {
@@ -367,7 +393,7 @@ impl Engine {
                 if run != self.lock().login_run {
                     return BeginOut::Stale;
                 }
-                BeginOut::Failed { status: failure_status(e.reason), message: e.message, detail: e.detail }
+                BeginOut::Failed { status: failure_status(e.reason), said: e.said() }
             }
             Ok(code) => {
                 let mut st = self.lock();
@@ -403,7 +429,7 @@ impl Engine {
                 if run != self.lock().login_run || e.reason == Failure::Cancelled {
                     return FinishOut::Stale { login_reason: None };
                 }
-                return FinishOut::Failed { status: failure_status(e.reason), message: e.message, detail: e.detail };
+                return FinishOut::Failed { status: failure_status(e.reason), said: e.said() };
             }
         };
         // Who is this? Asked with the token in memory only: nothing is persisted
@@ -421,17 +447,19 @@ impl Engine {
         let me = self.clone();
         let job = async move {
             if run != me.lock().login_run {
-                return Ok(FinishOut::Stale { login_reason: None });
+                return Ok::<FinishOut, Said>(FinishOut::Stale { login_reason: None });
             }
             // nothing stored is trusted while the new credential is being written
-            me.set_trusted(&[])?;
-            me.d.credentials.set(&encode_grant(&grant)).await?;
+            // (as before: only the database's / the keychain's own words)
+            me.set_trusted(&[]).map_err(|e| Said::outside(&String::from(e), "system"))?;
+            me.d.credentials.set(&encode_grant(&grant)).await.map_err(|e| Said::outside(&e, "system"))?;
             // The decision and everything it records happen under the state lock, the same
             // lock a cancel or sign-out takes first: either this login commits before them (and
             // a cancel of it then signs it out), or they win and nothing of it is recorded.
             // Everything recorded goes in one transaction: the trust, the app it came from (a
             // GitHub App token is refreshed with that app, whatever the setting says later),
             // whose cache this is (another account's data goes), the viewer.
+            // Err: the outside text of what refused (the database's or the keychain's own words)
             let outcome: Result<FinishOut, String> = {
                 let mut st = me.lock();
                 if run != st.login_run {
@@ -451,7 +479,7 @@ impl Engine {
                         ],
                         !same_owner,
                     ) {
-                        Err(e) => Err(e),
+                        Err(e) => Err(e.raw),
                         Ok(()) => {
                             // a sign-out marker from before is superseded by this trusted sign-in (if it
                             // cannot be removed, the next start only asks to sign in again: the safe direction)
@@ -475,26 +503,27 @@ impl Engine {
                     // cancelled / signed out / a newer login while the keychain write was on its way:
                     // the token this login wrote goes again
                     let err = Engine::clear_stored(me.d.credentials.clone()).await;
-                    Ok(FinishOut::Stale { login_reason: err.map(|e| not_deleted_message(Some("登录已取消"), &e)) })
+                    let cancelled = Said::plain(tr("登录已取消", &[]));
+                    Ok(FinishOut::Stale { login_reason: err.map(|e| not_deleted_message(Some(&cancelled), &e)) })
                 }
                 Ok(out) => Ok(out),
                 // the database refused: the credential just written is removed again, no half sign-in
                 Err(e) => {
                     let left = Engine::clear_stored(me.d.credentials.clone()).await;
                     Err(match left {
-                        None => format!("登录没能保存到本机（{e}），已撤销这次登录，请重试"),
-                        Some(d) => not_deleted_message(Some(&format!("登录没能保存到本机（{e}）")), &d),
+                        None => Said::new("登录没能保存到本机（{e}），已撤销这次登录，请重试", &[("e", &e)], "system"),
+                        Some(d) => not_deleted_message(Some(&Said::new("登录没能保存到本机（{e}）", &[("e", &e)], "system")), &d),
                     })
                 }
             }
         };
         match self.serial(job.boxed()).await {
             Ok(out) => out,
-            Err(message) => {
+            Err(said) => {
                 if run != self.lock().login_run {
                     return FinishOut::Stale { login_reason: None };
                 }
-                FinishOut::Failed { status: "error", message, detail: None }
+                FinishOut::Failed { status: "error", said }
             }
         }
     }
@@ -522,7 +551,9 @@ impl Engine {
     /// the cache is gone; the keychain delete is queued (see `logout_result`).
     /// Returns the new session and, when the sign-out could not be made fully durable,
     /// what to tell the user right away (it is never reported as a clean success then).
-    pub fn logout(self: &Arc<Self>, reason: Option<&str>) -> (u64, Option<String>) {
+    pub fn logout(self: &Arc<Self>, reason: Option<&str>) -> (u64, Option<Said>) {
+        // the reason is the client's own words, already in the window's language
+        let reason: Option<Said> = reason.map(|r| Said::plain(r.to_string()));
         let (session, durable) = {
             let mut st = self.lock();
             st.login_run += 1;
@@ -556,17 +587,20 @@ impl Engine {
         };
         let now_message = match &durable {
             Durable::Yes => None,
-            Durable::Marker(db) => Some(format!(
-                "{}退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录",
-                reason.map(|r| format!("{r}。")).unwrap_or_default()
+            Durable::Marker(db) => Some(with_reason(
+                reason.as_ref(),
+                Said::new("退出时本地数据库写入失败（{db}），已改用备用标记确保下次启动不会自动登录", &[("db", &db.raw)], "system"),
             )),
-            Durable::No(db, m) => Some(format!(
-                "{}退出没能保存到本机（数据库：{db}；备用标记：{m}）。正在删除钥匙串里的凭据；删除成功前关掉 App，下次启动可能会自动登录回去",
-                reason.map(|r| format!("{r}。")).unwrap_or_default()
+            Durable::No(db, m) => Some(with_reason(
+                reason.as_ref(),
+                Said::new(
+                    "退出没能保存到本机（数据库：{db}；备用标记：{m}）。正在删除钥匙串里的凭据；删除成功前关掉 App，下次启动可能会自动登录回去",
+                    &[("db", &db.raw), ("m", &m.raw)],
+                    "system",
+                ),
             )),
         };
         let creds = self.d.credentials.clone();
-        let reason = reason.map(str::to_string);
         let undurable = matches!(durable, Durable::No(..));
         // what is still worth saying once the delete is over, whatever it did
         let note = if matches!(durable, Durable::Marker(_)) { now_message.clone() } else { None };
@@ -575,13 +609,17 @@ impl Engine {
                 match Engine::clear_stored(creds).await {
                     None => note,
                     // nothing on disk says "signed out" and the credential is still there
-                    Some(e) if undurable => Some(format!(
-                        "{}退出没能保存到本机，钥匙串里的凭据也没能删除（{e}）。下次启动可能会自动登录回去：请在「钥匙串访问」里搜「Cavil Loop」手动删除",
-                        reason.as_deref().map(|r| format!("{r}。")).unwrap_or_default()
+                    Some(e) if undurable => Some(with_reason(
+                        reason.as_ref(),
+                        Said::new(
+                            "退出没能保存到本机，钥匙串里的凭据也没能删除（{e}）。下次启动可能会自动登录回去：请在「钥匙串访问」里搜「Cavil Loop」手动删除",
+                            &[("e", &e)],
+                            "system",
+                        ),
                     )),
                     Some(e) => Some(match &note {
-                        Some(n) => format!("{n}；{}", not_deleted_message(None, &e)),
-                        None => not_deleted_message(reason.as_deref(), &e),
+                        Some(n) => and_then(n, &not_deleted_message(None, &e)),
+                        None => not_deleted_message(reason.as_ref(), &e),
                     }),
                 }
             }
@@ -594,7 +632,7 @@ impl Engine {
     }
 
     /// The keychain delete of the sign-out that ended in `session`: what to tell the user when it failed.
-    pub async fn logout_result(&self, session: u64) -> (Option<String>, bool) {
+    pub async fn logout_result(&self, session: u64) -> (Option<Said>, bool) {
         let fut = self.lock().logouts.get(&session).cloned();
         let err = match fut {
             Some(f) => f.await,
@@ -755,8 +793,9 @@ impl Engine {
         if !current {
             return FreshOut::of(Fresh::Ended);
         }
-        let (session, message) = self.logout(Some(REASON_REFRESH_ENDED));
-        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, message.unwrap_or_else(|| REASON_REFRESH_ENDED.into()))), reason: None }
+        let ended = reason_refresh_ended();
+        let (session, message) = self.logout(Some(&ended));
+        FreshOut { result: Fresh::Ended, problem: None, signed_out: Some((session, message.unwrap_or_else(|| Said::plain(ended.clone())))), reason: None }
     }
 
     /// A refreshed grant that could not be stored: try again (same queue and session rules as any credential write).
@@ -836,7 +875,7 @@ impl Engine {
             return Ok(None);
         }
         let Some(token) = st.grant.as_ref().map(|g| g.access_token.clone()) else { return Ok(None) };
-        self.adopt_account(&mut st, Some(login), Some(&token)).map(Some)
+        self.adopt_account(&mut st, Some(login), Some(&token)).map(Some).map_err(String::from)
     }
 
     /// Write snapshots read in `session`; refused (false) when that session is over.
@@ -942,9 +981,9 @@ enum Durable {
     /// the trust list is empty in the database
     Yes,
     /// the database refused; the sign-out marker holds it
-    Marker(String),
+    Marker(StoreError),
     /// neither could be written: (database error, marker error)
-    No(String, String),
+    No(StoreError, StoreError),
 }
 
 pub enum RequestError {
@@ -961,7 +1000,7 @@ fn failure_status(f: Failure) -> &'static str {
     }
 }
 
-fn db_problem_message(e: String) -> String {
+fn db_problem_message(e: StoreError) -> String {
     format!("本地数据库写入失败（{e}）。这次运行照常可用；下次启动可能需要重新登录，离线时可能看不到缓存")
 }
 
@@ -1014,7 +1053,7 @@ impl FreshOut {
             m.insert("problem".into(), p.clone().map(Value::String).unwrap_or(Value::Null));
         }
         if let Some((s, r)) = &self.signed_out {
-            m.insert("signedOut".into(), json!({ "session": s, "reason": r }));
+            m.insert("signedOut".into(), json!({ "session": s, "reason": r.text(), "reasonSaid": r.to_json() }));
         }
         if let Some(r) = &self.reason {
             m.insert("reason".into(), Value::String(r.clone()));

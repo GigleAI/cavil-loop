@@ -6,7 +6,7 @@ import type { MergePrefs } from './mergePrefs';
 import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
-import type { Lang, LangSetting } from './i18n';
+import type { Lang, LangSetting, Said } from './i18n';
 import type { OpRecord } from './ops';
 import type { Handoff } from './handoff';
 import type { Picks } from './actions';
@@ -594,8 +594,8 @@ export interface LoginState {
   verificationUri: string | null;
   /** why it did not work: the client's own explanation (in the window's language) */
   message: string | null;
-  /** GitHub#471: the outside text the explanation is about (GitHub's words, a network error), shown as is */
-  detail?: string | null;
+  /** GitHub#471: the same message as the back end worded it, its outside parts (GitHub's / the system's words) marked; absent = `message` is all the client's own */
+  said?: Said | null;
 }
 
 export interface SyncState {
@@ -631,6 +631,8 @@ export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
   loginReason: string | null;
+  /** GitHub#471: `loginReason` as the back end worded it, outside parts marked (absent: all the client's own words) */
+  loginReasonSaid?: Said | null;
   login: LoginState;
   /** which kind of GitHub application the next sign-in goes through (OAuth app by default) */
   appKind: AppKind;

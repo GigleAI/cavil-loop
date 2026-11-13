@@ -98,6 +98,35 @@ export function preferredLanguages(): readonly string[] {
 
 export type Params = Readonly<Record<string, string | number>>;
 
+/**
+ * GitHub#471 (PR #480 review round 2): a message the back end words with holes for outside text
+ * (crates/core/src/i18n.rs `Said`): `template` is already in the window's language, each part fills
+ * its `{name}` hole and is shown as written, marked as coming from `from`.
+ */
+export interface Said {
+  template: string;
+  parts: { name: string; text: string; from: VerbatimSource }[];
+}
+
+/** a Said as one string (what it reads like with every hole filled) */
+export function saidText(s: Said): string {
+  return s.template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, name: string) => s.parts.find((p) => p.name === name)?.text ?? all);
+}
+
+/** a value from the back end that should be a Said: anything malformed is not one (null) */
+export function readSaid(v: unknown): Said | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as { template?: unknown; parts?: unknown };
+  if (typeof o.template !== 'string' || !Array.isArray(o.parts)) return null;
+  const parts: Said['parts'] = [];
+  for (const p of o.parts) {
+    const x = p as { name?: unknown; text?: unknown; from?: unknown };
+    if (typeof x?.name !== 'string' || typeof x.text !== 'string' || !(VERBATIM_SOURCES as readonly unknown[]).includes(x.from)) return null;
+    parts.push({ name: x.name, text: x.text, from: x.from as VerbatimSource });
+  }
+  return { template: o.template, parts };
+}
+
 /** `{name}` → the value; a placeholder with no value stays as written */
 function fill(text: string, params: Params | undefined): string {
   if (!params) return text;

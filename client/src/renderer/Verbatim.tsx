@@ -4,8 +4,8 @@
 // element carries `data-verbatim="<source>"`; the run-time language check lets Chinese through
 // only inside such an element. Never put the client's own words in here — only the outside text.
 
-import type { ReactNode } from 'react';
-import { KEEP_LANG, type Lang, type VerbatimSource } from '../shared/i18n';
+import { Fragment, type ReactNode } from 'react';
+import { KEEP_LANG, type Lang, type Said, type VerbatimSource } from '../shared/i18n';
 import { sourceLabel } from '../shared/sources';
 import type { SourceConfig } from '../shared/types';
 import { tNode } from './tNode';
@@ -25,6 +25,29 @@ export function Verbatim({ from, children, className, testid, title }: { from: V
  */
 export function verbatimParts(from: VerbatimSource, parts: readonly (string | null | undefined)[]): Record<string, string> {
   return { 'data-verbatim-attr': from, 'data-verbatim-parts': JSON.stringify(parts.filter((p): p is string => typeof p === 'string' && p !== '')) };
+}
+
+/**
+ * GitHub#471 (PR #480 review round 2): a message the back end worded with holes — its own words in
+ * the window's language, each outside part (the system's, GitHub's words) as written inside its marker.
+ */
+export function SaidText({ said }: { said: Said }) {
+  const pieces = said.template.split(/(\{[A-Za-z_][A-Za-z0-9_]*\})/);
+  return (
+    <>
+      {pieces.map((p, i) => {
+        const name = /^\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(p)?.[1];
+        const part = name === undefined ? undefined : said.parts.find((x) => x.name === name);
+        return part ? (
+          <Verbatim key={i} from={part.from}>
+            {part.text}
+          </Verbatim>
+        ) : (
+          <Fragment key={i}>{p}</Fragment>
+        );
+      })}
+    </>
+  );
 }
 
 /** A source's name as sourceLabel words it, its GitHub parts (Project title, owner, repository) shown as is. */

@@ -8,7 +8,8 @@
 // contents, its headings and the sections migrated here), the sign-in page and its help page.
 
 import { test, expect, type Page } from '@playwright/test';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -302,5 +303,76 @@ test('GitHub#471 (PR #480 review round 1): the same failures in Chinese read as 
   await page.getByTestId('start-login').click();
   await expect(page.getByTestId('user-code')).toBeVisible();
   await expect(banner).toHaveText('登录没有完成。 授权失败：org policy', { timeout: 15_000 });
+  await app.close();
+});
+
+/** the database refuses one setting from now on (a trigger in the real file the back end uses) */
+function refuseSetting(key: string): () => void {
+  const db = new DatabaseSync(join(env.userData, 'cache.sqlite'));
+  db.exec(`CREATE TRIGGER refuse_${key} BEFORE INSERT ON setting WHEN new.k = '${key}' BEGIN SELECT RAISE(ABORT, 'test storage unavailable'); END;`);
+  return () => {
+    db.exec(`DROP TRIGGER refuse_${key};`);
+    db.close();
+  };
+}
+
+test("GitHub#471 (PR #480 review round 2): what the sign-in page says when this computer refuses — a sign-out whose keychain delete failed, a sign-in that could not be saved — in English, the system's words as written; the undone sign-in leaves nothing behind", async () => {
+  const app = await launchApp(env, { locale: 'en-US' });
+  const page = app.page;
+  await signIn(page);
+  await page.getByTestId('lang-en').check();
+  await saved(app, 'en');
+
+  // the keychain delete of a sign-out fails (the stored credential cannot be removed)
+  rmSync(env.cred, { force: true });
+  mkdirSync(env.cred);
+  await page.getByTestId('logout').click();
+  const reason = page.getByTestId('login-reason');
+  await expect(reason).toContainText('The old sign-in credential saved on this computer could not be deleted (', { timeout: 15_000 });
+  await expect(reason.locator('[data-verbatim="system"]')).toHaveCount(1);
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await shot(page, '471-10-signout-not-deleted-en');
+  rmSync(env.cred, { recursive: true, force: true });
+
+  // GitHub approves, but the database refuses to record the sign-in: undone, said in English
+  const allow = refuseSetting('grantClientId');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  const banner = page.getByTestId('login-error');
+  await expect(banner).toHaveAttribute('data-status', 'error', { timeout: 15_000 });
+  // the save step was really reached and really failed: the database's own words are in the message
+  await expect(banner).toHaveText('Sign-in did not complete. The sign-in could not be saved on this computer (test storage unavailable); it has been undone, try again');
+  await expect(banner.locator('[data-verbatim="system"]')).toHaveText('test storage unavailable');
+  expect(await chineseIn(page, ['[data-testid="login"]'])).toEqual([]);
+  await shot(page, '471-11-signin-not-saved-en');
+  // undone: still signed out, and nothing of it is trusted (a restart does not sign in)
+  await expect(page.getByTestId('start-login')).toBeVisible();
+  await expect(page.getByTestId('board')).toHaveCount(0);
+  allow();
+  await app.close();
+  const again = await launchApp(env, { locale: 'en-US' });
+  await expect(again.page.getByTestId('start-login')).toHaveText('Sign in with GitHub', { timeout: 15_000 });
+  // and a sign-in afterwards works
+  await again.page.getByTestId('start-login').click();
+  await expect(again.page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(again.page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await again.close();
+});
+
+test('GitHub#471 (PR #480 review round 2): the same refusals in Chinese read exactly as before', async () => {
+  const app = await launchApp(env, { locale: 'en-US' });
+  const page = app.page;
+  await signIn(page);
+  await page.getByTestId('back').click();
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('logout').click();
+  const allow = refuseSetting('grantClientId');
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  await expect(page.getByTestId('login-error')).toHaveText('登录没有完成。 登录没能保存到本机（test storage unavailable），已撤销这次登录，请重试', { timeout: 15_000 });
+  allow();
   await app.close();
 });

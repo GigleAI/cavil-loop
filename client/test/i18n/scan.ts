@@ -270,7 +270,9 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
       if (wantKey) keyNotLiteral();
       const defining = lastWord === 'fn' || lastWord === 'function';
       lastWord = word;
-      if (fns.includes(word) && before !== '.' && !IDENT.test(before) && !defining) {
+      // Rust: Said::new( / Said::compose( take a key too (crates/core/src/i18n.rs)
+      const saidCall = lang === 'rust' && (word === 'new' || word === 'compose') && src.slice(i - word.length - 6, i - word.length) === 'Said::';
+      if ((saidCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
         let k = i;
         while (k < src.length && /\s/.test(src[k])) k++;
         if (src[k] === '(') {
