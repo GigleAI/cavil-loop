@@ -9,10 +9,13 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { SETTLES_NOTHING, confirmBlock, layerRows, parseRefQuery, planBlocked, planLines, rankByNumber, refKey, type NumberSettled, type Pick, type Ref } from '../shared/blocked';
 import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
+import { t, tKey, zhKey } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim } from './Verbatim';
 
 type Candidate = BlockedRefInfo & Pick;
 
-const STATE_TEXT: Record<BlockedRefInfo['state'], string> = { open: '开', closed: '已关闭', merged: '已合并', unknown: '读不到状态' };
+const STATE_TEXT: Record<BlockedRefInfo['state'], string> = { open: zhKey('开'), closed: zhKey('已关闭'), merged: zhKey('已合并'), unknown: zhKey('读不到状态') };
 
 function refName(r: { repo: string; number: number; kind?: string | null }, selfRepo: string): string {
   const n = r.repo === selfRepo.toLowerCase() ? `#${r.number}` : `${r.repo}#${r.number}`;
@@ -23,10 +26,12 @@ function RefChip({ r, selfRepo, testid, onRemove, fresh }: { r: BlockedRefInfo; 
   return (
     <span className={`chip blocked-chip${fresh ? ' new' : ''}`} data-testid={testid} data-ref={refKey(r)}>
       <b>{refName(r, selfRepo)}</b>
-      <span className="blocked-title">{r.title}</span>
-      <span className={`small ${r.state === 'open' ? '' : 'muted'}`}>{STATE_TEXT[r.state]}</span>
+      <span className="blocked-title">
+        <Verbatim from="github">{r.title}</Verbatim>
+      </span>
+      <span className={`small ${r.state === 'open' ? '' : 'muted'}`}>{tKey(STATE_TEXT[r.state])}</span>
       {onRemove && (
-        <button className="link" aria-label="去掉" data-testid="blocked-pick-remove" onClick={onRemove}>
+        <button className="link" aria-label={t('去掉')} data-testid="blocked-pick-remove" onClick={onRemove}>
           ×
         </button>
       )}
@@ -115,7 +120,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     }
     setFound(local);
     setSearching(true);
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       void api()
         .blockedSearch(item.key, q)
         .then((r) => {
@@ -127,7 +132,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
           if (r.error) setSearchErr(r.error);
         });
     }, 300);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [text, item.key, item.repo, item.number, state.githubWeb]);
 
   const shown = found.filter((c) => !taken.has(refKey(c)));
@@ -142,7 +147,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       const r = await api().blockedSearch(item.key, `${c.repo}#${c.number}`);
       // a number search lists the numbers that start with it too: take the one that was clicked (GitHub#448)
       const same = r.ok ? r.items.find((x) => refKey(x) === refKey(c)) : undefined;
-      if (!same) return setSearchErr(!r.ok ? r.error : r.error ?? `${refName(c, item.repo)} 不是开着的`);
+      if (!same) return setSearchErr(!r.ok ? r.error : r.error ?? t('{ref} 不是开着的', { ref: refName(c, item.repo) }));
       pick = same;
     }
     setPicks((p) => (p.some((x) => refKey(x) === refKey(pick)) ? p : [...p, pick]));
@@ -169,8 +174,8 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
 
   return (
     <ConfirmDialog
-      title={`设置 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number} 的前置`}
-      confirmLabel="登记前置"
+      title={item.kind === 'pr' ? t('设置 PR #{number} 的前置', { number: item.number }) : t('设置 issue #{number} 的前置', { number: item.number })}
+      confirmLabel={t('登记前置')}
       busy={busy}
       dirty={picks.length > 0 || text.trim().length > 0}
       disabled={!view?.ok || Boolean(view.refuse) || !plan || Boolean(blockWhy)}
@@ -178,13 +183,15 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       onCancel={onClose}
     >
       <div className="blocked-dialog" data-testid="blocked-dialog">
-        <div className="small muted">前置全部完成（issue 以「已完成」关闭、PR 已合并）后，daemon 把本条翻回「{state.handBack.agent}」接着干。</div>
+        <div className="small muted">
+          {tNode('前置全部完成（issue 以「已完成」关闭、PR 已合并）后，daemon 把本条翻回「{label}」接着干。', { label: <Verbatim from="user">{state.handBack.agent}</Verbatim> })}
+        </div>
         {warn && (
           <div className="warn-text" data-testid="blocked-warn">
             {warn}
           </div>
         )}
-        {view === null && <div className="small muted">正在读这一条现在的状态…</div>}
+        {view === null && <div className="small muted">{t('正在读这一条现在的状态…')}</div>}
         {view && !view.ok && (
           <div className="warn-text" data-testid="blocked-read-error">
             {view.error}
@@ -199,18 +206,18 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
             )}
             {paused && (
               <div className="warn-text" data-testid="blocked-paused">
-                这一条正暂停在等前置里（同时挂着「{state.handBack.human}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。
+                {tNode('这一条正暂停在等前置里（同时挂着「{label}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。', { label: <Verbatim from="user">{state.handBack.human}</Verbatim> })}
               </div>
             )}
             <div className="blocked-sec">
-              已登记的前置 <span className="small muted">（刚从 GitHub 读到：最新一份登记 + 侧栏 Blocked by）</span>
+              {t('已登记的前置')} <span className="small muted">{t('（刚从 GitHub 读到：最新一份登记 + 侧栏 Blocked by）')}</span>
             </div>
             <div className="chips" data-testid="blocked-current">
-              {view.current.length ? view.current.map((r) => <RefChip key={refKey(r)} r={r} selfRepo={item.repo} testid="blocked-current-ref" />) : <span className="small muted">还没有</span>}
+              {view.current.length ? view.current.map((r) => <RefChip key={refKey(r)} r={r} selfRepo={item.repo} testid="blocked-current-ref" />) : <span className="small muted">{t('还没有')}</span>}
             </div>
             {view.lost.length > 0 && (
               <>
-                <div className="blocked-sec">较早登记里有、最新一份没有</div>
+                <div className="blocked-sec">{t('较早登记里有、最新一份没有')}</div>
                 <div className="chips" data-testid="blocked-lost">
                   {view.lost.map((r) => (
                     <label key={refKey(r)} className="chip blocked-chip lost" data-testid="blocked-lost-ref" data-ref={refKey(r)}>
@@ -227,8 +234,10 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                         }
                       />
                       <b>{refName(r, item.repo)}</b>
-                      <span className="blocked-title">{r.title}</span>
-                      <span className="small">{STATE_TEXT[r.state]}</span>
+                      <span className="blocked-title">
+                        <Verbatim from="github">{r.title}</Verbatim>
+                      </span>
+                      <span className="small">{tKey(STATE_TEXT[r.state])}</span>
                     </label>
                   ))}
                 </div>
@@ -236,7 +245,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
             )}
             {picks.length > 0 && (
               <>
-                <div className="blocked-sec">本次新加</div>
+                <div className="blocked-sec">{t('本次新加')}</div>
                 <div className="chips" data-testid="blocked-picks">
                   {picks.map((p) => (
                     <RefChip key={refKey(p)} r={p} selfRepo={item.repo} testid="blocked-pick" fresh onRemove={() => setPicks((x) => x.filter((y) => refKey(y) !== refKey(p)))} />
@@ -250,7 +259,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                   className="blocked-search"
                   data-testid="blocked-search"
                   autoFocus
-                  placeholder="输入编号或标题，搜本仓库开着的 issue / PR"
+                  placeholder={t('输入编号或标题，搜本仓库开着的 issue / PR')}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   onKeyDown={(e) => {
@@ -271,10 +280,12 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                     {shown.map((c, i) => (
                       <button key={refKey(c)} className={`blocked-result${i === sel ? ' sel' : ''}`} data-testid="blocked-result" data-ref={refKey(c)} onMouseEnter={() => setSel(i)} onClick={() => void add(c)}>
                         <b>{refName(c, item.repo)}</b>
-                        <span className="blocked-title">{c.title}</span>
+                        <span className="blocked-title">
+                          <Verbatim from="github">{c.title}</Verbatim>
+                        </span>
                       </button>
                     ))}
-                    {searching && <div className="small muted">正在搜 GitHub…</div>}
+                    {searching && <div className="small muted">{t('正在搜 GitHub…')}</div>}
                     {searchErr && (
                       <div className="small err" data-testid="blocked-search-err">
                         {searchErr}
@@ -282,18 +293,20 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                     )}
                   </div>
                 )}
-                <div className="small muted">输入编号（如 429）直接定位，并列出编号以它开头的开着的条目；也可粘贴 issue / PR 网址；输入文字按标题搜。↑↓ 选，回车加入。别的仓库写成 owner/repo#编号——daemon 只认互通名单里的仓库，名单外的会交人。</div>
+                <div className="small muted">
+                  {t('输入编号（如 429）直接定位，并列出编号以它开头的开着的条目；也可粘贴 issue / PR 网址；输入文字按标题搜。↑↓ 选，回车加入。别的仓库写成 owner/repo#编号——daemon 只认互通名单里的仓库，名单外的会交人。')}
+                </div>
               </>
             )}
             {lines.length > 0 && (
               <div className="blocked-sum" data-testid="blocked-summary">
-                <b>确认后会：</b>
+                <b>{t('确认后会：')}</b>
                 <ol>
                   {lines.map((l) => (
                     <li key={l}>{l}</li>
                   ))}
                 </ol>
-                <div className="small muted">每一步发出前都会再读一遍；期间有变化就停在那一步，已做的会列出来。</div>
+                <div className="small muted">{t('每一步发出前都会再读一遍；期间有变化就停在那一步，已做的会列出来。')}</div>
               </div>
             )}
           </>

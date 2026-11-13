@@ -1,8 +1,10 @@
 // GitHub#250: the notice of one close / merge / autopilot / hand-back operation. What it
 // says and which buttons it offers come from shared/ops.ts alone (the same functions the
-// send gate uses), in the panel and above the board alike.
+// send gate uses). GitHub#490: at most 「重试」, one way out and × (opActions).
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { t, tKey, zhKey } from '../shared/i18n';
+import { Verbatim } from './Verbatim';
 import { AUTO_DISMISS_MS, opActions, opAutoDismissable, opDraftLeft, opPhase, opResendConfirm, opText, opTone, type OpRecord, type OpRetry } from '../shared/ops';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useAutoDismiss } from './autoDismiss';
@@ -10,30 +12,30 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { itemPageUrl, WebButton } from './NoticeButtons';
 
-/** GitHub#490: 「重试」 says what it does again; the redo goes out at once (no dialog) */
+/** GitHub#490: 「重试」 says what it does again; the redo goes out at once (no dialog). Chinese keys, shown through tKey() */
 const REDO_LABEL: Record<OpRecord['kind'], string> = {
-  closeIssue: '重新关闭',
-  closePr: '重新关闭',
-  merge: '重新合并',
-  autopilot: '重新托管',
-  handBack: '重新交给 agent',
+  closeIssue: zhKey('重新关闭'),
+  closePr: zhKey('重新关闭'),
+  merge: zhKey('重新合并'),
+  autopilot: zhKey('重新托管'),
+  handBack: zhKey('重新交给 agent'),
   // GitHub#434: opens the dialog again, read afresh
-  blocked: '等前置…（重新登记）',
+  blocked: zhKey('等前置…（重新登记）'),
 };
 
 function retryLabel(r: OpRecord, retry: OpRetry): string {
   switch (retry) {
     case 'redo':
     case 'blocked':
-      return REDO_LABEL[r.kind];
+      return tKey(REDO_LABEL[r.kind]);
     case 'finish':
-      return '补做剩下的步骤';
+      return t('补做剩下的步骤');
     case 'sendComment':
-      return '再发评论';
+      return t('再发评论');
     case 'resend':
-      return '重发…';
+      return t('重发…');
     case 'recheck':
-      return '再查一次';
+      return t('再查一次');
   }
 }
 
@@ -49,7 +51,7 @@ export function OpNotice({
 }: {
   r: OpRecord;
   /** above the board: which item it is about */
-  prefix?: string;
+  prefix?: ReactNode;
   /** a "等前置…" that did not finish: its dialog again (on the item) */
   onBlocked: (r: OpRecord) => void;
   /** above the board: open the item */
@@ -73,7 +75,7 @@ export function OpNotice({
     setProblem(null);
     try {
       const out = await f();
-      if (out && !out.ok) setProblem(out.error ?? '没有成功');
+      if (out && !out.ok) setProblem(out.error ?? t('没有成功'));
     } finally {
       setWorking(false);
     }
@@ -108,7 +110,10 @@ export function OpNotice({
         <span data-testid="op-notice-text">{opText(r)}</span>
         {left?.comment !== undefined && phase !== 'waiting' && (
           <span className="op-draft" data-testid="op-draft-comment">
-            附的评论原文：<q>{left.comment}</q>
+            {t('附的评论原文：')}
+            <q>
+              <Verbatim from="user">{left.comment}</Verbatim>
+            </q>
           </span>
         )}
         <span className="op-buttons">
@@ -140,7 +145,7 @@ export function OpNotice({
       {asking && confirm && (
         <ConfirmDialog
           title={confirm.title}
-          confirmLabel="仍要重发"
+          confirmLabel={t('仍要重发')}
           busy={working}
           onCancel={() => setAsking(false)}
           onConfirm={() => {
@@ -159,8 +164,8 @@ export function OpNotice({
       {a.close && (
         <button
           className="banner-close"
-          aria-label="关掉提示"
-          title={a.toBox ? '关掉提示（没发出的附带评论放回这一条的回复框）' : '关掉提示'}
+          aria-label={t('关掉提示')}
+          title={a.toBox ? t('关掉提示（没发出的附带评论放回这一条的回复框）') : t('关掉提示')}
           data-testid="op-dismiss"
           onClick={() => void api().opClose(r.id)}
         >

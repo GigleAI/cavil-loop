@@ -21,6 +21,7 @@ import type { CreatePlan, GroupPreset, IterationPick, MilestonePick, Picks, Repo
 export type { IterationPick, MilestonePick, Picks } from '../shared/actions';
 import { isCurrentIteration, iterationSections } from '../shared/filter';
 import type { Item, Iteration, ProjectMeta } from '../shared/types';
+import { t } from '../shared/i18n';
 
 /** The repository's milestone with this title: an open one first. One rule for the detail and for a new issue. */
 export function pickMilestone<T extends { title: string; state: string }>(list: T[], title: string): T | null {
@@ -178,7 +179,7 @@ function fillCurrentIteration(plan: CreatePlan, projects: ProjectMeta[], today: 
     const current = p.iterations.filter((it) => isCurrentIteration(it, today));
     if (current.length === 1) entry.iterationId = current[0].id;
     else if (current.length > 1)
-      lines.push({ target: `${p.key}:iteration`, text: `看板「${p.title}」同时有 ${current.length} 个当前迭代（日期重叠），没有自动设迭代`, applies: false });
+      lines.push({ target: `${p.key}:iteration`, text: t('看板「{board}」同时有 {n} 个当前迭代（日期重叠），没有自动设迭代', { board: p.title, n: current.length }), applies: false });
   }
 }
 
@@ -186,45 +187,45 @@ function previewGroup(preset: GroupPreset, projects: ProjectMeta[], repo: string
   const lines: PreviewLine[] = [];
   const entries: CreatePlan['projects'] = projects.map((p) => ({ projectKey: p.key, iterationId: null, status: null }));
   if (preset.by === 'iteration' || preset.by === 'status') {
-    const what = preset.by === 'iteration' ? '迭代' : '状态';
+    const isIt = preset.by === 'iteration';
     const value = preset.by === 'iteration' ? preset.title : preset.status;
-    if (projects.length === 0) lines.push({ target: 'group', text: `当前没有勾选看板，不会设置${what}`, applies: false });
+    if (projects.length === 0) lines.push({ target: 'group', text: isIt ? t('当前没有勾选看板，不会设置迭代') : t('当前没有勾选看板，不会设置状态'), applies: false });
     projects.forEach((p, i) => {
-      const head = `看板「${p.title}」`;
-      if (!p.viewerCanUpdate) return lines.push({ target: p.key, text: `${head}：这个账号不能修改它，不会设置${what}`, applies: false });
+      const board = p.title;
+      if (!p.viewerCanUpdate) return lines.push({ target: p.key, text: isIt ? t('看板「{board}」：这个账号不能修改它，不会设置迭代', { board }) : t('看板「{board}」：这个账号不能修改它，不会设置状态', { board }), applies: false });
       if (preset.by === 'iteration') {
         const it = p.hasIterationField && p.iterationFieldId ? p.iterations.find((x) => x.title === preset.title && x.startDate === preset.startDate) : undefined;
-        if (!it) return lines.push({ target: p.key, text: `${head}：没有这个迭代，只加入、不设迭代`, applies: false });
+        if (!it) return lines.push({ target: p.key, text: t('看板「{board}」：没有这个迭代，只加入、不设迭代', { board }), applies: false });
         entries[i].iterationId = it.id;
       } else {
         const ok = p.statusFieldId && p.statusOptionIds.some((o) => o.name === preset.status);
-        if (!ok) return lines.push({ target: p.key, text: `${head}：没有这个状态，只加入、不设状态`, applies: false });
+        if (!ok) return lines.push({ target: p.key, text: t('看板「{board}」：没有这个状态，只加入、不设状态', { board }), applies: false });
         entries[i].status = preset.status;
       }
-      lines.push({ target: p.key, text: `${head}：${what} = ${value}`, applies: true });
+      lines.push({ target: p.key, text: isIt ? t('看板「{board}」：迭代 = {value}', { board, value }) : t('看板「{board}」：状态 = {value}', { board, value }), applies: true });
     });
     const watch = watchEntries(preset, projects, others, lines);
     return { plan: { milestone: null, projects: entries, ...(watch.length ? { watch } : {}) }, lines, blocked: null };
   }
   if (preset.by === 'milestone') {
     if (read.state === 'loading') {
-      lines.push({ target: 'milestone', text: `正在读取仓库 ${repo} 的里程碑…`, applies: false });
-      return { plan: null, lines, blocked: '还在读取里程碑' };
+      lines.push({ target: 'milestone', text: t('正在读取仓库 {repo} 的里程碑…', { repo }), applies: false });
+      return { plan: null, lines, blocked: t('还在读取里程碑') };
     }
     if (read.state === 'error') {
-      lines.push({ target: 'milestone', text: `读不到仓库 ${repo} 的里程碑，没法确认能不能带上（${read.error}）`, applies: false });
-      return { plan: null, lines, blocked: '读不到里程碑' };
+      lines.push({ target: 'milestone', text: t('读不到仓库 {repo} 的里程碑，没法确认能不能带上（{error}）', { repo, error: read.error }), applies: false });
+      return { plan: null, lines, blocked: t('读不到里程碑') };
     }
     const m = pickMilestone(read.milestones, preset.title);
     lines.push(
       m
-        ? { target: 'milestone', text: `里程碑 = ${preset.title}`, applies: true }
-        : { target: 'milestone', text: `仓库 ${repo} 没有「${preset.title}」这个里程碑，不会设置`, applies: false },
+        ? { target: 'milestone', text: t('里程碑 = {title}', { title: preset.title }), applies: true }
+        : { target: 'milestone', text: t('仓库 {repo} 没有「{title}」这个里程碑，不会设置', { repo, title: preset.title }), applies: false },
     );
     return { plan: { milestone: m ? { number: m.number, title: m.title } : null, projects: entries }, lines, blocked: null };
   }
-  if (preset.by === 'repo') lines.push({ target: 'group', text: `仓库 = ${preset.repo}（已在上面预选）`, applies: true });
-  if (preset.by === 'none') lines.push({ target: 'group', text: '这一组没有值，不设字段', applies: false, quiet: true });
+  if (preset.by === 'repo') lines.push({ target: 'group', text: t('仓库 = {repo}（已在上面预选）', { repo: preset.repo }), applies: true });
+  if (preset.by === 'none') lines.push({ target: 'group', text: t('这一组没有值，不设字段'), applies: false, quiet: true });
   return { plan: { milestone: null, projects: entries }, lines, blocked: null };
 }
 
@@ -241,30 +242,32 @@ export function shownLines(preview: CreatePreview): PreviewLine[] {
 /** The boards not ticked that are watched after creating (GitHub#258), each with its line. */
 function watchEntries(preset: Extract<GroupPreset, { by: 'iteration' | 'status' }>, ticked: ProjectMeta[], others: ProjectMeta[], lines: PreviewLine[]): NonNullable<CreatePlan['watch']> {
   const out: NonNullable<CreatePlan['watch']> = [];
-  const what = preset.by === 'iteration' ? '迭代' : '状态';
+  const isIt = preset.by === 'iteration';
   const value = preset.by === 'iteration' ? preset.title : preset.status;
   for (const p of others) {
-    if (ticked.some((t) => t.key === p.key)) continue;
-    const head = `看板「${p.title}」没勾`;
+    if (ticked.some((x) => x.key === p.key)) continue;
+    const board = p.title;
     if (!p.viewerCanUpdate) {
-      lines.push({ target: p.key, text: `${head}：这个账号不能修改它，GitHub 自动收进这条也不会补设${what}`, applies: false, quiet: true });
+      lines.push({ target: p.key, text: isIt ? t('看板「{board}」没勾：这个账号不能修改它，GitHub 自动收进这条也不会补设迭代', { board }) : t('看板「{board}」没勾：这个账号不能修改它，GitHub 自动收进这条也不会补设状态', { board }), applies: false, quiet: true });
       continue;
     }
     if (preset.by === 'iteration') {
       const it = p.hasIterationField && p.iterationFieldId ? p.iterations.find((x) => x.title === preset.title && x.startDate === preset.startDate) : undefined;
       if (!it) {
-        lines.push({ target: p.key, text: `${head}：没有这个迭代，GitHub 自动收进这条也不会补设迭代`, applies: false, quiet: true });
+        lines.push({ target: p.key, text: t('看板「{board}」没勾：没有这个迭代，GitHub 自动收进这条也不会补设迭代', { board }), applies: false, quiet: true });
         continue;
       }
       out.push({ projectKey: p.key, iterationId: it.id, status: null, label: value });
     } else {
       if (!(p.statusFieldId && p.statusOptionIds.some((o) => o.name === preset.status))) {
-        lines.push({ target: p.key, text: `${head}：没有这个状态，GitHub 自动收进这条也不会补设状态`, applies: false, quiet: true });
+        lines.push({ target: p.key, text: t('看板「{board}」没勾：没有这个状态，GitHub 自动收进这条也不会补设状态', { board }), applies: false, quiet: true });
         continue;
       }
       out.push({ projectKey: p.key, iterationId: null, status: preset.status, label: value });
     }
-    lines.push({ target: p.key, text: `${head}：如果 GitHub 按它的自动加入规则收进这条、${what}还空着，会补设 ${what} = ${value}（已有别的值不改，提示里可一键改）`, applies: true, quiet: true });
+    lines.push({ target: p.key, text: isIt
+        ? t('看板「{board}」没勾：如果 GitHub 按它的自动加入规则收进这条、迭代还空着，会补设 迭代 = {value}（已有别的值不改，提示里可一键改）', { board, value })
+        : t('看板「{board}」没勾：如果 GitHub 按它的自动加入规则收进这条、状态还空着，会补设 状态 = {value}（已有别的值不改，提示里可一键改）', { board, value }), applies: true, quiet: true });
   }
   return out;
 }

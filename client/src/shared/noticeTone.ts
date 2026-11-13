@@ -19,6 +19,7 @@
 // sync round makes is this background loop — rule 4, also after a check that could not read.
 
 import type { CreateJob, CreateWatch } from './types';
+import { t } from './i18n';
 
 /** `info` is the plain blue of a remark (rule 5 only): nothing is running, nothing went wrong */
 export type NoticeTone = 'busy' | 'ok' | 'error' | 'warn' | 'info';
@@ -58,8 +59,8 @@ export function watchFailed(w: CreateWatch): boolean {
 export function createFailures(job: CreateJob): string[] {
   const out: string[] = [];
   if (job.retryError) out.push(job.retryError);
-  for (const b of job.boards ?? []) if (b.retryFailed) out.push(`再试后「${b.title}」${b.state === 'missing' ? '仍没加入' : '已加入但字段没设上'}（${b.reason}）`);
-  for (const w of job.watch ?? []) if (w.clickError) out.push(`「${w.title}」：${w.clickError}`);
+  for (const b of job.boards ?? []) if (b.retryFailed) out.push(b.state === 'missing' ? t('再试后「{board}」仍没加入（{reason}）', { board: b.title, reason: b.reason }) : t('再试后「{board}」已加入但字段没设上（{reason}）', { board: b.title, reason: b.reason }));
+  for (const w of job.watch ?? []) if (w.clickError) out.push(t('「{board}」：{problem}', { board: w.title, problem: w.clickError }));
   return out;
 }
 

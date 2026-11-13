@@ -8,12 +8,14 @@
 // GitHub's colours. A block without a language has no such spans and stays
 // plain — nothing here guesses a language.
 
+import { t } from '../shared/i18n';
+
 const PRE_OPEN = /<pre\b[^>]*>/gi;
 const PRE_CLOSE = /<\/pre\s*>/gi;
 
 /** the two buttons of one block; what they do is in FRAME_SCRIPT, by these attributes */
 function bar(wrap: boolean): string {
-  return `<div class="cbar"><button type="button" class="cbtn" data-code-wrap aria-pressed="${wrap ? 'true' : 'false'}" title="长的一行折到下一行（所有代码块一起切换）">换行</button><button type="button" class="cbtn" data-code-copy title="复制这一块代码">复制</button></div>`;
+  return `<div class="cbar"><button type="button" class="cbtn" data-code-wrap aria-pressed="${wrap ? 'true' : 'false'}" title="${t('长的一行折到下一行（所有代码块一起切换）')}">${t('换行')}</button><button type="button" class="cbtn" data-code-copy title="${t('复制这一块代码')}">${t('复制')}</button></div>`;
 }
 
 /**

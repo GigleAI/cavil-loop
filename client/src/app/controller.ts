@@ -11,6 +11,7 @@ import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
+import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
 import { readSaid, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
@@ -192,6 +193,8 @@ export interface ControllerDeps {
   desktop?: Desktop;
   /** GitHub#471: the system's preferred languages, for "跟随系统" (tests simulate a system; default: the window's) */
   languages?: () => readonly string[];
+  /** GitHub#516: the system's light / dark, for "跟随系统" (tests simulate a system; default: the window's media query) */
+  scheme?: SystemScheme;
   /** GitHub#229: how long an older unanswered change is watched for, and the first re-read of it (tests shorten them) */
   observeMs?: number;
   observeFirstMs?: number;
@@ -234,14 +237,20 @@ export function createNotice(number: number, boards: CreateBoard[], labelsNote =
   const parts: string[] = [];
   // GitHub#245: labels GitHub dropped come first — the issue may not be handed to the agent at all
   if (labelsNote) parts.push(labelsNote);
-  if (missing.length) parts.push(`没能加入看板 ${missing.map((b) => `「${b.title}」（${b.reason}）`).join('、')}`);
-  if (fields.length) parts.push(`已加入看板但字段没设上 ${fields.map((b) => `「${b.title}」（${b.reason}）`).join('、')}，请在详情里手动设置`);
+  const named = (list: CreateBoard[]) => list.map((b) => t('「{board}」（{why}）', { board: b.title, why: b.reason })).join(t('、'));
+  if (missing.length) parts.push(t('没能加入看板 {boards}', { boards: named(missing) }));
+  if (fields.length) parts.push(t('已加入看板但字段没设上 {boards}，请在详情里手动设置', { boards: named(fields) }));
   // GitHub#258: boards not ticked that took it in by themselves and were not (surely) set
   for (const w of watch) {
     const t = watchProblem(w);
     if (t) parts.push(t);
   }
-  return parts.length ? `issue #${number} 已建好，但${parts.join('；')}` : null;
+  return parts.length ? t('issue #{number} 已建好，但{problems}', { number, problems: joinSemi(parts) }) : null;
+}
+
+/** pieces said one after the other (Chinese: joined by '；') */
+function joinSemi(parts: string[]): string {
+  return parts.length ? parts.reduce((a, b) => t('{a}；{b}', { a, b })) : '';
 }
 
 /**
@@ -365,6 +374,8 @@ export class Controller {
    * reset time, across rounds. Of one session: another account starts with it open.
    */
   private readGate: ReadGate;
+  /** GitHub#516: the system's light / dark (followed for as long as the window lives) */
+  private scheme: SystemScheme;
   /** GitHub#374: per source (as the addition `epoch`), its failures in a row and when it is read again automatically */
   private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
   /** the session the gate and the failures belong to */
@@ -537,6 +548,8 @@ export class Controller {
     if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // GitHub#429: saved before the waiting label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
+    // GitHub#513: a setting saved before the parked label existed
+    if (typeof handBack.later !== 'string') handBack.later = DEFAULT_HAND_BACK.later;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
     // GitHub#471: the language is decided before anything is drawn; nothing set (or a value this
@@ -546,6 +559,13 @@ export class Controller {
     const lang = resolveLang(uiLanguage, this.systemLanguages());
     setLang(lang);
     if (lang !== 'zh') this.tellBackendLanguage(lang);
+    // GitHub#516: light / dark, likewise decided before anything is drawn; nothing set (or a value
+    // this version does not know) follows the system, as before. The native window follows the
+    // system by itself: it is told only when the choice is light or dark.
+    this.scheme = deps.scheme ?? windowScheme();
+    const uiTheme = normalizeThemeSetting(this.cache.getSetting<unknown>(THEME_SETTING, DEFAULT_THEME_SETTING));
+    const theme = resolveTheme(uiTheme, this.systemDark());
+    if (uiTheme !== 'system') this.tellBackendTheme(uiTheme);
     this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
@@ -573,6 +593,8 @@ export class Controller {
       notifyScope,
       uiLanguage,
       lang,
+      uiTheme,
+      theme,
       repoOrder: normalizeRepoOrder(this.cache.getSetting<unknown>(REPO_ORDER, null)),
       newIssueHandoff: normalizeHandoff(this.cache.getSetting<unknown>(NEW_ISSUE_HANDOFF, 'none')),
       pendingCount: 0,
@@ -597,6 +619,12 @@ export class Controller {
     }
     this.tabList = normalizeTabs(this.cache.getSetting<unknown>(TABS, null));
     this.refreshDerived();
+    // GitHub#516: "跟随系统" follows the system while the window is open
+    try {
+      this.scheme.watch(() => this.systemSchemeChanged());
+    } catch {
+      // cannot follow: the window keeps what it showed at the start
+    }
   }
 
   getState(): AppState {
@@ -1299,10 +1327,10 @@ export class Controller {
         try {
           r = await this.backend.call<{ written: boolean }>('replaceSnapshots', { session, snapshots: plan.rows });
         } catch (e) {
-          return { kind: 'failed' as const, reason: `没能存到本机：${(e as Error).message}`, error: e };
+          return { kind: 'failed' as const, reason: t('没能存到本机：{why}', { why: (e as Error).message }), error: e };
         }
         if (session !== this.session) return { kind: 'ended' as const };
-        if (!r.written) return { kind: 'failed' as const, reason: '没能存到本机' };
+        if (!r.written) return { kind: 'failed' as const, reason: t('没能存到本机') };
       }
       const rows = plan.rows.filter((snap) => keep(snap.sourceKey));
       for (const snap of rows) this.snapshots.set(snap.sourceKey, snap);
@@ -1401,8 +1429,8 @@ export class Controller {
 
   addSource(input: string): { ok: boolean; error?: string } {
     const src = parseSource(input);
-    if (!src) return { ok: false, error: '认不出这个地址：Project 请贴网址（https://github.com/orgs/<组织>/projects/<编号>），仓库写「组织/仓库名」' };
-    if (this.state.sources.some((s) => s.key === src.key)) return { ok: false, error: '这个来源已经加过了' };
+    if (!src) return { ok: false, error: t('认不出这个地址：Project 请贴网址（https://github.com/orgs/<组织>/projects/<编号>），仓库写「组织/仓库名」') };
+    if (this.state.sources.some((s) => s.key === src.key)) return { ok: false, error: t('这个来源已经加过了') };
     const sources = [...this.state.sources, src];
     this.bumpEpoch(src.key);
     this.cache.setSetting('sources', sources);
@@ -1525,7 +1553,7 @@ export class Controller {
             await this.runOne();
           } catch (e) {
             // a round must never reject: the 60 s timer and the window would see an unhandled rejection
-            this.set({ sync: { ...this.state.sync, syncing: false, problem: `同步出错：${(e as Error).message}` } });
+            this.set({ sync: { ...this.state.sync, syncing: false, problem: t('同步出错：{why}', { why: (e as Error).message }) } });
           }
           // GitHub#397: with every round — however it ended, also one that had no source left to read (they
           // all wait after failing) — the open tabs no complete read carries are checked one by one. Not while
@@ -1967,6 +1995,43 @@ export class Controller {
     if (setting !== this.state.uiLanguage || changed) this.set({ uiLanguage: setting, lang });
   }
 
+  /** the system's light / dark ("跟随系统"); unreadable = cannot tell, which is light */
+  private systemDark(): boolean | null {
+    try {
+      return this.scheme.dark();
+    } catch {
+      return null;
+    }
+  }
+
+  /** the native window (title bar, menus) follows the window's choice; a refusal changes nothing on this side */
+  private tellBackendTheme(setting: ThemeSetting): void {
+    void this.cache.enqueue(() => this.backend.call('setTheme', { theme: setting })).catch(() => undefined);
+  }
+
+  /** the system switched light / dark: only "跟随系统" follows it */
+  private systemSchemeChanged(): void {
+    if (this.state.uiTheme !== 'system') return;
+    const theme = resolveTheme('system', this.systemDark());
+    if (theme !== this.state.theme) this.set({ theme });
+  }
+
+  /**
+   * GitHub#516: light / dark — 'system' (default), 'light' or 'dark'. Takes effect at once: the
+   * whole window re-renders from the new state, the back end is told (the native title bar and
+   * menus), and the choice is kept on this machine. Anything but the three words is ignored.
+   */
+  setUiTheme(setting: unknown): void {
+    if (setting !== 'system' && setting !== 'light' && setting !== 'dark') return;
+    const theme = resolveTheme(setting, this.systemDark());
+    if (setting === this.state.uiTheme && theme === this.state.theme) return;
+    if (setting !== this.state.uiTheme) {
+      this.cache.setSetting(THEME_SETTING, setting);
+      this.tellBackendTheme(setting);
+    }
+    this.set({ uiTheme: setting, theme });
+  }
+
   /**
    * GitHub#487: change one shortcut's key, or put it back to its defaults (`spec` null). The whole table in effect
    * is checked (`changeKey`); refused = nothing written, nothing changed, the reason handed back.
@@ -2266,6 +2331,8 @@ export class Controller {
       running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
       // GitHub#429: empty is a choice — the graph then draws GitHub's own relations only
       blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.handBack.blocked,
+      // GitHub#513: empty is a choice — label pickers then pin no parked label
+      later: typeof patch.later === 'string' ? patch.later.trim() : this.state.handBack.later,
     };
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
@@ -2287,10 +2354,10 @@ export class Controller {
 
   /** A client for one call, or why there is none (signed out / offline / credential ended). */
   private async clientForCall(write: boolean): Promise<{ client: GitHubClient; session: number } | { error: string }> {
-    if (!this.signedIn || this.state.phase !== 'ready') return { error: '还没有登录' };
-    if (write && !writesEnabled(this.state.sync)) return { error: '离线时不能修改：GitHub 上什么都没改' };
+    if (!this.signedIn || this.state.phase !== 'ready') return { error: t('还没有登录') };
+    if (write && !writesEnabled(this.state.sync)) return { error: t('离线时不能修改：GitHub 上什么都没改') };
     const fresh = await this.fresh();
-    if (fresh === 'ended' || !this.signedIn) return { error: '登录已结束，请重新登录' };
+    if (fresh === 'ended' || !this.signedIn) return { error: t('登录已结束，请重新登录') };
     return { client: this.client(this.session), session: this.session };
   }
 
@@ -2318,13 +2385,13 @@ export class Controller {
    */
   private async readDetail(key: string): Promise<DetailResult> {
     const item = this.findItem(key);
-    if (!item) return { ok: false, error: '看板上找不到这一条，请刷新后再试' };
+    if (!item) return { ok: false, error: t('看板上找不到这一条，请刷新后再试') };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
     const read = ++this.detailReads;
     try {
       const raw = await fetchRawDetail(c.client, item.repo, item.number);
-      if (c.session !== this.session) return { ok: false, error: '账号已切换' };
+      if (c.session !== this.session) return { ok: false, error: t('账号已切换') };
       const detail = toDetail(item.repo, raw, this.now());
       if ((this.detailCache.get(key)?.read ?? 0) < read) {
         this.detailCache.delete(key);
@@ -2334,7 +2401,7 @@ export class Controller {
       return { ok: true, detail };
     } catch (e) {
       this.noteAuthFailure(e);
-      const msg = e instanceof GitHubError && e.kind === 'network' ? `连不上 GitHub，读不到详情（${e.message}）` : `读取详情失败：${(e as Error).message}`;
+      const msg = e instanceof GitHubError && e.kind === 'network' ? t('连不上 GitHub，读不到详情（{why}）', { why: e.message }) : t('读取详情失败：{why}', { why: (e as Error).message });
       return { ok: false, error: msg };
     }
   }
@@ -2430,7 +2497,7 @@ export class Controller {
       } catch (e) {
         if (attempt === 0 && e instanceof GitHubError && e.kind === 'network') continue;
         this.noteAuthFailure(e);
-        return { labels: [], milestones: [], error: `读取 ${repo} 的标签 / 里程碑失败：${(e as Error).message}` };
+        return { labels: [], milestones: [], error: t('读取 {repo} 的标签 / 里程碑失败：{why}', { repo, why: (e as Error).message }) };
       }
     }
   }
@@ -2480,7 +2547,7 @@ export class Controller {
     try {
       return { ok: true, html: await c.client.restText('/markdown', { text, mode: 'gfm', context: repo }) };
     } catch (e) {
-      return { ok: false, error: `预览失败：${(e as Error).message}` };
+      return { ok: false, error: t('预览失败：{why}', { why: (e as Error).message }) };
     }
   }
 
@@ -2498,7 +2565,7 @@ export class Controller {
     // two clicks on one comment would be two read-change-writes racing each other: the second waits its turn as a refusal
     // (GitHub#299: a title the same way, by its item)
     const slot = sendSlot(action)!;
-    if (this.tasksInFlight.has(slot) || this.sendHolding(slot)) return { ok: false, error: '这一条上一次修改还没完成，等它完成再试', warning: null };
+    if (this.tasksInFlight.has(slot) || this.sendHolding(slot)) return { ok: false, error: t('这一条上一次修改还没完成，等它完成再试'), warning: null };
     this.tasksInFlight.add(slot);
     try {
       return await this.actNow(action);
@@ -2516,23 +2583,23 @@ export class Controller {
     // GitHub#205: a new issue joins exactly the Projects ticked in the dialog; one the app does not know is refused before sending
     const known = this.allProjects();
     const wanted = action.kind === 'createIssue' ? (Array.isArray(action.projects) ? action.projects : null) : [];
-    if (wanted === null) return { ok: false, error: '不知道要加入哪些看板，没有新建', warning: null };
+    if (wanted === null) return { ok: false, error: t('不知道要加入哪些看板，没有新建'), warning: null };
     const createInProjects = wanted.map((k) => known.find((p) => p.key === k));
-    if (createInProjects.some((p) => !p)) return { ok: false, error: '勾选的看板不在当前来源里（可能刚被删掉），没有新建；请重新打开对话框', warning: null };
+    if (createInProjects.some((p) => !p)) return { ok: false, error: t('勾选的看板不在当前来源里（可能刚被删掉），没有新建；请重新打开对话框'), warning: null };
     let outcome;
     try {
       outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       onError?.(e);
-      return { ok: false, error: e instanceof CreateUnanswered ? `不确定有没有建好：${e.reason}` : explainError(e, action.kind), warning: null };
+      return { ok: false, error: e instanceof CreateUnanswered ? t('不确定有没有建好：{why}', { why: e.reason }) : explainError(e, action.kind), warning: null };
     }
     onOutcome?.(outcome);
     let warning = outcome.warning;
     if (c.session === this.session) {
       for (const [repo, number] of outcome.touched) {
         const { problem } = await this.refreshOne(c.client, c.session, repo, number);
-        if (problem) warning = [warning, problem].filter(Boolean).join('；');
+        if (problem) warning = joinSemi([warning, problem].filter((x): x is string => Boolean(x)));
       }
       // GitHub changed something (also when a follow-up step warned): one more round soon
       if (c.session === this.session) this.scheduleFollowUp(c.session);
@@ -2562,7 +2629,7 @@ export class Controller {
     repo: string,
     number: number,
     opts: { final?: boolean; quiet?: boolean } = {},
-  ): Promise<{ kind: 'done' | 'failed' | 'ended'; problem: string | null; issuedAt: number; own: Item | null }> {
+  ): Promise<{ kind: 'done' | 'failed' | 'ended'; problem: string | null; issuedAt: number; own: Item | null; reason?: string }> {
     const sources = this.state.sources;
     const epochAtStart = new Map(sources.map((src) => [src.key, this.epochs.get(src.key) ?? 0]));
     const issuedAt = this.stamp();
@@ -2571,7 +2638,7 @@ export class Controller {
       if (session === this.session) this.feedReadFailure(key, reason, issuedAt);
       // GitHub#279: a quiet re-read (the catch-up at the end of a round) never asks for another round
       if (!opts.quiet) void this.syncNow();
-      return { kind: 'failed' as const, problem: `修改已生效，但重读这一条失败（${reason}），下一轮同步会更新`, issuedAt, own: null };
+      return { kind: 'failed' as const, problem: t('修改已生效，但重读这一条失败（{why}），下一轮同步会更新', { why: reason }), issuedAt, own: null, reason };
     };
     let fresh;
     try {
@@ -2710,14 +2777,14 @@ export class Controller {
 
   /** A change was made by the user: shown at once, stored, then sent behind the item's earlier changes. */
   private async actEdit(action: FieldAction): Promise<WriteResult> {
-    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录', warning: null };
-    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: t('还没有登录'), warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: t('离线时不能修改：GitHub 上什么都没改'), warning: null };
     const item = this.findItem(action.key);
-    if (!item) return { ok: false, error: '看板上找不到这一条（可能刚被同步掉了），请刷新后再试', warning: null };
+    if (!item) return { ok: false, error: t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'), warning: null };
     const field = this.fieldOf(action, item);
     const id = fieldId(item.key, field);
     const prev = this.edits.get(id) ?? null;
-    if (!prev && this.edits.size >= MAX_EDITS) return { ok: false, error: `还有 ${MAX_EDITS} 处修改没确认，请先处理掉一些（重新发送或放弃）再改`, warning: null };
+    if (!prev && this.edits.size >= MAX_EDITS) return { ok: false, error: t('还有 {n} 处修改没确认，请先处理掉一些（重新发送或放弃）再改', { n: MAX_EDITS }), warning: null };
     const value = this.valueOf(action);
     const shown = fieldValue(item, field);
     const reqId = ++this.editSeq;
@@ -2795,10 +2862,10 @@ export class Controller {
     if (!(await this.storeEdits())) {
       const r = this.edits.get(id);
       if (r && session === this.session) {
-        this.setEdit(id, applyAnswer(r, reqId, 'rejected', this.stamp(), '没能存到本机，这次修改没发出'));
+        this.setEdit(id, applyAnswer(r, reqId, 'rejected', this.stamp(), t('没能存到本机，这次修改没发出')));
         this.editsChanged();
       }
-      return { ok: false, error: '没能存到本机，这次修改没发出', warning: null };
+      return { ok: false, error: t('没能存到本机，这次修改没发出'), warning: null };
     }
     // Only the write and its answer hold the item's queue (GitHub#229 review round 1): the re-read
     // after an accepted change runs once the next change of the item may go out.
@@ -2812,14 +2879,14 @@ export class Controller {
    * still be in it — the copy from before the await is never written back.
    */
   private async sendInQueue(id: string, reqId: number, action: FieldAction, session: number): Promise<{ result: WriteResult; after?: () => Promise<WriteResult> }> {
-    const notSent = { result: { ok: false, error: '这次修改在发出前被放弃或被后一次修改取代，没有发出', warning: null } };
+    const notSent = { result: { ok: false, error: t('这次修改在发出前被放弃或被后一次修改取代，没有发出'), warning: null } };
     const holds = () => session === this.session && Boolean(this.edits.get(id)?.reqs.some((q) => q.id === reqId));
     if (!holds()) return notSent;
     const c = await this.clientForCall(true);
     if (!holds()) return notSent;
     if ('error' in c) return { result: await this.answerEdit(id, reqId, session, 'rejected', c.error) };
     this.setEdit(id, markSent(this.edits.get(id)!, reqId, this.stamp()));
-    if (!(await this.storeEdits())) return { result: await this.answerEdit(id, reqId, session, 'rejected', '没能存到本机，这次修改没发出') };
+    if (!(await this.storeEdits())) return { result: await this.answerEdit(id, reqId, session, 'rejected', t('没能存到本机，这次修改没发出')) };
     if (!holds()) return notSent;
     const data = this.getBoardData();
     const item = data.tabItems?.find((i) => i.key === action.key) ?? data.items.find((i) => i.key === action.key) ?? null;
@@ -2831,7 +2898,7 @@ export class Controller {
       const error = explainError(e, action.kind);
       if (refusedForSure(e)) return { result: await this.answerEdit(id, reqId, session, 'rejected', error) };
       // not explainError's words: they say "nothing was changed", which is exactly what is not known here
-      return { result: await this.answerEdit(id, reqId, session, 'unknown', `没收到 GitHub 的明确答复（${(e as Error)?.message ?? String(e)}），不确定改没改上`) };
+      return { result: await this.answerEdit(id, reqId, session, 'unknown', t('没收到 GitHub 的明确答复（{why}），不确定改没改上', { why: (e as Error)?.message ?? String(e) })) };
     }
     await this.answerEdit(id, reqId, session, 'accepted', '');
     const touched = outcome.touched;
@@ -2843,7 +2910,7 @@ export class Controller {
         if (session === this.session) {
           for (const [repo, number] of touched) {
             const { problem } = await this.refreshOne(c.client, session, repo, number);
-            if (problem) warning = [warning, problem].filter(Boolean).join('；');
+            if (problem) warning = joinSemi([warning, problem].filter((x): x is string => Boolean(x)));
           }
           if (session === this.session) this.scheduleFollowUp(session);
         }
@@ -2997,10 +3064,10 @@ export class Controller {
 
   private async resendEditNow(id: string, force: boolean): Promise<WriteResult> {
     const r = this.edits.get(id);
-    if (!r) return { ok: false, error: '这处修改已经不在了', warning: null };
+    if (!r) return { ok: false, error: t('这处修改已经不在了'), warning: null };
     const st = editStatus(r);
-    if (st !== 'failed' && st !== 'unconfirmed') return { ok: false, error: '这处修改还在保存或核对中，不用重新发送', warning: null };
-    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+    if (st !== 'failed' && st !== 'unconfirmed') return { ok: false, error: t('这处修改还在保存或核对中，不用重新发送'), warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: t('离线时不能修改：GitHub 上什么都没改'), warning: null };
     if (!force) {
       const c = await this.clientForCall(false);
       if ('error' in c) return { ok: false, error: c.error, warning: null };
@@ -3008,28 +3075,28 @@ export class Controller {
       // the comparison reads GitHub's value from the board data, from reads issued at this
       // check or later that landed — never this read's own answer (PR #240 plan revision 1)
       const read = await this.refreshOne(c.client, c.session, r.repo, r.number);
-      if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
+      if (c.session !== this.session) return { ok: false, error: t('账号已切换'), warning: null };
       const cur = this.edits.get(id);
       // the read itself showed the change is on GitHub: nothing to send
       if (!cur) return { ok: true, error: null, warning: null };
       const ev = read.kind === 'done' || read.kind === 'failed' ? this.evidence(cur.key, cur.field, read.issuedAt, read.own) : null;
       if (ev === null) {
-        const why = read.problem?.replace(/^修改已生效，但重读这一条失败（(.*)），下一轮同步会更新$/, '$1') ?? '读取失败';
+        const why = read.reason ?? t('读取失败');
         this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: why } });
         this.editsChanged();
         void this.storeEdits();
-        return { ok: false, error: '读不到 GitHub 现在的值，没有重新发送；确认要发就点「仍然发送」', warning: null };
+        return { ok: false, error: t('读不到 GitHub 现在的值，没有重新发送；确认要发就点「仍然发送」'), warning: null };
       }
       if (ev === 'absent') {
-        this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: '这一条已不在那个看板上' } });
+        this.setEdit(id, { ...cur, hold: { kind: 'unreadable', reason: t('这一条已不在那个看板上') } });
         this.editsChanged();
-        return { ok: false, error: '这一条已不在那个看板上，没有重新发送', warning: null };
+        return { ok: false, error: t('这一条已不在那个看板上，没有重新发送'), warning: null };
       }
       if (ev.value !== cur.base && ev.value !== cur.target) {
         this.setEdit(id, { ...cur, hold: { kind: 'changed', value: ev.value } });
         this.editsChanged();
         void this.storeEdits();
-        return { ok: false, error: '你改之后有人改过这一项，没有重新发送；确认要覆盖就点「仍然覆盖」', warning: null };
+        return { ok: false, error: t('你改之后有人改过这一项，没有重新发送；确认要覆盖就点「仍然覆盖」'), warning: null };
       }
     }
     const cur = this.edits.get(id);
@@ -3065,7 +3132,7 @@ export class Controller {
       for (const id of ids) this.resendQueue.delete(id);
       if (session === this.session) this.markResending(ids, false);
     }
-    return held.length ? { ok: false, error: `${held.length} 处没有重新发送：${held[0]}`, warning: null } : { ok: true, error: null, warning: null };
+    return held.length ? { ok: false, error: t('{n} 处没有重新发送：{why}', { n: held.length, why: held[0] }), warning: null } : { ok: true, error: null, warning: null };
   }
 
   async abandonAllEdits(): Promise<void> {
@@ -3083,9 +3150,9 @@ export class Controller {
    * draft back with a create button; no answer = "not sure", never "try again".
    */
   async startCreate(action: Extract<WriteAction, { kind: 'createIssue' }>): Promise<{ ok: boolean; error: string | null; job?: number }> {
-    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录' };
-    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改' };
-    if (!action.title.trim()) return { ok: false, error: '标题不能为空' };
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: t('还没有登录') };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: t('离线时不能修改：GitHub 上什么都没改') };
+    if (!action.title.trim()) return { ok: false, error: t('标题不能为空') };
     const id = ++this.createSeq;
     const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true, ...(action.picks ? { picks: action.picks } : {}), ...(action.plan ? { plan: action.plan } : {}) };
     this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
@@ -3143,7 +3210,7 @@ export class Controller {
       return;
     }
     // GitHub#357: the look below is this notice's own request — it reads as running until it ends, and a look that failed is said
-    this.setCreate({ ...cur, status: 'unknown', message: `请求发出后没收到 GitHub 的明确答复（${unanswered}），不确定有没有建好`, looking: true, sentAt });
+    this.setCreate({ ...cur, status: 'unknown', message: t('请求发出后没收到 GitHub 的明确答复（{why}），不确定有没有建好', { why: unanswered }), looking: true, sentAt });
     await this.lookCreate(id, session);
   }
 
@@ -3297,7 +3364,7 @@ export class Controller {
   }
 
   private async runWatch(id: number, session: number, nodeId: string): Promise<void> {
-    let why = '留意中断';
+    let why = t('留意中断');
     try {
       why = await this.runLooks(id, session, nodeId);
     } finally {
@@ -3320,7 +3387,7 @@ export class Controller {
         const p = this.allProjects().find((x) => x.key === w.projectKey);
         if (p && (await autoAddSurelyOff(c0.client, p))) this.patchWatch(id, w.projectKey, () => null);
       }
-    let why = '读不到';
+    let why = t('读不到');
     let at = 0;
     for (let i = 0; i < looks.length; i++) {
       await this.watchSleep(looks[i] - at);
@@ -3338,7 +3405,7 @@ export class Controller {
         const s = typeof seen === 'string' ? null : seen.get(k);
         if (!s || s.state === 'unknown') {
           // the latest look decides: an earlier "not there" says nothing about now
-          why = typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板';
+          why = typeof seen === 'string' ? seen : t('GitHub 的回应没有列全这条所在的看板');
           if (last) this.patchWatch(id, k, (x) => ({ ...x, state: 'unread', reason: why }));
           continue;
         }
@@ -3385,14 +3452,14 @@ export class Controller {
   private async writeWatched(id: number, key: string, session: number, itemId: string, auto: boolean): Promise<string | null> {
     const c = await this.clientForCall(true);
     const w = this.watchEntry(id, key, session);
-    if (!w) return '这个看板已不在来源里，没有修改';
+    if (!w) return t('这个看板已不在来源里，没有修改');
     const p = this.allProjects().find((x) => x.key === key);
     const refused = (reason: string) => {
       this.patchWatch(id, key, (x) => (auto ? { ...x, state: 'failed', reason, busy: false } : { ...x, busy: false }));
       return reason;
     };
     if ('error' in c) return refused(c.error);
-    if (c.session !== session || !p) return refused('账号已切换');
+    if (c.session !== session || !p) return refused(t('账号已切换'));
     if (auto) this.patchWatch(id, key, (x) => ({ ...x, writes: x.writes + 1 }));
     try {
       await setCreatedField(c.client, p, itemId, w.iterationId, w.status);
@@ -3412,7 +3479,7 @@ export class Controller {
       await this.verifyLoop(id, key, session);
     } finally {
       const w = session === this.session ? this.state.creates.find((j) => j.id === id)?.watch?.find((x) => x.projectKey === key) : undefined;
-      if (w?.state === 'written') this.patchWatch(id, key, (x) => ({ ...x, state: 'unverified', reason: x.reason ?? '核对中断' }));
+      if (w?.state === 'written') this.patchWatch(id, key, (x) => ({ ...x, state: 'unverified', reason: x.reason ?? t('核对中断') }));
     }
   }
 
@@ -3429,7 +3496,7 @@ export class Controller {
       if (seen === 'ended') return;
       const s = typeof seen === 'string' ? null : seen.get(key);
       if (!s || s.state === 'unknown') {
-        reason = typeof seen === 'string' ? seen : 'GitHub 的回应没有列全这条所在的看板';
+        reason = typeof seen === 'string' ? seen : t('GitHub 的回应没有列全这条所在的看板');
         continue;
       }
       // taken off the board meanwhile: nothing left to do there
@@ -3460,8 +3527,8 @@ export class Controller {
   async applyCreateWatch(id: number, key: string): Promise<WriteResult> {
     const job = this.state.creates.find((j) => j.id === id);
     const w = job?.watch?.find((x) => x.projectKey === key);
-    if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: '没有要改的看板', warning: null };
-    if (w.busy) return { ok: false, error: '上一次修改还没完成', warning: null };
+    if (!job || !w || w.state !== 'human' || !job.createdNodeId) return { ok: false, error: t('没有要改的看板'), warning: null };
+    if (w.busy) return { ok: false, error: t('上一次修改还没完成'), warning: null };
     // taken before the first wait (code review round 2): a second click meanwhile is refused above.
     // GitHub#357: the failure of this board's click before goes at the same moment (only this board's)
     this.patchWatch(id, key, (x) => ({ ...x, busy: true, clickError: null }));
@@ -3486,15 +3553,15 @@ export class Controller {
     if ('error' in c) return unbusy(c.error);
     const session = c.session;
     const seen = await this.readWatched(id, session, job.createdNodeId ?? '', [key]);
-    if (seen === 'ended') return { ok: false, error: '账号已切换', warning: null };
+    if (seen === 'ended') return { ok: false, error: t('账号已切换'), warning: null };
     const s = typeof seen === 'string' ? null : seen.get(key);
-    if (!s || s.state === 'unknown') return unbusy(`读不到这条在看板上的当前值（${typeof seen === 'string' ? seen : '回应不完整'}），没有修改`);
+    if (!s || s.state === 'unknown') return unbusy(t('读不到这条在看板上的当前值（{why}），没有修改', { why: typeof seen === 'string' ? seen : t('回应不完整') }));
     if (s.state === 'absent') {
       this.patchWatch(id, key, () => null);
-      return { ok: false, error: '这条已经不在这个看板上，没有修改', warning: null };
+      return { ok: false, error: t('这条已经不在这个看板上，没有修改'), warning: null };
     }
     const cur = this.watchEntry(id, key, session);
-    if (!cur) return { ok: false, error: '这个看板已不在来源里，没有修改', warning: null };
+    if (!cur) return { ok: false, error: t('这个看板已不在来源里，没有修改'), warning: null };
     if (judgeWatch(cur, s.membership) === 'done') {
       this.patchWatch(id, key, () => null);
       return { ok: true, error: null, warning: null };
@@ -3502,7 +3569,7 @@ export class Controller {
     const now = watchedValue(cur, s.membership).text;
     if (now !== (cur.seen ?? null)) {
       this.patchWatch(id, key, (x) => ({ ...x, seen: now, busy: false }));
-      return { ok: false, error: `看板上现在是「${now ?? '空'}」，和提示里的不一样，没有修改；看过后再决定`, warning: null };
+      return { ok: false, error: t('看板上现在是「{value}」，和提示里的不一样，没有修改；看过后再决定', { value: now ?? t('空') }), warning: null };
     }
     const error = await this.writeWatched(id, key, session, s.itemId, false);
     return error === null ? { ok: true, error: null, warning: null } : { ok: false, error, warning: null };
@@ -3515,9 +3582,9 @@ export class Controller {
    */
   async retryCreateProjects(id: number): Promise<WriteResult> {
     const cur = this.state.creates.find((j) => j.id === id);
-    if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: '没有要补的看板', warning: null };
+    if (!cur || cur.status !== 'partial' || !cur.createdKey) return { ok: false, error: t('没有要补的看板'), warning: null };
     const created = cur.createdKey;
-    if (cur.retrying) return { ok: false, error: '上一次再试还没完成', warning: null };
+    if (cur.retrying) return { ok: false, error: t('上一次再试还没完成'), warning: null };
     // GitHub#357: running from before the first wait, the failure of the attempt before gone
     const session = this.session;
     this.patchCreate(id, { retrying: true, retryError: null });
@@ -3547,7 +3614,7 @@ export class Controller {
       if (b.state !== 'missing') continue;
       const p = this.allProjects().find((x) => x.key === b.projectKey);
       try {
-        if (!p) throw new ActionRefused('这个看板已不在来源里');
+        if (!p) throw new ActionRefused(t('这个看板已不在来源里'));
         const fieldError = await joinCreatedIssue(c.client, p, cur.createdNodeId ?? '', b.iterationId, b.status);
         results.set(b.projectKey, fieldError === null ? null : { ...b, state: 'fieldsFailed', reason: explainError(fieldError, 'addToProject'), retryFailed: true });
       } catch (e) {
@@ -3555,7 +3622,7 @@ export class Controller {
         results.set(b.projectKey, { ...b, reason: explainError(e, 'addToProject'), retryFailed: true });
       }
     }
-    if (c.session !== this.session) return { ok: false, error: '账号已切换', warning: null };
+    if (c.session !== this.session) return { ok: false, error: t('账号已切换'), warning: null };
     const number = Number(cur.createdKey.split('#')[1]);
     const after = [...results.values()];
     if (after.some((x) => x === null || x.state === 'fieldsFailed')) {
@@ -3567,8 +3634,9 @@ export class Controller {
     const now = this.state.creates.find((j) => j.id === id);
     const stillMissing = after.filter((x): x is CreateBoard => x !== null && x.state === 'missing');
     const fieldsNow = after.filter((x): x is CreateBoard => x !== null && x.state === 'fieldsFailed');
-    const error = stillMissing.length ? stillMissing.map((x) => `「${x.title}」（${x.reason}）`).join('、') : null;
-    const warning = fieldsNow.length ? `已加入看板，但字段没设上 ${fieldsNow.map((x) => `「${x.title}」（${x.reason}）`).join('、')}` : null;
+    const named = (list: CreateBoard[]) => list.map((x) => t('「{board}」（{why}）', { board: x.title, why: x.reason })).join(t('、'));
+    const error = stillMissing.length ? named(stillMissing) : null;
+    const warning = fieldsNow.length ? t('已加入看板，但字段没设上 {boards}', { boards: named(fieldsNow) }) : null;
     if (now) {
       const boards = mergeRetry(now.boards ?? [], results);
       // the notice goes only when nothing is left on any board, and no dropped label is left unsaid (GitHub#245);
@@ -3591,39 +3659,39 @@ export class Controller {
   /** The window's entry: refused at once (nothing sent) or started in the background. */
   startOp(action: OpAction, opts: { from?: string } = {}): { ok: boolean; error: string | null; id?: string } {
     const refuse = (error: string) => ({ ok: false, error });
-    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
-    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
-    if (!action || !isOpKind(action.kind)) return refuse('未知的操作');
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse(t('还没有登录'));
+    if (!writesEnabled(this.state.sync)) return refuse(t('离线时不能修改：GitHub 上什么都没改'));
+    if (!action || !isOpKind(action.kind)) return refuse(t('未知的操作'));
     const item = this.findItem(action.key);
-    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    if (!item) return refuse(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
     // PR #510 review round 1: the same text sent from the reply box is still without a result (the two could not be told apart)
     const opComment = (action as { comment?: unknown }).comment;
-    if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作');
+    if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse(t('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作'));
     const step = (name: OpStep['name'], label?: string, role?: OpStep['role']): OpStep => ({ name, ...(label !== undefined ? { label } : {}), state: 'unsent', reason: null, sentAt: null, answeredAt: null, ...(role ? { role } : {}) });
     let steps: OpStep[];
     let draft: OpRecord['draft'] = {};
     switch (action.kind) {
       case 'closeIssue': {
-        if (item.kind !== 'issue') return refuse('这一条不是 issue');
-        if (!ISSUE_CLOSE_REASONS.includes(action.reason)) return refuse('未知的关闭原因');
+        if (item.kind !== 'issue') return refuse(t('这一条不是 issue'));
+        if (!ISSUE_CLOSE_REASONS.includes(action.reason)) return refuse(t('未知的关闭原因'));
         const comment = typeof action.comment === 'string' ? action.comment : '';
         draft = { reason: action.reason, ...(comment.trim() ? { comment } : {}) };
         steps = comment.trim() ? [step('close'), step('comment')] : [step('close')];
         break;
       }
       case 'closePr': {
-        if (item.kind !== 'pr') return refuse('这一条不是 PR');
+        if (item.kind !== 'pr') return refuse(t('这一条不是 PR'));
         const comment = typeof action.comment === 'string' ? action.comment : '';
         draft = comment.trim() ? { comment } : {};
         steps = comment.trim() ? [step('close'), step('comment')] : [step('close')];
         break;
       }
       case 'merge': {
-        if (item.kind !== 'pr') return refuse('这一条不是 PR');
-        if (!/^[0-9a-f]{40}$/.test(action.headOid)) return refuse('不知道你看到的是哪个提交，请刷新详情后再合并');
-        if (!['merge', 'squash', 'rebase'].includes(action.method)) return refuse('未知的合并方式');
+        if (item.kind !== 'pr') return refuse(t('这一条不是 PR'));
+        if (!/^[0-9a-f]{40}$/.test(action.headOid)) return refuse(t('不知道你看到的是哪个提交，请刷新详情后再合并'));
+        if (!['merge', 'squash', 'rebase'].includes(action.method)) return refuse(t('未知的合并方式'));
         draft = { method: action.method, headOid: action.headOid };
         steps = [step('merge')];
         break;
@@ -3631,8 +3699,8 @@ export class Controller {
       case 'autopilot':
       case 'handBack': {
         const { human, agent, autopilot } = this.state.handBack;
-        if (!human.trim() || !agent.trim()) return refuse('设置里「交给 agent」的两个标签名不能为空');
-        if (action.kind === 'autopilot' && !autopilot.trim()) return refuse('设置里没有填托管标签，没有修改');
+        if (!human.trim() || !agent.trim()) return refuse(t('设置里「交给 agent」的两个标签名不能为空'));
+        if (action.kind === 'autopilot' && !autopilot.trim()) return refuse(t('设置里没有填托管标签，没有修改'));
         // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
         // not go out (or whose answer never came) leaves every label alone: never handed over without it
         const comment = typeof action.comment === 'string' ? action.comment : '';
@@ -3651,8 +3719,8 @@ export class Controller {
     // record no longer offers it), never while a reply made from it may still be on its way or unproven
     const draftOf = (action.kind === 'autopilot' || action.kind === 'handBack') && draft.comment !== undefined && typeof action.draftOf === 'string' ? this.ops.get(action.draftOf) : undefined;
     if (draftOf && draftOf.key === item.key) {
-      if (draftOf.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有发送');
-      if (opPhase(draftOf) === 'waiting' || opPhase(draftOf) === 'unknown') return refuse(`上一次操作还没结清，附带评论先不发：${opText(draftOf)}`);
+      if (draftOf.replyState) return refuse(t('这条附带评论已经用来发过回复（结果还没确定），没有发送'));
+      if (opPhase(draftOf) === 'waiting' || opPhase(draftOf) === 'unknown') return refuse(t('上一次操作还没结清，附带评论先不发：{why}', { why: opText(draftOf) }));
     }
     const id = `op-${++this.opSeq}`;
     const rec: OpRecord = {
@@ -3708,18 +3776,18 @@ export class Controller {
 
   /** GitHub#434: the dialog's read. */
   async blockedRead(key: string): Promise<BlockedView> {
-    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: '还没有登录' };
+    if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: t('还没有登录') };
     const item = this.findItem(key);
-    if (!item) return { ok: false, error: '看板上找不到这一条（可能刚被同步掉了），请刷新后再试' };
+    if (!item) return { ok: false, error: t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试') };
     const bl = this.state.blockedLabels;
-    if (!bl.blocked) return { ok: false, error: '设置里没有填等前置的标签' };
+    if (!bl.blocked) return { ok: false, error: t('设置里没有填等前置的标签') };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
     let read: BlockedRead;
     try {
       read = await readBlocked(c.client, item.repo, item.number, bl.blocked);
     } catch (e) {
-      return { ok: false, error: `没能完整读到这一条现在的状态，不能登记（${(e as Error)?.message ?? String(e)}）` };
+      return { ok: false, error: t('没能完整读到这一条现在的状态，不能登记（{why}）', { why: (e as Error)?.message ?? String(e) }) };
     }
     return this.blockedViewOf(c.client, item, read);
   }
@@ -3735,15 +3803,15 @@ export class Controller {
     const lost = (await Promise.all(lostRefs(read).map((r) => this.blockedRefInfo(client, r)))).filter((x) => x.state === 'open' || x.state === 'unknown');
     const entry = entryState(read.labels, names, bl);
     let refuse: string | null = null;
-    if (read.state !== 'open') refuse = '这一条已经关闭';
-    else if (entry.kind === 'other') refuse = `挂着「${entry.label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「${names.human}」后再登记`;
+    if (read.state !== 'open') refuse = t('这一条已经关闭');
+    else if (entry.kind === 'other') refuse = t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: entry.label, human: names.human });
     else {
       const opts = await this.repoOptions(item.repo);
-      if (opts.error) refuse = `读不到这个仓库的标签（${opts.error}），不能确认「${bl.blocked}」「${names.human}」两个标签都在`;
+      if (opts.error) refuse = t('读不到这个仓库的标签（{why}），不能确认「{blocked}」「{human}」两个标签都在', { why: opts.error, blocked: bl.blocked, human: names.human });
       else {
         const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
         const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
-        if (missing.length) refuse = `这个仓库没有标签 ${missing.map((m) => `「${m}」`).join('、')}（客户端不会替仓库新建标签）`;
+        if (missing.length) refuse = t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((m) => t('「{name}」', { name: m })).join(t('、')) });
       }
     }
     return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
@@ -3758,13 +3826,13 @@ export class Controller {
    */
   async blockedSearch(key: string, text: string): Promise<{ ok: true; items: (BlockedRefInfo & BlockedPick)[]; error?: string; settled?: NumberSettled } | { ok: false; error: string }> {
     const item = this.findItem(key);
-    if (!item) return { ok: false, error: '看板上找不到这一条' };
+    if (!item) return { ok: false, error: t('看板上找不到这一条') };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
     const q = text.trim();
     const parsed = parseRefQuery(q, this.deps.endpoints.web);
     const self = { repo: item.repo.toLowerCase(), number: item.number };
-    const fail = (e: unknown) => `搜索失败：${(e as Error)?.message ?? String(e)}`;
+    const fail = (e: unknown) => t('搜索失败：{why}', { why: (e as Error)?.message ?? String(e) });
     const one = async (repo: string, n: number): Promise<Candidate | null> => {
       try {
         return await readCandidate(c.client, repo, n);
@@ -3788,8 +3856,8 @@ export class Controller {
       const settled: NumberSettled = settledOf(layers);
       const errs: string[] = [];
       if (exact.status === 'rejected') errs.push(fail(exact.reason));
-      if (list.status === 'rejected') errs.push(`搜索失败：开着的条目没读全（${(list.reason as Error)?.message ?? String(list.reason)}）`);
-      return errs.length ? { ok: true, items, error: errs.join('；'), settled } : { ok: true, items, settled };
+      if (list.status === 'rejected') errs.push(t('搜索失败：开着的条目没读全（{why}）', { why: (list.reason as Error)?.message ?? String(list.reason) }));
+      return errs.length ? { ok: true, items, error: joinSemi(errs), settled } : { ok: true, items, settled };
     }
     try {
       let found: Candidate[];
@@ -3820,15 +3888,15 @@ export class Controller {
   /** GitHub#434: confirm in the dialog. Refused (nothing written) when GitHub no longer holds what was shown. */
   async blockedStart(req: BlockedStart): Promise<BlockedStartResult> {
     const refuse = (error: string): BlockedStartResult => ({ ok: false, error });
-    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
-    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse(t('还没有登录'));
+    if (!writesEnabled(this.state.sync)) return refuse(t('离线时不能修改：GitHub 上什么都没改'));
     const item = this.findItem(String(req?.key ?? ''));
-    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
+    if (!item) return refuse(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
     const blockedOp = this.opBlocked(item.key);
     if (blockedOp) return refuse(blockedOp);
     const bl = this.state.blockedLabels;
     const names = this.blockedNames();
-    if (!bl.blocked || !names.human.trim()) return refuse('设置里等前置的标签或「等人处理」的标签是空的，没有修改');
+    if (!bl.blocked || !names.human.trim()) return refuse(t('设置里等前置的标签或「等人处理」的标签是空的，没有修改'));
     const picks = Array.isArray(req.picks) ? req.picks : [];
     const restore = Array.isArray(req.restore) ? req.restore : [];
     const c = await this.clientForCall(true);
@@ -3838,11 +3906,11 @@ export class Controller {
     try {
       read = await readBlocked(c.client, item.repo, item.number, bl.blocked);
     } catch (e) {
-      return refuse(`没能完整读到这一条现在的状态，什么都没写（${(e as Error)?.message ?? String(e)}）`);
+      return refuse(t('没能完整读到这一条现在的状态，什么都没写（{why}）', { why: (e as Error)?.message ?? String(e) }));
     }
     const view = await this.blockedViewOf(c.client, item, read);
     if (!view.ok) return refuse(view.error);
-    if (view.fingerprint !== req.fingerprint) return { ok: false, error: '点「登记前置」后重新读到：这期间这一条有了变化。什么都没写，下面已按最新内容刷新，核对后再点一次', view };
+    if (view.fingerprint !== req.fingerprint) return { ok: false, error: t('点「登记前置」后重新读到：这期间这一条有了变化。什么都没写，下面已按最新内容刷新，核对后再点一次'), view };
     if (view.refuse) return { ok: false, error: view.refuse, view };
     // every prerequisite picked is read again: open, the kind and id it was picked with
     const fresh: BlockedPick[] = [];
@@ -3851,16 +3919,16 @@ export class Controller {
       try {
         cand = await readCandidate(c.client, p.repo, p.number);
       } catch (e) {
-        return refuse(`读不到前置 ${p.repo}#${p.number}（${(e as Error)?.message ?? String(e)}），什么都没写`);
+        return refuse(t('读不到前置 {item}（{why}），什么都没写', { item: `${p.repo}#${p.number}`, why: (e as Error)?.message ?? String(e) }));
       }
-      if (cand.state !== 'open') return { ok: false, error: `前置 ${p.repo}#${p.number} 已经关闭或合并，什么都没写`, view };
-      if (cand.repo === item.repo.toLowerCase() && cand.number === item.number) return refuse('不能把这一条自己设成前置');
+      if (cand.state !== 'open') return { ok: false, error: t('前置 {item} 已经关闭或合并，什么都没写', { item: `${p.repo}#${p.number}` }), view };
+      if (cand.repo === item.repo.toLowerCase() && cand.number === item.number) return refuse(t('不能把这一条自己设成前置'));
       fresh.push({ repo: cand.repo, number: cand.number, kind: cand.kind, id: cand.id, title: cand.title });
     }
     const plan = planBlocked({ itemIsPr: read.isPr, selfRepo: item.repo, entry: view.entry, latest: latestRefs(read), native: read.native, picks: fresh, restore });
     // the dialog asks the same rule (confirmBlock): a registration stopped half way may be finished with nothing new picked
     const why = confirmBlock({ picks: fresh.length, restore: restore.length, current: view.current.length, plan });
-    if (why) return { ok: false, error: `${why}，GitHub 上什么都没改`, view };
+    if (why) return { ok: false, error: t('{why}，GitHub 上什么都没改', { why }), view };
     const step = (name: OpStep['name'], b: OpStep['blocked'], extra: Partial<OpStep> = {}): OpStep => ({ name, state: 'unsent', reason: null, sentAt: null, answeredAt: null, blocked: b, ...extra });
     const steps: OpStep[] = plan.steps.map((s) => {
       switch (s.name) {
@@ -3948,7 +4016,7 @@ export class Controller {
   private async runBlocked(id: string, item: Item, c: { client: GitHubClient; session: number }): Promise<void> {
     const session = this.session;
     if (!(await this.storeOps())) {
-      this.blockedPatch(id, (r) => ({ ...r, steps: r.steps.map((s, j) => (j === 0 ? { ...s, reason: '没能存到本机，没有发送' } : s)) }));
+      this.blockedPatch(id, (r) => ({ ...r, steps: r.steps.map((s, j) => (j === 0 ? { ...s, reason: t('没能存到本机，没有发送') } : s)) }));
       return;
     }
     const names = this.blockedNames();
@@ -3965,7 +4033,7 @@ export class Controller {
       try {
         read = await readBlocked(c.client, r.repo, r.number, b.labels.blocked);
       } catch (e) {
-        await this.blockedStop(id, c, `没能完整读到这一条现在的状态（${(e as Error)?.message ?? String(e)}）`, null);
+        await this.blockedStop(id, c, t('没能完整读到这一条现在的状态（{why}）', { why: (e as Error)?.message ?? String(e) }), null);
         break;
       }
       lastRead = read;
@@ -3980,10 +4048,10 @@ export class Controller {
         // the registration just posted is the newest of this wait, and nothing else new (the permit above)
         const last = read.marks[read.marks.length - 1];
         if (!last || last.id !== b.commentId) {
-          await this.blockedStop(id, c, '本轮最新的登记不是刚发的这一条', read);
+          await this.blockedStop(id, c, t('本轮最新的登记不是刚发的这一条'), read);
           break;
         }
-        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'ok' as const, reason: '本轮最新登记就是这一条', answeredAt: this.stamp() } : y)) }));
+        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'ok' as const, reason: t('本轮最新登记就是这一条'), answeredAt: this.stamp() } : y)) }));
         await this.storeOps();
         continue;
       }
@@ -3997,13 +4065,13 @@ export class Controller {
           cand = null;
         }
         if (!pick || !cand || cand.state !== 'open') {
-          await this.blockedStop(id, c, `前置 ${s.target ?? ''} ${cand ? '已经关闭或合并' : '读不到'}`, read);
+          await this.blockedStop(id, c, cand ? t('前置 {item} 已经关闭或合并', { item: s.target ?? '' }) : t('前置 {item} 读不到', { item: s.target ?? '' }), read);
           break;
         }
       }
       this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'pending' as const, reason: null, sentAt: this.stamp() } : y)) }));
       if (!(await this.storeOps())) {
-        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null } : y)) }));
+        this.blockedPatch(id, (x) => ({ ...x, steps: x.steps.map((y, j) => (j === i ? { ...y, state: 'unsent' as const, reason: t('没能存到本机，没有发送'), sentAt: null } : y)) }));
         break;
       }
       let state: 'ok' | 'refused' | 'unknown';
@@ -4018,7 +4086,7 @@ export class Controller {
       } catch (e) {
         if (s.name === 'removeLabel' && e instanceof GitHubError && e.status === 404) {
           state = 'ok';
-          reason = '这个标签本来就不在';
+          reason = t('这个标签本来就不在');
         } else if (refusedForSure(e)) {
           state = 'refused';
           reason = explainError(e, s.name === 'comment' ? 'comment' : 'addLabel');
@@ -4050,11 +4118,11 @@ export class Controller {
       await this.storeOps();
       if (state !== 'ok') {
         const after = this.ops.get(id);
-        if (after) this.blockedPatch(id, (x) => ({ ...x, blocked: { ...x.blocked!, stop: { text: state === 'refused' ? 'GitHub 拒绝了这一步' : '这一步的结果不明', paused: this.blockedPaused(x, lastRead) } } }));
+        if (after) this.blockedPatch(id, (x) => ({ ...x, blocked: { ...x.blocked!, stop: { text: state === 'refused' ? t('GitHub 拒绝了这一步') : t('这一步的结果不明'), paused: this.blockedPaused(x, lastRead) } } }));
         break;
       }
       if (s.name === 'comment' && commentId === null) {
-        await this.blockedStop(id, c, '登记评论发出后找不到它', null);
+        await this.blockedStop(id, c, t('登记评论发出后找不到它'), null);
         break;
       }
     }
@@ -4092,7 +4160,7 @@ export class Controller {
         this.blockedPatch(id, (x) => ({ ...x, steps: [...x.steps, repause] }));
         await this.storeOps();
         let state: 'ok' | 'refused' | 'unknown' = 'ok';
-        let reason: string | null = '交错登记后补挂';
+        let reason: string | null = t('交错登记后补挂');
         try {
           await addLabel(c.client, r.repo, r.number, b.labels.human);
         } catch (e) {
@@ -4114,8 +4182,11 @@ export class Controller {
             // not read back: not confirmed
           }
         }
-        why = `${text}（另一份登记和本次交错：${state === 'ok' ? `已补挂「${b.labels.human}」` : `补挂「${b.labels.human}」没有成功：${reason}`}）`;
-      } else why = `${text}（没有补挂「${b.labels.human}」：${may.why}）`;
+        why =
+          state === 'ok'
+            ? t('{text}（另一份登记和本次交错：已补挂「{label}」）', { text, label: b.labels.human })
+            : t('{text}（另一份登记和本次交错：补挂「{label}」没有成功：{why}）', { text, label: b.labels.human, why: reason ?? '' });
+      } else why = t('{text}（没有补挂「{label}」：{why}）', { text, label: b.labels.human, why: may.why });
     }
     this.blockedPatch(id, (x) => ({ ...x, blocked: { ...x.blocked!, stop: { text: why, paused } } }));
     await this.storeOps();
@@ -4135,13 +4206,13 @@ export class Controller {
     try {
       if (s.name === 'comment') {
         const cid = await this.blockedFindComment(client, r.repo, r.number, opId);
-        return cid !== null ? { reason: '重读时找到了这条登记评论', commentId: cid } : null;
+        return cid !== null ? { reason: t('重读时找到了这条登记评论'), commentId: cid } : null;
       }
       const read = await readBlocked(client, r.repo, r.number, r.blocked!.labels.blocked);
       const has = (l: string) => read.labels.some((x) => x.toLowerCase() === l.toLowerCase());
-      if (s.name === 'addLabel' && has(s.label ?? '')) return { reason: '重读时这个标签已在' };
-      if (s.name === 'removeLabel' && !has(s.label ?? '')) return { reason: '重读时这个标签已不在' };
-      if (s.name === 'relation' && read.native.some((x) => refKey(x) === s.target)) return { reason: '重读时这条「Blocked by」已在' };
+      if (s.name === 'addLabel' && has(s.label ?? '')) return { reason: t('重读时这个标签已在') };
+      if (s.name === 'removeLabel' && !has(s.label ?? '')) return { reason: t('重读时这个标签已不在') };
+      if (s.name === 'relation' && read.native.some((x) => refKey(x) === s.target)) return { reason: t('重读时这条「Blocked by」已在') };
     } catch {
       // not read: stays unknown
     }
@@ -4151,11 +4222,11 @@ export class Controller {
   /** Why nothing conflicting may be sent for this item now; null = it may. */
   private opBlocked(key: string): string | null {
     const lock = opLockOf([...this.ops.values()], key);
-    if (lock) return `上一次操作还没结清，没有发送：${opText(lock)}`;
+    if (lock) return t('上一次操作还没结清，没有发送：{why}', { why: opText(lock) });
     // GitHub#359: a record that is going on by itself right now (reading before its next step) is not finished
     // or started over from elsewhere in between
-    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id) && opNextAuto(r) >= 0)) return '上一次操作还在自动处理剩下的步骤，没有发送';
-    if (this.opPreparing.has(key)) return '正在准备补做上一次操作剩下的步骤，没有发送';
+    if ([...this.ops.values()].some((r) => r.key === key && this.opJobs.has(r.id) && opNextAuto(r) >= 0)) return t('上一次操作还在自动处理剩下的步骤，没有发送');
+    if (this.opPreparing.has(key)) return t('正在准备补做上一次操作剩下的步骤，没有发送');
     return null;
   }
 
@@ -4191,7 +4262,7 @@ export class Controller {
       void this.storeOps();
     };
     // stored before anything goes out: not stored = not sent
-    if (!(await this.storeOps())) return fail('没能存到本机，没有发送');
+    if (!(await this.storeOps())) return fail(t('没能存到本机，没有发送'));
     const c = given ?? (await this.clientForCall(true));
     if ('error' in c) return fail(c.error);
     if (c.session !== session || session !== this.session) return;
@@ -4296,10 +4367,10 @@ export class Controller {
                     text:
                       no.why === 'unread'
                         ? rightAfter
-                          ? '评论发出后没能完整读到这一条现在的状态，没敢接着改标签'
-                          : '改标签途中没能完整读到这一条现在的状态，没敢接着改'
+                          ? t('评论发出后没能完整读到这一条现在的状态，没敢接着改标签')
+                          : t('改标签途中没能完整读到这一条现在的状态，没敢接着改')
                         : rightAfter
-                          ? `评论发出期间${no.text.replace(/^这期间/, '')}`
+                          ? t('评论发出期间{what}', { what: no.text.startsWith(t('这期间')) ? no.text.slice(t('这期间').length) : no.text })
                           : no.text,
                     redo: no.redo === true,
                   },
@@ -4330,7 +4401,7 @@ export class Controller {
         const now = this.ops.get(id);
         if (now && session === this.session) {
           // not stored = not sent: a step sent again goes back to "not sure" (its first request stands)
-          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? (again ? { ...s, state: 'unknown' as const, reason: '没能存到本机，没有重发' } : { ...s, state: 'unsent' as const, reason: '没能存到本机，没有发送', sentAt: null }) : s)) });
+          this.setOp({ ...now, steps: now.steps.map((s, j) => (j === i ? (again ? { ...s, state: 'unknown' as const, reason: t('没能存到本机，没有重发') } : { ...s, state: 'unsent' as const, reason: t('没能存到本机，没有发送'), sentAt: null }) : s)) });
           this.opsChanged();
         }
         break;
@@ -4345,7 +4416,7 @@ export class Controller {
         if (r.steps[i].name === 'removeLabel' && e instanceof GitHubError && e.status === 404) {
           // the label is not on it (any more): that is the state wanted
           state = 'ok';
-          reason = '这个标签本来就不在';
+          reason = t('这个标签本来就不在');
         } else if (refusedForSure(e)) {
           state = 'refused';
           reason = explainError(e, this.stepKind(r, i));
@@ -4521,8 +4592,8 @@ export class Controller {
    */
   async opRecheck(id: string): Promise<WriteResult> {
     const r = this.ops.get(id);
-    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: '这次操作没有需要查证的步骤', warning: null };
-    if (r.checking || this.opJobs.has(id)) return { ok: false, error: '正在查证，稍等', warning: null };
+    if (!r || opPhase(r) !== 'unknown') return { ok: false, error: t('这次操作没有需要查证的步骤'), warning: null };
+    if (r.checking || this.opJobs.has(id)) return { ok: false, error: t('正在查证，稍等'), warning: null };
     const c = await this.clientForCall(false);
     if ('error' in c) {
       this.patchOp(id, { checkProblem: c.error });
@@ -4533,7 +4604,7 @@ export class Controller {
     this.launchJob(id, run);
     await this.opJobs.get(id);
     const after = this.ops.get(id);
-    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? '还是查不到这一步的结果', warning: null } : { ok: true, error: null, warning: null };
+    return after && opPhase(after) === 'unknown' ? { ok: false, error: after.checkProblem ?? t('还是查不到这一步的结果'), warning: null } : { ok: true, error: null, warning: null };
   }
 
   /**
@@ -4544,31 +4615,31 @@ export class Controller {
   async opResend(id: string): Promise<WriteResult> {
     const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
     const r = this.ops.get(id);
-    if (!r) return refuse('这次操作已经不在了');
+    if (!r) return refuse(t('这次操作已经不在了'));
     const i = opResendStep(r);
-    if (i < 0 || this.opJobs.has(id)) return refuse('这一步现在不能重发');
-    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
-    if (this.opPreparing.has(r.key)) return refuse('这一条正在准备别的操作，没有发送');
+    if (i < 0 || this.opJobs.has(id)) return refuse(t('这一步现在不能重发'));
+    if (!writesEnabled(this.state.sync)) return refuse(t('离线时不能修改：GitHub 上什么都没改'));
+    if (this.opPreparing.has(r.key)) return refuse(t('这一条正在准备别的操作，没有发送'));
     const item = this.findItem(r.key);
-    if (!item) return refuse('看板上找不到这一条，请刷新后再试');
+    if (!item) return refuse(t('看板上找不到这一条，请刷新后再试'));
     this.opPreparing.add(r.key);
     try {
       const c = await this.clientForCall(true);
       if ('error' in c) return refuse(c.error);
       const decided = await this.recheckWith(id, c);
-      if (c.session !== this.session) return refuse('账号已切换');
+      if (c.session !== this.session) return refuse(t('账号已切换'));
       const now = this.ops.get(id);
-      if (!now) return refuse('这次操作已经不在了');
+      if (!now) return refuse(t('这次操作已经不在了'));
       if (now.steps[i].state !== 'unknown') {
         // the check found it done after all: nothing is sent again; the person is here, so what is left goes on
         this.setOp({ ...now, auto: now.kind === 'autopilot' || now.kind === 'handBack', autoSince: this.stamp(), halt: null });
         this.opsChanged();
         this.launchJob(id, this.settleOp(id, item, c, { first: false, waits: [], checked: decided }));
-        return { ok: true, error: null, warning: '核对时发现上一次请求已经生效，没有重发' };
+        return { ok: true, error: null, warning: t('核对时发现上一次请求已经生效，没有重发') };
       }
-      if (opResendStep(now) !== i) return refuse(`没有重发：${opText(now)}`);
+      if (opResendStep(now) !== i) return refuse(t('没有重发：{why}', { why: opText(now) }));
       const permit = opPermit(now, i, decided ?? null, { mode: 'resend', now: this.stamp() });
-      if (!permit.ok) return refuse(`没有重发：${permit.text}`);
+      if (!permit.ok) return refuse(t('没有重发：{why}', { why: permit.text }));
       this.launchJob(
         id,
         (async () => {
@@ -4626,7 +4697,7 @@ export class Controller {
         if (rel.problem) problems.push(rel.problem);
       } catch (e) {
         // the follow-up round reads them
-        problems.push(`没读到这个 PR 关联的 issue（${(e as Error)?.message ?? String(e)}），下一轮同步会更新`);
+        problems.push(t('没读到这个 PR 关联的 issue（{why}），下一轮同步会更新', { why: (e as Error)?.message ?? String(e) }));
       }
     }
     for (const [repo, number] of touched) {
@@ -4637,7 +4708,7 @@ export class Controller {
     if (c.session !== this.session) return;
     if (!quiet) this.scheduleFollowUp(c.session);
     const now = this.ops.get(id);
-    if (now && (problems.length || now.readProblem)) this.patchOp(id, { readProblem: problems.length ? problems.join('；') : null });
+    if (now && (problems.length || now.readProblem)) this.patchOp(id, { readProblem: problems.length ? joinSemi(problems) : null });
   }
 
   /**
@@ -4749,7 +4820,7 @@ export class Controller {
     let seen: OpSnapshot | null | undefined;
     const problems: string[] = [];
     const read = await this.refreshOne(c.client, c.session, start.repo, start.number, { quiet });
-    if (read.kind === 'failed' && read.problem) problems.push(`重读这一条失败（${read.problem}）`);
+    if (read.kind === 'failed' && read.problem) problems.push(t('重读这一条失败（{why}）', { why: read.problem }));
     if (c.session !== this.session) return undefined;
     const login = this.state.viewer;
     const mid = this.ops.get(id);
@@ -4759,14 +4830,14 @@ export class Controller {
       try {
         snap = await readItemSnapshot(c.client, mid.repo, mid.number, mid.before?.events ?? null);
       } catch (e) {
-        problems.push(`读评论和标签记录失败（${(e as Error)?.message ?? String(e)}）`);
+        problems.push(t('读评论和标签记录失败（{why}）', { why: (e as Error)?.message ?? String(e) }));
       }
       if (c.session !== this.session) return undefined;
       const view: OpSnapshot | null = snap ? { complete: snap.complete, labelsComplete: snap.labelsComplete, state: snap.state, labels: snap.labels, events: snap.labelEvents } : null;
       let now = this.ops.get(id);
       if (now) {
         if (snap) {
-          if (!login) problems.push('不知道当前账号是谁，查不了评论和标签记录');
+          if (!login) problems.push(t('不知道当前账号是谁，查不了评论和标签记录'));
           else {
             // PR #510 review rounds 1–3: the same rule as a reply's proof — a comment another send owns proves nothing,
             // and a text another request may still land with (on its way / not sure / unlocked with a mark) is not proven
@@ -4782,12 +4853,12 @@ export class Controller {
             }
             const out = opProveFromRecords(now, { ...snap, comments: snap.comments.filter((x) => !owned.has(x.id) && !blind.has(x.body)) }, login);
             now = out.record;
-            problems.push(...out.missing.filter((m) => !m.includes('评论列表里没有') || !blind.size));
+            problems.push(...out.missing.filter((m) => !NOT_LISTED().includes(m) || !blind.size));
           }
           now = opProveFromSnapshot(now, view);
         }
         now = opCheckSteps(now, view);
-        if (snap && !problems.length && now.steps.some((s) => s.state === 'unknown' && s.check === 'unread')) problems.push('没能完整读到这一条的标签记录');
+        if (snap && !problems.length && now.steps.some((s) => s.state === 'unknown' && s.check === 'unread')) problems.push(t('没能完整读到这一条的标签记录'));
         this.setOp(now);
         seen = view;
       }
@@ -4795,7 +4866,7 @@ export class Controller {
     if (c.session !== this.session) return undefined;
     const end = this.ops.get(id);
     if (!end) return undefined;
-    this.setOp({ ...end, checks: (end.checks ?? 0) + 1, checkProblem: problems.length ? problems.join('；') : null });
+    this.setOp({ ...end, checks: (end.checks ?? 0) + 1, checkProblem: problems.length ? joinSemi(problems) : null });
     this.opsChanged();
     await this.storeOps();
     return seen;
@@ -4804,9 +4875,9 @@ export class Controller {
   /** "补做剩下的步骤": the item is read first; only the label steps still missing on GitHub go out, as a new record. */
   async opFinish(id: string): Promise<{ ok: boolean; error: string | null; id?: string }> {
     const r = this.ops.get(id);
-    if (!r) return { ok: false, error: '这次操作已经不在了' };
-    if (r.finishing) return { ok: false, error: '正在补做，稍等' };
-    if (!finishSteps(r).length) return { ok: false, error: '没有需要补做的步骤' };
+    if (!r) return { ok: false, error: t('这次操作已经不在了') };
+    if (r.finishing) return { ok: false, error: t('正在补做，稍等') };
+    if (!finishSteps(r).length) return { ok: false, error: t('没有需要补做的步骤') };
     // GitHub#357: running from before the first wait, the failure of the attempt before gone; every
     // way out below either says why this one did nothing (red) or hands over to the new record
     const session = this.session;
@@ -4816,23 +4887,23 @@ export class Controller {
     };
     this.setOp({ ...r, finishing: true, finishProblem: null });
     this.opsChanged();
-    if (!writesEnabled(this.state.sync)) return fail('离线时不能修改：GitHub 上什么都没改');
+    if (!writesEnabled(this.state.sync)) return fail(t('离线时不能修改：GitHub 上什么都没改'));
     const blocked = this.opBlocked(r.key);
     if (blocked) return fail(blocked);
     this.opPreparing.add(r.key);
     try {
       const c = await this.clientForCall(true);
-      if (session !== this.session) return { ok: false, error: '账号已切换' };
+      if (session !== this.session) return { ok: false, error: t('账号已切换') };
       if ('error' in c) return fail(c.error);
       const read = await this.refreshOne(c.client, c.session, r.repo, r.number);
-      if (c.session !== this.session) return { ok: false, error: '账号已切换' };
+      if (c.session !== this.session) return { ok: false, error: t('账号已切换') };
       const seen = read.kind === 'done' ? this.itemEvidence(r.key, read.issuedAt, read.own) : null;
-      if (!seen) return fail(`重读这一条失败，什么都没发${read.problem ? `（${read.problem}）` : ''}`);
+      if (!seen) return fail(read.problem ? t('重读这一条失败，什么都没发（{why}）', { why: read.problem }) : t('重读这一条失败，什么都没发'));
       const now = this.ops.get(id);
-      if (!now) return { ok: false, error: '这次操作已经不在了' };
+      if (!now) return { ok: false, error: t('这次操作已经不在了') };
       const steps = finishSteps(now, seen.labels);
       const item = this.findItem(r.key);
-      if (!item) return fail('看板上找不到这一条，请刷新后再试');
+      if (!item) return fail(t('看板上找不到这一条，请刷新后再试'));
       this.opPreparing.delete(r.key);
       const lock = this.opBlocked(r.key);
       if (lock) return fail(lock);
@@ -5003,22 +5074,22 @@ export class Controller {
     const { draftOf: _drop, ...plain } = action;
     if (!rec) return this.actNow(plain);
     const refuse = (error: string): WriteResult => ({ ok: false, error, warning: null });
-    if (rec.replyState) return refuse('这条附带评论已经用来发过回复（结果还没确定），没有再发');
+    if (rec.replyState) return refuse(t('这条附带评论已经用来发过回复（结果还没确定），没有再发'));
     // PR #510 review round 1: the same text sent from the reply box is still without a result
-    if (this.sendCommentPending(rec.key, action.body)) return refuse('同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发');
-    if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(`这次操作还没结清，附带评论先不发：${opText(rec)}`);
-    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
-    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (this.sendCommentPending(rec.key, action.body)) return refuse(t('同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发'));
+    if (opPhase(rec) === 'waiting' || opPhase(rec) === 'unknown') return refuse(t('这次操作还没结清，附带评论先不发：{why}', { why: opText(rec) }));
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse(t('还没有登录'));
+    if (!writesEnabled(this.state.sync)) return refuse(t('离线时不能修改：GitHub 上什么都没改'));
     const item = this.findItem(plain.key);
-    if (!item || item.key !== rec.key) return refuse('看板上找不到这一条，回复没有发送');
-    if (!plain.body.trim()) return refuse('评论是空的，没有发送');
+    if (!item || item.key !== rec.key) return refuse(t('看板上找不到这一条，回复没有发送'));
+    if (!plain.body.trim()) return refuse(t('评论是空的，没有发送'));
     // code review round 3: everything below belongs to the session it started in. One client, bound
     // to that session (the back end refuses a request signed for a session that ended), is used for
     // every read and the write; after every wait the session and the record are checked again, and a
     // save that did not go through stops it. A sign-out / another account in between = nothing sent.
     const session = this.session;
     const mine = () => session === this.session && this.ops.get(id) !== undefined;
-    const ended = () => refuse('账号已切换或这次操作已不在，回复没有发送');
+    const ended = () => refuse(t('账号已切换或这次操作已不在，回复没有发送'));
     this.setOp({ ...rec, replyState: 'sending', reply: { body: plain.body, before: null } });
     this.opsChanged();
     const undo = (error: string): WriteResult => {
@@ -5031,7 +5102,7 @@ export class Controller {
       return refuse(error);
     };
     // 1. "sending" on disk before anything goes out
-    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();
+    if (!(await this.storeOps())) return mine() ? undo(t('没能存到本机，回复没有发送')) : ended();
     if (!mine()) return ended();
     // 2. the credential of this session (refreshed if due) — never of a later one
     const c = await this.clientForCall(true);
@@ -5047,7 +5118,7 @@ export class Controller {
     if (!mine()) return ended();
     // 4. that list on disk too (not stored = not sent: the record must say what proves it)
     this.setOp({ ...this.ops.get(id)!, reply: { body: plain.body, before } });
-    if (!(await this.storeOps())) return mine() ? undo('没能存到本机，回复没有发送') : ended();
+    if (!(await this.storeOps())) return mine() ? undo(t('没能存到本机，回复没有发送')) : ended();
     if (!mine()) return ended();
     // 5. the write, with the same client
     let outcome: 'ok' | 'refused' | 'unknown';
@@ -5057,14 +5128,14 @@ export class Controller {
       outcome = 'ok';
     } catch (e) {
       outcome = refusedForSure(e) ? 'refused' : 'unknown';
-      error = outcome === 'refused' ? explainError(e, 'comment') : `不确定有没有发出：${unknownReason(e)}`;
+      error = outcome === 'refused' ? explainError(e, 'comment') : t('不确定有没有发出：{why}', { why: unknownReason(e) });
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
     }
-    if (!mine()) return outcome === 'ok' ? { ok: true, error: null, warning: '账号已切换，这条回复的结果没有记下' } : refuse(error ?? '账号已切换');
+    if (!mine()) return outcome === 'ok' ? { ok: true, error: null, warning: t('账号已切换，这条回复的结果没有记下') } : refuse(error ?? t('账号已切换'));
     if (outcome === 'ok') this.patchOp(id, { replyState: null, reply: null, commentUsed: true });
     else if (outcome === 'refused') this.patchOp(id, { replyState: null, reply: null });
     else this.patchOp(id, { replyState: 'unknown' });
-    if (outcome !== 'ok') return refuse(error ?? '没有发出');
+    if (outcome !== 'ok') return refuse(error ?? t('没有发出'));
     // the item read again with the same client, like any change
     const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
     if (c.session === this.session) this.scheduleFollowUp(c.session);
@@ -5080,7 +5151,7 @@ export class Controller {
     await Promise.race([this.opJobs.get(id), new Promise<void>((resolve) => this.opFirst.set(id, resolve))]);
     this.opFirst.delete(id);
     const r = this.ops.get(s.id);
-    if (!r) return { ok: false, error: '这次操作已经不在了', warning: null };
+    if (!r) return { ok: false, error: t('这次操作已经不在了'), warning: null };
     const m = r.steps[0];
     if (m.state !== 'ok') return { ok: false, error: opText(r), warning: null };
     return { ok: true, error: null, warning: r.steps.every((x) => x.state === 'ok') && !r.readProblem ? null : opText(r) };
@@ -5176,18 +5247,18 @@ export class Controller {
    */
   startSend(action: SendAction): { ok: boolean; error: string | null; id?: string } {
     const refuse = (error: string) => ({ ok: false, error });
-    if (!action || typeof action !== 'object' || !['comment', 'editEntry', 'editTitle', 'toggleTask'].includes(action.kind)) return refuse('不认识的修改');
-    if ((action as { draftOf?: unknown }).draftOf !== undefined) return refuse('带操作草稿的回复不走这里');
-    if (!this.signedIn || this.state.phase !== 'ready') return refuse('还没有登录');
-    if (!writesEnabled(this.state.sync)) return refuse('离线时不能修改：GitHub 上什么都没改');
+    if (!action || typeof action !== 'object' || !['comment', 'editEntry', 'editTitle', 'toggleTask'].includes(action.kind)) return refuse(t('不认识的修改'));
+    if ((action as { draftOf?: unknown }).draftOf !== undefined) return refuse(t('带操作草稿的回复不走这里'));
+    if (!this.signedIn || this.state.phase !== 'ready') return refuse(t('还没有登录'));
+    if (!writesEnabled(this.state.sync)) return refuse(t('离线时不能修改：GitHub 上什么都没改'));
     const item = this.findItem(action.key);
-    if (!item) return refuse('看板上找不到这一条（可能刚被同步掉了），请刷新后再试');
-    if (action.kind === 'comment' && !action.body.trim()) return refuse('评论是空的，没有发送');
+    if (!item) return refuse(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
+    if (action.kind === 'comment' && !action.body.trim()) return refuse(t('评论是空的，没有发送'));
     const slot = sendSlot(action);
     if (this.tasksInFlight.has(slot) || this.sendHolding(slot))
-      return refuse(action.kind === 'comment' ? '同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发' : '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改');
+      return refuse(action.kind === 'comment' ? t('同样的一段评论刚发过，还没有结果（或还不确定有没有发出），等它有了结果再发') : t('这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再改'));
     // PR #510 review round 1: the same text as an operation's reply / attached comment that is on its way or not sure
-    if (action.kind === 'comment' && this.opCommentPending(item.key, action.body)) return refuse('同样的一段评论正由关闭 / 交给 agent 等操作发出，还没有结果，等它有了结果再发');
+    if (action.kind === 'comment' && this.opCommentPending(item.key, action.body)) return refuse(t('同样的一段评论正由关闭 / 交给 agent 等操作发出，还没有结果，等它有了结果再发'));
     const id = `send-${++this.sendSeq}`;
     const rec: SendRecord = {
       id,
@@ -5256,13 +5327,13 @@ export class Controller {
       if (mine()) this.patchSend(id, { state: 'refused', reason, answeredAt: this.stamp() });
     };
     // 1. "sending" on disk before anything goes out (a restart then finds it, and knows it was not sent)
-    if (!(await this.storeSends())) return notSent('没能存到本机，没有发出');
+    if (!(await this.storeSends())) return notSent(t('没能存到本机，没有发出'));
     if (!mine()) return;
     const c = await this.clientForCall(true);
     if ('error' in c) return notSent(c.error);
     if (c.session !== session || !mine()) return;
     const item = this.findItem(start.key);
-    if (!item) return notSent('看板上找不到这一条（可能刚被同步掉了），没有发出');
+    if (!item) return notSent(t('看板上找不到这一条（可能刚被同步掉了），没有发出'));
     // 2. every check before the write (each read that fails: nothing was sent)
     let prepared: Awaited<ReturnType<typeof prepareSend>>;
     try {
@@ -5273,14 +5344,14 @@ export class Controller {
     }
     if (!mine()) return;
     if (!prepared.write) {
-      this.patchSend(id, { state: 'ok', reason: 'GitHub 上已经是这样，没有再发', answeredAt: this.stamp(), proof: prepared.proof, dismissed: sendQuiet(start.action) });
+      this.patchSend(id, { state: 'ok', reason: t('GitHub 上已经是这样，没有再发'), answeredAt: this.stamp(), proof: prepared.proof, dismissed: sendQuiet(start.action) });
       return;
     }
     // 3. what proves it, and the moment it goes out, on disk too (not stored = not sent)
     this.patchSend(id, { proof: prepared.proof, sentAt: this.stamp() });
     if (!(await this.storeSends())) {
       if (mine()) this.patchSend(id, { sentAt: null });
-      return notSent('没能存到本机，没有发出');
+      return notSent(t('没能存到本机，没有发出'));
     }
     if (!mine()) return;
     // 4. the write
@@ -5309,7 +5380,7 @@ export class Controller {
     // the item read again, like any change
     const read = await this.refreshOne(c.client, c.session, item.repo, item.number);
     if (c.session === this.session) this.scheduleFollowUp(c.session);
-    if (read.problem && mine()) this.patchSend(id, { warning: [warning, read.problem].filter(Boolean).join('；') });
+    if (read.problem && mine()) this.patchSend(id, { warning: joinSemi([warning, read.problem].filter((x): x is string => Boolean(x))) });
   }
 
   /** Read what proves an unknown send (reads only, nothing is sent). */
@@ -5331,7 +5402,7 @@ export class Controller {
       this.sends.set(id, out.record);
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
-      problem = `读不到 GitHub 上现在的内容（${(e as Error)?.message ?? String(e)}）`;
+      problem = t('读不到 GitHub 上现在的内容（{why}）', { why: (e as Error)?.message ?? String(e) });
     }
     if (c.session !== this.session) return;
     const end = this.sends.get(id);
@@ -5347,31 +5418,31 @@ export class Controller {
   /** 「再查一次」: check an unknown send now (reads only). */
   async sendRecheck(id: string): Promise<WriteResult> {
     const r = this.sends.get(id);
-    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
+    if (!r) return { ok: false, error: t('这条记录已经不在了'), warning: null };
     if (r.state !== 'unknown') return { ok: true, error: null, warning: null };
-    if (r.unlocked) return { ok: false, error: '已由人核对后解除锁定，不再自动核对', warning: null };
-    if (this.sendJobs.has(id) || r.checking) return { ok: false, error: '正在查证，稍等', warning: null };
+    if (r.unlocked) return { ok: false, error: t('已由人核对后解除锁定，不再自动核对'), warning: null };
+    if (this.sendJobs.has(id) || r.checking) return { ok: false, error: t('正在查证，稍等'), warning: null };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error, warning: null };
     await this.launchSend(id, this.checkSend(id, c));
     const end = this.sends.get(id);
-    return end?.state === 'ok' ? { ok: true, error: null, warning: null } : { ok: false, error: end?.checkProblem ?? '还没查到（原来那次请求仍可能稍后生效）', warning: null };
+    return end?.state === 'ok' ? { ok: true, error: null, warning: null } : { ok: false, error: end?.checkProblem ?? t('还没查到（原来那次请求仍可能稍后生效）'), warning: null };
   }
 
   /** 「再发一次」: a send refused for sure whose text no panel took back goes out again (all its checks again). */
   async sendResend(id: string): Promise<WriteResult> {
     const r = this.sends.get(id);
-    if (!r) return { ok: false, error: '这条记录已经不在了', warning: null };
-    if (r.state !== 'refused' || r.returned || r.dropped) return { ok: false, error: '这一条不能再发（原文已放回编辑框，或结果还不确定）', warning: null };
-    if (this.sendJobs.has(id)) return { ok: false, error: '正在发送，稍等', warning: null };
+    if (!r) return { ok: false, error: t('这条记录已经不在了'), warning: null };
+    if (r.state !== 'refused' || r.returned || r.dropped) return { ok: false, error: t('这一条不能再发（原文已放回编辑框，或结果还不确定）'), warning: null };
+    if (this.sendJobs.has(id)) return { ok: false, error: t('正在发送，稍等'), warning: null };
     const slot = sendSlot(r.action);
     if (this.tasksInFlight.has(slot) || [...this.sends.values()].some((x) => x.id !== id && sendHolds(x) && sendSlot(x.action) === slot) || (r.action.kind === 'comment' && this.opCommentPending(r.key, r.action.body)))
-      return { ok: false, error: '这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再试', warning: null };
-    if (!writesEnabled(this.state.sync)) return { ok: false, error: '离线时不能修改：GitHub 上什么都没改', warning: null };
+      return { ok: false, error: t('这一条上一次修改还没完成（或还不确定有没有生效），等它有了结果再试'), warning: null };
+    if (!writesEnabled(this.state.sync)) return { ok: false, error: t('离线时不能修改：GitHub 上什么都没改'), warning: null };
     this.patchSend(id, { state: 'sending', reason: null, sentAt: null, answeredAt: null, warning: null, proof: null, dismissed: false, checks: 0, checkProblem: null });
     await this.launchSend(id, this.runSend(id));
     const end = this.sends.get(id);
-    return end?.state === 'ok' ? { ok: true, error: null, warning: end.warning } : { ok: false, error: end?.reason ?? '没有发出', warning: null };
+    return end?.state === 'ok' ? { ok: true, error: null, warning: end.warning } : { ok: false, error: end?.reason ?? t('没有发出'), warning: null };
   }
 
   /** The panel that shows the item put a refused send's text back into its edit box. */
@@ -5525,8 +5596,13 @@ export class Controller {
 /** Why an answer never came (GitHub#250): the request may have been carried out. */
 function unknownReason(e: unknown): string {
   if (e instanceof GitHubError) {
-    if (e.kind === 'network') return `连接中断，没有收到 GitHub 的应答（${e.message}）`;
-    if (e.status) return `GitHub 返回 HTTP ${e.status}，不确定有没有生效`;
+    if (e.kind === 'network') return t('连接中断，没有收到 GitHub 的应答（{why}）', { why: e.message });
+    if (e.status) return t('GitHub 返回 HTTP {status}，不确定有没有生效', { status: e.status });
   }
-  return `没有收到明确的应答（${(e as Error)?.message ?? String(e)}）`;
+  return t('没有收到明确的应答（{why}）', { why: (e as Error)?.message ?? String(e) });
+}
+
+/** what shared/ops says when a comment is not in the list (yet): left out while a same-text check could not tell */
+function NOT_LISTED(): string[] {
+  return [t('评论列表里没有用附的评论原文发的那条回复（可能还没出现）'), t('评论列表里没有这次发出的评论（可能还没出现）')];
 }

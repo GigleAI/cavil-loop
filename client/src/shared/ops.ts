@@ -31,6 +31,7 @@ import type { IssueCloseReason, MergeMethod, WriteAction } from './actions';
 import { noticeTone, type NoticeFacts, type NoticeTone } from './noticeTone';
 import type { BlockedStepName, Facts, Pick, Ref } from './blocked';
 import { commentProves } from './sends';
+import { t, tKey, zhKey } from './i18n';
 
 export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' | 'blocked';
 export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack', 'blocked'];
@@ -207,7 +208,8 @@ export const OP_CHECK_DELAYS_MS: readonly number[] = [3_000, 10_000, 30_000];
 /** GitHub#359: steps not sent yet go out by themselves only this long after the operation started (or was sent again by a person) */
 export const OP_AUTO_MS = 600_000;
 
-export const CLOSE_REASON_NAME: Record<IssueCloseReason, string> = { completed: '已完成', not_planned: '不计划' };
+/** the Chinese keys; shown through tKey() in the current language */
+export const CLOSE_REASON_NAME: Record<IssueCloseReason, string> = { completed: zhKey('已完成'), not_planned: zhKey('不计划') };
 
 export type OpPhase = 'waiting' | 'unknown' | 'settling' | 'settled' | 'unlocked';
 
@@ -257,31 +259,31 @@ export function readBoundary(r: OpRecord): number | null {
 const main = (r: OpRecord) => r.steps[0];
 
 function what(r: OpRecord): string {
-  return `${r.kind === 'closeIssue' ? 'issue' : r.kind === 'closePr' || r.kind === 'merge' ? 'PR' : '这一条'} #${r.number}`;
+  return r.kind === 'closeIssue' ? `issue #${r.number}` : r.kind === 'closePr' || r.kind === 'merge' ? `PR #${r.number}` : t('这一条 #{number}', { number: r.number });
 }
 
 /** GitHub#359: what the last check of an unknown label step found — never "it did not happen" */
 function checkText(s: OpStep, checks: number): string {
-  if (s.check === 'unseen') return `（已核对 ${Math.max(1, checks)} 次，到现在还没查到；原来那次请求仍可能稍后生效；还会继续自动核对）`;
-  if (s.check === 'touched') return '（这期间这个标签被人动过，请到 GitHub 页面核对）';
+  if (s.check === 'unseen') return t('（已核对 {n} 次，到现在还没查到；原来那次请求仍可能稍后生效；还会继续自动核对）', { n: Math.max(1, checks) });
+  if (s.check === 'touched') return t('（这期间这个标签被人动过，请到 GitHub 页面核对）');
   return '';
 }
 
 /** how one label step reads */
 function labelText(s: OpStep, checks = 0): string {
-  const L = `「${s.label ?? ''}」`;
+  const label = s.label ?? '';
   const add = s.name === 'addLabel';
   switch (s.state) {
     case 'ok':
-      return add ? `已加上${L}` : `已摘掉${L}`;
+      return add ? t('已加上「{label}」', { label }) : t('已摘掉「{label}」', { label });
     case 'refused':
-      return `${add ? '加' : '摘'}${L}没有成功：${s.reason ?? ''}`;
+      return add ? t('加「{label}」没有成功：{reason}', { label, reason: s.reason ?? '' }) : t('摘「{label}」没有成功：{reason}', { label, reason: s.reason ?? '' });
     case 'unknown':
-      return `${L}不确定有没有${add ? '加上' : '摘掉'}${checkText(s, checks)}`;
+      return (add ? t('「{label}」不确定有没有加上', { label }) : t('「{label}」不确定有没有摘掉', { label })) + checkText(s, checks);
     case 'pending':
-      return `正在${add ? '加' : '摘'}${L}…`;
+      return add ? t('正在加「{label}」…', { label }) : t('正在摘「{label}」…', { label });
     case 'unsent':
-      return `还没${add ? '加' : '摘'}${L}`;
+      return add ? t('还没加「{label}」', { label }) : t('还没摘「{label}」', { label });
   }
 }
 
@@ -289,15 +291,15 @@ function labelText(s: OpStep, checks = 0): string {
 function commentText(s: OpStep): string {
   switch (s.state) {
     case 'ok':
-      return '已发出评论';
+      return t('已发出评论');
     case 'refused':
-      return `评论没有发出去：${s.reason ?? ''}`;
+      return t('评论没有发出去：{reason}', { reason: s.reason ?? '' });
     case 'unknown':
-      return '评论不确定有没有发出';
+      return t('评论不确定有没有发出');
     case 'pending':
-      return '正在发评论…';
+      return t('正在发评论…');
     case 'unsent':
-      return `还没发评论${s.reason ? `：${s.reason}` : ''}`;
+      return s.reason ? t('还没发评论：{reason}', { reason: s.reason }) : t('还没发评论');
   }
 }
 
@@ -314,73 +316,81 @@ export function opText(r: OpRecord): string {
   const rest = r.steps.slice(1);
   let head: string;
   if (r.kind === 'closeIssue' || r.kind === 'closePr') {
-    const reason = r.kind === 'closeIssue' && r.draft.reason ? `（${CLOSE_REASON_NAME[r.draft.reason]}）` : '';
     head =
       m.state === 'pending'
-        ? `正在关闭 ${w}…`
+        ? t('正在关闭 {what}…', { what: w })
         : m.state === 'refused'
-          ? `没有关闭 ${w}：${m.reason ?? ''}`
+          ? t('没有关闭 {what}：{reason}', { what: w, reason: m.reason ?? '' })
           : m.state === 'unknown'
-            ? `不确定 ${w} 有没有关上（${m.reason ?? '没有收到 GitHub 的应答'}）`
+            ? t('不确定 {what} 有没有关上（{reason}）', { what: w, reason: m.reason ?? t('没有收到 GitHub 的应答') })
             : m.state === 'unsent'
-              ? `没有关闭 ${w}：${m.reason ?? '没有发出'}`
-              : `${w} 已关闭${reason}`;
+              ? t('没有关闭 {what}：{reason}', { what: w, reason: m.reason ?? t('没有发出') })
+              : r.kind === 'closeIssue' && r.draft.reason
+                ? t('{what} 已关闭（{reason}）', { what: w, reason: tKey(CLOSE_REASON_NAME[r.draft.reason]) })
+                : t('{what} 已关闭', { what: w });
     const c = rest[0];
     if (c && m.state === 'ok') {
       head +=
         c.state === 'ok'
-          ? '，评论已发出'
+          ? t('，评论已发出')
           : c.state === 'refused'
-            ? `，但附的评论没有发出去：${c.reason ?? ''}`
+            ? t('，但附的评论没有发出去：{reason}', { reason: c.reason ?? '' })
             : c.state === 'unknown'
-              ? '，附的评论不确定有没有发出'
+              ? t('，附的评论不确定有没有发出')
               : c.state === 'pending'
-                ? '，正在发评论…'
-                : '，附的评论没有发出（关闭的应答丢了，没敢接着发）';
+                ? t('，正在发评论…')
+                : t('，附的评论没有发出（关闭的应答丢了，没敢接着发）');
     }
   } else if (r.kind === 'blocked') {
     head = blockedText(r);
   } else if (r.kind === 'merge') {
     head =
       m.state === 'pending'
-        ? `正在合并 ${w}…`
+        ? t('正在合并 {what}…', { what: w })
         : m.state === 'refused'
-          ? `没有合并 ${w}：${m.reason ?? ''}`
+          ? t('没有合并 {what}：{reason}', { what: w, reason: m.reason ?? '' })
           : m.state === 'unknown'
-            ? `不确定 ${w} 有没有合并（${m.reason ?? '没有收到 GitHub 的应答'}）`
+            ? t('不确定 {what} 有没有合并（{reason}）', { what: w, reason: m.reason ?? t('没有收到 GitHub 的应答') })
             : m.state === 'unsent'
-              ? `没有合并 ${w}：${m.reason ?? '没有发出'}`
-              : `${w} 已合并`;
+              ? t('没有合并 {what}：{reason}', { what: w, reason: m.reason ?? t('没有发出') })
+              : t('{what} 已合并', { what: w });
   } else {
     // GitHub#451: a hand-over carrying the reply box's text sends it first ("评论并…")
     const commented = m.name === 'comment';
-    const verb = `${commented ? '评论并' : ''}${r.kind === 'autopilot' ? '托管' : '交给 agent'}`;
+    // the operation's name, put into the sentences below as one placeholder
+    const op = r.kind === 'autopilot' ? (commented ? t('评论并托管') : t('托管')) : commented ? t('评论并交给 agent') : t('交给 agent');
     const allOk = r.steps.every((s) => s.state === 'ok');
     const u = r.steps.find((s) => s.state === 'unknown');
-    if (m.state === 'pending') head = commented ? `正在${verb}：先发评论，发出后再改标签…` : `正在${verb}…`;
+    const nth = (r.checks ?? 0) + 1;
+    if (m.state === 'pending') head = commented ? t('正在{op}：先发评论，发出后再改标签…', { op }) : t('正在{op}…', { op });
     else if (r.checking && u && !r.steps.some((s) => s.state === 'pending'))
-      head =
-        u.name === 'comment'
-          ? `正在${verb}…评论发出后没有收到 GitHub 的应答，正在自动核对有没有发出（第 ${(r.checks ?? 0) + 1} 次）；标签还没动`
-          : `正在${verb}…「${u.label ?? ''}」发出后没有收到 GitHub 的应答，正在自动核对有没有${u.name === 'addLabel' ? '加上' : '摘掉'}（第 ${(r.checks ?? 0) + 1} 次）`;
-    else if (m.state === 'refused' || m.state === 'unsent') head = `没有${verb}：${handStepText(m)}${commented ? '，标签都没动' : ''}`;
-    else if (allOk) head = `已${verb}：${r.steps.map((s) => handStepText(s)).join('、')}`;
-    else head = `${verb}没有全部完成：${r.steps.map((s) => handStepText(s, r.checks ?? 0)).join('；')}`;
+      head = t('正在{op}…{detail}', {
+        op,
+        detail:
+          u.name === 'comment'
+            ? t('评论发出后没有收到 GitHub 的应答，正在自动核对有没有发出（第 {nth} 次）；标签还没动', { nth })
+            : u.name === 'addLabel'
+              ? t('「{label}」发出后没有收到 GitHub 的应答，正在自动核对有没有加上（第 {nth} 次）', { label: u.label ?? '', nth })
+              : t('「{label}」发出后没有收到 GitHub 的应答，正在自动核对有没有摘掉（第 {nth} 次）', { label: u.label ?? '', nth }),
+      });
+    else if (m.state === 'refused' || m.state === 'unsent') head = t('没有{op}：{detail}', { op, detail: handStepText(m) }) + (commented ? t('，标签都没动') : '');
+    else if (allOk) head = t('已{op}：{steps}', { op, steps: r.steps.map((s) => handStepText(s)).join(t('、')) });
+    else head = t('{op}没有全部完成：{steps}', { op, steps: r.steps.map((s) => handStepText(s, r.checks ?? 0)).join(t('；')) });
   }
   const p = opPhase(r);
   const labelOp = r.kind === 'autopilot' || r.kind === 'handBack';
-  if (r.halt && p !== 'waiting' && !r.steps.every((s) => s.state === 'ok')) head += `。${r.halt.text}，没有接着往下做`;
-  if (p === 'settling') head += r.stuck ? '（一直没读到 GitHub 上的最新状态，请到 GitHub 页面核对）' : '（正在等 GitHub 的最新状态）';
-  if (p === 'unlocked') head = `已由人核对后解除锁定：${head}`;
+  if (r.halt && p !== 'waiting' && !r.steps.every((s) => s.state === 'ok')) head += t('。{why}，没有接着往下做', { why: r.halt.text });
+  if (p === 'settling') head += r.stuck ? t('（一直没读到 GitHub 上的最新状态，请到 GitHub 页面核对）') : t('（正在等 GitHub 的最新状态）');
+  if (p === 'unlocked') head = t('已由人核对后解除锁定：{notice}', { notice: head });
   // GitHub#357: a read that is running says so; what the one before could not do is gone by then.
   // GitHub#359: a hand-over says it in its own sentence above; the checks go on with every sync round
-  if (r.checking && p === 'unknown') head += labelOp ? '' : '；正在查证…';
-  else if (r.checkProblem && p === 'unknown') head += `；这次没能查证：${r.checkProblem}；之后每次同步还会再核对`;
-  if (r.finishing) head += '；正在补做…';
-  else if (r.finishProblem) head += `；这次没能补做：${r.finishProblem}`;
-  if (r.readProblem && p !== 'waiting') head += `；${r.readProblem}`;
-  if (r.replyState === 'sending') head += '；正在用附的评论原文发回复…';
-  if (r.replyState === 'unknown') head += '；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对';
+  if (r.checking && p === 'unknown') head += labelOp ? '' : t('；正在查证…');
+  else if (r.checkProblem && p === 'unknown') head += t('；这次没能查证：{problem}；之后每次同步还会再核对', { problem: r.checkProblem });
+  if (r.finishing) head += t('；正在补做…');
+  else if (r.finishProblem) head += t('；这次没能补做：{problem}', { problem: r.finishProblem });
+  if (r.readProblem && p !== 'waiting') head += t('；{problem}', { problem: r.readProblem });
+  if (r.replyState === 'sending') head += t('；正在用附的评论原文发回复…');
+  if (r.replyState === 'unknown') head += t('；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对');
   return head;
 }
 
@@ -389,17 +399,17 @@ function blockedStepText(s: OpStep): string {
   switch (s.blocked) {
     case 'pause':
     case 'repause':
-      return `挂「${s.label ?? ''}」暂停`;
+      return t('挂「{label}」暂停', { label: s.label ?? '' });
     case 'unpause':
-      return `摘「${s.label ?? ''}」恢复等待`;
+      return t('摘「{label}」恢复等待', { label: s.label ?? '' });
     case 'addBlocked':
-      return `挂「${s.label ?? ''}」`;
+      return t('挂「{label}」', { label: s.label ?? '' });
     case 'relation':
-      return `把 ${s.target ?? ''} 设成「Blocked by」`;
+      return t('把 {target} 设成「Blocked by」', { target: s.target ?? '' });
     case 'comment':
-      return '发登记评论';
+      return t('发登记评论');
     case 'check':
-      return '核对登记';
+      return t('核对登记');
     default:
       return s.name;
   }
@@ -412,21 +422,21 @@ function blockedText(r: OpRecord): string {
   const pending = r.steps.find((s) => s.state === 'pending') ?? (r.running && r.steps[0].state === 'unsent' ? r.steps[0] : undefined);
   const done = r.steps.filter((s) => s.state === 'ok' && s.blocked !== 'check').map(blockedStepText);
   const refused = r.steps.find((s) => s.state === 'refused');
-  if (pending) return `正在登记前置：${blockedStepText(pending)}…`;
-  if (r.steps.every((s) => s.state === 'ok')) return `已登记前置：${done.join('、')}`;
+  if (pending) return t('正在登记前置：{step}…', { step: blockedStepText(pending) });
+  if (r.steps.every((s) => s.state === 'ok')) return t('已登记前置：{steps}', { steps: done.join(t('、')) });
   const parts: string[] = [];
-  if (u) parts.push(`${blockedStepText(u)}发出后没有收到 GitHub 的应答，不确定有没有生效（${u.reason ?? ''}）`);
-  else if (refused) parts.push(`${blockedStepText(refused)}没有成功：${refused.reason ?? ''}`);
-  else if (b?.stop) parts.push(`停在「${blockedStepText(r.steps.find((s) => s.state === 'unsent') ?? r.steps[r.steps.length - 1])}」之前：${b.stop.text}`);
+  if (u) parts.push(t('{step}发出后没有收到 GitHub 的应答，不确定有没有生效（{reason}）', { step: blockedStepText(u), reason: u.reason ?? '' }));
+  else if (refused) parts.push(t('{step}没有成功：{reason}', { step: blockedStepText(refused), reason: refused.reason ?? '' }));
+  else if (b?.stop) parts.push(t('停在「{step}」之前：{why}', { step: blockedStepText(r.steps.find((s) => s.state === 'unsent') ?? r.steps[r.steps.length - 1]), why: b.stop.text }));
   else {
     const first = r.steps.find((s) => s.state === 'unsent');
-    if (first) parts.push(`没有${blockedStepText(first)}：${first.reason ?? '没有发出'}`);
+    if (first) parts.push(t('没有{step}：{reason}', { step: blockedStepText(first), reason: first.reason ?? t('没有发出') }));
   }
-  parts.push(done.length ? `已做：${done.join('、')}` : 'GitHub 上什么都没改');
+  parts.push(done.length ? t('已做：{steps}', { steps: done.join(t('、')) }) : t('GitHub 上什么都没改'));
   const paused = b?.stop?.paused;
-  if (paused === 'yes') parts.push(`已暂停：挂着「${b!.labels.human}」，daemon 不会按这份登记接着干。核对后点「等前置…」重新登记`);
-  else if (paused === 'unconfirmed') parts.push(`暂停状态未确认，daemon 可能按缺项的登记接着干，请到 GitHub 页面核对，或点「等前置…」重新登记`);
-  return `登记前置没有完成：${parts.join('；')}`;
+  if (paused === 'yes') parts.push(t('已暂停：挂着「{label}」，daemon 不会按这份登记接着干。核对后点「等前置…」重新登记', { label: b!.labels.human }));
+  else if (paused === 'unconfirmed') parts.push(t('暂停状态未确认，daemon 可能按缺项的登记接着干，请到 GitHub 页面核对，或点「等前置…」重新登记'));
+  return t('登记前置没有完成：{parts}', { parts: parts.join(t('；')) });
 }
 
 export type OpTone = NoticeTone;
@@ -595,21 +605,21 @@ export function opActions(r: OpRecord): OpActions {
  * A string = why it cannot be done again from here.
  */
 export function opRedoAction(r: OpRecord): Extract<WriteAction, { kind: Exclude<OpKind, 'blocked'> }> | string {
-  if (opActions(r).retry !== 'redo') return '这次操作现在不能重试';
+  if (opActions(r).retry !== 'redo') return t('这次操作现在不能重试');
   const d = opReusableDraft(r) ?? {};
   const comment = d.comment?.trim() ? d.comment : '';
   switch (r.kind) {
     case 'closeIssue':
-      return r.draft.reason ? { kind: 'closeIssue', key: r.key, reason: d.reason ?? r.draft.reason, comment } : '不知道上次选的关闭原因，请从详情里重新关闭';
+      return r.draft.reason ? { kind: 'closeIssue', key: r.key, reason: d.reason ?? r.draft.reason, comment } : t('不知道上次选的关闭原因，请从详情里重新关闭');
     case 'closePr':
       return { kind: 'closePr', key: r.key, comment };
     case 'merge':
-      return d.method && d.headOid ? { kind: 'merge', key: r.key, method: d.method, headOid: d.headOid } : '不知道上次选的合并方式，请从详情里重新合并';
+      return d.method && d.headOid ? { kind: 'merge', key: r.key, method: d.method, headOid: d.headOid } : t('不知道上次选的合并方式，请从详情里重新合并');
     case 'autopilot':
     case 'handBack':
       return { kind: r.kind, key: r.key, ...(comment ? { comment } : {}) };
     default:
-      return '这次操作现在不能重试';
+      return t('这次操作现在不能重试');
   }
 }
 
@@ -649,12 +659,12 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
   let changed = false;
   const steps = r.steps.map((s) => {
     if (s.state !== 'unknown') return s;
-    if (s.name === 'close' && (read.state === 'closed' || read.state === 'merged')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时已是关闭状态' });
-    if (s.name === 'merge' && read.state === 'merged') return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时已是合并状态' });
+    if (s.name === 'close' && (read.state === 'closed' || read.state === 'merged')) return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时已是关闭状态') });
+    if (s.name === 'merge' && read.state === 'merged') return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时已是合并状态') });
     // a label missing proves the removal only when the read cannot have left labels out (PR #365 code review round 1)
-    if (s.name === 'removeLabel' && read.labels.length < ITEM_LABELS_FIRST && !read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时这个标签已不在' });
+    if (s.name === 'removeLabel' && read.labels.length < ITEM_LABELS_FIRST && !read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时这个标签已不在') });
     // GitHub#359: the wanted state is there in a read issued after the request — the step is done, whoever did it
-    if (s.name === 'addLabel' && read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: '重读时这个标签已在' });
+    if (s.name === 'addLabel' && read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时这个标签已在') });
     return s;
   });
   const next: OpRecord = { ...r, steps };
@@ -697,16 +707,19 @@ export function opProveFromRecords(
   const missing: string[] = [];
   if (r.replyState === 'unknown') {
     const reply = r.reply;
-    if (!reply || !reply.before) missing.push('用附的评论原文发的回复：发送前没读到这一条原有的评论，无法区分新旧，只能人工核对');
+    if (!reply || !reply.before) missing.push(t('用附的评论原文发的回复：发送前没读到这一条原有的评论，无法区分新旧，只能人工核对'));
     else if (commentProves(records.comments, reply.before, login, reply.body))
       record = { ...record, replyState: null, reply: null, commentUsed: true };
-    else missing.push('评论列表里没有用附的评论原文发的那条回复（可能还没出现）');
+    else missing.push(t('评论列表里没有用附的评论原文发的那条回复（可能还没出现）'));
   }
   r.steps.forEach((s, i) => {
     if (s.state !== 'unknown' || !needsRecords(s)) return;
-    const what = s.name === 'comment' ? '附带评论' : `「${s.label ?? ''}」`;
     if (!r.before) {
-      missing.push(`${what}：发送前没读到这一条原有的评论和标签记录，无法区分新旧，只能人工核对`);
+      missing.push(
+        s.name === 'comment'
+          ? t('附带评论：发送前没读到这一条原有的评论和标签记录，无法区分新旧，只能人工核对')
+          : t('「{label}」：发送前没读到这一条原有的评论和标签记录，无法区分新旧，只能人工核对', { label: s.label ?? '' }),
+      );
       return;
     }
     const before = r.before;
@@ -714,8 +727,8 @@ export function opProveFromRecords(
       s.name === 'comment'
         ? commentProves(records.comments, before.comments, login, r.draft.comment ?? '')
         : records.labelEvents.some((e) => !before.events.includes(e.id) && e.actor === login && e.label === s.label && e.event === (s.name === 'addLabel' ? 'labeled' : 'unlabeled'));
-    if (found) record = opProveStep(record, i, s.name === 'comment' ? '在评论列表里找到了这次发出的评论' : '在 GitHub 的标签记录里找到了这一步');
-    else if (s.name === 'comment') missing.push('评论列表里没有这次发出的评论（可能还没出现）');
+    if (found) record = opProveStep(record, i, s.name === 'comment' ? t('在评论列表里找到了这次发出的评论') : t('在 GitHub 的标签记录里找到了这一步'));
+    else if (s.name === 'comment') missing.push(t('评论列表里没有这次发出的评论（可能还没出现）'));
     // GitHub#359: a label step not found says so itself, through its check (opCheckSteps)
   });
   return { record, missing };
@@ -735,7 +748,7 @@ export function opAfterRestart(r0: OpRecord): OpRecord {
   const r: OpRecord = { ...r0, checking: false, finishing: false, auto: false };
   const replyState = r.replyState === 'sending' ? ('unknown' as const) : (r.replyState ?? null);
   if (!r.steps.some((s) => s.state === 'pending')) return { ...r, running: false, replyState };
-  return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: '客户端重启前没有收到 GitHub 的应答' } : s)) };
+  return { ...r, running: false, replyState, steps: r.steps.map((s) => (s.state === 'pending' ? { ...s, state: 'unknown' as const, reason: t('客户端重启前没有收到 GitHub 的应答') } : s)) };
 }
 
 /** How long a fully successful notice stays before it puts itself away (GitHub#256; 5 s since GitHub#279). */
@@ -858,7 +871,7 @@ export function opProveFromSnapshot(r: OpRecord, snap: OpSnapshot | null): OpRec
     if (s.state !== 'unknown' || !isLabelStep(s)) return;
     // a label seen is on; a label not seen is off only when the list came back whole (PR #365 code review round 1)
     if (s.name === 'addLabel' ? snap.labels.includes(s.label ?? '') : snap.labelsComplete && !snap.labels.includes(s.label ?? ''))
-      record = opProveStep(record, i, s.name === 'addLabel' ? '重读时这个标签已在' : '重读时这个标签已不在');
+      record = opProveStep(record, i, s.name === 'addLabel' ? t('重读时这个标签已在') : t('重读时这个标签已不在'));
   });
   return record;
 }
@@ -906,22 +919,22 @@ export type OpPermit =
  */
 export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, opts: { mode: 'auto' | 'resend' | 'follow'; now: number; autoMs?: number }): OpPermit {
   const s = r.steps[index];
-  if (!s || !isLabelStep(s)) return { ok: false, why: 'halt', text: '这一步不是改标签' };
+  if (!s || !isLabelStep(s)) return { ok: false, why: 'halt', text: t('这一步不是改标签') };
   if (opts.mode === 'auto') {
-    if (!r.auto) return { ok: false, why: 'halt', text: '客户端重启过，剩下的步骤不再自动发' };
-    if (opts.now - (r.autoSince ?? r.startedAt) > (opts.autoMs ?? OP_AUTO_MS)) return { ok: false, why: 'halt', text: '离发起已经超过 10 分钟，剩下的步骤不再自动发' };
+    if (!r.auto) return { ok: false, why: 'halt', text: t('客户端重启过，剩下的步骤不再自动发') };
+    if (opts.now - (r.autoSince ?? r.startedAt) > (opts.autoMs ?? OP_AUTO_MS)) return { ok: false, why: 'halt', text: t('离发起已经超过 10 分钟，剩下的步骤不再自动发') };
   }
   const news = opNewEvents(r, snap);
-  if (news === null || !snap) return { ok: false, why: 'unread', text: '没能完整读到这一条现在的状态和标签记录' };
+  if (news === null || !snap) return { ok: false, why: 'unread', text: t('没能完整读到这一条现在的状态和标签记录') };
   // GitHub#451: after a hand-over's comment, what stops it is a change while the comment was on its way —
   // a hand-over of an item that was already closed is allowed (as without a comment); unknown = must be open
   const wasState = opts.mode === 'follow' ? r.before?.state : undefined;
-  if (snap.state !== (wasState ?? 'open')) return { ok: false, why: 'halt', text: snap.state === 'open' ? '这一条被重新打开了' : '这一条已经关闭', redo: true };
+  if (snap.state !== (wasState ?? 'open')) return { ok: false, why: 'halt', text: snap.state === 'open' ? t('这一条被重新打开了') : t('这一条已经关闭'), redo: true };
   const allowed = new Map<string, number>();
   for (const d of r.steps) {
     if (d === s || d.state !== 'ok' || !isLabelStep(d)) continue;
     // a label of the hand-over taken away again is somebody picking the item up (or taking it back): the rest can be finished by hand
-    if (!reached(d, snap.labels)) return { ok: false, why: 'halt', text: `这期间「${d.label ?? ''}」${d.name === 'addLabel' ? '被摘掉了' : '又被加上了'}`, redo: d.role === 'autopilot' };
+    if (!reached(d, snap.labels)) return { ok: false, why: 'halt', text: d.name === 'addLabel' ? t('这期间「{label}」被摘掉了', { label: d.label ?? '' }) : t('这期间「{label}」又被加上了', { label: d.label ?? '' }), redo: d.role === 'autopilot' };
     const k = `${d.name === 'addLabel' ? 'labeled' : 'unlabeled'} ${d.label ?? ''}`;
     allowed.set(k, (allowed.get(k) ?? 0) + 1);
   }
@@ -930,10 +943,10 @@ export function opPermit(r: OpRecord, index: number, snap: OpSnapshot | null, op
     if (!mine.has(e.label)) continue;
     const k = `${e.event} ${e.label}`;
     const left = allowed.get(k) ?? 0;
-    if (left <= 0) return { ok: false, why: 'halt', text: `这期间「${e.label}」被人动过`, redo: r.steps.some((d) => d.label === e.label && d.role === 'autopilot') };
+    if (left <= 0) return { ok: false, why: 'halt', text: t('这期间「{label}」被人动过', { label: e.label }), redo: r.steps.some((d) => d.label === e.label && d.role === 'autopilot') };
     allowed.set(k, left - 1);
   }
-  if (reached(s, snap.labels)) return { ok: false, why: 'satisfied', text: s.name === 'addLabel' ? '这个标签已经在' : '这个标签已经不在' };
+  if (reached(s, snap.labels)) return { ok: false, why: 'satisfied', text: s.name === 'addLabel' ? t('这个标签已经在') : t('这个标签已经不在') };
   return { ok: true };
 }
 
@@ -955,9 +968,9 @@ export function opResendStep(r: OpRecord): number {
 
 /** What a second send of each label can cause when the first one lands late after all (said where the person decides). */
 const RESEND_RISK: Record<OpLabelRole, (label: string) => string> = {
-  autopilot: (l) => `如果之后摘掉「${l}」来叫停托管，上一次请求迟到生效时会把它重新加上，托管被恢复。`,
-  agent: (l) => `如果上一次请求稍后也生效，而这一次加上的「${l}」已被取走开工，这一条会被派两次工。`,
-  human: (l) => `如果之后 agent 把这一条交回给人，上一次请求迟到生效时会把「${l}」再摘掉，这一条可能被当成待派工。`,
+  autopilot: (label) => t('如果之后摘掉「{label}」来叫停托管，上一次请求迟到生效时会把它重新加上，托管被恢复。', { label }),
+  agent: (label) => t('如果上一次请求稍后也生效，而这一次加上的「{label}」已被取走开工，这一条会被派两次工。', { label }),
+  human: (label) => t('如果之后 agent 把这一条交回给人，上一次请求迟到生效时会把「{label}」再摘掉，这一条可能被当成待派工。', { label }),
 };
 
 /** GitHub#359: the words of the dialog behind "仍要重发…"; null = nothing to send again. */
@@ -969,13 +982,17 @@ export function opResendConfirm(r: OpRecord): { title: string; lines: string[]; 
   const role: OpLabelRole = s.role ?? (s.name === 'removeLabel' ? 'human' : 'agent');
   const rest = r.steps.slice(i + 1).filter((x) => x.state === 'unsent');
   return {
-    title: `再发一次「${s.name === 'addLabel' ? '加上' : '摘掉'} ${L}」？`,
+    title: s.name === 'addLabel' ? t('再发一次「加上 {label}」？', { label: L }) : t('再发一次「摘掉 {label}」？', { label: L }),
     lines: [
-      '到现在还没查到上一次请求生效，但它仍可能稍后生效，GitHub 上已发出的请求撤不回来。',
+      t('到现在还没查到上一次请求生效，但它仍可能稍后生效，GitHub 上已发出的请求撤不回来。'),
       RESEND_RISK[role](L),
-      '发之前客户端会再核对一次：这一条已关闭、或这期间有人动过这几个标签，就不发。',
+      t('发之前客户端会再核对一次：这一条已关闭、或这期间有人动过这几个标签，就不发。'),
     ],
-    after: rest.length ? `发出后会接着${rest.map((x) => `${x.name === 'addLabel' ? '加' : '摘'}「${x.label ?? ''}」`).join('、')}。` : null,
+    after: rest.length
+      ? t('发出后会接着{steps}。', {
+          steps: rest.map((x) => (x.name === 'addLabel' ? t('加「{label}」', { label: x.label ?? '' }) : t('摘「{label}」', { label: x.label ?? '' }))).join(t('、')),
+        })
+      : null,
   };
 }
 

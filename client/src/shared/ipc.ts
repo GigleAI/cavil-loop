@@ -11,6 +11,7 @@ import type { SendAction } from './sends';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 import type { LangSetting } from './i18n';
+import type { ThemeSetting } from './theme';
 
 export interface Snapshot {
   state: AppState;
@@ -198,6 +199,8 @@ export interface CavilApi {
   setNotifyScope(scope: NotifyScope): Promise<void>;
   /** GitHub#471: the interface language ('auto' = follow the system); takes effect at once */
   setUiLanguage(setting: LangSetting): Promise<void>;
+  /** GitHub#516: light / dark ('system' = follow the system); takes effect at once */
+  setUiTheme(setting: ThemeSetting): Promise<void>;
   /** a repository dragged (GitHub#304): `shown` = the list on screen before the drag, `next` = the same repositories in the new order */
   reorderRepos(shown: string[], next: string[]): Promise<void>;
   /** "按名称排序": forget the dragged order (GitHub#304) */

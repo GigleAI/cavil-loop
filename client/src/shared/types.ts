@@ -7,6 +7,7 @@ import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
 import type { Lang, LangSetting, Said } from './i18n';
+import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
@@ -545,9 +546,11 @@ export interface HandBackLabels {
   running: string;
   /** GitHub#429: the daemon's "waiting for a prerequisite" label — the graph reads the loop's registration on open issues carrying it; '' = not read */
   blocked: string;
+  /** GitHub#513: the daemon's parked label (`LABEL_PENDING_LATER`) — label pickers list it right after `human`; '' = not pinned */
+  later: string;
 }
 
-export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked' };
+export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked', later: 'pending/later' };
 
 /** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows */
 export type TallyFlow = 'running' | 'agent' | 'human';
@@ -701,6 +704,10 @@ export interface AppState {
   uiLanguage: LangSetting;
   /** the language the window shows now ('auto' resolved against the system's preferred languages) */
   lang: Lang;
+  /** GitHub#516: light / dark as chosen in Settings (kept on this machine); 'system' when nothing is set */
+  uiTheme: ThemeSetting;
+  /** what the window shows now ('system' resolved against the system's light / dark) */
+  theme: Theme;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */

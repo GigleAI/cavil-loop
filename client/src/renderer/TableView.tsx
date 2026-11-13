@@ -3,7 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { boardMode, buildTable, foldRuns, tableDropPlan, type Group, type Row, type Table } from '../data/table';
+import { boardMode, buildTable, foldRuns, isOwnGroup, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
@@ -17,23 +17,30 @@ import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { t } from '../shared/i18n';
+import { t, tKey, zhKey } from '../shared/i18n';
+import { Verbatim, verbatimParts } from './Verbatim';
 
-export const COLUMN_LABEL: Record<TableColumn, string> = {
-  title: '标题',
-  assignees: '负责人',
-  labels: '标签',
-  linkedPrs: '关联 PR',
-  subIssues: '子 issue 进度',
-  updated: '更新时间',
-  iteration: '迭代',
-  status: '状态',
-  milestone: '里程碑',
-  repo: '仓库',
-  author: '作者',
-};
+/** a table column's heading, in the window's language */
+export function columnLabel(c: TableColumn): string {
+  return {
+    title: t('标题'),
+    assignees: t('负责人'),
+    labels: t('标签'),
+    linkedPrs: t('关联 PR'),
+    subIssues: t('子 issue 进度'),
+    updated: t('更新时间'),
+    iteration: t('迭代'),
+    status: t('状态'),
+    milestone: t('里程碑'),
+    repo: t('仓库'),
+    author: t('作者'),
+  }[c];
+}
 
-const STATE_TEXT = { open: '开着', closed: '已关闭', merged: '已合并' } as const;
+/** a group's title: the client's own name ("全部", the group without a value) in the window's language, GitHub's value as is */
+function GroupTitle({ g }: { g: Group }) {
+  return isOwnGroup(g) ? <>{tKey(g.title)}</> : <Verbatim from="github">{g.title}</Verbatim>;
+}
 
 function updatedText(iso: string, now: number): string {
   const at = Date.parse(iso);
@@ -60,7 +67,7 @@ function toneOf(it: Item) {
 }
 
 /** GitHub#368: the hover text of a pulled row — right for a sub-issue and for a sub-issue's sub-issue alike */
-export const PULLED_TITLE = '此条目不符合搜索条件；因上层有命中的 issue 而显示';
+export const PULLED_TITLE = zhKey('此条目不符合搜索条件；因上层有命中的 issue 而显示');
 
 function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all: Item[]; now: number; dark: boolean }) {
   switch (col) {
@@ -77,7 +84,7 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
         <span className="labels">
           {item.labels.map((l) => (
             <span key={l.name} className={`label${item.edits?.some((m) => m.label === l.name && ['saving', 'verifying', 'observing'].includes(m.status)) ? ' pending' : ''}`} style={labelStyle(l.color, dark)}>
-              {l.name}
+              <Verbatim from="github">{l.name}</Verbatim>
             </span>
           ))}
         </span>
@@ -85,7 +92,7 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
     case 'linkedPrs': {
       // GitHub's links, plus the PRs whose description names this issue (GitHub#275)
       const links = issuePrLinks(item, all);
-      if (links === null) return <span className="muted small" title="仓库来源读不到关联 PR">—</span>;
+      if (links === null) return <span className="muted small" title={t('仓库来源读不到关联 PR')}>—</span>;
       return (
         <>
           {links.map((p) => (
@@ -96,7 +103,19 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
               onClick={open(p.url)}
               data-testid="linked-pr"
               data-via={p.via}
-              title={`PR ${STATE_TEXT[p.state]}（${p.via === 'github' ? 'GitHub 关联' : 'PR 正文引用'}）`}
+              title={
+                p.via === 'github'
+                  ? p.state === 'open'
+                    ? t('PR 开着（GitHub 关联）')
+                    : p.state === 'closed'
+                      ? t('PR 已关闭（GitHub 关联）')
+                      : t('PR 已合并（GitHub 关联）')
+                  : p.state === 'open'
+                    ? t('PR 开着（PR 正文引用）')
+                    : p.state === 'closed'
+                      ? t('PR 已关闭（PR 正文引用）')
+                      : t('PR 已合并（PR 正文引用）')
+              }
             >
               <Icon name={itemIcon('pr', p.state, null)} size={14} />#{p.number}
             </a>
@@ -117,13 +136,13 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
     case 'updated':
       return <span title={item.updatedAt}>{updatedText(item.updatedAt, now)}</span>;
     case 'iteration':
-      return <>{[...new Set(item.projects.filter((m) => m.iteration).map((m) => m.iteration!.title))].join('、')}</>;
+      return <Verbatim from="github">{[...new Set(item.projects.filter((m) => m.iteration).map((m) => m.iteration!.title))].join(t('、'))}</Verbatim>;
     case 'status':
-      return <>{[...new Set(item.projects.filter((m) => m.status).map((m) => m.status!))].join('、')}</>;
+      return <Verbatim from="github">{[...new Set(item.projects.filter((m) => m.status).map((m) => m.status!))].join(t('、'))}</Verbatim>;
     case 'milestone':
-      return <>{item.milestone?.title ?? ''}</>;
+      return <Verbatim from="github">{item.milestone?.title ?? ''}</Verbatim>;
     case 'repo':
-      return <>{item.repo}</>;
+      return <Verbatim from="github">{item.repo}</Verbatim>;
     case 'author':
       return <Person login={item.author} />;
     case 'title':
@@ -178,12 +197,12 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
     return () => document.removeEventListener('mousedown', out);
   }, [col, close]);
   if (col === 'labels') {
-    if (!options) return <span className="small muted">读取标签…</span>;
+    if (!options) return <span className="small muted">{t('读取标签…')}</span>;
     if (options.error) return <span className="small err">{options.error}</span>;
     return (
       <span className="picker-anchor">
         <LabelPicker
-          title="设置标签"
+          title={t('设置标签')}
           hint={item.repo}
           testid="cell-label-picker"
           pinned={pinned}
@@ -194,8 +213,8 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
           ]}
           onToggle={(l) =>
             l.checked
-              ? act({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
-              : act({ kind: 'addLabel', key: item.key, label: l.name }, `已加上标签「${l.name}」`)
+              ? act({ kind: 'removeLabel', key: item.key, label: l.name }, t('已去掉标签「{label}」', { label: l.name }))
+              : act({ kind: 'addLabel', key: item.key, label: l.name }, t('已加上标签「{label}」', { label: l.name }))
           }
           onClose={close}
         />
@@ -203,7 +222,7 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
     );
   }
   if (col === 'milestone') {
-    if (!options) return <span className="small muted">读取里程碑…</span>;
+    if (!options) return <span className="small muted">{t('读取里程碑…')}</span>;
     if (options.error) return <span className="small err">{options.error}</span>;
     const titles = [...new Set(options.milestones.map((m) => m.title))];
     if (item.milestone && !titles.includes(item.milestone.title)) titles.unshift(item.milestone.title);
@@ -216,14 +235,14 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
           disabled={disabled}
           value={item.milestone?.title ?? ''}
           onChange={(e) => {
-            act({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑');
+            act({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? t('里程碑改成「{title}」', { title: e.target.value }) : t('已去掉里程碑'));
             close();
           }}
         >
-          <option value="">（无）</option>
-          {titles.map((t) => (
-            <option key={t} value={t}>
-              {t}
+          <option value="">{t('（无）')}</option>
+          {titles.map((x) => (
+            <option key={x} value={x} data-verbatim="github">
+              {x}
             </option>
           ))}
         </select>
@@ -235,7 +254,7 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
   const rows = item.projects
     .map((m) => ({ m, p: projects.find((x) => x.key === m.projectKey) }))
     .filter((x): x is { m: Item['projects'][number]; p: ProjectMeta } => Boolean(x.p && (field === 'iteration' ? x.p.hasIterationField : x.p.statusFieldId)));
-  if (!rows.length) return <span className="small muted">{item.projects.length ? '看板没有这个字段' : '不在看板上；加入看板请在详情里'}</span>;
+  if (!rows.length) return <span className="small muted">{item.projects.length ? t('看板没有这个字段') : t('不在看板上；加入看板请在详情里')}</span>;
   return (
     <span ref={box} className="cell-selects">
       {rows.map(({ m, p }) => {
@@ -247,7 +266,8 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
             data-testid={`cell-${field}`}
             data-project={p.key}
             disabled={disabled || ro}
-            title={ro ? `你在看板「${p.title}」上没有修改权限` : `看板「${p.title}」`}
+            title={ro ? t('你在看板「{board}」上没有修改权限', { board: p.title }) : t('看板「{board}」', { board: p.title })}
+            {...verbatimParts('github', [p.title])}
             value={field === 'iteration' ? (m.iteration?.id ?? '') : (m.status ?? '')}
             onChange={(e) => {
               const v = e.target.value || null;
@@ -255,19 +275,18 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
                 field === 'iteration'
                   ? { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: v }
                   : { kind: 'setStatus', key: item.key, projectKey: p.key, status: v },
-                `看板「${p.title}」的${field === 'iteration' ? '迭代' : '状态'}已改`,
+                field === 'iteration' ? t('看板「{board}」的迭代已改', { board: p.title }) : t('看板「{board}」的状态已改', { board: p.title }),
               );
               close();
             }}
           >
-            <option value="">{field === 'iteration' ? '（无迭代）' : '（无状态）'}</option>
+            <option value="">{field === 'iteration' ? t('（无迭代）') : t('（无状态）')}</option>
             {field === 'iteration' ? (
-              <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => `${rows.length > 1 ? `${p.title}：` : ''}${i.title}`} />
+              <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => (rows.length > 1 ? t('{board}：{value}', { board: p.title, value: i.title }) : i.title)} />
             ) : (
               p.statusOptions.map((o) => (
-                <option key={o} value={o}>
-                  {rows.length > 1 ? `${p.title}：` : ''}
-                  {o}
+                <option key={o} value={o} data-verbatim="github">
+                  {rows.length > 1 ? t('{board}：{value}', { board: p.title, value: o }) : o}
                 </option>
               ))
             )}
@@ -326,16 +345,16 @@ export function TableView({
   pinnedLabels?: readonly string[];
 }) {
   const dark = useDarkMode();
-  const t = view.table;
-  const table = built ?? buildTable(items, projects, t, today, view.prsUnderIssues, repoOrder);
+  const tb = view.table;
+  const table = built ?? buildTable(items, projects, tb, today, view.prsUnderIssues, repoOrder);
   // GitHub#304: a repository in the slice list drags to another place; the order is the one every repository list uses
   const repoDrag = useRepoDrag(table.slices?.map((s) => s.value) ?? []);
-  const cols = t.columns.filter((c) => c !== 'title');
-  const folded = new Set(folds[t.groupBy] ?? []);
-  const toggle = (k: string) => void Promise.resolve(api().setTableFold(t.groupBy, k, !folded.has(k))).catch(() => undefined);
+  const cols = tb.columns.filter((c) => c !== 'title');
+  const folded = new Set(folds[tb.groupBy] ?? []);
+  const toggle = (k: string) => void Promise.resolve(api().setTableFold(tb.groupBy, k, !folded.has(k))).catch(() => undefined);
 
   // ---- dragging a row to another group (GitHub#294): the board's drag, rows for cards, groups for columns ----
-  const canDrag = canWrite && Boolean(onDropPlan) && boardMode(t.groupBy) !== null;
+  const canDrag = canWrite && Boolean(onDropPlan) && boardMode(tb.groupBy) !== null;
   const dragging = useRef<{ row: Row; from: Group } | null>(null);
   const [dragRow, setDragRow] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -364,7 +383,7 @@ export function TableView({
             const d = dragging.current;
             endDrag();
             if (!d || !canWrite) return;
-            const plan = tableDropPlan(d.row, d.from, g, t.groupBy, projects);
+            const plan = tableDropPlan(d.row, d.from, g, tb.groupBy, projects);
             if (plan.kind !== 'none') onDropPlan?.(plan);
           },
         }
@@ -401,12 +420,12 @@ export function TableView({
       return n;
     });
     // GitHub#488: a recorded field change is said by the cell and the window's notice area, not here
-    const said = resultNote(r, `${item.repo}#${item.number}：${okText}`);
+    const said = resultNote(r, t('{repo}#{number}：{what}', { repo: item.repo, number: item.number, what: okText }));
     if (said) onNote?.(said, a);
   };
 
   // ---- column widths (GitHub#205): dragged on the head's right edge, kept in the view settings; double-click = default ----
-  const widths = t.widths ?? {};
+  const widths = tb.widths ?? {};
   const [live, setLive] = useState<{ col: TableColumn; w: number } | null>(null);
   const shown = live ? { ...widths, [live.col]: live.w } : widths;
   const sized = Object.keys(shown).length > 0;
@@ -438,12 +457,12 @@ export function TableView({
   };
   const head = (c: TableColumn) => (
     <th key={c} data-testid="col-head" data-col={c} data-width={sized ? widthOf(c, shown) : undefined}>
-      {COLUMN_LABEL[c]}
+      {columnLabel(c)}
       <span
         className={`col-resize${live?.col === c ? ' on' : ''}`}
         data-testid="col-resize"
         data-col={c}
-        title="拖动改列宽；双击恢复默认"
+        title={t('拖动改列宽；双击恢复默认')}
         onPointerDown={startResize(c)}
         onDoubleClick={() => resetWidth(c)}
       />
@@ -456,22 +475,25 @@ export function TableView({
     return (
     <tbody
       key={g.key}
-      className={[inRepo ? 'in-repo' : '', t.groupBy !== 'none' ? 'grouped' : '', over === g.key ? 'drop-over' : ''].filter(Boolean).join(' ') || undefined}
+      className={[inRepo ? 'in-repo' : '', tb.groupBy !== 'none' ? 'grouped' : '', over === g.key ? 'drop-over' : ''].filter(Boolean).join(' ') || undefined}
       data-testid="group"
       data-key={g.key}
       data-title={g.title}
       data-drop-over={over === g.key ? 'yes' : undefined}
       {...dropTarget(g)}
     >
-      {t.groupBy !== 'none' && (
+      {tb.groupBy !== 'none' && (
         // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
-        <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? '点一下展开这一组' : '点一下收起这一组'}>
+        <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? t('点一下展开这一组') : t('点一下收起这一组')}>
           <td colSpan={cols.length + 1}>
-            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? '展开这一组' : '收起这一组'}>
+            <button className="link" data-testid="group-toggle" aria-label={folded.has(g.key) ? t('展开这一组') : t('收起这一组')}>
               {folded.has(g.key) ? '▸' : '▾'}
             </button>{' '}
-            <b>{g.title}</b> <span className="count" data-testid="group-count">{g.rows.length}</span>
-            {g.current && <span className="current" data-testid="group-current">当前</span>}
+            <b>
+              <GroupTitle g={g} />
+            </b>{' '}
+            <span className="count" data-testid="group-count">{g.rows.length}</span>
+            {g.current && <span className="current" data-testid="group-current">{t('当前')}</span>}
             {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
           </td>
         </tr>
@@ -487,7 +509,7 @@ export function TableView({
             data-pulled={r.pulled ? '' : undefined}
             className={[dragRow === r.id ? 'dragging' : '', r.pulled ? 'pulled' : ''].filter(Boolean).join(' ') || undefined}
             // GitHub#368: a row shown only because an issue above it matched the search
-            title={r.pulled ? PULLED_TITLE : undefined}
+            title={r.pulled ? tKey(PULLED_TITLE) : undefined}
             // an open cell editor keeps its text box / dropdowns usable: that row does not drag; nor does a pulled row (it sits in its parent's group, not its own)
             draggable={canDrag && !r.pulled && editing?.row !== r.id}
             onDragStart={(e) => {
@@ -502,17 +524,23 @@ export function TableView({
             <td
               className="title-cell"
               data-testid="title-cell"
-              style={{ paddingLeft: (t.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}
+              style={{ paddingLeft: (tb.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}
               {...{ [OPENS_ITEM]: '' }}
               onClick={() => onOpen(r.item.key)}
             >
               {r.under && (
-                <span className="nest-mark" title="关联到上面这个 issue 的 PR">
+                <span className="nest-mark" title={t('关联到上面这个 issue 的 PR')}>
                   ↳{' '}
                 </span>
               )}
               <span className={`state ${r.item.kind} ${toneOf(r.item)}`} data-testid="row-state" data-tone={toneOf(r.item)}>
-                <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={`${r.item.kind === 'pr' ? 'PR' : 'Issue'} ${STATE_TEXT[r.item.state]}`} />
+                <Icon name={itemIcon(r.item.kind, r.item.state, r.item.stateReason)} title={
+                    r.item.state === 'open'
+                      ? r.item.kind === 'pr' ? t('PR 开着') : t('Issue 开着')
+                      : r.item.state === 'closed'
+                        ? r.item.kind === 'pr' ? t('PR 已关闭') : t('Issue 已关闭')
+                        : r.item.kind === 'pr' ? t('PR 已合并') : t('Issue 已合并')
+                  } />
               </span>
               <a
                 href={r.item.url}
@@ -520,10 +548,10 @@ export function TableView({
                 // the link only stops the jump to GitHub; the click goes on to the cell, which opens (GitHub#257)
                 onClick={(e) => e.preventDefault()}
               >
-                {r.item.title}
+                <Verbatim from="github">{r.item.title}</Verbatim>
               </a>{' '}
               {/* under a repository heading the repository is already said (GitHub#275) */}
-              <span className="muted small" data-testid="row-ref">
+              <span className="muted small" data-verbatim="github" data-testid="row-ref">
                 {rowRef(r.item, repo)}
               </span>
             </td>
@@ -537,7 +565,7 @@ export function TableView({
                   data-testid="cell"
                   data-col={c}
                   data-editing={open ? 'yes' : undefined}
-                  title={editable && !open ? '点一下修改' : undefined}
+                  title={editable && !open ? t('点一下修改') : undefined}
                   onClick={editable && !open ? () => startEdit(r.id, r.item, c) : undefined}
                 >
                   {open ? (
@@ -560,11 +588,11 @@ export function TableView({
             })}
           </tr>
         ))}
-      {t.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && (
+      {tb.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && (
         <tr className="group-add">
           <td colSpan={cols.length + 1}>
             <button className="link" data-testid="group-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(g)}>
-              ＋ 新建 issue
+              {t('＋ 新建 issue')}
             </button>
           </td>
         </tr>
@@ -583,7 +611,7 @@ export function TableView({
             ▸
           </span>{' '}
           <span className="fold-run-title" data-testid="fold-run-title">
-            已收起 {groups.length} 组 · 共 {groups.reduce((n, g) => n + g.rows.length, 0)} 条
+            {t('已收起 {n} 组 · 共 {rows} 条', { n: groups.length, rows: groups.reduce((n, g) => n + g.rows.length, 0) })}
           </span>
           {groups.map((g) => (
             <button
@@ -593,22 +621,23 @@ export function TableView({
               data-key={g.key}
               data-drop-over={over === g.key ? 'yes' : undefined}
               {...dropTarget(g)}
-              title={`展开「${g.title}」`}
+              title={t('展开「{group}」', { group: isOwnGroup(g) ? tKey(g.title) : g.title })}
+              {...verbatimParts('github', [isOwnGroup(g) ? null : g.title])}
               onClick={() => toggle(g.key)}
             >
-              {g.title} <span className="count">{g.rows.length}</span>
-              {g.current && <span className="current">当前</span>}
+              <GroupTitle g={g} /> <span className="count">{g.rows.length}</span>
+              {g.current && <span className="current">{t('当前')}</span>}
             </button>
           ))}
           <button className="link fold-run-all" data-testid="fold-run-expand" onClick={() => groups.forEach((g) => toggle(g.key))}>
-            全部展开
+            {t('全部展开')}
           </button>
         </td>
       </tr>
     </tbody>
   );
   const groupList = (groups: Group[], repo: string | null) =>
-    t.groupBy === 'none'
+    tb.groupBy === 'none'
       ? groups.map((g) => groupBody(g, repo))
       : foldRuns(groups, folded).map((run) => (run.kind === 'group' ? groupBody(run.group, repo) : foldedRun(run.key, run.groups, repo !== null)));
 
@@ -616,9 +645,9 @@ export function TableView({
     <div className="table-layout" data-testid="table">
       {table.slices && (
         <nav className="slices" data-testid="slices">
-          <div className="small muted">仓库</div>
+          <div className="small muted">{t('仓库')}</div>
           <button className={table.slice === null ? 'slice on' : 'slice'} data-testid="slice" data-value="" onClick={() => api().setView({ table: { slice: null } })}>
-            全部 <span className="count">{items.length}</span>
+            {t('全部')} <span className="count">{items.length}</span>
           </button>
           {table.slices.map((s) => (
             // GitHub#398: the link to the repository's GitHub page sits next to the slice button, shown on hover / keyboard focus
@@ -627,18 +656,18 @@ export function TableView({
               className={table.slice?.toLowerCase() === s.value.toLowerCase() ? 'slice on' : 'slice'}
               data-testid="slice"
               data-value={s.value}
-              title="点一下只看这个仓库；拖动调整仓库顺序"
+              title={t('点一下只看这个仓库；拖动调整仓库顺序')}
               onClick={() => api().setView({ table: { slice: s.value } })}
               {...repoDrag.props(s.value)}
             >
-              <span className="slice-name">{s.value}</span> <span className="count" data-testid="slice-count">{s.count}</span>
+              <span className="slice-name"><Verbatim from="github">{s.value}</Verbatim></span> <span className="count" data-testid="slice-count">{s.count}</span>
             </button>
             <RepoWebLink repo={s.value} />
             </div>
           ))}
           {repoOrder.length > 0 && (
-            <button className="link small slice-reset" data-testid="repo-order-reset" title="不再用拖出来的顺序，仓库回到按名称排" onClick={() => void Promise.resolve(api().resetRepoOrder()).catch(() => undefined)}>
-              按名称排序
+            <button className="link small slice-reset" data-testid="repo-order-reset" title={t('不再用拖出来的顺序，仓库回到按名称排')} onClick={() => void Promise.resolve(api().resetRepoOrder()).catch(() => undefined)}>
+              {t('按名称排序')}
             </button>
           )}
         </nav>
@@ -662,12 +691,12 @@ export function TableView({
             ? table.repos.map((r) => (
                 <Fragment key={r.key}>
                   <tbody data-testid="repo-group" data-key={r.key} data-title={r.title}>
-                    <tr className="repo-head" data-testid="repo-head" onClick={() => toggle(r.key)} title={folded.has(r.key) ? '点一下展开这个仓库' : '点一下收起这个仓库'}>
+                    <tr className="repo-head" data-testid="repo-head" onClick={() => toggle(r.key)} title={folded.has(r.key) ? t('点一下展开这个仓库') : t('点一下收起这个仓库')}>
                       <td colSpan={cols.length + 1}>
-                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? '展开这个仓库' : '收起这个仓库'}>
+                        <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? t('展开这个仓库') : t('收起这个仓库')}>
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
-                        <Icon name="repo" size={16} /> <b>{r.title}</b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
+                        <Icon name="repo" size={16} /> <b><Verbatim from="github">{r.title}</Verbatim></b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
                         <RepoWebLink repo={r.title} />
                       </td>
                     </tr>
@@ -677,7 +706,7 @@ export function TableView({
               ))
             : groupList(table.groups, null)}
         </table>
-        {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">没有符合条件的条目</div>}
+        {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">{t('没有符合条件的条目')}</div>}
       </div>
     </div>
   );

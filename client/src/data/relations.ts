@@ -11,6 +11,7 @@ import { parseStateReason } from '../shared/stateTone';
 import type { Item, ItemRelations, RelatedIssue } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
+import { t } from '../shared/i18n';
 import { ISSUE_RELATIONS_QUERY } from './queries';
 
 /** issues per request of the repository batch (GitHub's limit for `nodes(ids:)`) */
@@ -87,22 +88,22 @@ export function readRelations(c: GqlRelationFields): ItemRelations | undefined {
 export async function completeRelations<T extends GqlRelationFields>(client: GitHubClient, c: T, what: string): Promise<T> {
   const cut = (x: GqlRelationFields) => LISTS.filter((name) => x[name]?.pageInfo?.hasNextPage);
   if (!cut(c).length) return c;
-  if (!c.id) throw new GitHubError('graphql', `${what} 的关系超过一页，但缺少读后续页要用的 id`);
+  if (!c.id) throw new GitHubError('graphql', t('{item} 的关系超过一页，但缺少读后续页要用的 id', { item: what }));
   const out: T = { ...c };
   for (const name of LISTS) if (c[name]) out[name] = { pageInfo: { ...c[name]!.pageInfo }, nodes: [...c[name]!.nodes] };
   for (let page = 0; cut(out).length; page++) {
-    if (page >= MAX_RELATION_PAGES) throw new GitHubError('http', `${what} 的关系分页超过 ${MAX_RELATION_PAGES} 页，已停止`);
+    if (page >= MAX_RELATION_PAGES) throw new GitHubError('http', t('{item} 的关系分页超过 {max} 页，已停止', { item: what, max: MAX_RELATION_PAGES }));
     const want = cut(out);
     const variables: Record<string, unknown> = { id: c.id };
     for (const name of LISTS) {
       variables[name] = want.includes(name);
       variables[`${name}After`] = want.includes(name) ? out[name]!.pageInfo.endCursor : null;
-      if (want.includes(name) && !out[name]!.pageInfo.endCursor) throw new GitHubError('graphql', `${what} 的关系分页缺少游标`);
+      if (want.includes(name) && !out[name]!.pageInfo.endCursor) throw new GitHubError('graphql', t('{item} 的关系分页缺少游标', { item: what }));
     }
     const data = await client.graphql<{ node: (Partial<Record<ListName, GqlRelationList | null>> & { __typename?: string }) | null }>(ISSUE_RELATIONS_QUERY, variables);
     for (const name of want) {
       const more = data.node?.[name];
-      if (!more || !Array.isArray(more.nodes) || !more.pageInfo) throw new GitHubError('graphql', `${what} 的关系后续页没有读到`);
+      if (!more || !Array.isArray(more.nodes) || !more.pageInfo) throw new GitHubError('graphql', t('{item} 的关系后续页没有读到', { item: what }));
       out[name] = { pageInfo: more.pageInfo, nodes: [...out[name]!.nodes, ...more.nodes] };
     }
   }
@@ -126,7 +127,7 @@ export async function fetchNodesBatch<T>(
   for (let at = 0; at < ids.length; at += size) {
     const batch = ids.slice(at, at + size);
     const data = await client.graphql<{ nodes: ((T & { __typename?: string }) | null)[] }>(query, { ids: batch });
-    if (!Array.isArray(data.nodes) || data.nodes.length !== batch.length) throw new GitHubError('graphql', '批量读关系：回应的条数和请求的不一致');
+    if (!Array.isArray(data.nodes) || data.nodes.length !== batch.length) throw new GitHubError('graphql', t('批量读关系：回应的条数和请求的不一致'));
     out.push(...data.nodes);
   }
   return out;

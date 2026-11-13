@@ -4,9 +4,11 @@
 // added). While a change is being sent, or offline, the list is greyed and Enter does nothing.
 // GitHub#496: what the item carried when the picker opened is listed first, then the `pinned` labels;
 // the order is fixed while it is open (a click only moves the tick), see shared/pickOrder.ts.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { pickOrder } from '../shared/pickOrder';
 import { useLayer, useShortcuts } from './keyboard';
+import { t } from '../shared/i18n';
+import { Verbatim } from './Verbatim';
 
 export type PickItem = { name: string; color?: string; checked: boolean };
 
@@ -20,8 +22,8 @@ export function LabelPicker({
   onToggle,
   onClose,
 }: {
-  title: string;
-  hint?: string;
+  title: ReactNode;
+  hint?: ReactNode;
   items: PickItem[];
   /** sending, or offline: nothing can be changed right now */
   disabled: boolean;
@@ -75,7 +77,7 @@ export function LabelPicker({
         ref={input}
         data-testid="picker-filter"
         value={filter}
-        placeholder="筛选"
+        placeholder={t('筛选')}
         onChange={(e) => {
           setFilter(e.target.value);
           setActive(0);
@@ -95,21 +97,21 @@ export function LabelPicker({
           >
             <span className="chk">{i.checked ? '✓' : ''}</span>
             {i.color !== undefined && <span className="dot" style={{ background: `#${i.color || 'ddd'}` }} />}
-            {i.name}
+            <Verbatim from="github">{i.name}</Verbatim>
           </li>
         ))}
-        {shown.length === 0 && <li className="muted">没有匹配的</li>}
+        {shown.length === 0 && <li className="muted">{t('没有匹配的')}</li>}
       </ul>
       <div className="picker-foot small muted">
         <span>
           <kbd>↑</kbd>
-          <kbd>↓</kbd> 选择
+          <kbd>↓</kbd> {t('选择')}
         </span>
         <span>
-          <kbd>↩</kbd> 加上 / 去掉
+          <kbd>↩</kbd> {t('加上 / 去掉')}
         </span>
         <span>
-          <kbd>Esc</kbd> 收起
+          <kbd>Esc</kbd> {t('收起')}
         </span>
       </div>
     </div>

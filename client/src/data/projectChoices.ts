@@ -8,6 +8,7 @@ import type { ChoiceGroup, ProjectChoice, ProjectChoices } from '../shared/types
 import { classifyFailure } from '../shared/readFailure';
 import { GitHubClient, GitHubError, failureInput } from './github';
 import { CHOICES_ORG_QUERY, CHOICES_ORGS_QUERY, CHOICES_VIEWER_QUERY } from './queries';
+import { t } from '../shared/i18n';
 
 /** at most this many pages per list (50 Projects / 100 organisations a page) */
 export const MAX_CHOICE_PAGES = 20;
@@ -25,13 +26,13 @@ async function allPages<T>(read: (after: string | null) => Promise<Page<T> | nul
   for (let i = 0; i < MAX_CHOICE_PAGES; i++) {
     const page = await read(after);
     if (!page) {
-      const missing = new GitHubError('graphql', 'GitHub 没有返回这份列表');
+      const missing = new GitHubError('graphql', t('GitHub 没有返回这份列表'));
       missing.meta.gqlTypes = ['NOT_FOUND'];
       throw missing;
     }
     nodes.push(...page.nodes.filter((n): n is T => n !== null));
     if (!page.pageInfo.hasNextPage) return { nodes, truncated: false };
-    if (!page.pageInfo.endCursor) throw new GitHubError('graphql', 'GitHub 的分页缺少下一页的位置');
+    if (!page.pageInfo.endCursor) throw new GitHubError('graphql', t('GitHub 的分页缺少下一页的位置'));
     after = page.pageInfo.endCursor;
   }
   return { nodes, truncated: true };

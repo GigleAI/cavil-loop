@@ -8,6 +8,7 @@
 // GitHub's HTML with `annotateTaskBoxes`, and the write re-checks the fresh
 // source and flips the character with `flipTask`.
 
+import { zhKey } from '../shared/i18n';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmTaskListItem } from 'micromark-extension-gfm-task-list-item';
 import { gfmTaskListItemFromMarkdown } from 'mdast-util-gfm-task-list-item';
@@ -93,15 +94,16 @@ export function annotateTaskBoxes(html: string, clickable: boolean, pending: Pen
   });
 }
 
+/** `why`: a Chinese key (zhKey), shown with tKey */
 export type TaskPlan = { ok: true; boxes: TaskBox[] } | { ok: false; why: string };
 
 /** Can this entry's boxes be clicked? Only when the source and GitHub's rendering agree box for box. */
 export function planTasks(source: string, html: string): TaskPlan {
   const rendered = renderedTaskBoxes(html);
-  if (!rendered.length) return { ok: false, why: '没有勾选框' };
+  if (!rendered.length) return { ok: false, why: zhKey('没有勾选框') };
   const boxes = findTaskBoxes(source);
   if (!boxes || boxes.length !== rendered.length || boxes.some((b, i) => b.checked !== rendered[i]))
-    return { ok: false, why: '这条评论的勾选框客户端对不上，请在网页上勾' };
+    return { ok: false, why: zhKey('这条评论的勾选框客户端对不上，请在网页上勾') };
   return { ok: true, boxes };
 }
 

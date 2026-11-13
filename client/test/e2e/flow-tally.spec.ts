@@ -233,7 +233,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   await expect(page.getByTestId('hand-back-agent')).toHaveValue('pending/agent');
   await expect
     .poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack))
-    .toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: '', blocked: 'pending/blocked' });
+    .toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: '', blocked: 'pending/blocked', later: 'pending/later' });
   expect(await page.evaluate(async () => (await (window as any).cavil.get()).state.pendingCount)).toBe(pendingBefore);
   await page.getByTestId('back').click();
   await expect(tally(page, 'agent').getByTestId('tally-count')).toHaveText(String(await expected(page, 'pending/agent')));

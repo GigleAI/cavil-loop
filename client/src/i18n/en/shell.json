@@ -180,6 +180,12 @@
   "界面语言": "Interface language",
   "（默认）": " (default)",
   "跟随系统（现在：{lang}）": "Follow system (now: {lang})",
+  "外观": "Appearance",
+  "窗口用浅色还是深色。看板、详情、讨论区、关系图、标签颜色和窗口标题栏一起换，选了立刻生效。": "Light or dark for this window. The board, details, discussions, the graph, label colours and the title bar all change together, at once.",
+  "跟随系统（默认，现在：{look}）": "Follow system (default, now: {look})",
+  "跟随系统（默认）": "Follow system (default)",
+  "浅色": "Light",
+  "深色": "Dark",
   "添加失败": "Could not add",
   "返回看板（{key}）": "Back to board ({key})",
   "返回看板": "Back to board",
@@ -196,6 +202,7 @@
   "{graph}：开着的 issue 挂着「等前置的标签」时，读它评论里 loop 的前置登记，和 GitHub 的「Blocked by」一起画成依赖线（默认 pending/blocked，要和 daemon 配置一致）。只认仓库所有者 / 成员 / 协作者写的登记。": "{graph}: when an open issue carries the waiting-for-prerequisite label, the loop's prerequisite records in its comments are read and drawn as dependency lines together with GitHub's \"Blocked by\" (default pending/blocked; must match the daemon's config). Only records written by the repository's owner / members / collaborators count.",
   "关系图": "Dependency view",
   "等人处理的标签（去掉）": "Waiting-for-human label (removed)",
+  "暂缓的标签（标签选择器里排在等人处理的标签后面；留空 = 不置顶）": "Parked label (listed right after the waiting-for-human label in label pickers; empty = not pinned)",
   "交给 agent 的标签（加上）": "Hand-to-agent label (added)",
   "托管标签（「托管」时加上；留空 = 不显示）": "Autopilot label (added by \"Autopilot\"; empty = not shown)",
   "等前置的标签（关系图按它读 loop 的前置登记，「等前置…」时加上；留空 = 两样都不做）": "Waiting-for-prerequisite label (the dependency view reads loop prerequisites by it; added by \"Wait for…\"; empty = neither)",
@@ -234,6 +241,7 @@
   "选中的位置读不出路径：{e}": "The chosen location has no readable path: {e}",
   "选择框没有给出结果": "The picker gave no result",
   "不认识的语言：{lang}": "Unknown language: {lang}",
+  "不认识的外观：{theme}": "Unknown appearance: {theme}",
   "已删除的账号": "deleted account",
   "（已删除的账号）": "(deleted account)",
   "符合「{query}」的有 {n} 个": {
@@ -347,6 +355,5 @@
   "打开这一条的 GitHub 页面": "Opens this item's GitHub page",
   "到 GitHub 上核对": "Check on GitHub",
   "到 GitHub 上处理": "Handle it on GitHub",
-  "原文已复制": "Text copied",
-  "；": "; "
+  "原文已复制": "Text copied"
 }

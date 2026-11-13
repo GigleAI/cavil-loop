@@ -1036,8 +1036,17 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
   await page.clock.setFixedTime(local(9, 0));
   await page.reload();
   await page.waitForSelector('[data-testid="app-root"]');
+  /**
+   * Nothing syncing. The open detail reads again only for a round with a new time mark, and a beat that
+   * comes while a round is running starts none (GitHub#324): the clock is moved, and the beat sent, only
+   * once every earlier round has ended — otherwise a round still running when the clock moved ends with
+   * the same mark as the beat's own, and the detail never reads (PR #520 review round 1: under load the
+   * round started by signing in was sometimes still running here).
+   */
+  const idle = () => expect.poll(async () => (await syncOf(page)).syncing, { timeout: 15_000 }).toBe(false);
   /** one round from the shell's beat, waited until the detail read it started has answered */
   const round = async () => {
+    await idle();
     const n = reads().length;
     app.desktop.push({ kind: 'tick' });
     await expect.poll(() => reads().length).toBeGreaterThan(n);
@@ -1051,9 +1060,11 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
   const frameEl = page.getByTestId('timeline-frame');
   await expect(frameEl).toHaveAttribute('data-ready', 'yes');
   const render0 = await frameEl.getAttribute('data-render');
+  await idle();
   await page.clock.setFixedTime(local(9, 5));
   await round(); // succeeds, same content
   await expect(frameEl).toHaveAttribute('data-render', render0!);
+  await idle();
   await page.clock.setFixedTime(local(9, 10));
   env.fake.state.w.failDetail.add(`gigleai/cavil-loop#${prN}`);
   await round(); // fails
@@ -2360,7 +2371,8 @@ async function lowContrast(page: Page) {
         if (c[3] >= 1) break;
       }
       let acc: C = parse(getComputedStyle(document.documentElement).backgroundColor);
-      if (acc[3] < 1) acc = over(acc, matchMedia('(prefers-color-scheme: dark)').matches ? [13, 17, 23, 1] : [255, 255, 255, 1]);
+      // GitHub#516: the look the window shows is the page's mark (Settings may hold it against the system)
+      if (acc[3] < 1) acc = over(acc, document.documentElement.dataset.theme === 'dark' ? [13, 17, 23, 1] : [255, 255, 255, 1]);
       for (const l of layers.reverse()) acc = over(l, acc);
       return acc;
     };
@@ -2514,6 +2526,36 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await page.getByTestId('open-settings').click();
   await expect(page.getByTestId('settings')).toBeVisible();
   await readableBoth(page, 'settings', 20);
+
+  // GitHub#516: the same check with light / dark chosen in Settings against the system's — settings, board, detail
+  // (Settings is open here; each round ends back in it)
+  for (const [choice, system] of [
+    ['dark', 'light'],
+    ['light', 'dark'],
+  ] as const) {
+    await page.emulateMedia({ colorScheme: system });
+    await page.getByTestId(`theme-${choice}`).check();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', choice);
+    for (const where of ['settings', 'board', 'detail'] as const) {
+      if (where === 'board') {
+        await page.getByTestId('back').click();
+        await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+      }
+      if (where === 'detail') {
+        await card(page, 138).click();
+        await expect(page.frameLocator('[data-testid="timeline-frame"]').locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
+      }
+      const r = await lowContrast(page);
+      expect(r.checked, `${where} (${choice} chosen, system ${system}): text was found`).toBeGreaterThan(where === 'settings' ? 20 : 100);
+      expect(r.bad, `${where} (${choice} chosen, system ${system})`).toEqual([]);
+      await shot(page, `52-look-${where}-chosen-${choice}`);
+    }
+    await page.getByTestId('detail-close').click();
+    await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+    await page.getByTestId('open-settings').click();
+  }
+  await page.getByTestId('theme-system').check();
+  await page.emulateMedia({ colorScheme: 'light' });
   await app.close();
 });
 
@@ -8499,5 +8541,85 @@ test('GitHub#496: label pickers (detail, table cell, new issue) list the checked
   await expect(np).toBeVisible();
   expect(await names(np)).toEqual(['enhancement', 'autopilot', 'pending/human', 'pending/agent', ...REST, 'pending/review']);
   await shot(page, '496-02-new-issue-picker');
+  await app.close();
+});
+
+// ---- GitHub#513: pending/later is pinned right after pending/human, in all three pickers, and follows Settings ----
+
+test('GitHub#513: label pickers (detail, table cell, new issue) pin the parked label right after pending/human; renamed in Settings it follows, emptied it is not pinned', async () => {
+  const N = 140;
+  const C = (name: string, color: string) => ({ name, color });
+  // the repository's labels, in GitHub's order: the parked label was created last, so without the pin it is listed last
+  const repoLabels = [C('doing/agent', 'c2e0c6'), C('Done', '555555'), C('autopilot', 'e4572e'), C('pending/PR', 'ededed'), C('pending/human', 'fbca04'), C('parked', 'cccccc'), C('pending/agent', '0e8a16'), C('enhancement', 'a2eeef'), C('pending/later', 'bfdadc')];
+  env.fake.state.w.repoLabels.set('gigleai/cavil-loop', repoLabels);
+  // the item carries nothing, so the pinned labels lead in every picker
+  for (const r of env.fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === N) r.labels = [];
+  for (const p of env.fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === N) node.content.labels.nodes = [];
+  const { app, page } = await launch(env);
+  await signInWithSources(page);
+  const names = (picker: Locator) => picker.getByTestId('picker-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-name')));
+  const detail = page.getByTestId('detail');
+  const row = page.locator(`[data-testid="row"][data-key="gigleai/cavil-loop#${N}"]`).first();
+
+  /** open the label picker in each of the three places and return what each lists, in order */
+  const allThree = async () => {
+    // 1. detail (the floating panel over the board)
+    await card(page, N).click();
+    await expect(detail).toHaveAttribute('data-key', `gigleai/cavil-loop#${N}`);
+    await expect(detail.getByTestId('label-add')).toBeEnabled({ timeout: 15_000 });
+    await detail.getByTestId('label-add').click();
+    const picker = detail.getByTestId('label-picker');
+    await expect(picker).toBeVisible();
+    const inDetail = await names(picker);
+    await page.keyboard.press('Escape');
+    await expect(picker).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(detail).toHaveCount(0);
+    // 2. the table's label cell
+    await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.locator('[data-testid="cell"][data-col="labels"]').click();
+    const cell = row.getByTestId('cell-label-picker');
+    await expect(cell).toBeVisible();
+    const inTable = await names(cell);
+    await page.keyboard.press('Escape');
+    await expect(cell).toHaveCount(0);
+    await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+    // 3. new issue
+    await page.getByTestId('write-entry').click();
+    await openMoreFields(page);
+    await page.getByTestId('new-issue-label-add').click();
+    const np = page.getByTestId('new-issue-label-picker');
+    await expect(np).toBeVisible();
+    const inNew = await names(np);
+    await page.keyboard.press('Escape');
+    await expect(np).toHaveCount(0);
+    await page.getByTestId('confirm-cancel').click();
+    await expect(page.getByTestId('new-issue')).toHaveCount(0);
+    return { detail: inDetail, table: inTable, newIssue: inNew };
+  };
+  const same = (list: string[]) => ({ detail: list, table: list, newIssue: list });
+  const setLater = async (value: string) => {
+    await page.getByTestId('open-settings').click();
+    await page.getByTestId('hand-back-later').fill(value);
+    await page.getByTestId('hand-back-later').blur();
+    await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.later)).toBe(value);
+    await page.getByTestId('back').click();
+  };
+
+  // ---- default: pending/later right after pending/human ----
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'pending/later', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'parked', 'enhancement']));
+  await page.getByTestId('open-settings').click();
+  await expect(page.getByTestId('hand-back-later')).toHaveValue('pending/later');
+  await page.getByTestId('back').click();
+
+  // ---- renamed: the new name takes the place, pending/later goes back where the repository has it ----
+  await setLater('parked');
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'parked', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'enhancement', 'pending/later']));
+
+  // ---- empty: nothing pinned in its place (the order before GitHub#513) ----
+  await setLater('');
+  expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'parked', 'enhancement', 'pending/later']));
+  expect(writes()).toEqual([]);
   await app.close();
 });

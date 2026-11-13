@@ -6,6 +6,7 @@ import { parseStateReason } from '../shared/stateTone';
 import type { Item, ItemState, Iteration, LinkedPr, ProjectMembership, ProjectMeta, SavedView, SourceConfig, SourceSnapshot, ViewField } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
+import { t } from '../shared/i18n';
 import { ISSUE_RELATIONS_BATCH_QUERY, PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
 import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, type GqlRelationFields } from './relations';
@@ -204,7 +205,7 @@ export async function fetchProject(
   let meta: ProjectMeta | null = null;
   const items = new Map<string, Item>();
   for (let page = 0; ; page++) {
-    if (page >= MAX_PROJECT_PAGES) throw new GitHubError('http', `Project 分页超过 ${MAX_PROJECT_PAGES} 页，已停止`);
+    if (page >= MAX_PROJECT_PAGES) throw new GitHubError('http', t('Project 分页超过 {max} 页，已停止', { max: MAX_PROJECT_PAGES }));
     const data: GqlProjectResponse = await client.graphql<GqlProjectResponse>(PROJECT_ITEMS_QUERY, {
       owner: src.owner,
       number: src.number,
@@ -213,7 +214,7 @@ export async function fetchProject(
     });
     const p = (src.ownerType === 'org' ? data.organization : data.user)?.projectV2;
     if (!p) {
-      const missing = new GitHubError('graphql', `找不到 Project：${src.url}（不存在，或当前账号没有权限）`);
+      const missing = new GitHubError('graphql', t('找不到 Project：{url}（不存在，或当前账号没有权限）', { url: src.url }));
       missing.meta.gqlTypes = ['NOT_FOUND'];
       throw missing;
     }
@@ -252,11 +253,11 @@ export async function fetchProject(
       // its end fails this source's read (the previous snapshot stays), it is never stored short
       const c = await withRelations(client, node.content);
       const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key], now);
-      if (it && !it.relations) throw new GitHubError('graphql', `${it.repo}#${it.number} 的关系没有读全`);
+      if (it && !it.relations) throw new GitHubError('graphql', t('{item} 的关系没有读全', { item: `${it.repo}#${it.number}` }));
       if (it) items.set(it.key, it);
     }
     if (!p.items.pageInfo.hasNextPage) break;
-    if (!p.items.pageInfo.endCursor) throw new GitHubError('graphql', 'Project 分页缺少游标');
+    if (!p.items.pageInfo.endCursor) throw new GitHubError('graphql', t('Project 分页缺少游标'));
     after = p.items.pageInfo.endCursor;
   }
   // GitHub#429: part of the same read — a failure fails the source (its previous snapshot stays)
@@ -390,21 +391,21 @@ export async function fetchRepo(
   const todo = (it: Item) => it.state === 'open' || (pending !== '' && hasLabel(it, pending));
   const wanted = [...items.values()].filter((it) => related.get(it.key) || todo(it));
   const missingId = wanted.find((it) => !it.nodeId);
-  if (missingId) throw new GitHubError('http', `${repo}#${missingId.number} 缺少读关系要用的 id`);
+  if (missingId) throw new GitHubError('http', t('{item} 缺少读关系要用的 id', { item: `${repo}#${missingId.number}` }));
   const nodes = await fetchNodesBatch<GqlRelationFields & GqlViewerFields>(client, ISSUE_RELATIONS_BATCH_QUERY, wanted.map((it) => it.nodeId), batchSize);
   for (let i = 0; i < wanted.length; i++) {
     const it = wanted[i];
     const node = nodes[i];
     const what = `${repo}#${it.number}`;
-    if (!node || node.__typename !== (it.kind === 'pr' ? 'PullRequest' : 'Issue')) throw new GitHubError('graphql', `${what} 的关系没有读到`);
+    if (!node || node.__typename !== (it.kind === 'pr' ? 'PullRequest' : 'Issue')) throw new GitHubError('graphql', t('{item} 的关系没有读到', { item: what }));
     if (related.get(it.key)) {
       const rel = readRelations(await completeRelations(client, node, what));
-      if (!rel) throw new GitHubError('graphql', `${what} 的关系没有读全`);
+      if (!rel) throw new GitHubError('graphql', t('{item} 的关系没有读全', { item: what }));
       it.relations = rel;
     }
     if (todo(it)) {
       const ties = readViewerTies(node, it.kind, now);
-      if (!ties) throw new GitHubError('graphql', `${what} 的订阅状态没有读到`);
+      if (!ties) throw new GitHubError('graphql', t('{item} 的订阅状态没有读到', { item: what }));
       Object.assign(it, ties);
     }
   }

@@ -20,7 +20,7 @@ import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './
 import { LabelPicker } from './LabelPicker';
 import { pinnedLabels } from '../shared/pickOrder';
 import { frameForward, isMac, keyText } from './shortcuts';
-import { copyText, isImageOnlyPaste, PASTE_IMAGE_NOTE } from './pasteImage';
+import { copyText, isImageOnlyPaste, pasteImageNote } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
 import { IterationOptions, localToday } from './iterationOptions';
 import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '../shared/ops';
@@ -30,19 +30,23 @@ import { entryState } from '../shared/blocked';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
+import { getLang, t, tKey, zhKey } from '../shared/i18n';
+import { tNode } from './tNode';
+import { Verbatim, verbatimParts } from './Verbatim';
 
-const METHOD_LABEL: Record<MergeMethod, string> = { merge: '合并提交（merge commit）', squash: '压成一个提交（squash）', rebase: '变基（rebase）' };
+// Chinese keys, shown with tKey
+const METHOD_LABEL: Record<MergeMethod, string> = { merge: zhKey('合并提交（merge commit）'), squash: zhKey('压成一个提交（squash）'), rebase: zhKey('变基（rebase）') };
 const CLOSE_REASON: Record<IssueCloseReason, { name: string; hint: string }> = {
-  completed: { name: '已完成', hint: '做完了 / 问题已解决' },
-  not_planned: { name: '不计划', hint: '不做了、不是问题' },
+  completed: { name: zhKey('已完成'), hint: zhKey('做完了 / 问题已解决') },
+  not_planned: { name: zhKey('不计划'), hint: zhKey('不做了、不是问题') },
 };
 /** GitHub#322: clicks on these in the reply card do their own thing; a click anywhere else there goes to the reply box */
 const CARD_OWN_CLICK = 'button, select, a, input, textarea, label, summary, iframe, [tabindex], [contenteditable]';
 /** the reply box's least height: about four lines (also in styles.css, .reply textarea) */
 const REPLY_MIN_PX = 96;
 /** the floating panel's own "put it away" button: not "关闭", which on an issue / PR means closing it on GitHub (GitHub#180) */
-const HIDE_LABEL = '收起 ›';
-const HIDE_TITLE = '收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）';
+const hideLabel = () => t('收起 ›');
+const hideTitle = () => t('收起（或点面板以外的地方、按 Esc；回复框里有没发出的文字时都不收起；点过讨论后，先点一下讨论以外的地方再按 Esc）');
 
 /**
  * GitHub#397: what a tab's detail holds that was not sent yet. Only one detail is mounted (the tab
@@ -65,8 +69,8 @@ export function draftDirty(d: TabDraft | null | undefined): boolean {
 export type ResultNote = { kind: 'ok' | 'error' | 'warn'; text: string };
 
 export function noteOf(r: WriteResult, okText: string): ResultNote {
-  if (!r.ok) return { kind: 'error', text: `${r.error ?? '没有成功'}` };
-  if (r.warning) return { kind: 'warn', text: `${okText}。注意：${r.warning}` };
+  if (!r.ok) return { kind: 'error', text: `${r.error ?? t('没有成功')}` };
+  if (r.warning) return { kind: 'warn', text: t('{done}。注意：{warning}', { done: okText, warning: r.warning }) };
   return { kind: 'ok', text: okText };
 }
 
@@ -104,7 +108,7 @@ export function ResultBanner({
       <Icon name={note.kind === 'ok' ? 'check' : 'warn'} />
       <span className="banner-text">{note.text}</span>
       {onClose && (
-        <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid={`${testid}-close`} onClick={onClose}>
+        <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid={`${testid}-close`} onClick={onClose}>
           <Icon name="x" />
         </button>
       )}
@@ -114,11 +118,11 @@ export function ResultBanner({
 
 /** GitHub#229: what a change on its way says next to its field. */
 export const EDIT_WORDS: Record<EditMark['status'], string> = {
-  saving: '保存中…',
-  verifying: '已保存，待核对',
-  observing: '已保存，观察中',
-  unconfirmed: '没确认',
-  failed: '没保存上',
+  saving: zhKey('保存中…'),
+  verifying: zhKey('已保存，待核对'),
+  observing: zhKey('已保存，观察中'),
+  unconfirmed: zhKey('没确认'),
+  failed: zhKey('没保存上'),
 };
 
 /** The small status next to a milestone / status / iteration that is on its way (the others are listed above the fields). */
@@ -127,7 +131,7 @@ function EditStatus({ mark, field }: { mark: EditMark | null; field: EditMark['f
   return (
     <span className="saving" data-testid="edit-status" data-field={field} data-edit={mark.status}>
       {mark.status === 'saving' && <span className="spin" aria-hidden="true" />}
-      {EDIT_WORDS[mark.status]}
+      {tKey(EDIT_WORDS[mark.status])}
     </span>
   );
 }
@@ -164,20 +168,24 @@ export function EditIssues({ marks, canWrite, resending, about }: { marks: EditM
       {sending ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />}
       <div className="banner-text">
         {about}
-        <b>{open.length} 处修改{open.some((m) => m.status === 'failed') ? '没保存上' : '没确认'}</b>
-        {sending && <span data-testid="edit-issues-sending">；正在重新发送…</span>}
+        <b>{open.some((m) => m.status === 'failed') ? t('{n} 处修改没保存上', { n: open.length }) : t('{n} 处修改没确认', { n: open.length })}</b>
+        {sending && <span data-testid="edit-issues-sending">{t('；正在重新发送…')}</span>}
         {open.map((m) => (
           <div key={m.id} className="edit-issue" data-testid="edit-issue" data-id={m.id} data-edit={m.status} data-field={m.field}>
             <div>
-              你要{m.field === 'label' ? '' : '设成：'}
-              <b data-testid="edit-target">{m.targetText}</b> <span className="muted small">{m.status === 'failed' ? '没保存上' : '没确认'}</span>
+              {m.field === 'label'
+                ? tNode('你要{target}', { target: <b data-testid="edit-target">{m.targetText}</b> })
+                : tNode('你要设成：{target}', { target: <b data-testid="edit-target">{m.targetText}</b> })}{' '}
+              <span className="muted small">{m.status === 'failed' ? t('没保存上') : t('没确认')}</span>
             </div>
             <div className={`small${m.changedByOthers ? ' err' : ''}`} data-testid="edit-github">
               {!m.github
-                ? 'GitHub 现在：还没读到'
+                ? t('GitHub 现在：还没读到')
                 : 'unreadable' in m.github
-                  ? `GitHub 现在：读不到（${m.github.unreadable}），没法确认有没有人改过`
-                  : `GitHub 现在：${m.github.text}（${at(m.github.at)} 读到）${m.changedByOthers ? '，你改之后有人改过' : ''}`}
+                  ? t('GitHub 现在：读不到（{reason}），没法确认有没有人改过', { reason: m.github.unreadable })
+                  : m.changedByOthers
+                    ? t('GitHub 现在：{value}（{time} 读到），你改之后有人改过', { value: m.github.text, time: at(m.github.at) })
+                    : t('GitHub 现在：{value}（{time} 读到）', { value: m.github.text, time: at(m.github.at) })}
             </div>
             {m.failure && (
               <div className="small" data-testid="edit-failure">
@@ -192,21 +200,21 @@ export function EditIssues({ marks, canWrite, resending, about }: { marks: EditM
             <div className="row" style={{ margin: '2px 0 0' }}>
               {m.hold ? (
                 <button className="link" data-testid="edit-force" disabled={!canWrite || working !== null || sending} onClick={() => void go(m.id, () => api().resendEdit(m.id, true))}>
-                  {m.hold.kind === 'changed' ? '仍然覆盖' : '仍然发送'}
+                  {m.hold.kind === 'changed' ? t('仍然覆盖') : t('仍然发送')}
                 </button>
               ) : (
                 <button className="link" data-testid="edit-resend" disabled={!canWrite || working !== null || sending} onClick={() => void go(m.id, () => api().resendEdit(m.id))}>
-                  重新发送
+                  {t('重新发送')}
                 </button>
               )}
               <button
                 className="link"
                 data-testid="edit-abandon"
                 disabled={working !== null}
-                title="不再显示这处修改，显示 GitHub 上的值；没确认的那次请求如果之后才执行，下一次同步会如实显示 GitHub 的值"
+                title={t('不再显示这处修改，显示 GitHub 上的值；没确认的那次请求如果之后才执行，下一次同步会如实显示 GitHub 的值')}
                 onClick={() => void go(m.id, () => api().abandonEdit(m.id))}
               >
-                放弃
+                {t('放弃')}
               </button>
             </div>
           </div>
@@ -221,7 +229,7 @@ export function PasteImageNotice({
   copied,
   onWeb,
   onDismiss,
-  webLabel = '到 GitHub 网页上继续写',
+  webLabel = t('到 GitHub 网页上继续写'),
   webBlocked = '',
 }: {
   copied: boolean | null;
@@ -235,15 +243,15 @@ export function PasteImageNotice({
     <div className="banner warn paste-image" data-testid="paste-image-note">
       <Icon name="warn" />
       <span className="banner-text">
-        {PASTE_IMAGE_NOTE}
-        {copied === true && ' 你写的文字已复制，在网页上粘贴后再贴图。'}
-        {copied === false && ' 没能复制你写的文字，请先手动复制。'}
+        {pasteImageNote()}
+        {copied === true && ` ${t('你写的文字已复制，在网页上粘贴后再贴图。')}`}
+        {copied === false && ` ${t('没能复制你写的文字，请先手动复制。')}`}
       </span>
       <button data-testid="paste-image-web" onClick={onWeb} disabled={Boolean(webBlocked)} title={webBlocked || undefined}>
         {webLabel}
       </button>
       <button className="ghost" data-testid="paste-image-dismiss" onClick={onDismiss}>
-        知道了
+        {t('知道了')}
       </button>
     </div>
   );
@@ -266,13 +274,13 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
  */
 function HeldLine({ floating, onDismiss }: { floating: boolean; onDismiss: () => void }) {
   const text = floating
-    ? '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。'
-    : '已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。';
+    ? t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+    : t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。');
   return (
     <div className="detail-held small" data-testid="auto-close-held" data-mode={floating ? 'float' : 'tab'} role="status">
       <Icon name="warn" size={13} />
       <span className="detail-held-text">{text}</span>
-      <button className="banner-close" aria-label="关掉提示" title="关掉提示" data-testid="auto-close-held-dismiss" onClick={onDismiss}>
+      <button className="banner-close" aria-label={t('关掉提示')} title={t('关掉提示')} data-testid="auto-close-held-dismiss" onClick={onDismiss}>
         <Icon name="x" size={12} />
       </button>
     </div>
@@ -292,7 +300,7 @@ export type NoticeTone = 'busy' | 'error' | 'warn' | 'ok';
 function DetailNotices({ count, tone, children }: { count: number; tone: NoticeTone; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
-  const label = tone === 'busy' ? `${count} 条提示，有操作正在进行（点开看）` : `${count} 条提示（点开看）`;
+  const label = tone === 'busy' ? t('{n} 条提示，有操作正在进行（点开看）', { n: count }) : t('{n} 条提示（点开看）', { n: count });
   return (
     <span className="trouble-anchor notices-anchor" ref={box}>
       <button
@@ -310,7 +318,7 @@ function DetailNotices({ count, tone, children }: { count: number; tone: NoticeT
         <span className="notices-count">{count}</span>
       </button>
       {open && <NoticesLayer box={box} onClose={() => setOpen(false)} />}
-      <div className="trouble-panel notices-panel" data-testid="detail-notices" role="dialog" aria-label="提示" hidden={!open}>
+      <div className="trouble-panel notices-panel" data-testid="detail-notices" role="dialog" aria-label={t('提示')} hidden={!open}>
         {children}
       </div>
     </span>
@@ -477,7 +485,7 @@ export function DetailPanel({
   }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
-  const offlineWhy = canWrite ? undefined : '离线时不能修改';
+  const offlineWhy = canWrite ? undefined : t('离线时不能修改');
   const repo = item?.repo ?? '';
 
   // GitHub#226: the board's `updatedAt` of this item when the detail on screen was read. Set only
@@ -614,7 +622,7 @@ export function DetailPanel({
     const r = await api().startOp(action, from);
     if (!session.current()) return r.ok;
     if (!r.ok) {
-      const n: ResultNote = { kind: 'error', text: r.error ?? '没有发送' };
+      const n: ResultNote = { kind: 'error', text: r.error ?? t('没有发送') };
       if (inDialog) setDialogNote(n);
       else setNote(n);
       return false;
@@ -681,7 +689,7 @@ export function DetailPanel({
         const res = await api().startOp({ kind: 'handBack', key: r.key, ...(d.comment?.trim() ? { comment: d.comment } : {}) }, r.id);
         if (!session.current()) return;
         setRetryFrom(null);
-        setNote(res.ok ? null : { kind: 'error', text: res.error ?? '没有发送' });
+        setNote(res.ok ? null : { kind: 'error', text: res.error ?? t('没有发送') });
       })();
     }
   };
@@ -695,7 +703,7 @@ export function DetailPanel({
     setBusy(true);
     const r = await api().act(action);
     if (!mine()) {
-      onLeftBehind(noteOf(r, `${label}：${okText}`), action);
+      onLeftBehind(noteOf(r, t('{item}：{done}', { item: label, done: okText })), action);
       return { ...r, here: false };
     }
     setBusy(false);
@@ -726,7 +734,7 @@ export function DetailPanel({
     // GitHub#488: a recorded change says nothing here (the field and the notice area do)
     const said = resultNote(r, okText);
     if (!session.current()) {
-      if (said) onLeftBehind(resultNote(r, `${label}：${okText}`)!, action);
+      if (said) onLeftBehind(resultNote(r, t('{item}：{done}', { item: label, done: okText }))!, action);
       return r;
     }
     if (said) setNote(said);
@@ -772,12 +780,14 @@ export function DetailPanel({
     wrapRef.current = on;
     void Promise.resolve(api().setView({ codeWrap: on })).catch(() => undefined);
   };
+  // the frame's own words are in the window's language: a switch draws it again
+  const lang = getLang();
   const frame = useMemo(() => {
     if (!detail) return { doc: '', render: '' };
     const render = `r${++renderSeq.current}`;
     return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current, web: state.githubWeb, offline: !canWrite }), render };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, unfold, isDark, canTick, canWrite, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked]);
+  }, [detail, unfold, isDark, canTick, canWrite, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked, lang]);
   const doc = frame.doc;
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   /** the rendering whose script reported in: the frame's script ran (tests wait on it) */
@@ -786,21 +796,21 @@ export function DetailPanel({
   /** A box was ticked in the frame. Sent only when everything the window knows says it may be. */
   const tick = async (entryId: unknown, index: unknown, checked: unknown) => {
     const e = detail?.timeline.find((x) => x.id === entryId && (x.kind === 'body' || x.kind === 'comment'));
-    const t = e?.tasks;
+    const tasks = e?.tasks;
     const count = e ? renderedTaskBoxes(e.bodyHtml).length : 0;
-    if (!item || !e || !t?.clickable || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= count || typeof checked !== 'boolean' || !canWrite || busy || waitingTick) {
+    if (!item || !e || !tasks?.clickable || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= count || typeof checked !== 'boolean' || !canWrite || busy || waitingTick) {
       setRedraw((n) => n + 1);
       return;
     }
     setPendingTick({ entryId: e.id, index, checked, written: false });
     // GitHub#489: the controller sends it; the box stays grey until it is answered and read again (the effect below)
-    const s = await api().startSend({ kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: t.source });
+    const s = await api().startSend({ kind: 'toggleTask', key: item.key, entryId: e.id, index, checked, seenSource: tasks.source });
     if (!session.current()) return;
     if (!s.ok || !s.id) {
       // refused before anything went out: the box goes back to what is on screen at once
       setPendingTick(null);
       setRedraw((n) => n + 1);
-      setNote({ kind: 'error', text: s.error ?? '没有修改' });
+      setNote({ kind: 'error', text: s.error ?? t('没有修改') });
       return;
     }
     const id = s.id;
@@ -826,7 +836,7 @@ export function DetailPanel({
     if (!e || e.editSource === undefined || !canWrite || busy || editing) return;
     // GitHub#489: its last change is on its way or not sure: a second one could be overwritten by a late answer
     const held = state.sends.find((r) => sendHolds(r) && sendSlot(r.action) === `entry:${e.id}`);
-    if (held) return void setNote({ kind: 'error', text: '这一条上一次的修改还没有结果（或还不确定有没有保存上），先看窗口上方的提示' });
+    if (held) return void setNote({ kind: 'error', text: t('这一条上一次的修改还没有结果（或还不确定有没有保存上），先看窗口上方的提示') });
     setEditNote(null);
     setEditing({ entryId: e.id, kind: e.kind as 'body' | 'comment', url: e.url, source: e.editSource, text: e.editSource });
   };
@@ -928,14 +938,14 @@ export function DetailPanel({
       // (nothing sent) is said here, and the text stays in the box.
       const text = reply;
       const s = await api().startSend({ kind: 'comment', key: item.key, body: text });
-      if (!s.ok) return void setNote({ kind: 'error', text: s.error ?? '没有发送' });
+      if (!s.ok) return void setNote({ kind: 'error', text: s.error ?? t('没有发送') });
       setNote(null);
       cleared();
       return;
     }
     // GitHub#250: a reply carrying an operation's kept comment says so — the controller finishes that draft, wherever this panel is by then
     setSendingReply(reply);
-    const r = await run({ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }, '评论已发出');
+    const r = await run({ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }, t('评论已发出'));
     if (r.here) setSendingReply(null);
     if (r.ok && r.here) cleared();
   };
@@ -945,7 +955,7 @@ export function DetailPanel({
     const mine = session.begin('preview');
     const r = await api().previewMarkdown(item.repo, reply);
     if (!mine()) return;
-    setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? '预览失败')}</p>`);
+    setPreview(r.ok ? (r.html ?? '') : `<p>${escapeHtml(r.error ?? t('预览失败'))}</p>`);
   };
   /** R and a click on the reply card's free space (GitHub#322): the reply box, when it can take text */
   const focusReply = () => {
@@ -1093,7 +1103,7 @@ export function DetailPanel({
   // ---- GitHub#250: this item's operations ----
   const myOps = state.ops.filter((r) => r.key === itemKey);
   const lock = opLockOf(state.ops, itemKey);
-  const lockWhy = lock ? `上一次操作还没结清：${opText(lock)}` : undefined;
+  const lockWhy = lock ? t('上一次操作还没结清：{op}', { op: opText(lock) }) : undefined;
   // an operation got an answer or settled: read the detail again, so the panel shows what GitHub holds now
   const opSig = myOps.map((r) => `${r.id}:${r.steps.map((x) => x.state).join(',')}:${r.readAt ?? ''}`).join('|');
   const seenSig = useRef(opSig);
@@ -1214,7 +1224,7 @@ export function DetailPanel({
         data-width={width}
         tabIndex={-1}
       >
-        <div className="detail-resize" data-testid="detail-resize" title="拖动改宽度" onPointerDown={startDrag} />
+        <div className="detail-resize" data-testid="detail-resize" title={t('拖动改宽度')} onPointerDown={startDrag} />
         {children}
       </aside>
     ) : (
@@ -1223,8 +1233,8 @@ export function DetailPanel({
       </section>
     );
   const hideButton = float && (
-    <button className="ghost" onClick={float.onClose} data-testid="detail-close" title={HIDE_TITLE}>
-      {HIDE_LABEL}
+    <button className="ghost" onClick={float.onClose} data-testid="detail-close" title={hideTitle()}>
+      {hideLabel()}
     </button>
   );
 
@@ -1235,7 +1245,7 @@ export function DetailPanel({
       <>
         <div className="detail-head">
           <span className="muted" data-testid="detail-gone">
-            {floating ? '这一条已不在当前视图里' : '这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。'}
+            {floating ? t('这一条已不在当前视图里') : t('这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。')}
           </span>
           {hideButton && <div className="spacer" />}
           {hideButton}
@@ -1257,7 +1267,7 @@ export function DetailPanel({
   const issueOpen = item.kind === 'issue' && detail?.state === 'open';
   // GitHub#205: a conflict is said loudly, and the merge button is off (GitHub refuses the merge anyway)
   const conflict = Boolean(pr && prOpen && (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'));
-  const conflictWhy = '有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）';
+  const conflictWhy = t('有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）');
   // the buttons need the detail read (labels can be changed on a closed item too: it may be waiting for a decision)
   const detailRead = Boolean(detail);
   const hb = state.handBack;
@@ -1267,8 +1277,25 @@ export function DetailPanel({
   const pressHandBack = () => void handOff('handBack', false);
   // GitHub#451: the reply box's text goes out first — the buttons and the 托管 dialog say so
   const boxComment = reply.trim() ? reply : '';
-  const handOffFirst = boxComment ? '先把回复框里的字作为评论发出，发成功后再' : '';
   const dialogComment = ask === 'autopilot' ? handOffComment().comment : '';
+  // the hand-back label names (the settings' / GitHub's) in the autopilot dialog's sentences
+  const labelCodes = {
+    autopilot: (
+      <code>
+        <Verbatim from="github">{hb.autopilot}</Verbatim>
+      </code>
+    ),
+    agent: (
+      <code>
+        <Verbatim from="github">{hb.agent}</Verbatim>
+      </code>
+    ),
+    human: (
+      <code>
+        <Verbatim from="github">{hb.human}</Verbatim>
+      </code>
+    ),
+  };
   const pressAutopilot = () => {
     // GitHub#231: "不再提示" was ticked once — no dialog, the same write as its "确认托管"
     if (!state.autopilotConfirm) return void runAutopilot();
@@ -1279,7 +1306,9 @@ export function DetailPanel({
   const blockedLabel = state.blockedLabels.blocked;
   const itemOpen = detail ? detail.state === 'open' : item.state === 'open';
   const blockedEntry = entryState(detail?.labels.map((l) => l.name) ?? item.labels.map((l) => l.name), hb, state.blockedLabels);
-  const blockedWhy = !itemOpen ? '这一条已经关闭' : blockedEntry.kind === 'other' ? `挂着「${blockedEntry.label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「${hb.human}」后再登记` : null;
+  const blockedWhy = !itemOpen ? t('这一条已经关闭') : blockedEntry.kind === 'other' ? t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: blockedEntry.label, human: hb.human }) : null;
+  // the label names inside blockedWhy are GitHub's (and the settings')
+  const blockedWhyParts = blockedEntry.kind === 'other' ? [blockedEntry.label, hb.human] : [];
   const pressBlocked = () => setBlockedOpen(true);
   quickKeys.current = {
     blocked: detailRead && blockedLabel && !opBlocked && !blockedWhy ? pressBlocked : undefined,
@@ -1308,7 +1337,7 @@ export function DetailPanel({
         <span className="head-info">
         <KindBadge kind={item.kind} state={item.state} reason={item.stateReason} isDraft={detail?.pr && fromCache === null ? detail.pr.isDraft : (item.isDraft ?? detail?.pr?.isDraft ?? null)} />
         <span className="ref">
-          {item.repo} #{item.number}
+          <Verbatim from="github">{item.repo}</Verbatim> #{item.number}
         </span>
         {/* GitHub#229: author and assignees moved up from the field rows, to keep the head short */}
         <span className="head-people" data-testid="detail-people">
@@ -1316,7 +1345,7 @@ export function DetailPanel({
           <Person login={item.author} size={16} />
           {item.assignees.length > 0 && (
             <>
-              <span className="muted small">负责人</span>
+              <span className="muted small">{t('负责人')}</span>
               <span className="people">
                 {item.assignees.map((a) => (
                   <Person key={a} login={a} size={16} />
@@ -1338,24 +1367,24 @@ export function DetailPanel({
               className={`open-tab-btn${width < OPEN_TAB_WORDS_MIN ? ' icon-only' : ''}`}
               onClick={float.onOpenTab}
               data-testid="detail-open-tab"
-              aria-label="在标签页打开"
-              title={`在本应用的新标签页里打开（${isMac() ? '⌘' : 'Ctrl'} + 单击同效）`}
+              aria-label={t('在标签页打开')}
+              title={t('在本应用的新标签页里打开（{mod} + 单击同效）', { mod: isMac() ? '⌘' : 'Ctrl' })}
             >
               <Icon name="open-tab" />
-              {width >= OPEN_TAB_WORDS_MIN && '在标签页打开'}
+              {width >= OPEN_TAB_WORDS_MIN && t('在标签页打开')}
             </button>
             <button
               className="icon-btn"
               onClick={() => api().openExternal(item.url)}
               data-testid="detail-open-web"
-              aria-label="在浏览器里打开 GitHub 网页"
-              title="在浏览器里打开 GitHub 网页"
+              aria-label={t('在浏览器里打开 GitHub 网页')}
+              title={t('在浏览器里打开 GitHub 网页')}
             >
               <Icon name="github" />
             </button>
           </>
         ) : (
-          <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label="在网页打开" title="在网页打开">
+          <button className="icon-btn" onClick={() => api().openExternal(item.url)} data-testid="detail-open-web" aria-label={t('在网页打开')} title={t('在网页打开')}>
             <Icon name="ext" />
           </button>
         )}
@@ -1364,8 +1393,8 @@ export function DetailPanel({
           data-testid="fields-toggle"
           data-shown={fieldsShown ? 'yes' : 'no'}
           aria-pressed={fieldsShown}
-          aria-label={fieldsShown ? '收起标签、里程碑、看板字段' : '显示标签、里程碑、看板字段'}
-          title={fieldsShown ? '收起标签、里程碑、看板字段' : '显示标签、里程碑、看板字段'}
+          aria-label={fieldsShown ? t('收起标签、里程碑、看板字段') : t('显示标签、里程碑、看板字段')}
+          title={fieldsShown ? t('收起标签、里程碑、看板字段') : t('显示标签、里程碑、看板字段')}
           onClick={() => showFields(!fieldsShown)}
         >
           <Icon name="sliders" />
@@ -1382,7 +1411,7 @@ export function DetailPanel({
             {draftOps.map((r) => (
               <div key={r.id} className="detail-stale small op-draft-line">
                 <button className="link" data-testid="op-draft-line" onClick={() => void api().opDismiss(r.id, false)}>
-                  {opDraftLeft(r)?.comment !== undefined ? '有一条没发出的附带评论' : '有一次没完成的操作的草稿'}，点这里找回
+                  {opDraftLeft(r)?.comment !== undefined ? t('有一条没发出的附带评论，点这里找回') : t('有一次没完成的操作的草稿，点这里找回')}
                 </button>
               </div>
             ))}
@@ -1394,8 +1423,8 @@ export function DetailPanel({
           onClick={refreshHere}
           data-testid="detail-refresh"
           data-loading={loading ? 'yes' : 'no'}
-          aria-label={loading ? '读取中…（点一下重新读取）' : '刷新这一条'}
-          title={loading ? '读取中…（点一下：重新读取）' : '刷新这一条（连同标签 / 里程碑列表）'}
+          aria-label={loading ? t('读取中…（点一下重新读取）') : t('刷新这一条')}
+          title={loading ? t('读取中…（点一下：重新读取）') : t('刷新这一条（连同标签 / 里程碑列表）')}
         >
           <Icon name="refresh" />
         </button>
@@ -1405,11 +1434,11 @@ export function DetailPanel({
       <div className="detail-title-row">
         {/* GitHub#489: a title on its way shows at once, marked, until GitHub answered */}
         <h3 className="detail-title" data-testid="detail-title" data-saving={titleSending ? 'yes' : 'no'}>
-          {titleSending?.action.kind === 'editTitle' ? titleSending.action.title.trim() : shownTitle}
+          <Verbatim from={titleSending?.action.kind === 'editTitle' ? 'user' : 'github'}>{titleSending?.action.kind === 'editTitle' ? titleSending.action.title.trim() : shownTitle}</Verbatim>
           {titleSending && (
             <span className="saving" data-testid="title-saving">
               <span className="spin" aria-hidden="true" />
-              {EDIT_WORDS.saving}
+              {tKey(EDIT_WORDS.saving)}
             </span>
           )}
         </h3>
@@ -1418,8 +1447,8 @@ export function DetailPanel({
           <button
             className="icon-btn"
             data-testid="detail-edit-title"
-            aria-label="编辑标题"
-            title={canWrite && !busy && !editing && !titleHeld ? '编辑标题' : (offlineWhy ?? '有修改在途（或上一次还不确定有没有保存上）时不能编辑')}
+            aria-label={t('编辑标题')}
+            title={canWrite && !busy && !editing && !titleHeld ? t('编辑标题') : (offlineWhy ?? t('有修改在途（或上一次还不确定有没有保存上）时不能编辑'))}
             disabled={!canWrite || busy || !!editing || titleHeld}
             onClick={() => {
               setTitleNote(null);
@@ -1433,7 +1462,7 @@ export function DetailPanel({
       {autoCloseHeld && <HeldLine floating={floating} onDismiss={autoCloseHeld.onDismiss} />}
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
-          显示 {clock(fromCache)} 读到的内容{loading ? ' · 正在更新…' : ''}
+          {loading ? t('显示 {time} 读到的内容 · 正在更新…', { time: clock(fromCache) }) : t('显示 {time} 读到的内容', { time: clock(fromCache) })}
         </div>
       )}
       {/* nothing read yet: the failure takes the discussion's place, in the open */}
@@ -1445,14 +1474,14 @@ export function DetailPanel({
       )}
       {autoFailed !== null && !loadError && (
         <div className="detail-stale muted" data-testid="detail-stale" role="status">
-          自动更新失败，显示的是 {clock(autoFailed)} 的内容
+          {t('自动更新失败，显示的是 {time} 的内容', { time: clock(autoFailed) })}
         </div>
       )}
 
       {fieldsShown && (
       <section className="detail-fields" data-testid="detail-fields">
         <div className="field-row">
-          <span className="field-name">标签</span>
+          <span className="field-name">{t('标签')}</span>
           <div className="labels">
             {item.labels.map((l) => {
               const m = markFor('label', { label: l.name });
@@ -1465,17 +1494,18 @@ export function DetailPanel({
                   data-testid="detail-label"
                   data-label={l.name}
                   data-edit={pend?.status ?? ''}
-                  title={pend ? EDIT_WORDS[pend.status] : undefined}
+                  title={pend ? tKey(EDIT_WORDS[pend.status]) : undefined}
                 >
                   {pend?.status === 'saving' && <span className="spin" aria-hidden="true" />}
-                  {l.name}
+                  <Verbatim from="github">{l.name}</Verbatim>
                   <button
                     className="label-x"
                     data-testid="label-remove"
                     data-label={l.name}
-                    title={offlineWhy ?? `去掉「${l.name}」`}
+                    title={offlineWhy ?? t('去掉「{label}」', { label: l.name })}
+                    {...verbatimParts('github', [l.name])}
                     disabled={!canWrite}
-                    onClick={() => void change({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)}
+                    onClick={() => void change({ kind: 'removeLabel', key: item.key, label: l.name }, t('已去掉标签「{label}」', { label: l.name }))}
                   >
                     <Icon name="x" size={10} />
                   </button>
@@ -1485,13 +1515,13 @@ export function DetailPanel({
             {marks
               .filter((m) => m.field === 'label' && m.label && !item.labels.some((l) => l.name === m.label) && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing'))
               .map((m) => (
-                <span key={m.id} className="label pending removing" style={labelStyle(m.color ?? '', isDark)} data-testid="detail-label-removing" data-label={m.label} data-edit={m.status} title={`正在去掉 · ${EDIT_WORDS[m.status]}`}>
-                  {m.label}
+                <span key={m.id} className="label pending removing" style={labelStyle(m.color ?? '', isDark)} data-testid="detail-label-removing" data-label={m.label} data-edit={m.status} title={t('正在去掉 · {status}', { status: tKey(EDIT_WORDS[m.status]) })}>
+                  <Verbatim from="github">{m.label}</Verbatim>
                 </span>
               ))}
             {marks.some((m) => m.field === 'label' && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing')) && (
               <span className="saving" data-testid="edit-status" data-field="label">
-                {EDIT_WORDS[marks.find((m) => m.field === 'label' && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing'))!.status]}
+                {tKey(EDIT_WORDS[marks.find((m) => m.field === 'label' && (m.status === 'saving' || m.status === 'verifying' || m.status === 'observing'))!.status])}
               </span>
             )}
             <span className="picker-anchor">
@@ -1499,16 +1529,17 @@ export function DetailPanel({
                 className="label-plus"
                 data-testid="label-add"
                 disabled={pickBlocked}
-                title={offlineWhy ?? (opts?.error ? opts.error : `候选来自 ${item.repo} 的标签（${keyText('labels')}）`)}
+                title={offlineWhy ?? (opts?.error ? opts.error : t('候选来自 {repo} 的标签（{key}）', { repo: item.repo, key: keyText('labels') }))}
+                {...verbatimParts('github', [item.repo, opts?.error])}
                 onClick={() => setPicker(picker === 'labels' ? null : 'labels')}
               >
-                {opts ? '+ 加标签' : '读取标签…'}
+                {opts ? t('+ 加标签') : t('读取标签…')}
                 <kbd>{keyText('labels')}</kbd>
               </button>
               {picker === 'labels' && opts && (
                 <LabelPicker
-                  title="设置标签"
-                  hint={item.repo}
+                  title={t('设置标签')}
+                  hint={<Verbatim from="github">{item.repo}</Verbatim>}
                   testid="label-picker"
                   pinned={pinnedLabels(state.handBack)}
                   disabled={!canWrite}
@@ -1518,8 +1549,8 @@ export function DetailPanel({
                   ]}
                   onToggle={(l) =>
                     void (l.checked
-                      ? change({ kind: 'removeLabel', key: item.key, label: l.name }, `已去掉标签「${l.name}」`)
-                      : change({ kind: 'addLabel', key: item.key, label: l.name, ...(l.color ? { color: l.color } : {}) }, `已加上标签「${l.name}」`))
+                      ? change({ kind: 'removeLabel', key: item.key, label: l.name }, t('已去掉标签「{label}」', { label: l.name }))
+                      : change({ kind: 'addLabel', key: item.key, label: l.name, ...(l.color ? { color: l.color } : {}) }, t('已加上标签「{label}」', { label: l.name })))
                   }
                   onClose={() => setPicker(null)}
                 />
@@ -1528,21 +1559,26 @@ export function DetailPanel({
           </div>
         </div>
         <div className="field-row">
-          <span className="field-name">里程碑</span>
+          <span className="field-name">{t('里程碑')}</span>
           <select
             data-testid="milestone-select"
             value={item.milestone?.title ?? ''}
             disabled={pickBlocked}
-            title={offlineWhy ?? `${item.repo} 的里程碑；客户端不新建里程碑（${keyText('milestone')}）`}
+            title={offlineWhy ?? t('{repo} 的里程碑；客户端不新建里程碑（{key}）', { repo: item.repo, key: keyText('milestone') })}
+            {...verbatimParts('github', [item.repo])}
             onChange={(e) =>
-              void change({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? `里程碑改成「${e.target.value}」` : '已去掉里程碑')
+              void change({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? t('里程碑改成「{title}」', { title: e.target.value }) : t('已去掉里程碑'))
             }
           >
-            <option value="">（无）</option>
-            {item.milestone && !msTitles.includes(item.milestone.title) && <option value={item.milestone.title}>{item.milestone.title}</option>}
-            {msTitles.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            <option value="">{t('（无）')}</option>
+            {item.milestone && !msTitles.includes(item.milestone.title) && (
+              <option value={item.milestone.title} data-verbatim="github">
+                {item.milestone.title}
+              </option>
+            )}
+            {msTitles.map((title) => (
+              <option key={title} value={title} data-verbatim="github">
+                {title}
               </option>
             ))}
           </select>
@@ -1550,17 +1586,17 @@ export function DetailPanel({
             <kbd>{keyText('milestone')}</kbd>
             {picker === 'milestone' && opts && (
               <LabelPicker
-                title="设置里程碑"
-                hint={`${item.repo}；再选一次当前的就是去掉`}
+                title={t('设置里程碑')}
+                hint={tNode('{repo}；再选一次当前的就是去掉', { repo: <Verbatim from="github">{item.repo}</Verbatim> })}
                 testid="milestone-picker"
                 disabled={!canWrite}
                 items={[
                   ...(item.milestone && !msTitles.includes(item.milestone.title) ? [item.milestone.title] : []),
                   ...msTitles,
-                ].map((t) => ({ name: t, checked: item.milestone?.title === t }))}
+                ].map((title) => ({ name: title, checked: item.milestone?.title === title }))}
                 onToggle={(m) => {
                   setPicker(null);
-                  void change({ kind: 'setMilestone', key: item.key, title: m.checked ? null : m.name }, m.checked ? '已去掉里程碑' : `里程碑改成「${m.name}」`);
+                  void change({ kind: 'setMilestone', key: item.key, title: m.checked ? null : m.name }, m.checked ? t('已去掉里程碑') : t('里程碑改成「{title}」', { title: m.name }));
                 }}
                 onClose={() => setPicker(null)}
               />
@@ -1570,10 +1606,10 @@ export function DetailPanel({
           {opts?.error && (
             <>
               <span className="small err" data-testid="options-error" title={opts.error}>
-                <Icon name="warn" size={12} /> 没读到标签 / 里程碑列表
+                <Icon name="warn" size={12} /> {t('没读到标签 / 里程碑列表')}
               </span>
               <button className="link small" data-testid="options-retry" onClick={rereadOptions}>
-                重试
+                {t('重试')}
               </button>
             </>
           )}
@@ -1582,25 +1618,29 @@ export function DetailPanel({
           const p = metaOf(m.projectKey);
           if (!p) return null;
           const ro = !p.viewerCanUpdate;
-          const why = offlineWhy ?? (ro ? `你在看板「${p.title}」上没有修改权限（GitHub 说这个账号不能改它），迭代和状态只能看` : undefined);
+          const why = offlineWhy ?? (ro ? t('你在看板「{project}」上没有修改权限（GitHub 说这个账号不能改它），迭代和状态只能看', { project: p.title }) : undefined);
+          const whyParts = verbatimParts('github', [ro ? p.title : null]);
           return (
             <div className="field-row project-row" key={m.projectKey} data-testid="project-fields" data-project={m.projectKey}>
-              <span className="field-name">{p.title}</span>
+              <span className="field-name">
+                <Verbatim from="github">{p.title}</Verbatim>
+              </span>
               {p.hasIterationField && (
                 <select
                   data-testid="iteration-select"
                   value={m.iteration?.id ?? ''}
                   disabled={!canWrite || ro}
                   title={why}
+                  {...whyParts}
                   onChange={(e) =>
                     void change(
                       { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: e.target.value || null },
-                      `看板「${p.title}」的迭代已改`,
+                      t('看板「{project}」的迭代已改', { project: p.title }),
                     )
                   }
                 >
-                  <option value="">（无迭代）</option>
-                  <IterationOptions iterations={p.iterations} chosen={m.iteration} today={localToday(Date.now())} label={(i) => `${i.title}（${i.startDate} 起）`} />
+                  <option value="">{t('（无迭代）')}</option>
+                  <IterationOptions iterations={p.iterations} chosen={m.iteration} today={localToday(Date.now())} label={(i) => t('{title}（{start} 起）', { title: i.title, start: i.startDate })} />
                 </select>
               )}
               <EditStatus mark={markFor('iteration', { projectKey: p.key })} field="iteration" />
@@ -1610,13 +1650,14 @@ export function DetailPanel({
                   value={m.status ?? ''}
                   disabled={!canWrite || ro}
                   title={why}
+                  {...whyParts}
                   onChange={(e) =>
-                    void change({ kind: 'setStatus', key: item.key, projectKey: p.key, status: e.target.value || null }, `看板「${p.title}」的状态已改`)
+                    void change({ kind: 'setStatus', key: item.key, projectKey: p.key, status: e.target.value || null }, t('看板「{project}」的状态已改', { project: p.title }))
                   }
                 >
-                  <option value="">（无状态）</option>
+                  <option value="">{t('（无状态）')}</option>
                   {p.statusOptions.map((o) => (
-                    <option key={o} value={o}>
+                    <option key={o} value={o} data-verbatim="github">
                       {o}
                     </option>
                   ))}
@@ -1625,7 +1666,7 @@ export function DetailPanel({
               <EditStatus mark={markFor('status', { projectKey: p.key })} field="status" />
               {ro && (
                 <span className="small muted" data-testid="project-readonly">
-                  只读：这个账号不能修改看板「{p.title}」
+                  {tNode('只读：这个账号不能修改看板「{project}」', { project: <Verbatim from="github">{p.title}</Verbatim> })}
                 </span>
               )}
             </div>
@@ -1636,13 +1677,13 @@ export function DetailPanel({
 
       {detail && detail.timeline.length > 1 && (
         <div className="timeline-tools small">
-          <b>动态</b>
+          <b>{t('动态')}</b>
           <span className="muted">
-            {unfold === 'latest' ? '只展开了最新一条，点标题展开其他' : unfold === 'all' ? '已全部展开' : '已全部收起'}
+            {unfold === 'latest' ? t('只展开了最新一条，点标题展开其他') : unfold === 'all' ? t('已全部展开') : t('已全部收起')}
           </span>
           <div className="spacer" />
           <button className="link" data-testid="unfold-toggle" data-unfold={unfold} onClick={() => setUnfold(unfold === 'all' ? 'none' : 'all')}>
-            {unfold === 'all' ? '全部收起' : '全部展开'}
+            {unfold === 'all' ? t('全部收起') : t('全部展开')}
           </button>
         </div>
       )}
@@ -1650,7 +1691,7 @@ export function DetailPanel({
         {detail ? (
           <iframe
             ref={frameRef}
-            title="评论"
+            title={t('评论')}
             data-testid="timeline-frame"
             data-render={frame.render}
             data-ready={readyRender === frame.render ? 'yes' : 'no'}
@@ -1658,7 +1699,7 @@ export function DetailPanel({
             srcDoc={doc}
           />
         ) : (
-          !loadError && <div className="muted center">正在从 GitHub 读取…</div>
+          !loadError && <div className="muted center">{t('正在从 GitHub 读取…')}</div>
         )}
       </div>
 
@@ -1669,7 +1710,7 @@ export function DetailPanel({
           ref={replyBox}
           onMouseDown={replyPress}
           value={reply}
-          placeholder={canWrite ? `回复（支持 markdown）· 按 ${keyText('reply')} 随时跳到这里` : '离线时不能回复'}
+          placeholder={canWrite ? t('回复（支持 markdown）· 按 {key} 随时跳到这里', { key: keyText('reply') }) : t('离线时不能回复')}
           disabled={!canWrite || busy}
           onChange={(e) => {
             setReply(e.target.value);
@@ -1700,13 +1741,13 @@ export function DetailPanel({
         )}
         {escKept && reply.trim() && (
           <div className="banner warn draft-kept" data-testid="draft-esc-hint" ref={(el) => el?.scrollIntoView?.({ block: 'nearest' })}>
-            回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。
+            {t('回复框里还有没发出的文字，按 Esc 不会收起面板（免得文字丢掉）。发出去、清空，或点右上角「收起 ›」（文字会丢）。')}
           </div>
         )}
         {preview !== null && (
           <iframe
             className="preview"
-            title="预览"
+            title={t('预览')}
             data-testid="reply-preview"
             sandbox={FRAME_SANDBOX}
             srcDoc={previewDocument(preview, isDark)}
@@ -1718,7 +1759,14 @@ export function DetailPanel({
               <div className="banner error" data-testid="pr-conflict">
                 <Icon name="warn" />
                 <span className="banner-text">
-                  <b>有冲突</b>：这个 PR 和目标分支 <code>{pr.baseRef}</code> 有冲突，GitHub 不能合并。先在分支上解决冲突（或在网页上点「Resolve conflicts」），再回来合并。
+                  {tNode('{conflict}：这个 PR 和目标分支 {base} 有冲突，GitHub 不能合并。先在分支上解决冲突（或在网页上点「Resolve conflicts」），再回来合并。', {
+                    conflict: <b>{t('有冲突')}</b>,
+                    base: (
+                      <code>
+                        <Verbatim from="github">{pr.baseRef}</Verbatim>
+                      </code>
+                    ),
+                  })}
                 </span>
               </div>
             )}
@@ -1728,7 +1776,7 @@ export function DetailPanel({
                 {pr.merged ? (
                   <span className="kind done">
                     <Icon name="pr-merged" />
-                    已合并
+                    {t('已合并')}
                   </span>
                 ) : (
                   <>
@@ -1741,10 +1789,18 @@ export function DetailPanel({
                         <span className="sr-only">{x.text}</span>
                       </span>
                     ))}
-                    <span className="branch" data-testid="pr-branch" title={`${pr.headRef} → ${pr.baseRef} · 提交 ${pr.headOid.slice(0, 7)}`} tabIndex={0}>
-                      <span aria-hidden="true">→ {pr.baseRef}</span>
+                    <span
+                      className="branch"
+                      data-testid="pr-branch"
+                      title={t('{head} → {base} · 提交 {sha}', { head: pr.headRef, base: pr.baseRef, sha: pr.headOid.slice(0, 7) })}
+                      {...verbatimParts('github', [pr.headRef, pr.baseRef])}
+                      tabIndex={0}
+                    >
+                      <span aria-hidden="true">
+                        → <Verbatim from="github">{pr.baseRef}</Verbatim>
+                      </span>
                       <span className="sr-only">
-                        {pr.headRef} → {pr.baseRef} · 提交 {pr.headOid.slice(0, 7)}
+                        {tNode('{head} → {base} · 提交 {sha}', { head: <Verbatim from="github">{pr.headRef}</Verbatim>, base: <Verbatim from="github">{pr.baseRef}</Verbatim>, sha: pr.headOid.slice(0, 7) })}
                       </span>
                     </span>
                   </>
@@ -1761,11 +1817,11 @@ export function DetailPanel({
                       void Promise.resolve(api().setMergeMethod(item.repo, m)).catch(() => undefined);
                     }}
                     disabled={!canWrite || busy}
-                    title={method ? METHOD_LABEL[method] : undefined}
+                    title={method ? tKey(METHOD_LABEL[method]) : undefined}
                   >
                     {pr.mergeMethods.map((m) => (
                       <option key={m} value={m}>
-                        {METHOD_LABEL[m]}
+                        {tKey(METHOD_LABEL[m])}
                       </option>
                     ))}
                   </select>
@@ -1777,15 +1833,15 @@ export function DetailPanel({
                     title={offlineWhy ?? lockWhy ?? (conflict ? conflictWhy : undefined)}
                     onClick={() => openAsk('merge')}
                   >
-                    {conflict ? '有冲突，不能合并' : '合并…'}
+                    {conflict ? t('有冲突，不能合并') : t('合并…')}
                   </button>
                   <button className="danger" data-testid="close-pr" disabled={!canWrite || busy || Boolean(lock)} title={offlineWhy ?? lockWhy} onClick={() => openAsk('close')}>
-                    关闭 PR…
+                    {t('关闭 PR…')}
                   </button>
                 </span>
               )}
             </div>
-            {prOpen && pr.mergeMethods.length === 0 && <div className="small err pr-note">这个仓库没有开启任何合并方式</div>}
+            {prOpen && pr.mergeMethods.length === 0 && <div className="small err pr-note">{t('这个仓库没有开启任何合并方式')}</div>}
           </div>
         )}
         <div className="row end">
@@ -1794,17 +1850,17 @@ export function DetailPanel({
               className="danger"
               data-testid="close-issue"
               disabled={opBlocked}
-              title={offlineWhy ?? lockWhy ?? `在 GitHub 上关闭这个 issue（先选原因，${keyText('closeIssue')}）`}
+              title={offlineWhy ?? lockWhy ?? t('在 GitHub 上关闭这个 issue（先选原因，{key}）', { key: keyText('closeIssue') })}
               onClick={pressCloseIssue}
             >
-              关闭 issue…
+              {t('关闭 issue…')}
               <kbd>{keyText('closeIssue')}</kbd>
             </button>
           )}
           <div className="spacer" />
           {/* GitHub#433: every button with a key carries it itself, the same way */}
-          <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={`预览（${keyText('preview')}）`} onClick={() => void togglePreview()}>
-            {preview !== null ? '继续编辑' : '预览'}
+          <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={t('预览（{key}）', { key: keyText('preview') })} onClick={() => void togglePreview()}>
+            {preview !== null ? t('继续编辑') : t('预览')}
             <kbd>{keyText('preview')}</kbd>
           </button>
           {detailRead && (
@@ -1813,10 +1869,11 @@ export function DetailPanel({
                 <button
                   data-testid="blocked-open"
                   disabled={opBlocked || Boolean(blockedWhy)}
-                  title={offlineWhy ?? lockWhy ?? blockedWhy ?? `选这一条要等的 issue / PR，登记后挂上「${blockedLabel}」；前置全部完成后 daemon 自动翻回「${hb.agent}」（${keyText('blocked')}）`}
+                  title={offlineWhy ?? lockWhy ?? blockedWhy ?? t('选这一条要等的 issue / PR，登记后挂上「{label}」；前置全部完成后 daemon 自动翻回「{agent}」（{key}）', { label: blockedLabel, agent: hb.agent, key: keyText('blocked') })}
+                  {...verbatimParts('github', offlineWhy || lockWhy ? [] : blockedWhy ? blockedWhyParts : [blockedLabel, hb.agent])}
                   onClick={pressBlocked}
                 >
-                  等前置…
+                  {t('等前置…')}
                   <kbd>{keyText('blocked')}</kbd>
                 </button>
               )}
@@ -1824,10 +1881,17 @@ export function DetailPanel({
                 data-testid="hand-back"
                 disabled={opBlocked}
                 data-comment={boxComment ? 'yes' : 'no'}
-                title={offlineWhy ?? lockWhy ?? `${handOffFirst}加上「${hb.agent}」、去掉「${hb.human}」（标签名在设置里改，${keyText('handBack')}）`}
+                title={
+                  offlineWhy ??
+                  lockWhy ??
+                  (boxComment
+                    ? t('先把回复框里的字作为评论发出，发成功后再加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') })
+                    : t('加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') }))
+                }
+                {...verbatimParts('github', offlineWhy || lockWhy ? [] : [hb.agent, hb.human])}
                 onClick={pressHandBack}
               >
-                {boxComment ? '评论并交给 agent' : '交给 agent'}
+                {boxComment ? t('评论并交给 agent') : t('交给 agent')}
                 <kbd>{keyText('handBack')}</kbd>
               </button>
               {hb.autopilot && (
@@ -1838,18 +1902,25 @@ export function DetailPanel({
                   title={
                     offlineWhy ??
                     lockWhy ??
-                    `${handOffFirst}加上「${hb.autopilot}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）${state.autopilotConfirm ? '' : '；已设为不再提示，点了直接托管（设置里可改回）'}（${keyText('autopilot')}）`
+                    (boxComment
+                      ? state.autopilotConfirm
+                        ? t('先把回复框里的字作为评论发出，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
+                        : t('先把回复框里的字作为评论发出，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
+                      : state.autopilotConfirm
+                        ? t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
+                        : t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { label: hb.autopilot, key: keyText('autopilot') }))
                   }
+                  {...verbatimParts('github', offlineWhy || lockWhy ? [] : [hb.autopilot])}
                   onClick={pressAutopilot}
                 >
-                  {`${boxComment ? '评论并' : ''}托管（自动合并）${state.autopilotConfirm ? '…' : ''}`}
+                  {`${boxComment ? t('评论并托管（自动合并）') : t('托管（自动合并）')}${state.autopilotConfirm ? '…' : ''}`}
                   <kbd>{keyText('autopilot')}</kbd>
                 </button>
               )}
             </span>
           )}
-          <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={`发送（${keyText('send')}）`} onClick={() => void send()}>
-            发送
+          <button className="primary" data-testid="reply-send" disabled={sendBlocked} title={t('发送（{key}）', { key: keyText('send') })} onClick={() => void send()}>
+            {t('发送')}
             <kbd>{keyText('send')}</kbd>
           </button>
         </div>
@@ -1857,8 +1928,8 @@ export function DetailPanel({
 
       {ask === 'merge' && pr && method && (
         <ConfirmDialog
-          title={`合并 PR #${item.number}？`}
-          confirmLabel="确认合并"
+          title={t('合并 PR #{number}？', { number: item.number })}
+          confirmLabel={t('确认合并')}
           busy={busy}
           onCancel={cancelAsk}
           onConfirm={async () => {
@@ -1867,15 +1938,31 @@ export function DetailPanel({
         >
           <ResultBanner note={dialogNote} testid="dialog-result" />
           <p>
-            把 <code>{pr.headRef}</code> 合进 <code>{pr.baseRef}</code>，方式：{METHOD_LABEL[method]}。
+            {tNode('把 {head} 合进 {base}，方式：{method}。', {
+              head: (
+                <code>
+                  <Verbatim from="github">{pr.headRef}</Verbatim>
+                </code>
+              ),
+              base: (
+                <code>
+                  <Verbatim from="github">{pr.baseRef}</Verbatim>
+                </code>
+              ),
+              method: tKey(METHOD_LABEL[method]),
+            })}
           </p>
         </ConfirmDialog>
       )}
       {blockedOpen && <BlockedDialog item={item} state={state} items={data.items} onClose={() => setBlockedOpen(false)} />}
       {ask === 'autopilot' && (
         <ConfirmDialog
-          title={`${dialogComment ? '评论并' : ''}托管 ${item.kind === 'pr' ? 'PR' : 'issue'} #${item.number}？`}
-          confirmLabel="确认托管"
+          title={
+            dialogComment
+              ? t('评论并托管 {kind} #{number}？', { kind: item.kind === 'pr' ? 'PR' : 'issue', number: item.number })
+              : t('托管 {kind} #{number}？', { kind: item.kind === 'pr' ? 'PR' : 'issue', number: item.number })
+          }
+          confirmLabel={t('确认托管')}
           busy={busy}
           onCancel={cancelAsk}
           onConfirm={async () => {
@@ -1888,34 +1975,34 @@ export function DetailPanel({
           <div data-testid="autopilot-explain">
             {dialogComment ? (
               <>
-                <p data-testid="autopilot-explain-comment">{retryFrom ? '先发出上一次没发出去的评论：' : '先发出回复框里的评论：'}</p>
+                <p data-testid="autopilot-explain-comment">{retryFrom ? t('先发出上一次没发出去的评论：') : t('先发出回复框里的评论：')}</p>
                 <blockquote className="op-comment" data-testid="autopilot-comment">
-                  {dialogComment}
+                  <Verbatim from="user">{dialogComment}</Verbatim>
                 </blockquote>
                 <p data-testid="autopilot-explain-labels">
-                  评论发成功后，再加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。评论没发成功就什么标签都不动，这段话留着可以放回回复框。
+                  {tNode('评论发成功后，再加上标签 {autopilot} 和 {agent}、去掉 {human}。评论没发成功就什么标签都不动，这段话留着可以放回回复框。', labelCodes)}
                 </p>
               </>
             ) : (
               <p data-testid="autopilot-explain-labels">
-                会加上标签 <code>{hb.autopilot}</code> 和 <code>{hb.agent}</code>、去掉 <code>{hb.human}</code>。
+                {tNode('会加上标签 {autopilot} 和 {agent}、去掉 {human}。', labelCodes)}
               </p>
             )}
-            <p data-testid="autopilot-explain-then">agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。</p>
+            <p data-testid="autopilot-explain-then">{t('agent 接手，从方案到合并不再等你确认；独立复审通过、检查通过后由 daemon 自动合并。')}</p>
             <p data-testid="autopilot-explain-stop">
-              要叫停，在网页上去掉 <code>{hb.autopilot}</code> 标签。只有维护者亲手加的托管标签才算数。
+              {tNode('要叫停，在网页上去掉 {autopilot} 标签。只有维护者亲手加的托管标签才算数。', labelCodes)}
             </p>
           </div>
           <label className="row small">
             <input type="checkbox" data-testid="autopilot-no-more-ask" checked={noMoreAsk} disabled={busy} onChange={(e) => setNoMoreAsk(e.target.checked)} />
-            不再提示，以后点「托管」直接执行（设置里可改回）
+            {t('不再提示，以后点「托管」直接执行（设置里可改回）')}
           </label>
         </ConfirmDialog>
       )}
       {editing && (
         <ConfirmDialog
-          title={editing.kind === 'body' ? '编辑正文' : '编辑评论'}
-          confirmLabel="保存到 GitHub"
+          title={editing.kind === 'body' ? t('编辑正文') : t('编辑评论')}
+          confirmLabel={t('保存到 GitHub')}
           busy={busy}
           disabled={editing.text === editing.source || (editing.kind === 'comment' && !editing.text.trim())}
           dirty={editing.text !== editing.source}
@@ -1929,7 +2016,7 @@ export function DetailPanel({
             // recorded (nothing sent) is said here, and the editor stays with the text
             const s = await api().startSend({ kind: 'editEntry', key: item.key, entryId: editing.entryId, body: editing.text, seenSource: editing.source });
             if (!session.current()) return;
-            if (!s.ok) return void setEditNote({ kind: 'error', text: s.error ?? '没有保存' });
+            if (!s.ok) return void setEditNote({ kind: 'error', text: s.error ?? t('没有保存') });
             setEditing(null);
             setEditNote(null);
             editFrom.current = null;
@@ -1963,8 +2050,8 @@ export function DetailPanel({
       )}
       {titleEdit && (
         <ConfirmDialog
-          title="编辑标题"
-          confirmLabel="保存到 GitHub"
+          title={t('编辑标题')}
+          confirmLabel={t('保存到 GitHub')}
           busy={busy}
           disabled={!titleEdit.text.trim() || titleEdit.text.trim() === titleEdit.seen}
           dirty={titleEdit.text !== titleEdit.seen}
@@ -1976,7 +2063,7 @@ export function DetailPanel({
             // GitHub#489: as an edit above — the controller saves it, the dialog closes at once
             const s = await api().startSend({ kind: 'editTitle', key: item.key, title: titleEdit.text, seenTitle: titleEdit.seen });
             if (!session.current()) return;
-            if (!s.ok) return void setTitleNote({ kind: 'error', text: s.error ?? '没有保存' });
+            if (!s.ok) return void setTitleNote({ kind: 'error', text: s.error ?? t('没有保存') });
             setTitleEdit(null);
             setTitleNote(null);
             titleFrom.current = null;
@@ -1987,7 +2074,7 @@ export function DetailPanel({
             ref={titleInput}
             className="title-box"
             data-testid="edit-title-input"
-            aria-label="标题"
+            aria-label={t('标题')}
             value={titleEdit.text}
             onChange={(e) => setTitleEdit({ ...titleEdit, text: e.target.value })}
           />
@@ -1996,8 +2083,8 @@ export function DetailPanel({
       )}
       {ask === 'close' && (
         <ConfirmDialog
-          title={`关闭 PR #${item.number}（不合并）？`}
-          confirmLabel="确认关闭"
+          title={t('关闭 PR #{number}（不合并）？', { number: item.number })}
+          confirmLabel={t('确认关闭')}
           danger
           busy={busy}
           onCancel={cancelAsk}
@@ -2009,13 +2096,13 @@ export function DetailPanel({
           }}
         >
           <ResultBanner note={dialogNote} testid="dialog-result" />
-          <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
+          <textarea data-testid="close-comment" placeholder={t('可选：附一句评论（关闭成功后发出）')} value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
       {ask === 'closeIssue' && (
         <ConfirmDialog
-          title={`关闭 issue #${item.number}？`}
-          confirmLabel="确认关闭"
+          title={t('关闭 issue #{number}？', { number: item.number })}
+          confirmLabel={t('确认关闭')}
           danger
           busy={busy}
           onCancel={cancelAsk}
@@ -2030,12 +2117,12 @@ export function DetailPanel({
             {ISSUE_CLOSE_REASONS.map((r) => (
               <label key={r} className="radio">
                 <input type="radio" name="close-reason" value={r} data-testid={`close-reason-${r}`} checked={closeReason === r} onChange={() => setCloseReason(r)} />
-                <b>{CLOSE_REASON[r].name}</b>
-                <span className="muted">{CLOSE_REASON[r].hint}</span>
+                <b>{tKey(CLOSE_REASON[r].name)}</b>
+                <span className="muted">{tKey(CLOSE_REASON[r].hint)}</span>
               </label>
             ))}
           </div>
-          <textarea data-testid="close-comment" placeholder="可选：附一句评论（关闭成功后发出）" value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
+          <textarea data-testid="close-comment" placeholder={t('可选：附一句评论（关闭成功后发出）')} value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
     </>,

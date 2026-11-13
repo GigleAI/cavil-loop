@@ -9,6 +9,8 @@
 // sign-on or a missing scope; whatever is left is "not found, or no access" without naming a cause,
 // and anything else is a plain "读取失败". GitHub's own words are always kept underneath.
 
+import { t } from './i18n';
+
 /** the kinds, in the order they are tried */
 export const FAILURE_KINDS = ['cancelled', 'network', 'rateLimited', 'auth', 'transient', 'orgRestricted', 'sso', 'scope', 'notFound', 'other'] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
@@ -124,52 +126,63 @@ const hhmm = (ms: number) => {
  * has passed (then "重新读取" is on again). `github-app` changes only the authorisation wording.
  */
 export function describeFailure(f: ReadFailure, now: number, appKind: 'oauth' | 'github-app' = 'oauth'): FailureText {
-  const org = f.org ? `组织 ${f.org} ` : '这个组织';
+  const org = f.org;
   switch (f.kind) {
     case 'cancelled':
-      return { title: '这一轮读取已放弃', body: '读取被放弃（例如手动重新同步），不是失败；新一轮会接着读。', actions: [] };
+      return { title: t('这一轮读取已放弃'), body: t('读取被放弃（例如手动重新同步），不是失败；新一轮会接着读。'), actions: [] };
     case 'network':
-      return { title: '连不上 GitHub', body: '网络断开，或 GitHub 没有完整回应。这和账号权限无关，不需要重新授权；网络恢复后点「重新读取」。', actions: ['retry'] };
+      return { title: t('连不上 GitHub'), body: t('网络断开，或 GitHub 没有完整回应。这和账号权限无关，不需要重新授权；网络恢复后点「重新读取」。'), actions: ['retry'] };
     case 'rateLimited': {
       const waiting = f.retryAt !== undefined && f.retryAt > now;
       return {
-        title: 'GitHub 暂时限制了读取次数',
+        title: t('GitHub 暂时限制了读取次数'),
         body: waiting
-          ? `请求太频繁，GitHub 要求稍等。${hhmm(f.retryAt!)} 之后会自动再读，不需要重新授权。`
-          : '请求太频繁，GitHub 要求稍等。稍后会自动再读，不需要重新授权。',
+          ? t('请求太频繁，GitHub 要求稍等。{time} 之后会自动再读，不需要重新授权。', { time: hhmm(f.retryAt!) })
+          : t('请求太频繁，GitHub 要求稍等。稍后会自动再读，不需要重新授权。'),
         actions: ['retry'],
         ...(waiting ? { retryAt: f.retryAt } : {}),
       };
     }
     case 'auth':
-      return { title: '登录已失效', body: 'GitHub 不再接受这次登录（凭据被撤销或已过期），需要重新登录。这不是 Project 的权限问题。', actions: ['relogin'] };
+      return { title: t('登录已失效'), body: t('GitHub 不再接受这次登录（凭据被撤销或已过期），需要重新登录。这不是 Project 的权限问题。'), actions: ['relogin'] };
     case 'transient':
-      return { title: 'GitHub 暂时出错', body: 'GitHub 服务端出错或超时，不代表 Project 不存在或没有权限。稍后点「重新读取」。', actions: ['retry'] };
+      return { title: t('GitHub 暂时出错'), body: t('GitHub 服务端出错或超时，不代表 Project 不存在或没有权限。稍后点「重新读取」。'), actions: ['retry'] };
     case 'orgRestricted':
       return {
-        title: `${org}还没有批准 Cavil Loop 访问它的数据`,
+        title: org ? t('组织 {org} 还没有批准 Cavil Loop 访问它的数据', { org }) : t('这个组织还没有批准 Cavil Loop 访问它的数据'),
         body:
           appKind === 'github-app'
-            ? `${org}要先安装或批准 Cavil Loop 这个 GitHub App，才能读到它的私有仓库和 Project。请组织管理员在组织设置里批准后，回到这里点「重新读取」。`
-            : `${org}开了「第三方应用访问限制」。账号本人授权过还不够，要组织管理员再批准一次；批准前读不到这个组织的私有仓库和 Project。\n1. 点「打开 GitHub 授权页」，在「Organization access」里找到${f.org ? ` ${f.org}` : '这个组织'}\n2. 旁边是「Request」就点它（发申请给管理员），是「Grant」就直接点（本人是管理员）\n3. 批准后回到这里点「重新读取」。`,
+            ? org
+              ? t('组织 {org} 要先安装或批准 Cavil Loop 这个 GitHub App，才能读到它的私有仓库和 Project。请组织管理员在组织设置里批准后，回到这里点「重新读取」。', { org })
+              : t('这个组织要先安装或批准 Cavil Loop 这个 GitHub App，才能读到它的私有仓库和 Project。请组织管理员在组织设置里批准后，回到这里点「重新读取」。')
+            : org
+              ? t(
+                  '组织 {org} 开了「第三方应用访问限制」。账号本人授权过还不够，要组织管理员再批准一次；批准前读不到这个组织的私有仓库和 Project。\n1. 点「打开 GitHub 授权页」，在「Organization access」里找到 {org}\n2. 旁边是「Request」就点它（发申请给管理员），是「Grant」就直接点（本人是管理员）\n3. 批准后回到这里点「重新读取」。',
+                  { org },
+                )
+              : t(
+                  '这个组织开了「第三方应用访问限制」。账号本人授权过还不够，要组织管理员再批准一次；批准前读不到这个组织的私有仓库和 Project。\n1. 点「打开 GitHub 授权页」，在「Organization access」里找到这个组织\n2. 旁边是「Request」就点它（发申请给管理员），是「Grant」就直接点（本人是管理员）\n3. 批准后回到这里点「重新读取」。',
+                ),
         actions: ['authPage', 'retry'],
       };
     case 'sso':
       return {
-        title: `${org}要求单点登录授权`,
-        body: `${org}开了 SAML 单点登录。要先在 GitHub 上用组织的单点登录授权这次登录，之后回到这里点「重新读取」。`,
+        title: org ? t('组织 {org} 要求单点登录授权', { org }) : t('这个组织要求单点登录授权'),
+        body: org
+          ? t('组织 {org} 开了 SAML 单点登录。要先在 GitHub 上用组织的单点登录授权这次登录，之后回到这里点「重新读取」。', { org })
+          : t('这个组织开了 SAML 单点登录。要先在 GitHub 上用组织的单点登录授权这次登录，之后回到这里点「重新读取」。'),
         actions: [f.ssoUrl ? 'ssoPage' : 'authPage', 'retry'],
       };
     case 'scope':
-      return { title: '登录时没有授予读 Project 的权限', body: '这次登录拿到的权限里没有读取 Project 所需的那一项。重新登录一次，在 GitHub 的授权页上同意全部权限。', actions: ['relogin'] };
+      return { title: t('登录时没有授予读 Project 的权限'), body: t('这次登录拿到的权限里没有读取 Project 所需的那一项。重新登录一次，在 GitHub 的授权页上同意全部权限。'), actions: ['relogin'] };
     case 'notFound':
       return {
-        title: '找不到，或当前账号 / 应用无权看',
-        body: '可能是：地址或编号写错了；这是私有的 Project / 仓库，当前登录的账号看不到；或者所属组织还没批准 Cavil Loop。看不出是哪一种时不猜，可以在 GitHub 授权页确认组织的批准状态。',
+        title: t('找不到，或当前账号 / 应用无权看'),
+        body: t('可能是：地址或编号写错了；这是私有的 Project / 仓库，当前登录的账号看不到；或者所属组织还没批准 Cavil Loop。看不出是哪一种时不猜，可以在 GitHub 授权页确认组织的批准状态。'),
         actions: ['authPage', 'retry'],
       };
     default:
-      return { title: '读取失败', body: '没能读到这个来源。', actions: ['retry'] };
+      return { title: t('读取失败'), body: t('没能读到这个来源。'), actions: ['retry'] };
   }
 }
 

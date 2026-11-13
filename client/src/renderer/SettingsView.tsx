@@ -16,6 +16,7 @@ import { FailureNote } from './FailureNote';
 import type { SettingsIntent } from './EmptyGuide';
 import { failureOf } from '../shared/readFailure';
 import { getLang, preferredLanguages, systemLang, t, type Lang } from '../shared/i18n';
+import type { ThemeSetting } from '../shared/theme';
 import { KeepLang, SourceName, Verbatim } from './Verbatim';
 import { tNode } from './tNode';
 import { TallySettings } from './TallySettings';
@@ -24,6 +25,8 @@ import { ShortcutSettings } from './ShortcutSettings';
 const sections = (): { id: string; icon: IconName; title: ReactNode }[] => [
   // GitHub#471: first, and named in both languages — found by someone who cannot read the current one
   { id: 'set-language', icon: 'globe', title: <LanguageName /> },
+  // GitHub#516
+  { id: 'set-theme', icon: 'contrast', title: t('外观') },
   { id: 'set-sources', icon: 'project', title: t('数据来源') },
   { id: 'set-hand-back', icon: 'tag', title: t('交给 agent') },
   // GitHub#468: the view-bar numbers
@@ -87,6 +90,31 @@ function LanguageSection({ state }: { state: AppState }) {
           <input type="radio" name="ui-language" data-testid="lang-auto" checked={state.uiLanguage === 'auto'} onChange={() => api().setUiLanguage('auto')} />
           <span data-testid="lang-auto-label">{tNode('跟随系统（现在：{lang}）', { lang: <OwnName lang={sys} /> })}</span>
         </label>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * GitHub#516: light / dark — follow the system (default) / light / dark. "现在：…" is said only while
+ * following the system: once the native window is told light or dark, what the window reads as the
+ * system's setting is that choice, not the system's.
+ */
+function ThemeSection({ state }: { state: AppState }) {
+  const choice = (value: ThemeSetting, label: ReactNode) => (
+    <label className="radio small">
+      <input type="radio" name="ui-theme" data-testid={`theme-${value}`} checked={state.uiTheme === value} onChange={() => api().setUiTheme(value)} />
+      <span data-testid={`theme-${value}-label`}>{label}</span>
+    </label>
+  );
+  return (
+    <section id="set-theme" data-testid="theme-settings">
+      <h3 id="theme-title">{t('外观')}</h3>
+      <p className="muted small">{t('窗口用浅色还是深色。看板、详情、讨论区、关系图、标签颜色和窗口标题栏一起换，选了立刻生效。')}</p>
+      <div className="lang-choices" role="radiogroup" aria-labelledby="theme-title" data-testid="theme-choices">
+        {choice('system', state.uiTheme === 'system' ? t('跟随系统（默认，现在：{look}）', { look: state.theme === 'dark' ? t('深色') : t('浅色') }) : t('跟随系统（默认）'))}
+        {choice('light', t('浅色'))}
+        {choice('dark', t('深色'))}
       </div>
     </section>
   );
@@ -183,6 +211,7 @@ export function SettingsView({
       </nav>
       <div className="settings-main">
       <LanguageSection state={state} />
+      <ThemeSection state={state} />
 
       <section id="set-sources">
         <h3>{t('数据来源')}</h3>
@@ -283,6 +312,10 @@ export function SettingsView({
           <label>
             {t('等人处理的标签（去掉）')}
             <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
+          </label>
+          <label>
+            {t('暂缓的标签（标签选择器里排在等人处理的标签后面；留空 = 不置顶）')}
+            <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
           </label>
           <label>
             {t('交给 agent 的标签（加上）')}

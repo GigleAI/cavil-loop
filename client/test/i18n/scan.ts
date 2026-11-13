@@ -49,6 +49,9 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const badCalls: Finding[] = [];
   const keys = new Map<string, number[]>();
   const fns = lang === 'ts' ? ['t', 'tNode', 'zhKey'] : ['tr'];
+  // GitHub#472: words that are not the window's text (src/shared/i18n.ts `outsideWords`): their literal is
+  // neither a key nor a finding, but must still be a plain literal
+  const outsideFns = lang === 'ts' ? ['outsideWords'] : [];
   const fn = fns.join(' / ');
   let i = 0;
   let line = 1;
@@ -57,6 +60,8 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   /** a t( was just read: the next literal is its key */
   let wantKey = false;
   let wantKeyLine = 0;
+  /** the literal wanted is outsideWords( … )'s, not a key */
+  let wantOutside = false;
   /** the identifier read last (`fn tr(` / `function t(` define, they do not call) */
   let lastWord = '';
   // template literals: each entry = the brace depth inside its ${ } where it resumes
@@ -72,6 +77,11 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   };
   const literal = (raw: string, at: number, plain: boolean) => {
     const value = plain ? unescape(raw) : raw;
+    if (wantKey && wantOutside) {
+      wantKey = false;
+      wantOutside = false;
+      return;
+    }
     if (wantKey) {
       wantKey = false;
       if (testDepth < 0) {
@@ -87,6 +97,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
   const keyNotLiteral = () => {
     if (wantKey) {
       wantKey = false;
+      wantOutside = false;
       if (testDepth < 0) badCalls.push({ line: wantKeyLine, text: `${fn}( 的第一个参数不是字面量` });
     }
   };
@@ -272,7 +283,8 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
       lastWord = word;
       // Rust: Said::new( / Said::compose( take a key too (crates/core/src/i18n.rs)
       const saidCall = lang === 'rust' && (word === 'new' || word === 'compose') && src.slice(i - word.length - 6, i - word.length) === 'Said::';
-      if ((saidCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
+      const outsideCall = outsideFns.includes(word) && before !== '.' && !IDENT.test(before);
+      if ((saidCall || outsideCall || (fns.includes(word) && before !== '.' && !IDENT.test(before))) && !defining) {
         let k = i;
         while (k < src.length && /\s/.test(src[k])) k++;
         if (src[k] === '(') {
@@ -284,6 +296,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
           }
           i = m;
           wantKey = true;
+          wantOutside = outsideCall;
           wantKeyLine = line;
           prev = '(';
           continue;

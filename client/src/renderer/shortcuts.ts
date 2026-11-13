@@ -10,6 +10,8 @@
 // A shortcut only presses a button for you: every handler is the button's own
 // handler, behind the same "is it enabled" condition (see the call sites).
 
+import { t, tKey, zhKey } from '../shared/i18n';
+
 export type Scope = 'global' | 'detail' | 'graph' | 'settings' | 'reply' | 'dialog' | 'picker' | 'help' | 'find';
 
 /**
@@ -82,76 +84,76 @@ function layoutKeys(key: string): KeySpec[] {
 }
 
 export const SCOPE_TITLE: Record<Scope, string> = {
-  global: '已登录的任何页面',
-  detail: '详情标签页（光标不在输入框里时）',
-  graph: '依赖图（光标不在输入框里时；拖动空白处平移，滚轮缩放）',
-  settings: '设置页',
-  reply: '回复框里',
-  dialog: '对话框里',
-  picker: '标签 / 里程碑选择框',
-  help: '本列表',
-  find: '查找栏里',
+  global: zhKey('已登录的任何页面'),
+  detail: zhKey('详情标签页（光标不在输入框里时）'),
+  graph: zhKey('依赖图（光标不在输入框里时；拖动空白处平移，滚轮缩放）'),
+  settings: zhKey('设置页'),
+  reply: zhKey('回复框里'),
+  dialog: zhKey('对话框里'),
+  picker: zhKey('标签 / 里程碑选择框'),
+  help: zhKey('本列表'),
+  find: zhKey('查找栏里'),
 };
 
 export const SHORTCUTS: readonly Shortcut[] = [
-  { id: 'search', scope: 'global', keys: [{ key: '/' }], label: '跳到搜索框（在别的页面会先回到看板）' },
-  { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }, { key: 'n', mod: true }], label: '新建 issue（在别的页面会先回到看板）' },
-  { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: '立即同步（详情标签页在前时：重新读这一条，同详情的刷新按钮）' },
-  { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: '打开设置' },
-  { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: '快捷键一览' },
+  { id: 'search', scope: 'global', keys: [{ key: '/' }], label: zhKey('跳到搜索框（在别的页面会先回到看板）') },
+  { id: 'newIssue', scope: 'global', keys: [{ key: 'c' }, { key: 'n', mod: true }], label: zhKey('新建 issue（在别的页面会先回到看板）') },
+  { id: 'sync', scope: 'global', keys: [{ key: 'r', mod: true }], label: zhKey('立即同步（详情标签页在前时：重新读这一条，同详情的刷新按钮）') },
+  { id: 'settings', scope: 'global', keys: [{ key: ',', mod: true }], label: zhKey('打开设置') },
+  { id: 'help', scope: 'global', keys: [{ key: '?', shift: true }], label: zhKey('快捷键一览') },
   // GitHub#372: the three layout buttons. GitHub#442: ⌘⇧1/2/3 (⌘1…⌘9 now pick a tab); on macOS also ⌥⌘1/2/3,
   // since macOS takes ⌘⇧3 for its screenshot before the window sees it. GitHub#492: on macOS the key is ⌃⌘1/2/3 —
   // the only one shown there; ⌥⌘1/2/3 and ⌘⇧1/2/3 are still acted on, just not named (GitHub#465 hid ⌘⇧3 first).
   // Elsewhere Ctrl+Shift+1/2/3 as before (Ctrl + the Windows / Super key + a digit belongs to the desktop there).
-  { id: 'viewBoard', scope: 'global', keys: layoutKeys('1'), label: '切到看板（在别的页面会先回到看板）' },
-  { id: 'viewTable', scope: 'global', keys: layoutKeys('2'), label: '切到表格（在别的页面会先回到看板）' },
-  { id: 'viewGraph', scope: 'global', keys: layoutKeys('3'), label: '切到依赖图（在别的页面会先回到看板）' },
+  { id: 'viewBoard', scope: 'global', keys: layoutKeys('1'), label: zhKey('切到看板（在别的页面会先回到看板）') },
+  { id: 'viewTable', scope: 'global', keys: layoutKeys('2'), label: zhKey('切到表格（在别的页面会先回到看板）') },
+  { id: 'viewGraph', scope: 'global', keys: layoutKeys('3'), label: zhKey('切到依赖图（在别的页面会先回到看板）') },
   // GitHub#397: detail tabs. On macOS ⌘W is the menu's own key (the shell hands it to the window, see App);
   // with no tab in front it closes the window, as before.
-  { id: 'closeTab', scope: 'global', keys: [{ key: 'w', mod: true }], label: '关掉当前标签页（在首页时：macOS 关窗，别的系统不做事）' },
-  { id: 'nextTab', scope: 'global', keys: [{ key: ']', mod: true, shift: true }], label: '下一个标签页' },
-  { id: 'prevTab', scope: 'global', keys: [{ key: '[', mod: true, shift: true }], label: '上一个标签页' },
+  { id: 'closeTab', scope: 'global', keys: [{ key: 'w', mod: true }], label: zhKey('关掉当前标签页（在首页时：macOS 关窗，别的系统不做事）') },
+  { id: 'nextTab', scope: 'global', keys: [{ key: ']', mod: true, shift: true }], label: zhKey('下一个标签页') },
+  { id: 'prevTab', scope: 'global', keys: [{ key: '[', mod: true, shift: true }], label: zhKey('上一个标签页') },
   // GitHub#442: as in a browser — ⌘1 is the leftmost tab (首页), ⌘9 always the last one
-  { id: 'tabAt', scope: 'global', keys: DIGITS.map((key) => ({ key, mod: true })), range: true, label: '切到第几个标签页（1 是首页，9 是最后一个；只有首页时不做事）' },
-  { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: '设置标签' },
-  { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: '设置里程碑' },
-  { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: '跳到回复框' },
+  { id: 'tabAt', scope: 'global', keys: DIGITS.map((key) => ({ key, mod: true })), range: true, label: zhKey('切到第几个标签页（1 是首页，9 是最后一个；只有首页时不做事）') },
+  { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: zhKey('设置标签') },
+  { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: zhKey('设置里程碑') },
+  { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: zhKey('跳到回复框') },
   // GitHub#413 / #433: the three buttons next to "发送". They take ⌘⇧ (Ctrl+Shift), so they also act
   // from the reply box (a ⌘ key is never typing, see `resolve`) and are forwarded by the discussion
   // frame (FRAME_FORWARD); the letters are the maintainer's choice in #433.
-  { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x', mod: true, shift: true }], label: '关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）' },
-  { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: '交给 agent（回复框、讨论区里也能按；回复框里有字时先作为评论发出，发成功后再改标签）' },
-  { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: '托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按；回复框里有字时先作为评论发出）' },
+  { id: 'closeIssue', scope: 'detail', keys: [{ key: 'x', mod: true, shift: true }], label: zhKey('关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）') },
+  { id: 'handBack', scope: 'detail', keys: [{ key: 'z', mod: true, shift: true }], label: zhKey('交给 agent（回复框、讨论区里也能按；回复框里有字时先作为评论发出，发成功后再改标签）') },
+  { id: 'autopilot', scope: 'detail', keys: [{ key: 'c', mod: true, shift: true }], label: zhKey('托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按；回复框里有字时先作为评论发出）') },
   // GitHub#434: "等前置…" next to them, same ⌘⇧ family
-  { id: 'blocked', scope: 'detail', keys: [{ key: 'b', mod: true, shift: true }], label: '等前置（打开选前置的对话框；回复框、讨论区里也能按）' },
-  { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: '回到首页（标签页留着，没发出的文字也留着）' },
-  { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: '适应窗口（整张图放进窗口）' },
-  { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: '放大' },
-  { id: 'graphZoomOut', scope: 'graph', keys: [{ key: '-' }], label: '缩小' },
-  { id: 'settingsBack', scope: 'settings', keys: [{ key: 'Escape' }], label: '回到看板（光标在输入框里时，先离开输入框并保存）' },
-  { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: '发送评论' },
-  { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: '预览 / 继续编辑' },
-  { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: '离开回复框（文字保留）' },
-  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: '确认（创建 / 关闭 / 合并 / 托管 / 加入看板）' },
-  { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: '取消（新建 issue 里有字时不取消）' },
+  { id: 'blocked', scope: 'detail', keys: [{ key: 'b', mod: true, shift: true }], label: zhKey('等前置（打开选前置的对话框；回复框、讨论区里也能按）') },
+  { id: 'hide', scope: 'detail', keys: [{ key: 'Escape' }], label: zhKey('回到首页（标签页留着，没发出的文字也留着）') },
+  { id: 'graphFit', scope: 'graph', keys: [{ key: 'f' }], label: zhKey('适应窗口（整张图放进窗口）') },
+  { id: 'graphZoomIn', scope: 'graph', keys: [{ key: '=' }], label: zhKey('放大') },
+  { id: 'graphZoomOut', scope: 'graph', keys: [{ key: '-' }], label: zhKey('缩小') },
+  { id: 'settingsBack', scope: 'settings', keys: [{ key: 'Escape' }], label: zhKey('回到看板（光标在输入框里时，先离开输入框并保存）') },
+  { id: 'send', scope: 'reply', keys: [{ key: 'Enter', mod: true }], label: zhKey('发送评论') },
+  { id: 'preview', scope: 'reply', keys: [{ key: 'p', mod: true, shift: true }], label: zhKey('预览 / 继续编辑') },
+  { id: 'leaveReply', scope: 'reply', keys: [{ key: 'Escape' }], label: zhKey('离开回复框（文字保留）') },
+  { id: 'confirm', scope: 'dialog', keys: [{ key: 'Enter', mod: true }], label: zhKey('确认（创建 / 关闭 / 合并 / 托管 / 加入看板）') },
+  { id: 'cancel', scope: 'dialog', keys: [{ key: 'Escape' }], label: zhKey('取消（新建 issue 里有字时不取消）') },
   // GitHub#450: the new-issue dialog's two buttons, on the detail panel's keys for 交给 agent / 托管 (the
   // detail panel cannot hear them while a dialog is on top). Only that dialog handles them: in any other
   // dialog the key is left to the browser.
-  { id: 'newIssueAgent', scope: 'dialog', keys: [{ key: 'z', mod: true, shift: true }], label: '新建 issue：交给 agent（加上派工标签并创建；标题、正文里也能按）' },
-  { id: 'newIssueAutopilot', scope: 'dialog', keys: [{ key: 'c', mod: true, shift: true }], label: '新建 issue：托管（设置里开着确认时先弹确认框；标题、正文里也能按）' },
-  { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: '上一个' },
-  { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: '下一个' },
-  { id: 'pickerToggle', scope: 'picker', keys: [{ key: 'Enter' }], label: '加上 / 去掉选中的那个' },
-  { id: 'pickerClose', scope: 'picker', keys: [{ key: 'Escape' }], label: '收起选择框' },
-  { id: 'helpClose', scope: 'help', keys: [{ key: 'Escape' }, { key: '?', shift: true }], label: '关掉本列表' },
+  { id: 'newIssueAgent', scope: 'dialog', keys: [{ key: 'z', mod: true, shift: true }], label: zhKey('新建 issue：交给 agent（加上派工标签并创建；标题、正文里也能按）') },
+  { id: 'newIssueAutopilot', scope: 'dialog', keys: [{ key: 'c', mod: true, shift: true }], label: zhKey('新建 issue：托管（设置里开着确认时先弹确认框；标题、正文里也能按）') },
+  { id: 'pickerUp', scope: 'picker', keys: [{ key: 'ArrowUp' }], label: zhKey('上一个') },
+  { id: 'pickerDown', scope: 'picker', keys: [{ key: 'ArrowDown' }], label: zhKey('下一个') },
+  { id: 'pickerToggle', scope: 'picker', keys: [{ key: 'Enter' }], label: zhKey('加上 / 去掉选中的那个') },
+  { id: 'pickerClose', scope: 'picker', keys: [{ key: 'Escape' }], label: zhKey('收起选择框') },
+  { id: 'helpClose', scope: 'help', keys: [{ key: 'Escape' }, { key: '?', shift: true }], label: zhKey('关掉本列表') },
   // GitHub#502: find text on the page (findInPage.ts), not the board's search box. ⌘F / ⌘G / ⇧⌘G act everywhere,
   // the discussion frame included (FRAME_IDS); ↩ / ⇧↩ / Esc act while the keyboard is in the bar (typing 'find').
-  { id: 'find', scope: 'global', keys: [{ key: 'f', mod: true }], label: '在页面上查找文字（不动搜索框；查找栏已开着时：回到查找栏并选中里面的字）' },
-  { id: 'findNext', scope: 'global', keys: [{ key: 'g', mod: true }], label: '查找：下一处（查找栏开着时；讨论区里也能按）' },
-  { id: 'findPrev', scope: 'global', keys: [{ key: 'g', mod: true, shift: true }], label: '查找：上一处（查找栏开着时；讨论区里也能按）' },
-  { id: 'findBarNext', scope: 'find', keys: [{ key: 'Enter' }], label: '下一处' },
-  { id: 'findBarPrev', scope: 'find', keys: [{ key: 'Enter', shift: true }], label: '上一处' },
-  { id: 'findBarClose', scope: 'find', keys: [{ key: 'Escape' }], label: '关掉查找栏、去掉高亮（查找栏开着时，在页面上、讨论区里按 Esc 也是先关它）' },
+  { id: 'find', scope: 'global', keys: [{ key: 'f', mod: true }], label: zhKey('在页面上查找文字（不动搜索框；查找栏已开着时：回到查找栏并选中里面的字）') },
+  { id: 'findNext', scope: 'global', keys: [{ key: 'g', mod: true }], label: zhKey('查找：下一处（查找栏开着时；讨论区里也能按）') },
+  { id: 'findPrev', scope: 'global', keys: [{ key: 'g', mod: true, shift: true }], label: zhKey('查找：上一处（查找栏开着时；讨论区里也能按）') },
+  { id: 'findBarNext', scope: 'find', keys: [{ key: 'Enter' }], label: zhKey('下一处') },
+  { id: 'findBarPrev', scope: 'find', keys: [{ key: 'Enter', shift: true }], label: zhKey('上一处') },
+  { id: 'findBarClose', scope: 'find', keys: [{ key: 'Escape' }], label: zhKey('关掉查找栏、去掉高亮（查找栏开着时，在页面上、讨论区里按 Esc 也是先关它）') },
 ];
 
 /**
@@ -218,7 +220,7 @@ export function customizable(id: unknown): id is ShortcutId {
 /** what a shortcut does, short: its label up to the first explanation in brackets */
 export function shortcutName(id: string): string {
   const s = SHORTCUTS.find((x) => x.id === id);
-  return s ? s.label.split('（')[0] : id;
+  return s ? tKey(s.label).split(/\uFF08| \(/)[0] : id;
 }
 
 /** a key as written on screen, e.g. "⌘⇧A" / "Ctrl+Shift+A" */
@@ -251,23 +253,23 @@ export function canonicalKey(raw: unknown): CustomKey | null {
  * looked at here — that is `keysConflicts`, on the whole table.
  */
 export function keyProblem(id: ShortcutId, spec: CustomKey, mac: boolean = isMac()): string | null {
-  if (!customizable(id)) return '这个操作的键是固定的，不能改';
+  if (!customizable(id)) return t('这个操作的键是固定的，不能改');
   const k = spec.key;
   const mod = Boolean(spec.mod);
   const shift = Boolean(spec.shift);
   const alt = Boolean(spec.alt);
-  if (k.length > 1 && !NAMED_OK.test(k)) return 'Esc、↩、Tab、空格、退格和方向键有固定用途，换一个键';
-  if (spec.ctrl && mac && !alt && !shift && ['q', 'f'].includes(k)) return `macOS 把 ${specText({ key: k, mod: true, ctrl: true }, mac)} 留给锁屏 / 全屏，换一个`;
-  if (alt && !/^[a-z0-9]$/.test(k)) return '按住 ⌥ / Alt 时只能配字母或数字';
+  if (k.length > 1 && !NAMED_OK.test(k)) return t('Esc、↩、Tab、空格、退格和方向键有固定用途，换一个键');
+  if (spec.ctrl && mac && !alt && !shift && ['q', 'f'].includes(k)) return t('macOS 把 {key} 留给锁屏 / 全屏，换一个', { key: specText({ key: k, mod: true, ctrl: true }, mac) });
+  if (alt && !/^[a-z0-9]$/.test(k)) return t('按住 ⌥ / Alt 时只能配字母或数字');
   if (mod && !alt) {
-    if (['=', '-', '+', '0'].includes(k)) return `${specText({ key: k, mod: true }, mac)} 是菜单里的缩放键，换一个`;
-    if (!shift && ['q', 'h', 'm'].includes(k)) return `${specText({ key: k, mod: true }, mac)} 由系统使用（退出 / 隐藏 / 最小化），换一个`;
-    if (!shift && ['c', 'v', 'x', 'a', 'z'].includes(k)) return `${specText({ key: k, mod: true }, mac)} 是输入框里的编辑键（复制 / 粘贴 / 剪切 / 全选 / 撤销），换一个`;
-    if (mac && shift && ['3', '4', '5'].includes(k)) return `macOS 把 ${specText({ key: k, mod: true, shift: true }, mac)} 留给截图，窗口收不到，换一个`;
+    if (['=', '-', '+', '0'].includes(k)) return t('{key} 是菜单里的缩放键，换一个', { key: specText({ key: k, mod: true }, mac) });
+    if (!shift && ['q', 'h', 'm'].includes(k)) return t('{key} 由系统使用（退出 / 隐藏 / 最小化），换一个', { key: specText({ key: k, mod: true }, mac) });
+    if (!shift && ['c', 'v', 'x', 'a', 'z'].includes(k)) return t('{key} 是输入框里的编辑键（复制 / 粘贴 / 剪切 / 全选 / 撤销），换一个', { key: specText({ key: k, mod: true }, mac) });
+    if (mac && shift && ['3', '4', '5'].includes(k)) return t('macOS 把 {key} 留给截图，窗口收不到，换一个', { key: specText({ key: k, mod: true, shift: true }, mac) });
   }
   const scope = SHORTCUTS.find((s) => s.id === id)!.scope;
   // these act while the keyboard is in a text field: a key without ⌘ / Ctrl would only type there
-  if ((scope === 'reply' || scope === 'dialog') && !mod) return '这个操作在输入框里也要能按，新键必须带 ⌘ / Ctrl';
+  if ((scope === 'reply' || scope === 'dialog') && !mod) return t('这个操作在输入框里也要能按，新键必须带 ⌘ / Ctrl');
   return null;
 }
 
@@ -345,12 +347,12 @@ export type KeyChange = { ok: true; keys: CustomKeys } | { ok: false; why: strin
  * refused when the key itself cannot be used, or when the table in effect afterwards would have a conflict.
  */
 export function changeKey(keys: CustomKeys, id: unknown, spec: unknown, mac: boolean = isMac()): KeyChange {
-  if (!customizable(id)) return { ok: false, why: '这个操作的键是固定的，不能改' };
+  if (!customizable(id)) return { ok: false, why: t('这个操作的键是固定的，不能改') };
   const next: CustomKeys = { ...keys };
   if (spec === null) delete next[id];
   else {
     const k = canonicalKey(spec);
-    if (!k) return { ok: false, why: '认不出这个键' };
+    if (!k) return { ok: false, why: t('认不出这个键') };
     const bad = keyProblem(id, k, mac);
     if (bad) return { ok: false, why: bad };
     next[id] = k;
@@ -363,9 +365,9 @@ export function changeKey(keys: CustomKeys, id: unknown, spec: unknown, mac: boo
     if (spec === null)
       return {
         ok: false,
-        why: `恢复不了：默认键 ${key} 现在是「${shortcutName(other)}」的键，恢复后两个操作会抢同一个键。先把「${shortcutName(other)}」改掉或恢复默认，再来恢复这一个。`,
+        why: t('恢复不了：默认键 {key} 现在是「{other}」的键，恢复后两个操作会抢同一个键。先把「{other}」改掉或恢复默认，再来恢复这一个。', { key, other: shortcutName(other) }),
       };
-    return { ok: false, why: `${key} 已经是「${shortcutName(other)}」的快捷键，会撞车。换一个键，或先把「${shortcutName(other)}」改掉。` };
+    return { ok: false, why: t('{key} 已经是「{other}」的快捷键，会撞车。换一个键，或先把「{other}」改掉。', { key, other: shortcutName(other) }) };
   }
   return { ok: true, keys: next };
 }
@@ -380,20 +382,20 @@ export function repairKeys(raw: unknown, mac: boolean = isMac()): { keys: Custom
   const keys: CustomKeys = {};
   const dropped: DroppedKey[] = [];
   if (raw === null || raw === undefined) return { keys, dropped };
-  if (typeof raw !== 'object' || Array.isArray(raw)) return { keys, dropped: [{ id: '', name: '全部', why: '保存的内容读不出来' }] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { keys, dropped: [{ id: '', name: t('全部'), why: t('保存的内容读不出来') }] };
   for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
     if (!SHORTCUTS.some((s) => s.id === id)) {
-      dropped.push({ id, name: id, why: '这个版本没有这个操作' });
+      dropped.push({ id, name: id, why: t('这个版本没有这个操作') });
       continue;
     }
     if (!customizable(id)) {
-      dropped.push({ id, name: shortcutName(id), why: '这个操作的键是固定的' });
+      dropped.push({ id, name: shortcutName(id), why: t('这个操作的键是固定的') });
       continue;
     }
     const k = canonicalKey(v);
-    const bad = k ? keyProblem(id, k, mac) : '保存的键读不出来';
+    const bad = k ? keyProblem(id, k, mac) : t('保存的键读不出来');
     if (!k || bad) {
-      dropped.push({ id, name: shortcutName(id), why: bad ?? '保存的键读不出来' });
+      dropped.push({ id, name: shortcutName(id), why: bad ?? t('保存的键读不出来') });
       continue;
     }
     keys[id] = k;
@@ -407,7 +409,7 @@ export function repairKeys(raw: unknown, mac: boolean = isMac()): { keys: Custom
         [owner(c.a), c.b],
         [owner(c.b), c.a],
       ] as const)
-        if (keys[me] && !out.has(me)) out.set(me, `保存的 ${specText(c.spec, mac)} 和「${shortcutName(other)}」撞车`);
+        if (keys[me] && !out.has(me)) out.set(me, t('保存的 {key} 和「{other}」撞车', { key: specText(c.spec, mac), other: shortcutName(other) }));
     if (!out.size) break;
     for (const [id, why] of out) {
       delete keys[id];

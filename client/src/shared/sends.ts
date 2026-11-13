@@ -21,6 +21,7 @@
 
 import type { WriteAction } from './actions';
 import type { OpRecord } from './ops';
+import { t } from './i18n';
 
 export type SendKind = 'comment' | 'editEntry' | 'editTitle' | 'toggleTask';
 export const SEND_KINDS: readonly SendKind[] = ['comment', 'editEntry', 'editTitle', 'toggleTask'];
@@ -157,7 +158,7 @@ export function isSameTextMark(x: unknown): x is SameTextMark {
  * Then nothing is proven automatically; the reason is said. null = clear.
  */
 export function sameTextUnclear(key: string, body: string, selfId: string, sends: readonly SendRecord[], ops: readonly OpRecord[], marks: readonly SameTextMark[]): string | null {
-  const why = '这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对';
+  const why = t('这一条上还有一条文字相同的评论没有结果，分不清找到的是哪一条，只能人工核对');
   if (sends.some((o) => o.id !== selfId && o.key === key && o.action.kind === 'comment' && o.action.body === body && !o.unlocked && (o.state === 'sending' || o.state === 'unknown'))) return why;
   for (const o of ops) {
     if (o.id === selfId || o.key !== key || o.unlocked) continue;
@@ -253,39 +254,80 @@ export function sendTone(r: SendRecord): SendTone {
   return 'warn';
 }
 
-const WHAT: Record<SendKind, string> = { comment: '评论', editEntry: '修改', editTitle: '标题修改', toggleTask: '勾选' };
-function what(a: SendAction): string {
-  if (a.kind === 'toggleTask') return a.checked ? '勾选' : '取消勾选';
-  if (a.kind === 'editEntry') return '正文 / 评论的修改';
-  return WHAT[a.kind];
-}
-
 /** where the text goes back to */
 function boxName(a: SendAction): string {
-  return a.kind === 'comment' ? '回复框' : a.kind === 'editTitle' ? '标题输入框' : '编辑框';
+  return a.kind === 'comment' ? t('回复框') : a.kind === 'editTitle' ? t('标题输入框') : t('编辑框');
+}
+
+/** each kind's own sentences (word order differs between the languages: whole sentences, no pieces) */
+function sendingText(a: SendAction): string {
+  switch (a.kind) {
+    case 'comment':
+      return t('正在发评论…');
+    case 'editEntry':
+      return t('正在保存正文 / 评论的修改…');
+    case 'editTitle':
+      return t('正在保存标题修改…');
+    case 'toggleTask':
+      return a.checked ? t('正在保存勾选…') : t('正在保存取消勾选…');
+  }
+}
+function okText(a: SendAction): string {
+  switch (a.kind) {
+    case 'comment':
+      return t('评论已发出');
+    case 'editEntry':
+      return t('正文 / 评论的修改已保存');
+    case 'editTitle':
+      return t('标题修改已保存');
+    case 'toggleTask':
+      return a.checked ? t('已勾选，GitHub 上已更新') : t('已取消勾选，GitHub 上已更新');
+  }
+}
+function refusedText(a: SendAction, reason: string): string {
+  switch (a.kind) {
+    case 'comment':
+      return t('评论没有发出去：{reason}', { reason });
+    case 'editEntry':
+      return t('正文 / 评论的修改没有保存上：{reason}', { reason });
+    case 'editTitle':
+      return t('标题修改没有保存上：{reason}', { reason });
+    case 'toggleTask':
+      return a.checked ? t('勾选没有保存上：{reason}', { reason }) : t('取消勾选没有保存上：{reason}', { reason });
+  }
+}
+function unknownText(a: SendAction, reason: string): string {
+  switch (a.kind) {
+    case 'comment':
+      return t('评论不确定有没有发出（{reason}）', { reason });
+    case 'editEntry':
+      return t('正文 / 评论的修改不确定有没有保存上（{reason}）', { reason });
+    case 'editTitle':
+      return t('标题修改不确定有没有保存上（{reason}）', { reason });
+    case 'toggleTask':
+      return a.checked ? t('勾选不确定有没有保存上（{reason}）', { reason }) : t('取消勾选不确定有没有保存上（{reason}）', { reason });
+  }
 }
 
 /** what the notice says */
 export function sendNoticeText(r: SendRecord): string {
-  const w = what(r.action);
-  if (r.state === 'sending') return r.action.kind === 'comment' ? '正在发评论…' : `正在保存${w}…`;
+  if (r.state === 'sending') return sendingText(r.action);
   if (r.state === 'ok') {
-    const head = r.action.kind === 'comment' ? '评论已发出' : r.action.kind === 'toggleTask' ? `已${w}，GitHub 上已更新` : `${w}已保存`;
-    const how = r.reason ? `（${r.reason}）` : '';
-    return r.warning ? `${head}${how}。注意：${r.warning}` : `${head}${how}`;
+    const head = okText(r.action) + (r.reason ? t('（{how}）', { how: r.reason }) : '');
+    return r.warning ? head + t('。注意：{warning}', { warning: r.warning }) : head;
   }
   if (r.state === 'refused') {
-    const head = `${w}没有${r.action.kind === 'comment' ? '发出去' : '保存上'}：${r.reason ?? '没有发出'}`;
+    const head = refusedText(r.action, r.reason ?? t('没有发出'));
     if (sendText(r.action) === null) return head;
     if (r.dropped) return head;
-    return r.returned ? `${head}。原文已放回${boxName(r.action)}` : `${head}。原文留在这里，打开这一条时会放回${boxName(r.action)}`;
+    return head + (r.returned ? t('。原文已放回{box}', { box: boxName(r.action) }) : t('。原文留在这里，打开这一条时会放回{box}', { box: boxName(r.action) }));
   }
-  let head = `${w}不确定有没有${r.action.kind === 'comment' ? '发出' : '保存上'}（${r.reason ?? '没有收到 GitHub 的应答'}）`;
-  if (sendText(r.action) !== null) head += '。原文只留在这里，没有放回编辑框（它可能已经在 GitHub 上了，再发可能重复）';
-  if (r.checking) head += '；正在查证…';
-  else if (r.checkProblem) head += `；这次没能查证：${r.checkProblem}`;
-  else if ((r.checks ?? 0) > 0) head += `；已核对 ${r.checks} 次，到现在还没查到（原来那次请求仍可能稍后生效）`;
-  if (r.unlocked) head = `已由人核对后解除锁定：${head}`;
+  let head = unknownText(r.action, r.reason ?? t('没有收到 GitHub 的应答'));
+  if (sendText(r.action) !== null) head += t('。原文只留在这里，没有放回编辑框（它可能已经在 GitHub 上了，再发可能重复）');
+  if (r.checking) head += t('；正在查证…');
+  else if (r.checkProblem) head += t('；这次没能查证：{problem}', { problem: r.checkProblem });
+  else if ((r.checks ?? 0) > 0) head += t('；已核对 {n} 次，到现在还没查到（原来那次请求仍可能稍后生效）', { n: r.checks ?? 0 });
+  if (r.unlocked) head = t('已由人核对后解除锁定：{notice}', { notice: head });
   return head;
 }
 
@@ -318,15 +360,15 @@ export function sendProve(
 ): { record: SendRecord; missing: string | null } {
   if (r.state !== 'unknown') return { record: r, missing: null };
   // PR #510 review round 2: unlocked by a person = settled by hand; never proven (or given a comment) by the app
-  if (r.unlocked) return { record: r, missing: '已由人核对后解除锁定，不再自动核对' };
+  if (r.unlocked) return { record: r, missing: t('已由人核对后解除锁定，不再自动核对') };
   const p = r.proof;
   const ok = (how: string) => ({ record: { ...r, state: 'ok' as const, reason: how, checkProblem: null }, missing: null });
-  if (!p) return { record: r, missing: '没有记下能证明它的东西，只能人工核对' };
+  if (!p) return { record: r, missing: t('没有记下能证明它的东西，只能人工核对') };
   if (p.kind === 'comment') {
-    if (r.action.kind !== 'comment') return { record: r, missing: '记录不完整' };
-    if (!p.before) return { record: r, missing: '发送前没读到这一条原有的评论，无法区分新旧，只能人工核对' };
-    if (!ev.login) return { record: r, missing: '不知道当前账号是谁，查不了评论' };
-    if (!ev.comments) return { record: r, missing: '没读到评论' };
+    if (r.action.kind !== 'comment') return { record: r, missing: t('记录不完整') };
+    if (!p.before) return { record: r, missing: t('发送前没读到这一条原有的评论，无法区分新旧，只能人工核对') };
+    if (!ev.login) return { record: r, missing: t('不知道当前账号是谁，查不了评论') };
+    if (!ev.comments) return { record: r, missing: t('没读到评论') };
     // PR #510 review round 1: another send of the same text on this item still without a result — a comment
     // found could be either one's; and a comment that already is another send's proves nothing here
     const body = r.action.body;
@@ -337,14 +379,14 @@ export function sendProve(
     const free = ev.comments.filter((c) => !taken.has(c.id));
     if (!commentProves(free, p.before, ev.login, body)) return { record: r, missing: null };
     const found = free.find((c) => !p.before!.includes(c.id) && c.author === ev.login && c.body === body)!;
-    return { record: { ...ok('在评论列表里找到了这条评论').record, commentId: found.id }, missing: null };
+    return { record: { ...ok(t('在评论列表里找到了这条评论')).record, commentId: found.id }, missing: null };
   }
   if (p.kind === 'source') {
-    if (ev.source === undefined) return { record: r, missing: '没读到这一条现在的原文' };
-    return ev.source === p.want ? ok('重读时 GitHub 上已是改后的内容') : { record: r, missing: null };
+    if (ev.source === undefined) return { record: r, missing: t('没读到这一条现在的原文') };
+    return ev.source === p.want ? ok(t('重读时 GitHub 上已是改后的内容')) : { record: r, missing: null };
   }
-  if (ev.title === undefined) return { record: r, missing: '没读到现在的标题' };
-  return ev.title === p.want ? ok('重读时 GitHub 上已是改后的标题') : { record: r, missing: null };
+  if (ev.title === undefined) return { record: r, missing: t('没读到现在的标题') };
+  return ev.title === p.want ? ok(t('重读时 GitHub 上已是改后的标题')) : { record: r, missing: null };
 }
 
 /** A record kept by an earlier run: one on its way then has no answer now — or, never sent, was not sent. */
@@ -353,8 +395,8 @@ export function sendAfterRestart(r0: SendRecord): SendRecord {
   // the edit box it went back to is gone with the last run: it goes back again
   if (r.state === 'refused' && r.returned && !r.dropped) return { ...r, returned: false };
   if (r.state !== 'sending') return r;
-  if (r.sentAt === null) return { ...r, state: 'refused', reason: '客户端在发出前关掉了，没有发出', answeredAt: null };
-  return { ...r, state: 'unknown', reason: '客户端重启前没有收到 GitHub 的应答' };
+  if (r.sentAt === null) return { ...r, state: 'refused', reason: t('客户端在发出前关掉了，没有发出'), answeredAt: null };
+  return { ...r, state: 'unknown', reason: t('客户端重启前没有收到 GitHub 的应答') };
 }
 
 const STATES: readonly SendState[] = ['sending', 'ok', 'refused', 'unknown'];
