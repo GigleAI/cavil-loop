@@ -16,10 +16,10 @@ Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be huma
 
 | | What it is | What it needs | Start here |
 |---|---|---|---|
-| **The daemon** (installed as an Agent Skill) | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
+| **The daemon** | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
 | **The Cavil Loop desktop client** | A GitHub issue / PR client that works on its own: issues together with their linked PRs, grouped by iteration / milestone, and a dependency graph of issues (across repositories). It can also install the daemon and hand items to it. | A GitHub account and a Mac — no daemon, no GitHub Project, no command-line tools | [Client guide](docs/client.md) |
 
-Each one works without the other.
+Each one works without the other, and they work best together.
 
 ## What it is
 
@@ -174,7 +174,7 @@ Linux stops user services on logout by default; this keeps the poller alive when
 
 ### Or start from the desktop client (macOS)
 
-Instead of the commands above, install the [desktop client](#client-desktop-board-preview) and do steps 1 and 2 from its Settings page:
+Instead of the commands above, install the [desktop client](#client-desktop-board) and do steps 1 and 2 from its Settings page:
 
 1. Install the [dependencies](#dependencies) and run `gh auth login` first — the client only checks what is missing, it does not install system software.
 2. Download and install the client, then sign in with your GitHub account (enter the short code in the browser).
@@ -221,7 +221,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 ---
 
-## Client (desktop board, preview)
+## Client (desktop board)
 
 The Cavil Loop desktop client (`client/`, macOS) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window:
 

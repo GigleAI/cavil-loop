@@ -7012,7 +7012,7 @@ test('GitHub#372 / #442: ⌘⇧1/2/3 (⌘1/2/3 before GitHub#442) switch the lay
   await page.keyboard.press(`${MOD}+Shift+1`);
   await expect(page.getByTestId('board')).toBeVisible();
   expect(await layoutNow()).toBe('board');
-  await expect(page.locator('[data-testid="layout"] button[data-value="graph"]')).toHaveAttribute('title', /依赖图（(⌥⌘3|Ctrl\+Shift\+3)）/);
+  await expect(page.locator('[data-testid="layout"] button[data-value="graph"]')).toHaveAttribute('title', /依赖图（(⌃⌘3|Ctrl\+Shift\+3)）/);
   // the shortcut list has the new rows, in the table's order
   await page.keyboard.press('?');
   expect(await page.getByTestId('shortcut-help').getByTestId('shortcut-row').evaluateAll((rows) => rows.slice(0, 8).map((r) => r.getAttribute('data-id')))).toEqual([
