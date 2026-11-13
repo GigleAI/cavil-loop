@@ -189,3 +189,56 @@ test('GitHub#516: the section in English; a stored value this version does not k
   await expect(third.page.getByTestId('theme-system')).toBeChecked();
   await third.close();
 });
+
+/** every colour token the stylesheet sets on the page root, with the value it has right now */
+const tokens = (page: Page) =>
+  page.evaluate(() => {
+    const names = new Set<string>();
+    const walk = (rules: CSSRuleList) => {
+      for (const r of Array.from(rules)) {
+        if (r instanceof CSSStyleRule && r.selectorText.startsWith(':root')) for (const n of Array.from(r.style)) if (n.startsWith('--')) names.add(n);
+        if ('cssRules' in r && (r as CSSGroupingRule).cssRules) walk((r as CSSGroupingRule).cssRules);
+      }
+    };
+    for (const sh of Array.from(document.styleSheets)) walk(sh.cssRules);
+    const cs = getComputedStyle(document.documentElement);
+    const out: Record<string, string> = { 'color-scheme': cs.colorScheme, 'body background': getComputedStyle(document.body).backgroundColor };
+    for (const n of [...names].sort()) out[n] = cs.getPropertyValue(n).trim();
+    return out;
+  });
+
+/** the page as it is before the window marks it: the stylesheet is in, the script has not run yet */
+const unmark = (page: Page) => page.evaluate(() => delete document.documentElement.dataset.theme);
+const mark = (page: Page, look: string) => page.evaluate((l) => (document.documentElement.dataset.theme = l), look);
+
+test('GitHub#516 (PR #518 review round 1): before the page is marked, a dark system paints the whole first screen dark — every token as the dark look gives it — and a light system light', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await mark(page, 'dark');
+  const dark = await tokens(page);
+  // the check sees what it should: the tokens are there, and they are the dark ones
+  expect(Object.keys(dark).length, 'colour tokens found').toBeGreaterThan(40);
+  expect(dark['body background']).toBe(CANVAS.dark);
+  expect(dark['color-scheme']).toBe('dark');
+
+  // unmarked on a dark system: what is painted — the body's canvas, native controls, every token — is the dark look
+  await unmark(page);
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
+  expect(await tokens(page)).toEqual(dark);
+  await page.screenshot({ path: join(screens, '516-05-unmarked-dark-system.png') });
+
+  // unmarked on a light system: the light look, the same as marked light (switching the system re-marks the
+  // page — "跟随系统" follows it — so the mark is taken off again before reading)
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await mark(page, 'light');
+  const light = await tokens(page);
+  expect(light['body background']).toBe(CANVAS.light);
+  expect(light['color-scheme']).toBe('light');
+  await unmark(page);
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
+  expect(await tokens(page)).toEqual(light);
+  await app.close();
+});
