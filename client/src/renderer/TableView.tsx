@@ -160,10 +160,12 @@ type Editor = {
   today: string;
   act: (a: WriteAction, okText: string) => void;
   close: () => void;
+  /** labels the label picker keeps near the top (GitHub#496) */
+  pinned?: readonly string[];
 };
 
 /** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
-function CellEditor({ item, col, projects, options, disabled, today, act, close }: Editor) {
+function CellEditor({ item, col, projects, options, disabled, today, act, close, pinned }: Editor) {
   const box = useRef<HTMLSpanElement>(null);
   // a click outside the editor puts it away (the label picker has its own)
   useEffect(() => {
@@ -183,6 +185,7 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close 
           title="设置标签"
           hint={item.repo}
           testid="cell-label-picker"
+          pinned={pinned}
           disabled={disabled}
           items={[
             ...options.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
@@ -294,6 +297,7 @@ export function TableView({
   onDropPlan,
   repoOrder = [],
   table: built,
+  pinnedLabels,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -317,6 +321,8 @@ export function TableView({
   repoOrder?: string[];
   /** the table as built by the board (GitHub#368: its counts feed the view bar too); left out = built here from `items` */
   table?: Table;
+  /** labels the cell's label picker keeps near the top, right after what the item carries (GitHub#496) */
+  pinnedLabels?: readonly string[];
 }) {
   const dark = useDarkMode();
   const t = view.table;
@@ -541,6 +547,7 @@ export function TableView({
                       today={today}
                       act={(a, ok) => void act(r.item)(a, ok)}
                       close={() => setEditing(null)}
+                      pinned={pinnedLabels}
                     />
                   ) : (
                     <Cell col={c} item={r.item} all={items} now={now} dark={dark} />

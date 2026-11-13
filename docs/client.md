@@ -106,6 +106,7 @@ The third view button. Only issues with a relation are drawn (those with a paren
 Changes go straight to GitHub, and the item is read back afterwards:
 
 - Labels (`L`), milestone (`M`), a Project's iteration and status: the new value shows at once and is marked until GitHub confirms it; you can resend or drop it.
+- When the label picker opens, the labels the item already carries are ticked at the top, followed by `autopilot`, `pending/human`, `pending/agent` (the label names set for "hand to the agent" in Settings; ones the repository lacks are not listed), then the rest in the repository's order. While it is open a click only moves the tick, never the rows; closing and reopening sorts again. The milestone picker lists the current milestone first.
 - Reply (⌘↩ sends, ⌘⇧P previews), edit your comments and the body, tick the task lists in a body.
 - New issue (`C`): pick the repository, optionally set labels, milestone, iteration and which boards it joins.
 - Close an issue (pick the reason, optionally add a comment), close or merge a PR: each needs one more click in a confirmation dialog. When it succeeds the tab / panel it was started from closes, and the result is shown at the top of the window.

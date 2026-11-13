@@ -22,6 +22,7 @@ import { useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
 import { LabelPicker } from './LabelPicker';
+import { pinnedLabels } from '../shared/pickOrder';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
@@ -425,6 +426,7 @@ export function NewIssueDialog({
                           title="选择标签"
                           hint={repo}
                           testid="new-issue-label-picker"
+                          pinned={pinnedLabels(hb)}
                           disabled={false}
                           items={opts.labels.map((l) => ({ name: l.name, color: l.color, checked: labels.includes(l.name) }))}
                           onToggle={(l) => toggleLabel(l.name)}

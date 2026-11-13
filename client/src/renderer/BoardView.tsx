@@ -27,6 +27,7 @@ import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Re
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf } from '../shared/readFailure';
 import { TableView } from './TableView';
+import { pinnedLabels } from '../shared/pickOrder';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
@@ -644,6 +645,9 @@ export function BoardView({
   const [panel, setPanel] = useState(false);
   const { view, sync } = state;
   const today = localToday(now);
+  // GitHub#496: the table's label picker keeps these near the top, like the detail panel's
+  const { autopilot: pinA, human: pinH, agent: pinG } = state.handBack;
+  const pinned = useMemo(() => pinnedLabels({ autopilot: pinA, human: pinH, agent: pinG }), [pinA, pinH, pinG]);
   const items = useMemo(
     () => applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }),
     [data, parsed, state.viewer, today],
@@ -1129,6 +1133,7 @@ export function BoardView({
           onDropPlan={applyPlan}
           repoOrder={state.repoOrder}
           table={table ?? undefined}
+          pinnedLabels={pinned}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>
