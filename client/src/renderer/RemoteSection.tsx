@@ -16,6 +16,7 @@ import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
 import { PAIR_COMMAND, clock, codeDigits, readOk, remoteName, remotePill, revokeCommand, sortTailnet, tailnetPill, type RemoteEntry, type RemoteFail, type RemoteRead, type RemoteResult, type TailnetDevice, type TailnetList } from '../shared/remote';
 import { t } from '../shared/i18n';
+import { SettingsMore } from './SettingsMore';
 
 type Ask =
   | { kind: 'stop' | 'start'; e: RemoteEntry; p: DaemonProject }
@@ -147,9 +148,11 @@ export function RemoteSection() {
   return (
     <section id="set-remote" data-testid="remote-settings">
       <h3>{t('远程 daemon')}</h3>
-      <p className="muted small">
-        看和管理另一台机器上的 daemon。只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。
-      </p>
+      <p className="muted small">{t('通过 Tailscale 看和管理另一台机器上的 daemon。')}</p>
+      {/* GitHub#514: the longer explanation, folded */}
+      <SettingsMore title={t('怎么配对、会不会发出 GitHub 登录')} testid="remote-more">
+        {t('只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。')}
+      </SettingsMore>
       {list && list.length === 0 && (
         <p className="muted small" data-testid="remote-empty">
           还没有配对任何远程机器。

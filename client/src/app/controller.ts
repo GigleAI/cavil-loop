@@ -545,7 +545,7 @@ export class Controller {
     if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // GitHub#429: saved before the waiting label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
-    // GitHub#513: a setting saved before the parked label existed
+    // GitHub#513 / #514: saved before the parked label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.later !== 'string') handBack.later = DEFAULT_HAND_BACK.later;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
@@ -2355,7 +2355,7 @@ export class Controller {
       running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
       // GitHub#429: empty is a choice — the graph then draws GitHub's own relations only
       blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.handBack.blocked,
-      // GitHub#513: empty is a choice — label pickers then pin no parked label
+      // GitHub#513 / #514: empty is a choice — label pickers pin no parked label, the view bar leaves out "稍后处理"
       later: typeof patch.later === 'string' ? patch.later.trim() : this.state.handBack.later,
     };
     this.cache.setSetting('handBack', next);
@@ -3680,7 +3680,7 @@ export class Controller {
       case 'autopilot':
       case 'handBack': {
         const { human, agent, autopilot } = this.state.handBack;
-        if (!human.trim() || !agent.trim()) return refuse(t('设置里「交给 agent」的两个标签名不能为空'));
+        if (!human.trim() || !agent.trim()) return refuse(t('设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空'));
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse(t('设置里没有填托管标签，没有修改'));
         // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
         // not go out (or whose answer never came) leaves every label alone: never handed over without it

@@ -544,14 +544,14 @@ export interface HandBackLabels {
   running: string;
   /** GitHub#429: the daemon's "waiting for a prerequisite" label — the graph reads the loop's registration on open issues carrying it; '' = not read */
   blocked: string;
-  /** GitHub#513: the daemon's parked label (`LABEL_PENDING_LATER`) — label pickers list it right after `human`; '' = not pinned */
+  /** GitHub#513 / #514: the daemon's parked label (`LABEL_PENDING_LATER`) — label pickers list it right after `human`, and the view bar counts it as "稍后处理"; '' = neither */
   later: string;
 }
 
 export const DEFAULT_HAND_BACK: HandBackLabels = { human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked', later: 'pending/later' };
 
-/** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows */
-export type TallyFlow = 'running' | 'agent' | 'human';
+/** GitHub#468: which flow label a "跟随流程标签" row of the view-bar numbers follows (GitHub#514: and the parked label) */
+export type TallyFlow = 'running' | 'agent' | 'human' | 'later';
 /** GitHub#468: the colours a view-bar number's dot can take ('ring' = the hollow circle) */
 export type TallyColor = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'ring';
 /**
