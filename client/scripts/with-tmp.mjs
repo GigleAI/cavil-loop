@@ -7,7 +7,8 @@
 // Before: reap the folders earlier runs left unused. Then: start the command with TMPDIR = a fresh
 // folder whose lock it (and everything under it) holds. After it ends — passed, failed or stopped
 // by a signal — reap again, which removes this run's folder unless something started by it is still
-// alive (then it stays, and a later run removes it). Exit code = the command's.
+// alive (then it stays — after waiting up to 10 s, CAVIL_TMP_GRACE_MS, for stragglers — and a later
+// run removes it). Exit code = the command's.
 //
 // Signals: the first Ctrl-C / SIGTERM / SIGHUP is passed on and the launcher waits for the command
 // to end, then cleans up; a second one exits at once without cleaning (a later run does it).
@@ -72,8 +73,15 @@ child.on('error', (e) => {
 });
 const code = await relay(child);
 
-const after = reap(sys);
+// Processes the command started may take a moment to go after it (a browser, a back end): give
+// them a few seconds before keeping the folder for a later run. Waiting changes nothing about what
+// is removed — only an unheld lock is.
 const name = root.slice(sys.length).replace(/^\/+/, '');
+const graceMs = Number(process.env.CAVIL_TMP_GRACE_MS ?? 10_000);
+let after = reap(sys);
+for (const end = Date.now() + graceMs; !after.error && after.busy.includes(name) && Date.now() < end; after = reap(sys)) {
+  await new Promise((r) => setTimeout(r, 250));
+}
 if (after.error) say(`这次没能清理（${after.error}），${root} 留给下次跑测试时清`);
 else if (after.busy.includes(name)) say(`${root} 里还有这次启动的进程在用，先保留；它们退出后，下次跑测试时会删掉`);
 for (const u of after.unknown) say(`判断不了，先保留：${u}`);
