@@ -3,6 +3,7 @@
 // stand-ins that call back into the test process, so the TypeScript suites can
 // hold a keychain write, fail it, or move the clock.
 
+use crate::i18n::{tr, Said};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,9 +12,10 @@ use std::sync::Mutex;
 pub trait CredentialStore: Send + Sync {
     /// true when the credential survives an app restart
     fn persistent(&self) -> bool;
-    async fn get(&self) -> Result<Option<String>, String>;
-    async fn set(&self, token: &str) -> Result<(), String>;
-    async fn clear(&self) -> Result<(), String>;
+    /// GitHub#471: errors are messages — the store's own words translated, the system's output in a hole
+    async fn get(&self) -> Result<Option<String>, Said>;
+    async fn set(&self, token: &str) -> Result<(), Said>;
+    async fn clear(&self) -> Result<(), Said>;
 }
 
 #[async_trait]
@@ -30,12 +32,12 @@ pub trait Opener: Send + Sync {
 
 // Stored credentials are GitHub tokens ([A-Za-z0-9_]) or the `v2:` form that
 // joins them with ':'; anything else is refused rather than quoted.
-pub fn assert_token_shape(token: &str) -> Result<(), String> {
+pub fn assert_token_shape(token: &str) -> Result<(), Said> {
     let ok = (20..=1024).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':');
     if ok {
         Ok(())
     } else {
-        Err("凭据格式不符合预期，未保存".into())
+        Err(Said::plain(tr("凭据格式不符合预期，未保存", &[])))
     }
 }
 
@@ -60,15 +62,15 @@ impl CredentialStore for MemoryStore {
     fn persistent(&self) -> bool {
         false
     }
-    async fn get(&self) -> Result<Option<String>, String> {
+    async fn get(&self) -> Result<Option<String>, Said> {
         Ok(self.0.lock().unwrap().clone())
     }
-    async fn set(&self, token: &str) -> Result<(), String> {
+    async fn set(&self, token: &str) -> Result<(), Said> {
         assert_token_shape(token)?;
         *self.0.lock().unwrap() = Some(token.to_string());
         Ok(())
     }
-    async fn clear(&self) -> Result<(), String> {
+    async fn clear(&self) -> Result<(), Said> {
         *self.0.lock().unwrap() = None;
         Ok(())
     }
@@ -82,15 +84,15 @@ impl CredentialStore for FileStore {
     fn persistent(&self) -> bool {
         true
     }
-    async fn get(&self) -> Result<Option<String>, String> {
+    async fn get(&self) -> Result<Option<String>, Said> {
         Ok(std::fs::read_to_string(&self.0).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
     }
-    async fn set(&self, token: &str) -> Result<(), String> {
+    async fn set(&self, token: &str) -> Result<(), Said> {
         assert_token_shape(token)?;
         if let Some(d) = self.0.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(d).map_err(|e| Said::outside(&e.to_string(), "system"))?;
         }
-        std::fs::write(&self.0, token).map_err(|e| e.to_string())?;
+        std::fs::write(&self.0, token).map_err(|e| Said::outside(&e.to_string(), "system"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -98,11 +100,11 @@ impl CredentialStore for FileStore {
         }
         Ok(())
     }
-    async fn clear(&self) -> Result<(), String> {
+    async fn clear(&self) -> Result<(), Said> {
         match std::fs::remove_file(&self.0) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(Said::outside(&e.to_string(), "system")),
         }
     }
 }
@@ -128,12 +130,12 @@ impl CredentialStore for MacKeychainStore {
     fn persistent(&self) -> bool {
         true
     }
-    async fn get(&self) -> Result<Option<String>, String> {
+    async fn get(&self) -> Result<Option<String>, Said> {
         let out = tokio::process::Command::new(&self.bin)
             .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT, "-w"])
             .output()
             .await
-            .map_err(|e| format!("读取钥匙串失败：{e}"))?;
+            .map_err(|e| Said::new("读取钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         match out.status.code() {
             Some(0) => {
                 let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -141,10 +143,10 @@ impl CredentialStore for MacKeychainStore {
             }
             // 44 = errSecItemNotFound
             Some(44) => Ok(None),
-            c => Err(format!("读取钥匙串失败：{}", stderr_or(&out.stderr, c))),
+            c => Err(Said::new("读取钥匙串失败：{e}", &[("e", &stderr_or(&out.stderr, c))], "system")),
         }
     }
-    async fn set(&self, token: &str) -> Result<(), String> {
+    async fn set(&self, token: &str) -> Result<(), Said> {
         assert_token_shape(token)?;
         use tokio::io::AsyncWriteExt;
         let mut child = tokio::process::Command::new(&self.bin)
@@ -153,30 +155,30 @@ impl CredentialStore for MacKeychainStore {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| format!("写入钥匙串失败：{e}"))?;
+            .map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         let line = format!(
             "add-generic-password -U -s \"{KEYCHAIN_SERVICE}\" -a \"{KEYCHAIN_ACCOUNT}\" -l \"Cavil Loop (GitHub)\" -w \"{token}\"\n"
         );
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(line.as_bytes()).await.map_err(|e| format!("写入钥匙串失败：{e}"))?;
+            stdin.write_all(line.as_bytes()).await.map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         }
-        let out = child.wait_with_output().await.map_err(|e| format!("写入钥匙串失败：{e}"))?;
+        let out = child.wait_with_output().await.map_err(|e| Said::new("写入钥匙串失败：{e}", &[("e", &e.to_string())], "system"))?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         if out.status.success() && !stderr.to_lowercase().contains("error") {
             Ok(())
         } else {
-            Err(format!("写入钥匙串失败：{}", stderr_or(&out.stderr, out.status.code())))
+            Err(Said::new("写入钥匙串失败：{e}", &[("e", &stderr_or(&out.stderr, out.status.code()))], "system"))
         }
     }
-    async fn clear(&self) -> Result<(), String> {
+    async fn clear(&self) -> Result<(), Said> {
         let out = tokio::process::Command::new(&self.bin)
             .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT])
             .output()
             .await
-            .map_err(|e| format!("删除钥匙串条目失败：{e}"))?;
+            .map_err(|e| Said::new("删除钥匙串条目失败：{e}", &[("e", &e.to_string())], "system"))?;
         match out.status.code() {
             Some(0) | Some(44) => Ok(()),
-            c => Err(format!("删除钥匙串条目失败：{}", stderr_or(&out.stderr, c))),
+            c => Err(Said::new("删除钥匙串条目失败：{e}", &[("e", &stderr_or(&out.stderr, c))], "system")),
         }
     }
 }

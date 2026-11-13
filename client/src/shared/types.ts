@@ -6,6 +6,7 @@ import type { MergePrefs } from './mergePrefs';
 import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
 import type { LaneFolds, TableFolds } from './uiPrefs';
+import type { Lang, LangSetting, Said } from './i18n';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
 import type { Handoff } from './handoff';
@@ -602,7 +603,10 @@ export interface LoginState {
   status: LoginStatus;
   userCode: string | null;
   verificationUri: string | null;
+  /** why it did not work: the client's own explanation (in the window's language) */
   message: string | null;
+  /** GitHub#471: the same message as the back end worded it, its outside parts (GitHub's / the system's words) marked; absent = `message` is all the client's own */
+  said?: Said | null;
 }
 
 export interface SyncState {
@@ -645,6 +649,8 @@ export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
   loginReason: string | null;
+  /** GitHub#471: `loginReason` as the back end worded it, outside parts marked (absent: all the client's own words) */
+  loginReasonSaid?: Said | null;
   login: LoginState;
   /** which kind of GitHub application the next sign-in goes through (OAuth app by default) */
   appKind: AppKind;
@@ -689,6 +695,10 @@ export interface AppState {
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */
   notifyScope: NotifyScope;
+  /** GitHub#471: the interface language as chosen in Settings (kept on this machine); 'zh' when nothing is set */
+  uiLanguage: LangSetting;
+  /** the language the window shows now ('auto' resolved against the system's preferred languages) */
+  lang: Lang;
   /** the repository order set by dragging (GitHub#304; lower-cased `owner/name`, kept on this machine); empty = alphabetical */
   repoOrder: string[];
   /** who a new issue is handed to, as last chosen in the new-issue dialog (GitHub#245; kept on this machine) */

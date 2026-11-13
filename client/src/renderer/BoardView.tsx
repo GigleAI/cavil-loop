@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
-import { RETRY_BY_HAND, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
+import { retryByHand, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
 import { buildBoard, dropPlan, writesEnabled, type Card, type Column, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
@@ -35,8 +35,11 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
+import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyName, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
 import { effectiveTallies } from '../shared/tallies';
+import { t } from '../shared/i18n';
+import { SourceName, Verbatim, verbatimParts } from './Verbatim';
+import { tNode } from './tNode';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -49,8 +52,9 @@ function useNow(ms = 15_000) {
 
 /** GitHub#372: each layout button's shortcut (the same action, see App) */
 const LAYOUT_KEY: Record<Layout, ShortcutId> = { board: 'viewBoard', table: 'viewTable', graph: 'viewGraph' };
-const MODE_LABEL: Record<ColumnMode, string> = { iteration: '迭代', status: '状态', milestone: '里程碑' };
-const LAYOUT_LABEL: Record<Layout, string> = { board: '看板', table: '表格', graph: '依赖图' };
+const MODES: ColumnMode[] = ['iteration', 'status', 'milestone'];
+const modeLabel = (m: ColumnMode): string => ({ iteration: t('迭代'), status: t('状态'), milestone: t('里程碑') })[m];
+const layoutLabel = (l: Layout): string => ({ board: t('看板'), table: t('表格'), graph: t('依赖图') })[l];
 
 interface CardOps {
   canWrite: boolean;
@@ -292,8 +296,8 @@ function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { tr
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
   const label = trouble.incomplete
-    ? `同步不完整：${n} 个来源读取失败（点开看详情）`
-    : '有来源这次没读全，筛选结果可能不全（点开看详情）';
+    ? t('同步不完整：{n} 个来源读取失败（点开看详情）', { n })
+    : t('有来源这次没读全，筛选结果可能不全（点开看详情）');
   return (
     <span className="trouble-anchor" ref={box}>
       <button
@@ -367,7 +371,7 @@ function SyncTroublePanel({
           </ul>
           {trouble.failed.some((f) => retryOf(f) !== null) && (
             <div className="trouble-note" data-testid="sync-trouble-by-hand">
-              {RETRY_BY_HAND}
+              {retryByHand()}
             </div>
           )}
         </>
@@ -738,9 +742,9 @@ export function BoardView({
                 ref={searchBox}
                 type="search"
                 value={query}
-                aria-label="搜索或筛选"
-                placeholder={searchOpen ? '搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me' : `搜索（${keyText('search')}）`}
-                title="写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me"
+                aria-label={t('搜索或筛选')}
+                placeholder={searchOpen ? t('搜索标题、编号、标签，或用 GitHub 写法：label:bug assignee:@me') : t('搜索（{key}）', { key: keyText('search') })}
+                title={t('写法同 GitHub 网页：label:bug -status:Done iteration:@current assignee:@me')}
                 onFocus={() => setSearchOpen(true)}
                 onBlur={() => setSearchOpen(false)}
                 onKeyDown={(e) => {
@@ -765,6 +769,7 @@ export function BoardView({
                   className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
                   data-testid="sync-status"
                   title={hoverLines(sync, labelOf, now).join('\n')}
+                  {...verbatimParts('github', state.sources.map((s) => labelOf(s.key)))}
                 >
                   <span className="dot" />
                   <span className="sync-text">{headerText(sync, now)}</span>
@@ -782,8 +787,8 @@ export function BoardView({
                 className={`icon-btn${sync.syncing ? ' spinning' : ''}`}
                 data-testid="refresh"
                 data-syncing={sync.syncing ? 'yes' : 'no'}
-                aria-label={sync.syncing ? '同步中…（点一下重新同步）' : '刷新'}
-                title={sync.syncing ? `同步中…（点一下：放弃这一轮，重新同步，${keyText('sync')}）` : `刷新（马上同步一轮，${keyText('sync')}）`}
+                aria-label={sync.syncing ? t('同步中…（点一下重新同步）') : t('刷新')}
+                title={sync.syncing ? t('同步中…（点一下：放弃这一轮，重新同步，{key}）', { key: keyText('sync') }) : t('刷新（马上同步一轮，{key}）', { key: keyText('sync') })}
                 onClick={() => api().restartSync()}
               >
                 <Icon name="refresh" />
@@ -791,9 +796,9 @@ export function BoardView({
               <button
                 className="primary icon-only"
                 data-testid="write-entry"
-                aria-label="新建 issue"
+                aria-label={t('新建 issue')}
                 disabled={!canWrite}
-                title={writesEnabled(sync) ? (state.sources.length ? `新建 issue（${keyText('newIssue')}）` : '先添加数据来源') : '离线时不能修改'}
+                title={writesEnabled(sync) ? (state.sources.length ? t('新建 issue（{key}）', { key: keyText('newIssue') }) : t('先添加数据来源')) : t('离线时不能修改')}
                 data-offline={writesEnabled(sync) ? 'no' : 'yes'}
                 onClick={() => {
                   onFront?.();
@@ -809,13 +814,13 @@ export function BoardView({
                   onSettings();
                 }}
                 data-testid="open-settings"
-                aria-label="设置"
-                title={`设置（${keyText('settings')}）`}
+                aria-label={t('设置')}
+                title={t('设置（{key}）', { key: keyText('settings') })}
               >
                 <Icon name="gear" />
               </button>
               {state.viewer && (
-                <span className="viewer" title={`已登录 ${state.viewer}`}>
+                <span className="viewer" title={t('已登录 {viewer}', { viewer: state.viewer })} {...verbatimParts('github', [state.viewer])}>
                   <Avatar login={state.viewer} size={28} />
                 </span>
               )}
@@ -828,27 +833,27 @@ export function BoardView({
       <div className="vbar">
         <div className="seg" data-testid="layout">
           {(['board', 'table', 'graph'] as Layout[]).map((l) => (
-            <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} title={`${LAYOUT_LABEL[l]}（${keyText(LAYOUT_KEY[l])}）`} onClick={() => api().setView({ layout: l })}>
+            <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} title={t('{label}（{key}）', { label: layoutLabel(l), key: keyText(LAYOUT_KEY[l]) })} onClick={() => api().setView({ layout: l })}>
               <Icon name={l} />
-              {LAYOUT_LABEL[l]}
+              {layoutLabel(l)}
             </button>
           ))}
         </div>
         {view.layout === 'board' && (
           <>
             <label className="inline">
-              分列
+              {t('分列')}
               <select data-testid="mode" value={view.mode} onChange={(e) => api().setView({ mode: e.target.value as ColumnMode })}>
-                {(Object.keys(MODE_LABEL) as ColumnMode[]).map((m) => (
+                {MODES.map((m) => (
                   <option key={m} value={m}>
-                    {MODE_LABEL[m]}
+                    {modeLabel(m)}
                   </option>
                 ))}
               </select>
             </label>
             <label className="toggle">
               <input type="checkbox" data-testid="swimlanes" checked={view.swimlanes} onChange={(e) => api().setView({ swimlanes: e.target.checked })} />
-              按仓库分泳道
+              {t('按仓库分泳道')}
             </label>
           </>
         )}
@@ -858,8 +863,8 @@ export function BoardView({
           data-view={closedKey}
           title={
             statesInSearch
-              ? '搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准'
-              : `打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。`
+              ? t('搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准')
+              : t('打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。')
           }
         >
           <input
@@ -869,29 +874,31 @@ export function BoardView({
             disabled={statesInSearch}
             onChange={(e) => api().setView({ showClosed: { [closedKey]: e.target.checked } })}
           />
-          显示已关闭{litEntry ? `（${litEntry.name}）` : ''}
+          {t('显示已关闭')}
+          {litEntry && tNode('（{name}）', { name: tallyName(litEntry).own ? <Verbatim from="user">{litEntry.name}</Verbatim> : tallyName(litEntry).text })}
         </label>
         {view.layout !== 'graph' && (
           <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
             <Icon name="sliders" />
-            视图设置
+            {t('视图设置')}
           </button>
         )}
         <span className="vbar-count">
           {graph ? (
             <span data-testid="graph-count">
-              显示 {graph.entries} 个有关系的条目 · 共 {data.items.length} 个条目
+              {t('显示 {entries} 个有关系的条目 · 共 {total} 个条目', { entries: graph.entries, total: data.items.length })}
             </span>
           ) : (
             <span className="tally" data-testid="flow-tally">
               {tally.map((e) => {
                 const on = lit === e.kind;
+                const named = tallyName(e);
                 const tip = [
                   // GitHub#462: a row following the "等人处理" label counts closed items carrying it too
-                  `${e.source === 'flow' ? (e.flow === 'human' ? `带 ${e.label} 标签的条目（开着的和已关闭的都算）` : `开着的条目里带 ${e.label} 标签的`) : e.query === UNLABELED_QUERY ? '开着的条目里一个标签都没有的' : `${statesStated(parseFilter(e.query!)) ? '' : '开着的条目里'}符合「${e.query}」的`}有 ${e.count} 个 · ${e.query === null ? '这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选' : on ? '再点一下回到之前的搜索' : '点一下只看这些'}`,
-                  `当前来源共 ${data.items.length} 个条目`,
-                  ...(filtering ? [`搜索命中 ${table?.matchCount ?? items.length} 条`] : []),
-                  ...(filtering && table && table.pulledCount > 0 ? [`另有 ${table.pulledCount} 个子 issue 随父 issue 显示`] : []),
+                  `${e.source === 'flow' ? (e.flow === 'human' ? t('带 {label} 标签的条目（开着的和已关闭的都算）有 {n} 个', { label: e.label, n: e.count }) : t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count })) : e.query === UNLABELED_QUERY ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : statesStated(parseFilter(e.query!)) ? t('符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count }) : t('开着的条目里符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
+                  t('当前来源共 {n} 个条目', { n: data.items.length }),
+                  ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
+                  ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
                 ].join('\n');
                 return (
                   <button
@@ -903,21 +910,22 @@ export function BoardView({
                     aria-pressed={on}
                     disabled={e.query === null}
                     title={tip}
+                    {...verbatimParts('user', [e.label, e.source === 'query' ? e.query : null, named.own ? e.name : null])}
                     onClick={() => clickTally(e)}
                   >
                     <i className={`dot c-${e.color}`} aria-hidden="true" />
-                    {e.name} <b data-testid="tally-count">{e.count}</b>
+                    {named.own ? <Verbatim from="user">{named.text}</Verbatim> : named.text} <b data-testid="tally-count">{e.count}</b>
                   </button>
                 );
               })}
             </span>
           )}
           <span data-testid="item-total" className="sr-only">
-            {data.items.length} 个条目
+            {t('{n} 个条目', { n: data.items.length })}
           </span>
         </span>
-        <button className="ghost" onClick={onKeysHelp} data-testid="open-shortcuts" title={`快捷键一览（${keyText('help')}）`}>
-          快捷键 <kbd>?</kbd>
+        <button className="ghost" onClick={onKeysHelp} data-testid="open-shortcuts" title={t('快捷键一览（{key}）', { key: keyText('help') })}>
+          {t('快捷键')} <kbd>?</kbd>
         </button>
       </div>
       {/* everything under the view bar */}

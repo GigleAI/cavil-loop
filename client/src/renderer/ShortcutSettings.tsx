@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import type { AppState } from '../shared/types';
 import { api } from './api';
+import { t } from '../shared/i18n';
 import { Icon } from './Icons';
 import { Keys } from './ShortcutHelp';
 import { SCOPE_TITLE, activeShortcuts, composing, customizable, isCustom, isMac, keyParts, shortcutName, shownKeys, type CustomKey, type Scope, type ShortcutId } from './shortcuts';
@@ -76,7 +77,7 @@ export function ShortcutSettings({ state }: { state: AppState }) {
   return (
     <section id="set-keys" data-testid="shortcut-settings">
       <div className="row set-keys-head">
-        <h3>快捷键</h3>
+        <h3>{t('快捷键')}</h3>
         <button
           data-testid="shortcut-reset-all"
           disabled={!anyCustom && state.shortcutDropped.length === 0}

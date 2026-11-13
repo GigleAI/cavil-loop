@@ -17,6 +17,7 @@ import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
+import { t } from '../shared/i18n';
 
 export const COLUMN_LABEL: Record<TableColumn, string> = {
   title: '标题',
@@ -35,14 +36,14 @@ export const COLUMN_LABEL: Record<TableColumn, string> = {
 const STATE_TEXT = { open: '开着', closed: '已关闭', merged: '已合并' } as const;
 
 function updatedText(iso: string, now: number): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  const mins = Math.max(0, Math.floor((now - t) / 60_000));
-  if (mins < 60) return `${Math.max(1, mins)} 分钟前`;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return '';
+  const mins = Math.max(0, Math.floor((now - at) / 60_000));
+  if (mins < 60) return t('{n} 分钟前', { n: Math.max(1, mins) });
   const h = Math.floor(mins / 60);
-  if (h < 24) return `${h} 小时前`;
+  if (h < 24) return t('{n} 小时前', { n: h });
   const d = Math.floor(h / 24);
-  if (d < 30) return `${d} 天前`;
+  if (d < 30) return t('{n} 天前', { n: d });
   return iso.slice(0, 10);
 }
 

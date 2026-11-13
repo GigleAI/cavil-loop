@@ -36,12 +36,41 @@ pub struct Store {
 /// File name of the sign-out marker, next to the database.
 pub const SIGNED_OUT_MARKER: &str = "signed-out";
 
-fn err(e: impl std::fmt::Display) -> String {
-    format!("本地存储出错：{e}")
+/// GitHub#471: a database error, its own words kept apart (`raw`) so a message can show them as
+/// written next to the client's own explanation; as one string it reads "本地存储出错：…" in the
+/// window's language, as before.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoreError {
+    pub raw: String,
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::tr("本地存储出错：{e}", &[("e", &self.raw)]))
+    }
+}
+
+impl StoreError {
+    /// as a message: the client's prefix in the window's language, the database's own words in the hole
+    pub fn said(&self) -> crate::i18n::Said {
+        crate::i18n::Said::new("本地存储出错：{e}", &[("e", &self.raw)], "system")
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+impl From<StoreError> for String {
+    fn from(e: StoreError) -> String {
+        e.to_string()
+    }
+}
+
+fn err(e: impl std::fmt::Display) -> StoreError {
+    StoreError { raw: e.to_string() }
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Store, String> {
+    pub fn open(path: &Path) -> Result<Store, StoreError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(err)?;
         }
@@ -73,7 +102,7 @@ impl Store {
     /// A second, independent record that the user signed out, for when the database
     /// refused the trust-list write (GitHub#151 review): written and synced to disk,
     /// then the folder entry synced. While it exists, start-up trusts no stored credential.
-    pub fn mark_signed_out(&self) -> Result<(), String> {
+    pub fn mark_signed_out(&self) -> Result<(), StoreError> {
         use std::io::Write;
         let mut f = std::fs::File::create(&self.marker).map_err(err)?;
         f.write_all(b"1\n").map_err(err)?;
@@ -91,7 +120,7 @@ impl Store {
     }
 
     /// Only once the trust list is empty on disk and the credential is gone.
-    pub fn clear_signed_out_mark(&self) -> Result<(), String> {
+    pub fn clear_signed_out_mark(&self) -> Result<(), StoreError> {
         match std::fs::remove_file(&self.marker) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -113,7 +142,7 @@ impl Store {
         self.get_setting(k).and_then(|v| v.as_str().map(str::to_string))
     }
 
-    pub fn set_setting(&self, k: &str, v: &Value) -> Result<(), String> {
+    pub fn set_setting(&self, k: &str, v: &Value) -> Result<(), StoreError> {
         let db = self.lock();
         set_in(&db, k, v)
     }
@@ -170,15 +199,15 @@ impl Store {
             )
             .map_err(err)?;
         }
-        tx.commit().map_err(err)
+        tx.commit().map_err(|e| String::from(err(e)))
     }
 
     pub fn delete_snapshot(&self, key: &str) -> Result<(), String> {
-        self.lock().execute("DELETE FROM snapshot WHERE source_key = ?1", params![key]).map(|_| ()).map_err(err)
+        self.lock().execute("DELETE FROM snapshot WHERE source_key = ?1", params![key]).map(|_| ()).map_err(|e| String::from(err(e)))
     }
 
     /// Several setting writes plus (optionally) dropping every snapshot, as one transaction.
-    pub fn write_all(&self, settings: &[(&str, Value)], wipe_snapshots: bool) -> Result<(), String> {
+    pub fn write_all(&self, settings: &[(&str, Value)], wipe_snapshots: bool) -> Result<(), StoreError> {
         let mut db = self.lock();
         let tx = db.transaction().map_err(err)?;
         if wipe_snapshots {
@@ -191,7 +220,7 @@ impl Store {
     }
 }
 
-fn set_in(db: &Connection, k: &str, v: &Value) -> Result<(), String> {
+fn set_in(db: &Connection, k: &str, v: &Value) -> Result<(), StoreError> {
     db.execute(
         "INSERT INTO setting (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
         params![k, v.to_string()],

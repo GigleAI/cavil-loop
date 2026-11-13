@@ -13,6 +13,7 @@
 // that is not a valid table is not shown half: the default is shown and Settings says so.
 
 import type { TallyColor, TallyDef, TallyFlow, TallySource } from './types';
+import { t, zhKey } from './i18n';
 
 export const TALLY_COLORS: readonly TallyColor[] = ['green', 'blue', 'orange', 'red', 'purple', 'gray', 'ring'];
 export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human'];
@@ -24,14 +25,14 @@ export const UNLABELED_QUERY = 'no:label';
 export const TALLIES_SETTING = 'tallies';
 
 /** the names of the three flow labels as Settings calls them */
-export const TALLY_FLOW_TEXT: Record<TallyFlow, string> = { running: '运行中的标签', agent: '交给 agent 的标签', human: '等人处理的标签' };
+export const tallyFlowText = (flow: TallyFlow): string => ({ running: t('运行中的标签'), agent: t('交给 agent 的标签'), human: t('等人处理的标签') })[flow];
 
 /** the table as it was before GitHub#468: the same names, order and colours */
 export const DEFAULT_TALLIES: readonly TallyDef[] = Object.freeze([
-  { id: 'running', name: '运行中', color: 'green', source: { kind: 'flow', flow: 'running' } },
-  { id: 'agent', name: '等 agent', color: 'blue', source: { kind: 'flow', flow: 'agent' } },
-  { id: 'human', name: '等人处理', color: 'orange', source: { kind: 'flow', flow: 'human' } },
-  { id: 'unlabeled', name: '未处理', color: 'ring', source: { kind: 'query', query: UNLABELED_QUERY } },
+  { id: 'running', name: zhKey('运行中'), color: 'green', source: { kind: 'flow', flow: 'running' } },
+  { id: 'agent', name: zhKey('等 agent'), color: 'blue', source: { kind: 'flow', flow: 'agent' } },
+  { id: 'human', name: zhKey('等人处理'), color: 'orange', source: { kind: 'flow', flow: 'human' } },
+  { id: 'unlabeled', name: zhKey('未处理'), color: 'ring', source: { kind: 'query', query: UNLABELED_QUERY } },
 ] satisfies TallyDef[]);
 
 /** a fresh copy of the default table (the frozen one is never handed out to be edited) */

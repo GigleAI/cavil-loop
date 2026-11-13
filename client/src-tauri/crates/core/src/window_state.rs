@@ -136,7 +136,7 @@ pub fn observe(prev: Option<Saved>, mode: Mode, size: (f64, f64), pos: Option<(f
 pub fn keep(store: &Store, mode: Mode, size: (f64, f64), pos: Option<(f64, f64)>) -> Option<(Saved, Result<(), String>)> {
     let next = observe(saved(store), mode, size, pos)?;
     let kept = store.set_setting(SETTING, &to_value(&next));
-    Some((next, kept))
+    Some((next, kept.map_err(String::from)))
 }
 
 /// How much of the window's title strip (top-left `pos`, `w` wide) lies on `s`.

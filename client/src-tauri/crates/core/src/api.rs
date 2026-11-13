@@ -6,6 +6,7 @@
 
 use crate::engine::{BeginOut, Engine, FinishOut, RequestError, StartOut};
 use crate::http::HttpRequest;
+use crate::i18n::Said;
 use crate::store::{BACKEND_ONLY_KEYS, SECRET_KEYS};
 use crate::zoom;
 use serde_json::{json, Value};
@@ -32,24 +33,24 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             }))
         }
         "start" => Ok(match e.start().await {
-            StartOut::Login { reason, wiped } => json!({ "phase": "login", "reason": reason, "wiped": wiped }),
+            StartOut::Login { reason, wiped } => json!({ "phase": "login", "reason": reason.as_ref().map(Said::text), "reasonSaid": reason.as_ref().map(Said::to_json), "wiped": wiped }),
             StartOut::Ready { session, wiped } => json!({ "phase": "ready", "session": session, "wiped": wiped }),
         }),
         "loginBegin" => Ok(match e.login_begin(s(&a, "clientId")?).await {
             BeginOut::Waiting { run, user_code, verification_uri } => {
                 json!({ "status": "waiting", "run": run, "userCode": user_code, "verificationUri": verification_uri })
             }
-            BeginOut::Failed { status, message } => json!({ "status": status, "message": message }),
+            BeginOut::Failed { status, said } => json!({ "status": status, "message": said.text(), "said": said.to_json() }),
             BeginOut::Stale => json!({ "status": "stale" }),
         }),
         "loginFinish" => Ok(match e.login_finish(u(&a, "run")?).await {
             FinishOut::Ok { session, viewer, wiped } => json!({ "status": "ok", "session": session, "viewer": viewer, "wiped": wiped }),
-            FinishOut::Failed { status, message } => json!({ "status": status, "message": message }),
-            FinishOut::Stale { login_reason } => json!({ "status": "stale", "loginReason": login_reason }),
+            FinishOut::Failed { status, said } => json!({ "status": status, "message": said.text(), "said": said.to_json() }),
+            FinishOut::Stale { login_reason } => json!({ "status": "stale", "loginReason": login_reason.as_ref().map(Said::text), "loginReasonSaid": login_reason.as_ref().map(Said::to_json) }),
         }),
         "loginCancel" => Ok(match e.cancel_login(a.get("run").and_then(|v| v.as_u64())) {
             None => json!({}),
-            Some((session, message)) => json!({ "signedOut": { "session": session, "message": message } }),
+            Some((session, message)) => json!({ "signedOut": { "session": session, "message": message.as_ref().map(Said::text), "said": message.as_ref().map(Said::to_json) } }),
         }),
         "openVerification" => match e.verification_uri() {
             Some(uri) => e.open_external(&uri).await.map(|_| Value::Null),
@@ -57,11 +58,11 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         },
         "logout" => {
             let (session, message) = e.logout(a.get("reason").and_then(|v| v.as_str()));
-            Ok(json!({ "session": session, "message": message }))
+            Ok(json!({ "session": session, "message": message.as_ref().map(Said::text), "said": message.as_ref().map(Said::to_json) }))
         }
         "logoutResult" => {
             let (message, current) = e.logout_result(u(&a, "session")?).await;
-            Ok(json!({ "message": message, "current": current }))
+            Ok(json!({ "message": message.as_ref().map(Said::text), "said": message.as_ref().map(Said::to_json), "current": current }))
         }
         "ensureFresh" => {
             let session = u(&a, "session")?;
@@ -109,6 +110,13 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         }
         // GitHub#395: a release attachment image of the discussion — only an attachment's API address is accepted
         "releaseImage" => Ok(e.release_image(u(&a, "session")?, s(&a, "url")?).await),
+        // GitHub#471: the language of the back end's own words (menu, messages); the window decides it
+        "setLanguage" => {
+            let l = s(&a, "lang")?;
+            let lang = crate::i18n::Lang::parse(l).ok_or_else(|| crate::i18n::tr("不认识的语言：{lang}", &[("lang", l)]))?;
+            crate::i18n::set_lang(lang);
+            Ok(Value::Null)
+        }
         "setSetting" => {
             let k = s(&a, "key")?;
             if SECRET_KEYS.contains(&k) || BACKEND_ONLY_KEYS.contains(&k) {
