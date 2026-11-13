@@ -248,12 +248,12 @@ PY2
     chk "无关 PR 61 没被合并" "$(merged 61)" 0
     chk "到达性 · 同一轮子项 PR 52 确实合并了" "$(merged 52)" 1
 
-    section "【1c】正文还写着关闭关键词（Closes #51）→ 不合并，交回 worker 改成 Refs"
+    section "【1c】正文写关闭关键词（Closes #51）→ 照合（GitHub#461：合并即关子项）"
     fresh; split_ready
-    jset items.json '.["52"].body = "做了 X。\n\nCloses #51"'
+    jset items.json '.["52"].body = "做了 X。\n\nCloses #51\nPart of #50"'
     tick
-    chk "Closes #51 → 不合并" "$(merged 52)" 0
-    chk "  → 交回 worker（pending/agent），说明写改成 Refs #51" "$(has_label 52 pending/agent)/$(comments_with 52 '改成 `Refs #51`')" "yes/1"
+    chk "Closes #51 → 合并" "$(merged 52)" 1
+    chk "  → 没交回 worker" "$(has_label 52 pending/agent)" no
 
     section "【2】不是拆分子项：借不走父 issue 的授权"
     local case_ who body purl what
@@ -558,7 +558,6 @@ mutate handoff-no-reread '        if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" 
 mutate handoff-delete-unchecked '            printf '"'"'%s'"'"' "$out" | grep -q '"'"'HTTP 404'"'"' && continue' '            continue'
 mutate bare-number-dropped '| {r: ((.[0] // "") | ascii_downcase' '| select(.[0] != null) | {r: ((.[0] // "") | ascii_downcase'
 mutate foreign-not-read 'gh api "repos/${pr:-$REPO}/issues/$p"' 'gh api "repos/$REPO/issues/$p"'
-mutate close-bounce-off 'if [ "$AP_KIND" = issue ] && printf '"'"'%s'"'"' "$AP_BODY" | autopilot_body_has_close; then' 'if false; then'
 mutate refs-binding-off '       && [ "$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_refs)" = "$n" ]; then' '       && false; then'
 mutate discover-off '    [ -s "${TICK_DIR:-/nonexistent}/issues.json" ] || return 0' '    return 0'
 pass=$REAL_PASS; fail=$REAL_FAIL
