@@ -1,7 +1,8 @@
 // The React side of the shortcuts (GitHub#192): who handles a shortcut, and which layer is on top.
 // The decision itself is `resolve` in shortcuts.ts; the single keydown listener is `useKeyboard` (App).
 import { useEffect, useRef } from 'react';
-import { frameAllowed, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
+import { findEscape, findEscapeFromFrame } from './findInPage';
+import { composing, frameAllowed, resolveKey, typingOf, type KeyLike, type KeySpec, type Layer, type Page, type ShortcutId, type Typing } from './shortcuts';
 
 /**
  * A handler returns false when the key did nothing it should keep from the page (it is then left
@@ -85,6 +86,11 @@ export function frameKey(key: unknown, mod: unknown = false, shift: unknown = fa
   return press(frameEvent(key, mod, shift, code, meta, ctrl, alt), 'none', frameAllowed) !== null;
 }
 
+/** GitHub#502: a plain Esc the discussion frame handed over because find is open: it only ever closes find */
+export function frameFindEscape(): void {
+  if (signedInNow) findEscapeFromFrame(topLayer() !== 'none');
+}
+
 /**
  * A key the discussion frame reported, as the window's event it stands for. GitHub#492: the frame also reports ⌘ and ⌃
  * one by one (⌃⌘1 is not ⌘1 on macOS); they are taken only when both are booleans and agree with `mod` — otherwise the
@@ -105,6 +111,9 @@ export function useKeyboard(signedIn: boolean, page: Page = 'board'): void {
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      // GitHub#502: while the find bar is open, a plain Esc closes it first (before 回到首页 / 离开回复框 / 回到看板);
+      // a dialog, picker or the shortcut list on top keeps its own Esc
+      if (signedInNow && !composing(e) && findEscape(e, topLayer() !== 'none')) return void e.preventDefault();
       if (press(e, typingOf(document.activeElement))) e.preventDefault();
     };
     window.addEventListener('keydown', listener);

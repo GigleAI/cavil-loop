@@ -20,6 +20,8 @@ import { useQuery } from './query';
 import { dismiss, isShown, notifyWarningIds, reconcile, warningIds, type Dismissed } from './warnings';
 import { useKeyboard, useShortcuts } from './keyboard';
 import { ShortcutHelp } from './ShortcutHelp';
+import { FindBar } from './FindBar';
+import { closeFind, openFind, stepFind } from './findInPage';
 import { setCustomKeys, type CustomKeys } from './shortcuts';
 import type { SettingsIntent } from './EmptyGuide';
 
@@ -360,6 +362,10 @@ export function App() {
       if (!tabKeys.length) return false;
       show(stepTab(tabKeys, front, -1));
     },
+    // GitHub#502: find text on the page — never the board's search box; ⌘G / ⇧⌘G only while the bar is open
+    find: () => openFind(),
+    findNext: () => stepFind(1),
+    findPrev: () => stepFind(-1),
   });
 
   const [query, setQuery] = useQuery(snap?.state.view.query ?? '');
@@ -387,6 +393,10 @@ export function App() {
   // GitHub#467: the window's one top row; the board draws its tools into it (`tools`)
   const frame = useWindowFrame();
   const [tools, setTools] = useState<HTMLDivElement | null>(null);
+  // the find bar belongs to the signed-in pages: leaving them (sign-out, the app-kind page) closes it
+  useEffect(() => {
+    if (!ready) closeFind();
+  }, [ready]);
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
       {/* GitHub#467: one top row for the whole window (on macOS it is the title bar). The tabs show in it
@@ -516,6 +526,7 @@ export function App() {
           <p data-testid="tab-close-question">这个标签页里还有没发出的文字（回复、正在编辑的评论或标题）。关掉后这些文字就没有了。</p>
         </ConfirmDialog>
       )}
+      {ready && <FindBar />}
       {keysOn && keysHelp && (
         <ShortcutHelp
           onClose={() => setKeysHelp(false)}

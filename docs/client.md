@@ -129,6 +129,7 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 | ⌃⌘1 / ⌃⌘2 / ⌃⌘3 (Control and Command together; the earlier ⌥⌘1/2/3 and ⌘⇧1/2 still work) | board / table / dependency graph |
 | ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
 | ⌘W | close the current tab |
+| ⌘F | find text on the page (the detail's discussion included; the search box is not touched); ↩ / ⇧↩ or ⌘G / ⌘⇧G next / previous, Esc closes |
 | `L` / `M` / `R` in details | labels / milestone / jump to the reply box |
 | ⌘↩ | send a reply, confirm a dialog |
 | ⌘= / ⌘- / ⌘0 | zoom in / out / actual size |

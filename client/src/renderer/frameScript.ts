@@ -23,7 +23,9 @@
 // (it carries \`data-rel\`, no \`src\` — the frame never fetches those) is asked of the window, entry by entry as
 // they are unfolded, and the window hands back the image as a data: address or the line to show; "reload" asks
 // again, or — for any other image — asks the window to read the discussion again (a pasted attachment's address
-// expires). The only message the frame listens to is that answer, from its parent, for this rendering; only a
+// expires). The messages the frame listens to come from its parent, for this rendering: that answer, the keys
+// (below) and find (GitHub#502: open or not, the query, which match is current — it only highlights, unfolds
+// and scrolls, and reports the count back; while find is open a plain Esc is handed to the window); only a
 // data: address of one of four bitmap kinds is ever put into an image. An image that failed before this script
 // ran is loaded once more so its failure is seen. Copying goes by select + copy, the way that
 // works in a frame that is not same-origin; the clipboard API after it), and when neither way works the button
@@ -36,6 +38,7 @@
 // table changes the text too; keys changed on this machine (GitHub#487) do not — the window sends them in a
 // `{ cavil: 'keys' }` message, for this rendering, from its parent, and only a list of plain entries is taken.
 
+import { FRAME_FIND_JS } from './frameFind';
 import { FRAME_FORWARD } from './shortcuts';
 
 export const FRAME_SCRIPT = `(function () {
@@ -205,9 +208,55 @@ export const FRAME_SCRIPT = `(function () {
     if (t.hasAttribute('data-rel') ? t.hasAttribute('data-shown') : !!t.getAttribute('src')) box(t, 'failed', '图片没加载出来');
   }, true);
   var fwd = ${JSON.stringify(FRAME_FORWARD)};
+  // GitHub#502: find on the page. The window says whether find is open, the query and which of this frame's
+  // matches is the current one; the frame finds (the same rule as the window, frameFind.ts), highlights,
+  // unfolds and scrolls to the current one, and answers how many it found
+  ${FRAME_FIND_JS}
+  var findOn = false, ownSel = null;
+  // without highlight support the current match is the selection; find takes away only the selection it made
+  // itself (still exactly that one), when find closes or the current match is no longer in this frame
+  function dropOwn() {
+    var mine = ownSel, sel = window.getSelection();
+    ownSel = null;
+    if (!mine || !sel || sel.rangeCount !== 1) return;
+    var r = sel.getRangeAt(0);
+    if (r.startContainer === mine[0] && r.startOffset === mine[1] && r.endContainer === mine[2] && r.endOffset === mine[3]) sel.removeAllRanges();
+  }
+  function findSet(m) {
+    findOn = m.open === true;
+    var hl = window.CSS && CSS.highlights && typeof Highlight === 'function' ? CSS.highlights : null;
+    if (hl) { hl.delete('cavil-find'); hl.delete('cavil-find-cur'); }
+    if (!findOn) { dropOwn(); return; }
+    var q = typeof m.q === 'string' && m.q.length <= 1000 ? m.q : '';
+    var list = cavilFind(document.body, q), all = hl ? new Highlight() : null, cur = null;
+    for (var i = 0; i < list.length; i++) {
+      var r = document.createRange();
+      r.setStart(list[i][0], list[i][1]);
+      r.setEnd(list[i][2], list[i][3]);
+      if (i === m.cur) cur = r;
+      else if (all) all.add(r);
+    }
+    if (hl) hl.set('cavil-find', all);
+    if (cur) {
+      if (hl) { var one = new Highlight(); one.add(cur); hl.set('cavil-find-cur', one); }
+      var el = cur.startContainer.parentElement;
+      for (var d = el && el.closest('details:not([open])'); d; d = d.parentElement ? d.parentElement.closest('details:not([open])') : null) d.open = true;
+      if (m.scroll === true) {
+        if (!hl) {
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(cur);
+          ownSel = [cur.startContainer, cur.startOffset, cur.endContainer, cur.endOffset];
+        }
+        if (el) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+      }
+    } else if (!hl) dropOwn();
+    send({ cavil: 'found', q: q, n: list.length });
+  }
   window.addEventListener('message', function (e) {
     var m = e.data;
     if (e.source !== parent || !m || m.render !== render) return;
+    if (m.cavil === 'find') { findSet(m); return; }
     if (m.cavil === 'keys') {
       // the keys in effect on this machine (GitHub#487): only a list of plain entries replaces the defaults
       var list = m.fwd, ok = Array.isArray(list) && list.length <= 64;
@@ -226,6 +275,12 @@ export const FRAME_SCRIPT = `(function () {
   });
   document.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229 || typeof e.key !== 'string') return;
+    // GitHub#502: while find is open a plain Esc closes it — handed to the window, which only closes find with it
+    if (findOn && e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      send({ cavil: 'findEsc' });
+      return;
+    }
     // only a candidate is picked here (the same modifiers, and the key position — for a digit, or a letter with ⌥ — or
     // the character of a forwarded shortcut); the event goes on as it came, and the window decides it with its own rule
     var mod = e.metaKey || e.ctrlKey, sh = e.shiftKey, alt = e.altKey, k = e.key.toLowerCase();
@@ -257,4 +312,4 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-yXXTmrZ2Vu8uHuEAmvWhS+leekRfoXXoFCaCbvIjI4s='";
+export const FRAME_SCRIPT_HASH = "'sha256-vt4ilgyVFr2NStBc3meRXrkXuLdn1eP6ZhJe+jWL6WU='";

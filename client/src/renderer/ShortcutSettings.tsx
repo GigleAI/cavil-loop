@@ -9,7 +9,7 @@ import { Icon } from './Icons';
 import { Keys } from './ShortcutHelp';
 import { SCOPE_TITLE, activeShortcuts, composing, customizable, isCustom, isMac, keyParts, shortcutName, shownKeys, type CustomKey, type Scope, type ShortcutId } from './shortcuts';
 
-const ORDER: Scope[] = ['global', 'detail', 'graph', 'reply', 'dialog', 'settings', 'picker', 'help'];
+const ORDER: Scope[] = ['global', 'detail', 'graph', 'reply', 'dialog', 'settings', 'picker', 'help', 'find'];
 const MODIFIERS = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph', 'CapsLock', 'Fn', 'OS']);
 
 /**
