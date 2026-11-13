@@ -1,5 +1,6 @@
 /* Cavil Loop window styles (GitHub#181: one look for the board, detail, table, settings and sign-in).
-   Every colour is a token below, light first, dark under prefers-color-scheme. Text colours are
+   Every colour is a token below, light first, dark under [data-theme='dark'] on the page root (GitHub#516:
+   set from the Settings choice, src/shared/theme.ts, before the first screen). Text colours are
    picked to keep 4.5:1 against the surfaces they sit on (checked by the UI test "contrast"). */
 :root {
   --canvas: #f6f8fa;
@@ -39,10 +40,15 @@
   /* GitHub#350: the dependency graph's arrows and badges */
   --edge-open: #bf8700; --edge-done: #8c959f; --blocked-fg: #7d4e00; --blocked-bg: #fff8c5; --blocked-border: #d4a72c;
   --graph-dot: #d1d9e0;
-  color-scheme: light dark;
+  color-scheme: light;
 }
+/* Before the window has marked the page (the stylesheet is linked in the page head, the mark comes with the
+   script, after the back end answered): the system's look, so a dark system does not flash white. The same
+   tokens as the dark block below, copied because a media condition cannot share a block with a selector
+   (light-dark() would, but not in the WebKit of macOS 14); test/e2e/theme.spec.ts checks the two give every
+   token the same value. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --canvas: #0d1117;
     --surface: #151b23;
     --col: #10151c;
@@ -75,7 +81,43 @@
     --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
     --edge-open: #d29922; --edge-done: #6e7681; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
     --graph-dot: #2a313c;
+    color-scheme: dark;
   }
+}
+:root[data-theme='dark'] {
+  --canvas: #0d1117;
+  --surface: #151b23;
+  --col: #10151c;
+  --raised: #1c232c;
+  --fg: #e6edf3;
+  --muted: #9198a1;
+  --icon: #7d8590;
+  --border: #3d444d;
+  --border-muted: #2a313c;
+  --accent: #4493f8;
+  --accent-subtle: rgba(56, 139, 253, 0.15);
+  --hover: #212830;
+  --ctl: #212830;
+  --primary-bg: #238636;
+  --warn-bg: #2b2111;
+  --warn-border: #6c4f0c;
+  --warn-icon: #d29922;
+  --err-bg: #2d1517;
+  --err-border: #8e2a2a;
+  --err-fg: #f85149;
+  --info-bg: #0f2645;
+  --info-border: #1f6feb;
+  --ok-bg: #12261e;
+  --ok-border: #238636;
+  --ok-icon: #3fb950;
+  --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.02);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px #3d444d;
+  --overlay: rgba(1, 4, 9, 0.6);
+  --state-open-fg: #3fb950; --state-closed-fg: #f85149; --state-done-fg: #ab7df8; --state-neutral-fg: #9198a1;
+  --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
+  --edge-open: #d29922; --edge-done: #6e7681; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
+  --graph-dot: #2a313c;
+  color-scheme: dark;
 }
 
 /* ---- base ---- */
@@ -1025,4 +1067,5 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 ::highlight(cavil-find) { background-color: var(--find-hl); color: inherit; }
 ::highlight(cavil-find-cur) { background-color: #ff9632; color: #1f2328; }
 :root { --find-hl: #fff3a3; }
-@media (prefers-color-scheme: dark) { :root { --find-hl: #5c4a00; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) { --find-hl: #5c4a00; } }
+:root[data-theme='dark'] { --find-hl: #5c4a00; }

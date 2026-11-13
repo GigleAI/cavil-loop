@@ -1,4 +1,5 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useSyncExternalStore, type CSSProperties } from 'react';
+import type { Theme } from '../shared/theme';
 
 // Label chips (GitHub#181): one rule for the board card, the table and the detail panel.
 // GitHub's label colours are picked for a light page; in dark mode a solid chip glares,
@@ -57,18 +58,32 @@ export function labelStyle(hex: string, dark: boolean): CSSProperties {
   return { background: `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0.18)`, color: css(fg), borderColor: `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0.45)` };
 }
 
-/** Follows the system's light / dark setting while the window is open. */
+/**
+ * GitHub#516: what the window shows, light or dark — the controller's `theme` (Settings' choice
+ * resolved against the system), not the system's own setting. `applyTheme` marks the page root
+ * (the stylesheet's tokens follow it) and re-renders everything that colours itself in code.
+ */
+let shown: Theme | null = null;
+const listeners = new Set<() => void>();
+
+export function applyTheme(theme: Theme): void {
+  if (typeof document !== 'undefined' && document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme;
+  if (theme === shown) return;
+  shown = theme;
+  for (const l of listeners) l();
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+/** True while the window shows dark (before anything was applied: what the page root says, else light). */
 export function useDarkMode(): boolean {
-  const q = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-  const [dark, setDark] = useState(q?.matches ?? false);
-  useEffect(() => {
-    if (!q) return;
-    const on = () => setDark(q.matches);
-    on();
-    // Safari 14 has only the old listener API
-    if (q.addEventListener) q.addEventListener('change', on);
-    else q.addListener(on);
-    return () => (q.removeEventListener ? q.removeEventListener('change', on) : q.removeListener(on));
-  }, []);
-  return dark;
+  return useSyncExternalStore(subscribe, isDark, isDark);
+}
+
+function isDark(): boolean {
+  if (shown) return shown === 'dark';
+  return typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark';
 }
