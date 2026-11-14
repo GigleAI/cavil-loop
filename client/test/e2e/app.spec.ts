@@ -983,12 +983,18 @@ test('GitHub#226: an open PR whose checks are still running is read every round 
   const reads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
   const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
   const { app, page } = await launch(env);
+  /**
+   * one sync round, waited until it has ended, then the detail's own read the round started (if any) until it
+   * has answered. GitHub#523: asked for directly and awaited, not the shell's beat + "the refresh button is
+   * enabled" — a round's first steps say nothing on screen, so under load the button was still enabled while
+   * the round ran, and the detail read it starts came after the count was taken
+   */
   const round = async () => {
     const n = rounds();
-    app.desktop.push({ kind: 'tick' });
-    await expect.poll(rounds).toBeGreaterThan(n);
-    await expect(page.getByTestId('refresh')).toBeEnabled();
+    await page.evaluate(() => (window as any).cavil.syncNow());
+    expect(rounds()).toBeGreaterThan(n);
     await page.waitForTimeout(400);
+    await expect.poll(() => reads().every((l) => l.status > 0)).toBe(true);
   };
   await signInWithSources(page);
   await card(page, prN).click();

@@ -8,7 +8,7 @@
 // answer shape (a Response through GitHubClient), not a hand-built error object.
 
 import { describe, expect, it } from 'vitest';
-import { GitHubClient, failureInput } from '../../src/data/github';
+import { GitHubClient, ReadGate, RateLimitError, failureInput } from '../../src/data/github';
 import { choicesWaitUntil, classifyFailure, describeFailure, failureOf, type FailureKind, type ReadFailure } from '../../src/shared/readFailure';
 
 const ENDPOINTS = { api: 'https://api.github.com', web: 'https://github.com' };
@@ -190,5 +190,28 @@ describe('what each kind says (GitHub#401)', () => {
     expect(choicesWaitUntil({ failure: lim(5), groups: [] })).toBe(5);
     expect(choicesWaitUntil({ orgsFailure: lim(3), groups: [{ failure: lim(9) }, { failure: { kind: 'network', raw: 'x' } }, {}] })).toBe(9);
     expect(choicesWaitUntil({ groups: [{ failure: { kind: 'rateLimited', raw: 'x' } }] })).toBeNull();
+  });
+});
+
+describe('a rate limit heard through a read gate names the gate\'s time (GitHub#523)', () => {
+  it('the gate hears the answer a moment after it arrived (a busy machine): the failure\'s time is when the gate lets a read out, not earlier', async () => {
+    // the gate's clock is 700 ms past the answer's arrival, as when the window was busy in between
+    const gate = new ReadGate(() => Date.now() + 700);
+    const c = new GitHubClient(ENDPOINTS, 'gho_x', async () => json(429, { message: 'too many' }, { 'retry-after': '3' }), undefined, { gate, retryDelaysMs: [] });
+    const e = await c.graphql('query CavilChoicesOrg { x }', {}).then(() => { throw new Error('the read did not fail'); }, (x) => x);
+    expect(e).toBeInstanceOf(RateLimitError);
+    const f = classifyFailure(failureInput(e));
+    expect(f.kind).toBe('rateLimited');
+    expect(gate.until).not.toBeNull();
+    // the answer alone says 3 s from its arrival; the gate opens later than that — the failure says the gate's time
+    expect(gate.until!).toBeGreaterThanOrEqual((e as RateLimitError).heardAt! + 3_000 + 700);
+    expect(f.retryAt).toBe(gate.until);
+    expect(choicesWaitUntil({ groups: [{ failure: f }] })).toBe(gate.until);
+  });
+
+  it('without a gate the time is counted from the answer\'s arrival, as before', async () => {
+    const e = (await raisedBy(() => json(429, { message: 'too many' }, { 'retry-after': '3' }))) as RateLimitError;
+    expect(e.gateUntil).toBeNull();
+    expect(classifyFailure(failureInput(e)).retryAt).toBe(e.heardAt! + 3_000);
   });
 });

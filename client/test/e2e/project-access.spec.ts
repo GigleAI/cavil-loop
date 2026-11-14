@@ -243,6 +243,10 @@ test('one organisation rate limited while another is still loading: closing and 
   limited = false;
   await expect(page.getByTestId('picker-reload')).toBeEnabled({ timeout: 8_000 });
   await page.getByTestId('picker-reload').click();
+  // GitHub#523: the reload takes the groups away while it reads, so "no failure in a-org" alone also held before
+  // the new read was sent — the a-org group is there again and nothing is loading any more
+  await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"]')).toBeVisible();
+  await expect(page.getByTestId('picker-loading')).toHaveCount(0);
   await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"] [data-testid="picker-group-failure"]')).toHaveCount(0);
   expect(viewerReads()).toBe(2);
 });
