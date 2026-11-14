@@ -18,7 +18,8 @@
     处理过的请求记在盘上，服务重启后重放同一个请求照样被拒。
     设备的 Tailscale 身份必须等于配对时记下的那台。
   · 能做的只有固定几件事：读状态（scripts/install-status.sh 原样）、停 / 启一个项目
-    （scripts/project-service.sh）、读一个项目轮询日志的最后 200 行、撤销本设备。
+    （scripts/project-service.sh）、读一个项目轮询日志的最后 200 行、读 / 改一个项目的常用配置
+    （scripts/project-config.sh，GitHub#530：只有它登记为可改的那几项）、撤销本设备。
 
 状态目录（权限 700，文件 600）：devices.json 已配对设备；pairing.json 当前配对码（只存散列）；
 nonces.json 最近处理过的请求（防重放，重启后仍然认得）。
@@ -47,6 +48,30 @@ LOG_LINES = 200
 LOG_TAIL_BYTES = 512 * 1024
 TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# 改配置的请求体（GitHub#530）。和客户端后端 daemon_config.rs 的 valid_setting / valid_value / valid_rev
+# 是同一条规则，两边用同一张样例表对拍（tests/fixtures/config-request-shapes.json）。
+SETTING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+VALUE_RE = re.compile(r"[A-Za-z0-9._:/@,+-]{0,200}")
+REV_RE = re.compile(r"[0-9a-f]{64}")
+CONFIG_MAX_VALUES = 64
+T_CONFIG_GET = 60       # 项目配置脚本 get 的时限（秒）
+T_CONFIG_SET = 120      # set：等另一个保存的锁最多 15 秒，再加载配置几次
+
+
+def config_request_problem(rev, values):
+    """保存请求体的形状对不对。→ None，或给人看的原因（这时读、写脚本都不调用）。"""
+    if not isinstance(rev, str) or not REV_RE.fullmatch(rev):
+        return "指纹不合规：先重新读取配置"
+    if not isinstance(values, dict) or not 0 < len(values) <= CONFIG_MAX_VALUES:
+        return "没有要改的配置项"
+    for name, v in values.items():
+        if not isinstance(name, str) or not SETTING_RE.fullmatch(name):
+            return "配置项的名字不合规"
+        if not isinstance(v, str):
+            return "%s 的值不是文本" % name
+        if not VALUE_RE.fullmatch(v):
+            return "%s 的值里有不能写进配置文件的字符" % name
+    return None
 
 
 # ── 状态文件 ──
@@ -210,10 +235,11 @@ class Service:
             self.nonces = {}
             self.quarantine_until = time.time() + 2 * CLOCK_WINDOW
 
-    def script(self, name, args, timeout):
+    def script(self, name, args, timeout, input_text=None):
         path = os.path.join(self.skill, "scripts", name)
+        feed = {"stdin": subprocess.DEVNULL} if input_text is None else {"input": input_text}
         try:
-            return subprocess.run(["bash", path, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+            return subprocess.run(["bash", path, *args], capture_output=True, text=True, timeout=timeout, **feed)
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess([], 124, "", "%s 超过 %d 秒没有结束" % (name, timeout))
         except OSError as e:
@@ -231,6 +257,55 @@ class Service:
         if not isinstance(st, dict) or st.get("version") != 1 or not isinstance(st.get("projects"), list):
             return None, "状态脚本输出的格式认不出"
         return st, None
+
+    def config_read(self, key):
+        """项目配置脚本的 get。→ ("ok", 它的 JSON) 或 (结果词, 给人看的原因)。
+        结果词只有 ok / not_found / unreadable：读不懂的输出一律是 unreadable，绝不当成「什么都没设」。"""
+        out = self.script("project-config.sh", ["get", key], T_CONFIG_GET)
+        try:
+            v = json.loads(out.stdout)
+        except ValueError:
+            text = ((out.stdout or "") + (out.stderr or "")).strip()
+            return "unreadable", "读不到这个项目的配置：%s" % (text[-2000:] or "脚本没有输出")
+        if not isinstance(v, dict) or v.get("version") != 1:
+            return "unreadable", "配置脚本输出的格式认不出"
+        state = v.get("state")
+        if state == "ok" and out.returncode == 0 and isinstance(v.get("fields"), list) and isinstance(v.get("rev"), str):
+            return "ok", v
+        if state == "not_found":
+            return "not_found", str(v.get("reason") or "那台机器上没有接入这个项目")
+        return "unreadable", str(v.get("reason") or (out.stderr or "").strip()[-2000:] or "配置读不出")
+
+    def config_save(self, key, rev, values):
+        """→ 回复对象。先核对请求体、再读一次配置只放行此刻可改的项，最后才调用 set。"""
+        why = config_request_problem(rev, values)
+        if why:
+            return {"result": "refused", "output": why}
+        word, now = self.config_read(key)
+        if word != "ok":
+            return {"result": "refused", "output": "保存前重新读取配置失败，没有保存：%s" % now}
+        editable = {f.get("name") for f in now["fields"] if isinstance(f, dict) and f.get("mode") == "edit" and f.get("editable") is True}
+        for name in values:
+            if name not in editable:
+                return {"result": "refused", "output": "%s 不是能在这里改的配置项，没有保存" % name}
+        out = self.script("project-config.sh", ["set", key, "--rev", rev], T_CONFIG_SET, json.dumps(values))
+        lines = [l for l in (out.stdout or "").splitlines() if l.strip()]
+        text = ((out.stdout or "") + (out.stderr or "")).strip()
+        m = re.fullmatch(r"RESULT=(\w+)", lines[-1]) if lines else None
+        detail = {}
+        for l in reversed(lines):
+            if l.startswith("DETAIL="):
+                try:
+                    d = json.loads(l[len("DETAIL="):])
+                except ValueError:
+                    d = None
+                detail = d if isinstance(d, dict) else {}
+                break
+        shown = "\n".join(l for l in text.splitlines() if not re.match(r"^(RESULT|DETAIL)=", l)).strip()
+        if m is None:
+            # 没有最终结果（被杀、超时、半途失败）：改没改不知道，不往脚本自己的词上靠
+            return {"result": "unconfirmed", "detail": detail, "output": "配置脚本没有给出最终结果（退出码 %s），配置文件可能已经改了、也可能没改：\n%s" % (out.returncode, shown[-20000:])}
+        return {"result": m.group(1), "detail": detail, "output": shown[-20000:]}
 
     def fresh_nonce(self, device_id, nonce, now):
         """这个请求没处理过 → 先记下（落盘）再返回 "new"；处理过 → "seen"；记不下来 → "unsaved"（不处理）。"""
@@ -342,11 +417,22 @@ class Handler(BaseHTTPRequestHandler):
             if st is None:
                 return self.deny(502, "status_failed", why, device, nonce)
             return self.reply(200, {"status": st}, device, nonce)
-        m = re.match(r"^/v1/projects/([^/]+)/(stop|start|log)$", path)
+        m = re.match(r"^/v1/projects/([^/]+)/(stop|start|log|config)$", path)
         if m and KEY_RE.match(m.group(1)):
             key, what = m.group(1), m.group(2)
             if what == "log" and method == "GET":
                 return self.log(key, device, nonce)
+            if what == "config" and method == "GET":
+                word, v = svc.config_read(key)
+                return self.reply(200, {"result": "ok", "config": v} if word == "ok" else {"result": word, "output": v}, device, nonce)
+            if what == "config" and method == "POST":
+                try:
+                    req = json.loads(body or b"{}")
+                except ValueError:
+                    req = None
+                if not isinstance(req, dict):
+                    return self.reply(200, {"result": "refused", "output": "请求体不是 JSON 对象"}, device, nonce)
+                return self.reply(200, svc.config_save(key, req.get("rev"), req.get("values")), device, nonce)
             if what in ("stop", "start") and method == "POST":
                 return self.service(key, what, device, nonce)
         if method == "POST" and path == "/v1/unpair":

@@ -217,6 +217,11 @@ export interface CavilApi {
   moveTab(key: string, to: number): Promise<void>;
   /** the tab is in front and shows the item as of `updatedAt` (its "something new" dot goes) */
   seenTab(key: string, updatedAt: string): Promise<void>;
+  /**
+   * GitHub#522: this item's detail is in front (floating panel opened it, or its tab came to the front);
+   * null = no detail in front. Seen while the window is in front: its notifications are taken back.
+   */
+  showingItem(key: string | null): Promise<void>;
   /** the tab came to the front, or its refresh button: an item no complete read carries is checked now */
   checkTab(key: string): Promise<void>;
   /** the shell's "close" key with no tab in front: close the window the way its close button does */
@@ -267,6 +272,9 @@ export interface CavilApi {
   remoteStatus(id: string): Promise<RemoteRead>;
   remoteService(id: string, key: string, action: 'stop' | 'start'): Promise<RemoteResult>;
   remoteLog(id: string, key: string): Promise<RemoteResult>;
+  /** "配置" on a project of that machine (GitHub#530): the same shapes as `daemonConfigGet` / `daemonConfigSet` */
+  remoteConfigGet(id: string, key: string): Promise<ConfigRead>;
+  remoteConfigSet(id: string, key: string, rev: string, values: Record<string, string>): Promise<ConfigSave>;
   /** `localOnly`: when the machine cannot confirm, stop using the key anyway and keep the entry as "取消配对未完成" */
   remoteUnpair(id: string, localOnly: boolean): Promise<RemoteResult>;
   /** drop a "取消配对未完成" entry: the person revoked this computer on the machine itself */

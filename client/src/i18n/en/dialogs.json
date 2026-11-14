@@ -74,7 +74,6 @@
   "没有保存上，再按一次试试": "Not saved; try pressing it again",
   "没有保存上，再点一次试试": "Not saved; try clicking again",
   "全部恢复默认": "Restore all defaults",
-  "点「改」后按下新的按键。改了只在这台电脑上生效；一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{mod}1 … {mod}9、{mod}W 和缩放键是固定的。不带 {modKey} 的单个键只在光标不在输入框里时生效。": "Click \"Change\", then press the new key. Changes apply on this computer only; an action gets one key, and its old keys stop working. Esc, ↩, the arrow keys, {mod}1 … {mod}9, {mod}W and the zoom keys are fixed. A single key without {modKey} only works when the cursor is not in a text field.",
   "上次保存的快捷键里有 {n} 项这次不能用，已按默认处理：{list}。这一项改过或恢复后，这条提示消失。": {
     "one": "{n} saved shortcut cannot be used this time and has its default key: {list}. This note goes away once it is changed or restored.",
     "other": "{n} saved shortcuts cannot be used this time and have their default keys: {list}. This note goes away once they are changed or restored."
@@ -84,7 +83,6 @@
   "不带 {mod} 的键在回复框里按是打字": "A key without {mod} types text in the reply box",
   "不带 {mod} 的键在回复框、讨论区里按不生效": "A key without {mod} does nothing in the reply box or the discussion",
   "请按新的按键…{esc} 取消": "Press the new key… {esc} cancels",
-  "固定，不能改": "Fixed",
   "改": "Change",
   "已关闭（没合并）": "Closed (not merged)",
   "已关闭（完成）": "Closed (completed)",

@@ -548,7 +548,7 @@ export class Controller {
     if (typeof handBack.running !== 'string') handBack.running = DEFAULT_HAND_BACK.running;
     // GitHub#429: saved before the waiting label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.blocked !== 'string') handBack.blocked = DEFAULT_HAND_BACK.blocked;
-    // GitHub#513: a setting saved before the parked label existed
+    // GitHub#513 / #514: saved before the parked label existed (or not a string) → the default; an empty one stays empty
     if (typeof handBack.later !== 'string') handBack.later = DEFAULT_HAND_BACK.later;
     // One "waiting for a human" label for everything: reminders count it, "hand back to the agent" removes it.
     const notifyScope = normalizeNotifyScope(this.cache.getSetting<unknown>(NOTIFY_SCOPE, 'all'));
@@ -992,6 +992,8 @@ export class Controller {
   private unread = new Set<string>();
   /** the window is in front (the shell says so); while it is, new items are seen as they come */
   private active = false;
+  /** GitHub#522: the item whose detail is in front of the window now (floating panel or a detail tab), null = none */
+  private shownItem: string | null = null;
   /** bumps when the "waiting for a human" label is renamed: a recount is silent, nothing queued before it goes out */
   private labelVersion = 0;
 
@@ -1043,6 +1045,27 @@ export class Controller {
     this.set({ unreadCount: 0 });
     this.badge();
     if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});
+  }
+
+  /**
+   * GitHub#522: the window shows this item's detail in front (the floating panel opened it, or its
+   * tab came to the front) — null: none. Shown while the window is in front = seen: the item is no
+   * longer unread, and its own notifications still in Notification Center are taken back (every one
+   * about it, of this start of the app or an earlier one); notifications about other items stay.
+   * A window not in front sees nothing yet: that happens when it comes to the front.
+   * Called on every opening, also of the item shown already: what came since is taken back too.
+   */
+  showingItem(key: unknown): void {
+    this.shownItem = typeof key === 'string' && key !== '' ? key : null;
+    if (this.shownItem && this.active) this.itemSeen(this.shownItem);
+  }
+
+  private itemSeen(key: string): void {
+    if (this.unread.delete(key)) {
+      this.set({ unreadCount: this.unreadNow() });
+      this.badge();
+    }
+    this.toDesktop((d) => d.clearItemNotifications(key))?.catch(() => {});
   }
 
   private badge(): void {
@@ -1273,7 +1296,11 @@ export class Controller {
   onDesktopEvent(ev: DesktopEvent): void {
     if (ev.kind === 'active' || ev.kind === 'inactive') {
       this.active = ev.kind === 'active';
-      if (this.active) this.markRead();
+      if (this.active) {
+        this.markRead();
+        // GitHub#522: the detail in front is looked at again now that the window is
+        if (this.shownItem) this.itemSeen(this.shownItem);
+      }
       return;
     }
     if (ev.kind === 'tick') {
@@ -2331,7 +2358,7 @@ export class Controller {
       running: typeof patch.running === 'string' ? patch.running.trim() : this.state.handBack.running,
       // GitHub#429: empty is a choice — the graph then draws GitHub's own relations only
       blocked: typeof patch.blocked === 'string' ? patch.blocked.trim() : this.state.handBack.blocked,
-      // GitHub#513: empty is a choice — label pickers then pin no parked label
+      // GitHub#513 / #514: empty is a choice — label pickers pin no parked label, the view bar leaves out "稍后处理"
       later: typeof patch.later === 'string' ? patch.later.trim() : this.state.handBack.later,
     };
     this.cache.setSetting('handBack', next);
@@ -3699,7 +3726,7 @@ export class Controller {
       case 'autopilot':
       case 'handBack': {
         const { human, agent, autopilot } = this.state.handBack;
-        if (!human.trim() || !agent.trim()) return refuse(t('设置里「交给 agent」的两个标签名不能为空'));
+        if (!human.trim() || !agent.trim()) return refuse(t('设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空'));
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse(t('设置里没有填托管标签，没有修改'));
         // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
         // not go out (or whose answer never came) leaves every label alone: never handed over without it

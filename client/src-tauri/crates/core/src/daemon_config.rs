@@ -21,6 +21,10 @@ const SCRIPT: &str = "project-config.sh";
 /// the save waits up to 15 s for another save's lock, then loads the config a few times
 const T_SAVE: std::time::Duration = std::time::Duration::from_secs(120);
 
+// valid_setting / valid_value / valid_rev are also the remote entry's rules for a save sent from another
+// computer (GitHub#530, scripts/remote-access/remote_access.py config_request_problem): both read the
+// same table of examples, tests/fixtures/config-request-shapes.json, in their own tests.
+
 /// A setting's name as a config file writes it.
 pub fn valid_setting(n: &str) -> bool {
     let b = n.as_bytes();
@@ -34,7 +38,7 @@ pub fn valid_value(v: &str) -> bool {
 }
 
 /// The fingerprint `get` hands out (sha-256, hex).
-fn valid_rev(r: &str) -> bool {
+pub fn valid_rev(r: &str) -> bool {
     r.len() == 64 && r.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
@@ -151,5 +155,22 @@ mod tests {
         }
         assert!(valid_rev(&"a1".repeat(32)));
         assert!(!valid_rev("abc") && !valid_rev(&"G1".repeat(32)) && !valid_rev(&"A1".repeat(32)));
+    }
+
+    /// The same table the remote entry's Python check is run against (GitHub#530).
+    #[test]
+    fn same_shapes_as_the_remote_entry() {
+        let t: Value = serde_json::from_str(include_str!("../../../../../tests/fixtures/config-request-shapes.json")).unwrap();
+        let mut n = 0;
+        for (kind, f) in [("settings", valid_setting as fn(&str) -> bool), ("values", valid_value), ("revs", valid_rev)] {
+            for (want, list) in [(true, "ok"), (false, "bad")] {
+                for v in t[kind][list].as_array().unwrap() {
+                    let v = v.as_str().unwrap();
+                    assert_eq!(f(v), want, "{kind} {v:?}");
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 30, "the table was read ({n} examples)");
     }
 }

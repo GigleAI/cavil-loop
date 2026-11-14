@@ -447,7 +447,7 @@ export const CHOICES_ORGS_QUERY = `query CavilChoicesOrgs($after: String) { view
 export const CHOICES_ORG_QUERY = `query CavilChoicesOrg($login: String!, $after: String) { organization(login: $login) { projectsV2(first: 50, after: $after) { ${CHOICE_NODES} } } }`;
 
 /**
- * GitHub#429: what the graph needs to find the loop's registration on an open issue carrying the
+ * GitHub#429: what the graph needs to find the loop's registration on an open issue (GitHub#526: or pull request) carrying the
  * "waiting for a prerequisite" label — its newest comments (with the author's standing in the
  * repository) and the newest removals of a label. Older pages: LOOP_BLOCKED_MORE_QUERY.
  */
@@ -461,6 +461,7 @@ query CavilLoopBlocked($ids: [ID!]!) {
   nodes(ids: $ids) {
     __typename
     ... on Issue { id ${LOOP_COMMENTS('last: 100')} ${LOOP_EVENTS('last: 100')} }
+    ... on PullRequest { id ${LOOP_COMMENTS('last: 100')} ${LOOP_EVENTS('last: 100')} }
   }
 }
 `;
@@ -470,6 +471,10 @@ query CavilLoopBlockedMore($id: ID!, $comments: Boolean!, $commentsBefore: Strin
   node(id: $id) {
     __typename
     ... on Issue {
+      ${LOOP_COMMENTS('last: 100, before: $commentsBefore', ' @include(if: $comments)')}
+      ${LOOP_EVENTS('last: 100, before: $eventsBefore', ' @include(if: $events)')}
+    }
+    ... on PullRequest {
       ${LOOP_COMMENTS('last: 100, before: $commentsBefore', ' @include(if: $comments)')}
       ${LOOP_EVENTS('last: 100, before: $eventsBefore', ' @include(if: $events)')}
     }

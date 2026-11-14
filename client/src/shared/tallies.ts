@@ -1,4 +1,4 @@
-// GitHub#468: the view-bar numbers ("运行中 / 等 agent / 等人处理 / 未处理") as a table set in Settings —
+// GitHub#468: the view-bar numbers ("未处理 / 等人处理 / 等 agent / 运行中 / 稍后处理") as a table set in Settings —
 // add, remove, reorder, rename, recolour, write a search condition of one's own.
 //
 // Two kinds of rows (shared/types.ts `TallySource`):
@@ -16,7 +16,7 @@ import type { TallyColor, TallyDef, TallyFlow, TallySource } from './types';
 import { t, zhKey } from './i18n';
 
 export const TALLY_COLORS: readonly TallyColor[] = ['green', 'blue', 'orange', 'red', 'purple', 'gray', 'ring'];
-export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human'];
+export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human', 'later'];
 /** at most this many numbers: the view bar has room for no more */
 export const TALLY_MAX = 8;
 /** the "未处理" number's search — no label at all (GitHub#418); open only while its "显示已关闭" switch is off (GitHub#464) */
@@ -24,15 +24,21 @@ export const UNLABELED_QUERY = 'no:label';
 /** the setting's key */
 export const TALLIES_SETTING = 'tallies';
 
-/** the names of the three flow labels as Settings calls them */
-export const tallyFlowText = (flow: TallyFlow): string => ({ running: t('运行中的标签'), agent: t('交给 agent 的标签'), human: t('等人处理的标签') })[flow];
+/** the names of the flow labels as Settings calls them */
+export const tallyFlowText = (flow: TallyFlow): string =>
+  ({ running: t('运行中的标签'), agent: t('交给 agent 的标签'), human: t('等人处理的标签'), later: t('暂缓的标签') })[flow];
 
-/** the table as it was before GitHub#468: the same names, order and colours */
+/**
+ * The table used until it is changed in Settings. GitHub#514: left to right 未处理 → 等人处理 → 等 agent →
+ * 运行中 → 稍后处理 (the parked label, LABEL_PENDING_LATER). The four older rows keep their ids, names and
+ * colours, so a number's "显示已关闭" switch (kept by id, GitHub#464) carries over; a saved table is not touched.
+ */
 export const DEFAULT_TALLIES: readonly TallyDef[] = Object.freeze([
-  { id: 'running', name: zhKey('运行中'), color: 'green', source: { kind: 'flow', flow: 'running' } },
-  { id: 'agent', name: zhKey('等 agent'), color: 'blue', source: { kind: 'flow', flow: 'agent' } },
-  { id: 'human', name: zhKey('等人处理'), color: 'orange', source: { kind: 'flow', flow: 'human' } },
   { id: 'unlabeled', name: zhKey('未处理'), color: 'ring', source: { kind: 'query', query: UNLABELED_QUERY } },
+  { id: 'human', name: zhKey('等人处理'), color: 'orange', source: { kind: 'flow', flow: 'human' } },
+  { id: 'agent', name: zhKey('等 agent'), color: 'blue', source: { kind: 'flow', flow: 'agent' } },
+  { id: 'running', name: zhKey('运行中'), color: 'green', source: { kind: 'flow', flow: 'running' } },
+  { id: 'later', name: zhKey('稍后处理'), color: 'purple', source: { kind: 'flow', flow: 'later' } },
 ] satisfies TallyDef[]);
 
 /** a fresh copy of the default table (the frozen one is never handed out to be edited) */

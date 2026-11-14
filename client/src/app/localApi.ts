@@ -92,6 +92,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     closeTab: async (key) => c.closeTab(String(key)),
     moveTab: async (key, to) => c.moveTab(String(key), Number(to)),
     seenTab: async (key, updatedAt) => c.seenTab(String(key), String(updatedAt)),
+    showingItem: async (key) => c.showingItem(key),
     checkTab: (key) => c.checkTabs(String(key)),
     closeWindow: () => c.closeWindow(),
     settled: () => c.settled(),
@@ -111,6 +112,9 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     remoteStatus: (id) => backend.call('remoteStatus', { id: String(id) }),
     remoteService: (id, key, action) => backend.call('remoteService', { id: String(id), key: String(key), action: action === 'start' ? 'start' : 'stop' }),
     remoteLog: (id, key) => backend.call('remoteLog', { id: String(id), key: String(key) }),
+    remoteConfigGet: (id, key) => backend.call('remoteConfigGet', { id: String(id), key: String(key) }),
+    remoteConfigSet: (id, key, rev, values) =>
+      backend.call('remoteConfigSet', { id: String(id), key: String(key), rev: String(rev), values: Object.fromEntries(Object.entries(values ?? {}).map(([k, v]) => [String(k), String(v)])) }),
     remoteUnpair: (id, localOnly) => backend.call('remoteUnpair', { id: String(id), localOnly: localOnly === true }),
     remoteForget: (id) => backend.call('remoteForget', { id: String(id) }),
     remoteTailnet: () => backend.call('remoteTailnet'),

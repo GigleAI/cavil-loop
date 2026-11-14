@@ -760,6 +760,47 @@ chk "排版带空格也能列出来" \
 chk "别的 cwd 不会被误配（前缀相同也不行）" \
     "$(lib_eval "agent_session_list '${JS_WT}-other' | wc -l")" "0"
 
+echo "── 复审续接旧对话：提示最前面声明「这是新的一轮」──"
+# 2026-11 实测：复审每轮提示几乎一字不差，续接时模型当成重复任务，几秒复读旧结论后空手停下。
+sed -i 's/^WORKER_AGENT="[a-z0-9]*"$/WORKER_AGENT="claude"/' "$TMP/coding-agent.config"
+rm -rf "$TMP/state/agent-sessions" "$(claude_dir "$WT")"
+RN_ID="44444444-4444-4444-8444-444444444444"
+RN_W_ID="55555555-5555-4555-8555-555555555555"
+RN_PROMPT="$TMP/rn-prompt.md"
+rn_reset() { printf '复审正文第一行\n第二行\n' > "$RN_PROMPT"; }
+mk_claude_session "$WT" "$RN_ID" "2026-11-14 10:00:00"
+mk_claude_session "$WT" "$RN_W_ID" "2026-11-14 09:00:00"
+lib_eval "agent_session_id_set 42 claude review '$RN_ID'; agent_session_id_set 42 claude worker '$RN_W_ID'" >/dev/null
+
+rn_reset
+out="$(lib_eval "agent_session_plan 42 '$WT' '$RN_PROMPT'; echo \"kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+chk_contains "复审第 2 轮走 resume（前提）" "$out" "kind=resume"
+chk "续接时第一行就是新一轮标记" "$(head -1 "$RN_PROMPT")" "<!-- review-new-round -->"
+chk_contains "说明里写明要发新评论、翻标签" "$(cat "$RN_PROMPT")" "发一条**新的**复审结论评论"
+chk "原提示原样跟在后面" "$(tail -2 "$RN_PROMPT" | tr '\n' '|')" "复审正文第一行|第二行|"
+
+lib_eval "agent_session_plan 42 '$WT' '$RN_PROMPT'" DISPATCH_PROMPT_KIND=review >/dev/null
+chk "同一份文件再经过一次（注入失败转重起）只加一次" \
+    "$(grep -c 'review-new-round' "$RN_PROMPT")" "1"
+
+rn_reset
+out="$(lib_eval "agent_session_plan 42 '$WT' '$RN_PROMPT'; echo \"kind=\$AGENT_LAUNCH_KIND\"")"
+chk_contains "worker 续接（前提）" "$out" "kind=resume"
+chk "worker 续接时提示一个字节不动" "$(cat "$RN_PROMPT")" "$(printf '复审正文第一行\n第二行')"
+
+rn_reset
+out="$(lib_eval "agent_session_plan 42 '$WT' '$RN_PROMPT' 1; echo \"kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+chk_contains "复审强制新开（前提）" "$out" "kind=new"
+chk_lacks "新开的复审会话不加声明" "$(cat "$RN_PROMPT")" "review-new-round"
+
+# 往活着的会话里注入 = 同一段对话：同样要加。agent_inject_prompt 换成只记下收到什么的假实现
+rn_reset
+out="$(lib_eval "agent_inject_prompt() { head -1 \"\$2\"; }; inject_prompt_logged sess '$RN_PROMPT'" DISPATCH_PROMPT_KIND=review)"
+chk "注入复审任务时，送进会话的第一行就是标记" "$out" "<!-- review-new-round -->"
+rn_reset
+out="$(lib_eval "agent_inject_prompt() { head -1 \"\$2\"; }; inject_prompt_logged sess '$RN_PROMPT'")"
+chk "注入 worker 任务时不加" "$out" "复审正文第一行"
+
 echo
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

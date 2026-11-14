@@ -15,6 +15,7 @@
 #   5. 签名请求：读状态、签名不对、重放、时间不对、换了设备、服务重启后的旧请求
 #   6. 停 / 启：只在状态对得上时执行，执行后读回；读不到不动；macOS 一侧同一套规则
 #   7. 日志最后 200 行
+#  7b. 项目配置（GitHub#530）：读 / 改，只放行此刻可改的项；格式不合规的读写脚本都不调用，只读项只读不写
 #   8. 撤销：命令行撤销、客户端自己撤销（回复带签名），之后旧钥匙被拒
 #   9. 关闭：读不到不动；停服务 + 撤转发，设备清单保留
 #  10. 文档里写给人照做的命令，按字面在空环境跑通
@@ -369,6 +370,112 @@ resp="$(call GET /v1/projects/widget/log)"
 chk "日志：最后 200 行，回复带签名" "$(jq -r '"\(.status) \(.signed) \(.body.text | split("\n") | length) \(.body.text | split("\n") | first) / \(.body.text | split("\n") | last)"' <<<"$resp")" \
     "200 true 200 [widget] line 251 / [widget] line 450"
 chk "别的项目的日志：没有这个项目" "$(call GET /v1/projects/nosuch/log | st_err)" "404 no_project"
+
+echo "── 7b. 项目配置（GitHub#530）──"
+# 真脚本前面套一层只记调用的替身：每次调用记一行「get」或「set」，原样转给真脚本。
+# 有 $SANDBOX/pcfg-crash 时，set 不转给真脚本、直接退出 1（没有 RESULT 行 = 「被杀 / 半途退出」）。
+PCFG="$SKILL/scripts/project-config.sh"; PCFG_CALLS="$SANDBOX/pcfg.calls"
+mv "$PCFG" "$SKILL/scripts/project-config.real.sh"
+cat > "$PCFG" <<EOF
+#!/usr/bin/env bash
+echo "\$1" >> "$PCFG_CALLS"
+if [ "\$1" = set ] && [ -e "$SANDBOX/pcfg-crash" ]; then cat >/dev/null; exit 1; fi
+exec bash "\$(dirname "\$0")/project-config.real.sh" "\$@"
+EOF
+pcfg_calls() { printf 'get=%s set=%s' "$(grep -cx get "$PCFG_CALLS" 2>/dev/null || true)" "$(grep -cx set "$PCFG_CALLS" 2>/dev/null || true)"; }
+CFG_FILE="$(in_env Linux -- bash "$SKILL/scripts/install-status.sh" | jq -r '.projects[0].config')"
+cfg_hash() { sha256sum "$CFG_FILE" | cut -d' ' -f1; }
+
+: > "$PCFG_CALLS"
+resp="$(call GET /v1/projects/widget/config)"
+chk "读配置：成功，回复带签名，读脚本调用 1 次、写脚本 0 次" "$(jq -r '"\(.status) \(.signed) \(.body.result)"' <<<"$resp") $(pcfg_calls)" "200 true ok get=1 set=0"
+chk "读配置：就是在那台机器上直接执行读脚本的输出（逐字段）" \
+    "$(jq -cS .body.config <<<"$resp")" "$(in_env Linux -- bash "$SKILL/scripts/project-config.real.sh" get widget | jq -cS .)"
+REV="$(jq -r .body.config.rev <<<"$resp")"
+chk "读配置：给出指纹、并发数是可改项" "$(jq -r '[(.body.config.rev | length | tostring), (.body.config.fields[] | select(.name=="MAX_CONCURRENT_WORKERS") | "\(.mode) \(.editable)")] | join(" ")' <<<"$resp")" "64 edit true"
+chk "读配置：别的项目 → not_found" "$(call GET /v1/projects/nosuch/config | jq -r '"\(.status) \(.body.result)"')" "200 not_found"
+
+save() {   # <请求体> → 回复；调用前清空脚本调用记录
+    : > "$PCFG_CALLS"; call POST /v1/projects/widget/config --body "$1"
+}
+before="$(cfg_hash)"
+# 格式不合规：读、写脚本都不调用，配置文件不动
+for bad in \
+    "{\"rev\":\"$REV\",\"values\":{\"max_workers\":\"2\"}}" \
+    "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"\$(id)\"}}" \
+    "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2 3\"}}" \
+    "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":2}}" \
+    "{\"rev\":\"$REV\",\"values\":{}}" \
+    "{\"rev\":\"abc\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2\"}}" \
+    "{\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2\"}}" \
+    "not json" \
+    "[1]"; do
+    resp="$(save "$bad")"
+    chk "格式不合规（$bad）：拒绝，读 0 次、写 0 次" "$(jq -r '"\(.status) \(.signed) \(.body.result)"' <<<"$resp") $(pcfg_calls)" "200 true refused get=0 set=0"
+done
+: > "$PCFG_CALLS"
+chk "项目名不合规：不认这个请求，脚本没调用" "$(call POST '/v1/projects/wid%20get/config' --body "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2\"}}" | st_err) $(pcfg_calls)" "404 not_found get=0 set=0"
+# 格式合规、但此刻只读的设置：先读一次才知道，写脚本不调用
+resp="$(save "{\"rev\":\"$REV\",\"values\":{\"LABEL_AUTOPILOT\":\"autopilot\"}}")"
+chk "只显示的设置：拒绝，读 1 次、写 0 次" "$(jq -r .body.result <<<"$resp") $(pcfg_calls)" "refused get=1 set=0"
+chk_has "只显示的设置：说明原因" "$(jq -r .body.output <<<"$resp")" "LABEL_AUTOPILOT 不是能在这里改的配置项"
+resp="$(save "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\",\"WORKTREE_BASE\":\"/tmp\"}}")"
+chk "一项可改、一项没登记（目录）：整个拒绝，写 0 次" "$(jq -r .body.result <<<"$resp") $(pcfg_calls)" "refused get=1 set=0"
+fake_ts_device 100.64.0.9 nOTHER other-box; : > "$PCFG_CALLS"
+resp="$(cl --xff 100.64.0.9 call POST /v1/projects/widget/config --id "$ID" --key "$KEY" --body "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\"}}")"
+chk "钥匙被拿到另一台设备上：拒绝，脚本没调用" "$(st_err <<<"$resp") $(pcfg_calls)" "403 device_mismatch get=0 set=0"
+: > "$PCFG_CALLS"
+chk "签名不对：拒绝，脚本没调用" "$(call POST /v1/projects/widget/config --bad-sig --body "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\"}}" | st_err) $(pcfg_calls)" "403 signature get=0 set=0"
+chk "到这里配置文件一个字节都没动" "$(cfg_hash)" "$before"
+
+# 合法保存（对照）
+cp "$CFG_FILE" "$SANDBOX/cfg.before"
+NS="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+: > "$PCFG_CALLS"
+resp="$(call POST /v1/projects/widget/config --nonce "$NS" --body "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\"}}")"
+chk "合法保存：saved，回复带签名，读 1 次、写 1 次" "$(jq -r '"\(.status) \(.signed) \(.body.result)"' <<<"$resp") $(pcfg_calls)" "200 true saved get=1 set=1"
+chk "合法保存：回复里列出改了什么" "$(jq -r '.body.detail.changes[] | "\(.name) \(.new)"' <<<"$resp")" "MAX_CONCURRENT_WORKERS 3"
+chk "合法保存：配置文件只多 / 改了这一行，其余逐字节不动" \
+    "$(diff "$SANDBOX/cfg.before" "$CFG_FILE" | grep '^[<>]' | grep -v '^[<>] MAX_CONCURRENT_WORKERS=' | wc -l) $(grep -c '^MAX_CONCURRENT_WORKERS=3$' "$CFG_FILE")" "0 1"
+chk "合法保存：在那台机器上重新加载，daemon 读到的就是 3" \
+    "$(in_env Linux -- bash "$SKILL/scripts/project-config.real.sh" get widget | jq -r '.fields[] | select(.name=="MAX_CONCURRENT_WORKERS") | .value')" 3
+: > "$PCFG_CALLS"
+chk "同一个保存请求重放：拒绝，脚本没调用" \
+    "$(call POST /v1/projects/widget/config --nonce "$NS" --body "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\"}}" | st_err) $(pcfg_calls)" "403 replay get=0 set=0"
+after="$(cfg_hash)"
+resp="$(save "{\"rev\":\"$REV\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"4\"}}")"
+chk "旧指纹（文件读取后已被改过）：写脚本自己拒绝 changed，文件不动" "$(jq -r .body.result <<<"$resp") $(pcfg_calls) $([ "$(cfg_hash)" = "$after" ] && echo same)" "changed get=1 set=1 same"
+REV2="$(call GET /v1/projects/widget/config | jq -r .body.config.rev)"
+resp="$(save "{\"rev\":\"$REV2\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"3\"}}")"
+chk "值没变：unchanged" "$(jq -r .body.result <<<"$resp")" "unchanged"
+resp="$(save "{\"rev\":\"$REV2\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"99\"}}")"
+chk "超出范围：写脚本按类型拒绝 invalid" "$(jq -r .body.result <<<"$resp") $(pcfg_calls)" "invalid get=1 set=1"
+touch "$SANDBOX/pcfg-crash"
+resp="$(save "{\"rev\":\"$REV2\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2\"}}")"
+chk "写脚本没给出最终结果：unconfirmed（不说已保存、也不说没写）" "$(jq -r '"\(.signed) \(.body.result)"' <<<"$resp") $(pcfg_calls)" "true unconfirmed get=1 set=1"
+rm -f "$SANDBOX/pcfg-crash"
+resp="$(cl call POST /v1/projects/nosuch/config --id "$ID" --key "$KEY" --body "{\"rev\":\"$REV2\",\"values\":{\"MAX_CONCURRENT_WORKERS\":\"2\"}}")"
+chk "别的项目：保存前读不到，拒绝" "$(jq -r .body.result <<<"$resp")" "refused"
+
+# 请求体规则和客户端后端是同一条：两边读同一张样例表（客户端那边在 daemon_config.rs 的测试里）
+shape="$(python3 - "$SKILL/scripts/remote-access/remote_access.py" "$REPO_DIR/tests/fixtures/config-request-shapes.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ra", sys.argv[1]); ra = importlib.util.module_from_spec(spec); spec.loader.exec_module(ra)
+t = json.load(open(sys.argv[2], encoding="utf-8"))
+rev, name, val = "a" * 64, "MAX_CONCURRENT_WORKERS", "2"
+wrong, n = [], 0
+for kind, make in (("settings", lambda v: (rev, {v: val})), ("values", lambda v: (rev, {name: v})), ("revs", lambda v: (v, {name: val}))):
+    for want, lst in ((True, "ok"), (False, "bad")):
+        for v in t[kind][lst]:
+            n += 1
+            if (ra.config_request_problem(*make(v)) is None) != want:
+                wrong.append("%s %r" % (kind, v))
+print(n, wrong)
+PY
+)"
+chk "远程入口对样例表的判断：全部对（客户端后端读同一张表）" "$(cut -d' ' -f2- <<<"$shape")" "[]"
+chk "样例表确实读到了" "$(( $(cut -d' ' -f1 <<<"$shape") > 30 ))" 1
+rm -f "$PCFG"; mv "$SKILL/scripts/project-config.real.sh" "$PCFG"
 
 echo "── 8. 撤销 ──"
 resp2="$(cl pair "$(pair_code)" second-mac)"; ID2="$(jq -r .body.id <<<"$resp2")"; KEY2="$(jq -r .body.key <<<"$resp2")"

@@ -71,6 +71,13 @@ export class RateLimitError extends GitHubError {
   }
   /** when the answer arrived (a retry-after counts from here) */
   readonly heardAt: number | null = Date.now();
+  /**
+   * GitHub#523: when the read gate this answer closed lets a read out again (null: it went through
+   * no gate). The gate counts from when it heard the answer, a moment after `heardAt` — on a busy
+   * machine long enough that a button the window enabled at the earlier time sent nothing — so a
+   * failure taken from this answer names the gate's time.
+   */
+  gateUntil: number | null = null;
 }
 
 /** an answer's headers the failure classifier reads (GitHub#401) */
@@ -82,7 +89,7 @@ function headerMeta(res: Response): GitHubErrorMeta {
 export function failureInput(e: unknown): FailureInput {
   if (!(e instanceof GitHubError)) return { kind: 'unknown', message: e instanceof Error ? e.message : String(e) };
   const limited = e instanceof RateLimitError;
-  const retryAt = limited ? (e.retryAfterMs !== null ? (e.heardAt ?? Date.now()) + e.retryAfterMs : e.resetAt) : null;
+  const retryAt = limited ? (e.gateUntil ?? (e.retryAfterMs !== null ? (e.heardAt ?? Date.now()) + e.retryAfterMs : e.resetAt)) : null;
   return {
     kind: e.kind,
     message: e.message,
@@ -258,7 +265,9 @@ export class GitHubClient {
 
   /** a rate limit heard: closes this client's gate — unless its round was given up on meanwhile */
   private limitHeard(e: RateLimitError): void {
-    if (!this.cancelled?.aborted) this.reads?.gate.hit(e);
+    if (this.cancelled?.aborted || !this.reads) return;
+    this.reads.gate.hit(e);
+    e.gateUntil = this.reads.gate.until;
   }
 
   private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {

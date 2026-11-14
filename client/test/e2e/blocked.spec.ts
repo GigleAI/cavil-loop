@@ -300,6 +300,76 @@ test('PR #441 review round 1: the registration is edited in place (same comment,
   expect(commentsOf(14).filter((b) => b.includes('<!-- agent-blocked-by:')).pop()).toContain('<!-- agent-blocked-by: #12 #17 #16 resume=pending/agent -->');
 });
 
+test('GitHub#523: "登记前置" pressed while the item just picked is still being read — it waits for that read and registers the item too, and nothing can be picked or taken off until it answers (PR #531 review round 1); when that read finds the item closed nothing is registered, the reason is on screen and the choice can be changed again', async () => {
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  await dialog.getByTestId('blocked-search').fill('12');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(1);
+  // the board's copy of #16 has no GitHub id, so picking it reads #16 first: hold that read, confirm in the meantime
+  const read16 = (e: { method: string; path: string }) => e.method === 'GET' && e.path === `/api/repos/${REPO}/issues/16`;
+  const release = env.fake.holdWhen(read16);
+  await dialog.getByTestId('blocked-search').fill('16');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await expect.poll(() => env.fake.log.filter(read16).length).toBeGreaterThan(0);
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(1);
+  await page.getByTestId('confirm-ok').click();
+  await page.waitForTimeout(300);
+  // nothing goes out while #16 is still on its way into the list
+  expect(writesTo(10)).toEqual([]);
+  // PR #531 review round 1: from the press until the answer the choice is fixed — nothing more can be picked, taken
+  // off or searched for, so a third item picked while #16 is read can never be left out of the registration
+  await expect(dialog.getByTestId('blocked-search')).toBeDisabled();
+  await expect(dialog.getByTestId('blocked-pick-remove')).toBeDisabled();
+  await expect(dialog.getByTestId('blocked-result')).toBeDisabled();
+  await dialog.getByTestId('blocked-result').click({ force: true });
+  await page.waitForTimeout(200);
+  expect(writesTo(10)).toEqual([]);
+  release();
+  await expect.poll(() => labelsOf(10), { timeout: 15_000 }).toEqual(['pending/blocked']);
+  const reg = commentsOf(10).filter((b) => b.includes('<!-- agent-blocked-by:'));
+  expect(reg).toHaveLength(1);
+  expect(reg[0]).toMatch(/<!-- agent-blocked-by: #12 #16 resume=/);
+
+  // the same on #11, but #16 has just been closed on GitHub while the board still shows it open (a read that merely fails is covered by the
+  // list of open items read a moment ago, so it is not a way to make this pick fail): the dialog stays open with the
+  // reason, and nothing is registered
+  await expect(dialog).toHaveCount(0);
+  await page.getByTestId('detail-close').click();
+  const detail11 = await openItem(page, 11);
+  await detail11.getByTestId('blocked-open').click();
+  await dialog.getByTestId('blocked-search').fill('12');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(1);
+  const release2 = env.fake.holdWhen(read16);
+  // (the fake works out an answer when the request arrives and only holds it back, so close it first; the board
+  // still shows it open)
+  for (const r of env.fake.state.repos.get(REPO)!) if (r.number === 16) r.state = 'closed';
+  await dialog.getByTestId('blocked-search').fill('16');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await page.getByTestId('confirm-ok').click();
+  release2();
+  await expect(dialog.getByTestId('blocked-search-err')).toContainText('不是开着的', { timeout: 15_000 });
+  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+  await page.waitForTimeout(300);
+  expect(writesTo(11)).toEqual([]);
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(1);
+  // the press is over: the choice can be changed again
+  await expect(dialog.getByTestId('blocked-search')).toBeEnabled();
+  await expect(dialog.getByTestId('blocked-pick-remove')).toBeEnabled();
+  await dialog.getByTestId('blocked-search').fill('17');
+  await expect(dialog.getByTestId('blocked-result')).toHaveCount(1);
+  await dialog.getByTestId('blocked-search').press('Enter');
+  await expect(dialog.getByTestId('blocked-pick')).toHaveCount(2);
+});
+
 test('PR #441 review round 1: only taking the pause off failed — after a restart the dialog finishes it with nothing new picked; with nothing left to do it cannot be confirmed', async () => {
   let app = await launchApp(env);
   let page = app.page;

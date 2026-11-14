@@ -1,10 +1,17 @@
 // GitHub#468: Settings → 顶栏计数. One row per view-bar number: name, what it counts, colour; move up /
 // down / delete; add one, back to the default. Every change saves the whole table (setTallies); the
 // table the window shows is always what the back end holds (state.tallies), never a copy of its own.
+// GitHub#514: a live preview above the table — the view bar's own numbers (`viewBarTallies`, drawn by the
+// view bar's own `TallyBar`) over the current items, so every change shows at once exactly as the bar
+// will show it. The longer rules are folded under 「计数规则」.
 
-import type { AppState, TallyColor, TallyDef, TallyFlow } from '../shared/types';
+import { useMemo } from 'react';
+import type { AppState, BoardData, TallyColor, TallyDef } from '../shared/types';
 import { effectiveTallies, TALLY_COLORS, tallyFlowText, TALLY_MAX } from '../shared/tallies';
-import { flowCondition, tallyName } from '../data/flowTally';
+import { flowCondition, tallyLabels, tallyName, viewBarTallies, type TallyLabels } from '../data/flowTally';
+import { TallyBar } from './TallyBar';
+import { SettingsMore } from './SettingsMore';
+import { localToday } from './iterationOptions';
 import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
@@ -25,15 +32,21 @@ function newId(taken: Set<string>): string {
  * stays the same ("等人处理" has no `is:open`, GitHub#462) — when it can be written exactly, otherwise
  * empty (never a query that counts something else)
  */
-export function toQueryRow(d: TallyDef, labels: Record<TallyFlow, string>): TallyDef {
+export function toQueryRow(d: TallyDef, labels: TallyLabels): TallyDef {
   if (d.source.kind !== 'flow') return d;
   const flow = d.source.flow;
   return { ...d, source: { kind: 'query', query: flowCondition(flow, labels[flow]) ?? '', from: flow } };
 }
 
-export function TallySettings({ state }: { state: AppState }) {
+export function TallySettings({ state, data }: { state: AppState; data: BoardData }) {
   const rows = effectiveTallies(state.tallies);
-  const labels: Record<TallyFlow, string> = { running: state.handBack.running, agent: state.handBack.agent, human: state.handBack.human };
+  const labels = tallyLabels(state.handBack);
+  const today = localToday(Date.now());
+  // GitHub#514: the view bar's own numbers, from the view bar's own function and context
+  const preview = useMemo(
+    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }),
+    [data.items, data.projects, state.tallies, state.handBack, state.viewer, today],
+  );
   const save = (next: TallyDef[]) => void api().setTallies(next);
   const patch = (i: number, d: TallyDef) => save(rows.map((x, j) => (j === i ? d : x)));
   const move = (i: number, by: -1 | 1) => {
@@ -47,19 +60,20 @@ export function TallySettings({ state }: { state: AppState }) {
   return (
     <section id="set-tallies" data-testid="tally-settings">
       <h3>{t('顶栏计数')}</h3>
-      <p className="muted small">
-        {t('顶栏右侧的每个数各对应下面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目，不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。')}
-        <br />
-        {tNode('「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），另外两个只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。', {
-          a: <code>is:open label:"bug"</code>,
-          b: <code>is:pr author:@me</code>,
-        })}
-        <br />
-        {t('系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。')}
-      </p>
+      <p className="muted small">{t('顶栏右侧的数，按下表的顺序、名称和颜色显示；点数字只看这些条目。')}</p>
+      <div className="tally-preview" data-testid="tally-preview">
+        <span className="muted small">{t('预览（按当前来源实时计数）')}</span>
+        {preview.length > 0 ? (
+          <TallyBar entries={preview} testid="tally-preview-bar" itemTestid="tally-preview-item" />
+        ) : (
+          <span className="muted small" data-testid="tally-preview-empty">
+            {t('一个数都不显示：顶栏不显示计数')}
+          </span>
+        )}
+      </div>
       {state.talliesBroken && (
         <div className="banner warn" data-testid="tally-broken" style={{ margin: '8px 0' }}>
-          {t('保存的顶栏计数读不出，现在显示的是默认的四个数；在这里改动一次就会重新保存。')}
+          {t('保存的顶栏计数读不出，现在显示的是默认的几个数；在这里改动一次就会重新保存。')}
         </div>
       )}
       <table className="tally-table" data-testid="tally-rows">
@@ -97,7 +111,7 @@ export function TallySettings({ state }: { state: AppState }) {
                       <span className="tally-flow" data-testid="tally-flow" title={t('跟随「流程标签」里的{which}', { which: tallyFlowText(src.flow) })}>
                         {label === ''
                           ? t('跟随流程标签：{which}留空', { which: tallyFlowText(src.flow) })
-                          : tNode('跟随流程标签：开着、带 {label} 标签的', {
+                          : tNode('跟随流程标签 {label}', {
                               label: (
                                 <b>
                                   <Verbatim from="user">{label}</Verbatim>
@@ -202,8 +216,18 @@ export function TallySettings({ state }: { state: AppState }) {
         <button className="ghost" data-testid="tally-reset" disabled={state.tallies === null && !state.talliesBroken} onClick={() => void api().setTallies(null)}>
           {t('恢复默认')}
         </button>
-        <span className="muted small">{t('最多 {n} 个；一个都不留 = 顶栏不显示计数', { n: TALLY_MAX })}</span>
+        <span className="muted small">{t('最多 {n} 个', { n: TALLY_MAX })}</span>
       </div>
+      <SettingsMore title={t('计数规则')} testid="tally-more">
+        {t('顶栏右侧的每个数各对应上面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目，不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。')}
+        <br />
+        {tNode('「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），其余的只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。', {
+          a: <code>is:open label:"bug"</code>,
+          b: <code>is:pr author:@me</code>,
+        })}
+        <br />
+        {t('一个数都不留 = 顶栏不显示计数。系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。')}
+      </SettingsMore>
     </section>
   );
 }

@@ -987,14 +987,15 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
     const loopNode = (id: string, comments: boolean, cBefore: string | null, events: boolean, eBefore: string | null): any => {
       const c = findByNodeId(store, id);
       if (!c) return null;
-      if (c.kind !== 'Issue') return { __typename: c.kind };
+      // GitHub#526: the queries ask a pull request for the same fields as an issue
+      if (c.kind !== 'Issue' && c.kind !== 'PullRequest') return { __typename: c.kind };
       const ikey = `${c.repo.toLowerCase()}#${c.number}`;
       if (w.failLoop.has(ikey)) throw Object.assign(new Error('502'), { http: 502 });
       if (w.failLoopPages && (cBefore || eBefore)) throw Object.assign(new Error('502'), { http: 502 });
       const all = (w.comments.get(ikey) ?? []).map((x, i) => ({ databaseId: i + 1, body: x.body ?? '', createdAt: x.createdAt, authorAssociation: x.authorAssociation ?? 'NONE' }));
       const evs = (w.labelEvents.get(ikey) ?? []).filter((e) => e.event === 'unlabeled').map((e) => ({ __typename: 'UnlabeledEvent', createdAt: e.created_at, label: e.label }));
       return {
-        __typename: 'Issue',
+        __typename: c.kind,
         id,
         ...(comments ? { comments: page(all, cBefore, 'lc:') } : {}),
         ...(events ? { timelineItems: page(evs, eBefore, 'le:') } : {}),

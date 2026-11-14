@@ -59,7 +59,7 @@ export interface RunningApp {
 
 /** What the window asked of the shell's desktop side, and the events the test sends it. */
 export interface FakeDesktop {
-  /** `{ op: 'notify', alert, result }` / `{ op: 'badge', count }` / `{ op: 'loginItem', on }` / `{ op: 'clearNotifications' }`, in order */
+  /** `{ op: 'notify', alert, result }` / `{ op: 'badge', count }` / `{ op: 'loginItem', on }` / `{ op: 'clearNotifications' }` / `{ op: 'clearItemNotifications', key }`, in order */
   records: any[];
   /** answer every notification with this refusal (null = shown) */
   refuse: string | null;
@@ -184,6 +184,8 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
           ok = desktop.update;
         } else if (op === 'windowFrame') {
           ok = desktop.frame;
+        } else if (op === 'clearItemNotifications') {
+          desktop.records.push({ op, key: args.key });
         } else if (op === 'checkUpdate' || op === 'restartToUpdate' || op === 'clearNotifications' || op === 'closeWindow' || op === 'startDrag' || op === 'toggleZoom') {
           desktop.records.push({ op });
         } else if (op === 'setAutoUpdate') {

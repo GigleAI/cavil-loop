@@ -35,11 +35,12 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyEntries, tallyForget, tallyName, UNLABELED_QUERY, type TallyEntry } from '../data/flowTally';
-import { effectiveTallies } from '../shared/tallies';
+import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
 import { SourceName, Verbatim, verbatimParts } from './Verbatim';
 import { tNode } from './tNode';
+import { isShown, revealBeside } from './reveal';
 
 function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now());
@@ -66,6 +67,8 @@ interface CardOps {
   /** the "本列来自 …" line: only when two or more Projects are picked (only then can it be either) */
   showProjects: boolean;
   dark: boolean;
+  /** GitHub#522: the item the floating detail shows: its card is marked */
+  openKey: string | null;
 }
 
 function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col: string; ops: CardOps }) {
@@ -76,9 +79,10 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
     <div
-      className={`card${card.under ? ' nested' : ''}`}
+      className={`card${card.under ? ' nested' : ''}${ops.openKey === it.key ? ' open-item' : ''}`}
       data-testid="card"
       data-key={it.key}
+      data-open-item={ops.openKey === it.key ? 'yes' : undefined}
       {...{ [OPENS_ITEM]: '' }}
       data-under={card.under ?? undefined}
       draggable={ops.canWrite}
@@ -431,6 +435,7 @@ export function BoardView({
   onOpen,
   detailKey,
   floatKey = null,
+  floatOpening = null,
   floatPanel = null,
   leftNote = null,
   request = null,
@@ -461,6 +466,8 @@ export function BoardView({
   detailKey: string | null;
   /** GitHub#442: the item the floating detail shows over the board, and the panel itself */
   floatKey?: string | null;
+  /** GitHub#522: which opening of the floating panel this is (changes with every opening): the board scrolls to its item once per opening */
+  floatOpening?: number | null;
   floatPanel?: ReactNode;
   /** a change made in a detail tab that has since been left: its result is said here (`seq` changes with every one) */
   leftNote?: { note: ResultNote; about?: WriteAction; seq: number } | null;
@@ -497,11 +504,12 @@ export function BoardView({
   const pinned = useMemo(() => pinKey.split('\n'), [pinKey]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
-  const { running, agent, human } = state.handBack;
+  // GitHub#514: the same function feeds Settings' live preview
   const tallyDefs = state.tallies;
+  const handBack = state.handBack;
   const tally = useMemo(
-    () => tallyEntries(data.items, effectiveTallies(tallyDefs), { running, agent, human }, { viewer: state.viewer, today, projects: data.projects }),
-    [data.items, data.projects, tallyDefs, running, agent, human, state.viewer, today],
+    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }),
+    [data.items, data.projects, tallyDefs, handBack, state.viewer, today],
   );
   // a window without its own memory (tests mounting the board alone) keeps the pick here
   const [ownPick, setOwnPick] = useState<string | null>(null);
@@ -683,6 +691,7 @@ export function BoardView({
     dragStart: (card, from) => (dragging.current = { card, from }),
     showProjects: pickedProjects >= 2,
     dark,
+    openKey: floatKey,
   };
   const onDrop = (col: Column) => {
     const d = dragging.current;
@@ -725,6 +734,20 @@ export function BoardView({
     ro.observe(el);
     return () => ro.disconnect();
   }, [withLanes, laneShape]);
+  // GitHub#522: once per opening of the floating detail, its item is brought into view left of the panel —
+  // as soon as it is drawn (a notification clicked before the data was read: when it arrives; in a folded
+  // lane: when unfolded). Never again for that opening: a later render must not pull the board back.
+  const areaRef = useRef<HTMLDivElement>(null);
+  const revealed = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (floatKey === null || floatOpening === null || revealed.current === floatOpening) return;
+    const area = areaRef.current;
+    const el = area?.querySelector<HTMLElement>('[data-open-item="yes"]');
+    if (!area || !el || !isShown(el)) return;
+    revealed.current = floatOpening;
+    const panel = area.closest('[data-testid="board"]')?.querySelector('.detail.floating');
+    revealBeside(el, panel ? panel.getBoundingClientRect().left : null);
+  });
   const renderRow = (lane: string | null) => {
     const pick = (c: Column) => (lane ? c.cards.filter((x) => x.lane === lane) : c.cards);
     return (
@@ -892,7 +915,7 @@ export function BoardView({
           title={
             statesInSearch
               ? t('搜索框已经指定了开 / 关状态（is:open、is:closed、is:merged），以搜索框为准')
-              : t('打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏四个数点亮时，各记一份。')
+              : t('打开后连已关闭、已合并的条目一起显示。只限已读到的条目：仓库来源读全部开着的、近 14 天更新过的和挂着「等人处理的标签」的已关闭条目，Project 来源读看板上的全部条目。\n看板、表格、依赖图，以及顶栏每个数点亮时，各记一份。')
           }
         >
           <input
@@ -917,36 +940,19 @@ export function BoardView({
               {t('显示 {entries} 个有关系的条目 · 共 {total} 个条目', { entries: graph.entries, total: data.items.length })}
             </span>
           ) : (
-            <span className="tally" data-testid="flow-tally">
-              {tally.map((e) => {
-                const on = lit === e.kind;
-                const named = tallyName(e);
-                const tip = [
-                  // GitHub#462: a row following the "等人处理" label counts closed items carrying it too
-                  `${e.source === 'flow' ? (e.flow === 'human' ? t('带 {label} 标签的条目（开着的和已关闭的都算）有 {n} 个', { label: e.label, n: e.count }) : t('开着的条目里带 {label} 标签的有 {n} 个', { label: e.label, n: e.count })) : e.query === UNLABELED_QUERY ? t('开着的条目里一个标签都没有的有 {n} 个', { n: e.count }) : statesStated(parseFilter(e.query!)) ? t('符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count }) : t('开着的条目里符合「{query}」的有 {n} 个', { query: e.query ?? '', n: e.count })} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
+            <TallyBar
+              entries={tally}
+              lit={lit}
+              onPick={clickTally}
+              tip={(e, on) =>
+                [
+                  `${tallyCountText(e)} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
-                ].join('\n');
-                return (
-                  <button
-                    key={e.kind}
-                    type="button"
-                    className={`tally-item${on ? ' on' : ''}${e.count === 0 ? ' zero' : ''}`}
-                    data-testid="tally"
-                    data-kind={e.kind}
-                    aria-pressed={on}
-                    disabled={e.query === null}
-                    title={tip}
-                    {...verbatimParts('user', [e.label, e.source === 'query' ? e.query : null, named.own ? e.name : null])}
-                    onClick={() => clickTally(e)}
-                  >
-                    <i className={`dot c-${e.color}`} aria-hidden="true" />
-                    {named.own ? <Verbatim from="user">{named.text}</Verbatim> : named.text} <b data-testid="tally-count">{e.count}</b>
-                  </button>
-                );
-              })}
-            </span>
+                ].join('\n')
+              }
+            />
           )}
           <span data-testid="item-total" className="sr-only">
             {t('{n} 个条目', { n: data.items.length })}
@@ -1009,7 +1015,7 @@ export function BoardView({
       )}
 
       </div>
-      <div className="board-area">
+      <div className="board-area" ref={areaRef}>
       {graph ? (
         <GraphView
           model={graph}
@@ -1048,6 +1054,7 @@ export function BoardView({
           repoOrder={state.repoOrder}
           table={table ?? undefined}
           pinnedLabels={pinned}
+          openKey={floatKey}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

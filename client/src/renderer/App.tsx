@@ -129,6 +129,8 @@ export function App() {
   // tab is in front (going to a tab and back finds it again — a new opening, its unsent text kept here).
   const [float, setFloat] = useState<{ key: string; n: number; intent: OpenIntent | null } | null>(null);
   const floatSeq = useRef(0);
+  /** GitHub#522: bumps on every opening of an item (`openItem`), whichever place it ends up in */
+  const [openings, setOpenings] = useState(0);
   const floatRef = useRef(float);
   floatRef.current = float;
   /** what the floating panel holds unsent, and for which item */
@@ -179,6 +181,8 @@ export function App() {
   const openItem = (key: string, how: OpenHow, intent: OpenIntent | null = null) => {
     setMenu(null);
     if (how === 'back') return void openTab(key, { background: true });
+    // GitHub#522: every opening in front counts as a look, also of the item shown already (its notifications go again)
+    setOpenings((n) => n + 1);
     if (how === 'front' || keysRef.current.includes(key)) return void openTab(key, { intent: intent ?? undefined });
     setHelp(false);
     setPage('board');
@@ -403,6 +407,15 @@ export function App() {
   useEffect(() => {
     if (!ready) closeFind();
   }, [ready]);
+  // GitHub#522: the item whose detail is in front (a detail tab, or the floating panel over the board) — told
+  // on every opening, also of the item shown already: the controller takes back its notifications
+  const shownKey = !ready ? null : front !== HOME ? front : page === 'board' && float ? float.key : null;
+  const shownOpening = shownKey === null ? '' : `${front !== HOME ? `tab:${front}` : `float:${float?.n}`}:${openings}`;
+  useEffect(() => {
+    void api()
+      .showingItem(shownKey)
+      .catch(() => {});
+  }, [shownKey, shownOpening]);
   return (
     <div data-testid="app-root" className="app" data-phase={snap?.state.phase ?? 'loading'}>
       {/* GitHub#467: one top row for the whole window (on macOS it is the title bar). The tabs show in it
@@ -454,6 +467,7 @@ export function App() {
                 onOpen={openFromClick}
                 detailKey={front === HOME ? null : front}
                 floatKey={front === HOME && float ? float.key : null}
+                floatOpening={front === HOME && float ? float.n : null}
                 floatPanel={
                   front === HOME && float ? (
                     <DetailPanel

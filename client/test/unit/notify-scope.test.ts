@@ -482,6 +482,7 @@ async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknow
     },
     setBadge: async (n) => void badges.push(n),
     clearNotifications: async () => {},
+    clearItemNotifications: async () => {},
     loginItem: async () => false,
     setLoginItem: async () => {},
     nextEvent: () => new Promise<DesktopEvent>(() => {}),

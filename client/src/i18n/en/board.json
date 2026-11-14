@@ -226,7 +226,7 @@
   "当前来源和筛选下，没有带父子 / 阻塞关系的 issue。": "No issues with parent / blocking relations under the current sources and filter.",
   "阻塞者未完成": "Blocker not done",
   "阻塞者已完成": "Blocker done",
-  "框 = 父 issue，框里是它的子 issue": "Box = parent issue, with its sub-issues inside",
+  "框 = 父 issue，框里是它的子 issue 和挂在子 issue 上、等前置的 PR": "Box = parent issue, with its sub-issues and their PRs waiting for prerequisites inside",
   "停在有未关闭 issue 的那一组": "Go to the group with open issues",
   "整张图放进窗口（{key}）": "Fit the whole graph in the window ({key})",
   "适应窗口": "Fit",

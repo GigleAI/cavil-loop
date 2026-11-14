@@ -303,7 +303,7 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
             </span>
             <span className="gleg">
               <span className="gleg-box" />
-              {t('框 = 父 issue，框里是它的子 issue')}
+              {t('框 = 父 issue，框里是它的子 issue 和挂在子 issue 上、等前置的 PR')}
             </span>
           </div>
         )}
