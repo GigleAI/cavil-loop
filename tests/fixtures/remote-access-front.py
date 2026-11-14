@@ -10,6 +10,9 @@
   --caller-file  文件内容就是「转发层查到的来访地址」（每个请求现读，测试可以中途换设备）
   --impostor     不转发：冒名顶替的另一台机器（有合法证书、没有钥匙），对任何请求都回一段没有签名的 200
   --log          每个到达的请求记一行 JSON：{method, path, headers, body}——断言「对面收到了什么」用
+  --reply-sig-file  转发时每个回复现读这个文件（GitHub#530）：内容是 drop → 去掉回复的签名头，
+                 corrupt → 换成一个不对的签名；文件不在 → 原样转回。请求照样转给服务、照样执行，
+                 测的是「已经执行、但回复验不过」这条路
 
 启动后往 stdout 打一行 `listening <端口>`。
 """
@@ -24,6 +27,7 @@ ap.add_argument("--backend", type=int, default=0)
 ap.add_argument("--caller-file", default="")
 ap.add_argument("--impostor", action="store_true")
 ap.add_argument("--log", required=True)
+ap.add_argument("--reply-sig-file", default="")
 a = ap.parse_args()
 
 
@@ -57,8 +61,16 @@ class H(BaseHTTPRequestHandler):
         conn.request(self.command, self.path, body=body or None, headers=headers)
         r = conn.getresponse()
         out = r.read()
+        try:
+            sig_mode = open(a.reply_sig_file, encoding="utf-8").read().strip() if a.reply_sig_file else ""
+        except OSError:
+            sig_mode = ""
         self.send_response(r.status)
         for k, v in r.getheaders():
+            if k.lower() == "x-cavil-signature" and sig_mode == "drop":
+                continue
+            if k.lower() == "x-cavil-signature" and sig_mode == "corrupt":
+                v = "0" * 64
             if k.lower() in ("content-type", "x-cavil-signature", "cache-control"):
                 self.send_header(k, v)
         self.send_header("Content-Length", str(len(out)))

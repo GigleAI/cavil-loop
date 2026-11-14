@@ -186,6 +186,9 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         "remoteStatus" => Ok(e.remote().status(s(&a, "id")?).await),
         "remoteService" => Ok(e.remote().service(s(&a, "id")?, s(&a, "key")?, s(&a, "action")?).await),
         "remoteLog" => Ok(e.remote().log(s(&a, "id")?, s(&a, "key")?).await),
+        // "配置" on a remote project (GitHub#530): that machine runs its own project-config.sh
+        "remoteConfigGet" => Ok(e.remote().config_get(s(&a, "id")?, s(&a, "key")?).await),
+        "remoteConfigSet" => Ok(e.remote().config_set(s(&a, "id")?, s(&a, "key")?, s(&a, "rev")?, a.get("values").unwrap_or(&Value::Null)).await),
         "remoteUnpair" => Ok(e.remote().unpair(s(&a, "id")?, a.get("localOnly").and_then(|v| v.as_bool()).unwrap_or(false)).await),
         "remoteForget" => Ok(e.remote().forget(s(&a, "id")?).await),
         "remoteTailnet" => Ok(e.remote().tailnet(e.daemon()).await),
