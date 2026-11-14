@@ -1,0 +1,15 @@
+{
+  "_comment": "GitHub#530: what a save of a project's settings may carry. Read by the client back end (client/src-tauri/crates/core/src/daemon_config.rs) and by the remote entry (scripts/remote-access/remote_access.py) in their own tests: both must accept every 'ok' and refuse every 'bad'.",
+  "settings": {
+    "ok": ["MAX_CONCURRENT_WORKERS", "A", "X9_Y", "OUTPUT_LANGUAGE", "A234567890123456789012345678901234567890123456789012345678901234"],
+    "bad": ["", "max", "9A", "_A", "A B", "A=1", "A;B", "A-B", "PATH\n", "A\n", "名字", "A2345678901234567890123456789012345678901234567890123456789012345"]
+  },
+  "values": {
+    "ok": ["", "2", "claude", "opus-5.5", "anthropic/claude:1@x", "a,b+c", "zh"],
+    "bad": ["a b", "a\"b", "$HOME", "`id`", "a\\b", "a;b", "a\nb", "2\n", "a'b", "a=b", "a#b", "中", "a\tb"]
+  },
+  "revs": {
+    "ok": ["a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"],
+    "bad": ["", "abc", "G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1G1", "A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\n", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"]
+  }
+}

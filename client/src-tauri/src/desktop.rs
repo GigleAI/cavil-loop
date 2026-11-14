@@ -171,6 +171,17 @@ fn clear_one<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
+/// GitHub#522: of these delivered notifications (their ids), the ones about this item — an item
+/// notification's id names its item (`notification_id`), whichever start of the app sent it. Ids
+/// that are not this app's JSON, or name no item (the packaging check's), are never picked.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn ids_for_item(ids: &[String], key: &str) -> Vec<String> {
+    ids.iter()
+        .filter(|id| serde_json::from_str::<Value>(id).ok().is_some_and(|v| v["key"].as_str() == Some(key)))
+        .cloned()
+        .collect()
+}
+
 /// The window came to the front (focused) or left it (lost focus, hidden) — GitHub#185: the
 /// window clears the unread badge when the user switches to it (and, only when ticked in Settings,
 /// the delivered notifications too — GitHub#369).
@@ -321,6 +332,19 @@ pub async fn desktop_clear_notifications<R: Runtime>(app: AppHandle<R>) -> Resul
     Ok(())
 }
 
+/// GitHub#522: the window shows this item: take back every notification about it still in
+/// Notification Center (of any start of the app); the others stay. v1: macOS only; test mode records it instead.
+#[tauri::command]
+pub async fn desktop_clear_item_notifications<R: Runtime>(app: AppHandle<R>, key: String) -> Result<(), String> {
+    let d = app.state::<Desktop>();
+    d.record(json!({ "op": "clearItemNotifications", "key": key }));
+    #[cfg(target_os = "macos")]
+    if d.hooks.record.is_none() {
+        crate::mac::clear_delivered_for(&key);
+    }
+    Ok(())
+}
+
 /// Launch at login: on / off; null where this platform cannot (v1: macOS only).
 #[tauri::command]
 #[allow(unused_variables)]
@@ -467,6 +491,26 @@ mod tests {
         assert_eq!(v["url"], "https://github.com/o/r/issues/1");
         let s: Value = serde_json::from_str(&d.notification_id(&json!({ "kind": "summary" }))).unwrap();
         assert!(s.get("key").is_none());
+    }
+
+    /// GitHub#522: an item's notifications are picked by the item their id names — every one about it,
+    /// of this start and an earlier one — and nothing else: other items, the packaging check's, ids not ours
+    #[test]
+    fn ids_for_item_picks_every_notification_about_that_item_only() {
+        let first = Desktop::new(TestHooks::default());
+        let second = Desktop::new(TestHooks::default());
+        let item = |k: &str| json!({ "kind": "item", "key": k, "url": "https://github.com/o/r/issues/1" });
+        let a1 = first.notification_id(&item("o/r#1"));
+        let b = first.notification_id(&item("o/r#2"));
+        let a2 = first.notification_id(&item("o/r#1"));
+        let a_earlier = second.notification_id(&item("o/r#1"));
+        let other_repo = first.notification_id(&item("o/r2#1"));
+        let summary = first.notification_id(&json!({ "kind": "summary" }));
+        let ids = vec![a1.clone(), b.clone(), "not json".to_string(), a2.clone(), summary, "{\"key\":1}".to_string(), a_earlier.clone(), other_repo];
+        assert_eq!(ids_for_item(&ids, "o/r#1"), vec![a1, a2, a_earlier]);
+        assert_eq!(ids_for_item(&ids, "o/r#2"), vec![b]);
+        assert!(ids_for_item(&ids, "o/r#3").is_empty());
+        assert!(ids_for_item(&ids, "o/r#").is_empty());
     }
 
     /// GitHub#369: a restart counts from 0 again, while a notification of the earlier start may still

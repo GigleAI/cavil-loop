@@ -98,6 +98,14 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await saved(app, 'en');
   expect(await chineseIn(page, SETTINGS)).toEqual([]);
+  // GitHub#514: what that change wrote or moved inside the sections still waiting for their own migration is English already
+  await expect(page.getByTestId('keys-more').locator('summary')).toHaveText('Which keys are fixed, and when a single key works');
+  await expect(page.getByTestId('keys-more')).toContainText('Ctrl+1 … Ctrl+9, Ctrl+W and the zoom keys are fixed');
+  await expect(page.locator('#set-keys .fixed').first()).toHaveText('Fixed');
+  await expect(page.locator('#set-keys > p.muted').first()).toHaveText('Click "Change", then press the new key; it applies on this computer only.');
+  await expect(page.getByTestId('daemon-more').locator('summary')).toHaveText('What the client does with it');
+  await expect(page.getByTestId('remote-more').locator('summary')).toHaveText('How pairing works, and whether the GitHub sign-in leaves this computer');
+  expect(await chineseIn(page, ['[data-testid="keys-more"]', '[data-testid="daemon-more"]', '[data-testid="remote-more"]', '#set-keys .fixed'])).toEqual([]);
   // the check sees what it should: the user's Chinese label is there, inside its as-is marker
   expect(await page.locator('[data-testid="pending-label"] [data-verbatim="user"]').textContent()).toBe('等人/处理');
   await section.screenshot({ path: join(screens, '471-02-language-en.png') });

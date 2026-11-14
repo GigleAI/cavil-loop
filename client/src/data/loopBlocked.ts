@@ -1,4 +1,5 @@
-// GitHub#429: what an open issue waits for according to the loop's own registration — the hidden
+// GitHub#429: what an open issue (GitHub#526: or pull request — the daemon takes a registration on
+// either) waits for according to the loop's own registration — the hidden
 // `<!-- agent-blocked-by: #12 owner/repo#34 resume=… -->` comment the daemon goes by — so the
 // dependency graph can draw it next to GitHub's own "Blocked by". Read-only: nothing is written.
 //
@@ -152,15 +153,18 @@ const asRelated = (x: Item): RelatedIssue => ({
   ...(x.kind === 'pr' ? { kind: 'pr' as const, isDraft: x.isDraft } : {}),
 });
 
-/** Does `it` get its registration read under this setting? (open issue carrying the label) */
+/** Does `it` get its registration read under this setting? (open issue or pull request carrying the label; GitHub#526: PRs too) */
 export function loopCandidate(it: Item, label: string): boolean {
-  return label !== '' && it.kind === 'issue' && it.state === 'open' && it.labels.some((l) => l.name === label);
+  return label !== '' && it.state === 'open' && it.labels.some((l) => l.name === label);
 }
 
+/** The GraphQL type a node read for `it` must have. */
+const nodeType = (it: Item) => (it.kind === 'pr' ? 'PullRequest' : 'Issue');
+
 /**
- * Fill `loopBlocked` on every issue of `items` (one source's read, or one re-read item) under the
+ * Fill `loopBlocked` on every item of `items` (one source's read, or one re-read item) under the
  * label setting `label`. '' = off: nothing is read, nothing is set. Requests go out only for open
- * issues carrying the label; every other issue is known to wait for nothing. Throws when any page
+ * issues and pull requests carrying the label; every other item is known to wait for nothing. Throws when any page
  * cannot be read — the caller then has nothing to store.
  */
 export async function readLoopBlocked(client: GitHubClient, items: Item[], label: string): Promise<void> {
@@ -175,7 +179,7 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
   for (let i = 0; i < wanted.length; i++) {
     const it = wanted[i];
     const node = nodes[i];
-    if (!node || node.__typename !== 'Issue') throw new GitHubError('graphql', t('{item} 的前置登记没有读到', { item: `${it.repo}#${it.number}` }));
+    if (!node || node.__typename !== nodeType(it)) throw new GitHubError('graphql', t('{item} 的前置登记没有读到', { item: `${it.repo}#${it.number}` }));
     const marks = await readOne(client, it, node, label);
     const out: RelatedIssue[] = [];
     for (const m of marks) {
@@ -192,10 +196,13 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
     result.set(it.key, out);
   }
   // only once everything is in: nothing half-read lands on the items
-  for (const it of items) if (it.kind === 'issue') it.loopBlocked = { label, ends: result.get(it.key) ?? [] };
+  for (const it of items) it.loopBlocked = { label, ends: result.get(it.key) ?? [] };
 }
 
-/** Is every issue's registration known under this setting? (false: read under another setting, or before #429) */
+/**
+ * Is every item's registration known under this setting? (false: read under another setting, or
+ * before #429 — or, for a pull request, before #526: such a snapshot is read in full once)
+ */
 export function loopKnown(items: Item[], label: string): boolean {
-  return !label || items.every((it) => it.kind !== 'issue' || it.loopBlocked?.label === label);
+  return !label || items.every((it) => it.loopBlocked?.label === label);
 }

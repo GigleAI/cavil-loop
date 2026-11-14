@@ -6,7 +6,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +137,81 @@ test('pair, see the machine’s projects, stop and start only after the confirma
   await page.screenshot({ path: join(screens, 'remote-4-log.png') });
   await page.getByTestId('remote-log-close').click();
   await expect(page.getByTestId('remote-log-dialog')).toHaveCount(0);
+});
+
+test("「配置…」on a project of that machine: the same form, saved there; no editor; a machine too old says so (GitHub#530)", async () => {
+  const { app, page } = await openSection();
+  await pairInWindow(page);
+  const host = page.locator(`[data-testid=remote-host][data-id="${BOX}:47387"]`);
+  await expect(host).toHaveAttribute('data-state', 'ok');
+  const row = host.locator('[data-testid=remote-project][data-key=widget]');
+  const st = await app.backend.call('remoteStatus', { id: `${BOX}:47387` });
+  const config = st.status.projects[0].config as string;
+  const before = readFileSync(config, 'utf8');
+  await shot(page, '10-config-button');
+
+  await row.getByTestId('remote-config').click();
+  const dialog = page.getByTestId('config-dialog');
+  await expect(dialog).toHaveAttribute('data-remote', 'true');
+  await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await expect(page.getByTestId('config-remote')).toHaveText('（在远程机器 box 上）');
+  await expect(page.getByTestId('config-path')).toHaveText(config);
+  await expect(page.getByTestId('config-intro')).toContainText('不要同时在那台机器上用编辑器改这个文件');
+  // the file is on the other machine: no editor button, a sentence instead
+  await expect(page.getByTestId('config-open-editor')).toHaveCount(0);
+  await expect(page.getByTestId('config-no-editor')).toBeVisible();
+  const input = page.getByTestId('config-input-MAX_CONCURRENT_WORKERS');
+  await expect(input).toHaveValue('1');
+  await input.fill('3');
+  await expect(page.getByTestId('config-pending')).toHaveText('已改 1 项，还没保存');
+  await page.locator('.modal.pcfg').screenshot({ path: join(screens, 'remote-11-config-form.png') });
+  // nothing is sent before "保存"
+  expect(sent(app, 'remoteConfigSet')).toEqual([]);
+  expect(readFileSync(config, 'utf8')).toBe(before);
+
+  await page.getByTestId('config-save').click();
+  const result = page.getByTestId('config-result');
+  await expect(result).toHaveAttribute('data-kind', 'saved');
+  await expect(page.locator('[data-testid=config-change][data-name=MAX_CONCURRENT_WORKERS]')).toContainText('3');
+  expect(sent(app, 'remoteConfigSet').map((c) => c.args)).toEqual([{ id: `${BOX}:47387`, key: 'widget', rev: expect.any(String), values: { MAX_CONCURRENT_WORKERS: '3' } }]);
+  // on that machine's disk: that one line, nothing else
+  const a = before.split('\n');
+  const now = readFileSync(config, 'utf8').split('\n');
+  expect(now.filter((l) => l.startsWith('MAX_CONCURRENT_WORKERS='))).toEqual(['MAX_CONCURRENT_WORKERS=3']);
+  expect(now.filter((l, i) => l !== a[i]).length).toBe(1);
+  // the machine was read again after the save
+  await expect.poll(() => sent(app, 'remoteStatus').length).toBeGreaterThan(1);
+
+  // a save carried out whose answer cannot be verified (the signature lost on the way): "unknown", not "nothing written"
+  await page.getByTestId('config-more').click();
+  await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await page.getByTestId('config-input-MAX_CONCURRENT_WORKERS').fill('4');
+  writeFileSync(r.replySig, 'drop');
+  await page.getByTestId('config-save').click();
+  await expect(result).toHaveAttribute('data-kind', 'unknown');
+  await expect(result).toContainText('保存没有给出最终结果');
+  await expect(result).not.toContainText('一个字都没动');
+  rmSync(r.replySig, { force: true });
+  expect(readFileSync(config, 'utf8').split('\n').filter((l) => l.startsWith('MAX_CONCURRENT_WORKERS='))).toEqual(['MAX_CONCURRENT_WORKERS=4']);
+  await page.locator('.modal.pcfg').screenshot({ path: join(screens, 'remote-12-config-unknown.png') });
+  await page.getByTestId('config-reload').click();
+  await expect(page.getByTestId('config-input-MAX_CONCURRENT_WORKERS')).toHaveValue('4');
+  await page.getByTestId('config-cancel').click();
+  await expect(dialog).toHaveCount(0);
+
+  // the same machine with its remote entry from before this change: said as such, not "cannot read"
+  await closeRemote(r);
+  const file = join(w.skill, 'scripts/remote-access/remote_access.py');
+  const cur = readFileSync(file, 'utf8');
+  writeFileSync(file, cur.replace('(stop|start|log|config)', '(stop|start|log)'));
+  // restarted at the same place: the paired devices and this computer's key are kept
+  r = await remoteWorld(w, path);
+  await host.getByTestId('remote-reload').click();
+  await expect(host).toHaveAttribute('data-state', 'ok');
+  await row.getByTestId('remote-config').click();
+  await expect(page.getByTestId('config-unsupported')).toContainText('更新那台机器的 daemon');
+  await expect(page.getByTestId('config-read-failed')).toHaveCount(0);
+  await expect(page.getByTestId('config-save')).toHaveCount(0);
 });
 
 test('this computer is not on Tailscale: pairing is refused, says nothing was sent, and nothing arrived', async () => {
@@ -342,8 +417,9 @@ test('pick the machine from this computer’s Tailscale: open ones first, how to
 test('this machine’s own switch: on, a code in the window, void it, the paired computers, off — no terminal', async () => {
   const { page } = await openSection(true);
   const block = page.getByTestId('local-remote');
-  await block.scrollIntoViewIfNeeded();
+  // GitHub#523: until its status is read the block is a placeholder that is then replaced; scroll to the real one
   await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 30_000 });
+  await block.scrollIntoViewIfNeeded();
   const sw = page.getByTestId('local-remote-switch');
   await expect(sw).toHaveAttribute('aria-checked', 'false');
   await sw.click();
@@ -392,8 +468,10 @@ exec bash "$d/remote-access.real.sh" "$@"
   );
   writeFileSync(join(r.state, 'devices.json'), JSON.stringify([{ id: '0123456789abcdef', name: 'MacBook', node: 'n1', node_name: 'macbook', key: '0'.repeat(64), paired_at: 1 }]));
   const { page } = await openSection(true);
-  // the block may be drawn again while its first status read lands: scroll again until it holds still
-  await expect(async () => page.getByTestId('local-remote').scrollIntoViewIfNeeded({ timeout: 2_000 })).toPass({ timeout: 20_000 });
+  // GitHub#523: until its status is read the block is a placeholder that is then replaced (scrolling to it failed
+  // with "not attached" when that happened mid-scroll); scroll to the real one
+  await expect(page.getByTestId('local-remote')).not.toHaveAttribute('data-state', 'reading', { timeout: 30_000 });
+  await page.getByTestId('local-remote').scrollIntoViewIfNeeded();
   await page.getByTestId('local-remote-devices').click();
   await expect(page.getByTestId('local-remote-device')).toHaveCount(1, { timeout: 30_000 });
   await page.getByTestId('local-remote-revoke').click();
@@ -403,7 +481,14 @@ exec bash "$d/remote-access.real.sh" "$@"
   await expect(err).toContainText('devices.json 写不进去');
   // the list was read again (successfully) and still shows the computer, which really is still authorized
   const calls = () => readFileSync(join(r.ts, 'wrapper-calls'), 'utf8').trim().split('\n');
-  await expect.poll(() => calls().slice(-2)).toEqual(['revoke 0123456789abcdef', 'list --machine']);
+  // GitHub#523: after a revoke the dialog reads the list again and then the block reads its status (the paired
+  // count) — a fixed order, so look at what came right after the revoke, not at the last two calls: those are
+  // the list and then the status once the status read has landed too
+  const afterRevoke = () => {
+    const c = calls();
+    return c.slice(c.lastIndexOf('revoke 0123456789abcdef'));
+  };
+  await expect.poll(() => afterRevoke()).toEqual(['revoke 0123456789abcdef', 'list --machine', 'status']);
   await expect(page.getByTestId('local-remote-device')).toHaveCount(1);
   await expect(page.getByTestId('local-remote-devices-error')).toHaveCount(0);
   expect(devices(r)).toHaveLength(1);

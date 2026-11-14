@@ -152,6 +152,29 @@ pub fn clear_delivered_one(id: &str) {
     UNUserNotificationCenter::currentNotificationCenter().removeDeliveredNotificationsWithIdentifiers(&ids);
 }
 
+/// GitHub#522: take back every notification of this app still in Notification Center that is about this
+/// item (`desktop::ids_for_item`: its id names the item), whichever start of the app sent it; the others
+/// stay. The list comes from the system; when it cannot be had, nothing is taken back (never all of them).
+pub fn clear_delivered_for(key: &str) {
+    if !bundled() {
+        return;
+    }
+    let key = key.to_string();
+    let done = RcBlock::new(move |list: std::ptr::NonNull<NSArray<UNNotification>>| {
+        // SAFETY: the system hands a valid array that lives for the call
+        let list = unsafe { list.as_ref() };
+        let ids: Vec<String> = (0..list.count()).map(|i| list.objectAtIndex(i).request().identifier().to_string()).collect();
+        let pick = crate::desktop::ids_for_item(&ids, &key);
+        if pick.is_empty() {
+            return;
+        }
+        let names: Vec<Retained<NSString>> = pick.iter().map(|s| NSString::from_str(s)).collect();
+        let refs: Vec<&NSString> = names.iter().map(|s| &**s).collect();
+        UNUserNotificationCenter::currentNotificationCenter().removeDeliveredNotificationsWithIdentifiers(&NSArray::from_slice(&refs));
+    });
+    UNUserNotificationCenter::currentNotificationCenter().getDeliveredNotificationsWithCompletionHandler(&done);
+}
+
 /// One notification. Resolves with what the system said: Ok once it accepted the request (that is not
 /// proof it was on screen), Err with its own words
 /// (e.g. "Notifications are not allowed for this application").

@@ -194,7 +194,6 @@
   "看板上现在是「{value}」，和提示里的不一样，没有修改；看过后再决定": "The board now holds \"{value}\", which differs from the notice; nothing was changed. Look at it before deciding",
   "离线时不能修改：GitHub 上什么都没改": "Nothing can be changed while offline: nothing was changed on GitHub",
   "认不出这个地址：Project 请贴网址（https://github.com/orgs/<组织>/projects/<编号>），仓库写「组织/仓库名」": "This address is not recognized: for a Project paste its URL (https://github.com/orgs/<org>/projects/<number>), for a repository write \"org/repo\"",
-  "设置里「交给 agent」的两个标签名不能为空": "The two \"Hand to agent\" label names in Settings cannot be empty",
   "设置里没有填托管标签，没有修改": "No autopilot label is set in Settings; nothing was changed",
   "设置里没有填等前置的标签": "No wait-for-prerequisite label is set in Settings",
   "设置里等前置的标签或「等人处理」的标签是空的，没有修改": "The wait-for-prerequisite label or the \"Waiting for human\" label in Settings is empty; nothing was changed",

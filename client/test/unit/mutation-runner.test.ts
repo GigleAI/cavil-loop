@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, chmodSync } from 'node:fs';
+import { writeFileSync, chmodSync, readFileSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
@@ -151,4 +151,88 @@ describe.skipIf(process.env.CLIENT_MUT_BASELINE === '1')('negative-control runne
     expect(base.out).not.toContain('✅ 基线');
     expect(base.status).toBe(1);
   }, 240_000);
+});
+
+// GitHub#527: PR #481 renamed a test an entry named, and the next nightly baseline stopped the whole
+// set. The PR checks (run.sh without the switch) now collect the real test names — vitest imports
+// every test file, registers its tests and runs none — and apply the baseline's own rule to them.
+// Each case is a small folder of its own test files (CLIENT_MUT_COLLECT_ROOT), never the real suite.
+describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner: named tests exist (PR checks)', () => {
+  const NAMED = 'the badge goes back to 0';
+  const entry = { ...OFFLINE_ENTRY, what: '点名一条测试的项', expect: [NAMED] };
+
+  /** A folder vitest can run: its own config, the client's packages, the given test files. */
+  function suite(files: Record<string, string>) {
+    const dir = tempDir();
+    symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
+    writeFileSync(join(dir, 'vitest.config.mjs'), "export default { test: { include: ['*.test.mjs'] } };\n");
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, f), `import { describe, it, expect } from 'vitest';\n${text}\n`);
+    return dir;
+  }
+  const names = (dir: string, entries: unknown[] = [entry]) => run(['--names'], { CLIENT_MUT_COLLECT_ROOT: dir, CLIENT_MUT_LIST: listFile(entries) });
+
+  it('a named test that is there passes; renamed, deleted, or left only in a comment and a string, it is named with its entry', () => {
+    const ok = names(suite({ 'a.test.mjs': `describe('pending', () => { it('${NAMED} once the label is off', () => expect(1).toBe(1)); });` }));
+    expect(ok.out).toContain('✅ 清单 1 项点名的测试都在');
+    expect(ok.status).toBe(0);
+    const cases = {
+      renamed: `describe('pending', () => { it('the count drops when the label is off', () => expect(1).toBe(1)); });`,
+      deleted: `describe('pending', () => { it('another test', () => expect(1).toBe(1)); });`,
+      // the source text still has the name; no test registered under it
+      leftInText: `// ${NAMED}\nconst why = '${NAMED}';\ndescribe('pending', () => { it('another test', () => expect(why).toBeTruthy()); });`,
+    };
+    for (const [kind, text] of Object.entries(cases)) {
+      const r = names(suite({ 'a.test.mjs': text }));
+      expect(r.out, kind).toContain(`第 0 项「点名一条测试的项」点名「${NAMED}」`);
+      expect(r.out, kind).not.toContain('✅');
+      expect(r.status, kind).toBe(1);
+    }
+  }, 120_000);
+
+  it('a test file that cannot be loaded is "cannot tell", never "every named test is there"', () => {
+    const dir = suite({ 'a.test.mjs': `it('${NAMED}', () => {});`, 'b.test.mjs': "import './not-there.mjs';" });
+    const r = names(dir);
+    expect(r.out).toContain('核对不了清单点名');
+    expect(r.out).toContain('b.test.mjs');
+    expect(r.out).not.toContain('✅');
+    expect(r.status).toBe(1);
+  }, 120_000);
+
+  // the names collected must be the names the baseline gets from vitest's report after a real run
+  it('the collected names equal the names of a real run, test for test', () => {
+    const dir = suite({
+      'a.test.mjs': [
+        `describe('labels: only "add this one" \\\\ is sent', () => {`,
+        `  describe('inner', () => { it('keeps \`$x\` and %s as typed', () => expect(1).toBe(1)); });`,
+        `  it.each([1, 2])('case %i of $0', (n) => expect(n).toBeGreaterThan(0));`,
+        `  it.each([{ a: 'x' }])('object $a', () => {});`,
+        `});`,
+        `it('top level', () => {});`,
+        `it.skip('skipped one', () => {});`,
+        `describe.skipIf(true)('skipped suite', () => { it('inside it', () => {}); });`,
+        `describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('only outside the runner', () => { it('runner self-test', () => {}); });`,
+        `if (process.env.CLIENT_MUT_BASELINE === '1') it('registered in the baseline only', () => {});`,
+      ].join('\n'),
+      'b.test.mjs': `describe('', () => { it('under an empty suite name', () => {}); });\ndescribe('only a suite', () => { it('', () => {}); });`,
+    });
+    const collected = run(['--unit-names'], { CLIENT_MUT_COLLECT_ROOT: dir });
+    expect(collected.status).toBe(0);
+    const got = (JSON.parse(collected.out.trim().split('\n').pop()!) as { name: string; file: string }[]).map((t) => `${t.file} ${t.name}`).sort();
+    // the baseline's run: same environment as run.mjs gives it, JSON report
+    const out = join(tempDir(), 'report.json');
+    const real = spawnSync(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--reporter=json', `--outputFile=${out}`], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_BASELINE: '1' },
+      timeout: 120_000,
+    });
+    expect(real.status, real.stderr).toBe(0);
+    const report = JSON.parse(readFileSync(out, 'utf8')) as { testResults: { name: string; assertionResults: { fullName: string }[] }[] };
+    const want = report.testResults.flatMap((f) => f.assertionResults.map((a) => `${f.name.slice(dir.length + 1)} ${a.fullName}`)).sort();
+    // "did happen": the expanded, skipped and conditional tests are all there
+    expect(want).toHaveLength(11);
+    expect(want).toContain('a.test.mjs labels: only "add this one" \\ is sent case 2 of 2');
+    expect(want).toContain('a.test.mjs registered in the baseline only');
+    expect(got).toEqual(want);
+  }, 120_000);
 });

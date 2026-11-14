@@ -39,6 +39,11 @@ export interface Desktop {
   setBadge(count: number): Promise<void>;
   /** take back this app's notifications still in Notification Center (GitHub#185) */
   clearNotifications(): Promise<void>;
+  /**
+   * GitHub#522: take back every notification about this item (`owner/repo#N`) still in Notification
+   * Center, of this start of the app or an earlier one; notifications about other items stay
+   */
+  clearItemNotifications(key: string): Promise<void>;
   /** launch at login: on / off; null = this platform cannot */
   loginItem(): Promise<boolean | null>;
   setLoginItem(on: boolean): Promise<void>;

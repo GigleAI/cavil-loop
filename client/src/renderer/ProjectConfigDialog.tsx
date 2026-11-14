@@ -13,6 +13,9 @@
 //
 // GitHub#473: the client's own words follow the language; the settings' names, groups, help, values
 // and reasons are the daemon's (scripts/config-fields.txt, project-config.sh) and are shown as is.
+// The same form opens for a project of a paired remote machine (GitHub#530): `remote` then says which
+// machine and how to read / save there — that machine runs its own project-config.sh, so what may be
+// changed and the fingerprint rule are the same. Its file cannot be handed to an editor on this computer.
 
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
@@ -30,6 +33,7 @@ import {
   saveWord,
   valueText,
   type ConfigField,
+  type ConfigRead,
   type ConfigSave,
   type DaemonProject,
   type LocalStatus,
@@ -43,14 +47,24 @@ import { BackendText, WordsText } from './WordsText';
 
 type Phase =
   | { at: 'loading' }
-  | { at: 'failed'; text: string; said?: unknown }
+  /** `old`: a remote machine whose daemon cannot read or change settings from here yet (GitHub#530) */
+  | { at: 'failed'; text: string; said?: unknown; old?: boolean }
   | { at: 'form'; config: ProjectConfig }
   | { at: 'saving'; config: ProjectConfig }
   | { at: 'done'; config: ProjectConfig; sent: Record<string, string>; result: ConfigSave };
 
+/** A project of a paired remote machine (GitHub#530). */
+export interface RemoteConfig {
+  /** the machine's name as the remote list shows it */
+  name: string;
+  read: () => Promise<ConfigRead>;
+  save: (rev: string, values: Record<string, string>) => Promise<ConfigSave>;
+}
+
 export function ProjectConfigDialog({
   project,
   status,
+  remote,
   onClose,
   onOpenEditor,
   onUnsupported,
@@ -59,10 +73,13 @@ export function ProjectConfigDialog({
   project: DaemonProject;
   /** the daemon's status as last read: after a save it says whether the chosen agent's program is there */
   status: LocalStatus | null;
+  /** a project of a paired remote machine; absent = this computer's daemon */
+  remote?: RemoteConfig;
   onClose: () => void;
-  onOpenEditor: () => void;
-  /** a daemon without the config script: the caller opens the editor instead, with these words (`whySaid`: the back end's message) */
-  onUnsupported: (why: string, whySaid?: unknown) => void;
+  /** this computer only: hand the config file to the system's editor */
+  onOpenEditor?: () => void;
+  /** this computer only — a daemon without the config script: the caller opens the editor instead, with these words (`whySaid`: the back end's message) */
+  onUnsupported?: (why: string, whySaid?: unknown) => void;
   /** a save went through: the caller reads the daemon's status again */
   onSaved: () => void;
 }) {
@@ -75,10 +92,10 @@ export function ProjectConfigDialog({
   const load = async (keep?: Record<string, string>) => {
     setPhase({ at: 'loading' });
     try {
-      const r = await api().daemonConfigGet(project.key);
+      const r = remote ? await remote.read() : await api().daemonConfigGet(project.key);
       if (!alive.current) return;
-      if (r.result === 'unsupported') return onUnsupported(r.output ?? '', r.outputSaid);
-      if (r.result !== 'ok' || !r.config) return setPhase({ at: 'failed', text: r.output || r.result, said: r.output ? r.outputSaid : undefined });
+      if (r.result === 'unsupported' && !remote && onUnsupported) return onUnsupported(r.output ?? '', r.outputSaid);
+      if (r.result !== 'ok' || !r.config) return setPhase({ at: 'failed', text: r.output || r.result, said: r.output ? r.outputSaid : undefined, old: r.result === 'unsupported' });
       setDraft(keep ?? {});
       setPhase({ at: 'form', config: r.config });
     } catch (e) {
@@ -110,7 +127,7 @@ export function ProjectConfigDialog({
     setPhase({ at: 'saving', config: c });
     let result: ConfigSave;
     try {
-      result = await api().daemonConfigSet(c.key, c.rev, sent);
+      result = remote ? await remote.save(c.rev, sent) : await api().daemonConfigSet(c.key, c.rev, sent);
     } catch (e) {
       // the request itself failed: whether the script ran is not known
       result = { result: 'unconfirmed', output: (e as Error).message };
@@ -134,8 +151,10 @@ export function ProjectConfigDialog({
     },
   });
 
+  const repoName = project.repo ? <Verbatim from="daemon">{project.repo}</Verbatim> : t('仓库读不出');
+  const configPath = <code data-testid="config-path">{(config?.config ?? project.config) ? <Verbatim from="user">{config?.config ?? project.config}</Verbatim> : '—'}</code>;
   return (
-    <div className="modal-back" data-testid="config-dialog" data-phase={phase.at} onClick={dirty ? undefined : close}>
+    <div className="modal-back" data-testid="config-dialog" data-phase={phase.at} data-remote={remote ? 'true' : 'false'} onClick={dirty ? undefined : close}>
       <div
         className="modal pcfg"
         role="dialog"
@@ -148,18 +167,24 @@ export function ProjectConfigDialog({
         }}
       >
         <div className="pcfg-head">
-          <h3>{tNode('项目配置：{key}', { key: <Verbatim from="user">{project.key}</Verbatim> })}</h3>
+          <h3>
+            {tNode('项目配置：{key}', { key: <Verbatim from="user">{project.key}</Verbatim> })}
+            {remote && (
+              <span className="muted pcfg-where" data-testid="config-remote">
+                {tNode('（在远程机器 {name} 上）', { name: <Verbatim from="user">{remote.name}</Verbatim> })}
+              </span>
+            )}
+          </h3>
           <div className="muted small">
-            {tNode('{repo} · 配置文件 {path}', {
-              repo: project.repo ? <Verbatim from="daemon">{project.repo}</Verbatim> : t('仓库读不出'),
-              path: <code data-testid="config-path">{(config?.config ?? project.config) ? <Verbatim from="user">{config?.config ?? project.config}</Verbatim> : '—'}</code>,
-            })}
+            {remote
+              ? tNode('{repo} · 配置文件（在 {name} 上） {path}', { repo: repoName, name: <Verbatim from="user">{remote.name}</Verbatim>, path: configPath })
+              : tNode('{repo} · 配置文件 {path}', { repo: repoName, path: configPath })}
           </div>
           {(phase.at === 'form' || phase.at === 'saving') && (
             <div className="muted small pcfg-intro" data-testid="config-intro">
               {t('这里列出日常会调的设置。保存后 daemon 在下一轮轮询（约 1 分钟内）按新值工作；已经在跑的 worker 不受影响，下次派工才用新值。')}
               <br />
-              {t('保存时不要同时在编辑器里改这个文件：两边同时改，其中一边的修改可能丢失。')}
+              {remote ? t('保存时不要同时在那台机器上用编辑器改这个文件：两边同时改，其中一边的修改可能丢失。') : t('保存时不要同时在编辑器里改这个文件：两边同时改，其中一边的修改可能丢失。')}
             </div>
           )}
         </div>
@@ -174,14 +199,22 @@ export function ProjectConfigDialog({
 
         {phase.at === 'failed' && (
           <div className="pcfg-body">
-            <div className="banner error" data-testid="config-read-failed">
-              <div className="banner-text">
-                {tNode('{what}，所以这里不显示任何值（读不出不等于没设置）。', { what: <b>{t('读不出这个项目的配置')}</b> })}
-                <pre className="daemon-output small">
+            {phase.old ? (
+              <div className="banner warn" data-testid="config-unsupported">
+                <div className="banner-text">
                   <BackendText said={phase.said} text={phase.text} />
-                </pre>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="banner error" data-testid="config-read-failed">
+                <div className="banner-text">
+                  {tNode('{what}，所以这里不显示任何值（读不出不等于没设置）。', { what: <b>{t('读不出这个项目的配置')}</b> })}
+                  <pre className="daemon-output small">
+                    <BackendText said={phase.said} text={phase.text} />
+                  </pre>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -195,10 +228,10 @@ export function ProjectConfigDialog({
                   <Verbatim from="daemon">{g.title}</Verbatim>
                 </div>
                 {g.fields.some((f) => f.mode === 'show') && (
-                  <div className="muted small pcfg-note">{t('下面这些会让 daemon 多做一类事（自动合并、谁开 issue 都派工……）或需要在仓库里新建标签，这里只显示现在的值；要改请用编辑器。')}</div>
+                  <div className="muted small pcfg-note">{remote ? t('下面这些会让 daemon 多做一类事（自动合并、谁开 issue 都派工……）或需要在仓库里新建标签，这里只显示现在的值；要改请到那台机器上用编辑器改。') : t('下面这些会让 daemon 多做一类事（自动合并、谁开 issue 都派工……）或需要在仓库里新建标签，这里只显示现在的值；要改请用编辑器。')}</div>
                 )}
                 {g.fields.map((f) => (
-                  <Row key={f.name} f={f} draft={draft[f.name]} onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))} onOpenEditor={onOpenEditor} />
+                  <Row key={f.name} f={f} draft={draft[f.name]} onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))} onOpenEditor={remote ? undefined : onOpenEditor} />
                 ))}
               </div>
             ))}
@@ -207,7 +240,7 @@ export function ProjectConfigDialog({
           </div>
         )}
 
-        {phase.at === 'done' && <Done phase={phase} project={project} status={status} />}
+        {phase.at === 'done' && <Done phase={phase} project={project} status={status} remote={remote?.name} />}
 
         {kept && dirty && (
           <div className="small warn-text pcfg-kept" data-testid="dialog-esc-hint">
@@ -215,9 +248,15 @@ export function ProjectConfigDialog({
           </div>
         )}
         <div className="pcfg-foot">
-          <button className="ghost" data-testid="config-open-editor" disabled={saving} onClick={onOpenEditor}>
-            {t('用编辑器打开配置文件')}
-          </button>
+          {remote || !onOpenEditor ? (
+            <span className="muted small" data-testid="config-no-editor">
+              {t('远程机器上的文件没法在这台电脑用编辑器打开')}
+            </span>
+          ) : (
+            <button className="ghost" data-testid="config-open-editor" disabled={saving} onClick={onOpenEditor}>
+              {t('用编辑器打开配置文件')}
+            </button>
+          )}
           <span className="grow" />
           {phase.at === 'form' && changed > 0 && problems === 0 && (
             <span className="small pcfg-pending" data-testid="config-pending">
@@ -278,7 +317,7 @@ export function ProjectConfigDialog({
   );
 }
 
-function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: string | undefined; onChange: (v: string) => void; onOpenEditor: () => void }) {
+function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: string | undefined; onChange: (v: string) => void; onOpenEditor?: () => void }) {
   const editable = canEdit(f);
   const value = draft ?? f.value;
   const changed = editable && value !== f.value;
@@ -321,9 +360,13 @@ function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: stri
             {f.editable
               ? t('这个客户端还不认识这种设置，这里不改它。')
               : tNode('{why}，这里不改它。', { why: f.reason ? <Verbatim from="daemon">{f.reason}</Verbatim> : t('这一项现在不能在这里改') })}
-            <button className="link" onClick={onOpenEditor}>
-              {t('用编辑器打开')}
-            </button>
+            {onOpenEditor ? (
+              <button className="link" onClick={onOpenEditor}>
+                {t('用编辑器打开')}
+              </button>
+            ) : (
+              t('要改请到那台机器上用编辑器改。')
+            )}
           </span>
         )}
       </div>
@@ -369,7 +412,7 @@ function Control({ f, value, onChange }: { f: ConfigField; value: string; onChan
   return <input className="t" data-testid={id} aria-label={f.label} {...label} value={value} placeholder={t('留空')} spellCheck={false} onChange={(e) => onChange(e.target.value.trim())} />;
 }
 
-function Done({ phase, project, status }: { phase: Extract<Phase, { at: 'done' }>; project: DaemonProject; status: LocalStatus | null }) {
+function Done({ phase, project, status, remote }: { phase: Extract<Phase, { at: 'done' }>; project: DaemonProject; status: LocalStatus | null; remote?: string }) {
   const { result, config, sent } = phase;
   const kind = saveKind(result.result);
   const label = (name: string) => config.fields.find((f) => f.name === name);
@@ -492,9 +535,13 @@ function Done({ phase, project, status }: { phase: Extract<Phase, { at: 'done' }
       {kind === 'saved' && missing.length > 0 && (
         <div className="banner warn" data-testid="config-missing">
           <div className="banner-text">
-            {tNode('{what}：下次派工会失败。装好后在「本机 daemon」里点「重新检查」。', {
-              what: <b>{tNode('这台电脑还没装 {list}', { list: <Verbatim from="daemon">{missing.join(t('、'))}</Verbatim> })}</b>,
-            })}
+            {remote
+              ? tNode('{what}：下次派工会失败。在那台机器上装好后，在这里点「重新读取」。', {
+                  what: <b>{tNode('{remote} 上还没装 {list}', { remote: <Verbatim from="user">{remote}</Verbatim>, list: <Verbatim from="daemon">{missing.join(t('、'))}</Verbatim> })}</b>,
+                })
+              : tNode('{what}：下次派工会失败。装好后在「本机 daemon」里点「重新检查」。', {
+                  what: <b>{tNode('这台电脑还没装 {list}', { list: <Verbatim from="daemon">{missing.join(t('、'))}</Verbatim> })}</b>,
+                })}
             {missing.map((m) => {
               const cmd = installCommand(m, status?.os ?? '');
               return cmd ? <Command key={m} text={cmd} /> : null;

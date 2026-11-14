@@ -51,7 +51,6 @@
   "配对码的格式认不出，已作废，请再生成一次。脚本输出：\n{text}": "The pairing code has a shape this client does not recognise; it was voided — make a new one. Script output:\n{text}",
   "配对码的格式认不出，而且没能确认把它作废（作废结果：{cw}）：这台机器上可能还有一个等着的配对码，10 分钟内仍能被用来配对。请点「生成配对码」换一个新码（新码会顶替它），或在这台机器上运行 {cmd}。\n作废时的输出：\n{ct}\n出码时的输出：\n{text}": "The pairing code has a shape this client does not recognise, and voiding it could not be confirmed (result: {cw}): a code may still be waiting on this machine and can be used to pair for up to 10 minutes. Click \"Make a pairing code\" for a new one (it replaces the old one), or run {cmd} on this machine.\nOutput when voiding:\n{ct}\nOutput when making the code:\n{text}",
   "还是没能让那台机器确认撤销：{why}": "That machine still could not confirm the revocation: {why}",
-  "看和管理另一台机器上的 daemon。只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。": "See and manage the daemon on another machine. Connected over Tailscale only: make a pairing code on that machine first, then pair here. This computer needs no daemon of its own, and the client's GitHub sign-in is never sent to that machine.",
   "还没有配对任何远程机器。": "No remote machine paired yet.",
   "这个系统上配对用的钥匙只保存到 App 退出为止，下次打开要重新配对。": "On this system the pairing keys are kept only until the app quits; pair again next time.",
   "添加远程 daemon…": "Add a remote daemon…",
@@ -136,7 +135,6 @@
   "要让另一台电脑连进来，先在这里生成一个配对码，再在那台电脑上选这台机器、填码。": "To let another computer connect, make a pairing code here, then pick this machine on that computer and enter the code.",
   "正在生成…": "Making…",
   "生成配对码": "Make a pairing code",
-  "打开 = 只在本 Tailscale 网络里开一个入口，配对过的电脑能看这台机器的 daemon、停 / 启项目、看日志。关掉开关 = 关闭入口；已配对的电脑保留，重新打开后还能连。打开时如果 Tailscale 要求管理员权限，会在这里说明怎么做。": "On = an entry opened inside this Tailscale network only: paired computers can see this machine's daemon, stop / start projects and read logs. Off = the entry is closed; paired computers are kept and can connect again once it is back on. If Tailscale asks for administrator rights when turning it on, this is where it says what to do.",
   "没有撤销 {name}：这台机器上已经没有它的记录（可能刚被别处撤销）。{out}": "{name} was not revoked: this machine no longer has a record of it (it may just have been revoked elsewhere). {out}",
   "没有确认撤销 {name}，它的授权可能还在，下面的列表是重新读到的：{out}": "Revoking {name} was not confirmed; its authorization may still stand. The list below was read again: {out}",
   "撤销 {name}？": "Revoke {name}?",
@@ -161,5 +159,11 @@
   "不在线": "offline",
   "不确定": "not sure",
   "打开||开关": "Turn on",
-  "关闭||开关": "Turn off"
+  "关闭||开关": "Turn off",
+  "改这个项目的常用设置（在那台机器上）": "Change this project's everyday settings (on that machine)",
+  "那台机器返回的配置格式认不出（version = {v}），客户端或那台机器的 daemon 可能需要更新": "The settings that machine sent back are in a form this client does not know (version = {v}); the client or that machine's daemon may need an update",
+  "那台机器读不出这个项目的配置": "That machine cannot read this project's settings",
+  "{m}。这次保存有没有执行不确定，请重新读取配置核对": "{m}. Whether this save went through is unknown; read the settings again to check",
+  "回复没有能验证的签名": "the reply had no signature that could be checked",
+  "那台机器的 daemon 还不支持在这里改配置：更新那台机器的 daemon 以后再试，或到那台机器上用编辑器改": "That machine's daemon cannot change settings from here yet: update the daemon on that machine and try again, or use an editor on that machine"
 }

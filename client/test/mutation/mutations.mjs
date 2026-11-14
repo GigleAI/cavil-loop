@@ -447,15 +447,17 @@ export const MUTATIONS = [
     from: '    if (this.state.clearAllOnActivate) this.toDesktop((d) => d.clearNotifications())?.catch(() => {});', to: '',
     expect: ['pending/human: nothing about the history at start'] },
   { what: '切到窗口不清未读', file: 'src/app/controller.ts',
-    from: '      if (this.active) this.markRead();', to: '',
+    from: '      if (this.active) {\n        this.markRead();', to: '      if (this.active) {',
     expect: ['switching to the window clears the badge and keeps the notifications'] },
   { what: '计未读时把不再待处理的条目删掉（改标签名再改回来，没看过的也丢了）', file: 'src/app/controller.ts',
     from: '    for (const k of this.unread) if (this.pending.has(k)) n++;\n    return n;',
     to: '    for (const k of [...this.unread]) if (!this.pending.has(k)) this.unread.delete(k);\n    return this.unread.size;',
     expect: ['a settings change brings no unread item'] },
-  { what: '未读不看条目是否还待处理（摘了标签或关掉的仍算）', file: 'src/app/controller.ts',
+  // GitHub#462 (PR #481) made a closed item that still carries the label pending, and renamed the
+  // test this entry named; the new one ends with the label taken off → badge back to 0 (GitHub#527)
+  { what: '未读不看条目是否还待处理（摘了标签的仍算）', file: 'src/app/controller.ts',
     from: '    for (const k of this.unread) if (this.pending.has(k)) n++;\n    return n;', to: '    return this.unread.size;',
-    expect: ['switching to the window clears the badge and keeps the notifications', 'closed again before anyone looked, it is no longer unread'] },
+    expect: ['switching to the window clears the badge and keeps the notifications', 'a closed issue given the label is notified once; reopened and closed again with the label on, it is the same to-do'] },
   // ---- one rule for every queued notification (PR #173 review round 2) ----
   { what: '只看来源还在不在、不看是不是同一次添加（删了又加回来，旧通知复活）', file: 'src/app/controller.ts',
     from: '      .filter(([k, e]) => this.state.sources.some((s) => s.key === k) && (this.epochs.get(k) ?? 0) === e)', to: '      .filter(([k]) => this.state.sources.some((s) => s.key === k))',
@@ -585,7 +587,7 @@ export const MUTATIONS = [
   // ---- GitHub#191 → GitHub#397 → GitHub#442: the mark on what opens an item — the middle button on it opens the
   // item's tab in the background (and the floating panel's "click outside" rule lets such a click switch items). ----
   { what: '中键开标签页：看板卡片没标「打开条目」', file: 'src/renderer/BoardView.tsx', runner: 'e2e',
-    from: "      data-key={it.key}\n      {...{ [OPENS_ITEM]: '' }}", to: '      data-key={it.key}',
+    from: "      data-open-item={ops.openKey === it.key ? 'yes' : undefined}\n      {...{ [OPENS_ITEM]: '' }}", to: "      data-open-item={ops.openKey === it.key ? 'yes' : undefined}",
     expect: ['GitHub#442: a click opens the floating panel'] },
   { what: '中键开标签页：表格行的标题格没标「打开条目」', file: 'src/renderer/TableView.tsx', runner: 'e2e',
     from: "              style={{ paddingLeft: (tb.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}\n              {...{ [OPENS_ITEM]: '' }}", to: "              style={{ paddingLeft: (tb.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}",
@@ -595,10 +597,10 @@ export const MUTATIONS = [
     from: "      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));\n", to: '',
     expect: ['somebody changed the comment after it was shown: refused, nothing written, their text stays'] },
   { what: '勾选：写前不核对修改权限', file: 'src/data/actions.ts',
-    from: "      if (!now.canUpdate) throw new ActionRefused('GitHub 说你没有权限改这一条，没有修改');\n", to: '',
+    from: "      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));\n      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));", to: '      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));',
     expect: ['GitHub says this account may not change it: read-only in the detail; a write is refused after the fresh read'] },
   { what: '勾选：不核对评论属于哪一条', file: 'src/data/actions.ts',
-    from: "      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused('这条评论不属于当前这一条，没有修改');\n", to: '',
+    from: "      if (now.repo.toLowerCase() !== it.repo.toLowerCase() || now.number !== it.number) throw new ActionRefused(t('这条评论不属于当前这一条，没有修改'));\n      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));\n      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));", to: "      if (!now.canUpdate) throw new ActionRefused(t('GitHub 说你没有权限改这一条，没有修改'));\n      if (now.body !== action.seenSource) throw new ActionRefused(tKey(TASK_CHANGED));",
     expect: ['a comment of another item: refused, nothing written'] },
   { what: '勾选：不止改一个字符', file: 'src/data/taskList.ts',
     from: "  return source.slice(0, b.at) + (checked ? 'x' : ' ') + source.slice(b.at + 1);",
@@ -613,7 +615,7 @@ export const MUTATIONS = [
     expect: ['whether an entry may be clicked: only with source and permission both read, and agreeing'] },
   { what: '勾选：同一条评论的两次勾选不互斥', file: 'src/app/controller.ts',
     // GitHub#299: the in-flight key is `slot` (a comment's node id here, the item for a title)
-    from: '    if (this.tasksInFlight.has(slot)) return', to: '    if (false) return',
+    from: "    if (this.tasksInFlight.has(slot) || this.sendHolding(slot)) return { ok: false, error: t('这一条上一次修改还没完成，等它完成再试')", to: "    if (this.sendHolding(slot)) return { ok: false, error: t('这一条上一次修改还没完成，等它完成再试')",
     expect: ['two clicks on one comment at once: the second is refused at once, one read-change-write reaches GitHub'] },
   { what: '勾选：主窗口策略不放行框内脚本', file: 'src-tauri/tauri.conf.json', runner: 'e2e',
     from: '"script-src": "\'self\' \'sha256-bEZYheZphWQ3rJ6nArX8YS2QrxNf6yiztl4Plus+5oQ=\'",', to: '"script-src": "\'self\'",',
@@ -1151,7 +1153,7 @@ export const MUTATIONS = [
     expect: ['dropped labels and a refused board are both said'] },
   // ---- GitHub#250, PR #255 code review round 1 ----
   { what: '证据不排除发送前已有的评论（一分钟前同内容的旧评论被认成这次发出的）', file: 'src/shared/ops.ts',
-    from: '!before.comments.includes(c.id) && ', to: '',
+    from: "commentProves(records.comments, before.comments, login, r.draft.comment ?? '')", to: "commentProves(records.comments, [], login, r.draft.comment ?? '')",
     expect: ['an older comment of this account with the same text proves nothing', 'an old comment / event that was there before the request proves nothing'] },
   { what: '证据不排除发送前已有的标签记录（旧的加派工标签记录被认成这次的）', file: 'src/shared/ops.ts',
     from: '!before.events.includes(e.id) && ', to: '',
@@ -1166,7 +1168,7 @@ export const MUTATIONS = [
     from: " && !r.replyState) out.push('toReply');", to: ") out.push('toReply');",
     expect: ['no answer: "not sure", copy only', 'close refused, the reply from its comment reached GitHub but the answer was lost'] },
   { what: '面板：发回复时不说明用的是哪次操作的草稿（离开面板后草稿不结束）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: '...(replyFromOp ? { draftOf: replyFromOp } : {})', to: '',
+    from: "{ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }", to: "{ kind: 'comment', key: item.key, body: reply }",
     expect: ['PR #255 code review round 1'] },
   // ---- GitHub#250, PR #255 code review round 2 ----
   { what: '用草稿发的回复没收到应答时不算未结清（「重新关闭」又能把同一条评论发出去）', file: 'src/shared/ops.ts',
@@ -1185,7 +1187,7 @@ export const MUTATIONS = [
     ],
     expect: ['"sending" cannot be stored'] },
   { what: '查证用草稿发的回复时不排除发送前已有的评论', file: 'src/shared/ops.ts',
-    from: '!reply.before!.includes(c.id) && ', to: '',
+    from: 'commentProves(records.comments, reply.before, login, reply.body)', to: 'commentProves(records.comments, [], login, reply.body)',
     expect: ['an older comment with the same text proves nothing for the reply either', 'proven only by a comment that was not there before the reply'] },
   // ---- GitHub#250, PR #255 code review round 3 ----
   { what: '用草稿发回复：等待之后不再核对账号，发送时改用当时登录账号的凭据（旧账号的草稿由新账号发出）',
@@ -1285,8 +1287,9 @@ export const MUTATIONS = [
   { what: '变化检查（GitHub#261）：查不清（报错、缺版本标记）时沿用上一份', file: 'src/data/sync.ts',
     from: '        checked = null; // could not tell: read in full, keep no record', to: "        checked = usable ? { unchanged: true, record: { pages: usable.pages, fields: usable.fields, count: usable.count } } : null;",
     expect: ['an item page answers 500', 'the repository answers 500'] },
+  // PR #481 (GitHub#462) added the pending label to this call; the entry followed it (GitHub#527)
   { what: '变化检查（GitHub#261）：版本标记在整读之后才取（检查与整读之间的改动永远看不见）', file: 'src/data/sync.ts',
-    from: '    const snap = await fetchSource(client, src, now, loopLabel);', to: '    const snap = await fetchSource(client, src, now, loopLabel);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
+    from: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel);', to: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
     expect: ['a change between the check and the full read: not in this read, seen by the next round'] },
   { what: '变化检查（GitHub#261）：没超过 10 分钟也不强制整读（看不见的改动永远不出现）', file: 'src/data/sync.ts',
     from: 'if (checked?.unchanged && usable && now - usable.fullAt < fullReadEveryMs) {', to: 'if (checked?.unchanged && usable) {',

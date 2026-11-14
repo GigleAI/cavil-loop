@@ -20,7 +20,6 @@
   "立即检查": "Check now",
   "查看更新内容": "See what's new",
   "上次更新：{from} → {to}": "Last update: {from} → {to}",
-  "自动检查更新（每次打开 App 查一次，一直开着的话每 6 小时查一次；查到就在后台下载）": "Check for updates automatically (each time the app opens, and every 6 hours while it stays open; a new version is downloaded in the background)",
   "更新渠道": "Update channel",
   "正式版": "Release",
   "开发版": "Development",

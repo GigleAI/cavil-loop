@@ -9,7 +9,7 @@
 // the resolved address must be a Tailscale address, the certificate must be valid for the name.
 
 import { spawn, spawnSync, execFileSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO, keepTmp, type DaemonWorld } from './daemon-world';
 
@@ -28,6 +28,8 @@ export interface RemoteWorld {
   /** every request that reached the machine (one JSON per line) */
   log: string;
   callerFile: string;
+  /** what the front does to the machine's reply signature (GitHub#530): absent = pass it on, 'drop' / 'corrupt' */
+  replySig: string;
   frontPort: number;
   backendPort: number;
   procs: ChildProcess[];
@@ -80,8 +82,8 @@ function waitLine(p: ChildProcess, re: RegExp, what: string): Promise<RegExpMatc
 }
 
 /** A TLS front on a fresh port. `backend`: forward there; without it, an impostor that answers everything unsigned. */
-export async function startFront(r: Pick<RemoteWorld, 'procs' | 'log' | 'callerFile'>, cert: { cert: string; key: string }, backend?: number): Promise<number> {
-  const args = [join(REPO, 'tests/fixtures/remote-access-front.py'), '--cert', cert.cert, '--key', cert.key, '--log', r.log, ...(backend ? ['--backend', String(backend), '--caller-file', r.callerFile] : ['--impostor'])];
+export async function startFront(r: Pick<RemoteWorld, 'procs' | 'log' | 'callerFile'> & { replySig?: string }, cert: { cert: string; key: string }, backend?: number): Promise<number> {
+  const args = [join(REPO, 'tests/fixtures/remote-access-front.py'), '--cert', cert.cert, '--key', cert.key, '--log', r.log, ...(backend ? ['--backend', String(backend), '--caller-file', r.callerFile, ...(r.replySig ? ['--reply-sig-file', r.replySig] : [])] : ['--impostor'])];
   const p = spawn('python3', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   r.procs.push(p);
   return Number((await waitLine(p, /listening (\d+)/, 'the TLS front'))[1]);
@@ -98,8 +100,9 @@ export async function remoteWorld(w: DaemonWorld, path: string, serverEnv: Recor
   const state = join(w.home, '.local/state/cavil-loop/remote-access');
   const ca = makeCa(dir);
   const good = makeCert(dir, 'box', BOX, ca);
-  const r: RemoteWorld = { dir, state, ts, ca: ca.cert, hosts: join(dir, 'hosts.json'), keys: join(dir, 'keys.json'), log: join(dir, 'requests.jsonl'), callerFile: join(dir, 'caller'), frontPort: 0, backendPort: 0, procs: [], env: {} };
+  const r: RemoteWorld = { dir, state, ts, ca: ca.cert, hosts: join(dir, 'hosts.json'), keys: join(dir, 'keys.json'), log: join(dir, 'requests.jsonl'), callerFile: join(dir, 'caller'), replySig: join(dir, 'reply-sig'), frontPort: 0, backendPort: 0, procs: [], env: {} };
   writeFileSync(r.callerFile, CLIENT_IP);
+  rmSync(r.replySig, { force: true });
   writeFileSync(r.log, '');
   addDevice(r, CLIENT_IP, 'nCLIENT', 'test-client');
   const server = spawn('python3', [join(w.skill, 'scripts/remote-access/remote_access.py'), 'serve', '--state', state, '--port', '0', '--skill', w.skill], {

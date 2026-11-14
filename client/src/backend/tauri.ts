@@ -17,6 +17,7 @@ export const tauriDesktop: Desktop = {
   notify: (alert) => invoke('desktop_notify', { alert }),
   setBadge: (count) => invoke('desktop_badge', { count }),
   clearNotifications: () => invoke('desktop_clear_notifications'),
+  clearItemNotifications: (key) => invoke('desktop_clear_item_notifications', { key }),
   loginItem: () => invoke('desktop_login_item'),
   setLoginItem: (on) => invoke('desktop_set_login_item', { on }),
   nextEvent: () => invoke('desktop_next_event'),
