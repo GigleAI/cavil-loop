@@ -10,7 +10,7 @@ import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref
 import type { SendAction } from './sends';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
-import type { LangSetting } from './i18n';
+import type { LangSetting, Said } from './i18n';
 import type { ThemeSetting } from './theme';
 
 export interface Snapshot {
@@ -48,8 +48,8 @@ export type BlockedView =
       latest: Ref[];
       native: Ref[];
       fingerprint: string;
-      /** set: the dialog may not confirm, and says why (labels missing in the repository, ...) */
-      refuse: string | null;
+      /** set: the dialog may not confirm, and says why (labels missing in the repository, ...); the label names in it are holes shown as written (GitHub#474) */
+      refuse: Said | null;
     }
   | { ok: false; error: string };
 

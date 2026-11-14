@@ -1,8 +1,8 @@
 // GitHub#466 / #471: Chinese / English. Three things here:
 //   1. the rules of t() (placeholders, singular / plural, a missing line, the language setting);
 //      the shared cases also run through the back end (crates/core/src/i18n.rs) and must agree
-//   2. the source scan: the client's own Chinese goes through t() / tr(), outside the files still
-//      on the "not migrated yet" list (test/i18n/untranslated.txt)
+//   2. the source scan: the client's own Chinese goes through t() / tr(), in every file of the
+//      window and of the back end — there is no list of files left out any more (GitHub#474)
 //   3. the tables: every key used has its English, no line is unused, placeholders agree
 // The run-time half (what the window really shows in English) is test/e2e/i18n.spec.ts.
 
@@ -136,10 +136,6 @@ const sources = [
   .map((f) => relative(root, f))
   .sort();
 const results = new Map(sources.map((f) => [f, scan(readFileSync(join(root, f), 'utf8'), f.endsWith('.rs') ? 'rust' : 'ts', KEEP)]));
-const listed = readFileSync(join(root, 'test/i18n/untranslated.txt'), 'utf8')
-  .split('\n')
-  .map((l) => l.trim())
-  .filter((l) => l && !l.startsWith('#'));
 
 describe('the source scan over the client', () => {
   it('scans the files it should (the window and both Rust crates of the app)', () => {
@@ -149,9 +145,13 @@ describe('the source scan over the client', () => {
     expect(sources.length).toBeGreaterThan(120);
   });
 
-  it('outside the "not migrated yet" list, all Chinese goes through t() / tr()', () => {
-    const bad = sources.filter((f) => !listed.includes(f)).flatMap((f) => results.get(f)!.findings.map((x) => `${f}:${x.line} ${x.text}`));
+  it('GitHub#474: in every file, all Chinese goes through t() / tr() — no file is left out', () => {
+    const bad = sources.flatMap((f) => results.get(f)!.findings.map((x) => `${f}:${x.line} ${x.text}`));
     expect(bad).toEqual([]);
+  });
+
+  it('GitHub#474: the "not migrated yet" list of sub-issues ①–③ is gone for good', () => {
+    expect(existsSync(join(root, 'test/i18n/untranslated.txt'))).toBe(false);
   });
 
   it('every t( / tr( names a plain literal key (the checks can only follow literals)', () => {
@@ -171,124 +171,6 @@ describe('the source scan over the client', () => {
     expect(r.findings).toEqual([]);
     expect([...r.keys.keys()]).toEqual([]);
     expect(r.badCalls).toHaveLength(1);
-  });
-
-  it("GitHub#473: the local / remote daemon, update and sign-in renewal areas are migrated (they are not on the list)", () => {
-    for (const f of [
-      'src/renderer/DaemonSection.tsx',
-      'src/renderer/ConnectDialog.tsx',
-      'src/renderer/ProjectConfigDialog.tsx',
-      'src/shared/daemon.ts',
-      'src-tauri/crates/core/src/daemon.rs',
-      'src-tauri/crates/core/src/daemon_config.rs',
-      'src-tauri/crates/core/src/daemon_connect.rs',
-      'src/renderer/RemoteSection.tsx',
-      'src/renderer/RemoteHostBlock.tsx',
-      'src/shared/remote.ts',
-      'src-tauri/crates/core/src/remote.rs',
-      'src-tauri/crates/core/src/remote_host.rs',
-      'src/renderer/UpdateViews.tsx',
-      'src-tauri/crates/core/src/update.rs',
-      'src-tauri/src/updater.rs',
-      'src-tauri/crates/core/src/release_image.rs',
-      'src-tauri/crates/core/src/engine.rs',
-      'src-tauri/crates/core/src/api.rs',
-      'src-tauri/crates/core/src/http.rs',
-      'src-tauri/crates/core/src/store.rs',
-      'src-tauri/crates/core/src/platform.rs',
-    ])
-      expect(listed, f).not.toContain(f);
-  });
-
-  it('the list names only existing files, each once, each still holding Chinese to migrate', () => {
-    expect(new Set(listed).size).toBe(listed.length);
-    for (const f of listed) {
-      expect(existsSync(join(root, f)), `${f} is listed but does not exist`).toBe(true);
-      expect(results.get(f), `${f} is listed but not scanned`).toBeDefined();
-      expect(results.get(f)!.findings.length, `${f} has nothing left to migrate: remove its line from test/i18n/untranslated.txt`).toBeGreaterThan(0);
-    }
-  });
-
-  it("this sub-issue's areas are migrated (they are not on the list)", () => {
-    for (const f of [
-      'src/renderer/SettingsView.tsx',
-      'src/renderer/LoginView.tsx',
-      'src/renderer/AppKindPicker.tsx',
-      'src/renderer/AppKindHelp.tsx',
-      'src/shared/appKind.ts',
-      'src/renderer/syncTimes.ts',
-      'src/renderer/App.tsx',
-      'src/data/pending.ts',
-      'src/data/flowTally.ts',
-      'src-tauri/src/main.rs',
-      'src-tauri/src/mac.rs',
-      'src-tauri/src/desktop.rs',
-    ])
-      expect(listed, f).not.toContain(f);
-  });
-
-  it("sub-issue ②'s areas (#472: board, table, dependency view, detail, tabs, new issue, dialogs, notices, shortcuts) are migrated", () => {
-    for (const f of [
-      'src/data/actions.ts',
-      'src/data/autoJoin.ts',
-      'src/data/blocked.ts',
-      'src/data/board.ts',
-      'src/data/changeCheck.ts',
-      'src/data/detail.ts',
-      'src/data/edits.ts',
-      'src/data/fetchSources.ts',
-      'src/data/github.ts',
-      'src/data/groupPreset.ts',
-      'src/data/itemRefresh.ts',
-      'src/data/loopBlocked.ts',
-      'src/data/newIssueFields.ts',
-      'src/data/projectChoices.ts',
-      'src/data/relations.ts',
-      'src/data/table.ts',
-      'src/data/taskList.ts',
-      'src/renderer/BlockedDialog.tsx',
-      'src/renderer/BoardView.tsx',
-      'src/renderer/ConfirmDialog.tsx',
-      'src/renderer/DetailPanel.tsx',
-      'src/renderer/EmptyGuide.tsx',
-      'src/renderer/FailureNote.tsx',
-      'src/renderer/FindBar.tsx',
-      'src/renderer/GraphView.tsx',
-      'src/renderer/KindBadge.tsx',
-      'src/renderer/LabelPicker.tsx',
-      'src/renderer/NewIssueDialog.tsx',
-      'src/renderer/NoticeArea.tsx',
-      'src/renderer/OpNotice.tsx',
-      'src/renderer/OpenMenu.tsx',
-      'src/renderer/ProjectPicker.tsx',
-      'src/renderer/RepoWebLink.tsx',
-      'src/renderer/SendNotice.tsx',
-      'src/renderer/ShortcutHelp.tsx',
-      'src/renderer/ShortcutSettings.tsx',
-      'src/renderer/TabBar.tsx',
-      'src/renderer/TableView.tsx',
-      'src/renderer/ViewSettingsPanel.tsx',
-      'src/renderer/codeBlocks.ts',
-      'src/renderer/detailHtml.ts',
-      'src/renderer/frameScript.ts',
-      'src/renderer/iterationOptions.tsx',
-      'src/renderer/pasteImage.ts',
-      'src/renderer/prStatus.ts',
-      'src/renderer/reread.ts',
-      'src/renderer/shortcuts.ts',
-      'src/shared/agentMetrics.ts',
-      'src/shared/blocked.ts',
-      'src/shared/handoff.ts',
-      'src/shared/images.ts',
-      'src/shared/noticeTone.ts',
-      'src/shared/ops.ts',
-      'src/shared/readFailure.ts',
-      'src/shared/sends.ts',
-      'src/shared/stateTone.ts',
-      'src/shared/tabs.ts',
-      'src/shared/viewImport.ts',
-    ])
-      expect(listed, f).not.toContain(f);
   });
 });
 

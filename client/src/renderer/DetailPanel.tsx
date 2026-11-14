@@ -32,7 +32,7 @@ import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
 import { getLang, t, tKey, zhKey } from '../shared/i18n';
 import { tNode } from './tNode';
-import { Verbatim, verbatimParts } from './Verbatim';
+import { Verbatim, saidParts, verbatimParts } from './Verbatim';
 
 // Chinese keys, shown with tKey
 const METHOD_LABEL: Record<MergeMethod, string> = { merge: zhKey('合并提交（merge commit）'), squash: zhKey('压成一个提交（squash）'), rebase: zhKey('变基（rebase）') };
@@ -1530,7 +1530,7 @@ export function DetailPanel({
                 data-testid="label-add"
                 disabled={pickBlocked}
                 title={offlineWhy ?? (opts?.error ? opts.error : t('候选来自 {repo} 的标签（{key}）', { repo: item.repo, key: keyText('labels') }))}
-                {...verbatimParts('github', [item.repo, opts?.error])}
+                {...saidParts(opts?.errorSaid, [item.repo])}
                 onClick={() => setPicker(picker === 'labels' ? null : 'labels')}
               >
                 {opts ? t('+ 加标签') : t('读取标签…')}
@@ -1605,7 +1605,7 @@ export function DetailPanel({
           <EditStatus mark={markFor('milestone')} field="milestone" />
           {opts?.error && (
             <>
-              <span className="small err" data-testid="options-error" title={opts.error}>
+              <span className="small err" data-testid="options-error" title={opts.error} {...saidParts(opts.errorSaid)}>
                 <Icon name="warn" size={12} /> {t('没读到标签 / 里程碑列表')}
               </span>
               <button className="link small" data-testid="options-retry" onClick={rereadOptions}>

@@ -12,7 +12,7 @@ import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptio
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
-import { noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
+import { nestSaid, noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
@@ -23,7 +23,7 @@ import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, 
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
-import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep } from '../data/github';
+import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep, sayFailure } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound } from '../data/sync';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
@@ -2535,7 +2535,10 @@ export class Controller {
       } catch (e) {
         if (attempt === 0 && e instanceof GitHubError && e.kind === 'network') continue;
         this.noteAuthFailure(e);
-        return { labels: [], milestones: [], error: t('读取 {repo} 的标签 / 里程碑失败：{why}', { repo, why: (e as Error).message }) };
+        // GitHub#474 (PR #537 review round 1): worded once, with the repository and the failure's own outside words as holes; the plain message is that sentence flattened
+        const errorSaid = sayFailure(zhKey('读取 {repo} 的标签 / 里程碑失败：{why}'), 'why', e, { repo: { text: repo, from: 'github' } });
+        const failed: RepoOptions = { labels: [], milestones: [], error: saidText(errorSaid), errorSaid };
+        return failed;
       }
     }
   }
@@ -3840,16 +3843,38 @@ export class Controller {
     const current = await Promise.all([...seen.values()].map((r) => this.blockedRefInfo(client, r)));
     const lost = (await Promise.all(lostRefs(read).map((r) => this.blockedRefInfo(client, r)))).filter((x) => x.state === 'open' || x.state === 'unknown');
     const entry = entryState(read.labels, names, bl);
-    let refuse: string | null = null;
-    if (read.state !== 'open') refuse = t('这一条已经关闭');
-    else if (entry.kind === 'other') refuse = t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: entry.label, human: names.human });
+    // GitHub#474: the label names in these sentences are the person's (Settings) or GitHub's: holes
+    // shown as written, never baked into the client's own words
+    let refuse: Said | null = null;
+    if (read.state !== 'open') refuse = { template: t('这一条已经关闭'), parts: [] };
+    else if (entry.kind === 'other')
+      refuse = {
+        template: t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: '{label}', human: '{human}' }),
+        parts: [
+          { name: 'label', text: entry.label, from: 'github' },
+          { name: 'human', text: names.human, from: 'user' },
+        ],
+      };
     else {
       const opts = await this.repoOptions(item.repo);
-      if (opts.error) refuse = t('读不到这个仓库的标签（{why}），不能确认「{blocked}」「{human}」两个标签都在', { why: opts.error, blocked: bl.blocked, human: names.human });
+      if (opts.error) {
+        // the failure's own outside words (repository, GitHub's / the network's message) stay holes
+        // too — never filled into the template, where a "{human}" inside them would be read as a
+        // hole (PR #537 review round 1); a failure the client worded itself is all its own words
+        const why: Said = opts.errorSaid ?? { template: opts.error, parts: [] };
+        refuse = nestSaid(t('读不到这个仓库的标签（{why}），不能确认「{blocked}」「{human}」两个标签都在', { why: '{why}', blocked: '{blocked}', human: '{human}' }), 'why', why, [
+          { name: 'blocked', text: bl.blocked, from: 'user' },
+          { name: 'human', text: names.human, from: 'user' },
+        ]);
+      }
       else {
         const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
         const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
-        if (missing.length) refuse = t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((m) => t('「{name}」', { name: m })).join(t('、')) });
+        if (missing.length)
+          refuse = {
+            template: t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
+            parts: missing.map((m, i) => ({ name: `l${i}`, text: m, from: 'user' as const })),
+          };
       }
     }
     return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
@@ -3949,7 +3974,7 @@ export class Controller {
     const view = await this.blockedViewOf(c.client, item, read);
     if (!view.ok) return refuse(view.error);
     if (view.fingerprint !== req.fingerprint) return { ok: false, error: t('点「登记前置」后重新读到：这期间这一条有了变化。什么都没写，下面已按最新内容刷新，核对后再点一次'), view };
-    if (view.refuse) return { ok: false, error: view.refuse, view };
+    if (view.refuse) return { ok: false, error: saidText(view.refuse), view };
     // every prerequisite picked is read again: open, the kind and id it was picked with
     const fresh: BlockedPick[] = [];
     for (const p of picks) {

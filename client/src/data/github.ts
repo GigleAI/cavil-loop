@@ -3,7 +3,7 @@
 // links that point anywhere else are refused so the token never leaves them.
 
 import type { FailureInput } from '../shared/readFailure';
-import { t, tKey, zhKey } from '../shared/i18n';
+import { getLang, nestSaid, t, tKey, translate, zhKey, type Params, type Said, type VerbatimSource } from '../shared/i18n';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -38,6 +38,13 @@ export class GitHubError extends Error {
   meta: GitHubErrorMeta = {};
   /** GitHub's own words of a refused answer ('' = it gave none); undefined = not a refused answer (GitHub#472: kept apart from the client's sentence) */
   said?: string;
+  /**
+   * GitHub#474 (PR #537 review round 1): `message` worded with holes — the client's words in the
+   * window's language, the outside words in it (GitHub's reply, the network's / system's message) as
+   * written parts. Set wherever such words go into the message, from the same call (`outsideError`);
+   * unset = the message is the client's own words. Read it through `errorWords`.
+   */
+  worded?: Said;
   constructor(
     readonly kind: GitHubErrorKind,
     message: string,
@@ -48,6 +55,42 @@ export class GitHubError extends Error {
     super(message);
     this.name = 'GitHubError';
   }
+}
+
+type Outside = Record<string, { text: string; from: VerbatimSource }>;
+
+/** the client's sentence `zh`: its own `params` filled in, each outside word a hole shown as written */
+function sayWith(zh: string, outside: Outside, params: Params = {}): Said {
+  const holes: Record<string, string> = {};
+  for (const name of Object.keys(outside)) holes[name] = `{${name}}`;
+  return { template: translate(getLang(), zh, { ...params, ...holes }), parts: Object.entries(outside).map(([name, o]) => ({ name, text: o.text, from: o.from })) };
+}
+
+/**
+ * GitHub#474: a GitHubError whose message quotes outside words — `message` and `worded` come from
+ * one sentence, so they cannot say different things.
+ */
+function outsideError(kind: GitHubErrorKind, zh: string, outside: Outside, params: Params = {}, status?: number): GitHubError {
+  const filled: Record<string, string> = {};
+  for (const [name, o] of Object.entries(outside)) filled[name] = o.text;
+  const e = new GitHubError(kind, translate(getLang(), zh, { ...params, ...filled }), status);
+  e.worded = sayWith(zh, outside, params);
+  return e;
+}
+
+/**
+ * GitHub#474: what a failure says, worded with holes — a GitHubError's own `worded`, else its message
+ * (then the client's own words); anything else is a message from outside the client, shown as written.
+ */
+export function errorWords(e: unknown): Said {
+  if (e instanceof GitHubError) return e.worded ?? { template: e.message, parts: [] };
+  return { template: '{why}', parts: [{ name: 'why', text: (e as Error)?.message ?? String(e), from: 'system' }] };
+}
+
+/** GitHub#474: the client's sentence `zh` whose `{hole}` is a failure's words (errorWords); `outside`: its other holes, shown as written */
+export function sayFailure(zh: string, hole: string, e: unknown, outside: Outside = {}): Said {
+  const outer = sayWith(zh, { ...outside, [hole]: { text: '', from: 'system' } });
+  return nestSaid(outer.template, hole, errorWords(e), outer.parts.filter((p) => p.name !== hole));
 }
 
 const USER_AGENT = 'cavil-loop-client';
@@ -130,7 +173,7 @@ export async function refusalOf(res: Response): Promise<GitHubError> {
   }
   let e: GitHubError | null = rateLimitOf(res, detail);
   if (!e) {
-    e = new GitHubError('http', detail ? t('GitHub 返回 HTTP {status}：{detail}', { status: res.status, detail }) : t('GitHub 返回 HTTP {status}', { status: res.status }), res.status);
+    e = detail ? outsideError('http', zhKey('GitHub 返回 HTTP {status}：{detail}'), { detail: { text: detail, from: 'github' } }, { status: res.status }, res.status) : new GitHubError('http', t('GitHub 返回 HTTP {status}', { status: res.status }), res.status);
     e.said = detail;
   }
   e.meta = headerMeta(res);
@@ -291,7 +334,7 @@ export class GitHubClient {
         signal: init.signal ?? timeoutSignal(30_000),
       });
     } catch (e) {
-      throw new GitHubError('network', t('无法连接 GitHub：{why}', { why: (e as Error).message }));
+      throw outsideError('network', zhKey('无法连接 GitHub：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }
     if (res.status === 401) throw await refusalOf(res);
     if (notModifiedOk && res.status === 304) return res;
@@ -318,7 +361,7 @@ export class GitHubClient {
     try {
       body = (await res.json()) as typeof body;
     } catch (e) {
-      throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
+      throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }
     if (body.errors && body.errors.length) {
       if (body.errors.some((e) => e.type === 'RATE_LIMITED')) {
@@ -328,6 +371,11 @@ export class GitHubClient {
       }
       const transient = body.errors.every((e) => !e.type && TRANSIENT_GRAPHQL.test(e.message));
       const err = new GitHubError('graphql', body.errors.map((e) => e.message).reduce((a, b) => t('{a}；{b}', { a, b })), undefined, transient);
+      // GitHub's words, each a hole (GitHub#474)
+      err.worded = {
+        template: body.errors.map((_, i) => `{m${i}}`).reduce((a, b) => t('{a}；{b}', { a, b })),
+        parts: body.errors.map((e, i) => ({ name: `m${i}`, text: e.message, from: 'github' as const })),
+      };
       err.meta = { ...headerMeta(res), gqlTypes: body.errors.map((e) => e.type).filter((t): t is string => typeof t === 'string') };
       throw err;
     }
@@ -350,7 +398,7 @@ export class GitHubClient {
     try {
       return JSON.parse(text) as T;
     } catch (e) {
-      throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
+      throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }
   }
 
@@ -374,7 +422,7 @@ export class GitHubClient {
    */
   async conditional(method: 'GET' | 'HEAD', pathOrUrl: string, etag: string | null): Promise<ConditionalAnswer> {
     const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : `${this.endpoints.api}${pathOrUrl}`;
-    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的链接：{url}', { url }));
+    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw outsideError('http', zhKey('拒绝跟随指向其他主机的链接：{url}'), { url: { text: url, from: 'github' } });
     const res = await this.again(() => this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true));
     const tag = res.headers.get('etag');
     const next = nextLink(res.headers.get('link'));
@@ -388,7 +436,7 @@ export class GitHubClient {
       try {
         body = await res.json();
       } catch (e) {
-        throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
+        throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
       }
     }
     return { status: 200, etag: tag!, next, body };
@@ -400,16 +448,16 @@ export class GitHubClient {
     let url: string | null = `${this.endpoints.api}${path}`;
     const origin = new URL(this.endpoints.api).origin;
     while (url) {
-      if (new URL(url).origin !== origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的分页链接：{url}', { url }));
+      if (new URL(url).origin !== origin) throw outsideError('http', zhKey('拒绝跟随指向其他主机的分页链接：{url}'), { url: { text: url, from: 'github' } });
       const at: string = url;
       const res = await this.again(() => this.send(at, { method: 'GET' }));
       let page: unknown;
       try {
         page = await res.json();
       } catch (e) {
-        throw new GitHubError('network', t('GitHub 回应不完整：{why}', { why: (e as Error).message }));
+        throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
       }
-      if (!Array.isArray(page)) throw new GitHubError('http', t('GitHub 列表接口回应不是数组：{path}', { path }));
+      if (!Array.isArray(page)) throw outsideError('http', zhKey('GitHub 列表接口回应不是数组：{path}'), { path: { text: path, from: 'github' } });
       out.push(...(page as T[]));
       url = nextLink(res.headers.get('link'));
     }

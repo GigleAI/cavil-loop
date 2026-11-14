@@ -8,7 +8,7 @@ The Cavil Loop client is a desktop app (macOS) for managing GitHub issues and pu
 
 ![The board: columns by status, each PR under its linked issue](client-screens/board.png)
 
-> This page covers what the app shows and does. The rules for changing its code, and how it is built, are in the developer notes [client/README.md](../client/README.md) (Chinese). **The interface is Chinese only for now** (switching between Chinese and English is in progress in [#466](https://github.com/GigleAI/cavil-loop/issues/466)), so button names below are given in Chinese with their meaning in brackets.
+> This page covers what the app shows and does. The rules for changing its code, and how it is built, are in the developer notes [client/README.md](../client/README.md) (Chinese). **The interface is Chinese until you switch it**: Settings → "Language · 语言" turns it to English (see [Language](#language)). Button names below are given as the Chinese interface shows them, with their meaning in brackets; the English interface may word them a little differently.
 
 ## Contents
 
@@ -24,6 +24,7 @@ The Cavil Loop client is a desktop app (macOS) for managing GitHub issues and pu
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Network, credentials and offline use](#network-credentials-and-offline-use)
 - [Updates](#updates)
+- [Language](#language)
 - [Optional: connect the daemon](#optional-connect-the-daemon)
 - [In progress](#in-progress)
 
@@ -158,6 +159,20 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 - The app checks for, downloads and installs updates itself; Settings lists what changed in each version.
 - "更新渠道" (update channel) is one of: **正式版** (stable — none released yet) or **开发版** (development — a new one can appear with every client change merged into main, and may be unstable). Switching from development back to stable never downgrades; it waits for the next stable version above the current one.
 
+## Language
+
+Settings → "语言 · Language", the first section, has three choices:
+
+| Choice | Shows |
+|---|---|
+| **简体中文** (Simplified Chinese) — the default | the Chinese interface, exactly as before; a setting this version does not recognise also reads as Chinese |
+| **English** | the English interface |
+| **跟随系统** (follow the system) | Chinese when the system's preferred language is any Chinese (`zh-…`), English for every other language; the choice shows which one it is now |
+
+- The switch takes effect at once — the window, the macOS menu and the notifications that follow — with no restart, and is remembered on this computer.
+- **Not translated**: what comes from outside the client is shown as written — on GitHub, titles, descriptions, comments, label / milestone / iteration / Project names, account and repository names, GitHub's own error messages and the release notes; the output of the daemon's scripts, of a remote daemon and its log; the error text of git, the system and other programs; and what you typed or named yourself (a search, a draft, a label name set in Settings). Only the words around them change language.
+- The section's own name and the choice "简体中文" stay in Chinese in the English interface (and "Language" / "English" in the Chinese one), so someone who cannot read the current language can still find the way back.
+
 ## Optional: connect the daemon
 
 The other thing in this repository is the daemon: label an issue `pending/agent` and an AI on your machine (Claude Code, Codex, …) picks it up, does the work and reports back on the issue / PR. The client can install the daemon for you and connect a repository to it; after that you can hand items to the AI from the client. **Without the daemon, everything above works the same.**
@@ -181,7 +196,6 @@ How the daemon itself works: the repository's [README](../README.md).
 
 Client issues still open when this guide was written (2026-11-13); the issue pages have the current state:
 
-- Chinese / English switching: [#466](https://github.com/GigleAI/cavil-loop/issues/466), in four steps — [#471](https://github.com/GigleAI/cavil-loop/issues/471) (language setting, top bar, settings, sign-in, menu, notifications), [#472](https://github.com/GigleAI/cavil-loop/issues/472) (board, table, graph, details, tabs, new issue), [#473](https://github.com/GigleAI/cavil-loop/issues/473) (local and remote daemon, updates, project settings), [#474](https://github.com/GigleAI/cavil-loop/issues/474) (finishing touches and this guide)
 - "Hand to the agent" and "autopilot" right in the new-issue window, with shortcuts: [#450](https://github.com/GigleAI/cavil-loop/issues/450)
 - A spinner and a result message after "重新读取" / "重新同步" (re-read / re-sync): [#455](https://github.com/GigleAI/cavil-loop/issues/455)
 - Client tests leaving temporary directories behind: [#469](https://github.com/GigleAI/cavil-loop/issues/469) (affects development only, not use)

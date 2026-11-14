@@ -3,6 +3,7 @@
 // renderer: no Node, no Electron in here.
 
 import type { Label } from './types';
+import type { Said } from './i18n';
 import type { Handoff } from './handoff';
 
 /**
@@ -134,6 +135,13 @@ export interface RepoOptions {
   labels: Label[];
   milestones: { number: number; title: string; state: 'open' | 'closed'; dueOn: string | null }[];
   error: string | null;
+  /**
+   * GitHub#474 (PR #537 review round 1): the same failure worded with holes — the client's words in
+   * the window's language, the repository and GitHub's / the network's own words as written parts —
+   * for a sentence that quotes it (the "wait for…" refusal). Unset: no failure, or one the client
+   * worded entirely by itself (then `error` is all its own words).
+   */
+  errorSaid?: Said;
 }
 
 export interface Author {

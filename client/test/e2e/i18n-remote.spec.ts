@@ -48,13 +48,6 @@ test.afterAll(async () => {
   await closeEngine();
 });
 
-/**
- * Parts of these regions that belong to another sub-issue of #466 (removed when those are merged):
- * the confirmation dialog's own buttons and hint (ConfirmDialog, sub-issue ② #472 — the label of its
- * confirm button is this area's and is asserted separately).
- */
-const LATER = ['[data-testid="confirm-cancel"]', '[data-testid="confirm-ok"]', '[data-testid="dialog-esc-hint"]'];
-
 async function openEnglish(): Promise<{ app: RunningApp; page: Page }> {
   const app = await launchApp(env, { backendEnv: { ...daemonEnv(w, { os: 'Linux', path, extra: { FAKE_TS: r.ts } }), ...r.env } });
   running.push(app);
@@ -81,7 +74,7 @@ test('GitHub#473: the remote daemon section in English — a refusal and a poll 
   await expect(section.locator('h3')).toHaveText('Remote daemons');
   await expect(page.getByTestId('remote-empty')).toHaveText('No remote machine paired yet.');
   await expect(page.getByTestId('remote-add')).toHaveText('Add a remote daemon…');
-  expect(await chineseIn(page, ['[data-testid="remote-settings"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="remote-settings"]'])).toEqual([]);
 
   // a wrong code: the machine's own (Chinese) refusal, marked; the dialog around it English
   await page.getByTestId('remote-add').click();
@@ -99,7 +92,7 @@ test('GitHub#473: the remote daemon section in English — a refusal and a poll 
   await expect(err).toContainText('Not paired: That machine answered: ');
   await expect(err.locator('[data-verbatim="remote"]')).toContainText('配对码不对');
   await expect(page.getByTestId('confirm-dialog').locator('h3')).toHaveText('Add a remote daemon');
-  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'])).toEqual([]);
   await shot(page, '1-pair-refused');
 
   // paired: the machine and its project, English around what the machine reported
@@ -110,7 +103,7 @@ test('GitHub#473: the remote daemon section in English — a refusal and a poll 
   await expect(host.getByTestId('remote-pill')).toHaveText('connected');
   await expect(host.locator('thead')).toContainText('Repository / folder (on that machine)');
   await expect(host.getByTestId('remote-log')).toHaveText('Log');
-  expect(await chineseIn(page, ['[data-testid="remote-settings"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="remote-settings"]'])).toEqual([]);
   await shot(page, '2-connected');
 
   // the poll log, in Chinese as that machine wrote it
@@ -133,19 +126,19 @@ test('GitHub#473: the remote daemon section in English — a refusal and a poll 
   const problem = host.getByTestId('remote-problem');
   await expect(problem).toContainText('Could not confirm that this connection goes over Tailscale');
   await expect(problem).toContainText('Below is what was read last time; no actions.');
-  expect(await chineseIn(page, ['[data-testid="remote-settings"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="remote-settings"]'])).toEqual([]);
   // unpairing now: the offline question, its reason in English
   await host.getByTestId('remote-unpair').click();
   await expect(page.getByTestId('remote-unpair-text')).toHaveAttribute('data-offline', 'true');
   await expect(page.getByTestId('confirm-ok')).toHaveText('Unpair on this computer only');
-  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'])).toEqual([]);
   await shot(page, '4-unpair-offline');
   await page.getByTestId('confirm-ok').click();
   await expect(host).toHaveAttribute('data-state', 'pending');
   await expect(host.getByTestId('remote-pill')).toHaveText('Unpairing not finished');
   await host.getByTestId('remote-retry').click();
   await expect(host.getByTestId('remote-note')).toContainText('That machine still could not confirm the revocation: ');
-  expect(await chineseIn(page, ['[data-testid="remote-settings"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="remote-settings"]'])).toEqual([]);
   await shot(page, '5-pending');
 });
 
@@ -176,7 +169,7 @@ test('GitHub#473: this machine’s own remote switch in English — a pairing co
   await expect(page.getByTestId('local-remote-device').locator('[data-verbatim="daemon"]').first()).toHaveText('张三的笔记本');
   await expect(page.getByTestId('confirm-dialog').locator('h3')).toHaveText('Paired computers');
   await expect(page.getByTestId('local-remote-revoke')).toHaveText('Revoke…');
-  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'], LATER)).toEqual([]);
+  expect(await chineseIn(page, ['[data-testid="confirm-dialog"]'])).toEqual([]);
   await shot(page, '7-host-devices');
   await page.getByTestId('confirm-ok').click();
   await page.getByTestId('local-remote-switch').click();

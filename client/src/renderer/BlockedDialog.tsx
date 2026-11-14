@@ -11,7 +11,7 @@ import type { BlockedRefInfo, BlockedView } from '../shared/ipc';
 import type { AppState, Item } from '../shared/types';
 import { t, tKey, zhKey } from '../shared/i18n';
 import { tNode } from './tNode';
-import { Verbatim } from './Verbatim';
+import { SaidText, Verbatim } from './Verbatim';
 
 type Candidate = BlockedRefInfo & Pick;
 
@@ -235,7 +235,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
           <>
             {view.refuse && (
               <div className="warn-text" data-testid="blocked-refuse">
-                {view.refuse}
+                <SaidText said={view.refuse} />
               </div>
             )}
             {paused && (
