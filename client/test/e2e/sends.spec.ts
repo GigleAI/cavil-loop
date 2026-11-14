@@ -105,7 +105,7 @@ test('GitHub#489: a reply — the box empties at once and the panel may go; refu
   await expect(said(page).first()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   await expect(said(page).first().getByTestId('send-notice-text')).toContainText('原文已放回回复框');
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('这段会被拒');
-  await expect(said(page).first().getByTestId('send-resend')).toHaveCount(0); // the text can be sent from one place only
+  await expect(said(page).first().getByTestId('send-retry')).toHaveCount(0); // the text can be sent from one place only
   env.fake.state.w.failComment = false;
   expect(onGitHub('这段会被拒')).toBe(0);
   await shot(page, '489-02-refused-back-in-box');
@@ -124,10 +124,10 @@ test('GitHub#489: a reply — the box empties at once and the panel may go; refu
   await expect(said(page).first().getByTestId('send-text')).toContainText('可能已经发出去了');
   await expect(said(page).first().getByTestId('send-notice-text')).toContainText('没有放回编辑框');
   await expect(said(page).first().getByTestId('send-dismiss')).toHaveCount(0);
-  await expect(said(page).first().getByTestId('send-recheck')).toBeVisible();
+  await expect(said(page).first().getByTestId('send-retry')).toBeVisible();
   await shot(page, '489-03-unknown-text-in-notice');
   // 「再查一次」: a read only — still not sure, nothing sent
-  await said(page).first().getByTestId('send-recheck').click();
+  await said(page).first().getByTestId('send-retry').click();
   await expect(said(page).first().getByTestId('send-notice-text')).toContainText('还没查到');
   expect(posts().length).toBe(before + 1);
 
@@ -141,7 +141,7 @@ test('GitHub#489: a reply — the box empties at once and the panel may go; refu
   // the request lands now; the next check proves it: done, the text gone, exactly one comment, one request
   late.land();
   expect(onGitHub('可能已经发出去了')).toBe(1);
-  await said(page).first().getByTestId('send-recheck').click();
+  await said(page).first().getByTestId('send-retry').click();
   await expect(said(page).first()).toHaveAttribute('data-state', 'ok', { timeout: 15_000 });
   await expect(said(page).first().getByTestId('send-notice-text')).toContainText('在评论列表里找到了这条评论');
   await expect(said(page).first().getByTestId('send-text')).toHaveCount(0);

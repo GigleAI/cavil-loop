@@ -27,7 +27,7 @@
 // (table E): a part goes only when its own step is confirmed done, or when a
 // person drops it. Settling never deletes a draft.
 
-import type { IssueCloseReason, MergeMethod } from './actions';
+import type { IssueCloseReason, MergeMethod, WriteAction } from './actions';
 import { noticeTone, type NoticeFacts, type NoticeTone } from './noticeTone';
 import type { BlockedStepName, Facts, Pick, Ref } from './blocked';
 import { commentProves } from './sends';
@@ -188,6 +188,11 @@ export interface OpRecord {
   finishProblem?: string | null;
   /** GitHub#434: a "等前置…" record */
   blocked?: BlockedOpData;
+  /**
+   * GitHub#490: 「到 GitHub 上核对」 was pressed and the page opened — the same place now offers
+   * 「已在 GitHub 上核对过，解除锁定」. Opening the page unlocks nothing; only that second press does.
+   */
+  webOpened?: boolean;
 }
 
 /**
@@ -545,6 +550,77 @@ export function opButtons(r: OpRecord): OpButton[] {
   if (left && p !== 'waiting') out.push('dropDraft');
   if (!opLocked(r) && !r.finishing) out.push('dismiss');
   return out;
+}
+
+/**
+ * GitHub#490: what a notice offers — at most one retry, one way out (the fallback) and ×. Derived from
+ * the record alone through `opButtons` (which keeps every existing rule about what may be sent again,
+ * what may go back into the reply box and what locks), so the notice only draws it.
+ *
+ *   retry — what 「重试」 does, following how sure the outcome is:
+ *     redo        refused for sure / never sent: the same operation again with the same choices (close
+ *                 reason, attached comment, merge method), no dialog; it is checked before sending as always
+ *     blocked     a "等前置…" that did not finish: its dialog again (the prerequisites are read afresh)
+ *     finish      the main step worked, label steps after it surely did not: 「补做剩下的步骤」
+ *     sendComment the main step worked, the attached comment surely did not go out: send it as a reply
+ *     resend      the one label step the existing rules let a person send again (「重发…」, its dialog first)
+ *     recheck     any other answer that never came: 「再查一次」, a read, nothing is sent
+ *   fallback — handleWeb: the item's page (the kept comment copied first); checkWeb: the two steps of
+ *     「到 GitHub 上核对」 (`webOpened` says which one is showing; the lock stays until the second).
+ *   close — × is there; `toBox` — × gives a comment that surely did not go out back to the reply box.
+ *   copy — the text the fallback copies (the kept attached comment), null = nothing.
+ */
+export type OpRetry = 'redo' | 'blocked' | 'finish' | 'sendComment' | 'resend' | 'recheck';
+export type OpFallback = 'handleWeb' | 'checkWeb';
+export interface OpActions {
+  retry: OpRetry | null;
+  fallback: OpFallback | null;
+  close: boolean;
+  toBox: boolean;
+  copy: string | null;
+  webOpened: boolean;
+}
+
+export function opActions(r: OpRecord): OpActions {
+  const b = opButtons(r);
+  const p = opPhase(r);
+  const left = opDraftLeft(r);
+  const out: OpActions = { retry: null, fallback: null, close: b.includes('dismiss'), toBox: b.includes('toReply'), copy: p === 'waiting' ? null : (left?.comment ?? null), webOpened: r.webOpened === true };
+  if (b.includes('resend')) return { ...out, retry: 'resend', fallback: 'checkWeb' };
+  if (p === 'unknown') return r.checking ? out : { ...out, retry: 'recheck', fallback: 'checkWeb' };
+  if (p === 'settling' && r.stuck) return { ...out, fallback: 'checkWeb' };
+  if (p !== 'settled') return out;
+  if (b.includes('retry')) return { ...out, retry: r.kind === 'blocked' ? 'blocked' : 'redo', fallback: 'handleWeb' };
+  if (b.includes('finish')) return { ...out, retry: 'finish', fallback: 'handleWeb' };
+  if (r.finishing) return out;
+  if (b.includes('toReply')) return { ...out, retry: 'sendComment', fallback: 'handleWeb' };
+  if (r.steps.some((s) => s.state !== 'ok') || left) return { ...out, fallback: 'handleWeb' };
+  return out;
+}
+
+/**
+ * GitHub#490, 「重试」 of an operation refused for sure (or never sent): the same operation again with the choices it
+ * was started with — never a comment a reply made from it may already have posted (`opReusableDraft`). Sent the way
+ * every operation is (its read before sending refuses a PR with a newer commit, labels someone changed meanwhile).
+ * A string = why it cannot be done again from here.
+ */
+export function opRedoAction(r: OpRecord): Extract<WriteAction, { kind: Exclude<OpKind, 'blocked'> }> | string {
+  if (opActions(r).retry !== 'redo') return t('这次操作现在不能重试');
+  const d = opReusableDraft(r) ?? {};
+  const comment = d.comment?.trim() ? d.comment : '';
+  switch (r.kind) {
+    case 'closeIssue':
+      return r.draft.reason ? { kind: 'closeIssue', key: r.key, reason: d.reason ?? r.draft.reason, comment } : t('不知道上次选的关闭原因，请从详情里重新关闭');
+    case 'closePr':
+      return { kind: 'closePr', key: r.key, comment };
+    case 'merge':
+      return d.method && d.headOid ? { kind: 'merge', key: r.key, method: d.method, headOid: d.headOid } : t('不知道上次选的合并方式，请从详情里重新合并');
+    case 'autopilot':
+    case 'handBack':
+      return { kind: r.kind, key: r.key, ...(comment ? { comment } : {}) };
+    default:
+      return t('这次操作现在不能重试');
+  }
 }
 
 /**
