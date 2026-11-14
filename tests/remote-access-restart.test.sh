@@ -184,6 +184,36 @@ fresh_world; use_tree "$NEW"
 ra Linux -- auto-restart
 chk "没开过远程入口：什么都不调、不说话" "$(cat "$FAKE_SVC/calls" 2>/dev/null | wc -l) [$out] $([ -e "$RA_STATE" ] && echo state)" "0 [] "
 
+echo "   入口报了身份字段、但认不出：证明不了是旧代码，不重启（PR #535 复审第 1 轮）"
+ORIG_ID='return {"level": API_LEVEL, "fingerprint": sha256_hex(f.read())}'
+grep -qF "$ORIG_ID" "$NEW/scripts/remote-access/remote_access.py" || { echo "  ❌ 夹具：入口脚本里找不到身份那一行"; fail=$((fail+1)); }
+bad_tree() {   # <名字> <替换成的 return 语句>：只改正在跑的入口报的身份，其余同新代码
+    local t="$SANDBOX/trees/bad-$1"; rm -rf "$t"; tree_from_repo "$t"
+    python3 - "$t/scripts/remote-access/remote_access.py" "$ORIG_ID" "$2" <<'PY'
+import sys
+p, a, b = sys.argv[1:]
+s = open(p).read(); assert a in s; open(p, "w").write(s.replace(a, b))
+PY
+    echo "$t"
+}
+for v in 'num|return {"level": API_LEVEL, "fingerprint": 123}' \
+         'empty|return {"level": API_LEVEL, "fingerprint": ""}' \
+         'nothex|return {"level": API_LEVEL, "fingerprint": "z" * 64}' \
+         'nolevel|return {"fingerprint": sha256_hex(f.read())}' \
+         'nofp|return {"level": API_LEVEL}' \
+         'strlevel|return {"level": "2", "fingerprint": sha256_hex(f.read())}'; do
+    name="${v%%|*}"; ret="${v#*|}"
+    fresh_world
+    tree="$(bad_tree "$name" "$ret")"
+    # 入口自己的 code-info 也会读出这个坏身份，所以起入口用坏代码、检查时磁盘换回新代码
+    open_with Linux "$tree"; use_tree "$NEW"
+    ra Linux CAVIL_REMOTE_FAKE_NOW=$T0 -- auto-restart
+    chk "身份字段认不出（${name}）：不重启、不记重启次数" "$(restarts) $(rec)" "0 none"
+    chk_has "身份字段认不出（${name}）：记一行「认不出」" "$out" "回答认不出"
+    ra Linux -- status
+    chk_has "身份字段认不出（${name}）：状态显示判断不了" "$out" "ENTRY_CODE=unknown"
+done
+
 echo "── 4. 重启失败与恢复 ──"
 fresh_world
 open_with Linux "$OLD"; use_tree "$NEW"

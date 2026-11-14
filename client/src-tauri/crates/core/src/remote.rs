@@ -965,14 +965,19 @@ fn old_entry(read: Result<&Value, &str>) -> OldEntry {
         Ok(b) => b,
     };
     let disk = body["status"]["remote_access"]["level"].as_u64();
-    let running = body["entry"]["level"].as_u64();
+    // the running entry: no `entry` field at all is an entry from before GitHub#533 (old code for
+    // sure); a field that is there but not a level is not evidence of anything — cannot tell
+    let running = match body.get("entry") {
+        None => Some(None),
+        Some(e) => e["level"].as_u64().map(Some),
+    };
     match (disk, running) {
         (Some(d), _) if d < CONFIG_LEVEL => {
             let v = body["status"]["daemon"]["version"].as_str().unwrap_or("");
             OldEntry::DiskTooOld { version: v.chars().take(12).collect() }
         }
-        (Some(_), None) => OldEntry::NotRestarted,
-        (Some(_), Some(r)) if r < CONFIG_LEVEL => OldEntry::NotRestarted,
+        (Some(_), Some(None)) => OldEntry::NotRestarted,
+        (Some(_), Some(Some(r))) if r < CONFIG_LEVEL => OldEntry::NotRestarted,
         _ => OldEntry::Unknown(None),
     }
 }
@@ -1069,8 +1074,13 @@ mod tests {
         // the code on disk is too old (a future feature: here its level is below the one asked for)
         assert_eq!(old_entry(Ok(&st(lv(1), lv(1)))), OldEntry::DiskTooOld { version: "0123456789ab".into() });
         // the code on disk has it, the entry runs older code: from before GitHub#533 (no entry field) or a lower level
-        assert_eq!(old_entry(Ok(&st(lv(2), Value::Null))), OldEntry::NotRestarted);
+        let no_entry = json!({ "status": { "version": 1, "daemon": { "version": "0123456789abcdef" }, "remote_access": lv(2) } });
+        assert_eq!(old_entry(Ok(&no_entry)), OldEntry::NotRestarted);
         assert_eq!(old_entry(Ok(&st(lv(2), lv(1)))), OldEntry::NotRestarted);
+        // an entry field that is there but cannot be read proves nothing (PR #535 review round 1)
+        for bad in [Value::Null, json!({}), json!({ "level": "1" }), json!({ "level": -1 }), json!({ "level": 1.5 }), json!("x")] {
+            assert_eq!(old_entry(Ok(&st(lv(2), bad.clone()))), OldEntry::Unknown(None), "{bad}");
+        }
         // the machine's code predates these fields: cannot tell (not "too old", not "not restarted")
         assert_eq!(old_entry(Ok(&json!({ "status": { "version": 1 } }))), OldEntry::Unknown(None));
         assert_eq!(old_entry(Ok(&st(Value::Null, Value::Null))), OldEntry::Unknown(None));

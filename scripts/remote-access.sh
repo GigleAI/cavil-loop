@@ -348,10 +348,21 @@ with urllib.request.urlopen("http://127.0.0.1:%s/v1/hello" % sys.argv[1], timeou
     print(json.dumps(json.loads(r.read())))
 PY
 )" || return 0
-    [ "$(printf '%s' "$js" | jq -r 'if type == "object" then .service // "" else "" end' 2>/dev/null)" = cavil-loop-remote ] || return 0
-    ENTRY=ours
-    ENTRY_FP="$(printf '%s' "$js" | jq -r 'if (.fingerprint | type) == "string" and (.fingerprint | test("^[0-9a-f]{64}$")) then .fingerprint else "none" end')"
-    ENTRY_LEVEL="$(printf '%s' "$js" | jq -r 'if (.level | type) == "number" then .level else "none" end')"
+    # 「没报」和「报了但认不出」是两回事：只有两个字段都**没有**（GitHub#533 之前的入口就是这样回答的）才记 none；
+    # 有这个字段却不是 64 位十六进制 / 不是整数，证明不了跑的是旧代码 → unknown，不重启
+    local id
+    id="$(printf '%s' "$js" | jq -r '
+        if type != "object" or .service != "cavil-loop-remote" then "unknown"
+        elif (has("fingerprint") | not) and (has("level") | not) then "old"
+        elif (.fingerprint | type) == "string" and (.fingerprint | test("^[0-9a-f]{64}$"))
+             and (.level | type) == "number" and (.level | floor) == .level and .level >= 0
+            then "new \(.level) \(.fingerprint)"
+        else "unknown" end' 2>/dev/null)" || return 0
+    case "$id" in
+        old) ENTRY=ours; ENTRY_FP=none; ENTRY_LEVEL=none ;;
+        new\ *) ENTRY=ours; read -r _ ENTRY_LEVEL ENTRY_FP <<<"$id" ;;
+        *) ENTRY=unknown ;;
+    esac
 }
 
 # ── 代码更新后的自动重启（GitHub#533）──

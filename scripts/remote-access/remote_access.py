@@ -581,7 +581,7 @@ def serve(state, port, skill):
 
     signal.signal(signal.SIGTERM, on_stop)
     signal.signal(signal.SIGINT, on_stop)
-    sys.stderr.write("cavil-loop 远程入口：监听 127.0.0.1:%d（接口级别 %d，代码指纹 %s）\n" % (httpd.server_address[1], svc.running["level"], svc.running["fingerprint"][:12]))
+    sys.stderr.write("cavil-loop 远程入口：监听 127.0.0.1:%d（接口级别 %s，代码指纹 %s）\n" % (httpd.server_address[1], svc.running.get("level"), str(svc.running.get("fingerprint", ""))[:12]))
     sys.stderr.flush()
     httpd.serve_forever()
     deadline = time.time() + STOP_GRACE
