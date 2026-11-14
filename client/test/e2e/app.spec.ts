@@ -3453,6 +3453,9 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
 
   // ---- 3. tick A: GitHub gets the comment with exactly that box changed ----
   await expect(box('C_Q', 0)).toBeEnabled();
+  const drawn = (await iframe.getAttribute('data-render'))!;
+  const detailReads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138);
+  const readsBefore = detailReads().length;
   await box('C_Q', 0).click();
   // GitHub#489: the box shows it itself — nothing is said when it simply went through
   const ticked = QUESTION193.replace('- [ ] **A.', '- [x] **A.');
@@ -3460,14 +3463,21 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: ticked }]]);
   expect(sourceOfQ()).toBe(ticked);
   // re-read: A shown ticked, B not; the entries opened before are still open; hand back is offered
+  // GitHub#523: the re-read draws the frame again with the new text, and the round a successful change asks for a
+  // few seconds later may draw it once more; under load a read of the frame landed while a new drawing loaded
+  // ("execution context was destroyed"). Waited for the re-read to answer and the frame to be drawn anew, then
+  // the open entries are read from whichever drawing is on screen — every drawing must keep them open
+  await expect.poll(() => detailReads().slice(readsBefore).some((l) => l.status >= 200)).toBe(true);
+  await expect(iframe).not.toHaveAttribute('data-render', drawn);
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
   await expect(box('C_Q', 0)).toBeChecked();
   await expect(box('C_Q', 1)).not.toBeChecked();
-  await expect(iframe).toHaveAttribute('data-ready', 'yes');
-  expect(await frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))).toEqual([
-    'C_Q',
-    'C_INJ',
-    'C_RO',
-  ]);
+  const openEntries = () =>
+    frame
+      .locator('details.entry')
+      .evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))
+      .catch(() => 'a new drawing was loading');
+  await expect.poll(openEntries).toEqual(['C_Q', 'C_INJ', 'C_RO']);
   await expect(page.getByTestId('hand-back')).toBeVisible();
   await shot(page, '61-task-ticked');
 
