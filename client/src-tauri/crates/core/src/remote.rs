@@ -958,18 +958,33 @@ enum OldEntry {
 }
 
 /// One signed status read (`{status, entry}` or why it failed) → which case it is. Only what the
-/// machine says counts: no field is never read as "old" or "new".
+/// machine says counts, and only in the exact shapes it says it in (PR #535 review rounds 1 and 2:
+/// judging single fields read malformed or unknown answers as "old code"):
+///   · the reply is exactly `{status}` (an entry from before GitHub#533: old code for sure) or
+///     exactly `{status, entry}` with `entry` an identity;
+///   · an identity is exactly `{level: non-negative integer, fingerprint: 64 hex digits}`;
+///   · the code on disk (`status.remote_access`) is an identity, or absent / null (cannot tell).
+/// Anything else is "cannot tell", never "old" or "new".
 fn old_entry(read: Result<&Value, &str>) -> OldEntry {
     let body = match read {
         Err(why) => return OldEntry::Unknown(Some(why.to_string())),
         Ok(b) => b,
     };
-    let disk = body["status"]["remote_access"]["level"].as_u64();
-    // the running entry: no `entry` field at all is an entry from before GitHub#533 (old code for
-    // sure); a field that is there but not a level is not evidence of anything — cannot tell
-    let running = match body.get("entry") {
-        None => Some(None),
-        Some(e) => e["level"].as_u64().map(Some),
+    let Some(obj) = body.as_object() else { return OldEntry::Unknown(None) };
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    // Some(None) = the entry reports nothing (old); Some(Some(n)) = it reports level n; None = cannot tell
+    let running = match keys.as_slice() {
+        ["status"] => Some(None),
+        ["entry", "status"] => identity_level(&body["entry"]).map(Some),
+        _ => None,
+    };
+    let disk = match &body["status"]["remote_access"] {
+        Value::Null => None,
+        v => match identity_level(v) {
+            Some(n) => Some(n),
+            None => return OldEntry::Unknown(None),
+        },
     };
     match (disk, running) {
         (Some(d), _) if d < CONFIG_LEVEL => {
@@ -980,6 +995,16 @@ fn old_entry(read: Result<&Value, &str>) -> OldEntry {
         (Some(_), Some(Some(r))) if r < CONFIG_LEVEL => OldEntry::NotRestarted,
         _ => OldEntry::Unknown(None),
     }
+}
+
+/// `{level, fingerprint}` in exactly the shape remote_access.py writes it → the level.
+fn identity_level(v: &Value) -> Option<u64> {
+    let o = v.as_object()?;
+    let fp = o.get("fingerprint")?.as_str()?;
+    if o.len() != 2 || fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return None;
+    }
+    o.get("level")?.as_u64()
 }
 
 /// What a person does on that machine (docs/operations.md "After an update" — the same commands,
@@ -1078,9 +1103,18 @@ mod tests {
         assert_eq!(old_entry(Ok(&no_entry)), OldEntry::NotRestarted);
         assert_eq!(old_entry(Ok(&st(lv(2), lv(1)))), OldEntry::NotRestarted);
         // an entry field that is there but cannot be read proves nothing (PR #535 review round 1)
-        for bad in [Value::Null, json!({}), json!({ "level": "1" }), json!({ "level": -1 }), json!({ "level": 1.5 }), json!("x")] {
+        for bad in [Value::Null, json!({}), json!({ "level": "1" }), json!({ "level": -1 }), json!({ "level": 1.5 }), json!("x"),
+                    json!({ "level": 1 }), json!({ "level": 1, "fingerprint": 123 }), json!({ "level": 1, "fingerprint": "" }),
+                    json!({ "level": 1, "fingerprint": "z".repeat(64) }), json!({ "level": 1, "fingerprint": "f".repeat(64), "x": 1 })] {
             assert_eq!(old_entry(Ok(&st(lv(2), bad.clone()))), OldEntry::Unknown(None), "{bad}");
         }
+        // a reply in a shape this client does not know (an extra field next to status) proves nothing either (round 2)
+        let mut extra = no_entry.clone();
+        extra["version"] = json!(2);
+        assert_eq!(old_entry(Ok(&extra)), OldEntry::Unknown(None));
+        // the code on disk in a shape that is not an identity: cannot tell
+        assert_eq!(old_entry(Ok(&st(json!({ "level": 2 }), Value::Null))), OldEntry::Unknown(None));
+        assert_eq!(old_entry(Ok(&json!("not an object"))), OldEntry::Unknown(None));
         // the machine's code predates these fields: cannot tell (not "too old", not "not restarted")
         assert_eq!(old_entry(Ok(&json!({ "status": { "version": 1 } }))), OldEntry::Unknown(None));
         assert_eq!(old_entry(Ok(&st(Value::Null, Value::Null))), OldEntry::Unknown(None));

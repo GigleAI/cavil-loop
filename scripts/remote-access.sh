@@ -348,13 +348,16 @@ with urllib.request.urlopen("http://127.0.0.1:%s/v1/hello" % sys.argv[1], timeou
     print(json.dumps(json.loads(r.read())))
 PY
 )" || return 0
-    # 「没报」和「报了但认不出」是两回事：只有两个字段都**没有**（GitHub#533 之前的入口就是这样回答的）才记 none；
-    # 有这个字段却不是 64 位十六进制 / 不是整数，证明不了跑的是旧代码 → unknown，不重启
+    # 回答的**整个形状**必须是认得的两种之一，别的一律 unknown（PR #535 复审第 1、2 轮：只看个别字段时，
+    # 畸形指纹、缺协议版本、不支持的协议版本都被当成了旧入口）：
+    #   old = 恰好 {service, version}，service = cavil-loop-remote、version = 1——GitHub#533 之前的入口就这样回答
+    #   new = 恰好 {service, version, level, fingerprint}，version = 1、level 非负整数、fingerprint 64 位十六进制
     local id
     id="$(printf '%s' "$js" | jq -r '
-        if type != "object" or .service != "cavil-loop-remote" then "unknown"
-        elif (has("fingerprint") | not) and (has("level") | not) then "old"
-        elif (.fingerprint | type) == "string" and (.fingerprint | test("^[0-9a-f]{64}$"))
+        if type != "object" or .service != "cavil-loop-remote" or (.version | type) != "number" or .version != 1 then "unknown"
+        elif (keys == ["service", "version"]) then "old"
+        elif (keys == ["fingerprint", "level", "service", "version"])
+             and (.fingerprint | type) == "string" and (.fingerprint | test("^[0-9a-f]{64}$"))
              and (.level | type) == "number" and (.level | floor) == .level and .level >= 0
             then "new \(.level) \(.fingerprint)"
         else "unknown" end' 2>/dev/null)" || return 0

@@ -214,6 +214,42 @@ for v in 'num|return {"level": API_LEVEL, "fingerprint": 123}' \
     chk_has "身份字段认不出（${name}）：状态显示判断不了" "$out" "ENTRY_CODE=unknown"
 done
 
+echo "   回答的整体形状不认得（协议版本缺失 / 不支持 / 类型不对 / 多出字段）：同样不重启（PR #535 复审第 2 轮）"
+OLD_HELLO='{"service": "cavil-loop-remote", "version": VERSION}'
+NEW_VER='VERSION = 1
+'
+grep -qF "$OLD_HELLO" "$OLD/scripts/remote-access/remote_access.py" || { echo "  ❌ 夹具：旧入口脚本里找不到打招呼那一行"; fail=$((fail+1)); }
+shape_tree() {   # <名字> <来源代码目录> <原文> <替换成>
+    local t="$SANDBOX/trees/shape-$1"; rm -rf "$t"; mkdir -p "$t"; cp -a "$2/." "$t/"
+    python3 - "$t/scripts/remote-access/remote_access.py" "$3" "$4" <<'PY'
+import sys
+p, a, b = sys.argv[1:]
+s = open(p).read(); assert a in s, a; open(p, "w").write(s.replace(a, b, 1))
+PY
+    echo "$t"
+}
+for v in "oldv2|$OLD|$OLD_HELLO|{\"service\": \"cavil-loop-remote\", \"version\": 2}" \
+         "oldnov|$OLD|$OLD_HELLO|{\"service\": \"cavil-loop-remote\"}" \
+         "oldstrv|$OLD|$OLD_HELLO|{\"service\": \"cavil-loop-remote\", \"version\": \"1\"}" \
+         "oldextra|$OLD|$OLD_HELLO|{\"service\": \"cavil-loop-remote\", \"version\": VERSION, \"x\": 1}" \
+         "newv2|$NEW|$NEW_VER|VERSION = 2
+"; do
+    IFS='|' read -r name src from to <<<"$v"
+    [ "$name" = newv2 ] && { from="$NEW_VER"; to="VERSION = 2
+"; }
+    fresh_world
+    tree="$(shape_tree "$name" "$src" "$from" "$to")"
+    open_with Linux "$tree"; use_tree "$NEW"
+    ra Linux CAVIL_REMOTE_FAKE_NOW=$T0 -- auto-restart
+    chk "回答形状不认得（${name}）：不重启、不记重启次数" "$(restarts) $(rec)" "0 none"
+    chk_has "回答形状不认得（${name}）：记一行「认不出」" "$out" "回答认不出"
+done
+# 正向对照：协议版本 1、两个新字段都没有的旧入口照样重启（第 1 组已测，这里在同一夹具路径上再走一遍）
+fresh_world
+open_with Linux "$(shape_tree oldsame "$OLD" "$OLD_HELLO" "$OLD_HELLO")"; use_tree "$NEW"
+ra Linux CAVIL_REMOTE_FAKE_NOW=$T0 -- auto-restart
+chk "正向对照：协议版本 1 的旧入口照样重启、换上新代码" "$(restarts) $(running_fp)" "1 $FP_NEW"
+
 echo "── 4. 重启失败与恢复 ──"
 fresh_world
 open_with Linux "$OLD"; use_tree "$NEW"
