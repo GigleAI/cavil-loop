@@ -3840,16 +3840,36 @@ export class Controller {
     const current = await Promise.all([...seen.values()].map((r) => this.blockedRefInfo(client, r)));
     const lost = (await Promise.all(lostRefs(read).map((r) => this.blockedRefInfo(client, r)))).filter((x) => x.state === 'open' || x.state === 'unknown');
     const entry = entryState(read.labels, names, bl);
-    let refuse: string | null = null;
-    if (read.state !== 'open') refuse = t('这一条已经关闭');
-    else if (entry.kind === 'other') refuse = t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: entry.label, human: names.human });
+    // GitHub#474: the label names in these sentences are the person's (Settings) or GitHub's: holes
+    // shown as written, never baked into the client's own words
+    let refuse: Said | null = null;
+    if (read.state !== 'open') refuse = { template: t('这一条已经关闭'), parts: [] };
+    else if (entry.kind === 'other')
+      refuse = {
+        template: t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: '{label}', human: '{human}' }),
+        parts: [
+          { name: 'label', text: entry.label, from: 'github' },
+          { name: 'human', text: names.human, from: 'user' },
+        ],
+      };
     else {
       const opts = await this.repoOptions(item.repo);
-      if (opts.error) refuse = t('读不到这个仓库的标签（{why}），不能确认「{blocked}」「{human}」两个标签都在', { why: opts.error, blocked: bl.blocked, human: names.human });
+      if (opts.error)
+        refuse = {
+          template: t('读不到这个仓库的标签（{why}），不能确认「{blocked}」「{human}」两个标签都在', { why: opts.error, blocked: '{blocked}', human: '{human}' }),
+          parts: [
+            { name: 'blocked', text: bl.blocked, from: 'user' },
+            { name: 'human', text: names.human, from: 'user' },
+          ],
+        };
       else {
         const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
         const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
-        if (missing.length) refuse = t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((m) => t('「{name}」', { name: m })).join(t('、')) });
+        if (missing.length)
+          refuse = {
+            template: t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
+            parts: missing.map((m, i) => ({ name: `l${i}`, text: m, from: 'user' as const })),
+          };
       }
     }
     return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
@@ -3949,7 +3969,7 @@ export class Controller {
     const view = await this.blockedViewOf(c.client, item, read);
     if (!view.ok) return refuse(view.error);
     if (view.fingerprint !== req.fingerprint) return { ok: false, error: t('点「登记前置」后重新读到：这期间这一条有了变化。什么都没写，下面已按最新内容刷新，核对后再点一次'), view };
-    if (view.refuse) return { ok: false, error: view.refuse, view };
+    if (view.refuse) return { ok: false, error: saidText(view.refuse), view };
     // every prerequisite picked is read again: open, the kind and id it was picked with
     const fresh: BlockedPick[] = [];
     for (const p of picks) {

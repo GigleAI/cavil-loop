@@ -8,7 +8,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS）�
 
 ![看板：按状态分列，PR 跟在关联的 issue 下面](client-screens/board.png)
 
-> 本文写的是界面和行为，改代码的规则与实现细节在开发文档 [client/README.md](../client/README.md)。界面目前只有中文（中英文切换在 [#466](https://github.com/GigleAI/cavil-loop/issues/466) 进行中）。
+> 本文写的是界面和行为，改代码的规则与实现细节在开发文档 [client/README.md](../client/README.md)。界面默认是中文，在设置的「语言 · Language」里可以换成英文（见[语言](#语言)）。
 
 ## 目录
 
@@ -24,6 +24,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS）�
 - [快捷键](#快捷键)
 - [网络、凭据和离线](#网络凭据和离线)
 - [更新](#更新)
+- [语言](#语言)
 - [可选：接上 daemon](#可选接上-daemon)
 - [正在开发中](#正在开发中)
 
@@ -158,6 +159,20 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS）�
 - App 会自己检查、下载、安装更新，设置里能看到每个版本改了什么。
 - 「更新渠道」二选一：**正式版**（还没有发布过）和**开发版**（每次客户端改动合进 main 都可能出一个，可能不稳定）。从开发版切回正式版不会降级，会等下一个更高的正式版。
 
+## 语言
+
+设置的第一节「语言 · Language」有三个选项：
+
+| 选项 | 显示 |
+|---|---|
+| **简体中文**（默认） | 中文界面，和以前一模一样；存着本版本认不出的设置值时也按中文 |
+| **English** | 英文界面 |
+| **跟随系统** | 系统首选语言是任何一种中文（`zh-…`）时显示中文，其他语言一律显示英文；选项上写着现在是哪一种 |
+
+- 切换当场生效——窗口、macOS 菜单和之后的系统通知一起换——不用重启，记在这台电脑上。
+- **不翻译的内容**：客户端以外来的文字一律原样显示——GitHub 上的标题、正文、评论、标签 / 里程碑 / 迭代 / Project 的名字、账号名和仓库名、GitHub 自己的报错原文和更新说明；daemon 脚本的输出、远程 daemon 返回的内容和它的日志；git、系统和其他程序的报错原文；人自己输入或起的名字（搜索、草稿、设置里填的标签名）。换语言的只是它们周围的文字。
+- 这一节的名字和「简体中文」这个选项在英文界面里仍是中文（中文界面里的「Language」「English」同理），看不懂当前语言的人也找得到回去的路。
+
 ## 可选：接上 daemon
 
 本仓库的另一样东西是 daemon：给 issue 打上 `pending/agent` 标签，本机的 AI（Claude Code、Codex 等）就会接走去做，做完把结果写回 issue / PR。客户端可以替人安装 daemon、把仓库接上去，之后在客户端里就能把条目交给 AI。**不接 daemon，上面的一切照样能用。**
@@ -181,7 +196,6 @@ daemon 本身的工作方式见仓库首页 [README](../README.zh.md)。
 
 以下是写这份说明时（2026-11-13）还开着的客户端 issue，状态以 issue 页面为准：
 
-- 中英文切换：[#466](https://github.com/GigleAI/cavil-loop/issues/466)，分成四步 [#471](https://github.com/GigleAI/cavil-loop/issues/471)（语言设置、顶栏、设置目录、登录、菜单、通知）、[#472](https://github.com/GigleAI/cavil-loop/issues/472)（看板、表格、依赖图、详情、标签页、新建 issue）、[#473](https://github.com/GigleAI/cavil-loop/issues/473)（本机与远程 daemon、更新、项目配置）、[#474](https://github.com/GigleAI/cavil-loop/issues/474)（收尾与说明文档）
 - 新建 issue 的窗口里直接「交给 agent」「托管」，并配快捷键：[#450](https://github.com/GigleAI/cavil-loop/issues/450)
 - 点「重新读取」「重新同步」后有转圈和结果提示：[#455](https://github.com/GigleAI/cavil-loop/issues/455)
 - 客户端测试不清理临时目录：[#469](https://github.com/GigleAI/cavil-loop/issues/469)（只影响开发，不影响使用）

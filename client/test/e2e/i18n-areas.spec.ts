@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { findCopies } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { KEEP_LANG } from '../../src/shared/i18n';
+import { chineseIn } from './langCheck';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -53,46 +53,6 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
-/** the scan of test/e2e/i18n.spec.ts, run in a page or a frame (the discussion is its own frame) */
-async function chineseIn(where: Page | Frame, selectors: string[], skip: string[] = []): Promise<string[]> {
-  return where.evaluate(
-    ({ selectors, skip, keep }) => {
-      const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
-      const out: string[] = [];
-      const exempt = (el: Element) => Boolean(el.closest('[data-verbatim]')) || skip.some((s) => el.closest(s));
-      const kept = (el: Element) => {
-        const k = el.closest('[data-keep-lang]');
-        return Boolean(k && keep.some((x) => x.text === k.textContent && x.lang === k.getAttribute('lang')));
-      };
-      let seen = 0;
-      for (const sel of selectors)
-        for (const root of Array.from(document.querySelectorAll(sel))) {
-          seen++;
-          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-            const el = n.parentElement;
-            if (!el || exempt(el) || kept(el)) continue;
-            if (el.closest('style, script')) continue;
-            if (CJK.test(n.textContent ?? '')) out.push(`${sel}: ${(n.textContent ?? '').trim()}`);
-          }
-          for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
-            if (exempt(el)) continue;
-            const parts: string[] = el.hasAttribute('data-verbatim-parts') ? JSON.parse(el.getAttribute('data-verbatim-parts')!) : [];
-            for (const a of ['title', 'aria-label', 'placeholder', 'alt']) {
-              let v = el.getAttribute(a);
-              if (!v) continue;
-              for (const p of parts) v = v.split(p).join('');
-              if (CJK.test(v)) out.push(`${sel} [${a}]: ${el.getAttribute(a)}`);
-            }
-          }
-        }
-      if (seen === 0) out.push(`nothing matched ${selectors.join(', ')}`);
-      return out;
-    },
-    { selectors, skip, keep: KEEP_LANG.map((k) => ({ ...k })) },
-  );
-}
-
 /** some Chinese of GitHub's is really on screen inside `sel`, inside its as-is marker (the check saw it and let it through) */
 async function githubChineseShown(where: Page | Frame, sel: string): Promise<boolean> {
   return where.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} [data-verbatim]`)).some((e) => /[一-鿿]/.test(e.textContent ?? '')), sel);
@@ -117,7 +77,7 @@ async function english(app: RunningApp) {
   const page = app.page;
   await page.getByTestId('lang-en').check();
   await expect.poll(async () => (await app.backend.call<any>('init')).settings.uiLanguage, { timeout: 20_000 }).toBe('en');
-  // the shortcut section's rows are this sub-issue's: Settings has no Chinese left outside sub-issue ③'s sections
+  // the shortcut section's rows are this file's (GitHub#472); the whole of Settings is i18n.spec.ts / i18n-walk.spec.ts
   expect(await chineseIn(page, ['.settings-main #set-keys'])).toEqual([]);
   await page.getByTestId('back').click();
   await toBoard(page);

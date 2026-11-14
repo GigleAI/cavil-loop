@@ -1,21 +1,24 @@
 // The run-time half of the language checks (GitHub#466 / #471), shared by the UI tests of every
 // area: Chinese in the given parts of the window outside text shown as is (`data-verbatim`,
 // `data-verbatim-parts`) and outside the few kept words (`data-keep-lang`, KEEP_LANG).
+// GitHub#474: the one copy — every spec uses it (it once had a drifted twin in i18n-areas.spec.ts),
+// and it has no way left to leave a part of the window out: every sub-issue of #466 is merged.
 
-import type { Page } from '@playwright/test';
+import type { Frame, Page } from '@playwright/test';
 import { KEEP_LANG } from '../../src/shared/i18n';
+import { CJK } from '../i18n/scan';
 
 /**
- * Chinese in `selectors` outside text shown as is and outside the kept words: text nodes, and the
- * title / aria-label / placeholder / alt of every element. `skip`: parts that belong to a later
- * sub-issue of #466 (named in the call, removed when that part is migrated).
+ * Chinese in `selectors` outside text shown as is and outside the kept words: text nodes (not those
+ * of a style / script element), and the title / aria-label / placeholder / alt of every element.
+ * Runs in a page or a frame (the discussion is its own frame).
  */
-export async function chineseIn(page: Page, selectors: string[], skip: string[] = []): Promise<string[]> {
-  return page.evaluate(
-    ({ selectors, skip, keep }) => {
-      const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
+export async function chineseIn(where: Page | Frame, selectors: string[]): Promise<string[]> {
+  return where.evaluate(
+    ({ selectors, keep, cjk }) => {
+      const CJK = new RegExp(cjk);
       const out: string[] = [];
-      const exempt = (el: Element) => Boolean(el.closest('[data-verbatim]')) || skip.some((s) => el.closest(s));
+      const exempt = (el: Element) => Boolean(el.closest('[data-verbatim]'));
       const kept = (el: Element) => {
         const k = el.closest('[data-keep-lang]');
         return Boolean(k && keep.some((x) => x.text === k.textContent && x.lang === k.getAttribute('lang')));
@@ -28,6 +31,7 @@ export async function chineseIn(page: Page, selectors: string[], skip: string[] 
           for (let n = walker.nextNode(); n; n = walker.nextNode()) {
             const el = n.parentElement;
             if (!el || exempt(el) || kept(el)) continue;
+            if (el.closest('style, script')) continue;
             if (CJK.test(n.textContent ?? '')) out.push(`${sel}: ${(n.textContent ?? '').trim()}`);
           }
           for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
@@ -46,7 +50,6 @@ export async function chineseIn(page: Page, selectors: string[], skip: string[] 
       if (seen === 0) out.push(`nothing matched ${selectors.join(', ')}`);
       return out;
     },
-    { selectors, skip, keep: KEEP_LANG.map((k) => ({ ...k })) },
+    { selectors, keep: KEEP_LANG.map((k) => ({ ...k })), cjk: CJK.source },
   );
 }
-

@@ -4,8 +4,9 @@
 // is allowed only inside text shown as is (`data-verbatim`) and in the few kept words
 // (`data-keep-lang`, KEEP_LANG). The source scan and the tables are test/unit/i18n.test.ts.
 //
-// The areas grow with each sub-issue of #466: today the top bar, the view bar, Settings (its
-// contents, its headings and the sections migrated here), the sign-in page and its help page.
+// The areas here: the top bar, the view bar, Settings (its contents and headings), the sign-in page
+// and its help page. The other areas have their own files (i18n-areas / -daemon / -remote / -update);
+// the whole window, page by page, is i18n-walk.spec.ts (GitHub#474).
 
 import { test, expect, type Page } from '@playwright/test';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
