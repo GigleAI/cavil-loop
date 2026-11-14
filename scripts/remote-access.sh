@@ -9,6 +9,7 @@
 #   bash scripts/remote-access.sh list [--machine]  列出已配对设备（--machine：给桌面客户端读的 DEVICE= 行）
 #   bash scripts/remote-access.sh revoke <设备名或编号>   撤销一台设备（立刻生效）
 #   bash scripts/remote-access.sh disable           关闭入口：停服务 + 撤掉转发（已配对设备清单保留）
+#   bash scripts/remote-access.sh auto-restart      （轮询每轮调用，不给人用）代码更新后入口还在跑旧代码时重启它（GitHub#533）
 #
 # 默认是关的：不跑 enable / pair 就没有任何监听、没有任何转发。打开时：
 #   · 常驻服务只监听 127.0.0.1:<端口>（默认 47387）；
@@ -22,6 +23,7 @@
 # enable / disable / pair / pair-cancel / status 的最后一行固定是 RESULT=<...>。
 # 给桌面客户端读的行（GitHub#387 简化配对）：status 另给 HOST= / PORT= / DEVICES=（数字，读不到是 unknown），
 # pair 另给 HOST= / CODE= / EXPIRES=（失效时刻，秒）。HOST= 只在读到机器名时出现。
+# status 在服务运行时另给 ENTRY_CODE=same|differs|unknown（入口在跑的代码和磁盘上的比，GitHub#533）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -296,6 +298,232 @@ device_count() {   # 「N 台」或「读不到」——清单读不懂时不报
     fi
 }
 
+# ── 一把锁：改服务状态的命令依次来（GitHub#533）──
+# enable、disable 和轮询的自动重启都要先拿它，整个「读状态 → 改服务 → 读回」过程不放。不然轮询刚读到
+# 「在运行、代码不同」，人就关了入口，轮询再发的重启会把刚停的服务又起起来。锁跟着进程：持锁的进程怎么
+# 退出（正常、被杀、崩溃），操作系统都会放掉它，不留死锁。fd 8 固定（macOS 的 bash 3.2 没有 {变量} 写法）。
+SVC_LOCKED=0
+svc_lock() {   # <等几秒> | now → 拿到返回 0
+    [ "$SVC_LOCKED" = 1 ] && return 0
+    { mkdir -p "$STATE" && chmod 700 "$STATE"; } 2>/dev/null || return 1
+    exec 8>>"$STATE/svc.lock" 2>/dev/null || return 1
+    if [ "$1" = now ]; then flock -n 8 || return 1; else flock -w "$1" 8 || return 1; fi
+    SVC_LOCKED=1
+}
+svc_lock_or_stop() {   # enable / disable 用：最多等 60 秒，等不到就什么都不动
+    if ! command -v flock >/dev/null 2>&1; then echo "缺少程序： flock —— 装好后再试，什么都没动"; result missing_tools 2; fi
+    svc_lock 60 && return 0
+    echo "另有操作正在改远程入口（等了 60 秒，或锁文件 $STATE/svc.lock 打不开），什么都没动；稍后重跑本命令"
+    result busy 2
+}
+
+# unit_skill：服务登记里写的 skill 目录（--skill 那一项）——服务重启后跑的就是这个目录里的代码。
+# 读不到（登记文件不在 / 读不了 / 没有这一项）返回非 0。给人的恢复步骤用的是同一个读法（docs/operations.md）。
+unit_skill() {
+    local file; file="$(svc_file)"
+    [ -f "$file" ] && [ -r "$file" ] || return 1
+    case "$OS" in
+        Linux)  UNIT_SKILL="$(sed -n 's/.*--skill \([^ ]*\).*/\1/p' "$file" | head -1)" ;;
+        Darwin) UNIT_SKILL="$(sed -n 's|.*<string>--skill</string><string>\([^<]*\)</string>.*|\1|p' "$file" | head -1)" ;;
+        *) return 1 ;;
+    esac
+    [ -n "$UNIT_SKILL" ]
+}
+
+# code_info <skill 目录>：那份代码的 {level, fingerprint}（一行 JSON）；读不到返回非 0
+code_info() {
+    local js
+    js="$(python3 "$1/scripts/remote-access/remote_access.py" code-info 2>/dev/null)" || return 1
+    printf '%s' "$js" | jq -ce 'select(type == "object" and (.level | type == "number") and (.fingerprint | type == "string") and (.fingerprint | test("^[0-9a-f]{64}$"))) | {level, fingerprint}' 2>/dev/null
+}
+
+# entry_hello <端口>：正在跑的入口报的身份。写 ENTRY=ours（是本功能的入口）+ ENTRY_FP（没报 = none）+ ENTRY_LEVEL；
+# 连不上 / 超时 / 回答认不出 → ENTRY=unknown。只问本机回环，不经 Tailscale。
+entry_hello() {
+    local js
+    ENTRY=unknown; ENTRY_FP=""; ENTRY_LEVEL=""
+    js="$(python3 - "$1" <<'PY' 2>/dev/null
+import json, sys, urllib.request
+with urllib.request.urlopen("http://127.0.0.1:%s/v1/hello" % sys.argv[1], timeout=3) as r:
+    print(json.dumps(json.loads(r.read())))
+PY
+)" || return 0
+    [ "$(printf '%s' "$js" | jq -r 'if type == "object" then .service // "" else "" end' 2>/dev/null)" = cavil-loop-remote ] || return 0
+    ENTRY=ours
+    ENTRY_FP="$(printf '%s' "$js" | jq -r 'if (.fingerprint | type) == "string" and (.fingerprint | test("^[0-9a-f]{64}$")) then .fingerprint else "none" end')"
+    ENTRY_LEVEL="$(printf '%s' "$js" | jq -r 'if (.level | type) == "number" then .level else "none" end')"
+}
+
+# ── 代码更新后的自动重启（GitHub#533）──
+# 重启记录 $STATE/restart.json，只在持锁时读写，一份磁盘代码（按指纹）一条：
+#   {fingerprint, tries（已发过几次重启）, next（这个时刻之前不再试，秒）, inflight（发重启前写 true）, last（上一次失败的原因）, logged（放弃后最后一次记日志的日期）}
+# 发出重启请求不等于完成：只有回环上的入口报出与磁盘相同的指纹才算成功（然后删记录）。失败或结果不明
+# 按 RESTART_BACKOFF 退避，同一份代码最多 RESTART_MAX 次；记录读不懂 = 不知道试过几次，不重启。
+RESTART_MAX=5
+RESTART_BACKOFF=(0 60 120 300 900)   # 第 N 次失败后等多少秒再试（N = 1..4；第 5 次失败后放弃）
+ra_now() { if [[ "${CAVIL_REMOTE_FAKE_NOW:-}" =~ ^[0-9]+$ ]]; then echo "$CAVIL_REMOTE_FAKE_NOW"; else date +%s; fi; }
+ra_log() { echo "远程入口：$*"; }
+
+# restart_load：写 REC=none|ok|bad 和 REC_*（REC=ok 时）
+restart_load() {
+    local f="$STATE/restart.json" js
+    REC=none; REC_FP=""; REC_TRIES=0; REC_NEXT=0; REC_INFLIGHT=false; REC_LAST=""; REC_LOGGED=""
+    [ -e "$f" ] || [ -L "$f" ] || return 0
+    if ! js="$(cat "$f" 2>/dev/null)" || ! printf '%s' "$js" | jq -e 'type == "object"
+            and (.fingerprint | type == "string") and (.tries | type == "number") and (.tries >= 0)
+            and (.next | type == "number") and (.inflight | type == "boolean")' >/dev/null 2>&1; then
+        REC=bad; return 0
+    fi
+    REC=ok
+    REC_FP="$(jq -r '.fingerprint' <<<"$js")"
+    REC_TRIES="$(jq -r '.tries | floor' <<<"$js")"
+    REC_NEXT="$(jq -r '.next | floor' <<<"$js")"
+    REC_INFLIGHT="$(jq -r '.inflight' <<<"$js")"
+    REC_LAST="$(jq -r '.last // "" | tostring' <<<"$js")"
+    REC_LOGGED="$(jq -r '.logged // "" | tostring' <<<"$js")"
+}
+restart_save() {   # <指纹> <次数> <下次时刻> <inflight> <原因> [<logged>] → 写不进返回非 0
+    jq -n --arg fp "$1" --argjson tries "$2" --argjson next "$3" --argjson inflight "$4" --arg last "$5" --arg logged "${6:-}" \
+        '{fingerprint:$fp, tries:$tries, next:$next, inflight:$inflight, last:$last, logged:$logged}' > "$STATE/restart.json.tmp" 2>/dev/null \
+        && mv "$STATE/restart.json.tmp" "$STATE/restart.json" 2>/dev/null
+}
+restart_failed() {   # <指纹> <次数> <原因>：记下失败和下次时刻
+    local next=0
+    if [ "$2" -lt "$RESTART_MAX" ]; then next=$(( $(ra_now) + ${RESTART_BACKOFF[$2]} )); fi
+    restart_save "$1" "$2" "$next" false "$3" || ra_log "重启记录写不进（${STATE}/restart.json）"
+    if [ "$2" -ge "$RESTART_MAX" ]; then
+        ra_log "自动重启已失败 ${RESTART_MAX} 次（最后一次：${3}），不再自动重启；请在这台机器上手动重启：$(restart_hint)"
+    else
+        ra_log "重启没有换上新代码（第 $2 次，${3}），$(( ${RESTART_BACKOFF[$2]} / 60 )) 分钟后再试"
+    fi
+}
+restart_hint() {
+    case "$OS" in
+        Linux)  echo "systemctl --user try-restart $CAVIL_REMOTE_ACCESS_UNIT" ;;
+        Darwin) echo "launchctl kickstart -k gui/$(id -u)/$CAVIL_REMOTE_ACCESS_LABEL" ;;
+    esac
+}
+# svc_restart：只重启**正在运行**的服务，停着的绝不启动（Linux try-restart；macOS kickstart -k 对已卸载的服务直接失败）
+svc_restart() {
+    case "$OS" in
+        Linux)  SVC_OUT="$(systemctl --user try-restart "$CAVIL_REMOTE_ACCESS_UNIT" 2>&1)" ;;
+        Darwin) SVC_OUT="$(launchctl kickstart -k "gui/$(id -u)/$CAVIL_REMOTE_ACCESS_LABEL" 2>&1)" ;;
+        *) return 1 ;;
+    esac
+}
+# 等入口换上磁盘上的代码（<指纹>），最多 CAVIL_REMOTE_VERIFY_SECS 秒（默认 10，测试可调到 1–60）
+wait_new_code() {
+    local secs="${CAVIL_REMOTE_VERIFY_SECS:-10}" i
+    [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -ge 1 ] && [ "$secs" -le 60 ] || secs=10
+    for ((i = 0; i < secs * 2; i++)); do
+        entry_hello "$2"
+        [ "$ENTRY" = ours ] && [ "$ENTRY_FP" = "$1" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+cmd_auto_restart() {
+    case "$OS" in Linux|Darwin) ;; *) exit 0 ;; esac
+    # 没开过远程入口（没有服务登记）：什么都不读，安静退出——绝大多数机器每轮走的是这一行
+    [ -e "$(svc_file)" ] || exit 0
+    local c
+    for c in python3 jq flock; do command -v "$c" >/dev/null 2>&1 || { ra_log "缺少 ${c}，没法检查入口是不是新代码"; exit 0; }; done
+    if ! svc_lock now; then ra_log "另有操作正在改远程入口（或锁文件打不开），这一轮不检查"; exit 0; fi
+    # 拿到锁之后再读一遍：登记还在、端口记录在、服务在运行、入口确实跑着别的代码——缺一样都不动
+    [ -e "$(svc_file)" ] || exit 0
+    state_load
+    if [ "$PORT_STATE" != ok ]; then
+        [ "$PORT_STATE" = bad ] && ra_log "读不懂当前端口的记录（${STATE}/port），这一轮不检查"
+        exit 0
+    fi
+    svc_probe
+    case "$SVC_STATE" in
+        running) ;;
+        stopped) exit 0 ;;   # 人没开或关掉了：不替人打开
+        *) ra_log "读不到常驻服务的状态，这一轮不检查"; exit 0 ;;
+    esac
+    if ! unit_skill; then ra_log "读不到服务登记里的 skill 目录（$(svc_file)），这一轮不检查"; exit 0; fi
+    local disk disk_fp
+    if ! disk="$(code_info "$UNIT_SKILL")"; then ra_log "读不到 ${UNIT_SKILL} 里入口代码的指纹，这一轮不检查"; exit 0; fi
+    disk_fp="$(jq -r '.fingerprint' <<<"$disk")"
+    entry_hello "$CUR_PORT"
+    if [ "$ENTRY" != ours ]; then ra_log "本机端口 $CUR_PORT 上的入口没有回答（或回答认不出），这一轮不检查"; exit 0; fi
+    restart_load
+    if [ "$ENTRY_FP" = "$disk_fp" ]; then
+        if [ "$REC" != none ]; then rm -f "$STATE/restart.json" 2>/dev/null || ra_log "重启记录删不掉（${STATE}/restart.json）"; fi
+        exit 0
+    fi
+    # 入口跑着别的代码
+    if [ "$REC" = bad ]; then
+        ra_log "重启记录读不懂（${STATE}/restart.json），不知道试过几次，不重启；删掉这个文件即重新开始自动重启"
+        exit 0
+    fi
+    local tries=0 now
+    now="$(ra_now)"
+    if [ "$REC" = ok ] && [ "$REC_FP" = "$disk_fp" ]; then
+        tries="$REC_TRIES"
+        if [ "$REC_INFLIGHT" = true ]; then
+            # 上一次发了重启却没走到核对（轮询被中断）：按失败算
+            restart_failed "$disk_fp" "$tries" "上一次重启没有做完（轮询中途被中断）"
+            exit 0
+        fi
+        if [ "$tries" -ge "$RESTART_MAX" ]; then
+            local today; today="$(date +%Y-%m-%d)"
+            if [ "$REC_LOGGED" != "$today" ]; then
+                ra_log "自动重启已失败 ${RESTART_MAX} 次（最后一次：${REC_LAST}），入口还在跑旧代码；请在这台机器上手动重启：$(restart_hint)"
+                restart_save "$disk_fp" "$tries" 0 false "$REC_LAST" "$today" || true
+            fi
+            exit 0
+        fi
+        [ "$now" -ge "$REC_NEXT" ] || exit 0
+    fi
+    tries=$((tries + 1))
+    # 先记下「进行中」：这一轮在重启中途被杀，下一轮也算这一次——次数才封得住顶
+    if ! restart_save "$disk_fp" "$tries" 0 true ""; then
+        ra_log "重启记录写不进（${STATE}/restart.json），不重启（否则次数没法封顶）"
+        exit 0
+    fi
+    ra_log "入口在跑旧代码（入口 ${ENTRY_FP:0:12}，磁盘 ${disk_fp:0:12}），重启它（第 $tries 次）"
+    if ! svc_restart; then
+        restart_failed "$disk_fp" "$tries" "重启命令失败：$(printf '%s' "$SVC_OUT" | tr '\n' ' ' | cut -c1-200)"
+        exit 0
+    fi
+    if wait_new_code "$disk_fp" "$CUR_PORT"; then
+        rm -f "$STATE/restart.json" 2>/dev/null || ra_log "重启记录删不掉（${STATE}/restart.json）"
+        ra_log "已重启，入口换上了磁盘上的代码（${disk_fp:0:12}）"
+        exit 0
+    fi
+    svc_probe
+    restart_failed "$disk_fp" "$tries" "重启后入口没有换上新代码（服务状态：${SVC_STATE}）"
+    exit 0
+}
+
+# restart_status：给 status 用的几行（入口代码与磁盘代码、自动重启的状态）
+restart_status() {
+    local disk="" disk_fp="" disk_level=""
+    if unit_skill && disk="$(code_info "$UNIT_SKILL")"; then
+        disk_fp="$(jq -r '.fingerprint' <<<"$disk")"; disk_level="$(jq -r '.level' <<<"$disk")"
+    fi
+    entry_hello "$1"
+    echo "入口代码：$( [ "$ENTRY" = ours ] && echo "级别 ${ENTRY_LEVEL}，指纹 ${ENTRY_FP:0:12}" || echo 读不到 )；磁盘上：$( [ -n "$disk_fp" ] && echo "级别 ${disk_level}，指纹 ${disk_fp:0:12}" || echo 读不到 )"
+    if [ "$ENTRY" = ours ] && [ -n "$disk_fp" ]; then
+        if [ "$ENTRY_FP" = "$disk_fp" ]; then echo "ENTRY_CODE=same"; else echo "入口在跑旧代码：轮询会自动重启它；要马上换，跑 $(restart_hint)"; echo "ENTRY_CODE=differs"; fi
+    else
+        echo "ENTRY_CODE=unknown"
+    fi
+    restart_load
+    case "$REC" in
+        bad) echo "自动重启记录读不懂（${STATE}/restart.json）：不会自动重启；删掉这个文件即重新开始" ;;
+        ok)
+            if [ "$REC_TRIES" -ge "$RESTART_MAX" ]; then
+                echo "自动重启已失败 ${REC_TRIES} 次（最后一次：${REC_LAST}），不再自动重启；请手动重启：$(restart_hint)"
+            elif [ "$REC_TRIES" -gt 0 ]; then
+                echo "自动重启已试 ${REC_TRIES} 次没成功（最后一次：${REC_LAST:-进行中}），会再试"
+            fi ;;
+    esac
+}
+
 cmd_enable() {
     local p="" 
     while [ $# -gt 0 ]; do
@@ -306,6 +534,7 @@ cmd_enable() {
     done
     case "$OS" in Linux|Darwin) ;; *) echo "不支持的系统：${OS:-读不到}，什么都没动"; result unsupported 2 ;; esac
     need_cmds
+    svc_lock_or_stop
     state_load
     if [ -n "$p" ]; then
         if ! valid_port "$p"; then echo "端口要在 1024–65535 之间"; result bad_port 1; fi
@@ -384,6 +613,7 @@ cmd_enable() {
 cmd_disable() {
     case "$OS" in Linux|Darwin) ;; *) echo "不支持的系统：${OS:-读不到}，什么都没动"; result unsupported 2 ;; esac
     need_cmds
+    svc_lock_or_stop
     # 先把要用的都读到：清单读不懂就不知道该撤哪些转发，这时不能停服务、不能报「已关闭」
     state_load
     [ "$PORT_STATE" = bad ] && PORT_STATE=none   # 关闭用不着当前端口那份记录
@@ -488,6 +718,7 @@ cmd_status() {
     device_count >/dev/null
     echo "已配对设备：$( [ "$DEVICE_N" = unknown ] && echo 读不到 || echo "$DEVICE_N 台")"
     [ ${#OWNED[@]} -eq 0 ] || echo "本功能登记过转发的端口：${OWNED[*]}"
+    [ "$SVC_STATE" != running ] || restart_status "$p"
     [ -z "$host" ] || echo "HOST=$host$( [ "$p" = "$CAVIL_REMOTE_ACCESS_PORT" ] || printf ':%s' "$p" )"
     echo "PORT=$p"
     echo "DEVICES=$DEVICE_N"
@@ -535,6 +766,7 @@ sub="${1:-}"; [ $# -gt 0 ] && shift
 case "$sub" in
     enable)  cmd_enable "$@" ;;
     disable) cmd_disable ;;
+    auto-restart) cmd_auto_restart ;;
     pair)    cmd_pair ;;
     pair-cancel) cmd_pair_cancel ;;
     status)  cmd_status ;;

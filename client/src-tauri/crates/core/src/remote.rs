@@ -755,7 +755,7 @@ impl Remote {
             return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
         }
         if reply.status == 404 && reply.body["error"] == "not_found" {
-            return json!({ "result": "unsupported", "output": OLD_MACHINE });
+            return json!({ "result": "unsupported", "output": self.why_not_found(&t, &s).await });
         }
         if reply.status != 200 {
             return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
@@ -820,7 +820,7 @@ impl Remote {
             });
         }
         if reply.status == 404 && reply.body["error"] == "not_found" {
-            return refused("unsupported", OLD_MACHINE);
+            return refused("unsupported", &self.why_not_found(&t, &s).await);
         }
         if reply.status != 200 {
             return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
@@ -833,6 +833,21 @@ impl Remote {
         };
         let detail = if b["detail"].is_object() { b["detail"].clone() } else { json!({}) };
         json!({ "result": result, "output": b["output"].as_str().unwrap_or(""), "detail": detail })
+    }
+
+    /// The machine answered a config request with "no such request" (GitHub#533): one more signed
+    /// status read tells "the code on that machine is too old" from "the code was updated, the
+    /// resident entry still runs the old one" — or says it cannot tell and gives the steps.
+    async fn why_not_found(&self, t: &Target, s: &Signer) -> String {
+        let read = match self.send(t, "GET", "/v1/status", None, Some(s), T_CALL).await {
+            Err(f) => Err(f.message()),
+            Ok(r) => match unbelievable(&r) {
+                Some(p) => Err(p["message"].as_str().unwrap_or("回复没有能验证的签名").to_string()),
+                None if r.status != 200 => Err(said(&r)),
+                None => Ok(r.body),
+            },
+        };
+        old_entry_message(&old_entry(read.as_ref().map_err(|e| e.as_str())))
     }
 
     // ── unpairing ──
@@ -928,8 +943,72 @@ pub fn parse_tailnet(text: &str) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// What a machine whose remote entry predates GitHub#530 answers to a config request (404 "没有这个请求").
-const OLD_MACHINE: &str = "那台机器的 daemon 还不支持在这里改配置：更新那台机器的 daemon 以后再试，或到那台机器上用编辑器改";
+/// The interface level a project's settings need (remote_access.py API_LEVEL, GitHub#530 = 2).
+const CONFIG_LEVEL: u64 = 2;
+
+/// Why a machine answered a config request with 404 "没有这个请求" (GitHub#533).
+#[derive(Debug, PartialEq)]
+enum OldEntry {
+    /// the code on that machine's disk is older than the feature: the daemon needs updating
+    DiskTooOld { version: String },
+    /// the code on disk has it; the resident entry still runs code from before the update
+    NotRestarted,
+    /// cannot tell (the machine's code predates these fields, or the status read failed: why)
+    Unknown(Option<String>),
+}
+
+/// One signed status read (`{status, entry}` or why it failed) → which case it is. Only what the
+/// machine says counts: no field is never read as "old" or "new".
+fn old_entry(read: Result<&Value, &str>) -> OldEntry {
+    let body = match read {
+        Err(why) => return OldEntry::Unknown(Some(why.to_string())),
+        Ok(b) => b,
+    };
+    let disk = body["status"]["remote_access"]["level"].as_u64();
+    let running = body["entry"]["level"].as_u64();
+    match (disk, running) {
+        (Some(d), _) if d < CONFIG_LEVEL => {
+            let v = body["status"]["daemon"]["version"].as_str().unwrap_or("");
+            OldEntry::DiskTooOld { version: v.chars().take(12).collect() }
+        }
+        (Some(_), None) => OldEntry::NotRestarted,
+        (Some(_), Some(r)) if r < CONFIG_LEVEL => OldEntry::NotRestarted,
+        _ => OldEntry::Unknown(None),
+    }
+}
+
+/// What a person does on that machine (docs/operations.md "After an update" — the same commands,
+/// checked by a test). Only the service manager and the service's own registration: no guessing
+/// which folder the skill is in.
+const STEP_RESTART: &str = "重启远程入口（配对和端口不变）：
+   Linux：systemctl --user try-restart cavil-loop-remote.service && systemctl --user is-active cavil-loop-remote.service
+   打印 active 算成功
+   macOS：launchctl kickstart -k gui/$(id -u)/dev.luosky.cavil-loop.remote && launchctl print gui/$(id -u)/dev.luosky.cavil-loop.remote | grep 'state ='
+   打印 state = running 算成功
+   打印 inactive、not found 或 Could not find service：那台机器的远程入口没开（这两条命令不会把它打开）";
+const STEP_UPDATE: &str = "更新 daemon。先查服务用的 skill 目录：
+   Linux：systemctl --user cat cavil-loop-remote.service | sed -n 's/.*--skill \\([^ ]*\\).*/\\1/p'
+   macOS：sed -n 's|.*<string>--skill</string><string>\\([^<]*\\)</string>.*|\\1|p' ~/Library/LaunchAgents/dev.luosky.cavil-loop.remote.plist
+   目录里有 .git：跑 git -C <目录> pull；没有 .git：托管安装会自动更新，约 10 分钟内；什么都没打印：到那台机器上重跑一次安装（setup.sh）。
+   更新后再重启一次远程入口";
+
+fn old_entry_message(e: &OldEntry) -> String {
+    match e {
+        OldEntry::DiskTooOld { version } => {
+            let v = if version.is_empty() { String::new() } else { format!("（{version}）") };
+            format!("那台机器的 daemon 版本太旧{v}，还不支持在这里改配置：在那台机器上{STEP_UPDATE}；或到那台机器上用编辑器改")
+        }
+        OldEntry::NotRestarted => format!(
+            "那台机器的 daemon 已更新，但远程入口还在跑更新前的代码，所以还不支持在这里改配置。那台机器会自动重启远程入口（失败时隔几分钟重试，最多 5 次）；要马上用、或一直是这条提示，在那台机器上{STEP_RESTART}"
+        ),
+        OldEntry::Unknown(why) => {
+            let w = why.as_deref().map(|w| format!("（再读一次那台机器的状态也没成功：{w}）")).unwrap_or_default();
+            format!(
+                "那台机器的远程入口还不支持在这里改配置。判断不了是那台机器的 daemon 版本太旧，还是更新后远程入口没有重启{w}。在那台机器上照做：\n1. {STEP_RESTART}\n2. 回到这里再点「配置」，能读出就结束。\n3. 仍是这条提示：{STEP_UPDATE}"
+            )
+        }
+    }
+}
 
 fn refused(reason: &str, m: &str) -> Value {
     json!({ "result": "refused", "reason": reason, "output": m })
@@ -982,6 +1061,48 @@ fn classify(e: ureq::Error) -> Fail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_404_says_which_case_it_is() {
+        let st = |disk: Value, entry: Value| json!({ "status": { "version": 1, "daemon": { "version": "0123456789abcdef" }, "remote_access": disk }, "entry": entry });
+        let lv = |n: u64| json!({ "level": n, "fingerprint": "f".repeat(64) });
+        // the code on disk is too old (a future feature: here its level is below the one asked for)
+        assert_eq!(old_entry(Ok(&st(lv(1), lv(1)))), OldEntry::DiskTooOld { version: "0123456789ab".into() });
+        // the code on disk has it, the entry runs older code: from before GitHub#533 (no entry field) or a lower level
+        assert_eq!(old_entry(Ok(&st(lv(2), Value::Null))), OldEntry::NotRestarted);
+        assert_eq!(old_entry(Ok(&st(lv(2), lv(1)))), OldEntry::NotRestarted);
+        // the machine's code predates these fields: cannot tell (not "too old", not "not restarted")
+        assert_eq!(old_entry(Ok(&json!({ "status": { "version": 1 } }))), OldEntry::Unknown(None));
+        assert_eq!(old_entry(Ok(&st(Value::Null, Value::Null))), OldEntry::Unknown(None));
+        assert_eq!(old_entry(Ok(&st(json!({ "level": "2" }), Value::Null))), OldEntry::Unknown(None));
+        // both say they have it, yet the request was not found: cannot tell either
+        assert_eq!(old_entry(Ok(&st(lv(2), lv(2)))), OldEntry::Unknown(None));
+        // the status read itself failed
+        assert_eq!(old_entry(Err("超时")), OldEntry::Unknown(Some("超时".into())));
+
+        let m = old_entry_message(&OldEntry::Unknown(Some("超时".into())));
+        assert!(m.contains("判断不了") && m.contains("超时") && m.contains("1. ") && m.contains("3. "), "{m}");
+        assert!(old_entry_message(&OldEntry::NotRestarted).contains("自动重启"));
+        assert!(old_entry_message(&OldEntry::DiskTooOld { version: "abc".into() }).contains("版本太旧（abc）"));
+    }
+
+    #[test]
+    fn the_steps_are_the_documented_commands() {
+        // every command in the docs' blocks is in the steps the client gives, word for word (both languages carry the same blocks)
+        for doc in [include_str!("../../../../../docs/operations.md"), include_str!("../../../../../docs/operations.zh.md")] {
+            for block in ["remote-restart-linux", "remote-restart-mac"] {
+                let begin = format!("<!-- {block}:begin -->");
+                let end = format!("<!-- {block}:end -->");
+                let from = doc.find(&begin).expect("block begins") + begin.len();
+                let to = doc[from..].find(&end).expect("block ends") + from;
+                let cmds: Vec<&str> = doc[from..to].lines().filter(|l| !l.trim().is_empty() && !l.starts_with("```")).collect();
+                assert_eq!(cmds.len(), 2, "{block}");
+                for c in cmds {
+                    assert!(STEP_RESTART.contains(c) || STEP_UPDATE.contains(c), "{block}: {c}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn tailnet_list() {
