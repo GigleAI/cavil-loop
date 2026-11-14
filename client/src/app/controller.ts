@@ -3289,8 +3289,8 @@ export class Controller {
   /** GitHub#490, 「再查一次」 of a new issue not known to be created: the look again (reads only; never creates). */
   async createLook(id: number): Promise<WriteResult> {
     const job = this.state.creates.find((j) => j.id === id);
-    if (!job || job.status !== 'unknown') return { ok: false, error: '这条新建记录已经不在了', warning: null };
-    if (job.looking) return { ok: false, error: '正在查，稍等', warning: null };
+    if (!job || job.status !== 'unknown') return { ok: false, error: t('这条新建记录已经不在了'), warning: null };
+    if (job.looking) return { ok: false, error: t('正在查，稍等'), warning: null };
     this.setCreate({ ...job, looking: true, lookError: null });
     await this.lookCreate(id, this.session);
     const end = this.state.creates.find((j) => j.id === id);
@@ -3300,7 +3300,7 @@ export class Controller {
   /** GitHub#490, 「重试」 of a new issue that surely was not created: the same draft again (the old notice goes). */
   async createRetry(id: number): Promise<{ ok: boolean; error: string | null; job?: number }> {
     const job = this.state.creates.find((j) => j.id === id);
-    if (!job || job.status !== 'failed') return { ok: false, error: '这条新建记录现在不能重试' };
+    if (!job || job.status !== 'failed') return { ok: false, error: t('这条新建记录现在不能重试') };
     const d = job.draft;
     const r = await this.startCreate({
       kind: 'createIssue',
@@ -5024,7 +5024,7 @@ export class Controller {
    */
   opRedo(id: string): { ok: boolean; error: string | null; id?: string } {
     const r = this.ops.get(id);
-    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (!r) return { ok: false, error: t('这次操作已经不在了') };
     const action = opRedoAction(r);
     if (typeof action === 'string') return { ok: false, error: action };
     return this.startOp(action, { from: id });
@@ -5036,9 +5036,9 @@ export class Controller {
    */
   opSendComment(id: string): { ok: boolean; error: string | null; id?: string } {
     const r = this.ops.get(id);
-    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (!r) return { ok: false, error: t('这次操作已经不在了') };
     const comment = opDraftLeft(r)?.comment;
-    if (opActions(r).retry !== 'sendComment' || comment === undefined) return { ok: false, error: '这条附带评论现在不能再发' };
+    if (opActions(r).retry !== 'sendComment' || comment === undefined) return { ok: false, error: t('这条附带评论现在不能再发') };
     const res = this.startSend({ kind: 'comment', key: r.key, body: comment });
     if (res.ok) this.patchOp(id, { draftDropped: true, dismissed: true });
     return res;
@@ -5079,7 +5079,7 @@ export class Controller {
       state: 'refused',
       sentAt: null,
       answeredAt: null,
-      reason: '附带的评论没有发出',
+      reason: t('附带的评论没有发出'),
       warning: null,
       proof: null,
       returned: false,

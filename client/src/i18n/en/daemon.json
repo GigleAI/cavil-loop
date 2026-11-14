@@ -320,5 +320,6 @@
   "远程机器上的文件没法在这台电脑用编辑器打开": "A file on a remote machine cannot be opened in an editor on this computer",
   "要改请到那台机器上用编辑器改。": "To change it, use an editor on that machine.",
   "{what}：下次派工会失败。在那台机器上装好后，在这里点「重新读取」。": "{what}: the next dispatch will fail. Install it on that machine, then click \"Read again\" here.",
-  "{remote} 上还没装 {list}": "{remote} does not have {list} yet"
+  "{remote} 上还没装 {list}": "{remote} does not have {list} yet",
+  "已复制": "Copied"
 }
