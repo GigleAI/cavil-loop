@@ -1123,6 +1123,8 @@ inject_prompt_logged() {
     local err rc line
     # 恢复派工（GitHub#339）：往会话里送任务之前的最后一次核对；平时什么都不做
     stuck_release_gate
+    # 往活着的会话里送 = 接着同一段对话：复审要先声明这是新的一轮（见 review_resume_notice）
+    review_resume_notice "$prompt_file"
     err="$(mktemp)"
     agent_inject_prompt "$sess" "$prompt_file" 2>"$err"
     rc=$?
@@ -9854,6 +9856,43 @@ agent_session_tag_prompt() {   # <prompt_file> → 追加标记并输出它
     return 0
 }
 
+# 复审接着旧对话干时，在提示最前面声明「这是新的一轮」。
+#
+# 为什么要有：复审每一轮的提示几乎一字不差（只写「复审 PR #N」，不带这轮是哪条评论触发的）。
+# 续接旧会话时，模型在上文里看到一份一模一样的任务，就当成重复请求：读一眼自己上一轮的
+# 评论，复读旧结论，几秒后空手停下——不发评论、不翻标签，条目一直挂在 doing/agent。
+# 2026-11-13/14 实测三条（GigleTutor-Web PR #1514 / #1517、arkknights-data PR #53），
+# 其中一条重开会话后下一轮续接又犯。
+#
+# 只在复审角色、且是续接（resume / 往活着的会话注入）时加；新开的会话 prompt 一个字节不动。
+# 幂等：注入失败转重起时同一份文件会再经过这里，靠标记行只加一次。
+REVIEW_NEW_ROUND_MARK="<!-- review-new-round -->"
+review_resume_notice() {   # <prompt_file>
+    local f="${1:-}" tmp
+    [ "${WORKER_SESSION_ROLE:-}" = review ] || return 0
+    [ -n "$f" ] && [ -f "$f" ] || return 0
+    grep -qF "$REVIEW_NEW_ROUND_MARK" "$f" 2>/dev/null && return 0
+    tmp="$(mktemp "${f}.XXXXXX")" || return 0
+    {
+        printf '%s\n' "$REVIEW_NEW_ROUND_MARK"
+        printf '# 这是一轮新的复审派工（%s），不是上文那一轮的延续\n\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+        printf '%s\n' \
+            '本对话里之前做过的复审都是更早的轮次。在那之后 worker 多半又改了代码、发了新评论，上文的结论、读到的评论、标签、提交都已过时，不能沿用。' \
+            '' \
+            '这一轮必须从头做完：' \
+            '1. 重新读目标当前的状态：最新提交，以及你上一条复审评论之后的所有评论。一切以 GitHub 现在的样子为准。' \
+            '2. 按下面的规则重新审、重新算轮次，发一条**新的**复审结论评论——结论和上一轮一样也要发。' \
+            '3. 按结论翻标签。现在挂着的 `doing/agent` 是这次派工留下的，不说明有别人在干活。' \
+            '' \
+            '不发新评论、不翻标签就结束，这一项会一直卡在 `doing/agent` 没人处理。' \
+            '' \
+            '---' \
+            ''
+        cat "$f"
+    } > "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+    return 0
+}
+
 agent_session_file() {   # <num> <agent> <role>
     echo "$AGENT_SESSION_DIR/$1.$2.$3"
 }
@@ -10091,6 +10130,7 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
            && agent_session_exists "$cwd" "$id"; then
             WORKER_SESSION_ID="$id"
             AGENT_LAUNCH_KIND="resume"
+            review_resume_notice "$prompt_file"
             return 0
         fi
         [ -z "$id" ] || log "外部内容保护：#$num 的 $role 会话不是在保护开着时起的（或已不在），起一条全新的" 2>/dev/null || true
@@ -10103,6 +10143,7 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
             if agent_session_exists "$cwd" "$id"; then
                 WORKER_SESSION_ID="$id"
                 AGENT_LAUNCH_KIND="resume"
+                review_resume_notice "$prompt_file"
                 return 0
             fi
             # 登记过但会话没了（history 被清、worktree 重建过…）→ 退休掉，往下起全新。
