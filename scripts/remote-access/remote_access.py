@@ -7,6 +7,7 @@
     remote_access.py pair-code --state DIR                        生成一个配对码，打印到 stdout
     remote_access.py list      --state DIR                        列出已配对设备
     remote_access.py revoke    --state DIR --target <设备名或编号>          撤销一台设备
+    remote_access.py code-info                                     这份代码的接口级别和指纹（JSON，只读）
 
 这台机器对外只经 `tailscale serve`（HTTPS，仅本 Tailscale 网络）把请求转给本服务。规则：
 
@@ -23,6 +24,10 @@
 
 状态目录（权限 700，文件 600）：devices.json 已配对设备；pairing.json 当前配对码（只存散列）；
 nonces.json 最近处理过的请求（防重放，重启后仍然认得）。
+
+代码更新后的重启（GitHub#533）：服务启动时记下自己这份代码的接口级别（API_LEVEL）和指纹（本文件内容的
+sha256），在 /v1/hello 和 /v1/status 的回复里报出来；每轮轮询（scripts/remote-access.sh auto-restart）拿它和
+磁盘上那份比，不一样才重启。收到停止信号时先不接新请求，把在途的请求做完（最多 STOP_GRACE 秒）再退出。
 """
 import argparse
 import fcntl
@@ -33,6 +38,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -40,6 +46,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 VERSION = 1
+# 接口级别：这份代码支持到哪一级请求（GitHub#533）。2 = 有项目配置的读 / 改（GitHub#530）；以后加请求就加 1。
+# 客户端据此判断「那台机器的代码太旧」还是「代码已更新、入口还没重启」。
+API_LEVEL = 2
+STOP_GRACE = 30         # 收到停止信号后，等在途请求做完最多这么久（秒）
 PAIR_TTL = 600          # 配对码有效期（秒）
 PAIR_MAX_TRIES = 5      # 连续输错这么多次，当前配对码作废
 CLOCK_WINDOW = 120      # 请求时间与本机相差超过它就拒绝
@@ -72,6 +82,13 @@ def config_request_problem(rev, values):
         if not VALUE_RE.fullmatch(v):
             return "%s 的值里有不能写进配置文件的字符" % name
     return None
+
+
+def code_identity(path=None):
+    """这份代码的身份：{level, fingerprint}。指纹是脚本文件内容的 sha256——和磁盘上那份比，
+    就知道正在跑的是不是磁盘上的代码（版本号不行：开发副本换了提交，本文件可能一个字都没变）。"""
+    with open(path or os.path.abspath(__file__), "rb") as f:
+        return {"level": API_LEVEL, "fingerprint": sha256_hex(f.read())}
 
 
 # ── 状态文件 ──
@@ -215,10 +232,16 @@ def whois(ip):
 # ── 服务 ──
 
 class Service:
-    def __init__(self, state, skill):
+    def __init__(self, state, skill, running=None):
         self.state = state
         self.skill = skill
         self.mu = threading.Lock()
+        # 启动那一刻这份代码的身份（GitHub#533），之后不变：磁盘上的文件换了，它仍报启动时的那份
+        self.running = running or code_identity()
+        # 正在处理的请求数；停止时等它归零（GitHub#533）
+        self.busy = threading.Condition()
+        self.inflight = 0
+        self.stopping = False
         # 已处理过的请求（设备编号:随机数 → 处理时间），落盘在 nonces.json，重启后照样认得。
         # 一个请求只在「它的时间与本机相差不超过 CLOCK_WINDOW」时被接受，所以处理过的记录留
         # 2 × CLOCK_WINDOW 就够：再晚，同一个请求会先被时间那一关拒掉。
@@ -387,6 +410,29 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_any("POST")
 
     def handle_any(self, method):
+        svc = self.svc
+        with svc.busy:
+            if svc.stopping:
+                admitted = False
+            else:
+                svc.inflight += 1
+                admitted = True
+        if not admitted:
+            # 正在重启：这个请求一点都没处理，客户端照「没有执行」报
+            try:
+                self.close_connection = True
+                self.deny(503, "not_ready", "这台机器的远程入口正在重启，没有执行；稍后再试")
+            except Exception:
+                pass
+            return
+        try:
+            self._handle(method)
+        finally:
+            with svc.busy:
+                svc.inflight -= 1
+                svc.busy.notify_all()
+
+    def _handle(self, method):
         try:
             self.route(method)
         except Exception as e:  # 任何没料到的错都按「服务端出错」回，不让连接悬着
@@ -398,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method):
         path = self.path.split("?", 1)[0]
         if method == "GET" and path == "/v1/hello":
-            return self.reply(200, {"service": "cavil-loop-remote", "version": VERSION})
+            return self.reply(200, {"service": "cavil-loop-remote", "version": VERSION, **self.svc.running})
         who = self.visitor()
         if who is None:
             return
@@ -416,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
             st, why = svc.status()
             if st is None:
                 return self.deny(502, "status_failed", why, device, nonce)
-            return self.reply(200, {"status": st}, device, nonce)
+            return self.reply(200, {"status": st, "entry": svc.running}, device, nonce)
         m = re.match(r"^/v1/projects/([^/]+)/(stop|start|log|config)$", path)
         if m and KEY_RE.match(m.group(1)):
             key, what = m.group(1), m.group(2)
@@ -521,23 +567,48 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(state, port, skill):
-    Handler.svc = Service(state, skill)
+    svc = Service(state, skill)
+    Handler.svc = svc
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     httpd.daemon_threads = True
-    sys.stderr.write("cavil-loop 远程入口：监听 127.0.0.1:%d\n" % httpd.server_address[1])
+
+    def on_stop(signum, frame):
+        # 停止信号（服务管理器的 stop / restart）：先不接新请求，在途的做完再退（GitHub#533）。
+        # shutdown 要在另一个线程里调：它等 serve_forever 返回，而 serve_forever 就在本线程里。
+        with svc.busy:
+            svc.stopping = True
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_stop)
+    signal.signal(signal.SIGINT, on_stop)
+    sys.stderr.write("cavil-loop 远程入口：监听 127.0.0.1:%d（接口级别 %s，代码指纹 %s）\n" % (httpd.server_address[1], svc.running.get("level"), str(svc.running.get("fingerprint", ""))[:12]))
     sys.stderr.flush()
     httpd.serve_forever()
+    deadline = time.time() + STOP_GRACE
+    with svc.busy:
+        while svc.inflight > 0 and time.time() < deadline:
+            svc.busy.wait(max(0.05, deadline - time.time()))
+        left = svc.inflight
+    httpd.server_close()
+    sys.stderr.write("cavil-loop 远程入口：已停止%s\n" % ("（还有 %d 个请求没做完）" % left if left else ""))
+    sys.stderr.flush()
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=["serve", "pair-code", "pair-cancel", "list", "revoke"])
+    ap.add_argument("command", choices=["serve", "pair-code", "pair-cancel", "list", "revoke", "code-info"])
     ap.add_argument("--expiry", action="store_true", help="pair-code：第二行给出失效时刻（秒）")
     ap.add_argument("--target", default="")
-    ap.add_argument("--state", required=True)
+    ap.add_argument("--state", default="")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--skill", default="")
     a = ap.parse_args()
+    if a.command == "code-info":
+        # 只读、不碰状态目录：轮询的检查和状态脚本拿它读「磁盘上这份代码」的身份
+        print(json.dumps(code_identity()))
+        return
+    if not a.state:
+        ap.error("需要 --state")
     state = State(a.state)
     if a.command in ("list", "revoke"):
         try:

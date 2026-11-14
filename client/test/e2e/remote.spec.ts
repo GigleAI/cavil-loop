@@ -199,17 +199,24 @@ test("「配置…」on a project of that machine: the same form, saved there; n
   await page.getByTestId('config-cancel').click();
   await expect(dialog).toHaveCount(0);
 
-  // the same machine with its remote entry from before this change: said as such, not "cannot read"
+  // the same machine whose code on disk was updated while its resident entry still runs code from
+  // before GitHub#530 (GitHub#533): said as "updated, not restarted" with the restart command — not
+  // "update the daemon", not "cannot read". The stand-in entry knows no config request and reports
+  // no running code (as one started before GitHub#533); the status still reads the code on disk.
   await closeRemote(r);
   const file = join(w.skill, 'scripts/remote-access/remote_access.py');
   const cur = readFileSync(file, 'utf8');
-  writeFileSync(file, cur.replace('(stop|start|log|config)', '(stop|start|log)'));
+  const old = cur.replace('(stop|start|log|config)', '(stop|start|log)').replace(', "entry": svc.running}', '}');
+  expect(old).not.toEqual(cur);
+  writeFileSync(file, old);
   // restarted at the same place: the paired devices and this computer's key are kept
   r = await remoteWorld(w, path);
   await host.getByTestId('remote-reload').click();
   await expect(host).toHaveAttribute('data-state', 'ok');
   await row.getByTestId('remote-config').click();
-  await expect(page.getByTestId('config-unsupported')).toContainText('更新那台机器的 daemon');
+  await expect(page.getByTestId('config-unsupported')).toContainText('远程入口还在跑更新前的代码');
+  await expect(page.getByTestId('config-unsupported')).toContainText('systemctl --user try-restart cavil-loop-remote.service');
+  await expect(page.getByTestId('config-unsupported')).not.toContainText('版本太旧');
   await expect(page.getByTestId('config-read-failed')).toHaveCount(0);
   await expect(page.getByTestId('config-save')).toHaveCount(0);
 });

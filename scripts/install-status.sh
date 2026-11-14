@@ -263,9 +263,21 @@ if [ -n "$CHECK_PROJECT" ]; then
     fi
 fi
 
+# ── 远程入口：磁盘上这份代码的接口级别和指纹（GitHub#533）──
+# 远程入口把本脚本的输出原样交给客户端；客户端拿它和入口自己报的那份比，分得清「那台机器的代码太旧」
+# 和「代码已更新、入口还没重启」。读不到（没有 python3、脚本不在、输出认不出）就是 null，不猜。
+remote_access_json=null
+if command -v python3 >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/remote-access/remote_access.py" ]; then
+    ra_info="$(python3 "$SCRIPT_DIR/remote-access/remote_access.py" code-info 2>/dev/null || true)"
+    if printf '%s' "$ra_info" | jq -e 'type == "object" and (.level | type == "number") and (.fingerprint | type == "string")' >/dev/null 2>&1; then
+        remote_access_json="$(printf '%s' "$ra_info" | jq -c '{level, fingerprint}')"
+    fi
+fi
+
 jq -n --arg os "$OS" --argjson scheduler "$(json_str_or_null "$SCHEDULER")" \
     --argjson daemon "$daemon_json" --argjson gh "$gh_json" --argjson base "$base_json" --argjson bash "$bash_json" \
-    --argjson agent_check "$agent_check_json" --argjson projects "$projects_json" --argjson project_check "$project_check_json" '
+    --argjson agent_check "$agent_check_json" --argjson projects "$projects_json" --argjson project_check "$project_check_json" \
+    --argjson remote_access "$remote_access_json" '
     {version:1, os:$os, scheduler:$scheduler, daemon:$daemon, gh:$gh,
-     base_deps:{missing:$base}, bash:$bash, agent_check:$agent_check, projects:$projects}
+     base_deps:{missing:$base}, bash:$bash, agent_check:$agent_check, projects:$projects, remote_access:$remote_access}
     + (if $project_check == null then {} else {project_check:$project_check} end)'

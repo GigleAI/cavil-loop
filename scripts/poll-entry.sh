@@ -52,6 +52,13 @@ if [ "$(uname -s)" = Linux ] && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/repair-
     bash "$CODING_AGENT_RELEASE_ROOT/scripts/repair-unit-links.sh" 2>&1 | sed 's/^/[cavil-loop] /' >&2 || true
 fi
 
+# 远程入口（GitHub#533）：它是常驻进程，代码在启动时读进内存，部署 / 更新只换磁盘上的文件。这里每轮
+# 比一次「入口在跑的代码」和「磁盘上的代码」，有证据不一样才重启（只重启正在运行的，有退避和上限，
+# 和开 / 关远程入口共用一把锁）。没开过远程入口的机器只做一次文件存在检查。出任何问题都不能挡住本轮轮询。
+if [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/remote-access.sh" ]; then
+    bash "$CODING_AGENT_RELEASE_ROOT/scripts/remote-access.sh" auto-restart 2>&1 | sed 's/^/[cavil-loop] /' >&2 || true
+fi
+
 # 改名前的旧安装（GigleAI/cavil-loop#71）：任何一个项目的这一轮都顺手把本机空闲的旧项目迁到
 # 新名字。必须在 agent-poll.sh 之前——它一 source _lib.sh 就会 mkdir 配置里的状态目录，
 # 迁到一半时会在旧位置凭空建出一个空目录。迁移自己出任何问题都不能挡住本轮轮询。

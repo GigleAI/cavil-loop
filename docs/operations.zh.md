@@ -1588,7 +1588,7 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 
 上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
 
-**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`project_check`（带 `--project <目录>` 才有：那个目录里已有的项目配置，按轮询一样的读法读——`config_state` 为 `none` / `ok` / `unreadable`，以及 `config`、`repo`、`worker_agent`；`setup.sh` 会沿用这份配置，所以接上后实际用的就是这两项）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
+**状态输出**（`version: 1`）。顶层：`os`、`scheduler`（`systemd` / `launchd`）、`daemon`（`entry` 稳定 skill 入口、`target` 实际指向、`form` 安装形态——`managed` 受管 release / `checkout` 普通代码目录 / `directory` / `missing` / `dangling`、`version` release 的 sha 或代码目录的 `HEAD`）、`gh`（`installed`、`logged_in`）、`base_deps.missing`（每个项目都要的通用工具）、`bash`（`path` 轮询会用的 bash，和 `setup.sh` 同一个挑选函数；`major` 主版本；`ok` —— 4 及以上为 `true`，macOS 自带的 3.2 为 `false`，跑不了 daemon，要 `brew install bash`；读不出版本为 `null`）、`agent_check`（带 `--agent` 才有）、`remote_access`（GitHub#533：本脚本旁边那份远程入口代码的 `{level, fingerprint}`——接口级别和 `remote_access.py` 的 sha256；读不到为 `null`）、`project_check`（带 `--project <目录>` 才有：那个目录里已有的项目配置，按轮询一样的读法读——`config_state` 为 `none` / `ok` / `unreadable`，以及 `config`、`repo`、`worker_agent`；`setup.sh` 会沿用这份配置，所以接上后实际用的就是这两项）、`projects[]`。每个项目：`key`、`layout`（`new` / `legacy` = 改名前装的）、`env_file`、`host`、`config`、`config_state`（`ok` / `unreadable`）、`repo`、`state_dir`、`agents[]`、`deps`、`scheduler`、`last_poll`。
 
 - `agents[]` 列出 worker agent、复审 agent（只在配了 `LABEL_PENDING_REVIEW` 时）和按标签选模型时用的 agent（`role: fable`，`required: false`——只有有人给条目打了那个标签才会起，所以没装 claude 的 codex 项目不会被报成缺依赖）。每项有 `bin`、`state`（`ok` / `missing` / `no_driver`）和 `missing`，用的是 `setup.sh` 同一个函数，两边结论不会不一致。`deps` 汇总必需的那几项：`ok` / `missing` / `unknown`（配置读不出或找不到 driver）。
 - `scheduler.state` 是 `running` / `stopped` / `unknown`。只认已知状态词：读失败、空输出、不认识的词一律 `unknown`，绝不报 `stopped`；`raw` 是读到的原文。
@@ -1682,7 +1682,7 @@ bash "$RA" disable
 | `enable [--port N]` | 登记 `tailscale serve` 转发（HTTPS，仅本 Tailscale 网络）→ 写后台任务文件 → 启动常驻服务。默认端口 47387。换端口时，新端口起来之后撤掉本功能在旧端口上的转发（撤不掉：`partial`，退出 3，写明哪个端口）。端口上已有别的转发时不接管，哪怕形状一样（`port_taken`） | `enabled`；前提不满足：`tailscale_down` / `tailscale_unknown` / `no_https` / `need_admin` / `funnel`（这个端口开着公网入口）/ `port_taken` / `unknown`（后台任务状态读不到），退出 2、什么都没动；`failed` 退出 3 |
 | `pair` | 入口没开就先 `enable`，再生成配对码（新码顶替等待中的码）。另给桌面客户端打印 `HOST=` / `CODE=` / `EXPIRES=`（失效时刻，秒） | `code` |
 | `pair-cancel` | 作废等待中的配对码（没有也算成功） | `cancelled` |
-| `status` | 只读。另给桌面客户端打印 `HOST=`（读到机器名时才有）、`PORT=`、`DEVICES=`（台数，清单读不懂是 `unknown`） | `open` / `closed` / `partial` / `unknown` |
+| `status` | 只读。服务在运行时另写出它跑的是不是磁盘上的代码（`ENTRY_CODE=`，见「更新之后」）。另给桌面客户端打印 `HOST=`（读到机器名时才有）、`PORT=`、`DEVICES=`（台数，清单读不懂是 `unknown`） | `open` / `closed` / `partial` / `unknown` |
 | `list [--machine]` | 列出已配对设备：编号、设备名、Tailscale 设备名、配对时间。`--machine`：一台一行 `DEVICE=<编号>\t<设备名>\t<设备>\t<时间>`，最后 `RESULT=ok` | —（`--machine` 时 `ok`） |
 | `revoke <设备名或编号>` | 撤销一台设备，立刻生效；没有这台设备退出 1 | — |
 | `disable` | 停服务并移除后台任务文件 → 撤掉本功能登记过的每一个端口的转发（换过端口也一并撤，别的功能的转发不动）→ 清掉等待中的配对码。已配对设备清单保留 | `disabled`；状态读不到退出 2、什么都没动；停不下来或转发撤不掉退出 3（`partial`），输出里写明还剩什么、该跑哪条命令 |
@@ -1695,7 +1695,34 @@ bash "$RA" disable
 - 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、读 / 改一个项目的常用设置（GitHub#530：在这台机器上执行 `scripts/project-config.sh <key> get|set`——只有 `scripts/config-fields.txt` 登记为可改的那几项，和「本机 daemon → 配置」在本机能改的一样；命令、钩子、令牌、目录和标签类开关都不在其中）、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能读整份配置文件、不能执行任意命令。
 - 日志按盘上的样子返回，不另做处理：daemon 写 `poll.log` 之前已把 GitHub 令牌脱敏（GitHub#342，开着的话），其余内容配对过的客户端都看得到。
 - 同一台机器上的其他系统用户能连到回环端口，但没有配对码和钥匙做不了任何事。
-- 常驻服务不随 daemon 自动更新而重启；更新后要用上新版本，重跑一次 `enable`。
+- 常驻服务的代码在它启动那一刻读进内存。GitHub#533 起每轮轮询比一次它在跑的代码和磁盘上的代码，不一样就重启它——见下面「更新之后」。
+
+**更新之后**（GitHub#533）。更新只换磁盘上的文件，常驻服务照旧跑它启动时的代码。每轮轮询（Linux、macOS 一样）问一下本机回环端口上的服务在跑哪份代码（`/v1/hello`：接口级别，以及它启动时脚本内容的 sha256），和服务登记指向的那份脚本（`--skill <目录>`）比。只有回答证明两者不同——指纹不是磁盘上那份，或者答了「我是本功能的入口」却不报指纹（GitHub#533 之前的代码）——才重启它：
+
+- 只重启正在运行的服务（Linux `systemctl --user try-restart`，macOS `launchctl kickstart -k`：停着的、已卸载的都不会被启动），而且持着 `enable`、`disable` 也要拿的同一把锁（`~/.local/state/cavil-loop/remote-access/svc.lock`），拿到后全部重读一遍。拿不到锁的那一轮跳过；`enable` / `disable` 最多等 60 秒，等不到就什么都不改（`RESULT=busy`）；
+- 服务之后报出磁盘上的指纹才算重启完成。失败或确认不了的，隔 1、2、5、15 分钟再试，同一份代码最多 5 次，记在 `remote-access/restart.json`（发重启前先记「进行中」，轮询中途被杀也算一次）。失败 5 次后不再试，在轮询的系统日志里每天说一次、在 `status` 里写明；哪一轮看到服务已经是磁盘上的代码就删掉记录，代码再变就重新开始。记录读不懂 = 不自动重启（删掉它即重新开始）；重启前记录写不进 = 不重启；
+- 读不到的——服务管理器、回环上的回答、端口记录、服务登记——什么都不改，记一行日志，等下一轮；
+- 正在停止的服务对新请求回 503 `not_ready`，把在途的请求做完（最多 30 秒）再退出。
+
+`status` 写出两份代码（`ENTRY_CODE=same|differs|unknown`）和自动重启的状态。客户端说那台机器的远程入口在跑更新前的代码、或判断不了时，给的就是下面这几步——只用服务管理器和服务自己的登记，所以不管 skill 目录叫什么（`cavil-loop`、`coding-agent-work-loop`、`coding-agent-workflow`、开发副本）都能照做：
+
+1. 重启远程入口（配对和端口不变）。Linux：下面第一行，打印 `active` 算成功（`inactive` 或「not found」= 远程入口没开）。macOS：第二块的第一行，打印 `state = running` 算成功（「Could not find service」= 没开）。两条都不会把关着的入口打开。
+2. 回客户端再点「配置」。能读出，就是这个原因，结束。
+3. 仍是同一条提示：那台机器的代码早于这项功能，要更新 daemon。第二行打印服务用的 skill 目录：目录里有 `.git`（手动 / 开发模式安装），跑 `git -C <目录> pull`；没有（托管安装）会自己更新，约 10 分钟内。什么都没打印：服务登记缺失或读不了，到那台机器上重跑一次安装（`setup.sh`）。更新后再做一次第 1 步。
+
+<!-- remote-restart-linux:begin -->
+```bash
+systemctl --user try-restart cavil-loop-remote.service && systemctl --user is-active cavil-loop-remote.service
+systemctl --user cat cavil-loop-remote.service | sed -n 's/.*--skill \([^ ]*\).*/\1/p'
+```
+<!-- remote-restart-linux:end -->
+
+<!-- remote-restart-mac:begin -->
+```bash
+launchctl kickstart -k gui/$(id -u)/dev.luosky.cavil-loop.remote && launchctl print gui/$(id -u)/dev.luosky.cavil-loop.remote | grep 'state ='
+sed -n 's|.*<string>--skill</string><string>\([^<]*\)</string>.*|\1|p' ~/Library/LaunchAgents/dev.luosky.cavil-loop.remote.plist
+```
+<!-- remote-restart-mac:end -->
 
 **客户端取消配对**：连得上时由这台机器确认撤销；连不上时客户端只能停止使用并显示「取消配对未完成」——这时这台机器上的授权**还在**，恢复连接后客户端会重试，或在这台机器上跑 `revoke`。
 
@@ -1703,8 +1730,8 @@ bash "$RA" disable
 
 - `POST /v1/pair`，请求体 `{"code": "<8 位>", "name": "<设备名>"}` → `{"version": 1, "id": "<设备编号>", "key": "<64 位十六进制钥匙>", "name": ...}`。
 - 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复——处理过的请求记在 `nonces.json` 里，服务重启后重放同一个请求照样被拒；这份记录读不懂时，服务在 240 秒内不接受任何签名请求，回 503 `not_ready`）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
-- `GET /v1/status` → `{"status": <install-status.sh 的输出>}`；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
-- 项目常用设置（GitHub#530）：`GET /v1/projects/<key>/config` → `{"result": "ok", "config": <project-config.sh get 的输出>}` 或 `{"result": "not_found|unreadable", "output": ...}`。`POST /v1/projects/<key>/config`，请求体 `{"rev": "<读到的配置指纹>", "values": {"MAX_CONCURRENT_WORKERS": "3"}}` → `{"result": <project-config.sh set 的 RESULT 词>, "detail": {...}, "output": ...}`。执行 `set` 之前服务先核对请求体——设置名 `[A-Z][A-Z0-9_]*`（≤ 64）、值只含 `A-Za-z0-9._:/@,+-`（≤ 200）、指纹 64 位十六进制、1–64 项；不合规回 `result: "refused"`，读、写脚本都不执行——再读一次配置，只放行此刻标成可改的项（否则 `refused`，不执行 `set`）。`set` 没有给出 `RESULT=` 行（被杀、超时）回 `unconfirmed`：文件可能改了也可能没改。GitHub#530 之前的机器对这两个请求回 404 `not_found`，客户端显示为「更新那台机器的 daemon」。
+- `GET /v1/hello`（不签名）→ `{"service": "cavil-loop-remote", "version": 1, "level": <接口级别>, "fingerprint": "<正在跑的脚本的 sha256>"}`（`level` / `fingerprint` 自 GitHub#533）。`GET /v1/status` → `{"status": <install-status.sh 的输出>, "entry": 正在跑的服务的 {"level", "fingerprint"}}`——状态里带着磁盘上那份代码的 `remote_access: {level, fingerprint}`，客户端据此分得清「代码太旧」和「已更新、没重启」；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
+- 项目常用设置（GitHub#530）：`GET /v1/projects/<key>/config` → `{"result": "ok", "config": <project-config.sh get 的输出>}` 或 `{"result": "not_found|unreadable", "output": ...}`。`POST /v1/projects/<key>/config`，请求体 `{"rev": "<读到的配置指纹>", "values": {"MAX_CONCURRENT_WORKERS": "3"}}` → `{"result": <project-config.sh set 的 RESULT 词>, "detail": {...}, "output": ...}`。执行 `set` 之前服务先核对请求体——设置名 `[A-Z][A-Z0-9_]*`（≤ 64）、值只含 `A-Za-z0-9._:/@,+-`（≤ 200）、指纹 64 位十六进制、1–64 项；不合规回 `result: "refused"`，读、写脚本都不执行——再读一次配置，只放行此刻标成可改的项（否则 `refused`，不执行 `set`）。`set` 没有给出 `RESULT=` 行（被杀、超时）回 `unconfirmed`：文件可能改了也可能没改。远程入口早于 GitHub#530 的机器对这两个请求回 404 `not_found`；客户端这时再读一次状态，说明是哪一种（GitHub#533）：磁盘上的代码太旧（更新 daemon）、磁盘上的代码已更新但入口还在跑旧的（重启它）、或判断不了（照上面「更新之后」的几步）。
 - 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）、`not_ready`（503，见上）。
 
 ## 多 project 共存

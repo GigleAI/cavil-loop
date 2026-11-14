@@ -361,24 +361,46 @@ describe("a project's settings on that machine (GitHub#530)", () => {
     expect(arrived(r)).toHaveLength(n);
   });
 
-  it('a machine whose remote entry predates this: "unsupported", not "cannot read the config"', async () => {
-    await closeRemote(r);
-    // the entry as it was before GitHub#530: the same service, without the config route
+  it('a machine whose remote entry predates this: "unsupported", not "cannot read the config" — and which kind (GitHub#533)', async () => {
+    // the entry as it was before GitHub#530: the same service, without the config route. What else
+    // the machine reports — the code on disk (its status) and the code the entry runs (its own field
+    // in the status reply) — decides what the client says (GitHub#533).
     const file = join(w.skill, 'scripts/remote-access/remote_access.py');
     const now = readFileSync(file, 'utf8');
-    const old = now.replace('(stop|start|log|config)', '(stop|start|log)');
-    expect(old).not.toBe(now);
-    writeFileSync(file, old);
-    r = await remoteWorld(w, path);
-    const b = backend();
-    await pair(b);
-    const got = await b.call('remoteConfigGet', { id: ID, key: 'widget' });
-    expect(got.result).toBe('unsupported');
-    expect(got.output).toContain('更新那台机器的 daemon');
-    const saved = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: 'a'.repeat(64), values: { MAX_CONCURRENT_WORKERS: '2' } });
-    expect(saved).toMatchObject({ result: 'refused', reason: 'unsupported' });
-    // and the status, stop / start and the log still work there
-    expect((await b.call('remoteStatus', { id: ID })).state).toBe('ok');
+    const noRoute = now.replace('(stop|start|log|config)', '(stop|start|log)');
+    expect(noRoute).not.toBe(now);
+    const noEntry = noRoute.replace(', "entry": svc.running}', '}');
+    expect(noEntry).not.toBe(noRoute);
+    const tooOld = noEntry.replace('API_LEVEL = 2\n', 'API_LEVEL = 1\n');
+    expect(tooOld).not.toBe(noEntry);
+    const cases: [string, string, string[], string[]][] = [
+      // code on disk updated, the entry started before GitHub#533 (it reports no running code): restart it
+      ['not restarted', noEntry, ['远程入口还在跑更新前的代码', 'systemctl --user try-restart cavil-loop-remote.service', 'launchctl kickstart -k'], ['版本太旧', '判断不了']],
+      // the code on disk is below the level the request needs: update the daemon
+      ['too old', tooOld, ['daemon 版本太旧', 'git -C <目录> pull'], ['判断不了', '还在跑更新前的代码']],
+      // both say they have it, yet no such request: cannot tell — the steps in full
+      ['cannot tell', noRoute, ['判断不了', '1. 重启远程入口', '3. 仍是这条提示', "systemctl --user cat cavil-loop-remote.service"], ['版本太旧（', '还在跑更新前的代码，所以']],
+    ];
+    try {
+      for (const [, code, has, lacks] of cases) {
+        await closeRemote(r);
+        writeFileSync(file, code);
+        r = await remoteWorld(w, path);
+        const b = backend();
+        await pair(b);
+        const got = await b.call('remoteConfigGet', { id: ID, key: 'widget' });
+        expect(got.result).toBe('unsupported');
+        for (const t of has) expect(got.output).toContain(t);
+        for (const t of lacks) expect(got.output).not.toContain(t);
+        // saving there: refused before anything was written, with the same words
+        const saved = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: 'a'.repeat(64), values: { MAX_CONCURRENT_WORKERS: '2' } });
+        expect(saved).toMatchObject({ result: 'refused', reason: 'unsupported', output: got.output });
+        // and the status, stop / start and the log still work there
+        expect((await b.call('remoteStatus', { id: ID })).state).toBe('ok');
+      }
+    } finally {
+      writeFileSync(file, now);
+    }
   });
 });
 
