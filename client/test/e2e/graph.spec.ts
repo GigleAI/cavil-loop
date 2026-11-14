@@ -701,6 +701,8 @@ test('GitHub#526: a registration on a pull request — the PR and its prerequisi
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(521))), 'PR #521 in #466').toBe(true);
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(473))), '#473 in #466').toBe(true);
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(523))), '#523 outside #466').toBe(false);
+  // the legend says a box can hold such a PR (it is not a sub-issue)
+  await expect(page.locator('.gleg').filter({ hasText: '框 = 父 issue' })).toHaveText('框 = 父 issue，框里是它的子 issue 和挂在子 issue 上、等前置的 PR');
   await expect(page.getByTestId('graph-hidden')).toHaveCount(0);
   await page.getByTestId('graph-fit').click();
   await shot(page, 'graph-13-pr-registration');

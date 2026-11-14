@@ -77,9 +77,9 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 
 ![The dependency graph: parents drawn as boxes, blocking relations as arrows](client-screens/graph.png)
 
-The third view button. Only issues with a relation are drawn (those with a parent, with sub-issues, blocking or blocked); the number left out is shown at the bottom left.
+The third view button. Only issues with a relation (those with a parent, with sub-issues, blocking or blocked) and pull requests with a prerequisite registration (see "Where relations come from" below) are drawn; the number left out is shown at the bottom left.
 
-- **Boxes**: a parent issue is a box with its sub-issues inside in GitHub's order, its header saying "N / M 子项完成" (N of M sub-issues done); a sub-issue with sub-issues of its own is a box inside the box.
+- **Boxes**: a parent issue is a box with its sub-issues inside in GitHub's order, its header saying "N / M 子项完成" (N of M sub-issues done, counting sub-issues only); a pull request with a prerequisite registration also sits in the box its linked sub-issue sits in, without being a sub-issue; a sub-issue with sub-issues of its own is a box inside the box.
 - **Arrows** point from the blocking item to the blocked one: thick amber while the blocker is open, thin grey once it is closed. Nodes say "被 N 项挡住" (blocked by N) or "挡住后面 N 项" (blocking N).
 - **Where relations come from**: the parent / sub-issue relations and "Blocked by" registered in GitHub's sidebar; in addition, for an open issue carrying the "waiting for prerequisites" label (default `pending/blocked`), the prerequisite registration for the daemon in its comments (only one written by the repository's owner, an organization member or a collaborator), drawn next to "Blocked by". The same goes for a pull request: an open PR carrying that label has the registration in its own comments read, and is drawn as a node with its prerequisites pointing at it, in the box its linked issue sits in (at the top level when that issue is not drawn or sits at the top level).
 - **Across repositories**: when the other end of a relation is in another repository that is not among your sources, it is still drawn, dashed and marked "不在当前来源中" (not in the current sources), and can be opened on GitHub; an end hidden by the search is drawn faded.
