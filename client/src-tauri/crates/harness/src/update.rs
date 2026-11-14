@@ -57,7 +57,7 @@ impl FakeBackend {
 
 #[async_trait]
 impl Backend for FakeBackend {
-    async fn releases(&self) -> Result<Vec<Value>, String> {
+    async fn releases(&self) -> Result<Vec<Value>, update::Why> {
         update::fetch_releases(&self.endpoints).await
     }
 
@@ -86,7 +86,7 @@ impl Backend for FakeBackend {
     }
 
     async fn download(&self, found: &Found, got: Box<dyn Fn(u64, Option<u64>) + Send + Sync>) -> Result<Vec<u8>, Failure> {
-        let (url, sig, _) = self.found.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Invalid("没有这个更新".into()))?;
+        let (url, sig, _) = self.found.lock().unwrap().get(&found.id).cloned().ok_or(Failure::Gone)?;
         let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Failure> {
             let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).max_redirects(0).build().into();
             let res = agent.get(&url).call().map_err(|e| Failure::Network(e.to_string()))?;
@@ -158,7 +158,7 @@ pub async fn command(
         let channel = Channel::parse(&s("channel")).unwrap_or(Channel::Stable);
         return Ok(match update::pick(&pages, &s("current"), &s("web"), channel) {
             Ok(p) => json!({ "pick": p.map(|p| json!({ "version": p.version, "tag": p.tag, "manifest": p.manifest_url })) }),
-            Err(m) => json!({ "error": m }),
+            Err(m) => json!({ "error": m.to_string() }),
         });
     }
     // what the versions in between changed (GitHub#348), from a release list the test hands over
@@ -210,7 +210,7 @@ pub async fn command(
         };
         let current = s("current");
         let backend = Arc::new(FakeBackend::new(endpoints.clone(), &current, &s("target"), PathBuf::from(s("dir"))));
-        let problem = a.get("problem").and_then(|v| v.as_str()).map(str::to_string);
+        let problem = a.get("problem").and_then(|v| v.as_str()).map(str::to_string).map(|p| Arc::new(move || p.clone()) as update::Words);
         let dev_supported = a.get("devSupported").and_then(|v| v.as_bool()).unwrap_or(true);
         let u = Updater::new(backend.clone(), clock.clone(), store.clone(), &current, &endpoints.web, timings, problem, dev_supported, Box::new(emit));
         if a.get("run").and_then(|v| v.as_bool()).unwrap_or(false) {

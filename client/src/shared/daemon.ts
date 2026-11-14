@@ -4,7 +4,7 @@
 // The one thing the client adds is a copyable install command per missing
 // program — it never decides on its own which programs are needed.
 
-import { t } from './i18n';
+import { getLang, t, translate, zhKey, type Params, type VerbatimSource } from './i18n';
 export type SchedState = 'running' | 'stopped' | 'unknown';
 
 export interface DaemonAgent {
@@ -53,18 +53,20 @@ export interface Precheck {
  */
 export type Outdated =
   | { form: 'checkout' | 'managed' | 'directory'; target: string }
-  | { form: 'unknown'; error: string };
+  | { form: 'unknown'; error: string; errorSaid?: unknown };
 
 export type DaemonStatus =
   | { state: 'missing'; entry: string }
   /** `precheck`: the status script could check only the common tools (no jq) — those are still listed */
-  | { state: 'unreadable'; reason: string; entry: string | null; precheck?: Precheck; outdated?: Outdated }
+  | { state: 'unreadable'; reason: string; reasonSaid?: unknown; entry: string | null; precheck?: Precheck; outdated?: Outdated }
   | { state: 'ok'; entry: string; status: LocalStatus };
 
 /** `refused`: the back end did not run anything (the reason is `output`) */
 export interface DaemonResult {
   result: string;
   output?: string;
+  /** GitHub#473: `output` with its outside parts marked (the back end's Said); absent: shown as `output` */
+  outputSaid?: unknown;
   state?: SchedState;
   code?: number | null;
   path?: string;
@@ -75,6 +77,7 @@ export interface DaemonRefresh {
   result: string;
   code: number | null;
   output: string;
+  outputSaid?: unknown;
 }
 
 export interface DaemonUpdate extends DaemonResult {
@@ -82,6 +85,7 @@ export interface DaemonUpdate extends DaemonResult {
   result: 'updated' | 'current' | 'blocked' | 'managed' | 'refused' | 'still_old';
   step?: string;
   branch?: string;
+  branchSaid?: unknown;
   before?: string;
   after?: string;
   version?: string | null;
@@ -104,63 +108,95 @@ export function installCommand(program: string, os: string): string | null {
   return null;
 }
 
+/**
+ * GitHub#473: a sentence of the client's own words with holes, some filled with text from outside
+ * (a program's name the status script reported, a path on this machine). `wordsText` reads it as one
+ * string; the window draws it with the outside parts marked (renderer/WordsText.tsx).
+ */
+export interface Words {
+  zh: string;
+  params?: Params;
+  /** which params are outside text, and where they come from */
+  outside?: Readonly<Record<string, VerbatimSource>>;
+}
+
+export const wordsText = (w: Words): string => translate(getLang(), w.zh, w.params);
+
 export interface CheckRow {
   id: string;
   ok: boolean | null;
   text: string;
+  words: Words;
   command: string | null;
 }
 
+const row = (id: string, ok: boolean | null, words: Words, command: string | null): CheckRow => ({ id, ok, text: wordsText(words), words, command });
+
+/** "缺 tmux" — the program's name as the status script gave it */
+const missingWords = (m: string): Words => ({ zh: zhKey('缺 {name}'), params: { name: m }, outside: { name: 'daemon' } });
+
 /** One row per common tool the status script found missing (or one "齐全" row). */
 export function toolRows(missing: string[], os: string): CheckRow[] {
-  if (missing.length === 0) return [{ id: 'tools', ok: true, text: '通用工具齐全', command: null }];
-  return missing.map((m) => ({ id: `tool:${m}`, ok: false, text: `缺 ${m}`, command: installCommand(m, os) }));
+  if (missing.length === 0) return [row('tools', true, { zh: zhKey('通用工具齐全') }, null)];
+  return missing.map((m) => row(`tool:${m}`, false, missingWords(m), installCommand(m, os)));
 }
 
 /** The checklist: what the status script found missing, gh's sign-in, the poller's bash. */
 export function checklist(st: LocalStatus): CheckRow[] {
   const rows: CheckRow[] = toolRows(st.base_deps.missing, st.os);
   if (st.gh.installed) {
-    if (st.gh.logged_in) rows.push({ id: 'gh', ok: true, text: 'gh 已登录（daemon 用它读写 GitHub）', command: null });
-    else rows.push({ id: 'gh', ok: false, text: 'gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub（客户端的登录不交给它）', command: 'gh auth login' });
+    if (st.gh.logged_in) rows.push(row('gh', true, { zh: zhKey('gh 已登录（daemon 用它读写 GitHub）') }, null));
+    else rows.push(row('gh', false, { zh: zhKey('gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub（客户端的登录不交给它）') }, 'gh auth login'));
   }
   if (st.bash) {
     if (st.bash.ok === false) {
-      rows.push({
-        id: 'bash',
-        ok: false,
-        text: `轮询会用的 bash（${st.bash.path}）是 ${st.bash.major} 版，太旧，daemon 跑不起来`,
-        command: st.os === 'Darwin' ? 'brew install bash' : null,
-      });
+      rows.push(
+        row(
+          'bash',
+          false,
+          { zh: zhKey('轮询会用的 bash（{path}）是 {major} 版，太旧，daemon 跑不起来'), params: { path: st.bash.path, major: String(st.bash.major) }, outside: { path: 'daemon' } },
+          st.os === 'Darwin' ? 'brew install bash' : null,
+        ),
+      );
     } else if (st.bash.ok === null) {
-      rows.push({ id: 'bash', ok: null, text: `读不出轮询会用的 bash（${st.bash.path}）的版本`, command: null });
+      rows.push(row('bash', null, { zh: zhKey('读不出轮询会用的 bash（{path}）的版本'), params: { path: st.bash.path }, outside: { path: 'daemon' } }, null));
     }
   }
   return rows;
 }
 
 export function schedWord(s: SchedState | undefined): string {
-  return s === 'running' ? '在跑' : s === 'stopped' ? '已停' : '读不到';
+  return s === 'running' ? t('在跑') : s === 'stopped' ? t('已停') : t('读不到');
 }
 
 /** launchd-refresh.sh's RESULT words (GitHub#313) */
 export function refreshWord(r: string): string {
-  return (
-    {
-      replaced: '已换新',
-      unchanged: '无需换新',
-      unknown: '读不到后台任务状态，什么都没动',
-      lint_failed: '新配置文件校验不过，什么都没动',
-      lock_timeout: '等不到这一轮轮询结束，什么都没动',
-      not_found: '找不到这个项目的后台任务配置',
-      not_macos: '不是 macOS，不需要',
-      // the script reports it only after reading back both the file and the job (launchd-refresh.sh)
-      failed: '没换成，已恢复原样（原文件和任务状态都读回确认过）',
-      needs_human: '没换成，恢复也失败：需要人处理',
-      // no final result from the script (killed, timed out, stopped half-way): nothing is confirmed
-      unconfirmed: '脚本中途退出，没有最终结果：配置文件和后台任务可能已经改动、没有确认恢复，需要人处理',
-    } as Record<string, string>
-  )[r] ?? `没换成（${r}）`;
+  switch (r) {
+    case 'replaced':
+      return t('已换新');
+    case 'unchanged':
+      return t('无需换新');
+    case 'unknown':
+      return t('读不到后台任务状态，什么都没动');
+    case 'lint_failed':
+      return t('新配置文件校验不过，什么都没动');
+    case 'lock_timeout':
+      return t('等不到这一轮轮询结束，什么都没动');
+    case 'not_found':
+      return t('找不到这个项目的后台任务配置');
+    case 'not_macos':
+      return t('不是 macOS，不需要');
+    // the script reports it only after reading back both the file and the job (launchd-refresh.sh)
+    case 'failed':
+      return t('没换成，已恢复原样（原文件和任务状态都读回确认过）');
+    case 'needs_human':
+      return t('没换成，恢复也失败：需要人处理');
+    // no final result from the script (killed, timed out, stopped half-way): nothing is confirmed
+    case 'unconfirmed':
+      return t('脚本中途退出，没有最终结果：配置文件和后台任务可能已经改动、没有确认恢复，需要人处理');
+    default:
+      return t('没换成（{r}）', { r });
+  }
 }
 
 export const refreshOk = (r: string) => r === 'replaced' || r === 'unchanged';
@@ -212,14 +248,23 @@ export interface DirCheck extends DaemonResult {
 export interface ConnectOutcome {
   result: 'connected' | 'failed' | 'blocked';
   output: string;
+  outputSaid?: unknown;
   key?: string;
   state?: SchedState;
   already?: boolean;
   dir?: string;
 }
 
+/** a stretch of the connect output: the client's own words (`from` null) or text from outside */
+export interface ConnectPiece {
+  text: string;
+  from: VerbatimSource | null;
+}
+
 export interface ConnectPoll extends DaemonResult {
   output?: string;
+  /** GitHub#473: the same text as `output`, in stretches marked with who wrote them */
+  pieces?: ConnectPiece[];
   next?: number;
   done?: boolean;
   outcome?: ConnectOutcome | null;
@@ -227,11 +272,12 @@ export interface ConnectPoll extends DaemonResult {
 
 /** The precheck as checklist rows: each missing program with a command, and gh's sign-in. */
 export function precheckRows(p: Precheck2): CheckRow[] {
-  if (p.result !== 'ok') return [{ id: 'unreadable', ok: null, text: `读不到本机缺什么：${p.output ?? p.result}`, command: null }];
+  // the reason is the back end's (its words in the window's language, outside parts in `outputSaid`)
+  if (p.result !== 'ok') return [row('unreadable', null, { zh: zhKey('读不到本机缺什么：{why}'), params: { why: p.output ?? p.result } }, null)];
   const os = p.os ?? '';
-  const rows: CheckRow[] = (p.missing ?? []).map((m) => ({ id: `tool:${m}`, ok: false, text: `缺 ${m}`, command: installCommand(m, os) }));
-  if (rows.length === 0) rows.push({ id: 'tools', ok: true, text: `${p.agent} 需要的程序都在`, command: null });
-  if (p.gh_logged_in === false) rows.push({ id: 'gh', ok: false, text: 'gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub', command: 'gh auth login' });
+  const rows: CheckRow[] = (p.missing ?? []).map((m) => row(`tool:${m}`, false, missingWords(m), installCommand(m, os)));
+  if (rows.length === 0) rows.push(row('tools', true, { zh: zhKey('{agent} 需要的程序都在'), params: { agent: p.agent ?? '' } }, null));
+  if (p.gh_logged_in === false) rows.push(row('gh', false, { zh: zhKey('gh 没有登录：daemon 要用 gh 自己的登录读写 GitHub') }, 'gh auth login'));
   return rows;
 }
 
@@ -306,35 +352,41 @@ export const canEdit = (f: ConfigField) => f.mode === 'edit' && f.editable && KN
 
 /** Why `v` cannot be saved into `f`; null when it can. */
 export function fieldProblem(f: ConfigField, v: string): string | null {
-  if (!PLAIN.test(v)) return '不能有空格、引号、$ 这类字符';
+  if (!PLAIN.test(v)) return t('不能有空格、引号、$ 这类字符');
   switch (f.type) {
     case 'int': {
       const lo = f.min ?? 0;
       const hi = f.max ?? 999_999_999;
-      return /^(0|[1-9]\d{0,8})$/.test(v) && Number(v) >= lo && Number(v) <= hi ? null : `只能是 ${lo} 到 ${hi} 之间的整数`;
+      return /^(0|[1-9]\d{0,8})$/.test(v) && Number(v) >= lo && Number(v) <= hi ? null : t('只能是 {lo} 到 {hi} 之间的整数', { lo: String(lo), hi: String(hi) });
     }
     case 'model':
-      return v === '' || (v.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(v)) ? null : '模型名只能含字母、数字和 . _ : / @ -';
+      return v === '' || (v.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(v)) ? null : t('模型名只能含字母、数字和 . _ : / @ -');
     case 'agent':
     case 'enum':
-      return (f.options ?? []).some((o) => o.value === v) ? null : '不在可选的值里';
+      return (f.options ?? []).some((o) => o.value === v) ? null : t('不在可选的值里');
     case 'bool':
-      return v === f.on || v === f.off ? null : `只能是 ${f.on} 或 ${f.off}`;
+      return v === f.on || v === f.off ? null : t('只能是 {on} 或 {off}', { on: String(f.on), off: String(f.off) });
     default:
-      return '这一项不能在这里改';
+      return t('这一项不能在这里改');
   }
 }
 
-/** A value as the person reads it (read-only rows, "原来：…", the list of what was saved). */
-export function valueText(f: ConfigField, v: string): string {
-  if (f.type === 'label') return v === '' ? '关' : `开，标签 ${v}`;
-  if (f.type === 'bool') return v === f.on ? '开' : v === f.off ? '关' : v;
+/**
+ * A value as the person reads it (read-only rows, "原来：…", the list of what was saved). The value
+ * and an option's label are the daemon's (the config and scripts/config-fields.txt): outside text.
+ */
+export function valueWords(f: ConfigField, v: string): Words {
+  const as = (x: string): Words => ({ zh: '{v}', params: { v: x }, outside: { v: 'daemon' } });
+  if (f.type === 'label') return v === '' ? { zh: zhKey('关||开关') } : { zh: zhKey('开，标签 {v}'), params: { v }, outside: { v: 'daemon' } };
+  if (f.type === 'bool') return v === f.on ? { zh: zhKey('开||开关') } : v === f.off ? { zh: zhKey('关||开关') } : as(v);
   if (f.type === 'enum') {
     const o = (f.options ?? []).find((x) => x.value === v);
-    return o && o.label && o.label !== v ? `${o.label}（${v}）` : v;
+    return o && o.label && o.label !== v ? { zh: zhKey('{label}（{v}）'), params: { label: o.label, v }, outside: { label: 'daemon', v: 'daemon' } } : as(v);
   }
-  return v === '' ? '（空）' : v;
+  return v === '' ? { zh: zhKey('（空）') } : as(v);
 }
+
+export const valueText = (f: ConfigField, v: string): string => wordsText(valueWords(f, v));
 
 /** Fields by group, in the daemon's order. */
 export function configGroups(fields: ConfigField[]): { title: string; fields: ConfigField[] }[] {
@@ -372,18 +424,28 @@ export function saveKind(result: string): SaveKind {
 }
 
 export function saveWord(result: string): string {
-  return (
-    {
-      changed: '打开这个弹窗之后，配置文件被别处改过（比如在编辑器里）。重新读取后再改一次。',
-      invalid: '有一项的值不合规。',
-      not_editable: '有一项现在不能在这里改（配置文件里它的写法变了）。重新读取后再看。',
-      busy: '另一个保存还没结束，稍后再试。',
-      unreadable: '配置文件现在加载不了。',
-      verify_failed: '新文件没通过检查：改完之后配置加载出来的结果对不上。这份配置请用编辑器改。',
-      backup_failed: '保存前的备份写不进去，所以没有保存。',
-      write_failed: '写不了配置文件所在的目录。',
-      not_found: '本机已经没有接入这个项目。',
-      refused: '后台没有执行这次保存。',
-    } as Record<string, string>
-  )[result] ?? '';
+  switch (result) {
+    case 'changed':
+      return t('打开这个弹窗之后，配置文件被别处改过（比如在编辑器里）。重新读取后再改一次。');
+    case 'invalid':
+      return t('有一项的值不合规。');
+    case 'not_editable':
+      return t('有一项现在不能在这里改（配置文件里它的写法变了）。重新读取后再看。');
+    case 'busy':
+      return t('另一个保存还没结束，稍后再试。');
+    case 'unreadable':
+      return t('配置文件现在加载不了。');
+    case 'verify_failed':
+      return t('新文件没通过检查：改完之后配置加载出来的结果对不上。这份配置请用编辑器改。');
+    case 'backup_failed':
+      return t('保存前的备份写不进去，所以没有保存。');
+    case 'write_failed':
+      return t('写不了配置文件所在的目录。');
+    case 'not_found':
+      return t('本机已经没有接入这个项目。');
+    case 'refused':
+      return t('后台没有执行这次保存。');
+    default:
+      return '';
+  }
 }

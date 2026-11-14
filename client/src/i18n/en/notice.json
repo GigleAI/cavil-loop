@@ -244,5 +244,10 @@
   "放回编辑框": "Put it back in the editor",
   "这次操作现在不能重试": "This operation cannot be retried now",
   "不知道上次选的关闭原因，请从详情里重新关闭": "The close reason chosen last time is not known; close it again from the item's detail",
-  "不知道上次选的合并方式，请从详情里重新合并": "The merge method chosen last time is not known; merge it again from the item's detail"
+  "不知道上次选的合并方式，请从详情里重新合并": "The merge method chosen last time is not known; merge it again from the item's detail",
+  "这条新建记录已经不在了": "This new-issue record is gone",
+  "正在查，稍等": "Checking, one moment",
+  "这条新建记录现在不能重试": "This new-issue record cannot be retried now",
+  "这条附带评论现在不能再发": "This attached comment cannot be sent again now",
+  "附带的评论没有发出": "The attached comment was not sent"
 }

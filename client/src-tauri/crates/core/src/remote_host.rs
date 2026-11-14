@@ -8,7 +8,8 @@
 // is the only thing that says what happened; no such line is "unconfirmed", never "closed" or
 // "no devices". What the window shows after a change is what a fresh `status` reads back.
 
-use crate::daemon::{refused, Daemon, Out, BUSY, T_SHORT, T_STATUS};
+use crate::daemon::{Daemon, Out, T_SHORT, T_STATUS};
+use crate::i18n::{tr, Said};
 use serde_json::{json, Value};
 
 const SCRIPT: &str = "remote-access.sh";
@@ -33,10 +34,49 @@ fn device_id_ok(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// What the script printed, shown as it printed it (GitHub#473: the script's words are not the client's).
+fn script_said(out: &Out) -> Said {
+    Said::outside(&out.text(), "daemon")
+}
+
+/// `Out::outcome`, with the client's own words and the script's output kept apart: the same word,
+/// and the same text when joined.
+fn outcome_said(out: &Out) -> (String, Said) {
+    match out.result_word() {
+        Some(w) => (w, script_said(out)),
+        None => {
+            let how = match out.code {
+                Some(c) => tr("退出码 {c}", &[("c", &c.to_string())]),
+                None => tr("没有正常结束", &[]),
+            };
+            (
+                "unconfirmed".into(),
+                Said::compose(
+                    "脚本没有给出最终结果（{how}），中途可能已经改动了文件或后台任务，没有确认恢复。脚本输出：\n{out}",
+                    &[("how", &Said::plain(how)), ("out", &script_said(out))],
+                ),
+            )
+        }
+    }
+}
+
+/// a refusal with its reason as one string (`output`, as always) and marked (`outputSaid`)
+fn host_refused(m: &Said) -> Value {
+    json!({ "result": "refused", "output": m.text(), "outputSaid": m.to_json() })
+}
+
+/// `{key: <the text>, <key>Said: <the same, marked>}` added to `v`
+fn put(v: &mut Value, key: &str, m: &Said) {
+    v[key] = json!(m.text());
+    v[format!("{key}Said")] = m.to_json();
+}
+
 /// `status` output → what the switch shows.
 pub(crate) fn parse_host_status(out: &Out) -> Value {
     let Some(word) = out.result_word() else {
-        return json!({ "state": "unknown", "output": out.outcome().1 });
+        let mut v = json!({ "state": "unknown" });
+        put(&mut v, "output", &outcome_said(out).1);
+        return v;
     };
     let state = match word.as_str() {
         "open" | "closed" | "partial" | "unknown" => word,
@@ -44,7 +84,9 @@ pub(crate) fn parse_host_status(out: &Out) -> Value {
     };
     let host = field(out, "HOST").filter(|h| host_ok(h));
     let devices = field(out, "DEVICES").filter(|d| digits(d, 1..=6)).and_then(|d| d.parse::<u64>().ok());
-    json!({ "state": state, "host": host, "devices": devices, "output": out.text() })
+    let mut v = json!({ "state": state, "host": host, "devices": devices });
+    put(&mut v, "output", &script_said(out));
+    v
 }
 
 /// `list --machine` output → the paired computers, or None when it could not be read whole.
@@ -74,9 +116,15 @@ impl Daemon {
     fn host_script_missing(&self) -> Option<Value> {
         match self.entry() {
             Ok(e) if e.join("scripts").join(SCRIPT).is_file() => None,
-            Ok(_) => Some(json!({ "state": "missing", "output": "本机的 daemon 还没有远程连接功能（没有 remote-access.sh），请先更新 daemon" })),
-            Err(m) => Some(json!({ "state": "missing", "output": m })),
+            Ok(_) => Some(Said::plain(tr("本机的 daemon 还没有远程连接功能（没有 remote-access.sh），请先更新 daemon", &[]))),
+            // the local daemon's own words (crate::daemon), already in the window's language
+            Err(m) => Some(Said::plain(m)),
         }
+        .map(|m| {
+            let mut v = json!({ "state": "missing" });
+            put(&mut v, "output", &m);
+            v
+        })
     }
 
     async fn host_status_with(&self, path: &str) -> Value {
@@ -87,11 +135,20 @@ impl Daemon {
     /// status / enable / disable / code / cancel / devices / revoke (with `target` = device id).
     pub async fn remote_host(&self, action: &str, target: Option<&str>) -> Value {
         if let Some(m) = self.host_script_missing() {
-            return if action == "status" { m } else { refused(m["output"].as_str().unwrap_or("")) };
+            return if action == "status" { m } else { json!({ "result": "refused", "output": m["output"], "outputSaid": m["outputSaid"] }) };
         }
         let path = match self.host_path().await {
             Ok(p) => p,
-            Err(m) => return if action == "status" { json!({ "state": "unknown", "output": m }) } else { refused(&m) },
+            Err(m) => {
+                let m = Said::plain(m);
+                return if action == "status" {
+                    let mut v = json!({ "state": "unknown" });
+                    put(&mut v, "output", &m);
+                    v
+                } else {
+                    host_refused(&m)
+                };
+            }
         };
         match action {
             "status" => self.host_status_with(&path).await,
@@ -99,18 +156,22 @@ impl Daemon {
                 let out = self.script(&path, SCRIPT, &["list", "--machine"], T_SHORT).await;
                 match parse_devices(&out) {
                     Some(d) => json!({ "result": "ok", "devices": d }),
-                    None => json!({ "result": "unreadable", "output": out.text() }),
+                    None => {
+                        let mut v = json!({ "result": "unreadable" });
+                        put(&mut v, "output", &script_said(&out));
+                        v
+                    }
                 }
             }
             "enable" | "disable" | "code" | "cancel" | "revoke" => {
-                let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
+                let Ok(_g) = self.busy.try_lock() else { return host_refused(&Said::plain(tr("另一个 daemon 操作还没结束，等它结束再试", &[]))) };
                 let args: Vec<&str> = match action {
                     "enable" => vec!["enable"],
                     "disable" => vec!["disable"],
                     "code" => vec!["pair"],
                     "cancel" => vec!["pair-cancel"],
                     _ => {
-                        let Some(id) = target.filter(|t| device_id_ok(t)) else { return refused("设备编号不合规") };
+                        let Some(id) = target.filter(|t| device_id_ok(t)) else { return host_refused(&Said::plain(tr("设备编号不合规", &[]))) };
                         vec!["revoke", id]
                     }
                 };
@@ -121,10 +182,13 @@ impl Daemon {
                         Some(1) => "not_found",
                         _ => "failed",
                     };
-                    return json!({ "result": result, "output": out.text() });
+                    let mut v = json!({ "result": result });
+                    put(&mut v, "output", &script_said(&out));
+                    return v;
                 }
-                let (word, text) = out.outcome();
-                let mut v = json!({ "result": word, "output": text });
+                let (word, text) = outcome_said(&out);
+                let mut v = json!({ "result": word });
+                put(&mut v, "output", &text);
                 if action == "code" && word == "code" {
                     let code = field(&out, "CODE").filter(|c| digits(c, 8..=8));
                     let expires = field(&out, "EXPIRES").filter(|e| digits(e, 9..=12)).and_then(|e| e.parse::<u64>().ok());
@@ -137,15 +201,22 @@ impl Daemon {
                         // a code the window cannot show is no code: void it rather than leave one waiting —
                         // and say it is void only when the script says so (PR #400 review round 7)
                         _ => {
-                            let (cw, ct) = self.script(&path, SCRIPT, &["pair-cancel"], T_SHORT).await.outcome();
+                            let (cw, ct) = outcome_said(&self.script(&path, SCRIPT, &["pair-cancel"], T_SHORT).await);
                             v["result"] = json!("failed");
-                            v["output"] = json!(if cw == "cancelled" {
-                                format!("配对码的格式认不出，已作废，请再生成一次。脚本输出：\n{text}")
+                            let m = if cw == "cancelled" {
+                                Said::compose("配对码的格式认不出，已作废，请再生成一次。脚本输出：\n{text}", &[("text", &text)])
                             } else {
-                                format!(
-                                    "配对码的格式认不出，而且没能确认把它作废（作废结果：{cw}）：这台机器上可能还有一个等着的配对码，10 分钟内仍能被用来配对。请点「生成配对码」换一个新码（新码会顶替它），或在这台机器上运行 bash ~/.agents/skills/cavil-loop/scripts/remote-access.sh pair-cancel。\n作废时的输出：\n{ct}\n出码时的输出：\n{text}"
+                                Said::compose(
+                                    "配对码的格式认不出，而且没能确认把它作废（作废结果：{cw}）：这台机器上可能还有一个等着的配对码，10 分钟内仍能被用来配对。请点「生成配对码」换一个新码（新码会顶替它），或在这台机器上运行 {cmd}。\n作废时的输出：\n{ct}\n出码时的输出：\n{text}",
+                                    &[
+                                        ("cw", &Said::outside(&cw, "daemon")),
+                                        ("cmd", &Said::plain("bash ~/.agents/skills/cavil-loop/scripts/remote-access.sh pair-cancel".into())),
+                                        ("ct", &ct),
+                                        ("text", &text),
+                                    ],
                                 )
-                            });
+                            };
+                            put(&mut v, "output", &m);
                         }
                     }
                 }
@@ -155,7 +226,7 @@ impl Daemon {
                 }
                 v
             }
-            _ => refused("未知操作"),
+            _ => host_refused(&Said::plain(tr("未知操作", &[]))),
         }
     }
 }

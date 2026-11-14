@@ -14,7 +14,8 @@
 // "unconfirmed" — the file may or may not have changed, so the window says
 // neither "saved" nor "nothing written".
 
-use crate::daemon::{refused, tail, valid_key, Daemon, BUSY, T_SHORT};
+use crate::daemon::{bad_key, busy, outside, plain, put_said, refused_s, tail, valid_key, Daemon, T_SHORT};
+use crate::i18n::{tr, Said};
 use serde_json::{json, Map, Value};
 
 const SCRIPT: &str = "project-config.sh";
@@ -43,95 +44,101 @@ pub fn valid_rev(r: &str) -> bool {
 }
 
 impl Daemon {
-    fn has_config_script(&self) -> Result<bool, String> {
-        Ok(self.entry()?.join("scripts").join(SCRIPT).is_file())
+    fn has_config_script(&self) -> Result<bool, Said> {
+        Ok(self.entry_s()?.join("scripts").join(SCRIPT).is_file())
     }
 
     /// The script's `get`: Ok(its JSON, state "ok") or Err((result word, words for the person)).
-    async fn config_read(&self, path: &str, key: &str) -> Result<Value, (String, String)> {
-        let out = self.script(path, SCRIPT, &["get", key], T_SHORT).await;
+    async fn config_read(&self, path: &str, key: &str) -> Result<Value, (String, Said)> {
+        let out = self.script_s(path, SCRIPT, &["get", key], T_SHORT).await;
         let v: Value = match serde_json::from_str(out.stdout.trim()) {
             Ok(v) => v,
             Err(_) => {
-                let t = out.text();
-                return Err(("unreadable".into(), format!("读不到这个项目的配置：{}", if t.is_empty() { "脚本没有输出".into() } else { t })));
+                let shown = if out.note.is_none() && out.text().is_empty() { plain(tr("脚本没有输出", &[])) } else { out.said("daemon") };
+                return Err(("unreadable".into(), Said::compose("读不到这个项目的配置：{e}", &[("e", &shown)])));
             }
         };
         if v["version"] != 1 {
-            return Err(("unreadable".into(), format!("配置脚本输出的格式认不出（version = {}），客户端可能需要更新", v["version"])));
+            return Err(("unreadable".into(), Said::new("配置脚本输出的格式认不出（version = {v}），客户端可能需要更新", &[("v", &v["version"].to_string())], "daemon")));
         }
         match v["state"].as_str() {
             Some("ok") if out.ok() && v["fields"].is_array() && v["rev"].is_string() => Ok(v),
-            Some("not_found") => Err(("not_found".into(), v["reason"].as_str().unwrap_or("本机没有接入这个项目").to_string())),
+            Some("not_found") => Err((
+                "not_found".into(),
+                v["reason"].as_str().map(|r| outside(r, "daemon")).unwrap_or_else(|| plain(tr("本机没有接入这个项目", &[]))),
+            )),
             // "unreadable" and anything this client does not know: never shown as "nothing set"
-            _ => Err(("unreadable".into(), v["reason"].as_str().map(str::to_string).unwrap_or_else(|| tail(&out.text(), 2000)))),
+            _ => Err(("unreadable".into(), outside(&v["reason"].as_str().map(str::to_string).unwrap_or_else(|| tail(&out.text(), 2000)), "daemon"))),
         }
     }
 
     /// `{result:"ok", config}` / `{result:"unsupported"|"unreadable"|"not_found"|"refused", output}`
     pub async fn config_get(&self, key: &str) -> Value {
         if !valid_key(key) {
-            return refused("项目名不合规");
+            return refused_s(&bad_key());
         }
         match self.has_config_script() {
             Ok(true) => {}
-            Ok(false) => return json!({ "result": "unsupported", "output": "这份 daemon 还没有读写项目配置的脚本（早于 GitHub#388）：更新 daemon 后可以在这里用表单改，现在只能用编辑器打开配置文件" }),
-            Err(m) => return refused(&m),
+            Ok(false) => {
+                let why = plain(tr("这份 daemon 还没有读写项目配置的脚本（早于 GitHub#388）：更新 daemon 后可以在这里用表单改，现在只能用编辑器打开配置文件", &[]));
+                return put_said(json!({ "result": "unsupported" }), "output", &why);
+            }
+            Err(m) => return refused_s(&m),
         }
-        let path = match self.path().await {
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         match self.config_read(&path, key).await {
             Ok(v) => json!({ "result": "ok", "config": v }),
-            Err((word, why)) => json!({ "result": word, "output": why }),
+            Err((word, why)) => put_said(json!({ "result": word }), "output", &why),
         }
     }
 
     /// `values`: `{SETTING: "value"}`. `{result: <the script's word> | "unconfirmed" | "refused", output, detail}`
     pub async fn config_set(&self, key: &str, rev: &str, values: &Value) -> Value {
         if !valid_key(key) {
-            return refused("项目名不合规");
+            return refused_s(&bad_key());
         }
         if !valid_rev(rev) {
-            return refused("指纹不合规：先重新读取配置");
+            return refused_s(&plain(tr("指纹不合规：先重新读取配置", &[])));
         }
-        let Some(map) = values.as_object().filter(|m| !m.is_empty() && m.len() <= 64) else { return refused("没有要改的配置项") };
+        let Some(map) = values.as_object().filter(|m| !m.is_empty() && m.len() <= 64) else { return refused_s(&plain(tr("没有要改的配置项", &[]))) };
         let mut send = Map::new();
         for (name, v) in map {
-            let Some(v) = v.as_str() else { return refused(&format!("{name} 的值不是文本")) };
+            let Some(v) = v.as_str() else { return refused_s(&plain(tr("{name} 的值不是文本", &[("name", name)]))) };
             if !valid_setting(name) {
-                return refused("配置项的名字不合规");
+                return refused_s(&plain(tr("配置项的名字不合规", &[])));
             }
             if !valid_value(v) {
-                return refused(&format!("{name} 的值里有不能写进配置文件的字符"));
+                return refused_s(&plain(tr("{name} 的值里有不能写进配置文件的字符", &[("name", name)])));
             }
             send.insert(name.clone(), Value::String(v.to_string()));
         }
         match self.has_config_script() {
             Ok(true) => {}
-            Ok(false) => return refused("这份 daemon 还没有读写项目配置的脚本"),
-            Err(m) => return refused(&m),
+            Ok(false) => return refused_s(&plain(tr("这份 daemon 还没有读写项目配置的脚本", &[]))),
+            Err(m) => return refused_s(&m),
         }
-        let Ok(_g) = self.busy.try_lock() else { return refused(BUSY) };
-        let path = match self.path().await {
+        let Ok(_g) = self.busy.try_lock() else { return refused_s(&busy()) };
+        let path = match self.path_s().await {
             Ok(p) => p,
-            Err(m) => return refused(&m),
+            Err(m) => return refused_s(&m),
         };
         // read again right before the save: only what the daemon lists as editable now goes out
         let now = match self.config_read(&path, key).await {
             Ok(v) => v,
-            Err((_, why)) => return refused(&format!("保存前重新读取配置失败，没有保存：{why}")),
+            Err((_, why)) => return refused_s(&Said::compose("保存前重新读取配置失败，没有保存：{why}", &[("why", &why)])),
         };
         let editable = |name: &str| now["fields"].as_array().into_iter().flatten().any(|f| f["name"].as_str() == Some(name) && f["mode"] == "edit" && f["editable"] == true);
         if let Some(name) = send.keys().find(|n| !editable(n)) {
-            return refused(&format!("{name} 不是能在这里改的配置项，没有保存"));
+            return refused_s(&plain(tr("{name} 不是能在这里改的配置项，没有保存", &[("name", name)])));
         }
         let input = Value::Object(send).to_string();
-        let out = self.script_input(&path, SCRIPT, &["set", key, "--rev", rev], Some(&input), T_SAVE).await;
-        let (result, output) = out.outcome();
+        let out = self.script_input_s(&path, SCRIPT, &["set", key, "--rev", rev], Some(&input), T_SAVE).await;
+        let (result, output) = out.outcome_said();
         let detail = out.stdout.lines().rev().find_map(|l| l.strip_prefix("DETAIL=")).and_then(|d| serde_json::from_str::<Value>(d).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
-        json!({ "result": result, "code": out.code, "output": output, "detail": detail })
+        put_said(json!({ "result": result, "code": out.code, "detail": detail }), "output", &output)
     }
 }
 

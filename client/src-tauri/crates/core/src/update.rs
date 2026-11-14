@@ -18,6 +18,7 @@
 // read without a token.
 
 use crate::http::{self, Endpoints, HttpRequest};
+use crate::i18n::{not_text, tr, Said};
 use crate::platform::Clock;
 use crate::store::Store;
 use async_trait::async_trait;
@@ -79,7 +80,51 @@ impl Channel {
 pub const DEV_TARGETS: &[&str] = &["darwin-aarch64"];
 
 /// Why the development channel cannot be chosen on a machine with no development builds.
-pub const NO_DEV_BUILD: &str = "开发版只有 Apple 芯片的包，这台 Mac 只能用正式版";
+pub fn no_dev_build() -> String {
+    tr("开发版只有 Apple 芯片的包，这台 Mac 只能用正式版", &[])
+}
+
+/// Words worded when they are shown (GitHub#473): in the language the window has at that moment.
+pub type Words = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// Why the release list could not be read, or the newest release cannot be updated to (GitHub#473:
+/// kept as facts and worded when shown; the network's own words stay apart).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// the connection failed: the network's words
+    Unreachable(String),
+    Http(u16),
+    BadList,
+    TooLong,
+    /// the running app's own version string
+    BadVersion(String),
+    NoManifest(String),
+    /// the manifest's address (from GitHub's release list) is not under this repository's downloads
+    Elsewhere { version: String, url: String },
+}
+
+impl Why {
+    pub fn said(&self) -> Said {
+        match self {
+            Why::Unreachable(e) => Said::new("连不上 GitHub（{e}）", &[("e", e)], "system"),
+            Why::Http(status) => Said::plain(tr("GitHub 返回 HTTP {status}", &[("status", &status.to_string())])),
+            Why::BadList => Said::plain(tr("GitHub 返回的发版列表看不懂", &[])),
+            Why::TooLong => Said::plain(tr("发版列表超过 {n} 页，没读完", &[("n", &MAX_PAGES.to_string())])),
+            Why::BadVersion(v) => Said::plain(tr("当前版本号看不懂：{version}", &[("version", v)])),
+            Why::NoManifest(v) => Said::plain(tr("新版 {version} 的发版里没有更新说明文件（{file}）", &[("version", v), ("file", MANIFEST)])),
+            Why::Elsewhere { version, url } => Said {
+                template: tr("新版 {version} 的更新说明文件不在本仓库的下载地址下：{url}", &[("version", version)]),
+                parts: vec![("url".into(), url.clone(), "github")],
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Why {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.said().text())
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Timings {
@@ -200,11 +245,11 @@ fn installable(r: &Value, channel: Channel) -> Option<Version> {
 ///   - `X.Y.Z-dev.N`: marked pre-release, and only on the development channel
 /// Any other mix (a pre-release on a release version, a development version not marked
 /// pre-release) is not one this app installs.
-pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Result<Option<Pick>, String> {
-    let cur = parse_version(current).ok_or_else(|| format!("当前版本号看不懂：{current}"))?;
+pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Result<Option<Pick>, Why> {
+    let cur = parse_version(current).ok_or_else(|| Why::BadVersion(current.to_string()))?;
     let mut best: Option<(Version, &Value)> = None;
     for page in pages {
-        let list = page.as_array().ok_or("GitHub 返回的发版列表看不懂")?;
+        let list = page.as_array().ok_or(Why::BadList)?;
         for r in list {
             let Some(v) = installable(r, channel) else { continue };
             if v <= cur || best.is_some_and(|(b, _)| v <= b) {
@@ -221,10 +266,10 @@ pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Resu
         .iter()
         .find(|x| x["name"] == MANIFEST)
         .and_then(|x| x["browser_download_url"].as_str())
-        .ok_or_else(|| format!("新版 {version} 的发版里没有更新说明文件（{MANIFEST}）"))?;
+        .ok_or_else(|| Why::NoManifest(version.clone()))?;
     let base = format!("{}/{REPO}/releases/download/", web.trim_end_matches('/'));
     if !url.starts_with(&base) || !http::under(&base, url) {
-        return Err(format!("新版 {version} 的更新说明文件不在本仓库的下载地址下：{url}"));
+        return Err(Why::Elsewhere { version, url: url.to_string() });
     }
     Ok(Some(Pick { version, tag, manifest_url: url.to_string() }))
 }
@@ -239,10 +284,15 @@ pub fn pick(pages: &[Value], current: &str, web: &str, channel: Channel) -> Resu
 /// The heading the development build's publisher puts above the notes it adds to a release page
 /// (scripts/dev-release.mjs `NOTES_HEADING`; test/fixtures/update-notes/dev-body.md is written by
 /// that script and read by this parser).
-pub const NOTES_HEADING: &str = "### 更新内容";
+pub const NOTES_HEADING: &str = not_text("### 更新内容");
 /// The heading of the current version's part of the release notes (RELEASE_NOTES.md), which is the
 /// whole body of a tagged release's page.
-pub const RELEASE_HEADING_PREFIX: &str = "### 这一版";
+pub const RELEASE_HEADING_PREFIX: &str = not_text("### 这一版");
+/// The marks the release notes' items and a development build's first line are written with.
+const OPEN: &str = not_text("（");
+const CLOSE: &str = not_text("）");
+const COLON: &str = not_text("：");
+const DEV_FIRST: &str = not_text("开发版 ");
 /// Versions listed at most (the newest ones); the rest is counted in `more`.
 pub const MAX_NOTE_VERSIONS: usize = 30;
 /// Items listed per version at most; the rest is counted in that version's `more`.
@@ -275,14 +325,14 @@ fn note_item(line: &str) -> Value {
         Some((bold, rest)) if !bold.trim().is_empty() => {
             let mut title = bold.to_string();
             let mut rest = rest;
-            if rest.starts_with('（') {
-                if let Some(i) = rest.find('）') {
-                    let end = i + '）'.len_utf8();
+            if rest.starts_with(OPEN) {
+                if let Some(i) = rest.find(CLOSE) {
+                    let end = i + CLOSE.len();
                     title.push_str(&rest[..end]);
                     rest = &rest[end..];
                 }
             }
-            let rest = rest.trim_start().trim_start_matches(['：', ':']).trim();
+            let rest = rest.trim_start().trim_start_matches(|c: char| COLON.starts_with(c) || c == ':').trim();
             (title, (!rest.is_empty()).then(|| rest.to_string()))
         }
         _ => (text.to_string(), None),
@@ -311,7 +361,7 @@ fn body_lines(body: &str, dev: bool) -> Vec<String> {
         return section_items(body, |l| l.starts_with(RELEASE_HEADING_PREFIX)).unwrap_or_default().into_iter().map(str::to_string).collect();
     }
     let first = body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    match first.strip_prefix("开发版 ").and_then(|l| l.split_once('：')) {
+    match first.strip_prefix(DEV_FIRST).and_then(|l| l.split_once(COLON)) {
         Some((_, title)) if !title.trim().is_empty() => vec![title.trim().to_string()],
         _ => vec![],
     }
@@ -375,7 +425,7 @@ pub fn well_formed_notes(v: &Value) -> bool {
 /// The whole release list, page by page, until a page has fewer than 100 entries. No credential.
 /// Any page that fails fails the whole read; so does a list longer than MAX_PAGES pages (its end
 /// was never seen, so "nothing newer" could not be told).
-pub async fn fetch_releases(ep: &Endpoints) -> Result<Vec<Value>, String> {
+pub async fn fetch_releases(ep: &Endpoints) -> Result<Vec<Value>, Why> {
     let mut pages = vec![];
     for page in 1..=MAX_PAGES {
         let res = http::send(HttpRequest {
@@ -385,18 +435,18 @@ pub async fn fetch_releases(ep: &Endpoints) -> Result<Vec<Value>, String> {
             body: None,
         })
         .await
-        .map_err(|e| format!("连不上 GitHub（{e}）"))?;
+        .map_err(|e| Why::Unreachable(e.to_string()))?;
         if res.status != 200 {
-            return Err(format!("GitHub 返回 HTTP {}", res.status));
+            return Err(Why::Http(res.status));
         }
-        let v: Value = serde_json::from_str(&res.body).map_err(|_| "GitHub 返回的发版列表看不懂".to_string())?;
-        let n = v.as_array().map(Vec::len).ok_or("GitHub 返回的发版列表看不懂")?;
+        let v: Value = serde_json::from_str(&res.body).map_err(|_| Why::BadList)?;
+        let n = v.as_array().map(Vec::len).ok_or(Why::BadList)?;
         pages.push(v);
         if n < 100 {
             return Ok(pages);
         }
     }
-    Err(format!("发版列表超过 {MAX_PAGES} 页，没读完"))
+    Err(Why::TooLong)
 }
 
 /// Why a step of a round failed.
@@ -410,12 +460,19 @@ pub enum Failure {
     Signature(String),
     /// putting the new app in place failed (the old one stays)
     Install(String),
+    /// a download that received nothing for this many seconds (the client's own words, GitHub#473)
+    Stalled(i64),
+    /// the update a round found is no longer held (the client's own words)
+    Gone,
 }
 
 impl Failure {
-    fn message(&self) -> &str {
+    /// The variants carrying text carry the updater's / the system's own words: shown as written.
+    fn said(&self) -> Said {
         match self {
-            Failure::Network(m) | Failure::Invalid(m) | Failure::Signature(m) | Failure::Install(m) => m,
+            Failure::Network(m) | Failure::Invalid(m) | Failure::Signature(m) | Failure::Install(m) => Said::outside(m, "system"),
+            Failure::Stalled(s) => Said::plain(tr("{n} 秒没有收到数据", &[("n", &s.to_string())])),
+            Failure::Gone => Said::plain(tr("没有这个更新", &[])),
         }
     }
 }
@@ -432,7 +489,7 @@ pub struct Found {
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// The release list (`fetch_releases` in the app).
-    async fn releases(&self) -> Result<Vec<Value>, String>;
+    async fn releases(&self) -> Result<Vec<Value>, Why>;
     /// Read the manifest at `url`. Ok(None) = it announces nothing newer than this app.
     async fn check(&self, url: &str) -> Result<Option<Found>, Failure>;
     /// Download the package and check its signature; `got(bytes so far, total if known)` after
@@ -456,7 +513,39 @@ enum Phase {
 struct Last {
     at: i64,
     ok: bool,
-    message: String,
+    message: Msg,
+}
+
+/// How a round ended, worded when shown (GitHub#473): switching the language re-words the last line.
+#[derive(Clone, Debug)]
+enum Msg {
+    Ready(String),
+    UpToDate,
+    NoAnswer,
+    Check(Why),
+    CheckFailed(Failure),
+    Signature(String),
+    Download(String, Failure),
+    Install(String, Failure),
+    /// overtaken by a channel switch (never shown: the round is rerun)
+    Switched,
+}
+
+impl Msg {
+    fn said(&self) -> Said {
+        let version = |v: &str| Said::plain(v.to_string());
+        match self {
+            Msg::Ready(v) => Said::plain(tr("新版 {version} 已下载，重启后生效", &[("version", v)])),
+            Msg::UpToDate => Said::plain(tr("已是最新", &[])),
+            Msg::NoAnswer => Said::plain(tr("检查失败：GitHub 没有回应", &[])),
+            Msg::Check(w) => Said::compose("检查失败：{e}", &[("e", &w.said())]),
+            Msg::CheckFailed(f) => Said::compose("检查失败：{e}", &[("e", &f.said())]),
+            Msg::Signature(v) => Said::plain(tr("新版 {version} 签名校验失败，没有安装", &[("version", v)])),
+            Msg::Download(v, f) => Said::compose("下载 {version} 失败：{e}", &[("version", &version(v)), ("e", &f.said())]),
+            Msg::Install(v, f) => Said::compose("安装 {version} 失败：{e}", &[("version", &version(v)), ("e", &f.said())]),
+            Msg::Switched => Said::plain(tr("渠道已切换", &[])),
+        }
+    }
 }
 
 struct Inner {
@@ -471,9 +560,6 @@ struct Inner {
     notes: Value,
 }
 
-/// What a round that was overtaken by a channel switch returns (never shown: the round is rerun).
-const SWITCHED: &str = "渠道已切换";
-
 /// The updater: one per app.
 pub struct Updater {
     backend: Arc<dyn Backend>,
@@ -484,7 +570,7 @@ pub struct Updater {
     web: String,
     timings: Timings,
     /// why this app cannot update itself at all (shown, never checks)
-    problem: Option<String>,
+    problem: Option<Words>,
     /// development builds are published for this machine (`DEV_TARGETS`)
     dev_supported: bool,
     inner: Mutex<Inner>,
@@ -502,7 +588,7 @@ impl Updater {
         current: &str,
         web: &str,
         timings: Timings,
-        problem: Option<String>,
+        problem: Option<Words>,
         dev_supported: bool,
         changed: Box<dyn Fn(Value) + Send + Sync>,
     ) -> Arc<Updater> {
@@ -545,12 +631,12 @@ impl Updater {
     /// on the new channel; refused while the new app is being put in place.
     pub fn set_channel(&self, c: Channel) -> Result<(), String> {
         if c == Channel::Dev && !self.dev_supported {
-            return Err(NO_DEV_BUILD.into());
+            return Err(no_dev_build());
         }
         {
             let mut g = self.inner.lock().unwrap();
             if let Phase::Installing { version } = &g.phase {
-                return Err(format!("正在安装 {version}，装好后可以切换"));
+                return Err(tr("正在安装 {version}，装好后可以切换", &[("version", version)]));
             }
             if self.channel() != c {
                 self.store.set_setting(CHANNEL_KEY, &json!(c.name()))?;
@@ -604,10 +690,13 @@ impl Updater {
             "current": self.current,
             "auto": self.auto(),
             "channel": self.channel().name(),
-            "devUnavailable": if self.dev_supported { Value::Null } else { json!(NO_DEV_BUILD) },
-            "problem": self.problem,
+            "devUnavailable": if self.dev_supported { Value::Null } else { json!(no_dev_build()) },
+            "problem": self.problem.as_ref().map(|p| p()),
             "dismissed": self.store.get_str(DISMISSED_KEY),
-            "last": last.map(|l| json!({ "at": l.at, "ok": l.ok, "message": l.message })),
+            "last": last.map(|l| {
+                let said = l.message.said();
+                json!({ "at": l.at, "ok": l.ok, "message": said.text(), "said": said.to_json() })
+            }),
             "installed": self.installed(),
         });
         // the notes belong to the version on the screen: none while idle or checking
@@ -657,7 +746,7 @@ impl Updater {
         true
     }
 
-    async fn finish(&self, phase: Phase, ok: bool, message: String) {
+    async fn finish(&self, phase: Phase, ok: bool, message: Msg) {
         let at = self.clock.now().await;
         {
             let mut g = self.inner.lock().unwrap();
@@ -689,8 +778,8 @@ impl Updater {
                 continue;
             }
             match r {
-                Ok(Some(version)) => self.finish(Phase::Ready { version: version.clone() }, true, format!("新版 {version} 已下载，重启后生效")).await,
-                Ok(None) => self.finish(Phase::Idle, true, "已是最新".into()).await,
+                Ok(Some(version)) => self.finish(Phase::Ready { version: version.clone() }, true, Msg::Ready(version)).await,
+                Ok(None) => self.finish(Phase::Idle, true, Msg::UpToDate).await,
                 Err(m) => self.finish(Phase::Idle, false, m).await,
             }
             return;
@@ -698,20 +787,20 @@ impl Updater {
     }
 
     /// Ok(Some(v)) = v is in place; Ok(None) = nothing newer; Err = what to show.
-    async fn round(self: &Arc<Self>, generation: u64, channel: Channel) -> Result<Option<String>, String> {
+    async fn round(self: &Arc<Self>, generation: u64, channel: Channel) -> Result<Option<String>, Msg> {
         let t = self.timings;
         let pages = self
             .unless_switched(generation, self.within(t.query_timeout_ms, self.backend.releases()))
             .await
-            .ok_or(SWITCHED)?
-            .ok_or("检查失败：GitHub 没有回应")?
-            .map_err(|e| format!("检查失败：{e}"))?;
-        let Some(p) = pick(&pages, &self.current, &self.web, channel).map_err(|e| format!("检查失败：{e}"))? else {
+            .ok_or(Msg::Switched)?
+            .ok_or(Msg::NoAnswer)?
+            .map_err(Msg::Check)?;
+        let Some(p) = pick(&pages, &self.current, &self.web, channel).map_err(Msg::Check)? else {
             return Ok(None);
         };
-        let found = match self.unless_switched(generation, self.within(t.query_timeout_ms, self.backend.check(&p.manifest_url))).await.ok_or(SWITCHED)? {
-            None => return Err("检查失败：GitHub 没有回应".into()),
-            Some(Err(f)) => return Err(format!("检查失败：{}", f.message())),
+        let found = match self.unless_switched(generation, self.within(t.query_timeout_ms, self.backend.check(&p.manifest_url))).await.ok_or(Msg::Switched)? {
+            None => return Err(Msg::NoAnswer),
+            Some(Err(f)) => return Err(Msg::CheckFailed(f)),
             Some(Ok(None)) => return Ok(None),
             Some(Ok(Some(f))) => f,
         };
@@ -720,22 +809,22 @@ impl Updater {
         {
             let mut g = self.inner.lock().unwrap();
             if g.generation != generation {
-                return Err(SWITCHED.into());
+                return Err(Msg::Switched);
             }
             g.phase = Phase::Downloading { version: version.clone(), got: 0, total: None };
             g.notes = changes.clone();
         }
         self.emit();
-        let bytes = match self.unless_switched(generation, self.download_watched(&found, generation)).await.ok_or(SWITCHED)? {
+        let bytes = match self.unless_switched(generation, self.download_watched(&found, generation)).await.ok_or(Msg::Switched)? {
             Ok(b) => b,
-            Err(Failure::Signature(_)) => return Err(format!("新版 {version} 签名校验失败，没有安装")),
-            Err(f) => return Err(format!("下载 {version} 失败：{}", f.message())),
+            Err(Failure::Signature(_)) => return Err(Msg::Signature(version)),
+            Err(f) => return Err(Msg::Download(version, f)),
         };
         // the last point a switch can stop this round: from here on the old app is being replaced
         {
             let mut g = self.inner.lock().unwrap();
             if g.generation != generation {
-                return Err(SWITCHED.into());
+                return Err(Msg::Switched);
             }
             g.phase = Phase::Installing { version: version.clone() };
         }
@@ -748,8 +837,8 @@ impl Updater {
                 }
                 Ok(Some(version))
             }
-            Err(Failure::Signature(_)) => Err(format!("新版 {version} 签名校验失败，没有安装")),
-            Err(f) => Err(format!("安装 {version} 失败：{}", f.message())),
+            Err(Failure::Signature(_)) => Err(Msg::Signature(version)),
+            Err(f) => Err(Msg::Install(version, f)),
         }
     }
 
@@ -805,7 +894,7 @@ impl Updater {
                     last_n = n;
                     last_at = now;
                 } else if now - last_at >= self.timings.stall_ms {
-                    return Failure::Network(format!("{} 秒没有收到数据", self.timings.stall_ms / 1000));
+                    return Failure::Stalled(self.timings.stall_ms / 1000);
                 }
             }
         };

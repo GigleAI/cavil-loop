@@ -30,7 +30,7 @@ impl Lang {
 }
 
 /// The English tables, by area — the same files, in the same order, as the window's EN_TABLES.
-pub const TABLES: [(&str, &str); 7] = [
+pub const TABLES: [(&str, &str); 10] = [
     ("shell", include_str!("../../../../src/i18n/en/shell.json")),
     ("board", include_str!("../../../../src/i18n/en/board.json")),
     ("detail", include_str!("../../../../src/i18n/en/detail.json")),
@@ -38,6 +38,9 @@ pub const TABLES: [(&str, &str); 7] = [
     ("notice", include_str!("../../../../src/i18n/en/notice.json")),
     ("actions", include_str!("../../../../src/i18n/en/actions.json")),
     ("daemon", include_str!("../../../../src/i18n/en/daemon.json")),
+    ("remote", include_str!("../../../../src/i18n/en/remote.json")),
+    ("update", include_str!("../../../../src/i18n/en/update.json")),
+    ("session", include_str!("../../../../src/i18n/en/session.json")),
 ];
 
 enum EnText {
@@ -117,13 +120,26 @@ fn fill(text: &str, params: &[(&str, &str)]) -> String {
     out
 }
 
+/// GitHub#473: Chinese that is never shown — a mark of a format another program writes and this
+/// code only matches (the headings of a release page). The source scan lets exactly these through
+/// and test/unit/i18n.test.ts pins the whole list; never wrap words that reach the screen.
+pub const fn not_text(s: &'static str) -> &'static str {
+    s
+}
+
 /// The window's `translate`: one language, one key, its values.
+/// GitHub#473: what a key reads as in Chinese — everything before its context mark `||` (the window's
+/// `shownZh`): one Chinese text that means two things is two keys, `开||开关` and `开`.
+pub fn shown_zh(key: &str) -> &str {
+    key.find("||").map_or(key, |at| &key[..at])
+}
+
 pub fn translate(l: Lang, zh: &str, params: &[(&str, &str)]) -> String {
     if l == Lang::Zh {
-        return fill(zh, params);
+        return fill(shown_zh(zh), params);
     }
     match table().get(zh) {
-        None => fill(zh, params),
+        None => fill(shown_zh(zh), params),
         Some(EnText::One(s)) => fill(s, params),
         Some(EnText::Plural { one, other }) => {
             let n = params.iter().find(|(k, _)| *k == "n").and_then(|(_, v)| v.trim().parse::<f64>().ok());

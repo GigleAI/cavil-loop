@@ -38,7 +38,7 @@ import { RepoWebLink } from './RepoWebLink';
 import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, viewBarTallies, type TallyEntry } from '../data/flowTally';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
-import { SourceName, Verbatim, verbatimParts } from './Verbatim';
+import { SaidText, SourceName, Verbatim, verbatimParts } from './Verbatim';
 import { tNode } from './tNode';
 import { isShown, revealBeside } from './reveal';
 
@@ -997,7 +997,7 @@ export function BoardView({
           : t('离线 · {data} · 每分钟自动重试，点刷新可立刻重试。修改功能暂不可用。', { data: offlineDataText(sync, now) })}
       </WarnBar>
       <WarnBar kind="sync-problem" warn={warn}>
-        {sync.problem}
+        {sync.problemSaid ? <SaidText said={sync.problemSaid} /> : sync.problem}
       </WarnBar>
       <WarnBar kind="board-notify-problem" warn={warn}>
         {tNode('macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」；角标照常显示。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })}
