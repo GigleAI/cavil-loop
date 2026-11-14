@@ -46,3 +46,4 @@ DISPATCH_MODE | 只显示、不在这里改的设置 | enum:label=只派打了�
 LABEL_PENDING_REVIEW | 只显示、不在这里改的设置 | label | | show | 复审关卡 |
 LABEL_AUTOPILOT | 只显示、不在这里改的设置 | label | | show | 托管（自动合并） |
 LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | | show | 等前置 |
+LABEL_PENDING_LATER | 只显示、不在这里改的设置 | label | | show | 暂缓 |
