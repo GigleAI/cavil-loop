@@ -7,6 +7,9 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { useLayer, useShortcuts } from './keyboard';
 import { t } from '../shared/i18n';
+import type { ReactNode } from 'react';
+import { SaidText, Verbatim } from './Verbatim';
+import { tNode } from './tNode';
 
 const MB = 1_000_000;
 const mb = (n: number) => (n / MB).toFixed(1);
@@ -15,21 +18,27 @@ const clock = (at: number) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-/** One line: what the updater is doing, or how its last round ended. */
-export function updateLine(u: UpdateStatus): string {
+/**
+ * One line: what the updater is doing, or how its last round ended. The back end words its own
+ * part (the last round, the problem) in the window's language; the outside words in it (the
+ * network's, the updater's) are shown as written (GitHub#473).
+ */
+export function updateLine(u: UpdateStatus): ReactNode {
   if (u.problem) return u.problem;
+  const version = u.version ?? '';
   switch (u.phase) {
     case 'checking':
-      return '正在检查…';
+      return t('正在检查…');
     case 'downloading':
-      return `正在下载 ${u.version}（${mb(u.got ?? 0)}${u.total ? ` / ${mb(u.total)}` : ''} MB）`;
+      return u.total ? t('正在下载 {version}（{got} / {total} MB）', { version, got: mb(u.got ?? 0), total: mb(u.total) }) : t('正在下载 {version}（{got} MB）', { version, got: mb(u.got ?? 0) });
     case 'installing':
-      return `正在安装 ${u.version}`;
+      return t('正在安装 {version}', { version });
     case 'ready':
-      return `新版 ${u.version} 已下载，重启后生效`;
+      return t('新版 {version} 已下载，重启后生效', { version });
   }
-  if (!u.last) return '还没有检查过';
-  return u.last.ok ? `上次检查 ${clock(u.last.at)}，${u.last.message}` : `${u.last.message}（${clock(u.last.at)}）`;
+  if (!u.last) return t('还没有检查过');
+  const message = u.last.said ? <SaidText said={u.last.said} /> : u.last.message;
+  return u.last.ok ? tNode('上次检查 {time}，{message}', { time: clock(u.last.at), message }) : tNode('{message}（{time}）', { message, time: clock(u.last.at) });
 }
 
 /** Every client release, on GitHub (the one link the notes offer; nothing out of a release page is made clickable). */
@@ -60,9 +69,9 @@ export function UpdateNotesDialog({ notes, restart, onClose }: { notes: UpdateNo
     <div className="modal-back" data-testid="update-notes" onClick={onClose}>
       <div className="modal update-notes" role="dialog" aria-modal="true" tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
         <h3>
-          更新内容{' '}
+          {t('更新内容')}{' '}
           <span className="sub" data-testid="update-notes-range">
-            {notes.from} → {notes.to}，共 {notes.entries.length + notes.more} 个版本
+            {t('{from} → {to}，共 {n} 个版本', { from: notes.from, to: notes.to, n: notes.entries.length + notes.more })}
           </span>
         </h3>
         {notes.entries.map((e) => (
@@ -74,43 +83,48 @@ export function UpdateNotesDialog({ notes, restart, onClose }: { notes: UpdateNo
               <ul className="un-items">
                 {e.items.map((it, i) => (
                   <li key={i} data-testid="update-notes-item">
+                    {/* the release page's words (GitHub), shown as written */}
                     {it.more ? (
                       <details>
                         <summary>
-                          <b>{it.title}</b>
+                          <b>
+                            <Verbatim from="github">{it.title}</Verbatim>
+                          </b>
                         </summary>
-                        <div className="more">{it.more}</div>
+                        <div className="more">
+                          <Verbatim from="github">{it.more}</Verbatim>
+                        </div>
                       </details>
                     ) : (
-                      it.title
+                      <Verbatim from="github">{it.title}</Verbatim>
                     )}
                   </li>
                 ))}
-                {e.more > 0 && <li className="muted">还有 {e.more} 条，在 GitHub 上看</li>}
+                {e.more > 0 && <li className="muted">{t('还有 {n} 条，在 GitHub 上看', { n: e.more })}</li>}
               </ul>
             ) : (
               <p className="small muted un-none" data-testid="update-notes-none">
-                这一版没有写更新说明
+                {t('这一版没有写更新说明')}
               </p>
             )}
           </div>
         ))}
         <p className="un-note" data-testid="update-notes-foot">
-          按版本从新到旧。没有写中文说明的版本，显示的是那次提交的标题。
-          {notes.more > 0 && ` 还有 ${notes.more} 个更早的版本没有列出，在 GitHub 上看。`}
-          {!notes.complete && ' 更早的版本说明已不在 GitHub 上（开发版只保留最近几个），这里可能不全。'}
+          {t('按版本从新到旧。没有写中文说明的版本，显示的是那次提交的标题。')}
+          {notes.more > 0 && t(' 还有 {n} 个更早的版本没有列出，在 GitHub 上看。', { n: notes.more })}
+          {!notes.complete && t(' 更早的版本说明已不在 GitHub 上（开发版只保留最近几个），这里可能不全。')}
         </p>
         <div className="row un-foot">
           <button className="link" data-testid="update-notes-web" onClick={() => void api().openExternal(RELEASES_URL)}>
-            在 GitHub 上看全部版本
+            {t('在 GitHub 上看全部版本')}
           </button>
           <span className="spacer" />
           <button data-testid="update-notes-close" onClick={onClose}>
-            关闭
+            {t('关闭')}
           </button>
           {restart && (
             <button className="primary" data-testid="update-notes-restart" onClick={() => api().restartToUpdate()}>
-              立即重启
+              {t('立即重启')}
             </button>
           )}
         </div>
@@ -137,7 +151,7 @@ function NotesButton({ notes, restart, label, link, testid }: { notes: UpdateNot
   return (
     <>
       <button className={link ? 'link' : undefined} data-testid={testid} onClick={() => setOpenOn(key)}>
-        {label}（{notes.entries.length + notes.more} 个版本）
+        {t('{label}（{n} 个版本）', { label, n: notes.entries.length + notes.more })}
       </button>
       {openOn !== null && openOn === key && <UpdateNotesDialog notes={notes} restart={restart} onClose={() => setOpenOn(null)} />}
     </>
@@ -150,28 +164,26 @@ export function UpdateSection({ update }: { update: UpdateStatus | null }) {
   return (
     <section id="set-update" data-testid="update-settings">
       <h3>{t('更新')}</h3>
-      <p className="small">
-        当前版本 <b data-testid="update-current">{update.current}</b>
-      </p>
+      <p className="small">{tNode('当前版本 {version}', { version: <b data-testid="update-current">{update.current}</b> })}</p>
       <p className={`small${update.last && !update.last.ok && update.phase === 'idle' ? ' err' : ''}`} data-testid="update-line" data-phase={update.phase}>
         {updateLine(update)}
       </p>
       <div className="row">
         {update.phase === 'ready' ? (
           <button className="primary" data-testid="update-restart" onClick={() => api().restartToUpdate()}>
-            立即重启
+            {t('立即重启')}
           </button>
         ) : (
           <button data-testid="update-check" disabled={busy} onClick={() => api().checkUpdate()}>
-            立即检查
+            {t('立即检查')}
           </button>
         )}
-        <NotesButton notes={update.notes} restart={update.phase === 'ready'} label="查看更新内容" testid="update-notes-open" />
+        <NotesButton notes={update.notes} restart={update.phase === 'ready'} label={t('查看更新内容')} testid="update-notes-open" />
       </div>
       {listed(update.installed) && (
         <div className="small update-installed-line" data-testid="update-installed-line">
-          上次更新：{update.installed.from} → {update.installed.to}
-          <NotesButton notes={update.installed} restart={false} label="查看更新内容" link testid="update-installed-open" />
+          {t('上次更新：{from} → {to}', { from: update.installed.from, to: update.installed.to })}
+          <NotesButton notes={update.installed} restart={false} label={t('查看更新内容')} link testid="update-installed-open" />
         </div>
       )}
       <label className="row small">
@@ -195,11 +207,11 @@ function ChannelPicker({ update }: { update: UpdateStatus }) {
   };
   return (
     <div className="small" data-testid="update-channel" data-channel={update.channel}>
-      <div className="row" role="radiogroup" aria-label="更新渠道">
-        更新渠道
+      <div className="row" role="radiogroup" aria-label={t('更新渠道')}>
+        {t('更新渠道')}
         <label className="row">
           <input type="radio" name="update-channel" data-testid="update-channel-stable" checked={update.channel === 'stable'} disabled={locked} onChange={() => pick('stable')} />
-          正式版
+          {t('正式版')}
         </label>
         <label className="row">
           <input
@@ -210,12 +222,12 @@ function ChannelPicker({ update }: { update: UpdateStatus }) {
             disabled={locked || !!update.devUnavailable}
             onChange={() => pick('dev')}
           />
-          开发版
+          {t('开发版')}
         </label>
       </div>
       {update.phase === 'installing' ? (
         <p className="small" data-testid="update-channel-note">
-          正在安装 {update.version}，装好后可以切换
+          {t('正在安装 {version}，装好后可以切换', { version: update.version ?? '' })}
         </p>
       ) : update.devUnavailable ? (
         <p className="small" data-testid="update-channel-note">
@@ -223,12 +235,12 @@ function ChannelPicker({ update }: { update: UpdateStatus }) {
         </p>
       ) : update.channel === 'dev' ? (
         <p className="small" data-testid="update-channel-note">
-          开发版跟着 main 走，每次合并都可能有新版，可能不稳定。切回正式版不会降级，会等下一个比当前高的正式版。
+          {t('开发版跟着 main 走，每次合并都可能有新版，可能不稳定。切回正式版不会降级，会等下一个比当前高的正式版。')}
         </p>
       ) : null}
       {update.phase === 'ready' ? (
         <p className="small" data-testid="update-channel-ready">
-          已装好 {update.version}，重启后生效；之后按所选渠道检查
+          {t('已装好 {version}，重启后生效；之后按所选渠道检查', { version: update.version ?? '' })}
         </p>
       ) : null}
     </div>
@@ -243,13 +255,13 @@ export function UpdateReadyBar({ update }: { update: UpdateStatus | null }) {
     <div className="banner info closable" data-testid="update-ready">
       <Icon name="refresh" />
       <span className="banner-text">
-        新版 {v} 已下载，重启后生效。
-        <NotesButton notes={update.notes} restart label="更新内容" link testid="update-ready-notes" />
+        {t('新版 {version} 已下载，重启后生效。', { version: v })}
+        <NotesButton notes={update.notes} restart label={t('更新内容')} link testid="update-ready-notes" />
         <button className="link" data-testid="update-ready-restart" onClick={() => api().restartToUpdate()}>
-          立即重启
+          {t('立即重启')}
         </button>
       </span>
-      <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="update-ready-close" onClick={() => api().dismissUpdate(v)}>
+      <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid="update-ready-close" onClick={() => api().dismissUpdate(v)}>
         <Icon name="x" />
       </button>
     </div>
@@ -264,10 +276,10 @@ export function UpdateInstalledBar({ update }: { update: UpdateStatus | null }) 
     <div className="banner info closable" data-testid="update-installed">
       <Icon name="refresh" />
       <span className="banner-text">
-        已从 {n.from} 更新到 {n.to}。
-        <NotesButton notes={n} restart={false} label="看更新了什么" link testid="update-installed-notes" />
+        {t('已从 {from} 更新到 {to}。', { from: n.from, to: n.to })}
+        <NotesButton notes={n} restart={false} label={t('看更新了什么')} link testid="update-installed-notes" />
       </span>
-      <button className="banner-close" aria-label="关闭提示" title="关闭提示" data-testid="update-installed-close" onClick={() => api().dismissInstalledUpdate(n.to)}>
+      <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid="update-installed-close" onClick={() => api().dismissInstalledUpdate(n.to)}>
         <Icon name="x" />
       </button>
     </div>

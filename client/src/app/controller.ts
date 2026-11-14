@@ -12,7 +12,7 @@ import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptio
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
-import { readSaid, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
+import { noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
@@ -888,7 +888,7 @@ export class Controller {
       loginReasonSaid: reasonSaid,
       viewer: null,
       signedInAppKind: null,
-      sync: { ...this.state.sync, problem: null },
+      sync: { ...this.state.sync, problem: null, problemSaid: null },
       login: { status: 'idle', userCode: null, verificationUri: null, message: null },
     });
     const r = await this.backend.call<{ message: string | null; said?: unknown; current: boolean }>('logoutResult', { session });
@@ -907,22 +907,26 @@ export class Controller {
     try {
       r = await this.backend.call<FreshOut>('ensureFresh', { session: this.session, force, clientId: this.state.clientId, ...(gen !== undefined ? { gen } : {}) });
     } catch (e) {
-      this.setProblem(`登录续期出错（${(e as Error).message}），会在下一轮自动重试`);
+      // GitHub#473: the client's own words in the window's language; the back end's / the system's words apart
+      const said: Said = { template: t('登录续期出错（{e}），会在下一轮自动重试'), parts: [{ name: 'e', text: (e as Error).message, from: 'system' }] };
+      this.setProblem(saidText(said), said);
       return { result: 'failed', reason: null };
     }
     if (r.signedOut) await this.applySignedOut(r.signedOut.session, r.signedOut.reason, readSaid(r.signedOut.reasonSaid));
-    if (r.problem !== undefined && this.signedIn) this.setProblem(r.problem);
+    if (r.problem !== undefined && this.signedIn) this.setProblem(r.problem, readSaid(r.problemSaid));
     return { result: r.result, reason: typeof r.reason === 'string' ? r.reason : null };
   }
 
   /** A refreshed grant that could not be stored: the back end tries again. */
   private async saveUnsaved(): Promise<void> {
-    const r = await this.backend.call<{ problem?: string | null }>('saveUnsaved');
-    if (r.problem !== undefined) this.setProblem(r.problem);
+    const r = await this.backend.call<{ problem?: string | null; problemSaid?: unknown }>('saveUnsaved');
+    if (r.problem !== undefined) this.setProblem(r.problem, readSaid(r.problemSaid));
   }
 
-  private setProblem(problem: string | null): void {
-    if (this.state.sync.problem !== problem) this.set({ sync: { ...this.state.sync, problem } });
+  /** `said`: the same message with the outside words apart (GitHub#473); null = show `problem` as it is */
+  private setProblem(problem: string | null, said: Said | null = null): void {
+    const s = problem === null ? null : said;
+    if (this.state.sync.problem !== problem || JSON.stringify(this.state.sync.problemSaid ?? null) !== JSON.stringify(s)) this.set({ sync: { ...this.state.sync, problem, problemSaid: s } });
   }
 
   /** The back end dropped every snapshot (sign-out / another account): forget them here too, and what was pending with them. */
@@ -1799,8 +1803,8 @@ export class Controller {
     if (session !== this.session) return over();
     // GitHub says who this token belongs to; data of anybody else goes first.
     if (round.viewer) {
-      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean; problem?: string }>('adoptViewer', { session, login: round.viewer });
-      if (a.problem) this.setProblem(a.problem);
+      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean; problem?: string; problemSaid?: unknown }>('adoptViewer', { session, login: round.viewer });
+      if (a.problem) this.setProblem(a.problem, readSaid(a.problemSaid));
       if (a.stale || session !== this.session) return over();
       if (a.wiped) this.dropMirror();
     }
@@ -2004,7 +2008,14 @@ export class Controller {
 
   /** the back end's words (menu, its messages) follow the window's; a refusal changes nothing on this side */
   private tellBackendLanguage(lang: Lang): void {
-    void this.cache.enqueue(() => this.backend.call('setLanguage', { lang })).catch(() => undefined);
+    // GitHub#473: the updater words its line when asked: read it again once the back end has the new language
+    void this.cache
+      .enqueue(() => this.backend.call('setLanguage', { lang }))
+      .then(() => {
+        noteBackendLang();
+        return this.readUpdate();
+      })
+      .catch(() => undefined);
   }
 
   /**
@@ -3278,8 +3289,8 @@ export class Controller {
   /** GitHub#490, 「再查一次」 of a new issue not known to be created: the look again (reads only; never creates). */
   async createLook(id: number): Promise<WriteResult> {
     const job = this.state.creates.find((j) => j.id === id);
-    if (!job || job.status !== 'unknown') return { ok: false, error: '这条新建记录已经不在了', warning: null };
-    if (job.looking) return { ok: false, error: '正在查，稍等', warning: null };
+    if (!job || job.status !== 'unknown') return { ok: false, error: t('这条新建记录已经不在了'), warning: null };
+    if (job.looking) return { ok: false, error: t('正在查，稍等'), warning: null };
     this.setCreate({ ...job, looking: true, lookError: null });
     await this.lookCreate(id, this.session);
     const end = this.state.creates.find((j) => j.id === id);
@@ -3289,7 +3300,7 @@ export class Controller {
   /** GitHub#490, 「重试」 of a new issue that surely was not created: the same draft again (the old notice goes). */
   async createRetry(id: number): Promise<{ ok: boolean; error: string | null; job?: number }> {
     const job = this.state.creates.find((j) => j.id === id);
-    if (!job || job.status !== 'failed') return { ok: false, error: '这条新建记录现在不能重试' };
+    if (!job || job.status !== 'failed') return { ok: false, error: t('这条新建记录现在不能重试') };
     const d = job.draft;
     const r = await this.startCreate({
       kind: 'createIssue',
@@ -5013,7 +5024,7 @@ export class Controller {
    */
   opRedo(id: string): { ok: boolean; error: string | null; id?: string } {
     const r = this.ops.get(id);
-    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (!r) return { ok: false, error: t('这次操作已经不在了') };
     const action = opRedoAction(r);
     if (typeof action === 'string') return { ok: false, error: action };
     return this.startOp(action, { from: id });
@@ -5025,9 +5036,9 @@ export class Controller {
    */
   opSendComment(id: string): { ok: boolean; error: string | null; id?: string } {
     const r = this.ops.get(id);
-    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    if (!r) return { ok: false, error: t('这次操作已经不在了') };
     const comment = opDraftLeft(r)?.comment;
-    if (opActions(r).retry !== 'sendComment' || comment === undefined) return { ok: false, error: '这条附带评论现在不能再发' };
+    if (opActions(r).retry !== 'sendComment' || comment === undefined) return { ok: false, error: t('这条附带评论现在不能再发') };
     const res = this.startSend({ kind: 'comment', key: r.key, body: comment });
     if (res.ok) this.patchOp(id, { draftDropped: true, dismissed: true });
     return res;
@@ -5068,7 +5079,7 @@ export class Controller {
       state: 'refused',
       sentAt: null,
       answeredAt: null,
-      reason: '附带的评论没有发出',
+      reason: t('附带的评论没有发出'),
       warning: null,
       proof: null,
       returned: false,

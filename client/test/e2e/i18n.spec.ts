@@ -15,7 +15,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
-import { KEEP_LANG } from '../../src/shared/i18n';
+import { chineseIn } from './langCheck';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -41,53 +41,6 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(screens, `${name}.png`) });
 }
 
-/**
- * Chinese in `selectors` outside text shown as is and outside the kept words: text nodes, and the
- * title / aria-label / placeholder / alt of every element. `skip`: parts that belong to a later
- * sub-issue of #466 (named in the call, removed when that part is migrated).
- */
-async function chineseIn(page: Page, selectors: string[], skip: string[] = []): Promise<string[]> {
-  return page.evaluate(
-    ({ selectors, skip, keep }) => {
-      const CJK = /[　-〿㐀-䶿一-鿿豈-﫿＀-￯]/;
-      const out: string[] = [];
-      const exempt = (el: Element) => Boolean(el.closest('[data-verbatim]')) || skip.some((s) => el.closest(s));
-      const kept = (el: Element) => {
-        const k = el.closest('[data-keep-lang]');
-        return Boolean(k && keep.some((x) => x.text === k.textContent && x.lang === k.getAttribute('lang')));
-      };
-      let seen = 0;
-      for (const sel of selectors)
-        for (const root of Array.from(document.querySelectorAll(sel))) {
-          seen++;
-          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-            const el = n.parentElement;
-            if (!el || exempt(el) || kept(el)) continue;
-            if (CJK.test(n.textContent ?? '')) out.push(`${sel}: ${(n.textContent ?? '').trim()}`);
-          }
-          for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
-            if (exempt(el)) continue;
-            // the outside parts an element names (verbatimParts) come out of its attributes, nothing else
-            const parts: string[] = el.hasAttribute('data-verbatim-parts') ? JSON.parse(el.getAttribute('data-verbatim-parts')!) : [];
-            for (const a of ['title', 'aria-label', 'placeholder', 'alt']) {
-              let v = el.getAttribute(a);
-              if (!v) continue;
-              for (const p of parts) v = v.split(p).join('');
-              if (CJK.test(v)) out.push(`${sel} [${a}]: ${el.getAttribute(a)}`);
-            }
-          }
-        }
-      // a selector that matched nothing checked nothing: report it rather than pass
-      if (seen === 0) out.push(`nothing matched ${selectors.join(', ')}`);
-      return out;
-    },
-    { selectors, skip, keep: KEEP_LANG.map((k) => ({ ...k })) },
-  );
-}
-
-/** the parts of Settings still in Chinese until sub-issue ③ (#473) — the local / remote daemon and update sections' contents, "接上 daemon" (the shortcut section's rows came with sub-issue ②, #472) */
-const SETTINGS_LATER = ['#set-update > :not(h3)', '#set-daemon > :not(h3)', '#set-remote > :not(h3)', '[data-testid^="connect-"]', '[data-testid="source-failure"]'];
 /** the settings page as this sub-issue migrated it */
 const SETTINGS = ['.settings > .toolbar', '[data-testid="settings-nav"]', '.settings-main section'];
 
@@ -144,7 +97,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await expect(page.getByTestId('pending-label')).toHaveText('等人/处理');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await saved(app, 'en');
-  expect(await chineseIn(page, SETTINGS, SETTINGS_LATER)).toEqual([]);
+  expect(await chineseIn(page, SETTINGS)).toEqual([]);
   // GitHub#514: what that change wrote or moved inside the sections still waiting for their own migration is English already
   await expect(page.getByTestId('keys-more').locator('summary')).toHaveText('Which keys are fixed, and when a single key works');
   await expect(page.getByTestId('keys-more')).toContainText('Ctrl+1 … Ctrl+9, Ctrl+W and the zoom keys are fixed');

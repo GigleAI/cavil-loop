@@ -190,8 +190,8 @@ impl Store {
         let mut db = self.lock();
         let tx = db.transaction().map_err(err)?;
         for s in snaps {
-            let key = s.get("sourceKey").and_then(|v| v.as_str()).ok_or("快照缺少 sourceKey")?;
-            let at = s.get("fetchedAt").and_then(|v| v.as_f64()).ok_or("快照缺少 fetchedAt")? as i64;
+            let key = s.get("sourceKey").and_then(|v| v.as_str()).ok_or_else(|| crate::i18n::tr("快照缺少 {field}", &[("field", "sourceKey")]))?;
+            let at = s.get("fetchedAt").and_then(|v| v.as_f64()).ok_or_else(|| crate::i18n::tr("快照缺少 {field}", &[("field", "fetchedAt")]))? as i64;
             tx.execute(
                 "INSERT INTO snapshot (source_key, fetched_at, data) VALUES (?1, ?2, ?3)
                  ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data",

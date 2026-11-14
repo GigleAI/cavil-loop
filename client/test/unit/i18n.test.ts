@@ -159,6 +159,47 @@ describe('the source scan over the client', () => {
     expect(bad).toEqual([]);
   });
 
+  it('GitHub#473: Chinese marked as never shown (not_text) is only the release page marks the updater matches', () => {
+    // (the window's own marker, outsideWords, is listed in the same place; this pins the back end's)
+    const marks = sources.filter((f) => f.endsWith('.rs')).flatMap((f) => results.get(f)!.notText.map((x) => `${f} ${x.text}`)).sort();
+    expect(marks).toEqual(
+      ['### 更新内容', '### 这一版', '（', '）', '：', '开发版 '].map((m) => `src-tauri/crates/core/src/update.rs ${m}`).sort(),
+    );
+    // the scan reads them as marks, not as keys and not as findings
+    const r = scan('const H: &str = not_text("### 更新内容"); fn x() { y(not_text(z)); }', 'rust', KEEP);
+    expect(r.notText.map((x) => x.text)).toEqual(['### 更新内容']);
+    expect(r.findings).toEqual([]);
+    expect([...r.keys.keys()]).toEqual([]);
+    expect(r.badCalls).toHaveLength(1);
+  });
+
+  it("GitHub#473: the local / remote daemon, update and sign-in renewal areas are migrated (they are not on the list)", () => {
+    for (const f of [
+      'src/renderer/DaemonSection.tsx',
+      'src/renderer/ConnectDialog.tsx',
+      'src/renderer/ProjectConfigDialog.tsx',
+      'src/shared/daemon.ts',
+      'src-tauri/crates/core/src/daemon.rs',
+      'src-tauri/crates/core/src/daemon_config.rs',
+      'src-tauri/crates/core/src/daemon_connect.rs',
+      'src/renderer/RemoteSection.tsx',
+      'src/renderer/RemoteHostBlock.tsx',
+      'src/shared/remote.ts',
+      'src-tauri/crates/core/src/remote.rs',
+      'src-tauri/crates/core/src/remote_host.rs',
+      'src/renderer/UpdateViews.tsx',
+      'src-tauri/crates/core/src/update.rs',
+      'src-tauri/src/updater.rs',
+      'src-tauri/crates/core/src/release_image.rs',
+      'src-tauri/crates/core/src/engine.rs',
+      'src-tauri/crates/core/src/api.rs',
+      'src-tauri/crates/core/src/http.rs',
+      'src-tauri/crates/core/src/store.rs',
+      'src-tauri/crates/core/src/platform.rs',
+    ])
+      expect(listed, f).not.toContain(f);
+  });
+
   it('the list names only existing files, each once, each still holding Chinese to migrate', () => {
     expect(new Set(listed).size).toBe(listed.length);
     for (const f of listed) {

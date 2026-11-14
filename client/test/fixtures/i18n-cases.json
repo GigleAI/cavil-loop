@@ -13,5 +13,10 @@
   { "lang": "en", "key": "这一句不在任何对照表里：{x}", "params": { "x": "1" }, "expect": "这一句不在任何对照表里：1" },
   { "lang": "zh", "key": "{{n}} 个{n}", "params": { "n": "3" }, "expect": "{3} 个3" },
   { "lang": "en", "key": "关闭标签页", "params": {}, "expect": "Close Tab" },
-  { "lang": "en", "key": "同步不完整：{n} 个来源读取失败（点开看详情）", "params": { "n": "1" }, "expect": "Sync incomplete: 1 source failed to read (click for details)" }
+  { "lang": "en", "key": "同步不完整：{n} 个来源读取失败（点开看详情）", "params": { "n": "1" }, "expect": "Sync incomplete: 1 source failed to read (click for details)" },
+  { "lang": "zh", "key": "开||开关", "params": {}, "expect": "开" },
+  { "lang": "en", "key": "开||开关", "params": {}, "expect": "On" },
+  { "lang": "en", "key": "开", "params": {}, "expect": "Open" },
+  { "lang": "zh", "key": "没有这一句||某处", "params": {}, "expect": "没有这一句" },
+  { "lang": "en", "key": "没有这一句||某处", "params": {}, "expect": "没有这一句" }
 ]

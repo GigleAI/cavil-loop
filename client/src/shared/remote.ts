@@ -3,6 +3,7 @@
 // Tailscale machine and signs every request; this file only has the shapes and the wording.
 
 import type { LocalStatus, SchedState } from './daemon';
+import { t } from './i18n';
 
 export interface RemoteEntry {
   /** `<host>:<port>` */
@@ -34,6 +35,8 @@ export interface RemoteFail {
   /** why not: unreachable / not_tailscale / identity / mismatch / revoked / … */
   state: string;
   message: string;
+  /** the same message with what came from outside marked (a Said, GitHub#473); read with readSaid */
+  messageSaid?: unknown;
 }
 export type RemoteRead = RemoteOk | RemoteFail;
 
@@ -46,6 +49,8 @@ export interface RemoteResult {
   result: string;
   reason?: string;
   output?: string;
+  /** `output` with what came from outside marked (a Said, GitHub#473); read with readSaid */
+  outputSaid?: unknown;
   state?: SchedState;
   id?: string;
   text?: string;
@@ -72,14 +77,14 @@ export function codeDigits(typed: string): string {
 
 /** What the pill of one machine says. */
 export function remotePill(e: RemoteEntry, reading: boolean, read: RemoteRead | null): { word: string; tone: 'ok' | 'bad' | 'busy' } {
-  if (e.state === 'pending_revoke') return { word: '取消配对未完成', tone: 'bad' };
-  if (reading) return { word: '正在读取…', tone: 'busy' };
-  if (!read) return { word: '还没读取', tone: 'busy' };
-  if (readOk(read)) return { word: '已连接', tone: 'ok' };
-  if (read.state === 'revoked') return { word: '配对已失效', tone: 'bad' };
-  if (read.state === 'mismatch' || read.state === 'identity') return { word: '不是那台机器', tone: 'bad' };
-  if (read.state === 'not_tailscale') return { word: '不在 Tailscale 上', tone: 'bad' };
-  return { word: '连不上', tone: 'bad' };
+  if (e.state === 'pending_revoke') return { word: t('取消配对未完成'), tone: 'bad' };
+  if (reading) return { word: t('正在读取…'), tone: 'busy' };
+  if (!read) return { word: t('还没读取'), tone: 'busy' };
+  if (readOk(read)) return { word: t('已连接'), tone: 'ok' };
+  if (read.state === 'revoked') return { word: t('配对已失效'), tone: 'bad' };
+  if (read.state === 'mismatch' || read.state === 'identity') return { word: t('不是那台机器'), tone: 'bad' };
+  if (read.state === 'not_tailscale') return { word: t('不在 Tailscale 上'), tone: 'bad' };
+  return { word: t('连不上'), tone: 'bad' };
 }
 
 export function clock(epochSec: number): string {
@@ -99,20 +104,22 @@ export interface TailnetDevice {
   /** open: its remote entry answered · closed: nothing listens there · unknown: could not tell (never "closed") · offline: not asked */
   remote: 'open' | 'closed' | 'unknown' | 'offline';
   why?: string;
+  /** `why` with what came from outside marked (a Said, GitHub#473) */
+  whySaid?: unknown;
 }
-export type TailnetList = { result: 'ok'; devices: TailnetDevice[] } | { result: 'unreadable'; output: string };
+export type TailnetList = { result: 'ok'; devices: TailnetDevice[] } | { result: 'unreadable'; output: string; outputSaid?: unknown };
 
 /** What the pill of a machine in the list says. */
 export function tailnetPill(d: TailnetDevice): { word: string; tone: 'ok' | 'bad' | 'busy' | 'none' } {
   switch (d.remote) {
     case 'open':
-      return { word: '已打开远程连接', tone: 'ok' };
+      return { word: t('已打开远程连接'), tone: 'ok' };
     case 'closed':
-      return { word: '未打开远程连接', tone: 'none' };
+      return { word: t('未打开远程连接'), tone: 'none' };
     case 'offline':
-      return { word: '不在线', tone: 'none' };
+      return { word: t('不在线'), tone: 'none' };
     default:
-      return { word: '不确定', tone: 'busy' };
+      return { word: t('不确定'), tone: 'busy' };
   }
 }
 
@@ -132,6 +139,8 @@ export interface HostStatus {
   host?: string | null;
   devices?: number | null;
   output?: string;
+  /** `output` with what came from outside marked (a Said, GitHub#473) */
+  outputSaid?: unknown;
 }
 
 export interface HostDevice {
@@ -144,6 +153,8 @@ export interface HostDevice {
 export interface HostResult {
   result: string;
   output?: string;
+  /** `output` with what came from outside marked (a Said, GitHub#473) */
+  outputSaid?: unknown;
   /** enable / disable: what a fresh read says afterwards */
   status?: HostStatus;
   code?: string;
@@ -162,5 +173,5 @@ export function spacedCode(code: string): string {
 export function codeLeft(expires: number, nowSec: number): string | null {
   const s = Math.floor(expires - nowSec);
   if (s <= 0) return null;
-  return `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, '0')} 秒`;
+  return t('{m} 分 {s} 秒', { m: Math.floor(s / 60), s: String(s % 60).padStart(2, '0') });
 }

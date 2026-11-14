@@ -24,6 +24,8 @@ export interface ScanResult {
   keys: Map<string, number[]>;
   /** a t( / tr( whose first argument is not a plain literal */
   badCalls: Finding[];
+  /** the literals marked `outsideWords(…)` (window) / `not_text(…)` (back end): never shown as the client's text (GitHub#472 / #473) */
+  notText: Finding[];
 }
 
 type Lang = 'ts' | 'rust';
@@ -47,11 +49,13 @@ function unescape(raw: string): string {
 export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResult {
   const findings: Finding[] = [];
   const badCalls: Finding[] = [];
+  const notText: Finding[] = [];
   const keys = new Map<string, number[]>();
   const fns = lang === 'ts' ? ['t', 'tNode', 'zhKey'] : ['tr'];
-  // GitHub#472: words that are not the window's text (src/shared/i18n.ts `outsideWords`): their literal is
-  // neither a key nor a finding, but must still be a plain literal
-  const outsideFns = lang === 'ts' ? ['outsideWords'] : [];
+  // GitHub#472 / #473: words that are not text anyone is shown — the window's `outsideWords` (src/shared/i18n.ts),
+  // the back end's `not_text` (crates/core/src/i18n.rs, marks the updater matches): their literal is neither a
+  // key nor a finding, but must still be a plain literal; each one is listed in `notText`
+  const outsideFns = lang === 'ts' ? ['outsideWords'] : ['not_text'];
   const fn = fns.join(' / ');
   let i = 0;
   let line = 1;
@@ -80,6 +84,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
     if (wantKey && wantOutside) {
       wantKey = false;
       wantOutside = false;
+      if (testDepth < 0) notText.push({ line: at, text: value });
       return;
     }
     if (wantKey) {
@@ -328,7 +333,7 @@ export function scan(src: string, lang: Lang, keep: readonly string[]): ScanResu
     prev = c;
     i++;
   }
-  return { findings: mergeLines(findings), keys, badCalls };
+  return { findings: mergeLines(findings), keys, badCalls, notText };
 }
 
 /** one finding per line: JSX text arrives a character at a time */

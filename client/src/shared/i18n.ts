@@ -21,6 +21,9 @@ import dialogs from '../i18n/en/dialogs.json' with { type: 'json' };
 import notice from '../i18n/en/notice.json' with { type: 'json' };
 import actions from '../i18n/en/actions.json' with { type: 'json' };
 import daemon from '../i18n/en/daemon.json' with { type: 'json' };
+import remote from '../i18n/en/remote.json' with { type: 'json' };
+import update from '../i18n/en/update.json' with { type: 'json' };
+import session from '../i18n/en/session.json' with { type: 'json' };
 
 export type Lang = 'zh' | 'en';
 /** what the user picked in Settings; 'auto' = follow the system */
@@ -34,7 +37,7 @@ export const LANG_SETTING = 'uiLanguage';
 export const DEFAULT_LANG_SETTING: LangSetting = 'zh';
 
 /** the English tables by area (file name without .json); the checks read them one by one */
-export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, detail, dialogs, notice, actions, daemon } as Record<string, Record<string, EnText>>;
+export const EN_TABLES: Readonly<Record<string, Readonly<Record<string, EnText>>>> = { shell, board, detail, dialogs, notice, actions, daemon, remote, update, session } as Record<string, Record<string, EnText>>;
 
 /** the tables as one, as the window and the back end look them up */
 function mergeTables(): Map<string, EnText> {
@@ -73,6 +76,30 @@ export function getLang(): Lang {
 /** set the language t() answers in (the window re-renders through its state, see Controller.setUiLanguage) */
 export function setLang(lang: Lang): void {
   current = lang;
+}
+
+/**
+ * GitHub#473: how many times the back end has taken a new language (it words its own messages in
+ * the language it last got). Parts of the window that hold a status the back end worded — the
+ * local / remote daemon sections — read it again when this changes, so a status read before the
+ * switch does not stay in the old language.
+ */
+let backendRound = 0;
+const backendListeners = new Set<() => void>();
+
+export function backendLangRound(): number {
+  return backendRound;
+}
+
+/** the back end has answered `setLanguage` */
+export function noteBackendLang(): void {
+  backendRound++;
+  for (const f of [...backendListeners]) f();
+}
+
+export function onBackendLang(f: () => void): () => void {
+  backendListeners.add(f);
+  return () => backendListeners.delete(f);
 }
 
 /** a stored setting as this version reads it: anything it does not know is Chinese */
@@ -143,11 +170,24 @@ export function enEntry(zh: string): EnText | undefined {
 }
 
 /** the pure rule t() applies, for one language (the back end applies the same) */
+/**
+ * GitHub#473: one Chinese text that means two things (「开」 an open issue / a switch that is on) is two keys:
+ * the Chinese, then `||` and a word saying which one (`t('开||开关')`). Only the part before `||` is ever
+ * shown in Chinese; the English table has one line per key. The back end reads keys the same way.
+ */
+export const CONTEXT_MARK = '||';
+
+/** what a key reads as in Chinese: everything before its context mark */
+export function shownZh(key: string): string {
+  const at = key.indexOf(CONTEXT_MARK);
+  return at < 0 ? key : key.slice(0, at);
+}
+
 export function translate(lang: Lang, zh: string, params?: Params): string {
-  if (lang === 'zh') return fill(zh, params);
+  if (lang === 'zh') return fill(shownZh(zh), params);
   const en = EN.get(zh);
   // a missing English line shows the Chinese rather than nothing; the table check catches it
-  if (en === undefined) return fill(zh, params);
+  if (en === undefined) return fill(shownZh(zh), params);
   if (typeof en === 'string') return fill(en, params);
   const n = params?.n;
   return fill(Number(n) === 1 ? en.one : en.other, params);

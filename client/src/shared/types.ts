@@ -38,7 +38,7 @@ export interface UpdateStatus {
   /** the "ready" banner was closed for this version */
   dismissed: string | null;
   /** the last finished round: when, and what it ended with (a failure never reads as "up to date") */
-  last: { at: number; ok: boolean; message: string } | null;
+  last: { at: number; ok: boolean; message: string; /** GitHub#473: the same, worded in the window's language with the outside words apart */ said?: Said | null } | null;
   /** downloading / installing / ready: what every version up to the new one changed (GitHub#348); null = nothing to list */
   notes?: UpdateNotes | null;
   /** what the update this app was started from changed, and whether its notice was closed; null = nothing kept for this version */
@@ -637,6 +637,8 @@ export interface SyncState {
   sources: SourceStatus[];
   /** something the user should know that is not "offline" (e.g. a refresh that failed, a credential not saved); null = none */
   problem: string | null;
+  /** GitHub#473: the same message with its own words and the outside words apart (the back end's, or the window's own); absent / null = show `problem` as it is */
+  problemSaid?: Said | null;
 }
 
 /** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */

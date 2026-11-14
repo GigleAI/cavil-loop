@@ -179,7 +179,7 @@ fn with_retries(message: String, retries: usize) -> String {
     if retries == 0 {
         message
     } else {
-        format!("{message}（已自动重试 {retries} 次）")
+        crate::i18n::tr("{e}（已自动重试 {n} 次）", &[("e", &message), ("n", &retries.to_string())])
     }
 }
 

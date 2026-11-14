@@ -220,7 +220,7 @@ pub fn select(os: &str, env: &std::collections::HashMap<String, String>) -> Resu
     if test_mode {
         if let (Some(api), Some(web)) = (env.get("CAVIL_CLIENT_TEST_API"), env.get("CAVIL_CLIENT_TEST_WEB")) {
             if !crate::http::is_loopback(api) || !crate::http::is_loopback(web) {
-                return Err("测试模式只允许把 GitHub 地址指向本机回环地址".into());
+                return Err(tr("测试模式只允许把 GitHub 地址指向本机回环地址", &[]));
             }
             endpoints = crate::http::Endpoints { api: api.trim_end_matches('/').into(), web: web.trim_end_matches('/').into() };
         }
