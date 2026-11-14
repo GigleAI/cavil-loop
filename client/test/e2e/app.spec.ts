@@ -2033,6 +2033,10 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('hand-back-human').fill('doing/agent');
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
+  // GitHub#523: another label name starts a round (GitHub#462: read under the new label); it sets the badge
+  // like every round, and under load that came after the switch below and was counted as the switch's.
+  // Waited until it has ended (asked while it runs, one more round is queued behind it and awaited too)
+  await page.evaluate(() => (window as any).cavil.syncNow());
   await page.waitForTimeout(300);
   expect(badge()).toBeLessThanOrEqual(2);
   expect(notes()).toHaveLength(2);
