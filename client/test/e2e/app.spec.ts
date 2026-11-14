@@ -5828,13 +5828,33 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.locator('[data-testid="detail-label"][data-label="pending/human"]')).toBeVisible();
 
   // ---- 4. the fields fold away; remembered across items and a restart; the label key brings them back with the picker ----
+  /**
+   * GitHub#523: the resend is followed by a read of the detail, and while one runs over what was shown from the cache
+   * a "正在更新…" line sits above the discussion; under load it came or went between the two measurements below.
+   * Both are taken with no read of this item under way and no such line. And the notice area above every page
+   * (the kept change's bar goes once the resend is through) can still change height in between, moving the whole
+   * panel: the discussion is measured from the panel's own top, both read in one step.
+   */
+  const discussionInPanel = () =>
+    page.evaluate(() => {
+      const top = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().top;
+      return Math.round(top('[data-testid="timeline-frame"]') - top('[data-testid="detail"]'));
+    });
+  const detailReads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
+  const still = async () => {
+    await expect.poll(() => detailReads().every((l) => l.status > 0)).toBe(true);
+    await expect(detail.getByTestId('detail-cached')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes');
+  };
   await expect(detail.getByTestId('detail-fields')).toBeVisible();
+  await still();
   const fieldsH = await detail.getByTestId('detail-fields').evaluate((e) => e.getBoundingClientRect().height);
-  const tOpen = await discussionTop();
+  const tOpen = await discussionInPanel();
   await detail.getByTestId('fields-toggle').click();
   await expect(detail.getByTestId('detail-fields')).toHaveCount(0);
   await expect(detail.getByTestId('fields-toggle')).toHaveAttribute('data-shown', 'no');
-  expect(tOpen - (await discussionTop())).toBeGreaterThanOrEqual(Math.floor(fieldsH));
+  await still();
+  expect(tOpen - (await discussionInPanel())).toBeGreaterThanOrEqual(Math.floor(fieldsH));
   await shot(page, '260-03-fields-folded');
   await page.getByTestId('detail-close').click();
   await card(page, 137).click();

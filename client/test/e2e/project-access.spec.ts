@@ -243,11 +243,11 @@ test('one organisation rate limited while another is still loading: closing and 
   limited = false;
   await expect(page.getByTestId('picker-reload')).toBeEnabled({ timeout: 8_000 });
   await page.getByTestId('picker-reload').click();
-  // GitHub#523: the reload takes the groups away while it reads, so "no failure in a-org" alone also held before
-  // the new read was sent — the a-org group is there again and nothing is loading any more
-  await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"]')).toBeVisible();
+  // GitHub#523: the reload takes the groups away while it reads, and the click may not have been taken yet when the
+  // next check runs — so neither "a-org is there" (the old answer) nor "no failure in a-org" (nothing shown while
+  // reading) says the new read answered. One condition only the new answer meets: a-org shown, with no failure
+  await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"]:not(:has([data-testid="picker-group-failure"]))')).toBeVisible();
   await expect(page.getByTestId('picker-loading')).toHaveCount(0);
-  await expect(page.locator('[data-testid="picker-group"][data-owner="a-org"] [data-testid="picker-group-failure"]')).toHaveCount(0);
   expect(viewerReads()).toBe(2);
 });
 
