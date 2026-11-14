@@ -77,7 +77,7 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 
 ![The dependency graph: parents drawn as boxes, blocking relations as arrows](client-screens/graph.png)
 
-The third view button. Only issues with a relation (those with a parent, with sub-issues, blocking or blocked) and pull requests with a prerequisite registration (see "Where relations come from" below) are drawn; the number left out is shown at the bottom left.
+The third view button. Only issues with a relation (those with a parent, with sub-issues, blocking or blocked) and pull requests tied to a prerequisite registration are drawn: a PR waiting with a registration of its own, and a PR some registration names as a prerequisite (the latter whether or not it has a registration or the label of its own, open or closed; see "Where relations come from" below); the number left out is shown at the bottom left.
 
 - **Boxes**: a parent issue is a box with its sub-issues inside in GitHub's order, its header saying "N / M 子项完成" (N of M sub-issues done, counting sub-issues only); a pull request with a prerequisite registration also sits in the box its linked sub-issue sits in, without being a sub-issue; a sub-issue with sub-issues of its own is a box inside the box.
 - **Arrows** point from the blocking item to the blocked one: thick amber while the blocker is open, thin grey once it is closed. Nodes say "被 N 项挡住" (blocked by N) or "挡住后面 N 项" (blocking N).
