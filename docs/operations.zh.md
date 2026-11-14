@@ -1648,7 +1648,7 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 
 ## 远程入口：让另一台电脑上的客户端看这台机器的 daemon（GitHub#387）
 
-daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客户端的「设置 → 远程 daemon」可以列出这台机器接了哪些项目、在不在跑，停 / 启某个项目的轮询，看轮询日志的最后 200 行。**只通过 Tailscale**，并且要先配对。默认是关的：不跑下面的命令，这台机器上没有任何监听、没有任何转发。
+daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客户端的「设置 → 远程 daemon」可以列出这台机器接了哪些项目、在不在跑，停 / 启某个项目的轮询，看轮询日志的最后 200 行，读 / 改某个项目的常用设置（GitHub#530：和「本机 daemon → 配置」同一张表单）。**只通过 Tailscale**，并且要先配对。默认是关的：不跑下面的命令，这台机器上没有任何监听、没有任何转发。
 
 **前提**（缺哪一条，`enable` 会说明并停下，不留半开的入口）：
 
@@ -1692,7 +1692,7 @@ bash "$RA" disable
 - 常驻服务只监听 `127.0.0.1`；对外只有 `tailscale serve` 那一条 HTTPS 转发。`enable` 不开公网入口（funnel），发现这个端口上开着就拒绝。本功能登记过哪些端口记在 `~/.local/state/cavil-loop/remote-access/ports`（登记前先记、撤掉并读回确认后才划掉），关闭和换端口都按它收尾；Tailscale 的转发设置读不到（查询失败，或退出 0 却没有输出）时什么都不动。这份清单和记着当前端口的 `port` 文件本身也分「没有 / 读得懂 / 读不懂」三种：读不了、或有一行不是端口号，就是「不知道哪些转发是本功能的」——`enable`、`pair`、`disable` 退出 2（`RESULT=state_unknown`）、什么都不动、不覆盖这份文件，`status` 报 `unknown`；按提示用 `tailscale serve status` 核对后把 `ports` 改成每行一个本功能登记过的端口（一个都没有就删掉文件）再重跑。清单写不进去时：登记之前发现的，不登记（`state_unwritable`，退出 2）；撤掉转发之后才发现的，报 `partial`（退出 3），修好后重跑。已配对设备清单读不懂时，`status` 写「读不到」、`list` / `revoke` 退出 2，不报「0 台」。
 - 每个请求先确认来访者：转发层给出的来访地址必须是一个 Tailscale 地址，且本机 `tailscale whois` 查得到它是哪台设备。查不到、查询失败、带公网入口标记，一律拒绝。
 - 配对之后钥匙不再传输：每个请求带「时间 + 一次性随机数 + 请求内容」的签名，回复也带签名；来访设备的 Tailscale 身份必须等于配对时那台，钥匙拷到别的设备上用会被拒。
-- 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能执行任意命令。
+- 能做的只有：读状态（`install-status.sh` 的输出原样）、停 / 启一个项目（`scripts/project-service.sh <key> stop|start`——只在「在跑 → 停」「已停 → 启」时执行，状态读不到既不停也不启，执行后读回）、读一个项目 `poll.log` 的最后 200 行、读 / 改一个项目的常用设置（GitHub#530：在这台机器上执行 `scripts/project-config.sh <key> get|set`——只有 `scripts/config-fields.txt` 登记为可改的那几项，和「本机 daemon → 配置」在本机能改的一样；命令、钩子、令牌、目录和标签类开关都不在其中）、撤销自己。不能断开项目、不能更新 daemon、不能接新项目、不能读整份配置文件、不能执行任意命令。
 - 日志按盘上的样子返回，不另做处理：daemon 写 `poll.log` 之前已把 GitHub 令牌脱敏（GitHub#342，开着的话），其余内容配对过的客户端都看得到。
 - 同一台机器上的其他系统用户能连到回环端口，但没有配对码和钥匙做不了任何事。
 - 常驻服务不随 daemon 自动更新而重启；更新后要用上新版本，重跑一次 `enable`。
@@ -1704,6 +1704,7 @@ bash "$RA" disable
 - `POST /v1/pair`，请求体 `{"code": "<8 位>", "name": "<设备名>"}` → `{"version": 1, "id": "<设备编号>", "key": "<64 位十六进制钥匙>", "name": ...}`。
 - 其余请求带四个头：`X-Cavil-Device`（设备编号）、`X-Cavil-Time`（Unix 秒，与这台机器相差不超过 120 秒）、`X-Cavil-Nonce`（16–64 位十六进制，不能重复——处理过的请求记在 `nonces.json` 里，服务重启后重放同一个请求照样被拒；这份记录读不懂时，服务在 240 秒内不接受任何签名请求，回 503 `not_ready`）、`X-Cavil-Signature` = HMAC-SHA256(钥匙, `方法\n路径\n时间\n随机数\nSHA256(请求体)的十六进制`) 的十六进制。回复的 `X-Cavil-Signature` = HMAC-SHA256(钥匙, `resp\n随机数\n状态码\nSHA256(回复体)的十六进制`)。
 - `GET /v1/status` → `{"status": <install-status.sh 的输出>}`；`POST /v1/projects/<key>/stop|start` → `{"result": "ok|failed|refused|not_found", "state": "running|stopped|unknown", "output": ...}`；`GET /v1/projects/<key>/log` → `{"path", "exists", "text"}`；`POST /v1/unpair` → `{"result": "revoked"}`。
+- 项目常用设置（GitHub#530）：`GET /v1/projects/<key>/config` → `{"result": "ok", "config": <project-config.sh get 的输出>}` 或 `{"result": "not_found|unreadable", "output": ...}`。`POST /v1/projects/<key>/config`，请求体 `{"rev": "<读到的配置指纹>", "values": {"MAX_CONCURRENT_WORKERS": "3"}}` → `{"result": <project-config.sh set 的 RESULT 词>, "detail": {...}, "output": ...}`。执行 `set` 之前服务先核对请求体——设置名 `[A-Z][A-Z0-9_]*`（≤ 64）、值只含 `A-Za-z0-9._:/@,+-`（≤ 200）、指纹 64 位十六进制、1–64 项；不合规回 `result: "refused"`，读、写脚本都不执行——再读一次配置，只放行此刻标成可改的项（否则 `refused`，不执行 `set`）。`set` 没有给出 `RESULT=` 行（被杀、超时）回 `unconfirmed`：文件可能改了也可能没改。GitHub#530 之前的机器对这两个请求回 404 `not_found`，客户端显示为「更新那台机器的 daemon」。
 - 出错时回复 `{"error": "<代码>", "message": "<给人看的话>"}`：`not_tailscale` / `unknown_device` / `funnel`（403，来访者不是查得到的 Tailscale 设备）、`pairing_closed` / `pairing_wrong` / `pairing_expired` / `pairing_locked`（403）、`revoked`（401，没配对或已撤销）、`device_mismatch` / `signature` / `clock` / `replay`（403）、`status_failed`（502，状态脚本没跑成）、`not_ready`（503，见上）。
 
 ## 多 project 共存

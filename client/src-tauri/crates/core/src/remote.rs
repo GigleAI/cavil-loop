@@ -40,6 +40,9 @@ const T_PAIR: Duration = Duration::from_secs(20);
 /// the status script may take up to 90 s on the other machine, a stop / start up to 120 s
 const T_CALL: Duration = Duration::from_secs(150);
 const T_QUICK: Duration = Duration::from_secs(15);
+/// a save of a project's settings (GitHub#530): the machine reads the config (up to 60 s), then the
+/// save waits up to 15 s for another save's lock and loads the config a few times (up to 120 s)
+const T_CONFIG_SAVE: Duration = Duration::from_secs(210);
 /// one "is the remote entry open" look at a machine in the device list
 const T_HELLO: Duration = Duration::from_secs(5);
 
@@ -728,6 +731,102 @@ impl Remote {
         json!({ "result": "ok", "exists": reply.body["exists"] == true, "path": reply.body["path"].as_str().unwrap_or(""), "text": reply.body["text"].as_str().unwrap_or("") })
     }
 
+    // ── a project's settings (GitHub#530) ──
+    //
+    // The machine runs its own scripts/project-config.sh, exactly as "本机 daemon → 配置" does here: it
+    // decides where the file is, what may be changed and whether the file is still the one that was
+    // read. The replies have the shapes of the local `daemonConfigGet` / `daemonConfigSet`, so the
+    // same form shows both.
+
+    /// `{result:"ok", config}` / `{result:"unsupported"|"unreadable"|"not_found"|"refused", output}`
+    pub async fn config_get(&self, id: &str, key: &str) -> Value {
+        if !crate::daemon::valid_key(key) {
+            return refused("local", "项目名不合规");
+        }
+        let (t, s) = match self.paired(id).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let reply = match self.send(&t, "GET", &format!("/v1/projects/{key}/config"), None, Some(&s), T_CALL).await {
+            Ok(r) => r,
+            Err(f) => return refused(f.kind(), &f.message()),
+        };
+        if let Some(problem) = unbelievable(&reply) {
+            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
+        }
+        if reply.status == 404 && reply.body["error"] == "not_found" {
+            return json!({ "result": "unsupported", "output": OLD_MACHINE });
+        }
+        if reply.status != 200 {
+            return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
+        }
+        let b = &reply.body;
+        match b["result"].as_str() {
+            Some("ok") => {
+                let c = &b["config"];
+                if c["version"] == 1 && c["state"] == "ok" && c["fields"].is_array() && c["rev"].is_string() {
+                    json!({ "result": "ok", "config": c })
+                } else {
+                    json!({ "result": "unreadable", "output": format!("那台机器返回的配置格式认不出（version = {}），客户端或那台机器的 daemon 可能需要更新", c["version"]) })
+                }
+            }
+            Some(w @ ("not_found" | "refused")) => json!({ "result": w, "output": b["output"].as_str().unwrap_or("") }),
+            // "unreadable" and anything this client does not know: never shown as "nothing set"
+            _ => json!({ "result": "unreadable", "output": b["output"].as_str().unwrap_or("那台机器读不出这个项目的配置") }),
+        }
+    }
+
+    /// `values`: `{SETTING: "value"}`. `{result: <the script's word> | "unconfirmed" | "refused", output, detail}`
+    pub async fn config_set(&self, id: &str, key: &str, rev: &str, values: &Value) -> Value {
+        if !crate::daemon::valid_key(key) {
+            return refused("local", "项目名不合规");
+        }
+        if !crate::daemon_config::valid_rev(rev) {
+            return refused("local", "指纹不合规：先重新读取配置");
+        }
+        let Some(map) = values.as_object().filter(|m| !m.is_empty() && m.len() <= 64) else { return refused("local", "没有要改的配置项") };
+        for (name, v) in map {
+            let Some(v) = v.as_str() else { return refused("local", &format!("{name} 的值不是文本")) };
+            if !crate::daemon_config::valid_setting(name) {
+                return refused("local", "配置项的名字不合规");
+            }
+            if !crate::daemon_config::valid_value(v) {
+                return refused("local", &format!("{name} 的值里有不能写进配置文件的字符"));
+            }
+        }
+        let (t, s) = match self.paired(id).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let body = json!({ "rev": rev, "values": map });
+        let reply = match self.send(&t, "POST", &format!("/v1/projects/{key}/config"), Some(body), Some(&s), T_CONFIG_SAVE).await {
+            Ok(r) => r,
+            // no answer after a connection was made: the save may or may not have happened — say so instead of guessing
+            Err(f @ Fail::Unreachable(_)) => {
+                return json!({ "result": "unconfirmed", "reason": f.kind(), "output": format!("{}。这次保存有没有执行不确定，请重新读取配置核对", f.message()), "detail": {} })
+            }
+            // refused before anything was sent
+            Err(f) => return refused(f.kind(), &f.message()),
+        };
+        if let Some(problem) = unbelievable(&reply) {
+            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
+        }
+        if reply.status == 404 && reply.body["error"] == "not_found" {
+            return refused("unsupported", OLD_MACHINE);
+        }
+        if reply.status != 200 {
+            return refused(reply.body["error"].as_str().unwrap_or("failed"), &said(&reply));
+        }
+        let b = &reply.body;
+        // a result word as the script prints it; anything else is "unconfirmed", never one of its words
+        let result = match b["result"].as_str() {
+            Some(w) if !w.is_empty() && w.len() <= 40 && w.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') => w,
+            _ => "unconfirmed",
+        };
+        let detail = if b["detail"].is_object() { b["detail"].clone() } else { json!({}) };
+        json!({ "result": result, "output": b["output"].as_str().unwrap_or(""), "detail": detail })
+    }
+
     // ── unpairing ──
 
     /// Ask the machine to revoke this computer. Only its signed "revoked" counts; then the key and
@@ -820,6 +919,9 @@ pub fn parse_tailnet(text: &str) -> Result<Vec<Value>, String> {
     out.sort_by(|a, b| a["host"].as_str().cmp(&b["host"].as_str()));
     Ok(out)
 }
+
+/// What a machine whose remote entry predates GitHub#530 answers to a config request (404 "没有这个请求").
+const OLD_MACHINE: &str = "那台机器的 daemon 还不支持在这里改配置：更新那台机器的 daemon 以后再试，或到那台机器上用编辑器改";
 
 fn refused(reason: &str, m: &str) -> Value {
     json!({ "result": "refused", "reason": reason, "output": m })

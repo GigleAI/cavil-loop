@@ -272,6 +272,92 @@ describe('reading and acting', () => {
   });
 });
 
+describe("a project's settings on that machine (GitHub#530)", () => {
+  const field = (c: any, name: string) => c.fields.find((f: any) => f.name === name);
+  const value = async (b: HarnessBackend) => field((await b.call('daemonConfigGet', { key: 'widget' })).config, 'MAX_CONCURRENT_WORKERS').value;
+
+  it('read and save: the remote way and the local way give the same answers on the same scenarios', async () => {
+    const b = backend({ local: true });
+    await pair(b);
+    // read: the same JSON both ways (the same machine, the same script)
+    const remote = await b.call('remoteConfigGet', { id: ID, key: 'widget' });
+    const local = await b.call('daemonConfigGet', { key: 'widget' });
+    expect(remote.result).toBe('ok');
+    expect(remote.config).toEqual(local.config);
+    expect(field(remote.config, 'MAX_CONCURRENT_WORKERS')).toMatchObject({ mode: 'edit', editable: true });
+    const rev = remote.config.rev;
+    const before = await value(b);
+    expect(before).toBe('1');
+
+    // a save from the other computer: written, and the machine itself now reads the new value
+    const saved = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '3' } });
+    expect(saved).toMatchObject({ result: 'saved', detail: { changes: [{ name: 'MAX_CONCURRENT_WORKERS', old: '1', new: '3' }] } });
+    expect(await value(b)).toBe('3');
+
+    // the fingerprint read before the save is stale now: both ways refuse and write nothing
+    const staleRemote = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '4' } });
+    const staleLocal = await b.call('daemonConfigSet', { key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '4' } });
+    expect([staleRemote.result, staleLocal.result]).toEqual(['changed', 'changed']);
+    expect(await value(b)).toBe('3');
+
+    // a setting shown only (the autopilot label): refused both ways, nothing written
+    const rev2 = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    const roRemote = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'autopilot' } });
+    const roLocal = await b.call('daemonConfigSet', { key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'autopilot' } });
+    expect([roRemote.result, roLocal.result]).toEqual(['refused', 'refused']);
+    expect((await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev).toBe(rev2);
+
+    // a project that is not connected there
+    expect((await b.call('remoteConfigGet', { id: ID, key: 'nope' })).result).toBe('not_found');
+  });
+
+  it('a value that cannot go on a config line is refused on this computer: nothing is sent', async () => {
+    const b = backend();
+    await pair(b);
+    const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    const n = arrived(r).length;
+    for (const values of [{ MAX_CONCURRENT_WORKERS: '$(id)' }, { MAX_CONCURRENT_WORKERS: '2 3' }, { max: '2' }, {}]) {
+      expect(await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values })).toMatchObject({ result: 'refused', reason: 'local' });
+    }
+    expect(await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: 'abc', values: { MAX_CONCURRENT_WORKERS: '2' } })).toMatchObject({ result: 'refused', reason: 'local' });
+    expect(arrived(r)).toHaveLength(n);
+    // the same save with a plain value is sent
+    expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '2' } })).result).toBe('saved');
+    expect(arrived(r)).toHaveLength(n + 1);
+  });
+
+  it('this computer is off Tailscale: nothing is sent, the save says so', async () => {
+    const b = backend();
+    await pair(b);
+    const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    const n = arrived(r).length;
+    offTailscale();
+    expect(await b.call('remoteConfigGet', { id: ID, key: 'widget' })).toMatchObject({ result: 'refused', reason: 'not_tailscale' });
+    expect(await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '2' } })).toMatchObject({ result: 'refused', reason: 'not_tailscale' });
+    expect(arrived(r)).toHaveLength(n);
+  });
+
+  it('a machine whose remote entry predates this: "unsupported", not "cannot read the config"', async () => {
+    await closeRemote(r);
+    // the entry as it was before GitHub#530: the same service, without the config route
+    const file = join(w.skill, 'scripts/remote-access/remote_access.py');
+    const now = readFileSync(file, 'utf8');
+    const old = now.replace('(stop|start|log|config)', '(stop|start|log)');
+    expect(old).not.toBe(now);
+    writeFileSync(file, old);
+    r = await remoteWorld(w, path);
+    const b = backend();
+    await pair(b);
+    const got = await b.call('remoteConfigGet', { id: ID, key: 'widget' });
+    expect(got.result).toBe('unsupported');
+    expect(got.output).toContain('更新那台机器的 daemon');
+    const saved = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: 'a'.repeat(64), values: { MAX_CONCURRENT_WORKERS: '2' } });
+    expect(saved).toMatchObject({ result: 'refused', reason: 'unsupported' });
+    // and the status, stop / start and the log still work there
+    expect((await b.call('remoteStatus', { id: ID })).state).toBe('ok');
+  });
+});
+
 describe('after pairing, when the other end is not the paired machine any more', () => {
   it('this computer leaves Tailscale: nothing is sent, the reason is shown, the last status read is kept', async () => {
     const b = backend();

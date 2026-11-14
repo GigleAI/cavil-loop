@@ -256,6 +256,9 @@ export interface CavilApi {
   remoteStatus(id: string): Promise<RemoteRead>;
   remoteService(id: string, key: string, action: 'stop' | 'start'): Promise<RemoteResult>;
   remoteLog(id: string, key: string): Promise<RemoteResult>;
+  /** "配置" on a project of that machine (GitHub#530): the same shapes as `daemonConfigGet` / `daemonConfigSet` */
+  remoteConfigGet(id: string, key: string): Promise<ConfigRead>;
+  remoteConfigSet(id: string, key: string, rev: string, values: Record<string, string>): Promise<ConfigSave>;
   /** `localOnly`: when the machine cannot confirm, stop using the key anyway and keep the entry as "取消配对未完成" */
   remoteUnpair(id: string, localOnly: boolean): Promise<RemoteResult>;
   /** drop a "取消配对未完成" entry: the person revoked this computer on the machine itself */

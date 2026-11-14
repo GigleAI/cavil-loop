@@ -139,6 +139,66 @@ test('pair, see the machine’s projects, stop and start only after the confirma
   await expect(page.getByTestId('remote-log-dialog')).toHaveCount(0);
 });
 
+test("「配置…」on a project of that machine: the same form, saved there; no editor; a machine too old says so (GitHub#530)", async () => {
+  const { app, page } = await openSection();
+  await pairInWindow(page);
+  const host = page.locator(`[data-testid=remote-host][data-id="${BOX}:47387"]`);
+  await expect(host).toHaveAttribute('data-state', 'ok');
+  const row = host.locator('[data-testid=remote-project][data-key=widget]');
+  const st = await app.backend.call('remoteStatus', { id: `${BOX}:47387` });
+  const config = st.status.projects[0].config as string;
+  const before = readFileSync(config, 'utf8');
+  await shot(page, '10-config-button');
+
+  await row.getByTestId('remote-config').click();
+  const dialog = page.getByTestId('config-dialog');
+  await expect(dialog).toHaveAttribute('data-remote', 'true');
+  await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await expect(page.getByTestId('config-remote')).toHaveText('（在远程机器 box 上）');
+  await expect(page.getByTestId('config-path')).toHaveText(config);
+  await expect(page.getByTestId('config-intro')).toContainText('不要同时在那台机器上用编辑器改这个文件');
+  // the file is on the other machine: no editor button, a sentence instead
+  await expect(page.getByTestId('config-open-editor')).toHaveCount(0);
+  await expect(page.getByTestId('config-no-editor')).toBeVisible();
+  const input = page.getByTestId('config-input-MAX_CONCURRENT_WORKERS');
+  await expect(input).toHaveValue('1');
+  await input.fill('3');
+  await expect(page.getByTestId('config-pending')).toHaveText('已改 1 项，还没保存');
+  await page.locator('.modal.pcfg').screenshot({ path: join(screens, 'remote-11-config-form.png') });
+  // nothing is sent before "保存"
+  expect(sent(app, 'remoteConfigSet')).toEqual([]);
+  expect(readFileSync(config, 'utf8')).toBe(before);
+
+  await page.getByTestId('config-save').click();
+  const result = page.getByTestId('config-result');
+  await expect(result).toHaveAttribute('data-kind', 'saved');
+  await expect(page.locator('[data-testid=config-change][data-name=MAX_CONCURRENT_WORKERS]')).toContainText('3');
+  expect(sent(app, 'remoteConfigSet').map((c) => c.args)).toEqual([{ id: `${BOX}:47387`, key: 'widget', rev: expect.any(String), values: { MAX_CONCURRENT_WORKERS: '3' } }]);
+  // on that machine's disk: that one line, nothing else
+  const a = before.split('\n');
+  const now = readFileSync(config, 'utf8').split('\n');
+  expect(now.filter((l) => l.startsWith('MAX_CONCURRENT_WORKERS='))).toEqual(['MAX_CONCURRENT_WORKERS=3']);
+  expect(now.filter((l, i) => l !== a[i]).length).toBe(1);
+  // the machine was read again after the save
+  await expect.poll(() => sent(app, 'remoteStatus').length).toBeGreaterThan(1);
+  await page.getByTestId('config-close').click();
+  await expect(dialog).toHaveCount(0);
+
+  // the same machine with its remote entry from before this change: said as such, not "cannot read"
+  await closeRemote(r);
+  const file = join(w.skill, 'scripts/remote-access/remote_access.py');
+  const cur = readFileSync(file, 'utf8');
+  writeFileSync(file, cur.replace('(stop|start|log|config)', '(stop|start|log)'));
+  // restarted at the same place: the paired devices and this computer's key are kept
+  r = await remoteWorld(w, path);
+  await host.getByTestId('remote-reload').click();
+  await expect(host).toHaveAttribute('data-state', 'ok');
+  await row.getByTestId('remote-config').click();
+  await expect(page.getByTestId('config-unsupported')).toContainText('更新那台机器的 daemon');
+  await expect(page.getByTestId('config-read-failed')).toHaveCount(0);
+  await expect(page.getByTestId('config-save')).toHaveCount(0);
+});
+
 test('this computer is not on Tailscale: pairing is refused, says nothing was sent, and nothing arrived', async () => {
   const { page } = await openSection();
   offTailscale();

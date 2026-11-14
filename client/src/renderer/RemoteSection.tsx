@@ -1,6 +1,7 @@
 // Settings → 远程 daemon (GitHub#387): daemons on other machines, reached over Tailscale after
 // pairing. Per machine: its projects and whether each runs, stop / start one (after a
-// confirmation), the tail of one poll log, unpair.
+// confirmation), the tail of one poll log, the project's everyday settings (GitHub#530: the same form
+// as 本机 daemon → 配置, run by that machine's own project-config.sh), unpair.
 //
 // The back end proves the other end is the paired machine before it sends anything and holds the
 // key; this section only shows what came back. A machine that cannot be read shows why, with the
@@ -11,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
 import { ConfirmDialog } from './ConfirmDialog';
+import { ProjectConfigDialog } from './ProjectConfigDialog';
 import { useLayer, useShortcuts } from './keyboard';
 import { copyText } from './pasteImage';
 import { ago, schedWord, type DaemonProject, type LocalStatus } from '../shared/daemon';
@@ -35,6 +37,7 @@ export function RemoteSection() {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [pairing, setPairing] = useState(false);
   const [log, setLog] = useState<{ e: RemoteEntry; key: string } | null>(null);
+  const [cfg, setCfg] = useState<{ e: RemoteEntry; p: DaemonProject } | null>(null);
   const alive = useRef(true);
 
   const note = (id: string, n: Note | null) =>
@@ -179,6 +182,7 @@ export function RemoteSection() {
             onRead={() => read(e.id)}
             onAsk={setAsk}
             onLog={(key) => setLog({ e, key })}
+            onConfig={(p) => setCfg({ e, p })}
           />
         ),
       )}
@@ -204,6 +208,23 @@ export function RemoteSection() {
         />
       )}
       {log && <LogDialog e={log.e} projectKey={log.key} onClose={() => setLog(null)} />}
+      {cfg && (
+        <ProjectConfigDialog
+          project={cfg.p}
+          status={(() => {
+            const r = reads[cfg.e.id];
+            return readOk(r) ? r.status : null;
+          })()}
+          remote={{
+            name: remoteName(cfg.e.host),
+            read: () => api().remoteConfigGet(cfg.e.id, cfg.p.key),
+            save: (rev, values) => api().remoteConfigSet(cfg.e.id, cfg.p.key, rev, values),
+          }}
+          onClose={() => setCfg(null)}
+          // a save went through: read that machine again (whether the chosen agent's program is there)
+          onSaved={() => void read(cfg.e.id)}
+        />
+      )}
       {ask && ask.kind !== 'unpair' && (
         <ConfirmDialog
           title={ask.kind === 'stop' ? `停掉 ${remoteName(ask.e.host)} 上 ${ask.p.key} 的后台轮询？` : `启动 ${remoteName(ask.e.host)} 上 ${ask.p.key} 的后台轮询？`}
@@ -248,7 +269,7 @@ export function RemoteSection() {
   );
 }
 
-function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog }: { e: RemoteEntry; read: RemoteRead | null; reading: boolean; busy: string | null; notes: Record<string, Note>; onRead: () => void; onAsk: (a: Ask) => void; onLog: (key: string) => void }) {
+function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog, onConfig }: { e: RemoteEntry; read: RemoteRead | null; reading: boolean; busy: string | null; notes: Record<string, Note>; onRead: () => void; onAsk: (a: Ask) => void; onLog: (key: string) => void; onConfig: (p: DaemonProject) => void }) {
   const pill = remotePill(e, reading, read);
   const live = readOk(read) ? read : null;
   const failed: RemoteFail | null = read && !readOk(read) ? read : null;
@@ -351,6 +372,11 @@ function Machine({ e, read, reading, busy, notes, onRead, onAsk, onLog }: { e: R
                       {live && (
                         <button className="ghost" data-testid="remote-log" disabled={!!busy} onClick={() => onLog(p.key)}>
                           日志
+                        </button>
+                      )}
+                      {live && (
+                        <button className="ghost" data-testid="remote-config" disabled={!!busy} title="改这个项目的常用设置（在那台机器上）" onClick={() => onConfig(p)}>
+                          配置…
                         </button>
                       )}
                       {busy === id && <div className="muted small">正在执行…</div>}
