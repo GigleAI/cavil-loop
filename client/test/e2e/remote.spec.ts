@@ -417,8 +417,9 @@ test('pick the machine from this computer’s Tailscale: open ones first, how to
 test('this machine’s own switch: on, a code in the window, void it, the paired computers, off — no terminal', async () => {
   const { page } = await openSection(true);
   const block = page.getByTestId('local-remote');
-  await block.scrollIntoViewIfNeeded();
+  // GitHub#523: until its status is read the block is a placeholder that is then replaced; scroll to the real one
   await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 30_000 });
+  await block.scrollIntoViewIfNeeded();
   const sw = page.getByTestId('local-remote-switch');
   await expect(sw).toHaveAttribute('aria-checked', 'false');
   await sw.click();
@@ -467,6 +468,9 @@ exec bash "$d/remote-access.real.sh" "$@"
   );
   writeFileSync(join(r.state, 'devices.json'), JSON.stringify([{ id: '0123456789abcdef', name: 'MacBook', node: 'n1', node_name: 'macbook', key: '0'.repeat(64), paired_at: 1 }]));
   const { page } = await openSection(true);
+  // GitHub#523: until its status is read the block is a placeholder that is then replaced (scrolling to it failed
+  // with "not attached" when that happened mid-scroll); scroll to the real one
+  await expect(page.getByTestId('local-remote')).not.toHaveAttribute('data-state', 'reading', { timeout: 30_000 });
   await page.getByTestId('local-remote').scrollIntoViewIfNeeded();
   await page.getByTestId('local-remote-devices').click();
   await expect(page.getByTestId('local-remote-device')).toHaveCount(1, { timeout: 30_000 });
@@ -477,7 +481,14 @@ exec bash "$d/remote-access.real.sh" "$@"
   await expect(err).toContainText('devices.json 写不进去');
   // the list was read again (successfully) and still shows the computer, which really is still authorized
   const calls = () => readFileSync(join(r.ts, 'wrapper-calls'), 'utf8').trim().split('\n');
-  await expect.poll(() => calls().slice(-2)).toEqual(['revoke 0123456789abcdef', 'list --machine']);
+  // GitHub#523: after a revoke the dialog reads the list again and then the block reads its status (the paired
+  // count) — a fixed order, so look at what came right after the revoke, not at the last two calls: those are
+  // the list and then the status once the status read has landed too
+  const afterRevoke = () => {
+    const c = calls();
+    return c.slice(c.lastIndexOf('revoke 0123456789abcdef'));
+  };
+  await expect.poll(() => afterRevoke()).toEqual(['revoke 0123456789abcdef', 'list --machine', 'status']);
   await expect(page.getByTestId('local-remote-device')).toHaveCount(1);
   await expect(page.getByTestId('local-remote-devices-error')).toHaveCount(0);
   expect(devices(r)).toHaveLength(1);

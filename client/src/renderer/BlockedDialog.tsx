@@ -22,7 +22,7 @@ function refName(r: { repo: string; number: number; kind?: string | null }, self
   return r.kind === 'pr' ? `PR ${n}` : n;
 }
 
-function RefChip({ r, selfRepo, testid, onRemove, fresh }: { r: BlockedRefInfo; selfRepo: string; testid: string; onRemove?: () => void; fresh?: boolean }) {
+function RefChip({ r, selfRepo, testid, onRemove, fresh, locked }: { r: BlockedRefInfo; selfRepo: string; testid: string; onRemove?: () => void; fresh?: boolean; locked?: boolean }) {
   return (
     <span className={`chip blocked-chip${fresh ? ' new' : ''}`} data-testid={testid} data-ref={refKey(r)}>
       <b>{refName(r, selfRepo)}</b>
@@ -31,7 +31,7 @@ function RefChip({ r, selfRepo, testid, onRemove, fresh }: { r: BlockedRefInfo; 
       </span>
       <span className={`small ${r.state === 'open' ? '' : 'muted'}`}>{tKey(STATE_TEXT[r.state])}</span>
       {onRemove && (
-        <button className="link" aria-label={t('去掉')} data-testid="blocked-pick-remove" onClick={onRemove}>
+        <button className="link" aria-label={t('去掉')} data-testid="blocked-pick-remove" disabled={locked} onClick={onRemove}>
           ×
         </button>
       )}
@@ -42,7 +42,20 @@ function RefChip({ r, selfRepo, testid, onRemove, fresh }: { r: BlockedRefInfo; 
 export function BlockedDialog({ item, state, items, onClose }: { item: Item; state: AppState; items: Item[]; onClose: () => void }) {
   const [view, setView] = useState<BlockedView | null>(null);
   const [warn, setWarn] = useState<string | null>(null);
-  const [picks, setPicks] = useState<Candidate[]>([]);
+  const [picks, setPicksState] = useState<Candidate[]>([]);
+  // GitHub#523: the picks as of now, not as of the last render — "登记前置" waits for an item still being read
+  // into the list and then registers what the list holds by then
+  const picksRef = useRef<Candidate[]>([]);
+  const setPicks = (f: (p: Candidate[]) => Candidate[]) => {
+    picksRef.current = f(picksRef.current);
+    setPicksState(picksRef.current);
+  };
+  // the adds whose read has not come back yet; each one says whether its item went into the list
+  const adding = useRef(new Set<Promise<boolean>>());
+  // PR #531 review round 1: from the press of "登记前置" until its answer the choice is fixed — nothing can be
+  // picked, taken off or ticked, so what is registered is what the list held at the press plus the reads already
+  // under way then. A ref, not `busy`: a click in the same moment must not slip in before the next render.
+  const submitting = useRef(false);
   const [restore, setRestore] = useState<Set<string>>(new Set());
   const [text, setText] = useState('');
   const [found, setFound] = useState<Candidate[]>([]);
@@ -138,8 +151,15 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
   const shown = found.filter((c) => !taken.has(refKey(c)));
   useEffect(() => setSel(0), [text]);
 
-  const add = async (c: Candidate) => {
-    if (taken.has(refKey(c))) return;
+  const add = (c: Candidate) => {
+    if (submitting.current) return Promise.resolve(false);
+    const run = addOne(c);
+    adding.current.add(run);
+    void run.finally(() => adding.current.delete(run));
+    return run;
+  };
+  const addOne = async (c: Candidate): Promise<boolean> => {
+    if (taken.has(refKey(c))) return true;
     const typed = textRef.current;
     let pick = c;
     // a board copy has no GitHub id: read the item itself (the same read a number search makes)
@@ -147,12 +167,16 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
       const r = await api().blockedSearch(item.key, `${c.repo}#${c.number}`);
       // a number search lists the numbers that start with it too: take the one that was clicked (GitHub#448)
       const same = r.ok ? r.items.find((x) => refKey(x) === refKey(c)) : undefined;
-      if (!same) return setSearchErr(!r.ok ? r.error : r.error ?? t('{ref} 不是开着的', { ref: refName(c, item.repo) }));
+      if (!same) {
+        setSearchErr(!r.ok ? r.error : r.error ?? t('{ref} 不是开着的', { ref: refName(c, item.repo) }));
+        return false;
+      }
       pick = same;
     }
     setPicks((p) => (p.some((x) => refKey(x) === refKey(pick)) ? p : [...p, pick]));
     // a read for a board copy may come back after more was typed: what was typed since stays
     if (textRef.current === typed) setText('');
+    return true;
   };
 
   const restoreRefs: Ref[] = view?.ok ? view.lost.filter((r) => restore.has(refKey(r))).map((r) => ({ repo: r.repo, number: r.number })) : [];
@@ -163,10 +187,20 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
   const paused = view?.ok && view.entry.kind === 'paused';
 
   const confirm = async () => {
-    if (!view?.ok || busy) return;
+    if (!view?.ok || busy || submitting.current) return;
+    submitting.current = true;
     setBusy(true);
-    const r = await api().blockedStart({ key: item.key, fingerprint: view.fingerprint, picks, restore: restoreRefs });
-    setBusy(false);
+    const done = () => {
+      submitting.current = false;
+      setBusy(false);
+    };
+    // GitHub#523: an item picked a moment ago may still be being read (a board copy is read from GitHub before it goes
+    // into the list): wait for it and register it too. One that could not be read stops here with its reason shown —
+    // registering without it would drop what was just picked. No new read can start meanwhile (`submitting`).
+    const pending = [...adding.current];
+    if (pending.length > 0 && (await Promise.all(pending)).includes(false)) return done();
+    const r = await api().blockedStart({ key: item.key, fingerprint: view.fingerprint, picks: picksRef.current, restore: restoreRefs });
+    done();
     if (r.ok) return onClose();
     setWarn(r.error);
     if (r.view) take(r.view);
@@ -224,7 +258,9 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                       <input
                         type="checkbox"
                         checked={restore.has(refKey(r))}
+                        disabled={busy}
                         onChange={(e) =>
+                          !submitting.current &&
                           setRestore((s) => {
                             const n = new Set(s);
                             if (e.target.checked) n.add(refKey(r));
@@ -248,7 +284,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                 <div className="blocked-sec">{t('本次新加')}</div>
                 <div className="chips" data-testid="blocked-picks">
                   {picks.map((p) => (
-                    <RefChip key={refKey(p)} r={p} selfRepo={item.repo} testid="blocked-pick" fresh onRemove={() => setPicks((x) => x.filter((y) => refKey(y) !== refKey(p)))} />
+                    <RefChip key={refKey(p)} r={p} selfRepo={item.repo} testid="blocked-pick" fresh locked={busy} onRemove={() => !submitting.current && setPicks((x) => x.filter((y) => refKey(y) !== refKey(p)))} />
                   ))}
                 </div>
               </>
@@ -259,6 +295,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                   className="blocked-search"
                   data-testid="blocked-search"
                   autoFocus
+                  disabled={busy}
                   placeholder={t('输入编号或标题，搜本仓库开着的 issue / PR')}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
@@ -278,7 +315,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                 {(shown.length > 0 || searching || searchErr) && (
                   <div className="blocked-results" data-testid="blocked-results">
                     {shown.map((c, i) => (
-                      <button key={refKey(c)} className={`blocked-result${i === sel ? ' sel' : ''}`} data-testid="blocked-result" data-ref={refKey(c)} onMouseEnter={() => setSel(i)} onClick={() => void add(c)}>
+                      <button key={refKey(c)} className={`blocked-result${i === sel ? ' sel' : ''}`} data-testid="blocked-result" data-ref={refKey(c)} disabled={busy} onMouseEnter={() => setSel(i)} onClick={() => void add(c)}>
                         <b>{refName(c, item.repo)}</b>
                         <span className="blocked-title">
                           <Verbatim from="github">{c.title}</Verbatim>

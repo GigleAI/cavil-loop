@@ -697,13 +697,15 @@ test('a slow answer for the item you left never lands on the one you are looking
 });
 
 /** hold only the first request matching `pred` (later ones go through) */
-function holdFirst(pred: (e: any) => boolean): () => void {
+/** hold the first request that matches; `held()` = one has been caught (and stays held until released) */
+function holdFirst(pred: (e: any) => boolean): (() => void) & { held: () => boolean } {
   let taken = false;
-  return env.fake.holdWhen((e) => {
+  const release = env.fake.holdWhen((e) => {
     if (taken || !pred(e)) return false;
     taken = true;
     return true;
   });
+  return Object.assign(release, { held: () => taken });
 }
 
 test('leave an item and come back: nothing that was in flight lands on the new opening (detail, labels, preview, reply)', async () => {
@@ -783,7 +785,10 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_OLD</p>');
   const releaseRefresh = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
   await detail.getByTestId('detail-refresh').click();
-  await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).at(-1)?.status).toBe(0);
+  // GitHub#523: the refresh is caught and held — a read of #138 that a sync round starts after it may answer
+  // meanwhile (still with the old body), so "the last read is unanswered" is not the question
+  await expect.poll(() => releaseRefresh.held()).toBe(true);
+  expect(env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).some((l) => l.status === 0)).toBe(true);
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_NEW</p>');
   // a change made meanwhile re-reads the detail: that newer read must win
   await pickLabel(page, 'pending/PR');
@@ -983,12 +988,18 @@ test('GitHub#226: an open PR whose checks are still running is read every round 
   const reads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
   const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
   const { app, page } = await launch(env);
+  /**
+   * one sync round, waited until it has ended, then the detail's own read the round started (if any) until it
+   * has answered. GitHub#523: asked for directly and awaited, not the shell's beat + "the refresh button is
+   * enabled" — a round's first steps say nothing on screen, so under load the button was still enabled while
+   * the round ran, and the detail read it starts came after the count was taken
+   */
   const round = async () => {
     const n = rounds();
-    app.desktop.push({ kind: 'tick' });
-    await expect.poll(rounds).toBeGreaterThan(n);
-    await expect(page.getByTestId('refresh')).toBeEnabled();
+    await page.evaluate(() => (window as any).cavil.syncNow());
+    expect(rounds()).toBeGreaterThan(n);
     await page.waitForTimeout(400);
+    await expect.poll(() => reads().every((l) => l.status > 0)).toBe(true);
   };
   await signInWithSources(page);
   await card(page, prN).click();
@@ -1044,11 +1055,17 @@ test('GitHub#226 (PR #227 review round 1): a read with the same content still co
    * round started by signing in was sometimes still running here).
    */
   const idle = () => expect.poll(async () => (await syncOf(page)).syncing, { timeout: 15_000 }).toBe(false);
-  /** one round from the shell's beat, waited until the detail read it started has answered */
+  /**
+   * one round, waited until the detail read it started has answered. GitHub#523: asked for directly, not by the
+   * shell's beat — a beat that comes while a round is running starts none, and a round is not always shown as
+   * syncing yet (its first steps, before it reads GitHub, say nothing), so "idle, then the beat" still lost the
+   * round now and then on a loaded machine. Asked for while one runs, a round is queued behind it and starts once
+   * it has ended — with the clock already moved, so its time mark is new either way.
+   */
   const round = async () => {
     await idle();
     const n = reads().length;
-    app.desktop.push({ kind: 'tick' });
+    await page.evaluate(() => void (window as any).cavil.syncNow());
     await expect.poll(() => reads().length).toBeGreaterThan(n);
     await expect.poll(() => reads()[n]?.status ?? 0).toBeGreaterThanOrEqual(200);
     await expect(page.getByTestId('detail-refresh')).toBeEnabled();
@@ -2024,6 +2041,10 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('hand-back-human').fill('doing/agent');
   await page.getByTestId('hand-back-human').blur();
   await expect(page.getByTestId('pending-label')).toHaveText('doing/agent');
+  // GitHub#523: another label name starts a round (GitHub#462: read under the new label); it sets the badge
+  // like every round, and under load that came after the switch below and was counted as the switch's.
+  // Waited until it has ended (asked while it runs, one more round is queued behind it and awaited too)
+  await page.evaluate(() => (window as any).cavil.syncNow());
   await page.waitForTimeout(300);
   expect(badge()).toBeLessThanOrEqual(2);
   expect(notes()).toHaveLength(2);
@@ -3443,6 +3464,9 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
 
   // ---- 3. tick A: GitHub gets the comment with exactly that box changed ----
   await expect(box('C_Q', 0)).toBeEnabled();
+  const drawn = (await iframe.getAttribute('data-render'))!;
+  const detailReads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138);
+  const readsBefore = detailReads().length;
   await box('C_Q', 0).click();
   // GitHub#489: the box shows it itself — nothing is said when it simply went through
   const ticked = QUESTION193.replace('- [ ] **A.', '- [x] **A.');
@@ -3450,14 +3474,21 @@ test('GitHub#193: tick a choice in the detail — one character changes on GitHu
   expect(writes()).toEqual([['CavilUpdateComment', '/api/graphql', { id: 'C_Q', body: ticked }]]);
   expect(sourceOfQ()).toBe(ticked);
   // re-read: A shown ticked, B not; the entries opened before are still open; hand back is offered
+  // GitHub#523: the re-read draws the frame again with the new text, and the round a successful change asks for a
+  // few seconds later may draw it once more; under load a read of the frame landed while a new drawing loaded
+  // ("execution context was destroyed"). Waited for the re-read to answer and the frame to be drawn anew, then
+  // the open entries are read from whichever drawing is on screen — every drawing must keep them open
+  await expect.poll(() => detailReads().slice(readsBefore).some((l) => l.status >= 200)).toBe(true);
+  await expect(iframe).not.toHaveAttribute('data-render', drawn);
+  await expect(iframe).toHaveAttribute('data-ready', 'yes');
   await expect(box('C_Q', 0)).toBeChecked();
   await expect(box('C_Q', 1)).not.toBeChecked();
-  await expect(iframe).toHaveAttribute('data-ready', 'yes');
-  expect(await frame.locator('details.entry').evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))).toEqual([
-    'C_Q',
-    'C_INJ',
-    'C_RO',
-  ]);
+  const openEntries = () =>
+    frame
+      .locator('details.entry')
+      .evaluateAll((els) => els.filter((e) => (e as HTMLDetailsElement).open).map((e) => e.getAttribute('data-entry')))
+      .catch(() => 'a new drawing was loading');
+  await expect.poll(openEntries).toEqual(['C_Q', 'C_INJ', 'C_RO']);
   await expect(page.getByTestId('hand-back')).toBeVisible();
   await shot(page, '61-task-ticked');
 
@@ -5808,13 +5839,33 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await expect(detail.locator('[data-testid="detail-label"][data-label="pending/human"]')).toBeVisible();
 
   // ---- 4. the fields fold away; remembered across items and a restart; the label key brings them back with the picker ----
+  /**
+   * GitHub#523: the resend is followed by a read of the detail, and while one runs over what was shown from the cache
+   * a "正在更新…" line sits above the discussion; under load it came or went between the two measurements below.
+   * Both are taken with no read of this item under way and no such line. And the notice area above every page
+   * (the kept change's bar goes once the resend is through) can still change height in between, moving the whole
+   * panel: the discussion is measured from the panel's own top, both read in one step.
+   */
+  const discussionInPanel = () =>
+    page.evaluate(() => {
+      const top = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().top;
+      return Math.round(top('[data-testid="timeline-frame"]') - top('[data-testid="detail"]'));
+    });
+  const detailReads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
+  const still = async () => {
+    await expect.poll(() => detailReads().every((l) => l.status > 0)).toBe(true);
+    await expect(detail.getByTestId('detail-cached')).toHaveCount(0);
+    await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes');
+  };
   await expect(detail.getByTestId('detail-fields')).toBeVisible();
+  await still();
   const fieldsH = await detail.getByTestId('detail-fields').evaluate((e) => e.getBoundingClientRect().height);
-  const tOpen = await discussionTop();
+  const tOpen = await discussionInPanel();
   await detail.getByTestId('fields-toggle').click();
   await expect(detail.getByTestId('detail-fields')).toHaveCount(0);
   await expect(detail.getByTestId('fields-toggle')).toHaveAttribute('data-shown', 'no');
-  expect(tOpen - (await discussionTop())).toBeGreaterThanOrEqual(Math.floor(fieldsH));
+  await still();
+  expect(tOpen - (await discussionInPanel())).toBeGreaterThanOrEqual(Math.floor(fieldsH));
   await shot(page, '260-03-fields-folded');
   await page.getByTestId('detail-close').click();
   await card(page, 137).click();
@@ -7026,11 +7077,21 @@ test('GitHub#357: a notice\'s colour follows what is going on — blue with a sp
   expect(green).toBe('rgb(218, 251, 225)');
   await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', /counting|paused/);
   await shot(page, '357-02-merged-green');
+  // GitHub#523: the window's clock still runs on its own here, so the 5 s were counted from the moment the bar
+  // turned green — under load the screenshot and the checks above took more than a second, and "still there
+  // after 4 s" saw it gone. Make the count start from a known moment instead: the pointer on the bar holds it,
+  // stop the clock, and leaving the bar starts the 5 s from zero; from then on only the fast-forwards move time.
+  await onBoard(146).hover();
+  await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', 'paused');
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
   await page.mouse.move(5, 5);
+  await expect(onBoard(146)).toHaveAttribute('data-auto-dismiss', 'counting');
   await ff(4_000);
   await expect(onBoard(146)).toBeVisible();
   await ff(1_200);
   await expect(onBoard(146)).toHaveCount(0);
+  // the rest of this test waits on the app's own retries (3 s, 10 s, 30 s apart) in real time
+  await page.clock.resume();
   expect(env.fake.writes().filter((w) => w.method === 'PUT' && w.path.endsWith('/pulls/146/merge'))).toHaveLength(1);
 
   // ---- 2. a close whose answer never came: being checked (blue, "正在查证") → the app's own checks could not read (GitHub#359: yellow,
@@ -7543,6 +7604,10 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await open();
   const copyBtn = (b: Locator) => b.locator('button[data-code-copy]');
   const wrapBtn = (b: Locator) => b.locator('button[data-code-wrap]');
+  const wrapStored = async (on: boolean) => {
+    await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.view.codeWrap)).toBe(on);
+    await page.evaluate(() => (window as any).cavil.settled());
+  };
   /** what the clipboard really holds: pasted into the reply box with the keyboard, read back, box emptied again */
   const pasted = async () => {
     const box = page.getByTestId('reply-input');
@@ -7690,6 +7755,10 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   expect(await overflow(sh)).toEqual([false, 'pre-wrap']);
 
   // ---- 5. remembered: the app closed and started again, another opening of the item ----
+  // GitHub#523: the switch is stored by a message from the discussion frame to the window, then a write to the back
+  // end; the test's "quit" kills the back end outright, so wait until the window holds the new value and every write
+  // has gone out (a real window being closed is only hidden, its writes go on)
+  await wrapStored(true);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -7702,6 +7771,7 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await wrapBtn(ts).click();
   expect(await wrapped()).toBe(false);
   expect(await overflow(sh)).toEqual([true, 'pre']);
+  await wrapStored(false);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
@@ -8029,7 +8099,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
   const handBackWrites = (n: number) => autopilotWrites(n).slice(1);
-  /** the operation of the item on screen has settled: the panel's last notice is no longer busy */
+  /** the operation of the item on screen has settled: the panel's last notice is no longer busy — with no notice
+   *  at all it passes at once (the one before has gone after its 5 s), so wait for the writes themselves first (GitHub#523) */
   const settled = () => expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
 
   // ---- 1. every key of the bottom row sits on its own button and in its tooltip (this window runs as Linux: Ctrl+Shift) ----
@@ -8121,6 +8192,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('autopilot-explain')).toBeVisible();
   await page.keyboard.press('Control+Enter');
   await expect(dialog).toHaveCount(0);
+  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(137));
   await settled();
   expect(writes().slice(before)).toEqual(autopilotWrites(137));
   await expect(reply).toHaveValue('');
@@ -8148,6 +8220,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.getByTestId('autopilot').click();
   await page.getByTestId('autopilot-no-more-ask').check();
   await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(139));
   await settled();
   const byButton = writes().slice(before);
   expect(byButton).toEqual(autopilotWrites(139));
@@ -8170,9 +8243,11 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('new-issue')).toHaveCount(0);
   expect(writes()).toHaveLength(before);
   await page.keyboard.press(AUTO);
+  const byKey = byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]);
+  await expect.poll(() => writes().slice(before)).toEqual(byKey);
   await settled();
   await expect(dialog).toHaveCount(0);
-  expect(writes().slice(before)).toEqual(byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]));
+  expect(writes().slice(before)).toEqual(byKey);
 
   // ---- 8. Ctrl+Shift+X inside the discussion frame, then ⌘↩ (Ctrl here): #139 really closes ----
   await open(139);
