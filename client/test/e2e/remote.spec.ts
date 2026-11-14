@@ -6,7 +6,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,7 +181,22 @@ test("「配置…」on a project of that machine: the same form, saved there; n
   expect(now.filter((l, i) => l !== a[i]).length).toBe(1);
   // the machine was read again after the save
   await expect.poll(() => sent(app, 'remoteStatus').length).toBeGreaterThan(1);
-  await page.getByTestId('config-close').click();
+
+  // a save carried out whose answer cannot be verified (the signature lost on the way): "unknown", not "nothing written"
+  await page.getByTestId('config-more').click();
+  await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await page.getByTestId('config-input-MAX_CONCURRENT_WORKERS').fill('4');
+  writeFileSync(r.replySig, 'drop');
+  await page.getByTestId('config-save').click();
+  await expect(result).toHaveAttribute('data-kind', 'unknown');
+  await expect(result).toContainText('保存没有给出最终结果');
+  await expect(result).not.toContainText('一个字都没动');
+  rmSync(r.replySig, { force: true });
+  expect(readFileSync(config, 'utf8').split('\n').filter((l) => l.startsWith('MAX_CONCURRENT_WORKERS='))).toEqual(['MAX_CONCURRENT_WORKERS=4']);
+  await page.locator('.modal.pcfg').screenshot({ path: join(screens, 'remote-12-config-unknown.png') });
+  await page.getByTestId('config-reload').click();
+  await expect(page.getByTestId('config-input-MAX_CONCURRENT_WORKERS')).toHaveValue('4');
+  await page.getByTestId('config-cancel').click();
   await expect(dialog).toHaveCount(0);
 
   // the same machine with its remote entry from before this change: said as such, not "cannot read"

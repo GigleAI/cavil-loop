@@ -808,8 +808,16 @@ impl Remote {
             // refused before anything was sent
             Err(f) => return refused(f.kind(), &f.message()),
         };
+        // The request was sent. An answer without this machine's signature (missing, wrong, or a
+        // refusal nobody can vouch for) says nothing about whether the save happened — the machine may
+        // have written the file and the signature got lost on the way. Only a signed answer decides.
         if let Some(problem) = unbelievable(&reply) {
-            return json!({ "result": "refused", "reason": problem["state"], "output": problem["message"] });
+            return json!({
+                "result": "unconfirmed",
+                "reason": problem["state"],
+                "output": format!("{}。这次保存有没有执行不确定，请重新读取配置核对", problem["message"].as_str().unwrap_or("回复没有能验证的签名")),
+                "detail": {},
+            });
         }
         if reply.status == 404 && reply.body["error"] == "not_found" {
             return refused("unsupported", OLD_MACHINE);

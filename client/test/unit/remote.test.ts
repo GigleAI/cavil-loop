@@ -311,6 +311,30 @@ describe("a project's settings on that machine (GitHub#530)", () => {
     expect((await b.call('remoteConfigGet', { id: ID, key: 'nope' })).result).toBe('not_found');
   });
 
+  it('the save was carried out but its answer cannot be verified (signature dropped / wrong): "unconfirmed", never "not written"', async () => {
+    const b = backend({ local: true });
+    await pair(b);
+    for (const [mode, to] of [['drop', '2'], ['corrupt', '4']] as const) {
+      const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+      const n = arrived(r).length;
+      writeFileSync(r.replySig, mode);
+      const got = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: to } });
+      rmSync(r.replySig, { force: true });
+      expect(got.result).toBe('unconfirmed');
+      expect(got.output).toContain('有没有执行不确定');
+      // the request did arrive and the machine did write the file
+      expect(arrived(r)).toHaveLength(n + 1);
+      expect(await value(b)).toBe(to);
+    }
+    // with the signature passed on again: a signed success, and a signed refusal (a setting shown only)
+    const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '5' } })).result).toBe('saved');
+    expect(await value(b)).toBe('5');
+    const rev2 = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'x' } })).result).toBe('refused');
+    expect(await value(b)).toBe('5');
+  });
+
   it('a value that cannot go on a config line is refused on this computer: nothing is sent', async () => {
     const b = backend();
     await pair(b);
