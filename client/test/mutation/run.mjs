@@ -6,6 +6,8 @@
 //
 //   node run.mjs --count        number of entries
 //   node run.mjs --check        every entry's source text is still there (nothing is run)
+//   node run.mjs --names        every test an entry names exists (tests collected, not run; GitHub#527)
+//   node run.mjs --unit-names   the unit test names --names collects (JSON; for the runner's own tests)
 //   node run.mjs --name I       one-line description of entry I
 //   node run.mjs --changes      what changed against the base branch (JSON; non-zero = cannot tell)
 //   node run.mjs --baseline     unmodified copy: the whole unit suite must pass
@@ -35,7 +37,8 @@
 //
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS), CLIENT_MUT_BASELINE_FILES
-// (comma-separated test files the baseline runs instead of the whole suite).
+// (comma-separated test files the baseline runs instead of the whole suite), CLIENT_MUT_COLLECT_ROOT
+// (folder whose vitest config --names / --unit-names collect instead of client/'s).
 
 import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -283,14 +286,84 @@ async function baseline() {
     // left its entry naming nothing; that entry could never go red "as expected")
     const map = all.map(({ name, file }) => ({ name, file }));
     const missing = unmappedNames(list, { unit: map, e2e: e2eTests() });
-    if (missing.length) {
-      return fail(`清单里有项点名的测试已经不存在（改名或删掉后没同步清单）：${missing.map((x) => `第 ${x.i} 项「${x.what}」点名「${x.name}」`).join('；')}`);
-    }
+    if (missing.length) return fail(missingText(missing));
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
     return 0;
   } finally {
     rmSync(dirname(work), { recursive: true, force: true });
   }
+}
+
+const missingText = (missing) =>
+  `清单里有项点名的测试已经不存在（改名或删掉后没同步清单）：${missing.map((x) => `第 ${x.i} 项「${x.what}」点名「${x.name}」`).join('；')}`;
+
+/**
+ * Every unit test, collected the way vitest itself runs the suite — each test file imported in a
+ * worker, `describe` / `it` registered, no test body run — named the way the baseline's JSON report
+ * names it (ancestor suites + title, joined by a space; the reporter's own rule). Not vitest's
+ * default collection, which reads the source text: it keeps quotes escaped, puts the file name in
+ * front and does not expand `it.each` (GitHub#527). Same environment as the baseline's run, so
+ * tests registered conditionally come out the same; CAVIL_HARNESS set so the global setup does not
+ * build the back end. Throws when a file cannot be loaded: "cannot tell", never "no tests".
+ */
+async function unitTests(dir = process.env.CLIENT_MUT_COLLECT_ROOT ?? root) {
+  Object.assign(process.env, {
+    CLIENT_MUT_CHILD: '1',
+    CLIENT_MUT_BASELINE: '1',
+    CLIENT_MUT_REPO: process.env.CLIENT_MUT_REPO ?? root,
+    CAVIL_HARNESS: process.env.CAVIL_HARNESS ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-harness'),
+  });
+  const { createVitest } = await import('vitest/node');
+  const v = await createVitest('test', { watch: false, root: dir, reporters: [] }, {}, {});
+  try {
+    const r = await v.collect(undefined, { staticParse: false });
+    const bad = r.testModules.filter((m) => m.task.result?.state === 'fail' || m.task.result?.errors?.length);
+    if (bad.length || r.unhandledErrors.length) {
+      const why = bad.map((m) => `${relative(dir, m.task.filepath)}：${String(m.task.result?.errors?.[0]?.message ?? '加载失败').split('\n')[0]}`);
+      throw new Error(`有测试文件加载失败：${[...why, ...r.unhandledErrors.map((e) => String(e?.message ?? e).split('\n')[0])].join('；')}`);
+    }
+    const out = [];
+    const walk = (task, file) => {
+      for (const t of task.tasks ?? []) {
+        if (t.type === 'suite') walk(t, file);
+        else {
+          const anc = [];
+          for (let s = t.suite; s && s !== file && s.type === 'suite' && !s.filepath; s = s.suite) anc.push(s.name);
+          anc.reverse();
+          out.push({ name: t.name ? [...anc, t.name].join(' ') : anc.join(' '), file: relative(dir, file.filepath) });
+        }
+      }
+    };
+    for (const m of r.testModules) walk(m.task, m.task);
+    if (!out.length) throw new Error('一条测试都没收集到');
+    return out;
+  } finally {
+    await v.close();
+  }
+}
+
+/**
+ * What the PR checks run (GitHub#527): every test an entry names exists, by the same rule the
+ * baseline applies (unmappedNames) to the same kind of names — unit tests registered by vitest,
+ * window tests listed by Playwright — without running a test. A renamed or deleted test is caught
+ * in the pull request that does it, not by the next nightly run on main.
+ */
+async function names() {
+  let unit, e2e;
+  try {
+    unit = await unitTests();
+  } catch (e) {
+    return fail(`核对不了清单点名：收集不到单元测试（${String(e?.message ?? e).split('\n')[0]}）`);
+  }
+  try {
+    e2e = list.some((m) => m.runner === 'e2e') ? e2eTests() : [];
+  } catch (e) {
+    return fail(`核对不了清单点名：列不出界面测试（${String(e?.stderr || e?.message || e).split('\n')[0]}）`);
+  }
+  const missing = unmappedNames(list, { unit, e2e });
+  if (missing.length) return fail(missingText(missing));
+  console.log(`✅ 清单 ${list.length} 项点名的测试都在（单元测试 ${unit.length} 条、界面测试 ${e2e.length} 条，只收集、没运行）`);
+  return 0;
 }
 
 /** Unmodified copy: the window tests named by the given entries must pass (no-op when none are window entries). */
@@ -441,6 +514,8 @@ const arg = args[0];
 if (cmd === '--count') console.log(list.length);
 else if (cmd === '--check') process.exitCode = check();
 else if (cmd === '--name') console.log(list[Number(arg)]?.what ?? '');
+else if (cmd === '--names') process.exitCode = await names();
+else if (cmd === '--unit-names') console.log(JSON.stringify(await unitTests()));
 else if (cmd === '--changes') process.exitCode = changes();
 else if (cmd === '--baseline') process.exitCode = await baseline();
 else if (cmd === '--select') process.exitCode = await select(arg);

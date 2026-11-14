@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Negative controls for client/ (GitHub#103 convention, tests/lib/mutation.sh):
 #
-#   bash test/mutation/run.sh                       -> counts only: "负对照：跳过 N 项"
+#   bash test/mutation/run.sh                       -> checks every entry's source text and named test
+#                                                      still exist (nothing run), then counts only:
+#                                                      "负对照：跳过 N 项"
 #   MUTATION=1 bash test/mutation/run.sh            -> baseline first, then every entry
 #   MUTATION=1 bash test/mutation/run.sh --changed  -> baseline first, then only the entries this
 #                                                      change could affect (GitHub#178; select.mjs)
@@ -29,6 +31,11 @@ n="$("$node" "$here/run.mjs" --count)"
 [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || { echo "❌ 读不到负对照清单（得到 [$n]）"; exit 1; }
 
 if ! mutation_on; then
+    # the PR checks run this step: code an entry breaks, or a test it names, changed without
+    # updating the list goes red here, in that pull request, instead of in the next nightly run
+    # on main (GitHub#527: PR #481 left both kinds behind)
+    "$node" "$here/run.mjs" --check || { echo "❌ 清单要改坏的原文核对没通过"; exit 1; }
+    "$node" "$here/run.mjs" --names || { echo "❌ 清单点名的测试核对没通过"; exit 1; }
     for ((i = 0; i < n; i++)); do mutation_gate || true; done
     echo "负对照：跳过 $MUTATION_COUNT 项（默认不跑；npm run test:mutation 打开，只跑和改动相关的用 npm run test:mutation -- --changed）"
     exit 0
