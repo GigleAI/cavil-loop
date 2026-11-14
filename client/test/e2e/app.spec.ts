@@ -697,13 +697,15 @@ test('a slow answer for the item you left never lands on the one you are looking
 });
 
 /** hold only the first request matching `pred` (later ones go through) */
-function holdFirst(pred: (e: any) => boolean): () => void {
+/** hold the first request that matches; `held()` = one has been caught (and stays held until released) */
+function holdFirst(pred: (e: any) => boolean): (() => void) & { held: () => boolean } {
   let taken = false;
-  return env.fake.holdWhen((e) => {
+  const release = env.fake.holdWhen((e) => {
     if (taken || !pred(e)) return false;
     taken = true;
     return true;
   });
+  return Object.assign(release, { held: () => taken });
 }
 
 test('leave an item and come back: nothing that was in flight lands on the new opening (detail, labels, preview, reply)', async () => {
@@ -783,7 +785,10 @@ test('leave an item and come back: nothing that was in flight lands on the new o
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_OLD</p>');
   const releaseRefresh = holdFirst((e) => e.operation === 'CavilItemDetail' && e.variables?.number === 138);
   await detail.getByTestId('detail-refresh').click();
-  await expect.poll(() => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).at(-1)?.status).toBe(0);
+  // GitHub#523: the refresh is caught and held — a read of #138 that a sync round starts after it may answer
+  // meanwhile (still with the old body), so "the last read is unanswered" is not the question
+  await expect.poll(() => releaseRefresh.held()).toBe(true);
+  expect(env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === 138).some((l) => l.status === 0)).toBe(true);
   w.bodies.set('gigleai/cavil-loop#138', '<p>BODY_REFRESH_NEW</p>');
   // a change made meanwhile re-reads the detail: that newer read must win
   await pickLabel(page, 'pending/PR');
@@ -8088,7 +8093,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
   const handBackWrites = (n: number) => autopilotWrites(n).slice(1);
-  /** the operation of the item on screen has settled: the panel's last notice is no longer busy */
+  /** the operation of the item on screen has settled: the panel's last notice is no longer busy — with no notice
+   *  at all it passes at once (the one before has gone after its 5 s), so wait for the writes themselves first (GitHub#523) */
   const settled = () => expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
 
   // ---- 1. every key of the bottom row sits on its own button and in its tooltip (this window runs as Linux: Ctrl+Shift) ----
@@ -8180,6 +8186,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('autopilot-explain')).toBeVisible();
   await page.keyboard.press('Control+Enter');
   await expect(dialog).toHaveCount(0);
+  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(137));
   await settled();
   expect(writes().slice(before)).toEqual(autopilotWrites(137));
   await expect(reply).toHaveValue('');
@@ -8207,6 +8214,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.getByTestId('autopilot').click();
   await page.getByTestId('autopilot-no-more-ask').check();
   await page.getByTestId('confirm-ok').click();
+  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(139));
   await settled();
   const byButton = writes().slice(before);
   expect(byButton).toEqual(autopilotWrites(139));
@@ -8229,9 +8237,11 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('new-issue')).toHaveCount(0);
   expect(writes()).toHaveLength(before);
   await page.keyboard.press(AUTO);
+  const byKey = byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]);
+  await expect.poll(() => writes().slice(before)).toEqual(byKey);
   await settled();
   await expect(dialog).toHaveCount(0);
-  expect(writes().slice(before)).toEqual(byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]));
+  expect(writes().slice(before)).toEqual(byKey);
 
   // ---- 8. Ctrl+Shift+X inside the discussion frame, then ⌘↩ (Ctrl here): #139 really closes ----
   await open(139);
