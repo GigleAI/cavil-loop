@@ -89,3 +89,20 @@ export function editsTone(resending: boolean): NoticeTone {
 export function resultTone(kind: 'ok' | 'warn' | 'error'): NoticeTone {
   return noticeTone({ busy: false, done: kind === 'ok', failed: kind === 'error', retrying: kind === 'warn', rest: 'warn' });
 }
+
+/**
+ * GitHub#490: what a new issue's notice offers — at most one retry, one way out and ×:
+ *   failed for sure (nothing was created) → 「重试」 (the same draft again) + 「重新打开草稿」;
+ *   not sure it was created → 「再查一次」 (looks for a same-title issue again: links to look at, never
+ *     proof of anything) + 「到 GitHub 上看最近建的 issue」 (the list, the draft copied). Nothing on it creates again;
+ *   created, not on every board → 「再试加入看板」 + 「打开这条 issue」.
+ */
+export type CreateRetry = 'recreate' | 'look' | 'projects';
+export type CreateFallback = 'reopenDraft' | 'webList' | 'openItem';
+export function createActions(job: CreateJob): { retry: CreateRetry | null; fallback: CreateFallback | null; close: boolean } {
+  if (job.status === 'running' || job.status === 'watching') return { retry: null, fallback: null, close: false };
+  if (job.status === 'failed') return { retry: 'recreate', fallback: 'reopenDraft', close: true };
+  if (job.status === 'unknown') return { retry: job.looking ? null : 'look', fallback: 'webList', close: true };
+  const missing = (job.boards ?? []).some((b) => b.state === 'missing');
+  return { retry: missing && !job.retrying ? 'projects' : null, fallback: job.createdKey ? 'openItem' : null, close: true };
+}

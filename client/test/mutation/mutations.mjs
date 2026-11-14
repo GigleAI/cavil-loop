@@ -1167,8 +1167,9 @@ export const MUTATIONS = [
   { what: '用草稿发回复途中，草稿仍可再放进回复框', file: 'src/shared/ops.ts',
     from: " && !r.replyState) out.push('toReply');", to: ") out.push('toReply');",
     expect: ['no answer: "not sure", copy only', 'close refused, the reply from its comment reached GitHub but the answer was lost'] },
-  { what: '面板：发回复时不说明用的是哪次操作的草稿（离开面板后草稿不结束）', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
-    from: "{ kind: 'comment', key: item.key, body: reply, draftOf: replyFromOp }", to: "{ kind: 'comment', key: item.key, body: reply }",
+  // GitHub#490: the kept comment goes back to the reply box by the notice's ×, no longer by 「放进回复框」 + a reply tied to the draft
+  { what: '关掉被拒操作的提示时，没发出的附带评论不放回回复框（原文丢失）', file: 'src/app/controller.ts', runner: 'e2e',
+    from: '    if (a.toBox && comment !== undefined) this.returnToBox(r, comment);', to: '',
     expect: ['PR #255 code review round 1'] },
   // ---- GitHub#250, PR #255 code review round 2 ----
   { what: '用草稿发的回复没收到应答时不算未结清（「重新关闭」又能把同一条评论发出去）', file: 'src/shared/ops.ts',

@@ -3,14 +3,16 @@
 // (GitHub#489) a reply / an edited body, comment or title / a ticked box — is
 // said here, under the tab bar and above every page, whichever page / tab / panel is showing. Nowhere
 // else says them (not the detail, not above the board), so each is said exactly once. What each notice
-// says and which buttons it has are unchanged: the same components and the same rules as before.
+// says comes from the same rules as before; GitHub#490: which buttons each has is one rule per kind
+// (shared/ops.ts opActions, shared/sends.ts sendActions, shared/noticeTone.ts createActions) — at most
+// 「重试」, one way out and ×, what 「重试」 does following how sure the outcome is.
 // Newest on top; three at most, the rest folded behind 「还有 N 条」. A click in it never puts the floating
 // panel away (like the tab bar): its buttons act on the item the panel may well be showing.
 
 import { useRef, useState } from 'react';
 import type { AppState, BoardData, CreateJob } from '../shared/types';
 import { writesEnabled } from '../data/board';
-import { createFailures, createTone, editsTone } from '../shared/noticeTone';
+import { createActions, createFailures, createTone, editsTone } from '../shared/noticeTone';
 import type { OpRecord } from '../shared/ops';
 import { api } from './api';
 import { Icon } from './Icons';
@@ -65,8 +67,7 @@ export function NoticeArea({
             </>
           }
           onOpen={openFloat}
-          onRetry={(x: OpRecord) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
-          onToReply={(x: OpRecord) => open(x.key, 'float', { opId: x.id, what: 'toReply' })}
+          onBlocked={(x: OpRecord) => open(x.key, 'float', { opId: x.id, what: 'retry' })}
         />
       ),
     });
@@ -194,19 +195,106 @@ function EditsBar({ state, data, onOpen }: { state: AppState; data: BoardData; o
   );
 }
 
-/** GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back. */
+/**
+ * GitHub#229: one new issue on its way, or what came of it. Only "surely nothing was created" gives the draft back
+ * or creates again. GitHub#490: at most 「重试」, one way out and × (shared/noticeTone.ts: createActions).
+ */
 export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (key: string) => void; onDraft: (d: CreateJob['draft']) => void }) {
-  const [copied, setCopied] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [copied, setCopied] = useState<boolean | null>(null);
+  const [working, setWorking] = useState(false);
   // GitHub#357: the colour, "running" and why the last attempt failed all come from the job itself
   // (shared/noticeTone.ts), never from this bar's own memory of a click
   const tone = createTone(job);
   const mark = tone === 'busy' ? <span className="spin" aria-hidden="true" /> : <Icon name="warn" />;
-  const working = job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
+  const busy = working || job.retrying === true || (job.watch ?? []).some((w) => w.busy === true);
   const failures = createFailures(job);
-  const close = (
+  const a = createActions(job);
+  const go = async (f: () => Promise<{ ok: boolean; error: string | null }>) => {
+    setWorking(true);
+    setProblem(null);
+    try {
+      const out = await f();
+      if (!out.ok) setProblem(out.error ?? t('没有成功'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const close = a.close && (
     <button className="banner-close" aria-label={t('关闭提示')} title={t('关闭提示')} data-testid="create-bar-close" onClick={() => void api().dismissCreate(job.id)}>
       <Icon name="x" />
     </button>
+  );
+  const retryButton = a.retry && (
+    <button
+      className="link"
+      data-testid="create-retry"
+      data-retry={a.retry}
+      disabled={busy}
+      title={a.retry === 'look' ? t('只查一次最近建的同标题 issue，不会再建') : undefined}
+      onClick={() => void go(() => (a.retry === 'recreate' ? api().createRetry(job.id) : a.retry === 'look' ? api().createLook(job.id) : api().retryCreateProjects(job.id)))}
+    >
+      {a.retry === 'recreate' ? t('重试') : a.retry === 'look' ? t('再查一次') : t('再试加入看板')}
+    </button>
+  );
+  const fallback = (() => {
+    if (a.fallback === 'openItem')
+      return (
+        <button className="link" data-testid="create-fallback" data-fallback="openItem" onClick={() => job.createdKey && onOpen(job.createdKey)}>
+          {t('打开 #{number}', { number: job.number ?? '' })}
+        </button>
+      );
+    if (a.fallback === 'webList')
+      return (
+        <button
+          className="link"
+          data-testid="create-fallback"
+          data-fallback="webList"
+          title={t('先把草稿复制到剪贴板，再打开 GitHub 上最近建的 issue')}
+          onClick={() =>
+            void (async () => {
+              setCopied(Boolean(await copyText(`${job.draft.title}\n\n${job.draft.body}`)));
+              await api()
+                .openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)
+                .then(() => setProblem(null))
+                .catch((e) => setProblem(t('没能打开 GitHub 页面：{reason}', { reason: (e as Error)?.message ?? String(e) })));
+            })()
+          }
+        >
+          {t('到 GitHub 上看最近建的 issue')}
+        </button>
+      );
+    if (a.fallback === 'reopenDraft')
+      return (
+        <button
+          className="link"
+          data-testid="create-fallback"
+          data-fallback="reopenDraft"
+          onClick={() => {
+            onDraft(job.draft);
+            void api().dismissCreate(job.id);
+          }}
+        >
+          {t('重新打开草稿')}
+        </button>
+      );
+    return null;
+  })();
+  const said = (
+    <>
+      {copied !== null && (
+        <span className={`small ${copied ? 'muted' : 'err'}`} data-testid="create-copied">
+          {' '}
+          {copied ? t('草稿已复制') : t('复制失败')}
+        </span>
+      )}
+      {problem && (
+        <span className="small err" data-testid="create-problem">
+          {' '}
+          {problem}
+        </span>
+      )}
+    </>
   );
   // GitHub#258: created, only boards not ticked still being watched: nothing to say
   if (job.status === 'watching') return null;
@@ -225,20 +313,13 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
           <b>{t('#{number} 已建好', { number: job.number ?? '' })}</b>
           {t('，')}
           {createdButRest(job.message, job.number)}{' '}
-          <button className="link" data-testid="create-open" onClick={() => job.createdKey && onOpen(job.createdKey)}>
-            {t('打开 #{number}', { number: job.number ?? '' })}
-          </button>
-          {(job.boards ?? []).some((b) => b.state === 'missing') &&
-            (job.retrying ? (
-              <span className="small muted" data-testid="create-retrying">
-                {' '}
-                {t('正在再试加入看板…')}
-              </span>
-            ) : (
-              <button className="link" data-testid="create-retry-projects" disabled={working} onClick={() => void api().retryCreateProjects(job.id)}>
-                {t('再试加入看板')}
-              </button>
-            ))}
+          {(job.boards ?? []).some((b) => b.state === 'missing') && job.retrying && (
+            <span className="small muted" data-testid="create-retrying">
+              {' '}
+              {t('正在再试加入看板…')}
+            </span>
+          )}
+          {/* GitHub#258: a board that took it in by itself holds another value — a choice of where it goes, not a retry */}
           {(job.watch ?? [])
             .filter((w) => w.state === 'human')
             .map((w) => (
@@ -247,18 +328,23 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
                 className="link"
                 data-testid="create-watch-apply"
                 data-project={w.projectKey}
-                disabled={working}
+                disabled={busy}
                 onClick={() => void api().applyCreateWatch(job.id, w.projectKey)}
               >
                 {tNode('在「{board}」改成「{value}」', { board: <Verbatim from="github">{w.title}</Verbatim>, value: <Verbatim from="github">{w.label}</Verbatim> })}
               </button>
             ))}
-          {failures.length > 0 && !working && (
+          <span className="op-buttons">
+            {retryButton}
+            {fallback}
+          </span>
+          {failures.length > 0 && !busy && (
             <span className="small err" data-testid="create-retry-error">
               {' '}
               {failures.join(t('；'))}
             </span>
           )}
+          {said}
         </span>
         {close}
       </div>
@@ -269,24 +355,14 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
         {mark}
         <span className="banner-text">
           <b>{tNode('不确定「{title}」有没有建好', { title: <Verbatim from="user">{job.title}</Verbatim> })}</b>
-          {t('：{message}。GitHub 可能稍后才建出来，请先去看一眼再决定要不要重建。', { message: job.message ?? '' })}
+          {t('：{message}。GitHub 可能稍后才建出来，查到的同标题 issue 只供核对，这里不会再建。', { message: job.message ?? '' })}
           {job.looking && <span data-testid="create-looking">{t('正在查最近建的同标题 issue…')}</span>}
           {job.lookError && !job.looking && <span data-testid="create-look-error">{t('没能查到最近建的 issue：{problem}。', { problem: job.lookError })}</span>}{' '}
-          <button className="link" data-testid="create-web" onClick={() => void api().openExternal(`https://github.com/${job.repo}/issues?q=${encodeURIComponent('is:issue author:@me sort:created-desc')}`)}>
-            {t('在网页上看我最近建的 issue')}
-          </button>
-          <button
-            className="link"
-            data-testid="create-copy"
-            onClick={() => void copyText(`${job.draft.title}\n\n${job.draft.body}`).then((ok) => setCopied(Boolean(ok)))}
-          >
-            {copied ? t('已复制') : t('复制草稿内容')}
-          </button>
-          {job.candidates && (
+          {job.candidates && !job.looking && (
             <span className="small muted" data-testid="create-candidates">
               {' '}
               {job.candidates.length
-                ? t('最近 10 分钟你在这个仓库建的同标题 issue（仅供查看）：')
+                ? t('最近 10 分钟你在这个仓库建的同标题 issue（待核对，不代表就是这一次建的）：')
                 : t('没找到最近 10 分钟你在这个仓库建的同标题 issue（原请求仍可能稍后完成）')}
               {job.candidates.map((c) => (
                 <a key={c.number} href={c.url} data-testid="create-candidate" onClick={(e) => (e.preventDefault(), void api().openExternal(c.url))}>
@@ -296,6 +372,11 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
               ))}
             </span>
           )}
+          <span className="op-buttons">
+            {retryButton}
+            {fallback}
+          </span>
+          {said}
         </span>
         {close}
       </div>
@@ -305,16 +386,11 @@ export function CreateBar({ job, onOpen, onDraft }: { job: CreateJob; onOpen: (k
       <Icon name="warn" />
       <span className="banner-text">
         {tNode('没能新建「{title}」：{message}。', { title: <Verbatim from="user">{job.title}</Verbatim>, message: job.message ?? '' })}{' '}
-        <button
-          className="link"
-          data-testid="create-reopen"
-          onClick={() => {
-            onDraft(job.draft);
-            void api().dismissCreate(job.id);
-          }}
-        >
-          {t('重新打开草稿')}
-        </button>
+        <span className="op-buttons">
+          {retryButton}
+          {fallback}
+        </span>
+        {said}
       </span>
       {close}
     </div>

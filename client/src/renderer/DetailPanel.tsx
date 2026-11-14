@@ -402,7 +402,7 @@ export function DetailPanel({
   draft?: TabDraft | null;
   onDraft?: (d: TabDraft) => void;
   /** GitHub#250: opened from a notice above the board to do this with one of the item's operations */
-  intent?: { opId: string; what: 'retry' | 'toReply' } | null;
+  intent?: { opId: string; what: 'retry' } | null;
   /** a change made on an item the panel has since left: its result goes to the board instead */
   /** `about`: the write the note reports on (GitHub#323: the board's bar follows a failed field change) */
   onLeftBehind: (note: ResultNote, about?: WriteAction) => void;
@@ -692,15 +692,6 @@ export function DetailPanel({
         setNote(res.ok ? null : { kind: 'error', text: res.error ?? t('没有发送') });
       })();
     }
-  };
-  const toReply = (r: OpRecord) => {
-    const c = opDraftLeft(r)?.comment;
-    if (c === undefined) return;
-    setReply((cur) => (cur.trim() ? `${cur}\n\n${c}` : c));
-    setReplyFromOp(r.id);
-    session.supersede('preview');
-    setPreview(null);
-    replyBox.current?.focus();
   };
   const run = async (action: WriteAction, okText: string): Promise<WriteResult & { here: boolean }> => {
     const label = item ? `${item.repo}#${item.number}` : itemKey;
@@ -1204,8 +1195,8 @@ export function DetailPanel({
     const r = state.ops.find((x) => x.id === intent.opId);
     intentDone.current = true;
     if (!r) return;
+    // GitHub#490: the one thing a notice still opens an item for is a "等前置…" to register again
     if (intent.what === 'retry') retryOp(r);
-    else toReply(r);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intent, item]);
   const openAsk = (k: 'merge' | 'close' | 'closeIssue' | 'autopilot') => {

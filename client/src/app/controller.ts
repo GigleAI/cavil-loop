@@ -41,13 +41,16 @@ import {
   opAfterRestart,
   opApplyRead,
   opCheckSteps,
+  opActions,
   opDisposable,
+  opDraftLeft,
   opLockOf,
   opNextAuto,
   opPermit,
   opPhase,
   opProveFromRecords,
   opProveFromSnapshot,
+  opRedoAction,
   opResendStep,
   opText,
   opWithoutStale,
@@ -3178,7 +3181,7 @@ export class Controller {
     if (!writesEnabled(this.state.sync)) return { ok: false, error: t('离线时不能修改：GitHub 上什么都没改') };
     if (!action.title.trim()) return { ok: false, error: t('标题不能为空') };
     const id = ++this.createSeq;
-    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true, ...(action.picks ? { picks: action.picks } : {}) };
+    const draft = { repo: action.repo, title: action.title, body: action.body, labels: action.labels, projects: Array.isArray(action.projects) ? action.projects : [], handoff: action.handoff, handoffPicked: action.handoffPicked === true, ...(action.picks ? { picks: action.picks } : {}), ...(action.plan ? { plan: action.plan } : {}) };
     this.setCreate({ id, repo: action.repo, title: action.title, status: 'running', message: null, draft });
     void this.runCreate(id, action);
     return { ok: true, error: null, job: id };
@@ -3234,23 +3237,34 @@ export class Controller {
       return;
     }
     // GitHub#357: the look below is this notice's own request — it reads as running until it ends, and a look that failed is said
-    this.setCreate({ ...cur, status: 'unknown', message: t('请求发出后没收到 GitHub 的明确答复（{why}），不确定有没有建好', { why: unanswered }), looking: true });
+    this.setCreate({ ...cur, status: 'unknown', message: t('请求发出后没收到 GitHub 的明确答复（{why}），不确定有没有建好', { why: unanswered }), looking: true, sentAt });
+    await this.lookCreate(id, session);
+  }
+
+  /**
+   * Same-title issues this account opened in this repository lately: links to look at, nothing is claimed or
+   * changed — the job stays "not sure" whatever is found (one, several, none, or the read failed).
+   */
+  private async lookCreate(id: number, session: number): Promise<void> {
+    const job = () => this.state.creates.find((j) => j.id === id);
+    const start = job();
+    if (!start || start.status !== 'unknown') return;
+    const sentAt = start.sentAt ?? new Date(start.id).toISOString();
     const lookOver = (lookError: string | null) => {
       const now = job();
       if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, looking: false, lookError });
     };
-    // same-title issues this account opened in this repository lately: links to look at, nothing is claimed or changed
     const c = await this.clientForCall(false);
     // not signed in / offline: no look was made (not a failed one)
     if ('error' in c || c.session !== session) return lookOver(null);
     try {
-      const [owner, name] = action.repo.split('/');
+      const [owner, name] = start.repo.split('/');
       const list = await c.client.restList<{ number: number; html_url: string; title: string; created_at: string; user?: { login?: string }; pull_request?: unknown }>(
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues?state=all&sort=created&direction=desc&since=${encodeURIComponent(sentAt)}&per_page=50`,
       );
       const since = Date.parse(sentAt) - 9 * 60_000;
       const candidates = list
-        .filter((x) => !x.pull_request && x.title === action.title && (!this.state.viewer || x.user?.login === this.state.viewer) && Date.parse(x.created_at) >= since)
+        .filter((x) => !x.pull_request && x.title === start.draft.title && (!this.state.viewer || x.user?.login === this.state.viewer) && Date.parse(x.created_at) >= since)
         .map((x) => ({ number: x.number, url: x.html_url, createdAt: x.created_at }));
       const now = job();
       if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates, looking: false, lookError: null });
@@ -3259,6 +3273,38 @@ export class Controller {
       // no list: the notice still says "not sure", with the web link
       lookOver((e as Error)?.message ?? String(e));
     }
+  }
+
+  /** GitHub#490, 「再查一次」 of a new issue not known to be created: the look again (reads only; never creates). */
+  async createLook(id: number): Promise<WriteResult> {
+    const job = this.state.creates.find((j) => j.id === id);
+    if (!job || job.status !== 'unknown') return { ok: false, error: '这条新建记录已经不在了', warning: null };
+    if (job.looking) return { ok: false, error: '正在查，稍等', warning: null };
+    this.setCreate({ ...job, looking: true, lookError: null });
+    await this.lookCreate(id, this.session);
+    const end = this.state.creates.find((j) => j.id === id);
+    return end?.lookError ? { ok: false, error: end.lookError, warning: null } : { ok: true, error: null, warning: null };
+  }
+
+  /** GitHub#490, 「重试」 of a new issue that surely was not created: the same draft again (the old notice goes). */
+  async createRetry(id: number): Promise<{ ok: boolean; error: string | null; job?: number }> {
+    const job = this.state.creates.find((j) => j.id === id);
+    if (!job || job.status !== 'failed') return { ok: false, error: '这条新建记录现在不能重试' };
+    const d = job.draft;
+    const r = await this.startCreate({
+      kind: 'createIssue',
+      repo: d.repo,
+      title: d.title,
+      body: d.body,
+      labels: d.labels,
+      projects: d.projects,
+      ...(d.plan ? { plan: d.plan } : {}),
+      ...(d.handoff ? { handoff: d.handoff } : {}),
+      ...(d.handoffPicked ? { handoffPicked: true } : {}),
+      ...(d.picks ? { picks: d.picks } : {}),
+    });
+    if (r.ok) this.setCreate(null, id);
+    return r;
   }
 
   dismissCreate(id: number): void {
@@ -4960,6 +5006,80 @@ export class Controller {
     this.patchOp(id, { draftDropped: true });
   }
 
+  /**
+   * GitHub#490, 「重试」 of an operation refused for sure (or never sent): started again at once with the same
+   * choices, no dialog (shared/ops.ts: opRedoAction). It goes through everything a new one does — the send gate,
+   * the read before sending — and the old record hands its draft over to it.
+   */
+  opRedo(id: string): { ok: boolean; error: string | null; id?: string } {
+    const r = this.ops.get(id);
+    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    const action = opRedoAction(r);
+    if (typeof action === 'string') return { ok: false, error: action };
+    return this.startOp(action, { from: id });
+  }
+
+  /**
+   * GitHub#490: the main step worked, the attached comment surely did not go out — 「再发评论」 sends it as a reply
+   * (a send of the controller, said in the notice area); the operation no longer keeps it.
+   */
+  opSendComment(id: string): { ok: boolean; error: string | null; id?: string } {
+    const r = this.ops.get(id);
+    if (!r) return { ok: false, error: '这次操作已经不在了' };
+    const comment = opDraftLeft(r)?.comment;
+    if (opActions(r).retry !== 'sendComment' || comment === undefined) return { ok: false, error: '这条附带评论现在不能再发' };
+    const res = this.startSend({ kind: 'comment', key: r.key, body: comment });
+    if (res.ok) this.patchOp(id, { draftDropped: true, dismissed: true });
+    return res;
+  }
+
+  /** GitHub#490: the first step of 「到 GitHub 上核对」 opened the page — nothing is unlocked by it. */
+  opWebOpened(id: string): void {
+    const r = this.ops.get(id);
+    if (!r || r.webOpened || opActions(r).fallback !== 'checkWeb') return;
+    this.patchOp(id, { webOpened: true });
+  }
+
+  /**
+   * GitHub#490, × of an operation's notice: put away with what it kept. A comment that surely did not go out goes
+   * back into the item's reply box (a refused send record the panel showing the item takes, like a refused reply);
+   * anything else it kept goes with the notice. Never while it locks.
+   */
+  opClose(id: string): void {
+    const r = this.ops.get(id);
+    if (!r) return;
+    const a = opActions(r);
+    if (!a.close) return;
+    const comment = opDraftLeft(r)?.comment;
+    if (a.toBox && comment !== undefined) this.returnToBox(r, comment);
+    this.patchOp(id, { dismissed: true, draftDropped: true });
+  }
+
+  /** a text that surely was not sent goes back into the item's reply box, through the rule a refused reply follows */
+  private returnToBox(r: OpRecord, body: string): void {
+    const id = `send-${++this.sendSeq}`;
+    this.sends.set(id, {
+      id,
+      key: r.key,
+      repo: r.repo,
+      number: r.number,
+      action: { kind: 'comment', key: r.key, body },
+      startedAt: this.stamp(),
+      state: 'refused',
+      sentAt: null,
+      answeredAt: null,
+      reason: '附带的评论没有发出',
+      warning: null,
+      proof: null,
+      returned: false,
+      unlocked: false,
+      dismissed: true,
+    });
+    this.pruneSends();
+    this.sendsChanged();
+    void this.storeSends();
+  }
+
   private patchOp(id: string, patch: Partial<OpRecord>): void {
     const r = this.ops.get(id);
     if (!r) return;
@@ -5423,6 +5543,14 @@ export class Controller {
       this.sendDraftTimer = null;
       void this.storeSends();
     }, 300);
+  }
+
+  /** GitHub#490: the first step of 「到 GitHub 上核对」 opened the page (unknown only) — the lock stays. */
+  sendWebOpened(id: string): void {
+    const r = this.sends.get(id);
+    if (!r || r.state !== 'unknown' || r.unlocked || r.webOpened) return;
+    this.patchSend(id, { webOpened: true });
+    void this.storeSends();
   }
 
   /** ×: only when the notice may be put away (never on its way, never unknown and still locked) */

@@ -1191,17 +1191,21 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   await closeIssueHere(page, '做完了');
   await expect(detail(page)).toHaveCount(0, { timeout: 15_000 });
   await expect(inStrip(page, F)).toBeVisible();
-  await expect(inStrip(page, F).getByTestId('op-to-reply')).toBeVisible({ timeout: 15_000 });
+  // GitHub#490: closed, the comment surely not sent: 「再发评论」 + 「到 GitHub 上处理」
+  await expect(inStrip(page, F).getByTestId('op-retry')).toHaveText('再发评论', { timeout: 15_000 });
   await expect(inStrip(page, F)).not.toHaveAttribute('data-kind', 'ok');
   await shot(page, '447-05-float-closed-comment-failed');
   await page.waitForTimeout(6_500);
   await expect(inStrip(page, F)).toBeVisible();
   store().w.failComment = false;
-  // its 放进回复框 opens the item again; GitHub#488: the notice stays in the notice area, never also in the detail
-  await inStrip(page, F).getByTestId('op-to-reply').click();
+  // GitHub#490: its × gives the comment back to the item's reply box (it surely did not go out); opened again, the
+  // text is there; GitHub#488: nothing about it is said in the detail
+  await inStrip(page, F).getByTestId('op-dismiss').click();
+  await expect(page.locator(`[data-testid="op-notice"][data-key="${K(F)}"]`)).toHaveCount(0);
+  // (closed now, it is no longer on the open board: a clicked notification opens it the way a click does)
+  app.desktop.push({ kind: 'open', key: K(F), url: `https://github.com/${REPO}/issues/${F}` });
   await expect(detail(page)).toHaveAttribute('data-key', K(F));
   await expect(detail(page).getByTestId('op-notice')).toHaveCount(0);
-  expect(await page.locator(`[data-testid="op-notice"][data-key="${K(F)}"]`).count()).toBeLessThanOrEqual(1);
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('做完了');
   await detail(page).getByTestId('reply-input').fill('');
   await detail(page).getByTestId('detail-close').click();
