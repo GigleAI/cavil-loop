@@ -152,8 +152,9 @@ test('GitHub#473: the remote daemon section in English — a refusal and a poll 
 test('GitHub#473: this machine’s own remote switch in English — a pairing code, a paired computer with a Chinese name shown as written', async () => {
   const { page } = await openEnglish();
   const block = page.getByTestId('local-remote');
-  await block.scrollIntoViewIfNeeded();
+  // until its status is read the block is a placeholder that is then replaced (GitHub#523): scroll to the real one
   await expect(block).toHaveAttribute('data-state', 'closed', { timeout: 30_000 });
+  await block.scrollIntoViewIfNeeded();
   await expect(block.locator('b').first()).toHaveText('Allow other computers to connect');
   await expect(page.getByTestId('local-remote-summary')).toContainText('Off · 0 paired');
   expect(await chineseIn(page, ['[data-testid="local-remote"]'])).toEqual([]);
