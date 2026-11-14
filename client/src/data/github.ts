@@ -422,7 +422,7 @@ export class GitHubClient {
    */
   async conditional(method: 'GET' | 'HEAD', pathOrUrl: string, etag: string | null): Promise<ConditionalAnswer> {
     const url = /^https?:/.test(pathOrUrl) ? pathOrUrl : `${this.endpoints.api}${pathOrUrl}`;
-    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的链接：{url}', { url }));
+    if (new URL(url).origin !== new URL(this.endpoints.api).origin) throw outsideError('http', zhKey('拒绝跟随指向其他主机的链接：{url}'), { url: { text: url, from: 'github' } });
     const res = await this.again(() => this.send(url, { method, ...(etag ? { headers: { 'If-None-Match': etag } } : {}) }, true));
     const tag = res.headers.get('etag');
     const next = nextLink(res.headers.get('link'));
@@ -448,7 +448,7 @@ export class GitHubClient {
     let url: string | null = `${this.endpoints.api}${path}`;
     const origin = new URL(this.endpoints.api).origin;
     while (url) {
-      if (new URL(url).origin !== origin) throw new GitHubError('http', t('拒绝跟随指向其他主机的分页链接：{url}', { url }));
+      if (new URL(url).origin !== origin) throw outsideError('http', zhKey('拒绝跟随指向其他主机的分页链接：{url}'), { url: { text: url, from: 'github' } });
       const at: string = url;
       const res = await this.again(() => this.send(at, { method: 'GET' }));
       let page: unknown;
@@ -457,7 +457,7 @@ export class GitHubClient {
       } catch (e) {
         throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
       }
-      if (!Array.isArray(page)) throw new GitHubError('http', t('GitHub 列表接口回应不是数组：{path}', { path }));
+      if (!Array.isArray(page)) throw outsideError('http', zhKey('GitHub 列表接口回应不是数组：{path}'), { path: { text: path, from: 'github' } });
       out.push(...(page as T[]));
       url = nextLink(res.headers.get('link'));
     }

@@ -277,3 +277,34 @@ for (const lang of ['en', 'zh'] as const)
     if (lang === 'en') await page_(page, '17-blocked-labels-unread');
     await app.close();
   });
+
+// PR #537 review round 2: the label list answers with a next-page link to another host, the link
+// shaped like the sentence's own holes — the client refuses to follow it and says so in English,
+// the link as written in GitHub's marker, "{human}" in it never replaced by the label name.
+test('GitHub#474 (PR #537 review round 2): "wait for…" when the label list points its next page at another host — the link as written, never followed, never read as holes', async () => {
+  const AWAY = 'https://evil.example/next/{human}?x={blocked}';
+  env.fake.state.w.labelsNextLink = AWAY;
+  const app = await launchApp(env, { locale: 'en-US' });
+  const page = app.page;
+  await signIn(page);
+  await english(app);
+  await page.getByTestId('hand-back-human').fill(CN_LABEL);
+  await page.getByTestId('hand-back-human').blur();
+  await page.getByTestId('back').click();
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await layout(page, 'board');
+  await page.getByTestId('search').fill('');
+  await expect(card(page, ISSUE)).toBeVisible({ timeout: 20_000 });
+  await card(page, ISSUE).click();
+  await page.getByTestId('detail').getByTestId('blocked-open').click();
+  const refuse = page.getByTestId('blocked-refuse');
+  await expect(refuse).toHaveText(
+    `Could not read this repository's labels (Reading the labels / milestones of ${REPO} failed: Refused to follow a page link to another host: ${AWAY}), so it cannot be confirmed that both "pending/blocked" and "${CN_LABEL}" exist`,
+    { timeout: 15_000 },
+  );
+  await expect(refuse.locator('[data-verbatim="github"]').filter({ hasText: AWAY })).toHaveText(AWAY);
+  await expect(refuse.locator('[data-verbatim="user"]')).toHaveText(['pending/blocked', CN_LABEL]);
+  // (that the other host is never asked is checked on the real client in test/unit/error-words.test.ts)
+  await page_(page, '18-blocked-next-link');
+  await app.close();
+});

@@ -708,9 +708,9 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         url.pathname + url.search,
         parsed,
         // frozen now (GitHub#229): a held answer must not pick up a write that arrived after it
-        (st, b) => {
+        (st, b, headers) => {
           const frozen = b === undefined ? undefined : JSON.parse(JSON.stringify(b));
-          out.push(() => send(st, frozen));
+          out.push(() => send(st, frozen, headers));
         },
         (t) =>
           out.push(() => {
