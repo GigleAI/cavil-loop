@@ -8335,7 +8335,7 @@ compose_prompt_template() {
 #
 # 进度在 state.json 的 stuck_workers（只在功能动作时才写，故意不进开头的补字段循环）。
 # 不配置 STUCK_WORKER_QUIET_SECS（或写 0 / 空）= 功能关闭，stuck_tick 第一行就返回。
-STUCK_WORKER_QUIET_SECS="${STUCK_WORKER_QUIET_SECS:-}"
+STUCK_WORKER_QUIET_SECS="${STUCK_WORKER_QUIET_SECS:-0}"   # 空 = 0 = 关；客户端配置窗口按整数项显示（config-fields.txt）
 STUCK_WORKER_STEP_GAP_SECS="${STUCK_WORKER_STEP_GAP_SECS:-900}"
 STUCK_WORKER_MAX_RESTARTS="${STUCK_WORKER_MAX_RESTARTS:-1}"
 # 两次观察之间最多隔多久还算「连续」：daemon 停过、或一轮轮询拖得很长时，不把没看到的那段

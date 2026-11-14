@@ -30,6 +30,9 @@ RETROSPECTIVE_MODEL | agent 与模型 | model | sonnet | edit | 合并后复盘�
 MAX_CONCURRENT_WORKERS | 派工与重试 | int:1:16 | 1 | edit | 同时最多几个 worker | 同一时刻最多有几条 issue / PR 在干活；1 = 一条一条来，最稳
 DISPATCH_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | 派工连续失败几次后交人 | 派不出去时最多自动重试几次，之后标 pending/human
 SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退出后最多重派几次 | 之后标 pending/human
+STUCK_WORKER_QUIET_SECS | 派工与重试 | int:0:86400 | 0 | edit | 卡在 doing/agent 多少秒后催一次 | agent 已空闲、GitHub 和分支都没动静满这么久，往会话里催一次；0 = 关闭这个兜底
+STUCK_WORKER_STEP_GAP_SECS | 派工与重试 | int:60:86400 | 900 | edit | 催过后再等多少秒就重派 | 仍没动静就结束会话、翻回触发标签重派；兜底关着时不用
+STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最多重派几次 | 之后再卡住就留言交 pending/human；兜底关着时不用
 REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决
 REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
 OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
