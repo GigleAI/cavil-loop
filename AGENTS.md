@@ -159,6 +159,15 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 - **Fallback values and recomputed values cannot be added together.** Within a group of overlapping dispatches, either all members are recomputed (group enters the total) or the whole group is listed separately as non-summable — mixing them counts the shared calls twice
 - **Processing time is counted per *turn*, and each turn belongs to exactly one dispatch** (GigleTutor-Web#933). A turn is the run of main-session records sharing one `promptId` — never split on "non-meta user records": tool results are `type=user` without `isMeta`, and splitting on them drops every tool execution in between. The turn's *start* goes through `attribute.owner()`, the same function the token claim uses, over **all** deduplicated windows at once; selecting "turns that start in my window" per window counts a turn twice whenever windows overlap. The owning dispatch gets the whole turn, uncapped, so processing time can exceed the dispatch's wall time — the report lists those as disclosure, not as misattribution. Two traps: an assistant record with `model=<synthetic>` ("No response requested.") is written by the CLI when a new prompt arrives after an interrupted turn, stamped with *that* moment — letting it extend the old turn turned a few minutes into 41 h / 75 h / 522 h and tripled a week's total; and the CLI deletes old session logs, so every run merges the turns it saw into a local ledger (`<cache>/worktime-turns.jsonl`, under `flock`, atomic replace, end only moves later, "done" only goes false→true). Never describe this metric as "excluding waits": in-turn waits (permission prompts, retry backoff, a paused process) are included
 
+### Adding a config setting
+
+Every new key in `cavil-loop.config.example` goes into **both** registries, in the same change:
+
+- `scripts/config-notices.txt` — `notice` (off when the line is missing, on in the template, so existing projects get a `poll.log` line) or `quiet` with the reason. `tests/config-notice.test.sh` fails on a key missing here
+- `scripts/config-fields.txt` — so the desktop client's project-settings dialog shows it (`edit`, or `show` for labels and modes). Skip only the categories that must never be there (commands, hooks, tokens, URLs, folders, names). The registered default must be what the daemon really uses: add the key to the cross-check in `tests/project-config.test.sh` §7 (`LIBKEYS`), and give an integer an integer default (`${X:-0}`, not `${X:-}`). **Nothing fails if you forget this one** — that is why it is written here
+
+Why: `LABEL_PENDING_LATER` (GitHub#463) and the three `STUCK_WORKER_*` settings (GitHub#339) went in without this second registration. The dialog could not show whether they were on, and most projects ran with them off unnoticed: a parked item kept getting dispatched (luosky/arkknights-data#49), and a reviewer that stopped without doing anything held `doing/agent` all night (GigleTutor-Web#1514).
+
 ### Label values
 
 The five states default to these in `cavil-loop.config.example` (overridable):
