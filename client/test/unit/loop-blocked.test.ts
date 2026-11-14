@@ -386,3 +386,114 @@ describe('a pull request a registration waits for keeps its draft mark', () => {
     expect(nodeTone(n)).toBe('done');
   });
 });
+
+// GigleAI/cavil-loop#526: the daemon takes a registration on a pull request too. The case that
+// started it: PR #521 (Closes #473; #473 is a sub-issue of #466) carries the waiting label and a
+// registration naming #523 — and the graph showed neither #521 nor #523.
+describe('a registration on a pull request (GitHub#526)', () => {
+  const rel = (n: number) => ({ number: n, title: `issue ${n}`, url: `https://github.com/${REPO}/issues/${n}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: REPO } });
+  const openPr = (n: number, labels: string[], body: string, extra: Record<string, unknown> = {}) => ({ ...pr(n, 'open', false), labels: labels.map((name) => ({ name, color: 'ededed' })), body, ...extra });
+  /** #466 holds #473; PR #521 closes #473 and waits for #523 (registered on the PR only) */
+  async function prCase(opts: { boxed?: boolean; prLabels?: string[]; prState?: 'open' | 'closed' } = {}) {
+    const boxed = opts.boxed ?? true;
+    const prItem = openPr(521, opts.prLabels ?? [BLOCKED, 'autopilot'], 'feat: 中英文切换（3/4）\n\nCloses #473');
+    if (opts.prState === 'closed') Object.assign(prItem, { state: 'closed', pull_request: { merged_at: null } });
+    await start([
+      issue(466, ['pending/PR'], boxed ? { sub_issues_summary: { total: 1, completed: 0, percent_completed: 0 } } : {}),
+      issue(473, ['pending/PR'], boxed ? { parent_issue_url: `https://api.github.com/repos/${REPO}/issues/466` } : {}),
+      issue(523, ['doing/agent']),
+      prItem,
+    ]);
+    if (boxed) {
+      fake.state.w.relations.set(K(466), { parent: null, subIssues: [rel(473)], blockedBy: [], blocking: [] } as any);
+      fake.state.w.relations.set(K(473), { parent: rel(466), subIssues: [], blockedBy: [], blocking: [] } as any);
+    }
+    comment(fake, 521, MARK('#523'), '2026-11-13T21:57:22Z');
+  }
+
+  it('the PR goes in with its prerequisite: an open arrow #523 → #521, in the box #473 sits in', async () => {
+    await prCase();
+    const snap = await read();
+    const it521 = snap.items.find((i) => i.number === 521)!;
+    expect(it521.kind).toBe('pr');
+    expect(it521.loopBlocked!.ends.map((e) => e.key)).toEqual([K(523)]);
+    // the one batch asked for the PR as well; #523 came from the read itself
+    const asked = fake.log.find((e) => e.operation === 'CavilLoopBlocked')!.variables!.ids as string[];
+    expect(asked).toEqual([it521.nodeId]);
+    expect(ops().filter((o) => o === 'CavilLoopEnd')).toHaveLength(0);
+    const g = buildGraph(snap.items, snap.items, BLOCKED);
+    expect(g.edges).toEqual([{ from: K(523), to: K(521), open: true }]);
+    const n521 = g.nodes.get(K(521))!;
+    expect(n521.kind).toBe('pr');
+    expect(n521.item).not.toBeNull();
+    expect(n521.blockedByOpen).toBe(1);
+    expect(n521.parent).toBe(K(466));
+    expect(g.nodes.get(K(473))!.parent).toBe(K(466));
+    expect(g.nodes.get(K(466))!.children).toEqual([K(473), K(521)]);
+    expect(g.nodes.get(K(523))!.parent).toBeNull();
+    expect(g.nodes.get(K(523))!.blockingAhead).toBe(1);
+    // drawn: #466, #473, #521 and #523 (an end); nothing picked is left out or unknown
+    expect(g.entries).toBe(4);
+    expect(g.noRelation).toBe(0);
+    expect(g.unknown).toBe(0);
+  });
+
+  it('its linked issue drawn at the top level (or not drawn): the PR sits at the top level', async () => {
+    await prCase({ boxed: false });
+    const snap = await read();
+    const g = buildGraph(snap.items, snap.items, BLOCKED);
+    expect(g.edges).toEqual([{ from: K(523), to: K(521), open: true }]);
+    expect(g.nodes.get(K(521))!.parent).toBeNull();
+    // #473 has no relation of its own here: not drawn, and the PR does not pull it in
+    expect(g.nodes.has(K(473))).toBe(false);
+    expect(g.noRelation).toBe(2); // #466, #473
+  });
+
+  it('a PR without the label, or a closed one, is not read and not drawn (a stale marker is not a wait)', async () => {
+    for (const opts of [{ prLabels: ['pending/review'] }, { prState: 'closed' as const }]) {
+      await prCase(opts);
+      const snap = await read();
+      expect(fake.log.some((e) => e.operation === 'CavilLoopBlocked')).toBe(false);
+      const pr521 = snap.items.find((i) => i.number === 521);
+      if (pr521) expect(pr521.loopBlocked).toEqual({ label: BLOCKED, ends: [] });
+      const g = buildGraph(snap.items, snap.items, BLOCKED);
+      expect(g.nodes.has(K(521))).toBe(false);
+      expect(g.nodes.has(K(523))).toBe(false);
+      await fake.close();
+    }
+  });
+
+  it('a snapshot from before #526 (the PR carries no registration): unknown, never "waits for nothing" — and the next sync reads in full', async () => {
+    await prCase();
+    const first = await syncRound(client(), [src()], new Map(), NOW, new Map(), 3_600_000, () => {}, BLOCKED);
+    const snap = first.snapshots.get(src().key)!;
+    const pre = { ...snap, items: snap.items.map((i) => (i.kind === 'pr' ? (({ loopBlocked: _l, ...rest }) => rest)(i) : i)) } as SourceSnapshot;
+    expect(loopKnown(snap.items, BLOCKED)).toBe(true);
+    expect(loopKnown(pre.items, BLOCKED)).toBe(false);
+    const g = buildGraph(pre.items, pre.items, BLOCKED);
+    expect(g.unknown).toBe(1);
+    expect(g.nodes.has(K(521))).toBe(false);
+    // the same snapshot as it was read: the change check may keep it
+    fake.log.length = 0;
+    const kept = await syncRound(client(), [src()], first.snapshots, NOW + 1000, first.checks, 3_600_000, () => {}, BLOCKED);
+    expect(kept.unchanged).toEqual([src().key]);
+    // the pre-#526 one: a full read that brings the PR's registration
+    fake.log.length = 0;
+    const again = await syncRound(client(), [src()], new Map([[src().key, pre]]), NOW + 2000, first.checks, 3_600_000, () => {}, BLOCKED);
+    expect(again.unchanged).toEqual([]);
+    expect(again.replaced[0].items.find((i) => i.number === 521)!.loopBlocked!.ends.map((e) => e.key)).toEqual([K(523)]);
+  });
+
+  it('read whole or not at all: a PR whose registration cannot be read fails the source read', async () => {
+    await prCase();
+    fake.state.w.failLoop.add(K(521));
+    await expect(read()).rejects.toThrow();
+  });
+
+  it('the one-item re-read of the PR carries its registration too', async () => {
+    await prCase();
+    const fresh = await fetchItem(client(), REPO, 521, NOW + 1, BLOCKED);
+    expect(fresh.loopBlocked!.ends.map((e) => e.key)).toEqual([K(523)]);
+    expect((await fetchItem(client(), REPO, 521, NOW + 2, '')).loopBlocked).toBeUndefined();
+  });
+});

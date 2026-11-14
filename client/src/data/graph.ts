@@ -17,17 +17,21 @@
 //   GitHub's "Blocked by" (one arrow per pair). Its prerequisite may be a pull request: that node is
 //   drawn too (only as such an end — PRs still never go in as entries). A registration read under
 //   another label setting, or not yet read, makes the issue "unknown", never "waits for nothing".
+// - GitHub#526: the daemon takes a registration on a pull request too (an open PR carrying the label):
+//   such a PR goes in as an entry of its own, its prerequisites drawn into it, and it sits in the box
+//   of the issue it is linked to (the board's "a PR goes under its issue" rule, `prHosts`) — top level
+//   when that issue is not drawn or sits at the top. It is the only way a PR goes in as an entry.
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { loopCandidate } from './loopBlocked';
-import { issuePrLinks } from './prNest';
+import { issuePrLinks, prHosts } from './prNest';
 import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
   key: string;
   repo: string;
   number: number;
-  /** GitHub#429: 'pr' only for a pull request named by a loop registration */
+  /** GitHub#429: 'pr' only for a pull request named by a loop registration (GitHub#526: or carrying one) */
   kind: ItemKind;
   title: string;
   url: string;
@@ -107,7 +111,7 @@ export function buildGraph(
   const rest: Item[] = [];
   for (const i of shown) {
     if (i.relations === undefined || loopUnknown(i, loopLabel)) unknown++;
-    else if (i.kind === 'issue' && hasRelations(i, loopLabel)) entries.push(i);
+    else if (i.kind === 'issue' ? hasRelations(i, loopLabel) : loopEnds(i, loopLabel).length > 0) entries.push(i);
     else rest.push(i);
   }
 
@@ -177,6 +181,16 @@ export function buildGraph(
   const known = [...nodes.values()].filter((n) => n.item?.relations).sort(byNumber);
   for (const n of known) if (n.item!.relations!.parent) setParent(n.key, n.item!.relations!.parent.key);
   for (const n of known) n.item!.relations!.subIssues.forEach((s, i) => (setParent(s.key, n.key), order.set(s.key, i)));
+  // GitHub#526: a PR that went in with a registration of its own sits in the box its linked issue sits in
+  const prEntries = entries.filter((e) => e.kind === 'pr');
+  if (prEntries.length) {
+    const hosts = prHosts(all);
+    for (const e of prEntries) {
+      const host = hosts.get(e.key);
+      const box = host !== undefined && nodes.has(host) ? parentOf.get(host) : undefined;
+      if (box !== undefined) setParent(e.key, box);
+    }
+  }
 
   // arrows: from each in-source node's own lists, both directions, once each
   const edgeKeys = new Set<string>();
