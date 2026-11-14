@@ -50,7 +50,7 @@ describe('platform layer (back end)', () => {
   const isAllowedExternal = (url: string, ep: { api: string; web: string }) => b.call<boolean>('test.allowedExternal', { url, ...ep });
   const select = (os: string, env: Record<string, string>) => b.call<{ api?: string; web?: string; store?: string; error?: string }>('test.selectPlatform', { os, env });
 
-  it('only github.com (or the loopback test server) may be opened in the browser', async () => {
+  it('the window\'s own navigation: only github.com (or the loopback test server) is handed to the browser', async () => {
     const prod = { api: 'https://api.github.com', web: 'https://github.com' };
     expect(await isAllowedExternal('https://github.com/login/device', prod)).toBe(true);
     expect(await isAllowedExternal('https://github.com.evil.example/', prod)).toBe(false);
@@ -75,12 +75,47 @@ describe('platform layer (back end)', () => {
     expect(await isAllowedExternal('https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png', prod)).toBe(false);
   });
 
-  it('a link the window asks to open that is not GitHub: refused, nothing opened', async () => {
+  it('GitHub#539: any web link (http / https, whatever the site) may be handed to the browser; every other kind of address may not', async () => {
+    const prod = { api: 'https://api.github.com', web: 'https://github.com' };
+    const isOpenable = (url: string) => b.call<boolean>('test.openableLink', { url, ...prod });
+    for (const u of [
+      'https://example.com/',
+      'http://example.com/x?y=1#z',
+      'https://futurelab-01.mercat-delta.ts.net:8443/review-assets/a.png',
+      'https://github.com/GigleAI/cavil-loop',
+      'https://github.com.evil.example/',
+      'HTTPS://Example.COM/a',
+    ]) {
+      expect(await isOpenable(u), u).toBe(true);
+    }
+    for (const u of [
+      'javascript:alert(1)',
+      'file:///etc/passwd',
+      'mailto:a@example.com',
+      'vscode://file/x',
+      'data:text/html,hi',
+      'ftp://example.com/a',
+      'about:blank',
+      'about:srcdoc#user-content-x',
+      'https://',
+      'not a url',
+      '',
+    ]) {
+      expect(await isOpenable(u), u).toBe(false);
+    }
+    // the window's own navigation keeps the narrower rule: a non-GitHub site is never handed on from there
+    expect(await isAllowedExternal('https://example.com/', prod)).toBe(false);
+  });
+
+  it('GitHub#539: a link the window asks to open on another site goes to the browser; another kind of address is refused, nothing opened', async () => {
     const opened: string[] = [];
     const h = new HarnessBackend({ db: join(tempDir(), 'cache.sqlite'), endpoints: { api: 'http://127.0.0.1:9/api', web: 'http://127.0.0.1:9/web' }, credentials: new MemoryStore(), opened });
-    await expect(h.call('openExternal', { url: 'https://example.com/' })).rejects.toThrow(/不打开非 GitHub 链接/);
+    await h.call('openExternal', { url: 'https://example.com/' });
+    for (const u of ['javascript:alert(1)', 'file:///etc/passwd', 'mailto:a@example.com']) {
+      await expect(h.call('openExternal', { url: u })).rejects.toThrow(/只在浏览器里打开网页链接/);
+    }
     await h.call('openExternal', { url: 'https://github.com/GigleAI/cavil-loop' });
-    expect(opened).toEqual(['https://github.com/GigleAI/cavil-loop']);
+    expect(opened).toEqual(['https://example.com/', 'https://github.com/GigleAI/cavil-loop']);
     await h.close();
   });
 

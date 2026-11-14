@@ -3,7 +3,7 @@
 // Content-Security-Policy. GitHub's rendered HTML goes in as is; everything
 // this file writes around it (names, times, paths) is escaped. Links open in
 // a new window, which the main process turns into "open in the system
-// browser" (GitHub addresses only).
+// browser" (any http / https address, GitHub#539; other kinds are refused).
 //
 // The one script that runs in the timeline frame is FRAME_SCRIPT (GitHub#193:
 // it reports a ticked task-list box to the window). Two policies stand between
