@@ -658,6 +658,55 @@ test('GitHub#429: the loop registrations in comments are drawn as arrows; the se
   await app.close();
 });
 
+test('GitHub#526: a registration on a pull request — the PR and its prerequisite are drawn, the PR in its issue\'s box', async () => {
+  // the case that started it: PR #521 closes #473 (a sub-issue of #466), carries the waiting label, registered "#523" on itself
+  const TOOL = 'luosky/arkknights-tool';
+  const TK = (n: number) => `${TOOL}#${n}`;
+  const issue = (n: number, labels: string[], extra: Record<string, unknown> = {}) => ({
+    number: n,
+    node_id: `I_tool_${n}`,
+    title: `客户端中英文切换 ${n}`,
+    state: 'open',
+    html_url: `https://github.com/${TOOL}/issues/${n}`,
+    updated_at: '2026-11-13T21:57:22Z',
+    labels: labels.map((name) => ({ name, color: 'c5def5' })),
+    assignees: [],
+    milestone: null,
+    user: { login: 'luosky' },
+    parent_issue_url: null,
+    sub_issues_summary: { total: 0, completed: 0, percent_completed: 0 },
+    issue_dependencies_summary: { blocked_by: 0, total_blocked_by: 0, blocking: 0, total_blocking: 0 },
+    ...extra,
+  });
+  const rel = (n: number) => ({ number: n, title: `客户端中英文切换 ${n}`, url: `https://github.com/${TOOL}/issues/${n}`, state: 'OPEN', stateReason: null, repository: { nameWithOwner: TOOL } });
+  env.fake.state.repos.set(TOOL, [
+    issue(466, ['pending/PR'], { sub_issues_summary: { total: 1, completed: 0, percent_completed: 0 } }),
+    issue(473, ['pending/PR'], { parent_issue_url: `https://api.github.com/repos/${TOOL}/issues/466` }),
+    issue(523, ['doing/agent']),
+    { ...issue(521, ['pending/blocked', 'autopilot']), node_id: 'PR_tool_521', title: 'feat(client): 中英文切换（3/4）', body: 'Closes #473', pull_request: { merged_at: null }, draft: false },
+  ]);
+  env.fake.state.w.relations.set(TK(466), { parent: null, subIssues: [rel(473)], blockedBy: [], blocking: [] } as any);
+  env.fake.state.w.relations.set(TK(473), { parent: rel(466), subIssues: [], blockedBy: [], blocking: [] } as any);
+  const body = '## 等前置 #523\n\n<!-- agent-blocked-by: #523 resume=pending/agent -->';
+  env.fake.state.w.comments.set(TK(521), [
+    { id: 'IC_tool_521', url: `https://github.com/${TOOL}/pull/521#c1`, createdAt: '2026-11-13T21:57:22Z', bodyHTML: body, body, author: { login: 'luosky-bot-pusher' }, authorAssociation: 'MEMBER' },
+  ]);
+  const app = await launchApp(env);
+  const { page } = app;
+  await signInToGraph(page, [TOOL]);
+  await expect(edgeOf(page, TK(523), TK(521))).toHaveCount(1);
+  await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(1);
+  await expect(nodeOf(page, TK(521)).getByTestId('graph-blocked-by')).toHaveText('被 1 项挡住');
+  await expect(nodeOf(page, TK(523)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 1 项');
+  expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(521))), 'PR #521 in #466').toBe(true);
+  expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(473))), '#473 in #466').toBe(true);
+  expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(523))), '#523 outside #466').toBe(false);
+  await expect(page.getByTestId('graph-hidden')).toHaveCount(0);
+  await page.getByTestId('graph-fit').click();
+  await shot(page, 'graph-13-pr-registration');
+  await app.close();
+});
+
 test('GitHub#483: the summary of an issue lists its linked PRs — state, draft, labels, where the link comes from; a click opens the PR', async () => {
   // the recording holds no PR in its sources: two are added to the repository list (#351 names #350 in
   // its description, #72 is the PR GitHub links to #70); #69, linked to #67, stays in no source

@@ -22,7 +22,7 @@ export interface FreshItem {
   readAt: number;
   content: GqlContent;
   projectItems: GqlProjectItem[];
-  /** GitHub#429: the loop's registration read with it (absent: the setting is off, or not an issue) */
+  /** GitHub#429: the loop's registration read with it (absent: the setting is off; GitHub#526: PRs carry one too) */
   loopBlocked?: LoopBlocked;
 }
 
