@@ -144,6 +144,21 @@ export function saidText(s: Said): string {
   return s.template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, name: string) => s.parts.find((p) => p.name === name)?.text ?? all);
 }
 
+/**
+ * GitHub#474 (PR #537 review round 1): a Said whose `{hole}` is filled by another Said — the inner
+ * template (the client's words) goes into the outer one, the inner parts stay parts. Outside text is
+ * never put into a template, so a "{name}" inside it is never read as a hole. The inner part names
+ * are renamed (`<hole>_<name>`) so they cannot meet the outer ones.
+ */
+export function nestSaid(outer: string, hole: string, inner: Said, parts: Said['parts']): Said {
+  const tag = (n: string) => `${hole}_${n}`;
+  const innerTemplate = inner.template.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (all, n: string) => (inner.parts.some((p) => p.name === n) ? `{${tag(n)}}` : all));
+  return {
+    template: outer.split(`{${hole}}`).join(innerTemplate),
+    parts: [...parts, ...inner.parts.map((p) => ({ ...p, name: tag(p.name) }))],
+  };
+}
+
 /** a value from the back end that should be a Said: anything malformed is not one (null) */
 export function readSaid(v: unknown): Said | null {
   if (!v || typeof v !== 'object') return null;

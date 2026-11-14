@@ -98,6 +98,8 @@ export interface WritableState {
   failMilestones: Set<string>;
   /** repositories whose label list answers HTTP 502 (GitHub#245: "cannot read" is not "has none") */
   failLabels: Set<string>;
+  /** GitHub#474: the message a failed label list answers with (null = "Server Error") */
+  failLabelsMessage: string | null;
   /** repositories where a new issue's labels are dropped without an error, as GitHub does for an account without write access (GitHub#245) */
   dropIssueLabels: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
@@ -197,6 +199,7 @@ export function defaultWritable(): WritableState {
     failLabel: null,
     failMilestones: new Set(),
     failLabels: new Set(),
+    failLabelsMessage: null,
     dropIssueLabels: new Set(),
     failTaskSource: false,
     failTitleSource: false,
@@ -579,7 +582,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (!known) return false;
 
   if (method === 'GET' && rest === '/labels') {
-    if (w.failLabels.has(key)) return send(502, { message: 'Server Error' }), true;
+    if (w.failLabels.has(key)) return send(502, { message: w.failLabelsMessage ?? 'Server Error' }), true;
     return send(200, w.repoLabels.get(key) ?? []), true;
   }
   if (method === 'GET' && rest === '/milestones') {

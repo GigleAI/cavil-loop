@@ -241,3 +241,39 @@ test('GitHub#474: nothing set — the same walk reads Chinese, as before', async
   expect((await chineseIn(page, ['body'])).length).toBeGreaterThan(0);
   await app.close();
 });
+
+// PR #537 review round 1: reading the repository's labels fails, GitHub answering in Chinese with
+// words that look like the sentence's own holes — the refusal is the client's words around it, the
+// repository and GitHub's words as written in their markers, "{human}" in them left alone.
+const NASTY = '服务器开小差了 {human} {blocked}';
+for (const lang of ['en', 'zh'] as const)
+  test(`GitHub#474 (PR #537 review round 1): "wait for…" when the labels cannot be read, ${lang === 'en' ? 'in English' : 'in Chinese (nothing set)'} — GitHub's words as written, never read as holes`, async () => {
+    env.fake.state.w.failLabels.add('gigleai/cavil-loop');
+    env.fake.state.w.failLabelsMessage = NASTY;
+    const app = await launchApp(env, { locale: 'en-US' });
+    const page = app.page;
+    await signIn(page);
+    if (lang === 'en') await english(app);
+    // the person's Chinese name for the waiting label, so it is the item's flow label and fills a hole too
+    await page.getByTestId('hand-back-human').fill(CN_LABEL);
+    await page.getByTestId('hand-back-human').blur();
+    await page.getByTestId('back').click();
+    await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+    await layout(page, 'board');
+    await page.getByTestId('search').fill('');
+    await expect(card(page, ISSUE)).toBeVisible({ timeout: 20_000 });
+    await card(page, ISSUE).click();
+    await page.getByTestId('detail').getByTestId('blocked-open').click();
+    const refuse = page.getByTestId('blocked-refuse');
+    const sentence =
+      lang === 'en'
+        ? `Could not read this repository's labels (Reading the labels / milestones of ${REPO} failed: GitHub answered HTTP 502: ${NASTY}), so it cannot be confirmed that both "pending/blocked" and "${CN_LABEL}" exist`
+        : `读不到这个仓库的标签（读取 ${REPO} 的标签 / 里程碑失败：GitHub 返回 HTTP 502：${NASTY}），不能确认「pending/blocked」「${CN_LABEL}」两个标签都在`;
+    await expect(refuse).toHaveText(sentence, { timeout: 15_000 });
+    // GitHub's words, whole and untouched, in GitHub's marker; the repository too; the labels the person's
+    await expect(refuse.locator('[data-verbatim="github"]').filter({ hasText: NASTY })).toHaveText(NASTY);
+    await expect(refuse.locator('[data-verbatim="github"]').filter({ hasText: REPO })).toHaveText(REPO);
+    await expect(refuse.locator('[data-verbatim="user"]')).toHaveText(['pending/blocked', CN_LABEL]);
+    if (lang === 'en') await page_(page, '17-blocked-labels-unread');
+    await app.close();
+  });

@@ -1012,7 +1012,8 @@ export const MUTATIONS = [
     from: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate({ ...now, candidates, looking: false, lookError: null });", to: "      if (now && now.status === 'unknown' && session === this.session) this.setCreate(candidates.length ? { ...now, status: 'partial', createdKey: `${action.repo.toLowerCase()}#${candidates[0].number}`, number: candidates[0].number, missingProjects: [] } : { ...now, status: 'failed' });",
     expect: ['no answer: "not sure"'] },
   { what: '标签 / 里程碑列表：读失败的结果也记住（之后一直报错）', file: 'src/app/controller.ts',
-    from: "        this.noteAuthFailure(e);\n        return { labels: [], milestones: [], error: t('读取 {repo} 的标签 / 里程碑失败：{why}', { repo, why: (e as Error).message }) };", to: "        this.noteAuthFailure(e);\n        const bad = { labels: [], milestones: [], error: t('读取 {repo} 的标签 / 里程碑失败：{why}', { repo, why: (e as Error).message }) };\n        this.optionsCache.set(repo, bad);\n        return bad;",
+    // GitHub#474 (PR #537 review round 1): the failure is now worded once (errorSaid) and flattened into `error`; the same break, on the new lines
+    from: "        const failed: RepoOptions = { labels: [], milestones: [], error: saidText(errorSaid), errorSaid };\n        return failed;", to: "        const failed: RepoOptions = { labels: [], milestones: [], error: saidText(errorSaid), errorSaid };\n        this.optionsCache.set(repo, failed);\n        return failed;",
     expect: ['a failed list is not kept'] },
   { what: '详情缓存：退出登录不清空（上一个账号的详情会在下一个账号里出现）', file: 'src/app/controller.ts',
     from: '    this.detailCache.clear();\n', to: '',

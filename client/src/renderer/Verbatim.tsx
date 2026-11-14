@@ -28,6 +28,15 @@ export function verbatimParts(from: VerbatimSource, parts: readonly (string | nu
 }
 
 /**
+ * GitHub#474 (PR #537 review round 1): `verbatimParts` for a hover text that shows a Said flattened
+ * (saidText): exactly its outside parts, plus any `extra` outside text the same hover text carries.
+ */
+export function saidParts(said: Said | null | undefined, extra: readonly (string | null | undefined)[] = []): Record<string, string> {
+  const parts = said?.parts ?? [];
+  return verbatimParts(parts[0]?.from ?? 'github', [...extra, ...parts.map((p) => p.text)]);
+}
+
+/**
  * GitHub#471 (PR #480 review round 2): a message the back end worded with holes — its own words in
  * the window's language, each outside part (the system's, GitHub's words) as written inside its marker.
  */
