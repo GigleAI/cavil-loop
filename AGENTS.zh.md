@@ -90,6 +90,7 @@
 │   ├── lib/report.sh          ← 每个测试文件结尾那一行计数（回归 / 改动前对拍 / 负对照）
 │   ├── smoke.test.sh          ← shell 冒烟测试：真实轮询跑一轮、三条主路径，几秒
 │   ├── ci-exclude.txt         ← CI 不跑的文件，每个写明原因
+│   ├── config-fields-hidden.txt ← 客户端项目配置窗口不显示的模板配置项，每个写明原因
 │   └── ci-weights.txt         ← 各文件参考耗时，只用来均衡 CI 分组
 ├── .github/workflows/
 │   ├── tests.yml              ← 每个 PR、每次推 main 跑 tests/run.sh（只改 client/ 的不跑；检查名：测试）
@@ -138,12 +139,22 @@
 - **明细不能只看 issue 侧活跃度** —— 很多 issue 定完方案就没人再回 issue 页，整周讨论全在 PR 上。入选条件是三选一：issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭。没有关联 issue 的 PR 用 `loose_prs` 单列一组
 - **处理时长按「轮」算，每一轮只归一个派工**（GigleTutor-Web#933）。一轮 = 主会话里共用同一个 `promptId` 的一段记录，**不能按「非 meta 的用户记录」切**：工具结果也是 `type=user`、没有 `isMeta`，按它切会丢掉中间全部工具执行时间。轮的**开始时刻**交给 `attribute.owner()`（与 token 认领同一个函数），而且要在**全部**去重后的窗口上统一认领——逐窗口各自挑「开始落在本窗口里」的轮，窗口重叠时同一轮会算两遍。认领到的派工拿整轮、不封顶，所以处理时长可能超过总耗时，报告里那张清单是披露、不是错配告警。两个坑：`model=<synthetic>` 的 assistant 记录（「No response requested.」）是上一轮被中断后、新指令到来时 CLI 补写的，时间戳是补写时刻，拿它延长上一轮会把几分钟变成 41h / 75h / 522h，一周合计翻三倍；CLI 会删旧会话日志，所以每次采集把轮并进本地台账（`<缓存目录>/worktime-turns.jsonl`，`flock` + 原子替换，结束时刻只往后推，「已结束」只能从否变是）。**不能把这个指标写成「不含等待」**：轮内等待（权限确认、重试退避、进程挂起）照算
 
+### 一条规矩放哪：lint、测试，还是 AGENTS.md
+
+本仓库的规矩，放进下面第一个装得下它的地方：
+
+1. **lint**：只读文本、不跑程序、最多几秒的 `# kind: guard` 测试。凡是只看源码就能判断的都放这里：两张登记表覆盖的配置项一致、禁止某种写法、同一段文字的几份副本必须一样。它在 `--quick` 和每个 PR 上跑；提交前跑一遍 `bash tests/run.sh --kind guard`。例：`config-fields-coverage`、`bash-multibyte-vars`、`token-redaction` 里带 `# redact-ok` 的那组
+2. **测试**：只有程序跑起来才看得出的行为：读失败时怎么处理、默认值是否等于使用方实际用的、一轮被打断后留下什么状态
+3. **只写进 AGENTS.md**：两者都查不了的判断：要人来判断，或者按文本查总是出错（`bash-multibyte-vars` 背后那个分辨上下文的解析器，在 PR #417 上连续三轮评审出错）。正文里写明为什么不查
+
+有 lint 或测试的规矩，这里仍留一句，讲为什么、检查在哪；但执行靠的是检查。正文里出现「漏了没有任何东西会红」这种话，说明这条规矩该往上挪一级：能写出不误报的检查，就写检查。lint 需要豁免的，豁免写在那一行上（`# redact-ok`），或者写进一张带原因的清单（`config-notices.txt` 的 `quiet`、`config-fields-hidden.txt`），不许悄悄跳过。
+
 ### 新增配置项
 
 往 `cavil-loop.config.example` 里加配置项，同一次改动里要登记进**两张**表：
 
 - `scripts/config-notices.txt`：登记成 `notice`（不写就关、模板里开，老项目会在 `poll.log` 里收到一行提示）或 `quiet` 并写原因。漏了 `tests/config-notice.test.sh` 会红
-- `scripts/config-fields.txt`：桌面客户端的「项目配置」窗口才看得到它（能改的登记 `edit`，标签、模式这类登记 `show`）。只有绝不许登记的几类（命令、钩子、令牌、网络地址、目录、各种名字）不登。登记的默认值必须是 daemon 实际用的：把它加进 `tests/project-config.test.sh` 第 7 节的对拍（`LIBKEYS`）；整数项的默认值写整数（`${X:-0}`，别写 `${X:-}`）。**这一张漏了没有任何测试会红**，所以写在这里
+- `scripts/config-fields.txt`：桌面客户端的「项目配置」窗口才看得到它（能改的登记 `edit`，标签、模式这类登记 `show`）。只有绝不许登记的几类（命令、钩子、令牌、网络地址、目录、各种名字）改登记进 `tests/config-fields-hidden.txt` 并写原因；两处都没登记或都登记了，`tests/config-fields-coverage.test.sh` 会红。登记的默认值必须是 daemon 实际用的：把它加进 `tests/project-config.test.sh` 第 7 节的对拍（`LIBKEYS`）；整数项的默认值写整数（`${X:-0}`，别写 `${X:-}`）。不显示清单里的 `待登记` 是这条规矩之前就有、核对完默认值就能显示的老配置项——新加的配置项不许放进去
 
 为什么：暂缓标签 `LABEL_PENDING_LATER`（GitHub#463）和卡住兜底的三项 `STUCK_WORKER_*`（GitHub#339）上线时都没登记第二张表，窗口里看不出开没开，多数项目一直关着也没人发现——打了暂缓的条目照样被派工（luosky/arkknights-data#49），复审空手停下的条目挂在 `doing/agent` 一整夜（GigleTutor-Web#1514）。
 

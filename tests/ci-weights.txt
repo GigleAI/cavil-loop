@@ -35,6 +35,7 @@ closed-issue-done 52
 comment-footer 14
 comment-layout-prompts 1
 concurrent-work 97
+config-fields-coverage 1
 config-notice 55
 conflict-check-prompts 1
 design-review-gate 38
