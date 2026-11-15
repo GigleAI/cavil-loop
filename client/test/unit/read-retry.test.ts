@@ -202,7 +202,7 @@ describe('a source that keeps failing waits longer each time', () => {
     for (let min = 1; min <= 36; min++) {
       const sent = await at(min);
       if (boardReads(sent)) readAt.push(min);
-      viewer += sent.filter((e) => e.operation === 'CavilViewer').length;
+      viewer += sent.filter((e) => e.operation === 'user').length;
       repoChecks += sent.filter((e) => e.method === 'HEAD' || isRepoList(e)).length > 0 ? 1 : 0;
     }
     // failed at 1 → next at 2 (+1) → 4 (+2) → 8 (+4) → 16 (+8) → 26 (+10) → 36 (+10)
@@ -303,9 +303,10 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const { c, clock, at } = await boot();
     clock.t = FIXTURE_NOW + MIN;
     const reset = resetIn(clock, 30);
-    fake.state.answerOverride = (e) => (e.operation === 'CavilViewer' ? limitedGraphql(reset) : null);
+    fake.state.answerOverride = (e) => (e.operation === 'user' ? limited(reset) : null);
     const sent = await at(1);
-    expect(sent.map((e) => e.operation)).toEqual(['CavilViewer']);
+    // GitHub#545: the quotas first (not counted), then "who am I" (REST)
+    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user']);
     fake.state.answerOverride = null;
     await holdsUntilReset(c, at, 1, reset);
   });
@@ -316,7 +317,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const reset = resetIn(clock, 20);
     fake.state.answerOverride = (e) => (e.operation === 'CavilProjectCounts' ? limitedGraphql(reset) : null);
     const sent = await at(1);
-    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['CavilViewer', 'CavilProjectCounts']);
+    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user', 'CavilProjectCounts']);
     fake.state.answerOverride = null;
     await holdsUntilReset(c, at, 1, reset);
   });
@@ -337,33 +338,21 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     await holdsUntilReset(c, at, 1, reset, [PROJECT_KEY]);
   });
 
-  it('page 2 of a full read is limited while the repository read is already on its way: that answer still lands, nothing else goes out, the board keeps its old data', async () => {
+  // GitHub#545: the sync's requests leave one at a time (the quota guard's queue), so "another request
+  // already on its way" when the limit is heard cannot happen any more: the one after it is not sent
+  it('page 2 of a full read is limited: nothing goes out after it, the board keeps its old data', async () => {
     const { c, clock } = await boot();
     clock.t = FIXTURE_NOW + MIN;
     const reset = resetIn(clock, 10);
     const boardFrom = c.getState().sync.times.find((t) => t.sourceKey === PROJECT_KEY)!.readAt;
-    // the repository's first list page is held at GitHub until the board heard the limit
-    let release: () => void = () => {};
-    let limitHeard!: () => void;
-    const heard = new Promise<void>((r) => (limitHeard = r));
-    release = fake.holdWhen((e) => isRepoList(e) && !/[?&]page=/.test(e.path));
-    fake.state.answerOverride = (e) => {
-      if (isBoardPage(e) && e.variables?.after) {
-        setTimeout(limitHeard, 50);
-        return limited(reset);
-      }
-      return null;
-    };
-    const round = c.restartSync(); // by hand: both read in full
-    await heard;
-    const before = fake.log.length;
-    release();
-    await round;
-    const after = fake.log.slice(before);
-    // nothing new went out once the limit was heard
-    expect(after).toEqual([]);
-    const repoPage = fake.log.filter((e) => isRepoList(e) && !/[?&]page=/.test(e.path)).at(-1)!;
-    expect(repoPage.status).toBe(200); // the request on its way was answered
+    fake.state.answerOverride = (e) => (isBoardPage(e) && e.variables?.after ? limited(reset) : null);
+    const n = fake.log.length;
+    await c.restartSync(); // by hand: both read in full
+    const sent = fake.log.slice(n);
+    const at = sent.findIndex((e) => isBoardPage(e) && e.status === 403);
+    expect(at).toBeGreaterThanOrEqual(0);
+    // nothing went out once the limit was heard
+    expect(sent.slice(at + 1)).toEqual([]);
     expect(status(c, PROJECT_KEY)).toMatchObject({ ok: false, rateLimited: true });
     expect(c.getState().sync.times.find((t) => t.sourceKey === PROJECT_KEY)!.readAt).toBe(boardFrom); // no half board
   });
@@ -387,13 +376,13 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const { c, clock, at } = await boot();
     clock.t = FIXTURE_NOW + MIN;
     const reset = resetIn(clock, 30);
-    fake.state.answerOverride = (e) => (e.operation === 'CavilViewer' ? limitedGraphql(reset) : null);
+    fake.state.answerOverride = (e) => (e.operation === 'user' ? limited(reset) : null);
     await at(1);
     expect(await at(2)).toEqual([]);
     clock.t = FIXTURE_NOW + 3 * MIN;
     let n = fake.log.length;
     await c.restartSync();
-    expect(fake.log.slice(n).map((e) => e.operation)).toEqual(['CavilViewer']);
+    expect(fake.log.slice(n).map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user']);
     expect(status(c, REPO_KEY)).toMatchObject({ rateLimited: true });
     // GitHub lets it through now: by hand reads at once
     fake.state.answerOverride = null;
@@ -407,7 +396,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
   it('writes are not held back by the sync\'s limit (they say GitHub\'s own answer)', async () => {
     const { c, clock, at } = await boot();
     clock.t = FIXTURE_NOW + MIN;
-    fake.state.answerOverride = (e) => (e.operation === 'CavilViewer' ? limitedGraphql(resetIn(clock, 30)) : null);
+    fake.state.answerOverride = (e) => (e.operation === 'user' ? limited(resetIn(clock, 30)) : null);
     await at(1);
     fake.state.answerOverride = null;
     const n = fake.log.length;
@@ -438,11 +427,11 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
       const until = () => status(c, PROJECT_KEY).retry?.limitedUntil;
       const limitedAt = (m: number) => FIXTURE_NOW + m * MIN;
       let sent = await at(1);
-      expect(sent.some((e) => e.operation === 'CavilViewer' && e.status === 200)).toBe(true); // who am I did answer
+      expect(sent.some((e) => e.operation === 'user' && (e.status === 200 || e.status === 304))).toBe(true); // who am I did answer
       expect(sent.some((e) => hits(e) && e.status === 403)).toBe(true);
       expect(until()).toBe(limitedAt(2));
       sent = await at(2);
-      expect(sent.some((e) => e.operation === 'CavilViewer' && e.status === 200)).toBe(true);
+      expect(sent.some((e) => e.operation === 'user' && (e.status === 200 || e.status === 304))).toBe(true);
       expect(until()).toBe(limitedAt(4));
       expect(await at(3)).toEqual([]);
       sent = await at(4);
@@ -492,7 +481,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     await sleep(100);
     // the rounds after it still go out and read
     const later = await at(2);
-    expect(later.some((e) => e.operation === 'CavilViewer')).toBe(true);
+    expect(later.some((e) => e.operation === 'user')).toBe(true);
     expect(c.getState().sync.sources.every((s) => s.ok && !s.rateLimited)).toBe(true);
     const byHand = fake.log.length;
     await c.restartSync();
@@ -539,7 +528,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     expect(status(c, REPO_KEY).ok).toBe(true);
     // the new account's rounds still go out and read
     const later = await at(2);
-    expect(later.some((e) => e.operation === 'CavilViewer' && e.auth === `Bearer ${TOKEN_B}`)).toBe(true);
+    expect(later.some((e) => e.operation === 'user' && e.auth === `Bearer ${TOKEN_B}`)).toBe(true);
     expect(status(c, REPO_KEY)).toMatchObject({ ok: true });
     expect(status(c, REPO_KEY).rateLimited).toBeFalsy();
     const n = fake.log.length;

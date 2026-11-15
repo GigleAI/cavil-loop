@@ -83,7 +83,6 @@
     "other": "Failed {n} times in a row since {since} · {next} (the more failures, the longer the wait, at most 10 minutes)"
   },
   "点「重新同步」会马上重读，不等自动重试。": "\"Sync again\" reads at once, without waiting for the automatic retry.",
-  "「检查」看不到仓库里被删除、被转走、滑出最近 14 天的条目，也看不到看板标题、保存的视图和写权限的变化；这些要等整份重读（约每 10 分钟一次，读不成就更久）。": "A \"check\" does not see items deleted, transferred or older than the last 14 days in a repository, nor changes to a board's title, its saved views or write access; those wait for a full read (about every 10 minutes, longer when it fails).",
   "上次检查 {ago}": "Last checked {ago}",
   "还没有同步过": "Not synced yet",
   "数据整份读取：{ago}": "Data fully read: {ago}",
@@ -382,5 +381,15 @@
   "一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{first} … {last}、{close} 和缩放键是固定的，不能改。不带 {mod} 的单个键只在光标不在输入框里时生效。": "Changing an action to a key stops its old keys from working. Esc, ↩, the arrow keys, {first} … {last}, {close} and the zoom keys are fixed and cannot be changed. A single key without {mod} works only while the cursor is not in a text box.",
   "固定的键，不能改": "A fixed key; it cannot be changed",
   "固定": "Fixed",
-  "顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做": "The \"Later\" count, and right after the waiting-for-human label in label pickers; empty = neither"
+  "顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做": "The \"Later\" count, and right after the waiting-for-human label in label pickers; empty = neither",
+  "额度保护中（{time} 恢复）": "Saving quota (resumes {time})",
+  "额度保护中": "Saving quota",
+  "{text}：客户端暂停了会扣 GitHub 额度的读取（点开看详情）": "{text}: the client paused the reads that count against the GitHub quota (click for details)",
+  "「检查」和「读取变化」看不到被删除、被转走的条目，也看不到看板标题、保存的视图、写权限和只改了别的条目带来的依赖关系变化；这些要等整份重读（仓库约每 10 分钟一次，按变化读取的看板约每 60 分钟一次，读不成就更久）。": "A \"check\" and a \"read of changes\" do not see items deleted or transferred, nor changes to a board's title, its saved views, write access, or dependencies changed through another item; those wait for a full read (about every 10 minutes for a repository, about every 60 minutes for a board read by changes, longer when it fails).",
+  "刚重新打开，{at} 开始同步（等上次关闭前的请求结清）": "Just reopened: syncing starts at {at} (once the requests from before closing are settled)",
+  "本小时额度：账号已用 {gu} / {gl} 点（GraphQL）、{cu} / {cl} 次（REST），{at} 重置（客户端最多用到账号只剩一半）": "Quota this hour: the account used {gu} / {gl} points (GraphQL) and {cu} / {cl} calls (REST); resets at {at} (the client uses at most half)",
+  "{source}：读取变化（{n} 个条目）{delta} · 整份读取 {read} · 上次检查 {checked}": {
+    "one": "{source}: changes read ({n} item) {delta} · full read {read} · last check {checked}",
+    "other": "{source}: changes read ({n} items) {delta} · full read {read} · last check {checked}"
+  }
 }

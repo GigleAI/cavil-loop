@@ -95,7 +95,7 @@ fragment P on ProjectV2 {
     totalCount
     pageInfo { hasNextPage endCursor }
     nodes {
-      id isArchived
+      id isArchived updatedAt
       fieldValues(first: 30) {
         nodes {
           __typename
@@ -130,6 +130,26 @@ const ITEM_FIELD_VALUES = `
       }
     }
   }
+`;
+
+/**
+ * GitHub#545: the items of a board a read of changes re-reads, by their Project item node ids — the
+ * same item and content fields as the board read (CONTENT_FIELDS, ITEM_FIELD_VALUES), so a re-read
+ * item cannot differ from what the full read would have shown. `project { id }` tells an item of
+ * this board from one of another; a null slot = the item is gone.
+ */
+export const PROJECT_ITEMS_BY_IDS_QUERY = `
+query CavilProjectItemsByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    __typename
+    ... on ProjectV2Item {
+      id isArchived updatedAt
+      project { id }
+      ${ITEM_FIELD_VALUES}
+      content { ${CONTENT_FIELDS} }
+    }
+  }
+}
 `;
 
 /** CONTENT_FIELDS without the DraftIssue part (it cannot be spread on IssueOrPullRequest) */

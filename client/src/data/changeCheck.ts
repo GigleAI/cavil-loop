@@ -24,6 +24,12 @@ import { projectCountsQuery } from './queries';
 
 /** A source is read in full at least this often, whatever the check says. */
 export const FULL_READ_EVERY_MS = 10 * 60_000;
+/**
+ * GitHub#545: a board whose changes are read item by item is read in full only this often (what a
+ * read of changes cannot see: saved views, relations changed from another item, transfers). A board
+ * that cannot be read by changes (an item without GitHub's times) keeps FULL_READ_EVERY_MS.
+ */
+export const BOARD_FULL_READ_EVERY_MS = 60 * 60_000;
 
 /** Pages of a board's REST item list the check follows before giving up (same bound as the full read). */
 const MAX_CHECK_PAGES = 200;
@@ -45,6 +51,12 @@ export interface SourceCheck {
   fields: PageTag | null;
   /** board: the item count when the tags were taken (null = unknown, never "unchanged") */
   count: number | null;
+  /**
+   * GitHub#545, board: each repository its items come from, "the most recently updated issue / PR"
+   * (the repository check) — an issue's own change does not always move its board item. Absent on a
+   * record taken before: not "unchanged".
+   */
+  repos?: PageTag[];
 }
 
 /** The check's verdict for one source. */
@@ -62,7 +74,7 @@ function boardBase(src: Board): string {
   return `/${src.ownerType === 'org' ? 'orgs' : 'users'}/${encodeURIComponent(src.owner)}/projectsV2/${src.number}`;
 }
 
-async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | null, count: number | null): Promise<CheckResult> {
+async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | null, count: number | null, repos: string[]): Promise<CheckResult> {
   // the field list: its ids go into the item list's URL (REST lists only the fields asked for)
   const fieldsUrl = `${boardBase(src)}/fields?per_page=100`;
   const oldFields = old?.fields && old.fields.url === fieldsUrl ? old.fields : null;
@@ -105,24 +117,40 @@ async function checkBoard(client: GitHubClient, src: Board, old: SourceCheck | n
       url = a.next;
     }
   }
-  const unchanged = Boolean(old) && !changed && pages.length === old!.pages.length && count !== null && count === old!.count;
-  return { unchanged, record: { pages, fields, count } };
+  // GitHub#545: and each repository on the board (sorted, so the same set is the same list)
+  const repoTags: PageTag[] = [];
+  for (const repo of [...new Set(repos.map((r) => r.toLowerCase()))].sort()) {
+    const [owner, name] = repo.split('/');
+    const r = await probeRepo(client, owner, name, old?.repos ?? null);
+    repoTags.push(r.tag);
+    if (!r.unchanged) changed = true;
+  }
+  const sameRepos = repoTags.length === 0 || old?.repos?.length === repoTags.length;
+  const unchanged = Boolean(old) && !changed && sameRepos && pages.length === old!.pages.length && count !== null && count === old!.count;
+  return { unchanged, record: { pages, fields, count, repos: repoTags } };
 }
 
-async function checkRepo(client: GitHubClient, src: Repo, old: SourceCheck | null): Promise<CheckResult> {
-  const url = `/repos/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.name)}/issues?state=all&sort=updated&direction=desc&per_page=1`;
-  const prior = old?.pages.length === 1 && old.pages[0].url === url ? old.pages[0] : null;
+/** one repository's "most recently updated issue / PR", against the tag recorded for that very URL */
+async function probeRepo(client: GitHubClient, owner: string, name: string, olds: PageTag[] | null): Promise<{ tag: PageTag; unchanged: boolean }> {
+  const url = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues?state=all&sort=updated&direction=desc&per_page=1`;
+  const prior = olds?.find((p) => p.url === url) ?? null;
   const a = await client.conditional('HEAD', url, prior?.etag ?? null);
   if (a.status === 304) {
     if (!prior) throw new GitHubError('http', t('变化检查：仓库回了 304，但没有上一次的记录'));
-    return { unchanged: true, record: { pages: [prior], fields: null, count: null } };
+    return { tag: prior, unchanged: true };
   }
-  return { unchanged: false, record: { pages: [{ url, etag: a.etag }], fields: null, count: null } };
+  return { tag: { url, etag: a.etag }, unchanged: false };
+}
+
+async function checkRepo(client: GitHubClient, src: Repo, old: SourceCheck | null): Promise<CheckResult> {
+  // the same probe a board makes of each of its repositories (GitHub#545): one rule
+  const r = await probeRepo(client, src.owner, src.name, old?.pages.length === 1 ? old.pages : null);
+  return { unchanged: r.unchanged, record: { pages: [r.tag], fields: null, count: null } };
 }
 
 /** Check one source against what was recorded (`old`, null = nothing usable: tags are taken, never "unchanged"). */
-export function checkSource(client: GitHubClient, src: SourceConfig, old: SourceCheck | null, counts: Map<string, number>): Promise<CheckResult> {
-  return src.kind === 'project' ? checkBoard(client, src, old, counts.get(src.key) ?? null) : checkRepo(client, src, old);
+export function checkSource(client: GitHubClient, src: SourceConfig, old: SourceCheck | null, counts: Map<string, number>, repos: string[] = []): Promise<CheckResult> {
+  return src.kind === 'project' ? checkBoard(client, src, old, counts.get(src.key) ?? null, repos) : checkRepo(client, src, old);
 }
 
 /**

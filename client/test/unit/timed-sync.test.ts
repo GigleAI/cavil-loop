@@ -119,6 +119,8 @@ interface Opts {
   entry?: Entry;
   /** the first round's read is held; the caller releases it and awaits `started` */
   holdFirst?: boolean;
+  /** GitHub#545: hold this request of the first round instead of the repository's first list page */
+  holdWhich?: (e: LoggedRequest) => boolean;
   /** the round after a successful change (real time; default: never within a test) */
   followUpSyncMs?: number;
 }
@@ -148,7 +150,7 @@ async function boot(opts: Opts = {}) {
   // the same beat through either entry: the window's own timer, or the shell's event (which says its interval)
   if (opts.entry === 'window') c.startTimer();
   if (opts.entry === 'shell') clock.timers.setInterval(() => c.onDesktopEvent({ kind: 'tick', everyMs: BEAT }), BEAT);
-  const release = opts.holdFirst ? holdNextRead() : null;
+  const release = opts.holdFirst ? holdNextRead(opts.holdWhich) : null;
   const started = c.start();
   if (!opts.holdFirst) {
     await started;
@@ -162,7 +164,8 @@ const isFirstPage = (l: LoggedRequest) => isOpenList(l) && !/[?&]page=/.test(l.p
 /** full reads of the repository source that reached GitHub (with the change check off: one per round) */
 const rounds = () => fake.log.filter(isFirstPage).length;
 /** rounds that reached GitHub at all: each asks who the account is once */
-const viewerAsks = () => fake.log.filter((l) => l.operation === 'CavilViewer').length;
+// GitHub#545: "who is this" is REST /user now
+const viewerAsks = () => fake.log.filter((l) => l.operation === 'user').length;
 const boardReads = () => fake.log.filter((e) => e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null).length;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
@@ -173,10 +176,10 @@ async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
   throw new Error(`timeout: ${what}`);
 }
 /** hold the next first page of the repository's open-issue list */
-function holdNextRead(): () => void {
+function holdNextRead(which: (e: LoggedRequest) => boolean = isFirstPage): () => void {
   let taken = false;
   return fake.holdWhen((e) => {
-    if (taken || !isFirstPage(e)) return false;
+    if (taken || !which(e)) return false;
     taken = true;
     return true;
   });
@@ -341,7 +344,9 @@ describe('two times per source: 整份读取 and 上次检查', () => {
   });
 
   it('a round in progress says how far it is; it ends with the round', async () => {
-    const { c, clock, started, release } = await boot({ sources: [PROJECT_URL, REPO], fullReadEveryMs: 0, holdFirst: true });
+    // GitHub#545: the requests leave one at a time, so the repository's last request (the read of its
+    // items by id, after its lists) is the one held: the board has had all of its turns by then
+    const { c, clock, started, release } = await boot({ sources: [PROJECT_URL, REPO], fullReadEveryMs: 0, holdFirst: true, holdWhich: (e) => e.operation === 'CavilIssueRelationsBatch' });
     await waitFor(() => rounds() === 1, 'the round reached GitHub');
     await waitFor(() => c.getState().sync.progress?.done === 1, 'the board is through, the repository is held');
     clock.to(75);

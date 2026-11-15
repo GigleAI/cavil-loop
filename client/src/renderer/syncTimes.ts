@@ -38,9 +38,25 @@ export function retryText(st: SourceStatus, now: number): string | null {
 /** GitHub#374: under the list of failed sources, when any of them waits for its next try */
 export const retryByHand = () => t('点「重新同步」会马上重读，不等自动重试。');
 
-/** what the check cannot see (data/changeCheck.ts); no promise of when the full read succeeds */
+/** what the check and the read of changes cannot see (data/changeCheck.ts, data/delta.ts); no promise of when the full read succeeds */
 export const checkBlind = () =>
-  t('「检查」看不到仓库里被删除、被转走、滑出最近 14 天的条目，也看不到看板标题、保存的视图和写权限的变化；这些要等整份重读（约每 10 分钟一次，读不成就更久）。');
+  t('「检查」和「读取变化」看不到被删除、被转走的条目，也看不到看板标题、保存的视图、写权限和只改了别的条目带来的依赖关系变化；这些要等整份重读（仓库约每 10 分钟一次，按变化读取的看板约每 60 分钟一次，读不成就更久）。');
+
+/** GitHub#545: the account's hourly quotas, as the latest round read them */
+export function quotaLine(sync: SyncState, now: number): string | null {
+  const q = sync.quota;
+  if (!q) return null;
+  if (q.quietUntil > now) return t('刚重新打开，{at} 开始同步（等上次关闭前的请求结清）', { at: clockAt(Math.ceil(q.quietUntil / 60_000) * 60_000) });
+  if (!q.graphql || !q.core) return null;
+  const reset = Math.min(q.graphql.resetAt, q.core.resetAt);
+  return t('本小时额度：账号已用 {gu} / {gl} 点（GraphQL）、{cu} / {cl} 次（REST），{at} 重置（客户端最多用到账号只剩一半）', {
+    gu: q.graphql.used,
+    gl: q.graphql.limit,
+    cu: q.core.used,
+    cl: q.core.limit,
+    at: clockAt(Math.ceil(reset / 60_000) * 60_000),
+  });
+}
 
 /** the header: the oldest check among the sources that have data; null = no source has data, nothing is shown */
 export function headerText(sync: SyncState, now: number): string | null {
@@ -64,13 +80,23 @@ export function hoverLines(sync: SyncState, label: (sourceKey: string) => string
   const lines = sync.times.map((x) =>
     x.readAt === null || x.checkedAt === null
       ? t('{source}：还没有读到过', { source: label(x.sourceKey) })
-      : t('{source}：整份读取 {read} · 上次检查 {checked}', { source: label(x.sourceKey), read: ago(x.readAt, now), checked: ago(x.checkedAt, now) }),
+      : x.delta && x.fullAt !== undefined
+        ? t('{source}：读取变化（{n} 个条目）{delta} · 整份读取 {read} · 上次检查 {checked}', {
+            source: label(x.sourceKey),
+            n: x.delta.count,
+            delta: ago(x.delta.at, now),
+            read: ago(x.fullAt, now),
+            checked: ago(x.checkedAt, now),
+          })
+        : t('{source}：整份读取 {read} · 上次检查 {checked}', { source: label(x.sourceKey), read: ago(x.readAt, now), checked: ago(x.checkedAt, now) }),
   );
   for (const st of sync.sources) {
     const r = retryText(st, now);
     if (r) lines.push(t('{source}：{text}', { source: label(st.sourceKey), text: r }));
   }
   lines.push(sync.lastOnlineAt === null ? t('最后连上 GitHub：这次打开后还没有连上过') : t('最后连上 GitHub：{ago}', { ago: ago(sync.lastOnlineAt, now) }));
+  const quota = quotaLine(sync, now);
+  if (quota) lines.push(quota);
   lines.push(checkBlind());
   if (sync.syncing && sync.progress) {
     lines.push(t('同步中，已进行 {lasted}，已读完 {done} / {total} 个来源', { lasted: lasted(now - sync.progress.startedAt), done: sync.progress.done, total: sync.progress.total }));

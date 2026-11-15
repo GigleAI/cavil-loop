@@ -252,5 +252,14 @@
   "重读这一条失败，什么都没发": "Reading this item again failed; nothing was sent",
   "重读这一条失败，什么都没发（{why}）": "Reading this item again failed; nothing was sent ({why})",
   "预览失败：{why}": "Preview failed: {why}",
-  "这期间": "Meanwhile, "
+  "这期间": "Meanwhile, ",
+  "读取变化：回应的条数和请求的不一致": "Reading the changes: the answer has a different number of items than asked for",
+  "读取变化：{id} 不是看板条目": "Reading the changes: {id} is not a board item",
+  "刚重新打开，等上次关闭前的请求结清后再读 GitHub": "Just reopened: GitHub is read once the requests from before closing are settled",
+  "读不到这个账号本小时的 GitHub 额度，这一轮不发会扣额度的请求": "This account's GitHub quota for the hour could not be read; no request that counts against it is sent this round",
+  "这个账号本小时的 GitHub 额度已过期，等下一轮重新读": "This account's GitHub quota figures for the hour are out of date; they are read again next round",
+  "额度保护中：这个账号本小时的 GitHub 额度只剩 {left} / {limit}，客户端最多用到一半": "Saving quota: this account has {left} / {limit} of its GitHub quota left for the hour; the client uses at most half",
+  "本机记录发送时间失败，这个请求没有发出": "Recording the send time on this computer failed; the request was not sent",
+  "登录账号检查回了 304，但没有上一次的记录": "The signed-in account check answered 304, but there is no earlier record",
+  "GitHub 没有说明当前登录的账号": "GitHub did not say which account is signed in"
 }

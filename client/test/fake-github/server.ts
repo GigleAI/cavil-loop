@@ -143,6 +143,32 @@ export interface FakeState {
   extraProjects: Map<string, { number: number; title: string; closed?: boolean }[]>;
   /** GitHub#401: X-OAuth-Scopes sent with every API answer; null = not sent (a GitHub App's token) */
   oauthScopes: string | null;
+  /**
+   * GitHub#545: the account's two hourly quotas, as GitHub keeps them. Every API answer carries the
+   * x-ratelimit-* headers of the quota it drew on (a 304 too); a REST answer other than a 304 costs 1,
+   * a GraphQL answer `graphqlCost(entry)` points; `/rate_limit` costs nothing. `resetAt` in epoch s.
+   */
+  quota: { graphql: FakeQuota; core: FakeQuota };
+  /** GitHub#545: points a GraphQL request costs (default 1) */
+  graphqlCost: (e: LoggedRequest) => number;
+  /** GitHub#545: the server's clock for the Date header (epoch ms); default the real one */
+  serverNow: () => number;
+  /**
+   * GitHub#545: the board read (and the by-id read) carry each item's own `updatedAt` (the item's
+   * `updatedAt` if set, else its content's). Off by default: snapshots then lack it and every board is
+   * read in full, as before #545 (the tests written before keep their requests).
+   */
+  itemTimes: boolean;
+  /** GitHub#545: answer the rate-limit endpoint this way instead (status / raw body); null = honestly */
+  rateLimitAnswer: ((e: LoggedRequest) => CannedAnswer | null) | null;
+}
+
+/** GitHub#545: one hourly quota of the fake account */
+export interface FakeQuota {
+  limit: number;
+  used: number;
+  /** epoch seconds */
+  resetAt: number;
 }
 
 export interface FakeRelease {
@@ -287,6 +313,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     memberOrgs: new Map(),
     extraProjects: new Map(),
     oauthScopes: null,
+    quota: { graphql: { limit: 1_000_000, used: 0, resetAt: 4102444800 }, core: { limit: 1_000_000, used: 0, resetAt: 4102444800 } },
+    graphqlCost: () => 1,
+    serverNow: () => Date.now(),
+    itemTimes: false,
+    rateLimitAnswer: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -308,6 +339,25 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     const auth = (req.headers.authorization as string | undefined) ?? null;
     const entry: LoggedRequest = { method: req.method ?? 'GET', path: url.pathname + url.search, auth, status: 0 };
     log.push(entry);
+    if (url.pathname === '/api/user') entry.operation = 'user';
+    // GitHub#545: GitHub's clock, and the quota every API answer draws on, in its headers
+    const writeHead = res.writeHead.bind(res) as (...a: unknown[]) => ServerResponse;
+    res.writeHead = ((status: number, ...rest: unknown[]) => {
+      // a test's own clock when its harness sends one (x-fake-now), else the fake's
+      const told = Number(req.headers['x-fake-now']);
+      res.setHeader('Date', new Date(Number.isFinite(told) && told > 0 ? told : state.serverNow()).toUTCString());
+      if (url.pathname.startsWith('/api/') && url.pathname !== '/api/rate_limit') {
+        const gql = url.pathname === '/api/graphql';
+        const q = gql ? state.quota.graphql : state.quota.core;
+        if (gql ? status !== 401 : status >= 200 && status < 300) q.used += gql ? state.graphqlCost(entry) : 1;
+        res.setHeader('X-RateLimit-Resource', gql ? 'graphql' : 'core');
+        res.setHeader('X-RateLimit-Limit', String(q.limit));
+        res.setHeader('X-RateLimit-Used', String(q.used));
+        res.setHeader('X-RateLimit-Remaining', String(Math.max(0, q.limit - q.used)));
+        res.setHeader('X-RateLimit-Reset', String(q.resetAt));
+      }
+      return writeHead(status, ...rest);
+    }) as typeof res.writeHead;
     // GitHub#364: every answer leaves through res.end — that is where it is broken on purpose
     const end = res.end.bind(res) as (...a: unknown[]) => ServerResponse;
     res.end = ((...a: unknown[]) => {
@@ -447,6 +497,15 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return res.end('<h1>fake device page</h1>');
     }
 
+    // ---- GitHub#545: the rate-limit endpoint (not counted) and who the credential belongs to (REST, conditional) ----
+    if (req.method === 'GET' && url.pathname === '/api/rate_limit') {
+      if (!authed()) return;
+      const canned = state.rateLimitAnswer?.(entry) ?? null;
+      if (canned) return send(canned.status, canned.body ?? {}, canned.headers);
+      const b = (q: FakeQuota) => ({ limit: q.limit, used: q.used, remaining: Math.max(0, q.limit - q.used), reset: q.resetAt });
+      await held();
+      return send(200, { resources: { core: b(state.quota.core), graphql: b(state.quota.graphql) }, rate: b(state.quota.core) });
+    }
     // ---- GraphQL ----
     if (req.method === 'POST' && url.pathname === '/api/graphql') {
       const body = JSON.parse(await readBody(req)) as { query: string; variables: Record<string, any> };
@@ -510,6 +569,22 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         await held();
         return send(200, frozen);
       }
+      if (op === 'CavilProjectItemsByIds') {
+        // GitHub#545: board items by node id, the same fields as the board read; null = no such item
+        const ids: string[] = body.variables?.ids ?? [];
+        const nodes = ids.map((id) => {
+          for (const pages of state.projects.values()) {
+            for (const p of pages) {
+              const n = p.items.nodes.find((x: any) => x.id === id);
+              if (n) return { __typename: 'ProjectV2Item', ...n, updatedAt: n.updatedAt ?? n.content?.updatedAt, project: { id: (pages[0] as any).id }, content: withRelationFields(store, n.content) };
+            }
+          }
+          return null;
+        });
+        const frozen = JSON.parse(JSON.stringify({ data: { nodes } }));
+        await held();
+        return send(200, frozen);
+      }
       if (op === 'CavilProjectItems') {
         const v = body.variables;
         const key = `${v.isOrg ? 'org' : 'user'}/${String(v.owner).toLowerCase()}/${v.number}`;
@@ -526,7 +601,17 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         if (state.failProjectPage.get(key) === idx) return send(502, { message: 'Server Error' });
         // frozen now, then held like every other read (GitHub#229)
         // GitHub#349: each issue with its relations as they are now (first page of each list)
-        const page = { ...pages[idx], items: { ...pages[idx].items, nodes: pages[idx].items.nodes.map((n: any) => ({ ...n, content: withRelationFields(store, n.content) })) } };
+        const page = {
+          ...pages[idx],
+          items: {
+            ...pages[idx].items,
+            nodes: pages[idx].items.nodes.map((n: any) => {
+              const { updatedAt: own, ...rest } = n;
+              // GitHub#545: the item's own updatedAt only when the fake is told to carry it
+              return { ...rest, ...(state.itemTimes ? { updatedAt: own ?? n.content?.updatedAt } : {}), content: withRelationFields(store, n.content) };
+            }),
+          },
+        };
         const frozen = JSON.parse(JSON.stringify({ data: { [holder]: { projectV2: { ...page, viewerCanUpdate: !state.w.readOnlyProjects.has(key) } } } }));
         await held();
         return send(200, frozen);
@@ -572,6 +657,22 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         await held();
         return send(canned.status, canned.body ?? {}, canned.headers);
       }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/user') {
+      entry.operation = 'user';
+      if (!authed()) return;
+      const canned = state.viewerAnswers.shift();
+      // GitHub sends a version tag with every successful answer of this endpoint
+      if (canned?.raw !== undefined) {
+        entry.status = canned.status;
+        res.writeHead(canned.status, { 'Content-Type': 'application/json', ...(canned.status === 200 ? { ETag: etagOf(canned.raw) } : {}) });
+        return res.end(canned.raw);
+      }
+      if (canned) return send(canned.status, canned.body ?? {}, canned.status === 200 ? { ETag: etagOf(canned.body ?? {}) } : {});
+      const body = { login: login() };
+      await held();
+      return conditional(req, res, entry, body);
     }
 
     // ---- GitHub#395: releases, their attachments, and the files themselves ----
@@ -636,6 +737,35 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
         const frozen = JSON.parse(JSON.stringify(fields));
         await held();
         return conditional(req, res, entry, frozen, {}, fault);
+      }
+      // GitHub#545: `q=updated:>=YYYY-MM-DD` — the items updated on or after that day (UTC), in GitHub's
+      // REST shape (node_id, updated_at, content.updated_at / repository_url / number), as measured
+      const qp = url.searchParams.get('q');
+      if (pm[4] === 'items' && qp !== null) {
+        const day = /^updated:>=(\d{4}-\d{2}-\d{2})$/.exec(qp)?.[1];
+        if (!day) return send(422, { message: 'fake: unsupported q' });
+        const from = Date.parse(`${day}T00:00:00Z`);
+        const all = pages.flatMap((p) => p.items.nodes).filter((n: any) => Date.parse(n.updatedAt ?? n.content?.updatedAt ?? '1970-01-01T00:00:00Z') >= from);
+        const per = Math.min(Number(url.searchParams.get('per_page') ?? 30), 100);
+        const pg = Number(url.searchParams.get('page') ?? 1);
+        const slice = all.slice((pg - 1) * per, pg * per);
+        const headers: Record<string, string> = {};
+        if (pg * per < all.length) {
+          const next = new URL(`${fake.api}${url.pathname.replace(/^\/api/, '')}`);
+          url.searchParams.forEach((val, k) => next.searchParams.set(k, val));
+          next.searchParams.set('page', String(pg + 1));
+          headers.Link = `<${next.toString()}>; rel="next"`;
+        }
+        const shaped = slice.map((n: any) => ({
+          id: Number(String(n.id).replace(/\D/g, '').slice(0, 9) || 0),
+          node_id: n.id,
+          updated_at: n.updatedAt ?? n.content?.updatedAt,
+          content_type: n.content?.__typename ?? 'DraftIssue',
+          content: n.content && n.content.repository ? { number: n.content.number, updated_at: n.content.updatedAt, repository_url: `${fake.api}/repos/${n.content.repository.nameWithOwner}` } : null,
+        }));
+        const frozen = JSON.parse(JSON.stringify(shaped));
+        await held();
+        return send(200, frozen, headers);
       }
       // items: every node of every page, 100 a page, cursor = offset; the body carries each item
       // whole (content + field values) and the field ids asked for, as GitHub's does

@@ -245,7 +245,7 @@ test('browser login → board; restart skips login; sources; three column modes;
   const hover = (await page.getByTestId('sync-status').getAttribute('title')) ?? '';
   expect(hover).toMatch(/：整份读取 .+前 · 上次检查 .+前/);
   expect(hover).toContain('最后连上 GitHub：这次打开后还没有连上过');
-  expect(hover).toContain('「检查」看不到');
+  expect(hover).toContain('「检查」和「读取变化」看不到');
   await expect(page.getByTestId('offline')).toContainText('每分钟自动重试，点刷新可立刻重试');
   expect(await countOf(page, 'Iteration 25')).toBe('13');
   await expect(page.getByTestId('write-entry')).toBeDisabled();
@@ -841,7 +841,7 @@ test('GitHub#226: the open detail follows the sync rounds — new comment withou
     for (const g of c.gql) g.updatedAt = now;
   };
   const reads = (n: number) => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === n);
-  const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
+  const rounds = () => env.fake.log.filter((l) => l.operation === 'user').length;
   const { app, page } = await launch(env);
   /** one sync round from the shell's beat, waited until it is over (the board's refresh button is enabled again) */
   const round = async () => {
@@ -986,7 +986,7 @@ test('GitHub#226: an open PR whose checks are still running is read every round 
   const pull = pullOf(store, c);
   pull.checks = 'PENDING';
   const reads = () => env.fake.log.filter((l) => l.operation === 'CavilItemDetail' && l.variables?.number === prN);
-  const rounds = () => env.fake.log.filter((l) => l.operation === 'CavilViewer').length;
+  const rounds = () => env.fake.log.filter((l) => l.operation === 'user').length;
   const { app, page } = await launch(env);
   /**
    * one sync round, waited until it has ended, then the detail's own read the round started (if any) until it
