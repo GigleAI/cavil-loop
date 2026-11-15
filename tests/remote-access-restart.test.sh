@@ -358,6 +358,10 @@ kpid=$!
 for i in $(seq 1 100); do [ -e "$FAKE_SVC/hold.before-restart.reached" ] && break; sleep 0.1; done
 killtree() { local c; for c in $(pgrep -P "$1"); do killtree "$c"; done; kill -KILL "$1" 2>/dev/null; }
 killtree "$kpid"; wait "$kpid" 2>/dev/null
+# killing the tree one process at a time races with the fake's poll loop: a `sleep 0.1` it starts
+# in between survives, inherits the lock's descriptor and holds it for up to 0.1 s — the next check
+# takes the lock without waiting and would skip (seen once on CI). Wait for that leftover, at most 5 s
+chk "夹具：kill -9 后残留子进程放开了锁" "$(flock -w 5 "$RA_STATE/svc.lock" true && echo free)" free
 chk "夹具：记录停在「进行中」" "$(rec)" '{"tries":1,"inflight":true}'
 ra Linux CAVIL_REMOTE_FAKE_NOW=$T0 -- auto-restart
 chk "持锁进程被 kill -9 后：下一次检查拿得到锁（按上次中断算失败）" "$(rec)" '{"tries":1,"inflight":false}'
