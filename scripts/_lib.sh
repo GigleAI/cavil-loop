@@ -433,6 +433,9 @@ AUTOPILOT_UNKNOWN_MAX="${AUTOPILOT_UNKNOWN_MAX:-10}"
 # 合并前必须人过目的文件清单（GitHub#337）。留空 / 不写 = 和以前逐字节一样（只拦 .github/，走原来的代码）。
 # 非空才进入新判断：清单匹配、改动文件列表读全校验、命中交人前原样重判一次。写法见 autopilot_paths_verdict
 AUTOPILOT_HUMAN_PATHS="${AUTOPILOT_HUMAN_PATHS:-}"
+# 上面的清单配了时，只改测试文件的 PR 不因清单交人（GitHub#548）。不写 / 空 / on = 排除测试文件；
+# 其余任何值（off、写错的词）= 不排除，和以前逐字节一样。「测试文件」的认法只有一份：AUTOPILOT_PATHS_JQ 的 is_test
+AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="${AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS:-on}"
 # 外部账号内容的保护（GitHub#391，只对托管条目生效）。留空 / 不写 = 和以前逐字节一样。
 # mark = 读取命令标明作者、剥掉外人内容里的链接 / 附件 / 代码 / 隐藏文字；block = 再加「授权之后有外人内容就不自动合并」。
 # SCREEN=on 时外人内容先过一个不给任何工具的模型预筛（daemon 派工前跑，见 scripts/_outsider.sh）
@@ -5423,9 +5426,14 @@ autopilot_files_verdict() {   # <PR>
 # 读全：PR 详情自报的改动文件数（changed_files）和列表条数对得上才算读全。缺页（这个接口一个 PR 最多给
 # 3000 个文件）、缺自报数、坏响应、请求失败、空输出都是 unread —— 读不到绝不当成「没命中」。
 # 改名的文件新旧路径都拿来匹配。
+# 测试文件（GitHub#548）：AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS 是 on 时，新旧路径都是测试文件（is_test）的那个文件
+# 整个不拿去匹配；有一边不是就照旧两个路径都匹配。命中列表里因此只剩非测试文件。不是 on = 不排除，结果和以前一样。
+# 能不能排除要看全旧路径：新路径是测试文件的那条记录，改动类型（status）必须是认识的词，改名 / 复制还必须带非空的
+# 旧路径（test_rec_ok）；做不到就是 unread（读不全），绝不当成「没有旧路径」放行。
 autopilot_paths_verdict() {   # <PR> <PR JSON>
-    local pr="$1" pj="$2" files out
+    local pr="$1" pj="$2" files out ex=off
     AP_PATHS_V=unread; AP_PATHS_DETAIL=""
+    [ "$AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS" = on ] && ex=on
     # 先看配置（不用读 GitHub）：写错了就不必读文件列表
     out=$(jq -rn --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'
         rules($spec; $def) | map(select(.bad)) | if length > 0 then "bad\t\(.[0].raw)（\(.[0].bad)）" else "fine" end' 2>/dev/null) || out=""
@@ -5437,7 +5445,7 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
     if ! files=$(gh api --paginate --slurp "repos/$REPO/pulls/$pr/files" 2>/dev/null) || [ -z "$files" ]; then
         AP_PATHS_DETAIL="请求失败或空输出"; return 0
     fi
-    out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" \
+    out=$(printf '%s' "$files" | jq -r --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" --arg ex "$ex" \
         --argjson pj "$(printf '%s' "$pj" | jq -c '{changed_files}')" "$AUTOPILOT_PATHS_JQ"'
         ($pj.changed_files) as $n
         | if ($n | type) != "number" or $n < 0 or $n != ($n | floor) then "unread\tPR 详情里没有可用的改动文件数"
@@ -5446,8 +5454,11 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
                                and ((.previous_filename // "") | type) == "string") | not)
           then "unread\t文件列表的形状不对"
           elif ([.[][]] | length) != $n then "unread\t列表有 \([.[][]] | length) 个文件，PR 自报 \($n) 个"
+          elif $ex == "on" and any(.[][]; (.filename | is_test) and (test_rec_ok | not))
+          then "unread\t测试文件的改动记录不完整（改动类型不认识，或改名缺旧路径）"
           else (rules($spec; $def) | map(.re)) as $res
-            | ([ .[][] | .filename, (.previous_filename // empty) | select(. != "") ]
+            | ([ .[][] | select(($ex == "on" and ([.filename, (.previous_filename // empty) | select(. != "")] | all(is_test))) | not)
+                 | .filename, (.previous_filename // empty) | select(. != "") ]
                | map(select(. as $f | any($res[]; . as $re | $f | test($re)))) | unique) as $hits
             | if ($hits | length) > 0 then "hit\t\($hits | tojson)" else "ok\t" end
           end' 2>/dev/null) || out=""
@@ -5459,6 +5470,9 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
     esac
 }
 # 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]
+# is_test：这个路径算不算测试文件（GitHub#548，只此一份，文档 docs/operations*.md 同名一节列的就是这几条）：
+#   文件名形如 <名字>.test.<扩展名> / <名字>.spec.<扩展名>（名字、扩展名都不能空，扩展名不含 . ），
+#   或者路径里某一层目录叫 __tests__；但仓库根目录 .github/ 下的一律不算（GitHub 会运行那里任何名字的工作流）
 # shellcheck disable=SC2016
 AUTOPILOT_PATHS_JQ='
     def esc: explode | map([.] | implode | . as $c
@@ -5476,6 +5490,17 @@ AUTOPILOT_PATHS_JQ='
           elif (($rooted | not) and ($segs | length) > 1) then {raw: $raw, bad: "中间含 / 的条目要以 / 开头"}
           else {raw: $raw, re: ((if $rooted then "^" else "(^|/)" end) + ($segs | map(esc) | join("/")) + (if $dir then "/" else "$" end))}
           end;
+    def is_test:
+        (startswith(".github/") | not)
+        and ((split("/") | last | test("^.+\\.(test|spec)\\.[^./]+$"))
+             or (split("/") | .[:-1] | any(.[]; . == "__tests__")));
+    def test_rec_ok:
+        .status as $st
+        | (($st | type) == "string")
+          and ($st | IN("added", "removed", "modified", "renamed", "copied", "changed", "unchanged"))
+          and (if $st == "renamed" or $st == "copied"
+               then ((.previous_filename | type) == "string" and .previous_filename != "")
+               else true end);
     def rules($spec; $def):
         ([$spec | splits("[,\\s]+") | select(. != "")]
          | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)

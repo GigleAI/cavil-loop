@@ -229,6 +229,15 @@ AUTOPILOT_CHECKS_TIMEOUT_HOURS=6
 # （只拦 .github/）。空格或逗号分隔；开头 / = 只认仓库根目录，不写 = 任何深度；末尾 / = 目录；`default` = 内置清单
 # （见 docs/operations.zh.md）。写法读不懂的条目不会被跳过：那时每次托管合并都交人，直到改好。
 AUTOPILOT_HUMAN_PATHS=""
+# Only matters when AUTOPILOT_HUMAN_PATHS is set (GitHub#548): "on" (also when the line is missing or empty) =
+# test files do not count — a file whose old and new paths are both test files (`<name>.test.<ext>`,
+# `<name>.spec.<ext>`, or under a `__tests__/` directory; never anything under the root `.github/`) is not matched
+# against the list, so a PR that only changes test files is merged as usual. Any other value ("off", a misspelling)
+# = test files are matched like any other file, exactly the previous behaviour.
+# 只在配了 AUTOPILOT_HUMAN_PATHS 时起作用（GitHub#548）："on"（不写这一行或写成空也是）= 测试文件不算：新旧路径都是测试文件
+# （文件名形如 `<名字>.test.<扩展名>`、`<名字>.spec.<扩展名>`，或在某一层叫 `__tests__/` 的目录下；仓库根目录 `.github/` 下的
+# 一律不算）的文件不拿去和清单比，只改测试文件的 PR 照常合并。其他任何值（"off"、写错的词）= 测试文件也照清单交人，和以前完全一样。
+AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="on"
 # Comments and edits by outside accounts on autopilot items (GitHub#391; only matters when LABEL_AUTOPILOT is set).
 # An "outside account" has no write access to this repo. The worker and the reviewer read the item through a read
 # command that names every author; an outside account's text stays readable, but its links, images, attachments,

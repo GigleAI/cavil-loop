@@ -393,6 +393,104 @@ chk "生命周期 ④ 已经交给人的 PR #8 仍在人手上：没合并、标
     "$(merged)/$(labels_of 8)/$(comments_with 'cavil-loop daemon')" "0/autopilot,pending/human/1"
 chk "模板里这一项是空值（不写和照抄模板行为一样）" "$(grep -cE '^AUTOPILOT_HUMAN_PATHS=""$' "$REPO_DIR/cavil-loop.config.example")" 1
 
+# ─────────────────────────────────────────────────────────────────────────
+section "【9】测试文件不算（GitHub#548）：只改测试文件照常合并；混着非测试文件只点名非测试文件"
+# 每个场景的改动都落在默认清单的目录里（.agents/ .claude/）：测试文件一旦被当成普通文件就会交人
+# 文件列表照 GitHub 的真实形状写：每条都带改动类型 status，改名带 previous_filename
+T_ONLY='[{"filename":".agents/skills/x/scripts/a.test.mjs","status":"modified"},{"filename":".agents/skills/x/fixtures/x.test.json","status":"added"},
+         {"filename":".claude/__tests__/b.ts","status":"modified"},{"filename":".agents/skills/x/scripts/old.spec.ts","status":"removed"},
+         {"filename":".claude/commands/foo.test.md","status":"added"}]'
+T_MIX='[{"filename":".agents/skills/x/scripts/a.test.mjs","status":"modified"},{"filename":".agents/skills/x/scripts/a.mjs","status":"modified"}]'
+for line in "" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS=""' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="on"'; do
+    what="${line:-不写开关}"
+    if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
+    happy; files "$T_ONLY"; tick
+    chk "$what · 只改测试文件（含 .json 测试数据、__tests__/、删掉的 .spec、Markdown 测试）→ 照常合并、不交人" \
+        "$(merged)/$(has_label pending/human)/$(comments_with '需人过目')" "1/no/0"
+    chk "$what · 到达性：这一轮确实读了文件列表（决定时 + 合并前各一次）" "$(files_reads)" 2
+    if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
+    happy; files "$T_MIX"; tick
+    chk "$what · 测试文件 + 同目录非测试文件 → 交人、不合并" "$(merged)/$(has_label pending/human)/$(has_label pending/merge)" "0/yes/no"
+    chk "$what · 说明只点名非测试文件" "$(comments_with '改动碰了合并前需人过目的文件：`.agents/skills/x/scripts/a.mjs`。')/$(comments_with 'a.test.mjs')" "1/0"
+done
+
+# 改名：新旧路径都是测试文件才不算
+while IFS='|' read -r fj want named what; do
+    [ -n "$fj" ] || continue
+    fresh "$ON"; happy; files "$fj"; tick
+    got=$([ "$(merged)" = 1 ] && echo ok || { [ "$(has_label pending/human)" = yes ] && echo hit || echo other; })
+    chk "改名 · $what → $want" "$got" "$want"
+    [ -z "$named" ] || chk "改名 · $what → 说明点名 $named" "$(comments_with "$named")" 1
+done <<'EOF'
+[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/b.test.mjs"}]|ok||测试 → 测试
+[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/a.mjs"}]|hit|`.agents/a.mjs`|非测试 → 测试
+[{"filename":"src/a.mjs","status":"renamed","previous_filename":".agents/a.test.mjs"}]|hit|`.agents/a.test.mjs`|清单里的测试 → 清单外的非测试
+[{"filename":".agents/a.test.mjs","status":"copied","previous_filename":".agents/a.mjs"}]|hit|`.agents/a.mjs`|复制：非测试 → 测试
+EOF
+
+# 新路径是测试文件、改动记录却不完整：不能证明旧路径也是测试文件 → 读不全，本轮不合并、不写，计一次读不到
+# （PR #549 复审第 1 轮：缺旧路径的改名曾被当成「只有新路径」放行）
+while IFS='|' read -r fj what; do
+    [ -n "$fj" ] || continue
+    fresh "$ON"; happy; files "$fj"; tick
+    chk "改动记录不完整 · $what → 不合并、不写任何东西" "$(merged)/$(writes)" "0/0"
+    chk "改动记录不完整 · $what → 计一次读不到、日志写明原因" \
+        "$(unknown_n)/$(grep -cF -- '测试文件的改动记录不完整（改动类型不认识，或改名缺旧路径）' "$W/state/poll.log")" "1/1"
+done <<'EOF'
+[{"filename":".agents/new.test.mjs","status":"renamed"}]|改名缺旧路径
+[{"filename":".agents/new.test.mjs","status":"renamed","previous_filename":""}]|改名的旧路径是空的
+[{"filename":".agents/new.test.mjs","status":"copied"}]|复制缺旧路径
+[{"filename":".agents/new.test.mjs"}]|缺改动类型
+[{"filename":".agents/new.test.mjs","status":"moved"}]|改动类型不认识
+EOF
+# 只卡测试文件那一条：非测试文件缺改动类型照旧按清单判（和以前一样交人），清单外的测试文件缺类型也拦下
+fresh "$ON"; happy; files '[{"filename":".agents/a.mjs"}]'; tick
+chk "非测试文件缺改动类型 → 照旧命中交人（不受这条检查影响）" "$(merged)/$(has_label pending/human)" "0/yes"
+fresh "$ON" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'; happy; files '[{"filename":".agents/new.test.mjs","status":"renamed"}]'; tick
+chk "开关 off：缺旧路径的测试文件改名照以前的规则（命中新路径就交人），不算读不全" \
+    "$(merged)/$(has_label pending/human)/$(unknown_n)" "0/yes/0"
+fresh "$ON"; happy; files '[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/b.test.mjs"},{"filename":"src/x.test.mjs","status":"modified"}]'; tick
+chk "到达性 · 记录完整的改名 + 清单外测试文件 → 照常合并" "$(merged)" 1
+
+# 仓库根目录 .github/ 下的文件名字像测试也不算（维护者在 #548 选的 C）
+for f in .github/workflows/ci.test.yml .github/__tests__/a.ts; do
+    fresh "$ON"; happy; files "[{\"filename\":\"$f\"}]"; tick
+    chk "$f → 交人、说明点名它" "$(merged)/$(has_label pending/human)/$(comments_with "需人过目的文件：\`$f\`")" "0/yes/1"
+done
+
+# 名字只是像、其实不是测试文件
+for f in .agents/a.test .agents/test.mjs .agents/x.tests.mjs .agents/.test.mjs .agents/__tests__x/b.ts; do
+    fresh "$ON"; happy; files "[{\"filename\":\"$f\"}]"; tick
+    chk "$f 不算测试文件 → 交人" "$(merged)/$(has_label pending/human)" "0/yes"
+done
+
+section "【10】开关关掉（off，或写了认不出的词）：和改动前的脚本逐字节一样"
+# 同一份清单 + 两个场景，调用、state、标签、评论全文和合并基准的脚本比；旧脚本不认这个开关，写不写都一样
+cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
+    local root="$1" line="$2" sc="$3" i
+    if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
+    happy
+    case "$sc" in only) files "$T_ONLY" ;; mix) files "$T_MIX" ;; esac
+    for i in 1 2 3; do tick "$root/scripts"; echo "── 第 $i 轮调用"; cat "$CALLS"; done
+    echo "── state"; jq -S . "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
+    echo "── 标签"; jq -S . "$GD/labels.json"
+    echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
+}
+if ! compat_skip "开关关掉时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    for sc in only mix; do
+        old=$(cmp_run "$SANDBOX/old" "" "$sc")
+        for line in 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="of"'; do
+            new=$(cmp_run "$REPO_DIR" "$line" "$sc")
+            chk "场景 $sc，$line → 和改动前一样" "$([ -n "$new" ] && [ "$old" = "$new" ] && echo same || echo differ)" same
+            [ "$old" = "$new" ] || [ -z "${KEEP_SANDBOX:-}" ] || { printf '%s\n' "$old" > "$SANDBOX/ex-$sc.old"; printf '%s\n' "$new" > "$SANDBOX/ex-$sc.new"; }
+        done
+    done
+fi
+# 到达性：比的不是两份空记录——开关关掉时只改测试文件的 PR 交人，说明里列着测试文件
+fresh "$ON" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'; happy; files "$T_ONLY"; tick
+chk "到达性 · 开关 off：只改测试文件也交人，说明列出测试文件" "$(merged)/$(has_label pending/human)/$(comments_with '.agents/skills/x/scripts/a.test.mjs')" "0/yes/1"
+chk "模板里这一项是 on" "$(grep -cE '^AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="on"$' "$REPO_DIR/cavil-loop.config.example")" 1
+
 echo
 compat_summary
 echo "通过 $pass / 失败 $fail"
