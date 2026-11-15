@@ -5428,6 +5428,8 @@ autopilot_files_verdict() {   # <PR>
 # 改名的文件新旧路径都拿来匹配。
 # 测试文件（GitHub#548）：AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS 是 on 时，新旧路径都是测试文件（is_test）的那个文件
 # 整个不拿去匹配；有一边不是就照旧两个路径都匹配。命中列表里因此只剩非测试文件。不是 on = 不排除，结果和以前一样。
+# 能不能排除要看全旧路径：新路径是测试文件的那条记录，改动类型（status）必须是认识的词，改名 / 复制还必须带非空的
+# 旧路径（test_rec_ok）；做不到就是 unread（读不全），绝不当成「没有旧路径」放行。
 autopilot_paths_verdict() {   # <PR> <PR JSON>
     local pr="$1" pj="$2" files out ex=off
     AP_PATHS_V=unread; AP_PATHS_DETAIL=""
@@ -5452,6 +5454,8 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
                                and ((.previous_filename // "") | type) == "string") | not)
           then "unread\t文件列表的形状不对"
           elif ([.[][]] | length) != $n then "unread\t列表有 \([.[][]] | length) 个文件，PR 自报 \($n) 个"
+          elif $ex == "on" and any(.[][]; (.filename | is_test) and (test_rec_ok | not))
+          then "unread\t测试文件的改动记录不完整（改动类型不认识，或改名缺旧路径）"
           else (rules($spec; $def) | map(.re)) as $res
             | ([ .[][] | select(($ex == "on" and ([.filename, (.previous_filename // empty) | select(. != "")] | all(is_test))) | not)
                  | .filename, (.previous_filename // empty) | select(. != "") ]
@@ -5490,6 +5494,13 @@ AUTOPILOT_PATHS_JQ='
         (startswith(".github/") | not)
         and ((split("/") | last | test("^.+\\.(test|spec)\\.[^./]+$"))
              or (split("/") | .[:-1] | any(.[]; . == "__tests__")));
+    def test_rec_ok:
+        .status as $st
+        | (($st | type) == "string")
+          and ($st | IN("added", "removed", "modified", "renamed", "copied", "changed", "unchanged"))
+          and (if $st == "renamed" or $st == "copied"
+               then ((.previous_filename | type) == "string" and .previous_filename != "")
+               else true end);
     def rules($spec; $def):
         ([$spec | splits("[,\\s]+") | select(. != "")]
          | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)

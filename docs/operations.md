@@ -939,14 +939,17 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   - except anything under the repo root's `.github/`: GitHub runs every workflow there whatever its name,
     so `.github/workflows/ci.test.yml` is still a file a human must look at.
 
-  A renamed file counts as a test file only when both its old and its new path are test files. Not set, empty
+  A renamed file counts as a test file only when both its old and its new path are test files. The change record
+  of a file whose new path is a test file must be complete: its status is one of GitHub's known words, and a
+  rename / copy carries its old path; otherwise the file list counts as "can't read" (no merge and nothing
+  written this round, a human only after repeated rounds), never as "no old path". Not set, empty
   or `"on"` = test files do not count; any other value (`"off"`, a misspelling) = test files are matched like
   any other file, exactly the behaviour before GitHub#548. The setting matters only when `AUTOPILOT_HUMAN_PATHS`
   is set. A limit to know: the rule looks at names, not content — if something in the project already runs a
   particular test file as the maintainer on its own (a git hook or an agent hook that runs it), set this to
   `"off"`. A project whose own review rules copied the file list should point to this section instead of
   keeping a copy.
-- **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
+- **Only paths are looked at, not content**: any change to a listed file (other than the test files above) counts (a dependency bump in
   `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
   if the project wants them.
 - **Turning it off**: delete the line (or set it to `""`). From the next poll on the previous rule

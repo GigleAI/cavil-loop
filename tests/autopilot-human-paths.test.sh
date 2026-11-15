@@ -396,10 +396,11 @@ chk "模板里这一项是空值（不写和照抄模板行为一样）" "$(grep
 # ─────────────────────────────────────────────────────────────────────────
 section "【9】测试文件不算（GitHub#548）：只改测试文件照常合并；混着非测试文件只点名非测试文件"
 # 每个场景的改动都落在默认清单的目录里（.agents/ .claude/）：测试文件一旦被当成普通文件就会交人
-T_ONLY='[{"filename":".agents/skills/x/scripts/a.test.mjs"},{"filename":".agents/skills/x/fixtures/x.test.json"},
-         {"filename":".claude/__tests__/b.ts"},{"filename":".agents/skills/x/scripts/old.spec.ts","status":"removed"},
-         {"filename":".claude/commands/foo.test.md"}]'
-T_MIX='[{"filename":".agents/skills/x/scripts/a.test.mjs"},{"filename":".agents/skills/x/scripts/a.mjs"}]'
+# 文件列表照 GitHub 的真实形状写：每条都带改动类型 status，改名带 previous_filename
+T_ONLY='[{"filename":".agents/skills/x/scripts/a.test.mjs","status":"modified"},{"filename":".agents/skills/x/fixtures/x.test.json","status":"added"},
+         {"filename":".claude/__tests__/b.ts","status":"modified"},{"filename":".agents/skills/x/scripts/old.spec.ts","status":"removed"},
+         {"filename":".claude/commands/foo.test.md","status":"added"}]'
+T_MIX='[{"filename":".agents/skills/x/scripts/a.test.mjs","status":"modified"},{"filename":".agents/skills/x/scripts/a.mjs","status":"modified"}]'
 for line in "" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS=""' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="on"'; do
     what="${line:-不写开关}"
     if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
@@ -421,10 +422,35 @@ while IFS='|' read -r fj want named what; do
     chk "改名 · $what → $want" "$got" "$want"
     [ -z "$named" ] || chk "改名 · $what → 说明点名 $named" "$(comments_with "$named")" 1
 done <<'EOF'
-[{"filename":".agents/a.test.mjs","previous_filename":".agents/b.test.mjs"}]|ok||测试 → 测试
-[{"filename":".agents/a.test.mjs","previous_filename":".agents/a.mjs"}]|hit|`.agents/a.mjs`|非测试 → 测试
-[{"filename":"src/a.mjs","previous_filename":".agents/a.test.mjs"}]|hit|`.agents/a.test.mjs`|清单里的测试 → 清单外的非测试
+[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/b.test.mjs"}]|ok||测试 → 测试
+[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/a.mjs"}]|hit|`.agents/a.mjs`|非测试 → 测试
+[{"filename":"src/a.mjs","status":"renamed","previous_filename":".agents/a.test.mjs"}]|hit|`.agents/a.test.mjs`|清单里的测试 → 清单外的非测试
+[{"filename":".agents/a.test.mjs","status":"copied","previous_filename":".agents/a.mjs"}]|hit|`.agents/a.mjs`|复制：非测试 → 测试
 EOF
+
+# 新路径是测试文件、改动记录却不完整：不能证明旧路径也是测试文件 → 读不全，本轮不合并、不写，计一次读不到
+# （PR #549 复审第 1 轮：缺旧路径的改名曾被当成「只有新路径」放行）
+while IFS='|' read -r fj what; do
+    [ -n "$fj" ] || continue
+    fresh "$ON"; happy; files "$fj"; tick
+    chk "改动记录不完整 · $what → 不合并、不写任何东西" "$(merged)/$(writes)" "0/0"
+    chk "改动记录不完整 · $what → 计一次读不到、日志写明原因" \
+        "$(unknown_n)/$(grep -cF -- '测试文件的改动记录不完整（改动类型不认识，或改名缺旧路径）' "$W/state/poll.log")" "1/1"
+done <<'EOF'
+[{"filename":".agents/new.test.mjs","status":"renamed"}]|改名缺旧路径
+[{"filename":".agents/new.test.mjs","status":"renamed","previous_filename":""}]|改名的旧路径是空的
+[{"filename":".agents/new.test.mjs","status":"copied"}]|复制缺旧路径
+[{"filename":".agents/new.test.mjs"}]|缺改动类型
+[{"filename":".agents/new.test.mjs","status":"moved"}]|改动类型不认识
+EOF
+# 只卡测试文件那一条：非测试文件缺改动类型照旧按清单判（和以前一样交人），清单外的测试文件缺类型也拦下
+fresh "$ON"; happy; files '[{"filename":".agents/a.mjs"}]'; tick
+chk "非测试文件缺改动类型 → 照旧命中交人（不受这条检查影响）" "$(merged)/$(has_label pending/human)" "0/yes"
+fresh "$ON" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'; happy; files '[{"filename":".agents/new.test.mjs","status":"renamed"}]'; tick
+chk "开关 off：缺旧路径的测试文件改名照以前的规则（命中新路径就交人），不算读不全" \
+    "$(merged)/$(has_label pending/human)/$(unknown_n)" "0/yes/0"
+fresh "$ON"; happy; files '[{"filename":".agents/a.test.mjs","status":"renamed","previous_filename":".agents/b.test.mjs"},{"filename":"src/x.test.mjs","status":"modified"}]'; tick
+chk "到达性 · 记录完整的改名 + 清单外测试文件 → 照常合并" "$(merged)" 1
 
 # 仓库根目录 .github/ 下的文件名字像测试也不算（维护者在 #548 选的 C）
 for f in .github/workflows/ci.test.yml .github/__tests__/a.ts; do
