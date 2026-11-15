@@ -85,6 +85,7 @@ export interface CavilApi {
   syncNow(): Promise<void>;
   /** refresh by hand (GitHub#217): a round reading GitHub is dropped and a new one starts at once */
   restartSync(): Promise<void>;
+  /** open a web address (http / https, any site — GitHub#539) in the system browser; any other kind is refused */
   openExternal(url: string): Promise<void>;
   /** GitHub#401: GitHub's page for the app the current sign-in used (each organisation's access); the back end builds it */
   openAuthPage(): Promise<void>;

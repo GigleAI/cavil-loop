@@ -364,7 +364,8 @@ fn main() {
                 // same for HTML5 drag and drop; Linux never blocked it). A dropped file still
                 // cannot navigate the window: on_navigation below refuses non-app URLs.
                 .disable_drag_drop_handler()
-                // Links never navigate the app window; GitHub links go to the system browser.
+                // Links never navigate the app window; when something asks it to (a dropped link), only a
+                // GitHub address goes on to the system browser.
                 .on_navigation(move |url| {
                     if is_app_url(url) {
                         return true;
@@ -380,7 +381,9 @@ fn main() {
                     }
                     false
                 })
-                // `<a target="_blank">` (the detail view's GitHub HTML): same rule, never a new window
+                // `<a target="_blank">` (the detail view's GitHub HTML): never a new window; any web address
+                // (http / https, whatever the site — GitHub#539) goes to the system browser, the back end's
+                // `open_external` refuses every other kind
                 .on_new_window(move |url, _features| {
                     let e = engine.clone();
                     let u = url.to_string();

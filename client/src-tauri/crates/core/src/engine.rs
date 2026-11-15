@@ -966,8 +966,8 @@ impl Engine {
     }
 
     pub async fn open_external(&self, url: &str) -> Result<(), String> {
-        if !is_allowed_external(url, &self.d.endpoints) {
-            return Err(tr("不打开非 GitHub 链接：{url}", &[("url", url)]));
+        if !is_openable_link(url, &self.d.endpoints) {
+            return Err(tr("只在浏览器里打开网页链接：{url}", &[("url", url)]));
         }
         self.d.opener.open(url).await
     }
@@ -1030,7 +1030,21 @@ fn api_headers(token: &str, extra: &[(String, String)]) -> Vec<(String, String)>
 /// The same list as GITHUB_IMAGE_HOSTS (src/shared/avatar.ts); exact hosts only.
 pub const GITHUB_IMAGE_HOSTS: [&str; 4] = ["private-user-images.githubusercontent.com", "user-images.githubusercontent.com", "camo.githubusercontent.com", "raw.githubusercontent.com"];
 
-/// Links the app may open in the system browser: GitHub (and its image hosts), plus — in test mode — the loopback fake's web side.
+/// GitHub#539: what the system browser may be handed to open — a link in the discussion, or a button of the
+/// window: any web address (`http` / `https` with a host), whatever the site, as github.com's own pages do.
+/// Every other kind of address (`javascript:`, `file:`, `mailto:`, another app's scheme) is refused. The
+/// browser opens it, not the app: the app's own requests keep their rules (only GitHub, plus the remote
+/// daemon's Tailscale machines), and no credential goes with a link.
+pub fn is_openable_link(url: &str, endpoints: &Endpoints) -> bool {
+    match url::Url::parse(url) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some_and(|h| !h.is_empty()) => true,
+        _ => is_allowed_external(url, endpoints),
+    }
+}
+
+/// Where the app window itself may be sent when something asks it to navigate away (it never leaves its own
+/// page; the address goes to the browser): GitHub (and its image hosts), plus — in test mode — the loopback
+/// fake's web side. Narrower than `is_openable_link` on purpose: only an accident (a dropped link) navigates the window.
 pub fn is_allowed_external(url: &str, endpoints: &Endpoints) -> bool {
     let Ok(u) = url::Url::parse(url) else { return false };
     if u.scheme() == "https" {

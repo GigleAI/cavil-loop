@@ -70,7 +70,7 @@ test.afterEach(async ({}, info) => {
 
 test('real app: sign in, sync, change a label, detail links and navigation go to the browser through the shell', async () => {
   fake.state.w.comments.set('gigleai/cavil-loop#138', [
-    { id: 'C-new', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c2', createdAt: '2026-11-02T01:00:00Z', bodyHTML: '<p>newer comment <a href="https://github.com/GigleAI/cavil-loop">link</a></p>', author: { login: 'user-3' } },
+    { id: 'C-new', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c2', createdAt: '2026-11-02T01:00:00Z', bodyHTML: '<p>newer comment <a href="https://github.com/GigleAI/cavil-loop">link</a> <a href="https://example.com/docs?a=1">elsewhere</a></p>', author: { login: 'user-3' } },
   ]);
 
   // the window really is the app's: Tauri's IPC is there, the page is the app's own
@@ -125,6 +125,12 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   await wd.frame(null);
   await until(() => openedUrls().includes('https://github.com/GigleAI/cavil-loop'), 'frame link opened in the browser');
   expect(await wd.url()).toBe(appUrl);
+  // GitHub#539: a link to another site in the discussion goes to the browser the same way
+  await wd.frame('[data-testid="timeline-frame"]');
+  await wd.click('a[href="https://example.com/docs?a=1"]');
+  await wd.frame(null);
+  await until(() => openedUrls().includes('https://example.com/docs?a=1'), 'frame link to another site opened in the browser');
+  expect(await wd.url()).toBe(appUrl);
 
   // the window is asked to navigate away: the shell refuses, a GitHub address goes to the browser
   await wd.exec(`window.location.href = 'https://github.com/GigleAI/cavil-loop/issues/1'`);
@@ -133,7 +139,8 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   expect(await wd.url()).toBe(appUrl);
   await wd.find('[data-testid="board"]');
 
-  // "open on the web" goes through IPC → back end → browser; a non-GitHub address is refused
+  // "open on the web" goes through IPC → back end → browser; the window asked to navigate to another
+  // site: nothing is handed on (only a link the person clicks opens another site, GitHub#539)
   await wd.click('[data-testid="detail-open-web"]');
   await until(() => openedUrls().some((u) => u.startsWith('https://github.com/GigleAI/cavil-loop/issues/138')), 'detail opened on the web');
   await wd.exec(`window.location.href = 'https://example.com/'`);

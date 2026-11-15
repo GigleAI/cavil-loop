@@ -232,13 +232,21 @@ async fn main() {
                         Err(m) => json!({ "error": m }),
                     })
                 }
-                // which links may be opened in the system browser (the real function)
+                // where the window may be sent when asked to navigate away (the real function)
                 ("test.allowedExternal", _) => {
                     let ep = Endpoints {
                         api: a.get("api").and_then(|v| v.as_str()).unwrap_or("").into(),
                         web: a.get("web").and_then(|v| v.as_str()).unwrap_or("").into(),
                     };
                     Ok(json!(cavil_core::engine::is_allowed_external(a.get("url").and_then(|v| v.as_str()).unwrap_or(""), &ep)))
+                }
+                // which links may be handed to the system browser (GitHub#539; the real function)
+                ("test.openableLink", _) => {
+                    let ep = Endpoints {
+                        api: a.get("api").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        web: a.get("web").and_then(|v| v.as_str()).unwrap_or("").into(),
+                    };
+                    Ok(json!(cavil_core::engine::is_openable_link(a.get("url").and_then(|v| v.as_str()).unwrap_or(""), &ep)))
                 }
                 // how one refresh answer is classified (the real function, against whatever the test serves)
                 ("test.refreshGrant", _) => {
