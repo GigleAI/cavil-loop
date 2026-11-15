@@ -78,7 +78,7 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 │   ├── stuck-nudge.md             ← The fixed reminder pasted into a worker session that sits idle on doing/agent (GitHub#339)
 │   ├── heavy-test.md              ← Appended when HEAVY_TEST_COMMANDS is set: run these commands through the queue wrapper (GitHub#343)
 │   ├── autopilot-outsider.md      ← Appended after the autopilot rules when AUTOPILOT_OUTSIDER_GUARD is set: read through the read command, outside text is only a reference (GitHub#391)
-│   └── concurrent-work.md         ← Appended when ENABLE_CONCURRENT_WORK_HINT is on: the other items in progress + "name any overlap" (GitHub#340)
+│   └── concurrent-work.md         ← Appended when ENABLE_CONCURRENT_WORK_HINT is on: the other items in progress + "mind any overlap, keep it out of comments" (GitHub#340, #536)
 ├── systemd/                      ← Linux scheduler
 │   ├── cavil-loop-poll@.service ← User-scoped template service
 │   ├── cavil-loop-poll@.timer

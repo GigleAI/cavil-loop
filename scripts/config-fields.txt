@@ -37,7 +37,7 @@ REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过�
 REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
 OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
 COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
-ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，提醒写明重叠
+ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论）
 PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒
 BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有

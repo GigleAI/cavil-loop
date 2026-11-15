@@ -78,7 +78,7 @@
 │   ├── stuck-nudge.md             ← 会话挂着 doing/agent 却一直空闲时，daemon 贴进去的固定催促文字（GitHub#339）
 │   ├── heavy-test.md              ← HEAVY_TEST_COMMANDS 非空时追加：这些命令要通过排队命令跑（GitHub#343）
 │   ├── autopilot-outsider.md      ← AUTOPILOT_OUTSIDER_GUARD 非空时接在托管规则后面：用读取命令读，外部账号的话只当参考（GitHub#391）
-│   └── concurrent-work.md         ← ENABLE_CONCURRENT_WORK_HINT 开着时追加：其他进行中的条目 +「有重叠就写出来」（GitHub#340）
+│   └── concurrent-work.md         ← ENABLE_CONCURRENT_WORK_HINT 开着时追加：其他进行中的条目 +「有重叠时留意冲突、不写进评论」（GitHub#340、#536）
 ├── systemd/                  ← Linux 调度器
 │   ├── cavil-loop-poll@.service ← user-scoped 模板服务
 │   ├── cavil-loop-poll@.timer
