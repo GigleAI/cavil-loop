@@ -115,6 +115,12 @@ export class RateLimitError extends GitHubError {
   /** when the answer arrived (a retry-after counts from here) */
   readonly heardAt: number | null = Date.now();
   /**
+   * GitHub#545: which limit GitHub applied — 'hourly' (the quota is used up: remaining 0, or GraphQL's
+   * RATE_LIMITED), 'secondary' (too many requests in a short time: a retry-after, or GitHub's words
+   * say so); null = not told apart.
+   */
+  limit: 'hourly' | 'secondary' | null = null;
+  /**
    * GitHub#523: when the read gate this answer closed lets a read out again (null: it went through
    * no gate). The gate counts from when it heard the answer, a moment after `heardAt` — on a busy
    * machine long enough that a button the window enabled at the earlier time sent nothing — so a
@@ -135,7 +141,9 @@ export function failureInput(e: unknown): FailureInput {
   const retryAt = limited ? (e.gateUntil ?? (e.retryAfterMs !== null ? (e.heardAt ?? Date.now()) + e.retryAfterMs : e.resetAt)) : null;
   return {
     kind: e.kind,
-    message: e.message,
+    // GitHub#545: a rate limit shows GitHub's own words when it gave any (not the client's sentence)
+    message: limited && e.said ? e.said : e.message,
+    ...(limited && e.limit ? { limit: e.limit } : {}),
     ...(e.status !== undefined ? { status: e.status } : {}),
     ...(e.meta.cancelled ? { cancelled: true } : {}),
     ...(limited ? { rateLimited: true, retryAt } : {}),
@@ -155,7 +163,10 @@ export function rateLimitOf(res: Response, detail: string): RateLimitError | nul
   const remaining = res.headers.get('x-ratelimit-remaining');
   const after = res.headers.get('retry-after');
   if (remaining !== '0' && after === null && !/rate limit/i.test(detail) && res.status !== 429) return null;
-  return limitError(res, res.status);
+  const e = limitError(res, res.status);
+  e.limit = remaining === '0' && !/secondary/i.test(detail) ? 'hourly' : after !== null || /secondary/i.test(detail) ? 'secondary' : null;
+  if (detail) e.said = detail;
+  return e;
 }
 
 /**
@@ -183,7 +194,11 @@ export async function refusalOf(res: Response): Promise<GitHubError> {
 function limitError(res: Response, status: number | undefined): RateLimitError {
   const reset = Number(res.headers.get('x-ratelimit-reset'));
   const after = Number(res.headers.get('retry-after'));
-  const resetAt = Number.isFinite(reset) && reset > 0 ? reset * 1000 : null;
+  // GitHub#545: the reset time is the hourly quota's — it says when to ask again only when that quota is
+  // what ran out (remaining 0). A short-time (secondary) limit's answer carries the hourly figures too;
+  // without a retry-after it means "wait a while" (GitHub's docs: at least a minute), not "until the hour ends"
+  const exhausted = res.headers.get('x-ratelimit-remaining') === '0';
+  const resetAt = exhausted && Number.isFinite(reset) && reset > 0 ? reset * 1000 : null;
   const retryAfterMs = res.headers.get('retry-after') !== null && Number.isFinite(after) && after >= 0 ? after * 1000 : null;
   return new RateLimitError(tKey(RATE_LIMIT_MESSAGE), status, resetAt, retryAfterMs, true);
 }
@@ -261,9 +276,44 @@ export interface ReadOptions {
   /** each entry = one more try of the same request after that many ms */
   retryDelaysMs: number[];
   sleep?: (ms: number) => Promise<void>;
+  /** GitHub#545: every request of the sync through the quota guard (one at a time, never below half) */
+  quota?: QuotaSender;
 }
 
 export const READ_RETRY_DELAYS_MS = [1000, 3000];
+// ---- GitHub#545: which quota a request draws on, and the most a sync GraphQL request may cost ----
+
+export type QuotaResource = 'graphql' | 'core';
+
+/** which quota a request draws on */
+export function resourceOf(url: string): QuotaResource {
+  return /\/graphql(?:$|\?)/.test(url) ? 'graphql' : 'core';
+}
+
+/** GitHub#545: the most a GraphQL request of the sync may cost (points), by operation; unknown = 10 */
+export function graphqlCost(query: string, variables: Record<string, unknown>): number {
+  const op = /(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? '';
+  const ids = Array.isArray(variables.ids) ? variables.ids.length : 0;
+  switch (op) {
+    case 'CavilProjectItems':
+      return 8;
+    case 'CavilProjectCounts':
+    case 'CavilIssueRelations':
+      return 1;
+    case 'CavilIssueRelationsBatch':
+    case 'CavilProjectItemsByIds':
+      return Math.max(1, Math.ceil(ids / 100) * 3);
+    default:
+      return 10;
+  }
+}
+
+/** GitHub#545: the sync's quota guard as the client sees it (src/data/quota.ts) */
+export interface QuotaSender {
+  /** `admit`: checked at the moment of sending (throws = not sent); `given`: the round was given up on — stop waiting */
+  send(resource: QuotaResource, cost: number, go: () => Promise<Response>, admit?: () => void, given?: AbortSignal): Promise<Response>;
+}
+
 
 /**
  * A signal that aborts after `ms`. Not `AbortSignal.timeout`: this code now runs in
@@ -313,7 +363,7 @@ export class GitHubClient {
     e.gateUntil = this.reads.gate.until;
   }
 
-  private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
+  private async send(url: string, init: RequestInit, notModifiedOk = false, cost = 1): Promise<Response> {
     if (this.cancelled?.aborted) {
       const given = new GitHubError('network', t('已放弃这一轮同步'));
       given.meta.cancelled = true;
@@ -321,8 +371,12 @@ export class GitHubClient {
     }
     this.reads?.gate.check();
     let res: Response;
-    try {
-      res = await this.fetchImpl(url, {
+    // GitHub#545: a refusal (a rate limit above all) is read while the request still holds its turn in
+    // the quota guard's queue, so the gate is closed before the next request is let through
+    let refused: GitHubError | null = null;
+    const gql = resourceOf(url) === 'graphql';
+    const go = async (): Promise<Response> => {
+      const r = await this.fetchImpl(url, {
         ...init,
         headers: {
           ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
@@ -333,16 +387,57 @@ export class GitHubClient {
         },
         signal: init.signal ?? timeoutSignal(30_000),
       });
+      if (r.status === 401 || (notModifiedOk && r.status === 304)) return r;
+      if (!r.ok) {
+        refused = await refusalOf(r);
+        if (refused instanceof RateLimitError) this.limitHeard(refused);
+        return r;
+      }
+      if (!gql) return r;
+      // a GraphQL rate limit comes as HTTP 200 with an error of type RATE_LIMITED
+      const text = await r.text();
+      try {
+        const errors = (JSON.parse(text) as { errors?: { message: string; type?: string }[] }).errors;
+        const hit = Array.isArray(errors) ? errors.filter((e) => e?.type === 'RATE_LIMITED') : [];
+        if (hit.length) {
+          const limited = limitError(r, r.status);
+          limited.limit = 'hourly';
+          limited.said = hit.map((e) => e.message).join('; ');
+          this.limitHeard(limited);
+          refused = limited;
+        }
+      } catch {
+        /* not JSON: graphqlOnce says so */
+      }
+      return new Response(text, { status: r.status, headers: r.headers });
+    };
+    try {
+      // GitHub#545: the sync's requests go one at a time through the quota guard
+      const quota = this.reads?.quota;
+      res = quota
+        ? await quota.send(
+            resourceOf(url),
+            cost,
+            go,
+            () => {
+              // the gate may have closed (and the round been given up on) while this request waited its turn
+              if (this.cancelled?.aborted) {
+                const given = new GitHubError('network', t('已放弃这一轮同步'));
+                given.meta.cancelled = true;
+                throw given;
+              }
+              this.reads?.gate.check();
+            },
+            this.cancelled,
+          )
+        : await go();
     } catch (e) {
+      if (e instanceof GitHubError) throw e;
       throw outsideError('network', zhKey('无法连接 GitHub：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }
     if (res.status === 401) throw await refusalOf(res);
     if (notModifiedOk && res.status === 304) return res;
-    if (!res.ok) {
-      const refused = await refusalOf(res);
-      if (refused instanceof RateLimitError) this.limitHeard(refused);
-      throw refused;
-    }
+    if (refused) throw refused;
     return res;
   }
 
@@ -352,11 +447,16 @@ export class GitHubClient {
   }
 
   private async graphqlOnce<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const res = await this.send(`${this.endpoints.api}/graphql`, {
-      method: 'POST',
-      body: JSON.stringify({ query, variables }),
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const res = await this.send(
+      `${this.endpoints.api}/graphql`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ query, variables }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+      false,
+      graphqlCost(query, variables),
+    );
     let body: { data?: T; errors?: { message: string; type?: string }[] };
     try {
       body = (await res.json()) as typeof body;
@@ -366,6 +466,8 @@ export class GitHubClient {
     if (body.errors && body.errors.length) {
       if (body.errors.some((e) => e.type === 'RATE_LIMITED')) {
         const limited = limitError(res, res.status);
+        limited.limit = 'hourly';
+        limited.said = body.errors.filter((e) => e.type === 'RATE_LIMITED').map((e) => e.message).join('; ');
         this.limitHeard(limited);
         throw limited;
       }
@@ -400,6 +502,44 @@ export class GitHubClient {
     } catch (e) {
       throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }
+  }
+
+  /**
+   * GitHub#545: the account's two hourly quotas, from GitHub's rate-limit endpoint — not counted
+   * against either quota, so it bypasses the read gate and the quota guard. `serverAt` = GitHub's
+   * own clock (the answer's Date header, whole seconds), null when it did not say. Throws like
+   * any read when there is no usable answer.
+   */
+  async rateLimit(): Promise<{ body: unknown; serverAt: number | null }> {
+    if (this.cancelled?.aborted) {
+      const given = new GitHubError('network', t('已放弃这一轮同步'));
+      given.meta.cancelled = true;
+      throw given;
+    }
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.endpoints.api}/rate_limit`, {
+        method: 'GET',
+        headers: {
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+          'User-Agent': USER_AGENT,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        signal: timeoutSignal(30_000),
+      });
+    } catch (e) {
+      throw outsideError('network', zhKey('无法连接 GitHub：{why}'), { why: { text: (e as Error).message, from: 'system' } });
+    }
+    if (!res.ok) throw await refusalOf(res);
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (e) {
+      throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
+    }
+    const date = Date.parse(res.headers.get('date') ?? '');
+    return { body, serverAt: Number.isFinite(date) ? date : null };
   }
 
   /** POST that answers with text (GitHub's markdown renderer). */
