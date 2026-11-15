@@ -78,7 +78,7 @@
 │   ├── stuck-nudge.md             ← 会话挂着 doing/agent 却一直空闲时，daemon 贴进去的固定催促文字（GitHub#339）
 │   ├── heavy-test.md              ← HEAVY_TEST_COMMANDS 非空时追加：这些命令要通过排队命令跑（GitHub#343）
 │   ├── autopilot-outsider.md      ← AUTOPILOT_OUTSIDER_GUARD 非空时接在托管规则后面：用读取命令读，外部账号的话只当参考（GitHub#391）
-│   └── concurrent-work.md         ← ENABLE_CONCURRENT_WORK_HINT 开着时追加：其他进行中的条目 +「有重叠就写出来」（GitHub#340）
+│   └── concurrent-work.md         ← ENABLE_CONCURRENT_WORK_HINT 开着时追加：其他进行中的条目 +「有重叠时留意冲突、不写进评论」（GitHub#340、#536）
 ├── systemd/                  ← Linux 调度器
 │   ├── cavil-loop-poll@.service ← user-scoped 模板服务
 │   ├── cavil-loop-poll@.timer
@@ -137,6 +137,15 @@
 - 出 PDF 与发布：`node topdf.mjs <项目目录> report.md report.pdf --title T --subtitle S`，然后 `URL=$(bash publish-asset.sh <project-key> report.pdf)`（自动加 `rev`；PDF 不是图片，不公开发布——给内网地址或本机路径，见 docs/operations.zh.md「评论配图的公网入口」）
 - **明细不能只看 issue 侧活跃度** —— 很多 issue 定完方案就没人再回 issue 页，整周讨论全在 PR 上。入选条件是三选一：issue 自己有讨论 / 关联 PR 有讨论 / 当周关闭。没有关联 issue 的 PR 用 `loose_prs` 单列一组
 - **处理时长按「轮」算，每一轮只归一个派工**（GigleTutor-Web#933）。一轮 = 主会话里共用同一个 `promptId` 的一段记录，**不能按「非 meta 的用户记录」切**：工具结果也是 `type=user`、没有 `isMeta`，按它切会丢掉中间全部工具执行时间。轮的**开始时刻**交给 `attribute.owner()`（与 token 认领同一个函数），而且要在**全部**去重后的窗口上统一认领——逐窗口各自挑「开始落在本窗口里」的轮，窗口重叠时同一轮会算两遍。认领到的派工拿整轮、不封顶，所以处理时长可能超过总耗时，报告里那张清单是披露、不是错配告警。两个坑：`model=<synthetic>` 的 assistant 记录（「No response requested.」）是上一轮被中断后、新指令到来时 CLI 补写的，时间戳是补写时刻，拿它延长上一轮会把几分钟变成 41h / 75h / 522h，一周合计翻三倍；CLI 会删旧会话日志，所以每次采集把轮并进本地台账（`<缓存目录>/worktime-turns.jsonl`，`flock` + 原子替换，结束时刻只往后推，「已结束」只能从否变是）。**不能把这个指标写成「不含等待」**：轮内等待（权限确认、重试退避、进程挂起）照算
+
+### 新增配置项
+
+往 `cavil-loop.config.example` 里加配置项，同一次改动里要登记进**两张**表：
+
+- `scripts/config-notices.txt`：登记成 `notice`（不写就关、模板里开，老项目会在 `poll.log` 里收到一行提示）或 `quiet` 并写原因。漏了 `tests/config-notice.test.sh` 会红
+- `scripts/config-fields.txt`：桌面客户端的「项目配置」窗口才看得到它（能改的登记 `edit`，标签、模式这类登记 `show`）。只有绝不许登记的几类（命令、钩子、令牌、网络地址、目录、各种名字）不登。登记的默认值必须是 daemon 实际用的：把它加进 `tests/project-config.test.sh` 第 7 节的对拍（`LIBKEYS`）；整数项的默认值写整数（`${X:-0}`，别写 `${X:-}`）。**这一张漏了没有任何测试会红**，所以写在这里
+
+为什么：暂缓标签 `LABEL_PENDING_LATER`（GitHub#463）和卡住兜底的三项 `STUCK_WORKER_*`（GitHub#339）上线时都没登记第二张表，窗口里看不出开没开，多数项目一直关着也没人发现——打了暂缓的条目照样被派工（luosky/arkknights-data#49），复审空手停下的条目挂在 `doing/agent` 一整夜（GigleTutor-Web#1514）。
 
 ### Label 值
 

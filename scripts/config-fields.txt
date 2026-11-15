@@ -30,11 +30,14 @@ RETROSPECTIVE_MODEL | agent 与模型 | model | sonnet | edit | 合并后复盘�
 MAX_CONCURRENT_WORKERS | 派工与重试 | int:1:16 | 1 | edit | 同时最多几个 worker | 同一时刻最多有几条 issue / PR 在干活；1 = 一条一条来，最稳
 DISPATCH_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | 派工连续失败几次后交人 | 派不出去时最多自动重试几次，之后标 pending/human
 SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退出后最多重派几次 | 之后标 pending/human
+STUCK_WORKER_QUIET_SECS | 派工与重试 | int:0:86400 | 0 | edit | 卡在 doing/agent 多少秒后催一次 | agent 已空闲、GitHub 和分支都没动静满这么久，往会话里催一次；0 = 关闭这个兜底
+STUCK_WORKER_STEP_GAP_SECS | 派工与重试 | int:60:86400 | 900 | edit | 催过后再等多少秒就重派 | 仍没动静就结束会话、翻回触发标签重派；兜底关着时不用
+STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最多重派几次 | 之后再卡住就留言交 pending/human；兜底关着时不用
 REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决
 REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
 OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
 COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
-ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，提醒写明重叠
+ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论）
 PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒
 BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有
@@ -46,3 +49,4 @@ DISPATCH_MODE | 只显示、不在这里改的设置 | enum:label=只派打了�
 LABEL_PENDING_REVIEW | 只显示、不在这里改的设置 | label | | show | 复审关卡 |
 LABEL_AUTOPILOT | 只显示、不在这里改的设置 | label | | show | 托管（自动合并） |
 LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | | show | 等前置 |
+LABEL_PENDING_LATER | 只显示、不在这里改的设置 | label | | show | 暂缓 |

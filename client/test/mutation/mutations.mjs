@@ -164,7 +164,7 @@ export const MUTATIONS = [
     expect: ['sign-out, delete-pending, quit', 'sign-out, delete-fails, quit', 'credential replaced outside the app: not trusted'] },
   { what: '续期写钥匙串时不同时信任新旧两份（写一半关 App，重启被迫重新登录）', file: 'src-tauri/crates/core/src/engine.rs',
     from: '                me.set_trusted(&[&used.access_token, &next.access_token]).err()\n            };',
-    to: '                None::<String>\n            };',
+    to: '                None::<StoreError>\n            };',
     expect: ['a refresh quits while writing the new token'] },
   // ---- review (2026-11-05 20:12): upgrade from a preview build ----
   { what: '没有可信名单的旧数据就信任钥匙串里那份（旧版已退出的账号被登录回去）', file: 'src-tauri/crates/core/src/engine.rs',
@@ -299,7 +299,7 @@ export const MUTATIONS = [
     expect: ['a cancel naming an attempt that already committed signs it out'] },
   // ---- PR #161 review round 1: a database that refuses a write ----
   { what: '退出时数据库写失败也当成退出成功（不写备用标记、不告诉用户）', file: 'src-tauri/crates/core/src/engine.rs',
-    from: 'let durable = match write().or_else(|_| write()) {', to: 'let durable = match write().or_else(|_| Ok::<(), String>(())) {',
+    from: 'let durable = match write().or_else(|_| write()) {', to: 'let durable = match write().or_else(|_| Ok::<(), StoreError>(())) {',
     expect: ['the sign-out is not reported as clean'] },
   { what: '启动时不看退出标记', file: 'src-tauri/crates/core/src/engine.rs',
     from: 'let marked = self.d.store.signed_out_marked();', to: 'let marked = false;',
@@ -318,7 +318,7 @@ export const MUTATIONS = [
     from: '        if self.lock().owner.is_none() {\n            return vec![];\n        }\n', to: '',
     expect: ['is never handed to the window'] },
   { what: '续期后数据库写失败不告诉用户', file: 'src-tauri/crates/core/src/engine.rs',
-    from: '            } else {\n                db_problem.map(db_problem_message)\n            };', to: '            } else {\n                db_problem.map(|_| String::new()).filter(|_| false)\n            };',
+    from: '            } else {\n                db_problem.map(db_problem_message)\n            };', to: '            } else {\n                db_problem.map(db_problem_message).filter(|_| false)\n            };',
     expect: ['still signed in on the new token, and the user is told'] },
   // ---- review round 2 of PR #150: every late answer of the detail panel, per call site (real Electron) ----
   { what: '同一次打开里，改了字之后旧文字的预览照样显示', file: 'src/renderer/DetailPanel.tsx', runner: 'e2e',
@@ -1143,8 +1143,13 @@ export const MUTATIONS = [
     expect: ['labels by the names in Settings', 'autopilot: one create request'] },
   // GitHub#450 removed the hand-over choice (and with it the web page's hand-over labels this entry used to break): re-pointed
   // at the new dialog's rule — under the autopilot confirmation the two hand-over keys must do nothing
-  { what: '交接（GitHub#450）：托管确认框开着时，底下新建对话框的 ⌘⇧Z / ⌘⇧C 照样创建', file: 'src/renderer/NewIssueDialog.tsx', runner: 'e2e',
-    from: '    if (asking || !canHand(h)) return;', to: '    if (!canHand(h)) return;',
+  // GitHub#543: the rule has two gates — the key handler and create() itself (PR #459 review round 1); breaking only
+  // the first one left the second to refuse, so both go together
+  { what: '交接（GitHub#450）：托管确认框开着时，底下新建对话框的 ⌘⇧Z / ⌘⇧C 照样创建', runner: 'e2e',
+    edits: [
+      { file: 'src/renderer/NewIssueDialog.tsx', from: '    if (asking || !canHand(h)) return;', to: '    if (!canHand(h)) return;' },
+      { file: 'src/renderer/NewIssueDialog.tsx', from: "    if (asking && !(confirmed && handoff === 'autopilot')) return false;\n", to: '' },
+    ],
     expect: ['GitHub#450: new issue'] },
   { what: '交接（GitHub#245，PR #249 复审第 1 轮）：标签被丢和看板失败同时发生时，提示只剩看板', file: 'src/app/controller.ts',
     from: '  if (labelsNote) parts.push(labelsNote);\n', to: '',
