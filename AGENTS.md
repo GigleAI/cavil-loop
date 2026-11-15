@@ -1,7 +1,5 @@
 # AGENTS.md
 
-> **English** · [中文](AGENTS.zh.md)
-
 Quick context for agents (Claude Code et al.) and maintainers working in this repo. New people / agents read this first, then [README.md](README.md) for the external intro.
 
 ## What this project is
@@ -15,11 +13,12 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 ```
 .
 ├── README.md / README.zh.md       ← External intro (what it is, how to use)
-├── AGENTS.md  / AGENTS.zh.md      ← This file
+├── AGENTS.md                      ← This file (English only: it is read by agents)
 ├── CONTRIBUTING.md / .zh.md       ← External contributor PR guide
 ├── SKILL.md / SKILL.zh.md         ← Claude Code skill metadata (frontmatter + entry)
 ├── LICENSE                        ← MIT
 ├── setup.sh                       ← Bootstraps the daemon into a host project
+├── .githooks/pre-commit           ← Runs the guard-kind tests before each commit (`git config core.hooksPath .githooks`)
 ├── cavil-loop.config.example    ← Config template (every field commented)
 ├── scripts/
 │   ├── _lib.sh                    ← Common library: config load, log, has_claude_session, run_gh
@@ -164,11 +163,15 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 
 Each rule this repo keeps goes to the first of these that can hold it:
 
-1. **A lint** — a `# kind: guard` test that only reads text (no program run, a few seconds at most), for anything decidable from the source alone: two registries cover the same keys, a forbidden way of writing something, copies of one text that must stay identical. It runs in `--quick` and on every PR; run `bash tests/run.sh --kind guard` before committing. Examples: `config-fields-coverage`, `bash-multibyte-vars`, the `# redact-ok` group in `token-redaction`
+1. **A lint** — a `# kind: guard` test that only reads text (no program run, a few seconds at most), for anything decidable from the source alone: two registries cover the same keys, a forbidden way of writing something, copies of one text that must stay identical. It runs in `--quick`, on every PR, and before every commit through `.githooks/pre-commit` (about 30 s; enable once per clone with `git config core.hooksPath .githooks` — every worktree of the clone shares it, so workers of this repo get it too; `git commit --no-verify` skips it once, CI still runs it). Examples: `config-fields-coverage`, `bash-multibyte-vars`, the `# redact-ok` group in `token-redaction`
 2. **A test** — for behaviour that is only visible when the program runs: what happens when a read fails, whether a default equals what the consumer really uses, what state a killed round leaves
 3. **AGENTS.md only** — for a judgement neither can check: it needs a person, or every textual check of it was wrong too often (the context-aware parser behind `bash-multibyte-vars` failed three review rounds on PR #417). Say in the text why it is not checked
 
 A rule that has a lint or a test still gets a line here, for the *why* and for where its check lives — but the check is what enforces it. A sentence like "nothing fails if you forget this" is a sign the rule belongs one step up: write the check instead, if it can be written without false alarms. A lint that needs an exemption carries it on the line (`# redact-ok`) or in a list with the reason (`config-notices.txt` `quiet`, `config-fields-hidden.txt`), never as a silent skip.
+
+### Which files are bilingual
+
+Only documents written for people get a Chinese `.zh.md` sibling next to the English file: `README`, `CONTRIBUTING`, everything under `docs/` (except the generated `docs/retrospectives/`). Files written for agents have one copy: this file (English), `prompts/` including `prompts/lessons.md` (Chinese, the language the workers write in). A second copy of an agent-facing file is not read by any agent, doubles every edit and drifts unnoticed — nothing checks that two translations still say the same thing.
 
 ### Adding a config setting
 

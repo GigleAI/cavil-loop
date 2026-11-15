@@ -4,7 +4,7 @@
 
 欢迎贡献。本仓库是个小工具，没有 CLA、没有要签的协议——MIT licensed，发 PR 即默认接受。
 
-> 维护者 / 长期合作者建议先读 [AGENTS.md](AGENTS.zh.md)，里面有项目结构、约定、本地开发流程。这份是给"第一次来"的人看的。
+> 维护者 / 长期合作者建议先读 [AGENTS.md](AGENTS.md)（只有英文版，写给 agent 读），里面有项目结构、约定、本地开发流程。这份是给"第一次来"的人看的。
 
 ## 适合提的 PR
 
@@ -37,9 +37,11 @@
    - **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
    - **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
    - **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）。每个 PR 还会在 GitHub Actions 上跑 `tests/`，**测试** 这条检查必须是绿的；交之前先在本机跑 `bash tests/run.sh`（或覆盖你改动的那几个文件）
-   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口。往 `cavil-loop.config.example` 里加配置项，还要登记进 `scripts/config-notices.txt`（「不写就关、模板里开」的登记成 `notice`，老项目会收到提示；其余登记成 `quiet` 并写原因），否则 `tests/config-notice.test.sh` 红
+   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口。往 `cavil-loop.config.example` 里加配置项，还要登记进 `scripts/config-notices.txt`（「不写就关、模板里开」的登记成 `notice`，老项目会收到提示；其余登记成 `quiet` 并写原因），否则 `tests/config-notice.test.sh` 红；同时登记进 `scripts/config-fields.txt`（桌面客户端的项目配置窗口显示）或 `tests/config-fields-hidden.txt`（不显示，写原因），否则 `tests/config-fields-coverage.test.sh` 红
 5. **保持小**：一个 PR 一个焦点。改 daemon + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
-6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；markdown 用现有中文/英文混排习惯）
+6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；给人看的文档是双语的——英文 `X.md` 加中文 `X.zh.md`，两份一起改；给 agent 读的文件如 `AGENTS.md`、`prompts/` 只有一份）
+
+第一次提交前先跑 `git config core.hooksPath .githooks`：pre-commit 钩子会跑一致性检查（`bash tests/run.sh --kind guard`，约 30 秒），漏登记、副本不一致在推之前就红，不用等 CI。
 
 ## Review 时记得点 Submit
 

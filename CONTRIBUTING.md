@@ -37,9 +37,11 @@ Welcome. This is a small tool with no CLA, no agreement to sign — it's MIT lic
    - **Motivation**: what's being solved / fixed. Link related issues via `Closes #N` / `Refs #N`
    - **Changes**: 1–2 paragraphs or a bullet list. Don't make the reviewer read the diff to figure it out
    - **Verification**: how you tested it (which commands you ran / which project you connected it to / which prompt scenario you verified). Every PR also runs `tests/` on GitHub Actions — the **测试** check must be green; run `bash tests/run.sh` (or the files covering your change) locally first
-   - **Impact**: if you changed `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema, say so explicitly — these are compatibility-bound interfaces. A new key in `cavil-loop.config.example` must also be registered in `scripts/config-notices.txt` (`notice` when it is off when missing but on in the template, so existing projects get told; `quiet` with a reason otherwise) — `tests/config-notice.test.sh` fails otherwise
+   - **Impact**: if you changed `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema, say so explicitly — these are compatibility-bound interfaces. A new key in `cavil-loop.config.example` must also be registered in `scripts/config-notices.txt` (`notice` when it is off when missing but on in the template, so existing projects get told; `quiet` with a reason otherwise) — `tests/config-notice.test.sh` fails otherwise — and in `scripts/config-fields.txt` (shown in the desktop client's settings dialog) or `tests/config-fields-hidden.txt` (not shown, with the reason) — `tests/config-fields-coverage.test.sh` fails otherwise
 5. **Keep PRs small**: one focused change per PR. Mixing daemon changes + a rename + a new feature in one PR will get split
-6. **Style**: follow existing conventions (shell `set -euo pipefail` + `log()` helper + functions from `_lib.sh`; markdown follows the project's bilingual layout)
+6. **Style**: follow existing conventions (shell `set -euo pipefail` + `log()` helper + functions from `_lib.sh`; documents for people are bilingual — English `X.md` plus Chinese `X.zh.md`, change both; files for agents such as `AGENTS.md` and `prompts/` have one copy)
+
+Before your first commit, run `git config core.hooksPath .githooks`: the pre-commit hook runs the consistency checks (`bash tests/run.sh --kind guard`, about 30 s) so a missed registration or a drifted copy fails before the push, not on CI.
 
 ## When you review: remember to click Submit
 

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# 提交前跑一遍一致性守卫（tests/run.sh --kind guard，本机约 30 秒）。
+# Runs the guard-kind tests before every commit (about 30 s on the dev box).
+#
+# 启用（每个克隆一次；同一仓库的所有 worktree 共用这项设置）：
+#   git config core.hooksPath .githooks
+# 跳过一次：git commit --no-verify（CI 照样会跑，红了一样合不进去）。
+#
+# 用干净环境跑：worker 会话继承的 CODING_AGENT_RELEASE_ROOT / DISPATCH_* 等会让测试跑到已安装的版本上。
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+[ -f "$root/tests/run.sh" ] || exit 0
+# 只改了 client/ 的提交不跑：guard 里只有 client-docs 读 client/，读的是 client/README.md。
+if ! git diff --cached --name-only | grep -v '^client/' | grep -q . \
+   && ! git diff --cached --name-only | grep -qx 'client/README.md'; then exit 0; fi
+echo "pre-commit：跑一致性守卫（--kind guard）…" >&2
+if ! out=$(cd "$root" && env -i PATH="$PATH" HOME="$HOME" LANG="${LANG:-C.UTF-8}" TZ=UTC \
+        bash tests/run.sh --kind guard 2>&1); then
+    printf '%s\n' "$out" | grep -E '^(❌|  ✗|      )' >&2 || printf '%s\n' "$out" | tail -30 >&2
+    echo "pre-commit：一致性守卫没过，提交已中止。确认要先提交：git commit --no-verify" >&2
+    exit 1
+fi

@@ -1635,7 +1635,7 @@ chk "scripts/ prompts/ 配置模板 setup.sh 里没有 grokbot" \
 # 复盘记录（docs/retrospectives/）是合并后自动生成的历史，原样引用当时的 issue / PR 内容，和第 6 节
 # 一样排除——主干上 #105、#113 的复盘点名了它，这条从那时起在主干上就是红的（GitHub#162 时发现）
 chk "文档里（复盘记录除外）只有首页那一行和对接文档点名" \
-    "$(grep -rli --exclude-dir=retrospectives grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" "$REPO_DIR/AGENTS.zh.md" 2>/dev/null | sed "s|$REPO_DIR/||" | LC_ALL=C sort | paste -sd,)" "README.md,README.zh.md,docs/requester-bot.md,docs/requester-bot.zh.md"
+    "$(grep -rli --exclude-dir=retrospectives grokbot "$REPO_DIR/docs" "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" "$REPO_DIR/AGENTS.md" 2>/dev/null | sed "s|$REPO_DIR/||" | LC_ALL=C sort | paste -sd,)" "README.md,README.zh.md,docs/requester-bot.md,docs/requester-bot.zh.md"
 chk "首页只在「可以调的地方」和「深入阅读」各一行点名" \
     "$(cat "$REPO_DIR/README.md" "$REPO_DIR/README.zh.md" | grep -ci grokbot)" 4
 
