@@ -462,6 +462,10 @@ table.items th, table.items td.col-updated, table.items td.col-subIssues, table.
 .detail:focus { outline: none; }
 /* GitHub#442: the default way to open an item floats over the board, stuck to the right (GitHub#155 / #260, as before #397) */
 .detail.floating { position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; flex: none; padding: 0; border-left: 1px solid var(--border); box-shadow: var(--shadow-lg); }
+/* GitHub#541: WebKit keeps the inherited `hidden` on a panel inserted in the same update that brings the home tab back to the
+   front (its parents and its own content read visible, the panel itself does not, and it is never recomputed) — so it is
+   painted but reads as hidden. Say it outright, only while the home tab is in front. */
+.tab-page[data-front="yes"] .detail.floating { visibility: visible; }
 .detail-resize { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 6; }
 .detail-resize:hover, .detail.resizing .detail-resize { background: var(--accent); opacity: 0.35; }
 .detail.resizing { user-select: none; }

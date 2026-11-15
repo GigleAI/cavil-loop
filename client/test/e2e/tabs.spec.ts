@@ -343,6 +343,8 @@ test('GitHub#442: the floating panel belongs to the home tab — a tab and back 
   await home(page).click();
   await expect(detail(page)).toHaveAttribute('data-key', K(A));
   await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  // GitHub#541: the panel put back with the home tab must also read as visible (WebKit kept the hidden tab's value)
+  await expect(detail(page)).toBeVisible();
   await expect(detail(page).getByTestId('reply-input')).toHaveValue('浮窗里的半句话');
 
   // ⌘W asks before dropping the text; cancelled, the panel stays
