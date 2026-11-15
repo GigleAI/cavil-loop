@@ -265,6 +265,10 @@ fn main() {
     let smoke = smoke();
     let notify_check = notify_check();
     let hidden = hidden_start();
+    // the smoke test's / notification check's throw-away profile: removed again when the app exits
+    // (GitHub#541: left behind, CI's temp-dir check failed the next step)
+    let throwaway = (smoke || notify_check).then(|| std::env::temp_dir().join(format!("cavil-smoke-{}", std::process::id())));
+    let throwaway_at_exit = throwaway.clone();
     let hooks = TestHooks::from_env(selection.test_mode, &env);
     // test mode: files the daemon section asked the system to open (GitHub#314)
     let daemon_opened = if selection.test_mode { env.get("CAVIL_CLIENT_TEST_DAEMON_OPENED_FILE").map(PathBuf::from) } else { None };
@@ -302,8 +306,8 @@ fn main() {
             // Same profile folder as the Electron build ("Cavil Loop"), so an upgrade keeps
             // the sign-in and the cache. The smoke test gets a throw-away one; the test
             // suite may point it elsewhere (test mode only).
-            let profile = if smoke || notify_check {
-                std::env::temp_dir().join(format!("cavil-smoke-{}", std::process::id()))
+            let profile = if let Some(d) = throwaway.clone() {
+                d
             } else if let (true, Some(d)) = (selection.test_mode, env.get("CAVIL_CLIENT_USER_DATA")) {
                 PathBuf::from(d)
             } else {
@@ -505,10 +509,14 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building the app");
-    app.run(|_app, _ev: RunEvent| {
+    app.run(move |_app, _ev: RunEvent| {
         // quitting: the last resize / move may still be waiting for the window to be still
         if matches!(_ev, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
             window::look(_app);
+        }
+        // last: the window's place was just written into that profile
+        if let (RunEvent::Exit, Some(d)) = (&_ev, &throwaway_at_exit) {
+            let _ = std::fs::remove_dir_all(d);
         }
         // the Dock icon clicked while the window is hidden: it comes back
         #[cfg(target_os = "macos")]
