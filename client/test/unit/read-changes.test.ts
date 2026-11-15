@@ -122,18 +122,22 @@ async function fullReadNow(key: string, at: number): Promise<Record<string, unkn
   const client = new GitHubClient({ api: fake.api, web: fake.web }, FAKE_TOKEN);
   // the same label settings the controller reads with (the loop's waiting label, the pending label)
   const snap = key === PROJECT_KEY ? await fetchProject(client, src(key) as any, at, labels.blocked) : await fetchRepo(client, src(key) as any, at, 100, labels.blocked, labels.human);
-  return comparable(snap.items);
+  return comparable(snap.items, key === PROJECT_KEY);
 }
-function comparable(items: Item[]): Record<string, unknown>[] {
-  return items
-    .map((it) => {
-      const { seenAt: _s, relationsAt: _r, viewerAt: _v, ...rest } = it as any;
-      return { ...rest, projects: rest.projects.map((m: any) => ({ ...m })) };
-    })
-    .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+/**
+ * A board keeps its own order (the table's "Project 里的顺序" and each group's order follow it), so a
+ * board is compared in that order; a repository's list order is not shown, it is compared by key.
+ */
+function comparable(items: Item[], ordered: boolean): Record<string, unknown>[] {
+  const out = items.map((it) => {
+    const { seenAt: _s, relationsAt: _r, viewerAt: _v, ...rest } = it as any;
+    return { ...rest, projects: rest.projects.map((m: any) => ({ ...m })) };
+  });
+  return ordered ? out : out.sort((a, b) => String(a.key).localeCompare(String(b.key)));
 }
 /** the source's snapshot as kept on disk (what the board is built from) */
-const shownOf = (cache: Cache, key: string) => comparable(cache.loadSnapshots().get(key)!.items);
+const shownOf = (cache: Cache, key: string) => comparable(cache.loadSnapshots().get(key)!.items, key === PROJECT_KEY);
+const orderOf = (cache: Cache) => cache.loadSnapshots().get(PROJECT_KEY)!.items.map((it) => it.key);
 
 // ---------------------------------------------------------------------------
 
@@ -152,6 +156,51 @@ describe('a board: only the changed items are read again', () => {
     // the hover says the data came from a read of changes
     const line = hoverLines(c.getState().sync, () => '看板', clock.t).find((l) => l.startsWith('看板：'))!;
     expect(line).toMatch(/^看板：读取变化（1 个条目）不到 1 分钟前 · 整份读取 \d+ 分钟前 · 上次检查/);
+  });
+
+  it('the first item changed: it stays first, the board\'s order is the one a full read gives', async () => {
+    const { c, cache, clock } = await ready();
+    await round(c, clock);
+    const before = orderOf(cache);
+    const first = nodes().find((x: any) => !x.isArchived && x.content?.repository?.nameWithOwner === REPO)!;
+    const n = first.content.number as number;
+    expect(before.indexOf(K(n))).toBe(0);
+    moveCard(n, 'In progress', clock.t + 30_000);
+    const sent = await round(c, clock);
+    expect(boardFullReads(sent)).toBe(0);
+    expect(idsAsked(sent)).toEqual([first.id]);
+    expect(statusOf(c, n)).toBe('In progress');
+    // same order as before, and the same order (and content) a full read gives now
+    expect(orderOf(cache)).toEqual(before);
+    expect(shownOf(cache, PROJECT_KEY)).toEqual(await fullReadNow(PROJECT_KEY, clock.t));
+  });
+
+  it('an archived item changed and then restored, the count unchanged: read by id while hidden, shown again in its place', async () => {
+    const node = nodes().find((x: any) => !x.isArchived && x.content?.repository?.nameWithOwner === REPO)!;
+    const n = node.content.number as number;
+    // archived on github.com before the first read: counted, not shown
+    node.isArchived = true;
+    node.updatedAt = new Date(FIXTURE_NOW - 60 * MIN).toISOString();
+    const { c, cache, clock } = await ready();
+    await round(c, clock);
+    expect(shown(c, n)).toBeNull();
+    const count = nodes().length;
+    // a change while archived: read, still hidden
+    node.updatedAt = new Date(clock.t + 30_000).toISOString();
+    let sent = await round(c, clock);
+    expect(boardFullReads(sent)).toBe(0);
+    expect(idsAsked(sent)).toContain(node.id);
+    expect(shown(c, n)).toBeNull();
+    clock.t += 10 * MIN;
+    // restored: the board's count is the same as before, only its own time moved
+    node.isArchived = false;
+    node.updatedAt = new Date(clock.t + 30_000).toISOString();
+    expect(nodes().length).toBe(count);
+    sent = await round(c, clock);
+    expect(boardFullReads(sent)).toBe(0);
+    expect(idsAsked(sent)).toContain(node.id);
+    expect(shown(c, n)).not.toBeNull();
+    expect(shownOf(cache, PROJECT_KEY)).toEqual(await fullReadNow(PROJECT_KEY, clock.t));
   });
 
   it('only the issue changed and the board\'s own pages still answer "not modified": the repository\'s check finds it', async () => {

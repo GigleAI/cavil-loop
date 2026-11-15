@@ -151,10 +151,11 @@ export async function readBoardChanges(
     const ct = r.content ? ms(r.content.updated_at) : null;
     if (bt <= since && (ct === null || ct <= since)) continue;
     const old = byItemId.get(id) ?? null;
-    if (!old && !snap.boardItemIds!.includes(id)) added.add(id);
     if (!old) {
-      // a draft / archived item already counted is not shown: only a new one is read
-      if (added.has(id)) want.add(id);
+      // not shown: a new item, or one counted but hidden (archived, a draft) that changed — it may
+      // have come back (restored from the archive, a draft turned into an issue), so it is read too
+      if (!snap.boardItemIds!.includes(id)) added.add(id);
+      want.add(id);
       continue;
     }
     if (needsRead(old, { board: bt, ...(r.content ? { content: ct } : {}) }, true)) want.add(id);
@@ -216,13 +217,14 @@ export async function readBoardChanges(
   const boardItemIds = [...snap.boardItemIds!.filter((id) => !gone.has(id)), ...[...added].filter((id) => !gone.has(id))];
   // GitHub's count is the only way an item taken off the board shows: they must agree
   if (boardItemIds.length !== count) return { kind: 'full', why: 'count-differs' };
+  // in the board's own order, as a full read lists them: a changed item stays where it was, a new
+  // one goes where its id is (the end) — the table's "Project 里的顺序" and each group's order follow it
   const items = new Map<string, Item>();
-  for (const it of snap.items) {
-    const id = it.projects[0]!.itemId;
-    if (gone.has(id) || hidden.has(id) || fresh.has(id)) continue;
-    items.set(it.key, it);
+  for (const id of boardItemIds) {
+    if (hidden.has(id)) continue;
+    const it = fresh.get(id) ?? byItemId.get(id);
+    if (it) items.set(it.key, it);
   }
-  for (const it of fresh.values()) items.set(it.key, it);
   return {
     kind: 'read',
     count: ids.length,
