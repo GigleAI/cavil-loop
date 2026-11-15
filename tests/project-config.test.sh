@@ -459,14 +459,14 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS"
+LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS"
 loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
 ' _ "$REPO_DIR" $LIBKEYS 2>&1)"
 want="$(for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=%s\n' "$k" "$(col 4 "$k")"; done)"
-chk "真实加载公共库（配置里一项都不写）后的值 = 登记表的「不写时的值」（21 项）" "$loaded" "$want"
+chk "真实加载公共库（配置里一项都不写）后的值 = 登记表的「不写时的值」（22 项）" "$loaded" "$want"
 # 每一项都写成空值：daemon 各处都是「空 = 用默认值」，表单显示值用的就是这条规则——同一份输入对拍
 for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=""\n' "$k"; done >> "$MIN/cavil-loop.config"
 loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
@@ -474,13 +474,13 @@ loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-lo
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
 ' _ "$REPO_DIR" $LIBKEYS 2>&1)"
-chk "这 21 项全写成空值后真实加载公共库：仍是登记表的默认值" "$loaded" "$want"
+chk "这 22 项全写成空值后真实加载公共库：仍是登记表的默认值" "$loaded" "$want"
 mkdir -p "$H/.config/cavil-loop"; printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$MIN/proj" "$MIN/cavil-loop.config" > "$H/.config/cavil-loop/min.conf"
 shown="$(run get min | jq -r --arg ks "$LIBKEYS ENABLE_CONCURRENT_WORK_HINT" '. as $g | $ks | split(" ")[] | . as $k | "\($k)=\($g.fields[] | select(.name == $k) | .value)"')"
 chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$shown" "$loaded"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
-chk "只显示的那五项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show "
+chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
 
 echo "── 8. 文档里的命令照字面跑 ──"
 doc_block() {

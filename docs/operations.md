@@ -929,6 +929,23 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   issue must be the same, otherwise nothing is written this round. The hand-off itself is the same code every
   other autopilot hand-over uses: each of its three writes is preceded by a fresh judgement and a state check
   (see "Every write of a hand-over is checked against the current state first" above, GitHub#382).
+- **Test files do not count** (GitHub#548, `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`): a file whose old and new
+  paths are both test files is not matched against the list, so a PR that only changes test files under a
+  listed directory is merged as usual; in a PR that mixes them, only the other files are matched and named.
+  A test file is, by its path alone (one rule, `is_test` in `scripts/_lib.sh`):
+  - a file name of the form `<name>.test.<ext>` or `<name>.spec.<ext>` (any extension, `a.test.json` too;
+    `a.test`, `test.mjs`, `a.tests.mjs` are not), or
+  - a file anywhere below a directory named `__tests__`;
+  - except anything under the repo root's `.github/`: GitHub runs every workflow there whatever its name,
+    so `.github/workflows/ci.test.yml` is still a file a human must look at.
+
+  A renamed file counts as a test file only when both its old and its new path are test files. Not set, empty
+  or `"on"` = test files do not count; any other value (`"off"`, a misspelling) = test files are matched like
+  any other file, exactly the behaviour before GitHub#548. The setting matters only when `AUTOPILOT_HUMAN_PATHS`
+  is set. A limit to know: the rule looks at names, not content — if something in the project already runs a
+  particular test file as the maintainer on its own (a git hook or an agent hook that runs it), set this to
+  `"off"`. A project whose own review rules copied the file list should point to this section instead of
+  keeping a copy.
 - **Only paths are looked at, not content**: any change to a listed file counts (a dependency bump in
   `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
   if the project wants them.
