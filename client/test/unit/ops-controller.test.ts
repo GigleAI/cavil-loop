@@ -965,7 +965,8 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
   const ITEM = `gigleai/cavil-loop#${ISSUE}`;
   const refreshes = () => fake.log.filter((e) => e.operation === 'CavilItemRefresh' && e.variables?.number === ISSUE).length;
   /** what a round sent that reads data in full (a confirmed-unchanged round sends only version checks) */
-  const fullReads = (from: number) => fake.log.slice(from).filter((e) => e.operation === 'CavilProjectItems' || (e.method === 'GET' && /\/repos\/[^/]+\/[^/]+\/issues(\?|$)/.test(e.path)));
+  // GitHub#545: a repository's read of changes (its list since the last read) is not a full read
+  const fullReads = (from: number) => fake.log.slice(from).filter((e) => e.operation === 'CavilProjectItems' || (e.method === 'GET' && /\/repos\/[^/]+\/[^/]+\/issues(\?|$)/.test(e.path) && !/[?&]since=/.test(e.path)));
   let rounds = 0;
   /** an autopilot whose every step worked, and whose re-read right after failed; every round it asked for is through */
   async function failedReread() {

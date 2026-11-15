@@ -23,7 +23,8 @@ export const MUTATIONS = [
     to: "snapshots.set(src.key, { sourceKey: src.key, fetchedAt: now, items: [] });\n      replaced.push({ sourceKey: src.key, fetchedAt: now, items: [] });\n      if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;",
     expect: ['a source that fails mid-pagination keeps its previous snapshot'] },
   { what: '连不上 GitHub 不算离线', file: 'src/data/sync.ts',
-    from: "const offline = !(err instanceof GitHubError) || err.kind === 'network';", to: 'const offline = false;',
+    // GitHub#545: the line also says a quota hold is not "offline"; the entry follows it
+    from: "const offline = !quotaHeld && (!(err instanceof GitHubError) || err.kind === 'network');", to: 'const offline = false;',
     expect: ['offline restart: cached content still shows'] },
   { what: '缓存不覆盖旧快照', file: 'src-tauri/crates/core/src/store.rs',
     from: 'ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data',
@@ -1283,7 +1284,8 @@ export const MUTATIONS = [
     expect: ['the account name: readable by the window, never writable by it'] },
   // ---- GitHub#261 ----
   { what: '变化检查（GitHub#261）：不比条目数（整页之后新加的条目在 304 下看不见）', file: 'src/data/changeCheck.ts',
-    from: '!changed && pages.length === old!.pages.length && count !== null && count === old!.count;', to: '!changed && pages.length === old!.pages.length;',
+    // GitHub#545: the line also compares the repositories' checks; the entry follows it
+    from: '!changed && sameRepos && pages.length === old!.pages.length && count !== null && count === old!.count;', to: '!changed && sameRepos && pages.length === old!.pages.length;',
     expect: ['an item added right after a full last page: only the count can tell (GitHub sends no next-page link with a 304)'] },
   { what: '变化检查（GitHub#261）：一页回 200 不算变化（只要有 304 就沿用）', file: 'src/data/changeCheck.ts',
     from: '      pages.push({ url, etag: a.etag });\n      changed = true;', to: '      pages.push({ url, etag: a.etag });',
@@ -1296,10 +1298,12 @@ export const MUTATIONS = [
     expect: ['an item page answers 500', 'the repository answers 500'] },
   // PR #481 (GitHub#462) added the pending label to this call; the entry followed it (GitHub#527)
   { what: '变化检查（GitHub#261）：版本标记在整读之后才取（检查与整读之间的改动永远看不见）', file: 'src/data/sync.ts',
-    from: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel);', to: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
+    // GitHub#545 added GitHub's clock to this call; the entry followed it
+    from: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, extra.serverAt);', to: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, extra.serverAt);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
     expect: ['a change between the check and the full read: not in this read, seen by the next round'] },
   { what: '变化检查（GitHub#261）：没超过 10 分钟也不强制整读（看不见的改动永远不出现）', file: 'src/data/sync.ts',
-    from: 'if (checked?.unchanged && usable && now - usable.fullAt < fullReadEveryMs) {', to: 'if (checked?.unchanged && usable) {',
+    // GitHub#545: "a full read is due" is one line now (it also stops a read of changes); the entry breaks it there
+    from: '    const fullDue = !usable || now - usable.fullAt >= fullEvery;', to: '    const fullDue = !usable;',
     expect: ['a saved view edited on github.com: kept until 10 minutes after the last full read, then read'] },
   { what: '变化检查（GitHub#261）：没变时把旧快照改成本轮时间、当作新读到的落盘（被当成改动之后的读，盖掉刚做的改动）', file: 'src/data/sync.ts',
     from: "      checks.set(src.key, { ...checked.record, snapshotAt: usable.snapshotAt, fullAt: usable.fullAt });\n      return { kind: 'unchanged' };",
@@ -1308,14 +1312,14 @@ export const MUTATIONS = [
   { what: '变化检查（GitHub#261）：记录在落盘之前就记下（没存上的读也算数）',
     edits: [
       { file: 'src/app/controller.ts', from: '    const landing = await this.landSnapshots(session, () => this.roundRows(', to: '    for (const [k, v] of round.checks) this.checks.set(k, { epoch: epochAtStart.get(k) ?? 0, check: v });\n    const landing = await this.landSnapshots(session, () => this.roundRows(' },
-      { file: 'src/app/controller.ts', from: '    this.keepChecks(session, round.checks, sources, epochAtStart);\n', to: '' },
+      { file: 'src/app/controller.ts', from: '    this.keepChecks(session, round.checks, sources.filter((src) => !round.keepRecords.includes(src.key)), epochAtStart);\n', to: '' },
     ],
     expect: ['a round whose read could not be saved keeps no record: the next round reads in full'] },
   { what: '变化检查（GitHub#261）：手动刷新也按检查结果跳过整读', file: 'src/app/controller.ts',
     from: '    this.fullReadNext = true;\n', to: '',
     expect: ['refresh by hand reads every source in full at once (a view edited on github.com shows right away)'] },
   { what: '变化检查（PR #272 复审第 1 轮）：整读没落地时不作废旧记录（手动整读存失败后，下一轮按旧记录跳过）', file: 'src/app/controller.ts',
-    from: '    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key)), held);\n', to: '',
+    from: '    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key) && !round.keepRecords.includes(src.key)), held);\n', to: '',
     expect: ['a refresh by hand whose save fails (the save throws): the next automatic round reads in full again', 'a refresh by hand whose save fails (the save is refused): the next automatic round reads in full again'] },
   { what: '变化检查（PR #272 复审第 1 轮）：没有版本标记的 304 也当「没变」', file: 'src/data/github.ts',
     from: '    if ((res.status === 304 || res.status === 200) && !tag) throw', to: '    if (res.status === 200 && !tag) throw',

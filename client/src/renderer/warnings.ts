@@ -58,6 +58,12 @@ export interface SyncTrouble {
   failed: SourceStatus[];
   incomplete: boolean;
   filterIncomplete: boolean;
+  /**
+   * GitHub#545: every source not read was held back by the quota guard (none failed): the ⚠️ is the
+   * yellow "额度保护中（HH:MM 恢复）" instead of "同步不完整"; `heldUntil` = the earliest time it lifts (null = not known)
+   */
+  held: boolean;
+  heldUntil: number | null;
 }
 
 export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble | null {
@@ -65,7 +71,10 @@ export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble 
   if (failed.length === 0) return null;
   const incomplete = !sync.offline;
   const filterIncomplete = isFiltering(parsed);
-  return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete } : null;
+  const held = failed.every((s) => s.quotaHeld === true);
+  const times = failed.map((s) => s.failure?.retryAt).filter((x): x is number => typeof x === 'number');
+  const heldUntil = held && times.length ? Math.min(...times) : null;
+  return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete, held, heldUntil } : null;
 }
 
 /**

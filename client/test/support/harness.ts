@@ -138,9 +138,12 @@ export class HarnessBackend implements Backend {
     if (this.closedErr) return Promise.reject(this.closedErr);
     const id = this.seq++;
     this.sent.push({ cmd, args });
+    // GitHub#545: the fake GitHub's clock (its Date header — GitHub's time to the client) follows this
+    // test's clock, so the update times a test writes and "now" at GitHub agree, as they do on GitHub
+    const out = cmd === 'request' && this.o.now ? { ...args, headers: { ...((args.headers as Record<string, string>) ?? {}), 'x-fake-now': String(this.o.now()) } } : args;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.write({ id, cmd, args });
+      this.write({ id, cmd, args: out });
     });
   }
 

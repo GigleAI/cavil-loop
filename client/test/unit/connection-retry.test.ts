@@ -118,7 +118,7 @@ describe('a sync round over connections that break', () => {
     // the breaking really happened, both ways, on the identity query and on the full read of the repository
     expect(broken.some((e) => e.broken === 'close')).toBe(true);
     expect(broken.some((e) => e.broken === 'cut')).toBe(true);
-    expect(broken.some((e) => e.operation === 'CavilViewer')).toBe(true);
+    expect(broken.some((e) => e.operation === 'user')).toBe(true);
     expect(broken.some((e) => e.method === 'GET' && e.path.includes('/issues?'))).toBe(true);
   });
 
@@ -129,7 +129,7 @@ describe('a sync round over connections that break', () => {
     await c.syncNow();
     const round = fake.log.slice(from);
     const broken = recovered(c, round);
-    expect(broken.some((e) => e.operation === 'CavilViewer')).toBe(true);
+    expect(broken.some((e) => e.operation === 'user')).toBe(true);
     expect(broken.some((e) => e.method === 'HEAD')).toBe(true);
   });
 });

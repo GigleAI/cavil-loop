@@ -84,7 +84,7 @@ interface GqlProject {
   items: {
     totalCount: number;
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    nodes: { id: string; isArchived: boolean; fieldValues: { nodes: GqlFieldValue[] }; content: GqlContent | null }[];
+    nodes: { id: string; isArchived: boolean; updatedAt?: string; fieldValues: { nodes: GqlFieldValue[] }; content: GqlContent | null }[];
   };
 }
 type GqlProjectResponse = {
@@ -132,6 +132,8 @@ export function readMembership(
   meta: ProjectMeta,
   itemId: string,
   values: GqlFieldValue[],
+  /** GitHub#545: the Project item's own updatedAt, when the read asked for it */
+  itemUpdatedAt?: string,
 ): ProjectMembership {
   let iteration: Iteration | null = null;
   let status: string | null = null;
@@ -142,7 +144,7 @@ export function readMembership(
       status = v.name ?? null;
     }
   }
-  return { projectKey: meta.key, projectTitle: meta.title, itemId, iteration, status };
+  return { projectKey: meta.key, projectTitle: meta.title, itemId, iteration, status, ...(typeof itemUpdatedAt === 'string' && itemUpdatedAt ? { itemUpdatedAt } : {}) };
 }
 
 /**
@@ -200,8 +202,11 @@ export async function fetchProject(
   now: number,
   /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
   loopLabel: string = '',
+  /** GitHub#545: GitHub's clock at the start of this round (null = not known: no read of changes can start from this snapshot) */
+  serverAt: number | null = null,
 ): Promise<SourceSnapshot> {
   let after: string | null = null;
+  const boardItemIds: string[] = [];
   let meta: ProjectMeta | null = null;
   const items = new Map<string, Item>();
   for (let page = 0; ; page++) {
@@ -248,13 +253,14 @@ export async function fetchProject(
       };
     }
     for (const node of p.items.nodes) {
+      boardItemIds.push(node.id);
       if (node.isArchived || !node.content) continue;
       // GitHub#349: the relations belong to the same snapshot — a list that cannot be read to
       // its end fails this source's read (the previous snapshot stays), it is never stored short
       const c = await withRelations(client, node.content);
-      const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes)], [src.key], now);
+      const it = contentToItem(c, [readMembership(meta, node.id, node.fieldValues.nodes, node.updatedAt)], [src.key], now);
       if (it && !it.relations) throw new GitHubError('graphql', t('{item} 的关系没有读全', { item: `${it.repo}#${it.number}` }));
-      if (it) items.set(it.key, it);
+      if (it) items.set(it.key, serverAt !== null ? { ...it, seenAt: serverAt } : it);
     }
     if (!p.items.pageInfo.hasNextPage) break;
     if (!p.items.pageInfo.endCursor) throw new GitHubError('graphql', t('Project 分页缺少游标'));
@@ -262,7 +268,16 @@ export async function fetchProject(
   }
   // GitHub#429: part of the same read — a failure fails the source (its previous snapshot stays)
   await readLoopBlocked(client, [...items.values()], loopLabel);
-  return { sourceKey: src.key, fetchedAt: now, items: [...items.values()], project: meta! };
+  return {
+    sourceKey: src.key,
+    fetchedAt: now,
+    items: [...items.values()],
+    project: meta!,
+    boardItemIds,
+    ...(serverAt !== null ? { syncedThrough: serverAt } : {}),
+    lastRead: { kind: 'full', at: now },
+    fullReadAt: now,
+  };
 }
 
 interface RestIssue {
@@ -358,6 +373,8 @@ export async function fetchRepo(
   loopLabel: string = '',
   /** GitHub#462: the pending ("等人处理") label setting; '' = closed items carrying it are not read */
   pendingLabel: string = '',
+  /** GitHub#545: GitHub's clock at the start of this round (null = not known) */
+  serverAt: number | null = null,
 ): Promise<SourceSnapshot> {
   const repo = `${src.owner}/${src.name}`;
   const base = `/repos/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.name)}/issues`;
@@ -383,6 +400,48 @@ export async function fetchRepo(
       related.set(it.key, hasRelations(r));
     }
   }
+  await completeRepoItems(client, repo, [...items.values()], related, now, batchSize, loopLabel, pending);
+  return {
+    sourceKey: src.key,
+    fetchedAt: now,
+    items: [...items.values()].filter((it) => keepInRepo(it, now, pending)).map((it) => (serverAt !== null ? { ...it, seenAt: serverAt } : it)),
+    pendingLabel: pending,
+    ...(serverAt !== null ? { syncedThrough: serverAt } : {}),
+    lastRead: { kind: 'full', at: now },
+    fullReadAt: now,
+  };
+}
+
+/**
+ * GitHub#545: which items a repository source shows — every open one, everything updated in the last
+ * REPO_RECENT_DAYS days, and every closed one carrying the pending label. The one rule for the full
+ * read (whose three lists ask for exactly these) and the read of changes (which applies it to the
+ * merged snapshot every round, so an item sliding out of the 14 days goes without a full read).
+ */
+export function keepInRepo(it: Item, now: number, pendingLabel: string): boolean {
+  if (it.state === 'open') return true;
+  const at = Date.parse(it.updatedAt);
+  if (Number.isFinite(at) && at >= now - REPO_RECENT_DAYS * 86_400_000) return true;
+  return pendingLabel !== '' && hasLabel(it, pendingLabel);
+}
+
+/**
+ * GitHub#349 / #373 / #429 / #462: what a repository item needs beyond its REST list entry — its
+ * relations (when the list says it has any), how the signed-in account stands to it (open items and
+ * closed pending ones), the loop's registrations. Shared by the full read and the read of changes
+ * (GitHub#545). `list` is completed in place; a failure throws (the source's read fails whole).
+ */
+export async function completeRepoItems(
+  client: GitHubClient,
+  repo: string,
+  list: Item[],
+  related: Map<string, boolean>,
+  now: number,
+  batchSize: number,
+  loopLabel: string,
+  pending: string,
+): Promise<void> {
+  const items = new Map(list.map((it) => [it.key, it]));
   // GitHub#349: the list says only how many relations an issue has; the ones that have any are
   // read by node id. GitHub#373: nor does it say how the signed-in account stands to an item —
   // every open issue / PR is read for that too, and (GitHub#462) every closed one carrying the
@@ -415,9 +474,14 @@ export async function fetchRepo(
   }
   // GitHub#429: part of the same read — a failure fails the source (its previous snapshot stays)
   await readLoopBlocked(client, [...items.values()], loopLabel);
-  return { sourceKey: src.key, fetchedAt: now, items: [...items.values()], pendingLabel: pending };
 }
 
-export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: string = '', pendingLabel: string = ''): Promise<SourceSnapshot> {
-  return src.kind === 'project' ? fetchProject(client, src, now, loopLabel) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel, pendingLabel);
+/** GitHub#545: a REST issue / PR of a repository list → the source's item (relations etc. filled in by completeRepoItems) */
+export function repoListItem(repo: string, r: unknown, srcKey: string): { item: Item; related: boolean } {
+  const x = r as RestIssue;
+  return { item: restToItem(repo, x, srcKey), related: hasRelations(x) };
+}
+
+export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: string = '', pendingLabel: string = '', serverAt: number | null = null): Promise<SourceSnapshot> {
+  return src.kind === 'project' ? fetchProject(client, src, now, loopLabel, serverAt) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel, pendingLabel, serverAt);
 }

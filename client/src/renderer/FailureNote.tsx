@@ -4,17 +4,12 @@
 
 import { useEffect, useState } from 'react';
 import type { AppState } from '../shared/types';
-import { describeFailure, type FailureAction, type ReadFailure } from '../shared/readFailure';
+import { describeFailure, hhmm, type FailureAction, type ReadFailure } from '../shared/readFailure';
 import { api } from './api';
 import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
 import { rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
-
-const hhmm = (ms: number) => {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
 
 /**
  * True until `until` (epoch ms), then false — the component re-renders at that moment by itself,
@@ -53,7 +48,7 @@ export function FailureNote({
   reread?: Reread;
   testid?: string;
 }) {
-  const waiting = useWaiting(failure.kind === 'rateLimited' ? failure.retryAt : null);
+  const waiting = useWaiting(failure.kind === 'rateLimited' || failure.kind === 'quotaHeld' ? failure.retryAt : null);
   const own = useReread();
   // a caller's own retry (the Project picker) has its own reading state: not this one's
   const rr = onRetry ? null : (shared ?? own);

@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type SyncQuota, type TallyDef, type ViewSettings } from '../shared/types';
 import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
@@ -25,7 +25,8 @@ import { clientIdKindProblem } from '../shared/appKind';
 import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
 import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep, sayFailure } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
-import { syncRound } from '../data/sync';
+import { syncRound, type ViewerTag } from '../data/sync';
+import { QuotaGuard, readingOf } from '../data/quota';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
 import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
@@ -178,6 +179,8 @@ export interface ControllerDeps {
    * every source in full). Default FULL_READ_EVERY_MS.
    */
   fullReadEveryMs?: number;
+  /** GitHub#545: a board read by changes is read in full at least this often (default BOARD_FULL_READ_EVERY_MS); tests shorten it */
+  boardFullReadEveryMs?: number;
   /**
    * GitHub#374: the sync asks a read that failed for a temporary reason again after each of these
    * waits (default READ_RETRY_DELAYS_MS); [] = never. Tests shorten them.
@@ -300,6 +303,10 @@ function normalizeBlockedLabels(raw: unknown, blocked: string): BlockedLabels {
   return { blocked, flow: typeof r.flow === 'string' && r.flow.trim() ? r.flow.trim() : DEFAULT_BLOCKED_LABELS.flow };
 }
 const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
+/** GitHub#545: when the sync last sent a request to GitHub (epoch ms), written before each one; kept across sign-outs */
+const LAST_SEND = 'syncLastSendAt';
+/** GitHub#545: reads of changes failing this many rounds in a row: the source is read in full */
+const DELTA_FAILS_MAX = 3;
 /** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
 const NOTIFY_SCOPE = 'notifyScope';
 const REPO_ORDER = 'repoOrder';
@@ -380,6 +387,16 @@ export class Controller {
   private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
   /** the session the gate and the failures belong to */
   private readsSession: number | null = null;
+  /**
+   * GitHub#545: every request of the sync goes through this guard — one at a time, never taking the
+   * account's hourly quota below half. Kept across sessions (a reservation is about this machine's
+   * requests, whichever account they were for, and only ever makes it more careful).
+   */
+  private quota: QuotaGuard;
+  /** GitHub#545: who the credential belongs to, with the version tag of the answer (REST /user; a 304 costs nothing); of `readsSession` */
+  private viewerTag: ViewerTag | null = null;
+  /** GitHub#545: per source (as the addition `epoch`), reads of changes that failed in a row; 3 = read in full next */
+  private deltaFails = new Map<string, { epoch: number; count: number }>();
   /** GitHub#261: refresh by hand asked for a full read: the next round to start ignores the records */
   private fullReadNext = false;
   /** signed in, as the back end last said (it holds the credential, this side never does) */
@@ -542,6 +559,10 @@ export class Controller {
     this.timers = deps.timers ?? REAL_TIMERS;
     this.timedGapMs = deps.syncGapMs ?? deps.syncIntervalMs ?? SYNC_INTERVAL_MS;
     this.readGate = new ReadGate(this.now);
+    // GitHub#545: nothing goes out until the requests of the previous run are settled (SETTLE_MS after its last send)
+    this.quota = new QuotaGuard({ now: this.now, noteSend: (at) => this.noteSend(at) });
+    const lastSend = this.cache.getSetting<unknown>(LAST_SEND, null);
+    this.quota.startAfter(lastSend === null ? null : typeof lastSend === 'number' && Number.isFinite(lastSend) ? lastSend : 'unreadable');
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // GitHub#404: saved before the running label existed (or not a string) → the default; an empty one stays empty
@@ -695,8 +716,15 @@ export class Controller {
   private refreshDerived() {
     const cur = this.state.sync;
     const times: SourceTimes[] = this.state.sources.map((s) => {
-      const readAt = this.snapshots.get(s.key)?.fetchedAt ?? null;
-      return { sourceKey: s.key, readAt, checkedAt: readAt === null ? null : Math.max(readAt, this.checkedAt.get(s.key) ?? readAt) };
+      const snap = this.snapshots.get(s.key);
+      const readAt = snap?.fetchedAt ?? null;
+      const base: SourceTimes = { sourceKey: s.key, readAt, checkedAt: readAt === null ? null : Math.max(readAt, this.checkedAt.get(s.key) ?? readAt) };
+      // GitHub#545: the data shown came from a read of changes: when, how many items, and the full read it goes back to
+      if (snap?.lastRead?.kind === 'delta') {
+        base.delta = { at: snap.lastRead.at, count: snap.lastRead.count ?? 0 };
+        if (typeof snap.fullReadAt === 'number') base.fullAt = snap.fullReadAt;
+      }
+      return base;
     });
     const oldest = (xs: (number | null)[]) => {
       const have = xs.filter((t): t is number => t !== null);
@@ -704,7 +732,7 @@ export class Controller {
     };
     const dataFrom = oldest(times.map((t) => t.readAt));
     const checkedFrom = oldest(times.map((t) => t.checkedAt));
-    const sameTimes = times.length === cur.times.length && times.every((t, i) => t.sourceKey === cur.times[i].sourceKey && t.readAt === cur.times[i].readAt && t.checkedAt === cur.times[i].checkedAt);
+    const sameTimes = times.length === cur.times.length && times.every((t, i) => JSON.stringify(t) === JSON.stringify(cur.times[i]));
     // the progress of a round ends with the round, whichever way it ended
     const progress = cur.syncing ? cur.progress : null;
     if (dataFrom !== cur.dataFrom || checkedFrom !== cur.checkedFrom || !sameTimes || progress !== cur.progress) {
@@ -1734,6 +1762,8 @@ export class Controller {
     if (this.readsSession !== session) {
       this.readGate = new ReadGate(this.now);
       this.failures.clear();
+      this.deltaFails.clear();
+      this.viewerTag = null;
       this.readsSession = session;
     }
     const configured = this.state.sources;
@@ -1768,9 +1798,29 @@ export class Controller {
     };
     progress();
     const gate = this.readGate;
-    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS };
+    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS, quota: this.quota };
+    const client = this.client(session, run.signal, reads);
+    // GitHub#545: the account's quotas and GitHub's clock first (not counted against either quota);
+    // not readable = no request this round (the guard holds every one back)
+    this.quota.forget();
+    let serverAt: number | null = null;
+    let quotaError: unknown = null;
+    // a round the closed read gate keeps at home asks nothing at all — not even this (GitHub#374)
+    if (gate.until === null || this.now() >= gate.until) {
+      try {
+        const rl = await client.rateLimit();
+        this.quota.takeReading(readingOf(rl.body));
+        serverAt = rl.serverAt;
+      } catch (e) {
+        this.quota.takeReading(null);
+        quotaError = e;
+      }
+    }
+    const forceFull = new Set(
+      [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
+    );
     const round = await syncRound(
-      this.client(session, run.signal, reads),
+      client,
       sources,
       this.snapshots,
       startedAt,
@@ -1783,6 +1833,13 @@ export class Controller {
       this.state.handBack.blocked,
       // GitHub#462: a repository's closed items carrying the pending label are read too
       this.state.handBack.human,
+      {
+        serverAt,
+        viewer: this.viewerTag,
+        forceFull,
+        quotaError,
+        ...(this.deps.boardFullReadEveryMs !== undefined ? { boardFullReadEveryMs: this.deps.boardFullReadEveryMs } : {}),
+      },
     );
     run.reading = false;
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
@@ -1792,7 +1849,8 @@ export class Controller {
     // (PR #272 review round 1). Only a record that is still the one this round started from: a round
     // dropped by a refresh by hand finishes in the background, possibly after the newer round saved its
     // own record — that one is not this round's to drop (review round 2).
-    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key)), held);
+    // GitHub#545: a source the quota guard held back before anything was learned keeps its record too
+    this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key) && !round.keepRecords.includes(src.key)), held);
     this.deps.afterRoundRead?.(run.signal.aborted);
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
     if (run.signal.aborted) return;
@@ -1819,7 +1877,18 @@ export class Controller {
     // a source removed while the write was on its way: not shown either
     if (landing.kind !== 'landed') return over();
     const accepted = landing.rows;
-    this.keepChecks(session, round.checks, sources, epochAtStart);
+    this.keepChecks(session, round.checks, sources.filter((src) => !round.keepRecords.includes(src.key)), epochAtStart);
+    if (session === this.session && round.viewerTag) this.viewerTag = round.viewerTag;
+    // GitHub#545: reads of changes failing in a row (a full read, or one that worked, ends the run)
+    for (const src of sources) {
+      const tried = round.deltaTried.get(src.key);
+      const epoch = epochAtStart.get(src.key) ?? 0;
+      const st = round.status.find((x) => x.sourceKey === src.key);
+      if (tried === true) {
+        const f = this.deltaFails.get(src.key);
+        this.deltaFails.set(src.key, { epoch, count: (f && f.epoch === epoch ? f.count : 0) + 1 });
+      } else if (st?.ok) this.deltaFails.delete(src.key);
+    }
     this.feedSnapshots(accepted, issuedAt);
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
@@ -1849,6 +1918,8 @@ export class Controller {
         // GitHub#374: a round the closed gate kept at home did not reach GitHub either
         lastOnlineAt: round.offline || round.held ? this.state.sync.lastOnlineAt : this.now(),
         sources: [...status, ...untouched],
+        // GitHub#545: the quotas as this round read them (and kept up to date by every answer)
+        quota: this.quotaView(),
       },
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
@@ -1906,6 +1977,25 @@ export class Controller {
     }
   }
 
+  /** GitHub#545: the time of a request about to go out, on disk before it goes (false = not written: it does not go) */
+  private async noteSend(at: number | null): Promise<boolean> {
+    try {
+      await this.backend.call('setSetting', { key: LAST_SEND, value: at });
+      this.cache.mirror(LAST_SEND, at);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** GitHub#545: the quotas as the window shows them */
+  private quotaView(): SyncQuota {
+    const g = this.quota.view('graphql');
+    const c = this.quota.view('core');
+    const strip = (v: typeof g) => (v ? { limit: v.limit, used: v.used, remaining: v.remaining, resetAt: v.resetAt, reserved: v.reserved } : null);
+    return { graphql: strip(g), core: strip(c), quietUntil: this.quota.quietTill() };
+  }
+
   /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
   private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
     return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
@@ -1927,6 +2017,8 @@ export class Controller {
    * read is when the gate opens.
    */
   private noteResult(st: SourceStatus, at: number, epoch: number, gate: ReadGate): SourceStatus {
+    // GitHub#545: held back by the quota guard — nothing was asked, nothing is counted
+    if (st.quotaHeld) return st;
     if (st.ok) {
       this.failures.delete(st.sourceKey);
       return st;

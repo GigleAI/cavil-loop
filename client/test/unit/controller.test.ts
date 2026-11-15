@@ -937,7 +937,8 @@ describe('the cache belongs to one account', () => {
     const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
     const before = fake.log.filter((l) => l.path.includes('/issues?')).length;
     const inflight = c.syncNow();
-    await requestsSeen('/issues?', before + 2);
+    // GitHub#545: the sync's requests leave one at a time: one list request is held at GitHub
+    await requestsSeen('/issues?', before + 1);
     await c.logout();
     // From here on, at no moment may A's data be visible or owned (a later B round
     // overwriting it would hide the leak from an end-state check).
@@ -958,7 +959,7 @@ describe('the cache belongs to one account', () => {
     await login;
     await c.syncNow();
     // the held responses (A's) really were delivered
-    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.auth === `Bearer ${FAKE_TOKEN}` && l.status === 200).length).toBeGreaterThanOrEqual(2);
+    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.auth === `Bearer ${FAKE_TOKEN}` && l.status === 200).length).toBeGreaterThanOrEqual(1);
     expect(leaks).toEqual([]);
     expect(c.getState().viewer).toBe('user-2');
     expect(c.getBoardData().items).toHaveLength(1);
@@ -979,7 +980,8 @@ describe('sources removed while a round is in flight', () => {
     const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
     const before = fake.log.filter((l) => l.path.includes('/issues?')).length;
     const inflight = h.c.syncNow();
-    await requestsSeen('/issues?', before + 2);
+    // GitHub#545: the sync's requests leave one at a time: one list request is held at GitHub
+    await requestsSeen('/issues?', before + 1);
     return { ...h, release, inflight };
   }
 
@@ -990,7 +992,7 @@ describe('sources removed while a round is in flight', () => {
     expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
     release();
     await inflight;
-    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.status === 200).length).toBeGreaterThanOrEqual(2);
+    expect(fake.log.filter((l) => l.path.includes('/issues?') && l.status === 200).length).toBeGreaterThanOrEqual(1);
     expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
     expect(c.getState().sync.sources.map((s) => s.sourceKey)).not.toContain(REPO_KEY);
     expect(c.getBoardData().items.every((i) => !i.sources.includes(REPO_KEY))).toBe(true);

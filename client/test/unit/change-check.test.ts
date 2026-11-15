@@ -126,7 +126,9 @@ describe('nothing changed: the round keeps the previous snapshot and reads nothi
     const sent = await round(c);
     expect(boardReads(sent)).toBe(0);
     expect(repoReads(sent)).toBe(0);
-    expect(gqlOps(sent)).toEqual(['CavilViewer', 'CavilProjectCounts']);
+    // GitHub#545: "who am I" is REST now (answered 304: not counted against either quota)
+    expect(gqlOps(sent)).toEqual(['CavilProjectCounts']);
+    expect(sent.filter((e) => e.operation === 'user').map((e) => e.status)).toEqual([304]);
     // the check did go out and was answered "not modified" every time
     expect(checks(sent).length).toBeGreaterThan(0);
     expect(checks(sent).every((e) => e.status === 304)).toBe(true);
@@ -153,7 +155,9 @@ describe('a change the check sees: the next round reads in full and shows it', (
     await labelOnGitHub(138, 'bug');
     const sent = await round(c);
     expect(boardReads(sent)).toBe(1);
-    expect(repoReads(sent)).toBe(1);
+    // GitHub#545: the repository is read by its changes (the list since the last read), not in full
+    expect(repoReads(sent)).toBe(0);
+    expect(sent.some((e) => e.method === 'GET' && e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.path.includes('since='))).toBe(true);
     expect(onBoard(c, 138)!.labels.map((l) => l.name)).toContain('bug');
     // and quiet again afterwards
     const after = await round(c);

@@ -450,7 +450,9 @@ describe('the app: cache on disk, status, the round after a failure, sign-out', 
     await c.start();
     expect(numbers(shown(c, PARENT).relations!.subIssues)).toEqual([BLOCKER, BLOCKED]);
     expect(c.getBoardData().relationsUnknown).toEqual([]);
-    const disk = () => JSON.stringify([...cache.loadSnapshots()].filter(([k]) => k === PROJECT_KEY || k === REPO_KEY).sort());
+    // GitHub#545: the board only — the repository is read by its changes (just the closed blocker), which
+    // does not touch the item whose relation page fails, so it reads fine this round
+    const disk = () => JSON.stringify([...cache.loadSnapshots()].filter(([k]) => k === PROJECT_KEY).sort());
     await c.settled();
     const before = disk();
     expect(before).toContain('"blockedBy"');

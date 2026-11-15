@@ -87,6 +87,8 @@ export interface ProjectMembership {
   itemId: string;
   iteration: Iteration | null;
   status: string | null;
+  /** GitHub#545: the Project item's own updatedAt (GitHub's ISO time) as read; absent = not read with it */
+  itemUpdatedAt?: string;
 }
 
 export interface Label {
@@ -215,6 +217,12 @@ export interface Item {
    * the item, this — never `updatedAt` — says whose relations are newer.
    */
   relationsAt?: number;
+  /**
+   * GitHub#545: GitHub's own clock (epoch ms) at the start of the sync round whose read produced this
+   * copy — a lower bound of when it was read. "Changed since" compares GitHub's times with it only,
+   * never this machine's clock. Absent = not known (a copy cached before #545, or a one-item re-read).
+   */
+  seenAt?: number;
   /**
    * GitHub#429: the loop's registered prerequisites (see LoopBlocked). Absent = not read (the setting
    * is empty, or a cache written before #429) — never "none".
@@ -449,6 +457,18 @@ export interface SourceSnapshot {
    * for ('' = not read; absent = a snapshot from before that list existed). A board reads every item.
    */
   pendingLabel?: string;
+  /**
+   * GitHub#545: GitHub's clock (epoch ms) at the start of the round that produced this snapshot (full
+   * read or read of changes): a change after it is found by the next read of changes. Absent = reads
+   * of changes cannot start from this snapshot (it is read in full).
+   */
+  syncedThrough?: number;
+  /** GitHub#545, boards: every item node id on the board (drafts and archived ones too), to compare with GitHub's item count */
+  boardItemIds?: string[];
+  /** GitHub#545: how the snapshot was produced last ('full' / 'delta'), and how many items a read of changes re-read */
+  lastRead?: { kind: 'full' | 'delta'; at: number; count?: number };
+  /** GitHub#545: epoch ms of the latest full read this snapshot goes back to (kept through reads of changes) */
+  fullReadAt?: number;
 }
 
 export interface SourceTimes {
@@ -457,6 +477,10 @@ export interface SourceTimes {
   readAt: number | null;
   /** epoch ms of the latest full read or "nothing changed" answer; never before `readAt` */
   checkedAt: number | null;
+  /** GitHub#545: the latest read was a read of changes: when, and how many items it re-read (absent = a full read) */
+  delta?: { at: number; count: number };
+  /** GitHub#545: epoch ms of the latest full read when the data shown came from a read of changes since */
+  fullAt?: number;
 }
 
 export interface SyncProgress {
@@ -475,6 +499,8 @@ export interface SourceStatus {
   dataFrom: number | null;
   /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
+  /** GitHub#545: not read because the quota guard held it back (not a failure: nothing was asked; not counted) */
+  quotaHeld?: boolean;
   /** GitHub#401: what kind of failure (shared/readFailure.ts); absent on a status saved before = shown as a plain failure */
   failure?: ReadFailure;
   /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
@@ -639,6 +665,28 @@ export interface SyncState {
   problem: string | null;
   /** GitHub#473: the same message with its own words and the outside words apart (the back end's, or the window's own); absent / null = show `problem` as it is */
   problemSaid?: Said | null;
+  /**
+   * GitHub#545: the account's hourly GitHub quotas as the latest round read them (null = not read this
+   * round), and until when nothing is sent after a restart (0 = not waiting)
+   */
+  quota?: SyncQuota | null;
+}
+
+/** GitHub#545: one hourly quota as the window shows it */
+export interface SyncQuotaBucket {
+  limit: number;
+  used: number;
+  remaining: number;
+  resetAt: number;
+  /** reserved for requests whose outcome is not known */
+  reserved: number;
+}
+
+export interface SyncQuota {
+  graphql: SyncQuotaBucket | null;
+  core: SyncQuotaBucket | null;
+  /** no request before this after a restart (epoch ms); 0 = not waiting */
+  quietUntil: number;
 }
 
 /** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */
