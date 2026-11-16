@@ -38,6 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/_names.sh"
 # shellcheck source=_install.sh
 source "$SCRIPT_DIR/_install.sh"
+# shellcheck source=_preview_ports.sh
+source "$SCRIPT_DIR/_preview_ports.sh"
 
 export LC_ALL=C
 FIELDS_FILE="$SCRIPT_DIR/config-fields.txt"
@@ -499,6 +501,29 @@ for j in "${!W_NAMES[@]}"; do
         --argjson added "$([ "$W_KIND" = absent ] && echo true || echo false)" \
         '{name:$k, label:$label, old:$old, new:$new, added:$added}')")
 done
+# 3b. 组合检查（GitHub#556）：预览端口的起始号 / 取余数 / 后端偏移改了任何一项，就用保存后的三项
+#     （没改的取现在实际用的值）算一遍端口；算出来不能用就不存。规则和注册前的检查是同一份（_preview_ports.sh）
+pv_touch=0
+for k in "${W_NAMES[@]}"; do case "$k" in PREVIEW_PORT_BASE|PREVIEW_PORT_MODULO|PREVIEW_BACKEND_OFFSET) pv_touch=1 ;; esac; done
+if [ "$pv_touch" = 1 ]; then
+    pv_after() {   # <名字> → 保存后的值：这次要写的，否则 daemon 现在实际用的
+        local j i
+        for j in "${!W_NAMES[@]}"; do [ "${W_NAMES[$j]}" = "$1" ] && { printf '%s' "${W_VALUES[$j]}"; return; }; done
+        i="$(field_index "$1")" && effective "$i"
+    }
+    pv_b="$(pv_after PREVIEW_PORT_BASE)"; pv_m="$(pv_after PREVIEW_PORT_MODULO)"; pv_o="$(pv_after PREVIEW_BACKEND_OFFSET)"
+    # 没改的那几项现在的值也要合乎登记的类型才算得了（按各自登记的类型查，不另写一份范围）
+    pv_bad=""
+    for pv_k in PREVIEW_PORT_BASE PREVIEW_PORT_MODULO PREVIEW_BACKEND_OFFSET; do
+        pv_i="$(field_index "$pv_k")"; pv_v="$(pv_after "$pv_k")"
+        valid_value "${F_TYPE[$pv_i]}" "$pv_v" || { pv_bad="$pv_k 现在的值 ${pv_v:-（空）} 算不了端口（${BAD_WHY}）"; break; }
+    done
+    [ -n "$pv_bad" ] || pv_bad="$(preview_ports_save_problem "$pv_b" "$pv_m" "$pv_o")" || true
+    if [ -n "$pv_bad" ]; then
+        echo "预览端口的三项设置合起来不能用：${pv_bad}。什么都没写"
+        DETAIL="$(jq -cn --arg why "$pv_bad" '{field:"PREVIEW_PORT_BASE", reason:$why}')"; finish invalid 2
+    fi
+fi
 if [ "${#E_IDX[@]}" -eq 0 ]; then
     echo "要写的值和配置文件里的一样，什么都没写"
     DETAIL='{"changes":[]}'; finish unchanged 0

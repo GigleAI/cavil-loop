@@ -18,7 +18,8 @@
 #      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
 #      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
 #   8. 预览的几项（GitHub#556）：一项都不写时真实 preview-serve.sh 登记的端口、后端端口、闲置、就绪等待 = 窗口显示的值；
-#      用 project-config.sh 改了之后（含取模改回留空）再注册，跟着变
+#      用 project-config.sh 改了之后（含取模改回留空）再注册，跟着变；算出来的端口超过 65535（手写的组合、编号涨上去）
+#      注册入口拒绝、不写登记，边界正好的照常注册
 #
 #   bash tests/project-config-poll.test.sh      （约 40 秒）
 set -uo pipefail
@@ -320,9 +321,10 @@ LABEL_PENDING_HUMAN="pending/human"
 PREVIEW_EXEC="node server.mjs"
 CONF
 printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$PV/project" "$PCONF" > "$HOME/.config/cavil-loop/pvtest.conf"
-serve() {   # → 真实 preview-serve.sh 注册 #1040 后写下的那份登记里「端口 后端端口 闲置 就绪等待」；没写出来输出 NONE
+serve() {   # [issue，默认 1040] → 真实 preview-serve.sh 注册后写下的那份登记里「端口 后端端口 闲置 就绪等待」；没写出来输出 NONE
+    local n="${1:-1040}"; mkdir -p "$PV/wt/issue-$n"
     rm -rf "$HOME/.config/cavil-loop/preview"
-    env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-serve.sh" 1040 >/dev/null 2>&1
+    env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-serve.sh" "$n" > "$PV/serve.out" 2>&1; echo "$?" > "$PV/serve.rc"
     local f; f="$(ls "$HOME/.config/cavil-loop/preview/"*.conf 2>/dev/null | head -1)"
     [ -n "$f" ] || { printf NONE; return; }
     ( set +u; source "$f"; printf '%s %s %s %s' "$PREVIEW_PORT" "$PREVIEW_BACKEND_PORT" "$PREVIEW_IDLE" "$PREVIEW_READY_TIMEOUT" )
@@ -341,6 +343,19 @@ chk "窗口读回的是新值" "$(shown_pv)" "6000|1000|100|30min|30"
 rev="$(pc get pvtest | jq -r .rev)"
 out="$(printf '{"PREVIEW_PORT_MODULO":""}' | pc set pvtest --rev "$rev")"
 chk "取模改回留空：保存成功，再注册就不取模（6000+1040）" "$(tail -1 <<<"$out") $(serve)" "RESULT=saved 7040 7140 30min 30"
+# 算出来的端口超过 65535（GitHub#556 复审第 1 轮）：配置里手写的越界组合、或没取余数时 issue 编号涨上去——
+# 真实注册入口在写任何登记之前就停下，退出码 2，说清是哪几项设置
+pv_line() { local k="$1" v="$2" t; t="$(grep -v "^$k=" "$PCONF")"; printf '%s\n%s=%s\n' "$t" "$k" "$v" > "$PCONF"; }
+pv_line PREVIEW_PORT_BASE 6000; pv_line PREVIEW_BACKEND_OFFSET 65535; pv_line PREVIEW_PORT_MODULO '""'
+r="$(serve 1)"
+chk "配置里手写起始号 6000 + 偏移 65535：#1 的后端端口 71536，注册拒绝（退出 2、没写登记）" "$r $(cat "$PV/serve.rc")" "NONE 2"
+chk "拒绝时说清是后端端口越界、该改哪几项" "$(grep -c '后端端口 71536 超出' "$PV/serve.out") $(grep -c 'PREVIEW_BACKEND_OFFSET' "$PV/serve.out")" "1 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_BACKEND_OFFSET 10000
+chk "默认的起始号和偏移、编号小的 #1040：照常注册（到达性）" "$(serve 1040) $(cat "$PV/serve.rc")" "5040 15040 30min 30 0"
+chk "同一份配置，编号涨到 #52000：后端端口 66000 越界，注册拒绝" "$(serve 52000) $(cat "$PV/serve.rc") $(grep -c '后端端口 66000 超出' "$PV/serve.out")" "NONE 2 1"
+chk "边界正好：编号 #51535 的后端端口 65535，照常注册" "$(serve 51535) $(cat "$PV/serve.rc")" "55535 65535 30min 30 0"
+pv_line PREVIEW_PORT_BASE 65000
+chk "公开端口本身越界（起始号 65000 + #1040 = 66040）：注册拒绝" "$(serve 1040) $(cat "$PV/serve.rc") $(grep -c '公开端口 66040 超出' "$PV/serve.out")" "NONE 2 1"
 
 echo
 echo "通过 $pass，失败 $fail"
