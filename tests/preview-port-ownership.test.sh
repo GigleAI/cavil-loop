@@ -219,6 +219,19 @@ chk "最后一次路由操作与最终登记一致" \
     "$(grep -E '^(OFF|BIND) 4040$' "$CALLS" | tail -1)" \
     "$([ "$o" = "-" ] && echo 'OFF 4040' || echo 'BIND 4040')"
 
+echo "【12】配置里不写 / 写成空值「挂 tailnet」那一行：只在本机起，不绑 tailscale（= 项目配置登记表的默认值，GitHub#554）"
+reg="$(grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{gsub(/[ \t]/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $4)} $1 == "PREVIEW_TAILSCALE_SERVE" {print $4}')"
+chk "登记表里「不写时的值」是 false" "$reg" "false"
+for how in missing empty; do
+    mk_conf "plain$how" ""
+    if [ "$how" = missing ]; then sed -i '/^PREVIEW_TAILSCALE_SERVE=/d' "$SANDBOX/plain$how.config"
+    else sed -i 's/^PREVIEW_TAILSCALE_SERVE=.*/PREVIEW_TAILSCALE_SERVE=""/' "$SANDBOX/plain$how.config"; fi
+    reset; W42="$(wt 42)"
+    serve "plain$how" 42 > "$SANDBOX/out" 2>&1; rc=$?
+    chk "$how：注册 #42 成功、登记在 4042（预览确实起了）" "$rc $(owner 4042)" "0 plain$how|42|$W42"
+    chk "$how：没绑 tailscale" "$(route_on 4042) $(grep -c '^BIND ' "$CALLS")" "0 0"
+done
+
 echo
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"

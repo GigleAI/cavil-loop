@@ -54,6 +54,13 @@ describe('the rules the form is drawn from', () => {
     expect(valueText(field({ type: 'bool', on: 'true', off: 'false' }), 'false')).toBe('关');
     expect(valueText(field({ type: 'enum', options: [{ value: 'zh', label: '中文' }] }), 'zh')).toBe('中文（zh）');
     expect(valueText(field({}), '')).toBe('（空）');
+    // an option whose value is empty (GitHub#554: "off" written as an empty line): its label alone
+    expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), '')).toBe('关');
+    expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), 'block')).toBe('拦住（block）');
+    // a switch whose "off" is an empty value
+    expect(valueText(field({ type: 'bool', on: 'on', off: '' }), '')).toBe('关');
+    expect(fieldProblem(field({ type: 'bool', on: 'on', off: '' }), '')).toBeNull();
+    expect(fieldProblem(field({ type: 'bool', on: 'on', off: '' }), 'yes')).not.toBeNull();
     const g = configGroups([field({ name: 'A', group: 'one' }), field({ name: 'B', group: 'two' }), field({ name: 'C', group: 'one' })]);
     expect(g.map((x) => [x.title, x.fields.map((f) => f.name)])).toEqual([['one', ['A', 'C']], ['two', ['B']]]);
   });

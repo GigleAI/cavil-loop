@@ -131,14 +131,21 @@ OS="$(uname -s 2>/dev/null || true)"
 RUN_BASH="$(cavil_bash_bin "$OS")"
 
 # ── 登记表 ──
-F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_MODE=(); F_LABEL=(); F_HELP=()
+# F_DEF = 不写这一行时的值；F_EMPTY = 写成空值时的值（登记成「默认;empty=值」的项和默认值不同，其余同默认值）；
+# F_WHY = 只显示的原因（show 行的第 8 列）
+F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_EMPTY=(); F_MODE=(); F_LABEL=(); F_HELP=(); F_WHY=()
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 [ -r "$FIELDS_FILE" ] || fail unreadable "找不到登记表 $FIELDS_FILE" 2
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 <<<"$line"
-    F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")"); F_DEF+=("$(trim "$c4")")
-    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")")
+    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 c8 <<<"$line"
+    c4="$(trim "$c4")"
+    case "$c4" in
+        *';empty='*) F_DEF+=("${c4%%;empty=*}"); F_EMPTY+=("${c4#*;empty=}") ;;
+        *) F_DEF+=("$c4"); F_EMPTY+=("$c4") ;;
+    esac
+    F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
+    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
 done < "$FIELDS_FILE"
 field_index() {   # <KEY> → 下标；没有返回 1
     local i
@@ -220,10 +227,13 @@ top_level_assign() {
     printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
 }
 
-# daemon 实际用的值：各处读这些配置项都是「没设置或为空 → 默认值」（${X:-默认}），这里同一条规则。
+# daemon 实际用的值：没设置 → 默认值；为空 → 写成空值时的值（多数项读的是 ${X:-默认}，两者相同；
+# 少数项读的是 ${X-默认}，空值有自己的意思，登记成「默认;empty=值」）。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
 effective() {   # <下标>
-    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"; else printf '%s' "${F_DEF[$1]}"; fi
+    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"
+    elif [ "${V_SET[$1]}" = 1 ]; then printf '%s' "${F_EMPTY[$1]}"
+    else printf '%s' "${F_DEF[$1]}"; fi
 }
 
 V_SET=(); V_VAL=(); STATE_DIR_VAL=""
@@ -351,7 +361,7 @@ if [ "$MODE" = get ]; then
             elif valid_value "${F_TYPE[$i]}" "$value"; then editable=true
             else why="现在的值不是这里能改的写法（${BAD_WHY}）"; fi
         else
-            why=""
+            why="${F_WHY[$i]}"
         fi
         fields+=("$(jq -cn --arg name "${F_NAME[$i]}" --arg group "${F_GROUP[$i]}" --arg mode "${F_MODE[$i]}" \
             --arg label "${F_LABEL[$i]}" --arg help "${F_HELP[$i]}" --arg value "$value" --arg def "${F_DEF[$i]}" \

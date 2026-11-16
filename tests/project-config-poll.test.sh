@@ -9,8 +9,10 @@
 #   2. 用真实 project-config.sh set 把这四项写进同一份配置，再跑：派 2 条、「1/5」、「1/4」、不清理
 #   3. 等人审的 PR 和主干冲突（真冲突、真 merge-tree）：不写时刚更新的交回 agent、3 天没更新的只提醒
 #      （= 开、2 天）；改成 5 天后 3 天没更新的也交回；关掉后什么都不做
-#   4. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
-#      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个
+#   4. 有新合并时刷新常驻正式站（GitHub#554）：不写 = 不刷新；用 project-config.sh 打开后，同样的合并触发刷新
+#   5. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
+#      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
+#      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
 #
 #   bash tests/project-config-poll.test.sh      （约 40 秒）
 set -uo pipefail
@@ -90,6 +92,7 @@ POST_MERGE_RETROSPECTIVE=false
 PENDING_HUMAN_CONFLICT_CHECK=false
 POLL_BACKOFF_LADDER=""
 PRICE_AUTO_FETCH=0
+LATEST_SITE_BUILD_CMD="false"
 AGENT_TRUST_PROMPT_WAIT_SECS=1
 WORKER_SECRET_ENV=""
 PATH="$SANDBOX/bin:\$PATH"
@@ -174,6 +177,11 @@ chk "登记表里这四项「不写时的值」是 1 / 3 / 3 / true" \
 chk "登记表里冲突提醒这两项「不写时的值」是 true / 2" "$(default_of PENDING_HUMAN_CONFLICT_CHECK) $(default_of PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS)" "true 2"
 conflict_scenarios worker remind
 
+# 有新合并时刷新正式站：不写 = 关（这一轮确实清理了那个已合并的 PR，说明合并确实被看到了）
+world two-pending; poll
+chk "不写「刷新正式站」：看到新合并、不刷新；登记表的「不写时的值」是 false" \
+    "$(cleaned) $(logged 'merge 钩子') $(default_of LATEST_SITE_REFRESH)" "true 0 false"
+
 echo "【2】用 project-config.sh 把四项写进同一份配置"
 pc() { env -i HOME="$HOME" PATH="$PATH" bash "$ROOT/scripts/project-config.sh" "$@" 2>&1; }
 rev="$(pc get pctest | jq -r .rev)"
@@ -192,7 +200,14 @@ out="$(printf '{"PENDING_HUMAN_CONFLICT_CHECK":"false"}' | pc set pctest --rev "
 chk "冲突提醒关掉：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
 conflict_scenarios none none
 
-echo "【4】复盘用的模型：真实复盘入口实际交给模型程序的 --model"
+echo "【4】刷新正式站：经 project-config.sh 打开，同样的合并触发刷新"
+rev="$(pc get pctest | jq -r .rev)"
+out="$(printf '{"LATEST_SITE_REFRESH":"true","AUTO_CLEANUP_ON_MERGE":"true"}' | pc set pctest --rev "$rev")"
+chk "打开刷新（并把合并后清理改回开）：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+world two-pending; poll
+chk "看到新合并、触发刷新" "$(cleaned) $(logged 'merge 钩子')" "true 1"
+
+echo "【5】复盘用的模型：真实复盘入口实际交给模型程序的 --model"
 # 这组用例自带一个假 HOME 和它自己的 git 身份：不带上面给轮询用的 git 环境变量
 if out="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM -u FAKE_GH_DIR -u FAKE_GH_LISTS -u FAKE_GH_REPO QUIET=1 python3 "$TEST_DIR/project_config_retro_test.py" 2>&1)"; then
     echo "  ✅ $(printf '%s\n' "$out" | grep -E '^Ran ')"; pass=$((pass+1))

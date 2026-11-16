@@ -434,7 +434,7 @@ for k in $names; do
     tv="$(sed -n "s/^$k=//p" "$TPL" | head -1)"
     grep -qE "^$k=" "$TPL" || { bad="$bad $k:不在模板里"; continue; }
     tv="${tv%%[[:space:]]#*}"; tv="${tv%\"}"; tv="${tv#\"}"
-    def="$(col 4 "$k")"; type="$(col 3 "$k")"
+    def="$(col 4 "$k")"; def="${def%%;empty=*}"; type="$(col 3 "$k")"
     reg="$(grep -E "^$k[[:space:]]*\|" "$NOTICES" | head -1)"
     case "$reg" in
         *"| quiet | 不写这一行时的行为和模板里的值相同"*) [ "$def" = "$tv" ] || bad="$bad $k:登记册说和模板一样，模板[$tv]登记表[$def]" ;;
@@ -459,28 +459,61 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS"
-loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
+LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS"
+# 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
+#   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
+#   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
+#   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
+#   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE"
+lib_load() {
+    env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
+    source "$1/scripts/_runlog.sh" >/dev/null 2>&1 || { echo RUNLOG_LOAD_FAILED; exit 1; }
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
-' _ "$REPO_DIR" $LIBKEYS 2>&1)"
-want="$(for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=%s\n' "$k" "$(col 4 "$k")"; done)"
-chk "真实加载公共库（配置里一项都不写）后的值 = 登记表的「不写时的值」（22 项）" "$loaded" "$want"
-# 每一项都写成空值：daemon 各处都是「空 = 用默认值」，表单显示值用的就是这条规则——同一份输入对拍
-for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do printf '%s=""\n' "$k"; done >> "$MIN/cavil-loop.config"
-loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
-    source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
-    shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
-    if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
-' _ "$REPO_DIR" $LIBKEYS 2>&1)"
-chk "这 22 项全写成空值后真实加载公共库：仍是登记表的默认值" "$loaded" "$want"
+    if usage_limit_enabled; then echo ENABLE_USAGE_LIMIT_PAUSE=true; else echo ENABLE_USAGE_LIMIT_PAUSE=false; fi
+    if _runlog_enabled; then echo ENABLE_POLL_RUN_LOG=true; else echo ENABLE_POLL_RUN_LOG=false; fi
+    echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"
+' _ "$REPO_DIR" $LIBKEYS 2>&1
+}
+loaded="$(lib_load)"
+# col 4 是「不写时的值[;empty=写成空值时的值]」
+reg_unset() { local d; d="$(col 4 "$1")"; printf '%s' "${d%%;empty=*}"; }
+reg_empty() { local d; d="$(col 4 "$1")"; case "$d" in *';empty='*) printf '%s' "${d#*;empty=}" ;; *) printf '%s' "$d" ;; esac; }
+want="$(for k in $LIBKEYS $FNKEYS; do printf '%s=%s\n' "$k" "$(reg_unset "$k")"; done)"
+nkeys="$(wc -w <<<"$LIBKEYS $FNKEYS" | tr -d ' ')"
+chk "真实加载公共库（配置里一项都不写）后的值 = 登记表的「不写时的值」（$nkeys 项）" "$loaded" "$want"
 mkdir -p "$H/.config/cavil-loop"; printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$MIN/proj" "$MIN/cavil-loop.config" > "$H/.config/cavil-loop/min.conf"
-shown="$(run get min | jq -r --arg ks "$LIBKEYS ENABLE_CONCURRENT_WORK_HINT" '. as $g | $ks | split(" ")[] | . as $k | "\($k)=\($g.fields[] | select(.name == $k) | .value)"')"
-chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$shown" "$loaded"
+shown_of() { run get min | jq -r --arg ks "$LIBKEYS $FNKEYS" '. as $g | $ks | split(" ")[] | . as $k | "\($k)=\($g.fields[] | select(.name == $k) | .value)"'; }
+chk "同一份一项都不写的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$(shown_of)" "$loaded"
+# 每一项都写成空值：多数项「空 = 用默认值」，少数项（登记成「默认;empty=值」的）空值有自己的意思——同一份输入对拍
+for k in $LIBKEYS $FNKEYS; do printf '%s=""\n' "$k"; done >> "$MIN/cavil-loop.config"
+loaded="$(lib_load)"
+want="$(for k in $LIBKEYS $FNKEYS; do printf '%s=%s\n' "$k" "$(reg_empty "$k")"; done)"
+chk "这 $nkeys 项全写成空值后真实加载公共库：是登记表的「写成空值时的值」" "$loaded" "$want"
+chk "确有空值和不写不同的项（轮询记录：不写 = 开、空值 = 关）" "$(reg_unset ENABLE_POLL_RUN_LOG) $(reg_empty ENABLE_POLL_RUN_LOG)" "true false"
+chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$(shown_of)" "$loaded"
+# 保存这两种新写法：空值 = 关的开关（轮询记录）、「关」本身是空值的开关（外部内容预筛）
+save min '{"ENABLE_POLL_RUN_LOG":"true","AUTOPILOT_OUTSIDER_SCREEN":"on"}'
+chk "空值的轮询记录改成开、空值的预筛改成 on：保存成功" "$RESULT" "RESULT=saved"
+chk "文件里那两行改成了新值" "$(grep -cxE 'ENABLE_POLL_RUN_LOG="true"|AUTOPILOT_OUTSIDER_SCREEN="on"' "$MIN/cavil-loop.config")" 2
+G="$(run get min)"
+chk "读回：轮询记录开、预筛 on" "$(field "$G" ENABLE_POLL_RUN_LOG) $(field "$G" AUTOPILOT_OUTSIDER_SCREEN)" '["true",true,true] ["on",true,true]'
+save min '{"ENABLE_POLL_RUN_LOG":"false","AUTOPILOT_OUTSIDER_SCREEN":""}'
+chk "再关掉（预筛的「关」写成空值）：保存成功" "$RESULT" "RESULT=saved"
+G="$(run get min)"
+chk "读回：轮询记录关、预筛关（空值）" "$(field "$G" ENABLE_POLL_RUN_LOG) $(field "$G" AUTOPILOT_OUTSIDER_SCREEN)" '["false",true,true] ["",true,true]'
+chk "预筛那一行确实写成了空值" "$(grep -cx 'AUTOPILOT_OUTSIDER_SCREEN=""' "$MIN/cavil-loop.config")" 1
+save min '{"AUTOPILOT_OUTSIDER_SCREEN":"yes"}'
+chk "预筛只认 on 和空值：写 yes 被拒" "$RESULT" "RESULT=invalid"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
+G="$(run get min)"
+chk "get 把只显示行的原因放进 reason" "$(jq -r '.fields[] | select(.name == "LABEL_PENDING_MERGE") | .reason' <<<"$G")" "$(col 8 LABEL_PENDING_MERGE)"
+chk "只显示的行不再集中在一个分组里，而是放进各自的主题分组" \
+    "$(jq -r '[.fields[] | select(.mode == "show") | .group] | unique | length > 3' <<<"$G") $(jq -r '[.fields[] | select(.group | test("只显示"))] | length' <<<"$G")" "true 0"
 
 echo "── 8. 文档里的命令照字面跑 ──"
 doc_block() {
