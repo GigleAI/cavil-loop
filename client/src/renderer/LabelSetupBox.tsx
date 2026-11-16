@@ -76,7 +76,7 @@ export function LabelSetupBox({
     <span className="label-setup-chips">
       {specs.map((s) => (
         <span key={s.name} className="label" data-testid={`${testid}-label`} data-label={s.name} style={labelStyle(s.color, dark)} {...verbatimParts('user', [s.name])}>
-          {s.name}
+          <Verbatim from="user">{s.name}</Verbatim>
         </span>
       ))}
     </span>
@@ -113,7 +113,7 @@ export function LabelSetupBox({
                 <tr key={s.name}>
                   <td>
                     <span className="label" data-testid={`${testid}-label`} data-label={s.name} style={labelStyle(s.color, dark)} {...verbatimParts('user', [s.name])}>
-                      {s.name}
+                      <Verbatim from="user">{s.name}</Verbatim>
                     </span>
                   </td>
                   <td className="small">{t('颜色 {color}', { color: s.color })}</td>

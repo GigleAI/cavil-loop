@@ -11,11 +11,19 @@
 //   5. no answer: 「再查一次」 reads only — the label landed later is found, nothing is sent again
 
 import { test, expect, type Page } from '@playwright/test';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+
+const screens = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'test-results', 'screens');
+mkdirSync(screens, { recursive: true });
+const shot = async (page: Page, name: string) => {
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: join(screens, `${name}.png`) });
+};
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const A = 'GigleAI/cavil-loop';
@@ -78,9 +86,11 @@ test('GitHub#559: may write — one press creates exactly the missing labels, th
   await expect(box(page).getByTestId('new-issue-labels-label')).toHaveText(['pending/agent', 'autopilot']);
   await expect(page.getByTestId('new-issue-agent')).toBeDisabled();
   await expect(page.getByTestId('new-issue-autopilot')).toBeDisabled();
+  await shot(page, '559-01-create');
   await box(page).getByTestId('new-issue-labels-create').click();
   await expect(notice(page)).toHaveAttribute('data-state', 'done');
   await expect(notice(page)).toContainText(`已在 ${A} 建好标签「pending/agent」「autopilot」`);
+  await shot(page, '559-02-created');
   await expect(page.getByTestId('new-issue-agent')).toBeEnabled();
   await expect(page.getByTestId('new-issue-autopilot')).toBeEnabled();
   await expect(box(page)).toHaveCount(0);
@@ -113,6 +123,7 @@ test('GitHub#559: may not write — no create request; the list, the labels page
   await expect(box(page).getByTestId('new-issue-labels-list')).toContainText('颜色 ff401e');
   await expect(box(page).getByTestId('new-issue-labels-list')).toContainText('颜色 d4c5f9');
   await expect(box(page).getByTestId('new-issue-labels-create')).toHaveCount(0);
+  await shot(page, '559-03-no-permission');
   await box(page).getByTestId('new-issue-labels-web').click();
   await expect.poll(opened).toContain(`/${A}/labels`);
   await box(page).getByTestId('new-issue-labels-copy').click();
@@ -168,6 +179,7 @@ test('GitHub#559: a press in A, the dialog switched to B while A is held — B s
   await expect(box(page)).toHaveAttribute('data-kind', 'create');
   await expect(box(page).getByTestId('new-issue-labels-create')).toBeEnabled();
   await expect(page.getByTestId('new-issue-agent')).toBeDisabled();
+  await shot(page, '559-04-switched-while-running');
   // A's answers arrive: the notice says A, B is untouched
   release();
   await expect(notice(page)).toHaveAttribute('data-state', 'done');
