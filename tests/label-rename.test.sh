@@ -59,7 +59,16 @@ if [ "\$1" = -n ] && [ "\$2" = 9 ] && [ -n "\${FLOCK_HOOK:-}" ] && [ -f "\$FLOCK
 fi
 exec "$REAL_FLOCK" "\$@"
 SH
-chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/tmux" "$SANDBOX/bin/claude" "$SANDBOX/bin/flock"
+# 假 systemctl：项目的轮询任务状态从 $SANDBOX/sched 读（active / inactive / 别的词 = 读不到）；文件不在 = 停着
+cat > "$SANDBOX/bin/systemctl" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+    *" show "*) if [ -f "$SANDBOX/sched" ]; then cat "$SANDBOX/sched"; else echo inactive; fi ;;
+    *" is-enabled "*) echo enabled ;;
+esac
+exit 0
+SH
+chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/tmux" "$SANDBOX/bin/claude" "$SANDBOX/bin/flock" "$SANDBOX/bin/systemctl"
 
 pass=0; fail=0
 chk() {
@@ -160,6 +169,8 @@ r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to 'needs h
 chk "新名字有空格 → 拦下" "$(res "$r")/$(failed_checks "$r")" "refused/name"
 r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to done --others-stopped)"
 chk "新名字和已有标签只差大小写 → 拦下（同时配置里「已完成」也叫 Done）" "$(res "$r")/$(failed_checks "$r")" "refused/other_settings,new_free"
+r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to Pending/Human --others-stopped)"
+chk "只改大小写 → 拦下（复审第 1 轮）" "$(res "$r")/$(failed_checks "$r")" "refused/name,new_free"
 r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human)"
 chk "没确认其他机器 → 拦下" "$(res "$r")/$(failed_checks "$r")" "refused/others_stopped"
 r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/hum --to needs-human --others-stopped)"
@@ -294,6 +305,13 @@ LID="$(line "$r" LABEL_ID)"
 chk "第一台改名的标签编号" "$LID" "102"
 r="$(rn lrb check --follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id 999)"
 chk "编号对不上（另建的同名标签）→ 拦下" "$(res "$r")/$(failed_checks "$r")" "refused/followed"
+echo active > "$SANDBOX/sched"
+r="$(rn lrb follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id "$LID" --rev "$(rev_of lrb)")"
+chk "那台的轮询还在跑 → 跟进拦下、配置不动（复审第 1 轮）" "$(res "$r")/$(failed_checks "$r")/$(conf_val lrb LABEL_PENDING_HUMAN)" "refused/poller_stopped/pending/human"
+echo activating-weird > "$SANDBOX/sched"
+r="$(rn lrb check --follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id "$LID")"
+chk "那台的轮询状态读不到 → 判断不了（null），不放行" "$(res "$r")/$(printf '%s\n' "$r" | sed -n 's/^DETAIL=//p' | jq -r '.checks[] | select(.id == "poller_stopped") | .ok')" "refused/null"
+echo inactive > "$SANDBOX/sched"
 w0="$(writes)"
 r="$(rn lrb follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id "$LID" --rev "$(rev_of lrb)")"
 chk "跟进：只改那台配置" "$(res "$r")/$(conf_val lrb LABEL_PENDING_HUMAN)" "awaiting_client/needs-human"

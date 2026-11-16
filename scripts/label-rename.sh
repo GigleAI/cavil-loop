@@ -131,11 +131,12 @@ id_of_name_ci() {   # 不分大小写（GitHub 的标签名不分大小写唯一
     local want; want="$(lower "$1")"
     printf '%s\n' "$LABELS" | awk -F'\t' -v w="$want" 'tolower($2) == w { print $1; exit }'
 }
-# 现状：new（编号对应新名、没有叫旧名的标签）/ old（编号对应旧名）/ other（都不是：说不清）；读不全返回 1
+# 现状：new（编号对应新名、没有别的标签叫旧名）/ old（编号对应旧名）/ other（都不是：说不清）；读不全返回 1。
+# 「叫旧名的标签」按编号区分：就是这个标签自己的不算（检查已拒绝只改大小写，这里再按编号守一道）
 github_state() {   # <编号> <旧名> <新名>
     labels_read || return 1
-    local n; n="$(name_of_id "$1")"
-    if [ "$n" = "$3" ] && [ -z "$(id_of_name_ci "$2")" ]; then printf 'new'
+    local n o; n="$(name_of_id "$1")"; o="$(id_of_name_ci "$2")"
+    if [ "$n" = "$3" ] && { [ -z "$o" ] || [ "$o" = "$1" ]; }; then printf 'new'
     elif [ "$n" = "$2" ]; then printf 'old'
     else printf 'other'; fi
 }
@@ -148,13 +149,23 @@ PC_JSON=""
 pc_get() { PC_JSON="$(bash "$SCRIPT_DIR/project-config.sh" get "$KEY" 2>/dev/null)" && [ "$(printf '%s' "$PC_JSON" | jq -r .state 2>/dev/null)" = ok ]; }
 pc_field() { printf '%s' "$PC_JSON" | jq -r --arg k "$1" --arg p "$2" '.fields[] | select(.name == $k) | getpath($p | split("."))' 2>/dev/null; }
 
+# 本机这个项目的后台轮询任务状态：running / stopped / unknown（读法同 project-service.sh 的 read_sched）
+poller_state() {
+    local out s
+    out="$(bash "$SCRIPT_DIR/install-status.sh" 2>/dev/null)" || { printf unknown; return 0; }
+    s="$(printf '%s' "$out" | jq -r --arg k "$KEY" 'select(.version == 1) | .projects | map(select(.key == $k)) | if length == 1 then (.[0].scheduler.state // "unknown") else "unknown" end' 2>/dev/null)" || s=unknown
+    case "$s" in running|stopped) printf '%s' "$s" ;; *) printf unknown ;; esac
+}
+
 # ── 检查（check / rename / follow 共用）──
 run_checks() {   # <rename|follow>
     local mode="$1" k v el cur n i doing
     CHECKS=()
     if ! label_rename_field_ok "$FIELD"; then chk field false "${FIELD:-（没给）} 不是能在这里改名的流程标签"; return 0; fi
-    if label_rename_name_ok "$TO" && [ "$TO" != "$FROM" ]; then chk name true "新名字 $TO 可以用"
-    else chk name false "新名字只能用字母、数字和 . _ : / @ + -，1–50 个字符，并且和旧名字不同"; fi
+    # 只改大小写的改名不做：GitHub 的标签名不分大小写，「旧名字已经没有了」和「另一个标签占着旧名字」
+    # 在这种情况下分不清（复审第 1 轮）
+    if label_rename_name_ok "$TO" && [ "$(lower "$TO")" != "$(lower "$FROM")" ]; then chk name true "新名字 $TO 可以用"
+    else chk name false "新名字只能用字母、数字和 . _ : / @ + -，1–50 个字符，并且和旧名字不同（只改大小写不算不同）"; fi
     if [ -e "$REC" ] || [ -L "$REC" ]; then chk pending false "本项目有一次改名还没做完，先把它做完或退回"; fi
     cur="$(label_field_value "$FIELD")"
     if [ "$cur" = "$FROM" ] && [ -n "$FROM" ]; then chk config_value true "配置里 $FIELD 是 $FROM"
@@ -187,7 +198,7 @@ run_checks() {   # <rename|follow>
         if [ -n "$i" ]; then chk old_label true "仓库里有标签 ${FROM}（编号 ${i}）"; R_LABEL_ID="$i"
         else chk old_label false "仓库里没有名字正好是「${FROM}」的标签"; fi
         n="$(id_of_name_ci "$TO")"
-        if [ -z "$n" ] || [ "$n" = "$i" ]; then chk new_free true "仓库里没有别的标签叫 $TO"
+        if [ -z "$n" ]; then chk new_free true "仓库里没有别的标签叫 $TO"
         else chk new_free false "仓库里已经有标签叫「$(name_of_id "$n")」（标签名不分大小写）"; fi
         if doing="$(open_count "$LABEL_AGENT_DOING")"; then
             if [ "$doing" = 0 ]; then chk no_worker true "没有条目挂着 $LABEL_AGENT_DOING"
@@ -214,8 +225,16 @@ run_checks() {   # <rename|follow>
             if [ "$n" = "$TO" ]; then chk followed true "仓库里编号 $LABEL_ID 的标签现在叫 $TO"
             else chk followed false "仓库里编号 $LABEL_ID 的标签现在叫「${n:-（不存在）}」，不是 $TO"; fi
         else chk followed false "改名凭据里没有标签编号"; fi
-        if [ -z "$(id_of_name_ci "$FROM")" ]; then chk old_gone true "仓库里已经没有 $FROM"
+        n="$(id_of_name_ci "$FROM")"
+        if [ -z "$n" ] || [ "$n" = "$LABEL_ID" ]; then chk old_gone true "仓库里已经没有 $FROM"
         else chk old_gone false "仓库里还有标签叫 ${FROM}，另一台的改名可能还没做完"; fi
+        # 这台的轮询必须已停（第一台改名前把它停掉、跟进完才开）。读法和 project-service.sh 一样：当场跑
+        # install-status.sh，只认 stopped；在跑 = 拦下，读不到 = 判断不了（复审第 1 轮）
+        case "$(poller_state)" in
+            stopped) chk poller_stopped true "本机这个项目的轮询已停" ;;
+            running) chk poller_stopped false "本机这个项目的轮询还在跑，先停掉它再跟进（跟进完再开）" ;;
+            *) chk poller_stopped null "读不到本机这个项目的轮询状态，判断不了它停没停" ;;
+        esac
     fi
 }
 
