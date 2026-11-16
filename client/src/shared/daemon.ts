@@ -299,7 +299,7 @@ export interface ConfigField {
   mode: 'edit' | 'show';
   label: string;
   help: string;
-  /** agent | model | int | bool | enum | label — one this client does not know is shown only */
+  /** agent | model | int | bool | enum | label | text (a plain value read as written: a flow label, a label list, a branch) — one this client does not know is shown only */
   type: string;
   options?: { value: string; label: string }[];
   min?: number;

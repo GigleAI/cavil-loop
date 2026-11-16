@@ -438,6 +438,8 @@ for k in $names; do
     reg="$(grep -E "^$k[[:space:]]*\|" "$NOTICES" | head -1)"
     case "$reg" in
         *"| quiet | 不写这一行时的行为和模板里的值相同"*) [ "$def" = "$tv" ] || bad="$bad $k:登记册说和模板一样，模板[$tv]登记表[$def]" ;;
+        # 必填项没有「不写时的值」：不写这一行 daemon 不加载（下面另外对拍），登记成空
+        *"| quiet | 必填项，每个项目自己的值"*) [ -z "$def" ] || bad="$bad $k:必填项登记了不写时的值[$def]" ;;
         *"| notice |"*)
             off="$(awk -F'|' '{v = $4; gsub(/^[ \t]+|[ \t]+$/, "", v); print v}' <<<"$reg")"; off="${off%\"}"; off="${off#\"}"
             case "$type" in bool:*) [ -z "$off" ] && off="${type##*:}" ;; esac
@@ -459,13 +461,14 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS"
+LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS"
 # 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
 #   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
 #   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
 #   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
 #   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
-FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE"
+#   GREEDY_SKIP_LABELS           加载时不补值，用到时（greedy_skip_label_list）才读：问它在内置的跳过标签之后多列了哪些
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS"
 lib_load() {
     env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
@@ -475,6 +478,8 @@ lib_load() {
     if usage_limit_enabled; then echo ENABLE_USAGE_LIMIT_PAUSE=true; else echo ENABLE_USAGE_LIMIT_PAUSE=false; fi
     if _runlog_enabled; then echo ENABLE_POLL_RUN_LOG=true; else echo ENABLE_POLL_RUN_LOG=false; fi
     echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"
+    __n="$(GREEDY_SKIP_LABELS="" greedy_skip_label_list | wc -l)"
+    echo "GREEDY_SKIP_LABELS=$(greedy_skip_label_list | tail -n +$((__n + 1)) | paste -sd, -)"
 ' _ "$REPO_DIR" $LIBKEYS 2>&1
 }
 loaded="$(lib_load)"
@@ -593,6 +598,29 @@ early_conf 'REQUESTER_BOT_REPORT_FIRST="false"'
 chk "只写新名字：照旧可改" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,true]'
 save early '{"REQUESTER_BOT_REPORT_FIRST":"true"}'
 chk "只写新名字：保存成功，公共库读到新值，和窗口一致" "$RESULT $(early_lib_shown)" "RESULT=saved lib  true | shown  true"
+# 两个必填的流程标签（派工、等人）：配置里没有这一行，daemon 加载公共库就退出——没有「不写时 daemon 用的值」，
+# 登记表的「不写时的值」是空；窗口照实显示空、标成文件里没有（GitHub#555）
+RQ="$SANDBOX/req"; mkdir -p "$RQ/proj" "$RQ/state" "$RQ/wt"
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$RQ/proj" "$RQ/cavil-loop.config" > "$H/.config/cavil-loop/req.conf"
+req_conf() {   # [不写的那一项]
+    printf '%s\n' 'REPO="example/req"' "PROJECT_ROOT=\"$RQ/proj\"" "WORKTREE_BASE=\"$RQ/wt\"" "STATE_DIR=\"$RQ/state\"" \
+        'TMUX_PREFIX="reqtest"' 'BRANCH_PREFIX="feature/issue-"' 'SESSION_NAME_PREFIX="issue"' \
+        'LABEL_PENDING_AGENT="pending/agent"' 'LABEL_PENDING_HUMAN="pending/human"' | grep -v "^${1:-__none__}=" > "$RQ/cavil-loop.config"
+}
+req_load() {
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1
+        echo "LOADED $LABEL_PENDING_AGENT $LABEL_PENDING_HUMAN"' _ "$REPO_DIR" 2>/dev/null || echo LOAD_FAILED
+}
+req_conf
+chk "到达性 · 两个必填标签都写了：公共库照常加载，窗口显示写的值" \
+    "$(req_load) | $(G="$(run get req)"; field "$G" LABEL_PENDING_AGENT) $(field "$G" LABEL_PENDING_HUMAN)" \
+    'LOADED pending/agent pending/human | ["pending/agent",true,false] ["pending/human",true,false]'
+for k in LABEL_PENDING_AGENT LABEL_PENDING_HUMAN; do
+    req_conf "$k"
+    chk "必填的 $k 不写：公共库不加载；登记表「不写时的值」是空，窗口显示空、文件里没有" \
+        "$(req_load) [$(col 4 "$k")] $(field "$(run get req)" "$k")" 'LOAD_FAILED [] ["",false,false]'
+done
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "

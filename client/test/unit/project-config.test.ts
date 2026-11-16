@@ -39,6 +39,7 @@ describe('the rules the form is drawn from', () => {
     expect(canEdit(field({ editable: false }))).toBe(false);
     expect(canEdit(field({ mode: 'show' }))).toBe(false);
     expect(canEdit(field({ type: 'label' }))).toBe(false);
+    expect(canEdit(field({ type: 'text' }))).toBe(false);
     expect(canEdit(field({ type: 'command' }))).toBe(false);
   });
 
@@ -54,6 +55,10 @@ describe('the rules the form is drawn from', () => {
     expect(valueText(field({ type: 'bool', on: 'true', off: 'false' }), 'false')).toBe('关');
     expect(valueText(field({ type: 'enum', options: [{ value: 'zh', label: '中文' }] }), 'zh')).toBe('中文（zh）');
     expect(valueText(field({}), '')).toBe('（空）');
+    // a plain value (GitHub#555: flow labels, label lists, a branch) reads as written — a flow label is a name, not a switch
+    expect(valueText(field({ type: 'text' }), 'doing/agent')).toBe('doing/agent');
+    expect(valueText(field({ type: 'text' }), 'priority/p0,priority/p1')).toBe('priority/p0,priority/p1');
+    expect(valueText(field({ type: 'text' }), '')).toBe('（空）');
     // an option whose value is empty (GitHub#554: "off" written as an empty line): its label alone
     expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), '')).toBe('关');
     expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), 'block')).toBe('拦住（block）');

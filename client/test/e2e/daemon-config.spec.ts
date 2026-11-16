@@ -227,6 +227,48 @@ test('what cannot be changed here has no input: arithmetic and a line inside a c
   expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
 });
 
+test('flow labels, label lists, a branch and a field name are read-only plain text in their topic groups; the numbers, agent and model registered with them can be changed (GitHub#555)', async () => {
+  const { page } = await openSection();
+  await openDialog(page);
+  const groupOf = async (name: string) => (await page.locator('[data-testid=config-group]').filter({ has: row(page, name) }).getAttribute('data-title'))!;
+  expect(await groupOf('LABEL_AGENT_DOING')).toBe('流程标签');
+  expect(await groupOf('LABEL_PENDING_AGENT')).toBe('流程标签');
+  expect(await groupOf('GREEDY_SCAN_LIMIT')).toBe('派工挑选');
+  expect(await groupOf('PRIORITY_SOURCE')).toBe('派工挑选');
+  expect(await groupOf('FABLE_MODEL')).toBe('agent 与模型');
+  expect(await groupOf('AUTOPILOT_MERGE_METHOD')).toBe('托管（自动合并）');
+  expect(await groupOf('CI_FAILURE_REPORT_BRANCH')).toBe('CI 失败报告');
+  // a flow label is a name, not a switch: shown as written, never as "开，标签 …"
+  await expect(row(page, 'LABEL_AGENT_DOING').getByTestId('config-readonly')).toHaveText('doing/agent');
+  await expect(row(page, 'LABEL_PENDING_AGENT').getByTestId('config-readonly')).toHaveText('pending/agent');
+  await expect(row(page, 'PRIORITY_LABELS').getByTestId('config-readonly')).toHaveText('priority/p0,priority/p1,priority/p2');
+  await expect(row(page, 'GREEDY_SKIP_LABELS').getByTestId('config-readonly')).toHaveText('（空）');
+  await expect(row(page, 'CI_FAILURE_REPORT_BRANCH').getByTestId('config-readonly')).toHaveText('main');
+  await expect(row(page, 'AUTOPILOT_MERGE_METHOD').getByTestId('config-readonly')).toHaveText('压成一个提交（squash）');
+  await expect(row(page, 'LABEL_PENDING_AGENT_EXTRA').getByTestId('config-why')).toContainText('另一台机器');
+  for (const name of ['LABEL_PENDING_AGENT', 'LABEL_AGENT_DOING', 'LABEL_DONE', 'GREEDY_SKIP_LABELS', 'PRIORITY_LABELS', 'PRIORITY_SOURCE', 'PROJECT_PRIORITY_FIELD', 'AUTOPILOT_MERGE_METHOD', 'CI_FAILURE_REPORT_BRANCH']) {
+    await expect(row(page, name)).toHaveAttribute('data-editable', 'false');
+    await expect(input(page, name)).toHaveCount(0);
+  }
+  for (const name of ['FABLE_WORKER_AGENT', 'FABLE_MODEL', 'AUTOPILOT_CHECKS_TIMEOUT_HOURS', 'USAGE_LIMIT_FALLBACK_SECS', 'HEAVY_TEST_LOCK_WAIT', 'PENDING_HUMAN_CONFLICT_MAX_TRIES', 'CHECKOUT_STALE_ALERT_COMMITS', 'GREEDY_SCAN_LIMIT', 'CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS']) {
+    await expect(row(page, name)).toHaveAttribute('data-editable', 'true');
+  }
+  await row(page, 'LABEL_AGENT_DOING').scrollIntoViewIfNeeded();
+  await shot(page, '8-flow-labels');
+
+  // the daemon's own range: the fallback pause takes 60–604800 seconds
+  await input(page, 'USAGE_LIMIT_FALLBACK_SECS').fill('30');
+  await expect(row(page, 'USAGE_LIMIT_FALLBACK_SECS').getByTestId('config-problem')).toHaveText('只能是 60 到 604800 之间的整数');
+  await expect(page.getByTestId('config-save')).toBeDisabled();
+  await input(page, 'USAGE_LIMIT_FALLBACK_SECS').fill('7200');
+  await input(page, 'GREEDY_SCAN_LIMIT').fill('250');
+  await page.getByTestId('config-save').click();
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
+  expect(lines('GREEDY_SCAN_LIMIT')).toEqual(['GREEDY_SCAN_LIMIT=250']);
+  expect(lines('USAGE_LIMIT_FALLBACK_SECS')).toEqual(['USAGE_LIMIT_FALLBACK_SECS=7200']);
+  await page.getByTestId('config-close').click();
+});
+
 test('read-only rows sit in their own topic groups, each saying its own reason; the run-log switch follows the daemon\'s rule for an empty line and for a missing one (GitHub#554)', async () => {
   const { page } = await openSection(() => {
     const t = readFileSync(config, 'utf8');
