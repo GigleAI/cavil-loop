@@ -442,9 +442,10 @@ AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="${AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS:-on}"
 AUTOPILOT_OUTSIDER_GUARD="${AUTOPILOT_OUTSIDER_GUARD:-}"
 AUTOPILOT_OUTSIDER_SCREEN="${AUTOPILOT_OUTSIDER_SCREEN:-}"
 AUTOPILOT_OUTSIDER_SCREEN_CMD="${AUTOPILOT_OUTSIDER_SCREEN_CMD:-}"
-# `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
-# 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
-AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
+# `default` 展开成的内置清单（AUTOPILOT_HUMAN_PATHS_DEFAULT）和清单匹配规则（AUTOPILOT_PATHS_JQ）放在
+# _human_paths.sh：合并检查和给复审用的验算命令（human-paths-check.sh，GitHub#560）source 同一份
+# shellcheck source=_human_paths.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_human_paths.sh"
 # 互通仓库名单（GitHub#233）：逗号 / 空格分隔的 owner/repo。名单里的仓库 ① 可以当拆分子项的父 issue 所在仓库
 # （父 issue 上维护者亲手打的托管标签，授权本仓库的子项；打标签的人在两个仓库都要有写权限）；② 可以当
 # 等前置的前置所在仓库（`<!-- agent-blocked-by: owner/repo#N -->`、「Blocked by」里那个仓库的条目）。
@@ -5469,43 +5470,6 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
         *) AP_PATHS_DETAIL="文件列表不是合法的 JSON" ;;
     esac
 }
-# 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]
-# is_test：这个路径算不算测试文件（GitHub#548，只此一份，文档 docs/operations*.md 同名一节列的就是这几条）：
-#   文件名形如 <名字>.test.<扩展名> / <名字>.spec.<扩展名>（名字、扩展名都不能空，扩展名不含 . ），
-#   或者路径里某一层目录叫 __tests__；但仓库根目录 .github/ 下的一律不算（GitHub 会运行那里任何名字的工作流）
-# shellcheck disable=SC2016
-AUTOPILOT_PATHS_JQ='
-    def esc: explode | map([.] | implode | . as $c
-        | if $c == "*" then "[^/]*"
-          elif ([".", "^", "$", "+", "?", "(", ")", "[", "]", "{", "}", "|", "\\"] | index($c)) != null then "\\" + $c
-          else $c end) | join("");
-    def rule: . as $raw
-        | startswith("/") as $rooted | endswith("/") as $dir
-        | (if $rooted then .[1:] else . end | if $dir then .[:-1] else . end) as $core
-        | ($core | split("/")) as $segs
-        | if $core == "" then {raw: $raw, bad: "空条目"}
-          elif ($segs | any(. == "")) then {raw: $raw, bad: "有空的一段"}
-          elif ($segs | any(. == "." or . == "..")) then {raw: $raw, bad: "不能含 . 或 .. 段"}
-          elif ($core | contains("**")) then {raw: $raw, bad: "不支持 **"}
-          elif (($rooted | not) and ($segs | length) > 1) then {raw: $raw, bad: "中间含 / 的条目要以 / 开头"}
-          else {raw: $raw, re: ((if $rooted then "^" else "(^|/)" end) + ($segs | map(esc) | join("/")) + (if $dir then "/" else "$" end))}
-          end;
-    def is_test:
-        (startswith(".github/") | not)
-        and ((split("/") | last | test("^.+\\.(test|spec)\\.[^./]+$"))
-             or (split("/") | .[:-1] | any(.[]; . == "__tests__")));
-    def test_rec_ok:
-        .status as $st
-        | (($st | type) == "string")
-          and ($st | IN("added", "removed", "modified", "renamed", "copied", "changed", "unchanged"))
-          and (if $st == "renamed" or $st == "copied"
-               then ((.previous_filename | type) == "string" and .previous_filename != "")
-               else true end);
-    def rules($spec; $def):
-        ([$spec | splits("[,\\s]+") | select(. != "")]
-         | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)
-         | ["/.github/"] + . | unique) | map(rule);
-'
 
 # 与目标分支冲突没有：GitHub 两个信号任一说冲突就算冲突（mergeable=false 或 mergeable_state=dirty），
 # mergeable=null 是还在算。输出 ok / conflict / computing
@@ -7674,6 +7638,42 @@ autopilot_handoff_section() {   # <模板名>
     text="${text//@@LABEL_AGENT_DOING@@/"$LABEL_AGENT_DOING"}"
     text="${text//@@LABEL_DONE@@/"$LABEL_DONE"}"
     printf '%s\n' "$text"
+    [ "$1" != review ] || autopilot_review_paths_section
+}
+
+# 托管复审的「钩子调用的文件」段（GitHub#560，prompts/autopilot-review-human-paths.md）：只在配了
+# 「合并前需人过目的文件」清单时追加在托管规则之后；没配时什么都不输出，提示词和以前逐字节一样。
+# 渲染进去的清单值、展开后的条目、豁免状态都来自 daemon 自己加载的配置和 _human_paths.sh 的同一份规则。
+autopilot_review_paths_section() {
+    [ -n "$AUTOPILOT_HUMAN_PATHS" ] || return 0
+    local f="$SKILL_DIR/prompts/autopilot-review-human-paths.md" text list ex append
+    [ -s "$f" ] || { log "⚠️ 托管复审「钩子调用的文件」段缺失：$f" 2>/dev/null || true; return 0; }
+    list=$(jq -rn --arg spec "$AUTOPILOT_HUMAN_PATHS" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'
+        rules($spec; $def) | map("`" + .raw + "`" + (if .bad then "（写法不认识：" + .bad + "；有这种条目时 daemon 每次托管合并都交人）" else "" end))
+        | join(" ")' 2>/dev/null) || list=""
+    [ -n "$list" ] || list="（展开失败，用验算命令核对）"
+    if [ "$AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS" = on ]; then
+        ex="开着（\`AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS\` 是 on 或没写）——名字形如 \`<名字>.test.<扩展名>\` / \`<名字>.spec.<扩展名>\`、或在某一层 \`__tests__/\` 目录下的文件（仓库根目录 \`.github/\` 下的除外）不拿去比清单，验算时传 \`--exempt-tests on\`"
+    else
+        ex="关着——测试文件和别的文件一样照清单比，验算时传 \`--exempt-tests off\`"
+    fi
+    case "$AUTOPILOT_HUMAN_PATHS" in
+        *[\"\'\$\\\`]*|*$'\n'*)
+            append="本项目这一行的值里有照抄容易出错的字符（引号、\`\$\`、反斜杠、反引号或换行），不给完整的配置行，只写「在 \`AUTOPILOT_HUMAN_PATHS\` 现有的值末尾追加 \`<路径>\`（用空格隔开）」。" ;;
+        *)
+            append="给完整的配置行时写成 \`AUTOPILOT_HUMAN_PATHS=\"${AUTOPILOT_HUMAN_PATHS} <路径>\"\`——现有的值原样保留、新路径加在末尾。" ;;
+    esac
+    text="$(cat "$f")"
+    text="${text//@@SPEC@@/"$AUTOPILOT_HUMAN_PATHS"}"
+    text="${text//@@LIST@@/"$list"}"
+    text="${text//@@EXEMPT@@/"$ex"}"
+    text="${text//@@APPEND_RULE@@/"$append"}"
+    text="${text//@@CHECK_CMD@@/"bash '$HUMAN_PATHS_CHECK_SCRIPT'"}"
+    text="${text//@@LABEL_PENDING_MERGE@@/"$LABEL_PENDING_MERGE"}"
+    text="${text//@@LABEL_PENDING_REVIEW@@/"$LABEL_PENDING_REVIEW"}"
+    text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+    text="${text//@@LABEL_AGENT_DOING@@/"$LABEL_AGENT_DOING"}"
+    printf '\n%s\n' "$text"
 }
 
 # 「外部需求机器人提的需求 + 托管」合并规则段（GitHub#162，prompts/autopilot-requester-bot.md）：机器人
@@ -9699,6 +9699,12 @@ OUTSIDER_READ_SCRIPT="$_LIB_DIR/outsider-read.sh"
 _MANAGED_OUTSIDER_READ="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/outsider-read.sh"
 [ ! -f "$_MANAGED_OUTSIDER_READ" ] || OUTSIDER_READ_SCRIPT="$_MANAGED_OUTSIDER_READ"
 OUTSIDER_READ_CMD="bash '$OUTSIDER_READ_SCRIPT' --config '$CONFIG_FILE'"
+
+# ── 验算「合并前需人过目」清单的命令（GitHub#560，写进托管复审的「钩子调用的文件」段）──
+# 同上走长期入口：复审会话里跑它的时候，发版切换不会让路径失效
+HUMAN_PATHS_CHECK_SCRIPT="$_LIB_DIR/human-paths-check.sh"
+_MANAGED_HUMAN_PATHS_CHECK="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/human-paths-check.sh"
+[ ! -f "$_MANAGED_HUMAN_PATHS_CHECK" ] || HUMAN_PATHS_CHECK_SCRIPT="$_MANAGED_HUMAN_PATHS_CHECK"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
