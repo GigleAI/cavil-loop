@@ -391,25 +391,44 @@ describe('a record vouches only for the snapshot it was taken for', () => {
   it('a round dropped by a refresh by hand, finishing after the new round saved: it drops none of the new records (PR #272 review round 2)', async () => {
     let droppedDone!: () => void;
     const droppedFinished = new Promise<void>((r) => (droppedDone = r));
-    const { c, clock } = await ready({ sources: [PROJECT_URL], afterRoundRead: (dropped) => dropped && droppedDone() });
+    // set once the refresh's round has saved its record; read when the dropped round reaches its end
+    let newSaved = false;
+    let droppedEndedAfterNew: boolean | null = null;
+    const { c, clock } = await ready({
+      sources: [PROJECT_URL],
+      afterRoundRead: (dropped) => {
+        if (!dropped) return;
+        droppedEndedAfterNew = newSaved;
+        droppedDone();
+      },
+    });
     clock.t += 60_000;
     statusOnBoard(22, 'In progress');
-    // the automatic round's full read is held (its first page)
+    // The automatic round is held at its first step, reading the account's quotas. GitHub#545: a dropped
+    // round no longer waits for a request that goes through the quota guard — it gives it up at once and
+    // ends before the new round saves anything, so holding a board read cannot make it end late any more.
+    // The quota read does not go through the guard: the dropped round waits for it, and only after it is
+    // released does it reach its end, where it may drop only the records it started from (GitHub#552).
     let holding = true;
-    const release = fake.holdWhen((e) => holding && e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null);
+    const release = fake.holdWhen((e) => holding && e.method === 'GET' && e.path === '/api/rate_limit');
     const n = fake.log.length;
     const auto = c.syncNow();
-    for (let i = 0; i < 500 && !since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
-    expect(since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 0)).toBe(true);
+    for (let i = 0; i < 500 && !since(n).some((e) => e.path === '/api/rate_limit' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(since(n).some((e) => e.path === '/api/rate_limit' && e.status === 0)).toBe(true);
     // a refresh by hand drops it, reads in full and saves its record
     holding = false;
     clock.t += 60_000;
     await c.restartSync();
+    newSaved = true;
     expect(statusOf(c, 22)).toBe('In progress');
+    // the refresh really read the board in full (and so saved a new record of its own)
+    expect(boardReads(since(n))).toBeGreaterThanOrEqual(1);
     // only now does the dropped round's answer come, and that round finishes in the background
     release();
     await auto;
     await droppedFinished;
+    // "this did happen": the dropped round reached its end only after the new round had saved its record
+    expect(droppedEndedAfterNew).toBe(true);
     // nothing changed since the refresh: the record the refresh saved is still there
     clock.t += 60_000;
     const next = await round(c);

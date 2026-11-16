@@ -9,7 +9,7 @@ import { FileStore, MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import type { Backend } from '../../src/backend/backend';
 import { writesEnabled } from '../../src/data/board';
-import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
+import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } from './helpers';
 import type { AppState } from '../../src/shared/types';
 import { DEFAULT_QUERY, DEFAULT_SHOW_CLOSED } from '../../src/shared/viewSettings';
@@ -774,6 +774,18 @@ async function loginViaBrowser(c: Controller, token: string) {
   return p;
 }
 
+/** the repository source's issue lists (each full read asks three) */
+const REPO_LIST = '/api/repos/GigleAI/cavil-loop/issues?';
+
+/** wait until the fake has seen `n` requests matching `pred` */
+async function requestsMatching(pred: (l: LoggedRequest) => boolean, n: number) {
+  for (let i = 0; i < 1500; i++) {
+    if (fake.log.filter(pred).length >= n) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`fake never saw ${n} matching requests`);
+}
+
 /** wait until the fake has seen `n` requests whose path contains `fragment` */
 async function requestsSeen(fragment: string, n: number) {
   for (let i = 0; i < 1500; i++) {
@@ -977,12 +989,21 @@ describe('sources removed while a round is in flight', () => {
     h.c.addSource(PROJECT_URL);
     h.c.addSource(REPO);
     await h.c.start();
-    const release = fake.hold('/repos/GigleAI/cavil-loop/issues');
-    const before = fake.log.filter((l) => l.path.includes('/issues?')).length;
+    // GitHub#545: the sync's requests leave one at a time, so the repository's lists are asked one
+    // after the other (open, recently updated, closed with the pending label). The last of them is
+    // held: by then the round has every earlier list answered, and the held one was answered too
+    // (the fake fixes an answer before holding it) — a complete read of the repository is on its way
+    // back. Holding the first list instead would leave the later ones to be sent after the release,
+    // into whatever the test sets up meanwhile (GitHub#552).
+    const isLastList = (l: LoggedRequest) => l.method === 'GET' && l.path.startsWith(REPO_LIST) && l.path.includes('state=closed');
+    const release = fake.holdWhen(isLastList);
+    const before = fake.log.filter(isLastList).length;
+    const listsBefore = fake.log.filter((l) => l.path.startsWith(REPO_LIST)).length;
     const inflight = h.c.syncNow();
-    // GitHub#545: the sync's requests leave one at a time: one list request is held at GitHub
-    await requestsSeen('/issues?', before + 1);
-    return { ...h, release, inflight };
+    await requestsMatching(isLastList, before + 1);
+    /** the repository list requests the round held here sent (its whole read of the repository) */
+    const oldLists = fake.log.filter((l) => l.path.startsWith(REPO_LIST)).slice(listsBefore);
+    return { ...h, release, inflight, oldLists };
   }
 
   it('removed → the finished old request does not bring it back (database, memory, status)', async () => {
@@ -1001,13 +1022,17 @@ describe('sources removed while a round is in flight', () => {
   });
 
   it('removed and added again → the old request is not taken for the new addition', async () => {
-    const { c, cache, release, inflight } = await started();
+    const { c, cache, release, inflight, oldLists } = await started();
     c.removeSource(REPO_KEY);
     expect(c.addSource(REPO).ok).toBe(true);
     // the round queued by the re-add cannot read the repo: only the stale answer could fill it
     fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
     release();
     await inflight;
+    // "this did happen": the old round's read of the repository was whole and answered — every one of
+    // its three lists came back 200, so a complete stale answer really was there to be taken
+    expect(oldLists.map((l) => l.path.split('?')[1].split('&')[0])).toEqual(['state=open', 'state=all', 'state=closed']);
+    expect(oldLists.every((l) => l.status === 200)).toBe(true);
     expect(cache.loadSnapshots().has(REPO_KEY)).toBe(false);
     const st = c.getState().sync.sources.find((s) => s.sourceKey === REPO_KEY)!;
     expect(st).toMatchObject({ ok: false, dataFrom: null });
