@@ -742,9 +742,9 @@ table.items tr.repo-head:hover td { background: var(--hover); }
 .trouble-anchor { position: relative; display: inline-flex; align-items: center; }
 button.icon-btn.trouble-btn, button.icon-btn.trouble-btn:hover:not(:disabled) { color: var(--warn-icon); }
 button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(--warn-border); }
-/* GitHub#545: held back to keep half of the account's quota — a yellow pill with when it lifts, not the bare ⚠️ of a failure */
-button.icon-btn.trouble-btn.quota-held { width: auto; padding: 0 8px; gap: 4px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; font-size: 12px; white-space: nowrap; }
-button.icon-btn.trouble-btn.quota-held .quota-held-text { color: var(--warn-icon); }
+/* GitHub#558: refused by GitHub's rate limit — a yellow pill with when it lifts, not the bare ⚠️ of a failure */
+button.icon-btn.trouble-btn.rate-limited { width: auto; padding: 0 8px; gap: 4px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; font-size: 12px; white-space: nowrap; }
+button.icon-btn.trouble-btn.rate-limited .rate-limited-text { color: var(--warn-icon); }
 .trouble-panel { position: absolute; top: calc(100% + 6px); right: 0; width: min(440px, calc(100vw - 32px)); z-index: 8; background: var(--raised); border: 1px solid var(--warn-border); border-radius: 10px; box-shadow: var(--shadow-lg); color: var(--fg); font-size: 13px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .trouble-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .trouble-head .icon { color: var(--warn-icon); }

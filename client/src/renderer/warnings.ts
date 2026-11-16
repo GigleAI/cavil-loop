@@ -59,11 +59,12 @@ export interface SyncTrouble {
   incomplete: boolean;
   filterIncomplete: boolean;
   /**
-   * GitHub#545: every source not read was held back by the quota guard (none failed): the ⚠️ is the
-   * yellow "额度保护中（HH:MM 恢复）" instead of "同步不完整"; `heldUntil` = the earliest time it lifts (null = not known)
+   * GitHub#558: every source not read was refused by GitHub's rate limit (nothing else failed): the ⚠️ is
+   * the yellow "GitHub 限流（HH:MM 恢复）" instead of "同步不完整"; `limitedUntil` = the earliest time
+   * GitHub said reading may start again (null = it did not say)
    */
-  held: boolean;
-  heldUntil: number | null;
+  limited: boolean;
+  limitedUntil: number | null;
 }
 
 export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble | null {
@@ -71,10 +72,10 @@ export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble 
   if (failed.length === 0) return null;
   const incomplete = !sync.offline;
   const filterIncomplete = isFiltering(parsed);
-  const held = failed.every((s) => s.quotaHeld === true);
+  const limited = failed.every((s) => s.rateLimited === true || s.failure?.kind === 'rateLimited');
   const times = failed.map((s) => s.failure?.retryAt).filter((x): x is number => typeof x === 'number');
-  const heldUntil = held && times.length ? Math.min(...times) : null;
-  return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete, held, heldUntil } : null;
+  const limitedUntil = limited && times.length ? Math.min(...times) : null;
+  return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete, limited, limitedUntil } : null;
 }
 
 /**

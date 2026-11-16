@@ -499,8 +499,6 @@ export interface SourceStatus {
   dataFrom: number | null;
   /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
-  /** GitHub#545: not read because the quota guard held it back (not a failure: nothing was asked; not counted) */
-  quotaHeld?: boolean;
   /** GitHub#401: what kind of failure (shared/readFailure.ts); absent on a status saved before = shown as a plain failure */
   failure?: ReadFailure;
   /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
@@ -665,28 +663,6 @@ export interface SyncState {
   problem: string | null;
   /** GitHub#473: the same message with its own words and the outside words apart (the back end's, or the window's own); absent / null = show `problem` as it is */
   problemSaid?: Said | null;
-  /**
-   * GitHub#545: the account's hourly GitHub quotas as the latest round read them (null = not read this
-   * round), and until when nothing is sent after a restart (0 = not waiting)
-   */
-  quota?: SyncQuota | null;
-}
-
-/** GitHub#545: one hourly quota as the window shows it */
-export interface SyncQuotaBucket {
-  limit: number;
-  used: number;
-  remaining: number;
-  resetAt: number;
-  /** reserved for requests whose outcome is not known */
-  reserved: number;
-}
-
-export interface SyncQuota {
-  graphql: SyncQuotaBucket | null;
-  core: SyncQuotaBucket | null;
-  /** no request before this after a restart (epoch ms); 0 = not waiting */
-  quietUntil: number;
 }
 
 /** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */

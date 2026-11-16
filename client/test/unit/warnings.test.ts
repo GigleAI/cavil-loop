@@ -95,16 +95,20 @@ describe('failed sources: the ⚠️ next to refresh and its two parts (GitHub#2
 
   it('online, a source failed, no filter → "sync incomplete" part only, with the failed sources only', () => {
     const t = syncTrouble(sync({ sources: [ok('a'), bad('b', 'e1'), bad('c', 'e2')] }), none);
-    expect(t).toEqual({ failed: [bad('b', 'e1'), bad('c', 'e2')], incomplete: true, filterIncomplete: false, held: false, heldUntil: null });
+    expect(t).toEqual({ failed: [bad('b', 'e1'), bad('c', 'e2')], incomplete: true, filterIncomplete: false, limited: false, limitedUntil: null });
   });
 
-  // GitHub#545: every source not read was held back by the quota guard — the yellow "额度保护中"
-  it('every source not read was held back for the quota (none failed) → held, with the earliest time it lifts', () => {
-    const held = (key: string, at: number) => ({ sourceKey: key, ok: false, error: 'x', dataFrom: 1, quotaHeld: true, failure: { kind: 'quotaHeld' as const, raw: 'x', retryAt: at } });
-    const t = syncTrouble(sync({ sources: [ok('a'), held('b', 2000), held('c', 1000)] }), none);
-    expect(t).toMatchObject({ incomplete: true, held: true, heldUntil: 1000 });
-    // one real failure among them: not "held" — the ⚠️ says the round was incomplete
-    expect(syncTrouble(sync({ sources: [held('b', 2000), bad('c')] }), none)).toMatchObject({ held: false, heldUntil: null });
+  // GitHub#558: every source not read was refused by GitHub's rate limit — the yellow "GitHub 限流（HH:MM 恢复）"
+  it('every source not read was refused by GitHub\'s rate limit (nothing else failed) → limited, with the earliest time it lifts', () => {
+    const limited = (key: string, at?: number) => ({ sourceKey: key, ok: false, error: 'x', dataFrom: 1, rateLimited: true, failure: { kind: 'rateLimited' as const, raw: 'x', ...(at !== undefined ? { retryAt: at } : {}) } });
+    const t = syncTrouble(sync({ sources: [ok('a'), limited('b', 2000), limited('c', 1000)] }), none);
+    expect(t).toMatchObject({ incomplete: true, limited: true, limitedUntil: 1000 });
+    // GitHub did not say when: still limited, without a time
+    expect(syncTrouble(sync({ sources: [limited('b'), limited('c')] }), none)).toMatchObject({ limited: true, limitedUntil: null });
+    // flagged by the round (the gate) without a classification: limited too
+    expect(syncTrouble(sync({ sources: [{ sourceKey: 'b', ok: false, error: 'x', dataFrom: 1, rateLimited: true }] }), none)).toMatchObject({ limited: true });
+    // one real failure among them: not "limited" — the ⚠️ says the round was incomplete
+    expect(syncTrouble(sync({ sources: [limited('b', 2000), bad('c')] }), none)).toMatchObject({ limited: false, limitedUntil: null });
   });
 
   it('online, a source failed, filtering → both parts', () => {
@@ -122,7 +126,7 @@ describe('failed sources: the ⚠️ next to refresh and its two parts (GitHub#2
   });
 
   it('offline and filtering → ⚠️ with the "filter may be incomplete" part only', () => {
-    expect(syncTrouble(sync({ offline: true, sources: [bad('a')] }), filter)).toEqual({ failed: [bad('a')], incomplete: false, filterIncomplete: true, held: false, heldUntil: null });
+    expect(syncTrouble(sync({ offline: true, sources: [bad('a')] }), filter)).toEqual({ failed: [bad('a')], incomplete: false, filterIncomplete: true, limited: false, limitedUntil: null });
   });
 
   it('fails → offline → recovers: the parts follow each state, then the ⚠️ goes', () => {

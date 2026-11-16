@@ -23,8 +23,7 @@ export const MUTATIONS = [
     to: "snapshots.set(src.key, { sourceKey: src.key, fetchedAt: now, items: [] });\n      replaced.push({ sourceKey: src.key, fetchedAt: now, items: [] });\n      if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;",
     expect: ['a source that fails mid-pagination keeps its previous snapshot'] },
   { what: '连不上 GitHub 不算离线', file: 'src/data/sync.ts',
-    // GitHub#545: the line also says a quota hold is not "offline"; the entry follows it
-    from: "const offline = !quotaHeld && (!(err instanceof GitHubError) || err.kind === 'network');", to: 'const offline = false;',
+    from: "const offline = !(err instanceof GitHubError) || err.kind === 'network';", to: 'const offline = false;',
     expect: ['offline restart: cached content still shows'] },
   { what: '缓存不覆盖旧快照', file: 'src-tauri/crates/core/src/store.rs',
     from: 'ON CONFLICT(source_key) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data',
@@ -846,8 +845,8 @@ export const MUTATIONS = [
     from: '    if (this.round?.reading) this.round.drop();\n', to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache', 'three clicks in a row while a round reads: one new round, not three'] },
   // GitHub#552: since GitHub#545 three guards stop a dropped round — the check before sending, the
-  // check when its turn in the quota guard's queue comes, and the guard giving up waiting for its
-  // answer; "goes on reading" means all three gone (any one left still stops it)
+  // check when its turn in the send queue comes, and the queue giving up waiting for its answer
+  // (GitHub#558: the queue without the quota); "goes on reading" means all three gone (any one left still stops it)
   { what: '被放弃的那一轮还接着翻下一页',
     edits: [
       { file: 'src/data/github.ts', from: "    if (this.cancelled?.aborted) {\n      const given = new GitHubError('network', t('已放弃这一轮同步'));\n      given.meta.cancelled = true;\n      throw given;\n    }\n    this.reads?.gate.check();\n", to: '    this.reads?.gate.check();\n' },
@@ -1305,8 +1304,8 @@ export const MUTATIONS = [
     expect: ['an item page answers 500', 'the repository answers 500'] },
   // PR #481 (GitHub#462) added the pending label to this call; the entry followed it (GitHub#527)
   { what: '变化检查（GitHub#261）：版本标记在整读之后才取（检查与整读之间的改动永远看不见）', file: 'src/data/sync.ts',
-    // GitHub#545 added GitHub's clock to this call; the entry followed it
-    from: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, extra.serverAt);', to: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, extra.serverAt);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
+    // GitHub#545 added GitHub's clock to this call (GitHub#558: now a local of the round); the entry followed it
+    from: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, serverAt);', to: '    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, serverAt);\n    try { if (checking) checked = await checkSource(client, src, null, counts); } catch { checked = null; }',
     expect: ['a change between the check and the full read: not in this read, seen by the next round'] },
   { what: '变化检查（GitHub#261）：没超过 10 分钟也不强制整读（看不见的改动永远不出现）', file: 'src/data/sync.ts',
     // GitHub#545: "a full read is due" is one line now (it also stops a read of changes); the entry breaks it there

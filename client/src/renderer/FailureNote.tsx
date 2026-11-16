@@ -48,7 +48,7 @@ export function FailureNote({
   reread?: Reread;
   testid?: string;
 }) {
-  const waiting = useWaiting(failure.kind === 'rateLimited' || failure.kind === 'quotaHeld' ? failure.retryAt : null);
+  const waiting = useWaiting(failure.kind === 'rateLimited' ? failure.retryAt : null);
   const own = useReread();
   // a caller's own retry (the Project picker) has its own reading state: not this one's
   const rr = onRetry ? null : (shared ?? own);
