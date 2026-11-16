@@ -60,7 +60,7 @@ done
 
 [[ "$ISSUE" =~ ^[0-9]+$ ]] || usage
 if [ -z "$PORT" ]; then
-    PORT="$(preview_port "$ISSUE")" || { echo "❌ 按项目配置里的预览端口设置算不出 #$ISSUE 的端口（起始号 / 取余数不合法）；用 --port 指定要注销的端口" >&2; exit 2; }
+    PORT="$(preview_port "$ISSUE")" || { echo "❌ 按项目配置里的预览端口设置算不出 #$ISSUE 的端口（起始号 / 取余数不是不超过 9 位的整数，或取余数是 0）；用 --port 指定要注销的端口" >&2; exit 2; }
 fi
 [[ "$PORT" =~ ^[0-9]+$ ]] || usage
 [ -z "$EXPECT_WT" ] && EXPECT_WT="$(worktree_path "$ISSUE")"

@@ -294,9 +294,9 @@ test('preview and poll-pace settings are in their groups; the port modulo may be
   await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-why')).toContainText('秒:秒');
   // the modulo: blank in the file, and blank is allowed; 0 is not
   await expect(input(page, 'PREVIEW_PORT_MODULO')).toHaveValue('');
-  await expect(row(page, 'PREVIEW_PORT_MODULO')).toContainText('（1–65535，可留空）');
+  await expect(row(page, 'PREVIEW_PORT_MODULO')).toContainText('（1–999999999，可留空）');
   await input(page, 'PREVIEW_PORT_MODULO').fill('0');
-  await expect(row(page, 'PREVIEW_PORT_MODULO').getByTestId('config-problem')).toHaveText('只能是 1 到 65535 之间的整数，或者留空');
+  await expect(row(page, 'PREVIEW_PORT_MODULO').getByTestId('config-problem')).toHaveText('只能是 1 到 999999999 之间的整数，或者留空');
   await expect(page.getByTestId('config-save')).toBeDisabled();
   await input(page, 'PREVIEW_PORT_MODULO').fill('1000');
   await input(page, 'POLL_RUN_LOG_ROUNDS').fill('500');

@@ -369,6 +369,17 @@ pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_PORT_BASE 0
 chk "起始号 0、不取余数：#1 端口 1、后端 10001，照常注册" "$(serve 1) $(cat "$PV/serve.rc")" "1 10001 30min 30 0"
 pv_line PREVIEW_PORT_MODULO 1000
 chk "起始号 0、取余数 1000：#1000 端口 0，注册拒绝；#1 端口 1 照常注册" "$(serve 1000) $(cat "$PV/serve.rc") | $(serve 1) $(cat "$PV/serve.rc")" "NONE 2 | 1 10001 30min 30 0"
+# 复审第 3 轮：取余数是除数不是端口——旧配置的取余数 100000 照常注册、照常注销（不带 --port，按同一份算法找回端口）
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO 100000
+chk "旧配置取余数 100000：#1 注册出 4001 / 14001" "$(serve 1) $(cat "$PV/serve.rc")" "4001 14001 30min 30 0"
+unserve() { env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-unserve.sh" "$@" > "$PV/unserve.out" 2>&1; echo $?; }
+chk "同一份配置不带 --port 注销 #1：按同一份算法找到 4001，登记删掉" "$(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "0 0"
+# 编号大了才越界：取余数 1000、起始号 60000、偏移 5000 能保存（见配置测试），余数大的那几条在注册时按实际端口拦下
+pv_line PREVIEW_PORT_BASE 60000; pv_line PREVIEW_PORT_MODULO 1000; pv_line PREVIEW_BACKEND_OFFSET 5000
+chk "起始号 60000、取余数 1000、偏移 5000：#535 后端 65535 照常注册，#536 后端 65536 拒绝" "$(serve 535) $(cat "$PV/serve.rc") | $(serve 536) $(cat "$PV/serve.rc") $(grep -c '后端端口 65536 超出' "$PV/serve.out")" "60535 65535 30min 30 0 | NONE 2 1"
+pv_line PREVIEW_BACKEND_OFFSET 0
+chk "手写偏移 0：后端和公开端口相同，注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '两个服务会抢同一个端口' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_BACKEND_OFFSET 10000
 
 echo
 echo "通过 $pass，失败 $fail"

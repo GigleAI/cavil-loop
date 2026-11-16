@@ -259,7 +259,7 @@ describe('the back end and the daemon\'s real script', () => {
       ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
       ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
       // GitHub#556: the one integer that may be left blank, and one that may not
-      ['PREVIEW_PORT_MODULO', '1000'], ['PREVIEW_PORT_MODULO', ''], ['PREVIEW_PORT_MODULO', '0'], ['PREVIEW_PORT_MODULO', '65536'],
+      ['PREVIEW_PORT_MODULO', '1000'], ['PREVIEW_PORT_MODULO', ''], ['PREVIEW_PORT_MODULO', '0'], ['PREVIEW_PORT_MODULO', '1000000000'],
       ['PREVIEW_BACKEND_OFFSET', ''],
     ];
     const verdicts: [string, boolean][] = [];
