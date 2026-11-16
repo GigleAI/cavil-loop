@@ -16,7 +16,7 @@ export type LabelRole = 'agent' | 'autopilot' | 'blocked' | 'human';
  */
 export const LABEL_DEFAULTS: Record<LabelRole, { color: string; description: string }> = {
   agent: { color: 'd4c5f9', description: zhKey('等待 agent 处理') },
-  autopilot: { color: 'ff401e', description: zhKey('托管：从方案到合并全交给 agent（复审与测试通过后自动合并）') },
+  autopilot: { color: 'c5def5', description: zhKey('托管：从方案到合并全交给 agent（复审与测试通过后自动合并）') },
   blocked: { color: '2dcdd0', description: zhKey('等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干') },
   human: { color: 'fbca04', description: zhKey('等待人类处理') },
 };

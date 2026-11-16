@@ -20,7 +20,7 @@ describe('GitHub#559: which labels, with what', () => {
       { name: 'x', role: 'nope' as never },
     ]);
     expect(s.map((x) => [x.name, x.role, x.color])).toEqual([
-      ['autopilot', 'autopilot', 'ff401e'],
+      ['autopilot', 'autopilot', 'c5def5'],
       ['pending/agent', 'agent', 'd4c5f9'],
     ]);
     expect(s[1].description).toBe('等待 agent 处理');
@@ -101,7 +101,7 @@ describe('GitHub#559: what a dialog shows, for the repository it shows', () => {
   });
   it('the labels page and the list to copy', () => {
     expect(labelsPageUrl('https://github.com/', 'o/r')).toBe('https://github.com/o/r/labels');
-    expect(labelListText(labelSpecs([{ name: 'pending/agent', role: 'agent' }, { name: 'autopilot', role: 'autopilot' }]))).toBe(`pending/agent\t#d4c5f9\t${LABEL_DEFAULTS.agent.description}\nautopilot\t#ff401e\t${LABEL_DEFAULTS.autopilot.description}`);
+    expect(labelListText(labelSpecs([{ name: 'pending/agent', role: 'agent' }, { name: 'autopilot', role: 'autopilot' }]))).toBe(`pending/agent\t#d4c5f9\t${LABEL_DEFAULTS.agent.description}\nautopilot\t#c5def5\t${LABEL_DEFAULTS.autopilot.description}`);
   });
 });
 

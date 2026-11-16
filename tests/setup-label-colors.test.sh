@@ -25,9 +25,9 @@ chk() {
     else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
 }
 
-# 期望的 15 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）照抄本仓库 labels 页的 2dcdd0（GitHub#435）。暂缓标签 pending/later（GitHub#463）是 c5def5，本仓库 labels 页建它时用同一个颜色。等外部需求机器人那个标签的名字由下面的配置指定。
+# 期望的 15 个标签：名字|颜色（小写）。pending/blocked（GitHub#157）照抄本仓库 labels 页的 2dcdd0（GitHub#435）。暂缓标签 pending/later（GitHub#463）是 c5def5，本仓库 labels 页建它时用同一个颜色。托管标签 autopilot（GitHub#566）也是 c5def5，照抄本仓库 labels 页。等外部需求机器人那个标签的名字由下面的配置指定。
 EXPECTED='Done|586069
-autopilot|ff401e
+autopilot|c5def5
 doing/agent|c2e0c6
 pending/PR|eeeeee
 pending/agent|d4c5f9
@@ -149,7 +149,7 @@ PY
     if [ "$nf" -gt 0 ]; then echo "  ✅ 负对照「$title」变红（$nf 条断言失败）"; pass=$((p0+1)); fail=$f0
     else echo "  ❌ 负对照「$title」没变红"; pass=$p0; fail=$((f0+1)); fi
 }
-neg_case "autopilot 退回 0e8a16" '$autopilot_label|ff401e|' '$autopilot_label|0e8a16|'
+neg_case "autopilot 退回 ff401e" '$autopilot_label|c5def5|' '$autopilot_label|ff401e|'
 neg_case "pending/PR 退回 bbbbbb" '"pending/PR|eeeeee|' '"pending/PR|bbbbbb|'
 
 echo
