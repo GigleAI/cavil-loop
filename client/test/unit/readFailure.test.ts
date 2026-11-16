@@ -136,7 +136,6 @@ describe('classifying a failed read (GitHub#401)', () => {
 describe('what each kind says (GitHub#401)', () => {
   const all: Record<FailureKind, ReadFailure> = {
     cancelled: { kind: 'cancelled', raw: '已放弃这一轮同步' },
-    quotaHeld: { kind: 'quotaHeld', raw: 'x', retryAt: NOW + 12 * 60_000 },
     network: { kind: 'network', raw: '无法连接 GitHub：fetch failed' },
     rateLimited: { kind: 'rateLimited', raw: 'x', retryAt: NOW + 12 * 60_000 },
     auth: { kind: 'auth', raw: 'x' },
@@ -152,7 +151,6 @@ describe('what each kind says (GitHub#401)', () => {
     const got = Object.fromEntries(Object.values(all).map((f) => [f.kind, (({ title, actions }) => ({ title, actions }))(describeFailure(f, NOW))]));
     expect(got).toEqual({
       cancelled: { title: '这一轮读取已放弃', actions: [] },
-      quotaHeld: { title: '额度保护中，暂时无法确认有没有变化', actions: ['retry'] },
       network: { title: '连不上 GitHub', actions: ['retry'] },
       rateLimited: { title: 'GitHub 暂时限制了读取次数', actions: ['retry'] },
       auth: { title: '登录已失效', actions: ['relogin'] },
@@ -184,6 +182,13 @@ describe('what each kind says (GitHub#401)', () => {
     const noTime = describeFailure({ kind: 'rateLimited', raw: 'x' }, NOW);
     expect(noTime.retryAt).toBeUndefined();
     expect(noTime.body).toContain('稍后会自动再读');
+    // GitHub#558: the hourly quota's "HH:MM 额度恢复" only for a time GitHub gave; the client's own wait keeps the button's time only
+    const hourly = (retrySaid?: boolean): ReadFailure => ({ kind: 'rateLimited', raw: 'x', limit: 'hourly', retryAt: NOW + 12 * 60_000, ...(retrySaid ? { retrySaid } : {}) });
+    expect(describeFailure(hourly(true), NOW).body).toContain(`${hhmm} 额度恢复后自动再读`);
+    const own = describeFailure(hourly(), NOW);
+    expect(own.body).toMatch(/^这个账号每小时的查询额度已经用完。额度恢复后自动再读/);
+    expect(own.body).not.toContain(hhmm);
+    expect(own.retryAt).toBe(NOW + 12 * 60_000);
   });
 
   it('the "从 GitHub 选" list waits for the latest rate-limit time among its failures; none = no wait', () => {

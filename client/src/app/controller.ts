@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type SyncQuota, type TallyDef, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
 import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
@@ -17,6 +17,7 @@ import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFo
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
+import { LABEL_EXISTS_CODE, labelJobOutcome, labelSpecs, permissionOf, pressBlocked, type LabelAttempt, type LabelJob, type LabelPermission, type LabelRole } from '../shared/labelSetup';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
@@ -26,10 +27,10 @@ import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_M
 import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep, sayFailure } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound, type ViewerTag } from '../data/sync';
-import { QuotaGuard, readingOf } from '../data/quota';
+import { SendQueue } from '../data/sendQueue';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -303,8 +304,6 @@ function normalizeBlockedLabels(raw: unknown, blocked: string): BlockedLabels {
   return { blocked, flow: typeof r.flow === 'string' && r.flow.trim() ? r.flow.trim() : DEFAULT_BLOCKED_LABELS.flow };
 }
 const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
-/** GitHub#545: when the sync last sent a request to GitHub (epoch ms), written before each one; kept across sign-outs */
-const LAST_SEND = 'syncLastSendAt';
 /** GitHub#545: reads of changes failing this many rounds in a row: the source is read in full */
 const DELTA_FAILS_MAX = 3;
 /** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
@@ -387,12 +386,8 @@ export class Controller {
   private failures = new Map<string, { count: number; since: number; nextAt: number | null; epoch: number }>();
   /** the session the gate and the failures belong to */
   private readsSession: number | null = null;
-  /**
-   * GitHub#545: every request of the sync goes through this guard — one at a time, never taking the
-   * account's hourly quota below half. Kept across sessions (a reservation is about this machine's
-   * requests, whichever account they were for, and only ever makes it more careful).
-   */
-  private quota: QuotaGuard;
+  /** GitHub#545 / #558: every request of the sync goes through this queue — one at a time */
+  private sendQueue = new SendQueue();
   /** GitHub#545: who the credential belongs to, with the version tag of the answer (REST /user; a 304 costs nothing); of `readsSession` */
   private viewerTag: ViewerTag | null = null;
   /** GitHub#545: per source (as the addition `epoch`), reads of changes that failed in a row; 3 = read in full next */
@@ -559,10 +554,6 @@ export class Controller {
     this.timers = deps.timers ?? REAL_TIMERS;
     this.timedGapMs = deps.syncGapMs ?? deps.syncIntervalMs ?? SYNC_INTERVAL_MS;
     this.readGate = new ReadGate(this.now);
-    // GitHub#545: nothing goes out until the requests of the previous run are settled (SETTLE_MS after its last send)
-    this.quota = new QuotaGuard({ now: this.now, noteSend: (at) => this.noteSend(at) });
-    const lastSend = this.cache.getSetting<unknown>(LAST_SEND, null);
-    this.quota.startAfter(lastSend === null ? null : typeof lastSend === 'number' && Number.isFinite(lastSend) ? lastSend : 'unreadable');
     const appKind = this.loadAppKind();
     const handBack: HandBackLabels = { ...DEFAULT_HAND_BACK, ...this.cache.getSetting<Partial<HandBackLabels>>('handBack', {}) };
     // GitHub#404: saved before the running label existed (or not a string) → the default; an empty one stays empty
@@ -631,6 +622,7 @@ export class Controller {
       creates: [],
       ops: [],
       sends: [],
+      labelJobs: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
@@ -995,7 +987,7 @@ export class Controller {
     if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
     this.sendDraftTimer = null;
     this.sendsStored = false;
-    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [] };
+    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [], labelJobs: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -1798,24 +1790,8 @@ export class Controller {
     };
     progress();
     const gate = this.readGate;
-    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS, quota: this.quota };
+    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS, queue: this.sendQueue };
     const client = this.client(session, run.signal, reads);
-    // GitHub#545: the account's quotas and GitHub's clock first (not counted against either quota);
-    // not readable = no request this round (the guard holds every one back)
-    this.quota.forget();
-    let serverAt: number | null = null;
-    let quotaError: unknown = null;
-    // a round the closed read gate keeps at home asks nothing at all — not even this (GitHub#374)
-    if (gate.until === null || this.now() >= gate.until) {
-      try {
-        const rl = await client.rateLimit();
-        this.quota.takeReading(readingOf(rl.body));
-        serverAt = rl.serverAt;
-      } catch (e) {
-        this.quota.takeReading(null);
-        quotaError = e;
-      }
-    }
     const forceFull = new Set(
       [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
     );
@@ -1834,10 +1810,9 @@ export class Controller {
       // GitHub#462: a repository's closed items carrying the pending label are read too
       this.state.handBack.human,
       {
-        serverAt,
+        byChanges: true,
         viewer: this.viewerTag,
         forceFull,
-        quotaError,
         ...(this.deps.boardFullReadEveryMs !== undefined ? { boardFullReadEveryMs: this.deps.boardFullReadEveryMs } : {}),
       },
     );
@@ -1849,7 +1824,7 @@ export class Controller {
     // (PR #272 review round 1). Only a record that is still the one this round started from: a round
     // dropped by a refresh by hand finishes in the background, possibly after the newer round saved its
     // own record — that one is not this round's to drop (review round 2).
-    // GitHub#545: a source the quota guard held back before anything was learned keeps its record too
+    // GitHub#545: a source whose read of changes failed keeps its record too
     this.dropChecks(sources.filter((src) => !round.unchanged.includes(src.key) && !round.keepRecords.includes(src.key)), held);
     this.deps.afterRoundRead?.(run.signal.aborted);
     // dropped meanwhile: a newer round owns the state now, nothing of this one may land
@@ -1918,8 +1893,6 @@ export class Controller {
         // GitHub#374: a round the closed gate kept at home did not reach GitHub either
         lastOnlineAt: round.offline || round.held ? this.state.sync.lastOnlineAt : this.now(),
         sources: [...status, ...untouched],
-        // GitHub#545: the quotas as this round read them (and kept up to date by every answer)
-        quota: this.quotaView(),
       },
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
@@ -1977,25 +1950,6 @@ export class Controller {
     }
   }
 
-  /** GitHub#545: the time of a request about to go out, on disk before it goes (false = not written: it does not go) */
-  private async noteSend(at: number | null): Promise<boolean> {
-    try {
-      await this.backend.call('setSetting', { key: LAST_SEND, value: at });
-      this.cache.mirror(LAST_SEND, at);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /** GitHub#545: the quotas as the window shows them */
-  private quotaView(): SyncQuota {
-    const g = this.quota.view('graphql');
-    const c = this.quota.view('core');
-    const strip = (v: typeof g) => (v ? { limit: v.limit, used: v.used, remaining: v.remaining, resetAt: v.resetAt, reserved: v.reserved } : null);
-    return { graphql: strip(g), core: strip(c), quietUntil: this.quota.quietTill() };
-  }
-
   /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
   private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
     return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
@@ -2017,8 +1971,6 @@ export class Controller {
    * read is when the gate opens.
    */
   private noteResult(st: SourceStatus, at: number, epoch: number, gate: ReadGate): SourceStatus {
-    // GitHub#545: held back by the quota guard — nothing was asked, nothing is counted
-    if (st.quotaHeld) return st;
     if (st.ok) {
       this.failures.delete(st.sourceKey);
       return st;
@@ -2029,7 +1981,7 @@ export class Controller {
       const until = gate.until;
       const f = { count: old?.count ?? 0, since: old?.since ?? at, nextAt: null, epoch };
       this.failures.set(st.sourceKey, f);
-      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until } };
+      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until, ...(until !== null ? { limitedSaid: gate.said } : {}) } };
     }
     const count = (old?.count ?? 0) + 1;
     const f = { count, since: old?.since ?? at, nextAt: at + backoffStep(count), epoch };
@@ -2633,6 +2585,127 @@ export class Controller {
         return failed;
       }
     }
+  }
+
+  /**
+   * GitHub#559: may the signed-in account create labels in `repo`? Read now, every time (a permission
+   * granted a minute ago must show); anything that cannot be read is 'unknown', never 'no'.
+   */
+  async labelPermission(repo: string): Promise<LabelPermission> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return 'unknown';
+    try {
+      return permissionOf(await readRepoInfo(c.client, repo));
+    } catch (e) {
+      this.noteAuthFailure(e);
+      return 'unknown';
+    }
+  }
+
+  private labelSeq = 0;
+
+  private patchLabelJob(id: number, patch: Partial<LabelJob>): LabelJob | null {
+    let out: LabelJob | null = null;
+    this.set({ labelJobs: this.state.labelJobs.map((j) => (j.id === id ? (out = { ...j, ...patch }) : j)) });
+    return out;
+  }
+
+  /**
+   * GitHub#559: "建标签" — create these labels in `repo` (the repository the dialog showed when it was
+   * pressed). Everything after this — each request, the read afterwards, the notice — goes by the
+   * job's own `repo`. One running press per repository: a second one is refused before anything is sent.
+   */
+  async startLabelCreate(repo: string, wants: { name: string; role: LabelRole }[]): Promise<{ ok: boolean; error: string | null; id?: number }> {
+    const labels = labelSpecs(wants);
+    if (!repo || !labels.length) return { ok: false, error: t('没有要建的标签') };
+    const blocked = pressBlocked(this.state.labelJobs, repo);
+    if (blocked === 'running') return { ok: false, error: t('这个仓库的标签正在建') };
+    // GitHub#559 (PR #564 review round 1): the last press got no answer — read first, never race it with a second
+    if (blocked === 'unknown') return { ok: false, error: t('上一次建标签没收到回答：先「再查一次」，确认标签还没有再建') };
+    const id = ++this.labelSeq;
+    const job: LabelJob = { id, repo, labels, status: 'running', error: null, startedAt: this.now() };
+    // a press for this repository settles every earlier one: only the newest is said
+    this.set({ labelJobs: [...this.state.labelJobs.map((j) => (j.repo.toLowerCase() === repo.toLowerCase() ? { ...j, dismissed: true } : j)), job] });
+    void this.runLabelJob(id);
+    return { ok: true, error: null, id };
+  }
+
+  private async runLabelJob(id: number): Promise<void> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job) return;
+    const c = await this.clientForCall(true);
+    if ('error' in c) {
+      this.patchLabelJob(id, { status: 'refused', error: c.error });
+      return;
+    }
+    const attempts: LabelAttempt[] = [];
+    let refusedApp = false;
+    for (const l of job.labels) {
+      try {
+        await createRepoLabel(c.client, job.repo, l);
+        attempts.push({ name: l.name, outcome: 'made' });
+      } catch (e) {
+        this.noteAuthFailure(e);
+        const why = (e as Error)?.message ?? String(e);
+        // GitHub#559 (PR #564 review round 1): 422 `already_exists` = the label is there (someone made it meanwhile),
+        // never a refusal — whether or not the read afterwards works
+        if (e instanceof GitHubError && e.status === 422 && e.meta.codes?.includes(LABEL_EXISTS_CODE)) attempts.push({ name: l.name, outcome: 'exists' });
+        else if (refusedForSure(e)) {
+          attempts.push({ name: l.name, outcome: 'refused', error: why });
+          if (e instanceof GitHubError && (e.status === 403 || e.status === 404)) refusedApp = true;
+        } else attempts.push({ name: l.name, outcome: 'noAnswer', error: why });
+      }
+      if (c.session !== this.session) return;
+    }
+    // the repository's labels now: what settles a 422 "already there" and a request whose answer was lost
+    const after = await this.readLabelsAfter(job.repo);
+    if (c.session !== this.session) return;
+    const out = labelJobOutcome(attempts, after);
+    let app = false;
+    if (out.status === 'refused' && refusedApp) {
+      const info = await this.backend.call<GrantInfo>('grantInfo').catch(() => null);
+      app = Boolean(info?.signedIn && info.session === c.session && info.githubApp);
+    }
+    this.patchLabelJob(id, { status: out.status, error: out.error, ...(app ? { app: true } : {}) });
+  }
+
+  /** the repository's label names read now (the options cache takes it too); null = could not be read */
+  private async readLabelsAfter(repo: string): Promise<string[] | null> {
+    const o = await this.repoOptions(repo, true);
+    return o.error ? null : o.labels.map((l) => l.name);
+  }
+
+  /** GitHub#559, 「重试」 of a refused press: the same labels, in the same repository, sent again. */
+  async labelJobRetry(id: number): Promise<{ ok: boolean; error: string | null }> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status !== 'refused') return { ok: false, error: t('这条已经不能重试') };
+    const r = await this.startLabelCreate(job.repo, job.labels);
+    return { ok: r.ok, error: r.error };
+  }
+
+  /** GitHub#559, 「再查一次」 of a press with no answer: reads the repository's labels only, never sends again. */
+  async labelJobRecheck(id: number): Promise<{ ok: boolean; error: string | null }> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status !== 'unknown' || job.checking) return { ok: false, error: t('这条已经不用再查') };
+    this.patchLabelJob(id, { checking: true });
+    const after = await this.readLabelsAfter(job.repo);
+    const now = this.state.labelJobs.find((j) => j.id === id);
+    if (!now || now.status !== 'unknown') return { ok: true, error: null };
+    if (after === null) {
+      this.patchLabelJob(id, { checking: false });
+      return { ok: false, error: t('读不到 {repo} 的标签', { repo: job.repo }) };
+    }
+    const have = new Set(after.map((n) => n.toLowerCase()));
+    const all = job.labels.every((l) => have.has(l.name.toLowerCase()));
+    this.patchLabelJob(id, { checking: false, status: all ? 'done' : 'missing', error: null });
+    return { ok: true, error: null };
+  }
+
+  /** GitHub#559: × of a notice (and the success notice going away by itself). */
+  labelJobDismiss(id: number): void {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status === 'running') return;
+    this.patchLabelJob(id, { dismissed: true });
   }
 
   /**
@@ -3938,6 +4011,7 @@ export class Controller {
     // GitHub#474: the label names in these sentences are the person's (Settings) or GitHub's: holes
     // shown as written, never baked into the client's own words
     let refuse: Said | null = null;
+    let missingLabels: { name: string; role: LabelRole }[] | null = null;
     if (read.state !== 'open') refuse = { template: t('这一条已经关闭'), parts: [] };
     else if (entry.kind === 'other')
       refuse = {
@@ -3961,15 +4035,22 @@ export class Controller {
       }
       else {
         const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
-        const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
-        if (missing.length)
+        const wants = [
+          { name: bl.blocked, role: 'blocked' as const },
+          { name: names.human, role: 'human' as const },
+        ].filter((w) => !have.has(w.name.toLowerCase()));
+        const missing = wants.map((w) => w.name);
+        if (missing.length) {
           refuse = {
-            template: t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
+            template: t('这个仓库没有标签 {labels}', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
             parts: missing.map((m, i) => ({ name: `l${i}`, text: m, from: 'user' as const })),
           };
+          // GitHub#559: the dialog offers to create them (or says how)
+          missingLabels = wants;
+        }
       }
     }
-    return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
+    return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse, ...(missingLabels ? { missingLabels } : {}) };
   }
 
   /**

@@ -335,23 +335,26 @@ requester_bot_wait_hold() {   # <编号>
     return 0
 }
 
-# ── 暂缓标签（GitHub#463，可选，默认关闭）──
+# ── 暂缓标签（GitHub#463；GitHub#551 起默认开启）──
 # 给「暂时不处理」的条目用：挂着它的条目 greedy 兜底趟不收，托管的「只挂托管标签就派」也因此不收
 # （都走 greedy_skip_label_list）。只挡自动捞取：有人打了派工标签（pending/agent 等）照常派。
-# 留空 = 功能关闭，挡工名单和以前一样。
-LABEL_PENDING_LATER="${LABEL_PENDING_LATER:-}"
+# 配置里没有这一行 = 开，用 pending/later；写成空值（LABEL_PENDING_LATER=""）= 人决定不开，挡工名单和以前一样。
+# 用 ${X-默认}（不带冒号）：只有「没设置」才取默认，空值原样保留——空值是人写下的「不开」。
+LABEL_PENDING_LATER="${LABEL_PENDING_LATER-pending/later}"
 
-# ── 等前置标签（GitHub#157，可选，默认关闭）──
+# ── 等前置标签（GitHub#157；GitHub#551 起默认开启）──
 # 一条活卡在「别的 issue / PR 还没完成」上（不是卡在要人拍板；前置可以在本仓库，也可以在别的仓库，
 # GitHub#243）时，worker 挂这个标签并登记
 # 前置；daemon 定期检查（blocked_tick），前置全部成功完成 → 留一条说明、翻回原触发标签接着干；
-# 有前置以失败收场 / 读全了却找不到前置 → 交人。留空 = 功能关闭，行为和以前一样。
+# 有前置以失败收场 / 读全了却找不到前置 → 交人。
+# 配置里没有这一行 = 开，用 pending/blocked；写成空值（LABEL_PENDING_BLOCKED=""）= 人决定不开，行为和以前一样。
+# 用 ${X-默认}（不带冒号）：只有「没设置」才取默认，空值原样保留。
 #
 # 和外部需求机器人的等待标签一样，daemon 这边另有三处作用（标签非空才生效）：
 #   1. greedy 兜底趟挡工（greedy_skip_label_list；托管的「只挂托管标签就派」也因此不收它）
 #   2. self-heal 不把挂着它的 doing/agent 条目翻回触发标签
 #   3. 有人在等待期间**又打了触发标签** → 照常派工，派工时一并摘掉它（BLOCKED_DISPATCH_CLEAR）
-LABEL_PENDING_BLOCKED="${LABEL_PENDING_BLOCKED:-}"
+LABEL_PENDING_BLOCKED="${LABEL_PENDING_BLOCKED-pending/blocked}"
 # 同一个等待条目两次细查的最短间隔；也是「有条目在等」时轮询退避的上限（见 agent-poll.sh § 5）
 BLOCKED_RECHECK_SECS="${BLOCKED_RECHECK_SECS:-300}"
 # 判定已定、写 GitHub 连续失败多少次就放弃（留在等待标签上、记日志）
@@ -3661,16 +3664,24 @@ blocked_comment_body() {   # <判定 JSON>
 BLOCKED_WAITING=0
 BLOCKED_ACTED=0
 blocked_tick() {   # <state_file>
-    local sf="$1" rows kind num labels_csv nums="" now rec checked d1 d2 rc v stop
+    local sf="$1" rows kind num labels_csv nums="" now rec checked d1 d2 rc v stop part list_ok=1
     BLOCKED_WAITING=0; BLOCKED_ACTED=0
     blocked_enabled || return 0
     rows=""
     for kind in issue pr; do
-        rows+=$(snapshot_rows "$kind" "$LABEL_PENDING_BLOCKED" 2>/dev/null | cut -f1,4)$'\n' || true
+        # 读不到（GitHub 失败、快照解析失败）≠「没人在等」（GitHub#551）：记下来，下面不清进度
+        if part=$(snapshot_rows "$kind" "$LABEL_PENDING_BLOCKED" 2>/dev/null); then
+            rows+=$(printf '%s\n' "$part" | cut -f1,4)$'\n'
+        else
+            list_ok=0
+        fi
     done
-    # 已经不在等的条目（标签摘了、关了）清掉进度
+    # 已经不在等的条目（标签摘了、关了）清掉进度——只在 issue 和 PR 两张列表都读全时做：
+    # 编号是 issue / PR 共用的，少读一张就会把那一边所有在等的条目当成「不在等」删掉
     while IFS=$'\t' read -r num _; do [ -n "$num" ] && nums+="$num,"; done <<< "$rows"
-    if jq -e 'has("blocked_resume")' "$sf" >/dev/null 2>&1; then
+    if [ "$list_ok" != 1 ]; then
+        log "等前置：读不到打开条目列表，等待进度不清理，读到的那一边照常检查"
+    elif jq -e 'has("blocked_resume")' "$sf" >/dev/null 2>&1; then
         blocked_state_set "$sf" '.blocked_resume |= with_entries(select(.key as $k | ($keep | split(",") | index($k))))' --arg keep "$nums" || true
     fi
     now=$(pace_now)

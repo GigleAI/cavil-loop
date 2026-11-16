@@ -143,8 +143,8 @@ describe('one round: offline or not, and why', () => {
     fake.state.validTokens.delete(APP_TOKEN);
     fake.state.tokenAnswers.push({ kind: 'refresh', status: 503, body: { error: 'temporarily_unavailable' } });
     await c.syncNow();
-    // GitHub#545: the round's first request (the quotas, not counted) is the one refused
-    expect(fake.log.filter((l) => l.path === '/api/rate_limit').at(-1)).toMatchObject({ status: 401 });
+    // GitHub#545: the round's first request ("who am I", REST) is the one refused
+    expect(fake.log.filter((l) => l.operation === 'user').at(-1)).toMatchObject({ status: 401 });
     expect(refreshes()).toHaveLength(1);
     expect(sync(c)).toMatchObject({ offline: true, offlineReason: 'GitHub 暂时不可用（HTTP 503）' });
   });

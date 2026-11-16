@@ -78,6 +78,11 @@ export interface WritableState {
   failLabel: string | null;
   /** repositories where every write answers 403 (the account has read access only) */
   readOnlyRepos: Set<string>;
+  /** GitHub#559: repositories whose own read (GET /repos/o/r) answers HTTP 502, or carries no `permissions` */
+  failRepoInfo: Set<string>;
+  noPermissionsField: Set<string>;
+  /** GitHub#559: label names whose create answers 422 with a validation error other than "already exists" */
+  rejectLabelCreate: Set<string>;
   /** GitHub#381: what the markdown renderer answers, whatever was sent (a recorded rendering of GitHub's); null = the text in a <p> */
   markdownHtml: string | null;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
@@ -209,6 +214,9 @@ export function defaultWritable(): WritableState {
     titleSourceDrop: null,
     titleKept: null,
     readOnlyRepos: new Set(),
+    failRepoInfo: new Set(),
+    noPermissionsField: new Set(),
+    rejectLabelCreate: new Set(),
     markdownHtml: null,
     readOnlyProjects: new Set(),
     dropWrites: false,
@@ -576,6 +584,18 @@ export function handleRest(store: Store, method: string, path: string, body: any
     sendText(w.markdownHtml ?? `<p>${esc}</p>`);
     return true;
   }
+  // GitHub#559: the repository itself — its `permissions` say whether the account may write (create labels)
+  const rm = path.replace(/\?.*$/, '').match(/^\/api\/repos\/([^/]+)\/([^/]+)$/);
+  if (rm && method === 'GET') {
+    const rkey = `${decodeURIComponent(rm[1])}/${decodeURIComponent(rm[2])}`.toLowerCase();
+    const rknown = store.repos.has(rkey) || [...store.projects.values()].some((pages) => pages.some((p) => p.items.nodes.some((n) => n.content?.repository?.nameWithOwner?.toLowerCase() === rkey)));
+    if (!rknown) return false;
+    if (w.failRepoInfo.has(rkey)) return send(502, { message: 'Server Error' }), true;
+    const write = !w.readOnlyRepos.has(rkey);
+    const info: Record<string, unknown> = { full_name: `${decodeURIComponent(rm[1])}/${decodeURIComponent(rm[2])}` };
+    if (!w.noPermissionsField.has(rkey)) info.permissions = { admin: false, maintain: false, push: write, triage: write, pull: true };
+    return send(200, info), true;
+  }
   const m = path.match(/^\/api\/repos\/([^/]+)\/([^/]+)(\/.*)$/);
   if (!m) return false;
   const repo = `${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}`;
@@ -609,6 +629,16 @@ export function handleRest(store: Store, method: string, path: string, body: any
 
   if (w.readOnlyRepos.has(key)) return send(403, { message: 'Resource not accessible by integration' }), true;
 
+  // GitHub#559: create a label in the repository (422 when one of that name, any case, is there)
+  if (method === 'POST' && rest === '/labels') {
+    const name = String(body?.name ?? '').trim();
+    const list = w.repoLabels.get(key) ?? [];
+    if (!name || w.rejectLabelCreate.has(name)) return send(422, { message: 'Validation Failed', errors: [{ resource: 'Label', code: 'invalid', field: 'name' }] }), true;
+    if (list.some((l) => l.name.toLowerCase() === name.toLowerCase())) return send(422, { message: 'Validation Failed', errors: [{ resource: 'Label', code: 'already_exists', field: 'name' }] }), true;
+    const made = { name, color: String(body?.color ?? 'ededed'), description: String(body?.description ?? '') };
+    w.repoLabels.set(key, [...list, made]);
+    return send(201, made), true;
+  }
   if (method === 'POST' && rest === '/issues') {
     if (!body?.title) return send(422, { message: 'Validation Failed' }), true;
     let max = 0;

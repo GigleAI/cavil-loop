@@ -474,7 +474,14 @@ loaded="$(env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-lo
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
 ' _ "$REPO_DIR" $LIBKEYS 2>&1)"
-chk "这 22 项全写成空值后真实加载公共库：仍是登记表的默认值" "$loaded" "$want"
+# 例外：标签开关（label 类型）只在「没设置」时取默认（GitHub#551：${X-默认}），写成空值 = 关，加载后就是空
+want_empty="$(for k in $LIBKEYS ENABLE_CONCURRENT_WORK_HINT; do
+    if [ "$(col 3 "$k")" = label ]; then printf '%s=\n' "$k"; else printf '%s=%s\n' "$k" "$(col 4 "$k")"; fi
+done)"
+chk "这 22 项全写成空值后真实加载公共库：仍是登记表的默认值（标签开关是空 = 关）" "$loaded" "$want_empty"
+chk "到达性 · 两个默认开的标签开关：没写这一行时是标签名，写成空值时是空" \
+    "$(grep -E '^LABEL_PENDING_(BLOCKED|LATER)=' <<<"$want" | tr '\n' ' ')|$(grep -E '^LABEL_PENDING_(BLOCKED|LATER)=' <<<"$loaded" | tr '\n' ' ')" \
+    "LABEL_PENDING_BLOCKED=pending/blocked LABEL_PENDING_LATER=pending/later |LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "
 mkdir -p "$H/.config/cavil-loop"; printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$MIN/proj" "$MIN/cavil-loop.config" > "$H/.config/cavil-loop/min.conf"
 shown="$(run get min | jq -r --arg ks "$LIBKEYS ENABLE_CONCURRENT_WORK_HINT" '. as $g | $ks | split(" ")[] | . as $k | "\($k)=\($g.fields[] | select(.name == $k) | .value)"')"
 chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$shown" "$loaded"

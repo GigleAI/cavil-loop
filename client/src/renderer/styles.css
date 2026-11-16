@@ -742,9 +742,9 @@ table.items tr.repo-head:hover td { background: var(--hover); }
 .trouble-anchor { position: relative; display: inline-flex; align-items: center; }
 button.icon-btn.trouble-btn, button.icon-btn.trouble-btn:hover:not(:disabled) { color: var(--warn-icon); }
 button.icon-btn.trouble-btn.on { background: var(--warn-bg); border-color: var(--warn-border); }
-/* GitHub#545: held back to keep half of the account's quota — a yellow pill with when it lifts, not the bare ⚠️ of a failure */
-button.icon-btn.trouble-btn.quota-held { width: auto; padding: 0 8px; gap: 4px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; font-size: 12px; white-space: nowrap; }
-button.icon-btn.trouble-btn.quota-held .quota-held-text { color: var(--warn-icon); }
+/* GitHub#558: refused by GitHub's rate limit — a yellow pill with when it lifts, not the bare ⚠️ of a failure */
+button.icon-btn.trouble-btn.rate-limited { width: auto; padding: 0 8px; gap: 4px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; font-size: 12px; white-space: nowrap; }
+button.icon-btn.trouble-btn.rate-limited .rate-limited-text { color: var(--warn-icon); }
 .trouble-panel { position: absolute; top: calc(100% + 6px); right: 0; width: min(440px, calc(100vw - 32px)); z-index: 8; background: var(--raised); border: 1px solid var(--warn-border); border-radius: 10px; box-shadow: var(--shadow-lg); color: var(--fg); font-size: 13px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .trouble-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .trouble-head .icon { color: var(--warn-icon); }
@@ -1098,3 +1098,12 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 :root { --find-hl: #fff3a3; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme]) { --find-hl: #5c4a00; } }
 :root[data-theme='dark'] { --find-hl: #5c4a00; }
+
+/* GitHub#559: labels the repository lacks — create them, or what to create by hand */
+.label-setup { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; text-align: left; }
+.label-setup.guide { background: var(--warn-bg); border-color: var(--warn-border); }
+.label-setup-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.label-setup-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.label-setup-table { border-collapse: collapse; }
+.label-setup-table td { padding: 2px 12px 2px 0; vertical-align: middle; }
+.label-setup-table td:nth-child(-n + 2) { white-space: nowrap; }

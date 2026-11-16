@@ -235,7 +235,7 @@ test('GitHub#474: nothing set — the same walk reads Chinese, as before', async
   await expect(page.getByTestId('detail').getByTestId('close-issue')).toContainText('关闭 issue…');
   // the "wait for…" refusal, now worded with holes, reads word for word as the sentence it was
   await page.getByTestId('detail').getByTestId('blocked-open').click();
-  await expect(page.getByTestId('blocked-refuse')).toHaveText('这个仓库没有标签 「pending/blocked」（客户端不会替仓库新建标签）', { timeout: 15_000 });
+  await expect(page.getByTestId('blocked-refuse')).toHaveText('这个仓库没有标签 「pending/blocked」', { timeout: 15_000 });
   await expect(page.locator('[data-testid="blocked-refuse"] [data-verbatim="user"]')).toHaveText('pending/blocked');
   // the check itself is not blind: in Chinese it finds the client's own words on the same page
   expect((await chineseIn(page, ['body'])).length).toBeGreaterThan(0);

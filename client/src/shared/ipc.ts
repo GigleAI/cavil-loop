@@ -6,6 +6,7 @@ import type { ViewPatch } from './viewSettings';
 import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
+import type { LabelPermission, LabelRole } from './labelSetup';
 import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref } from './blocked';
 import type { SendAction } from './sends';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
@@ -50,6 +51,8 @@ export type BlockedView =
       fingerprint: string;
       /** set: the dialog may not confirm, and says why (labels missing in the repository, ...); the label names in it are holes shown as written (GitHub#474) */
       refuse: Said | null;
+      /** GitHub#559: set with `refuse` when the refusal is labels missing in the repository: the ones to create */
+      missingLabels?: { name: string; role: LabelRole }[];
     }
   | { ok: false; error: string };
 
@@ -105,6 +108,13 @@ export interface CavilApi {
   loadImage(src: string): Promise<ImageResult>;
   /** `fresh`: read again even when a read of this run worked (the detail's refresh button) */
   repoOptions(repo: string, fresh?: boolean): Promise<RepoOptions>;
+  /** GitHub#559: may the account create labels in the repository (read now) */
+  labelPermission(repo: string): Promise<LabelPermission>;
+  /** GitHub#559: create these labels in the repository (the controller sends, the notice area says how it went) */
+  startLabelCreate(repo: string, wants: { name: string; role: LabelRole }[]): Promise<{ ok: boolean; error: string | null; id?: number }>;
+  labelJobRetry(id: number): Promise<{ ok: boolean; error: string | null }>;
+  labelJobRecheck(id: number): Promise<{ ok: boolean; error: string | null }>;
+  labelJobDismiss(id: number): Promise<void>;
   /** GitHub#229: send a change not saved / not confirmed again (read GitHub first unless `force`), or give it up */
   resendEdit(id: string, force?: boolean): Promise<WriteResult>;
   abandonEdit(id: string): Promise<void>;

@@ -142,7 +142,7 @@ AUTO_RELEASE_MAIN_CHECKOUT=0
 # unless a blocking label stops it
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # extra blocking labels for greedy (comma-separated)
-LABEL_PENDING_LATER="pending/later"  # parked: never picked up automatically (greedy / autopilot); empty = off
+LABEL_PENDING_LATER="pending/later"  # parked: never picked up automatically (greedy / autopilot); line missing = on, empty = off
 GREEDY_SCAN_LIMIT=100
 
 # Where sort key #1 comes from: label = priority/p* labels; project = GitHub's Priority
@@ -1242,7 +1242,10 @@ still carrying it is back on autopilot** — remove them if that is not what you
 
 ## Waiting on another item: `pending/blocked` (GitHub#157)
 
-Set `LABEL_PENDING_BLOCKED` (the example config uses `pending/blocked`) and a worker whose work is blocked on **another
+On by default (GitHub#551): a config without the `LABEL_PENDING_BLOCKED` line uses `pending/blocked`; writing it as an
+empty value (`LABEL_PENDING_BLOCKED=""`) turns it off. A repository that does not have the label yet still works — GitHub
+creates it (grey, no description) the first time it is put on an item; rerunning `setup.sh` does not recolour a label that
+already exists, change its colour on the repository's Labels page if wanted. A worker whose work is blocked on **another
 issue / PR** — of this repo, or of a repo on the trusted list (GitHub#233 / #243) — and not on a human decision, records the prerequisites and puts that label on instead of
 `pending/human`. Every poll round the daemon looks at items carrying it:
 
@@ -1301,9 +1304,9 @@ other hosts than github.com, cycle detection (two items waiting on each other bo
 
 ## Parked for later: `pending/later` (GitHub#463)
 
-For items a human has decided not to work on for now. Set `LABEL_PENDING_LATER` (the example config uses `pending/later`;
-a config without the line, or with it empty, keeps the blocking list exactly as before) and the daemon never picks up an
-item carrying it on its own:
+For items a human has decided not to work on for now. On by default (GitHub#551): a config without the
+`LABEL_PENDING_LATER` line uses `pending/later`; writing it as an empty value (`LABEL_PENDING_LATER=""`) keeps the
+blocking list exactly as before. The daemon never picks up an item carrying it on its own:
 
 | Item | Daemon does |
 |---|---|
@@ -2169,9 +2172,9 @@ Only managed Linux installations fetch script-only updates automatically.
 
 ### New settings an upgrade does not add to your config
 
-An upgrade replaces the code, never your project's `cavil-loop.config`. A new feature that is **off when its line is missing** — while `cavil-loop.config.example` turns it on, so freshly installed projects have it — therefore stays off on an existing project, silently (GitHub#289: the waiting label `pending/blocked` stayed off on a project whose maintainer thought it was live). The keys this applies to are registered as `notice` in [`scripts/config-notices.txt`](../scripts/config-notices.txt); every other key of the template is registered there as `quiet`, with the reason (same behaviour when missing, required, example value, permission flag).
+An upgrade replaces the code, never your project's `cavil-loop.config`. A new feature that is **off when its line is missing** — while `cavil-loop.config.example` turns it on, so freshly installed projects have it — therefore stays off on an existing project, silently (GitHub#289: the waiting label `pending/blocked` stayed off on a project whose maintainer thought it was live; since GitHub#551 that label and the parked label are on when their line is missing). The keys this applies to are registered as `notice` in [`scripts/config-notices.txt`](../scripts/config-notices.txt); every other key of the template is registered there as `quiet`, with the reason (same behaviour when missing, required, example value, permission flag).
 
-Each scheduled poll the daemon checks those keys against what the config (plus the systemd environment file) actually sets. An empty value such as `LABEL_PENDING_BLOCKED=""` counts as "decided: off" and is never reported. Each key that is missing gets one line in `poll.log` (`⚠️ 配置提示：本项目配置里没有 <KEY> …`, with the template line that turns it on and the value that keeps it off) — once per key; a key that is added and later removed again is logged again.
+Each scheduled poll the daemon checks those keys against what the config (plus the systemd environment file) actually sets. An empty value such as `ENABLE_CONCURRENT_WORK_HINT=""` counts as "decided: off" and is never reported. Each key that is missing gets one line in `poll.log` (`⚠️ 配置提示：本项目配置里没有 <KEY> …`, with the template line that turns it on and the value that keeps it off) — once per key; a key that is added and later removed again is logged again.
 
 That log line is all it does (GitHub#428). The daemon sends no GitHub call for this: it opens no issue, and a notice issue an earlier version opened is neither commented on nor closed — close it by hand. A `CONFIG_NOTICE_ISSUE` line still in an old config is ignored and can stay. The daemon never edits the config. This runs only in the scheduled poller (started through `poll-entry.sh`): running `agent-poll.sh` by hand for a dry run, or from inside a worker session, writes nothing. State lives in `$STATE_DIR/config-notice.json`; deleting it only means "judge afresh" (at worst each missing key is logged once more).
 

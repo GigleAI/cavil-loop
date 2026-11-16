@@ -10,6 +10,7 @@ import type { Lang, LangSetting, Said } from './i18n';
 import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
+import type { LabelJob } from './labelSetup';
 import type { Handoff } from './handoff';
 import type { CreatePlan, Picks } from './actions';
 
@@ -499,8 +500,6 @@ export interface SourceStatus {
   dataFrom: number | null;
   /** GitHub#374: the failure was GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
-  /** GitHub#545: not read because the quota guard held it back (not a failure: nothing was asked; not counted) */
-  quotaHeld?: boolean;
   /** GitHub#401: what kind of failure (shared/readFailure.ts); absent on a status saved before = shown as a plain failure */
   failure?: ReadFailure;
   /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
@@ -517,6 +516,8 @@ export interface SourceRetry {
   nextAt: number | null;
   /** rate limited: no read before this (epoch ms); null = not rate limited */
   limitedUntil: number | null;
+  /** GitHub#558, rate limited: `limitedUntil` is a time GitHub gave; false / absent = the client's own wait */
+  limitedSaid?: boolean;
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';
@@ -665,28 +666,6 @@ export interface SyncState {
   problem: string | null;
   /** GitHub#473: the same message with its own words and the outside words apart (the back end's, or the window's own); absent / null = show `problem` as it is */
   problemSaid?: Said | null;
-  /**
-   * GitHub#545: the account's hourly GitHub quotas as the latest round read them (null = not read this
-   * round), and until when nothing is sent after a restart (0 = not waiting)
-   */
-  quota?: SyncQuota | null;
-}
-
-/** GitHub#545: one hourly quota as the window shows it */
-export interface SyncQuotaBucket {
-  limit: number;
-  used: number;
-  remaining: number;
-  resetAt: number;
-  /** reserved for requests whose outcome is not known */
-  reserved: number;
-}
-
-export interface SyncQuota {
-  graphql: SyncQuotaBucket | null;
-  core: SyncQuotaBucket | null;
-  /** no request before this after a restart (epoch ms); 0 = not waiting */
-  quietUntil: number;
 }
 
 /** 'oauth' = an OAuth app (the default); 'github-app' = a GitHub App the user chose */
@@ -788,6 +767,8 @@ export interface AppState {
   ops: OpRecord[];
   /** GitHub#489: replies / edits / ticked boxes sent for the window, oldest first (see shared/sends.ts) */
   sends: SendRecord[];
+  /** GitHub#559: presses of "建标签" (labels a button needs, created in a repository), oldest first (see shared/labelSetup.ts) */
+  labelJobs: LabelJob[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

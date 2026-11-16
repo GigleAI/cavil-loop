@@ -32,7 +32,8 @@ import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
 import { IterationOptions, localToday } from './iterationOptions';
 import { currentIterationNames, foldSummary, iterationOptionLabel, iterationPickText, milestoneText } from '../data/newIssueFields';
 import { sortRepos } from '../shared/repoOrder';
-import { checkHandoff, handoffProblem, handoffSummary, type HandoffCheck, type LabelRead } from '../shared/handoff';
+import { checkHandoff, handoffProblem, handoffSummary, missingHandoffLabels, type HandoffCheck, type LabelRead } from '../shared/handoff';
+import { LabelSetupBox } from './LabelSetupBox';
 
 /** GitHub#450: the two buttons that create the issue and hand it over at once */
 type HandOver = 'agent' | 'autopilot';
@@ -134,11 +135,25 @@ export function NewIssueDialog({
           if (seq === readSeq.current) setOpts(o);
         });
   }, [repo]);
+  // GitHub#559: read the repository's labels again (a label created here or by someone else) — the picks stay;
+  // the same sequence as a pick of a repository, so only the newest read of the repository shown now lands
+  const reread = () => {
+    const seq = ++readSeq.current;
+    const now = repo;
+    if (now)
+      api()
+        .repoOptions(now, true)
+        .then((o) => {
+          if (seq === readSeq.current) setOpts(o);
+        });
+  };
   const read: MilestoneRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', milestones: opts.milestones };
   const labelRead: LabelRead = !opts ? { state: 'loading' } : opts.error ? { state: 'error', error: opts.error } : { state: 'ok', names: opts.labels.map((l) => l.name) };
   // GitHub#450: 交给 agent / 托管 are buttons that create at once; each is usable only when its labels are known to be there
   const choices: HandOver[] = hb.autopilot.trim() ? ['agent', 'autopilot'] : ['agent'];
   const checks = Object.fromEntries(choices.map((h) => [h, checkHandoff(h, hb, labelRead)])) as Record<HandOver, HandoffCheck>;
+  // GitHub#559: the labels these buttons need that the repository was read without, once each, with the part each plays
+  const missingWants = missingHandoffLabels(choices.map((h) => checks[h]), hb);
   // the Projects ticked in the dialog, in the order they are listed: the ones the issue joins, and what a group's "+" fills in (GitHub#214)
   const ticked = allProjects.filter((p) => projects.includes(p.key));
   // GitHub#258: the boards left unticked are watched for taking the issue in by themselves
@@ -267,11 +282,16 @@ export function NewIssueDialog({
           })}
         </span>
       }
-      footnote={[...new Set(choices.filter((h) => checks[h].state !== 'ok' && checks[h].state !== 'loading').map((h) => handoffProblem(repo, checks[h])))].map((why) => (
-        <div key={why} className="small muted dialog-footnote" data-testid="new-issue-handoff-why">
-          {why}
-        </div>
-      ))}
+      footnote={
+        <>
+          {[...new Set(choices.filter((h) => checks[h].state !== 'ok' && checks[h].state !== 'loading').map((h) => handoffProblem(repo, checks[h])))].map((why) => (
+            <div key={why} className="small muted dialog-footnote" data-testid="new-issue-handoff-why">
+              {why}
+            </div>
+          ))}
+          <LabelSetupBox repo={repo} wants={missingWants} state={state} onReread={reread} testid="new-issue-labels" />
+        </>
+      }
     >
       <div className="form" data-testid="new-issue">
         <label>

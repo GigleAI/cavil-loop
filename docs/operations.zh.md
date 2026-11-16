@@ -129,7 +129,7 @@ AUTO_RELEASE_MAIN_CHECKOUT=0
 # 派工口径：label = 只捡打了 pending/agent 的；greedy = 开着的都干，除非被挡工 label 挡住
 DISPATCH_MODE="label"
 GREEDY_SKIP_LABELS=""            # greedy 下额外的挡工 label（逗号分隔，追加在内置五个之后）
-LABEL_PENDING_LATER="pending/later"  # 暂缓：greedy / 托管都不自动捞它开工；留空 = 关闭
+LABEL_PENDING_LATER="pending/later"  # 暂缓：greedy / 托管都不自动捞它开工；没写这一行 = 开，写成空值 = 关闭
 GREEDY_SCAN_LIMIT=100
 
 # 第一排序键从哪儿来：label = priority/p* 标签；project = GitHub 的 Priority 字段；both = 前者优先、缺了回落标签
@@ -1000,7 +1000,9 @@ issue 上残留的托管标签在关着时不起作用，但**以后再打开托
 
 ## 等前置：`pending/blocked`（GitHub#157）
 
-配了 `LABEL_PENDING_BLOCKED`（示例配置写的是 `pending/blocked`）后，worker 的活卡在**别的 issue / PR** 上——本仓库的，或互通名单里别的仓库的（GitHub#233 / #243）
+默认开启（GitHub#551）：配置里没有 `LABEL_PENDING_BLOCKED` 这一行 = 用 `pending/blocked`；写成空值（`LABEL_PENDING_BLOCKED=""`）= 关闭。
+仓库里还没有这个标签也能用——第一次挂上时 GitHub 会自动建出（灰色、无说明）；重跑 `setup.sh` 不会改已存在标签的颜色，要改在仓库的
+Labels 页面改。开着时 worker 的活卡在**别的 issue / PR** 上——本仓库的，或互通名单里别的仓库的（GitHub#233 / #243）
 ——而不是卡在要人拍板时，登记前置、挂这个标签，不再翻 `pending/human`。daemon 每轮看挂着它的条目：
 
 | 前置的情况 | daemon 做什么 |
@@ -1045,8 +1047,8 @@ issue 就是等它合并；只有正文写 `Refs #N` 的老托管 PR，issue 合
 
 ## 暂缓：`pending/later`（GitHub#463）
 
-给人决定「暂时不做」的条目用。配了 `LABEL_PENDING_LATER`（示例配置写的是 `pending/later`；配置里没这一行或写成空值 = 关闭，
-挡工名单和以前一样）后，挂着它的条目 daemon 不会自己捞去开工：
+给人决定「暂时不做」的条目用。默认开启（GitHub#551）：配置里没有 `LABEL_PENDING_LATER` 这一行 = 用 `pending/later`；写成空值
+（`LABEL_PENDING_LATER=""`）= 关闭，挡工名单和以前一样。开着时挂着它的条目 daemon 不会自己捞去开工：
 
 | 条目 | daemon 做什么 |
 |---|---|
@@ -1840,9 +1842,9 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 ### 升级不会自动补上的新配置
 
-升级换的是代码，不动项目自己的 `cavil-loop.config`。新功能若是**配置里不写就关**、而 `cavil-loop.config.example` 里是开的（新装项目因此默认就有），老项目上它就一直关着，没有任何提示（GitHub#289：等前置标签 `pending/blocked` 在老项目上一直没开，维护者以为早已生效）。这类配置项在 [`scripts/config-notices.txt`](../scripts/config-notices.txt) 里登记为 `notice`；模板里其余每一项都登记为 `quiet` 并写明原因（不写时行为相同、必填项、示例值、权限参数）。
+升级换的是代码，不动项目自己的 `cavil-loop.config`。新功能若是**配置里不写就关**、而 `cavil-loop.config.example` 里是开的（新装项目因此默认就有），老项目上它就一直关着，没有任何提示（GitHub#289：等前置标签 `pending/blocked` 在老项目上一直没开，维护者以为早已生效；GitHub#551 起它和暂缓标签改成没写这一行就开）。这类配置项在 [`scripts/config-notices.txt`](../scripts/config-notices.txt) 里登记为 `notice`；模板里其余每一项都登记为 `quiet` 并写明原因（不写时行为相同、必填项、示例值、权限参数）。
 
-daemon 每轮调度轮询把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `LABEL_PENDING_BLOCKED=""`）算「已决定不开」，不会被提示。每个缺项在 `poll.log` 里写一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`，附上要开时照抄的模板行和不开时写的值）——每项一次；补上又去掉的项会再写一次。
+daemon 每轮调度轮询把这些项和配置（加上 systemd 环境文件）实际设置的值对一遍。写成空值（如 `ENABLE_CONCURRENT_WORK_HINT=""`）算「已决定不开」，不会被提示。每个缺项在 `poll.log` 里写一行（`⚠️ 配置提示：本项目配置里没有 <KEY> …`，附上要开时照抄的模板行和不开时写的值）——每项一次；补上又去掉的项会再写一次。
 
 它只做这一件事（GitHub#428）：这件事上 daemon 不发任何 GitHub 调用，不开提示 issue；早先版本开过的提示 issue 不评论、也不再自动关，由人手动关掉。老配置里还写着的 `CONFIG_NOTICE_ISSUE` 一行不再起作用，留着无害。daemon 从不改配置。只在调度器经 `poll-entry.sh` 起的轮询里运行：手动直接跑 `agent-poll.sh` 试跑、或在 worker 会话里跑，都不写。状态在 `$STATE_DIR/config-notice.json`，删掉它只意味着「重新判断一次」（最坏每个缺项的日志多写一次）。
 
