@@ -11,8 +11,9 @@
 #      （= 开、2 天）；改成 5 天后 3 天没更新的也交回；关掉后什么都不做
 #   4. 有新合并时刷新常驻正式站（GitHub#554）：不写 = 不刷新；用 project-config.sh 打开后，同样的合并触发刷新
 #   5. 冲突检查判不出时重试几轮（GitHub#555）：不写 = 第 10 轮放弃这一版；用 project-config.sh 改成 3 后第 3 轮放弃
-#   6. 「开着的都派」每轮扫几条（GitHub#555）：0 / 1 / 9 位 / 10 位 / 20 位，各在本机 GNU head 和一个照 macOS head
-#      行为做的替身（-n 只收 1 到 2^31-1）下跑真实轮询，两边派出去的条数一样
+#   6. 「开着的都派」每轮扫几条（GitHub#555）：0 / 1 / 9 位 / 10 位 / 20 位，以及手写配置里带前导 0 的写法
+#      （0000000000、0000000001、20 位长的 1、前导 0 的 10 亿），各在本机 GNU head 和一个照 macOS head 行为做的替身
+#      （-n 只收 1 到 2^31-1）下跑真实轮询：派出去的条数按数值算，两边一样
 #   7. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
 #      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
 #      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
@@ -252,7 +253,9 @@ for a in "\$@"; do
     n=""; is_n=0
     if [ "\$prev" = -n ]; then n="\$a"; is_n=1; else case "\$a" in -n?*) n="\${a#-n}"; is_n=1 ;; esac; fi
     if [ "\$is_n" = 1 ]; then
-        if ! [[ "\$n" =~ ^[0-9]{1,10}\$ ]] || [ "\$n" -le 0 ] || [ "\$n" -gt 2147483647 ]; then
+        # strtol 读的是数值：前导 0 不算位数（0000000001 = 1）
+        v="\${n#"\${n%%[!0]*}"}"; [ -n "\$v" ] || v=0
+        if ! [[ "\$n" =~ ^[0-9]+\$ ]] || ! [[ "\$v" =~ ^[0-9]{1,10}\$ ]] || [ "\$v" -le 0 ] || [ "\$v" -gt 2147483647 ]; then
             echo "head: illegal line count -- \$n" >&2; exit 1
         fi
     fi
@@ -261,9 +264,9 @@ done
 exec "$REAL_HEAD" "\$@"
 SH
 chmod +x "$SANDBOX/bsdbin/head"
-chk "替身 head 像 macOS：-n 0 / 2147483648 报错，-n 2 / -2 照常" \
-    "$(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 0 >/dev/null 2>&1; echo $?) $(printf 'a\n' | "$SANDBOX/bsdbin/head" -n 2147483648 >/dev/null 2>&1; echo $?) $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 2 | wc -l | tr -d ' ') $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -2 | wc -l | tr -d ' ')" \
-    "1 1 2 2"
+chk "替身 head 像 macOS：-n 0 / 0000000000 / 2147483648 报错，-n 2 / -2 / 00000000000000000002 照常" \
+    "$(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 0 >/dev/null 2>&1; echo $?) $(printf 'a\n' | "$SANDBOX/bsdbin/head" -n 0000000000 >/dev/null 2>&1; echo $?) $(printf 'a\n' | "$SANDBOX/bsdbin/head" -n 2147483648 >/dev/null 2>&1; echo $?) $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 2 | wc -l | tr -d ' ') $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -2 | wc -l | tr -d ' ') $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 00000000000000000002 | wc -l | tr -d ' ')" \
+    "1 1 1 2 2 2"
 greedy_round() {   # <扫描条数> <gnu|bsd> → 这一轮起了几个 worker 会话
     local c2="$W/greedy.config"
     { cat "$CONF"; printf 'DISPATCH_MODE="greedy"\nMAX_CONCURRENT_WORKERS=5\nGREEDY_SCAN_LIMIT=%s\n' "$1"
@@ -277,10 +280,15 @@ for flavor in gnu bsd; do
     got=""
     for v in 0 1 999999999 2147483648 18446744073709551616; do got="$got $v:$(greedy_round "$v" "$flavor")"; done
     chk "$flavor head：扫 0 条不派、1 条派 1 个、9 位 / 10 位 / 20 位都把两条派完" "$got" " 0:0 1:1 999999999:2 2147483648:2 18446744073709551616:2"
+    # 配置窗口不让写前导 0，但手写的已有配置照样被 daemon 读：按数值算，不按写了几位（复审第 4 轮）
+    got=""
+    for v in 0000000000 0000000001 00000000000000000001 00001000000000; do got="$got $v:$(greedy_round "$v" "$flavor")"; done
+    chk "$flavor head：带前导 0 的写法按数值算——十个 0 不派、0000000001 和 20 位长的 1 只派 1 个、前导 0 的 10 亿派完" \
+        "$got" " 0000000000:0 0000000001:1 00000000000000000001:1 00001000000000:2"
 done
 # 每轮对 issue、PR 各扫一次：每个交给 head 的数在记录里出现两次
-chk "到达性 · bsd 那一组轮询真的用了替身 head：9 位的扫描条数交给了它，10 位及以上的没交给它" \
-    "$(grep -cx -- '-n 999999999' "$SANDBOX/bsdhead.log") $(grep -cxE -- '-n (0|1)' "$SANDBOX/bsdhead.log" | tr -d ' ') $(grep -cE -- '-n [0-9]{10,}' "$SANDBOX/bsdhead.log")" "2 4 0"
+chk "到达性 · bsd 那一组轮询真的用了替身 head：9 位的、带前导 0 的小数交给了它，数值到 10 亿的没交给它" \
+    "$(grep -cx -- '-n 999999999' "$SANDBOX/bsdhead.log") $(grep -cxE -- '-n (0|1)' "$SANDBOX/bsdhead.log" | tr -d ' ') $(grep -cxE -- '-n (0000000000|0000000001|00000000000000000001)' "$SANDBOX/bsdhead.log") $(grep -cE -- '-n 0*[1-9][0-9]{9,}$' "$SANDBOX/bsdhead.log")" "2 4 6 0"
 chk "登记表：扫描条数从 0 起、不设上限" "$(grep -E '^GREEDY_SCAN_LIMIT ' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{gsub(/ /, "", $3); print $3}')" "int:0:"
 
 echo "【7】复盘用的模型：真实复盘入口实际交给模型程序的 --model"
