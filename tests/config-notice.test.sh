@@ -96,10 +96,11 @@ POLL_BACKOFF_LADDER=""
 POLL_IDLE_PROBE=false
 PRICE_AUTO_FETCH=0
 MAX_CONCURRENT_WORKERS=0
-# 这份「老项目配置」对别的 notice 项都已经拿过主意（写成空值 = 决定不开），只剩等前置标签那一项没写：
-# 下面每一组都以「恰好缺 LABEL_PENDING_BLOCKED 一项」为起点
+# 这份「老项目配置」对别的 notice 项都已经拿过主意（写成空值 = 决定不开），只剩用量上限停派那一项没写：
+# 下面每一组都以「恰好缺 ENABLE_USAGE_LIMIT_PAUSE 一项」为起点。
+# （GitHub#551 以前这里拿等前置标签当样例；它改成没写就开以后登记成 quiet，这里写空值让它和改动前一样关着）
 ENABLE_CONCURRENT_WORK_HINT=""
-ENABLE_USAGE_LIMIT_PAUSE=""
+LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
 AUTOPILOT_OUTSIDER_GUARD=""
 AUTOPILOT_OUTSIDER_SCREEN=""
@@ -143,7 +144,7 @@ legacy_issue() {
     jq '.["1"] = ["pending/human"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
 }
 
-echo "【1】缺等前置那一行：只写一行轮询日志，不开 issue；老配置里写着 CONFIG_NOTICE_ISSUE=true 也一样"
+echo "【1】缺用量上限停派那一行：只写一行轮询日志，不开 issue；老配置里写着 CONFIG_NOTICE_ISSUE=true 也一样"
 for extra in "" "CONFIG_NOTICE_ISSUE=true"; do
     what="${extra:-配置里没有开关那一行}"
     fresh ${extra:+"$extra"}
@@ -151,29 +152,29 @@ for extra in "" "CONFIG_NOTICE_ISSUE=true"; do
     for _ in 1 2 3; do tick; cat "$CALLS" >> "$SANDBOX/all.calls"; done
     chk "$what：三轮合计零创建、零提示 issue 调用、仓库里没有条目" \
         "$(grep -cE "^gh api -X POST $R/issues " "$SANDBOX/all.calls")/$(grep -cE "^gh api( -X [A-Z]+)? $R/issues( |/[0-9]+( |/comments))" "$SANDBOX/all.calls")/$(n_items)" "0/0/0"
-    chk "$what：日志写了一行（这一轮确实跑到了比对），不重复写" "$(log_has '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED')" 1
+    chk "$what：日志写了一行（这一轮确实跑到了比对），不重复写" "$(log_has '配置提示：本项目配置里没有 ENABLE_USAGE_LIMIT_PAUSE')" 1
     chk "$what：日志给出模板里那一行和不开写什么" \
-        "$(log_has '里加 LABEL_PENDING_BLOCKED="pending/blocked"；不开就写 LABEL_PENDING_BLOCKED=""')" 1
-    chk "$what：状态只记日志" "$(nst .)" '{"logged":["LABEL_PENDING_BLOCKED"]}'
+        "$(log_has '里加 ENABLE_USAGE_LIMIT_PAUSE=true；不开就写 ENABLE_USAGE_LIMIT_PAUSE=""')" 1
+    chk "$what：状态只记日志" "$(nst .)" '{"logged":["ENABLE_USAGE_LIMIT_PAUSE"]}'
     chk "$what：这一轮确实跑到了 GitHub" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
 done
 fresh 'CONFIG_NOTICE_ISSUE=true'; ticks_calls "$NEW" > "$SANDBOX/miss.calls"
-fresh 'LABEL_PENDING_BLOCKED=""'; ticks_calls "$NEW" > "$SANDBOX/full.calls"
+fresh 'ENABLE_USAGE_LIMIT_PAUSE=""'; ticks_calls "$NEW" > "$SANDBOX/full.calls"
 chk "缺项的项目和配置写全的项目：两轮合计 GitHub 调用逐条一致" "$(diff "$SANDBOX/miss.calls" "$SANDBOX/full.calls" >/dev/null && echo same || echo diff)" same
 
 echo "【2】写进配置（空值 = 明确不开，或开启值）：从记录里去掉；之后再删掉那一行，日志再写一次"
-for val in '""' '"pending/blocked"'; do
+for val in '""' 'true'; do
     fresh
     tick
-    conf_set "LABEL_PENDING_BLOCKED=$val"
+    conf_set "ENABLE_USAGE_LIMIT_PAUSE=$val"
     tick
     chk "写成 $val：记录清空、零提示 issue 调用" "$(nst .)/$(notice_calls)" '{"logged":[]}/0'
     tick
-    chk "写成 $val：日志没有多写" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
+    chk "写成 $val：日志没有多写" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" 1
 done
-sed -i '/^LABEL_PENDING_BLOCKED=/d' "$CONF"
+sed -i '/^ENABLE_USAGE_LIMIT_PAUSE=/d' "$CONF"
 tick
-chk "删掉之后：日志再写一次、记录里又有它" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(nst .logged)" '2/["LABEL_PENDING_BLOCKED"]'
+chk "删掉之后：日志再写一次、记录里又有它" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')/$(nst .logged)" '2/["ENABLE_USAGE_LIMIT_PAUSE"]'
 
 echo "【2c】由 systemd 环境文件给的值也算已设置（三轮输入只差这一个环境变量，都走调度路径）"
 env_tick() {   # <环境变量赋值，空 = 不设>
@@ -183,33 +184,33 @@ env_tick() {   # <环境变量赋值，空 = 不设>
         bash "$NEW/scripts/agent-poll.sh" >/dev/null 2>&1
 }
 env_tick ""
-chk "环境里没有这一行：写日志（证明这一组确实走进了比对）" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(nst .logged)" '1/["LABEL_PENDING_BLOCKED"]'
-env_tick 'LABEL_PENDING_BLOCKED='
+chk "环境里没有这一行：写日志（证明这一组确实走进了比对）" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')/$(nst .logged)" '1/["ENABLE_USAGE_LIMIT_PAUSE"]'
+env_tick 'ENABLE_USAGE_LIMIT_PAUSE='
 chk "环境里给空值：不写日志、不写状态文件" "$(log_has '配置提示')/$(nst .)" "0/无"
 chk "（这一轮确实跑到了 GitHub）" "$([ -s "$CALLS" ] && echo yes || echo no)" yes
-env_tick 'LABEL_PENDING_BLOCKED=pending/blocked'
+env_tick 'ENABLE_USAGE_LIMIT_PAUSE=true'
 chk "环境里给开启值：不写日志、不写状态文件" "$(log_has '配置提示')/$(nst .)" "0/无"
 
 echo "【3】早先版本留下的提示 issue 和记录：不读、不评论、不关，记录里的旧字段丢掉"
 # 仍缺、旧记录里已写过日志：这一轮没有新日志要写，旧字段也要丢掉
 fresh
 legacy_issue
-echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
+echo '{"issue":1,"logged":["ENABLE_USAGE_LIMIT_PAUSE"],"issued":["ENABLE_USAGE_LIMIT_PAUSE"]}' > "$NSTATE"
 tick "$NEW2"
 chk "出现新缺项：零创建、不碰那条 issue、零评论" "$(creates)/$(on_issue 1)/$(comments_on 1)" "0/0/0"
 chk "那条 issue 原样开着、标签不动" "$(item 1 .state)/$(labels_of 1)" "open/pending/human"
-chk "只为新缺项写一行日志（这一轮确实跑到了比对）" "$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "1/0"
-chk "记录只剩 logged" "$(nst .)" '{"logged":["DEMO_NEW_FEATURE","LABEL_PENDING_BLOCKED"]}'
+chk "只为新缺项写一行日志（这一轮确实跑到了比对）" "$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" "1/0"
+chk "记录只剩 logged" "$(nst .)" '{"logged":["DEMO_NEW_FEATURE","ENABLE_USAGE_LIMIT_PAUSE"]}'
 fresh
 legacy_issue
-echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
+echo '{"issue":1,"logged":["ENABLE_USAGE_LIMIT_PAUSE"],"issued":["ENABLE_USAGE_LIMIT_PAUSE"]}' > "$NSTATE"
 tick
-chk "缺项没变、没有新日志：旧字段照样丢掉" "$(nst .)/$(log_has '配置提示')" '{"logged":["LABEL_PENDING_BLOCKED"]}/0'
+chk "缺项没变、没有新日志：旧字段照样丢掉" "$(nst .)/$(log_has '配置提示')" '{"logged":["ENABLE_USAGE_LIMIT_PAUSE"]}/0'
 chk "不碰那条 issue" "$(on_issue 1)/$(item 1 .state)" "0/open"
 # 缺项都补上了：早先版本会关掉提示 issue，现在不关
-fresh 'LABEL_PENDING_BLOCKED=""'
+fresh 'ENABLE_USAGE_LIMIT_PAUSE=""'
 legacy_issue
-echo '{"issue":1,"logged":["LABEL_PENDING_BLOCKED"],"issued":["LABEL_PENDING_BLOCKED"]}' > "$NSTATE"
+echo '{"issue":1,"logged":["ENABLE_USAGE_LIMIT_PAUSE"],"issued":["ENABLE_USAGE_LIMIT_PAUSE"]}' > "$NSTATE"
 tick
 chk "缺项都补上：不重读、不关那条 issue" "$(on_issue 1)/$(n_calls "^gh api -X PATCH ")/$(item 1 .state)" "0/0/open"
 chk "记录清空、只剩 logged" "$(nst .)" '{"logged":[]}'
@@ -220,7 +221,7 @@ echo "【4】登记表里新加了一项：新缺项多写一行日志，仍不�
 fresh
 tick
 tick "$NEW2"
-chk "零创建、日志各一行" "$(creates)/$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "0/1/1"
+chk "零创建、日志各一行" "$(creates)/$(log_has '没有 DEMO_NEW_FEATURE')/$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" "0/1/1"
 chk "日志给出模板里的那一行" "$(log_has '里加 DEMO_NEW_FEATURE="on"；')" 1
 tick "$NEW2"
 chk "再下一轮：不重复写" "$(log_has '没有 DEMO_NEW_FEATURE')" 1
@@ -228,7 +229,7 @@ chk "再下一轮：不重复写" "$(log_has '没有 DEMO_NEW_FEATURE')" 1
 echo "【4b】改了名的设置（GitHub#356）：配置里只写着旧名字 = 没写，照常提示新名字；旧记录里的旧名字不拦这一次"
 OLD_KEY="CONCURRENT_WORK_HINT"; NEW_KEY="ENABLE_CONCURRENT_WORK_HINT"
 only_old_name() { sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"; conf_set "$OLD_KEY=\"true\""; }
-fresh 'LABEL_PENDING_BLOCKED=""'
+fresh 'ENABLE_USAGE_LIMIT_PAUSE=""'
 only_old_name
 tick
 chk "只写旧名字：日志点名新名字、给出新名字那一行" "$(log_has "没有 ${NEW_KEY}，")/$(log_has "里加 $NEW_KEY=true；")" "1/1"
@@ -236,7 +237,7 @@ chk "零创建；记下的是新名字" "$(creates)/$(nst .logged)" "0/[\"$NEW_K
 conf_set "$NEW_KEY=\"true\""
 tick
 chk "补上新名字那一行后清空" "$(nst .logged)" "[]"
-fresh 'LABEL_PENDING_BLOCKED=""'
+fresh 'ENABLE_USAGE_LIMIT_PAUSE=""'
 echo "{\"logged\":[\"$OLD_KEY\"]}" > "$NSTATE"
 sed -i "/^$NEW_KEY=/d; /^$OLD_KEY=/d" "$CONF"
 tick
@@ -246,8 +247,8 @@ echo "【5】状态文件读不懂：写一行说明，按全新状态重来"
 fresh
 echo 'not json' > "$NSTATE"
 tick
-chk "说明一行 + 缺项日志一行" "$(log_has '读不懂，按全新状态重来')/$(log_has '没有 LABEL_PENDING_BLOCKED')" "1/1"
-chk "状态改写成正常形状、零创建" "$(nst .)/$(creates)" '{"logged":["LABEL_PENDING_BLOCKED"]}/0'
+chk "说明一行 + 缺项日志一行" "$(log_has '读不懂，按全新状态重来')/$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" "1/1"
+chk "状态改写成正常形状、零创建" "$(nst .)/$(creates)" '{"logged":["ENABLE_USAGE_LIMIT_PAUSE"]}/0'
 
 echo "【10】不是调度器起的轮询：不写日志、不写状态"
 fresh
@@ -264,7 +265,7 @@ export TMUX_ENV_LOG="$W/tmux-env.log"; : > "$TMUX_ENV_LOG"
 tick
 chk "子进程确实被调起过" "$([ -s "$TMUX_ENV_LOG" ] && echo yes || echo no)" yes
 chk "子进程都看不到调度标记" "$(sort -u "$TMUX_ENV_LOG" | tr '\n' ' ')" "none "
-chk "这一轮本身认得是调度器起的（写了日志）" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
+chk "这一轮本身认得是调度器起的（写了日志）" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" 1
 unset TMUX_ENV_LOG
 
 echo "【10c】经真实调度入口 poll-entry.sh：写日志，不开 issue"
@@ -272,7 +273,7 @@ fresh 'CONFIG_NOTICE_ISSUE=true'
 : > "$CALLS"
 env -u CODING_AGENT_RELEASE_ROOT CAVIL_DEPLOY_CONF="$SANDBOX/no-deploy.conf" CAVIL_DEPLOY_ROOT="$SANDBOX/no-deploy" \
     CODING_AGENT_CONFIG="$CONF" PATH="$SANDBOX/bin:$PATH" bash "$NEW/scripts/poll-entry.sh" >/dev/null 2>&1
-chk "日志一行、零创建、零提示 issue 调用" "$(log_has '没有 LABEL_PENDING_BLOCKED')/$(creates)/$(notice_calls)" "1/0/0"
+chk "日志一行、零创建、零提示 issue 调用" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')/$(creates)/$(notice_calls)" "1/0/0"
 
 echo "【11】和改动前逐条一致：配置都写全的项目；缺项的项目对改动前只写日志的跑法"
 same_calls() {   # <描述> <改动前那份的配置行> <当前这份的配置行>
@@ -284,9 +285,9 @@ same_calls() {   # <描述> <改动前那份的配置行> <当前这份的配置
         chk "$what：确实发过调用（不是早退）" "$([ -s "$SANDBOX/new.calls" ] && echo yes || echo no)" yes
     fi
 }
-same_calls "配置全写了" 'LABEL_PENDING_BLOCKED=""' 'LABEL_PENDING_BLOCKED=""'
+same_calls "配置全写了" 'ENABLE_USAGE_LIMIT_PAUSE=""' 'ENABLE_USAGE_LIMIT_PAUSE=""'
 same_calls "缺一项（改动前只写日志 / 当前写着开 issue 的老开关）" 'CONFIG_NOTICE_ISSUE=false' 'CONFIG_NOTICE_ISSUE=true'
-chk "缺一项：当前这份确实写了日志" "$(log_has '没有 LABEL_PENDING_BLOCKED')" 1
+chk "缺一项：当前这份确实写了日志" "$(log_has '没有 ENABLE_USAGE_LIMIT_PAUSE')" 1
 
 echo "【12】登记表：模板里每个配置项都登记了，登记的都在模板里，说明字段齐全"
 # 守的是以后：往模板里加新配置项却没决定老项目要不要被提示，这里就红。
@@ -358,7 +359,7 @@ mism=$(paste "$SANDBOX/cls/a" "$SANDBOX/cls/b" | awk -F'\t' '
     $2 == "notice" && ($3 == $6) { print "notice 但不写时和模板一样:", $1 }')
 chk "分类与公共库的默认值一致" "$mism" ""
 chk "核对确实覆盖到了 notice 项（不写时是空、模板里开）" \
-    "$(awk -F'\t' '$1 == "LABEL_PENDING_BLOCKED" { print $3 }' "$SANDBOX/cls/a")|$(awk -F'\t' '$1 == "LABEL_PENDING_BLOCKED" { print $3 }' "$SANDBOX/cls/b")" "|pending/blocked"
+    "$(awk -F'\t' '$1 == "ENABLE_USAGE_LIMIT_PAUSE" { print $3 }' "$SANDBOX/cls/a")|$(awk -F'\t' '$1 == "ENABLE_USAGE_LIMIT_PAUSE" { print $3 }' "$SANDBOX/cls/b")" "|true"
 chk "核对覆盖的 quiet 项不止几个" "$([ "$(awk -F'\t' '$2 == "quiet" && $3 != "<unset>"' "$SANDBOX/cls/a" | wc -l)" -ge 30 ] && echo yes || echo no)" yes
 
 echo "【14】运维文档里的查看步骤：中英文两份一字不差，在干净 shell 里按原样执行"
@@ -383,20 +384,20 @@ chk "还没跑过：找到了配置和状态目录" "$(grep -cxF "config: $CONF"
 chk "还没跑过：说明没有状态文件，不报错" "$(grep -c '^no config-notice.json' <<<"$out")/$(grep -c 'No such file' <<<"$out")" "1/0"
 tick
 out=$(run_ops)
-chk "跑过一轮：列出缺项" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":["LABEL_PENDING_BLOCKED"]}'
-chk "跑过一轮：日志里那一行也列出来" "$(grep -c '配置提示：本项目配置里没有 LABEL_PENDING_BLOCKED' <<<"$out")" 1
-conf_set 'LABEL_PENDING_BLOCKED=""'
+chk "跑过一轮：列出缺项" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":["ENABLE_USAGE_LIMIT_PAUSE"]}'
+chk "跑过一轮：日志里那一行也列出来" "$(grep -c '配置提示：本项目配置里没有 ENABLE_USAGE_LIMIT_PAUSE' <<<"$out")" 1
+conf_set 'ENABLE_USAGE_LIMIT_PAUSE=""'
 tick
 out=$(run_ops)
 chk "补上配置后：缺项清空" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":[]}'
-echo '{"issue":7,"logged":[],"issued":["LABEL_PENDING_BLOCKED"]}' > "$W/state/config-notice.json"
+echo '{"issue":7,"logged":[],"issued":["ENABLE_USAGE_LIMIT_PAUSE"]}' > "$W/state/config-notice.json"
 tick
 out=$(run_ops)
 chk "早先版本写下的 issue / issued：下一轮调度轮询后不见了" "$(printf '%s\n' "$out" | sed -n '/^{/,/^}/p' | jq -c .)" '{"logged":[]}'
 
 echo "【开关写法】模板里的 true / false 不带引号，提示里照抄的那一行也不带（GitHub#403）"
 chk "模板里没有带引号的 true / false 赋值" "$(grep -cE '^[A-Z_]+="(true|false)"' "$REPO_DIR/cavil-loop.config.example" || true)" 0
-fresh 'LABEL_PENDING_BLOCKED=""'
+fresh 'ENABLE_USAGE_LIMIT_PAUSE=""'
 sed -i '/^ENABLE_USAGE_LIMIT_PAUSE=/d' "$CONF"
 tick
 chk "恰好缺用量上限这一项：只记它、零创建" "$(nst '.logged')/$(creates)" '["ENABLE_USAGE_LIMIT_PAUSE"]/0'

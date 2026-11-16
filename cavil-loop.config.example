@@ -291,8 +291,10 @@ TRUSTED_REPOS=""
 # #12" is never read. Adding pending/human stops it. While an item is waiting, the poll interval is
 # capped at BLOCKED_RECHECK_SECS; noticing a NEWLY labelled item still follows the idle backoff.
 # Another repo counts only when it is on TRUSTED_REPOS (read-only; unreadable → pending/human with
-# the reason); any other repo goes to a human. Leave LABEL_PENDING_BLOCKED empty to keep the previous behaviour
-# exactly (no extra calls, no state.json field, prompts unchanged). setup.sh creates the label.
+# the reason); any other repo goes to a human. On by default (GitHub#551): a config without this line uses
+# pending/blocked. Set it to an empty value (LABEL_PENDING_BLOCKED="") to turn it off and keep the previous
+# behaviour exactly (no extra calls, no state.json field, prompts unchanged). setup.sh creates the label; a repo
+# without it still works — GitHub creates the label (grey, no description) the first time it is put on an item.
 #
 # 一条活卡在**别的 issue / PR 还没完成**上（本仓库的，或上面 TRUSTED_REPOS 里别的仓库的，GitHub#243；不是卡在要人拍板）时，worker 登记前置、挂这个标签，
 # 不再翻 pending/human。daemon 定期检查：
@@ -302,8 +304,10 @@ TRUSTED_REPOS=""
 # 前置从两处取：issue 侧栏 Relationships 里的「Blocked by」（GitHub 只接受 issue），以及 loop 写入账号或维护者
 # 发的隐藏标记评论 <!-- agent-blocked-by: #12 owner/repo#34 resume=pending/agent -->。「等 #12」这种普通文字不认。
 # 加 pending/human 即可叫停。有条目在等时轮询间隔最长 BLOCKED_RECHECK_SECS；新挂上的那一次仍按空闲退避才发现。
-# 别的仓库只认 TRUSTED_REPOS 里的（只读；读不到 → 写明原因交人），其余别的仓库交人。LABEL_PENDING_BLOCKED 留空 = 关闭，行为和以前逐字节一样（不多发调用、不写 state.json、
-# 提示词不变）。setup.sh 会按这个名字建标签。
+# 别的仓库只认 TRUSTED_REPOS 里的（只读；读不到 → 写明原因交人），其余别的仓库交人。
+# 默认开启（GitHub#551）：配置里没有这一行 = 用 pending/blocked。写成空值（LABEL_PENDING_BLOCKED=""）= 关闭，行为和以前
+# 逐字节一样（不多发调用、不写 state.json、提示词不变）。setup.sh 会按这个名字建标签；仓库里还没有这个标签也能用——
+# 第一次挂上时 GitHub 会自动建出（灰色、无说明）。
 LABEL_PENDING_BLOCKED="pending/blocked"
 # 同一个等待条目两次细查的最短间隔，也是「有条目在等」时轮询间隔的上限（秒）
 BLOCKED_RECHECK_SECS=300
@@ -315,13 +319,15 @@ BLOCKED_MAX_TRIES=10
 # its own: greedy dispatch skips it, and so does autopilot's "label only" pickup. It only stops the
 # automatic pickup — putting a trigger label (pending/agent …) on it by hand dispatches it as usual. It
 # is not "waiting for a human" either. To find parked items search `label:pending/later` (GitHub's issue
-# list, a Project view, the desktop client). Leave it empty to keep the previous behaviour exactly (the
-# blocking list is unchanged). setup.sh creates the label.
+# list, a Project view, the desktop client). On by default (GitHub#551): a config without this line uses
+# pending/later. Set it to an empty value (LABEL_PENDING_LATER="") to turn it off and keep the previous behaviour
+# exactly (the blocking list is unchanged). setup.sh creates the label.
 #
 # 给人决定「暂时不做」的条目用。挂着它的条目 daemon 不会自己捞去开工：greedy 兜底趟跳过它，托管的
 # 「只挂托管标签就派」也跳过它。只挡自动捞取——有人亲手打了派工标签（pending/agent 等）照常派工。
 # 它也不算「等人处理」。要找暂缓的条目就搜 `label:pending/later`（GitHub 的 issue 列表、Project 视图、
-# 桌面客户端都行）。留空 = 关闭，挡工名单和以前一样。setup.sh 会按这个名字建标签。
+# 桌面客户端都行）。默认开启（GitHub#551）：配置里没有这一行 = 用 pending/later；写成空值（LABEL_PENDING_LATER=""）
+# = 关闭，挡工名单和以前一样。setup.sh 会按这个名字建标签。
 LABEL_PENDING_LATER="pending/later"
 
 # ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340）──

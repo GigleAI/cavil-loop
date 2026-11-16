@@ -10,8 +10,11 @@
 #   · 配了暂缓标签：greedy 兜底趟不收挂着它的 issue / PR，同一轮里没挂它的确实收了
 #   · 托管的「只挂托管标签就派」也不收挂着它的 issue；同一轮里只挂托管标签的确实收了
 #   · 只挡自动捞取：有人打了 pending/agent 照常进派工队列
-#   · 配置里没写这一行、或写成空值：轮询的 GitHub 调用和改动前（merge-base）逐条相同，
+#   · 写成空值：轮询的 GitHub 调用和改动前（merge-base）逐条相同，
 #     挂着 pending/later 的条目照旧被 greedy 收（它在关着时只是个普通标签）
+#   · 配置里没写这一行（GitHub#551 起默认开启）：和写了 "pending/later" 一样——挡工结果相同、
+#     GitHub 调用逐条相同、state.json 相同
+# 夹具里写了 LABEL_PENDING_BLOCKED=""：等前置也默认开启了，不关掉它，它每轮的检查会混进这里比的调用里
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -83,6 +86,7 @@ MAX_CONCURRENT_WORKERS=0
 DISPATCH_MODE="greedy"
 PATH="$SANDBOX/bin:\$PATH"
 GH_TOKEN="fake-token-for-test"
+LABEL_PENDING_BLOCKED=""
 CONF
     local l; for l in "$@"; do printf '%s\n' "$l" >> "$CONF"; done
     EVN=0
@@ -150,28 +154,41 @@ tick
 chk "挂暂缓标签的托管 issue 不当作派工" "$(queued issue 10)" 0
 chk "到达性 · 只挂托管标签的 issue 确实收了" "$(queued issue 41)" 1
 
-echo "── 4. 配置里没写 / 写成空值：GitHub 调用与改动前逐条相同 ──"
-for mode in missing empty; do
-    sides="old new"; csame=0
-    if compat_skip "暂缓标签关着（$mode）：轮询的 GitHub 调用与改动前" "$SANDBOX/old" "$SANDBOX/new" scripts prompts; then
-        sides="new"; csame=1
-    fi
-    for side in $sides; do
-        if [ "$mode" = empty ]; then fresh 'LABEL_PENDING_LATER=""'; else fresh; fi
-        mkissue 10 "pending/later"; mkissue 40 ""; mkpr 50 "pending/later"
-        tick "$SANDBOX/$side"
-        cp "$CALLS" "$SANDBOX/off-$mode-$side.calls"
-        jq -S . "$STATE" > "$SANDBOX/off-$mode-$side.state"
-        printf '%s %s %s\n' "$(queued issue 10)" "$(queued issue 40)" "$(queued pr 50)" > "$SANDBOX/off-$mode-$side.q"
-    done
-    if [ "$csame" = 0 ]; then
-        chk "$mode：GitHub 调用逐条相同" "$(cmp -s "$SANDBOX/off-$mode-old.calls" "$SANDBOX/off-$mode-new.calls" && echo same || echo diff)" same
-        chk "$mode：state.json 逐字节相同" "$(cmp -s "$SANDBOX/off-$mode-old.state" "$SANDBOX/off-$mode-new.state" && echo same || echo diff)" same
-        chk "$mode：派工队列与改动前相同" "$(cat "$SANDBOX/off-$mode-new.q")" "$(cat "$SANDBOX/off-$mode-old.q")"
-    fi
-    chk "$mode：关着时 pending/later 只是普通标签，照旧被 greedy 收" "$(cat "$SANDBOX/off-$mode-new.q")" "1 1 1"
-    chk "到达性 · $mode：这一轮确实读了 open 列表" "$([ "$(grep -c 'state=open' "$SANDBOX/off-$mode-new.calls")" -gt 0 ] && echo yes || echo no)" yes
+echo "── 4. 写成空值：GitHub 调用与改动前逐条相同 ──"
+sides="old new"; csame=0
+if compat_skip "暂缓标签关着（空值）：轮询的 GitHub 调用与改动前" "$SANDBOX/old" "$SANDBOX/new" scripts prompts; then
+    sides="new"; csame=1
+fi
+for side in $sides; do
+    fresh 'LABEL_PENDING_LATER=""'
+    mkissue 10 "pending/later"; mkissue 40 ""; mkpr 50 "pending/later"
+    tick "$SANDBOX/$side"
+    cp "$CALLS" "$SANDBOX/off-$side.calls"
+    jq -S . "$STATE" > "$SANDBOX/off-$side.state"
+    printf '%s %s %s\n' "$(queued issue 10)" "$(queued issue 40)" "$(queued pr 50)" > "$SANDBOX/off-$side.q"
 done
+if [ "$csame" = 0 ]; then
+    chk "空值：GitHub 调用逐条相同" "$(cmp -s "$SANDBOX/off-old.calls" "$SANDBOX/off-new.calls" && echo same || echo diff)" same
+    chk "空值：state.json 逐字节相同" "$(cmp -s "$SANDBOX/off-old.state" "$SANDBOX/off-new.state" && echo same || echo diff)" same
+    chk "空值：派工队列与改动前相同" "$(cat "$SANDBOX/off-new.q")" "$(cat "$SANDBOX/off-old.q")"
+fi
+chk "空值：关着时 pending/later 只是普通标签，照旧被 greedy 收" "$(cat "$SANDBOX/off-new.q")" "1 1 1"
+chk "到达性 · 空值：这一轮确实读了 open 列表" "$([ "$(grep -c 'state=open' "$SANDBOX/off-new.calls")" -gt 0 ] && echo yes || echo no)" yes
+
+echo "── 5. 配置里没写这一行（GitHub#551 起默认开启）：和写了 pending/later 完全一样 ──"
+for mode in missing explicit; do
+    if [ "$mode" = explicit ]; then fresh 'LABEL_PENDING_LATER="pending/later"'; else fresh; fi
+    mkissue 10 "pending/later"; mkissue 40 ""; mkpr 50 "pending/later"
+    tick
+    cp "$CALLS" "$SANDBOX/def-$mode.calls"
+    jq -S . "$STATE" > "$SANDBOX/def-$mode.state"
+    printf '%s %s %s\n' "$(queued issue 10)" "$(queued issue 40)" "$(queued pr 50)" > "$SANDBOX/def-$mode.q"
+done
+chk "没写这一行：挂暂缓标签的 issue / PR 不进派工队列，没挂的照常收" "$(cat "$SANDBOX/def-missing.q")" "0 1 0"
+chk "没写这一行：派工队列和写了 pending/later 时相同" "$(cat "$SANDBOX/def-missing.q")" "$(cat "$SANDBOX/def-explicit.q")"
+chk "没写这一行：GitHub 调用和写了 pending/later 时逐条相同" "$(cmp -s "$SANDBOX/def-missing.calls" "$SANDBOX/def-explicit.calls" && echo same || echo diff)" same
+chk "没写这一行：state.json 和写了 pending/later 时相同" "$(cmp -s "$SANDBOX/def-missing.state" "$SANDBOX/def-explicit.state" && echo same || echo diff)" same
+chk "到达性 · 没写这一行：这一轮确实读了 open 列表" "$([ "$(grep -c 'state=open' "$SANDBOX/def-missing.calls")" -gt 0 ] && echo yes || echo no)" yes
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
