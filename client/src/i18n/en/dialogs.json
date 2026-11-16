@@ -226,5 +226,7 @@
   "颜色 {color}": "colour {color}",
   "复制标签清单": "Copy the label list",
   "再试一次建标签": "Try creating them again",
-  "复制失败，请手动选中上面的清单": "Copy failed; select the list above by hand"
+  "复制失败，请手动选中上面的清单": "Copy failed; select the list above by hand",
+  "上一次在 {repo} 建标签没收到 GitHub 的回答，不知道建没建成。先「再查一次」（只读，不会再建）：": "No answer from GitHub to the last attempt to create labels in {repo}; they may or may not exist. \"Check again\" first (reads only, creates nothing):",
+  "查到已经建好就能直接用；查到还没有，再按建标签": "If they are there, the buttons work; if not, create them again"
 }

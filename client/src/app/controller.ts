@@ -17,7 +17,7 @@ import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFo
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
-import { labelJobOutcome, labelSpecs, permissionOf, type LabelAttempt, type LabelJob, type LabelPermission, type LabelRole } from '../shared/labelSetup';
+import { LABEL_EXISTS_CODE, labelJobOutcome, labelSpecs, permissionOf, pressBlocked, type LabelAttempt, type LabelJob, type LabelPermission, type LabelRole } from '../shared/labelSetup';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
@@ -2668,7 +2668,10 @@ export class Controller {
   async startLabelCreate(repo: string, wants: { name: string; role: LabelRole }[]): Promise<{ ok: boolean; error: string | null; id?: number }> {
     const labels = labelSpecs(wants);
     if (!repo || !labels.length) return { ok: false, error: t('没有要建的标签') };
-    if (this.state.labelJobs.some((j) => j.status === 'running' && j.repo.toLowerCase() === repo.toLowerCase())) return { ok: false, error: t('这个仓库的标签正在建') };
+    const blocked = pressBlocked(this.state.labelJobs, repo);
+    if (blocked === 'running') return { ok: false, error: t('这个仓库的标签正在建') };
+    // GitHub#559 (PR #564 review round 1): the last press got no answer — read first, never race it with a second
+    if (blocked === 'unknown') return { ok: false, error: t('上一次建标签没收到回答：先「再查一次」，确认标签还没有再建') };
     const id = ++this.labelSeq;
     const job: LabelJob = { id, repo, labels, status: 'running', error: null, startedAt: this.now() };
     // a press for this repository settles every earlier one: only the newest is said
@@ -2694,7 +2697,10 @@ export class Controller {
       } catch (e) {
         this.noteAuthFailure(e);
         const why = (e as Error)?.message ?? String(e);
-        if (refusedForSure(e)) {
+        // GitHub#559 (PR #564 review round 1): 422 `already_exists` = the label is there (someone made it meanwhile),
+        // never a refusal — whether or not the read afterwards works
+        if (e instanceof GitHubError && e.status === 422 && e.meta.codes?.includes(LABEL_EXISTS_CODE)) attempts.push({ name: l.name, outcome: 'exists' });
+        else if (refusedForSure(e)) {
           attempts.push({ name: l.name, outcome: 'refused', error: why });
           if (e instanceof GitHubError && (e.status === 403 || e.status === 404)) refusedApp = true;
         } else attempts.push({ name: l.name, outcome: 'noAnswer', error: why });

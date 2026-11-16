@@ -36,6 +36,7 @@ export function LabelSetupBox({
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean | null>(null);
   const [permRound, setPermRound] = useState(0);
+  const [checking, setChecking] = useState(false);
   // the permission belongs to the repository it was read for: only the newest read lands
   const permSeq = useRef(0);
   const show = specs.length > 0;
@@ -51,10 +52,11 @@ export function LabelSetupBox({
       });
   }, [repo, show, permRound]);
 
-  // this repository's newest press: once it settles (made, or found missing by 「再查一次」), read again —
+  // this repository's newest press: once it settles (made, refused, or found missing by 「再查一次」), read again —
   // a press for another repository never makes this dialog read or change anything
   const job = repo ? jobFor(state.labelJobs, repo) : null;
-  const settled = job && (job.status === 'done' || job.status === 'missing') ? `${job.id}:${job.status}` : '';
+  // a refusal too: some of the labels may have been made before GitHub refused the rest
+  const settled = job && (job.status === 'done' || job.status === 'missing' || job.status === 'refused') ? `${job.id}:${job.status}` : '';
   const lastSettled = useRef({ repo, settled });
   useEffect(() => {
     const before = lastSettled.current;
@@ -83,8 +85,36 @@ export function LabelSetupBox({
   );
   const n = specs.length;
   return (
-    <div className={`label-setup ${box.kind === 'guide' ? 'guide' : ''}`} data-testid={testid} data-kind={box.kind} data-repo={repo}>
-      {box.kind !== 'guide' && (
+    <div className={`label-setup ${box.kind === 'guide' || box.kind === 'unknown' ? 'guide' : ''}`} data-testid={testid} data-kind={box.kind} data-repo={repo}>
+      {box.kind === 'unknown' && (
+        <>
+          <div data-testid={`${testid}-why`} data-why="unknown">
+            {tNode('上一次在 {repo} 建标签没收到 GitHub 的回答，不知道建没建成。先「再查一次」（只读，不会再建）：', { repo: <Verbatim from="github">{repo}</Verbatim> })}
+          </div>
+          {chips}
+          <div className="label-setup-row">
+            <button
+              className="primary small"
+              data-testid={`${testid}-recheck`}
+              disabled={box.checking || checking}
+              onClick={async () => {
+                setProblem(null);
+                setChecking(true);
+                try {
+                  const r = await api().labelJobRecheck(box.jobId);
+                  if (!r.ok) setProblem(r.error);
+                } finally {
+                  setChecking(false);
+                }
+              }}
+            >
+              {box.checking || checking ? t('正在读取…') : t('再查一次')}
+            </button>
+            <span className="small muted">{t('查到已经建好就能直接用；查到还没有，再按建标签')}</span>
+          </div>
+        </>
+      )}
+      {(box.kind === 'create' || box.kind === 'running') && (
         <>
           <div>{tNode('仓库 {repo} 还没有这些标签：', { repo: <Verbatim from="github">{repo}</Verbatim> })}</div>
           {chips}

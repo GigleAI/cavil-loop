@@ -270,5 +270,6 @@
   "等待 agent 处理": "Waiting for the agent",
   "托管：从方案到合并全交给 agent（复审与测试通过后自动合并）": "Autopilot: the agent takes it from proposal to merge (merged automatically once review and tests pass)",
   "等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干": "Waiting for other issues / PRs of this repository; the daemon carries on once they are done",
-  "等待人类处理": "Waiting for a human"
+  "等待人类处理": "Waiting for a human",
+  "上一次建标签没收到回答：先「再查一次」，确认标签还没有再建": "The last attempt got no answer: \"Check again\" first, and create them only once they are confirmed missing"
 }

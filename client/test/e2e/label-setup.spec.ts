@@ -198,7 +198,7 @@ test('GitHub#559: a press in A, the dialog switched to B while A is held — B s
   expect(issuePosts()).toEqual([]);
 });
 
-test('GitHub#559: no answer — 「再查一次」 reads only; a label that landed later is found, nothing is sent again', async () => {
+test('GitHub#559 (PR #564 review round 1): no answer — the dialog offers only 「再查一次」 (reads, never sends); missing → the button again; landed → done', async () => {
   const { page } = await launchApp(env);
   await signIn(page);
   await openDialog(page, A, '');
@@ -206,22 +206,75 @@ test('GitHub#559: no answer — 「再查一次」 reads only; a label that land
   await box(page).getByTestId('new-issue-labels-create').click();
   await expect(notice(page)).toHaveAttribute('data-state', 'unknown');
   await expect(notice(page).getByTestId('label-notice-retry')).toHaveAttribute('data-retry', 'recheck');
-  // still not there: the box offers the button again (not the guide), the buttons stay grey
-  await expect(box(page)).toHaveAttribute('data-kind', 'create');
+  // the requests did reach GitHub (their answers were lost) and nothing landed yet
+  await expect.poll(() => late.caught()).toBe(2);
+  expect(labelPosts(A).length).toBe(2);
+  expect(labelsOn(AK)).toEqual(['bug']);
+  // in the dialog: the read-only check, no button that sends
+  await expect(box(page)).toHaveAttribute('data-kind', 'unknown');
+  await expect(box(page).getByTestId('new-issue-labels-create')).toHaveCount(0);
+  await expect(box(page).getByTestId('new-issue-labels-recheck')).toBeEnabled();
   await expect(page.getByTestId('new-issue-agent')).toBeDisabled();
-  const sent = labelPosts(A).length;
-  expect(late.caught()).toBe(sent);
-  // the requests land on GitHub after all; the dialog is put away (the notice's buttons lie under it)
+  await shot(page, '559-05-no-answer');
+  // checked while still not there: nothing sent, the button comes back
+  const before = env.fake.writes().length;
+  await box(page).getByTestId('new-issue-labels-recheck').click();
+  await expect(notice(page)).toHaveAttribute('data-state', 'missing');
+  await expect(box(page)).toHaveAttribute('data-kind', 'create');
+  expect(env.fake.writes().length).toBe(before);
+  // a second press, its answers lost again — then they land after all
+  await box(page).getByTestId('new-issue-labels-create').click();
+  await expect(box(page)).toHaveAttribute('data-kind', 'unknown');
+  await expect.poll(() => late.caught()).toBe(4);
   late.land();
   late.stop();
-  await page.getByTestId('confirm-cancel').click();
-  await expect(page.getByTestId('new-issue')).toHaveCount(0);
-  await notice(page).getByTestId('label-notice-retry').click();
+  expect(labelsOn(AK)).toEqual(['bug', 'pending/agent', 'autopilot']);
+  const sent = env.fake.writes().length;
+  await box(page).getByTestId('new-issue-labels-recheck').click();
   await expect(notice(page)).toHaveAttribute('data-state', 'done');
-  expect(labelPosts(A).length).toBe(sent);
-  // the dialog again: the labels are there
-  await openDialog(page, A);
-  await expect(page.getByTestId('new-issue-agent')).toBeEnabled();
   await expect(box(page)).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-title')).toBeVisible();
+  await page.getByTestId('new-issue-title').fill('跑一下测试');
+  await expect(page.getByTestId('new-issue-agent')).toBeEnabled();
+  expect(env.fake.writes().length).toBe(sent);
   expect(issuePosts()).toEqual([]);
+});
+
+test('GitHub#559 (PR #564 review round 1): someone else created them meanwhile and the read afterwards fails — 422 "already exists" is done, never a refusal', async () => {
+  const { page } = await launchApp(env);
+  await signIn(page);
+  await openDialog(page, A);
+  await expect(box(page)).toHaveAttribute('data-kind', 'create');
+  // the dialog read them missing; now another window creates both, and the label list stops answering
+  env.fake.state.w.repoLabels.set(AK, ['bug', 'pending/agent', 'autopilot'].map((name) => ({ name, color: 'ededed' })));
+  env.fake.state.w.failLabels.add(AK);
+  await box(page).getByTestId('new-issue-labels-create').click();
+  await expect(notice(page)).toHaveAttribute('data-state', 'done');
+  expect(labelPosts(A).map((w) => (w.body as any).name)).toEqual(['pending/agent', 'autopilot']);
+  // GitHub really answered 422 to both
+  expect(env.fake.log.filter((l) => l.method === 'POST' && l.path === `/api/repos/${A}/labels`).map((l) => l.status)).toEqual([422, 422]);
+  // no guide asking for labels that exist (the dialog's own read fails: it says so, it offers nothing to create)
+  await expect(page.getByTestId('new-issue-labels')).toHaveCount(0);
+  await expect(page.getByTestId('new-issue-handoff-why').first()).toContainText('读不到仓库');
+  // the list answers again: the buttons work
+  env.fake.state.w.failLabels.delete(AK);
+  await page.getByTestId('new-issue-repo').selectOption(B);
+  await page.getByTestId('new-issue-repo').selectOption(A);
+  await expect(page.getByTestId('new-issue-agent')).toBeEnabled();
+});
+
+test('GitHub#559 (PR #564 review round 1): a 422 that is not "already exists" is a refusal — the guide, with GitHub\'s words', async () => {
+  env.fake.state.w.rejectLabelCreate.add('autopilot');
+  const { page } = await launchApp(env);
+  await signIn(page);
+  await openDialog(page, A);
+  await box(page).getByTestId('new-issue-labels-create').click();
+  await expect(notice(page)).toHaveAttribute('data-state', 'refused');
+  await expect(box(page)).toHaveAttribute('data-kind', 'guide');
+  await expect(box(page).getByTestId('new-issue-labels-why')).toHaveAttribute('data-why', 'refused');
+  await expect(box(page).getByTestId('new-issue-labels-why')).toContainText('Validation Failed');
+  // the one GitHub took is there; the other is not
+  expect(labelsOn(AK)).toEqual(['bug', 'pending/agent']);
+  await expect(page.getByTestId('new-issue-agent')).toBeEnabled();
+  await expect(page.getByTestId('new-issue-autopilot')).toBeDisabled();
 });

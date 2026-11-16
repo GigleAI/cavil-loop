@@ -32,6 +32,8 @@ export interface GitHubErrorMeta {
   scopes?: string | null;
   /** the read was given up on (a dropped round), not refused */
   cancelled?: boolean;
+  /** GitHub#559: the codes of a validation answer's `errors` (e.g. `already_exists`) */
+  codes?: string[];
 }
 
 export class GitHubError extends Error {
@@ -177,8 +179,12 @@ export function rateLimitOf(res: Response, detail: string): RateLimitError | nul
 export async function refusalOf(res: Response): Promise<GitHubError> {
   if (res.status === 401) return new GitHubError('auth', t('GitHub 凭据无效（可能已被撤销或过期）'), 401);
   let detail = '';
+  // GitHub#559: a validation answer's `errors[].code` (`already_exists`, `invalid`, …) — what a 422 refused
+  let codes: string[] = [];
   try {
-    detail = ((await res.json()) as { message?: string }).message ?? '';
+    const body = (await res.json()) as { message?: unknown; errors?: unknown };
+    detail = typeof body?.message === 'string' ? body.message : '';
+    if (Array.isArray(body?.errors)) codes = body.errors.map((x) => (x && typeof x === 'object' ? (x as { code?: unknown }).code : null)).filter((c): c is string => typeof c === 'string');
   } catch {
     /* body not JSON */
   }
@@ -188,6 +194,7 @@ export async function refusalOf(res: Response): Promise<GitHubError> {
     e.said = detail;
   }
   e.meta = headerMeta(res);
+  if (codes.length) e.meta.codes = codes;
   return e;
 }
 

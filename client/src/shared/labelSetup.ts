@@ -99,17 +99,25 @@ export interface LabelJob {
 }
 
 /** The answer to each label's create request: made, refused for sure (with GitHub's words), or no answer. */
-export type LabelAttempt = { name: string; outcome: 'made' } | { name: string; outcome: 'refused'; error: string } | { name: string; outcome: 'noAnswer'; error: string };
+export type LabelAttempt =
+  | { name: string; outcome: 'made' }
+  /** GitHub answered 422 with `already_exists`: one of that name is in the repository (made by someone else meanwhile) */
+  | { name: string; outcome: 'exists' }
+  | { name: string; outcome: 'refused'; error: string }
+  | { name: string; outcome: 'noAnswer'; error: string };
+
+/** GitHub#559: the validation code GitHub gives a label create whose name is already taken */
+export const LABEL_EXISTS_CODE = 'already_exists';
 
 /**
  * What one press came to, from each request's answer and the repository's labels read afterwards
- * (null = that read failed). A label is there when it was made or the read lists it (any case: a
- * 422 "already exists" is just that). Every one there → done; else any without an answer → unknown
- * (it may still land); else → refused.
+ * (null = that read failed). A label is there when it was made, GitHub said it already exists, or the
+ * read lists it (any case). Every one there → done; else any without an answer → unknown (it may
+ * still land); else → refused (GitHub said no to a label that is not there).
  */
 export function labelJobOutcome(attempts: LabelAttempt[], after: string[] | null): { status: 'done' | 'refused' | 'unknown'; error: string | null } {
   const have = new Set((after ?? []).map((n) => n.toLowerCase()));
-  const there = (a: LabelAttempt) => a.outcome === 'made' || have.has(a.name.toLowerCase());
+  const there = (a: LabelAttempt) => a.outcome === 'made' || a.outcome === 'exists' || have.has(a.name.toLowerCase());
   if (attempts.every(there)) return { status: 'done', error: null };
   const left = attempts.filter((a) => !there(a));
   const lost = left.find((a) => a.outcome === 'noAnswer');
@@ -130,12 +138,19 @@ export function jobFor(jobs: readonly LabelJob[], repo: string): LabelJob | null
  * What a dialog's box shows for the labels `missing` in the repository it shows now:
  *   create — the button (the account may, or it is not known)
  *   running — a press for this repository is being sent
+ *   unknown — the last press got no answer: 「再查一次」 only
  *   guide  — what to create by hand, and where (the account may not, or GitHub refused)
  */
-export type LabelBoxState = { kind: 'create' } | { kind: 'running' } | { kind: 'guide'; why: 'noPermission' | 'refused'; error: string | null; app: boolean };
+export type LabelBoxState =
+  | { kind: 'create' }
+  | { kind: 'running' }
+  /** the last press got no answer: only 「再查一次」 (reads), never a new press before it found them still missing */
+  | { kind: 'unknown'; jobId: number; checking: boolean; error: string | null }
+  | { kind: 'guide'; why: 'noPermission' | 'refused'; error: string | null; app: boolean };
 
 export function labelBoxState(permission: LabelPermission, job: LabelJob | null): LabelBoxState {
   if (job?.status === 'running') return { kind: 'running' };
+  if (job?.status === 'unknown') return { kind: 'unknown', jobId: job.id, checking: job.checking === true, error: job.error };
   if (job?.status === 'refused') return { kind: 'guide', why: 'refused', error: job.error, app: job.app === true };
   if (permission === 'no') return { kind: 'guide', why: 'noPermission', error: null, app: false };
   return { kind: 'create' };
@@ -154,4 +169,15 @@ export function labelListText(specs: LabelSpec[]): string {
 /** The labels as the notice names them: 「a」「b」. */
 export function labelNames(specs: { name: string }[]): string {
   return specs.map((s) => t('「{name}」', { name: s.name })).join('');
+}
+
+/**
+ * May a new press for `repo` go out now? Not while one is being sent, and not while the last one got no
+ * answer and 「再查一次」 has not yet found the labels still missing (it may land: a second press would race it).
+ */
+export function pressBlocked(jobs: readonly LabelJob[], repo: string): 'running' | 'unknown' | null {
+  const j = jobFor(jobs, repo);
+  if (j?.status === 'running') return 'running';
+  if (j?.status === 'unknown') return 'unknown';
+  return null;
 }

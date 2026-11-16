@@ -81,6 +81,8 @@ export interface WritableState {
   /** GitHub#559: repositories whose own read (GET /repos/o/r) answers HTTP 502, or carries no `permissions` */
   failRepoInfo: Set<string>;
   noPermissionsField: Set<string>;
+  /** GitHub#559: label names whose create answers 422 with a validation error other than "already exists" */
+  rejectLabelCreate: Set<string>;
   /** GitHub#381: what the markdown renderer answers, whatever was sent (a recorded rendering of GitHub's); null = the text in a <p> */
   markdownHtml: string | null;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
@@ -214,6 +216,7 @@ export function defaultWritable(): WritableState {
     readOnlyRepos: new Set(),
     failRepoInfo: new Set(),
     noPermissionsField: new Set(),
+    rejectLabelCreate: new Set(),
     markdownHtml: null,
     readOnlyProjects: new Set(),
     dropWrites: false,
@@ -630,7 +633,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   if (method === 'POST' && rest === '/labels') {
     const name = String(body?.name ?? '').trim();
     const list = w.repoLabels.get(key) ?? [];
-    if (!name) return send(422, { message: 'Validation Failed' }), true;
+    if (!name || w.rejectLabelCreate.has(name)) return send(422, { message: 'Validation Failed', errors: [{ resource: 'Label', code: 'invalid', field: 'name' }] }), true;
     if (list.some((l) => l.name.toLowerCase() === name.toLowerCase())) return send(422, { message: 'Validation Failed', errors: [{ resource: 'Label', code: 'already_exists', field: 'name' }] }), true;
     const made = { name, color: String(body?.color ?? 'ededed'), description: String(body?.description ?? '') };
     w.repoLabels.set(key, [...list, made]);
