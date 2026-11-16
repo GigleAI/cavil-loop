@@ -83,6 +83,9 @@ BRANCH_PREFIX="feature/issue-"
 SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
+# 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
+LABEL_PENDING_BLOCKED=""
+LABEL_PENDING_LATER=""
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
 LABEL_AUTOPILOT="autopilot"
@@ -465,7 +468,9 @@ for f in .agents/a.test .agents/test.mjs .agents/x.tests.mjs .agents/.test.mjs .
 done
 
 section "【10】开关关掉（off，或写了认不出的词）：和改动前的脚本逐字节一样"
-# 同一份清单 + 两个场景，调用、state、标签、评论全文和合并基准的脚本比；旧脚本不认这个开关，写不写都一样
+# 同一份清单 + 两个场景，调用、state、标签、评论全文和合并基准的脚本比。两边写同一行开关：
+# 合并基准在 #549 之前时旧脚本不认它（写不写都一样），在那之后旧脚本照它关——只给新的一侧写，
+# 合并基准一过 #549 这组就拿「开」去比「关」，任何改到 scripts/ 的分支都会红（GitHub#551 发现）
 cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
     local root="$1" line="$2" sc="$3" i
     if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
@@ -478,8 +483,8 @@ cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
 }
 if ! compat_skip "开关关掉时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
     for sc in only mix; do
-        old=$(cmp_run "$SANDBOX/old" "" "$sc")
         for line in 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="of"'; do
+            old=$(cmp_run "$SANDBOX/old" "$line" "$sc")
             new=$(cmp_run "$REPO_DIR" "$line" "$sc")
             chk "场景 $sc，$line → 和改动前一样" "$([ -n "$new" ] && [ "$old" = "$new" ] && echo same || echo differ)" same
             [ "$old" = "$new" ] || [ -z "${KEEP_SANDBOX:-}" ] || { printf '%s\n' "$old" > "$SANDBOX/ex-$sc.old"; printf '%s\n' "$new" > "$SANDBOX/ex-$sc.new"; }

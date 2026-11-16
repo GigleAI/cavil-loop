@@ -234,6 +234,11 @@ subst_inplace() {
 config_value() {
     ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1:-}\"" )
 }
+# 同上，但区分「没设置」和「写成空值」：没设置 → 第二个参数（默认值），空值 → 空。
+# 给 GitHub#551 起「没写这一行 = 开」的两个标签用，规则和 _lib.sh 的 ${X-默认} 相同。
+config_value_or_default() {   # <KEY> <没设置时的值>
+    ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1-\$2}\"" )
+}
 
 # ── 1. 生成 host/cavil-loop.config ──
 # 项目里已经有改名前的 coding-agent.config 就继续用它，不另建一份：项目的忽略规则写的
@@ -488,11 +493,11 @@ review_label="$(config_value LABEL_PENDING_REVIEW)"
 # LABEL_PENDING_RELAY 也认（_names.sh 的 cavil_pick_setting，与 _lib.sh 同一个函数）。
 requester_bot_label="$(cavil_pick_setting "$(config_value LABEL_PENDING_REQUESTER_BOT)" "$(config_value LABEL_PENDING_RELAY)")"
 [ -n "$requester_bot_label" ] && label_defs+=("$requester_bot_label|f9a8d4|等外部需求机器人带回提需求方的答复")
-# 等前置标签（GitHub#157）：配了 LABEL_PENDING_BLOCKED 才建它。
-blocked_label="$(config_value LABEL_PENDING_BLOCKED)"
+# 等前置标签（GitHub#157）：配置里没这一行也建（GitHub#551 起默认开启），写成空值才不建。
+blocked_label="$(config_value_or_default LABEL_PENDING_BLOCKED pending/blocked)"
 [ -n "$blocked_label" ] && label_defs+=("$blocked_label|2dcdd0|等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干")
-# 暂缓标签（GitHub#463）：配了 LABEL_PENDING_LATER 才建它。
-later_label="$(config_value LABEL_PENDING_LATER)"
+# 暂缓标签（GitHub#463）：配置里没这一行也建（GitHub#551 起默认开启），写成空值才不建。
+later_label="$(config_value_or_default LABEL_PENDING_LATER pending/later)"
 [ -n "$later_label" ] && label_defs+=("$later_label|c5def5|暂缓：暂时不做，daemon 不自动捞它开工；打派工标签照常派")
 # 托管标签（GitHub#114）默认关闭；配了 LABEL_AUTOPILOT 才建它和「等 daemon 合并」标签。
 autopilot_label="$(config_value LABEL_AUTOPILOT)"
