@@ -7,6 +7,7 @@
 
 import type { SourceStatus, SyncState } from '../shared/types';
 import { t } from '../shared/i18n';
+import { hhmm } from '../shared/readFailure';
 
 export function ago(from: number, now: number): string {
   const mins = Math.max(0, Math.floor((now - from) / 60_000));
@@ -24,12 +25,13 @@ export function clockAt(at: number): string {
 }
 
 /** GitHub#374: the line under a failed source — the panel and the hover both take it from here */
+// GitHub#558: the time a rate limit lifts is rounded up to the minute, as on the yellow button next to refresh (shared/readFailure.ts)
 export function retryText(st: SourceStatus, now: number): string | null {
   const r = st.retry;
   if (st.ok || !r) return null;
   if (st.rateLimited) {
     if (r.limitedUntil === null) return null;
-    return r.limitedUntil > now ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: clockAt(r.limitedUntil) }) : t('限流时间已过，下一轮自动重读');
+    return r.limitedUntil > now ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) }) : t('限流时间已过，下一轮自动重读');
   }
   const next = r.nextAt === null || r.nextAt <= now ? t('下一轮自动重试') : t('下次自动重试 {at}', { at: clockAt(r.nextAt) });
   return t('从 {since} 起连续失败 {n} 次 · {next}（失败越多隔得越久，最长 10 分钟）', { since: clockAt(r.since), n: r.count, next });

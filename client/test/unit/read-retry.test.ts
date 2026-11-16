@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
 import { RATE_LIMIT_MESSAGE } from '../../src/data/github';
 import { clockAt, hoverLines, retryText, retryByHand } from '../../src/renderer/syncTimes';
+import { hhmm } from '../../src/shared/readFailure';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -290,7 +291,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     // "nothing went out" is not "connected"
     expect(c.getState().sync.lastOnlineAt).toBe(lastOnline);
     const text = retryText(status(c, PROJECT_KEY), FIXTURE_NOW + from * MIN);
-    expect(text).toBe(`额度约 ${clockAt(reset)} 恢复，到时自动重读；在那之前不再发读取请求`);
+    expect(text).toBe(`额度约 ${hhmm(reset)} 恢复，到时自动重读；在那之前不再发读取请求`);
     expect(hoverLines(c.getState().sync, label, FIXTURE_NOW + from * MIN)).toContain(`看板：${text}`);
     // the reset: the reads go out again, and work
     const sent = await at(Math.ceil(resetMin));

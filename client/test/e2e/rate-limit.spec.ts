@@ -83,6 +83,8 @@ test('no quota of its own: nothing while GitHub answers; GitHub\'s rate limit = 
   await btn.click();
   const panel = page.getByTestId('sync-trouble-panel');
   await expect(panel).toHaveAttribute('aria-label', 'GitHub 限流中');
+  // the line under the source says the same minute as the button
+  await expect(page.getByTestId('sync-trouble-retry').first()).toContainText(`额度约 ${hhmm(reset * 1000)} 恢复`);
   await expect(page.getByTestId('sync-trouble-failure').first().getByTestId('failure-title')).toHaveText('GitHub 暂时限制了读取次数');
   await expect(page.getByTestId('sync-trouble-failure').first().getByTestId('failure-body')).toContainText('每小时的查询额度已经用完');
   // the board keeps what it showed
