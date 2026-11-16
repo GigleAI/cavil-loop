@@ -375,6 +375,15 @@ chk "旧配置取余数 100000：#1 注册出 4001 / 14001" "$(serve 1) $(cat "$
 unserve() { env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-unserve.sh" "$@" > "$PV/unserve.out" 2>&1; echo $?; }
 chk "同一份配置不带 --port 注销 #1：按同一份算法找到 4001，登记删掉" "$(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "0 0"
 # 编号大了才越界：取余数 1000、起始号 60000、偏移 5000 能保存（见配置测试），余数大的那几条在注册时按实际端口拦下
+# 复审第 4 轮：限制是 64 位算术本身的（三个加数各不超过 (2^63−1)/3），十位数的取余数照常可用
+pv_line PREVIEW_PORT_MODULO 1000000000
+chk "旧配置取余数 1000000000：#1 注册出 4001 / 14001，不带 --port 注销删掉登记" "$(serve 1) $(cat "$PV/serve.rc") | $(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "4001 14001 30min 30 0 | 0 0"
+pv_line PREVIEW_PORT_MODULO 3074457345618258602
+chk "取余数正好是上限 3074457345618258602：#1 注册出 4001 / 14001，不带 --port 注销删掉登记" "$(serve 1) $(cat "$PV/serve.rc") | $(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "4001 14001 30min 30 0 | 0 0"
+pv_line PREVIEW_PORT_MODULO 3074457345618258603
+chk "取余数比上限大 1：注册拒绝并说明，不带 --port 注销说明算不出端口、退出 2" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 3074457345618258603 不是' "$PV/serve.out") | $(unserve --issue 1) $(grep -c '算不出' "$PV/unserve.out")" "NONE 2 1 | 2 1"
+pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_PORT_BASE 3074457345618258602
+chk "起始号正好是上限：能算（不回绕），算出的公开端口越界，注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '公开端口 3074457345618258603 超出' "$PV/serve.out")" "NONE 2 1"
 pv_line PREVIEW_PORT_BASE 60000; pv_line PREVIEW_PORT_MODULO 1000; pv_line PREVIEW_BACKEND_OFFSET 5000
 chk "起始号 60000、取余数 1000、偏移 5000：#535 后端 65535 照常注册，#536 后端 65536 拒绝" "$(serve 535) $(cat "$PV/serve.rc") | $(serve 536) $(cat "$PV/serve.rc") $(grep -c '后端端口 65536 超出' "$PV/serve.out")" "60535 65535 30min 30 0 | NONE 2 1"
 pv_line PREVIEW_BACKEND_OFFSET 0

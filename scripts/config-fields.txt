@@ -100,7 +100,7 @@ AUTO_RELEASE_MAIN_CHECKOUT | 主 checkout 与正式站 | bool:1:0 | 0 | edit | �
 LATEST_SITE_REFRESH | 主 checkout 与正式站 | bool:true:false | false | edit | 有新合并时刷新常驻正式站 | 把主 checkout 拉到最新，重建并重启本机常驻的正式站
 CHECKOUT_STALE_ALERT_COMMITS | 主 checkout 与正式站 | int:0:9223372036854775807 | 0 | edit | 主 checkout 落后多少个提交就开 issue 提醒 | 本机主 checkout 的主干落后远端满这么多个提交时开一条 pending/human 的提醒 issue，跟上后自动关；0 = 关
 PREVIEW_PORT_BASE | 预览 | int:0:65535 | 4000 | edit | 预览端口从几号起 | 预览端口 = 这个数 + issue 编号（配了下一项就加编号除以它的余数），后端端口再加偏移，都要在 1 到 65535：保存时按这三项一起查 #1 的端口（配了取余数再查余数为 0 的那条），编号大了才越界的那几条在注册时报错；改了以后已经登记的预览端口会和新算出来的对不上
-PREVIEW_PORT_MODULO | 预览 | int:1:999999999:empty | | edit | 预览端口按多少取余数 | 留空 = 不取余数，端口一直往上加；配了就把端口留在「起始号 + 0 到这个数减 1」这一段里
+PREVIEW_PORT_MODULO | 预览 | int:1:3074457345618258602:empty | | edit | 预览端口按多少取余数 | 留空 = 不取余数，端口一直往上加；配了就把端口留在「起始号 + 0 到这个数减 1」这一段里
 PREVIEW_BACKEND_OFFSET | 预览 | int:1:65535 | 10000 | edit | 预览程序实际监听的端口比公开端口大多少 | 预览程序自己听的端口 = 公开端口 + 这个数，公开端口由系统转发过去
 PREVIEW_IDLE | 预览 | text | 30min | show | 预览闲置多久自动停 | 没人访问满这么久就停掉预览程序，再次访问自动拉起 | 是「30min / 2h」这类时间写法，不是单个数字；写错了预览的转发起不来
 PREVIEW_READY_TIMEOUT | 预览 | int:0:120 | 90 | edit | 预览程序最多等多少秒起来 | 拉起预览程序后，等它开始监听最多这么久，超时算没起来；预览单元启动本身最多等 120 秒
