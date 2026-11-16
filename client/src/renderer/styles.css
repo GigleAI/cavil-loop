@@ -1106,3 +1106,4 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .label-setup-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .label-setup-table { border-collapse: collapse; }
 .label-setup-table td { padding: 2px 12px 2px 0; vertical-align: middle; }
+.label-setup-table td:nth-child(-n + 2) { white-space: nowrap; }
