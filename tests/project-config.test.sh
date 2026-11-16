@@ -562,6 +562,29 @@ chk "两个名字都有值且不同：也只显示" "$(field "$(run get early)" 
 early_conf 'RELAY_REPORT_FIRST=""'
 chk "早期名字写成空值：窗口显示的值 = 公共库的值（默认）" "$(early_lib_shown)" "lib  false | shown  false"
 chk "早期名字只写成空值也算用到了它：只显示" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,false]'
+# 早期名字来自配置加载的另一个文件：主文件里看不到这个名字的文字，凭加载后的定义判断
+printf 'RELAY_REPORT_FIRST="true"\n' > "$EW/extra.sh"
+early_conf ". \"$EW/extra.sh\""
+chk "早期名字在被加载的另一个文件里：窗口显示的值 = 公共库的值" "$(early_lib_shown)" "lib  true | shown  true"
+G="$(run get early)"
+chk "早期名字在被加载的另一个文件里：只显示" "$(field "$G" REQUESTER_BOT_REPORT_FIRST)" '["true",true,false]'
+chk_has "原因写明可能来自加载的另一个文件" "$(why "$G" REQUESTER_BOT_REPORT_FIRST)" "加载的另一个文件"
+before="$(sum "$EW/cavil-loop.config")"
+save early '{"REQUESTER_BOT_REPORT_FIRST":"false"}'
+chk "早期名字在被加载的另一个文件里：保存被拒，主文件不变" "$RESULT $(sum "$EW/cavil-loop.config")" "RESULT=not_editable $before"
+early_conf 'REQUESTER_BOT_REPORT_FIRST="false"' ". \"$EW/extra.sh\""
+chk "主文件写新名字、被加载的文件写不同的早期名字：显示新名字的值，公共库提示冲突" \
+    "$(early_lib_shown) $(early_lib | grep -c 'RELAY_REPORT_FIRST（忽略）')" "lib  false | shown  false 1"
+chk "这种情况也只显示" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,false]'
+printf 'RELAY_REPORT_FIRST=""\n' > "$EW/extra.sh"
+early_conf ". \"$EW/extra.sh\""
+chk "被加载的文件把早期名字写成空值：显示默认，也只显示" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,false]'
+printf 'UNRELATED_SETTING="1"\n' > "$EW/extra.sh"
+early_conf ". \"$EW/extra.sh\""
+G="$(run get early)"
+chk "被加载的文件里没有早期名字：新名字照旧可改（文件里没有，保存会追加）" "$(field "$G" REQUESTER_BOT_REPORT_FIRST)" '["false",false,true]'
+save early '{"REQUESTER_BOT_REPORT_FIRST":"true"}'
+chk "被加载的文件里没有早期名字：保存成功，公共库读到新值" "$RESULT $(early_lib_shown)" "RESULT=saved lib  true | shown  true"
 early_conf 'REQUESTER_BOT_REPORT_FIRST="false"'
 chk "只写新名字：照旧可改" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,true]'
 save early '{"REQUESTER_BOT_REPORT_FIRST":"true"}'

@@ -245,19 +245,19 @@ effective() {   # <下标>
     else printf '%s' "${F_DEF[$1]}"; fi
 }
 
-V_SET=(); V_VAL=(); V_EARLY_VAL=(); STATE_DIR_VAL=""
-read_values() {   # <配置文件> → 填 V_SET / V_VAL / V_EARLY_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
+V_SET=(); V_VAL=(); V_EARLY_SET=(); V_EARLY_VAL=(); STATE_DIR_VAL=""
+read_values() {   # <配置文件> → 填 V_SET / V_VAL / V_EARLY_SET / V_EARLY_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
     local parts=() p i=0 n=${#F_NAME[@]} m
     m=$((n * 2))
     while IFS= read -r -d '' p; do parts+=("$p"); done < <(load_values "$1" || true)
     [ "${#parts[@]}" -eq $((m * 3 + 2)) ] || return 1
     [ "${parts[$((m * 3 + 1))]}" = "__pc_end__" ] || return 1
-    V_SET=(); V_VAL=(); V_EARLY_VAL=()
+    V_SET=(); V_VAL=(); V_EARLY_SET=(); V_EARLY_VAL=()
     while [ "$i" -lt "$n" ]; do
         [ "${parts[$((i * 3))]}" = "${F_NAME[$i]}" ] || return 1
         [ "${parts[$(((n + i) * 3))]}" = "${EARLY_LOAD[$i]}" ] || return 1
         V_SET+=("${parts[$((i * 3 + 1))]}"); V_VAL+=("${parts[$((i * 3 + 2))]}")
-        V_EARLY_VAL+=("${parts[$(((n + i) * 3 + 2))]}")
+        V_EARLY_SET+=("${parts[$(((n + i) * 3 + 1))]}"); V_EARLY_VAL+=("${parts[$(((n + i) * 3 + 2))]}")
         i=$((i + 1))
     done
     STATE_DIR_VAL="${parts[$((m * 3))]}"
@@ -274,11 +274,18 @@ inspect_field() {   # <配置文件> <下标>
     if [ "$NORM_OK" != 1 ]; then
         W_WHY="读不出配置文件的结构，判断不了这一项能不能安全地改"; return 0
     fi
-    # 配置里用到了这一项的早期名字：daemon 照样认（新名字没有值时用它），但在这里写新名字会让
-    # 两个名字并存、值还可能互相矛盾。只显示，说清怎么改
-    if [ -n "${F_EARLY[$i]}" ] && [ "$(mentions "${F_EARLY[$i]}")" != 0 ]; then
-        W_WHY="配置文件里写的是这一项的早期名字 ${F_EARLY[$i]}（daemon 照样认）；在文件里把它改成 ${k} 后才能在这里改"
-        return 0
+    # 用到了这一项的早期名字：daemon 照样认（新名字没有值时用它），但在这里写新名字会让两个名字并存、
+    # 值还可能互相矛盾。两份证据任一成立都只显示：配置的代码里提到了它（没执行的分支、unset 也算），
+    # 或者加载完它有定义（不管来自哪里——配置加载的另一个文件、运行时拼出来的名字，这里都看不到文字）
+    if [ -n "${F_EARLY[$i]}" ]; then
+        if [ "$(mentions "${F_EARLY[$i]}")" != 0 ]; then
+            W_WHY="配置文件里写的是这一项的早期名字 ${F_EARLY[$i]}（daemon 照样认）；在文件里把它改成 ${k} 后才能在这里改"
+            return 0
+        fi
+        if [ "${V_EARLY_SET[$i]}" = 1 ]; then
+            W_WHY="配置加载后有这一项的早期名字 ${F_EARLY[$i]}（不在这份文件里，可能来自它加载的另一个文件；daemon 照样认）；把那里改成 ${k} 后才能在这里改"
+            return 0
+        fi
     fi
     m="$(mentions "$k")"
     # 整份配置的代码里一次都没提到这个名字，加载后也确实没有值：才算「没有这一行」，可以追加
