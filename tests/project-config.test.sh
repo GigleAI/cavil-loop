@@ -687,7 +687,7 @@ done
 # GitHub#556 登记的轮询节奏、轮询记录、预览几项：登记的范围 = 使用端实际收的范围
 chk "整数范围（GitHub#556）：轮询节奏 9 位、轮询记录 7 位、预览端口 65535、就绪等待 120 秒" \
     "$(for k in POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS $RUNLOG_KEYS PREVIEW_PORT_BASE PREVIEW_PORT_MODULO PREVIEW_BACKEND_OFFSET PREVIEW_READY_TIMEOUT; do printf '%s ' "$(col 3 "$k")"; done)" \
-    "int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:2:9999999 int:2:9999999 int:2:9999999 int:1:9999999 int:1:65535 int:1:65535:empty int:1:65535 int:0:120 "
+    "int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:2:9999999 int:2:9999999 int:2:9999999 int:1:9999999 int:0:65535 int:1:65535:empty int:1:65535 int:0:120 "
 pace_after_load() {   # <名字> <值> → 公共库加载后实际用的值（轻量检查封顶问 pace_probe_cap：不合法 = 不封顶，输出 none）
     req_conf; printf '%s=%s\n' "$1" "$2" >> "$RQ/cavil-loop.config"
     env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
@@ -748,9 +748,15 @@ chk "取余数 1000、起始号 60000、偏移 5000：最大的端口 60999 + 50
 chk "边界正好：取余数 1000、起始号 60000、偏移 4536（60999 + 4536 = 65535）：能存" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"60000","PREVIEW_PORT_MODULO":"1000","PREVIEW_BACKEND_OFFSET":"4536"}')" "RESULT=saved changed silent"
 chk "边界正好：不取余数、起始号 4000、偏移 61534（#1 的后端 65535）：能存" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"4000","PREVIEW_BACKEND_OFFSET":"61534"}')" "RESULT=saved changed silent"
 chk "配置里另一项写坏了（偏移 = abc）时改起始号：算不了端口，不让存" "$(pv_combo 'PREVIEW_BACKEND_OFFSET=abc' '{"PREVIEW_PORT_BASE":"5000"}')" "RESULT=invalid same said"
+# 复审第 2 轮：起始号 0 在不取余数时可用（#1 的端口是 1）；取余数时编号整除的 issue 端口是 0，不能用
+chk "起始号改成 0、不取余数、偏移默认 10000：#1 端口 1、后端 10001，能存" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"0"}')" "RESULT=saved changed silent"
+chk "配置里已有起始号 0、不取余数：只改偏移照常能存" "$(pv_combo 'PREVIEW_PORT_BASE=0' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=saved changed silent"
+chk "配置里已有起始号 0：配上取余数 1000 会算出端口 0，不让存" "$(pv_combo 'PREVIEW_PORT_BASE=0' '{"PREVIEW_PORT_MODULO":"1000"}')" "RESULT=invalid same said"
+chk "配置里手写的偏移是 2^64（算术会回绕成 0）时改起始号：先查输入，不让存" "$(pv_combo 'PREVIEW_BACKEND_OFFSET=18446744073709551616' '{"PREVIEW_PORT_BASE":"5000"}')" "RESULT=invalid same said"
+chk "配置里手写的取余数是 0（会除以零）时改偏移：不让存" "$(pv_combo 'PREVIEW_PORT_MODULO=0' '{"PREVIEW_BACKEND_OFFSET":"100"}')" "RESULT=invalid same said"
 chk "不碰这三项的保存不做这项检查（配置里已经越界也照常存别的）" "$(pv_combo 'PREVIEW_PORT_BASE=65535' '{"PREVIEW_READY_TIMEOUT":"30"}')" "RESULT=saved changed silent"
 # 唯一的例外 PREVIEW_PORT_BASE：名字以 _BASE 结尾，却是预览端口的起始号（一个整数），不是目录（GitHub#556）
-chk "名字像目录的例外只有预览端口起始号，且它登记成整数" "$(col 3 PREVIEW_PORT_BASE)" "int:1:65535"
+chk "名字像目录的例外只有预览端口起始号，且它登记成整数" "$(col 3 PREVIEW_PORT_BASE)" "int:0:65535"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -vx PREVIEW_PORT_BASE <<<"$names" | grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "

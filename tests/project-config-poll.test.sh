@@ -356,6 +356,19 @@ chk "同一份配置，编号涨到 #52000：后端端口 66000 越界，注册�
 chk "边界正好：编号 #51535 的后端端口 65535，照常注册" "$(serve 51535) $(cat "$PV/serve.rc")" "55535 65535 30min 30 0"
 pv_line PREVIEW_PORT_BASE 65000
 chk "公开端口本身越界（起始号 65000 + #1040 = 66040）：注册拒绝" "$(serve 1040) $(cat "$PV/serve.rc") $(grep -c '公开端口 66040 超出' "$PV/serve.out")" "NONE 2 1"
+# 复审第 2 轮：手写的大数一进算术就回绕（偏移 2^64 加完等于没加，两个服务抢同一个端口）——先查输入再算
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_BACKEND_OFFSET 18446744073709551616
+chk "手写偏移 2^64：注册拒绝（不回绕成 4001 / 4001），点名偏移" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '后端偏移 18446744073709551616 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_BACKEND_OFFSET 10000; pv_line PREVIEW_PORT_BASE 18446744073709555616
+chk "手写起始号 2^64+4000：注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '起始号 18446744073709555616 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO 0
+chk "手写取余数 0（会除以零）：注册拒绝，不是算术报错" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 0 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_MODULO 08
+chk "手写取余数 08（bash 会按八进制读而报错）：注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 08 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_PORT_BASE 0
+chk "起始号 0、不取余数：#1 端口 1、后端 10001，照常注册" "$(serve 1) $(cat "$PV/serve.rc")" "1 10001 30min 30 0"
+pv_line PREVIEW_PORT_MODULO 1000
+chk "起始号 0、取余数 1000：#1000 端口 0，注册拒绝；#1 端口 1 照常注册" "$(serve 1000) $(cat "$PV/serve.rc") | $(serve 1) $(cat "$PV/serve.rc")" "NONE 2 | 1 10001 30min 30 0"
 
 echo
 echo "通过 $pass，失败 $fail"

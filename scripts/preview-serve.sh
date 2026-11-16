@@ -79,16 +79,16 @@ done
     exit 2
 }
 
-PORT="$(preview_port "$ISSUE")"
-BACKEND_PORT=$((PORT + PREVIEW_BACKEND_OFFSET))
-# 算出来的端口要能用（GitHub#556）：三项设置各自合法，加上 issue 编号后仍可能超过 65535。
-# 不能用就在写任何登记之前停下，说清是哪几项设置算出来的
-if ! why="$(preview_port_problem "$PORT" "$BACKEND_PORT")"; then
-    echo "❌ #$ISSUE 的预览端口不能用：${why}。" >&2
+# 端口要能用（GitHub#556）：先查参与运算的三项设置和 issue 编号（手写的大数一进算术就回绕），
+# 再算端口、再查算出来的端口在 1–65535。不能用就在写任何登记之前停下，说清是哪几项设置
+if ! ports="$(preview_ports_issue_problem "$PREVIEW_PORT_BASE" "${PREVIEW_PORT_MODULO:-}" "$PREVIEW_BACKEND_OFFSET" "$ISSUE")"; then
+    echo "❌ #$ISSUE 的预览端口不能用：${ports}。" >&2
     echo "   公开端口 = 起始号 ${PREVIEW_PORT_BASE} + issue 编号${PREVIEW_PORT_MODULO:+ 除以 ${PREVIEW_PORT_MODULO} 的余数}，后端端口 = 公开端口 + 偏移 ${PREVIEW_BACKEND_OFFSET}" >&2
-    echo "   在项目配置里调小起始号 / 偏移，或配上取余数（PREVIEW_PORT_BASE / PREVIEW_PORT_MODULO / PREVIEW_BACKEND_OFFSET），什么都没注册" >&2
+    echo "   在项目配置里改起始号 / 取余数 / 偏移（PREVIEW_PORT_BASE / PREVIEW_PORT_MODULO / PREVIEW_BACKEND_OFFSET），什么都没注册" >&2
     exit 2
 fi
+PORT="${ports%% *}"
+BACKEND_PORT="${ports#* }"
 WORKTREE="$(worktree_path "$ISSUE")"
 
 [ -d "$WORKTREE" ] || { echo "❌ worktree 不存在：$WORKTREE" >&2; exit 2; }

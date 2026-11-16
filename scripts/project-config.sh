@@ -512,13 +512,8 @@ if [ "$pv_touch" = 1 ]; then
         i="$(field_index "$1")" && effective "$i"
     }
     pv_b="$(pv_after PREVIEW_PORT_BASE)"; pv_m="$(pv_after PREVIEW_PORT_MODULO)"; pv_o="$(pv_after PREVIEW_BACKEND_OFFSET)"
-    # 没改的那几项现在的值也要合乎登记的类型才算得了（按各自登记的类型查，不另写一份范围）
-    pv_bad=""
-    for pv_k in PREVIEW_PORT_BASE PREVIEW_PORT_MODULO PREVIEW_BACKEND_OFFSET; do
-        pv_i="$(field_index "$pv_k")"; pv_v="$(pv_after "$pv_k")"
-        valid_value "${F_TYPE[$pv_i]}" "$pv_v" || { pv_bad="$pv_k 现在的值 ${pv_v:-（空）} 算不了端口（${BAD_WHY}）"; break; }
-    done
-    [ -n "$pv_bad" ] || pv_bad="$(preview_ports_save_problem "$pv_b" "$pv_m" "$pv_o")" || true
+    # 没改的那几项现在的值也一起查：能不能参与运算、算出来的端口能不能用，都由 _preview_ports.sh 判断
+    pv_bad="$(preview_ports_save_problem "$pv_b" "$pv_m" "$pv_o")" || true
     if [ -n "$pv_bad" ]; then
         echo "预览端口的三项设置合起来不能用：${pv_bad}。什么都没写"
         DETAIL="$(jq -cn --arg why "$pv_bad" '{field:"PREVIEW_PORT_BASE", reason:$why}')"; finish invalid 2
