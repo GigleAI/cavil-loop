@@ -259,5 +259,14 @@
   "这个账号本小时的 GitHub 额度已用到一半左右。客户端最多用到账号只剩一半，剩下的留给编辑、打开详情和同一账号下的其他程序；{time} 重置后自动恢复读取。": "About half of this account's GitHub quota for the hour is used. The client uses at most half, leaving the rest for edits, opening details and other programs on the same account; reading resumes automatically after the reset at {time}.",
   "这个账号本小时的 GitHub 额度已用到一半左右（或这一轮没读到额度）。客户端最多用到账号只剩一半，剩下的留给编辑、打开详情和同一账号下的其他程序；额度恢复后自动读取。": "About half of this account's GitHub quota for the hour is used (or this round could not read the quota). The client uses at most half, leaving the rest for edits, opening details and other programs on the same account; reading resumes automatically once the quota allows.",
   "页面上仍是上次读到的内容。检查已经看出有变化，额度恢复后读取。": "The page still shows what was read last time. The check has already seen changes; they are read once the quota allows.",
-  "页面上仍是上次读到的内容。这期间不重读条目，额度够时仍做的检查看不出条目被移出等变化，所以不显示「已确认没变」。": "The page still shows what was read last time. Meanwhile no items are read again, and the checks that still run while there is quota for them cannot see changes such as an item taken off the board, so this is not shown as \"confirmed unchanged\"."
+  "页面上仍是上次读到的内容。这期间不重读条目，额度够时仍做的检查看不出条目被移出等变化，所以不显示「已确认没变」。": "The page still shows what was read last time. Meanwhile no items are read again, and the checks that still run while there is quota for them cannot see changes such as an item taken off the board, so this is not shown as \"confirmed unchanged\".",
+  "正在 {repo} 建标签{labels}…": "Creating labels {labels} in {repo}…",
+  "已在 {repo} 建好标签{labels}": "Created labels {labels} in {repo}",
+  "没能在 {repo} 建标签{labels}：{why}": "Could not create labels {labels} in {repo}: {why}",
+  "没有说明原因": "no reason given",
+  "在 {repo} 建标签{labels}没收到 GitHub 的回答，不知道建没建成（{why}）": "No answer from GitHub while creating labels {labels} in {repo}; they may or may not have been created ({why})",
+  "{repo} 里还没有标签{labels}：可以在对话框里重新按「建标签」": "{repo} still has no labels {labels}: press the create button in the dialog again",
+  "登录用的 GitHub App 可能没被允许在这个仓库建标签。": "The GitHub App you signed in with may not be allowed to create labels in this repository.",
+  "只读一次仓库现在的标签，不会再建": "Only reads the repository's labels once; creates nothing",
+  "打开仓库的标签页": "Open the repository's labels page"
 }

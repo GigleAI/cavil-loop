@@ -584,3 +584,76 @@ test('PR #452 review round 2: the list is kept a minute, then the exact number i
   // the kept list really was what answered (no new list read)
   expect(listReads()).toBe(listKept);
 });
+
+test('GitHub#559: the repository lacks the waiting label — the dialog creates it (the install colour), reads again and lets the registration go on', async () => {
+  const w = env.fake.state.w;
+  w.repoLabels.set(REPO, ['pending/human', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-labels');
+  await expect(dialog.getByTestId('blocked-refuse')).toContainText('pending/blocked');
+  await expect(box).toHaveAttribute('data-kind', 'create');
+  await expect(box.getByTestId('blocked-labels-label')).toHaveText(['pending/blocked']);
+  await expect(dialog.getByTestId('blocked-search')).toHaveCount(0);
+  await box.getByTestId('blocked-labels-create').click();
+  // made, then the dialog read the item again: no refusal, the search is there
+  await expect(dialog.getByTestId('blocked-refuse')).toHaveCount(0, { timeout: 15_000 });
+  await expect(box).toHaveCount(0);
+  await expect(dialog.getByTestId('blocked-search')).toBeVisible();
+  const posts = env.fake.writes().filter((x) => x.method === 'POST' && /\/labels$/.test(x.path) && !/\/issues\//.test(x.path));
+  expect(posts.map((x) => x.body)).toEqual([{ name: 'pending/blocked', color: '2dcdd0', description: '等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干' }]);
+  expect(env.fake.writes().length).toBe(1);
+});
+
+test('GitHub#559: read-only, and the human label is missing too — no request, both listed with what to create by hand', async () => {
+  const w = env.fake.state.w;
+  w.repoLabels.set(REPO, ['pending/agent'].map((name) => ({ name, color: 'ededed' })));
+  w.readOnlyRepos.add(REPO);
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-labels');
+  await expect(box).toHaveAttribute('data-kind', 'guide', { timeout: 15_000 });
+  await expect(box.getByTestId('blocked-labels-why')).toHaveAttribute('data-why', 'noPermission');
+  await expect(box.getByTestId('blocked-labels-label')).toHaveText(['pending/blocked', 'pending/human']);
+  await expect(box.getByTestId('blocked-labels-create')).toHaveCount(0);
+  expect(env.fake.writes()).toEqual([]);
+});
+
+test('GitHub#559 (PR #564 review round 1): the create got no answer — the dialog offers only 「再查一次」 (no write while checking); landed → the registration goes on', async () => {
+  const w = env.fake.state.w;
+  w.repoLabels.set(REPO, ['pending/human', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
+  const { page } = await launchApp(env);
+  await ready(page);
+  const detail = await openItem(page, 10);
+  await detail.getByTestId('blocked-open').click();
+  const dialog = page.getByTestId('blocked-dialog');
+  const box = dialog.getByTestId('blocked-labels');
+  await expect(box).toHaveAttribute('data-kind', 'create');
+  const late = env.fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/labels`);
+  await box.getByTestId('blocked-labels-create').click();
+  await expect(box).toHaveAttribute('data-kind', 'unknown', { timeout: 15_000 });
+  await expect.poll(() => late.caught()).toBe(1);
+  await expect(box.getByTestId('blocked-labels-create')).toHaveCount(0);
+  // checked while not there: nothing written, the button again
+  const before = env.fake.writes().length;
+  await box.getByTestId('blocked-labels-recheck').click();
+  await expect(box).toHaveAttribute('data-kind', 'create');
+  expect(env.fake.writes().length).toBe(before);
+  // pressed again, lost again, then it lands: the check finds it and the dialog goes on
+  await box.getByTestId('blocked-labels-create').click();
+  await expect(box).toHaveAttribute('data-kind', 'unknown');
+  await expect.poll(() => late.caught()).toBe(2);
+  late.land();
+  late.stop();
+  const sent = env.fake.writes().length;
+  await box.getByTestId('blocked-labels-recheck').click();
+  await expect(dialog.getByTestId('blocked-refuse')).toHaveCount(0, { timeout: 15_000 });
+  await expect(dialog.getByTestId('blocked-search')).toBeVisible();
+  expect(env.fake.writes().length).toBe(sent);
+});
