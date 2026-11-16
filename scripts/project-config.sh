@@ -147,6 +147,12 @@ while IFS= read -r line || [ -n "$line" ]; do
     F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
     F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
 done < "$FIELDS_FILE"
+# F_EARLY = 这一项的早期名字（_names.sh 的 CAVIL_SETTING_EARLY_NAMES，daemon 加载时按同一张表挑值），没有就是空
+F_EARLY=()
+for __k in "${F_NAME[@]}"; do F_EARLY+=("$(cavil_setting_early_name "$__k")"); done
+# 加载时一起读的早期名字：和 F_NAME 同下标，没有早期名字的位置放一个配置里不会有的名字（读出来一定是没设置）
+EARLY_LOAD=()
+for __k in "${F_EARLY[@]}"; do EARLY_LOAD+=("${__k:-__pc_no_early_name}"); done
 field_index() {   # <KEY> → 下标；没有返回 1
     local i
     for i in "${!F_NAME[@]}"; do [ "${F_NAME[$i]}" = "$1" ] && { printf '%s' "$i"; return 0; }; done
@@ -174,7 +180,7 @@ load_values() {
             else printf "%s\0000\000\000" "$__pc_k"; fi
         done
         printf "%s\000%s\000" "${STATE_DIR:-}" "__pc_end__"
-    ' _ "$1" "$HOST" "${F_NAME[@]}"
+    ' _ "$1" "$HOST" "${F_NAME[@]}" "${EARLY_LOAD[@]}"
 }
 # dump_vars <配置文件> [不算在内的变量名...]：加载后的全部变量和函数（去掉 bash 自己会变的那些）
 dump_vars() {
@@ -227,28 +233,34 @@ top_level_assign() {
     printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
 }
 
-# daemon 实际用的值：没设置 → 默认值；为空 → 写成空值时的值（多数项读的是 ${X:-默认}，两者相同；
+# daemon 实际用的值：有值 → 它；没有值但早期名字有值 → 早期名字的值（_lib.sh 用 cavil_pick_setting
+# 挑，这里调的是同一个函数）；没设置 → 默认值；为空 → 写成空值时的值（多数项读的是 ${X:-默认}，两者相同；
 # 少数项读的是 ${X-默认}，空值有自己的意思，登记成「默认;empty=值」）。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
 effective() {   # <下标>
-    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"
+    local picked
+    picked="$(cavil_pick_setting "${V_VAL[$1]}" "${V_EARLY_VAL[$1]}")"
+    if [ -n "$picked" ]; then printf '%s' "$picked"
     elif [ "${V_SET[$1]}" = 1 ]; then printf '%s' "${F_EMPTY[$1]}"
     else printf '%s' "${F_DEF[$1]}"; fi
 }
 
-V_SET=(); V_VAL=(); STATE_DIR_VAL=""
-read_values() {   # <配置文件> → 填 V_SET / V_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
-    local parts=() p i=0 n=${#F_NAME[@]}
+V_SET=(); V_VAL=(); V_EARLY_VAL=(); STATE_DIR_VAL=""
+read_values() {   # <配置文件> → 填 V_SET / V_VAL / V_EARLY_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
+    local parts=() p i=0 n=${#F_NAME[@]} m
+    m=$((n * 2))
     while IFS= read -r -d '' p; do parts+=("$p"); done < <(load_values "$1" || true)
-    [ "${#parts[@]}" -eq $((n * 3 + 2)) ] || return 1
-    [ "${parts[$((n * 3 + 1))]}" = "__pc_end__" ] || return 1
-    V_SET=(); V_VAL=()
+    [ "${#parts[@]}" -eq $((m * 3 + 2)) ] || return 1
+    [ "${parts[$((m * 3 + 1))]}" = "__pc_end__" ] || return 1
+    V_SET=(); V_VAL=(); V_EARLY_VAL=()
     while [ "$i" -lt "$n" ]; do
         [ "${parts[$((i * 3))]}" = "${F_NAME[$i]}" ] || return 1
+        [ "${parts[$(((n + i) * 3))]}" = "${EARLY_LOAD[$i]}" ] || return 1
         V_SET+=("${parts[$((i * 3 + 1))]}"); V_VAL+=("${parts[$((i * 3 + 2))]}")
+        V_EARLY_VAL+=("${parts[$(((n + i) * 3 + 2))]}")
         i=$((i + 1))
     done
-    STATE_DIR_VAL="${parts[$((n * 3))]}"
+    STATE_DIR_VAL="${parts[$((m * 3))]}"
 }
 
 # ── 一个配置项在文件里是怎么写的 ──
@@ -261,6 +273,12 @@ inspect_field() {   # <配置文件> <下标>
     # 结构读不出来：不知道这一项在文件里有没有、在哪——不当成「没有」，也不当成「在最外层」
     if [ "$NORM_OK" != 1 ]; then
         W_WHY="读不出配置文件的结构，判断不了这一项能不能安全地改"; return 0
+    fi
+    # 配置里用到了这一项的早期名字：daemon 照样认（新名字没有值时用它），但在这里写新名字会让
+    # 两个名字并存、值还可能互相矛盾。只显示，说清怎么改
+    if [ -n "${F_EARLY[$i]}" ] && [ "$(mentions "${F_EARLY[$i]}")" != 0 ]; then
+        W_WHY="配置文件里写的是这一项的早期名字 ${F_EARLY[$i]}（daemon 照样认）；在文件里把它改成 ${k} 后才能在这里改"
+        return 0
     fi
     m="$(mentions "$k")"
     # 整份配置的代码里一次都没提到这个名字，加载后也确实没有值：才算「没有这一行」，可以追加

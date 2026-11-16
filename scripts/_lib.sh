@@ -206,11 +206,13 @@ _requester_bot_pick() {   # <新名字> <旧名字>
     fi
     printf -v "$new" '%s' "$(cavil_pick_setting "${!new:-}" "${!old:-}")"
 }
-_requester_bot_pick LABEL_PENDING_REQUESTER_BOT  LABEL_PENDING_RELAY
-_requester_bot_pick REQUESTER_BOT_ACCOUNT        RELAY_BOT_ACCOUNT
-_requester_bot_pick REQUESTER_BOT_ALLOWED_ACTORS RELAY_ALLOWED_ACTORS
-_requester_bot_pick REQUESTER_BOT_ORIGIN_MARKER  RELAY_ORIGIN_MARKER
-_requester_bot_pick REQUESTER_BOT_REPORT_FIRST   RELAY_REPORT_FIRST
+# 新旧名字的对照表在 _names.sh（CAVIL_SETTING_EARLY_NAMES），项目配置窗口按同一张表算显示的值
+while read -r __rb_new __rb_old; do
+    [ -n "$__rb_new" ] && _requester_bot_pick "$__rb_new" "$__rb_old"
+done <<EOF_EARLY
+$CAVIL_SETTING_EARLY_NAMES
+EOF_EARLY
+unset __rb_new __rb_old
 REQUESTER_BOT_REPORT_FIRST="${REQUESTER_BOT_REPORT_FIRST:-false}"
 # GitHub#133：非机器人提的条目（维护者自己的 issue / PR）也允许叫醒。默认关；没有早期名字。
 REQUESTER_BOT_WAKE_ANY_ITEM="${REQUESTER_BOT_WAKE_ANY_ITEM:-false}"

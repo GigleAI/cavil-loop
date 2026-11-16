@@ -507,6 +507,65 @@ chk "读回：轮询记录关、预筛关（空值）" "$(field "$G" ENABLE_POLL
 chk "预筛那一行确实写成了空值" "$(grep -cx 'AUTOPILOT_OUTSIDER_SCREEN=""' "$MIN/cavil-loop.config")" 1
 save min '{"AUTOPILOT_OUTSIDER_SCREEN":"yes"}'
 chk "预筛只认 on 和空值：写 yes 被拒" "$RESULT" "RESULT=invalid"
+# 早期名字（外部需求机器人的 RELAY_* / LABEL_PENDING_RELAY）：daemon 加载时新名字没有值就用早期名字的值，
+# 窗口显示的值必须是同一个——同一份配置，真实加载公共库和 project-config.sh 对拍。用到早期名字的项只显示、不可改
+EARLY_PAIRS="$(env -i bash -c 'source "$1/scripts/_names.sh"; printf "%s\n" "$CAVIL_SETTING_EARLY_NAMES"' _ "$REPO_DIR")"
+chk "早期名字对照表有五对（外部需求机器人的五项）" "$(grep -c . <<<"$EARLY_PAIRS")" 5
+EW="$SANDBOX/early"; mkdir -p "$EW/proj" "$EW/state" "$EW/wt"
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$EW/proj" "$EW/cavil-loop.config" > "$H/.config/cavil-loop/early.conf"
+early_conf() {   # <追加的行...>：只有必填项，再加上这几行
+    cat > "$EW/cavil-loop.config" <<CONF
+REPO="example/early"
+PROJECT_ROOT="$EW/proj"
+WORKTREE_BASE="$EW/wt"
+STATE_DIR="$EW/state"
+TMUX_PREFIX="earlytest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+CONF
+    local l; for l in "$@"; do printf '%s\n' "$l" >> "$EW/cavil-loop.config"; done
+}
+EKEYS="LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_ACCOUNT REQUESTER_BOT_ALLOWED_ACTORS REQUESTER_BOT_ORIGIN_MARKER REQUESTER_BOT_REPORT_FIRST"
+early_lib() {   # 真实加载公共库后，五个新名字的值 + 冲突提示
+    env -i HOME="$EW" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$EW/cavil-loop.config" bash -c '
+    source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
+    shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
+    printf "CONFLICTS=%s\n" "$REQUESTER_BOT_NAME_CONFLICTS"
+' _ "$REPO_DIR" $EKEYS 2>&1
+}
+early_lib_shown() {   # 两个登记了的项：公共库的值 / 窗口显示的值
+    local L G; L="$(early_lib)"; G="$(run get early)"
+    printf 'lib %s %s | shown %s %s' \
+        "$(sed -n 's/^LABEL_PENDING_REQUESTER_BOT=//p' <<<"$L")" "$(sed -n 's/^REQUESTER_BOT_REPORT_FIRST=//p' <<<"$L")" \
+        "$(jq -r '.fields[] | select(.name == "LABEL_PENDING_REQUESTER_BOT") | .value' <<<"$G")" \
+        "$(jq -r '.fields[] | select(.name == "REQUESTER_BOT_REPORT_FIRST") | .value' <<<"$G")"
+}
+early_conf 'LABEL_PENDING_RELAY="pending/relay"' 'RELAY_BOT_ACCOUNT="old-bot"' 'RELAY_ALLOWED_ACTORS="old-bot"' \
+    'RELAY_ORIGIN_MARKER="<!-- old -->"' 'RELAY_REPORT_FIRST="true"'
+chk "只写早期名字：公共库五项都取早期名字的值，没有冲突提示" "$(early_lib)" \
+    "$(printf '%s\n' LABEL_PENDING_REQUESTER_BOT=pending/relay REQUESTER_BOT_ACCOUNT=old-bot REQUESTER_BOT_ALLOWED_ACTORS=old-bot 'REQUESTER_BOT_ORIGIN_MARKER=<!-- old -->' REQUESTER_BOT_REPORT_FIRST=true CONFLICTS=)"
+chk "只写早期名字：窗口显示的值 = 公共库的值" "$(early_lib_shown)" "lib pending/relay true | shown pending/relay true"
+G="$(run get early)"
+chk "只写早期名字：可改的那项变成只显示，标成「文件里有」" "$(field "$G" REQUESTER_BOT_REPORT_FIRST)" '["true",true,false]'
+chk_has "只显示的原因写出早期名字和怎么改" "$(why "$G" REQUESTER_BOT_REPORT_FIRST)" "早期名字 RELAY_REPORT_FIRST"
+before="$(sum "$EW/cavil-loop.config")"
+save early '{"REQUESTER_BOT_REPORT_FIRST":"false"}'
+chk "只写早期名字：保存这一项被拒，文件不变" "$RESULT $(sum "$EW/cavil-loop.config")" "RESULT=not_editable $before"
+early_conf 'LABEL_PENDING_REQUESTER_BOT=""' 'REQUESTER_BOT_REPORT_FIRST=""' 'LABEL_PENDING_RELAY="pending/relay"' 'RELAY_REPORT_FIRST="true"'
+chk "新名字写成空值、早期名字有值：窗口显示的值 = 公共库的值（早期名字的值）" "$(early_lib_shown)" "lib pending/relay true | shown pending/relay true"
+early_conf 'LABEL_PENDING_REQUESTER_BOT="pending/bot"' 'REQUESTER_BOT_REPORT_FIRST="false"' 'LABEL_PENDING_RELAY="pending/relay"' 'RELAY_REPORT_FIRST="true"'
+chk "两个名字都有值且不同：窗口显示的值 = 公共库的值（新名字的值）" "$(early_lib_shown)" "lib pending/bot false | shown pending/bot false"
+chk_has "两个名字都有值且不同：公共库照旧提示冲突" "$(early_lib)" "REQUESTER_BOT_REPORT_FIRST（用它）/ RELAY_REPORT_FIRST（忽略）"
+chk "两个名字都有值且不同：也只显示" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,false]'
+early_conf 'RELAY_REPORT_FIRST=""'
+chk "早期名字写成空值：窗口显示的值 = 公共库的值（默认）" "$(early_lib_shown)" "lib  false | shown  false"
+chk "早期名字只写成空值也算用到了它：只显示" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,false]'
+early_conf 'REQUESTER_BOT_REPORT_FIRST="false"'
+chk "只写新名字：照旧可改" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,true]'
+save early '{"REQUESTER_BOT_REPORT_FIRST":"true"}'
+chk "只写新名字：保存成功，公共库读到新值，和窗口一致" "$RESULT $(early_lib_shown)" "RESULT=saved lib  true | shown  true"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
