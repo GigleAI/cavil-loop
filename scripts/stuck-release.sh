@@ -84,6 +84,11 @@ if ! flock -w "$LOCK_WAIT" 8; then
     echo "等了 $LOCK_WAIT 秒没拿到轮询锁（轮询正在跑），什么都没改。稍后再运行。"
     exit 2
 fi
+# 流程标签改名的闸门（GitHub#569）：配置是拿锁前读的，锁里确认它没被换过、也没有改名在进行
+if ! label_rename_gate; then
+    echo "${LABEL_GATE_WHY}。什么都没改，稍后再运行。"
+    exit 2
+fi
 
 # 2. 停住记录（按目标编号找；给的是关联条目的编号也认）
 # 读不出本机状态 ≠ 没有记录

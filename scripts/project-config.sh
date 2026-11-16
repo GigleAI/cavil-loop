@@ -38,6 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/_names.sh"
 # shellcheck source=_install.sh
 source "$SCRIPT_DIR/_install.sh"
+# shellcheck source=_label_rename.sh
+source "$SCRIPT_DIR/_label_rename.sh"
 
 export LC_ALL=C
 FIELDS_FILE="$SCRIPT_DIR/config-fields.txt"
@@ -49,6 +51,9 @@ LIT_CHARS='A-Za-z0-9._:/@,+-'
 MODE="${1:-}"
 KEY="${2:-}"
 REV=""
+# 只给 scripts/label-rename.sh 用（GitHub#569）：这一次只改一个流程标签的名字。要求本项目有一条和它对得上的
+# 「改名进行中」记录（同一项、同一旧名、同一新名），所以不能拿来绕过「流程标签只显示」
+LABEL_RENAME=""
 usage() { sed -n '2,11p' "$0" >&2; }
 case "$MODE" in
     get|set) ;;
@@ -59,6 +64,7 @@ shift 2 2>/dev/null || true
 while [ $# -gt 0 ]; do
     case "$1" in
         --rev) REV="${2:-}"; shift 2 2>/dev/null || shift ;;
+        --label-rename) LABEL_RENAME=1; shift ;;
         --lock-wait) LOCK_WAIT_SECS="${2:-}"; shift 2 2>/dev/null || shift
             case "$LOCK_WAIT_SECS" in ''|*[!0-9]*) echo "--lock-wait 后面要跟秒数" >&2; exit 1 ;; esac ;;
         *) echo "不认识的参数：$1" >&2; exit 1 ;;
@@ -391,6 +397,24 @@ TYPE_JQ='def type_json($t):
     elif $t | startswith("enum:") then {type:"enum", options:[after("enum:") | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}
     else {type:$t} end;'
 
+# 本项目有没有没做完的流程标签改名、有没有在核对标签（GitHub#569）。记录是 scripts/label-rename.sh 写的小 JSON；
+# 读不了 = unreadable，不当成「没有」
+label_rename_status_json() {
+    local rec watch p w
+    case "$STATE_DIR_VAL" in /*) ;; *) printf '{"state":"unknown"}'; return 0 ;; esac
+    rec="$(label_rename_record_path "$STATE_DIR_VAL")"; watch="$(label_watch_path "$STATE_DIR_VAL")"
+    p=null; w=null
+    if [ -e "$rec" ] || [ -L "$rec" ]; then
+        p="$(jq -c 'if type == "object" then . else error("x") end' "$rec" 2>/dev/null)" || p='"unreadable"'
+        [ -n "$p" ] || p='"unreadable"'
+    fi
+    if [ -e "$watch" ] || [ -L "$watch" ]; then
+        w="$(jq -c 'if type == "object" then . else error("x") end' "$watch" 2>/dev/null)" || w='"unreadable"'
+        [ -n "$w" ] || w='"unreadable"'
+    fi
+    jq -cn --argjson p "$p" --argjson w "$w" '{state:"ok", pending:$p, watch:$w}'
+}
+
 # ════════════════ get ════════════════
 if [ "$MODE" = get ]; then
     rev="$(rev_of "$REAL" "$REAL")" || get_fail unreadable "读不了配置文件：$REAL" 2
@@ -410,19 +434,30 @@ if [ "$MODE" = get ]; then
         else
             why="${F_WHY[$i]}"
         fi
-        # 每项 11 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
+        # 能不能在改名框里改名（GitHub#569）：只看能改名的流程标签；配置里要是最外层一行普通字面值、值不为空
+        rn=""; rn_why=""
+        if label_rename_field_ok "${F_NAME[$i]}"; then
+            if [ -z "$value" ]; then rn=false; rn_why="这个功能关着（标签为空），没有可以改名的标签"
+            elif [ "$W_KIND" != literal ]; then rn=false; rn_why="${W_WHY:-配置文件里没有单独写这一行}，用编辑器改成最外层单独一行后才能在这里改名"
+            elif ! label_rename_name_ok "$value"; then rn=false; rn_why="现在的名字含有这里改不了的字符"
+            else rn=true; fi
+        fi
+        # 每项 13 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
         fields+=("${F_NAME[$i]}" "${F_GROUP[$i]}" "${F_MODE[$i]}" "${F_LABEL[$i]}" "${F_HELP[$i]}" "$value" \
-            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}")
+            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}" "$rn" "$rn_why")
     done
     # --rawfile 整份读进一个字符串：jq -R 从管道分块读时会把一个多字节字符切在两块之间，读成乱码（jq 1.7 实测）
     jq -n --rawfile raw <(printf '%s\0' "${fields[@]}") --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
+        --argjson lr "$(label_rename_status_json)" \
         "$TYPE_JQ"'
         ($raw | split("\u0000") | .[:-1]) as $f
-        | [range(0; $f | length; 11) as $i | $f[$i:$i + 11]
+        | [range(0; $f | length; 13) as $i | $f[$i:$i + 13]
            | {name:.[0], group:.[1], mode:.[2], label:.[3], help:.[4], value:.[5], default:.[6],
               in_file:(.[7] == "true"), editable:(.[8] == "true"), reason:(if .[9] == "" then null else .[9] end)}
-             + type_json(.[10])]
-        | {version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.}' \
+             + type_json(.[10])
+             + (if .[11] == "" then {} else {rename:{ok:(.[11] == "true"), reason:(if .[12] == "" then null else .[12] end)}} end)]
+        | {version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.,
+           label_rename:$lr}' \
         --args ${AGENTS[@]+"${AGENTS[@]}"}
     exit 0
 fi
@@ -473,17 +508,36 @@ E_IDX=(); E_KIND=(); E_LINE=(); E_QUOTE=(); E_LIT=(); E_NEW=()
 changes=()
 for j in "${!W_NAMES[@]}"; do
     k="${W_NAMES[$j]}"; v="${W_VALUES[$j]}"
-    if ! i="$(field_index "$k")" || [ "${F_MODE[$i]}" != edit ]; then
+    if [ -n "$LABEL_RENAME" ]; then
+        # 改名脚本的这一次写入：只能是一个能改名的流程标签，而且必须有对得上的「改名进行中」记录
+        if [ "${#W_NAMES[@]}" != 1 ] || ! i="$(field_index "$k")" || ! label_rename_field_ok "$k"; then
+            echo "$k 不是能改名的流程标签，什么都没写"
+            DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
+        fi
+        inspect_field "$SNAP" "$i"
+        old="$(effective "$i")"
+        rec="$(label_rename_record_path "$STATE_DIR_VAL")"
+        if [ "$W_KIND" != literal ] || [ -z "$old" ] \
+           || ! jq -e --arg k "$k" --arg o "$old" --arg n "$v" '.field == $k and .from == $o and .to == $n' "$rec" >/dev/null 2>&1; then
+            echo "$k 没有对得上的改名记录，或配置里这一行不能改（${W_WHY:-}），什么都没写"
+            DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
+        fi
+        if ! label_rename_name_ok "$v"; then
+            echo "新名字只能用字母、数字和 . _ : / @ + -，最长 50 个字符。什么都没写"
+            DETAIL="$(jq -cn --arg k "$k" '{field:$k, reason:"name"}')"; finish invalid 2
+        fi
+    elif ! i="$(field_index "$k")" || [ "${F_MODE[$i]}" != edit ]; then
         echo "$k 不是能在这里改的配置项，什么都没写"
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
-    fi
+    else
     inspect_field "$SNAP" "$i"
     old="$(effective "$i")"
     if [ "$W_KIND" = complex ] || ! valid_value "${F_TYPE[$i]}" "$old"; then
         echo "$k 现在不能在这里改（${W_WHY:-现在的值不是标准写法}），什么都没写"
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
     fi
-    if ! valid_value "${F_TYPE[$i]}" "$v"; then
+    fi
+    if [ -z "$LABEL_RENAME" ] && ! valid_value "${F_TYPE[$i]}" "$v"; then
         echo "${F_LABEL[$i]}（${k}）的值不合规：${BAD_WHY}。什么都没写"
         DETAIL="$(jq -cn --arg k "$k" --arg why "$BAD_WHY" '{field:$k, reason:$why}')"; finish invalid 2
     fi

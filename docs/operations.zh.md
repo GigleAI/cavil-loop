@@ -1690,6 +1690,46 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 
 **保存时不要同时在编辑器里改同一个文件。** 脚本没法让编辑器等它。最后一次核对时文件和 `--rev` 不一样，它就不写；那次核对之后的事它看不到：编辑器在那次核对和换上之间存的一版会被新文件换掉；编辑器在保存前就开着这个文件、保存后才存盘的，要么用它手里整份旧内容把新值盖回去，要么写进刚被换下的那个文件。这两种情况结果仍可能是 `saved`，丢掉的修改找不回来——备份里只有保存前的那一版。新文件换上之后脚本不再写配置文件：不回滚，不自动恢复。轮询每一轮开头读一次配置，替换是改名，所以它读到的要么是旧的整份、要么是新的整份；已经在跑的 worker 用的还是它启动时的值。
 
+## 给流程标签改名
+
+流程标签（派工、干活中、等人、转 PR 跟踪、已完成，以及复审、托管、等合并、等前置、暂缓、等外部需求机器人这几个可选标签）存在三个地方：项目配置、GitHub 上的标签本身（和挂着它的每个 issue / PR）、桌面客户端自己记的标签名。`scripts/label-rename.sh` 一次改前两处；桌面客户端的「改名…」按钮调用它，然后只给这个仓库存新名字（GitHub#569）。只有一个设置一个名字的才能改名；列表类设置（`LABEL_PENDING_AGENT_EXTRA`、`GREEDY_SKIP_LABELS`、`PRIORITY_LABELS`）不能，它们里面用到了新旧名字时改名会被拦下。
+
+<!-- label-rename-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/label-rename.sh" myproject check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --others-stopped | tail -1
+REV="$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .rev)"
+bash "$SKILL/scripts/label-rename.sh" myproject rename --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --rev "$REV" --others-stopped | tail -1
+bash "$SKILL/scripts/label-rename.sh" myproject finish --no-client | tail -1
+```
+<!-- label-rename-ops:end -->
+
+依次是：检查（只读，每一项和原因都在 `DETAIL=` 那一行）；取配置的指纹；改名——GitHub 和配置都换成新名字后最后一行是 `RESULT=awaiting_client`；结束暂停。`--others-stopped` 是人确认「没有别的机器在轮询本仓库，或已经停掉」（见下文）。`finish --no-client` 表示这次不改客户端的名字，要在客户端设置里手动改。
+
+**改名期间没有东西按旧名字动手。** 脚本在本项目的轮询锁里做，动 GitHub 之前先写 `$STATE_DIR/label-rename.json`。有这个文件时，本项目每一轮轮询、人手动跑的派工和 CI 报告、叫醒外部需求机器人的脚本都不动手（轮询记录写 `label-rename`）。每个「读了配置、之后会写标签」的入口拿到轮询锁后，先确认配置还是自己加载的那一版（指纹按加载的那份字节算），不是就不动手，下一轮用新配置；人手动跑的派工脚本会先在轮询锁里重新起自己。这个文件只由 `finish`、`undo` 或 `abandon --yes` 删掉。
+
+**检查项。** 新名字只用字母、数字和 `. _ : / @ + -`，1–50 个字符。仓库里有名字正好是旧名的标签，没有叫新名的标签（标签名不分大小写唯一；只改同一个标签的大小写可以）。没有打开的条目挂着干活中标签（`doing/agent`），卡住检测没有停下的条目。别的设置没用到这两个名字。配置那一行是最外层的普通字面值（和 `project-config.sh` 同一条规则）。托管、等合并、等前置、等外部需求机器人这几个标签按 GitHub 的标签历史判断，改名后历史里记的是不是新名字没实测过——所以有打开的条目挂着它们时不能改名。标签列表读不全是「判断不了」，不是「新名字没被占用」。
+
+| `RESULT` | 意思 | 接下来 |
+|---|---|---|
+| `awaiting_client` | GitHub 和配置都已是新名字；本项目仍暂停 | 客户端存好自己的名字后 `finish --client-saved`；终端里用 `finish --no-client` |
+| `done` | 做完了，暂停文件已删 | — |
+| `refused` | 有检查没过，或 GitHub 拒绝了改名（4xx）；什么都没改 | 按 `DETAIL=` 里的原因处理后再试 |
+| `no_answer` | 改名请求没有回音：之后任何时候都可能生效 | `continue`（只读）直到 GitHub 上是新名字，或 `resend`；没有 `undo` |
+| `partial` | GitHub 已改名，配置没写成 | 处理原因后 `continue` |
+| `busy` | 轮询锁一直被占（`LABEL_RENAME_LOCK_WAIT`，默认 60 秒）；什么都没改 | 再试 |
+| `unknown` | 有东西读不到，或 GitHub 上两个名字都不是；什么都没写 | 看提示；手动处理好后 `abandon --yes` |
+
+**请求没回音时。** GitHub 的标签接口没有条件写入，也没有「这个请求已作废」的回执，没回音的改名可能在之后任何时候生效。所以脚本从不把「旧名字还在」当成「什么都没发生」：本项目一直暂停，`undo` 被拒，只有 `continue` 和 `resend`（重发是安全的：迟到的那个请求目标相同，旧名字没了之后会被拒掉）。这样的改名做完后会写 `$STATE_DIR/label-watch.json`：之后每一轮轮询先读仓库标签，按那个固定编号对应的名字和配置不一致就整轮不做（轮询记录写 `label-watch`），直到 `label-rename.sh myproject watch-end`。迟到的请求恰好落在核对之后、这一轮最后一次写标签之前时，这一轮仍可能按旧名字动手一次——这是维护者在 #569 里接受的风险。
+
+**另一台机器也在轮询同一个仓库时。** GitHub 一改名，那台的配置还是旧名字。改名前先停掉它的轮询（客户端会列出它知道的机器并先停掉）。改完后在那台运行 `follow`，带上第一台输出里的标签固定编号（`LABEL_ID=`）：它核对这个编号的标签已是新名字、旧名字已经没有，只改那台的配置，不向 GitHub 发任何请求——然后 `finish --no-client`，再开那台的轮询。
+
+```bash
+bash "$SKILL/scripts/label-rename.sh" otherproject follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id 1234567 --rev "$(bash "$SKILL/scripts/project-config.sh" get otherproject | jq -r .rev)"
+```
+
+`status` 打印进行中的记录和是否在核对标签；`project-config.sh get` 也在 `label_rename` 里给出同样的状态，并给每个能改名的设置 `rename.ok` / `rename.reason`。
+
 ## 远程入口：让另一台电脑上的客户端看这台机器的 daemon（GitHub#387）
 
 daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客户端的「设置 → 远程 daemon」可以列出这台机器接了哪些项目、在不在跑，停 / 启某个项目的轮询，看轮询日志的最后 200 行，读 / 改某个项目的常用设置（GitHub#530：和「本机 daemon → 配置」同一张表单）。**只通过 Tailscale**，并且要先配对。默认是关的：不跑下面的命令，这台机器上没有任何监听、没有任何转发。
@@ -2198,6 +2238,8 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" 
 | `pace-skip` | 被空闲 / 故障退避跳过（轻量检查的结果在单独一列） |
 | `lock-busy` | 上一轮还没跑完；备注里写着占锁的是哪一轮、已经跑了多久 |
 | `github-unreadable` | 读不到 GitHub，没派工就停了（有快照） |
+| `label-rename` | 有一次流程标签改名还没做完，或配置在这一轮加载之后被改过——这一轮什么都没做（[给流程标签改名](#给流程标签改名)） |
+| `label-watch` | 改名后的标签核对发现 GitHub 上那个标签的名字和配置不一样，或读不到——这一轮什么都没做 |
 | `error` | 非零退出（有快照，带脚本名和行号） |
 | `early-exit` | 没走到最后就以 0 退出，走的是运行记录没有起名字的路径 |
 

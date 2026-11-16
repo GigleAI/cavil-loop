@@ -456,7 +456,7 @@ _runlog_finish() {   # <退出码>
     if [ "$rc" != 0 ]; then outcome=error
     else
         case "$RUNLOG_OUTCOME" in
-            ok|pace-skip|lock-busy|github-unreadable) outcome="$RUNLOG_OUTCOME" ;;
+            ok|pace-skip|lock-busy|github-unreadable|label-rename|label-watch) outcome="$RUNLOG_OUTCOME" ;;
             *) outcome=early-exit ;;
         esac
     fi

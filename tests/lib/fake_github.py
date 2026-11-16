@@ -419,10 +419,14 @@ if method == "GET":
 
     if parts == ["issues"] and ("state" in QUERY or "creator" in QUERY):
         want = QUERY.get("state", "open")
+        # labels=：只有测试放了 filter_labels 文件时才按它筛（GitHub#569；不放时照旧不筛，别的测试不受影响）
+        want_labels = [l for l in QUERY.get("labels", "").split(",") if l] if os.path.exists(p("filter_labels")) else []
         out = []
         for n in sorted(items, key=int):
             a = as_issue(n)
             if want != "all" and a["state"] != want:
+                continue
+            if want_labels and not all(l in [x["name"] for x in a.get("labels", [])] for l in want_labels):
                 continue
             if "creator" in QUERY and (a.get("user") or {}).get("login") != QUERY["creator"]:
                 continue
@@ -484,6 +488,9 @@ if method == "GET":
             it.setdefault("merged_at", "2026-01-01T00:00:00Z" if it.get("merged") else None)
             out.append(it)
         emit(paged(out), pages=True)
+    # 仓库的标签列表（GitHub#569）：label_ids.json {"名字": 编号}；没有这个文件时照旧落到末尾的空列表
+    if parts == ["labels"] and os.path.exists(p("label_ids.json")):
+        emit(paged([{"id": i, "name": nm} for nm, i in sorted(load("label_ids.json", {}).items(), key=lambda x: x[1])]), pages=True)
     if len(parts) == 2 and parts[0] == "labels":
         from urllib.parse import unquote as _unq
         known = load("repo_labels.json", None)
@@ -587,6 +594,43 @@ if method != "GET":
         fail("gh: You have exceeded a secondary rate limit. (HTTP 403)")
     if os.path.exists(p("F_" + _wkey)):
         fail("HTTP 500: injected write failure (" + _wkey + ")")
+
+# 给仓库里的标签改名（GitHub#569）：PATCH labels/<名字> new_name=…，挂着它的条目跟着换名字。
+# F_patch_label：422 拒绝（没改）；Fhold_patch_label：没回音、也没生效——请求记进 held_patch.json，测试之后
+# 用 release_held() 再让它生效（模拟迟到）；Flost_patch_label：生效了但回音丢了。
+def label_rename_apply(old, new):
+    ids = load("label_ids.json", {})
+    if old not in ids:
+        return False
+    if any(n.lower() == new.lower() and n != old for n in ids):
+        return False
+    ids[new] = ids.pop(old)
+    save("label_ids.json", ids)
+    lb = load("labels.json", {})
+    for n in lb:
+        lb[n] = [new if l == old else l for l in lb[n]]
+    save("labels.json", lb)
+    return True
+
+
+if method == "PATCH" and len(parts) == 2 and parts[0] == "labels" and os.path.exists(p("label_ids.json")):
+    from urllib.parse import unquote as _unq
+    old, new = _unq(parts[1]), fields.get("new_name", "")
+    if os.path.exists(p("F_patch_label")):
+        fail("gh: Validation Failed (HTTP 422)")
+    if os.path.exists(p("Fhold_patch_label")):
+        held = load("held_patch.json", [])
+        held.append({"from": old, "to": new})
+        save("held_patch.json", held)
+        fail("error connecting to api.github.com: context deadline exceeded")
+    ids = load("label_ids.json", {})
+    if old not in ids:
+        fail("gh: Not Found (HTTP 404)")
+    if not label_rename_apply(old, new):
+        fail("gh: Validation Failed (HTTP 422)")
+    if os.path.exists(p("Flost_patch_label")):
+        fail("HTTP 502: injected lost response (label renamed)")
+    emit({"id": ids[old], "name": new})
 
 # 开 issue / 改 issue 状态（GitHub#289：配置提示 issue）。F_post_issue / F_patch_issue 让这两种写失败。
 if method == "POST" and parts == ["issues"]:

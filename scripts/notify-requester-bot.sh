@@ -26,6 +26,7 @@ set -euo pipefail
 
 usage() { echo "用法: notify-requester-bot.sh --config <项目配置> <issue 或 PR 编号>"; exit 2; }
 
+ORIG_ARGS=("$@")
 CFG="" NUM=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -40,6 +41,8 @@ case "$NUM" in ''|*[!0-9]*) usage ;; esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
+# 在本项目的轮询锁里重新起自己，过流程标签改名的闸门（GitHub#569）：改名进行中、或配置在加载后被换过时不动手
+poll_lock_enter "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 say() { printf '%s\n' "$*"; log "notify-requester-bot #$NUM: $*" 2>/dev/null || true; }
 reject() { say "❌ 拒绝叫醒（标签未改动）：$*"; exit 2; }
