@@ -197,6 +197,14 @@ run_checks() {   # <rename|follow>
         i="$(id_of_name "$FROM")"
         if [ -n "$i" ]; then chk old_label true "仓库里有标签 ${FROM}（编号 ${i}）"; R_LABEL_ID="$i"
         else chk old_label false "仓库里没有名字正好是「${FROM}」的标签"; fi
+        # 「每轮核对标签」只记一个标签：另一个标签的核对还没结束时不改名，免得这次又没回音、收尾时把它
+        # 的核对记录换掉（复审第 2 轮）。同一个标签可以：收尾时核对记录跟着换成新名字
+        if [ -e "$WATCH" ] || [ -L "$WATCH" ]; then
+            n="$(jq -er '.label_id | tostring' "$WATCH" 2>/dev/null || true)"
+            if ! [[ "$n" =~ ^[0-9]+$ ]]; then chk watch null "标签核对记录读不了（${WATCH}），判断不了它核对的是哪个标签"
+            elif [ -n "$i" ] && [ "$n" = "$i" ]; then chk watch true "正在核对的就是这个标签（编号 ${n}），改完后核对跟着换成新名字"
+            else chk watch false "另一个标签（编号 ${n}）还在每轮核对中；确认不需要后先结束核对（watch-end）再改这个"; fi
+        fi
         n="$(id_of_name_ci "$TO")"
         if [ -z "$n" ]; then chk new_free true "仓库里没有别的标签叫 $TO"
         else chk new_free false "仓库里已经有标签叫「$(name_of_id "$n")」（标签名不分大小写）"; fi
@@ -369,6 +377,11 @@ finish)
     R_GITHUB=new
     if [ "$(label_field_value "$RF")" != "$RTO" ]; then R_CONFIG=old; MESSAGE="配置里 $RF 不是 ${RTO}，没有收尾"; out unknown 1; fi
     R_CONFIG=new
+    if [ "$RUNANS" = true ] && { [ -e "$WATCH" ] || [ -L "$WATCH" ]; } \
+       && [ "$(jq -er '.label_id | tostring' "$WATCH" 2>/dev/null || true)" != "$RID" ]; then
+        # 检查已拦下这种情况；万一走到这里（检查之后有人手工写了核对记录），不覆盖别的标签的核对、不收尾
+        MESSAGE="另一个标签的核对记录还在（${WATCH}），没有收尾；结束那个核对（watch-end）后再 finish"; out refused 1
+    fi
     if [ "$RUNANS" = true ]; then
         jq -cn --arg f "$RF" --argjson id "$RID" --arg n "$RTO" --argjson t "$(date +%s)" '{field:$f, label_id:$id, name:$n, since:$t}' \
             > "$WATCH.tmp.$$" && mv -f "$WATCH.tmp.$$" "$WATCH" \

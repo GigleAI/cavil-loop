@@ -90,7 +90,8 @@ export function LabelRenameDialog({
   const [name, setName] = useState('');
   const [ticked, setTicked] = useState(false);
   const [local, setLocal] = useState<LocalStatus | null>(status);
-  const [remotes, setRemotes] = useState<{ id: string; name: string; status: LocalStatus | null }[] | null>(null);
+  // null = still reading; 'failed' = the list could not be read (never taken for "no paired machines")
+  const [remotes, setRemotes] = useState<{ id: string; name: string; status: LocalStatus | null }[] | 'failed' | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
   const [stopNote, setStopNote] = useState<Record<string, string>>({});
   const [stopped, setStopped] = useState<StoppedMachine[]>([]);
@@ -104,8 +105,9 @@ export function LabelRenameDialog({
     try {
       list = await api().remoteList();
     } catch {
-      return setRemotes([]);
+      return setRemotes('failed');
     }
+    if (!list || !Array.isArray(list.remotes)) return setRemotes('failed');
     const paired = list.remotes.filter((e) => e.state === 'paired');
     const got = await Promise.all(
       paired.map(async (e) => {
@@ -133,7 +135,8 @@ export function LabelRenameDialog({
     // once when the dialog opens; a stop reads its machine again
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const pollers: Poller[] = otherPollers(local, project.key, repo, remotes ?? []);
+  const remotesState: 'loading' | 'failed' | 'read' = remotes === null ? 'loading' : remotes === 'failed' ? 'failed' : 'read';
+  const pollers: Poller[] = otherPollers(local, project.key, repo, Array.isArray(remotes) ? remotes : []);
   // a local status that could not be read: this computer's other projects are not known either
   const localUnknown = local === null;
   const list: Poller[] = localUnknown ? [{ where: 'local', key: '', name: '', state: 'unknown', unreadable: true }, ...pollers] : pollers;
@@ -155,7 +158,7 @@ export function LabelRenameDialog({
     }
   };
 
-  const missing = renameMissing({ checks: nameOk ? checks : null, checking, pollers: list, ticked });
+  const missing = renameMissing({ checks: nameOk ? checks : null, checking, pollers: list, ticked, remotes: remotesState });
   if (!nameOk) missing.unshift(to === '' ? t('还没填新名字') : t('新名字只能用字母、数字和 . _ : / @ + -，1–50 个字符，并且和旧名字不同'));
   const go = async () => {
     if (missing.length) return;
@@ -213,7 +216,14 @@ export function LabelRenameDialog({
         <CheckList checks={nameOk ? checks : null} />
         <h4>{t('别处在轮询这个仓库的 daemon')}</h4>
         {remotes === null ? (
-          <div className="small muted">{t('正在读取…')}</div>
+          <div className="small muted" data-testid="rename-remotes-loading">{t('正在读取…')}</div>
+        ) : remotes === 'failed' ? (
+          <div className="small err" data-testid="rename-remotes-failed">
+            {t('读不到配对过的远程机器列表，判断不了有没有别的机器在轮询这个仓库。')}{' '}
+            <button className="link" data-testid="rename-remotes-retry" onClick={() => { setRemotes(null); void readRemotes(); }}>
+              {t('再读一次')}
+            </button>
+          </div>
         ) : list.length === 0 ? (
           <div className="small muted" data-testid="rename-pollers-none">
             {t('这个客户端知道的 daemon 里，没有别的在轮询这个仓库。')}

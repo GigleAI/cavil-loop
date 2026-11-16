@@ -216,17 +216,20 @@ describe('the rename dialog', () => {
       { id: 'm2:1', name: 'm2', status: null },
     ]);
     expect(list.map((p) => `${p.where} ${p.name} ${p.key} ${p.state}${p.unreadable ? ' unreadable' : ''}`)).toEqual(['local  widget2 running', 'remote m1 w stopped', 'remote m2  unknown unreadable']);
-    expect(renameMissing({ checks: [{ id: 'name', ok: true, text: '' }], checking: false, pollers: list, ticked: true })).toEqual(['还有 2 个别处的轮询没停（或读不到）']);
+    expect(renameMissing({ checks: [{ id: 'name', ok: true, text: '' }], checking: false, pollers: list, ticked: true, remotes: 'read' })).toEqual(['还有 2 个别处的轮询没停（或读不到）']);
   });
   it('the button waits for every check, every poller stopped and the tick', () => {
     const ok = [
       { id: 'name', ok: true as const, text: '' },
       { id: 'others_stopped', ok: false as const, text: '' },
     ];
-    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: true })).toEqual([]);
-    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: false })).toEqual(['还没勾选「已确认」']);
-    expect(renameMissing({ checks: [{ id: 'labels', ok: null, text: '' }], checking: false, pollers: [], ticked: true })).toEqual(['有 1 项检查没过']);
-    expect(renameMissing({ checks: null, checking: true, pollers: [], ticked: true })).toEqual(['检查还没做完']);
+    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: true, remotes: 'read' })).toEqual([]);
+    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: false, remotes: 'read' })).toEqual(['还没勾选「已确认」']);
+    expect(renameMissing({ checks: [{ id: 'labels', ok: null, text: '' }], checking: false, pollers: [], ticked: true, remotes: 'read' })).toEqual(['有 1 项检查没过']);
+    expect(renameMissing({ checks: null, checking: true, pollers: [], ticked: true, remotes: 'read' })).toEqual(['检查还没做完']);
+    // PR #571 review round 2: the paired machines' list still being read, or not readable, keeps the button off
+    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: true, remotes: 'loading' })).toEqual(['还在读取配对过的远程机器']);
+    expect(renameMissing({ checks: ok, checking: false, pollers: [], ticked: true, remotes: 'failed' })).toEqual(['读不到配对过的远程机器列表（算作没停）']);
   });
 });
 

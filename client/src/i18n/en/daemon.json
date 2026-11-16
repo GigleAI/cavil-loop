@@ -430,5 +430,8 @@
     "one": "{n} polling elsewhere is not stopped (or cannot be read)",
     "other": "{n} pollings elsewhere are not stopped (or cannot be read)"
   },
-  "还没勾选「已确认」": "\"Confirmed\" is not ticked yet"
+  "还没勾选「已确认」": "\"Confirmed\" is not ticked yet",
+  "还在读取配对过的远程机器": "Still reading the paired remote machines",
+  "读不到配对过的远程机器列表（算作没停）": "The paired remote machines could not be read (counted as not stopped)",
+  "读不到配对过的远程机器列表，判断不了有没有别的机器在轮询这个仓库。": "The paired remote machines could not be read, so whether another machine polls this repository is unknown."
 }

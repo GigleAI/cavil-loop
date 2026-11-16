@@ -342,9 +342,15 @@ export function otherPollers(local: StatusLike | null, thisKey: string, repo: st
   return out;
 }
 
-/** What still keeps 「改名（三处一起改）」 off, one line each (empty: it may be pressed). */
-export function renameMissing(o: { checks: RenameCheck[] | null; checking: boolean; pollers: Poller[]; ticked: boolean }): string[] {
+/**
+ * What still keeps 「改名（三处一起改）」 off, one line each (empty: it may be pressed).
+ * `remotes`: the paired machines' list — still being read and could not be read both keep the button off;
+ * only a list that was read (empty or not) lets it through (PR #571 review round 2: a failed read had been an empty list).
+ */
+export function renameMissing(o: { checks: RenameCheck[] | null; checking: boolean; pollers: Poller[]; ticked: boolean; remotes: 'loading' | 'failed' | 'read' }): string[] {
   const out: string[] = [];
+  if (o.remotes === 'loading') out.push(t('还在读取配对过的远程机器'));
+  else if (o.remotes === 'failed') out.push(t('读不到配对过的远程机器列表（算作没停）'));
   if (o.checking || o.checks === null) out.push(t('检查还没做完'));
   else {
     const bad = o.checks.filter((c) => c.ok !== true && c.id !== 'others_stopped').length;

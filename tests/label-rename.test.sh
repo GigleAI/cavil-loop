@@ -258,6 +258,26 @@ chk "日志写明标签核对没过" "$(grep -c '标签核对：GitHub 上编号
 r="$(rn lra watch-end)"
 chk "watch-end 结束核对" "$(res "$r")/$(line "$r" WATCH)" "done/no"
 
+echo "4b. 一个标签还在核对时，另一个标签不改名（复审第 2 轮：核对记录只记一个标签，不能被覆盖）"
+mkconf lra; world; : > "$GD/Fhold_patch_label"
+rn lra rename --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --rev "$(rev_of lra)" --others-stopped >/dev/null
+rm -f "$GD/Fhold_patch_label"; release_held
+rn lra continue >/dev/null; rn lra finish --no-client >/dev/null
+chk "标签 A（编号 102）没回音后做完：在核对" "$(jq -r .label_id "$SANDBOX/lra/state/label-watch.json")" "102"
+r="$(rn lra check --field LABEL_DONE --from Done --to Shipped --others-stopped)"
+chk "标签 B（已完成）改名被拦下，写明先结束 A 的核对" "$(res "$r")/$(failed_checks "$r")" "refused/watch"
+w0="$(writes)"
+r="$(rn lra rename --field LABEL_DONE --from Done --to Shipped --rev "$(rev_of lra)" --others-stopped)"
+chk "直接改名同样被拦下：没有 GitHub 写请求、配置不动、A 的核对还在" "$(res "$r")/$(( $(writes) - w0 ))/$(conf_val lra LABEL_DONE)/$(jq -r .label_id "$SANDBOX/lra/state/label-watch.json")" "refused/0/Done/102"
+r="$(rn lra check --field LABEL_PENDING_HUMAN --from needs-human --to waits-human --others-stopped)"
+chk "同一个标签 A 可以再改名（核对跟着换名字）" "$(res "$r")" "ok"
+rn lra watch-end >/dev/null
+r="$(rn lra check --field LABEL_DONE --from Done --to Shipped --others-stopped)"
+chk "结束 A 的核对后，B 可以改名" "$(res "$r")" "ok"
+echo '{"label_id":' > "$SANDBOX/lra/state/label-watch.json"
+r="$(rn lra check --field LABEL_DONE --from Done --to Shipped --others-stopped)"
+chk "核对记录读不了 → 判断不了（null），不放行" "$(res "$r")/$(printf '%s\n' "$r" | sed -n 's/^DETAIL=//p' | jq -r '.checks[] | select(.id == "watch") | .ok')" "refused/null"
+
 echo "5. 配置那一步没写成"
 mkconf lra; world
 chmod 500 "$SANDBOX/lra"

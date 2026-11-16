@@ -140,6 +140,45 @@ test('改名: the checks are listed, the button waits for the tick; then GitHub,
   await expect(page.locator('[data-testid=repo-label-row][data-slot=human]')).toHaveCount(0);
 });
 
+test('the paired machines\' list still being read, or not readable, keeps 改名 off; read again, it lets it through (PR #571 review round 2)', async () => {
+  const { app, page } = await openSection(['widget']);
+  // hold every remoteList the window asks for until the test says how it ends
+  let mode: 'hold' | 'fail' | 'pass' = 'hold';
+  const held: (() => void)[] = [];
+  await page.route('**/call', async (route) => {
+    const body = route.request().postData() ?? '';
+    if (!body.includes('"remoteList"')) return route.continue();
+    if (mode === 'pass') return route.continue();
+    if (mode === 'fail') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ err: 'remote list unreadable' }) });
+    await new Promise<void>((r) => held.push(r));
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ err: 'remote list unreadable' }) });
+  });
+  await openConfig(page, 'widget');
+  await row(page, 'LABEL_PENDING_HUMAN').getByTestId('config-rename-open').click();
+  await page.getByTestId('rename-new-name').fill('wait/human');
+  await page.getByTestId('rename-others-stopped').check();
+  await expect(check(page, 'others_stopped')).toHaveAttribute('data-ok', 'true', SCRIPT);
+  // still reading: off, and says so
+  await expect(page.getByTestId('rename-remotes-loading')).toBeVisible();
+  await expect(page.getByTestId('rename-missing')).toContainText('还在读取配对过的远程机器');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  // the read fails: never "no paired machines"
+  mode = 'fail';
+  for (const r of held.splice(0)) r();
+  await expect(page.getByTestId('rename-remotes-failed')).toBeVisible(SCRIPT);
+  await expect(page.getByTestId('rename-pollers-none')).toHaveCount(0);
+  await expect(page.getByTestId('rename-missing')).toContainText('读不到配对过的远程机器列表');
+  await expect(page.getByTestId('confirm-ok')).toBeDisabled();
+  // read again, it answers: an empty list is a real "none" and the button comes on
+  mode = 'pass';
+  await page.getByTestId('rename-remotes-retry').click();
+  await expect(page.getByTestId('rename-pollers-none')).toBeVisible(SCRIPT);
+  await expect(page.getByTestId('rename-missing')).toHaveAttribute('data-count', '0', SCRIPT);
+  await expect(page.getByTestId('confirm-ok')).toBeEnabled();
+  expect(app.backend.sent.filter((c) => c.cmd === 'daemonLabelRename').map((c) => (c.args as { cmd: string }).cmd)).not.toContain('rename');
+  await page.unroute('**/call');
+});
+
 test('another project polling the same repository is listed and stopped first; it then follows with the credential', async () => {
   const { page, configs } = await openSection(['widget', 'widgetb']);
   await openConfig(page, 'widget');
