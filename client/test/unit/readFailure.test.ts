@@ -182,6 +182,13 @@ describe('what each kind says (GitHub#401)', () => {
     const noTime = describeFailure({ kind: 'rateLimited', raw: 'x' }, NOW);
     expect(noTime.retryAt).toBeUndefined();
     expect(noTime.body).toContain('稍后会自动再读');
+    // GitHub#558: the hourly quota's "HH:MM 额度恢复" only for a time GitHub gave; the client's own wait keeps the button's time only
+    const hourly = (retrySaid?: boolean): ReadFailure => ({ kind: 'rateLimited', raw: 'x', limit: 'hourly', retryAt: NOW + 12 * 60_000, ...(retrySaid ? { retrySaid } : {}) });
+    expect(describeFailure(hourly(true), NOW).body).toContain(`${hhmm} 额度恢复后自动再读`);
+    const own = describeFailure(hourly(), NOW);
+    expect(own.body).toMatch(/^这个账号每小时的查询额度已经用完。额度恢复后自动再读/);
+    expect(own.body).not.toContain(hhmm);
+    expect(own.retryAt).toBe(NOW + 12 * 60_000);
   });
 
   it('the "从 GitHub 选" list waits for the latest rate-limit time among its failures; none = no wait', () => {

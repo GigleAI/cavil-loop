@@ -1979,7 +1979,7 @@ export class Controller {
       const until = gate.until;
       const f = { count: old?.count ?? 0, since: old?.since ?? at, nextAt: null, epoch };
       this.failures.set(st.sourceKey, f);
-      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until } };
+      return { ...st, retry: { count: f.count, since: f.since, nextAt: until, limitedUntil: until, ...(until !== null ? { limitedSaid: gate.said } : {}) } };
     }
     const count = (old?.count ?? 0) + 1;
     const f = { count, since: old?.since ?? at, nextAt: at + backoffStep(count), epoch };

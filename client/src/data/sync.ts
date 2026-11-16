@@ -160,6 +160,8 @@ export async function syncRound(
   const deltaTried = new Map<string, boolean>();
   // GitHub#261: one count query for every board, then each source checks before it reads
   const checking = fullReadEveryMs > 0;
+  // GitHub#558: the round was to read by changes, but who-am-I's answer carried no clock
+  const clockMissing = extra.byChanges && serverAt === null;
   // GitHub#374: a rate limit here closed the read gate — every source below then fails at its first read, sending nothing
   const counts = checking
     ? await boardCounts(client, sources).catch((e) => {
@@ -194,7 +196,9 @@ export async function syncRound(
         checked = null; // could not tell: read in full, keep no record
       }
     }
-    const fullDue = !usable || now - usable.fullAt >= fullEvery;
+    // GitHub#558: a round meant to read by changes that got no GitHub clock reads every source in full —
+    // not even "the check says unchanged" keeps a snapshot then (what the round promises when the clock is missing)
+    const fullDue = !usable || clockMissing || now - usable.fullAt >= fullEvery;
     // GitHub#545: items read too close to their last change are confirmed every round, whatever the check says
     const unsure = byChanges && prev ? unstableItems(prev, src).length > 0 : false;
     if (checked?.unchanged && usable && !fullDue && !unsure) {

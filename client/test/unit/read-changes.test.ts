@@ -18,7 +18,7 @@ import { GitHubClient } from '../../src/data/github';
 import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { parseSource } from '../../src/shared/sources';
 import type { Item, SourceConfig } from '../../src/shared/types';
-import { hoverLines } from '../../src/renderer/syncTimes';
+import { hoverLines, retryText } from '../../src/renderer/syncTimes';
 import { syncTrouble } from '../../src/renderer/warnings';
 import { describeFailure } from '../../src/shared/readFailure';
 import { parseFilter } from '../../src/shared/filter';
@@ -443,6 +443,74 @@ describe('GitHub#558: no quota of the client\'s own; GitHub\'s own limit is said
     expect(statusOf(c, 22)).toBe('In progress');
     expect(c.getState().sync.sources.every((s) => s.ok)).toBe(true);
     expect(syncTrouble(c.getState().sync, parseFilter(''))).toBeNull();
+  });
+
+  it('GitHub limits without saying when (GraphQL RATE_LIMITED, no reset): no "HH:MM 恢复" anywhere — first round and the next while the gate is closed', async () => {
+    const { c, clock } = await ready({ sources: [PROJECT_URL] });
+    await round(c, clock);
+    moveCard(22, 'In progress', clock.t + 30_000);
+    // GitHub's GraphQL limit: HTTP 200, an error of type RATE_LIMITED; the quota still has room (no reset taken)
+    fake.state.answerOverride = (e) => (e.path === '/api/graphql' ? { status: 200, body: { errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded for user ID 1.' }] } } : null);
+    const sent = await round(c, clock);
+    expect(sent.some((e) => e.path === '/api/graphql' && e.status === 200)).toBe(true);
+    const check = (where: string) => {
+      const st = c.getState().sync.sources.find((s) => s.sourceKey === PROJECT_KEY)!;
+      expect(st.failure, where).toMatchObject({ kind: 'rateLimited' });
+      // the client's own wait: a time to try again (the button), never GitHub's reset
+      expect(typeof st.failure!.retryAt, where).toBe('number');
+      expect(st.failure!.retrySaid, where).toBeUndefined();
+      expect(st.retry, where).toMatchObject({ limitedSaid: false });
+      expect(syncTrouble(c.getState().sync, parseFilter('')), where).toMatchObject({ limited: true, limitedUntil: null });
+      // never "HH:MM 额度恢复": that is GitHub's reset, and GitHub gave none
+      expect(describeFailure(st.failure!, clock.t).body, where).not.toMatch(/\d\d:\d\d 额度恢复/);
+      expect(retryText(st, clock.t), where).toMatch(/^GitHub 没说什么时候恢复，客户端 \d\d:\d\d 再试/);
+    };
+    check('first round');
+    // 30 s later, the gate still closed: nothing goes out, still no GitHub time
+    clock.t += 30_000;
+    const n = fake.log.length;
+    await c.syncNow();
+    expect(fake.log.slice(n).filter((e) => e.path.startsWith('/api/'))).toHaveLength(0);
+    check('gate closed');
+    expect(statusOf(c, 22)).toBe('Done');
+  });
+
+  it('GitHub does give its reset: the time is GitHub\'s, and said as when the quota comes back', async () => {
+    const { c, clock } = await ready({ sources: [PROJECT_URL] });
+    await round(c, clock);
+    const reset = Math.ceil((clock.t + 20 * MIN) / 1000);
+    fake.state.answerOverride = (e) => (e.path === '/api/graphql' ? { status: 200, body: { errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded for user ID 1.' }] }, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) } } : null);
+    await round(c, clock);
+    const st = c.getState().sync.sources.find((s) => s.sourceKey === PROJECT_KEY)!;
+    expect(st.failure).toMatchObject({ kind: 'rateLimited', retryAt: reset * 1000, retrySaid: true });
+    expect(st.retry).toMatchObject({ limitedUntil: reset * 1000, limitedSaid: true });
+    expect(syncTrouble(c.getState().sync, parseFilter(''))).toMatchObject({ limited: true, limitedUntil: reset * 1000 });
+    expect(retryText(st, clock.t)).toMatch(/^额度约 \d\d:\d\d 恢复/);
+    // the gate closed on GitHub's time: the next round, refused before sending, keeps it as GitHub's
+    clock.t += 60_000;
+    const n = fake.log.length;
+    await c.syncNow();
+    expect(fake.log.slice(n).filter((e) => e.path.startsWith('/api/'))).toHaveLength(0);
+    expect(c.getState().sync.sources.find((s) => s.sourceKey === PROJECT_KEY)!.failure).toMatchObject({ retrySaid: true });
+  });
+
+  it('who-am-I\'s answer carries no clock: every source with a snapshot is read in full that round, even "unchanged" ones; the clock back = checks again', async () => {
+    const { c, clock } = await ready({ sources: [PROJECT_URL, REPO] });
+    // with the clock, nothing changed: no full read ("this did happen" for the contrast below)
+    const quiet = await round(c, clock);
+    expect(boardFullReads(quiet)).toBe(0);
+    expect(repoFullReads(quiet)).toBe(0);
+    fake.state.noDate = (e) => e.operation === 'user';
+    const sent = await round(c, clock);
+    expect(sent.find((e) => e.operation === 'user')?.status).toBeGreaterThan(0);
+    expect(boardFullReads(sent)).toBe(1);
+    expect(repoFullReads(sent)).toBe(1);
+    expect(byIds(sent)).toHaveLength(0);
+    expect(c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+    fake.state.noDate = null;
+    const back = await round(c, clock);
+    expect(boardFullReads(back)).toBe(0);
+    expect(repoFullReads(back)).toBe(0);
   });
 
   it('busy board and repository for an hour: within the fake\'s REST accounting, no full read after the first', async () => {

@@ -22,8 +22,10 @@ export interface ReadFailure {
   org?: string;
   /** single sign-on: the page GitHub named for authorising (from its X-GitHub-SSO header) */
   ssoUrl?: string;
-  /** rate limit: when reading may start again (epoch ms); absent = GitHub did not say */
+  /** rate limit: when reading may start again (epoch ms); absent = not known */
   retryAt?: number;
+  /** GitHub#558, rate limit: `retryAt` is a time GitHub gave; false / absent = only when the client tries again */
+  retrySaid?: boolean;
   /** GitHub#545, rate limit: which limit — the hourly quota used up, or too many requests in a short time */
   limit?: 'hourly' | 'secondary';
   /** the error as raised (GitHub's words, or the connection's) */
@@ -41,8 +43,10 @@ export interface FailureInput {
   cancelled?: boolean;
   /** GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
-  /** rate limit: when GitHub said reading may start again (epoch ms); null / absent = it did not say */
+  /** rate limit: when reading may start again (epoch ms); null / absent = not known */
   retryAt?: number | null;
+  /** GitHub#558, rate limit: `retryAt` is a time GitHub gave (not the client's own wait) */
+  retrySaid?: boolean;
   /** GitHub#545, rate limit: the hourly quota used up, or a short-time (secondary) limit; absent = not told apart */
   limit?: 'hourly' | 'secondary';
   /** GitHub called it temporary (a GraphQL "something went wrong / timed out") */
@@ -86,7 +90,7 @@ export function classifyFailure(input: FailureInput, org?: string, projectRead =
   if (input.cancelled) return base('cancelled');
   if (input.kind === 'network') return base('network');
   if (input.rateLimited) {
-    return base('rateLimited', { ...(input.retryAt != null ? { retryAt: input.retryAt } : {}), ...(input.limit ? { limit: input.limit } : {}) });
+    return base('rateLimited', { ...(input.retryAt != null ? { retryAt: input.retryAt, ...(input.retrySaid ? { retrySaid: true } : {}) } : {}), ...(input.limit ? { limit: input.limit } : {}) });
   }
   if (input.kind === 'auth' || input.status === 401) return base('auth');
   const types = input.gqlTypes ?? [];
@@ -147,8 +151,9 @@ export function describeFailure(f: ReadFailure, now: number, appKind: 'oauth' | 
       const secondary = f.limit === 'secondary';
       return {
         title: t('GitHub 暂时限制了读取次数'),
+        // GitHub#558: "额度 HH:MM 恢复" only for a time GitHub gave; the client's own wait is not GitHub's reset
         body: hourly
-          ? waiting
+          ? waiting && f.retrySaid
             ? t('这个账号每小时的查询额度已经用完。{time} 额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。', { time: hhmm(f.retryAt!) })
             : t('这个账号每小时的查询额度已经用完。额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。')
           : secondary

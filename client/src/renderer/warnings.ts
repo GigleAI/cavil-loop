@@ -61,7 +61,7 @@ export interface SyncTrouble {
   /**
    * GitHub#558: every source not read was refused by GitHub's rate limit (nothing else failed): the ⚠️ is
    * the yellow "GitHub 限流（HH:MM 恢复）" instead of "同步不完整"; `limitedUntil` = the earliest time
-   * GitHub said reading may start again (null = it did not say)
+   * GitHub said reading may start again (null = GitHub did not give one for every source)
    */
   limited: boolean;
   limitedUntil: number | null;
@@ -73,8 +73,9 @@ export function syncTrouble(sync: SyncState, parsed: ParsedFilter): SyncTrouble 
   const incomplete = !sync.offline;
   const filterIncomplete = isFiltering(parsed);
   const limited = failed.every((s) => s.rateLimited === true || s.failure?.kind === 'rateLimited');
-  const times = failed.map((s) => s.failure?.retryAt).filter((x): x is number => typeof x === 'number');
-  const limitedUntil = limited && times.length ? Math.min(...times) : null;
+  // GitHub#558: a time only when GitHub gave one for every source; the client's own retry time is not "恢复"
+  const said = failed.every((s) => s.failure?.retrySaid === true && typeof s.failure.retryAt === 'number');
+  const limitedUntil = limited && said ? Math.min(...failed.map((s) => s.failure!.retryAt!)) : null;
   return incomplete || filterIncomplete ? { failed, incomplete, filterIncomplete, limited, limitedUntil } : null;
 }
 

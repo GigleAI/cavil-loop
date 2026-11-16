@@ -127,6 +127,11 @@ export class RateLimitError extends GitHubError {
    * failure taken from this answer names the gate's time.
    */
   gateUntil: number | null = null;
+  /**
+   * GitHub#558: whether `gateUntil` is a time GitHub gave (its reset or retry-after) — false = the
+   * client's own wait after a limit that named no time (GitHub may still refuse then); null = no gate.
+   */
+  gateSaid: boolean | null = null;
 }
 
 /** an answer's headers the failure classifier reads (GitHub#401) */
@@ -139,6 +144,8 @@ export function failureInput(e: unknown): FailureInput {
   if (!(e instanceof GitHubError)) return { kind: 'unknown', message: e instanceof Error ? e.message : String(e) };
   const limited = e instanceof RateLimitError;
   const retryAt = limited ? (e.gateUntil ?? (e.retryAfterMs !== null ? (e.heardAt ?? Date.now()) + e.retryAfterMs : e.resetAt)) : null;
+  // GitHub#558: did GitHub give that time, or is it only when the client tries again?
+  const retrySaid = limited ? (e.gateUntil !== null ? e.gateSaid === true : e.retryAfterMs !== null || e.resetAt !== null) : false;
   return {
     kind: e.kind,
     // GitHub#545: a rate limit shows GitHub's own words when it gave any (not the client's sentence)
@@ -146,7 +153,7 @@ export function failureInput(e: unknown): FailureInput {
     ...(limited && e.limit ? { limit: e.limit } : {}),
     ...(e.status !== undefined ? { status: e.status } : {}),
     ...(e.meta.cancelled ? { cancelled: true } : {}),
-    ...(limited ? { rateLimited: true, retryAt } : {}),
+    ...(limited ? { rateLimited: true, retryAt, retrySaid } : {}),
     ...(e.transient ? { transient: true } : {}),
     ...(e.meta.gqlTypes ? { gqlTypes: e.meta.gqlTypes } : {}),
     ...(e.meta.sso !== undefined ? { sso: e.meta.sso } : {}),
@@ -233,6 +240,8 @@ export function isTransient(e: unknown): boolean {
 export class ReadGate {
   /** no read goes out before this (epoch ms); null = open */
   until: number | null = null;
+  /** GitHub#558: `until` is a time GitHub gave (reset / retry-after), not the client's own wait */
+  said = false;
   /** limits in a row that did not say when to ask again (each waits longer) */
   private blind = 0;
 
@@ -240,16 +249,30 @@ export class ReadGate {
 
   /** throws the "rate limited" error, without sending, while closed */
   check(): void {
-    if (this.until !== null && this.now() < this.until) throw new RateLimitError(tKey(RATE_LIMIT_MESSAGE), undefined, this.until, null, false);
+    if (this.until !== null && this.now() < this.until) {
+      // GitHub#558: the gate's time is GitHub's only when GitHub gave it
+      const e = new RateLimitError(tKey(RATE_LIMIT_MESSAGE), undefined, this.said ? this.until : null, null, false);
+      e.gateUntil = this.until;
+      e.gateSaid = this.said;
+      throw e;
+    }
   }
 
   /** a rate-limit answer arrived: closed until GitHub's time, or 1, 2, 4, 8, 10 min when it gave none (never past an hour) */
   hit(e: RateLimitError): void {
     const now = this.now();
     let at = e.retryAfterMs !== null ? now + e.retryAfterMs : e.resetAt;
+    // GitHub#558: a time GitHub gave (and believed: not past the hour's cap) vs. the client's own wait
+    let said = at !== null && at > now;
     if (at === null || at <= now) at = now + backoffStep(++this.blind);
-    at = Math.min(at, now + MAX_LIMIT_WAIT_MS);
-    this.until = Math.max(this.until ?? 0, at);
+    if (at > now + MAX_LIMIT_WAIT_MS) {
+      at = now + MAX_LIMIT_WAIT_MS;
+      said = false;
+    }
+    const prev = this.until ?? 0;
+    if (at > prev) this.said = said;
+    else if (at === prev) this.said = this.said || said;
+    this.until = Math.max(prev, at);
   }
 
   /**
@@ -333,6 +356,7 @@ export class GitHubClient {
     if (this.cancelled?.aborted || !this.reads) return;
     this.reads.gate.hit(e);
     e.gateUntil = this.reads.gate.until;
+    e.gateSaid = this.reads.gate.said;
   }
 
   private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {

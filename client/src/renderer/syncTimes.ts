@@ -31,7 +31,11 @@ export function retryText(st: SourceStatus, now: number): string | null {
   if (st.ok || !r) return null;
   if (st.rateLimited) {
     if (r.limitedUntil === null) return null;
-    return r.limitedUntil > now ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) }) : t('限流时间已过，下一轮自动重读');
+    if (r.limitedUntil <= now) return t('限流时间已过，下一轮自动重读');
+    // GitHub#558: GitHub gave no time — the client's own wait is not when the quota comes back
+    return r.limitedSaid
+      ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) })
+      : t('GitHub 没说什么时候恢复，客户端 {at} 再试；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) });
   }
   const next = r.nextAt === null || r.nextAt <= now ? t('下一轮自动重试') : t('下次自动重试 {at}', { at: clockAt(r.nextAt) });
   return t('从 {since} 起连续失败 {n} 次 · {next}（失败越多隔得越久，最长 10 分钟）', { since: clockAt(r.since), n: r.count, next });

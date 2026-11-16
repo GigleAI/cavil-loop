@@ -100,10 +100,14 @@ describe('failed sources: the ⚠️ next to refresh and its two parts (GitHub#2
 
   // GitHub#558: every source not read was refused by GitHub's rate limit — the yellow "GitHub 限流（HH:MM 恢复）"
   it('every source not read was refused by GitHub\'s rate limit (nothing else failed) → limited, with the earliest time it lifts', () => {
-    const limited = (key: string, at?: number) => ({ sourceKey: key, ok: false, error: 'x', dataFrom: 1, rateLimited: true, failure: { kind: 'rateLimited' as const, raw: 'x', ...(at !== undefined ? { retryAt: at } : {}) } });
+    const limited = (key: string, at?: number, said = true) => ({ sourceKey: key, ok: false, error: 'x', dataFrom: 1, rateLimited: true, failure: { kind: 'rateLimited' as const, raw: 'x', ...(at !== undefined ? { retryAt: at, ...(said ? { retrySaid: true } : {}) } : {}) } });
     const t = syncTrouble(sync({ sources: [ok('a'), limited('b', 2000), limited('c', 1000)] }), none);
     expect(t).toMatchObject({ incomplete: true, limited: true, limitedUntil: 1000 });
     // GitHub did not say when: still limited, without a time
+    // (GitHub#558 review round 1) the client's own retry time is not GitHub's: no time on the button either
+    expect(syncTrouble(sync({ sources: [limited('b', 2000, false), limited('c', 1000, false)] }), none)).toMatchObject({ limited: true, limitedUntil: null });
+    // one source with GitHub's time, one without: not known for the whole account — no time
+    expect(syncTrouble(sync({ sources: [limited('b', 2000), limited('c', 1000, false)] }), none)).toMatchObject({ limited: true, limitedUntil: null });
     expect(syncTrouble(sync({ sources: [limited('b'), limited('c')] }), none)).toMatchObject({ limited: true, limitedUntil: null });
     // flagged by the round (the gate) without a classification: limited too
     expect(syncTrouble(sync({ sources: [{ sourceKey: 'b', ok: false, error: 'x', dataFrom: 1, rateLimited: true }] }), none)).toMatchObject({ limited: true });

@@ -390,5 +390,6 @@
   "GitHub 限流（{time} 恢复）": "GitHub rate limit (resumes {time})",
   "GitHub 限流": "GitHub rate limit",
   "GitHub 限流中": "GitHub rate limit",
-  "{text}：GitHub 暂时拒绝了这个账号的读取，到时自动再读（点开看详情）": "{text}: GitHub is refusing this account's reads for now; they resume automatically (click for details)"
+  "{text}：GitHub 暂时拒绝了这个账号的读取，到时自动再读（点开看详情）": "{text}: GitHub is refusing this account's reads for now; they resume automatically (click for details)",
+  "GitHub 没说什么时候恢复，客户端 {at} 再试；在那之前不再发读取请求": "GitHub did not say when it lifts; the client tries again at {at}, and sends no read before then"
 }

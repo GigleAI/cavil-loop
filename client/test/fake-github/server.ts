@@ -154,6 +154,8 @@ export interface FakeState {
   graphqlCost: (e: LoggedRequest) => number;
   /** GitHub#545: the server's clock for the Date header (epoch ms); default the real one */
   serverNow: () => number;
+  /** GitHub#558: answer this request without a Date header at all (GitHub's clock missing); null = always send one */
+  noDate: ((e: LoggedRequest) => boolean) | null;
   /**
    * GitHub#545: the board read (and the by-id read) carry each item's own `updatedAt` (the item's
    * `updatedAt` if set, else its content's). Off by default: snapshots then lack it and every board is
@@ -315,6 +317,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     quota: { graphql: { limit: 1_000_000, used: 0, resetAt: 4102444800 }, core: { limit: 1_000_000, used: 0, resetAt: 4102444800 } },
     graphqlCost: () => 1,
     serverNow: () => Date.now(),
+    noDate: null,
     itemTimes: false,
     ...init,
   };
@@ -343,7 +346,10 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     res.writeHead = ((status: number, ...rest: unknown[]) => {
       // a test's own clock when its harness sends one (x-fake-now), else the fake's
       const told = Number(req.headers['x-fake-now']);
-      res.setHeader('Date', new Date(Number.isFinite(told) && told > 0 ? told : state.serverNow()).toUTCString());
+      if (state.noDate?.(entry)) {
+        res.sendDate = false;
+        res.removeHeader('Date');
+      } else res.setHeader('Date', new Date(Number.isFinite(told) && told > 0 ? told : state.serverNow()).toUTCString());
       if (url.pathname.startsWith('/api/')) {
         const gql = url.pathname === '/api/graphql';
         const q = gql ? state.quota.graphql : state.quota.core;

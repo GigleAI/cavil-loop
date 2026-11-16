@@ -515,6 +515,8 @@ export interface SourceRetry {
   nextAt: number | null;
   /** rate limited: no read before this (epoch ms); null = not rate limited */
   limitedUntil: number | null;
+  /** GitHub#558, rate limited: `limitedUntil` is a time GitHub gave; false / absent = the client's own wait */
+  limitedSaid?: boolean;
 }
 
 export type ColumnMode = 'iteration' | 'status' | 'milestone';

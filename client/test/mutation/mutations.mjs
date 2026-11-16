@@ -1309,7 +1309,8 @@ export const MUTATIONS = [
     expect: ['a change between the check and the full read: not in this read, seen by the next round'] },
   { what: '变化检查（GitHub#261）：没超过 10 分钟也不强制整读（看不见的改动永远不出现）', file: 'src/data/sync.ts',
     // GitHub#545: "a full read is due" is one line now (it also stops a read of changes); the entry breaks it there
-    from: '    const fullDue = !usable || now - usable.fullAt >= fullEvery;', to: '    const fullDue = !usable;',
+    // GitHub#558 added the missing-clock condition to the line; the entry keeps it and breaks only the 10 minutes
+    from: '    const fullDue = !usable || clockMissing || now - usable.fullAt >= fullEvery;', to: '    const fullDue = !usable || clockMissing;',
     expect: ['a saved view edited on github.com: kept until 10 minutes after the last full read, then read'] },
   { what: '变化检查（GitHub#261）：没变时把旧快照改成本轮时间、当作新读到的落盘（被当成改动之后的读，盖掉刚做的改动）', file: 'src/data/sync.ts',
     from: "      checks.set(src.key, { ...checked.record, snapshotAt: usable.snapshotAt, fullAt: usable.fullAt });\n      return { kind: 'unchanged' };",
