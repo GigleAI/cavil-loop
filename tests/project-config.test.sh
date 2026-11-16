@@ -461,14 +461,16 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS"
+LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS POLL_BACKOFF_LADDER POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS"
 # 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
 #   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
 #   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
 #   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
 #   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
 #   GREEDY_SKIP_LABELS           加载时不补值，用到时（greedy_skip_label_list）才读：问它在内置的跳过标签之后多列了哪些
-FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS"
+#   POLL_RUN_LOG_ROUNDS / _SNAPSHOTS / _INFLIGHT / _SLOW_SECS  加载时不补值，轮询记录用到时才补：问 _runlog_setting（用到它们的地方都问它，GitHub#556）
+RUNLOG_KEYS="POLL_RUN_LOG_ROUNDS POLL_RUN_LOG_SNAPSHOTS POLL_RUN_LOG_INFLIGHT POLL_RUN_LOG_SLOW_SECS"
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS $RUNLOG_KEYS"
 lib_load() {
     env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
@@ -480,6 +482,7 @@ lib_load() {
     echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"
     __n="$(GREEDY_SKIP_LABELS="" greedy_skip_label_list | wc -l)"
     echo "GREEDY_SKIP_LABELS=$(greedy_skip_label_list | tail -n +$((__n + 1)) | paste -sd, -)"
+    for k in POLL_RUN_LOG_ROUNDS POLL_RUN_LOG_SNAPSHOTS POLL_RUN_LOG_INFLIGHT POLL_RUN_LOG_SLOW_SECS; do echo "$k=$(_runlog_setting "$k")"; done
 ' _ "$REPO_DIR" $LIBKEYS 2>&1
 }
 loaded="$(lib_load)"
@@ -681,8 +684,60 @@ for kv in AUTOPILOT_CHECKS_TIMEOUT_HOURS:2562047788015216 CHECKOUT_STALE_ALERT_C
     save req "{\"${kv%%:*}\":\"${kv#*:}\"}"
     chk "使用端不收或会改回默认的值不让存：${kv%%:*} = ${kv#*:} → invalid，文件不变" "$RESULT $(sum "$RQ/cavil-loop.config")" "RESULT=invalid $before"
 done
+# GitHub#556 登记的轮询节奏、轮询记录、预览几项：登记的范围 = 使用端实际收的范围
+chk "整数范围（GitHub#556）：轮询节奏 9 位、轮询记录 7 位、预览端口 65535、就绪等待 120 秒" \
+    "$(for k in POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS $RUNLOG_KEYS PREVIEW_PORT_BASE PREVIEW_PORT_MODULO PREVIEW_BACKEND_OFFSET PREVIEW_READY_TIMEOUT; do printf '%s ' "$(col 3 "$k")"; done)" \
+    "int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:2:9999999 int:2:9999999 int:2:9999999 int:1:9999999 int:0:65535 int:1:65535:empty int:1:65535 int:0:120 "
+pace_after_load() {   # <名字> <值> → 公共库加载后实际用的值（轻量检查封顶问 pace_probe_cap：不合法 = 不封顶，输出 none）
+    req_conf; printf '%s=%s\n' "$1" "$2" >> "$RQ/cavil-loop.config"
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1
+        if [ "$2" = POLL_IDLE_PROBE_MAX_SECS ]; then POLL_FORCE_SYNC_SECS=999999999; pace_probe_cap quiet || printf none; else printf %s "${!2}"; fi' _ "$REPO_DIR" "$1" 2>/dev/null || printf LOAD_FAILED
+}
+for kd in POLL_FORCE_SYNC_SECS:1800 POLL_FAIL_BACKOFF_MAX_SECS:1800 POLL_DUE_SLACK_SECS:10; do
+    chk "轮询节奏 ${kd%%:*}：0 和 999999999 公共库照用，10 位的 1000000000 被改回 ${kd#*:}" \
+        "$(for v in 0 999999999 1000000000; do printf '%s ' "$(pace_after_load "${kd%%:*}" "$v")"; done)" "0 999999999 ${kd#*:} "
+done
+chk "轻量检查封顶：1 和 999999999 照用（心跳调到最大时），0 和 10 位的不封顶（所以登记 1 到 999999999）" \
+    "$(for v in 1 999999999 0 1000000000; do printf '%s ' "$(pace_after_load POLL_IDLE_PROBE_MAX_SECS "$v")"; done)" "1 999999999 none none "
+runlog_after() {   # <名字> <值> → 轮询记录实际用的值
+    env -i PATH="$SYS_PATH" "$1=$2" bash -c 'source "$1/scripts/_runlog.sh" >/dev/null 2>&1 || exit 1; _runlog_setting "$2"' _ "$REPO_DIR" "$1" 2>/dev/null || printf LOAD_FAILED
+}
+for k in $RUNLOG_KEYS; do
+    lo="$(col 3 "$k" | cut -d: -f2)"; d="$(col 4 "$k")"
+    chk "轮询记录 $k：$lo 和 9999999 照用，$((lo - 1)) 和 8 位的 10000000 被改回 $d" \
+        "$(for v in "$lo" 9999999 "$((lo - 1))" 10000000; do printf '%s ' "$(runlog_after "$k" "$v")"; done)" "$lo 9999999 $d $d "
+done
+preview_port_of() {   # <起始号> <取模数> <issue> → 公共库 preview_port 算出的端口；出错输出 ERR
+    req_conf; printf 'PREVIEW_PORT_BASE=%s\nPREVIEW_PORT_MODULO=%s\n' "$1" "$2" >> "$RQ/cavil-loop.config"
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1; preview_port "$2"' _ "$REPO_DIR" "$3" 2>/dev/null || printf ERR
+}
+chk "预览端口：取模留空 = 不取模（4000 + 1040），取模 1000 = 4040，取模 0 算不出来（所以登记从 1 起）" \
+    "$(preview_port_of 4000 '""' 1040) $(preview_port_of 4000 1000 1040) $(preview_port_of 4000 0 1040)" "5040 4040 ERR"
+chk "就绪等待上限 = 预览单元启动最多等的秒数（新旧两套单元都是 120）" \
+    "$(sed -n 's/^TimeoutStartSec=//p' "$REPO_DIR/systemd/cavil-loop-preview-app@.service" "$REPO_DIR/systemd/coding-agent-preview-app@.service" | tr '\n' ' ')" "120 120 "
+# 可以留空的整数（GitHub#556）：get 给 empty:true，别的整数不带这个字段；留空能存，0 不能
+G="$(run get req)"
+chk "get：取模那一项带 empty:true，别的整数项都不带" \
+    "$(jq -c '[.fields[] | select(.type == "int" and .empty == true) | .name]' <<<"$G") $(jq -c '[.fields[] | select(.type == "int" and has("empty") and .name != "PREVIEW_PORT_MODULO")] | length' <<<"$G")" \
+    '["PREVIEW_PORT_MODULO"] 0'
+req_conf; printf 'PREVIEW_PORT_MODULO=1000\n' >> "$RQ/cavil-loop.config"
+save req '{"PREVIEW_PORT_MODULO":""}'
+chk "取模从 1000 改成留空：保存成功，文件里那一行写成空值，读回是空" \
+    "$RESULT $(grep -cx 'PREVIEW_PORT_MODULO=""' "$RQ/cavil-loop.config") $(field "$(run get req)" PREVIEW_PORT_MODULO)" 'RESULT=saved 1 ["",true,true]'
+for v in 0 65536; do
+    before="$(sum "$RQ/cavil-loop.config")"
+    save req "{\"PREVIEW_PORT_MODULO\":\"$v\"}"
+    chk "取模写 $v 不让存（文件不变），原因里说可以留空" "$RESULT $(sum "$RQ/cavil-loop.config") $(grep -c '或者留空' <<<"$OUT")" "RESULT=invalid $before 1"
+done
+before="$(sum "$RQ/cavil-loop.config")"
+save req '{"PREVIEW_BACKEND_OFFSET":""}'
+chk "不带 empty 的整数（预览端口偏移）留空仍不让存" "$RESULT $(sum "$RQ/cavil-loop.config")" "RESULT=invalid $before"
+# 唯一的例外 PREVIEW_PORT_BASE：名字以 _BASE 结尾，却是预览端口的起始号（一个整数），不是目录（GitHub#556）
+chk "名字像目录的例外只有预览端口起始号，且它登记成整数" "$(col 3 PREVIEW_PORT_BASE)" "int:0:65535"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
-    "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
+    "$(grep -vx PREVIEW_PORT_BASE <<<"$names" | grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
 G="$(run get min)"
 chk "get 把只显示行的原因放进 reason" "$(jq -r '.fields[] | select(.name == "LABEL_PENDING_MERGE") | .reason' <<<"$G")" "$(col 8 LABEL_PENDING_MERGE)"

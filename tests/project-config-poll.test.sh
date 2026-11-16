@@ -17,6 +17,8 @@
 #   7. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
 #      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
 #      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
+#   8. 预览的几项（GitHub#556）：一项都不写时真实 preview-serve.sh 登记的端口、后端端口、闲置、就绪等待 = 窗口显示的值；
+#      用 project-config.sh 改了之后（含取模改回留空）再注册，跟着变
 #
 #   bash tests/project-config-poll.test.sh      （约 40 秒）
 set -uo pipefail
@@ -298,6 +300,47 @@ if out="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM -u FAKE_GH_DIR -u FAKE
 else
     printf '%s\n' "$out" | tail -30; echo "  ❌ 复盘入口用例有红"; fail=$((fail+1))
 fi
+
+echo "【8】预览的几项（GitHub#556）：真实 preview-serve.sh 登记的端口和参数 = 窗口显示的值"
+# 预览的默认值在用到的地方（preview-serve.sh / 公共库的 preview_port）才补：跑真实注册入口，读它写下的那份登记。
+# 假 systemctl 只认「没在跑」、其余一律成功；不碰真实 systemd，tailnet 那项保持默认关。
+PV="$SANDBOX/pv"; PCONF="$PV/cavil-loop.config"; mkdir -p "$PV/bin" "$PV/project" "$PV/state" "$PV/wt/issue-1040" "$HOME/.config/systemd/user"
+printf '#!/usr/bin/env bash\ncase "$*" in *is-active*) echo inactive; exit 3;; esac\nexit 0\n' > "$PV/bin/systemctl"; chmod +x "$PV/bin/systemctl"
+: > "$HOME/.config/systemd/user/cavil-loop-preview@.socket"
+cat > "$PCONF" <<CONF
+REPO="example/pv"
+PROJECT_ROOT="$PV/project"
+WORKTREE_BASE="$PV/wt"
+STATE_DIR="$PV/state"
+TMUX_PREFIX="pvtest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+PREVIEW_EXEC="node server.mjs"
+CONF
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$PV/project" "$PCONF" > "$HOME/.config/cavil-loop/pvtest.conf"
+serve() {   # → 真实 preview-serve.sh 注册 #1040 后写下的那份登记里「端口 后端端口 闲置 就绪等待」；没写出来输出 NONE
+    rm -rf "$HOME/.config/cavil-loop/preview"
+    env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-serve.sh" 1040 >/dev/null 2>&1
+    local f; f="$(ls "$HOME/.config/cavil-loop/preview/"*.conf 2>/dev/null | head -1)"
+    [ -n "$f" ] || { printf NONE; return; }
+    ( set +u; source "$f"; printf '%s %s %s %s' "$PREVIEW_PORT" "$PREVIEW_BACKEND_PORT" "$PREVIEW_IDLE" "$PREVIEW_READY_TIMEOUT" )
+}
+shown_pv() {   # → 窗口显示的「起始号|取模|偏移|闲置|就绪等待」
+    pc get pvtest | jq -r '[.fields[] | select(.name | test("^PREVIEW_(PORT_BASE|PORT_MODULO|BACKEND_OFFSET|IDLE|READY_TIMEOUT)$")) | {(.name): .value}] | add
+        | "\(.PREVIEW_PORT_BASE)|\(.PREVIEW_PORT_MODULO)|\(.PREVIEW_BACKEND_OFFSET)|\(.PREVIEW_IDLE)|\(.PREVIEW_READY_TIMEOUT)"'
+}
+chk "一项都不写：真实注册用的是端口 4000+1040、后端再加 10000、闲置 30min、就绪等 90 秒" "$(serve)" "5040 15040 30min 90"
+chk "同一份配置：窗口显示的正是这几个值（取模留空 = 不取模）" "$(shown_pv)" "4000||10000|30min|90"
+rev="$(pc get pvtest | jq -r .rev)"
+out="$(printf '{"PREVIEW_PORT_BASE":"6000","PREVIEW_PORT_MODULO":"1000","PREVIEW_BACKEND_OFFSET":"100","PREVIEW_READY_TIMEOUT":"30"}' | pc set pvtest --rev "$rev")"
+chk "用 project-config.sh 改起始号、取模、偏移、就绪等待：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+chk "改完再注册：端口 6000+1040%1000、后端再加 100、就绪等 30 秒" "$(serve)" "6040 6140 30min 30"
+chk "窗口读回的是新值" "$(shown_pv)" "6000|1000|100|30min|30"
+rev="$(pc get pvtest | jq -r .rev)"
+out="$(printf '{"PREVIEW_PORT_MODULO":""}' | pc set pvtest --rev "$rev")"
+chk "取模改回留空：保存成功，再注册就不取模（6000+1040）" "$(tail -1 <<<"$out") $(serve)" "RESULT=saved 7040 7140 30min 30"
 
 echo
 echo "通过 $pass，失败 $fail"

@@ -10,9 +10,10 @@
 #
 # 类别：
 #   命令 / 钩子 / 令牌 / 网址 / 目录 / 名字   永远不进窗口（窗口能填它们就成了跑命令、读凭据的入口）
-#   待登记                                    可以显示，只是还没登记（GitHub#550）——登记要核对默认值并补对拍
-#                                             （tests/project-config.test.sh 第 7 节），做完就从这里挪走。
-#                                             新加的配置项不要放这里，直接登记进 config-fields.txt。
+#   安装时生效                                安装脚本把它写进定时器之类的系统设置，窗口改了配置文件也不会生效（GitHub#556）
+#
+# 以前还有一个类别放「可以显示、只是还没核对默认值」的旧配置项（GitHub#550），已全部登记完、类别已删；
+# 可以显示的配置项直接登记进 config-fields.txt，不再有「先放这里、以后再登记」这条路（tests/config-fields-coverage.test.sh 查）。
 #
 REPO | 名字 | 每个项目自己的名字或前缀，改了会和已有工作目录、会话、分支对不上
 PROJECT_ROOT | 目录 | 本机路径，每个项目自己的值
@@ -46,11 +47,6 @@ WORKER_SECRET_ENV | 令牌 | 决定哪些环境变量（含凭据）带进 worke
 POST_RETROSPECTIVE_PROJECT_CMD | 命令 | 窗口里能填就等于能在本机跑任意命令
 CLEANUP_HOOK | 钩子 | 指向本机脚本，窗口里能填就等于能跑任意程序
 PREVIEW_EXEC | 命令 | 窗口里能填就等于能在本机跑任意命令
-PREVIEW_PORT_BASE | 待登记 | 还没核对默认值、补对拍
-PREVIEW_PORT_MODULO | 待登记 | 还没核对默认值、补对拍
-PREVIEW_BACKEND_OFFSET | 待登记 | 还没核对默认值、补对拍
-PREVIEW_IDLE | 待登记 | 还没核对默认值、补对拍
-PREVIEW_READY_TIMEOUT | 待登记 | 还没核对默认值、补对拍
 PREVIEW_URL_HOST | 网址 | 对外给出的预览地址
 PR_CREATED_HOOK | 钩子 | 指向本机脚本，窗口里能填就等于能跑任意程序
 PROJECT_NUMBER | 名字 | GitHub Projects / 工作流的名字
@@ -58,13 +54,4 @@ PROJECT_OWNER | 名字 | GitHub Projects / 工作流的名字
 PROJECT_GH_TOKEN | 令牌 | 凭据本身
 AUTO_ADD_PROJECTS | 名字 | GitHub Projects / 工作流的名字
 CI_FAILURE_REPORT_WORKFLOWS | 名字 | GitHub Projects / 工作流的名字
-POLL_INTERVAL_SECS | 待登记 | 还没核对默认值、补对拍
-POLL_BACKOFF_LADDER | 待登记 | 还没核对默认值、补对拍
-POLL_FORCE_SYNC_SECS | 待登记 | 还没核对默认值、补对拍
-POLL_IDLE_PROBE_MAX_SECS | 待登记 | 还没核对默认值、补对拍
-POLL_RUN_LOG_ROUNDS | 待登记 | 还没核对默认值、补对拍
-POLL_RUN_LOG_SNAPSHOTS | 待登记 | 还没核对默认值、补对拍
-POLL_RUN_LOG_INFLIGHT | 待登记 | 还没核对默认值、补对拍
-POLL_RUN_LOG_SLOW_SECS | 待登记 | 还没核对默认值、补对拍
-POLL_FAIL_BACKOFF_MAX_SECS | 待登记 | 还没核对默认值、补对拍
-POLL_DUE_SLACK_SECS | 待登记 | 还没核对默认值、补对拍
+POLL_INTERVAL_SECS | 安装时生效 | 安装脚本把它写进定时器，改完要重跑安装才生效（项目自己写的定时器覆盖文件不会被改）；读不到 GitHub 时的重试间隔也从这个值起步，维护者决定不进窗口（#550）

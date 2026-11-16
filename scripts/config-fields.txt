@@ -20,6 +20,7 @@
 #                  （例：只有 Python 读的，或使用端自己处理大数的）；位数仍不超过 200，窗口送来的每个值都不超过
 #                  200 个字符。范围要在 daemon 跑的每个平台上都成立：别把大数直接交给各平台上限不同的外部命令
 #                  （macOS 的 head -n 只收到 2^31-1，GNU 的收到 2^64-1）
+#   int:MIN:MAX:empty  同上，另外可以留空（留空是什么意思写在说明里，例：PREVIEW_PORT_MODULO 留空 = 不取余数）
 #   bool:ON:OFF    开关；ON / OFF 是写进配置文件的那两个词
 #   enum:a=说明,b=说明   几选一；= 后面是给人看的说明
 #   label          标签名：空 = 这个功能关着（只用于 show）
@@ -98,8 +99,22 @@ CI_FAILURE_REPORT_BRANCH | CI 失败报告 | text | main | show | 盯哪个分�
 AUTO_RELEASE_MAIN_CHECKOUT | 主 checkout 与正式站 | bool:1:0 | 0 | edit | 主 checkout 占着 PR 分支时自动切回主干 | 只在没有未提交改动、本地分支和 PR 最新提交相同等条件都满足时才切；关 = 转 pending/human 并给出切换命令
 LATEST_SITE_REFRESH | 主 checkout 与正式站 | bool:true:false | false | edit | 有新合并时刷新常驻正式站 | 把主 checkout 拉到最新，重建并重启本机常驻的正式站
 CHECKOUT_STALE_ALERT_COMMITS | 主 checkout 与正式站 | int:0:9223372036854775807 | 0 | edit | 主 checkout 落后多少个提交就开 issue 提醒 | 本机主 checkout 的主干落后远端满这么多个提交时开一条 pending/human 的提醒 issue，跟上后自动关；0 = 关
+PREVIEW_PORT_BASE | 预览 | int:0:65535 | 4000 | edit | 预览端口从几号起 | 预览端口 = 这个数 + issue 编号（配了下一项就加编号除以它的余数）；改了以后已经登记的预览端口会和新算出来的对不上
+PREVIEW_PORT_MODULO | 预览 | int:1:65535:empty | | edit | 预览端口按多少取余数 | 留空 = 不取余数，端口一直往上加；配了就把端口留在「起始号 + 0 到这个数减 1」这一段里
+PREVIEW_BACKEND_OFFSET | 预览 | int:1:65535 | 10000 | edit | 预览程序实际监听的端口比公开端口大多少 | 预览程序自己听的端口 = 公开端口 + 这个数，公开端口由系统转发过去
+PREVIEW_IDLE | 预览 | text | 30min | show | 预览闲置多久自动停 | 没人访问满这么久就停掉预览程序，再次访问自动拉起 | 是「30min / 2h」这类时间写法，不是单个数字；写错了预览的转发起不来
+PREVIEW_READY_TIMEOUT | 预览 | int:0:120 | 90 | edit | 预览程序最多等多少秒起来 | 拉起预览程序后，等它开始监听最多这么久，超时算没起来；预览单元启动本身最多等 120 秒
 PREVIEW_TAILSCALE_SERVE | 预览 | bool:true:false | false | edit | 预览同时挂到 tailnet 上 | 同一 tailnet 里的设备也能打开预览；需要免密 sudo 跑 tailscale，失败只告警
 POLL_IDLE_PROBE | 轮询 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询
+POLL_BACKOFF_LADDER | 轮询 | text | 86400:300,259200:600,604800:1800;empty= | show | 仓库没动静时放慢轮询 | 「安静了多少秒:这时每隔多少秒轮询一次」，逗号分隔；配置里没写这一行 = 默认这三档（安静 1 天隔 5 分钟、3 天隔 10 分钟、7 天隔 30 分钟）；写成空值 = 不放慢，一直按轮询间隔 | 是一串「秒:秒」档位，不是单个数字；写错的档位会被跳过
+POLL_FORCE_SYNC_SECS | 轮询 | int:0:999999999 | 1800 | edit | 放慢时最长隔多少秒也完整轮询一次 | 仓库再没动静，满这么久也完整查一遍；放慢的档位超过它时按它算
+POLL_IDLE_PROBE_MAX_SECS | 轮询 | int:1:999999999 | 600 | edit | 先轻量探一下时完整轮询最长隔多少秒 | 「空闲时先轻量探一下」开着时，完整检查最长隔这么久；要不大于上一项，大于时不按它封顶
+POLL_FAIL_BACKOFF_MAX_SECS | 轮询 | int:0:999999999 | 1800 | edit | 读不到 GitHub 时最长隔多少秒重试 | 读不到 GitHub 时，重试间隔从轮询间隔起每失败一次翻倍，最长到这么久
+POLL_DUE_SLACK_SECS | 轮询 | int:0:999999999 | 10 | edit | 离该轮询还差几秒就提前跑 | 定时器比约定时间稍早叫醒时，差不到这么多秒就照跑，免得白等一整轮
 ENABLE_POLL_RUN_LOG | 轮询 | bool:true:false | true;empty=false | edit | 记录每轮轮询 | 每轮写一条小记录、出问题时留快照，只记不判；配置里写成空值也算关
+POLL_RUN_LOG_ROUNDS | 轮询 | int:2:9999999 | 1000 | edit | 轮询记录最多留几轮 | 超过就删掉最早的；记录每轮轮询关着时不用
+POLL_RUN_LOG_SNAPSHOTS | 轮询 | int:2:9999999 | 20 | edit | 出问题时的快照最多留几份 | 超过就删掉最早的；记录每轮轮询关着时不用
+POLL_RUN_LOG_INFLIGHT | 轮询 | int:2:9999999 | 64 | edit | 进行中的轮询记录最多留几份 | 被中途打断的轮次留下的进度文件也算在内，超过就删掉最早的；记录每轮轮询关着时不用
+POLL_RUN_LOG_SLOW_SECS | 轮询 | int:1:9999999 | 600 | edit | 一步超过多少秒算慢 | 轮询里某一步或整轮超过这么久就留一份快照；记录每轮轮询关着时不用
 HEAVY_TEST_LOCK_WAIT | 其他 | int:0:9223372036854775807 | 0 | edit | 重测试排队最多等多少秒 | worker 经排队命令跑重测试时，排了这么久还轮不到就放弃；0 = 一直等；没配重测试命令时不用
 LOG_LEVEL | 其他 | enum:info=常规,debug=排查（更详细） | info | edit | 日志详细程度 | 写进轮询日志的内容多少
