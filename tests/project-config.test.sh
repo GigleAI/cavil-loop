@@ -621,6 +621,45 @@ for k in LABEL_PENDING_AGENT LABEL_PENDING_HUMAN; do
     chk "必填的 $k 不写：公共库不加载；登记表「不写时的值」是空，窗口显示空、文件里没有" \
         "$(req_load) [$(col 4 "$k")] $(field "$(run get req)" "$k")" 'LOAD_FAILED [] ["",false,false]'
 done
+# 整数的范围 = 使用它的代码实际接受的范围（GitHub#555 复审）：代码不设上限的登记到窗口整数的上限 999999999，
+# 有意义的 0 能填；代码自己会把越界值改回默认的，登记的两端正好是它不改的两端
+chk "整数范围：代码不设上限的几项登记到 999999999，0 有意义的从 0 起" \
+    "$(for k in GREEDY_SCAN_LIMIT AUTOPILOT_CHECKS_TIMEOUT_HOURS CHECKOUT_STALE_ALERT_COMMITS HEAVY_TEST_LOCK_WAIT PENDING_HUMAN_CONFLICT_MAX_TRIES CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS USAGE_LIMIT_FALLBACK_SECS; do printf '%s ' "$(col 3 "$k")"; done)" \
+    "int:0:999999999 int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:1:999999999 int:60:604800 "
+usage_after_load() {   # <USAGE_LIMIT_FALLBACK_SECS 的值> → 公共库加载后实际用的值
+    req_conf; printf 'USAGE_LIMIT_FALLBACK_SECS=%s\n' "$1" >> "$RQ/cavil-loop.config"
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1; printf %s "$USAGE_LIMIT_FALLBACK_SECS"' _ "$REPO_DIR" 2>/dev/null || printf LOAD_FAILED
+}
+chk "读不出解除时间的停派秒数：登记的两端 60 / 604800 公共库照用，出界的 59 / 604801 被改回 3600" \
+    "$(for v in 60 604800 59 604801; do printf '%s ' "$(usage_after_load "$v")"; done)" "60 604800 3600 3600 "
+fix_after_load() {   # <CI 报告修复上限的值> → 检查脚本实际用的值
+    env -i PATH="$SYS_PATH" CI_REPORT_MAX_FIX="$1" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ci_failure_report as m; print(m.MAX_FIX, end="")' "$REPO_DIR/scripts" 2>/dev/null || printf LOAD_FAILED
+}
+chk "CI 报告修复上限：1 和 999999999 检查脚本照用，0 被改回 2（所以登记从 1 起）" \
+    "$(for v in 1 999999999 0; do printf '%s ' "$(fix_after_load "$v")"; done)" "1 999999999 2 "
+# 配置里已经是超出旧登记范围的值、或有意义的 0：窗口照样可改，能改回普通值
+req_conf
+printf '%s\n' GREEDY_SCAN_LIMIT=1001 AUTOPILOT_CHECKS_TIMEOUT_HOURS=0 CHECKOUT_STALE_ALERT_COMMITS=100001 HEAVY_TEST_LOCK_WAIT=604801 \
+    PENDING_HUMAN_CONFLICT_MAX_TRIES=101 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=21 >> "$RQ/cavil-loop.config"
+RANGE_KEYS="GREEDY_SCAN_LIMIT AUTOPILOT_CHECKS_TIMEOUT_HOURS CHECKOUT_STALE_ALERT_COMMITS HEAVY_TEST_LOCK_WAIT PENDING_HUMAN_CONFLICT_MAX_TRIES CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS"
+G="$(run get req)"
+chk "配置里写着 1001 / 0 / 100001 / 604801 / 101 / 21：都显示原值、都可改" \
+    "$(for k in $RANGE_KEYS; do printf '%s ' "$(field "$G" "$k")"; done)" \
+    '["1001",true,true] ["0",true,true] ["100001",true,true] ["604801",true,true] ["101",true,true] ["21",true,true] '
+CONF_SAVED="$CONF"; CONF="$RQ/cavil-loop.config"   # save 用 CONF 算「读不出时」的指纹，这里指向这份配置
+save req '{"GREEDY_SCAN_LIMIT":"100","AUTOPILOT_CHECKS_TIMEOUT_HOURS":"6","CHECKOUT_STALE_ALERT_COMMITS":"20","HEAVY_TEST_LOCK_WAIT":"0","PENDING_HUMAN_CONFLICT_MAX_TRIES":"10","CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS":"2"}'
+chk "从这些值改回普通值：保存成功，文件里就是新值" "$RESULT $(grep -cxE 'GREEDY_SCAN_LIMIT=100|AUTOPILOT_CHECKS_TIMEOUT_HOURS=6|CHECKOUT_STALE_ALERT_COMMITS=20|HEAVY_TEST_LOCK_WAIT=0|PENDING_HUMAN_CONFLICT_MAX_TRIES=10|CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2' "$RQ/cavil-loop.config")" "RESULT=saved 6"
+save req '{"GREEDY_SCAN_LIMIT":"0","AUTOPILOT_CHECKS_TIMEOUT_HOURS":"999999999","CHECKOUT_STALE_ALERT_COMMITS":"999999999","HEAVY_TEST_LOCK_WAIT":"999999999","PENDING_HUMAN_CONFLICT_MAX_TRIES":"999999999","CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS":"999999999"}'
+G="$(run get req)"
+chk "再改成 0 / 两端的 999999999：保存成功，读回就是这些值" "$RESULT $(for k in $RANGE_KEYS; do printf '%s ' "$(jq -r --arg n "$k" '.fields[] | select(.name == $n) | .value' <<<"$G")"; done)" \
+    "RESULT=saved 0 999999999 999999999 999999999 999999999 999999999 "
+for kv in PENDING_HUMAN_CONFLICT_MAX_TRIES:0 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:0 USAGE_LIMIT_FALLBACK_SECS:59 USAGE_LIMIT_FALLBACK_SECS:604801; do
+    before="$(sum "$RQ/cavil-loop.config")"
+    save req "{\"${kv%%:*}\":\"${kv#*:}\"}"
+    chk "代码会改回默认的值不让存：${kv%%:*} = ${kv#*:} → invalid，文件不变" "$RESULT $(sum "$RQ/cavil-loop.config")" "RESULT=invalid $before"
+done
+CONF="$CONF_SAVED"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
