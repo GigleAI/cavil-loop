@@ -226,8 +226,15 @@ $__pc_src
 #                            printf -v / for KEY in / ${KEY:=…} / unset / 写在一行里的 if、函数体、a && KEY=…
 #                            都会提到这个名字，一处都不能漏看
 #   top_level_assign <KEY>   规范格式里有一行恰好缩进 4 格、以 KEY= 开头
+# 输出有几行（命令替换去掉了末尾换行：空 = 0 行，否则 = 换行数 + 1）。在 bash 里数，不另起 wc：
+# 每个登记项都要数几次，进程数跟着登记项一起涨（GitHub#554 登记到 45 项后读一次慢了一倍）
+line_count() {   # <文本>
+    local nl
+    if [ -z "$1" ]; then printf 0; return 0; fi
+    nl="${1//[!$'\n']/}"; printf '%s' "$(( ${#nl} + 1 ))"
+}
 mentions() {
-    { printf '%s\n' "$NORM" | grep -ow -- "$1" || true; } | wc -l | tr -d ' '
+    line_count "$(printf '%s\n' "$NORM" | grep -ow -- "$1" || true)"
 }
 top_level_assign() {
     printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
@@ -295,7 +302,7 @@ inspect_field() {   # <配置文件> <下标>
         return 0
     fi
     hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
-    count=0; [ -z "$hits" ] || count="$(printf '%s\n' "$hits" | wc -l | tr -d ' ')"
+    count="$(line_count "$hits")"
     if [ "$count" -gt 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
     # 不是「单独一行、在最外层的赋值」：写在 if / 循环 / case / 函数 / { } 组里（一行写完的也算）、
     # 接在别的命令后面，或者是 export / declare / read 这类别的写法。看结构，不看缩进
@@ -356,18 +363,17 @@ valid_value() {   # <类型> <值>
 }
 
 # 类型 → 客户端画表单要的那部分 JSON
-type_json() {   # <类型>
-    local type="$1" lo hi
-    case "$type" in
-        agent) jq -cn '{type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}' --args ${AGENTS[@]+"${AGENTS[@]}"} ;;
-        int:*) lo="${type#int:}"; hi="${lo#*:}"; lo="${lo%%:*}"
-               jq -cn --argjson lo "$lo" --argjson hi "$hi" '{type:"int", min:$lo, max:$hi}' ;;
-        bool:*) lo="${type#bool:}"; hi="${lo#*:}"; lo="${lo%%:*}"
-                jq -cn --arg on "$lo" --arg off "$hi" '{type:"bool", on:$on, off:$off}' ;;
-        enum:*) jq -cn --arg o "${type#enum:}" '{type:"enum", options:[$o | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}' ;;
-        *) jq -cn --arg t "$type" '{type:$t}' ;;
-    esac
-}
+# 一个登记项的类型 → JSON 里的 type 和它带的字段。agent 的选项是 $ARGS.positional（daemon 自带的 agent）。
+# int:下限:上限 / bool:开的值:关的值 都在第一个冒号处分开，和 valid_value 一致
+TYPE_JQ='def type_json($t):
+    def after($p): $t[($p | length):];
+    def head($s): if ($s | index(":")) == null then $s else $s[:($s | index(":"))] end;
+    def tail($s): if ($s | index(":")) == null then $s else $s[(($s | index(":")) + 1):] end;
+    if $t == "agent" then {type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}
+    elif $t | startswith("int:") then after("int:") as $r | {type:"int", min:(head($r) | tonumber), max:(tail($r) | tonumber)}
+    elif $t | startswith("bool:") then after("bool:") as $r | {type:"bool", on:head($r), off:tail($r)}
+    elif $t | startswith("enum:") then {type:"enum", options:[after("enum:") | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}
+    else {type:$t} end;'
 
 # ════════════════ get ════════════════
 if [ "$MODE" = get ]; then
@@ -388,15 +394,20 @@ if [ "$MODE" = get ]; then
         else
             why="${F_WHY[$i]}"
         fi
-        fields+=("$(jq -cn --arg name "${F_NAME[$i]}" --arg group "${F_GROUP[$i]}" --arg mode "${F_MODE[$i]}" \
-            --arg label "${F_LABEL[$i]}" --arg help "${F_HELP[$i]}" --arg value "$value" --arg def "${F_DEF[$i]}" \
-            --argjson in_file "$in_file" --argjson editable "$editable" --arg why "$why" \
-            --argjson t "$(type_json "${F_TYPE[$i]}")" \
-            '{name:$name, group:$group, mode:$mode, label:$label, help:$help, value:$value, default:$def,
-              in_file:$in_file, editable:$editable, reason:(if $why == "" then null else $why end)} + $t')")
+        # 每项 11 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
+        fields+=("${F_NAME[$i]}" "${F_GROUP[$i]}" "${F_MODE[$i]}" "${F_LABEL[$i]}" "${F_HELP[$i]}" "$value" \
+            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}")
     done
-    printf '%s\n' "${fields[@]}" | jq -s --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
-        '{version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.}'
+    # --rawfile 整份读进一个字符串：jq -R 从管道分块读时会把一个多字节字符切在两块之间，读成乱码（jq 1.7 实测）
+    jq -n --rawfile raw <(printf '%s\0' "${fields[@]}") --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
+        "$TYPE_JQ"'
+        ($raw | split("\u0000") | .[:-1]) as $f
+        | [range(0; $f | length; 11) as $i | $f[$i:$i + 11]
+           | {name:.[0], group:.[1], mode:.[2], label:.[3], help:.[4], value:.[5], default:.[6],
+              in_file:(.[7] == "true"), editable:(.[8] == "true"), reason:(if .[9] == "" then null else .[9] end)}
+             + type_json(.[10])]
+        | {version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.}' \
+        --args ${AGENTS[@]+"${AGENTS[@]}"}
     exit 0
 fi
 
