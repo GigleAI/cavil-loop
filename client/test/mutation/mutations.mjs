@@ -845,8 +845,15 @@ export const MUTATIONS = [
   { what: '手动刷新在同步中只排队，不放弃正在读的这一轮', file: 'src/app/controller.ts',
     from: '    if (this.round?.reading) this.round.drop();\n', to: '',
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache', 'three clicks in a row while a round reads: one new round, not three'] },
-  { what: '被放弃的那一轮还接着翻下一页', file: 'src/data/github.ts',
-    from: "    if (this.cancelled?.aborted) {\n      const given = new GitHubError('network', t('已放弃这一轮同步'));\n      given.meta.cancelled = true;\n      throw given;\n    }\n", to: '',
+  // GitHub#552: since GitHub#545 three guards stop a dropped round — the check before sending, the
+  // check when its turn in the quota guard's queue comes, and the guard giving up waiting for its
+  // answer; "goes on reading" means all three gone (any one left still stops it)
+  { what: '被放弃的那一轮还接着翻下一页',
+    edits: [
+      { file: 'src/data/github.ts', from: "    if (this.cancelled?.aborted) {\n      const given = new GitHubError('network', t('已放弃这一轮同步'));\n      given.meta.cancelled = true;\n      throw given;\n    }\n    this.reads?.gate.check();\n", to: '    this.reads?.gate.check();\n' },
+      { file: 'src/data/github.ts', from: '              // the gate may have closed (and the round been given up on) while this request waited its turn\n              if (this.cancelled?.aborted) {', to: '              // the gate may have closed (and the round been given up on) while this request waited its turn\n              if (false) {' },
+      { file: 'src/data/github.ts', from: '            this.cancelled,\n          )\n        : await go();', to: '            undefined,\n          )\n        : await go();' },
+    ],
     expect: ['the new round starts without the old one finishing; nothing the old one read lands, on screen or in the cache'] },
   { what: '续期登录、写缓存中途也被手动刷新打断', file: 'src/app/controller.ts',
     from: '    if (this.round?.reading) this.round.drop();', to: '    if (this.round) this.round.drop();',
