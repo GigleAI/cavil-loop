@@ -406,7 +406,7 @@ function Control({ f, value, onChange }: { f: ConfigField; value: string; onChan
       <span className="pcfg-num">
         <input className="n" data-testid={id} aria-label={f.label} {...label} inputMode="numeric" value={value} onChange={(e) => onChange(e.target.value.trim())} />
         <span className="muted small">
-          {t('（{min}–{max}）', { min: String(f.min), max: String(f.max) })}
+          {f.max == null ? t('（不小于 {min}）', { min: String(f.min ?? 0) }) : t('（{min}–{max}）', { min: String(f.min), max: String(f.max) })}
         </span>
       </span>
     );

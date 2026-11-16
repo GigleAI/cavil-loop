@@ -681,8 +681,17 @@ collect_queue_rows_greedy() {
     local kind="$1"
     local raw num branch updated labels_csv title prio stage key blocked rc
     # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
-    # 仍然只看前 N 条，配置含义不变。
-    raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "${GREEDY_SCAN_LIMIT:-100}" || true)
+    # 仍然只看前 N 条，配置含义不变。数值到了 10 亿（去掉前导 0 后十位数及以上）的不交给 head：
+    # macOS 的 head 只收到 2^31-1（再大报错 → 一条都不看），GNU 的收到 2^64-1；任何快照都远不到
+    # 10 亿行，这么大的上限就是「全看」，两个平台一样（GitHub#555）。按数值判断，不按写了几位：
+    # 手写的 0000000001 仍是 1。其余写法原样交给 head，和以前逐字节一样。
+    local lim="${GREEDY_SCAN_LIMIT:-100}" lim_val
+    lim_val="${lim#"${lim%%[!0]*}"}"   # 去掉前导 0（全是 0 时为空）
+    if [[ "$lim" =~ ^[0-9]+$ ]] && [ "${#lim_val}" -ge 10 ]; then
+        raw=$(snapshot_rows "$kind" "" 2>/dev/null || true)
+    else
+        raw=$(snapshot_rows "$kind" "" 2>/dev/null | head -n "$lim" || true)
+    fi
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
         [ -n "$num" ] || continue

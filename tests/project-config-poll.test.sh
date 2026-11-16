@@ -10,7 +10,11 @@
 #   3. 等人审的 PR 和主干冲突（真冲突、真 merge-tree）：不写时刚更新的交回 agent、3 天没更新的只提醒
 #      （= 开、2 天）；改成 5 天后 3 天没更新的也交回；关掉后什么都不做
 #   4. 有新合并时刷新常驻正式站（GitHub#554）：不写 = 不刷新；用 project-config.sh 打开后，同样的合并触发刷新
-#   5. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
+#   5. 冲突检查判不出时重试几轮（GitHub#555）：不写 = 第 10 轮放弃这一版；用 project-config.sh 改成 3 后第 3 轮放弃
+#   6. 「开着的都派」每轮扫几条（GitHub#555）：0 / 1 / 9 位 / 10 位 / 20 位，以及手写配置里带前导 0 的写法
+#      （0000000000、0000000001、20 位长的 1、前导 0 的 10 亿），各在本机 GNU head 和一个照 macOS head 行为做的替身
+#      （-n 只收 1 到 2^31-1）下跑真实轮询：派出去的条数按数值算，两边一样
+#   7. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
 #      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
 #      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
 #
@@ -28,7 +32,7 @@ export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TZ=UTC
 unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN POLL_FAKE_NOW
 unset DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR CAVIL_SCHEDULED_POLL
-unset MAX_CONCURRENT_WORKERS DISPATCH_MAX_RETRIES SELFHEAL_MAX_RETRIES AUTO_CLEANUP_ON_MERGE
+unset MAX_CONCURRENT_WORKERS DISPATCH_MAX_RETRIES SELFHEAL_MAX_RETRIES AUTO_CLEANUP_ON_MERGE PENDING_HUMAN_CONFLICT_MAX_TRIES
 export FAKE_GH_LISTS=1 FAKE_GH_REPO="example/pc"
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
@@ -124,6 +128,14 @@ world() {   # <场景：two-pending | failing | dead-worker>
                 '{($p): {kind:"pr", state:"open", merged:false, draft:false, title:"改动", body:"x", user:{login:"maint"}, updated_at:$u,
                          head:{sha:$sha, ref:"topic/conflict", repo:{full_name:"example/pc"}}, base:{ref:"main"}}}' > "$GD/items.json"
             jq -n --arg p "$P" '{($p): ["pending/human"]}' > "$GD/labels.json" ;;
+        conflict-unknown)   # 一个等人审的 PR，GitHub 上拉不到它的提交：冲突检查每轮都判不出
+            jq -n --arg p "$P2" --arg sha "$GHOST" \
+                '{($p): {kind:"pr", state:"open", merged:false, draft:false, title:"拉不到", body:"x", user:{login:"maint"}, updated_at:"2026-01-01T00:00:00Z",
+                         head:{sha:$sha, ref:"topic/ghost", repo:{full_name:"example/pc"}}, base:{ref:"main"}}}' > "$GD/items.json"
+            jq -n --arg p "$P2" '{($p): ["pending/human"]}' > "$GD/labels.json" ;;
+        greedy)   # 两条没打标签的 issue：只有「开着的都派」会派
+            jq -n --arg a "$A" --arg b "$B" "{(\$a): $issue, (\$b): $issue}" > "$GD/items.json"
+            jq -n --arg a "$A" --arg b "$B" '{($a): [], ($b): []}' > "$GD/labels.json" ;;
         dead-worker)
             jq -n --arg c "$C" "{(\$c): $issue}" > "$GD/items.json"
             jq -n --arg c "$C" '{($c): ["doing/agent"]}' > "$GD/labels.json" ;;
@@ -152,6 +164,17 @@ conflict_scenarios() {   # <PR 刚更新时期望> <PR 3 天没更新时期望>
     world conflict 3; poll
     chk "同一个 PR、3 天没更新：$2" "$(conflict_outcome)" "$2"
 }
+# 冲突检查判不出：先记下「这一版已经判不出 N 轮」，再跑一轮，看这一版 → "<轮数> trying|gaveup"
+P2=987206; GHOST=3333333333333333333333333333333333333333
+unknown_round() {   # <已经判不出的轮数>
+    local tip tmp="$W/state/state.tmp"
+    world conflict-unknown
+    tip="$(git --git-dir="$SANDBOX/origin.git" rev-parse main)"
+    jq --arg p "$P2" --arg k "$tip $GHOST" --argjson t "$1" '.pr_conflict[$p] = {key:$k, tries:$t, done:""}' "$W/state/state.json" > "$tmp" \
+        && mv "$tmp" "$W/state/state.json"
+    poll
+    jq -r --arg p "$P2" '.pr_conflict[$p] // {} | "\(.tries) \(if (.done // "") == "" then "trying" else .done end)"' "$W/state/state.json"
+}
 default_of() { grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' -v k="$1" '{gsub(/[ \t]/, "", $1); gsub(/^[ \t]+|[ \t]+$/, "", $4)} $1 == k {print $4}'; }
 
 scenarios() {   # <同时几条> <派工失败上限> <自愈上限> <合并后清理 true|false>
@@ -176,6 +199,10 @@ chk "登记表里这四项「不写时的值」是 1 / 3 / 3 / true" \
 # 冲突提醒：登记表说默认开、2 天内更新过的才自动交回——3 天没更新的那个只留提醒
 chk "登记表里冲突提醒这两项「不写时的值」是 true / 2" "$(default_of PENDING_HUMAN_CONFLICT_CHECK) $(default_of PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS)" "true 2"
 conflict_scenarios worker remind
+# 判不出时的重试上限：登记表说不写 = 10 轮
+chk "登记表里冲突检查重试上限「不写时的值」是 10" "$(default_of PENDING_HUMAN_CONFLICT_MAX_TRIES)" "10"
+chk "不写重试上限：判不出第 9 轮还在试（这一轮确实判了一次、记了数）" "$(unknown_round 8)" "9 trying"
+chk "不写重试上限：第 10 轮放弃这一版" "$(unknown_round 9)" "10 gaveup"
 
 # 有新合并时刷新正式站：不写 = 关（这一轮确实清理了那个已合并的 PR，说明合并确实被看到了）
 world two-pending; poll
@@ -207,7 +234,64 @@ chk "打开刷新（并把合并后清理改回开）：保存成功" "$(tail -1
 world two-pending; poll
 chk "看到新合并、触发刷新" "$(cleaned) $(logged 'merge 钩子')" "true 1"
 
-echo "【5】复盘用的模型：真实复盘入口实际交给模型程序的 --model"
+echo "【5】冲突检查重试上限：经 project-config.sh 改成 3，轮询跟着变"
+rev="$(pc get pctest | jq -r .rev)"
+out="$(printf '{"PENDING_HUMAN_CONFLICT_CHECK":"true","PENDING_HUMAN_CONFLICT_MAX_TRIES":"3"}' | pc set pctest --rev "$rev")"
+chk "重试上限改成 3（并把冲突提醒打开）：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+chk "改成 3：第 2 轮还在试" "$(unknown_round 1)" "2 trying"
+chk "改成 3：第 3 轮放弃这一版" "$(unknown_round 2)" "3 gaveup"
+
+echo "【6】「开着的都派」每轮扫几条：GNU head 和 macOS 式 head 下，真实轮询派出去的条数一样"
+# macOS 的 head 把 -n 的数用 strtol 存进 int、再拒绝非正数：只收 1 到 2^31-1，别的报错退出。照这个行为做一个替身，
+# 其余调用原样交给本机的 head（daemon 别处也用 head，那些写法两个平台一样）
+REAL_HEAD="$(command -v head)"; mkdir -p "$SANDBOX/bsdbin"
+cat > "$SANDBOX/bsdbin/head" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SANDBOX/bsdhead.log"
+prev=""
+for a in "\$@"; do
+    n=""; is_n=0
+    if [ "\$prev" = -n ]; then n="\$a"; is_n=1; else case "\$a" in -n?*) n="\${a#-n}"; is_n=1 ;; esac; fi
+    if [ "\$is_n" = 1 ]; then
+        # strtol 读的是数值：前导 0 不算位数（0000000001 = 1）
+        v="\${n#"\${n%%[!0]*}"}"; [ -n "\$v" ] || v=0
+        if ! [[ "\$n" =~ ^[0-9]+\$ ]] || ! [[ "\$v" =~ ^[0-9]{1,10}\$ ]] || [ "\$v" -le 0 ] || [ "\$v" -gt 2147483647 ]; then
+            echo "head: illegal line count -- \$n" >&2; exit 1
+        fi
+    fi
+    prev="\$a"
+done
+exec "$REAL_HEAD" "\$@"
+SH
+chmod +x "$SANDBOX/bsdbin/head"
+chk "替身 head 像 macOS：-n 0 / 0000000000 / 2147483648 报错，-n 2 / -2 / 00000000000000000002 照常" \
+    "$(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 0 >/dev/null 2>&1; echo $?) $(printf 'a\n' | "$SANDBOX/bsdbin/head" -n 0000000000 >/dev/null 2>&1; echo $?) $(printf 'a\n' | "$SANDBOX/bsdbin/head" -n 2147483648 >/dev/null 2>&1; echo $?) $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 2 | wc -l | tr -d ' ') $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -2 | wc -l | tr -d ' ') $(printf 'a\nb\nc\n' | "$SANDBOX/bsdbin/head" -n 00000000000000000002 | wc -l | tr -d ' ')" \
+    "1 1 1 2 2 2"
+greedy_round() {   # <扫描条数> <gnu|bsd> → 这一轮起了几个 worker 会话
+    local c2="$W/greedy.config"
+    { cat "$CONF"; printf 'DISPATCH_MODE="greedy"\nMAX_CONCURRENT_WORKERS=5\nGREEDY_SCAN_LIMIT=%s\n' "$1"
+      [ "$2" = bsd ] && printf 'PATH="%s:$PATH"\n' "$SANDBOX/bsdbin"; } > "$c2"
+    world greedy
+    env CODING_AGENT_CONFIG="$c2" timeout 120 bash "$ROOT/scripts/agent-poll.sh" >/dev/null 2>&1
+    local n; n="$(sessions)"; printf '%s' "${n:-0}"   # 一个会话都没起时 tmux 记录文件不存在
+}
+: > "$SANDBOX/bsdhead.log"
+for flavor in gnu bsd; do
+    got=""
+    for v in 0 1 999999999 2147483648 18446744073709551616; do got="$got $v:$(greedy_round "$v" "$flavor")"; done
+    chk "$flavor head：扫 0 条不派、1 条派 1 个、9 位 / 10 位 / 20 位都把两条派完" "$got" " 0:0 1:1 999999999:2 2147483648:2 18446744073709551616:2"
+    # 配置窗口不让写前导 0，但手写的已有配置照样被 daemon 读：按数值算，不按写了几位（复审第 4 轮）
+    got=""
+    for v in 0000000000 0000000001 00000000000000000001 00001000000000; do got="$got $v:$(greedy_round "$v" "$flavor")"; done
+    chk "$flavor head：带前导 0 的写法按数值算——十个 0 不派、0000000001 和 20 位长的 1 只派 1 个、前导 0 的 10 亿派完" \
+        "$got" " 0000000000:0 0000000001:1 00000000000000000001:1 00001000000000:2"
+done
+# 每轮对 issue、PR 各扫一次：每个交给 head 的数在记录里出现两次
+chk "到达性 · bsd 那一组轮询真的用了替身 head：9 位的、带前导 0 的小数交给了它，数值到 10 亿的没交给它" \
+    "$(grep -cx -- '-n 999999999' "$SANDBOX/bsdhead.log") $(grep -cxE -- '-n (0|1)' "$SANDBOX/bsdhead.log" | tr -d ' ') $(grep -cxE -- '-n (0000000000|0000000001|00000000000000000001)' "$SANDBOX/bsdhead.log") $(grep -cE -- '-n 0*[1-9][0-9]{9,}$' "$SANDBOX/bsdhead.log")" "2 4 6 0"
+chk "登记表：扫描条数从 0 起、不设上限" "$(grep -E '^GREEDY_SCAN_LIMIT ' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{gsub(/ /, "", $3); print $3}')" "int:0:"
+
+echo "【7】复盘用的模型：真实复盘入口实际交给模型程序的 --model"
 # 这组用例自带一个假 HOME 和它自己的 git 身份：不带上面给轮询用的 git 环境变量
 if out="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM -u FAKE_GH_DIR -u FAKE_GH_LISTS -u FAKE_GH_REPO QUIET=1 python3 "$TEST_DIR/project_config_retro_test.py" 2>&1)"; then
     echo "  ✅ $(printf '%s\n' "$out" | grep -E '^Ran ')"; pass=$((pass+1))

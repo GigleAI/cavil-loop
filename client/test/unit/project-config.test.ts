@@ -32,6 +32,17 @@ describe('the rules the form is drawn from', () => {
     expect(fieldProblem(sw, 'true')).not.toBeNull();
     // a type this client has not heard of is never an input
     expect(fieldProblem(field({ type: 'path' }), 'x')).not.toBeNull();
+    // GitHub#555: the bound is the using code's own, compared digit by digit — not a 9-digit cap, never through a Number
+    const big = field({ type: 'int', min: 0, max: '18446744073709551615' });
+    expect(['0', '999999999', '1000000000', '9007199254740993', '18446744073709551615'].map((v) => fieldProblem(big, v))).toEqual([null, null, null, null, null]);
+    for (const v of ['18446744073709551616', '99999999999999999999', '01']) expect(fieldProblem(big, v), v).not.toBeNull();
+    // a number past 2^53 compared exactly: 9007199254740993 is over a 9007199254740992 bound (as Numbers they are equal)
+    expect(fieldProblem(field({ type: 'int', min: 0, max: '9007199254740992' }), '9007199254740993')).not.toBeNull();
+    // no upper bound in the code: any whole number from the minimum on, up to the 200 characters every value may have
+    const open = field({ type: 'int', min: 1, max: null });
+    expect([fieldProblem(open, '1'), fieldProblem(open, '1' + '0'.repeat(199))]).toEqual([null, null]);
+    expect(fieldProblem(open, '1' + '0'.repeat(200))).not.toBeNull();
+    expect(fieldProblem(open, '0')).toBe('只能是不小于 1 的整数');
   });
 
   it('only what the daemon calls editable, of a type the client knows, is an input', () => {
@@ -39,6 +50,7 @@ describe('the rules the form is drawn from', () => {
     expect(canEdit(field({ editable: false }))).toBe(false);
     expect(canEdit(field({ mode: 'show' }))).toBe(false);
     expect(canEdit(field({ type: 'label' }))).toBe(false);
+    expect(canEdit(field({ type: 'text' }))).toBe(false);
     expect(canEdit(field({ type: 'command' }))).toBe(false);
   });
 
@@ -54,6 +66,10 @@ describe('the rules the form is drawn from', () => {
     expect(valueText(field({ type: 'bool', on: 'true', off: 'false' }), 'false')).toBe('关');
     expect(valueText(field({ type: 'enum', options: [{ value: 'zh', label: '中文' }] }), 'zh')).toBe('中文（zh）');
     expect(valueText(field({}), '')).toBe('（空）');
+    // a plain value (GitHub#555: flow labels, label lists, a branch) reads as written — a flow label is a name, not a switch
+    expect(valueText(field({ type: 'text' }), 'doing/agent')).toBe('doing/agent');
+    expect(valueText(field({ type: 'text' }), 'priority/p0,priority/p1')).toBe('priority/p0,priority/p1');
+    expect(valueText(field({ type: 'text' }), '')).toBe('（空）');
     // an option whose value is empty (GitHub#554: "off" written as an empty line): its label alone
     expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), '')).toBe('关');
     expect(valueText(field({ type: 'enum', options: [{ value: '', label: '关' }, { value: 'block', label: '拦住' }] }), 'block')).toBe('拦住（block）');
@@ -225,6 +241,34 @@ describe('the back end and the daemon\'s real script', () => {
     expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
     expect(new Set(verdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
     // 17 values × (read + save through the real script): ~17 s on a loaded dev box, past the 20 s default on CI (PR #415)
+  }, 60_000);
+
+  // GitHub#555: whole numbers past 9 digits, up to the using code's own bound, go through the form, the back end and the
+  // script alike; one past the bound, or a leading zero, through none of them
+  it('integers: the form, the back end and the script agree up to the using code\'s own bound', async () => {
+    const b = backend();
+    const cases: [string, string][] = [
+      ['GREEDY_SCAN_LIMIT', '1000000000'], ['GREEDY_SCAN_LIMIT', '18446744073709551616'],
+      ['GREEDY_SCAN_LIMIT', '0'], ['GREEDY_SCAN_LIMIT', '0100'], ['GREEDY_SCAN_LIMIT', '100'],
+      ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
+      ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
+    ];
+    const verdicts: [string, boolean][] = [];
+    for (const [name, v] of cases) {
+      const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
+      const f = byName(c, name);
+      expect(f.editable, `${name} editable before ${v}`).toBe(true);
+      const form = fieldProblem(f, v) === null;
+      const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { [name]: v } });
+      verdicts.push([`${name}=${v}`, form]);
+      expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(form);
+      if (form) expect(line(name)).toEqual([`${name}=${v}`]);
+    }
+    expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual([
+      'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551616', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
+      'AUTOPILOT_CHECKS_TIMEOUT_HOURS=2562047788015215',
+      `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1${'0'.repeat(60)}`,
+    ]);
   }, 60_000);
 
   it('a config that does not load: "unreadable" with no values; an unknown project: "not_found"', async () => {

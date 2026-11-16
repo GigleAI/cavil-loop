@@ -438,6 +438,8 @@ for k in $names; do
     reg="$(grep -E "^$k[[:space:]]*\|" "$NOTICES" | head -1)"
     case "$reg" in
         *"| quiet | 不写这一行时的行为和模板里的值相同"*) [ "$def" = "$tv" ] || bad="$bad $k:登记册说和模板一样，模板[$tv]登记表[$def]" ;;
+        # 必填项没有「不写时的值」：不写这一行 daemon 不加载（下面另外对拍），登记成空
+        *"| quiet | 必填项，每个项目自己的值"*) [ -z "$def" ] || bad="$bad $k:必填项登记了不写时的值[$def]" ;;
         *"| notice |"*)
             off="$(awk -F'|' '{v = $4; gsub(/^[ \t]+|[ \t]+$/, "", v); print v}' <<<"$reg")"; off="${off%\"}"; off="${off#\"}"
             case "$type" in bool:*) [ -z "$off" ] && off="${type##*:}" ;; esac
@@ -459,13 +461,14 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS"
+LIBKEYS="WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS"
 # 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
 #   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
 #   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
 #   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
 #   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
-FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE"
+#   GREEDY_SKIP_LABELS           加载时不补值，用到时（greedy_skip_label_list）才读：问它在内置的跳过标签之后多列了哪些
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS"
 lib_load() {
     env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
@@ -475,6 +478,8 @@ lib_load() {
     if usage_limit_enabled; then echo ENABLE_USAGE_LIMIT_PAUSE=true; else echo ENABLE_USAGE_LIMIT_PAUSE=false; fi
     if _runlog_enabled; then echo ENABLE_POLL_RUN_LOG=true; else echo ENABLE_POLL_RUN_LOG=false; fi
     echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"
+    __n="$(GREEDY_SKIP_LABELS="" greedy_skip_label_list | wc -l)"
+    echo "GREEDY_SKIP_LABELS=$(greedy_skip_label_list | tail -n +$((__n + 1)) | paste -sd, -)"
 ' _ "$REPO_DIR" $LIBKEYS 2>&1
 }
 loaded="$(lib_load)"
@@ -593,6 +598,89 @@ early_conf 'REQUESTER_BOT_REPORT_FIRST="false"'
 chk "只写新名字：照旧可改" "$(field "$(run get early)" REQUESTER_BOT_REPORT_FIRST)" '["false",true,true]'
 save early '{"REQUESTER_BOT_REPORT_FIRST":"true"}'
 chk "只写新名字：保存成功，公共库读到新值，和窗口一致" "$RESULT $(early_lib_shown)" "RESULT=saved lib  true | shown  true"
+# 两个必填的流程标签（派工、等人）：配置里没有这一行，daemon 加载公共库就退出——没有「不写时 daemon 用的值」，
+# 登记表的「不写时的值」是空；窗口照实显示空、标成文件里没有（GitHub#555）
+RQ="$SANDBOX/req"; mkdir -p "$RQ/proj" "$RQ/state" "$RQ/wt"
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$RQ/proj" "$RQ/cavil-loop.config" > "$H/.config/cavil-loop/req.conf"
+req_conf() {   # [不写的那一项]
+    printf '%s\n' 'REPO="example/req"' "PROJECT_ROOT=\"$RQ/proj\"" "WORKTREE_BASE=\"$RQ/wt\"" "STATE_DIR=\"$RQ/state\"" \
+        'TMUX_PREFIX="reqtest"' 'BRANCH_PREFIX="feature/issue-"' 'SESSION_NAME_PREFIX="issue"' \
+        'LABEL_PENDING_AGENT="pending/agent"' 'LABEL_PENDING_HUMAN="pending/human"' | grep -v "^${1:-__none__}=" > "$RQ/cavil-loop.config"
+}
+req_load() {
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1
+        echo "LOADED $LABEL_PENDING_AGENT $LABEL_PENDING_HUMAN"' _ "$REPO_DIR" 2>/dev/null || echo LOAD_FAILED
+}
+req_conf
+chk "到达性 · 两个必填标签都写了：公共库照常加载，窗口显示写的值" \
+    "$(req_load) | $(G="$(run get req)"; field "$G" LABEL_PENDING_AGENT) $(field "$G" LABEL_PENDING_HUMAN)" \
+    'LOADED pending/agent pending/human | ["pending/agent",true,false] ["pending/human",true,false]'
+for k in LABEL_PENDING_AGENT LABEL_PENDING_HUMAN; do
+    req_conf "$k"
+    chk "必填的 $k 不写：公共库不加载；登记表「不写时的值」是空，窗口显示空、文件里没有" \
+        "$(req_load) [$(col 4 "$k")] $(field "$(run get req)" "$k")" 'LOAD_FAILED [] ["",false,false]'
+done
+# 整数的范围 = 使用它的代码在 daemon 跑的每个平台上实际接受的范围（GitHub#555 复审三轮）。按十进制数字比大小，不受位数限制：
+# bash 拿去 [ -gt ] / $(( )) 的到 2^63-1（Linux 的 bash 5、macOS 的 bash 3.2 一样），乘 3600 再比的取乘完不溢出的那个数，
+# 只有 Python 读的、和「开着的都派」的扫描条数（十位数及以上不再交给各平台上限不同的 head，等于全看；真实轮询对拍在
+# tests/project-config-poll.test.sh）不设上限
+U64=18446744073709551615; I64=9223372036854775807; HMAX=2562047788015215
+chk "整数范围：每项登记的就是它使用端的上下限" \
+    "$(for k in GREEDY_SCAN_LIMIT AUTOPILOT_CHECKS_TIMEOUT_HOURS CHECKOUT_STALE_ALERT_COMMITS HEAVY_TEST_LOCK_WAIT PENDING_HUMAN_CONFLICT_MAX_TRIES CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS USAGE_LIMIT_FALLBACK_SECS; do printf '%s ' "$(col 3 "$k")"; done)" \
+    "int:0: int:0:$HMAX int:0:$I64 int:0:$I64 int:1:$I64 int:1: int:60:604800 "
+# 使用端自己的写法在两端的表现（同一个命令 / 表达式，照抄使用它的那一行）
+chk "使用端 · 重测试排队 / 冲突重试 / 落后提醒用 [ -gt ] / [ -ge ] 比：$I64 能比，再大 1 报错" \
+    "$(bash -c '[ "$1" -gt 0 ] && echo ok' _ "$I64") $(bash -c '[ "$1" -gt 0 ] 2>/dev/null; echo $?' _ 9223372036854775808)" "ok 2"
+chk "使用端 · 托管检查超时乘 3600：$HMAX 小时不溢出，再大 1 溢出成负数" \
+    "$(bash -c 'echo $(( $1 * 3600 >= 0 ))' _ "$HMAX") $(bash -c 'echo $(( $1 * 3600 >= 0 ))' _ 2562047788015216)" "1 0"
+usage_after_load() {   # <USAGE_LIMIT_FALLBACK_SECS 的值> → 公共库加载后实际用的值
+    req_conf; printf 'USAGE_LIMIT_FALLBACK_SECS=%s\n' "$1" >> "$RQ/cavil-loop.config"
+    env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
+        source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 1; printf %s "$USAGE_LIMIT_FALLBACK_SECS"' _ "$REPO_DIR" 2>/dev/null || printf LOAD_FAILED
+}
+chk "读不出解除时间的停派秒数：登记的两端 60 / 604800 公共库照用，出界的 59 / 604801 被改回 3600" \
+    "$(for v in 60 604800 59 604801; do printf '%s ' "$(usage_after_load "$v")"; done)" "60 604800 3600 3600 "
+fix_after_load() {   # <CI 报告修复上限的值> → 检查脚本实际用的值
+    env -i PATH="$SYS_PATH" CI_REPORT_MAX_FIX="$1" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import ci_failure_report as m; print(m.MAX_FIX, end="")' "$REPO_DIR/scripts" 2>/dev/null || printf LOAD_FAILED
+}
+BIG200="1$(printf '0%.0s' $(seq 199))"
+chk "CI 报告修复上限：1 和 200 位的数检查脚本照用（不设上限），0 被改回 2（所以登记从 1 起）" \
+    "$(for v in 1 "$BIG200" 0; do r="$(fix_after_load "$v")"; [ "$r" = "$v" ] && r=same; printf '%s ' "$r"; done)" "same same 2 "
+G="$(run get req)"
+chk "get 给的上限：超过 15 位的给字符串（不被读成近似值），不设上限的给 null，小的照旧是数" \
+    "$(jq -c '[.fields[] | select(.name == "GREEDY_SCAN_LIMIT" or .name == "AUTOPILOT_CHECKS_TIMEOUT_HOURS" or .name == "CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS" or .name == "USAGE_LIMIT_FALLBACK_SECS") | [.name, .min, .max]]' <<<"$G")" \
+    "[[\"USAGE_LIMIT_FALLBACK_SECS\",60,604800],[\"GREEDY_SCAN_LIMIT\",0,null],[\"AUTOPILOT_CHECKS_TIMEOUT_HOURS\",0,\"$HMAX\"],[\"CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS\",1,null]]"
+# 配置里已经是超出旧登记范围的值（九位以上、十位数）或有意义的 0：窗口照样可改，能改回普通值
+RANGE_KEYS="GREEDY_SCAN_LIMIT AUTOPILOT_CHECKS_TIMEOUT_HOURS CHECKOUT_STALE_ALERT_COMMITS HEAVY_TEST_LOCK_WAIT PENDING_HUMAN_CONFLICT_MAX_TRIES CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS"
+req_conf
+printf '%s\n' GREEDY_SCAN_LIMIT=1000000000 AUTOPILOT_CHECKS_TIMEOUT_HOURS=0 CHECKOUT_STALE_ALERT_COMMITS=1000000000 HEAVY_TEST_LOCK_WAIT=1000000000 \
+    PENDING_HUMAN_CONFLICT_MAX_TRIES=1000000000 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1000000000 >> "$RQ/cavil-loop.config"
+G="$(run get req)"
+chk "配置里写着十位数 1000000000（托管检查超时写 0）：都显示原值、都可改" \
+    "$(for k in $RANGE_KEYS; do printf '%s ' "$(field "$G" "$k")"; done)" \
+    '["1000000000",true,true] ["0",true,true] ["1000000000",true,true] ["1000000000",true,true] ["1000000000",true,true] ["1000000000",true,true] '
+save req '{"GREEDY_SCAN_LIMIT":"100","AUTOPILOT_CHECKS_TIMEOUT_HOURS":"6","CHECKOUT_STALE_ALERT_COMMITS":"20","HEAVY_TEST_LOCK_WAIT":"0","PENDING_HUMAN_CONFLICT_MAX_TRIES":"10","CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS":"2"}'
+chk "从十位数改回普通值：保存成功，文件里就是新值" "$RESULT $(grep -cxE 'GREEDY_SCAN_LIMIT=100|AUTOPILOT_CHECKS_TIMEOUT_HOURS=6|CHECKOUT_STALE_ALERT_COMMITS=20|HEAVY_TEST_LOCK_WAIT=0|PENDING_HUMAN_CONFLICT_MAX_TRIES=10|CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=2' "$RQ/cavil-loop.config")" "RESULT=saved 6"
+read_back() { local G k; G="$(run get req)"; for k in $RANGE_KEYS; do printf '%s ' "$(jq -r --arg n "$k" '.fields[] | select(.name == $n) | .value' <<<"$G")"; done; }
+for v in 999999999 1000000000; do
+    save req "$(jq -cn --arg v "$v" '{GREEDY_SCAN_LIMIT:$v, AUTOPILOT_CHECKS_TIMEOUT_HOURS:$v, CHECKOUT_STALE_ALERT_COMMITS:$v, HEAVY_TEST_LOCK_WAIT:$v, PENDING_HUMAN_CONFLICT_MAX_TRIES:$v, CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:$v}')"
+    chk "六项都改成 $v：保存成功，读回就是 $v" "$RESULT $(read_back)" "RESULT=saved $v $v $v $v $v $v "
+done
+save req "{\"GREEDY_SCAN_LIMIT\":\"$U64\",\"AUTOPILOT_CHECKS_TIMEOUT_HOURS\":\"$HMAX\",\"CHECKOUT_STALE_ALERT_COMMITS\":\"$I64\",\"HEAVY_TEST_LOCK_WAIT\":\"$I64\",\"PENDING_HUMAN_CONFLICT_MAX_TRIES\":\"$I64\",\"CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS\":\"$BIG200\"}"
+chk "六项都改成各自使用端的上限（「开着的都派」写 2^64-1，CI 修复上限写 200 位）：保存成功，读回就是这些值" "$RESULT $(read_back)" "RESULT=saved $U64 $HMAX $I64 $I64 $I64 $BIG200 "
+G="$(run get req)"
+chk "上限上的值照样可改" "$(for k in $RANGE_KEYS; do printf '%s ' "$(jq -r --arg n "$k" '.fields[] | select(.name == $n) | .editable' <<<"$G")"; done)" "true true true true true true "
+save req '{"GREEDY_SCAN_LIMIT":"0","PENDING_HUMAN_CONFLICT_MAX_TRIES":"1","CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS":"1"}'
+chk "下限 0 / 1：保存成功" "$RESULT" "RESULT=saved"
+for kv in AUTOPILOT_CHECKS_TIMEOUT_HOURS:2562047788015216 CHECKOUT_STALE_ALERT_COMMITS:9223372036854775808 \
+          HEAVY_TEST_LOCK_WAIT:9223372036854775808 PENDING_HUMAN_CONFLICT_MAX_TRIES:9223372036854775808 PENDING_HUMAN_CONFLICT_MAX_TRIES:0 \
+          CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:0 "CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS:${BIG200}0" GREEDY_SCAN_LIMIT:0100 \
+          USAGE_LIMIT_FALLBACK_SECS:59 USAGE_LIMIT_FALLBACK_SECS:604801; do
+    before="$(sum "$RQ/cavil-loop.config")"
+    save req "{\"${kv%%:*}\":\"${kv#*:}\"}"
+    chk "使用端不收或会改回默认的值不让存：${kv%%:*} = ${kv#*:} → invalid，文件不变" "$RESULT $(sum "$RQ/cavil-loop.config")" "RESULT=invalid $before"
+done
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
     "$(grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' <<<"$names" | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
