@@ -248,8 +248,9 @@ describe('the back end and the daemon\'s real script', () => {
   it('integers: the form, the back end and the script agree up to the using code\'s own bound', async () => {
     const b = backend();
     const cases: [string, string][] = [
-      ['GREEDY_SCAN_LIMIT', '1000000000'], ['GREEDY_SCAN_LIMIT', '18446744073709551615'], ['GREEDY_SCAN_LIMIT', '18446744073709551616'],
+      ['GREEDY_SCAN_LIMIT', '1000000000'], ['GREEDY_SCAN_LIMIT', '18446744073709551616'],
       ['GREEDY_SCAN_LIMIT', '0'], ['GREEDY_SCAN_LIMIT', '0100'], ['GREEDY_SCAN_LIMIT', '100'],
+      ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
       ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
     ];
     const verdicts: [string, boolean][] = [];
@@ -264,7 +265,8 @@ describe('the back end and the daemon\'s real script', () => {
       if (form) expect(line(name)).toEqual([`${name}=${v}`]);
     }
     expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual([
-      'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551615', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
+      'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551616', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
+      'AUTOPILOT_CHECKS_TIMEOUT_HOURS=2562047788015215',
       `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1${'0'.repeat(60)}`,
     ]);
   }, 60_000);
