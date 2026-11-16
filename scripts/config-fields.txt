@@ -6,7 +6,10 @@
 # 在本机跑任意命令 / 读凭据的入口（tests/project-config.test.sh 按名单断言它们不在这里）。
 #
 # 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
-#   KEY | 分组标题 | 类型 | 不写这一行时 daemon 实际用的值 | edit / show | 名称 | 一句说明
+#   KEY | 分组标题 | 类型 | 不写这一行时 daemon 实际用的值 | edit / show | 名称 | 一句说明 [| 只显示的原因]
+#
+# 只显示的原因：show 行必填（这一行为什么不在窗口里改，窗口里写在这一行下面），edit 行不写。
+# 只显示的行和可改的行放在同一个主题分组里（GitHub#554）。
 #
 # 类型：
 #   agent          daemon 自带的 agent（scripts/drivers/ 下的 driver 名）
@@ -16,12 +19,16 @@
 #   enum:a=说明,b=说明   几选一；= 后面是给人看的说明
 #   label          标签名：空 = 这个功能关着（只用于 show）
 #
+# 「不写这一行时的值」一般也是「写成空值时」的值。两者不同的项写成 `不写时的值;empty=写成空值时的值`
+# （例：ENABLE_POLL_RUN_LOG 不写 = 开、写成空值 = 关，登记成 `true;empty=false`）。
+# 开关的「关」可以是空值（`bool:on:`）。
+#
 # 「不写这一行时的值」必须和 daemon 实际用的一致——有的在 _lib.sh 加载时定，有的在 agent-poll.sh
 # 用到的地方才补（${X:-默认}）。两类都和真实的使用方对拍（tests/project-config.test.sh 第 7 节、
 # tests/project-config-poll.test.sh），新加一行就要补上它的对拍；改默认值时两边一起改。
 # 模板里没登记在这里的配置项，都登记在 tests/config-fields-hidden.txt 并写明不显示的原因（tests/config-fields-coverage.test.sh 查）。
 # edit 项只在「配置的代码里只提到它一次，且那是最外层单独一行、顶格写的普通字面值」时可改；写成算式、引用变量、
-# 多处赋值、写在 if / 循环 / case / 函数里（一行写完的也算）、别处还提到它的只显示。代码里一次都没提到才算「没写」。显示的值一律是 daemon 实际用的：没设置或为空 = 这里登记的默认值。
+# 多处赋值、写在 if / 循环 / case / 函数里（一行写完的也算）、别处还提到它的只显示。代码里一次都没提到才算「没写」。显示的值一律是 daemon 实际用的：没设置 = 这里登记的默认值，为空 = 写成空值时的值（没另写就是默认值）。
 #
 WORKER_AGENT | agent 与模型 | agent | claude | edit | 干活的 agent | 派工时用哪个 agent 程序写代码
 WORKER_MODEL | agent 与模型 | model | | edit | 干活用的模型 | 留空 = 用 agent 自己的默认模型
@@ -34,8 +41,17 @@ SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退�
 STUCK_WORKER_QUIET_SECS | 派工与重试 | int:0:86400 | 0 | edit | 卡在 doing/agent 多少秒后催一次 | agent 已空闲、GitHub 和分支都没动静满这么久，往会话里催一次；0 = 关闭这个兜底
 STUCK_WORKER_STEP_GAP_SECS | 派工与重试 | int:60:86400 | 900 | edit | 催过后再等多少秒就重派 | 仍没动静就结束会话、翻回触发标签重派；兜底关着时不用
 STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最多重派几次 | 之后再卡住就留言交 pending/human；兜底关着时不用
+SELFHEAL_ONLY_OWN_WORKERS | 派工与重试 | bool:true:false | false | edit | 只接管本机派出的活 | 多台机器盯同一个仓库时打开，免得一台把另一台正在跑的 worker 当成意外退出接管过去；单机保持关
+ENABLE_USAGE_LIMIT_PAUSE | 派工与重试 | bool:true:false | false | edit | agent 撞到用量上限时停派 | 认出用量上限提示后，到解除时间前不再给这个 agent 派新活，被打断的那条留言转 pending/human
+DISPATCH_MODE | 派工与重试 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |  | 改成「开着的都派」后谁开的 issue 都会被派工，会扩大 daemon 做事的范围
 REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决
 REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
+LABEL_PENDING_REVIEW | 复审 | label |  | show | 复审关卡 |  | 开关复审关卡会改变每条 PR 的流转，标签也要先在仓库里建好
+LABEL_AUTOPILOT | 托管（自动合并） | label |  | show | 托管（自动合并） |  | 打开后 daemon 会自己合并 PR；标签也要先在仓库里建好
+LABEL_PENDING_MERGE | 托管（自动合并） | label | pending/merge | show | 等合并的标签 | 复审通过后挂上它，daemon 核对检查后合并；托管关着时不用 | 标签名要和仓库里建好的标签一致
+AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 托管（自动合并） | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人 | 决定托管合并前哪些改动要人过目，放宽它等于放宽自动合并
+AUTOPILOT_OUTSIDER_GUARD | 托管（自动合并） | enum:=关,mark=只标出,block=标出并拦住自动合并 |  | show | 外部账号的评论 | 托管条目上没有写权限的账号写的内容：只标出 = 标明作者、去掉里面的链接和代码等；拦住 = 授权之后有外部内容的 PR 不自动合并、交人 | 几选一的保护模式，改它会改变托管 PR 能不能自动合并
+AUTOPILOT_OUTSIDER_SCREEN | 托管（自动合并） | bool:on: |  | edit | 外部账号的内容先给模型预筛 | 外部账号的每条内容先交给一个不带任何工具的模型判断是不是在指挥 agent，判为是的给 agent 看时换成占位；每条多一次模型调用，要和上一项一起开
 OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
 COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
 ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论）
@@ -44,11 +60,18 @@ PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲�
 BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有
 BLOCKED_MAX_TRIES | 等人期间 | int:1:100 | 10 | edit | 等前置：写 GitHub 连续失败几次后放弃 | 放弃后条目留在等前置标签上，只记日志
 AUTO_CLEANUP_ON_MERGE | 等人期间 | bool:true:false | true | edit | 合并后自动清理工作目录 | 清掉这条 issue 的工作目录和终端会话；分支、对话记录、日志都保留
-POLL_IDLE_PROBE | 其他 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询
+LABEL_PENDING_BLOCKED | 等人期间 | label | pending/blocked;empty= | show | 等前置 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好
+LABEL_PENDING_LATER | 等人期间 | label | pending/later;empty= | show | 暂缓 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好
+LABEL_PENDING_REQUESTER_BOT | 外部需求机器人 | label |  | show | 等外部需求机器人回话 | 关 = 没接外部需求机器人 | 标签要先在仓库里建好，还要配好机器人的账号等几项（那几项不在这里显示）
+REQUESTER_BOT_REPORT_FIRST | 外部需求机器人 | bool:true:false | false | edit | 做完先给机器人汇报 | 机器人提的需求做完后先交机器人认可，再交维护者；没接机器人时不用
+REQUESTER_BOT_WAKE_ANY_ITEM | 外部需求机器人 | bool:true:false | false | edit | 不是机器人提的条目也能叫醒机器人 | 机器人那边要先支持这种交接；没接机器人时不用
+POST_MERGE_RETROSPECTIVE | 合并后复盘 | bool:true:false | true | edit | 合并后自动复盘 | PR 合并后让模型写复盘报告、更新项目经验
+RETROSPECTIVE_PROMOTION | 合并后复盘 | enum:auto=直接升成硬规则,confirm=先放进待确认 | auto | show | 经验攒够次数后 |  | 几选一的模式：决定经验是否不经人确认就升成所有 worker 都要遵守的硬规则
+RETROSPECTIVE_DIRECTORY_LESSONS | 合并后复盘 | bool:true:false | true | edit | 记录只在某个目录生效的经验 | 复盘时把只适用于某个目录的经验单独记下
+CI_FAILURE_REPORT_DISPATCH | CI 失败报告 | bool:true:false | false | edit | CI 失败报告直接派给 agent 修 | 主干测试失败开出的报告 issue 直接打派工标签；没配要盯的工作流时不用
+AUTO_RELEASE_MAIN_CHECKOUT | 主 checkout 与正式站 | bool:1:0 | 0 | edit | 主 checkout 占着 PR 分支时自动切回主干 | 只在没有未提交改动、本地分支和 PR 最新提交相同等条件都满足时才切；关 = 转 pending/human 并给出切换命令
+LATEST_SITE_REFRESH | 主 checkout 与正式站 | bool:true:false | false | edit | 有新合并时刷新常驻正式站 | 把主 checkout 拉到最新，重建并重启本机常驻的正式站
+PREVIEW_TAILSCALE_SERVE | 预览 | bool:true:false | false | edit | 预览同时挂到 tailnet 上 | 同一 tailnet 里的设备也能打开预览；需要免密 sudo 跑 tailscale，失败只告警
+POLL_IDLE_PROBE | 轮询 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询
+ENABLE_POLL_RUN_LOG | 轮询 | bool:true:false | true;empty=false | edit | 记录每轮轮询 | 每轮写一条小记录、出问题时留快照，只记不判；配置里写成空值也算关
 LOG_LEVEL | 其他 | enum:info=常规,debug=排查（更详细） | info | edit | 日志详细程度 | 写进轮询日志的内容多少
-DISPATCH_MODE | 只显示、不在这里改的设置 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |
-LABEL_PENDING_REVIEW | 只显示、不在这里改的设置 | label | | show | 复审关卡 |
-LABEL_AUTOPILOT | 只显示、不在这里改的设置 | label | | show | 托管（自动合并） |
-AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 只显示、不在这里改的设置 | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人
-LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | pending/blocked | show | 等前置 | 配置里没写这一行 = 开；写成空值 = 关
-LABEL_PENDING_LATER | 只显示、不在这里改的设置 | label | pending/later | show | 暂缓 | 配置里没写这一行 = 开；写成空值 = 关

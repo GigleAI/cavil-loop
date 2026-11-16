@@ -5,7 +5,8 @@
 // Which settings exist, their types, labels and current values all come from
 // the daemon's own script through the back end (shared/daemon.ts); this file
 // only draws them. A row is an input only when the daemon says the setting is
-// editable; everything else is shown with the reason. "保存" sends the changed
+// editable; everything else is shown with the reason. Read-only rows sit in their own topic group,
+// each with its own reason (GitHub#554). "保存" sends the changed
 // settings with the fingerprint of the file as it was read: when the file is
 // another one by then nothing is written and the dialog says so. What the
 // result means is decided by `saveKind` — a result the client does not know is
@@ -227,9 +228,6 @@ export function ProjectConfigDialog({
                 <div className="pcfg-group">
                   <Verbatim from="daemon">{g.title}</Verbatim>
                 </div>
-                {g.fields.some((f) => f.mode === 'show') && (
-                  <div className="muted small pcfg-note">{remote ? t('下面这些会让 daemon 多做一类事（自动合并、谁开 issue 都派工……）或需要在仓库里新建标签，这里只显示现在的值；要改请到那台机器上用编辑器改。') : t('下面这些会让 daemon 多做一类事（自动合并、谁开 issue 都派工……）或需要在仓库里新建标签，这里只显示现在的值；要改请用编辑器。')}</div>
-                )}
                 {g.fields.map((f) => (
                   <Row key={f.name} f={f} draft={draft[f.name]} onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))} onOpenEditor={remote ? undefined : onOpenEditor} />
                 ))}
@@ -355,11 +353,15 @@ function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: stri
             {problem}
           </span>
         )}
-        {!editable && f.mode === 'edit' && (
+        {/* every row that is not an input says why, its own reason (GitHub#554): a "show" row's comes from
+            scripts/config-fields.txt; an older daemon sends none */}
+        {!editable && (
           <span className="muted small" data-testid="config-why">
-            {f.editable
+            {f.mode === 'edit' && f.editable
               ? t('这个客户端还不认识这种设置，这里不改它。')
-              : tNode('{why}，这里不改它。', { why: f.reason ? <Verbatim from="daemon">{f.reason}</Verbatim> : t('这一项现在不能在这里改') })}
+              : tNode('{why}，这里不改它。', {
+                  why: f.reason ? <Verbatim from="daemon">{f.reason}</Verbatim> : f.mode === 'show' ? t('这一项只显示现在的值') : t('这一项现在不能在这里改'),
+                })}
             {onOpenEditor ? (
               <button className="link" onClick={onOpenEditor}>
                 {t('用编辑器打开')}

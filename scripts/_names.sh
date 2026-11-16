@@ -20,6 +20,23 @@ CAVIL_NAME="cavil-loop"
 cavil_pick_setting() {
     if [ -n "$1" ]; then printf '%s' "$1"; else printf '%s' "$2"; fi
 }
+# 有早期名字的配置项：一行一对「新名字 早期名字」。_lib.sh 按这张表逐项挑值，
+# project-config.sh（客户端的项目配置窗口）按同一张表算显示的值——只在这里写一份。
+CAVIL_SETTING_EARLY_NAMES="LABEL_PENDING_REQUESTER_BOT LABEL_PENDING_RELAY
+REQUESTER_BOT_ACCOUNT RELAY_BOT_ACCOUNT
+REQUESTER_BOT_ALLOWED_ACTORS RELAY_ALLOWED_ACTORS
+REQUESTER_BOT_ORIGIN_MARKER RELAY_ORIGIN_MARKER
+REQUESTER_BOT_REPORT_FIRST RELAY_REPORT_FIRST"
+# 这一项的早期名字（没有就输出空）
+cavil_setting_early_name() {   # <新名字>
+    local n o
+    while read -r n o; do
+        [ "$n" = "$1" ] && { printf '%s' "$o"; return 0; }
+    done <<EOF_EARLY
+$CAVIL_SETTING_EARLY_NAMES
+EOF_EARLY
+    return 0
+}
 CAVIL_LEGACY_NAME="coding-agent-work-loop"
 
 CAVIL_CONFIG_HOME="$HOME/.config/cavil-loop"

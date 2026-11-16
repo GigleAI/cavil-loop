@@ -13,6 +13,7 @@
 #   1. cavil-loop.config.example 里的每个配置项，恰好在 scripts/config-fields.txt（显示）和
 #      tests/config-fields-hidden.txt（不显示，写明原因）其中一处
 #   2. 不显示清单：类别是规定的几种、原因不空、没有重复、每项都在模板里
+#   2b. 显示登记表：只显示的项每行写了自己的原因（第 8 列），可改的项不写（GitHub#554）
 #   3. 检查本身能报错：往模板副本加一项不登记、一项两边都登记、写错类别，都要报出来
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -48,6 +49,13 @@ def rows(path):
         if l.strip() and not l.lstrip().startswith("#"):
             yield [x.strip() for x in l.rstrip("\n").split("|")]
 shown = {r[0] for r in rows(fields)}
+for r in rows(fields):
+    mode = r[4] if len(r) > 4 else ""
+    why = r[7] if len(r) > 7 else ""
+    if mode == "show" and not why:
+        print("只显示的项要写自己的原因（第 8 列）:", r[0])
+    elif mode != "show" and why:
+        print("可改的项不写只显示的原因:", r[0])
 hid = {}
 for r in rows(hidden):
     k = r[0]
@@ -87,6 +95,9 @@ chk "类别写错：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden2")" "不�
 
 cp "$HIDDEN" "$TMP/hidden3"; echo 'GONE_KEY | 待登记 | 测试' >> "$TMP/hidden3"
 chk "清单里有、模板里没有：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden3")" "不显示清单里有、模板里没有: GONE_KEY"
+
+cp "$FIELDS" "$TMP/fields"; sed -i 's/^\(LABEL_PENDING_MERGE |.*\) | 标签名要和仓库里建好的标签一致$/\1/' "$TMP/fields"
+chk "只显示的项没写原因：报出来" "$(guard "$TPL" "$TMP/fields" "$HIDDEN")" "只显示的项要写自己的原因（第 8 列）: LABEL_PENDING_MERGE"
 
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

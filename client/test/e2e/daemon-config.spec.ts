@@ -227,6 +227,61 @@ test('what cannot be changed here has no input: arithmetic and a line inside a c
   expect(lines('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
 });
 
+test('read-only rows sit in their own topic groups, each saying its own reason; the run-log switch follows the daemon\'s rule for an empty line and for a missing one (GitHub#554)', async () => {
+  const { page } = await openSection(() => {
+    const t = readFileSync(config, 'utf8');
+    expect(t).toContain('\nENABLE_POLL_RUN_LOG=true\n');
+    // an empty value: the daemon does not record rounds (only a missing line means "on")
+    writeFileSync(config, t.replace('\nENABLE_POLL_RUN_LOG=true\n', '\nENABLE_POLL_RUN_LOG=""\n'));
+  });
+  await openDialog(page);
+  const groupOf = async (name: string) => (await page.locator('[data-testid=config-group]').filter({ has: row(page, name) }).getAttribute('data-title'))!;
+  expect(await groupOf('LABEL_AUTOPILOT')).toBe('托管（自动合并）');
+  expect(await groupOf('LABEL_PENDING_MERGE')).toBe('托管（自动合并）');
+  expect(await groupOf('AUTOPILOT_OUTSIDER_SCREEN')).toBe('托管（自动合并）');
+  expect(await groupOf('DISPATCH_MODE')).toBe('派工与重试');
+  expect(await groupOf('LABEL_PENDING_REVIEW')).toBe('复审');
+  expect(await groupOf('LABEL_PENDING_BLOCKED')).toBe('等人期间');
+  expect(await groupOf('RETROSPECTIVE_PROMOTION')).toBe('合并后复盘');
+  const titles = await page.getByTestId('config-group').evaluateAll((gs) => gs.map((g) => g.getAttribute('data-title')));
+  expect(titles.filter((x) => x?.includes('只显示'))).toEqual([]);
+  // no shared note above a group's read-only rows any more: each row says why
+  await expect(page.locator('[data-testid=config-group] .pcfg-note')).toHaveCount(0);
+  await expect(row(page, 'LABEL_PENDING_MERGE').getByTestId('config-why')).toContainText('标签名要和仓库里建好的标签一致');
+  await expect(row(page, 'LABEL_PENDING_MERGE').getByTestId('config-readonly')).toHaveText('开，标签 pending/merge');
+  await expect(row(page, 'DISPATCH_MODE').getByTestId('config-why')).toContainText('开着的都派');
+  await expect(row(page, 'AUTOPILOT_OUTSIDER_GUARD').getByTestId('config-readonly')).toHaveText('标出并拦住自动合并（block）');
+  await expect(row(page, 'AUTOPILOT_OUTSIDER_GUARD').getByTestId('config-why')).toContainText('保护模式');
+  for (const name of ['LABEL_PENDING_MERGE', 'AUTOPILOT_OUTSIDER_GUARD', 'RETROSPECTIVE_PROMOTION', 'LABEL_PENDING_REQUESTER_BOT']) {
+    await expect(row(page, name)).toHaveAttribute('data-editable', 'false');
+    await expect(input(page, name)).toHaveCount(0);
+  }
+  // the switches registered here are inputs; the screening switch's "off" is an empty value
+  for (const name of ['ENABLE_USAGE_LIMIT_PAUSE', 'POST_MERGE_RETROSPECTIVE', 'AUTO_RELEASE_MAIN_CHECKOUT', 'SELFHEAL_ONLY_OWN_WORKERS']) {
+    await expect(row(page, name)).toHaveAttribute('data-editable', 'true');
+  }
+  await expect(input(page, 'AUTOPILOT_OUTSIDER_SCREEN')).toHaveAttribute('data-on', 'true');
+  // written as an empty value: off, and it is in the file
+  await expect(input(page, 'ENABLE_POLL_RUN_LOG')).toHaveAttribute('data-on', 'false');
+  await expect(row(page, 'ENABLE_POLL_RUN_LOG').getByTestId('config-absent')).toHaveCount(0);
+  await row(page, 'LABEL_PENDING_MERGE').scrollIntoViewIfNeeded();
+  await shot(page, '7-groups');
+
+  // the screening switch off writes its empty "off" word
+  await input(page, 'AUTOPILOT_OUTSIDER_SCREEN').click();
+  await page.getByTestId('config-save').click();
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
+  expect(lines('AUTOPILOT_OUTSIDER_SCREEN')).toEqual(['AUTOPILOT_OUTSIDER_SCREEN=""']);
+  await page.getByTestId('config-close').click();
+
+  // the line taken out: the daemon records rounds, and the form says the file has no such line
+  writeFileSync(config, readFileSync(config, 'utf8').replace('\nENABLE_POLL_RUN_LOG=""\n', '\n'));
+  await openDialog(page);
+  await expect(input(page, 'ENABLE_POLL_RUN_LOG')).toHaveAttribute('data-on', 'true');
+  await expect(row(page, 'ENABLE_POLL_RUN_LOG').getByTestId('config-absent')).toBeVisible();
+  await expect(input(page, 'AUTOPILOT_OUTSIDER_SCREEN')).toHaveAttribute('data-on', 'false');
+});
+
 test('a config that does not load shows no values at all; "用编辑器打开配置文件" still hands the file to the system', async () => {
   const { page } = await openSection(() => writeFileSync(config, readFileSync(config, 'utf8') + 'if then fi (\n'));
   await page.locator('[data-testid=daemon-project][data-key=widget]').getByTestId('daemon-config').click();

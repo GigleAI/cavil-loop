@@ -381,6 +381,8 @@ export function valueWords(f: ConfigField, v: string): Words {
   if (f.type === 'bool') return v === f.on ? { zh: zhKey('开||开关') } : v === f.off ? { zh: zhKey('关||开关') } : as(v);
   if (f.type === 'enum') {
     const o = (f.options ?? []).find((x) => x.value === v);
+    // an option whose value is empty ("off" written as an empty line): its label alone
+    if (o && o.label && v === '') return as(o.label);
     return o && o.label && o.label !== v ? { zh: zhKey('{label}（{v}）'), params: { label: o.label, v }, outside: { label: 'daemon', v: 'daemon' } } : as(v);
   }
   return v === '' ? { zh: zhKey('（空）') } : as(v);

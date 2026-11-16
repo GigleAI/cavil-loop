@@ -25,29 +25,21 @@ LABEL_PENDING_AGENT | 待登记 | 还没核对默认值、补对拍
 LABEL_PENDING_AGENT_FABLE | 待登记 | 还没核对默认值、补对拍
 FABLE_WORKER_AGENT | 待登记 | 还没核对默认值、补对拍
 FABLE_MODEL | 待登记 | 还没核对默认值、补对拍
-SELFHEAL_ONLY_OWN_WORKERS | 待登记 | 还没核对默认值、补对拍
 LABEL_PENDING_AGENT_EXTRA | 待登记 | 还没核对默认值、补对拍
-LABEL_PENDING_MERGE | 待登记 | 还没核对默认值、补对拍
 AUTOPILOT_MERGE_METHOD | 待登记 | 还没核对默认值、补对拍
 AUTOPILOT_CHECKS_TIMEOUT_HOURS | 待登记 | 还没核对默认值、补对拍
 AUTOPILOT_HUMAN_PATHS | 目录 | 托管合并前要人看的路径，放宽它等于放宽自动合并
-AUTOPILOT_OUTSIDER_GUARD | 待登记 | 还没核对默认值、补对拍
-AUTOPILOT_OUTSIDER_SCREEN | 待登记 | 还没核对默认值、补对拍
 AUTOPILOT_OUTSIDER_SCREEN_CMD | 命令 | 窗口里能填就等于能在本机跑任意命令
 TRUSTED_REPOS | 名字 | 账号名，决定信任谁
-ENABLE_USAGE_LIMIT_PAUSE | 待登记 | 还没核对默认值、补对拍
 USAGE_LIMIT_FALLBACK_SECS | 待登记 | 还没核对默认值、补对拍
-REDACT_AGENT_RECORDS | 待登记 | 还没核对默认值、补对拍
-CODEX_SHELL_SNAPSHOT | 待登记 | 还没核对默认值、补对拍
+REDACT_AGENT_RECORDS | 令牌 | 令牌防泄漏的开关，维护者决定不在窗口里显示和修改（#550）
+CODEX_SHELL_SNAPSHOT | 令牌 | 令牌防泄漏的开关，维护者决定不在窗口里显示和修改（#550）
 HEAVY_TEST_COMMANDS | 命令 | 窗口里能填就等于能在本机跑任意命令
 HEAVY_TEST_LOCK_WAIT | 待登记 | 还没核对默认值、补对拍
 HEAVY_TEST_SCOPE_PROPERTIES | 命令 | systemd 属性，能改测试进程的运行方式
-LABEL_PENDING_REQUESTER_BOT | 待登记 | 还没核对默认值、补对拍
 REQUESTER_BOT_ACCOUNT | 名字 | 账号名，决定信任谁
 REQUESTER_BOT_ALLOWED_ACTORS | 名字 | 账号名，决定信任谁
 REQUESTER_BOT_ORIGIN_MARKER | 名字 | 识别外部机器人请求的标记文字
-REQUESTER_BOT_REPORT_FIRST | 待登记 | 还没核对默认值、补对拍
-REQUESTER_BOT_WAKE_ANY_ITEM | 待登记 | 还没核对默认值、补对拍
 REQUESTER_BOT_WEBHOOK_URL | 网址 | 数据会发到这个地址
 REQUESTER_BOT_WEBHOOK_KEY_HEADER | 令牌 | 凭据所在的请求头名
 REQUESTER_BOT_WEBHOOK_KEY | 令牌 | 凭据本身
@@ -65,9 +57,6 @@ CODEX_EXTRA_FLAGS | 命令 | 命令行参数，能改 agent 程序的启动方�
 WORKER_PASS_ENV | 令牌 | 决定哪些环境变量（含凭据）带进 worker
 WORKER_SECRET_ENV | 令牌 | 决定哪些环境变量（含凭据）带进 worker
 PENDING_HUMAN_CONFLICT_MAX_TRIES | 待登记 | 还没核对默认值、补对拍
-POST_MERGE_RETROSPECTIVE | 待登记 | 还没核对默认值、补对拍
-RETROSPECTIVE_PROMOTION | 待登记 | 还没核对默认值、补对拍
-RETROSPECTIVE_DIRECTORY_LESSONS | 待登记 | 还没核对默认值、补对拍
 POST_RETROSPECTIVE_PROJECT_CMD | 命令 | 窗口里能填就等于能在本机跑任意命令
 CLEANUP_HOOK | 钩子 | 指向本机脚本，窗口里能填就等于能跑任意程序
 PREVIEW_EXEC | 命令 | 窗口里能填就等于能在本机跑任意命令
@@ -76,7 +65,6 @@ PREVIEW_PORT_MODULO | 待登记 | 还没核对默认值、补对拍
 PREVIEW_BACKEND_OFFSET | 待登记 | 还没核对默认值、补对拍
 PREVIEW_IDLE | 待登记 | 还没核对默认值、补对拍
 PREVIEW_READY_TIMEOUT | 待登记 | 还没核对默认值、补对拍
-PREVIEW_TAILSCALE_SERVE | 待登记 | 还没核对默认值、补对拍
 PREVIEW_URL_HOST | 网址 | 对外给出的预览地址
 PR_CREATED_HOOK | 钩子 | 指向本机脚本，窗口里能填就等于能跑任意程序
 GREEDY_SKIP_LABELS | 待登记 | 还没核对默认值、补对拍
@@ -90,13 +78,11 @@ PROJECT_GH_TOKEN | 令牌 | 凭据本身
 AUTO_ADD_PROJECTS | 名字 | GitHub Projects / 工作流的名字
 CI_FAILURE_REPORT_WORKFLOWS | 名字 | GitHub Projects / 工作流的名字
 CI_FAILURE_REPORT_BRANCH | 待登记 | 还没核对默认值、补对拍
-CI_FAILURE_REPORT_DISPATCH | 待登记 | 还没核对默认值、补对拍
 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | 待登记 | 还没核对默认值、补对拍
 POLL_INTERVAL_SECS | 待登记 | 还没核对默认值、补对拍
 POLL_BACKOFF_LADDER | 待登记 | 还没核对默认值、补对拍
 POLL_FORCE_SYNC_SECS | 待登记 | 还没核对默认值、补对拍
 POLL_IDLE_PROBE_MAX_SECS | 待登记 | 还没核对默认值、补对拍
-ENABLE_POLL_RUN_LOG | 待登记 | 还没核对默认值、补对拍
 POLL_RUN_LOG_ROUNDS | 待登记 | 还没核对默认值、补对拍
 POLL_RUN_LOG_SNAPSHOTS | 待登记 | 还没核对默认值、补对拍
 POLL_RUN_LOG_INFLIGHT | 待登记 | 还没核对默认值、补对拍
@@ -104,5 +90,3 @@ POLL_RUN_LOG_SLOW_SECS | 待登记 | 还没核对默认值、补对拍
 POLL_FAIL_BACKOFF_MAX_SECS | 待登记 | 还没核对默认值、补对拍
 POLL_DUE_SLACK_SECS | 待登记 | 还没核对默认值、补对拍
 CHECKOUT_STALE_ALERT_COMMITS | 待登记 | 还没核对默认值、补对拍
-AUTO_RELEASE_MAIN_CHECKOUT | 待登记 | 还没核对默认值、补对拍
-LATEST_SITE_REFRESH | 待登记 | 还没核对默认值、补对拍

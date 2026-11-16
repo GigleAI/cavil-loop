@@ -131,15 +131,28 @@ OS="$(uname -s 2>/dev/null || true)"
 RUN_BASH="$(cavil_bash_bin "$OS")"
 
 # ── 登记表 ──
-F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_MODE=(); F_LABEL=(); F_HELP=()
+# F_DEF = 不写这一行时的值；F_EMPTY = 写成空值时的值（登记成「默认;empty=值」的项和默认值不同，其余同默认值）；
+# F_WHY = 只显示的原因（show 行的第 8 列）
+F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_EMPTY=(); F_MODE=(); F_LABEL=(); F_HELP=(); F_WHY=()
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 [ -r "$FIELDS_FILE" ] || fail unreadable "找不到登记表 $FIELDS_FILE" 2
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 <<<"$line"
-    F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")"); F_DEF+=("$(trim "$c4")")
-    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")")
+    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 c8 <<<"$line"
+    c4="$(trim "$c4")"
+    case "$c4" in
+        *';empty='*) F_DEF+=("${c4%%;empty=*}"); F_EMPTY+=("${c4#*;empty=}") ;;
+        *) F_DEF+=("$c4"); F_EMPTY+=("$c4") ;;
+    esac
+    F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
+    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
 done < "$FIELDS_FILE"
+# F_EARLY = 这一项的早期名字（_names.sh 的 CAVIL_SETTING_EARLY_NAMES，daemon 加载时按同一张表挑值），没有就是空
+F_EARLY=()
+for __k in "${F_NAME[@]}"; do F_EARLY+=("$(cavil_setting_early_name "$__k")"); done
+# 加载时一起读的早期名字：和 F_NAME 同下标，没有早期名字的位置放一个配置里不会有的名字（读出来一定是没设置）
+EARLY_LOAD=()
+for __k in "${F_EARLY[@]}"; do EARLY_LOAD+=("${__k:-__pc_no_early_name}"); done
 field_index() {   # <KEY> → 下标；没有返回 1
     local i
     for i in "${!F_NAME[@]}"; do [ "${F_NAME[$i]}" = "$1" ] && { printf '%s' "$i"; return 0; }; done
@@ -167,7 +180,7 @@ load_values() {
             else printf "%s\0000\000\000" "$__pc_k"; fi
         done
         printf "%s\000%s\000" "${STATE_DIR:-}" "__pc_end__"
-    ' _ "$1" "$HOST" "${F_NAME[@]}"
+    ' _ "$1" "$HOST" "${F_NAME[@]}" "${EARLY_LOAD[@]}"
 }
 # dump_vars <配置文件> [不算在内的变量名...]：加载后的全部变量和函数（去掉 bash 自己会变的那些）
 dump_vars() {
@@ -213,35 +226,49 @@ $__pc_src
 #                            printf -v / for KEY in / ${KEY:=…} / unset / 写在一行里的 if、函数体、a && KEY=…
 #                            都会提到这个名字，一处都不能漏看
 #   top_level_assign <KEY>   规范格式里有一行恰好缩进 4 格、以 KEY= 开头
+# 输出有几行（命令替换去掉了末尾换行：空 = 0 行，否则 = 换行数 + 1）。在 bash 里数，不另起 wc：
+# 每个登记项都要数几次，进程数跟着登记项一起涨（GitHub#554 登记到 45 项后读一次慢了一倍）
+line_count() {   # <文本>
+    local nl
+    if [ -z "$1" ]; then printf 0; return 0; fi
+    nl="${1//[!$'\n']/}"; printf '%s' "$(( ${#nl} + 1 ))"
+}
 mentions() {
-    { printf '%s\n' "$NORM" | grep -ow -- "$1" || true; } | wc -l | tr -d ' '
+    line_count "$(printf '%s\n' "$NORM" | grep -ow -- "$1" || true)"
 }
 top_level_assign() {
     printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
 }
 
-# daemon 实际用的值：各处读这些配置项都是「没设置或为空 → 默认值」（${X:-默认}），这里同一条规则。
-# 例外是 label 类型：标签开关读的是 ${X-默认}（GitHub#551），只有「没设置」才取默认，写成空值 = 关，显示为空。
+# daemon 实际用的值：有值 → 它；没有值但早期名字有值 → 早期名字的值（_lib.sh 用 cavil_pick_setting
+# 挑，这里调的是同一个函数）；没设置 → 默认值；为空 → 写成空值时的值（多数项读的是 ${X:-默认}，两者相同；
+# 少数项读的是 ${X-默认}，空值有自己的意思，登记成「默认;empty=值」——例如等前置、暂缓两个标签
+# （GitHub#551：不写 = 开，写成空值 = 关）。按项登记、不按类型：同是标签的「等合并」读的是 ${X:-默认}，空值仍是默认标签）。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
 effective() {   # <下标>
-    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"
-    elif [ "${F_TYPE[$1]}" = label ] && [ "${V_SET[$1]}" = 1 ]; then printf ''
+    local picked
+    picked="$(cavil_pick_setting "${V_VAL[$1]}" "${V_EARLY_VAL[$1]}")"
+    if [ -n "$picked" ]; then printf '%s' "$picked"
+    elif [ "${V_SET[$1]}" = 1 ]; then printf '%s' "${F_EMPTY[$1]}"
     else printf '%s' "${F_DEF[$1]}"; fi
 }
 
-V_SET=(); V_VAL=(); STATE_DIR_VAL=""
-read_values() {   # <配置文件> → 填 V_SET / V_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
-    local parts=() p i=0 n=${#F_NAME[@]}
+V_SET=(); V_VAL=(); V_EARLY_SET=(); V_EARLY_VAL=(); STATE_DIR_VAL=""
+read_values() {   # <配置文件> → 填 V_SET / V_VAL / V_EARLY_SET / V_EARLY_VAL（和 F_NAME 同下标）、STATE_DIR_VAL；失败返回 1
+    local parts=() p i=0 n=${#F_NAME[@]} m
+    m=$((n * 2))
     while IFS= read -r -d '' p; do parts+=("$p"); done < <(load_values "$1" || true)
-    [ "${#parts[@]}" -eq $((n * 3 + 2)) ] || return 1
-    [ "${parts[$((n * 3 + 1))]}" = "__pc_end__" ] || return 1
-    V_SET=(); V_VAL=()
+    [ "${#parts[@]}" -eq $((m * 3 + 2)) ] || return 1
+    [ "${parts[$((m * 3 + 1))]}" = "__pc_end__" ] || return 1
+    V_SET=(); V_VAL=(); V_EARLY_SET=(); V_EARLY_VAL=()
     while [ "$i" -lt "$n" ]; do
         [ "${parts[$((i * 3))]}" = "${F_NAME[$i]}" ] || return 1
+        [ "${parts[$(((n + i) * 3))]}" = "${EARLY_LOAD[$i]}" ] || return 1
         V_SET+=("${parts[$((i * 3 + 1))]}"); V_VAL+=("${parts[$((i * 3 + 2))]}")
+        V_EARLY_SET+=("${parts[$(((n + i) * 3 + 1))]}"); V_EARLY_VAL+=("${parts[$(((n + i) * 3 + 2))]}")
         i=$((i + 1))
     done
-    STATE_DIR_VAL="${parts[$((n * 3))]}"
+    STATE_DIR_VAL="${parts[$((m * 3))]}"
 }
 
 # ── 一个配置项在文件里是怎么写的 ──
@@ -255,6 +282,19 @@ inspect_field() {   # <配置文件> <下标>
     if [ "$NORM_OK" != 1 ]; then
         W_WHY="读不出配置文件的结构，判断不了这一项能不能安全地改"; return 0
     fi
+    # 用到了这一项的早期名字：daemon 照样认（新名字没有值时用它），但在这里写新名字会让两个名字并存、
+    # 值还可能互相矛盾。两份证据任一成立都只显示：配置的代码里提到了它（没执行的分支、unset 也算），
+    # 或者加载完它有定义（不管来自哪里——配置加载的另一个文件、运行时拼出来的名字，这里都看不到文字）
+    if [ -n "${F_EARLY[$i]}" ]; then
+        if [ "$(mentions "${F_EARLY[$i]}")" != 0 ]; then
+            W_WHY="配置文件里写的是这一项的早期名字 ${F_EARLY[$i]}（daemon 照样认）；在文件里把它改成 ${k} 后才能在这里改"
+            return 0
+        fi
+        if [ "${V_EARLY_SET[$i]}" = 1 ]; then
+            W_WHY="配置加载后有这一项的早期名字 ${F_EARLY[$i]}（不在这份文件里，可能来自它加载的另一个文件；daemon 照样认）；把那里改成 ${k} 后才能在这里改"
+            return 0
+        fi
+    fi
     m="$(mentions "$k")"
     # 整份配置的代码里一次都没提到这个名字，加载后也确实没有值：才算「没有这一行」，可以追加
     if [ "$m" = 0 ]; then
@@ -263,7 +303,7 @@ inspect_field() {   # <配置文件> <下标>
         return 0
     fi
     hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
-    count=0; [ -z "$hits" ] || count="$(printf '%s\n' "$hits" | wc -l | tr -d ' ')"
+    count="$(line_count "$hits")"
     if [ "$count" -gt 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
     # 不是「单独一行、在最外层的赋值」：写在 if / 循环 / case / 函数 / { } 组里（一行写完的也算）、
     # 接在别的命令后面，或者是 export / declare / read 这类别的写法。看结构，不看缩进
@@ -324,18 +364,17 @@ valid_value() {   # <类型> <值>
 }
 
 # 类型 → 客户端画表单要的那部分 JSON
-type_json() {   # <类型>
-    local type="$1" lo hi
-    case "$type" in
-        agent) jq -cn '{type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}' --args ${AGENTS[@]+"${AGENTS[@]}"} ;;
-        int:*) lo="${type#int:}"; hi="${lo#*:}"; lo="${lo%%:*}"
-               jq -cn --argjson lo "$lo" --argjson hi "$hi" '{type:"int", min:$lo, max:$hi}' ;;
-        bool:*) lo="${type#bool:}"; hi="${lo#*:}"; lo="${lo%%:*}"
-                jq -cn --arg on "$lo" --arg off "$hi" '{type:"bool", on:$on, off:$off}' ;;
-        enum:*) jq -cn --arg o "${type#enum:}" '{type:"enum", options:[$o | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}' ;;
-        *) jq -cn --arg t "$type" '{type:$t}' ;;
-    esac
-}
+# 一个登记项的类型 → JSON 里的 type 和它带的字段。agent 的选项是 $ARGS.positional（daemon 自带的 agent）。
+# int:下限:上限 / bool:开的值:关的值 都在第一个冒号处分开，和 valid_value 一致
+TYPE_JQ='def type_json($t):
+    def after($p): $t[($p | length):];
+    def head($s): if ($s | index(":")) == null then $s else $s[:($s | index(":"))] end;
+    def tail($s): if ($s | index(":")) == null then $s else $s[(($s | index(":")) + 1):] end;
+    if $t == "agent" then {type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}
+    elif $t | startswith("int:") then after("int:") as $r | {type:"int", min:(head($r) | tonumber), max:(tail($r) | tonumber)}
+    elif $t | startswith("bool:") then after("bool:") as $r | {type:"bool", on:head($r), off:tail($r)}
+    elif $t | startswith("enum:") then {type:"enum", options:[after("enum:") | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}
+    else {type:$t} end;'
 
 # ════════════════ get ════════════════
 if [ "$MODE" = get ]; then
@@ -354,17 +393,22 @@ if [ "$MODE" = get ]; then
             elif valid_value "${F_TYPE[$i]}" "$value"; then editable=true
             else why="现在的值不是这里能改的写法（${BAD_WHY}）"; fi
         else
-            why=""
+            why="${F_WHY[$i]}"
         fi
-        fields+=("$(jq -cn --arg name "${F_NAME[$i]}" --arg group "${F_GROUP[$i]}" --arg mode "${F_MODE[$i]}" \
-            --arg label "${F_LABEL[$i]}" --arg help "${F_HELP[$i]}" --arg value "$value" --arg def "${F_DEF[$i]}" \
-            --argjson in_file "$in_file" --argjson editable "$editable" --arg why "$why" \
-            --argjson t "$(type_json "${F_TYPE[$i]}")" \
-            '{name:$name, group:$group, mode:$mode, label:$label, help:$help, value:$value, default:$def,
-              in_file:$in_file, editable:$editable, reason:(if $why == "" then null else $why end)} + $t')")
+        # 每项 11 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
+        fields+=("${F_NAME[$i]}" "${F_GROUP[$i]}" "${F_MODE[$i]}" "${F_LABEL[$i]}" "${F_HELP[$i]}" "$value" \
+            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}")
     done
-    printf '%s\n' "${fields[@]}" | jq -s --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
-        '{version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.}'
+    # --rawfile 整份读进一个字符串：jq -R 从管道分块读时会把一个多字节字符切在两块之间，读成乱码（jq 1.7 实测）
+    jq -n --rawfile raw <(printf '%s\0' "${fields[@]}") --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
+        "$TYPE_JQ"'
+        ($raw | split("\u0000") | .[:-1]) as $f
+        | [range(0; $f | length; 11) as $i | $f[$i:$i + 11]
+           | {name:.[0], group:.[1], mode:.[2], label:.[3], help:.[4], value:.[5], default:.[6],
+              in_file:(.[7] == "true"), editable:(.[8] == "true"), reason:(if .[9] == "" then null else .[9] end)}
+             + type_json(.[10])]
+        | {version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.}' \
+        --args ${AGENTS[@]+"${AGENTS[@]}"}
     exit 0
 fi
 
