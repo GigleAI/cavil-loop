@@ -477,9 +477,11 @@ cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
     echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
 }
 if ! compat_skip "开关关掉时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    # 改动前的那份也写同一行：#548 之前的脚本不认这一项，等于不写；合并基线已带 #548 时
+    # （之后的 PR 都是），不写就等于开着，比的就该是两版在同一行开关下的行为
     for sc in only mix; do
-        old=$(cmp_run "$SANDBOX/old" "" "$sc")
         for line in 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="of"'; do
+            old=$(cmp_run "$SANDBOX/old" "$line" "$sc")
             new=$(cmp_run "$REPO_DIR" "$line" "$sc")
             chk "场景 $sc，$line → 和改动前一样" "$([ -n "$new" ] && [ "$old" = "$new" ] && echo same || echo differ)" same
             [ "$old" = "$new" ] || [ -z "${KEEP_SANDBOX:-}" ] || { printf '%s\n' "$old" > "$SANDBOX/ex-$sc.old"; printf '%s\n' "$new" > "$SANDBOX/ex-$sc.new"; }
