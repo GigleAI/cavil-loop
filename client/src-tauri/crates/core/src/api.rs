@@ -174,6 +174,9 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
         // daemon's own project-config.sh, which decides where the file is and what may be changed
         "daemonConfigGet" => Ok(e.daemon().config_get(s(&a, "key")?).await),
         "daemonConfigSet" => Ok(e.daemon().config_set(s(&a, "key")?, s(&a, "rev")?, a.get("values").unwrap_or(&Value::Null)).await),
+        // 「改名…」 on a flow label (GitHub#569): the daemon's own label-rename.sh renames it on GitHub and in the
+        // config; the back end checks the command word and every value first
+        "daemonLabelRename" => Ok(e.daemon().label_rename(s(&a, "key")?, s(&a, "cmd")?, &a).await),
         // "接上 daemon" from the repository list (GitHub#315): the window names a repository, an agent and a folder;
         // the back end checks each of them again and runs the daemon's own setup.sh
         "daemonConnectInfo" => Ok(e.daemon().connect_info(s(&a, "repo")?).await),

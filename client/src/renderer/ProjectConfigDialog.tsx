@@ -45,6 +45,8 @@ import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim, verbatimParts } from './Verbatim';
 import { BackendText, WordsText } from './WordsText';
+import { LabelFollowDialog, LabelRenameDialog } from './LabelRenameDialog';
+import { credentialText, pendingOf } from '../shared/labelRename';
 
 type Phase =
   | { at: 'loading' }
@@ -87,6 +89,8 @@ export function ProjectConfigDialog({
   const [phase, setPhase] = useState<Phase>({ at: 'loading' });
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [kept, setKept] = useState(false);
+  /** GitHub#569: the flow label whose 「改名…」 / 「跟进另一台的改名…」 dialog is open */
+  const [renaming, setRenaming] = useState<{ f: ConfigField; mode: 'rename' | 'follow'; prefill: string } | null>(null);
   const alive = useRef(true);
   const box = useRef<HTMLDivElement>(null);
 
@@ -136,6 +140,32 @@ export function ProjectConfigDialog({
     if (!alive.current) return;
     setPhase({ at: 'done', config: c, sent, result });
     if (saveKind(result.result) !== 'not_written' && saveKind(result.result) !== 'conflict') onSaved();
+  };
+
+  // GitHub#569: 「改名…」 on a flow label — only for this computer's daemon, only when no rename of this project is unfinished
+  const pending = config ? pendingOf(config.label_rename) : null;
+  const renameOffer = (f: ConfigField): RenameOffer => {
+    if (!f.rename) return null;
+    if (remote) return { ok: false, why: t('请在那台机器的客户端里改名') };
+    if (!f.rename.ok) return f.rename.reason ? { ok: false, why: f.rename.reason, daemon: true } : { ok: false, why: t('这一项现在不能改名') };
+    if (pending) return { ok: false, why: t('这个项目有一次改名还没做完，先在窗口顶上的提示里把它处理完') };
+    if (!project.repo) return { ok: false, why: t('仓库读不出') };
+    if (changed > 0) return { ok: false, why: t('先保存或取消这里的其他修改') };
+    return { ok: true, why: null };
+  };
+  const openRename = async (f: ConfigField, mode: 'rename' | 'follow') => {
+    let prefill = '';
+    if (mode === 'follow') {
+      // a rename this client did for the same repository: its credential is filled in
+      try {
+        const snap = await api().get();
+        const done = [...(snap.state.renameJobs ?? [])].reverse().find((j) => j.status === 'done' && j.mode === 'rename' && j.field === f.name && j.repo.toLowerCase() === (project.repo ?? '').toLowerCase() && j.labelId);
+        if (done) prefill = credentialText({ repo: done.repo, field: done.field, from: done.from, to: done.to, labelId: done.labelId });
+      } catch {
+        // nothing to fill in
+      }
+    }
+    if (alive.current) setRenaming({ f, mode, prefill });
   };
 
   const dirty = phase.at === 'form' && changed > 0;
@@ -190,6 +220,8 @@ export function ProjectConfigDialog({
           )}
         </div>
 
+        {config && (phase.at === 'form' || phase.at === 'saving') && <RenameStateBanner config={config} />}
+
         {phase.at === 'loading' && (
           <div className="pcfg-body">
             <p className="muted small" data-testid="config-loading">
@@ -229,7 +261,15 @@ export function ProjectConfigDialog({
                   <Verbatim from="daemon">{g.title}</Verbatim>
                 </div>
                 {g.fields.map((f) => (
-                  <Row key={f.name} f={f} draft={draft[f.name]} onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))} onOpenEditor={remote ? undefined : onOpenEditor} />
+                  <Row
+                    key={f.name}
+                    f={f}
+                    draft={draft[f.name]}
+                    onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))}
+                    onOpenEditor={remote ? undefined : onOpenEditor}
+                    rename={renameOffer(f)}
+                    onRename={(mode) => void openRename(f, mode)}
+                  />
                 ))}
               </div>
             ))}
@@ -239,6 +279,32 @@ export function ProjectConfigDialog({
         )}
 
         {phase.at === 'done' && <Done phase={phase} project={project} status={status} remote={remote?.name} />}
+        {renaming && config && renaming.mode === 'rename' && (
+          <LabelRenameDialog
+            project={project}
+            config={config}
+            field={renaming.f}
+            status={status}
+            onClose={() => setRenaming(null)}
+            onStarted={() => {
+              setRenaming(null);
+              void load();
+            }}
+          />
+        )}
+        {renaming && config && renaming.mode === 'follow' && (
+          <LabelFollowDialog
+            project={project}
+            config={config}
+            field={renaming.f}
+            prefill={renaming.prefill}
+            onClose={() => setRenaming(null)}
+            onStarted={() => {
+              setRenaming(null);
+              void load();
+            }}
+          />
+        )}
 
         {kept && dirty && (
           <div className="small warn-text pcfg-kept" data-testid="dialog-esc-hint">
@@ -315,7 +381,58 @@ export function ProjectConfigDialog({
   );
 }
 
-function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: string | undefined; onChange: (v: string) => void; onOpenEditor?: () => void }) {
+/** GitHub#569: 「改名…」 on a row — null: not a flow label that can be renamed; ok false: shown greyed with why */
+type RenameOffer = { ok: boolean; why: string | null; daemon?: boolean } | null;
+
+function RenameStateBanner({ config }: { config: ProjectConfig }) {
+  const lr = config.label_rename;
+  const pending = pendingOf(lr);
+  const watch = lr?.state === 'ok' ? lr.watch : null;
+  if (!pending && !watch) return null;
+  return (
+    <div className="pcfg-body rename-state" data-testid="config-rename-state">
+      {pending && (
+        <div className="banner warn" data-testid="config-rename-pending">
+          <Icon name="warn" />
+          <div className="banner-text">
+            {pending === 'unreadable'
+              ? t('这个项目有一条流程标签改名记录，但读不了：daemon 暂停这个项目。在窗口顶上的提示里处理。')
+              : tNode('这个项目有一次流程标签改名还没做完（{field}：{from} → {to}）：daemon 暂停这个项目。在窗口顶上的提示里处理。', {
+                  field: <Verbatim from="daemon">{pending.field}</Verbatim>,
+                  from: <Verbatim from="daemon">{pending.from}</Verbatim>,
+                  to: <Verbatim from="daemon">{pending.to}</Verbatim>,
+                })}
+          </div>
+        </div>
+      )}
+      {watch && (
+        <div className="banner info" data-testid="config-rename-watch">
+          <div className="banner-text">
+            {watch === 'unreadable'
+              ? t('标签核对记录读不了：daemon 这一轮不动手。')
+              : tNode('改名时有过没回音的请求：daemon 每轮先核对标签 {name} 再干活，直到在提示里点「结束核对」。', { name: <Verbatim from="daemon">{watch.name}</Verbatim> })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Row({
+  f,
+  draft,
+  onChange,
+  onOpenEditor,
+  rename,
+  onRename,
+}: {
+  f: ConfigField;
+  draft: string | undefined;
+  onChange: (v: string) => void;
+  onOpenEditor?: () => void;
+  rename?: RenameOffer;
+  onRename?: (mode: 'rename' | 'follow') => void;
+}) {
   const editable = canEdit(f);
   const value = draft ?? f.value;
   const changed = editable && value !== f.value;
@@ -355,7 +472,25 @@ function Row({ f, draft, onChange, onOpenEditor }: { f: ConfigField; draft: stri
         )}
         {/* every row that is not an input says why, its own reason (GitHub#554): a "show" row's comes from
             scripts/config-fields.txt; an older daemon sends none */}
-        {!editable && (
+        {!editable && rename && f.reason && (
+          <span className="muted small" data-testid="config-why">
+            <Verbatim from="daemon">{f.reason}</Verbatim>
+          </span>
+        )}
+        {!editable && rename && (
+          <span className="muted small pcfg-rename" data-testid="config-rename" data-ok={String(rename.ok)}>
+            <button className="link" data-testid="config-rename-open" disabled={!rename.ok} title={rename.why ?? undefined} {...verbatimParts('daemon', rename.daemon && rename.why ? [rename.why] : [])} onClick={() => onRename?.('rename')}>
+              {t('改名…')}
+            </button>
+            <button className="link" data-testid="config-follow-open" disabled={!rename.ok} title={rename.why ?? t('另一台机器已经在 GitHub 上改了这个标签的名字时用')} {...verbatimParts('daemon', rename.daemon && rename.why ? [rename.why] : [])} onClick={() => onRename?.('follow')}>
+              {t('跟进另一台的改名…')}
+            </button>
+            {rename.why && (
+              <span data-testid="config-rename-why">{rename.daemon ? <Verbatim from="daemon">{rename.why}</Verbatim> : rename.why}</span>
+            )}
+          </span>
+        )}
+        {!editable && !rename && (
           <span className="muted small" data-testid="config-why">
             {f.mode === 'edit' && f.editable
               ? t('这个客户端还不认识这种设置，这里不改它。')

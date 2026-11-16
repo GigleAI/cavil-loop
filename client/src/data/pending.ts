@@ -33,6 +33,7 @@
 
 import type { Item, NotifyScope, SourceSnapshot } from '../shared/types';
 import { mergeSnapshots } from './merge';
+import { labelAt, type LabelFor } from './loopBlocked';
 import { t } from '../shared/i18n';
 
 
@@ -112,7 +113,8 @@ export class PendingTracker {
   private alert = new Map<string, Item>();
 
   constructor(
-    private label: string = DEFAULT_PENDING_LABEL,
+    /** GitHub#569: one name, or each item's repository's name (shared/repoLabels.ts handBackFor) */
+    private label: LabelFor = DEFAULT_PENDING_LABEL,
     private audience: Audience = { scope: 'all', viewer: null },
   ) {}
 
@@ -137,7 +139,7 @@ export class PendingTracker {
    * Another label name: recompute every baselined source from the snapshots
    * already held, silently (a settings change is not "new work arrived").
    */
-  relabel(label: string, snapshots: Map<string, SourceSnapshot>): void {
+  relabel(label: LabelFor, snapshots: Map<string, SourceSnapshot>): void {
     this.label = label;
     for (const k of [...this.bySource.keys()]) {
       const snap = snapshots.get(k);
@@ -216,7 +218,7 @@ export class PendingTracker {
 
   private pendingOf(snap: SourceSnapshot): Map<string, Item> {
     const out = new Map<string, Item>();
-    for (const it of snap.items) if (isPending(it, this.label)) out.set(it.key, it);
+    for (const it of snap.items) if (isPending(it, labelAt(this.label, it.repo))) out.set(it.key, it);
     return out;
   }
 

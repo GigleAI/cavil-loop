@@ -3,6 +3,7 @@
 // read, what is written and every check before a write are the controller's (blockedRead /
 // blockedSearch / blockedStart), the rules shared/blocked.ts.
 
+import { blockedLabelsFor, handBackFor } from '../shared/repoLabels';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -186,7 +187,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
   const plan = view?.ok && !view.refuse ? planBlocked({ itemIsPr: view.isPr, selfRepo: item.repo, entry: view.entry, latest: view.latest, native: view.native, picks, restore: restoreRefs }) : null;
   // one rule with the controller: something new, or a registration stopped half way to finish
   const blockWhy = view?.ok && plan ? confirmBlock({ picks: picks.length, restore: restoreRefs.length, current: view.current.length, plan }) : null;
-  const lines = plan && !blockWhy ? planLines(plan, item.repo, { human: state.handBack.human, blocked: state.blockedLabels.blocked }) : [];
+  const lines = plan && !blockWhy ? planLines(plan, item.repo, { human: handBackFor(state, item.repo).human, blocked: blockedLabelsFor(state, item.repo).blocked }) : [];
   const paused = view?.ok && view.entry.kind === 'paused';
 
   const confirm = async () => {
@@ -221,7 +222,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     >
       <div className="blocked-dialog" data-testid="blocked-dialog">
         <div className="small muted">
-          {tNode('前置全部完成（issue 以「已完成」关闭、PR 已合并）后，daemon 把本条翻回「{label}」接着干。', { label: <Verbatim from="user">{state.handBack.agent}</Verbatim> })}
+          {tNode('前置全部完成（issue 以「已完成」关闭、PR 已合并）后，daemon 把本条翻回「{label}」接着干。', { label: <Verbatim from="user">{handBackFor(state, item.repo).agent}</Verbatim> })}
         </div>
         {warn && (
           <div className="warn-text" data-testid="blocked-warn">
@@ -244,7 +245,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
             {view.refuse && view.missingLabels && <LabelSetupBox repo={view.repo} wants={view.missingLabels} state={state} onReread={() => setRound((x) => x + 1)} testid="blocked-labels" />}
             {paused && (
               <div className="warn-text" data-testid="blocked-paused">
-                {tNode('这一条正暂停在等前置里（同时挂着「{label}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。', { label: <Verbatim from="user">{state.handBack.human}</Verbatim> })}
+                {tNode('这一条正暂停在等前置里（同时挂着「{label}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。', { label: <Verbatim from="user">{handBackFor(state, item.repo).human}</Verbatim> })}
               </div>
             )}
             <div className="blocked-sec">

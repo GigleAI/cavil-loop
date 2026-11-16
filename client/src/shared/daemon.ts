@@ -5,6 +5,7 @@
 // program — it never decides on its own which programs are needed.
 
 import { getLang, t, translate, zhKey, type Params, type VerbatimSource } from './i18n';
+import type { RenameState } from './labelRename';
 export type SchedState = 'running' | 'stopped' | 'unknown';
 
 export interface DaemonAgent {
@@ -316,6 +317,8 @@ export interface ConfigField {
   in_file: boolean;
   editable: boolean;
   reason: string | null;
+  /** GitHub#569: a flow label that 「改名…」 may rename (absent: not one of those, or a daemon from before) */
+  rename?: { ok: boolean; reason: string | null };
 }
 
 export interface ProjectConfig {
@@ -327,6 +330,8 @@ export interface ProjectConfig {
   /** fingerprint of the file as read; a save names it and is refused when the file is another one by then */
   rev: string;
   fields: ConfigField[];
+  /** GitHub#569: a rename of this project not finished, and the label check after one (absent: a daemon from before) */
+  label_rename?: RenameState;
 }
 
 export interface ConfigRead extends DaemonResult {

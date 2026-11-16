@@ -26,6 +26,7 @@ import { Verbatim, verbatimParts } from './Verbatim';
 import { noteOf, PasteImageNotice, ResultBanner, type ResultNote } from './DetailPanel';
 import { LabelPicker } from './LabelPicker';
 import { pinnedLabels } from '../shared/pickOrder';
+import { handBackFor } from '../shared/repoLabels';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon } from './Icons';
 import { isImageOnlyPaste, newIssueOnWeb } from './pasteImage';
@@ -114,7 +115,8 @@ export function NewIssueDialog({
     backToTitle.current = false;
     titleBox.current?.focus();
   }, [asking]);
-  const hb = state.handBack;
+  // GitHub#569: the names of the repository picked (its own where a rename gave it one)
+  const hb = handBackFor(state, repo);
 
   // every pick of a repository is a read of its own: only the latest one may land. Compared by
   // read, not by repository name — after A → B → A the first read of A is as stale as B's.

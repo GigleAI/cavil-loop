@@ -408,7 +408,7 @@ export const MUTATIONS = [
     from: '    this.pending.prune(sources.map((s) => s.key));\n', to: '',
     expect: ['removing a source drops what only it carried'] },
   { what: '改「等人处理的标签」后提醒仍按旧标签计数（两处设置各管各）', file: 'src/app/controller.ts',
-    from: '      this.pending.relabel(next.human, this.snapshots);\n', to: '',
+    from: '      this.pending.relabel((repo: string) => this.humanFor(repo), this.snapshots);\n', to: '',
     expect: ['another label name: recounted silently'] },
   { what: '外壳的同步节拍不触发同步', file: 'src/app/controller.ts',
     from: "    if (ev.kind === 'tick') {\n      this.timedSync(ev.everyMs);\n      return;", to: "    if (ev.kind === 'tick') {\n      return;",

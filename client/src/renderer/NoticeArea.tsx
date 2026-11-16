@@ -19,6 +19,7 @@ import { Icon } from './Icons';
 import { copyText } from './pasteImage';
 import { OpNotice } from './OpNotice';
 import { LabelJobNotice } from './LabelJobNotice';
+import { RenameNotice, RenameWatchNotice } from './RenameNotice';
 import { SendNotice } from './SendNotice';
 import { sendShown } from '../shared/sends';
 import { EditIssues } from './DetailPanel';
@@ -88,6 +89,12 @@ export function NoticeArea({
     if (j.dismissed) continue;
     entries.push({ id: `label:${j.id}`, order: j.startedAt, node: <LabelJobNotice key={`label:${j.id}`} job={j} web={state.githubWeb} /> });
   }
+  // GitHub#569: flow label renames, and the label check a daemon keeps after one
+  for (const j of state.renameJobs ?? []) {
+    if (j.dismissed) continue;
+    entries.push({ id: `rename:${j.id}`, order: j.startedAt, node: <RenameNotice key={`rename:${j.id}`} job={j} /> });
+  }
+  for (const w of state.renameWatches ?? []) entries.push({ id: `rename-watch:${w.key}`, order: Number.MAX_SAFE_INTEGER - 2e6, node: <RenameWatchNotice key={`rename-watch:${w.key}`} w={w} /> });
   if (state.editsNeedingAction) entries.push({ id: 'edits', order: Number.MAX_SAFE_INTEGER, node: <EditsNotice key="edits" state={state} data={data} onOpen={openFloat} /> });
   const order = noticeOrder(entries, seen.current, next.current);
   if (!entries.length) return null;

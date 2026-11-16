@@ -5,6 +5,7 @@ pub mod api;
 pub mod daemon;
 pub mod daemon_config;
 pub mod daemon_connect;
+pub mod daemon_rename;
 pub mod device;
 pub mod engine;
 pub mod grant;

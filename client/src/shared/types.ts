@@ -11,6 +11,8 @@ import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
 import type { LabelJob } from './labelSetup';
+import type { RenameJob, RenameWatch } from './labelRename';
+import type { RepoLabels } from './repoLabels';
 import type { Handoff } from './handoff';
 import type { CreatePlan, Picks } from './actions';
 
@@ -769,6 +771,12 @@ export interface AppState {
   sends: SendRecord[];
   /** GitHub#559: presses of "建标签" (labels a button needs, created in a repository), oldest first (see shared/labelSetup.ts) */
   labelJobs: LabelJob[];
+  /** GitHub#569: flow label names of one repository that differ from the shared ones (kept on this machine, shared/repoLabels.ts) */
+  repoLabels: RepoLabels;
+  /** GitHub#569: renames of a flow label (project settings → 「改名…」), oldest first (see shared/labelRename.ts) */
+  renameJobs: RenameJob[];
+  /** GitHub#569: projects whose daemon still checks a renamed label every round */
+  renameWatches: RenameWatch[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

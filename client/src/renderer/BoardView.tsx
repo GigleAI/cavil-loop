@@ -25,6 +25,7 @@ import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf, hhmm } from '../shared/readFailure';
 import { TableView } from './TableView';
 import { pinnedLabels } from '../shared/pickOrder';
+import { handBackFor } from '../shared/repoLabels';
 import { buildTable } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
@@ -506,16 +507,18 @@ export function BoardView({
   // GitHub#496: the table's label picker keeps these near the top, like the detail panel's
   // GitHub#513: built from the whole setting, like the detail panel and new issue (pending/later included);
   // the list is kept while the names stay the same
-  const pinKey = pinnedLabels(state.handBack).join('\n');
-  const pinned = useMemo(() => pinKey.split('\n'), [pinKey]);
+  // GitHub#569: each item's repository's own names
+  const repoLabels = state.repoLabels;
+  const sharedHand = state.handBack;
+  const pinned = useMemo(() => (repo: string) => pinnedLabels(handBackFor({ handBack: sharedHand, repoLabels }, repo)), [sharedHand, repoLabels]);
   // GitHub#404: the flow numbers, over every item of the ticked sources (not the search result)
   // GitHub#468: the numbers are the table set in Settings; a condition of one's own is judged with the board's context
   // GitHub#514: the same function feeds Settings' live preview
   const tallyDefs = state.tallies;
   const handBack = state.handBack;
   const tally = useMemo(
-    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }),
-    [data.items, data.projects, tallyDefs, handBack, state.viewer, today],
+    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor({ handBack, repoLabels }, repo)),
+    [data.items, data.projects, tallyDefs, handBack, repoLabels, state.viewer, today],
   );
   // a window without its own memory (tests mounting the board alone) keeps the pick here
   const [ownPick, setOwnPick] = useState<string | null>(null);
@@ -551,8 +554,10 @@ export function BoardView({
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
   // GitHub#350: the dependency graph of what the sources and search picked
   // GitHub#429: plus the loop's own prerequisite registrations, read under the waiting label setting
-  const loopLabel = state.handBack.blocked;
-  const graph = useMemo(() => (view.layout === 'graph' ? buildGraph(data.items, items, loopLabel) : null), [view.layout, data.items, items, loopLabel]);
+  const graph = useMemo(
+    () => (view.layout === 'graph' ? buildGraph(data.items, items, (repo: string) => handBackFor({ handBack: sharedHand, repoLabels }, repo).blocked) : null),
+    [view.layout, data.items, items, sharedHand, repoLabels],
+  );
   const ownSaved = useRef<string | null>(null);
   const saved = tallySaved ?? ownSaved;
   // the box changed some other way and no longer shows a number's query: the remembered search is void

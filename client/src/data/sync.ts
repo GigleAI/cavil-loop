@@ -7,7 +7,7 @@ import { BOARD_FULL_READ_EVERY_MS, boardCounts, checkSource, FULL_READ_EVERY_MS,
 import { deltaReady, readBoardChanges, readRepoChanges, unstableItems } from './delta';
 import { keepInRepo } from './fetchSources';
 import { relationsKnown } from './relations';
-import { loopKnown } from './loopBlocked';
+import { labelAt, loopKnown, type LabelFor } from './loopBlocked';
 
 export interface SyncRound {
   /** snapshot per source key: fresh where the read completed, previous otherwise */
@@ -107,9 +107,10 @@ export async function syncRound(
   /** GitHub#324: one source is over — read, confirmed unchanged or failed (the round's progress) */
   onSourceDone: () => void = () => {},
   /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
-  loopLabel: string = '',
-  /** GitHub#462: the pending ("等人处理") label setting; '' = a repository's closed items carrying it are not read */
-  pendingLabel: string = '',
+  loopFor: LabelFor = '',
+  /** GitHub#462: the pending ("等人处理") label setting; '' = a repository's closed items carrying it are not read
+   *  (GitHub#569: per repository when a function — a repository source is read under its own name) */
+  pendingFor: LabelFor = '',
   /** GitHub#545: read by changes or not, the confirmed viewer, the sources to read in full */
   extra: RoundExtra = { byChanges: false, viewer: null, forceFull: new Set() },
 ): Promise<SyncRound> {
@@ -172,6 +173,9 @@ export async function syncRound(
   type Outcome = { kind: 'read'; snap: SourceSnapshot } | { kind: 'unchanged' };
   const readOne = async (src: SourceConfig): Promise<Outcome> => {
     const prev = previous.get(src.key);
+    // GitHub#569: a repository is read under its own names; a board's items under each one's repository's
+    const pendingLabel = src.kind === 'repo' ? labelAt(pendingFor, `${src.owner}/${src.name}`) : '';
+    const loopLabel: LabelFor = src.kind === 'repo' ? labelAt(loopFor, `${src.owner}/${src.name}`) : loopFor;
     const old = recorded.get(src.key);
     // a record vouches only for the very snapshot it was taken for — and never for one whose
     // relations are unknown (GitHub#349: cached before they were read): "nothing changed" must

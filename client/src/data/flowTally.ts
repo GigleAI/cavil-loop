@@ -108,6 +108,20 @@ export function tallyQuery(label: string, open: boolean = true): string | null {
 }
 
 /**
+ * GitHub#569: a flow row's click query when repositories name the label differently — `label:"A","B"` (any
+ * of them); null when one cannot be written in the search syntax.
+ */
+export function tallyQueryAny(labels: readonly string[]): string | null {
+  const ls = labels.map((l) => l.trim());
+  if (ls.some((l) => l === '' || l.includes('"') || l.includes(','))) return null;
+  const q = `label:${ls.map((l) => `"${l}"`).join(',')}`;
+  const { clauses, unsupported } = parseFilter(q);
+  const c = clauses[0];
+  const ok = unsupported.length === 0 && clauses.length === 1 && c.kind === 'field' && c.field === 'label' && !c.negated && c.values.length === ls.length && c.values.every((v, i) => v === ls[i]);
+  return ok ? q : null;
+}
+
+/**
  * GitHub#462: does a flow row count this item? "等人处理" is the reminders' own rule (`isPending`: the
  * label, open or closed); "运行中" / "等 agent" count open items only — work in progress is open.
  */
@@ -149,7 +163,7 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
  */
-export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
+export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT, byRepo?: (repo: string) => TallyLabels): TallyEntry[] {
   const out: TallyEntry[] = [];
   for (const d of defs) {
     const name = d.name.trim();
@@ -158,7 +172,12 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const flow = d.source.flow;
       const label = labels[flow].trim();
       if (label === '') continue;
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: items.filter((it) => flowCounts(flow, it, label)).length, query: flowQuery(flow, label) });
+      // GitHub#569: each item counted under its own repository's name; the click lists every name in play
+      const own = (it: Item) => (byRepo ? byRepo(it.repo)[flow].trim() : label);
+      const names = [label];
+      if (byRepo) for (const it of items) if (own(it) !== '' && !names.some((n) => n.toLowerCase() === own(it).toLowerCase())) names.push(own(it));
+      const query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it))).length, query });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
@@ -177,8 +196,8 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
  * the settings and the board's filter context. The view bar and Settings' live preview both take theirs from
  * here, so the two cannot show different numbers.
  */
-export function viewBarTallies(items: Item[], saved: TallyDef[] | null, handBack: HandBackLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
-  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx);
+export function viewBarTallies(items: Item[], saved: TallyDef[] | null, handBack: HandBackLabels, ctx: FilterContext = NO_CONTEXT, handBackFor?: (repo: string) => HandBackLabels): TallyEntry[] {
+  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined);
 }
 
 /**

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { DEFAULT_BLOCKED_LABELS } from '../shared/blocked';
 import { DEFAULT_HAND_BACK, type AppState, type BoardData } from '../shared/types';
+import { overrideRows } from '../shared/repoLabels';
+import { slotWord } from './RenameNotice';
 import { shownOnBoard, sourceLabel } from '../shared/sources';
 import { api } from './api';
 import { AppKindPicker } from './AppKindPicker';
@@ -340,6 +342,7 @@ export function SettingsView({
             <span className="field-hint">{t('挂着时「等前置…」置灰；逗号分隔，* 结尾 = 前缀')}</span>
           </label>
         </div>
+        <RepoLabelTable state={state} />
         <label className="row small" title={t('在确认框里勾过「不再提示」会关掉这一项，在这里勾回来')}>
           <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
           {t('「托管」前先弹确认框')}
@@ -487,6 +490,51 @@ export function SettingsView({
       </section>
       </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * GitHub#569: the names one repository has of its own (a rename from the project settings window gave them),
+ * one row each, with 「改回共用」. Nothing to list: not shown.
+ */
+function RepoLabelTable({ state }: { state: AppState }) {
+  const rows = overrideRows(state);
+  if (!rows.length) return null;
+  return (
+    <div className="repo-labels" data-testid="repo-labels">
+      <h4>{t('按仓库单独的标签名')}</h4>
+      <p className="muted small">{t('在项目配置里给流程标签改名时，只改了那个仓库的名字；其余仓库照上面的共用名字。')}</p>
+      <table className="pcfg-changes">
+        <thead>
+          <tr>
+            <th>{t('仓库')}</th>
+            <th>{t('哪个标签')}</th>
+            <th>{t('名字')}</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.repo}:${r.slot}`} data-testid="repo-label-row" data-repo={r.repo} data-slot={r.slot}>
+              <td>
+                <Verbatim from="github">{r.repo}</Verbatim>
+              </td>
+              <td>{r.slot === 'flow' ? t('其他流程标签') : slotWord(r.slot)}</td>
+              <td>
+                <code>
+                  <Verbatim from="user">{r.name}</Verbatim>
+                </code>
+              </td>
+              <td>
+                <button className="link" data-testid="repo-label-drop" title={t('改回共用的名字：{name}', { name: r.shared })} onClick={() => void api().dropRepoLabel(r.repo, r.slot)}>
+                  {t('改回共用')}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

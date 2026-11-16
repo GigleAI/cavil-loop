@@ -11,7 +11,7 @@ import { ISSUE_RELATIONS_BATCH_QUERY, PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
 import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, type GqlRelationFields } from './relations';
 import { readViewerTies, type GqlViewerFields } from './viewerTies';
-import { readLoopBlocked } from './loopBlocked';
+import { readLoopBlocked, type LabelFor } from './loopBlocked';
 import { hasLabel } from './pending';
 
 export const STATUS_FIELD_NAME = 'Status';
@@ -201,7 +201,7 @@ export async function fetchProject(
   src: Extract<SourceConfig, { kind: 'project' }>,
   now: number,
   /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
-  loopLabel: string = '',
+  loopLabel: LabelFor = '',
   /** GitHub#545: GitHub's clock at the start of this round (null = not known: no read of changes can start from this snapshot) */
   serverAt: number | null = null,
 ): Promise<SourceSnapshot> {
@@ -370,7 +370,7 @@ export async function fetchRepo(
   /** tests: a smaller batch, to cross the batch boundary with the recorded items */
   batchSize: number = RELATION_BATCH_SIZE,
   /** GitHub#429: the "waiting for a prerequisite" label setting; '' = the loop's registrations are not read */
-  loopLabel: string = '',
+  loopLabel: LabelFor = '',
   /** GitHub#462: the pending ("等人处理") label setting; '' = closed items carrying it are not read */
   pendingLabel: string = '',
   /** GitHub#545: GitHub's clock at the start of this round (null = not known) */
@@ -438,7 +438,7 @@ export async function completeRepoItems(
   related: Map<string, boolean>,
   now: number,
   batchSize: number,
-  loopLabel: string,
+  loopLabel: LabelFor,
   pending: string,
 ): Promise<void> {
   const items = new Map(list.map((it) => [it.key, it]));
@@ -482,6 +482,6 @@ export function repoListItem(repo: string, r: unknown, srcKey: string): { item: 
   return { item: restToItem(repo, x, srcKey), related: hasRelations(x) };
 }
 
-export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: string = '', pendingLabel: string = '', serverAt: number | null = null): Promise<SourceSnapshot> {
+export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: LabelFor = '', pendingLabel: string = '', serverAt: number | null = null): Promise<SourceSnapshot> {
   return src.kind === 'project' ? fetchProject(client, src, now, loopLabel, serverAt) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel, pendingLabel, serverAt);
 }

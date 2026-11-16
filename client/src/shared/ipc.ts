@@ -9,6 +9,8 @@ import type { Handoff } from './handoff';
 import type { LabelPermission, LabelRole } from './labelSetup';
 import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref } from './blocked';
 import type { SendAction } from './sends';
+import type { RenameAnswer, RenameArgs, RenameCmd, StoppedMachine } from './labelRename';
+import type { HandBackSlot } from './repoLabels';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 import type { LangSetting, Said } from './i18n';
@@ -266,6 +268,29 @@ export interface CavilApi {
    */
   daemonConfigGet(key: string): Promise<ConfigRead>;
   daemonConfigSet(key: string, rev: string, values: Record<string, string>): Promise<ConfigSave>;
+  /**
+   * 「改名…」 on a flow label (GitHub#569): one run of the daemon's own label-rename.sh for a project of this
+   * computer. The window uses it directly only for `check` (read-only); every changing command goes through
+   * the controller (`startLabelRename` and the notice's buttons).
+   */
+  daemonLabelRename(key: string, cmd: RenameCmd, args?: RenameArgs): Promise<RenameAnswer>;
+  /** GitHub#569: start a rename / a follow-up in the background; refused at once when another one of this project is not settled */
+  startLabelRename(req: LabelRenameRequest): Promise<{ ok: boolean; error: string | null; id?: number }>;
+  /** 「重试」 / 「再查一次」: label-rename.sh continue (reads GitHub only), then the client's names and finish */
+  labelRenameContinue(id: number): Promise<{ ok: boolean; error: string | null }>;
+  /** 「重发改名」 after no answer */
+  labelRenameResend(id: number): Promise<{ ok: boolean; error: string | null }>;
+  /** 「退回」: only while GitHub is surely unchanged */
+  labelRenameUndo(id: number): Promise<{ ok: boolean; error: string | null }>;
+  /** 「已手动处理好」: the person fixed the three places by hand (asked first in the window) */
+  labelRenameAbandon(id: number): Promise<{ ok: boolean; error: string | null }>;
+  labelRenameDismiss(id: number): Promise<void>;
+  /** 「结束核对」 */
+  labelRenameWatchEnd(key: string): Promise<{ ok: boolean; error: string | null }>;
+  /** read every local project's rename state (at start, and when the daemon list is read again) */
+  labelRenameScan(status?: DaemonStatus): Promise<void>;
+  /** Settings → 「改回共用」 of one repository's own name */
+  dropRepoLabel(repo: string, slot: HandBackSlot | 'flow'): Promise<void>;
   /** "接上 daemon" (GitHub#315): the back end checks repository, agent and folder again before running setup.sh */
   daemonConnectInfo(repo: string): Promise<ConnectInfo>;
   daemonPrecheck(agent: string): Promise<Precheck2>;
@@ -295,4 +320,19 @@ export interface CavilApi {
   /** this machine as the one being connected to: its remote entry switch, a pairing code, the computers paired with it */
   remoteHost(action: 'status'): Promise<HostStatus>;
   remoteHost(action: Exclude<HostAction, 'status'>, target?: string): Promise<HostResult>;
+}
+
+/** GitHub#569: what the rename dialog hands the controller */
+export interface LabelRenameRequest {
+  key: string;
+  repo: string;
+  mode: 'rename' | 'follow';
+  field: string;
+  from: string;
+  to: string;
+  rev: string;
+  labelId?: string;
+  othersStopped?: boolean;
+  /** the machines stopped for it (they follow afterwards) */
+  stopped?: StoppedMachine[];
 }

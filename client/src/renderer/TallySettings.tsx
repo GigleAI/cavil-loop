@@ -9,6 +9,7 @@ import { useMemo } from 'react';
 import type { AppState, BoardData, TallyColor, TallyDef } from '../shared/types';
 import { effectiveTallies, TALLY_COLORS, tallyFlowText, TALLY_MAX } from '../shared/tallies';
 import { flowCondition, tallyLabels, tallyName, viewBarTallies, type TallyLabels } from '../data/flowTally';
+import { handBackFor } from '../shared/repoLabels';
 import { TallyBar } from './TallyBar';
 import { SettingsMore } from './SettingsMore';
 import { localToday } from './iterationOptions';
@@ -44,8 +45,9 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
   const today = localToday(Date.now());
   // GitHub#514: the view bar's own numbers, from the view bar's own function and context
   const preview = useMemo(
-    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }),
-    [data.items, data.projects, state.tallies, state.handBack, state.viewer, today],
+    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor(state, repo)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, today],
   );
   const save = (next: TallyDef[]) => void api().setTallies(next);
   const patch = (i: number, d: TallyDef) => save(rows.map((x, j) => (j === i ? d : x)));
