@@ -7,6 +7,7 @@
 
 import type { SourceStatus, SyncState } from '../shared/types';
 import { t } from '../shared/i18n';
+import { hhmm } from '../shared/readFailure';
 
 export function ago(from: number, now: number): string {
   const mins = Math.max(0, Math.floor((now - from) / 60_000));
@@ -24,12 +25,17 @@ export function clockAt(at: number): string {
 }
 
 /** GitHub#374: the line under a failed source — the panel and the hover both take it from here */
+// GitHub#558: the time a rate limit lifts is rounded up to the minute, as on the yellow button next to refresh (shared/readFailure.ts)
 export function retryText(st: SourceStatus, now: number): string | null {
   const r = st.retry;
   if (st.ok || !r) return null;
   if (st.rateLimited) {
     if (r.limitedUntil === null) return null;
-    return r.limitedUntil > now ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: clockAt(r.limitedUntil) }) : t('限流时间已过，下一轮自动重读');
+    if (r.limitedUntil <= now) return t('限流时间已过，下一轮自动重读');
+    // GitHub#558: GitHub gave no time — the client's own wait is not when the quota comes back
+    return r.limitedSaid
+      ? t('额度约 {at} 恢复，到时自动重读；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) })
+      : t('GitHub 没说什么时候恢复，客户端 {at} 再试；在那之前不再发读取请求', { at: hhmm(r.limitedUntil) });
   }
   const next = r.nextAt === null || r.nextAt <= now ? t('下一轮自动重试') : t('下次自动重试 {at}', { at: clockAt(r.nextAt) });
   return t('从 {since} 起连续失败 {n} 次 · {next}（失败越多隔得越久，最长 10 分钟）', { since: clockAt(r.since), n: r.count, next });
@@ -41,22 +47,6 @@ export const retryByHand = () => t('点「重新同步」会马上重读，不�
 /** what the check and the read of changes cannot see (data/changeCheck.ts, data/delta.ts); no promise of when the full read succeeds */
 export const checkBlind = () =>
   t('「检查」和「读取变化」看不到被删除、被转走的条目，也看不到看板标题、保存的视图、写权限和只改了别的条目带来的依赖关系变化；这些要等整份重读（仓库约每 10 分钟一次，按变化读取的看板约每 60 分钟一次，读不成就更久）。');
-
-/** GitHub#545: the account's hourly quotas, as the latest round read them */
-export function quotaLine(sync: SyncState, now: number): string | null {
-  const q = sync.quota;
-  if (!q) return null;
-  if (q.quietUntil > now) return t('刚重新打开，{at} 开始同步（等上次关闭前的请求结清）', { at: clockAt(Math.ceil(q.quietUntil / 60_000) * 60_000) });
-  if (!q.graphql || !q.core) return null;
-  const reset = Math.min(q.graphql.resetAt, q.core.resetAt);
-  return t('本小时额度：账号已用 {gu} / {gl} 点（GraphQL）、{cu} / {cl} 次（REST），{at} 重置（客户端最多用到账号只剩一半）', {
-    gu: q.graphql.used,
-    gl: q.graphql.limit,
-    cu: q.core.used,
-    cl: q.core.limit,
-    at: clockAt(Math.ceil(reset / 60_000) * 60_000),
-  });
-}
 
 /** the header: the oldest check among the sources that have data; null = no source has data, nothing is shown */
 export function headerText(sync: SyncState, now: number): string | null {
@@ -95,8 +85,6 @@ export function hoverLines(sync: SyncState, label: (sourceKey: string) => string
     if (r) lines.push(t('{source}：{text}', { source: label(st.sourceKey), text: r }));
   }
   lines.push(sync.lastOnlineAt === null ? t('最后连上 GitHub：这次打开后还没有连上过') : t('最后连上 GitHub：{ago}', { ago: ago(sync.lastOnlineAt, now) }));
-  const quota = quotaLine(sync, now);
-  if (quota) lines.push(quota);
   lines.push(checkBlind());
   if (sync.syncing && sync.progress) {
     lines.push(t('同步中，已进行 {lasted}，已读完 {done} / {total} 个来源', { lasted: lasted(now - sync.progress.startedAt), done: sync.progress.done, total: sync.progress.total }));

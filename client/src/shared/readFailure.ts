@@ -12,7 +12,7 @@
 import { t } from './i18n';
 
 /** the kinds, in the order they are tried */
-export const FAILURE_KINDS = ['cancelled', 'quotaHeld', 'network', 'rateLimited', 'auth', 'transient', 'orgRestricted', 'sso', 'scope', 'notFound', 'other'] as const;
+export const FAILURE_KINDS = ['cancelled', 'network', 'rateLimited', 'auth', 'transient', 'orgRestricted', 'sso', 'scope', 'notFound', 'other'] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 /** What a failed read is, as data (kept with a source's status; the words come from `describeFailure`). */
@@ -22,10 +22,10 @@ export interface ReadFailure {
   org?: string;
   /** single sign-on: the page GitHub named for authorising (from its X-GitHub-SSO header) */
   ssoUrl?: string;
-  /** rate limit / quota held: when reading may start again (epoch ms); absent = GitHub did not say */
+  /** rate limit: when reading may start again (epoch ms); absent = not known */
   retryAt?: number;
-  /** GitHub#545, quota held: the check had already seen a change (it is read once the quota allows) */
-  changed?: boolean;
+  /** GitHub#558, rate limit: `retryAt` is a time GitHub gave; false / absent = only when the client tries again */
+  retrySaid?: boolean;
   /** GitHub#545, rate limit: which limit — the hourly quota used up, or too many requests in a short time */
   limit?: 'hourly' | 'secondary';
   /** the error as raised (GitHub's words, or the connection's) */
@@ -43,8 +43,10 @@ export interface FailureInput {
   cancelled?: boolean;
   /** GitHub's rate limit (or the read gate it closed) */
   rateLimited?: boolean;
-  /** rate limit: when GitHub said reading may start again (epoch ms); null / absent = it did not say */
+  /** rate limit: when reading may start again (epoch ms); null / absent = not known */
   retryAt?: number | null;
+  /** GitHub#558, rate limit: `retryAt` is a time GitHub gave (not the client's own wait) */
+  retrySaid?: boolean;
   /** GitHub#545, rate limit: the hourly quota used up, or a short-time (secondary) limit; absent = not told apart */
   limit?: 'hourly' | 'secondary';
   /** GitHub called it temporary (a GraphQL "something went wrong / timed out") */
@@ -88,7 +90,7 @@ export function classifyFailure(input: FailureInput, org?: string, projectRead =
   if (input.cancelled) return base('cancelled');
   if (input.kind === 'network') return base('network');
   if (input.rateLimited) {
-    return base('rateLimited', { ...(input.retryAt != null ? { retryAt: input.retryAt } : {}), ...(input.limit ? { limit: input.limit } : {}) });
+    return base('rateLimited', { ...(input.retryAt != null ? { retryAt: input.retryAt, ...(input.retrySaid ? { retrySaid: true } : {}) } : {}), ...(input.limit ? { limit: input.limit } : {}) });
   }
   if (input.kind === 'auth' || input.status === 401) return base('auth');
   const types = input.gqlTypes ?? [];
@@ -149,8 +151,9 @@ export function describeFailure(f: ReadFailure, now: number, appKind: 'oauth' | 
       const secondary = f.limit === 'secondary';
       return {
         title: t('GitHub 暂时限制了读取次数'),
+        // GitHub#558: "额度 HH:MM 恢复" only for a time GitHub gave; the client's own wait is not GitHub's reset
         body: hourly
-          ? waiting
+          ? waiting && f.retrySaid
             ? t('这个账号每小时的查询额度已经用完。{time} 额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。', { time: hhmm(f.retryAt!) })
             : t('这个账号每小时的查询额度已经用完。额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。')
           : secondary
@@ -160,24 +163,6 @@ export function describeFailure(f: ReadFailure, now: number, appKind: 'oauth' | 
             : waiting
               ? t('请求太频繁，GitHub 要求稍等。{time} 之后会自动再读，不需要重新授权。', { time: hhmm(f.retryAt!) })
               : t('请求太频繁，GitHub 要求稍等。稍后会自动再读，不需要重新授权。'),
-        actions: ['retry'],
-        ...(waiting ? { retryAt: f.retryAt } : {}),
-      };
-    }
-    case 'quotaHeld': {
-      // GitHub#545: the client held its own reads back to keep half of the account's hourly quota
-      const waiting = f.retryAt !== undefined && f.retryAt > now;
-      const when = waiting ? hhmm(f.retryAt!) : null;
-      return {
-        title: f.changed ? t('额度保护中，检查发现有变化，额度恢复后读取') : t('额度保护中，暂时无法确认有没有变化'),
-        body: [
-          when
-            ? t('这个账号本小时的 GitHub 额度已用到一半左右。客户端最多用到账号只剩一半，剩下的留给编辑、打开详情和同一账号下的其他程序；{time} 重置后自动恢复读取。', { time: when })
-            : t('这个账号本小时的 GitHub 额度已用到一半左右（或这一轮没读到额度）。客户端最多用到账号只剩一半，剩下的留给编辑、打开详情和同一账号下的其他程序；额度恢复后自动读取。'),
-          f.changed
-            ? t('页面上仍是上次读到的内容。检查已经看出有变化，额度恢复后读取。')
-            : t('页面上仍是上次读到的内容。这期间不重读条目，额度够时仍做的检查看不出条目被移出等变化，所以不显示「已确认没变」。'),
-        ].join('\n'),
         actions: ['retry'],
         ...(waiting ? { retryAt: f.retryAt } : {}),
       };

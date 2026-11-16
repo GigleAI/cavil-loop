@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
 import { RATE_LIMIT_MESSAGE } from '../../src/data/github';
 import { clockAt, hoverLines, retryText, retryByHand } from '../../src/renderer/syncTimes';
+import { hhmm } from '../../src/shared/readFailure';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -290,7 +291,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     // "nothing went out" is not "connected"
     expect(c.getState().sync.lastOnlineAt).toBe(lastOnline);
     const text = retryText(status(c, PROJECT_KEY), FIXTURE_NOW + from * MIN);
-    expect(text).toBe(`额度约 ${clockAt(reset)} 恢复，到时自动重读；在那之前不再发读取请求`);
+    expect(text).toBe(`额度约 ${hhmm(reset)} 恢复，到时自动重读；在那之前不再发读取请求`);
     expect(hoverLines(c.getState().sync, label, FIXTURE_NOW + from * MIN)).toContain(`看板：${text}`);
     // the reset: the reads go out again, and work
     const sent = await at(Math.ceil(resetMin));
@@ -305,8 +306,8 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const reset = resetIn(clock, 30);
     fake.state.answerOverride = (e) => (e.operation === 'user' ? limited(reset) : null);
     const sent = await at(1);
-    // GitHub#545: the quotas first (not counted), then "who am I" (REST)
-    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user']);
+    // GitHub#545: "who am I" (REST) is the round's first request; GitHub#558: nothing asks for the quota before it
+    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['user']);
     fake.state.answerOverride = null;
     await holdsUntilReset(c, at, 1, reset);
   });
@@ -317,7 +318,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     const reset = resetIn(clock, 20);
     fake.state.answerOverride = (e) => (e.operation === 'CavilProjectCounts' ? limitedGraphql(reset) : null);
     const sent = await at(1);
-    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user', 'CavilProjectCounts']);
+    expect(sent.map((e) => e.operation ?? e.path)).toEqual(['user', 'CavilProjectCounts']);
     fake.state.answerOverride = null;
     await holdsUntilReset(c, at, 1, reset);
   });
@@ -338,7 +339,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     await holdsUntilReset(c, at, 1, reset, [PROJECT_KEY]);
   });
 
-  // GitHub#545: the sync's requests leave one at a time (the quota guard's queue), so "another request
+  // GitHub#545: the sync's requests leave one at a time (the send queue), so "another request
   // already on its way" when the limit is heard cannot happen any more: the one after it is not sent
   it('page 2 of a full read is limited: nothing goes out after it, the board keeps its old data', async () => {
     const { c, clock } = await boot();
@@ -382,7 +383,7 @@ describe('rate limited: nothing more goes out until the reset, then the reads wo
     clock.t = FIXTURE_NOW + 3 * MIN;
     let n = fake.log.length;
     await c.restartSync();
-    expect(fake.log.slice(n).map((e) => e.operation ?? e.path)).toEqual(['/api/rate_limit', 'user']);
+    expect(fake.log.slice(n).map((e) => e.operation ?? e.path)).toEqual(['user']);
     expect(status(c, REPO_KEY)).toMatchObject({ rateLimited: true });
     // GitHub lets it through now: by hand reads at once
     fake.state.answerOverride = null;

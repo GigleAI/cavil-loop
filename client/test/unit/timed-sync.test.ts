@@ -143,6 +143,10 @@ async function boot(opts: Opts = {}) {
     syncIntervalMs: BEAT,
     defaultClientId: '',
     followUpSyncMs: opts.followUpSyncMs ?? 600_000,
+    // the same two retries of a failed read, without the real 1 s / 3 s waits: this file moves its clock by hand,
+    // and the waits only add wall time (GitHub#558 review round 2: the offline round's "who am I" is retried
+    // like every read, which took one test to 16 s of a 20 s limit)
+    readRetryDelaysMs: [0, 0],
     ...(opts.fullReadEveryMs !== undefined ? { fullReadEveryMs: opts.fullReadEveryMs } : {}),
   });
   controllers.push(c);

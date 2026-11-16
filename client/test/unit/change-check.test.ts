@@ -45,7 +45,7 @@ afterEach(async () => {
 
 type Intercept = (cmd: string, args: any, next: (cmd: string, args: any) => Promise<unknown>) => unknown;
 
-async function ready(opts: { sources?: string[]; intercept?: Intercept; fullReadEveryMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
+async function ready(opts: { sources?: string[]; intercept?: Intercept; fullReadEveryMs?: number; afterRoundRead?: (dropped: boolean) => void; readRetryDelaysMs?: number[] } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -64,6 +64,7 @@ async function ready(opts: { sources?: string[]; intercept?: Intercept; fullRead
     followUpSyncMs: 600_000,
     ...(opts.fullReadEveryMs !== undefined ? { fullReadEveryMs: opts.fullReadEveryMs } : {}),
     ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}),
+    ...(opts.readRetryDelaysMs ? { readRetryDelaysMs: opts.readRetryDelaysMs } : {}),
   });
   controllers.push(c);
   for (const s of opts.sources ?? [PROJECT_URL, REPO]) c.addSource(s);
@@ -394,8 +395,10 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     // set once the refresh's round has saved its record; read when the dropped round reaches its end
     let newSaved = false;
     let droppedEndedAfterNew: boolean | null = null;
+    // the automatic round's retry wait after a temporary failure (long enough for the whole refresh)
     const { c, clock } = await ready({
       sources: [PROJECT_URL],
+      readRetryDelaysMs: [4000],
       afterRoundRead: (dropped) => {
         if (!dropped) return;
         droppedEndedAfterNew = newSaved;
@@ -404,27 +407,29 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     });
     clock.t += 60_000;
     statusOnBoard(22, 'In progress');
-    // The automatic round is held at its first step, reading the account's quotas. GitHub#545: a dropped
-    // round no longer waits for a request that goes through the quota guard — it gives it up at once and
-    // ends before the new round saves anything, so holding a board read cannot make it end late any more.
-    // The quota read does not go through the guard: the dropped round waits for it, and only after it is
-    // released does it reach its end, where it may drop only the records it started from (GitHub#552).
-    let holding = true;
-    const release = fake.holdWhen((e) => holding && e.method === 'GET' && e.path === '/api/rate_limit');
+    // GitHub#545: a dropped round stops waiting for its request at once, so holding an answer cannot make
+    // it end late. What does: a temporary failure (502) on its first board page puts it in the wait before
+    // the second try, which a drop does not cut short. It reaches its end only after that wait — after the
+    // refresh by hand saved its record — and may drop only the records it started from (GitHub#552 / #558).
+    let failOnce = true;
+    fake.state.answerOverride = (e) => {
+      if (!failOnce || e.operation !== 'CavilProjectItems') return null;
+      failOnce = false;
+      return { status: 502, body: { message: 'Server Error' } };
+    };
     const n = fake.log.length;
     const auto = c.syncNow();
-    for (let i = 0; i < 500 && !since(n).some((e) => e.path === '/api/rate_limit' && e.status === 0); i++) await new Promise((res) => setTimeout(res, 10));
-    expect(since(n).some((e) => e.path === '/api/rate_limit' && e.status === 0)).toBe(true);
+    for (let i = 0; i < 500 && !since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 502); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(since(n).some((e) => e.operation === 'CavilProjectItems' && e.status === 502)).toBe(true);
+    fake.state.answerOverride = null;
     // a refresh by hand drops it, reads in full and saves its record
-    holding = false;
     clock.t += 60_000;
     await c.restartSync();
     newSaved = true;
     expect(statusOf(c, 22)).toBe('In progress');
     // the refresh really read the board in full (and so saved a new record of its own)
-    expect(boardReads(since(n))).toBeGreaterThanOrEqual(1);
-    // only now does the dropped round's answer come, and that round finishes in the background
-    release();
+    expect(boardReads(since(n).filter((e) => e.status === 200))).toBeGreaterThanOrEqual(1);
+    // the dropped round's wait ends, and that round finishes in the background
     await auto;
     await droppedFinished;
     // "this did happen": the dropped round reached its end only after the new round had saved its record

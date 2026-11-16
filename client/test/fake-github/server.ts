@@ -146,21 +146,22 @@ export interface FakeState {
   /**
    * GitHub#545: the account's two hourly quotas, as GitHub keeps them. Every API answer carries the
    * x-ratelimit-* headers of the quota it drew on (a 304 too); a REST answer other than a 304 costs 1,
-   * a GraphQL answer `graphqlCost(entry)` points; `/rate_limit` costs nothing. `resetAt` in epoch s.
+   * a GraphQL answer `graphqlCost(entry)` points. `resetAt` in epoch s. (GitHub#558: the client no longer
+   * reads the rate-limit endpoint; the fake does not serve it, so a call would show up as a 404 in the log.)
    */
   quota: { graphql: FakeQuota; core: FakeQuota };
   /** GitHub#545: points a GraphQL request costs (default 1) */
   graphqlCost: (e: LoggedRequest) => number;
   /** GitHub#545: the server's clock for the Date header (epoch ms); default the real one */
   serverNow: () => number;
+  /** GitHub#558: answer this request without a Date header at all (GitHub's clock missing); null = always send one */
+  noDate: ((e: LoggedRequest) => boolean) | null;
   /**
    * GitHub#545: the board read (and the by-id read) carry each item's own `updatedAt` (the item's
    * `updatedAt` if set, else its content's). Off by default: snapshots then lack it and every board is
    * read in full, as before #545 (the tests written before keep their requests).
    */
   itemTimes: boolean;
-  /** GitHub#545: answer the rate-limit endpoint this way instead (status / raw body); null = honestly */
-  rateLimitAnswer: ((e: LoggedRequest) => CannedAnswer | null) | null;
 }
 
 /** GitHub#545: one hourly quota of the fake account */
@@ -316,8 +317,8 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     quota: { graphql: { limit: 1_000_000, used: 0, resetAt: 4102444800 }, core: { limit: 1_000_000, used: 0, resetAt: 4102444800 } },
     graphqlCost: () => 1,
     serverNow: () => Date.now(),
+    noDate: null,
     itemTimes: false,
-    rateLimitAnswer: null,
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -345,8 +346,11 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     res.writeHead = ((status: number, ...rest: unknown[]) => {
       // a test's own clock when its harness sends one (x-fake-now), else the fake's
       const told = Number(req.headers['x-fake-now']);
-      res.setHeader('Date', new Date(Number.isFinite(told) && told > 0 ? told : state.serverNow()).toUTCString());
-      if (url.pathname.startsWith('/api/') && url.pathname !== '/api/rate_limit') {
+      if (state.noDate?.(entry)) {
+        res.sendDate = false;
+        res.removeHeader('Date');
+      } else res.setHeader('Date', new Date(Number.isFinite(told) && told > 0 ? told : state.serverNow()).toUTCString());
+      if (url.pathname.startsWith('/api/')) {
         const gql = url.pathname === '/api/graphql';
         const q = gql ? state.quota.graphql : state.quota.core;
         if (gql ? status !== 401 : status >= 200 && status < 300) q.used += gql ? state.graphqlCost(entry) : 1;
@@ -497,15 +501,6 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       return res.end('<h1>fake device page</h1>');
     }
 
-    // ---- GitHub#545: the rate-limit endpoint (not counted) and who the credential belongs to (REST, conditional) ----
-    if (req.method === 'GET' && url.pathname === '/api/rate_limit') {
-      if (!authed()) return;
-      const canned = state.rateLimitAnswer?.(entry) ?? null;
-      if (canned) return send(canned.status, canned.body ?? {}, canned.headers);
-      const b = (q: FakeQuota) => ({ limit: q.limit, used: q.used, remaining: Math.max(0, q.limit - q.used), reset: q.resetAt });
-      await held();
-      return send(200, { resources: { core: b(state.quota.core), graphql: b(state.quota.graphql) }, rate: b(state.quota.core) });
-    }
     // ---- GraphQL ----
     if (req.method === 'POST' && url.pathname === '/api/graphql') {
       const body = JSON.parse(await readBody(req)) as { query: string; variables: Record<string, any> };

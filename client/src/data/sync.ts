@@ -4,7 +4,6 @@ import { t } from '../shared/i18n';
 import { classifyFailure } from '../shared/readFailure';
 import { fetchSource } from './fetchSources';
 import { BOARD_FULL_READ_EVERY_MS, boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
-import { QuotaHeldError } from './quota';
 import { deltaReady, readBoardChanges, readRepoChanges, unstableItems } from './delta';
 import { keepInRepo } from './fetchSources';
 import { relationsKnown } from './relations';
@@ -33,7 +32,7 @@ export interface SyncRound {
   unchanged: string[];
   /** GitHub#374: no request of this round went out (the read gate was closed from the start) */
   held: boolean;
-  /** GitHub#545: the sources the quota guard held back before the round learned anything about them: their records stay */
+  /** GitHub#545: the sources whose read of changes failed: the snapshot is untouched and its record still vouches for it */
   keepRecords: string[];
   /** GitHub#545: the sources whose read of changes was tried this round, and whether it failed */
   deltaTried: Map<string, boolean>;
@@ -47,42 +46,38 @@ export interface ViewerTag {
   etag: string;
 }
 
+/** who-am-I's answer: the viewer, and GitHub's clock when it answered (null = it did not say) */
+interface Viewer {
+  tag: ViewerTag;
+  serverAt: number | null;
+}
+
 /** GitHub#545: what a round gets beyond the sources and the records */
 export interface RoundExtra {
-  /** GitHub's clock at the round's start (rate-limit endpoint); null = not known: no read of changes */
-  serverAt: number | null;
+  /**
+   * GitHub#545: read only what changed where a snapshot allows it. GitHub#558: GitHub's clock at the
+   * round's start then comes from the round's first answer (who am I, its Date header); an answer
+   * without one = no read of changes this round (every source as before: checked, read in full).
+   */
+  byChanges: boolean;
   /** the viewer this session confirmed last, with its tag (null = not yet) */
   viewer: ViewerTag | null;
   /** sources whose read of changes failed too often: read in full this round */
   forceFull: Set<string>;
   /** how often a board read by changes is read in full anyway (tests shorten it) */
   boardFullReadEveryMs?: number;
-  /** the rate-limit endpoint could not be read: why (a refused credential / no connection end the round as such) */
-  quotaError?: unknown;
-}
-
-/** GitHub#545: the quota guard held this source back (not a failure: nothing was asked) */
-export function heldStatus(src: SourceConfig, e: QuotaHeldError, dataFrom: number | null, changed: boolean): SourceStatus {
-  return {
-    sourceKey: src.key,
-    ok: false,
-    error: e.message,
-    dataFrom,
-    quotaHeld: true,
-    failure: { kind: 'quotaHeld', raw: e.message, ...(e.resetAt !== null ? { retryAt: e.resetAt } : {}), ...(changed ? { changed: true } : {}) },
-  };
 }
 
 /** GitHub#545: who the credential belongs to — REST /user with the last version tag (a 304 is not counted against the quota) */
-async function whoAmI(client: GitHubClient, known: ViewerTag | null): Promise<ViewerTag> {
+async function whoAmI(client: GitHubClient, known: ViewerTag | null): Promise<Viewer> {
   const a = await client.conditional('GET', '/user', known?.etag ?? null);
   if (a.status === 304) {
     if (!known) throw new GitHubError('http', t('登录账号检查回了 304，但没有上一次的记录'));
-    return { login: known.login, etag: a.etag };
+    return { tag: { login: known.login, etag: a.etag }, serverAt: a.serverAt };
   }
   const login = (a.body as { login?: unknown } | null)?.login;
   if (typeof login !== 'string' || !login) throw new GitHubError('http', t('GitHub 没有说明当前登录的账号'));
-  return { login, etag: a.etag };
+  return { tag: { login, etag: a.etag }, serverAt: a.serverAt };
 }
 
 /** GitHub#462: does this snapshot carry the closed items with this pending label? (a board reads every item) */
@@ -115,8 +110,8 @@ export async function syncRound(
   loopLabel: string = '',
   /** GitHub#462: the pending ("等人处理") label setting; '' = a repository's closed items carrying it are not read */
   pendingLabel: string = '',
-  /** GitHub#545: GitHub's clock, the confirmed viewer, the sources to read in full */
-  extra: RoundExtra = { serverAt: null, viewer: null, forceFull: new Set() },
+  /** GitHub#545: read by changes or not, the confirmed viewer, the sources to read in full */
+  extra: RoundExtra = { byChanges: false, viewer: null, forceFull: new Set() },
 ): Promise<SyncRound> {
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
@@ -126,41 +121,30 @@ export async function syncRound(
 
   let viewer: string | null = null;
   let viewerTag: ViewerTag | null = null;
-  let viewerError: unknown = null;
-  // GitHub#545: the rate-limit endpoint refused the credential or GitHub was not reachable: the round
-  // ends as that (nothing else is sent: without the quota no request may go out)
-  const qe = extra.quotaError;
-  if (qe instanceof GitHubError && (qe.kind === 'auth' || qe.kind === 'network')) viewerError = qe;
-  else try {
-    viewerTag = await whoAmI(client, extra.viewer);
-    viewer = viewerTag.login;
+  // GitHub#558: GitHub's clock at the round's start, from the who-am-I answer; null = no read of changes
+  let serverAt: number | null = null;
+  try {
+    const who = await whoAmI(client, extra.viewer);
+    viewerTag = who.tag;
+    viewer = who.tag.login;
+    if (extra.byChanges) serverAt = who.serverAt;
   } catch (e) {
-    // GitHub#545: held back by the quota guard: the account this session confirmed last stays (nothing says it changed)
-    if (e instanceof QuotaHeldError && extra.viewer) {
-      viewer = extra.viewer.login;
-      viewerTag = extra.viewer;
-    } else viewerError = e;
-  }
-  if (viewer === null) {
-    const err = viewerError as GitHubError;
+    const err = e as GitHubError;
     const authFailed = err instanceof GitHubError && err.kind === 'auth';
-    const quotaHeld = err instanceof QuotaHeldError;
-    const offline = !quotaHeld && (!(err instanceof GitHubError) || err.kind === 'network');
+    const offline = !(err instanceof GitHubError) || err.kind === 'network';
     const limited = err instanceof RateLimitError;
     return {
       snapshots: keep(),
       replaced: [],
-      status: quotaHeld
-        ? sources.map((src) => heldStatus(src, err as QuotaHeldError, previous.get(src.key)?.fetchedAt ?? null, false))
-        : unchangedStatus(err).map((st) => ({ ...st, rateLimited: limited })),
+      status: unchangedStatus(err).map((st) => ({ ...st, rateLimited: limited })),
       offline,
       offlineReason: offline ? err.message || null : null,
       authFailed,
       viewer: null,
       checks: new Map(),
       unchanged: [],
-      held: (limited && !err.sent) || quotaHeld,
-      keepRecords: quotaHeld ? sources.map((src) => src.key) : [],
+      held: limited && !err.sent,
+      keepRecords: [],
       deltaTried: new Map(),
       viewerTag: null,
     };
@@ -176,17 +160,16 @@ export async function syncRound(
   const deltaTried = new Map<string, boolean>();
   // GitHub#261: one count query for every board, then each source checks before it reads
   const checking = fullReadEveryMs > 0;
-  // GitHub#374: a rate limit here closed the read gate — every source below then fails at its first read, sending nothing.
-  // GitHub#545: the quota guard holding it back = no counts: no board can be confirmed unchanged ("暂时无法确认")
+  // GitHub#558: the round was to read by changes, but who-am-I's answer carried no clock
+  const clockMissing = extra.byChanges && serverAt === null;
+  // GitHub#374: a rate limit here closed the read gate — every source below then fails at its first read, sending nothing
   const counts = checking
     ? await boardCounts(client, sources).catch((e) => {
-        if (e instanceof RateLimitError || e instanceof QuotaHeldError) return new Map<string, number>();
+        if (e instanceof RateLimitError) return new Map<string, number>();
         throw e;
       })
     : new Map<string, number>();
   type Outcome = { kind: 'read'; snap: SourceSnapshot } | { kind: 'unchanged' };
-  /** GitHub#545: per source, did the check see a change (for the "held" status: "检查发现有变化") */
-  const sawChange = new Map<string, boolean>();
   const readOne = async (src: SourceConfig): Promise<Outcome> => {
     const prev = previous.get(src.key);
     const old = recorded.get(src.key);
@@ -198,7 +181,7 @@ export async function syncRound(
     const usable =
       prev && old && old.snapshotAt === prev.fetchedAt && relationsKnown(prev.items) && loopKnown(prev.items, loopLabel) && pendingKnown(src, prev, pendingLabel) ? old : null;
     // GitHub#545: a board read item by item is read in full only hourly; one that cannot be (or a repository) every 10 minutes
-    const byChanges = usable !== null && extra.serverAt !== null && !extra.forceFull.has(src.key) && deltaReady(prev, src);
+    const byChanges = usable !== null && serverAt !== null && !extra.forceFull.has(src.key) && deltaReady(prev, src);
     const fullEvery = byChanges && src.kind === 'project' ? Math.max(fullReadEveryMs, extra.boardFullReadEveryMs ?? BOARD_FULL_READ_EVERY_MS) : fullReadEveryMs;
     let checked: CheckResult | null = null;
     if (checking) {
@@ -210,16 +193,12 @@ export async function syncRound(
       } catch (e) {
         // GitHub#374: rate limited — no full read now (it would be refused, or spend what is left)
         if (e instanceof RateLimitError) throw e;
-        // GitHub#545: held by the quota guard before the check could say anything: the record stays
-        if (e instanceof QuotaHeldError) {
-          keepRecords.push(src.key);
-          throw e;
-        }
         checked = null; // could not tell: read in full, keep no record
       }
     }
-    sawChange.set(src.key, checked !== null && !checked.unchanged);
-    const fullDue = !usable || now - usable.fullAt >= fullEvery;
+    // GitHub#558: a round meant to read by changes that got no GitHub clock reads every source in full —
+    // not even "the check says unchanged" keeps a snapshot then (what the round promises when the clock is missing)
+    const fullDue = !usable || clockMissing || now - usable.fullAt >= fullEvery;
     // GitHub#545: items read too close to their last change are confirmed every round, whatever the check says
     const unsure = byChanges && prev ? unstableItems(prev, src).length > 0 : false;
     if (checked?.unchanged && usable && !fullDue && !unsure) {
@@ -244,27 +223,27 @@ export async function syncRound(
       try {
         const d =
           src.kind === 'project'
-            ? await readBoardChanges(client, src, prev, extra.serverAt!, counts.get(src.key) ?? null, now, loopLabel)
-            : await readRepoChanges(client, src, prev, extra.serverAt!, now, loopLabel, pendingLabel);
+            ? await readBoardChanges(client, src, prev, serverAt!, counts.get(src.key) ?? null, now, loopLabel)
+            : await readRepoChanges(client, src, prev, serverAt!, now, loopLabel, pendingLabel);
         if (d.kind === 'read') {
           checks.set(src.key, { ...checked.record, snapshotAt: d.snap.fetchedAt, fullAt: usable.fullAt });
           return { kind: 'read', snap: d.snap };
         }
         // anything a read of changes cannot handle: the full read below
       } catch (e) {
-        if (!(e instanceof QuotaHeldError) && !(e instanceof RateLimitError)) deltaTried.set(src.key, true);
+        if (!(e instanceof RateLimitError)) deltaTried.set(src.key, true);
         // the snapshot is untouched and its record still vouches for it: the next round finds the same
         // changes from the same point (a read of changes again — not a full read), until it fails too often
         keepRecords.push(src.key);
         throw e;
       }
     }
-    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, extra.serverAt);
+    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, serverAt);
     // the tags were taken before this read began: a change in between is seen again next round
     if (checked) checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: now });
     return { kind: 'read', snap };
   };
-  // the sources go on side by side, as before; their requests still leave one at a time (GitHub#545: the quota guard's queue)
+  // the sources go on side by side, as before; their requests still leave one at a time (GitHub#545: the send queue)
   const results = await Promise.allSettled(sources.map((src) => readOne(src).finally(onSourceDone)));
   results.forEach((r, i) => {
     const src = sources[i];
@@ -280,10 +259,6 @@ export async function syncRound(
     } else if (r.status === 'rejected') {
       checks.delete(src.key);
       const err = r.reason as Error;
-      if (err instanceof QuotaHeldError) {
-        status.push(heldStatus(src, err, previous.get(src.key)?.fetchedAt ?? null, sawChange.get(src.key) === true));
-        return;
-      }
       if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;
       status.push({
         sourceKey: src.key,

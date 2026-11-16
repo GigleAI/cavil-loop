@@ -314,19 +314,19 @@ function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { tr
   };
   const box = useRef<HTMLSpanElement>(null);
   const n = trouble.failed.length;
-  // GitHub#545: held back to keep half of the account's quota — not a failure: yellow, with when it lifts
-  const heldText = trouble.held ? (trouble.heldUntil !== null ? t('额度保护中（{time} 恢复）', { time: hhmm(trouble.heldUntil) }) : t('额度保护中')) : null;
-  const label = heldText
-    ? t('{text}：客户端暂停了会扣 GitHub 额度的读取（点开看详情）', { text: heldText })
+  // GitHub#558: refused by GitHub's rate limit (and nothing else) — yellow, with when GitHub lets reading start again
+  const limitText = trouble.limited ? (trouble.limitedUntil !== null ? t('GitHub 限流（{time} 恢复）', { time: hhmm(trouble.limitedUntil) }) : t('GitHub 限流')) : null;
+  const label = limitText
+    ? t('{text}：GitHub 暂时拒绝了这个账号的读取，到时自动再读（点开看详情）', { text: limitText })
     : trouble.incomplete
       ? t('同步不完整：{n} 个来源读取失败（点开看详情）', { n })
       : t('有来源这次没读全，筛选结果可能不全（点开看详情）');
   return (
     <span className="trouble-anchor" ref={box}>
       <button
-        className={`icon-btn trouble-btn${heldText ? ' quota-held' : ''}${open ? ' on' : ''}`}
+        className={`icon-btn trouble-btn${limitText ? ' rate-limited' : ''}${open ? ' on' : ''}`}
         data-testid="sync-trouble"
-        data-held={heldText ? 'yes' : 'no'}
+        data-limited={limitText ? 'yes' : 'no'}
         data-open={open ? 'yes' : 'no'}
         aria-label={label}
         aria-expanded={open}
@@ -334,7 +334,7 @@ function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { tr
         onClick={() => (open ? close() : setOpen(true))}
       >
         <Icon name="warn" />
-        {heldText && <span className="quota-held-text">{heldText}</span>}
+        {limitText && <span className="rate-limited-text">{limitText}</span>}
       </button>
       {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} reread={reread} onClose={close} />}
     </span>
@@ -373,12 +373,12 @@ function SyncTroublePanel({
     return () => document.removeEventListener('mousedown', out);
   }, [box, onClose]);
   return (
-    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label={trouble.held ? t('额度保护中') : t('同步不完整')}>
+    <div className="trouble-panel" data-testid="sync-trouble-panel" role="dialog" aria-label={trouble.limited ? t('GitHub 限流中') : t('同步不完整')}>
       {trouble.incomplete && (
         <>
           <div className="trouble-head">
             <Icon name="warn" />
-            {trouble.held ? t('额度保护中') : t('同步不完整')}
+            {trouble.limited ? t('GitHub 限流中') : t('同步不完整')}
           </div>
           <ul data-testid="sync-trouble-incomplete">
             {trouble.failed.map((f) => (
