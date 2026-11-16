@@ -32,7 +32,9 @@ trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TZ=UTC
-unset CODING_AGENT_RELEASE_ROOT LABEL_PENDING_BLOCKED LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR
+unset CODING_AGENT_RELEASE_ROOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER LABEL_AUTOPILOT
+# 在派工会话里跑时会继承派工变量（如 DISPATCH_PROMPT_KIND=review），派工脚本会照它拼成别的提示词：全部清掉
+for __v in $(compgen -v DISPATCH_); do unset "$__v"; done; unset __v
 unset GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN POLL_FAKE_NOW
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
@@ -285,11 +287,12 @@ CONF
         chk "读 $f 恢复后 → 接力" "$(labels_of 10)" "pending/agent"
     done
 
-    # GitHub#551：打开条目列表（issue 一张、PR 一张）有一张读不到 → 一条进度记录都不删；
-    # 读到的那一边照常检查。#30 代表「PR 那边在等的条目」的进度记录，PR 列表读不到时不能被当成「不在等」删掉。
+    # GitHub#551：打开条目列表（issue 一张、PR 一张）有一张读不到 → 一条进度记录都不删；读到的那一边照常检查。
+    # issue #10 在等还开着的 #12，PR #30 在等还开着的 PR #31——两边各有一条真在等的条目；#40 是一条已经不在等的旧记录，
+    # 只有两张列表都读全时才该被清掉。
     # 整轮轮询在列表读不到时会更早退出（无法确认活跃 worker），走不到这一步；所以这里直接调用等前置检查本身
     # （真实的 _lib.sh、真实的 gh 调用路径，每次用一个空的本轮缓存目录，读失败由假 GitHub 注入）
-    local rec10 rec30
+    local rec10 rec30 rec40
     btick() {   # <时间>
         local td; td=$(mktemp -d "$SANDBOX/tick.XXXXXX")
         : > "$CALLS"
@@ -297,25 +300,35 @@ CONF
             bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 9; blocked_tick "$STATE_DIR/state.json"' _ "$ROOT" >/dev/null 2>&1
     }
     on; waiting "#11 #12"; mkissue 11 "" closed completed; mkissue 12 ""
+    mkpr 30 "pending/blocked"; ev 30 labeled pending/blocked; mark 30 "#31"; mkpr 31 ""
     NOW=$T0 tick
-    jq '.blocked_resume["30"] = {"event": 99, "tries": 2, "commented": true, "checked_at": 1}' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-    rec30=$(jq -c '.blocked_resume["30"]' "$STATE")
-    chk "到达性 · 第一轮给 #10 记下了检查时间" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$T0"
+    jq '.blocked_resume["40"] = {"event": 99, "tries": 2, "commented": true, "checked_at": 1}' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    rec40=$(jq -c '.blocked_resume["40"]' "$STATE")
+    chk "到达性 · 第一轮给 issue #10、PR #30 都记下了检查时间" "$(jq -r '"\(.blocked_resume["10"].checked_at)/\(.blocked_resume["30"].checked_at)"' "$STATE")" "$T0/$T0"
+
     : > "$GD/F_pulls"
+    rec30=$(jq -c '.blocked_resume["30"]' "$STATE")
     btick $((T0 + 301))
-    chk "PR 列表读不到：PR 那边的进度一字不变" "$(jq -c '.blocked_resume["30"]' "$STATE")" "$rec30"
-    chk "PR 列表读不到：issue 那边照常检查（检查时间更新了）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 301))"
+    chk "PR 列表读不到：PR #30 的进度一字不变" "$(jq -c '.blocked_resume["30"]' "$STATE")" "$rec30"
+    chk "PR 列表读不到：已不在等的 #40 也不删" "$(jq -c '.blocked_resume["40"]' "$STATE")" "$rec40"
+    chk "PR 列表读不到：issue #10 照常检查（检查时间更新了）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 301))"
     chk "PR 列表读不到：日志写明不清理" "$(grep -c '读不到打开条目列表，等待进度不清理' "$W/state/poll.log" || true)" 1
     chk "到达性 · 这一次确实去读了 PR 列表" "$(yes_if_pos "$(n_calls "^gh api --method GET --paginate --slurp $R/pulls")")" yes
+
     rm -f "$GD/F_pulls"; : > "$GD/F_issues"
     rec10=$(jq -c '.blocked_resume["10"]' "$STATE")
     btick $((T0 + 602))
-    chk "issue 列表读不到：两边的进度都一字不变" "$(jq -c '.blocked_resume["10"]' "$STATE")|$(jq -c '.blocked_resume["30"]' "$STATE")" "$rec10|$rec30"
+    chk "issue 列表读不到：issue #10 的进度一字不变" "$(jq -c '.blocked_resume["10"]' "$STATE")" "$rec10"
+    chk "issue 列表读不到：已不在等的 #40 也不删" "$(jq -c '.blocked_resume["40"]' "$STATE")" "$rec40"
+    chk "issue 列表读不到：PR #30 照常检查（检查时间更新了）" "$(jq -r '.blocked_resume["30"].checked_at' "$STATE")" "$((T0 + 602))"
+    chk "到达性 · issue 列表读不到那一次确实读了 PR #30 的评论" "$(yes_if_pos "$(n_calls "^gh api .*$R/issues/30/comments")")" yes
     chk "issue 列表读不到：日志写明不清理" "$(grep -c '读不到打开条目列表，等待进度不清理' "$W/state/poll.log" || true)" 2
-    rm -f "$GD/F_issues"
+
+    rm -f "$GD/F_issues"; mkpr 31 "" merged
     btick $((T0 + 903))
-    chk "两张都读到：已不在等的 #30 这时才清掉" "$(jq -r '.blocked_resume | has("30")' "$STATE")" false
-    chk "两张都读到：还在等的 #10 进度接着用（检查时间更新）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 903))"
+    chk "两张都读到：已不在等的 #40 这时才清掉" "$(jq -r '.blocked_resume | has("40")' "$STATE")" false
+    chk "两张都读到：issue #10 进度接着用（检查时间更新）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 903))"
+    chk "两张都读到：PR #30 的前置已合并 → 接力翻回 pending/agent" "$(labels_of 30)" "pending/agent"
     fi
 
     # ── 【5】读全了但没有前置 → 交人一次 ──
