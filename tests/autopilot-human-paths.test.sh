@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # kind: e2e
-# 托管合并：改动碰了「合并前必须人过目」的文件就交人 —— GitHub#337（AUTOPILOT_HUMAN_PATHS）。
+# 托管合并：改动碰了「合并前必须人过目」的文件就交人 —— GitHub#337（AUTOPILOT_HUMAN_PATHS）；
+# 钩子调用的清单外文件：验算命令与托管复审提示词的那一段 —— GitHub#560。
 #
 # 跑法：bash tests/autopilot-human-paths.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py）+ 假 tmux，HOME 指向
@@ -16,6 +17,8 @@
 #   · 写错的条目被忽略 → 清单少了一条，没人知道
 #   · 根目录写法和任意深度写法分不清 → 拦多了或拦少了
 #   · 判定命中之后不重读就交人 → 人刚改完状态又被写一遍
+#   · 验算命令（human-paths-check.sh，GitHub#560）和合并检查判得不一样 → 复审照着验算发的配置建议改完仍拦不住
+#   · 没配清单时托管复审提示词多出「钩子调用的文件」那段 → 没开这项的项目复审悄悄变样
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -497,6 +500,169 @@ fi
 fresh "$ON" 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'; happy; files "$T_ONLY"; tick
 chk "到达性 · 开关 off：只改测试文件也交人，说明列出测试文件" "$(merged)/$(has_label pending/human)/$(comments_with '.agents/skills/x/scripts/a.test.mjs')" "0/yes/1"
 chk "模板里这一项是 on" "$(grep -cE '^AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="on"$' "$REPO_DIR/cavil-loop.config.example")" 1
+
+# ─────────────────────────────────────────────────────────────────────────
+section "【11】钩子调用的清单外文件（GitHub#560）：验算命令和真实合并检查逐个对拍；文档命令照字面跑"
+CHECK="$SCRIPTS/human-paths-check.sh"
+# 只改一个文件的托管 PR 跑一轮真实轮询：merge = 合并了，human = 交人没合并，其他 = other
+outcome() {   # <文件> [配置行…]
+    local f="$1"; shift
+    fresh "$@"; happy; files "[{\"filename\":\"$f\",\"status\":\"modified\"}]"; tick
+    if [ "$(merged)" = 1 ]; then echo merge
+    elif [ "$(has_label pending/human)" = yes ]; then echo human
+    else echo other; fi
+}
+# 验算命令对同一个文件的结论：拦 → human，不拦 → merge
+predict() {   # <清单值> <on|off> <文件>
+    local out rc=0
+    out=$(bash "$CHECK" --spec "$1" --exempt-tests "$2" "$3") || rc=$?
+    case "$rc:$out" in
+        0:拦$'\t'*) echo human ;;
+        1:不拦$'\t'*) echo merge ;;
+        *) echo "error($rc:$out)" ;;
+    esac
+}
+# 同一个例子（原清单 default /setup.sh），清单 × 豁免 × 文件：方案里六种情况各至少一行，外加改名路线和根目录 .github/
+while IFS='|' read -r spec ex f want what; do
+    [ -n "$spec" ] || continue
+    lines=("AUTOPILOT_HUMAN_PATHS=\"$spec\"")
+    [ "$ex" = off ] && lines+=('AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"')
+    got=$(outcome "$f" "${lines[@]}")
+    chk "真实轮询 · $what → $want" "$got" "$want"
+    chk "验算命令与真实轮询一致 · $what" "$(predict "$spec" "$ex" "$f")" "$got"
+done <<'CASES'
+default /setup.sh|on|scripts/check-commit.sh|merge|没追加：钩子调用的脚本照旧被合并（缺口本身）
+default /setup.sh /scripts/check-commit.sh|on|scripts/check-commit.sh|human|追加之后：只改脚本 → 交人
+default /setup.sh /scripts/check-commit.sh|on|setup.sh|human|追加之后：原条目 /setup.sh 还在 → 交人
+default /setup.sh /scripts/check-commit.sh|on|scripts/other.sh|merge|追加之后：无关脚本 → 照常合并
+default /scripts/check-commit.sh|on|setup.sh|merge|替换整行（丢了 /setup.sh）→ setup.sh 不再交人
+default /setup.sh /scripts/check-commit.sh|off|scripts/check-commit.sh|human|不是测试名 · 豁免关 → 交人
+default /setup.sh|on|scripts/check.test.sh|merge|测试名 · 不追加 + 豁免开 → 合并
+default /setup.sh|off|scripts/check.test.sh|merge|测试名 · 不追加 + 豁免关 → 仍合并（只关豁免不够）
+default /setup.sh /scripts/check.test.sh|on|scripts/check.test.sh|merge|测试名 · 追加 + 豁免开 → 仍合并（只追加不够）
+default /setup.sh /scripts/check.test.sh|off|scripts/check.test.sh|human|测试名 · 追加 + 豁免关 → 交人（两步都做）
+default /setup.sh /scripts/check-test.sh|on|scripts/check-test.sh|human|测试名 · 改名为不像测试的名字并追加 → 交人
+default /setup.sh|on|.githooks/pre-commit|human|钩子本身 → 交人
+default /setup.sh|on|.github/workflows/ci.test.yml|human|根目录 .github/ 下名字像测试也拦
+CASES
+# 改名 / 复制：新旧路径作为一条记录一起判（PR #565 代码复审第 1 轮：拆成两个路径分别验算，和合并检查不一致）
+outcome_rec() {   # <改动记录 JSON> [配置行…]
+    local r="$1"; shift
+    fresh "$@"; happy; files "[$r]"; tick
+    if [ "$(merged)" = 1 ]; then echo merge
+    elif [ "$(has_label pending/human)" = yes ]; then echo human
+    else echo other; fi
+}
+predict_rename() {   # <清单值> <on|off> <旧路径> <新路径>
+    local out rc=0
+    out=$(bash "$CHECK" --spec "$1" --exempt-tests "$2" --renamed "$3" "$4") || rc=$?
+    case "$rc:$out" in
+        0:拦$'\t'"$3 -> $4") echo human ;;
+        1:不拦$'\t'"$3 -> $4"$'\t'*) echo merge ;;
+        *) echo "error($rc:$out)" ;;
+    esac
+}
+while IFS='|' read -r spec ex st old new want what; do
+    [ -n "$spec" ] || continue
+    lines=("AUTOPILOT_HUMAN_PATHS=\"$spec\"")
+    [ "$ex" = off ] && lines+=('AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"')
+    got=$(outcome_rec "{\"filename\":\"$new\",\"previous_filename\":\"$old\",\"status\":\"$st\"}" "${lines[@]}")
+    chk "真实轮询 · $what → $want" "$got" "$want"
+    chk "验算命令（--renamed）与真实轮询一致 · $what" "$(predict_rename "$spec" "$ex" "$old" "$new")" "$got"
+done <<'CASES'
+default|on|renamed|.githooks/a.test.sh|scripts/a.sh|human|改名 · 清单里的测试名 → 清单外的非测试名：拦（复审第 1 轮的例子）
+default|on|renamed|.githooks/a.sh|.githooks/a.test.sh|human|改名 · 清单里的非测试名 → 测试名：拦
+default|on|renamed|.githooks/a.test.sh|.githooks/b.test.sh|merge|改名 · 测试名 → 测试名，豁免开：不拦
+default|off|renamed|.githooks/a.test.sh|.githooks/b.test.sh|human|改名 · 测试名 → 测试名，豁免关：拦
+default|on|renamed|scripts/a.test.sh|scripts/a.sh|merge|改名 · 清单外的测试名 → 清单外的非测试名：不拦
+default|on|renamed|scripts/a.sh|.githooks/a.sh|human|改名 · 清单外 → 清单里：拦
+default|on|copied|.githooks/a.test.sh|scripts/a.sh|human|复制 · 清单里的测试名 → 清单外的非测试名：拦
+CASES
+# 拆成两个路径分别验算，在第一行那个例子上确实会得出和合并检查不同的结论——所以提示词和文档要求用 --renamed
+out=$(bash "$CHECK" --spec default --exempt-tests on .githooks/a.test.sh scripts/a.sh); rc=$?
+chk "到达性 · 同一对路径拆成两项验算：两项都不拦（和合并检查不同，这正是 --renamed 存在的原因）" "$rc|$(printf '%s\n' "$out" | cut -f1 | tr '\n' ',')" "1|不拦,不拦,"
+# 退出码与输出格式
+out=$(bash "$CHECK" --spec 'default /setup.sh' --exempt-tests on setup.sh scripts/check.test.sh scripts/x.sh); rc=$?
+chk "验算命令：多个路径逐行给结论、原因分得清，有不拦时退出码 1" "$rc|$out" \
+    "1|拦	setup.sh
+不拦	scripts/check.test.sh	测试文件豁免（也不在清单里）
+不拦	scripts/x.sh	不在清单里"
+out=$(bash "$CHECK" --spec 'default /scripts/check.test.sh' --exempt-tests on scripts/check.test.sh); rc=$?
+chk "验算命令：命中清单但被豁免 → 原因写明命中清单" "$rc|$out" "1|不拦	scripts/check.test.sh	测试文件豁免（命中清单）"
+for args in "--spec|default a/b|--exempt-tests|on|x" "--spec|default|--exempt-tests|yes|x" "--spec|default|--exempt-tests|on" \
+            "--exempt-tests|on|x" "--spec|default|--exempt-tests|on|/etc/passwd" "--spec|default|--exempt-tests|on|../x" \
+            "--spec|default|--exempt-tests|on|--renamed|a" "--spec|default|--exempt-tests|on|--renamed|../a|b"; do
+    IFS='|' read -r -a a <<< "$args"
+    out=$(bash "$CHECK" "${a[@]}" 2>/dev/null); rc=$?
+    chk "验算命令：用法错误 / 清单写法不认识 → 退出码 2、不给逐路径结论（${args//|/ }）" "$rc|$out" "2|"
+done
+chk "清单写法不认识：真实轮询交人（验算命令同样不放行）" "$(outcome docs/a.md 'AUTOPILOT_HUMAN_PATHS="default a/b"')" human
+
+# 文档里的验算命令：两份一致；在只有 HOME 和 PATH 的环境里照字面跑（托管安装的技能目录指向本仓库）
+cmd_of() { sed -n '/<!-- autopilot-human-paths:check:begin -->/,/<!-- autopilot-human-paths:check:end -->/p' "$1" | sed '1,2d;$d' | sed '$d'; }
+CMD_EN=$(cmd_of "$REPO_DIR/docs/operations.md"); CMD_ZH=$(cmd_of "$REPO_DIR/docs/operations.zh.md")
+chk "两份文档的验算命令一致、不是空的" "$([ -n "$CMD_EN" ] && [ "$CMD_EN" = "$CMD_ZH" ] && echo yes || echo no)" yes
+DOC_HOME="$SANDBOX/doc-home"; mkdir -p "$DOC_HOME/.agents/skills"; ln -sfn "$REPO_DIR" "$DOC_HOME/.agents/skills/cavil-loop"
+out=$(env -i HOME="$DOC_HOME" PATH="/usr/bin:/bin" LANG=C.UTF-8 bash -c "$CMD_EN" 2>&1); rc=$?
+chk "文档命令照字面跑：三个路径都拦、退出码 0" "$rc|$out" "0|拦	scripts/check-commit.sh
+拦	setup.sh
+拦	.githooks/pre-commit"
+spec_in_cmd=$(printf '%s\n' "$CMD_EN" | sed -n "s/.*--spec '\([^']*\)'.*/\1/p")
+chk "文档命令验算的清单值就是示例块里新加的那一行" \
+    "$(ex_of "$REPO_DIR/docs/operations.md" | grep -cxF "AUTOPILOT_HUMAN_PATHS=\"$spec_in_cmd\"")" 1
+
+section "【12】托管复审提示词：配了清单才多一段「钩子调用的文件」；没配时和改动前逐字节一样"
+compose() {   # <scripts 根> <模板名> [环境变量…]
+    local root="$1" name="$2"; shift 2
+    (cd "$W/project" && env "$@" CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template "$2"); [ -n "$f" ] && cat "$f"' _ "$root" "$name" 2>/dev/null)
+}
+AP=(DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE=7)
+SEC='^# 托管复审加一步：钩子调用的文件'
+for line in "" 'AUTOPILOT_HUMAN_PATHS=""'; do
+    if [ -n "$line" ]; then fresh "$line"; else fresh; fi
+    for name in review new-issue issue-comment pr-comment; do
+        new=$(compose "$SCRIPTS" "$name" "${AP[@]}"); old=$(compose "$SANDBOX/old/scripts" "$name" "${AP[@]}")
+        chk "没配清单（${line:-不写这一行}）· 托管 $name 提示词和改动前逐字节一样" \
+            "$([ -n "$new" ] && [ "$new" = "$old" ] && echo same || echo differ)" same
+    done
+    chk "到达性 · 比的是带托管规则的复审提示词" "$(compose "$SCRIPTS" review "${AP[@]}" | grep -c '^# 托管规则')" 1
+done
+fresh 'AUTOPILOT_HUMAN_PATHS="default,/setup.sh"'
+n=$(compose "$SCRIPTS" review "${AP[@]}")
+chk "配了清单 · 托管复审提示词多出这一段、排在托管规则之后、没有没换掉的占位" \
+    "$(printf '%s\n' "$n" | grep -c "$SEC")/$(printf '%s\n' "$n" | awk -v s="$SEC" '/^# 托管规则/{a=NR} $0~s{b=NR} END{print (b>a && a>0)?"yes":"no"}')/$(printf '%s\n' "$n" | grep -c '@@')" "1/yes/0"
+chk "配了清单 · 原样值照抄进来（逗号分隔也原样）" "$(printf '%s\n' "$n" | grep -cxF 'default,/setup.sh')" 1
+# shellcheck disable=SC2016
+want_list=$(bash -c 'source "$1/_human_paths.sh"; jq -rn --arg spec "default,/setup.sh" --arg def "$AUTOPILOT_HUMAN_PATHS_DEFAULT" "$AUTOPILOT_PATHS_JQ"'"'"'rules($spec; $def) | map("`" + .raw + "`") | join(" ")'"'" _ "$SCRIPTS")
+chk "配了清单 · 展开后的条目和合并检查用的规则展开结果一样" "$([ -n "$want_list" ] && printf '%s\n' "$n" | grep -cF -- "- 展开后 daemon 实际比对的条目：$want_list")" 1
+# 列出的每一条，验算命令都判拦（同一份规则的另一个出口）
+bad_entries=0; n_entries=0
+for e in $(printf '%s' "$want_list" | tr -d '`'); do
+    p="${e#/}"; case "$p" in */) p="${p}x" ;; esac
+    n_entries=$((n_entries+1))
+    [ "$(predict 'default,/setup.sh' on "$p")" = human ] || bad_entries=$((bad_entries+1))
+done
+chk "展开列出的每一条（共 15 条），验算命令都判拦" "$n_entries/$bad_entries" "15/0"
+chk "配了清单 · 完整建议行是「原值 + 追加」" "$(printf '%s\n' "$n" | grep -cF 'AUTOPILOT_HUMAN_PATHS="default,/setup.sh <路径>"')" 1
+chk "配了清单 · 提示词要求改名 / 复制的文件用 --renamed 一起交进去" "$(printf '%s\n' "$n" | grep -c '改名 / 复制的文件\*\*必须\*\*用 `--renamed')" 1
+chk "配了清单 · 验算命令写的是本次能跑的路径" "$(printf '%s\n' "$n" | grep -cF "bash '$SCRIPTS/human-paths-check.sh' --spec")" 1
+chk "豁免没写 → 写明开着、验算传 on" "$(printf '%s\n' "$n" | grep -c '^- 测试文件豁免：开着.*--exempt-tests on')" 1
+fresh 'AUTOPILOT_HUMAN_PATHS="default"' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'
+chk "豁免 off → 写明关着、验算传 off" "$(compose "$SCRIPTS" review "${AP[@]}" | grep -c '^- 测试文件豁免：关着.*--exempt-tests off')" 1
+for v in "default /a'b" 'default /$HOME' 'default /a\b' 'default /a`b' 'default /a"b'; do
+    q=$(printf '%q' "$v")
+    fresh "AUTOPILOT_HUMAN_PATHS=$q"
+    n=$(compose "$SCRIPTS" review "${AP[@]}")
+    chk "原值含照抄易错的字符（$v）→ 原样列出，不给完整配置行，只写末尾追加" \
+        "$(printf '%s\n' "$n" | grep -c "$SEC")/$(printf '%s\n' "$n" | grep -cxF -- "$v")/$(printf '%s\n' "$n" | grep -cF '<路径>"`')/$(printf '%s\n' "$n" | grep -c '现有的值末尾追加')" "1/1/0/1"
+done
+fresh "$ON"
+for name in new-issue issue-comment pr-comment; do
+    w=$(compose "$SCRIPTS" "$name" "${AP[@]}")
+    chk "配了清单 · worker 的 $name 提示词有托管规则、没有这一段" "$(printf '%s\n' "$w" | grep -c '^# 托管规则')/$(printf '%s\n' "$w" | grep -c "$SEC")" "1/0"
+done
+r=$(compose "$SCRIPTS" review)
+chk "配了清单 · 不是托管条目的复审：提示词拼出来了、没有这一段" "$([ -n "$r" ] && echo yes || echo no)/$(printf '%s\n' "$r" | grep -c "$SEC")" "yes/0"
 
 echo
 compat_summary

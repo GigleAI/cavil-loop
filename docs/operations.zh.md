@@ -717,6 +717,7 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
 AUTOPILOT_HUMAN_PATHS="default"
 AUTOPILOT_HUMAN_PATHS="default /systemd/ /launchd/ /setup.sh"
 AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh"
+AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"
 ```
 <!-- autopilot-human-paths:examples:end -->
 
@@ -736,7 +737,7 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   代码：三次写入每次之前都重判、都核对现状（见上文「交人的每次写入之前都核对现状」，GitHub#382）。
 - **测试文件不算**（GitHub#548，`AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`）：新旧路径都是测试文件的文件不拿去和清单比，
   所以只改清单目录里测试文件的 PR 照常合并；测试文件和别的文件混在一个 PR 里时，只拿别的文件比、说明里也只点名它们。
-  测试文件只看路径认（只有一份认法：`scripts/_lib.sh` 里的 `is_test`）：
+  测试文件只看路径认（只有一份认法：`scripts/_human_paths.sh` 里的 `is_test`）：
   - 文件名形如 `<名字>.test.<扩展名>` 或 `<名字>.spec.<扩展名>`（扩展名不限，`a.test.json` 也算；`a.test`、`test.mjs`、
     `a.tests.mjs` 不算），或
   - 位于某一层叫 `__tests__` 的目录下；
@@ -747,6 +748,34 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   和别的文件一样照清单比，和 GitHub#548 之前完全一样。这一项只在配了 `AUTOPILOT_HUMAN_PATHS` 时起作用。要知道的限制：
   只看文件名、不看内容——项目里若本来就有东西会自动以维护者身份运行某个测试文件（git 钩子、agent 钩子里写死了它），
   把这一项写成 `"off"`。项目自己的复审规则里抄了这份名单的，改成引用这一节，别留一份副本。
+- **钩子把检查交给清单外的文件**（GitHub#560）：常见写法是钩子只做一层壳——`.githooks/pre-commit` 里只有
+  `exec scripts/check-commit.sh`——真正的检查在钩子目录以外的脚本里。那个脚本每次提交都以开发者身份运行，和钩子
+  本身是一类风险；但 daemon 只看路径，不会顺着钩子去找它调用的文件：只改 `scripts/check-commit.sh` 的托管 PR 会被合并。
+  daemon 拦一个文件的条件是**命中清单、而且没被当成测试文件豁免掉**，所以：
+  - 把被调用的文件**追加**到现有的值后面，不要替换整行。原来是 `AUTOPILOT_HUMAN_PATHS="default /setup.sh"`，就写成
+    `AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"`；写成 `"default /scripts/check-commit.sh"` 会悄悄丢掉 `/setup.sh`。
+  - 被调用的文件名字算测试文件（`scripts/check.test.sh`）、测试文件豁免又开着时，只追加进清单**不够**：还要加
+    `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"`（代价：清单目录里的测试文件改动也会交人），或者把它改成不像测试文件的
+    名字、同步改钩子，再追加新路径。只关豁免、不追加，同样拦不住。
+  - 改配置之前用下面这条只读命令核对结果（和合并检查同一份规则；不读 GitHub、不读项目配置）。每个路径输出
+    `拦` 或 `不拦` 和原因；全部是「拦」时退出码 0，用法错误或清单里有 daemon 读不懂的条目时是 2：
+
+<!-- autopilot-human-paths:check:begin -->
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/human-paths-check.sh \
+    --spec 'default /setup.sh /scripts/check-commit.sh' --exempt-tests on \
+    scripts/check-commit.sh setup.sh .githooks/pre-commit
+```
+<!-- autopilot-human-paths:check:end -->
+
+  `--spec` 是打算写进配置的值；`AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS` 不写、写成空或 `"on"` 时 `--exempt-tests` 传 `on`，
+  否则传 `off`。改名 / 复制的文件作为一项传 `--renamed <旧路径> <新路径>`：合并检查对一条改名记录是新旧路径一起判的
+  （两边都算测试文件才豁免），拆成两个路径分别验算可能得出不一样的结论。开发模式下用 checkout 里的 `scripts/human-paths-check.sh`。
+  配了清单的项目，托管复审会多一步（只在配了清单时出现，否则复审提示词不变）：顺着清单里的钩子和钩子配置（以及它们调用的
+  `package.json` scripts、`Makefile` 目标）找到它们运行的仓库内文件，目标分支和 PR 两边都看；PR 改到调用链上 daemon 不会拦的
+  文件，或者调用链上有算不出路径的调用（变量、命令替换、通配）时，不翻合并队列、交人，并给出用上面这条命令验算过的配置建议。
+  这一步是复审读代码的判断，不是 daemon 的硬检查：复审可能漏看，工具自己隐式加载的文件（如 lint 工具的配置）也不跟踪——
+  这类文件请自己写进清单。
 - **只看路径，不看内容**：清单里的文件（除了上一条说的测试文件）只要被改就算（`package.json` 里只升级依赖版本也算）。锁文件和
   `AGENTS.md` / `CLAUDE.md` 不在内置清单里，项目需要可以自己加。
 - **关闭**：删掉这一行（或写成 `""`）。从下一轮起恢复原来的规则；已经交给人的 PR 仍在人手上。

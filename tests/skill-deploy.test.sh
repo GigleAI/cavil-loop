@@ -30,6 +30,7 @@ cp "$REPO_DIR/scripts/_names.sh" "$SRC/scripts/_names.sh"
 cp "$REPO_DIR/scripts/notify-requester-bot.sh" "$SRC/scripts/notify-requester-bot.sh"
 cp "$REPO_DIR/scripts/notify-relay.sh" "$SRC/scripts/notify-relay.sh"
 cp "$REPO_DIR/scripts/heavy-test.sh" "$REPO_DIR/scripts/_heavy.sh" "$SRC/scripts/"
+cp "$REPO_DIR/scripts/human-paths-check.sh" "$REPO_DIR/scripts/_human_paths.sh" "$SRC/scripts/"
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -83,6 +84,10 @@ done
 # worker 跑重测试用的排队命令（GitHub#343）也走长期入口：真的转进发布目录里的脚本
 heavy_out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/heavy-test.sh" --list 2>&1) || fail "heavy-test-entry: $heavy_out"
 case "$heavy_out" in *"没有登记着的重测试"*) ;; *) fail "heavy-test-entry: $heavy_out" ;; esac
+# 复审验算「合并前需人过目」清单的命令（GitHub#560）也走长期入口：真的转进发布目录里的脚本
+hp_out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/human-paths-check.sh" --spec 'default' --exempt-tests on .githooks/pre-commit 2>&1) \
+    || fail "human-paths-check-entry: $hp_out"
+[ "$hp_out" = "拦	.githooks/pre-commit" ] || fail "human-paths-check-entry: $hp_out"
 pass bootstrap
 
 echo '▶ a running consumer stays on v1 while the stable link moves to v2'

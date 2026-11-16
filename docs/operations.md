@@ -906,6 +906,7 @@ To turn it on, add one line to the project's config; it takes effect on the next
 AUTOPILOT_HUMAN_PATHS="default"
 AUTOPILOT_HUMAN_PATHS="default /systemd/ /launchd/ /setup.sh"
 AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh"
+AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"
 ```
 <!-- autopilot-human-paths:examples:end -->
 
@@ -932,7 +933,7 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 - **Test files do not count** (GitHub#548, `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`): a file whose old and new
   paths are both test files is not matched against the list, so a PR that only changes test files under a
   listed directory is merged as usual; in a PR that mixes them, only the other files are matched and named.
-  A test file is, by its path alone (one rule, `is_test` in `scripts/_lib.sh`):
+  A test file is, by its path alone (one rule, `is_test` in `scripts/_human_paths.sh`):
   - a file name of the form `<name>.test.<ext>` or `<name>.spec.<ext>` (any extension, `a.test.json` too;
     `a.test`, `test.mjs`, `a.tests.mjs` are not), or
   - a file anywhere below a directory named `__tests__`;
@@ -949,6 +950,44 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
   particular test file as the maintainer on its own (a git hook or an agent hook that runs it), set this to
   `"off"`. A project whose own review rules copied the file list should point to this section instead of
   keeping a copy.
+- **A hook that hands its work to a file outside the list** (GitHub#560): a common shape is a hook that is only a
+  shell — `.githooks/pre-commit` contains `exec scripts/check-commit.sh` — with the real check in a script outside
+  the hook directory. That script runs on every commit as the developer, the same risk as the hook itself, but
+  the daemon looks at paths only and never follows a hook to the files it calls: an autopilot PR that changes only
+  `scripts/check-commit.sh` is merged. The daemon blocks a file only when it **matches the list and is not
+  exempted as a test file**, so:
+  - **Append** each called file to the existing value — never replace the line. With
+    `AUTOPILOT_HUMAN_PATHS="default /setup.sh"` that is `AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"`;
+    writing `"default /scripts/check-commit.sh"` would silently drop `/setup.sh`.
+  - If the called file's name counts as a test file (`scripts/check.test.sh`) and the test-file exemption is on,
+    appending it is **not enough**: also set `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"` (cost: changes to test
+    files under listed directories then go to a human too), or rename it to a name that is not a test file,
+    update the hook, and append the new path. Turning the exemption off without appending is not enough either.
+  - Before changing the config, check the result with the read-only command below (same rules as the merge
+    check; it reads neither GitHub nor the project config). Each path prints `拦` (blocked) or `不拦` (not
+    blocked) with the reason; the exit code is 0 only when every path is blocked, 2 for a usage error or an
+    entry the daemon cannot read:
+
+<!-- autopilot-human-paths:check:begin -->
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/human-paths-check.sh \
+    --spec 'default /setup.sh /scripts/check-commit.sh' --exempt-tests on \
+    scripts/check-commit.sh setup.sh .githooks/pre-commit
+```
+<!-- autopilot-human-paths:check:end -->
+
+  `--spec` is the value you intend to write; `--exempt-tests` is `on` when `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`
+  is missing, empty or `"on"`, otherwise `off`. A renamed or copied file is one item, `--renamed <old path> <new path>`:
+  the merge check judges both paths of one rename together (exempt only when both are test files), so checking them
+  as two separate paths can give a different answer. On a development checkout use `scripts/human-paths-check.sh` in it.
+  The autopilot reviewer of a project with the list set gets an extra step for this (only then; otherwise its
+  prompt is unchanged): it follows the hooks and hook configs on the list (and the `package.json` scripts /
+  `Makefile` targets they call) to the repo files they run, on both the target branch and the PR; when the PR
+  changes a file on such a chain that the daemon would not block, or a call whose path cannot be worked out
+  (a variable, command substitution, glob), it hands the PR to a human instead of queuing the merge, and
+  suggests a config change it has checked with the command above. That step is the reviewer reading code, not a
+  check the daemon enforces: a reviewer can miss a call, and files a tool loads implicitly (a linter's own config)
+  are not followed — put those on the list yourself.
 - **Only paths are looked at, not content**: any change to a listed file (other than the test files above) counts (a dependency bump in
   `package.json` too). Lock files and `AGENTS.md` / `CLAUDE.md` are not on the built-in list; add them
   if the project wants them.
