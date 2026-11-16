@@ -331,6 +331,17 @@ inspect_field() {   # <配置文件> <下标>
     W_KIND=literal; W_LINE="$ln"; W_WHY=""; W_LITERAL="${BASH_REMATCH[2]}"
 }
 
+# 整数按十进制数字串比大小，不经过 bash 的 64 位整数：登记的上限可以是使用端的真实上限
+# （head -n 收到 2^64-1、[ -gt ] 收到 2^63-1），比较时不会溢出。两边都是不带前导 0 的写法。
+# 上限留空 = 使用它的代码不设上限。位数以 200 为限：窗口送来的每个值都不超过 200 个字符（客户端后端
+# daemon_config.rs 的 valid_value、远程入口 remote_access.py 的 VALUE_RE），这里和它们用同一个数。
+INT_MAX_DIGITS=200
+dec_le() {   # <a> <b>：a <= b 返回 0
+    if [ "${#1}" -ne "${#2}" ]; then [ "${#1}" -lt "${#2}" ]; return; fi
+    [ "$1" = "$2" ] && return 0
+    [[ "$1" < "$2" ]]   # 同样位数的数字串：按字节比（本脚本开头已 LC_ALL=C）
+}
+
 # ── 按类型校验一个值；不合规时把原因放进 BAD_WHY ──
 valid_value() {   # <类型> <值>
     local type="$1" v="$2" lo hi a opts o
@@ -346,8 +357,10 @@ valid_value() {   # <类型> <值>
             BAD_WHY="模型名只能含字母、数字和 . _ : / @ -"; return 1 ;;
         int:*)
             lo="${type#int:}"; hi="${lo#*:}"; lo="${lo%%:*}"
-            if [[ "$v" =~ ^(0|[1-9][0-9]{0,8})$ ]] && [ "$v" -ge "$lo" ] && [ "$v" -le "$hi" ]; then return 0; fi
-            BAD_WHY="只能是 $lo 到 $hi 之间的整数"; return 1 ;;
+            if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]] && [ "${#v}" -le "$INT_MAX_DIGITS" ] \
+               && dec_le "$lo" "$v" && { [ -z "$hi" ] || dec_le "$v" "$hi"; }; then return 0; fi
+            if [ -z "$hi" ]; then BAD_WHY="只能是不小于 $lo 的整数"; else BAD_WHY="只能是 $lo 到 $hi 之间的整数"; fi
+            return 1 ;;
         bool:*)
             lo="${type#bool:}"; hi="${lo#*:}"; lo="${lo%%:*}"
             [ "$v" = "$lo" ] || [ "$v" = "$hi" ] && return 0
@@ -365,13 +378,15 @@ valid_value() {   # <类型> <值>
 
 # 类型 → 客户端画表单要的那部分 JSON
 # 一个登记项的类型 → JSON 里的 type 和它带的字段。agent 的选项是 $ARGS.positional（daemon 自带的 agent）。
-# int:下限:上限 / bool:开的值:关的值 都在第一个冒号处分开，和 valid_value 一致
+# int:下限:上限 / bool:开的值:关的值 都在第一个冒号处分开，和 valid_value 一致（int 的上限可以留空）
 TYPE_JQ='def type_json($t):
     def after($p): $t[($p | length):];
     def head($s): if ($s | index(":")) == null then $s else $s[:($s | index(":"))] end;
     def tail($s): if ($s | index(":")) == null then $s else $s[(($s | index(":")) + 1):] end;
     if $t == "agent" then {type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}
-    elif $t | startswith("int:") then after("int:") as $r | {type:"int", min:(head($r) | tonumber), max:(tail($r) | tonumber)}
+    elif $t | startswith("int:") then after("int:") as $r
+        # max：空 = 代码不设上限（null）；超过 JSON 数字能精确表示的位数时给字符串，免得被读成近似值
+        | {type:"int", min:(head($r) | tonumber), max:(tail($r) | if . == "" then null elif length <= 15 then tonumber else . end)}
     elif $t | startswith("bool:") then after("bool:") as $r | {type:"bool", on:head($r), off:tail($r)}
     elif $t | startswith("enum:") then {type:"enum", options:[after("enum:") | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}
     else {type:$t} end;'

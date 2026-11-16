@@ -303,7 +303,11 @@ export interface ConfigField {
   type: string;
   options?: { value: string; label: string }[];
   min?: number;
-  max?: number;
+  /**
+   * null: the code that uses the setting sets no upper bound. A string when the bound is beyond what a JSON number
+   * holds exactly (e.g. 2^64-1, what `head -n` takes) — compare as BigInt, never as a Number.
+   */
+  max?: number | string | null;
   on?: string;
   off?: string;
   value: string;
@@ -344,6 +348,9 @@ export interface ConfigSave extends DaemonResult {
 }
 
 const KNOWN_TYPES = new Set(['agent', 'model', 'int', 'bool', 'enum']);
+/** the most digits an integer setting may have: every value the window sends is at most 200 characters (the back end's
+ * valid_value, the remote entry's VALUE_RE); scripts/project-config.sh INT_MAX_DIGITS is the same number */
+const INT_MAX_DIGITS = 200;
 /** what project-config.sh may write on one config line (its LIT_CHARS) */
 const PLAIN = /^[A-Za-z0-9._:/@,+-]*$/;
 
@@ -355,9 +362,12 @@ export function fieldProblem(f: ConfigField, v: string): string | null {
   if (!PLAIN.test(v)) return t('不能有空格、引号、$ 这类字符');
   switch (f.type) {
     case 'int': {
-      const lo = f.min ?? 0;
-      const hi = f.max ?? 999_999_999;
-      return /^(0|[1-9]\d{0,8})$/.test(v) && Number(v) >= lo && Number(v) <= hi ? null : t('只能是 {lo} 到 {hi} 之间的整数', { lo: String(lo), hi: String(hi) });
+      // decimal digits compared exactly (BigInt): the bound is the using code's own, e.g. 2^63-1, not a 9-digit cap
+      const lo = BigInt(f.min ?? 0);
+      const hi = f.max == null ? null : BigInt(f.max);
+      const ok = /^(0|[1-9]\d*)$/.test(v) && v.length <= INT_MAX_DIGITS && BigInt(v) >= lo && (hi === null || BigInt(v) <= hi);
+      if (ok) return null;
+      return hi === null ? t('只能是不小于 {lo} 的整数', { lo: String(lo) }) : t('只能是 {lo} 到 {hi} 之间的整数', { lo: String(lo), hi: String(hi) });
     }
     case 'model':
       return v === '' || (v.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(v)) ? null : t('模型名只能含字母、数字和 . _ : / @ -');
