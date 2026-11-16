@@ -12,6 +12,7 @@ import type { AppState, Item } from '../shared/types';
 import { t, tKey, zhKey } from '../shared/i18n';
 import { tNode } from './tNode';
 import { SaidText, Verbatim } from './Verbatim';
+import { LabelSetupBox } from './LabelSetupBox';
 
 type Candidate = BlockedRefInfo & Pick;
 
@@ -74,6 +75,8 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     setView(v);
     if (v.ok) setRestore(new Set(v.lost.map((r) => refKey(r))));
   };
+  // GitHub#559: read again once labels the repository lacked were created (the newest read counts)
+  const [round, setRound] = useState(0);
   useEffect(() => {
     let live = true;
     void api()
@@ -82,7 +85,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
     return () => {
       live = false;
     };
-  }, [item.key]);
+  }, [item.key, round]);
 
   const taken = useMemo(() => {
     const s = new Set<string>(picks.map((p) => refKey(p)));
@@ -238,6 +241,7 @@ export function BlockedDialog({ item, state, items, onClose }: { item: Item; sta
                 <SaidText said={view.refuse} />
               </div>
             )}
+            {view.refuse && view.missingLabels && <LabelSetupBox repo={view.repo} wants={view.missingLabels} state={state} onReread={() => setRound((x) => x + 1)} testid="blocked-labels" />}
             {paused && (
               <div className="warn-text" data-testid="blocked-paused">
                 {tNode('这一条正暂停在等前置里（同时挂着「{label}」）。确认后会把没做完的补上、恢复等待；已有的前置不用重新选。', { label: <Verbatim from="user">{state.handBack.human}</Verbatim> })}

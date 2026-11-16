@@ -4,6 +4,7 @@
 
 import type { HandBackLabels } from './types';
 import { t } from './i18n';
+import { roleOf, type LabelRole } from './labelSetup';
 
 export type Handoff = 'none' | 'agent' | 'autopilot';
 export const HANDOFFS: readonly Handoff[] = ['none', 'agent', 'autopilot'];
@@ -93,4 +94,24 @@ export function handoffProblem(repo: string, check: HandoffCheck): string {
     case 'unset':
       return t('设置里没有填托管标签');
   }
+}
+
+/**
+ * GitHub#559: the labels the hand-over buttons need that the repository was read without (`missing`
+ * checks only — never "could not read"), each once (any case), with the part it plays.
+ */
+export function missingHandoffLabels(checks: HandoffCheck[], hb: HandBackLabels): { name: string; role: LabelRole }[] {
+  const out: { name: string; role: LabelRole }[] = [];
+  const seen = new Set<string>();
+  for (const c of checks) {
+    if (c.state !== 'missing') continue;
+    for (const name of c.missing) {
+      const role = roleOf(name, hb);
+      const k = name.toLowerCase();
+      if (!role || seen.has(k)) continue;
+      seen.add(k);
+      out.push({ name, role });
+    }
+  }
+  return out;
 }

@@ -201,6 +201,16 @@ export async function listRepoOptions(client: GitHubClient, repo: string): Promi
   };
 }
 
+/** GitHub#559: the repository as the signed-in account sees it (its `permissions` say whether it may create labels). */
+export async function readRepoInfo(client: GitHubClient, repo: string): Promise<unknown> {
+  return client.rest('GET', repoPath(repo));
+}
+
+/** GitHub#559: create one label in the repository (GitHub answers 422 when one of that name is already there). */
+export async function createRepoLabel(client: GitHubClient, repo: string, label: { name: string; color: string; description: string }): Promise<void> {
+  await client.rest('POST', `${repoPath(repo)}/labels`, { name: label.name, color: label.color, description: label.description });
+}
+
 async function setField(client: GitHubClient, p: ProjectMeta, itemId: string, field: 'iteration' | 'status', value: string | null) {
   const fieldId = field === 'iteration' ? p.iterationFieldId : p.statusFieldId;
   if (!fieldId) throw new ActionRefused(field === 'iteration' ? t('看板「{board}」没有迭代字段', { board: p.title }) : t('看板「{board}」没有状态字段', { board: p.title }));

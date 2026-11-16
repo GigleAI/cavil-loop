@@ -215,5 +215,16 @@
   "正在搜 GitHub…": "Searching GitHub…",
   "输入编号（如 429）直接定位，并列出编号以它开头的开着的条目；也可粘贴 issue / PR 网址；输入文字按标题搜。↑↓ 选，回车加入。别的仓库写成 owner/repo#编号——daemon 只认互通名单里的仓库，名单外的会交人。": "Type a number (e.g. 429) to go straight to it and list the open items whose numbers start with it; or paste an issue / PR address; or type words to search titles. ↑↓ to pick, Enter to add. For another repository write owner/repo#number — the daemon only counts repositories on the trusted list; others are handed to a human.",
   "确认后会：": "Confirming will:",
-  "每一步发出前都会再读一遍；期间有变化就停在那一步，已做的会列出来。": "Each step reads again before it is sent; if anything changed meanwhile, it stops at that step and lists what was done."
+  "每一步发出前都会再读一遍；期间有变化就停在那一步，已做的会列出来。": "Each step reads again before it is sent; if anything changed meanwhile, it stops at that step and lists what was done.",
+  "仓库 {repo} 还没有这些标签：": "{repo} does not have these labels yet:",
+  "正在建标签…": "Creating labels…",
+  "在这个仓库建好这个标签": "Create this label in this repository",
+  "在这个仓库建好这 {n} 个标签": "Create these {n} labels in this repository",
+  "按 cavil-loop 的默认颜色和说明新建，不改仓库已有的标签": "Created with cavil-loop's default colours and descriptions; existing labels are not changed",
+  "当前账号不能在 {repo} 建标签（需要这个仓库的写权限）。请仓库管理员建好下面这些标签，建好后点「重新读取」：": "This account cannot create labels in {repo} (it needs write access to the repository). Ask a repository admin to create the labels below, then press \"Read again\":",
+  "GitHub 没让在 {repo} 建标签（{why}）。请有写权限的人建好下面这些标签，建好后点「重新读取」：": "GitHub did not allow creating labels in {repo} ({why}). Ask someone with write access to create the labels below, then press \"Read again\":",
+  "颜色 {color}": "colour {color}",
+  "复制标签清单": "Copy the label list",
+  "再试一次建标签": "Try creating them again",
+  "复制失败，请手动选中上面的清单": "Copy failed; select the list above by hand"
 }
