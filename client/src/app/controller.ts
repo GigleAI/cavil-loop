@@ -17,6 +17,7 @@ import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFo
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
+import { LABEL_EXISTS_CODE, labelJobOutcome, labelSpecs, permissionOf, pressBlocked, type LabelAttempt, type LabelJob, type LabelPermission, type LabelRole } from '../shared/labelSetup';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
@@ -29,7 +30,7 @@ import { syncRound, type ViewerTag } from '../data/sync';
 import { SendQueue } from '../data/sendQueue';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -621,6 +622,7 @@ export class Controller {
       creates: [],
       ops: [],
       sends: [],
+      labelJobs: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
@@ -985,7 +987,7 @@ export class Controller {
     if (this.sendDraftTimer) clearTimeout(this.sendDraftTimer);
     this.sendDraftTimer = null;
     this.sendsStored = false;
-    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [] };
+    this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [], labelJobs: [] };
     this.pending.reset();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
@@ -2586,6 +2588,127 @@ export class Controller {
   }
 
   /**
+   * GitHub#559: may the signed-in account create labels in `repo`? Read now, every time (a permission
+   * granted a minute ago must show); anything that cannot be read is 'unknown', never 'no'.
+   */
+  async labelPermission(repo: string): Promise<LabelPermission> {
+    const c = await this.clientForCall(false);
+    if ('error' in c) return 'unknown';
+    try {
+      return permissionOf(await readRepoInfo(c.client, repo));
+    } catch (e) {
+      this.noteAuthFailure(e);
+      return 'unknown';
+    }
+  }
+
+  private labelSeq = 0;
+
+  private patchLabelJob(id: number, patch: Partial<LabelJob>): LabelJob | null {
+    let out: LabelJob | null = null;
+    this.set({ labelJobs: this.state.labelJobs.map((j) => (j.id === id ? (out = { ...j, ...patch }) : j)) });
+    return out;
+  }
+
+  /**
+   * GitHub#559: "建标签" — create these labels in `repo` (the repository the dialog showed when it was
+   * pressed). Everything after this — each request, the read afterwards, the notice — goes by the
+   * job's own `repo`. One running press per repository: a second one is refused before anything is sent.
+   */
+  async startLabelCreate(repo: string, wants: { name: string; role: LabelRole }[]): Promise<{ ok: boolean; error: string | null; id?: number }> {
+    const labels = labelSpecs(wants);
+    if (!repo || !labels.length) return { ok: false, error: t('没有要建的标签') };
+    const blocked = pressBlocked(this.state.labelJobs, repo);
+    if (blocked === 'running') return { ok: false, error: t('这个仓库的标签正在建') };
+    // GitHub#559 (PR #564 review round 1): the last press got no answer — read first, never race it with a second
+    if (blocked === 'unknown') return { ok: false, error: t('上一次建标签没收到回答：先「再查一次」，确认标签还没有再建') };
+    const id = ++this.labelSeq;
+    const job: LabelJob = { id, repo, labels, status: 'running', error: null, startedAt: this.now() };
+    // a press for this repository settles every earlier one: only the newest is said
+    this.set({ labelJobs: [...this.state.labelJobs.map((j) => (j.repo.toLowerCase() === repo.toLowerCase() ? { ...j, dismissed: true } : j)), job] });
+    void this.runLabelJob(id);
+    return { ok: true, error: null, id };
+  }
+
+  private async runLabelJob(id: number): Promise<void> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job) return;
+    const c = await this.clientForCall(true);
+    if ('error' in c) {
+      this.patchLabelJob(id, { status: 'refused', error: c.error });
+      return;
+    }
+    const attempts: LabelAttempt[] = [];
+    let refusedApp = false;
+    for (const l of job.labels) {
+      try {
+        await createRepoLabel(c.client, job.repo, l);
+        attempts.push({ name: l.name, outcome: 'made' });
+      } catch (e) {
+        this.noteAuthFailure(e);
+        const why = (e as Error)?.message ?? String(e);
+        // GitHub#559 (PR #564 review round 1): 422 `already_exists` = the label is there (someone made it meanwhile),
+        // never a refusal — whether or not the read afterwards works
+        if (e instanceof GitHubError && e.status === 422 && e.meta.codes?.includes(LABEL_EXISTS_CODE)) attempts.push({ name: l.name, outcome: 'exists' });
+        else if (refusedForSure(e)) {
+          attempts.push({ name: l.name, outcome: 'refused', error: why });
+          if (e instanceof GitHubError && (e.status === 403 || e.status === 404)) refusedApp = true;
+        } else attempts.push({ name: l.name, outcome: 'noAnswer', error: why });
+      }
+      if (c.session !== this.session) return;
+    }
+    // the repository's labels now: what settles a 422 "already there" and a request whose answer was lost
+    const after = await this.readLabelsAfter(job.repo);
+    if (c.session !== this.session) return;
+    const out = labelJobOutcome(attempts, after);
+    let app = false;
+    if (out.status === 'refused' && refusedApp) {
+      const info = await this.backend.call<GrantInfo>('grantInfo').catch(() => null);
+      app = Boolean(info?.signedIn && info.session === c.session && info.githubApp);
+    }
+    this.patchLabelJob(id, { status: out.status, error: out.error, ...(app ? { app: true } : {}) });
+  }
+
+  /** the repository's label names read now (the options cache takes it too); null = could not be read */
+  private async readLabelsAfter(repo: string): Promise<string[] | null> {
+    const o = await this.repoOptions(repo, true);
+    return o.error ? null : o.labels.map((l) => l.name);
+  }
+
+  /** GitHub#559, 「重试」 of a refused press: the same labels, in the same repository, sent again. */
+  async labelJobRetry(id: number): Promise<{ ok: boolean; error: string | null }> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status !== 'refused') return { ok: false, error: t('这条已经不能重试') };
+    const r = await this.startLabelCreate(job.repo, job.labels);
+    return { ok: r.ok, error: r.error };
+  }
+
+  /** GitHub#559, 「再查一次」 of a press with no answer: reads the repository's labels only, never sends again. */
+  async labelJobRecheck(id: number): Promise<{ ok: boolean; error: string | null }> {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status !== 'unknown' || job.checking) return { ok: false, error: t('这条已经不用再查') };
+    this.patchLabelJob(id, { checking: true });
+    const after = await this.readLabelsAfter(job.repo);
+    const now = this.state.labelJobs.find((j) => j.id === id);
+    if (!now || now.status !== 'unknown') return { ok: true, error: null };
+    if (after === null) {
+      this.patchLabelJob(id, { checking: false });
+      return { ok: false, error: t('读不到 {repo} 的标签', { repo: job.repo }) };
+    }
+    const have = new Set(after.map((n) => n.toLowerCase()));
+    const all = job.labels.every((l) => have.has(l.name.toLowerCase()));
+    this.patchLabelJob(id, { checking: false, status: all ? 'done' : 'missing', error: null });
+    return { ok: true, error: null };
+  }
+
+  /** GitHub#559: × of a notice (and the success notice going away by itself). */
+  labelJobDismiss(id: number): void {
+    const job = this.state.labelJobs.find((j) => j.id === id);
+    if (!job || job.status === 'running') return;
+    this.patchLabelJob(id, { dismissed: true });
+  }
+
+  /**
    * GitHub#401: the Projects "从 GitHub 选" offers — the account's own and each organisation's, read
    * now (never cached: an organisation approved a minute ago must show at the next look).
    */
@@ -3888,6 +4011,7 @@ export class Controller {
     // GitHub#474: the label names in these sentences are the person's (Settings) or GitHub's: holes
     // shown as written, never baked into the client's own words
     let refuse: Said | null = null;
+    let missingLabels: { name: string; role: LabelRole }[] | null = null;
     if (read.state !== 'open') refuse = { template: t('这一条已经关闭'), parts: [] };
     else if (entry.kind === 'other')
       refuse = {
@@ -3911,15 +4035,22 @@ export class Controller {
       }
       else {
         const have = new Set(opts.labels.map((l) => l.name.toLowerCase()));
-        const missing = [bl.blocked, names.human].filter((n) => !have.has(n.toLowerCase()));
-        if (missing.length)
+        const wants = [
+          { name: bl.blocked, role: 'blocked' as const },
+          { name: names.human, role: 'human' as const },
+        ].filter((w) => !have.has(w.name.toLowerCase()));
+        const missing = wants.map((w) => w.name);
+        if (missing.length) {
           refuse = {
-            template: t('这个仓库没有标签 {labels}（客户端不会替仓库新建标签）', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
+            template: t('这个仓库没有标签 {labels}', { labels: missing.map((_, i) => t('「{name}」', { name: `{l${i}}` })).join(t('、')) }),
             parts: missing.map((m, i) => ({ name: `l${i}`, text: m, from: 'user' as const })),
           };
+          // GitHub#559: the dialog offers to create them (or says how)
+          missingLabels = wants;
+        }
       }
     }
-    return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse };
+    return { ok: true, key: item.key, repo: item.repo, number: item.number, isPr: read.isPr, entry, current, lost, latest: latestRefs(read), native: read.native, fingerprint: fingerprint(facts), refuse, ...(missingLabels ? { missingLabels } : {}) };
   }
 
   /**

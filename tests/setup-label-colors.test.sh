@@ -76,16 +76,18 @@ make_skill_src() {   # <目录>：把当前工作区（含未提交改动）做�
     git -C "$d" remote add origin "$d.git"; git -C "$d" push -q -u origin main 2>/dev/null
 }
 
-run_setup() {   # <skill 目录> → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
-    local src="$1" H="$SANDBOX/h" HOST="$SANDBOX/projects/widget"
+run_setup() {   # <skill 目录> [配置变体：missing = 删掉等前置 / 暂缓两行；empty = 两行写成空值] → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
+    local src="$1" variant="${2:-}" H="$SANDBOX/h" HOST="$SANDBOX/projects/widget"
     rm -rf "$H" "$SANDBOX/projects"; mkdir -p "$H" "$SANDBOX/projects"
     git init -q -b main "$HOST"; git -C "$HOST" -c user.email=t@x -c user.name=t commit -q --allow-empty -m init
     # 和真实安装一样以配置模板打底，再打开全部可选标签（后写的赋值生效）
-    { cat "$REPO_DIR/cavil-loop.config.example"
+    { if [ "$variant" = missing ]; then grep -vE '^LABEL_PENDING_(BLOCKED|LATER)=' "$REPO_DIR/cavil-loop.config.example"
+      else cat "$REPO_DIR/cavil-loop.config.example"; fi
       printf 'REPO="acme/widget"\nPROJECT_ROOT="%s"\nSTATE_DIR="%s/state"\nWORKTREE_BASE="%s/wt"\nTMUX_PREFIX="widget"\n' "$HOST" "$H" "$H"
       printf 'LABEL_PENDING_REVIEW="pending/review"\n'
       printf 'LABEL_PENDING_REQUESTER_BOT="waiting/requester-bot"\n'
       printf 'LABEL_AUTOPILOT="autopilot"\nLABEL_PENDING_MERGE="pending/merge"\n'
+      [ "$variant" = empty ] && printf 'LABEL_PENDING_BLOCKED=""\nLABEL_PENDING_LATER=""\n'
     } > "$HOST/cavil-loop.config"
     printf 'n\n' | env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_CONFIG \
         -u CODING_AGENT_RELEASE_ROOT -u WORKER_AGENT HOME="$H" PATH="$SANDBOX/fakebin:$PATH" \
@@ -118,6 +120,16 @@ suite() {   # <skill 目录>
 echo "── 1. 当前工作区：全部可选标签打开时的默认配色 ──"
 make_skill_src "$SANDBOX/src"
 suite "$SANDBOX/src"
+
+echo "── 1b. GitHub#551：配置里没有等前置 / 暂缓这两行也建；写成空值才不建 ──"
+got=$(run_setup "$SANDBOX/src" missing)
+chk "没写这两行：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "没写这两行：两个标签照样建、颜色照旧" "$(printf '%s\n' "$got" | grep -E '^pending/(blocked|later)\|' | tr '\n' ' ')" "pending/blocked|2dcdd0 pending/later|c5def5 "
+chk "没写这两行：其余标签不受影响（共 15 条）" "$(printf '%s\n' "$got" | grep -c '|')" 15
+got=$(run_setup "$SANDBOX/src" empty)
+chk "写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "写成空值：这两个标签不建" "$(printf '%s\n' "$got" | grep -cE '^pending/(blocked|later)\|')" 0
+chk "写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
 
 echo "── 2. 负对照：两处改色各自退回旧值，必须变红 ──"
 neg_case() {   # <标题> <旧行> <新行>

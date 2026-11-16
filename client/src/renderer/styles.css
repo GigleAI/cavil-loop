@@ -1098,3 +1098,12 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 :root { --find-hl: #fff3a3; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme]) { --find-hl: #5c4a00; } }
 :root[data-theme='dark'] { --find-hl: #5c4a00; }
+
+/* GitHub#559: labels the repository lacks — create them, or what to create by hand */
+.label-setup { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; text-align: left; }
+.label-setup.guide { background: var(--warn-bg); border-color: var(--warn-border); }
+.label-setup-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.label-setup-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.label-setup-table { border-collapse: collapse; }
+.label-setup-table td { padding: 2px 12px 2px 0; vertical-align: middle; }
+.label-setup-table td:nth-child(-n + 2) { white-space: nowrap; }

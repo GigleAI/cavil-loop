@@ -18,6 +18,7 @@ import { api } from './api';
 import { Icon } from './Icons';
 import { copyText } from './pasteImage';
 import { OpNotice } from './OpNotice';
+import { LabelJobNotice } from './LabelJobNotice';
 import { SendNotice } from './SendNotice';
 import { sendShown } from '../shared/sends';
 import { EditIssues } from './DetailPanel';
@@ -81,6 +82,11 @@ export function NoticeArea({
     // GitHub#258: created, only boards not ticked still being watched: nothing to say
     if (j.status === 'watching') continue;
     entries.push({ id: `create:${j.id}`, order: Number.MAX_SAFE_INTEGER - 1e6 + j.id, node: <CreateBar key={`create:${j.id}`} job={j} onOpen={openFloat} onDraft={onDraft} /> });
+  }
+  // GitHub#559: presses of "建标签"
+  for (const j of state.labelJobs ?? []) {
+    if (j.dismissed) continue;
+    entries.push({ id: `label:${j.id}`, order: j.startedAt, node: <LabelJobNotice key={`label:${j.id}`} job={j} web={state.githubWeb} /> });
   }
   if (state.editsNeedingAction) entries.push({ id: 'edits', order: Number.MAX_SAFE_INTEGER, node: <EditsNotice key="edits" state={state} data={data} onOpen={openFloat} /> });
   const order = noticeOrder(entries, seen.current, next.current);

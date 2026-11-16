@@ -253,5 +253,14 @@
   "这个账号每小时的查询额度已经用完。{time} 额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。": "This account's hourly query quota is used up. It is read again automatically once the quota resets at {time}; no need to authorize again. The quota is shared by the whole account: other programs on the same account (command line, daemon, …) use it too.",
   "这个账号每小时的查询额度已经用完。额度恢复后自动再读，不需要重新授权。额度是整个账号共用的，同一账号下的其他程序（命令行、daemon 等）也在用。": "This account's hourly query quota is used up. It is read again automatically once the quota resets; no need to authorize again. The quota is shared by the whole account: other programs on the same account (command line, daemon, …) use it too.",
   "短时间内请求太密，GitHub 要求停一会儿。{time} 之后会自动再读，不需要重新授权。": "Too many requests in a short time; GitHub asked for a pause. It is read again automatically after {time}; no need to authorize again.",
-  "短时间内请求太密，GitHub 要求停一会儿。稍后会自动再读，不需要重新授权。": "Too many requests in a short time; GitHub asked for a pause. It is read again automatically a little later; no need to authorize again."
+  "短时间内请求太密，GitHub 要求停一会儿。稍后会自动再读，不需要重新授权。": "Too many requests in a short time; GitHub asked for a pause. It is read again automatically a little later; no need to authorize again.",
+  "正在 {repo} 建标签{labels}…": "Creating labels {labels} in {repo}…",
+  "已在 {repo} 建好标签{labels}": "Created labels {labels} in {repo}",
+  "没能在 {repo} 建标签{labels}：{why}": "Could not create labels {labels} in {repo}: {why}",
+  "没有说明原因": "no reason given",
+  "在 {repo} 建标签{labels}没收到 GitHub 的回答，不知道建没建成（{why}）": "No answer from GitHub while creating labels {labels} in {repo}; they may or may not have been created ({why})",
+  "{repo} 里还没有标签{labels}：可以在对话框里重新按「建标签」": "{repo} still has no labels {labels}: press the create button in the dialog again",
+  "登录用的 GitHub App 可能没被允许在这个仓库建标签。": "The GitHub App you signed in with may not be allowed to create labels in this repository.",
+  "只读一次仓库现在的标签，不会再建": "Only reads the repository's labels once; creates nothing",
+  "打开仓库的标签页": "Open the repository's labels page"
 }

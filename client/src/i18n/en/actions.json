@@ -229,7 +229,6 @@
   "这一条正在准备别的操作，没有发送": "Another operation is being prepared for this item; nothing was sent",
   "这一步现在不能重发": "This step cannot be sent again now",
   "这一步的结果不明": "This step's result is unknown",
-  "这个仓库没有标签 {labels}（客户端不会替仓库新建标签）": "This repository has no label {labels} (the client does not create labels for a repository)",
   "这个来源已经加过了": "This source has already been added",
   "这个标签本来就不在": "this label was not there in the first place",
   "这个看板已不在来源里": "This board is no longer among the sources",
@@ -256,5 +255,16 @@
   "读取变化：回应的条数和请求的不一致": "Reading the changes: the answer has a different number of items than asked for",
   "读取变化：{id} 不是看板条目": "Reading the changes: {id} is not a board item",
   "登录账号检查回了 304，但没有上一次的记录": "The signed-in account check answered 304, but there is no earlier record",
-  "GitHub 没有说明当前登录的账号": "GitHub did not say which account is signed in"
+  "GitHub 没有说明当前登录的账号": "GitHub did not say which account is signed in",
+  "没有要建的标签": "No labels to create",
+  "这个仓库的标签正在建": "Labels are already being created in this repository",
+  "这条已经不能重试": "This one can no longer be retried",
+  "这条已经不用再查": "This one no longer needs checking",
+  "读不到 {repo} 的标签": "Could not read the labels of {repo}",
+  "这个仓库没有标签 {labels}": "This repository has no label {labels}",
+  "等待 agent 处理": "Waiting for the agent",
+  "托管：从方案到合并全交给 agent（复审与测试通过后自动合并）": "Autopilot: the agent takes it from proposal to merge (merged automatically once review and tests pass)",
+  "等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干": "Waiting for other issues / PRs of this repository; the daemon carries on once they are done",
+  "等待人类处理": "Waiting for a human",
+  "上一次建标签没收到回答：先「再查一次」，确认标签还没有再建": "The last attempt got no answer: \"Check again\" first, and create them only once they are confirmed missing"
 }

@@ -221,9 +221,12 @@ top_level_assign() {
 }
 
 # daemon 实际用的值：各处读这些配置项都是「没设置或为空 → 默认值」（${X:-默认}），这里同一条规则。
+# 例外是 label 类型：标签开关读的是 ${X-默认}（GitHub#551），只有「没设置」才取默认，写成空值 = 关，显示为空。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
 effective() {   # <下标>
-    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"; else printf '%s' "${F_DEF[$1]}"; fi
+    if [ -n "${V_VAL[$1]}" ]; then printf '%s' "${V_VAL[$1]}"
+    elif [ "${F_TYPE[$1]}" = label ] && [ "${V_SET[$1]}" = 1 ]; then printf ''
+    else printf '%s' "${F_DEF[$1]}"; fi
 }
 
 V_SET=(); V_VAL=(); STATE_DIR_VAL=""

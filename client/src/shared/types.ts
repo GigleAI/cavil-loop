@@ -10,6 +10,7 @@ import type { Lang, LangSetting, Said } from './i18n';
 import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
 import type { SendRecord } from './sends';
+import type { LabelJob } from './labelSetup';
 import type { Handoff } from './handoff';
 import type { CreatePlan, Picks } from './actions';
 
@@ -766,6 +767,8 @@ export interface AppState {
   ops: OpRecord[];
   /** GitHub#489: replies / edits / ticked boxes sent for the window, oldest first (see shared/sends.ts) */
   sends: SendRecord[];
+  /** GitHub#559: presses of "建标签" (labels a button needs, created in a repository), oldest first (see shared/labelSetup.ts) */
+  labelJobs: LabelJob[];
 }
 
 /** One configured Project, as the new-issue dialog weighs it for its default board (GitHub#231). */

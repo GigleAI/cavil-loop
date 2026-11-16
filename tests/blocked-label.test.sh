@@ -32,7 +32,9 @@ trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 export HOME="$SANDBOX/home"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 TZ=UTC
-unset CODING_AGENT_RELEASE_ROOT LABEL_PENDING_BLOCKED LABEL_AUTOPILOT DISPATCH_AUTOPILOT DISPATCH_AUTOPILOT_ISSUE DISPATCH_AUTOPILOT_PR
+unset CODING_AGENT_RELEASE_ROOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER LABEL_AUTOPILOT
+# 在派工会话里跑时会继承派工变量（如 DISPATCH_PROMPT_KIND=review），派工脚本会照它拼成别的提示词：全部清掉
+for __v in $(compgen -v DISPATCH_); do unset "$__v"; done; unset __v
 unset GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN POLL_FAKE_NOW
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
@@ -170,13 +172,13 @@ CONF
 
     # ── 【1】功能关着：和改动前逐字节一致 ──
     if want off; then
-    section "【1】功能关着：轮询的 GitHub 调用、state.json 和改动前一致（多轮）"
+    section "【1】功能关着（写成空值）：轮询的 GitHub 调用、state.json 和改动前一致（多轮）"
     local side sides="old new" csame=0
     if compat_skip "功能关着：三轮轮询的 GitHub 调用、state.json 与改动前" "$SANDBOX/old" "$ROOT" scripts prompts; then
         sides="new"; csame=1
     fi
     for side in $sides; do
-        fresh
+        fresh 'LABEL_PENDING_BLOCKED=""'
         waiting; mkissue 11 "" closed completed
         mkissue 20 "pending/agent"; mkissue 21 "doing/agent,pending/blocked"
         local r; for r in 1 2 3; do
@@ -212,6 +214,11 @@ CONF
     NOW=$((T0 + 60)) tick
     chk "下一轮进派工队列" "$(queued 10)" 1
     chk "不重复评论" "$(comments_with 10 'agent-blocked-resolved')" 1
+    # GitHub#551：配置里没写这一行 = 开，同一个场景同样接力
+    fresh; waiting; mkissue 11 "" closed completed
+    NOW=$T0 tick
+    chk "没写这一行：同样留接力评论" "$(comments_with 10 'v=resume')" 1
+    chk "没写这一行：同样翻回 pending/agent、摘掉等前置标签" "$(has_label 10 pending/agent)/$(has_label 10 pending/blocked)" yes/no
 
     section "【2b】标记写了 resume=pending/agent/fable → 翻回 fable 队列；写了不认识的 → 回落默认"
     on; waiting "#11" "pending/agent/fable"; mkissue 11 "" closed completed
@@ -279,6 +286,49 @@ CONF
         NOW=$((T0 + 301)) tick
         chk "读 $f 恢复后 → 接力" "$(labels_of 10)" "pending/agent"
     done
+
+    # GitHub#551：打开条目列表（issue 一张、PR 一张）有一张读不到 → 一条进度记录都不删；读到的那一边照常检查。
+    # issue #10 在等还开着的 #12，PR #30 在等还开着的 PR #31——两边各有一条真在等的条目；#40 是一条已经不在等的旧记录，
+    # 只有两张列表都读全时才该被清掉。
+    # 整轮轮询在列表读不到时会更早退出（无法确认活跃 worker），走不到这一步；所以这里直接调用等前置检查本身
+    # （真实的 _lib.sh、真实的 gh 调用路径，每次用一个空的本轮缓存目录，读失败由假 GitHub 注入）
+    local rec10 rec30 rec40
+    btick() {   # <时间>
+        local td; td=$(mktemp -d "$SANDBOX/tick.XXXXXX")
+        : > "$CALLS"
+        env POLL_FAKE_NOW="$1" TICK_DIR="$td" CODING_AGENT_CONFIG="$CONF" \
+            bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1 || exit 9; blocked_tick "$STATE_DIR/state.json"' _ "$ROOT" >/dev/null 2>&1
+    }
+    on; waiting "#11 #12"; mkissue 11 "" closed completed; mkissue 12 ""
+    mkpr 30 "pending/blocked"; ev 30 labeled pending/blocked; mark 30 "#31"; mkpr 31 ""
+    NOW=$T0 tick
+    jq '.blocked_resume["40"] = {"event": 99, "tries": 2, "commented": true, "checked_at": 1}' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+    rec40=$(jq -c '.blocked_resume["40"]' "$STATE")
+    chk "到达性 · 第一轮给 issue #10、PR #30 都记下了检查时间" "$(jq -r '"\(.blocked_resume["10"].checked_at)/\(.blocked_resume["30"].checked_at)"' "$STATE")" "$T0/$T0"
+
+    : > "$GD/F_pulls"
+    rec30=$(jq -c '.blocked_resume["30"]' "$STATE")
+    btick $((T0 + 301))
+    chk "PR 列表读不到：PR #30 的进度一字不变" "$(jq -c '.blocked_resume["30"]' "$STATE")" "$rec30"
+    chk "PR 列表读不到：已不在等的 #40 也不删" "$(jq -c '.blocked_resume["40"]' "$STATE")" "$rec40"
+    chk "PR 列表读不到：issue #10 照常检查（检查时间更新了）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 301))"
+    chk "PR 列表读不到：日志写明不清理" "$(grep -c '读不到打开条目列表，等待进度不清理' "$W/state/poll.log" || true)" 1
+    chk "到达性 · 这一次确实去读了 PR 列表" "$(yes_if_pos "$(n_calls "^gh api --method GET --paginate --slurp $R/pulls")")" yes
+
+    rm -f "$GD/F_pulls"; : > "$GD/F_issues"
+    rec10=$(jq -c '.blocked_resume["10"]' "$STATE")
+    btick $((T0 + 602))
+    chk "issue 列表读不到：issue #10 的进度一字不变" "$(jq -c '.blocked_resume["10"]' "$STATE")" "$rec10"
+    chk "issue 列表读不到：已不在等的 #40 也不删" "$(jq -c '.blocked_resume["40"]' "$STATE")" "$rec40"
+    chk "issue 列表读不到：PR #30 照常检查（检查时间更新了）" "$(jq -r '.blocked_resume["30"].checked_at' "$STATE")" "$((T0 + 602))"
+    chk "到达性 · issue 列表读不到那一次确实读了 PR #30 的评论" "$(yes_if_pos "$(n_calls "^gh api .*$R/issues/30/comments")")" yes
+    chk "issue 列表读不到：日志写明不清理" "$(grep -c '读不到打开条目列表，等待进度不清理' "$W/state/poll.log" || true)" 2
+
+    rm -f "$GD/F_issues"; mkpr 31 "" merged
+    btick $((T0 + 903))
+    chk "两张都读到：已不在等的 #40 这时才清掉" "$(jq -r '.blocked_resume | has("40")' "$STATE")" false
+    chk "两张都读到：issue #10 进度接着用（检查时间更新）" "$(jq -r '.blocked_resume["10"].checked_at' "$STATE")" "$((T0 + 903))"
+    chk "两张都读到：PR #30 的前置已合并 → 接力翻回 pending/agent" "$(labels_of 30)" "pending/agent"
     fi
 
     # ── 【5】读全了但没有前置 → 交人一次 ──
@@ -700,7 +750,8 @@ WORKER_AGENT_DEFAULT="claude"
 PATH="$SANDBOX/pbin:\$PATH"
 GH_TOKEN="fake-token-for-test"
 CONF
-        [ "$sw" = on ] && echo 'LABEL_PENDING_BLOCKED="pending/blocked"'
+        # on = 写了标签名；off = 写成空值（GitHub#551 起，空值才是「关」）；missing = 没写这一行（默认开）
+        case "$sw" in on) echo 'LABEL_PENDING_BLOCKED="pending/blocked"' ;; off) echo 'LABEL_PENDING_BLOCKED=""' ;; esac
     } > "$w/config"
     prompt_files_clear "$root" "$w/state"
     local e=(env -u CODING_AGENT_RELEASE_ROOT -u LABEL_PENDING_BLOCKED HOME="$SANDBOX/home" CODING_AGENT_CONFIG="$w/config")
@@ -734,7 +785,7 @@ WORKER_AGENT_DEFAULT="claude"
 PATH="$SANDBOX/pbin:\$PATH"
 GH_TOKEN="fake-token-for-test"
 CONF
-        [ "$2" = on ] && echo 'LABEL_PENDING_BLOCKED="pending/blocked"'
+        case "$2" in on) echo 'LABEL_PENDING_BLOCKED="pending/blocked"' ;; off) echo 'LABEL_PENDING_BLOCKED=""' ;; esac
     } > "$c"
     mkdir -p "$SANDBOX/cstate-$2"
     env -u CODING_AGENT_RELEASE_ROOT -u LABEL_PENDING_BLOCKED HOME="$SANDBOX/home" CODING_AGENT_CONFIG="$c" \
@@ -747,7 +798,7 @@ run_prompt_checks() {
     mkdir -p "$O"
     compat_skip "提示词 · 功能关着时五类提示词与改动前的派工脚本" "$SANDBOX/old" "$R" scripts prompts && csame=1
     [ "$csame" = 1 ] || [ -d "$O/old-off" ] || render "$SANDBOX/old" off "$O/old-off"
-    render "$R" off "$O/off"; render "$R" on "$O/on"
+    render "$R" off "$O/off"; render "$R" on "$O/on"; render "$R" missing "$O/missing"
     for k in new-issue sub-issue issue-comment; do
         [ "$csame" = 0 ] || continue
         chk "提示词 · 关闭：$k 和改动前的派工脚本逐字节一致" \
@@ -779,6 +830,18 @@ run_prompt_checks() {
         "$( [ -n "$a" ] && [ -n "$b" ] && [ "$b" -gt "$a" ] && echo after || echo "no(${a:-?}/${b:-?})")" after
     compose_out "$R" on pr-comment > "$O/on-pr-comment.md"
     chk "提示词 · 开启：pr-comment 拼装也带等前置规则" "$(grep -c '^# 等前置规则' "$O/on-pr-comment.md" || true)" 1
+
+    # GitHub#551：配置里没写这一行 = 开，和写了 pending/blocked 逐字节相同
+    for k in new-issue sub-issue issue-comment; do
+        chk "提示词 · 没写这一行：$k 和写了 pending/blocked 逐字节相同" \
+            "$( [ -s "$O/missing/$k.md" ] && cmp -s "$O/missing/$k.md" "$O/on/$k.md" && echo same || echo diff)" same
+    done
+    for k in pr-comment review; do
+        compose_out "$R" on "$k" > "$O/on2-$k.md"; compose_out "$R" missing "$k" > "$O/missing-$k.md"
+        chk "提示词 · 没写这一行：$k 拼装和写了 pending/blocked 逐字节相同" \
+            "$( [ -s "$O/missing-$k.md" ] && cmp -s "$O/missing-$k.md" "$O/on2-$k.md" && echo same || echo diff)" same
+    done
+    chk "提示词 · 到达性：没写这一行时确实带等前置规则" "$(grep -c '^# 等前置规则（本项目开启了等前置标签 `pending/blocked`）' "$O/missing/issue-comment.md" || true)" 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────

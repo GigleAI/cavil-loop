@@ -50,5 +50,5 @@ DISPATCH_MODE | 只显示、不在这里改的设置 | enum:label=只派打了�
 LABEL_PENDING_REVIEW | 只显示、不在这里改的设置 | label | | show | 复审关卡 |
 LABEL_AUTOPILOT | 只显示、不在这里改的设置 | label | | show | 托管（自动合并） |
 AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 只显示、不在这里改的设置 | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人
-LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | | show | 等前置 |
-LABEL_PENDING_LATER | 只显示、不在这里改的设置 | label | | show | 暂缓 |
+LABEL_PENDING_BLOCKED | 只显示、不在这里改的设置 | label | pending/blocked | show | 等前置 | 配置里没写这一行 = 开；写成空值 = 关
+LABEL_PENDING_LATER | 只显示、不在这里改的设置 | label | pending/later | show | 暂缓 | 配置里没写这一行 = 开；写成空值 = 关
