@@ -503,7 +503,7 @@ later_label="$(config_value_or_default LABEL_PENDING_LATER pending/later)"
 autopilot_label="$(config_value LABEL_AUTOPILOT)"
 if [ -n "$autopilot_label" ]; then
     merge_label="$(config_value LABEL_PENDING_MERGE)"
-    label_defs+=("$autopilot_label|ff401e|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")
+    label_defs+=("$autopilot_label|c5def5|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")
     label_defs+=("${merge_label:-pending/merge}|5319e7|托管：复审已通过，等 daemon 检查后自动合并")
 fi
 for ld in "${label_defs[@]}"; do

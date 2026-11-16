@@ -98,7 +98,7 @@ test('GitHub#559: may write — one press creates exactly the missing labels, th
   // exactly the two, with the install script's colours and descriptions; nothing else written
   expect(labelPosts(A).map((w) => w.body)).toEqual([
     { name: 'pending/agent', color: 'd4c5f9', description: '等待 agent 处理' },
-    { name: 'autopilot', color: 'ff401e', description: '托管：从方案到合并全交给 agent（复审与测试通过后自动合并）' },
+    { name: 'autopilot', color: 'c5def5', description: '托管：从方案到合并全交给 agent（复审与测试通过后自动合并）' },
   ]);
   expect(env.fake.writes().length).toBe(2);
   expect(issuePosts()).toEqual([]);
@@ -120,14 +120,14 @@ test('GitHub#559: may not write — no create request; the list, the labels page
   await expect(box(page)).toHaveAttribute('data-kind', 'guide');
   await expect(box(page).getByTestId('new-issue-labels-why')).toHaveAttribute('data-why', 'noPermission');
   await expect(box(page).getByTestId('new-issue-labels-why')).toContainText(`当前账号不能在 ${A} 建标签`);
-  await expect(box(page).getByTestId('new-issue-labels-list')).toContainText('颜色 ff401e');
+  await expect(box(page).getByTestId('new-issue-labels-list')).toContainText('颜色 c5def5');
   await expect(box(page).getByTestId('new-issue-labels-list')).toContainText('颜色 d4c5f9');
   await expect(box(page).getByTestId('new-issue-labels-create')).toHaveCount(0);
   await shot(page, '559-03-no-permission');
   await box(page).getByTestId('new-issue-labels-web').click();
   await expect.poll(opened).toContain(`/${A}/labels`);
   await box(page).getByTestId('new-issue-labels-copy').click();
-  await expect.poll(() => page.evaluate(() => (window as any).__copied as string[])).toEqual([`pending/agent\t#d4c5f9\t等待 agent 处理\nautopilot\t#ff401e\t托管：从方案到合并全交给 agent（复审与测试通过后自动合并）`]);
+  await expect.poll(() => page.evaluate(() => (window as any).__copied as string[])).toEqual([`pending/agent\t#d4c5f9\t等待 agent 处理\nautopilot\t#c5def5\t托管：从方案到合并全交给 agent（复审与测试通过后自动合并）`]);
   // a maintainer created them on the web page
   env.fake.state.w.repoLabels.set(AK, ['bug', 'autopilot', 'pending/agent'].map((name) => ({ name, color: 'ededed' })));
   await box(page).getByTestId('new-issue-labels-reread').click();
