@@ -787,7 +787,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
 
     // ---- REST writes of #138, labels / milestones lists, markdown ----
     // GitHub#434: one issue, its native "Blocked by", the issue search (test/fake-github/blocked.ts)
-    if (url.pathname.startsWith('/api/') && ((req.method !== 'GET' && req.method !== 'HEAD') || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname) || /\/repos\/[^/]+\/[^/]+\/issues\/\d+(\/dependencies\/blocked_by)?$/.test(url.pathname) || url.pathname === '/api/search/issues')) {
+    if (url.pathname.startsWith('/api/') && ((req.method !== 'GET' && req.method !== 'HEAD') || /\/(labels|milestones)$/.test(url.pathname) || /\/issues\/\d+\/(comments|events)$/.test(url.pathname) || /\/repos\/[^/]+\/[^/]+\/issues\/\d+(\/dependencies\/blocked_by)?$/.test(url.pathname) || /^\/api\/repos\/[^/]+\/[^/]+$/.test(url.pathname) || url.pathname === '/api/search/issues')) {
       const raw = req.method === 'GET' ? '' : await readBody(req);
       let parsed: any = undefined;
       try {
