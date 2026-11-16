@@ -977,7 +977,9 @@ bash ~/.agents/skills/cavil-loop/scripts/human-paths-check.sh \
 <!-- autopilot-human-paths:check:end -->
 
   `--spec` is the value you intend to write; `--exempt-tests` is `on` when `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`
-  is missing, empty or `"on"`, otherwise `off`. On a development checkout use `scripts/human-paths-check.sh` in it.
+  is missing, empty or `"on"`, otherwise `off`. A renamed or copied file is one item, `--renamed <old path> <new path>`:
+  the merge check judges both paths of one rename together (exempt only when both are test files), so checking them
+  as two separate paths can give a different answer. On a development checkout use `scripts/human-paths-check.sh` in it.
   The autopilot reviewer of a project with the list set gets an extra step for this (only then; otherwise its
   prompt is unchanged): it follows the hooks and hook configs on the list (and the `package.json` scripts /
   `Makefile` targets they call) to the repo files they run, on both the target branch and the PR; when the PR

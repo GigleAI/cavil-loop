@@ -5458,9 +5458,7 @@ autopilot_paths_verdict() {   # <PR> <PR JSON>
           elif $ex == "on" and any(.[][]; (.filename | is_test) and (test_rec_ok | not))
           then "unread\t测试文件的改动记录不完整（改动类型不认识，或改名缺旧路径）"
           else (rules($spec; $def) | map(.re)) as $res
-            | ([ .[][] | select(($ex == "on" and ([.filename, (.previous_filename // empty) | select(. != "")] | all(is_test))) | not)
-                 | .filename, (.previous_filename // empty) | select(. != "") ]
-               | map(select(. as $f | any($res[]; . as $re | $f | test($re)))) | unique) as $hits
+            | ([ .[][] | select(rec_exempt($ex) | not) | rec_hits($res)[] ] | unique) as $hits
             | if ($hits | length) > 0 then "hit\t\($hits | tojson)" else "ok\t" end
           end' 2>/dev/null) || out=""
     case "$out" in

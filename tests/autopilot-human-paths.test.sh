@@ -540,6 +540,42 @@ default /setup.sh /scripts/check-test.sh|on|scripts/check-test.sh|human|测试�
 default /setup.sh|on|.githooks/pre-commit|human|钩子本身 → 交人
 default /setup.sh|on|.github/workflows/ci.test.yml|human|根目录 .github/ 下名字像测试也拦
 CASES
+# 改名 / 复制：新旧路径作为一条记录一起判（PR #565 代码复审第 1 轮：拆成两个路径分别验算，和合并检查不一致）
+outcome_rec() {   # <改动记录 JSON> [配置行…]
+    local r="$1"; shift
+    fresh "$@"; happy; files "[$r]"; tick
+    if [ "$(merged)" = 1 ]; then echo merge
+    elif [ "$(has_label pending/human)" = yes ]; then echo human
+    else echo other; fi
+}
+predict_rename() {   # <清单值> <on|off> <旧路径> <新路径>
+    local out rc=0
+    out=$(bash "$CHECK" --spec "$1" --exempt-tests "$2" --renamed "$3" "$4") || rc=$?
+    case "$rc:$out" in
+        0:拦$'\t'"$3 -> $4") echo human ;;
+        1:不拦$'\t'"$3 -> $4"$'\t'*) echo merge ;;
+        *) echo "error($rc:$out)" ;;
+    esac
+}
+while IFS='|' read -r spec ex st old new want what; do
+    [ -n "$spec" ] || continue
+    lines=("AUTOPILOT_HUMAN_PATHS=\"$spec\"")
+    [ "$ex" = off ] && lines+=('AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"')
+    got=$(outcome_rec "{\"filename\":\"$new\",\"previous_filename\":\"$old\",\"status\":\"$st\"}" "${lines[@]}")
+    chk "真实轮询 · $what → $want" "$got" "$want"
+    chk "验算命令（--renamed）与真实轮询一致 · $what" "$(predict_rename "$spec" "$ex" "$old" "$new")" "$got"
+done <<'CASES'
+default|on|renamed|.githooks/a.test.sh|scripts/a.sh|human|改名 · 清单里的测试名 → 清单外的非测试名：拦（复审第 1 轮的例子）
+default|on|renamed|.githooks/a.sh|.githooks/a.test.sh|human|改名 · 清单里的非测试名 → 测试名：拦
+default|on|renamed|.githooks/a.test.sh|.githooks/b.test.sh|merge|改名 · 测试名 → 测试名，豁免开：不拦
+default|off|renamed|.githooks/a.test.sh|.githooks/b.test.sh|human|改名 · 测试名 → 测试名，豁免关：拦
+default|on|renamed|scripts/a.test.sh|scripts/a.sh|merge|改名 · 清单外的测试名 → 清单外的非测试名：不拦
+default|on|renamed|scripts/a.sh|.githooks/a.sh|human|改名 · 清单外 → 清单里：拦
+default|on|copied|.githooks/a.test.sh|scripts/a.sh|human|复制 · 清单里的测试名 → 清单外的非测试名：拦
+CASES
+# 拆成两个路径分别验算，在第一行那个例子上确实会得出和合并检查不同的结论——所以提示词和文档要求用 --renamed
+out=$(bash "$CHECK" --spec default --exempt-tests on .githooks/a.test.sh scripts/a.sh); rc=$?
+chk "到达性 · 同一对路径拆成两项验算：两项都不拦（和合并检查不同，这正是 --renamed 存在的原因）" "$rc|$(printf '%s\n' "$out" | cut -f1 | tr '\n' ',')" "1|不拦,不拦,"
 # 退出码与输出格式
 out=$(bash "$CHECK" --spec 'default /setup.sh' --exempt-tests on setup.sh scripts/check.test.sh scripts/x.sh); rc=$?
 chk "验算命令：多个路径逐行给结论、原因分得清，有不拦时退出码 1" "$rc|$out" \
@@ -549,7 +585,8 @@ chk "验算命令：多个路径逐行给结论、原因分得清，有不拦时
 out=$(bash "$CHECK" --spec 'default /scripts/check.test.sh' --exempt-tests on scripts/check.test.sh); rc=$?
 chk "验算命令：命中清单但被豁免 → 原因写明命中清单" "$rc|$out" "1|不拦	scripts/check.test.sh	测试文件豁免（命中清单）"
 for args in "--spec|default a/b|--exempt-tests|on|x" "--spec|default|--exempt-tests|yes|x" "--spec|default|--exempt-tests|on" \
-            "--exempt-tests|on|x" "--spec|default|--exempt-tests|on|/etc/passwd" "--spec|default|--exempt-tests|on|../x"; do
+            "--exempt-tests|on|x" "--spec|default|--exempt-tests|on|/etc/passwd" "--spec|default|--exempt-tests|on|../x" \
+            "--spec|default|--exempt-tests|on|--renamed|a" "--spec|default|--exempt-tests|on|--renamed|../a|b"; do
     IFS='|' read -r -a a <<< "$args"
     out=$(bash "$CHECK" "${a[@]}" 2>/dev/null); rc=$?
     chk "验算命令：用法错误 / 清单写法不认识 → 退出码 2、不给逐路径结论（${args//|/ }）" "$rc|$out" "2|"
@@ -602,6 +639,7 @@ for e in $(printf '%s' "$want_list" | tr -d '`'); do
 done
 chk "展开列出的每一条（共 15 条），验算命令都判拦" "$n_entries/$bad_entries" "15/0"
 chk "配了清单 · 完整建议行是「原值 + 追加」" "$(printf '%s\n' "$n" | grep -cF 'AUTOPILOT_HUMAN_PATHS="default,/setup.sh <路径>"')" 1
+chk "配了清单 · 提示词要求改名 / 复制的文件用 --renamed 一起交进去" "$(printf '%s\n' "$n" | grep -c '改名 / 复制的文件\*\*必须\*\*用 `--renamed')" 1
 chk "配了清单 · 验算命令写的是本次能跑的路径" "$(printf '%s\n' "$n" | grep -cF "bash '$SCRIPTS/human-paths-check.sh' --spec")" 1
 chk "豁免没写 → 写明开着、验算传 on" "$(printf '%s\n' "$n" | grep -c '^- 测试文件豁免：开着.*--exempt-tests on')" 1
 fresh 'AUTOPILOT_HUMAN_PATHS="default"' 'AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS="off"'

@@ -769,7 +769,8 @@ bash ~/.agents/skills/cavil-loop/scripts/human-paths-check.sh \
 <!-- autopilot-human-paths:check:end -->
 
   `--spec` 是打算写进配置的值；`AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS` 不写、写成空或 `"on"` 时 `--exempt-tests` 传 `on`，
-  否则传 `off`。开发模式下用 checkout 里的 `scripts/human-paths-check.sh`。
+  否则传 `off`。改名 / 复制的文件作为一项传 `--renamed <旧路径> <新路径>`：合并检查对一条改名记录是新旧路径一起判的
+  （两边都算测试文件才豁免），拆成两个路径分别验算可能得出不一样的结论。开发模式下用 checkout 里的 `scripts/human-paths-check.sh`。
   配了清单的项目，托管复审会多一步（只在配了清单时出现，否则复审提示词不变）：顺着清单里的钩子和钩子配置（以及它们调用的
   `package.json` scripts、`Makefile` 目标）找到它们运行的仓库内文件，目标分支和 PR 两边都看；PR 改到调用链上 daemon 不会拦的
   文件，或者调用链上有算不出路径的调用（变量、命令替换、通配）时，不翻合并队列、交人，并给出用上面这条命令验算过的配置建议。

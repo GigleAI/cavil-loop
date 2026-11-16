@@ -45,13 +45,17 @@ AUTOPILOT_PATHS_JQ='
         ([$spec | splits("[,\\s]+") | select(. != "")]
          | map(if . == "default" then ($def | splits("\\s+") | select(. != "")) else . end)
          | ["/.github/"] + . | unique) | map(rule);
-    # 单个路径的判定（GitHub#560，验算命令用；和合并检查对同一个文件的结论一致，tests/autopilot-human-paths.test.sh 对拍）：
-    #   hit         = 命中清单（合并检查会因它交人）
-    #   miss        = 不在清单里
-    #   exempt-hit  = 命中清单，但测试文件豁免开着、这个路径算测试文件：合并检查整个不拿它去比
-    #   exempt-miss = 不在清单里，而且测试文件豁免开着、这个路径算测试文件
-    def path_verdict($res; $ex):
-        (. as $f | any($res[]; . as $re | $f | test($re))) as $m
-        | if $ex == "on" and is_test then (if $m then "exempt-hit" else "exempt-miss" end)
+    # 一条改动记录（{filename, previous_filename?}：GitHub 改动文件列表的一项，或验算命令拼出来的一项）的判定。
+    # 合并检查和验算命令（human-paths-check.sh，GitHub#560）都只用这三个函数，不各写一份：
+    #   rec_paths      新旧路径（旧路径只在改名 / 复制时有）
+    #   rec_exempt     测试文件豁免开着、而且新旧路径都算测试文件 → 整条记录不拿去比清单
+    #   rec_hits       新旧路径里命中清单的那些
+    def rec_paths: [.filename, (.previous_filename // empty) | select(. != "")];
+    def rec_exempt($ex): $ex == "on" and (rec_paths | all(is_test));
+    def rec_hits($res): [rec_paths[] | select(. as $f | any($res[]; . as $re | $f | test($re)))];
+    # 验算命令的结论：hit（拦）/ miss（不在清单里）/ exempt-hit（豁免掉了，关豁免就会拦）/ exempt-miss（豁免掉了，关了也不拦）
+    def rec_verdict($res; $ex):
+        (rec_hits($res) | length > 0) as $m
+        | if rec_exempt($ex) then (if $m then "exempt-hit" else "exempt-miss" end)
           elif $m then "hit" else "miss" end;
 '
