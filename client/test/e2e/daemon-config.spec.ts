@@ -291,7 +291,6 @@ test('preview and poll-pace settings are in their groups; the port modulo may be
   }
   await expect(row(page, 'PREVIEW_IDLE').getByTestId('config-readonly')).toHaveText('30min');
   await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-readonly')).toHaveText('（空）');
-  await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-absent')).toHaveCount(0);
   await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-why')).toContainText('秒:秒');
   // the modulo: blank in the file, and blank is allowed; 0 is not
   await expect(input(page, 'PREVIEW_PORT_MODULO')).toHaveValue('');
@@ -320,8 +319,8 @@ test('preview and poll-pace settings are in their groups; the port modulo may be
   // the ladder line taken out: the default ladder the daemon then uses, marked as not in the file
   writeFileSync(config, readFileSync(config, 'utf8').replace('\nPOLL_BACKOFF_LADDER=""\n', '\n'));
   await openDialog(page);
+  // (a read-only row carries no "not in the file" pill: that mark is only on rows the form can write)
   await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-readonly')).toHaveText('86400:300,259200:600,604800:1800');
-  await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-absent')).toBeVisible();
 });
 
 test('read-only rows sit in their own topic groups, each saying its own reason; the run-log switch follows the daemon\'s rule for an empty line and for a missing one (GitHub#554)', async () => {

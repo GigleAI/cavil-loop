@@ -724,12 +724,12 @@ chk "get：取模那一项带 empty:true，别的整数项都不带" \
     '["PREVIEW_PORT_MODULO"] 0'
 req_conf; printf 'PREVIEW_PORT_MODULO=1000\n' >> "$RQ/cavil-loop.config"
 save req '{"PREVIEW_PORT_MODULO":""}'
-chk "取模从 1000 改成留空：保存成功，文件里那一行写成空值，读回是空" \
-    "$RESULT $(grep -cx 'PREVIEW_PORT_MODULO=""' "$RQ/cavil-loop.config") $(field "$(run get req)" PREVIEW_PORT_MODULO)" 'RESULT=saved 1 ["",true,true]'
+chk "取模从 1000 改成留空：保存成功，文件里那一行写成空值（照原行不带引号），读回是空" \
+    "$RESULT $(grep -cxE 'PREVIEW_PORT_MODULO=(""|)' "$RQ/cavil-loop.config") $(field "$(run get req)" PREVIEW_PORT_MODULO)" 'RESULT=saved 1 ["",true,true]'
 for v in 0 65536; do
     before="$(sum "$RQ/cavil-loop.config")"
     save req "{\"PREVIEW_PORT_MODULO\":\"$v\"}"
-    chk "取模写 $v 不让存（文件不变），原因里说可以留空" "$RESULT $(sum "$RQ/cavil-loop.config") $(grep -c '或者留空' <<<"$OUT")" "RESULT=invalid $before 1"
+    chk "取模写 $v 不让存（文件不变），原因里说可以留空" "$RESULT $(sum "$RQ/cavil-loop.config") $(grep -q '或者留空' <<<"$OUT" && echo said)" "RESULT=invalid $before said"
 done
 before="$(sum "$RQ/cavil-loop.config")"
 save req '{"PREVIEW_BACKEND_OFFSET":""}'
