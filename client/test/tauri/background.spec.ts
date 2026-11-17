@@ -226,11 +226,21 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
 
   // GitHub#369: the user switches to the app (the handler the window's focus runs): the badge goes to 0,
   // the delivered notifications stay (the setting is off by default)
+  // The click above already showed and focused the window: on a display that delivers focus, that alone made
+  // the window active, and its "badge 0" may reach the shell only after `at` (calls to the shell go one at a
+  // time, GitHub#575: CI recorded "badge 0" before this step's "active"). So what is asserted is the order
+  // after this step's own "active": the badge goes to 0 after it, whatever arrived in between.
   const at = records().length;
   appendFileSync(control, 'activate\n');
-  await until(() => records().slice(at).some((r) => r.op === 'badge' && r.count === 0), 'switched: badge 0', 15_000);
-  const ops = records().slice(at).filter((r) => ['active', 'badge', 'clearNotifications'].includes(r.op)).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op));
-  expect(ops.slice(0, 2)).toEqual(['active', 'badge 0']);
+  const afterActive = () => {
+    const r = records().slice(at);
+    const i = r.findIndex((x) => x.op === 'active');
+    return i < 0 ? null : r.slice(i + 1);
+  };
+  await until(() => afterActive()?.some((r) => r.op === 'badge' && r.count === 0) ?? false, 'switched: badge 0 after active', 15_000);
+  const badges = afterActive()!.filter((r) => r.op === 'badge');
+  expect(badges.length).toBeGreaterThan(0);
+  expect(badges[badges.length - 1].count).toBe(0);
   await new Promise((r) => setTimeout(r, 1500));
   expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
 
