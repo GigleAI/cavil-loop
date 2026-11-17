@@ -130,8 +130,11 @@ describe('platform layer (back end)', () => {
     expect((await select('linux', { CAVIL_CLIENT_TEST_MODE: '1', CAVIL_CLIENT_TEST_CREDENTIAL_FILE: '/tmp/x' })).store).toBe('file:/tmp/x');
   });
 
-  it('macOS uses the keychain store; other platforms keep the token for this run only', async () => {
+  it('macOS uses the keychain store, Windows its Credential Manager (GitHub#577); other platforms keep the token for this run only', async () => {
     expect((await select('macos', {})).store).toBe('keychain');
+    expect((await select('windows', {})).store).toBe('windows-credential');
     expect((await select('linux', {})).store).toBe('memory');
+    // a credential file is a test-mode thing on Windows too
+    expect((await select('windows', { CAVIL_CLIENT_TEST_CREDENTIAL_FILE: '/tmp/x' })).store).toBe('windows-credential');
   });
 });

@@ -488,6 +488,18 @@ rm -f "$L.open" "$L.all" "$L.list"
 - **同步节拍在外壳**：外壳每 60 秒告诉窗口「该同步了」（并带上节拍间隔），窗口收到才同步（窗口里不再有周期定时器；慢轮之后的那一次补跑见「定时同步不首尾相接」）——隐藏窗口的定时器会被网页引擎放慢。macOS 上另外声明一个「用户发起的活动」，不让系统的 App 小憩把没有窗口的 App 停掉。
 - **窗口对外壳的调用一次只发一条**：隐藏窗口里同时发出的第二条请求可能被压到下一次唤醒（实测：角标比通知晚了整整一拍，超过 2 分钟的承诺），所以 controller 把它们排成队。
 
+**Windows 版**（GitHub#577，x64，`src-tauri/src/win.rs`；会判断的部分放在 `crates/core`，每个系统都跑得到测试）：
+
+- **凭据**：Windows 凭据管理器（`crates/core/src/wincred.rs`），通用凭据、只存本机本用户。GitHub 登录的目标名是 `dev.luosky.cavil-loop.client/github-oauth`，配对远程机器的钥匙是 `…/remote/<机器>`。只有系统明说「没有这一条」（ERROR_NOT_FOUND）才算没登录；别的失败、存着的不是文本，一律报错，不当成「没登录」。系统的三个调用隔在 `CredApi` 后面：Linux 上用假的测判断，真的存、取、清、清后取不到在 CI 的 Windows 机器上跑（`wincred::tests::the_real_credential_manager_round_trip`）。
+- **通知**：系统的 toast 接口（`windows` crate），以安装包写进开始菜单快捷方式的 AppUserModelID（= `identifier`）发出；系统设置里关掉了就回报拒绝，设置页显示 Windows 的说法。标题、正文来自 GitHub，按 XML 转义（`crates/core/src/toast.rs`）。系统按不超过 64 字的 tag / group 找回已发的通知：tag 是那条通知整个编号的散列，group 是它那一条 item 的散列，所以「收起这一条」「收起关于这个 item 的全部（哪次启动发的都算）」「全部收起」都做得到。点通知 = macOS 上点通知（`desktop::on_click`）。
+- **任务栏数字**：Windows 没有角标数字，只能在任务栏图标上叠一张小图（overlay icon）；图由 `crates/core/src/badge.rs` 画（红底白字，超过 99 写 99+），不依赖字体。
+- **关窗只隐藏，图标留在通知区域**：托盘图标（Tauri 的 `tray-icon`，只在 Windows 打开），单击叫回窗口，右键菜单「打开 Cavil Loop / 退出」。开机自启用同一个插件（注册表的「运行」项），同样带 `--hidden`。
+- **更新**：更新包就是 NSIS 安装包本身（`Cavil-Loop-<版本>-windows-x64.exe` + `.sig`，签名和 Mac 同一把钥匙）。插件在 Windows 上一装就退出 App，所以下载、验签之后先放着，人点「重启」时才交给安装程序（`updater.rs` 的 `restart_now`），安装程序装完再把新版打开；交不出去就照常重启旧版，下一轮再找到这次更新。
+- **daemon**：Windows 上不跑 daemon。设置页的「本机 daemon」换成说明 + 跳到「远程 daemon」，数据来源里不显示「接上 daemon」，也不去读本机 daemon 的状态。远程 daemon 照常；「添加远程 daemon」读本机 Tailscale 时直接找 `%ProgramFiles%\Tailscale\tailscale.exe`（找不到再按 PATH 找），不开控制台窗口。
+- **窗口怎么知道是 Windows**：外壳的 `desktop_system` 回 `macos` / `windows` / `other`；测试模式下可用 `CAVIL_CLIENT_TEST_SYSTEM` 指定，UI 测试 `test/e2e/windows.spec.ts` 用桥的假外壳演 Windows 和 Mac 两种。
+- **打包与发版**（`.github/workflows/client.yml` 的 `package-windows`，和 Mac 打包同样的时机，PR 上不跑）：Windows 机器上跑上面那几项只能在 Windows 跑的后端测试 → `tauri build --bundles nsis` → 验签 → 体积门（≤ 20 MB）→ 静默安装（`/S`，装给当前用户）→ 装好的 App `--smoke-test` 必须通过、`--notify-check` 只报告结果。正式版和开发版都附 Windows 安装包；`latest.json` 的 `windows-x86_64` 一项和 App 里的 `DEV_TARGETS` 是同一张表（`test/unit/update-manifest.test.ts` 对拍）。安装包没有代码签名（维护者在 #574 选的），第一次运行 Windows 会弹 SmartScreen，下载说明写了怎么过。
+- **没有做的**：ARM 版；Windows 上的真实自我更新回归（Mac 有 `mac-update-check.sh`，Windows 没有对应的检查）；点 toast 时 App 已经退出的情况（这时系统按开始菜单快捷方式打开 App，不打开那一条）。
+
 **测试模式**（只在 `CAVIL_CLIENT_TEST_MODE=1` 且 GitHub 指向本机回环时生效）：`CAVIL_CLIENT_TEST_ALERTS_FILE` 把每次通知 / 角标 / 节拍（带当时窗口是否可见）/ 隐藏 / 显示写成一行 JSON，不弹真通知；`CAVIL_CLIENT_TEST_NOTIFY_REFUSE=<消息>` 模拟系统拒绝；`CAVIL_CLIENT_TEST_TICK_MS` 改节拍；`CAVIL_CLIENT_TEST_HIDE_ON_CLOSE=1` 让 Linux 上也关窗只隐藏；`CAVIL_CLIENT_TEST_CONTROL_FILE` 里追加 `close`（和关窗按钮同一个请求）、`click <通知 id>`（和点那条通知同一段处理）或 `activate`（和窗口获得焦点同一段处理：没有窗口管理器的测试显示上焦点事件不一定有）。
 
 **怎么验的**：

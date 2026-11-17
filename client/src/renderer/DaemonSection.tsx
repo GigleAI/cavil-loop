@@ -47,7 +47,7 @@ export interface DaemonState {
  * The daemon's status, read once when settings open and again on request. Shared by this section
  * and the repository list's "接上 daemon" (GitHub#315), so both show the same answer.
  */
-export function useDaemonStatus(): DaemonState {
+export function useDaemonStatus(enabled = true): DaemonState {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const alive = useRef(true);
@@ -69,11 +69,12 @@ export function useDaemonStatus(): DaemonState {
   const round = useBackendLangRound();
   useEffect(() => {
     alive.current = true;
-    void check();
+    // GitHub#577: not on Windows — no daemon to read there
+    if (enabled) void check();
     return () => {
       alive.current = false;
     };
-  }, [round]);
+  }, [round, enabled]);
   return { status, checking, check };
 }
 

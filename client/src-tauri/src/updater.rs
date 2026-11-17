@@ -5,8 +5,8 @@
 // window shows are decided in cavil_core::update (one implementation, the one
 // the test suites drive).
 //
-// Which builds look for updates at all (`mode`): the released macOS app. Not a
-// development build, not the packaged-app checks (--smoke-test / --notify-check),
+// Which builds look for updates at all (`mode`): the released macOS and Windows apps (GitHub#577).
+// Not a development build, not the packaged-app checks (--smoke-test / --notify-check),
 // not test mode unless a test asks for it, not Linux (nothing is released there).
 //
 // Test builds only (cargo feature `update-test`, scripts/mac-update-check.sh): the
@@ -50,7 +50,8 @@ pub fn no_key() -> String {
 }
 
 pub struct Facts {
-    pub macos: bool,
+    /// a system the app is released for: macOS, Windows (GitHub#577)
+    pub released_os: bool,
     pub debug: bool,
     pub test_feature: bool,
     pub test_mode: bool,
@@ -61,7 +62,7 @@ pub struct Facts {
 }
 
 pub fn mode(f: &Facts) -> Mode {
-    if f.check_run || (!f.macos && !f.test_feature) || (f.debug && !f.test_feature) || (f.test_mode && !f.test_wants_it) {
+    if f.check_run || (!f.released_os && !f.test_feature) || (f.debug && !f.test_feature) || (f.test_mode && !f.test_wants_it) {
         return Mode::Off;
     }
     Mode::On { problem: None }
@@ -127,16 +128,32 @@ impl<R: Runtime> Backend for PluginBackend<R> {
 
     async fn install(&self, found: &Found, bytes: Vec<u8>) -> Result<(), Failure> {
         let u = self.updates.lock().unwrap().remove(&found.id).ok_or(Failure::Gone)?;
-        // verifies the signature again, then swaps the app bundle (may ask for an administrator's password)
-        tokio::task::spawn_blocking(move || u.install(bytes)).await.map_err(|e| Failure::Install(e.to_string()))?.map_err(failure)?;
-        clear_quarantine(&self.app);
-        Ok(())
+        // GitHub#577, Windows: the installer can only replace the app once it has quit, so the plugin's
+        // install quits the app at once. The verified package waits here instead and is installed when
+        // the user chooses to restart (`restart_now`): the installer then starts the new version.
+        #[cfg(windows)]
+        {
+            *WINDOWS_PENDING.lock().unwrap() = Some((u, bytes));
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            // verifies the signature again, then swaps the app bundle (may ask for an administrator's password)
+            tokio::task::spawn_blocking(move || u.install(bytes)).await.map_err(|e| Failure::Install(e.to_string()))?.map_err(failure)?;
+            clear_quarantine(&self.app);
+            Ok(())
+        }
     }
 }
+
+/// GitHub#577: the downloaded, verified Windows installer, run by `restart_now`.
+#[cfg(windows)]
+static WINDOWS_PENDING: Mutex<Option<(Update, Vec<u8>)>> = Mutex::new(None);
 
 /// A just-installed app carrying the "downloaded from the internet" mark would be stopped by macOS
 /// on its next start. The plugin's own download does not set it; should anything have, take it off
 /// the new app (only that bundle, which has just passed the signature check).
+#[cfg_attr(windows, allow(dead_code))]
 fn clear_quarantine<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
     {
@@ -256,6 +273,14 @@ pub fn desktop_update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
 pub fn restart_now<R: Runtime>(app: &AppHandle<R>) -> ! {
     app.state::<crate::desktop::Desktop>().record(json!({ "op": "restart" }));
     crate::window::look(app);
+    // Windows: the waiting installer (it checks the signature again, quits this app and starts the new
+    // one). Should it fail to start, the app restarts as it is and a later round finds the update again.
+    #[cfg(windows)]
+    if let Some((u, bytes)) = WINDOWS_PENDING.lock().unwrap().take() {
+        if let Err(e) = u.install(bytes) {
+            eprintln!("cavil: starting the installer failed: {e}");
+        }
+    }
     app.restart()
 }
 
@@ -264,13 +289,13 @@ mod tests {
     use super::*;
 
     fn released() -> Facts {
-        Facts { macos: true, debug: false, test_feature: false, test_mode: false, test_wants_it: false, check_run: false }
+        Facts { released_os: true, debug: false, test_feature: false, test_mode: false, test_wants_it: false, check_run: false }
     }
 
     #[test]
-    fn only_the_released_mac_app_looks() {
+    fn only_the_released_mac_and_windows_apps_look() {
         assert_eq!(mode(&released()), Mode::On { problem: None });
-        assert_eq!(mode(&Facts { macos: false, ..released() }), Mode::Off);
+        assert_eq!(mode(&Facts { released_os: false, ..released() }), Mode::Off);
         assert_eq!(mode(&Facts { debug: true, ..released() }), Mode::Off);
         assert_eq!(mode(&Facts { check_run: true, ..released() }), Mode::Off);
         assert_eq!(mode(&Facts { test_mode: true, ..released() }), Mode::Off);

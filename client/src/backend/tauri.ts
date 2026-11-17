@@ -32,6 +32,7 @@ export const tauriDesktop: Desktop = {
   windowFrame: () => invoke('desktop_window_frame'),
   startDrag: () => invoke('desktop_start_drag'),
   toggleZoom: () => invoke('desktop_toggle_zoom'),
+  system: () => invoke('desktop_system'),
 };
 
 /** Tell the shell the window is up. true = this is the packaged-app smoke test: it reports and quits. */

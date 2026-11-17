@@ -749,6 +749,8 @@ export interface AppState {
   unreadCount: number;
   /** launch at login: on / off, null = this platform cannot */
   launchAtLogin: boolean | null;
+  /** GitHub#577: the system the app runs on, as the shell says it; null = not known (yet) — shown as on a Mac */
+  desktopSystem: 'macos' | 'windows' | 'other' | null;
   /** the system refused the latest notification (e.g. not allowed in System Settings); null = the latest one went out */
   notifyProblem: string | null;
   /** a notification was clicked: open this item's detail (`seq` changes on every click) */

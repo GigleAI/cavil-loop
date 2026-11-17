@@ -17,7 +17,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 | | 是什么 | 需要什么 | 从哪开始 |
 |---|---|---|---|
 | **daemon** | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。这张表以下讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
-| **Cavil Loop 桌面客户端** | 可以单独使用的 GitHub issue / PR 客户端：issue 和关联的 PR 放在一起，按迭代 / 里程碑分组，把 issue 之间的依赖画成图（可跨仓库）。也能替人安装 daemon、把条目交给它。 | 一个 GitHub 账号、一台 Mac——不需要 daemon、不需要 GitHub Project、不需要命令行程序 | [客户端使用说明](docs/client.zh.md) |
+| **Cavil Loop 桌面客户端** | 可以单独使用的 GitHub issue / PR 客户端：issue 和关联的 PR 放在一起，按迭代 / 里程碑分组，把 issue 之间的依赖画成图（可跨仓库）。也能替人安装 daemon、把条目交给它。 | 一个 GitHub 账号、一台 Mac 或 Windows 电脑——不需要 daemon、不需要 GitHub Project、不需要命令行程序 | [客户端使用说明](docs/client.zh.md) |
 
 两样东西互不依赖，可以只用其中一样；搭配使用更佳。
 
@@ -236,7 +236,7 @@ AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/huma
 
 ## 客户端（桌面看板）
 
-Cavil Loop 桌面客户端（`client/`，macOS）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口：
+Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口：
 
 - **看板**：按迭代 / 状态 / 里程碑分列，可按仓库分泳道；PR 跟在它关联的 issue 下面。
 - **表格**：按仓库 / 迭代 / 状态 / 里程碑分组，子 issue 缩进在父 issue 下并显示完成进度，格子里直接改。
@@ -249,9 +249,9 @@ Cavil Loop 桌面客户端（`client/`，macOS）是一个**可以单独使用**
 |---|---|---|
 | ![看板](docs/client-screens/board.png) | ![表格](docs/client-screens/table.png) | ![依赖图](docs/client-screens/graph.png) |
 
-登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
+登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串（Windows 上存进 Windows 凭据管理器）。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 
-安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`（第一个是 `client/v0.5.2`），有 Apple 芯片和 Intel 两种 dmg；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，只有 Apple 芯片的 dmg。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。** 改代码的规则在开发文档 [client/README.md](client/README.md)。
+安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`（第一个是 `client/v0.5.2`），有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。** 改代码的规则在开发文档 [client/README.md](client/README.md)。
 
 ---
 

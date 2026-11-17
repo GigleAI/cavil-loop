@@ -15,3 +15,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
 url = "2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# GitHub#577: the Windows app keeps its credentials in Windows Credential Manager (src/wincred.rs)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials"] }

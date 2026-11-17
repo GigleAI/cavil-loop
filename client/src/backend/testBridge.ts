@@ -41,5 +41,6 @@ export function bridgeDesktop(): Desktop {
     windowFrame: () => d('windowFrame'),
     startDrag: () => d('startDrag'),
     toggleZoom: () => d('toggleZoom'),
+    system: () => d('system'),
   };
 }

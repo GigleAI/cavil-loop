@@ -70,5 +70,10 @@ export interface Desktop {
   startDrag(): Promise<void>;
   /** GitHub#467: a double click on an empty part of the top row (macOS): zoom the window, or put it back */
   toggleZoom(): Promise<void>;
+  /** GitHub#577: which system the app runs on (absent: an older shell or a test stand-in — treated as not Windows) */
+  system?(): Promise<DesktopSystem>;
 }
+
+/** GitHub#577: the systems the window words some things differently for */
+export type DesktopSystem = 'macos' | 'windows' | 'other';
 

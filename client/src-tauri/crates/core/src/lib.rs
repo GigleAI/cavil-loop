@@ -2,6 +2,7 @@
 //! touches the GitHub credential. The window (TypeScript) never sees it.
 
 pub mod api;
+pub mod badge;
 pub mod daemon;
 pub mod daemon_config;
 pub mod daemon_connect;
@@ -17,7 +18,9 @@ pub mod remote;
 pub mod remote_host;
 pub mod store;
 pub mod theme;
+pub mod toast;
 pub mod update;
+pub mod wincred;
 pub mod window_state;
 pub mod zoom;
 

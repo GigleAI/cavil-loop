@@ -9,6 +9,7 @@
 //   node scripts/size-gate.mjs <dmg> [<dmg> ...]   [--expect arm64,x64]
 import { statSync } from 'node:fs';
 import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const TARGET = 10_000_000;
 export const LIMIT = 20_000_000;
@@ -44,7 +45,8 @@ export function judge(files, expect = []) {
   return { ok, lines };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const i = args.indexOf('--expect');
   const expect = i >= 0 ? args.splice(i, 2)[1].split(',').filter(Boolean) : [];

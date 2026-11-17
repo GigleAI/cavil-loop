@@ -76,7 +76,7 @@ export function LoginView({ state, onHelp }: { state: AppState; onHelp: () => vo
       <AppKindPicker state={state} disabled={busy} onHelp={onHelp} />
 
       <p className="muted small" data-testid="permission-text">
-        {permissionText(state.appKind, state.clientId)} {t('凭据存在本机钥匙串里，只发给 GitHub。')}
+        {permissionText(state.appKind, state.clientId)} {state.desktopSystem === 'windows' ? t('凭据存在本机的 Windows 凭据管理器里，只发给 GitHub。') : t('凭据存在本机钥匙串里，只发给 GitHub。')}
         {!state.credentialsPersistent && ` ${t('当前系统还不支持保存凭据，退出后需要重新登录。')}`}
       </p>
     </div>

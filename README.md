@@ -17,7 +17,7 @@ Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be huma
 | | What it is | What it needs | Start here |
 |---|---|---|---|
 | **The daemon** | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
-| **The Cavil Loop desktop client** | A GitHub issue / PR client that works on its own: issues together with their linked PRs, grouped by iteration / milestone, and a dependency graph of issues (across repositories). It can also install the daemon and hand items to it. | A GitHub account and a Mac — no daemon, no GitHub Project, no command-line tools | [Client guide](docs/client.md) |
+| **The Cavil Loop desktop client** | A GitHub issue / PR client that works on its own: issues together with their linked PRs, grouped by iteration / milestone, and a dependency graph of issues (across repositories). It can also install the daemon and hand items to it. | A GitHub account and a Mac or a Windows PC — no daemon, no GitHub Project, no command-line tools | [Client guide](docs/client.md) |
 
 Each one works without the other, and they work best together.
 
@@ -223,7 +223,7 @@ AI sees it's a discussion question, replies without touching code, keeps label `
 
 ## Client (desktop board)
 
-The Cavil Loop desktop client (`client/`, macOS) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window:
+The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window:
 
 - **Board** with columns by iteration / status / milestone, optional swimlanes per repository; each PR sits under the issue it links to.
 - **Table** grouped by repository / iteration / status / milestone, sub-issues indented under their parent with their progress, cells editable in place.
@@ -236,9 +236,9 @@ The Cavil Loop desktop client (`client/`, macOS) is a GitHub issue / PR client y
 |---|---|---|
 | ![Board](docs/client-screens/board.png) | ![Table](docs/client-screens/table.png) | ![Dependency graph](docs/client-screens/graph.png) |
 
-You sign in through the browser (GitHub's device flow); the credential goes into the macOS keychain. By default the client talks only to GitHub (`api.github.com`, `github.com` and GitHub's own avatar, image, file and release-download addresses); Tailscale machines are contacted only when you use the remote-daemon settings: opening the "add remote daemon" window asks every online device on your tailnet whether its remote entry is open, pairing talks to the one machine you picked, and afterwards only paired machines are contacted — always over HTTPS to `*.ts.net` names, never with a GitHub credential (details in the [client guide](docs/client.md#network-credentials-and-offline-use)). When it installs or connects the daemon, it runs the daemon's own scripts and a few fixed `git` / `systemctl` / `launchctl` commands on this machine; the window can send only fixed requests, the back end checks every argument, and the client's credential is never handed to the daemon, which keeps using `gh`'s own sign-in.
+You sign in through the browser (GitHub's device flow); the credential goes into the macOS keychain (on Windows: Windows Credential Manager). By default the client talks only to GitHub (`api.github.com`, `github.com` and GitHub's own avatar, image, file and release-download addresses); Tailscale machines are contacted only when you use the remote-daemon settings: opening the "add remote daemon" window asks every online device on your tailnet whether its remote entry is open, pairing talks to the one machine you picked, and afterwards only paired machines are contacted — always over HTTPS to `*.ts.net` names, never with a GitHub credential (details in the [client guide](docs/client.md#network-credentials-and-offline-use)). When it installs or connects the daemon, it runs the daemon's own scripts and a few fixed `git` / `systemctl` / `launchctl` commands on this machine; the window can send only fixed requests, the back end checks every argument, and the client's credential is never handed to the daemon, which keeps using `gh`'s own sign-in.
 
-Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` (the first is `client/v0.5.2`) and come with an Apple-silicon and an Intel dmg; development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, Apple-silicon dmg only. **Install, first run and every feature: [docs/client.md](docs/client.md).** The developer notes are in [client/README.md](client/README.md) (Chinese).
+Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` (the first is `client/v0.5.2`) and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. **Install, first run and every feature: [docs/client.md](docs/client.md).** The developer notes are in [client/README.md](client/README.md) (Chinese).
 
 ---
 
