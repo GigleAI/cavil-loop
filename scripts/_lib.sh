@@ -120,9 +120,12 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
 # 指纹必须和本进程**实际读到的版本**对得上（复审：加载后才算指纹，加载期间被原子替换的文件会让「旧值 + 新指纹」
-# 一路放行）。所以每个文件在 bash 读它**之前**先算一次（主配置在 source 之前；它 source 的文件由临时套在
-# source / . 外面的函数在调内置命令之前算），加载完再算一次：两次不一样 = 加载期间被改过，本进程不动手。
-# 两次之间先改后又改回原样（内容一样）不算改。
+# 一路放行）。主配置在 source 之前算一次；它 source 的文件在**其第一条命令执行之前**算一次（DEBUG 陷阱第一次
+# 在这个文件里触发时——bash 的 source 先把整个文件读进来再执行，这一刻文件已读完、自己的命令还没跑）；加载完
+# 再算一次：两次不一样 = 加载期间被改过，本进程不动手。不给 source / . 套函数：套了会改掉被加载文件看到的位置
+# 参数（$1 …）和 declare 的作用域（复审：无参数的 source 沿用调用者的 $1，经函数就变成函数参数）。
+# 看不到的：bash 读完一个被 source 的文件、到它第一条命令执行之间那一瞬被换掉（中间不执行任何命令，只有外部进程
+# 恰好在这一刻写才会发生）；内容被改了又改回原样（内容一样，不影响结果）。
 _CFG_SRCS="|"
 _CFG_PRE=""
 _CFG_PRE_BAD=0
@@ -130,45 +133,33 @@ _CFG_LIB_SELF="${BASH_SOURCE[0]}"
 _cfg_abs() {   # <路径> → 绝对路径（相对路径按当前目录补全）
     case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac
 }
-_cfg_src_resolve() {   # <source 的第一个参数> → bash 会读的那个文件（规则同内置 source：带 / 照原样；否则先 PATH 后当前目录）
-    local n="$1" d
-    case "$n" in */*) _cfg_abs "$n"; return 0 ;; esac
-    if shopt -q sourcepath; then
-        local IFS=':'
-        for d in $PATH; do
-            [ -n "$d" ] || d=.
-            if [ -f "$d/$n" ] && [ -r "$d/$n" ]; then _cfg_abs "$d/$n"; return 0; fi
-        done
-    fi
-    _cfg_abs "$n"
-}
-_cfg_pre_note() {   # <绝对路径>：bash 读它之前记一次指纹；同一文件第二次被读时指纹不同也算加载期间被改
-    local f="$1" h old
+_cfg_pre_note() {   # <绝对路径>：记下这个文件此刻的指纹（每个文件只记第一次）
+    local f="$1" h
     h="$(cfg_sha256 < "$f" 2>/dev/null || true)"
     if [ -z "$h" ]; then _CFG_PRE_BAD=1; return 0; fi
-    old="$(printf '%s' "$_CFG_PRE" | awk -F'\t' -v f="$f" '$2 == f { print $1; exit }')"
-    if [ -z "$old" ]; then _CFG_PRE="${_CFG_PRE}${h}"$'\t'"${f}"$'\n'
-    elif [ "$old" != "$h" ]; then _CFG_PRE_BAD=1; fi
+    _CFG_PRE="${_CFG_PRE}${h}"$'\t'"${f}"$'\n'
+}
+_cfg_trap_seen() {   # <BASH_SOURCE[0]>：DEBUG 陷阱里调；新文件第一次出现时记下名字和指纹
+    case "$_CFG_SRCS" in *"|$1|"*) return 0 ;; esac
+    _CFG_SRCS="${_CFG_SRCS}${1}|"
+    [ -n "$1" ] && [ "$1" != "$_CFG_LIB_SELF" ] || return 0
+    _cfg_pre_note "$(_cfg_abs "$1")"
 }
 _CFG_OLD_DEBUG="$(trap -p DEBUG)"
 case "$-" in *T*) _CFG_HAD_T=1 ;; *) _CFG_HAD_T=0 ;; esac
-# 只在加载配置这一次套上；source 是普通名字，. 在老版 bash 上未必能当函数名，先在子 shell 里试
-source() { [ $# -gt 0 ] && _cfg_pre_note "$(_cfg_src_resolve "$1")"; builtin source "$@"; }
-_CFG_DOT_WRAP=0
-if ( eval '.() { :; }' ) 2>/dev/null; then
-    eval '.() { [ $# -gt 0 ] && _cfg_pre_note "$(_cfg_src_resolve "$1")"; builtin . "$@"; }'
-    _CFG_DOT_WRAP=1
-fi
 _cfg_pre_note "$(_cfg_abs "$CONFIG_FILE")"
+_CFG_SRCS="|$(_cfg_abs "$CONFIG_FILE")|${CONFIG_FILE}|"
 set -T
-trap 'case "$_CFG_SRCS" in *"|${BASH_SOURCE[0]:-}|"*) ;; *) _CFG_SRCS="${_CFG_SRCS}${BASH_SOURCE[0]:-}|" ;; esac' DEBUG
+_CFG_OUR_DEBUG='_cfg_trap_seen "${BASH_SOURCE[0]:-}"'
+trap "$_CFG_OUR_DEBUG" DEBUG
 # shellcheck disable=SC1090
-builtin source "$CONFIG_FILE"
-trap - DEBUG
+source "$CONFIG_FILE"
+# 配置自己改了 DEBUG 陷阱就不动它（之后的文件没被记到：它们没有读之前的指纹，见下面的比对）
+if [ "$(trap -p DEBUG)" = "trap -- '${_CFG_OUR_DEBUG}' DEBUG" ]; then
+    trap - DEBUG
+    [ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
+fi
 [ "$_CFG_HAD_T" = 1 ] || set +T
-[ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
-unset -f source
-[ "$_CFG_DOT_WRAP" = 0 ] || unset -f .
 # 每个文件：绝对路径 + 内容指纹；主配置总在里面
 cfg_src_fps() {   # <文件列表，| 分隔> → 每行「指纹 路径」；有一个读不了就返回 1
     local list="$1" f out="" h
@@ -192,18 +183,18 @@ _cfg_abs_list() {
 }
 CONFIG_SRC_LIST="$(_cfg_abs_list)"
 CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
-# 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹（套不上 . 的老 bash 用 . 读的文件
-# 除外：它只有加载后的指纹，文档写明），且两次相同；对不上 = 加载期间被改过，整份指纹作废（闸门不放行）
+# 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹，且两次相同；对不上 = 加载期间被改过，
+# 整份指纹作废（闸门不放行）
 if [ -n "$CONFIG_SRC_FPS" ]; then
-    _cfg_mis="$(printf '%s\n' "$CONFIG_SRC_FPS" | awk -v pre="$_CFG_PRE" -v strict="$_CFG_DOT_WRAP" '
+    _cfg_mis="$(printf '%s\n' "$CONFIG_SRC_FPS" | awk -v pre="$_CFG_PRE" '
         BEGIN { n = split(pre, L, "\n"); for (i = 1; i <= n; i++) { if (L[i] == "") continue; t = index(L[i], "\t"); P[substr(L[i], t + 1)] = substr(L[i], 1, t - 1) } }
         $0 == "" { next }
-        { h = $1; f = substr($0, length($1) + 2); if (f in P) { if (P[f] != h) bad = 1 } else if (strict == 1) bad = 1 }
+        { h = $1; f = substr($0, length($1) + 2); if (!(f in P) || P[f] != h) bad = 1 }
         END { print bad ? 1 : 0 }')"
     if [ "$_CFG_PRE_BAD" = 1 ] || [ "$_cfg_mis" != 0 ]; then CONFIG_SRC_FPS=""; CONFIG_SRC_CHANGED_DURING_LOAD=1; fi
     unset _cfg_mis
 fi
-unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_DOT_WRAP
+unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_OUR_DEBUG
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd

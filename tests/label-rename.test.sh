@@ -408,6 +408,16 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 chk "都没有：手动派工照常（翻成 doing/agent）" "$rc/$(item_labels "$I_AGENT")" "0/doing/agent"
 chk "派工起的 worker 会话不带着轮询锁（锁现在拿得到）" "$("$REAL_FLOCK" -n "$SANDBOX/lra/state/poll.lock" true && echo free)" "free"
 
+echo "7b. 被 source 的邻近文件看到的位置参数、declare 的作用域和直接 source 一样（复审：不能给 source 套函数）"
+mkconf lra; world
+jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
+rm -f "$SANDBOX/lra/args.log"
+printf 'printf "%%s\\n" "arg=${1-unset}" >> "%s/args.log"\ndeclare SRC_DECL=x\n' "$SANDBOX/lra" > "$SANDBOX/lra/extra.conf"
+printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n[ "${SRC_DECL-}" = x ] || echo "decl=lost" >> "%s/args.log"\n' "$SANDBOX/lra" >> "$SANDBOX/lra/cavil-loop.config"
+(cd "$SANDBOX/lra/project" && FAKE_TMUX_LOG="$SANDBOX/lra/tmux.log" CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" bash "$S/dispatch-new-issue.sh" "$I_AGENT" >/dev/null 2>&1); rc=$?
+chk "手动派工照常（翻成 doing/agent）" "$rc/$(item_labels "$I_AGENT")" "0/doing/agent"
+chk "邻近文件每次加载看到的 \$1 都是派工脚本收到的编号，declare 的变量留在全局" "$(sort -u "$SANDBOX/lra/args.log" | tr '\n' ' ')" "arg=$I_AGENT "
+
 echo "8. 另一台机器跟进"
 mkconf lra; mkconf lrb; world
 r="$(rn lra rename --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --rev "$(rev_of lra)" --others-stopped)"
