@@ -119,18 +119,57 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
+# 指纹必须和本进程**实际读到的版本**对得上（复审：加载后才算指纹，加载期间被原子替换的文件会让「旧值 + 新指纹」
+# 一路放行）。所以每个文件在 bash 读它**之前**先算一次（主配置在 source 之前；它 source 的文件由临时套在
+# source / . 外面的函数在调内置命令之前算），加载完再算一次：两次不一样 = 加载期间被改过，本进程不动手。
+# 两次之间先改后又改回原样（内容一样）不算改。
 _CFG_SRCS="|"
+_CFG_PRE=""
+_CFG_PRE_BAD=0
 _CFG_LIB_SELF="${BASH_SOURCE[0]}"
+_cfg_abs() {   # <路径> → 绝对路径（相对路径按当前目录补全）
+    case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac
+}
+_cfg_src_resolve() {   # <source 的第一个参数> → bash 会读的那个文件（规则同内置 source：带 / 照原样；否则先 PATH 后当前目录）
+    local n="$1" d
+    case "$n" in */*) _cfg_abs "$n"; return 0 ;; esac
+    if shopt -q sourcepath; then
+        local IFS=':'
+        for d in $PATH; do
+            [ -n "$d" ] || d=.
+            if [ -f "$d/$n" ] && [ -r "$d/$n" ]; then _cfg_abs "$d/$n"; return 0; fi
+        done
+    fi
+    _cfg_abs "$n"
+}
+_cfg_pre_note() {   # <绝对路径>：bash 读它之前记一次指纹；同一文件第二次被读时指纹不同也算加载期间被改
+    local f="$1" h old
+    h="$(cfg_sha256 < "$f" 2>/dev/null || true)"
+    if [ -z "$h" ]; then _CFG_PRE_BAD=1; return 0; fi
+    old="$(printf '%s' "$_CFG_PRE" | awk -F'\t' -v f="$f" '$2 == f { print $1; exit }')"
+    if [ -z "$old" ]; then _CFG_PRE="${_CFG_PRE}${h}"$'\t'"${f}"$'\n'
+    elif [ "$old" != "$h" ]; then _CFG_PRE_BAD=1; fi
+}
 _CFG_OLD_DEBUG="$(trap -p DEBUG)"
 case "$-" in *T*) _CFG_HAD_T=1 ;; *) _CFG_HAD_T=0 ;; esac
+# 只在加载配置这一次套上；source 是普通名字，. 在老版 bash 上未必能当函数名，先在子 shell 里试
+source() { [ $# -gt 0 ] && _cfg_pre_note "$(_cfg_src_resolve "$1")"; builtin source "$@"; }
+_CFG_DOT_WRAP=0
+if ( eval '.() { :; }' ) 2>/dev/null; then
+    eval '.() { [ $# -gt 0 ] && _cfg_pre_note "$(_cfg_src_resolve "$1")"; builtin . "$@"; }'
+    _CFG_DOT_WRAP=1
+fi
+_cfg_pre_note "$(_cfg_abs "$CONFIG_FILE")"
 set -T
 trap 'case "$_CFG_SRCS" in *"|${BASH_SOURCE[0]:-}|"*) ;; *) _CFG_SRCS="${_CFG_SRCS}${BASH_SOURCE[0]:-}|" ;; esac' DEBUG
 # shellcheck disable=SC1090
-source "$CONFIG_FILE"
+builtin source "$CONFIG_FILE"
 trap - DEBUG
 [ "$_CFG_HAD_T" = 1 ] || set +T
 [ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
-# 每个文件：绝对路径（相对路径按加载时的当前目录补全）+ 内容指纹；主配置总在里面
+unset -f source
+[ "$_CFG_DOT_WRAP" = 0 ] || unset -f .
+# 每个文件：绝对路径 + 内容指纹；主配置总在里面
 cfg_src_fps() {   # <文件列表，| 分隔> → 每行「指纹 路径」；有一个读不了就返回 1
     local list="$1" f out="" h
     local IFS='|'
@@ -146,14 +185,25 @@ _cfg_abs_list() {
     local f out="|" IFS='|'
     for f in "$CONFIG_FILE" $_CFG_SRCS; do
         [ -n "$f" ] && [ "$f" != "$_CFG_LIB_SELF" ] || continue
-        case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
+        f="$(_cfg_abs "$f")"
         case "$out" in *"|$f|"*) ;; *) out="${out}${f}|" ;; esac
     done
     printf '%s' "$out"
 }
 CONFIG_SRC_LIST="$(_cfg_abs_list)"
 CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
-unset _CFG_SRCS _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T
+# 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹（套不上 . 的老 bash 用 . 读的文件
+# 除外：它只有加载后的指纹，文档写明），且两次相同；对不上 = 加载期间被改过，整份指纹作废（闸门不放行）
+if [ -n "$CONFIG_SRC_FPS" ]; then
+    _cfg_mis="$(printf '%s\n' "$CONFIG_SRC_FPS" | awk -v pre="$_CFG_PRE" -v strict="$_CFG_DOT_WRAP" '
+        BEGIN { n = split(pre, L, "\n"); for (i = 1; i <= n; i++) { if (L[i] == "") continue; t = index(L[i], "\t"); P[substr(L[i], t + 1)] = substr(L[i], 1, t - 1) } }
+        $0 == "" { next }
+        { h = $1; f = substr($0, length($1) + 2); if (f in P) { if (P[f] != h) bad = 1 } else if (strict == 1) bad = 1 }
+        END { print bad ? 1 : 0 }')"
+    if [ "$_CFG_PRE_BAD" = 1 ] || [ "$_cfg_mis" != 0 ]; then CONFIG_SRC_FPS=""; CONFIG_SRC_CHANGED_DURING_LOAD=1; fi
+    unset _cfg_mis
+fi
+unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_DOT_WRAP
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8177,7 +8227,11 @@ label_rename_gate() {
         return 1
     fi
     if [ -z "$CONFIG_SRC_FPS" ]; then
-        LABEL_GATE_WHY="加载配置时没能给它读的文件算出指纹，这一次不动手，下一次重新加载"
+        if [ "${CONFIG_SRC_CHANGED_DURING_LOAD:-0}" = 1 ]; then
+            LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载期间被改过，这一次不动手，下一次重新加载"
+        else
+            LABEL_GATE_WHY="加载配置时没能给它读的文件算出指纹，这一次不动手，下一次重新加载"
+        fi
         return 1
     fi
     now="$(cfg_src_fps "$CONFIG_SRC_LIST" 2>/dev/null || true)"

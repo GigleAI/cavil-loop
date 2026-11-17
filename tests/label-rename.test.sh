@@ -368,6 +368,29 @@ chmod 644 "$SANDBOX/lra/extra.conf"
 n0="$(calls)"; poll lra
 chk "恢复可读后下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
+echo "6f. 加载期间（bash 已读入旧内容、加载还没结束）主配置被原子替换（复审：指纹要对得上实际读到的版本）"
+mkconf lra; world
+sed 's/^LABEL_PENDING_HUMAN=.*/LABEL_PENDING_HUMAN="needs-human"/' "$SANDBOX/lra/cavil-loop.config" > "$SANDBOX/lra/new.config"
+# 旧配置最后一行在加载中把文件换掉（模拟编辑器 / 本工具在这一刻保存）
+printf 'mv -f "%s/new.config" "%s/cavil-loop.config"\n' "$SANDBOX/lra" "$SANDBOX/lra" >> "$SANDBOX/lra/cavil-loop.config"
+n0="$(calls)"; poll lra
+chk "这一轮整轮不做、日志写明加载期间被改过" "$(( $(calls) - n0 ))/$(grep -c '在本进程加载期间被改过' "$SANDBOX/lra/state/poll.log")" "0/1"
+chk "主配置已是新内容" "$(grep -c '^LABEL_PENDING_HUMAN="needs-human"' "$SANDBOX/lra/cavil-loop.config")" "1"
+n0="$(calls)"; poll lra
+chk "下一轮用新配置照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
+
+echo "6g. 加载期间被 source 的邻近文件被原子替换"
+mkconf lra; world
+printf 'LABEL_PENDING_HUMAN="pending/human"\n' > "$SANDBOX/lra/extra.conf"
+printf 'LABEL_PENDING_HUMAN="needs-human"\n' > "$SANDBOX/lra/extra.new"
+sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
+printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\nmv -f "%s/extra.new" "%s/extra.conf"\n' "$SANDBOX/lra" "$SANDBOX/lra" >> "$SANDBOX/lra/cavil-loop.config"
+n0="$(calls)"; poll lra
+chk "这一轮整轮不做、日志写明加载期间被改过" "$(( $(calls) - n0 ))/$(grep -c '在本进程加载期间被改过' "$SANDBOX/lra/state/poll.log")" "0/1"
+sed -i '/extra.new/d' "$SANDBOX/lra/cavil-loop.config"
+n0="$(calls)"; poll lra
+chk "去掉换文件那一行后下一轮照常跑（只读、命令只执行一次的 6d 仍在）" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
+
 echo "7. 手动跑的派工"
 mkconf lra; world
 jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
