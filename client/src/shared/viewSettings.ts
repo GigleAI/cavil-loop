@@ -99,6 +99,7 @@ export const DEFAULT_VIEW: ViewSettings = {
   imported: null,
   prsUnderIssues: true,
   detailWidth: 560,
+  panelWidth: null,
   detailFields: true,
   codeWrap: false,
   showClosed: DEFAULT_SHOW_CLOSED,
@@ -110,6 +111,19 @@ export const DETAIL_MAX_WIDTH = 4000;
 
 function validWidth(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v >= DETAIL_MIN_WIDTH && v <= DETAIL_MAX_WIDTH;
+}
+
+/** The width builds before GitHub#582 saved whether or not anybody dragged: read as "follow the window". */
+export const LEGACY_DEFAULT_WIDTH = 560;
+
+/**
+ * GitHub#582: the floating panel's width from what was saved. A saved `panelWidth` is the only answer once there is one (a
+ * dragged 560 stays 560); without it (saved by an older build) the old `detailWidth` is read once: its default 560 cannot be
+ * told from a dragged 560 and follows the window, any other valid width is kept as dragged.
+ */
+export function panelWidthOf(r: Record<string, unknown>): number | null {
+  if ('panelWidth' in r) return validWidth(r.panelWidth) ? r.panelWidth : null;
+  return validWidth(r.detailWidth) && r.detailWidth !== LEGACY_DEFAULT_WIDTH ? r.detailWidth : null;
 }
 
 /** A change from the UI: any top-level setting, and any part of the table settings. */
@@ -150,6 +164,7 @@ export function isValidView(v: unknown): v is ViewSettings {
     (x.imported === null || (typeof x.imported === 'object' && Array.isArray(x.imported.notes))) &&
     typeof x.prsUnderIssues === 'boolean' &&
     validWidth(x.detailWidth) &&
+    (x.panelWidth === null || validWidth(x.panelWidth)) &&
     typeof x.detailFields === 'boolean' &&
     typeof x.codeWrap === 'boolean' &&
     validShowClosed(x.showClosed)
@@ -183,6 +198,7 @@ export function normalizeView(raw: unknown): ViewSettings {
     imported: pick('imported', (v) => v === null || (typeof v === 'object' && Array.isArray(v.notes))),
     prsUnderIssues: pick('prsUnderIssues', (v) => typeof v === 'boolean'),
     detailWidth: pick('detailWidth', validWidth),
+    panelWidth: panelWidthOf(r),
     detailFields: pick('detailFields', (v) => typeof v === 'boolean'),
     codeWrap: pick('codeWrap', (v) => typeof v === 'boolean'),
     showClosed: normalizeShowClosed(r.showClosed),

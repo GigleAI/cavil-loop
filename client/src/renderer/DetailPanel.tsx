@@ -1097,7 +1097,10 @@ export function DetailPanel({
       window.removeEventListener('click', click, true);
     };
   }, [floating]);
-  const { width, dragging, startDrag } = usePanelWidth(state.view.detailWidth);
+  // GitHub#582: whatever moves where the titles behind the panel start makes it measure them again
+  const v = state.view;
+  const layoutKey = `${v.layout}|${v.mode}|${v.swimlanes}|${v.prsUnderIssues}|${v.table.columns.join(',')}|${JSON.stringify(v.table.widths)}|${v.table.sliceByRepo}|${v.table.hierarchy}|${data?.items.length ?? 0}`;
+  const { width, dragging, startDrag, resetWidth } = usePanelWidth(v.panelWidth, layoutKey);
   // the board leaves this much room to scroll past the floating panel (BoardView's spacer)
   useEffect(() => {
     if (floating) document.documentElement.style.setProperty('--detail-space', `${width}px`);
@@ -1226,7 +1229,7 @@ export function DetailPanel({
         data-width={width}
         tabIndex={-1}
       >
-        <div className="detail-resize" data-testid="detail-resize" title={t('拖动改宽度')} onPointerDown={startDrag} />
+        <div className="detail-resize" data-testid="detail-resize" title={t('拖动改宽度，双击恢复默认')} onPointerDown={startDrag} onDoubleClick={resetWidth} />
         {children}
       </aside>
     ) : (
