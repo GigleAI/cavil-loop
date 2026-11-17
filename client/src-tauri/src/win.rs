@@ -31,11 +31,13 @@ fn app_id() -> HSTRING {
 pub fn notify(id: &str, title: &str, body: &str, on_click: impl Fn(String) + Send + Sync + 'static) -> Result<(), String> {
     let e = |e: windows::core::Error| e.message().to_string();
     let notifier = ToastNotificationManager::CreateToastNotifierWithId(&app_id()).map_err(e)?;
-    // switched off for this app (or for the whole system) in Windows' settings: say so, like macOS's refusal
-    match notifier.Setting() {
-        Ok(NotificationSetting::Enabled) => {}
-        Ok(s) => return Err(tr("Windows 设置里关掉了通知（{why}）", &[("why", &format!("{}", s.0))])),
-        Err(err) => return Err(e(err)),
+    // switched off for this app (or for the whole system) in Windows' settings: say so, like macOS's refusal.
+    // A setting that cannot be read (the system has not listed the app yet) is not a refusal: the
+    // notification is still sent, and what Show answers is the result.
+    if let Ok(st) = notifier.Setting() {
+        if st != NotificationSetting::Enabled {
+            return Err(tr("Windows 设置里关掉了通知（{why}）", &[("why", &format!("{}", st.0))]));
+        }
     }
     let doc = XmlDocument::new().map_err(e)?;
     doc.LoadXml(&HSTRING::from(toast::xml(title, body))).map_err(e)?;
