@@ -408,6 +408,46 @@ SH
     chk "[$how] 去掉这一行后下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 done
 
+echo "6i. 配置在加载中途临时关掉 functrace / 换掉陷阱再恢复（复审：加载完一切照旧，中间 source 的文件看不见）"
+for how in 'set +T|set -T' 'set +o functrace|set -o functrace' '_t="$(trap -p DEBUG)"; trap - DEBUG|eval "$_t"'; do
+    mkconf lra; world
+    printf 'LABEL_PENDING_HUMAN="pending/human"\n' > "$SANDBOX/lra/extra.conf"
+    sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
+    cp "$SANDBOX/lra/cavil-loop.config" "$SANDBOX/lra/base.config"
+    printf '%s\nsource "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n%s\n' "${how%%|*}" "${how#*|}" >> "$SANDBOX/lra/cavil-loop.config"
+    cat > "$SANDBOX/hook.sh" <<SH
+printf 'LABEL_PENDING_HUMAN="needs-human"\\n' > "$SANDBOX/lra/extra.conf"
+SH
+    n0="$(calls)"
+    FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
+    chk "[$how] 这一轮整轮不做、日志写明、等人的条目没被派工" "$(( $(calls) - n0 ))/$(grep -c '改了 DEBUG 陷阱或关了 functrace' "$SANDBOX/lra/state/poll.log")/$(item_labels "$I_HUMAN")" "0/1/pending/human"
+    cp "$SANDBOX/lra/base.config" "$SANDBOX/lra/cavil-loop.config"
+    printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
+    n0="$(calls)"; poll lra
+    chk "[$how] 去掉这几行后下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
+done
+
+echo "6j. 配置在命令替换（子 shell）里 source 邻近文件取标签名"
+mkconf lra; world
+printf 'L="pending/human"\n' > "$SANDBOX/lra/extra.conf"
+sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
+printf 'LABEL_PENDING_HUMAN="$(source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"; printf %%s "$L")"\n' >> "$SANDBOX/lra/cavil-loop.config"
+cat > "$SANDBOX/hook.sh" <<SH
+printf 'L="needs-human"\\n' > "$SANDBOX/lra/extra.conf"
+SH
+n0="$(calls)"
+FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
+chk "邻近文件在拿锁前被改：整轮不做、日志写明" "$(( $(calls) - n0 ))/$(grep -c '在本进程加载之后被改过或读不了' "$SANDBOX/lra/state/poll.log")" "0/1"
+mkdir -p "$SANDBOX/tmpd"
+n0="$(calls)"; TMPDIR="$SANDBOX/tmpd" poll lra
+chk "没再被改：下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
+chk "加载用的临时目录都已删掉" "$(find "$SANDBOX/tmpd" -mindepth 1 -maxdepth 1 -name 'cavil-cfgload.*' | wc -l)" "0"
+chmod 500 "$SANDBOX/tmpd"
+# 轮询自己在这种机器上也跑不起来（处处要 mktemp），这里直接加载公共库看闸门的回答
+r="$(cd "$SANDBOX/lra/project" && TMPDIR="$SANDBOX/tmpd" CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" S="$S" bash -c 'source "$S/_lib.sh" >/dev/null 2>&1; rc=0; label_rename_gate || rc=$?; echo "$rc|$LABEL_GATE_WHY"' 2>/dev/null)"
+chk "临时目录建不出来：闸门不放行（子 shell 里读的文件回不来）" "${r%%|*}/$(printf '%s' "$r" | grep -c '建不出临时目录')" "1/1"
+chmod 700 "$SANDBOX/tmpd"
+
 echo "7. 手动跑的派工"
 mkconf lra; world
 jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"

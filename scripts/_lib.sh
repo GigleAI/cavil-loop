@@ -139,12 +139,48 @@ _cfg_pre_note() {   # <绝对路径>：记下这个文件此刻的指纹（每�
     if [ -z "$h" ]; then _CFG_PRE_BAD=1; return 0; fi
     _CFG_PRE="${_CFG_PRE}${h}"$'\t'"${f}"$'\n'
 }
+# 加载中途「看不全」也要记下（复审：配置 set +T、source 邻近文件、再 set -T，加载完 functrace 又是开的，只在加载
+# 结束时检查就漏了中间那段）。陷阱每次触发都看一眼：functrace 此刻是关的（之后 source 的文件不触发陷阱），或者
+# 下一条命令是改 DEBUG 陷阱的 trap（换掉 / 清掉之后就看不见；只认字面写着 trap … DEBUG 的命令，经变量、别名拼出来的
+# 看不出，写在文档里），都算看不全。命令替换 / 管道等子 shell 里的记录回不到本进程的变量，写进本次加载自己建的
+# 临时目录（mkdir 新建、权限 700），加载完并回来：子 shell 里 source 的文件同样记指纹，看不全同样作废。
+_CFG_BLIND_SEEN=0
+_cfg_blind_note() {
+    if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        [ -n "$_CFG_SUBDIR" ] && : >> "$_CFG_SUBDIR/blind" 2>/dev/null
+    else
+        _CFG_BLIND_SEEN=1
+    fi
+}
 _cfg_trap_seen() {   # <BASH_SOURCE[0]>：DEBUG 陷阱里调；新文件第一次出现时记下名字和指纹
+    [ "$1" != "$_CFG_LIB_SELF" ] || return 0
+    case "$-" in *T*) ;; *) _cfg_blind_note ;; esac
+    local c="${BASH_COMMAND#"${BASH_COMMAND%%[![:space:]]*}"}"
+    case "$c" in
+        trap[[:space:]]-p*|builtin[[:space:]]*trap[[:space:]]-p*|command[[:space:]]*trap[[:space:]]-p*) ;;
+        trap[[:space:]]*DEBUG*|builtin[[:space:]]*trap[[:space:]]*DEBUG*|command[[:space:]]*trap[[:space:]]*DEBUG*) _cfg_blind_note ;;
+    esac
     case "$_CFG_SRCS" in *"|$1|"*) return 0 ;; esac
     _CFG_SRCS="${_CFG_SRCS}${1}|"
-    [ -n "$1" ] && [ "$1" != "$_CFG_LIB_SELF" ] || return 0
+    [ -n "$1" ] || return 0
+    if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        local f h
+        f="$(_cfg_abs "$1")"
+        h="$(cfg_sha256 < "$f" 2>/dev/null || true)"
+        [ -n "$_CFG_SUBDIR" ] && printf '%s\t%s\n' "${h:-?}" "$f" >> "$_CFG_SUBDIR/pre" 2>/dev/null
+        return 0
+    fi
     _cfg_pre_note "$(_cfg_abs "$1")"
 }
+_CFG_SUBDIR=""
+for _cfg_i in 1 2 3 4 5; do
+    _cfg_d="${TMPDIR:-/tmp}/cavil-cfgload.$$.${RANDOM}${RANDOM}"
+    if mkdir -m 700 "$_cfg_d" 2>/dev/null; then _CFG_SUBDIR="$_cfg_d"; break; fi
+done
+unset _cfg_i _cfg_d
+# 建不出临时目录：子 shell 里读的文件回不来，整份指纹作废（CONFIG_SRC_NOTMP，闸门不放行）
+CONFIG_SRC_NOTMP=0
+[ -n "$_CFG_SUBDIR" ] || CONFIG_SRC_NOTMP=1
 _CFG_OLD_DEBUG="$(trap -p DEBUG)"
 case "$-" in *T*) _CFG_HAD_T=1 ;; *) _CFG_HAD_T=0 ;; esac
 _cfg_pre_note "$(_cfg_abs "$CONFIG_FILE")"
@@ -157,7 +193,7 @@ source "$CONFIG_FILE"
 # 配置自己改了 DEBUG 陷阱（换掉或清掉）或关了 functrace，之后 source 的文件就没被看见：记下的文件清单不完整，
 # 整份指纹作废（CONFIG_SRC_BLIND），闸门每轮不放行，直到配置里去掉这类设置（复审：改了陷阱后加载的文件被换掉，
 # 闸门照样放行）。配置换掉的陷阱留给配置自己，不去动它。
-CONFIG_SRC_BLIND=0
+CONFIG_SRC_BLIND="$_CFG_BLIND_SEEN"
 case "$-" in *T*) ;; *) CONFIG_SRC_BLIND=1 ;; esac
 if [ "$(trap -p DEBUG)" = "trap -- '${_CFG_OUR_DEBUG}' DEBUG" ]; then
     trap - DEBUG
@@ -166,6 +202,24 @@ else
     CONFIG_SRC_BLIND=1
 fi
 [ "$_CFG_HAD_T" = 1 ] || set +T
+# 子 shell 的记录并回来：看不全 → 作废；读到的文件进清单、读之前的指纹进 _CFG_PRE（算不出的记成 ?，后面对不上）
+if [ -n "$_CFG_SUBDIR" ]; then
+    [ ! -e "$_CFG_SUBDIR/blind" ] || CONFIG_SRC_BLIND=1
+    if [ -e "$_CFG_SUBDIR/pre" ]; then
+        if [ -f "$_CFG_SUBDIR/pre" ] && [ -r "$_CFG_SUBDIR/pre" ]; then
+            while IFS="$(printf '\t')" read -r _cfg_h _cfg_f; do
+                [ -n "$_cfg_f" ] || continue
+                case "$_cfg_h" in '?'|'') _CFG_PRE_BAD=1; continue ;; esac
+                case "$_CFG_SRCS" in *"|$_cfg_f|"*) ;; *) _CFG_SRCS="${_CFG_SRCS}${_cfg_f}|" ;; esac
+                _CFG_PRE="${_CFG_PRE}${_cfg_h}"$'\t'"${_cfg_f}"$'\n'
+            done < "$_CFG_SUBDIR/pre"
+            unset _cfg_h _cfg_f
+        else
+            _CFG_PRE_BAD=1
+        fi
+    fi
+    rm -rf "$_CFG_SUBDIR" 2>/dev/null || true
+fi
 # 每个文件：绝对路径 + 内容指纹；主配置总在里面
 cfg_src_fps() {   # <文件列表，| 分隔> → 每行「指纹 路径」；有一个读不了就返回 1
     local list="$1" f out="" h
@@ -189,19 +243,19 @@ _cfg_abs_list() {
 }
 CONFIG_SRC_LIST="$(_cfg_abs_list)"
 CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
-[ "$CONFIG_SRC_BLIND" = 0 ] || CONFIG_SRC_FPS=""
+[ "$CONFIG_SRC_BLIND" = 0 ] && [ "$CONFIG_SRC_NOTMP" = 0 ] || CONFIG_SRC_FPS=""
 # 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹，且两次相同；对不上 = 加载期间被改过，
 # 整份指纹作废（闸门不放行）
 if [ -n "$CONFIG_SRC_FPS" ]; then
     _cfg_mis="$(printf '%s\n' "$CONFIG_SRC_FPS" | awk -v pre="$_CFG_PRE" '
-        BEGIN { n = split(pre, L, "\n"); for (i = 1; i <= n; i++) { if (L[i] == "") continue; t = index(L[i], "\t"); P[substr(L[i], t + 1)] = substr(L[i], 1, t - 1) } }
+        BEGIN { n = split(pre, L, "\n"); for (i = 1; i <= n; i++) { if (L[i] == "") continue; t = index(L[i], "\t"); k = substr(L[i], t + 1); v = substr(L[i], 1, t - 1); if ((k in P) && P[k] != v) v = "conflict"; P[k] = v } }
         $0 == "" { next }
         { h = $1; f = substr($0, length($1) + 2); if (!(f in P) || P[f] != h) bad = 1 }
         END { print bad ? 1 : 0 }')"
     if [ "$_CFG_PRE_BAD" = 1 ] || [ "$_cfg_mis" != 0 ]; then CONFIG_SRC_FPS=""; CONFIG_SRC_CHANGED_DURING_LOAD=1; fi
     unset _cfg_mis
 fi
-unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_OUR_DEBUG
+unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_OUR_DEBUG _CFG_SUBDIR _CFG_BLIND_SEEN
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8225,8 +8279,10 @@ label_rename_gate() {
         return 1
     fi
     if [ -z "$CONFIG_SRC_FPS" ]; then
-        if [ "${CONFIG_SRC_BLIND:-0}" = 1 ]; then
-            LABEL_GATE_WHY="配置在加载时改了 DEBUG 陷阱或关了 functrace（set +T），看不出它还读了哪些文件，这一次不动手；去掉配置里的这类设置后恢复"
+        if [ "${CONFIG_SRC_NOTMP:-0}" = 1 ]; then
+            LABEL_GATE_WHY="加载配置时建不出临时目录（TMPDIR=${TMPDIR:-/tmp}），看不到子 shell 里读的文件，这一次不动手"
+        elif [ "${CONFIG_SRC_BLIND:-0}" = 1 ]; then
+            LABEL_GATE_WHY="配置在加载时改了 DEBUG 陷阱或关了 functrace（set +T，哪怕之后又打开），看不出它还读了哪些文件，这一次不动手；去掉配置里的这类设置后恢复"
         elif [ "${CONFIG_SRC_CHANGED_DURING_LOAD:-0}" = 1 ]; then
             LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载期间被改过，这一次不动手，下一次重新加载"
         else
