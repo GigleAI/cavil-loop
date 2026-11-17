@@ -27,7 +27,7 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const REPO = 'GigleAI/cavil-loop';
 /** the updater's platform names → the machine's name in the package's file name */
@@ -149,7 +149,8 @@ export function build({ version, dir, pubkey, notes, date, channel = 'stable' })
   return { ok: true, manifest: { version, notes: notes ?? '', pub_date: (date ?? new Date()).toISOString(), platforms } };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const a = process.argv.slice(2);
   const opt = (n) => {
     const i = a.indexOf(`--${n}`);

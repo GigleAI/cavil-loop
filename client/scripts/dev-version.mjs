@@ -21,7 +21,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { devBase, releaseVersions, TAG_PREFIX } from './release-version.mjs';
 
 const RELEASE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -101,7 +101,8 @@ export function stamp(root, { write = false, count = commitCount(root), tags = l
   return dev;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const i = process.argv.indexOf('--root');
   const root = i >= 0 ? process.argv[i + 1] : join(dirname(fileURLToPath(import.meta.url)), '..');
   try {

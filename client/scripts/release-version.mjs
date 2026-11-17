@@ -32,7 +32,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // The three version files are read and written in one place, dev-version.mjs, which imports this
 // file's rules in turn. The cycle is safe: neither module calls the other while it is being loaded.
 import { writeVersion } from './dev-version.mjs';
@@ -149,7 +149,8 @@ export function check(root, tag, at) {
   return tag.slice(TAG_PREFIX.length);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const opt = (name) => {
     const i = args.indexOf(`--${name}`);

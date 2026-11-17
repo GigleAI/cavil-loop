@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { VERSION_SHAPE } from './update-manifest.mjs';
 
 export const TAG_PREFIX = 'client/v';
@@ -393,7 +393,8 @@ function main() {
   console.log(`保留最近 ${keep} 个开发版；这次删了 ${tally.done} 个，跳过 ${tally.skipped} 个${tally.later ? `，${tally.later} 个留到下次` : ''}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     main();
   } catch (e) {
