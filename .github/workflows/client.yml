@@ -360,6 +360,11 @@ jobs:
         shell: bash
         working-directory: client
     steps:
+      # Git for Windows refuses such a name in the index even when the file is never written: let it be
+      # listed (the sparse checkout below keeps it out of the working tree). This runner only.
+      - name: Let Git list file names Windows cannot hold
+        working-directory: .
+        run: git config --global core.protectNTFS false
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.mode.outputs.sha }}
