@@ -25,20 +25,72 @@ export interface FixtureProjectPage {
   items: { totalCount: number; pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: any[] };
 }
 
-export function loadCavilProjectPages(): FixtureProjectPage[] {
-  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-project-11.pages.json'), 'utf8')).pages;
+/**
+ * GitHub#572: the recordings age with the calendar. The client keeps a closed repository item only
+ * while it was updated within the last 14 days (`REPO_RECENT_DAYS`), so a closed item recorded on
+ * 11-05 left the repository read on 11-16 and a UI test that needed it went red. A loader asked for
+ * the recordings "as of" a moment moves every item's own times (created / updated / closed / merged)
+ * forward by the whole days between the recording and that moment: the recording moment then lies
+ * less than a day before it, and every item keeps its distance to it and to every other item. Board
+ * configuration (iteration start dates, milestone due dates) is not an item's time and is not moved.
+ *
+ * `null` = as recorded. That is the default for every caller (the unit tests bring their own fixed
+ * "now"); the UI tests' bridge sets the moment once per process (`serveRecordingsAt`), so the fake's
+ * default data and every expectation a test reads from these loaders move together (one offset).
+ */
+const DAY_MS = 86_400_000;
+const RECORDED_TIME_KEYS = new Set(['created_at', 'updated_at', 'closed_at', 'merged_at', 'createdAt', 'updatedAt', 'closedAt', 'mergedAt']);
+let recordingsAt: number | null = null;
+
+/** GitHub#572: serve the recordings as of this moment (epoch ms) from now on; null = as recorded */
+export function serveRecordingsAt(at: number | null): void {
+  if (at !== null && !Number.isFinite(at)) throw new Error(`serveRecordingsAt: not a moment: ${at}`);
+  recordingsAt = at;
 }
-export function loadCavilRepoIssues(): any[] {
-  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-loop.issues.json'), 'utf8')).issues;
+
+/** GitHub#572: whole days from the recording to `at`, in ms (negative when `at` is before it); never past `at` */
+export function recordingShiftMs(recordedAt: string, at: number): number {
+  const from = Date.parse(recordedAt);
+  if (!Number.isFinite(from) || !Number.isFinite(at)) throw new Error(`recordingShiftMs: cannot read ${recordedAt} / ${at}`);
+  return Math.floor((at - from) / DAY_MS) * DAY_MS;
+}
+
+/** GitHub#572: a copy of `data` with every item time moved by `ms`, written the way it was (with or without milliseconds) */
+export function shiftRecorded<T>(data: T, ms: number): T {
+  const walk = (v: any, key: string | null): any => {
+    if (Array.isArray(v)) return v.map((x) => walk(x, null));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));
+    if (typeof v === 'string' && key !== null && RECORDED_TIME_KEYS.has(key)) {
+      const t = Date.parse(v);
+      if (!Number.isFinite(t)) throw new Error(`shiftRecorded: ${key} is not a time: ${v}`);
+      const out = new Date(t + ms).toISOString();
+      return /\.\d+Z$/.test(v) ? out : out.replace(/\.\d+Z$/, 'Z');
+    }
+    return v;
+  };
+  return walk(data, null);
+}
+
+function loadRecording(file: string, key: 'pages' | 'issues', at: number | null): any[] {
+  const rec = JSON.parse(readFileSync(join(here, '../fixtures', file), 'utf8'));
+  return at === null ? rec[key] : shiftRecorded(rec[key], recordingShiftMs(rec.recordedAt, at));
+}
+
+/** `at`: GitHub#572 — the moment to serve the recording as of (default: the one the bridge set, else as recorded) */
+export function loadCavilProjectPages(at: number | null = recordingsAt): FixtureProjectPage[] {
+  return loadRecording('cavil-project-11.pages.json', 'pages', at);
+}
+export function loadCavilRepoIssues(at: number | null = recordingsAt): any[] {
+  return loadRecording('cavil-loop.issues.json', 'issues', at);
 }
 
 /** GitHub#349: the board issues that have relations, recorded with them (see record.mjs) */
-export function loadRelationPages(): FixtureProjectPage[] {
-  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-project-11.relations.json'), 'utf8')).pages;
+export function loadRelationPages(at: number | null = recordingsAt): FixtureProjectPage[] {
+  return loadRecording('cavil-project-11.relations.json', 'pages', at);
 }
 /** GitHub#349: the repository's issues with their relation counts and relations (see record.mjs) */
-export function loadRelationIssues(): any[] {
-  return JSON.parse(readFileSync(join(here, '../fixtures/cavil-loop.relations.json'), 'utf8')).issues;
+export function loadRelationIssues(at: number | null = recordingsAt): any[] {
+  return loadRecording('cavil-loop.relations.json', 'issues', at);
 }
 
 export interface DeviceGrant {

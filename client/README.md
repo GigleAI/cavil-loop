@@ -52,6 +52,8 @@ test/
                writes.ts 是可写的一面（标签、里程碑、评论、看板字段、合并 / 关闭、新建 issue），digest() 判断「GitHub 上什么都没改」
   fixtures/    从 cavil project（GigleAI #11）录下来的真实接口返回，已脱敏；record.mjs 可重录
                cavil-project-11.filters.json：同一次录制里 GitHub 服务端筛选对每条查询的结果，搜索框按它逐条对拍
+               界面测试里录制数据按「今天」读（GitHub#572）：条目自己的时间（创建 / 更新 / 关闭 / 合并）整天平移到录制时刻离现在不到一天，
+               否则已关闭的条目会随日历超出仓库来源的 14 天、测试跟着变红；迭代起止日等看板配置不动。单元测试照录制原样读
   mutation/    负对照
 scripts/
   build.mjs             构建窗口 dist/renderer（--test-bridge：界面测试用的 dist/renderer-test）
