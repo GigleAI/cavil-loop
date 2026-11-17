@@ -3,7 +3,9 @@
 // before packaging it, so the installed apps on the development channel can tell it is newer.
 //
 //   X.Y.(Z+1)-dev.N   X.Y.Z = the client's version (package.json, tauri.conf.json and Cargo.toml,
-//                     which must agree), N = the number of commits on HEAD
+//                     which must agree) or, when higher, the highest client/vX.Y.Z tag here
+//                     (GitHub#576: a release no longer commits its version, it is written from the
+//                     tag at build time — scripts/release-version.mjs); N = the number of commits on HEAD
 //
 // Why Z+1: by semver precedence `0.5.0-dev.N` is *older* than 0.5.0 — the updater would never take
 // it; `0.5.1-dev.N` is newer than 0.5.0 and older than the 0.5.1 / 0.6.0 release that follows, so
@@ -20,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { devBase, releaseVersions, TAG_PREFIX } from './release-version.mjs';
 
 const RELEASE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -66,23 +69,35 @@ export function commitCount(root) {
   return n;
 }
 
-/** → the development version for `root` (and, with write, puts it in the three files). */
-export function stamp(root, { write = false, count = commitCount(root) } = {}) {
+/** this repository's client/v* tag names (the build checks out every tag: fetch-depth: 0); throws when unreadable */
+export function localTags(root) {
+  const r = execFileSync('git', ['-C', root, 'tag', '-l', `${TAG_PREFIX}*`], { encoding: 'utf8' });
+  return r.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** write `version` into the three files, which must agree first; read back → the version */
+export function writeVersion(root, version) {
   const v = readVersions(root);
   if (!(v.pkg === v.conf && v.conf === v.cargo)) throw new Error(`三处版本号不一致：package.json ${v.pkg}，tauri.conf.json ${v.conf}，Cargo.toml ${v.cargo}`);
-  const dev = devVersion(v.pkg, count);
-  if (write) {
-    const pkg = JSON.parse(v.text.pkg);
-    pkg.version = dev;
-    writeFileSync(v.files.pkg, `${JSON.stringify(pkg, null, 2)}\n`);
-    const conf = JSON.parse(v.text.conf);
-    conf.version = dev;
-    writeFileSync(v.files.conf, `${JSON.stringify(conf, null, 2)}\n`);
-    const c = cargoVersion(v.text.cargo);
-    writeFileSync(v.files.cargo, v.text.cargo.slice(0, c.index) + dev + v.text.cargo.slice(c.index + c.length));
-    const after = readVersions(root);
-    if (!(after.pkg === dev && after.conf === dev && after.cargo === dev)) throw new Error('写完再读，三处版本号不是新版本号');
-  }
+  const pkg = JSON.parse(v.text.pkg);
+  pkg.version = version;
+  writeFileSync(v.files.pkg, `${JSON.stringify(pkg, null, 2)}\n`);
+  const conf = JSON.parse(v.text.conf);
+  conf.version = version;
+  writeFileSync(v.files.conf, `${JSON.stringify(conf, null, 2)}\n`);
+  const c = cargoVersion(v.text.cargo);
+  writeFileSync(v.files.cargo, v.text.cargo.slice(0, c.index) + version + v.text.cargo.slice(c.index + c.length));
+  const after = readVersions(root);
+  if (!(after.pkg === version && after.conf === version && after.cargo === version)) throw new Error('写完再读，三处版本号不是新版本号');
+  return version;
+}
+
+/** → the development version for `root` (and, with write, puts it in the three files). */
+export function stamp(root, { write = false, count = commitCount(root), tags = localTags(root) } = {}) {
+  const v = readVersions(root);
+  if (!(v.pkg === v.conf && v.conf === v.cargo)) throw new Error(`三处版本号不一致：package.json ${v.pkg}，tauri.conf.json ${v.conf}，Cargo.toml ${v.cargo}`);
+  const dev = devVersion(devBase(v.pkg, releaseVersions(tags)), count);
+  if (write) writeVersion(root, dev);
   return dev;
 }
 

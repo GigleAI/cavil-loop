@@ -3,6 +3,8 @@
 # scripts/release.sh: the non-interactive mode the weekly Release workflow
 # runs (--auto), the Release title (--title), and the interactive mode a
 # maintainer runs by hand. Real script, real git repos (bare remote + clone).
+# Also the client's release riding on it (GitHub#576): the client plan step, and the steps of
+# client.yml's mode / version / tag / page, run against a bare remote.
 #
 #   bash tests/release-auto.test.sh
 #   RELEASE_SH=/path/to/old/release.sh bash tests/release-auto.test.sh   # negative control
@@ -1278,6 +1280,242 @@ lacks "诊断运行" "$(body_of 1)" "… not called a gate-only run"
 rf_repo; run_report "shell=cancelled autopilot=cancelled client=cancelled summary=skipped"
 check "cancelled night: no call at all" "$(wc -l < "$RF/calls.log")" 0
 unset RF_KIND
+
+
+echo "== the client's release rides on the weekly release (GitHub#576)"
+CLIENT_WORKFLOW="${CLIENT_WORKFLOW:-$REPO_DIR/.github/workflows/client.yml}"
+cstep() {  # cstep <workflow> <job> <step name> → that step's run: script
+    python3 - "$1" "$2" "$3" <<'PYC'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"][sys.argv[2]]["steps"]
+print(next(s["run"] for s in steps if s.get("name") == sys.argv[3]))
+PYC
+}
+cstep "$WORKFLOW" client-plan "Decide the client release" > "$TMP/c-plan.sh"
+cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
+cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
+cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs" > "$TMP/c-files.sh"
+cstep "$CLIENT_WORKFLOW" release "Tag the tested commit" > "$TMP/c-tag.sh"
+cstep "$CLIENT_WORKFLOW" release "Create Release" > "$TMP/c-create.sh"
+
+echo "-- how the jobs are wired"
+python3 - "$WORKFLOW" "$CLIENT_WORKFLOW" > "$TMP/c-static" <<'PYW'
+import sys, yaml
+rel = yaml.safe_load(open(sys.argv[1]))["jobs"]
+cl_wf = yaml.safe_load(open(sys.argv[2]))
+cl = cl_wf["jobs"]
+lst = lambda n: n if isinstance(n, list) else [n]
+print("plan-needs", lst(rel["client-plan"]["needs"]))
+print("plan-if", rel["client-plan"]["if"])
+c = rel["client"]
+print("call", c.get("uses"), c.get("secrets"), sorted((c.get("with") or {}).items()))
+print("call-needs", lst(c["needs"]), "if", c["if"])
+print("daemon-release-needs", lst(rel["release"]["needs"]))
+on = cl_wf.get("on", cl_wf.get(True))
+inp = on["workflow_call"]["inputs"]
+print("inputs", sorted((k, v.get("required"), v.get("type")) for k, v in inp.items()))
+r = cl["release"]
+print("client-release-needs", sorted(lst(r["needs"])), "if", r["if"])
+print("no-github-ref-tag-test", "startsWith(github.ref" not in open(sys.argv[2]).read())
+bad = []
+for jn, j in cl.items():
+    if jn in ("mode", "test"):
+        continue
+    if "mode" not in lst(j.get("needs", [])):
+        bad.append(f"{jn}: needs no mode")
+    for s in j.get("steps") or []:
+        if str(s.get("uses", "")).startswith("actions/checkout") and (s.get("with") or {}).get("ref") != "${{ needs.mode.outputs.sha }}":
+            bad.append(f"{jn}: checks out another commit")
+print("every-job-on-mode", bad)
+print("mode-checkout", cl["mode"]["steps"][0]["with"]["ref"])
+print("matrix", cl["package"]["strategy"]["matrix"]["include"])
+print("dev-release-if", cl["dev-release"]["if"])
+PYW
+S="$(cat "$TMP/c-static")"
+has "plan-needs ['plan']" "$S" "client plan waits for the plan only, not for the daemon's gate"
+has "plan-if needs.plan.outputs.work == 'true'" "$S" "… and runs whenever the run has work"
+has "call ./.github/workflows/client.yml inherit [('sha', '\${{ needs.client-plan.outputs.sha }}'), ('tag', '\${{ needs.client-plan.outputs.tag }}')]" "$S" "the client job calls client.yml with the planned tag and commit, and the update key"
+has "call-needs ['client-plan'] if needs.client-plan.outputs.tag != ''" "$S" "… only when the plan named a tag"
+has "daemon-release-needs ['plan', 'gate-summary']" "$S" "the daemon's release waits for nothing of the client"
+has "inputs [('sha', True, 'string'), ('tag', True, 'string')]" "$S" "client.yml can be called with a tag and a commit"
+has "client-release-needs ['e2e', 'mode', 'package', 'size', 'test'] if needs.mode.outputs.tag != ''" "$S" "client release page only after quick + full tests, both Macs and the size gate"
+has "no-github-ref-tag-test True" "$S" "no job decides 'release build' from github.ref (the caller's ref in a call)"
+has "every-job-on-mode []" "$S" "every build / test job checks out the commit the mode job names"
+has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
+has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
+has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
+
+# A repo of its own: client/ with the real version files and scripts, a bare remote, one tag list.
+CREMOTE="$TMP/client-remote.git"; CWORK="$TMP/client-work"
+git init -q --bare "$CREMOTE"; git clone -q "$CREMOTE" "$CWORK" 2>/dev/null
+mkdir -p "$CWORK/client/src-tauri" "$CWORK/client/scripts"
+cp "$REPO_DIR/client/package.json" "$CWORK/client/"
+cp "$REPO_DIR/client/src-tauri/tauri.conf.json" "$REPO_DIR/client/src-tauri/Cargo.toml" "$CWORK/client/src-tauri/"
+cp "$REPO_DIR/client/scripts/release-version.mjs" "$REPO_DIR/client/scripts/dev-version.mjs" "$CWORK/client/scripts/"
+node "$CWORK/client/scripts/release-version.mjs" write 0.5.2 --root "$CWORK/client" >/dev/null
+echo base > "$CWORK/file"
+git -C "$CWORK" add -A; git -C "$CWORK" commit -qm "client 0.5.2"; git -C "$CWORK" push -q origin main
+ccommit() {  # ccommit <path> <msg>: change one file, commit, push → prints the commit
+    git -C "$CWORK" pull -q --ff-only origin main 2>/dev/null || true
+    echo "$2" >> "$CWORK/$1"; git -C "$CWORK" add -A; git -C "$CWORK" commit -qm "$2"; git -C "$CWORK" push -q origin main
+    git -C "$CWORK" rev-parse HEAD
+}
+export CREL="$TMP/client-releases"; : > "$CREL"
+crun() {  # crun <dir> <script> [VAR=value …] → $RC, outputs in $TMP/c-output, stdout / stderr in $TMP/c-out / c-err
+    local dir="$1" s="$2"; shift 2
+    : > "$TMP/c-output"; rm -f "$GH_ARGS"
+    set +e
+    (cd "$dir" && env -u EVENT -u GH_FAIL_API GITHUB_OUTPUT="$TMP/c-output" GITHUB_REPOSITORY=o/r GH_RELEASES="$CREL" \
+        PATH="${CPATH:-}$TMP/bin:$PATH" "$@" bash -e "$s") >"$TMP/c-out" 2>"$TMP/c-err"
+    RC=$?
+    set -e
+}
+cout() { sed -n "s/^$1=//p" "$TMP/c-output"; }
+cplan() {  # cplan <action> <sha> [VAR=value …] in a fresh checkout of the client repo
+    rm -rf "$TMP/client-run"; git clone -q "$CREMOTE" "$TMP/client-run" 2>/dev/null
+    local a="$1" s="$2"; shift 2
+    crun "$TMP/client-run" "$TMP/c-plan.sh" ACTION="$a" SHA="$s" GH_TOKEN=x "$@"
+}
+
+echo "-- the plan: which runs get a client release, and which version"
+C0="$(git -C "$CREMOTE" rev-parse main)"
+cplan new "$C0"
+check "no client release yet → the first one, package.json's version" "$RC:$(cout tag):$(cout sha)" "0:client/v0.5.2:$C0"
+has "还没有发出过客户端正式版" "$(cat "$TMP/c-err")" "… says so in the run log"
+cplan page "$C0"
+check "a run finishing the week's missing page: the same" "$RC:$(cout tag)" "0:client/v0.5.2"
+for a in none verify push ""; do
+    cplan "$a" "$C0"
+    check "action '${a}': no client release, nothing read" "$RC:$(cout tag):$( [ -f "$GH_ARGS" ] && echo read || echo none)" "0::none"
+done
+git -C "$CREMOTE" tag client/v0.5.2 "$C0"; echo client/v0.5.2 >> "$CREL"
+C1="$(ccommit file "daemon only")"
+cplan new "$C1"
+check "only files outside client/ changed since client/v0.5.2 → no client release" "$RC:$(cout tag)" "0:"
+has "以来客户端没有改动" "$(cat "$TMP/c-err")" "… says so"
+grep -qx -- "--paginate" "$GH_ARGS" && ok "… having read every page of the Release list" || bad "… having read every page of the Release list"
+C2="$(ccommit client/src-tauri/x "client change")"
+cplan new "$C2"
+check "client/ changed → the next patch version, on the planned commit" "$RC:$(cout tag):$(cout sha)" "0:client/v0.5.3:$C2"
+cplan new "$C1"
+check "the planned commit decides, not main's tip (the client change came after it)" "$RC:$(cout tag)" "0:"
+git -C "$CREMOTE" tag client/v0.6.1-dev.9 "$C2"
+cplan new "$C2"
+check "development tags do not count" "$RC:$(cout tag)" "0:client/v0.5.3"
+git -C "$CREMOTE" tag client/v0.5.3 "$C2"   # its release failed: a tag, no page
+C3="$(ccommit file "daemon only again")"
+cplan new "$C3"
+check "the highest tag has no page → measured from the last real release, numbered past every tag" "$RC:$(cout tag)" "0:client/v0.5.4"
+(cd "$CWORK" && git pull -q --ff-only origin main && node client/scripts/release-version.mjs write 0.6.0 --root client >/dev/null \
+    && git commit -qam "client 0.6.0" && git push -q origin main)
+C4="$(git -C "$CREMOTE" rev-parse main)"
+cplan new "$C4"
+check "package.json raised above every tag → that version" "$RC:$(cout tag)" "0:client/v0.6.0"
+cplan new "$C4" GH_FAIL_API=1
+check "the Release list cannot be read → the job fails, no tag" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
+mkdir -p "$TMP/c-gitbad"
+printf '#!/usr/bin/env bash\n[ "$1" = -C ] && [ "$3" = ls-remote ] && { echo "fatal: injected" >&2; exit 128; }\nexec %q "$@"\n' "$(command -v git)" > "$TMP/c-gitbad/git"
+chmod +x "$TMP/c-gitbad/git"
+CPATH="$TMP/c-gitbad:" cplan new "$C4"
+check "the remote's tags cannot be read → the job fails, no tag" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
+has "读不到远端的客户端标签" "$(cat "$TMP/c-err")" "… says why"
+cplan new 0000000000000000000000000000000000000000
+check "a planned commit that is not there → the job fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
+
+echo "-- the build mode: release or development build, which version, which key"
+rm -rf "$TMP/client-run"; git clone -q "$CREMOTE" "$TMP/client-run" 2>/dev/null
+cmode() { crun "$TMP/client-run/client" "$TMP/c-mode.sh" "$@"; }
+mode_line() { echo "$RC:$(cout tag):$(cout version):$(cout sha):$(cout sign)"; }
+cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
+check "called by the weekly release → that tag, its version, the planned commit, the real key" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+cmode CALL_TAG=client/v0.6.0 CALL_SHA= GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
+check "called without a commit → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
+cmode GITHUB_REF=refs/tags/client/v0.6.0 GITHUB_SHA="$C4" EVENT=push
+check "a client tag pushed by hand → the tag's version, no commit needed to change it" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+cmode GITHUB_REF=refs/tags/client/v0.5.9 GITHUB_SHA="$C4" EVENT=push
+check "a tag below package.json → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
+has "低于 package.json 的版本 0.6.0" "$(cat "$TMP/c-err")" "… says why"
+git -C "$CREMOTE" tag client/v0.7.0 "$C4"
+cmode GITHUB_REF=refs/tags/client/v0.6.5 GITHUB_SHA="$C4" EVENT=push
+check "a tag not above an existing release tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
+has "已有 client/v0.7.0" "$(cat "$TMP/c-err")" "… says why"
+git -C "$CREMOTE" tag -d client/v0.7.0 >/dev/null
+cmode GITHUB_REF=refs/tags/client/v0.6.1-dev.3 GITHUB_SHA="$C4" EVENT=push
+check "a development-shaped tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=push
+check "push to main → development build, the real key" "$(mode_line)" "0:::$C4:true"
+for ev in schedule workflow_dispatch pull_request; do
+    cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT="$ev"
+    check "$ev → development build, a throw-away key" "$(mode_line)" "0:::$C4:false"
+done
+
+echo "-- the version written into the three files"
+cver() { crun "$TMP/client-run/client" "$TMP/c-version.sh" "$@"; }
+three() { node -e 'const v=require("fs");const r=process.argv[1];const p=JSON.parse(v.readFileSync(r+"/package.json")).version;const c=JSON.parse(v.readFileSync(r+"/src-tauri/tauri.conf.json")).version;const g=/^version = "([^"]*)"/m.exec(v.readFileSync(r+"/src-tauri/Cargo.toml","utf8"))[1];console.log([p,c,g].join(" "))' "$TMP/client-run/client"; }
+cver TAG=client/v0.6.0 VERSION=0.6.0
+check "release build: the tag's version in all three" "$RC:$(three)" "0:0.6.0 0.6.0 0.6.0"
+git -C "$TMP/client-run" checkout -q -- client
+cver TAG=client/v0.6.0 VERSION=
+check "release build without a version → fails, nothing written" "$([ "$RC" != 0 ] && echo red):$(three)" "red:0.6.0 0.6.0 0.6.0"
+N="$(git -C "$TMP/client-run" rev-list --count HEAD)"
+cver TAG= VERSION=
+check "development build: package.json's version + 1, -dev.<commits>" "$RC:$(three)" "0:0.6.1-dev.$N 0.6.1-dev.$N 0.6.1-dev.$N"
+git -C "$TMP/client-run" checkout -q -- client
+git -C "$TMP/client-run" tag client/v0.6.4 HEAD; git -C "$TMP/client-run" tag client/v0.6.9-dev.2 HEAD
+cver TAG= VERSION=
+check "… after a release above package.json: counted from that release (dev builds stay newer)" "$RC:$(three)" "0:0.6.5-dev.$N 0.6.5-dev.$N 0.6.5-dev.$N"
+git -C "$TMP/client-run" checkout -q -- client
+
+echo "-- the release page: the tested build, the tag on the tested commit"
+mkdir -p "$TMP/client-run/client/dist-release"
+for arch in arm64 x64; do for e in dmg app.tar.gz app.tar.gz.sig; do : > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-$arch.$e"; done; done
+crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
+check "both Macs' files of the tag's version → passes" "$RC" 0
+crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.1
+check "files of another version → fails" "$([ "$RC" != 0 ] && echo red)" "red"
+rm "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-x64.app.tar.gz.sig"
+crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
+check "one Mac's signature missing → fails" "$([ "$RC" != 0 ] && echo red)" "red"
+: > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-x64.app.tar.gz.sig"
+ctag() { crun "$TMP/client-run/client" "$TMP/c-tag.sh" "$@"; }
+ccreate() { crun "$TMP/client-run/client" "$TMP/c-create.sh" "$@"; }
+remote_tag() { git -C "$CREMOTE" rev-parse -q --verify "refs/tags/$1^{commit}" 2>/dev/null || echo none; }
+PAGES_BEFORE="$(wc -l < "$CREL")"
+ccreate TAG=client/v0.6.0 SHA="$C4" GH_TOKEN=x
+check "no tag on the remote yet → no page" "$([ "$RC" != 0 ] && echo red):$(wc -l < "$CREL")" "red:$PAGES_BEFORE"
+ctag TAG=client/v0.6.0 SHA="$C3"
+check "tag absent → created on the tested commit" "$RC:$(remote_tag client/v0.6.0)" "0:$C3"
+ccreate TAG=client/v0.6.0 SHA="$C4" GH_TOKEN=x
+check "the remote's tag is on another commit → no page" "$([ "$RC" != 0 ] && echo red):$(wc -l < "$CREL")" "red:$PAGES_BEFORE"
+ctag TAG=client/v0.6.0 SHA="$C4"
+check "tag on another commit → fails, left alone" "$([ "$RC" != 0 ] && echo red):$(remote_tag client/v0.6.0)" "red:$C3"
+git -C "$CREMOTE" tag -d client/v0.6.0 >/dev/null
+ctag TAG=client/v0.6.0 SHA="$C4"; ctag TAG=client/v0.6.0 SHA="$C4"
+check "tag already on the tested commit → kept (a rerun)" "$RC:$(remote_tag client/v0.6.0)" "0:$C4"
+ccreate TAG=client/v0.6.0 SHA="$C4" GH_TOKEN=x
+check "page created for the tag" "$RC:$(tail -1 "$CREL")" "0:client/v0.6.0"
+A="$(cat "$GH_ARGS")"
+has "--verify-tag" "$A" "… never letting gh make the tag"
+has "--latest=false" "$A" "… not marked Latest (the daemon's release keeps it)"
+has "Cavil Loop 客户端 v0.6.0" "$A" "… titled with the version"
+has "dist-release/latest.json" "$A" "… with the update manifest"
+
+echo "-- a failed client release is reported; the daemon's release is not its business"
+rf_repo
+run_report "client=failure"
+check "client failed alone → an issue for the daemon" "$RC:$(n_issues):$(labels_of 1)" "0:1:pending/agent"
+B="$(body_of 1)"
+has "客户端正式版没发出" "$B" "… says the client release did not ship"
+has "后台工具的发版不受它影响" "$B" "… and that the daemon's release went on"
+lacks "门禁已通过，发版" "$B" "… without blaming the daemon's release"
+rf_repo; rf_jobs "release=failure:Create GitHub Release"
+run_report "release=failure client=failure"
+has "门禁已通过，发版在『Create GitHub Release』失败。" "$(body_of 1)" "daemon release and client both failed: the daemon's line still names its step"
+has "客户端正式版没发出" "$(body_of 1)" "… and the client's line is there too"
+rf_repo; run_report "client-plan=failure client=skipped"
+has "没能判断这次要不要出客户端正式版" "$(body_of 1)" "the client plan failed → said as such"
+rf_repo; run_report "client=skipped client-plan=success"
+check "no client release this week (skipped) → nothing to report" "$RC:$(n_issues)" "0:0"
 
 
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──

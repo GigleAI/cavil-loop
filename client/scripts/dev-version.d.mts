@@ -8,4 +8,6 @@ export interface Versions {
 }
 export declare function readVersions(root: string): Versions;
 export declare function commitCount(root: string): number;
-export declare function stamp(root: string, o?: { write?: boolean; count?: number }): string;
+export declare function stamp(root: string, o?: { write?: boolean; count?: number; tags?: string[] }): string;
+export declare function localTags(root: string): string[];
+export declare function writeVersion(root: string, version: string): string;

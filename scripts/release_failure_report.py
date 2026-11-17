@@ -202,12 +202,17 @@ def job_section(needs, jobs):
     return out
 
 
+# The client release's jobs in the release kind (GitHub#576): they neither wait for nor hold the
+# daemon's release, so they never decide whether the daemon's release failed on its own.
+CLIENT_JOBS = ("client-plan", "client")
+
+
 def release_only_line(needs, jobs):
     """Gate passed, release failed → say where it failed."""
     res = {k: (v.get("result") if isinstance(v, dict) else None) for k, v in needs.items()}
     if res.get("release") != "failure":
         return None
-    if any(r == "failure" for k, r in res.items() if k != "release"):
+    if any(r == "failure" for k, r in res.items() if k != "release" and k not in CLIENT_JOBS):
         return None
     steps = []
     if jobs is not None:
@@ -217,6 +222,22 @@ def release_only_line(needs, jobs):
     if steps:
         return "门禁已通过，发版在" + "、".join(f"『{s}』" for s in steps) + "失败。"
     return "门禁已通过，发版任务失败（步骤明细读不到）。"
+
+
+def client_release_line(needs):
+    """The release kind only: the client's release failed → say what that means (GitHub#576)."""
+    if KIND_NAME != "release":
+        return None
+    res = {k: (needs.get(k).get("result") if isinstance(needs.get(k), dict) else None) for k in CLIENT_JOBS}
+    tag = ((needs.get("client-plan") or {}).get("outputs") or {}).get("tag") if isinstance(needs.get("client-plan"), dict) else ""
+    name = f"`{tag}`" if tag else ""
+    if res["client-plan"] == "failure":
+        return ("没能判断这次要不要出客户端正式版（读标签、发版列表或客户端改动时失败，见 `client release plan` 任务）；"
+                "后台工具的发版不受它影响。")
+    if res["client"] == "failure":
+        return (f"客户端正式版{name}没发出：客户端的测试、打包或发版有一步失败（见上表 `client release / …` 各行）；"
+                "后台工具的发版不受它影响。修好后，下一次每周发版在客户端有改动时会再出。")
+    return None
 
 
 def read_text(d, name):
@@ -302,6 +323,9 @@ def report_text(needs, jobs):
     one = release_only_line(needs, jobs)
     if one:
         lines += ["", f"**{one}**"]
+    client = client_release_line(needs)
+    if client:
+        lines += ["", f"**{client}**"]
     lines += ["", "### 各任务结果", ""] + job_section(needs, jobs) + [""]
     lines += shell_section()
     lines += client_section(needs, jobs)

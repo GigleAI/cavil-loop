@@ -2,7 +2,8 @@ name: Client
 
 # The desktop client in client/ (GitHub#135): its own tests, its own macOS
 # packages, its own Releases (tag client/vX.Y.Z). Nothing here touches the
-# daemon's tests or its weekly release.
+# daemon's tests; the daemon's weekly release calls this workflow for the
+# client's release (GitHub#576) and never waits for it.
 #
 # What runs when:
 #   every PR push                 quick tests: typecheck + cargo, vitest in two halves, in parallel (a few minutes)
@@ -10,6 +11,9 @@ name: Client
 #                                 development build is published as a pre-release (GitHub#215)
 #   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
 #                                 arm64 and x64; any failure, no Release
+#   called by release.yml         the same as a client/v* tag, for the tag and commit the weekly
+#                                 release planned (GitHub#576: a tag pushed with the workflow's own
+#                                 token starts no run, so the weekly release calls this workflow)
 #   weekly / manual run           quick + full tests + the Mac arm64 build (packaging or end-to-end
 #                                 breakage shows up within a week); negative controls only when asked
 # Negative controls run automatically only in the weekly release gate
@@ -33,13 +37,26 @@ on:
   # No negative controls here, manual runs included: they run only in negative-controls.yml
   # (GitHub#416).
   workflow_dispatch:
+  # GitHub#576: the weekly Release workflow's client release. The tag need not exist yet: the release
+  # job creates it on `sha` once everything passed. Versions: scripts/release-version.mjs.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'client/vX.Y.Z to release'
+        type: string
+        required: true
+      sha:
+        description: 'the commit to build, test and tag'
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  # the weekly run has its own group, so it never cancels (or is cancelled by) a push to main
-  group: client-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'schedule' && '-weekly' || '' }}
+  # the weekly run has its own group, so it never cancels (or is cancelled by) a push to main; a
+  # release called by release.yml has one per tag (its github.ref is the caller's, often main)
+  group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && '-weekly' || '' }}
   cancel-in-progress: true
 
 defaults:
@@ -47,16 +64,71 @@ defaults:
     working-directory: client
 
 jobs:
+  # What this run builds, decided once (GitHub#576) and read by every later job:
+  #   tag      client/vX.Y.Z for a release build (a pushed client/v* tag, or the tag release.yml
+  #            passed in), empty for a development build
+  #   version  X.Y.Z of that tag, checked by scripts/release-version.mjs (not below package.json,
+  #            above every other client/vX.Y.Z tag); the build writes it into the three version files
+  #   sha      the commit every job checks out: the one release.yml planned, else this run's own
+  #   sign     true when the update packages are signed with the maintainer's key (a release, or the
+  #            development build of a push to main); every other run uses a throw-away key
+  mode:
+    name: client build mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.mode.outputs.tag }}
+      version: ${{ steps.mode.outputs.version }}
+      sha: ${{ steps.mode.outputs.sha }}
+      sign: ${{ steps.mode.outputs.sign }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - name: Release or development build
+        id: mode
+        env:
+          CALL_TAG: ${{ inputs.tag }}
+          CALL_SHA: ${{ inputs.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          tag=""
+          sha="$GITHUB_SHA"
+          if [ -n "$CALL_TAG" ]; then
+            [ -n "$CALL_SHA" ] || { echo "::error::called for $CALL_TAG without a commit"; exit 1; }
+            tag="$CALL_TAG"
+            sha="$CALL_SHA"
+          elif [[ "$GITHUB_REF" == refs/tags/client/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          version=""
+          if [ -n "$tag" ]; then
+            version="$(node scripts/release-version.mjs check "$tag" --at "$sha")"
+            echo "release build $tag ($version) of $sha"
+          else
+            echo "development build of $sha"
+          fi
+          sign=false
+          if [ -n "$tag" ] || { [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; }; then sign=true; fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "sign=$sign"
+          } >> "$GITHUB_OUTPUT"
+
   # The quick tests run as three parallel jobs (GitHub#495: one after another they took ~10 minutes):
   # type check + the back end's cargo tests, and vitest in two halves. `test` below is the one check
   # the later jobs wait on; it is green only when all three are.
   test-rust:
     name: client quick tests — type check + back end (Linux)
+    needs: mode
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
       - uses: ./.github/actions/client-setup
         with:
@@ -68,6 +140,7 @@ jobs:
 
   test-vitest:
     name: client quick tests — vitest ${{ matrix.shard }}/2 (Linux)
+    needs: mode
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -77,6 +150,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.mode.outputs.sha }}
           # the upgrade tests take earlier commits' files (git show / archive)
           fetch-depth: 0
       - uses: ./.github/actions/client-setup
@@ -107,16 +181,18 @@ jobs:
           echo "type check + back end: $RUST; vitest: $VITEST"
           [ "$RUST" = success ] && [ "$VITEST" = success ]
 
-  # Playwright + the real app on Linux. Each builds the whole app, so only on a client/v* tag,
+  # Playwright + the real app on Linux. Each builds the whole app, so only on a release build,
   # the weekly run and a manual run — not on pull requests, not on pushes to main.
   e2e:
     name: client full tests (Linux)
-    if: startsWith(github.ref, 'refs/tags/client/v') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: mode
+    if: needs.mode.outputs.tag != '' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
       - uses: ./.github/actions/client-setup
       - name: UI tests (Playwright on WebKit, real window + real back end)
@@ -141,19 +217,21 @@ jobs:
   package:
     name: dmg (${{ matrix.arch }})
     # Not on pull requests (GitHub#195). arm64 alone on a push to main, the weekly run and a manual
-    # run; arm64 and x64 on a client/v* tag.
+    # run; arm64 and x64 on a release build.
+    needs: mode
     if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
-      # x64 (Intel) only on a client/v* tag, where the Release ships both dmgs; a push to main, the
+      # x64 (Intel) only on a release build, where the Release ships both dmgs; a push to main, the
       # weekly and the manual runs build and check arm64 alone.
       matrix:
-        include: ${{ fromJSON(startsWith(github.ref, 'refs/tags/client/v') && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
+        include: ${{ fromJSON(needs.mode.outputs.tag != '' && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.mode.outputs.sha }}
           # the development build's version counts the commits (scripts/dev-version.mjs)
           fetch-depth: 0
       - uses: actions/setup-node@v4
@@ -178,15 +256,24 @@ jobs:
           "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.7
           echo "$RUNNER_TEMP/dmgbuild/bin" >> "$GITHUB_PATH"
       - run: npm ci
-      # GitHub#215: every build but a release tag is a development build, X.Y.(Z+1)-dev.N, stamped
-      # into package.json / tauri.conf.json / Cargo.toml here (never committed). Only a push to main
-      # publishes it (job dev-release); the weekly and manual runs build and check the same thing.
-      - name: Development build version
-        if: ${{ !startsWith(github.ref, 'refs/tags/client/v') }}
-        run: node scripts/dev-version.mjs --write
+      # The version is stamped into package.json / tauri.conf.json / Cargo.toml here (never
+      # committed). A release build takes its tag's X.Y.Z (GitHub#576); every other build is a
+      # development build, X.Y.(Z+1)-dev.N (GitHub#215). Only a push to main publishes the latter
+      # (job dev-release); the weekly and manual runs build and check the same thing.
+      - name: Version
+        env:
+          TAG: ${{ needs.mode.outputs.tag }}
+          VERSION: ${{ needs.mode.outputs.version }}
+        run: |
+          if [ -n "$TAG" ]; then
+            [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
+            node scripts/release-version.mjs write "$VERSION"
+          else
+            node scripts/dev-version.mjs --write
+          fi
       # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
       # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
-      # time, the bundler when it signs, the release job when it verifies). A release tag and a push to
+      # time, the bundler when it signs, the release job when it verifies). A release build and a push to
       # main (its development build is published, GitHub#215 — the maintainer chose to sign it with the
       # same key) sign with the maintainer's key (secret) against that public key, and refuse when
       # either is missing; every other run (weekly, manual) uses a throw-away key pair, passed to the
@@ -194,11 +281,12 @@ jobs:
       # never published).
       - name: Build the app (Tauri), its update package, and the dmg
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ (startsWith(github.ref, 'refs/tags/client/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ (startsWith(github.ref, 'refs/tags/client/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          SIGN: ${{ needs.mode.outputs.sign }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/client/v* || ( "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ) ]]; then
-            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release tag and a push to main need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+          if [ "$SIGN" = true ]; then
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a push to main need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
             pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
             [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
           else
@@ -257,10 +345,12 @@ jobs:
 
   size:
     name: download size (every dmg built)
-    needs: [package]
+    needs: [mode, package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.mode.outputs.sha }}
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: Cavil-Loop-*
@@ -268,47 +358,90 @@ jobs:
           merge-multiple: true
       - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
         env:
-          ARCHES: ${{ startsWith(github.ref, 'refs/tags/client/v') && 'arm64,x64' || 'arm64' }}
+          ARCHES: ${{ needs.mode.outputs.tag != '' && 'arm64,x64' || 'arm64' }}
         run: |
           node scripts/size-gate.mjs dist-release/*.dmg --expect "$ARCHES"
           node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect "$ARCHES"
 
+  # A release build (a pushed client/v* tag, or the weekly release's call, GitHub#576): only after the
+  # quick and full tests, both Macs and the size gate passed. The version is the tag's, stamped at
+  # build time; the tag goes on exactly the tested commit (`sha`), created here when it does not exist
+  # yet (pushed with this job's token, so it starts no other run), and checked again right before the
+  # page is created.
   release:
     name: publish client release
-    if: startsWith(github.ref, 'refs/tags/client/v')
-    needs: [test, e2e, package, size]
+    needs: [mode, test, e2e, package, size]
+    if: needs.mode.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches package.json version
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          want="client/v$(node -p "require('./package.json').version")"
-          [ "$tag" = "$want" ] || { echo "::error::tag $tag does not match package.json ($want)"; exit 1; }
+        with:
+          ref: ${{ needs.mode.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: Both dmgs are there
+      - name: The build is the tag's version, both Macs
+        env:
+          V: ${{ needs.mode.outputs.version }}
         run: |
           ls -la dist-release
-          [ "$(ls dist-release/*-arm64.dmg dist-release/*-x64.dmg | wc -l)" -eq 2 ]
+          [ -n "$V" ] || { echo "::error::no version for this release build"; exit 1; }
+          for arch in arm64 x64; do
+            for f in "Cavil-Loop-$V-$arch.dmg" "Cavil-Loop-$V-$arch.app.tar.gz" "Cavil-Loop-$V-$arch.app.tar.gz.sig"; do
+              [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing: the build is not $V for both Macs"; exit 1; }
+            done
+          done
       # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
-      # are there and their signatures verify with the app's public key (tauri.conf.json).
+      # are there and their signatures verify with the app's public key (tauri.conf.json) and are bound
+      # to this version.
       - name: Update manifest (latest.json)
-        run: node scripts/update-manifest.mjs --version "$(node -p "require('./package.json').version")" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
-      # Not marked latest: the daemon's weekly release stays "Latest".
+        env:
+          V: ${{ needs.mode.outputs.version }}
+        run: node scripts/update-manifest.mjs --version "$V" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
+      # The remote's tag: absent → create it on the tested commit; on that commit → keep; anywhere
+      # else, or unreadable → stop, no page.
+      - name: Tag the tested commit
+        env:
+          TAG: ${{ needs.mode.outputs.tag }}
+          SHA: ${{ needs.mode.outputs.sha }}
+        run: |
+          set -o pipefail
+          refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          now="$(awk -v t="refs/tags/$TAG" '$2 == t { p = $1 } $2 == t "^{}" { q = $1 } END { print (q != "" ? q : p) }' <<<"$refs")"
+          if [ -z "$now" ]; then
+            # straight onto the remote: no local tag, so none left over from an earlier attempt is pushed
+            git push origin "$SHA:refs/tags/$TAG"
+            echo "pushed $TAG → $SHA"
+          elif [ "$now" = "$SHA" ]; then
+            echo "$TAG already points at $SHA"
+          else
+            echo "::error::$TAG is on $now, not on the tested $SHA — no Release"
+            exit 1
+          fi
+      # Not marked latest: the daemon's weekly release stays "Latest". --verify-tag: gh never creates
+      # a missing tag on the default branch's tip, a commit nothing here tested.
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.mode.outputs.tag }}
+          SHA: ${{ needs.mode.outputs.sha }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
+          set -o pipefail
+          refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          now="$(awk -v t="refs/tags/$TAG" '$2 == t { p = $1 } $2 == t "^{}" { q = $1 } END { print (q != "" ? q : p) }' <<<"$refs")"
+          if [ "$now" != "$SHA" ]; then
+            echo "::error::the remote's $TAG is at '${now:-nothing}', not the tested $SHA — no Release"
+            exit 1
+          fi
+          gh release create "$TAG" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Cavil Loop 客户端 ${tag#client/}" \
+            --verify-tag \
+            --title "Cavil Loop 客户端 ${TAG#client/}" \
             --notes-file RELEASE_NOTES.md \
             --latest=false
 
@@ -318,16 +451,17 @@ jobs:
   # publishes it complete or not at all, never on top of a newer one, and keeps the latest 10.
   dev-release:
     name: publish development build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test, package, size]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.mode.outputs.tag == ''
+    needs: [mode, test, package, size]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
-      # the same version the Mac build stamped: same commit, same count
+      # the same version the Mac build stamped: same commit, same count, same tags
       - name: Version
         id: v
         run: |
