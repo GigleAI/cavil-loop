@@ -433,7 +433,7 @@ jobs:
           conf="$(node -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.argv[1] } } }))' "$pub")"
           # the installer's name carries the version: an earlier build's, restored with the cache, would be a second one
           rm -rf src-tauri/target/release/bundle/nsis
-          npx tauri build --bundles nsis --config "$conf""
+          npx tauri build --bundles nsis --config "$conf"
           v="$(node -p "require('./package.json').version")"
           exe="$(ls src-tauri/target/release/bundle/nsis/*_x64-setup.exe)"
           printf '%s' "$conf" > "$RUNNER_TEMP/update-conf.json"
