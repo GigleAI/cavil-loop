@@ -365,6 +365,9 @@ jobs:
           ref: ${{ needs.mode.outputs.sha }}
           # the development build's version counts the commits (scripts/dev-version.mjs)
           fetch-depth: 0
+          # client/ only (plus the files at the top): some of the daemon's file names cannot exist on
+          # Windows (systemd's escaped unit names, e.g. app-cavil\x2dloop\x2dpoll.slice)
+          sparse-checkout: client
       - uses: actions/setup-node@v4
         with:
           node-version: 24
