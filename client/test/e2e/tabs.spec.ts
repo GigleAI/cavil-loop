@@ -118,6 +118,8 @@ test('GitHub#442: a click opens the floating panel, ⌘ / Ctrl + click or the ri
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const bar = page.getByTestId('tabs');
   const menu = page.getByTestId('open-menu');
 
@@ -321,6 +323,8 @@ test('GitHub#442: the floating panel belongs to the home tab — a tab and back 
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   await row(page, B).click({ button: 'middle' });
   await expect(tabs(page)).toHaveCount(1);
   await row(page, A).click();
@@ -1132,6 +1136,8 @@ test('GitHub#447: a close in the floating panel puts the panel away — only the
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
 
   // ---- 1. the panel shows the item it was closed in: it goes, the board is whole, the result at the top ----
   await row(page, A).click();

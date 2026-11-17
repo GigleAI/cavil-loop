@@ -621,8 +621,12 @@ export interface ViewSettings {
   imported: ImportInfo | null;
   /** PRs shown right under the issue they are linked to, on the board and in the table (GitHub#155) */
   prsUnderIssues: boolean;
-  /** width of the floating detail panel, CSS px (GitHub#155). Not used since GitHub#397 (the detail fills a tab of its own); kept so that a saved view stays valid */
+  /** the floating detail panel's width as builds before GitHub#582 saved it (their default 560 included). Only read once, when
+   *  `panelWidth` is not saved yet; never written by the window, kept so that an older build reading the view still finds it */
   detailWidth: number;
+  /** GitHub#582: the floating detail panel's width, CSS px, as dragged by its edge; null = follow the window (leave the list
+   *  behind it about 15 characters of title, see panelWidth.ts) */
+  panelWidth: number | null;
   /** labels / milestone / board fields shown in the detail panel; false = folded away (GitHub#260) */
   detailFields: boolean;
   /** long lines of code blocks in the discussion fold onto the next line; false = scroll sideways (GitHub#381) */

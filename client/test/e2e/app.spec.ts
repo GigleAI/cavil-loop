@@ -1423,11 +1423,13 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   await card(page, 138).click();
   const detail = page.getByTestId('detail');
   await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
-  await expect(detail).toHaveAttribute('data-width', '560');
+  // GitHub#582: not dragged yet, it follows the window (its exact width: the GitHub#582 test)
+  const auto = Number(await detail.getAttribute('data-width'));
+  expect(auto).toBeGreaterThan(900);
   expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
   let box = (await detail.boundingBox())!;
   expect(Math.round(box.x + box.width)).toBe(1280);
-  expect(Math.round(box.width)).toBe(560);
+  expect(Math.round(box.width)).toBe(auto);
   await expect(detail.getByTestId('detail-people').locator('[data-testid="avatar"]').first()).toHaveAttribute('data-login', author138);
 
   // ---- 3. only the newest entry is unfolded; a folded one opens on a click; unfold all / fold all ----
@@ -1464,19 +1466,19 @@ test('GitHub#155: avatars; the detail floats over the board, keeps its dragged w
   // the people in the discussion have avatars too
   await expect.poll(() => readFileSync(env.requests, 'utf8')).toContain('request https://avatars.githubusercontent.com/user-4?s=40\n');
 
-  // ---- 4. drag the left edge: wider; the board still does not move; the width is kept ----
+  // ---- 4. drag the left edge: narrower; the board still does not move; the width is kept ----
   const h = (await page.getByTestId('detail-resize').boundingBox())!;
   const x0 = h.x + h.width / 2;
   await page.mouse.move(x0, h.y + 200);
   await page.mouse.down();
-  await page.mouse.move(x0 - 100, h.y + 200, { steps: 4 });
-  await page.mouse.move(x0 - 200, h.y + 200, { steps: 4 });
+  await page.mouse.move(x0 + 100, h.y + 200, { steps: 4 });
+  await page.mouse.move(x0 + 200, h.y + 200, { steps: 4 });
   await page.mouse.up();
-  // 200px wider, give or take the sub-pixel position of the edge
-  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - 760)).toBeLessThanOrEqual(2);
+  // 200px narrower, give or take the sub-pixel position of the edge
+  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - (auto - 200))).toBeLessThanOrEqual(2);
   const dragged = (await detail.getAttribute('data-width'))!;
   expect(await page.locator('.board').boundingBox()).toEqual(boardBefore);
-  await shot(page, '41-detail-wider');
+  await shot(page, '41-detail-narrower');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await card(page, 137).click();
@@ -1574,6 +1576,121 @@ const sourceErr = (page: Page, key: string) => page.locator(`[data-testid="sourc
 const syncOf = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.sync as { syncing: boolean; offline: boolean });
 const UNSUPPORTED = 'updated:>2026-01-01';
 
+
+// ---- GitHub#582: until dragged, the floating panel follows the window and leaves the list about 15 characters of title ----
+test('GitHub#582: the panel follows the window, leaving 15 characters of the board\'s / table\'s titles; a dragged 560 is kept over restarts and window changes; double-click on the edge goes back', async () => {
+  let { app, page } = await launch(env);
+  await signInWithSources(page);
+  /**
+   * Where the titles start (unscrolled) and their font, worked out here independently of the client: the table's leftmost
+   * row title; on the board, the first column's left edge plus how far into its column a card title starts.
+   */
+  const titles = (sel: string) =>
+    page.evaluate((sel) => {
+      const un = (e: Element) => {
+        let left = e.getBoundingClientRect().left;
+        for (let p = e.parentElement; p; p = p.parentElement) left += p.scrollLeft;
+        return left;
+      };
+      const els = [...document.querySelectorAll(sel)];
+      const font = parseFloat(getComputedStyle(els[0]).fontSize);
+      if (sel.includes('row-title')) return { left: Math.min(...els.map(un)), font };
+      const cols = [...document.querySelectorAll('[data-testid="column"]')];
+      const into = Math.min(...els.map((e) => e.getBoundingClientRect().left - e.closest('[data-testid="column"]')!.getBoundingClientRect().left));
+      return { left: Math.min(...cols.map(un)) + into, font };
+    }, sel);
+  const detail = page.getByTestId('detail');
+  const panelLeft = async (d = detail) => Math.round((await d.boundingBox())!.x);
+  const expectStrip = async (sel: string, d = detail) => {
+    const t = await titles(sel);
+    const want = Math.round(t.left + 15 * t.font + 16);
+    await expect.poll(async () => Math.abs((await panelLeft(d)) - want)).toBeLessThanOrEqual(2);
+    // the characters really are in view: 15 of the title's font fit between where titles start and the panel
+    expect((await panelLeft(d)) - t.left).toBeGreaterThanOrEqual(15 * t.font);
+    return want;
+  };
+
+  // ---- 1. board: measured from the first column's titles; the window grows, the strip stays ----
+  await card(page, 138).click();
+  await expect(detail).toHaveAttribute('data-key', 'gigleai/cavil-loop#138');
+  const boardStrip = await expectStrip('[data-testid="card-title"]');
+  expect(boardStrip).toBeLessThan(320);
+  await shot(page, '582-01-board');
+  await page.setViewportSize({ width: 1700, height: 800 });
+  // the panel's left edge stays where it was: the panel takes the extra width
+  const near = (want: number) => async () => Math.abs((await panelLeft()) - want);
+  await expect.poll(async () => Math.abs(Number(await detail.getAttribute('data-width')) - (1700 - boardStrip))).toBeLessThanOrEqual(2);
+  await expect.poll(near(boardStrip)).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(near(boardStrip)).toBeLessThanOrEqual(2);
+  // a board scrolled sideways measures from its first column all the same
+  await page.locator('.board').evaluate((e) => (e.scrollLeft = 200));
+  await page.setViewportSize({ width: 1281, height: 800 });
+  await expect.poll(near(boardStrip)).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // a card far right, under the panel: opening it scrolls the board so its title's first 15 characters show left of the panel
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  const far = page.locator('[data-testid="column"]').last().locator('[data-testid="card"]').first();
+  const farKey = (await far.getAttribute('data-key'))!;
+  await far.locator('[data-testid="card-title"]').click();
+  await expect(detail).toHaveAttribute('data-key', farKey);
+  await expect
+    .poll(async () => {
+      const t = page.locator(`[data-testid="card"][data-key="${farKey}"] [data-testid="card-title"]`).first();
+      const b = (await t.boundingBox())!;
+      const font = await t.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+      return b.x >= 0 && b.x + 15 * font <= (await panelLeft()) + 2;
+    })
+    .toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+
+  // ---- 2. table: measured from the title column (the repository list and the columns before it do not count) ----
+  await page.locator('[data-testid="layout"] button[data-value="table"]').click();
+  await page.getByTestId('row-title').first().click();
+  await expect(detail).toBeVisible();
+  const tableStrip = await expectStrip('[data-testid="row-title"]');
+  expect(tableStrip).toBeGreaterThan(boardStrip);
+  await shot(page, '582-02-table');
+
+  // ---- 3. drag to exactly 560: kept over a window change and a restart ----
+  /** the panel is as wide as from the pointer to its right edge (the window's): let go exactly there */
+  const dragTo = async (want: number) => {
+    const h = (await page.getByTestId('detail-resize').boundingBox())!;
+    const right = (await detail.boundingBox())!;
+    await page.mouse.move(h.x + h.width / 2, h.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(right.x + right.width - want, h.y + 200, { steps: 6 });
+    await page.mouse.up();
+    await expect(detail).toHaveAttribute('data-width', String(want));
+  };
+  await dragTo(560);
+  await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).state.view.panelWidth))).toBe(560);
+  await page.setViewportSize({ width: 1600, height: 800 });
+  await expect(detail).toHaveAttribute('data-width', '560');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.locator('[data-testid="layout"] button[data-value="board"]').click();
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(card(page, 138)).toBeVisible({ timeout: 15_000 });
+  await card(page, 138).click();
+  const d2 = page.getByTestId('detail');
+  await expect(d2).toHaveAttribute('data-width', '560');
+
+  // ---- 4. double-click on the edge: back to following the window, also after a restart ----
+  await page.getByTestId('detail-resize').dblclick();
+  await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).state.view.panelWidth))).toBeNull();
+  // (measured again: this board may lay its columns out differently from the first run's)
+  await expectStrip('[data-testid="card-title"]', d2);
+  await app.close();
+  ({ app, page } = await launch(env));
+  await expect(card(page, 138)).toBeVisible({ timeout: 15_000 });
+  await card(page, 138).click();
+  await expectStrip('[data-testid="card-title"]', page.getByTestId('detail'));
+  expect(Number(await page.getByTestId('detail').getAttribute('data-width'))).not.toBe(560);
+  await app.close();
+});
 test('yellow bars: × closes one bar; time passing and page switches keep it closed; recovery, or a new filter shows it again', async () => {
   const { app, page } = await launch(env);
   // fake time in the window: "1 hour later" without waiting an hour
@@ -2873,6 +2990,8 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   ]);
   const { app, page } = await launch(env);
   await signInWithSources(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   /** a blank spot of the window outside the panel: the head of the leftmost column (not a card) */
@@ -3040,6 +3159,8 @@ test('GitHub#257: the whole title cell of a table row opens the detail — icon,
   ]);
   const { app, page } = await launch(env);
   await signInWithSources(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
@@ -5774,7 +5895,7 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   let { app, page } = await launch(env);
   await signInWithSources(page);
   // wide enough for the PR line to fit on one line (narrower, the buttons wrap under the icons)
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 720 }));
   await card(page, prN).click();
   const detail = page.getByTestId('detail');
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
@@ -5891,7 +6012,7 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await page.frameLocator('[data-testid="timeline-frame"]').locator('body').click({ position: { x: 20, y: 60 } });
   await expect(detail.getByTestId('detail-notices')).toBeHidden();
   // the narrowest panel (360 px): every head button and the open notices stay inside it, nothing scrolls sideways
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 360 }));
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 360 }));
   await expect(detail).toHaveAttribute('data-width', '360');
   await toggle.click();
   await expect(detail.getByTestId('detail-notices')).toBeVisible();
@@ -5914,7 +6035,7 @@ test('GitHub#260: the detail starts under the view bar and never moves — bars 
   await detail.getByTestId('reply-input').fill('');
   await detail.getByTestId('detail-close').click();
   await expect(detail).toHaveCount(0);
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 720 }));
   await card(page, prN).click();
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   // sent again once GitHub accepts: the kept change goes, the count follows
@@ -6930,7 +7051,7 @@ test('GitHub#322: a click on the reply card\'s free space types into the box; R 
   Object.assign(pullOf(store, c), { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: 'SUCCESS', reviewDecision: null });
   const { app, page } = await launch(env);
   await signInWithSources(page);
-  await page.evaluate(() => (window as any).cavil.setView({ detailWidth: 720 }));
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 720 }));
   await card(page, prN).click();
   const detail = page.getByTestId('detail');
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });

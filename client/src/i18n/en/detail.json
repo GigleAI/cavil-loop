@@ -188,7 +188,7 @@
   "这一条上一次的修改还没有结果（或还不确定有没有保存上），先看窗口上方的提示": "The last change to this item has no result yet (or it is not sure whether it was saved); see the notice at the top of the window first",
   "预览失败": "Preview failed",
   "上一次操作还没结清：{op}": "The last operation is not settled yet: {op}",
-  "拖动改宽度": "Drag to change the width",
+  "拖动改宽度，双击恢复默认": "Drag to change the width, double-click for the default",
   "这一条已不在当前视图里": "This item is no longer in the current view",
   "这一条现在读不到（来源里没有它，单独读取也还没有结果）。下一轮同步会再读；也可以关掉这个标签页。": "This item cannot be read right now (no source carries it, and reading it on its own has no result yet). The next sync reads it again; you can also close this tab.",
   "有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）": "Has conflicts, GitHub cannot merge: resolve the conflicts on the branch first (or click \"Resolve conflicts\" on the web page)",

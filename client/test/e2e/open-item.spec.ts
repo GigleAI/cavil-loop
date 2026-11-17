@@ -91,6 +91,8 @@ test('GitHub#522: opening an item takes back its own notifications only — pane
   const app = await launchApp(env);
   const page = app.page;
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   // the window behind: an opening is not a look
   app.desktop.push({ kind: 'inactive' });
   await row(page, A).click();
@@ -134,6 +136,8 @@ test('GitHub#522: the item the floating panel shows is marked and brought into v
   const page = app.page;
   await page.setViewportSize({ width: 1100, height: 640 });
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   await boardByStatus(page);
   const cards = page.locator('[data-testid="card"]');
   // the board scrolled away from the first column's top card: right and down as far as it goes
@@ -206,6 +210,8 @@ test('GitHub#522: in the table, a row out of view is scrolled to; in a folded gr
   const page = app.page;
   await page.setViewportSize({ width: 1100, height: 520 });
   await signIn(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const rows = page.locator('[data-testid="row"]');
   const scroller = () => page.evaluate(() => {
     let el: HTMLElement | null = document.querySelector('[data-testid="row"]');

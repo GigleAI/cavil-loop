@@ -494,6 +494,36 @@ describe('sync and cache', () => {
     expect(second.c.getState().view.query).toBe('is:open');
   });
 
+  it('GitHub#582: the floating panel\'s width — an older build\'s 560 follows the window, its 720 is kept; a dragged 560 and "follow the window" both survive a restart', async () => {
+    const base = { mode: 'status', swimlanes: false, selected: null };
+    // an older build's 560 is its default, saved whether or not anybody dragged: follow the window
+    const was560 = await make({ seed: { view: { ...base, detailWidth: 560 } } });
+    expect(was560.c.getState().view.panelWidth).toBeNull();
+    // drag to exactly 560 in this build: kept across restarts, however many
+    was560.c.setView({ panelWidth: 560 });
+    was560.c.stopTimer();
+    let next = await make({ credentials: was560.credentials });
+    expect(next.c.getState().view.panelWidth).toBe(560);
+    next.c.stopTimer();
+    next = await make({ credentials: was560.credentials });
+    expect(next.c.getState().view.panelWidth).toBe(560);
+    // double-click on the edge: follow the window again, also after a restart
+    next.c.setView({ panelWidth: null });
+    next.c.stopTimer();
+    next = await make({ credentials: was560.credentials });
+    expect(next.c.getState().view.panelWidth).toBeNull();
+    // the older setting is left as it was (an older build reading this view again)
+    expect(next.c.getState().view.detailWidth).toBe(560);
+    next.c.stopTimer();
+    // an older build's other width was dragged: kept
+    const was720 = await make({ seed: { view: { ...base, detailWidth: 720 } } });
+    expect(was720.c.getState().view.panelWidth).toBe(720);
+    // a width out of range is refused whole
+    was720.c.setView({ panelWidth: 100 });
+    expect(was720.c.getState().view.panelWidth).toBe(720);
+    was720.c.stopTimer();
+  });
+
   it('invalid view changes are refused whole; settings saved by an older build are read with defaults', async () => {
     const { c } = await loggedIn();
     const before = c.getState().view;
