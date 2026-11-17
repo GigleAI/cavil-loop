@@ -269,6 +269,60 @@ test('flow labels, label lists, a branch and a field name are read-only plain te
   await page.getByTestId('config-close').click();
 });
 
+test('preview and poll-pace settings are in their groups; the port modulo may be left blank; the back-off ladder shows what the daemon uses for a missing line and for an empty one (GitHub#556)', async () => {
+  const { page } = await openSection(() => {
+    const t = readFileSync(config, 'utf8');
+    expect(t).toContain('\nPREVIEW_PORT_MODULO=""\n');
+    expect(t).toContain('\nPOLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"\n');
+    // written as an empty value: back-off is off (only a missing line means the default ladder)
+    writeFileSync(config, t.replace('\nPOLL_BACKOFF_LADDER="86400:300,259200:600,604800:1800"\n', '\nPOLL_BACKOFF_LADDER=""\n'));
+  });
+  await openDialog(page);
+  const groupOf = async (name: string) => (await page.locator('[data-testid=config-group]').filter({ has: row(page, name) }).getAttribute('data-title'))!;
+  for (const name of ['PREVIEW_PORT_BASE', 'PREVIEW_PORT_MODULO', 'PREVIEW_BACKEND_OFFSET', 'PREVIEW_IDLE', 'PREVIEW_READY_TIMEOUT']) expect(await groupOf(name)).toBe('预览');
+  for (const name of ['POLL_BACKOFF_LADDER', 'POLL_FORCE_SYNC_SECS', 'POLL_IDLE_PROBE_MAX_SECS', 'POLL_FAIL_BACKOFF_MAX_SECS', 'POLL_DUE_SLACK_SECS', 'POLL_RUN_LOG_ROUNDS', 'POLL_RUN_LOG_SNAPSHOTS', 'POLL_RUN_LOG_INFLIGHT', 'POLL_RUN_LOG_SLOW_SECS']) {
+    expect(await groupOf(name)).toBe('轮询');
+  }
+  // the poll interval stays out of the window: the installer writes it into the timer
+  await expect(row(page, 'POLL_INTERVAL_SECS')).toHaveCount(0);
+  for (const name of ['PREVIEW_IDLE', 'POLL_BACKOFF_LADDER']) {
+    await expect(row(page, name)).toHaveAttribute('data-editable', 'false');
+    await expect(input(page, name)).toHaveCount(0);
+  }
+  await expect(row(page, 'PREVIEW_IDLE').getByTestId('config-readonly')).toHaveText('30min');
+  await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-readonly')).toHaveText('（空）');
+  await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-why')).toContainText('秒:秒');
+  // the modulo: blank in the file, and blank is allowed; 0 is not
+  await expect(input(page, 'PREVIEW_PORT_MODULO')).toHaveValue('');
+  await expect(row(page, 'PREVIEW_PORT_MODULO')).toContainText('（1–9223372036854775807，可留空）');
+  await input(page, 'PREVIEW_PORT_MODULO').fill('0');
+  await expect(row(page, 'PREVIEW_PORT_MODULO').getByTestId('config-problem')).toHaveText('只能是 1 到 9223372036854775807 之间的整数，或者留空');
+  await expect(page.getByTestId('config-save')).toBeDisabled();
+  await input(page, 'PREVIEW_PORT_MODULO').fill('1000');
+  await input(page, 'POLL_RUN_LOG_ROUNDS').fill('500');
+  await row(page, 'PREVIEW_PORT_MODULO').scrollIntoViewIfNeeded();
+  await shot(page, '9-preview-poll');
+  await page.getByTestId('config-save').click();
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
+  expect(lines('PREVIEW_PORT_MODULO').map((l) => l.replace(/"/g, ''))).toEqual(['PREVIEW_PORT_MODULO=1000']);
+  expect(lines('POLL_RUN_LOG_ROUNDS').map((l) => l.replace(/"/g, ''))).toEqual(['POLL_RUN_LOG_ROUNDS=500']);
+  await page.getByTestId('config-close').click();
+  // back to blank: no problem, saved as an empty value
+  await openDialog(page);
+  await input(page, 'PREVIEW_PORT_MODULO').fill('');
+  await expect(row(page, 'PREVIEW_PORT_MODULO').getByTestId('config-problem')).toHaveCount(0);
+  await page.getByTestId('config-save').click();
+  await expect(page.getByTestId('config-result')).toHaveAttribute('data-kind', 'saved', SCRIPT);
+  expect(lines('PREVIEW_PORT_MODULO').map((l) => l.replace(/"/g, ''))).toEqual(['PREVIEW_PORT_MODULO=']);
+  await page.getByTestId('config-close').click();
+
+  // the ladder line taken out: the default ladder the daemon then uses, marked as not in the file
+  writeFileSync(config, readFileSync(config, 'utf8').replace('\nPOLL_BACKOFF_LADDER=""\n', '\n'));
+  await openDialog(page);
+  // (a read-only row carries no "not in the file" pill: that mark is only on rows the form can write)
+  await expect(row(page, 'POLL_BACKOFF_LADDER').getByTestId('config-readonly')).toHaveText('86400:300,259200:600,604800:1800');
+});
+
 test('read-only rows sit in their own topic groups, each saying its own reason; the run-log switch follows the daemon\'s rule for an empty line and for a missing one (GitHub#554)', async () => {
   const { page } = await openSection(() => {
     const t = readFileSync(config, 'utf8');

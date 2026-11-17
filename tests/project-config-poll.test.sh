@@ -17,6 +17,9 @@
 #   7. 复盘用的模型：跑真实入口 post-merge-retrospective.sh（tests/project_config_retro_test.py），
 #      看它实际交给模型程序的 --model：不写 / 写成空值 = sonnet，写了就是写的那个；
 #      复盘开没开、两个复盘模式同样在那里对拍（GitHub#554）
+#   8. 预览的几项（GitHub#556）：一项都不写时真实 preview-serve.sh 登记的端口、后端端口、闲置、就绪等待 = 窗口显示的值；
+#      用 project-config.sh 改了之后（含取模改回留空）再注册，跟着变；算出来的端口超过 65535（手写的组合、编号涨上去）
+#      注册入口拒绝、不写登记，边界正好的照常注册
 #
 #   bash tests/project-config-poll.test.sh      （约 40 秒）
 set -uo pipefail
@@ -298,6 +301,101 @@ if out="$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM -u FAKE_GH_DIR -u FAKE
 else
     printf '%s\n' "$out" | tail -30; echo "  ❌ 复盘入口用例有红"; fail=$((fail+1))
 fi
+
+echo "【8】预览的几项（GitHub#556）：真实 preview-serve.sh 登记的端口和参数 = 窗口显示的值"
+# 预览的默认值在用到的地方（preview-serve.sh / 公共库的 preview_port）才补：跑真实注册入口，读它写下的那份登记。
+# 假 systemctl 只认「没在跑」、其余一律成功；不碰真实 systemd，tailnet 那项保持默认关。
+PV="$SANDBOX/pv"; PCONF="$PV/cavil-loop.config"; mkdir -p "$PV/bin" "$PV/project" "$PV/state" "$PV/wt/issue-1040" "$HOME/.config/systemd/user"
+printf '#!/usr/bin/env bash\ncase "$*" in *is-active*) echo inactive; exit 3;; esac\nexit 0\n' > "$PV/bin/systemctl"; chmod +x "$PV/bin/systemctl"
+: > "$HOME/.config/systemd/user/cavil-loop-preview@.socket"
+cat > "$PCONF" <<CONF
+REPO="example/pv"
+PROJECT_ROOT="$PV/project"
+WORKTREE_BASE="$PV/wt"
+STATE_DIR="$PV/state"
+TMUX_PREFIX="pvtest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+PREVIEW_EXEC="node server.mjs"
+CONF
+printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$PV/project" "$PCONF" > "$HOME/.config/cavil-loop/pvtest.conf"
+serve() {   # [issue，默认 1040] → 真实 preview-serve.sh 注册后写下的那份登记里「端口 后端端口 闲置 就绪等待」；没写出来输出 NONE
+    local n="${1:-1040}"; mkdir -p "$PV/wt/issue-$n"
+    rm -rf "$HOME/.config/cavil-loop/preview"
+    env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-serve.sh" "$n" > "$PV/serve.out" 2>&1; echo "$?" > "$PV/serve.rc"
+    local f; f="$(ls "$HOME/.config/cavil-loop/preview/"*.conf 2>/dev/null | head -1)"
+    [ -n "$f" ] || { printf NONE; return; }
+    ( set +u; source "$f"; printf '%s %s %s %s' "$PREVIEW_PORT" "$PREVIEW_BACKEND_PORT" "$PREVIEW_IDLE" "$PREVIEW_READY_TIMEOUT" )
+}
+shown_pv() {   # → 窗口显示的「起始号|取模|偏移|闲置|就绪等待」
+    pc get pvtest | jq -r '[.fields[] | select(.name | test("^PREVIEW_(PORT_BASE|PORT_MODULO|BACKEND_OFFSET|IDLE|READY_TIMEOUT)$")) | {(.name): .value}] | add
+        | "\(.PREVIEW_PORT_BASE)|\(.PREVIEW_PORT_MODULO)|\(.PREVIEW_BACKEND_OFFSET)|\(.PREVIEW_IDLE)|\(.PREVIEW_READY_TIMEOUT)"'
+}
+chk "一项都不写：真实注册用的是端口 4000+1040、后端再加 10000、闲置 30min、就绪等 90 秒" "$(serve)" "5040 15040 30min 90"
+chk "同一份配置：窗口显示的正是这几个值（取模留空 = 不取模）" "$(shown_pv)" "4000||10000|30min|90"
+rev="$(pc get pvtest | jq -r .rev)"
+out="$(printf '{"PREVIEW_PORT_BASE":"6000","PREVIEW_PORT_MODULO":"1000","PREVIEW_BACKEND_OFFSET":"100","PREVIEW_READY_TIMEOUT":"30"}' | pc set pvtest --rev "$rev")"
+chk "用 project-config.sh 改起始号、取模、偏移、就绪等待：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+chk "改完再注册：端口 6000+1040%1000、后端再加 100、就绪等 30 秒" "$(serve)" "6040 6140 30min 30"
+chk "窗口读回的是新值" "$(shown_pv)" "6000|1000|100|30min|30"
+rev="$(pc get pvtest | jq -r .rev)"
+out="$(printf '{"PREVIEW_PORT_MODULO":""}' | pc set pvtest --rev "$rev")"
+chk "取模改回留空：保存成功，再注册就不取模（6000+1040）" "$(tail -1 <<<"$out") $(serve)" "RESULT=saved 7040 7140 30min 30"
+# 算出来的端口超过 65535（GitHub#556 复审第 1 轮）：配置里手写的越界组合、或没取余数时 issue 编号涨上去——
+# 真实注册入口在写任何登记之前就停下，退出码 2，说清是哪几项设置
+pv_line() { local k="$1" v="$2" t; t="$(grep -v "^$k=" "$PCONF")"; printf '%s\n%s=%s\n' "$t" "$k" "$v" > "$PCONF"; }
+pv_line PREVIEW_PORT_BASE 6000; pv_line PREVIEW_BACKEND_OFFSET 65535; pv_line PREVIEW_PORT_MODULO '""'
+r="$(serve 1)"
+chk "配置里手写起始号 6000 + 偏移 65535：#1 的后端端口 71536，注册拒绝（退出 2、没写登记）" "$r $(cat "$PV/serve.rc")" "NONE 2"
+chk "拒绝时说清是后端端口越界、该改哪几项" "$(grep -c '后端端口 71536 超出' "$PV/serve.out") $(grep -c 'PREVIEW_BACKEND_OFFSET' "$PV/serve.out")" "1 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_BACKEND_OFFSET 10000
+chk "默认的起始号和偏移、编号小的 #1040：照常注册（到达性）" "$(serve 1040) $(cat "$PV/serve.rc")" "5040 15040 30min 30 0"
+chk "同一份配置，编号涨到 #52000：后端端口 66000 越界，注册拒绝" "$(serve 52000) $(cat "$PV/serve.rc") $(grep -c '后端端口 66000 超出' "$PV/serve.out")" "NONE 2 1"
+chk "边界正好：编号 #51535 的后端端口 65535，照常注册" "$(serve 51535) $(cat "$PV/serve.rc")" "55535 65535 30min 30 0"
+pv_line PREVIEW_PORT_BASE 65000
+chk "公开端口本身越界（起始号 65000 + #1040 = 66040）：注册拒绝" "$(serve 1040) $(cat "$PV/serve.rc") $(grep -c '公开端口 66040 超出' "$PV/serve.out")" "NONE 2 1"
+# 复审第 2 轮：手写的大数一进算术就回绕（偏移 2^64 加完等于没加，两个服务抢同一个端口）——先查输入再算
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_BACKEND_OFFSET 18446744073709551616
+chk "手写偏移 2^64：注册拒绝（不回绕成 4001 / 4001），点名偏移" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '后端偏移 18446744073709551616 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_BACKEND_OFFSET 10000; pv_line PREVIEW_PORT_BASE 18446744073709555616
+chk "手写起始号 2^64+4000：注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '起始号 18446744073709555616 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO 0
+chk "手写取余数 0（会除以零）：注册拒绝，不是算术报错" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 0 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_MODULO 08
+chk "手写取余数 08（bash 会按八进制读而报错）：注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 08 不是' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_PORT_BASE 0
+chk "起始号 0、不取余数：#1 端口 1、后端 10001，照常注册" "$(serve 1) $(cat "$PV/serve.rc")" "1 10001 30min 30 0"
+pv_line PREVIEW_PORT_MODULO 1000
+chk "起始号 0、取余数 1000：#1000 端口 0，注册拒绝；#1 端口 1 照常注册" "$(serve 1000) $(cat "$PV/serve.rc") | $(serve 1) $(cat "$PV/serve.rc")" "NONE 2 | 1 10001 30min 30 0"
+# 复审第 3 轮：取余数是除数不是端口——旧配置的取余数 100000 照常注册、照常注销（不带 --port，按同一份算法找回端口）
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO 100000
+chk "旧配置取余数 100000：#1 注册出 4001 / 14001" "$(serve 1) $(cat "$PV/serve.rc")" "4001 14001 30min 30 0"
+unserve() { env -i HOME="$HOME" PATH="$PV/bin:$PATH" CODING_AGENT_CONFIG="$PCONF" timeout 60 bash "$ROOT/scripts/preview-unserve.sh" "$@" > "$PV/unserve.out" 2>&1; echo $?; }
+chk "同一份配置不带 --port 注销 #1：按同一份算法找到 4001，登记删掉" "$(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "0 0"
+# 编号大了才越界：取余数 1000、起始号 60000、偏移 5000 能保存（见配置测试），余数大的那几条在注册时按实际端口拦下
+# 复审第 4、5 轮：限制是 bash 64 位整数本身的（2^63−1），每次加法前查会不会越过它；取余数是除数，多大都不影响加法
+pv_line PREVIEW_PORT_MODULO 1000000000
+chk "旧配置取余数 1000000000：#1 注册出 4001 / 14001，不带 --port 注销删掉登记" "$(serve 1) $(cat "$PV/serve.rc") | $(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "4001 14001 30min 30 0 | 0 0"
+pv_line PREVIEW_PORT_MODULO 3074457345618258603
+chk "取余数 3074457345618258603（上一轮误拒的值）：#1 注册出 4001 / 14001，不带 --port 注销删掉登记" "$(serve 1) $(cat "$PV/serve.rc") | $(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "4001 14001 30min 30 0 | 0 0"
+pv_line PREVIEW_PORT_MODULO 9223372036854775807
+chk "取余数正好是 bash 整数上限 2^63−1：#1 注册出 4001 / 14001，不带 --port 注销删掉登记" "$(serve 1) $(cat "$PV/serve.rc") | $(unserve --issue 1) $(ls "$HOME/.config/cavil-loop/preview/" 2>/dev/null | grep -c '^4001\.conf$')" "4001 14001 30min 30 0 | 0 0"
+pv_line PREVIEW_PORT_MODULO 9223372036854775808
+chk "取余数 2^63（bash 整数装不下）：注册拒绝并说明，不带 --port 注销说明算不出端口、退出 2" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '取余数 9223372036854775808 不是' "$PV/serve.out") | $(unserve --issue 1) $(grep -c '算不出' "$PV/unserve.out")" "NONE 2 1 | 2 1"
+pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_PORT_BASE 3074457345618258602
+chk "起始号 3074457345618258602：能算（不回绕），算出的公开端口越界，注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '公开端口 3074457345618258603 超出' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 9223372036854775807
+chk "起始号 2^63−1、#1：加法会越过 bash 上限，不做那次加法、按公开端口越界拒绝（不回绕成负数）" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '比 bash 能表示的最大整数还大' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_BACKEND_OFFSET 9223372036854775807
+chk "偏移 2^63−1：后端端口的加法会越过上限，按后端端口越界拒绝（不回绕）" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '后端端口超出' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_BACKEND_OFFSET 10000
+pv_line PREVIEW_PORT_BASE 60000; pv_line PREVIEW_PORT_MODULO 1000; pv_line PREVIEW_BACKEND_OFFSET 5000
+chk "起始号 60000、取余数 1000、偏移 5000：#535 后端 65535 照常注册，#536 后端 65536 拒绝" "$(serve 535) $(cat "$PV/serve.rc") | $(serve 536) $(cat "$PV/serve.rc") $(grep -c '后端端口 65536 超出' "$PV/serve.out")" "60535 65535 30min 30 0 | NONE 2 1"
+pv_line PREVIEW_BACKEND_OFFSET 0
+chk "手写偏移 0：后端和公开端口相同，注册拒绝" "$(serve 1) $(cat "$PV/serve.rc") $(grep -c '两个服务会抢同一个端口' "$PV/serve.out")" "NONE 2 1"
+pv_line PREVIEW_PORT_BASE 4000; pv_line PREVIEW_PORT_MODULO '""'; pv_line PREVIEW_BACKEND_OFFSET 10000
 
 echo
 echo "通过 $pass，失败 $fail"

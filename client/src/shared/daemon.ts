@@ -309,6 +309,8 @@ export interface ConfigField {
    * holds exactly (e.g. 2^64-1, what `head -n` takes) — compare as BigInt, never as a Number.
    */
   max?: number | string | null;
+  /** int only: the setting may also be left empty (its help says what empty means; GitHub#556) */
+  empty?: boolean;
   on?: string;
   off?: string;
   value: string;
@@ -367,11 +369,13 @@ export function fieldProblem(f: ConfigField, v: string): string | null {
   if (!PLAIN.test(v)) return t('不能有空格、引号、$ 这类字符');
   switch (f.type) {
     case 'int': {
+      if (v === '' && f.empty) return null;
       // decimal digits compared exactly (BigInt): the bound is the using code's own, e.g. 2^63-1, not a 9-digit cap
       const lo = BigInt(f.min ?? 0);
       const hi = f.max == null ? null : BigInt(f.max);
       const ok = /^(0|[1-9]\d*)$/.test(v) && v.length <= INT_MAX_DIGITS && BigInt(v) >= lo && (hi === null || BigInt(v) <= hi);
       if (ok) return null;
+      if (f.empty) return hi === null ? t('只能是不小于 {lo} 的整数，或者留空', { lo: String(lo) }) : t('只能是 {lo} 到 {hi} 之间的整数，或者留空', { lo: String(lo), hi: String(hi) });
       return hi === null ? t('只能是不小于 {lo} 的整数', { lo: String(lo) }) : t('只能是 {lo} 到 {hi} 之间的整数', { lo: String(lo), hi: String(hi) });
     }
     case 'model':

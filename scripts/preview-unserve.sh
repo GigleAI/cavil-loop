@@ -59,7 +59,9 @@ while [ $# -gt 0 ]; do
 done
 
 [[ "$ISSUE" =~ ^[0-9]+$ ]] || usage
-[ -z "$PORT" ] && PORT="$(preview_port "$ISSUE")"
+if [ -z "$PORT" ]; then
+    PORT="$(preview_port "$ISSUE")" || { echo "❌ 按项目配置里的预览端口设置算不出 #$ISSUE 的端口（起始号 / 取余数不是能安全运算的整数，或取余数是 0）；用 --port 指定要注销的端口" >&2; exit 2; }
+fi
 [[ "$PORT" =~ ^[0-9]+$ ]] || usage
 [ -z "$EXPECT_WT" ] && EXPECT_WT="$(worktree_path "$ISSUE")"
 

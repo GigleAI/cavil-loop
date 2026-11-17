@@ -54,6 +54,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
 # 流程标签改名的共用规则（GitHub#569），scripts/project-config.sh 用的是同一份
 # shellcheck source=_label_rename.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_label_rename.sh"
+# shellcheck source=_preview_ports.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_preview_ports.sh"
 # 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
 # shellcheck source=_heavy.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_heavy.sh"
@@ -2626,12 +2628,7 @@ PREVIEW_CONF_DIR="$(cavil_preview_dir_of_prefix "$PREVIEW_UNIT_PREFIX")"
 PREVIEW_LOCK_DIR="$(cavil_preview_lock_dir)"
 
 preview_port() {
-    local issue="$1" base="${PREVIEW_PORT_BASE:-4000}" mod="${PREVIEW_PORT_MODULO:-}"
-    if [ -n "$mod" ]; then
-        echo $(( base + issue % mod ))
-    else
-        echo $(( base + issue ))
-    fi
+    preview_port_calc "${PREVIEW_PORT_BASE:-4000}" "${PREVIEW_PORT_MODULO:-}" "$1"
 }
 
 # preview_with_port_lock <port> <cmd…>：持端口锁执行 cmd（在子 shell 里，退出码原样透出）。
