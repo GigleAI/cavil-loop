@@ -90,13 +90,18 @@ fi
 # 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
 unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
 
-# ── 加载配置：先复制一份，再加载这份副本（GitHub#569）──
-# 记下「这一次加载的到底是哪一版」：指纹和加载的内容必须来自同一份字节。直接 source 原文件再另算指纹，
-# 两步之间文件可能被换掉（标签改名脚本原子替换配置），就成了「旧值 + 新指纹」。cp 打开原文件后一直读
-# 同一个 inode，被改名替换也读完旧内容，所以副本是某一版完整的内容；指纹按副本算、加载的也是副本。
-# 指纹的算法和 project-config.sh 的 rev 一致（真实位置 + 内容），两边可以直接比。
-# 复制不了（只读文件系统、临时目录满）就照旧直接加载原文件，指纹记成空——空指纹一律当「变过」，
-# 改名闸门（label_rename_gate）会让这一轮什么都不做，不会把读不到当成没变。
+# ── 加载配置，并记下这一次加载的是哪一版（GitHub#569）──
+# 改名闸门（label_rename_gate）拿锁后要比「现在的文件」和「本进程加载的那一版」，所以指纹必须和加载的内容
+# 是同一份字节：直接 source 原文件再另算指纹，两步之间文件可能被换掉（标签改名脚本原子替换配置），就成了
+# 「旧值 + 新指纹」。
+# 做法：照旧 source 原文件（不改路径——配置里用 ${BASH_SOURCE[0]} 找邻近文件的写法照常工作；复审第 3 轮：
+# 早先从临时副本加载把这种配置弄坏了），加载前后各读一次「指纹 + inode」，两次都一样才记下指纹：
+#   · 原子替换（mv）换的是 inode——加载期间被换过，前后 inode 不同；
+#   · 加载期间一直开着原文件（fd 7），它的 inode 不会被释放、再分给「换回来」的新文件，所以「换掉又换回」也看得出；
+#   · 原地写（同一 inode）改了内容，前后指纹不同。
+# 前后不一样、或读不了，指纹记成空——空指纹一律当「变过」，闸门让这一轮什么都不做、下一轮重新加载。
+# 看不出的只有一种：同一个 inode 上，加载那几毫秒里内容被原地改成别的又原地改回一模一样。本工具自己的写入
+# （project-config.sh、label-rename.sh）都是原子替换，不会这样写。
 cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依赖 realpath：老 macOS 没有）
     local p="$1" n=0 t d
     while [ -L "$p" ]; do
@@ -118,17 +123,23 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
 CONFIG_LOADED_REV=""
-_cfg_snap="$(mktemp "${TMPDIR:-/tmp}/cavil-config.XXXXXX" 2>/dev/null || true)"
-if [ -n "$_cfg_snap" ] && [ -n "$CONFIG_REAL" ] && cp "$CONFIG_FILE" "$_cfg_snap" 2>/dev/null; then
-    CONFIG_LOADED_REV="$(cfg_rev_of "$CONFIG_REAL" "$_cfg_snap" 2>/dev/null || true)"
-    # shellcheck disable=SC1090
-    source "$_cfg_snap"
-else
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+cfg_inode() { ls -di "$1" 2>/dev/null | awk '{print $1}'; }   # <路径>：macOS 和 Linux 的 ls 都有 -i
+_cfg_ok=0; _cfg_ino1=""; _cfg_rev1=""
+if [ -n "$CONFIG_REAL" ] && exec 7<"$CONFIG_REAL" 2>/dev/null; then
+    _cfg_ok=1
+    _cfg_ino1="$(cfg_inode "$CONFIG_REAL")"
+    _cfg_rev1="$(cfg_rev_of "$CONFIG_REAL" "$CONFIG_REAL" 2>/dev/null || true)"
 fi
-[ -z "$_cfg_snap" ] || rm -f "$_cfg_snap" 2>/dev/null || true
-unset _cfg_snap
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+if [ "$_cfg_ok" = 1 ]; then
+    if [ -n "$_cfg_ino1" ] && [ -n "$_cfg_rev1" ] && [ "$(cfg_inode "$CONFIG_REAL")" = "$_cfg_ino1" ] \
+       && [ "$(cfg_rev_of "$CONFIG_REAL" "$CONFIG_REAL" 2>/dev/null || true)" = "$_cfg_rev1" ]; then
+        CONFIG_LOADED_REV="$_cfg_rev1"
+    fi
+    exec 7<&-
+fi
+unset _cfg_ok _cfg_ino1 _cfg_rev1
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd

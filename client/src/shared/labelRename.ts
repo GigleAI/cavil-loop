@@ -316,6 +316,8 @@ export interface Poller {
   state: 'running' | 'stopped' | 'unknown';
   /** the machine could not be read: its projects are not known, so it counts as not stopped */
   unreadable?: boolean;
+  /** the project was read but its repository was not (its config could not be read): it may poll this one, so it is listed */
+  repoUnknown?: boolean;
 }
 
 interface StatusLike {
@@ -329,15 +331,33 @@ const sameRepo = (a: string | null, b: string) => (a ?? '').toLowerCase() === b.
  * and each paired machine's projects of that repository. A machine whose state cannot be read is listed
  * as not stopped (it may well poll the repository).
  */
+/**
+ * Every machine and project that might poll `repo`, with what is known of its poller. One rule for every read that
+ * can come back unknown (PR #571 reviews 2–3): a machine that could not be read, a project list that is not a list,
+ * a project whose repository could not be read — each is listed and counts as not stopped unless its poller reads
+ * back stopped. Only a project read with a repository that is another one is left out.
+ */
 export function otherPollers(local: StatusLike | null, thisKey: string, repo: string, remotes: { id: string; name: string; status: StatusLike | null }[]): Poller[] {
   const out: Poller[] = [];
-  for (const p of local?.projects ?? []) if (p.key !== thisKey && sameRepo(p.repo, repo)) out.push({ where: 'local', key: p.key, name: '', state: p.scheduler?.state ?? 'unknown' });
+  const state = (p: { scheduler?: { state?: string } | null }): Poller['state'] => {
+    const s = p.scheduler?.state;
+    return s === 'running' || s === 'stopped' ? s : 'unknown';
+  };
+  const repoKnown = (r: string | null | undefined) => typeof r === 'string' && r.trim() !== '';
+  for (const p of local?.projects ?? []) {
+    if (p.key === thisKey) continue;
+    if (!repoKnown(p.repo)) out.push({ where: 'local', key: p.key, name: '', state: state(p), repoUnknown: true });
+    else if (sameRepo(p.repo, repo)) out.push({ where: 'local', key: p.key, name: '', state: state(p) });
+  }
   for (const m of remotes) {
-    if (!m.status) {
+    if (!m.status || !Array.isArray(m.status.projects)) {
       out.push({ where: 'remote', key: '', name: m.name, id: m.id, state: 'unknown', unreadable: true });
       continue;
     }
-    for (const p of m.status.projects) if (sameRepo(p.repo, repo)) out.push({ where: 'remote', key: p.key, name: m.name, id: m.id, state: p.scheduler?.state ?? 'unknown' });
+    for (const p of m.status.projects) {
+      if (!repoKnown(p.repo)) out.push({ where: 'remote', key: p.key, name: m.name, id: m.id, state: state(p), repoUnknown: true });
+      else if (sameRepo(p.repo, repo)) out.push({ where: 'remote', key: p.key, name: m.name, id: m.id, state: state(p) });
+    }
   }
   return out;
 }

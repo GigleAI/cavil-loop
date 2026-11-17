@@ -300,6 +300,17 @@ chk "日志写明配置在加载之后被改过" "$(grep -c '配置文件在本�
 n0="$(calls)"; poll lra
 chk "下一轮用新配置照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
+echo "6b. 配置用 \${BASH_SOURCE[0]} 找邻近文件（复审第 3 轮：加载时不能换掉配置的路径）"
+mkconf lra; world
+sed -i '/^DISPATCH_MODE=/d' "$SANDBOX/lra/cavil-loop.config"
+printf 'DISPATCH_MODE="greedy"\n' > "$SANDBOX/lra/extra.conf"
+printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
+n0="$(calls)"; poll lra
+chk "照常跑完一轮：等人的不派、排队的那条被派（邻近文件里的「开着的都派」生效）" "$(item_labels "$I_HUMAN")/$(item_labels "$I_AGENT")" "pending/human/doing/agent"
+chk "日志里没有「配置在加载之后被改过」（指纹照常记下）" "$(grep -c '配置文件在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log" || true)" "0"
+r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --others-stopped)"
+chk "改名检查照常（只有 doing/agent 那一项因为刚派出去被拦下）" "$(res "$r")/$(failed_checks "$r")" "refused/no_worker"
+
 echo "7. 手动跑的派工"
 mkconf lra; world
 jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"

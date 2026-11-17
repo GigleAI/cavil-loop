@@ -218,6 +218,30 @@ describe('the rename dialog', () => {
     expect(list.map((p) => `${p.where} ${p.name} ${p.key} ${p.state}${p.unreadable ? ' unreadable' : ''}`)).toEqual(['local  widget2 running', 'remote m1 w stopped', 'remote m2  unknown unreadable']);
     expect(renameMissing({ checks: [{ id: 'name', ok: true, text: '' }], checking: false, pollers: list, ticked: true, remotes: 'read' })).toEqual(['还有 2 个别处的轮询没停（或读不到）']);
   });
+  it('a project whose repository could not be read is listed, on this computer and on a paired machine; a known other repository is not (PR #571 review round 3)', () => {
+    const local = st([
+      { key: 'widget', repo: 'acme/widget', state: 'running' },
+      { key: 'broken', repo: null, state: 'running' },
+      { key: 'blank', repo: '', state: 'stopped' },
+      { key: 'other', repo: 'acme/other', state: 'running' },
+    ]);
+    const list = otherPollers(local, 'widget', 'acme/widget', [
+      { id: 'm1:1', name: 'm1', status: st([{ key: 'r', repo: null, state: 'unknown' }, { key: 'o', repo: 'acme/other', state: 'running' }]) },
+      // a status whose project list is not a list is a machine that could not be read
+      { id: 'm2:1', name: 'm2', status: { projects: null } as unknown as ReturnType<typeof st> },
+    ]);
+    expect(list.map((p) => `${p.where} ${p.name} ${p.key} ${p.state}${p.repoUnknown ? ' repo?' : ''}${p.unreadable ? ' unreadable' : ''}`)).toEqual([
+      'local  broken running repo?',
+      'local  blank stopped repo?',
+      'remote m1 r unknown repo?',
+      'remote m2  unknown unreadable',
+    ]);
+    // the stopped one lets the button through; the running, unknown and unreadable ones do not
+    expect(renameMissing({ checks: [{ id: 'name', ok: true, text: '' }], checking: false, pollers: list, ticked: true, remotes: 'read' })).toEqual(['还有 3 个别处的轮询没停（或读不到）']);
+    // a scheduler state that is not one of the known words counts as unknown
+    const odd = otherPollers({ projects: [{ key: 'x', repo: 'acme/widget', scheduler: { state: 'weird' as 'unknown' } }] }, 'widget', 'acme/widget', []);
+    expect(odd.map((p) => p.state)).toEqual(['unknown']);
+  });
   it('the button waits for every check, every poller stopped and the tick', () => {
     const ok = [
       { id: 'name', ok: true as const, text: '' },

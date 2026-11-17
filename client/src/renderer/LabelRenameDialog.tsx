@@ -233,14 +233,18 @@ export function LabelRenameDialog({
             {list.map((p) => {
               const id = `${p.where}:${p.id ?? ''}:${p.key}`;
               return (
-                <li key={id} data-testid="rename-poller" data-where={p.where} data-key={p.key} data-state={p.state}>
+                <li key={id} data-testid="rename-poller" data-where={p.where} data-key={p.key} data-state={p.state} data-repo-unknown={p.repoUnknown ? 'true' : undefined}>
                   {p.unreadable
                     ? p.where === 'local'
                       ? t('这台电脑的 daemon 状态读不到（算作没停）')
                       : tNode('{name}：读不到（算作没停）', { name: <Verbatim from="user">{p.name}</Verbatim> })
-                    : p.where === 'local'
-                      ? tNode('这台电脑上的 {key}：{state}', { key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })
-                      : tNode('{name} 上的 {key}：{state}', { name: <Verbatim from="user">{p.name}</Verbatim>, key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })}{' '}
+                    : p.repoUnknown
+                      ? p.where === 'local'
+                        ? tNode('这台电脑上的 {key}：读不到它轮询哪个仓库，{state}（没停就算作在轮询本仓库）', { key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })
+                        : tNode('{name} 上的 {key}：读不到它轮询哪个仓库，{state}（没停就算作在轮询本仓库）', { name: <Verbatim from="user">{p.name}</Verbatim>, key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })
+                      : p.where === 'local'
+                        ? tNode('这台电脑上的 {key}：{state}', { key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })
+                        : tNode('{name} 上的 {key}：{state}', { name: <Verbatim from="user">{p.name}</Verbatim>, key: <Verbatim from="user">{p.key}</Verbatim>, state: schedWord(p.state) })}{' '}
                   {!p.unreadable && p.state === 'running' && (
                     <button className="link" data-testid="rename-stop" disabled={stopping !== null} onClick={() => void stop(p)}>
                       {stopping === id ? t('正在停…') : t('停掉它的轮询')}
