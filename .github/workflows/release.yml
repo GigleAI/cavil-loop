@@ -35,6 +35,11 @@ concurrency:
 #   gate  → tests/run.sh --ci on 4 shards (no MUTATION)
 #   gate-summary → green only when every unit passed exactly once and every gate job passed
 #   release → checks the gate again, then tags exactly the planned commit, notes, Release page
+#   client-plan → (GitHub#576) does the client get a release too: only on a run that releases the
+#           week (plan action new / page), only when client/ changed since the last client release
+#   client  → client.yml called for that tag on the planned commit: its quick + full tests, both Macs,
+#           the size gate, then the client's own Release page. Nothing of the daemon's release waits
+#           for it, and it does not wait for the daemon's gate; a failure is reported like any other.
 # The two "did the gate pass" steps read the `needs` context, which only holds the
 # jobs a job declares: dropping a gate job from `needs` fails them, it never skips the check.
 jobs:
@@ -321,13 +326,65 @@ jobs:
             --title "$title" \
             --notes-file release-notes.md
 
+  # GitHub#576: the client's release rides on the week's release. Decided from the planned commit
+  # alone (scripts in client/scripts/release-version.mjs): the next version is the highest
+  # client/vX.Y.Z tag plus one (or package.json's version when that is higher), and there is a
+  # release only when client/ changed since the highest client tag that has a Release page. A
+  # gate-only run (action verify), a pushed release/v* tag and a run with nothing to release get no
+  # client release. A failed read fails this job (reported below), never "nothing changed".
+  client-plan:
+    name: client release plan
+    needs: plan
+    if: needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide the client release
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTION: ${{ needs.plan.outputs.action }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          tag=""
+          case "$ACTION" in
+            new|page)
+              [ -n "$SHA" ] || { echo "::error::the plan gave no commit"; exit 1; }
+              git fetch -q --tags --force origin main
+              git rev-parse -q --verify "$SHA^{commit}" >/dev/null || { echo "::error::the planned commit $SHA is not here"; exit 1; }
+              released="$(mktemp)"
+              gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name' > "$released"
+              plan="$(cd client && node scripts/release-version.mjs plan --at "$SHA" --released "$released")"
+              tag="$(sed -n 's/^tag=//p' <<<"$plan")"
+              ;;
+            *) echo "本次运行（${ACTION:-?}）不发版，不出客户端正式版" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  client:
+    name: client release
+    needs: client-plan
+    if: needs.client-plan.outputs.tag != ''
+    uses: ./.github/workflows/client.yml
+    with:
+      tag: ${{ needs.client-plan.outputs.tag }}
+      sha: ${{ needs.client-plan.outputs.sha }}
+    secrets: inherit
+
   # Any job above failed → open an issue labelled for the daemon, or comment on the open one of the
   # same kind (GitHub#285). Every kind of run, gate-only included; never on a cancelled run. It only
   # creates or comments, never changes an existing issue's labels: scripts/release_failure_report.py.
   # Turned off by the repository variable RELEASE_FAILURE_REPORT=off (docs/operations.md, Release cadence).
   report-failure:
     name: report failure
-    needs: [plan, gate, gate-summary, release]
+    needs: [plan, gate, gate-summary, release, client-plan, client]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && vars.RELEASE_FAILURE_REPORT != 'off' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
