@@ -30,10 +30,36 @@ const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 
 type Env = AppEnv;
 
-async function launch(env: Env) {
-  const app = await launchApp(env);
+async function launch(env: Env, opts: Parameters<typeof launchApp>[1] = {}) {
+  const app = await launchApp(env, opts);
   return { app, page: app.page };
 }
+
+/**
+ * GitHub#572: replace this test's fake GitHub with one at the moment `at` (epoch ms): its clock (the Date
+ * header) starts there and runs on, and it serves the board and repository recordings as of `data`
+ * (default `at`; null = as recorded). Launch the window with `{ clockAt: at }` so all three agree.
+ * For a test that depends on the iteration dates (board configuration, not moved with the items),
+ * `RECORDED_AT` puts everything back at the recording itself.
+ */
+async function fakeAt(at: number, data: number | null = at) {
+  await env.fake.close();
+  const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-'));
+  const t0 = Date.now();
+  env = {
+    fake: await startFakeGitHub({
+      projects: new Map([['org/gigleai/11', loadCavilProjectPages(data)]]),
+      repos: new Map([['gigleai/cavil-loop', loadCavilRepoIssues(data)]]),
+      serverNow: () => at + (Date.now() - t0),
+    }),
+    userData: join(dir, 'userData'),
+    cred: join(dir, 'cred'),
+    opened: join(dir, 'opened.txt'),
+    requests: join(dir, 'requests.txt'),
+  };
+}
+/** a little after the board / repository recording (2026-11-05 16:34 UTC): Iteration 25 current, 26 and 27 ahead */
+const RECORDED_AT = Date.UTC(2026, 10, 5, 18, 0, 0);
 
 /**
  * GitHub#464: closed / merged items are hidden unless a view's "显示已关闭" switch is on. Most tests here were
@@ -414,6 +440,8 @@ const sentOp = (op: string) => (w: unknown[]) => w[0] === op;
 const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
 
 test('detail newest first in an isolated view; labels, status, drag, reply + hand back, merge / refused merge, new issue; offline greys it all', async () => {
+  // it drags a card into Iteration 26, which ended on 11-16 and, empty, is no longer drawn: run at the recording (GitHub#572)
+  await fakeAt(RECORDED_AT);
   // one recorded PR made open, with comments to order
   const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
   const prN = node.content.number as number;
@@ -425,7 +453,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   ]);
   env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 1, title: 'v1', state: 'open', due_on: null }]);
 
-  const { app, page } = await launch(env);
+  const { app, page } = await launch(env, { clockAt: RECORDED_AT });
   await signInWithSources(page);
 
   // ---- detail: newest first, GitHub's HTML in a sandboxed frame ----
@@ -4698,22 +4726,8 @@ test('GitHub#572: the recordings follow the test clock — long after the record
   const DAY = 86_400_000;
   const rowsOf = async (page: Page) => (await tableShape(page)).flatMap((g) => g.rows);
   for (const shifted of [true, false]) {
-    await env.fake.close();
-    const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-'));
-    const t0 = Date.now();
-    const at = shifted ? SIM : null;
-    env = {
-      fake: await startFakeGitHub({
-        projects: new Map([['org/gigleai/11', loadCavilProjectPages(at)]]),
-        repos: new Map([['gigleai/cavil-loop', loadCavilRepoIssues(at)]]),
-        // GitHub's clock (the Date header) at the same moment as the window's
-        serverNow: () => SIM + (Date.now() - t0),
-      }),
-      userData: join(dir, 'userData'),
-      cred: join(dir, 'cred'),
-      opened: join(dir, 'opened.txt'),
-      requests: join(dir, 'requests.txt'),
-    };
+    // window, GitHub's clock (the Date header) and data at one moment; the control: same moment, data as recorded
+    await fakeAt(SIM, shifted ? SIM : null);
     const app = await launchApp(env, { clockAt: SIM });
     const page = app.page;
     // the window's clock really is at the simulated moment (not only the data)
