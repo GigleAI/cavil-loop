@@ -8270,9 +8270,10 @@ poll_lock_reexport() {
 }
 
 LABEL_GATE_WHY=""
-label_rename_gate() {
+LABEL_GATE_KIND=""
+label_rename_gate() {   # 不放行时 LABEL_GATE_KIND = rename（暂停 / 配置变了）或 watch（持续核对对不上 / 读不到）
     local rec now
-    LABEL_GATE_WHY=""
+    LABEL_GATE_WHY=""; LABEL_GATE_KIND=rename
     rec="$(label_rename_record_file)"
     if [ -e "$rec" ] || [ -L "$rec" ]; then
         LABEL_GATE_WHY="有一次流程标签改名还没做完（${rec}），本项目暂停到改名做完或退回"
@@ -8293,6 +8294,13 @@ label_rename_gate() {
     now="$(cfg_src_fps "$CONFIG_SRC_LIST" 2>/dev/null || true)"
     if [ "$now" != "$CONFIG_SRC_FPS" ]; then
         LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载之后被改过或读不了，这一次不动手，下一次用新配置"
+        return 1
+    fi
+    # 改名做完后的持续核对（label-watch.json）：轮询和每个手动入口都在这里问同一个问题（复审：手动入口漏了这一步，
+    # 迟到生效的改名让 GitHub 和配置对不上时，手动派工照样按旧名字写标签）
+    if ! label_watch_check; then
+        LABEL_GATE_KIND=watch
+        LABEL_GATE_WHY="⚠️ ${LABEL_WATCH_WHY}（结束核对：bash ${BASH_SOURCE[0]%/*}/label-rename.sh <项目> watch-end）"
         return 1
     fi
     return 0

@@ -48,16 +48,11 @@ fi
 
 # ── 流程标签改名的闸门（GitHub#569）──
 # 配置是拿锁之前读的：锁里先确认它还是读的那一版、也没有改名在进行，否则整轮什么都不做，下一轮用新配置。
-# 改名中途有过没回音的 GitHub 请求时，再按标签固定编号核对名字（label_watch_check），对不上同样整轮不做。
+# 改名中途有过没回音的 GitHub 请求时，闸门还按标签固定编号核对名字（label_watch_check），对不上同样整轮不做。
 # 都放在任何会写 GitHub 的步骤（CI 失败报告、节奏闸门后的一切）之前。
 if ! label_rename_gate; then
     log "$LABEL_GATE_WHY"
-    runlog_outcome label-rename
-    exit 0
-fi
-if ! label_watch_check; then
-    log "⚠️ ${LABEL_WATCH_WHY}（结束核对：bash $SCRIPT_DIR/label-rename.sh <项目> watch-end）"
-    runlog_outcome label-watch
+    if [ "$LABEL_GATE_KIND" = watch ]; then runlog_outcome label-watch; else runlog_outcome label-rename; fi
     exit 0
 fi
 # 由本轮拉起的派工 / 清理脚本在锁里：告诉它们不用再拿锁（只认本进程是它们祖先时）

@@ -157,6 +157,7 @@ poll() {   # <项目> → 跑一轮真实轮询
     (cd "$W/project" && CODING_AGENT_CONFIG="$W/cavil-loop.config" bash "$S/agent-poll.sh") >/dev/null 2>&1
 }
 calls() { if [ -f "$GD/calls.log" ]; then grep -c . "$GD/calls.log"; else echo 0; fi; }
+lreads() { if [ -f "$GD/calls.log" ]; then grep -c 'labels?per_page' "$GD/calls.log" || true; else echo 0; fi; }
 writes() { if [ -f "$GD/calls.log" ]; then grep -cE -- '-X (POST|PATCH|DELETE|PUT)|--method (POST|PATCH|DELETE|PUT)|issue edit|pr edit' "$GD/calls.log"; else echo 0; fi; }
 
 mkconf lra
@@ -255,6 +256,15 @@ jq --arg n "$I_AGENT" '.[$n] = []' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.
 w0="$(writes)"; poll lra
 chk "下一轮整轮不做：没有写请求" "$(( $(writes) - w0 ))" "0"
 chk "日志写明标签核对没过" "$(grep -c '标签核对：GitHub 上编号 102' "$SANDBOX/lra/state/poll.log")" "1"
+# 手动入口同样过这一道核对（复审：手动入口只看暂停记录和配置指纹，迟到生效后照样按旧名字写标签）
+jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
+w0="$(writes)"; c0="$(lreads)"
+(cd "$SANDBOX/lra/project" && FAKE_TMUX_LOG="$SANDBOX/lra/tmux.log" CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" bash "$S/dispatch-new-issue.sh" "$I_AGENT" >/dev/null 2>&1); rc=$?
+chk "手动派工：不动手（退出 75、没有写请求、排队那条没被翻走），且确实读了标签列表" "$rc/$(( $(writes) - w0 ))/$(item_labels "$I_AGENT")/$([ "$(lreads)" -gt "$c0" ] && echo read)" "75/0/pending/agent/read"
+o="$(cd "$SANDBOX/lra/project" && CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" bash "$S/ci-failure-report.sh" 2>&1)"; rc=$?
+chk "手动跑 CI 失败报告：不动手、说明标签核对没过" "$rc/$(( $(writes) - w0 ))/$(printf '%s' "$o" | grep -c '标签核对：GitHub 上编号 102')" "1/0/1"
+o="$(cd "$SANDBOX/lra/project" && bash "$S/stuck-release.sh" "$SANDBOX/lra/cavil-loop.config" "$I_AGENT" 2>&1)"; rc=$?
+chk "释放卡住条目：不动手、说明标签核对没过" "$rc/$(( $(writes) - w0 ))/$(printf '%s' "$o" | grep -c '标签核对：GitHub 上编号 102')" "2/0/1"
 r="$(rn lra watch-end)"
 chk "watch-end 结束核对" "$(res "$r")/$(line "$r" WATCH)" "done/no"
 
@@ -461,8 +471,11 @@ sleep 0.5
 (cd "$SANDBOX/lra/project" && POLL_LOCK_REEXEC_WAIT_SECS=1 FAKE_TMUX_LOG="$SANDBOX/lra/tmux.log" CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" bash "$S/dispatch-new-issue.sh" "$I_AGENT" >/dev/null 2>&1); rc=$?
 chk "轮询锁被占：等不到就不动手" "$rc/$(( $(writes) - w0 ))" "75/0"
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+echo '{"field":"LABEL_PENDING_HUMAN","label_id":102,"name":"pending/human"}' > "$SANDBOX/lra/state/label-watch.json"
+c0="$(lreads)"
 (cd "$SANDBOX/lra/project" && FAKE_TMUX_LOG="$SANDBOX/lra/tmux.log" CODING_AGENT_CONFIG="$SANDBOX/lra/cavil-loop.config" bash "$S/dispatch-new-issue.sh" "$I_AGENT" >/dev/null 2>&1); rc=$?
-chk "都没有：手动派工照常（翻成 doing/agent）" "$rc/$(item_labels "$I_AGENT")" "0/doing/agent"
+chk "都没有、持续核对对得上：手动派工照常（翻成 doing/agent），核对确实读了标签列表" "$rc/$(item_labels "$I_AGENT")/$([ "$(lreads)" -gt "$c0" ] && echo read)" "0/doing/agent/read"
+rm -f "$SANDBOX/lra/state/label-watch.json"
 chk "派工起的 worker 会话不带着轮询锁（锁现在拿得到）" "$("$REAL_FLOCK" -n "$SANDBOX/lra/state/poll.lock" true && echo free)" "free"
 
 echo "7b. 被 source 的邻近文件看到的位置参数、declare 的作用域和直接 source 一样（复审：不能给 source 套函数）"
