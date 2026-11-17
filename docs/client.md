@@ -31,11 +31,11 @@ The Cavil Loop client is a desktop app (macOS) for managing GitHub issues and pu
 ## What you need
 
 - A GitHub account that can see the repositories you want to manage.
-- A Mac with macOS 14 or later. For now there is only an Apple-silicon package, and only development builds (see [Updates](#updates)); on an Intel Mac you have to build it yourself (the "开发" (development) section of the developer notes).
+- A Mac with macOS 14 or later. Stable releases come with an Apple-silicon and an Intel package; development builds are Apple silicon only (see [Updates](#updates)).
 
 ## First run (the client on its own)
 
-1. **Download**: open this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page, find the newest entry whose tag starts with `client/v` (for now `client/vX.Y.Z-dev.N`, marked Pre-release) and download its `.dmg`.
+1. **Download**: open this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page, find the newest entry tagged `client/vX.Y.Z` that is **not** marked Pre-release (a stable client release; the first is `client/v0.5.2`) and pick the `.dmg` for your Mac: the file ending in `-arm64.dmg` for Apple silicon, the one ending in `-x64.dmg` for Intel (not sure? Apple menu → About This Mac: a "Chip" line reading Apple M… means Apple silicon, a "Processor" line reading Intel means Intel). The entry marked Latest at the top of the page is the daemon's weekly release, not the client. To get the newest changes first, install a development build instead: the entries tagged `client/vX.Y.Z-dev.N` and marked Pre-release, Apple-silicon dmg only.
 2. **Install**: open the dmg and drag the app into Applications. macOS blocks the first launch; allow it in one of the two ways the dmg window describes: System Settings → Privacy & Security → "Open Anyway", or double-click "复制放行命令" (copy the allow command) in the dmg and run the copied command in Terminal.
 3. **Sign in**: open the app and click "用 GitHub 登录" (sign in with GitHub). The app shows a short code; enter it on the browser page that opens and approve. This is the client's own sign-in; the credential goes into the macOS keychain.
 4. **Add a source**: the gear at the top right opens Settings → "数据来源" (sources). Type `owner/repo` (or the repository's URL), or a GitHub Project's URL, and click "添加" (add); or click "从 GitHub 选…" (pick from GitHub) to choose among the repositories and Projects you can see.
@@ -160,7 +160,10 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 ## Updates
 
 - The app checks for, downloads and installs updates itself; Settings lists what changed in each version.
-- "更新渠道" (update channel) is one of: **正式版** (stable — none released yet) or **开发版** (development — a new one can appear with every client change merged into main, and may be unstable). Switching from development back to stable never downgrades; it waits for the next stable version above the current one.
+- "更新渠道" (update channel), in Settings, is one of:
+  - **正式版** (stable, the default): only the stable releases tagged `client/vX.Y.Z`, which pass the full tests and have update packages for both Apple silicon and Intel. The one for everyday use.
+  - **开发版** (development): stable releases too, and on top a new one can appear with every client change merged into main (tag `client/vX.Y.Z-dev.N`) — new features first, but only the quick tests have run, it may be unstable, and there are Apple-silicon update packages only.
+- Switching from development back to stable never downgrades; it waits for the next stable version above the current one. A development version sorts before the stable one with the same number (`0.5.3-dev.N` is below `0.5.3` and above `0.5.2`), so someone on a 0.5.3 development build who switches back to stable gets the next update at 0.5.3 or later.
 
 ## Language
 
