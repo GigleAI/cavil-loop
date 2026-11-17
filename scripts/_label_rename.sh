@@ -21,3 +21,37 @@ label_rename_name_ok() {   # <名字>
 }
 label_rename_record_path() { printf '%s/label-rename.json\n' "$1"; }   # <状态目录>
 label_watch_path() { printf '%s/label-watch.json\n' "$1"; }            # <状态目录>
+
+# ── 配置改写计数（GitHub#569）──
+# 本工具自己改配置的唯一入口是 project-config.sh set（窗口保存、标签改名都走它）。它在换上新文件之前把这个
+# 计数推到奇数、换上之后再推到偶数；每个读配置的进程在加载之前读一次，拿到轮询锁后再读一次——两次一样且是
+# 偶数，才说明这期间本工具没改过配置（label_rename_gate）。按配置文件的真实位置分开记，和保存用的锁同一个目录。
+# 只协调本工具自己的写入：人在编辑器里直接改配置不经过这里（和项目配置窗口的说明一致）。
+config_gen_path() {   # <配置文件真实位置>
+    local h
+    if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"
+    elif command -v shasum >/dev/null 2>&1; then h="$(printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1)"
+    else return 1; fi
+    printf '%s/config-locks/%s.gen\n' "$CAVIL_STATE_HOME" "$h"
+}
+# 读计数：文件不在 = 0（从没被本工具改过）；读到非数字 = 输出 bad（当成「改写中 / 读不了」）
+config_gen_read() {   # <配置文件真实位置>
+    local f v
+    f="$(config_gen_path "$1")" || { printf 'bad'; return 0; }
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf '0'; return 0; fi
+    v="$(cat "$f" 2>/dev/null || true)"
+    case "$v" in ''|*[!0-9]*) printf 'bad' ;; *) printf '%s' "$v" ;; esac
+}
+# 改写开始 / 结束：开始时把计数推到下一个奇数，结束时推到下一个偶数（不管原来停在哪——上次没收尾的奇数也能
+# 被下一次保存带回偶数）。写临时文件再改名；失败返回 1（调用方决定是否继续）
+config_gen_set() {   # <配置文件真实位置> <odd|even>
+    local f v tmp
+    f="$(config_gen_path "$1")" || return 1
+    v="$(config_gen_read "$1")"
+    [ "$v" != bad ] || v=0
+    v=$((v + 1))
+    if [ "$2" = odd ]; then [ $((v % 2)) = 1 ] || v=$((v + 1)); else [ $((v % 2)) = 0 ] || v=$((v + 1)); fi
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+    tmp="$f.tmp.$$"
+    printf '%s\n' "$v" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+}

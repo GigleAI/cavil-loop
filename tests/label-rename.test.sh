@@ -290,13 +290,15 @@ rn lra finish --no-client >/dev/null
 
 echo "6. 先读配置、后拿锁"
 mkconf lra; world
+# 用本工具自己的保存（项目配置窗口走的就是它）在这一刻改配置
 cat > "$SANDBOX/hook.sh" <<SH
-sed -i 's/^LABEL_DONE=.*/LABEL_DONE="Finished"/' "$SANDBOX/lra/cavil-loop.config"
+rev="\$(bash "$S/project-config.sh" get lra | jq -r .rev)"
+printf '{"MAX_CONCURRENT_WORKERS":"2"}' | bash "$S/project-config.sh" set lra --rev "\$rev" >/dev/null 2>&1
 SH
 n0="$(calls)"
 FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
 chk "拿到锁后发现配置被换过：整轮不做（没有 GitHub 请求）" "$(( $(calls) - n0 ))" "0"
-chk "日志写明配置里的标签名在加载之后被改过" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log")" "1"
+chk "日志写明配置在加载之后被本工具改过" "$(grep -c '配置在本进程加载之后被本工具改过' "$SANDBOX/lra/state/poll.log")" "1"
 n0="$(calls)"; poll lra
 chk "下一轮用新配置照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
@@ -307,33 +309,30 @@ printf 'DISPATCH_MODE="greedy"\n' > "$SANDBOX/lra/extra.conf"
 printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
 n0="$(calls)"; poll lra
 chk "照常跑完一轮：等人的不派、排队的那条被派（邻近文件里的「开着的都派」生效）" "$(item_labels "$I_HUMAN")/$(item_labels "$I_AGENT")" "pending/human/doing/agent"
-chk "日志里没有「标签名在加载之后被改过」（指纹照常记下）" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log" || true)" "0"
+chk "日志里没有闸门拦下的记录" "$(grep -c '这一次不动手' "$SANDBOX/lra/state/poll.log" || true)" "0"
 r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --others-stopped)"
 chk "改名检查照常（只有 doing/agent 那一项因为刚派出去被拦下）" "$(res "$r")/$(failed_checks "$r")" "refused/no_worker"
 
-echo "6c. 邻近文件里的标签名在读完配置、拿锁之前被改（复审第 4 轮）"
+echo "6c. 只读的标签变量、配置里带命令（复审第 5 轮）：闸门不重新执行配置，照常放行"
 mkconf lra; world
-sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
-printf 'LABEL_PENDING_HUMAN="pending/human"\n' > "$SANDBOX/lra/extra.conf"
-printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
-# 人在这一刻把邻近文件和 GitHub 一起改成 needs-human（主配置一个字节都没变）
-cat > "$SANDBOX/hook.sh" <<SH
-printf 'LABEL_PENDING_HUMAN="needs-human"\\n' > "$SANDBOX/lra/extra.conf"
-python3 - "$GD" <<'PY2'
-import json, sys
-d = sys.argv[1]
-ids = json.load(open(d + "/label_ids.json")); ids["needs-human"] = ids.pop("pending/human"); json.dump(ids, open(d + "/label_ids.json", "w"))
-lb = json.load(open(d + "/labels.json"))
-for n in lb: lb[n] = ["needs-human" if l == "pending/human" else l for l in lb[n]]
-json.dump(lb, open(d + "/labels.json", "w"))
-PY2
-SH
-n0="$(calls)"
-FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
-chk "这一轮整轮不做：没有 GitHub 请求，等人的条目没被派工" "$(( $(calls) - n0 ))/$(item_labels "$I_HUMAN")" "0/needs-human"
-chk "日志写明标签名在加载之后被改过" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log")" "1"
-poll lra
-chk "下一轮用新值：等人的条目（needs-human）仍不派、排队的那条照常派" "$(item_labels "$I_HUMAN")/$(item_labels "$I_AGENT")" "needs-human/doing/agent"
+sed -i 's/^LABEL_PENDING_HUMAN=.*/readonly LABEL_PENDING_HUMAN="pending\/human"/; s/^DISPATCH_MODE=.*/DISPATCH_MODE="label"/' "$SANDBOX/lra/cavil-loop.config"
+printf 'echo loaded >> "%s/side.log"\n' "$SANDBOX/lra" >> "$SANDBOX/lra/cavil-loop.config"
+rm -f "$SANDBOX/lra/side.log"
+n0="$(calls)"; poll lra
+chk "这一轮照常跑完（发了 GitHub 请求，日志里没有闸门拦下）" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)/$(grep -c '这一次不动手' "$SANDBOX/lra/state/poll.log" || true)" "yes/0"
+chk "配置里的命令一轮只执行一次（没有派工时只有轮询自己加载一次）" "$(wc -l < "$SANDBOX/lra/side.log")" "1"
+
+echo "6d. 改写计数停在奇数（上一次保存没收尾）：每轮不动手，下一次保存成功后恢复"
+mkconf lra; world
+GEN="$(env HOME="$HOME" bash -c 'source "$1/_names.sh"; source "$1/_label_rename.sh"; config_gen_path "$2"' _ "$S" "$(cd "$SANDBOX/lra" && pwd -P)/cavil-loop.config")"
+mkdir -p "$(dirname "$GEN")"; echo 7 > "$GEN"
+n0="$(calls)"; poll lra
+chk "计数是奇数：整轮不做、日志写明" "$(( $(calls) - n0 ))/$(grep -c '正在被本工具改写' "$SANDBOX/lra/state/poll.log")" "0/1"
+rev="$(bash "$S/project-config.sh" get lra | jq -r .rev)"
+printf '{"MAX_CONCURRENT_WORKERS":"1"}' | bash "$S/project-config.sh" set lra --rev "$rev" >/dev/null 2>&1
+chk "一次保存后计数回到偶数（7 → 9 → 10）" "$(cat "$GEN")" "10"
+n0="$(calls)"; poll lra
+chk "下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
 echo "7. 手动跑的派工"
 mkconf lra; world

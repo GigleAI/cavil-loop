@@ -90,14 +90,11 @@ fi
 # 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
 unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
 
-# ── 加载配置，并记下这一次加载到的标签名（GitHub#569）──
-# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程手里的标签名，和配置现在给出的是不是同一组？
-# 比的是「值」而不是某个文件的字节：配置可以 source 邻近文件（复审第 3、4 轮——从临时副本加载弄坏了
-# ${BASH_SOURCE[0]}；只比主文件又看不见邻近文件里改的标签名），所以：
-#   · 加载前记下这些设置在环境里原本的样子（有没有、值是什么），照常 source 原文件；
-#   · 加载后把这些设置的值算成一个指纹（CONFIG_LABELS_DIGEST）——这就是本进程实际要用的值；
-#   · 闸门在锁里把同样的起点还原进一个子 shell，再 source 一次配置，算同样的指纹，两者相等才放行。
-# 锁里改名脚本动不了配置，所以「锁里重读到的值」就是本轮期间配置给出的值；读不了、加载失败一律当「变过」。
+# ── 加载配置，并记下这一次加载时配置的改写计数（GitHub#569）──
+# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程加载配置之后，本工具有没有改过它？本工具改配置只经过
+# project-config.sh set，它换文件前后各把改写计数加一（_label_rename.sh config_gen_*）。所以这里在加载**之前**读
+# 一次计数，闸门在锁里再读一次：一样且是偶数 = 加载之后没改过。照常 source 原文件、只 source 一次（复审第 3、5 轮：
+# 换路径加载弄坏了 ${BASH_SOURCE[0]}；锁里再加载一遍配置会重复配置里的命令、撞上只读变量）。
 cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依赖 realpath：老 macOS 没有）
     local p="$1" n=0 t d
     while [ -L "$p" ]; do
@@ -118,35 +115,9 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
-# 指纹覆盖的设置：能改名的流程标签 + 会写标签名的列表类设置（_label_rename.sh 一份清单）
-cfg_labels_digest() {
-    local k
-    for k in $LABEL_RENAME_FIELDS $LABEL_RENAME_LIST_FIELDS; do
-        if [ -n "${!k+x}" ]; then printf '%s=1:%s\n' "$k" "${!k}"; else printf '%s=0\n' "$k"; fi
-    done | cfg_sha256
-}
-_CFG_PRE=()   # 加载前的样子：每项「名字 有没有 值」三格
-for _cfg_k in $LABEL_RENAME_FIELDS $LABEL_RENAME_LIST_FIELDS; do
-    if [ -n "${!_cfg_k+x}" ]; then _CFG_PRE+=("$_cfg_k" 1 "${!_cfg_k}"); else _CFG_PRE+=("$_cfg_k" 0 ""); fi
-done
-unset _cfg_k
+CONFIG_GEN_AT_LOAD="$( [ -n "$CONFIG_REAL" ] && config_gen_read "$CONFIG_REAL" || printf 'bad' )"
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
-CONFIG_LABELS_DIGEST="$(cfg_labels_digest 2>/dev/null || true)"
-# 锁里重读一次：从同样的起点在子 shell 里再加载配置，给出同一种指纹；加载失败输出空
-cfg_labels_digest_now() {
-    (
-        local i=0
-        while [ "$i" -lt "${#_CFG_PRE[@]}" ]; do
-            if [ "${_CFG_PRE[$((i + 1))]}" = 1 ]; then printf -v "${_CFG_PRE[$i]}" '%s' "${_CFG_PRE[$((i + 2))]}"
-            else unset "${_CFG_PRE[$i]}"; fi
-            i=$((i + 3))
-        done
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE" >/dev/null 2>&1 </dev/null || exit 3
-        cfg_labels_digest
-    ) 2>/dev/null || true
-}
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8128,7 +8099,7 @@ item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
 # 任何「读了配置、之后会写标签」的进程都不能按旧名字动手。这里是所有入口共用的三样东西：
 #
 #   label_rename_gate    拿到轮询锁之后问一次：没有「改名进行中」记录，且配置文件还是本进程加载的那一版
-#                        （CONFIG_LABELS_DIGEST：加载后手里的标签名，锁里从同样的起点重新加载比一次）。两条都满足才动手；读不到一律当不满足。
+#                        （改写计数 CONFIG_GEN_AT_LOAD：加载前读一次，锁里再读一次）。两条都满足才动手；读不到一律当不满足。
 #   poll_lock_reexec     人在终端直接跑的入口（派工、叫醒外部需求机器人、CI 失败报告）不在轮询锁里：
 #                        先在轮询锁里重新起自己（flock -o：锁由 flock 进程拿着，不传给本脚本和它起的
 #                        tmux），锁里那一份重新加载配置、过闸门，再往下走。由轮询拉起的子进程不重复拿锁。
@@ -8174,13 +8145,14 @@ label_rename_gate() {
         LABEL_GATE_WHY="有一次流程标签改名还没做完（${rec}），本项目暂停到改名做完或退回"
         return 1
     fi
-    if [ -z "$CONFIG_LABELS_DIGEST" ]; then
-        LABEL_GATE_WHY="加载配置时没能记下标签名，这一次不动手"
-        return 1
-    fi
-    now="$(cfg_labels_digest_now)"
-    if [ "$now" != "$CONFIG_LABELS_DIGEST" ]; then
-        LABEL_GATE_WHY="配置里的标签名在本进程加载之后被改过（或配置读不了），这一次不动手，下一次用新配置"
+    case "$CONFIG_GEN_AT_LOAD" in
+        bad|*[13579])
+            LABEL_GATE_WHY="加载配置时它正在被本工具改写（或改写计数读不了），这一次不动手，下一次重新加载"
+            return 1 ;;
+    esac
+    now="$( [ -n "$CONFIG_REAL" ] && config_gen_read "$CONFIG_REAL" || printf 'bad' )"
+    if [ "$now" != "$CONFIG_GEN_AT_LOAD" ]; then
+        LABEL_GATE_WHY="配置在本进程加载之后被本工具改过（标签改名或项目配置窗口保存），这一次不动手，下一次用新配置"
         return 1
     fi
     return 0
