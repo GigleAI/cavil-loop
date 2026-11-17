@@ -296,7 +296,7 @@ SH
 n0="$(calls)"
 FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
 chk "拿到锁后发现配置被换过：整轮不做（没有 GitHub 请求）" "$(( $(calls) - n0 ))" "0"
-chk "日志写明配置在加载之后被改过" "$(grep -c '配置文件在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log")" "1"
+chk "日志写明配置里的标签名在加载之后被改过" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log")" "1"
 n0="$(calls)"; poll lra
 chk "下一轮用新配置照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
@@ -307,9 +307,33 @@ printf 'DISPATCH_MODE="greedy"\n' > "$SANDBOX/lra/extra.conf"
 printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
 n0="$(calls)"; poll lra
 chk "照常跑完一轮：等人的不派、排队的那条被派（邻近文件里的「开着的都派」生效）" "$(item_labels "$I_HUMAN")/$(item_labels "$I_AGENT")" "pending/human/doing/agent"
-chk "日志里没有「配置在加载之后被改过」（指纹照常记下）" "$(grep -c '配置文件在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log" || true)" "0"
+chk "日志里没有「标签名在加载之后被改过」（指纹照常记下）" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log" || true)" "0"
 r="$(rn lra check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --others-stopped)"
 chk "改名检查照常（只有 doing/agent 那一项因为刚派出去被拦下）" "$(res "$r")/$(failed_checks "$r")" "refused/no_worker"
+
+echo "6c. 邻近文件里的标签名在读完配置、拿锁之前被改（复审第 4 轮）"
+mkconf lra; world
+sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
+printf 'LABEL_PENDING_HUMAN="pending/human"\n' > "$SANDBOX/lra/extra.conf"
+printf 'source "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' >> "$SANDBOX/lra/cavil-loop.config"
+# 人在这一刻把邻近文件和 GitHub 一起改成 needs-human（主配置一个字节都没变）
+cat > "$SANDBOX/hook.sh" <<SH
+printf 'LABEL_PENDING_HUMAN="needs-human"\\n' > "$SANDBOX/lra/extra.conf"
+python3 - "$GD" <<'PY2'
+import json, sys
+d = sys.argv[1]
+ids = json.load(open(d + "/label_ids.json")); ids["needs-human"] = ids.pop("pending/human"); json.dump(ids, open(d + "/label_ids.json", "w"))
+lb = json.load(open(d + "/labels.json"))
+for n in lb: lb[n] = ["needs-human" if l == "pending/human" else l for l in lb[n]]
+json.dump(lb, open(d + "/labels.json", "w"))
+PY2
+SH
+n0="$(calls)"
+FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
+chk "这一轮整轮不做：没有 GitHub 请求，等人的条目没被派工" "$(( $(calls) - n0 ))/$(item_labels "$I_HUMAN")" "0/needs-human"
+chk "日志写明标签名在加载之后被改过" "$(grep -c '配置里的标签名在本进程加载之后被改过' "$SANDBOX/lra/state/poll.log")" "1"
+poll lra
+chk "下一轮用新值：等人的条目（needs-human）仍不派、排队的那条照常派" "$(item_labels "$I_HUMAN")/$(item_labels "$I_AGENT")" "needs-human/doing/agent"
 
 echo "7. 手动跑的派工"
 mkconf lra; world

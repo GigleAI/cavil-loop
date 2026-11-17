@@ -90,18 +90,14 @@ fi
 # 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
 unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
 
-# ── 加载配置，并记下这一次加载的是哪一版（GitHub#569）──
-# 改名闸门（label_rename_gate）拿锁后要比「现在的文件」和「本进程加载的那一版」，所以指纹必须和加载的内容
-# 是同一份字节：直接 source 原文件再另算指纹，两步之间文件可能被换掉（标签改名脚本原子替换配置），就成了
-# 「旧值 + 新指纹」。
-# 做法：照旧 source 原文件（不改路径——配置里用 ${BASH_SOURCE[0]} 找邻近文件的写法照常工作；复审第 3 轮：
-# 早先从临时副本加载把这种配置弄坏了），加载前后各读一次「指纹 + inode」，两次都一样才记下指纹：
-#   · 原子替换（mv）换的是 inode——加载期间被换过，前后 inode 不同；
-#   · 加载期间一直开着原文件（fd 7），它的 inode 不会被释放、再分给「换回来」的新文件，所以「换掉又换回」也看得出；
-#   · 原地写（同一 inode）改了内容，前后指纹不同。
-# 前后不一样、或读不了，指纹记成空——空指纹一律当「变过」，闸门让这一轮什么都不做、下一轮重新加载。
-# 看不出的只有一种：同一个 inode 上，加载那几毫秒里内容被原地改成别的又原地改回一模一样。本工具自己的写入
-# （project-config.sh、label-rename.sh）都是原子替换，不会这样写。
+# ── 加载配置，并记下这一次加载到的标签名（GitHub#569）──
+# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程手里的标签名，和配置现在给出的是不是同一组？
+# 比的是「值」而不是某个文件的字节：配置可以 source 邻近文件（复审第 3、4 轮——从临时副本加载弄坏了
+# ${BASH_SOURCE[0]}；只比主文件又看不见邻近文件里改的标签名），所以：
+#   · 加载前记下这些设置在环境里原本的样子（有没有、值是什么），照常 source 原文件；
+#   · 加载后把这些设置的值算成一个指纹（CONFIG_LABELS_DIGEST）——这就是本进程实际要用的值；
+#   · 闸门在锁里把同样的起点还原进一个子 shell，再 source 一次配置，算同样的指纹，两者相等才放行。
+# 锁里改名脚本动不了配置，所以「锁里重读到的值」就是本轮期间配置给出的值；读不了、加载失败一律当「变过」。
 cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依赖 realpath：老 macOS 没有）
     local p="$1" n=0 t d
     while [ -L "$p" ]; do
@@ -122,24 +118,35 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
-CONFIG_LOADED_REV=""
-cfg_inode() { ls -di "$1" 2>/dev/null | awk '{print $1}'; }   # <路径>：macOS 和 Linux 的 ls 都有 -i
-_cfg_ok=0; _cfg_ino1=""; _cfg_rev1=""
-if [ -n "$CONFIG_REAL" ] && exec 7<"$CONFIG_REAL" 2>/dev/null; then
-    _cfg_ok=1
-    _cfg_ino1="$(cfg_inode "$CONFIG_REAL")"
-    _cfg_rev1="$(cfg_rev_of "$CONFIG_REAL" "$CONFIG_REAL" 2>/dev/null || true)"
-fi
+# 指纹覆盖的设置：能改名的流程标签 + 会写标签名的列表类设置（_label_rename.sh 一份清单）
+cfg_labels_digest() {
+    local k
+    for k in $LABEL_RENAME_FIELDS $LABEL_RENAME_LIST_FIELDS; do
+        if [ -n "${!k+x}" ]; then printf '%s=1:%s\n' "$k" "${!k}"; else printf '%s=0\n' "$k"; fi
+    done | cfg_sha256
+}
+_CFG_PRE=()   # 加载前的样子：每项「名字 有没有 值」三格
+for _cfg_k in $LABEL_RENAME_FIELDS $LABEL_RENAME_LIST_FIELDS; do
+    if [ -n "${!_cfg_k+x}" ]; then _CFG_PRE+=("$_cfg_k" 1 "${!_cfg_k}"); else _CFG_PRE+=("$_cfg_k" 0 ""); fi
+done
+unset _cfg_k
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
-if [ "$_cfg_ok" = 1 ]; then
-    if [ -n "$_cfg_ino1" ] && [ -n "$_cfg_rev1" ] && [ "$(cfg_inode "$CONFIG_REAL")" = "$_cfg_ino1" ] \
-       && [ "$(cfg_rev_of "$CONFIG_REAL" "$CONFIG_REAL" 2>/dev/null || true)" = "$_cfg_rev1" ]; then
-        CONFIG_LOADED_REV="$_cfg_rev1"
-    fi
-    exec 7<&-
-fi
-unset _cfg_ok _cfg_ino1 _cfg_rev1
+CONFIG_LABELS_DIGEST="$(cfg_labels_digest 2>/dev/null || true)"
+# 锁里重读一次：从同样的起点在子 shell 里再加载配置，给出同一种指纹；加载失败输出空
+cfg_labels_digest_now() {
+    (
+        local i=0
+        while [ "$i" -lt "${#_CFG_PRE[@]}" ]; do
+            if [ "${_CFG_PRE[$((i + 1))]}" = 1 ]; then printf -v "${_CFG_PRE[$i]}" '%s' "${_CFG_PRE[$((i + 2))]}"
+            else unset "${_CFG_PRE[$i]}"; fi
+            i=$((i + 3))
+        done
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE" >/dev/null 2>&1 </dev/null || exit 3
+        cfg_labels_digest
+    ) 2>/dev/null || true
+}
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8121,7 +8128,7 @@ item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
 # 任何「读了配置、之后会写标签」的进程都不能按旧名字动手。这里是所有入口共用的三样东西：
 #
 #   label_rename_gate    拿到轮询锁之后问一次：没有「改名进行中」记录，且配置文件还是本进程加载的那一版
-#                        （CONFIG_LOADED_REV，加载时按副本算的）。两条都满足才动手；读不到一律当不满足。
+#                        （CONFIG_LABELS_DIGEST：加载后手里的标签名，锁里从同样的起点重新加载比一次）。两条都满足才动手；读不到一律当不满足。
 #   poll_lock_reexec     人在终端直接跑的入口（派工、叫醒外部需求机器人、CI 失败报告）不在轮询锁里：
 #                        先在轮询锁里重新起自己（flock -o：锁由 flock 进程拿着，不传给本脚本和它起的
 #                        tmux），锁里那一份重新加载配置、过闸门，再往下走。由轮询拉起的子进程不重复拿锁。
@@ -8167,13 +8174,13 @@ label_rename_gate() {
         LABEL_GATE_WHY="有一次流程标签改名还没做完（${rec}），本项目暂停到改名做完或退回"
         return 1
     fi
-    if [ -z "$CONFIG_LOADED_REV" ]; then
-        LABEL_GATE_WHY="加载配置时没能记下是哪一版，这一次不动手"
+    if [ -z "$CONFIG_LABELS_DIGEST" ]; then
+        LABEL_GATE_WHY="加载配置时没能记下标签名，这一次不动手"
         return 1
     fi
-    now="$(cfg_rev_of "$CONFIG_REAL" "$CONFIG_REAL" 2>/dev/null || true)"
-    if [ "$now" != "$CONFIG_LOADED_REV" ]; then
-        LABEL_GATE_WHY="配置文件在本进程加载之后被改过（或读不了），这一次不动手，下一次用新配置"
+    now="$(cfg_labels_digest_now)"
+    if [ "$now" != "$CONFIG_LABELS_DIGEST" ]; then
+        LABEL_GATE_WHY="配置里的标签名在本进程加载之后被改过（或配置读不了），这一次不动手，下一次用新配置"
         return 1
     fi
     return 0
