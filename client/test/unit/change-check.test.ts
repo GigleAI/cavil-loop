@@ -395,10 +395,12 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     // set once the refresh's round has saved its record; read when the dropped round reaches its end
     let newSaved = false;
     let droppedEndedAfterNew: boolean | null = null;
-    // the automatic round's retry wait after a temporary failure (long enough for the whole refresh)
+    // the automatic round's retry wait after a temporary failure (long enough for the whole refresh: real
+    // time, and a busy CI runner sharing its CPUs with the other files of the shard needed more than 4 s —
+    // GitHub#577 saw the dropped round end before the refresh saved, twice in a row)
     const { c, clock } = await ready({
       sources: [PROJECT_URL],
-      readRetryDelaysMs: [4000],
+      readRetryDelaysMs: [12_000],
       afterRoundRead: (dropped) => {
         if (!dropped) return;
         droppedEndedAfterNew = newSaved;
@@ -440,7 +442,7 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     expect(boardReads(next)).toBe(0);
     expect(checks(next).filter((e) => e.method === 'HEAD').every((e) => e.status === 304)).toBe(true);
     expect(statusOf(c, 22)).toBe('In progress');
-  });
+  }, 40_000);
 
   it('signed out and in again: the first round reads in full although nothing changed', async () => {
     const { c } = await ready({ sources: [PROJECT_URL] });
