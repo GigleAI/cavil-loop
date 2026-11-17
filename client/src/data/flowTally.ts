@@ -181,6 +181,15 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
 }
 
 /**
+ * GitHub#569: the items the board lists for a search — the board's own rule, in one place. The search through
+ * the real filter, then, while a number narrowed per repository is lit (`lit`, from `litTally` with the pick),
+ * only the items carrying their own repository's name. With no such number lit it is exactly the search.
+ */
+export function searchList(items: Item[], parsed: ReturnType<typeof parseFilter>, ctx: FilterContext, lit: Pick<TallyEntry, 'scope'> | null): Item[] {
+  return applyFilter(items, parsed, ctx).filter((it) => tallyScoped(lit, it));
+}
+
+/**
  * GitHub#468: the numbers of a table, in its order. A row is left out when its name is empty, when it
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
@@ -272,7 +281,10 @@ export function unlabeledTally(items: Item[]): TallyEntry {
  */
 export function litTally(query: string, entries: TallyEntry[], pick: TallyKind | null = null): TallyKind | null {
   const q = query.trim();
-  const same = entries.filter((e) => e.query !== null && e.query === q);
+  // GitHub#569: a number narrowed by each repository's own name (`scope`) is lit only when it was clicked (`pick`).
+  // The same text typed or pasted by hand is an ordinary search and keeps its ordinary meaning — every item
+  // carrying either name — so it lights no such number and nothing narrows it (PR #571 code review round 5).
+  const same = entries.filter((e) => e.query !== null && e.query === q && (!e.scope || e.kind === pick));
   if (same.length === 0) return null;
   return same.find((e) => e.kind === pick)?.kind ?? same[0].kind;
 }
@@ -301,8 +313,8 @@ export function tallyClick(
 }
 
 /** The box was changed some other way: once it no longer shows a number's query, the remembered text is void. */
-export function tallyForget(saved: string | null, current: string, entries: TallyEntry[]): string | null {
-  return litTally(current, entries) === null ? null : saved;
+export function tallyForget(saved: string | null, current: string, entries: TallyEntry[], pick: TallyKind | null = null): string | null {
+  return litTally(current, entries, pick) === null ? null : saved;
 }
 
 /**

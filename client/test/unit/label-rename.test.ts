@@ -31,7 +31,7 @@ import {
 import { applyClientRename, blockedLabelsFor, dropOverride, handBackFor, normalizeRepoLabels, overrideRows, renamedFlow, type RepoLabels } from '../../src/shared/repoLabels';
 import { DEFAULT_HAND_BACK } from '../../src/shared/types';
 import { DEFAULT_BLOCKED_LABELS } from '../../src/shared/blocked';
-import { litTally, showClosedDefault, tallyClick, tallyForget, tallyScoped, viewBarTallies, type TallyEntry } from '../../src/data/flowTally';
+import { litTally, searchList, showClosedDefault, tallyClick, tallyForget, tallyScoped, viewBarTallies, type TallyEntry } from '../../src/data/flowTally';
 import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
 import { PendingTracker } from '../../src/data/pending';
 import { buildGraph } from '../../src/data/graph';
@@ -191,18 +191,77 @@ describe('every user of the label names asks for the item\'s repository', () => 
     // every flow number lists exactly what it counts
     for (const e of by) if (e.source === 'flow' && e.query !== null) expect(clickList(items, e).length).toBe(e.count);
   });
-  it('a lit number survives every change of the items: same click text, lit, saved search kept, list = count, second click restores', () => {
+  // The board's view-bar state, driven the way BoardView drives it: the box text, the search saved before a
+  // click, the number last clicked; after every change the same clean-up BoardView's effect makes; the list
+  // through the board's own `searchList`.
+  const ctx = { viewer: null, today: '', projects: [] };
+  function board(first: Item[]) {
+    let set = first;
+    let t = tallies(set);
+    const st = { query: '', saved: null as string | null, pick: null as string | null };
+    const settle = () => {
+      st.saved = tallyForget(st.saved, st.query, t, st.pick);
+      if (litTally(st.query, t, st.pick) === null) st.pick = null;
+    };
+    const entry = (flow: string) => t.find((e) => e.flow === flow)!;
+    return {
+      st,
+      entry,
+      type(q: string) { st.query = q; settle(); },
+      click(flow: string) { const n = tallyClick(st.query, st.saved, entry(flow), t, st.pick); st.query = n.query; st.saved = n.saved; st.pick = n.pick; settle(); },
+      sync(next: Item[]) { set = next; t = tallies(set); settle(); },
+      lit: () => litTally(st.query, t, st.pick),
+      list: () => { const k = litTally(st.query, t, st.pick); return searchList(set, parseFilter(st.query), ctx, t.find((e) => e.kind === k) ?? null).map((i) => i.number).sort((x, y) => x - y); },
+    };
+  }
+  const COMBINED = 'label:"pending/human","wait/human"';
+  it('the same text typed by hand is an ordinary search: nothing lit, nothing narrowed (PR #571 code review round 5)', () => {
+    const b = board(items);
+    b.type(COMBINED);
+    expect(b.lit()).toBe(null);
+    expect(b.list()).toEqual([1, 2, 3]); // #2 carries pending/human as an ordinary label in widget: listed, as a search should
+    // a click on the number while the box already says the same: lit and narrowed, the typed text kept to come back to
+    b.click('human');
+    expect(b.lit()).toBe(b.entry('human').kind);
+    expect(b.st.saved).toBe(COMBINED);
+    expect(b.list()).toEqual([1, 3]);
+    b.click('human');
+    expect(b.st.query).toBe(COMBINED);
+    expect(b.lit()).toBe(null);
+    expect(b.list()).toEqual([1, 2, 3]);
+  });
+  it('clicked, switched, clicked again: the search from before comes back; editing the box ends it', () => {
+    const b = board(items);
+    b.type('author:alice');
+    b.click('human');
+    expect(b.list()).toEqual([1, 3]);
+    expect(b.list().length).toBe(b.entry('human').count);
+    b.click('running'); // the other number, also narrowed per repository (busy/agent in widget)
+    expect(b.lit()).toBe(b.entry('running').kind);
+    expect(b.list()).toEqual([4, 5]);
+    expect(b.st.saved).toBe('author:alice');
+    b.click('running');
+    expect(b.st.query).toBe('author:alice');
+    expect(b.lit()).toBe(null);
+    // clicked, then the box edited by hand: no number lit, the saved search void, the pick void
+    b.click('human');
+    b.type(b.st.query + ' is:open');
+    expect([b.lit(), b.st.saved, b.st.pick]).toEqual([null, null, null]);
+    // typing the number's text back by hand after that is an ordinary search again
+    b.type(COMBINED);
+    expect(b.lit()).toBe(null);
+    expect(b.list()).toEqual([1, 2, 3]);
+  });
+  it('a clicked number survives every change of the items: same click text, lit, saved search kept, list = count, second click restores', () => {
     // PR #571 code review rounds 3 and 4: the click text was built from the items in hand, so a sync bringing a
     // stray label, or a repository's last item leaving, changed it — the number went dark and the search saved
     // before the click was dropped. Every change of the item set a sync or the source ticks can make, round after
-    // round, from one starting point: the click text comes from the label settings only.
-    const ctx = { viewer: null, today: '', projects: [] };
+    // round, on one clicked number.
     const start = items.filter((i) => i.number !== 2);
-    const t0 = tallies(start);
-    const h0 = t0.find((e) => e.flow === 'human')!;
-    expect(h0.query).toBe('label:"pending/human","wait/human"');
-    const c = tallyClick('author:alice', null, h0, t0);
-    expect(c.saved).toBe('author:alice');
+    const b = board(start);
+    b.type('author:alice');
+    b.click('human');
+    expect(b.st.query).toBe(COMBINED);
     const rounds: [string, Item[]][] = [
       ['a stray label in widget arrives', items],
       ['it leaves again', start],
@@ -212,24 +271,19 @@ describe('every user of the label names asks for the item\'s repository', () => 
       ['a third repository with the shared name arrives', [...start, item('acme/third', 9, { labels: [label('pending/human')] }), item('acme/third', 10, { labels: [label('wait/human')] })]],
       ['back to the start', start],
     ];
-    let saved = c.saved;
     for (const [why, set] of rounds) {
-      const t = tallies(set);
-      const h = t.find((e) => e.flow === 'human')!;
-      expect(h.query, why).toBe(h0.query);
-      expect(litTally(c.query, t, c.pick), why).toBe(h.kind);
-      saved = tallyForget(saved, c.query, t);
-      expect(saved, why).toBe('author:alice');
-      // the list a lit number shows is what it counts
-      const listed = applyFilter(set, parseFilter(h.query!), ctx).filter((i) => tallyScoped(h, i));
-      expect(listed.length, why).toBe(h.count);
+      b.sync(set);
+      expect(b.st.query, why).toBe(COMBINED);
+      expect(b.lit(), why).toBe(b.entry('human').kind);
+      expect(b.st.saved, why).toBe('author:alice');
+      expect(b.list().length, why).toBe(b.entry('human').count);
     }
     // in the third repository (no name of its own) the shared name counts, the widget name does not
-    const third = tallies(rounds[5][1]).find((e) => e.flow === 'human')!;
-    expect(clickList(rounds[5][1], third)).toEqual([1, 3, 9]);
-    // and a second click gives the search back
-    const tEnd = tallies(start);
-    expect(tallyClick(c.query, saved, tEnd.find((e) => e.flow === 'human')!, tEnd, c.pick)).toEqual({ query: 'author:alice', saved: null, pick: null });
+    b.sync(rounds[5][1]);
+    expect(b.list()).toEqual([1, 3, 9]);
+    b.sync(start);
+    b.click('human');
+    expect(b.st.query).toBe('author:alice');
   });
   it('only a change of the label settings changes the click text (as changing the shared label always did)', () => {
     const t0 = tallies(items);
