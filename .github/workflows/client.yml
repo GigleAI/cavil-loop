@@ -7,15 +7,16 @@ name: Client
 #
 # What runs when:
 #   every PR push                 quick tests: typecheck + cargo, vitest in two halves, in parallel (a few minutes)
-#   push to main                  quick tests + the Mac arm64 build (dmg + its checks), then the
-#                                 development build is published as a pre-release (GitHub#215)
+#   push to main                  quick tests + the Mac arm64 build (dmg + its checks) + the Windows
+#                                 x64 build (installer + its checks, GitHub#577), then the development
+#                                 build is published as a pre-release (GitHub#215)
 #   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
-#                                 arm64 and x64; any failure, no Release
+#                                 arm64 and x64, + Windows x64; any failure, no Release
 #   called by release.yml         the same as a client/v* tag, for the tag and commit the weekly
 #                                 release planned (GitHub#576: a tag pushed with the workflow's own
 #                                 token starts no run, so the weekly release calls this workflow)
-#   weekly / manual run           quick + full tests + the Mac arm64 build (packaging or end-to-end
-#                                 breakage shows up within a week); negative controls only when asked
+#   weekly / manual run           quick + full tests + the Mac arm64 build + the Windows build (packaging
+#                                 or end-to-end breakage shows up within a week)
 # Negative controls run automatically only in the weekly release gate
 # (.github/workflows/release.yml, job gate-client), on the commit that release tags.
 on:
@@ -343,9 +344,130 @@ jobs:
           path: ${{ runner.temp }}/dmg-window-${{ matrix.arch }}.png
           if-no-files-found: ignore
 
+  # GitHub#577: the Windows x64 app — wherever the Macs are built (never on a pull request). Its own back
+  # end tests that need Windows (the real Credential Manager), the installer (NSIS .exe, which is also
+  # the update package Tauri's updater runs, signed like the Macs' packages), a silent install, the
+  # installed app's start-up check and one real notification, the size gate. Not signed with a code
+  # signing certificate (the maintainer's choice on #574): Windows warns on first install.
+  package-windows:
+    name: Windows installer (x64)
+    needs: mode
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.mode.outputs.sha }}
+          # the development build's version counts the commits (scripts/dev-version.mjs)
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            client/src-tauri/target
+          key: cargo-windows-x64-${{ hashFiles('client/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-windows-x64-
+      - run: npm ci
+      # the parts of the back end only Windows can run: the real Credential Manager (store, read back,
+      # clear, "not there" after clearing), and the rest of the Windows-only rules
+      - name: Back end on Windows (Credential Manager, taskbar number, notifications, Tailscale path)
+        run: |
+          cd src-tauri
+          cargo test -p cavil-core --lib -- wincred:: badge:: toast:: remote::tests::tailscale
+      # the same version rule as the Macs (one step text, see the dmg job)
+      - name: Version
+        env:
+          TAG: ${{ needs.mode.outputs.tag }}
+          VERSION: ${{ needs.mode.outputs.version }}
+        run: |
+          if [ -n "$TAG" ]; then
+            [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
+            node scripts/release-version.mjs write "$VERSION"
+          else
+            node scripts/dev-version.mjs --write
+          fi
+      # signing the update package: exactly as on the Macs (the maintainer's key on a release build and a
+      # push to main, a throw-away pair otherwise)
+      - name: Build the app and its installer (= its update package)
+        env:
+          SIGN: ${{ needs.mode.outputs.sign }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          if [ "$SIGN" = true ]; then
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a push to main need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
+            [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
+          else
+            npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/throwaway-update.key" >/dev/null
+            TAURI_SIGNING_PRIVATE_KEY="$(cat "$RUNNER_TEMP/throwaway-update.key")"
+            export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            pub="$(cat "$RUNNER_TEMP/throwaway-update.key.pub")"
+          fi
+          conf="$(node -e 'console.log(JSON.stringify({ bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: process.argv[1] } } }))' "$pub")"
+          # the installer's name carries the version: an earlier build's, restored with the cache, would be a second one
+          rm -rf src-tauri/target/release/bundle/nsis
+          npx tauri build --bundles nsis --config "$conf""
+          v="$(node -p "require('./package.json').version")"
+          exe="$(ls src-tauri/target/release/bundle/nsis/*_x64-setup.exe)"
+          printf '%s' "$conf" > "$RUNNER_TEMP/update-conf.json"
+          node scripts/update-manifest.mjs --verify "$exe" "$exe.sig" --conf "$RUNNER_TEMP/update-conf.json"
+          mkdir -p release
+          cp "$exe" "release/Cavil-Loop-$v-windows-x64.exe"
+          cp "$exe.sig" "release/Cavil-Loop-$v-windows-x64.exe.sig"
+          ls -la release
+      # GitHub#151 / #577: the same gate as the dmgs (≤ 10 MB target, > 20 MB fails)
+      - name: Download size
+        run: node scripts/size-gate.mjs release/Cavil-Loop-*-windows-x64.exe --expect windows-x64
+      # The installer as a person runs it (silently here), then the installed app: it starts, its window
+      # mounts and reaches the back end (--smoke-test), and one real notification goes to the system
+      # (--notify-check: reported, never failing the job — a runner's notification settings are not ours).
+      - name: Install, start, notify
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release -Filter 'Cavil-Loop-*-windows-x64.exe' | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "installer exit $($p.ExitCode)"; exit 1 }
+          $app = Join-Path $env:LOCALAPPDATA 'Cavil Loop\Cavil Loop.exe'
+          if (-not (Test-Path $app)) { Get-ChildItem -Recurse (Join-Path $env:LOCALAPPDATA 'Cavil Loop') -ErrorAction SilentlyContinue | Select-Object FullName; Write-Error "not installed at $app"; exit 1 }
+          $lnk = Get-ChildItem -Recurse ([Environment]::GetFolderPath('Programs')) -Filter 'Cavil Loop.lnk' -ErrorAction SilentlyContinue
+          if (-not $lnk) { Write-Error 'no Start menu shortcut (notifications need it)'; exit 1 }
+          $out = Join-Path $env:RUNNER_TEMP 'smoke.txt'
+          $s = Start-Process -FilePath $app -ArgumentList '--smoke-test', "--smoke-out=$out" -Wait -PassThru
+          $line = if (Test-Path $out) { Get-Content $out -Raw } else { '' }
+          Write-Output "smoke: exit $($s.ExitCode): $line"
+          if ($s.ExitCode -ne 0 -or $line -notmatch 'CAVIL_SMOKE_OK') { exit 1 }
+          $n = Join-Path $env:RUNNER_TEMP 'notify.txt'
+          $c = Start-Process -FilePath $app -ArgumentList '--notify-check', "--smoke-out=$n" -Wait -PassThru
+          $said = if (Test-Path $n) { Get-Content $n -Raw } else { '(nothing written)' }
+          Write-Output "notification check: exit $($c.ExitCode): $said"
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-windows-x64.exe
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          path: client/release/Cavil-Loop-*-windows-x64.exe.sig
+          archive: false
+          if-no-files-found: error
+
   size:
-    name: download size (every dmg built)
-    needs: [mode, package]
+    name: download size (every dmg and installer built)
+    needs: [mode, package, package-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -356,21 +478,22 @@ jobs:
           pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: Each dmg and each update package ≤ 20 MB (target ≤ 10 MB)
+      - name: Each dmg, each update package and the Windows installer ≤ 20 MB (target ≤ 10 MB)
         env:
           ARCHES: ${{ needs.mode.outputs.tag != '' && 'arm64,x64' || 'arm64' }}
         run: |
           node scripts/size-gate.mjs dist-release/*.dmg --expect "$ARCHES"
           node scripts/size-gate.mjs dist-release/*.app.tar.gz --expect "$ARCHES"
+          node scripts/size-gate.mjs dist-release/*-windows-x64.exe --expect windows-x64
 
   # A release build (a pushed client/v* tag, or the weekly release's call, GitHub#576): only after the
-  # quick and full tests, both Macs and the size gate passed. The version is the tag's, stamped at
+  # quick and full tests, both Macs, Windows (GitHub#577) and the size gate passed. The version is the tag's, stamped at
   # build time; the tag goes on exactly the tested commit (`sha`), created here when it does not exist
   # yet (pushed with this job's token, so it starts no other run), and checked again right before the
   # page is created.
   release:
     name: publish client release
-    needs: [mode, test, e2e, package, size]
+    needs: [mode, test, e2e, package, package-windows, size]
     if: needs.mode.outputs.tag != ''
     # One client release publishes at a time, whatever its version or how it started (a pushed tag,
     # the weekly call): the builds of two versions may overlap for an hour, but their writes never do,
@@ -392,7 +515,7 @@ jobs:
           pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: The build is the tag's version, both Macs
+      - name: The build is the tag's version, both Macs and Windows
         env:
           V: ${{ needs.mode.outputs.version }}
         run: |
@@ -403,8 +526,11 @@ jobs:
               [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing: the build is not $V for both Macs"; exit 1; }
             done
           done
-      # GitHub#184: what installed apps read to update themselves. Refuses unless both update packages
-      # are there and their signatures verify with the app's public key (tauri.conf.json) and are bound
+          for f in "Cavil-Loop-$V-windows-x64.exe" "Cavil-Loop-$V-windows-x64.exe.sig"; do
+            [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing: the build is not $V for Windows"; exit 1; }
+          done
+      # GitHub#184: what installed apps read to update themselves. Refuses unless every update package
+      # (both Macs, Windows) is there and their signatures verify with the app's public key (tauri.conf.json) and are bound
       # to this version.
       - name: Update manifest (latest.json)
         env:
@@ -449,7 +575,7 @@ jobs:
           fi
           # and once more right before the page: no newer client tag appeared meanwhile
           node scripts/release-version.mjs check "$TAG" --at "$SHA" >/dev/null
-          gh release create "$TAG" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
+          gh release create "$TAG" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/*-windows-x64.exe dist-release/*-windows-x64.exe.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "Cavil Loop 客户端 ${TAG#client/}" \
@@ -458,12 +584,12 @@ jobs:
 
   # GitHub#215: the development build of a push to main, for installed apps on the development
   # channel: a pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), only after the quick tests,
-  # the Mac build and its real-update check, and the size gate passed. scripts/dev-release.mjs
+  # the Mac build and its real-update check, the Windows build (GitHub#577), and the size gate passed. scripts/dev-release.mjs
   # publishes it complete or not at all, never on top of a newer one, and keeps the latest 10.
   dev-release:
     name: publish development build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.mode.outputs.tag == ''
-    needs: [mode, test, package, size]
+    needs: [mode, test, package, package-windows, size]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -484,12 +610,12 @@ jobs:
           pattern: Cavil-Loop-*
           path: client/dist-release
           merge-multiple: true
-      - name: The Mac build is that version
+      - name: The Mac and Windows builds are that version
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
           ls -la dist-release
-          for f in "Cavil-Loop-$V-arm64.dmg" "Cavil-Loop-$V-arm64.app.tar.gz" "Cavil-Loop-$V-arm64.app.tar.gz.sig"; do
+          for f in "Cavil-Loop-$V-arm64.dmg" "Cavil-Loop-$V-arm64.app.tar.gz" "Cavil-Loop-$V-arm64.app.tar.gz.sig" "Cavil-Loop-$V-windows-x64.exe" "Cavil-Loop-$V-windows-x64.exe.sig"; do
             [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing"; exit 1; }
           done
       - name: Release notes
@@ -502,7 +628,7 @@ jobs:
             echo "只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。"
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
-      # refuses unless the Apple silicon package is there and verifies with the app's public key
+      # refuses unless the Apple silicon and the Windows packages are there and verify with the app's public key
       - name: Update manifest (latest.json, development channel)
         env:
           V: ${{ steps.v.outputs.version }}

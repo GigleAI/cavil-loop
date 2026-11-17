@@ -164,8 +164,10 @@ export function SettingsView({
     onIntentTaken?.();
   }, [intent?.seq]);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
+  // GitHub#577: Windows cannot run the daemon — no local daemon section, no "接上 daemon", nothing read
+  const win = state.desktopSystem === 'windows';
   // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
-  const daemon = useDaemonStatus();
+  const daemon = useDaemonStatus(!win);
   // GitHub#369: Esc goes back to the board, like the "返回看板" button. In a text field the first Esc
   // only leaves it (the label fields save when left), so a half-typed value is never carried away.
   useShortcuts({
@@ -283,7 +285,7 @@ export function SettingsView({
                   />
                   {t('在看板显示')}
                 </label>
-                {s.kind === 'repo' && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
+                {s.kind === 'repo' && !win && <ConnectButton repo={`${s.owner}/${s.name}`} daemon={daemon} />}
                 <button className="ghost" data-testid="source-remove" onClick={() => api().removeSource(s.key)}>
                   {t('删除')}
                 </button>
@@ -401,7 +403,11 @@ export function SettingsView({
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
             <Icon name="warn" />
-            <span>{tNode('macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标不受影响。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })}</span>
+            <span>
+              {win
+                ? tNode('Windows 没有让 Cavil Loop 弹出通知（{why}）。请打开「设置 → 系统 → 通知」，打开 Cavil Loop 的通知。任务栏图标上的数字不受影响。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })
+                : tNode('macOS 没有让 Cavil Loop 弹出通知（{why}）。请打开「系统设置 → 通知 → Cavil Loop」，打开「允许通知」。角标不受影响。', { why: <Verbatim from="system">{state.notifyProblem}</Verbatim> })}
+            </span>
           </div>
         )}
         <label className="row small">
@@ -414,7 +420,7 @@ export function SettingsView({
           {t('切到 App 时收起全部系统通知')}
         </label>
         <p className="muted small" data-testid="pending-how-to-clear">
-          {t('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。')}
+          {win ? t('任务栏图标上的数字 = 窗口不在前台时新来的待处理数，切到 App 清零。') : t('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。')}
         </p>
         {state.launchAtLogin !== null && (
           <label className="row small">
@@ -428,8 +434,12 @@ export function SettingsView({
           </label>
         )}
         {state.launchAtLogin !== null && (
-          // same platforms as launch at login (v1: macOS)
-          <p className="muted small">{t('关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。')}</p>
+          // same platforms as launch at login (macOS, Windows — GitHub#577)
+          <p className="muted small" data-testid="close-keeps-running">
+            {win
+              ? t('关掉窗口后 App 仍在后台同步和提醒（图标留在任务栏右下角的通知区域）；要完全退出，在那个图标上右键选「退出」。')
+              : t('关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。')}
+          </p>
         )}
         <SettingsMore title={t('提醒规则')} testid="pending-more">
           <span data-testid="pending-rule-full">
@@ -446,7 +456,9 @@ export function SettingsView({
           <br />
           {t('一个仓库有几个人一起用时，选「全部待处理」每人都会收到全部待处理的通知；选「只提醒和我有关的」就只收自己的。')}
           <br />
-          {t('Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。')}
+          {win
+            ? t('任务栏图标上的数字只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。')
+            : t('Dock 角标只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。')}
           <br />
           {/* GitHub#369 (PR #370 review round 1): what a click leaves behind depends on the box above */}
           <span data-testid="notification-keep-rule">
@@ -461,7 +473,7 @@ export function SettingsView({
 
       <UpdateSection update={state.update} />
 
-      <DaemonSection daemon={daemon} />
+      {win ? <WindowsDaemonNote /> : <DaemonSection daemon={daemon} />}
 
       <RemoteSection />
 
@@ -480,7 +492,9 @@ export function SettingsView({
           <button data-testid="logout" onClick={() => api().logout()}>
             {t('退出登录')}
           </button>
-          <span className="muted small">{t('会删除钥匙串里的凭据')}</span>
+          <span className="muted small" data-testid="logout-note">
+            {win ? t('会删除 Windows 凭据管理器里的凭据') : t('会删除钥匙串里的凭据')}
+          </span>
         </div>
         {/* GitHub#514: the sign-in method, inside the account card (it was a card of its own) */}
         <div id="set-login" className="account-login">
@@ -491,6 +505,28 @@ export function SettingsView({
       </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * GitHub#577: the local daemon section on Windows. The daemon needs bash, tmux and a scheduler that
+ * Windows does not have, so this computer only says so and points at the remote daemon section.
+ */
+function WindowsDaemonNote() {
+  return (
+    <section id="set-daemon" data-testid="daemon-settings-windows">
+      <h3>{t('本机 daemon')}</h3>
+      <div className="banner info" data-testid="daemon-windows-note">
+        <span className="banner-text">
+          {t('这台电脑是 Windows，不能运行 daemon（它需要 macOS 或 Linux 上的 bash、tmux 和定时服务）。看板、评论、改标签、交给 agent 都照常可用；要看 daemon 的状态或改项目设置，在下面「远程 daemon」里接上装着 daemon 的那台电脑。')}
+        </span>
+      </div>
+      <div className="row">
+        <button data-testid="daemon-go-remote" onClick={() => document.getElementById('set-remote')?.scrollIntoView({ block: 'start' })}>
+          {t('去接远程 daemon')}
+        </button>
+      </div>
+    </section>
   );
 }
 

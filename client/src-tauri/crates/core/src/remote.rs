@@ -193,6 +193,19 @@ impl KeyStore for MacKeys {
     }
 }
 
+/// Where this system keeps the keys of paired machines: the macOS keychain, Windows Credential
+/// Manager (GitHub#577), this run only elsewhere.
+fn system_keys(os: &str) -> Arc<dyn KeyStore> {
+    if os == "macos" {
+        return Arc::new(MacKeys::default());
+    }
+    #[cfg(windows)]
+    if os == "windows" {
+        return Arc::new(crate::wincred::WinCredStore::system());
+    }
+    Arc::new(MemoryKeys::default())
+}
+
 // ── the name and the address ──
 
 /// `name.tailnet.ts.net` or `name.tailnet.ts.net:port` → (host, port). Nothing else is a remote machine.
@@ -411,12 +424,12 @@ impl Remote {
         Remote { store, keys, test, device_name, writing: tokio::sync::Mutex::new(()) }
     }
 
-    /// The app: the keychain on macOS (memory elsewhere), the system resolver, the public
+    /// The app: the keychain on macOS, Credential Manager on Windows (memory elsewhere), the system resolver, the public
     /// certificate authorities. Test mode (the suites only): a key file, a table of names leading
     /// to loopback stand-ins, and the suite's own certificate authority.
     pub fn from_env(test_mode: bool, os: &str, env: &HashMap<String, String>, store: Arc<Store>) -> Remote {
         let mut test = None;
-        let mut keys: Arc<dyn KeyStore> = if os == "macos" { Arc::new(MacKeys::default()) } else { Arc::new(MemoryKeys::default()) };
+        let mut keys = system_keys(os);
         let mut name = None;
         if test_mode {
             if let (Some(h), Some(ca)) = (env.get("CAVIL_CLIENT_TEST_REMOTE_HOSTS"), env.get("CAVIL_CLIENT_TEST_REMOTE_CA")) {
@@ -428,8 +441,14 @@ impl Remote {
             name = env.get("CAVIL_CLIENT_TEST_REMOTE_NAME").cloned();
         }
         let name = name.unwrap_or_else(|| {
-            let out = if os == "macos" { std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output() } else { std::process::Command::new("hostname").output() };
-            out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| tr("Cavil Loop 客户端", &[]))
+            // Windows: the computer's name from the environment (no console program started for it)
+            let named = if os == "windows" {
+                std::env::var("COMPUTERNAME").ok()
+            } else {
+                let out = if os == "macos" { std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]).output() } else { std::process::Command::new("hostname").output() };
+                out.ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            };
+            named.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| tr("Cavil Loop 客户端", &[]))
         });
         Remote::new(store, keys, test, name)
     }
@@ -545,12 +564,20 @@ impl Remote {
     /// service; never shown as "closed") or `offline` (Tailscale says it is not online: not asked).
     /// A device list that cannot be read is `unreadable`, never an empty list.
     pub async fn tailnet(&self, daemon: &crate::daemon::Daemon) -> Value {
-        let path = match daemon.path().await {
-            Ok(p) => if cfg!(target_os = "macos") { format!("{p}:/Applications/Tailscale.app/Contents/MacOS") } else { p },
-            // the local daemon's own words (crate::daemon), already in the window's language
-            Err(m) => return unreadable(&Said::plain(m)),
+        let out = if cfg!(windows) {
+            // GitHub#577: no daemon (and no login shell) on Windows — Tailscale's own program, found directly
+            match windows_tailscale_status().await {
+                Ok(o) => o,
+                Err(m) => return unreadable(&m),
+            }
+        } else {
+            let path = match daemon.path().await {
+                Ok(p) => if cfg!(target_os = "macos") { format!("{p}:/Applications/Tailscale.app/Contents/MacOS") } else { p },
+                // the local daemon's own words (crate::daemon), already in the window's language
+                Err(m) => return unreadable(&Said::plain(m)),
+            };
+            daemon.run(&path, "tailscale", &["status", "--json"], T_QUICK).await
         };
-        let out = daemon.run(&path, "tailscale", &["status", "--json"], T_QUICK).await;
         if !out.ok() {
             return unreadable(&sys(out.text()));
         }
@@ -951,6 +978,37 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// GitHub#577: where Tailscale's command line is on Windows — `tailscale.exe` in the folder its installer
+/// puts it in (`%ProgramFiles%\\Tailscale`), else the first one on PATH (`;`-separated). `exists` is the
+/// file check (the tests pass their own).
+pub fn windows_tailscale(program_files: Option<&str>, path: Option<&str>, exists: impl Fn(&std::path::Path) -> bool) -> Option<PathBuf> {
+    let installed = program_files.filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("Tailscale").join("tailscale.exe"));
+    let on_path = path.unwrap_or("").split(';').filter(|d| !d.trim().is_empty()).map(|d| PathBuf::from(d.trim()).join("tailscale.exe"));
+    installed.into_iter().chain(on_path).find(|p| exists(p))
+}
+
+/// `tailscale status --json` on Windows: the user's own environment (Tailscale needs the system's
+/// variables), no console window, the same time limit as everywhere else.
+async fn windows_tailscale_status() -> Result<crate::daemon::Out, Said> {
+    let pf = std::env::var("ProgramFiles").ok();
+    let path = std::env::var("PATH").ok();
+    let Some(bin) = windows_tailscale(pf.as_deref(), path.as_deref(), |p| p.is_file()) else {
+        return Err(Said::plain(tr("找不到 Tailscale（tailscale.exe）：请先在这台电脑上装好并登录 Tailscale", &[])));
+    };
+    let mut c = tokio::process::Command::new(&bin);
+    c.args(["status", "--json"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW: a console program started from the app opens no console window
+        c.creation_flags(0x0800_0000);
+    }
+    match tokio::time::timeout(T_QUICK, c.output()).await {
+        Ok(Ok(o)) => Ok(crate::daemon::Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into(), stderr: String::from_utf8_lossy(&o.stderr).into() }),
+        Ok(Err(e)) => Err(crate::daemon::not_started("tailscale", &e.to_string())),
+        Err(_) => Err(crate::daemon::timed_out("tailscale", T_QUICK)),
+    }
+}
+
 /// `tailscale status --json` → the other machines with a usable Tailscale name, sorted by name.
 ///
 /// Only the shape Tailscale gives counts: an object with a `BackendState` word and a `Self`
@@ -1277,6 +1335,23 @@ mod tests {
         for bad in ["100.64.0.5", "100.64.0.5:47387", "mybox", "mybox.ts.net", "mybox.tailnet.ts.net.evil.com", "mybox.tailnet.example.com", "a b.tailnet.ts.net", "mybox.tailnet.ts.net:80", "mybox.tailnet.ts.net:x", "-x.tailnet.ts.net", "user@mybox.tailnet.ts.net", "mybox.tailnet.ts.net/path", ""] {
             assert!(parse_host(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn tailscale_on_windows_is_found_where_its_installer_puts_it_then_on_path() {
+        let have = |list: Vec<PathBuf>| move |p: &std::path::Path| list.iter().any(|f| f == p);
+        let pf = Some("C:\\Program Files");
+        let path = Some("C:\\Windows\\system32;;D:\\tools ;C:\\Other");
+        let installed = PathBuf::from("C:\\Program Files").join("Tailscale").join("tailscale.exe");
+        let tools = PathBuf::from("D:\\tools").join("tailscale.exe");
+        let other = PathBuf::from("C:\\Other").join("tailscale.exe");
+        // the installer's folder first
+        assert_eq!(windows_tailscale(pf, path, have(vec![tools.clone(), installed.clone()])), Some(installed));
+        // else the first PATH folder that has it, in PATH order (empty entries and spaces skipped)
+        assert_eq!(windows_tailscale(pf, path, have(vec![other.clone(), tools.clone()])), Some(tools));
+        assert_eq!(windows_tailscale(None, None, have(vec![other])), None);
+        assert_eq!(windows_tailscale(Some(""), Some(""), |_| true), None);
+        assert_eq!(windows_tailscale(pf, None, have(vec![])), None);
     }
 
     #[test]

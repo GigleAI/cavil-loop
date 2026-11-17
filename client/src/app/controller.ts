@@ -630,6 +630,7 @@ export class Controller {
       pendingCount: 0,
       unreadCount: 0,
       launchAtLogin: null,
+      desktopSystem: null,
       notifyProblem: null,
       focus: null,
       tabs: [],
@@ -755,6 +756,7 @@ export class Controller {
   }
 
   async start(): Promise<void> {
+    void this.readSystem();
     void this.readLoginItem();
     void this.readUpdate();
     const r = await this.backend.call<{ phase: 'login' | 'ready'; reason?: string | null; reasonSaid?: unknown; session?: number; wiped: boolean }>('start');
@@ -1243,6 +1245,18 @@ export class Controller {
   private reportNotification(result: Delivery): void {
     const problem = result.ok ? null : result.error;
     if (problem !== this.state.notifyProblem) this.set({ notifyProblem: problem });
+  }
+
+  /** GitHub#577: the shell's system, once; anything else than its three words is "not known" */
+  private async readSystem(): Promise<void> {
+    let v: AppState['desktopSystem'] = null;
+    try {
+      const s = await this.deps.desktop?.system?.();
+      v = s === 'macos' || s === 'windows' || s === 'other' ? s : null;
+    } catch {
+      v = null;
+    }
+    if (v !== this.state.desktopSystem) this.set({ desktopSystem: v });
   }
 
   private async readLoginItem(): Promise<void> {

@@ -75,6 +75,8 @@ export interface FakeDesktop {
   update: any | null;
   /** GitHub#467: how the "shell" says the top row sits (default: the system's title bar, as on Linux) */
   frame: { overlay: boolean; fullscreen: boolean };
+  /** GitHub#577: the system the "shell" names (null: says nothing, as a shell from before it did) */
+  system: 'macos' | 'windows' | 'other' | null;
   /** a beat sent without `everyMs` is sent with 0: no gap after a round that ran over a beat (GitHub#324 — the test keeps the time; the gap itself is in test/unit/timed-sync.test.ts) */
   push(ev: { kind: 'tick'; everyMs?: number } | { kind: 'open'; key: string; url: string } | { kind: 'update'; status: any } | { kind: 'active' } | { kind: 'inactive' } | { kind: 'closeTab' }): void;
   /** the shell changed the updater's status: the window hears it the way it hears the real one */
@@ -90,6 +92,7 @@ function fakeDesktop(): FakeDesktop & { next(): Promise<unknown>; stop(): void }
     loginItem: false,
     update: null,
     frame: { overlay: false, fullscreen: false },
+    system: null,
     setUpdate(status) {
       this.update = status;
       this.push({ kind: 'update', status });
@@ -135,9 +138,10 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number; /** GitHub#577: the system the fake shell names (default: none) */ system?: 'macos' | 'windows' | 'other' } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const desktop = fakeDesktop();
+  if (opts.system) desktop.system = opts.system;
   const backend = new HarnessBackend({
     db: join(env.userData, 'cache.sqlite'),
     endpoints: { api: env.fake.api, web: env.fake.web },
@@ -190,6 +194,8 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
           ok = desktop.update;
         } else if (op === 'windowFrame') {
           ok = desktop.frame;
+        } else if (op === 'system') {
+          ok = desktop.system;
         } else if (op === 'clearItemNotifications') {
           desktop.records.push({ op, key: args.key });
         } else if (op === 'checkUpdate' || op === 'restartToUpdate' || op === 'clearNotifications' || op === 'closeWindow' || op === 'startDrag' || op === 'toggleZoom') {

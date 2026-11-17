@@ -1294,7 +1294,7 @@ PYC
 cstep "$WORKFLOW" client-plan "Decide the client release" > "$TMP/c-plan.sh"
 cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
 cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
-cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs" > "$TMP/c-files.sh"
+cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs and Windows" > "$TMP/c-files.sh"
 cstep "$CLIENT_WORKFLOW" release "Tag the tested commit" > "$TMP/c-tag.sh"
 cstep "$CLIENT_WORKFLOW" release "Create Release" > "$TMP/c-create.sh"
 
@@ -1338,7 +1338,7 @@ has "call ./.github/workflows/client.yml inherit [('sha', '\${{ needs.client-pla
 has "call-needs ['client-plan'] if needs.client-plan.outputs.tag != ''" "$S" "… only when the plan named a tag"
 has "daemon-release-needs ['plan', 'gate-summary']" "$S" "the daemon's release waits for nothing of the client"
 has "inputs [('sha', True, 'string'), ('tag', True, 'string')]" "$S" "client.yml can be called with a tag and a commit"
-has "client-release-needs ['e2e', 'mode', 'package', 'size', 'test'] if needs.mode.outputs.tag != ''" "$S" "client release page only after quick + full tests, both Macs and the size gate"
+has "client-release-needs ['e2e', 'mode', 'package', 'package-windows', 'size', 'test'] if needs.mode.outputs.tag != ''" "$S" "client release page only after quick + full tests, both Macs, Windows (GitHub#577) and the size gate"
 has "no-github-ref-tag-test True" "$S" "no job decides 'release build' from github.ref (the caller's ref in a call)"
 has "every-job-on-mode []" "$S" "every build / test job checks out the commit the mode job names"
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
@@ -1469,8 +1469,12 @@ git -C "$TMP/client-run" checkout -q -- client
 echo "-- the release page: the tested build, the tag on the tested commit"
 mkdir -p "$TMP/client-run/client/dist-release"
 for arch in arm64 x64; do for e in dmg app.tar.gz app.tar.gz.sig; do : > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-$arch.$e"; done; done
+: > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-windows-x64.exe"
 crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
-check "both Macs' files of the tag's version → passes" "$RC" 0
+check "the Windows installer's signature missing → fails (GitHub#577)" "$([ "$RC" != 0 ] && echo red)" "red"
+: > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-windows-x64.exe.sig"
+crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
+check "both Macs' and Windows' files of the tag's version → passes" "$RC" 0
 crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.1
 check "files of another version → fails" "$([ "$RC" != 0 ] && echo red)" "red"
 rm "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-x64.app.tar.gz.sig"

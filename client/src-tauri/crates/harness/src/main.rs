@@ -224,6 +224,7 @@ async fn main() {
                             "web": s.endpoints.web,
                             "store": match s.store {
                                 cavil_core::platform::StoreKind::Keychain => "keychain".to_string(),
+                                cavil_core::platform::StoreKind::WindowsCredential => "windows-credential".to_string(),
                                 cavil_core::platform::StoreKind::Memory => "memory".to_string(),
                                 cavil_core::platform::StoreKind::File(p) => format!("file:{}", p.display()),
                             },

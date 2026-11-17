@@ -53,7 +53,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// Platforms v1 does not support yet: keep the token for this run only.
+/// Platforms with no credential store of their own here (Linux): keep the token for this run only.
 #[derive(Default)]
 pub struct MemoryStore(Mutex<Option<String>>);
 
@@ -196,6 +196,8 @@ fn stderr_or(stderr: &[u8], code: Option<i32>) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreKind {
     Keychain,
+    /// Windows Credential Manager (GitHub#577, crate::wincred)
+    WindowsCredential,
     Memory,
     File(PathBuf),
 }
@@ -228,6 +230,7 @@ pub fn select(os: &str, env: &std::collections::HashMap<String, String>) -> Resu
     let store = match env.get("CAVIL_CLIENT_TEST_CREDENTIAL_FILE") {
         Some(f) if test_mode => StoreKind::File(PathBuf::from(f)),
         _ if os == "macos" => StoreKind::Keychain,
+        _ if os == "windows" => StoreKind::WindowsCredential,
         _ => StoreKind::Memory,
     };
     let opened_file = if test_mode { env.get("CAVIL_CLIENT_TEST_OPENED_FILE").map(PathBuf::from) } else { None };

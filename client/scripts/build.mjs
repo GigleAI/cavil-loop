@@ -32,13 +32,15 @@ await vite({
 console.log(`built ${outDir.slice(root.length + 1)}/`);
 
 // The app's icon set (src-tauri/icons, not committed): generated from build/icon.png — the one
-// icon source (GitHub#144) — by Tauri's own generator, so the .icns has every slot macOS asks for.
+// icon source (GitHub#144) — by Tauri's own generator, so the .icns has every slot macOS asks for (and the .ico the Windows build embeds, GitHub#577).
 if (!testBridge) {
   const tmp = mkdtempSync(join(tmpdir(), 'cavil-icons-'));
-  execFileSync(join(root, 'node_modules', '.bin', 'tauri'), ['icon', join(root, 'build', 'icon.png'), '-o', tmp], { stdio: 'ignore' });
+  // the CLI's own script through this node: on Windows node_modules/.bin/tauri is a .cmd wrapper,
+  // which Node starts only through a shell (GitHub#577)
+  execFileSync(process.execPath, [join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'icon', join(root, 'build', 'icon.png'), '-o', tmp], { stdio: 'ignore' });
   const icons = join(root, 'src-tauri', 'icons');
   mkdirSync(icons, { recursive: true });
-  for (const f of ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.png', 'icon.icns']) copyFileSync(join(tmp, f), join(icons, f));
+  for (const f of ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.png', 'icon.icns', 'icon.ico']) copyFileSync(join(tmp, f), join(icons, f));
   rmSync(tmp, { recursive: true, force: true });
   console.log('built src-tauri/icons/ from build/icon.png');
 }

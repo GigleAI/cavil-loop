@@ -3,9 +3,9 @@
 // file only wires them together:
 //   - one IPC command, `backend`, that hands a command to crates/core/src/api.rs
 //   - the window: links never navigate it, GitHub links open in the browser
-//   - the platform: keychain on macOS, where the profile lives, test mode
-//   - the desktop side (desktop.rs, mac.rs): notifications, Dock badge, launch at
-//     login, closing the window hides it, the sync beat (GitHub#169)
+//   - the platform: keychain on macOS, Credential Manager on Windows (GitHub#577), where the profile lives, test mode
+//   - the desktop side (desktop.rs, mac.rs, win.rs): notifications, Dock badge / taskbar number, launch at
+//     login, closing the window hides it (Windows: into the notification area), the sync beat (GitHub#169)
 //   - page zoom (GitHub#155): the 显示 menu's ⌘+ / ⌘- / ⌘0 (macOS), level kept by crates/core/src/zoom.rs
 //   - the window's size and place kept across restarts (GitHub#333, window.rs; rules: crates/core/src/window_state.rs)
 //   - updating itself (GitHub#184, updater.rs): Tauri's updater plugin; when and which release: crates/core/src/update.rs
@@ -18,12 +18,16 @@ mod updater;
 mod window;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(windows)]
+mod win;
 
 use async_trait::async_trait;
 use cavil_core::api::dispatch;
 use cavil_core::engine::is_allowed_external;
 use cavil_core::i18n::tr;
 use cavil_core::platform::{select, FileStore, MacKeychainStore, MemoryStore, Opener, StoreKind, SystemClock};
+#[cfg(windows)]
+use cavil_core::wincred::WinCredStore;
 use cavil_core::store::Store;
 use cavil_core::theme::Theme;
 use cavil_core::{Deps, Engine};
@@ -53,7 +57,14 @@ impl Opener for SystemOpener {
             let mut file = std::fs::OpenOptions::new().create(true).append(true).open(f).map_err(|e| e.to_string())?;
             return writeln!(file, "{url}").map_err(|e| e.to_string());
         }
-        let program = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
+        // Windows: Explorer hands a web address to the default browser (no console window, no shell)
+        let program = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else if cfg!(windows) {
+            "explorer.exe"
+        } else {
+            "xdg-open"
+        };
         std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))
     }
 }
@@ -301,6 +312,11 @@ fn main() {
                 .build(),
         );
     }
+    // Windows (GitHub#577): the user's Run entry in the registry, started the same hidden way
+    #[cfg(windows)]
+    {
+        builder = builder.plugin(tauri_plugin_autostart::Builder::new().arg("--hidden").build());
+    }
     let app = builder
         .setup(move |app| {
             // Same profile folder as the Electron build ("Cavil Loop"), so an upgrade keeps
@@ -320,6 +336,11 @@ fn main() {
             app.manage(window::Keeper::new(store.clone()));
             let credentials: Arc<dyn cavil_core::platform::CredentialStore> = match &selection.store {
                 StoreKind::Keychain => Arc::new(MacKeychainStore::default()),
+                #[cfg(windows)]
+                StoreKind::WindowsCredential => Arc::new(WinCredStore::system()),
+                // only ever chosen on Windows
+                #[cfg(not(windows))]
+                StoreKind::WindowsCredential => Arc::new(MemoryStore::default()),
                 StoreKind::File(p) => Arc::new(FileStore(p.clone())),
                 StoreKind::Memory => Arc::new(MemoryStore::default()),
             };
@@ -419,10 +440,16 @@ fn main() {
                 let h = handle.clone();
                 mac::setup(move |id| desktop::on_click(&h, &id));
             }
+            // the icon in the notification area: where the app is while its window is closed (GitHub#577).
+            // Not for the packaged-app checks, which quit at once.
+            #[cfg(windows)]
+            if !smoke && !notify_check {
+                win::tray(&handle)?;
+            }
             desktop::spawn_background(handle.clone());
             // the app updating itself: at start, then every 6 hours (when this build does at all)
             let mode = updater::mode(&updater::Facts {
-                macos: cfg!(target_os = "macos"),
+                released_os: cfg!(any(target_os = "macos", windows)),
                 debug: cfg!(debug_assertions),
                 test_feature: cfg!(feature = "update-test"),
                 test_mode: selection.test_mode,
@@ -460,7 +487,7 @@ fn main() {
             }
             Ok(())
         })
-        // closing the window hides it where the app keeps running (macOS; tests may ask for it elsewhere)
+        // closing the window hides it where the app keeps running (macOS, Windows; tests may ask for it elsewhere)
         .on_window_event(|w, ev| {
             // the window's size and place, kept for the next start (GitHub#333)
             if w.label() == "main" {
@@ -502,6 +529,7 @@ fn main() {
             desktop::desktop_window_frame,
             desktop::desktop_start_drag,
             desktop::desktop_toggle_zoom,
+            desktop::desktop_system,
             updater::desktop_update_status,
             updater::desktop_update_check,
             updater::desktop_update_set_auto,

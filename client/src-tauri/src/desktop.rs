@@ -1,6 +1,7 @@
 // The desktop side of the app (GitHub#139, rebuilt on Tauri in #169): system
-// notifications, the Dock badge, launch at login, keeping the app running with
-// its window closed, and the sync beat. The window decides *what* to show
+// notifications, the Dock badge (Windows: the number on the taskbar button), launch at login,
+// keeping the app running with its window closed, and the sync beat. macOS (mac.rs) and, since
+// GitHub#577, Windows (win.rs); Linux shows none of it. The window decides *what* to show
 // (src/app/controller.ts + src/data/pending.ts); this file only does it.
 // Nothing here touches the GitHub credential.
 //
@@ -22,6 +23,7 @@
 //                                    takes that size, GitHub#333), "quit" (the app quits the way its
 //                                    Quit menu item does) or "restart" (the restart an installed
 //                                    update asks for, updater::restart_now)
+//   CAVIL_CLIENT_TEST_SYSTEM         GitHub#577: the system `desktop_system` names (macos / windows / other)
 //   CAVIL_CLIENT_TEST_WINDOW_STILL_MS  how long the window has to be still before a resize / move is
 //                                    kept (default: window.rs STILL_MS) — a test of what closing,
 //                                    quitting and restarting keep sets it longer than the test
@@ -45,6 +47,8 @@ pub struct TestHooks {
     pub hide_on_close: bool,
     pub control: Option<PathBuf>,
     pub window_still_ms: Option<u64>,
+    /// GitHub#577: the system the window is told it runs on (`desktop_system`)
+    pub system: Option<String>,
 }
 
 impl TestHooks {
@@ -60,6 +64,7 @@ impl TestHooks {
             hide_on_close: get("CAVIL_CLIENT_TEST_HIDE_ON_CLOSE").as_deref() == Some("1"),
             control: get("CAVIL_CLIENT_TEST_CONTROL_FILE").map(PathBuf::from),
             window_still_ms: get("CAVIL_CLIENT_TEST_WINDOW_STILL_MS").and_then(|v| v.parse().ok()),
+            system: get("CAVIL_CLIENT_TEST_SYSTEM").map(|v| system_name(&v).to_string()),
         }
     }
 }
@@ -91,9 +96,10 @@ impl Desktop {
         Desktop { queue: Mutex::new(VecDeque::new()), wake: tokio::sync::Notify::new(), seq: AtomicU64::new(0), run: run_token(), hooks }
     }
 
-    /// Closing the window hides it (the app keeps syncing and reminding): macOS, or a test that asks for it.
+    /// Closing the window hides it (the app keeps syncing and reminding): macOS (the Dock icon stays),
+    /// Windows (the icon in the notification area stays, GitHub#577), or a test that asks for it.
     pub fn hide_on_close(&self) -> bool {
-        cfg!(target_os = "macos") || self.hooks.hide_on_close
+        cfg!(any(target_os = "macos", windows)) || self.hooks.hide_on_close
     }
 
     pub fn tick_ms(&self) -> u64 {
@@ -161,13 +167,17 @@ pub fn on_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
-/// Take back one delivered notification by its id (GitHub#369). v1: macOS only; test mode records it instead.
+/// Take back one delivered notification by its id (GitHub#369). macOS and Windows; test mode records it instead.
 fn clear_one<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let d = app.state::<Desktop>();
     d.record(json!({ "op": "clearNotification", "id": id }));
     #[cfg(target_os = "macos")]
     if d.hooks.record.is_none() {
         crate::mac::clear_delivered_one(id);
+    }
+    #[cfg(windows)]
+    if d.hooks.record.is_none() {
+        crate::win::clear_delivered_one(id);
     }
 }
 
@@ -294,14 +304,20 @@ pub async fn desktop_notify<R: Runtime>(app: AppHandle<R>, alert: Value) -> Resu
     Ok(answer)
 }
 
-/// A real notification. v1: macOS only; elsewhere nothing is shown (and nothing is refused).
+/// A real notification: macOS, Windows (GitHub#577); elsewhere nothing is shown (and nothing is refused).
 #[allow(unused_variables)]
 async fn send<R: Runtime>(app: &AppHandle<R>, id: &str, title: &str, body: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         crate::mac::notify(id, title, body).await
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        // a click on it does what a click on a macOS notification does (`on_click`)
+        let h = app.clone();
+        crate::win::notify(id, title, body, move |id| on_click(&h, &id))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Ok(())
     }
@@ -317,10 +333,13 @@ pub async fn desktop_badge<R: Runtime>(app: AppHandle<R>, count: i64) -> Result<
             w.set_badge_count(if count > 0 { Some(count) } else { None }).map_err(|e| e.to_string())?;
         }
     }
+    // Windows has no badge number: a picture of it over the taskbar icon (GitHub#577)
+    #[cfg(windows)]
+    crate::win::set_badge(&app, count)?;
     Ok(())
 }
 
-/// Take back this app's notifications still in Notification Center (GitHub#185). v1: macOS only.
+/// Take back this app's notifications still in Notification Center (GitHub#185). macOS and Windows.
 #[tauri::command]
 pub async fn desktop_clear_notifications<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let d = app.state::<Desktop>();
@@ -329,11 +348,15 @@ pub async fn desktop_clear_notifications<R: Runtime>(app: AppHandle<R>) -> Resul
     if d.hooks.record.is_none() {
         crate::mac::clear_delivered();
     }
+    #[cfg(windows)]
+    if d.hooks.record.is_none() {
+        crate::win::clear_delivered();
+    }
     Ok(())
 }
 
 /// GitHub#522: the window shows this item: take back every notification about it still in
-/// Notification Center (of any start of the app); the others stay. v1: macOS only; test mode records it instead.
+/// Notification Center (of any start of the app); the others stay. macOS and Windows; test mode records it instead.
 #[tauri::command]
 pub async fn desktop_clear_item_notifications<R: Runtime>(app: AppHandle<R>, key: String) -> Result<(), String> {
     let d = app.state::<Desktop>();
@@ -342,19 +365,23 @@ pub async fn desktop_clear_item_notifications<R: Runtime>(app: AppHandle<R>, key
     if d.hooks.record.is_none() {
         crate::mac::clear_delivered_for(&key);
     }
+    #[cfg(windows)]
+    if d.hooks.record.is_none() {
+        crate::win::clear_delivered_for(&key);
+    }
     Ok(())
 }
 
-/// Launch at login: on / off; null where this platform cannot (v1: macOS only).
+/// Launch at login: on / off; null where this platform cannot (macOS, and Windows since GitHub#577).
 #[tauri::command]
 #[allow(unused_variables)]
 pub fn desktop_login_item<R: Runtime>(app: AppHandle<R>) -> Option<bool> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         use tauri_plugin_autostart::ManagerExt;
         app.autolaunch().is_enabled().ok()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
@@ -363,13 +390,13 @@ pub fn desktop_login_item<R: Runtime>(app: AppHandle<R>) -> Option<bool> {
 #[tauri::command]
 #[allow(unused_variables)]
 pub fn desktop_set_login_item<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         use tauri_plugin_autostart::ManagerExt;
         let l = app.autolaunch();
         return if on { l.enable() } else { l.disable() }.map_err(|e| e.to_string());
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Err(cavil_core::i18n::tr("这个系统还不支持开机自动启动", &[]))
     }
@@ -430,6 +457,25 @@ pub async fn desktop_toggle_zoom<R: Runtime>(app: AppHandle<R>) -> Result<(), St
         r.map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// GitHub#577: which system the app runs on, for the few places the window words or shows differently
+/// ("macos" / "windows" / "other"). Test mode may name another one (CAVIL_CLIENT_TEST_SYSTEM), so the
+/// suites can look at the Windows window on any machine.
+#[tauri::command]
+pub async fn desktop_system<R: Runtime>(app: AppHandle<R>) -> String {
+    if let Some(s) = &app.state::<Desktop>().hooks.system {
+        return s.clone();
+    }
+    system_name(std::env::consts::OS).to_string()
+}
+
+pub fn system_name(os: &str) -> &'static str {
+    match os {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "other",
+    }
 }
 
 #[tauri::command]
@@ -536,6 +582,21 @@ mod tests {
         let s: Value = serde_json::from_str(&second.notification_id(&json!({ "kind": "summary" }))).unwrap();
         assert_eq!(s["run"], vb["run"]);
         assert_ne!(first.notification_id(&json!({ "kind": "summary" })), second.notification_id(&json!({ "kind": "summary" })));
+    }
+
+    /// GitHub#577: the window is told one of three words; a test may name the system, only in test mode
+    #[test]
+    fn the_system_is_one_of_three_words_and_only_a_test_may_name_another() {
+        assert_eq!(system_name("macos"), "macos");
+        assert_eq!(system_name("windows"), "windows");
+        assert_eq!(system_name("linux"), "other");
+        assert_eq!(system_name(""), "other");
+        let mut env = std::collections::HashMap::new();
+        env.insert("CAVIL_CLIENT_TEST_SYSTEM".to_string(), "windows".to_string());
+        assert_eq!(TestHooks::from_env(false, &env).system, None);
+        assert_eq!(TestHooks::from_env(true, &env).system.as_deref(), Some("windows"));
+        env.insert("CAVIL_CLIENT_TEST_SYSTEM".to_string(), "beos".to_string());
+        assert_eq!(TestHooks::from_env(true, &env).system.as_deref(), Some("other"));
     }
 
     #[test]

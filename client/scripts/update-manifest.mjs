@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // The update manifest of one client release (GitHub#184): `latest.json`, the file the app's
 // updater reads (src-tauri/crates/core/src/update.rs picks the release, Tauri's updater plugin
-// reads this). Run by the release job on the packages the two Macs built.
+// reads this). Run by the release job on the packages the two Macs and the Windows machine built.
 //
 // The public key is the app's own: `plugins.updater.pubkey` in src-tauri/tauri.conf.json — the
 // one place the app (at run time), the bundler (when it signs) and this script read it from.
 //
-// Two channels (GitHub#215): a tagged release (`--channel stable`, the default) must carry both
-// Apple silicon and Intel; a development build from main (`--channel dev`, version X.Y.Z-dev.N)
-// carries the machines in CHANNEL_PLATFORMS.dev. Which machines a channel needs is decided here
+// Two channels (GitHub#215): a tagged release (`--channel stable`, the default) must carry Apple
+// silicon, Intel and Windows x64 (GitHub#577); a development build from main (`--channel dev`,
+// version X.Y.Z-dev.N) carries the machines in CHANNEL_PLATFORMS.dev. Which machines a channel needs is decided here
 // only, by the channel's name; nobody can pass a shorter list.
 //
 // Refuses (exit 1, nothing written) unless, for every machine the channel needs:
@@ -30,19 +30,23 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPO = 'GigleAI/cavil-loop';
-/** the updater's platform names → the arch in the package's file name */
-export const PLATFORMS = { 'darwin-aarch64': 'arm64', 'darwin-x86_64': 'x64' };
+/** the updater's platform names → the machine's name in the package's file name */
+export const PLATFORMS = { 'darwin-aarch64': 'arm64', 'darwin-x86_64': 'x64', 'windows-x86_64': 'windows-x64' };
 /**
  * The machines each channel's manifest must carry (GitHub#215). Development builds are made on
- * the Apple silicon Mac only (the push-to-main build, .github/workflows/client.yml); the app has
- * the same list (`DEV_TARGETS`, src-tauri/crates/core/src/update.rs) to grey the channel out on
- * other Macs — test/unit/update-manifest.test.ts compares the two.
+ * the Apple silicon Mac and on Windows (the push-to-main build, .github/workflows/client.yml,
+ * GitHub#577); the app has the same list (`DEV_TARGETS`, src-tauri/crates/core/src/update.rs) to
+ * grey the channel out on other machines — test/unit/update-manifest.test.ts compares the two.
  */
-export const CHANNEL_PLATFORMS = { stable: ['darwin-aarch64', 'darwin-x86_64'], dev: ['darwin-aarch64'] };
+export const CHANNEL_PLATFORMS = { stable: ['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'], dev: ['darwin-aarch64', 'windows-x86_64'] };
 /** the version each channel publishes */
 export const VERSION_SHAPE = { stable: /^\d+\.\d+\.\d+$/, dev: /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-dev\.(0|[1-9]\d*)$/ };
 
-export const packageName = (version, arch) => `Cavil-Loop-${version}-${arch}.app.tar.gz`;
+/**
+ * The update package of one machine. A Mac's is the app bundle packed (.app.tar.gz); Windows' is the
+ * installer itself (GitHub#577: Tauri's updater runs it), the same file people download to install.
+ */
+export const packageName = (version, arch) => (arch.startsWith('windows-') ? `Cavil-Loop-${version}-${arch}.exe` : `Cavil-Loop-${version}-${arch}.app.tar.gz`);
 export const downloadUrl = (version, file) => `https://github.com/${REPO}/releases/download/client/v${version}/${file}`;
 
 /** The app's public key as written in tauri.conf.json ('' when there is none). */

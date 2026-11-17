@@ -56,17 +56,22 @@ function editTrusted(sigB64: string, from: string, to: string): string {
 }
 
 describe('the update manifest (GitHub#184)', () => {
-  it('both packages signed with the app\'s key: both platforms, this repository\'s download URLs, the signatures as signed', async () => {
+  it('every package signed with the app\'s key: every platform (both Macs, Windows — GitHub#577), this repository\'s download URLs, the signatures as signed', async () => {
     const dir = tempDir();
     const k = key(dir, 'release.key');
     const a = pack(dir, '0.5.0', 'arm64', k.priv);
     pack(dir, '0.5.0', 'x64', k.priv);
+    const w = pack(dir, '0.5.0', 'windows-x64', k.priv);
     const r = build({ version: '0.5.0', dir, pubkey: k.pub, notes: 'n', date: new Date('2026-11-06T00:00:00Z') });
     expect(r.ok).toBe(true);
     const m = (r as any).manifest;
     expect(m.version).toBe('0.5.0');
-    expect(Object.keys(m.platforms).sort()).toEqual(['darwin-aarch64', 'darwin-x86_64']);
+    expect(Object.keys(m.platforms).sort()).toEqual(['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64']);
     expect(m.platforms['darwin-aarch64'].url).toBe('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.0/Cavil-Loop-0.5.0-arm64.app.tar.gz');
+    // Windows: the installer itself is the update package (Tauri's updater runs it)
+    expect(m.platforms['windows-x86_64'].url).toBe('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.0/Cavil-Loop-0.5.0-windows-x64.exe');
+    expect(m.platforms['windows-x86_64'].signature).toBe(readFileSync(w.sig, 'utf8').trim());
+    expect(await pluginSays(readFileSync(w.file), readFileSync(w.sig, 'utf8').trim(), k.pub)).toBe(true);
     expect(m.platforms['darwin-x86_64'].signature).toBe(readFileSync(join(dir, 'Cavil-Loop-0.5.0-x64.app.tar.gz.sig'), 'utf8').trim());
     expect(keyId(m.platforms['darwin-aarch64'].signature)).toBe(keyId(k.pub));
     // the plugin's own library agrees
@@ -141,6 +146,7 @@ describe('the update manifest (GitHub#184)', () => {
     writeFileSync(conf, JSON.stringify({ plugins: { updater: { pubkey: k.pub } } }));
     const a = pack(dir, '0.5.0', 'arm64', k.priv);
     pack(dir, '0.5.0', 'x64', k.priv);
+    pack(dir, '0.5.0', 'windows-x64', k.priv);
     const run = (args: string[]) => {
       try {
         execFileSync('node', [join(root, 'scripts/update-manifest.mjs'), ...args], { stdio: 'pipe' });
@@ -167,26 +173,35 @@ describe('per channel: which machines a manifest must carry (GitHub#215)', () =>
     }
   };
 
-  it('a development build with only the Apple silicon package: the manifest is made, for that machine only', () => {
+  it('a development build: the Apple silicon and the Windows package, those machines only (an Intel package there is left out)', () => {
     const dir = tempDir();
     const k = key(dir, 'k');
     pack(dir, '0.5.1-dev.387', 'arm64', k.priv);
+    pack(dir, '0.5.1-dev.387', 'x64', k.priv);
+    pack(dir, '0.5.1-dev.387', 'windows-x64', k.priv);
     const r = build({ version: '0.5.1-dev.387', dir, pubkey: k.pub, channel: 'dev' });
     expect(r.ok, JSON.stringify(r)).toBe(true);
     const m = (r as any).manifest;
     expect(m.version).toBe('0.5.1-dev.387');
-    expect(Object.keys(m.platforms)).toEqual(['darwin-aarch64']);
+    expect(Object.keys(m.platforms)).toEqual(['darwin-aarch64', 'windows-x86_64']);
     expect(m.platforms['darwin-aarch64'].url).toBe('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.387/Cavil-Loop-0.5.1-dev.387-arm64.app.tar.gz');
+    expect(m.platforms['windows-x86_64'].url).toBe('https://github.com/GigleAI/cavil-loop/releases/download/client/v0.5.1-dev.387/Cavil-Loop-0.5.1-dev.387-windows-x64.exe');
+    // without the Windows package a development build is refused too
+    const d2 = tempDir();
+    pack(d2, '0.5.1-dev.388', 'arm64', k.priv);
+    expect((build({ version: '0.5.1-dev.388', dir: d2, pubkey: k.pub, channel: 'dev' }) as any).errors.join('\n')).toMatch(/windows-x64：没有更新包/);
   });
 
-  it('a release still needs both machines: missing either one is refused, whatever else is there', () => {
-    for (const only of ['arm64', 'x64']) {
+  it('a release still needs all three machines: missing any one is refused, whatever else is there', () => {
+    const all = ['arm64', 'x64', 'windows-x64'];
+    for (const missing of all) {
       const dir = tempDir();
       const k = key(dir, 'k');
-      pack(dir, '0.5.1', only, k.priv);
+      for (const a of all.filter((a) => a !== missing)) pack(dir, '0.5.1', a, k.priv);
       const r = build({ version: '0.5.1', dir, pubkey: k.pub });
-      expect(r.ok, only).toBe(false);
-      expect((r as any).errors.join('\n')).toMatch(only === 'arm64' ? /x64：没有更新包/ : /arm64：没有更新包/);
+      expect(r.ok, missing).toBe(false);
+      const errs = (r as any).errors as string[];
+      expect(errs, missing).toEqual([expect.stringMatching(new RegExp(`^${missing}：没有更新包`))]);
       expect(build({ version: '0.5.1', dir, pubkey: k.pub, channel: 'stable' }).ok).toBe(false);
     }
   });
@@ -226,11 +241,12 @@ describe('per channel: which machines a manifest must carry (GitHub#215)', () =>
     const conf = join(dir, 'tauri.conf.json');
     writeFileSync(conf, JSON.stringify({ plugins: { updater: { pubkey: k.pub } } }));
     pack(dir, '0.5.1-dev.9', 'arm64', k.priv);
+    pack(dir, '0.5.1-dev.9', 'windows-x64', k.priv);
     expect(cli(['--version', '0.5.1-dev.9', '--dir', dir, '--conf', conf, '--out', join(dir, 'a.json')]).code).toBe(1);
     expect(cli(['--version', '0.5.1-dev.9', '--dir', dir, '--conf', conf, '--channel', 'dev', '--out', join(dir, 'b.json')]).code).toBe(0);
-    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'b.json'), 'utf8')).platforms)).toEqual(['darwin-aarch64']);
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, 'b.json'), 'utf8')).platforms)).toEqual(['darwin-aarch64', 'windows-x86_64']);
     expect(JSON.parse(cli(['--print-platforms', 'dev']).out)).toEqual(CHANNEL_PLATFORMS.dev);
-    expect(JSON.parse(cli(['--print-platforms', 'stable']).out)).toEqual(['darwin-aarch64', 'darwin-x86_64']);
+    expect(JSON.parse(cli(['--print-platforms', 'stable']).out)).toEqual(['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64']);
     expect(cli(['--print-platforms', 'nightly']).code).toBe(1);
   });
 

@@ -308,6 +308,9 @@
   "读取钥匙串失败：{e}": "Reading the keychain failed: {e}",
   "写入钥匙串失败：{e}": "Writing the keychain failed: {e}",
   "删除钥匙串条目失败：{e}": "Deleting the keychain entry failed: {e}",
+  "读取 Windows 凭据管理器失败：{e}": "Reading Windows Credential Manager failed: {e}",
+  "写入 Windows 凭据管理器失败：{e}": "Writing Windows Credential Manager failed: {e}",
+  "删除 Windows 凭据管理器里的条目失败：{e}": "Deleting the Windows Credential Manager entry failed: {e}",
   "凭据格式不符合预期，未保存": "The credential has an unexpected format; not saved",
   "关掉后看板上暂时不显示这个来源的条目；来源不删，照常同步": "When off, this source's items are hidden from the board for now; the source is kept and still syncs",
   "在看板显示": "Show on board",
@@ -391,5 +394,16 @@
   "GitHub 限流": "GitHub rate limit",
   "GitHub 限流中": "GitHub rate limit",
   "{text}：GitHub 暂时拒绝了这个账号的读取，到时自动再读（点开看详情）": "{text}: GitHub is refusing this account's reads for now; they resume automatically (click for details)",
-  "GitHub 没说什么时候恢复，客户端 {at} 再试；在那之前不再发读取请求": "GitHub did not say when it lifts; the client tries again at {at}, and sends no read before then"
+  "GitHub 没说什么时候恢复，客户端 {at} 再试；在那之前不再发读取请求": "GitHub did not say when it lifts; the client tries again at {at}, and sends no read before then",
+  "任务栏图标上的数字 = 窗口不在前台时新来的待处理数，切到 App 清零。": "Taskbar number = new waiting items while the window is in the background; reset when switching to the app.",
+  "关掉窗口后 App 仍在后台同步和提醒（图标留在任务栏右下角的通知区域）；要完全退出，在那个图标上右键选「退出」。": "After the window is closed the app keeps syncing and reminding in the background (its icon stays in the notification area at the bottom right of the taskbar); to quit completely, right-click that icon and choose \"Quit\".",
+  "任务栏图标上的数字只是「未读数」：窗口不在前台时每来一条新的待处理加一；切到 App 就清零。还没看就被摘掉标签或关掉的那条，不再算未读。": "The taskbar number is only an \"unread count\": each new waiting item adds one while the window is in the background; switching to the app resets it. An item whose label was removed or that was closed before being seen no longer counts as unread.",
+  "Windows 没有让 Cavil Loop 弹出通知（{why}）。请打开「设置 → 系统 → 通知」，打开 Cavil Loop 的通知。任务栏图标上的数字不受影响。": "Windows did not let Cavil Loop show notifications ({why}). Open \"Settings → System → Notifications\" and turn on notifications for Cavil Loop. The taskbar number is not affected.",
+  "会删除 Windows 凭据管理器里的凭据": "Deletes the credential from Windows Credential Manager",
+  "这台电脑是 Windows，不能运行 daemon（它需要 macOS 或 Linux 上的 bash、tmux 和定时服务）。看板、评论、改标签、交给 agent 都照常可用；要看 daemon 的状态或改项目设置，在下面「远程 daemon」里接上装着 daemon 的那台电脑。": "This computer runs Windows and cannot run the daemon (it needs bash, tmux and a scheduler on macOS or Linux). The board, comments, label changes and handing work to the agent all work as usual; to see the daemon's status or change project settings, connect to the computer that runs the daemon under \"Remote daemon\" below.",
+  "去接远程 daemon": "Connect a remote daemon",
+  "凭据存在本机的 Windows 凭据管理器里，只发给 GitHub。": "The credential is kept in this computer's Windows Credential Manager and only sent to GitHub.",
+  "打开 Cavil Loop": "Open Cavil Loop",
+  "Windows 设置里关掉了通知（{why}）": "Notifications are turned off in Windows settings ({why})",
+  "退出": "Quit"
 }

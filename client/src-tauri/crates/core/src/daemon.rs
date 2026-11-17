@@ -71,6 +71,11 @@ impl Config {
     /// The app: the user's HOME and login PATH. Test mode (the suites only): a fake HOME, a fixed
     /// PATH, a local clone source and extra environment — or off when the test set no HOME.
     pub fn from_env(test_mode: bool, env: &std::collections::HashMap<String, String>) -> Config {
+        // GitHub#577: Windows cannot run the daemon — the feature is off there, whatever HOME says
+        // (Git for Windows sets one), so nothing here ever starts a shell on Windows
+        if !test_mode && cfg!(windows) {
+            return Config::off();
+        }
         if !test_mode {
             return Config { home: env.get("HOME").filter(|h| !h.is_empty()).map(PathBuf::from), ..Config::off() };
         }
