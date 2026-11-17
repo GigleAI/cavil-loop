@@ -69,7 +69,8 @@ export function TabBar({
   tabs: TabInfo[];
   /** HOME or the key of the tab in front */
   active: string;
-  labels: TabLabels;
+  /** GitHub#569: the names of a tab's item's repository */
+  labels: TabLabels | ((repo: string) => TabLabels);
   onPick: (key: string) => void;
   onClose: (key: string) => void;
   /** a tab dragged onto the place of another one */
@@ -141,7 +142,7 @@ export function TabBar({
         >
           {tabs.map((tab, i) => {
             const on = tab.key === active;
-            const status = tabStatus(tab.item, labels);
+            const status = tabStatus(tab.item, typeof labels === 'function' ? labels(tab.item.repo) : labels);
             const unread = tabUnread(tab, on);
             const words = unread ? t('{status} · 有新动静', { status: tKey(TAB_STATUS_TEXT[status]) }) : tKey(TAB_STATUS_TEXT[status]);
             return (

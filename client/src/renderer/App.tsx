@@ -25,6 +25,7 @@ import { closeFind, openFind, stepFind } from './findInPage';
 import { setCustomKeys, type CustomKeys } from './shortcuts';
 import type { SettingsIntent } from './EmptyGuide';
 import { t } from '../shared/i18n';
+import { handBackFor } from '../shared/repoLabels';
 
 /** GitHub#442: the "tab" the close question / ⌘W is about when it is the floating panel (never an item key) */
 const FLOAT = '\u0000float';
@@ -62,6 +63,10 @@ export function App() {
     api()
       .get()
       .then((s) => alive && setSnap(s));
+    // GitHub#569: a flow label rename left unfinished on this computer (the app closed half way) is said at once
+    void api()
+      .labelRenameScan?.()
+      ?.catch(() => undefined);
     return () => {
       alive = false;
       off();
@@ -430,7 +435,10 @@ export function App() {
               <TabBar
                 tabs={tabs}
                 active={front}
-                labels={{ human: snap!.state.handBack.human, doing: snap!.state.handBack.running, blocked: snap!.state.handBack.blocked }}
+                labels={(repo: string) => {
+                  const hb = handBackFor(snap!.state, repo);
+                  return { human: hb.human, doing: hb.running, blocked: hb.blocked };
+                }}
                 onPick={(key) => show(key)}
                 onClose={closeTab}
                 onMove={(key, to) => void api().moveTab(key, to)}

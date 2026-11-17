@@ -8,6 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
+# 人在终端直接跑时先在本项目的轮询锁里重新起自己，过流程标签改名的闸门（GitHub#569）；由轮询拉起时什么都不做
+poll_lock_enter "${BASH_SOURCE[0]}" "$@"
 
 # 重测试排队开着时（GitHub#343），整个派工在条目锁里跑，和 cleanup-issue.sh 一先一后
 if heavy_enabled; then item_lock_reexec "${1:?need issue number}" "${BASH_SOURCE[0]}" "$@"; fi

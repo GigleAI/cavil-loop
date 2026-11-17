@@ -343,7 +343,8 @@ export function TableView({
   /** the table as built by the board (GitHub#368: its counts feed the view bar too); left out = built here from `items` */
   table?: Table;
   /** labels the cell's label picker keeps near the top, right after what the item carries (GitHub#496) */
-  pinnedLabels?: readonly string[];
+  /** GitHub#569: the label picker's pinned names for an item of this repository */
+  pinnedLabels?: (repo: string) => readonly string[];
   /** GitHub#522: the item the floating detail shows: its row is marked */
   openKey?: string | null;
 }) {
@@ -582,7 +583,7 @@ export function TableView({
                       today={today}
                       act={(a, ok) => void act(r.item)(a, ok)}
                       close={() => setEditing(null)}
-                      pinned={pinnedLabels}
+                      pinned={pinnedLabels?.(r.item.repo)}
                     />
                   ) : (
                     <Cell col={c} item={r.item} all={items} now={now} dark={dark} />

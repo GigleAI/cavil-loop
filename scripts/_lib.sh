@@ -51,6 +51,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
 # 令牌脱敏入口（GitHub#342）：log() 和所有往 poll.log / 窗格历史追加内容的地方都用它
 # shellcheck source=_redact.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
+# 流程标签改名的共用规则（GitHub#569），scripts/project-config.sh 用的是同一份
+# shellcheck source=_label_rename.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_label_rename.sh"
 # shellcheck source=_preview_ports.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_preview_ports.sh"
 # 重测试排队的公共判断（GitHub#343），scripts/heavy-test.sh 用的是同一份
@@ -88,8 +91,171 @@ fi
 # webhook 的地址 / 密钥只认项目配置文件（GitHub#100）：worker 跑叫醒脚本时只 source 这个文件，
 # 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
 unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
+
+# ── 加载配置，并记下这一次加载读了哪些文件、各是什么内容（GitHub#569）──
+# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程加载配置之后，配置有没有被改过？配置是 Bash，标签名
+# 可能写在它 source 的邻近文件里，人也可能直接用编辑器改。所以加载时用 DEBUG 陷阱（临时打开 functrace，source
+# 进来的文件才会触发）记下执行过命令的每个文件，加载完立刻给每个文件算一次内容指纹（CONFIG_SRC_FPS）；闸门在锁里
+# 重算一遍，任何一个变了或读不了就不动手。配置照常按原路径只 source 一次：不重新执行配置（复审第 5 轮：重新加载会
+# 重复配置里的命令、撞上只读变量），也不换路径加载（第 3 轮：弄坏 ${BASH_SOURCE[0]}）。
+# 看不到的输入写在文档里：配置用 $(cat …) 等方式读的文件、加载时不存在而之后才出现的文件、环境变量。
+cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依赖 realpath：老 macOS 没有）
+    local p="$1" n=0 t d
+    while [ -L "$p" ]; do
+        n=$((n + 1)); [ "$n" -le 40 ] || return 1
+        t="$(readlink "$p")" || return 1
+        case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac
+    done
+    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+    printf '%s/%s\n' "$d" "$(basename "$p")"
+}
+cfg_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+    else return 1; fi
+}
+cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh 的 rev_of 同一个算法
+    [ -f "$2" ] && [ -r "$2" ] || return 1
+    { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
+}
+CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
+# 指纹必须和本进程**实际读到的版本**对得上（复审：加载后才算指纹，加载期间被原子替换的文件会让「旧值 + 新指纹」
+# 一路放行）。主配置在 source 之前算一次；它 source 的文件在**其第一条命令执行之前**算一次（DEBUG 陷阱第一次
+# 在这个文件里触发时——bash 的 source 先把整个文件读进来再执行，这一刻文件已读完、自己的命令还没跑）；加载完
+# 再算一次：两次不一样 = 加载期间被改过，本进程不动手。不给 source / . 套函数：套了会改掉被加载文件看到的位置
+# 参数（$1 …）和 declare 的作用域（复审：无参数的 source 沿用调用者的 $1，经函数就变成函数参数）。
+# 看不到的：bash 读完一个被 source 的文件、到它第一条命令执行之间那一瞬被换掉（中间不执行任何命令，只有外部进程
+# 恰好在这一刻写才会发生）；内容被改了又改回原样（内容一样，不影响结果）。
+_CFG_SRCS="|"
+_CFG_PRE=""
+_CFG_PRE_BAD=0
+_CFG_LIB_SELF="${BASH_SOURCE[0]}"
+_cfg_abs() {   # <路径> → 绝对路径（相对路径按当前目录补全）
+    case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac
+}
+_cfg_pre_note() {   # <绝对路径>：记下这个文件此刻的指纹（每个文件只记第一次）
+    local f="$1" h
+    h="$(cfg_sha256 < "$f" 2>/dev/null || true)"
+    if [ -z "$h" ]; then _CFG_PRE_BAD=1; return 0; fi
+    _CFG_PRE="${_CFG_PRE}${h}"$'\t'"${f}"$'\n'
+}
+# 加载中途「看不全」也要记下（复审：配置 set +T、source 邻近文件、再 set -T，加载完 functrace 又是开的，只在加载
+# 结束时检查就漏了中间那段）。陷阱每次触发都看一眼：functrace 此刻是关的（之后 source 的文件不触发陷阱），或者
+# 下一条命令是改 DEBUG 陷阱的 trap（换掉 / 清掉之后就看不见；只认字面写着 trap … DEBUG 的命令，经变量、别名拼出来的
+# 看不出，写在文档里），都算看不全。命令替换 / 管道等子 shell 里的记录回不到本进程的变量，写进本次加载自己建的
+# 临时目录（mkdir 新建、权限 700），加载完并回来：子 shell 里 source 的文件同样记指纹，看不全同样作废。
+_CFG_BLIND_SEEN=0
+_cfg_blind_note() {
+    if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        [ -n "$_CFG_SUBDIR" ] && : >> "$_CFG_SUBDIR/blind" 2>/dev/null
+    else
+        _CFG_BLIND_SEEN=1
+    fi
+}
+_cfg_trap_seen() {   # <BASH_SOURCE[0]>：DEBUG 陷阱里调；新文件第一次出现时记下名字和指纹
+    [ "$1" != "$_CFG_LIB_SELF" ] || return 0
+    case "$-" in *T*) ;; *) _cfg_blind_note ;; esac
+    local c="${BASH_COMMAND#"${BASH_COMMAND%%[![:space:]]*}"}"
+    case "$c" in
+        trap[[:space:]]-p*|builtin[[:space:]]*trap[[:space:]]-p*|command[[:space:]]*trap[[:space:]]-p*) ;;
+        trap[[:space:]]*DEBUG*|builtin[[:space:]]*trap[[:space:]]*DEBUG*|command[[:space:]]*trap[[:space:]]*DEBUG*) _cfg_blind_note ;;
+    esac
+    case "$_CFG_SRCS" in *"|$1|"*) return 0 ;; esac
+    _CFG_SRCS="${_CFG_SRCS}${1}|"
+    [ -n "$1" ] || return 0
+    if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+        local f h
+        f="$(_cfg_abs "$1")"
+        h="$(cfg_sha256 < "$f" 2>/dev/null || true)"
+        [ -n "$_CFG_SUBDIR" ] && printf '%s\t%s\n' "${h:-?}" "$f" >> "$_CFG_SUBDIR/pre" 2>/dev/null
+        return 0
+    fi
+    _cfg_pre_note "$(_cfg_abs "$1")"
+}
+_CFG_SUBDIR=""
+for _cfg_i in 1 2 3 4 5; do
+    _cfg_d="${TMPDIR:-/tmp}/cavil-cfgload.$$.${RANDOM}${RANDOM}"
+    if mkdir -m 700 "$_cfg_d" 2>/dev/null; then _CFG_SUBDIR="$_cfg_d"; break; fi
+done
+unset _cfg_i _cfg_d
+# 建不出临时目录：子 shell 里读的文件回不来，整份指纹作废（CONFIG_SRC_NOTMP，闸门不放行）
+CONFIG_SRC_NOTMP=0
+[ -n "$_CFG_SUBDIR" ] || CONFIG_SRC_NOTMP=1
+_CFG_OLD_DEBUG="$(trap -p DEBUG)"
+case "$-" in *T*) _CFG_HAD_T=1 ;; *) _CFG_HAD_T=0 ;; esac
+_cfg_pre_note "$(_cfg_abs "$CONFIG_FILE")"
+_CFG_SRCS="|$(_cfg_abs "$CONFIG_FILE")|${CONFIG_FILE}|"
+set -T
+_CFG_OUR_DEBUG='_cfg_trap_seen "${BASH_SOURCE[0]:-}"'
+trap "$_CFG_OUR_DEBUG" DEBUG
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+# 配置自己改了 DEBUG 陷阱（换掉或清掉）或关了 functrace，之后 source 的文件就没被看见：记下的文件清单不完整，
+# 整份指纹作废（CONFIG_SRC_BLIND），闸门每轮不放行，直到配置里去掉这类设置（复审：改了陷阱后加载的文件被换掉，
+# 闸门照样放行）。配置换掉的陷阱留给配置自己，不去动它。
+CONFIG_SRC_BLIND="$_CFG_BLIND_SEEN"
+case "$-" in *T*) ;; *) CONFIG_SRC_BLIND=1 ;; esac
+if [ "$(trap -p DEBUG)" = "trap -- '${_CFG_OUR_DEBUG}' DEBUG" ]; then
+    trap - DEBUG
+    [ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
+else
+    CONFIG_SRC_BLIND=1
+fi
+[ "$_CFG_HAD_T" = 1 ] || set +T
+# 子 shell 的记录并回来：看不全 → 作废；读到的文件进清单、读之前的指纹进 _CFG_PRE（算不出的记成 ?，后面对不上）
+if [ -n "$_CFG_SUBDIR" ]; then
+    [ ! -e "$_CFG_SUBDIR/blind" ] || CONFIG_SRC_BLIND=1
+    if [ -e "$_CFG_SUBDIR/pre" ]; then
+        if [ -f "$_CFG_SUBDIR/pre" ] && [ -r "$_CFG_SUBDIR/pre" ]; then
+            while IFS="$(printf '\t')" read -r _cfg_h _cfg_f; do
+                [ -n "$_cfg_f" ] || continue
+                case "$_cfg_h" in '?'|'') _CFG_PRE_BAD=1; continue ;; esac
+                case "$_CFG_SRCS" in *"|$_cfg_f|"*) ;; *) _CFG_SRCS="${_CFG_SRCS}${_cfg_f}|" ;; esac
+                _CFG_PRE="${_CFG_PRE}${_cfg_h}"$'\t'"${_cfg_f}"$'\n'
+            done < "$_CFG_SUBDIR/pre"
+            unset _cfg_h _cfg_f
+        else
+            _CFG_PRE_BAD=1
+        fi
+    fi
+    rm -rf "$_CFG_SUBDIR" 2>/dev/null || true
+fi
+# 每个文件：绝对路径 + 内容指纹；主配置总在里面
+cfg_src_fps() {   # <文件列表，| 分隔> → 每行「指纹 路径」；有一个读不了就返回 1
+    local list="$1" f out="" h
+    local IFS='|'
+    for f in $list; do
+        [ -n "$f" ] || continue
+        h="$(cfg_sha256 < "$f" 2>/dev/null)" || return 1
+        [ -n "$h" ] || return 1
+        out="${out}${h} ${f}"$'\n'
+    done
+    printf '%s' "$out"
+}
+_cfg_abs_list() {
+    local f out="|" IFS='|'
+    for f in "$CONFIG_FILE" $_CFG_SRCS; do
+        [ -n "$f" ] && [ "$f" != "$_CFG_LIB_SELF" ] || continue
+        f="$(_cfg_abs "$f")"
+        case "$out" in *"|$f|"*) ;; *) out="${out}${f}|" ;; esac
+    done
+    printf '%s' "$out"
+}
+CONFIG_SRC_LIST="$(_cfg_abs_list)"
+CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
+[ "$CONFIG_SRC_BLIND" = 0 ] && [ "$CONFIG_SRC_NOTMP" = 0 ] || CONFIG_SRC_FPS=""
+# 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹，且两次相同；对不上 = 加载期间被改过，
+# 整份指纹作废（闸门不放行）
+if [ -n "$CONFIG_SRC_FPS" ]; then
+    _cfg_mis="$(printf '%s\n' "$CONFIG_SRC_FPS" | awk -v pre="$_CFG_PRE" '
+        BEGIN { n = split(pre, L, "\n"); for (i = 1; i <= n; i++) { if (L[i] == "") continue; t = index(L[i], "\t"); k = substr(L[i], t + 1); v = substr(L[i], 1, t - 1); if ((k in P) && P[k] != v) v = "conflict"; P[k] = v } }
+        $0 == "" { next }
+        { h = $1; f = substr($0, length($1) + 2); if (!(f in P) || P[f] != h) bad = 1 }
+        END { print bad ? 1 : 0 }')"
+    if [ "$_CFG_PRE_BAD" = 1 ] || [ "$_cfg_mis" != 0 ]; then CONFIG_SRC_FPS=""; CONFIG_SRC_CHANGED_DURING_LOAD=1; fi
+    unset _cfg_mis
+fi
+unset _CFG_SRCS _CFG_PRE _CFG_PRE_BAD _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T _CFG_OUR_DEBUG _CFG_SUBDIR _CFG_BLIND_SEEN
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8052,11 +8218,163 @@ item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
     # 动用人的恢复指令的派工（GitHub#339）：本文件一加载就把那个标记从环境里收走了，重新起自己
     # 之前要交回去，不然锁里跑的那一份会把停住的条目当成普通派工。平时什么都不做。
     stuck_release_reexport
+    # 在轮询锁里（由轮询拉起，或 poll_lock_reexec 起的）：交给锁里重新起的那一份（GitHub#569）
+    poll_lock_reexport
     CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
     if [ "$rc" = 75 ]; then
         log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
     fi
     exit "$rc"
+}
+
+# ════════════════ 流程标签改名（GitHub#569）════════════════
+# 改名脚本（scripts/label-rename.sh）在本项目的轮询锁里改 GitHub 上的标签和配置那一行。改名期间，
+# 任何「读了配置、之后会写标签」的进程都不能按旧名字动手。这里是所有入口共用的三样东西：
+#
+#   label_rename_gate    拿到轮询锁之后问一次：没有「改名进行中」记录，且配置文件还是本进程加载的那一版
+#                        （CONFIG_SRC_FPS：加载时读过的每个文件的内容指纹，锁里重算一遍）。两条都满足才动手；读不到一律当不满足。
+#   poll_lock_reexec     人在终端直接跑的入口（派工、叫醒外部需求机器人、CI 失败报告）不在轮询锁里：
+#                        先在轮询锁里重新起自己（flock -o：锁由 flock 进程拿着，不传给本脚本和它起的
+#                        tmux），锁里那一份重新加载配置、过闸门，再往下走。由轮询拉起的子进程不重复拿锁。
+#   label_watch_check    改名中途有过没回音的 GitHub 请求时，之后每轮按标签的固定编号核对名字和配置一致。
+#
+# 「由轮询拉起」用 CAVIL_POLL_LOCK_HELD=<状态目录>|<持锁进程号> 传下去，只在那个进程号是本进程的祖先时才认。
+# 所以它留在环境里也无害：锁里的脚本再调另一个入口（例如评论派工找不到工作树时转给新 issue 派工）照样认得；
+# 漏进 tmux 的那一份不算数——tmux server 脱离了拉起它的进程，worker 会话的祖先里没有那个持锁进程。
+POLL_LOCK_TOKEN="${CAVIL_POLL_LOCK_HELD:-}"
+POLL_LOCK_REEXEC_WAIT_SECS="${POLL_LOCK_REEXEC_WAIT_SECS:-120}"
+label_rename_record_file() { label_rename_record_path "$STATE_DIR"; }
+label_watch_file() { label_watch_path "$STATE_DIR"; }
+
+# <pid> 是不是本进程（或它的祖先）
+pid_is_ancestor() {   # <pid>
+    local want="$1" p="$$" n=0 pp
+    [[ "$want" =~ ^[0-9]+$ ]] || return 1
+    while [ -n "$p" ] && [ "$p" != 0 ] && [ "$n" -lt 64 ]; do
+        [ "$p" = "$want" ] && return 0
+        pp="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" || return 1
+        [ -n "$pp" ] && [ "$pp" != "$p" ] || return 1
+        p="$pp"; n=$((n + 1))
+    done
+    return 1
+}
+# 本进程是不是在本项目的轮询锁里（由持锁的轮询或 poll_lock_reexec 拉起）
+poll_lock_held() {
+    local dir="${POLL_LOCK_TOKEN%|*}" pid="${POLL_LOCK_TOKEN##*|}"
+    [ -n "$POLL_LOCK_TOKEN" ] && [ "$dir" = "$STATE_DIR" ] && pid_is_ancestor "$pid"
+}
+# 交给本进程拉起的、要在锁里跑的子脚本（轮询调派工脚本、item_lock_reexec 重新起自己）
+poll_lock_reexport() {
+    [ -n "$POLL_LOCK_TOKEN" ] || return 0
+    export CAVIL_POLL_LOCK_HELD="$POLL_LOCK_TOKEN"
+}
+
+LABEL_GATE_WHY=""
+LABEL_GATE_KIND=""
+label_rename_gate() {   # 不放行时 LABEL_GATE_KIND = rename（暂停 / 配置变了）或 watch（持续核对对不上 / 读不到）
+    local rec now
+    LABEL_GATE_WHY=""; LABEL_GATE_KIND=rename
+    rec="$(label_rename_record_file)"
+    if [ -e "$rec" ] || [ -L "$rec" ]; then
+        LABEL_GATE_WHY="有一次流程标签改名还没做完（${rec}），本项目暂停到改名做完或退回"
+        return 1
+    fi
+    if [ -z "$CONFIG_SRC_FPS" ]; then
+        if [ "${CONFIG_SRC_NOTMP:-0}" = 1 ]; then
+            LABEL_GATE_WHY="加载配置时建不出临时目录（TMPDIR=${TMPDIR:-/tmp}），看不到子 shell 里读的文件，这一次不动手"
+        elif [ "${CONFIG_SRC_BLIND:-0}" = 1 ]; then
+            LABEL_GATE_WHY="配置在加载时改了 DEBUG 陷阱或关了 functrace（set +T，哪怕之后又打开），看不出它还读了哪些文件，这一次不动手；去掉配置里的这类设置后恢复"
+        elif [ "${CONFIG_SRC_CHANGED_DURING_LOAD:-0}" = 1 ]; then
+            LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载期间被改过，这一次不动手，下一次重新加载"
+        else
+            LABEL_GATE_WHY="加载配置时没能给它读的文件算出指纹，这一次不动手，下一次重新加载"
+        fi
+        return 1
+    fi
+    now="$(cfg_src_fps "$CONFIG_SRC_LIST" 2>/dev/null || true)"
+    if [ "$now" != "$CONFIG_SRC_FPS" ]; then
+        LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载之后被改过或读不了，这一次不动手，下一次用新配置"
+        return 1
+    fi
+    # 改名做完后的持续核对（label-watch.json）：轮询和每个手动入口都在这里问同一个问题（复审：手动入口漏了这一步，
+    # 迟到生效的改名让 GitHub 和配置对不上时，手动派工照样按旧名字写标签）
+    if ! label_watch_check; then
+        LABEL_GATE_KIND=watch
+        LABEL_GATE_WHY="⚠️ ${LABEL_WATCH_WHY}（结束核对：bash ${BASH_SOURCE[0]%/*}/label-rename.sh <项目> watch-end）"
+        return 1
+    fi
+    return 0
+}
+
+poll_lock_reexec() {   # <脚本路径> [原参数…]
+    local self="$1" rc=0
+    shift
+    if poll_lock_held; then
+        return 0
+    fi
+    mkdir -p "$STATE_DIR" 2>/dev/null || { log "建不了状态目录 ${STATE_DIR}，本次什么都不做"; exit 75; }
+    stuck_release_reexport
+    CAVIL_POLL_LOCK_HELD="$STATE_DIR|$$" CAVIL_POLL_LOCK_GATE=1 \
+        flock -o -x -w "$POLL_LOCK_REEXEC_WAIT_SECS" -E 75 "$STATE_DIR/poll.lock" bash "$self" "$@" || rc=$?
+    if [ "$rc" = 75 ]; then
+        log "本项目的轮询锁被占用超过 ${POLL_LOCK_REEXEC_WAIT_SECS} 秒（一轮轮询或一次标签改名还在进行），或标签改名闸门没放行，本次什么都不做"
+    fi
+    exit "$rc"
+}
+# 锁里那一份（poll_lock_reexec 起的）：加载完配置后过一次闸门。由轮询拉起的子进程不过——轮询拿锁后已经过了。
+POLL_LOCK_GATE_PENDING="${CAVIL_POLL_LOCK_GATE:-}"
+unset CAVIL_POLL_LOCK_GATE
+poll_lock_reexec_gate() {
+    [ "$POLL_LOCK_GATE_PENDING" = 1 ] || return 0
+    POLL_LOCK_GATE_PENDING=""
+    if ! label_rename_gate; then
+        log "$LABEL_GATE_WHY"
+        exit 75
+    fi
+}
+# 入口脚本顶部（source 本文件之后、item_lock_reexec 之前）一行调用
+poll_lock_enter() {   # <脚本路径> [原参数…]
+    poll_lock_reexec "$@"
+    poll_lock_reexec_gate
+}
+
+# daemon 实际用的名字（LABEL_PENDING_AGENT 在派工时会被临时换成触发标签，原值在 _DEFAULT 里）
+label_field_value() {   # <设置名>
+    case "$1" in
+        LABEL_PENDING_AGENT) printf '%s' "$LABEL_PENDING_AGENT_DEFAULT" ;;
+        LABEL_*) printf '%s' "${!1-}" ;;
+        *) return 1 ;;
+    esac
+}
+# 仓库标签列表：每行「编号<TAB>名字」，读全了才返回 0
+label_list_read() {
+    local out
+    out="$(gh api --paginate "repos/$REPO/labels?per_page=100" --jq '.[] | "\(.id)\t\(.name)"' 2>/dev/null)" || return 1
+    printf '%s\n' "$out"
+}
+LABEL_WATCH_WHY=""
+label_watch_check() {
+    local f field id want list name cur
+    LABEL_WATCH_WHY=""
+    f="$(label_watch_file)"
+    [ -e "$f" ] || [ -L "$f" ] || return 0
+    if ! IFS=$'\t' read -r field id want < <(jq -r '[.field, (.label_id|tostring), .name] | @tsv' "$f" 2>/dev/null) \
+       || ! [[ "$id" =~ ^[0-9]+$ ]] || [ -z "$field" ] || [ -z "$want" ]; then
+        LABEL_WATCH_WHY="标签核对记录读不了（${f}），这一轮不动手"; return 1
+    fi
+    cur="$(label_field_value "$field" 2>/dev/null || true)"
+    if [ "$cur" != "$want" ]; then
+        LABEL_WATCH_WHY="标签核对：配置里 $field 是「${cur}」，核对记录要的是「${want}」，这一轮不动手"; return 1
+    fi
+    if ! list="$(label_list_read)"; then
+        LABEL_WATCH_WHY="标签核对：读不全仓库的标签列表，这一轮不动手"; return 1
+    fi
+    name="$(printf '%s\n' "$list" | awk -F'\t' -v id="$id" '$1 == id { print $2; exit }')"
+    if [ "$name" != "$want" ]; then
+        LABEL_WATCH_WHY="标签核对：GitHub 上编号 $id 的标签现在叫「${name:-（不存在）}」，配置是「${want}」，这一轮不动手"
+        return 1
+    fi
+    return 0
 }
 
 # 派工：定下这次启动的编号和代数，tmux_env_args 会把它们交给 worker。读不到代数 → 非 0，本轮不派。

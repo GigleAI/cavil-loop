@@ -2020,6 +2020,46 @@ In order: list the settings that can be changed with their current values; take 
 
 **Do not edit the same file in an editor while saving.** The script cannot make an editor wait. It refuses to write when the file differs from `--rev` at its last check; after that check it cannot see anything: a version an editor stores between that check and the swap is replaced by the new file, and an editor that had the file open before the save and stores afterwards either overwrites the new values with its whole old copy or writes into the file that was just swapped out. In both cases the result may still be `saved`, and the lost edit cannot be recovered — the backup holds only the version from before the save. Once the new file is in place the script never writes the config again: no rollback, no automatic restore. The poller reads the config once at the start of each tick, and the swap is a rename, so it sees the whole old file or the whole new one; a running worker keeps the values it started with.
 
+## Rename a flow label
+
+A flow label (dispatch, working, waiting for a human, moved to PR, done, and the optional review / autopilot / merge / blocked / later / requester-bot labels) lives in three places: the project's config, the label itself on GitHub (and every issue / PR carrying it), and the desktop client's own label names. `scripts/label-rename.sh` changes the first two in one go; the desktop client's 「改名…」 button runs it and then saves its own names for that repository only (GitHub#569). Only a setting that holds one label name can be renamed; list settings (`LABEL_PENDING_AGENT_EXTRA`, `GREEDY_SKIP_LABELS`, `PRIORITY_LABELS`) cannot, and a rename is refused while one of them names the old or the new name.
+
+<!-- label-rename-ops:begin -->
+```bash
+SKILL="$HOME/.agents/skills/cavil-loop"
+bash "$SKILL/scripts/label-rename.sh" myproject check --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --others-stopped | tail -1
+REV="$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .rev)"
+bash "$SKILL/scripts/label-rename.sh" myproject rename --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --rev "$REV" --others-stopped | tail -1
+bash "$SKILL/scripts/label-rename.sh" myproject finish --no-client | tail -1
+```
+<!-- label-rename-ops:end -->
+
+In order: check (read-only: every check with its reason is in the `DETAIL=` line); take the config's fingerprint; rename — the last line is `RESULT=awaiting_client` once GitHub and the config both hold the new name; then end the pause. `--others-stopped` is the person's statement that no other machine polls this repository, or that it has been stopped (see below). `finish --no-client` says the client's names are not being changed this time; change them in the client's settings by hand.
+
+**While it runs, nothing acts on the old name.** The script works inside the project's poll lock and writes `$STATE_DIR/label-rename.json` before it touches GitHub. While that file exists, every poll round of the project, a dispatch or CI report run by hand, and the requester-bot wake script do nothing (the run log records `label-rename`). Every entry that reads the config and later writes labels checks, once it holds the poll lock, that the config has not changed since it was loaded: it fingerprints the config right before bash reads it, and each file the config `source`s right before that file's first command runs (bash has read the whole file by then), then once more when loading is done (a difference means the file was replaced while loading, and the entry does nothing); under the lock it fingerprints them again, and if any differs or cannot be read it does nothing and the next round uses the new config. This covers hand edits as well as saves through this tool. It does not see files the config reads some other way (for example `$(cat …)`), or a file the config would source only if it existed and that appears later — keep label names in the config or in a file it always sources. A config that sets or clears its own `DEBUG` trap, or runs `set +T`, while it loads hides the files it sources afterwards — also when it turns it back on later; the gate then refuses every round, with a line saying so in `poll.log`, until that line is removed. Files sourced inside a command substitution or another subshell are fingerprinted the same way. Accepted limit (the maintainer's choice on PR #571): a `trap` command that is not written out as `trap … DEBUG` — built from a variable or an alias — is not recognised, so a config that removes and restores the trap that way hides what it sources in between. Dispatch scripts run by hand re-run themselves inside the poll lock first. The file is removed only by `finish`, `undo` or `abandon --yes`.
+
+**Checks.** The new name uses only letters, digits and `. _ : / @ + -`, 1–50 characters. The repository has a label with exactly the old name and none with the new name (labels are unique regardless of case, so a rename that only changes upper / lower case is refused). No open item carries the working label (`doing/agent`) and the stuck-worker check holds no item. No other setting uses either name. The config line is a plain top-level literal (the same rule as `project-config.sh`). The autopilot, merge, blocked and requester-bot labels are judged from GitHub's label history, and whether that history shows the new name after a rename has not been measured — so they cannot be renamed while an open item carries them. A label list that cannot be read in full is "cannot tell", never "the new name is free".
+
+| `RESULT` | Meaning | What next |
+|---|---|---|
+| `awaiting_client` | GitHub and the config hold the new name; the project stays paused | the client saves its names, then `finish --client-saved`; from a terminal `finish --no-client` |
+| `done` | finished; the pause file is gone | — |
+| `refused` | a check failed, or GitHub refused the rename (4xx); nothing changed | fix the reason in `DETAIL=`, try again |
+| `no_answer` | the rename request got no answer: it may still take effect at any later time | `continue` (reads only) until GitHub shows the new name, or `resend`; there is no `undo` |
+| `partial` | GitHub was renamed, the config was not written | fix the reason, `continue` |
+| `busy` | the poll lock stayed taken (`LABEL_RENAME_LOCK_WAIT`, default 60 s); nothing changed | try again |
+| `unknown` | something could not be read, or GitHub shows neither name; nothing written | read the message; after fixing it by hand, `abandon --yes` |
+
+**A request that got no answer.** GitHub's label API has no conditional write and no receipt that a request was dropped, so an unanswered rename can land at any later moment. The script therefore never takes "the old name is still there" as "nothing happened": the project stays paused, `undo` is refused, and only `continue` and `resend` are offered (resending is safe — a late copy aims at the same name, and fails once the old name is gone). When such a rename finishes, `$STATE_DIR/label-watch.json` is written: from then on every poll round reads the repository's labels first and does nothing when the label with that fixed id is not called what the config says (run log: `label-watch`); a dispatch, CI report or stuck-item release run by hand, and the requester-bot wake script, make the same check once they hold the poll lock and stop the same way. It ends only with `label-rename.sh myproject watch-end`. The record holds one label, so while it is on, renaming any other label is refused (renaming the same label again is allowed and moves the check to the new name). One round can still act on the old name if a late request lands between that check and the round's last label write; this is the risk the maintainer accepted in #569.
+
+**Other machines polling the same repository.** Their configs still name the old label once GitHub is renamed. Stop their polling before the rename (the client lists the machines it knows and stops them first). Afterwards, on each of them, run `follow` with the label's fixed id from the first machine's output (`LABEL_ID=`): it checks that the label with that id now has the new name, the old name is gone and that machine's own polling is stopped (read the way `project-service.sh` reads it; running or unreadable refuses), changes only that machine's config, and sends nothing to GitHub — then `finish --no-client` and start that machine's polling again.
+
+```bash
+bash "$SKILL/scripts/label-rename.sh" otherproject follow --field LABEL_PENDING_HUMAN --from pending/human --to needs-human --label-id 1234567 --rev "$(bash "$SKILL/scripts/project-config.sh" get otherproject | jq -r .rev)"
+```
+
+`status` prints the pending record and whether the label check is on; `project-config.sh get` reports the same under `label_rename`, and each renameable setting's `rename.ok` / `rename.reason`.
+
 ## Remote access: let the client on another computer see this machine's daemon (GitHub#387)
 
 When the daemon runs on one machine and the desktop client on another, the client's "设置 → 远程 daemon" section can list the projects this machine has connected and whether they are running, stop / start one project's poller, show the last 200 lines of its poll log, and read / change a project's everyday settings (GitHub#530: the same form as "本机 daemon → 配置"). **Tailscale only**, and only after pairing. It is off by default: without the commands below nothing listens on this machine and nothing is forwarded.
@@ -2575,6 +2615,8 @@ the latest snapshot with the matching slice of `poll.log`. `--json` gives the sa
 | `pace-skip` | skipped by the idle / failure backoff (the idle probe result is in its own column) |
 | `lock-busy` | the previous round was still running; the note says which round holds the lock and for how long |
 | `github-unreadable` | could not read GitHub, stopped without dispatching (snapshot saved) |
+| `label-rename` | a flow-label rename is not finished, or the config changed after this round loaded it — the round did nothing ([Rename a flow label](#rename-a-flow-label)) |
+| `label-watch` | the label check after a rename found the label's name on GitHub differs from the config, or could not read it — the round did nothing |
 | `error` | exited non-zero (snapshot saved, with script name and line number) |
 | `early-exit` | exited 0 before reaching the end, by a path the run log has no name for |
 

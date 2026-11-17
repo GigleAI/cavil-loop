@@ -153,6 +153,13 @@ const asRelated = (x: Item): RelatedIssue => ({
   ...(x.kind === 'pr' ? { kind: 'pr' as const, isDraft: x.isDraft } : {}),
 });
 
+/**
+ * GitHub#569: the waiting label setting — one name for every repository, or the name for each repository
+ * (shared/repoLabels.ts `handBackFor(…).blocked`): the items of one read can come from several repositories.
+ */
+export type LabelFor = string | ((repo: string) => string);
+export const labelAt = (l: LabelFor, repo: string): string => (typeof l === 'string' ? l : l(repo));
+
 /** Does `it` get its registration read under this setting? (open issue or pull request carrying the label; GitHub#526: PRs too) */
 export function loopCandidate(it: Item, label: string): boolean {
   return label !== '' && it.state === 'open' && it.labels.some((l) => l.name === label);
@@ -167,9 +174,9 @@ const nodeType = (it: Item) => (it.kind === 'pr' ? 'PullRequest' : 'Issue');
  * issues and pull requests carrying the label; every other item is known to wait for nothing. Throws when any page
  * cannot be read — the caller then has nothing to store.
  */
-export async function readLoopBlocked(client: GitHubClient, items: Item[], label: string): Promise<void> {
-  if (!label) return;
-  const wanted = items.filter((it) => loopCandidate(it, label));
+export async function readLoopBlocked(client: GitHubClient, items: Item[], label: LabelFor): Promise<void> {
+  if (label === '') return;
+  const wanted = items.filter((it) => loopCandidate(it, labelAt(label, it.repo)));
   const missingId = wanted.find((it) => !it.nodeId);
   if (missingId) throw new GitHubError('http', t('{item} 缺少读前置登记要用的 id', { item: `${missingId.repo}#${missingId.number}` }));
   const nodes = wanted.length ? await fetchNodesBatch<GqlLoopNode>(client, LOOP_BLOCKED_BATCH_QUERY, wanted.map((it) => it.nodeId)) : [];
@@ -180,7 +187,7 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
     const it = wanted[i];
     const node = nodes[i];
     if (!node || node.__typename !== nodeType(it)) throw new GitHubError('graphql', t('{item} 的前置登记没有读到', { item: `${it.repo}#${it.number}` }));
-    const marks = await readOne(client, it, node, label);
+    const marks = await readOne(client, it, node, labelAt(label, it.repo));
     const out: RelatedIssue[] = [];
     for (const m of marks) {
       const repo = m.r === '' ? it.repo : m.r;
@@ -196,13 +203,19 @@ export async function readLoopBlocked(client: GitHubClient, items: Item[], label
     result.set(it.key, out);
   }
   // only once everything is in: nothing half-read lands on the items
-  for (const it of items) it.loopBlocked = { label, ends: result.get(it.key) ?? [] };
+  for (const it of items) {
+    const l = labelAt(label, it.repo);
+    if (l !== '') it.loopBlocked = { label: l, ends: result.get(it.key) ?? [] };
+  }
 }
 
 /**
  * Is every item's registration known under this setting? (false: read under another setting, or
  * before #429 — or, for a pull request, before #526: such a snapshot is read in full once)
  */
-export function loopKnown(items: Item[], label: string): boolean {
-  return !label || items.every((it) => it.loopBlocked?.label === label);
+export function loopKnown(items: Item[], label: LabelFor): boolean {
+  return items.every((it) => {
+    const l = labelAt(label, it.repo);
+    return !l || it.loopBlocked?.label === l;
+  });
 }

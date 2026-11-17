@@ -90,7 +90,11 @@ import {
   type Pick as BlockedPick,
   type Ref,
 } from '../shared/blocked';
-import type { BlockedStart, BlockedStartResult, BlockedView, BlockedRefInfo } from '../shared/ipc';
+import type { BlockedStart, BlockedStartResult, BlockedView, BlockedRefInfo, LabelRenameRequest } from '../shared/ipc';
+import { applyClientRename, blockedLabelsFor, dropOverride, handBackFor, normalizeRepoLabels, REPO_LABELS_SETTING, type HandBackSlot, type RepoLabels } from '../shared/repoLabels';
+import { FIELD_SLOT } from '../shared/repoLabels';
+import { NAME_RE, pendingOf, renameActions, renameLockOf, renameLockText, renameSettled, undoableOf, type PendingRecord, type RenameAnswer, type RenameArgs, type RenameCmd, type RenameJob, type RenameState, type RenameWatch } from '../shared/labelRename';
+import type { ConfigRead, DaemonStatus } from '../shared/daemon';
 import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
 import {
@@ -315,6 +319,11 @@ const TABS = 'tabs';
 /** how many re-read items no source carries are kept for opening in a tab */
 const LOOSE_ITEMS = 20;
 
+/** a value as JSON with every object's keys sorted (the back end may keep them in another order) */
+function canon(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+}
+
 /**
  * The settings, as the window sees them: read once at start, every change
  * applied here at once and written through to the back end in call order.
@@ -334,6 +343,14 @@ class Settings {
   setSetting(k: string, v: unknown): void {
     this.values.set(k, v);
     this.enqueue(() => this.backend.call('setSetting', { key: k, value: v }));
+  }
+  /** GitHub#569: like setSetting, and say whether the back end took it (false: refused, or no answer) */
+  setChecked(k: string, v: unknown): Promise<boolean> {
+    this.values.set(k, v);
+    return this.enqueue(() => this.backend.call('setSetting', { key: k, value: v })).then(
+      () => true,
+      () => false,
+    );
   }
   /** the back end already wrote it (sign-in / sign-out): mirror only */
   mirror(k: string, v: unknown): void {
@@ -578,7 +595,8 @@ export class Controller {
     const uiTheme = normalizeThemeSetting(this.cache.getSetting<unknown>(THEME_SETTING, DEFAULT_THEME_SETTING));
     const theme = resolveTheme(uiTheme, this.systemDark());
     if (uiTheme !== 'system') this.tellBackendTheme(uiTheme);
-    this.pending = new PendingTracker(handBack.human.trim() || DEFAULT_HAND_BACK.human, { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
+    // GitHub#569: each item under its repository's own name (the closure reads the state as it is then)
+    this.pending = new PendingTracker((repo: string) => this.humanFor(repo), { scope: notifyScope, viewer: this.cache.getSetting<string | null>('viewer', null) });
     this.state = {
       phase: 'loading',
       loginReason: null,
@@ -623,6 +641,9 @@ export class Controller {
       ops: [],
       sends: [],
       labelJobs: [],
+      repoLabels: normalizeRepoLabels(this.cache.getSetting<unknown>(REPO_LABELS_SETTING, null)),
+      renameJobs: [],
+      renameWatches: [],
     };
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
@@ -1806,9 +1827,10 @@ export class Controller {
         done++;
         progress();
       },
-      this.state.handBack.blocked,
+      // GitHub#569: each repository under its own names
+      (repo: string) => this.hb(repo).blocked,
       // GitHub#462: a repository's closed items carrying the pending label are read too
-      this.state.handBack.human,
+      (repo: string) => this.hb(repo).human,
       {
         byChanges: true,
         viewer: this.viewerTag,
@@ -2419,14 +2441,15 @@ export class Controller {
     this.cache.setSetting('handBack', next);
     // The same label is what reminders count: another name is recounted silently
     // (a settings change is not new work arriving).
+    // GitHub#462: a repository's closed items carrying the new pending label are not held yet — read them now
+    const reread = next.blocked !== this.state.handBack.blocked || next.human !== this.state.handBack.human;
     if (next.human !== this.state.handBack.human) {
       this.labelVersion++;
-      this.pending.relabel(next.human, this.snapshots);
+      this.state = { ...this.state, handBack: next };
+      this.pending.relabel((repo: string) => this.humanFor(repo), this.snapshots);
       this.badge();
       this.state = { ...this.state, ...this.pendingNow() };
     }
-    // GitHub#462: a repository's closed items carrying the new pending label are not held yet — read them now
-    const reread = next.blocked !== this.state.handBack.blocked || next.human !== this.state.handBack.human;
     // GitHub#434: "等前置…" uses the same waiting label
     this.set({ handBack: next, blockedLabels: { ...this.state.blockedLabels, blocked: next.blocked } });
     // GitHub#429: the registrations held were read under the old label — the graph shows them as
@@ -2708,6 +2731,316 @@ export class Controller {
     this.patchLabelJob(id, { dismissed: true });
   }
 
+  // ---- GitHub#569: renaming a flow label ------------------------------------------------
+  //
+  // The rename on GitHub and in the config is the daemon's own label-rename.sh (the back end runs it); this
+  // part runs its commands one at a time per project, saves the client's own names for that repository
+  // when the script says so (awaiting_client), reads them back, and only then lets the daemon go on
+  // (`finish --client-saved`). What a result means for the notice is shared/labelRename.ts.
+
+  private renameSeq = 0;
+  /** the project keys a command is running for now: one at a time per project */
+  private renameBusy = new Set<string>();
+  private renameScanning: Promise<void> | null = null;
+
+  private humanFor(repo: string): string {
+    return this.hb(repo).human.trim() || DEFAULT_HAND_BACK.human;
+  }
+
+  private patchRename(id: number, patch: Partial<RenameJob>): RenameJob | null {
+    let out: RenameJob | null = null;
+    this.set({ renameJobs: this.state.renameJobs.map((j) => (j.id === id ? (out = { ...j, ...patch }) : j)) });
+    return out;
+  }
+
+  private renameJob(id: number): RenameJob | null {
+    return this.state.renameJobs.find((j) => j.id === id) ?? null;
+  }
+
+  /** one run of label-rename.sh; an answer that never came is "unconfirmed", never a result */
+  private async renameCall(key: string, cmd: RenameCmd, args: RenameArgs = {}): Promise<RenameAnswer> {
+    try {
+      return await this.backend.call<RenameAnswer>('daemonLabelRename', { key, cmd, ...args });
+    } catch (e) {
+      return { result: 'unconfirmed', output: (e as Error)?.message ?? String(e) };
+    }
+  }
+
+  /** The rename dialog's 「改名（三处一起改）」 / the follow dialog's 「跟进」: refused at once, or started in the background. */
+  startLabelRename(req: LabelRenameRequest): { ok: boolean; error: string | null; id?: number } {
+    const refuse = (error: string) => ({ ok: false, error });
+    const key = String(req?.key ?? '');
+    const repo = String(req?.repo ?? '');
+    const mode = req?.mode === 'follow' ? 'follow' : 'rename';
+    const field = String(req?.field ?? '');
+    const from = String(req?.from ?? '');
+    const to = String(req?.to ?? '');
+    const labelId = String(req?.labelId ?? '');
+    if (!/^[A-Za-z0-9_.-]+$/.test(key) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return refuse(t('项目或仓库名不合规'));
+    if (!NAME_RE.test(from) || !NAME_RE.test(to) || from === to) return refuse(t('新名字只能用字母、数字和 . _ : / @ + -，1–50 个字符，并且和旧名字不同'));
+    if (mode === 'follow' && !/^\d{1,20}$/.test(labelId)) return refuse(t('改名凭据里没有标签编号'));
+    if (mode === 'rename' && req.othersStopped !== true) return refuse(t('要先确认没有别的机器在轮询本仓库（或已经停掉）'));
+    const open = this.state.renameJobs.find((j) => j.key === key && !renameSettled(j));
+    if (open || this.renameBusy.has(key)) return refuse(t('这个项目还有一次改名没做完：先在提示里把它处理完'));
+    const slot = FIELD_SLOT[field];
+    if (slot === undefined) return refuse(t('这个设置不是能在这里改名的流程标签'));
+    const id = ++this.renameSeq;
+    const job: RenameJob = {
+      id,
+      key,
+      repo,
+      mode,
+      field,
+      from,
+      to,
+      labelId,
+      status: 'running',
+      doing: mode,
+      github: mode === 'follow' ? 'new' : 'old',
+      config: 'old',
+      client: slot ? 'old' : 'none',
+      polling: 'running',
+      ...(Array.isArray(req.stopped) && req.stopped.length ? { stopped: req.stopped.map((m) => ({ where: m.where === 'remote' ? 'remote' : 'local', name: String(m.name), key: String(m.key), ...(m.id ? { id: String(m.id) } : {}) })) } : {}),
+      startedAt: this.now(),
+    };
+    // a new one for this project settles every earlier notice of it: only the newest is said
+    this.set({ renameJobs: [...this.state.renameJobs.map((j) => (j.key === key ? { ...j, dismissed: true } : j)), job] });
+    const args: RenameArgs = { field, from, to, rev: String(req.rev ?? ''), ...(mode === 'follow' ? { labelId } : { othersStopped: true }) };
+    void this.renameRun(id, mode, args);
+    return { ok: true, error: null, id };
+  }
+
+  /** run one command for a job and settle what it answered (more commands follow by themselves: save, finish) */
+  private async renameRun(id: number, cmd: RenameCmd, args: RenameArgs = {}): Promise<void> {
+    const job = this.renameJob(id);
+    if (!job || this.renameBusy.has(job.key)) return;
+    this.renameBusy.add(job.key);
+    try {
+      let next: RenameCmd | null = cmd;
+      let a: RenameArgs = args;
+      while (next) {
+        this.patchRename(id, { doing: next, status: 'running', problem: undefined });
+        const answer = await this.renameCall(job.key, next, a);
+        next = await this.renameSettle(id, next, answer);
+        a = {};
+      }
+    } finally {
+      this.renameBusy.delete(job.key);
+    }
+  }
+
+  /** What one answer means for the job; returns the command that follows by itself (finish), or null. */
+  private async renameSettle(id: number, cmd: RenameCmd, a: RenameAnswer): Promise<RenameCmd | null> {
+    const job = this.renameJob(id);
+    if (!job) return null;
+    const words = { message: a.output || a.message || undefined, messageSaid: a.output ? a.outputSaid : undefined };
+    const prev = job.prevStatus ?? (cmd === 'rename' || cmd === 'follow' ? 'refused' : 'unknown');
+    // the back end ran nothing (or the project's lock was taken): the job stays where it was
+    if (a.ran === false || a.result === 'busy') {
+      this.patchRename(id, { status: prev, doing: undefined, problem: a.output || a.result, ...(cmd === 'rename' || cmd === 'follow' ? words : {}) });
+      return null;
+    }
+    const polling: RenameJob['polling'] = a.paused === true ? 'paused' : a.paused === false ? 'running' : 'unknown';
+    const github = a.github ?? 'unknown';
+    const config = a.config ?? 'unknown';
+    const base: Partial<RenameJob> = { doing: undefined, prevStatus: undefined, github, config, polling, undoable: undoableOf(a.record, config), ...words };
+    if (a.labelId && !job.labelId) base.labelId = a.labelId;
+    switch (a.result) {
+      case 'awaiting_client': {
+        this.patchRename(id, { ...base, status: 'running', doing: 'save' });
+        const saved = await this.renameSaveClient(id);
+        return saved ? 'finish' : null;
+      }
+      case 'done': {
+        if (cmd === 'undo') {
+          this.patchRename(id, { ...base, status: 'undone', github: job.mode === 'follow' ? 'new' : 'old', config: 'old' });
+          return null;
+        }
+        if (cmd === 'abandon') {
+          this.patchRename(id, { ...base, status: 'abandoned' });
+          return null;
+        }
+        this.patchRename(id, { ...base, status: 'done', github: 'new', config: 'new', watch: a.watch === true });
+        if (a.watch === true) this.upsertWatch({ key: job.key, repo: job.repo, field: job.field, name: job.to, labelId: a.labelId || job.labelId });
+        return null;
+      }
+      case 'no_answer':
+        this.patchRename(id, { ...base, status: 'no_answer', github: 'unknown' });
+        return null;
+      case 'partial':
+        this.patchRename(id, { ...base, status: 'partial' });
+        return null;
+      case 'refused':
+        // the first command refused: nothing changed. A later one refused (finish before the client, undo too late): where it was
+        if (cmd === 'rename' || cmd === 'follow') this.patchRename(id, { ...base, status: 'refused' });
+        else this.patchRename(id, { status: prev, doing: undefined, prevStatus: undefined, problem: a.output || a.message || a.result, polling });
+        return null;
+      default:
+        // unknown / unconfirmed / a word this client does not know: could not tell
+        this.patchRename(id, { ...base, status: 'unknown' });
+        return null;
+    }
+  }
+
+  /** The client's names for the job's repository (only that one), written and read back. */
+  private async renameSaveClient(id: number): Promise<boolean> {
+    const job = this.renameJob(id);
+    if (!job) return false;
+    const r = applyClientRename(this.state, job.repo, job.field, job.from, job.to);
+    this.applyRepoLabels(r.repoLabels);
+    const fail = (why: string) => {
+      this.patchRename(id, { status: 'client', client: 'old', doing: undefined, problem: why });
+      return false;
+    };
+    if (!(await this.cache.setChecked(REPO_LABELS_SETTING, r.repoLabels))) return fail(t('客户端的标签名没能存到本机'));
+    let back: unknown;
+    try {
+      back = (await this.backend.call<{ settings?: Record<string, unknown> }>('init')).settings?.[REPO_LABELS_SETTING];
+    } catch {
+      return fail(t('读不回刚存的标签名'));
+    }
+    if (canon(normalizeRepoLabels(back)) !== canon(r.repoLabels)) return fail(t('读回来的标签名和刚存的不一样'));
+    this.patchRename(id, {
+      client: r.slot ? 'new' : 'none',
+      ...(r.slotOutcome === 'kept' && r.slot ? { slotKept: { slot: r.slot, name: r.slotWas ?? '' } } : {}),
+    });
+    return true;
+  }
+
+  /** New per-repository names in effect: reminders recounted silently, the waiting registrations read again. */
+  private applyRepoLabels(next: RepoLabels): void {
+    this.labelVersion++;
+    this.state = { ...this.state, repoLabels: next };
+    this.pending.relabel((repo: string) => this.humanFor(repo), this.snapshots);
+    this.badge();
+    this.set({ repoLabels: next, ...this.pendingNow() });
+    if (this.signedIn && this.state.phase === 'ready') void this.syncNow();
+  }
+
+  /** Settings → 「改回共用」 */
+  dropRepoLabel(repo: string, slot: HandBackSlot | 'flow'): void {
+    const next = dropOverride(this.state.repoLabels, repo, slot);
+    if (next === this.state.repoLabels) return;
+    this.cache.setSetting(REPO_LABELS_SETTING, next);
+    this.applyRepoLabels(next);
+  }
+
+  /** A button of the notice: 'continue' (「重试」 / 「再查一次」), 'resend', 'undo', 'abandon'. */
+  async labelRenameStep(id: number, cmd: 'continue' | 'resend' | 'undo' | 'abandon'): Promise<{ ok: boolean; error: string | null }> {
+    const job = this.renameJob(id);
+    if (!job) return { ok: false, error: t('这条已经不在了') };
+    if (job.status === 'running' || this.renameBusy.has(job.key)) return { ok: false, error: t('这个项目的改名正在进行，等它有了结果再试') };
+    const acts = renameActions(job);
+    const allowed = cmd === 'continue' ? acts.retry !== null : cmd === 'resend' ? acts.resend : acts.out === cmd;
+    if (!allowed) return { ok: false, error: t('这一步现在不能做') };
+    this.patchRename(id, { prevStatus: job.status, problem: undefined });
+    await this.renameRun(id, cmd);
+    const after = this.renameJob(id);
+    return after?.problem ? { ok: false, error: after.problem } : { ok: true, error: null };
+  }
+
+  /** ×, and a done notice going away by itself */
+  labelRenameDismiss(id: number): void {
+    const job = this.renameJob(id);
+    if (!job || !renameActions(job).close) return;
+    this.patchRename(id, { dismissed: true });
+  }
+
+  private upsertWatch(w: RenameWatch): void {
+    this.set({ renameWatches: [...this.state.renameWatches.filter((x) => x.key !== w.key), w] });
+  }
+
+  /** 「结束核对」 */
+  async labelRenameWatchEnd(key: string): Promise<{ ok: boolean; error: string | null }> {
+    const w = this.state.renameWatches.find((x) => x.key === key);
+    if (!w) return { ok: true, error: null };
+    if (this.renameBusy.has(key)) return { ok: false, error: t('这个项目的改名正在进行，等它有了结果再试') };
+    this.renameBusy.add(key);
+    this.upsertWatch({ ...w, working: true, problem: undefined });
+    try {
+      const a = await this.renameCall(key, 'watch-end');
+      if (a.result === 'done' && a.watch === false) {
+        this.set({ renameWatches: this.state.renameWatches.filter((x) => x.key !== key) });
+        return { ok: true, error: null };
+      }
+      const why = a.output || a.message || a.result;
+      this.upsertWatch({ ...w, working: false, problem: why });
+      return { ok: false, error: why };
+    } finally {
+      this.renameBusy.delete(key);
+    }
+  }
+
+  /**
+   * Read every project of this computer for a rename left unfinished (the app was closed half way, the
+   * save of the client's names failed) and for a label check still on: each becomes a notice that
+   * stays until it is settled. A project that cannot be read is left as it was.
+   */
+  labelRenameScan(status?: DaemonStatus): Promise<void> {
+    if (!this.renameScanning) this.renameScanning = this.renameScanNow(status).finally(() => (this.renameScanning = null));
+    return this.renameScanning;
+  }
+
+  private async renameScanNow(given?: DaemonStatus): Promise<void> {
+    let st: DaemonStatus;
+    try {
+      st = given && typeof given === 'object' && 'state' in given ? given : await this.backend.call<DaemonStatus>('daemonStatus');
+    } catch {
+      return;
+    }
+    if (st?.state !== 'ok') return;
+    for (const p of st.status.projects) {
+      if (!p.repo || this.renameBusy.has(p.key)) continue;
+      let r: ConfigRead;
+      try {
+        r = await this.backend.call<ConfigRead>('daemonConfigGet', { key: p.key });
+      } catch {
+        continue;
+      }
+      if (r.result !== 'ok' || !r.config?.label_rename || r.config.label_rename.state !== 'ok') continue;
+      this.renameFound(p.key, p.repo, r.config.label_rename);
+    }
+  }
+
+  private renameFound(key: string, repo: string, lr: RenameState): void {
+    if (this.renameBusy.has(key)) return;
+    const pending = pendingOf(lr);
+    const open = this.state.renameJobs.find((j) => j.key === key && !renameSettled(j));
+    if (pending && !open) {
+      const rec: Partial<PendingRecord> = pending === 'unreadable' ? {} : pending;
+      const step = rec.step;
+      const github = step === 'config' || step === 'client' ? 'new' : rec.sent || rec.unanswered ? 'unknown' : 'old';
+      const config = step === 'client' ? 'new' : 'old';
+      const job: RenameJob = {
+        id: ++this.renameSeq,
+        key,
+        repo,
+        mode: rec.mode === 'follow' ? 'follow' : 'rename',
+        field: rec.field ?? '',
+        from: rec.from ?? '',
+        to: rec.to ?? '',
+        labelId: rec.label_id === undefined ? '' : String(rec.label_id),
+        status: pending === 'unreadable' ? 'unknown' : 'pending',
+        github: pending === 'unreadable' ? 'unknown' : github,
+        config: pending === 'unreadable' ? 'unknown' : config,
+        client: rec.field && FIELD_SLOT[rec.field] === null ? 'none' : 'unknown',
+        polling: 'paused',
+        undoable: pending !== 'unreadable' && undoableOf(rec, config),
+        ...(pending === 'unreadable' ? { message: t('这个项目的改名记录读不了') } : {}),
+        startedAt: this.now(),
+      };
+      this.set({ renameJobs: [...this.state.renameJobs, job] });
+    } else if (!pending) {
+      // no record any more: a notice that only said "found waiting" goes; the others keep what they said
+      const gone = this.state.renameJobs.filter((j) => j.key === key && j.status === 'pending');
+      if (gone.length) this.set({ renameJobs: this.state.renameJobs.map((j) => (gone.includes(j) ? { ...j, status: 'abandoned', polling: 'running', dismissed: true } : j)) });
+    }
+    const w = lr.watch;
+    if (w && typeof w === 'object') this.upsertWatch({ key, repo, field: w.field, name: w.name, labelId: String(w.label_id) });
+    else if (w === 'unreadable') this.upsertWatch({ key, repo, field: '', name: '', labelId: '', problem: t('标签核对记录读不了') });
+    else if (this.state.renameWatches.some((x) => x.key === key)) this.set({ renameWatches: this.state.renameWatches.filter((x) => x.key !== key) });
+  }
+
   /**
    * GitHub#401: the Projects "从 GitHub 选" offers — the account's own and each organisation's, read
    * now (never cached: an organisation approved a minute ago must show at the next look).
@@ -2794,7 +3127,7 @@ export class Controller {
     if (createInProjects.some((p) => !p)) return { ok: false, error: t('勾选的看板不在当前来源里（可能刚被删掉），没有新建；请重新打开对话框'), warning: null };
     let outcome;
     try {
-      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.hb(item?.repo ?? (action.kind === 'createIssue' ? action.repo : null)), createInProjects: createInProjects as ProjectMeta[], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       onError?.(e);
@@ -2848,7 +3181,7 @@ export class Controller {
     };
     let fresh;
     try {
-      fresh = await fetchItem(client, repo, number, this.now(), this.state.handBack.blocked);
+      fresh = await fetchItem(client, repo, number, this.now(), this.hb(repo).blocked);
     } catch (e) {
       return failed((e as Error).message);
     }
@@ -3098,7 +3431,7 @@ export class Controller {
     const item = data.tabItems?.find((i) => i.key === action.key) ?? data.items.find((i) => i.key === action.key) ?? null;
     let outcome;
     try {
-      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.state.handBack, createInProjects: [], cached: this.cachedItems() });
+      outcome = await performAction(c.client, action, { item, projects: data.projects, handBack: this.hb(item?.repo), createInProjects: [], cached: this.cachedItems() });
     } catch (e) {
       if (!(e instanceof ActionRefused)) this.noteAuthFailure(e);
       const error = explainError(e, action.kind);
@@ -3872,6 +4205,9 @@ export class Controller {
     if (!item) return refuse(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
     const blocked = this.opBlocked(item.key);
     if (blocked) return refuse(blocked);
+    // GitHub#569: no flow label of a repository whose labels are being renamed
+    const renaming = action.kind === 'autopilot' || action.kind === 'handBack' ? renameLockOf(this.state.renameJobs, item.repo) : null;
+    if (renaming) return refuse(renameLockText(renaming));
     // PR #510 review round 1: the same text sent from the reply box is still without a result (the two could not be told apart)
     const opComment = (action as { comment?: unknown }).comment;
     if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse(t('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作'));
@@ -3904,7 +4240,7 @@ export class Controller {
       }
       case 'autopilot':
       case 'handBack': {
-        const { human, agent, autopilot } = this.state.handBack;
+        const { human, agent, autopilot } = this.hb(item.repo);
         if (!human.trim() || !agent.trim()) return refuse(t('设置里「流程标签」的「等人处理」「交给 agent」两个标签名不能为空'));
         if (action.kind === 'autopilot' && !autopilot.trim()) return refuse(t('设置里没有填托管标签，没有修改'));
         // GitHub#451: the comment first — the steps stop at the first that is not done, so a comment that did
@@ -3965,9 +4301,19 @@ export class Controller {
   // hold what the person confirmed plus exactly what the steps done so far changed (factsDiffer);
   // otherwise the record stops there and says why. It is never continued by itself.
 
-  private blockedNames(): { human: string; agent: string; running: string } {
-    const { human, agent, running } = this.state.handBack;
+  private blockedNames(repo: string): { human: string; agent: string; running: string } {
+    const { human, agent, running } = this.hb(repo);
     return { human, agent, running };
+  }
+
+  /** GitHub#569: the "交给 agent" names for an item of `repo` — its repository's own where it has them */
+  private hb(repo: string | null | undefined): HandBackLabels {
+    return handBackFor(this.state, repo);
+  }
+
+  /** GitHub#569: the labels of "等前置…" for an item of `repo` */
+  private bl(repo: string | null | undefined): BlockedLabels {
+    return blockedLabelsFor(this.state, repo);
   }
 
   private async blockedRefInfo(client: GitHubClient, r: Ref): Promise<BlockedRefInfo> {
@@ -3985,7 +4331,7 @@ export class Controller {
     if (!this.signedIn || this.state.phase !== 'ready') return { ok: false, error: t('还没有登录') };
     const item = this.findItem(key);
     if (!item) return { ok: false, error: t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试') };
-    const bl = this.state.blockedLabels;
+    const bl = this.bl(item.repo);
     if (!bl.blocked) return { ok: false, error: t('设置里没有填等前置的标签') };
     const c = await this.clientForCall(false);
     if ('error' in c) return { ok: false, error: c.error };
@@ -3999,8 +4345,8 @@ export class Controller {
   }
 
   private async blockedViewOf(client: GitHubClient, item: Item, read: BlockedRead): Promise<BlockedView> {
-    const bl = this.state.blockedLabels;
-    const names = this.blockedNames();
+    const bl = this.bl(item.repo);
+    const names = this.blockedNames(item.repo);
     const facts = factsOf(read, names, bl);
     const latest = read.marks.length ? read.marks[read.marks.length - 1].refs : [];
     const seen = new Map<string, Ref>();
@@ -4130,8 +4476,10 @@ export class Controller {
     if (!item) return refuse(t('看板上找不到这一条（可能刚被同步掉了），请刷新后再试'));
     const blockedOp = this.opBlocked(item.key);
     if (blockedOp) return refuse(blockedOp);
-    const bl = this.state.blockedLabels;
-    const names = this.blockedNames();
+    const renaming = renameLockOf(this.state.renameJobs, item.repo);
+    if (renaming) return refuse(renameLockText(renaming));
+    const bl = this.bl(item.repo);
+    const names = this.blockedNames(item.repo);
     if (!bl.blocked || !names.human.trim()) return refuse(t('设置里等前置的标签或「等人处理」的标签是空的，没有修改'));
     const picks = Array.isArray(req.picks) ? req.picks : [];
     const restore = Array.isArray(req.restore) ? req.restore : [];
@@ -4235,7 +4583,7 @@ export class Controller {
   private blockedExpected(r: OpRecord): Facts {
     const b = r.blocked!;
     let f = b.basis;
-    for (const s of r.steps) if (s.state === 'ok' && s.blocked) f = applyDone(f, { name: s.blocked, target: s.target }, { human: b.labels.human, blocked: b.labels.blocked, commentId: b.commentId, mark: { refs: b.markRefs, resume: b.resume ?? this.state.handBack.agent } });
+    for (const s of r.steps) if (s.state === 'ok' && s.blocked) f = applyDone(f, { name: s.blocked, target: s.target }, { human: b.labels.human, blocked: b.labels.blocked, commentId: b.commentId, mark: { refs: b.markRefs, resume: b.resume ?? this.hb(r.repo).agent } });
     return f;
   }
 
@@ -4255,8 +4603,8 @@ export class Controller {
       this.blockedPatch(id, (r) => ({ ...r, steps: r.steps.map((s, j) => (j === 0 ? { ...s, reason: t('没能存到本机，没有发送') } : s)) }));
       return;
     }
-    const names = this.blockedNames();
-    const bl = this.state.blockedLabels;
+    const names = this.blockedNames(item.repo);
+    const bl = this.bl(item.repo);
     let lastRead: BlockedRead | null = null;
     for (let i = 0; ; i++) {
       const r = this.ops.get(id);
@@ -4389,7 +4737,7 @@ export class Controller {
     let why = text;
     const wroteMark = r.steps.some((s) => s.blocked === 'comment' && (s.state === 'ok' || s.state === 'unknown'));
     if (read && wroteMark && paused === 'unconfirmed') {
-      const now = factsOf(read, this.blockedNames(), this.state.blockedLabels);
+      const now = factsOf(read, this.blockedNames(r.repo), this.bl(r.repo));
       const may = repauseAllowed(this.blockedExpected(r), now, b.basis.round.id as number | null, b.labels.human);
       if (may.ok) {
         const repause: OpStep = { name: 'addLabel', label: b.labels.human, role: 'human', blocked: 'repause', state: 'pending', reason: null, sentAt: this.stamp(), answeredAt: null };

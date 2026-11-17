@@ -28,6 +28,11 @@ if [ "${CI_FAILURE_REPORT_IN_POLL:-}" != 1 ] && [ "$MODE" != list ]; then
         echo "等了 5 分钟还拿不到轮询锁（有一轮轮询一直没结束），什么都没改" >&2
         exit 1
     fi
+    # 流程标签改名的闸门（GitHub#569）：配置是拿锁前读的，锁里确认它没被换过、也没有改名在进行
+    if ! label_rename_gate; then
+        echo "${LABEL_GATE_WHY}，什么都没改" >&2
+        exit 1
+    fi
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then

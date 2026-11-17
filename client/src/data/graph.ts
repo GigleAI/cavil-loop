@@ -23,7 +23,7 @@
 //   when that issue is not drawn or sits at the top. It is the only way a PR goes in as an entry.
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
-import { loopCandidate } from './loopBlocked';
+import { labelAt, loopCandidate, type LabelFor } from './loopBlocked';
 import { issuePrLinks, prHosts } from './prNest';
 import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
@@ -80,11 +80,17 @@ export interface GraphModel {
 }
 
 /** GitHub#429: the loop registration's prerequisites under the current setting ('' = off: none taken) */
-const loopEnds = (i: Item, loopLabel: string): RelatedIssue[] => (loopLabel && i.loopBlocked?.label === loopLabel ? i.loopBlocked.ends : []);
+const loopEnds = (i: Item, loopFor: LabelFor): RelatedIssue[] => {
+  const loopLabel = labelAt(loopFor, i.repo);
+  return loopLabel && i.loopBlocked?.label === loopLabel ? i.loopBlocked.ends : [];
+};
 /** GitHub#429: an issue whose registration should be there but was not read under the current setting */
-const loopUnknown = (i: Item, loopLabel: string) => loopCandidate(i, loopLabel) && i.loopBlocked?.label !== loopLabel;
+const loopUnknown = (i: Item, loopFor: LabelFor) => {
+  const loopLabel = labelAt(loopFor, i.repo);
+  return loopCandidate(i, loopLabel) && i.loopBlocked?.label !== loopLabel;
+};
 
-const hasRelations = (i: Item, loopLabel: string) => {
+const hasRelations = (i: Item, loopLabel: LabelFor) => {
   const r = i.relations!;
   return r.parent !== null || r.subIssues.length > 0 || r.blockedBy.length > 0 || r.blocking.length > 0 || loopEnds(i, loopLabel).length > 0;
 };
@@ -99,8 +105,8 @@ const byNumber = (a: { repo: string; number: number }, b: { repo: string; number
 export function buildGraph(
   all: Item[],
   shown: Item[],
-  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = only GitHub's own relations */
-  loopLabel: string = '',
+  /** GitHub#429: the "waiting for a prerequisite" label setting; '' = only GitHub's own relations (GitHub#569: per repository when a function) */
+  loopLabel: LabelFor = '',
 ): GraphModel {
   const inSource = new Map(all.map((i) => [i.key, i]));
   const picked = new Set(shown.map((i) => i.key));

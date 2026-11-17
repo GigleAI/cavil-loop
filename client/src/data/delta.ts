@@ -22,7 +22,7 @@ import { GitHubClient, GitHubError } from './github';
 import { t } from '../shared/i18n';
 import { PROJECT_ITEMS_BY_IDS_QUERY } from './queries';
 import { completeRepoItems, contentToItem, keepInRepo, readMembership, repoListItem, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
-import { readLoopBlocked } from './loopBlocked';
+import { readLoopBlocked, type LabelFor } from './loopBlocked';
 import { RELATION_BATCH_SIZE } from './relations';
 
 /** a change at least this long before a read began was certainly seen by it (GitHub ends a query within 10 s) */
@@ -133,7 +133,7 @@ export async function readBoardChanges(
   serverAt: number,
   count: number | null,
   now: number,
-  loopLabel: string,
+  loopLabel: LabelFor,
 ): Promise<DeltaResult> {
   if (count === null) return { kind: 'full', why: 'count' };
   const meta: ProjectMeta = snap.project!;
@@ -239,7 +239,7 @@ export async function readRepoChanges(
   snap: SourceSnapshot,
   serverAt: number,
   now: number,
-  loopLabel: string,
+  loopLabel: LabelFor,
   pendingLabel: string,
   batchSize: number = RELATION_BATCH_SIZE,
 ): Promise<DeltaResult> {

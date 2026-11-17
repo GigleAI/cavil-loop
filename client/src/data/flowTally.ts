@@ -57,6 +57,28 @@ export interface TallyEntry {
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
+  /** GitHub#569: a flow row whose repositories name the label differently — each repository's own name; the
+   *  list a click shows is narrowed by it (`tallyScoped`). Absent when every repository uses the same name. */
+  scope?: TallyScope;
+}
+
+/** each repository (lower-cased owner/repo) → the name this flow label has there */
+export interface TallyScope {
+  /** repositories with a name of their own (from the label settings) */
+  names: Record<string, string>;
+  /** every other repository: the shared name */
+  fallback: string;
+}
+
+/**
+ * GitHub#569: is this item one the lit number means? Only a flow row with `scope` narrows anything: the item
+ * must carry its own repository's name (the shared one for a repository without a name of its own). The board
+ * applies it on top of the search while that number is lit, so the list is what the number counts.
+ */
+export function tallyScoped(entry: Pick<TallyEntry, 'scope'> | null, it: Item): boolean {
+  if (!entry?.scope) return true;
+  const n = entry.scope.names[it.repo.toLowerCase()] ?? entry.scope.fallback;
+  return n !== '' && hasLabel(it, n);
 }
 
 /**
@@ -108,6 +130,20 @@ export function tallyQuery(label: string, open: boolean = true): string | null {
 }
 
 /**
+ * GitHub#569: a flow row's click query when repositories name the label differently — `label:"A","B"` (any
+ * of them); null when one cannot be written in the search syntax.
+ */
+export function tallyQueryAny(labels: readonly string[]): string | null {
+  const ls = labels.map((l) => l.trim());
+  if (ls.some((l) => l === '' || l.includes('"') || l.includes(','))) return null;
+  const q = `label:${ls.map((l) => `"${l}"`).join(',')}`;
+  const { clauses, unsupported } = parseFilter(q);
+  const c = clauses[0];
+  const ok = unsupported.length === 0 && clauses.length === 1 && c.kind === 'field' && c.field === 'label' && !c.negated && c.values.length === ls.length && c.values.every((v, i) => v === ls[i]);
+  return ok ? q : null;
+}
+
+/**
  * GitHub#462: does a flow row count this item? "等人处理" is the reminders' own rule (`isPending`: the
  * label, open or closed); "运行中" / "等 agent" count open items only — work in progress is open.
  */
@@ -145,11 +181,20 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
 }
 
 /**
+ * GitHub#569: the items the board lists for a search — the board's own rule, in one place. The search through
+ * the real filter, then, while a number narrowed per repository is lit (`lit`, from `litTally` with the pick),
+ * only the items carrying their own repository's name. With no such number lit it is exactly the search.
+ */
+export function searchList(items: Item[], parsed: ReturnType<typeof parseFilter>, ctx: FilterContext, lit: Pick<TallyEntry, 'scope'> | null): Item[] {
+  return applyFilter(items, parsed, ctx).filter((it) => tallyScoped(lit, it));
+}
+
+/**
  * GitHub#468: the numbers of a table, in its order. A row is left out when its name is empty, when it
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
  */
-export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
+export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT, byRepo?: (repo: string) => TallyLabels, repos: readonly string[] = []): TallyEntry[] {
   const out: TallyEntry[] = [];
   for (const d of defs) {
     const name = d.name.trim();
@@ -158,7 +203,28 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const flow = d.source.flow;
       const label = labels[flow].trim();
       if (label === '') continue;
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: items.filter((it) => flowCounts(flow, it, label)).length, query: flowQuery(flow, label) });
+      // GitHub#569: each item counted under its own repository's name. The names and the narrowing come from the
+      // label settings alone — the shared name plus each repository that has its own (`repos`) — never from the
+      // items in hand: a sync, a source ticked off or a repository's last item leaving must not change the click
+      // text, or the lit number goes dark and the search saved before the click is dropped (PR #571 code review
+      // rounds 3 and 4). Only a change to the label settings themselves changes it, as the shared label always did.
+      const own = (it: Item) => (byRepo ? byRepo(it.repo)[flow].trim() : label);
+      const names = [label];
+      const map: Record<string, string> = {};
+      if (byRepo) {
+        for (const r of repos) {
+          const n = byRepo(r)[flow].trim();
+          map[r.toLowerCase()] = n;
+          if (n !== '' && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+        }
+      }
+      const counted = items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it)));
+      const query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
+      // The search box has no "this name in that repository": `label:"A","B"` takes either name in every
+      // repository, so while such a number is lit the board narrows the list by each repository's own name
+      // (`tallyScoped`): the list is what the number counts.
+      const scope: TallyScope | null = names.length > 1 ? { names: map, fallback: label } : null;
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}) });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
@@ -177,8 +243,16 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
  * the settings and the board's filter context. The view bar and Settings' live preview both take theirs from
  * here, so the two cannot show different numbers.
  */
-export function viewBarTallies(items: Item[], saved: TallyDef[] | null, handBack: HandBackLabels, ctx: FilterContext = NO_CONTEXT): TallyEntry[] {
-  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx);
+export function viewBarTallies(
+  items: Item[],
+  saved: TallyDef[] | null,
+  handBack: HandBackLabels,
+  ctx: FilterContext = NO_CONTEXT,
+  handBackFor?: (repo: string) => HandBackLabels,
+  /** GitHub#569: the repositories that have label names of their own (the keys of the label settings) */
+  repos: readonly string[] = [],
+): TallyEntry[] {
+  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined, repos);
 }
 
 /**
@@ -207,7 +281,10 @@ export function unlabeledTally(items: Item[]): TallyEntry {
  */
 export function litTally(query: string, entries: TallyEntry[], pick: TallyKind | null = null): TallyKind | null {
   const q = query.trim();
-  const same = entries.filter((e) => e.query !== null && e.query === q);
+  // GitHub#569: a number narrowed by each repository's own name (`scope`) is lit only when it was clicked (`pick`).
+  // The same text typed or pasted by hand is an ordinary search and keeps its ordinary meaning — every item
+  // carrying either name — so it lights no such number and nothing narrows it (PR #571 code review round 5).
+  const same = entries.filter((e) => e.query !== null && e.query === q && (!e.scope || e.kind === pick));
   if (same.length === 0) return null;
   return same.find((e) => e.kind === pick)?.kind ?? same[0].kind;
 }
@@ -236,8 +313,8 @@ export function tallyClick(
 }
 
 /** The box was changed some other way: once it no longer shows a number's query, the remembered text is void. */
-export function tallyForget(saved: string | null, current: string, entries: TallyEntry[]): string | null {
-  return litTally(current, entries) === null ? null : saved;
+export function tallyForget(saved: string | null, current: string, entries: TallyEntry[], pick: TallyKind | null = null): string | null {
+  return litTally(current, entries, pick) === null ? null : saved;
 }
 
 /**

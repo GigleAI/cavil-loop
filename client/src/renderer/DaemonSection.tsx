@@ -56,6 +56,10 @@ export function useDaemonStatus(): DaemonState {
     try {
       const s = await api().daemonStatus();
       if (alive.current) setStatus(s);
+      // GitHub#569: the daemon list read again — look for renames left unfinished (the status just read is reused)
+      void api()
+        .labelRenameScan?.(s)
+        ?.catch(() => undefined);
     } catch (e) {
       if (alive.current) setStatus({ state: 'unreadable', reason: (e as Error).message, entry: null });
     } finally {

@@ -19,6 +19,8 @@ import { frameFindEscape, frameKey, useLayer, useShortcuts } from './keyboard';
 import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
 import { pinnedLabels } from '../shared/pickOrder';
+import { blockedLabelsFor, handBackFor } from '../shared/repoLabels';
+import { renameLockOf, renameLockText } from '../shared/labelRename';
 import { frameForward, isMac, keyText } from './shortcuts';
 import { copyText, isImageOnlyPaste, pasteImageNote } from './pasteImage';
 import { freshMark, sameDetail, shouldAutoRefresh } from './autoRefresh';
@@ -1270,7 +1272,8 @@ export function DetailPanel({
   const conflictWhy = t('有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）');
   // the buttons need the detail read (labels can be changed on a closed item too: it may be waiting for a decision)
   const detailRead = Boolean(detail);
-  const hb = state.handBack;
+  // GitHub#569: the names of this item's repository (its own where a rename gave it one)
+  const hb = handBackFor(state, item.repo);
   // GitHub#413: one condition per button, read by the button and by its key alike
   const opBlocked = !canWrite || busy || Boolean(lock);
   const pressCloseIssue = () => openAsk('closeIssue');
@@ -1303,18 +1306,23 @@ export function DetailPanel({
     openAsk('autopilot');
   };
   // GitHub#434: "等前置…" — only when a waiting label is set; greyed (with why) when the item is in another flow
-  const blockedLabel = state.blockedLabels.blocked;
+  const itemBlocked = blockedLabelsFor(state, item.repo);
+  const blockedLabel = itemBlocked.blocked;
   const itemOpen = detail ? detail.state === 'open' : item.state === 'open';
-  const blockedEntry = entryState(detail?.labels.map((l) => l.name) ?? item.labels.map((l) => l.name), hb, state.blockedLabels);
+  const blockedEntry = entryState(detail?.labels.map((l) => l.name) ?? item.labels.map((l) => l.name), hb, itemBlocked);
   const blockedWhy = !itemOpen ? t('这一条已经关闭') : blockedEntry.kind === 'other' ? t('挂着「{label}」：这一条还在别的流程里，daemon 这时不会处理等前置。等它回到「{human}」后再登记', { label: blockedEntry.label, human: hb.human }) : null;
   // the label names inside blockedWhy are GitHub's (and the settings')
   const blockedWhyParts = blockedEntry.kind === 'other' ? [blockedEntry.label, hb.human] : [];
   const pressBlocked = () => setBlockedOpen(true);
+  // GitHub#569: while this repository's flow labels are being renamed, no button writes one
+  const renaming = renameLockOf(state.renameJobs, item.repo);
+  const renameWhy = renaming ? renameLockText(renaming) : undefined;
+  const labelBlocked = opBlocked || Boolean(renaming);
   quickKeys.current = {
-    blocked: detailRead && blockedLabel && !opBlocked && !blockedWhy ? pressBlocked : undefined,
+    blocked: detailRead && blockedLabel && !labelBlocked && !blockedWhy ? pressBlocked : undefined,
     closeIssue: issueOpen && !opBlocked ? pressCloseIssue : undefined,
-    handBack: detailRead && !opBlocked ? pressHandBack : undefined,
-    autopilot: detailRead && hb.autopilot && !opBlocked ? pressAutopilot : undefined,
+    handBack: detailRead && !labelBlocked ? pressHandBack : undefined,
+    autopilot: detailRead && hb.autopilot && !labelBlocked ? pressAutopilot : undefined,
   };
     const msTitles = [...new Set((opts?.milestones ?? []).map((m) => m.title))];
 
@@ -1541,7 +1549,7 @@ export function DetailPanel({
                   title={t('设置标签')}
                   hint={<Verbatim from="github">{item.repo}</Verbatim>}
                   testid="label-picker"
-                  pinned={pinnedLabels(state.handBack)}
+                  pinned={pinnedLabels(hb)}
                   disabled={!canWrite}
                   items={[
                     ...opts.labels.map((l) => ({ name: l.name, color: l.color, checked: item.labels.some((x) => x.name === l.name) })),
@@ -1868,9 +1876,9 @@ export function DetailPanel({
               {blockedLabel && (
                 <button
                   data-testid="blocked-open"
-                  disabled={opBlocked || Boolean(blockedWhy)}
-                  title={offlineWhy ?? lockWhy ?? blockedWhy ?? t('选这一条要等的 issue / PR，登记后挂上「{label}」；前置全部完成后 daemon 自动翻回「{agent}」（{key}）', { label: blockedLabel, agent: hb.agent, key: keyText('blocked') })}
-                  {...verbatimParts('github', offlineWhy || lockWhy ? [] : blockedWhy ? blockedWhyParts : [blockedLabel, hb.agent])}
+                  disabled={labelBlocked || Boolean(blockedWhy)}
+                  title={offlineWhy ?? lockWhy ?? renameWhy ?? blockedWhy ?? t('选这一条要等的 issue / PR，登记后挂上「{label}」；前置全部完成后 daemon 自动翻回「{agent}」（{key}）', { label: blockedLabel, agent: hb.agent, key: keyText('blocked') })}
+                  {...verbatimParts('github', offlineWhy || lockWhy || renameWhy ? [] : blockedWhy ? blockedWhyParts : [blockedLabel, hb.agent])}
                   onClick={pressBlocked}
                 >
                   {t('等前置…')}
@@ -1879,16 +1887,17 @@ export function DetailPanel({
               )}
               <button
                 data-testid="hand-back"
-                disabled={opBlocked}
+                disabled={labelBlocked}
                 data-comment={boxComment ? 'yes' : 'no'}
                 title={
                   offlineWhy ??
                   lockWhy ??
+                  renameWhy ??
                   (boxComment
                     ? t('先把回复框里的字作为评论发出，发成功后再加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') })
                     : t('加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') }))
                 }
-                {...verbatimParts('github', offlineWhy || lockWhy ? [] : [hb.agent, hb.human])}
+                {...verbatimParts('github', offlineWhy || lockWhy || renameWhy ? [] : [hb.agent, hb.human])}
                 onClick={pressHandBack}
               >
                 {boxComment ? t('评论并交给 agent') : t('交给 agent')}
@@ -1898,10 +1907,11 @@ export function DetailPanel({
                 <button
                   data-testid="autopilot"
                   data-comment={boxComment ? 'yes' : 'no'}
-                  disabled={opBlocked}
+                  disabled={labelBlocked}
                   title={
                     offlineWhy ??
                     lockWhy ??
+                    renameWhy ??
                     (boxComment
                       ? state.autopilotConfirm
                         ? t('先把回复框里的字作为评论发出，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
@@ -1910,7 +1920,7 @@ export function DetailPanel({
                         ? t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
                         : t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { label: hb.autopilot, key: keyText('autopilot') }))
                   }
-                  {...verbatimParts('github', offlineWhy || lockWhy ? [] : [hb.autopilot])}
+                  {...verbatimParts('github', offlineWhy || lockWhy || renameWhy ? [] : [hb.autopilot])}
                   onClick={pressAutopilot}
                 >
                   {`${boxComment ? t('评论并托管（自动合并）') : t('托管（自动合并）')}${state.autopilotConfirm ? '…' : ''}`}

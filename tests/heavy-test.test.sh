@@ -640,7 +640,8 @@ hw2_bg() {
 gen_now() { cat "$D/state/item-gen/$N" 2>/dev/null || echo 0; }
 gen_is() { [ "$(gen_now)" = "$1" ]; }
 lock_free() { flock -n "$D/state/item-locks/$N.lock" true 2>/dev/null; }
-state_files() { (cd "$D/state" && find . -type f | grep -v -e 'poll.log' -e '^./prompt-composed' | sort); }
+# poll.lock 不算：人手动跑派工时先在本项目的轮询锁里重新起自己（GitHub#569），锁文件是轮询本来就有的，和本功能无关
+state_files() { (cd "$D/state" && find . -type f | grep -v -e 'poll.log' -e '^./prompt-composed' -e '^./poll.lock$' | sort); }
 
 echo "── 11. 派工（issue 评论入口）：worker 带着条目、代数、启动编号；记下了启动；锁用完就放 ──"
 setup2 on "$ON"

@@ -2,8 +2,18 @@
 // this same window. The views never see the back end or the credential.
 
 import type { CavilApi, Snapshot } from '../shared/ipc';
+import type { RenameArgs } from '../shared/labelRename';
 import type { Backend } from '../backend/backend';
 import type { Controller } from './controller';
+
+/** only the plain values the back end checks again */
+function renameArgs(a: RenameArgs | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of ['field', 'from', 'to', 'rev', 'labelId'] as const) if (typeof a?.[k] === 'string') out[k] = a[k];
+  if (a?.follow === true) out.follow = true;
+  if (a?.othersStopped === true) out.othersStopped = true;
+  return out;
+}
 
 export function localApi(c: Controller, backend: Backend): CavilApi {
   const snapshot = (): Snapshot => ({ state: c.getState(), data: c.getBoardData() });
@@ -124,6 +134,17 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     remoteForget: (id) => backend.call('remoteForget', { id: String(id) }),
     remoteTailnet: () => backend.call('remoteTailnet'),
     remoteHost: ((action: string, target?: string) => backend.call('remoteHost', target === undefined ? { action: String(action) } : { action: String(action), target: String(target) })) as never,
+    // GitHub#569: the read-only check goes straight to the back end; every changing step is the controller's
+    daemonLabelRename: (key, cmd, args) => backend.call('daemonLabelRename', { ...renameArgs(args), key: String(key), cmd: cmd === 'check' || cmd === 'status' ? cmd : 'check' }),
+    startLabelRename: async (req) => c.startLabelRename(req),
+    labelRenameContinue: (id) => c.labelRenameStep(Number(id), 'continue'),
+    labelRenameResend: (id) => c.labelRenameStep(Number(id), 'resend'),
+    labelRenameUndo: (id) => c.labelRenameStep(Number(id), 'undo'),
+    labelRenameAbandon: (id) => c.labelRenameStep(Number(id), 'abandon'),
+    labelRenameDismiss: async (id) => c.labelRenameDismiss(Number(id)),
+    labelRenameWatchEnd: (key) => c.labelRenameWatchEnd(String(key)),
+    labelRenameScan: (status) => c.labelRenameScan(status),
+    dropRepoLabel: async (repo, slot) => c.dropRepoLabel(String(repo), slot),
     daemonConfigGet: (key) => backend.call('daemonConfigGet', { key: String(key) }),
     daemonConfigSet: (key, rev, values) =>
       backend.call('daemonConfigSet', { key: String(key), rev: String(rev), values: Object.fromEntries(Object.entries(values ?? {}).map(([k, v]) => [String(k), String(v)])) }),

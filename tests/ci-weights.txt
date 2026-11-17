@@ -48,6 +48,7 @@ greedy-dispatch 1
 heavy-test 173
 heavy-test-systemd 35
 install-scripts 32
+label-rename 110
 later-label 7
 migrate-legacy 20
 open-snapshot 1
