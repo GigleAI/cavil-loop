@@ -58,6 +58,21 @@ const records = (): any[] => {
 const notified = (key: string) => records().some((r) => r.op === 'notify' && r.alert?.kind === 'item' && r.alert.key === key);
 const lastBadge = () => records().filter((r) => r.op === 'badge').pop()?.count as number | undefined;
 
+/**
+ * GitHub#575: did this one "switch to the app" step clear the badge? The records from the step's start, the
+ * window still hidden: nothing showed it, exactly one "active" (a hidden window gets no focus events, so it is
+ * this step's), no "badge 0" before it, and the first badge after it is 0. Anything else names what failed.
+ */
+function switchedByThisStep(recs: any[]): string {
+  if (recs.some((r) => r.op === 'shown')) return 'window shown';
+  const actives = recs.filter((r) => r.op === 'active').length;
+  if (actives !== 1) return `${actives} active records`;
+  const i = recs.findIndex((r) => r.op === 'active');
+  if (recs.slice(0, i).some((r) => r.op === 'badge' && r.count === 0)) return 'badge 0 before active';
+  const next = recs.slice(i + 1).find((r) => r.op === 'badge');
+  return next?.count === 0 ? 'ok' : `first badge after active: ${next ? next.count : 'none'}`;
+}
+
 async function startApp(args: string[] = []) {
   driver = spawn(DRIVER, [], {
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -188,6 +203,21 @@ test.afterEach(async () => {
   console.log(records().map((r) => JSON.stringify(r).slice(0, 160)).join('\n'));
 });
 
+// GitHub#575 (PR #579 review round 1): the check above on fixed record orders, no app needed. The third one is
+// the order the review described — a late focus "active" and its "badge 0" landing after the step's start —
+// which the round-1 check ("badge 0 somewhere after the first active") let through.
+test("GitHub#575: the switch-to-app check tells this step's own badge 0 from a focus event's", () => {
+  const A = { op: 'active' };
+  const b = (count: number) => ({ op: 'badge', count });
+  expect(switchedByThisStep([A, b(0)])).toBe('ok');
+  expect(switchedByThisStep([{ op: 'tick' }, b(1), A, { op: 'tick' }, b(0)])).toBe('ok');
+  expect(switchedByThisStep([A, b(0), A])).toBe('2 active records');
+  expect(switchedByThisStep([b(0), A])).toBe('badge 0 before active');
+  expect(switchedByThisStep([A, b(1), b(0)])).toBe('first badge after active: 1');
+  expect(switchedByThisStep([A])).toBe('first badge after active: none');
+  expect(switchedByThisStep([{ op: 'shown', why: 'click' }, A, b(0)])).toBe('window shown');
+});
+
 test('window closed: hidden, still syncing and reminding within 120 s; a click on the notification brings it back on that item', async () => {
   test.setTimeout(GATE_MS + 120_000);
   await startApp();
@@ -214,6 +244,20 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
   expect(after.some((r) => r.op === 'shown')).toBe(false);
   console.log(`hidden-window round: notified ${Math.round((Date.now() - t0) / 1000)} s after the label`);
 
+  // GitHub#369: the user switches to the app (the handler the window's focus runs): the badge goes to 0,
+  // the delivered notifications stay (the setting is off by default). Done here, while the window is still
+  // hidden and before the click below shows it (GitHub#575): a hidden window gets no focus events, so this
+  // step's "activate" is the only thing that can make the window active, and the badge is 1 right before
+  // it. After the click, a focus event of the shown window also writes "active" and sends "badge 0", and
+  // either can land after this step's start — the order of the records then proved nothing.
+  expect(lastBadge()).toBe(1);
+  const at = records().length;
+  appendFileSync(control, 'activate\n');
+  await until(() => records().slice(at).some((r) => r.op === 'badge' && r.count === 0), 'switched: badge 0', 15_000);
+  expect(switchedByThisStep(records().slice(at))).toBe('ok');
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
+
   // a click on that notification: the window comes back with the item's detail open
   const note = after.find((r) => r.op === 'notify' && r.alert?.key === key);
   const clickAt = records().length;
@@ -223,16 +267,6 @@ test('window closed: hidden, still syncing and reminding within 120 s; a click o
   // "click opened the item" — and GitHub#369: the shell took back exactly that one notification, by its whole id
   const taken = records().slice(clickAt).filter((r) => r.op === 'clearNotification');
   expect(taken.map((r) => r.id)).toEqual([note.id]);
-
-  // GitHub#369: the user switches to the app (the handler the window's focus runs): the badge goes to 0,
-  // the delivered notifications stay (the setting is off by default)
-  const at = records().length;
-  appendFileSync(control, 'activate\n');
-  await until(() => records().slice(at).some((r) => r.op === 'badge' && r.count === 0), 'switched: badge 0', 15_000);
-  const ops = records().slice(at).filter((r) => ['active', 'badge', 'clearNotifications'].includes(r.op)).map((r) => (r.op === 'badge' ? `badge ${r.count}` : r.op));
-  expect(ops.slice(0, 2)).toEqual(['active', 'badge 0']);
-  await new Promise((r) => setTimeout(r, 1500));
-  expect(records().slice(at).filter((r) => r.op === 'clearNotifications' || r.op === 'clearNotification')).toEqual([]);
 
   // GitHub#397 / #442: the shell's "close" key — on macOS the menu's ⌘W; here the very handler it runs, asked for by
   // the test. The clicked notification opened the item in the floating panel over the board (GitHub#442): the
