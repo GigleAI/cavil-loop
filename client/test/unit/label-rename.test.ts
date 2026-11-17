@@ -31,11 +31,12 @@ import {
 import { applyClientRename, blockedLabelsFor, dropOverride, handBackFor, normalizeRepoLabels, overrideRows, renamedFlow } from '../../src/shared/repoLabels';
 import { DEFAULT_HAND_BACK } from '../../src/shared/types';
 import { DEFAULT_BLOCKED_LABELS } from '../../src/shared/blocked';
-import { viewBarTallies } from '../../src/data/flowTally';
+import { showClosedDefault, viewBarTallies, type TallyEntry } from '../../src/data/flowTally';
+import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
 import { PendingTracker } from '../../src/data/pending';
 import { buildGraph } from '../../src/data/graph';
 import { loopKnown } from '../../src/data/loopBlocked';
-import type { SourceSnapshot } from '../../src/shared/types';
+import type { Item, SourceSnapshot } from '../../src/shared/types';
 
 const shared = { handBack: DEFAULT_HAND_BACK, blockedLabels: DEFAULT_BLOCKED_LABELS };
 const label = (name: string) => ({ name, color: 'ededed' });
@@ -168,12 +169,31 @@ describe('every user of the label names asks for the item\'s repository', () => 
     item('acme/widget', 4, { labels: [label('busy/agent')] }),
     item('acme/other', 5, { labels: [label('doing/agent')] }),
   ];
+  // what a click on a number really lists: its query through the real filter, with the number's switch as it starts
+  const clickList = (all: Item[], e: TallyEntry) => applyFilter(showClosedDefault(e) ? all : openOnly(all), parseFilter(e.query!), { viewer: null, today: '', projects: [] }).map((i) => i.number).sort();
   it('the view-bar numbers: each item under its own repository\'s name; the click lists both names', () => {
     const by = viewBarTallies(items, null, s.handBack, undefined, (r) => handBackFor(s, r));
     const human = by.find((e) => e.flow === 'human')!;
     expect(human.count).toBe(2); // #1 (wait/human in widget) and #3 (pending/human in other) — not #2
-    expect(human.query).toBe('label:"pending/human","wait/human"');
+    // #2 carries the other repository's name in widget: a combined click would list it too (PR #571 code review
+    // round 2: 2 counted, 3 listed), and the search box cannot say "this name in that repository" — not clickable
+    expect(human.query).toBe(null);
     expect(by.find((e) => e.flow === 'running')!.count).toBe(2);
+    expect(by.find((e) => e.flow === 'running')!.query).toBe('label:"doing/agent","busy/agent"');
+    expect(clickList(items, by.find((e) => e.flow === 'running')!)).toEqual([4, 5]);
+    // without #2 the combined click lists exactly the counted items, and stays clickable
+    const clean = items.filter((i) => i.number !== 2);
+    const h2 = viewBarTallies(clean, null, s.handBack, undefined, (r) => handBackFor(s, r)).find((e) => e.flow === 'human')!;
+    expect(h2.count).toBe(2);
+    expect(h2.query).toBe('label:"pending/human","wait/human"');
+    expect(clickList(clean, h2)).toEqual([1, 3]);
+    // every clickable number lists exactly what it counts, on both item sets
+    for (const set of [items, clean]) {
+      for (const e of viewBarTallies(set, null, s.handBack, undefined, (r) => handBackFor(s, r))) {
+        if (e.query === null || e.source !== 'flow') continue;
+        expect(clickList(set, e).length).toBe(e.count);
+      }
+    }
     // without overrides: exactly as before
     const plain = viewBarTallies(items, null, s.handBack);
     expect(plain.find((e) => e.flow === 'human')!.count).toBe(2); // #2, #3

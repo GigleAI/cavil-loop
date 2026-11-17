@@ -176,8 +176,19 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const own = (it: Item) => (byRepo ? byRepo(it.repo)[flow].trim() : label);
       const names = [label];
       if (byRepo) for (const it of items) if (own(it) !== '' && !names.some((n) => n.toLowerCase() === own(it).toLowerCase())) names.push(own(it));
-      const query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it))).length, query });
+      const counted = items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it)));
+      let query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
+      // The search box has no "this name in that repository": `label:"A","B"` takes either name in every
+      // repository. So the combined click is kept only when the real filter, over what the click lists with
+      // the number's switch as it starts (showClosedDefault), picks exactly the counted items; otherwise the
+      // number is shown but not clickable (PR #571 code review round 2: 2 counted, 3 listed).
+      if (query !== null && names.length > 1) {
+        const pool = flow === 'human' ? items : openOnly(items);
+        const listed = applyFilter(pool, parseFilter(query), ctx).map((it) => it.key).sort();
+        const want = counted.map((it) => it.key).sort();
+        if (listed.length !== want.length || listed.some((k, i) => k !== want[i])) query = null;
+      }
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
