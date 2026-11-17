@@ -1628,6 +1628,21 @@ test('GitHub#582: the panel follows the window, leaving 15 characters of the boa
   await page.setViewportSize({ width: 1281, height: 800 });
   await expect.poll(near(boardStrip)).toBeLessThanOrEqual(2);
   await page.setViewportSize({ width: 1280, height: 800 });
+  // a card far right, under the panel: opening it scrolls the board so its title's first 15 characters show left of the panel
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  const far = page.locator('[data-testid="column"]').last().locator('[data-testid="card"]').first();
+  const farKey = (await far.getAttribute('data-key'))!;
+  await far.locator('[data-testid="card-title"]').click();
+  await expect(detail).toHaveAttribute('data-key', farKey);
+  await expect
+    .poll(async () => {
+      const t = page.locator(`[data-testid="card"][data-key="${farKey}"] [data-testid="card-title"]`).first();
+      const b = (await t.boundingBox())!;
+      const font = await t.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+      return b.x >= 0 && b.x + 15 * font <= (await panelLeft()) + 2;
+    })
+    .toBe(true);
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
 
@@ -2975,6 +2990,8 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   ]);
   const { app, page } = await launch(env);
   await signInWithSources(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   /** a blank spot of the window outside the panel: the head of the leftmost column (not a card) */
@@ -3142,6 +3159,8 @@ test('GitHub#257: the whole title cell of a table row opens the detail — icon,
   ]);
   const { app, page } = await launch(env);
   await signInWithSources(page);
+  // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   await page.locator('[data-testid="layout"] button[data-value="table"]').click();
