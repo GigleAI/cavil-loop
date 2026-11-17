@@ -64,18 +64,21 @@ export interface TallyEntry {
 
 /** each repository (lower-cased owner/repo) → the name this flow label has there */
 export interface TallyScope {
+  /** repositories with a name of their own (from the label settings) */
   names: Record<string, string>;
+  /** every other repository: the shared name */
+  fallback: string;
 }
 
 /**
  * GitHub#569: is this item one the lit number means? Only a flow row with `scope` narrows anything: the item
- * must carry its own repository's name (a repository the entry did not see counts for nothing). The board
+ * must carry its own repository's name (the shared one for a repository without a name of its own). The board
  * applies it on top of the search while that number is lit, so the list is what the number counts.
  */
 export function tallyScoped(entry: Pick<TallyEntry, 'scope'> | null, it: Item): boolean {
   if (!entry?.scope) return true;
-  const n = entry.scope.names[it.repo.toLowerCase()];
-  return n !== undefined && n !== '' && hasLabel(it, n);
+  const n = entry.scope.names[it.repo.toLowerCase()] ?? entry.scope.fallback;
+  return n !== '' && hasLabel(it, n);
 }
 
 /**
@@ -182,7 +185,7 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
  */
-export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT, byRepo?: (repo: string) => TallyLabels): TallyEntry[] {
+export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT, byRepo?: (repo: string) => TallyLabels, repos: readonly string[] = []): TallyEntry[] {
   const out: TallyEntry[] = [];
   for (const d of defs) {
     const name = d.name.trim();
@@ -191,22 +194,27 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const flow = d.source.flow;
       const label = labels[flow].trim();
       if (label === '') continue;
-      // GitHub#569: each item counted under its own repository's name; the click lists every name in play
+      // GitHub#569: each item counted under its own repository's name. The names and the narrowing come from the
+      // label settings alone — the shared name plus each repository that has its own (`repos`) — never from the
+      // items in hand: a sync, a source ticked off or a repository's last item leaving must not change the click
+      // text, or the lit number goes dark and the search saved before the click is dropped (PR #571 code review
+      // rounds 3 and 4). Only a change to the label settings themselves changes it, as the shared label always did.
       const own = (it: Item) => (byRepo ? byRepo(it.repo)[flow].trim() : label);
       const names = [label];
-      if (byRepo) for (const it of items) if (own(it) !== '' && !names.some((n) => n.toLowerCase() === own(it).toLowerCase())) names.push(own(it));
+      const map: Record<string, string> = {};
+      if (byRepo) {
+        for (const r of repos) {
+          const n = byRepo(r)[flow].trim();
+          map[r.toLowerCase()] = n;
+          if (n !== '' && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+        }
+      }
       const counted = items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it)));
       const query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
       // The search box has no "this name in that repository": `label:"A","B"` takes either name in every
-      // repository. So when the names differ the entry carries each repository's own name, and the list a click
-      // shows is narrowed by it (`tallyScoped`) — the click text stays the same whatever a sync brings, so the
-      // lit number and the search saved before the click survive it (PR #571 code review rounds 2 and 3).
-      let scope: TallyScope | null = null;
-      if (byRepo && names.length > 1) {
-        const map: Record<string, string> = {};
-        for (const it of items) map[it.repo.toLowerCase()] = own(it);
-        scope = { names: map };
-      }
+      // repository, so while such a number is lit the board narrows the list by each repository's own name
+      // (`tallyScoped`): the list is what the number counts.
+      const scope: TallyScope | null = names.length > 1 ? { names: map, fallback: label } : null;
       out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}) });
     } else {
       const q = d.source.query.trim();
@@ -226,8 +234,16 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
  * the settings and the board's filter context. The view bar and Settings' live preview both take theirs from
  * here, so the two cannot show different numbers.
  */
-export function viewBarTallies(items: Item[], saved: TallyDef[] | null, handBack: HandBackLabels, ctx: FilterContext = NO_CONTEXT, handBackFor?: (repo: string) => HandBackLabels): TallyEntry[] {
-  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined);
+export function viewBarTallies(
+  items: Item[],
+  saved: TallyDef[] | null,
+  handBack: HandBackLabels,
+  ctx: FilterContext = NO_CONTEXT,
+  handBackFor?: (repo: string) => HandBackLabels,
+  /** GitHub#569: the repositories that have label names of their own (the keys of the label settings) */
+  repos: readonly string[] = [],
+): TallyEntry[] {
+  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined, repos);
 }
 
 /**

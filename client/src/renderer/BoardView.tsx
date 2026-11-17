@@ -517,7 +517,7 @@ export function BoardView({
   const tallyDefs = state.tallies;
   const handBack = state.handBack;
   const tally = useMemo(
-    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor({ handBack, repoLabels }, repo)),
+    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor({ handBack, repoLabels }, repo), Object.keys(repoLabels)),
     [data.items, data.projects, tallyDefs, handBack, repoLabels, state.viewer, today],
   );
   // a window without its own memory (tests mounting the board alone) keeps the pick here

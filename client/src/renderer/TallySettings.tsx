@@ -45,7 +45,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
   const today = localToday(Date.now());
   // GitHub#514: the view bar's own numbers, from the view bar's own function and context
   const preview = useMemo(
-    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor(state, repo)),
+    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor(state, repo), Object.keys(state.repoLabels)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, today],
   );
