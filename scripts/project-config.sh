@@ -629,17 +629,8 @@ if [ "$real_now" != "$REAL" ] || [ "$(rev_of "$REAL" "$REAL" || true)" != "$REV"
 fi
 
 # 8. 原子替换。从这一行起本脚本不再写配置文件。
-# 换文件前把改写计数推到奇数、换上后推到偶数（GitHub#569，_label_rename.sh）：读配置的进程拿到轮询锁后比一下计数，就知道
-# 自己加载之后本工具有没有改过配置。推不上奇数 = 不换文件；换不上就推回偶数（配置没变）
-if ! config_gen_set "$REAL" odd; then
-    echo "写不了配置改写计数（$(config_gen_path "$REAL" || true)），什么都没写"; finish write_failed 2
-fi
 if ! mv -f "$NEW" "$REAL"; then
-    config_gen_set "$REAL" even || true
     echo "换不上新文件，什么都没写"; finish write_failed 2
-fi
-if ! config_gen_set "$REAL" even; then
-    echo "已换上新文件，但配置改写计数没能收尾：读配置的进程会一直当成「配置正在改写」不动手，直到下一次保存成功。"
 fi
 
 # 9. 读回

@@ -90,11 +90,13 @@ fi
 # 拿不到 daemon 的环境变量；先清掉，两边才读同一处。
 unset REQUESTER_BOT_WEBHOOK_URL REQUESTER_BOT_WEBHOOK_KEY_HEADER REQUESTER_BOT_WEBHOOK_KEY
 
-# ── 加载配置，并记下这一次加载时配置的改写计数（GitHub#569）──
-# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程加载配置之后，本工具有没有改过它？本工具改配置只经过
-# project-config.sh set，它换文件前后各把改写计数加一（_label_rename.sh config_gen_*）。所以这里在加载**之前**读
-# 一次计数，闸门在锁里再读一次：一样且是偶数 = 加载之后没改过。照常 source 原文件、只 source 一次（复审第 3、5 轮：
-# 换路径加载弄坏了 ${BASH_SOURCE[0]}；锁里再加载一遍配置会重复配置里的命令、撞上只读变量）。
+# ── 加载配置，并记下这一次加载读了哪些文件、各是什么内容（GitHub#569）──
+# 改名闸门（label_rename_gate）拿到轮询锁后要回答：本进程加载配置之后，配置有没有被改过？配置是 Bash，标签名
+# 可能写在它 source 的邻近文件里，人也可能直接用编辑器改。所以加载时用 DEBUG 陷阱（临时打开 functrace，source
+# 进来的文件才会触发）记下执行过命令的每个文件，加载完立刻给每个文件算一次内容指纹（CONFIG_SRC_FPS）；闸门在锁里
+# 重算一遍，任何一个变了或读不了就不动手。配置照常按原路径只 source 一次：不重新执行配置（复审第 5 轮：重新加载会
+# 重复配置里的命令、撞上只读变量），也不换路径加载（第 3 轮：弄坏 ${BASH_SOURCE[0]}）。
+# 看不到的输入写在文档里：配置用 $(cat …) 等方式读的文件、加载时不存在而之后才出现的文件、环境变量。
 cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依赖 realpath：老 macOS 没有）
     local p="$1" n=0 t d
     while [ -L "$p" ]; do
@@ -115,9 +117,41 @@ cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
 }
 CONFIG_REAL="$(cfg_real_path "$CONFIG_FILE" 2>/dev/null || true)"
-CONFIG_GEN_AT_LOAD="$( [ -n "$CONFIG_REAL" ] && config_gen_read "$CONFIG_REAL" || printf 'bad' )"
+_CFG_SRCS="|"
+_CFG_LIB_SELF="${BASH_SOURCE[0]}"
+_CFG_OLD_DEBUG="$(trap -p DEBUG)"
+case "$-" in *T*) _CFG_HAD_T=1 ;; *) _CFG_HAD_T=0 ;; esac
+set -T
+trap 'case "$_CFG_SRCS" in *"|${BASH_SOURCE[0]:-}|"*) ;; *) _CFG_SRCS="${_CFG_SRCS}${BASH_SOURCE[0]:-}|" ;; esac' DEBUG
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+trap - DEBUG
+[ "$_CFG_HAD_T" = 1 ] || set +T
+[ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
+# 每个文件：绝对路径（相对路径按加载时的当前目录补全）+ 内容指纹；主配置总在里面
+cfg_src_fps() {   # <文件列表，| 分隔> → 每行「指纹 路径」；有一个读不了就返回 1
+    local list="$1" f out="" h
+    local IFS='|'
+    for f in $list; do
+        [ -n "$f" ] || continue
+        h="$(cfg_sha256 < "$f" 2>/dev/null)" || return 1
+        [ -n "$h" ] || return 1
+        out="${out}${h} ${f}"$'\n'
+    done
+    printf '%s' "$out"
+}
+_cfg_abs_list() {
+    local f out="|" IFS='|'
+    for f in "$CONFIG_FILE" $_CFG_SRCS; do
+        [ -n "$f" ] && [ "$f" != "$_CFG_LIB_SELF" ] || continue
+        case "$f" in /*) ;; *) f="$PWD/$f" ;; esac
+        case "$out" in *"|$f|"*) ;; *) out="${out}${f}|" ;; esac
+    done
+    printf '%s' "$out"
+}
+CONFIG_SRC_LIST="$(_cfg_abs_list)"
+CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
+unset _CFG_SRCS _CFG_LIB_SELF _CFG_OLD_DEBUG _CFG_HAD_T
 
 # ── 配置缺新功能的设置（GitHub#289）──
 # 必须紧跟在 source 配置之后、任何默认值补上之前记：这时「未设置」才等于「项目配置（和 systemd
@@ -8099,7 +8133,7 @@ item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
 # 任何「读了配置、之后会写标签」的进程都不能按旧名字动手。这里是所有入口共用的三样东西：
 #
 #   label_rename_gate    拿到轮询锁之后问一次：没有「改名进行中」记录，且配置文件还是本进程加载的那一版
-#                        （改写计数 CONFIG_GEN_AT_LOAD：加载前读一次，锁里再读一次）。两条都满足才动手；读不到一律当不满足。
+#                        （CONFIG_SRC_FPS：加载时读过的每个文件的内容指纹，锁里重算一遍）。两条都满足才动手；读不到一律当不满足。
 #   poll_lock_reexec     人在终端直接跑的入口（派工、叫醒外部需求机器人、CI 失败报告）不在轮询锁里：
 #                        先在轮询锁里重新起自己（flock -o：锁由 flock 进程拿着，不传给本脚本和它起的
 #                        tmux），锁里那一份重新加载配置、过闸门，再往下走。由轮询拉起的子进程不重复拿锁。
@@ -8145,14 +8179,13 @@ label_rename_gate() {
         LABEL_GATE_WHY="有一次流程标签改名还没做完（${rec}），本项目暂停到改名做完或退回"
         return 1
     fi
-    case "$CONFIG_GEN_AT_LOAD" in
-        bad|*[13579])
-            LABEL_GATE_WHY="加载配置时它正在被本工具改写（或改写计数读不了），这一次不动手，下一次重新加载"
-            return 1 ;;
-    esac
-    now="$( [ -n "$CONFIG_REAL" ] && config_gen_read "$CONFIG_REAL" || printf 'bad' )"
-    if [ "$now" != "$CONFIG_GEN_AT_LOAD" ]; then
-        LABEL_GATE_WHY="配置在本进程加载之后被本工具改过（标签改名或项目配置窗口保存），这一次不动手，下一次用新配置"
+    if [ -z "$CONFIG_SRC_FPS" ]; then
+        LABEL_GATE_WHY="加载配置时没能给它读的文件算出指纹，这一次不动手，下一次重新加载"
+        return 1
+    fi
+    now="$(cfg_src_fps "$CONFIG_SRC_LIST" 2>/dev/null || true)"
+    if [ "$now" != "$CONFIG_SRC_FPS" ]; then
+        LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载之后被改过或读不了，这一次不动手，下一次用新配置"
         return 1
     fi
     return 0
