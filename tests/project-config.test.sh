@@ -687,7 +687,7 @@ done
 # GitHub#556 登记的轮询节奏、轮询记录、预览几项：登记的范围 = 使用端实际收的范围
 chk "整数范围（GitHub#556）：轮询节奏 9 位、轮询记录 7 位、预览端口 65535、就绪等待 120 秒" \
     "$(for k in POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS $RUNLOG_KEYS PREVIEW_PORT_BASE PREVIEW_PORT_MODULO PREVIEW_BACKEND_OFFSET PREVIEW_READY_TIMEOUT; do printf '%s ' "$(col 3 "$k")"; done)" \
-    "int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:2:9999999 int:2:9999999 int:2:9999999 int:1:9999999 int:0:65535 int:1:3074457345618258602:empty int:1:65535 int:0:120 "
+    "int:0:999999999 int:0:999999999 int:0:999999999 int:1:999999999 int:2:9999999 int:2:9999999 int:2:9999999 int:1:9999999 int:0:65535 int:1:9223372036854775807:empty int:1:65535 int:0:120 "
 pace_after_load() {   # <名字> <值> → 公共库加载后实际用的值（轻量检查封顶问 pace_probe_cap：不合法 = 不封顶，输出 none）
     req_conf; printf '%s=%s\n' "$1" "$2" >> "$RQ/cavil-loop.config"
     env -i HOME="$RQ" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$RQ/cavil-loop.config" bash -c '
@@ -726,7 +726,7 @@ req_conf; printf 'PREVIEW_PORT_MODULO=1000\n' >> "$RQ/cavil-loop.config"
 save req '{"PREVIEW_PORT_MODULO":""}'
 chk "取模从 1000 改成留空：保存成功，文件里那一行写成空值（照原行不带引号），读回是空" \
     "$RESULT $(grep -cxE 'PREVIEW_PORT_MODULO=(""|)' "$RQ/cavil-loop.config") $(field "$(run get req)" PREVIEW_PORT_MODULO)" 'RESULT=saved 1 ["",true,true]'
-for v in 0 3074457345618258603; do
+for v in 0 9223372036854775808; do
     before="$(sum "$RQ/cavil-loop.config")"
     save req "{\"PREVIEW_PORT_MODULO\":\"$v\"}"
     chk "取模写 $v 不让存（文件不变），原因里说可以留空" "$RESULT $(sum "$RQ/cavil-loop.config") $(grep -q '或者留空' <<<"$OUT" && echo said)" "RESULT=invalid $before said"
@@ -748,11 +748,13 @@ chk "只改偏移，起始号是配置里已有的 60000：合起来越界，不
 chk "取余数 1000、起始号 60000、偏移 5000：#1 和余数 0 的那条都能用，能存（余数大的那几条注册时拦，见轮询测试）" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"60000","PREVIEW_PORT_MODULO":"1000","PREVIEW_BACKEND_OFFSET":"5000"}')" "RESULT=saved changed silent"
 chk "旧配置取余数 100000（是除数，不是端口）：只改偏移照常能存" "$(pv_combo 'PREVIEW_PORT_MODULO=100000' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=saved changed silent"
 chk "取余数改成 100000：能存" "$(pv_combo '' '{"PREVIEW_PORT_MODULO":"100000"}')" "RESULT=saved changed silent"
-# 复审第 4 轮：限制是 64 位算术本身的（三个加数各不超过 (2^63−1)/3），不是 9 位
+# 复审第 4、5 轮：限制是 bash 64 位整数本身的（2^63−1），每次加法前查会不会越过它；取余数是除数，不受加法限制
 chk "取余数改成 1000000000（十位数）：能存" "$(pv_combo '' '{"PREVIEW_PORT_MODULO":"1000000000"}')" "RESULT=saved changed silent"
 chk "旧配置取余数 1000000000：只改偏移照常能存" "$(pv_combo 'PREVIEW_PORT_MODULO=1000000000' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=saved changed silent"
-chk "取余数正好是上限 3074457345618258602：能存" "$(pv_combo '' '{"PREVIEW_PORT_MODULO":"3074457345618258602"}')" "RESULT=saved changed silent"
-chk "旧配置取余数比上限大 1：改偏移时算不了端口，不让存" "$(pv_combo 'PREVIEW_PORT_MODULO=3074457345618258603' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=invalid same said"
+chk "取余数 3074457345618258603（上一轮误拒的值）：能存" "$(pv_combo '' '{"PREVIEW_PORT_MODULO":"3074457345618258603"}')" "RESULT=saved changed silent"
+chk "旧配置取余数 3074457345618258603：只改偏移照常能存" "$(pv_combo 'PREVIEW_PORT_MODULO=3074457345618258603' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=saved changed silent"
+chk "取余数正好是 bash 整数上限 2^63−1：能存" "$(pv_combo '' '{"PREVIEW_PORT_MODULO":"9223372036854775807"}')" "RESULT=saved changed silent"
+chk "旧配置取余数 2^63（bash 整数装不下）：改偏移时算不了端口，不让存" "$(pv_combo 'PREVIEW_PORT_MODULO=9223372036854775808' '{"PREVIEW_BACKEND_OFFSET":"20000"}')" "RESULT=invalid same said"
 chk "偏移 65535 配起始号 4000：#1 的后端端口 69536，不让存" "$(pv_combo '' '{"PREVIEW_BACKEND_OFFSET":"65535"}')" "RESULT=invalid same said"
 chk "边界正好：取余数 1000、起始号 60000、偏移 4536（60999 + 4536 = 65535）：能存" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"60000","PREVIEW_PORT_MODULO":"1000","PREVIEW_BACKEND_OFFSET":"4536"}')" "RESULT=saved changed silent"
 chk "边界正好：不取余数、起始号 4000、偏移 61534（#1 的后端 65535）：能存" "$(pv_combo '' '{"PREVIEW_PORT_BASE":"4000","PREVIEW_BACKEND_OFFSET":"61534"}')" "RESULT=saved changed silent"
