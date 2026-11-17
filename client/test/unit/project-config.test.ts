@@ -43,6 +43,12 @@ describe('the rules the form is drawn from', () => {
     expect([fieldProblem(open, '1'), fieldProblem(open, '1' + '0'.repeat(199))]).toEqual([null, null]);
     expect(fieldProblem(open, '1' + '0'.repeat(200))).not.toBeNull();
     expect(fieldProblem(open, '0')).toBe('只能是不小于 1 的整数');
+    // GitHub#556: an integer the daemon marks `empty` may also be left blank; one without it may not
+    const blank = field({ type: 'int', min: 1, max: 65535, empty: true });
+    expect(['', '1', '65535'].map((v) => fieldProblem(blank, v))).toEqual([null, null, null]);
+    expect(fieldProblem(blank, '0')).toBe('只能是 1 到 65535 之间的整数，或者留空');
+    for (const v of ['65536', ' ', '01']) expect(fieldProblem(blank, v), v).not.toBeNull();
+    expect(fieldProblem(field({ type: 'int', min: 1, max: 65535 }), '')).toBe('只能是 1 到 65535 之间的整数');
   });
 
   it('only what the daemon calls editable, of a type the client knows, is an input', () => {
@@ -252,6 +258,9 @@ describe('the back end and the daemon\'s real script', () => {
       ['GREEDY_SCAN_LIMIT', '0'], ['GREEDY_SCAN_LIMIT', '0100'], ['GREEDY_SCAN_LIMIT', '100'],
       ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
       ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
+      // GitHub#556: the one integer that may be left blank, and one that may not
+      ['PREVIEW_PORT_MODULO', '1000'], ['PREVIEW_PORT_MODULO', ''], ['PREVIEW_PORT_MODULO', '0'], ['PREVIEW_PORT_MODULO', '1000000000'], ['PREVIEW_PORT_MODULO', '3074457345618258603'], ['PREVIEW_PORT_MODULO', '9223372036854775808'],
+      ['PREVIEW_BACKEND_OFFSET', ''],
     ];
     const verdicts: [string, boolean][] = [];
     for (const [name, v] of cases) {
@@ -262,12 +271,13 @@ describe('the back end and the daemon\'s real script', () => {
       const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { [name]: v } });
       verdicts.push([`${name}=${v}`, form]);
       expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(form);
-      if (form) expect(line(name)).toEqual([`${name}=${v}`]);
+      if (form) expect(line(name).map((l) => l.replace(/"/g, ''))).toEqual([`${name}=${v}`]);
     }
     expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual([
       'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551616', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
       'AUTOPILOT_CHECKS_TIMEOUT_HOURS=2562047788015215',
       `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1${'0'.repeat(60)}`,
+      'PREVIEW_PORT_MODULO=1000', 'PREVIEW_PORT_MODULO=', 'PREVIEW_PORT_MODULO=1000000000', 'PREVIEW_PORT_MODULO=3074457345618258603',
     ]);
   }, 60_000);
 

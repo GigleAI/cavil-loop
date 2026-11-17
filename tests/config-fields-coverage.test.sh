@@ -14,7 +14,7 @@
 #      tests/config-fields-hidden.txt（不显示，写明原因）其中一处
 #   2. 不显示清单：类别是规定的几种、原因不空、没有重复、每项都在模板里
 #   2b. 显示登记表：只显示的项每行写了自己的原因（第 8 列），可改的项不写（GitHub#554）
-#   3. 检查本身能报错：往模板副本加一项不登记、一项两边都登记、写错类别，都要报出来
+#   3. 检查本身能报错：往模板副本加一项不登记、一项两边都登记、写错类别、再放一行已删掉的「待登记」类别，都要报出来
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -38,7 +38,7 @@ guard() {   # <模板> <显示登记表> <不显示清单> → 打印问题，�
     python3 - "$1" "$2" "$3" <<'PY'
 import re, sys
 tpl, fields, hidden = sys.argv[1:4]
-KINDS = {"命令", "钩子", "令牌", "网址", "目录", "名字", "待登记"}
+KINDS = {"命令", "钩子", "令牌", "网址", "目录", "名字", "安装时生效"}
 keys = []
 for l in open(tpl, encoding="utf-8"):
     m = re.match(r"^([A-Z_][A-Z0-9_]*)=", l)
@@ -87,14 +87,20 @@ echo "【2】检查本身能报错"
 cp "$TPL" "$TMP/tpl"; echo 'BRAND_NEW_KEY="x"' >> "$TMP/tpl"
 chk "模板加一项、两处都不登记：报出来" "$(guard "$TMP/tpl" "$FIELDS" "$HIDDEN")" "模板里有、两处都没登记: BRAND_NEW_KEY"
 
-cp "$HIDDEN" "$TMP/hidden"; echo 'WORKER_AGENT | 待登记 | 测试' >> "$TMP/hidden"
+cp "$HIDDEN" "$TMP/hidden"; echo 'WORKER_AGENT | 名字 | 测试' >> "$TMP/hidden"
 chk "一项两处都登记：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden")" "两处都登记了: WORKER_AGENT"
 
 cp "$HIDDEN" "$TMP/hidden2"; sed -i 's/^REPO | 名字 |/REPO | 其他 |/' "$TMP/hidden2"
 chk "类别写错：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden2")" "不显示清单格式或类别不对: REPO"
 
-cp "$HIDDEN" "$TMP/hidden3"; echo 'GONE_KEY | 待登记 | 测试' >> "$TMP/hidden3"
+cp "$HIDDEN" "$TMP/hidden3"; echo 'GONE_KEY | 名字 | 测试' >> "$TMP/hidden3"
 chk "清单里有、模板里没有：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden3")" "不显示清单里有、模板里没有: GONE_KEY"
+
+# 「待登记」类别已清零删除（GitHub#556）：再往不显示清单里放一行这个类别要报错，可以显示的项只能登记进显示登记表
+chk "当前不显示清单里一行「待登记」都没有" "$(grep -c '| 待登记 |' "$HIDDEN")" 0
+cp "$HIDDEN" "$TMP/hidden4"; sed -i 's/^POLL_INTERVAL_SECS | 安装时生效 |/POLL_INTERVAL_SECS | 待登记 |/' "$TMP/hidden4"
+chk "到达性：上面那行替换确实改到了一行" "$(grep -c '^POLL_INTERVAL_SECS | 待登记 |' "$TMP/hidden4")" 1
+chk "再加一行「待登记」：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden4")" "不显示清单格式或类别不对: POLL_INTERVAL_SECS"
 
 cp "$FIELDS" "$TMP/fields"; sed -i 's/^\(LABEL_PENDING_MERGE |.*\) | 标签名要和仓库里建好的标签一致$/\1/' "$TMP/fields"
 chk "只显示的项没写原因：报出来" "$(guard "$TPL" "$TMP/fields" "$HIDDEN")" "只显示的项要写自己的原因（第 8 列）: LABEL_PENDING_MERGE"

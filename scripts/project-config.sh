@@ -38,6 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$SCRIPT_DIR/_names.sh"
 # shellcheck source=_install.sh
 source "$SCRIPT_DIR/_install.sh"
+# shellcheck source=_preview_ports.sh
+source "$SCRIPT_DIR/_preview_ports.sh"
 
 export LC_ALL=C
 FIELDS_FILE="$SCRIPT_DIR/config-fields.txt"
@@ -357,9 +359,11 @@ valid_value() {   # <类型> <值>
             BAD_WHY="模型名只能含字母、数字和 . _ : / @ -"; return 1 ;;
         int:*)
             lo="${type#int:}"; hi="${lo#*:}"; lo="${lo%%:*}"
+            # int:下限:上限:empty = 另外可以留空（GitHub#556）
+            a=""; case "$hi" in *:empty) hi="${hi%:empty}"; a="，或者留空"; [ -z "$v" ] && return 0 ;; esac
             if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]] && [ "${#v}" -le "$INT_MAX_DIGITS" ] \
                && dec_le "$lo" "$v" && { [ -z "$hi" ] || dec_le "$v" "$hi"; }; then return 0; fi
-            if [ -z "$hi" ]; then BAD_WHY="只能是不小于 $lo 的整数"; else BAD_WHY="只能是 $lo 到 $hi 之间的整数"; fi
+            if [ -z "$hi" ]; then BAD_WHY="只能是不小于 $lo 的整数$a"; else BAD_WHY="只能是 $lo 到 $hi 之间的整数$a"; fi
             return 1 ;;
         bool:*)
             lo="${type#bool:}"; hi="${lo#*:}"; lo="${lo%%:*}"
@@ -385,8 +389,11 @@ TYPE_JQ='def type_json($t):
     def tail($s): if ($s | index(":")) == null then $s else $s[(($s | index(":")) + 1):] end;
     if $t == "agent" then {type:"agent", options:[$ARGS.positional[] | {value:., label:.}]}
     elif $t | startswith("int:") then after("int:") as $r
+        # 末尾的 :empty = 另外可以留空（GitHub#556），给 empty:true；不带它的项 JSON 和以前一样
+        | ($r | endswith(":empty")) as $e | (if $e then $r[:-6] else $r end) as $r
         # max：空 = 代码不设上限（null）；超过 JSON 数字能精确表示的位数时给字符串，免得被读成近似值
         | {type:"int", min:(head($r) | tonumber), max:(tail($r) | if . == "" then null elif length <= 15 then tonumber else . end)}
+        + (if $e then {empty:true} else {} end)
     elif $t | startswith("bool:") then after("bool:") as $r | {type:"bool", on:head($r), off:tail($r)}
     elif $t | startswith("enum:") then {type:"enum", options:[after("enum:") | split(",")[] | {value:(split("=")[0]), label:(split("=")[1:] | join("="))}]}
     else {type:$t} end;'
@@ -494,6 +501,24 @@ for j in "${!W_NAMES[@]}"; do
         --argjson added "$([ "$W_KIND" = absent ] && echo true || echo false)" \
         '{name:$k, label:$label, old:$old, new:$new, added:$added}')")
 done
+# 3b. 组合检查（GitHub#556）：预览端口的起始号 / 取余数 / 后端偏移改了任何一项，就用保存后的三项
+#     （没改的取现在实际用的值）算一遍端口；算出来不能用就不存。规则和注册前的检查是同一份（_preview_ports.sh）
+pv_touch=0
+for k in "${W_NAMES[@]}"; do case "$k" in PREVIEW_PORT_BASE|PREVIEW_PORT_MODULO|PREVIEW_BACKEND_OFFSET) pv_touch=1 ;; esac; done
+if [ "$pv_touch" = 1 ]; then
+    pv_after() {   # <名字> → 保存后的值：这次要写的，否则 daemon 现在实际用的
+        local j i
+        for j in "${!W_NAMES[@]}"; do [ "${W_NAMES[$j]}" = "$1" ] && { printf '%s' "${W_VALUES[$j]}"; return; }; done
+        i="$(field_index "$1")" && effective "$i"
+    }
+    pv_b="$(pv_after PREVIEW_PORT_BASE)"; pv_m="$(pv_after PREVIEW_PORT_MODULO)"; pv_o="$(pv_after PREVIEW_BACKEND_OFFSET)"
+    # 没改的那几项现在的值也一起查：能不能参与运算、算出来的端口能不能用，都由 _preview_ports.sh 判断
+    pv_bad="$(preview_ports_save_problem "$pv_b" "$pv_m" "$pv_o")" || true
+    if [ -n "$pv_bad" ]; then
+        echo "预览端口的三项设置合起来不能用：${pv_bad}。什么都没写"
+        DETAIL="$(jq -cn --arg why "$pv_bad" '{field:"PREVIEW_PORT_BASE", reason:$why}')"; finish invalid 2
+    fi
+fi
 if [ "${#E_IDX[@]}" -eq 0 ]; then
     echo "要写的值和配置文件里的一样，什么都没写"
     DETAIL='{"changes":[]}'; finish unchanged 0

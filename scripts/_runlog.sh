@@ -83,6 +83,17 @@ _runlog_int() {   # <值> <默认> <最小>
     if [ "${#1}" -gt 7 ] || [ "$1" -lt "$3" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
 }
 
+# 四个上限 / 门槛配置项实际用的值：不写、写成空值或不合法都是默认值。用到它们的地方都问这里，
+# 客户端项目配置窗口登记的默认值和范围也和这里对拍（tests/project-config.test.sh 第 7 节，GitHub#556）。
+_runlog_setting() {   # <配置项名>
+    case "$1" in
+        POLL_RUN_LOG_ROUNDS)    _runlog_int "${POLL_RUN_LOG_ROUNDS:-}" 1000 2 ;;
+        POLL_RUN_LOG_SNAPSHOTS) _runlog_int "${POLL_RUN_LOG_SNAPSHOTS:-}" 20 2 ;;
+        POLL_RUN_LOG_INFLIGHT)  _runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2 ;;
+        POLL_RUN_LOG_SLOW_SECS) _runlog_int "${POLL_RUN_LOG_SLOW_SECS:-}" 600 1 ;;
+    esac
+}
+
 # 过格式校验的值：合格原样输出，不合格输出 invalid。记录里所有「不是数字」的值都走它。
 _runlog_tok() {   # <值> <ERE>
     if printf '%s' "$1" | grep -qE -- "$2"; then printf '%s' "$1"; else printf 'invalid'; fi
@@ -213,7 +224,7 @@ _runlog_enabled() {
 }
 
 _runlog_inflight_write() {
-    _runlog_put "$RUNLOG_DIR/inflight" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID.json" \
+    _runlog_put "$RUNLOG_DIR/inflight" "$(_runlog_setting POLL_RUN_LOG_INFLIGHT)" "$RUNLOG_ID.json" \
         "{\"v\":1,\"id\":\"$RUNLOG_ID\",\"start\":$RUNLOG_START,\"lock\":$RUNLOG_LOCKED,\"step\":\"$RUNLOG_STEP\",\"steps\":[$RUNLOG_STEPS],\"log_from\":$RUNLOG_LOG_FROM}"
 }
 
@@ -279,7 +290,7 @@ _runlog_counters_open() {
     RUNLOG_FD_CALLS=""; RUNLOG_FD_FAILED=""; RUNLOG_FD_PROBE=""; RUNLOG_TICKS_SIZE=0
     RUNLOG_TICKS=$(_runlog_int "${CAVIL_RUNLOG_TEST_TICKS:-}" 20000 1)   # 环境变量只有测试设（把上限调小）
     ( set +e
-      _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_int "${POLL_RUN_LOG_INFLIGHT:-}" 64 2)" "$RUNLOG_ID" \
+      _runlog_put "$RUNLOG_DIR/acct" "$(_runlog_setting POLL_RUN_LOG_INFLIGHT)" "$RUNLOG_ID" \
           "$(head -c "$RUNLOG_TICKS" /dev/zero | tr '\0' x)" raw
     ) >/dev/null 2>&1 || return 0
     size=$(_runlog_file_size "$f")
@@ -348,7 +359,7 @@ runlog_step() {
     now=$(_runlog_now)
     dur=$((now - RUNLOG_STEP_T0))
     RUNLOG_STEPS+="${RUNLOG_STEPS:+,}[\"$RUNLOG_STEP\",$dur]"
-    if [ -z "$RUNLOG_SLOW_STEP" ] && [ "$dur" -gt "$(_runlog_int "${POLL_RUN_LOG_SLOW_SECS:-}" 600 1)" ]; then
+    if [ -z "$RUNLOG_SLOW_STEP" ] && [ "$dur" -gt "$(_runlog_setting POLL_RUN_LOG_SLOW_SECS)" ]; then
         RUNLOG_SLOW_STEP="$RUNLOG_STEP"
     fi
     RUNLOG_STEP="$1"
@@ -421,7 +432,7 @@ _runlog_snapshot_write() {   # <文件名> <原因> <位置> <退出码> <轻量
     cfg+=",\"max_concurrent_workers\":\"$(_runlog_tok "${MAX_CONCURRENT_WORKERS:-1}" '^[0-9]{1,6}$')\""
     cfg+=",\"dispatch_mode\":\"$(_runlog_tok "${DISPATCH_MODE:-label}" '^[a-z]{1,20}$')\""
     cfg+=",\"force_sync_secs\":\"$(_runlog_tok "${POLL_FORCE_SYNC_SECS:-0}" '^[0-9]{1,9}$')\"}"
-    _runlog_put "$RUNLOG_DIR/snapshots" "$(_runlog_int "${POLL_RUN_LOG_SNAPSHOTS:-}" 20 2)" "$1" \
+    _runlog_put "$RUNLOG_DIR/snapshots" "$(_runlog_setting POLL_RUN_LOG_SNAPSHOTS)" "$1" \
         "{\"v\":1,\"id\":\"$RUNLOG_ID\",\"t\":$(_runlog_now),\"reason\":\"$2\",\"where\":\"$3\",\"rc\":$4,\"probe\":\"$5\",\"steps\":[$6],\"release\":\"$(_runlog_release)\",\"bash\":\"$(_runlog_tok "${BASH_VERSION:-}" '^[A-Za-z0-9_.()-]{1,40}$')\",\"config\":$cfg,\"pace\":$pace,\"poll_log\":{\"from\":$RUNLOG_LOG_FROM,\"to\":$(_runlog_file_size "${LOG_FILE:-/nonexistent}")},\"rounds\":$rounds}"
 }
 
@@ -450,7 +461,7 @@ _runlog_finish() {   # <退出码>
     now=$(_runlog_now)
     dur=$((now - RUNLOG_STEP_T0))
     RUNLOG_STEPS+="${RUNLOG_STEPS:+,}[\"$RUNLOG_STEP\",$dur]"
-    if [ -z "$RUNLOG_SLOW_STEP" ] && [ "$dur" -gt "$(_runlog_int "${POLL_RUN_LOG_SLOW_SECS:-}" 600 1)" ]; then
+    if [ -z "$RUNLOG_SLOW_STEP" ] && [ "$dur" -gt "$(_runlog_setting POLL_RUN_LOG_SLOW_SECS)" ]; then
         RUNLOG_SLOW_STEP="$RUNLOG_STEP"
     fi
     if [ "$rc" != 0 ]; then outcome=error
@@ -503,7 +514,7 @@ _runlog_finish() {   # <退出码>
                 holder_age=$((now - holder_start))
                 extra=",\"holder\":\"$holder_id\",\"holder_age\":$holder_age"
                 # 卡死：用被卡住的那一轮命名，几轮同时发现也只有同名的一份；已有就不再写。
-                if [ -z "$snap_reason" ] && [ "$holder_age" -gt "$(_runlog_int "${POLL_RUN_LOG_SLOW_SECS:-}" 600 1)" ] \
+                if [ -z "$snap_reason" ] && [ "$holder_age" -gt "$(_runlog_setting POLL_RUN_LOG_SLOW_SECS)" ] \
                    && [ ! -e "$RUNLOG_DIR/snapshots/$holder_id-stuck.json" ]; then
                     snap_reason=stuck; where="$holder_id"; snap_name="$holder_id-stuck.json"
                 fi
@@ -521,7 +532,7 @@ _runlog_finish() {   # <退出码>
         _runlog_hook snapshot
     fi
 
-    _runlog_put "$RUNLOG_DIR/rounds" "$(_runlog_int "${POLL_RUN_LOG_ROUNDS:-}" 1000 2)" "$RUNLOG_START-$RUNLOG_ID.json" \
+    _runlog_put "$RUNLOG_DIR/rounds" "$(_runlog_setting POLL_RUN_LOG_ROUNDS)" "$RUNLOG_START-$RUNLOG_ID.json" \
         "{\"v\":1,\"id\":\"$RUNLOG_ID\",\"start\":$RUNLOG_START,\"end\":$now,\"secs\":$((now - RUNLOG_START)),\"outcome\":\"$outcome\",\"rc\":$rc,\"step\":\"$RUNLOG_STEP\",\"steps\":[$RUNLOG_STEPS],\"candidates\":$RUNLOG_CANDIDATES,\"dispatched\":$RUNLOG_DISPATCH_OK,\"dispatch_failed\":$RUNLOG_DISPATCH_FAIL,\"gh_calls\":$calls,\"gh_failed\":$failed,\"gh_capped\":$capped,\"probe\":\"$probe\",\"release\":\"$(_runlog_release)\",\"log_from\":$RUNLOG_LOG_FROM,\"log_to\":$(_runlog_file_size "${LOG_FILE:-/nonexistent}")$extra,\"snapshot\":$snap}"
     _runlog_hook record
     rm -f "$RUNLOG_DIR/inflight/$RUNLOG_ID.json"
