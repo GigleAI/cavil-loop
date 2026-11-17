@@ -1294,6 +1294,7 @@ PYC
 cstep "$WORKFLOW" client-plan "Decide the client release" > "$TMP/c-plan.sh"
 cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
 cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
+cstep "$CLIENT_WORKFLOW" package-windows "Version" > "$TMP/c-version-win.sh"
 cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs and Windows" > "$TMP/c-files.sh"
 cstep "$CLIENT_WORKFLOW" release "Tag the tested commit" > "$TMP/c-tag.sh"
 cstep "$CLIENT_WORKFLOW" release "Create Release" > "$TMP/c-create.sh"
@@ -1344,6 +1345,7 @@ has "every-job-on-mode []" "$S" "every build / test job checks out the commit th
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
+check "the Windows build stamps its version with the very same step as the Macs (GitHub#577)" "$(cmp -s "$TMP/c-version.sh" "$TMP/c-version-win.sh" && echo same)" "same"
 
 # A repo of its own: client/ with the real version files and scripts, a bare remote, one tag list.
 CREMOTE="$TMP/client-remote.git"; CWORK="$TMP/client-work"
