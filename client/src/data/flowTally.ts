@@ -57,6 +57,25 @@ export interface TallyEntry {
   count: number;
   /** what the search box becomes on a click; null = this label cannot be written in the search syntax */
   query: string | null;
+  /** GitHub#569: a flow row whose repositories name the label differently — each repository's own name; the
+   *  list a click shows is narrowed by it (`tallyScoped`). Absent when every repository uses the same name. */
+  scope?: TallyScope;
+}
+
+/** each repository (lower-cased owner/repo) → the name this flow label has there */
+export interface TallyScope {
+  names: Record<string, string>;
+}
+
+/**
+ * GitHub#569: is this item one the lit number means? Only a flow row with `scope` narrows anything: the item
+ * must carry its own repository's name (a repository the entry did not see counts for nothing). The board
+ * applies it on top of the search while that number is lit, so the list is what the number counts.
+ */
+export function tallyScoped(entry: Pick<TallyEntry, 'scope'> | null, it: Item): boolean {
+  if (!entry?.scope) return true;
+  const n = entry.scope.names[it.repo.toLowerCase()];
+  return n !== undefined && n !== '' && hasLabel(it, n);
 }
 
 /**
@@ -177,18 +196,18 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const names = [label];
       if (byRepo) for (const it of items) if (own(it) !== '' && !names.some((n) => n.toLowerCase() === own(it).toLowerCase())) names.push(own(it));
       const counted = items.filter((it) => own(it) !== '' && flowCounts(flow, it, own(it)));
-      let query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
+      const query = names.length === 1 ? flowQuery(flow, label) : tallyQueryAny(names);
       // The search box has no "this name in that repository": `label:"A","B"` takes either name in every
-      // repository. So the combined click is kept only when the real filter, over what the click lists with
-      // the number's switch as it starts (showClosedDefault), picks exactly the counted items; otherwise the
-      // number is shown but not clickable (PR #571 code review round 2: 2 counted, 3 listed).
-      if (query !== null && names.length > 1) {
-        const pool = flow === 'human' ? items : openOnly(items);
-        const listed = applyFilter(pool, parseFilter(query), ctx).map((it) => it.key).sort();
-        const want = counted.map((it) => it.key).sort();
-        if (listed.length !== want.length || listed.some((k, i) => k !== want[i])) query = null;
+      // repository. So when the names differ the entry carries each repository's own name, and the list a click
+      // shows is narrowed by it (`tallyScoped`) — the click text stays the same whatever a sync brings, so the
+      // lit number and the search saved before the click survive it (PR #571 code review rounds 2 and 3).
+      let scope: TallyScope | null = null;
+      if (byRepo && names.length > 1) {
+        const map: Record<string, string> = {};
+        for (const it of items) map[it.repo.toLowerCase()] = own(it);
+        scope = { names: map };
       }
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query });
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}) });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;

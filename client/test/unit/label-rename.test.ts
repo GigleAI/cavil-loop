@@ -31,7 +31,7 @@ import {
 import { applyClientRename, blockedLabelsFor, dropOverride, handBackFor, normalizeRepoLabels, overrideRows, renamedFlow } from '../../src/shared/repoLabels';
 import { DEFAULT_HAND_BACK } from '../../src/shared/types';
 import { DEFAULT_BLOCKED_LABELS } from '../../src/shared/blocked';
-import { showClosedDefault, viewBarTallies, type TallyEntry } from '../../src/data/flowTally';
+import { litTally, showClosedDefault, tallyClick, tallyForget, tallyScoped, viewBarTallies, type TallyEntry } from '../../src/data/flowTally';
 import { applyFilter, openOnly, parseFilter } from '../../src/shared/filter';
 import { PendingTracker } from '../../src/data/pending';
 import { buildGraph } from '../../src/data/graph';
@@ -169,36 +169,60 @@ describe('every user of the label names asks for the item\'s repository', () => 
     item('acme/widget', 4, { labels: [label('busy/agent')] }),
     item('acme/other', 5, { labels: [label('doing/agent')] }),
   ];
-  // what a click on a number really lists: its query through the real filter, with the number's switch as it starts
-  const clickList = (all: Item[], e: TallyEntry) => applyFilter(showClosedDefault(e) ? all : openOnly(all), parseFilter(e.query!), { viewer: null, today: '', projects: [] }).map((i) => i.number).sort();
-  it('the view-bar numbers: each item under its own repository\'s name; the click lists both names', () => {
-    const by = viewBarTallies(items, null, s.handBack, undefined, (r) => handBackFor(s, r));
+  // what a click on a number really lists: its query through the real filter, narrowed the way the board narrows it
+  // while that number is lit (tallyScoped), with the number's "显示已关闭" switch as it starts
+  const clickList = (all: Item[], e: TallyEntry) =>
+    applyFilter(showClosedDefault(e) ? all : openOnly(all), parseFilter(e.query!), { viewer: null, today: '', projects: [] })
+      .filter((i) => tallyScoped(e, i))
+      .map((i) => i.number)
+      .sort((x, y) => x - y);
+  const tallies = (set: Item[]) => viewBarTallies(set, null, s.handBack, undefined, (r) => handBackFor(s, r));
+  it('the view-bar numbers: each item under its own repository\'s name; the click lists exactly what is counted', () => {
+    const by = tallies(items);
     const human = by.find((e) => e.flow === 'human')!;
     expect(human.count).toBe(2); // #1 (wait/human in widget) and #3 (pending/human in other) — not #2
-    // #2 carries the other repository's name in widget: a combined click would list it too (PR #571 code review
-    // round 2: 2 counted, 3 listed), and the search box cannot say "this name in that repository" — not clickable
-    expect(human.query).toBe(null);
+    expect(human.query).toBe('label:"pending/human","wait/human"');
+    // #2 carries the other repository's name in widget: the search alone lists it too (PR #571 code review round 2:
+    // 2 counted, 3 listed); narrowed by each repository's own name the list is the counted items
+    expect(applyFilter(items, parseFilter(human.query!), { viewer: null, today: '', projects: [] }).map((i) => i.number).sort()).toEqual([1, 2, 3]);
+    expect(clickList(items, human)).toEqual([1, 3]);
     expect(by.find((e) => e.flow === 'running')!.count).toBe(2);
-    expect(by.find((e) => e.flow === 'running')!.query).toBe('label:"doing/agent","busy/agent"');
     expect(clickList(items, by.find((e) => e.flow === 'running')!)).toEqual([4, 5]);
-    // without #2 the combined click lists exactly the counted items, and stays clickable
-    const clean = items.filter((i) => i.number !== 2);
-    const h2 = viewBarTallies(clean, null, s.handBack, undefined, (r) => handBackFor(s, r)).find((e) => e.flow === 'human')!;
-    expect(h2.count).toBe(2);
-    expect(h2.query).toBe('label:"pending/human","wait/human"');
-    expect(clickList(clean, h2)).toEqual([1, 3]);
-    // every clickable number lists exactly what it counts, on both item sets
-    for (const set of [items, clean]) {
-      for (const e of viewBarTallies(set, null, s.handBack, undefined, (r) => handBackFor(s, r))) {
-        if (e.query === null || e.source !== 'flow') continue;
-        expect(clickList(set, e).length).toBe(e.count);
-      }
-    }
+    // every flow number lists exactly what it counts
+    for (const e of by) if (e.source === 'flow' && e.query !== null) expect(clickList(items, e).length).toBe(e.count);
+  });
+  it('a lit number survives a sync that brings or removes a stray label: same click text, saved search kept, list = count', () => {
+    // PR #571 code review round 3: the number had turned unclickable after such a sync, the lit state and the
+    // search saved before the click were dropped, and the box kept a combined search listing the stray item
+    const before = items.filter((i) => i.number !== 2);
+    const t0 = tallies(before);
+    const h0 = t0.find((e) => e.flow === 'human')!;
+    const c = tallyClick('author:alice', null, h0, t0);
+    expect(c.query).toBe(h0.query);
+    expect(c.saved).toBe('author:alice');
+    // the sync brings #2
+    const t1 = tallies(items);
+    const h1 = t1.find((e) => e.flow === 'human')!;
+    expect(h1.query).toBe(h0.query);
+    expect(litTally(c.query, t1, c.pick)).toBe(h1.kind);
+    expect(tallyForget(c.saved, c.query, t1)).toBe('author:alice');
+    expect(clickList(items, h1)).toEqual([1, 3]);
+    expect(h1.count).toBe(2);
+    // and takes it away again
+    const t2 = tallies(before);
+    const h2 = t2.find((e) => e.flow === 'human')!;
+    expect(litTally(c.query, t2, c.pick)).toBe(h2.kind);
+    expect(clickList(before, h2)).toEqual([1, 3]);
+    // a second click puts the saved search back
+    expect(tallyClick(c.query, c.saved, h2, t2, c.pick)).toEqual({ query: 'author:alice', saved: null, pick: null });
+  });
+  it('the view-bar numbers without per-repository names: as before', () => {
     // without overrides: exactly as before
     const plain = viewBarTallies(items, null, s.handBack);
     expect(plain.find((e) => e.flow === 'human')!.count).toBe(2); // #2, #3
     expect(plain.find((e) => e.flow === 'human')!.query).toBe('label:"pending/human"');
     expect(viewBarTallies(items, null, s.handBack, undefined, (r) => handBackFor(shared, r))).toEqual(plain);
+    expect(plain.every((e) => e.scope === undefined)).toBe(true);
   });
   it('reminders count each item under its repository\'s name', () => {
     const snap = { sourceKey: 's', items, fetchedAt: 1 } as unknown as SourceSnapshot;

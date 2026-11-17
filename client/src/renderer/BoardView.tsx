@@ -36,7 +36,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, tallyScoped, viewBarTallies, type TallyEntry } from '../data/flowTally';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
 import { SaidText, SourceName, Verbatim, verbatimParts } from './Verbatim';
@@ -534,9 +534,11 @@ export function BoardView({
   const closedOn = view.showClosed[closedKey] ?? showClosedDefault(litEntry);
   const hideClosed = !statesInSearch && !closedOn;
   const items = useMemo(() => {
-    const hit = applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects });
+    // GitHub#569: a lit number whose repositories name its label differently narrows the search to each
+    // repository's own name (the search box cannot say "this name in that repository")
+    const hit = applyFilter(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }).filter((it) => tallyScoped(litEntry, it));
     return hideClosed ? openOnly(hit) : hit;
-  }, [data, parsed, state.viewer, today, hideClosed]);
+  }, [data, parsed, state.viewer, today, hideClosed, litEntry]);
   // the column / group lines are worded when built: built again when the language changes
   const lang = getLang();
   const board = useMemo(
