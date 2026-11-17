@@ -714,7 +714,7 @@ export const MUTATIONS = [
     expect: ['every signature verdict matches the update plugin'] },
   { what: '发版说明：新式签名不先算 BLAKE2b（合法的包也验不过）', file: 'scripts/update-manifest.mjs',
     from: "s.alg === 'ED' ? createHash('blake2b512').update(data).digest() : data", to: 'data',
-    expect: ['both packages signed with the app\'s key', 'every signature verdict matches the update plugin'] },
+    expect: ['every package signed with the app\'s key', 'every signature verdict matches the update plugin'] },
   { what: '维护者步骤：--set-pubkey 不真写进 tauri.conf.json', file: 'scripts/update-manifest.mjs',
     from: "    writeFileSync(conf, `${JSON.stringify(c, null, 2)}\\n`);", to: '    void c;',
     expect: ['make the key pair (with a password), put the public key in, sign and verify a file'] },
