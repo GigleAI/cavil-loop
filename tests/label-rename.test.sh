@@ -391,6 +391,23 @@ sed -i '/extra.new/d' "$SANDBOX/lra/cavil-loop.config"
 n0="$(calls)"; poll lra
 chk "去掉换文件那一行后下一轮照常跑（只读、命令只执行一次的 6d 仍在）" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
 
+echo "6h. 配置在加载时换掉 / 清掉 DEBUG 陷阱或关掉 functrace（复审：之后 source 的文件看不见）"
+for how in "trap ':' DEBUG" "trap - DEBUG" "set +T"; do
+    mkconf lra; world
+    printf 'LABEL_PENDING_HUMAN="pending/human"\n' > "$SANDBOX/lra/extra.conf"
+    sed -i '/^LABEL_PENDING_HUMAN=/d' "$SANDBOX/lra/cavil-loop.config"
+    printf '%s\nsource "$(dirname "${BASH_SOURCE[0]}")/extra.conf"\n' "$how" >> "$SANDBOX/lra/cavil-loop.config"
+    cat > "$SANDBOX/hook.sh" <<SH
+printf 'LABEL_PENDING_HUMAN="needs-human"\\n' > "$SANDBOX/lra/extra.conf"
+SH
+    n0="$(calls)"
+    FLOCK_HOOK="$SANDBOX/hook.sh" poll lra
+    chk "[$how] 这一轮整轮不做、日志写明" "$(( $(calls) - n0 ))/$(grep -c '改了 DEBUG 陷阱或关了 functrace' "$SANDBOX/lra/state/poll.log")" "0/1"
+    sed -i "/^$(printf '%s' "$how" | sed 's/[]\/$*.^[]/\\&/g')\$/d" "$SANDBOX/lra/cavil-loop.config"
+    n0="$(calls)"; poll lra
+    chk "[$how] 去掉这一行后下一轮照常跑" "$([ $(( $(calls) - n0 )) -gt 1 ] && echo yes)" "yes"
+done
+
 echo "7. 手动跑的派工"
 mkconf lra; world
 jq --arg n "$I_AGENT" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"

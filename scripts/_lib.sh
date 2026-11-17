@@ -154,10 +154,16 @@ _CFG_OUR_DEBUG='_cfg_trap_seen "${BASH_SOURCE[0]:-}"'
 trap "$_CFG_OUR_DEBUG" DEBUG
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
-# 配置自己改了 DEBUG 陷阱就不动它（之后的文件没被记到：它们没有读之前的指纹，见下面的比对）
+# 配置自己改了 DEBUG 陷阱（换掉或清掉）或关了 functrace，之后 source 的文件就没被看见：记下的文件清单不完整，
+# 整份指纹作废（CONFIG_SRC_BLIND），闸门每轮不放行，直到配置里去掉这类设置（复审：改了陷阱后加载的文件被换掉，
+# 闸门照样放行）。配置换掉的陷阱留给配置自己，不去动它。
+CONFIG_SRC_BLIND=0
+case "$-" in *T*) ;; *) CONFIG_SRC_BLIND=1 ;; esac
 if [ "$(trap -p DEBUG)" = "trap -- '${_CFG_OUR_DEBUG}' DEBUG" ]; then
     trap - DEBUG
     [ -z "$_CFG_OLD_DEBUG" ] || eval "$_CFG_OLD_DEBUG"
+else
+    CONFIG_SRC_BLIND=1
 fi
 [ "$_CFG_HAD_T" = 1 ] || set +T
 # 每个文件：绝对路径 + 内容指纹；主配置总在里面
@@ -183,6 +189,7 @@ _cfg_abs_list() {
 }
 CONFIG_SRC_LIST="$(_cfg_abs_list)"
 CONFIG_SRC_FPS="$(cfg_src_fps "$CONFIG_SRC_LIST" || true)"
+[ "$CONFIG_SRC_BLIND" = 0 ] || CONFIG_SRC_FPS=""
 # 读之前的指纹和加载后的一一对上：每个执行过命令的文件都要有读之前的指纹，且两次相同；对不上 = 加载期间被改过，
 # 整份指纹作废（闸门不放行）
 if [ -n "$CONFIG_SRC_FPS" ]; then
@@ -8218,7 +8225,9 @@ label_rename_gate() {
         return 1
     fi
     if [ -z "$CONFIG_SRC_FPS" ]; then
-        if [ "${CONFIG_SRC_CHANGED_DURING_LOAD:-0}" = 1 ]; then
+        if [ "${CONFIG_SRC_BLIND:-0}" = 1 ]; then
+            LABEL_GATE_WHY="配置在加载时改了 DEBUG 陷阱或关了 functrace（set +T），看不出它还读了哪些文件，这一次不动手；去掉配置里的这类设置后恢复"
+        elif [ "${CONFIG_SRC_CHANGED_DURING_LOAD:-0}" = 1 ]; then
             LABEL_GATE_WHY="配置（或它 source 的文件）在本进程加载期间被改过，这一次不动手，下一次重新加载"
         else
             LABEL_GATE_WHY="加载配置时没能给它读的文件算出指纹，这一次不动手，下一次重新加载"
