@@ -22,9 +22,15 @@ import { extname, join, dirname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HarnessBackend } from '../support/harness';
 import { FileStore } from '../support/credentials';
-import type { FakeGitHub } from '../fake-github/server';
+import { serveRecordingsAt, type FakeGitHub } from '../fake-github/server';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// GitHub#572: every UI test serves the recordings as of this process's start, not as recorded —
+// otherwise they age out of the client's 14-day window with the calendar (fake-github/server.ts).
+// Fixed once, so the fake's data and every expectation a test reads from the loaders share one offset.
+serveRecordingsAt(Date.now());
+
 const pageDir = join(root, 'dist', 'renderer-test');
 
 /** The app's policy, as Tauri sends it, plus same-origin `fetch` for the bridge itself. */
@@ -129,7 +135,7 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const desktop = fakeDesktop();
   const backend = new HarnessBackend({
@@ -277,6 +283,8 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
     if (url && url !== 'about:blank') await backend.call('openExternal', { url }).catch(() => {});
   });
   page.on('pageerror', (e) => console.error('[window]', e.message));
+  // the window takes its clock when it starts: installing one after the page loaded changes nothing (GitHub#572)
+  if (opts.clockAt !== undefined) await page.clock.install({ time: opts.clockAt });
   await page.goto(`${origin}/index.html`);
   await page.waitForSelector('[data-testid="app-root"]');
   return {

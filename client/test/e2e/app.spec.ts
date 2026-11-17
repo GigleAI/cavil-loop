@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, existsSync, mkdirSync, appendFileSync } from
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startFakeGitHub, loadCavilProjectPages } from '../fake-github/server';
+import { startFakeGitHub, loadCavilProjectPages, loadCavilRepoIssues } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 import { findCopies, gqlContent, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
@@ -30,10 +30,36 @@ const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 
 type Env = AppEnv;
 
-async function launch(env: Env) {
-  const app = await launchApp(env);
+async function launch(env: Env, opts: Parameters<typeof launchApp>[1] = {}) {
+  const app = await launchApp(env, opts);
   return { app, page: app.page };
 }
+
+/**
+ * GitHub#572: replace this test's fake GitHub with one at the moment `at` (epoch ms): its clock (the Date
+ * header) starts there and runs on, and it serves the board and repository recordings as of `data`
+ * (default `at`; null = as recorded). Launch the window with `{ clockAt: at }` so all three agree.
+ * For a test that depends on the iteration dates (board configuration, not moved with the items),
+ * `RECORDED_AT` puts everything back at the recording itself.
+ */
+async function fakeAt(at: number, data: number | null = at) {
+  await env.fake.close();
+  const dir = mkdtempSync(join(tmpdir(), 'cavil-e2e-'));
+  const t0 = Date.now();
+  env = {
+    fake: await startFakeGitHub({
+      projects: new Map([['org/gigleai/11', loadCavilProjectPages(data)]]),
+      repos: new Map([['gigleai/cavil-loop', loadCavilRepoIssues(data)]]),
+      serverNow: () => at + (Date.now() - t0),
+    }),
+    userData: join(dir, 'userData'),
+    cred: join(dir, 'cred'),
+    opened: join(dir, 'opened.txt'),
+    requests: join(dir, 'requests.txt'),
+  };
+}
+/** a little after the board / repository recording (2026-11-05 16:34 UTC): Iteration 25 current, 26 and 27 ahead */
+const RECORDED_AT = Date.UTC(2026, 10, 5, 18, 0, 0);
 
 /**
  * GitHub#464: closed / merged items are hidden unless a view's "显示已关闭" switch is on. Most tests here were
@@ -414,6 +440,8 @@ const sentOp = (op: string) => (w: unknown[]) => w[0] === op;
 const writes = () => env.fake.writes().map((w) => [w.method === 'POST' && w.path === '/api/graphql' ? w.operation : w.method, w.path, w.body ?? w.variables]);
 
 test('detail newest first in an isolated view; labels, status, drag, reply + hand back, merge / refused merge, new issue; offline greys it all', async () => {
+  // it drags a card into Iteration 26, which ended on 11-16 and, empty, is no longer drawn: run at the recording (GitHub#572)
+  await fakeAt(RECORDED_AT);
   // one recorded PR made open, with comments to order
   const node = env.fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes).find((n: any) => n.content?.__typename === 'PullRequest')!;
   const prN = node.content.number as number;
@@ -425,7 +453,7 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   ]);
   env.fake.state.w.milestones.set('gigleai/cavil-loop', [{ number: 1, title: 'v1', state: 'open', due_on: null }]);
 
-  const { app, page } = await launch(env);
+  const { app, page } = await launch(env, { clockAt: RECORDED_AT });
   await signInWithSources(page);
 
   // ---- detail: newest first, GitHub's HTML in a sandboxed frame ----
@@ -4690,6 +4718,62 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await page.locator('[data-testid="row"][data-key="gigleai/cavil-loop#137"] [data-testid="row-title"]').first().click();
   await expect(page.getByTestId('detail').locator('.reply .row.end').getByTestId('autopilot')).toHaveText('托管（自动合并）…Ctrl+Shift+C');
   await app.close();
+});
+
+test('GitHub#572: the recordings follow the test clock — long after the recording, with the window, the fake GitHub and the data at one moment, the closed #122 is still read and "no status" is still there; served as recorded, it ages out', async () => {
+  // 56 days after the recording (2026-11-05): as recorded, every closed item is past the client's 14-day window
+  const SIM = Date.UTC(2026, 11, 31, 12, 0, 0);
+  const DAY = 86_400_000;
+  const rowsOf = async (page: Page) => (await tableShape(page)).flatMap((g) => g.rows);
+  for (const shifted of [true, false]) {
+    // window, GitHub's clock (the Date header) and data at one moment; the control: same moment, data as recorded
+    await fakeAt(SIM, shifted ? SIM : null);
+    const app = await launchApp(env, { clockAt: SIM });
+    const page = app.page;
+    // the window's clock really is at the simulated moment (not only the data)
+    const windowNow = await page.evaluate(() => Date.now());
+    expect(windowNow, `window clock (${shifted ? 'shifted' : 'as recorded'})`).toBeGreaterThanOrEqual(SIM);
+    expect(windowNow).toBeLessThan(SIM + 10 * 60_000);
+    // what the fake serves for #122: shifted = before the moment and within 14 days of it; as recorded = older
+    const served = Date.parse(env.fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === 122).updated_at);
+    if (shifted) {
+      expect(served).toBeLessThanOrEqual(SIM);
+      expect(served).toBeGreaterThanOrEqual(SIM - 14 * DAY);
+    } else expect(served).toBeLessThan(SIM - 14 * DAY);
+
+    await page.getByTestId('oauth-settings-toggle').click();
+    await page.getByTestId('client-id').fill(env.fake.state.oauthClientId);
+    await page.getByTestId('save-client-id').click();
+    await page.getByTestId('start-login').click();
+    await expect(page.getByTestId('user-code')).toBeVisible();
+    env.fake.resolveGrant('approved');
+    await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('open-settings').click();
+    await page.getByTestId('source-input').fill(PROJECT_URL);
+    await page.getByTestId('source-add').click();
+    await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
+    await page.getByTestId('source-add').click();
+    await page.getByTestId('back').click();
+    await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('search').fill('');
+    await page.getByTestId('show-closed').check();
+    await page.getByTestId('open-view-panel').click();
+    await page.getByTestId('group-by').selectOption('status');
+    // both sources read in full: the board (its closed #128 shows either way) and the repository's issue list
+    await expect.poll(() => rowsOf(page), { timeout: 15_000 }).toContain('gigleai/cavil-loop#128');
+    await expect.poll(() => env.fake.log.some((e) => e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.status === 200), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.syncing), { timeout: 15_000 }).toBe(false);
+    expect(await page.evaluate(async () => (await (window as any).cavil.get()).state.sync.problem)).toBeNull();
+    const shape = await tableShape(page);
+    if (shifted) {
+      expect(shape.at(-1)!.title).toBe('无状态');
+      expect(shape.at(-1)!.rows).toContain('gigleai/cavil-loop#122');
+    } else {
+      expect(shape.map((g) => g.title)).not.toContain('无状态');
+      expect(shape.flatMap((g) => g.rows)).not.toContain('gigleai/cavil-loop#122');
+    }
+    await app.close();
+  }
 });
 
 test('GitHub#231 (PR #241 review round 1): new issue while boards are not read yet — "not synced yet", never "no board added"; the default follows the first complete read', async () => {
