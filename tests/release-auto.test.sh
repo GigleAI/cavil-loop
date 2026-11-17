@@ -1500,6 +1500,27 @@ has "--latest=false" "$A" "… not marked Latest (the daemon's release keeps it)
 has "Cavil Loop 客户端 v0.6.0" "$A" "… titled with the version"
 has "dist-release/latest.json" "$A" "… with the update manifest"
 
+echo "-- a newer release appears while this one builds → this one writes nothing (PR #580 review round 1)"
+PAGES_BEFORE="$(wc -l < "$CREL")"
+git -C "$CREMOTE" tag client/v0.6.2 "$C4"     # a person pushed and released 0.6.2 meanwhile
+ctag TAG=client/v0.6.1 SHA="$C4"
+check "tag step: 0.6.1 not tagged once 0.6.2 exists" "$([ "$RC" != 0 ] && echo red):$(remote_tag client/v0.6.1)" "red:none"
+has "已有 client/v0.6.2" "$(cat "$TMP/c-err")" "… says why"
+git -C "$CREMOTE" tag client/v0.6.1 "$C4"     # tagged before 0.6.2 came, page not yet made
+ccreate TAG=client/v0.6.1 SHA="$C4" GH_TOKEN=x
+check "page step: no page for 0.6.1 once 0.6.2 exists" "$([ "$RC" != 0 ] && echo red):$(wc -l < "$CREL")" "red:$PAGES_BEFORE"
+git -C "$CREMOTE" tag -d client/v0.6.1 client/v0.6.2 >/dev/null
+CPATH="$TMP/c-gitbad:" ctag TAG=client/v0.6.1 SHA="$C4"
+check "the remote's tags cannot be read → no tag" "$([ "$RC" != 0 ] && echo red):$(remote_tag client/v0.6.1)" "red:none"
+ctag TAG=client/v0.6.1 SHA="$C4"
+check "nothing newer → tagged as usual" "$RC:$(remote_tag client/v0.6.1)" "0:$C4"
+python3 - "$CLIENT_WORKFLOW" > "$TMP/c-conc" <<'PYK'
+import sys, yaml
+c = yaml.safe_load(open(sys.argv[1]))["jobs"]["release"].get("concurrency") or {}
+print(c.get("group"), c.get("cancel-in-progress"))
+PYK
+check "publishing is one at a time for every version and trigger, never cancelling a running one" "$(cat "$TMP/c-conc")" "client-release-publish False"
+
 echo "-- a failed client release is reported; the daemon's release is not its business"
 rf_repo
 run_report "client=failure"

@@ -372,6 +372,13 @@ jobs:
     name: publish client release
     needs: [mode, test, e2e, package, size]
     if: needs.mode.outputs.tag != ''
+    # One client release publishes at a time, whatever its version or how it started (a pushed tag,
+    # the weekly call): the builds of two versions may overlap for an hour, but their writes never do,
+    # and each re-checks the version order (scripts/release-version.mjs check) right before it writes —
+    # an older version waiting here stops once a newer one is out. Never cancels the running one.
+    concurrency:
+      group: client-release-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -411,6 +418,8 @@ jobs:
           SHA: ${{ needs.mode.outputs.sha }}
         run: |
           set -o pipefail
+          # still the newest release: the remote's every client tag, read now (a failed read stops)
+          node scripts/release-version.mjs check "$TAG" --at "$SHA" >/dev/null
           refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
           now="$(awk -v t="refs/tags/$TAG" '$2 == t { p = $1 } $2 == t "^{}" { q = $1 } END { print (q != "" ? q : p) }' <<<"$refs")"
           if [ -z "$now" ]; then
@@ -438,6 +447,8 @@ jobs:
             echo "::error::the remote's $TAG is at '${now:-nothing}', not the tested $SHA — no Release"
             exit 1
           fi
+          # and once more right before the page: no newer client tag appeared meanwhile
+          node scripts/release-version.mjs check "$TAG" --at "$SHA" >/dev/null
           gh release create "$TAG" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/latest.json \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
