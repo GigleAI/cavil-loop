@@ -191,6 +191,8 @@ export interface ControllerDeps {
    * waits (default READ_RETRY_DELAYS_MS); [] = never. Tests shorten them.
    */
   readRetryDelaysMs?: number[];
+  /** tests only: how the sync waits before asking a failed read again (default: a real timer) — GitHub#584 */
+  readRetrySleep?: (ms: number) => Promise<void>;
   /** tests only: a round's read is in and its change-check records were dealt with (`dropped`: the round had been given up on) */
   afterRoundRead?: (dropped: boolean) => void;
   /** built-in OAuth Client ID (tests inject their own; production uses the constant) */
@@ -1825,7 +1827,12 @@ export class Controller {
     };
     progress();
     const gate = this.readGate;
-    const reads = { gate, retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS, queue: this.sendQueue };
+    const reads = {
+      gate,
+      retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS,
+      queue: this.sendQueue,
+      ...(this.deps.readRetrySleep ? { sleep: this.deps.readRetrySleep } : {}),
+    };
     const client = this.client(session, run.signal, reads);
     const forceFull = new Set(
       [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
