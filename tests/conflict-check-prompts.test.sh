@@ -73,6 +73,9 @@ check_prompts() {
         cp "$f" "$TMP/composed-$name.md"; f="$TMP/composed-$name.md"
         s=$(snippet "$f")
         if [ -z "$s" ]; then echo "$name: 没有冲突检查命令"; continue; fi
+        if grep -Eq '(^|[^[:alnum:]_])(mktemp|rm)([[:space:])]|$)' <<<"$s"; then
+            echo "$name: 冲突检查不应创建或删除临时文件"
+        fi
         [ "$(grep -c '^# --- 冲突检查 开始 ---$' "$f")" -eq 1 ] || echo "$name: 冲突检查命令不止一份"
         if [ -z "$ref_snip" ]; then ref_snip="$s"; elif [ "$s" != "$ref_snip" ]; then echo "$name: 冲突检查命令和 ${ALL[0]} 不一致"; fi
     done
