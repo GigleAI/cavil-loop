@@ -586,43 +586,21 @@ else
     pass "rename-transition (negative control skipped: base commit unavailable)"
 fi
 
-# ── 步骤脚本的结果核对规则 step-result.jq（GitHub#599）：随发布复制到长期入口旁；复制失败 = 安装失败、
-#    不切换发布（PR #607 复审第 2 轮：失败被吞掉，旧规则配新脚本）。用一套独立的部署目录，不碰上面的流程
-echo '▶ step-result.jq lands next to the entrypoints, and a failed copy keeps the old release'
+# ── 步骤脚本的长期入口（GitHub#599）：真的转进发布里的脚本；结果核对规则 step-result.jq 不复制到入口旁
+#    （PR #607 复审第 2、3 轮：复制出来的那份会和发布错开），以前装过的那份部署时删掉。独立部署目录
+echo '▶ step entrypoints run the release scripts; no step-result.jq copy is kept next to them'
 (
     export CAVIL_DEPLOY_ROOT="$TMP/sr-root" CAVIL_SKILL_LINK="$TMP/sr-skills/cavil-loop"
+    mkdir -p "$CAVIL_DEPLOY_ROOT/entrypoints"; printf 'stale\n' > "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq"
     deploy --bootstrap >/dev/null
-    SR_OLD=$(readlink -f "$CAVIL_SKILL_LINK")
-    cmp -s "$SR_OLD/scripts/step-result.jq" "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq" || fail step-result-not-installed
-    # 长期入口真的转进发布里的脚本，且结果过得了长期入口旁那份规则
+    SR=$(readlink -f "$CAVIL_SKILL_LINK")
+    [ ! -e "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq" ] || fail stale-step-result-kept
     out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/flip-label.sh" --result-fd 3 --repo a/b x --add y 3>&1 >/dev/null 2>&1) || fail "step-entry-exit: $out"
     [ "${out%%$'\n'*}" = STARTED ] || fail "step-entry-no-marker: $out"
-    printf '%s' "${out#*$'\n'}" | jq -se --arg s flip-label -f "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq" >/dev/null \
+    printf '%s' "${out#*$'\n'}" | jq -se --arg s flip-label -f "$SR/scripts/step-result.jq" >/dev/null \
         || fail "step-entry-result-rejected: $out"
-    old_rule=$(cat "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq")
-    printf '# new rule\n' >> "$SRC/scripts/step-result.jq"
-    git -C "$SRC" commit -qam "step-result.jq changes" && git -C "$SRC" push -q origin main
-    # 只让复制这一个文件失败；记一笔，证明确实走到了复制那一步
-    mkdir -p "$TMP/sr-shim"
-    cat > "$TMP/sr-shim/cp" <<SH
-#!/usr/bin/env bash
-case "\$*" in *step-result.jq*) touch "$TMP/sr-shim/hit"; exit 1 ;; esac
-exec /bin/cp "\$@"
-SH
-    chmod +x "$TMP/sr-shim/cp"
-    PATH="$TMP/sr-shim:$PATH" deploy >/dev/null 2>&1 || true
-    [ -f "$TMP/sr-shim/hit" ] || fail step-result-copy-not-reached
-    [ "$(readlink -f "$CAVIL_SKILL_LINK")" = "$SR_OLD" ] || fail step-result-failure-still-switched
-    [ "$(cat "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq")" = "$old_rule" ] || fail step-result-failure-changed-rule
-    grep -q 'installing durable entrypoints failed' "$CAVIL_DEPLOY_ROOT/deploy-state.json" || fail step-result-failure-not-recorded
-    # 复制恢复正常：切换到新发布，长期入口旁的是新规则
-    deploy >/dev/null 2>&1
-    SR_NEW=$(readlink -f "$CAVIL_SKILL_LINK")
-    [ "$SR_NEW" != "$SR_OLD" ] || fail step-result-recovery-not-switched
-    cmp -s "$SR_NEW/scripts/step-result.jq" "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq" || fail step-result-recovery-stale
-    grep -q '^# new rule$' "$CAVIL_DEPLOY_ROOT/entrypoints/step-result.jq" || fail step-result-recovery-content
 ) || exit 1
-pass "step-result.jq installed, a failed copy keeps the old release, the next deploy catches up"
+pass "step entrypoints run the release scripts, no rule copy next to them"
 
 mutation_summary "$0"
 echo 'All skill deploy tests passed.'

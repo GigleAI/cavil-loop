@@ -286,6 +286,26 @@ chk "--body 写出的文件 = 正文 + 空行 + 原来的 footer" "$(norm <<<"$g
 python3 "$FOOT" --agent claude --driver "$fake_driver" --start "bad" --wt 7 --body "$TMP/body.md" >/dev/null 2>&1
 chk "footer 生成失败：正文不变，末尾一句固定说明" "$(cat "$TMP/body.md.footer")" "$( { cat "$TMP/body.md"; printf '\n\n用量 footer 生成失败\n'; } )"
 
+# 脚本交出结果前用自己发布里的 step-result.jq 核对：通不过就什么都不写（调用方看到没跑完）
+SC="$TMP/selfcheck"; mkdir -p "$SC"; cp "$REPO_DIR/scripts/_step.sh" "$REPO_DIR/scripts/step-result.jq" "$SC/"
+cat > "$SC/flip-label.sh" <<'SH'
+#!/usr/bin/env bash
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_step.sh"
+step_parse flip-label "$@"
+step_start || exit 65
+step_result '{"step":"flip-label","status":"not-done","labels":[]}' || exit 0
+SH
+defs "$TMP/composed-review.md" "$SC" > "$TMP/defs-selfcheck.sh"
+chk "脚本自己的结果缺字段：自检不过、不写结果，调用方看到 RESULT=none" "$(line "$(run "$TMP/defs-selfcheck.sh" "cavil_step flip-label 7")" 2)" "RESULT=none"
+cat > "$SC/flip-label.sh" <<'SH'
+#!/usr/bin/env bash
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_step.sh"
+step_parse flip-label "$@"
+step_start || exit 65
+step_result '{"step":"flip-label","status":"done","labels":[]}' || exit 0
+SH
+chk "  ……对照：字段齐全时照常写出、调用方收到" "$(status_of "$(run "$TMP/defs-selfcheck.sh" "cavil_step flip-label 7")")" "done"
+
 echo "── 5. 文本检查 ──"
 for s in flip-label conflict-check pr-feedback _step; do
     f="$REPO_DIR/scripts/$s.sh"
@@ -297,6 +317,12 @@ for s in flip-label conflict-check pr-feedback; do
     req=$(grep -nE '(^|[[:space:]])(step_gh|step_git|gh|git) ' "$f" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)
     if [ -n "$st" ] && [ -n "$req" ] && [ "$st" -lt "$req" ]; then ok "$s.sh 在第一个请求之前写启动标记，写不出去就退出"
     else bad "$s.sh 的启动标记不在第一个请求之前" "step_start 第 ${st:-?} 行，第一个请求第 ${req:-?} 行"; fi
+done
+prog=$(grep -v '^#' "$REPO_DIR/scripts/step-result.jq")
+for name in new-issue issue-comment pr-comment review; do
+    grep -qF -- "jq -se --arg s \"\$1\" '$prog'" "$REPO_DIR/prompts/$name.template.md" \
+        && ok "$name 模板里 cavil_step 的核对规则和 scripts/step-result.jq 逐字一致" \
+        || bad "$name 模板里 cavil_step 的核对规则和 scripts/step-result.jq 不一致"
 done
 rest=$(grep -ln 'REST 翻' "$REPO_DIR"/prompts/*.md 2>/dev/null | xargs -r -n1 basename)
 chk "提示词里不再有「REST 翻」这种只写文字的翻标签" "$rest" ""

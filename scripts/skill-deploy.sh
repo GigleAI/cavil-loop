@@ -69,18 +69,9 @@ install_entrypoints() {
     ln -sfn release-entry.sh "$root/conflict-check.sh"   # 交 PR 前的冲突检查（GitHub#599）
     ln -sfn release-entry.sh "$root/pr-feedback.sh"      # 读 PR 全部评论（GitHub#599）
     ln -sfn release-entry.sh "$root/notify-relay.sh"   # 早期入口名（GitHub#97 改名前的提示词还在用）
-    # 步骤脚本结果的核对规则（模板里的 cavil_step 用 jq -f 读它）：数据文件，不能走入口转发，复制一份。
-    # 放在最后、失败就让整个安装失败：调用方据此不切换发布，旧规则配新脚本会把新结果判成「没跑完」（PR #607 复审第 2 轮）。
-    # 这一版没有这个文件就删掉旧的那份，_lib.sh 见它不在就退回本次发布的 scripts/
-    if [ -f "$base/scripts/step-result.jq" ]; then
-        tmp=$(mktemp "$root/.step-result.XXXXXX") || { log_deploy "cannot create a temp file for step-result.jq"; return 1; }
-        if ! cp "$base/scripts/step-result.jq" "$tmp" || ! mv -f "$tmp" "$root/step-result.jq"; then
-            rm -f "$tmp"; log_deploy "installing step-result.jq failed"; return 1
-        fi
-        cmp -s "$base/scripts/step-result.jq" "$root/step-result.jq" || { log_deploy "step-result.jq differs from the release after install"; return 1; }
-    else
-        rm -f "$root/step-result.jq" || { log_deploy "removing a stale step-result.jq failed"; return 1; }
-    fi
+    # 步骤脚本结果的核对规则 step-result.jq 不往这里复制（PR #607 复审第 2、3 轮）：模板里带着它，
+    # 脚本用自己发布里的那份核对自己的结果。以前装过的那份删掉，免得有人读到旧的
+    rm -f "$root/step-result.jq" || { log_deploy "removing a stale step-result.jq failed"; return 1; }
 }
 
 # 每一次写 GitHub 都走它。规则与 _lib.sh:gh_write 相同，但这里自带一份实现：部署器

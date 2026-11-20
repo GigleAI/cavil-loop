@@ -64,9 +64,17 @@ step_start() { printf 'STARTED\n' >&3 2>/dev/null; }
 
 # step_result <json>: the one and only result, compacted to a single line; the log path is added.
 # Called once, as the script's last action.
+# Before writing, the result is checked with step-result.jq from this script's own release — the same
+# rule the templates carry inline. A result that fails it is not written at all (the caller then sees
+# "did not finish"), so a script never hands over something its own release would reject.
 step_result() {
-    local line
+    local line rule
+    rule="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/step-result.jq"
     line=$(printf '%s' "$1" | jq -c --arg log "$STEP_LOG" '. + {log: $log}' 3>&-) || return 1
+    if ! printf '%s' "$line" | jq -se --arg s "$STEP_NAME" -f "$rule" >/dev/null 2>&1 3>&-; then
+        step_log "result failed its own check ($rule), not written"
+        return 1
+    fi
     printf '%s\n' "$line" >&3
 }
 

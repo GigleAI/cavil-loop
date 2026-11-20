@@ -17,7 +17,7 @@ cavil_step() {
     out=$(bash '${CAVIL_STEP_DIR}'/"$1".sh --result-fd 3 --repo '${REPO}' "${@:2}" 3>&1 >/dev/null 2>&1) || rc=$?
     echo "EXIT=$rc"
     if [ -z "$out" ]; then echo "RESULT=not-started"
-    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" -f '${CAVIL_STEP_DIR}/step-result.jq' >/dev/null 2>&1
+    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" '{"flip-label":{"done":"labels","not-done":"missing still_on labels deletes_sent diag","unknown":"writes diag","usage":"diag"},"conflict-check":{"clean":"base head","conflict":"base head files","error":"stage diag","usage":"diag"},"pr-feedback":{"ok":"comments","error":"stage diag","usage":"diag"}} as $t | length == 1 and (.[0] as $r | ($r | type) == "object" and $r.step == $s and ($t[$s][$r.status | tostring] // null) as $n | $n != null and all($n | split(" ")[]; . as $k | $r | has($k)))' >/dev/null 2>&1
     then printf '%s' "${out#*$'\n'}" | jq -c .; else echo "RESULT=none"; fi
 }
 flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标签>… --remove <标签>…
