@@ -416,6 +416,17 @@ by name (file name without `.test.sh`; `NAME:K/N` for one part of a split file);
 when every expected unit passed exactly once across the shards (`--verify`). That is the check to
 require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
 
+- **The whole suite runs on CI, not on the dev box** (GitHub#593). Workers and reviewers do not run
+  `bash tests/run.sh` without unit names (nor `--ci`, a `--shard`, or `--kind` over every kind) locally:
+  CI runs the whole suite on every push anyway, measured slightly faster (median 8.7 min over 98 first
+  attempts against 10.0 min over 68 local runs, 2026-11-07 to 11-19), and a local copy only adds load to
+  a machine other workers share. Locally run `bash tests/run.sh --quick` and the files the change touches
+  (`bash tests/run.sh NAME...` or `bash tests/NAME.test.sh`), plus the area tests listed below. The whole
+  suite's verdict is the PR's **测试** check (`gh pr checks <PR>`): a reviewer reads it there, never
+  asks the worker for a local full run, and never reruns one; a red check is a rejection like a red
+  local test. Files listed in `tests/ci-exclude.txt` are the exception — CI cannot run them, so when a
+  change touches what they test, run them locally. This is a rule about what agents choose to run, so
+  no lint or test checks it
 - **A docs / test-file-only PR runs only what it can reach** (GitHub#495). On a pull request every
   shard and the summary get `--changed-from origin/<base>`: the change is every file that differs
   between the merge-base and the PR head — the whole branch, never its last commit. When all of them
@@ -529,7 +540,8 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   `tests/prompt-files.test.sh` (~1.5 min; real dispatch / cleanup, and the scripts of the fixed commit
   `4f585de` through the isolation)
 - A green check is not a substitute for running what you touched locally before handing a PR on — it
-  is the floor, not the review. `tests/run.sh` itself is covered by `tests/run.test.sh`
+  is the floor, not the review. What "what you touched" means is the quick run plus the changed area's
+  files, never the whole suite (see "The whole suite runs on CI" above). `tests/run.sh` itself is covered by `tests/run.test.sh`
 
 ### Default regression vs. negative controls (GitHub#103)
 
@@ -544,8 +556,8 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 
 | When | Default regression | Negative controls | Mac packaging + Mac checks |
 |---|---|---|---|
-| Worker develops, hands on, reworks (local) | the part the change touches | **not run** | not run |
-| Reviewer (local) | reruns the relevant part when needed | **not run, and not asked of the worker** | not run |
+| Worker develops, hands on, reworks (local) | `--quick` + the part the change touches; never the whole suite (GitHub#593) | **not run** | not run |
+| Reviewer (local) | reruns the relevant part when needed; the whole suite is read from the PR's 测试 check, not rerun | **not run, and not asked of the worker** | not run |
 | PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
 | `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only**, signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215) |
 | `Client` on a `client/v*` tag, or called by `Release` for the weekly client release (GitHub#576) | quick + full tests | not run | run, arm64 and x64; a red one means no client Release (never holds the daemon's) |
