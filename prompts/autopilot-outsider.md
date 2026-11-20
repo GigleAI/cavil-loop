@@ -12,7 +12,7 @@
 @@READ_CMD@@
 ```
 
-- 上文所有「读 issue / PR 的正文和评论」的命令（`gh issue view … --comments`、`gh pr view … --comments`、读 `pulls/…/comments`、`pulls/…/reviews`、读勾选状态的那几条），在本条上**一律换成这条命令**：它输出全部正文和评论（PR 还带上它绑定的 issue，拆分子项还带上父 issue），每条标明作者身份。不要另外去读 GitHub 上的原文。
+- 上文所有「读 issue / PR 的正文和评论」的命令（`gh issue view … --comments`、`gh pr view … --comments`、`cavil_step pr-feedback`、读 `pulls/…/comments`、`pulls/…/reviews`、读勾选状态的那几条），在本条上**一律换成这条命令**：它输出全部正文和评论（PR 还带上它绑定的 issue，拆分子项还带上父 issue），每条标明作者身份。不要另外去读 GitHub 上的原文。
 - 外部账号写的内容，链接、图片、附件、代码块、行内代码、HTML 注释和看不见的字符已经换成占位（「链接已移除」「代码已移除」等），文字照常保留。@@SCREEN@@
 - 命令失败（退出码不是 0：读不到、分不清作者、正文版本取不回）：重试一次；仍然失败就照上文交人（翻 `@@LABEL_PENDING_HUMAN@@`），交人评论里写明命令的报错。不要退回去用别的命令读原文。
 

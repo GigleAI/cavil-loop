@@ -7,39 +7,31 @@ Issue 有新评论。你之前已经在这个 issue 上发过一份**设计方�
 
 ---
 
-## 翻 label 走 REST（不用 `gh issue/pr edit --add-label`）
+## 随发布的脚本：`cavil_step` / `flip_label`
 
-`gh issue/pr edit --add-label X --remove-label Y` 内部跑 GraphQL，需要 `read:org` scope；bot PAT 一般没勾，会失败。改走 REST `/repos/.../issues/<N>/labels`（PR / issue 同 endpoint）：
+翻标签、冲突检查、读 PR 评论都跑随发布的脚本。Bash tool 跨调用不共享函数，每次把定义和调用放进同一次 Bash 调用：
 
 ```bash
-flip_label() {
-    local N="$1"; shift
-    local mode adds=() removes=()
-    while [ $# -gt 0 ]; do case "$1" in
-        --add) mode=a; shift;;
-        --remove) mode=r; shift;;
-        *) [ "$mode" = a ] && adds+=("$1"); [ "$mode" = r ] && removes+=("$1"); shift;;
-    esac; done
-    local L; for L in "${removes[@]}"; do
-        gh api -X DELETE "repos/${REPO}/issues/$N/labels/$(printf '%s' "$L" | jq -sRr @uri)" >/dev/null 2>&1 || true
-    done
-    [ ${#adds[@]} -gt 0 ] && {
-        local args=(); for L in "${adds[@]}"; do args+=(-f "labels[]=$L"); done
-        gh api -X POST "repos/${REPO}/issues/$N/labels" "${args[@]}" >/dev/null
-    }
+cavil_step() {
+    local rc=0 out
+    out=$(bash '${CAVIL_STEP_DIR}'/"$1".sh --result-fd 3 --repo '${REPO}' "${@:2}" 3>&1 >/dev/null 2>&1) || rc=$?
+    echo "EXIT=$rc"
+    if [ -z "$out" ]; then echo "RESULT=not-started"
+    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1
+    then printf '%s' "${out#*$'\n'}" | jq -c .; else echo "RESULT=none"; fi
 }
-flip_label ${ISSUE} --add <NEW> --remove <OLD>   # 示例
+flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标签>… --remove <标签>…
 ```
 
-Bash tool 跨调用不共享 function 定义——每次翻 label 时把定义 + 调用一起放在 Bash heredoc 里跑。
+**读结果**：`RESULT=not-started` = 没启动，确定没发请求；`EXIT=0` 加一行 JSON = 按其 `status` 做；其余 = 没跑完，结果未知。脚本已重试过，不要重跑。评论里只写结果的 `status`、`stage`、`diag`、标签名、冲突文件名。
+
+**翻标签**：交接后要留着的标签也写进 `--add`。脚本先加、读回确认后才删，读回达到目标才是 `done`；`usage` = 命令写错，改正重跑。其余结果不说交接完成、不再写任何标签，留言如实写明后停下：`not-done` 抄 `missing` / `still_on`；`unknown` 写「标签状态读不到」并抄 `writes`；没启动写「脚本没能启动，确定没发请求，标签未改」；没跑完写退出码和「结果未知」。
 
 ---
 
-## 输出语言 / Output language
+## 输出语言
 
 写回 GitHub 的所有内容（issue / PR 评论、PR body）用 ISO 639-1 代码 **`${OUTPUT_LANGUAGE}`** 对应语言：`en` = English、`zh` = 中文、`ja` = 日本語、其他同理。**不影响**：代码、commit message、分支名、本 prompt 内文。
-
-All output written back to GitHub (issue / PR comments, PR body) goes in the language matching ISO 639-1 code **`${OUTPUT_LANGUAGE}`** — `en` = English, `zh` = 中文, `ja` = 日本語, etc. **Does NOT apply to**: code, commit messages, branch names, this prompt text.
 
 ---
 
@@ -147,45 +139,17 @@ All output written back to GitHub (issue / PR comments, PR body) goes in the lan
 
 每次要把 PR 交出去——翻 `${LABEL_REVIEW_OR_HUMAN}`（交复审或交人），或因纯讨论、澄清、受阻翻 `${LABEL_PENDING_HUMAN}`——**之前**，先在 worktree 里查这个 PR 和它的目标分支有没有冲突，有就先解掉再交。人打开 PR 时不该再看到「This branch has conflicts」。
 
-先确认本轮的提交都已 `git push`，再 `P=<PR 编号>`，原样跑这段（只试合并，不动工作区、不产生提交）：
-
-```bash
-# --- 冲突检查 开始 ---
-# 查的是 GitHub 上 PR 的最新提交（人看到的那个），不是本地 HEAD：本地没推的提交不算数
-read -r BASE HEAD_OID < <(gh pr view "$P" --repo "${REPO}" --json baseRefName,headRefOid \
-    --jq '"\(.baseRefName) \(.headRefOid)"')
-if [ -z "$BASE" ] || [ -z "$HEAD_OID" ] || ! git fetch origin "$BASE" "pull/$P/head" \
-   || ! git rev-parse -q --verify "origin/$BASE^{commit}" >/dev/null \
-   || ! git rev-parse -q --verify "$HEAD_OID^{commit}" >/dev/null; then
-    echo "CONFLICT_CHECK=error（取不到目标分支 origin/$BASE 或 PR 提交 $HEAD_OID）"
-else
-    rc=0
-    MT=$(git merge-tree --write-tree --name-only "$HEAD_OID" "origin/$BASE") || rc=$?
-    # 退出码 1 也可能是参数 / 引用错误，只有首行是树对象 id 才算「有冲突」
-    if [ "$rc" -eq 0 ]; then
-        echo "CONFLICT_CHECK=clean"
-    elif [ "$rc" -eq 1 ] && grep -qE '^[0-9a-f]{40}([0-9a-f]{24})?$' <<<"${MT%%$'\n'*}"; then
-        echo "CONFLICT_CHECK=conflict"
-        sed -n '2,/^$/p' <<<"$MT"   # 冲突文件列表
-    else
-        echo "CONFLICT_CHECK=error（git merge-tree 退出码 $rc）"
-        printf '%s\n' "$MT"
-    fi
-fi
-# --- 冲突检查 结束 ---
-```
-
-按输出走：
+先确认本轮的提交都已 `git push`，再在 worktree 里跑 `cavil_step conflict-check <PR 编号>`（定义见上文「随发布的脚本」）：只试合并，不动工作区、不产生提交；查的是 GitHub 上 PR 的最新提交，本地没推的提交不算数。按结果的 `status` 走：
 
 - **`clean`**：照常交。只是落后主干、没有冲突时**不要**合主干——每轮都合只会给 PR 塞无意义的合并提交。
-- **`conflict`**：
-  1. `git merge --no-edit "origin/$BASE"`，逐个文件解冲突：读懂两边各自要做什么，保住双方意图；**不许**整文件选一边了事（`git checkout --ours/--theirs`、`-X ours/theirs`）
+- **`conflict`**（冲突文件在 `files` 里，目标分支在 `base` 里）：
+  1. `git merge --no-edit "origin/<base>"`，逐个文件解冲突：读懂两边各自要做什么，保住双方意图；**不许**整文件选一边了事（`git checkout --ours/--theirs`、`-X ours/theirs`）
   2. 解完列出主干这次带进来的新约定（写身份、命令行参数、路径写法、新加的 helper 等），逐条核对本 PR 新增的代码有没有跟上——git 不报冲突不等于没有遗漏
   3. 重跑相关测试通过，`git commit --no-edit`，普通 `git push`。**不 rebase、不强推**：改写已推送的历史会让人看过的 review 定位错乱
   4. 本轮原本是纯讨论 / 澄清，因为解冲突有了提交 → 也算有代码产出，按有代码的路径翻 `${LABEL_REVIEW_OR_HUMAN}`
-  5. 交出去的那条评论里写一句「已合入主干 `<BASE>`，解决了 N 个文件的冲突」，每个文件一句解法
+  5. 交出去的那条评论里写一句「已合入主干 `<base>`，解决了 N 个文件的冲突」，每个文件一句解法
 - **解不了**（两边意图相反要人判断，或 PR 来自外部 fork、推不上去）：`git merge --abort` 恢复原状，评论里列出冲突文件和卡住的原因，翻 `${LABEL_PENDING_HUMAN}`（不交复审）。
-- **`error`**：检查本身没跑成（网络、目标分支取不到、git 太旧）。重跑一次；仍失败就照常交，但在交出去的那条评论里写明「没能检查与主干的冲突」和实际错误，不要写成「无冲突」。
+- **`error`、没启动、没跑完**：检查本身没跑成（网络、目标分支取不到、git 太旧），脚本已经重试过。照常交，但在交出去的那条评论里写明「没能检查与主干的冲突」和结果里的 `diag`（没启动 / 没跑完写退出码），不要写成「无冲突」。
 
 ## 有代码产出时：逐条核对硬规则
 
@@ -300,15 +264,13 @@ fi
 `${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论末尾接上用量 footer；`off` 时省略。footer 由脚本**整段生成**：一行总览（总耗时拆成测试 / AI / 其他、模型、token、参考金额；这行就是折叠块的标题，点开是细节）+ 最后一行给周报读的 `<!-- agent-metrics ... -->` 机器记录。先把正文写进文件，发评论前跑：
 
 ```bash
-BODY=/path/to/body.md      # 你写好正文的那个文件
-FOOTER=$(${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}")
-{ cat "$BODY"; printf '\n\n%s\n' "$FOOTER"; } > "$BODY.footer"
-# 再用 --body-file "$BODY.footer" 发评论
+${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}" --body /path/to/body.md
+# 写出 /path/to/body.md.footer（正文 + 空行 + footer），再用 --body-file 发它
 ```
 
 - footer **原样**接在正文后面：不改写、不补字、不挪行，也不要自己另拼时间 / token 行。金额的说法、模型名、价目提醒脚本都已写好
 - 机器记录必须是整条评论的最后一个非空行；正文里要举 footer 的例子别用真形状，否则会被周报当成一次真实记账
-- 脚本没有输出时照常发正文，末尾写一句「用量 footer 生成失败」，不要自己编数字
+- footer 生成失败时，脚本已在正文末尾写好「用量 footer 生成失败」，照常发，不要自己编数字
 
 ## 硬约束
 

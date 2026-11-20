@@ -385,6 +385,25 @@ def render(start_ts, start_epoch, end_epoch, agent, wt, human, kv_line, extra, c
                      + ["", "</details>", f"<!-- agent-metrics {' '.join(marker)} -->"])
 
 
+FOOTER_FAILED = "用量 footer 生成失败"
+
+
+def write_with_body(body_path, footer):
+    """--body（GitHub#599）：写出 <正文文件>.footer = 正文 + 空行 + footer，和模板里原来那句
+    `{ cat "$BODY"; printf '\n\n%s\n' "$FOOTER"; }` 逐字相同（footer 末尾的换行先去掉，同 $( ) 的做法）。
+    footer 生成失败时末尾写固定的一句失败说明，正文不变。先写临时文件再改名，不会留下半份。"""
+    with open(body_path, encoding="utf-8", newline="") as fh:
+        body = fh.read()
+    tail = footer.rstrip("\n") if footer and footer.strip() else FOOTER_FAILED
+    out = body_path + ".footer"
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(body + "\n\n" + tail + "\n")
+    os.replace(tmp, out)
+    print(out)
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True)
@@ -392,12 +411,32 @@ def main(argv):
     ap.add_argument("--config", default="")
     ap.add_argument("--start", required=True)
     ap.add_argument("--wt", required=True)
+    ap.add_argument("--body", default="")
     a = ap.parse_args(argv)
+    if a.body:
+        if not os.path.isfile(a.body):
+            print(f"comment-footer: 正文文件不存在：{a.body}", file=sys.stderr)
+            return 2
+        try:
+            footer = build(a)
+        except Exception as e:  # 生成失败不拦发评论：正文照发，末尾一句失败说明
+            print(f"comment-footer: {e}", file=sys.stderr)
+            footer = None
+        return write_with_body(a.body, footer)
+    footer = build(a)
+    if footer is None:
+        return 2
+    print(footer)
+    return 0
+
+
+def build(a):
+    """footer 全文；开始时刻格式不对时返回 None"""
     try:
         start_epoch = time.mktime(time.strptime(a.start, "%Y-%m-%d %H:%M:%S"))
     except ValueError:
         print(f"comment-footer: 开始时刻格式不对：{a.start}", file=sys.stderr)
-        return 2
+        return None
     start_epoch = int(start_epoch)
     human = run_driver(a.driver, start_epoch, False)
     kv_line = run_driver(a.driver, start_epoch, True)
@@ -417,8 +456,7 @@ def main(argv):
             if extra is None:
                 extra = "的输出第一行不是「test_secs=秒数」"
 
-    print(render(a.start, start_epoch, time.time(), a.agent, a.wt, human, kv_line, extra, ci))
-    return 0
+    return render(a.start, start_epoch, time.time(), a.agent, a.wt, human, kv_line, extra, ci)
 
 
 if __name__ == "__main__":

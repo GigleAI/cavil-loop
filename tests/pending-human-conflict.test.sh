@@ -401,12 +401,12 @@ echo "═══ 正式版 ═══"
 run_scenarios "$REPO_DIR/scripts"
 
 # ─────────────────────────────────────────────────────────────────────────
-# 对拍：同一条「有没有冲突」的规则有两份实现 —— worker 交出 PR 前跑的那段命令
-# （prompts/*.template.md 里「冲突检查 开始/结束」之间，GitHub#82）和 daemon 这里的
+# 对拍：同一条「有没有冲突」的规则有两份实现 —— worker 交出 PR 前跑的冲突检查
+# （scripts/conflict-check.sh，模板里经 cavil_step 调用，GitHub#82 / #599）和 daemon 这里的
 # pr_conflict_verdict。拿上面场景跑完后的同一个 origin（有冲突的、干净的、拉不到的
 # PR 都有），两边逐个 PR 判一遍，结论必须一致。
 # ─────────────────────────────────────────────────────────────────────────
-echo "【对拍】worker 的冲突检查命令 vs daemon 的判定，同一批 PR 结论一致"
+echo "【对拍】worker 的冲突检查脚本 vs daemon 的判定，同一批 PR 结论一致"
 W="$SANDBOX/run"
 "$REAL_GIT" -C "$W/seed" checkout -q --detach "$("$REAL_GIT" -C "$W/seed" rev-parse main)"
 echo new > "$W/seed/p26.txt"; "$REAL_GIT" -C "$W/seed" add p26.txt
@@ -414,16 +414,18 @@ echo new > "$W/seed/p26.txt"; "$REAL_GIT" -C "$W/seed" add p26.txt
 "$REAL_GIT" -C "$W/seed" push -q "$W/origin.git" "HEAD:refs/pull/26/head" 2>/dev/null
 TIP=$("$REAL_GIT" --git-dir="$W/origin.git" rev-parse main)
 "$REAL_GIT" clone -q "$W/origin.git" "$W/worker-wt" 2>/dev/null
-sed -n '/^# --- 冲突检查 开始 ---$/,/^# --- 冲突检查 结束 ---$/p' "$REPO_DIR/prompts/pr-comment.template.md" \
-    | sed 's|\${REPO}|example/cf|g' > "$SANDBOX/snippet.sh"
 agree=0; disagree=""; seen_kinds=""
 for n in 10 11 15 17 23 26; do
     # PR 现在的提交：远端有 refs/pull/N/head 就用它；#23 从没推上去，用 daemon 看到的那个
     head=$("$REAL_GIT" --git-dir="$W/origin.git" rev-parse -q --verify "refs/pull/$n/head" 2>/dev/null) \
         || head=$(jq -r .head.sha "$W/gh/pr-$n.json")
-    jq -cn --arg h "$head" '{baseRefName:"main", headRefOid:$h}' > "$W/gh/prview-$n.json"
-    w=$(cd "$W/worker-wt" && PATH="$SANDBOX/bin:$PATH" FAKE_GH_DIR="$W/gh" P=$n bash "$SANDBOX/snippet.sh" 2>/dev/null \
-        | sed -n 's/^CONFLICT_CHECK=\([a-z]*\).*/\1/p')
+    # worker 那边跑的是 scripts/conflict-check.sh（GitHub#599），它从 pulls/<n> 读目标分支和 PR 提交：
+    # 给它一份只改这两项的副本，免得动到上面场景用过的状态
+    rm -rf "$W/gh-x"; cp -r "$W/gh" "$W/gh-x"
+    { cat "$W/gh/pr-$n.json" 2>/dev/null || echo '{}'; } | jq --arg h "$head" '.base.ref = "main" | .head.sha = $h' > "$W/gh-x/pr-$n.json"
+    w=$(cd "$W/worker-wt" && PATH="$SANDBOX/bin:$PATH" FAKE_GH_DIR="$W/gh-x" CAVIL_STEP_RETRY_SLEEP=0 HOME="$SANDBOX" \
+        bash "$REPO_DIR/scripts/conflict-check.sh" --result-fd 3 --repo example/cf "$n" 3>&1 >/dev/null 2>&1 \
+        | sed -n 2p | jq -r .status 2>/dev/null)
     case "$w" in error) w=unknown ;; esac
     d=$(cd "$REPO_DIR" && FAKE_GH_DIR="$W/gh" CODING_AGENT_CONFIG="$W/cavil-loop.config" bash -c '
         exec 8>&2; source scripts/_lib.sh; exec 2>&8 8>&-; set +e

@@ -392,7 +392,7 @@ for name in new-issue issue-comment pr-comment review; do
     # 开始时刻取夹具起点：真驱动读夹具会话，AI 时间应是夹具算好的 31 秒
     rendered=$(printf '%s' "$block" | sed -e "s|\${COMMENT_FOOTER_CMD}|${COMMENT_FOOTER_CMD:-}|g" \
         -e "s|\${TASK_START_TS}|$(date -d "@$START" '+%Y-%m-%d %H:%M:%S')|g" \
-        -e "s|\${WORK_NUM}|7|g" -e "s|^BODY=.*|BODY=$TMP/body-$name.md|")
+        -e "s|\${WORK_NUM}|7|g" -e "s|/path/to/body.md|$TMP/body-$name.md|g")
     printf '## 正文\n' > "$TMP/body-$name.md"
     (cd "$WT" && HOME="$TMP/home" CLAUDE_PROJECTS_DIR="$TMP/home/.claude/projects" bash -c "$rendered") 2>/dev/null
     got="$TMP/body-$name.md.footer"
@@ -477,10 +477,11 @@ dispatch_check() { # $1 = scripts 目录；打印 PASS / FAIL
                 pr-comment:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" pr "$N_PR")"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ ! -s "$f" ]; then echo "FAIL dispatch_$kind :: 没写出 prompt"
-        elif grep -q 'COMMENT_FOOTER_CMD' "$f"; then echo "FAIL dispatch_$kind :: 占位没被换掉"
-        elif grep -q "^FOOTER=\$(bash '$sd/drivers/token-usage/comment-footer.sh' --agent 'claude' --driver '[^']*/claude.sh' --config '$DSB/config' --start \"20[0-9-]* [0-9:]*\" --wt \"[0-9]*\")\$" "$f"; then
+        elif grep -q 'COMMENT_FOOTER_CMD\|CAVIL_STEP_DIR' "$f"; then echo "FAIL dispatch_$kind :: 占位没被换掉"
+        elif ! grep -qF "out=\$(bash '$sd'/\"\$1\".sh" "$f"; then echo "FAIL dispatch_$kind :: 步骤脚本目录没换成 $sd（GitHub#599）"
+        elif grep -q "^bash '$sd/drivers/token-usage/comment-footer.sh' --agent 'claude' --driver '[^']*/claude.sh' --config '$DSB/config' --start \"20[0-9-]* [0-9:]*\" --wt \"[0-9]*\" --body /path/to/body.md\$" "$f"; then
             echo "PASS dispatch_$kind"
-        else echo "FAIL dispatch_$kind :: 渲染出的命令不对：$(grep -m1 '^FOOTER=' "$f")"; fi
+        else echo "FAIL dispatch_$kind :: 渲染出的命令不对：$(grep -m1 'comment-footer.sh' "$f")"; fi
     done
     prompt_files_clear "${sd%/scripts}" "$DSB/state"
 }
