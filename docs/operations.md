@@ -2640,6 +2640,7 @@ KEY=myproject      # the project to turn on / 要接入的项目: systemctl --us
 FROM=otherproject  # a project that already shows images / 已经能出图的项目
 ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
 REC="$ENV_FILE.asset-url-added"   # the address this procedure added / 本流程加进去的地址
+LOCK="$ENV_FILE.asset-url.lock"   # add and revert hold it from first read to last write / 补地址和撤销从第一次读到最后一次写都持有它
 URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
 echo "URL=$URL"
 ```
@@ -2647,38 +2648,43 @@ echo "URL=$URL"
 
 <!-- asset-url-ops:add:begin -->
 ```bash
-if [ -z "$URL" ]; then
-    echo "STOP: no address in $FROM — nothing changed"
-elif [ ! -w "$ENV_FILE" ]; then
-    echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
-else
-    # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
-    # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
-    # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
-    # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
-    # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
-    LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
-    BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
-    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
-    OLD="$ENV_FILE.replaced-$$"
-    if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
-        rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
-    elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
-        rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
-    elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
-        && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
-        && chmod --reference="$ENV_FILE" "$TMPF"; }; then
-        rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
-    elif ! cmp -s "$ENV_FILE" "$BAK"; then
-        rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
-    elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
-        rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
-    elif ! cmp -s "$OLD" "$BAK"; then
-        echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    if [ -z "$URL" ]; then
+        echo "STOP: no address in $FROM — nothing changed"
+    elif [ ! -w "$ENV_FILE" ]; then
+        echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
     else
-        rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+        # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
+        # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
+        # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
+        # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
+        # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
+        LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
+        BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+        TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+        OLD="$ENV_FILE.replaced-$$"
+        if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
+        elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
+        elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+            && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$BAK"; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$BAK"; then
+            echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        else
+            rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+        fi
     fi
-fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
 ```
 <!-- asset-url-ops:add:end -->
 
@@ -2696,45 +2702,50 @@ fi
 
 <!-- asset-url-ops:revert:begin -->
 ```bash
-added=$(cat "$REC" 2>/dev/null)
-# Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
-# 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
-SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
-TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
-OLD="$ENV_FILE.replaced-$$"
-if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
-    rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
-else
-    n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
-    v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
-    if [ "$n" = 0 ]; then
-        # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
-        # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
-        rm -f "$TMPF" "$SNAP"
-        if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
-        else echo "FAILED: could not remove $REC — fix the cause and run this block again"
-        fi
-    elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
-        rm -f "$TMPF" "$SNAP"
-        echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
-    elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
-        && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
-        && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
-        && chmod --reference="$ENV_FILE" "$TMPF"; }; then
-        rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
-    elif ! cmp -s "$ENV_FILE" "$SNAP"; then
-        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
-    elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
-        rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
-    elif ! cmp -s "$OLD" "$SNAP"; then
-        rm -f "$SNAP" "$REC"
-        echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
-    elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
-        echo "REVERTED"
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    added=$(cat "$REC" 2>/dev/null)
+    # Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
+    # 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
+    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
+        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
     else
-        echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
+        v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
+        if [ "$n" = 0 ]; then
+            # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+            # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+            rm -f "$TMPF" "$SNAP"
+            if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+            else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+            fi
+        elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+            rm -f "$TMPF" "$SNAP"
+            echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+        elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
+            && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+            && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$SNAP"; then
+            rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$SNAP"; then
+            rm -f "$SNAP" "$REC"
+            echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
+            echo "REVERTED"
+        else
+            echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
     fi
-fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
 ```
 <!-- asset-url-ops:revert:end -->
 
@@ -2747,6 +2758,8 @@ Every outcome, and what to do next (a failed step never leaves a state the block
 | add `ADDED` | line and record written | check should print `OK` |
 | add `FAILED` | the file was not changed — it is missing, not writable or unreadable, or a write failed (a record may be left) | fix the cause (e.g. free disk space, or make the file writable) and run add again — a record without a line is rewritten |
 | add `STOP` | no address to copy, or the file already has an address line | nothing changed; look at the file |
+| add / revert `STOP: another add / revert … holds …` | another terminal is running add or revert for this project and did not finish within 60 s | nothing changed; let that one finish, then run this block again |
+| add / revert `FAILED: could not open … .asset-url.lock` | the lock file next to the configuration could not be created or opened | nothing changed; make the directory writable and run the block again |
 | add / revert `STOP: … was changed while this block ran` | someone saved the file after this block read it and before the swap | nothing changed, their save is kept; run the block again |
 | add / revert `CONFLICT` | someone saved the file at the very moment of the swap; this block's change is in place, theirs is in the `….replaced-<n>` file it names | copy their change from that file into the config by hand, then delete it |
 | revert `REVERTED` | the added line and the record are gone (or there was no line and only a leftover record was cleared) | check prints `NONE` |
@@ -2754,7 +2767,7 @@ Every outcome, and what to do next (a failed step never leaves a state the block
 | revert `FAILED` | nothing removed | fix the cause and run revert again |
 | revert `STOP` | the line is not the one that was added, there are several, there is no record, or the file cannot be read | nothing changed; look at the file with the maintainer |
 
-The configuration file is only ever replaced whole: add and revert write the complete new file next to it, check it, and only then rename it over the old one, so a write that fails or stops half-way (a full disk, a size limit) leaves the old file exactly as it was. The new file keeps the old file's permissions. Each block works from one snapshot of the file (for add, the backup): right before the swap the file must still equal that snapshot, otherwise the block stops and changes nothing; right after the swap the file that was replaced must still equal it, otherwise a save landed in between and the block reports `CONFLICT` and keeps that file. Not caught: an editor that saves by renaming its own file in the instant between the last check and the swap — that save is lost. Do not edit the file, or run `setup.sh` for this project, while running these blocks. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
+The configuration file is only ever replaced whole: add and revert write the complete new file next to it, check it, and only then rename it over the old one, so a write that fails or stops half-way (a full disk, a size limit) leaves the old file exactly as it was. The new file keeps the old file's permissions. Add and revert for the same project never overlap: each holds the lock file `<key>.conf.asset-url.lock` (left in place, it is empty) from its first read to its last write, and one started while the other runs waits for it. Each block works from one snapshot of the file (for add, the backup): right before the swap the file must still equal that snapshot, otherwise the block stops and changes nothing; right after the swap the file that was replaced must still equal it, otherwise a save landed in between and the block reports `CONFLICT` and keeps that file. Not caught: an editor that saves by renaming its own file in the instant between the last check and the swap — that save is lost. Do not edit the file, or run `setup.sh` for this project, while running these blocks. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
 
 ## Upgrading to webhooks (instant trigger)
 

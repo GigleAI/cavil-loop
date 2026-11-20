@@ -11,7 +11,9 @@
 # 中途失败（复审第 2、3 轮）：配置只读、写到一半超出文件大小上限（prlimit 造的真实短写）、改名前遗留的
 # 记录、删记录失败——每种都要求原配置不被写坏，并能按文档接着跑完。
 #
-# 跑法：bash tests/asset-url-ops.test.sh   依赖：bash、GNU coreutils、grep、sed、awk、prlimit（util-linux）
+# 并发（重新派工后复审第 1 轮）：撤销删记录前另一终端跑补地址，两段共用一把锁，后来的等前一个放锁。
+#
+# 跑法：bash tests/asset-url-ops.test.sh   依赖：bash、GNU coreutils、grep、sed、awk、prlimit、flock（util-linux）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -78,7 +80,7 @@ if grep -qx 'REVERTED' <<<"$out" && grep -q '^NONE: ' <<<"$out"; then ok "撤销
 else bad "撤销输出不对：$out"; fi
 if cmp -s "$CONF" "$TMP/orig.conf"; then ok "撤销后与改前逐字节一致"; else bad "撤销后与改前不同"; fi
 if [ "$(stat -c %a "$CONF")" = 600 ]; then ok "撤销后权限仍是 600"; else bad "撤销后权限变了：$(stat -c %a "$CONF")"; fi
-left=$(find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*')
+left=$(find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*' ! -name 'myproject.conf.asset-url.lock')
 if [ -z "$left" ]; then ok "没留临时文件，记录随这一行删掉"; else bad "留下了文件：$left"; fi
 
 echo "── 补完改了无关设置，再撤销 ──"
@@ -132,7 +134,7 @@ if grep -q "^STOP: .*recorded 'none'" <<<"$out" && cmp -s "$CONF" "$TMP/before.c
 else bad "没有记录时撤销没停下：$out"; fi
 
 echo "── 中途失败后按文档继续（复审第 2、3 轮） ──"
-left_tmp() { find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*' ! -name 'myproject.conf.asset-url-added'; }
+left_tmp() { find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*' ! -name 'myproject.conf.asset-url-added' ! -name 'myproject.conf.asset-url.lock'; }
 # 只读：打不开就不动任何东西（不留记录）
 sandbox
 chmod 400 "$CONF"
@@ -273,6 +275,45 @@ if [ -e "$TMP/race-cat/done" ] && grep -q "^STOP: 1 address line(s), value '$URL
    && grep -qxF "WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL_B\"" "$CONF" && [ -e "$REC" ] && [ -z "$(left_tmp)" ]; then
     ok "撤销取快照时地址刚被改成 B：按快照判断 → STOP，B 和记录都留着"
 else bad "撤销取快照时地址被改：结果不对：$out / $(cat "$CONF")"; fi
+# 复审（重新派工后第 1 轮）：撤销读到零行地址、删遗留记录之前，另一个终端跑完整的补地址——
+# 记录被撤销删掉、地址却留下。两段共用一把锁后，后来的补地址要等撤销放锁再跑，地址和记录始终配对。
+LOCK="$CONF.asset-url.lock"
+REAL_RM=$(command -v rm); mkdir -p "$TMP/race-rm"
+cat > "$TMP/race-rm/rm" <<SH
+#!/usr/bin/env bash
+if [ "\$*" = "-f $REC" ] && [ ! -e "$TMP/race-rm/started" ]; then
+    : > "$TMP/race-rm/started"
+    flock -n "$LOCK" true && : > "$TMP/race-rm/unlocked"
+    # 另一个终端不会继承这把锁的描述符：关掉它，免得后台的补地址等的是自己
+    { cat "$TMP/vars.sh" "$TMP/add.sh" | env -i HOME="$TMP/home" PATH="$PATH" bash > "$TMP/race-rm/add.out" 2>&1; : > "$TMP/race-rm/add.done"; } 9>&- &
+    sleep 1
+    [ -e "$TMP/race-rm/add.done" ] && : > "$TMP/race-rm/add-early"
+fi
+exec "$REAL_RM" "\$@"
+SH
+"$REAL_CHMOD" +x "$TMP/race-rm/rm"
+sandbox
+printf '%s\n' "$URL" > "$REC"
+"$REAL_RM" -f "$TMP/race-rm/"{started,unlocked,add.out,add.done,add-early}
+out=$(RUN_PATH="$TMP/race-rm:$PATH" run revert)
+for _ in $(seq 100); do [ -e "$TMP/race-rm/add.done" ] && break; sleep 0.1; done
+if [ -e "$TMP/race-rm/started" ] && [ ! -e "$TMP/race-rm/unlocked" ] && [ ! -e "$TMP/race-rm/add-early" ] \
+   && grep -q '^REVERTED: no address line, leftover record cleared' <<<"$out" && grep -q '^ADDED ' "$TMP/race-rm/add.out"; then
+    ok "撤销删记录前另一终端补地址：补地址等撤销放锁后才跑，两边各报 REVERTED / ADDED"
+else bad "并发撤销 / 补地址的顺序不对：$out / $(cat "$TMP/race-rm/add.out" 2>&1) / $(ls "$TMP/race-rm")"; fi
+out=$(run check)
+if grep -qxF "OK: $URL" <<<"$out" && [ "$(cat "$REC" 2>/dev/null)" = "$URL" ]; then ok "并发之后地址和记录配对，核对 OK"
+else bad "并发之后地址和记录不配对：$out"; fi
+out=$(run revert check)
+if grep -qx 'REVERTED' <<<"$out" && grep -q '^NONE: ' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf"; then ok "并发之后照常撤销，与改前逐字节一致"
+else bad "并发之后撤销不对：$out"; fi
+# 锁打不开（这里把锁的位置占成目录）：两段都什么都不改
+sandbox
+mkdir "$LOCK"
+out=$(run add); out2=$(run revert)
+if grep -q '^FAILED: could not open ' <<<"$out" && grep -q '^FAILED: could not open ' <<<"$out2" && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ]; then
+    ok "锁打不开：补地址和撤销都报 FAILED、配置不变"
+else bad "锁打不开时结果不对：$out / $out2"; fi
 # 补地址停下时不留没用的备份
 sandbox
 printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL_B" >> "$CONF"
