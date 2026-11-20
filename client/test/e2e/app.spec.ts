@@ -10,12 +10,16 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub, loadCavilProjectPages, loadCavilRepoIssues } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { unfoldSettings } from './unfold';
 import { findCopies, gqlContent, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
+import { PREVIEW_SANDBOX } from '../../src/renderer/detailHtml';
+import { PREVIEW_SCRIPT } from '../../src/renderer/frameScript';
 
 /** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
 async function showSource(page: Page, selector: string, on: boolean) {
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   const sw = page.locator(`[data-testid="source-shown"]${selector}`);
   if (on) await sw.check();
   else await sw.uncheck();
@@ -178,6 +182,7 @@ test('browser login → board; restart skips login; sources; three column modes;
 
   // add a Project and a repository
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
@@ -349,6 +354,7 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
 
   // Settings shows the same choice and the same link
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('settings')).toBeVisible();
   await expect(page.getByTestId('app-kind-github-app')).toBeChecked();
   await page.getByTestId('app-kind-help-link').click();
@@ -370,6 +376,7 @@ async function signInWithSources(page: Page, iteration25 = '13') {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
@@ -1164,6 +1171,8 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -1285,6 +1294,7 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/1`); // a table grouped by iteration
   await page.getByTestId('source-add').click();
   // the view's filter (-label:Done -status:Done) only hid finished items: left to the switch (GitHub#464)
@@ -1303,6 +1313,8 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   const C = 'repo:gigleai/cavil-loop', Z = 'repo:gigleai/zeta';
   await expect.poll(async () => (await repoHeads(page)).map(([t]) => t), { timeout: 15_000 }).toEqual(['GigleAI/cavil-loop', 'GigleAI/zeta']);
   await expect.poll(async () => (await tableShape(page)).some((g) => g.title === 'Iteration 25' && g.rows.includes('gigleai/cavil-loop#22'))).toBe(true);
+  // GitHub#587: zeta's heading is there as soon as it is a source, before its issues are read: wait for them
+  await expect.poll(async () => (await tableShape(page)).filter((g) => g.key.startsWith(`${Z}|`)).flatMap((g) => g.rows).length, { timeout: 15_000 }).toBe(2);
   const shape = await tableShape(page);
   for (const g of shape) expect(g.key.startsWith(`${C}|`) || g.key.startsWith(`${Z}|`), g.key).toBe(true);
   // the sections come in the heading order: every cavil-loop group before every zeta group
@@ -1351,6 +1363,7 @@ test('a saved board view sorted by update time: the board shows each column newe
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(`${PROJECT_URL}/views/2`);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -1699,6 +1712,7 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   await page.waitForSelector('[data-testid="app-root"]');
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -1729,6 +1743,7 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
 
   // board → settings → board: stays closed
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('back').click();
   await expect(page.getByTestId('filter-unsupported')).toBeVisible();
   await expect(page.getByTestId('offline')).toHaveCount(0);
@@ -1753,6 +1768,7 @@ test('yellow bars: × closes one bar; time passing and page switches keep it clo
   await page.getByTestId('offline-close').click();
   await expect(page.getByTestId('offline')).toHaveCount(0);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   env.fake.state.offline = false;
   await page.evaluate(() => (window as any).cavil.restartSync());
   await expect.poll(async () => (await syncOf(page)).offline, { timeout: 15_000 }).toBe(false);
@@ -1770,6 +1786,7 @@ test('sync trouble: ⚠️ next to refresh instead of two bars; a click shows th
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -1867,6 +1884,7 @@ test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, 
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -1959,6 +1977,7 @@ test('Settings: a failed source\'s "重新读取" spins while it runs and says w
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   const row = page.getByTestId('source-row');
@@ -1987,6 +2006,7 @@ test('yellow bars: a closed "unsupported words" bar comes back when an import in
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/21');
   await page.getByTestId('source-add').click();
   await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('updated:>2026-01-01');
@@ -1997,12 +2017,14 @@ test('yellow bars: a closed "unsupported words" bar comes back when an import in
 
   // only switching pages, filter unchanged → stays closed
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('back').click();
   await expect(page.getByTestId('search')).toHaveValue('updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
 
   // in settings: a Project whose view has a supported filter, then one with the old unsupported words
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/22');
   await page.getByTestId('source-add').click();
   await expect.poll(() => savedQuery(page), { timeout: 15_000 }).toBe('label:bug');
@@ -2053,6 +2075,7 @@ async function signInForReminders(page: Page, sources: string[]) {
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await showClosedEverywhere(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of sources) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();
@@ -2111,6 +2134,7 @@ test('pending/human: nothing about the history at start, one notification per ne
 
   // the settings page: how reminders work, no list, no counts
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   // GitHub#514: one line on the card, the whole rule in the card's fold
   await expect(page.getByTestId('pending-how-to-clear')).toHaveText('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。');
   await expect(page.getByTestId('pending-more')).toContainText('「未读数」');
@@ -2122,7 +2146,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：打开哪一条（点它的通知，或在窗口里点开），就收起关于这一条的通知，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
-  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也算');
+  await expect(page.getByTestId('pending-rule')).toContainText('已关闭、已合并的也算');
   await expect(page.getByTestId('pending-rule-full')).toContainText('已关闭、已合并的也提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
@@ -2162,6 +2186,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   // what was read ahead shows at once, while the panel's own read is still held
   const releaseDetail = env.fake.holdWhen((e) => e.operation === 'CavilItemDetail' && e.variables?.number === fresh);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   app.desktop.push({ kind: 'open', key: itemNote.key, url: itemNote.url });
   await expect(page.getByTestId('detail')).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId('detail')).toContainText(`#${fresh}`);
@@ -2176,12 +2201,14 @@ test('pending/human: nothing about the history at start, one notification per ne
   await page.getByTestId('detail-close').click();
   await expect(page.getByTestId('detail')).toHaveCount(0);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('back').click();
   await page.waitForTimeout(300);
   await expect(page.getByTestId('detail')).toHaveCount(0);
 
   // another label name: recounted silently, nothing notified, nothing new unread
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   // the reminder label is the same setting as the "hand back to agent" one
   await page.getByTestId('hand-back-human').fill('doing/agent');
   await page.getByTestId('hand-back-human').blur();
@@ -2290,6 +2317,7 @@ test('GitHub#373: "which items remind" in Settings — every pending item by def
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('notify-scope-mine')).toBeChecked();
   await expect.poll(() => app.desktop.records.filter((a) => a.op === 'badge').length).toBeGreaterThan(0);
   await page.waitForTimeout(300);
@@ -2314,6 +2342,7 @@ test('notifications refused by the system: the board says so and how to allow th
   await expect(card(page, first)).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   putPending(first);
   app.desktop.push({ kind: 'tick' });
   // sent (and refused)
@@ -2696,6 +2725,8 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
   await page.setViewportSize({ width: 1280, height: 800 });
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   await expect(page.getByTestId('settings')).toBeVisible();
   await readableBoth(page, 'settings', 20);
 
@@ -2725,6 +2756,7 @@ test('GitHub#181 look: text readable at 4.5:1 in light and dark on every page; d
     await page.getByTestId('detail-close').click();
     await page.locator('[data-testid="layout"] button[data-value="table"]').click();
     await page.getByTestId('open-settings').click();
+    await unfoldSettings(page);
   }
   await page.getByTestId('theme-system').check();
   await page.emulateMedia({ colorScheme: 'light' });
@@ -2813,6 +2845,7 @@ test('GitHub#181 / #467 many sources: the top row fits at 720, 1024 and 1280 px;
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const [i, name] of names.entries()) {
     await page.getByTestId('source-input').fill(name);
     await page.getByTestId('source-add').click();
@@ -2830,6 +2863,7 @@ test('GitHub#181 / #467 many sources: the top row fits at 720, 1024 and 1280 px;
   for (const name of [names[names.length - 1], names[10]]) {
     const key = `repo:${name.toLowerCase()}`;
     await page.getByTestId('open-settings').click();
+    await unfoldSettings(page);
     const sw = page.locator(`[data-testid="source-shown"][data-key="${key}"]`);
     const rowOf = page.locator(`[data-testid="source-row"][data-key="${key}"]`);
     await expect(sw).toBeChecked();
@@ -2842,6 +2876,7 @@ test('GitHub#181 / #467 many sources: the top row fits at 720, 1024 and 1280 px;
     await expect(total).toHaveText('19 个条目');
     await expect(page.getByText(`item from ${name}`)).toHaveCount(0);
     await page.getByTestId('open-settings').click();
+    await unfoldSettings(page);
     await sw.click();
     await expect(sw).toBeChecked();
     await expect(rowOf).toHaveAttribute('data-shown', 'yes');
@@ -3348,6 +3383,8 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await expect(settings).toBeVisible();
   await shot(page, '61-settings-after-keys');
   // GitHub#369: in a text field the first Esc only leaves the field (which saves it), the second goes back
+  // (GitHub#591: the flow labels are a 高级 card — unfolded first)
+  await unfoldSettings(page);
   const agentLabel = page.getByTestId('hand-back-agent');
   const originalAgent = await agentLabel.inputValue();
   expect(originalAgent).not.toBe('');
@@ -3363,11 +3400,13 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   // saved when the field was left: reopened, the settings show it; then it is put back the same way
   await page.keyboard.press(`${MOD}+,`);
   await expect(settings).toBeVisible();
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-agent')).toHaveValue(`${originalAgent}X`);
   await page.getByTestId('hand-back-agent').fill(originalAgent);
   await page.getByTestId('hand-back-agent').blur();
   await page.getByTestId('back').click();
   await page.keyboard.press(`${MOD}+,`);
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-agent')).toHaveValue(originalAgent);
   // nothing focused: one Esc goes back to the board
   await blur(page);
@@ -3380,6 +3419,7 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
 
   // ---- 6. the app-kind page (from Settings) takes the global keys too ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('app-kind-help-link').click();
   await expect(page.getByTestId('app-kind-help')).toBeVisible();
   await blur(page);
@@ -3839,6 +3879,7 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   await expect(page.getByTestId('update-ready')).toHaveCount(0);
   await expect(page.locator('.banner', { hasText: '0.5.1' })).toHaveCount(0);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
 
   // automatic checks: the box follows what the shell reports
   await page.getByTestId('update-auto').click();
@@ -3867,6 +3908,7 @@ test('GitHub#184: update section in Settings, every state; failures only in Sett
   // a build that cannot update itself says why and offers nothing to click
   app.desktop.setUpdate({ ...base, problem: '这一版没有带更新用的公钥，不能自动更新，请手动下载新版' });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('update-line')).toHaveText('这一版没有带更新用的公钥，不能自动更新，请手动下载新版');
   await expect(page.getByTestId('update-check')).toBeDisabled();
   await expect(page.getByTestId('update-auto')).toBeDisabled();
@@ -3965,6 +4007,7 @@ test('GitHub#348: what the update changes — one list opened from the board not
   // Settings: the same list from a button next to "restart"; also while it downloads (no restart offered then)
   app.desktop.setUpdate({ ...ready, notes });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('update-notes-open')).toHaveText('查看更新内容（3 个版本）');
   await page.getByTestId('update-notes-open').scrollIntoViewIfNeeded();
   await shot(page, '55-update-ready-settings-notes');
@@ -4025,6 +4068,7 @@ test('GitHub#348: what the update changes — one list opened from the board not
   await expect(page.getByTestId('update-ready-notes')).toHaveText('更新内容（4 个版本）');
   await expect(dialog).toHaveCount(0);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   // idle again (the round failed): the button goes with the list
   app.desktop.setUpdate({ ...base, last: { at, ok: false, message: `下载 ${NEW} 失败：60 秒没有收到数据` } });
   await expect(page.getByTestId('update-line')).toContainText('失败');
@@ -4047,6 +4091,7 @@ test('GitHub#348: what the update changes — one list opened from the board not
   await expect(page.getByTestId('update-installed')).toHaveCount(0);
   // still readable from Settings
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('update-installed-open').click();
   await expect(dialog.getByTestId('update-notes-range')).toHaveText(`${CUR} → ${NEW}，共 3 个版本`);
   await dialog.getByTestId('update-notes-close').click();
@@ -4428,6 +4473,7 @@ test('GitHub#205 (PR #220 review round 1): an item shown in two groups (two boar
   const { app, page } = await launch(env);
   await signInWithSources(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/31');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -4477,6 +4523,7 @@ test('GitHub#214: "+ new issue" under a table group — the dialog shows what it
   const { app, page } = await launch(env);
   await signInWithSources(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('GigleAI/second');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -4832,6 +4879,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
 
   // ---- 6. ticked back in Settings: 托管 asks again ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('autopilot-confirm')).not.toBeChecked();
   await page.getByTestId('autopilot-confirm').check();
   await page.getByTestId('back').click();
@@ -4870,6 +4918,7 @@ test('GitHub#572: the recordings follow the test clock — long after the record
     env.fake.resolveGrant('approved');
     await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
     await page.getByTestId('open-settings').click();
+    await unfoldSettings(page);
     await page.getByTestId('source-input').fill(PROJECT_URL);
     await page.getByTestId('source-add').click();
     await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
@@ -4908,6 +4957,7 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
 
   // ---- 1. no board added at all: says so ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -4921,6 +4971,7 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
   // ---- 2. the only board added, its first read failing: "not synced yet", not "no board added" ----
   env.fake.state.failProjectPage.set(P11, 0);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(PROJECT_URL);
   await page.getByTestId('source-add').click();
   await expect(sourceErr(page, 'project:org/gigleai/11')).toBeVisible({ timeout: 15_000 });
@@ -4945,6 +4996,7 @@ test('GitHub#231 (PR #241 review round 1): new issue while boards are not read y
 
   // ---- 4. one board read, another never read (it cannot be found): the read one is ticked, the other is said ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/99');
   await page.getByTestId('source-add').click();
   await expect(sourceErr(page, 'project:org/gigleai/99')).toBeVisible({ timeout: 15_000 });
@@ -5267,6 +5319,7 @@ test('GitHub#450: new issue — 交给 agent / 托管 are buttons that create at
 
   // ---- 8. no autopilot label in Settings: no 托管 button and ⌘⇧C does nothing; ⌘⇧Z still creates ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-autopilot').fill('');
   await page.getByTestId('hand-back-autopilot').blur();
   await page.getByTestId('back').click();
@@ -6459,6 +6512,7 @@ test('GitHub#297: swimlanes — each repository scrolls sideways on its own, eac
   let { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of [PROJECT_URL, 'GigleAI/cavil-loop', 'GigleAI/zeta']) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();
@@ -6746,6 +6800,7 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   let { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const r of [A, B, C]) {
     await page.getByTestId('source-input').fill(r);
     await page.getByTestId('source-add').click();
@@ -6787,22 +6842,25 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await everywhere([C, A, B]);
   expect(await saved()).toEqual(['gigleai/ccc', 'gigleai/aaa', 'gigleai/bbb']);
 
-  // ---- 3. table: the search hides a; b dragged before c; the search cleared → b, a, c (a kept its place) ----
+  // ---- 3. table: the search hides a's only issue, yet a repository source stays in the list, with 0
+  // (GitHub#587; a repository hidden by the search keeping its place is the board's swimlanes in step 6);
+  // b dragged before c → b, c, a ----
   await layout('table');
   await search.fill('kept');
-  await expect.poll(slices).toEqual([C, B]);
+  await expect.poll(slices).toEqual([C, A, B]);
+  await expect(slice(A).getByTestId('slice-count')).toHaveText('0');
   await dragRepo(slice(B), slice(C));
-  await expect.poll(slices).toEqual([B, C]);
+  await expect.poll(slices).toEqual([B, C, A]);
   await search.fill('');
-  await everywhere([B, A, C]);
+  await everywhere([B, C, A]);
 
   // ---- 4. a restart keeps it ----
-  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/aaa', 'gigleai/ccc']);
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/ccc', 'gigleai/aaa']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
-  await everywhere([B, A, C]);
+  await everywhere([B, C, A]);
   await shot(page, '304-01-lanes-after-restart');
 
   // ---- 5. "按名称排序" → alphabetical again, the link goes away ----
@@ -8026,8 +8084,11 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await expect.poll(() => colour(preview.locator('.pl-k'))).toBe(light.keyword);
   expect(await colour(preview.locator('.pl-c'))).toBe(light.comment);
   await expect(preview.locator('button')).toHaveCount(0);
-  await expect(preview.locator('script')).toHaveCount(0);
-  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).not.toContain('allow-scripts');
+  // GitHub#590: the one script in the preview is its link script; the frame is still never same-origin
+  await expect(preview.locator('script')).toHaveCount(1);
+  expect(await preview.locator('script').textContent()).toBe(PREVIEW_SCRIPT);
+  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).toBe(PREVIEW_SANDBOX);
+  expect(PREVIEW_SANDBOX).not.toContain('allow-same-origin');
   await shot(page, '381-code-preview');
   w.markdownHtml = null;
   await app.close();
@@ -8139,6 +8200,7 @@ test('GitHub#398: "open this repository on GitHub" on the board\'s swimlane head
   const { app, page } = await launch(env);
   await signIn(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const r of [A, B]) {
     await page.getByTestId('source-input').fill(r);
     await page.getByTestId('source-add').click();
@@ -8476,6 +8538,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
 
   // ---- 9. no autopilot label in Settings: no button, so Ctrl+Shift+C does nothing (from the frame neither); Ctrl+Shift+Z from the frame still hands back ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-autopilot').fill('');
   await page.getByTestId('hand-back-autopilot').blur();
   await page.getByTestId('back').click();
@@ -8540,6 +8603,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
 
   // ---- 1. Settings → 快捷键: the section is in the contents; 交给 agent → Ctrl+Shift+A ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.locator('.settings-nav a', { hasText: '快捷键' })).toHaveCount(1);
   await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftZ');
   await expect(row('hide').getByTestId('shortcut-change')).toHaveCount(0); // Esc is fixed
@@ -8614,6 +8678,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   // ---- 4b. PR #498 review round 1: changed to a key without Ctrl (G), it does nothing from the discussion, as the
   // settings page says; from the panel itself it hands back ----
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await row('handBack').getByTestId('shortcut-change').click();
   await page.keyboard.press('g');
   await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('G已改');
@@ -8651,6 +8716,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('G已改');
   await page.getByTestId('shortcut-reset-all').click();
   await expect(row('handBack').getByTestId('shortcut-setting-keys')).toHaveText('CtrlShiftZ');
@@ -8887,6 +8953,7 @@ test('GitHub#513: label pickers (detail, table cell, new issue) pin the parked l
   const same = (list: string[]) => ({ detail: list, table: list, newIssue: list });
   const setLater = async (value: string) => {
     await page.getByTestId('open-settings').click();
+    await unfoldSettings(page);
     await page.getByTestId('hand-back-later').fill(value);
     await page.getByTestId('hand-back-later').blur();
     await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.later)).toBe(value);
@@ -8896,6 +8963,7 @@ test('GitHub#513: label pickers (detail, table cell, new issue) pin the parked l
   // ---- default: pending/later right after pending/human ----
   expect(await allThree()).toEqual(same(['autopilot', 'pending/human', 'pending/later', 'pending/agent', 'doing/agent', 'Done', 'pending/PR', 'parked', 'enhancement']));
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-later')).toHaveValue('pending/later');
   await page.getByTestId('back').click();
 

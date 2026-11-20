@@ -18,15 +18,16 @@
 // machine and how to read / save there — that machine runs its own project-config.sh, so what may be
 // changed and the fingerprint rule are the same. Its file cannot be handed to an editor on this computer.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from './api';
 import { Icon } from './Icons';
+import { InfoTip } from './InfoTip';
 import { useLayer, useShortcuts } from './keyboard';
 import { keyText } from './shortcuts';
 import { copyText } from './pasteImage';
 import {
   canEdit,
-  configGroups,
+  configLayout,
   draftChanges,
   fieldProblem,
   installCommand,
@@ -89,6 +90,9 @@ export function ProjectConfigDialog({
   const [phase, setPhase] = useState<Phase>({ at: 'loading' });
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [kept, setKept] = useState(false);
+  /** GitHub#591: which folds the person opened — a group's 「高级」 by group title, the 「高级设置」 block */
+  const [moreOpen, setMoreOpen] = useState<Record<string, boolean>>({});
+  const [advOpen, setAdvOpen] = useState(false);
   /** GitHub#569: the flow label whose 「改名…」 / 「跟进另一台的改名…」 dialog is open */
   const [renaming, setRenaming] = useState<{ f: ConfigField; mode: 'rename' | 'follow'; prefill: string } | null>(null);
   const alive = useRef(true);
@@ -255,24 +259,81 @@ export function ProjectConfigDialog({
           <div className="pcfg-body">
           {/* the scrolling box is the div: a fieldset does not clip its content */}
           <fieldset className="pcfg-form" disabled={saving}>
-            {configGroups(config.fields).map((g) => (
-              <div key={g.title} data-testid="config-group" data-title={g.title}>
-                <div className="pcfg-group">
-                  <Verbatim from="daemon">{g.title}</Verbatim>
-                </div>
-                {g.fields.map((f) => (
-                  <Row
-                    key={f.name}
-                    f={f}
-                    draft={draft[f.name]}
-                    onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))}
-                    onOpenEditor={remote ? undefined : onOpenEditor}
-                    rename={renameOffer(f)}
-                    onRename={(mode) => void openRename(f, mode)}
-                  />
-                ))}
-              </div>
-            ))}
+            {(() => {
+              // GitHub#591: 常用 shown, each group's less used ones under its own 「高级」, whole 高级 groups in the block at the bottom.
+              // A fold holding a changed (or wrongly typed) value stays open: nothing typed is ever out of sight.
+              const layout = configLayout(config.fields);
+              const touched = (fs: ConfigField[]) => fs.filter((f) => f.name in changes).length;
+              const row = (f: ConfigField) => (
+                <Row
+                  key={f.name}
+                  f={f}
+                  draft={draft[f.name]}
+                  onChange={(v) => setDraft((d) => ({ ...d, [f.name]: v }))}
+                  onOpenEditor={remote ? undefined : onOpenEditor}
+                  rename={renameOffer(f)}
+                  onRename={(mode) => void openRename(f, mode)}
+                />
+              );
+              const advFields = layout.advanced.flatMap((g) => g.fields);
+              const advTouched = touched(advFields);
+              const advShown = advOpen || advTouched > 0;
+              return (
+                <>
+                  {layout.common.map((g) => {
+                    const held = touched(g.more);
+                    const shown = !!moreOpen[g.title] || held > 0;
+                    return (
+                      <div key={g.title} data-testid="config-group" data-title={g.title}>
+                        <div className="pcfg-group">
+                          <Verbatim from="daemon">{g.title}</Verbatim>
+                        </div>
+                        {g.main.map(row)}
+                        {g.more.length > 0 && (
+                          <div data-testid="config-group-more" data-group={g.title} data-open={String(shown)}>
+                            <div className="pcfg-more-head">
+                              <FoldToggle
+                                open={shown}
+                                held={held}
+                                testid="config-more-toggle"
+                                onToggle={() => setMoreOpen((o) => ({ ...o, [g.title]: !shown }))}
+                                title={t('高级')}
+                                what={tNode('{n} 项：{names}', { n: g.more.length, names: <Names fields={g.more} /> })}
+                              />
+                            </div>
+                            {shown && g.more.map(row)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {layout.advanced.length > 0 && (
+                    <div className="pcfg-adv" data-testid="config-adv" data-open={String(advShown)}>
+                      <FoldToggle
+                        open={advShown}
+                        held={advTouched}
+                        testid="config-adv-toggle"
+                        onToggle={() => setAdvOpen(!advShown)}
+                        title={t('高级设置')}
+                        what={tNode('{n} 项 · {groups}', {
+                          n: advFields.length,
+                          groups: <Verbatim from="daemon">{layout.advanced.map((g) => g.title).join(' · ')}</Verbatim>,
+                        })}
+                      />
+                      {advShown &&
+                        layout.advanced.map((g) => (
+                          <div key={g.title} data-testid="config-group" data-title={g.title}>
+                            <div className="pcfg-group">
+                              <Verbatim from="daemon">{g.title}</Verbatim>
+                            </div>
+                            {g.fields.map(row)}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             <div className="muted small pcfg-note">{t('其余设置（目录、命令、钩子、令牌等）不在这里显示。')}</div>
           </fieldset>
           </div>
@@ -443,14 +504,19 @@ function Row({
         <b>
           <Verbatim from="daemon">{f.label}</Verbatim>
         </b>
-        <div className="muted small">
-          {!f.in_file && f.mode === 'edit' && (
+        {/* GitHub#591: the explanation behind an ⓘ; what the line's state is (not in the file) stays in sight */}
+        {f.help && (
+          <InfoTip testid={`config-help-${f.name}`}>
+            <Verbatim from="daemon">{f.help}</Verbatim>
+          </InfoTip>
+        )}
+        {!f.in_file && f.mode === 'edit' && (
+          <div className="muted small">
             <span className="pcfg-pill" data-testid="config-absent" title={t('配置文件里没有这一行，daemon 按右边的值工作；在这里保存后会把这一行写进配置文件')}>
               {t('配置文件里没写这一项')}
             </span>
-          )}
-          <Verbatim from="daemon">{f.help}</Verbatim>
-        </div>
+          </div>
+        )}
       </div>
       <div className="ctl">
         {editable ? (
@@ -508,6 +574,29 @@ function Row({
         )}
       </div>
     </div>
+  );
+}
+
+/** GitHub#591: the line that opens / closes a fold; a fold holding changed values stays open and says so */
+function FoldToggle({ open, held, onToggle, title, what, testid }: { open: boolean; held: number; onToggle: () => void; title: string; what: ReactNode; testid: string }) {
+  return (
+    <button type="button" className="fold-toggle" aria-expanded={open} data-testid={testid} onClick={() => held === 0 && onToggle()}>
+      <Icon name="chevron" size={14} />
+      <b>{title}</b>
+      <span>{what}</span>
+      {held > 0 && <span className="pcfg-pending" data-testid={`${testid}-held`}>{t('（{n} 项已改，保持展开）', { n: held })}</span>}
+    </button>
+  );
+}
+
+/** the first three names of a fold, then … */
+function Names({ fields }: { fields: ConfigField[] }) {
+  const shown = fields.slice(0, 3).map((f) => f.label).join(t('、'));
+  return (
+    <>
+      <Verbatim from="daemon">{shown}</Verbatim>
+      {fields.length > 3 ? '…' : ''}
+    </>
   );
 }
 

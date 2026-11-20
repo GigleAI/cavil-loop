@@ -158,7 +158,8 @@ if [ -d "$WORKTREE" ]; then
 
     # 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
-    CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+    CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+        || { dispatch_prompt_refused "$PR"; exit 0; }
     log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
     worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
@@ -175,7 +176,8 @@ if [ -d "$WORKTREE" ]; then
         if [ "$_alive" = 1 ]; then
             log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
             agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE" 1
-            CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+            CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+                || { dispatch_prompt_refused "$PR"; exit 0; }
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
@@ -307,7 +309,8 @@ done
     (cd "$WORKTREE" && eval "$WORKTREE_SETUP_CMD") || true
 
 agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
-CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+    || { dispatch_prompt_refused "$PR"; exit 0; }
 log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do

@@ -92,6 +92,9 @@ impl Opener for RemoteOpener {
     async fn open(&self, url: &str) -> Result<(), String> {
         self.0.call("open", json!({ "url": url })).await.map(|_| ())
     }
+    async fn open_link(&self, url: &str, via: &str) -> Result<(), String> {
+        self.0.call("open", json!({ "url": url, "via": via })).await.map(|_| ())
+    }
 }
 
 struct RemoteFileOpener(Arc<Link>);

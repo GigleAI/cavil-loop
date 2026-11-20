@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { unfoldSettings } from './unfold';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -176,12 +177,14 @@ test('an organisation that has not approved the app: the same explanation in the
 test('Client ID changed in Settings without signing in again: "打开 GitHub 授权页" still opens the page of the app this sign-in used', async () => {
   const page = await signIn();
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.locator('#set-login').getByTestId('oauth-settings-toggle').click();
   await page.locator('#set-login').getByTestId('client-id').fill('Ov23liAnotherApp');
   await page.locator('#set-login').getByTestId('save-client-id').click();
   await page.getByTestId('back').click();
   // the save really happened: Settings now holds the other app's ID for the next sign-in
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   if ((await page.locator('#set-login').getByTestId('client-id').count()) === 0) await page.locator('#set-login').getByTestId('oauth-settings-toggle').click();
   await expect(page.locator('#set-login').getByTestId('client-id')).toHaveValue('Ov23liAnotherApp');
   await page.getByTestId('back').click();

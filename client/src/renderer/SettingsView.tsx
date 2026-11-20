@@ -23,7 +23,15 @@ import { KeepLang, SourceName, Verbatim } from './Verbatim';
 import { tNode } from './tNode';
 import { TallySettings } from './TallySettings';
 import { ShortcutSettings } from './ShortcutSettings';
-import { SettingsMore } from './SettingsMore';
+import { CardMore, SettingsMore } from './SettingsMore';
+import { InfoTip } from './InfoTip';
+import { clientIdKindProblem } from '../shared/appKind';
+
+/**
+ * GitHub#591: which cards are 高级 — kept in the 「高级设置」 block at the bottom of the page, folded each time Settings
+ * opens. On Windows the remote daemon is the only daemon this computer can reach, so it stays with the common ones.
+ */
+export const advancedCards = (windows: boolean): string[] => ['set-hand-back', 'set-tallies', 'set-keys', ...(windows ? [] : ['set-remote'])];
 
 const sections = (): { id: string; icon: IconName; title: ReactNode }[] => [
   // GitHub#471: first, and named in both languages — found by someone who cannot read the current one
@@ -73,8 +81,8 @@ function LanguageSection({ state }: { state: AppState }) {
     <section id="set-language" data-testid="language-settings">
       <h3 data-testid="language-title">
         <LanguageName />
+        <InfoTip testid="language-help">{t('窗口、菜单、系统通知和提示用的语言。GitHub 上的标题、评论、标签照原样显示，不翻译。')}</InfoTip>
       </h3>
-      <p className="muted small">{t('窗口、菜单、系统通知和提示用的语言。GitHub 上的标题、评论、标签照原样显示，不翻译。')}</p>
       <div className="lang-choices" role="radiogroup" aria-labelledby="language-title-text" data-testid="language-choices">
         <span id="language-title-text" className="sr-only">
           {t('界面语言')}
@@ -113,8 +121,10 @@ function ThemeSection({ state }: { state: AppState }) {
   );
   return (
     <section id="set-theme" data-testid="theme-settings">
-      <h3 id="theme-title">{t('外观')}</h3>
-      <p className="muted small">{t('窗口用浅色还是深色。看板、详情、讨论区、关系图、标签颜色和窗口标题栏一起换，选了立刻生效。')}</p>
+      <h3>
+        <span id="theme-title">{t('外观')}</span>
+        <InfoTip testid="theme-help">{t('窗口用浅色还是深色。看板、详情、讨论区、关系图、标签颜色和窗口标题栏一起换，选了立刻生效。')}</InfoTip>
+      </h3>
       <div className="lang-choices" role="radiogroup" aria-labelledby="theme-title" data-testid="theme-choices">
         {choice('system', state.uiTheme === 'system' ? t('跟随系统（默认，现在：{look}）', { look: state.theme === 'dark' ? t('深色') : t('浅色') }) : t('跟随系统（默认）'))}
         {choice('light', t('浅色'))}
@@ -150,11 +160,28 @@ export function SettingsView({
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const inputBox = useRef<HTMLInputElement>(null);
+  // GitHub#577: Windows cannot run the daemon — no local daemon section, no "接上 daemon", nothing read
+  const win = state.desktopSystem === 'windows';
+  // GitHub#591: the 「高级设置」 block, folded each time Settings opens; going to a card in it opens it first
+  const advanced = advancedCards(win);
+  const [advOpen, setAdvOpen] = useState(false);
+  const scrollTo = useRef<string | null>(null);
+  const goTo = (id: string) => {
+    if (advanced.includes(id) && !advOpen) {
+      scrollTo.current = id;
+      setAdvOpen(true);
+    } else document.getElementById(id)?.scrollIntoView({ block: 'start' });
+  };
+  useEffect(() => {
+    if (!advOpen || !scrollTo.current) return;
+    document.getElementById(scrollTo.current)?.scrollIntoView({ block: 'start' });
+    scrollTo.current = null;
+  }, [advOpen]);
   useEffect(() => {
     if (!intent) return;
-    // GitHub#487: from the shortcut list's "在设置里改快捷键"
+    // GitHub#487: from the shortcut list's "在设置里改快捷键" (GitHub#591: a 高级 card — the block opens first)
     if (intent.what === 'keys') {
-      document.getElementById('set-keys')?.scrollIntoView({ block: 'start' });
+      goTo('set-keys');
       onIntentTaken?.();
       return;
     }
@@ -164,8 +191,6 @@ export function SettingsView({
     onIntentTaken?.();
   }, [intent?.seq]);
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
-  // GitHub#577: Windows cannot run the daemon — no local daemon section, no "接上 daemon", nothing read
-  const win = state.desktopSystem === 'windows';
   // the local daemon's status: the daemon section and the repositories' "接上 daemon" share it (GitHub#315)
   const daemon = useDaemonStatus(!win);
   // GitHub#369: Esc goes back to the board, like the "返回看板" button. In a text field the first Esc
@@ -194,34 +219,55 @@ export function SettingsView({
           {t('返回看板')}
           <kbd data-testid="back-key">{keyText('settingsBack')}</kbd>
         </button>
-        <h2>{t('设置')}</h2>
-        <span className="muted small">{t('只保存在这台电脑上')}</span>
+        <h2>
+          {t('设置')}
+          <InfoTip testid="settings-help">{t('只保存在这台电脑上')}</InfoTip>
+        </h2>
       </div>
 
       <div className="settings-body">
-      {/* contents: a click scrolls to that card (one page, nothing hidden) */}
+      {/* contents: a click scrolls to that card (one page; a 高级 card opens the 「高级设置」 block first, GitHub#591) */}
       <nav className="settings-nav" aria-label={t('设置目录')} data-testid="settings-nav">
-        {sections().filter((x) => x.id !== 'set-update' || state.update).map((x) => (
-          <a
-            key={x.id}
-            href={`#${x.id}`}
-            onClick={(e) => {
-              e.preventDefault();
-              document.getElementById(x.id)?.scrollIntoView({ block: 'start' });
-            }}
-          >
-            <Icon name={x.icon} />
-            {x.title}
-          </a>
-        ))}
+        {(() => {
+          const shown = sections().filter((x) => x.id !== 'set-update' || state.update);
+          const link = (x: (typeof shown)[number]) => (
+            <a
+              key={x.id}
+              href={`#${x.id}`}
+              data-tier={advanced.includes(x.id) ? 'advanced' : 'main'}
+              onClick={(e) => {
+                e.preventDefault();
+                goTo(x.id);
+              }}
+            >
+              <Icon name={x.icon} />
+              {x.title}
+            </a>
+          );
+          // GitHub#591: 常用 first, then 高级 — the order of the page
+          return (
+            <>
+              <div className="nav-head" data-testid="settings-nav-main">
+                {t('常用')}
+              </div>
+              {shown.filter((x) => !advanced.includes(x.id)).map(link)}
+              <div className="nav-head" data-testid="settings-nav-advanced">
+                {t('高级')}
+              </div>
+              {shown.filter((x) => advanced.includes(x.id)).map(link)}
+            </>
+          );
+        })()}
       </nav>
       <div className="settings-main">
       <LanguageSection state={state} />
       <ThemeSection state={state} />
 
       <section id="set-sources">
-        <h3>{t('数据来源')}</h3>
-        <p className="muted small">{t('贴 GitHub Project 网址，或写「组织/仓库名」。')}</p>
+        <h3>
+          {t('数据来源')}
+          <InfoTip testid="sources-help">{t('贴 GitHub Project 网址，或写「组织/仓库名」。')}</InfoTip>
+        </h3>
         <div className="row">
           <input
             ref={inputBox}
@@ -304,71 +350,11 @@ export function SettingsView({
         </SettingsMore>
       </section>
 
-      <section id="set-hand-back" data-testid="hand-back-settings">
-        <h3>{t('流程标签')}</h3>
-        <p className="muted small">{t('要和 daemon 配置里的标签名一致。')}</p>
-        <div className="row label-grid">
-          <label>
-            {t('运行中')}
-            <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
-            <span className="field-hint">{t('顶栏「运行中」、标签页的运行图标；留空 = 不用')}</span>
-          </label>
-          <label>
-            {t('等人处理')}
-            <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
-            <span className="field-hint">{t('提醒、顶栏「等人处理」；「交给 agent」时去掉')}</span>
-          </label>
-          <label>
-            {t('暂缓')}
-            <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
-            <span className="field-hint">{t('顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做')}</span>
-          </label>
-          <label>
-            {t('交给 agent')}
-            <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: keepDefault(e.target, DEFAULT_HAND_BACK.agent) })} />
-            <span className="field-hint">{t('「交给 agent」时加上')}</span>
-          </label>
-          <label>
-            {t('托管')}
-            <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
-            <span className="field-hint">{t('「托管」时加上；留空 = 不显示「托管」按钮')}</span>
-          </label>
-          <label>
-            {t('等前置')}
-            <input data-testid="hand-back-blocked" defaultValue={state.handBack.blocked} onBlur={(e) => api().setHandBack({ blocked: e.target.value })} />
-            <span className="field-hint">{t('「等前置…」时加上，关系图读它的登记；留空 = 不用')}</span>
-          </label>
-          <label>
-            {t('其他流程标签')}
-            <input data-testid="blocked-flow" defaultValue={state.blockedLabels.flow} onBlur={(e) => api().setBlockedLabels({ flow: keepDefault(e.target, DEFAULT_BLOCKED_LABELS.flow) })} />
-            <span className="field-hint">{t('挂着时「等前置…」置灰；逗号分隔，* 结尾 = 前缀')}</span>
-          </label>
-        </div>
-        <RepoLabelTable state={state} />
-        <label className="row small" title={t('在确认框里勾过「不再提示」会关掉这一项，在这里勾回来')}>
-          <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
-          {t('「托管」前先弹确认框')}
-        </label>
-        <SettingsMore title={t('这些标签各用在哪')} testid="hand-back-more">
-          {t('顶栏右侧的数在下面「顶栏计数」里设置；跟随流程标签的数按这里的标签名数：跟随「等人处理」的开着的和已关闭的都数，其余的只数开着的。「运行中」「暂缓」留空，跟随它的数就不显示（标签页上的「正在运行」图标也认「运行中」这一格，留空就不显示这个状态）；「等人处理」「交给 agent」留空会恢复成默认值。')}
-          <br />
-          {t('详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。')}
-          <br />
-          {tNode('{graph}：开着的 issue 挂着「等前置的标签」时，读它评论里 loop 的前置登记，和 GitHub 的「Blocked by」一起画成依赖线（默认 pending/blocked，要和 daemon 配置一致）。只认仓库所有者 / 成员 / 协作者写的登记。', { graph: <b>{t('关系图')}</b> })}
-          <br />
-          <span data-testid="blocked-settings-note">
-            {t('「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。')}
-          </span>
-          <br />
-          {t('「托管」前的确认框：在确认框里勾过「不再提示」会关掉上面那一项，在这里勾回来。')}
-        </SettingsMore>
-      </section>
-
-      <TallySettings state={state} data={data} />
 
       <section id="set-pending" data-testid="pending-settings">
-        <h3>{t('提醒')}</h3>
-        <p className="muted small" data-testid="pending-rule">
+        <h3>
+          {t('提醒')}
+          <InfoTip testid="pending-help" textTestid="pending-rule">
           {state.notifyScope === 'mine'
             ? tNode('条目新挂上 {label}、并且和我有关时发一次系统通知（已关闭、已合并的也算）。', {
               label: (
@@ -384,10 +370,16 @@ export function SettingsView({
                 </b>
               ),
             })}
-        </p>
+          </InfoTip>
+        </h3>
         {/* GitHub#373: several people on one repository — each is reminded of their own items only */}
         <div className="notify-scope" role="radiogroup" aria-label={t('提醒哪些条目')} data-testid="notify-scope">
-          <div className="small notify-scope-title">{t('提醒哪些条目')}</div>
+          <div className="small notify-scope-title">
+            {t('提醒哪些条目')}
+            <InfoTip testid="notify-scope-help" textTestid="notify-scope-note">
+              {state.notifyScope === 'mine' ? t('指派给我、请我 review 的提醒；谁都没指派的，我订阅着才提醒。') : t('几个人一起用一个仓库时，选下面一项就只收自己的。')}
+            </InfoTip>
+          </div>
           <label className="radio small">
             <input type="radio" name="notify-scope" data-testid="notify-scope-all" checked={state.notifyScope === 'all'} onChange={() => api().setNotifyScope('all')} />
             {t('全部待处理')}
@@ -396,9 +388,6 @@ export function SettingsView({
             <input type="radio" name="notify-scope" data-testid="notify-scope-mine" checked={state.notifyScope === 'mine'} onChange={() => api().setNotifyScope('mine')} />
             <span>{tNode('只提醒和我（{viewer}）有关的', { viewer: <b>{state.viewer ? <Verbatim from="github">{state.viewer}</Verbatim> : '…'}</b> })}</span>
           </label>
-          <p className="muted small notify-scope-note" data-testid="notify-scope-note">
-            {state.notifyScope === 'mine' ? t('指派给我、请我 review 的提醒；谁都没指派的，我订阅着才提醒。') : t('几个人一起用一个仓库时，选下面一项就只收自己的。')}
-          </p>
         </div>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">
@@ -410,18 +399,6 @@ export function SettingsView({
             </span>
           </div>
         )}
-        <label className="row small">
-          <input
-            type="checkbox"
-            data-testid="clear-all-on-activate"
-            checked={state.clearAllOnActivate}
-            onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
-          />
-          {t('切到 App 时收起全部系统通知')}
-        </label>
-        <p className="muted small" data-testid="pending-how-to-clear">
-          {win ? t('任务栏图标上的数字 = 窗口不在前台时新来的待处理数，切到 App 清零。') : t('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。')}
-        </p>
         {state.launchAtLogin !== null && (
           <label className="row small">
             <input
@@ -431,16 +408,29 @@ export function SettingsView({
               onChange={(e) => api().setLaunchAtLogin(e.target.checked)}
             />
             {t('开机自动启动（在后台运行，不弹窗口）')}
+            {/* same platforms as launch at login (macOS, Windows — GitHub#577) */}
+            <InfoTip testid="close-keeps-running-help" textTestid="close-keeps-running">
+              {win
+                ? t('关掉窗口后 App 仍在后台同步和提醒（图标留在任务栏右下角的通知区域）；要完全退出，在那个图标上右键选「退出」。')
+                : t('关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。')}
+            </InfoTip>
           </label>
         )}
-        {state.launchAtLogin !== null && (
-          // same platforms as launch at login (macOS, Windows — GitHub#577)
-          <p className="muted small" data-testid="close-keeps-running">
-            {win
-              ? t('关掉窗口后 App 仍在后台同步和提醒（图标留在任务栏右下角的通知区域）；要完全退出，在那个图标上右键选「退出」。')
-              : t('关掉窗口后 App 仍在后台同步和提醒（Dock 图标保留）；要完全退出，用菜单「退出」或 ⌘Q。')}
-          </p>
-        )}
+        {/* GitHub#591: the less used option of this card */}
+        <CardMore testid="pending-card-more" what={t('切到 App 时收起全部系统通知')}>
+          <label className="row small">
+            <input
+              type="checkbox"
+              data-testid="clear-all-on-activate"
+              checked={state.clearAllOnActivate}
+              onChange={(e) => api().setClearAllOnActivate(e.target.checked)}
+            />
+            {t('切到 App 时收起全部系统通知')}
+            <InfoTip testid="pending-how-to-clear-help" textTestid="pending-how-to-clear">
+              {win ? t('任务栏图标上的数字 = 窗口不在前台时新来的待处理数，切到 App 清零。') : t('Dock 角标 = 窗口不在前台时新来的待处理数，切到 App 清零。')}
+            </InfoTip>
+          </label>
+        </CardMore>
         <SettingsMore title={t('提醒规则')} testid="pending-more">
           <span data-testid="pending-rule-full">
             {state.notifyScope === 'mine'
@@ -469,13 +459,11 @@ export function SettingsView({
         </SettingsMore>
       </section>
 
-      <ShortcutSettings state={state} />
-
       <UpdateSection update={state.update} />
 
       {win ? <WindowsDaemonNote /> : <DaemonSection daemon={daemon} />}
 
-      <RemoteSection />
+      {win && <RemoteSection />}
 
       <section id="set-account">
         <h3>{t('账号')}</h3>
@@ -496,12 +484,117 @@ export function SettingsView({
             {win ? t('会删除 Windows 凭据管理器里的凭据') : t('会删除钥匙串里的凭据')}
           </span>
         </div>
-        {/* GitHub#514: the sign-in method, inside the account card (it was a card of its own) */}
+        {/* GitHub#514: the sign-in method, inside the account card (it was a card of its own); GitHub#591: under 「高级」,
+            open by itself while the saved Client ID is missing or does not fit the method */}
         <div id="set-login" className="account-login">
-          <AppKindPicker state={state} onHelp={onHelp} />
-          <p className="muted small">{t('登录方式改了，下次登录生效；现在登录着的账号不受影响。')}</p>
+          <CardMore
+            testid="account-card-more"
+            what={t('登录方式、Client ID')}
+            held={!state.clientId || clientIdKindProblem(state.appKind, state.clientId) ? t('（Client ID 要处理，保持展开）') : undefined}
+          >
+            <AppKindPicker state={state} onHelp={onHelp} hintAsTip kindTip={t('登录方式改了，下次登录生效；现在登录着的账号不受影响。')} />
+          </CardMore>
         </div>
       </section>
+
+      {/* GitHub#591: the 高级 cards, folded each time Settings opens */}
+      <div className="settings-adv" data-testid="settings-advanced" data-open={String(advOpen)}>
+        <button type="button" className="fold-toggle" aria-expanded={advOpen} data-testid="settings-advanced-toggle" onClick={() => setAdvOpen(!advOpen)}>
+          <Icon name="chevron" size={14} />
+          <b>{t('高级设置')}</b>
+          <span>{sections().filter((x) => advanced.includes(x.id)).map((x, i) => (
+            <span key={x.id}>
+              {i > 0 && ' · '}
+              {x.title}
+            </span>
+          ))}</span>
+        </button>
+        {advOpen && (
+          <>
+            <section id="set-hand-back" data-testid="hand-back-settings">
+              <h3>
+                {t('流程标签')}
+                <InfoTip testid="hand-back-help">{t('要和 daemon 配置里的标签名一致。')}</InfoTip>
+              </h3>
+              <div className="row label-grid">
+                <label>
+                  <span className="label-head">
+                    {t('运行中')}
+                    <InfoTip testid="hand-back-running-help" textTestid="hand-back-running-hint">{t('顶栏「运行中」、标签页的运行图标；留空 = 不用')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-running" defaultValue={state.handBack.running} onBlur={(e) => api().setHandBack({ running: e.target.value })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('等人处理')}
+                    <InfoTip testid="hand-back-human-help" textTestid="hand-back-human-hint">{t('提醒、顶栏「等人处理」；「交给 agent」时去掉')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-human" defaultValue={state.handBack.human} onBlur={(e) => api().setHandBack({ human: keepDefault(e.target, DEFAULT_HAND_BACK.human) })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('暂缓')}
+                    <InfoTip testid="hand-back-later-help" textTestid="hand-back-later-hint">{t('顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('交给 agent')}
+                    <InfoTip testid="hand-back-agent-help" textTestid="hand-back-agent-hint">{t('「交给 agent」时加上')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-agent" defaultValue={state.handBack.agent} onBlur={(e) => api().setHandBack({ agent: keepDefault(e.target, DEFAULT_HAND_BACK.agent) })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('托管')}
+                    <InfoTip testid="hand-back-autopilot-help" textTestid="hand-back-autopilot-hint">{t('「托管」时加上；留空 = 不显示「托管」按钮')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-autopilot" defaultValue={state.handBack.autopilot} onBlur={(e) => api().setHandBack({ autopilot: e.target.value })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('等前置')}
+                    <InfoTip testid="hand-back-blocked-help" textTestid="hand-back-blocked-hint">{t('「等前置…」时加上，关系图读它的登记；留空 = 不用')}</InfoTip>
+                  </span>
+                  <input data-testid="hand-back-blocked" defaultValue={state.handBack.blocked} onBlur={(e) => api().setHandBack({ blocked: e.target.value })} />
+                </label>
+                <label>
+                  <span className="label-head">
+                    {t('其他流程标签')}
+                    <InfoTip testid="blocked-flow-help" textTestid="blocked-flow-hint">{t('挂着时「等前置…」置灰；逗号分隔，* 结尾 = 前缀')}</InfoTip>
+                  </span>
+                  <input data-testid="blocked-flow" defaultValue={state.blockedLabels.flow} onBlur={(e) => api().setBlockedLabels({ flow: keepDefault(e.target, DEFAULT_BLOCKED_LABELS.flow) })} />
+                </label>
+              </div>
+              <RepoLabelTable state={state} />
+              <label className="row small" title={t('在确认框里勾过「不再提示」会关掉这一项，在这里勾回来')}>
+                <input type="checkbox" data-testid="autopilot-confirm" checked={state.autopilotConfirm} onChange={(e) => api().setAutopilotConfirm(e.target.checked)} />
+                {t('「托管」前先弹确认框')}
+              </label>
+              <SettingsMore title={t('这些标签各用在哪')} testid="hand-back-more">
+                {t('顶栏右侧的数在下面「顶栏计数」里设置；跟随流程标签的数按这里的标签名数：跟随「等人处理」的开着的和已关闭的都数，其余的只数开着的。「运行中」「暂缓」留空，跟随它的数就不显示（标签页上的「正在运行」图标也认「运行中」这一格，留空就不显示这个状态）；「等人处理」「交给 agent」留空会恢复成默认值。')}
+                <br />
+                {t('详情页发送按钮旁的「交给 agent」：加上「交给 agent 的标签」、去掉「等人处理的标签」；「托管（自动合并）」先加上托管标签再交给 agent。要和 daemon 配置里的标签名一致（默认 doing/agent、pending/human、pending/agent，托管标签 autopilot）。托管标签留空就不显示「托管」按钮。')}
+                <br />
+                {tNode('{graph}：开着的 issue 挂着「等前置的标签」时，读它评论里 loop 的前置登记，和 GitHub 的「Blocked by」一起画成依赖线（默认 pending/blocked，要和 daemon 配置一致）。只认仓库所有者 / 成员 / 协作者写的登记。', { graph: <b>{t('关系图')}</b> })}
+                <br />
+                <span data-testid="blocked-settings-note">
+                  {t('「等前置…」：选这一条要等的 issue / PR，按 daemon 认的方式登记，再挂上等前置的标签；前置全部完成后 daemon 自动翻回「交给 agent 的标签」。条目挂着「其他流程标签」里任何一个（上面的「等人处理的标签」和等前置标签本身除外）时按钮置灰：daemon 看到这些标签就不处理等前置，登记了也不会生效。要和 daemon 配置一致。')}
+                </span>
+                <br />
+                {t('「托管」前的确认框：在确认框里勾过「不再提示」会关掉上面那一项，在这里勾回来。')}
+              </SettingsMore>
+            </section>
+
+            <TallySettings state={state} data={data} />
+
+            <ShortcutSettings state={state} />
+
+            {!win && <RemoteSection />}
+          </>
+        )}
+      </div>
       </div>
       </div>
     </div>
@@ -539,8 +632,10 @@ function RepoLabelTable({ state }: { state: AppState }) {
   if (!rows.length) return null;
   return (
     <div className="repo-labels" data-testid="repo-labels">
-      <h4>{t('按仓库单独的标签名')}</h4>
-      <p className="muted small">{t('在项目配置里给流程标签改名时，只改了那个仓库的名字；其余仓库照上面的共用名字。')}</p>
+      <h4>
+        {t('按仓库单独的标签名')}
+        <InfoTip testid="repo-labels-help">{t('在项目配置里给流程标签改名时，只改了那个仓库的名字；其余仓库照上面的共用名字。')}</InfoTip>
+      </h4>
       <table className="pcfg-changes">
         <thead>
           <tr>

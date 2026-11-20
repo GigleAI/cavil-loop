@@ -14,6 +14,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { appCsp } from './bridge';
 import { escapeHtml, timelineDocument, TIMELINE_CSP, TIMELINE_SANDBOX } from '../../src/renderer/detailHtml';
+import { FRAME_SCRIPT_HASH, PREVIEW_SCRIPT_HASH } from '../../src/renderer/frameScript';
 import { taskEntry } from '../../src/data/detail';
 import type { ItemDetail } from '../../src/shared/actions';
 
@@ -102,7 +103,8 @@ test('GitHub#193: the frame\'s own policy alone (window loosened in this test pa
 });
 
 test('GitHub#193: the window\'s policy alone (tauri.conf.json; frame policy loosened in this test page): the frame script runs, nothing injected does', async () => {
-  expect(APP_WINDOW).toMatch(/script-src 'self' 'sha256-[^']+'(;|$)/);
+  // the frame script and (GitHub#590) the reply preview's link script, nothing else
+  expect(APP_WINDOW).toMatch(new RegExp(`script-src 'self' ${FRAME_SCRIPT_HASH.replace(/[+/=]/g, '\\$&')} ${PREVIEW_SCRIPT_HASH.replace(/[+/=]/g, '\\$&')}(;|$)`));
   const r = await run(APP_WINDOW, looseFrame);
   expect(r.ran).toEqual(expect.arrayContaining(['ready', 'task']));
   expect(r.ran.filter((m) => PWNED.includes(m))).toEqual([]);

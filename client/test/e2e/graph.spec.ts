@@ -14,12 +14,14 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 import { Cache } from '../support/cache';
 import type { Item } from '../../src/shared/types';
 
 /** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
 async function showSource(page: Page, selector: string, on: boolean) {
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   const sw = page.locator(`[data-testid="source-shown"]${selector}`);
   if (on) await sw.check();
   else await sw.uncheck();
@@ -71,6 +73,7 @@ async function signInToGraph(page: Page, sources: string[] = [PROJECT_URL, REPO]
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of sources) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();
@@ -641,6 +644,7 @@ test('GitHub#429: the loop registrations in comments are drawn as arrows; the se
 
   // the setting: empty = only GitHub's own relations (none here) — the arrows go, no registration is read again
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-blocked')).toHaveValue('pending/blocked');
   await shot(page, 'graph-12-setting');
   await page.getByTestId('hand-back-blocked').fill('');
@@ -651,6 +655,7 @@ test('GitHub#429: the loop registrations in comments are drawn as arrows; the se
   await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(0);
   // and back: the next read under the label brings them back
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-blocked').fill('pending/blocked');
   await page.getByTestId('hand-back-blocked').blur();
   await page.getByTestId('back').click();

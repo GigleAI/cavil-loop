@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTable, GROUP_NONE_KEY, iterationRange, type Group, type Table } from '../../src/data/table';
+import { buildTable, foldRuns, foldTally, GROUP_NONE_KEY, iterationRange, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
 import { buildBoard, iterationColumnKey } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
@@ -323,6 +323,215 @@ describe('"all repositories": repository first, then the chosen grouping inside 
 
   it('nothing left after filtering: no sections', () => {
     expect(buildTable([], [A, B], ALL(), TODAY)).toMatchObject({ repos: [], groups: [], itemCount: 0 });
+  });
+});
+
+describe('GitHub#587: a repository source with nothing to show keeps its place in the table', () => {
+  // sources as typed in Settings: x/app and X/LIB have items (X/LIB differs from GitHub's "x/lib" only in case),
+  // x/new was read and has none, x/wait was never read
+  const SRC: RepoSource[] = [
+    { repo: 'x/app', read: true },
+    { repo: 'X/LIB', read: true },
+    { repo: 'x/new', read: true },
+    { repo: 'x/wait', read: false },
+  ];
+  const ALL = (patch: Partial<TableSettings> = {}) => T({ sliceByRepo: true, slice: null, ...patch });
+  const build = (settings: TableSettings, items = board(), sources: readonly RepoSource[] = SRC, order: string[] = []) =>
+    buildTable(items, [A, B], settings, TODAY, false, order, items, sources);
+
+  it('the slice list: every source once, whatever the case of its name; 0 for a read one, unknown for one never read', () => {
+    expect(build(ALL()).slices).toEqual([
+      { value: 'x/app', count: 5 },
+      { value: 'x/lib', count: 2 },
+      { value: 'x/new', count: 0 },
+      { value: 'x/wait', count: 0, unread: true },
+    ]);
+    // two spellings of one repository on items are one entry too (GitHub's spelling, the first seen)
+    expect(buildTable([item('x/Lib', 1), item('x/lib', 2)], [], ALL(), TODAY).slices).toEqual([{ value: 'x/Lib', count: 2 }]);
+  });
+
+  for (const groupBy of ['iteration', 'status', 'milestone', 'none'] as const) {
+    it(`"all repositories", grouped by ${groupBy}: an empty section per such source, in the repository order`, () => {
+      const t = build(ALL({ groupBy }));
+      expect(t.repos!.map((r) => [r.key, r.title, r.itemCount, r.groups.length > 0, r.unread ?? false])).toEqual([
+        ['repo:x/app', 'x/app', 5, true, false],
+        ['repo:x/lib', 'x/lib', 2, true, false],
+        ['repo:x/new', 'x/new', 0, false, false],
+        ['repo:x/wait', 'x/wait', 0, false, true],
+      ]);
+      // the sections with items are exactly what they were without the sources
+      expect(t.repos!.slice(0, 2)).toEqual(build(ALL({ groupBy }), board(), []).repos);
+      expect(t.groups).toEqual(t.repos!.flatMap((r) => r.groups));
+      expect(t.itemCount).toBe(7);
+    });
+
+    it(`one empty repository picked, grouped by ${groupBy}: no rows, the table names the repository`, () => {
+      const t = build(ALL({ groupBy, slice: 'X/NEW' }));
+      // (without a grouping the one group "全部" is there, as before, with no rows)
+      expect(t).toMatchObject({ repos: null, itemCount: 0, blankRepo: { repo: 'x/new' } });
+      expect(t.groups.flatMap((g) => g.rows)).toEqual([]);
+      expect(build(ALL({ groupBy, slice: 'x/wait' })).blankRepo).toEqual({ repo: 'x/wait', unread: true });
+      // a picked repository with items, or one that is no source: no such line
+      expect(build(ALL({ groupBy, slice: 'x/lib' })).blankRepo).toBeUndefined();
+      expect(build(ALL({ groupBy, slice: 'x/gone' })).blankRepo).toBeUndefined();
+    });
+  }
+
+  it('grouped by repository (slicing on or off): an empty group per such source, carrying that repository for "+"', () => {
+    for (const sliceByRepo of [false, true]) {
+      const t = build(ALL({ groupBy: 'repo', sliceByRepo }));
+      expect(t.groups.map((g) => [g.key, g.title, g.rows.length, g.preset, g.unread ?? false])).toEqual([
+        ['repo:x/app', 'x/app', 5, { by: 'repo', repo: 'x/app' }, false],
+        ['repo:x/lib', 'x/lib', 2, { by: 'repo', repo: 'x/lib' }, false],
+        ['repo:x/new', 'x/new', 0, { by: 'repo', repo: 'x/new' }, false],
+        ['repo:x/wait', 'x/wait', 0, { by: 'repo', repo: 'x/wait' }, true],
+      ]);
+    }
+  });
+
+  it('the saved repository order places them, as every other repository list', () => {
+    const order = ['x/wait', 'x/lib', 'x/new'];
+    expect(build(ALL(), board(), SRC, order).repos!.map((r) => r.title)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+    expect(build(ALL(), board(), SRC, order).slices!.map((s) => s.value)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+    expect(build(ALL({ groupBy: 'repo' }), board(), SRC, order).groups.map((g) => g.title)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+  });
+
+  it('a search that hides every item of a repository: the repository still has its place', () => {
+    const t = buildTable([], [A, B], ALL(), TODAY, false, [], board(), SRC);
+    expect(t.repos!.map((r) => [r.title, r.groups.length, r.unread ?? false])).toEqual([
+      ['x/app', 0, false],
+      ['X/LIB', 0, false],
+      ['x/new', 0, false],
+      ['x/wait', 0, true],
+    ]);
+    expect(t.itemCount).toBe(0);
+  });
+
+  it('no repository layer (slicing off, grouped by anything but repository): nothing added', () => {
+    for (const groupBy of ['iteration', 'status', 'milestone', 'none'] as const) expect(build(T({ groupBy }))).toEqual(build(T({ groupBy }), board(), []));
+  });
+
+  it('every source has items: the table is the one built without sources, in every layout', () => {
+    const covered: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: false }];
+    for (const groupBy of ['iteration', 'status', 'milestone', 'repo', 'none'] as const)
+      for (const patch of [{ sliceByRepo: false }, { sliceByRepo: true }, { sliceByRepo: true, slice: 'x/lib' }]) {
+        const settings = ALL({ groupBy, ...patch });
+        expect(build(settings, board(), covered), `${groupBy} ${JSON.stringify(patch)}`).toEqual(build(settings, board(), []));
+      }
+  });
+
+  it('PR #594 review round 1: a repository whose only shown item is a PR placed under an issue elsewhere is not "nothing to show"', () => {
+    // x/lib's only item is a PR naming x/app#1: with PRs under their issues it shows in x/app's place
+    const items = [item('x/app', 1, { title: 'issue' }), item('x/lib', 2, { title: 'pr', kind: 'pr', refIssues: ['x/app#1'] })];
+    const src: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: true }, { repo: 'x/new', read: true }];
+    const run = (patch: Partial<TableSettings>) => buildTable(items, [], ALL(patch), TODAY, true, [], items, src);
+    // the PR really does follow its issue (otherwise this case tests nothing)
+    const sections = run({ groupBy: 'milestone' });
+    expect(sections.repos!.find((r) => r.title === 'x/app')!.groups.flatMap((g) => g.rows.map((r) => r.item.key))).toEqual(['x/app#1', 'x/lib#2']);
+    // no empty section or group for x/lib — only x/new, which has no item at all
+    expect(sections.repos!.map((r) => [r.title, r.groups.length > 0])).toEqual([
+      ['x/app', true],
+      ['x/new', false],
+    ]);
+    const byRepo = run({ groupBy: 'repo' });
+    expect(byRepo.groups.map((g) => [g.title, g.rows.map((r) => r.item.key)])).toEqual([
+      ['x/app', ['x/app#1', 'x/lib#2']],
+      ['x/new', []],
+    ]);
+    for (const sliceByRepo of [true, false]) expect(run({ groupBy: 'repo', sliceByRepo }).groups.map((g) => g.title)).toEqual(['x/app', 'x/new']);
+    // the slice list counts the PR in its own repository, as before
+    expect(sections.slices).toEqual([
+      { value: 'x/app', count: 1 },
+      { value: 'x/lib', count: 1 },
+      { value: 'x/new', count: 0 },
+    ]);
+  });
+
+  it('PR #594 review round 2: a repository whose only row is a sub-issue pulled in under a matched parent is not "nothing to show"', () => {
+    // the search matches x/app#1 only; its sub-issue x/lib#5 did not match and comes in under it (show hierarchy)
+    const parent = item('x/app', 1, { title: 'parent' });
+    const child = item('x/lib', 5, { title: 'child', parent: 'x/app#1' });
+    const src: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: true }, { repo: 'x/new', read: true }];
+    const run = (patch: Partial<TableSettings>) => buildTable([parent], [], ALL({ hierarchy: true, ...patch }), TODAY, false, [], [parent, child], src);
+    const sections = run({ groupBy: 'milestone' });
+    // the child really is drawn, as a pulled row under its parent (otherwise this case tests nothing)
+    const appRows = sections.repos!.find((r) => r.title === 'x/app')!.groups.flatMap((g) => g.rows);
+    expect(appRows.map((r) => [r.item.key, r.depth, r.pulled])).toEqual([
+      ['x/app#1', 0, false],
+      ['x/lib#5', 1, true],
+    ]);
+    expect(sections.repos!.map((r) => [r.title, r.groups.length > 0])).toEqual([
+      ['x/app', true],
+      ['x/new', false],
+    ]);
+    for (const sliceByRepo of [true, false]) {
+      const byRepo = run({ groupBy: 'repo', sliceByRepo });
+      expect(byRepo.groups.map((g) => [g.title, g.rows.map((r) => r.item.key)])).toEqual([
+        ['x/app', ['x/app#1', 'x/lib#5']],
+        ['x/new', []],
+      ]);
+    }
+    // the search counts keep their meaning: one match, one pulled row; the slice list counts matches only
+    expect(sections).toMatchObject({ itemCount: 1, matchCount: 1, pulledCount: 1 });
+    expect(sections.slices).toEqual([
+      { value: 'x/app', count: 1 },
+      { value: 'x/lib', count: 0 },
+      { value: 'x/new', count: 0 },
+    ]);
+    // picking x/lib: nothing of its own matched, nothing is pulled into it — its line says so
+    expect(run({ groupBy: 'none', slice: 'x/lib' }).blankRepo).toEqual({ repo: 'x/lib' });
+  });
+
+  it('every way an item reaches the table counts: a placed PR and a pulled sub-issue together, in both layouts', () => {
+    const parent = item('x/app', 1, { title: 'parent' });
+    const pr = item('x/lib', 2, { title: 'pr', kind: 'pr', refIssues: ['x/app#1'] });
+    const child = item('x/doc', 3, { title: 'child', parent: 'x/app#1' });
+    const src: RepoSource[] = ['x/app', 'x/lib', 'x/doc', 'x/new'].map((repo) => ({ repo, read: true }));
+    for (const groupBy of ['milestone', 'repo'] as const) {
+      const t = buildTable([parent, pr], [], ALL({ hierarchy: true, groupBy }), TODAY, true, [], [parent, pr, child], src);
+      const drawn = new Set(t.groups.flatMap((g) => g.rows.map((r) => r.item.key)));
+      expect([...drawn].sort(), groupBy).toEqual(['x/app#1', 'x/doc#3', 'x/lib#2']);
+      const empty = groupBy === 'repo' ? t.groups.filter((g) => g.rows.length === 0).map((g) => g.title) : t.repos!.filter((r) => r.groups.length === 0).map((r) => r.title);
+      expect(empty, groupBy).toEqual(['x/new']);
+    }
+  });
+
+  it('PR #594 review round 1: a folded run never adds an unknown count in as 0', () => {
+    const t = build(ALL({ groupBy: 'repo' }), board(), [...SRC, { repo: 'x/wait2', read: false }]);
+    const all = new Set(t.groups.map((g) => g.key));
+    const runs = foldRuns(t.groups, all);
+    expect(runs.map((r) => r.kind)).toEqual(['folded']);
+    const run = runs[0] as Extract<(typeof runs)[number], { kind: 'folded' }>;
+    // read and never-read groups folded together: the known rows, and how many are unknown
+    expect(foldTally(run.groups)).toEqual({ rows: 7, unknown: 2 });
+    // two never-read groups alone: nothing known
+    const unread = t.groups.filter((g) => g.unread);
+    expect(unread).toHaveLength(2);
+    expect(foldTally(unread)).toEqual({ rows: 0, unknown: 2 });
+    // read ones only: the plain sum, as before
+    expect(foldTally(t.groups.filter((g) => !g.unread))).toEqual({ rows: 7, unknown: 0 });
+  });
+
+  it('which sources count: repository sources shown on the board; read = has a snapshot', () => {
+    const sources = [
+      parseSource('x/app')!,
+      parseSource('https://github.com/orgs/x/projects/1')!,
+      parseSource('X/New')!,
+      parseSource('x/off')!,
+    ];
+    const times = [
+      { sourceKey: 'repo:x/app', readAt: 1 },
+      { sourceKey: 'repo:x/new', readAt: null },
+    ];
+    expect(repoSources(sources, null, times)).toEqual([
+      { repo: 'x/app', read: true },
+      { repo: 'X/New', read: false },
+      { repo: 'x/off', read: false },
+    ]);
+    expect(repoSources(sources, ['repo:x/app', 'project:org/x/1', 'repo:x/new'], times)).toEqual([
+      { repo: 'x/app', read: true },
+      { repo: 'X/New', read: false },
+    ]);
   });
 });
 
