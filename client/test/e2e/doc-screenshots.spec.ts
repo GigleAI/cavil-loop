@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
+import { loadCavilProjectPages, loadCavilRepoIssues, loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,6 +22,41 @@ const out = join(root, '..', 'docs', 'client-screens');
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const BOARD = 'org/gigleai/11';
 const REPO = 'GigleAI/cavil-loop';
+
+// GigleAI/cavil-loop#609: the recordings carry the label colors of the day they were recorded (autopilot was
+// still red); the pictures show the colors GigleAI/cavil-loop's labels have now. Read from
+// https://github.com/GigleAI/cavil-loop/labels on 2026-11-21 — when a color changes there, change it here and
+// re-run. Only these pictures are recolored: the recordings themselves stay as they are, every other test reads
+// them unchanged. A label missing from this table keeps its recorded color.
+const REPO_LABEL_COLORS: Record<string, string> = {
+  autopilot: 'c5def5',
+  'doing/agent': 'c2e0c6',
+  Done: '586069',
+  'pending/agent': 'd4c5f9',
+  'pending/blocked': '2dcdd0',
+  'pending/human': 'fbca04',
+  'pending/later': '735b15',
+  'pending/merge': 'c2e0c6',
+  'pending/PR': 'EEEEEE',
+  'pending/review': '1d76db',
+  'priority/p0': 'b60205',
+  'priority/p1': 'f9d0c4',
+  'priority/p2': 'bfd4f2',
+};
+
+/** every label object anywhere in the recorded data ({ name, color, … }) gets the repository's current color */
+function withRepoLabelColors<T>(data: T): T {
+  const walk = (v: any): any => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+      if (typeof out.name === 'string' && typeof out.color === 'string' && Object.hasOwn(REPO_LABEL_COLORS, out.name)) out.color = REPO_LABEL_COLORS[out.name];
+      return out;
+    }
+    return v;
+  };
+  return walk(data);
+}
 
 test.skip(process.env.CAVIL_DOC_SHOTS !== '1', 'writes the user-guide screenshots; run with CAVIL_DOC_SHOTS=1');
 
@@ -77,7 +112,12 @@ async function start(env: AppEnv, search: string, settingsShot?: string) {
 }
 
 test('user-guide screenshots: board, table, detail, settings', async () => {
-  const env = await newEnv(await startFakeGitHub());
+  const env = await newEnv(
+    await startFakeGitHub({
+      projects: new Map([[BOARD, withRepoLabelColors(loadCavilProjectPages())]]),
+      repos: new Map([['gigleai/cavil-loop', withRepoLabelColors(loadCavilRepoIssues())]]),
+    }),
+  );
   const { page, close } = await start(env, 'is:open', 'settings-sources');
   await layout(page, 'board');
   // the recorded iterations have all ended by now: columns by status show the board as people use it
@@ -98,7 +138,10 @@ test('user-guide screenshots: board, table, detail, settings', async () => {
 });
 
 test('user-guide screenshots: dependency graph', async () => {
-  const env = await newEnv(await startFakeGitHub({ projects: new Map([[BOARD, loadRelationPages()]]), repos: new Map([['gigleai/cavil-loop', loadRelationIssues()]]) }));
+  const env = await newEnv(await startFakeGitHub({
+      projects: new Map([[BOARD, withRepoLabelColors(loadRelationPages())]]),
+      repos: new Map([['gigleai/cavil-loop', withRepoLabelColors(loadRelationIssues())]]),
+    }));
   const { page, close } = await start(env, '');
   await layout(page, 'graph');
   await expect(page.getByTestId('graph')).toBeVisible();
