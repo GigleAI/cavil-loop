@@ -2239,6 +2239,149 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 截图要带登录状态时，`scripts/review-screenshot.mjs --auth <文件>` 要求登录状态文件在被 git 忽略的路径里、且不在截图输出目录内，否则报错不截图；它改端口用的副本写在原件旁边（权限 600），结束、出错、被中断都会删掉。
 
+### 哪些项目的评论能出图
+
+公网出图地址按项目配：只有项目自己的 `~/.config/cavil-loop/<key>.conf` 里有一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`，这个项目的 worker 才拿得到地址；上面的公网入口是整台机器一份。没有这一行时，worker 拿到的派工说明是「本项目没有出图地址」，只能用文字描述图。不能改成把截图提交进仓库、再在评论里嵌 `github.com/<仓库>/blob|raw/…` 或 `raw.githubusercontent.com/…` 地址：私有仓库的这种地址 GitHub 不替它代理图片，没登录 GitHub 的人取不到图（实测返回 404），手机 GitHub app 能否显示未实测。worker 和复审的说明里都禁止这样嵌图；给一个注明「需登录 GitHub 才能看」的普通链接、再用文字描述，是允许的。
+
+给项目接入后，它的截图拿到地址的人都能打开（文件名带唯一戳、不列目录，但并不私密）。派工说明只允许放可公开的内容：登录后才看得到的页面、带个人信息（姓名、邮箱、账号、订单等）的页面、内部预览环境，一律不放，拿不准就改用文字描述。图片内容没有自动检查，这条靠 worker 自己判断、复审抽查。接不接入按项目逐个决定。
+
+给一个项目接入：在同一个终端里依次跑下面几段（第一段设好后面几段用的名字）。下一轮轮询起生效（每轮 timer 都重新启动服务，systemd 每次启动都重读这个文件）；已经在跑的 worker 仍用它拿到的旧说明。
+
+<!-- asset-url-ops:vars:begin -->
+```bash
+KEY=myproject      # the project to turn on / 要接入的项目: systemctl --user list-timers 'cavil-loop-poll@*'
+FROM=otherproject  # a project that already shows images / 已经能出图的项目
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+REC="$ENV_FILE.asset-url-added"   # the address this procedure added / 本流程加进去的地址
+LOCK="$ENV_FILE.asset-url.lock"   # add and revert hold it from first read to last write / 补地址和撤销从第一次读到最后一次写都持有它
+URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
+echo "URL=$URL"
+```
+<!-- asset-url-ops:vars:end -->
+
+<!-- asset-url-ops:add:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    if [ -z "$URL" ]; then
+        echo "STOP: no address in $FROM — nothing changed"
+    elif [ ! -w "$ENV_FILE" ]; then
+        echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
+    else
+        # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
+        # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
+        # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
+        # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
+        # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
+        LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
+        BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+        TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+        OLD="$ENV_FILE.replaced-$$"
+        if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
+        elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
+        elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+            && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$BAK"; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$BAK"; then
+            echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        else
+            rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:add:end -->
+
+<!-- asset-url-ops:check:begin -->
+```bash
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+added=$(cat "$REC" 2>/dev/null)
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words${added:+ (a leftover record will be cleared by add or revert)}"
+elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
+else echo "MISMATCH: ${n:-unreadable} line(s): $v (recorded / 记录: ${added:-none})"
+fi
+```
+<!-- asset-url-ops:check:end -->
+
+<!-- asset-url-ops:revert:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    added=$(cat "$REC" 2>/dev/null)
+    # Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
+    # 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
+    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
+        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
+    else
+        n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
+        v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
+        if [ "$n" = 0 ]; then
+            # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+            # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+            rm -f "$TMPF" "$SNAP"
+            if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+            else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+            fi
+        elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+            rm -f "$TMPF" "$SNAP"
+            echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+        elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
+            && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+            && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$SNAP"; then
+            rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$SNAP"; then
+            rm -f "$SNAP" "$REC"
+            echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
+            echo "REVERTED"
+        else
+            echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:revert:end -->
+
+看到什么算成功：补地址那段打印 `ADDED`、备份路径（同目录，权限 600；文件里有该项目的 GitHub 令牌，别打印内容）和记录文件 `<key>.conf.asset-url-added`，记录里是本流程写进去的地址；核对那段打印 `OK: <地址>`。要撤销，先跑第一段，再跑撤销那段：它拿这份记录比对——不拿另一个项目现在的地址比，那个地址之后可能换过——只删本次加的那一行，而且只在这样的行恰好一行、值仍等于记录的地址时才删；其他设置保持现在的样子（之后换过的令牌不会被改回去），记录随这一行一起删掉。没有记录就什么都不删。
+
+每种结果和下一步（任何一步失败，留下的状态都能用这几段继续处理）：
+
+| 那段打印 | 含义 | 下一步 |
+|---|---|---|
+| 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
+| 补地址 `FAILED` | 配置文件没有改动——文件不存在、不可写、读不了，或写入失败（可能留下了记录） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
+| 补地址 `STOP` | 没有可复制的地址、或已有地址行 | 什么都没改；去看文件 |
+| 补地址 / 撤销 `STOP: another add / revert … holds …` | 另一个终端正在对这个项目跑补地址或撤销，60 秒内没跑完 | 什么都没改；等那一段跑完再重跑这一段 |
+| 补地址 / 撤销 `FAILED: could not open … .asset-url.lock` | 配置旁边的锁文件建不了或打不开 | 什么都没改；让目录可写后重跑这一段 |
+| 补地址 / 撤销 `STOP: … was changed while this block ran` | 这段读完文件之后、替换之前，别处保存了这个文件 | 什么都没改，别处那次保存留着；重跑这一段 |
+| 补地址 / 撤销 `CONFLICT` | 别处恰好在替换的那一刻保存了；这一段的改动已生效，别处的改动在它点名的 `….replaced-<n>` 文件里 | 把那个文件里别处的改动手工抄进配置，再删掉它 |
+| 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |
+| 撤销 `PARTIAL` | 地址行已删，记录还在 | 再跑一次撤销，它会清掉记录 |
+| 撤销 `FAILED` | 什么都没删 | 排除原因后重跑撤销 |
+| 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |
+
+配置文件只会被整份替换：补地址和撤销都先在同一目录写出完整的新文件、核对无误，再改名覆盖旧文件，所以写到一半出错（磁盘满、文件大小限制）时旧文件原样不动。新文件沿用旧文件的权限。同一项目的补地址和撤销不会交错：每段从第一次读到最后一次写都持有锁文件 `<key>.conf.asset-url.lock`（留在原处，是空文件），一段在跑时另一段会等它跑完。每一段都从文件的一份快照出发（补地址用的就是备份）：替换前文件必须仍等于这份快照，否则停下、什么都不改；替换后被换下的那份文件也必须仍等于它，否则说明中途有人保存过，这一段报 `CONFLICT` 并留下那份文件。查不出的情况：编辑器恰好在最后一次核对和替换之间、用改名的方式存盘——那次保存会丢。跑这几段时不要同时手改这个文件，也不要对这个项目跑 `setup.sh`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+
 ## 升级到 webhook（即时触发）
 
 轮询有最坏 1 分钟延迟。要即时：
