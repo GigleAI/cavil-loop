@@ -136,6 +136,8 @@ stand nz "printf 'STARTED\n%s\n' '$OK' >&3; exit 3"
 stand other 'printf "STARTED\n%s\n" "{\"step\":\"conflict-check\",\"status\":\"clean\",\"base\":\"main\",\"head\":\"x\"}" >&3'
 stand badstatus 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"clean\",\"labels\":[]}" >&3'
 stand nofield 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"not-done\",\"labels\":[]}" >&3'
+stand numstatus 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":1}" >&3'
+stand notobj 'printf "STARTED\n%s\n" "[\"flip-label\",\"done\"]" >&3'
 reset_gh doing/agent
 out=$(sv req127)
 chk "发请求后以 127 退出：RESULT=none（没跑完，不是没启动）" "$(line "$out" 1)|$(line "$out" 2)" "EXIT=127|RESULT=none"
@@ -147,8 +149,13 @@ out=$(sv noisy)
 chk "脚本输出里混着 EXIT= / RESULT= / 伪造 JSON：只有调用行的两行" "$out" "$(printf 'EXIT=0\n%s\nSENTINEL' "$OK")"
 chk "写好结果后非零退出：EXIT=3（按规则算没跑完）" "$(line "$(sv nz)" 1)" "EXIT=3"
 chk "别的脚本的结果：RESULT=none" "$(line "$(sv other)" 2)" "RESULT=none"
-chk "本脚本没有的 status：RESULT=none" "$(line "$(sv badstatus)" 2)" "RESULT=none"
-chk "缺了 status 承诺的字段：RESULT=none" "$(line "$(sv nofield)" 2)" "RESULT=none"
+# 模板在派工时渲染，可能调到之后发布的脚本：调用方只核对「一个对象、这个脚本的、status 是字符串」，
+# 状态和字段由脚本自己核对（下面「自检」）。新状态、少字段照样交到 agent 手上，由模板文字把不认识的
+# 状态当作结果未知
+chk "模板没写到的新 status：原样交给 agent（不当成没跑完）" "$(status_of "$(sv badstatus)")" "clean"
+chk "少了旧版本写的字段：原样交给 agent" "$(status_of "$(sv nofield)")" "not-done"
+chk "status 不是字符串：RESULT=none" "$(line "$(sv numstatus)" 2)" "RESULT=none"
+chk "结果不是对象：RESULT=none" "$(line "$(sv notobj)" 2)" "RESULT=none"
 
 # 启动标记写不出去（第 3 号输出被关掉）：脚本必须在发任何请求之前退出
 reset_gh doing/agent
@@ -318,11 +325,13 @@ for s in flip-label conflict-check pr-feedback; do
     if [ -n "$st" ] && [ -n "$req" ] && [ "$st" -lt "$req" ]; then ok "$s.sh 在第一个请求之前写启动标记，写不出去就退出"
     else bad "$s.sh 的启动标记不在第一个请求之前" "step_start 第 ${st:-?} 行，第一个请求第 ${req:-?} 行"; fi
 done
-prog=$(grep -v '^#' "$REPO_DIR/scripts/step-result.jq")
+# 调用方的核对永远是这一行：派工时渲染的模板要能读之后发布的脚本，改它就会让在途会话读不懂新结果
+# （PR #607 复审第 2–4 轮）。状态、字段的规则只在 scripts/step-result.jq，由脚本自己用
+FROZEN='length == 1 and (.[0] | type == "object" and .step == $s and (.status | type) == "string")'
 for name in new-issue issue-comment pr-comment review; do
-    grep -qF -- "jq -se --arg s \"\$1\" '$prog'" "$REPO_DIR/prompts/$name.template.md" \
-        && ok "$name 模板里 cavil_step 的核对规则和 scripts/step-result.jq 逐字一致" \
-        || bad "$name 模板里 cavil_step 的核对规则和 scripts/step-result.jq 不一致"
+    grep -qF -- "jq -se --arg s \"\$1\" '$FROZEN'" "$REPO_DIR/prompts/$name.template.md" \
+        && ok "$name 模板里 cavil_step 的核对是那一行固定规则" \
+        || bad "$name 模板里 cavil_step 的核对不是那一行固定规则"
 done
 rest=$(grep -ln 'REST 翻' "$REPO_DIR"/prompts/*.md 2>/dev/null | xargs -r -n1 basename)
 chk "提示词里不再有「REST 翻」这种只写文字的翻标签" "$rest" ""
