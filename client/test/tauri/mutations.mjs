@@ -68,10 +68,19 @@ const MUTATIONS = [
 /**
  * Folders of client/ every entry's work copy holds besides src-tauri/ (GitHub#586): the back end
  * compiles in files from them (src/i18n/en/*.json since the language switch), so a copy without
- * them never compiles and no entry reaches its test. test/unit/tauri-mutation-copy.test.ts checks
- * every compile-time read of the back end's product code lands in src-tauri/ or one of these.
+ * them never compiles and no entry reaches its test.
  */
 export const COPY_ALWAYS = ['src'];
+
+/**
+ * The sources every entry's copy holds, whatever it breaks: src-tauri/ without its build output
+ * (target/, gen/) plus COPY_ALWAYS. test/unit/tauri-mutation-copy.test.ts runs this same function and
+ * requires every file the back end's product code reads at compile time to be there in the copy.
+ */
+export function copySources(work, from = root) {
+  cpSync(join(from, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
+  for (const d of COPY_ALWAYS) cpSync(join(from, d), join(work, d), { recursive: true });
+}
 
 const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
 
@@ -79,11 +88,10 @@ const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'ta
 function one(m) {
   const work = mkdtempSync(join(tmpdir(), 'cavil-tauri-mut-'));
   try {
-    cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
+    copySources(work);
     const rel = m.file ?? MAIN;
     // an entry that breaks the window's own code rebuilds the window from the broken copy
     const windowCode = rel.startsWith('src/');
-    for (const d of COPY_ALWAYS) cpSync(join(root, d), join(work, d), { recursive: true });
     if (windowCode) {
       for (const d of ['scripts', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
       for (const f of ['package.json', 'tsconfig.json']) cpSync(join(root, f), join(work, f));
