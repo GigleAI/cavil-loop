@@ -1228,6 +1228,38 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
+### 每个已合并 PR 的平均 AI 与测试耗时（估算，GitHub#593）
+
+`scripts/pr-time-stats.py` 把一段时间内合并的每个 PR 的 AI 耗时和测试耗时加起来：数据来自上面的 footer、
+本机 `tests/run.sh` 测试流水和 GitHub Actions。只读：只读 GitHub（用 `gh` 当前登录的身份）和测试流水，
+不写任何地方。
+
+```bash
+python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
+    --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop 写评论的账号> \
+    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--json]
+```
+
+- 算哪些 PR：在 `[--since, --until]` 合并（默认从本机测试流水开始记的 2026-11-07 到今天）、创建不早于
+  `--since`、也没有早于它的 footer。
+- 读哪些评论：PR 自己的，加上它对应 issue 的。对应 issue 用 daemon 同一条规则找：分支名
+  `BRANCH_PREFIX<N>` → 正文第一处 `Closes / Fixes / Resolves / Refs #N` → PR 号本身。只认机器人账号发的
+  footer；loop 账号名不以 `-bot` 结尾时用 `--bot-login` 指定。几个已合并 PR 对到同一个 issue 时，issue 上的
+  评论和测试运行按各 PR 的合并时刻切开（标「共用工作树」）。
+- 各栏：AI（footer 的 `ai_secs` 相加）；单跑（footer 的 `adhoc_secs` 相加——footer 只记合计，分不出种类）；
+  `tests/run.sh` 的运行从流水按参数分：冒烟（只跑 `smoke`）、快速（`--quick`）、按种类（`--kind`）、相关改动
+  （按名字跑几个文件或 `--changed-from`）、全部（不带挑选条件）、其他；`Tests` 工作流的 CI 每次尝试按汇总
+  那一步印的挑选方式分（全量 / 只跑改动够得着的 / 未知），`Client` 工作流单列；本地小计、CI 小计（各次尝试
+  取并集）、测试总耗时。「完整测试」（每晚负对照、发版回归、客户端完整测试）在主干上跑、不属于某个 PR：
+  这一栏为 0，报告另列这几个工作流每次运行多久。
+- **这是估算**（维护者在 #593 选定）：footer 的数值直接相加、不跨派工去重，同一 agent 在同一工作树上两轮
+  派工时间重叠时，重叠段算两次（标「派工重叠」）；本地和 CI 也是直接相加。footer 的测试字段带不确定标记
+  （读取失败、认不出的命令、未计时、未关联）时照常计入，标「测试记录不全」（是下限）。没有 footer 的 PR 没有
+  AI 值；某条 footer 缺 `ai_secs` 时这个 PR 的 AI 记「未知」——两种都不当 0 进平均。每栏的平均都写明各自的
+  计入个数，各栏平均不能相加。
+- 读 GitHub 或流水失败、列表没读全，命令以退出码 2 结束，不出报告。`--no-ci-selection` 不读 CI 日志
+  （`Tests` 的尝试全部记「挑选方式未知」）。
+
 ## GitHub 令牌脱敏（GitHub#342）
 
 worker 的环境里有 GitHub 令牌。agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头），随后落进长期保留的文件。daemon 分三处处理，匹配规则只有一份（`scripts/redact_tokens.py`）：

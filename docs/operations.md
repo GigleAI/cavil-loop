@@ -1530,6 +1530,44 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
+### Average AI and test time per merged PR (estimate, GitHub#593)
+
+`scripts/pr-time-stats.py` adds up, for every PR merged in a window, the AI time and the test time
+recorded by the footers above, the local `tests/run.sh` run log and GitHub Actions. Read-only: it
+only reads GitHub (with whatever `gh` is logged in as) and the run log, and writes nothing.
+
+```bash
+python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
+    --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop write account> \
+    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--json]
+```
+
+- Which PRs: merged within `[--since, --until]` (default: from 2026-11-07, the day the local run log
+  starts, to today), created on or after `--since`, and with no footer from before it.
+- Which comments: the PR's own and those of the issue it works on, found with the daemon's rule
+  (branch `BRANCH_PREFIX<N>` → first `Closes / Fixes / Resolves / Refs #N` in the body → the PR
+  number). Only footers posted by a bot account count; pass the loop account with `--bot-login` when
+  its name does not end in `-bot`. When several merged PRs share one issue, that issue's comments
+  and runs are split at each PR's merge time (marked "shared worktree").
+- Columns: AI (footer `ai_secs` summed); single test files (footer `adhoc_secs` summed — the footer
+  only keeps a total, so these cannot be split by kind); `tests/run.sh` runs from the run log, by
+  their arguments: smoke (`smoke` alone), quick (`--quick`), by kind (`--kind`), related (named
+  files or `--changed-from`), all (no selection), other; CI attempts of the `Tests` workflow split
+  by the selection its summary job printed (full run / only what the change can reach / unknown),
+  and of the `Client` workflow; local subtotal, CI subtotal (union of attempts) and total. "Full
+  tests" (nightly negative controls, release gate, client full tests) run on `main`, never per PR:
+  that column is 0 and the report lists those workflows' run times separately.
+- **It is an estimate** (the maintainer's choice in #593): footer values are added up without
+  de-duplication, so when two dispatches of the same agent on one worktree overlap in time, the
+  overlap is counted twice (marked "dispatches overlap"); local and CI time are added the same way.
+  A footer whose test fields carry an uncertainty marker (unreadable, unrecognised commands, untimed,
+  unlinked) is counted as is and marked "test record incomplete" (a lower bound). A PR with no footer
+  has no AI value; a footer without `ai_secs` makes that PR's AI unknown — neither is averaged as 0.
+  Every column's average states its own count, so averages of different columns do not add up.
+- Any GitHub or run-log read that fails, or a list that is not read whole, stops the command with
+  exit code 2 and no report. `--no-ci-selection` skips reading the CI logs (all `Tests` attempts
+  then count as "selection unknown").
+
 ## GitHub token redaction (GitHub#342)
 
 A worker's environment holds a GitHub token. An agent can print it verbatim while it works (running `env`, debugging `gh`, an error that echoes request headers), and it then lands in files that are kept for a long time. The daemon handles three places with one set of matching rules (`scripts/redact_tokens.py`):
