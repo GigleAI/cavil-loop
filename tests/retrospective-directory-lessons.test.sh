@@ -192,6 +192,9 @@ project_lessons | sed '/^## 目录经验$/,$d' | tr '\n' '\r' > "$F/counted-lone
 # 观察中在最前、在最后、出现两次；前言里以「- Seen」开头的行不在条目里，留着；条目里的未知行留着
 printf '前言\n- Seen 9×: 前言里的\n\n<!-- next-id: 3 -->\n\n## 观察中\n\n### L1\n- 规则：W\n\n## 硬规则\n\n### L2\n- 规则：H\n- 其他行\n- Seen 3×: #1\n\n## 附注\n- Seen 1×: 段首的\n\n## 观察中\n- 第二次\n' > "$F/counted-odd.md"
 printf '<!-- next-id: 1 -->\n' > "$F/counted-empty.md"
+# 复盘程序的「超长待升」行（GitHub#600）：两边都去掉；CRLF 下同样
+printf '前言\n\n<!-- next-id: 3 -->\n<!-- held-over-limit: L1 L2 -->\n\n## 硬规则\n\n### L2\n- 规则：H\n\n## 观察中\n\n### L1\n- 规则：W\n' > "$F/counted-held.md"
+printf '前言\r\n<!-- next-id: 3 -->\r\n<!-- held-over-limit: L1 -->\r\n## 硬规则\r\n' > "$F/counted-held-crlf.md"
 # 非计次格式（没有 next-id）：「- Seen」「这样做是对的」「## 观察中」都是普通文本，原样
 printf '# 手写经验\n\n### L1\n- Seen 3×: 普通文本\n- 这样做是对的：也是普通文本\n\n## 观察中\n- 留着\n' > "$F/freeform.md"
 printf '<!-- next-id: x -->\n## 观察中\n- 留着\n' > "$F/bad-next-id.md"
@@ -220,6 +223,8 @@ chk "没有标题的 CRLF 文件原样输出" "$(cmp -s "$F/crlf-plain.md" "$F/c
 chk "中间一段切掉后下一段保留" "$(cat "$F/middle.md.sh")" "$(printf 'a\n\n## 后面还有一段\nb')"
 chk "非计次格式的手写经验原样输出" "$(cmp -s "$F/freeform.md" "$F/freeform.md.sh" && echo same)" "same"
 chk "next-id 不是数字的不算计次格式" "$(cmp -s "$F/bad-next-id.md" "$F/bad-next-id.md.sh" && echo same)" "same"
+chk "超长待升那一行不进派工说明" "$(cat "$F/counted-held.md.sh" "$F/counted-held-crlf.md.sh" | grep -c 'held-over-limit')" "0"
+chk "去掉那一行后与没有它的文件相同" "$(cat "$F/counted-held.md.sh")" "$(printf '前言\n\n<!-- next-id: 3 -->\n\n## 硬规则\n\n### L2\n- 规则：H\n\n%s' "$LESSONS_PROMPT_NOTE")"
 chk "CRLF 计次文件也裁掉了观察中和出现记录" "$(grep -c 'WATCH\|^- Seen' "$F/counted-crlf.md.sh")" "0"
 chk "单独 \r 换行的计次文件也裁掉了" "$(grep -c 'WATCH\|^- Seen' "$F/counted-lone-cr.md.sh")" "0"
 chk "怪形状：前言行、条目外的段首行、未知行留着，两段观察中都切掉，条目里的出现记录切掉" \

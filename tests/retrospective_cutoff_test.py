@@ -293,6 +293,9 @@ class Cutoff(Sandbox):
 
     def test_B3_开关关掉_不跳过_不写目录经验_与改动前一致(self):
         self.switch = 'false'
+        # Without a length limit on promotions (GitHub#600) the round is the old one byte for byte;
+        # the limit's own cases are in tests/retrospective_rule_limit_test.py.
+        self.extra_cfg = ['RETROSPECTIVE_RULE_MAX_CHARS=0']
         self.publish(lessons(dirs=False))
         self.prs = {'41': OLD}
         self.job(41, OLD)

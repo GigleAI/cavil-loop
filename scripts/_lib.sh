@@ -7884,6 +7884,7 @@ autopilot_requester_bot_section() {
 # ② 计次格式的经验文件（有 `<!-- next-id: N -->` 这一行，GitHub#208）只带要照做的部分：去掉整段
 #    「## 观察中」，每条经验去掉「这样做是对的」举例和「Seen」出现记录；硬规则、待确认的编号 /
 #    规则 / 适用 / 为什么都留着（自审和复审逐条核对要用）。末尾加一句说明完整版在哪。
+#    复盘程序自己维护的「超长待升」那一行（`<!-- held-over-limit: … -->`，GitHub#600）也去掉。
 #    没有这一行的文件（工具自带的通用经验、项目手写的自由文本）不做这一步：普通文本里恰好以
 #    「- Seen」开头的行不能被误删。
 # 切完再去掉切口留下的末尾空行。
@@ -7907,6 +7908,7 @@ lessons_for_prompt() {   # <经验文件>
                   skip = (sec == "目录经验") || (counted && sec == "观察中") }
          skip { next }
          /^### L[0-9]+$/ { entry = 1 }
+         counted && /^<!-- held-over-limit:/ { next }
          counted && entry && /^- (这样做是对的：|Seen [0-9]+×:)/ { next }
          /^$/ { blank++; next }
          { while (blank > 0) { print ""; blank-- } print }

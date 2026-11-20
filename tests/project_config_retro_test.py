@@ -10,11 +10,14 @@ a local bare origin) with a `claude` that records its arguments, and compares th
 way scripts/project-config.sh writes it. The same recorder writes down the two modes
 the model program inherited from the retrospective process — the values that process
 read (scripts/post-merge-retrospective.py takes both from its environment) — and
-whether the model was called at all tells whether the retrospective ran.
+whether the model was called at all tells whether the retrospective ran. The length limit
+on promotions (RETROSPECTIVE_RULE_MAX_CHARS, GitHub#600) is read off the instruction the
+model program got: it states the limit the retrospective really applies.
 
 Run by tests/project-config-poll.test.sh.
 """
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -98,6 +101,30 @@ class RetroModel(_Retro):
     def test_modes_written_values_reach_the_retrospective(self):
         self.run_once('RETROSPECTIVE_PROMOTION="confirm"', 'RETROSPECTIVE_DIRECTORY_LESSONS="false"')
         self.assertEqual(self.modes(), ['confirm false'])
+
+
+class RetroRuleLimit(_Retro):
+    """RETROSPECTIVE_RULE_MAX_CHARS: missing / empty = the registered default, as the
+    instruction handed to the model states it; a written value is the one used."""
+
+    def limit_in_instruction(self, *cfg):
+        self.run_once(*cfg)
+        text = self.model_calls()[0]['instruction']
+        found = re.findall(r'三栏合计[^。]*?不超过 (\d+) 字符', text)
+        return found
+
+    def test_line_missing_is_the_registered_default(self):
+        self.assertEqual(registered_default('RETROSPECTIVE_RULE_MAX_CHARS'), '300')
+        self.assertEqual(self.limit_in_instruction(), [registered_default('RETROSPECTIVE_RULE_MAX_CHARS')])
+
+    def test_empty_value_is_the_default_too(self):
+        self.assertEqual(self.limit_in_instruction('RETROSPECTIVE_RULE_MAX_CHARS=""'), ['300'])
+
+    def test_a_written_value_is_the_one_used(self):
+        self.assertEqual(self.limit_in_instruction('RETROSPECTIVE_RULE_MAX_CHARS="120"'), ['120'])
+
+    def test_zero_means_no_limit(self):
+        self.assertEqual(self.limit_in_instruction('RETROSPECTIVE_RULE_MAX_CHARS="0"'), [])
 
 
 class RetroSwitch(_Retro):

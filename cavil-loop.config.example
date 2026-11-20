@@ -878,6 +878,15 @@ RETROSPECTIVE_MODEL="sonnet"
 # up after 3 attempts). An old-format lessons file is skipped without a model
 # call until the project migrates it. Format: scripts/retrospective_lessons.py
 RETROSPECTIVE_PROMOTION="auto"
+# Length limit on a promotion (GitHub#600): an entry whose 规则 + 适用 + 为什么 add up
+# to more than this many characters (a CJK character counts 1, the "- 规则：" prefixes
+# do not) stays in 观察中 instead of being promoted, its id goes into the line
+# `<!-- held-over-limit: L12 -->` under next-id, and the report names it. Once a
+# human shortens it, or raises the limit, the next retrospective promotes it.
+# Delete an id from that line to keep the entry in 观察中 for good. Entries already in
+# 硬规则 / 待确认 are never measured. 0 = no limit; an empty value = 300. Anything but
+# an integer from 0 to 100000 stops the retrospective before it reads its queue.
+RETROSPECTIVE_RULE_MAX_CHARS=300
 # 目录经验 (directory lessons, GitHub#152 / #168): pitfalls that only bite in one part
 # of the code, kept in a `## 目录经验` section at the end of lessons.md; every sighting
 # names its directories, it never promotes, and dispatch prompts leave it out.

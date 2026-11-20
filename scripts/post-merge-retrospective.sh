@@ -12,6 +12,9 @@ export RETROSPECTIVE_SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export RETROSPECTIVE_LOCK="$CAVIL_RETROSPECTIVE_LOCK"
 export RETROSPECTIVE_MODEL="${RETROSPECTIVE_MODEL:-sonnet}"
 export RETROSPECTIVE_PROMOTION="${RETROSPECTIVE_PROMOTION:-auto}"
+# 经验升档时单条字数上限（GitHub#600）：规则 + 适用 + 为什么合计，按字符数；0 = 不限，不写 / 留空 = 300。
+# 只认 0–100000 的整数，其余值在 python 侧读队列之前就报错停下、不动任何任务。
+export RETROSPECTIVE_RULE_MAX_CHARS="${RETROSPECTIVE_RULE_MAX_CHARS:-300}"
 # 目录经验总开关（GitHub#168），默认打开：打开时只复盘开关生效后合并的 PR，生效前合并、还在排队的
 # 标成已跳过；关掉时照旧复盘所有 PR、不写目录经验。只认 true / false，其余值在扫描前就报错。
 export RETROSPECTIVE_DIRECTORY_LESSONS="${RETROSPECTIVE_DIRECTORY_LESSONS:-true}"

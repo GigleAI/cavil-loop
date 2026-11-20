@@ -85,6 +85,7 @@ PENDING_HUMAN_CONFLICT_MAX_TRIES | quiet | 不写这一行时的行为和模板�
 POST_MERGE_RETROSPECTIVE | quiet | 不写这一行时的行为和模板里的值相同
 RETROSPECTIVE_MODEL | quiet | 不写这一行时的行为和模板里的值相同
 RETROSPECTIVE_PROMOTION | quiet | 不写这一行时的行为和模板里的值相同
+RETROSPECTIVE_RULE_MAX_CHARS | quiet | 不写这一行时的行为和模板里的值相同
 RETROSPECTIVE_DIRECTORY_LESSONS | quiet | 不写这一行时的行为和模板里的值相同
 POST_RETROSPECTIVE_PROJECT_CMD | quiet | 不写这一行时的行为和模板里的值相同
 CLEANUP_HOOK | quiet | 不写这一行时的行为和模板里的值相同

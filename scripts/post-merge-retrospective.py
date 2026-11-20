@@ -127,22 +127,47 @@ def changed_directories(paths, checkout):
 
 
 def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=None,
-           directories=None, reattach=None):
+           directories=None, reattach=None, max_chars=lessons_format.RULE_MAX_CHARS_DEFAULT,
+           summary=None):
     """Judge the model's output; return (report, lessons) or raise ValueError naming what failed.
 
-    `reattach` puts back the 目录经验 section the model was not shown (directories=False)."""
+    `reattach` puts back the 目录经验 section the model was not shown (directories=False).
+    Promotions are placed by the program (`lessons_format.place`, GitHub#600) before the
+    check; what the length limit held back or promoted late is appended to the report
+    and, when `summary` is a dict, copied into it for the log."""
     report, lessons = result['report_markdown'], result['lessons_markdown']
+    if lessons_format._on('held') and lessons_format.has_held_line(lessons):
+        raise ValueError('lessons rejected: [held] the held-over-limit line is written by the program only')
     if reattach is not None:
         lessons = reattach(lessons)
     if len(report.strip()) < 100 or source not in report:
         raise ValueError('report missing content/source')
+    lessons, placed = lessons_format.place(old_lessons, lessons, mode=mode, max_chars=max_chars)
     # The model only writes prose; ids, locked fields, counts and evidence are checked here.
     errors = lessons_format.validate(old_lessons, lessons, pr=number, mode=mode,
                                      evidence_urls=lessons_format.evidence_urls(evidence),
-                                     repo_root=repo_root, directories=directories)
+                                     repo_root=repo_root, directories=directories,
+                                     max_chars=max_chars)
     if errors:
         raise ValueError('lessons rejected: ' + '; '.join(errors[:12]))
+    note = lessons_format.summary_markdown(placed)
+    if note:
+        report = report.rstrip('\n') + '\n\n' + note
+    if summary is not None:
+        summary.update(placed)
     return report, lessons
+
+
+def rule_max_chars():
+    """RETROSPECTIVE_RULE_MAX_CHARS (GitHub#600): 0–100000, 0 = no limit; unset / empty = 300.
+    Checked by main() before anything is read or written, like the directory switch."""
+    value = os.environ.get('RETROSPECTIVE_RULE_MAX_CHARS', '')
+    if value == '':
+        return lessons_format.RULE_MAX_CHARS_DEFAULT
+    if not re.fullmatch(r'[0-9]{1,6}', value) or int(value) > lessons_format.RULE_MAX_CHARS_LIMIT:
+        raise SystemExit(f'RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to '
+                         f'{lessons_format.RULE_MAX_CHARS_LIMIT}, not {value!r}')
+    return int(value)
 
 
 def promotion_mode():
@@ -161,9 +186,18 @@ DIRECTORY_RULES = '''
   - 已有记录（包括它的目录）一字不改；同一条只加一次本 PR。目录经验够 3 次也留在本段，不挪去任何段；前三段的条目不能挪进来，本段的条目也不能挪出去。不要把前三段已有的规则原样抄进本段。本段单独计字数，上限 ${DIR_MAX_CHARS} 字符，前面说的全文上限不含本段。'''
 
 
-def render_instruction(template, mode, directories=False):
+# Only with a length limit (GitHub#600); with 0 the placeholder renders to nothing.
+RULE_LIMIT = (' 升档有字数上限：要挪段的条目「规则」「适用」「为什么」三栏合计（不算「- 规则：」这类前缀，'
+              '一个汉字算 1）不超过 ${RULE_MAX_CHARS} 字符；超了程序会把它留在 `## 观察中`、在报告末尾点名，'
+              '等人压缩或调高上限后再补升。可以把「为什么」改写短让它达标（「规则」「适用」照旧一字不能改）。'
+              '挪段最后由程序按这条规则摆放；报告里说某条转正之前先数一下字数。')
+
+
+def render_instruction(template, mode, directories=False, max_chars=0):
     rules = DIRECTORY_RULES.replace('${DIR_MAX_CHARS}', str(lessons_format.MAX_DIR_CHARS)) if directories else ''
+    limit = RULE_LIMIT.replace('${RULE_MAX_CHARS}', str(max_chars)) if max_chars else ''
     return (template.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
+            .replace('${RULE_LIMIT}', limit)
             .replace('${DIRECTORY_LESSONS}', rules))
 
 
@@ -207,7 +241,12 @@ def baseline(text):
     one raises NotReady so the job waits (uncounted) until the project migrates it."""
     if text is None:
         return lessons_format.empty_lessons(DEFAULT_PREAMBLE)
-    if not lessons_format.is_ready(text):
+    try:
+        lessons_format.parse(text)
+    except lessons_format.LessonsError as error:
+        if 'held-over-limit' in str(error):
+            # A human edit broke the program's line (GitHub#600): same wait, with the line named.
+            raise NotReady(f'lessons file has a broken held-over-limit line: {error}')
         raise NotReady('lessons file is not in the counted-lessons format yet')
     return text
 
@@ -287,6 +326,7 @@ def review(repo, job, queue, root, *, directories):
             templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
                          if p.name != 'retrospective.template.md'}
             mode = promotion_mode()
+            max_chars = rule_max_chars()
             if directories:
                 # The runner opens the section, so a model adding it is still rejected.
                 old_lessons = lessons_format.with_directory_section(old_lessons)
@@ -295,7 +335,9 @@ def review(repo, job, queue, root, *, directories):
                 # Not shown at all, put back unchanged, and checked byte for byte.
                 shown, reattach = lessons_format.detach_directory_section(old_lessons)
             instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(),
-                                             mode, directories)
+                                             mode, directories, max_chars)
+            # The held-over-limit line is the program's own (GitHub#600): never shown.
+            shown = lessons_format.strip_held(shown)
             payload = {'evidence': evidence, 'templates': templates, 'lessons_markdown': shown}
             if directories:
                 payload['directories'] = changed_directories(changed_files(repo, number), checkout)
@@ -311,10 +353,15 @@ def review(repo, job, queue, root, *, directories):
             response = json.loads(output)
             if response.get('is_error'):
                 raise ValueError('retrospective model returned an error')
+            placed = {}
             report, lessons = accept(old_lessons, response['structured_output'], number=number,
                                      source=f'https://github.com/{repo}/pull/{number}',
                                      evidence=evidence, mode=mode, repo_root=checkout,
-                                     directories=directories, reattach=reattach)
+                                     directories=directories, reattach=reattach,
+                                     max_chars=max_chars, summary=placed)
+            if lessons_format.summary_log(placed):
+                print(f'{utcnow()} [{repo}] retrospective PR #{number} '
+                      f'{lessons_format.summary_log(placed)}', flush=True)
             target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
@@ -561,6 +608,7 @@ def classify(repo, queue, since, log):
 
 def main():
     on = directory_switch()
+    rule_max_chars()   # a bad value stops here, before the queue is touched (GitHub#600)
     start = utcnow()
     repo = os.environ['REPO']
     root = Path(os.environ['RETROSPECTIVE_SKILL_ROOT'])
