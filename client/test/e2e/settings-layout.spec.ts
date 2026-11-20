@@ -100,17 +100,44 @@ test('Settings: a card\'s explanation is behind its ⓘ — hover, keyboard focu
   await expect(tip).toBeVisible();
   await page.mouse.move(5, 5);
   await expect(tip).toBeHidden();
-  // keyboard focus shows it; Esc hides it and Settings stays (Esc otherwise goes back to the board)
-  await page.getByTestId('theme-help-button').focus();
+  // keyboard focus shows it (a real Shift+Tab from the first choice below the heading); Esc hides it and Settings stays
+  // (Esc otherwise goes back to the board)
+  await page.getByTestId('theme-system').focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByTestId('theme-help-button')).toBeFocused();
   await expect(tip).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(tip).toBeHidden();
   await expect(page.getByTestId('settings')).toBeVisible();
-  // a click pins it; a second click hides it
-  await page.getByTestId('theme-help-button').click();
+  // Tab away and back: keyboard focus opens it again
+  await page.keyboard.press('Tab');
+  await expect(tip).toBeHidden();
+  await page.keyboard.press('Shift+Tab');
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Tab');
+  // a click keeps it open after the pointer leaves
+  const btn = page.getByTestId('theme-help-button');
+  await btn.click();
+  await expect(tip).toBeVisible();
   await page.mouse.move(5, 5);
   await expect(tip).toBeVisible();
-  await page.getByTestId('theme-help-button').click();
+  // a second click closes it at once, with the pointer still resting on the ⓘ (PR #596 review round 1)
+  await btn.click();
+  await expect(tip).toBeHidden();
+  await page.waitForTimeout(500);
+  await expect(tip).toBeHidden();
+  // also when both clicks happen without the pointer leaving in between (it leaves once, comes back, then clicks twice)
+  await page.mouse.move(5, 5);
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await btn.click();
+  await expect(tip).toBeVisible();
+  await btn.click();
+  await expect(tip).toBeHidden();
+  // the next hover opens it again
+  await page.mouse.move(5, 5);
+  await btn.hover();
+  await expect(tip).toBeVisible();
   await page.mouse.move(5, 5);
   await expect(tip).toBeHidden();
   // the screen reader reads it as the button's description
