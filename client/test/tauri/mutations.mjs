@@ -133,6 +133,9 @@ export function checkCopies({ from = root, shapes = [...new Set(MUTATIONS.map(is
   return problems;
 }
 
+// where every entry's broken app is built and where test/tauri runs it from (one value for both)
+const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
+
 /** One entry: copy, break, rebuild the real app, run test/tauri; 0 = red at the expected step. */
 function one(m) {
   const work = mkdtempSync(join(tmpdir(), 'cavil-tauri-mut-'));
