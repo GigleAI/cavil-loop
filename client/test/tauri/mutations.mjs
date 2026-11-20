@@ -8,7 +8,7 @@
 //   MUTATION=1 bash test/tauri/mutations.sh
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, realpathSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,6 +65,14 @@ const MUTATIONS = [
   },
 ];
 
+/**
+ * Folders of client/ every entry's work copy holds besides src-tauri/ (GitHub#586): the back end
+ * compiles in files from them (src/i18n/en/*.json since the language switch), so a copy without
+ * them never compiles and no entry reaches its test. test/unit/tauri-mutation-copy.test.ts checks
+ * every compile-time read of the back end's product code lands in src-tauri/ or one of these.
+ */
+export const COPY_ALWAYS = ['src'];
+
 const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
 
 /** One entry: copy, break, rebuild the real app, run test/tauri; 0 = red at the expected step. */
@@ -75,8 +83,9 @@ function one(m) {
     const rel = m.file ?? MAIN;
     // an entry that breaks the window's own code rebuilds the window from the broken copy
     const windowCode = rel.startsWith('src/');
+    for (const d of COPY_ALWAYS) cpSync(join(root, d), join(work, d), { recursive: true });
     if (windowCode) {
-      for (const d of ['src', 'scripts', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
+      for (const d of ['scripts', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
       for (const f of ['package.json', 'tsconfig.json']) cpSync(join(root, f), join(work, f));
       symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
     } else {
@@ -121,8 +130,18 @@ function fail(msg) {
 //   node mutations.mjs --count | --name I | --one I
 //   node mutations.mjs --related   exit 0 = this change touches what these entries check, 1 = it does
 //                                  not (both print why), 2 = cannot tell (GitHub#178)
-const [cmd, arg] = process.argv.slice(2);
-if (cmd === '--count') console.log(MUTATIONS.length);
+// (imported by a test for COPY_ALWAYS: only the command line runs anything)
+const isMain = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+const [cmd, arg] = isMain ? process.argv.slice(2) : [];
+if (!isMain) {
+  // imported: nothing to do
+} else if (cmd === '--count') console.log(MUTATIONS.length);
 else if (cmd === '--related') {
   const c = changedFiles(root);
   if (!c.ok) {
