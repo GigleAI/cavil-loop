@@ -7970,19 +7970,25 @@ def cw_first_sentence:
     (. // "") | tostring | gsub("\r\n?"; "\n")
     | gsub("<!--[\\s\\S]*?-->"; "") | sub("<!--[\\s\\S]*$"; "")
     # 第一个可用的行找到后，同一段里接着的普通行（软换行）也并进来，句子跨行时不会只剩半句；
-    # 空行或另一种块（标题、列表、引用、表格、代码块、图片、HTML、关联行）开头就到段尾
+    # 空行或另一种块（标题、列表、引用、表格、代码块、图片、HTML、关联行）开头就到段尾。
+    # 标题自成一块：取标题当摘要时，下一行即使紧挨着也不并进来。
+    # 两行相接时只有两边都是中日文字（汉字、假名、全角标点）才直接相连，别的文字之间补一个空格
     | reduce (split("\n")[]) as $l ({fence: null, out: null, done: false};
         if .done then .
         elif .out != null then
             (if ($l | test("^\\s*$") or test("^\\s{0,3}(#|[-*+]\\s|[0-9]+[.)]\\s|>|\\||!\\[|<|```|~~~)")) then .done = true
              else (($l | cw_line) as $c
                    | if $c == null then .done = true
-                     elif ((.out | test("[\\x{0080}-\\x{10FFFF}]$")) and ($c | test("^[\\x{0080}-\\x{10FFFF}]"))) then .out += $c
+                     elif ((.out | test("[\\p{Han}\\p{Hiragana}\\p{Katakana}\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]$"))
+                           and ($c | test("^[\\p{Han}\\p{Hiragana}\\p{Katakana}\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]"))) then .out += $c
                      else .out += " " + $c end) end)
         elif .fence != null then (.fence as $f | if ($l | test("^\\s{0,3}" + $f)) then .fence = null else . end)
         elif ($l | test("^\\s{0,3}(```|~~~)")) then .fence = ($l | capture("^\\s{0,3}(?<f>```|~~~)").f)
         elif ($l | test("^( {4}|\\t)")) then .
-        else (($l | cw_line) as $c | if $c != null then .out = $c else . end) end)
+        else (($l | cw_line) as $c
+              | if $c == null then .
+                elif ($l | test("^\\s{0,3}#{1,6}(\\s|$)")) then .out = $c | .done = true
+                else .out = $c end) end)
     | (.out // "")
     | (capture("^(?<s>.*?(?:[。！？]|[.!?](?=\\s|$)))") // {s: .}).s
     | sub("[。！？.!?]+$"; "")
@@ -8208,15 +8214,19 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
                             _concurrent_work_log_file "同时进行的其他工作：$head 的提交标题读不出来" "$tmp/err"
                         fi
                     fi
-                    # 上一级目录：git 给的是以 NUL 分隔的原样路径（不加引号、不转义），先按真实的上一级目录去重计数，
-                    # 再清理成显示用的名字——在加了引号的显示文本上取目录，同一个目录会被算成两个（PR #604 复审第 1 轮）。
-                    # 仓库根目录下的文件单列；排序按 jq 的码点顺序
-                    if ! jq -Rrs --argjson max "$CONCURRENT_WORK_MAX_DIRS" "$CONCURRENT_WORK_JQ_DEFS"'
-                            [ split("\u0000")[] | select(. != "")
-                              | if test("/") then sub("/[^/]*$"; "/") else "\u0001" end ] | unique
-                            | "\(length)\u001f" + ([ .[0:$max][]
-                                | if . == "\u0001" then "仓库根目录" else "`" + cw_flat(80) + "`" end ] | join("、"))' \
-                            < "$tmp/files.raw" > "$tmp/dirs" 2> "$tmp/err" \
+                    # 上一级目录：git 给的是以 NUL 分隔的原样路径（不加引号、不转义）。按原样的字节取上一级目录、
+                    # 去重、计数（python3，字节不经过任何解码），之后才转成显示名、过同一份「压成一行」规则——
+                    # 在加了引号的显示文本上取目录，同一个目录会被算成两个（PR #604 复审第 1 轮）；先解码再去重，
+                    # 两个只差一个非 UTF-8 字节的目录会被并成一个（复审第 2 轮）。仓库根目录下的文件单列；按字节排序
+                    if ! python3 -c '
+import json, sys
+raw = sys.stdin.buffer.read()
+dirs = sorted({(p.rsplit(b"/", 1)[0] + b"/") if b"/" in p else b"" for p in raw.split(b"\0") if p})
+show = [None if d == b"" else d.decode("utf-8", "replace") for d in dirs[:int(sys.argv[1])]]
+print(json.dumps({"n": len(dirs), "show": show}))' "$CONCURRENT_WORK_MAX_DIRS" < "$tmp/files.raw" 2> "$tmp/err" \
+                            | jq -r "$CONCURRENT_WORK_JQ_DEFS"'
+                                "\(.n)\u001f" + ([ .show[] | if . == null then "仓库根目录" else "`" + cw_flat(80) + "`" end ] | join("、"))' \
+                            > "$tmp/dirs" 2>> "$tmp/err" \
                        || ! IFS=$'\x1f' read -r n dirs < "$tmp/dirs" || ! [[ "$n" =~ ^[0-9]+$ ]]; then
                         line+="${summ}；涉及的目录未能读取（整理目录失败）"
                     elif [ "$n" -eq 0 ]; then
