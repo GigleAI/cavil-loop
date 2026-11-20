@@ -306,7 +306,7 @@ def attempts(repo, run):
 
 def selection(repo, run_id, attempt, done):
     """Tests 运行汇总那一步写的挑选方式：full / changed / unknown。done = 这次尝试已跑完（结果可缓存）。"""
-    key = f"sel:{run_id}:{attempt}"
+    key = f"sel2:{run_id}:{attempt}"   # 规则改过就换前缀，旧结论不再用
     if key in CACHE:
         return CACHE[key]
     v = _selection(repo, run_id, attempt)
@@ -328,6 +328,10 @@ def _selection(repo, run_id, attempt):
         return "full"
     if "only what this change can reach" in log:
         return "changed"
+    # tests/run.sh --verify 只在带 --changed-from 时写 Selection 行；GitHub#495 之前 PR 上不带它、跑的就是全部。
+    # 所以有结论标题（汇总那一步确实跑完了）却没有 Selection 行 = 全量
+    if re.search(r"## (✅ All \d+ tests passed|❌ \d+ of \d+ tests did not pass)", log):
+        return "full"
     return "none"
 
 

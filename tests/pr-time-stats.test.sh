@@ -141,12 +141,19 @@ tests_runs = [
     run(103, [99], 1, "2026-11-11T03:00:00Z", "2026-11-11T03:05:00Z", "x"),                    # 窗口外的 PR：不算
     run(104, [], 1, "2026-11-11T03:00:00Z", "2026-11-11T03:05:00Z", "unmerged-branch", repo="x/fork"),  # fork、对不上窗口内任何 PR：不算、也不算「归不到」
 ]
+tests_runs += [run(105, [14], 1, "2026-11-10T06:00:00Z", "2026-11-10T06:07:00Z", "feature/issue-8"),
+               run(106, [14], 1, "2026-11-10T07:00:00Z", "2026-11-10T07:01:00Z", "feature/issue-8", concl="cancelled")]
 put(f"repos/{R}/actions/workflows/tests.yml/runs?created=%3E%3D2026-10-08&event=pull_request&per_page=100&page=1",
     {"total_count": len(tests_runs), "workflow_runs": tests_runs})
 put(f"repos/{R}/actions/runs/100/attempts/1", {"run_started_at": "2026-11-11T01:00:00Z", "updated_at": "2026-11-11T01:05:00Z", "conclusion": "failure"})
 put(f"repos/{R}/actions/runs/100/attempts/1/jobs?per_page=100", {"jobs": [{"id": 501, "name": "测试"}]})
 put(f"repos/{R}/actions/runs/100/attempts/2/jobs?per_page=100", {"jobs": [{"id": 502, "name": "测试"}]})
 put(f"repos/{R}/actions/runs/101/attempts/1/jobs?per_page=100", {"jobs": [{"id": 601, "name": "shard 1/8"}]})   # 没有汇总那一步：挑选方式未知
+# GitHub#495 之前的运行：汇总只写结论标题、没有 Selection 行 = 全量；结论都没有（中途取消）= 未知
+put(f"repos/{R}/actions/runs/105/attempts/1/jobs?per_page=100", {"jobs": [{"id": 701, "name": "测试"}]})
+put(f"repos/{R}/actions/runs/106/attempts/1/jobs?per_page=100", {"jobs": [{"id": 702, "name": "测试"}]})
+put(f"repos/{R}/actions/jobs/701/logs", "\x1b[36;1mbash tests/run.sh --ci --verify results\x1b[0m\n## \u2705 All 74 tests passed\n")
+put(f"repos/{R}/actions/jobs/702/logs", "\x1b[36;1mbash tests/run.sh --ci --verify results\x1b[0m\nError: The operation was canceled.\n")
 put(f"repos/{R}/actions/jobs/501/logs", "...\nSelection: **only what this change can reach** — docs only\n")
 put(f"repos/{R}/actions/jobs/502/logs", "\x1b[36;1m...\x1b[0m\n2026-11-11T02:09:00Z Selection: full run — scripts changed\n")
 client_runs = [run(200, [10], 1, "2026-11-11T02:00:00Z", "2026-11-11T02:04:00Z", "feature/issue-5")]   # 与 Tests 重叠 4 分钟
@@ -236,6 +243,8 @@ eq("【5】#12 拿 issue 7 合并前那轮 AI 60、工作树合并前那次 200 
 eq("【5】#13 拿合并后那轮 AI 70、那次 300 s", (P[13]["ai_secs"], P[13]["local_secs"]["all"]), (70.0, 300.0))
 eq("【5】#12 / #13 标注共用工作树", ("共用工作树" in P[12]["flags"], "共用工作树" in P[13]["flags"]), (True, True))
 eq("【4】#14 一条 footer 缺 ai_secs → AI 未知，不当 0", (P[14]["ai_secs"], P[14]["ai_state"]), (None, "unknown"))
+eq("【3】#14 旧运行只有结论标题、没有 Selection 行 → 全量 420 s；中途取消、没有结论 → 未知 60 s、计 1 次取消",
+   (P[14]["ci_secs"]["shell_full"], P[14]["ci_secs"]["shell_unknown"], P[14]["ci_cancelled"]), (420.0, 60.0, 1))
 s = d["summary"]
 eq("【7】AI 平均只用 #10 #12 #13：(180+60+70)/3", round(s["ai"]["stat"]["mean"], 3), round(310 / 3, 3))
 eq("【7】AI 中位数 70、分母 3、未计入 2", (s["ai"]["stat"]["median"], s["ai"]["stat"]["n"], s["ai"]["excluded"]), (70.0, 3, 2))
