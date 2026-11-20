@@ -2647,16 +2647,20 @@ echo "URL=$URL"
 
 <!-- asset-url-ops:add:begin -->
 ```bash
-if [ -z "$URL" ] || [ ! -f "$ENV_FILE" ]; then
-    echo "STOP: no address in $FROM, or no $ENV_FILE"
-elif grep -q '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" || [ -e "$REC" ]; then
-    echo "STOP: $ENV_FILE already has an address line, or $REC exists — nothing changed"
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+if [ -z "$URL" ] || [ "$n" != 0 ]; then
+    echo "STOP: address to add '$URL', '${n:-unreadable}' address line(s) in $ENV_FILE — nothing changed"
 else
-    BAK="$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
-    ( umask 077 && cp "$ENV_FILE" "$BAK" && printf '%s\n' "$URL" > "$REC" ) \
-        && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo >> "$ENV_FILE"; } \
-        && printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL" >> "$ENV_FILE" \
-        && echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+    # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
+    # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
+    BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+    if [ -z "$BAK" ] || ! ( umask 077 && cat "$ENV_FILE" > "$BAK" && printf '%s\n' "$URL" > "$REC" ); then
+        echo "FAILED: backup or record not written; $ENV_FILE not changed — fix the cause and run this block again"
+    elif { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL"; } >> "$ENV_FILE"; then
+        echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+    else
+        echo "FAILED: could not write $ENV_FILE — fix the cause (e.g. its permissions) and run this block again"
+    fi
 fi
 ```
 <!-- asset-url-ops:add:end -->
@@ -2666,9 +2670,9 @@ fi
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
 added=$(cat "$REC" 2>/dev/null)
-if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words"
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words${added:+ (a leftover record will be cleared by add or revert)}"
 elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
-else echo "MISMATCH: $n line(s): $v (recorded / 记录: ${added:-none})"
+else echo "MISMATCH: ${n:-unreadable} line(s): $v (recorded / 记录: ${added:-none})"
 fi
 ```
 <!-- asset-url-ops:check:end -->
@@ -2678,21 +2682,41 @@ fi
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
 added=$(cat "$REC" 2>/dev/null)
-if [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
-    echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+if [ "$n" = 0 ]; then
+    # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+    # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+    if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+    else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+    fi
+elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+    echo "STOP: ${n:-unreadable} address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
 else
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
         && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
-        rm -f "$REC"; echo "REVERTED"
+        if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED"
+        else echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
     else
-        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed"
+        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     fi
 fi
 ```
 <!-- asset-url-ops:revert:end -->
 
-Expected output: add prints `ADDED`, the backup path (mode 600, same directory; the file holds the project's GitHub token, so do not print it) and the record `<key>.conf.asset-url-added`, which keeps the address this procedure wrote; check prints `OK: <address>`. To turn it off again, run the first block and then revert: it compares with that record — never with the other project's current address, which may have changed since — and removes only the line that was added, only when there is exactly one such line and it still equals the recorded address; every other setting stays as it is now (a later token change survives), and the record is removed with the line. Without a record nothing is removed. Anything else prints `STOP` and leaves the file untouched; then look at the file with the maintainer. After a revert, check prints `NONE`. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
+Expected output: add prints `ADDED`, the backup path (mode 600, same directory; the file holds the project's GitHub token, so do not print it) and the record `<key>.conf.asset-url-added`, which keeps the address this procedure wrote; check prints `OK: <address>`. To turn it off again, run the first block and then revert: it compares with that record — never with the other project's current address, which may have changed since — and removes only the line that was added, only when there is exactly one such line and it still equals the recorded address; every other setting stays as it is now (a later token change survives), and the record is removed with the line. Without a record nothing is removed.
+
+Every outcome, and what to do next (a failed step never leaves a state the blocks cannot continue from):
+
+| Block prints | Meaning | Next |
+|---|---|---|
+| add `ADDED` | line and record written | check should print `OK` |
+| add `FAILED` | the line was not written (a record or backup may be left) | fix the cause (e.g. `chmod 600` the file) and run add again — a record without a line is rewritten |
+| add `STOP` | no address to copy, the file cannot be read, or it already has an address line | nothing changed; look at the file |
+| revert `REVERTED` | the added line and the record are gone (or there was no line and only a leftover record was cleared) | check prints `NONE` |
+| revert `PARTIAL` | the line is gone, the record is still there | run revert again: it clears the record |
+| revert `FAILED` | nothing removed | fix the cause and run revert again |
+| revert `STOP` | the line is not the one that was added, there are several, there is no record, or the file cannot be read | nothing changed; look at the file with the maintainer | Anything else prints `STOP` and leaves the file untouched; then look at the file with the maintainer. After a revert, check prints `NONE`. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
 
 ## Upgrading to webhooks (instant trigger)
 

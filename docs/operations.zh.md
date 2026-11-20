@@ -2260,16 +2260,20 @@ echo "URL=$URL"
 
 <!-- asset-url-ops:add:begin -->
 ```bash
-if [ -z "$URL" ] || [ ! -f "$ENV_FILE" ]; then
-    echo "STOP: no address in $FROM, or no $ENV_FILE"
-elif grep -q '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" || [ -e "$REC" ]; then
-    echo "STOP: $ENV_FILE already has an address line, or $REC exists — nothing changed"
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+if [ -z "$URL" ] || [ "$n" != 0 ]; then
+    echo "STOP: address to add '$URL', '${n:-unreadable}' address line(s) in $ENV_FILE — nothing changed"
 else
-    BAK="$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
-    ( umask 077 && cp "$ENV_FILE" "$BAK" && printf '%s\n' "$URL" > "$REC" ) \
-        && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo >> "$ENV_FILE"; } \
-        && printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL" >> "$ENV_FILE" \
-        && echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+    # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
+    # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
+    BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+    if [ -z "$BAK" ] || ! ( umask 077 && cat "$ENV_FILE" > "$BAK" && printf '%s\n' "$URL" > "$REC" ); then
+        echo "FAILED: backup or record not written; $ENV_FILE not changed — fix the cause and run this block again"
+    elif { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL"; } >> "$ENV_FILE"; then
+        echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+    else
+        echo "FAILED: could not write $ENV_FILE — fix the cause (e.g. its permissions) and run this block again"
+    fi
 fi
 ```
 <!-- asset-url-ops:add:end -->
@@ -2279,9 +2283,9 @@ fi
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
 added=$(cat "$REC" 2>/dev/null)
-if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words"
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words${added:+ (a leftover record will be cleared by add or revert)}"
 elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
-else echo "MISMATCH: $n line(s): $v (recorded / 记录: ${added:-none})"
+else echo "MISMATCH: ${n:-unreadable} line(s): $v (recorded / 记录: ${added:-none})"
 fi
 ```
 <!-- asset-url-ops:check:end -->
@@ -2291,21 +2295,41 @@ fi
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
 added=$(cat "$REC" 2>/dev/null)
-if [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
-    echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+if [ "$n" = 0 ]; then
+    # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+    # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+    if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+    else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+    fi
+elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+    echo "STOP: ${n:-unreadable} address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
 else
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
         && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
-        rm -f "$REC"; echo "REVERTED"
+        if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED"
+        else echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
     else
-        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed"
+        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     fi
 fi
 ```
 <!-- asset-url-ops:revert:end -->
 
-看到什么算成功：补地址那段打印 `ADDED`、备份路径（同目录，权限 600；文件里有该项目的 GitHub 令牌，别打印内容）和记录文件 `<key>.conf.asset-url-added`，记录里是本流程写进去的地址；核对那段打印 `OK: <地址>`。要撤销，先跑第一段，再跑撤销那段：它拿这份记录比对——不拿另一个项目现在的地址比，那个地址之后可能换过——只删本次加的那一行，而且只在这样的行恰好一行、值仍等于记录的地址时才删；其他设置保持现在的样子（之后换过的令牌不会被改回去），记录随这一行一起删掉。没有记录就什么都不删。其他情况一律打印 `STOP`、文件一个字节不动，这时和维护者一起看文件。撤销后核对那段打印 `NONE`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+看到什么算成功：补地址那段打印 `ADDED`、备份路径（同目录，权限 600；文件里有该项目的 GitHub 令牌，别打印内容）和记录文件 `<key>.conf.asset-url-added`，记录里是本流程写进去的地址；核对那段打印 `OK: <地址>`。要撤销，先跑第一段，再跑撤销那段：它拿这份记录比对——不拿另一个项目现在的地址比，那个地址之后可能换过——只删本次加的那一行，而且只在这样的行恰好一行、值仍等于记录的地址时才删；其他设置保持现在的样子（之后换过的令牌不会被改回去），记录随这一行一起删掉。没有记录就什么都不删。
+
+每种结果和下一步（任何一步失败，留下的状态都能用这几段继续处理）：
+
+| 那段打印 | 含义 | 下一步 |
+|---|---|---|
+| 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
+| 补地址 `FAILED` | 地址行没写进去（可能留下了记录或备份） | 排除原因（例如 `chmod 600` 该文件）后重跑补地址那段——没有地址行的记录会被重写 |
+| 补地址 `STOP` | 没有可复制的地址、文件读不了、或已有地址行 | 什么都没改；去看文件 |
+| 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |
+| 撤销 `PARTIAL` | 地址行已删，记录还在 | 再跑一次撤销，它会清掉记录 |
+| 撤销 `FAILED` | 什么都没删 | 排除原因后重跑撤销 |
+| 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |其他情况一律打印 `STOP`、文件一个字节不动，这时和维护者一起看文件。撤销后核对那段打印 `NONE`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
 
 ## 升级到 webhook（即时触发）
 
