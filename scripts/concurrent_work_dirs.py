@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Directories a branch touches, for the "other work in progress" list (GitHub#598).
+r"""Directories a branch touches, for the "other work in progress" list (GitHub#598).
 
 stdin : the output of `git diff -z --name-only <base>...<head>` — raw paths, NUL-separated,
         never quoted or escaped by git.
@@ -8,21 +8,26 @@ stdout: one line, `<count>\x1f<shown>` — <count> is the number of distinct par
         <shown> the first <max> of them (byte order) joined with 「、」, each in backticks; files
         at the top of the repository are 仓库根目录 (no backticks).
 
-The whole path from git's bytes to the text an agent reads is in this one file, because three
-review rounds on PR #604 each found a different place that lost a directory's identity:
+The whole path from git's bytes to the text an agent reads is in this one file. Review rounds on
+PR #604 each found a different place that lost a directory's identity:
   1. taking the parent of git's *quoted* display form split one directory in two;
   2. decoding before grouping merged two directories that differ in one non-UTF-8 byte;
-  3. the display name then printed both of those as the same `a�/`.
-So: group and count on raw bytes; turn each into a display name with an escaping that is
-one-to-one (two different byte strings never give the same text); shorten a long name only
-by adding a hash of its raw bytes; and tag any names that would still look alike to a reader
-(same text after Unicode normalisation and case folding) with that hash as well.
-
-Escaping: valid UTF-8 is kept as is, except `\\` -> `\\\\`, the backtick -> `\\x60` (names sit
-inside backticks) and every control / format / line- or paragraph-separator / non-space
-whitespace character -> `\\xHH` or `\\uHHHH`; a byte that is not part of valid UTF-8 -> `\\xHH`.
-Every escape starts with a backslash and a literal backslash is itself escaped, so the mapping
-is reversible and therefore one-to-one.
+  3. the display name then printed both of those as the same `a\ufffd/`;
+  4. a hash added only when two names in the *same item* looked alike made one directory read
+     differently in two items, and an invalid byte and a valid control character shared `\x85`.
+So the display name of a directory is a function of that directory's raw bytes alone — never of
+which other directories are listed with it — and different raw bytes always give different text:
+  - group and count on raw bytes (byte order);
+  - escaping: valid UTF-8 is kept as is, except `\` -> `\\`, the backtick and every control /
+    format / line or paragraph separator / unassigned / private-use / non-space whitespace
+    character -> `\u{HEX}`; a byte that is not part of valid UTF-8 -> `\xHH`. Each escape is
+    marked by its own prefix (`\\`, `\u{`, `\x`) and a literal backslash is itself escaped, so the
+    text can be decoded back to the exact bytes: the mapping is one-to-one;
+  - a name longer than SHOW_MAX_CHARS after escaping is cut there and gets `…#<8 hex of the sha256
+    of its raw bytes>` — a cut name is always longer than any uncut one, so the two kinds never meet,
+    and two cut names differ unless their hashes collide.
+Two items that touch the same directory therefore show the same text, and two different
+directories never show the same text.
 """
 import hashlib
 import sys
@@ -35,12 +40,10 @@ ROOT = "仓库根目录"
 def _char(c):
     if c == "\\":
         return "\\\\"
-    if c == "`":
-        return "\\x60"
     cat = unicodedata.category(c)
-    if cat in ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn") or (cat == "Zs" and c != " ") or (c.isspace() and c != " "):
-        o = ord(c)
-        return "\\x%02x" % o if o < 0x100 else ("\\u%04x" % o if o < 0x10000 else "\\U%08x" % o)
+    if c == "`" or cat in ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn") or (cat == "Zs" and c != " ") \
+            or (c.isspace() and c != " "):
+        return "\\u{%x}" % ord(c)
     return c
 
 
@@ -54,6 +57,11 @@ def escape(raw):
     return "".join(out)
 
 
+def show(raw):
+    s = escape(raw)
+    return s if len(s) <= SHOW_MAX_CHARS else s[:SHOW_MAX_CHARS] + "…#" + tag(raw)
+
+
 def tag(raw):
     return hashlib.sha256(raw).hexdigest()[:8]
 
@@ -63,24 +71,7 @@ def main():
     data = sys.stdin.buffer.read()
     dirs = sorted({(p.rsplit(b"/", 1)[0] + b"/") if b"/" in p else b"" for p in data.split(b"\0") if p})
     shown = dirs[:show_max]
-    names = {}
-    for d in shown:
-        if d == b"":
-            continue
-        s = escape(d)
-        if len(s) > SHOW_MAX_CHARS:
-            s = s[:SHOW_MAX_CHARS] + "…#" + tag(d)
-        names[d] = s
-    # names that would read the same to a person (normalisation, case) get their hash too
-    looks = {}
-    for d, s in names.items():
-        looks.setdefault(unicodedata.normalize("NFKC", s).casefold(), []).append(d)
-    for group in looks.values():
-        if len(group) > 1:
-            for d in group:
-                if "#" + tag(d) not in names[d]:
-                    names[d] += "#" + tag(d)
-    parts = [ROOT if d == b"" else "`" + names[d] + "`" for d in shown]
+    parts = [ROOT if d == b"" else "`" + show(d) + "`" for d in shown]
     sys.stdout.write("%d\x1f%s\n" % (len(dirs), "、".join(parts)))
 
 
