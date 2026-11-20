@@ -9,19 +9,23 @@
 // it reports a ticked task-list box to the window). Two policies stand between
 // GitHub's HTML and running anything, each allowing that script alone by its
 // hash: the window's (tauri.conf.json — a srcdoc frame inherits it) and the
-// frame's own (TIMELINE_CSP). The reply preview frame runs no script at all.
+// frame's own (TIMELINE_CSP). The reply preview frame runs PREVIEW_SCRIPT alone (GitHub#590: it hands a
+// clicked web link to the window), allowed the same way: the window's policy and PREVIEW_CSP.
+// Both frames hand a clicked web link to the window themselves; the new-window path stays as a fallback.
 
 import type { ItemDetail, TimelineEntry } from '../shared/actions';
 import { AVATAR_HOST, GITHUB_IMAGE_HOSTS, avatarInitial, avatarUrl } from '../shared/avatar';
 import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
-import { FRAME_SCRIPT, FRAME_SCRIPT_HASH, frameWords } from './frameScript';
+import { FRAME_SCRIPT, FRAME_SCRIPT_HASH, PREVIEW_SCRIPT, PREVIEW_SCRIPT_HASH, frameWords } from './frameScript';
 import { t, tKey, zhKey } from '../shared/i18n';
 import { annotateCodeBlocks, codeCss } from './codeBlocks';
 import { parseReleaseImage } from '../shared/images';
 import { formatDuration, withoutFooter } from '../shared/agentMetrics';
 
-/** the reply preview: no scripts at all */
+/** a frame that runs no script at all */
 export const FRAME_SANDBOX = 'allow-popups allow-popups-to-escape-sandbox';
+/** the reply preview (GitHub#590): scripts on (only PREVIEW_SCRIPT gets past both policies), still no same-origin */
+export const PREVIEW_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
 /** the timeline: scripts on (only FRAME_SCRIPT gets past both policies), still no same-origin */
 export const TIMELINE_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
 
@@ -38,6 +42,9 @@ export const FRAME_CSP = `default-src 'none'; img-src ${IMAGE_HOSTS.join(' ')} d
 
 /** The timeline frame's own policy: FRAME_CSP with FRAME_SCRIPT, and nothing else, allowed to run. */
 export const TIMELINE_CSP = FRAME_CSP.replace("script-src 'none'", `script-src ${FRAME_SCRIPT_HASH}`);
+
+/** The reply preview's own policy (GitHub#590): FRAME_CSP with PREVIEW_SCRIPT, and nothing else, allowed to run. */
+export const PREVIEW_CSP = FRAME_CSP.replace("script-src 'none'", `script-src ${PREVIEW_SCRIPT_HASH}`);
 
 const IMG_TAG = /<img\b[^>]*>/gi;
 const IMG_SRC = /(\s)src(\s*=\s*)(["'])([^"']*)\3/i;
@@ -332,9 +339,10 @@ ${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && p
 
 /**
  * The reply preview as one document (GitHub's rendering of what was typed): no
- * script, no buttons — only the code styles the discussion uses (GitHub#381),
- * so a block is coloured the same in both.
+ * buttons — only the code styles the discussion uses (GitHub#381), so a block is
+ * coloured the same in both — and one script, PREVIEW_SCRIPT (GitHub#590: a clicked
+ * web link goes to the window).
  */
 export function previewDocument(html: string, dark: boolean): string {
-  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(FRAME_CSP)}"><base target="_blank"><style>${codeCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${html}</body>`;
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}"><base target="_blank"><style>${codeCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${html}<script>${PREVIEW_SCRIPT}</script></body>`;
 }

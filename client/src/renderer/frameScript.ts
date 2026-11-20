@@ -34,7 +34,7 @@
 // (no allow-same-origin) nor the network (connect-src 'none').
 //
 // Change the text → change FRAME_SCRIPT_HASH and the hash in tauri.conf.json
-// (test/unit/taskList.test.ts checks all three agree). Changing the default keys of FRAME_IDS in the shortcut
+// (test/unit/taskList.test.ts checks all three agree; the same for PREVIEW_SCRIPT, GitHub#590). Changing the default keys of FRAME_IDS in the shortcut
 // table changes the text too; keys changed on this machine (GitHub#487) do not — the window sends them in a
 // `{ cavil: 'keys' }` message, for this rendering, from its parent, and only a list of plain entries is taken.
 
@@ -62,6 +62,44 @@ export function frameWords(): Record<string, string> {
     notGot: t('没取到'),
   };
 }
+
+/**
+ * GitHub#590: a click on a web link (left button, with or without ⌘ / Ctrl, or the middle button) is
+ * handed to the window, which opens it in the system browser — the frame never asks for a new window
+ * itself, which on macOS never reached the shell (its navigation check refused every non-GitHub
+ * address first). Only a link written as an absolute http / https address with a host is taken (a
+ * relative one resolves against the app's own page). A link to a place on the page (a footnote's `#…`)
+ * scrolls there instead of asking for a new window, which would have been the app's own page; any
+ * other link (`mailto:` …) keeps its old behaviour. One text, in both frames: FRAME_SCRIPT carries
+ * it and PREVIEW_SCRIPT is it; each defines its own `send`. The back end still decides what may open.
+ */
+const LINK_JS = `  function linkOf(e) {
+    if (e.defaultPrevented) return null;
+    if (e.type === 'click' ? e.button !== 0 : e.button !== 1) return null;
+    return e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  }
+  function onLink(e) {
+    var a = linkOf(e);
+    if (!a) return;
+    var raw = a.getAttribute('href') || '';
+    // a place on this page (a footnote's \`#…\`): go there — as a new window it would be the app's own page
+    if (raw.charAt(0) === '#') {
+      e.preventDefault();
+      var id = raw.slice(1), to = null;
+      try { id = decodeURIComponent(id); } catch (x) { /* keep it as written */ }
+      if (id) to = document.getElementById(id) || document.getElementsByName(id)[0] || null;
+      if (to && to.scrollIntoView) to.scrollIntoView();
+      return;
+    }
+    // the address as written: anything relative resolves against the app's own page
+    if (!/^\\s*https?:\\/\\/[^\\/?#\\s]/i.test(raw)) return;
+    var u = String(a.href || '');
+    if (!/^https?:\\/\\/[^\\/?#\\s]/i.test(u)) return;
+    e.preventDefault();
+    send({ cavil: 'link', url: u });
+  }
+  document.addEventListener('click', onLink);
+  document.addEventListener('auxclick', onLink);`;
 
 export const FRAME_SCRIPT = `(function () {
   var b = document.body, render = b.getAttribute('data-render');
@@ -330,6 +368,7 @@ export const FRAME_SCRIPT = `(function () {
     clearTimeout(timer);
     timer = setTimeout(function () { send({ cavil: 'view' }); }, 150);
   });
+${LINK_JS}
   send({ cavil: 'ready' });
   want();
   var late = document.querySelectorAll('.md img[src]');
@@ -337,4 +376,17 @@ export const FRAME_SCRIPT = `(function () {
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-bEZYheZphWQ3rJ6nArX8YS2QrxNf6yiztl4Plus+5oQ='";
+export const FRAME_SCRIPT_HASH = "'sha256-0Go1D+oZyUwWVvoAq7T8YQOm01AcScTOFZB+3KqDvxA='";
+
+/**
+ * The one script the reply preview runs (GitHub#590): web links go to the window, nothing else. Its
+ * own frame policy allows this hash alone; the window's policy (tauri.conf.json) allows it next to
+ * FRAME_SCRIPT_HASH. Change the text → change PREVIEW_SCRIPT_HASH and the hash in tauri.conf.json.
+ */
+export const PREVIEW_SCRIPT = `(function () {
+  function send(m) { parent.postMessage(m, '*'); }
+${LINK_JS}
+})();`;
+
+/** CSP source for PREVIEW_SCRIPT: the same string sits in tauri.conf.json's script-src. */
+export const PREVIEW_SCRIPT_HASH = "'sha256-PMvx9aGZjlIh6r4I4zPdp5Xl1Ap5y/0dqUWYg13lqsk='";

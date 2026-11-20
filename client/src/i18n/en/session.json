@@ -13,6 +13,7 @@
   "拒绝发往 GitHub 接口以外的请求：{url}": "Refused a request that does not go to GitHub's API: {url}",
   "不支持的请求方法：{method}": "Request method not supported: {method}",
   "只在浏览器里打开网页链接：{url}": "Only web links are opened in the browser: {url}",
+  "不认识的链接来源：{via}": "Unknown link source: {via}",
   "{e}（已自动重试 {n} 次）": { "one": "{e} (retried automatically {n} time)", "other": "{e} (retried automatically {n} times)" },
   "测试模式只允许把 GitHub 地址指向本机回环地址": "Test mode only lets the GitHub addresses point at this computer's loopback address",
   "不是 Release 附件的接口地址：{url}": "Not the API address of a release attachment: {url}",

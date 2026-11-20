@@ -45,17 +45,33 @@ struct AppState {
     engine: Arc<Engine>,
 }
 
-/// Opens GitHub links in the system browser; in test mode appends them to a file instead.
+/// Opens web links in the system browser; in test mode appends them to a file instead.
 struct SystemOpener {
     record: Option<PathBuf>,
+}
+
+/// Test mode only: one line appended to the record of opened addresses.
+fn record_line(record: &PathBuf, line: &str) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(record).map_err(|e| e.to_string())?;
+    writeln!(file, "{line}").map_err(|e| e.to_string())
+}
+
+/// GitHub#590, test mode only: which of the shell's two fallbacks handed an address on
+/// (`shell-new-window <url>` / `shell-navigation <url>`), next to the address itself — so a test can
+/// tell a link the page handed to the window from one that reached the browser through the shell.
+fn record_shell(record: &Option<PathBuf>, how: &str, url: &str) {
+    if let Some(f) = record {
+        if let Err(err) = record_line(f, &format!("shell-{how} {url}")) {
+            eprintln!("cavil: recording {how} failed: {err}");
+        }
+    }
 }
 
 #[async_trait]
 impl Opener for SystemOpener {
     async fn open(&self, url: &str) -> Result<(), String> {
         if let Some(f) = &self.record {
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(f).map_err(|e| e.to_string())?;
-            return writeln!(file, "{url}").map_err(|e| e.to_string());
+            return record_line(f, url);
         }
         // Windows: Explorer hands a web address to the default browser (no console window, no shell)
         let program = if cfg!(target_os = "macos") {
@@ -66,6 +82,16 @@ impl Opener for SystemOpener {
             "xdg-open"
         };
         std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))
+    }
+
+    /// GitHub#590: in test mode a clicked frame link also says which frame (`frame-link <url>` /
+    /// `preview-link <url>`), on a line before the address — only the window, after checking the
+    /// message came from that frame, can produce it.
+    async fn open_link(&self, url: &str, via: &str) -> Result<(), String> {
+        if let Some(f) = &self.record {
+            record_line(f, &format!("{via}-link {url}"))?;
+        }
+        self.open(url).await
     }
 }
 
@@ -363,6 +389,8 @@ fn main() {
 
             let open_ep = endpoints.clone();
             let open_engine = engine.clone();
+            let nav_record = selection.opened_file.clone();
+            let new_window_record = selection.opened_file.clone();
             let handle = app.handle().clone();
             let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Cavil Loop")
@@ -392,6 +420,7 @@ fn main() {
                         return true;
                     }
                     if is_allowed_external(url.as_str(), &open_ep) {
+                        record_shell(&nav_record, "navigation", url.as_str());
                         let e = open_engine.clone();
                         let u = url.to_string();
                         tauri::async_runtime::spawn(async move {
@@ -406,6 +435,7 @@ fn main() {
                 // (http / https, whatever the site — GitHub#539) goes to the system browser, the back end's
                 // `open_external` refuses every other kind
                 .on_new_window(move |url, _features| {
+                    record_shell(&new_window_record, "new-window", url.as_str());
                     let e = engine.clone();
                     let u = url.to_string();
                     tauri::async_runtime::spawn(async move {

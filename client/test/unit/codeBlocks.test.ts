@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse, parseFragment } from 'parse5';
 import { annotateCodeBlocks, codeBlockCount, codeCss } from '../../src/renderer/codeBlocks';
-import { FRAME_CSP, previewDocument, timelineDocument } from '../../src/renderer/detailHtml';
+import { FRAME_CSP, PREVIEW_CSP, previewDocument, timelineDocument } from '../../src/renderer/detailHtml';
+import { PREVIEW_SCRIPT, PREVIEW_SCRIPT_HASH } from '../../src/renderer/frameScript';
 import { annotateTaskBoxes } from '../../src/data/taskList';
 import { DEFAULT_VIEW, isValidView, normalizeView } from '../../src/shared/viewSettings';
 import type { ItemDetail, TimelineEntry } from '../../src/shared/actions';
@@ -191,12 +192,14 @@ describe('GitHub#381: syntax colours — GitHub\'s marks, one set of colours for
     }
   });
 
-  it('the reply preview stays a document that runs nothing and has no buttons', () => {
+  it('the reply preview runs its link script alone (GitHub#590) and has no buttons', () => {
     const doc = previewDocument(recorded.comments[0].bodyHTML, false);
-    expect(doc).toContain(`content="${FRAME_CSP.replace(/&/g, '&amp;').replace(/'/g, '&#39;')}"`);
+    expect(doc).toContain(`content="${PREVIEW_CSP.replace(/&/g, '&amp;').replace(/'/g, '&#39;')}"`);
+    expect(PREVIEW_CSP.match(/script-src ([^;]*)/)![1]).toBe(PREVIEW_SCRIPT_HASH);
     expect(FRAME_CSP).toContain("script-src 'none'");
     const tree = parse(doc) as unknown as El;
-    expect(all(tree, tag('script'))).toEqual([]);
+    expect(all(tree, tag('script'))).toHaveLength(1);
+    expect([...doc.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1])).toEqual([PREVIEW_SCRIPT]);
     expect(all(tree, tag('button'))).toEqual([]);
     expect(all(tree, (e) => hasClass(e, 'cb'))).toEqual([]);
     // GitHub's HTML is in it as it came
