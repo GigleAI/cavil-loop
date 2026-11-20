@@ -128,6 +128,19 @@ test('GitHub#587: a repository source with nothing to show keeps its place in th
   await shot(page, 'grouped-by-repository');
   await opensWithSecond(page, group);
 
+  // ---- 3b. second and third folded together: the unknown count is never added in as 0 (PR #594 review round 1) ----
+  await group.getByTestId('group-toggle').click();
+  await page.locator('[data-testid="group"][data-key="repo:gigleai/third"]').getByTestId('group-toggle').click();
+  const run = page.getByTestId('fold-run');
+  await expect(run).toHaveAttribute('data-keys', 'repo:gigleai/second repo:gigleai/third');
+  await expect(run.getByTestId('fold-run-title')).toHaveText('已收起 2 组 · 已知 0 条，另有 1 组还没读到');
+  await expect(run.locator('[data-testid="fold-run-group"][data-key="repo:gigleai/second"] [data-testid="fold-run-count"]')).toHaveText('0');
+  await expect(run.locator('[data-testid="fold-run-group"][data-key="repo:gigleai/third"] [data-testid="fold-run-count"]')).toHaveText('—');
+  await run.scrollIntoViewIfNeeded();
+  await shot(page, 'folded-run');
+  await run.getByTestId('fold-run-expand').click();
+  await expect(group.getByTestId('repo-blank')).toHaveCount(1);
+
   // ---- 4. offline: the line's "+" greys out, as every group's ----
   env.fake.state.offline = true;
   await page.getByTestId('refresh').press('Enter');

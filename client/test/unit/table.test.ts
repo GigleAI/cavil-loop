@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTable, GROUP_NONE_KEY, iterationRange, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
+import { buildTable, foldRuns, foldTally, GROUP_NONE_KEY, iterationRange, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
 import { buildBoard, iterationColumnKey } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
@@ -418,6 +418,49 @@ describe('GitHub#587: a repository source with nothing to show keeps its place i
         const settings = ALL({ groupBy, ...patch });
         expect(build(settings, board(), covered), `${groupBy} ${JSON.stringify(patch)}`).toEqual(build(settings, board(), []));
       }
+  });
+
+  it('PR #594 review round 1: a repository whose only shown item is a PR placed under an issue elsewhere is not "nothing to show"', () => {
+    // x/lib's only item is a PR naming x/app#1: with PRs under their issues it shows in x/app's place
+    const items = [item('x/app', 1, { title: 'issue' }), item('x/lib', 2, { title: 'pr', kind: 'pr', refIssues: ['x/app#1'] })];
+    const src: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: true }, { repo: 'x/new', read: true }];
+    const run = (patch: Partial<TableSettings>) => buildTable(items, [], ALL(patch), TODAY, true, [], items, src);
+    // the PR really does follow its issue (otherwise this case tests nothing)
+    const sections = run({ groupBy: 'milestone' });
+    expect(sections.repos!.find((r) => r.title === 'x/app')!.groups.flatMap((g) => g.rows.map((r) => r.item.key))).toEqual(['x/app#1', 'x/lib#2']);
+    // no empty section or group for x/lib — only x/new, which has no item at all
+    expect(sections.repos!.map((r) => [r.title, r.groups.length > 0])).toEqual([
+      ['x/app', true],
+      ['x/new', false],
+    ]);
+    const byRepo = run({ groupBy: 'repo' });
+    expect(byRepo.groups.map((g) => [g.title, g.rows.map((r) => r.item.key)])).toEqual([
+      ['x/app', ['x/app#1', 'x/lib#2']],
+      ['x/new', []],
+    ]);
+    for (const sliceByRepo of [true, false]) expect(run({ groupBy: 'repo', sliceByRepo }).groups.map((g) => g.title)).toEqual(['x/app', 'x/new']);
+    // the slice list counts the PR in its own repository, as before
+    expect(sections.slices).toEqual([
+      { value: 'x/app', count: 1 },
+      { value: 'x/lib', count: 1 },
+      { value: 'x/new', count: 0 },
+    ]);
+  });
+
+  it('PR #594 review round 1: a folded run never adds an unknown count in as 0', () => {
+    const t = build(ALL({ groupBy: 'repo' }), board(), [...SRC, { repo: 'x/wait2', read: false }]);
+    const all = new Set(t.groups.map((g) => g.key));
+    const runs = foldRuns(t.groups, all);
+    expect(runs.map((r) => r.kind)).toEqual(['folded']);
+    const run = runs[0] as Extract<(typeof runs)[number], { kind: 'folded' }>;
+    // read and never-read groups folded together: the known rows, and how many are unknown
+    expect(foldTally(run.groups)).toEqual({ rows: 7, unknown: 2 });
+    // two never-read groups alone: nothing known
+    const unread = t.groups.filter((g) => g.unread);
+    expect(unread).toHaveLength(2);
+    expect(foldTally(unread)).toEqual({ rows: 0, unknown: 2 });
+    // read ones only: the plain sum, as before
+    expect(foldTally(t.groups.filter((g) => !g.unread))).toEqual({ rows: 7, unknown: 0 });
   });
 
   it('which sources count: repository sources shown on the board; read = has a snapshot', () => {

@@ -161,6 +161,7 @@
   "没有要显示的 issue / PR": "no issues or PRs to show",
   "还没读到，读到之后才知道有没有条目": "not read yet; whether it has items is known once it is",
   "还没读到，条目数未知": "Not read yet: the number of items is unknown",
+  "已收起 {n} 组 · 已知 {rows} 条，另有 {unknown} 组还没读到": "{n} groups folded · {rows} items known, {unknown} groups not read yet",
   "已收起 {n} 组 · 共 {rows} 条": {
     "one": "{n} group collapsed · items: {rows}",
     "other": "{n} groups collapsed · items: {rows}"

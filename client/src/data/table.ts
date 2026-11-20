@@ -351,8 +351,16 @@ export function buildTable(
   // GitHub#587: the repository sources by their lower-cased name, the one key every repository list uses
   const sourceOf = new Map<string, RepoSource>();
   for (const s of sources) if (!sourceOf.has(s.repo.toLowerCase())) sourceOf.set(s.repo.toLowerCase(), s);
-  /** sources none of `shown` (lower-cased names) holds: what gets an empty place of its own */
-  const blanks = (shown: ReadonlySet<string>) => [...sourceOf.entries()].filter(([k]) => !shown.has(k)).map(([, s]) => s);
+  /**
+   * sources none of `list` belongs to: what gets an empty place of its own. Judged by each item's own
+   * repository, never by where it is shown — a PR placed under its issue in another repository is still
+   * shown, so its own repository is not "nothing to show" (PR #594 review round 1). One rule for the
+   * slice list, the sections and the groups.
+   */
+  const blanks = (list: readonly Item[]) => {
+    const own = new Set(list.map((it) => it.repo.toLowerCase()));
+    return [...sourceOf.entries()].filter(([k]) => !own.has(k)).map(([, s]) => s);
+  };
   let slices: Slice[] | null = null;
   let slice: string | null = null;
   let picked = items;
@@ -365,7 +373,7 @@ export function buildTable(
       if (cur) cur.count++;
       else counts.set(k, { value: it.repo, count: 1 });
     }
-    for (const s of blanks(new Set(counts.keys()))) counts.set(s.repo.toLowerCase(), s.read ? { value: s.repo, count: 0 } : { value: s.repo, count: 0, unread: true });
+    for (const s of blanks(items)) counts.set(s.repo.toLowerCase(), s.read ? { value: s.repo, count: 0 } : { value: s.repo, count: 0, unread: true });
     slices = [...counts.values()].sort((a, b) => compareRepo(a.value, b.value));
     if (settings.slice) {
       slice = settings.slice;
@@ -415,7 +423,7 @@ export function buildTable(
       return { key, title: r.title, itemCount: r.items.length + pulledIn(groups), groups };
     });
     // GitHub#587: a repository source with nothing to show keeps a section of its own, with no groups
-    for (const s of blanks(new Set([...byRepo.keys()].map((k) => k.slice('repo:'.length)))))
+    for (const s of blanks(picked))
       repos.push(s.read ? { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [] } : { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [], unread: true });
     repos.sort((a, b) => compareRepo(a.title, b.title));
     const groups = repos.flatMap((r) => r.groups);
@@ -429,8 +437,7 @@ export function buildTable(
     if (s) out.blankRepo = s.read ? { repo: s.repo } : { repo: s.repo, unread: true };
   } else if (settings.groupBy === 'repo') {
     // GitHub#587: grouped by repository, a repository source with nothing to show keeps an empty group
-    const shown = new Set(groups.map((g) => g.key.slice('repo:'.length)));
-    const extra = blanks(shown);
+    const extra = blanks(picked);
     if (extra.length) {
       for (const s of extra) {
         const g: Group = { key: repoKey(s.repo), title: s.repo, subtitle: null, current: false, empty: false, preset: { by: 'repo', repo: s.repo }, column: null, section: null, rows: [] };
@@ -545,4 +552,19 @@ export function foldRuns(groups: Group[], folded: ReadonlySet<string>): GroupRun
   }
   flush();
   return out;
+}
+
+/**
+ * GitHub#587 (PR #594 review round 1): what a folded run of groups holds — the rows of the groups whose
+ * count is known, and how many groups belong to a repository never read (their count is unknown,
+ * never added in as 0).
+ */
+export function foldTally(groups: readonly Pick<Group, 'rows' | 'unread'>[]): { rows: number; unknown: number } {
+  let rows = 0;
+  let unknown = 0;
+  for (const g of groups) {
+    if (g.unread) unknown++;
+    else rows += g.rows.length;
+  }
+  return { rows, unknown };
 }

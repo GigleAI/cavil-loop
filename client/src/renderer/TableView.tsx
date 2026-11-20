@@ -3,7 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { boardMode, buildTable, foldRuns, isOwnGroup, tableDropPlan, type Group, type Row, type Table } from '../data/table';
+import { boardMode, buildTable, foldRuns, foldTally, isOwnGroup, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
@@ -300,6 +300,17 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
 /** GitHub#587: what a repository line's "+" hands the new-issue dialog: a group of that repository with no rows */
 function blankGroup(repo: string): Group {
   return { key: `repo:${repo.toLowerCase()}`, title: repo, subtitle: null, current: false, empty: false, preset: { by: 'repo', repo }, column: null, section: null, rows: [] };
+}
+
+/**
+ * A folded run's line (GitHub#275): its groups and their rows. A group of a repository never read
+ * (GitHub#587) has an unknown count: never added in as 0 — the line says how many such groups there are.
+ */
+function foldedSummary(groups: Group[]): string {
+  const { rows, unknown } = foldTally(groups);
+  return unknown === 0
+    ? t('已收起 {n} 组 · 共 {rows} 条', { n: groups.length, rows })
+    : t('已收起 {n} 组 · 已知 {rows} 条，另有 {unknown} 组还没读到', { n: groups.length, rows, unknown });
 }
 
 /** GitHub#587: the table draws at least one repository line (then "no matching items" is not said again) */
@@ -666,7 +677,7 @@ export function TableView({
             ▸
           </span>{' '}
           <span className="fold-run-title" data-testid="fold-run-title">
-            {t('已收起 {n} 组 · 共 {rows} 条', { n: groups.length, rows: groups.reduce((n, g) => n + g.rows.length, 0) })}
+            {foldedSummary(groups)}
           </span>
           {groups.map((g) => (
             <button
@@ -680,7 +691,7 @@ export function TableView({
               {...verbatimParts('github', [isOwnGroup(g) ? null : g.title])}
               onClick={() => toggle(g.key)}
             >
-              <GroupTitle g={g} /> <span className="count">{g.rows.length}</span>
+              <GroupTitle g={g} /> <span className="count" data-testid="fold-run-count">{countOf(g.rows.length, g.unread)}</span>
               {g.current && <span className="current">{t('当前')}</span>}
             </button>
           ))}
