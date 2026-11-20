@@ -271,7 +271,7 @@ chk "改参照价：触发重算，结果等于全量" "$(env "${run_env[@]}" XD
 import json, price_solve as ps
 ps.build_cached('A')
 ps.REFERENCE['claude-opus-5'] = dict(ps.REFERENCE['claude-opus-5'], output=77)
-a = json.dumps(ps.build_cached('A'), sort_keys=True); b = json.dumps(ps.build('A'), sort_keys=True)
+a = json.dumps(ps.build_cached('A')); b = json.dumps(ps.build('A'))
 print('ok' if a == b and json.loads(a)['models']['claude-opus-5']['output']['reference'] == 77 else 'bad')")" "ok"
 chk "改快速档参照：触发重算" "$(env "${run_env[@]}" XDG_CACHE_HOME="$TMP/cache" \
     PYTHONPATH="$NEW/weekly-report" python3 -c "
@@ -312,7 +312,7 @@ corrupt() { # 名字 改法
 corrupt 截断 'head -c 100 "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
 corrupt 不是JSON 'printf "garbage" > "$(SC)"'
 corrupt 结构不对 'printf "[1,2,3]" > "$(SC)"'
-# 改坏缓存里的一处：<文件> <jq 改法> <resum|stale>。resum = 按缓存的格式约定（内容按键排序的
+# 改坏缓存里的一处：<文件> <jq 改法> <resum|stale>。resum = 按缓存的格式约定（内容按原样顺序的
 # JSON 的 sha256）重算校验和，让坏内容「看起来是原样写进去的」，测的是结构 / 类型检查本身；
 # stale = 校验和不动，测的是校验和（PR #612 复审第 1 轮：两种坏法都绕过了检查）
 mangle() {
@@ -324,7 +324,7 @@ out = subprocess.run(["jq", "-c", prog], input=json.dumps(c), capture_output=Tru
 c = json.loads(out)
 key = "files" if "files" in c else "table"
 if mode == "resum":
-    blob = json.dumps(c[key], sort_keys=True, ensure_ascii=False, allow_nan=True)
+    blob = json.dumps(c[key], ensure_ascii=False, allow_nan=True)   # 格式约定：按原样顺序，不排序
     c["sum"] = hashlib.sha256(blob.encode("utf-8", "surrogatepass")).hexdigest()
 json.dump(c, open(f, "w", encoding="utf-8"))
 PY
@@ -358,6 +358,26 @@ table_bad 表是空的 'mangle "$PT" ".table = {}" resum'
 table_bad 少了模型表 'mangle "$PT" ".table |= del(.models)" resum'
 table_bad 某项单价缺字段 'mangle "$PT" ".table.models[\"claude-opus-5\"].input |= del(.price)" resum'
 table_bad 单价被改且校验和没跟着改 'mangle "$PT" ".table.models[\"claude-opus-5\"].input.price = 123" stale'
+
+# 只换顺序、内容不变（复审第 2 轮）：输出的字节跟着键顺序走，所以缓存命中必须连顺序都和全量一样
+FP="$TMP/cache/cavil-loop/fetched-prices.json"
+cp "$FP" "$TMP/fp.orig"
+tbl "$TMP/o0.json"
+jq -S . "$TMP/fp.orig" > "$FP"
+tbl "$TMP/o1.json"; ref "$TMP/o1r.json"
+same "抓来的价只换了键顺序：带缓存 = 同输入全量" "$TMP/o1.json" "$TMP/o1r.json"
+chk "抓来的价换顺序确实改变了输出的字节（这一条测得到东西）" \
+    "$(cmp -s "$TMP/o1.json" "$TMP/o0.json" && echo 没变 || echo 变了)" "变了"
+chk "抓来的价换顺序：日志不用重读" "$(opens "$TMP/o1.json")" "0"
+cp "$TMP/fp.orig" "$FP"
+tbl "$TMP/o2.json"
+same "抓来的价换回原顺序：又与原来一致" "$TMP/o2.json" "$TMP/r9.json"
+jq -S . "$PT" > "$TMP/pt.tmp" && mv "$TMP/pt.tmp" "$PT"
+tbl "$TMP/o3.json"
+same "反解结果缓存只换了键顺序：重新反解，结果一致" "$TMP/o3.json" "$TMP/r9.json"
+chk "反解结果缓存换顺序前后输出确实不同（这一条测得到东西）" \
+    "$(jq -S -c . "$TMP/r9.json" | cmp -s - "$TMP/r9.json" && echo 没变 || echo 变了)" "变了"
+corrupt 样本缓存只换了键顺序 'jq -S . "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
 
 # 缓存目录不可写（XDG_CACHE_HOME 指到一个普通文件）：结果照旧，只是每次都全量
 : > "$TMP/notadir"

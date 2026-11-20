@@ -427,8 +427,11 @@ def _valid_raw(raw):
 
 def _content_sum(obj):
     """缓存内容的校验和：读回时重算，对不上就整份当作没有。结构检查只能查出认得的坏法，
-    这一道查的是「和写进去的不是同一份」（PR #612 复审第 1 轮：两种结构损坏都绕过了检查）。"""
-    blob = json.dumps(obj, sort_keys=True, ensure_ascii=False, allow_nan=True)
+    这一道查的是「和写进去的不是同一份」（PR #612 复审第 1 轮：两种结构损坏都绕过了检查）。
+
+    ⚠️ 按原样的键顺序算，**不排序**：输出的字节跟着键顺序走，排序后再算的校验和认不出
+    「内容一样、顺序变了」的缓存，热缓存就会吐出和全量重扫顺序不同的表（复审第 2 轮）。"""
+    blob = json.dumps(obj, ensure_ascii=False, allow_nan=True)
     return hashlib.sha256(blob.encode("utf-8", "surrogatepass")).hexdigest()
 
 
@@ -651,12 +654,16 @@ def solve_fingerprint(rows, ttl, policy, fetched, rev=None):
     程序版本。这些都没变，反解结果就一定相同，可以直接复用（GitHub#606）。
 
     原来的判据是日志目录的「文件数 + 最新 mtime + 总字节数」：有 agent 在写日志时隔几秒
-    就变，可表本身没变；而阈值、抽样参数这些环境变量改了，判据却不变。"""
+    就变，可表本身没变；而阈值、抽样参数这些环境变量改了，判据却不变。
+
+    ⚠️ 按原样的顺序序列化，**不排序**：没有本机样本的模型，单价各项按参照 / 抓来的价里的
+    原顺序写进表，同一组价换个键顺序，输出的字节就不同。排序后的指纹会把两者当成一样、
+    返回旧顺序的表（复审第 2 轮）。顺序多算进去只会让重算变多，不会让结果出错。"""
     blob = json.dumps([rev or code_rev(), policy, rows, ttl,
                        REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST, fetched,
                        [MAX_AMPLIFY, MAX_SPREAD, MAX_DIVERGE, MIN_SESSIONS,
                         BOOTSTRAP_N, NOISE, SEED]],
-                      sort_keys=True, allow_nan=True)
+                      allow_nan=True)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
