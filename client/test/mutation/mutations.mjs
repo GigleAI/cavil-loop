@@ -941,8 +941,9 @@ export const MUTATIONS = [
     expect: ['milestone promised and still there'] },
   // ---- GitHub#213: "all repositories" in the table — repository first, then the chosen grouping ----
   { what: '界面上的仓库计数自己数行数，不用计算函数给的条目数', file: 'src/renderer/TableView.tsx', runner: 'e2e',
-    from: '<span className="count" data-testid="repo-count">{r.itemCount}</span>',
-    to: '<span className="count" data-testid="repo-count">{r.groups.reduce((n, g) => n + g.rows.length, 0)}</span>',
+    // GitHub#587: the count goes through countOf (a repository never read shows "—"); the number it is given is what this checks
+    from: '<span className="count" data-testid="repo-count">{countOf(r.itemCount, r.unread)}</span>',
+    to: '<span className="count" data-testid="repo-count">{countOf(r.groups.reduce((n, g) => n + g.rows.length, 0), r.unread)}</span>',
     expect: ['GitHub#213: "all repositories" in the table'] },
   // ---- PR #220 review round 1: an item shown in two groups ----
   // ---- GitHub#226: the open detail follows the sync rounds ----
