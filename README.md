@@ -27,7 +27,7 @@ Each one works without the other, and they work best together.
 
 ![create issues and review PRs from AI agent in github](./docs/github_project.png)
 
-A **lightweight multi-agent parallel scheduler built on GitHub issues and PRs** (Claude Code / OpenCode / Codex / your own driver): putting the agreed label on an issue dispatches it, a local AI agent picks it up to do the design / coding / review work, and everything is posted back as GitHub comments + PR commits. Separate work items run at the same time, each in its own git worktree and branch, without blocking one another; the PR an issue later opens carries on in that issue's work item rather than starting another one.
+A **lightweight multi-agent parallel scheduler built on GitHub issues and PRs** (Claude Code / OpenCode / Codex / your own driver): putting the agreed label on an issue dispatches it, a local AI agent picks it up to do the design / coding / review work, and everything is posted back as GitHub comments + PR commits. Separate work items each get their own git worktree and branch, so they never interfere; they run at the same time when the configuration allows it and a slot is free, and queue when every slot is taken (`MAX_CONCURRENT_WORKERS` sets how many, 1 — one at a time — in the template); the PR an issue later opens carries on in that issue's work item rather than starting another one.
 
 "Lightweight" means it is just a scheduled poller on your machine plus GitHub: installed as an [Agent Skill](https://agentskills.io/home), it polls GitHub every 60 seconds in the background — no server, no database, no new web UI to learn.
 
@@ -63,7 +63,7 @@ Morning:    10 PRs / design proposals sit on GitHub. Review them like a reviewer
             AI does another round on its own (you stay hands-off).
 ```
 
-Multiple requests run **truly in parallel** — each issue gets its own worker / worktree / git branch, no cross-blocking. Progress is visible at a glance via GitHub labels. The [official GitHub mobile app](https://github.com/mobile) handles review + comment + label, so you can keep things moving during the commute.
+Multiple requests **can run in parallel** — each issue gets its own worker / worktree / git branch, so they never interfere; `MAX_CONCURRENT_WORKERS` sets how many run at once (1 in the template; the rest queue by priority). Progress is visible at a glance via GitHub labels. The [official GitHub mobile app](https://github.com/mobile) handles review + comment + label, so you can keep things moving during the commute.
 
 ### 2. All process + artifacts traceable by issue number
 

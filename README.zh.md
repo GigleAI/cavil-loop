@@ -27,7 +27,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 ![在 GitHub 上给 Agent 建 issue，review PR](./docs/github_project.png)
 
-一个**基于 GitHub issue / PR 的轻量多 agent 并行调度器**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）：给 issue 打上约定的标签就是派工，本机的 AI agent 接走，做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。不同的工作项各自在独立的 git worktree 和分支里同时处理，互不阻塞；issue 后续开出的 PR 接着在原工作项里做，不另起一份。
+一个**基于 GitHub issue / PR 的轻量多 agent 并行调度器**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）：给 issue 打上约定的标签就是派工，本机的 AI agent 接走，做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。不同的工作项各有独立的 git worktree 和分支，互不干扰；配置允许、又有空闲名额时同时处理，名额满了就排队（同时运行几个由 `MAX_CONCURRENT_WORKERS` 决定，模板默认 1，即一次一个）。issue 后续开出的 PR 接着在原工作项里做，不另起一份。
 
 「轻量」是说它只有本机一个定时轮询脚本加上 GitHub：以 [Agent Skill](https://agentskills.io/home) 形式安装在你本机，后台每 60 秒轮询一次 GitHub，不需要服务器、数据库，也没有要学的新网页界面。
 
@@ -63,7 +63,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
      AI 自己再下一轮（你这边不用动）。
 ```
 
-N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支，互不阻塞。进度看 GitHub 标签一眼清楚。手机端 [GitHub 官方 app](https://github.com/mobile) 也能 review + 评论 + 改标签，通勤路上也能推进。
+N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分支，互不干扰；同时跑几个由 `MAX_CONCURRENT_WORKERS` 决定（模板默认 1，名额满了就按优先级排队）。进度看 GitHub 标签一眼清楚。手机端 [GitHub 官方 app](https://github.com/mobile) 也能 review + 评论 + 改标签，通勤路上也能推进。
 
 ### 2. 全过程 + 交付物可回溯
 
