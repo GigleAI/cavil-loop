@@ -2142,7 +2142,7 @@ test('pending/human: nothing about the history at start, one notification per ne
   await expect(page.getByTestId('notification-keep-rule')).toHaveText('系统通知不会因为切到 App 而收起：打开哪一条（点它的通知，或在窗口里点开），就收起关于这一条的通知，其余留在通知中心。');
   await page.getByTestId('pending-settings').scrollIntoViewIfNeeded();
   await shot(page, '20b-pending-settings-unticked');
-  await expect(page.getByTestId('pending-settings')).toContainText('已关闭、已合并的也算');
+  await expect(page.getByTestId('pending-rule')).toContainText('已关闭、已合并的也算');
   await expect(page.getByTestId('pending-rule-full')).toContainText('已关闭、已合并的也提醒');
   await expect(page.getByTestId('pending-label')).toHaveText('pending/human');
   for (const gone of ['pending-list', 'pending-item', 'pending-count', 'unread-count', 'pending-breakdown']) await expect(page.getByTestId(gone)).toHaveCount(0);
@@ -3379,6 +3379,8 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   await expect(settings).toBeVisible();
   await shot(page, '61-settings-after-keys');
   // GitHub#369: in a text field the first Esc only leaves the field (which saves it), the second goes back
+  // (GitHub#591: the flow labels are a 高级 card — unfolded first)
+  await unfoldSettings(page);
   const agentLabel = page.getByTestId('hand-back-agent');
   const originalAgent = await agentLabel.inputValue();
   expect(originalAgent).not.toBe('');
@@ -3394,11 +3396,13 @@ test('GitHub#192: shortcuts — nothing before sign-in; global keys on every sig
   // saved when the field was left: reopened, the settings show it; then it is put back the same way
   await page.keyboard.press(`${MOD}+,`);
   await expect(settings).toBeVisible();
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-agent')).toHaveValue(`${originalAgent}X`);
   await page.getByTestId('hand-back-agent').fill(originalAgent);
   await page.getByTestId('hand-back-agent').blur();
   await page.getByTestId('back').click();
   await page.keyboard.press(`${MOD}+,`);
+  await unfoldSettings(page);
   await expect(page.getByTestId('hand-back-agent')).toHaveValue(originalAgent);
   // nothing focused: one Esc goes back to the board
   await blur(page);

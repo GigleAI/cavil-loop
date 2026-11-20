@@ -1119,7 +1119,7 @@ button.info-tip:hover, button.info-tip.on { color: var(--accent); background: va
 .info-tip-text.on b, .info-tip-text.on code { color: inherit; }
 /* a fold that holds the less used settings of a group or a card */
 button.fold-toggle { min-height: 0; padding: 6px 0; border: none; background: transparent; color: var(--muted); font-weight: 400; font-size: 12px; gap: 6px; justify-content: flex-start; max-width: 100%; white-space: normal; text-align: left; }
-button.fold-toggle b { color: var(--fg); font-weight: 600; }
+button.fold-toggle b { color: var(--fg); font-weight: 600; white-space: nowrap; flex: none; }
 button.fold-toggle .icon { flex: none; transition: transform 0.15s; transform: rotate(-90deg); }
 button.fold-toggle[aria-expanded='true'] .icon { transform: none; }
 button.fold-toggle:hover b { color: var(--accent); }

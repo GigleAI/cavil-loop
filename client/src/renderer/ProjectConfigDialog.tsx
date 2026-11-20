@@ -506,7 +506,7 @@ function Row({
         </b>
         {/* GitHub#591: the explanation behind an ⓘ; what the line's state is (not in the file) stays in sight */}
         {f.help && (
-          <InfoTip testid="config-help">
+          <InfoTip testid={`config-help-${f.name}`}>
             <Verbatim from="daemon">{f.help}</Verbatim>
           </InfoTip>
         )}

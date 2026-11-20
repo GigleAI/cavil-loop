@@ -90,8 +90,9 @@ test('Settings: 常用 first, the 高级 cards folded at the bottom; going to on
 test('Settings: a card\'s explanation is behind its ⓘ — hover, keyboard focus and a click show it; Esc hides it without leaving Settings', async () => {
   const page = await openSettings();
   const said = '窗口用浅色还是深色。看板、详情、讨论区、关系图、标签颜色和窗口标题栏一起换，选了立刻生效。';
-  // no longer a line on the card
-  await expect(page.getByTestId('theme-settings').getByText(said)).toBeHidden();
+  // no longer a line on the card, and the heading says only its own word
+  await expect(page.getByTestId('theme-settings').getByText(said)).toHaveCount(0);
+  await expect(page.getByTestId('theme-settings').locator('h3')).toHaveText('外观');
   const tip = page.getByTestId('theme-help-text');
   await expect(tip).toHaveText(said);
   await expect(tip).toBeHidden();
@@ -150,10 +151,10 @@ test('project settings: opens with the 18 common ones; each group\'s 「高级�
   expect(await names()).toEqual(want(['main']));
   expect(want(['main']).length).toBe(18);
   // each row's explanation is the registry's help, behind its ⓘ
-  const help = page.locator('[data-testid=config-row][data-name=MAX_CONCURRENT_WORKERS] [data-testid=config-help-text]');
+  const help = page.getByTestId('config-help-MAX_CONCURRENT_WORKERS-text');
   await expect(help).toHaveText(reg.get('MAX_CONCURRENT_WORKERS')!.help);
   await expect(help).toBeHidden();
-  await page.locator('[data-testid=config-row][data-name=MAX_CONCURRENT_WORKERS] [data-testid=config-help-button]').hover();
+  await page.locator('[data-testid=config-row][data-name=MAX_CONCURRENT_WORKERS]').getByTestId('config-help-MAX_CONCURRENT_WORKERS-button').hover();
   await expect(help).toBeVisible();
   // Esc hides the tip and keeps the dialog open
   await page.keyboard.press('Escape');

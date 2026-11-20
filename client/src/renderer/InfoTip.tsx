@@ -7,10 +7,12 @@
 // taken before the window's own Esc (leaving settings, closing the dialog) sees it.
 //
 // The tip is drawn by the window (not the system's `title` tooltip, which waits a second and is
-// out of reach of the keyboard and screen readers) in a fixed layer, so a dialog's scrolling
-// box does not clip it; it opens below the ⓘ and moves above / to the left when there is no room.
+// out of reach of the keyboard and screen readers) in a fixed layer at the end of the page (a
+// portal), so a dialog's scrolling box does not clip it and the heading or label it sits next to
+// keeps only its own words; it opens below the ⓘ and moves above / to the left when there is no room.
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from './Icons';
 import { t } from '../shared/i18n';
 
@@ -103,6 +105,7 @@ export function InfoTip({ children, testid, textTestid, label }: { children: Rea
         <Icon name="info" size={14} />
       </button>
       {/* always in the page (the button's description for screen readers); shown only while open */}
+      {createPortal(
       <span
         ref={tip}
         id={id}
@@ -112,7 +115,9 @@ export function InfoTip({ children, testid, textTestid, label }: { children: Rea
         style={open && place ? { left: place.left, top: place.top } : undefined}
       >
         {children}
-      </span>
+      </span>,
+      document.body,
+      )}
     </span>
   );
 }
