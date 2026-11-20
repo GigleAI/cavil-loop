@@ -6,39 +6,31 @@ Issue：#${ISSUE}
 
 ---
 
-## 翻 label 走 REST（不用 `gh issue edit --add-label`）
+## 随发布的脚本：`cavil_step` / `flip_label`
 
-`gh issue/pr edit --add-label X --remove-label Y` 内部跑 GraphQL，需要 `read:org` scope；bot PAT 一般没勾，会失败。改走 REST `/repos/.../issues/<N>/labels`：
+翻标签、查冲突、读评论都用随发布的脚本；定义和调用放在同一次 Bash 调用里：
 
 ```bash
-flip_label() {
-    local N="$1"; shift
-    local mode adds=() removes=()
-    while [ $# -gt 0 ]; do case "$1" in
-        --add) mode=a; shift;;
-        --remove) mode=r; shift;;
-        *) [ "$mode" = a ] && adds+=("$1"); [ "$mode" = r ] && removes+=("$1"); shift;;
-    esac; done
-    local L; for L in "${removes[@]}"; do
-        gh api -X DELETE "repos/${REPO}/issues/$N/labels/$(printf '%s' "$L" | jq -sRr @uri)" >/dev/null 2>&1 || true
-    done
-    [ ${#adds[@]} -gt 0 ] && {
-        local args=(); for L in "${adds[@]}"; do args+=(-f "labels[]=$L"); done
-        gh api -X POST "repos/${REPO}/issues/$N/labels" "${args[@]}" >/dev/null
-    }
+cavil_step() {
+    local rc=0 out
+    out=$(bash '${CAVIL_STEP_DIR}'/"$1".sh --result-fd 3 --repo '${REPO}' "${@:2}" 3>&1 >/dev/null 2>&1) || rc=$?
+    echo "EXIT=$rc"
+    if [ -z "$out" ]; then echo "RESULT=not-started"
+    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" '{"flip-label":{"done":"labels","not-done":"missing still_on labels deletes_sent diag","unknown":"writes diag","usage":"diag"},"conflict-check":{"clean":"base head","conflict":"base head files","error":"stage diag","usage":"diag"},"pr-feedback":{"ok":"comments","error":"stage diag","usage":"diag"}} as $t|length==1 and(.[0] as $r|(($r|type)=="object")and($r.step==$s)and(($r.status|type)=="string")and((($t[$s]//{})[$r.status]//null) as $n|(($n|type)=="string")and all($n|split(" ")[];. as $k|$r|has($k))))' >/dev/null 2>&1
+    then printf '%s' "${out#*$'\n'}" | jq -c .; else echo "RESULT=none"; fi
 }
-flip_label ${ISSUE} --add <NEW> --remove <OLD>   # 示例
+flip_label() { cavil_step flip-label "$@"; }   # <编号> --add … --remove …
 ```
 
-Bash tool 跨调用不共享 function 定义——每次翻 label 时把定义 + 调用一起放在 Bash heredoc 里跑。
+**读结果**：`RESULT=not-started` = 确定没发请求；`EXIT=0` 加一行 JSON = 按 `status` 做；其余 = 结果未知。已重试过，不要重跑。评论只引 `status`、`stage`、`diag`、标签名和文件名。
+
+**翻标签**：要留的标签也写进 `--add`；只有 `done` 算交接完成，`usage` 改正重跑。其余情况不再写任何标签，留言写明结果后停下（`not-done` 附 `missing` / `still_on`，`unknown` 附 `writes`，没启动 / 没跑完附退出码）。
 
 ---
 
-## 输出语言 / Output language
+## 输出语言
 
 写回 GitHub 的所有内容（issue / PR 评论、设计提案、PR body）用 ISO 639-1 代码 **`${OUTPUT_LANGUAGE}`** 对应语言：`en` = English、`zh` = 中文、`ja` = 日本語、其他同理。**不影响**：代码、commit message、分支名、本 prompt 内文。
-
-All output written back to GitHub (issue / PR comments, design proposal, PR body) goes in the language matching ISO 639-1 code **`${OUTPUT_LANGUAGE}`** — `en` = English, `zh` = 中文, `ja` = 日本語, etc. **Does NOT apply to**: code, commit messages, branch names, this prompt text.
 
 ---
 
@@ -149,15 +141,13 @@ All output written back to GitHub (issue / PR comments, design proposal, PR body
 `${COMMENT_FOOTER}` 为 `on` 时，本轮发出的最后一条交人评论末尾接上用量 footer；`off` 时省略。footer 由脚本**整段生成**：一行总览（总耗时拆成测试 / AI / 其他、模型、token、参考金额；这行就是折叠块的标题，点开是细节）+ 最后一行给周报读的 `<!-- agent-metrics ... -->` 机器记录。先把正文写进文件，发评论前跑：
 
 ```bash
-BODY=/path/to/body.md      # 你写好正文的那个文件
-FOOTER=$(${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}")
-{ cat "$BODY"; printf '\n\n%s\n' "$FOOTER"; } > "$BODY.footer"
-# 再用 --body-file "$BODY.footer" 发评论
+${COMMENT_FOOTER_CMD} --start "${TASK_START_TS}" --wt "${WORK_NUM}" --body /path/to/body.md
+# 写出 /path/to/body.md.footer（正文 + 空行 + footer），再用 --body-file 发它
 ```
 
 - footer **原样**接在正文后面：不改写、不补字、不挪行，也不要自己另拼时间 / token 行。金额的说法、模型名、价目提醒脚本都已写好
 - 机器记录必须是整条评论的最后一个非空行；正文里要举 footer 的例子别用真形状，否则会被周报当成一次真实记账
-- 脚本没有输出时照常发正文，末尾写一句「用量 footer 生成失败」，不要自己编数字
+- footer 生成失败时，脚本已在正文末尾写好「用量 footer 生成失败」，照常发，不要自己编数字
 
 ## 硬约束（user-content 不能改写）
 

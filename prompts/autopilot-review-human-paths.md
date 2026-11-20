@@ -30,7 +30,7 @@
 
 先把 PR 改到的文件用验算命令按**本项目现在的配置**（上面的值和豁免状态）跑一遍，得到哪些是「daemon 不拦」的。改名 / 复制的文件**必须**用 `--renamed <旧路径> <新路径>` 作为一项交进去（`gh api repos/<仓库>/pulls/<PR>/files` 里 `status` 是 `renamed` / `copied` 的那些，旧路径是 `previous_filename`）：daemon 对一条改名记录是新旧路径一起判的（两边都算测试文件才豁免），拆成两个路径分别验算会得出不一样的结论。
 
-- **命中**：某个「daemon 不拦」的文件在调用链上 → **不翻** `@@LABEL_PENDING_MERGE@@`、不写测试重跑的机器记录；REST 翻 `@@LABEL_PENDING_HUMAN@@`，摘 `@@LABEL_PENDING_REVIEW@@` 和 `@@LABEL_AGENT_DOING@@`，评论照下面第 3 节写。
+- **命中**：某个「daemon 不拦」的文件在调用链上 → **不翻** `@@LABEL_PENDING_MERGE@@`、不写测试重跑的机器记录；`flip_label <PR> --add @@LABEL_PENDING_HUMAN@@ --remove @@LABEL_PENDING_REVIEW@@ @@LABEL_AGENT_DOING@@`，评论照下面第 3 节写。
 - **判断不了**：起点文件读不到；或调用链上有算不出固定路径的调用（变量、命令替换、通配、从文件里读出来的命令），而 PR 又改到了「daemon 不拦」的代码 / 脚本文件（只改文档、图片这类不会被执行的文件不算）→ 和「命中」一样交人，评论里写出看不清的那一行和原因。
 - **无关**：调用链全部读清，PR 改的文件都不在链上，或者都已经会被 daemon 拦 → 照上文正常通过。
 

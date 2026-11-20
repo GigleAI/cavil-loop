@@ -93,6 +93,8 @@ chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/tmux" "$SANDBOX/bin/claude"
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$SANDBOX/old" "$SANDBOX/new"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$SANDBOX/old"
+# GitHub#599 的新占位：旧派工脚本照新脚本的办法换掉（tests/lib/compat.sh）
+compat_step_dir_patch "$SANDBOX/old" || exit 1
 cp -r "$REPO_DIR/prompts" "$SANDBOX/old/"
 cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$SANDBOX/new/"
 NEW="$SANDBOX/new"; OLD="$SANDBOX/old"
@@ -513,9 +515,17 @@ big_run() {   # <根>
 big_run "$NEW"; NEW_BIG=$(LC_ALL=C wc -c < "$W/got" | tr -d ' ')
 chk "20 条大样例：改后整段 ≤ 6000 字节（实得 $NEW_BIG）" "$([ "$NEW_BIG" -le 6000 ] && echo yes)" "yes"
 chk "…每行都有摘要和涉及的目录" "$(grep -c '：第 [0-9]* 块界面改动；涉及 5 个目录：' "$W/got")/$(grep -c '^- ' "$W/got")" "$(grep -c '^- ' "$W/got")/$(grep -c '^- ' "$W/got")"
-if ! compat_skip "20 条大样例的清单体积与改动前" "$OLD" "$NEW" scripts; then
-    big_run "$OLD"; OLD_BIG=$(LC_ALL=C wc -c < "$W/got" | tr -d ' ')
-    chk "…同一份夹具，改动前的清单超过 20 KB（实得 $OLD_BIG 字节）" "$([ "$OLD_BIG" -gt 20000 ] && echo yes)" "yes"
+# 「改动前」固定为 GitHub#598（PR #604）合入前的提交 02ec6cf5：#604 之后开的分支，合并基点已经是
+# 一行一条的新格式，拿它比体积就比不出差别（PR #607 上 CI 实测：基点 c8eb0b53 时得 5683 字节）
+PRE598="$SANDBOX/pre598"; mkdir -p "$PRE598"
+if git -C "$REPO_DIR" archive 02ec6cf5 scripts 2>/dev/null | tar -x -C "$PRE598"; then
+    compat_step_dir_patch "$PRE598" || exit 1
+    cp -r "$REPO_DIR/prompts" "$PRE598/"
+    prompt_tree_isolate "$PRE598" "$SANDBOX/pre598-prompts" || { echo "❌ #598 之前的派工脚本认不出提示词写在哪"; exit 1; }
+    big_run "$PRE598"; OLD_BIG=$(LC_ALL=C wc -c < "$W/got" | tr -d ' ')
+    chk "…同一份夹具，#598 之前的清单超过 20 KB（实得 $OLD_BIG 字节）" "$([ "$OLD_BIG" -gt 20000 ] && echo yes)" "yes"
+else
+    bad "取不到 #598 之前的提交 02ec6cf5（需要完整历史）"
 fi
 
 # 整份提示词在单个参数上限（131071 字节）两侧：项目的 PR 评论附加模板用来撑长度，清单是上面那份满额的

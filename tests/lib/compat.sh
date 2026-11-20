@@ -44,3 +44,20 @@ compat_skip() {   # <label> <old root> <new root> <subdir>...
 compat_summary() {
     echo "改动前对拍：跑了 $COMPAT_RAN 组，同版本跳过 $COMPAT_SKIPPED 组（跳过的不算通过）"
 }
+
+# compat_step_dir_patch <old root>: GitHub#599 added the ${CAVIL_STEP_DIR} placeholder to the base
+# templates. Tests that render the *current* templates with the merge-base dispatch scripts (to show a
+# switched-off feature changes nothing) would otherwise see the placeholder left unrendered by the old
+# scripts and report a difference that has nothing to do with the feature under test. This gives the old
+# dispatch scripts the same substitution the current ones make (the tree's own scripts/ — what
+# _lib.sh picks when no managed entrypoints exist). A tree that already renders it is left alone, so the
+# patch turns into a no-op once the merge-base contains GitHub#599.
+compat_step_dir_patch() {
+    local f
+    for f in "$1"/scripts/dispatch-new-issue.sh "$1"/scripts/dispatch-issue-comment.sh "$1"/scripts/dispatch-pr-comment.sh; do
+        [ -f "$f" ] || continue
+        grep -q 'CAVIL_STEP_DIR' "$f" && continue
+        sed -i 's#^\(        -e "s|\\${COMMENT_FOOTER_CMD}|$COMMENT_FOOTER_CMD|g" \\\)$#\1\n        -e "s|\\${CAVIL_STEP_DIR}|$_LIB_DIR|g" \\#' "$f"
+        grep -q 'CAVIL_STEP_DIR' "$f" || { echo "compat_step_dir_patch: 没能给 $f 补上 \${CAVIL_STEP_DIR}" >&2; return 1; }
+    done
+}

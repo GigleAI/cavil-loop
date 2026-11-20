@@ -8,9 +8,11 @@
 # 同一条规矩落在三处：issue 回复模板的开发阶段（首次开 PR，拆出来的子项也走这里）、PR 回复
 # 模板（返工）、通用 review 模板（复审下结论前）。只改其中一处不会报错，只会让某个入口照样把
 # 冲突的 PR 交给人——所以这里按 daemon 真正拼出来的成品对拍：
-#   1. 三份成品里的检查命令逐字一致，两份 worker 成品里的处理规则逐字一致，且排在翻 label 之前
-#   2. 把成品里的检查命令原样拿出来，在真实 git worktree 里跑：无冲突 / 有冲突 / 只落后 /
-#      取不到分支 / 本地没推的提交，各自判对，而且不动工作区、不产生提交
+#   1. 三份成品都调 `cavil_step conflict-check`，`cavil_step` 的定义块四份成品逐字一致（GitHub#599：
+#      整段命令改成了随发布的 scripts/conflict-check.sh），两份 worker 成品里的处理规则逐字一致，
+#      且排在翻 label 之前
+#   2. 把成品里的定义块原样拿出来，在真实 git worktree 里跑 `cavil_step conflict-check 7`：无冲突 /
+#      有冲突 / 只落后 / 取不到分支 / 本地没推的提交，各自判对，而且不动工作区、不产生提交
 # （原来的第 3 组负对照已按 GitHub#234 删去。）
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -46,6 +48,7 @@ ok()  { echo "  ✅ $1"; pass=$((pass+1)); }
 bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 
 ALL=(issue-comment pr-comment review)
+DEFS=(new-issue issue-comment pr-comment review)
 WORKERS=(issue-comment pr-comment)
 SECTION_HEAD='## 交出 PR 前：先查和主干有没有冲突'
 
@@ -59,7 +62,8 @@ make_sandbox() {
     SKILL_DIR="$TMP/skill"
 }
 
-snippet() { sed -n '/^# --- 冲突检查 开始 ---$/,/^# --- 冲突检查 结束 ---$/p' "$1"; }
+# `cavil_step` 的定义块：成品里含 `cavil_step() {` 的那个 bash 代码块（不含围栏）
+snippet() { awk '/^```bash$/{b=""; inb=1; next} inb && /^```$/{if (b ~ /cavil_step\(\) \{/) printf "%s", b; inb=0; next} inb{b=b $0 "\n"}' "$1"; }
 # worker 的处理规则：从段标题截到下一个二级标题之前
 section() { awk -v h="$SECTION_HEAD" '$0==h{on=1;print;next} on&&/^## /{exit} on{print}' "$1"; }
 line_of() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
@@ -67,24 +71,25 @@ line_of() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
 # 打印发现的问题，一行一条；空输出 = 全部满足
 check_prompts() {
     local name f s ref_snip="" ref_sec=""
-    for name in "${ALL[@]}"; do
+    for name in "${DEFS[@]}"; do
         f=$(compose_prompt_template "$name" 2>/dev/null)
         [ -s "$f" ] || { echo "$name: 拼不出 prompt"; continue; }
         cp "$f" "$TMP/composed-$name.md"; f="$TMP/composed-$name.md"
         s=$(snippet "$f")
-        if [ -z "$s" ]; then echo "$name: 没有冲突检查命令"; continue; fi
-        if grep -Eq '(^|[^[:alnum:]_])(mktemp|rm)([[:space:])]|$)' <<<"$s"; then
-            echo "$name: 冲突检查不应创建或删除临时文件"
-        fi
-        [ "$(grep -c '^# --- 冲突检查 开始 ---$' "$f")" -eq 1 ] || echo "$name: 冲突检查命令不止一份"
-        if [ -z "$ref_snip" ]; then ref_snip="$s"; elif [ "$s" != "$ref_snip" ]; then echo "$name: 冲突检查命令和 ${ALL[0]} 不一致"; fi
+        if [ -z "$s" ]; then echo "$name: 没有 cavil_step 定义"; continue; fi
+        [ "$(grep -c '^cavil_step() {$' "$f")" -eq 1 ] || echo "$name: cavil_step 定义不止一份"
+        grep -qF '冲突检查 开始' "$f" && echo "$name: 还留着整段冲突检查命令"
+        if [ -z "$ref_snip" ]; then ref_snip="$s"; elif [ "$s" != "$ref_snip" ]; then echo "$name: cavil_step 定义和 ${DEFS[0]} 不一致"; fi
+    done
+    for name in "${ALL[@]}"; do
+        grep -qF 'cavil_step conflict-check' "$TMP/composed-$name.md" 2>/dev/null || echo "$name: 没有调用 cavil_step conflict-check"
     done
 
     for name in "${WORKERS[@]}"; do
         f="$TMP/composed-$name.md"; [ -s "$f" ] || continue
         s=$(section "$f")
         if [ -z "$s" ]; then echo "$name: 没有「交出 PR 前」处理规则"; continue; fi
-        grep -qF '冲突检查 开始' <<<"$s" || echo "$name: 处理规则里没有检查命令"
+        grep -qF 'cavil_step conflict-check' <<<"$s" || echo "$name: 处理规则里没有检查命令"
         grep -qF '不 rebase、不强推' <<<"$s" || echo "$name: 处理规则缺「不 rebase、不强推」"
         grep -qF 'git merge --abort' <<<"$s" || echo "$name: 处理规则缺解不了时的恢复"
         grep -qF '重跑相关测试' <<<"$s" || echo "$name: 处理规则缺重跑测试"
@@ -116,7 +121,7 @@ check_prompts() {
         ref=$(grep -nE '^2C\. ' "$f" | head -1 | cut -d: -f1)
         flip=$(grep -nE '^3\. 在该目标发一条 review 结论评论' "$f" | head -1 | cut -d: -f1)
         local start
-        start=$(line_of "$f" '# --- 冲突检查 开始 ---')
+        start=$(line_of "$f" 'cavil_step conflict-check')
         if [ -z "$ref" ]; then echo "review: 没有下结论前的冲突检查步骤"
         elif [ -z "$flip" ] || [ "$ref" -ge "$flip" ] || [ -z "$start" ] || [ "$start" -ge "$flip" ]; then
             echo "review: 冲突检查排在发结论评论之后"
@@ -125,19 +130,19 @@ check_prompts() {
     fi
 }
 
-echo "── 仓库现状：三份成品带同一份检查命令，worker 处理规则一致，都排在翻 label / 下结论之前 ──"
+echo "── 仓库现状：四份成品带同一份 cavil_step 定义，三份调冲突检查，worker 处理规则一致，都排在翻 label / 下结论之前 ──"
 make_sandbox
 out=$(check_prompts)
 if [ -z "$out" ]; then ok "全部满足"; else bad "仓库现状不满足："; sed 's/^/       /' <<<"$out"; fi
 
 # ── 2. 成品里的检查命令原样在真实 git worktree 里跑 ──
 echo "── 检查命令实跑（真实 git worktree + 假 gh）──"
-mkdir -p "$TMP/bin"
+mkdir -p "$TMP/bin" "$TMP/home"
 cat > "$TMP/bin/gh" <<'GH'
 #!/usr/bin/env bash
-# 只认 `gh pr view <P> --repo R --json baseRefName,headRefOid --jq ...`，按环境变量回答
+# 只认 conflict-check.sh 读 PR 的那一下：`gh api repos/acme/widget/pulls/7 --jq ...`，按环境变量回答
 case "$*" in
-    "pr view 7 --repo acme/widget --json baseRefName,headRefOid "*) echo "$FAKE_BASE $FAKE_OID" ;;
+    "api repos/acme/widget/pulls/7 --jq "*) echo "$FAKE_BASE $FAKE_OID" ;;
     *) echo "fake gh: unexpected: $*" >&2; exit 1 ;;
 esac
 GH
@@ -162,9 +167,10 @@ setup_repo() {   # <功能分支改 f 的哪一行内容> <主干改什么：sam
     esac
 }
 
-run_snippet() {   # <成品 prompt>；在 worktree 里跑，回显输出
-    snippet "$1" | sed 's|\${REPO}|acme/widget|g' > "$TMP/snippet.sh"
-    (cd "$TMP/git/wt" && PATH="$TMP/bin:$PATH" P=7 bash "$TMP/snippet.sh" 2>&1)
+run_snippet() {   # <成品 prompt>；在 worktree 里定义 cavil_step 并跑 conflict-check，回显两行
+    snippet "$1" | sed -e 's|\${REPO}|acme/widget|g' -e "s|\${CAVIL_STEP_DIR}|$REPO_DIR/scripts|g" > "$TMP/snippet.sh"
+    printf 'cavil_step conflict-check 7\necho SENTINEL\n' >> "$TMP/snippet.sh"
+    (cd "$TMP/git/wt" && PATH="$TMP/bin:$PATH" HOME="$TMP/home" CAVIL_STEP_RETRY_SLEEP=0 bash -euo pipefail "$TMP/snippet.sh" 2>&1)
 }
 
 untouched() {   # 工作区干净、HEAD 没动
@@ -172,13 +178,15 @@ untouched() {   # 工作区干净、HEAD 没动
     [ -z "$(cd "$TMP/git/wt" && git status --porcelain)" ] && [ "$(cd "$TMP/git/wt" && git rev-parse HEAD)" = "$head" ]
 }
 
-expect_run() {   # <说明> <期望 CONFLICT_CHECK 值> [期望出现在输出里的片段]
-    local name out head
+expect_run() {   # <说明> <期望 status> [期望出现在 files 里的文件]
+    local name out head st
     for name in "${ALL[@]}"; do
         head=$(cd "$TMP/git/wt" && git rev-parse HEAD)
         out=$(run_snippet "$TMP/composed-$name.md")
-        if ! grep -q "^CONFLICT_CHECK=$2" <<<"$out"; then bad "$name: $1 → 期望 $2，实得：$(tr '\n' ' ' <<<"$out")"; continue; fi
-        if [ -n "${3:-}" ] && ! grep -qxF -- "$3" <<<"$out"; then bad "$name: $1 → 输出里没列出 $3"; continue; fi
+        st=$(sed -n 2p <<<"$out" | jq -r '.status' 2>/dev/null)
+        if [ "$(sed -n 1p <<<"$out")" != "EXIT=0" ] || [ "$st" != "$2" ]; then bad "$name: $1 → 期望 $2，实得：$(tr '\n' ' ' <<<"$out")"; continue; fi
+        if [ "$(sed -n 3p <<<"$out")" != SENTINEL ]; then bad "$name: $1 → 调用后的语句没执行到（set -e 下中断了）"; continue; fi
+        if [ -n "${3:-}" ] && ! sed -n 2p <<<"$out" | jq -e --arg f "$3" '.files | index($f)' >/dev/null; then bad "$name: $1 → files 里没列出 $3"; continue; fi
         if ! untouched "$head"; then bad "$name: $1 → 检查动了工作区或产生了提交"; continue; fi
         ok "$name: $1 → $2"
     done
