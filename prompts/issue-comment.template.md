@@ -9,7 +9,7 @@ Issue 有新评论。你之前已经在这个 issue 上发过一份**设计方�
 
 ## 随发布的脚本：`cavil_step` / `flip_label`
 
-翻标签、冲突检查、读 PR 评论都跑随发布的脚本。Bash tool 跨调用不共享函数，每次把定义和调用放进同一次 Bash 调用：
+翻标签、查冲突、读评论都用随发布的脚本；定义和调用放在同一次 Bash 调用里：
 
 ```bash
 cavil_step() {
@@ -17,15 +17,15 @@ cavil_step() {
     out=$(bash '${CAVIL_STEP_DIR}'/"$1".sh --result-fd 3 --repo '${REPO}' "${@:2}" 3>&1 >/dev/null 2>&1) || rc=$?
     echo "EXIT=$rc"
     if [ -z "$out" ]; then echo "RESULT=not-started"
-    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" '{"flip-label":{"done":"labels","not-done":"missing still_on labels deletes_sent diag","unknown":"writes diag","usage":"diag"},"conflict-check":{"clean":"base head","conflict":"base head files","error":"stage diag","usage":"diag"},"pr-feedback":{"ok":"comments","error":"stage diag","usage":"diag"}} as $t | length == 1 and (.[0] as $r | (($r | type) == "object") and ($r.step == $s) and (($r.status | type) == "string") and ((($t[$s] // {})[$r.status] // null) as $n | (($n | type) == "string") and all($n | split(" ")[]; . as $k | $r | has($k))))' >/dev/null 2>&1
+    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" '{"flip-label":{"done":"labels","not-done":"missing still_on labels deletes_sent diag","unknown":"writes diag","usage":"diag"},"conflict-check":{"clean":"base head","conflict":"base head files","error":"stage diag","usage":"diag"},"pr-feedback":{"ok":"comments","error":"stage diag","usage":"diag"}} as $t|length==1 and(.[0] as $r|(($r|type)=="object")and($r.step==$s)and(($r.status|type)=="string")and((($t[$s]//{})[$r.status]//null) as $n|(($n|type)=="string")and all($n|split(" ")[];. as $k|$r|has($k))))' >/dev/null 2>&1
     then printf '%s' "${out#*$'\n'}" | jq -c .; else echo "RESULT=none"; fi
 }
-flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标签>… --remove <标签>…
+flip_label() { cavil_step flip-label "$@"; }   # <编号> --add … --remove …
 ```
 
-**读结果**：`RESULT=not-started` = 没启动，确定没发请求；`EXIT=0` 加一行 JSON（已核对：是这个脚本的、`status` 是这份说明写到的、该状态要的字段都在）= 按其 `status` 做；其余 = 没跑完，结果未知。脚本已重试过，不要重跑。评论里只写结果的 `status`、`stage`、`diag`、标签名、冲突文件名。
+**读结果**：`RESULT=not-started` = 确定没发请求；`EXIT=0` 加一行 JSON = 按 `status` 做；其余 = 结果未知。已重试过，不要重跑。评论只引 `status`、`stage`、`diag`、标签名和文件名。
 
-**翻标签**：交接后要留着的标签也写进 `--add`。脚本先加、读回确认后才删，读回达到目标才是 `done`；`usage` = 命令写错，改正重跑。其余结果不说交接完成、不再写任何标签，留言如实写明后停下：`not-done` 抄 `missing` / `still_on`；`unknown` 写「标签状态读不到」并抄 `writes`；没启动写「脚本没能启动，确定没发请求，标签未改」；没跑完写退出码和「结果未知」。
+**翻标签**：要留的标签也写进 `--add`；只有 `done` 算交接完成，`usage` 改正重跑。其余情况不再写任何标签，留言写明结果后停下（`not-done` 附 `missing` / `still_on`，`unknown` 附 `writes`，没启动 / 没跑完附退出码）。
 
 ---
 
@@ -139,7 +139,7 @@ flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标�
 
 每次要把 PR 交出去——翻 `${LABEL_REVIEW_OR_HUMAN}`（交复审或交人），或因纯讨论、澄清、受阻翻 `${LABEL_PENDING_HUMAN}`——**之前**，先在 worktree 里查这个 PR 和它的目标分支有没有冲突，有就先解掉再交。人打开 PR 时不该再看到「This branch has conflicts」。
 
-先确认本轮的提交都已 `git push`，再在 worktree 里跑 `cavil_step conflict-check <PR 编号>`（定义见上文「随发布的脚本」）：只试合并，不动工作区、不产生提交；查的是 GitHub 上 PR 的最新提交，本地没推的提交不算数。按结果的 `status` 走：
+提交都 `git push` 后，在 worktree 里跑 `cavil_step conflict-check <PR 编号>`（只试合并，不动工作区；查的是 GitHub 上 PR 的最新提交）。按 `status` 走：
 
 - **`clean`**：照常交。只是落后主干、没有冲突时**不要**合主干——每轮都合只会给 PR 塞无意义的合并提交。
 - **`conflict`**（冲突文件在 `files` 里，目标分支在 `base` 里）：
@@ -149,7 +149,7 @@ flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标�
   4. 本轮原本是纯讨论 / 澄清，因为解冲突有了提交 → 也算有代码产出，按有代码的路径翻 `${LABEL_REVIEW_OR_HUMAN}`
   5. 交出去的那条评论里写一句「已合入主干 `<base>`，解决了 N 个文件的冲突」，每个文件一句解法
 - **解不了**（两边意图相反要人判断，或 PR 来自外部 fork、推不上去）：`git merge --abort` 恢复原状，评论里列出冲突文件和卡住的原因，翻 `${LABEL_PENDING_HUMAN}`（不交复审）。
-- **`error`、没启动、没跑完**：检查本身没跑成（网络、目标分支取不到、git 太旧），脚本已经重试过。照常交，但在交出去的那条评论里写明「没能检查与主干的冲突」和结果里的 `diag`（没启动 / 没跑完写退出码），不要写成「无冲突」。
+- **`error`、没启动、没跑完**：照常交，评论里写明「没能检查与主干的冲突」和 `diag`（或退出码），不要写成「无冲突」。
 
 ## 有代码产出时：逐条核对硬规则
 

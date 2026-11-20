@@ -345,7 +345,7 @@ for name in new-issue issue-comment pr-comment review; do
         && ok "$name 模板里 cavil_step 的核对是稳定表" \
         || bad "$name 模板里 cavil_step 的核对不是稳定表"
 done
-table_of() { grep -v '^#' "$1" | sed 's/ as \$t | .*//' | jq -c 'map_values(map_values(split(" ")))'; }
+table_of() { grep -v '^#' "$1" | sed 's/ as \$t|.*//' | jq -c 'map_values(map_values(split(" ")))'; }
 gone=$(jq -nr --argjson a "$(table_of "$TEST_DIR/fixtures/step-result-stable.jq")" --argjson b "$(table_of "$REPO_DIR/scripts/step-result.jq")" \
     '[$a | to_entries[] | .key as $st | .value | to_entries[] | .key as $s | .value[] as $f
       | select(($b[$st][$s] // null) == null or ($b[$st][$s] | index($f)) == null) | "\($st)/\($s)/\($f)"] | join(" ")')
