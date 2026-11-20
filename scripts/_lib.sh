@@ -7969,8 +7969,16 @@ def cw_line:
 def cw_first_sentence:
     (. // "") | tostring | gsub("\r\n?"; "\n")
     | gsub("<!--[\\s\\S]*?-->"; "") | sub("<!--[\\s\\S]*$"; "")
-    | reduce (split("\n")[]) as $l ({fence: null, out: null};
-        if .out != null then .
+    # 第一个可用的行找到后，同一段里接着的普通行（软换行）也并进来，句子跨行时不会只剩半句；
+    # 空行或另一种块（标题、列表、引用、表格、代码块、图片、HTML、关联行）开头就到段尾
+    | reduce (split("\n")[]) as $l ({fence: null, out: null, done: false};
+        if .done then .
+        elif .out != null then
+            (if ($l | test("^\\s*$") or test("^\\s{0,3}(#|[-*+]\\s|[0-9]+[.)]\\s|>|\\||!\\[|<|```|~~~)")) then .done = true
+             else (($l | cw_line) as $c
+                   | if $c == null then .done = true
+                     elif ((.out | test("[\\x{0080}-\\x{10FFFF}]$")) and ($c | test("^[\\x{0080}-\\x{10FFFF}]"))) then .out += $c
+                     else .out += " " + $c end) end)
         elif .fence != null then (.fence as $f | if ($l | test("^\\s{0,3}" + $f)) then .fence = null else . end)
         elif ($l | test("^\\s{0,3}(```|~~~)")) then .fence = ($l | capture("^\\s{0,3}(?<f>```|~~~)").f)
         elif ($l | test("^( {4}|\\t)")) then .
@@ -8186,7 +8194,7 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
                     else line+="${summ:-摘要未能读取}；涉及的目录未能读取（分支 \`$head\` 取不到）"; fi
                 elif [ -z "${tips[$eb]:-}" ]; then
                     line+="${summ:-摘要未能读取}；涉及的目录未能读取（目标分支 \`$eb\` 取不到）"
-                elif ! git -C "$PROJECT_ROOT" -c core.quotePath=true diff --name-only "${tips[$eb]}...${tips[$head]}" > "$tmp/files.raw" 2> "$tmp/err"; then
+                elif ! git -C "$PROJECT_ROOT" diff -z --name-only "${tips[$eb]}...${tips[$head]}" > "$tmp/files.raw" 2> "$tmp/err"; then
                     line+="${summ:-摘要未能读取}；涉及的目录未能读取（算不出和 \`$eb\` 的差异）"
                     _concurrent_work_log_file "同时进行的其他工作：$head 相对 $eb 的差异算不出来" "$tmp/err"
                 else
@@ -8200,24 +8208,22 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
                             _concurrent_work_log_file "同时进行的其他工作：$head 的提交标题读不出来" "$tmp/err"
                         fi
                     fi
-                    # 上一级目录：去重、按字节排序；仓库根目录下的文件单列
-                    if ! LC_ALL=C awk 'NF { if (index($0, "/") == 0) print "\001"; else { sub(/\/[^\/]*$/, "/"); print } }' "$tmp/files.raw" \
-                            | LC_ALL=C sort -u > "$tmp/dirs.raw"; then
+                    # 上一级目录：git 给的是以 NUL 分隔的原样路径（不加引号、不转义），先按真实的上一级目录去重计数，
+                    # 再清理成显示用的名字——在加了引号的显示文本上取目录，同一个目录会被算成两个（PR #604 复审第 1 轮）。
+                    # 仓库根目录下的文件单列；排序按 jq 的码点顺序
+                    if ! jq -Rrs --argjson max "$CONCURRENT_WORK_MAX_DIRS" "$CONCURRENT_WORK_JQ_DEFS"'
+                            [ split("\u0000")[] | select(. != "")
+                              | if test("/") then sub("/[^/]*$"; "/") else "\u0001" end ] | unique
+                            | "\(length)\u001f" + ([ .[0:$max][]
+                                | if . == "\u0001" then "仓库根目录" else "`" + cw_flat(80) + "`" end ] | join("、"))' \
+                            < "$tmp/files.raw" > "$tmp/dirs" 2> "$tmp/err" \
+                       || ! IFS=$'\x1f' read -r n dirs < "$tmp/dirs" || ! [[ "$n" =~ ^[0-9]+$ ]]; then
                         line+="${summ}；涉及的目录未能读取（整理目录失败）"
+                    elif [ "$n" -eq 0 ]; then
+                        line+="${summ}；相对 \`$eb\` 没有改动文件"
                     else
-                        n=$(wc -l < "$tmp/dirs.raw" | tr -d ' ')
-                        if [ "$n" -eq 0 ]; then
-                            line+="${summ}；相对 \`$eb\` 没有改动文件"
-                        else
-                            dirs=$(head -n "$CONCURRENT_WORK_MAX_DIRS" "$tmp/dirs.raw" \
-                                | jq -Rr "$CONCURRENT_WORK_JQ_DEFS"' if . == "\u0001" then "仓库根目录" else "`" + cw_flat(80) + "`" end' \
-                                | awk '{ printf "%s%s", (NR > 1 ? "、" : ""), $0 }') || dirs=""
-                            if [ -z "$dirs" ]; then line+="${summ}；涉及的目录未能读取（整理目录失败）"
-                            else
-                                more=""; [ "$n" -le "$CONCURRENT_WORK_MAX_DIRS" ] || more=" 等"
-                                line+="${summ}；涉及 $n 个目录：$dirs$more"
-                            fi
-                        fi
+                        more=""; [ "$n" -le "$CONCURRENT_WORK_MAX_DIRS" ] || more=" 等"
+                        line+="${summ}；涉及 $n 个目录：$dirs$more"
                     fi
                 fi ;;
             *) return 1 ;;   # 行的形状不对：宁可整段「未能读取」，也不按错位的字段往下写
