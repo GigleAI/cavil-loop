@@ -321,6 +321,11 @@ export interface ConfigField {
   reason: string | null;
   /** GitHub#569: a flow label that 「改名…」 may rename (absent: not one of those, or a daemon from before) */
   rename?: { ok: boolean; reason: string | null };
+  /**
+   * GitHub#591: where the dialog puts it — `main` shown at once, `more` under its group's 「高级」, `advanced` in the
+   * 「高级设置」 block at the bottom (scripts/config-fields.txt, ninth column). Absent: a daemon from before.
+   */
+  tier?: string;
 }
 
 export interface ProjectConfig {
@@ -418,6 +423,36 @@ export function configGroups(fields: ConfigField[]): { title: string; fields: Co
     else out.push({ title: f.group, fields: [f] });
   }
   return out;
+}
+
+export interface ConfigLayoutGroup {
+  title: string;
+  /** shown at once */
+  main: ConfigField[];
+  /** under the group's own 「高级」 */
+  more: ConfigField[];
+}
+
+/**
+ * GitHub#591: how the dialog lays the fields out. `common` groups are shown, each with its `more` fields folded;
+ * `advanced` groups go into the 「高级设置」 block, folded. A group is advanced only when every field in it says
+ * `advanced`. Nothing is ever hidden on a guess: a daemon that gives no tiers at all (from before this field) lays
+ * everything out at once (`tiered` false), and a tier word this client does not know counts as `main`.
+ * Group order, and field order inside a group, are the daemon's.
+ */
+export function configLayout(fields: ConfigField[]): { tiered: boolean; common: ConfigLayoutGroup[]; advanced: { title: string; fields: ConfigField[] }[] } {
+  const tiered = fields.some((f) => f.tier !== undefined);
+  const common: ConfigLayoutGroup[] = [];
+  const advanced: { title: string; fields: ConfigField[] }[] = [];
+  for (const g of configGroups(fields)) {
+    if (tiered && g.fields.every((f) => f.tier === 'advanced')) {
+      advanced.push(g);
+      continue;
+    }
+    const folded = (f: ConfigField) => tiered && (f.tier === 'more' || f.tier === 'advanced');
+    common.push({ title: g.title, main: g.fields.filter((f) => !folded(f)), more: g.fields.filter(folded) });
+  }
+  return { tiered, common, advanced };
 }
 
 /** What a save would send: editable fields whose typed value differs from the one read. */

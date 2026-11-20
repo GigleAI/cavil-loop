@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -65,6 +66,7 @@ async function ready(page: Page) {
   await expect(page.getByTestId('search')).toHaveValue('');
   await expect(box(page)).not.toBeChecked();
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/11');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -198,6 +200,7 @@ test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one
   await ready(page);
   // the running label set to the same one as "等人处理"
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-running').fill('pending/human');
   await page.getByTestId('hand-back-running').blur();
   await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.handBack.running)).toBe('pending/human');
@@ -247,6 +250,7 @@ test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one
   // the settings page in between keeps which one was clicked
   await tally(page, 'human').click();
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('back').click();
   await expect(toggle(page)).toHaveAttribute('data-view', 'human');
   await app.close();

@@ -17,6 +17,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -74,6 +75,7 @@ async function ready(page: Page) {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('https://github.com/orgs/GigleAI/projects/11');
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -154,6 +156,7 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- the settings page in between does not lose the remembered search ----
   await tally(page, 'running').click();
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('back').click();
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await tally(page, 'running').click();
@@ -185,6 +188,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   const { page } = await launchApp(env);
   await ready(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   const section = page.getByTestId('hand-back-settings');
   await expect(section.locator('h3')).toHaveText('流程标签');
   await expect(page.getByTestId('hand-back-running')).toHaveValue('doing/agent');
@@ -205,6 +209,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
 
   // a label the search box cannot carry (a leading ">" is a comparison the filter drops): shown, not clickable
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-running').fill('>待处理');
   await page.getByTestId('hand-back-running').blur();
   await page.getByTestId('back').click();
@@ -216,6 +221,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
 
   // cleared: no "运行中"; the other two stay
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-running').fill('');
   await page.getByTestId('hand-back-running').blur();
   await page.getByTestId('back').click();
@@ -227,6 +233,7 @@ test('GitHub#404: Settings — the running label can be renamed or cleared (the 
   // the two hand-back labels cleared: the boxes show the defaults again, the numbers still count them
   const pendingBefore = await page.evaluate(async () => (await (window as any).cavil.get()).state.pendingCount);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const id of ['hand-back-human', 'hand-back-agent']) {
     await page.getByTestId(id).fill('');
     await page.getByTestId(id).blur();
@@ -315,6 +322,8 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
   await expect.poll(() => barOrder(page)).toEqual(['unlabeled', 'human', 'agent', 'running', 'later']);
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   const section = page.getByTestId('tally-settings');
   await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
   await expect(section.getByTestId('tally-row')).toHaveCount(5);
@@ -379,12 +388,14 @@ test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of
 
   // back to the default
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('tally-reset').click();
   await expect.poll(async () => (await state(page)).tallies).toBeNull();
   await page.getByTestId('back').click();
   await expect.poll(() => barOrder(page)).toEqual(['unlabeled', 'human', 'agent', 'running', 'later']);
   // every row removed: no number at all
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (let i = 0; i < 5; i++) await page.getByTestId('tally-settings').getByTestId('tally-remove').first().click();
   await expect(page.getByTestId('tally-empty')).toBeVisible();
   await page.getByTestId('back').click();
@@ -396,6 +407,7 @@ test('GitHub#468: a row following a label the search box cannot carry counts exa
   const { page } = await launchApp(env);
   await ready(page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-human').fill('>待处理');
   await page.getByTestId('hand-back-human').blur();
   const row = rowOf(page, 'human');
@@ -409,6 +421,7 @@ test('GitHub#468: a row following a label the search box cannot carry counts exa
 
   // turned into a condition of its own: nothing is guessed
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await row.getByTestId('tally-to-query').click();
   await expect(row.getByTestId('tally-query')).toHaveValue('');
   await expect(row.getByTestId('tally-note')).toContainText('没法自动转换');
@@ -419,6 +432,7 @@ test('GitHub#468: a row following a label the search box cannot carry counts exa
 
   // back to following; then with a plain label the conversion is exact and counts the same
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await row.getByTestId('tally-to-flow').click();
   await page.getByTestId('hand-back-human').fill('pending/human');
   await page.getByTestId('hand-back-human').blur();
@@ -441,6 +455,7 @@ test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s 
   // at the window size the app opens with — a second line pushes the board down. With the repository added too, as
   // people use it, "等人处理" has two digits (the case that wrapped with the numbers' old spacing).
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill('GigleAI/cavil-loop');
   await page.getByTestId('source-add').click();
   await expect(page.getByTestId('source-row')).toHaveCount(2);
@@ -466,6 +481,8 @@ test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s 
   expect(bar[4]).toEqual(['later', '稍后处理 0', 'purple']);
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
   const preview = page.getByTestId('tally-preview');
   // the same numbers, names, colours and order as the bar; only shown, never clicked
@@ -507,6 +524,8 @@ test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s 
   await expect(page.getByTestId('search')).toHaveValue('');
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-later').fill('');
   await page.getByTestId('hand-back-later').blur();
   await expect(preview.locator('[data-kind="later"]')).toHaveCount(0);
@@ -517,6 +536,7 @@ test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s 
 
   // no row left: the preview says the bar shows nothing
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (let i = 0; i < 5; i++) await page.getByTestId('tally-settings').getByTestId('tally-remove').first().click();
   await expect(page.getByTestId('tally-preview-empty')).toBeVisible();
   await expect(page.getByTestId('tally-preview-item')).toHaveCount(0);

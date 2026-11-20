@@ -1107,3 +1107,32 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .label-setup-table { border-collapse: collapse; }
 .label-setup-table td { padding: 2px 12px 2px 0; vertical-align: middle; }
 .label-setup-table td:nth-child(-n + 2) { white-space: nowrap; }
+
+/* ---- GitHub#591: a setting's explanation behind an ⓘ; 常用 / 高级 ---- */
+.info-tip-wrap { display: inline-flex; align-items: center; vertical-align: middle; margin-left: 4px; }
+button.info-tip { min-height: 0; width: 18px; height: 18px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--muted); cursor: help; font-weight: 400; }
+button.info-tip:hover, button.info-tip.on { color: var(--accent); background: var(--accent-subtle); }
+/* not drawn while closed, yet still the button's description (aria-describedby reads hidden text); shown in a fixed
+   layer so no scrolling box clips it */
+.info-tip-text { display: none; }
+.info-tip-text.on { display: block; position: fixed; z-index: 1000; width: max-content; max-width: min(320px, calc(100vw - 16px)); white-space: normal; padding: 7px 10px; border-radius: 6px; background: var(--fg); color: var(--canvas); font-size: 12px; font-weight: 400; line-height: 1.55; box-shadow: var(--shadow-lg); text-align: left; overflow-wrap: anywhere; }
+.info-tip-text.on b, .info-tip-text.on code { color: inherit; }
+/* a fold that holds the less used settings of a group or a card */
+button.fold-toggle { min-height: 0; padding: 6px 0; border: none; background: transparent; color: var(--muted); font-weight: 400; font-size: 12px; gap: 6px; justify-content: flex-start; max-width: 100%; white-space: normal; text-align: left; }
+button.fold-toggle b { color: var(--fg); font-weight: 600; }
+button.fold-toggle .icon { flex: none; transition: transform 0.15s; transform: rotate(-90deg); }
+button.fold-toggle[aria-expanded='true'] .icon { transform: none; }
+button.fold-toggle:hover b { color: var(--accent); }
+.pcfg-more-head { border-bottom: 1px solid var(--border-muted); }
+.pcfg-adv { margin-top: 18px; border: 1px solid var(--border-muted); border-radius: 8px; padding: 2px 14px 8px; background: var(--canvas); }
+.pcfg-adv > button.fold-toggle { font-size: 13px; width: 100%; padding: 8px 0; }
+.pcfg-adv .pcfg-row.changed, .pcfg-adv .pcfg-row.bad { margin: 0 -14px; padding: 8px 14px; }
+.card-more { margin-top: 6px; }
+.card-more-body { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 2px 0 4px; }
+.settings-nav .nav-head { font-size: 11px; font-weight: 600; color: var(--muted); padding: 10px 10px 2px; }
+.settings-nav .nav-head:first-child { padding-top: 0; }
+.settings-main > .settings-adv { max-width: 760px; margin: 4px 0 16px; }
+.settings-adv > button.fold-toggle { width: 100%; padding: 12px 18px; border: 1px solid var(--border-muted); border-radius: 12px; background: var(--surface); font-size: 13px; }
+.settings-adv[data-open='true'] > button.fold-toggle { margin-bottom: 16px; }
+.settings-adv > section { max-width: 760px; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 12px; padding: 4px 18px 16px; margin: 0 0 16px; scroll-margin-top: 16px; }
+.settings-main .label-head { display: inline-flex; align-items: center; }

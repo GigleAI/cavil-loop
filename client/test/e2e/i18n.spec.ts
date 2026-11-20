@@ -16,6 +16,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 import { chineseIn } from './langCheck';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -59,6 +60,7 @@ async function signIn(page: Page) {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of [PROJECT_URL, REPO]) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();
@@ -103,7 +105,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
   await expect(page.getByTestId('keys-more').locator('summary')).toHaveText('Which keys are fixed, and when a single key works');
   await expect(page.getByTestId('keys-more')).toContainText('Ctrl+1 … Ctrl+9, Ctrl+W and the zoom keys are fixed');
   await expect(page.locator('#set-keys .fixed').first()).toHaveText('Fixed');
-  await expect(page.locator('#set-keys > p.muted').first()).toHaveText('Click "Change", then press the new key; it applies on this computer only.');
+  await expect(page.getByTestId('keys-help-text')).toHaveText('Click "Change", then press the new key; it applies on this computer only.');
   await expect(page.getByTestId('daemon-more').locator('summary')).toHaveText('What the client does with it');
   await expect(page.getByTestId('remote-more').locator('summary')).toHaveText('How pairing works, and whether the GitHub sign-in leaves this computer');
   expect(await chineseIn(page, ['[data-testid="keys-more"]', '[data-testid="daemon-more"]', '[data-testid="remote-more"]', '#set-keys .fixed'])).toEqual([]);
@@ -142,6 +144,7 @@ test('GitHub#471: 简体中文 by default; English at once, through Settings, th
 
   // back to Chinese: everything as it was
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('lang-zh').check();
   await expect(page.locator('.settings .toolbar h2')).toHaveText('设置');
   await expect(page.getByTestId('language-title')).toHaveText('语言 · Language');
@@ -367,6 +370,7 @@ test('GitHub#471 (PR #480 review round 2): the same refusals in Chinese read exa
   await signIn(page);
   await page.getByTestId('back').click();
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('logout').click();
   const allow = refuseSetting('grantClientId');
   await page.getByTestId('start-login').click();

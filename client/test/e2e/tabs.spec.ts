@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { findCopies, pullOf } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -72,6 +73,7 @@ async function signIn(page: Page, sources: string[] = [PROJECT_URL, REPO]) {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of sources) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();
@@ -860,6 +862,8 @@ test('settings: the "running" label (GitHub#404) is the one a tab\'s status read
   await expect(tab(page, A)).toHaveAttribute('data-status', 'open');
 
   await page.getByTestId('open-settings').click();
+
+  await unfoldSettings(page);
   // the tab bar stays above the settings page
   await expect(tabs(page)).toHaveCount(2);
   const field = page.getByTestId('hand-back-running');
@@ -906,6 +910,7 @@ test('an item waiting for a prerequisite (GitHub#443): its tab shows a pause, fo
   change(C, { labels: ['on-hold'] });
   await beatWhenIdle(app, page);
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   const field = page.getByTestId('hand-back-blocked');
   await expect(field).toHaveValue('pending/blocked');
   await field.fill('on-hold');

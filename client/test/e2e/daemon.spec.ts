@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldConfig, unfoldDaemonChecks, unfoldSettings } from './unfold';
 import { addTool, appendLine, connect, daemonEnv, daemonWorld, dropWorlds, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, systemTool, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -48,6 +49,7 @@ async function openSection(os: Os, path: string, extra?: Record<string, string>)
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('daemon-settings').scrollIntoViewIfNeeded();
   return { app, page };
 }
@@ -102,6 +104,7 @@ test('all fine: the project row; stop, start and disconnect go out only after th
   await expect(row).toHaveAttribute('data-state', 'running');
   await expect(row).toContainText('acme/widget');
   await expect(row).toContainText('claude');
+  await unfoldDaemonChecks(page);
   await expect(page.locator('[data-testid=daemon-check][data-id=tools]')).toHaveAttribute('data-ok', 'true');
   await expect(row.getByTestId('daemon-start')).toHaveCount(0);
   await shot(page, '4-ok');
@@ -136,6 +139,7 @@ test('all fine: the project row; stop, start and disconnect go out only after th
   // "配置" is a form now (GitHub#388, test/e2e/daemon-config.spec.ts); its "用编辑器打开配置文件" still hands the file to the system
   await row.getByTestId('daemon-config').click();
   await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form');
+  await unfoldConfig(page);
   await page.getByTestId('config-open-editor').click();
   await expect(row.getByTestId('daemon-note')).toContainText('已打开');
   await page.getByTestId('config-cancel').click();
@@ -170,6 +174,7 @@ test('unreadable: jq missing — the reason, the missing tools with commands, no
   addTool(path, 'jq', systemTool('jq'));
   await page.getByTestId('daemon-recheck').click();
   await expect(sum).toHaveAttribute('data-state', 'ok');
+  await unfoldDaemonChecks(page);
   await expect(page.locator('[data-testid=daemon-check][data-id=tools]')).toHaveAttribute('data-ok', 'true');
 });
 
