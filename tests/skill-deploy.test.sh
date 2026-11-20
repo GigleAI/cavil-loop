@@ -604,8 +604,8 @@ echo '▶ step entrypoints run the release scripts; no step-result.jq copy is ke
 pass "step entrypoints run the release scripts, no rule copy next to them"
 
 # ── 跨版本（PR #607 复审第 4 轮）：模板在派工时按发布 A 渲染，会话还没调脚本，长期入口就切到了发布 B；
-#    B 的翻标签结果和 A 的规则不一样（done 不再带 labels、多一个字段）。A 渲染出来的 cavil_step 调 B 的
-#    脚本，标签确实写上了，调用方必须认出这个 done，不能报「没跑完」
+#    B 的翻标签结果比 A 多一个字段，B 自己的规则也要求它（只加不减，见 tests/fixtures/step-result-stable.jq）。
+#    A 渲染出来的 cavil_step 调 B 的脚本，标签确实写上了，调用方必须认出这个 done，不能报「没跑完」
 echo '▶ a template rendered against release A reads the result of release B after the switch'
 (
     export CAVIL_DEPLOY_ROOT="$TMP/xv-root" CAVIL_SKILL_LINK="$TMP/xv-skills/cavil-loop"
@@ -617,11 +617,11 @@ echo '▶ a template rendered against release A reads the result of release B af
         "$XA/prompts/review.template.md" | sed -e 's|\${REPO}|acme/widget|g' -e "s|\${CAVIL_STEP_DIR}|$EP|g" > "$TMP/xv-defs.sh"
     grep -q 'cavil_step()' "$TMP/xv-defs.sh" || fail xv-no-definition
     rule_a=$(cat "$XA/scripts/step-result.jq")
-    # 发布 B：done 的结果换了形状，B 自己的规则跟着改
-    sed -i 's|status: "done", labels: \$l}|status: "done", read_back: true}|' "$SRC/scripts/flip-label.sh"
-    sed -i 's|"done":"labels"|"done":"read_back"|' "$SRC/scripts/step-result.jq"
-    grep -q 'read_back: true' "$SRC/scripts/flip-label.sh" && grep -q '"done":"read_back"' "$SRC/scripts/step-result.jq" || fail xv-fixture-not-applied
-    git -C "$SRC" commit -qam "release B: done carries read_back instead of labels" && git -C "$SRC" push -q origin main
+    # 发布 B：done 多带一个字段，B 自己的规则跟着要求它
+    sed -i 's|status: "done", labels: \$l}|status: "done", labels: $l, read_back: true}|' "$SRC/scripts/flip-label.sh"
+    sed -i 's|"done":"labels"|"done":"labels read_back"|' "$SRC/scripts/step-result.jq"
+    grep -q 'read_back: true' "$SRC/scripts/flip-label.sh" && grep -q '"done":"labels read_back"' "$SRC/scripts/step-result.jq" || fail xv-fixture-not-applied
+    git -C "$SRC" commit -qam "release B: done also carries read_back" && git -C "$SRC" push -q origin main
     deploy >/dev/null
     XB=$(readlink -f "$CAVIL_SKILL_LINK")
     [ "$XB" != "$XA" ] || fail xv-not-switched
@@ -637,8 +637,10 @@ SH
     res=$(sed -n 2p <<<"$out")
     [ "$(sed -n 1p <<<"$out")" = EXIT=0 ] || fail "xv-exit: $out"
     [ "$(jq -r '"\(.status) \(.read_back)"' <<<"$res" 2>/dev/null)" = "done true" ] || fail "xv-not-confirmed: $out"
-    # 两个发布的规则确实不同：A 的规则不认 B 的结果（以前把规则写进模板时，旧会话就是这样报没跑完的）
-    if printf '%s' "$res" | jq -se --arg s flip-label "$rule_a" >/dev/null 2>&1; then fail xv-releases-do-not-differ; fi
+    # 两个发布确实不同：B 的规则不认 A 的脚本写的 done（少了 read_back）
+    if printf '%s' '{"step":"flip-label","status":"done","labels":[]}' | jq -se --arg s flip-label -f "$XB/scripts/step-result.jq" >/dev/null 2>&1; then
+        fail xv-releases-do-not-differ; fi
+    [ "$(cat "$XA/scripts/step-result.jq" 2>/dev/null || printf '%s' "$rule_a")" = "$rule_a" ] || fail xv-a-rule-changed
 ) || exit 1
 pass "a template rendered before the switch confirms a newer release's done"
 

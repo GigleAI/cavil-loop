@@ -137,6 +137,7 @@ stand other 'printf "STARTED\n%s\n" "{\"step\":\"conflict-check\",\"status\":\"c
 stand badstatus 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"clean\",\"labels\":[]}" >&3'
 stand nofield 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"not-done\",\"labels\":[]}" >&3'
 stand numstatus 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":1}" >&3'
+stand extra 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"done\",\"labels\":[],\"newer\":true}" >&3'
 stand notobj 'printf "STARTED\n%s\n" "[\"flip-label\",\"done\"]" >&3'
 reset_gh doing/agent
 out=$(sv req127)
@@ -149,13 +150,24 @@ out=$(sv noisy)
 chk "脚本输出里混着 EXIT= / RESULT= / 伪造 JSON：只有调用行的两行" "$out" "$(printf 'EXIT=0\n%s\nSENTINEL' "$OK")"
 chk "写好结果后非零退出：EXIT=3（按规则算没跑完）" "$(line "$(sv nz)" 1)" "EXIT=3"
 chk "别的脚本的结果：RESULT=none" "$(line "$(sv other)" 2)" "RESULT=none"
-# 模板在派工时渲染，可能调到之后发布的脚本：调用方只核对「一个对象、这个脚本的、status 是字符串」，
-# 状态和字段由脚本自己核对（下面「自检」）。新状态、少字段照样交到 agent 手上，由模板文字把不认识的
-# 状态当作结果未知
-chk "模板没写到的新 status：原样交给 agent（不当成没跑完）" "$(status_of "$(sv badstatus)")" "clean"
-chk "少了旧版本写的字段：原样交给 agent" "$(status_of "$(sv nofield)")" "not-done"
+# 模板在派工时渲染，可能调到之后发布的脚本。调用方的核对是一张固定的稳定表
+# （tests/fixtures/step-result-stable.jq），之后的脚本只能在它上面加状态、加字段：
+# 不认识的状态、缺了稳定表要的字段，一律是没跑完；多出来的字段照常交给 agent
+chk "本脚本没有的 status：RESULT=none" "$(line "$(sv badstatus)" 2)" "RESULT=none"
+chk "缺了 status 承诺的字段：RESULT=none" "$(line "$(sv nofield)" 2)" "RESULT=none"
 chk "status 不是字符串：RESULT=none" "$(line "$(sv numstatus)" 2)" "RESULT=none"
 chk "结果不是对象：RESULT=none" "$(line "$(sv notobj)" 2)" "RESULT=none"
+chk "新版脚本多写一个字段：照常交给 agent" "$(line "$(sv extra)" 2 | jq -r '"\(.status) \(.newer)"')" "done true"
+# 读评论成功却没有评论列表、冲突检查无冲突却没有目标分支：后面的步骤要用这些数据，不能当成功
+for st in feedback-nolist conflict-nobase; do
+    mkdir -p "$TMP/xs-$st"; cp "$REPO_DIR/scripts/step-result.jq" "$TMP/xs-$st/"
+done
+printf '#!/usr/bin/env bash\nprintf "STARTED\\n%%s\\n" %s >&3\n' "'{\"step\":\"pr-feedback\",\"status\":\"ok\"}'" > "$TMP/xs-feedback-nolist/pr-feedback.sh"
+printf '#!/usr/bin/env bash\nprintf "STARTED\\n%%s\\n" %s >&3\n' "'{\"step\":\"conflict-check\",\"status\":\"clean\",\"head\":\"x\"}'" > "$TMP/xs-conflict-nobase/conflict-check.sh"
+defs "$TMP/composed-review.md" "$TMP/xs-feedback-nolist" > "$TMP/defs-xs1.sh"
+defs "$TMP/composed-review.md" "$TMP/xs-conflict-nobase" > "$TMP/defs-xs2.sh"
+chk "读评论 ok 却没有评论列表：RESULT=none" "$(line "$(run "$TMP/defs-xs1.sh" "cavil_step pr-feedback 7")" 2)" "RESULT=none"
+chk "冲突检查 clean 却没有目标分支：RESULT=none" "$(line "$(run "$TMP/defs-xs2.sh" "cavil_step conflict-check 7")" 2)" "RESULT=none"
 
 # 启动标记写不出去（第 3 号输出被关掉）：脚本必须在发任何请求之前退出
 reset_gh doing/agent
@@ -325,14 +337,25 @@ for s in flip-label conflict-check pr-feedback; do
     if [ -n "$st" ] && [ -n "$req" ] && [ "$st" -lt "$req" ]; then ok "$s.sh 在第一个请求之前写启动标记，写不出去就退出"
     else bad "$s.sh 的启动标记不在第一个请求之前" "step_start 第 ${st:-?} 行，第一个请求第 ${req:-?} 行"; fi
 done
-# 调用方的核对永远是这一行：派工时渲染的模板要能读之后发布的脚本，改它就会让在途会话读不懂新结果
-# （PR #607 复审第 2–4 轮）。状态、字段的规则只在 scripts/step-result.jq，由脚本自己用
-FROZEN='length == 1 and (.[0] | type == "object" and .step == $s and (.status | type) == "string")'
+# 调用方的核对是稳定表，四份模板逐字一致；脚本自己用的 scripts/step-result.jq 只能在它上面加
+# （PR #607 复审第 2–5 轮：派工时渲染的模板要能读之后发布的脚本）
+STABLE=$(grep -v '^#' "$TEST_DIR/fixtures/step-result-stable.jq")
 for name in new-issue issue-comment pr-comment review; do
-    grep -qF -- "jq -se --arg s \"\$1\" '$FROZEN'" "$REPO_DIR/prompts/$name.template.md" \
-        && ok "$name 模板里 cavil_step 的核对是那一行固定规则" \
-        || bad "$name 模板里 cavil_step 的核对不是那一行固定规则"
+    grep -qF -- "jq -se --arg s \"\$1\" '$STABLE'" "$REPO_DIR/prompts/$name.template.md" \
+        && ok "$name 模板里 cavil_step 的核对是稳定表" \
+        || bad "$name 模板里 cavil_step 的核对不是稳定表"
 done
+table_of() { grep -v '^#' "$1" | sed 's/ as \$t | .*//' | jq -c 'map_values(map_values(split(" ")))'; }
+gone=$(jq -nr --argjson a "$(table_of "$TEST_DIR/fixtures/step-result-stable.jq")" --argjson b "$(table_of "$REPO_DIR/scripts/step-result.jq")" \
+    '[$a | to_entries[] | .key as $st | .value | to_entries[] | .key as $s | .value[] as $f
+      | select(($b[$st][$s] // null) == null or ($b[$st][$s] | index($f)) == null) | "\($st)/\($s)/\($f)"] | join(" ")')
+chk "scripts/step-result.jq 保留稳定表里的每个状态、每个字段（只加不减）" "$gone" ""
+# 规则本身也测一下：从当前表删掉一个字段，上面的比较必须报出来
+cp "$REPO_DIR/scripts/step-result.jq" "$TMP/sr-dropped.jq"; sed -i 's|"ok":"comments"|"ok":""|' "$TMP/sr-dropped.jq"
+gone=$(jq -nr --argjson a "$(table_of "$TEST_DIR/fixtures/step-result-stable.jq")" --argjson b "$(table_of "$TMP/sr-dropped.jq")" \
+    '[$a | to_entries[] | .key as $st | .value | to_entries[] | .key as $s | .value[] as $f
+      | select(($b[$st][$s] // null) == null or ($b[$st][$s] | index($f)) == null) | "\($st)/\($s)/\($f)"] | join(" ")')
+chk "  ……对照：删掉读评论 ok 的评论列表，会被报出来" "$gone" "pr-feedback/ok/comments"
 rest=$(grep -ln 'REST 翻' "$REPO_DIR"/prompts/*.md 2>/dev/null | xargs -r -n1 basename)
 chk "提示词里不再有「REST 翻」这种只写文字的翻标签" "$rest" ""
 calls=$(cd "$REPO_DIR/prompts" && for f in *.md; do grep -o 'flip_label [^`]*' "$f" | grep -v '^flip_label() ' | sed "s|^|$f: |"; done | sort)
