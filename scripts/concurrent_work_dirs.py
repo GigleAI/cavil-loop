@@ -14,7 +14,9 @@ PR #604 each found a different place that lost a directory's identity:
   2. decoding before grouping merged two directories that differ in one non-UTF-8 byte;
   3. the display name then printed both of those as the same `a\ufffd/`;
   4. a hash added only when two names in the *same item* looked alike made one directory read
-     differently in two items, and an invalid byte and a valid control character shared `\x85`.
+     differently in two items, and an invalid byte and a valid control character shared `\x85`;
+  5. a cut name carried only 8 hex digits of its hash: two real 84- / 85-character names were
+     found that cut to the same text and the same 8 digits.
 So the display name of a directory is a function of that directory's raw bytes alone — never of
 which other directories are listed with it — and different raw bytes always give different text:
   - group and count on raw bytes (byte order);
@@ -23,9 +25,11 @@ which other directories are listed with it — and different raw bytes always gi
     character -> `\u{HEX}`; a byte that is not part of valid UTF-8 -> `\xHH`. Each escape is
     marked by its own prefix (`\\`, `\u{`, `\x`) and a literal backslash is itself escaped, so the
     text can be decoded back to the exact bytes: the mapping is one-to-one;
-  - a name longer than SHOW_MAX_CHARS after escaping is cut there and gets `…#<8 hex of the sha256
-    of its raw bytes>` — a cut name is always longer than any uncut one, so the two kinds never meet,
-    and two cut names differ unless their hashes collide.
+  - a name longer than SHOW_MAX_CHARS after escaping is cut there and gets `…#<the full 64-hex
+    sha256 of its raw bytes>` — a cut name is always longer than any uncut one, so the two kinds
+    never meet, and two cut names differ unless SHA-256 itself collides (finding one pair takes about
+    2^128 hash computations). Fewer digits are not "enough in practice": with 8, a colliding pair of
+    real directory names was found by brute force in review round 5.
 Two items that touch the same directory therefore show the same text, and two different
 directories never show the same text.
 """
@@ -63,7 +67,7 @@ def show(raw):
 
 
 def tag(raw):
-    return hashlib.sha256(raw).hexdigest()[:8]
+    return hashlib.sha256(raw).hexdigest()
 
 
 def main():

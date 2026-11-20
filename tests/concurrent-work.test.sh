@@ -292,8 +292,8 @@ dispatch "$NEW" new; S1_NEW="$OUT"; S1_RC="$DISPATCH_RC"; S1_CALLS="$(list_calls
 dispatch "$NEW" cmt; S1_CMT="$OUT"
 dispatch "$NEW" pr;  S1_PR="$OUT"
 dispatch "$NEW" sub; S1_SUB="$OUT"
-# 目录名的短哈希：原始字节的 sha256 前 8 位（用系统的 sha256sum 算，不经被测代码）
-dirhash() { printf '%s' "$1" | sha256sum | cut -c1-8; }
+# 截短的目录名后面带原始字节完整的 sha256（用系统的 sha256sum 算，不经被测代码）
+dirhash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 NFD_E=$'e\xcc\x81'; NFC_E=$'\xc3\xa9'   # é 的两种写法
 H_LONG=$(dirhash "$LONG_DIR/")
 DIRS8=$(for i in 0 1 2 3 4 5 6 7; do printf '%s`d%s/`' "$([ "$i" = 0 ] || printf '、')" "$i"; done)

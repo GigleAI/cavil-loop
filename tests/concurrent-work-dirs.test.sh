@@ -7,7 +7,8 @@
 #
 # 真实派工里的整行比对在 tests/concurrent-work.test.sh；这里用大量随机的原始字节目录名，直接跑真实脚本，
 # 守住 PR #604 复审四轮各找到的一种「目录身份丢失」：
-#   【1】一一对应：每个显示名都能用一个**独立写的**解码器还原成原始字节（截短的那种按哈希核对）
+#   【1】一一对应：每个显示名都能用一个**独立写的**解码器还原成原始字节（截短的那种按完整的 sha256 核对；
+#        8 位哈希在复审第 5 轮被实测撞上，那一对目录名也在这里）
 #   【2】不看上下文：同一个目录单独列出、和别的目录一起列出，显示名完全一样
 #   【3】不同目录显示名两两不同；计数等于不同上一级目录的个数；根目录下的文件记为「仓库根目录」
 set -uo pipefail
@@ -79,12 +80,12 @@ for d in dirs:
     body = s[1:-1]
     if "…#" in body:
         head, _, h = body.rpartition("…#")
-        if h != hashlib.sha256(d).hexdigest()[:8] or len(head) != 80:
+        if h != hashlib.sha256(d).hexdigest() or len(head) != 80:
             bad_hash += 1
     elif decode(body) != d:
         bad_decode += 1
 check("【1】%d 个随机目录名，每个显示名都能还原成原始字节" % len(dirs), bad_decode == 0, "还原失败 %d 个" % bad_decode)
-check("【1】截短的显示名 = 前 80 字 + 原始字节 sha256 前 8 位", bad_hash == 0, "不符 %d 个" % bad_hash)
+check("【1】截短的显示名 = 前 80 字 + 原始字节完整的 sha256（64 位十六进制）", bad_hash == 0, "不符 %d 个" % bad_hash)
 check("【1】确有截短的用例（200 字的目录名）", any("…#" in v for v in alone.values()))
 
 n, shown = run([d + b"f" for d in dirs] + [b"top.txt"], show=len(dirs) + 1)
@@ -99,6 +100,13 @@ check("【3】%d 个不同目录的显示名两两不同" % len(dirs), len(set(a
 check("【2】只差大小写的 SRC/ 在同一条里，src/ 仍显示为 src/", run([b"src/f", b"SRC/f"])[1] == ["`SRC/`", "`src/`"])
 check("【3】非 UTF-8 字节 85 和控制字符 U+0085 显示不同",
       run([b"a\x85/f"])[1] != run([b"a\xc2\x85/f"])[1], repr((run([b"a\x85/f"])[1], run([b"a\xc2\x85/f"])[1])))
+# 复审第 5 轮实测的一对：截短后前 80 字相同、sha256 前 8 位也相同的两个真实目录名
+pair = [b"x" * 80 + b"9838/", b"x" * 80 + b"12815/"]
+check("【3】复审第 5 轮的一对目录：sha256 前 8 位确实相同（夹具分得出旧做法）",
+      hashlib.sha256(pair[0]).hexdigest()[:8] == hashlib.sha256(pair[1]).hexdigest()[:8])
+apart = [run([d + b"f"])[1][0] for d in pair]
+check("【3】这一对分属两个条目时显示名不同", apart[0] != apart[1], repr(apart))
+check("【3】这一对在同一条里时也列成两个不同的名字", len(set(run([d + b"f" for d in pair])[1])) == 2)
 n, shown = run([b"d%d/f" % i for i in range(12)], show=8)
 check("展示上限：12 个目录只列前 8 个，计数仍是 12", (n, len(shown)) == (12, 8), repr((n, len(shown))))
 print("COUNTS %d %d" % (ok, fail))
