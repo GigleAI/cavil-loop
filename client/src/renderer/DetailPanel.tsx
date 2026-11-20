@@ -5,7 +5,7 @@ import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
-import { FRAME_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
+import { PREVIEW_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
 import { Person } from './Avatar';
@@ -373,6 +373,16 @@ function clock(ms: number): string {
 
 /** GitHub#457: below this floating-panel width, 在标签页打开 shows its icon only */
 const OPEN_TAB_WORDS_MIN = 440;
+
+/**
+ * GitHub#590: a web link clicked inside one of the detail's frames goes to the system browser.
+ * The frame only pre-filters; the back end (openLink) decides what may open. Like the window's
+ * other "open on the web" buttons, a browser that did not open says nothing here.
+ */
+function openFrameLink(url: unknown, via: 'frame' | 'preview'): void {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+  void Promise.resolve(api().openLink(url, via)).catch(() => undefined);
+}
 
 export function DetailPanel({
   itemKey,
@@ -792,6 +802,8 @@ export function DetailPanel({
   }, [detail, unfold, isDark, canTick, canWrite, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked, lang]);
   const doc = frame.doc;
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  /** GitHub#590: the reply preview's frame — the only other frame whose messages are taken (a web link only) */
+  const previewRef = useRef<HTMLIFrameElement | null>(null);
   /** the rendering whose script reported in: the frame's script ran (tests wait on it) */
   const [readyRender, setReadyRender] = useState('');
 
@@ -876,7 +888,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { q?: unknown; n?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown } | null;
+      const m = ev.data as { q?: unknown; n?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown; url?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -894,9 +906,22 @@ export function DetailPanel({
       // GitHub#502: find on the page — the frame's count for a query, and a plain Esc while find is open
       else if (m.cavil === 'found') findFrameFound(findHost.current, m.q, m.n);
       else if (m.cavil === 'findEsc') frameFindEscape();
+      // GitHub#590: a web link clicked in the discussion — the back end decides whether it opens
+      else if (m.cavil === 'link') openFrameLink(m.url, 'frame');
     };
     window.addEventListener('message', on);
-    return () => window.removeEventListener('message', on);
+    // GitHub#590: the reply preview may say one thing only — a web link was clicked in it
+    const onPreview = (ev: MessageEvent) => {
+      const f = previewRef.current;
+      if (!f || ev.source !== f.contentWindow) return;
+      const m = ev.data as { cavil?: unknown; url?: unknown } | null;
+      if (m && typeof m === 'object' && m.cavil === 'link') openFrameLink(m.url, 'preview');
+    };
+    window.addEventListener('message', onPreview);
+    return () => {
+      window.removeEventListener('message', on);
+      window.removeEventListener('message', onPreview);
+    };
   }, []);
   // GitHub#502: this panel's discussion frame takes part in find on the page (findInPage.ts); what is sent is
   // always for the rendering on screen, and it is told where find stands each time a rendering is ready
@@ -1760,7 +1785,8 @@ export function DetailPanel({
             className="preview"
             title={t('预览')}
             data-testid="reply-preview"
-            sandbox={FRAME_SANDBOX}
+            ref={previewRef}
+            sandbox={PREVIEW_SANDBOX}
             srcDoc={previewDocument(preview, isDark)}
           />
         )}

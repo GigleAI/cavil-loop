@@ -13,8 +13,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
+import { serveRecordingsAt, startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { WebDriver, until } from './webdriver';
+
+// GitHub#572 / #590: the recordings as of today, as the UI tests' bridge serves them. The real app keeps a
+// closed item only while it changed in the last 14 days, so as recorded (2026-11-05) the closed #138 every
+// test here opens left the board on 11-19 and both tests stopped before their first detail.
+serveRecordingsAt(Date.now());
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const APP = process.env.CAVIL_TAURI_APP ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-loop-client');
@@ -29,6 +34,22 @@ let opened: string;
 let dir: string;
 
 const openedUrls = () => (existsSync(opened) ? readFileSync(opened, 'utf8').split('\n').filter(Boolean) : []);
+/**
+ * GitHub#590: one click, `click` (in the frame), and what the record of opened addresses gained by it,
+ * from one snapshot taken before the click: the page handed the link to the window — the line only the
+ * window's check + the back end's openLink write (`frame-link <url>` / `preview-link <url>`), then the
+ * address — and nothing else: not a second opening, not one of the shell's two fallbacks
+ * (`shell-new-window <url>` / `shell-navigation <url>`). The full increment is compared only after the
+ * expected lines are there and a quiet spell has passed, so a late fallback would be in it too.
+ */
+const handedOnByPage = async (click: () => Promise<void>, url: string, via: 'frame' | 'preview', what: string) => {
+  const before = openedUrls().length;
+  await click();
+  const added = () => openedUrls().slice(before);
+  await until(() => added().includes(`${via}-link ${url}`) && added().includes(url), what);
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(added()).toEqual([`${via}-link ${url}`, url]);
+};
 const card = (n: number) => `[data-testid="card"][data-key="gigleai/cavil-loop#${n}"]`;
 
 test.beforeEach(async () => {
@@ -118,23 +139,55 @@ test('real app: sign in, sync, change a label, detail links and navigation go to
   await until(() => fake.log.some((l) => l.method === 'POST' && l.path.endsWith('/issues/138/labels')), 'label POST reached GitHub');
   await until(async () => (await wd.text(card(138))).includes(label), 'card shows the new label');
 
-  // GitHub's HTML in the sandboxed frame: a link there asks for a new window — the shell's
-  // handler sends it to the browser, the window itself stays where it is
-  await wd.frame('[data-testid="timeline-frame"]');
-  await wd.click('a[href="https://github.com/GigleAI/cavil-loop"]');
-  await wd.frame(null);
-  await until(() => openedUrls().includes('https://github.com/GigleAI/cavil-loop'), 'frame link opened in the browser');
+  // GitHub's HTML in the sandboxed frame: a link there is handed to the window by the frame's own script
+  // (GitHub#590 — not through the webview's new-window request), the window itself stays where it is
+  await handedOnByPage(
+    async () => {
+      await wd.frame('[data-testid="timeline-frame"]');
+      await wd.click('a[href="https://github.com/GigleAI/cavil-loop"]');
+      await wd.frame(null);
+    },
+    'https://github.com/GigleAI/cavil-loop',
+    'frame',
+    'frame link opened in the browser',
+  );
   expect(await wd.url()).toBe(appUrl);
   // GitHub#539: a link to another site in the discussion goes to the browser the same way
-  await wd.frame('[data-testid="timeline-frame"]');
-  await wd.click('a[href="https://example.com/docs?a=1"]');
-  await wd.frame(null);
-  await until(() => openedUrls().includes('https://example.com/docs?a=1'), 'frame link to another site opened in the browser');
+  await handedOnByPage(
+    async () => {
+      await wd.frame('[data-testid="timeline-frame"]');
+      await wd.click('a[href="https://example.com/docs?a=1"]');
+      await wd.frame(null);
+    },
+    'https://example.com/docs?a=1',
+    'frame',
+    'frame link to another site opened in the browser',
+  );
+  expect(await wd.url()).toBe(appUrl);
+  // GitHub#590: a link in the reply preview, the same way
+  await wd.type('[data-testid="reply-input"]', 'see the preview');
+  fake.state.w.markdownHtml = '<p>see <a href="https://example.com/preview">the preview</a></p>';
+  await wd.click('[data-testid="reply-preview-toggle"]');
+  await wd.find('[data-testid="reply-preview"]');
+  await handedOnByPage(
+    async () => {
+      await wd.frame('[data-testid="reply-preview"]');
+      await wd.click('a[href="https://example.com/preview"]');
+      await wd.frame(null);
+    },
+    'https://example.com/preview',
+    'preview',
+    'preview link opened in the browser',
+  );
   expect(await wd.url()).toBe(appUrl);
 
-  // the window is asked to navigate away: the shell refuses, a GitHub address goes to the browser
+  // the window is asked to navigate away: the shell refuses, a GitHub address goes to the browser — and
+  // says so (`shell-navigation`), which is what makes "no shell line" above mean something
+  const navBefore = openedUrls().length;
   await wd.exec(`window.location.href = 'https://github.com/GigleAI/cavil-loop/issues/1'`);
-  await until(() => openedUrls().includes('https://github.com/GigleAI/cavil-loop/issues/1'), 'navigation handed to the browser');
+  await until(() => openedUrls().slice(navBefore).includes('https://github.com/GigleAI/cavil-loop/issues/1'), 'navigation handed to the browser');
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(openedUrls().slice(navBefore)).toEqual(['shell-navigation https://github.com/GigleAI/cavil-loop/issues/1', 'https://github.com/GigleAI/cavil-loop/issues/1']);
   await new Promise((r) => setTimeout(r, 500));
   expect(await wd.url()).toBe(appUrl);
   await wd.find('[data-testid="board"]');

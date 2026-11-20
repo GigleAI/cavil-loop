@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
-import { canEdit, configGroups, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
+import { canEdit, configGroups, configLayout, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
 const field = (o: Partial<ConfigField>): ConfigField => ({ name: 'X', group: 'g', mode: 'edit', label: 'x', help: '', type: 'model', value: '', default: '', in_file: true, editable: true, reason: null, ...o });
@@ -85,6 +85,31 @@ describe('the rules the form is drawn from', () => {
     expect(fieldProblem(field({ type: 'bool', on: 'on', off: '' }), 'yes')).not.toBeNull();
     const g = configGroups([field({ name: 'A', group: 'one' }), field({ name: 'B', group: 'two' }), field({ name: 'C', group: 'one' })]);
     expect(g.map((x) => [x.title, x.fields.map((f) => f.name)])).toEqual([['one', ['A', 'C']], ['two', ['B']]]);
+  });
+
+  it('GitHub#591: main fields shown, more fields folded in their group, all-advanced groups in the 高级设置 block; nothing hidden on a guess', () => {
+    const fs = [
+      field({ name: 'A', group: 'one', tier: 'main' }),
+      field({ name: 'B', group: 'one', tier: 'more' }),
+      field({ name: 'C', group: 'two', tier: 'advanced' }),
+      field({ name: 'D', group: 'one', tier: 'main' }),
+      field({ name: 'E', group: 'two', tier: 'advanced' }),
+      field({ name: 'F', group: 'three', tier: 'main' }),
+    ];
+    const l = configLayout(fs);
+    expect(l.tiered).toBe(true);
+    expect(l.common.map((g) => [g.title, g.main.map((f) => f.name), g.more.map((f) => f.name)])).toEqual([['one', ['A', 'D'], ['B']], ['three', ['F'], []]]);
+    expect(l.advanced.map((g) => [g.title, g.fields.map((f) => f.name)])).toEqual([['two', ['C', 'E']]]);
+    // every field lands in exactly one place
+    const placed = [...l.common.flatMap((g) => [...g.main, ...g.more]), ...l.advanced.flatMap((g) => g.fields)].map((f) => f.name).sort();
+    expect(placed).toEqual(['A', 'B', 'C', 'D', 'E', 'F']);
+    // a daemon from before the field: everything at once, in its groups, as before
+    const old = configLayout([field({ name: 'A', group: 'one' }), field({ name: 'B', group: 'two' })]);
+    expect([old.tiered, old.common.map((g) => [g.title, g.main.map((f) => f.name), g.more.length]), old.advanced]).toEqual([false, [['one', ['A'], 0], ['two', ['B'], 0]], []]);
+    // a word the client does not know is shown, never folded away; a group with one advanced and one main field stays common
+    const odd = configLayout([field({ name: 'A', group: 'one', tier: 'someday' }), field({ name: 'B', group: 'one', tier: 'advanced' }), field({ name: 'C', group: 'one', tier: 'main' })]);
+    expect(odd.common.map((g) => [g.main.map((f) => f.name), g.more.map((f) => f.name)])).toEqual([[['A', 'C'], ['B']]]);
+    expect(odd.advanced).toEqual([]);
   });
 
   it('a result word the client does not know is neither "saved" nor "nothing written"', () => {

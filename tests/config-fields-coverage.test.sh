@@ -14,6 +14,7 @@
 #      tests/config-fields-hidden.txt（不显示，写明原因）其中一处
 #   2. 不显示清单：类别是规定的几种、原因不空、没有重复、每项都在模板里
 #   2b. 显示登记表：只显示的项每行写了自己的原因（第 8 列），可改的项不写（GitHub#554）
+#   2c. 显示登记表：每行有层级（第 9 列 main / more / advanced），一组要么全是 advanced、要么一项都没有且至少一项 main（GitHub#591）
 #   3. 检查本身能报错：往模板副本加一项不登记、一项两边都登记、写错类别、再放一行已删掉的「待登记」类别，都要报出来
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -56,6 +57,20 @@ for r in rows(fields):
         print("只显示的项要写自己的原因（第 8 列）:", r[0])
     elif mode != "show" and why:
         print("可改的项不写只显示的原因:", r[0])
+# 层级（第 9 列，GitHub#591）：每行都要有、只能是这三个词；一组要么全是 advanced、要么一项 advanced 都没有，且至少一项 main
+TIERS = ("main", "more", "advanced")
+groups = {}
+for r in rows(fields):
+    tier = r[8] if len(r) > 8 else ""
+    if len(r) != 9 or tier not in TIERS:
+        print("层级（第 9 列）缺了或不是 main / more / advanced:", r[0])
+        continue
+    groups.setdefault(r[1], []).append(tier)
+for g, ts in groups.items():
+    if "advanced" in ts and set(ts) != {"advanced"}:
+        print("一组里 advanced 和别的层级混在一起:", g)
+    elif "advanced" not in ts and "main" not in ts:
+        print("常用分组里一项 main 都没有:", g)
 hid = {}
 for r in rows(hidden):
     k = r[0]
@@ -102,8 +117,20 @@ cp "$HIDDEN" "$TMP/hidden4"; sed -i 's/^POLL_INTERVAL_SECS | 安装时生效 |/P
 chk "到达性：上面那行替换确实改到了一行" "$(grep -c '^POLL_INTERVAL_SECS | 待登记 |' "$TMP/hidden4")" 1
 chk "再加一行「待登记」：报出来" "$(guard "$TPL" "$FIELDS" "$TMP/hidden4")" "不显示清单格式或类别不对: POLL_INTERVAL_SECS"
 
-cp "$FIELDS" "$TMP/fields"; sed -i 's/^\(LABEL_PENDING_MERGE |.*\) | 标签名要和仓库里建好的标签一致$/\1/' "$TMP/fields"
+cp "$FIELDS" "$TMP/fields"; sed -i 's/^\(LABEL_PENDING_MERGE |.*\) | 标签名要和仓库里建好的标签一致 | \(more\)$/\1 |  | \2/' "$TMP/fields"
+chk "到达性：上面那行替换确实改到了一行" "$(grep -c '^LABEL_PENDING_MERGE |.*|  | more$' "$TMP/fields")" 1
 chk "只显示的项没写原因：报出来" "$(guard "$TPL" "$TMP/fields" "$HIDDEN")" "只显示的项要写自己的原因（第 8 列）: LABEL_PENDING_MERGE"
+
+echo "【3】层级（GitHub#591）"
+chk "当前登记表三种层级都用到了" "$(grep -vE '^[[:space:]]*(#|$)' "$FIELDS" | awk -F'|' '{gsub(/[ \t]/, "", $9); print $9}' | sort -u | tr '\n' ' ')" "advanced main more "
+cp "$FIELDS" "$TMP/t1"; sed -i 's/^\(WORKER_MODEL |.*\) | main$/\1 | sometimes/' "$TMP/t1"
+chk "层级写成不认识的词：报出来" "$(guard "$TPL" "$TMP/t1" "$HIDDEN")" "层级（第 9 列）缺了或不是 main / more / advanced: WORKER_MODEL"
+cp "$FIELDS" "$TMP/t2"; sed -i 's/^\(WORKER_MODEL |.*\) | main$/\1/' "$TMP/t2"
+chk "少了层级这一列：报出来" "$(guard "$TPL" "$TMP/t2" "$HIDDEN")" "层级（第 9 列）缺了或不是 main / more / advanced: WORKER_MODEL"
+cp "$FIELDS" "$TMP/t3"; sed -i 's/^\(LOG_LEVEL |.*\) | advanced$/\1 | main/' "$TMP/t3"
+chk "高级分组里混进一项常用：报出来" "$(guard "$TPL" "$TMP/t3" "$HIDDEN")" "一组里 advanced 和别的层级混在一起: 其他"
+cp "$FIELDS" "$TMP/t4"; sed -i 's/^\(POST_MERGE_RETROSPECTIVE |.*\) | main$/\1 | more/' "$TMP/t4"
+chk "常用分组一项 main 都没有：报出来" "$(guard "$TPL" "$TMP/t4" "$HIDDEN")" "常用分组里一项 main 都没有: 合并后复盘"
 
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

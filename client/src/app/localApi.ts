@@ -35,6 +35,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     syncNow: () => c.syncNow(),
     restartSync: () => c.restartSync(),
     openExternal: (url) => backend.call('openExternal', { url: String(url) }),
+    openLink: (url, via) => backend.call('openLink', { url: String(url), via: via === 'preview' ? 'preview' : 'frame' }),
     openAuthPage: () => backend.call('openAuthPage'),
     setLaunchAtLogin: (on) => c.setLaunchAtLogin(Boolean(on)),
     checkUpdate: () => c.checkUpdate(),

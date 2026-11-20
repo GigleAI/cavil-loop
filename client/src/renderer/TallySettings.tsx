@@ -5,6 +5,7 @@
 // view bar's own `TallyBar`) over the current items, so every change shows at once exactly as the bar
 // will show it. The longer rules are folded under 「计数规则」.
 
+import { InfoTip } from './InfoTip';
 import { useMemo } from 'react';
 import type { AppState, BoardData, TallyColor, TallyDef } from '../shared/types';
 import { effectiveTallies, TALLY_COLORS, tallyFlowText, TALLY_MAX } from '../shared/tallies';
@@ -61,8 +62,10 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
 
   return (
     <section id="set-tallies" data-testid="tally-settings">
-      <h3>{t('顶栏计数')}</h3>
-      <p className="muted small">{t('顶栏右侧的数，按下表的顺序、名称和颜色显示；点数字只看这些条目。')}</p>
+      <h3>
+        {t('顶栏计数')}
+        <InfoTip testid="tally-help">{t('顶栏右侧的数，按下表的顺序、名称和颜色显示；点数字只看这些条目。')}</InfoTip>
+      </h3>
       <div className="tally-preview" data-testid="tally-preview">
         <span className="muted small">{t('预览（按当前来源实时计数）')}</span>
         {preview.length > 0 ? (

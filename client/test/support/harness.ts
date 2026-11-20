@@ -120,6 +120,8 @@ export class HarnessBackend implements Backend {
       case 'sleep':
         return (this.o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(Number(args.ms));
       case 'open':
+        // GitHub#590: a link clicked inside a detail frame also says which frame, on a line of its own
+        if (args.via != null) this.o.opened?.push(`${String(args.via)}-link ${String(args.url)}`);
         this.o.opened?.push(String(args.url));
         return null;
       case 'pickFolder':

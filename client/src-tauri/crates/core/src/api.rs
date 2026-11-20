@@ -148,6 +148,8 @@ pub async fn dispatch(e: &Arc<Engine>, cmd: &str, a: Value) -> Result<Value, Str
             Ok(Value::Null)
         }
         "openExternal" => e.open_external(s(&a, "url")?).await.map(|_| Value::Null),
+        // GitHub#590: a web link clicked inside a detail frame, handed on by the window
+        "openLink" => e.open_link(s(&a, "url")?, s(&a, "via")?).await.map(|_| Value::Null),
         // GitHub#401: the authorisation page of the app this sign-in used (the back end builds it)
         "openAuthPage" => {
             let url = e.auth_page_url();

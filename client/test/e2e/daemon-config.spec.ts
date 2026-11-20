@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldConfig } from './unfold';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -65,6 +66,7 @@ async function openSection(prepare?: () => void): Promise<{ app: RunningApp; pag
 const openDialog = async (page: Page) => {
   await page.locator('[data-testid=daemon-project][data-key=widget]').getByTestId('daemon-config').click();
   await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form', SCRIPT);
+  await unfoldConfig(page);
 };
 const row = (page: Page, name: string) => page.locator(`[data-testid=config-row][data-name=${name}]`);
 const input = (page: Page, name: string) => page.getByTestId(`config-input-${name}`);
@@ -167,6 +169,7 @@ test('the file was edited elsewhere while the dialog was open: nothing is writte
 
   await page.getByTestId('config-reload').click();
   await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form', SCRIPT);
+  await unfoldConfig(page);
   // the outside edit is what the form shows now, and the typed change is still there
   await expect(input(page, 'REVIEW_MAX_ROUNDS')).toHaveValue('9');
   await expect(input(page, 'MAX_CONCURRENT_WORKERS')).toHaveValue('2');

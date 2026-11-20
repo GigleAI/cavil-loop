@@ -1,6 +1,7 @@
 // The app updating itself (GitHub#184): the Settings section and the board's "ready" banner.
 // What to show comes whole from the shell (state.update); nothing here decides anything.
 
+import { InfoTip } from './InfoTip';
 import { useEffect, useRef, useState } from 'react';
 import type { UpdateNotes, UpdateStatus } from '../shared/types';
 import { api } from './api';
@@ -189,10 +190,10 @@ export function UpdateSection({ update }: { update: UpdateStatus | null }) {
       <label className="row small">
         <input type="checkbox" data-testid="update-auto" checked={update.auto} disabled={!!update.problem} onChange={(e) => api().setAutoUpdate(e.target.checked)} />
         {t('自动检查并在后台下载更新')}
+        <InfoTip testid="update-auto-help" textTestid="update-auto-note">
+          {t('打开 App 时查一次，一直开着的话每 6 小时查一次。')}
+        </InfoTip>
       </label>
-      <p className="muted small" data-testid="update-auto-note">
-        {t('打开 App 时查一次，一直开着的话每 6 小时查一次。')}
-      </p>
       <ChannelPicker update={update} />
     </section>
   );

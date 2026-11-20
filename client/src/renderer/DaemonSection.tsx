@@ -11,8 +11,9 @@
 // GitHub#473: the client's own words follow the language; what the daemon's scripts, git and the
 // system said, and this machine's paths and project names, are shown as is (Verbatim / BackendText).
 
+import { InfoTip } from './InfoTip';
 import { RemoteHostBlock } from './RemoteHostBlock';
-import { SettingsMore } from './SettingsMore';
+import { CardMore, SettingsMore } from './SettingsMore';
 import { noticeTone } from '../shared/noticeTone';
 import { useEffect, useRef, useState } from 'react';
 import { useBackendLangRound } from './backendLang';
@@ -146,8 +147,10 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
 
   return (
     <section id="set-daemon" data-testid="daemon-settings">
-      <h3>{t('本机 daemon')}</h3>
-      <p className="muted small">{t('在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。')}</p>
+      <h3>
+        {t('本机 daemon')}
+        <InfoTip testid="daemon-help">{t('在这台电脑上替人处理 issue / PR 的后台程序（cavil-loop）。')}</InfoTip>
+      </h3>
       {/* GitHub#514: the longer explanation, folded */}
       <SettingsMore title={t('客户端会对它做什么')} testid="daemon-more">
         {t('这里检查它装没装、缺什么、接了哪些项目、在不在跑。客户端只在本机跑 daemon 自带的脚本，不替人装系统软件，也不把客户端的 GitHub 登录交给它。')}
@@ -156,7 +159,14 @@ export function DaemonSection({ daemon }: { daemon: DaemonState }) {
       {notes.install && <Note id="install" note={notes.install} />}
       {status?.state === 'ok' && (
         <>
-          <Checks st={status.status} />
+          {/* GitHub#591: the dependency checks under the card's 「高级」 — open by itself while one of them fails */}
+          <CardMore
+            testid="daemon-card-more"
+            what={t('依赖检查')}
+            held={checklist(status.status).some((r) => !r.ok) ? t('（有缺的东西，保持展开）') : undefined}
+          >
+            <Checks st={status.status} />
+          </CardMore>
           <Projects st={status.status} busy={busy} notes={notes} onAsk={setAsk} onOpen={(p) => void openFile(p, 'log')} onConfig={setCfg} />
           <Update st={status.status} busy={busy} result={update} onUpdate={doUpdate} />
           <RemoteHostBlock />

@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldConfig, unfoldDaemonChecks, unfoldSettings } from './unfold';
 import { connect, daemonEnv, daemonWorld, dropWorlds, githubRewrite, installByHand, localCopy, pathFor, type DaemonWorld, type Os } from '../support/daemon-world';
 import { chineseIn } from './langCheck';
 
@@ -52,6 +53,7 @@ async function openEnglish(os: Os, path: string, extra: Record<string, string> =
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('lang-en').check();
   await expect(page.locator('.settings .toolbar h2')).toHaveText('Settings');
   await page.getByTestId('source-input').fill(REPO);
@@ -76,6 +78,7 @@ test("GitHub#473: Settings → local daemon in English — the projects table, t
   const row = page.locator('[data-testid=daemon-project][data-key=widget]');
   await expect(row.getByTestId('daemon-log')).toHaveText('Log');
   await expect(row.getByTestId('daemon-config')).toHaveText('Settings…');
+  await unfoldDaemonChecks(page);
   await expect(page.getByTestId('daemon-check').first()).toContainText(/All common tools are there|Missing/);
   expect(await chineseIn(page, SECTION)).toEqual([]);
   // the stop confirmation: its title names the project as written, the rest is English
@@ -139,6 +142,7 @@ test('GitHub#473: a project\'s settings in English — the settings\' Chinese na
   await row.getByTestId('daemon-config').click();
   const dlg = page.getByTestId('config-dialog');
   await expect(dlg).toHaveAttribute('data-phase', 'form');
+  await unfoldConfig(page);
   await expect(dlg.locator('h3')).toHaveText('Project settings: widget');
   await expect(dlg.getByTestId('config-open-editor')).toHaveText('Open the config file in an editor');
   await expect(dlg.getByTestId('config-save')).toHaveText('Save');

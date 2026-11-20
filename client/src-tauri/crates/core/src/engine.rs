@@ -971,6 +971,18 @@ impl Engine {
         }
         self.d.opener.open(url).await
     }
+
+    /// GitHub#590: a web link the person clicked inside a detail frame — `via` names which one
+    /// ("frame": the discussion, "preview": the reply preview). The same rule as `open_external`.
+    pub async fn open_link(&self, url: &str, via: &str) -> Result<(), String> {
+        if !matches!(via, "frame" | "preview") {
+            return Err(tr("不认识的链接来源：{via}", &[("via", via)]));
+        }
+        if !is_openable_link(url, &self.d.endpoints) {
+            return Err(tr("只在浏览器里打开网页链接：{url}", &[("url", url)]));
+        }
+        self.d.opener.open_link(url, via).await
+    }
 }
 
 /// How durable a sign-out's revocation is.
