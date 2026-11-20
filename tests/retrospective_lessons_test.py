@@ -1004,7 +1004,7 @@ class DirectoryInstructionTest(unittest.TestCase):
     def test_未开启时提示词与去掉占位符的模板逐字节相同(self):
         self.assertIn('${DIRECTORY_LESSONS}', self.template)
         for mode in ('auto', 'confirm'):
-            plain = self.template.replace('${DIRECTORY_LESSONS}', '')
+            plain = self.template.replace('${DIRECTORY_LESSONS}', '').replace('${RULE_LIMIT}', '')
             expected = plain.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
             self.assertEqual(runner.render_instruction(self.template, mode), expected)
             self.assertNotIn('目录经验', runner.render_instruction(self.template, mode))
@@ -1016,6 +1016,246 @@ class DirectoryInstructionTest(unittest.TestCase):
                        '留在本段', f'{rl.MAX_DIR_CHARS} 字符'):
             self.assertIn(needle, text)
 
+
+
+# ── Length limit on promotions (GitHub#600) ──────────────────────────────────
+
+def held(text, *ids):
+    """`text` with the program's held-over-limit line under next-id."""
+    line = '<!-- held-over-limit:' + ''.join(f' L{i}' for i in ids) + ' -->'
+    return re.sub(r'^(<!-- next-id: \d+ -->)$', lambda m: m[1] + '\n' + line, text, count=1, flags=re.M)
+
+
+def long_entry(n, chars, seen, rule='规'):
+    """An entry whose 规则 + 适用 + 为什么 is exactly `chars` characters."""
+    return entry(n, rule * (chars - 10), seen, applies='适' * 5, why='因' * 5)
+
+
+def three():
+    """Three sightings, the last one this PR's."""
+    return [(1, None), (2, None), (9, C9)]
+
+
+class RuleLimitParseTest(Case):
+    def test_标记行读出编号_不进派工说明(self):
+        text = held(doc(watch=[long_entry(1, 301, [(1, None), (2, None), (3, None)])]), 1)
+        self.assertEqual(rl.parse(text).held, (1,))
+        self.assertNotIn('held-over-limit', rl.prompt_text(text))
+        self.assertEqual(rl.prompt_text(text), rl.prompt_text(rl.strip_held(text)))
+
+    def test_没有标记行就是空(self):
+        self.assertEqual(rl.parse(doc()).held, ())
+
+    def test_人删光编号留下的空标记行可解析_等于没有(self):
+        text = doc(watch=[entry(1, 'x', [(4, None)])]).replace(
+            '<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: -->')
+        self.assertEqual(rl.parse(text).held, ())
+        self.assertEqual(rl.place(text, rl.strip_held(text), mode='auto', max_chars=300)[0], rl.strip_held(text))
+
+    def test_标记行写坏_重复_放进段里_重复编号都解析失败并写明哪一行(self):
+        base = doc(watch=[entry(1, 'x', [(4, None)])])
+        bad = [
+            ('malformed', base.replace('<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: 1 -->')),
+            ('malformed', base.replace('<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!--held-over-limit: L1-->')),
+            ('given twice', held(held(base, 1), 1)),
+            ('inside a section', base.replace('## 观察中\n', '## 观察中\n<!-- held-over-limit: L1 -->\n')),
+            ('lists an id twice', held(base, 1, 1)),
+            ('above next-id', base.replace('<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->')),
+            (': an id has more than 9 digits', held(base, 1).replace(' L1 -->', ' L' + '9' * 4301 + ' -->')),
+        ]
+        for why, text in bad:
+            with self.subTest(why=why):
+                with self.assertRaisesRegex(rl.LessonsError, rf'line \d+: held-over-limit line ?{why}'):
+                    rl.parse(text)
+
+    def test_只有行首注释紧跟标记名才算那一行_普通注释照常(self):
+        for line, want in (('<!-- held-over-limit: L1 -->', True), ('<!--held-over-limit: L1-->', True),
+                           ('<!--\theld-over-limit:', True), ('<!-- held-over-limit:x', True),
+                           ('<!-- 维护说明：held-over-limit 的例子 -->', False),
+                           ('<!-- Maintenance note: keep held-over-limit examples -->', False),
+                           ('  <!-- held-over-limit: L1 -->', False), ('held-over-limit: L1', False)):
+            self.assertEqual(rl.held_like(line), want, line)
+        pre = PRE + '\n<!-- Maintenance note: keep held-over-limit examples in the docs. -->\n'
+        text = doc(watch=[entry(1, 'x', [(4, None)])], pre=pre)
+        self.assertEqual(rl.parse(text).held, ())
+        self.assertIn('Maintenance note', rl.prompt_text(text))
+        self.assertFalse(rl.has_held_line(text))
+
+    def test_过长的数字一律是格式错误_不是程序异常(self):
+        base = doc(watch=[entry(1, 'x', [(4, None)])])
+        for text in (base.replace('### L1', '### L' + '1' * 4301),
+                     base.replace('<!-- next-id: 2 -->', '<!-- next-id: ' + '9' * 4301 + ' -->'),
+                     base.replace('Seen 1×: #4', 'Seen 1×: #' + '4' * 4301)):
+            with self.assertRaisesRegex(rl.LessonsError, 'more than 9 digits'):
+                rl.parse(text)
+
+    def test_字数是三栏原文的字符数_不含前缀_缺的栏算零(self):
+        e = rl.parse(doc(watch=[entry(1, '一二三', [(4, None)], applies=None, why='四五')])).by_id()[1]
+        self.assertEqual(rl.rule_chars(e), 5)
+
+
+class RuleLimitTest(Case):
+    def place(self, old, new, mode='auto', max_chars=300):
+        return rl.place(old, new, mode=mode, max_chars=max_chars)
+
+    def check(self, old, new, mode='auto', max_chars=300):
+        return rl.validate(old, new, pr=9, evidence_urls=EVIDENCE, mode=mode, max_chars=max_chars)
+
+    def test_300字第三次升_模型已摆好时原样返回(self):
+        old = doc(watch=[long_entry(1, 300, [(1, None), (2, None)])])
+        new = doc(hard=[long_entry(1, 300, three())])
+        text, summary = self.place(old, new)
+        self.assertIs(text, new)
+        self.assertEqual(self.check(old, text), [])
+        self.assertEqual(rl.summary_markdown(summary), '')
+
+    def test_300字第三次模型没挪_程序挪进目标段(self):
+        old = doc(watch=[long_entry(1, 300, [(1, None), (2, None)])])
+        for mode, target in (('auto', '硬规则'), ('confirm', '待确认')):
+            with self.subTest(mode=mode):
+                text, _ = self.place(old, doc(watch=[long_entry(1, 300, three())]), mode=mode)
+                self.assertEqual(rl.parse(text).by_id()[1].section, target)
+                self.assertEqual(self.check(old, text, mode=mode), [])
+
+    def test_301字第三次_模型挪了也摆回观察中_记进标记(self):
+        old = doc(watch=[long_entry(1, 301, [(1, None), (2, None)])])
+        text, summary = self.place(old, doc(hard=[long_entry(1, 301, three())]))
+        got = rl.parse(text)
+        self.assertEqual((got.by_id()[1].section, got.held), ('观察中', (1,)))
+        self.assertEqual(self.check(old, text), [])
+        self.assertEqual(summary['held'], [(1, 301)])
+        self.assertIn('本次挡下：L1，301 字，上限 300', rl.summary_markdown(summary))
+        self.assertEqual(rl.summary_log(summary), 'rule length limit 300: held back L1(301)')
+
+    def test_已在硬规则的超长条目照常计次(self):
+        old = doc(hard=[long_entry(1, 509, [(1, None), (2, None), (3, None)])])
+        new = doc(hard=[long_entry(1, 509, [(1, None), (2, None), (3, None), (9, C9)])])
+        self.assertEqual(self.place(old, new)[0], new)
+        self.assertEqual(self.check(old, new), [])
+
+    def test_被挡下后压到上限内_调高上限_改成不限都补升(self):
+        for chars, limit in ((300, 300), (301, 301), (301, 0)):
+            with self.subTest(chars=chars, limit=limit):
+                old = held(doc(watch=[long_entry(1, chars, three())]), 1)
+                text, summary = self.place(old, rl.strip_held(old), max_chars=limit)
+                got = rl.parse(text)
+                self.assertEqual((got.by_id()[1].section, got.held), ('硬规则', ()))
+                self.assertEqual(self.check(old, text, max_chars=limit), [])
+                self.assertEqual(summary['late'], [(1, chars)])
+
+    def test_人从标记里删掉编号就不升_观察中满三次不在标记里的也不动(self):
+        old = doc(watch=[long_entry(1, 300, three())])
+        text, summary = self.place(old, old)
+        self.assertIs(text, old)
+        self.assertEqual(self.check(old, old), [])
+        self.rejects(old, doc(hard=[long_entry(1, 300, three())]), 'section')
+
+    def test_一份标记里同时有继续等_补升_无效编号(self):
+        old = held(doc(hard=[entry(5, '硬', [(1, None), (2, None), (3, None)])],
+                       watch=[long_entry(1, 301, three()), long_entry(2, 300, three(), rule='短'),
+                              long_entry(3, 300, [(4, None)], rule='一')], next_id=8), 1, 2, 3, 5, 7)
+        text, summary = self.place(old, rl.strip_held(old))
+        got = rl.parse(text)
+        self.assertEqual({i: e.section for i, e in got.by_id().items()},
+                         {1: '观察中', 2: '硬规则', 3: '观察中', 5: '硬规则'})
+        self.assertEqual(got.held, (1,))
+        self.assertEqual(self.check(old, text), [])
+        self.assertEqual((summary['still'], summary['late']), ([(1, 301)], [(2, 300)]))
+        self.assertEqual(summary['dropped'], [(3, 'fewer than 3 sightings'), (5, 'not in 观察中'),
+                                              (7, 'no such entry')])
+        note = rl.summary_markdown(summary)
+        for needle in ('继续等待：L1，301 字', '本次补升：L2，300 字', 'L3（出现不足 3 次）',
+                       'L5（不在「观察中」）', 'L7（找不到这一条）'):
+            self.assertIn(needle, note)
+
+    def test_标记和摆放对不上被拒(self):
+        old = doc(watch=[long_entry(1, 301, [(1, None), (2, None)])])
+        placed = doc(watch=[long_entry(1, 301, three())])
+        self.rejects(old, placed, 'held')                       # held back but not listed
+        self.rejects(old, held(doc(hard=[long_entry(1, 301, three())]), 1), 'section')
+        short = doc(watch=[long_entry(1, 300, [(1, None), (2, None)])])
+        self.rejects(short, held(doc(hard=[long_entry(1, 300, three())]), 1), 'held')  # listed but promoted
+
+    def test_上限0且没有标记_摆放不改任何东西(self):
+        old = doc(watch=[long_entry(1, 5000, [(1, None), (2, None)])])
+        new = doc(hard=[long_entry(1, 5000, three())])
+        self.assertIs(self.place(old, new, max_chars=0)[0], new)
+        self.assertEqual(self.check(old, new, max_chars=0), [])
+
+    def test_编号带前导零的条目照解析认出的位置搬段(self):
+        old = held(doc(watch=[long_entry(1, 300, three())]), 1)
+        new = rl.strip_held(old).replace('### L1\n', '### L01\n')
+        text, summary = self.place(old, new)
+        self.assertEqual(rl.parse(text).by_id()[1].section, '硬规则')
+        self.assertIn('### L01', text)
+        self.assertEqual(self.check(old, text), [])
+
+    def test_序言里举例的条目标题和段标题不会被当成真的_序言原样保留(self):
+        pre = PRE + '\n举例：\n\n```\n## 硬规则\n### L1\n- 规则：示例\n```\n'
+        old = held(doc(watch=[long_entry(1, 300, three())], pre=pre), 1)
+        text, summary = self.place(old, rl.strip_held(old))
+        got = rl.parse(text)
+        self.assertEqual((got.by_id()[1].section, got.held, got.preamble), ('硬规则', (), rl.parse(old).preamble))
+        self.assertEqual(self.check(old, text), [])
+        self.assertEqual(summary['late'], [(1, 300)])
+
+    def test_解析不了的输出原样交给校验(self):
+        self.assertEqual(self.place(doc(), 'garbage')[0], 'garbage')
+
+
+class RuleLimitRunnerTest(Case):
+    def accept(self, old, lessons, **kw):
+        evidence = {'pr': {'html_url': SOURCE}, 'issues': [], 'reviews': [], 'inline_comments': [],
+                    'conversation': [{'html_url': C9}]}
+        return runner.accept(old, {'report_markdown': REPORT, 'lessons_markdown': lessons},
+                             number=9, source=SOURCE, evidence=evidence, mode='auto', **kw)
+
+    def test_模型输出自带标记行整份作废(self):
+        old = doc(watch=[long_entry(1, 301, [(1, None), (2, None)])])
+        with self.assertRaisesRegex(ValueError, r'\[held\]'):
+            self.accept(old, held(doc(watch=[long_entry(1, 301, three())]), 1), max_chars=300)
+
+    def test_挡下时报告末尾追加程序附注_并交出摘要(self):
+        old = doc(watch=[long_entry(1, 301, [(1, None), (2, None)])])
+        summary = {}
+        report, lessons = self.accept(old, doc(hard=[long_entry(1, 301, three())]), max_chars=300,
+                                      summary=summary)
+        self.assertTrue(report.startswith(REPORT.rstrip('\n')))
+        self.assertIn('## 程序附注：升档字数上限', report)
+        self.assertEqual(rl.parse(lessons).held, (1,))
+        self.assertEqual(summary['held'], [(1, 301)])
+
+    def test_标记行写坏时基线未就绪_不调模型不计次(self):
+        bad = doc(watch=[entry(1, 'x', [(4, None)])]).replace(
+            '<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: x -->')
+        with self.assertRaisesRegex(runner.NotReady, r'broken held-over-limit line: line \d+'):
+            runner.baseline(bad)
+        with self.assertRaisesRegex(runner.NotReady, 'counted-lessons format'):
+            runner.baseline('# 旧格式\n\n1. 一条\n')
+
+    def test_上限配置只认0到100000的整数_不写留空按300(self):
+        saved = os.environ.pop('RETROSPECTIVE_RULE_MAX_CHARS', None)
+        try:
+            self.assertEqual(runner.rule_max_chars(), 300)
+            for value, want in (('', 300), ('0', 0), ('300', 300), ('100000', 100000)):
+                os.environ['RETROSPECTIVE_RULE_MAX_CHARS'] = value
+                self.assertEqual(runner.rule_max_chars(), want)
+            for value in ('abc', '-1', '100001', '3.5', ' 300', '1e3', '0300', '00', '+300'):
+                os.environ['RETROSPECTIVE_RULE_MAX_CHARS'] = value
+                with self.assertRaisesRegex(SystemExit, 'must be an integer from 0 to 100000'):
+                    runner.rule_max_chars()
+        finally:
+            os.environ.pop('RETROSPECTIVE_RULE_MAX_CHARS', None)
+            if saved is not None:
+                os.environ['RETROSPECTIVE_RULE_MAX_CHARS'] = saved
+
+    def test_提示词写明上限_上限0时与没有这句的模板相同(self):
+        template = (Path(__file__).resolve().parent.parent / 'prompts' / 'retrospective.template.md').read_text()
+        text = runner.render_instruction(template, 'auto', max_chars=300)
+        self.assertIn('不超过 300 字符', text)
+        self.assertNotIn('${', text)
+        self.assertEqual(runner.render_instruction(template, 'auto', max_chars=0),
+                         runner.render_instruction(template.replace('${RULE_LIMIT}', ''), 'auto'))
 
 if __name__ == '__main__':
     unittest.main(verbosity=1 if os.environ.get('QUIET') else 2)

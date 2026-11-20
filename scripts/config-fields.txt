@@ -98,6 +98,7 @@ REQUESTER_BOT_WAKE_ANY_ITEM | 外部需求机器人 | bool:true:false | false | 
 POST_MERGE_RETROSPECTIVE | 合并后复盘 | bool:true:false | true | edit | 合并后自动复盘 | PR 合并后让模型写复盘报告、更新项目经验 | | main
 RETROSPECTIVE_PROMOTION | 合并后复盘 | enum:auto=直接升成硬规则,confirm=先放进待确认 | auto | show | 经验攒够次数后 |  | 几选一的模式：决定经验是否不经人确认就升成所有 worker 都要遵守的硬规则 | more
 RETROSPECTIVE_DIRECTORY_LESSONS | 合并后复盘 | bool:true:false | true | edit | 记录只在某个目录生效的经验 | 复盘时把只适用于某个目录的经验单独记下 | | more
+RETROSPECTIVE_RULE_MAX_CHARS | 合并后复盘 | int:0:100000 | 300 | edit | 升档时单条经验的字数上限 | 规则、适用、为什么三栏合计超过它就先留在「观察中」，压到上限内后下次复盘自动补升；0 = 不限 | | more
 CI_FAILURE_REPORT_DISPATCH | CI 失败报告 | bool:true:false | false | edit | CI 失败报告直接派给 agent 修 | 主干测试失败开出的报告 issue 直接打派工标签；没配要盯的工作流时不用 | | advanced
 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | CI 失败报告 | int:1: | 2 | edit | 修复失败几次后交人 | 同一份报告的修复 PR 合并后测试仍然失败，满这么多次就交 pending/human；没配要盯的工作流时不用 | | advanced
 CI_FAILURE_REPORT_BRANCH | CI 失败报告 | text | main | show | 盯哪个分支上的测试 | 只看这个分支上的工作流运行 | 分支名要和仓库里的一致，改了之后原来那个分支上的失败不再报告 | advanced
