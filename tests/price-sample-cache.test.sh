@@ -312,11 +312,52 @@ corrupt() { # 名字 改法
 corrupt 截断 'head -c 100 "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
 corrupt 不是JSON 'printf "garbage" > "$(SC)"'
 corrupt 结构不对 'printf "[1,2,3]" > "$(SC)"'
-corrupt 记录缺字段 'jq ".files |= with_entries(.value |= del(.raw))" "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
-corrupt 身份不是整数 'jq ".files |= with_entries(.value.id[0] = \"x\")" "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
-printf 'garbage' > "$TMP/cache/cavil-loop/price-table.json"
-tbl "$TMP/c12.json"
-same "反解结果缓存损坏：一致" "$TMP/c12.json" "$TMP/r9.json"
+# 改坏缓存里的一处：<文件> <jq 改法> <resum|stale>。resum = 按缓存的格式约定（内容按键排序的
+# JSON 的 sha256）重算校验和，让坏内容「看起来是原样写进去的」，测的是结构 / 类型检查本身；
+# stale = 校验和不动，测的是校验和（PR #612 复审第 1 轮：两种坏法都绕过了检查）
+mangle() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import hashlib, json, subprocess, sys
+f, prog, mode = sys.argv[1:]
+c = json.load(open(f, encoding="utf-8"))
+out = subprocess.run(["jq", "-c", prog], input=json.dumps(c), capture_output=True, text=True, check=True).stdout
+c = json.loads(out)
+key = "files" if "files" in c else "table"
+if mode == "resum":
+    blob = json.dumps(c[key], sort_keys=True, ensure_ascii=False, allow_nan=True)
+    c["sum"] = hashlib.sha256(blob.encode("utf-8", "surrogatepass")).hexdigest()
+json.dump(c, open(f, "w", encoding="utf-8"))
+PY
+}
+corrupt 记录缺字段 'mangle "$(SC)" ".files |= with_entries(.value |= del(.raw))" resum'
+corrupt 身份不是整数 'mangle "$(SC)" ".files |= with_entries(.value.id[0] = \"x\")" resum'
+# 求解要用的数值类型不对：单模型总账里的用量、金额改成字符串（复审第 1 轮第 2 条，原来求解器直接崩溃）
+SINGLE='(.files[] | select(.raw.last != null and (.raw.last.modelUsage | length) == 1) | .raw.last)'
+corrupt 用量不是数 "mangle \"\$(SC)\" '$SINGLE.modelUsage[].inputTokens = \"x\"' resum"
+corrupt 金额不是数 "mangle \"\$(SC)\" '$SINGLE.totalCostUSD = \"x\"' resum"
+corrupt 缓存写入不是数 'mangle "$(SC)" ".files[].raw.w1 = \"x\"" resum'
+# 类型都对、数被改了：只有校验和能认出
+corrupt 数值被改且校验和没跟着改 "mangle \"\$(SC)\" '$SINGLE.modelUsage[].inputTokens += 1' stale"
+# 一条只有多模型总账的记录：内容不进样本，不因为它的值没查就当坏缓存（不该多重读）
+tbl "$TMP/cm.json"
+chk "多模型总账的记录照常沿用（只查求解真正读的值）" "$(opens "$TMP/cm.json")" "0"
+
+# 反解结果缓存：签名对、内容坏（复审第 1 轮第 1 条：原来直接输出空表，--report 崩溃）
+PT="$TMP/cache/cavil-loop/price-table.json"
+table_bad() { # 名字 改法
+    tbl "$TMP/tx.json"
+    eval "$2"
+    tbl "$TMP/ty.json"
+    same "反解结果缓存损坏（$1）：重新反解，结果一致" "$TMP/ty.json" "$TMP/r9.json"
+    eval "$2"
+    env "${run_env[@]}" XDG_CACHE_HOME="$TMP/cache" python3 "$NEW/weekly-report/price_solve.py" --report > "$TMP/tr.txt" 2>&1
+    chk "反解结果缓存损坏（$1）：--report 照常出" "$? $(grep -c '^参照来源：' "$TMP/tr.txt")" "0 1"
+}
+table_bad 不是JSON 'printf garbage > "$PT"'
+table_bad 表是空的 'mangle "$PT" ".table = {}" resum'
+table_bad 少了模型表 'mangle "$PT" ".table |= del(.models)" resum'
+table_bad 某项单价缺字段 'mangle "$PT" ".table.models[\"claude-opus-5\"].input |= del(.price)" resum'
+table_bad 单价被改且校验和没跟着改 'mangle "$PT" ".table.models[\"claude-opus-5\"].input.price = 123" stale'
 
 # 缓存目录不可写（XDG_CACHE_HOME 指到一个普通文件）：结果照旧，只是每次都全量
 : > "$TMP/notadir"

@@ -373,7 +373,7 @@ def load_samples(projects_dir=None):
 #
 # 缓存坏掉（读不出、不是 JSON、结构不对）、程序版本或日志目录不是这次的，一律整份作废
 # 重读；写不进去只影响下一次，不影响这一次的结果。
-SAMPLE_CACHE_FORMAT = 1
+SAMPLE_CACHE_FORMAT = 2
 
 
 def code_rev():
@@ -398,7 +398,15 @@ def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+# _accumulate 从单模型总账里取的四个用量字段：缓存里的值必须是 _accumulate 吃得下的，
+# 否则一份坏缓存会让求解器崩溃（PR #612 复审第 1 轮）。缺省照旧按 0 算，与全量扫描一致。
+USAGE_KEYS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+
+
 def _valid_raw(raw):
+    """一个文件的原料是否完整、且 _accumulate 要用的每个值类型都对。
+
+    只查 _accumulate 真正读的东西：多模型总账在那里直接跳过，它的内容不查。"""
     if not isinstance(raw, dict) or set(raw) != {"last", "w5", "w1"}:
         return False
     if not (_num(raw["w5"]) and _num(raw["w1"])):
@@ -406,9 +414,22 @@ def _valid_raw(raw):
     last = raw["last"]
     if last is None:
         return True
-    return (isinstance(last, dict) and set(last) == {"modelUsage", "totalCostUSD"}
-            and isinstance(last["modelUsage"], dict) and last["modelUsage"]
-            and all(isinstance(v, dict) for v in last["modelUsage"].values()))
+    if not (isinstance(last, dict) and set(last) == {"modelUsage", "totalCostUSD"}
+            and isinstance(last["modelUsage"], dict) and last["modelUsage"]):
+        return False
+    if len(last["modelUsage"]) != 1:
+        return True
+    mu = next(iter(last["modelUsage"].values()))
+    cost = last["totalCostUSD"]
+    return (isinstance(mu, dict) and (cost is None or _num(cost))
+            and all(_num(mu[k]) for k in USAGE_KEYS if k in mu))
+
+
+def _content_sum(obj):
+    """缓存内容的校验和：读回时重算，对不上就整份当作没有。结构检查只能查出认得的坏法，
+    这一道查的是「和写进去的不是同一份」（PR #612 复审第 1 轮：两种结构损坏都绕过了检查）。"""
+    blob = json.dumps(obj, sort_keys=True, ensure_ascii=False, allow_nan=True)
+    return hashlib.sha256(blob.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _load_sample_cache(path, base, rev):
@@ -423,6 +444,11 @@ def _load_sample_cache(path, base, rev):
             and isinstance(c.get("files"), dict)):
         return {}
     files = c["files"]
+    try:
+        if c.get("sum") != _content_sum(files):
+            return {}
+    except (TypeError, ValueError):
+        return {}
     for k, e in files.items():
         if not (isinstance(e, dict) and set(e) == {"id", "raw"}
                 and isinstance(e["id"], list) and len(e["id"]) == 5
@@ -481,7 +507,8 @@ def load_samples_cached(projects_dir=None):
         _accumulate(rows, ttl, raw)
     if new != old:
         _write_json_atomic(path, {"format": SAMPLE_CACHE_FORMAT, "code": rev,
-                                  "base": os.path.abspath(base), "files": new})
+                                  "base": os.path.abspath(base), "files": new,
+                                  "sum": _content_sum(new)})
     return rows, ttl
 
 
@@ -643,13 +670,28 @@ def build_cached(policy="A", projects_dir=None):
     try:
         with open(path, encoding="utf-8") as f:
             c = json.load(f)
-        if c.get("signature") == sig and isinstance(c.get("table"), dict):
-            return c["table"]
+        t = c.get("table")
+        if (c.get("signature") == sig and _valid_table(t, policy)
+                and c.get("sum") == _content_sum(t)):
+            return t
     except Exception:
         pass
     table = solve_table(rows, ttl, policy, fetched)
-    _write_json_atomic(path, {"signature": sig, "table": table})
+    _write_json_atomic(path, {"signature": sig, "table": table, "sum": _content_sum(table)})
     return table
+
+
+def _valid_table(t, policy):
+    """价目表有 solve_table() 产出的那几层：--report / --table 和两个驱动读的就是这些。"""
+    if not (isinstance(t, dict)
+            and set(t) == {"policy", "reference_source", "thresholds", "fast", "models"}
+            and t["policy"] == policy and isinstance(t["reference_source"], str)
+            and isinstance(t["thresholds"], dict) and isinstance(t["fast"], dict)
+            and isinstance(t["models"], dict)):
+        return False
+    return all(isinstance(items, dict) and all(isinstance(v, dict) and "status" in v and "price" in v
+                                               for v in items.values())
+               for items in t["models"].values())
 
 
 def main():
