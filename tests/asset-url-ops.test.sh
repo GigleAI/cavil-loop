@@ -199,6 +199,61 @@ out=$(RUN_PATH="$TMP/badrm:$PATH" run revert)
 if grep -q '^FAILED: could not remove ' <<<"$out" && [ -e "$REC" ]; then ok "只剩记录且删不掉：报 FAILED"
 else bad "只剩记录删不掉时报告不对：$out"; fi
 
+echo "── 别处在同一时刻保存了配置（复审第 4 轮） ──"
+# 两个包装器只把「别处保存」放进固定的时刻，然后交给真正的命令：
+#   chmod：新文件写好、换上去之前（这时必须停下、不换）；mv：换上去的那一刻（这时必须报 CONFLICT、留下被换下的文件）
+REAL_MV=$(command -v mv); REAL_CHMOD=$(command -v chmod)
+mkdir -p "$TMP/race-chmod" "$TMP/race-mv"
+cat > "$TMP/race-chmod/chmod" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in --reference=*) printf 'LATER_SETTING=enabled\\n' >> "\${a#--reference=}" ;; esac; done
+exec "$REAL_CHMOD" "\$@"
+SH
+cat > "$TMP/race-mv/mv" <<SH
+#!/usr/bin/env bash
+printf 'LATER_SETTING=enabled\\n' >> "\${@: -1}"
+exec "$REAL_MV" "\$@"
+SH
+"$REAL_CHMOD" +x "$TMP/race-chmod/chmod" "$TMP/race-mv/mv"
+later() { grep -qx 'LATER_SETTING=enabled' "$1"; }
+replaced() { find "$CDIR" -maxdepth 1 -name 'myproject.conf.replaced-*'; }
+# 换上去之前有人保存：补地址停下，别处的保存留着，重跑后两样都在
+sandbox
+out=$(RUN_PATH="$TMP/race-chmod:$PATH" run add)
+if grep -q '^STOP: .* was changed while this block ran' <<<"$out" && later "$CONF" && [ "$(addr_lines)" = 0 ] \
+   && [ ! -e "$REC" ] && [ -z "$(left_tmp)" ] && [ -z "$(replaced)" ]; then
+    ok "补地址：替换前别处保存了 → STOP，那次保存留着，没写地址、没留记录和临时文件"
+else bad "补地址替换前被别处保存时结果不对：$out / $(cat "$CONF")"; fi
+out=$(run add check)
+if grep -q '^ADDED ' <<<"$out" && grep -qxF "OK: $URL" <<<"$out" && later "$CONF"; then ok "重跑补地址：ADDED，别处那次保存仍在"
+else bad "替换前被保存后重跑补地址不对：$out"; fi
+# 撤销同理
+cp "$CONF" "$TMP/before.conf"
+out=$(RUN_PATH="$TMP/race-chmod:$PATH" run revert)
+if grep -q '^STOP: .* was changed while this block ran' <<<"$out" && [ "$(addr_lines)" = 1 ] && [ "$(grep -c '^LATER_SETTING=' "$CONF")" = 2 ] \
+   && [ -e "$REC" ] && [ -z "$(left_tmp)" ] && [ -z "$(replaced)" ]; then
+    ok "撤销：替换前别处保存了 → STOP，地址行和那次保存都留着"
+else bad "撤销替换前被别处保存时结果不对：$out / $(cat "$CONF")"; fi
+out=$(run revert)
+if grep -qx 'REVERTED' <<<"$out" && [ "$(addr_lines)" = 0 ] && [ "$(grep -c '^LATER_SETTING=' "$CONF")" = 2 ] && [ ! -e "$REC" ]; then
+    ok "重跑撤销：REVERTED，别处的保存都还在"
+else bad "替换前被保存后重跑撤销不对：$out"; fi
+# 换上去的那一刻有人保存：不能悄悄丢，报 CONFLICT 并留下被换下的文件
+sandbox
+out=$(RUN_PATH="$TMP/race-mv:$PATH" run add check)
+old=$(replaced)
+if grep -q '^CONFLICT: ADDED, but a change saved at the same moment is in ' <<<"$out" && grep -qxF "OK: $URL" <<<"$out" \
+   && [ -n "$old" ] && later "$old" && [ "$(wc -l <<<"$old")" = 1 ]; then
+    ok "补地址：替换那一刻别处保存了 → 报 CONFLICT，那次保存在被换下的文件里留着，没有悄悄丢"
+else bad "补地址替换瞬间被别处保存时结果不对：$out"; fi
+rm -f "$old"
+out=$(RUN_PATH="$TMP/race-mv:$PATH" run revert check)
+old=$(replaced)
+if grep -q '^CONFLICT: REVERTED, but a change saved at the same moment is in ' <<<"$out" && grep -q '^NONE: ' <<<"$out" \
+   && [ -n "$old" ] && later "$old" && [ ! -e "$REC" ]; then
+    ok "撤销：替换那一刻别处保存了 → 报 CONFLICT，那次保存在被换下的文件里留着"
+else bad "撤销替换瞬间被别处保存时结果不对：$out"; fi
+
 echo "── 不该补的情况 ──"
 sandbox
 sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$CDIR/otherproject.conf"

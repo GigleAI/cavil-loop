@@ -2268,20 +2268,26 @@ elif [ ! -w "$ENV_FILE" ]; then
 else
     # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
     # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
-    # The new file is written whole next to the old one, checked, and only then renamed over it.
-    # 新文件先在同一目录写完整、核对，再改名覆盖旧文件。
+    # The backup is the snapshot everything is built from; the file must still equal it right before the swap,
+    # and the replaced file must still equal it right after — otherwise someone saved in between.
+    # 备份就是这次所依据的快照：替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它——否则中途有人保存过。
     LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
     BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
-    if [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK" \
-        && { cat "$ENV_FILE" && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK" \
+        && { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
         && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
-        && chmod --reference="$ENV_FILE" "$TMPF" \
-        && ( umask 077 && printf '%s\n' "$URL" > "$REC" ) && [ "$(cat "$REC")" = "$URL" ] \
-        && mv "$TMPF" "$ENV_FILE"; then
-        echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
-    else
+        && chmod --reference="$ENV_FILE" "$TMPF"; }; then
         rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+    elif ! cmp -s "$ENV_FILE" "$BAK"; then
+        rm -f "$TMPF"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+    elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+        rm -f "$TMPF" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+    elif ! cmp -s "$OLD" "$BAK"; then
+        echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+    else
+        rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
     fi
 fi
 ```
@@ -2313,16 +2319,29 @@ if [ "$n" = 0 ]; then
 elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
     echo "STOP: ${n:-unreadable} address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
 else
+    # Same snapshot rule as add: built from one snapshot, checked against it before and after the swap.
+    # 和补地址同一条规矩：从一份快照生成，替换前后都和它比对。
+    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
-    if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP" \
+        && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" = 1 ] \
+        && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
         && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
-        && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")" ] \
-        && chmod --reference="$ENV_FILE" "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
-        if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED"
-        else echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
-        fi
+        && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
+        && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+        rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+    elif ! cmp -s "$ENV_FILE" "$SNAP"; then
+        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+    elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+        rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+    elif ! cmp -s "$OLD" "$SNAP"; then
+        rm -f "$SNAP" "$REC"
+        echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+    elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
+        echo "REVERTED"
     else
-        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
     fi
 fi
 ```
@@ -2337,12 +2356,14 @@ fi
 | 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
 | 补地址 `FAILED` | 配置文件没有改动（可能留下了记录或备份） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
 | 补地址 `STOP` | 没有可复制的地址、文件读不了、或已有地址行 | 什么都没改；去看文件 |
+| 补地址 / 撤销 `STOP: … was changed while this block ran` | 这段读完文件之后、替换之前，别处保存了这个文件 | 什么都没改，别处那次保存留着；重跑这一段 |
+| 补地址 / 撤销 `CONFLICT` | 别处恰好在替换的那一刻保存了；这一段的改动已生效，别处的改动在它点名的 `….replaced-<n>` 文件里 | 把那个文件里别处的改动手工抄进配置，再删掉它 |
 | 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |
 | 撤销 `PARTIAL` | 地址行已删，记录还在 | 再跑一次撤销，它会清掉记录 |
 | 撤销 `FAILED` | 什么都没删 | 排除原因后重跑撤销 |
 | 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |
 
-配置文件只会被整份替换：补地址和撤销都先在同一目录写出完整的新文件、核对无误，再改名覆盖旧文件，所以写到一半出错（磁盘满、文件大小限制）时旧文件原样不动。新文件沿用旧文件的权限。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+配置文件只会被整份替换：补地址和撤销都先在同一目录写出完整的新文件、核对无误，再改名覆盖旧文件，所以写到一半出错（磁盘满、文件大小限制）时旧文件原样不动。新文件沿用旧文件的权限。每一段都从文件的一份快照出发（补地址用的就是备份）：替换前文件必须仍等于这份快照，否则停下、什么都不改；替换后被换下的那份文件也必须仍等于它，否则说明中途有人保存过，这一段报 `CONFLICT` 并留下那份文件。查不出的情况：编辑器恰好在最后一次核对和替换之间、用改名的方式存盘——那次保存会丢。跑这几段时不要同时手改这个文件，也不要对这个项目跑 `setup.sh`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
 
 ## 升级到 webhook（即时触发）
 
