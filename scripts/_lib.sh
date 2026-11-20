@@ -8214,19 +8214,11 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
                             _concurrent_work_log_file "同时进行的其他工作：$head 的提交标题读不出来" "$tmp/err"
                         fi
                     fi
-                    # 上一级目录：git 给的是以 NUL 分隔的原样路径（不加引号、不转义）。按原样的字节取上一级目录、
-                    # 去重、计数（python3，字节不经过任何解码），之后才转成显示名、过同一份「压成一行」规则——
-                    # 在加了引号的显示文本上取目录，同一个目录会被算成两个（PR #604 复审第 1 轮）；先解码再去重，
-                    # 两个只差一个非 UTF-8 字节的目录会被并成一个（复审第 2 轮）。仓库根目录下的文件单列；按字节排序
-                    if ! python3 -c '
-import json, sys
-raw = sys.stdin.buffer.read()
-dirs = sorted({(p.rsplit(b"/", 1)[0] + b"/") if b"/" in p else b"" for p in raw.split(b"\0") if p})
-show = [None if d == b"" else d.decode("utf-8", "replace") for d in dirs[:int(sys.argv[1])]]
-print(json.dumps({"n": len(dirs), "show": show}))' "$CONCURRENT_WORK_MAX_DIRS" < "$tmp/files.raw" 2> "$tmp/err" \
-                            | jq -r "$CONCURRENT_WORK_JQ_DEFS"'
-                                "\(.n)\u001f" + ([ .show[] | if . == null then "仓库根目录" else "`" + cw_flat(80) + "`" end ] | join("、"))' \
-                            > "$tmp/dirs" 2>> "$tmp/err" \
+                    # 上一级目录：从 git 给的原样字节到 agent 读到的文字，整条都在 concurrent_work_dirs.py 里
+                    # （PR #604 复审三轮各在一处丢了目录的身份：取父目录、去重、显示名）——按字节归并计数，
+                    # 显示名用一一对应的转义，长名截短时带原始字节的短哈希，看起来相同的名字也带上哈希
+                    if ! python3 "$_LIB_DIR/concurrent_work_dirs.py" "$CONCURRENT_WORK_MAX_DIRS" \
+                            < "$tmp/files.raw" > "$tmp/dirs" 2> "$tmp/err" \
                        || ! IFS=$'\x1f' read -r n dirs < "$tmp/dirs" || ! [[ "$n" =~ ^[0-9]+$ ]]; then
                         line+="${summ}；涉及的目录未能读取（整理目录失败）"
                     elif [ "$n" -eq 0 ]; then
