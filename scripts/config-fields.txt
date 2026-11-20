@@ -6,9 +6,14 @@
 # 在本机跑任意命令 / 读凭据的入口（tests/project-config.test.sh 按名单断言它们不在这里）。
 #
 # 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
-#   KEY | 分组标题 | 类型 | 不写这一行时 daemon 实际用的值 | edit / show | 名称 | 一句说明 [| 只显示的原因]
+#   KEY | 分组标题 | 类型 | 不写这一行时 daemon 实际用的值 | edit / show | 名称 | 一句说明 | 只显示的原因 | 层级
 #
-# 只显示的原因：show 行必填（这一行为什么不在窗口里改，窗口里写在这一行下面），edit 行不写。
+# 只显示的原因：show 行必填（这一行为什么不在窗口里改，窗口里写在这一行下面），edit 行留空。
+# 层级（GitHub#591）：窗口打开时这一项放在哪。
+#   main      常用：直接显示
+#   more      常用分组里不常用的：收在这一组末尾的「高级」折叠里
+#   advanced  高级：整组收进窗口底部默认收起的「高级设置」
+# 一个分组要么每一项都是 advanced，要么一项 advanced 都没有，而且至少有一项 main（tests/config-fields-coverage.test.sh 查）。
 # 只显示的行和可改的行放在同一个主题分组里（GitHub#554）。
 #
 # 类型：
@@ -37,85 +42,85 @@
 # edit 项只在「配置的代码里只提到它一次，且那是最外层单独一行、顶格写的普通字面值」时可改；写成算式、引用变量、
 # 多处赋值、写在 if / 循环 / case / 函数里（一行写完的也算）、别处还提到它的只显示。代码里一次都没提到才算「没写」。显示的值一律是 daemon 实际用的：没设置 = 这里登记的默认值，为空 = 写成空值时的值（没另写就是默认值）。
 #
-WORKER_AGENT | agent 与模型 | agent | claude | edit | 干活的 agent | 派工时用哪个 agent 程序写代码
-WORKER_MODEL | agent 与模型 | model | | edit | 干活用的模型 | 留空 = 用 agent 自己的默认模型
-REVIEW_WORKER_AGENT | agent 与模型 | agent | codex | edit | 复审的 agent | 独立复审用哪个 agent（复审关卡开着时才用到）
-REVIEW_MODEL | agent 与模型 | model | | edit | 复审用的模型 | 留空 = 用 agent 自己的默认模型
-RETROSPECTIVE_MODEL | agent 与模型 | model | sonnet | edit | 合并后复盘用的模型 | 留空 = sonnet
-FABLE_WORKER_AGENT | agent 与模型 | agent | claude | edit | 打 fable 标签时干活的 agent | 条目打的是 fable 派工标签时用哪个 agent 程序
-FABLE_MODEL | agent 与模型 | model | fable | edit | 打 fable 标签时用的模型 | 留空 = fable
-MAX_CONCURRENT_WORKERS | 派工与重试 | int:1:16 | 1 | edit | 同时最多几个 worker | 同一时刻最多有几条 issue / PR 在干活；1 = 一条一条来，最稳
-DISPATCH_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | 派工连续失败几次后交人 | 派不出去时最多自动重试几次，之后标 pending/human
-SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退出后最多重派几次 | 之后标 pending/human
-STUCK_WORKER_QUIET_SECS | 派工与重试 | int:0:86400 | 0 | edit | 卡在 doing/agent 多少秒后催一次 | agent 已空闲、GitHub 和分支都没动静满这么久，往会话里催一次；0 = 关闭这个兜底
-STUCK_WORKER_STEP_GAP_SECS | 派工与重试 | int:60:86400 | 900 | edit | 催过后再等多少秒就重派 | 仍没动静就结束会话、翻回触发标签重派；兜底关着时不用
-STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最多重派几次 | 之后再卡住就留言交 pending/human；兜底关着时不用
-SELFHEAL_ONLY_OWN_WORKERS | 派工与重试 | bool:true:false | false | edit | 只接管本机派出的活 | 多台机器盯同一个仓库时打开，免得一台把另一台正在跑的 worker 当成意外退出接管过去；单机保持关
-ENABLE_USAGE_LIMIT_PAUSE | 派工与重试 | bool:true:false | false | edit | agent 撞到用量上限时停派 | 认出用量上限提示后，到解除时间前不再给这个 agent 派新活，被打断的那条留言转 pending/human
-USAGE_LIMIT_FALLBACK_SECS | 派工与重试 | int:60:604800 | 3600 | edit | 读不出解除时间时停派多少秒 | 用量上限提示里的解除时间读不出、或在 8 天以外时，按这么久估；停派关着时不用
-DISPATCH_MODE | 派工与重试 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |  | 改成「开着的都派」后谁开的 issue 都会被派工，会扩大 daemon 做事的范围
-GREEDY_SCAN_LIMIT | 派工挑选 | int:0: | 100 | edit | 「开着的都派」每轮最多看几条 | 每轮从开着的 issue / PR 里最多挑这么多条来看；积压多时调大；只派打了标签的时不用；0 = 一条都不看，十位数及以上 = 全看
-GREEDY_SKIP_LABELS | 派工挑选 | text |  | show | 「开着的都派」额外跳过的标签 | 逗号分隔，追加在内置的几个流程标签之后；空 = 只跳过内置的 | 多台机器分工时要和另一台机器的派工标签一起改，改错了一台会把另一台的活抢过来
-PRIORITY_SOURCE | 派工挑选 | enum:label=看优先级标签,project=看 Project 上的优先级字段,both=Project 上设了就用它、没设看标签 | label | show | 优先级看哪里 | 同时有几条可派时先派哪条 | 几选一的模式；改成看 Project 还要配好看板和读看板的令牌（那几项不在这里显示）
-PRIORITY_LABELS | 派工挑选 | text | priority/p0,priority/p1,priority/p2 | show | 优先级标签 | 逗号分隔，排在前面的先派 | 标签列表的顺序就是先后，标签名要和仓库里建好的一致
-PROJECT_PRIORITY_FIELD | 派工挑选 | text | Priority | show | Project 上的优先级字段 | 优先级看 Project 时读这个单选字段，档位按字段里选项的顺序 | 是看板上字段的名字，要和看板里的一致
-LABEL_PENDING_AGENT | 流程标签 | text |  | show | 派工标签 | 必填：配置里没有这一行 daemon 不启动 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-LABEL_PENDING_AGENT_FABLE | 流程标签 | text | pending/agent/fable | show | fable 派工标签 | 打这个标签派工时用上面「打 fable 标签时」的 agent 和模型 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-LABEL_PENDING_AGENT_EXTRA | 流程标签 | text |  | show | 也算派工的标签 | 逗号分隔，和派工标签一样派；多台机器分工时各配各的主机标签；空 = 没有 | 多台机器分工时要和另一台机器的跳过标签一起改，改错了一台会把另一台的活抢过来
-LABEL_AGENT_DOING | 流程标签 | text | doing/agent | show | 干活中 | worker 在干活时挂着 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-LABEL_PENDING_HUMAN | 流程标签 | text |  | show | 等人 | 必填：配置里没有这一行 daemon 不启动 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-LABEL_PENDING_PR | 流程标签 | text | pending/PR | show | 转 PR 跟踪 | issue 的活转到 PR 上之后挂着 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-LABEL_DONE | 流程标签 | text | Done | show | 已完成 | PR 合并后挂上 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出
-REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决
-REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人
-LABEL_PENDING_REVIEW | 复审 | label |  | show | 复审关卡 |  | 开关复审关卡会改变每条 PR 的流转，标签也要先在仓库里建好
-LABEL_AUTOPILOT | 托管（自动合并） | label |  | show | 托管（自动合并） |  | 打开后 daemon 会自己合并 PR；标签也要先在仓库里建好
-LABEL_PENDING_MERGE | 托管（自动合并） | label | pending/merge | show | 等合并的标签 | 复审通过后挂上它，daemon 核对检查后合并；托管关着时不用 | 标签名要和仓库里建好的标签一致
-AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 托管（自动合并） | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人 | 决定托管合并前哪些改动要人过目，放宽它等于放宽自动合并
-AUTOPILOT_OUTSIDER_GUARD | 托管（自动合并） | enum:=关,mark=只标出,block=标出并拦住自动合并 |  | show | 外部账号的评论 | 托管条目上没有写权限的账号写的内容：只标出 = 标明作者、去掉里面的链接和代码等；拦住 = 授权之后有外部内容的 PR 不自动合并、交人 | 几选一的保护模式，改它会改变托管 PR 能不能自动合并
-AUTOPILOT_OUTSIDER_SCREEN | 托管（自动合并） | bool:on: |  | edit | 外部账号的内容先给模型预筛 | 外部账号的每条内容先交给一个不带任何工具的模型判断是不是在指挥 agent，判为是的给 agent 看时换成占位；每条多一次模型调用，要和上一项一起开
-AUTOPILOT_MERGE_METHOD | 托管（自动合并） | enum:squash=压成一个提交,merge=合并提交,rebase=变基 | squash | show | 托管合并用的方式 |  | 几选一的模式；仓库设置里也得允许这种合并方式，不允许时托管 PR 会交人
-AUTOPILOT_CHECKS_TIMEOUT_HOURS | 托管（自动合并） | int:0:2562047788015215 | 6 | edit | 自动检查等多少小时还没跑完就交人 | 托管 PR 的检查（CI）一直没跑完，满这么久就交 pending/human；0 = 检查只要还没跑完就立即交人；托管关着时不用
-OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
-COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
-ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论）
-PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查
-PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒
-PENDING_HUMAN_CONFLICT_MAX_TRIES | 等人期间 | int:1:9223372036854775807 | 10 | edit | 冲突检查判不出时最多重试几轮 | 拉不下来、读不到 PR 等判不出的情况连续这么多轮，这一版就先不查了（目标分支或 PR 再动才重来）
-BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有
-BLOCKED_MAX_TRIES | 等人期间 | int:1:100 | 10 | edit | 等前置：写 GitHub 连续失败几次后放弃 | 放弃后条目留在等前置标签上，只记日志
-AUTO_CLEANUP_ON_MERGE | 等人期间 | bool:true:false | true | edit | 合并后自动清理工作目录 | 清掉这条 issue 的工作目录和终端会话；分支、对话记录、日志都保留
-LABEL_PENDING_BLOCKED | 等人期间 | label | pending/blocked;empty= | show | 等前置 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好
-LABEL_PENDING_LATER | 等人期间 | label | pending/later;empty= | show | 暂缓 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好
-LABEL_PENDING_REQUESTER_BOT | 外部需求机器人 | label |  | show | 等外部需求机器人回话 | 关 = 没接外部需求机器人 | 标签要先在仓库里建好，还要配好机器人的账号等几项（那几项不在这里显示）
-REQUESTER_BOT_REPORT_FIRST | 外部需求机器人 | bool:true:false | false | edit | 做完先给机器人汇报 | 机器人提的需求做完后先交机器人认可，再交维护者；没接机器人时不用
-REQUESTER_BOT_WAKE_ANY_ITEM | 外部需求机器人 | bool:true:false | false | edit | 不是机器人提的条目也能叫醒机器人 | 机器人那边要先支持这种交接；没接机器人时不用
-POST_MERGE_RETROSPECTIVE | 合并后复盘 | bool:true:false | true | edit | 合并后自动复盘 | PR 合并后让模型写复盘报告、更新项目经验
-RETROSPECTIVE_PROMOTION | 合并后复盘 | enum:auto=直接升成硬规则,confirm=先放进待确认 | auto | show | 经验攒够次数后 |  | 几选一的模式：决定经验是否不经人确认就升成所有 worker 都要遵守的硬规则
-RETROSPECTIVE_DIRECTORY_LESSONS | 合并后复盘 | bool:true:false | true | edit | 记录只在某个目录生效的经验 | 复盘时把只适用于某个目录的经验单独记下
-RETROSPECTIVE_RULE_MAX_CHARS | 合并后复盘 | int:0:100000 | 300 | edit | 升档时单条经验的字数上限 | 规则、适用、为什么三栏合计超过它就先留在「观察中」，压到上限内后下次复盘自动补升；0 = 不限
-CI_FAILURE_REPORT_DISPATCH | CI 失败报告 | bool:true:false | false | edit | CI 失败报告直接派给 agent 修 | 主干测试失败开出的报告 issue 直接打派工标签；没配要盯的工作流时不用
-CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | CI 失败报告 | int:1: | 2 | edit | 修复失败几次后交人 | 同一份报告的修复 PR 合并后测试仍然失败，满这么多次就交 pending/human；没配要盯的工作流时不用
-CI_FAILURE_REPORT_BRANCH | CI 失败报告 | text | main | show | 盯哪个分支上的测试 | 只看这个分支上的工作流运行 | 分支名要和仓库里的一致，改了之后原来那个分支上的失败不再报告
-AUTO_RELEASE_MAIN_CHECKOUT | 主 checkout 与正式站 | bool:1:0 | 0 | edit | 主 checkout 占着 PR 分支时自动切回主干 | 只在没有未提交改动、本地分支和 PR 最新提交相同等条件都满足时才切；关 = 转 pending/human 并给出切换命令
-LATEST_SITE_REFRESH | 主 checkout 与正式站 | bool:true:false | false | edit | 有新合并时刷新常驻正式站 | 把主 checkout 拉到最新，重建并重启本机常驻的正式站
-CHECKOUT_STALE_ALERT_COMMITS | 主 checkout 与正式站 | int:0:9223372036854775807 | 0 | edit | 主 checkout 落后多少个提交就开 issue 提醒 | 本机主 checkout 的主干落后远端满这么多个提交时开一条 pending/human 的提醒 issue，跟上后自动关；0 = 关
-PREVIEW_PORT_BASE | 预览 | int:0:65535 | 4000 | edit | 预览端口从几号起 | 预览端口 = 这个数 + issue 编号（配了下一项就加编号除以它的余数），后端端口再加偏移，都要在 1 到 65535：保存时按这三项一起查 #1 的端口（配了取余数再查余数为 0 的那条），编号大了才越界的那几条在注册时报错；改了以后已经登记的预览端口会和新算出来的对不上
-PREVIEW_PORT_MODULO | 预览 | int:1:9223372036854775807:empty | | edit | 预览端口按多少取余数 | 留空 = 不取余数，端口一直往上加；配了就把端口留在「起始号 + 0 到这个数减 1」这一段里
-PREVIEW_BACKEND_OFFSET | 预览 | int:1:65535 | 10000 | edit | 预览程序实际监听的端口比公开端口大多少 | 预览程序自己听的端口 = 公开端口 + 这个数，公开端口由系统转发过去
-PREVIEW_IDLE | 预览 | text | 30min | show | 预览闲置多久自动停 | 没人访问满这么久就停掉预览程序，再次访问自动拉起 | 是「30min / 2h」这类时间写法，不是单个数字；写错了预览的转发起不来
-PREVIEW_READY_TIMEOUT | 预览 | int:0:120 | 90 | edit | 预览程序最多等多少秒起来 | 拉起预览程序后，等它开始监听最多这么久，超时算没起来；预览单元启动本身最多等 120 秒
-PREVIEW_TAILSCALE_SERVE | 预览 | bool:true:false | false | edit | 预览同时挂到 tailnet 上 | 同一 tailnet 里的设备也能打开预览；需要免密 sudo 跑 tailscale，失败只告警
-POLL_IDLE_PROBE | 轮询 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询
-POLL_BACKOFF_LADDER | 轮询 | text | 86400:300,259200:600,604800:1800;empty= | show | 仓库没动静时放慢轮询 | 「安静了多少秒:这时每隔多少秒轮询一次」，逗号分隔；配置里没写这一行 = 默认这三档（安静 1 天隔 5 分钟、3 天隔 10 分钟、7 天隔 30 分钟）；写成空值 = 不放慢，一直按轮询间隔 | 是一串「秒:秒」档位，不是单个数字；写错的档位会被跳过
-POLL_FORCE_SYNC_SECS | 轮询 | int:0:999999999 | 1800 | edit | 放慢时最长隔多少秒也完整轮询一次 | 仓库再没动静，满这么久也完整查一遍；放慢的档位超过它时按它算
-POLL_IDLE_PROBE_MAX_SECS | 轮询 | int:1:999999999 | 600 | edit | 先轻量探一下时完整轮询最长隔多少秒 | 「空闲时先轻量探一下」开着时，完整检查最长隔这么久；要不大于上一项，大于时不按它封顶
-POLL_FAIL_BACKOFF_MAX_SECS | 轮询 | int:0:999999999 | 1800 | edit | 读不到 GitHub 时最长隔多少秒重试 | 读不到 GitHub 时，重试间隔从轮询间隔起每失败一次翻倍，最长到这么久
-POLL_DUE_SLACK_SECS | 轮询 | int:0:999999999 | 10 | edit | 离该轮询还差几秒就提前跑 | 定时器比约定时间稍早叫醒时，差不到这么多秒就照跑，免得白等一整轮
-ENABLE_POLL_RUN_LOG | 轮询 | bool:true:false | true;empty=false | edit | 记录每轮轮询 | 每轮写一条小记录、出问题时留快照，只记不判；配置里写成空值也算关
-POLL_RUN_LOG_ROUNDS | 轮询 | int:2:9999999 | 1000 | edit | 轮询记录最多留几轮 | 超过就删掉最早的；记录每轮轮询关着时不用
-POLL_RUN_LOG_SNAPSHOTS | 轮询 | int:2:9999999 | 20 | edit | 出问题时的快照最多留几份 | 超过就删掉最早的；记录每轮轮询关着时不用
-POLL_RUN_LOG_INFLIGHT | 轮询 | int:2:9999999 | 64 | edit | 进行中的轮询记录最多留几份 | 被中途打断的轮次留下的进度文件也算在内，超过就删掉最早的；记录每轮轮询关着时不用
-POLL_RUN_LOG_SLOW_SECS | 轮询 | int:1:9999999 | 600 | edit | 一步超过多少秒算慢 | 轮询里某一步或整轮超过这么久就留一份快照；记录每轮轮询关着时不用
-HEAVY_TEST_LOCK_WAIT | 其他 | int:0:9223372036854775807 | 0 | edit | 重测试排队最多等多少秒 | worker 经排队命令跑重测试时，排了这么久还轮不到就放弃；0 = 一直等；没配重测试命令时不用
-LOG_LEVEL | 其他 | enum:info=常规,debug=排查（更详细） | info | edit | 日志详细程度 | 写进轮询日志的内容多少
+WORKER_AGENT | agent 与模型 | agent | claude | edit | 干活的 agent | 派工时用哪个 agent 程序写代码 | | main
+WORKER_MODEL | agent 与模型 | model | | edit | 干活用的模型 | 留空 = 用 agent 自己的默认模型 | | main
+REVIEW_WORKER_AGENT | agent 与模型 | agent | codex | edit | 复审的 agent | 独立复审用哪个 agent（复审关卡开着时才用到） | | main
+REVIEW_MODEL | agent 与模型 | model | | edit | 复审用的模型 | 留空 = 用 agent 自己的默认模型 | | main
+RETROSPECTIVE_MODEL | agent 与模型 | model | sonnet | edit | 合并后复盘用的模型 | 留空 = sonnet | | more
+FABLE_WORKER_AGENT | agent 与模型 | agent | claude | edit | 打 fable 标签时干活的 agent | 条目打的是 fable 派工标签时用哪个 agent 程序 | | more
+FABLE_MODEL | agent 与模型 | model | fable | edit | 打 fable 标签时用的模型 | 留空 = fable | | more
+MAX_CONCURRENT_WORKERS | 派工与重试 | int:1:16 | 1 | edit | 同时最多几个 worker | 同一时刻最多有几条 issue / PR 在干活；1 = 一条一条来，最稳 | | main
+DISPATCH_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | 派工连续失败几次后交人 | 派不出去时最多自动重试几次，之后标 pending/human | | more
+SELFHEAL_MAX_RETRIES | 派工与重试 | int:1:20 | 3 | edit | worker 意外退出后最多重派几次 | 之后标 pending/human | | more
+STUCK_WORKER_QUIET_SECS | 派工与重试 | int:0:86400 | 0 | edit | 卡在 doing/agent 多少秒后催一次 | agent 已空闲、GitHub 和分支都没动静满这么久，往会话里催一次；0 = 关闭这个兜底 | | more
+STUCK_WORKER_STEP_GAP_SECS | 派工与重试 | int:60:86400 | 900 | edit | 催过后再等多少秒就重派 | 仍没动静就结束会话、翻回触发标签重派；兜底关着时不用 | | more
+STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最多重派几次 | 之后再卡住就留言交 pending/human；兜底关着时不用 | | more
+SELFHEAL_ONLY_OWN_WORKERS | 派工与重试 | bool:true:false | false | edit | 只接管本机派出的活 | 多台机器盯同一个仓库时打开，免得一台把另一台正在跑的 worker 当成意外退出接管过去；单机保持关 | | more
+ENABLE_USAGE_LIMIT_PAUSE | 派工与重试 | bool:true:false | false | edit | agent 撞到用量上限时停派 | 认出用量上限提示后，到解除时间前不再给这个 agent 派新活，被打断的那条留言转 pending/human | | more
+USAGE_LIMIT_FALLBACK_SECS | 派工与重试 | int:60:604800 | 3600 | edit | 读不出解除时间时停派多少秒 | 用量上限提示里的解除时间读不出、或在 8 天以外时，按这么久估；停派关着时不用 | | more
+DISPATCH_MODE | 派工与重试 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |  | 改成「开着的都派」后谁开的 issue 都会被派工，会扩大 daemon 做事的范围 | main
+GREEDY_SCAN_LIMIT | 派工挑选 | int:0: | 100 | edit | 「开着的都派」每轮最多看几条 | 每轮从开着的 issue / PR 里最多挑这么多条来看；积压多时调大；只派打了标签的时不用；0 = 一条都不看，十位数及以上 = 全看 | | advanced
+GREEDY_SKIP_LABELS | 派工挑选 | text |  | show | 「开着的都派」额外跳过的标签 | 逗号分隔，追加在内置的几个流程标签之后；空 = 只跳过内置的 | 多台机器分工时要和另一台机器的派工标签一起改，改错了一台会把另一台的活抢过来 | advanced
+PRIORITY_SOURCE | 派工挑选 | enum:label=看优先级标签,project=看 Project 上的优先级字段,both=Project 上设了就用它、没设看标签 | label | show | 优先级看哪里 | 同时有几条可派时先派哪条 | 几选一的模式；改成看 Project 还要配好看板和读看板的令牌（那几项不在这里显示） | advanced
+PRIORITY_LABELS | 派工挑选 | text | priority/p0,priority/p1,priority/p2 | show | 优先级标签 | 逗号分隔，排在前面的先派 | 标签列表的顺序就是先后，标签名要和仓库里建好的一致 | advanced
+PROJECT_PRIORITY_FIELD | 派工挑选 | text | Priority | show | Project 上的优先级字段 | 优先级看 Project 时读这个单选字段，档位按字段里选项的顺序 | 是看板上字段的名字，要和看板里的一致 | advanced
+LABEL_PENDING_AGENT | 流程标签 | text |  | show | 派工标签 | 必填：配置里没有这一行 daemon 不启动 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+LABEL_PENDING_AGENT_FABLE | 流程标签 | text | pending/agent/fable | show | fable 派工标签 | 打这个标签派工时用上面「打 fable 标签时」的 agent 和模型 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+LABEL_PENDING_AGENT_EXTRA | 流程标签 | text |  | show | 也算派工的标签 | 逗号分隔，和派工标签一样派；多台机器分工时各配各的主机标签；空 = 没有 | 多台机器分工时要和另一台机器的跳过标签一起改，改错了一台会把另一台的活抢过来 | advanced
+LABEL_AGENT_DOING | 流程标签 | text | doing/agent | show | 干活中 | worker 在干活时挂着 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+LABEL_PENDING_HUMAN | 流程标签 | text |  | show | 等人 | 必填：配置里没有这一行 daemon 不启动 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+LABEL_PENDING_PR | 流程标签 | text | pending/PR | show | 转 PR 跟踪 | issue 的活转到 PR 上之后挂着 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+LABEL_DONE | 流程标签 | text | Done | show | 已完成 | PR 合并后挂上 | 流程标签名要和仓库里建好的一致，改名后挂着旧名字的条目不再被认出 | advanced
+REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决 | | main
+REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人 | | main
+LABEL_PENDING_REVIEW | 复审 | label |  | show | 复审关卡 |  | 开关复审关卡会改变每条 PR 的流转，标签也要先在仓库里建好 | main
+LABEL_AUTOPILOT | 托管（自动合并） | label |  | show | 托管（自动合并） |  | 打开后 daemon 会自己合并 PR；标签也要先在仓库里建好 | main
+LABEL_PENDING_MERGE | 托管（自动合并） | label | pending/merge | show | 等合并的标签 | 复审通过后挂上它，daemon 核对检查后合并；托管关着时不用 | 标签名要和仓库里建好的标签一致 | more
+AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 托管（自动合并） | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人 | 决定托管合并前哪些改动要人过目，放宽它等于放宽自动合并 | more
+AUTOPILOT_OUTSIDER_GUARD | 托管（自动合并） | enum:=关,mark=只标出,block=标出并拦住自动合并 |  | show | 外部账号的评论 | 托管条目上没有写权限的账号写的内容：只标出 = 标明作者、去掉里面的链接和代码等；拦住 = 授权之后有外部内容的 PR 不自动合并、交人 | 几选一的保护模式，改它会改变托管 PR 能不能自动合并 | more
+AUTOPILOT_OUTSIDER_SCREEN | 托管（自动合并） | bool:on: |  | edit | 外部账号的内容先给模型预筛 | 外部账号的每条内容先交给一个不带任何工具的模型判断是不是在指挥 agent，判为是的给 agent 看时换成占位；每条多一次模型调用，要和上一项一起开 | | more
+AUTOPILOT_MERGE_METHOD | 托管（自动合并） | enum:squash=压成一个提交,merge=合并提交,rebase=变基 | squash | show | 托管合并用的方式 |  | 几选一的模式；仓库设置里也得允许这种合并方式，不允许时托管 PR 会交人 | main
+AUTOPILOT_CHECKS_TIMEOUT_HOURS | 托管（自动合并） | int:0:2562047788015215 | 6 | edit | 自动检查等多少小时还没跑完就交人 | 托管 PR 的检查（CI）一直没跑完，满这么久就交 pending/human；0 = 检查只要还没跑完就立即交人；托管关着时不用 | | more
+OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响 | | main
+COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行 | | main
+ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论） | | more
+PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查 | | main
+PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒 | | more
+PENDING_HUMAN_CONFLICT_MAX_TRIES | 等人期间 | int:1:9223372036854775807 | 10 | edit | 冲突检查判不出时最多重试几轮 | 拉不下来、读不到 PR 等判不出的情况连续这么多轮，这一版就先不查了（目标分支或 PR 再动才重来） | | more
+BLOCKED_RECHECK_SECS | 等人期间 | int:60:86400 | 300 | edit | 等前置时每隔多少秒检查一次 | 条目挂着等前置标签时，隔多久看一次前置完成没有 | | more
+BLOCKED_MAX_TRIES | 等人期间 | int:1:100 | 10 | edit | 等前置：写 GitHub 连续失败几次后放弃 | 放弃后条目留在等前置标签上，只记日志 | | more
+AUTO_CLEANUP_ON_MERGE | 等人期间 | bool:true:false | true | edit | 合并后自动清理工作目录 | 清掉这条 issue 的工作目录和终端会话；分支、对话记录、日志都保留 | | main
+LABEL_PENDING_BLOCKED | 等人期间 | label | pending/blocked;empty= | show | 等前置 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好 | main
+LABEL_PENDING_LATER | 等人期间 | label | pending/later;empty= | show | 暂缓 | 配置里没写这一行 = 开；写成空值 = 关 | 标签要先在仓库里建好 | main
+LABEL_PENDING_REQUESTER_BOT | 外部需求机器人 | label |  | show | 等外部需求机器人回话 | 关 = 没接外部需求机器人 | 标签要先在仓库里建好，还要配好机器人的账号等几项（那几项不在这里显示） | advanced
+REQUESTER_BOT_REPORT_FIRST | 外部需求机器人 | bool:true:false | false | edit | 做完先给机器人汇报 | 机器人提的需求做完后先交机器人认可，再交维护者；没接机器人时不用 | | advanced
+REQUESTER_BOT_WAKE_ANY_ITEM | 外部需求机器人 | bool:true:false | false | edit | 不是机器人提的条目也能叫醒机器人 | 机器人那边要先支持这种交接；没接机器人时不用 | | advanced
+POST_MERGE_RETROSPECTIVE | 合并后复盘 | bool:true:false | true | edit | 合并后自动复盘 | PR 合并后让模型写复盘报告、更新项目经验 | | main
+RETROSPECTIVE_PROMOTION | 合并后复盘 | enum:auto=直接升成硬规则,confirm=先放进待确认 | auto | show | 经验攒够次数后 |  | 几选一的模式：决定经验是否不经人确认就升成所有 worker 都要遵守的硬规则 | more
+RETROSPECTIVE_DIRECTORY_LESSONS | 合并后复盘 | bool:true:false | true | edit | 记录只在某个目录生效的经验 | 复盘时把只适用于某个目录的经验单独记下 | | more
+RETROSPECTIVE_RULE_MAX_CHARS | 合并后复盘 | int:0:100000 | 300 | edit | 升档时单条经验的字数上限 | 规则、适用、为什么三栏合计超过它就先留在「观察中」，压到上限内后下次复盘自动补升；0 = 不限 | | more
+CI_FAILURE_REPORT_DISPATCH | CI 失败报告 | bool:true:false | false | edit | CI 失败报告直接派给 agent 修 | 主干测试失败开出的报告 issue 直接打派工标签；没配要盯的工作流时不用 | | advanced
+CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | CI 失败报告 | int:1: | 2 | edit | 修复失败几次后交人 | 同一份报告的修复 PR 合并后测试仍然失败，满这么多次就交 pending/human；没配要盯的工作流时不用 | | advanced
+CI_FAILURE_REPORT_BRANCH | CI 失败报告 | text | main | show | 盯哪个分支上的测试 | 只看这个分支上的工作流运行 | 分支名要和仓库里的一致，改了之后原来那个分支上的失败不再报告 | advanced
+AUTO_RELEASE_MAIN_CHECKOUT | 主 checkout 与正式站 | bool:1:0 | 0 | edit | 主 checkout 占着 PR 分支时自动切回主干 | 只在没有未提交改动、本地分支和 PR 最新提交相同等条件都满足时才切；关 = 转 pending/human 并给出切换命令 | | advanced
+LATEST_SITE_REFRESH | 主 checkout 与正式站 | bool:true:false | false | edit | 有新合并时刷新常驻正式站 | 把主 checkout 拉到最新，重建并重启本机常驻的正式站 | | advanced
+CHECKOUT_STALE_ALERT_COMMITS | 主 checkout 与正式站 | int:0:9223372036854775807 | 0 | edit | 主 checkout 落后多少个提交就开 issue 提醒 | 本机主 checkout 的主干落后远端满这么多个提交时开一条 pending/human 的提醒 issue，跟上后自动关；0 = 关 | | advanced
+PREVIEW_PORT_BASE | 预览 | int:0:65535 | 4000 | edit | 预览端口从几号起 | 预览端口 = 这个数 + issue 编号（配了下一项就加编号除以它的余数），后端端口再加偏移，都要在 1 到 65535：保存时按这三项一起查 #1 的端口（配了取余数再查余数为 0 的那条），编号大了才越界的那几条在注册时报错；改了以后已经登记的预览端口会和新算出来的对不上 | | advanced
+PREVIEW_PORT_MODULO | 预览 | int:1:9223372036854775807:empty | | edit | 预览端口按多少取余数 | 留空 = 不取余数，端口一直往上加；配了就把端口留在「起始号 + 0 到这个数减 1」这一段里 | | advanced
+PREVIEW_BACKEND_OFFSET | 预览 | int:1:65535 | 10000 | edit | 预览程序实际监听的端口比公开端口大多少 | 预览程序自己听的端口 = 公开端口 + 这个数，公开端口由系统转发过去 | | advanced
+PREVIEW_IDLE | 预览 | text | 30min | show | 预览闲置多久自动停 | 没人访问满这么久就停掉预览程序，再次访问自动拉起 | 是「30min / 2h」这类时间写法，不是单个数字；写错了预览的转发起不来 | advanced
+PREVIEW_READY_TIMEOUT | 预览 | int:0:120 | 90 | edit | 预览程序最多等多少秒起来 | 拉起预览程序后，等它开始监听最多这么久，超时算没起来；预览单元启动本身最多等 120 秒 | | advanced
+PREVIEW_TAILSCALE_SERVE | 预览 | bool:true:false | false | edit | 预览同时挂到 tailnet 上 | 同一 tailnet 里的设备也能打开预览；需要免密 sudo 跑 tailscale，失败只告警 | | advanced
+POLL_IDLE_PROBE | 轮询 | bool:true:false | true | edit | 空闲时先轻量探一下再轮询 | 仓库没动静时只发一次不占额度的请求，有变化才完整轮询 | | advanced
+POLL_BACKOFF_LADDER | 轮询 | text | 86400:300,259200:600,604800:1800;empty= | show | 仓库没动静时放慢轮询 | 「安静了多少秒:这时每隔多少秒轮询一次」，逗号分隔；配置里没写这一行 = 默认这三档（安静 1 天隔 5 分钟、3 天隔 10 分钟、7 天隔 30 分钟）；写成空值 = 不放慢，一直按轮询间隔 | 是一串「秒:秒」档位，不是单个数字；写错的档位会被跳过 | advanced
+POLL_FORCE_SYNC_SECS | 轮询 | int:0:999999999 | 1800 | edit | 放慢时最长隔多少秒也完整轮询一次 | 仓库再没动静，满这么久也完整查一遍；放慢的档位超过它时按它算 | | advanced
+POLL_IDLE_PROBE_MAX_SECS | 轮询 | int:1:999999999 | 600 | edit | 先轻量探一下时完整轮询最长隔多少秒 | 「空闲时先轻量探一下」开着时，完整检查最长隔这么久；要不大于上一项，大于时不按它封顶 | | advanced
+POLL_FAIL_BACKOFF_MAX_SECS | 轮询 | int:0:999999999 | 1800 | edit | 读不到 GitHub 时最长隔多少秒重试 | 读不到 GitHub 时，重试间隔从轮询间隔起每失败一次翻倍，最长到这么久 | | advanced
+POLL_DUE_SLACK_SECS | 轮询 | int:0:999999999 | 10 | edit | 离该轮询还差几秒就提前跑 | 定时器比约定时间稍早叫醒时，差不到这么多秒就照跑，免得白等一整轮 | | advanced
+ENABLE_POLL_RUN_LOG | 轮询 | bool:true:false | true;empty=false | edit | 记录每轮轮询 | 每轮写一条小记录、出问题时留快照，只记不判；配置里写成空值也算关 | | advanced
+POLL_RUN_LOG_ROUNDS | 轮询 | int:2:9999999 | 1000 | edit | 轮询记录最多留几轮 | 超过就删掉最早的；记录每轮轮询关着时不用 | | advanced
+POLL_RUN_LOG_SNAPSHOTS | 轮询 | int:2:9999999 | 20 | edit | 出问题时的快照最多留几份 | 超过就删掉最早的；记录每轮轮询关着时不用 | | advanced
+POLL_RUN_LOG_INFLIGHT | 轮询 | int:2:9999999 | 64 | edit | 进行中的轮询记录最多留几份 | 被中途打断的轮次留下的进度文件也算在内，超过就删掉最早的；记录每轮轮询关着时不用 | | advanced
+POLL_RUN_LOG_SLOW_SECS | 轮询 | int:1:9999999 | 600 | edit | 一步超过多少秒算慢 | 轮询里某一步或整轮超过这么久就留一份快照；记录每轮轮询关着时不用 | | advanced
+HEAVY_TEST_LOCK_WAIT | 其他 | int:0:9223372036854775807 | 0 | edit | 重测试排队最多等多少秒 | worker 经排队命令跑重测试时，排了这么久还轮不到就放弃；0 = 一直等；没配重测试命令时不用 | | advanced
+LOG_LEVEL | 其他 | enum:info=常规,debug=排查（更详细） | info | edit | 日志详细程度 | 写进轮询日志的内容多少 | | advanced

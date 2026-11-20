@@ -439,5 +439,19 @@
   "读不到配对过的远程机器列表（算作没停）": "The paired remote machines could not be read (counted as not stopped)",
   "读不到配对过的远程机器列表，判断不了有没有别的机器在轮询这个仓库。": "The paired remote machines could not be read, so whether another machine polls this repository is unknown.",
   "这台电脑上的 {key}：读不到它轮询哪个仓库，{state}（没停就算作在轮询本仓库）": "{key} on this computer: which repository it polls could not be read, {state} (counted as polling this one unless stopped)",
-  "{name} 上的 {key}：读不到它轮询哪个仓库，{state}（没停就算作在轮询本仓库）": "{key} on {name}: which repository it polls could not be read, {state} (counted as polling this one unless stopped)"
+  "{name} 上的 {key}：读不到它轮询哪个仓库，{state}（没停就算作在轮询本仓库）": "{key} on {name}: which repository it polls could not be read, {state} (counted as polling this one unless stopped)",
+  "{n} 项：{names}": {
+    "one": "{n} setting: {names}",
+    "other": "{n} settings: {names}"
+  },
+  "{n} 项 · {groups}": {
+    "one": "{n} setting · {groups}",
+    "other": "{n} settings · {groups}"
+  },
+  "（{n} 项已改，保持展开）": {
+    "one": "({n} changed, kept open)",
+    "other": "({n} changed, kept open)"
+  },
+  "依赖检查": "Dependency checks",
+  "（有缺的东西，保持展开）": "(something is missing, kept open)"
 }

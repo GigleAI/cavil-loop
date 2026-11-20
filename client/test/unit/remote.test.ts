@@ -272,6 +272,13 @@ describe('reading and acting', () => {
   });
 });
 
+/**
+ * GitHub#590 (seen on PRs #592, #595, #596): the two tests below run the real project-config script many times
+ * through both the remote and the local way — about 15 s on a dev box, past the suite's 20 s on a slow CI runner.
+ * They get their own limit; nothing they check depends on time.
+ */
+const SCRIPT_RUNS_MS = 60_000;
+
 describe("a project's settings on that machine (GitHub#530)", () => {
   const field = (c: any, name: string) => c.fields.find((f: any) => f.name === name);
   const value = async (b: HarnessBackend) => field((await b.call('daemonConfigGet', { key: 'widget' })).config, 'MAX_CONCURRENT_WORKERS').value;
@@ -309,7 +316,7 @@ describe("a project's settings on that machine (GitHub#530)", () => {
 
     // a project that is not connected there
     expect((await b.call('remoteConfigGet', { id: ID, key: 'nope' })).result).toBe('not_found');
-  });
+  }, SCRIPT_RUNS_MS);
 
   it('the save was carried out but its answer cannot be verified (signature dropped / wrong): "unconfirmed", never "not written"', async () => {
     const b = backend({ local: true });
@@ -333,7 +340,7 @@ describe("a project's settings on that machine (GitHub#530)", () => {
     const rev2 = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
     expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'x' } })).result).toBe('refused');
     expect(await value(b)).toBe('5');
-  });
+  }, SCRIPT_RUNS_MS);
 
   it('a value that cannot go on a config line is refused on this computer: nothing is sent', async () => {
     const b = backend();

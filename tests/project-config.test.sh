@@ -109,6 +109,10 @@ chk "只显示的项：给值、不可改" "$(field "$G" LABEL_PENDING_REVIEW)$(
 chk "agent 的可选项 = daemon 自带的 driver" "$(jq -c '[.fields[] | select(.name=="WORKER_AGENT") | .options[].value] | sort' <<<"$G")" \
     "$(cd "$REPO_DIR/scripts/drivers" && ls *.sh | grep -v '^_' | sed 's/\.sh$//' | jq -Rcs 'split("\n") | map(select(. != "")) | sort')"
 chk "整数项带范围" "$(jq -c '.fields[] | select(.name=="MAX_CONCURRENT_WORKERS") | [.type,.min,.max]' <<<"$G")" '["int",1,16]'
+# 层级（GitHub#591）：每项的 tier 就是登记表第 9 列，原样交给客户端
+chk "每项都带层级，和登记表第 9 列逐项相同" "$(jq -r '.fields[] | "\(.name) \(.tier // "缺")"' <<<"$G")" \
+    "$(grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{n = $1; t = $9; gsub(/[ \t]/, "", n); gsub(/[ \t]/, "", t); print n, t}')"
+chk "三种层级的项数（常用 18 / 组内高级 24 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=24"
 chk_lacks "令牌的值不在输出里" "$G" "ghp_TESTSECRET0000"
 chk_lacks "命令的值不在输出里" "$G" "npm ci"
 chk "命令 / 钩子 / 令牌不是输出的字段" "$(jq -c '[.fields[].name] | map(select(test("CMD|HOOK|TOKEN|EXEC|URL|ROOT|_DIR$|^REPO$|PREFIX")))' <<<"$G")" '[]'
