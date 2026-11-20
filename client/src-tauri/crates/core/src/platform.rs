@@ -28,6 +28,12 @@ pub trait Clock: Send + Sync {
 #[async_trait]
 pub trait Opener: Send + Sync {
     async fn open(&self, url: &str) -> Result<(), String>;
+    /// GitHub#590: a link the person clicked inside a detail frame (`via`: "frame" = the discussion,
+    /// "preview" = the reply preview), already checked by the engine. Opened the same way as `open`;
+    /// an opener that records what it opened (tests) also notes where it came from.
+    async fn open_link(&self, url: &str, _via: &str) -> Result<(), String> {
+        self.open(url).await
+    }
 }
 
 // Stored credentials are GitHub tokens ([A-Za-z0-9_]) or the `v2:` form that

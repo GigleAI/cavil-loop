@@ -92,6 +92,8 @@ export interface CavilApi {
   restartSync(): Promise<void>;
   /** open a web address (http / https, any site — GitHub#539) in the system browser; any other kind is refused */
   openExternal(url: string): Promise<void>;
+  /** GitHub#590: a web link clicked inside a detail frame ('frame' = the discussion, 'preview' = the reply preview); the same rule as openExternal */
+  openLink(url: string, via: 'frame' | 'preview'): Promise<void>;
   /** GitHub#401: GitHub's page for the app the current sign-in used (each organisation's access); the back end builds it */
   openAuthPage(): Promise<void>;
   setLaunchAtLogin(on: boolean): Promise<void>;

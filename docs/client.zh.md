@@ -155,7 +155,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 
 - **默认只连 GitHub**：同步和修改只发给 `api.github.com` / `github.com`。另外几处也是 GitHub 自己的地址：头像（`avatars.githubusercontent.com`）、讨论里的图片（GitHub 的附件地址和图片代理）、仓库文件（`raw.githubusercontent.com`）、讨论里引用的 Release 附件图，以及自动更新下载更新包时跳转到的 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`。
 - **只有人用到「远程 daemon」时，才会连 Tailscale 上的机器**（见[可选：接上 daemon](#可选接上-daemon)）：① 在设置 →「远程 daemon」里打开「添加远程 daemon」窗口时，客户端读一次本机 Tailscale 的设备列表，并向每台在线设备发一个不带内容的 HTTPS 请求，问它的远程入口开没开——这时还没选机器、也没输配对码；② 提交配对码时，只向人选定的那一台发配对请求；③ 配对之后，读状态、停启项目、看日志、读改项目配置也只连已配对的机器。这些连接只接受 `*.ts.net` 的完整机器名，地址必须全是 Tailscale 地址，对方必须出示这个名字的有效 HTTPS 证书，都不带 GitHub 凭据。没打开过添加窗口、也没有已配对的机器时，不发这类请求。
-- **讨论里的链接交给系统浏览器**：在详情里点 `http` / `https` 链接（不论是不是 GitHub 的），由系统浏览器打开，和网页版 GitHub 一样，打开前不再确认；客户端自己不访问这个地址，也不带凭据。`javascript:`、`file:`、`mailto:` 这类别的地址不打开。
+- **讨论里的链接交给系统浏览器**：在详情里点 `http` / `https` 链接（不论是不是 GitHub 的），由系统浏览器打开，和网页版 GitHub 一样，打开前不再确认；⌘ / Ctrl + 点击、中键点击一样，回复框下方「预览」里的链接也一样。客户端自己不访问这个地址，也不带凭据。指向本页某处的链接（如脚注）在讨论里跳过去，不开浏览器；`javascript:`、`file:`、`mailto:` 这类别的地址不打开。
 - **凭据**：登录凭据存在 macOS 钥匙串（Windows 上存在 Windows 凭据管理器，名字是 `dev.luosky.cavil-loop.client/github-oauth`，配对远程机器的钥匙也在旁边），只在 App 的后台使用，窗口里的页面拿不到。退出登录会清掉凭据和本机缓存。
 - **离线**：断网时照样能看上次同步下来的内容，顶栏写明数据是什么时候的；修改入口变灰。
 

@@ -12,8 +12,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { annotateTaskBoxes, findTaskBoxes, flipTask, planTasks, renderedTaskBoxes } from '../../src/data/taskList';
 import { taskEntry } from '../../src/data/detail';
-import { FRAME_SCRIPT, FRAME_SCRIPT_HASH } from '../../src/renderer/frameScript';
-import { FRAME_CSP, TIMELINE_CSP, TIMELINE_SANDBOX, FRAME_SANDBOX } from '../../src/renderer/detailHtml';
+import { FRAME_SCRIPT, FRAME_SCRIPT_HASH, PREVIEW_SCRIPT, PREVIEW_SCRIPT_HASH } from '../../src/renderer/frameScript';
+import { FRAME_CSP, TIMELINE_CSP, TIMELINE_SANDBOX, FRAME_SANDBOX, PREVIEW_CSP, PREVIEW_SANDBOX } from '../../src/renderer/detailHtml';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const recorded = JSON.parse(readFileSync(join(here, '..', 'fixtures', 'tasklists.github.json'), 'utf8')) as {
@@ -153,19 +153,32 @@ describe('the frame script and the two policies (GitHub#193)', () => {
   it('its hash is the one both policies allow: the frame\'s own and the window\'s (tauri.conf.json)', () => {
     const hash = `'sha256-${createHash('sha256').update(FRAME_SCRIPT).digest('base64')}'`;
     expect(FRAME_SCRIPT_HASH).toBe(hash);
+    // GitHub#590: the reply preview's script, the window's other allowed one
+    const previewHash = `'sha256-${createHash('sha256').update(PREVIEW_SCRIPT).digest('base64')}'`;
+    expect(PREVIEW_SCRIPT_HASH).toBe(previewHash);
     const conf = JSON.parse(readFileSync(join(here, '..', '..', 'src-tauri', 'tauri.conf.json'), 'utf8'));
-    expect(conf.app.security.csp['script-src'].split(/\s+/)).toEqual(["'self'", hash]);
+    expect(conf.app.security.csp['script-src'].split(/\s+/)).toEqual(["'self'", hash, previewHash]);
+    // each frame allows its own script alone, never the other's
+    expect(PREVIEW_CSP.match(/script-src ([^;]*)/)![1]).toBe(previewHash);
+    expect(PREVIEW_CSP).not.toContain(hash);
+    expect(TIMELINE_CSP).not.toContain(previewHash);
+    expect(PREVIEW_CSP).not.toMatch(/script-src[^;]*unsafe/);
     expect(TIMELINE_CSP).toContain(`script-src ${hash};`);
     // nothing else may run in either: no unsafe-inline, no other hash or nonce
     expect(TIMELINE_CSP).not.toMatch(/unsafe-inline'[^;]*script|script-src[^;]*unsafe/);
     expect(TIMELINE_CSP.match(/script-src ([^;]*)/)![1]).toBe(hash);
   });
 
-  it('the timeline frame may run scripts but is never same-origin; the reply preview runs none', () => {
+  it('the timeline frame may run scripts but is never same-origin; a frame with no script runs none; the reply preview runs its own (GitHub#590)', () => {
     expect(TIMELINE_SANDBOX.split(' ')).toContain('allow-scripts');
     expect(TIMELINE_SANDBOX.split(' ')).not.toContain('allow-same-origin');
     expect(FRAME_SANDBOX.split(' ')).not.toContain('allow-scripts');
     expect(FRAME_CSP).toContain("script-src 'none'");
     expect(TIMELINE_CSP).toContain("connect-src 'none'");
+    // GitHub#590: the reply preview runs its link script, never same-origin, never navigating the app
+    expect(PREVIEW_SANDBOX.split(' ')).toContain('allow-scripts');
+    expect(PREVIEW_SANDBOX.split(' ')).not.toContain('allow-same-origin');
+    expect(PREVIEW_SANDBOX.split(' ')).not.toContain('allow-top-navigation');
+    expect(PREVIEW_CSP).toContain("connect-src 'none'");
   });
 });
