@@ -29,7 +29,11 @@ BRANCH_PREFIX<N> → 正文第一处 Closes/Fixes/Resolves/Refs #N → PR 号本
 用法：
   python3 scripts/pr-time-stats.py --repo OWNER/REPO --worktree-base DIR [--session-prefix issue]
       [--branch-prefix feature/issue-] [--since 2026-11-07] [--until YYYY-MM-DD]
-      [--bot-login LOGIN]... [--runs-log FILE] [--no-ci-selection] [--json]
+      [--bot-login LOGIN]... [--runs-log FILE] [--no-ci-selection] [--no-cache] [--json]
+
+请求量：每个 PR 读一两页评论；CI 每次尝试多读两次（作业列表和汇总那一步的日志），第一次跑 170 多个 PR
+约要两千多次请求，和 daemon 共用一个账号时会占掉它一小时额度的一半左右。跑完的 CI 尝试的起止和挑选方式
+存在 $XDG_CACHE_HOME/cavil-loop/（结果不会再变），重跑只读评论和列表；`--no-ci-selection` 不读日志。
 `--since` 默认 2026-11-07（本机测试流水开始记的那天）：只算创建和所有派工都在这之后、并且在
 [since, until] 合并的 PR。`gh` 从 PATH 找（测试用假的）。
 """
@@ -65,9 +69,42 @@ class Fail(Exception):
 
 # ── GitHub（只读）───────────────────────────────────────────────────────────
 
-def gh(path, raw=False):
+CALLS = [0]          # 本次发出的 GitHub 请求数（报告里写明，和 daemon 共用额度时心里有数）
+CACHE = {}           # 跑完的 CI 尝试的起止和挑选方式：结果不会再变，存在本机，重跑不再请求
+
+
+def cache_path(repo):
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "cavil-loop", "pr-time-stats-" + re.sub(r"[^A-Za-z0-9._-]", "_", repo) + ".json")
+
+
+def cache_load(path):
     try:
-        p = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=120)
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            CACHE.update(d)
+    except (OSError, ValueError):
+        pass             # 没有或读不懂：当成空的，大不了重新请求
+
+
+def cache_save(path):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(CACHE, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"缓存写不进 {path}：{e}（不影响结果，下次会重新请求）", file=sys.stderr)
+
+
+def gh(path, raw=False):
+    CALLS[0] += 1
+    try:
+        # 作业日志里有终端转义字符，gh 默认拒绝原样输出（报错退出），读日志时要明说允许
+        cmd = ["gh", "api"] + (["--allow-escape-sequences"] if raw else []) + [path]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise Fail(f"gh api {path}：{e}")
     if p.returncode != 0:
@@ -255,27 +292,43 @@ def attempts(repo, run):
     out = []
     n = run.get("run_attempt") or 1
     for k in range(1, n + 1):
+        key = f"attempt:{run['id']}:{k}"
+        if k < n and key in CACHE:
+            out.append((k, *CACHE[key]))
+            continue
         a = run if k == n else gh(f"repos/{repo}/actions/runs/{run['id']}/attempts/{k}")
-        out.append((k, ts(a.get("run_started_at") or a.get("created_at")), ts(a.get("updated_at")),
-                    a.get("conclusion")))
+        row = (ts(a.get("run_started_at") or a.get("created_at")), ts(a.get("updated_at")), a.get("conclusion"))
+        if k < n and row[2] is not None:      # 有结论 = 跑完了，以后不会再变
+            CACHE[key] = list(row)
+        out.append((k, *row))
     return out
 
 
-def selection(repo, run_id, attempt):
-    """Tests 运行汇总那一步写的挑选方式：full / changed / unknown。"""
+def selection(repo, run_id, attempt, done):
+    """Tests 运行汇总那一步写的挑选方式：full / changed / unknown。done = 这次尝试已跑完（结果可缓存）。"""
+    key = f"sel:{run_id}:{attempt}"
+    if key in CACHE:
+        return CACHE[key]
+    v = _selection(repo, run_id, attempt)
+    if done and v != "error":
+        CACHE[key] = v
+    return "unknown" if v in ("error", "none") else v
+
+
+def _selection(repo, run_id, attempt):
     try:
         jobs = gh(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100").get("jobs") or []
         job = next((j for j in jobs if j.get("name") == "测试"), None)
         if not job:
-            return "unknown"
+            return "none"
         log = gh(f"repos/{repo}/actions/jobs/{job['id']}/logs", raw=True)
     except Fail:
-        return "unknown"
+        return "error"       # 读失败（日志过期、限流）不缓存，下次再试
     if "Selection: full run" in log:
         return "full"
     if "only what this change can reach" in log:
         return "changed"
-    return "unknown"
+    return "none"
 
 
 # ── 汇总 ────────────────────────────────────────────────────────────────────
@@ -297,6 +350,7 @@ def main(argv=None):
     ap.add_argument("--bot-login", action="append", default=[])
     ap.add_argument("--runs-log", default=None)
     ap.add_argument("--no-ci-selection", action="store_true")
+    ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     if a.bot_login:
@@ -309,11 +363,18 @@ def main(argv=None):
     except ValueError:
         print("--since / --until 要写成 YYYY-MM-DD", file=sys.stderr)
         return 2
+    cpath = cache_path(a.repo)
+    if not a.no_cache:
+        cache_load(cpath)
     try:
         res = collect(a, since, until)
     except Fail as e:
-        print(f"统计失败：{e}", file=sys.stderr)
+        print(f"统计失败：{e}（本次已发 {CALLS[0]} 次请求）", file=sys.stderr)
         return 2
+    finally:
+        if not a.no_cache:
+            cache_save(cpath)       # 失败也存：限流中断后重跑不必再读已经读过的
+    res["gh_calls"] = CALLS[0]
     if a.json:
         print(json.dumps(res, ensure_ascii=False, indent=1, sort_keys=True))
     else:
@@ -446,7 +507,7 @@ def pr_row(a, p, n, ds, runs_by_wt, ci, lo, hi, shared):
             if kind == "client":
                 key = "client"
             else:
-                sel = "unknown" if a.no_ci_selection else selection(a.repo, r["id"], k)
+                sel = "unknown" if a.no_ci_selection else selection(a.repo, r["id"], k, concl is not None)
                 key = {"full": "shell_full", "changed": "shell_changed"}.get(sel, "shell_unknown")
             ci_spans[key].append((t0, t1))
             ci_count[key] += 1
@@ -535,7 +596,7 @@ def render(res):
                                       dur(r["ci_secs"]["shell_changed"]), dur(r["ci_secs"]["shell_unknown"]),
                                       dur(r["ci_secs"]["client"]), dur(r["ci_total_secs"]),
                                       dur(r["test_total_secs"]), "、".join(r["flags"]) or ""]) + " |")
-    extra = []
+    extra = [f"本次向 GitHub 发了 {res.get('gh_calls', '?')} 次请求"]
     if res["ci_unassigned"]:
         extra.append(f"{res['ci_unassigned']} 次 CI 运行归不到唯一一个 PR，没算进任何 PR")
     if res["skipped_nonbot_footers"]:

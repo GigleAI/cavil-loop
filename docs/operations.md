@@ -1539,7 +1539,7 @@ only reads GitHub (with whatever `gh` is logged in as) and the run log, and writ
 ```bash
 python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
     --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop write account> \
-    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--json]
+    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--no-cache] [--json]
 ```
 
 - Which PRs: merged within `[--since, --until]` (default: from 2026-11-07, the day the local run log
@@ -1567,6 +1567,13 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
 - Any GitHub or run-log read that fails, or a list that is not read whole, stops the command with
   exit code 2 and no report. `--no-ci-selection` skips reading the CI logs (all `Tests` attempts
   then count as "selection unknown").
+- **Request cost**: a page or two of comments per PR, plus two requests per `Tests` attempt (its job
+  list and the summary job's log). About 1,000 requests for the 176 PRs merged 2026-11-07…19 — a
+  fifth of the hourly allowance of the account `gh` is logged in as, which may be the one the daemon
+  polls with (several runs in an hour exhausted it on 2026-11-20). Finished attempts' times and
+  selections are kept in `$XDG_CACHE_HOME/cavil-loop/pr-time-stats-<repo>.json` (they never change),
+  so a rerun reads only comments and lists; failed reads are not cached. The report states how many
+  requests it made. `--no-cache` ignores the cache.
 
 ## GitHub token redaction (GitHub#342)
 

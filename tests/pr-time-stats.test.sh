@@ -17,6 +17,7 @@
 #   【7】平均数 / 中位数 / 分母
 #   【8】读 GitHub 失败、流水读不了 → 退出码 2，不出报告
 #   【9】工作编号与 _lib.sh 的 pr_to_issue_num 同一批输入对拍
+#   【10】跑完的 CI 尝试的起止和挑选方式存本机缓存：重跑不再请求；读失败的不存；报告写明请求数
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -46,6 +47,11 @@ cat > "$SB/bin/gh" <<'EOF'
 #!/usr/bin/env python3
 import hashlib, os, sys
 a = sys.argv[1:]
+is_log = a[-1:] and a[-1].endswith("/logs")
+# 真 gh 读到带终端转义字符的日志时，不带 --allow-escape-sequences 就报错退出：照样学
+if is_log and "--allow-escape-sequences" not in a:
+    sys.stderr.write("the response contains terminal escape sequences\n"); sys.exit(1)
+a = [x for x in a if x != "--allow-escape-sequences"]
 if len(a) != 2 or a[0] != "api":
     sys.stderr.write("fake gh: unsupported %r\n" % a); sys.exit(3)
 d = os.environ["FAKE_GH_DIR"]
@@ -140,8 +146,9 @@ put(f"repos/{R}/actions/workflows/tests.yml/runs?created=%3E%3D2026-10-08&event=
 put(f"repos/{R}/actions/runs/100/attempts/1", {"run_started_at": "2026-11-11T01:00:00Z", "updated_at": "2026-11-11T01:05:00Z", "conclusion": "failure"})
 put(f"repos/{R}/actions/runs/100/attempts/1/jobs?per_page=100", {"jobs": [{"id": 501, "name": "测试"}]})
 put(f"repos/{R}/actions/runs/100/attempts/2/jobs?per_page=100", {"jobs": [{"id": 502, "name": "测试"}]})
+put(f"repos/{R}/actions/runs/101/attempts/1/jobs?per_page=100", {"jobs": [{"id": 601, "name": "shard 1/8"}]})   # 没有汇总那一步：挑选方式未知
 put(f"repos/{R}/actions/jobs/501/logs", "...\nSelection: **only what this change can reach** — docs only\n")
-put(f"repos/{R}/actions/jobs/502/logs", "...\nSelection: full run — scripts changed\n")
+put(f"repos/{R}/actions/jobs/502/logs", "\x1b[36;1m...\x1b[0m\n2026-11-11T02:09:00Z Selection: full run — scripts changed\n")
 client_runs = [run(200, [10], 1, "2026-11-11T02:00:00Z", "2026-11-11T02:04:00Z", "feature/issue-5")]   # 与 Tests 重叠 4 分钟
 put(f"repos/{R}/actions/workflows/client.yml/runs?created=%3E%3D2026-10-08&event=pull_request&per_page=100&page=1",
     {"total_count": 1, "workflow_runs": client_runs})
@@ -186,9 +193,10 @@ run_stats() {   # 额外参数原样传给脚本
     python3 "$REPO_DIR/scripts/pr-time-stats.py" --repo o/r --worktree-base "$SB/wt" --bot-login loop-bot-pusher \
         --runs-log "$SB/runs.jsonl" --since 2026-11-07 "$@"
 }
+export XDG_CACHE_HOME="$SB/cache"
 
 echo "【1–7】一次完整运行"
-rc=0; run_stats --json > "$SB/out.json" 2> "$SB/err" || rc=$?
+rc=0; run_stats --json --no-cache > "$SB/out.json" 2> "$SB/err" || rc=$?
 if [ "$rc" = 0 ]; then echo "  ✅ 退出码 0"; pass=$((pass+1)); else echo "  ❌ 退出码 $rc：$(cat "$SB/err")"; fail=$((fail+1)); fi
 tally < <(python3 - "$SB/out.json" <<'PY'
 import json, sys
@@ -221,7 +229,7 @@ eq("#10 测试总耗时 = 285 + 900", r["test_total_secs"], 1185.0)
 eq("#10 完整测试 0", r["full_secs"], 0)
 r = P[11]
 eq("【4】#11 没有 footer → AI 无记录", (r["ai_secs"], r["ai_state"]), (None, "none"))
-eq("【3】#11 fork 运行按分支认到 #11，挑选方式未知（没有汇总日志）", (r["ci_secs"]["shell_unknown"], r["ci_attempts"]["shell_unknown"]), (180.0, 1))
+eq("【3】#11 fork 运行按分支认到 #11，挑选方式未知（没有汇总那一步）", (r["ci_secs"]["shell_unknown"], r["ci_attempts"]["shell_unknown"]), (180.0, 1))
 eq("【4】#11 测试总耗时照算 = CI 180", r["test_total_secs"], 180.0)
 eq("【3】归不到唯一 PR 的运行 1 次（#102；#103 #104 属于窗口外的 PR，不计）", d["ci_unassigned"], 1)
 eq("【5】#12 拿 issue 7 合并前那轮 AI 60、工作树合并前那次 200 s", (P[12]["ai_secs"], P[12]["local_secs"]["all"]), (60.0, 200.0))
@@ -241,7 +249,7 @@ PY
 )
 
 echo "【7】人读报告"
-run_stats > "$SB/out.md" 2>&1
+run_stats --no-cache > "$SB/out.md" 2>&1
 for want in "AI 耗时 | 1m 43s | 1m 10s | 3 | 2" "1 次 CI 运行归不到唯一一个 PR" "| #10 | 5 | 3m 0s |"; do
     if grep -qF -- "$want" "$SB/out.md"; then echo "  ✅ 报告含「$want」"; pass=$((pass+1))
     else echo "  ❌ 报告缺「$want」"; fail=$((fail+1)); fi
@@ -249,16 +257,37 @@ done
 
 echo "【3】--no-ci-selection：不读日志，挑选方式记未知"
 : > "$SB/gh/calls.log"
-run_stats --json --no-ci-selection > "$SB/out2.json" 2>/dev/null
+run_stats --json --no-cache --no-ci-selection > "$SB/out2.json" 2>/dev/null
 got=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv[1]))["prs"]}[10]; print(r["ci_attempts"]["shell_unknown"])' "$SB/out2.json" 2>/dev/null)
 if [ "$got" = 2 ] && ! grep -q '/logs$' "$SB/gh/calls.log"; then echo "  ✅ 两次尝试都记未知、没读日志"; pass=$((pass+1))
 else echo "  ❌ 得到 $got；日志调用：$(grep -c '/logs$' "$SB/gh/calls.log")"; fail=$((fail+1)); fi
+
+echo "【10】跑完的 CI 尝试存本机缓存：重跑不再读，读失败的不存"
+rm -rf "$SB/cache"
+FAKE_GH_FAIL="repos/o/r/actions/jobs/502/logs" run_stats --json > "$SB/c1.json" 2>/dev/null
+v1=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv[1]))["prs"]}[10]; print(r["ci_attempts"]["shell_unknown"], r["ci_attempts"]["shell_full"])' "$SB/c1.json")
+: > "$SB/gh/calls.log"
+run_stats --json > "$SB/c2.json" 2>/dev/null
+v2=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv[1]))["prs"]}[10]; print(r["ci_attempts"]["shell_unknown"], r["ci_attempts"]["shell_full"])' "$SB/c2.json")
+reread=$(grep -c 'jobs/502/logs' "$SB/gh/calls.log")
+if [ "$v1" = "1 0" ] && [ "$v2" = "0 1" ] && [ "$reread" = 1 ]; then echo "  ✅ 读失败那次记未知、没进缓存，下次重新读到全量"; pass=$((pass+1))
+else echo "  ❌ 第一次「$v1」第二次「$v2」重读 $reread 次"; fail=$((fail+1)); fi
+: > "$SB/gh/calls.log"
+run_stats --json > "$SB/c3.json" 2>/dev/null
+n=$(grep -cE '/logs$|/jobs\?|/attempts/[0-9]+$' "$SB/gh/calls.log")
+same=$(python3 -c 'import json,sys
+a,b=(json.load(open(f)) for f in sys.argv[1:]); a.pop("gh_calls"); b.pop("gh_calls"); print(a==b)' "$SB/c2.json" "$SB/c3.json")
+if [ "$n" = 0 ] && [ "$same" = True ]; then echo "  ✅ 第三次：CI 尝试、作业、日志一次都没再读，结果相同"; pass=$((pass+1))
+else echo "  ❌ 第三次还读了 $n 次；结果相同：$same"; fail=$((fail+1)); fi
+calls=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gh_calls"])' "$SB/c3.json")
+if [ "$calls" = "$(wc -l < "$SB/gh/calls.log")" ]; then echo "  ✅ 报告的请求数 $calls = 假 gh 收到的请求数"; pass=$((pass+1))
+else echo "  ❌ 报告 $calls 次，假 gh 收到 $(wc -l < "$SB/gh/calls.log") 次"; fail=$((fail+1)); fi
 
 echo "【8】读失败 → 退出码 2，不出报告"
 for f in "repos/o/r/issues/7/comments?per_page=100&page=1" \
          "repos/o/r/actions/workflows/client.yml/runs?created=%3E%3D2026-10-08&event=pull_request&per_page=100&page=1" \
          "repos/o/r/actions/runs/100/attempts/1"; do
-    rc=0; out=$(FAKE_GH_FAIL="$f" run_stats --json 2>"$SB/err") || rc=$?
+    rc=0; out=$(FAKE_GH_FAIL="$f" run_stats --json --no-cache 2>"$SB/err") || rc=$?
     if [ "$rc" = 2 ] && [ -z "$out" ] && grep -q '统计失败' "$SB/err"; then echo "  ✅ ${f%%\?*} 失败 → 2"; pass=$((pass+1))
     else echo "  ❌ ${f%%\?*} 失败时 rc=$rc 输出 ${#out} 字节"; fail=$((fail+1)); fi
 done
@@ -271,7 +300,7 @@ d = os.path.join(sys.argv[1], "gh")
 p = "repos/o/r/actions/workflows/release.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1"
 open(os.path.join(d, hashlib.sha1(p.encode()).hexdigest()), "w").write(json.dumps({"total_count": 3, "workflow_runs": []}))
 PY
-rc=0; out=$(run_stats --json 2>"$SB/err") || rc=$?
+rc=0; out=$(run_stats --json --no-cache 2>"$SB/err") || rc=$?
 if [ "$rc" = 2 ] && grep -q '没读全' "$SB/err"; then echo "  ✅ 列表没读全 → 2"; pass=$((pass+1)); else echo "  ❌ 列表没读全时 rc=$rc"; fail=$((fail+1)); fi
 
 echo "【9】工作编号与 _lib.sh 的 pr_to_issue_num 对拍"

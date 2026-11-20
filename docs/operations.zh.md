@@ -1237,7 +1237,7 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
 ```bash
 python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
     --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop 写评论的账号> \
-    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--json]
+    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--no-cache] [--json]
 ```
 
 - 算哪些 PR：在 `[--since, --until]` 合并（默认从本机测试流水开始记的 2026-11-07 到今天）、创建不早于
@@ -1259,6 +1259,11 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   计入个数，各栏平均不能相加。
 - 读 GitHub 或流水失败、列表没读全，命令以退出码 2 结束，不出报告。`--no-ci-selection` 不读 CI 日志
   （`Tests` 的尝试全部记「挑选方式未知」）。
+- **请求量**：每个 PR 读一两页评论，`Tests` 每次尝试再读两次（作业列表、汇总那一步的日志）。2026-11-07…19
+  合并的 176 个 PR 约 1000 次请求，占 `gh` 当前登录账号每小时额度的五分之一；这个账号可能就是 daemon 轮询用的
+  那个（2026-11-20 一小时内跑了几遍就把额度用光了）。跑完的尝试的起止和挑选方式存在
+  `$XDG_CACHE_HOME/cavil-loop/pr-time-stats-<仓库>.json`（不会再变），重跑只读评论和列表；读失败的不存。
+  报告末尾写明这次发了几次请求。`--no-cache` 不用缓存。
 
 ## GitHub 令牌脱敏（GitHub#342）
 
