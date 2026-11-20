@@ -12,7 +12,7 @@
 // parent links count (`validParents`) is one rule, used for the walk and for
 // the indenting alike.
 
-import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
+import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, SourceConfig, SourceTimes, TableSettings } from '../shared/types';
 import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
 import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan, iterationColumnKey, type DropPlan } from './board';
@@ -54,11 +54,28 @@ export interface Group {
   /** the repository section it sits in ("all repositories"); null = no repository layer */
   section: string | null;
   rows: Row[];
+  /**
+   * GitHub#587, grouped by repository: a repository source with nothing to show has a group with no
+   * rows. `unread`: that source was never read, so nothing is known about its items (no "+" then).
+   */
+  unread?: true;
 }
 
 export interface Slice {
   value: string;
   count: number;
+  /** GitHub#587: a repository source never read: its count is not known (shown as "—", not 0) */
+  unread?: true;
+}
+
+/**
+ * GitHub#587: a repository source shown on the board, so the table keeps a place for it even when
+ * none of its items is shown. `read`: the source has a snapshot (read whole at least once); false =
+ * never read, nothing is known about its items.
+ */
+export interface RepoSource {
+  repo: string;
+  read: boolean;
 }
 
 /** One repository's part of the table when "all repositories" is picked (GitHub#213) */
@@ -69,6 +86,8 @@ export interface RepoSection {
   /** distinct items shown in this repository's groups (pulled rows included) — an item shown in two groups counts once */
   itemCount: number;
   groups: Group[];
+  /** GitHub#587: a repository source with nothing to show (no groups) that was never read */
+  unread?: true;
 }
 
 export interface Table {
@@ -86,6 +105,11 @@ export interface Table {
   matchCount: number;
   /** distinct items shown as pulled rows anywhere in the table (GitHub#368) */
   pulledCount: number;
+  /**
+   * GitHub#587: the one picked repository is a repository source with nothing to show — the table
+   * says so in a line of its own (with a "+" unless it was never read). Absent otherwise.
+   */
+  blankRepo?: { repo: string; unread?: true };
 }
 
 interface Seed {
@@ -290,6 +314,21 @@ function withPulled(list: Item[], pull: Pull | null): { items: Item[]; pulled: S
   return { items: out, pulled };
 }
 
+/**
+ * GitHub#587: the repository sources the board shows (`selected`: the ticked source keys, null = all),
+ * each read or not: read = it has a snapshot (`times`' full-read time, the same one the header shows).
+ */
+export function repoSources(
+  sources: readonly SourceConfig[],
+  selected: readonly string[] | null,
+  times: readonly Pick<SourceTimes, 'sourceKey' | 'readAt'>[],
+): RepoSource[] {
+  const shown = selected === null ? null : new Set(selected);
+  return sources
+    .filter((s): s is Extract<SourceConfig, { kind: 'repo' }> => s.kind === 'repo' && (shown === null || shown.has(s.key)))
+    .map((s) => ({ repo: `${s.owner}/${s.name}`, read: (times.find((x) => x.sourceKey === s.key)?.readAt ?? null) !== null }));
+}
+
 export function buildTable(
   items: Item[],
   projects: ProjectMeta[],
@@ -305,15 +344,40 @@ export function buildTable(
    * Left out (older callers), `items` is all there is and nothing is pulled.
    */
   all: readonly Item[] = items,
+  /** GitHub#587: the repository sources shown on the board; each keeps its place when it has nothing to show */
+  sources: readonly RepoSource[] = [],
 ): Table {
   const compareRepo = repoComparator(repoOrder);
+  // GitHub#587: the repository sources by their lower-cased name, the one key every repository list uses
+  const sourceOf = new Map<string, RepoSource>();
+  for (const s of sources) if (!sourceOf.has(s.repo.toLowerCase())) sourceOf.set(s.repo.toLowerCase(), s);
+  /**
+   * Sources that `shown` (lower-cased repository names) does not hold: what gets an empty place of its own.
+   * `shown` is always the items' OWN repositories, never where they are placed. For the sections, the
+   * groups and the one picked repository it is every row the table really draws (`rowRepos`): a PR placed
+   * under its issue in another repository (PR #594 review round 1) and a sub-issue pulled in under a
+   * parent that matched the search (round 2) are rows, so their repository is not "nothing to show".
+   * Rows are the only way an item reaches the table, so judging by them covers every way in. The slice
+   * list counts search matches (`items`) as before: a repository there with 0 is one whose pick shows
+   * nothing of its own.
+   */
+  const blanks = (shown: ReadonlySet<string>) => [...sourceOf.entries()].filter(([k]) => !shown.has(k)).map(([, s]) => s);
+  const ownRepos = (list: readonly Item[]) => new Set(list.map((it) => it.repo.toLowerCase()));
+  const rowRepos = (gs: readonly Group[]) => new Set(gs.flatMap((g) => g.rows.map((r) => r.item.repo.toLowerCase())));
   let slices: Slice[] | null = null;
   let slice: string | null = null;
   let picked = items;
   if (settings.sliceByRepo) {
-    const counts = new Map<string, number>();
-    for (const it of items) counts.set(it.repo, (counts.get(it.repo) ?? 0) + 1);
-    slices = [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => compareRepo(a.value, b.value));
+    // one entry per repository whatever the case of its name; the name GitHub gives (on an item) is shown
+    const counts = new Map<string, Slice>();
+    for (const it of items) {
+      const k = it.repo.toLowerCase();
+      const cur = counts.get(k);
+      if (cur) cur.count++;
+      else counts.set(k, { value: it.repo, count: 1 });
+    }
+    for (const s of blanks(ownRepos(items))) counts.set(s.repo.toLowerCase(), s.read ? { value: s.repo, count: 0 } : { value: s.repo, count: 0, unread: true });
+    slices = [...counts.values()].sort((a, b) => compareRepo(a.value, b.value));
     if (settings.slice) {
       slice = settings.slice;
       picked = items.filter((it) => it.repo.toLowerCase() === settings.slice!.toLowerCase());
@@ -357,17 +421,36 @@ export function buildTable(
       if (cur) cur.items.push(it);
       else byRepo.set(k, { title: home, items: [it] });
     }
-    const repos = [...byRepo]
-      .sort(([, a], [, b]) => compareRepo(a.title, b.title))
-      .map(([key, r]) => {
-        const groups = group(r.items, `${key}|`, key);
-        return { key, title: r.title, itemCount: r.items.length + pulledIn(groups), groups };
-      });
+    const repos = [...byRepo].map(([key, r]): RepoSection => {
+      const groups = group(r.items, `${key}|`, key);
+      return { key, title: r.title, itemCount: r.items.length + pulledIn(groups), groups };
+    });
+    // GitHub#587: a repository source with nothing to show keeps a section of its own, with no groups
+    for (const s of blanks(rowRepos(repos.flatMap((r) => r.groups))))
+      repos.push(s.read ? { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [] } : { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [], unread: true });
+    repos.sort((a, b) => compareRepo(a.title, b.title));
     const groups = repos.flatMap((r) => r.groups);
     return { groups, repos, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
   }
   const groups = group(picked, '', null);
-  return { groups, repos: null, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
+  const out: Table = { groups, repos: null, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
+  if (slice !== null) {
+    // GitHub#587: the picked repository is a source with nothing to show
+    const s = rowRepos(groups).has(slice.toLowerCase()) ? undefined : sourceOf.get(slice.toLowerCase());
+    if (s) out.blankRepo = s.read ? { repo: s.repo } : { repo: s.repo, unread: true };
+  } else if (settings.groupBy === 'repo') {
+    // GitHub#587: grouped by repository, a repository source with nothing to show keeps an empty group
+    const extra = blanks(rowRepos(groups));
+    if (extra.length) {
+      for (const s of extra) {
+        const g: Group = { key: repoKey(s.repo), title: s.repo, subtitle: null, current: false, empty: false, preset: { by: 'repo', repo: s.repo }, column: null, section: null, rows: [] };
+        if (!s.read) g.unread = true;
+        groups.push(g);
+      }
+      groups.sort((a, b) => compareRepo(a.title, b.title));
+    }
+  }
+  return out;
 }
 
 const repoKey = (repo: string) => `repo:${repo.toLowerCase()}`;
@@ -472,4 +555,19 @@ export function foldRuns(groups: Group[], folded: ReadonlySet<string>): GroupRun
   }
   flush();
   return out;
+}
+
+/**
+ * GitHub#587 (PR #594 review round 1): what a folded run of groups holds — the rows of the groups whose
+ * count is known, and how many groups belong to a repository never read (their count is unknown,
+ * never added in as 0).
+ */
+export function foldTally(groups: readonly Pick<Group, 'rows' | 'unread'>[]): { rows: number; unknown: number } {
+  let rows = 0;
+  let unknown = 0;
+  for (const g of groups) {
+    if (g.unread) unknown++;
+    else rows += g.rows.length;
+  }
+  return { rows, unknown };
 }
