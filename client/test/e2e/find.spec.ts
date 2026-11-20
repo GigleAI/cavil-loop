@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { findCopies } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { unfoldSettings } from './unfold';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -58,6 +59,7 @@ async function signIn(page: Page) {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   for (const s of [PROJECT_URL, REPO]) {
     await page.getByTestId('source-input').fill(s);
     await page.getByTestId('source-add').click();

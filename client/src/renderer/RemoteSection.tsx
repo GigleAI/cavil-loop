@@ -8,6 +8,7 @@
 // last status that was read greyed out and no actions — never "no projects" or "stopped".
 // Unpairing counts only when the machine confirmed it; otherwise the row stays as "取消配对未完成".
 
+import { InfoTip } from './InfoTip';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useBackendLangRound } from './backendLang';
 import { api } from './api';
@@ -172,8 +173,10 @@ export function RemoteSection() {
 
   return (
     <section id="set-remote" data-testid="remote-settings">
-      <h3>{t('远程 daemon')}</h3>
-      <p className="muted small">{t('通过 Tailscale 看和管理另一台机器上的 daemon。')}</p>
+      <h3>
+        {t('远程 daemon')}
+        <InfoTip testid="remote-help">{t('通过 Tailscale 看和管理另一台机器上的 daemon。')}</InfoTip>
+      </h3>
       {/* GitHub#514: the longer explanation, folded */}
       <SettingsMore title={t('怎么配对、会不会发出 GitHub 登录')} testid="remote-more">
         {t('只通过 Tailscale 连接；先在那台机器上生成配对码，再在这里配对。这台电脑上不需要装 daemon，也不会把客户端的 GitHub 登录发给那台机器。')}

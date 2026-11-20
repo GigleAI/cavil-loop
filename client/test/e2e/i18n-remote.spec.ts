@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldSettings } from './unfold';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, type DaemonWorld } from '../support/daemon-world';
 import { BOX, closeRemote, installFakeTailscale, pairCode, remoteWorld, setHosts, type RemoteWorld } from '../support/remote-world';
 import { chineseIn } from './langCheck';
@@ -60,6 +61,7 @@ async function openEnglish(): Promise<{ app: RunningApp; page: Page }> {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('lang-en').check();
   await expect(page.locator('.settings .toolbar h2')).toHaveText('Settings');
   await page.getByTestId('remote-settings').scrollIntoViewIfNeeded();

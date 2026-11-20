@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldConfig, unfoldSettings } from './unfold';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, keepTmp, pathFor, type DaemonWorld } from '../support/daemon-world';
 import { BOX, arrived, closeRemote, devices, installFakeTailscale, pairCode, remoteWorld, setHosts, type RemoteWorld } from '../support/remote-world';
 
@@ -58,6 +59,7 @@ async function openSection(local = false, extra: Record<string, string> = {}): P
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('remote-settings').scrollIntoViewIfNeeded();
   return { app, page };
 }
@@ -154,6 +156,7 @@ test("「配置…」on a project of that machine: the same form, saved there; n
   const dialog = page.getByTestId('config-dialog');
   await expect(dialog).toHaveAttribute('data-remote', 'true');
   await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await unfoldConfig(page);
   await expect(page.getByTestId('config-remote')).toHaveText('（在远程机器 box 上）');
   await expect(page.getByTestId('config-path')).toHaveText(config);
   await expect(page.getByTestId('config-intro')).toContainText('不要同时在那台机器上用编辑器改这个文件');
@@ -185,6 +188,7 @@ test("「配置…」on a project of that machine: the same form, saved there; n
   // a save carried out whose answer cannot be verified (the signature lost on the way): "unknown", not "nothing written"
   await page.getByTestId('config-more').click();
   await expect(dialog).toHaveAttribute('data-phase', 'form');
+  await unfoldConfig(page);
   await page.getByTestId('config-input-MAX_CONCURRENT_WORKERS').fill('4');
   writeFileSync(r.replySig, 'drop');
   await page.getByTestId('config-save').click();

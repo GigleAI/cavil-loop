@@ -405,5 +405,11 @@
   "凭据存在本机的 Windows 凭据管理器里，只发给 GitHub。": "The credential is kept in this computer's Windows Credential Manager and only sent to GitHub.",
   "打开 Cavil Loop": "Open Cavil Loop",
   "Windows 设置里关掉了通知（{why}）": "Notifications are turned off in Windows settings ({why})",
-  "退出": "Quit"
+  "退出": "Quit",
+  "说明": "About this",
+  "高级": "Advanced",
+  "高级设置": "Advanced settings",
+  "常用": "Common",
+  "登录方式、Client ID": "Sign-in method, Client ID",
+  "（Client ID 要处理，保持展开）": "(the Client ID needs attention, kept open)"
 }

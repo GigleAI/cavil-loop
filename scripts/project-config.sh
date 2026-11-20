@@ -140,13 +140,13 @@ RUN_BASH="$(cavil_bash_bin "$OS")"
 
 # ── 登记表 ──
 # F_DEF = 不写这一行时的值；F_EMPTY = 写成空值时的值（登记成「默认;empty=值」的项和默认值不同，其余同默认值）；
-# F_WHY = 只显示的原因（show 行的第 8 列）
-F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_EMPTY=(); F_MODE=(); F_LABEL=(); F_HELP=(); F_WHY=()
+# F_WHY = 只显示的原因（show 行的第 8 列）；F_TIER = 层级（第 9 列：main / more / advanced，GitHub#591）
+F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_EMPTY=(); F_MODE=(); F_LABEL=(); F_HELP=(); F_WHY=(); F_TIER=()
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 [ -r "$FIELDS_FILE" ] || fail unreadable "找不到登记表 $FIELDS_FILE" 2
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 c8 <<<"$line"
+    IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 c8 c9 <<<"$line"
     c4="$(trim "$c4")"
     case "$c4" in
         *';empty='*) F_DEF+=("${c4%%;empty=*}"); F_EMPTY+=("${c4#*;empty=}") ;;
@@ -154,6 +154,8 @@ while IFS= read -r line || [ -n "$line" ]; do
     esac
     F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
     F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
+    # 层级是一个词，去掉全部空白即可，不再为它起一个子进程（81 行各一次，PR #596 复审第 3 轮实测慢了约 1 成）
+    c9="${c9:-}"; F_TIER+=("${c9//[[:space:]]/}")
 done < "$FIELDS_FILE"
 # F_EARLY = 这一项的早期名字（_names.sh 的 CAVIL_SETTING_EARLY_NAMES，daemon 加载时按同一张表挑值），没有就是空
 F_EARLY=()
@@ -449,20 +451,21 @@ if [ "$MODE" = get ]; then
             elif ! label_rename_name_ok "$value"; then rn=false; rn_why="现在的名字含有这里改不了的字符"
             else rn=true; fi
         fi
-        # 每项 13 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
+        # 每项 14 个字段，最后用一次 jq 拼成 JSON（不再每项起两次 jq）
         fields+=("${F_NAME[$i]}" "${F_GROUP[$i]}" "${F_MODE[$i]}" "${F_LABEL[$i]}" "${F_HELP[$i]}" "$value" \
-            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}" "$rn" "$rn_why")
+            "${F_DEF[$i]}" "$in_file" "$editable" "$why" "${F_TYPE[$i]}" "$rn" "$rn_why" "${F_TIER[$i]}")
     done
     # --rawfile 整份读进一个字符串：jq -R 从管道分块读时会把一个多字节字符切在两块之间，读成乱码（jq 1.7 实测）
     jq -n --rawfile raw <(printf '%s\0' "${fields[@]}") --arg key "$KEY" --arg config "$CONFIG" --arg real "$REAL" --arg rev "$rev" \
         --argjson lr "$(label_rename_status_json)" \
         "$TYPE_JQ"'
         ($raw | split("\u0000") | .[:-1]) as $f
-        | [range(0; $f | length; 13) as $i | $f[$i:$i + 13]
+        | [range(0; $f | length; 14) as $i | $f[$i:$i + 14]
            | {name:.[0], group:.[1], mode:.[2], label:.[3], help:.[4], value:.[5], default:.[6],
               in_file:(.[7] == "true"), editable:(.[8] == "true"), reason:(if .[9] == "" then null else .[9] end)}
              + type_json(.[10])
-             + (if .[11] == "" then {} else {rename:{ok:(.[11] == "true"), reason:(if .[12] == "" then null else .[12] end)}} end)]
+             + (if .[11] == "" then {} else {rename:{ok:(.[11] == "true"), reason:(if .[12] == "" then null else .[12] end)}} end)
+             + (if .[13] == "" then {} else {tier:.[13]} end)]
         | {version:1, key:$key, state:"ok", config:$config, real:$real, rev:$rev, fields:.,
            label_rename:$lr}' \
         --args ${AGENTS[@]+"${AGENTS[@]}"}

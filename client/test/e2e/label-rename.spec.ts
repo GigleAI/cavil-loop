@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
+import { unfoldConfig, unfoldSettings } from './unfold';
 import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld } from '../support/daemon-world';
 
 // the real scripts run under bash with a poll lock and several gh calls
@@ -73,6 +74,7 @@ async function openSection(keys: string[]): Promise<{ app: RunningApp; page: Pag
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('daemon-settings').scrollIntoViewIfNeeded();
   for (const k of keys) await expect(page.locator(`[data-testid=daemon-project][data-key=${k}]`)).toBeVisible(SCRIPT);
   return { app, page, configs };
@@ -81,6 +83,7 @@ async function openSection(keys: string[]): Promise<{ app: RunningApp; page: Pag
 const openConfig = async (page: Page, key: string) => {
   await page.locator(`[data-testid=daemon-project][data-key=${key}]`).getByTestId('daemon-config').click();
   await expect(page.getByTestId('config-dialog')).toHaveAttribute('data-phase', 'form', SCRIPT);
+  await unfoldConfig(page);
 };
 const row = (page: Page, name: string) => page.locator(`[data-testid=config-row][data-name=${name}]`);
 const notice = (page: Page) => page.locator('[data-testid="notice-area"] [data-testid="rename-notice"]');

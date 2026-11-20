@@ -2,6 +2,7 @@
 // shortcut list; a shortcut that may be changed gets "改" (press the new key) and, once changed, "恢复默认".
 // Nothing is decided here: the controller checks every change on the whole table (`changeKey` in shortcuts.ts)
 // and either saves it or hands back why not; this section only shows that answer.
+import { InfoTip } from './InfoTip';
 import { useEffect, useState } from 'react';
 import type { AppState } from '../shared/types';
 import { api } from './api';
@@ -79,7 +80,10 @@ export function ShortcutSettings({ state }: { state: AppState }) {
   return (
     <section id="set-keys" data-testid="shortcut-settings">
       <div className="row set-keys-head">
-        <h3>{t('快捷键')}</h3>
+        <h3>
+          {t('快捷键')}
+          <InfoTip testid="keys-help">{t('点「改」后按下新键，只在这台电脑生效。')}</InfoTip>
+        </h3>
         <button
           data-testid="shortcut-reset-all"
           disabled={!anyCustom && state.shortcutDropped.length === 0}
@@ -92,7 +96,6 @@ export function ShortcutSettings({ state }: { state: AppState }) {
           {t('全部恢复默认')}
         </button>
       </div>
-      <p className="muted small">{t('点「改」后按下新键，只在这台电脑生效。')}</p>
       {/* GitHub#514: the longer rules, folded */}
       <SettingsMore title={t('哪些键固定、单个键何时生效')} testid="keys-more">
         {t('一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{first} … {last}、{close} 和缩放键是固定的，不能改。不带 {mod} 的单个键只在光标不在输入框里时生效。', {

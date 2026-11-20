@@ -13,6 +13,7 @@ import { startFakeGitHub } from '../fake-github/server';
 import { restIdOf } from '../fake-github/blocked';
 import { findCopies, gqlContent } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv } from './bridge';
+import { unfoldSettings } from './unfold';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const screens = join(root, 'test-results', 'screens');
@@ -88,6 +89,7 @@ async function ready(page: Page) {
   env.fake.resolveGrant('approved');
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('source-input').fill(REPO);
   await page.getByTestId('source-add').click();
   await page.getByTestId('back').click();
@@ -175,6 +177,7 @@ test('GitHub#434: an item in another flow cannot enter (button greyed, why named
   await page.getByTestId('confirm-cancel').click();
   // Settings: an empty waiting label = no button
   await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
   await page.getByTestId('hand-back-blocked').fill('');
   await page.getByTestId('hand-back-blocked').blur();
   await page.getByTestId('back').click();
