@@ -34,7 +34,8 @@ client-tauri-mutation-prep 1
 closed-issue-done 52
 comment-footer 14
 comment-layout-prompts 1
-concurrent-work 97
+concurrent-work 220
+concurrent-work-dirs 6
 config-fields-coverage 1
 config-notice 55
 conflict-check-prompts 1
