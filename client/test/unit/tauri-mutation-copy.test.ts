@@ -1,203 +1,23 @@
-// The real-window negative controls (test/tauri/mutations.mjs) compile a copy of the app built by
-// `copySources` (src-tauri/ without target/ and gen/, plus COPY_ALWAYS) and then dist/ or the
-// window's own build inputs. GitHub#586: the back end began compiling in src/i18n/en/*.json, the
-// copy did not carry src/, and all seven entries failed to compile — every night, without one of
-// them reaching its test.
+// GitHub#586: the real-window negative controls (test/tauri/mutations.mjs) compile a copy of the app
+// made by prepareCopy. When the back end began compiling in src/i18n/en/*.json the copy did not
+// carry src/, and all seven entries failed to compile every night without reaching their test.
 //
-// This test runs the real `copySources` into a temporary directory, scans every Rust file of the
-// copy for compile-time file reads and requires each read of product code to resolve to a file
-// that is there in the copy. A new read of a folder the copy does not carry goes red on the next
-// push instead of in the nightly run.
+// What guards it now is the compiler itself: `node test/tauri/mutations.mjs --check-copy` (run by
+// `npm run test:rust` on every push) makes an unbroken copy of each entry shape with prepareCopy and
+// runs `cargo check` on it. Nothing keeps a list of the files the back end reads — three review rounds
+// on PR #592 each found a way a hand-written scan of the Rust source disagreed with the compiler.
 //
-// What counts as a read: `include_str!`, `include_bytes!`, `include!` (also with a `std::` /
-// `core::` path, whitespace or comments around `!`, and `(…)`, `[…]` or `{…}` delimiters) and a
-// `path = "…"` inside any attribute (`#[path = …]`, `#![…]`, nested in `#[cfg_attr(…)]` whatever the
-// condition — an off condition is still checked, which errs on the strict side). Text inside comments and string / char literals is not code. Reads
-// inside `#[cfg(test)] mod … { }` are left out: `cargo build` never compiles them. Anything the
-// scan cannot resolve to one file — an argument that is not a plain string literal (`concat!`,
-// a macro variable; `env!("OUT_DIR")` is build output and allowed), a string with escapes, one of
-// these macros imported under another name — is reported as a problem, never skipped.
-// The last cases hold the scan against `rustc` itself: one-file crates that compile in their own tree,
-// where the compiler on the copy must fail exactly when the scan reports a problem.
-// Not covered: files read by build scripts (build.rs) or procedural macros (tauri's
-// generate_context! reads tauri.conf.json and dist/, which every entry provides on its own); a
-// plain build of the copy (PR #592) is the check for those.
+// These cases check that wiring on one-file crates: each compiles in its own tree; the check must
+// fail exactly when the copy leaves out a file the crate reads. They keep the examples of all three
+// rounds (macro forms, attribute paths, module-relative paths, a path built at build time).
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join, dirname, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tempDir } from './helpers';
 // @ts-expect-error plain .mjs runner without type declarations
-import { copySources } from '../tauri/mutations.mjs';
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-
-function rustFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) out.push(...rustFiles(p));
-    else if (e.name.endsWith('.rs')) out.push(p);
-  }
-  return out;
-}
-
-/**
- * The source with comments blanked to spaces and the inside of string / char literals blanked to
- * `_` (quotes, prefixes and newlines kept), same length: offsets map back onto the original.
- */
-function mask(s: string): string {
-  const o = s.split('');
-  const blank = (a: number, b: number, ch: string) => {
-    for (let k = a; k < b && k < o.length; k++) if (o[k] !== '\n') o[k] = ch;
-  };
-  let i = 0;
-  while (i < s.length) {
-    const c = s[i];
-    const prevWord = i > 0 && /[A-Za-z0-9_]/.test(s[i - 1]);
-    if (c === '/' && s[i + 1] === '/') {
-      const nl = s.indexOf('\n', i);
-      const end = nl < 0 ? s.length : nl;
-      blank(i, end, ' ');
-      i = end;
-      continue;
-    }
-    if (c === '/' && s[i + 1] === '*') {
-      const start = i;
-      let d = 1;
-      i += 2;
-      while (i < s.length && d > 0) {
-        if (s[i] === '/' && s[i + 1] === '*') (d++, (i += 2));
-        else if (s[i] === '*' && s[i + 1] === '/') (d--, (i += 2));
-        else i++;
-      }
-      blank(start, i, ' ');
-      continue;
-    }
-    const raw = prevWord ? null : /^(?:b|c)?r(#*)"/.exec(s.slice(i, i + 300));
-    if (raw) {
-      const close = `"${raw[1]}`;
-      const from = i + raw[0].length;
-      const end = s.indexOf(close, from);
-      const stop = end < 0 ? s.length : end;
-      blank(from, stop, '_');
-      i = stop + close.length;
-      continue;
-    }
-    if (c === '"') {
-      let j = i + 1;
-      while (j < s.length && s[j] !== '"') j += s[j] === '\\' ? 2 : 1;
-      blank(i + 1, j, '_');
-      i = j + 1;
-      continue;
-    }
-    if (c === "'") {
-      const ch = /^'(\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|.)|[^\\'\n])'/u.exec(s.slice(i, i + 16));
-      if (ch) {
-        blank(i + 1, i + ch[0].length - 1, '_');
-        i += ch[0].length;
-        continue;
-      }
-    }
-    i++;
-  }
-  return o.join('');
-}
-
-/** Index of the bracket closing the one at `open` in masked text (any of ()[]{}), -1 = unbalanced. */
-function closing(m: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < m.length; i++) {
-    if ('([{'.includes(m[i])) depth++;
-    else if (')]}'.includes(m[i]) && --depth === 0) return i;
-  }
-  return -1;
-}
-
-const lineOf = (s: string, at: number) => s.slice(0, at).split('\n').length;
-
-/** [start, end) of every `#[cfg(test)] mod name { … }` in the file. */
-function testModules(m: string): [number, number][] {
-  const spans: [number, number][] = [];
-  const re = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{/g;
-  for (let x = re.exec(m); x; x = re.exec(m)) {
-    const open = x.index + x[0].length - 1;
-    const end = closing(m, open);
-    if (end < 0) throw new Error(`读不懂测试模块的括号（从第 ${lineOf(m, x.index)} 行起）`);
-    spans.push([x.index, end + 1]);
-    re.lastIndex = end + 1;
-  }
-  return spans;
-}
-
-/** The value of a plain Rust string literal, or undefined when it is not one the scan can read for sure. */
-function literal(arg: string): string | undefined {
-  const raw = /^(?:r(#*)"([\s\S]*)"\1)$/.exec(arg);
-  if (raw) return raw[2];
-  const plain = /^"([^"\\]*)"$/.exec(arg);
-  return plain ? plain[1] : undefined;
-}
-
-type Read = { file: string; line: number; what: string; target?: string; test: boolean; why?: string };
-
-/** Every compile-time file read in one file; `target` = the absolute path it reads. */
-function reads(file: string, s: string): Read[] {
-  const m = mask(s);
-  const spans = testModules(m);
-  const inTest = (at: number) => spans.some(([a, b]) => at >= a && at < b);
-  const out: Read[] = [];
-  const at = (i: number, what: string, extra: Partial<Read>): Read => ({ file, line: lineOf(s, i), what, test: inTest(i), ...extra });
-
-  const macro = /\b(include(?:_str|_bytes)?)\s*!\s*([([{])/g;
-  for (let x = macro.exec(m); x; x = macro.exec(m)) {
-    const open = x.index + x[0].length - 1;
-    const close = closing(m, open);
-    if (close < 0) {
-      out.push(at(x.index, x[1], { why: '括号不配对' }));
-      continue;
-    }
-    const arg = s.slice(open + 1, close).trim().replace(/,\s*$/, '').trim();
-    const lit = literal(arg);
-    if (lit !== undefined) out.push(at(x.index, x[1], { target: resolve(dirname(file), lit) }));
-    else if (/\benv\s*!\s*\(\s*"OUT_DIR"\s*\)/.test(arg)) continue; // build output, made by the copy's own build
-    else out.push(at(x.index, x[1], { why: `参数不是能确定的单个路径：${arg}` }));
-  }
-  // `path = "…"` anywhere inside an attribute: `#[path = …]`, `#![…]`, and nested in `cfg_attr(…)` —
-  // whatever the condition says (a read under a condition that is off is still checked: stricter, never looser)
-  const attr = /#\s*!?\s*\[/g;
-  for (let x = attr.exec(m); x; x = attr.exec(m)) {
-    const open = x.index + x[0].length - 1;
-    const close = closing(m, open);
-    if (close < 0) {
-      out.push(at(x.index, '#[…]', { why: '属性的括号不配对' }));
-      continue;
-    }
-    const key = /\bpath\s*=\s*/g;
-    const body = m.slice(0, close);
-    key.lastIndex = open + 1;
-    for (let k = key.exec(body); k; k = key.exec(body)) {
-      const v = k.index + k[0].length;
-      const tok = /^(?:r#*)?"_*"#*/.exec(m.slice(v, close));
-      const lit = tok ? literal(s.slice(v, v + tok[0].length)) : undefined;
-      out.push(at(k.index, 'path 属性', lit === undefined ? { why: '路径不是能确定的字符串' } : { target: resolve(dirname(file), lit) }));
-    }
-  }
-  const alias = /\b(include(?:_str|_bytes)?)\s+as\s+\w+/g;
-  for (let x = alias.exec(m); x; x = alias.exec(m)) out.push(at(x.index, x[1], { why: '换了名字导入，扫描认不出用到它的地方' }));
-  return out;
-}
-
-/** Scan a copy made by the real copySources: every product-code read and what is wrong with it. */
-function scanCopy(work: string) {
-  const all = rustFiles(join(work, 'src-tauri')).flatMap((f) => reads(f, readFileSync(f, 'utf8')));
-  const product = all.filter((r) => !r.test);
-  const problems = product
-    .filter((r) => r.why !== undefined || r.target === undefined || !r.target.startsWith(work + sep) || !existsSync(r.target))
-    .map((r) => `${relative(work, r.file)}:${r.line} ${r.what} ${r.why ?? `读的文件副本里没有：${relative(work, r.target!)}`}`);
-  return { all, product, problems };
-}
+import { prepareCopy, checkCopies } from '../tauri/mutations.mjs';
 
 const dirs: string[] = [];
 const made = () => {
@@ -209,123 +29,91 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-describe('真实窗口负对照的副本带齐后台编译要读的文件（GitHub#586）', () => {
-  it('按负对照的真实拷法造副本：后台产品代码在编译时读的每个文件副本里都有', () => {
-    const work = made();
-    copySources(work);
-    const { all, product, problems } = scanCopy(work);
-    // it really found the 10 language tables, as product code, inside the copy
-    const lang = product.filter((r) => r.file.endsWith(join('core', 'src', 'i18n.rs')) && r.target?.startsWith(join(work, 'src', 'i18n', 'en') + sep));
-    expect(lang.length).toBe(10);
-    // reads in test modules are recognised as such (they point outside the copy on purpose)
-    expect(all.some((r) => r.test && r.target === join(work, '..', 'docs', 'operations.md'))).toBe(true);
-    expect(all.some((r) => r.test && r.target === join(work, '..', 'scripts', '_label_rename.sh'))).toBe(true);
-    expect(problems).toEqual([]);
-  });
+function tree(files: Record<string, string>): string {
+  const root = made();
+  for (const [p, t] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, p)), { recursive: true });
+    writeFileSync(join(root, p), t);
+  }
+  return root;
+}
 
-  it('副本不带的目录（target、gen、别的顶层目录）里的文件，原目录里有也算缺', () => {
-    const src = made();
-    const files: Record<string, string> = {
-      'src-tauri/gen/schema.txt': 'x',
-      'src-tauri/target/out.txt': 'x',
-      'src-tauri/res/kept.txt': 'x',
+const CARGO = '[package]\nname = "cavil-loop-client"\nversion = "0.0.0"\nedition = "2021"\n\n[workspace]\n';
+
+/** A client/-shaped tree around one crate: src-tauri/ (with target/ and gen/), src/, dist/, scripts/. */
+function crate(main: string, files: Record<string, string>, buildRs?: string): string {
+  return tree({
+    'src-tauri/Cargo.toml': CARGO,
+    'src-tauri/src/main.rs': main,
+    ...(buildRs ? { 'src-tauri/build.rs': buildRs } : {}),
+    'src/index.ts': '',
+    'dist/renderer/index.html': '',
+    ...files,
+  });
+}
+
+const cargoCheck = (root: string, targetDir: string) =>
+  spawnSync('cargo', ['check', '-q', '-p', 'cavil-loop-client'], { cwd: join(root, 'src-tauri'), env: { ...process.env, CARGO_TARGET_DIR: targetDir }, encoding: 'utf8' });
+
+describe('真实窗口负对照的副本：由编译器判断能不能编（GitHub#586）', () => {
+  it('副本的形状：外壳项带 src-tauri（不含 target、gen）、src、dist；界面项另带构建所需', () => {
+    const from = tree({
+      'src-tauri/Cargo.toml': CARGO,
+      'src-tauri/src/main.rs': '',
+      'src-tauri/gen/x': '',
+      'src-tauri/target/x': '',
       'src/i18n/en/a.json': '{}',
-      'scripts/tool.sh': 'x',
-    };
-    for (const [p, t] of Object.entries(files)) {
-      mkdirSync(dirname(join(src, p)), { recursive: true });
-      writeFileSync(join(src, p), t);
-    }
-    mkdirSync(join(src, 'src-tauri', 'src'), { recursive: true });
-    writeFileSync(
-      join(src, 'src-tauri', 'src', 'main.rs'),
-      [
-        'const A: &str = include_str!("../gen/schema.txt");',
-        'const B: &str = include_str!("../target/out.txt");',
-        'const C: &str = include_str!("../res/kept.txt");',
-        'const D: &str = include_str!("../../src/i18n/en/a.json");',
-        'const E: &str = include_str!("../../scripts/tool.sh");',
-      ].join('\n'),
-    );
-    const work = made();
-    copySources(work, src);
-    expect(existsSync(join(work, 'src-tauri', 'gen'))).toBe(false);
-    expect(scanCopy(work).problems).toEqual([
-      'src-tauri/src/main.rs:1 include_str 读的文件副本里没有：src-tauri/gen/schema.txt',
-      'src-tauri/src/main.rs:2 include_str 读的文件副本里没有：src-tauri/target/out.txt',
-      'src-tauri/src/main.rs:5 include_str 读的文件副本里没有：scripts/tool.sh',
-    ].map((l) => l.split('/').join(sep)));
+      'dist/renderer/index.html': '',
+      'scripts/build.mjs': '',
+      'build/icon.png': '',
+      'package.json': '{}',
+      'tsconfig.json': '{}',
+      'node_modules/.keep': '',
+      'docs/x.md': '',
+    });
+    const shell = made();
+    prepareCopy(shell, false, from);
+    for (const p of ['src-tauri/Cargo.toml', 'src-tauri/src/main.rs', 'src/i18n/en/a.json', 'dist/renderer/index.html']) expect(existsSync(join(shell, p)), p).toBe(true);
+    for (const p of ['src-tauri/gen', 'src-tauri/target', 'scripts', 'node_modules', 'docs']) expect(existsSync(join(shell, p)), p).toBe(false);
+    const win = made();
+    prepareCopy(win, true, from);
+    for (const p of ['src/i18n/en/a.json', 'scripts/build.mjs', 'build/icon.png', 'package.json', 'tsconfig.json']) expect(existsSync(join(win, p)), p).toBe(true);
+    expect(lstatSync(join(win, 'node_modules')).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(win, 'dist'))).toBe(false); // the window entry builds its own
   });
 
-  it('各种合法写法都进路径校验；注释、字符串里的字样和测试模块里的不算', () => {
-    const work = made();
-    const dir = join(work, 'src-tauri', 'src');
-    mkdirSync(dir, { recursive: true });
-    const s = [
-      'const A: &str = include_str! {"../m1"};', // 1
-      'const B: &str = include_str ! ["../m2"];', // 2
-      'const C: &[u8] = std::include_bytes!("../m3");', // 3
-      'const D: &str = core :: include_str!(r#"../m4"#);', // 4
-      'const E: &str = include_str! /* x */ ("../m5",);', // 5
-      'include!("../m6");', // 6
-      'const F: &str = include_str!(concat!("../", "m7"));', // 7
-      'use std::include_str as inc;', // 8
-      '#[path = "../m9.rs"] mod nine;', // 9
-      'const G: &str = include_str!("..\\\\m10");', // 10
-      'const H: &str = include_str!(concat!(env!("OUT_DIR"), "/gen.rs"));', // 11
-      '// include_str!("../comment") and /* include_bytes!("../block") */', // 12
-      'const I: &str = "include_str!(\\"../in-string\\")";', // 13
-      '#[cfg(test)]', // 14
-      'mod tests {', // 15
-      "    fn f<'a>(x: &'a str) -> char { let _ = \"}\"; let _ = r#\"}{\"#; /* } */ // }", // 16
-      "        '}' }", // 17
-      '    const T: &str = include_str!("../../../docs/t.md");', // 18
-      '}', // 19
-      'const Z: &str = include_str!("../after-tests");', // 20
-    ].join('\n');
-    writeFileSync(join(dir, 'lib.rs'), s);
-    const { all, problems } = scanCopy(work);
-    const lines = (xs: string[]) => xs.map((p) => Number(/:(\d+) /.exec(p)![1]));
-    // every form landed in the path check (none of these files exist), the ignored ones did not
-    expect(lines(problems).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20]);
-    expect(problems.find((p) => p.includes(':7 '))).toContain('参数不是能确定的单个路径');
-    expect(problems.find((p) => p.includes(':8 '))).toContain('换了名字导入');
-    expect(all.filter((r) => r.test).map((r) => r.line)).toEqual([18]);
-    // with the files there, the same forms pass
-    for (const f of ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm9.rs', 'after-tests']) writeFileSync(join(work, 'src-tauri', f), 'x');
-    expect(lines(scanCopy(work).problems).sort((a, b) => a - b)).toEqual([7, 8, 10]);
-  });
-
-  // The scan against the compiler itself: each case is a one-file crate that compiles in its own tree;
-  // after the real copySources, `rustc` on the copy fails exactly when the scan reports a problem.
-  const CASES: { name: string; main: string; files: Record<string, string>; missing: boolean }[] = [
-    { name: '条件属性里的 path（复审第 2 轮的例子）', main: '#[cfg_attr(all(), path = "../gen/schema.rs")]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
-    { name: '套两层的条件属性', main: '#[cfg_attr(all(), cfg_attr(all(), path = "../gen/schema.rs"))]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
-    { name: '原始字符串写的 path', main: '#[path = r"../target/m.rs"]\nmod m;\nfn main() { m::f(); }', files: { 'src-tauri/target/m.rs': 'pub fn f() {}' }, missing: true },
-    { name: '花括号的 include_str', main: 'const A: &str = include_str! {"../gen/a.txt"};\nfn main() { let _ = A; }', files: { 'src-tauri/gen/a.txt': 'a' }, missing: true },
-    { name: '方括号的 include_bytes，读副本不带的顶层目录', main: 'const A: &[u8] = include_bytes! ["../../scripts/a.bin"];\nfn main() { let _ = A; }', files: { 'scripts/a.bin': 'a' }, missing: true },
-    { name: '读副本带的目录（正例）', main: '#[cfg_attr(all(), path = "../res/m.rs")]\nmod m;\nconst A: &str = include_str!("../../src/a.txt");\nfn main() { let _ = A; m::f(); }', files: { 'src-tauri/res/m.rs': 'pub fn f() {}', 'src/a.txt': 'a' }, missing: false },
+  const CASES: { name: string; main: string; files: Record<string, string>; buildRs?: string; missing: boolean }[] = [
+    // the nightly failure itself, and its correct counterpart
+    { name: '读 src 下的语言表（副本带 src）', main: 'const A: &str = include_str!("../../src/i18n/en/a.json");\nfn main() { let _ = A; }', files: { 'src/i18n/en/a.json': '{}' }, missing: false },
+    { name: '读副本不带的顶层目录', main: 'const A: &[u8] = include_bytes!("../../scripts/a.bin");\nfn main() { let _ = A; }', files: { 'scripts/a.bin': 'a' }, missing: true },
+    // review round 1: excluded folders, other macro forms
+    { name: '读被排除的 gen/（圆括号）', main: 'const A: &str = include_str!("../gen/a.txt");\nfn main() { let _ = A; }', files: { 'src-tauri/gen/a.txt': 'a' }, missing: true },
+    { name: '花括号的 include_str 读 gen/', main: 'const A: &str = include_str! {"../gen/a.txt"};\nfn main() { let _ = A; }', files: { 'src-tauri/gen/a.txt': 'a' }, missing: true },
+    { name: '方括号的 include_bytes 读 target/', main: 'const A: &[u8] = include_bytes! ["../target/a.bin"];\nfn main() { let _ = A; }', files: { 'src-tauri/target/a.bin': 'a' }, missing: true },
+    // review round 2: paths inside attributes
+    { name: '条件属性里的 path 指向 gen/', main: '#[cfg_attr(all(), path = "../gen/schema.rs")]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
+    { name: '两层条件属性', main: '#[cfg_attr(all(), cfg_attr(all(), path = "../gen/schema.rs"))]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
+    // review round 3: module-relative paths (no false alarm), a path built at build time
+    { name: '内联模块里的 path（相对模块目录，副本能编）', main: 'mod outer {\n    #[path = "schema.rs"]\n    pub mod schema;\n}\nfn main() { outer::schema::f(); }', files: { 'src-tauri/src/outer/schema.rs': 'pub fn f() {}' }, missing: false },
+    {
+      name: '构建脚本给出的目录拼出的路径指向 gen/',
+      main: 'const A: &str = include_str!(concat!(env!("GEN_DIR"), "/schema.txt"));\nfn main() { let _ = A; }',
+      buildRs: 'fn main() { println!("cargo:rustc-env=GEN_DIR={}/gen", std::env::var("CARGO_MANIFEST_DIR").unwrap()); }',
+      files: { 'src-tauri/gen/schema.txt': 'a' },
+      missing: true,
+    },
   ];
-  const rustc = (crateRoot: string) => {
-    const out = made();
-    const r = spawnSync('rustc', ['--edition', '2021', '--crate-type', 'bin', '--emit=metadata', '--out-dir', out, join(crateRoot, 'src-tauri', 'src', 'main.rs')], { encoding: 'utf8' });
-    if (r.error) throw new Error(`rustc 跑不起来：${r.error.message}`);
-    return r.status;
-  };
+
   for (const c of CASES) {
-    it(`扫描与编译器一致：${c.name}`, () => {
-      const src = made();
-      mkdirSync(join(src, 'src')); // the client's own sources: every real tree has them
-      for (const [p, t] of Object.entries({ ...c.files, 'src-tauri/src/main.rs': c.main })) {
-        mkdirSync(dirname(join(src, p)), { recursive: true });
-        writeFileSync(join(src, p), t);
-      }
-      expect(rustc(src)).toBe(0);
-      const work = made();
-      copySources(work, src);
-      const { problems } = scanCopy(work);
-      expect(rustc(work) !== 0).toBe(c.missing);
-      expect(problems.length > 0).toBe(c.missing);
+    it(`没改坏的副本能不能编，与它读的文件在不在副本里一致：${c.name}`, () => {
+      const from = crate(c.main, c.files, c.buildRs);
+      const targetDir = made();
+      const own = cargoCheck(from, targetDir);
+      if (own.error) throw new Error(`cargo 跑不起来：${own.error.message}`);
+      expect(own.status, own.stderr).toBe(0); // the crate itself compiles in its own tree
+      const problems: string[] = checkCopies({ from, shapes: [false], targetDir });
+      expect(problems.length > 0, problems.join('\n')).toBe(c.missing);
+      if (c.missing) expect(problems[0]).toContain('没改坏的副本编译不过');
     });
   }
 });

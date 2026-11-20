@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node scripts/with-tmp.mjs sh -c 'vitest run && bash test/mutation/run.sh \"$@\"' _",
     "test:mutation": "node scripts/with-tmp.mjs env MUTATION=1 bash test/mutation/run.sh",
-    "test:rust": "node scripts/with-tmp.mjs sh -c 'node scripts/build.mjs && cd src-tauri && cargo test --workspace \"$@\"' _",
+    "test:rust": "node scripts/with-tmp.mjs sh -c 'node scripts/build.mjs && (cd src-tauri && cargo test --workspace \"$@\") && node test/tauri/mutations.mjs --check-copy' _",
     "test:e2e": "node scripts/with-tmp.mjs sh -c 'node scripts/build.mjs --test-bridge && playwright test \"$@\"' _",
     "start": "tauri dev",
     "dist:mac": "tauri build --bundles app && node scripts/make-dmg.mjs",
