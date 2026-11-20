@@ -2260,30 +2260,32 @@ echo "URL=$URL"
 
 <!-- asset-url-ops:add:begin -->
 ```bash
-n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
-if [ -z "$URL" ] || [ "$n" != 0 ]; then
-    echo "STOP: address to add '$URL', '${n:-unreadable}' address line(s) in $ENV_FILE — nothing changed"
+if [ -z "$URL" ]; then
+    echo "STOP: no address in $FROM — nothing changed"
 elif [ ! -w "$ENV_FILE" ]; then
-    echo "FAILED: $ENV_FILE is not writable — nothing changed; fix that and run this block again"
+    echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
 else
-    # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
-    # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
-    # The backup is the snapshot everything is built from; the file must still equal it right before the swap,
-    # and the replaced file must still equal it right after — otherwise someone saved in between.
-    # 备份就是这次所依据的快照：替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它——否则中途有人保存过。
+    # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
+    # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
+    # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
+    # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
+    # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
     LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
     BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     OLD="$ENV_FILE.replaced-$$"
-    if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK" \
-        && { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+    if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
+        rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
+    elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
+        rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
+    elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
         && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
         && chmod --reference="$ENV_FILE" "$TMPF"; }; then
-        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     elif ! cmp -s "$ENV_FILE" "$BAK"; then
-        rm -f "$TMPF"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
     elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
-        rm -f "$TMPF" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     elif ! cmp -s "$OLD" "$BAK"; then
         echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
     else
@@ -2307,26 +2309,28 @@ fi
 
 <!-- asset-url-ops:revert:begin -->
 ```bash
-n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
-v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
 added=$(cat "$REC" 2>/dev/null)
-if [ "$n" = 0 ]; then
-    # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
-    # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
-    if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
-    else echo "FAILED: could not remove $REC — fix the cause and run this block again"
-    fi
-elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
-    echo "STOP: ${n:-unreadable} address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+# Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
+# 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
+SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
+TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+OLD="$ENV_FILE.replaced-$$"
+if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
+    rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
 else
-    # Same snapshot rule as add: built from one snapshot, checked against it before and after the swap.
-    # 和补地址同一条规矩：从一份快照生成，替换前后都和它比对。
-    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
-    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
-    OLD="$ENV_FILE.replaced-$$"
-    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP" \
-        && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" = 1 ] \
-        && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
+    n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
+    v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
+    if [ "$n" = 0 ]; then
+        # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+        # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+        rm -f "$TMPF" "$SNAP"
+        if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+        else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+        fi
+    elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+        rm -f "$TMPF" "$SNAP"
+        echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+    elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
         && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
         && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
         && chmod --reference="$ENV_FILE" "$TMPF"; }; then
@@ -2354,8 +2358,8 @@ fi
 | 那段打印 | 含义 | 下一步 |
 |---|---|---|
 | 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
-| 补地址 `FAILED` | 配置文件没有改动（可能留下了记录或备份） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
-| 补地址 `STOP` | 没有可复制的地址、文件读不了、或已有地址行 | 什么都没改；去看文件 |
+| 补地址 `FAILED` | 配置文件没有改动——文件不存在、不可写、读不了，或写入失败（可能留下了记录） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
+| 补地址 `STOP` | 没有可复制的地址、或已有地址行 | 什么都没改；去看文件 |
 | 补地址 / 撤销 `STOP: … was changed while this block ran` | 这段读完文件之后、替换之前，别处保存了这个文件 | 什么都没改，别处那次保存留着；重跑这一段 |
 | 补地址 / 撤销 `CONFLICT` | 别处恰好在替换的那一刻保存了；这一段的改动已生效，别处的改动在它点名的 `….replaced-<n>` 文件里 | 把那个文件里别处的改动手工抄进配置，再删掉它 |
 | 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |

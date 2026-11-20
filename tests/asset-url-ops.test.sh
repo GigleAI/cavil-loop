@@ -254,16 +254,42 @@ if grep -q '^CONFLICT: REVERTED, but a change saved at the same moment is in ' <
     ok "撤销：替换那一刻别处保存了 → 报 CONFLICT，那次保存在被换下的文件里留着"
 else bad "撤销替换瞬间被别处保存时结果不对：$out"; fi
 
+# 复审第 5 轮：撤销读完记录、取快照的那一刻，地址被改成 B——判断和生成都只看快照，必须停下、留着 B
+REAL_CAT=$(command -v cat); mkdir -p "$TMP/race-cat"
+cat > "$TMP/race-cat/cat" <<SH
+#!/usr/bin/env bash
+if [ "\$#" = 1 ] && [ "\$1" = "$CONF" ] && [ ! -e "$TMP/race-cat/done" ]; then
+    : > "$TMP/race-cat/done"
+    sed -i 's|^WEEKLY_REPORT_ASSET_ROOT_URL=.*|WEEKLY_REPORT_ASSET_ROOT_URL="$URL_B"|' "$CONF"
+fi
+exec "$REAL_CAT" "\$@"
+SH
+"$REAL_CHMOD" +x "$TMP/race-cat/cat"
+sandbox
+run add >/dev/null
+rm -f "$TMP/race-cat/done"
+out=$(RUN_PATH="$TMP/race-cat:$PATH" run revert)
+if [ -e "$TMP/race-cat/done" ] && grep -q "^STOP: 1 address line(s), value '$URL_B', recorded '$URL'" <<<"$out" \
+   && grep -qxF "WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL_B\"" "$CONF" && [ -e "$REC" ] && [ -z "$(left_tmp)" ]; then
+    ok "撤销取快照时地址刚被改成 B：按快照判断 → STOP，B 和记录都留着"
+else bad "撤销取快照时地址被改：结果不对：$out / $(cat "$CONF")"; fi
+# 补地址停下时不留没用的备份
+sandbox
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL_B" >> "$CONF"
+run add >/dev/null
+if [ -z "$(find "$CDIR" -maxdepth 1 -name 'myproject.conf.bak-*')" ]; then ok "补地址停下时不留备份"
+else bad "补地址停下时留下了备份"; fi
+
 echo "── 不该补的情况 ──"
 sandbox
 sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$CDIR/otherproject.conf"
 out=$(run add)
-if grep -q "^STOP: address to add ''" <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf"; then ok "来源项目没有地址：停下、目标不变"
+if grep -q '^STOP: no address in otherproject' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf"; then ok "来源项目没有地址：停下、目标不变"
 else bad "来源没有地址时没停下：$out"; fi
 sandbox
 printf 'WEEKLY_REPORT_ASSET_ROOT_URL=""\n' >> "$CONF"; cp "$CONF" "$TMP/before.conf"
 out=$(run add)
-if grep -q "^STOP: .*'1' address line" <<<"$out" && cmp -s "$CONF" "$TMP/before.conf"; then
+if grep -q '^STOP: .* already has an address line' <<<"$out" && cmp -s "$CONF" "$TMP/before.conf"; then
     ok "目标已有地址行（哪怕为空）：停下、文件不变"
 else bad "目标已有地址行时没停下：$out"; fi
 sandbox
@@ -275,7 +301,7 @@ else bad "遗留记录挡住了补地址：$out"; fi
 sandbox
 chmod 000 "$CONF"
 out=$(run add); chmod 600 "$CONF"
-if grep -q "^STOP: .*'unreadable' address line" <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ]; then
+if grep -q '^FAILED: .* is not writable' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ]; then
     ok "配置读不了：补地址停下，不写记录"
 else bad "配置读不了时没停下：$out"; fi
 sandbox
