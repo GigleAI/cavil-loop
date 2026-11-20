@@ -151,6 +151,103 @@ test('Settings: a card\'s explanation is behind its ⓘ — hover, keyboard focu
   await expect(page.getByTestId('hand-back-running-hint')).toBeVisible();
 });
 
+test('Settings: once closed (Esc or a second click), nothing already true reopens the ⓘ — not the pointer still on it, not the focus still on it; a new hover, Tab or click does (PR #596 review rounds 1–2)', async () => {
+  const page = await openSettings();
+  const btn = page.getByTestId('theme-help-button');
+  const tip = page.getByTestId('theme-help-text');
+  const leave = () => page.mouse.move(5, 5);
+  // keyboard focus on the ⓘ: a real Shift+Tab from the first choice under the heading
+  const keyboardIn = async () => {
+    await page.getByTestId('theme-system').focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect(btn).toBeFocused();
+  };
+  const keyboardOut = () => page.keyboard.press('Tab');
+  /** closed, and stays closed for a while — nothing reopens it by itself */
+  const staysClosed = async () => {
+    await expect(tip).toBeHidden();
+    await page.waitForTimeout(400);
+    await expect(tip).toBeHidden();
+  };
+  const reset = async () => {
+    await leave();
+    await page.getByTestId('theme-system').focus();
+    await expect(tip).toBeHidden();
+  };
+
+  // ① keyboard focus + hover, Esc, then only the pointer leaves (the round-2 case): stays closed
+  await reset();
+  await keyboardIn();
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Escape');
+  await staysClosed();
+  await leave();
+  await staysClosed();
+  await expect(btn).toBeFocused();
+  // a new hover opens it; leaving again closes it (the old focus does not hold it open)
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await leave();
+  await staysClosed();
+  // a new keyboard focus opens it
+  await keyboardOut();
+  await keyboardIn();
+  await expect(tip).toBeVisible();
+
+  // ② keyboard focus only, Esc: stays closed; the pointer passing over opens it, leaving closes it again
+  await reset();
+  await keyboardIn();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Escape');
+  await staysClosed();
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await leave();
+  await staysClosed();
+
+  // ③ hover only, Esc: stays closed while the pointer rests there; leave and come back opens it
+  await reset();
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Escape');
+  await staysClosed();
+  await leave();
+  await staysClosed();
+  await btn.hover();
+  await expect(tip).toBeVisible();
+
+  // ④ kept open by a click with keyboard focus and the pointer on it; the second click closes it at once, and neither
+  //    the pointer leaving nor the focus staying brings it back
+  await reset();
+  await keyboardIn();
+  await btn.click();
+  await expect(tip).toBeVisible();
+  await btn.click();
+  await staysClosed();
+  await leave();
+  await staysClosed();
+  // a new click keeps it open again; a click elsewhere on the page lets it go
+  await btn.click();
+  await leave();
+  await expect(tip).toBeVisible();
+  await page.getByTestId('theme-settings').locator('h3').click({ position: { x: 2, y: 2 } });
+  await staysClosed();
+
+  // ⑤ kept open by a click, pointer gone; Esc closes it; hovering again opens it, leaving closes it (no longer kept)
+  await reset();
+  await btn.click();
+  await leave();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Escape');
+  await staysClosed();
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await btn.hover();
+  await expect(tip).toBeVisible();
+  await leave();
+  await staysClosed();
+});
+
 test('Settings: a common card\'s less used option is under its own 「高级」', async () => {
   const page = await openSettings();
   await expect(page.getByTestId('clear-all-on-activate')).toHaveCount(0);

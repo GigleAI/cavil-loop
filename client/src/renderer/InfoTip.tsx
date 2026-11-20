@@ -41,19 +41,19 @@ export function InfoTip({ children, testid, textTestid, label }: { children: Rea
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [pinned, setPinned] = useState(false);
-  /**
-   * An explicit close (the second click, Esc) wins over the pointer still resting on the ⓘ and over its focus: it holds
-   * until the pointer leaves and focus moves away, so the next hover, Tab or click opens it again (PR #596 review round 1).
-   */
-  const [closed, setClosed] = useState(false);
   const [place, setPlace] = useState<{ left: number; top: number; above: boolean } | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
   const tip = useRef<HTMLSpanElement>(null);
   const id = useId();
-  const open = !closed && (hover || focus || pinned);
+  // Three reasons to be open, each set only by its own new event (pointer entering, keyboard focus arriving, a click).
+  // An explicit close — the second click, Esc, scrolling — clears all three at once, so nothing that was already true
+  // before it (the pointer still resting there, the focus still on the button) can bring the tip back; only a new
+  // hover, a new keyboard focus or a new click does (PR #596 review rounds 1 and 2).
+  const open = hover || focus || pinned;
   const hide = () => {
+    setHover(false);
+    setFocus(false);
     setPinned(false);
-    setClosed(true);
   };
 
   useLayoutEffect(() => {
@@ -97,25 +97,16 @@ export function InfoTip({ children, testid, textTestid, label }: { children: Rea
         aria-expanded={open}
         data-testid={`${testid ?? 'info-tip'}-button`}
         onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => {
-          setHover(false);
-          setClosed(false);
-        }}
+        onMouseLeave={() => setHover(false)}
         // keyboard focus opens it; the focus a mouse click leaves behind does not (that one is the click's to decide)
         onFocus={(e) => setFocus(e.currentTarget.matches(':focus-visible'))}
-        onBlur={() => {
-          setFocus(false);
-          setClosed(false);
-        }}
+        onBlur={() => setFocus(false)}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
           // the first click keeps it open after the pointer leaves; a click on an open, kept tip closes it at once
           if (pinned && open) hide();
-          else {
-            setPinned(true);
-            setClosed(false);
-          }
+          else setPinned(true);
         }}
       >
         <Icon name="info" size={14} />
