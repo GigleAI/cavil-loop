@@ -1136,3 +1136,9 @@ button.fold-toggle:hover b { color: var(--accent); }
 .settings-adv[data-open='true'] > button.fold-toggle { margin-bottom: 16px; }
 .settings-adv > section { max-width: 760px; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 12px; padding: 4px 18px 16px; margin: 0 0 16px; scroll-margin-top: 16px; }
 .settings-main .label-head { display: inline-flex; align-items: center; }
+
+/* GitHub#587: a repository source with nothing to show keeps a line of its own, with its own "+" */
+table.items tr.repo-blank td { padding-top: 10px; padding-bottom: 10px; }
+table.items tr.repo-blank .link { color: var(--muted); margin-left: 8px; }
+table.items tr.repo-blank .link:hover:not(:disabled) { color: var(--fg); }
+table.items tr.repo-blank .link:disabled { opacity: 0.5; cursor: default; }

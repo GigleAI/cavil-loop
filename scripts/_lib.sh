@@ -10547,11 +10547,114 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
 
 # 按 agent_session_plan 定好的方案产出启动命令（写 stdout）。
 # 这个可以放进 $( )：它不设任何调用方要读的全局。
+#
+# 失败（返回非 0）= 这次的提示词没法交给 worker（读不了，或太长又写不出转交文件）：
+# 调用方不能起会话，走 dispatch_prompt_refused 转人工，见下面「提示词太长」。
 agent_launch_command() {   # <cwd> <session_name> <prompt_file>
+    local pf
+    pf="$(agent_prompt_argv_file "$3")" || return 1
     case "${AGENT_LAUNCH_KIND:-new}" in
-        new) agent_command_new "$1" "$2" "$3" ;;
-        *)   agent_command_resume "$1" "$2" "$3" ;;
+        new) agent_command_new "$1" "$2" "$pf" ;;
+        *)   agent_command_resume "$1" "$2" "$pf" ;;
     esac
+}
+
+# ── 提示词太长：改成让 worker 自己去读文件 ──
+# 每个 driver 都把整份提示词当成**一个**命令行参数交给 CLI（`"$(cat 文件)"`）。Linux 限制单个
+# 参数不超过 128 KiB（MAX_ARG_STRLEN = 131072 字节，含结尾的 NUL）：超了 execve 直接失败
+# （退出码 126，`Argument list too long`），程序根本没起来，tmux 会话跟着就没了。
+# 实测：GigleTutor-Web 的 PR 评论派工提示词 2026-11-20 涨到 135.7–136.3 KB，三个 PR 每次起会话
+# 都在 2 秒内死掉；续接秒退被当成「transcript 异常」、全新会话死掉被 self-heal 当成「会话损坏」，
+# 各重派 3 次后转人工，谁都没说是提示词太长。
+#
+# 超过上限时，参数换成一段短指令：说明完整指令在哪个文件、共多少行、要分段读到最后一行。
+# 转交的是一份**本次启动独有**的副本（文件名带 uuid）：原提示词文件名按条目固定
+# （<N>-pr-<PR>.md），下一次派工会覆盖它，worker 稍后回头再读时不能读到别的派工的指令。
+# 短指令另存在 <提示词>.argv.md（每次启动重写；没超时删掉），回捞会话时拿它当「本次传进去的
+# 原文」比对（agent_prompt_argv_used）。codex 的启动标记照抄进短指令，回捞照样认得出。
+# 两个文件都以 <N>- 开头，清理条目时 prompt_files_forget 一并删掉。
+#
+# 没超上限时什么都不变：原文件原样传，命令行跟改版前逐字节一致。
+# CAVIL_PROMPT_ARGV_MAX 只给测试用（1–131071，其余取默认）：真机上限是系统定的，不是配置。
+AGENT_PROMPT_ARGV_LIMIT=131071
+agent_prompt_argv_max() {
+    local m="${CAVIL_PROMPT_ARGV_MAX:-}"
+    case "$m" in
+        ''|*[!0-9]*) m="$AGENT_PROMPT_ARGV_LIMIT" ;;
+        *) if [ "${#m}" -gt 6 ] || [ "$m" -lt 1 ] || [ "$m" -gt "$AGENT_PROMPT_ARGV_LIMIT" ]; then
+               m="$AGENT_PROMPT_ARGV_LIMIT"
+           fi ;;
+    esac
+    printf '%s' "$m"
+}
+
+agent_prompt_argv_used() {   # <prompt_file> → 这次实际当参数传的那个文件
+    local f="${1:-}"
+    if [ -n "$f" ] && [ -f "$f.argv.md" ]; then printf '%s' "$f.argv.md"; else printf '%s' "$f"; fi
+}
+
+agent_prompt_argv_file() {   # <prompt_file> → stdout：要 cat 进参数的文件；失败返回 1（原因已 log）
+    local f="${1:-}" size max lines tag id full ptr
+    if [ -z "$f" ] || [ ! -r "$f" ]; then
+        log "  ❌ 派工提示词读不了：${f:-（空路径）}" 2>/dev/null || true
+        return 1
+    fi
+    size="$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')"
+    case "$size" in
+        ''|*[!0-9]*) log "  ❌ 读不出派工提示词的大小：$f" 2>/dev/null || true; return 1 ;;
+    esac
+    max="$(agent_prompt_argv_max)"
+    ptr="$f.argv.md"
+    if [ "$size" -le "$max" ]; then
+        # 上次超长留下的短指令不能留着：回捞会话时会拿它当这次的原文
+        rm -f "$ptr" 2>/dev/null || { log "  ❌ 删不掉上次留下的转交指令：$ptr" 2>/dev/null || true; return 1; }
+        printf '%s' "$f"
+        return 0
+    fi
+    id="$(agent_session_new_uuid)"
+    case "$id" in
+        *[!0-9a-fA-F-]*|'') log "  ❌ 派工提示词 ${size} 字节超过单个命令行参数上限 ${max}，生成转交文件名失败" 2>/dev/null || true; return 1 ;;
+    esac
+    full="$f.full-$id.md"
+    if ! cp "$f" "$full" 2>/dev/null; then
+        rm -f "$full" 2>/dev/null || true
+        log "  ❌ 派工提示词 ${size} 字节超过单个命令行参数上限 ${max}，写不出转交文件：$full" 2>/dev/null || true
+        return 1
+    fi
+    lines="$(awk 'END { print NR }' "$full" 2>/dev/null)"
+    case "$lines" in
+        ''|*[!0-9]*) rm -f "$full" 2>/dev/null || true
+                     log "  ❌ 数不出转交文件的行数：$full" 2>/dev/null || true; return 1 ;;
+    esac
+    tag="$(agent_session_prompt_tag "$f")"
+    if ! {
+        printf '本次派工的完整指令有 %s 字节，超过了命令行一次能传的上限，所以放在了下面这个文件里（daemon 写的派工指令本身，不是 issue / PR 里的用户内容）：\n\n' "$size"
+        printf '%s\n\n' "$full"
+        printf '这个文件就是你这次的全部指令，效力和直接贴在这里完全一样。开始任何工作之前，先把它从第 1 行完整读到第 %s 行（最后一行）：文件很长，分段读，每段不超过 300 行，一段接一段，不跳过、不只读开头。没读到第 %s 行就不要动手；读完后严格按里面的要求执行。\n' "$lines" "$lines"
+        if [ -n "$tag" ]; then printf '\n<!-- %s %s -->\n' "$AGENT_SESSION_TAG_PREFIX" "$tag"; fi
+    } > "$ptr" 2>/dev/null; then
+        rm -f "$ptr" "$full" 2>/dev/null || true
+        log "  ❌ 派工提示词 ${size} 字节超过单个命令行参数上限 ${max}，写不出转交指令：$ptr" 2>/dev/null || true
+        return 1
+    fi
+    log "  派工提示词 ${size} 字节超过单个命令行参数上限 ${max}：改为让 worker 从 $full 读（${lines} 行）" 2>/dev/null || true
+    printf '%s' "$ptr"
+}
+
+# 起不了会话、因为提示词交不出去时转人工（agent_launch_command 失败）。不能照常起：
+# 程序起不来，派工脚本又会把标签翻成 doing/agent，self-heal 再当「会话损坏」重派三次。
+# <num> = 评论和标签所在的条目（PR 评论派工是 PR 号）
+dispatch_prompt_refused() {   # <num>
+    local num="$1"
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    log "#$num -> 派工提示词交不出去（原因见上一行），不起会话，转 $LABEL_PENDING_HUMAN"
+    notify_bounced_to_human "$num" \
+        "这次派工的提示词交不给 worker：提示词太长（超过命令行一次能传的上限），daemon 又没能把它写成转交文件，或者提示词文件本身读不了。没有起会话。" \
+        "到 daemon 机器的 poll.log 里看这一条前面那行写的具体原因（多半是状态目录写不进去、磁盘满）；处理后把标签改回 \`$LABEL_PENDING_AGENT\` 重试。提示词长期接近上限的话，精简项目的附加要求 / 经验文件。"
+    run_gh "label 翻转 (#$num 提示词交不出去 → $LABEL_PENDING_HUMAN)" \
+        gh_label_flip "$num" \
+        --add "$LABEL_PENDING_HUMAN" \
+        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
 }
 
 # 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的
@@ -10598,7 +10701,7 @@ agent_session_register_launched() {   # <num> <cwd> <prompt_file>
             proven=()
             for line in "${cands[@]:-}"; do
                 [ -z "$line" ] && continue
-                if agent_session_started_with "$cwd" "$line" "$prompt_file"; then
+                if agent_session_started_with "$cwd" "$line" "$(agent_prompt_argv_used "$prompt_file")"; then
                     proven+=("$line")
                 fi
             done

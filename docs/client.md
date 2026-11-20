@@ -75,6 +75,7 @@ That is all the client needs. **With repositories only, no Project**: iteration 
 - **Editing in a cell**: click a labels, iteration, status or milestone cell to change it; when grouped by iteration / status / milestone, a whole row can be dragged to another group.
 - **Folding**: every group folds; neighbouring folded groups merge into one row "已收起 N 组 · 共 M 条" (N groups folded · M items). What is folded is remembered on this machine.
 - **New issue**: every group ends with "＋ 新建 issue" (new issue), which creates the issue with that group's iteration / status / milestone already set.
+- **Repositories with nothing to show stay** ([#587](https://github.com/GigleAI/cavil-loop/issues/587)): a repository in "数据来源" (sources) with "在看板显示" (show on board) on keeps its place in the table even when none of its issues / PRs is shown (a new empty repository, or everything filtered out by the search or by "显示已关闭"): 0 in the repository list, a section of its own under "全部", a group of its own when grouped by repository, and the same when it alone is picked (whatever the grouping) — each saying "no issues or PRs to show" with "＋ 新建 issue" (the dialog opens with that repository picked). A repository never read shows "—", says so and offers no "+". A repository known only from a GitHub Project is unknown to the client while it has no items, and is not shown.
 
 ## Dependency graph
 

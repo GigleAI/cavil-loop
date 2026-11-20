@@ -1311,6 +1311,8 @@ test('GitHub#213: "all repositories" in the table — repository first, then ite
   const C = 'repo:gigleai/cavil-loop', Z = 'repo:gigleai/zeta';
   await expect.poll(async () => (await repoHeads(page)).map(([t]) => t), { timeout: 15_000 }).toEqual(['GigleAI/cavil-loop', 'GigleAI/zeta']);
   await expect.poll(async () => (await tableShape(page)).some((g) => g.title === 'Iteration 25' && g.rows.includes('gigleai/cavil-loop#22'))).toBe(true);
+  // GitHub#587: zeta's heading is there as soon as it is a source, before its issues are read: wait for them
+  await expect.poll(async () => (await tableShape(page)).filter((g) => g.key.startsWith(`${Z}|`)).flatMap((g) => g.rows).length, { timeout: 15_000 }).toBe(2);
   const shape = await tableShape(page);
   for (const g of shape) expect(g.key.startsWith(`${C}|`) || g.key.startsWith(`${Z}|`), g.key).toBe(true);
   // the sections come in the heading order: every cavil-loop group before every zeta group
@@ -6838,22 +6840,25 @@ test('GitHub#304: drag repositories in the table\'s list and by the board\'s swi
   await everywhere([C, A, B]);
   expect(await saved()).toEqual(['gigleai/ccc', 'gigleai/aaa', 'gigleai/bbb']);
 
-  // ---- 3. table: the search hides a; b dragged before c; the search cleared → b, a, c (a kept its place) ----
+  // ---- 3. table: the search hides a's only issue, yet a repository source stays in the list, with 0
+  // (GitHub#587; a repository hidden by the search keeping its place is the board's swimlanes in step 6);
+  // b dragged before c → b, c, a ----
   await layout('table');
   await search.fill('kept');
-  await expect.poll(slices).toEqual([C, B]);
+  await expect.poll(slices).toEqual([C, A, B]);
+  await expect(slice(A).getByTestId('slice-count')).toHaveText('0');
   await dragRepo(slice(B), slice(C));
-  await expect.poll(slices).toEqual([B, C]);
+  await expect.poll(slices).toEqual([B, C, A]);
   await search.fill('');
-  await everywhere([B, A, C]);
+  await everywhere([B, C, A]);
 
   // ---- 4. a restart keeps it ----
-  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/aaa', 'gigleai/ccc']);
+  await expect.poll(stored, { timeout: 15_000 }).toEqual(['gigleai/bbb', 'gigleai/ccc', 'gigleai/aaa']);
   await app.close();
   ({ app, page } = await launch(env));
   await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('search').fill('');
-  await everywhere([B, A, C]);
+  await everywhere([B, C, A]);
   await shot(page, '304-01-lanes-after-restart');
 
   // ---- 5. "按名称排序" → alphabetical again, the link goes away ----

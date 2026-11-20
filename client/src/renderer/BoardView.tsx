@@ -26,7 +26,7 @@ import { describeFailure, failureOf, hhmm } from '../shared/readFailure';
 import { TableView } from './TableView';
 import { pinnedLabels } from '../shared/pickOrder';
 import { handBackFor } from '../shared/repoLabels';
-import { buildTable } from '../data/table';
+import { buildTable, repoSources } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
 import { localToday } from './iterationOptions';
@@ -547,10 +547,12 @@ export function BoardView({
     [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang],
   );
   // GitHub#368: built once here, so the view bar's counts and the table come from the same result
+  // GitHub#587: the repository sources shown on the board keep their place in the table when nothing of theirs is shown
+  const tableRepos = useMemo(() => repoSources(state.sources, view.selected, sync.times), [state.sources, view.selected, sync.times]);
   const table = useMemo(
-    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items) : null),
+    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, lang],
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, lang],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
