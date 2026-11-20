@@ -144,6 +144,8 @@ registry() { cat "$TMP/state/agent-sessions/$1" 2>/dev/null; }
 # plan 现在要收一个 prompt 文件（钉不了 id 的 driver 要往里打启动标记）
 PLAN_PROMPT="$TMP/plan-prompt.md"
 printf 'plan 用的占位 prompt\n' > $PLAN_PROMPT
+# agent_launch_command 读不到提示词文件就拒绝起会话，所以给它一份真文件
+printf "launch 用的占位 prompt\n" > "$TMP/p.md"
 
 W_ID="11111111-1111-4111-8111-111111111111"
 R_ID="22222222-2222-4222-8222-222222222222"
@@ -172,7 +174,7 @@ chk "pr-comment 模板仍是 worker" \
     "$(lib_eval 'echo "$WORKER_SESSION_ROLE"' DISPATCH_PROMPT_KIND=pr-comment)" "worker"
 
 echo "── 2. claude：全新会话会钉 id 并登记 ──"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND|id=\$WORKER_SESSION_ID\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND|id=\$WORKER_SESSION_ID\"")"
 chk_contains "首次派工起全新会话" "$out" "kind=new"
 chk_contains "全新会话带 --session-id" "$out" "--session-id"
 NEW_ID="$(registry 42.claude.worker)"
@@ -181,7 +183,7 @@ chk_contains "登记的 id 就是命令里钉的那个" "$out" "$NEW_ID"
 
 echo "── 3. claude：同角色再派工续同一条 ──"
 mk_claude_session "$WT" "$NEW_ID" "2026-09-18 10:00:00"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "第二次是 resume" "$out" "kind=resume"
 chk_contains "resume 的是自己登记的那条" "$out" "--resume $NEW_ID"
 
@@ -189,7 +191,7 @@ echo "── 4. 核心：review 不许续 worker 的会话 ──"
 rm -rf "$TMP/state/agent-sessions" "$(claude_dir "$WT")"
 mk_claude_session "$WT" "$W_ID" "2026-09-18 10:00:00"
 lib_eval "agent_session_id_set 42 claude worker '$W_ID'" >/dev/null
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
 chk_contains "review 首轮起全新会话" "$out" "kind=new"
 chk_lacks "review 的命令里没有 worker 那条会话" "$out" "$W_ID"
 chk_lacks "review 不会用 --continue（那会续到 worker 那条）" "$out" "--continue"
@@ -198,13 +200,13 @@ chk "review 角色单独登记了一条" "$([ -n "$REVIEW_ID" ] && [ "$REVIEW_ID
 
 echo "── 5. review 跨轮复用自己那条（Q3 拍板 A）──"
 mk_claude_session "$WT" "$REVIEW_ID" "2026-09-18 11:00:00"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
 chk_contains "review 第 2 轮是 resume" "$out" "kind=resume"
 chk_contains "续的是 review 自己那条" "$out" "--resume $REVIEW_ID"
 
 echo "── 6. 反方向：worker 不许续 review 的会话 ──"
 # review 那条现在是这个目录里**最新**的一条，老实现的 --continue 正好会续到它
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "worker 续的是自己那条" "$out" "--resume $W_ID"
 chk_lacks "worker 没碰 review 那条" "$out" "$REVIEW_ID"
 chk_lacks "worker 没回落到 --continue" "$out" "--continue"
@@ -213,14 +215,14 @@ echo "── 7. 目录里只剩 review 那条时，worker 必须起全新 ──
 rm -rf "$TMP/state/agent-sessions" "$(claude_dir "$WT")"
 mk_claude_session "$WT" "$R_ID" "2026-09-18 12:00:00"
 lib_eval "agent_session_id_set 42 claude review '$R_ID'" >/dev/null
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "worker 起全新会话" "$out" "kind=new"
 chk_lacks "worker 没收养 review 那条" "$out" "--resume $R_ID"
 
 echo "── 8. 向后兼容：上线前没登记过的会话仍被 worker 收养 ──"
 rm -rf "$TMP/state/agent-sessions" "$(claude_dir "$WT")"
 mk_claude_session "$WT" "$LEGACY_ID" "2026-09-18 09:00:00"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "收养旧会话" "$out" "kind=adopt"
 chk_contains "续的就是那条旧会话" "$out" "--resume $LEGACY_ID"
 chk "收养后补登记" "$(registry 42.claude.worker)" "$LEGACY_ID"
@@ -228,7 +230,7 @@ chk "收养后补登记" "$(registry 42.claude.worker)" "$LEGACY_ID"
 echo "── 9. 登记的会话已经不在了 → 起全新，不报错 ──"
 rm -rf "$TMP/state/agent-sessions" "$(claude_dir "$WT")"
 lib_eval "agent_session_id_set 42 claude review 'deadbeef-dead-4ead-8ead-deadbeefdead'" >/dev/null
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
 chk_contains "会话没了就起全新" "$out" "kind=new"
 chk_lacks "不会去 resume 一条不存在的会话" "$out" "--resume deadbeef"
 
@@ -269,17 +271,17 @@ chk "按 id 能确认会话还在" \
 chk "codex 启动侧钉不了 id" "$(lib_eval "agent_session_new_id '$WT' n worker")" ""
 
 lib_eval "agent_session_id_set 42 codex review '$CR_ID'" >/dev/null
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
 chk_contains "codex review 续自己那条" "$out" "codex resume $CR_ID"
 chk_lacks "codex review 不用 --last（那会按时间猜，分不清角色）" "$out" "resume --last"
 
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "codex worker 收养的是非 review 的那条" "$out" "codex resume $CW_ID"
 chk_lacks "codex worker 没收养 review 那条" "$out" "$CR_ID"
 
 echo "── 12. codex：全新会话启动后回捞 id 登记 ──"
 rm -rf "$TMP/state/agent-sessions" "$FAKE_HOME/.codex"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND|pre=[\$AGENT_SESSION_PRELAUNCH_IDS]\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND|pre=[\$AGENT_SESSION_PRELAUNCH_IDS]\"")"
 chk_contains "没历史时起全新" "$out" "kind=new"
 chk_lacks "全新时不带 resume" "$out" "resume"
 # 模拟 codex 起来后落盘，再跑回捞。会话里要留下「用这份 prompt 起的」证据——
@@ -308,10 +310,10 @@ MINI
 sed -i 's/^WORKER_AGENT="codex"$/WORKER_AGENT="mini"/' "$TMP/coding-agent.config"
 rm -rf "$TMP/state/agent-sessions"
 touch "$WT/.mini-history"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"" DISPATCH_PROMPT_KIND=review)"
 chk_contains "没实现隔离的 driver，review 也一律起全新" "$out" "kind=new"
 chk_contains "review 用的是 new 命令" "$out" "mini-new"
-out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name /tmp/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
+out="$(lib_eval "agent_session_plan 42 '$WT' $PLAN_PROMPT; agent_launch_command '$WT' name $TMP/p.md; echo \"|kind=\$AGENT_LAUNCH_KIND\"")"
 chk_contains "worker 保持上线前的续接行为" "$out" "kind=legacy-resume"
 chk_contains "worker 用的是 driver 自己的 resume 命令" "$out" "mini-resume"
 
@@ -324,7 +326,7 @@ rm -rf "$TMP/state/agent-sessions"
 # 所以这条用例必须照抄 dispatch 的调用形状，不能图省事在同一层里调。
 out="$(lib_eval "set -u
 agent_session_plan 42 '$WT' $PLAN_PROMPT
-CMD=\"\$(agent_launch_command '$WT' name /tmp/p.md)\"
+CMD=\"\$(agent_launch_command '$WT' name $TMP/p.md)\"
 echo \"|kind=\$AGENT_LAUNCH_KIND|id=\$WORKER_SESSION_ID|cmd=\$CMD\"")"
 chk_contains "plan 设的 kind 在命令替换之后还在" "$out" "kind="
 chk_lacks "kind 不是空的" "$out" "|kind=|"
@@ -527,7 +529,7 @@ agent_session_register_launched 99 '$X_WT' '$WK_FILE' 2>/dev/null
 echo registered=[\$(agent_session_id_get 99 codex worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
 chk_contains "worker 认领的是自己那条" "$out" "registered=[$X_W]"
 # ⑤ 下一轮续接必须指向 worker 自己那条
-out="$(lib_eval "agent_session_plan 99 '$X_WT' $PLAN_PROMPT; agent_launch_command '$X_WT' n /tmp/p.md")"
+out="$(lib_eval "agent_session_plan 99 '$X_WT' $PLAN_PROMPT; agent_launch_command '$X_WT' n $TMP/p.md")"
 chk_contains "下一轮 resume 自己那条" "$out" "codex resume $X_W"
 chk_lacks "下一轮没有 resume review 那条" "$out" "$X_R"
 
@@ -631,7 +633,7 @@ out="$(lib_eval "AGENT_LAUNCH_KIND=new WORKER_SESSION_ID='' AGENT_SESSION_PRELAU
 agent_session_register_launched 95 '$ML_WT' '$ML_FILE' 2>/dev/null
 echo registered=[\$(agent_session_id_get 95 codex worker)]" AGENT_SESSION_CAPTURE_SECS=0)"
 chk_contains "多行 prompt 的会话登记得上" "$out" "registered=[$ML_ID]"
-out="$(lib_eval "agent_session_plan 95 '$ML_WT' $PLAN_PROMPT; agent_launch_command '$ML_WT' n /tmp/p.md")"
+out="$(lib_eval "agent_session_plan 95 '$ML_WT' $PLAN_PROMPT; agent_launch_command '$ML_WT' n $TMP/p.md")"
 chk_contains "下一轮按 id 续接自己那条" "$out" "codex resume $ML_ID"
 
 echo "── 29. 首行相同、后文不同的两个角色，不许互相认领 ──"
@@ -722,7 +724,7 @@ agent_session_register_launched 91 '$PRE_WT' '$PRE_FILE' 2>/dev/null
 echo registered=[\$(agent_session_id_get 91 codex review)]" \
     DISPATCH_PROMPT_KIND=review AGENT_SESSION_CAPTURE_SECS=0)"
 chk_contains "登记成功" "$out" "registered=[$PRE_ID]"
-out="$(lib_eval "agent_session_plan 91 '$PRE_WT' $PLAN_PROMPT; agent_launch_command '$PRE_WT' n /tmp/p.md" DISPATCH_PROMPT_KIND=review)"
+out="$(lib_eval "agent_session_plan 91 '$PRE_WT' $PLAN_PROMPT; agent_launch_command '$PRE_WT' n $TMP/p.md" DISPATCH_PROMPT_KIND=review)"
 chk_contains "下一轮按 id 续接（Q3 的跨轮复用）" "$out" "codex resume $PRE_ID"
 
 echo "── 32. 标记只出现在「第一条 assistant 之后」的，不算本次启动 ──"

@@ -138,7 +138,8 @@ fi
 #    agent_session_plan 要在当前 shell 里调（它设的全局在 $( ) 子 shell 里会丢）。
 agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
-CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+    || { dispatch_prompt_refused "$ISSUE"; exit 0; }
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
