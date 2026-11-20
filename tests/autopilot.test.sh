@@ -1809,8 +1809,8 @@ prompts_check() {
     chk "issue-comment：授权打在 PR 上时写 PR #8" \
         "$(compose "$root" issue-comment $on DISPATCH_AUTOPILOT_WHERE='PR #8' | grep -c '维护者在 PR #8 上亲手打了托管标签')" 1
     chk "review：拼入复审的托管规则（通过翻 pending/merge、留测试记录）" \
-        "$(printf '%s' "$n" | grep -c 'REST 翻 `pending/merge`，摘 `pending/review`')/$(printf '%s' "$n" | grep -c 'autopilot-review-pass head=')" "1/1"
-    chk "review：方案通过翻 pending/agent" "$(printf '%s' "$n" | grep -c 'REST 翻 `pending/agent`，摘 `pending/review`')" 1
+        "$(printf '%s' "$n" | grep -c 'flip_label <PR> --add pending/merge --remove pending/review doing/agent')/$(printf '%s' "$n" | grep -c 'autopilot-review-pass head=')" "1/1"
+    chk "review：方案通过翻 pending/agent" "$(printf '%s' "$n" | grep -c 'flip_label <编号> --add pending/agent --remove pending/review doing/agent')" 1
     # 没绑 issue 的 PR（GitHub#142）：worker 拿只看 PR 的那一版，复审写授权在 PR 上
     local m pon="LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_PR=8"
     # shellcheck disable=SC2086
@@ -1824,7 +1824,7 @@ prompts_check() {
     # shellcheck disable=SC2086
     chk "没绑 issue · review：写授权在 PR #8" "$(compose "$root" review $pon | grep -c '维护者在 PR #8 上亲手打了托管标签')" 1
     chk "review：托管规则在最末尾（在通用复审指令之后）" \
-        "$(printf '%s' "$n" | awk '/^# 托管规则/{a=NR} /^5\. 通过：REST 翻/{b=NR} END{print (a>b && b>0) ? "yes" : "no"}')" yes
+        "$(printf '%s' "$n" | awk '/^# 托管规则/{a=NR} /^5\. 翻 label（/{b=NR} END{print (a>b && b>0) ? "yes" : "no"}')" yes
 
     # 派工脚本真的把轮询给的标记传进拼装（读它写出的那份给 worker 的提示词）
     local W="$SANDBOX/disp"; rm -rf "$W"; mkdir -p "$W/state" "$W/wt"

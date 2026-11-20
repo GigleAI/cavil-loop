@@ -59,6 +59,8 @@ section() { [ "$QUIET" = 1 ] || echo "$1"; }
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$SANDBOX/old"
+# GitHub#599 的新占位：旧派工脚本照新脚本的办法换掉（tests/lib/compat.sh）
+compat_step_dir_patch "$SANDBOX/old" || exit 1
 cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
 mkdir -p "$SANDBOX/new"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$SANDBOX/new/"
 # 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
