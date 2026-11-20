@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # kind: guard
-# 文档里那两张会动的讲解图（GitHub#76）。
+# 文档里那三张会动的讲解图（GitHub#76；编排挂点图 GitHub#615）。
 #
 # 跑法：bash tests/doc-diagrams.test.sh
 # 依赖：python3（标准库）。不需要浏览器。
@@ -10,7 +10,7 @@
 #   2. 每张动图在所有关键帧把一圈切成小段、逐段判定（不靠定时采样）：任意时刻最多一段说明、说明只在红框停在它那一步时出现、
 #      不含脚本 / 元素 id / 外链 / 主机名、所有动画同一周期从 0 秒开始（check.py）
 #   3. 静态版和动图的说明逐字一致
-#   4. 四份文档各自引用了对应语言的动图和静态版，且文件存在
+#   4. 六份文档（README、架构文档、编排文档各中英一份）各自引用了对应语言的动图和静态版，且文件存在
 # 再对 check.py 的每条承诺各造一个坏图做负对照：检查放过了哪一种坏图，这里就红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -38,7 +38,7 @@ else
     head -20 "$TMP/drift"
 fi
 n=$(find "$TMP/gen" -name '*.svg' | wc -l)
-[ "$n" -eq 8 ] && ok "生成 8 张图（2 张 × 中英 × 动/静）" || bad "生成了 $n 张图，应为 8"
+[ "$n" -eq 12 ] && ok "生成 12 张图（3 张 × 中英 × 动/静）" || bad "生成了 $n 张图，应为 12"
 
 echo "== 2/3. 动图行为 + 静态版一致"
 if python3 "$CHECK" "$IMG" >"$TMP/check.out"; then
@@ -53,11 +53,12 @@ refs() {   # <doc> <image path as written in the doc> <file on disk>
     if grep -qF "($2)" "$doc" && [ -f "$3" ]; then ok "$1 → $2"; else bad "$1 没有引用 $2（或文件不存在）"; fi
 }
 for lang in en zh; do
-    readme=README.md; arch=docs/architecture.md
-    [ "$lang" = zh ] && readme=README.zh.md && arch=docs/architecture.zh.md
+    readme=README.md; arch=docs/architecture.md; orch=docs/orchestration.md
+    [ "$lang" = zh ] && readme=README.zh.md && arch=docs/architecture.zh.md && orch=docs/orchestration.zh.md
     for v in "" .static; do
         refs "$readme" "docs/images/issue-lifecycle.$lang$v.svg" "$IMG/issue-lifecycle.$lang$v.svg"
         refs "$arch" "images/prompt-assembly.$lang$v.svg" "$IMG/prompt-assembly.$lang$v.svg"
+        refs "$orch" "images/orchestration.$lang$v.svg" "$IMG/orchestration.$lang$v.svg"
     done
 done
 

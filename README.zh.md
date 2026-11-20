@@ -265,6 +265,7 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 | [docs/requester-bot.md](docs/requester-bot.zh.md) | 对接外部需求机器人（以 grokbot 为例）：对接步骤、机器人那边要照做的约定、排查 |
 | [docs/persistence.md](docs/persistence.zh.md) | 设计方案 / 讨论 / 代码 / Claude 对话 / tmux 历史 都存哪、怎么事后查阅、怎么从断点续上 |
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
+| [docs/orchestration.md](docs/orchestration.zh.md) | 编排：项目能在哪几步插进自己的命令和提示词（装依赖、提示词增量、开 PR 后、复审、合并后清理、刷新常驻站、复盘），以及怎么定制复审 / 测试 / 预览 / 部署 |
 | [docs/operations.md](docs/operations.zh.md) | 配置全字段、派工口径与取工顺序、prompt 模板（base + 项目增量）、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
 | [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex` / `cursor`、加自家 driver 教程 |
 

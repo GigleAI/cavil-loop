@@ -5,7 +5,7 @@ Usage: python3 scripts/doc-diagrams/gen.py [out_dir]   (default: docs/images)
 
 Every SVG is generated here, never hand-edited: the zh / en copies and the
 animated / static variants must say the same thing, and the only way to keep
-eight files in step is to render them from one table. tests/doc-diagrams.test.sh
+every language / variant pair in step is to render them from one table. tests/doc-diagrams.test.sh
 regenerates into a temp dir and diffs, so an edit made straight to an SVG fails.
 
 The visual design (layout, palette, a red box that slides between steps and
@@ -195,6 +195,71 @@ PROMPT = {
             ('6  Project-side hook (example): inject before the edit',
              ['The rule files found reach the model before this edit runs, not a round later.',
               'Files already sent in this session are not repeated, so the context does not balloon.']),
+        ],
+    },
+}
+
+ORCH = {
+    'zh': {
+        'title': '项目能在哪几步插进自己的命令和提示词',
+        'subtitle': '上排：一条 issue 从派工到开 PR；下排：合并之后。红框走到哪一步，下面就讲哪一步。',
+        'subtitle_static': '上排：一条 issue 从派工到开 PR；下排：合并之后。每一步的说明都列在下面。',
+        'lanes': ['派工到开 PR', '合并之后（daemon 每轮轮询里）'],
+        'merge': '合并', 'apart': '互不依赖',
+        'who': {'daemon': 'daemon 执行', 'worker': 'worker 执行', 'review': '复审 agent'},
+        'steps': [
+            ('建 worktree 后', 'WORKTREE_SETUP_CMD', 'daemon',
+             ['daemon 给条目建好 worktree、复制 COPY_TO_WORKTREE 列的本地文件后，在 worktree 里跑这条命令。',
+              '用来装依赖；失败只记日志，照常派工。不需要就设成 :（冒号）。']),
+            ('拼提示词', '<模板名>.extra.md', 'daemon',
+             ['每次派工，daemon 把工具模板、复盘经验和项目的 <模板名>.extra.md 首尾相接，再按开关追加段落。',
+              '项目只写增量，冲突时以项目这一层为准；整份覆写模板就收不到工具的更新。']),
+            ('开 PR 后', 'PR_CREATED_HOOK', 'worker',
+             ['worker 开完 PR、翻完标签后，照提示词跑这个脚本——是 worker 跑的，不是 daemon 调用的。',
+              '拿到 PR、ISSUE、WORKTREE、BRANCH、REPO、PROJECT_ROOT，常用来发体验版、贴二维码。']),
+            ('复审', 'review.extra.md', 'review',
+             ['设了 LABEL_PENDING_REVIEW 才有：另一个 agent 用工具的复审模板加项目的 review.extra.md 独立审。',
+              '通过才交人；不通过带意见打回 worker，最多 REVIEW_MAX_ROUNDS 轮。']),
+            ('合并后清理', 'CLEANUP_HOOK', 'daemon',
+             ['daemon 扫到新合并的 PR 就清理（AUTO_CLEANUP_ON_MERGE，默认开）：先跑这个脚本，再关会话、删 worktree。',
+              '脚本非零退出只记日志，清理照常往下做；人手动跑清理脚本时也会先跑它。']),
+            ('刷新常驻站', 'LATEST_SITE_REFRESH', 'daemon',
+             ['合并后清理开着、这个开关也开着、本轮扫到新合并：清理扫描结束后在后台重建、重启常驻站。',
+              '不看清理成没成功；关掉合并后清理，它也不会跑。']),
+            ('合并后复盘', 'POST_RETROSPECTIVE_PROJECT_CMD', 'daemon',
+             ['复盘是每轮在后台推进的独立队列（POST_MERGE_RETROSPECTIVE，默认开），和清理互不依赖。',
+              '这条命令在复盘写完、提交之前跑，它改的文件进同一个提交；失败则这次复盘不提交。']),
+        ],
+    },
+    'en': {
+        'title': 'Where a project plugs in its own commands and prompts',
+        'subtitle': 'Top row: one issue from dispatch to PR. Bottom row: after the merge. The red box marks the step explained below.',
+        'subtitle_static': 'Top row: one issue from dispatch to PR. Bottom row: after the merge. Every step is explained below.',
+        'lanes': ['Dispatch to PR', 'After the merge (every daemon poll)'],
+        'merge': 'merge', 'apart': 'independent',
+        'who': {'daemon': 'run by daemon', 'worker': 'run by worker', 'review': 'review agent'},
+        'steps': [
+            ('Worktree ready', 'WORKTREE_SETUP_CMD', 'daemon',
+             ['Once the daemon has built the worktree and copied the files in COPY_TO_WORKTREE, it runs this command there.',
+              'For installing dependencies; a failure is only logged and dispatch goes on. Set it to : if not needed.']),
+            ('Compose prompt', '<name>.extra.md', 'daemon',
+             ['On every dispatch the daemon joins the tool\'s template, the lessons and the project\'s <name>.extra.md,',
+              'then appends sections by switch. The project layer wins on conflict; a full override misses tool updates.']),
+            ('PR opened', 'PR_CREATED_HOOK', 'worker',
+             ['After opening the PR and flipping labels, the worker runs this script as its prompt says; the daemon never calls it.',
+              'It gets PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT; typical use: deploy a preview build, post a QR code.']),
+            ('Review', 'review.extra.md', 'review',
+             ['Only with LABEL_PENDING_REVIEW set: another agent reviews with the tool\'s review template plus review.extra.md.',
+              'A pass goes to the human; a fail bounces back to the worker with feedback, at most REVIEW_MAX_ROUNDS rounds.']),
+            ('Cleanup on merge', 'CLEANUP_HOOK', 'daemon',
+             ['When the daemon sees a newly merged PR it cleans up (AUTO_CLEANUP_ON_MERGE, on by default): this script first,',
+              'then it ends the session and removes the worktree. A non-zero exit is only logged; manual cleanup runs it too.']),
+            ('Refresh latest site', 'LATEST_SITE_REFRESH', 'daemon',
+             ['With cleanup on merge on, this switch on and a new merge seen this poll: after the cleanup scan, the resident',
+              'site is rebuilt and restarted in the background. Cleanup success is not required; with cleanup off it never runs.']),
+            ('Retrospective', 'POST_RETROSPECTIVE_PROJECT_CMD', 'daemon',
+             ['Retrospectives are their own background queue, advanced every poll (POST_MERGE_RETROSPECTIVE, on by default).',
+              'This command runs before the retrospective commits; what it changes joins that commit, and a failure commits nothing.']),
         ],
     },
 }
@@ -417,12 +482,56 @@ def prompt(lang, animated):
     return frame(t, '\n'.join(parts), t['steps'], 4.0, rects, animated)
 
 
+# ── diagram 3: orchestration hooks ─────────────────────────────────────────
+
+WHO_PILL = {'daemon': 'agent', 'worker': 'doing', 'review': 'review'}
+
+
+def orchestration(lang, animated):
+    t = ORCH[lang]
+    steps = t['steps']
+    CW, CH = 270, 104
+    # top row ①–④ left to right; bottom row: ⑤ under ④, ⑥ to its left; ⑦ on its own at the left
+    pos = [(40, 160), (350, 160), (660, 160), (970, 160), (970, 326), (660, 326), (40, 326)]
+    parts = [text(40, 146, t['lanes'][0], 14, fill=MUTED, weight=600),
+             text(40, 310, t['lanes'][1], 14, fill=MUTED, weight=600)]
+    for a, b in zip(pos[:3], pos[1:4]):
+        parts.append(line_arrow(a[0] + CW + 4, a[1] + 52, b[0] - 12, b[1] + 52))
+    # merge: ④ straight down to ⑤
+    mx = 970 + CW / 2
+    parts.append(line_arrow(mx, 160 + CH + 4, mx, 326 - 14))
+    parts.append(text(mx + 12, 296, t['merge'], 13, fill=RED))
+    # ⑤ → ⑥ right to left
+    parts.append(line_arrow(970 - 4, 326 + 52, 660 + CW + 12, 326 + 52))
+    # the merge also feeds the retrospective queue, independent of cleanup (dashed, into ⑦'s right side)
+    dy, vx, ry = 160 + CH + 18, 40 + CW + 20, 326 + 52
+    parts.append(f'<path d="M{mx:g},{dy:g} L{vx:g},{dy:g} L{vx:g},{ry:g} L{40 + CW + 12:g},{ry:g}" '
+                 f'fill="none" stroke="{MUTED}" stroke-width="2" stroke-dasharray="6 5"/>')
+    parts.append(chevron(40 + CW + 12, ry, -1, 0, color=MUTED))
+    parts.append(text(vx + 12, dy + 20, t['apart'], 13, fill=MUTED))
+    for i, ((x, y), (title, hook, who, _)) in enumerate(zip(pos, steps)):
+        label = t['who'][who]
+        parts.append('\n'.join([
+            f'<g class="card s{i + 1}" transform="translate({x} {y})">',
+            f'<rect width="{CW}" height="{CH}" rx="10" fill="{CARD}" stroke="{LINE}"/>',
+            text(14, 32, CIRCLED[i], 24, fill=RED, font=SERIF),
+            text(46, 31, title, 17, weight=600),
+            text(14, 60, hook, 13, font=MONO),
+            pill(14, 70, label, WHO_PILL[who], mono=False),
+            '</g>']))
+    rects = [(x - 6, y - 6, CW + 12, CH + 12) for x, y in pos]
+    caps = [(f'{CIRCLED[i]} {title}　·　{hook}' if lang == 'zh' else f'{i + 1}  {title}  ·  {hook}', lines)
+            for i, (title, hook, _w, lines) in enumerate(steps)]
+    return frame(t, '\n'.join(parts), caps, 4.0, rects, animated)
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', '..', 'docs', 'images')
     os.makedirs(out, exist_ok=True)
     for lang in ('en', 'zh'):
-        for name, fn in (('issue-lifecycle', lifecycle), ('prompt-assembly', prompt)):
+        for name, fn in (('issue-lifecycle', lifecycle), ('prompt-assembly', prompt),
+                         ('orchestration', orchestration)):
             for animated, suffix in ((True, ''), (False, '.static')):
                 path = os.path.join(out, f'{name}.{lang}{suffix}.svg')
                 with open(path, 'w', encoding='utf-8') as f:

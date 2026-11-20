@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
+<title>项目能在哪几步插进自己的命令和提示词</title>
+<rect width="1280" height="640" fill="#F6F2EA"/>
+<text x="40" y="70" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="32" font-weight="400" fill="#1F1D1A" text-anchor="start">项目能在哪几步插进自己的命令和提示词</text>
+<text x="40" y="104" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="400" fill="#7A746A" text-anchor="start">上排：一条 issue 从派工到开 PR；下排：合并之后。红框走到哪一步，下面就讲哪一步。</text>
+<text x="40" y="146" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="600" fill="#7A746A" text-anchor="start">派工到开 PR</text>
+<text x="40" y="310" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="600" fill="#7A746A" text-anchor="start">合并之后（daemon 每轮轮询里）</text>
+<line x1="314" y1="212" x2="338" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M336,218 L346,212 L336,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="624" y1="212" x2="648" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M646,218 L656,212 L646,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="934" y1="212" x2="958" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M956,218 L966,212 L956,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="1105.0" y1="268" x2="1105.0" y2="312" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1099,310 L1105,320 L1111,310" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<text x="1117.0" y="296" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#C2412D" text-anchor="start">合并</text>
+<line x1="966" y1="378" x2="942" y2="378" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M944,372 L934,378 L944,384" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1105,282 L330,282 L330,378 L322,378" fill="none" stroke="#7A746A" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M324,372 L314,378 L324,384" fill="none" stroke="#7A746A" stroke-width="2"/>
+<text x="342" y="302" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">互不依赖</text>
+<g class="card s1" transform="translate(40 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">①</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">建 worktree 后</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">WORKTREE_SETUP_CMD</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">daemon 执行</text>
+</g>
+<g class="card s2" transform="translate(350 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">②</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">拼提示词</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">&lt;模板名&gt;.extra.md</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">daemon 执行</text>
+</g>
+<g class="card s3" transform="translate(660 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">③</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">开 PR 后</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">PR_CREATED_HOOK</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#F6E7C8"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#8A5A12" text-anchor="start">worker 执行</text>
+</g>
+<g class="card s4" transform="translate(970 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">④</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">复审</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">review.extra.md</text>
+<rect x="14" y="70" width="95" height="24" rx="12" fill="#E7E0F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#5B3F8E" text-anchor="start">复审 agent</text>
+</g>
+<g class="card s5" transform="translate(970 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑤</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">合并后清理</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">CLEANUP_HOOK</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">daemon 执行</text>
+</g>
+<g class="card s6" transform="translate(660 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑥</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">刷新常驻站</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">LATEST_SITE_REFRESH</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">daemon 执行</text>
+</g>
+<g class="card s7" transform="translate(40 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑦</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">合并后复盘</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">POST_RETROSPECTIVE_PROJECT_CMD</text>
+<rect x="14" y="70" width="103" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">daemon 执行</text>
+</g>
+<rect class="focus" x="34" y="154" width="282" height="116" rx="12" fill="none" stroke="#C2412D" stroke-width="3">
+<animate attributeName="x" values="34;34;344;344;654;654;964;964;964;964;654;654;34;34;34" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="y" values="154;154;154;154;154;154;154;154;320;320;320;320;320;320;154" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="width" values="282;282;282;282;282;282;282;282;282;282;282;282;282;282;282" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="height" values="116;116;116;116;116;116;116;116;116;116;116;116;116;116;116" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+</rect>
+<rect x="40" y="456" width="1200" height="150" rx="12" fill="#EFE9DD"/>
+<g class="cap" transform="translate(72 502)" opacity="1">
+<animate attributeName="opacity" values="1;1;0;0" keyTimes="0.000000;0.125000;0.133929;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">① 建 worktree 后　·　WORKTREE_SETUP_CMD</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">daemon 给条目建好 worktree、复制 COPY_TO_WORKTREE 列的本地文件后，在 worktree 里跑这条命令。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">用来装依赖；失败只记日志，照常派工。不需要就设成 :（冒号）。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.142857;0.151786;0.267857;0.276786;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">② 拼提示词　·　&lt;模板名&gt;.extra.md</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">每次派工，daemon 把工具模板、复盘经验和项目的 &lt;模板名&gt;.extra.md 首尾相接，再按开关追加段落。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">项目只写增量，冲突时以项目这一层为准；整份覆写模板就收不到工具的更新。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.285714;0.294643;0.410714;0.419643;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">③ 开 PR 后　·　PR_CREATED_HOOK</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">worker 开完 PR、翻完标签后，照提示词跑这个脚本——是 worker 跑的，不是 daemon 调用的。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">拿到 PR、ISSUE、WORKTREE、BRANCH、REPO、PROJECT_ROOT，常用来发体验版、贴二维码。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.428571;0.437500;0.553571;0.562500;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">④ 复审　·　review.extra.md</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">设了 LABEL_PENDING_REVIEW 才有：另一个 agent 用工具的复审模板加项目的 review.extra.md 独立审。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通过才交人；不通过带意见打回 worker，最多 REVIEW_MAX_ROUNDS 轮。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.571429;0.580357;0.696429;0.705357;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑤ 合并后清理　·　CLEANUP_HOOK</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">daemon 扫到新合并的 PR 就清理（AUTO_CLEANUP_ON_MERGE，默认开）：先跑这个脚本，再关会话、删 worktree。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">脚本非零退出只记日志，清理照常往下做；人手动跑清理脚本时也会先跑它。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.714286;0.723214;0.839286;0.848214;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑥ 刷新常驻站　·　LATEST_SITE_REFRESH</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">合并后清理开着、这个开关也开着、本轮扫到新合并：清理扫描结束后在后台重建、重启常驻站。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">不看清理成没成功；关掉合并后清理，它也不会跑。</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.857143;0.866071;0.982143;0.991071;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">⑦ 合并后复盘　·　POST_RETROSPECTIVE_PROJECT_CMD</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">复盘是每轮在后台推进的独立队列（POST_MERGE_RETROSPECTIVE，默认开），和清理互不依赖。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">这条命令在复盘写完、提交之前跑，它改的文件进同一个提交；失败则这次复盘不提交。</text>
+</g>
+</svg>

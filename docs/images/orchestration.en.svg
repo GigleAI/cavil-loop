@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img">
+<title>Where a project plugs in its own commands and prompts</title>
+<rect width="1280" height="640" fill="#F6F2EA"/>
+<text x="40" y="70" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="32" font-weight="400" fill="#1F1D1A" text-anchor="start">Where a project plugs in its own commands and prompts</text>
+<text x="40" y="104" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" font-weight="400" fill="#7A746A" text-anchor="start">Top row: one issue from dispatch to PR. Bottom row: after the merge. The red box marks the step explained below.</text>
+<text x="40" y="146" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="600" fill="#7A746A" text-anchor="start">Dispatch to PR</text>
+<text x="40" y="310" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="14" font-weight="600" fill="#7A746A" text-anchor="start">After the merge (every daemon poll)</text>
+<line x1="314" y1="212" x2="338" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M336,218 L346,212 L336,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="624" y1="212" x2="648" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M646,218 L656,212 L646,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="934" y1="212" x2="958" y2="212" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M956,218 L966,212 L956,206" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<line x1="1105.0" y1="268" x2="1105.0" y2="312" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1099,310 L1105,320 L1111,310" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<text x="1117.0" y="296" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#C2412D" text-anchor="start">merge</text>
+<line x1="966" y1="378" x2="942" y2="378" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M944,372 L934,378 L944,384" fill="none" stroke="#1F1D1A" stroke-width="2"/>
+<path d="M1105,282 L330,282 L330,378 L322,378" fill="none" stroke="#7A746A" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M324,372 L314,378 L324,384" fill="none" stroke="#7A746A" stroke-width="2"/>
+<text x="342" y="302" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#7A746A" text-anchor="start">independent</text>
+<g class="card s1" transform="translate(40 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">①</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Worktree ready</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">WORKTREE_SETUP_CMD</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">run by daemon</text>
+</g>
+<g class="card s2" transform="translate(350 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">②</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Compose prompt</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">&lt;name&gt;.extra.md</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">run by daemon</text>
+</g>
+<g class="card s3" transform="translate(660 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">③</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">PR opened</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">PR_CREATED_HOOK</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#F6E7C8"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#8A5A12" text-anchor="start">run by worker</text>
+</g>
+<g class="card s4" transform="translate(970 160)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">④</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Review</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">review.extra.md</text>
+<rect x="14" y="70" width="116" height="24" rx="12" fill="#E7E0F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#5B3F8E" text-anchor="start">review agent</text>
+</g>
+<g class="card s5" transform="translate(970 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑤</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Cleanup on merge</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">CLEANUP_HOOK</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">run by daemon</text>
+</g>
+<g class="card s6" transform="translate(660 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑥</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Refresh latest site</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">LATEST_SITE_REFRESH</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">run by daemon</text>
+</g>
+<g class="card s7" transform="translate(40 326)">
+<rect width="270" height="104" rx="10" fill="#FFFDF8" stroke="#CFC7B8"/>
+<text x="14" y="32" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="24" font-weight="400" fill="#C2412D" text-anchor="start">⑦</text>
+<text x="46" y="31" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="600" fill="#1F1D1A" text-anchor="start">Retrospective</text>
+<text x="14" y="60" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="400" fill="#1F1D1A" text-anchor="start">POST_RETROSPECTIVE_PROJECT_CMD</text>
+<rect x="14" y="70" width="123" height="24" rx="12" fill="#DCE6F2"/>
+<text x="24" y="87" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="13" font-weight="400" fill="#2F5D8A" text-anchor="start">run by daemon</text>
+</g>
+<rect class="focus" x="34" y="154" width="282" height="116" rx="12" fill="none" stroke="#C2412D" stroke-width="3">
+<animate attributeName="x" values="34;34;344;344;654;654;964;964;964;964;654;654;34;34;34" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="y" values="154;154;154;154;154;154;154;154;320;320;320;320;320;320;154" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="width" values="282;282;282;282;282;282;282;282;282;282;282;282;282;282;282" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<animate attributeName="height" values="116;116;116;116;116;116;116;116;116;116;116;116;116;116;116" keyTimes="0.000000;0.125000;0.142857;0.267857;0.285714;0.410714;0.428571;0.553571;0.571429;0.696429;0.714286;0.839286;0.857143;0.982143;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+</rect>
+<rect x="40" y="456" width="1200" height="150" rx="12" fill="#EFE9DD"/>
+<g class="cap" transform="translate(72 502)" opacity="1">
+<animate attributeName="opacity" values="1;1;0;0" keyTimes="0.000000;0.125000;0.133929;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">1  Worktree ready  ·  WORKTREE_SETUP_CMD</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Once the daemon has built the worktree and copied the files in COPY_TO_WORKTREE, it runs this command there.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">For installing dependencies; a failure is only logged and dispatch goes on. Set it to : if not needed.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.142857;0.151786;0.267857;0.276786;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">2  Compose prompt  ·  &lt;name&gt;.extra.md</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">On every dispatch the daemon joins the tool's template, the lessons and the project's &lt;name&gt;.extra.md,</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">then appends sections by switch. The project layer wins on conflict; a full override misses tool updates.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.285714;0.294643;0.410714;0.419643;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">3  PR opened  ·  PR_CREATED_HOOK</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">After opening the PR and flipping labels, the worker runs this script as its prompt says; the daemon never calls it.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">It gets PR, ISSUE, WORKTREE, BRANCH, REPO, PROJECT_ROOT; typical use: deploy a preview build, post a QR code.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.428571;0.437500;0.553571;0.562500;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">4  Review  ·  review.extra.md</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Only with LABEL_PENDING_REVIEW set: another agent reviews with the tool's review template plus review.extra.md.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">A pass goes to the human; a fail bounces back to the worker with feedback, at most REVIEW_MAX_ROUNDS rounds.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.571429;0.580357;0.696429;0.705357;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">5  Cleanup on merge  ·  CLEANUP_HOOK</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">When the daemon sees a newly merged PR it cleans up (AUTO_CLEANUP_ON_MERGE, on by default): this script first,</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">then it ends the session and removes the worktree. A non-zero exit is only logged; manual cleanup runs it too.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.714286;0.723214;0.839286;0.848214;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">6  Refresh latest site  ·  LATEST_SITE_REFRESH</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">With cleanup on merge on, this switch on and a new merge seen this poll: after the cleanup scan, the resident</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">site is rebuilt and restarted in the background. Cleanup success is not required; with cleanup off it never runs.</text>
+</g>
+<g class="cap" transform="translate(72 502)" opacity="0">
+<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.857143;0.866071;0.982143;0.991071;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
+<text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">7  Retrospective  ·  POST_RETROSPECTIVE_PROJECT_CMD</text>
+<text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Retrospectives are their own background queue, advanced every poll (POST_MERGE_RETROSPECTIVE, on by default).</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">This command runs before the retrospective commits; what it changes joins that commit, and a failure commits nothing.</text>
+</g>
+</svg>
