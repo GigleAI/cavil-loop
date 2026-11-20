@@ -115,6 +115,8 @@ class Entry:
     why: str = None
     example: str = None
     seen: list = field(default_factory=list)  # [(pr, url-or-None, dirs-tuple-or-None)]
+    at: int = -1     # 0-based line of its `### L<n>` heading in the parsed text
+    end: int = -1    # one past its last non-blank line
 
     @property
     def seen_prs(self):
@@ -128,6 +130,10 @@ class Lessons:
     entries: list
     has_dirs: bool = False   # the file carries the optional 目录经验 section
     held: tuple = ()         # ids on the held-over-limit line, in file order
+    # Positions in the parsed text (0-based lines), so `place` edits exactly what was parsed:
+    marker_at: int = -1      # the next-id line
+    held_at: int = -1        # the held-over-limit line, -1 when there is none
+    sections_at: dict = field(default_factory=dict)  # name -> (heading line, last non-blank line)
 
     def by_id(self):
         return {e.id: e for e in self.entries}
@@ -140,30 +146,47 @@ def empty_lessons(preamble):
     return '\n'.join(body).rstrip('\n') + '\n'
 
 
+MAX_DIGITS = 9   # ids, PR numbers, counts: anything longer is a broken file, never a Python error
+
+
+def _int(digits, n, what):
+    if len(digits) > MAX_DIGITS:
+        raise LessonsError(f'line {n}: {what} has more than {MAX_DIGITS} digits')
+    return int(digits)
+
+
+def held_like(line):
+    """A line meant as the held-over-limit line, well-formed or not: an HTML comment naming it."""
+    return line.startswith(HELD_PREFIX) or (line.lstrip().startswith('<!--') and 'held-over-limit' in line)
+
+
 def parse(text):
+    """Parse a lessons file; anything malformed is a LessonsError (never another exception),
+    so the runner can tell a broken baseline from a failed run."""
     lines = text.split('\n')
     marker = next((i for i, line in enumerate(lines) if NEXT_ID.match(line)), None)
     if marker is None:
         raise LessonsError('missing <!-- next-id: N --> marker (old-format lessons file?)')
     for n, line in enumerate(lines[:marker], 1):
-        if line.startswith(HELD_PREFIX):
+        if held_like(line):
             # Caught here, before the model call: strip_held would otherwise hide it and the
             # preamble check would reject the model's output instead (one attempt wasted).
             raise LessonsError(f'line {n}: held-over-limit line above next-id: {line[:80]!r}; {HELD_FIX}')
     preamble = '\n'.join(lines[:marker]).strip('\n')
-    next_id = int(NEXT_ID.match(lines[marker])[1])
+    next_id = _int(NEXT_ID.match(lines[marker])[1], marker + 1, 'next-id')
     entries, section, current, seen_sections, held, held_line = [], None, None, [], (), None
+    sections_at = {}
     for n, line in enumerate(lines[marker + 1:], marker + 2):
         if not line.strip():
             continue
-        if line.startswith(HELD_PREFIX):
+        if held_like(line):
             m = HELD.match(line)
             if section is not None or held_line is not None or not m:
                 where = ('given twice' if held_line is not None else
                          'inside a section' if section is not None else 'malformed')
                 raise LessonsError(f'line {n}: held-over-limit line {where}: {line[:80]!r}; {HELD_FIX}')
             held_line = n
-            held = tuple(int(x[1:]) for x in m[1].split())
+            held = tuple(_int(x[1:], n, 'held-over-limit line: an id') for x in m[1].split())
             if len(held) != len(set(held)):
                 raise LessonsError(f'line {n}: held-over-limit line lists an id twice; {HELD_FIX}')
             continue
@@ -172,11 +195,12 @@ def parse(text):
                 raise LessonsError(f'line {n}: unknown section {m[1]!r}')
             section, current = m[1], None
             seen_sections.append(section)
+            sections_at[section] = n - 1
             continue
         if m := ENTRY.match(line):
             if section is None:
                 raise LessonsError(f'line {n}: entry outside a section')
-            current = Entry(int(m[1]), section)
+            current = Entry(_int(m[1], n, 'entry id'), section, at=n - 1)
             entries.append(current)
             continue
         if current is None:
@@ -202,11 +226,14 @@ def parse(text):
                     dirs = tuple(d.strip() for d in s[3].split(' · '))
                     if not all(dirs):
                         raise LessonsError(f'L{current.id}: empty directory in {item!r}')
-                current.seen.append((int(s[1]), s[2], dirs))
-            if _on('count') and int(m[1]) != len(current.seen):
+                current.seen.append((_int(s[1], n, 'a sighting'), s[2], dirs))
+            if _on('count') and _int(m[1], n, 'Seen count') != len(current.seen):
                 raise LessonsError(f'[count] L{current.id}: says Seen {m[1]}× but lists {len(current.seen)}')
             continue
         raise LessonsError(f'line {n}: unexpected line in L{current.id}: {line[:60]!r}')
+    for e in entries:
+        e.end = _block_end(lines, e.at)
+    sections_at = {name: (k, _block_end(lines, k) - 1) for name, k in sections_at.items()}
     if tuple(seen_sections) not in (SECTIONS, SECTIONS + (DIRS,)):
         raise LessonsError(f'sections must be exactly {" / ".join(SECTIONS)} in that order'
                            f' (optionally followed by {DIRS})')
@@ -220,7 +247,22 @@ def parse(text):
             raise LessonsError(f'[dup_pr] L{e.id}: the same PR is counted twice')
         if e.id >= next_id:
             raise LessonsError(f'L{e.id}: id not below next-id {next_id}')
-    return Lessons(preamble, next_id, entries, seen_sections[-1:] == [DIRS], held)
+    return Lessons(preamble, next_id, entries, seen_sections[-1:] == [DIRS], held,
+                   marker_at=marker, held_at=-1 if held_line is None else held_line - 1,
+                   sections_at=sections_at)
+
+
+def _block_end(lines, at):
+    """One past the last non-blank line from heading `at` up to the next heading of its level
+    or above (an entry stops at `### ` or `## `, a section only at `## `). Only called on
+    positions after next-id, where every non-blank line was parsed as heading or entry text."""
+    stops = (lambda l: SECTION.match(l) or ENTRY.match(l)) if ENTRY.match(lines[at]) else SECTION.match
+    end, k = at + 1, at + 1
+    while k < len(lines) and not stops(lines[k]):
+        if lines[k].strip():
+            end = k + 1
+        k += 1
+    return end
 
 
 def _split_sightings(text):
@@ -529,30 +571,22 @@ def promotion_plan(old, new, max_chars):
     return plan, dropped
 
 
-def _block(lines, entry_id):
-    """(start, end) of entry `### L<id>`: its lines up to the next heading, trailing blanks excluded."""
-    # Found the way `parse` finds it (`### L01` is entry 1 too), never by spelling the heading.
-    start = next(k for k, line in enumerate(lines) if (m := ENTRY.match(line)) and int(m[1]) == entry_id)
-    end = start + 1
-    while end < len(lines) and not lines[end].startswith(('### ', '## ')):
-        end += 1
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1
-    return start, end
-
-
-def _move(lines, entry_id, section):
-    start, end = _block(lines, entry_id)
-    block = lines[start:end]
-    del lines[start:end]
-    if 0 < start < len(lines) and not lines[start - 1].strip() and not lines[start].strip():
-        del lines[start - 1]
-    elif start == len(lines) and start > 0 and not lines[start - 1].strip():
-        del lines[start - 1]
-    heading = next(k for k, line in enumerate(lines) if (m := SECTION.match(line)) and m[1] == section)
-    nxt = next((k for k in range(heading + 1, len(lines)) if lines[k].startswith('## ')), len(lines))
-    last = max(k for k in range(heading, nxt) if lines[k].strip())
+def _move(text, entry_id, section):
+    """`text` with entry `entry_id` moved to the end of `section`. Positions come from `parse`
+    of this very text — never from searching for a heading (a `### L1` or `## 硬规则` quoted in
+    the preamble is not the entry or the section)."""
+    lines = text.split('\n')
+    e = parse(text).by_id()[entry_id]
+    block = lines[e.at:e.end]
+    del lines[e.at:e.end]
+    if 0 < e.at < len(lines) and not lines[e.at - 1].strip() and not lines[e.at].strip():
+        del lines[e.at - 1]
+    elif e.at == len(lines) and e.at > 0 and not lines[e.at - 1].strip():
+        del lines[e.at - 1]
+    text = '\n'.join(lines)
+    last = parse(text).sections_at[section][1]
     lines[last + 1:last + 1] = [''] + block
+    return '\n'.join(lines)
 
 
 def place(old_text, new_text, *, mode, max_chars):
@@ -571,11 +605,11 @@ def place(old_text, new_text, *, mode, max_chars):
         return new_text, summary
     plan, dropped = promotion_plan(old, new, max_chars)
     new_ids = new.by_id()
-    lines = new_text.split('\n')
+    text = new_text
     for i, decision in sorted(plan.items()):
         want = target if decision == 'promote' else WATCH
         if new_ids[i].section != want:
-            _move(lines, i, want)
+            text = _move(text, i, want)
         chars = (i, rule_chars(new_ids[i]))
         if decision == 'hold':
             summary['still' if i in old.held else 'held'].append(chars)
@@ -583,23 +617,32 @@ def place(old_text, new_text, *, mode, max_chars):
             summary['late'].append(chars)
     summary['dropped'] = sorted(dropped.items())
     held = sorted(i for i, d in plan.items() if d == 'hold')
-    lines = [line for line in lines if not line.startswith(HELD_PREFIX)]
+    text = strip_held(text)
     if held:
-        marker = next(k for k, line in enumerate(lines) if NEXT_ID.match(line))
-        lines.insert(marker + 1, HELD_PREFIX + ''.join(f' L{i}' for i in held) + ' -->')
-    text = '\n'.join(lines)
+        lines = text.split('\n')
+        lines.insert(parse(text).marker_at + 1, HELD_PREFIX + ''.join(f' L{i}' for i in held) + ' -->')
+        text = '\n'.join(lines)
     return (new_text if text == new_text else text), summary
 
 
 def strip_held(text):
-    """The lessons without the held-over-limit line — what the model is shown."""
+    """The lessons without the held-over-limit line — what the model is shown. Removes the
+    one line `parse` found there (callers pass a text that parses); a text that does not
+    parse is returned as it is."""
+    try:
+        at = parse(text).held_at
+    except LessonsError:
+        return text
+    if at < 0:
+        return text
     lines = text.split('\n')
-    kept = [line for line in lines if not line.startswith(HELD_PREFIX)]
-    return text if len(kept) == len(lines) else '\n'.join(kept)
+    del lines[at]
+    return '\n'.join(lines)
 
 
 def has_held_line(text):
-    return any(line.startswith(HELD_PREFIX) for line in text.split('\n'))
+    """Whether a model output carries anything meant as the held-over-limit line."""
+    return any(held_like(line) for line in text.split('\n'))
 
 
 def summary_markdown(summary):

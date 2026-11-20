@@ -168,7 +168,7 @@ def rule_max_chars():
     # zeros); tests/project_config_retro_test.py runs one batch of values through both entries.
     if not re.fullmatch(r'0|[1-9][0-9]{0,5}', value) or int(value) > lessons_format.RULE_MAX_CHARS_LIMIT:
         raise SystemExit(f'RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to '
-                         f'{lessons_format.RULE_MAX_CHARS_LIMIT}, not {value!r}')
+                         f'{lessons_format.RULE_MAX_CHARS_LIMIT} written without leading zeros, not {value!r}')
     return int(value)
 
 
@@ -249,7 +249,7 @@ def baseline(text):
         if 'held-over-limit' in str(error):
             # A human edit broke the program's line (GitHub#600): same wait, with the line named.
             raise NotReady(f'lessons file has a broken held-over-limit line: {error}')
-        raise NotReady('lessons file is not in the counted-lessons format yet')
+        raise NotReady(f'lessons file is not in the counted-lessons format yet ({error})')
     return text
 
 

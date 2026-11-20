@@ -174,6 +174,50 @@ class Limit(base.Sandbox):
         self.assertEqual((job['attempts'], len(self.model_calls())), (0, calls))
         self.assertIn('held-over-limit line above next-id', job['error'])
 
+    def again(self, n):
+        """Run the same queued job once more, as if its hourly retry time had come."""
+        job = self.read_job(n)
+        job['retry_after'] = 0
+        (self.queue / f'pr-{n}.json').write_text(json.dumps(job) + '\n')
+        self.assertEqual(self.run_round(), 0, self.out)
+        return self.read_job(n)
+
+    def test_坏标记行跨轮反复遇到都不计次_改好后同一任务跑完(self):
+        bad = {
+            '编号过长': '<!-- held-over-limit: L' + '9' * 4301 + ' -->',
+            '写法不对': '<!--held-over-limit: L1-->',
+            '挪到声明行上面': None,
+        }
+        for how, line in bad.items():
+            with self.subTest(how=how):
+                self.tearDown(); self.setUp()
+                good = lessons(301, seen=3, held='<!-- held-over-limit: L1 -->')
+                broken = (good.replace('<!-- held-over-limit: L1 -->', line) if line else
+                          good.replace('<!-- held-over-limit: L1 -->\n', '').replace(
+                              '<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->'))
+                self.publish(broken)
+                job = self.round(expect='pending')
+                n = self.n - 1
+                for _ in range(2):
+                    self.assertEqual((job['status'], job['attempts'], len(self.model_calls())), ('pending', 0, 0))
+                    self.assertIn('held-over-limit line', job['error'])
+                    self.assertRegex(job['error'], r'line \d+')
+                    job = self.again(n)
+                self.publish(good)
+                job = self.again(n)
+                self.assertEqual((job['status'], job['attempts'], len(self.model_calls())), ('done', 0, 1), self.out)
+                self.assertEqual(self.landed().held, (1,))
+
+    def test_序言里举例的标题不挡补升_序言原样推上去(self):
+        example = '说明。\n\n举例：\n\n```\n## 硬规则\n### L1\n- 规则：示例\n```'
+        text = lessons(300, seen=3, held='<!-- held-over-limit: L1 -->').replace('说明。', example)
+        self.publish(text)
+        job = self.round()
+        self.assertEqual(job['attempts'], 0)
+        got = self.landed()
+        self.assertEqual((got.by_id()[1].section, got.held), ('硬规则', ()))
+        self.assertTrue(self.on_origin(LESSONS).startswith('# 项目复盘经验\n\n' + example + '\n\n<!-- next-id: 2 -->\n'))
+
     def test_挡着期间仍超长就继续等(self):
         self.publish(lessons(301, seen=3, held='<!-- held-over-limit: L1 -->'))
         self.round()
@@ -226,7 +270,7 @@ class Limit(base.Sandbox):
             with self.subTest(bad=bad):
                 self.extra_cfg = [f'RETROSPECTIVE_RULE_MAX_CHARS={bad}']
                 self.assertNotEqual(self.run_round(), 0)
-                self.assertIn(f"RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to 100000, not '{bad}'",
+                self.assertIn(f"RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to 100000 written without leading zeros, not '{bad}'",
                               self.out)
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual((self.gh_calls(), self.model_calls()), ([], []))

@@ -1054,17 +1054,27 @@ class RuleLimitParseTest(Case):
 
     def test_标记行写坏_重复_放进段里_重复编号都解析失败并写明哪一行(self):
         base = doc(watch=[entry(1, 'x', [(4, None)])])
-        bad = {
-            'malformed': base.replace('<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: 1 -->'),
-            'given twice': held(held(base, 1), 1),
-            'inside a section': base.replace('## 观察中\n', '## 观察中\n<!-- held-over-limit: L1 -->\n'),
-            'lists an id twice': held(base, 1, 1),
-            'above next-id': base.replace('<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->'),
-        }
-        for why, text in bad.items():
+        bad = [
+            ('malformed', base.replace('<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: 1 -->')),
+            ('malformed', base.replace('<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!--held-over-limit: L1-->')),
+            ('given twice', held(held(base, 1), 1)),
+            ('inside a section', base.replace('## 观察中\n', '## 观察中\n<!-- held-over-limit: L1 -->\n')),
+            ('lists an id twice', held(base, 1, 1)),
+            ('above next-id', base.replace('<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->')),
+            (': an id has more than 9 digits', held(base, 1).replace(' L1 -->', ' L' + '9' * 4301 + ' -->')),
+        ]
+        for why, text in bad:
             with self.subTest(why=why):
-                with self.assertRaisesRegex(rl.LessonsError, rf'line \d+: held-over-limit line {why}'):
+                with self.assertRaisesRegex(rl.LessonsError, rf'line \d+: held-over-limit line ?{why}'):
                     rl.parse(text)
+
+    def test_过长的数字一律是格式错误_不是程序异常(self):
+        base = doc(watch=[entry(1, 'x', [(4, None)])])
+        for text in (base.replace('### L1', '### L' + '1' * 4301),
+                     base.replace('<!-- next-id: 2 -->', '<!-- next-id: ' + '9' * 4301 + ' -->'),
+                     base.replace('Seen 1×: #4', 'Seen 1×: #' + '4' * 4301)):
+            with self.assertRaisesRegex(rl.LessonsError, 'more than 9 digits'):
+                rl.parse(text)
 
     def test_字数是三栏原文的字符数_不含前缀_缺的栏算零(self):
         e = rl.parse(doc(watch=[entry(1, '一二三', [(4, None)], applies=None, why='四五')])).by_id()[1]
@@ -1166,6 +1176,15 @@ class RuleLimitTest(Case):
         self.assertEqual(rl.parse(text).by_id()[1].section, '硬规则')
         self.assertIn('### L01', text)
         self.assertEqual(self.check(old, text), [])
+
+    def test_序言里举例的条目标题和段标题不会被当成真的_序言原样保留(self):
+        pre = PRE + '\n举例：\n\n```\n## 硬规则\n### L1\n- 规则：示例\n```\n'
+        old = held(doc(watch=[long_entry(1, 300, three())], pre=pre), 1)
+        text, summary = self.place(old, rl.strip_held(old))
+        got = rl.parse(text)
+        self.assertEqual((got.by_id()[1].section, got.held, got.preamble), ('硬规则', (), rl.parse(old).preamble))
+        self.assertEqual(self.check(old, text), [])
+        self.assertEqual(summary['late'], [(1, 300)])
 
     def test_解析不了的输出原样交给校验(self):
         self.assertEqual(self.place(doc(), 'garbage')[0], 'garbage')

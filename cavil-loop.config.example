@@ -885,7 +885,8 @@ RETROSPECTIVE_PROMOTION="auto"
 # human shortens it, or raises the limit, the next retrospective promotes it.
 # Delete an id from that line to keep the entry in 观察中 for good. Entries already in
 # 硬规则 / 待确认 are never measured. 0 = no limit; an empty value = 300. Anything but
-# an integer from 0 to 100000 stops the retrospective before it reads its queue.
+# an integer from 0 to 100000 in plain decimal (no sign, no leading zeros) stops the
+# retrospective before it reads its queue.
 RETROSPECTIVE_RULE_MAX_CHARS=300
 # 目录经验 (directory lessons, GitHub#152 / #168): pitfalls that only bite in one part
 # of the code, kept in a `## 目录经验` section at the end of lessons.md; every sighting
