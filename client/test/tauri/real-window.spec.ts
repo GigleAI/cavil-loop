@@ -13,8 +13,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
+import { serveRecordingsAt, startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { WebDriver, until } from './webdriver';
+
+// GitHub#572 / #590: the recordings as of today, as the UI tests' bridge serves them. The real app keeps a
+// closed item only while it changed in the last 14 days, so as recorded (2026-11-05) the closed #138 every
+// test here opens left the board on 11-19 and both tests stopped before their first detail.
+serveRecordingsAt(Date.now());
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const APP = process.env.CAVIL_TAURI_APP ?? join(root, 'src-tauri', 'target', 'debug', 'cavil-loop-client');
