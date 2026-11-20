@@ -297,6 +297,16 @@ function CellEditor({ item, col, projects, options, disabled, today, act, close,
   );
 }
 
+/** GitHub#587: what a repository line's "+" hands the new-issue dialog: a group of that repository with no rows */
+function blankGroup(repo: string): Group {
+  return { key: `repo:${repo.toLowerCase()}`, title: repo, subtitle: null, current: false, empty: false, preset: { by: 'repo', repo }, column: null, section: null, rows: [] };
+}
+
+/** GitHub#587: the table draws at least one repository line (then "no matching items" is not said again) */
+function hasBlank(table: Table): boolean {
+  return Boolean(table.blankRepo) || (table.repos ?? []).some((r) => r.groups.length === 0) || table.groups.some((g) => g.rows.length === 0 && g.preset.by === 'repo');
+}
+
 /**
  * `onOpen`: a click anywhere in a row's title cell opens the item's detail panel, the same as clicking a card on the board (GitHub#257).
  * `onNewInGroup`: a group's "+" (GitHub#214); `canCreate` false greys it (offline, no sources).
@@ -473,6 +483,45 @@ export function TableView({
     </th>
   );
 
+  /**
+   * GitHub#587: the line a repository source with nothing to show gets — in its section, its group
+   * (grouped by repository) or the table of the one picked repository — whatever the grouping, with
+   * its own "+" (the group's "+" row is not drawn without a grouping). Never read: said, no "+".
+   */
+  const blankLine = (repo: string, unread: boolean, named: boolean, pad: number) => (
+    <tr className="repo-blank" data-testid="repo-blank" data-repo={repo} data-unread={unread ? 'yes' : undefined}>
+      <td colSpan={cols.length + 1} style={{ paddingLeft: pad }}>
+        {named && (
+          <>
+            <b>
+              <Verbatim from="github">{repo}</Verbatim>
+            </b>
+            {' · '}
+          </>
+        )}
+        <span className="muted" data-testid="repo-blank-text">
+          {unread
+            ? named
+              ? t('还没读到，读到之后才知道有没有条目')
+              : t('这个仓库还没读到，读到之后才知道有没有条目')
+            : named
+              ? t('没有要显示的 issue / PR')
+              : t('这个仓库没有要显示的 issue / PR')}
+        </span>
+        {!unread && onNewInGroup && (
+          <>
+            {' '}
+            <button className="link" data-testid="repo-blank-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(blankGroup(repo))}>
+              {t('＋ 新建 issue')}
+            </button>
+          </>
+        )}
+      </td>
+    </tr>
+  );
+  /** the count a repository / its group shows: "—" when its source was never read (GitHub#587) */
+  const countOf = (n: number, unread: boolean | undefined) => (unread ? <span title={t('还没读到，条目数未知')}>—</span> : n);
+
   /** `repo`: the repository heading this group sits under ("all repositories"); null = no repository layer */
   const groupBody = (g: Group, repo: string | null) => {
     const inRepo = repo !== null;
@@ -496,7 +545,7 @@ export function TableView({
             <b>
               <GroupTitle g={g} />
             </b>{' '}
-            <span className="count" data-testid="group-count">{g.rows.length}</span>
+            <span className="count" data-testid="group-count">{countOf(g.rows.length, g.unread)}</span>
             {g.current && <span className="current" data-testid="group-current">{t('当前')}</span>}
             {g.subtitle && <span className="small muted"> {g.subtitle}</span>}
           </td>
@@ -593,7 +642,8 @@ export function TableView({
             })}
           </tr>
         ))}
-      {tb.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && (
+      {!folded.has(g.key) && g.rows.length === 0 && g.preset.by === 'repo' && blankLine(g.preset.repo, Boolean(g.unread), false, inRepo ? REPO_ROW_BASE : ROW_BASE)}
+      {tb.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && g.rows.length > 0 && (
         <tr className="group-add">
           <td colSpan={cols.length + 1}>
             <button className="link" data-testid="group-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(g)}>
@@ -665,7 +715,7 @@ export function TableView({
               onClick={() => api().setView({ table: { slice: s.value } })}
               {...repoDrag.props(s.value)}
             >
-              <span className="slice-name"><Verbatim from="github">{s.value}</Verbatim></span> <span className="count" data-testid="slice-count">{s.count}</span>
+              <span className="slice-name"><Verbatim from="github">{s.value}</Verbatim></span> <span className="count" data-testid="slice-count">{countOf(s.count, s.unread)}</span>
             </button>
             <RepoWebLink repo={s.value} />
             </div>
@@ -701,17 +751,25 @@ export function TableView({
                         <button className="link" data-testid="repo-toggle" aria-label={folded.has(r.key) ? t('展开这个仓库') : t('收起这个仓库')}>
                           {folded.has(r.key) ? '▸' : '▾'}
                         </button>{' '}
-                        <Icon name="repo" size={16} /> <b><Verbatim from="github">{r.title}</Verbatim></b> <span className="count" data-testid="repo-count">{r.itemCount}</span>
+                        <Icon name="repo" size={16} /> <b><Verbatim from="github">{r.title}</Verbatim></b> <span className="count" data-testid="repo-count">{countOf(r.itemCount, r.unread)}</span>
                         <RepoWebLink repo={r.title} />
                       </td>
                     </tr>
                   </tbody>
-                  {!folded.has(r.key) && groupList(r.groups, r.title)}
+                  {!folded.has(r.key) &&
+                    (r.groups.length === 0 ? (
+                      <tbody className="in-repo" data-testid="repo-blank-body" data-key={r.key}>
+                        {blankLine(r.title, Boolean(r.unread), false, 32)}
+                      </tbody>
+                    ) : (
+                      groupList(r.groups, r.title)
+                    ))}
                 </Fragment>
               ))
             : groupList(table.groups, null)}
+          {table.blankRepo && <tbody data-testid="repo-blank-body">{blankLine(table.blankRepo.repo, Boolean(table.blankRepo.unread), true, 12)}</tbody>}
         </table>
-        {table.itemCount === 0 && <div className="center muted" data-testid="table-empty">{t('没有符合条件的条目')}</div>}
+        {table.itemCount === 0 && !hasBlank(table) && <div className="center muted" data-testid="table-empty">{t('没有符合条件的条目')}</div>}
       </div>
     </div>
   );

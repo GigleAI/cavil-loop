@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTable, GROUP_NONE_KEY, iterationRange, type Group, type Table } from '../../src/data/table';
+import { buildTable, GROUP_NONE_KEY, iterationRange, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
 import { buildBoard, iterationColumnKey } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
@@ -323,6 +323,123 @@ describe('"all repositories": repository first, then the chosen grouping inside 
 
   it('nothing left after filtering: no sections', () => {
     expect(buildTable([], [A, B], ALL(), TODAY)).toMatchObject({ repos: [], groups: [], itemCount: 0 });
+  });
+});
+
+describe('GitHub#587: a repository source with nothing to show keeps its place in the table', () => {
+  // sources as typed in Settings: x/app and X/LIB have items (X/LIB differs from GitHub's "x/lib" only in case),
+  // x/new was read and has none, x/wait was never read
+  const SRC: RepoSource[] = [
+    { repo: 'x/app', read: true },
+    { repo: 'X/LIB', read: true },
+    { repo: 'x/new', read: true },
+    { repo: 'x/wait', read: false },
+  ];
+  const ALL = (patch: Partial<TableSettings> = {}) => T({ sliceByRepo: true, slice: null, ...patch });
+  const build = (settings: TableSettings, items = board(), sources: readonly RepoSource[] = SRC, order: string[] = []) =>
+    buildTable(items, [A, B], settings, TODAY, false, order, items, sources);
+
+  it('the slice list: every source once, whatever the case of its name; 0 for a read one, unknown for one never read', () => {
+    expect(build(ALL()).slices).toEqual([
+      { value: 'x/app', count: 5 },
+      { value: 'x/lib', count: 2 },
+      { value: 'x/new', count: 0 },
+      { value: 'x/wait', count: 0, unread: true },
+    ]);
+    // two spellings of one repository on items are one entry too (GitHub's spelling, the first seen)
+    expect(buildTable([item('x/Lib', 1), item('x/lib', 2)], [], ALL(), TODAY).slices).toEqual([{ value: 'x/Lib', count: 2 }]);
+  });
+
+  for (const groupBy of ['iteration', 'status', 'milestone', 'none'] as const) {
+    it(`"all repositories", grouped by ${groupBy}: an empty section per such source, in the repository order`, () => {
+      const t = build(ALL({ groupBy }));
+      expect(t.repos!.map((r) => [r.key, r.title, r.itemCount, r.groups.length > 0, r.unread ?? false])).toEqual([
+        ['repo:x/app', 'x/app', 5, true, false],
+        ['repo:x/lib', 'x/lib', 2, true, false],
+        ['repo:x/new', 'x/new', 0, false, false],
+        ['repo:x/wait', 'x/wait', 0, false, true],
+      ]);
+      // the sections with items are exactly what they were without the sources
+      expect(t.repos!.slice(0, 2)).toEqual(build(ALL({ groupBy }), board(), []).repos);
+      expect(t.groups).toEqual(t.repos!.flatMap((r) => r.groups));
+      expect(t.itemCount).toBe(7);
+    });
+
+    it(`one empty repository picked, grouped by ${groupBy}: no rows, the table names the repository`, () => {
+      const t = build(ALL({ groupBy, slice: 'X/NEW' }));
+      // (without a grouping the one group "全部" is there, as before, with no rows)
+      expect(t).toMatchObject({ repos: null, itemCount: 0, blankRepo: { repo: 'x/new' } });
+      expect(t.groups.flatMap((g) => g.rows)).toEqual([]);
+      expect(build(ALL({ groupBy, slice: 'x/wait' })).blankRepo).toEqual({ repo: 'x/wait', unread: true });
+      // a picked repository with items, or one that is no source: no such line
+      expect(build(ALL({ groupBy, slice: 'x/lib' })).blankRepo).toBeUndefined();
+      expect(build(ALL({ groupBy, slice: 'x/gone' })).blankRepo).toBeUndefined();
+    });
+  }
+
+  it('grouped by repository (slicing on or off): an empty group per such source, carrying that repository for "+"', () => {
+    for (const sliceByRepo of [false, true]) {
+      const t = build(ALL({ groupBy: 'repo', sliceByRepo }));
+      expect(t.groups.map((g) => [g.key, g.title, g.rows.length, g.preset, g.unread ?? false])).toEqual([
+        ['repo:x/app', 'x/app', 5, { by: 'repo', repo: 'x/app' }, false],
+        ['repo:x/lib', 'x/lib', 2, { by: 'repo', repo: 'x/lib' }, false],
+        ['repo:x/new', 'x/new', 0, { by: 'repo', repo: 'x/new' }, false],
+        ['repo:x/wait', 'x/wait', 0, { by: 'repo', repo: 'x/wait' }, true],
+      ]);
+    }
+  });
+
+  it('the saved repository order places them, as every other repository list', () => {
+    const order = ['x/wait', 'x/lib', 'x/new'];
+    expect(build(ALL(), board(), SRC, order).repos!.map((r) => r.title)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+    expect(build(ALL(), board(), SRC, order).slices!.map((s) => s.value)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+    expect(build(ALL({ groupBy: 'repo' }), board(), SRC, order).groups.map((g) => g.title)).toEqual(['x/wait', 'x/lib', 'x/new', 'x/app']);
+  });
+
+  it('a search that hides every item of a repository: the repository still has its place', () => {
+    const t = buildTable([], [A, B], ALL(), TODAY, false, [], board(), SRC);
+    expect(t.repos!.map((r) => [r.title, r.groups.length, r.unread ?? false])).toEqual([
+      ['x/app', 0, false],
+      ['X/LIB', 0, false],
+      ['x/new', 0, false],
+      ['x/wait', 0, true],
+    ]);
+    expect(t.itemCount).toBe(0);
+  });
+
+  it('no repository layer (slicing off, grouped by anything but repository): nothing added', () => {
+    for (const groupBy of ['iteration', 'status', 'milestone', 'none'] as const) expect(build(T({ groupBy }))).toEqual(build(T({ groupBy }), board(), []));
+  });
+
+  it('every source has items: the table is the one built without sources, in every layout', () => {
+    const covered: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: false }];
+    for (const groupBy of ['iteration', 'status', 'milestone', 'repo', 'none'] as const)
+      for (const patch of [{ sliceByRepo: false }, { sliceByRepo: true }, { sliceByRepo: true, slice: 'x/lib' }]) {
+        const settings = ALL({ groupBy, ...patch });
+        expect(build(settings, board(), covered), `${groupBy} ${JSON.stringify(patch)}`).toEqual(build(settings, board(), []));
+      }
+  });
+
+  it('which sources count: repository sources shown on the board; read = has a snapshot', () => {
+    const sources = [
+      parseSource('x/app')!,
+      parseSource('https://github.com/orgs/x/projects/1')!,
+      parseSource('X/New')!,
+      parseSource('x/off')!,
+    ];
+    const times = [
+      { sourceKey: 'repo:x/app', readAt: 1 },
+      { sourceKey: 'repo:x/new', readAt: null },
+    ];
+    expect(repoSources(sources, null, times)).toEqual([
+      { repo: 'x/app', read: true },
+      { repo: 'X/New', read: false },
+      { repo: 'x/off', read: false },
+    ]);
+    expect(repoSources(sources, ['repo:x/app', 'project:org/x/1', 'repo:x/new'], times)).toEqual([
+      { repo: 'x/app', read: true },
+      { repo: 'X/New', read: false },
+    ]);
   });
 });
 

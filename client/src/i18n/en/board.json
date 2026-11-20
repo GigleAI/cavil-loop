@@ -156,6 +156,11 @@
   "Issue 已合并": "Issue merged",
   "点一下修改": "Click to change",
   "＋ 新建 issue": "+ New issue",
+  "这个仓库没有要显示的 issue / PR": "No issues or PRs to show in this repository",
+  "这个仓库还没读到，读到之后才知道有没有条目": "This repository has not been read yet; whether it has items is known once it is",
+  "没有要显示的 issue / PR": "no issues or PRs to show",
+  "还没读到，读到之后才知道有没有条目": "not read yet; whether it has items is known once it is",
+  "还没读到，条目数未知": "Not read yet: the number of items is unknown",
   "已收起 {n} 组 · 共 {rows} 条": {
     "one": "{n} group collapsed · items: {rows}",
     "other": "{n} groups collapsed · items: {rows}"

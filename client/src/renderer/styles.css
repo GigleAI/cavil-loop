@@ -1107,3 +1107,9 @@ button.reread-busy, button.reread-busy:hover:not(:disabled) { background: var(--
 .label-setup-table { border-collapse: collapse; }
 .label-setup-table td { padding: 2px 12px 2px 0; vertical-align: middle; }
 .label-setup-table td:nth-child(-n + 2) { white-space: nowrap; }
+
+/* GitHub#587: a repository source with nothing to show keeps a line of its own, with its own "+" */
+table.items tr.repo-blank td { padding-top: 10px; padding-bottom: 10px; }
+table.items tr.repo-blank .link { color: var(--muted); margin-left: 8px; }
+table.items tr.repo-blank .link:hover:not(:disabled) { color: var(--fg); }
+table.items tr.repo-blank .link:disabled { opacity: 0.5; cursor: default; }
