@@ -1228,6 +1228,49 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
+### 每个已合并 PR 的平均 AI 与测试耗时（估算，GitHub#593）
+
+`scripts/pr-time-stats.py` 把一段时间内合并的每个 PR 的 AI 耗时和测试耗时加起来：数据来自上面的 footer、
+本机 `tests/run.sh` 测试流水和 GitHub Actions。只读：只读 GitHub（用 `gh` 当前登录的身份）和测试流水，
+不写任何地方。
+
+```bash
+python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
+    --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop 写评论的账号> \
+    [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--no-cache] [--json]
+```
+
+- 算哪些 PR：在 `[--since, --until]` 合并（默认从本机测试流水开始记的 2026-11-07 到今天）、创建不早于
+  `--since`、也没有早于它的 footer。
+- 读哪些评论：PR 自己的，加上它对应 issue 的。对应 issue 用 daemon 同一条规则找：分支名
+  `BRANCH_PREFIX<N>` → 正文第一处 `Closes / Fixes / Resolves / Refs #N` → PR 号本身。只认机器人账号发的
+  footer；loop 账号名不以 `-bot` 结尾时用 `--bot-login` 指定。几个已合并 PR 对到同一个 issue 时，issue 上的
+  评论和测试运行按各 PR 的合并时刻切开（标「共用工作树」）。
+- 各栏：AI（footer 的 `ai_secs` 相加）；单跑（footer 的 `adhoc_secs` 相加——footer 只记合计，分不出种类）；
+  `tests/run.sh` 的运行从流水按参数分：冒烟（只跑 `smoke`）、快速（`--quick`）、按种类（`--kind`）、相关改动
+  （按名字跑几个文件或 `--changed-from`）、全部（不带挑选条件）、其他；`Tests` 工作流的 CI 每次尝试按汇总
+  那一步印的挑选方式分（全量 / 只跑改动够得着的 / 未知），`Client` 工作流单列；本地小计、CI 小计（各次尝试
+  取并集）、测试总耗时。「完整测试」= 带负对照的整套运行（维护者在 #593 的定义），只有每晚的 `Negative controls`
+  工作流在主干上这么跑、不属于某个 PR：这一栏为 0，报告另列它每次运行多久——只算「负对照那一步」自己真的跑了的那几次
+  （shell 分片、autopilot、客户端三种作业都按步骤判断；跑红的照实计入）。只做了准备就收尾的运行（不在主干上的
+  手动运行、定时运行发现同一个提交上次已经跑绿），以及准备步骤失败、负对照那一步没开始的运行，整条运行照样显示
+  完成或失败，都不算进去、单列为「没真跑」；作业或步骤读不到、负对照那一步被取消或状态认不出的，也不算、单列，
+  下次重读。发版流水线和客户端完整测试
+  单列为「其他主干测试」，不算完整测试。
+- **这是估算**（维护者在 #593 选定）：footer 的数值直接相加、不跨派工去重，同一 agent 在同一工作树上两轮
+  派工时间重叠时，重叠段算两次（标「派工重叠」）；本地和 CI 也是直接相加。footer 的测试字段带不确定标记
+  （读取失败、认不出的命令、未计时、未关联）时照常计入，标「测试记录不全」（是下限）。没有 footer 的 PR 没有
+  AI 值，本地小计和测试总耗时也记「未知」（缺单跑那部分），`tests/run.sh` 各栏和 CI 照给；某条 footer 缺
+  `ai_secs` 时这个 PR 的 AI 记「未知」——都不当 0 进平均。每栏的平均都写明各自的
+  计入个数，各栏平均不能相加。
+- 读 GitHub 或流水失败、列表没读全，命令以退出码 2 结束，不出报告。`--no-ci-selection` 不读 CI 日志
+  （`Tests` 的尝试全部记「挑选方式未知」）。
+- **请求量**：每个 PR 读一两页评论，`Tests` 每次尝试再读两次（作业列表、汇总那一步的日志）。2026-11-07…19
+  合并的 176 个 PR 约 1000 次请求，占 `gh` 当前登录账号每小时额度的五分之一；这个账号可能就是 daemon 轮询用的
+  那个（2026-11-20 一小时内跑了几遍就把额度用光了）。跑完的尝试的起止和挑选方式存在
+  `$XDG_CACHE_HOME/cavil-loop/pr-time-stats-<仓库>.json`（不会再变），重跑只读评论和列表；读失败的不存。
+  报告末尾写明这次发了几次请求。`--no-cache` 不用缓存。
+
 ## GitHub 令牌脱敏（GitHub#342）
 
 worker 的环境里有 GitHub 令牌。agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头），随后落进长期保留的文件。daemon 分三处处理，匹配规则只有一份（`scripts/redact_tokens.py`）：
