@@ -41,7 +41,6 @@ test.afterEach(async () => {
 test.afterAll(closeEngine);
 
 const lines = () => (existsSync(env.opened) ? readFileSync(env.opened, 'utf8').split('\n').filter(Boolean) : []);
-const times = (line: string) => lines().filter((l) => l === line).length;
 
 async function signIn(page: Page) {
   await page.getByTestId('oauth-settings-toggle').click();
@@ -64,11 +63,18 @@ async function frameOf(page: Page, testid: string): Promise<Frame> {
   return (await page.getByTestId(testid).elementHandle())!.contentFrame() as Promise<Frame>;
 }
 
-/** clicked once in the given frame: recorded with its source, opened exactly once, never through the shell */
-async function handedOn(url: string, via: 'frame' | 'preview') {
-  await expect.poll(() => times(`${via}-link ${url}`), { timeout: 10_000 }).toBe(1);
-  expect(times(url)).toBe(1);
-  expect(lines().filter((l) => l.startsWith('shell-') && l.endsWith(` ${url}`))).toEqual([]);
+/**
+ * One click and what the record of opened addresses gained by it, from one snapshot taken before the
+ * click: the source line and the address, in that order, and nothing else (no second opening, no
+ * fallback). Compared whole only once the expected lines are there and a quiet spell has passed.
+ */
+async function handedOn(click: () => Promise<void>, url: string, via: 'frame' | 'preview') {
+  const before = lines().length;
+  await click();
+  const added = () => lines().slice(before);
+  await expect.poll(() => added().includes(`${via}-link ${url}`) && added().includes(url), { timeout: 10_000 }).toBe(true);
+  await new Promise((r) => setTimeout(r, 800));
+  expect(added()).toEqual([`${via}-link ${url}`, url]);
 }
 
 test('GitHub#590: web links in the discussion and the reply preview are handed to the browser by the page itself; other links and other senders are not', async () => {
@@ -87,17 +93,12 @@ test('GitHub#590: web links in the discussion and the reply preview are handed t
   const appUrl = page.url();
 
   // a GitHub link and a link to another site: plain click
-  await frame.locator('#gh').click();
-  await handedOn(GH, 'frame');
-  await frame.locator('#site').click();
-  await handedOn(SITE, 'frame');
+  await handedOn(() => frame.locator('#gh').click(), GH, 'frame');
+  await handedOn(() => frame.locator('#site').click(), SITE, 'frame');
   // ⌘ + click (macOS), Ctrl + click (Windows / Linux), the middle button
-  await frame.locator('#meta').click({ modifiers: ['Meta'] });
-  await handedOn(META, 'frame');
-  await frame.locator('#ctrl').click({ modifiers: ['Control'] });
-  await handedOn(CTRL, 'frame');
-  await frame.locator('#middle').click({ button: 'middle' });
-  await handedOn(MIDDLE, 'frame');
+  await handedOn(() => frame.locator('#meta').click({ modifiers: ['Meta'] }), META, 'frame');
+  await handedOn(() => frame.locator('#ctrl').click({ modifiers: ['Control'] }), CTRL, 'frame');
+  await handedOn(() => frame.locator('#middle').click({ button: 'middle' }), MIDDLE, 'frame');
 
   // not web addresses: nothing reaches the browser; a place on the page (a footnote) is scrolled to
   const before = lines().length;
@@ -132,8 +133,7 @@ test('GitHub#590: web links in the discussion and the reply preview are handed t
   expect(bodyEntry).not.toBe('');
   const render = await frame.evaluate(() => document.body.getAttribute('data-render'));
   await preview.evaluate(([e, r]) => parent.postMessage({ cavil: 'edit', entry: e, render: r }, '*'), [bodyEntry, render]);
-  await preview.locator('a').click();
-  await handedOn(PREVIEW, 'preview');
+  await handedOn(() => preview.locator('a').click(), PREVIEW, 'preview');
   await expect(previewEl).toBeVisible();
   await expect(detail.getByTestId('edit-input')).toHaveCount(0);
   expect(page.url()).toBe(appUrl);

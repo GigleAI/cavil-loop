@@ -50,10 +50,11 @@ struct SystemOpener {
     record: Option<PathBuf>,
 }
 
-/// Test mode only: one line appended to the record of opened addresses.
+/// Test mode only: lines appended to the record of opened addresses, all in one write (a reader never
+/// sees a source line without the address that goes with it).
 fn record_line(record: &PathBuf, line: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(record).map_err(|e| e.to_string())?;
-    writeln!(file, "{line}").map_err(|e| e.to_string())
+    file.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 /// GitHub#590, test mode only: which of the shell's two fallbacks handed an address on
@@ -85,11 +86,11 @@ impl Opener for SystemOpener {
     }
 
     /// GitHub#590: in test mode a clicked frame link also says which frame (`frame-link <url>` /
-    /// `preview-link <url>`), on a line before the address — only the window, after checking the
-    /// message came from that frame, can produce it.
+    /// `preview-link <url>`), on the line before the address and in the same write — only the window,
+    /// after checking the message came from that frame, can produce it.
     async fn open_link(&self, url: &str, via: &str) -> Result<(), String> {
         if let Some(f) = &self.record {
-            record_line(f, &format!("{via}-link {url}"))?;
+            return record_line(f, &format!("{via}-link {url}\n{url}"));
         }
         self.open(url).await
     }
