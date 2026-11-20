@@ -80,7 +80,13 @@ ENTRY = re.compile(r'^### L(\d+)$')
 FIELD = re.compile(r'^- (规则|适用|为什么|这样做是对的)：(.+)$')
 SEEN = re.compile(r'^- Seen (\d+)×:(.*)$')
 SIGHTING = re.compile(r'^#(\d+)(?: (https://\S+))?(?: \[([^\[\]]*)\])?$')
-HELD_PREFIX = '<!-- held-over-limit:'
+HELD_PREFIX = '<!-- held-over-limit:'   # what the program writes
+# Which lines are the program's line, well-formed or not: an HTML comment opening at the start
+# of the line, optional blanks, then the tag and a colon. The one identity rule, used by the
+# parser, the model-output check, the prompt trim here and `lessons_for_prompt` in _lib.sh
+# (`/^<!--[[:blank:]]*held-over-limit:/`, same bytes in the C locale). A comment that merely
+# mentions the name is ordinary text.
+HELD_TAG = re.compile(r'^<!--[ \t]*held-over-limit:')
 # Zero ids is allowed: a human deleting the last id from the line leaves `<!-- held-over-limit: -->`.
 HELD = re.compile(r'^<!-- held-over-limit:((?: L\d+)*) -->$')
 HELD_FIX = ('expected one line `<!-- held-over-limit: L12 L34 -->` right under next-id '
@@ -156,8 +162,8 @@ def _int(digits, n, what):
 
 
 def held_like(line):
-    """A line meant as the held-over-limit line, well-formed or not: an HTML comment naming it."""
-    return line.startswith(HELD_PREFIX) or (line.lstrip().startswith('<!--') and 'held-over-limit' in line)
+    """A line meant as the held-over-limit line, well-formed or not (see HELD_TAG)."""
+    return HELD_TAG.match(line) is not None
 
 
 def parse(text):
@@ -356,7 +362,7 @@ def prompt_text(text):
             skip = section == DIRS or (counted and section == WATCH)
         if skip:
             continue
-        if counted and line.startswith(HELD_PREFIX):
+        if counted and held_like(line):
             continue
         if PROMPT_ENTRY.match(line):
             in_entry = True

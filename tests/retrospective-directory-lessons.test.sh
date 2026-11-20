@@ -195,6 +195,9 @@ printf '<!-- next-id: 1 -->\n' > "$F/counted-empty.md"
 # 复盘程序的「超长待升」行（GitHub#600）：两边都去掉；CRLF 下同样
 printf '前言\n\n<!-- next-id: 3 -->\n<!-- held-over-limit: L1 L2 -->\n\n## 硬规则\n\n### L2\n- 规则：H\n\n## 观察中\n\n### L1\n- 规则：W\n' > "$F/counted-held.md"
 printf '前言\r\n<!-- next-id: 3 -->\r\n<!-- held-over-limit: L1 -->\r\n## 硬规则\r\n' > "$F/counted-held-crlf.md"
+# 同一套「是不是那一行」的认法（GitHub#600 复审第 3 轮）：普通注释留着；写坏的、挪错位置的、编号过长的也是那一行，去掉
+printf '前言\n<!-- 维护说明：held-over-limit 的例子写在文档里 -->\n\n<!-- next-id: 3 -->\n<!--held-over-limit: L1-->\n\n## 硬规则\n\n### L2\n- 规则：H\n' > "$F/counted-held-variants.md"
+printf '前言\n<!--\theld-over-limit: L1 -->\n<!-- next-id: 3 -->\n<!-- held-over-limit: L%s -->\n## 硬规则\n' "$(printf '9%.0s' $(seq 1 60))" > "$F/counted-held-misplaced.md"
 # 非计次格式（没有 next-id）：「- Seen」「这样做是对的」「## 观察中」都是普通文本，原样
 printf '# 手写经验\n\n### L1\n- Seen 3×: 普通文本\n- 这样做是对的：也是普通文本\n\n## 观察中\n- 留着\n' > "$F/freeform.md"
 printf '<!-- next-id: x -->\n## 观察中\n- 留着\n' > "$F/bad-next-id.md"
@@ -224,6 +227,8 @@ chk "中间一段切掉后下一段保留" "$(cat "$F/middle.md.sh")" "$(printf 
 chk "非计次格式的手写经验原样输出" "$(cmp -s "$F/freeform.md" "$F/freeform.md.sh" && echo same)" "same"
 chk "next-id 不是数字的不算计次格式" "$(cmp -s "$F/bad-next-id.md" "$F/bad-next-id.md.sh" && echo same)" "same"
 chk "超长待升那一行不进派工说明" "$(cat "$F/counted-held.md.sh" "$F/counted-held-crlf.md.sh" | grep -c 'held-over-limit')" "0"
+chk "普通注释留着、写法不对的那一行去掉" "$(cat "$F/counted-held-variants.md.sh")" "$(printf '前言\n<!-- 维护说明：held-over-limit 的例子写在文档里 -->\n\n<!-- next-id: 3 -->\n\n## 硬规则\n\n### L2\n- 规则：H\n\n%s' "$LESSONS_PROMPT_NOTE")"
+chk "挪到声明行上面的、编号过长的也去掉" "$(grep -c 'held-over-limit' "$F/counted-held-misplaced.md.sh")" "0"
 chk "去掉那一行后与没有它的文件相同" "$(cat "$F/counted-held.md.sh")" "$(printf '前言\n\n<!-- next-id: 3 -->\n\n## 硬规则\n\n### L2\n- 规则：H\n\n%s' "$LESSONS_PROMPT_NOTE")"
 chk "CRLF 计次文件也裁掉了观察中和出现记录" "$(grep -c 'WATCH\|^- Seen' "$F/counted-crlf.md.sh")" "0"
 chk "单独 \r 换行的计次文件也裁掉了" "$(grep -c 'WATCH\|^- Seen' "$F/counted-lone-cr.md.sh")" "0"

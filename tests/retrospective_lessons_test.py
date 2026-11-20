@@ -1068,6 +1068,19 @@ class RuleLimitParseTest(Case):
                 with self.assertRaisesRegex(rl.LessonsError, rf'line \d+: held-over-limit line ?{why}'):
                     rl.parse(text)
 
+    def test_只有行首注释紧跟标记名才算那一行_普通注释照常(self):
+        for line, want in (('<!-- held-over-limit: L1 -->', True), ('<!--held-over-limit: L1-->', True),
+                           ('<!--\theld-over-limit:', True), ('<!-- held-over-limit:x', True),
+                           ('<!-- 维护说明：held-over-limit 的例子 -->', False),
+                           ('<!-- Maintenance note: keep held-over-limit examples -->', False),
+                           ('  <!-- held-over-limit: L1 -->', False), ('held-over-limit: L1', False)):
+            self.assertEqual(rl.held_like(line), want, line)
+        pre = PRE + '\n<!-- Maintenance note: keep held-over-limit examples in the docs. -->\n'
+        text = doc(watch=[entry(1, 'x', [(4, None)])], pre=pre)
+        self.assertEqual(rl.parse(text).held, ())
+        self.assertIn('Maintenance note', rl.prompt_text(text))
+        self.assertFalse(rl.has_held_line(text))
+
     def test_过长的数字一律是格式错误_不是程序异常(self):
         base = doc(watch=[entry(1, 'x', [(4, None)])])
         for text in (base.replace('### L1', '### L' + '1' * 4301),

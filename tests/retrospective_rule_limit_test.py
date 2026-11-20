@@ -208,6 +208,15 @@ class Limit(base.Sandbox):
                 self.assertEqual((job['status'], job['attempts'], len(self.model_calls())), ('done', 0, 1), self.out)
                 self.assertEqual(self.landed().held, (1,))
 
+    def test_序言里只提到标记名的普通注释不挡复盘_原样保留(self):
+        note = '说明。\n<!-- Maintenance note: keep held-over-limit examples in the docs. -->'
+        self.publish(lessons(301).replace('说明。', note))
+        job = self.round()
+        self.assertEqual((job['attempts'], len(self.model_calls())), (0, 1))
+        got = self.landed()
+        self.assertEqual((got.by_id()[1].section, got.held), ('观察中', (1,)))
+        self.assertIn(note + '\n\n<!-- next-id: 2 -->\n<!-- held-over-limit: L1 -->\n', self.on_origin(LESSONS))
+
     def test_序言里举例的标题不挡补升_序言原样推上去(self):
         example = '说明。\n\n举例：\n\n```\n## 硬规则\n### L1\n- 规则：示例\n```'
         text = lessons(300, seen=3, held='<!-- held-over-limit: L1 -->').replace('说明。', example)
