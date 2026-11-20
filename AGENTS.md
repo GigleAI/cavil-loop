@@ -425,15 +425,21 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   median 10.4 min over 67 finished runs, varying from 3 to 30 min with the load other workers put on it.
   A local copy only adds to that load. Locally run
   `bash tests/run.sh --quick` and the files the change touches (`bash tests/run.sh NAME...` or
-  `bash tests/NAME.test.sh`), plus the area tests listed below. Which checks a PR gets is decided by
-  the path filters in `.github/workflows/tests.yml` and `client.yml` (they are the source; this is a summary): a change
-  outside `client/` (or touching `client/test/tauri/mutations.sh`) starts `Tests`, a change under
-  `client/` (or to the client workflow and its setup) starts `Client`, and a mixed change starts both.
-  `Tests` (check **测试**) runs the whole shell suite unless every changed file is a leaf file (docs, a
-  test file — next bullet), where it runs only what those files can reach. So a reviewer reads every
-  check `gh pr checks <PR>` lists for the PR — all of them, both when both ran — never asks the worker
-  for a local full run and never reruns one; a red check is a rejection like a red
-  local test, and a check still running is reported as such, never as passed. Files listed in
+  `bash tests/NAME.test.sh`), plus the area tests listed below. **This paragraph is the one place
+  that says which checks a PR gets**; `review.extra.md` and `CONTRIBUTING` only point at the checks
+  list, and the source of truth is the `paths` filters of `.github/workflows/tests.yml` and
+  `client.yml` plus `tests/run.sh`'s selection (next bullet). `Tests` (check **测试**) starts for any
+  changed path outside `client/`, and for `client/test/tauri/mutations.sh`; it runs the whole shell
+  suite unless every changed file is a leaf file (docs, a test file — next bullet), where it runs only
+  what those files can reach. `Client` starts for any changed path under `client/`, and for its own
+  workflow and `.github/actions/client-setup/`. A mixed change starts both; a change under `client/`
+  only starts `Client` alone (unless it touches `client/test/tauri/mutations.sh`); on a push to `main`
+  the same path filters apply, and `Tests` then never selects. A reviewer reads the verdict from
+  `gh pr checks <PR>`, every row it lists, in three states: **failed** (any failed or cancelled row) is
+  a rejection like a red local test; **still running** is reported as such, never as passed;
+  **skipped** rows are jobs the workflow does not run on a pull request by design (the dmg, Windows
+  installer, client full tests, size gate and publish jobs of `Client`) and are never a reason to
+  reject or to wait. The reviewer never asks the worker for a local full run and never reruns one. Files listed in
   `tests/ci-exclude.txt` are the exception — CI cannot run them, so when a change touches what they
   test, run them locally. This is a rule about what agents choose to run, so no lint or test checks it
 - **A docs / test-file-only PR runs only what it can reach** (GitHub#495). On a pull request every
@@ -566,8 +572,8 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 | When | Default regression | Negative controls | Mac packaging + Mac checks |
 |---|---|---|---|
 | Worker develops, hands on, reworks (local) | `--quick` + the part the change touches; never the whole suite (GitHub#593) | **not run** | not run |
-| Reviewer (local) | reruns the relevant part when needed; never the whole suite — the verdict is every check the PR got (测试, `Client`, whichever ran) | **not run, and not asked of the worker** | not run |
-| PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
+| Reviewer (local) | reruns the relevant part when needed; never the whole suite — the verdict is `gh pr checks` (failed / still running / skipped by design) | **not run, and not asked of the worker** | not run |
+| PR CI, every push | the checks the changed paths start (see "The whole suite runs on CI" above): `Tests` — the whole shell suite, or only what the change can reach when every changed file is a leaf file — and / or `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
 | `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only**, signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215) |
 | `Client` on a `client/v*` tag, or called by `Release` for the weekly client release (GitHub#576) | quick + full tests | not run | run, arm64 and x64; a red one means no client Release (never holds the daemon's) |
 | `Client` weekly (Sunday 16:40 UTC) | quick + full tests | not run | run, **arm64 only**, so a packaging breakage shows up within a week |
