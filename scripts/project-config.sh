@@ -153,7 +153,9 @@ while IFS= read -r line || [ -n "$line" ]; do
         *) F_DEF+=("$c4"); F_EMPTY+=("$c4") ;;
     esac
     F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
-    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")"); F_TIER+=("$(trim "${c9:-}")")
+    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
+    # 层级是一个词，去掉全部空白即可，不再为它起一个子进程（81 行各一次，PR #596 复审第 3 轮实测慢了约 1 成）
+    c9="${c9:-}"; F_TIER+=("${c9//[[:space:]]/}")
 done < "$FIELDS_FILE"
 # F_EARLY = 这一项的早期名字（_names.sh 的 CAVIL_SETTING_EARLY_NAMES，daemon 加载时按同一张表挑值），没有就是空
 F_EARLY=()
