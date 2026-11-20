@@ -4,6 +4,8 @@
 
 > **English** · [中文](README.zh.md)
 
+> **A lightweight multi-agent parallel scheduler built on GitHub issues and PRs.**
+>
 > Send AI a batch of issues, async-review the PRs it ships — like working with a real teammate.
 >
 > Turn "babysitting AI step-by-step" into "sleep on it, review the PRs in the morning."
@@ -16,7 +18,7 @@ Cavil is the Cylon from *Battlestar Galactica* who says "I don't want to be huma
 
 | | What it is | What it needs | Start here |
 |---|---|---|---|
-| **The daemon** | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
+| **The daemon** | A background poller on your machine: label an issue `pending/agent` and a local AI agent picks it up, writes the design and the PR, and reports back on GitHub. Everything below this table is about it, except the client screenshots under "What it is" and the "Client" section. | `git`, `gh`, `tmux`, `jq`, `flock`, an agent CLI; Linux or macOS | [Quick start](#quick-start) |
 | **The Cavil Loop desktop client** | A GitHub issue / PR client that works on its own: issues together with their linked PRs, grouped by iteration / milestone, and a dependency graph of issues (across repositories). It can also install the daemon and hand items to it. | A GitHub account and a Mac or a Windows PC — no daemon, no GitHub Project, no command-line tools | [Client guide](docs/client.md) |
 
 Each one works without the other, and they work best together.
@@ -25,7 +27,16 @@ Each one works without the other, and they work best together.
 
 ![create issues and review PRs from AI agent in github](./docs/github_project.png)
 
-A GitHub-label-driven workflow for **AI coding agents** (Claude Code / OpenCode / Codex / your own). Installed as an [Agent Skill](https://agentskills.io/home) on your machine — runs a 60-second background poller that watches your repos for label triggers, dispatches a local AI worker in an isolated git worktree to do design / coding / review work, and posts everything back as GitHub comments + PR commits.
+A **lightweight multi-agent parallel scheduler built on GitHub issues and PRs** (Claude Code / OpenCode / Codex / your own driver): putting the agreed label on an issue dispatches it, a local AI agent picks it up to do the design / coding / review work, and everything is posted back as GitHub comments + PR commits. Separate work items run at the same time, each in its own git worktree and branch, without blocking one another; the PR an issue later opens carries on in that issue's work item rather than starting another one.
+
+"Lightweight" means it is just a scheduled poller on your machine plus GitHub: installed as an [Agent Skill](https://agentskills.io/home), it polls GitHub every 60 seconds in the background — no server, no database, no new web UI to learn.
+
+To see every item in one window, add the desktop client (it also works on its own, see [Client](#client-desktop-board)):
+
+| Board | Table | Dependency graph |
+|---|---|---|
+| ![Board: columns by status, each PR under the issue it links to](docs/client-screens/board.png) | ![Table: items grouped, cells editable in place](docs/client-screens/table.png) | ![Dependency graph: parent issues as boxes, blocking as arrows](docs/client-screens/graph.png) |
+| Issues together with their linked PRs, in columns by status / iteration / milestone | Grouped by repository / iteration / status, sub-issues indented with their progress | Parent issues as boxes around their sub-issues, blocking as arrows, across repositories |
 
 Three things you should know up front:
 
@@ -232,9 +243,7 @@ The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue /
 - **Changes** sent straight to GitHub: labels, iteration, status, milestone, replies, new issues, closing and merging; details float over the board or open as tabs.
 - **With the daemon** (optional): install it and connect a repository from Settings, hand an item to the agent or put it on autopilot with one button, and get a system notification when something lands on `pending/human`.
 
-| Board | Table | Dependency graph |
-|---|---|---|
-| ![Board](docs/client-screens/board.png) | ![Table](docs/client-screens/table.png) | ![Dependency graph](docs/client-screens/graph.png) |
+Screenshots of the three views are under [What it is](#what-it-is) above.
 
 You sign in through the browser (GitHub's device flow); the credential goes into the macOS keychain (on Windows: Windows Credential Manager). By default the client talks only to GitHub (`api.github.com`, `github.com` and GitHub's own avatar, image, file and release-download addresses); Tailscale machines are contacted only when you use the remote-daemon settings: opening the "add remote daemon" window asks every online device on your tailnet whether its remote entry is open, pairing talks to the one machine you picked, and afterwards only paired machines are contacted — always over HTTPS to `*.ts.net` names, never with a GitHub credential (details in the [client guide](docs/client.md#network-credentials-and-offline-use)). When it installs or connects the daemon, it runs the daemon's own scripts and a few fixed `git` / `systemctl` / `launchctl` commands on this machine; the window can send only fixed requests, the back end checks every argument, and the client's credential is never handed to the daemon, which keeps using `gh`'s own sign-in.
 
