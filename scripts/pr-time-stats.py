@@ -570,9 +570,52 @@ def workflow_durations(repo, wf, since_s, until):
     return stat(durs) or {"n": 0}
 
 
+NC_TEST_JOB = re.compile(r"negative controls (?!summary$)")   # 真正跑负对照的作业；summary 只汇总
+
+
+def nc_ran(repo, run):
+    """这次负对照运行有没有真的跑负对照：ran / skipped / unknown。
+    工作流在「不是主干的手动运行」或「上次成功已覆盖同一个提交」时只跑完准备那一步，负对照作业全部跳过，
+    整条运行照样 completed——这种不算完整测试。作业列表读不到、没读全、认不出作业 = unknown，不猜。"""
+    att = run.get("run_attempt") or 1
+    key = f"nc:{run['id']}:{att}"
+    if key in CACHE:
+        return CACHE[key]
+    try:
+        d = gh(f"repos/{repo}/actions/runs/{run['id']}/attempts/{att}/jobs?per_page=100")
+    except Fail:
+        return "unknown"
+    jobs = d.get("jobs")
+    if not isinstance(jobs, list) or d.get("total_count") != len(jobs):
+        return "unknown"
+    tests = [j for j in jobs if NC_TEST_JOB.match(j.get("name") or "")]
+    concl = [j.get("conclusion") for j in tests]
+    if not tests or any(c is None for c in concl):
+        return "unknown"
+    v = "skipped" if all(c == "skipped" for c in concl) else "ran"
+    CACHE[key] = v
+    return v
+
+
+def full_runs(repo, since_s, until):
+    """完整测试 = 负对照工作流里真的跑了负对照的那几次（跑红的也算，照实计时）。"""
+    runs = [r for r in ci_runs(repo, FULL_WORKFLOW, since_s)
+            if r.get("status") == "completed" and ts(r.get("created_at")) < until]
+    kinds = {"ran": [], "skipped": 0, "unknown": 0}
+    for r in runs:
+        k = nc_ran(repo, r)
+        if k == "ran":
+            kinds["ran"].append(ts(r.get("updated_at")) - ts(r.get("run_started_at") or r.get("created_at")))
+        else:
+            kinds[k] += 1
+    out = stat(kinds["ran"]) or {"n": 0}
+    out.update(skipped=kinds["skipped"], unknown=kinds["unknown"])
+    return out
+
+
 def full_reference(repo, since_s, since, until):
-    """(完整测试 = 负对照工作流每次运行, {其他主干测试工作流: 每次运行})"""
-    return (workflow_durations(repo, FULL_WORKFLOW, since_s, until),
+    """(完整测试 = 真的跑了负对照的那几次运行, {其他主干测试工作流: 每次运行})"""
+    return (full_runs(repo, since_s, until),
             {wf: workflow_durations(repo, wf, since_s, until) for wf in OTHER_WORKFLOWS})
 
 
@@ -624,6 +667,9 @@ def render(res):
     L += ["", "标注：" + "，".join(f"{k} {v} 个" for k, v in s["flagged"].items()), "",
           "「完整测试」= 带负对照的整套运行，只在主干上每晚跑，不属于某个 PR（每 PR 一栏为 0）：", ""]
     L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(FULL_WORKFLOW, res["full_tests"])])
+    ft = res["full_tests"]
+    if ft.get("skipped") or ft.get("unknown"):
+        L += ["", f"另有 {ft.get('skipped', 0)} 次只做了准备、负对照全部跳过，{ft.get('unknown', 0)} 次读不到作业结果，都没算进上表。"]
     L += ["", "其他主干测试参考（不是完整测试，也不进每 PR）：", ""]
     L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(wf, st) for wf, st in res["other_main_tests"].items()])
     L += [""] + md_table([h for h, _ in PR_COLS], [[f(r) for _, f in PR_COLS] for r in res["prs"]])

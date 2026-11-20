@@ -1557,7 +1557,10 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   and of the `Client` workflow; local subtotal, CI subtotal (union of attempts) and total. "Full
   tests" means the whole suite run with negative controls (the maintainer's definition in #593),
   which only the nightly `Negative controls` workflow does, on `main`, never per PR: that column is 0
-  and the report lists that workflow's run times. The release workflow and the client's full tests
+  and the report lists that workflow's run times — only runs whose negative-control jobs really ran
+  (a red one counts as it is). A run that only did its preparation step (a manual run off `main`, or a
+  scheduled run that found the same commit already green) skips every such job yet still completes;
+  it is left out and counted separately, and so is a run whose job list cannot be read. The release workflow and the client's full tests
   are listed separately as "other tests on main", not as full tests.
 - **It is an estimate** (the maintainer's choice in #593): footer values are added up without
   de-duplication, so when two dispatches of the same agent on one worktree overlap in time, the

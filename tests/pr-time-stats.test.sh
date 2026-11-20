@@ -160,9 +160,20 @@ client_runs = [run(200, [10], 1, "2026-11-11T02:00:00Z", "2026-11-11T02:04:00Z",
 put(f"repos/{R}/actions/workflows/client.yml/runs?created=%3E%3D2026-10-08&event=pull_request&per_page=100&page=1",
     {"total_count": 1, "workflow_runs": client_runs})
 # 完整测试参考
+# 完整测试 = 真的跑了负对照的运行：300 跑过（绿）、301 跑过（红，也算、照实计时）、
+# 302 只做了准备（负对照作业全部 skipped，整条运行照样 completed）、303 作业列表读不到
 put(f"repos/{R}/actions/workflows/negative-controls.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1",
-    {"total_count": 2, "workflow_runs": [run(300, [], 1, "2026-11-10T18:10:00Z", "2026-11-10T19:10:00Z", "main"),
-                                          run(301, [], 1, "2026-11-11T18:10:00Z", "2026-11-11T20:10:00Z", "main")]})
+    {"total_count": 4, "workflow_runs": [run(300, [], 1, "2026-11-10T18:10:00Z", "2026-11-10T19:10:00Z", "main"),
+                                          run(301, [], 1, "2026-11-11T18:10:00Z", "2026-11-11T20:10:00Z", "main", concl="failure"),
+                                          run(302, [], 1, "2026-11-12T18:10:00Z", "2026-11-12T18:13:00Z", "main"),
+                                          run(303, [], 1, "2026-11-13T18:10:00Z", "2026-11-13T21:10:00Z", "main")]})
+def nc_jobs(concls):
+    names = ["plan", "negative controls 1/4", "negative controls autopilot 1/6", "negative controls client", "negative controls summary"]
+    jobs = [{"id": i, "name": n, "conclusion": c} for i, (n, c) in enumerate(zip(names, concls))]
+    return {"total_count": len(jobs), "jobs": jobs}
+put(f"repos/{R}/actions/runs/300/attempts/1/jobs?per_page=100", nc_jobs(["success"] * 5))
+put(f"repos/{R}/actions/runs/301/attempts/1/jobs?per_page=100", nc_jobs(["success", "success", "failure", "success", "failure"]))
+put(f"repos/{R}/actions/runs/302/attempts/1/jobs?per_page=100", nc_jobs(["success", "skipped", "skipped", "skipped", "success"]))
 put(f"repos/{R}/actions/workflows/release.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1", {"total_count": 0, "workflow_runs": []})
 put(f"repos/{R}/actions/workflows/client.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1",
     {"total_count": 2, "workflow_runs": [{**run(400, [], 1, "2026-11-10T16:40:00Z", "2026-11-10T17:40:00Z", "main"), "event": "schedule"},
@@ -251,7 +262,8 @@ eq("【7】AI 平均只用 #10 #12 #13：(180+60+70)/3", round(s["ai"]["stat"]["
 eq("【7】AI 中位数 70、分母 3、未计入 2", (s["ai"]["stat"]["median"], s["ai"]["stat"]["n"], s["ai"]["excluded"]), (70.0, 3, 2))
 eq("【7】测试总耗时分母 4、未计入 1（#11 没 footer）；CI 小计分母 5", (s["test_total"]["stat"]["n"], s["test_total"]["excluded"], s["ci_total"]["stat"]["n"]), (4, 1, 5))
 eq("【7】标注计数", s["flagged"], {"派工重叠": 1, "测试记录不全": 1, "共用工作树": 2})
-eq("完整测试 = 只算负对照工作流：2 次、平均 90 分钟", (d["full_tests"]["n"], d["full_tests"]["mean"]), (2, 5400.0))
+eq("完整测试 = 真的跑了负对照的 2 次（红的也算）、平均 90 分钟；只做准备的 1 次、作业读不到的 1 次不算、单列",
+   (d["full_tests"]["n"], d["full_tests"]["mean"], d["full_tests"]["skipped"], d["full_tests"]["unknown"]), (2, 5400.0, 1, 1))
 eq("其他主干测试单列：发版 0 次、客户端只算定时那 1 次", (d["other_main_tests"]["release.yml"]["n"], d["other_main_tests"]["client.yml"]["n"]), (0, 1))
 eq("流水读不懂的行计数 1", d["runs_log_bad_lines"], 1)
 PY
@@ -282,7 +294,7 @@ PY
 )
 if [ "$(head -1 <<<"$bad")" = "tables=4" ] && [ "$(sed -n 2p <<<"$bad")" = "" ]; then echo "  ✅ 报告 4 张表，表头、分隔行、数据行列数都一致"; pass=$((pass+1))
 else echo "  ❌ 表格：$bad"; fail=$((fail+1)); fi
-grep -q "其他主干测试参考（不是完整测试" "$SB/out.md" && ! grep -q "| release.yml |.*完整" "$SB/out.md" && { echo "  ✅ 发版 / 客户端单列为其他主干测试"; pass=$((pass+1)); } || { echo "  ❌ 没有单列其他主干测试"; fail=$((fail+1)); }
+grep -q "另有 1 次只做了准备、负对照全部跳过，1 次读不到作业结果" "$SB/out.md" && grep -q "其他主干测试参考（不是完整测试" "$SB/out.md" && ! grep -q "| release.yml |.*完整" "$SB/out.md" && { echo "  ✅ 发版 / 客户端单列为其他主干测试；完整测试跳过 / 读不到的次数写在报告里"; pass=$((pass+1)); } || { echo "  ❌ 没有单列其他主干测试"; fail=$((fail+1)); }
 
 echo "【3】--no-ci-selection：不读日志，挑选方式记未知"
 : > "$SB/gh/calls.log"
@@ -303,11 +315,12 @@ if [ "$v1" = "1 0" ] && [ "$v2" = "0 1" ] && [ "$reread" = 1 ]; then echo "  ✅
 else echo "  ❌ 第一次「$v1」第二次「$v2」重读 $reread 次"; fail=$((fail+1)); fi
 : > "$SB/gh/calls.log"
 run_stats --json > "$SB/c3.json" 2>/dev/null
-n=$(grep -cE '/logs$|/jobs\?|/attempts/[0-9]+$' "$SB/gh/calls.log")
+n=$(grep -E '/logs$|/jobs\?|/attempts/[0-9]+$' "$SB/gh/calls.log" | grep -cv 'runs/303/')
+retry=$(grep -c 'runs/303/attempts/1/jobs' "$SB/gh/calls.log")
 same=$(python3 -c 'import json,sys
 a,b=(json.load(open(f)) for f in sys.argv[1:]); a.pop("gh_calls"); b.pop("gh_calls"); print(a==b)' "$SB/c2.json" "$SB/c3.json")
-if [ "$n" = 0 ] && [ "$same" = True ]; then echo "  ✅ 第三次：CI 尝试、作业、日志一次都没再读，结果相同"; pass=$((pass+1))
-else echo "  ❌ 第三次还读了 $n 次；结果相同：$same"; fail=$((fail+1)); fi
+if [ "$n" = 0 ] && [ "$retry" = 1 ] && [ "$same" = True ]; then echo "  ✅ 第三次：已缓存的 CI 尝试、作业、日志一次都没再读，只重读了上次读不到的那个作业列表，结果相同"; pass=$((pass+1))
+else echo "  ❌ 第三次还读了 $n 次已缓存的、重读读不到的 $retry 次；结果相同：$same"; fail=$((fail+1)); fi
 calls=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gh_calls"])' "$SB/c3.json")
 if [ "$calls" = "$(wc -l < "$SB/gh/calls.log")" ]; then echo "  ✅ 报告的请求数 $calls = 假 gh 收到的请求数"; pass=$((pass+1))
 else echo "  ❌ 报告 $calls 次，假 gh 收到 $(wc -l < "$SB/gh/calls.log") 次"; fail=$((fail+1)); fi
