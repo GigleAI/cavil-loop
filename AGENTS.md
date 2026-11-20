@@ -418,18 +418,21 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
 
 - **The whole suite runs on CI, not on the dev box** (GitHub#593). Workers and reviewers do not run
   `bash tests/run.sh` without unit names (nor `--ci`, a `--shard`, or `--kind` over every kind) locally.
-  The two take about as long (median 8.3 min over 241 first attempts of `Tests` on pull requests that
-  passed and whose summary log says "Selection: full run", against 10.4 min over 67 finished local runs
-  of `tests/run.sh` with no unit names, 2026-11-07 to 11-19; local runs vary from 3 to 30 min with the
-  load other workers put on the machine), and a local copy only adds to that load. Locally run
+  The two take about as long, measured 2026-11-07 to 11-19 (#603): `Tests` on pull requests, first
+  attempt, passed — median 8.4 min over 240 runs, of which 82 have "Selection: full run" in the summary
+  log (median 8.3) and 158 were created before PR #504 added the selection (no selection line; the
+  workflow then always ran everything; median 8.8); `tests/run.sh` with no unit names on this machine —
+  median 10.4 min over 67 finished runs, varying from 3 to 30 min with the load other workers put on it.
+  A local copy only adds to that load. Locally run
   `bash tests/run.sh --quick` and the files the change touches (`bash tests/run.sh NAME...` or
-  `bash tests/NAME.test.sh`), plus the area tests listed below. What CI runs on a PR: `Tests` (check
-  **测试**) runs the whole shell suite, except when every changed file is a leaf file (docs, a test
-  file — next bullet), where it runs only what those files can reach, which is by design the whole of
-  what such a change can break; a PR that only touches `client/` does not start `Tests` at all and its
-  check is `Client`; every push to `main` runs the whole suite. So a reviewer reads the verdict from the
-  checks the PR actually got (`gh pr checks <PR>`) — 测试 for the shell tests, `Client` for `client/` —
-  never asks the worker for a local full run and never reruns one; a red check is a rejection like a red
+  `bash tests/NAME.test.sh`), plus the area tests listed below. Which checks a PR gets is decided by
+  the path filters in `.github/workflows/tests.yml` and `client.yml` (they are the source; this is a summary): a change
+  outside `client/` (or touching `client/test/tauri/mutations.sh`) starts `Tests`, a change under
+  `client/` (or to the client workflow and its setup) starts `Client`, and a mixed change starts both.
+  `Tests` (check **测试**) runs the whole shell suite unless every changed file is a leaf file (docs, a
+  test file — next bullet), where it runs only what those files can reach. So a reviewer reads every
+  check `gh pr checks <PR>` lists for the PR — all of them, both when both ran — never asks the worker
+  for a local full run and never reruns one; a red check is a rejection like a red
   local test, and a check still running is reported as such, never as passed. Files listed in
   `tests/ci-exclude.txt` are the exception — CI cannot run them, so when a change touches what they
   test, run them locally. This is a rule about what agents choose to run, so no lint or test checks it
@@ -563,7 +566,7 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 | When | Default regression | Negative controls | Mac packaging + Mac checks |
 |---|---|---|---|
 | Worker develops, hands on, reworks (local) | `--quick` + the part the change touches; never the whole suite (GitHub#593) | **not run** | not run |
-| Reviewer (local) | reruns the relevant part when needed; the whole suite is read from the PR's 测试 check, not rerun | **not run, and not asked of the worker** | not run |
+| Reviewer (local) | reruns the relevant part when needed; never the whole suite — the verdict is every check the PR got (测试, `Client`, whichever ran) | **not run, and not asked of the worker** | not run |
 | PR CI, every push | `Tests` (all shell tests; not when only `client/` changed) + `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
 | `Client` on a push to `main` | quick tests only (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run, **arm64 only**, signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215) |
 | `Client` on a `client/v*` tag, or called by `Release` for the weekly client release (GitHub#576) | quick + full tests | not run | run, arm64 and x64; a red one means no client Release (never holds the daemon's) |
