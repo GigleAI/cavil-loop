@@ -447,6 +447,55 @@ describe('GitHub#587: a repository source with nothing to show keeps its place i
     ]);
   });
 
+  it('PR #594 review round 2: a repository whose only row is a sub-issue pulled in under a matched parent is not "nothing to show"', () => {
+    // the search matches x/app#1 only; its sub-issue x/lib#5 did not match and comes in under it (show hierarchy)
+    const parent = item('x/app', 1, { title: 'parent' });
+    const child = item('x/lib', 5, { title: 'child', parent: 'x/app#1' });
+    const src: RepoSource[] = [{ repo: 'x/app', read: true }, { repo: 'x/lib', read: true }, { repo: 'x/new', read: true }];
+    const run = (patch: Partial<TableSettings>) => buildTable([parent], [], ALL({ hierarchy: true, ...patch }), TODAY, false, [], [parent, child], src);
+    const sections = run({ groupBy: 'milestone' });
+    // the child really is drawn, as a pulled row under its parent (otherwise this case tests nothing)
+    const appRows = sections.repos!.find((r) => r.title === 'x/app')!.groups.flatMap((g) => g.rows);
+    expect(appRows.map((r) => [r.item.key, r.depth, r.pulled])).toEqual([
+      ['x/app#1', 0, false],
+      ['x/lib#5', 1, true],
+    ]);
+    expect(sections.repos!.map((r) => [r.title, r.groups.length > 0])).toEqual([
+      ['x/app', true],
+      ['x/new', false],
+    ]);
+    for (const sliceByRepo of [true, false]) {
+      const byRepo = run({ groupBy: 'repo', sliceByRepo });
+      expect(byRepo.groups.map((g) => [g.title, g.rows.map((r) => r.item.key)])).toEqual([
+        ['x/app', ['x/app#1', 'x/lib#5']],
+        ['x/new', []],
+      ]);
+    }
+    // the search counts keep their meaning: one match, one pulled row; the slice list counts matches only
+    expect(sections).toMatchObject({ itemCount: 1, matchCount: 1, pulledCount: 1 });
+    expect(sections.slices).toEqual([
+      { value: 'x/app', count: 1 },
+      { value: 'x/lib', count: 0 },
+      { value: 'x/new', count: 0 },
+    ]);
+    // picking x/lib: nothing of its own matched, nothing is pulled into it — its line says so
+    expect(run({ groupBy: 'none', slice: 'x/lib' }).blankRepo).toEqual({ repo: 'x/lib' });
+  });
+
+  it('every way an item reaches the table counts: a placed PR and a pulled sub-issue together, in both layouts', () => {
+    const parent = item('x/app', 1, { title: 'parent' });
+    const pr = item('x/lib', 2, { title: 'pr', kind: 'pr', refIssues: ['x/app#1'] });
+    const child = item('x/doc', 3, { title: 'child', parent: 'x/app#1' });
+    const src: RepoSource[] = ['x/app', 'x/lib', 'x/doc', 'x/new'].map((repo) => ({ repo, read: true }));
+    for (const groupBy of ['milestone', 'repo'] as const) {
+      const t = buildTable([parent, pr], [], ALL({ hierarchy: true, groupBy }), TODAY, true, [], [parent, pr, child], src);
+      const drawn = new Set(t.groups.flatMap((g) => g.rows.map((r) => r.item.key)));
+      expect([...drawn].sort(), groupBy).toEqual(['x/app#1', 'x/doc#3', 'x/lib#2']);
+      const empty = groupBy === 'repo' ? t.groups.filter((g) => g.rows.length === 0).map((g) => g.title) : t.repos!.filter((r) => r.groups.length === 0).map((r) => r.title);
+      expect(empty, groupBy).toEqual(['x/new']);
+    }
+  });
+
   it('PR #594 review round 1: a folded run never adds an unknown count in as 0', () => {
     const t = build(ALL({ groupBy: 'repo' }), board(), [...SRC, { repo: 'x/wait2', read: false }]);
     const all = new Set(t.groups.map((g) => g.key));
