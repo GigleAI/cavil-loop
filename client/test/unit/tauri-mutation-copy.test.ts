@@ -10,17 +10,21 @@
 // push instead of in the nightly run.
 //
 // What counts as a read: `include_str!`, `include_bytes!`, `include!` (also with a `std::` /
-// `core::` path, whitespace or comments around `!`, and `(…)`, `[…]` or `{…}` delimiters) and
-// `#[path = "…"]` on a module. Text inside comments and string / char literals is not code. Reads
+// `core::` path, whitespace or comments around `!`, and `(…)`, `[…]` or `{…}` delimiters) and a
+// `path = "…"` inside any attribute (`#[path = …]`, `#![…]`, nested in `#[cfg_attr(…)]` whatever the
+// condition — an off condition is still checked, which errs on the strict side). Text inside comments and string / char literals is not code. Reads
 // inside `#[cfg(test)] mod … { }` are left out: `cargo build` never compiles them. Anything the
 // scan cannot resolve to one file — an argument that is not a plain string literal (`concat!`,
 // a macro variable; `env!("OUT_DIR")` is build output and allowed), a string with escapes, one of
 // these macros imported under another name — is reported as a problem, never skipped.
+// The last cases hold the scan against `rustc` itself: one-file crates that compile in their own tree,
+// where the compiler on the copy must fail exactly when the scan reports a problem.
 // Not covered: files read by build scripts (build.rs) or procedural macros (tauri's
 // generate_context! reads tauri.conf.json and dist/, which every entry provides on its own); a
 // plain build of the copy (PR #592) is the check for those.
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -160,12 +164,25 @@ function reads(file: string, s: string): Read[] {
     else if (/\benv\s*!\s*\(\s*"OUT_DIR"\s*\)/.test(arg)) continue; // build output, made by the copy's own build
     else out.push(at(x.index, x[1], { why: `参数不是能确定的单个路径：${arg}` }));
   }
-  const pathAttr = /#\s*!?\s*\[\s*path\s*=\s*"/g;
-  for (let x = pathAttr.exec(m); x; x = pathAttr.exec(m)) {
-    const q = x.index + x[0].length - 1;
-    const end = m.indexOf('"', q + 1);
-    const lit = literal(s.slice(q, end + 1));
-    out.push(at(x.index, '#[path]', lit === undefined ? { why: '路径写法读不懂' } : { target: resolve(dirname(file), lit) }));
+  // `path = "…"` anywhere inside an attribute: `#[path = …]`, `#![…]`, and nested in `cfg_attr(…)` —
+  // whatever the condition says (a read under a condition that is off is still checked: stricter, never looser)
+  const attr = /#\s*!?\s*\[/g;
+  for (let x = attr.exec(m); x; x = attr.exec(m)) {
+    const open = x.index + x[0].length - 1;
+    const close = closing(m, open);
+    if (close < 0) {
+      out.push(at(x.index, '#[…]', { why: '属性的括号不配对' }));
+      continue;
+    }
+    const key = /\bpath\s*=\s*/g;
+    const body = m.slice(0, close);
+    key.lastIndex = open + 1;
+    for (let k = key.exec(body); k; k = key.exec(body)) {
+      const v = k.index + k[0].length;
+      const tok = /^(?:r#*)?"_*"#*/.exec(m.slice(v, close));
+      const lit = tok ? literal(s.slice(v, v + tok[0].length)) : undefined;
+      out.push(at(k.index, 'path 属性', lit === undefined ? { why: '路径不是能确定的字符串' } : { target: resolve(dirname(file), lit) }));
+    }
   }
   const alias = /\b(include(?:_str|_bytes)?)\s+as\s+\w+/g;
   for (let x = alias.exec(m); x; x = alias.exec(m)) out.push(at(x.index, x[1], { why: '换了名字导入，扫描认不出用到它的地方' }));
@@ -278,4 +295,37 @@ describe('真实窗口负对照的副本带齐后台编译要读的文件（GitH
     for (const f of ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm9.rs', 'after-tests']) writeFileSync(join(work, 'src-tauri', f), 'x');
     expect(lines(scanCopy(work).problems).sort((a, b) => a - b)).toEqual([7, 8, 10]);
   });
+
+  // The scan against the compiler itself: each case is a one-file crate that compiles in its own tree;
+  // after the real copySources, `rustc` on the copy fails exactly when the scan reports a problem.
+  const CASES: { name: string; main: string; files: Record<string, string>; missing: boolean }[] = [
+    { name: '条件属性里的 path（复审第 2 轮的例子）', main: '#[cfg_attr(all(), path = "../gen/schema.rs")]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
+    { name: '套两层的条件属性', main: '#[cfg_attr(all(), cfg_attr(all(), path = "../gen/schema.rs"))]\nmod schema;\nfn main() { schema::f(); }', files: { 'src-tauri/gen/schema.rs': 'pub fn f() {}' }, missing: true },
+    { name: '原始字符串写的 path', main: '#[path = r"../target/m.rs"]\nmod m;\nfn main() { m::f(); }', files: { 'src-tauri/target/m.rs': 'pub fn f() {}' }, missing: true },
+    { name: '花括号的 include_str', main: 'const A: &str = include_str! {"../gen/a.txt"};\nfn main() { let _ = A; }', files: { 'src-tauri/gen/a.txt': 'a' }, missing: true },
+    { name: '方括号的 include_bytes，读副本不带的顶层目录', main: 'const A: &[u8] = include_bytes! ["../../scripts/a.bin"];\nfn main() { let _ = A; }', files: { 'scripts/a.bin': 'a' }, missing: true },
+    { name: '读副本带的目录（正例）', main: '#[cfg_attr(all(), path = "../res/m.rs")]\nmod m;\nconst A: &str = include_str!("../../src/a.txt");\nfn main() { let _ = A; m::f(); }', files: { 'src-tauri/res/m.rs': 'pub fn f() {}', 'src/a.txt': 'a' }, missing: false },
+  ];
+  const rustc = (crateRoot: string) => {
+    const out = made();
+    const r = spawnSync('rustc', ['--edition', '2021', '--crate-type', 'bin', '--emit=metadata', '--out-dir', out, join(crateRoot, 'src-tauri', 'src', 'main.rs')], { encoding: 'utf8' });
+    if (r.error) throw new Error(`rustc 跑不起来：${r.error.message}`);
+    return r.status;
+  };
+  for (const c of CASES) {
+    it(`扫描与编译器一致：${c.name}`, () => {
+      const src = made();
+      mkdirSync(join(src, 'src')); // the client's own sources: every real tree has them
+      for (const [p, t] of Object.entries({ ...c.files, 'src-tauri/src/main.rs': c.main })) {
+        mkdirSync(dirname(join(src, p)), { recursive: true });
+        writeFileSync(join(src, p), t);
+      }
+      expect(rustc(src)).toBe(0);
+      const work = made();
+      copySources(work, src);
+      const { problems } = scanCopy(work);
+      expect(rustc(work) !== 0).toBe(c.missing);
+      expect(problems.length > 0).toBe(c.missing);
+    });
+  }
 });
