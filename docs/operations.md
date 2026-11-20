@@ -2628,7 +2628,7 @@ For screenshots that need a login state, `scripts/review-screenshot.mjs --auth <
 
 ### Which projects show images in comments
 
-A project's workers get the public address only when that project's own file `~/.config/cavil-loop/<key>.conf` has a `WEEKLY_REPORT_ASSET_ROOT_URL=` line; the public entry above is per machine, the address is per project. Without the line the worker prompt says "this project has no image address", and workers describe images in words. They must not fall back to committing screenshots into the repository and embedding `github.com/<repo>/blob|raw/…` or `raw.githubusercontent.com/…` addresses: for a private repository GitHub does not proxy those images, so anyone not signed in to GitHub — and, as far as is known, the mobile app — sees a broken image. The worker and review prompts forbid it; a plain link marked "needs a GitHub login", plus a description in words, is allowed.
+A project's workers get the public address only when that project's own file `~/.config/cavil-loop/<key>.conf` has a `WEEKLY_REPORT_ASSET_ROOT_URL=` line; the public entry above is per machine, the address is per project. Without the line the worker prompt says "this project has no image address", and workers describe images in words. They must not fall back to committing screenshots into the repository and embedding `github.com/<repo>/blob|raw/…` or `raw.githubusercontent.com/…` addresses: for a private repository GitHub does not proxy those images, so anyone not signed in to GitHub gets no image (measured: HTTP 404); whether the GitHub mobile app shows it has not been tested. The worker and review prompts forbid it; a plain link marked "needs a GitHub login", plus a description in words, is allowed.
 
 Turning a project on makes its screenshots public to anyone who has the address (file names carry a unique stamp and nothing is listed, but nothing is private either). The prompts allow only public content there: no pages that need a login, no pages showing personal data (names, e-mail addresses, accounts, orders, …), no internal preview environments — when unsure, words instead. Nothing checks image content automatically; that rule rests on the worker and the reviewer's spot check. Decide per project.
 
@@ -2639,6 +2639,7 @@ To turn one project on, run these in one terminal (the first block sets the name
 KEY=myproject      # the project to turn on / 要接入的项目: systemctl --user list-timers 'cavil-loop-poll@*'
 FROM=otherproject  # a project that already shows images / 已经能出图的项目
 ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+REC="$ENV_FILE.asset-url-added"   # the address this procedure added / 本流程加进去的地址
 URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
 echo "URL=$URL"
 ```
@@ -2648,14 +2649,14 @@ echo "URL=$URL"
 ```bash
 if [ -z "$URL" ] || [ ! -f "$ENV_FILE" ]; then
     echo "STOP: no address in $FROM, or no $ENV_FILE"
-elif grep -q '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE"; then
-    echo "STOP: $ENV_FILE already has an address line — nothing changed"
+elif grep -q '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" || [ -e "$REC" ]; then
+    echo "STOP: $ENV_FILE already has an address line, or $REC exists — nothing changed"
 else
     BAK="$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
-    ( umask 077 && cp "$ENV_FILE" "$BAK" ) && chmod 600 "$BAK" \
+    ( umask 077 && cp "$ENV_FILE" "$BAK" && printf '%s\n' "$URL" > "$REC" ) \
         && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo >> "$ENV_FILE"; } \
         && printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL" >> "$ENV_FILE" \
-        && echo "ADDED (backup / 备份: $BAK)"
+        && echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
 fi
 ```
 <!-- asset-url-ops:add:end -->
@@ -2664,9 +2665,10 @@ fi
 ```bash
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+added=$(cat "$REC" 2>/dev/null)
 if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words"
-elif [ "$n" = 1 ] && [ "$v" = "$URL" ]; then echo "OK: $v"
-else echo "MISMATCH: $n line(s): $v"
+elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
+else echo "MISMATCH: $n line(s): $v (recorded / 记录: ${added:-none})"
 fi
 ```
 <!-- asset-url-ops:check:end -->
@@ -2675,13 +2677,14 @@ fi
 ```bash
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
-if [ "$n" != 1 ] || [ "$v" != "$URL" ]; then
-    echo "STOP: $n address line(s), value '$v' — not the line that was added; nothing changed, ask the maintainer"
+added=$(cat "$REC" 2>/dev/null)
+if [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+    echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
 else
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
         && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
-        echo "REVERTED"
+        rm -f "$REC"; echo "REVERTED"
     else
         rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed"
     fi
@@ -2689,7 +2692,7 @@ fi
 ```
 <!-- asset-url-ops:revert:end -->
 
-Expected output: add prints `ADDED` and the backup path (mode 600, same directory; the file holds the project's GitHub token, so do not print it); check prints `OK: <address>`. To turn it off again, run the first block and then revert: it removes only the line that was added, and only when there is exactly one such line and it still equals the address — every other setting stays as it is now (a later token change survives). Anything else prints `STOP` and leaves the file untouched; then look at the file with the maintainer. After a revert, check prints `NONE`. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
+Expected output: add prints `ADDED`, the backup path (mode 600, same directory; the file holds the project's GitHub token, so do not print it) and the record `<key>.conf.asset-url-added`, which keeps the address this procedure wrote; check prints `OK: <address>`. To turn it off again, run the first block and then revert: it compares with that record — never with the other project's current address, which may have changed since — and removes only the line that was added, only when there is exactly one such line and it still equals the recorded address; every other setting stays as it is now (a later token change survives), and the record is removed with the line. Without a record nothing is removed. Anything else prints `STOP` and leaves the file untouched; then look at the file with the maintainer. After a revert, check prints `NONE`. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
 
 ## Upgrading to webhooks (instant trigger)
 

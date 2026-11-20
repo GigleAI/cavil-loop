@@ -38,6 +38,8 @@ done
 URL="https://assets.example.invalid/review-assets"
 CDIR="$TMP/home/.config/cavil-loop"
 CONF="$CDIR/myproject.conf"
+REC="$CONF.asset-url-added"
+URL_B="https://assets-b.example.invalid/review-assets"
 # 沙盘：假 HOME 下两份项目配置；myproject 没有地址，otherproject 有
 sandbox() {
     rm -rf "${TMP:?}/home"; mkdir -p "$CDIR"
@@ -65,6 +67,8 @@ bak=$(find "$CDIR" -maxdepth 1 -name 'myproject.conf.bak-*')
 if [ -n "$bak" ] && [ "$(wc -l <<<"$bak")" = 1 ] && cmp -s "$bak" "$TMP/orig.conf" && [ "$(stat -c %a "$bak")" = 600 ]; then
     ok "备份在同目录、权限 600、与改前逐字节一致"
 else bad "备份不对：${bak:-没有}"; fi
+if [ "$(cat "$REC" 2>/dev/null)" = "$URL" ] && [ "$(stat -c %a "$REC")" = 600 ]; then ok "记录文件写下了本次加的地址、权限 600"
+else bad "记录文件不对：$(cat "$REC" 2>&1)"; fi
 if grep -q 'fake-old' <<<"$out"; then bad "输出里打印了配置内容（令牌）"; else ok "输出里没有令牌"; fi
 out=$(run revert check)
 if grep -qx 'REVERTED' <<<"$out" && grep -q '^NONE: ' <<<"$out"; then ok "撤销打印 REVERTED，之后核对打印 NONE"
@@ -72,7 +76,7 @@ else bad "撤销输出不对：$out"; fi
 if cmp -s "$CONF" "$TMP/orig.conf"; then ok "撤销后与改前逐字节一致"; else bad "撤销后与改前不同"; fi
 if [ "$(stat -c %a "$CONF")" = 600 ]; then ok "撤销后权限仍是 600"; else bad "撤销后权限变了：$(stat -c %a "$CONF")"; fi
 left=$(find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*')
-if [ -z "$left" ]; then ok "没留临时文件"; else bad "留下了临时文件：$left"; fi
+if [ -z "$left" ]; then ok "没留临时文件，记录随这一行删掉"; else bad "留下了文件：$left"; fi
 
 echo "── 补完改了无关设置，再撤销 ──"
 sandbox
@@ -100,6 +104,30 @@ out=$(run revert)
 if grep -q '^STOP: 2 address line' <<<"$out" && cmp -s "$CONF" "$TMP/before.conf"; then ok "地址有两行时撤销停下、文件不变"
 else bad "地址有两行时撤销没停下：$out"; fi
 
+echo "── 接入后来源项目的地址换了，再撤销（按记录比对，不按来源现值） ──"
+sandbox
+run add >/dev/null
+sed -i "s|^WEEKLY_REPORT_ASSET_ROOT_URL=.*|WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL_B\"|" "$CDIR/otherproject.conf"
+out=$(run check revert)
+if grep -qxF "OK: $URL" <<<"$out" && grep -qx 'REVERTED' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ]; then
+    ok "来源换成 B：目标里仍是本次加的 A，核对 OK、撤销删掉 A"
+else bad "来源换了以后撤销不了本次加的地址：$out"; fi
+sandbox
+run add >/dev/null
+sed -i "s|^WEEKLY_REPORT_ASSET_ROOT_URL=.*|WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL_B\"|" "$CDIR/otherproject.conf" "$CONF"
+cp "$CONF" "$TMP/before.conf"
+out=$(run check revert)
+if grep -qF "MISMATCH: 1 line(s): $URL_B (recorded / 记录: $URL)" <<<"$out" && grep -q '^STOP: ' <<<"$out" \
+   && cmp -s "$CONF" "$TMP/before.conf" && [ -e "$REC" ]; then
+    ok "来源和目标都换成 B：B 不是本次加的，撤销停下、B 保留"
+else bad "目标被改成来源的新地址后被误删：$out / $(cat "$CONF")"; fi
+sandbox
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL" >> "$CONF"; cp "$CONF" "$TMP/before.conf"
+out=$(run revert)
+if grep -q "^STOP: .*recorded 'none'" <<<"$out" && cmp -s "$CONF" "$TMP/before.conf"; then
+    ok "没有记录（不是这套步骤加的）：撤销停下、文件不变"
+else bad "没有记录时撤销没停下：$out"; fi
+
 echo "── 不该补的情况 ──"
 sandbox
 sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$CDIR/otherproject.conf"
@@ -112,6 +140,11 @@ out=$(run add)
 if grep -q '^STOP: .*already has an address line' <<<"$out" && cmp -s "$CONF" "$TMP/before.conf"; then
     ok "目标已有地址行（哪怕为空）：停下、文件不变"
 else bad "目标已有地址行时没停下：$out"; fi
+sandbox
+printf '%s\n' "$URL" > "$REC"
+out=$(run add)
+if grep -q '^STOP: ' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf"; then ok "已有记录文件（上次没撤销干净）：停下、文件不变"
+else bad "已有记录文件时没停下：$out"; fi
 sandbox
 printf 'GH_TOKEN=fake-old' > "$CONF"
 run add >/dev/null
