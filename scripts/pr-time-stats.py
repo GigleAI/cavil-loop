@@ -12,11 +12,12 @@
                    Tests 按汇总那一步日志里的 `Selection:` 行分「全量 / 按改动挑选 / 挑选方式未知」。
   · 本地小计     = 整套测试并集 + 单跑合计；CI 小计 = 所有尝试的时间段并集；
     测试总耗时   = 本地小计 + CI 小计（两边时间上可能重叠，偏高）。
-  · 「完整测试」（每晚负对照、发版回归、客户端完整测试）属于主干，PR 流程里不跑：每 PR 为 0，
-    报告末尾另给这几个工作流窗口内每次运行多久。
+  · 「完整测试」= 带负对照的整套运行（维护者在 #593 的定义），只有每晚的负对照工作流这么跑，属于主干、
+    PR 流程里不跑：每 PR 为 0，报告另给它窗口内每次运行多久。发版流水线、客户端完整测试单列「其他主干测试」。
 
 缺数据怎么记（不把「不知道」当 0）：
-  · 一个 PR 一条 footer 都没有 → AI / 单跑「无记录」，不进平均；整套测试照流水算。
+  · 一个 PR 一条 footer 都没有 → AI / 单跑「无记录」，不进平均；本地小计和测试总耗时也说不出（缺单跑那部分），
+    记未知、不进平均；整套测试各栏照流水算，CI 照常算。
   · 某条 footer 没有 `ai_secs`（AI 时间未知、旧格式）→ AI「未知」，不进平均。
   · 某条 footer 的测试字段带不确定标记（读取失败、写法认不出的命令、未计时、未关联、没有记账、
     未记到结束）→ 数字照常计入，标「测试记录不全」（是下限）。
@@ -59,7 +60,10 @@ LOCAL_CATS = ("smoke", "quick", "kind", "related", "all", "other")
 CAT_NAME = {"smoke": "冒烟", "quick": "快速", "kind": "按种类", "related": "相关改动",
             "all": "全部", "other": "其他"}
 CI_WORKFLOWS = {"tests.yml": "shell", "client.yml": "client"}
-FULL_WORKFLOWS = ("negative-controls.yml", "release.yml", "client.yml")
+# 「完整测试」= 带负对照的整套运行（维护者在 #593 的定义），只有每晚的负对照工作流这么跑；
+# 发版流水线和客户端完整测试另列「其他主干测试」参考，不叫完整测试
+FULL_WORKFLOW = "negative-controls.yml"
+OTHER_WORKFLOWS = ("release.yml", "client.yml")
 TEST_FLAGS = ("adhoc_untimed", "cmd_unparsed", "suite_unlinked", "suite_unlogged", "suite_unfinished")
 
 
@@ -447,10 +451,10 @@ def collect(a, since, until):
             rows.append(row)
             prev_merge = hi
 
-    full = full_reference(repo, a.since, since, until)
+    full, other = full_reference(repo, a.since, since, until)
     summary = summarize(rows)
     return {"repo": repo, "since": a.since, "until": a.until, "prs": rows, "summary": summary,
-            "full_tests": full, "ci_unassigned": ci_unassigned, "skipped_nonbot_footers": skipped_nonbot,
+            "full_tests": full, "other_main_tests": other, "ci_unassigned": ci_unassigned, "skipped_nonbot_footers": skipped_nonbot,
             "excluded_too_early": sorted(too_early), "runs_log_bad_lines": bad_lines}
 
 
@@ -517,15 +521,17 @@ def pr_row(a, p, n, ds, runs_by_wt, ci, lo, hi, shared):
             ci_count[key] += 1
     ci_secs = {k: union(v) for k, v in ci_spans.items()}
     ci_total = union([s for v in ci_spans.values() for s in v])
-    local_total = suite_total + (adhoc or 0)
+    # 本地小计 / 测试总耗时要用到单跑合计：footer 没有（无记录）或缺字段（未知）时说不出，记未知；
+    # 能单独算的整套测试各栏和 CI 照常给出
+    local_total = suite_total + adhoc if adhoc_state == "ok" else None
     return {
         "pr": p["number"], "item": n, "dispatches": len(ds),
         "ai_secs": ai, "ai_state": ai_state,
         "adhoc_secs": adhoc, "adhoc_state": adhoc_state,
         "local_secs": local, "local_runs": counts, "suite_secs": suite_total,
-        "local_total_secs": local_total if adhoc_state != "unknown" else None,
+        "local_total_secs": local_total,
         "ci_secs": ci_secs, "ci_attempts": ci_count, "ci_cancelled": cancelled, "ci_total_secs": ci_total,
-        "test_total_secs": (local_total + ci_total) if adhoc_state != "unknown" else None,
+        "test_total_secs": (local_total + ci_total) if local_total is not None else None,
         "full_secs": 0, "flags": flags,
     }
 
@@ -555,16 +561,44 @@ def summarize(rows):
     return out
 
 
+def workflow_durations(repo, wf, since_s, until):
+    runs = ci_runs(repo, wf, since_s)
+    if wf == "client.yml":     # 只要完整测试那几种：每周定时、发版标签
+        runs = [r for r in runs if r.get("event") == "schedule" or (r.get("head_branch") or "").startswith("client/v")]
+    durs = [ts(r.get("updated_at")) - ts(r.get("run_started_at") or r.get("created_at"))
+            for r in runs if r.get("status") == "completed" and ts(r.get("created_at")) < until]
+    return stat(durs) or {"n": 0}
+
+
 def full_reference(repo, since_s, since, until):
-    out = {}
-    for wf in FULL_WORKFLOWS:
-        runs = ci_runs(repo, wf, since_s)
-        if wf == "client.yml":
-            runs = [r for r in runs if r.get("event") == "schedule" or (r.get("head_branch") or "").startswith("client/v")]
-        durs = [ts(r.get("updated_at")) - ts(r.get("run_started_at") or r.get("created_at"))
-                for r in runs if r.get("status") == "completed" and ts(r.get("created_at")) < until]
-        out[wf] = stat(durs) or {"n": 0}
-    return out
+    """(完整测试 = 负对照工作流每次运行, {其他主干测试工作流: 每次运行})"""
+    return (workflow_durations(repo, FULL_WORKFLOW, since_s, until),
+            {wf: workflow_durations(repo, wf, since_s, until) for wf in OTHER_WORKFLOWS})
+
+
+def ref_row(wf, st):
+    return [wf, str(st.get("n", 0)), dur(st.get("mean")), dur(st.get("median"))]
+
+
+def md_table(head, rows):
+    """表头、分隔行、数据行出自同一份列数，不会对不上（GitHub 列数对不上就不渲染成表格）"""
+    for r in rows:
+        assert len(r) == len(head), (head, r)
+    return ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)] + ["| " + " | ".join(r) + " |" for r in rows]
+
+
+# 逐 PR 那张表：每一列的表头和取值写在一起
+PR_COLS = ([("PR", lambda r: f"#{r['pr']}"), ("编号", lambda r: r["item"]),
+            ("AI", lambda r: dur(r["ai_secs"])), ("单跑", lambda r: dur(r["adhoc_secs"]))]
+           + [(f"整套·{CAT_NAME[c]}", (lambda c: lambda r: dur(r["local_secs"][c]))(c)) for c in LOCAL_CATS]
+           + [("本地", lambda r: dur(r["local_total_secs"])),
+              ("CI 全量", lambda r: dur(r["ci_secs"]["shell_full"])),
+              ("CI 挑选", lambda r: dur(r["ci_secs"]["shell_changed"])),
+              ("CI 未知", lambda r: dur(r["ci_secs"]["shell_unknown"])),
+              ("CI 客户端", lambda r: dur(r["ci_secs"]["client"])),
+              ("CI 小计", lambda r: dur(r["ci_total_secs"])),
+              ("测试总耗时", lambda r: dur(r["test_total_secs"])),
+              ("标注", lambda r: "、".join(r["flags"]))])
 
 
 def dur(x):
@@ -581,25 +615,18 @@ def render(res):
          f"仓库 {res['repo']}，{res['since']} 起创建、{res['since']} 至 {res['until'] or '今天'} 合并的 PR：{s['prs']} 个。",
          "估算口径：AI 和单跑测试是各轮 footer 直接相加，同一 agent 的派工时间重叠时偏高；测试总耗时 = 本地 + CI，"
          "两边时间上重叠时也偏高。各栏分母不同，平均数不能相加。", "",
-         "| 栏 | 平均 | 中位数 | 计入 PR 数 | 无记录 / 未知 |", "|---|---|---|---|---|"]
-    for key, name, _ in COLUMNS:
-        st = s[key]["stat"]
-        L.append(f"| {name} | {dur(st['mean']) if st else '—'} | {dur(st['median']) if st else '—'} | "
-                 f"{st['n'] if st else 0} | {s[key]['excluded']} |")
+         ]
+    L += md_table(["栏", "平均", "中位数", "计入 PR 数", "无记录 / 未知"],
+                  [[name, dur(s[key]["stat"]["mean"]) if s[key]["stat"] else "—",
+                    dur(s[key]["stat"]["median"]) if s[key]["stat"] else "—",
+                    str(s[key]["stat"]["n"] if s[key]["stat"] else 0), str(s[key]["excluded"])]
+                   for key, name, _ in COLUMNS])
     L += ["", "标注：" + "，".join(f"{k} {v} 个" for k, v in s["flagged"].items()), "",
-          "「完整测试」参考（属于主干，不进每 PR）：", "", "| 工作流 | 次数 | 平均 | 中位数 |", "|---|---|---|---|"]
-    for wf, st in res["full_tests"].items():
-        L.append(f"| {wf} | {st.get('n', 0)} | {dur(st.get('mean'))} | {dur(st.get('median'))} |")
-    L += ["", "| PR | 编号 | AI | 单跑 | " + " | ".join(f"整套·{CAT_NAME[c]}" for c in LOCAL_CATS)
-          + " | 本地 | CI 全量 | CI 挑选 | CI 未知 | CI 客户端 | CI 小计 | 测试总耗时 | 标注 |",
-          "|" + "---|" * (19)]
-    for r in res["prs"]:
-        L.append("| " + " | ".join([f"#{r['pr']}", r["item"], dur(r["ai_secs"]), dur(r["adhoc_secs"])]
-                                   + [dur(r["local_secs"][c]) for c in LOCAL_CATS]
-                                   + [dur(r["local_total_secs"]), dur(r["ci_secs"]["shell_full"]),
-                                      dur(r["ci_secs"]["shell_changed"]), dur(r["ci_secs"]["shell_unknown"]),
-                                      dur(r["ci_secs"]["client"]), dur(r["ci_total_secs"]),
-                                      dur(r["test_total_secs"]), "、".join(r["flags"]) or ""]) + " |")
+          "「完整测试」= 带负对照的整套运行，只在主干上每晚跑，不属于某个 PR（每 PR 一栏为 0）：", ""]
+    L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(FULL_WORKFLOW, res["full_tests"])])
+    L += ["", "其他主干测试参考（不是完整测试，也不进每 PR）：", ""]
+    L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(wf, st) for wf, st in res["other_main_tests"].items()])
+    L += [""] + md_table([h for h, _ in PR_COLS], [[f(r) for _, f in PR_COLS] for r in res["prs"]])
     extra = [f"本次向 GitHub 发了 {res.get('gh_calls', '?')} 次请求"]
     if res["ci_unassigned"]:
         extra.append(f"{res['ci_unassigned']} 次 CI 运行归不到唯一一个 PR，没算进任何 PR")

@@ -237,7 +237,8 @@ eq("#10 完整测试 0", r["full_secs"], 0)
 r = P[11]
 eq("【4】#11 没有 footer → AI 无记录", (r["ai_secs"], r["ai_state"]), (None, "none"))
 eq("【3】#11 fork 运行按分支认到 #11，挑选方式未知（没有汇总那一步）", (r["ci_secs"]["shell_unknown"], r["ci_attempts"]["shell_unknown"]), (180.0, 1))
-eq("【4】#11 测试总耗时照算 = CI 180", r["test_total_secs"], 180.0)
+eq("【4】#11 没有 footer → 本地小计、测试总耗时未知（缺单跑那部分），不当 0", (r["local_total_secs"], r["test_total_secs"]), (None, None))
+eq("【4】#11 能单独算的照给：CI 小计 180、整套测试各栏 0", (r["ci_total_secs"], r["suite_secs"]), (180.0, 0.0))
 eq("【3】归不到唯一 PR 的运行 1 次（#102；#103 #104 属于窗口外的 PR，不计）", d["ci_unassigned"], 1)
 eq("【5】#12 拿 issue 7 合并前那轮 AI 60、工作树合并前那次 200 s", (P[12]["ai_secs"], P[12]["local_secs"]["all"]), (60.0, 200.0))
 eq("【5】#13 拿合并后那轮 AI 70、那次 300 s", (P[13]["ai_secs"], P[13]["local_secs"]["all"]), (70.0, 300.0))
@@ -248,11 +249,10 @@ eq("【3】#14 旧运行只有结论标题、没有 Selection 行 → 全量 420
 s = d["summary"]
 eq("【7】AI 平均只用 #10 #12 #13：(180+60+70)/3", round(s["ai"]["stat"]["mean"], 3), round(310 / 3, 3))
 eq("【7】AI 中位数 70、分母 3、未计入 2", (s["ai"]["stat"]["median"], s["ai"]["stat"]["n"], s["ai"]["excluded"]), (70.0, 3, 2))
-eq("【7】测试总耗时分母 5（#11 没 footer 也算）", s["test_total"]["stat"]["n"], 5)
+eq("【7】测试总耗时分母 4、未计入 1（#11 没 footer）；CI 小计分母 5", (s["test_total"]["stat"]["n"], s["test_total"]["excluded"], s["ci_total"]["stat"]["n"]), (4, 1, 5))
 eq("【7】标注计数", s["flagged"], {"派工重叠": 1, "测试记录不全": 1, "共用工作树": 2})
-eq("完整测试参考：负对照 2 次、平均 90 分钟；客户端只算定时那 1 次", (d["full_tests"]["negative-controls.yml"]["n"],
-   d["full_tests"]["negative-controls.yml"]["mean"], d["full_tests"]["client.yml"]["n"], d["full_tests"]["release.yml"]["n"]),
-   (2, 5400.0, 1, 0))
+eq("完整测试 = 只算负对照工作流：2 次、平均 90 分钟", (d["full_tests"]["n"], d["full_tests"]["mean"]), (2, 5400.0))
+eq("其他主干测试单列：发版 0 次、客户端只算定时那 1 次", (d["other_main_tests"]["release.yml"]["n"], d["other_main_tests"]["client.yml"]["n"]), (0, 1))
 eq("流水读不懂的行计数 1", d["runs_log_bad_lines"], 1)
 PY
 )
@@ -263,6 +263,26 @@ for want in "AI 耗时 | 1m 43s | 1m 10s | 3 | 2" "1 次 CI 运行归不到唯�
     if grep -qF -- "$want" "$SB/out.md"; then echo "  ✅ 报告含「$want」"; pass=$((pass+1))
     else echo "  ❌ 报告缺「$want」"; fail=$((fail+1)); fi
 done
+# 每张表的表头、分隔行、数据行列数一致（GitHub 对不上就不渲染成表格）
+bad=$(python3 - "$SB/out.md" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+bad, tables, i = [], 0, 0
+while i < len(lines):
+    if lines[i].startswith("|") and i + 1 < len(lines) and set(lines[i + 1].replace("|", "")) <= {"-"} and lines[i + 1].startswith("|---"):
+        n = lines[i].count("|"); tables += 1; j = i + 1
+        while j < len(lines) and lines[j].startswith("|"):
+            if lines[j].count("|") != n: bad.append(f"第 {j+1} 行 {lines[j].count('|')} 个竖线，表头 {n} 个")
+            j += 1
+        i = j
+    else:
+        i += 1
+print(f"tables={tables}"); print("\n".join(bad))
+PY
+)
+if [ "$(head -1 <<<"$bad")" = "tables=4" ] && [ "$(sed -n 2p <<<"$bad")" = "" ]; then echo "  ✅ 报告 4 张表，表头、分隔行、数据行列数都一致"; pass=$((pass+1))
+else echo "  ❌ 表格：$bad"; fail=$((fail+1)); fi
+grep -q "其他主干测试参考（不是完整测试" "$SB/out.md" && ! grep -q "| release.yml |.*完整" "$SB/out.md" && { echo "  ✅ 发版 / 客户端单列为其他主干测试"; pass=$((pass+1)); } || { echo "  ❌ 没有单列其他主干测试"; fail=$((fail+1)); }
 
 echo "【3】--no-ci-selection：不读日志，挑选方式记未知"
 : > "$SB/gh/calls.log"

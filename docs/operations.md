@@ -1555,14 +1555,18 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   files or `--changed-from`), all (no selection), other; CI attempts of the `Tests` workflow split
   by the selection its summary job printed (full run / only what the change can reach / unknown),
   and of the `Client` workflow; local subtotal, CI subtotal (union of attempts) and total. "Full
-  tests" (nightly negative controls, release gate, client full tests) run on `main`, never per PR:
-  that column is 0 and the report lists those workflows' run times separately.
+  tests" means the whole suite run with negative controls (the maintainer's definition in #593),
+  which only the nightly `Negative controls` workflow does, on `main`, never per PR: that column is 0
+  and the report lists that workflow's run times. The release workflow and the client's full tests
+  are listed separately as "other tests on main", not as full tests.
 - **It is an estimate** (the maintainer's choice in #593): footer values are added up without
   de-duplication, so when two dispatches of the same agent on one worktree overlap in time, the
   overlap is counted twice (marked "dispatches overlap"); local and CI time are added the same way.
   A footer whose test fields carry an uncertainty marker (unreadable, unrecognised commands, untimed,
   unlinked) is counted as is and marked "test record incomplete" (a lower bound). A PR with no footer
-  has no AI value; a footer without `ai_secs` makes that PR's AI unknown — neither is averaged as 0.
+  has no AI value, and its local subtotal and total test time are unknown too (the single-file part is
+  missing) — its `tests/run.sh` columns and CI are still given; a footer without `ai_secs` makes that
+  PR's AI unknown. None of these is averaged as 0.
   Every column's average states its own count, so averages of different columns do not add up.
 - Any GitHub or run-log read that fails, or a list that is not read whole, stops the command with
   exit code 2 and no report. `--no-ci-selection` skips reading the CI logs (all `Tests` attempts
