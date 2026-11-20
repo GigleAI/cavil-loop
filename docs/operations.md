@@ -2650,16 +2650,25 @@ echo "URL=$URL"
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 if [ -z "$URL" ] || [ "$n" != 0 ]; then
     echo "STOP: address to add '$URL', '${n:-unreadable}' address line(s) in $ENV_FILE — nothing changed"
+elif [ ! -w "$ENV_FILE" ]; then
+    echo "FAILED: $ENV_FILE is not writable — nothing changed; fix that and run this block again"
 else
     # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
     # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
+    # The new file is written whole next to the old one, checked, and only then renamed over it.
+    # 新文件先在同一目录写完整、核对，再改名覆盖旧文件。
+    LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
     BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
-    if [ -z "$BAK" ] || ! ( umask 077 && cat "$ENV_FILE" > "$BAK" && printf '%s\n' "$URL" > "$REC" ); then
-        echo "FAILED: backup or record not written; $ENV_FILE not changed — fix the cause and run this block again"
-    elif { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL"; } >> "$ENV_FILE"; then
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    if [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK" \
+        && { cat "$ENV_FILE" && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+        && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+        && chmod --reference="$ENV_FILE" "$TMPF" \
+        && ( umask 077 && printf '%s\n' "$URL" > "$REC" ) && [ "$(cat "$REC")" = "$URL" ] \
+        && mv "$TMPF" "$ENV_FILE"; then
         echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
     else
-        echo "FAILED: could not write $ENV_FILE — fix the cause (e.g. its permissions) and run this block again"
+        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     fi
 fi
 ```
@@ -2693,7 +2702,9 @@ elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
 else
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
-        && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
+        && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+        && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")" ] \
+        && chmod --reference="$ENV_FILE" "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
         if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED"
         else echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
         fi
@@ -2711,12 +2722,14 @@ Every outcome, and what to do next (a failed step never leaves a state the block
 | Block prints | Meaning | Next |
 |---|---|---|
 | add `ADDED` | line and record written | check should print `OK` |
-| add `FAILED` | the line was not written (a record or backup may be left) | fix the cause (e.g. `chmod 600` the file) and run add again — a record without a line is rewritten |
+| add `FAILED` | the file was not changed (a record or backup may be left) | fix the cause (e.g. free disk space, or make the file writable) and run add again — a record without a line is rewritten |
 | add `STOP` | no address to copy, the file cannot be read, or it already has an address line | nothing changed; look at the file |
 | revert `REVERTED` | the added line and the record are gone (or there was no line and only a leftover record was cleared) | check prints `NONE` |
 | revert `PARTIAL` | the line is gone, the record is still there | run revert again: it clears the record |
 | revert `FAILED` | nothing removed | fix the cause and run revert again |
-| revert `STOP` | the line is not the one that was added, there are several, there is no record, or the file cannot be read | nothing changed; look at the file with the maintainer | Anything else prints `STOP` and leaves the file untouched; then look at the file with the maintainer. After a revert, check prints `NONE`. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
+| revert `STOP` | the line is not the one that was added, there are several, there is no record, or the file cannot be read | nothing changed; look at the file with the maintainer |
+
+The configuration file is only ever replaced whole: add and revert write the complete new file next to it, check it, and only then rename it over the old one, so a write that fails or stops half-way (a full disk, a size limit) leaves the old file exactly as it was. The new file keeps the old file's permissions. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
 
 ## Upgrading to webhooks (instant trigger)
 

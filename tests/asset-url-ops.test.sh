@@ -8,7 +8,10 @@
 # 出图地址那一行）；补完地址被改成别的值（撤销停在核对、文件一个字节不变）。另加几种不该补 / 不该
 # 删的情况：来源项目没有地址、目标已有地址行、地址有两行，以及原文件末尾没有换行。
 #
-# 跑法：bash tests/asset-url-ops.test.sh   依赖：bash、coreutils、grep、sed、awk
+# 中途失败（复审第 2、3 轮）：配置只读、写到一半超出文件大小上限（prlimit 造的真实短写）、改名前遗留的
+# 记录、删记录失败——每种都要求原配置不被写坏，并能按文档接着跑完。
+#
+# 跑法：bash tests/asset-url-ops.test.sh   依赖：bash、GNU coreutils、grep、sed、awk、prlimit（util-linux）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -128,15 +131,15 @@ if grep -q "^STOP: .*recorded 'none'" <<<"$out" && cmp -s "$CONF" "$TMP/before.c
     ok "没有记录（不是这套步骤加的）：撤销停下、文件不变"
 else bad "没有记录时撤销没停下：$out"; fi
 
-echo "── 中途失败后按文档继续（复审第 2 轮） ──"
+echo "── 中途失败后按文档继续（复审第 2、3 轮） ──"
+left_tmp() { find "$CDIR" -maxdepth 1 -name 'myproject.conf.*' ! -name 'myproject.conf.bak-*' ! -name 'myproject.conf.asset-url-added'; }
+# 只读：打不开就不动任何东西（不留记录）
 sandbox
 chmod 400 "$CONF"
 out=$(run add)
-if grep -q '^FAILED: could not write ' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ -e "$REC" ]; then
-    ok "配置只读：补地址报 FAILED、配置一个字节没变（记录留下）"
+if grep -q '^FAILED: .* is not writable' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ] && [ -z "$(left_tmp)" ]; then
+    ok "配置只读：补地址报 FAILED，配置一个字节没变，不留记录和临时文件"
 else bad "配置只读时补地址结果不对：$out"; fi
-out=$(run check)
-if grep -q '^NONE: .*leftover record' <<<"$out"; then ok "失败后核对：NONE，并提示有遗留记录"; else bad "失败后核对不对：$out"; fi
 chmod 600 "$CONF"
 out=$(run add check)
 if grep -q '^ADDED ' <<<"$out" && grep -qxF "OK: $URL" <<<"$out" && [ "$(addr_lines)" = 1 ]; then
@@ -146,12 +149,32 @@ out=$(run revert check)
 if grep -qx 'REVERTED' <<<"$out" && grep -q '^NONE: no address — workers describe images in words$' <<<"$out" \
    && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ]; then ok "之后撤销：REVERTED，配置与改前逐字节一致、记录删掉"
 else bad "重试后撤销不对：$out"; fi
+# 真实短写：文件大小上限 64 字节（只作用于跑文档的那个 bash），备份能写下，新配置写到一半被截断
 sandbox
-chmod 400 "$CONF"; run add >/dev/null; chmod 600 "$CONF"
+printf 'GH_TOKEN=fake-old\n' > "$CONF"; chmod 640 "$CONF"; cp "$CONF" "$TMP/orig.conf"
+out=$(cat "$TMP/vars.sh" "$TMP/add.sh" | env -i HOME="$TMP/home" PATH="$PATH" prlimit --fsize=64 -- bash -c 'trap "" XFSZ; exec bash' 2>&1)
+if grep -q '^FAILED: .* not changed' <<<"$out" && grep -qi 'File too large' <<<"$out" \
+   && cmp -s "$CONF" "$TMP/orig.conf" && [ ! -e "$REC" ] && [ -z "$(left_tmp)" ]; then
+    ok "写到一半超出文件大小上限：报 FAILED，原配置一个字节没变，不留记录、不留半截临时文件"
+else bad "短写时结果不对：$out / $(cat "$CONF")"; fi
+out=$(run check)
+if grep -q '^NONE: no address — workers describe images in words$' <<<"$out"; then ok "短写失败后核对：NONE"; else bad "短写失败后核对不对：$out"; fi
+out=$(run add check)
+if grep -q '^ADDED ' <<<"$out" && grep -qxF "OK: $URL" <<<"$out" && [ "$(stat -c %a "$CONF")" = 640 ]; then
+    ok "去掉限制后重跑补地址：ADDED、核对 OK，配置仍是原来的权限 640"
+else bad "短写后重试不对：$out / $(stat -c %a "$CONF")"; fi
 out=$(run revert)
-if grep -q '^REVERTED: no address line, leftover record cleared' <<<"$out" && [ ! -e "$REC" ] && cmp -s "$CONF" "$TMP/orig.conf"; then
-    ok "失败后不重试、直接撤销：只清掉遗留记录，报 REVERTED"
-else bad "失败后直接撤销不对：$out"; fi
+if grep -qx 'REVERTED' <<<"$out" && cmp -s "$CONF" "$TMP/orig.conf" && [ "$(stat -c %a "$CONF")" = 640 ] && [ ! -e "$REC" ]; then
+    ok "之后撤销：REVERTED，与改前逐字节一致，权限仍是 640"
+else bad "短写重试后撤销不对：$out"; fi
+# 遗留记录（例如上次改名那一步失败）：直接撤销只清记录
+sandbox
+printf '%s\n' "$URL" > "$REC"
+out=$(run check revert)
+if grep -q '^NONE: .*leftover record' <<<"$out" && grep -q '^REVERTED: no address line, leftover record cleared' <<<"$out" \
+   && [ ! -e "$REC" ] && cmp -s "$CONF" "$TMP/orig.conf"; then
+    ok "只有遗留记录：核对提示遗留，撤销只清掉记录，报 REVERTED"
+else bad "遗留记录时核对 / 撤销不对：$out"; fi
 # 撤销删了行、删记录失败：报 PARTIAL，不报 REVERTED；再跑一次清掉记录
 sandbox
 run add >/dev/null

@@ -2263,16 +2263,25 @@ echo "URL=$URL"
 n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
 if [ -z "$URL" ] || [ "$n" != 0 ]; then
     echo "STOP: address to add '$URL', '${n:-unreadable}' address line(s) in $ENV_FILE — nothing changed"
+elif [ ! -w "$ENV_FILE" ]; then
+    echo "FAILED: $ENV_FILE is not writable — nothing changed; fix that and run this block again"
 else
     # A record with no address line is left over from a failed add or an unfinished revert: it describes nothing, so it is rewritten.
     # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，它不对应任何一行，直接重写。
+    # The new file is written whole next to the old one, checked, and only then renamed over it.
+    # 新文件先在同一目录写完整、核对，再改名覆盖旧文件。
+    LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
     BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
-    if [ -z "$BAK" ] || ! ( umask 077 && cat "$ENV_FILE" > "$BAK" && printf '%s\n' "$URL" > "$REC" ); then
-        echo "FAILED: backup or record not written; $ENV_FILE not changed — fix the cause and run this block again"
-    elif { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL"; } >> "$ENV_FILE"; then
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    if [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK" \
+        && { cat "$ENV_FILE" && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+        && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+        && chmod --reference="$ENV_FILE" "$TMPF" \
+        && ( umask 077 && printf '%s\n' "$URL" > "$REC" ) && [ "$(cat "$REC")" = "$URL" ] \
+        && mv "$TMPF" "$ENV_FILE"; then
         echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
     else
-        echo "FAILED: could not write $ENV_FILE — fix the cause (e.g. its permissions) and run this block again"
+        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
     fi
 fi
 ```
@@ -2306,7 +2315,9 @@ elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
 else
     TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
     if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
-        && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
+        && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+        && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")" ] \
+        && chmod --reference="$ENV_FILE" "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
         if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED"
         else echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
         fi
@@ -2324,12 +2335,14 @@ fi
 | 那段打印 | 含义 | 下一步 |
 |---|---|---|
 | 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
-| 补地址 `FAILED` | 地址行没写进去（可能留下了记录或备份） | 排除原因（例如 `chmod 600` 该文件）后重跑补地址那段——没有地址行的记录会被重写 |
+| 补地址 `FAILED` | 配置文件没有改动（可能留下了记录或备份） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
 | 补地址 `STOP` | 没有可复制的地址、文件读不了、或已有地址行 | 什么都没改；去看文件 |
 | 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |
 | 撤销 `PARTIAL` | 地址行已删，记录还在 | 再跑一次撤销，它会清掉记录 |
 | 撤销 `FAILED` | 什么都没删 | 排除原因后重跑撤销 |
-| 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |其他情况一律打印 `STOP`、文件一个字节不动，这时和维护者一起看文件。撤销后核对那段打印 `NONE`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+| 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |
+
+配置文件只会被整份替换：补地址和撤销都先在同一目录写出完整的新文件、核对无误，再改名覆盖旧文件，所以写到一半出错（磁盘满、文件大小限制）时旧文件原样不动。新文件沿用旧文件的权限。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
 
 ## 升级到 webhook（即时触发）
 
