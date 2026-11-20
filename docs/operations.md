@@ -1530,6 +1530,23 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
+- **One price table per footer, and the table is cached per log file** (GitHub#606). The Claude
+  usage driver prices each call with a table solved from every Claude session log on the
+  machine (`scripts/weekly-report/price_solve.py`). The footer calls the Claude driver once
+  with `--both`, which prints the readable line and the machine record from one table and one
+  pass over the logs; anything but exactly two lines counts as "usage unknown" for both, and the
+  driver is not called again (the Codex driver is still called twice). The table keeps two
+  caches under `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/`: `price-samples-<hash>.json` holds what
+  each log file contributed, reused only while the file's device, inode, size, modification time
+  and change time (`ctime`) are all unchanged, so only files written since the last run are read
+  again; `price-table.json` holds the solved table, reused while its inputs (the samples, the
+  built-in and fetched reference prices, the policy, the solver's settings and code) are
+  unchanged. A cached run gives byte-identical output to a full scan as long as logs only change
+  through ordinary writes, appends, replacements and deletions. ⚠️ Not covered: the system clock
+  set back to an earlier moment and a file then rewritten at the same length. Force a full scan
+  with `python3 scripts/weekly-report/price_solve.py --table --no-cache` (reads every log, uses
+  and writes no cache); deleting the two files has the same effect on the next run.
+
 ### Average AI and test time per merged PR (estimate, GitHub#593)
 
 `scripts/pr-time-stats.py` adds up, for every PR merged in a window, the AI time and the test time

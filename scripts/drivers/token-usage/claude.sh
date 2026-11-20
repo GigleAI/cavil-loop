@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Token usage driver: Claude
 #
-# 用法: bash claude.sh <start_epoch> [--kv | --ci-wait]
+# 用法: bash claude.sh <start_epoch> [--kv | --both | --ci-wait]
 #
 # 读 claude 本地 transcript jsonl，统计 [start_epoch, 现在) 这段里的用量与金额。
 # 默认输出跟 claude CLI 的 /usage 命令接近的一行人话：
@@ -9,6 +9,11 @@
 #   2.4k input, 153.5k output, 42.8m cache read, 1.1m cache write ($32.24)（模型：claude-opus-5）
 #
 # 加 --kv 则输出机器可读的一行（给评论末尾的 agent-metrics 标记用）。
+#
+# 加 --both 则一次输出两行：先人读行、再 --kv 那一行，出自同一次取表、同一次汇总、同一个
+# 时刻（GitHub#606）。评论 footer 只这样调一次：原来分两次调，每次各取一遍价目表、各读一遍
+# 会话，第一次取表失败第二次成功时两行还会用不同的价。两行与分别单独调用的输出逐字节一致
+# （日志不变时）；算不出来就什么都不输出，不会只给一行。
 #
 # ⚠️ 模型名要**两边都出**（GitHub#29）：评论 footer 的 `token …` 行是「整行原样用脚本
 #   输出」的，所以模型只写进 --kv 的隐藏标记时，GitHub 评论上（尤其手机端）根本看不到
@@ -246,15 +251,14 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
     | ($modelarr | join(",")) as $models
     | (if ((.models.unknown // 0) > 0) then "yes" else "no" end) as $model_unknown
     | (.gaps | keys | join(" ")) as $gaps
-    | (if $mode == "--kv"
-      then "in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
+    | ("in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
            + (if $state == "none" then "" else " cost_usd=\(.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\(.unk)"
            # 单价出处：这一侧是本机反解的（codex 那侧是人工配置，写 configured）
            + " price_source=solved"
            + (if $pstat == "" then "" else " price_status=\($pstat)" end)
-           + " models=\($models) model_unknown=\($model_unknown)"
-      else "\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write"
+           + " models=\($models) model_unknown=\($model_unknown)") as $kvline
+    | ("\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write"
            + (if $state == "none" then "（单价未知，金额未计）"
               elif $state == "partial" then " ($\(.usd | usd2)，部分用量未计价，金额偏低)"
               else " ($\(.usd | usd2))" end)
@@ -267,17 +271,25 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
            + (if ($modelarr | length) == 0 then "（模型未知）"
               else "（模型：\($modelarr | join("、"))"
                    + (if $model_unknown == "yes" then "；另有模型无法确认" else "" end)
-                   + "）" end)
-      end), "GAPS \($gaps)"
+                   + "）" end)) as $humanline
+    # 两行出自同一份汇总；--both 一次给齐（评论 footer 用，GitHub#606），单独的模式各给一行
+    | (if $mode == "--kv" then $kvline
+       elif $mode == "--both" then $humanline, $kvline
+       else $humanline end), "GAPS \($gaps)"
 ' "${FILES[@]}" 2>/dev/null)
 [ -n "$RES" ] || exit 0
-# 第一行是给评论 / 标记用的结果，原样输出；第二行是缺价模型清单，只用来留标记
-LINE="${RES%%$'\n'*}"
-# --kv 另附 AI 时间估算（GitHub#88）：同一批会话文件、同一个窗口，算不出来就不附
-if [ "$MODE" = "--kv" ]; then
+# 前面是给评论 / 标记用的结果行（--both 两行：人读、机器），原样输出；最后一行是缺价模型
+# 清单，只用来留标记
+mapfile -t OUT <<<"$RES"
+NOUT=1; [ "$MODE" = "--both" ] && NOUT=2
+# 行数不对（jq 中途出错只吐了一部分）就什么都不输出：footer 把两行一起当未知，
+# 不会拿半份结果拼一条记录
+[ "${#OUT[@]}" -eq $((NOUT + 1)) ] && [ "${OUT[$NOUT]#GAPS}" != "${OUT[$NOUT]}" ] || exit 0
+# 机器记录行另附 AI 时间估算（GitHub#88）：同一批会话文件、同一个窗口，算不出来就不附
+if [ "$MODE" = "--kv" ] || [ "$MODE" = "--both" ]; then
     AI=$(python3 "$HERE/ai_time.py" claude "$START_EPOCH" now "${FILES[@]}" 2>/dev/null)
-    [ -z "$AI" ] || LINE="$LINE $AI"
+    [ -z "$AI" ] || OUT[$((NOUT - 1))]="${OUT[$((NOUT - 1))]} $AI"
 fi
-printf '%s\n' "$LINE"
+printf '%s\n' "${OUT[@]:0:$NOUT}"
 GAPS="${RES##*$'\n'GAPS }"
 [ "$GAPS" = "$RES" ] || [ -z "$GAPS" ] || mark_unpriced claude $GAPS

@@ -105,6 +105,26 @@ def run_driver(driver, start_epoch, kv):
     return (r.stdout or "").strip().splitlines()[0] if (r.stdout or "").strip() else ""
 
 
+def run_driver_both(driver, start_epoch):
+    """Claude 驱动的 --both：一次调用拿齐人读行和机器记录行（GitHub#606）→ (人读, 机器)。
+
+    恰好两行才算数；没有输出、只有一行、多出行、超时、退出码非 0，两行一起当没有，**不再
+    调第二次**：再调一次就会再取一遍价目表，第一次取表失败、第二次成功时两行口径不同。"""
+    try:
+        r = subprocess.run(["bash", driver, str(start_epoch), "--both"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    lines = (r.stdout or "").splitlines()
+    if r.returncode != 0 or len(lines) != 2 or not all(l.strip() for l in lines):
+        return "", ""
+    return lines[0].strip(), lines[1].strip()
+
+
+# 支持 --both 的驱动。别的驱动（codex.sh 等）不认这个模式，照旧分两次调用
+BOTH_AGENTS = ("claude",)
+
+
 def run_ci_wait(driver, start_epoch):
     """用量驱动的 --ci-wait → None（没有会话文件，什么也不说）| 失败原因 str | 结果 dict。"""
     try:
@@ -399,8 +419,11 @@ def main(argv):
         print(f"comment-footer: 开始时刻格式不对：{a.start}", file=sys.stderr)
         return 2
     start_epoch = int(start_epoch)
-    human = run_driver(a.driver, start_epoch, False)
-    kv_line = run_driver(a.driver, start_epoch, True)
+    if a.agent in BOTH_AGENTS:
+        human, kv_line = run_driver_both(a.driver, start_epoch)
+    else:
+        human = run_driver(a.driver, start_epoch, False)
+        kv_line = run_driver(a.driver, start_epoch, True)
     ci = run_ci_wait(a.driver, start_epoch)
 
     extra = None

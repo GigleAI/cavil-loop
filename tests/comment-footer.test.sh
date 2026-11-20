@@ -92,6 +92,8 @@ cat > "$FAKE" <<'SH'
 #!/usr/bin/env bash
 case "${2:-}" in
     --kv) printf '%s\n' "${FAKE_KV-}" ;;
+    # Claude 一侧 footer 只调一次，两行一起要（GitHub#606）；真实驱动要么两行都给、要么都不给
+    --both) [ -z "${FAKE_HUMAN-}${FAKE_KV-}" ] || printf '%s\n%s\n' "${FAKE_HUMAN-}" "${FAKE_KV-}" ;;
     --ci-wait) [ -z "${FAKE_CI-}" ] || printf '%s\n' "$FAKE_CI" ;;
     *) printf '%s\n' "${FAKE_HUMAN-}" ;;
 esac

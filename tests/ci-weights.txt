@@ -65,6 +65,7 @@ preview-rename-coexist 1
 preview-socket-activation 7
 price-fetch 8
 price-identifiability 2
+price-sample-cache 5
 project-auto-add 85
 project-config 133
 project-config-poll 29
