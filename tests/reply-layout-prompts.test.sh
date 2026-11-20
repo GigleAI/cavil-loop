@@ -132,6 +132,14 @@ check_prompts() {
         has '纯后端、没有可见样式差异的决策不适用' "$s" || echo "$e: 配图规矩缺不适用范围"
         has '`${REVIEW_ASSET_BASE_URL}`' "$s" || echo "$e: 配图规矩没给出图地址"
         has 'scripts/review-screenshot.mjs' "$s" || echo "$e: 配图规矩没指截图脚本"
+        # GitHub#602：私有仓库文件不许当图嵌进评论（配没配出图地址都一样）；公网图片只放可公开内容
+        has '- **仓库里的文件不能当图嵌进评论**（不管有没有配出图地址）' "$s" || echo "$e: 配图规矩没禁私有仓库文件嵌图"
+        has '`github.com/<仓库>/blob/…`、`github.com/<仓库>/raw/…`、`raw.githubusercontent.com/…`' "$s" || echo "$e: 私库嵌图规矩没列地址形状"
+        has '链接旁写明「需登录 GitHub 才能看」' "$s" || echo "$e: 私库嵌图规矩没给普通链接的退路"
+        has '这种链接也不能代替规定的设计稿 / 样例图' "$s" || echo "$e: 私库嵌图规矩没写配了地址时也不能代替"
+        has '`gh repo view <仓库> --json visibility`' "$s" || echo "$e: 私库嵌图规矩没写怎么查是否私有"
+        has '- **走公网出图地址的图只放可公开的内容**' "$s" || echo "$e: 配图规矩没限公网图片只放可公开内容"
+        has '登录后才看得到的页面、带个人信息（姓名、邮箱、账号、订单等）的页面、内部预览环境的页面' "$s" || echo "$e: 公网图片规矩没列不能放的页面"
         if [ -z "$ref" ]; then ref="$s"; elif [ "$s" != "$ref" ]; then echo "$e: 配图规矩和 new-issue 不一致"; fi
     done
     for e in review review-noextra; do
@@ -212,6 +220,10 @@ check_prompts() {
         has '缺「改前截图（标出要改的地方）」或「改后设计稿」任一张' "$s" || echo "$e: 版式检查没要求改前 / 改后都有"
         has '并用文字描述改前改后的差异，缺了同样不合格' "$s" || echo "$e: 版式检查缺没配出图地址时的退路"
         has '纯后端、没有可见界面变化的方案不适用 ④' "$s" || echo "$e: 版式检查的设计稿一项缺不适用范围"
+        has '评论用嵌图写法（`![…](…)`、`<img>`）放了私有仓库文件的地址' "$s" || echo "$e: 版式检查没拦私有仓库文件嵌图"
+        has '配了时这种链接也不能代替样例图' "$s" || echo "$e: 版式检查没写配了地址时私库链接也不能代替"
+        has '走公网出图地址的图拍的是登录后才看得到的页面、带个人信息的页面或内部预览环境，同样不合格' "$s" || echo "$e: 版式检查没拦不可公开的公网图片"
+        has '私有仓库文件的嵌图不算设计稿' "$s" || echo "$e: 版式检查的设计稿一项没排除私库嵌图"
         has '在标题前引用人这一轮的全部评论' "$s" || echo "$e: 版式检查漏了缺引用"
         has '过程叙述（试了哪些写法、怎么一步步推导的、版本之间改了什么）留在折叠区外' "$s" || echo "$e: 版式检查漏了过程叙述外露"
         [ "$(grep -nF -- "$L2_HEAD" "$f" | cut -d: -f1)" -lt "$(grep -nF '2C. **A 类下结论之前' "$f" | head -1 | cut -d: -f1)" ] \
@@ -398,6 +410,20 @@ for kind in new-issue issue-comment pr-comment review; do
         if grep -qF -- "$must" "$f" 2>/dev/null && grep -qF -- "$fallback" "$f" 2>/dev/null && grep -qF '会改变界面外观' "$f"; then
             ok "$kind（$([ "$d" = r-url ] && echo 配了 || echo 没配)出图地址）：带改界面外观必须附设计稿 + 文字描述退路"
         else bad "$kind（$d）：派工写出的 prompt 缺改界面外观必须附设计稿或文字描述退路"; fi
+    done
+done
+
+# GitHub#602：四个入口、配了 / 没配出图地址，派工写出的成品都带私库嵌图禁令和公网图片只放可公开内容
+for kind in new-issue issue-comment pr-comment review; do
+    case "$kind" in
+        review) a1='放了私有仓库文件的地址'; a2='走公网出图地址的图拍的是登录后才看得到的页面' ;;
+        *) a1='- **仓库里的文件不能当图嵌进评论**（不管有没有配出图地址）'; a2='- **走公网出图地址的图只放可公开的内容**' ;;
+    esac
+    for d in r-url r-none; do
+        f="$TMP/$d/$kind.md"
+        if grep -qF -- "$a1" "$f" 2>/dev/null && grep -qF -- "$a2" "$f" 2>/dev/null; then
+            ok "$kind（$([ "$d" = r-url ] && echo 配了 || echo 没配)出图地址）：带私库嵌图禁令 + 公网图片只放可公开内容"
+        else bad "$kind（$d）：派工写出的 prompt 缺私库嵌图禁令或公网图片规矩"; fi
     done
 done
 

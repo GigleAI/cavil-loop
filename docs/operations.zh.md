@@ -2239,6 +2239,71 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 截图要带登录状态时，`scripts/review-screenshot.mjs --auth <文件>` 要求登录状态文件在被 git 忽略的路径里、且不在截图输出目录内，否则报错不截图；它改端口用的副本写在原件旁边（权限 600），结束、出错、被中断都会删掉。
 
+### 哪些项目的评论能出图
+
+公网出图地址按项目配：只有项目自己的 `~/.config/cavil-loop/<key>.conf` 里有一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`，这个项目的 worker 才拿得到地址；上面的公网入口是整台机器一份。没有这一行时，worker 拿到的派工说明是「本项目没有出图地址」，只能用文字描述图。不能改成把截图提交进仓库、再在评论里嵌 `github.com/<仓库>/blob|raw/…` 或 `raw.githubusercontent.com/…` 地址：私有仓库的这种地址 GitHub 不替它代理图片，没登录 GitHub 的人看到的是裂图（手机 app 目前所知也一样）。worker 和复审的说明里都禁止这样嵌图；给一个注明「需登录 GitHub 才能看」的普通链接、再用文字描述，是允许的。
+
+给项目接入后，它的截图拿到地址的人都能打开（文件名带唯一戳、不列目录，但并不私密）。派工说明只允许放可公开的内容：登录后才看得到的页面、带个人信息（姓名、邮箱、账号、订单等）的页面、内部预览环境，一律不放，拿不准就改用文字描述。图片内容没有自动检查，这条靠 worker 自己判断、复审抽查。接不接入按项目逐个决定。
+
+给一个项目接入：在同一个终端里依次跑下面几段（第一段设好后面几段用的名字）。下一轮轮询起生效（每轮 timer 都重新启动服务，systemd 每次启动都重读这个文件）；已经在跑的 worker 仍用它拿到的旧说明。
+
+<!-- asset-url-ops:vars:begin -->
+```bash
+KEY=myproject      # the project to turn on / 要接入的项目: systemctl --user list-timers 'cavil-loop-poll@*'
+FROM=otherproject  # a project that already shows images / 已经能出图的项目
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
+echo "URL=$URL"
+```
+<!-- asset-url-ops:vars:end -->
+
+<!-- asset-url-ops:add:begin -->
+```bash
+if [ -z "$URL" ] || [ ! -f "$ENV_FILE" ]; then
+    echo "STOP: no address in $FROM, or no $ENV_FILE"
+elif grep -q '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE"; then
+    echo "STOP: $ENV_FILE already has an address line — nothing changed"
+else
+    BAK="$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
+    ( umask 077 && cp "$ENV_FILE" "$BAK" ) && chmod 600 "$BAK" \
+        && { [ -z "$(tail -c 1 "$ENV_FILE")" ] || echo >> "$ENV_FILE"; } \
+        && printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$URL" >> "$ENV_FILE" \
+        && echo "ADDED (backup / 备份: $BAK)"
+fi
+```
+<!-- asset-url-ops:add:end -->
+
+<!-- asset-url-ops:check:begin -->
+```bash
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words"
+elif [ "$n" = 1 ] && [ "$v" = "$URL" ]; then echo "OK: $v"
+else echo "MISMATCH: $n line(s): $v"
+fi
+```
+<!-- asset-url-ops:check:end -->
+
+<!-- asset-url-ops:revert:begin -->
+```bash
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+if [ "$n" != 1 ] || [ "$v" != "$URL" ]; then
+    echo "STOP: $n address line(s), value '$v' — not the line that was added; nothing changed, ask the maintainer"
+else
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    if [ -n "$TMPF" ] && { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE" > "$TMPF" || [ $? -eq 1 ]; } \
+        && chmod 600 "$TMPF" && mv "$TMPF" "$ENV_FILE"; then
+        echo "REVERTED"
+    else
+        rm -f "$TMPF"; echo "FAILED: $ENV_FILE not changed"
+    fi
+fi
+```
+<!-- asset-url-ops:revert:end -->
+
+看到什么算成功：补地址那段打印 `ADDED` 和备份路径（同目录，权限 600；文件里有该项目的 GitHub 令牌，别打印内容）；核对那段打印 `OK: <地址>`。要撤销，先跑第一段，再跑撤销那段：它只删本次加的那一行，而且只在这样的行恰好一行、值仍等于该地址时才删——其他设置保持现在的样子（之后换过的令牌不会被改回去）。其他情况一律打印 `STOP`、文件一个字节不动，这时和维护者一起看文件。撤销后核对那段打印 `NONE`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+
 ## 升级到 webhook（即时触发）
 
 轮询有最坏 1 分钟延迟。要即时：
