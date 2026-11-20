@@ -7913,34 +7913,95 @@ lessons_for_prompt() {   # <经验文件>
          END { if (counted) { print ""; print note } }'
 }
 
-# ── 同时在进行的其他工作（GitHub#340）──
-# 派工时告诉 worker：此刻还有哪些条目在进行（doing / 待复审 / 已转 PR）、各自的分支已经改了哪些文件，
-# 让文件重叠在开工时就被看见，而不是等交接时的冲突检查或对方合并之后。
+# ── 同时在进行的其他工作（GitHub#340；每条一行「摘要 + 涉及目录」、整份封顶 GitHub#598）──
+# 派工时告诉 worker：此刻还有哪些条目在进行（doing / 待复审 / 已转 PR）、各自在改什么、改到了哪些目录，
+# 让重叠在开工时就被看见，而不是等交接时的冲突检查或对方合并之后。
 #
 #   · 只在派工那一刻读（三个 dispatch 脚本写完 prompt 之后调 concurrent_work_fill），轮询本身不多一次调用；
 #     开关关着、prompt 里又没有占位符时什么都不读，拼出来的 prompt 逐字节不变。
-#   · GitHub 调用数不随条目数增长：每个状态标签一次打开条目列表 + 一次打开 PR 列表（满 100 条才翻页），
-#     轮询身份只读。文件清单不走 API：一次 ls-remote + 一次 fetch，本地 `git diff --name-only 基准...分支`。
+#   · GitHub 调用数不随条目数增长：每个状态标签一次打开条目列表 + 一次打开 PR 列表（满 100 条才翻页，
+#     PR 正文就在这次列表里），轮询身份只读。改动不走 API：一次 ls-remote + 一次 fetch，本地 git diff / log。
+#   · 每个条目一行（GitHub#598）：编号、状态、标题、一句改动摘要、涉及的目录——不再列文件名（单条最长曾到
+#     2.4 KB，整份随条目数无上限地涨，把派工提示词撑过了单个命令行参数的上限）。摘要按顺序取：PR 正文第一句
+#     （concurrent_work_first_sentence）→ 分支自己的提交里（基准..分支，两点范围：主干分叉后的新提交不算）
+#     最新一条非合并提交的标题 → 都没有写「（没有摘要）」。目录是改动文件的上一级目录，去重排序，最多列
+#     CONCURRENT_WORK_MAX_DIRS 个。整份按字节封顶（CONCURRENT_WORK_MAX_BYTES，默认 6000，2000–20000），
+#     只按整行取舍，末尾那句「另有 N 个条目未列出」也算在内。
 #   · 比较基准：已有 PR → 那个 PR 的实际目标分支；没有 PR → 固定 CONCURRENT_WORK_DEFAULT_BASE（main）。
 #     这是新 issue 入口建工作分支时传的固定值（dispatch-new-issue.sh 调 create-worktree.sh "$ISSUE" main），
 #     不是配置里的 BASE_BRANCH——那一项只用于同步主 checkout。基准取不到就写「未能读取」，不退回别的分支。
 #   · 「读不到」绝不写成「没有」：任何一次列表调用失败、形状不对 → 整段「未能读取」；ls-remote / fetch 失败 →
-#     条目照列、每行「改动文件未能读取」；只有 ls-remote 成功且远端确实没有这个分支，才写「还没有推送改动」。
-#   · 标题、文件名是别人写的数据：标题压成一行、去掉控制字符和反引号、截到 80 字；分支名只认安全字符，
-#     不认的不拿去喂 git。清单在 dispatch 的 sed 全部跑完之后才填进去，里面的 ${...}、|、& 不会再被渲染。
+#     条目照列、每行「涉及的目录未能读取」；只有 ls-remote 成功且远端确实没有这个分支，才写「还没有推送改动」；
+#     提交标题读不到写「摘要未能读取」，不写「（没有摘要）」。
+#   · 标题、正文、提交标题、目录名是别人写的数据：压成一行、去掉控制字符和反引号、「」换成『』、截断；分支名
+#     只认安全字符，不认的不拿去喂 git。清单在 dispatch 的 sed 全部跑完之后才填进去，里面的 ${...}、|、& 不会
+#     再被渲染。
 #   · 任何失败都不挡派工。
 ENABLE_CONCURRENT_WORK_HINT="${ENABLE_CONCURRENT_WORK_HINT:-}"
+CONCURRENT_WORK_MAX_BYTES="${CONCURRENT_WORK_MAX_BYTES:-6000}"
+CONCURRENT_WORK_BYTES_DEFAULT=6000
+CONCURRENT_WORK_BYTES_MIN=2000
+CONCURRENT_WORK_BYTES_MAX=20000
 CONCURRENT_WORK_MAX_ITEMS=20
-CONCURRENT_WORK_MAX_FILES=30
+CONCURRENT_WORK_MAX_DIRS=8
 CONCURRENT_WORK_DEFAULT_BASE="main"
 CONCURRENT_WORK_PLACEHOLDER='${CONCURRENT_WORK}'
 CONCURRENT_WORK_UNREAD="未能读取当前进行中的其他工作（不代表没有）；交接前照常做冲突检查。"
+# 别人写的文字压成一行的规则：标题、PR 正文摘要、提交标题、目录名都用这一份（jq 定义，拼在各个程序前面）
+CONCURRENT_WORK_JQ_DEFS='
+def cw_flat($n): (. // "") | tostring
+    | gsub("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\s]+"; " ") | gsub("`"; "") | gsub("「"; "『") | gsub("」"; "』")
+    | sub("^ +"; "") | sub(" +$"; "")
+    | if length > $n then .[0:$n] + "…" else . end;
+def cw_line:
+    sub("^\\s+"; "") | sub("\\s+$"; "")
+    | if . == "" then null
+      elif test("^(\\||!\\[|<|-{3,}$|\\*{3,}$|_{3,}$|={3,}$)") then null
+      elif test("^(>\\s*)*((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part of)\\b[^#]*#[0-9]+|#[0-9]+\\s*$)"; "i") then null
+      elif test("^#{1,6}(\\s|$)") then (sub("^#{1,6}\\s*"; "") | sub("\\s+#+$"; "") | if length < 8 then null else . end)
+      else sub("^(>\\s*)+"; "") | sub("^([-*+]|[0-9]+[.)])\\s+"; "") | sub("^\\[[ xX]\\]\\s+"; "")
+      end
+    | if . == null then null
+      else gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("\\[(?<t>[^\\]]*)\\]\\([^)]*\\)"; .t)
+           | gsub("\\*\\*|__"; "") | sub("^\\s+"; "") | sub("\\s+$"; "")
+           | if test("[\\p{L}\\p{N}]") then . else null end
+      end;
+def cw_first_sentence:
+    (. // "") | tostring | gsub("\r\n?"; "\n")
+    | gsub("<!--[\\s\\S]*?-->"; "") | sub("<!--[\\s\\S]*$"; "")
+    | reduce (split("\n")[]) as $l ({fence: null, out: null};
+        if .out != null then .
+        elif .fence != null then (.fence as $f | if ($l | test("^\\s{0,3}" + $f)) then .fence = null else . end)
+        elif ($l | test("^\\s{0,3}(```|~~~)")) then .fence = ($l | capture("^\\s{0,3}(?<f>```|~~~)").f)
+        elif ($l | test("^( {4}|\\t)")) then .
+        else (($l | cw_line) as $c | if $c != null then .out = $c else . end) end)
+    | (.out // "")
+    | (capture("^(?<s>.*?(?:[。！？]|[.!?](?=\\s|$)))") // {s: .}).s
+    | sub("[。！？.!?]+$"; "")
+    | cw_flat(120);
+'
 
 concurrent_work_enabled() {
     case "$(printf '%s' "${ENABLE_CONCURRENT_WORK_HINT:-}" | tr '[:upper:]' '[:lower:]')" in
         true|1|yes|on) return 0 ;;
     esac
     return 1
+}
+
+# 整份清单的字节上限：不是 2000–20000 之间的十进制整数 → 默认值，并在 poll.log 记一行。
+concurrent_work_max_bytes() {
+    local v="${CONCURRENT_WORK_MAX_BYTES:-}"
+    if [ -z "$v" ]; then echo "$CONCURRENT_WORK_BYTES_DEFAULT"; return 0; fi
+    if [[ "$v" =~ ^[0-9]{1,6}$ ]] && [ "$((10#$v))" -ge "$CONCURRENT_WORK_BYTES_MIN" ] && [ "$((10#$v))" -le "$CONCURRENT_WORK_BYTES_MAX" ]; then
+        echo "$((10#$v))"; return 0
+    fi
+    log "  ⚠️ 同时进行的其他工作：CONCURRENT_WORK_MAX_BYTES 不是 ${CONCURRENT_WORK_BYTES_MIN}–${CONCURRENT_WORK_BYTES_MAX} 之间的整数，按默认 ${CONCURRENT_WORK_BYTES_DEFAULT} 处理" 2>/dev/null || true
+    echo "$CONCURRENT_WORK_BYTES_DEFAULT"
+}
+
+# PR 正文的第一句（stdin → stdout，一行；取不出时输出空行）。清单和测试都走这一个入口。
+concurrent_work_first_sentence() {
+    jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence'
 }
 
 # 这份模板要不要追加这一段：只给 worker 的三种派工（子项走 issue-comment 打底，也在内）；复审不加。
@@ -7977,11 +8038,12 @@ concurrent_work_text() {   # <本次工作分支> <本次工作编号>...
 # 返回非 0 = 条目读不到（调用方输出「未能读取」）；这时自己不输出任何东西。
 _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工作编号>...
     local tmp="$1" self_branch="$2"; shift 2
-    local L enc self_json
+    local L enc self_json budget
     local -a wanted=("$LABEL_AGENT_DOING")
     [ -z "${LABEL_PENDING_REVIEW:-}" ] || wanted+=("$LABEL_PENDING_REVIEW")
     wanted+=("$LABEL_PENDING_PR")
     self_json=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)') || return 1
+    budget=$(concurrent_work_max_bytes) && [[ "$budget" =~ ^[0-9]+$ ]] || return 1
 
     # 1. 各状态标签下的打开条目（issue 和 PR 都在 issues 接口里）
     : > "$tmp/issues"
@@ -7995,9 +8057,9 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
             return 1
         fi
     done
-    # 2. 打开的 PR：工作分支、目标分支、是不是本仓库的分支
+    # 2. 打开的 PR：工作分支、目标分支、是不是本仓库的分支、正文（取摘要用；长度没有上限，只经文件交给 jq）
     if ! gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-            --jq '.[] | {number, title, head: .head.ref, base: .base.ref, head_repo: (.head.repo.full_name // "")}' \
+            --jq '.[] | {number, title, head: .head.ref, base: .base.ref, head_repo: (.head.repo.full_name // ""), body: (.body // "")}' \
             > "$tmp/pulls" 2> "$tmp/err"; then
         _concurrent_work_log_file "同时进行的其他工作：读取打开的 PR 列表失败，本次写「未能读取」" "$tmp/err"
         return 1
@@ -8009,12 +8071,8 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
             --arg repo "$REPO" --arg prefix "$BRANCH_PREFIX" --arg self_branch "$self_branch" \
             --argjson self "$self_json" \
             --arg doing "$LABEL_AGENT_DOING" --arg review "${LABEL_PENDING_REVIEW:-}" --arg ppr "$LABEL_PENDING_PR" \
-            --argjson max "$CONCURRENT_WORK_MAX_ITEMS" '
-        def clean: (. // "") | tostring
-            | gsub("[\\p{Cc}\\p{Zl}\\p{Zp}\\s]+"; " ") | gsub("`"; "") | gsub("「"; "『") | gsub("」"; "』")
-            | sub("^ +"; "") | sub(" +$"; "")
-            | if length > 80 then .[0:80] + "…" else . end
-            | if . == "" then "（无标题）" else . end;
+            --argjson max "$CONCURRENT_WORK_MAX_ITEMS" "$CONCURRENT_WORK_JQ_DEFS"'
+        def clean: cw_flat(80) | if . == "" then "（无标题）" else . end;
         def safe: type == "string" and length > 0 and length <= 200
             and test("^[A-Za-z0-9._/-]+$") and (test("\\.\\.|//|^[-/.]|[/.]$|\\.lock$|/\\.") | not);
         def shape: type == "object" and (.number | type == "number") and (.number == (.number | floor)) and .number > 0;
@@ -8029,12 +8087,13 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
             | if $it.pr then
                   ($prs | map(select(.number == $it.number)) | first) as $p
                   | if $p == null then {key: "nopr:\($it.number)", kind: "nopr", pr: $it.number, it: $it}
-                    elif (($p.head_repo | tostring | ascii_downcase) != $r) then {key: "fork:\($it.number)", kind: "fork", pr: $it.number, it: $it}
-                    else {key: "b:\($p.head)", kind: "ok", head: $p.head, base: $p.base, pr: $it.number, it: $it} end
+                    elif (($p.head_repo | tostring | ascii_downcase) != $r) then {key: "fork:\($it.number)", kind: "fork", pr: $it.number, it: $it, body: $p.body}
+                    else {key: "b:\($p.head)", kind: "ok", head: $p.head, base: $p.base, pr: $it.number, it: $it, body: $p.body} end
               else
                   ($prefix + ($it.number | tostring)) as $b
                   | ($own | map(select(.head == $b)) | first) as $p
-                  | {key: "b:\($b)", kind: "ok", head: $b, base: ($p.base // null), pr: ($p.number // null), issue: $it.number, it: $it}
+                  | {key: "b:\($b)", kind: "ok", head: $b, base: ($p.base // null), pr: ($p.number // null), issue: $it.number, it: $it,
+                     body: (if $p == null then null else $p.body end)}
               end ]
         | group_by(.key)
         | map(
@@ -8046,6 +8105,7 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
                 sort: (($i.issue) // ($pp.pr)),
                 issue: ($i.issue // null), pr: ($pp.pr // null),
                 title: ((($i // $g[0]).it.title) | clean),
+                summ: ([$g[] | .body | select(. != null) | cw_first_sentence | select(. != "")] | first // ""),
                 state: (if ($labs | index($doing)) != null then "进行中"
                         elif $review != "" and ($labs | index($review)) != null then "待复审"
                         else "已转 PR" end),
@@ -8060,7 +8120,7 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
            | [ (if .issue != null and .pr != null then "#\(.issue)（PR #\(.pr)，\(.state)）"
                 elif .issue != null then "#\(.issue)（\(.state)）"
                 else "PR #\(.pr)（\(.state)）" end),
-               .title, .kind, .head, .base ] | join("\u001f"))
+               .title, .kind, .head, .base, .summ ] | join("\u001f"))
         ' > "$tmp/rows" 2> "$tmp/err"; then
         _concurrent_work_log_file "同时进行的其他工作：GitHub 返回的条目不是预期的形状，本次写「未能读取」" "$tmp/err"
         return 1
@@ -8069,8 +8129,8 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
     # 字段之间用 US（0x1f）隔开，不用制表符：制表符是 IFS 的「空白」分隔符，read 会把连续的几个并成一个，
     # 中间一列为空（没有 PR 的条目目标分支是空的、fork 的分支是空的）后面的列就整体前移——标题清理成空串时
     # 分支被读成目标分支、已推送的改动被写成「还没有推送」（PR #352 复审第 1 轮）。US 不是空白，空列原样保留；
-    # 标题里的控制字符在上面已经清掉，分支名只认安全字符，字段里不会出现它。
-    local total=0 shown=0 tag disp title kind head base
+    # 标题、摘要里的控制字符在上面已经清掉，分支名只认安全字符，字段里不会出现它。
+    local total=0 tag disp title kind head base summ
     IFS=$'\x1f' read -r tag total < "$tmp/rows" || return 1
     [ "$tag" = TOTAL ] && [[ "$total" =~ ^[0-9]+$ ]] || return 1
     if [ "$total" -eq 0 ]; then
@@ -8081,7 +8141,7 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
     # 4. 远端分支的当前提交（一次 ls-remote）+ 把它们拉进主 checkout 的对象库（一次 fetch，不写任何引用）
     local git_ok=1 b sha ref
     local -A need=() tips=()
-    while IFS=$'\x1f' read -r disp title kind head base; do
+    while IFS=$'\x1f' read -r disp title kind head base summ; do
         [ "$kind" = ok ] && [ -n "$head" ] || continue
         need["$head"]=1; need["${base:-$CONCURRENT_WORK_DEFAULT_BASE}"]=1
     done < <(tail -n +2 "$tmp/rows")
@@ -8098,51 +8158,83 @@ _concurrent_work_text_in() {   # <临时目录> <本次工作分支> <本次工�
             # --refmap= ：不顺手挪动主 checkout 的 origin/<分支>
             if [ "${#have[@]}" -gt 0 ] && ! git -C "$PROJECT_ROOT" fetch -q --no-write-fetch-head --refmap= origin "${have[@]}" > "$tmp/err" 2>&1; then
                 git_ok=0
-                _concurrent_work_log_file "同时进行的其他工作：拉取各分支失败，改动文件写「未能读取」" "$tmp/err"
+                _concurrent_work_log_file "同时进行的其他工作：拉取各分支失败，涉及的目录写「未能读取」" "$tmp/err"
             fi
         else
             git_ok=0
-            _concurrent_work_log_file "同时进行的其他工作：读取远端分支失败（git ls-remote），改动文件写「未能读取」" "$tmp/err"
+            _concurrent_work_log_file "同时进行的其他工作：读取远端分支失败（git ls-remote），涉及的目录写「未能读取」" "$tmp/err"
         fi
     fi
 
-    # 5. 逐行输出
-    local eb against n files more
-    while IFS=$'\x1f' read -r disp title kind head base; do
-        shown=$((shown + 1))
+    # 5. 逐条拼成一行（先全部拼好，第 6 步再按字节取舍）
+    local eb against n dirs more line
+    : > "$tmp/lines"
+    while IFS=$'\x1f' read -r disp title kind head base summ; do
         case "$kind" in
-            fork)      printf -- '- %s「%s」：来自 fork，改动文件未读取\n' "$disp" "$title"; continue ;;
-            nopr)      printf -- '- %s「%s」：PR 信息未能读取，改动文件未能读取\n' "$disp" "$title"; continue ;;
-            badbranch) printf -- '- %s「%s」：分支名异常，未列出\n' "$disp" "$title"; continue ;;
-            ok)        [ -n "$head" ] || return 1 ;;
-            *)         return 1 ;;   # 行的形状不对：宁可整段「未能读取」，也不按错位的字段往下写
+            fork)      line="- ${disp}「${title}」：来自 fork，${summ:-（没有摘要）}；涉及的目录未读取" ;;
+            nopr)      line="- ${disp}「${title}」：PR 信息未能读取，改动未能读取" ;;
+            badbranch) line="- ${disp}「${title}」：分支名异常，未列出" ;;
+            ok)
+                [ -n "$head" ] || return 1
+                eb="${base:-$CONCURRENT_WORK_DEFAULT_BASE}"
+                if [ -n "$base" ]; then against="→ \`$eb\`"; else against="（相对 \`$eb\`）"; fi
+                line="- ${disp}「${title}」${against}："
+                if [ "$git_ok" != 1 ]; then
+                    line+="${summ:-摘要未能读取}；涉及的目录未能读取（本机这次读不到远端分支）"
+                elif [ -z "${tips[$head]:-}" ]; then
+                    if [ -z "$base" ]; then line+="还没有推送改动"
+                    else line+="${summ:-摘要未能读取}；涉及的目录未能读取（分支 \`$head\` 取不到）"; fi
+                elif [ -z "${tips[$eb]:-}" ]; then
+                    line+="${summ:-摘要未能读取}；涉及的目录未能读取（目标分支 \`$eb\` 取不到）"
+                elif ! git -C "$PROJECT_ROOT" -c core.quotePath=true diff --name-only "${tips[$eb]}...${tips[$head]}" > "$tmp/files.raw" 2> "$tmp/err"; then
+                    line+="${summ:-摘要未能读取}；涉及的目录未能读取（算不出和 \`$eb\` 的差异）"
+                    _concurrent_work_log_file "同时进行的其他工作：$head 相对 $eb 的差异算不出来" "$tmp/err"
+                else
+                    if [ -z "$summ" ]; then
+                        # 两点范围：只在分支上、不在基准上的提交；主干分叉后的新提交不在里面
+                        if git -C "$PROJECT_ROOT" log -1 --no-merges --format=%s "${tips[$eb]}..${tips[$head]}" > "$tmp/subj" 2> "$tmp/err"; then
+                            summ=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' split("\n")[0] | cw_flat(120)' < "$tmp/subj") || summ="摘要未能读取"
+                            [ -n "$summ" ] || summ="（没有摘要）"
+                        else
+                            summ="摘要未能读取"
+                            _concurrent_work_log_file "同时进行的其他工作：$head 的提交标题读不出来" "$tmp/err"
+                        fi
+                    fi
+                    # 上一级目录：去重、按字节排序；仓库根目录下的文件单列
+                    if ! LC_ALL=C awk 'NF { if (index($0, "/") == 0) print "\001"; else { sub(/\/[^\/]*$/, "/"); print } }' "$tmp/files.raw" \
+                            | LC_ALL=C sort -u > "$tmp/dirs.raw"; then
+                        line+="${summ}；涉及的目录未能读取（整理目录失败）"
+                    else
+                        n=$(wc -l < "$tmp/dirs.raw" | tr -d ' ')
+                        if [ "$n" -eq 0 ]; then
+                            line+="${summ}；相对 \`$eb\` 没有改动文件"
+                        else
+                            dirs=$(head -n "$CONCURRENT_WORK_MAX_DIRS" "$tmp/dirs.raw" \
+                                | jq -Rr "$CONCURRENT_WORK_JQ_DEFS"' if . == "\u0001" then "仓库根目录" else "`" + cw_flat(80) + "`" end' \
+                                | awk '{ printf "%s%s", (NR > 1 ? "、" : ""), $0 }') || dirs=""
+                            if [ -z "$dirs" ]; then line+="${summ}；涉及的目录未能读取（整理目录失败）"
+                            else
+                                more=""; [ "$n" -le "$CONCURRENT_WORK_MAX_DIRS" ] || more=" 等"
+                                line+="${summ}；涉及 $n 个目录：$dirs$more"
+                            fi
+                        fi
+                    fi
+                fi ;;
+            *) return 1 ;;   # 行的形状不对：宁可整段「未能读取」，也不按错位的字段往下写
         esac
-        eb="${base:-$CONCURRENT_WORK_DEFAULT_BASE}"
-        if [ -n "$base" ]; then against=" → \`$eb\`"; else against="（相对 \`$eb\`）"; fi
-        printf -- '- %s「%s」分支 `%s`%s：' "$disp" "$title" "$head" "$against"
-        if [ "$git_ok" != 1 ]; then
-            printf '改动文件未能读取（本机这次读不到远端分支）\n'
-        elif [ -z "${tips[$head]:-}" ]; then
-            if [ -z "$base" ]; then printf '还没有推送改动\n'
-            else printf '改动文件未能读取（分支 `%s` 取不到）\n' "$head"; fi
-        elif [ -z "${tips[$eb]:-}" ]; then
-            printf '改动文件未能读取（目标分支 `%s` 取不到）\n' "$eb"
-        elif ! git -C "$PROJECT_ROOT" -c core.quotePath=true diff --name-only "${tips[$eb]}...${tips[$head]}" > "$tmp/files.raw" 2> "$tmp/err"; then
-            printf '改动文件未能读取（算不出和 `%s` 的差异）\n' "$eb"
-            _concurrent_work_log_file "同时进行的其他工作：$head 相对 $eb 的差异算不出来" "$tmp/err"
-        else
-            LC_ALL=C tr -d '`\000-\010\013-\037\177' < "$tmp/files.raw" | awk 'NF' > "$tmp/files"
-            n=$(wc -l < "$tmp/files" | tr -d ' ')
-            if [ "$n" -eq 0 ]; then
-                printf '相对 `%s` 没有改动文件\n' "$eb"
-            else
-                files=$(head -n "$CONCURRENT_WORK_MAX_FILES" "$tmp/files" | awk '{ printf "%s`%s`", (NR > 1 ? "、" : ""), $0 }')
-                more=""
-                [ "$n" -le "$CONCURRENT_WORK_MAX_FILES" ] || more="；另有 $((n - CONCURRENT_WORK_MAX_FILES)) 个文件未列出"
-                printf '已改 %s 个文件：\n  %s%s\n' "$n" "$files" "$more"
-            fi
-        fi
+        printf '%s\n' "$line" >> "$tmp/lines"
     done < <(tail -n +2 "$tmp/rows")
+
+    # 6. 按字节封顶：只砍整行；放进下一行时，连同那时还剩的「另有 N 个条目未列出。」一起不能超过上限
+    local used=0 shown=0 len tail_len rest
+    while IFS= read -r line; do
+        rest=$((total - shown - 1)); tail_len=0
+        [ "$rest" -le 0 ] || tail_len=$(printf '另有 %s 个条目未列出。\n' "$rest" | LC_ALL=C wc -c | tr -d ' ')
+        len=$(printf '%s\n' "$line" | LC_ALL=C wc -c | tr -d ' ')
+        [ $((used + len + tail_len)) -le "$budget" ] || break
+        printf '%s\n' "$line"
+        used=$((used + len)); shown=$((shown + 1))
+    done < "$tmp/lines"
     [ "$total" -le "$shown" ] || printf '另有 %s 个条目未列出。\n' "$((total - shown))"
     return 0
 }

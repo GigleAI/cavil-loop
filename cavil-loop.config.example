@@ -330,28 +330,42 @@ BLOCKED_MAX_TRIES=10
 # = 关闭，挡工名单和以前一样。setup.sh 会按这个名字建标签。
 LABEL_PENDING_LATER="pending/later"
 
-# ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340）──
+# ── Tell the worker what else is in progress / 派工时告诉 worker 还有哪些条目在进行（GitHub#340, #598）──
 # With true, every worker dispatch (new issue, issue comment, PR comment, split sub-issue) gets one more
-# section: the other open items labelled doing/agent, the review label (when set) or pending/PR — number,
-# title, branch — and the files each branch has changed. A PR's files are relative to that PR's own base
-# branch; an item with no PR yet is compared with `main` (the branch this tool cuts work branches from) and
-# says so. The list is for the worker alone: it keeps an eye on overlapping files and does not write the
-# overlap into issue / PR comments. It is a snapshot taken at dispatch, of pushed commits only — the conflict
-# check before hand-off still runs. Read only at dispatch (one issue list per label + one PR list, polling
-# identity; files come from a local `git fetch` + diff), never during polling. A list that cannot be read is
-# written as "could not read", never as "nothing else". At most 20 items and 30 files per item are listed,
-# with the real remainder stated. Reviews do not get the section. Empty / false / line missing = off:
-# prompts and GitHub calls are byte-identical to before.
+# section: the other open items labelled doing/agent, the review label (when set) or pending/PR, one line
+# each — number, state, title, a one-sentence summary of the change (the first sentence of the PR body, else
+# the subject of the branch's own latest non-merge commit, else "no summary") and the directories it touches
+# (parent directories of the changed files; no file names). A PR's directories are relative to that PR's own
+# base branch; an item with no PR yet is compared with `main` (the branch this tool cuts work branches from)
+# and says so. The list is for the worker alone: it keeps an eye on overlapping directories and does not
+# write the overlap into issue / PR comments. It is a snapshot taken at dispatch, of pushed commits only —
+# the conflict check before hand-off still runs. Read only at dispatch (one issue list per label + one PR
+# list, polling identity; directories come from a local `git fetch` + diff), never during polling. A list
+# that cannot be read is written as "could not read", never as "nothing else". At most 20 items, and at most
+# CONCURRENT_WORK_MAX_BYTES bytes in all, with the real remainder stated. Reviews do not get the section.
+# Empty / false / line missing = off: prompts and GitHub calls are byte-identical to before.
 #
 # 设成 true 时，worker 的每次派工（新 issue、issue 评论、PR 评论、拆出来的子项）提示词里多一段：其他带
-# doing/agent、复审标签（配了才算）、pending/PR 的打开条目——编号、标题、分支——以及各分支已经改了哪些文件。
-# 已有 PR 的按那个 PR 自己的目标分支算；还没有 PR 的固定和 `main` 比（本工具建工作分支就是从它切的），行内写明。
-# 这份清单只给 worker 自己参考：动到重叠的文件时留意冲突、交付前照常做冲突检查，不把重叠写进 issue / PR 评论。
-# 这是派工那一刻的快照，只含已推送的提交，不替代交接前的冲突检查。只在派工时读（每个标签一次条目列表 +
-# 一次 PR 列表，轮询身份；文件靠本地 git fetch + diff），轮询不多一次调用。读不到写「未能读取」，绝不写成
-# 「没有」。最多列 20 个条目、每个条目 30 个文件，超出写明真实剩余数。复审不带这一段。
-# 留空 / false / 不写这一行 = 关闭，提示词和 GitHub 调用与以前逐字节一样。
+# doing/agent、复审标签（配了才算）、pending/PR 的打开条目，每条一行——编号、状态、标题、一句改动摘要
+# （PR 正文第一句；没有就取这个分支自己最新一次非合并提交的标题；都没有写「（没有摘要）」）、涉及的目录
+# （改动文件的上一级目录，不列文件名）。已有 PR 的按那个 PR 自己的目标分支算；还没有 PR 的固定和 `main` 比
+# （本工具建工作分支就是从它切的），行内写明。这份清单只给 worker 自己参考：动到重叠的目录时留意冲突、交付前
+# 照常做冲突检查，不把重叠写进 issue / PR 评论。这是派工那一刻的快照，只含已推送的提交，不替代交接前的冲突
+# 检查。只在派工时读（每个标签一次条目列表 + 一次 PR 列表，轮询身份；目录靠本地 git fetch + diff），轮询不多
+# 一次调用。读不到写「未能读取」，绝不写成「没有」。最多列 20 个条目，整份不超过 CONCURRENT_WORK_MAX_BYTES
+# 字节，超出写明真实剩余数。复审不带这一段。留空 / false / 不写这一行 = 关闭，提示词和 GitHub 调用与以前
+# 逐字节一样。
 ENABLE_CONCURRENT_WORK_HINT=true
+
+# The most bytes the list above may take (whole lines only; the closing "N more not listed" line counts).
+# 2000–20000; anything else (not a whole number, out of range) is treated as 6000 with one poll.log line.
+# This caps the list alone, not the whole prompt: a prompt over one command-line argument's limit is
+# already handed to the worker as a file. Unused while the switch above is off.
+#
+# 上面那份清单最多占多少字节（只按整行取舍，末尾「另有 N 个条目未列出」那句也算在内）。可填 2000–20000；
+# 不是整数或超出范围按 6000 处理，并在 poll.log 记一行。只管清单这一段，不管整份提示词——整份超过单个命令行
+# 参数的上限时，派工已经会改成把完整提示词放进文件交给 worker。上面的开关关着时不用。
+CONCURRENT_WORK_MAX_BYTES=6000
 
 # ── Agent hit its usage limit / agent 撞到用量上限（GitHub#341）──
 # Both agents run on flat-rate subscriptions with a usage limit per time window. With true, the daemon

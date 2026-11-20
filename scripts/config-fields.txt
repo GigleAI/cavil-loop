@@ -78,7 +78,8 @@ AUTOPILOT_MERGE_METHOD | 托管（自动合并） | enum:squash=压成一个提�
 AUTOPILOT_CHECKS_TIMEOUT_HOURS | 托管（自动合并） | int:0:2562047788015215 | 6 | edit | 自动检查等多少小时还没跑完就交人 | 托管 PR 的检查（CI）一直没跑完，满这么久就交 pending/human；0 = 检查只要还没跑完就立即交人；托管关着时不用
 OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,fr=Français,de=Deutsch,es=Español | en | edit | 写回 GitHub 用的语言 | 评论、方案、PR 正文；代码和提交说明不受影响
 COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行
-ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目已改的文件，供 worker 留意冲突（不写进评论）
+ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目的改动摘要和涉及的目录，供 worker 留意冲突（不写进评论）
+CONCURRENT_WORK_MAX_BYTES | 评论 | int:2000:20000 | 6000 | edit | 进行中条目清单最多多少字节 | 上一项开着时，那份清单最多占这么多字节，超出只列前几条并写明还剩几条；只管清单，不管整份提示词
 PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒
 PENDING_HUMAN_CONFLICT_MAX_TRIES | 等人期间 | int:1:9223372036854775807 | 10 | edit | 冲突检查判不出时最多重试几轮 | 拉不下来、读不到 PR 等判不出的情况连续这么多轮，这一版就先不查了（目标分支或 PR 再动才重来）
