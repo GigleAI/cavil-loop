@@ -360,24 +360,67 @@ table_bad 某项单价缺字段 'mangle "$PT" ".table.models[\"claude-opus-5\"].
 table_bad 单价被改且校验和没跟着改 'mangle "$PT" ".table.models[\"claude-opus-5\"].input.price = 123" stale'
 
 # 只换顺序、内容不变（复审第 2 轮）：输出的字节跟着键顺序走，所以缓存命中必须连顺序都和全量一样
+# reorder_proof A B：两份 JSON 的内容相同（不计顺序）、键路径按文档原样的顺序不同 → 「重排了」。
+# 只比内容和键的先后，不比字节：两边换一个格式化工具（空格、缩进）也认不成「重排」（复审第 3 轮）
+reorder_proof() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+def keys(v, path=""):
+    if isinstance(v, list):
+        out = []
+        for i, x in enumerate(v):
+            out += keys(x, f"{path}[{i}]")
+        return out
+    if isinstance(v, dict):
+        out = []
+        for k, x in v.items():
+            out.append(f"{path}/{k}")
+            out += keys(x, f"{path}/{k}")
+        return out
+    return []
+a, b = (json.load(open(f, encoding="utf-8")) for f in sys.argv[1:3])
+same_content = a == b                     # dict 比较不看顺序
+print("重排了" if same_content and keys(a) != keys(b)
+      else "内容不同" if not same_content else "顺序没变")
+PY
+}
+# same_order A B：两份 JSON 的键路径顺序完全一样（命中的输出连顺序都等于全量）
+same_order() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+def keys(v, path=""):
+    if isinstance(v, list):
+        return [k for i, x in enumerate(v) for k in keys(x, f"{path}[{i}]")]
+    if isinstance(v, dict):
+        return [k for kk, x in v.items() for k in [f"{path}/{kk}"] + keys(x, f"{path}/{kk}")]
+    return []
+a, b = (json.load(open(f, encoding="utf-8")) for f in sys.argv[1:3])
+print("一样" if keys(a) == keys(b) else "不一样")
+PY
+}
 FP="$TMP/cache/cavil-loop/fetched-prices.json"
 cp "$FP" "$TMP/fp.orig"
 tbl "$TMP/o0.json"
 jq -S . "$TMP/fp.orig" > "$FP"
+chk "抓来的价文件确实只是重排（内容相同、键的先后不同）" "$(reorder_proof "$TMP/fp.orig" "$FP")" "重排了"
 tbl "$TMP/o1.json"; ref "$TMP/o1r.json"
 same "抓来的价只换了键顺序：带缓存 = 同输入全量" "$TMP/o1.json" "$TMP/o1r.json"
-chk "抓来的价换顺序确实改变了输出的字节（这一条测得到东西）" \
-    "$(cmp -s "$TMP/o1.json" "$TMP/o0.json" && echo 没变 || echo 变了)" "变了"
+chk "抓来的价换顺序确实改变了输出的键顺序（这一条测得到东西）" "$(reorder_proof "$TMP/o0.json" "$TMP/o1.json")" "重排了"
+chk "抓来的价换顺序：带缓存的输出与全量的键顺序一样" "$(same_order "$TMP/o1.json" "$TMP/o1r.json")" "一样"
 chk "抓来的价换顺序：日志不用重读" "$(opens "$TMP/o1.json")" "0"
 cp "$TMP/fp.orig" "$FP"
 tbl "$TMP/o2.json"
 same "抓来的价换回原顺序：又与原来一致" "$TMP/o2.json" "$TMP/r9.json"
-jq -S . "$PT" > "$TMP/pt.tmp" && mv "$TMP/pt.tmp" "$PT"
+cp "$PT" "$TMP/pt.orig"
+jq -S . "$TMP/pt.orig" > "$PT"
+chk "反解结果缓存文件确实只是重排（比改写前后的同一个文件）" "$(reorder_proof "$TMP/pt.orig" "$PT")" "重排了"
+chk "重排后的缓存里，价目表本身的键顺序确实变了（不只是外层）" \
+    "$(jq '.table' "$TMP/pt.orig" > "$TMP/pt.a"; jq '.table' "$PT" > "$TMP/pt.b"; reorder_proof "$TMP/pt.a" "$TMP/pt.b")" "重排了"
 tbl "$TMP/o3.json"
 same "反解结果缓存只换了键顺序：重新反解，结果一致" "$TMP/o3.json" "$TMP/r9.json"
-chk "反解结果缓存换顺序前后输出确实不同（这一条测得到东西）" \
-    "$(jq -S -c . "$TMP/r9.json" | cmp -s - "$TMP/r9.json" && echo 没变 || echo 变了)" "变了"
-corrupt 样本缓存只换了键顺序 'jq -S . "$(SC)" > "$TMP/sc.tmp" && mv "$TMP/sc.tmp" "$(SC)"'
+chk "反解结果缓存换顺序后：输出的键顺序与全量一样" "$(same_order "$TMP/o3.json" "$TMP/r9.json")" "一样"
+corrupt 样本缓存只换了键顺序 'cp "$(SC)" "$TMP/sc.orig"; jq -S . "$TMP/sc.orig" > "$(SC)"; cp "$(SC)" "$TMP/sc.reordered"'
+chk "样本缓存文件确实只是重排（比改写前后的同一个文件）" "$(reorder_proof "$TMP/sc.orig" "$TMP/sc.reordered")" "重排了"
 
 # 缓存目录不可写（XDG_CACHE_HOME 指到一个普通文件）：结果照旧，只是每次都全量
 : > "$TMP/notadir"
