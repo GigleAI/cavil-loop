@@ -24,7 +24,8 @@ P="${STEP_ARGS[0]:-}"
 [ "${#STEP_ARGS[@]}" -eq 1 ] || usage_bad=1
 case "$P" in ''|*[!0-9]*) usage_bad=1 ;; esac
 
-step_start
+# the start marker is the only proof the caller has that nothing was sent: no marker, no request
+step_start || exit 65
 
 if [ "$usage_bad" -ne 0 ]; then
     step_result '{"step":"conflict-check","status":"usage","diag":"usage:bad-arguments"}'

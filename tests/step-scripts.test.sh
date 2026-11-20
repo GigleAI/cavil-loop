@@ -46,7 +46,7 @@ CONF
 mkdir -p "$TMP/state" "$TMP/wt" "$TMP/project/.agents/skills/cavil-loop" "$TMP/home"
 cp -r "$REPO_DIR/.agents/skills/cavil-loop/prompts" "$TMP/project/.agents/skills/cavil-loop/prompts"
 export HOME="$TMP/home"
-unset CODING_AGENT_RELEASE_ROOT CODING_AGENT_RELEASE_LEASE_FD
+unset CODING_AGENT_RELEASE_ROOT CODING_AGENT_RELEASE_LEASE_FD CAVIL_DEPLOY_ROOT DISPATCH_PROMPT_KIND DISPATCH_WORKER_AGENT
 export CODING_AGENT_CONFIG="$TMP/cavil.config"
 exec 8>&2
 # shellcheck source=../scripts/_lib.sh
@@ -119,27 +119,44 @@ else chk "入口不可读：RESULT=not-started" "$(line "$out" 2)" "RESULT=not-s
 chmod 644 "$TMP/unread/flip-label.sh"
 
 # 替身脚本：发了请求之后才出事的各种情况
-STAND="$TMP/stand"; mkdir -p "$STAND"
-stand() {   # <名字> <脚本体>；替身放在 $STAND/<名字>.sh
-    printf '#!/usr/bin/env bash\n%s\n' "$2" > "$STAND/$1.sh"
+# 替身：每种情况一个目录，里面的 flip-label.sh 是替身，结果核对规则是仓库里那一份
+OK='{"step":"flip-label","status":"done","labels":[]}'
+stand() {   # <情况> <脚本体>；之后用 $TMP/defs-<情况>.sh 调它
+    mkdir -p "$TMP/stand-$1"; cp "$REPO_DIR/scripts/step-result.jq" "$TMP/stand-$1/"
+    printf '#!/usr/bin/env bash\n%s\n' "$2" > "$TMP/stand-$1/flip-label.sh"
+    defs "$TMP/composed-review.md" "$TMP/stand-$1" > "$TMP/defs-$1.sh"
 }
-defs "$TMP/composed-review.md" "$STAND" > "$TMP/defs-stand.sh"
+sv() { run "$TMP/defs-$1.sh" "cavil_step flip-label 7"; }   # 跑某个替身
 stand req127 'printf "STARTED\n" >&3; gh api -X POST repos/acme/widget/issues/7/labels -f "labels[]=pending/human" >/dev/null 3>&-; exec bash -c "exit 127" 3>&-'
-stand half 'printf "STARTED\n{\"step\":\"x\",\"sta" >&3'
-stand two 'printf "STARTED\n{\"status\":\"done\"}\n{\"status\":\"done\"}\n" >&3'
-stand nomark 'printf "{\"status\":\"done\"}\n" >&3'
-stand noisy 'echo "EXIT=9"; echo "RESULT=none" >&2; echo "{\"status\":\"forged\"}"; printf "STARTED\n{\"status\":\"done\"}\n" >&3'
-stand nz 'printf "STARTED\n{\"status\":\"done\"}\n" >&3; exit 3'
+stand half 'printf "STARTED\n{\"step\":\"flip-label\",\"sta" >&3'
+stand two "printf 'STARTED\n%s\n%s\n' '$OK' '$OK' >&3"
+stand nomark "printf '%s\n' '$OK' >&3"
+stand noisy "echo 'EXIT=9'; echo 'RESULT=none' >&2; echo '$OK'; printf 'STARTED\n%s\n' '$OK' >&3"
+stand nz "printf 'STARTED\n%s\n' '$OK' >&3; exit 3"
+stand other 'printf "STARTED\n%s\n" "{\"step\":\"conflict-check\",\"status\":\"clean\",\"base\":\"main\",\"head\":\"x\"}" >&3'
+stand badstatus 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"clean\",\"labels\":[]}" >&3'
+stand nofield 'printf "STARTED\n%s\n" "{\"step\":\"flip-label\",\"status\":\"not-done\",\"labels\":[]}" >&3'
 reset_gh doing/agent
-out=$(run "$TMP/defs-stand.sh" "cavil_step req127 7")
+out=$(sv req127)
 chk "发请求后以 127 退出：RESULT=none（没跑完，不是没启动）" "$(line "$out" 1)|$(line "$out" 2)" "EXIT=127|RESULT=none"
 chk "  ……假 GitHub 确实收到了那个请求" "$(labels_now)" "doing/agent,pending/human"
-chk "结果写一半：RESULT=none" "$(line "$(run "$TMP/defs-stand.sh" "cavil_step half 7")" 2)" "RESULT=none"
-chk "两个对象：RESULT=none" "$(line "$(run "$TMP/defs-stand.sh" "cavil_step two 7")" 2)" "RESULT=none"
-chk "没有启动标记：RESULT=none" "$(line "$(run "$TMP/defs-stand.sh" "cavil_step nomark 7")" 2)" "RESULT=none"
-out=$(run "$TMP/defs-stand.sh" "cavil_step noisy 7")
-chk "脚本输出里混着 EXIT= / RESULT= / 伪造 JSON：只有调用行的两行" "$out" "$(printf 'EXIT=0\n{"status":"done"}\nSENTINEL')"
-chk "写好结果后非零退出：EXIT=3（按规则算没跑完）" "$(line "$(run "$TMP/defs-stand.sh" "cavil_step nz 7")" 1)" "EXIT=3"
+chk "结果写一半：RESULT=none" "$(line "$(sv half)" 2)" "RESULT=none"
+chk "两个对象：RESULT=none" "$(line "$(sv two)" 2)" "RESULT=none"
+chk "没有启动标记：RESULT=none" "$(line "$(sv nomark)" 2)" "RESULT=none"
+out=$(sv noisy)
+chk "脚本输出里混着 EXIT= / RESULT= / 伪造 JSON：只有调用行的两行" "$out" "$(printf 'EXIT=0\n%s\nSENTINEL' "$OK")"
+chk "写好结果后非零退出：EXIT=3（按规则算没跑完）" "$(line "$(sv nz)" 1)" "EXIT=3"
+chk "别的脚本的结果：RESULT=none" "$(line "$(sv other)" 2)" "RESULT=none"
+chk "本脚本没有的 status：RESULT=none" "$(line "$(sv badstatus)" 2)" "RESULT=none"
+chk "缺了 status 承诺的字段：RESULT=none" "$(line "$(sv nofield)" 2)" "RESULT=none"
+
+# 启动标记写不出去（第 3 号输出被关掉）：脚本必须在发任何请求之前退出
+reset_gh doing/agent
+rc=0; ( cd "$TMP" && bash "$REPO_DIR/scripts/flip-label.sh" --result-fd 3 --repo acme/widget 7 --add pending/human --remove doing/agent 3>&- >/dev/null 2>&1 ) || rc=$?
+chk "启动标记写失败：退出 65，假 GitHub 一个请求都没收到，标签原样" "$rc|$(n_calls 'api')|$(labels_now)" "65|0|doing/agent"
+reset_gh doing/agent
+out=$(run "$DEF" "flip_label 7 --add pending/human --remove doing/agent")
+chk "  ……对照：通道开着时同一条命令确实发了请求" "$(status_of "$out")|$([ "$(n_calls 'api')" -gt 0 ] && echo sent)" "done|sent"
 
 echo "── 2. 翻标签的交接契约 ──"
 reset_gh doing/agent; touch "$G/F_post_labels"
@@ -211,6 +228,50 @@ touch "$G/F_pulls_7_comments"
 out=$(run "$TMP/defs-pr.sh" "cavil_step pr-feedback 7")
 chk "一个来源读不到：error，不给任何评论记录" "$(line "$out" 2 | jq -r '"\(.status) \(.stage) \(has("comments"))"')" "error read-inline false"
 
+# 分页：上面那个假 GitHub 不带页码时一次给全部，测不出「漏了 --paginate」。这里换一个只服务
+# 读评论的假 gh，照真 gh 的样子：不带 --paginate 只给第 1 页（每页 30 条），带上时逐页跑 --jq 再接起来；
+# PAGEFAIL_<来源>_<页> 文件里写着还要失败几次（页 2 失败一次后重试能读全，一直失败就是读不全）
+PG="$TMP/pg"; mkdir -p "$PG/bin" "$PG/d"
+cat > "$PG/bin/gh" <<'GH'
+#!/usr/bin/env python3
+import json, os, subprocess, sys
+d = os.environ["PG_DIR"]; a = sys.argv[1:]
+open(os.path.join(d, "calls.log"), "a").write(" ".join(a) + "\n")
+pag = "--paginate" in a
+jq = a[a.index("--jq") + 1] if "--jq" in a else "."
+path = [x for x in a if x.startswith("repos/")][0]
+src = {"issues/7/comments": "conv", "pulls/7/comments": "inline", "pulls/7/reviews": "reviews"}[path.split("acme/widget/", 1)[1]]
+items = json.load(open(os.path.join(d, src + ".json")))
+pages = [items[i:i + 30] for i in range(0, len(items), 30)] or [[]]
+for n, page in enumerate(pages if pag else pages[:1], 1):
+    f = os.path.join(d, "PAGEFAIL_%s_%d" % (src, n))
+    if os.path.exists(f):
+        left = int(open(f).read() or 0)
+        if left > 0:
+            open(f, "w").write(str(left - 1))
+            sys.stderr.write("gh: Server Error (HTTP 502)\n"); sys.exit(1)
+    r = subprocess.run(["jq", "-c", jq], input=json.dumps(page), capture_output=True, text=True)
+    sys.stdout.write(r.stdout)
+GH
+chmod +x "$PG/bin/gh"
+# 35 条对话评论：agent 自己那条带勾选题的旧评论在第 2 页（第 32 条），人后来编辑勾了 B
+jq -n '[range(1; 36) | {id: (100 + .), user: {login: "h"}, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", body: "c\(.)"}]
+       | .[31] = {id: 132, user: {login: "loop-bot"}, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-05T00:00:00Z", body: "**Q1**\n- [ ] A\n- [x] B"}' > "$PG/d/conv.json"
+jq -n '[range(1; 33) | {id: (200 + .), user: {login: "h"}, created_at: "2026-01-01T00:00:00Z", path: "a.sh", line: ., body: "i\(.)"}]' > "$PG/d/inline.json"
+echo '[]' > "$PG/d/reviews.json"
+pgrun() { ( PATH="$PG/bin:$PATH" PG_DIR="$PG/d" run "$TMP/defs-pr.sh" "cavil_step pr-feedback 7" ); }
+r=$(line "$(pgrun)" 2)
+chk "分页：35 条对话 + 32 条行内全部读到" "$(jq -r '"\(.status) \([.comments[]|select(.source=="conversation")]|length) \([.comments[]|select(.source=="inline")]|length)"' <<<"$r")" "ok 35 32"
+chk "分页：第 2 页上被勾选的旧评论认得出，正文是勾选后的" "$(jq -r '.comments[] | select(.id==132) | "\(.edited) \(.has_checkbox) \(.body|test("\\[x\\] B"))"' <<<"$r")" "true true true"
+chk "  ……对照：不带 --paginate 的同一个请求只拿得到 30 条" "$(PATH="$PG/bin:$PATH" PG_DIR="$PG/d" gh api repos/acme/widget/issues/7/comments --jq '.[] | .id' | wc -l | tr -d ' ')" "30"
+echo 1 > "$PG/d/PAGEFAIL_conv_2"
+r=$(line "$(pgrun)" 2)
+chk "第 2 页失败一次：脚本重试后读全" "$(jq -r '"\(.status) \([.comments[]|select(.source=="conversation")]|length)"' <<<"$r")" "ok 35"
+echo 99 > "$PG/d/PAGEFAIL_conv_2"
+r=$(line "$(pgrun)" 2)
+chk "第 2 页一直失败：error，不交出半份记录" "$(jq -r '"\(.status) \(.stage) \(has("comments"))"' <<<"$r")" "error read-conversation false"
+rm -f "$PG/d/PAGEFAIL_conv_2"
+
 echo "── 4. footer --body ──"
 printf '## 正文\n\n一段话\n' > "$TMP/body.md"
 FOOT="$REPO_DIR/scripts/drivers/token-usage/comment_footer.py"
@@ -232,9 +293,9 @@ for s in flip-label conflict-check pr-feedback _step; do
 done
 for s in flip-label conflict-check pr-feedback; do
     f="$REPO_DIR/scripts/$s.sh"
-    st=$(grep -n '^step_start$' "$f" | head -1 | cut -d: -f1)
+    st=$(grep -n '^step_start || exit 65$' "$f" | head -1 | cut -d: -f1)
     req=$(grep -nE '(^|[[:space:]])(step_gh|step_git|gh|git) ' "$f" | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)
-    if [ -n "$st" ] && [ -n "$req" ] && [ "$st" -lt "$req" ]; then ok "$s.sh 在第一个请求之前写启动标记"
+    if [ -n "$st" ] && [ -n "$req" ] && [ "$st" -lt "$req" ]; then ok "$s.sh 在第一个请求之前写启动标记，写不出去就退出"
     else bad "$s.sh 的启动标记不在第一个请求之前" "step_start 第 ${st:-?} 行，第一个请求第 ${req:-?} 行"; fi
 done
 rest=$(grep -ln 'REST 翻' "$REPO_DIR"/prompts/*.md 2>/dev/null | xargs -r -n1 basename)

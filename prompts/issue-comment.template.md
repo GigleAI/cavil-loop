@@ -17,13 +17,13 @@ cavil_step() {
     out=$(bash '${CAVIL_STEP_DIR}'/"$1".sh --result-fd 3 --repo '${REPO}' "${@:2}" 3>&1 >/dev/null 2>&1) || rc=$?
     echo "EXIT=$rc"
     if [ -z "$out" ]; then echo "RESULT=not-started"
-    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1
+    elif [ "${out%%$'\n'*}" = STARTED ] && printf '%s' "${out#*$'\n'}" | jq -se --arg s "$1" -f '${CAVIL_STEP_DIR}/step-result.jq' >/dev/null 2>&1
     then printf '%s' "${out#*$'\n'}" | jq -c .; else echo "RESULT=none"; fi
 }
 flip_label() { cavil_step flip-label "$@"; }   # flip_label <编号> --add <标签>… --remove <标签>…
 ```
 
-**读结果**：`RESULT=not-started` = 没启动，确定没发请求；`EXIT=0` 加一行 JSON = 按其 `status` 做；其余 = 没跑完，结果未知。脚本已重试过，不要重跑。评论里只写结果的 `status`、`stage`、`diag`、标签名、冲突文件名。
+**读结果**：`RESULT=not-started` = 没启动，确定没发请求；`EXIT=0` 加一行 JSON（已核对是这个脚本的、`status` 和字段齐全）= 按其 `status` 做；其余 = 没跑完，结果未知。脚本已重试过，不要重跑。评论里只写结果的 `status`、`stage`、`diag`、标签名、冲突文件名。
 
 **翻标签**：交接后要留着的标签也写进 `--add`。脚本先加、读回确认后才删，读回达到目标才是 `done`；`usage` = 命令写错，改正重跑。其余结果不说交接完成、不再写任何标签，留言如实写明后停下：`not-done` 抄 `missing` / `still_on`；`unknown` 写「标签状态读不到」并抄 `writes`；没启动写「脚本没能启动，确定没发请求，标签未改」；没跑完写退出码和「结果未知」。
 

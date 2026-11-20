@@ -10015,11 +10015,12 @@ _MANAGED_FOOTER="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypo
 COMMENT_FOOTER_CMD="bash '$COMMENT_FOOTER_SCRIPT' --agent '$WORKER_AGENT' --driver '$AGENT_TOKEN_USAGE_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 随发布的步骤脚本（GitHub#599：翻标签 / 冲突检查 / 读 PR 评论，模板里的 cavil_step 用 ${CAVIL_STEP_DIR}）──
-# 同 footer 走长期入口；三个入口都装好了才用长期入口目录，缺任何一个（旧部署器装的入口）就用本次的 scripts/，
+# 同 footer 走长期入口；三个入口和结果核对规则 step-result.jq 都装好了才用长期入口目录，缺任何一个（旧部署器装的入口）就用本次的 scripts/，
 # 免得一个提示词里三条命令指向不同版本
 CAVIL_STEP_DIR="$_LIB_DIR"
 _MANAGED_STEP_DIR="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints"
-if [ -e "$_MANAGED_STEP_DIR/flip-label.sh" ] && [ -e "$_MANAGED_STEP_DIR/conflict-check.sh" ] && [ -e "$_MANAGED_STEP_DIR/pr-feedback.sh" ]; then
+if [ -e "$_MANAGED_STEP_DIR/flip-label.sh" ] && [ -e "$_MANAGED_STEP_DIR/conflict-check.sh" ] && [ -e "$_MANAGED_STEP_DIR/pr-feedback.sh" ] \
+   && [ -f "$_MANAGED_STEP_DIR/step-result.jq" ]; then
     CAVIL_STEP_DIR="$_MANAGED_STEP_DIR"
 fi
 

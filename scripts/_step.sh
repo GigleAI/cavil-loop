@@ -58,8 +58,9 @@ step_log() {
     return 0
 }
 
-# The first write to fd 3. Every script calls it before its first request.
-step_start() { printf 'STARTED\n' >&3; }
+# The first write to fd 3. Every script calls it before its first request and exits when it fails
+# (`step_start || exit 65`): a request sent after a failed marker would be reported as "not started".
+step_start() { printf 'STARTED\n' >&3 2>/dev/null; }
 
 # step_result <json>: the one and only result, compacted to a single line; the log path is added.
 # Called once, as the script's last action.

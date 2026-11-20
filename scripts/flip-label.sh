@@ -47,7 +47,8 @@ for l in "${ADDS[@]+"${ADDS[@]}"}"; do
     for r in "${REMOVES[@]+"${REMOVES[@]}"}"; do [ "$l" != "$r" ] || usage_bad=1; done
 done
 
-step_start
+# the start marker is the only proof the caller has that nothing was sent: no marker, no request
+step_start || exit 65
 
 if [ "$usage_bad" -ne 0 ]; then
     step_result '{"step":"flip-label","status":"usage","diag":"usage:bad-arguments"}'
