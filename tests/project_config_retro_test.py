@@ -16,6 +16,7 @@ model program got: it states the limit the retrospective really applies.
 
 Run by tests/project-config-poll.test.sh.
 """
+import json
 import os
 import re
 import subprocess
@@ -125,6 +126,47 @@ class RetroRuleLimit(_Retro):
 
     def test_zero_means_no_limit(self):
         self.assertEqual(self.limit_in_instruction('RETROSPECTIVE_RULE_MAX_CHARS="0"'), [])
+
+
+class RetroRuleLimitSameRule(_Retro):
+    """One batch of values through both real entries: the settings dialog's save
+    (scripts/project-config.sh set) and the retrospective (post-merge-retrospective.sh).
+    A value is accepted by both or by neither. An empty value is not in the batch: the
+    dialog never writes one for this setting (its type has no `empty`), and a hand-written
+    empty line means the default, like every other unset integer."""
+
+    VALUES = ('0', '1', '299', '300', '301', '100000', '100001', '0300', '00', '-1',
+              '+300', '3.5', '1e3', ' 300', 'abc', '99999999')
+
+    def save(self, value):
+        pc = str(base.REPO_DIR / 'scripts/project-config.sh')
+        env = {'HOME': str(self.t / 'home'), 'PATH': '/usr/bin:/bin'}
+        got = subprocess.run(['bash', pc, 'get', 'retro'], env=env, capture_output=True, text=True)
+        rev = json.loads(got.stdout)['rev']
+        body = '{"RETROSPECTIVE_RULE_MAX_CHARS": %s}' % json.dumps(value)
+        out = subprocess.run(['bash', pc, 'set', 'retro', '--rev', rev], input=body, env=env,
+                             capture_output=True, text=True).stdout
+        return out.strip().splitlines()[-1]
+
+    def test_dialog_save_and_retrospective_accept_the_same_values(self):
+        self.assertEqual(self.run_round(), 0, self.out)          # writes the config, finishes job 50
+        cfg = self.t / 'config'
+        plain = cfg.read_text()
+        reg = self.t / 'home/.config/cavil-loop'
+        reg.mkdir(parents=True, exist_ok=True)
+        (reg / 'retro.conf').write_text(f'PROJECT_ROOT={self.project}\nCODING_AGENT_CONFIG={cfg}\n')
+        verdicts = {}
+        for value in self.VALUES:
+            cfg.write_text(plain)
+            saved = self.save(value)
+            self.assertIn(saved, ('RESULT=saved', 'RESULT=invalid'), value)
+            self.extra_cfg = [f"RETROSPECTIVE_RULE_MAX_CHARS='{value}'"]
+            rc = self.run_round()
+            ran = rc == 0 and 'RETROSPECTIVE_RULE_MAX_CHARS must be' not in self.out
+            verdicts[value] = (saved == 'RESULT=saved', ran)
+        self.assertEqual({v: a for v, (a, b) in verdicts.items() if a != b}, {}, verdicts)
+        # both kinds really occurred
+        self.assertEqual({a for a, _ in verdicts.values()}, {True, False})
 
 
 class RetroSwitch(_Retro):

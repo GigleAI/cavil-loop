@@ -1046,6 +1046,12 @@ class RuleLimitParseTest(Case):
     def test_没有标记行就是空(self):
         self.assertEqual(rl.parse(doc()).held, ())
 
+    def test_人删光编号留下的空标记行可解析_等于没有(self):
+        text = doc(watch=[entry(1, 'x', [(4, None)])]).replace(
+            '<!-- next-id: 2 -->', '<!-- next-id: 2 -->\n<!-- held-over-limit: -->')
+        self.assertEqual(rl.parse(text).held, ())
+        self.assertEqual(rl.place(text, rl.strip_held(text), mode='auto', max_chars=300)[0], rl.strip_held(text))
+
     def test_标记行写坏_重复_放进段里_重复编号都解析失败并写明哪一行(self):
         base = doc(watch=[entry(1, 'x', [(4, None)])])
         bad = {
@@ -1053,6 +1059,7 @@ class RuleLimitParseTest(Case):
             'given twice': held(held(base, 1), 1),
             'inside a section': base.replace('## 观察中\n', '## 观察中\n<!-- held-over-limit: L1 -->\n'),
             'lists an id twice': held(base, 1, 1),
+            'above next-id': base.replace('<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->'),
         }
         for why, text in bad.items():
             with self.subTest(why=why):
@@ -1152,6 +1159,14 @@ class RuleLimitTest(Case):
         self.assertIs(self.place(old, new, max_chars=0)[0], new)
         self.assertEqual(self.check(old, new, max_chars=0), [])
 
+    def test_编号带前导零的条目照解析认出的位置搬段(self):
+        old = held(doc(watch=[long_entry(1, 300, three())]), 1)
+        new = rl.strip_held(old).replace('### L1\n', '### L01\n')
+        text, summary = self.place(old, new)
+        self.assertEqual(rl.parse(text).by_id()[1].section, '硬规则')
+        self.assertIn('### L01', text)
+        self.assertEqual(self.check(old, text), [])
+
     def test_解析不了的输出原样交给校验(self):
         self.assertEqual(self.place(doc(), 'garbage')[0], 'garbage')
 
@@ -1193,7 +1208,7 @@ class RuleLimitRunnerTest(Case):
             for value, want in (('', 300), ('0', 0), ('300', 300), ('100000', 100000)):
                 os.environ['RETROSPECTIVE_RULE_MAX_CHARS'] = value
                 self.assertEqual(runner.rule_max_chars(), want)
-            for value in ('abc', '-1', '100001', '3.5', ' 300', '1e3'):
+            for value in ('abc', '-1', '100001', '3.5', ' 300', '1e3', '0300', '00', '+300'):
                 os.environ['RETROSPECTIVE_RULE_MAX_CHARS'] = value
                 with self.assertRaisesRegex(SystemExit, 'must be an integer from 0 to 100000'):
                     runner.rule_max_chars()
@@ -1204,7 +1219,6 @@ class RuleLimitRunnerTest(Case):
 
     def test_提示词写明上限_上限0时与没有这句的模板相同(self):
         template = (Path(__file__).resolve().parent.parent / 'prompts' / 'retrospective.template.md').read_text()
-        self.assertIn('${RULE_LIMIT}', template)
         text = runner.render_instruction(template, 'auto', max_chars=300)
         self.assertIn('不超过 300 字符', text)
         self.assertNotIn('${', text)

@@ -164,7 +164,9 @@ def rule_max_chars():
     value = os.environ.get('RETROSPECTIVE_RULE_MAX_CHARS', '')
     if value == '':
         return lessons_format.RULE_MAX_CHARS_DEFAULT
-    if not re.fullmatch(r'[0-9]{1,6}', value) or int(value) > lessons_format.RULE_MAX_CHARS_LIMIT:
+    # Same shape as the settings dialog accepts (`int:` in scripts/project-config.sh: no leading
+    # zeros); tests/project_config_retro_test.py runs one batch of values through both entries.
+    if not re.fullmatch(r'0|[1-9][0-9]{0,5}', value) or int(value) > lessons_format.RULE_MAX_CHARS_LIMIT:
         raise SystemExit(f'RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to '
                          f'{lessons_format.RULE_MAX_CHARS_LIMIT}, not {value!r}')
     return int(value)

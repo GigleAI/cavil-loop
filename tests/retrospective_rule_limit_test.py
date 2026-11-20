@@ -145,6 +145,35 @@ class Limit(base.Sandbox):
         got = self.landed()
         self.assertEqual((got.by_id()[1].section, len(got.by_id()[1].seen), got.held), ('观察中', 4, ()))
 
+    def test_照报告删掉唯一的编号_下一轮照常跑完_条目留在观察中(self):
+        for how in ('只删编号', '删掉整行'):
+            with self.subTest(how=how):
+                self.tearDown(); self.setUp()
+                self.publish(lessons(301))
+                self.round()
+                text = self.on_origin(LESSONS)
+                self.assertIn('<!-- held-over-limit: L1 -->\n', text)   # the line the program wrote
+                edited = (text.replace('<!-- held-over-limit: L1 -->', '<!-- held-over-limit: -->')
+                          if how == '只删编号' else text.replace('<!-- held-over-limit: L1 -->\n', ''))
+                self.publish(edited)
+                job = self.round()
+                self.assertEqual(job['attempts'], 0)
+                got = self.landed()
+                self.assertEqual((got.by_id()[1].section, len(got.by_id()[1].seen), got.held), ('观察中', 4, ()))
+                self.assertNotIn('held-over-limit', self.on_origin(LESSONS))
+
+    def test_标记行挪到声明行上面_不调模型不计次(self):
+        self.publish(lessons(301))
+        self.round()
+        text = self.on_origin(LESSONS)
+        moved = text.replace('<!-- held-over-limit: L1 -->\n', '').replace(
+            '<!-- next-id: 2 -->', '<!-- held-over-limit: L1 -->\n<!-- next-id: 2 -->')
+        self.publish(moved)
+        calls = len(self.model_calls())
+        job = self.round(expect='pending')
+        self.assertEqual((job['attempts'], len(self.model_calls())), (0, calls))
+        self.assertIn('held-over-limit line above next-id', job['error'])
+
     def test_挡着期间仍超长就继续等(self):
         self.publish(lessons(301, seen=3, held='<!-- held-over-limit: L1 -->'))
         self.round()

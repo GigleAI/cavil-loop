@@ -81,9 +81,10 @@ FIELD = re.compile(r'^- (规则|适用|为什么|这样做是对的)：(.+)$')
 SEEN = re.compile(r'^- Seen (\d+)×:(.*)$')
 SIGHTING = re.compile(r'^#(\d+)(?: (https://\S+))?(?: \[([^\[\]]*)\])?$')
 HELD_PREFIX = '<!-- held-over-limit:'
-HELD = re.compile(r'^<!-- held-over-limit:((?: L\d+)+) -->$')
-HELD_FIX = ('expected one line `<!-- held-over-limit: L12 L34 -->` right under next-id, '
-            'or delete the line (then nothing held back is promoted later)')
+# Zero ids is allowed: a human deleting the last id from the line leaves `<!-- held-over-limit: -->`.
+HELD = re.compile(r'^<!-- held-over-limit:((?: L\d+)*) -->$')
+HELD_FIX = ('expected one line `<!-- held-over-limit: L12 L34 -->` right under next-id '
+            '(ids may be deleted, down to none), or delete the whole line')
 RULE_MAX_CHARS_DEFAULT = 300   # same default as RETROSPECTIVE_RULE_MAX_CHARS in the runner's shell entry
 RULE_MAX_CHARS_LIMIT = 100000
 DIR_HEADING = f'## {DIRS}'
@@ -144,6 +145,11 @@ def parse(text):
     marker = next((i for i, line in enumerate(lines) if NEXT_ID.match(line)), None)
     if marker is None:
         raise LessonsError('missing <!-- next-id: N --> marker (old-format lessons file?)')
+    for n, line in enumerate(lines[:marker], 1):
+        if line.startswith(HELD_PREFIX):
+            # Caught here, before the model call: strip_held would otherwise hide it and the
+            # preamble check would reject the model's output instead (one attempt wasted).
+            raise LessonsError(f'line {n}: held-over-limit line above next-id: {line[:80]!r}; {HELD_FIX}')
     preamble = '\n'.join(lines[:marker]).strip('\n')
     next_id = int(NEXT_ID.match(lines[marker])[1])
     entries, section, current, seen_sections, held, held_line = [], None, None, [], (), None
@@ -525,7 +531,8 @@ def promotion_plan(old, new, max_chars):
 
 def _block(lines, entry_id):
     """(start, end) of entry `### L<id>`: its lines up to the next heading, trailing blanks excluded."""
-    start = lines.index(f'### L{entry_id}')
+    # Found the way `parse` finds it (`### L01` is entry 1 too), never by spelling the heading.
+    start = next(k for k, line in enumerate(lines) if (m := ENTRY.match(line)) and int(m[1]) == entry_id)
     end = start + 1
     while end < len(lines) and not lines[end].startswith(('### ', '## ')):
         end += 1
@@ -542,7 +549,7 @@ def _move(lines, entry_id, section):
         del lines[start - 1]
     elif start == len(lines) and start > 0 and not lines[start - 1].strip():
         del lines[start - 1]
-    heading = lines.index(f'## {section}')
+    heading = next(k for k, line in enumerate(lines) if (m := SECTION.match(line)) and m[1] == section)
     nxt = next((k for k in range(heading + 1, len(lines)) if lines[k].startswith('## ')), len(lines))
     last = max(k for k in range(heading, nxt) if lines[k].strip())
     lines[last + 1:last + 1] = [''] + block
@@ -617,7 +624,8 @@ def summary_markdown(summary):
     if summary['held'] or summary['still']:
         out += ['', '处理办法：人手把这条的「规则」「适用」「为什么」压到上限以内（改经验文件），'
                 '或调高上限 / 改成 0（不限），下一次复盘会自动补升；想让它一直留在「观察中」，'
-                '就从经验文件 next-id 下面那行 `<!-- held-over-limit: … -->` 里删掉它的编号。']
+                '就从经验文件 next-id 下面那行 `<!-- held-over-limit: … -->` 里删掉它的编号'
+                '（删到一个编号都不剩时，留下 `<!-- held-over-limit: -->` 或删掉整行都可以）。']
     return '\n'.join(out) + '\n'
 
 
