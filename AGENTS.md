@@ -417,16 +417,22 @@ when every expected unit passed exactly once across the shards (`--verify`). Tha
 require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
 
 - **The whole suite runs on CI, not on the dev box** (GitHub#593). Workers and reviewers do not run
-  `bash tests/run.sh` without unit names (nor `--ci`, a `--shard`, or `--kind` over every kind) locally:
-  CI runs the whole suite on every push anyway, measured slightly faster (median 8.7 min over 98 first
-  attempts against 10.0 min over 68 local runs, 2026-11-07 to 11-19), and a local copy only adds load to
-  a machine other workers share. Locally run `bash tests/run.sh --quick` and the files the change touches
-  (`bash tests/run.sh NAME...` or `bash tests/NAME.test.sh`), plus the area tests listed below. The whole
-  suite's verdict is the PR's **测试** check (`gh pr checks <PR>`): a reviewer reads it there, never
-  asks the worker for a local full run, and never reruns one; a red check is a rejection like a red
-  local test. Files listed in `tests/ci-exclude.txt` are the exception — CI cannot run them, so when a
-  change touches what they test, run them locally. This is a rule about what agents choose to run, so
-  no lint or test checks it
+  `bash tests/run.sh` without unit names (nor `--ci`, a `--shard`, or `--kind` over every kind) locally.
+  The two take about as long (median 8.3 min over 241 first attempts of `Tests` on pull requests that
+  passed and whose summary log says "Selection: full run", against 10.4 min over 67 finished local runs
+  of `tests/run.sh` with no unit names, 2026-11-07 to 11-19; local runs vary from 3 to 30 min with the
+  load other workers put on the machine), and a local copy only adds to that load. Locally run
+  `bash tests/run.sh --quick` and the files the change touches (`bash tests/run.sh NAME...` or
+  `bash tests/NAME.test.sh`), plus the area tests listed below. What CI runs on a PR: `Tests` (check
+  **测试**) runs the whole shell suite, except when every changed file is a leaf file (docs, a test
+  file — next bullet), where it runs only what those files can reach, which is by design the whole of
+  what such a change can break; a PR that only touches `client/` does not start `Tests` at all and its
+  check is `Client`; every push to `main` runs the whole suite. So a reviewer reads the verdict from the
+  checks the PR actually got (`gh pr checks <PR>`) — 测试 for the shell tests, `Client` for `client/` —
+  never asks the worker for a local full run and never reruns one; a red check is a rejection like a red
+  local test, and a check still running is reported as such, never as passed. Files listed in
+  `tests/ci-exclude.txt` are the exception — CI cannot run them, so when a change touches what they
+  test, run them locally. This is a rule about what agents choose to run, so no lint or test checks it
 - **A docs / test-file-only PR runs only what it can reach** (GitHub#495). On a pull request every
   shard and the summary get `--changed-from origin/<base>`: the change is every file that differs
   between the merge-base and the PR head — the whole branch, never its last commit. When all of them
