@@ -2239,6 +2239,149 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 截图要带登录状态时，`scripts/review-screenshot.mjs --auth <文件>` 要求登录状态文件在被 git 忽略的路径里、且不在截图输出目录内，否则报错不截图；它改端口用的副本写在原件旁边（权限 600），结束、出错、被中断都会删掉。
 
+### 哪些项目的评论能出图
+
+公网出图地址按项目配：只有项目自己的 `~/.config/cavil-loop/<key>.conf` 里有一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`，这个项目的 worker 才拿得到地址；上面的公网入口是整台机器一份。没有这一行时，worker 拿到的派工说明是「本项目没有出图地址」，只能用文字描述图。不能改成把截图提交进仓库、再在评论里嵌 `github.com/<仓库>/blob|raw/…` 或 `raw.githubusercontent.com/…` 地址：私有仓库的这种地址 GitHub 不替它代理图片，没登录 GitHub 的人取不到图（实测返回 404），手机 GitHub app 能否显示未实测。worker 和复审的说明里都禁止这样嵌图；给一个注明「需登录 GitHub 才能看」的普通链接、再用文字描述，是允许的。
+
+给项目接入后，它的截图拿到地址的人都能打开（文件名带唯一戳、不列目录，但并不私密）。派工说明只允许放可公开的内容：登录后才看得到的页面、带个人信息（姓名、邮箱、账号、订单等）的页面、内部预览环境，一律不放，拿不准就改用文字描述。图片内容没有自动检查，这条靠 worker 自己判断、复审抽查。接不接入按项目逐个决定。
+
+给一个项目接入：在同一个终端里依次跑下面几段（第一段设好后面几段用的名字）。下一轮轮询起生效（每轮 timer 都重新启动服务，systemd 每次启动都重读这个文件）；已经在跑的 worker 仍用它拿到的旧说明。
+
+<!-- asset-url-ops:vars:begin -->
+```bash
+KEY=myproject      # the project to turn on / 要接入的项目: systemctl --user list-timers 'cavil-loop-poll@*'
+FROM=otherproject  # a project that already shows images / 已经能出图的项目
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+REC="$ENV_FILE.asset-url-added"   # the address this procedure added / 本流程加进去的地址
+LOCK="$ENV_FILE.asset-url.lock"   # add and revert hold it from first read to last write / 补地址和撤销从第一次读到最后一次写都持有它
+URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
+echo "URL=$URL"
+```
+<!-- asset-url-ops:vars:end -->
+
+<!-- asset-url-ops:add:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    if [ -z "$URL" ]; then
+        echo "STOP: no address in $FROM — nothing changed"
+    elif [ ! -w "$ENV_FILE" ]; then
+        echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
+    else
+        # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
+        # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
+        # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
+        # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
+        # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
+        LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
+        BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+        TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+        OLD="$ENV_FILE.replaced-$$"
+        if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
+        elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
+        elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+            && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$BAK"; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$BAK"; then
+            echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        else
+            rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:add:end -->
+
+<!-- asset-url-ops:check:begin -->
+```bash
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+added=$(cat "$REC" 2>/dev/null)
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words${added:+ (a leftover record will be cleared by add or revert)}"
+elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
+else echo "MISMATCH: ${n:-unreadable} line(s): $v (recorded / 记录: ${added:-none})"
+fi
+```
+<!-- asset-url-ops:check:end -->
+
+<!-- asset-url-ops:revert:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    added=$(cat "$REC" 2>/dev/null)
+    # Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
+    # 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
+    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
+        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
+    else
+        n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
+        v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
+        if [ "$n" = 0 ]; then
+            # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+            # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+            rm -f "$TMPF" "$SNAP"
+            if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+            else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+            fi
+        elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+            rm -f "$TMPF" "$SNAP"
+            echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+        elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
+            && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+            && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$SNAP"; then
+            rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$SNAP"; then
+            rm -f "$SNAP" "$REC"
+            echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
+            echo "REVERTED"
+        else
+            echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:revert:end -->
+
+看到什么算成功：补地址那段打印 `ADDED`、备份路径（同目录，权限 600；文件里有该项目的 GitHub 令牌，别打印内容）和记录文件 `<key>.conf.asset-url-added`，记录里是本流程写进去的地址；核对那段打印 `OK: <地址>`。要撤销，先跑第一段，再跑撤销那段：它拿这份记录比对——不拿另一个项目现在的地址比，那个地址之后可能换过——只删本次加的那一行，而且只在这样的行恰好一行、值仍等于记录的地址时才删；其他设置保持现在的样子（之后换过的令牌不会被改回去），记录随这一行一起删掉。没有记录就什么都不删。
+
+每种结果和下一步（任何一步失败，留下的状态都能用这几段继续处理）：
+
+| 那段打印 | 含义 | 下一步 |
+|---|---|---|
+| 补地址 `ADDED` | 地址行和记录都已写好 | 核对应打印 `OK` |
+| 补地址 `FAILED` | 配置文件没有改动——文件不存在、不可写、读不了，或写入失败（可能留下了记录） | 排除原因（例如腾出磁盘空间、或让文件可写）后重跑补地址那段——没有地址行的记录会被重写 |
+| 补地址 `STOP` | 没有可复制的地址、或已有地址行 | 什么都没改；去看文件 |
+| 补地址 / 撤销 `STOP: another add / revert … holds …` | 另一个终端正在对这个项目跑补地址或撤销，60 秒内没跑完 | 什么都没改；等那一段跑完再重跑这一段 |
+| 补地址 / 撤销 `FAILED: could not open … .asset-url.lock` | 配置旁边的锁文件建不了或打不开 | 什么都没改；让目录可写后重跑这一段 |
+| 补地址 / 撤销 `STOP: … was changed while this block ran` | 这段读完文件之后、替换之前，别处保存了这个文件 | 什么都没改，别处那次保存留着；重跑这一段 |
+| 补地址 / 撤销 `CONFLICT` | 别处恰好在替换的那一刻保存了；这一段的改动已生效，别处的改动在它点名的 `….replaced-<n>` 文件里 | 把那个文件里别处的改动手工抄进配置，再删掉它 |
+| 撤销 `REVERTED` | 加的那一行和记录都已删掉（或本来没有那一行，只清掉了遗留记录） | 核对打印 `NONE` |
+| 撤销 `PARTIAL` | 地址行已删，记录还在 | 再跑一次撤销，它会清掉记录 |
+| 撤销 `FAILED` | 什么都没删 | 排除原因后重跑撤销 |
+| 撤销 `STOP` | 那一行不是本流程加的、有多行、没有记录、或文件读不了 | 什么都没改；和维护者一起看文件 |
+
+配置文件只会被整份替换：补地址和撤销都先在同一目录写出完整的新文件、核对无误，再改名覆盖旧文件，所以写到一半出错（磁盘满、文件大小限制）时旧文件原样不动。新文件沿用旧文件的权限。同一项目的补地址和撤销不会交错：每段从第一次读到最后一次写都持有锁文件 `<key>.conf.asset-url.lock`（留在原处，是空文件），一段在跑时另一段会等它跑完。每一段都从文件的一份快照出发（补地址用的就是备份）：替换前文件必须仍等于这份快照，否则停下、什么都不改；替换后被换下的那份文件也必须仍等于它，否则说明中途有人保存过，这一段报 `CONFLICT` 并留下那份文件。查不出的情况：编辑器恰好在最后一次核对和替换之间、用改名的方式存盘——那次保存会丢。跑这几段时不要同时手改这个文件，也不要对这个项目跑 `setup.sh`。备份只供人工对照，不要拿它覆盖回去，那会把之后的所有改动一起撤掉。
+
 ## 升级到 webhook（即时触发）
 
 轮询有最坏 1 分钟延迟。要即时：
@@ -2748,7 +2891,11 @@ rm ~/.config/cavil-loop/$KEY.conf
 
 公开 cavil 仓库的 `prompts/lessons.md` 只保留经过独立审查、脱离项目也成立的公开流程原则。自动发布程序不会向 cavil 写入生成的项目内容、标识、链接或复盘。通用改进候选先保存在项目报告中，另行去项目化审查后才能公开。证据保存在来源项目和本机状态目录。
 
-项目经验是一本按 PR 计次的错题本（格式与校验见 `scripts/retrospective_lessons.py`）：每条规则有永久编号 `L<n>`，所在段落（`硬规则` / `待确认` / `观察中`）就是它的状态，`Seen N×` 列出出现过它的不同 PR。模型每次只能给规则追加**本次 PR** 的一次出现，并且必须附上本次采集到的某条评论 / review 的链接作为证据；已有规则的「规则」「适用」字段、编号和旧的出现记录都不能改，含义不同只能新开一条从 1 次起算。在 3 个不同 PR 里出现的规则由程序要求升级：`RETROSPECTIVE_PROMOTION=auto`（默认）直接进 `硬规则`，`confirm` 只进 `待确认`、由人手改文件挪进 `硬规则`。违反任何一条，整份输出作废。自审与交叉 review 模板要求逐条核对 `硬规则`。**派工说明里带的是裁过的版本（GitHub#208）**：计次格式的文件（有 `<!-- next-id: N -->` 这一行）只带开头说明，以及 `硬规则` / `待确认` 每条的编号、规则、适用、为什么；整段 `观察中`、每条的「这样做是对的」举例和 `Seen` 出现记录只留在文件里，末尾一句告诉 agent 去哪读。没有 `next-id` 行的文件（skill 自带的通用经验、手写的文件）原样带。文件本身不变，复盘照旧读写整份。项目里的 lessons.md 还是旧格式时，复盘在调模型之前就跳过、不计失败次数，一小时后再查，等项目迁移完自动补上。
+项目经验是一本按 PR 计次的错题本（格式与校验见 `scripts/retrospective_lessons.py`）：每条规则有永久编号 `L<n>`，所在段落（`硬规则` / `待确认` / `观察中`）就是它的状态，`Seen N×` 列出出现过它的不同 PR。模型每次只能给规则追加**本次 PR** 的一次出现，并且必须附上本次采集到的某条评论 / review 的链接作为证据；已有规则的「规则」「适用」字段、编号和旧的出现记录都不能改，含义不同只能新开一条从 1 次起算。在 3 个不同 PR 里出现、并且字数在下面所说的上限以内的规则由程序升级（超长的先留在 `观察中` 等着）：`RETROSPECTIVE_PROMOTION=auto`（默认）直接进 `硬规则`，`confirm` 只进 `待确认`、由人手改文件挪进 `硬规则`。违反任何一条，整份输出作废。自审与交叉 review 模板要求逐条核对 `硬规则`。**派工说明里带的是裁过的版本（GitHub#208）**：计次格式的文件（有 `<!-- next-id: N -->` 这一行）只带开头说明，以及 `硬规则` / `待确认` 每条的编号、规则、适用、为什么；整段 `观察中`、每条的「这样做是对的」举例和 `Seen` 出现记录只留在文件里，末尾一句告诉 agent 去哪读。没有 `next-id` 行的文件（skill 自带的通用经验、手写的文件）原样带。文件本身不变，复盘照旧读写整份。项目里的 lessons.md 还是旧格式时，复盘在调模型之前就跳过、不计失败次数，一小时后再查，等项目迁移完自动补上。
+
+**升档时的单条字数上限（GitHub#600）。** `RETROSPECTIVE_RULE_MAX_CHARS`（默认 300，`0` = 不限，留空 = 300）限制要升档的条目：「规则」「适用」「为什么」三栏合计的字符数（一个汉字算 1，不算 `- 规则：` 这类前缀）。挪段由复盘程序做，不靠模型：刚攒够 3 个 PR、字数在上限内的，进 `硬规则`（`auto`）或 `待确认`（`confirm`）；超了的留在 `观察中`，编号记进 next-id 正下方的一行 `<!-- held-over-limit: L12 L34 -->`，报告末尾由程序追加一段（编号、字数、上限、怎么处理），`retrospective.log` 也记一行（`rule length limit 300: held back L12(312)`）。模型可以把「为什么」改写短，那一轮就按改写后的字数判断；「规则」「适用」照旧不许模型改。被挡下的条目达标之后——人在主干上把它压短了、调高了上限、或改成 `0`——下一次复盘（任一 PR 合并后）就把它补升到当前模式对应的段，并从那一行去掉。想让某条一直留在 `观察中`，从那一行删掉它的编号；删的是最后一个编号时，留下空的 `<!-- held-over-limit: -->` 或删掉整行都可以，下一次复盘不再写这一行。还列着编号时删掉整行，所有被挡下的条目都不再补升。那一行里不够格的编号（找不到这条、不在 `观察中`、不足 3 个 PR——手工往里加编号不会让它升档）会被去掉，并在报告里列出。已经在 `硬规则` / `待确认` 的条目不量字数、也不会被挪回去。这一行不给模型看、不进派工说明；模型交回的文字里自己带了这一行，整份作废（计一次）。人手改坏了这一行（格式不对、出现两行、挪到了 next-id 上面或写进了段里），复盘在调模型之前就停下、不计失败次数、一小时后再查，任务的错误信息里写明是第几行——改对或删掉这一行即可。
+
+**上限填错了。** 填的不是 0–100000 之间、按普通十进制写的整数（不带正负号、不带前导 0：写 `300`，不是 `0300` 或 `+300`）时，每一轮复盘在读队列之前就停下：`retrospective.log` 末尾是 `RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to 100000 written without leading zeros, not '…'`，之后不再出现新的复盘记录；队列里每个任务的状态和重试次数都不变。在项目配置里把这一行改对（或删掉这一行，= 300；客户端「项目配置」弹窗里也能改）。成功的标志：下一轮轮询后 `retrospective.log` 出现 `retrospective PR #N started` / `committed` 这样的新记录，不再出现填错的那一行。不用手改任务文件：等着的任务按原来的重试次数接着跑。
 
 **目录经验与只复盘哪些 PR（GitHub#152 / #168）。** 项目配置里的 `RETROSPECTIVE_DIRECTORY_LESSONS` 是一个总开关，**默认打开**。打开时，复盘只处理「开关在本机生效那一刻及之后」合并的 PR；更早合并、还在队列里等的 PR 会在任务文件里标成 `skipped`（保留，不删），**永远不会被复盘**：没有复盘报告，也不计入任何经验次数。被处理的 PR 都可以写经验文件末尾的 `## 目录经验` 段，文件里没有这一段时复盘会自己补上。关掉开关时照旧复盘队列里所有 PR，不写目录经验（已有的这一段一字不改：根本不交给模型）。关掉再打开会重新计时，关着期间合并、还在排队的 PR 同样被跳过。开关写成 `true` / `false` 以外的值，复盘在读写任何东西之前就报错停下。每一轮先把整个队列分类一遍（所有未结束的任务，不看排队位置和重试时间；主干上已经有报告的算完成；合并时间或主干上的报告读不出的任务原样留到下一轮），再最多复盘一个。开始时间按机器记在 `$STATE_DIR/retrospectives/directory-lessons.json`（不进 `cursor.json`）；换机器或文件丢了，就从那一刻重新计时。开关打开时这个文件读不出或写不进，整个队列这一轮暂停（日志写明文件位置）——因为判断不了哪些该跳过。目录经验的条目格式与前三段一样、共用 `next-id`，区别是每次记录写明发生在哪些目录：`- Seen 2×: #1460 <链接> [server/credits/] · #1471 <链接> [server/credits/ · server/usage/]`。目录相对仓库根、以 `/` 结尾；每条新记录至少写一个，且必须是合并后目录树里真实存在的目录（不许绝对路径、`..`、`.git`、指出仓库的链接）。旧条目和旧记录（包括目录）一字不改；同一 PR 在一条里只记一次；把流程经验原样抄进这一段会被拒；模型自己加这个标题会被拒。这一段不参与升级，条目不进不出。各目录的次数由项目自己从记录里筛；派工拼说明时跳过这一段，这些经验只经项目自己的各层目录说明到达 agent。24000 字的上限算的是除这一段以外的整份文件（不是派工说明里裁过的版本），这一段另有 24000 字上限。
 

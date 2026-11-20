@@ -8,7 +8,7 @@
 //   MUTATION=1 bash test/tauri/mutations.sh
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, realpathSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,23 +65,84 @@ const MUTATIONS = [
   },
 ];
 
+/**
+ * Folders of client/ every entry's work copy holds besides src-tauri/ (GitHub#586): the back end
+ * compiles in files from them (src/i18n/en/*.json since the language switch), so a copy without
+ * them never compiles and no entry reaches its test.
+ */
+export const COPY_ALWAYS = ['src'];
+
+/** The sources every entry's copy holds, whatever it breaks: src-tauri/ without its build output (target/, gen/) plus COPY_ALWAYS. */
+export function copySources(work, from = root) {
+  cpSync(join(from, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
+  for (const d of COPY_ALWAYS) cpSync(join(from, d), join(work, d), { recursive: true });
+}
+
+/** An entry that breaks the window's own code rebuilds the window from the broken copy. */
+const isWindowCode = (m) => (m.file ?? MAIN).startsWith('src/');
+
+/**
+ * Everything an entry's work dir holds before its one edit: the shared sources, then what its shape
+ * needs — the window's build inputs (window code) or the built window, dist/ (shell code).
+ */
+export function prepareCopy(work, windowCode, from = root) {
+  copySources(work, from);
+  if (windowCode) {
+    for (const d of ['scripts', 'build']) cpSync(join(from, d), join(work, d), { recursive: true });
+    for (const f of ['package.json', 'tsconfig.json']) cpSync(join(from, f), join(work, f));
+    symlinkSync(join(from, 'node_modules'), join(work, 'node_modules'));
+  } else {
+    cpSync(join(from, 'dist'), join(work, 'dist'), { recursive: true });
+  }
+}
+
+const tailOf = (t) => (t ?? '').split('\n').slice(-8).join('\n');
+
+/**
+ * GitHub#586: an unbroken copy of each shape the entries use, made by prepareCopy, must compile —
+ * `cargo check`, the compiler's own answer about which files it reads (include_str!, #[path], modules,
+ * build scripts, macros), so no list of "what the back end reads" is kept anywhere. Run on every push
+ * by `npm run test:rust` (`node test/tauri/mutations.mjs --check-copy`), after the window and the icons
+ * are built. Each copy is made in a temporary folder exactly as one() makes an entry's, and removed after.
+ * Returns the problems, [] = every shape compiles.
+ */
+export function checkCopies({ from = root, shapes = [...new Set(MUTATIONS.map(isWindowCode))], targetDir = join(from, 'src-tauri', 'target') } = {}) {
+  const problems = [];
+  for (const windowCode of shapes) {
+    const shape = windowCode ? '改界面代码的项' : '改外壳代码的项';
+    // made where and how one() makes an entry's copy, so a read that leaves the copy lands where it would there
+    const work = mkdtempSync(join(tmpdir(), 'cavil-tauri-mut-'));
+    try {
+      prepareCopy(work, windowCode, from);
+      if (windowCode) {
+        const web = spawnSync(process.execPath, [join(work, 'scripts', 'build.mjs')], { cwd: work, encoding: 'utf8' });
+        if (web.status !== 0) {
+          problems.push(`${shape}：没改坏的副本构建窗口失败\n${tailOf(web.stderr)}`);
+          continue;
+        }
+      }
+      const r = spawnSync('cargo', ['check', '-q', '-p', 'cavil-loop-client'], { cwd: join(work, 'src-tauri'), env: { ...process.env, CARGO_TARGET_DIR: targetDir }, encoding: 'utf8' });
+      if (r.error) problems.push(`${shape}：cargo 跑不起来（${r.error.message}）`);
+      else if (r.status !== 0) problems.push(`${shape}：没改坏的副本编译不过\n${tailOf(r.stderr)}`);
+    } catch (e) {
+      problems.push(`${shape}：造副本失败（${e.message}）`);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+  return problems;
+}
+
+// where every entry's broken app is built and where test/tauri runs it from (one value for both)
 const target = process.env.CAVIL_TAURI_MUT_TARGET ?? join(root, 'src-tauri', 'target', 'tauri-mutation');
 
 /** One entry: copy, break, rebuild the real app, run test/tauri; 0 = red at the expected step. */
 function one(m) {
   const work = mkdtempSync(join(tmpdir(), 'cavil-tauri-mut-'));
   try {
-    cpSync(join(root, 'src-tauri'), join(work, 'src-tauri'), { recursive: true, filter: (s) => !/[\\/]src-tauri[\\/](target|gen)([\\/]|$)/.test(s) });
     const rel = m.file ?? MAIN;
-    // an entry that breaks the window's own code rebuilds the window from the broken copy
-    const windowCode = rel.startsWith('src/');
-    if (windowCode) {
-      for (const d of ['src', 'scripts', 'build']) cpSync(join(root, d), join(work, d), { recursive: true });
-      for (const f of ['package.json', 'tsconfig.json']) cpSync(join(root, f), join(work, f));
-      symlinkSync(join(root, 'node_modules'), join(work, 'node_modules'));
-    } else {
-      cpSync(join(root, 'dist'), join(work, 'dist'), { recursive: true });
-    }
+    const windowCode = isWindowCode(m);
+    prepareCopy(work, windowCode);
     const file = join(work, rel);
     const text = readFileSync(file, 'utf8');
     if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${rel}）：${m.what}`);
@@ -119,10 +180,27 @@ function fail(msg) {
 // Driven by test/tauri/mutations.sh, which passes every entry through tests/lib/mutation.sh's
 // mutation_gate (so "skipped N" and "ran N" come from the project's one counter):
 //   node mutations.mjs --count | --name I | --one I
+//   node mutations.mjs --check-copy  an unbroken copy of each entry shape compiles (run by npm run test:rust;
+//                                    not a negative control, so not behind MUTATION)
 //   node mutations.mjs --related   exit 0 = this change touches what these entries check, 1 = it does
 //                                  not (both print why), 2 = cannot tell (GitHub#178)
-const [cmd, arg] = process.argv.slice(2);
-if (cmd === '--count') console.log(MUTATIONS.length);
+// (imported by a test for COPY_ALWAYS: only the command line runs anything)
+const isMain = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+const [cmd, arg] = isMain ? process.argv.slice(2) : [];
+if (!isMain) {
+  // imported: nothing to do
+} else if (cmd === '--check-copy') {
+  const problems = checkCopies();
+  for (const p of problems) console.log(`❌ ${p}`);
+  if (!problems.length) console.log('✅ 真实窗口负对照的副本（没改坏）能编译');
+  process.exitCode = problems.length ? 1 : 0;
+} else if (cmd === '--count') console.log(MUTATIONS.length);
 else if (cmd === '--related') {
   const c = changedFiles(root);
   if (!c.ok) {
@@ -141,6 +219,6 @@ else if (cmd === '--one') {
   const m = MUTATIONS[Number(arg)];
   process.exitCode = m ? one(m) : fail(`没有第 ${arg} 项`);
 } else {
-  console.error('用法：由 test/tauri/mutations.sh 调用（--count | --name I | --related | --one I）');
+  console.error('用法：由 test/tauri/mutations.sh 调用（--count | --name I | --related | --one I），或 --check-copy');
   process.exitCode = 2;
 }

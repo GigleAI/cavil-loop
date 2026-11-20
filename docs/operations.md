@@ -2626,6 +2626,149 @@ Attachments that are not images / videos (the weekly-report PDF, …) are not pu
 
 For screenshots that need a login state, `scripts/review-screenshot.mjs --auth <file>` requires the file to be in a git-ignored path and outside the screenshot output directory, and refuses otherwise; the per-port copy it makes is written next to the original (mode 600) and removed on normal exit, on error and on interruption.
 
+### Which projects show images in comments
+
+A project's workers get the public address only when that project's own file `~/.config/cavil-loop/<key>.conf` has a `WEEKLY_REPORT_ASSET_ROOT_URL=` line; the public entry above is per machine, the address is per project. Without the line the worker prompt says "this project has no image address", and workers describe images in words. They must not fall back to committing screenshots into the repository and embedding `github.com/<repo>/blob|raw/…` or `raw.githubusercontent.com/…` addresses: for a private repository GitHub does not proxy those images, so anyone not signed in to GitHub gets no image (measured: HTTP 404); whether the GitHub mobile app shows it has not been tested. The worker and review prompts forbid it; a plain link marked "needs a GitHub login", plus a description in words, is allowed.
+
+Turning a project on makes its screenshots public to anyone who has the address (file names carry a unique stamp and nothing is listed, but nothing is private either). The prompts allow only public content there: no pages that need a login, no pages showing personal data (names, e-mail addresses, accounts, orders, …), no internal preview environments — when unsure, words instead. Nothing checks image content automatically; that rule rests on the worker and the reviewer's spot check. Decide per project.
+
+To turn one project on, run these in one terminal (the first block sets the names the others use). The change takes effect from the next poll round (each round starts the service, and systemd reads the file at every start); a worker already running keeps its old prompt.
+
+<!-- asset-url-ops:vars:begin -->
+```bash
+KEY=myproject      # the project to turn on / 要接入的项目: systemctl --user list-timers 'cavil-loop-poll@*'
+FROM=otherproject  # a project that already shows images / 已经能出图的项目
+ENV_FILE="$HOME/.config/cavil-loop/$KEY.conf"
+REC="$ENV_FILE.asset-url-added"   # the address this procedure added / 本流程加进去的地址
+LOCK="$ENV_FILE.asset-url.lock"   # add and revert hold it from first read to last write / 补地址和撤销从第一次读到最后一次写都持有它
+URL=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$HOME/.config/cavil-loop/$FROM.conf" | tr -d '"')
+echo "URL=$URL"
+```
+<!-- asset-url-ops:vars:end -->
+
+<!-- asset-url-ops:add:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    if [ -z "$URL" ]; then
+        echo "STOP: no address in $FROM — nothing changed"
+    elif [ ! -w "$ENV_FILE" ]; then
+        echo "FAILED: $ENV_FILE is not writable (or missing) — nothing changed; fix that and run this block again"
+    else
+        # Every decision and the new file come from ONE snapshot (the backup); right before the swap the file must
+        # still equal it, and the replaced file must still equal it right after — otherwise someone saved in between.
+        # 所有判断和新文件都只来自同一份快照（就是备份）；替换前文件必须仍等于它，替换后被换下的旧文件也必须仍等于它。
+        # A record with no address line is left over from a failed add or an unfinished revert; it is rewritten.
+        # 没有地址行却有记录：是上次接入失败或撤销没做完留下的，直接重写。
+        LINE="WEEKLY_REPORT_ASSET_ROOT_URL=\"$URL\""
+        BAK=$(mktemp "$ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)-XXXX") || BAK=
+        TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+        OLD="$ENV_FILE.replaced-$$"
+        if ! { [ -n "$BAK" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$BAK"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE could not be read — nothing changed"
+        elif [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$BAK")" != 0 ]; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE already has an address line — nothing changed"
+        elif ! { { cat "$BAK" && { [ -z "$(tail -c 1 "$BAK")" ] || echo; } && printf '%s\n' "$LINE"; } > "$TMPF" \
+            && [ "$(tail -n 1 "$TMPF")" = "$LINE" ] && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 1 ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$BAK"; then
+            rm -f "$TMPF" "$BAK"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ( umask 077 && printf '%s\n' "$URL" > "$REC" ) || ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$OLD" "$BAK"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$BAK"; then
+            echo "CONFLICT: ADDED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        else
+            rm -f "$OLD"; echo "ADDED (backup / 备份: $BAK; record / 记录: $REC)"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:add:end -->
+
+<!-- asset-url-ops:check:begin -->
+```bash
+n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$ENV_FILE")
+v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$ENV_FILE" | tr -d '"')
+added=$(cat "$REC" 2>/dev/null)
+if [ "$n" = 0 ]; then echo "NONE: no address — workers describe images in words${added:+ (a leftover record will be cleared by add or revert)}"
+elif [ "$n" = 1 ] && [ -n "$added" ] && [ "$v" = "$added" ]; then echo "OK: $v"
+else echo "MISMATCH: ${n:-unreadable} line(s): $v (recorded / 记录: ${added:-none})"
+fi
+```
+<!-- asset-url-ops:check:end -->
+
+<!-- asset-url-ops:revert:begin -->
+```bash
+# One add / revert at a time per project: a second one waits up to 60 s, then stops with nothing changed.
+# 同一项目同时只跑一个补地址 / 撤销：后来的最多等 60 秒，等不到就停下、什么都不改。
+(
+    flock -w 60 9 || { echo "STOP: another add / revert of $KEY holds $LOCK — nothing changed; run this block again"; exit 0; }
+    added=$(cat "$REC" 2>/dev/null)
+    # Every decision and the new file come from ONE snapshot, compared with the file again before and after the swap.
+    # 所有判断和新文件都只来自同一份快照，替换前后再和文件比对。
+    SNAP=$(mktemp "$ENV_FILE.snap-XXXXXX") || SNAP=
+    TMPF=$(mktemp "$ENV_FILE.XXXXXX") || TMPF=
+    OLD="$ENV_FILE.replaced-$$"
+    if ! { [ -n "$SNAP" ] && [ -n "$TMPF" ] && cat "$ENV_FILE" > "$SNAP"; }; then
+        rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE could not be read — nothing changed"
+    else
+        n=$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")
+        v=$(sed -n 's/^WEEKLY_REPORT_ASSET_ROOT_URL=//p' "$SNAP" | tr -d '"')
+        if [ "$n" = 0 ]; then
+            # Nothing to remove; only a leftover record (failed add, or a revert that stopped after removing the line) is cleared.
+            # 没有地址行：只清掉遗留的记录（接入失败、或撤销删了行后没删掉记录）。
+            rm -f "$TMPF" "$SNAP"
+            if rm -f "$REC" && [ ! -e "$REC" ]; then echo "REVERTED: no address line${added:+, leftover record cleared}"
+            else echo "FAILED: could not remove $REC — fix the cause and run this block again"
+            fi
+        elif [ -z "$added" ] || [ "$n" != 1 ] || [ "$v" != "$added" ]; then
+            rm -f "$TMPF" "$SNAP"
+            echo "STOP: $n address line(s), value '$v', recorded '${added:-none}' — not the line that was added; nothing changed, ask the maintainer"
+        elif ! { { grep -v '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP" > "$TMPF" || [ $? -eq 1 ]; } \
+            && [ "$(grep -c '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$TMPF")" = 0 ] \
+            && [ "$(wc -l < "$TMPF")" = "$(grep -vc '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$SNAP")" ] \
+            && chmod --reference="$ENV_FILE" "$TMPF"; }; then
+            rm -f "$TMPF" "$SNAP"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$ENV_FILE" "$SNAP"; then
+            rm -f "$TMPF" "$SNAP"; echo "STOP: $ENV_FILE was changed while this block ran — nothing changed; run it again"
+        elif ! ln "$ENV_FILE" "$OLD" || ! mv "$TMPF" "$ENV_FILE"; then
+            rm -f "$TMPF" "$SNAP" "$OLD"; echo "FAILED: $ENV_FILE not changed — fix the cause and run this block again"
+        elif ! cmp -s "$OLD" "$SNAP"; then
+            rm -f "$SNAP" "$REC"
+            echo "CONFLICT: REVERTED, but a change saved at the same moment is in $OLD — copy it into $ENV_FILE by hand, then delete $OLD"
+        elif rm -f "$SNAP" "$OLD" "$REC" && [ ! -e "$REC" ]; then
+            echo "REVERTED"
+        else
+            echo "PARTIAL: address line removed, record $REC left — run this block again to clear it"
+        fi
+    fi
+) 9>>"$LOCK" || echo "FAILED: could not open $LOCK — nothing changed"
+```
+<!-- asset-url-ops:revert:end -->
+
+Expected output: add prints `ADDED`, the backup path (mode 600, same directory; the file holds the project's GitHub token, so do not print it) and the record `<key>.conf.asset-url-added`, which keeps the address this procedure wrote; check prints `OK: <address>`. To turn it off again, run the first block and then revert: it compares with that record — never with the other project's current address, which may have changed since — and removes only the line that was added, only when there is exactly one such line and it still equals the recorded address; every other setting stays as it is now (a later token change survives), and the record is removed with the line. Without a record nothing is removed.
+
+Every outcome, and what to do next (a failed step never leaves a state the blocks cannot continue from):
+
+| Block prints | Meaning | Next |
+|---|---|---|
+| add `ADDED` | line and record written | check should print `OK` |
+| add `FAILED` | the file was not changed — it is missing, not writable or unreadable, or a write failed (a record may be left) | fix the cause (e.g. free disk space, or make the file writable) and run add again — a record without a line is rewritten |
+| add `STOP` | no address to copy, or the file already has an address line | nothing changed; look at the file |
+| add / revert `STOP: another add / revert … holds …` | another terminal is running add or revert for this project and did not finish within 60 s | nothing changed; let that one finish, then run this block again |
+| add / revert `FAILED: could not open … .asset-url.lock` | the lock file next to the configuration could not be created or opened | nothing changed; make the directory writable and run the block again |
+| add / revert `STOP: … was changed while this block ran` | someone saved the file after this block read it and before the swap | nothing changed, their save is kept; run the block again |
+| add / revert `CONFLICT` | someone saved the file at the very moment of the swap; this block's change is in place, theirs is in the `….replaced-<n>` file it names | copy their change from that file into the config by hand, then delete it |
+| revert `REVERTED` | the added line and the record are gone (or there was no line and only a leftover record was cleared) | check prints `NONE` |
+| revert `PARTIAL` | the line is gone, the record is still there | run revert again: it clears the record |
+| revert `FAILED` | nothing removed | fix the cause and run revert again |
+| revert `STOP` | the line is not the one that was added, there are several, there is no record, or the file cannot be read | nothing changed; look at the file with the maintainer |
+
+The configuration file is only ever replaced whole: add and revert write the complete new file next to it, check it, and only then rename it over the old one, so a write that fails or stops half-way (a full disk, a size limit) leaves the old file exactly as it was. The new file keeps the old file's permissions. Add and revert for the same project never overlap: each holds the lock file `<key>.conf.asset-url.lock` (left in place, it is empty) from its first read to its last write, and one started while the other runs waits for it. Each block works from one snapshot of the file (for add, the backup): right before the swap the file must still equal that snapshot, otherwise the block stops and changes nothing; right after the swap the file that was replaced must still equal it, otherwise a save landed in between and the block reports `CONFLICT` and keeps that file. Not caught: an editor that saves by renaming its own file in the instant between the last check and the swap — that save is lost. Do not edit the file, or run `setup.sh` for this project, while running these blocks. The backup is only for comparing by hand; do not copy it back over the file, that would undo every later change.
+
 ## Upgrading to webhooks (instant trigger)
 
 Polling has up to 1 minute of latency. For instant:
@@ -3330,7 +3473,11 @@ The collector reads associated issues, conversation comments, reviews and inline
 
 The public cavil repository only holds independently reviewed, project-neutral workflow rules in `prompts/lessons.md`. The automatic publisher never writes generated project content, identifiers, links or reports there. Generalization candidates stay in the project report until separately reviewed for public suitability. Report evidence remains in the source project and local state directory.
 
-Project lessons are a counted error book (format and checks: `scripts/retrospective_lessons.py`). Each rule has a permanent id `L<n>`; the section it sits in (`硬规则` hard rules / `待确认` awaiting confirmation / `观察中` watching) is its state, and `Seen N×` lists the distinct PRs it occurred in. A run may only add **this PR** to a rule, once, citing the URL of a comment / review collected for this PR. A rule's 规则/适用 (rule/applies) fields, its id and its earlier sightings are locked; a different meaning is a new rule starting from one. A rule reaching 3 distinct PRs must be promoted: `RETROSPECTIVE_PROMOTION=auto` (default) moves it into `硬规则`, `confirm` only into `待确认`, from where a human edit moves it on. Any violation voids the whole output. The self-review and cross-review templates check every hard rule one by one. **What a prompt gets is a trimmed copy (GitHub#208):** for a file in this counted format (it has the `<!-- next-id: N -->` line), dispatch and review prompts carry the preamble plus each `硬规则` / `待确认` entry's id, 规则, 适用 and 为什么; the whole `观察中` section, every 这样做是对的 example and every `Seen` line stay in the file only, and one closing line tells the agent where to read them. A file without the `next-id` line (the skill's public lessons, a hand-written file) goes in as it is. The file itself is unchanged and the retrospective still reads and rewrites all of it. While a project's lessons.md is still in the old format the run is skipped before the model call, without counting an attempt, and retried hourly until the project migrates it.
+Project lessons are a counted error book (format and checks: `scripts/retrospective_lessons.py`). Each rule has a permanent id `L<n>`; the section it sits in (`硬规则` hard rules / `待确认` awaiting confirmation / `观察中` watching) is its state, and `Seen N×` lists the distinct PRs it occurred in. A run may only add **this PR** to a rule, once, citing the URL of a comment / review collected for this PR. A rule's 规则/适用 (rule/applies) fields, its id and its earlier sightings are locked; a different meaning is a new rule starting from one. A rule reaching 3 distinct PRs is promoted when it is within the length limit described below (an over-long one waits in `观察中`): `RETROSPECTIVE_PROMOTION=auto` (default) moves it into `硬规则`, `confirm` only into `待确认`, from where a human edit moves it on. Any violation voids the whole output. The self-review and cross-review templates check every hard rule one by one. **What a prompt gets is a trimmed copy (GitHub#208):** for a file in this counted format (it has the `<!-- next-id: N -->` line), dispatch and review prompts carry the preamble plus each `硬规则` / `待确认` entry's id, 规则, 适用 and 为什么; the whole `观察中` section, every 这样做是对的 example and every `Seen` line stay in the file only, and one closing line tells the agent where to read them. A file without the `next-id` line (the skill's public lessons, a hand-written file) goes in as it is. The file itself is unchanged and the retrospective still reads and rewrites all of it. While a project's lessons.md is still in the old format the run is skipped before the model call, without counting an attempt, and retried hourly until the project migrates it.
+
+**Length limit on promotions (GitHub#600).** `RETROSPECTIVE_RULE_MAX_CHARS` (default 300, `0` = no limit, an empty value = 300) caps an entry being promoted: its 规则 + 适用 + 为什么 together, counted in characters (a CJK character is one; the `- 规则：` prefixes do not count). The retrospective program, not the model, places promotions: an entry that just reached 3 PRs and fits goes to `硬规则` (`auto`) or `待确认` (`confirm`); one over the limit stays in `观察中`, its id goes into one line right under next-id, `<!-- held-over-limit: L12 L34 -->`, and the report ends with a section the program writes (id, characters, limit, what to do), plus one line in `retrospective.log` (`rule length limit 300: held back L12(312)`). The model may rewrite 为什么 shorter, and then the entry is judged on the shorter text in the same run; 规则 / 适用 stay locked as always. Once a held entry fits — a human shortened it on the base branch, or raised the limit, or set it to `0` — the next retrospective (after any merged PR) promotes it into the section the current mode names and drops it from the line. To keep an entry in `观察中` for good, delete its id from the line; when it was the last id, either leave the empty line `<!-- held-over-limit: -->` or delete the whole line — both are fine, and the next retrospective writes no line at all. Deleting the whole line while it still lists ids stops every held entry from being promoted later. Ids on the line that do not qualify (no such entry, not in `观察中`, fewer than 3 PRs — typing an id there never promotes it) are dropped and listed in the report. Entries already in `硬规则` / `待确认` are never measured and never moved back. The line is never shown to the model and never goes into dispatch prompts; a model output that carries it is rejected (one attempt). A line a human edit broke (not of that form, given twice, moved above next-id or into a section) holds the retrospective before the model call, without counting an attempt, retried hourly, with the line number in the job's error — fix or delete the line.
+
+**If the limit is mistyped.** Anything but an integer from 0 to 100000 in plain decimal (no sign, no leading zeros: `300`, not `0300` or `+300`) stops every retrospective round before it reads the queue: `retrospective.log` ends with `RETROSPECTIVE_RULE_MAX_CHARS must be an integer from 0 to 100000 written without leading zeros, not '…'` and no new retrospective lines follow; no job's state or attempt count changes. Fix the line in the project config (or delete it, = 300; the desktop client's 项目配置 dialog edits it too). Success: after the next poll `retrospective.log` shows new lines such as `retrospective PR #N started` / `committed`, and the mistyped-value line no longer appears. No job file needs editing: the waiting jobs carry on with the attempt counts they had.
 
 **Directory lessons and which PRs get retrospected (GitHub#152 / #168).** `RETROSPECTIVE_DIRECTORY_LESSONS` in the project config is one switch, **on by default**. While it is on, the retrospective only handles PRs merged at or after the moment the switch took effect on this machine; PRs merged earlier that are still waiting in the queue are marked `skipped` in their job file (kept, not deleted) and **never retrospected**: no report, not counted in any lesson. Every PR it does handle may write the `## 目录经验` (directory lessons) section at the end of lessons.md, which the retrospective adds itself if it is missing. Turning the switch off retrospects every queued PR as before and never writes directory lessons (the section, if present, is kept byte for byte: the model is not shown it). Turning it off and on again starts counting anew, so PRs merged while it was off and still queued are skipped too. Any value other than `true` / `false` stops the run before it reads or writes anything. Each run first classifies the whole queue (every unfinished job, whatever its place or retry time; a PR whose report is already on the base branch counts as done; a job whose merge time or base-branch report cannot be read is left as it is for the next round), then retrospects at most one. The start time is kept per machine in `$STATE_DIR/retrospectives/directory-lessons.json` (never in `cursor.json`); a new machine or a lost file starts counting from then. If that file is unreadable or cannot be written while the switch is on, the whole queue pauses for that round (logged with the file's path) — it cannot tell which PRs to skip. Directory-lesson entries use the same format and share `next-id`, but every sighting names where it happened: `- Seen 2×: #1460 <url> [server/credits/] · #1471 <url> [server/credits/ · server/usage/]`. Directories are relative to the repository root and end in `/`; every new sighting must name at least one, each must be a real directory in the merged tree (no absolute paths, `..`, `.git`, or links out of the repository). Old entries and sightings, directories included, never change; a PR is counted once per entry; copying a process lesson verbatim into this section is rejected; a model adding the heading itself is rejected. The section never promotes and entries never move in or out of it. Per-directory counts are left to the project, and prompt composition leaves the section out, so these lessons reach agents only through the project's own per-directory instructions. The 24 000-character limit covers the whole file except this section (not the trimmed copy prompts get); this section has its own 24 000.
 
