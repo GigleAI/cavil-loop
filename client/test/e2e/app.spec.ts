@@ -12,6 +12,8 @@ import { startFakeGitHub, loadCavilProjectPages, loadCavilRepoIssues } from '../
 import { launchApp, closeEngine, type AppEnv } from './bridge';
 import { findCopies, gqlContent, handleGraphql, pullOf } from '../fake-github/writes';
 import { TASK_CHANGED as TASK_CHANGED193 } from '../../src/data/actions';
+import { PREVIEW_SANDBOX } from '../../src/renderer/detailHtml';
+import { PREVIEW_SCRIPT } from '../../src/renderer/frameScript';
 
 /** GitHub#467: switch a source's 在看板显示 in Settings (the board's top row no longer has check boxes), then back to the board */
 async function showSource(page: Page, selector: string, on: boolean) {
@@ -8026,8 +8028,11 @@ test('GitHub#381: code blocks — "复制" puts the block\'s exact text on the c
   await expect.poll(() => colour(preview.locator('.pl-k'))).toBe(light.keyword);
   expect(await colour(preview.locator('.pl-c'))).toBe(light.comment);
   await expect(preview.locator('button')).toHaveCount(0);
-  await expect(preview.locator('script')).toHaveCount(0);
-  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).not.toContain('allow-scripts');
+  // GitHub#590: the one script in the preview is its link script; the frame is still never same-origin
+  await expect(preview.locator('script')).toHaveCount(1);
+  expect(await preview.locator('script').textContent()).toBe(PREVIEW_SCRIPT);
+  expect(await page.getByTestId('reply-preview').getAttribute('sandbox')).toBe(PREVIEW_SANDBOX);
+  expect(PREVIEW_SANDBOX).not.toContain('allow-same-origin');
   await shot(page, '381-code-preview');
   w.markdownHtml = null;
   await app.close();
