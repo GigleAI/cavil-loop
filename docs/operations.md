@@ -682,14 +682,17 @@ The merged tree is `git merge-tree --write-tree <reviewed commit> <fork point>`:
 saw last round plus whatever the base brought in since, so a plain merge of `main` into the branch
 is not counted as part of the fix. For a design proposal: round 1, an unreadable comment list or
 no baseline → full; the previous proposal comment deleted (`deleted`), edited in place since
-(`edited`), the same comment as this round's (`same-comment`), or either comment not posted by the
-dispatch account (`not-own`) → full; otherwise `scope` plus the diff from the previous proposal's
-text to this one. The command only ever shows text the dispatch account posted itself; on an
-autopilot item everything else is still read through the guarded read command. A proposal run
-also prints `current sha256=<fingerprint>` of this round's comment, and the baseline is written only
-through `review-scope.sh fingerprint <id> --expect <that fingerprint>`, which refuses (exit 3) when
-the comment was edited while it was being reviewed — then no baseline is written and the next round
-is full. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
+(`edited`), the same comment as this round's (`same-comment`), either comment not posted by the
+dispatch account (`not-own`) or not on this issue (`not-this-issue`) → full; otherwise `scope` plus
+the diff from the previous proposal's text to this one. The command only ever shows text the
+dispatch account posted on this issue itself (the guarded read command shows such comments verbatim
+too); on an autopilot item everything else is still read through the guarded read command. A
+proposal run also prints `current sha256=<fingerprint>` and the full text of this round's comment,
+both from one read — the reviewer reviews exactly that printed text, so the fingerprint is the
+version it saw — and the baseline is written only through
+`review-scope.sh fingerprint <id> --issue <N> --expect <that fingerprint>`, which refuses (exit 3)
+when the comment was edited while it was being reviewed — then no baseline is written and the next
+round is full. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
 config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
 other first line is treated as full.
 

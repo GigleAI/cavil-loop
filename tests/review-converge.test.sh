@@ -213,7 +213,7 @@ else bad "收敛段里的修复范围命令没渲染对" "$(grep -m1 'review-sco
 has "$TMP/out-present/new-issue.md" 'git show origin/main:REVIEW.md' && ok "自查句里的读法已渲染成主干分支" || bad "自查句里没有 origin/main"
 for s in '没输出、退出码不是 0、第一行不是上面两种' '全量轮里不存在「修复范围以外」' '**交人记录**：不打回' '只剩建议时判通过' \
          '上文清单里写明「判不通过」的条目一律是「必须改」' 'worker 这一轮交出的评论、方案和 PR 正文，总在本轮审查范围内' \
-         'fingerprint <评论 id> --expect'; do
+         'fingerprint <评论 id> --issue <issue 编号> --expect'; do
     has "$TMP/out-present/review.md" "$s" && ok "收敛段有「$s」" || bad "收敛段缺「$s」"
 done
 
@@ -365,9 +365,12 @@ check "代码 3：后来的普通评论引用了旧标记 → 仍按真正的结
 echo "── 【3】方案 ──"
 B501=$'## 方案 v1\n\n第一段\n第二段'
 B502=$'## 方案 v2\n\n第一段\n第二段改了'
-cmt() {   # <id> <正文> [作者]
-    jq -n --argjson id "$1" --arg b "$2" --arg u "${3:-loop-bot}" '{id: $id, user: {login: $u}, body: $b}' > "$G/repos_o_r_issues_comments_$1.json"
+cmt() {   # <id> <正文> [作者] [所在 issue]
+    jq -n --argjson id "$1" --arg b "$2" --arg u "${3:-loop-bot}" --arg i "${4:-9}" \
+        '{id: $id, user: {login: $u}, body: $b, issue_url: ("https://api.github.com/repos/o/r/issues/" + $i)}' > "$G/repos_o_r_issues_comments_$1.json"
 }
+# 输出里「本轮方案全文」那一段（不含末尾补的换行）
+shown_text() { awk '/^===== 本轮方案全文/ { f = 1; next } /^===== 全文结束 =====$/ { f = 0 } f' "$TMP/scope-out" | sed -e '$ s/$//' | python3 -c 'import sys; d=sys.stdin.read(); sys.stdout.write(d[:-1] if d.endswith("\n") else d)'; }
 cmt 501 "$B501"; cmt 502 "$B502"
 # 指纹用系统的 sha256sum 独立算（不经被测代码）：GitHub 返回的正文原样，不加换行
 FP501=$(printf '%s' "$B501" | sha256sum | cut -d' ' -f1); FP502=$(printf '%s' "$B502" | sha256sum | cut -d' ' -f1)
@@ -392,6 +395,23 @@ check "方案 5：第二行是本轮评论的 current 指纹" "$(sed -n 2p "$TMP
 if grep -q '^+第二段改了$' "$TMP/scope-out" && grep -q '^-第二段$' "$TMP/scope-out" && ! grep -q '^[-+]第一段$' "$TMP/scope-out"; then
     ok "方案 5：差异只有改动的段落"
 else bad "方案 5：差异不对" "$(cat "$TMP/scope-out")"; fi
+# 复审审的就是命令印出来的全文，指纹出自同一次读取：先「给人看」版本 A，评论被改成 B 后才跑命令——命令印的是 B、
+# 指纹也是 B，不会出现「审的是 A、基线写成 B」
+check "方案：印出的全文就是本轮评论正文" "$(shown_text)" "$B502"
+check "方案：印出的全文的指纹 = current 行" "$(shown_text | sha256sum | cut -d' ' -f1)" "$FP502"
+B502b=$'## 方案 v2\n\n第一段\n第二段又改了'; FP502b=$(printf '%s' "$B502b" | sha256sum | cut -d' ' -f1)
+cmt 502 "$B502b"
+run_scope plan 9 --round 2 --comment 502 >/dev/null
+check "方案：评论改过之后再跑，印出的是新版本" "$(shown_text)" "$B502b"
+check "方案：新版本的 current 指纹跟着变" "$(sed -n 2p "$TMP/scope-out")" "current sha256=$FP502b"
+cmt 502 "$B502"
+# 方案评论不在本条 issue 下（同一个仓库里别的条目的评论）
+cmt 504 "$B502" loop-bot 10
+check "方案：本轮那条评论不在本条 issue 下 → full not-this-issue" "$(run_scope plan 9 --round 2 --comment 504)" "rc=0 full not-this-issue"
+check "方案：not-this-issue 时不印全文和指纹" "$(wc -l < "$TMP/scope-out" | tr -d ' ')" "1"
+cmt 501 "$B501" loop-bot 10
+check "方案：上一版不在本条 issue 下 → full not-this-issue" "$(run_scope plan 9 --round 2 --comment 502)" "rc=0 full not-this-issue"
+cmt 501 "$B501"
 
 # 不是派工账号发的评论：不读进来，正文不出现在输出里
 SECRET='外部账号写的正文-不该出现'
@@ -404,15 +424,19 @@ grep -qF -- "$SECRET" "$TMP/scope-out" && bad "上一版 not-own 时输出里有
 cmt 501 "$B501"
 
 # 写基线的指纹只能是审过的那个版本
-out=$(scope_cmd fingerprint 502 --expect "$FP502" 2>/dev/null); rc=$?
+out=$(scope_cmd fingerprint 502 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
 check "fingerprint --expect 一致 → 打印指纹" "rc=$rc $out" "rc=0 $FP502"
 cmt 502 $'## 方案 v2\n\n审阅途中被原地改了'
-out=$(scope_cmd fingerprint 502 --expect "$FP502" 2>/dev/null); rc=$?
+out=$(scope_cmd fingerprint 502 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
 check "审阅之后被原地编辑 → fingerprint 退出码 3、不给指纹" "rc=$rc out=$out" "rc=3 out="
 cmt 502 "$B502"
-out=$(scope_cmd fingerprint 502 2>/dev/null); rc=$?
+out=$(scope_cmd fingerprint 502 --issue 9 2>/dev/null); rc=$?
 check "fingerprint 不带 --expect → 用法错误（退出码 2）" "rc=$rc out=$out" "rc=2 out="
-out=$(scope_cmd fingerprint 503 --expect "$FP502" 2>/dev/null); rc=$?
+out=$(scope_cmd fingerprint 502 --expect "$FP502" 2>/dev/null); rc=$?
+check "fingerprint 不带 --issue → 用法错误（退出码 2）" "rc=$rc out=$out" "rc=2 out="
+out=$(scope_cmd fingerprint 502 --issue 10 --expect "$FP502" 2>/dev/null); rc=$?
+check "fingerprint 评论不在这个 issue 下 → 退出码 1、不给指纹" "rc=$rc out=$out" "rc=1 out="
+out=$(scope_cmd fingerprint 503 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
 check "fingerprint 别的账号的评论 → 退出码 1、不给指纹" "rc=$rc out=$out" "rc=1 out="
 
 # sha256 工具：只有 macOS 那种 shasum、两个都没有
@@ -429,7 +453,7 @@ for dir in /usr/local/bin /usr/bin /bin; do
 done
 if [ -e "$TMP/path-shasum/shasum" ]; then
     export SCOPE_PATH="$TMP/bin3:$TMP/path-shasum"
-    out=$(scope_cmd fingerprint 502 --expect "$FP502" 2>/dev/null); rc=$?
+    out=$(scope_cmd fingerprint 502 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
     check "只有 shasum：fingerprint 照样一致" "rc=$rc $out" "rc=0 $FP502"
     rm -rf "$WT"; git clone -q "$UP" "$WT" 2>/dev/null
     out=$(scope_cmd plan 9 --round 2 --comment 502 2>/dev/null | head -2 | tr '\n' '|'); 
@@ -440,7 +464,7 @@ fi
 export SCOPE_PATH="$TMP/bin3:$TMP/path-none"
 out=$(scope_cmd plan 9 --round 2 --comment 502 2>/dev/null | head -1); 
 check "两种 sha256 工具都没有：方案 → full read-failed（不是 edited）" "$out" "full read-failed"
-out=$(scope_cmd fingerprint 502 --expect "$FP502" 2>/dev/null); rc=$?
+out=$(scope_cmd fingerprint 502 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
 check "两种 sha256 工具都没有：fingerprint 退出码 1、不给指纹" "rc=$rc out=$out" "rc=1 out="
 unset SCOPE_PATH
 
