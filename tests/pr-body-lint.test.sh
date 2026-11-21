@@ -95,6 +95,16 @@ Closes #9
 { printf '托管总结段里有带属性的 HTML。\n\nCloses #1\n\n<!-- autopilot-summary:begin -->\n'
   for t in 改了什么 怎么验证 剩余风险; do printf '<details><summary>%s</summary>\n\n<span title="</details><details>">x</span>\n\n</details>\n\n' "$t"; done
   printf '<!-- autopilot-summary:end -->\n'; } > "$S/attr-summary.md"
+# PR #650 复审第 4 轮：行内原样文字元素跨三个 token（正文和托管总结段）；关联行紧贴折叠标签、同在一个 HTML 块里
+{ printf '验证说明里有行内原样文字。\n\nCloses #1\n\n'; fold 验证 '示例 <textarea><details></textarea>。'; summary3; } > "$S/raw-inline.md"
+{ printf '托管总结段里有行内原样文字。\n\nCloses #1\n\n<!-- autopilot-summary:begin -->\n'
+  for t in 背景 采用的方案 排除的方案和原因; do printf '<details><summary>%s</summary>\n\n示例 <textarea></details></textarea>。\n\n</details>\n' "$t"; done
+  printf '<!-- autopilot-summary:end -->\n'; } > "$S/raw-summary.md"
+{ printf '关联行紧贴折叠标签。\n\n<details><summary>验证</summary>\nCloses #644\n</details>\n'; } > "$S/link-block-in.md"
+{ printf '关联行紧贴在折叠块后面。\n\n<details><summary>验证</summary>\n</details>\nCloses #644\n'; } > "$S/link-block-out.md"
+{ printf '跨行行内代码后面的关联行。\n\n'; fold 验证 '跨行 `a
+b` 之后
+Closes #1'; } > "$S/link-after-code.md"
 # 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
 { printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
 
@@ -109,6 +119,7 @@ expect=(
     "inline-tag|ok|0" "setext-out|bad section-outside 3|1" "setext-in|ok|0" "hr|ok|0"
     "inline-tag-wrap|ok|0" "setext-bold-out|bad section-outside 3|1" "setext-bold-in|ok|0" "list|ok|0"
     "attr-in|ok|0" "attr-out|bad section-outside 11|1" "attr-summary|ok|0" "comment-dash|ok|0"
+    "raw-inline|ok|0" "raw-summary|ok|0" "link-block-in|bad link-folded 4|1" "link-block-out|ok|0" "link-after-code|bad link-folded 7|1"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do

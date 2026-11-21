@@ -63,66 +63,86 @@ TAG_NAME = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)")
 RAW_TEXT = ("script", "style", "textarea", "title")
 
 
-def tags(html):
-    """一段 HTML（HTML 块或行内 HTML）里真正的折叠标签，按出现顺序：(是不是结尾标签, 在这段里的第几行)。
-    标签怎么算一个用解析器自己的写法（markdown_it.common.html_re.HTML_TAG_RE，行内 HTML 也是它认的）：
-    从每个 < 起整段匹配一个标签 / 注释 / 声明，属性值（引号里的也算）、注释里的字随整段跳过，不会被当成标签；
-    解析器的注释写法不收的注释（中间有 --）照浏览器到第一个 --> 为止，没关上的算到这段末尾；script / style / textarea / title 里是原样文字，跳到它们的结尾标签"""
-    out = []
-    pos = 0
-    while True:
-        pos = html.find("<", pos)
-        if pos < 0:
-            return out
-        m = HTML_TAG_RE.match(html[pos:])
-        if m is None:
-            if html.startswith("<!--", pos):
-                close = html.find("-->", pos + 4)
-                if close < 0:
-                    return out
-                pos = close + 3
+# 折叠深度和「这一行的字处在第几层折叠里」都由同一个扫描器 Scan 按文档顺序算：HTML 块整段喂进去，
+# 段落 / 标题里的行内 HTML 和文字按解析器给的次序逐个喂进去，扫描状态（在注释里、在原样文字元素里）
+# 跨 token 保留——行内的 <textarea>、示例、</textarea> 是三个 token，中间那个照样算原样文字。
+# 标签怎么算一个用解析器自己的写法（markdown_it.common.html_re.HTML_TAG_RE，行内 HTML 也是它认的）：
+# 从每个 < 起整段匹配一个标签 / 注释 / 声明，属性值（引号里的也算）、注释里的字随整段跳过；
+# 解析器的注释写法不收的注释（中间有 --）照浏览器到第一个 --> 为止，没关上的算到文末；
+# script / style / textarea / title 里是原样文字，到它们的结尾标签为止。
+# 代码块、行内代码是解析器给的别种 token，不喂标签，只占位（行首是代码的行不算关联行）。
+# 正文扫描、关联行检查和托管总结段用的是同一串 token、同一个扫描器。
+class Scan:
+    def __init__(self):
+        self.depth = 0
+        self.mode = None       # None | "comment" | 原样文字元素名
+        self.opens = []        # 还没关上的 <details> 所在行
+        self.unbalanced = None
+        self.detail_opens = [] # 每个 <details> 打开时：(行号, 打开前的深度)
+        self.pieces = {}       # 行号 → [(文字, 当时的深度)]，只收看得见的文字
+
+    def text(self, s, line):
+        if self.mode is None and s:
+            self.pieces.setdefault(line, []).append((s, self.depth))
+
+    def _tag(self, closing, line):
+        if closing:
+            self.depth -= 1
+            if self.opens:
+                self.opens.pop()
+            if self.depth < 0 and self.unbalanced is None:
+                self.unbalanced = line
+                self.depth = 0
+        else:
+            self.detail_opens.append((line, self.depth))
+            self.depth += 1
+            self.opens.append(line)
+
+    def html(self, h, line):
+        """喂一段 HTML，line 是它第一个字所在的行"""
+        pos = 0
+        ln = lambda p: line + h.count("\n", 0, p)
+        while pos < len(h):
+            if self.mode == "comment":
+                e = h.find("-->", pos)
+                if e < 0:
+                    return
+                pos, self.mode = e + 3, None
                 continue
-            pos += 1
-            continue
-        t = m.group(0)
-        name = TAG_NAME.match(t)
-        if name:
-            n = name.group(2).lower()
-            if n == "details":
-                out.append((name.group(1) == "/", html.count("\n", 0, pos)))
-            elif n in RAW_TEXT and name.group(1) == "":
-                end = re.compile(r"</" + n + r"\s*>", re.I).search(html, pos + len(t))
-                if end is None:
-                    return out
-                pos = end.end()
+            if self.mode is not None:
+                e = re.compile(r"</" + self.mode + r"\s*>", re.I).search(h, pos)
+                if e is None:
+                    return
+                pos, self.mode = e.end(), None
                 continue
-        pos += len(t)
+            lt = h.find("<", pos)
+            seg = h[pos:] if lt < 0 else h[pos:lt]
+            for k, part in enumerate(seg.split("\n")):
+                self.text(part, ln(pos) + k)
+            if lt < 0:
+                return
+            m = HTML_TAG_RE.match(h[lt:])
+            if m is None:
+                if h.startswith("<!--", lt):
+                    pos, self.mode = lt + 4, "comment"
+                else:
+                    self.text("<", ln(lt))
+                    pos = lt + 1
+                continue
+            t = m.group(0)
+            name = TAG_NAME.match(t)
+            if name:
+                n = name.group(2).lower()
+                if n == "details":
+                    self._tag(name.group(1) == "/", ln(lt))
+                elif n in RAW_TEXT and name.group(1) == "":
+                    self.mode = n
+            pos = lt + len(t)
 
 
-# 折叠深度只由 HTML 块和行内 HTML 改变：代码块、行内代码是解析器给的别种 token，碰不到这里。
-# 正文扫描和托管总结段用的是同一串 token、同一个 tags()。
-depth = 0
-opens = []          # 还没关上的 <details> 所在行
-unbalanced = None
+sc = Scan()
 marks = []          # (b|e, 行号, 当时的深度)
-detail_opens = []   # 每个 <details> 打开时：(行号, 打开前的深度)
 first_block = None  # 第一个不是纯注释的块：(token, 深度)
-
-
-def step(closing, line):
-    global depth, unbalanced
-    if closing:
-        depth -= 1
-        if opens:
-            opens.pop()
-        if depth < 0 and unbalanced is None:
-            unbalanced = line
-            depth = 0
-    else:
-        detail_opens.append((line, depth))
-        depth += 1
-        opens.append(line)
-
 
 for i, tok in enumerate(tokens):
     line = tok.map[0] + 1 if tok.map else None
@@ -130,35 +150,58 @@ for i, tok in enumerate(tokens):
         content = tok.content
         only_comment = re.fullmatch(r"\s*(<!--[\s\S]*?-->\s*)+", content) is not None
         if first_block is None and not only_comment:
-            first_block = (tok, depth)
-        # 这个块里的标记和标签按出现的先后一起处理：标记记下的是它那一刻的深度
-        events = [(off, 1, closing) for closing, off in tags(content)]
+            first_block = (tok, sc.depth)
+        # 托管总结段的标记是独占一行的注释：在它之前的内容先喂完，标记记下的是它那一刻的深度
+        chunk, start = [], 0
         for off, l in enumerate(content.split("\n")):
-            if l.strip() in (BEGIN, END):
-                events.append((off, 0 if l.strip() == BEGIN else 2, l.strip()))
-        for off, kind, v in sorted(events, key=lambda x: (x[0], x[1])):
-            if kind == 1:
-                step(v, line + off)
+            if l.strip() in (BEGIN, END) and sc.mode is None:
+                if chunk:
+                    sc.html("\n".join(chunk), line + start)
+                marks.append(("b" if l.strip() == BEGIN else "e", line + off, sc.depth))
+                chunk, start = [], off + 1
             else:
-                marks.append(("b" if v == BEGIN else "e", line + off, depth))
+                chunk.append(l)
+        if chunk:
+            sc.html("\n".join(chunk), line + start)
         continue
-    if tok.type.endswith("_close") or tok.type == "inline":
-        if tok.type == "inline" and tokens[i - 1].type == "paragraph_open":
-            base = tokens[i - 1].map[0] + 1
-            if depth > 0:
-                for off, l in enumerate(tok.content.split("\n")):
-                    if LINK.match(l):
-                        bad.append(("link-folded", base + off))
-            for ch in tok.children or []:
-                if ch.type == "html_inline":
-                    for closing, _ in tags(ch.content):
-                        step(closing, base)
+    if tok.type == "inline":
+        # 行号：在这段的原文里顺着找每个换行、行内 HTML、行内代码的位置（文字不含换行，不用找）
+        src, cur, base = tok.content, 0, tok.map[0] + 1
+        ln = lambda p: base + src.count("\n", 0, p)
+        for ch in tok.children or []:
+            if ch.type in ("softbreak", "hardbreak"):
+                o = src.find("\n", cur)
+                cur = o + 1 if o >= 0 else cur
+            elif ch.type == "html_inline":
+                o = src.find(ch.content, cur)
+                o = cur if o < 0 else o
+                sc.html(ch.content, ln(o))
+                cur = o + len(ch.content)
+            elif ch.type == "text":
+                sc.text(ch.content, ln(cur))
+            elif ch.type == "code_inline":
+                o = src.find(ch.markup, cur)
+                o = cur if o < 0 else o
+                sc.text("\x00", ln(o))
+                e = re.compile(r"(?<!`)" + re.escape(ch.markup) + r"(?!`)").search(src, o + len(ch.markup))
+                cur = e.end() if e else o + len(ch.markup)
+        continue
+    if tok.type.endswith("_close"):
         continue
     if first_block is None and tok.map is not None:
-        first_block = (tok, depth)
-    if tok.type == "heading_open" and depth == 0:
+        first_block = (tok, sc.depth)
+    if tok.type == "heading_open" and sc.depth == 0:
         bad.append(("section-outside", line))
 
+# 关联行：每一行看得见的文字从第一个非空字起拼起来，按那个字所在的折叠深度判
+for ln, ps in sc.pieces.items():
+    k = 0
+    while k < len(ps) and not ps[k][0].strip():
+        k += 1
+    if k < len(ps) and ps[k][1] > 0 and LINK.match("".join(x for x, _ in ps[k:])):
+        bad.append(("link-folded", ln))
+
+depth, opens, unbalanced, detail_opens = sc.depth, sc.opens, sc.unbalanced, sc.detail_opens
 if depth != 0 and unbalanced is None:
     unbalanced = opens[0] if opens else len(lines)
 if unbalanced is not None:
