@@ -464,6 +464,15 @@ humanof() { grep -- '- token 明细：' "$1"; }
 
 foot "$NEW" "$WT" "$TMP/f1.txt"
 chk "正常：整条 footer 价目表只算 1 次" "$(runs "$TMP/f1.txt")" "1"
+# 另一个入口：--body 把 footer 接进正文文件（GitHub#599 的模板就这样调）。同样只算 1 次价目表，
+# 接上去的 footer 与直接输出的逐字节一致
+printf '## 正文\n' > "$TMP/body.md"; : > "$TMP/fb.log"
+(cd "$WT" && env "${run_env[@]}" XDG_CACHE_HOME="$TMP/fcache" FOOTER_TEST_NOW="$NOW" PROBE_LOG="$TMP/fb.log" \
+    bash "$NEW/drivers/token-usage/comment-footer.sh" --agent claude \
+    --driver "$NEW/drivers/token-usage/claude.sh" --config "$CFG" --start "$STS" --wt 7 --body "$TMP/body.md") >/dev/null
+chk "接进正文文件的方式：价目表也只算 1 次" "$(grep -c '^run$' "$TMP/fb.log")" "1"
+{ printf '## 正文\n\n\n'; cat "$TMP/f1.txt"; } > "$TMP/fb.want"
+same "接进正文文件的方式：footer 与直接输出的逐字节一致" "$TMP/body.md.footer" "$TMP/fb.want"
 chk "正常：机器记录带金额与 AI 时间" \
     "$(kvof "$TMP/f1.txt" | grep -o 'cost_state=[a-z]*' ) $(kvof "$TMP/f1.txt" | grep -c 'ai_secs=')" "cost_state=full 1"
 chk "正常：参照价兜底的模型也在里面（haiku 本机无样本）" \
