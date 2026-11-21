@@ -37,7 +37,7 @@ The Cavil Loop client is a desktop app (macOS, Windows) for managing GitHub issu
 
 Download the client from this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page, install it, sign in with GitHub and add one repository or Project as a source — that is all the client needs.
 
-1. **Download**: the newest entry tagged `client/vX.Y.Z` that is **not** marked Pre-release; on a Mac the `.dmg` ending in `-arm64.dmg` (Apple silicon) or `-x64.dmg` (Intel), on Windows the file ending in `-windows-x64.exe`.
+1. **Download**: the newest entry tagged `client/vX.Y.Z` that is **not** marked Pre-release; on a Mac the `.dmg` ending in `-arm64.dmg` (Apple silicon) or `-x64.dmg` (Intel), on Windows the file ending in `-windows-x64.exe` (when no stable entry has it yet, take it from the newest development build that does, marked Pre-release).
 2. **Install**: on a Mac, open the dmg and drag the app into Applications, then allow the first launch; on Windows, run the `.exe`.
 3. **Sign in**: open the app and click "用 GitHub 登录" (sign in with GitHub), then enter the short code it shows on the browser page that opens.
 4. **Add a source**: the gear at the top right opens Settings → "数据来源" (sources); type `owner/repo` (or the repository's URL) or a GitHub Project's URL and click "添加" (add).
@@ -45,7 +45,7 @@ Download the client from this repository's [Releases](https://github.com/GigleAI
 
 <details><summary>Details: which file to download, allowing the first launch, sign-in, repositories without a Project</summary>
 
-- **Which entry**: the newest entry tagged `client/vX.Y.Z` without the Pre-release mark is a stable client release. The entry marked Latest at the top of the page is the daemon's weekly release, not the client. Each stable entry also carries the Windows installer. To get the newest changes first, install a development build instead: the entries tagged `client/vX.Y.Z-dev.N` and marked Pre-release, with an Apple-silicon dmg and a Windows installer.
+- **Which entry**: the newest entry tagged `client/vX.Y.Z` without the Pre-release mark is a stable client release. The entry marked Latest at the top of the page is the daemon's weekly release, not the client. **On Windows**, pick the newest entry whose files include `-windows-x64.exe`: when no stable entry has that file yet, take the newest development build that has it. To get the newest changes first, install a development build instead: the entries tagged `client/vX.Y.Z-dev.N` and marked Pre-release, with an Apple-silicon dmg and a Windows installer.
 - **Apple silicon or Intel?** Apple menu → About This Mac: a "Chip" line reading Apple M… means Apple silicon, a "Processor" line reading Intel means Intel.
 - **macOS blocks the first launch**: allow it in one of the two ways the dmg window describes: System Settings → Privacy & Security → "Open Anyway", or double-click "复制放行命令" (copy the allow command) in the dmg and run the copied command in Terminal.
 - **Windows**: the installer is not code-signed, so Windows shows "Windows protected your PC" (Microsoft Defender SmartScreen) the first time: click "More info", check that the app is "Cavil Loop" from this repository's Releases page, then "Run anyway". It installs for the current user only (no administrator needed) and adds a Start menu entry; updates later install themselves without this prompt.

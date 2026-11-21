@@ -150,7 +150,7 @@ greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡
 
 ## 轮询节奏：空闲退避与故障退避
 
-安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；删掉项目状态目录（`~/.local/state/cavil-loop/<项目 key>/`）里的 `poll-pace.json` 就回到最快档。
+安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；删掉这个项目状态目录（该项目配置里的 `STATE_DIR`，见[运维 → 用户级状态文件](operations.zh.md#用户级状态文件)）里的 `poll-pace.json` 就回到最快档。
 
 <details><summary>细节：省的是什么，以及硬边界</summary>
 

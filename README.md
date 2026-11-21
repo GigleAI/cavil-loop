@@ -318,7 +318,7 @@ You sign in through the browser (GitHub's device flow); the credential goes into
 
 <details><summary>Details: where the packages are</summary>
 
-Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. The developer notes are in [client/README.md](client/README.md) (Chinese).
+Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` and come with an Apple-silicon and an Intel dmg; development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows x64 installer. On Windows pick the newest entry whose files include `-windows-x64.exe` (a development build when no stable entry has it yet; not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine), see the [client guide](docs/client.md#first-run-the-client-on-its-own). The developer notes are in [client/README.md](client/README.md) (Chinese).
 
 </details>
 

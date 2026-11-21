@@ -155,7 +155,7 @@ Overlapping ticks, repeated dispatch and duplicate comments are ruled out by a l
 
 ## Poll pace: idle and failure backoff
 
-A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; deleting the project's `poll-pace.json` (in its state directory, `~/.local/state/cavil-loop/<project key>/`) returns it to full speed.
+A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; deleting `poll-pace.json` from the project's state directory — the `STATE_DIR` set in that project's config, see [operations → User-level state files](operations.md#user-level-state-files) — returns it to full speed.
 
 <details><summary>Details: what is saved, and the hard boundary</summary>
 

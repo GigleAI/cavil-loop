@@ -37,7 +37,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 
 从本仓库的 [Releases](https://github.com/GigleAI/cavil-loop/releases) 页下载客户端，装好、用 GitHub 登录、加一个仓库或 Project 作为来源——客户端要的就这些。
 
-1. **下载**：标签形如 `client/vX.Y.Z`、**没有** Pre-release 标记的最新一条；Mac 选以 `-arm64.dmg`（Apple 芯片）或 `-x64.dmg`（Intel）结尾的 `.dmg`，Windows 选以 `-windows-x64.exe` 结尾的文件。
+1. **下载**：标签形如 `client/vX.Y.Z`、**没有** Pre-release 标记的最新一条；Mac 选以 `-arm64.dmg`（Apple 芯片）或 `-x64.dmg`（Intel）结尾的 `.dmg`，Windows 选以 `-windows-x64.exe` 结尾的文件（还没有正式版带它时，从带它的最新开发版里取，那一条标着 Pre-release）。
 2. **安装**：Mac 上打开 dmg，把 App 拖进「应用程序」，再放行第一次打开；Windows 上运行 `.exe`。
 3. **登录**：打开 App，点「用 GitHub 登录」，在弹出的浏览器页面里输入 App 显示的短码。
 4. **添加来源**：右上角齿轮进设置 →「数据来源」，填 `owner/repo`（或仓库网址），或者一个 GitHub Project 的网址，点「添加」。
@@ -45,7 +45,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 
 <details><summary>细节：下载哪个文件、放行第一次打开、登录、只加仓库不加 Project</summary>
 
-- **下哪一条**：标签形如 `client/vX.Y.Z`、没有 Pre-release 标记的最新一条是客户端正式版。页面顶上标着 Latest 的是后台工具（daemon）的每周发版，不是客户端。正式版也带 Windows 安装包。想先用上最新改动，可以改装开发版：标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release 的那些，有 Apple 芯片的 dmg 和 Windows 安装包。
+- **下哪一条**：标签形如 `client/vX.Y.Z`、没有 Pre-release 标记的最新一条是客户端正式版。页面顶上标着 Latest 的是后台工具（daemon）的每周发版，不是客户端。**Windows** 上选附件里有 `-windows-x64.exe` 的最新一条：还没有哪个正式版带这个文件时，用带这个文件的最新开发版。想先用上最新改动，可以改装开发版：标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release 的那些，有 Apple 芯片的 dmg 和 Windows 安装包。
 - **Apple 芯片还是 Intel？** 点屏幕左上角苹果菜单 →「关于本机」，「芯片」一行写 Apple M… 就是 Apple 芯片，「处理器」一行写 Intel 就是 Intel。
 - **macOS 拦下第一次打开**：照 dmg 窗口里写的两种办法之一放行：「系统设置 → 隐私与安全性 → 仍要打开」，或双击 dmg 里的「复制放行命令」，复制一条命令到终端里运行。
 - **Windows**：安装包没有代码签名，第一次运行时 Windows 会弹「Windows 已保护你的电脑」（Microsoft Defender SmartScreen）：点「更多信息」，核对应用名是「Cavil Loop」、文件来自本仓库的 Releases 页，再点「仍要运行」。只装给当前用户（不用管理员权限），开始菜单里会有它；之后的更新自己装，不再弹这个提示。

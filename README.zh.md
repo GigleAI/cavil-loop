@@ -318,7 +318,7 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 
 <details><summary>细节：安装包在哪</summary>
 
-安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`，有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。改代码的规则在开发文档 [client/README.md](client/README.md)。
+安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`，有 Apple 芯片和 Intel 两种 dmg；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows x64 安装包。Windows 上选附件里有 `-windows-x64.exe` 的最新一条（还没有正式版带它时就是开发版；没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的），见[使用说明](docs/client.zh.md#第一次用只用客户端)。改代码的规则在开发文档 [client/README.md](client/README.md)。
 
 </details>
 
