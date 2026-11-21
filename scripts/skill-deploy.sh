@@ -70,6 +70,7 @@ install_entrypoints() {
     ln -sfn release-entry.sh "$root/flip-label.sh"       # worker / 复审翻标签（GitHub#599）
     ln -sfn release-entry.sh "$root/conflict-check.sh"   # 交 PR 前的冲突检查（GitHub#599）
     ln -sfn release-entry.sh "$root/pr-feedback.sh"      # 读 PR 全部评论（GitHub#599）
+    ln -sfn release-entry.sh "$root/feedback-fingerprint.sh"   # 纯提问的答复记录（GitHub#614）
     ln -sfn release-entry.sh "$root/notify-relay.sh"   # 早期入口名（GitHub#97 改名前的提示词还在用）
     # 步骤脚本结果的核对规则 step-result.jq 不往这里复制（PR #607 复审第 2、3 轮）：模板里带着它，
     # 脚本用自己发布里的那份核对自己的结果。以前装过的那份删掉，免得有人读到旧的

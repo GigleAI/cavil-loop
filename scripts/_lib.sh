@@ -10296,6 +10296,13 @@ REVIEW_SCOPE_SCRIPT="$_LIB_DIR/review-scope.sh"
 _MANAGED_REVIEW_SCOPE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/review-scope.sh"
 [ ! -f "$_MANAGED_REVIEW_SCOPE" ] || REVIEW_SCOPE_SCRIPT="$_MANAGED_REVIEW_SCOPE"
 
+# ── 纯提问的答复记录命令（GitHub#614，写进 issue / PR 回复说明的「先判断是不是纯提问」段，${FEEDBACK_FP_CMD}）──
+# 同上走长期入口；配置路径由这里给定，不让 worker 自己找
+FEEDBACK_FP_SCRIPT="$_LIB_DIR/feedback-fingerprint.sh"
+_MANAGED_FEEDBACK_FP="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/feedback-fingerprint.sh"
+[ ! -f "$_MANAGED_FEEDBACK_FP" ] || FEEDBACK_FP_SCRIPT="$_MANAGED_FEEDBACK_FP"
+FEEDBACK_FP_CMD="bash '$FEEDBACK_FP_SCRIPT' --config '${CONFIG_FILE:-}'"
+
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
 # 标记；daemon 每轮调这里，有标记才去跑 price_fetch.py（官方价目页 + LiteLLM 两边一致
