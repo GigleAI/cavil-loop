@@ -133,16 +133,32 @@ EOF
 uninstall() {
   stop_apps
   if [ -f "$installed_dir/uninstall.exe" ]; then
+    # NSIS's uninstaller copies itself away and returns at once; it goes on deleting in the
+    # background, so wait for the whole folder (a new install meanwhile would lose files to it)
     "$installed_dir/uninstall.exe" //S || true
-    for _ in $(seq 1 60); do [ -e "$installed" ] || break; sleep 1; done
+    for _ in $(seq 1 90); do [ -e "$installed_dir" ] || break; sleep 1; done
   fi
   [ ! -e "$installed" ] || { echo "❌ could not remove the installed app before the check"; exit 1; }
+  # whatever is left in the folder (a log, an empty folder) goes too, so the next install starts clean
+  rm -rf "$installed_dir"
+}
+# the installed program is this build, byte for byte: waits for it, since the file appears before the
+# installer has finished writing it (and the installer itself may still be running in the background)
+wait_installed() {  # wait_installed <sum> <seconds>
+  local i
+  for i in $(seq 1 "$2"); do
+    if [ -f "$installed" ] && [ "$(sum "$installed" 2>/dev/null)" = "$1" ]; then return 0; fi
+    sleep 1
+  done
+  echo "installed: $(ls -l "$installed" 2>&1); its sha256 $(sum "$installed" 2>/dev/null || echo '(unreadable)'), expected $1"
+  return 1
 }
 install_old() {
   uninstall
-  "$old_installer" //S
-  for _ in $(seq 1 60); do [ -f "$installed" ] && break; sleep 1; done
-  [ "$(sum "$installed")" = "$old_sum" ] || { echo "❌ the old version is not what got installed"; exit 1; }
+  local rc=0
+  "$old_installer" //S || rc=$?
+  echo "old installer exit $rc"
+  wait_installed "$old_sum" 120 || { echo "❌ the old version is not what got installed"; ls -la "$installed_dir" || true; exit 1; }
 }
 
 # start the installed app in test mode (loopback GitHub, its own profile); its updater looks at once
@@ -220,12 +236,7 @@ served_whole "/web/GigleAI/cavil-loop/releases/download/$tag/setup.exe" || { ech
 
 echo "== 2. restart, as a person asks for it: the waiting installer puts the new version in place"
 echo restart >> "$work/rec-good.jsonl.control"
-done=""
-for _ in $(seq 1 240); do
-  if [ -f "$installed" ] && [ "$(sum "$installed" 2>/dev/null)" = "$new_sum" ]; then done=yes; break; fi
-  sleep 1
-done
-[ -n "$done" ] || { echo "❌ the new version was not installed within 240 s after the restart"; tail -20 "$work/rec-good.jsonl.out" || true; exit 1; }
+wait_installed "$new_sum" 240 || { echo "❌ the new version was not installed within 240 s after the restart"; tail -20 "$work/rec-good.jsonl.out" || true; exit 1; }
 # the installer starts the new app when it is done; give it a moment, then stop every copy
 sleep 5
 stop_apps
