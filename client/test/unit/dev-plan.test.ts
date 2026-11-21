@@ -24,7 +24,7 @@ if (process.env.FAKE_GH_FAIL) { process.stderr.write('HTTP 502: Bad Gateway\\n')
 if (process.argv.some((x) => x.includes('/git/matching-refs/tags/'))) {
   if (process.env.FAKE_GH_FAIL_TAGS) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
   const tags = JSON.parse(process.env.FAKE_GH_TAGS || '[]');
-  process.stdout.write(JSON.stringify([tags.map((t) => ({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: 'a'.repeat(40) } }))]));
+  process.stdout.write(JSON.stringify([tags.map((t) => (typeof t === 'string' ? { ref: 'refs/tags/' + t, object: { type: 'commit', sha: 'a'.repeat(40) } } : { ref: 'refs/tags/' + t.name, object: { type: 'commit', sha: t.sha } }))]));
   process.exit(0);
 }
 process.stdout.write(JSON.stringify([JSON.parse(fs.readFileSync(process.env.FAKE_GH_LIST, 'utf8'))]));
@@ -77,7 +77,7 @@ const without = (tag: string, sha: string, ...gone: string[]) => {
   return { ...r, assets: r.assets.filter((a) => !gone.some((g) => a.name.endsWith(g))) };
 };
 
-function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[], tags: string[] | 'fail' = []) {
+function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[], tags: (string | { name: string; sha: string })[] | 'fail' = []) {
   const listFile = join(r.dir, '..', `${r.dir.split('/').pop()}-list.json`);
   const out = join(r.dir, '..', `${r.dir.split('/').pop()}-output`);
   const calls = join(r.dir, '..', `${r.dir.split('/').pop()}-calls`);
@@ -220,6 +220,13 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     const draft = run(r, [...list, rel('client/v0.5.3-dev.11', head, { draft: true })], ['--sha', head]);
     expect(draft.build).toBe('true');
     expect(draft.why).toContain('停在草稿');
+    // that hidden build is of this very commit: nothing can be put out (it was public once, or its
+    // version is taken) — no build; forced → build (the publish step then refuses to change it)
+    const own = [{ name: 'client/v0.5.3-dev.10', sha: base }, { name: 'client/v0.5.3-dev.12', sha: head }];
+    const mine = run(r, list, ['--sha', head], own);
+    expect(mine).toMatchObject({ code: 0, build: 'false' });
+    expect(mine.why).toContain('公开过的版本一律不改');
+    expect(run(r, list, ['--sha', head, '--force'], own).build).toBe('true');
     // the tag list cannot be read → build
     const unreadable = run(r, list, ['--sha', head], 'fail');
     expect(unreadable).toMatchObject({ code: 0, build: 'true' });
@@ -350,5 +357,32 @@ describe('a public build that broke is never changed; the next commit puts out a
 
     // and the night after: Z is complete, of this very commit → nothing to do
     expect(plan(c).build).toBe('false');
+
+    // a public build someone turns back into a draft (#11): GitHub keeps its publish time and its
+    // tag. The read-only plan sees only the tag: on that commit no build; the publish step (forced)
+    // refuses to fill it; a later commit puts out a higher version
+    edit((w) => {
+      const z = w.releases.find((x: any) => x.tag_name === tag(Z));
+      z.draft = true;
+      z.assets = z.assets.map((x: any) => (x.name === 'latest.json' ? { name: x.name, state: 'starter', size: 0 } : x));
+    });
+    const hiddenZ = JSON.stringify(rel(Z));
+    const h1 = plan(c);
+    expect(h1.build, h1.why).toBe('false');
+    expect(h1.why).toContain(tag(Z));
+    const releaseWrites = () => world().calls.filter((x: string[]) => x[0] === 'release').length;
+    const w0 = releaseWrites();
+    const pz2 = publish(Z, c);
+    expect(pz2.code).toBe(1);
+    expect(pz2.out).toContain('已公开的版本一律不改');
+    expect(releaseWrites()).toBe(w0);
+    expect(JSON.stringify(rel(Z))).toBe(hiddenZ);
+    const d = r.commit('scripts/daemon.sh');
+    const W = '0.5.3-dev.13';
+    expect(plan(d).build).toBe('true');
+    const pw = publish(W, d);
+    expect(pw.code, pw.out).toBe(0);
+    expect(complete(W)).toBe(true);
+    xStays('after W came out');
   });
 });

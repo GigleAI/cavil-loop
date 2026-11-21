@@ -12,7 +12,8 @@
 //   - this version is already published with every file: nothing to publish (a rerun)
 //   - otherwise it is created as a draft with every file, then published: an installed app never
 //     sees a release with a missing file (drafts are invisible to it). A draft of this version left
-//     half-done by an earlier run is filled in and published. A published release of this version
+//     half-done by an earlier run is filled in and published — only when it never was public (no
+//     publish time recorded, no tag yet); a draft that was public once is kept like a public one. A published release of this version
 //     that is not complete is never changed (the maintainer's choice on #628, PR #630 Q1 = B): the
 //     run fails and writes nothing; the next commit's higher version comes out over it.
 //   - read again: it must now be published, a pre-release, with every file — or this run fails.
@@ -116,8 +117,9 @@ export function buildState(release, files) {
 /**
  * What to do for `version`, given the release list and the files it must carry.
  * → { action: 'skip', why } | { action: 'done' } | { action: 'create' }
- *   | { action: 'fill' } (a draft of this version, never public: every file put in, then published)
- *   | { action: 'keep', bad } (public but not complete: never changed — written to nowhere)
+ *   | { action: 'fill' } (a draft of this version that never was public: every file put in, then
+ *     published — main also requires its tag not to exist yet)
+ *   | { action: 'keep', bad, was } (public, or a draft that was public once: never changed)
  *   | { action: 'unknown', files, why } (a file's state, or whether a release is public, cannot be
  *     judged: write nothing)
  */
@@ -143,7 +145,13 @@ export function decide(list, version, files) {
   // a public release is never changed (the maintainer's choice on #628, PR #630 Q1 = B): one that is
   // not complete stays as it is, and the next commit's higher version comes out over it
   if (r.draft === false) return { action: 'keep', bad: s.bad };
-  return { action: 'fill' };
+  // a draft is filled in only when it never was public (PR #630 review, round 1 after Q1 = B): GitHub
+  // records a publish time once a release is published and keeps it when the release is turned back
+  // into a draft. null = never published; a time = it was public → kept as it is; anything else
+  // (missing, not a string) cannot tell → nothing written. The tag is checked as well, in main.
+  if (r.published_at === null) return { action: 'fill' };
+  if (typeof r.published_at === 'string' && r.published_at !== '') return { action: 'keep', bad: s.bad, was: true };
+  return { action: 'unknown', files: [], why: `${tag} 是草稿，但读不出它有没有公开过（没有发布时间这一项）` };
 }
 
 /** The development builds to delete: all published ones but the `keep` highest. */
@@ -335,6 +343,20 @@ function settleTag(repo, release, fresh) {
   }
 }
 
+/**
+ * Does the tag exist? → 'absent' (GitHub answered 404) | 'present' (a ref of that name) | a reason
+ * (anything else: cannot tell).
+ */
+function tagState(repo, tag) {
+  try {
+    const ref = JSON.parse(gh(['api', `repos/${repo}/git/ref/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]));
+    return ref?.ref === `refs/tags/${tag}` ? 'present' : '回答看不懂';
+  } catch (e) {
+    const err = String(e.stderr ?? e.message);
+    return /HTTP 404/.test(err) ? 'absent' : `读不到：${err.trim()}`;
+  }
+}
+
 function note(what, tag, why) {
   console.log(`::warning::标签 ${tag} ${what === 'kept' ? '不删' : '这次没删成，下次再来'}：${why}`);
   return what;
@@ -427,8 +449,16 @@ function main() {
     d = decide(before, version, files);
     if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写、不替换，现有文件原样保留`);
   }
+  if (d.action === 'fill') {
+    // never public also means no tag yet: GitHub creates a draft's tag only when it is published, and a
+    // release turned back into a draft keeps it. A tag there, or one that cannot be read → not filled
+    const t = tagState(repo, tag);
+    if (t === 'present') d = { action: 'keep', bad: [], was: true };
+    else if (t !== 'absent') throw new Error(`${tag} 是草稿，但读不出它的标签在不在（${t}），不能确认它从没公开过：什么都不写、不替换，现有文件原样保留`);
+  }
   if (d.action === 'keep') {
-    throw new Error(`${tag} 已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）：按维护者的选择，已公开的版本一律不改，什么都没写；等 main 上有新提交，下一次运行会发一个更高的版本盖过它`);
+    const what = d.was ? '公开过（现在是草稿，但记着发布时间或已有标签）' : `已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）`;
+    throw new Error(`${tag} ${what}：按维护者的选择，已公开的版本一律不改（公开过又改回草稿的也算），什么都没写；等 main 上有新提交，下一次运行会发一个更高的版本盖过它`);
   }
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);

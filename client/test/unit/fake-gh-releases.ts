@@ -97,7 +97,8 @@ if (a[1] === 'create') {
   if (find(tag)) die('a release with this tag already exists');
   const names = files(a.slice(3));
   if (fail('create')) die('HTTP 500');
-  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
+  // GitHub records a publish time once a release is published (null for a draft never published)
+  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), published_at: a.includes('--draft') ? null : '2026-11-21T00:00:00Z', target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
   st.releases.unshift(r);
   // an asset the way GitHub lists it: uploaded with its size, or — an upload that failed — a placeholder
   // of the same name, state "starter", size 0 (GitHub#628 review round 2)
@@ -132,7 +133,7 @@ if (a[1] === 'edit') {
   if (fail('edit')) die('HTTP 500');
   // GitHub answering "ok" to an edit that did not take
   if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; if (!st.tags.includes(tag)) st.tags.push(tag); }
+  if (a.includes('--draft=false')) { r.draft = false; if (!r.published_at) r.published_at = '2026-11-21T00:00:00Z'; if (!st.tags.includes(tag)) { st.tags.push(tag); st.tagSha = { ...(st.tagSha ?? {}), [tag]: r.target_commitish }; } }
   if (a.includes('--draft=true')) r.draft = true;
   if (a.includes('--prerelease')) r.prerelease = true;
   save();

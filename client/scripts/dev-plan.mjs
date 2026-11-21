@@ -55,16 +55,16 @@ const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
 /**
  * A development build that was made but is not public now, of a higher version than the newest
- * published one (there is none: any version): from `tags` (tag names) without a published release,
- * and from drafts in `list` (when the token sees them). The highest → { tag, version, kind:
- * 'tag' | 'draft' } | null.
+ * published one (there is none: any version): from `tags` (names, or { name, sha } as readTags gives
+ * them) without a published release, and from drafts in `list` (when the token sees them). The
+ * highest → { tag, version, kind: 'tag' | 'draft', sha (its commit, null when not known) } | null.
  */
 export function hiddenBuild(list, tags) {
   const top = devReleases(list)[0];
   const isPublic = new Set(list.filter((r) => r?.draft === false).map((r) => r?.tag_name));
   const seen = [
-    ...tags.map((t) => ({ tag: t, kind: 'tag' })),
-    ...list.filter((r) => r?.draft === true && typeof r?.tag_name === 'string').map((r) => ({ tag: r.tag_name, kind: 'draft' })),
+    ...tags.map((t) => (typeof t === 'string' ? { tag: t, kind: 'tag' } : { tag: t?.name, sha: t?.sha, kind: 'tag' })),
+    ...list.filter((r) => r?.draft === true && typeof r?.tag_name === 'string').map((r) => ({ tag: r.tag_name, sha: r.target_commitish, kind: 'draft' })),
   ];
   let best = null;
   for (const c of seen) {
@@ -73,7 +73,7 @@ export function hiddenBuild(list, tags) {
     if (!parsed || (top && cmp(parsed, top.parsed) <= 0)) continue;
     if (!best || cmp(parsed, best.parsed) > 0) best = { ...c, parsed };
   }
-  return best && { tag: best.tag, version: best.tag.slice(TAG_PREFIX.length), kind: best.kind };
+  return best && { tag: best.tag, version: best.tag.slice(TAG_PREFIX.length), kind: best.kind, sha: typeof best.sha === 'string' && FULL_SHA.test(best.sha) ? best.sha : null };
 }
 
 /**
@@ -94,14 +94,14 @@ export function latestBuild(list, tags = []) {
   return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete: state === 'complete', state, ...extra };
 }
 
-/** The repository's client/v* tag names (every page); throws when a read fails. */
+/** The repository's client/v* tags (every page) as { name, sha } (sha null for a tag object); throws when a read fails. */
 export function readTags(repo) {
   const out = execFileSync('gh', ['api', '--paginate', '--slurp', `repos/${repo}/git/matching-refs/tags/${TAG_PREFIX}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const pages = JSON.parse(out);
   if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('GitHub 返回的标签列表看不懂');
   const refs = pages.flat();
   if (!refs.every((r) => typeof r?.ref === 'string' && r.ref.startsWith('refs/tags/'))) throw new Error('GitHub 返回的标签列表看不懂');
-  return refs.map((r) => r.ref.slice('refs/tags/'.length));
+  return refs.map((r) => ({ name: r.ref.slice('refs/tags/'.length), sha: r?.object?.type === 'commit' ? r.object.sha : null }));
 }
 
 /**
@@ -125,6 +125,11 @@ export function clientChanged(base, head, root = REPO_ROOT) {
 export function plan({ latest, head, force, changed }) {
   if (latest === 'unreadable') return { build: true, why: '读不到发版列表，不知道上一个开发版是哪个提交：照常构建' };
   if (latest?.tags === 'unreadable') return { build: true, why: '读不到标签列表，不知道有没有停在草稿、没公开的开发版：照常构建' };
+  if (latest?.hidden?.kind === 'tag' && latest.hidden.sha === head && !force) {
+    // that build is of this very commit: same version, and a build that was public once is never
+    // changed (PR #630 Q1 = B) — nothing to put out until main moves on
+    return { build: false, why: `开发版 ${latest.hidden.tag} 就是这个提交，做过但现在没有公开：公开过的版本一律不改，等 main 上有新提交再发一个更高的版本；这次不构建、不发` };
+  }
   if (latest?.hidden) {
     return { build: true, why: `开发版 ${latest.hidden.tag} 做过但现在没有公开（${latest.hidden.kind === 'tag' ? '标签在、发版页不在：上次补传或发布没做完' : '停在草稿'}）：照常构建，发布那一步把它补齐，或发一个更新的版本` };
   }

@@ -24,6 +24,7 @@ const SHA = DEFAULT_SHA;
 interface Rel {
   id?: number;
   target_commitish?: string;
+  published_at?: string | null;
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
@@ -40,7 +41,7 @@ const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { p
 function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}, at: { script?: string; sha?: string } = {}) {
   const script = at.script ?? SCRIPT;
   const SHA = at.sha ?? DEFAULT_SHA;
-  const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, ...r }));
+  const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, published_at: r.draft ? null : '2026-11-01T00:00:00Z', ...r }));
   const dir = tempDir();
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -227,6 +228,47 @@ describe('publishing a development build (GitHub#215)', () => {
       expect(r.code, r.out).toBe(0);
       expect(writeArgs(w.read().calls)).toEqual(['upload', 'edit --draft=false']);
       expect(published(w.read(), tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    // PR #630 review (round 1 after Q1 = B) #11: a draft is filled in only when it never was public
+    const draftExe = (o: Partial<Rel> = {}) => ({ ...withExe({ state: 'starter', size: 0 }), draft: true, ...o });
+    const tagged = (w: ReturnType<typeof world>, t: string) => {
+      const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+      st.tags.push(t);
+      writeFileSync(w.stateFile, JSON.stringify(st));
+    };
+    it('a new draft (no publish time, no tag) → filled and published: the tag is read first, then upload + publish', () => {
+      const w = world([draftExe({ published_at: null }), devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(writeArgs(s.calls)).toEqual(['upload', 'edit --draft=false']);
+      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it.each([
+      ['public once, turned back into a draft (publish time kept, tag kept)', { published_at: '2026-11-20T00:00:00Z' }, true, []],
+      ['publish time kept, no tag', { published_at: '2026-11-20T00:00:00Z' }, false, []],
+      ['no publish time, but its tag exists', { published_at: null }, true, []],
+      ['no publish time field at all', { published_at: undefined }, false, []],
+      ['the tag cannot be read', { published_at: null }, false, [`tagread:${tag}`]],
+    ])('a draft: %s → kept as it is, nothing uploaded or published, the run fails (#11)', (_, o, hasTag, fail) => {
+      const w = world([draftExe(o as Partial<Rel>), devRel('0.5.1-dev.380')], fail as string[]);
+      if (o.published_at === undefined) {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        delete st.releases[0].published_at;
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      if (hasTag) tagged(w, tag);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/已公开的版本一律不改|读不出/);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api')).toBe(true);
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
     });
     it('--check: a release that does not say whether it is a draft → UNKNOWN, exit 2 (round 5)', () => {
       const w = edited([devRel(v)], (rs) => { delete rs[0].draft; });

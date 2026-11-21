@@ -1592,11 +1592,17 @@ done
 # review round 4 #9: a build made and then hidden again (the publish step turned it back into a draft
 # to fill it in and could not finish): its tag is there, its release page is not public — the
 # read-only token cannot see the draft itself. The next night builds, client change or not.
-printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C3" "$C2" > "$TMP/c-devtags.json"
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C2" "$C2" > "$TMP/c-devtags.json"
 cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
 check "publishing run, no client change, but a higher build is tagged and not public → build" "$(build_line)" "0:true:true"
 has "client/v0.6.1-dev.12" "$(cat "$TMP/c-out")" "… naming it in the log"
 check "… it read the tag refs" "$(grep -c 'matching-refs/tags/client/v' "$GH_ARGS")" 1
+# that hidden build is of this very commit (it was public once; a public build is never changed and
+# the same commit gets the same version): nothing built (PR #630 review #11)
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C3" "$C2" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "… the hidden build is of this very commit → nothing built" "$(build_line)" "0:false:false"
+has "公开过的版本一律不改" "$(cat "$TMP/c-out")" "… says why in the log"
 printf '[{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.3","object":{"type":"commit","sha":"%s"}}]' "$C2" "$C1" > "$TMP/c-devtags.json"
 cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
 check "… only the published build's tag and a lower one (an old build being cleaned up) → nothing built" "$(build_line)" "0:false:false"
