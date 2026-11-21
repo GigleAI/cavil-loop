@@ -1531,12 +1531,16 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
 - **The Claude footer takes the latest published prices; it does not solve prices from logs**
-  (GitHub#606). Once a day the daemon downloads the official Claude pricing page and the LiteLLM
-  price list and keeps every model whose five prices (input, output, cache read, 5-minute and
-  1-hour cache write) are listed on both and agree, in
+  (GitHub#606). Once a day the daemon downloads the official Claude pricing page and uses only
+  its prices (no cross-check against LiteLLM; the gap-fill for missing models still needs both to
+  agree), keeping every model whose five prices (input, output, cache read, 5-minute and 1-hour
+  cache write) are all there and pass the sanity checks, in
   `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`; the time of the next download is in
   `latest-prices.next` next to it (a failed download is retried after `PRICE_FETCH_COOLDOWN_SECS`,
-  6 hours by default, and the previous file stays in use). The usage driver prices each call with
+  6 hours by default; a download that could not be written to the cache after 10 minutes; either
+  way the previous file stays in use. When the next time cannot be written either, `poll.log` says
+  "下次刷新时刻没能保存，下一轮会再抓" and every round downloads again until the cache directory is
+  writable). The usage driver prices each call with
   `python3 scripts/weekly-report/price_solve.py --listed`, which reads no session log: the latest
   price for the model, else the built-in table, else a price fetched for a missing model. In the
   machine record that is `price_source=default`, with the amount split into `fetched` (downloaded)

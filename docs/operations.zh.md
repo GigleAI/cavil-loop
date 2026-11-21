@@ -1228,10 +1228,12 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
-- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页和
-  LiteLLM 价目表，五项单价（input、output、缓存读、5 分钟和 1 小时缓存写入）两边都有且一致的模型存进
+- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页，只用这一处的价
+  （不拿 LiteLLM 对照；缺价补抓仍要两边一致），五项单价（input、output、缓存读、5 分钟和 1 小时缓存写入）齐全、
+  通过合理性校验的模型存进
   `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`；下次下载的时刻写在旁边的 `latest-prices.next`（下载失败过
-  `PRICE_FETCH_COOLDOWN_SECS`、默认 6 小时再试，期间继续用上一份）。用量驱动用
+  `PRICE_FETCH_COOLDOWN_SECS`、默认 6 小时再试；下载到了却写不进缓存，10 分钟后再试；两种情况都继续用上一份。连下次时刻也
+  写不进去时，`poll.log` 写「下次刷新时刻没能保存，下一轮会再抓」，每轮都会再下载，直到缓存目录能写）。用量驱动用
   `python3 scripts/weekly-report/price_solve.py --listed` 取单价（这一步不读会话日志）：模型有最新价用最新价，
   没有用内置表，再没有用缺价时补抓来的价。机器记录里是 `price_source=default`，金额拆成 `fetched`（下载来的）和
   `reference_only`（内置表）。footer 对 Claude 驱动只调一次 `--both`，人读行和机器记录出自同一张表；拿到的不是恰好两行就

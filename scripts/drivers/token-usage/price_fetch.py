@@ -25,10 +25,13 @@ LiteLLM 是第三方，可能抄错或晚收录。一个看起来正常、其实
 
 失败的模型冷却 COOLDOWN 秒再试，不会每轮都去打外网；成功的模型删掉标记。
 
-每日最新价（GitHub#606）：除了补缺，每天还把官方价目页上**全部** Claude 模型的价抓一遍
-（同样两源一致、五项齐全才收），写进 `latest-prices.json`。评论 footer 直接用它计价，
-不再从本机日志反推（维护者在 PR #612 定的：「不要反推，取最新的，缓存一天」）。
-成功后 LATEST_EVERY 秒（一天）内不再抓；失败冷却 COOLDOWN 秒再试，旧文件保留不动，
+每日最新价（GitHub#606）：除了补缺，每天还把官方价目页上**全部** Claude 模型的价抓一遍，
+写进 `latest-prices.json`。评论 footer 直接用它计价，不再从本机日志反推（维护者在 PR #612
+定的：「不要反推，取最新的，缓存一天」）。这一步**只用官方页**，不拿 LiteLLM 对照（维护者在
+PR #612：「使用当前的 api 返回的价格即可，不用再找别的」）；页面上的值仍要过上面的合理性校验、
+五项齐全才收。上面「两个来源」的规则只管补缺。
+成功后 LATEST_EVERY 秒（一天）内不再抓；下载失败冷却 COOLDOWN 秒再试，抓到却写不进缓存
+WRITE_RETRY 秒后再试，旧文件都保留不动；连下次时刻也存不上时日志如实说下一轮会再抓。
 一份都没抓到时 footer 用内置参照表。下次该抓的时刻写在 `latest-prices.next`（一个整数），
 daemon 每轮只读这个数，没到时间不启动本脚本。
 本脚本只往 stdout 打日志行（daemon 逐行转进 poll.log），退出码恒为 0——抓价失败
@@ -127,14 +130,23 @@ def latest_due(now):
 
 
 def _write_due(epoch):
+    """写下次该抓的时刻。返回 None 表示写好了，否则是给日志用的一句话（PR #612 复审第 6 轮：
+    以前吞掉失败，日志说「10 分钟后再试」，其实时刻没保存、下一轮立刻又抓，还留下临时文件）。
+    时刻没保存时文件里还是旧值（或没有）→ 按 latest_due 的规则多半已到时，下一轮会再抓。"""
     try:
-        os.makedirs(price_solve.cache_dir(), exist_ok=True)
-        tmp = f"{latest_due_path()}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(f"{int(epoch)}\n")
-        os.replace(tmp, latest_due_path())
-    except OSError:
-        pass
+        _replace_file(latest_due_path(), f"{int(epoch)}\n")
+    except Exception as e:
+        return f"下次刷新时刻没能保存（{type(e).__name__}: {e}），下一轮会再抓"
+    return None
+
+
+def _when(secs):
+    return f"{secs // 3600} 小时" if secs >= 3600 else f"{secs // 60} 分钟"
+
+
+def _retry_note(due_err, secs):
+    """日志里「什么时候再试」：时刻存上了才说过多久再试，没存上就如实说下一轮再抓。"""
+    return due_err if due_err else f"{_when(secs)}后再试"
 
 
 def _load_json(path, default):
@@ -162,13 +174,14 @@ def load_state():
     return out
 
 
-def _save_json(path, obj):
-    """整份写到临时文件再换名。失败就抛出（调用方据此不提交这一步），临时文件不留。"""
+def _replace_file(path, text):
+    """整份写到临时文件再换名——价格缓存、抓价状态、最新价、下次时刻都走这一处。
+    失败就抛出（调用方据此不提交这一步），临时文件不留。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=1, sort_keys=True)
+            f.write(text)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -178,7 +191,10 @@ def _save_json(path, obj):
         raise
 
 
-# ── 已有单价：内置表里有的模型从不抓 ─────────────────────────────────────────
+def _save_json(path, obj):
+    _replace_file(path, json.dumps(obj, ensure_ascii=False, indent=1, sort_keys=True))
+
+
 def builtin_models(agent):
     if agent == "claude":
         return set(price_solve.REFERENCE)
@@ -409,22 +425,19 @@ def resolve(agent, model):
 
 
 def refresh_latest(now):
-    """抓官方价目页上全部 Claude 模型的最新价（GitHub#606）。两源一致、五项齐全的模型才收；
-    一个都收不到算失败：旧的 latest-prices.json 不动，COOLDOWN 秒后再试。"""
+    """抓官方价目页上全部 Claude 模型的最新价（GitHub#606）。只用官方页这一处的价，不再拿别的
+    来源对照（维护者在 PR #612：「使用当前的 api 返回的价格即可，不用再找别的」）；页面上的值
+    自身站得住（sane）、五项齐全的模型才收。一个都收不到算失败：旧的 latest-prices.json 不动，
+    COOLDOWN 秒后再试。"""
     o_text, o_err = fetch(ANTHROPIC_URL)
-    c_text, c_err = (None, None) if o_text is None else fetch(LITELLM_URL)
     official = parse_anthropic(o_text) if o_text is not None else None
-    community = parse_litellm(c_text, "claude") if c_text is not None else None
     why = (f"官方页下载失败：{o_err}" if o_text is None
-           else f"LiteLLM 下载失败：{c_err}" if c_text is None
-           else "官方页解析不出价目表（页面可能改版）" if not official
-           else "LiteLLM 解析不出价目表" if community is None else None)
+           else "官方页解析不出价目表（页面可能改版）" if not official else None)
     ok, skipped = {}, []
     if why is None:
         for model, vals in official.items():
-            c = community.get(model)
-            prices, bad = (None, "有歧义") if vals is None else \
-                (None, "LiteLLM 没有收录") if c is None else reconcile("claude", vals, c)
+            bad = "有歧义" if vals is None else sane("claude", vals)
+            prices = None if bad else {k: v for k, v in vals.items() if v is not None}
             if prices is not None and set(prices) != set(price_solve.LATEST_ITEMS):
                 prices, bad = None, "缺项"
             if prices is None:
@@ -432,23 +445,24 @@ def refresh_latest(now):
             else:
                 ok[model] = prices
         if not ok:
-            why = "没有一个模型两边一致、五项齐全"
+            why = "没有一个模型的价站得住、五项齐全"
     if why:
-        _write_due(now + COOLDOWN)
-        log(f"Claude 最新价目抓取失败，{COOLDOWN // 3600} 小时后再试（评论 footer 继续用上次的价或内置价）：{why}")
+        log(f"Claude 最新价目抓取失败，{_retry_note(_write_due(now + COOLDOWN), COOLDOWN)}"
+            f"（评论 footer 继续用上次的价或内置价）：{why}")
         return
     try:
         _save_json(price_solve.latest_path(), {"claude": {
             "fetched_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "sources": [ANTHROPIC_URL, LITELLM_URL], "models": ok}})
+            "sources": [ANTHROPIC_URL], "models": ok}})
     except Exception as e:
         # 抓到了却没写进去：不算这一天已刷新，WRITE_RETRY 秒后再来（不是一天、也不是冷却期）
-        _write_due(now + WRITE_RETRY)
-        log(f"Claude 最新价目已抓到但写不进缓存，{WRITE_RETRY // 60} 分钟后再试：{type(e).__name__}: {e}")
+        log(f"Claude 最新价目已抓到但写不进缓存，{_retry_note(_write_due(now + WRITE_RETRY), WRITE_RETRY)}："
+            f"{type(e).__name__}: {e}")
         return
-    _write_due(now + LATEST_EVERY)
+    due_err = _write_due(now + LATEST_EVERY)
     log(f"已更新 Claude 最新价目：{len(ok)} 个模型"
-        + (f"；未采用 {len(skipped)} 个：{'、'.join(skipped)}" if skipped else ""))
+        + (f"；未采用 {len(skipped)} 个：{'、'.join(skipped)}" if skipped else "")
+        + (f"；{due_err}" if due_err else ""))
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -509,8 +523,8 @@ def main():
         try:
             refresh_latest(now)
         except Exception as e:
-            _write_due(now + COOLDOWN)
-            log(f"Claude 最新价目抓取异常（已忽略），{COOLDOWN // 3600} 小时后再试：{type(e).__name__}: {e}")
+            log(f"Claude 最新价目抓取异常（已忽略），{_retry_note(_write_due(now + COOLDOWN), COOLDOWN)}："
+                f"{type(e).__name__}: {e}")
     fetched = price_solve.load_fetched()
     latest = price_solve.load_latest()
     state = load_state()

@@ -12,7 +12,7 @@
 #   【2】驱动 `claude.sh`：取价一个日志文件都不读（别的工作目录的会话一个都不打开）；金额、
 #        price_source、price_status 跟着价目表走；`--both` 两行与分别单独调用逐字节一致
 #   【3】footer `comment-footer.sh`：Claude 一侧价目表只取 1 次（直接输出、接进正文文件两种方式）
-#   【4】每天抓一次（price_fetch.py）：没到时间不联网；到时间抓、写下次时刻；抓失败旧文件不动、
+#   【4】每天抓一次（price_fetch.py）：只用官方页、不找 LiteLLM；没到时间不联网；到时间抓、写下次时刻；抓失败旧文件不动、
 #        冷却后再试；下次时刻文件读不出 = 到时间
 #   【5】daemon 钩子（_lib.sh 的 price_fetch_tick）：没标记、没到时间 → 不启动脚本；到时间 → 启动
 #   【6】「下次时刻」文件：同一组内容交给钩子和抓价脚本，结论一致
@@ -23,7 +23,8 @@
 #   【9】读回的每个数都过同一个数值检查：抓价状态里的重试时刻、网络上 LiteLLM 的单价是超大整数 /
 #        无穷 / NaN / 负数时，那一项当作没有，别的模型照常补价；正常的冷却照样挡住重复抓取
 #   【10】价格缓存写不进去：这个模型什么都不提交（不记尝试、标记留着），同轮另一个模型照常处理并保存
-#        状态；写入恢复后下一轮补上。每日刷新写不进去：不算刷新过，10 分钟后再试
+#        状态；写入恢复后下一轮补上。每日刷新写不进去：不算刷新过，10 分钟后再试；连下次时刻也写不进去：
+#        日志如实说下一轮会再抓，不留临时文件，恢复后重新排定
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -184,14 +185,16 @@ chk "整条 footer 没打开别的工作目录的会话" "$(grep -c "proj-issue-
 echo "── 4. 每天抓一次最新价（price_fetch.py）──"
 fetch() { python3 "$TU/price_fetch.py"; }
 rm -rf "$CACHE"
-NOW=$(date +%s); OUT=$(fetch)
-chk "第一次（没有下次时刻）：抓了，两源一致、五项齐全的才收" \
-    "$(jq -c '.claude.models | keys' "$LATEST" 2>/dev/null)" '["claude-test-9","claude-zero-9"]'
+NOW=$(date +%s); OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/no-litellm.json" fetch)
+chk "第一次（没有下次时刻）：抓了，只看官方页，值站得住、五项齐全的都收（分档有歧义、output < input 的不收）" \
+    "$(jq -c '.claude.models | keys' "$LATEST" 2>/dev/null)" '["claude-clash-9","claude-lone-9","claude-opus-5","claude-partial-9","claude-test-9","claude-zero-9"]'
+chk "每日刷新只记官方页一处来源" "$(jq -c '.claude.sources | length' "$LATEST")" "1"
 chk "收进来的价取官方页的值" "$(jq -c '.claude.models["claude-test-9"] | map_values(. + 0)' "$LATEST")" \
     '{"cache_read":0.15,"cache_write_1h":6,"cache_write_5m":3.75,"input":3,"output":15}'
 N1=$(cat "$NEXT")
 chk "下次时刻 = 现在 + 一天" "$([ $((N1 - NOW)) -ge 86399 ] && [ $((N1 - NOW)) -le 86401 ] && echo yes || echo "$((N1 - NOW))")" "yes"
-chk "日志写了更新几个模型、哪些没采用" "$(grep -c '已更新 Claude 最新价目：2 个模型；未采用' <<<"$OUT")" "1"
+chk "LiteLLM 地址是坏的也照常更新（每日刷新不找别的来源）" "$(grep -c 'LiteLLM' <<<"$OUT")" "0"
+chk "日志写了更新几个模型、哪些没采用" "$(grep -c '已更新 Claude 最新价目：6 个模型；未采用 2 个' <<<"$OUT")" "1"
 chk "价目表随之换上最新价" "$(jq -r '.models["claude-test-9"].input.status' <<<"$(listed)")" "fetched"
 cp "$LATEST" "$TMP/latest.bak"
 OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/nope.md" fetch)
@@ -207,7 +210,7 @@ echo 0 > "$NEXT"
 printf '# Pricing\n\n## Model pricing\n\n| Model | Base input tokens | Output tokens |\n| --- | --- | --- |\n| Claude Test 9 | $3 / MTok | $15 / MTok |\n' > "$TMP/short.md"
 OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/short.md" fetch)
 chk "页面只剩 input / output（缺项）：一个都不收，算失败，旧文件不动" \
-    "$(cmp -s "$LATEST" "$TMP/latest.bak" && echo same) $(grep -c '没有一个模型两边一致、五项齐全' <<<"$OUT")" "same 1"
+    "$(cmp -s "$LATEST" "$TMP/latest.bak" && echo same) $(grep -c '没有一个模型的价站得住、五项齐全' <<<"$OUT")" "same 1"
 for junk in "" "abc" "12 34"; do
     printf '%s' "$junk" > "$NEXT"; rm -f "$LATEST"; fetch >/dev/null
     chk "下次时刻读不出（[$junk]）→ 当作到时间，照抓" "$([ -s "$LATEST" ] && echo fetched || echo idle)" "fetched"
@@ -437,11 +440,21 @@ rc=0; OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/litellm-big.json" python3 "$TU/
 chk "LiteLLM 里 claude-test-9 的单价是超大整数：它不收、标记留着，codex 那个照常补上，没有异常" \
     "$rc $([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept) $(jq -c '[.claude["claude-test-9"], .codex["gpt-test-9"].prices.in]' "$CACHE/fetched-prices.json" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" \
     "0 kept [null,2.0] 0"
-# 每日刷新遇到同样的超大整数：那个模型不收，别的照收
+# 每日刷新只看官方页：LiteLLM 里的超大整数不影响它；官方页上的超大数只让那个模型不收，别的照收
 rm -rf "$CACHE"; mkdir -p "$CACHE"
 rc=0; OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/litellm-big.json" python3 "$TU/price_fetch.py") || rc=$?
-chk "每日刷新遇到超大整数：claude-test-9 不收，claude-zero-9 照收，没有异常" \
-    "$rc $(jq -c '.claude.models | keys' "$LATEST" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" '0 ["claude-zero-9"] 0'
+chk "每日刷新：LiteLLM 里的超大整数不影响，claude-test-9 照收，没有异常" \
+    "$rc $(jq -r '.claude.models["claude-test-9"].input' "$LATEST" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" '0 3.0 0'
+python3 - "$FX/anthropic.md" "$TMP/anthropic-big.md" <<'PY3'
+import sys
+raw = open(sys.argv[1]).read()
+raw = raw.replace("| Claude Test 9                                               | $3 / MTok", "| Claude Test 9 | $" + "9" * 400 + " / MTok", 1)
+open(sys.argv[2], "w").write(raw)
+PY3
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+rc=0; OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/anthropic-big.md" python3 "$TU/price_fetch.py") || rc=$?
+chk "官方页上 claude-test-9 的单价是 400 位数：它不收，claude-zero-9 照收，没有异常" \
+    "$rc $(jq -c '.claude.models | [has("claude-test-9"), has("claude-zero-9")]' "$LATEST" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" '0 [false,true] 0'
 
 echo "── 10. 价格缓存写不进去：不提交，恢复后下一轮补上 ──"
 # PR #612 复审第 5 轮：fetched-prices.json 写入失败后，这个模型在内存里的价和 ok 状态被同轮另一个
@@ -465,8 +478,30 @@ N=$(cat "$NEXT")
 chk "每日刷新写不进去：不算刷新过，10 分钟后再试，日志说明" \
     "$rc $([ $((N - NOW)) -ge 599 ] && [ $((N - NOW)) -le 601 ] && echo 10min || echo "$((N - NOW))") $(grep -c '最新价目已抓到但写不进缓存' <<<"$OUT")" "0 10min 1"
 rmdir "$LATEST"; echo 0 > "$NEXT"; python3 "$TU/price_fetch.py" >/dev/null
-chk "写入恢复后：最新价写进去" "$(jq -c '.claude.models | keys' "$LATEST")" '["claude-test-9","claude-zero-9"]'
+chk "写入恢复后：最新价写进去" "$(jq -c '.claude.models | keys' "$LATEST")" '["claude-clash-9","claude-lone-9","claude-opus-5","claude-partial-9","claude-test-9","claude-zero-9"]'
 chk "没有遗留临时文件" "$(ls -A "$CACHE" | grep -c '\.tmp$')" "0"
+# PR #612 复审第 6 轮：最新价和下次时刻都写不进去时，日志说「10 分钟后再试」，其实时刻没保存、
+# 下一轮立刻又抓，每次还留下一个时刻临时文件
+rm -rf "$CACHE"; mkdir -p "$CACHE/latest-prices.json" "$CACHE/latest-prices.next"
+for round in 1 2; do
+    rc=0; OUT=$(python3 "$TU/price_fetch.py") || rc=$?
+    chk "两个文件都写不进去（第 $round 次）：照抓，日志如实说时刻没保存、下一轮会再抓，不说 10 分钟" \
+        "$rc $(grep -c '最新价目已抓到但写不进缓存，下次刷新时刻没能保存.*下一轮会再抓' <<<"$OUT") $(grep -c '10 分钟后再试' <<<"$OUT")" "0 1 0"
+    chk "两个文件都写不进去（第 $round 次）：没有遗留临时文件" "$(ls -A "$CACHE" | grep -c '\.tmp$')" "0"
+done
+# 只有下次时刻写不进去：最新价照常更新，日志说明时刻没保存
+rmdir "$LATEST"; rc=0; OUT=$(python3 "$TU/price_fetch.py") || rc=$?
+chk "只有下次时刻写不进去：最新价照常写进去，日志说时刻没保存、下一轮会再抓" \
+    "$rc $(jq -c '.claude.models | keys | length' "$LATEST") $(grep -c '已更新 Claude 最新价目：.*下次刷新时刻没能保存' <<<"$OUT") $(ls -A "$CACHE" | grep -c '\.tmp$')" "0 6 1 0"
+# 下载失败 + 时刻写不进去：同样不说「6 小时后再试」
+rm -f "$LATEST"; rc=0; OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/nope.md" python3 "$TU/price_fetch.py") || rc=$?
+chk "下载失败且时刻写不进去：日志说下一轮会再抓，不说 6 小时" \
+    "$rc $(grep -c '最新价目抓取失败，下次刷新时刻没能保存' <<<"$OUT") $(grep -c '6 小时后再试' <<<"$OUT")" "0 1 0"
+# 恢复后重新排定：一天后再抓
+rmdir "$NEXT"; NOW=$(date +%s); python3 "$TU/price_fetch.py" >/dev/null
+N=$(cat "$NEXT")
+chk "时刻文件恢复后：重新排定为一天后，最新价在" \
+    "$([ $((N - NOW)) -ge 86399 ] && [ $((N - NOW)) -le 86401 ] && echo 1day || echo "$((N - NOW))") $(jq -c '.claude.models | keys | length' "$LATEST")" "1day 6"
 
 report_counts "$pass" "$fail"
 echo
