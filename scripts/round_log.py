@@ -87,6 +87,11 @@ def parse_record(body):
     return top, secs
 
 
+def _trusted(c, trusted):
+    """一条评论可信与否：受保护读取已经判过的（带 trusted 字段）就用它的判断，否则按作者判。"""
+    return c["trusted"] if isinstance(c.get("trusted"), bool) else trusted(c.get("author") or "")
+
+
 def units(comments, trusted):
     """comments：[{id, author, at, body, url}]（任意顺序）；trusted(login) → 是否认这个账号写的记录。
     → 按位置排好的单元列表。读不懂的记录（trusted 账号写的、标记坏了）→ FormatError。"""
@@ -94,8 +99,7 @@ def units(comments, trusted):
     best = {}
     for c in comments:
         cid = int(c["id"])
-        ok = c["trusted"] if isinstance(c.get("trusted"), bool) else trusted(c.get("author") or "")
-        if is_record(c.get("body")) and ok:
+        if is_record(c.get("body")) and _trusted(c, trusted):
             top, secs = parse_record(c["body"])
             for s in secs:
                 u = {"kind": "section", "id": cid, "author": c.get("author"), "url": c.get("url", ""),
@@ -199,8 +203,7 @@ def plan(inp):
     → {mode: append|new, comment_id, append_body, new_body, of}。
     append_body = 追加到现有记录时整段写回的正文（mode=append 才有）；new_body = 新开 / 另起一条时的正文
     （两种情况都给：改写失败时另起用的就是它，内容与新开完全相同）。"""
-    login = (inp.get("trusted_login") or "").lower()
-    trusted = lambda a: bool(login) and (a or "").lower() == login  # noqa: E731
+    trusted = trusted_by(inp.get("trusted_login"))
     role, body, full = inp["role"], inp.get("body") or "", inp.get("full")
     check_body(body, "本节正文")
     if full is not None:
@@ -229,7 +232,9 @@ def plan(inp):
                 if u["kind"] == "section" and u["sec"] == of:
                     top_body = version_of(u, us)
         if top_body is None:
-            top_sec = None
+            # 所审的交付不在往返记录里（开关打开前的旧式独立评论，或版本取不到）：这一条复审结论照现在单独发，
+            # 不写一条下一轮读不出版本的记录
+            raise FormatError("所审的交付不在往返记录里（取不到它的完整版本），这一条复审结论照现在单独发")
     out = {"mode": "new", "comment_id": None, "of": of, "sec": sec}
     cap = int(inp.get("max") or MAX_CHARS)
     nb = new_record(top_sec, top_body or "", section_text(sec, role, at, latest_id, of, body))
@@ -237,7 +242,7 @@ def plan(inp):
         raise FormatError("这一节加上完整版本超过 %d 字，放不进一条评论" % cap)
     out["new_body"] = nb
     # 能追加：评论区最新一条就是可信账号写的往返记录（中途有任何新评论 → 来回被打断，另起一条）
-    if comments and is_record(comments[-1].get("body")) and trusted(comments[-1].get("author")):
+    if comments and is_record(comments[-1].get("body")) and _trusted(comments[-1], trusted):
         cur = comments[-1]
         top, _ = parse_record(cur["body"])
         text = cur["body"].replace("\r\n", "\n").rstrip("\n")
@@ -270,20 +275,41 @@ def _replace_top(text, new_top):
 
 # ── 统计用：把评论展开成「一个单元一条」的评论（周报、单 PR 统计）──────────────────
 
+def loop_login():
+    """loop 写评论的账号（统计入口用）：和写入命令里的 write_identity_login 同一个来源——有 WRITE_GH_TOKEN
+    就用它问 `gh api user`，没有就用 gh 自己的登录。问不到 → FormatError（调用方报错退出，不猜、不退回按名字认）。"""
+    import os
+    import subprocess
+    env = dict(os.environ)
+    if env.get("WRITE_GH_TOKEN"):
+        env["GH_TOKEN"] = env["WRITE_GH_TOKEN"]
+    try:
+        p = subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise FormatError("问不到 loop 写评论账号：%s" % e)
+    login = p.stdout.strip()
+    if p.returncode != 0 or not login or "\n" in login:
+        raise FormatError("问不到 loop 写评论账号（gh api user 退出码 %d）" % p.returncode)
+    return login
+
+
+def trusted_by(login):
+    """「这条记录可信」只有一种判法：作者就是 loop 写评论的账号（不区分大小写）。写入、读取、统计都用它。"""
+    want = (login or "").lower()
+    return lambda a: bool(want) and (a or "").lower() == want
+
+
 def expand_github_comments(comments, trusted):
     """GitHub 评论原样（user.login / created_at / body / id / issue_url / html_url）→ 同样形状的列表，
     往返记录换成它的各节：id 写成 "<评论编号>:<节编号>"、created_at 换成这一节的追加时间。
-    记录读不懂 → 原样留下那条评论（统计照旧按一条评论算，不猜它的节）。"""
+    可信账号写的记录读不懂 → FormatError（调用方报错退出：不退回按整条评论算，也不丢掉别的节）。"""
     norm = []
     raw_by_id = {}
     for c in comments:
         raw_by_id[int(c["id"])] = c
         norm.append({"id": c["id"], "author": (c.get("user") or {}).get("login", ""), "at": c.get("created_at", ""),
                      "body": c.get("body") or "", "url": c.get("html_url", "")})
-    try:
-        us = units(norm, trusted)
-    except FormatError:
-        return list(comments)
+    us = units(norm, trusted)
     out = []
     for u in us:
         raw = raw_by_id[u["id"]]
@@ -304,8 +330,7 @@ def main():
     try:
         inp = json.load(sys.stdin)
         if cmd == "show":
-            login = (inp.get("trusted_login") or "").lower()
-            us = units(inp["comments"], lambda a: bool(login) and (a or "").lower() == login)
+            us = units(inp["comments"], trusted_by(inp.get("trusted_login")))
             text, rc = render(us, bool(inp.get("all")))
             sys.stdout.write(text)
             return rc

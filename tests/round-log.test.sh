@@ -262,18 +262,36 @@ done
 
 echo "── PR：本次依据的提交、目标分支 ──"
 fresh pr
-o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001); rc=$?
-chk "PR：依据提交对得上 → 写入" "$rc" "0"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis bbbb000000000000000000000000000000000002); rc=$?
+for miss in "--base main" "--basis aaaa000000000000000000000000000000000001" ""; do
+    # shellcheck disable=SC2086
+    o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" $miss); rc=$?
+    chk "PR：漏传本次依据（只给了「${miss:-什么都没给}」）→ 拒收" "$rc $(result "$o")" "2 RESULT=rejected"
+done
+chk "PR：漏传依据的三次都零写入" "$(writes)" "0"
+o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+chk "PR：依据提交、目标分支都对得上 → 写入" "$rc" "0"
+o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis bbbb000000000000000000000000000000000002 --base main); rc=$?
 chk "PR：有了不是本次依据的提交 → 已过期" "$rc $(result "$o")" "3 RESULT=expired"
 printf '#!/usr/bin/env bash\njq %s "%s/items.json" > "%s/i" && mv "%s/i" "%s/items.json"\n' \
     "'.[\"8\"].base.ref = \"release\"'" "$GD" "$GD" "$GD" "$GD" > "$GD/hook_pulls_8_$(( $(cat "$GD/count_pulls_8" 2>/dev/null || echo 0) + 2 ))"
 : > "$CALLS"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001); rc=$?
+o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：第一次核对之后目标分支变了 → 已过期、零写入" "$rc $(writes)" "3 0"
 has "PR：已过期的原因是目标分支变了（不是别的检查）" "$o" "目标分支变了"
+# 交付开始后、调用命令之前就改投了：命令第一次读到的已经是新分支，照样要认出来
+fresh pr
+jq '.["8"].base.ref = "release"' "$GD/items.json" > "$GD/i" && mv "$GD/i" "$GD/items.json"
+o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+chk "PR：调用之前就改投了 → 已过期、零写入" "$rc $(writes)" "3 0"
+has "PR：调用之前就改投了：原因是目标分支变了" "$o" "目标分支变了"
+fresh pr
+jq '.["8"].head.repo.full_name = "someone/fork"' "$GD/items.json" > "$GD/i" && mv "$GD/i" "$GD/items.json"
+o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+chk "PR：来源仓库不是本仓库（没给 --source）→ 已过期" "$rc" "3"
+o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main --source someone/fork); rc=$?
+chk "PR：给了 --source 且对得上 → 写入" "$rc" "0"
 jq '.["8"].merged = true' "$GD/items.json" > "$GD/i" && mv "$GD/i" "$GD/items.json"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')"); rc=$?
+o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：已合并 → 已过期" "$rc" "3"
 fresh issue
 python3 - "$GD/items.json" <<'PY'
@@ -284,6 +302,68 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 'x')" --full "$(mk f1 'V')"); rc=$?
 chk "issue：已经有了工作分支的 PR（不再是方案阶段）→ 已过期" "$rc" "3"
+
+echo "── 旧式交付（开关打开前的独立评论）上的复审 ──"
+fresh issue
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["7"].append({"id": 300, "body": "## 方案第 3 版（开关打开前的独立评论）\n方案全文", "user": {"login": "loop-bot"}, "created_at": "2026-01-02T00:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+: > "$CALLS"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+chk "旧式交付上的复审：拒收，照现在单独发" "$rc $(result "$o")" "2 RESULT=rejected"
+has "旧式交付上的复审：说明原因" "$o" "所审的交付不在往返记录里"
+chk "旧式交付上的复审：零写入（不留一条读不出版本的记录）" "$(writes) $(records)" "0 0"
+o=$(RL show 7); rc=$?
+chk "旧式交付上的复审：读取照常（退出码 0）" "$rc" "0"
+# 复审照现在单独发出之后，worker 下一次交付开第一条往返记录，之后的复审照常追加
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["7"].append({"id": 301, "body": "<!-- codex-review-round:1 -->\n打回（单独发的）", "user": {"login": "loop-bot"}, "created_at": "2026-01-02T01:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+RL post 7 --role worker --to pending/review --body "$(mk b2 '第 4 版')" --full "$(mk f2 'V4 全文')" >/dev/null
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n再打回')"); rc=$?
+chk "之后的复审追加进新记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
+o=$(RL show 7); rc=$?
+chk "之后读取照常（退出码 0）" "$rc" "0"
+has "之后读取：附着第 4 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V4 全文"
+has "之后读取：轮次 2 个（单独发的 1 个 + 记录里 1 个）" "$o" "带复审轮次标记的 2 个"
+
+echo "── 托管 + 外部内容保护：写入路径也走受保护读取 ──"
+GUARD=('LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""')
+fresh issue "${GUARD[@]}"
+echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
+o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')"); rc=$?
+chk "保护开着、受保护读取读全：写入" "$rc $(result "$o")" "0 RESULT=written"
+has "保护开着：确实跑了受保护读取（查了评论作者的权限）" "$(cat "$CALLS")" "collaborators/maint/permission"
+: > "$GD/F_collaborators_maint_permission"
+: > "$CALLS"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+chk "保护开着、原样评论读得到但受保护读取失败：不写" "$rc $(result "$o")" "5 RESULT=unreadable"
+chk "受保护读取失败：零写入" "$(writes)" "0"
+has "受保护读取失败：原样评论确实读成功了（失败的只是受保护读取）" "$(cat "$CALLS")" "issues/7/comments"
+rm -f "$GD/F_collaborators_maint_permission"
+o=$(RL show 7); rc=$?
+chk "保护开着：读取命令也走受保护读取、成功" "$rc" "0"
+# 记录作者是别的机器人账号（名字也以 -bot 结尾）：写入、读取都只当普通评论
+fresh issue
+python3 - "$GD/comments.json" "$REPO_DIR/scripts" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+import round_log
+d = json.load(open(sys.argv[1]))
+body = round_log.new_record("aaaaaa000001", "别人的版本", round_log.section_text("aaaaaa000001", "worker", "2026-01-01T01:00:00Z", 100, None, "别人的一节"))
+d["7"].append({"id": 400, "body": body, "user": {"login": "other-bot"}, "created_at": "2026-01-01T01:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+o=$(RL show 7 --all)
+chk "别的机器人账号写的「记录」：读取当一条普通评论（2 个单元）" "$(grep -c '^### 单元 ' <<<"$o")" "2"
+o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')")
+has "别的机器人账号写的「记录」：写入不往里追加，另开一条" "$o" "MODE=new"
 
 echo "── 7. 托管受保护读取的视图：只认 loop 账号的记录 ──"
 fresh issue
@@ -314,7 +394,7 @@ import round_log, record
 cs = json.load(open(sys.argv[1]))["7"]
 for c in cs:
     c.setdefault("html_url", "")
-units = round_log.expand_github_comments(cs, record.is_bot)
+units = round_log.expand_github_comments(cs, round_log.trusted_by("loop-bot"))
 def recs(lst):
     out = []
     for c in lst:
@@ -365,6 +445,75 @@ PY
 ); rc=$?
 chk "周报：整串重读失败 → 整次退出，不出半份数字" "$rc" "2"
 lacks "周报：读失败后没有继续往下算" "$o" "NOT-EXITED"
+
+echo "── 8b. 同一条线程：读取命令、周报、单 PR 统计认记录的规则相同 ──"
+fresh issue
+F1='<!-- agent-metrics agent=claude wt=7 start=2026-01-05T01:00:00+08:00 end=2026-01-05T01:05:00+08:00 wall_secs=300 in=1 out=2 cache_r=3 cache_w=4 cost_usd=0.5 -->'
+RL post 7 --role worker --to pending/review --body "$(mk b1 "第 1 版
+$F1")" --full "$(mk f1 'V1')" >/dev/null
+python3 - "$GD/comments.json" "$REPO_DIR/scripts" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+import round_log
+d = json.load(open(sys.argv[1]))
+body = round_log.new_record("bbbbbb000001", "别人的版本", round_log.section_text("bbbbbb000001", "worker", "2026-01-06T01:00:00Z", 2000, None, "别人的一节"))
+d["7"].append({"id": 2000, "body": body, "user": {"login": "other-bot"}, "created_at": "2026-01-06T01:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+show_n=$(RL show 7 --all | grep -c '^### 单元 ')
+stats=$(FAKE_GH_DIR="$GD" WEEKLY_REPORT_BOT_LOGINS="loop-bot,other-bot" python3 - "$REPO_DIR/scripts" "$GD/comments.json" <<'PY' 2>&1
+import json, sys, importlib.util
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/weekly-report")
+import collect
+spec = importlib.util.spec_from_file_location("pts", sys.argv[1] + "/pr-time-stats.py")
+pts = importlib.util.module_from_spec(spec); spec.loader.exec_module(pts)
+cs = json.load(open(sys.argv[2]))["7"]
+for c in cs:
+    c["issue_url"] = "https://api.github.com/repos/example/rl/issues/7"
+w = collect.expand_round_logs("example/rl", [c for c in cs if c["id"] >= 1000])
+p = pts.expand_rl(cs)
+print("weekly=%d pr=%d" % (len(w), len(p)))
+PY
+)
+chk "同一线程：读取命令拆出 3 个单元（人的评论 + 1 节 + 别人的那条当普通评论）" "$show_n" "3"
+chk "同一线程：周报、单 PR 统计拆出的条数与读取命令一致（别的机器人账号写的不认，名字以 -bot 结尾也不认）" "$stats" "weekly=3 pr=3"
+# 可信账号写的记录坏了：两个统计入口都报错退出，不悄悄按整条评论算
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for c in d["7"]:
+    if c["user"]["login"] == "loop-bot" and c["body"].startswith("<!-- cavil-round-log"):
+        c["body"] = c["body"].replace("<!-- cavil-round-log:sec-end -->", "", 1)
+json.dump(d, open(sys.argv[1], "w"))
+PY
+o=$(FAKE_GH_DIR="$GD" python3 - "$REPO_DIR/scripts" "$GD/comments.json" <<'PY' 2>&1
+import json, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/weekly-report")
+import collect
+cs = json.load(open(sys.argv[2]))["7"]
+for c in cs:
+    c["issue_url"] = "https://api.github.com/repos/example/rl/issues/7"
+collect.expand_round_logs("example/rl", [c for c in cs if c["id"] >= 1000])
+print("NOT-EXITED")
+PY
+); rc=$?
+chk "记录坏了：周报整次退出" "$rc" "2"
+lacks "记录坏了：周报没有继续往下算" "$o" "NOT-EXITED"
+o=$(FAKE_GH_DIR="$GD" python3 - "$REPO_DIR/scripts" "$GD/comments.json" <<'PY' 2>&1
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("pts", sys.argv[1] + "/pr-time-stats.py")
+pts = importlib.util.module_from_spec(spec); spec.loader.exec_module(pts)
+cs = json.load(open(sys.argv[2]))["7"]
+try:
+    pts.expand_rl(cs)
+    print("NO-ERROR")
+except pts.Fail as e:
+    print("FAIL:%s" % e)
+PY
+)
+has "记录坏了：单 PR 统计报错（不出半份数字）" "$o" "FAIL:往返记录"
+o=$(RL show 7); rc=$?
+chk "记录坏了：读取命令也报错（退出码 4，读不懂）" "$rc" "4"
 
 echo "── 10. 提示词 ──"
 fresh issue

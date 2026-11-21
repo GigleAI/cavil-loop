@@ -1433,9 +1433,13 @@ proposal / whole delivery summary) sits at the top of the record and is replaced
   `~/.agents/releases/cavil-loop/entrypoints/round-log.sh`. Before every write the target is re-read (open, still
   `doing/agent`, no `pending/human` / waiting label, PR not merged, same base branch and source, head commit equal to
   the delivery's). An edit that fails or times out is replaced by a complete new record carrying the same section id;
-  readers and statistics count a section once. Each run logs one `round-log #<n> post：<result>` line to `poll.log`
+  readers and statistics count a section once. On a PR the caller must pass the commit and base branch the delivery was made against (`--basis` / `--base`; `--source` for a PR from another repository) — the command never takes its own first read as the baseline and refuses without them. A review of a delivery that is not in a record yet (a plain comment from before the switch was turned on) is refused, so it is posted as before. Each run logs one `round-log #<n> post：<result>` line to `poll.log`
 - **Autopilot items with the outsider guard on** read through the protected read command as before; its output ends
-  with the same unit view. A comment by another account that carries the record marker is an ordinary comment
+  with the same unit view. Writing goes through the same protected read first, and writes nothing when it fails
+- **One rule for whose record it is**: a record counts only when its author is the loop's write account (the login of
+  `WRITE_GH_TOKEN`, or gh's own login without it) — for the commands, the weekly report and `pr-time-stats.py`
+  alike. A comment by any other account that carries the record marker is an ordinary comment, a bot-suffixed name
+  included. A record by the write account that cannot be parsed stops the read and both statistics with an error
 - **Statistics**: the weekly report and `pr-time-stats.py` split records into sections (each with its own append
   time) through the same function; for every item that has a record, the weekly report re-reads that item's whole
   comment thread before applying the week window, and stops with an error when that read fails

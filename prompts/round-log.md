@@ -13,12 +13,14 @@
 
 1. 把**本节正文**写进一个文件：这一版改了什么（worker）或复审意见（复审，第一行照旧是轮次标记），加上给下一个 agent 的交代；用量 footer 照上文生成，用带 footer 的那个文件。**不要**再把整份方案 / 整份说明贴进本节
 2. worker 另把**完整版本**写进一个文件：方案阶段是整份最新方案；PR 阶段是这一版完整的交付说明（不含用量 footer）。复审不用给
-3. 运行（`<编号>` 是这条评论要发到的 issue / PR；PR 上要带本次交付依据的提交，即 `git rev-parse HEAD` 推送后的值；复审写所审的那个提交）：
+3. 运行（`<编号>` 是这条评论要发到的 issue / PR）。发到 PR 上时**必须**带本次交付开始时确认的两样：`--basis` = 本次交付依据的提交（worker：推送后的 `git rev-parse HEAD`；复审：所审的那个提交），`--base` = 当时确认的目标分支；PR 来自别的仓库时再加 `--source <那个仓库>`。缺了命令拒收：
 
    ```bash
-   @@ROUND_LOG_CMD@@ post <编号> --role worker --to <要翻到的标签> --body <本节文件> --full <完整版本文件> [--basis <PR 提交>]
-   @@ROUND_LOG_CMD@@ post <编号> --role review --to <要翻到的标签> --body <本节文件> [--basis <PR 提交>]
+   @@ROUND_LOG_CMD@@ post <编号> --role worker --to <要翻到的标签> --body <本节文件> --full <完整版本文件> [--basis <提交> --base <目标分支>]
+   @@ROUND_LOG_CMD@@ post <编号> --role review --to <要翻到的标签> --body <本节文件> [--basis <提交> --base <目标分支>]
    ```
+
+   复审所审的交付还不在往返记录里（开关打开前的旧式独立评论）时，命令会拒收这条复审结论，照上文单独发即可
 
 4. 按最后一行的 `RESULT=` 做（退出码与它一一对应）：
 

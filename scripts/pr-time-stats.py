@@ -172,6 +172,22 @@ def item_num(pr, branch, body, prefix):
 
 # ── footer 机器记录 ──────────────────────────────────────────────────────────
 
+_RL_TRUSTED = []
+
+
+def expand_rl(comments):
+    """往返记录（GitHub#610）拆成一节一条：只认 loop 写评论账号的记录（与写入 / 读取命令同一种判法）。
+    没有记录时不问账号；问不到账号、记录读不懂 → Fail（不出半份数字）。"""
+    if not any(round_log.is_record(c.get("body")) for c in comments):
+        return comments
+    try:
+        if not _RL_TRUSTED:
+            _RL_TRUSTED.append(round_log.trusted_by(round_log.loop_login()))
+        return round_log.expand_github_comments(comments, _RL_TRUSTED[0])
+    except round_log.FormatError as e:
+        raise Fail("往返记录：%s" % e)
+
+
 def footers(comments, default_wt):
     """评论里的派工记录，按派工身份去重（同一派工多条评论取最后那条，见 record.dispatch_key）。
     返回 (派工列表, 非机器人账号写的、形状像机器记录的评论条数)。"""
@@ -434,10 +450,10 @@ def collect(a, since, until):
     for n, plist in groups.items():
         # 工作编号是 issue 号（不是这组里某个 PR 自己的号）时，issue 上的派工也算进来
         is_issue = n not in {str(p["number"]) for p in plist}
-        issue_comments = round_log.expand_github_comments(pages(f"repos/{repo}/issues/{n}/comments"), record.is_bot) if is_issue else []
+        issue_comments = expand_rl(pages(f"repos/{repo}/issues/{n}/comments")) if is_issue else []
         prev_merge = float("-inf")
         for p in plist:
-            own = round_log.expand_github_comments(pages(f"repos/{repo}/issues/{p['number']}/comments"), record.is_bot)
+            own = expand_rl(pages(f"repos/{repo}/issues/{p['number']}/comments"))
             lo, hi = prev_merge, ts(p["merged_at"])
             mine = [c for c in issue_comments if lo < (ts(c.get("created_at")) or 0) <= hi]
             ds, sk = footers(own + mine, n)

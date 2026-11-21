@@ -31,7 +31,7 @@ CMD="${1:-}"; shift || usage
 NUM="${1:-}"; shift || usage
 case "$NUM" in ''|*[!0-9]*) usage ;; esac
 
-ROLE="" TO="" BODY_F="" FULL_F="" OF="" BASIS="" ALL=0
+ROLE="" TO="" BODY_F="" FULL_F="" OF="" BASIS="" BASE="" SOURCE="" ALL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --role) ROLE="${2:-}"; shift 2 || usage ;;
@@ -40,6 +40,8 @@ while [ $# -gt 0 ]; do
         --full) FULL_F="${2:-}"; shift 2 || usage ;;
         --of) OF="${2:-}"; shift 2 || usage ;;
         --basis) BASIS="${2:-}"; shift 2 || usage ;;
+        --base) BASE="${2:-}"; shift 2 || usage ;;
+        --source) SOURCE="${2:-}"; shift 2 || usage ;;
         --all) ALL=1; shift ;;
         *) usage ;;
     esac
@@ -71,7 +73,7 @@ rl_read_comments() {   # <输出文件>
 
 # ── show ──────────────────────────────────────────────────────────────────────
 if [ "$CMD" = show ]; then
-    [ -z "$ROLE$TO$BODY_F$FULL_F$OF$BASIS" ] || usage
+    [ -z "$ROLE$TO$BODY_F$FULL_F$OF$BASIS$BASE$SOURCE" ] || usage
     # 开了外部内容保护的项目一律走受保护读取（同 outsider-read.sh），文字用它展示的那一份
     if outsider_guard_on; then
         rc=0; outsider_scan "$NUM" read || rc=$?
@@ -108,8 +110,8 @@ done
 me=$(write_identity_login)
 [ -n "$me" ] || finish 4 unknown "读不到 loop 写评论账号是谁"
 
-# 第一次读目标：记下目标分支和来源仓库，之后每次写前都和它比
-SNAP_KIND="" SNAP_BASE="" SNAP_HEADREPO=""
+# 每次写前都和「本次交付开始时确认的」提交、目标分支、来源仓库比：PR 上这三样由调用方给（--basis / --base，
+# --source 不给 = 本仓库），缺了就不写——命令自己第一次读到的值不能当基准（交付开始后、调用之前改投就看不出来）
 rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
     local it labels pj st merged base hrepo hsha prs
     RL_WHY=""
@@ -129,12 +131,13 @@ rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
         hsha=$(printf '%s' "$pj" | jq -r '.head.sha // ""' 2>/dev/null) || return 2
         [ "$merged" != "?" ] && [ -n "$base" ] && [ -n "$hrepo" ] && [ -n "$hsha" ] || return 2
         [ "$merged" = false ] || { RL_WHY="已合并"; return 1; }
-        if [ -z "$SNAP_KIND" ]; then SNAP_KIND=pr; SNAP_BASE="$base"; SNAP_HEADREPO="$hrepo"; fi
-        [ "$base" = "$SNAP_BASE" ] || { RL_WHY="目标分支变了"; return 1; }
-        [ "$hrepo" = "$SNAP_HEADREPO" ] || { RL_WHY="来源仓库变了"; return 1; }
-        [ -z "$BASIS" ] || [ "$hsha" = "$BASIS" ] || { RL_WHY="PR 有了不是本次依据的新提交"; return 1; }
+        RL_KIND=pr
+        [ -n "$BASIS" ] && [ -n "$BASE" ] || return 3
+        [ "$base" = "$BASE" ] || { RL_WHY="目标分支变了"; return 1; }
+        [ "$hrepo" = "${SOURCE:-$REPO}" ] || { RL_WHY="来源仓库变了"; return 1; }
+        [ "$hsha" = "$BASIS" ] || { RL_WHY="PR 有了不是本次依据的新提交"; return 1; }
     else
-        SNAP_KIND=issue
+        RL_KIND=issue
         # 方案阶段：这条 issue 还没有打开的工作分支 PR
         prs=$(gh api "repos/$REPO/pulls?state=open&head=${REPO%%/*}:$(branch_name "$NUM")" --jq 'length' 2>/dev/null) || return 2
         case "$prs" in ''|*[!0-9]*) return 2 ;; esac
@@ -149,12 +152,28 @@ rl_gate() {   # 每一次写之前都跑；不通过就按结果收尾
     case "$rc" in
         0) return 0 ;;
         1) finish 3 expired "目标已不归这次派工：$RL_WHY" ;;
+        3) finish 2 rejected "PR 上的交付要给本次依据的提交和目标分支（--basis / --base），照现在单独发" ;;
         *) finish 4 unknown "目标状态读不到" ;;
     esac
 }
 
 rl_gate
 rl_read_comments "$TMPD/c.json" || finish 5 unreadable "评论读不全"
+# 开了外部内容保护的项目：写入路径和读取命令用同一次受保护读取（outsider_scan）。它读不全就不写；
+# 它认出的评论要和上面原样读到的是同一批，往返记录也只认它判为 loop 账号写的那条
+if outsider_guard_on; then
+    rc=0; outsider_scan "$NUM" read || rc=$?
+    [ "$rc" = 0 ] || finish 5 unreadable "受保护读取没读全：${OS_WHY:-原因没记下}"
+    src=issue-comment; [ "${OS_TARGET_KIND:-issue}" != pr ] || src=pr-comment
+    view_ids=$(printf '%s' "$OS_RES" | jq -r --arg s "$src" '[.view[]? | select(.src == $s) | .id | tostring] | sort | join(",")' 2>/dev/null) \
+        || finish 5 unreadable "受保护读取的结果读不懂"
+    raw_ids=$(jq -r '[.[].id | tostring] | sort | join(",")' < "$TMPD/c.json") || finish 5 unreadable "评论读不懂"
+    [ "$view_ids" = "$raw_ids" ] || finish 5 unreadable "受保护读取和原样读取看到的评论不是同一批"
+    printf '%s' "$OS_RES" | jq -c --arg s "$src" '[.view[]? | select(.src == $s) | {key: (.id | tostring), value: .trusted}] | from_entries' \
+        > "$TMPD/trust.json" || finish 5 unreadable "受保护读取的结果读不懂"
+    jq -c --slurpfile t "$TMPD/trust.json" 'map(. + {trusted: ($t[0][(.id | tostring)] // false)})' < "$TMPD/c.json" > "$TMPD/c2.json" \
+        && mv "$TMPD/c2.json" "$TMPD/c.json" || finish 5 unreadable "整理不了评论"
+fi
 
 SEC=$(od -An -N6 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 [ "${#SEC}" = 12 ] || finish 6 failed "生成不了节编号"

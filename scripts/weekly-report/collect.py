@@ -86,14 +86,20 @@ def gh_whole(path):
 def expand_round_logs(repo, comments):
     """往返记录（GitHub#610）：`since` 列表只用来找出哪些条目有往返记录；这些条目的评论整串重读，
     拆成「一节一条」（每节的 created_at = 它的追加时间、同一节多份只留一份），再交给下面按周统计。
-    这样旧记录在下一周才被改写时，统计看到的仍是各节真正的追加时间。只认机器人账号写的记录。"""
-    nums = sorted({int(c["issue_url"].rsplit("/", 1)[-1]) for c in comments
-                   if round_log.is_record(c.get("body")) and is_bot(((c.get("user") or {}).get("login")) or "")})
-    if not nums:
+    这样旧记录在下一周才被改写时，统计看到的仍是各节真正的追加时间。只认 loop 写评论账号写的记录
+    （round_log.trusted_by，与写入、读取命令同一种判法）；问不到账号、记录读不懂 → 整次退出。"""
+    if not any(round_log.is_record(c.get("body")) for c in comments):
         return comments
-    keep = [c for c in comments if int(c["issue_url"].rsplit("/", 1)[-1]) not in set(nums)]
-    for n in nums:
-        keep.extend(round_log.expand_github_comments(gh_whole(f"repos/{repo}/issues/{n}/comments?per_page=100"), is_bot))
+    try:
+        trusted = round_log.trusted_by(round_log.loop_login())
+        nums = sorted({int(c["issue_url"].rsplit("/", 1)[-1]) for c in comments
+                       if round_log.is_record(c.get("body")) and trusted(((c.get("user") or {}).get("login")) or "")})
+        keep = [c for c in comments if int(c["issue_url"].rsplit("/", 1)[-1]) not in set(nums)]
+        for n in nums:
+            keep.extend(round_log.expand_github_comments(gh_whole(f"repos/{repo}/issues/{n}/comments?per_page=100"), trusted))
+    except round_log.FormatError as e:
+        print(f"[error] 往返记录：{e}", file=sys.stderr)
+        sys.exit(2)
     return keep
 
 
