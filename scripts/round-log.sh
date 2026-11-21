@@ -112,28 +112,39 @@ done
 me=$(write_identity_login)
 [ -n "$me" ] || finish 4 unknown "读不到 loop 写评论账号是谁"
 
-# 每次写前都和「本次交付开始时确认的」提交、目标分支、来源仓库比：PR 上这三样由调用方给（--basis / --base，
-# --source 不给 = 本仓库），缺了就不写——命令自己第一次读到的值不能当基准（交付开始后、调用之前改投就看不出来）
-rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
-    local it labels pj pst st merged base hrepo hsha prs
-    RL_WHY=""
-    it=$(gh api "repos/$REPO/issues/$NUM" 2>/dev/null) || return 2
-    st=$(printf '%s' "$it" | jq -r '.state // ""' 2>/dev/null) || return 2
-    labels=$(printf '%s' "$it" | jq -r '[.labels[]? | (.name // empty)] | .[]' 2>/dev/null) || return 2
+# 一份 issue / PR 响应里的「还归不归这次派工」：打开、挂着派工中标签、没有交人 / 等前置 / 合并 / 转 PR 这类
+# 别人已接手的标签。issue 响应和 PR 响应各自都要过这一关：两次读之间维护者可能关掉条目或改了标签，
+# 只核对其中一份就会漏掉（PR #625 复审重派第 1、2 轮先后漏了 PR 的状态和标签）。
+# 字段缺失、标签没名字、状态是没见过的词 → 读不懂（2），不当成「没有保护标签」
+rl_flow_check() {   # <响应 JSON 文件> → 0 / 1（RL_WHY）/ 2
+    local f="$1" st labels l
+    st=$(jq -r 'if (.state | type) == "string" then .state else "" end' < "$f" 2>/dev/null) || return 2
+    labels=$(jq -r 'if (.labels | type) == "array" and all(.labels[]; (.name | type) == "string" and .name != "")
+                    then .labels[].name else error("labels") end' < "$f" 2>/dev/null) || return 2
     case "$st" in open) ;; closed) RL_WHY="已关闭"; return 1 ;; *) return 2 ;; esac
     grep -qxF -- "$LABEL_AGENT_DOING" <<<"$labels" || { RL_WHY="不再挂着 $LABEL_AGENT_DOING"; return 1; }
-    for l in "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_BLOCKED"; do
+    for l in "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_BLOCKED" "$LABEL_PENDING_MERGE" "$LABEL_PENDING_PR"; do
         [ -n "$l" ] && grep -qxF -- "$l" <<<"$labels" && { RL_WHY="带着 ${l}（已有人接手）"; return 1; }
     done
-    if printf '%s' "$it" | jq -e '.pull_request != null' >/dev/null 2>&1; then
-        pj=$(gh api "repos/$REPO/pulls/$NUM" 2>/dev/null) || return 2
-        # PR 自己的状态也要看：issue 资源读到打开之后、读 PR 之前它可能被关掉（未合并）
-        pst=$(printf '%s' "$pj" | jq -r '.state // ""' 2>/dev/null) || return 2
-        case "$pst" in open) ;; closed) RL_WHY="已关闭"; return 1 ;; *) return 2 ;; esac
-        merged=$(printf '%s' "$pj" | jq -r 'if (.merged | type) == "boolean" then .merged else "?" end' 2>/dev/null) || return 2
-        base=$(printf '%s' "$pj" | jq -r '.base.ref // ""' 2>/dev/null) || return 2
-        hrepo=$(printf '%s' "$pj" | jq -r '.head.repo.full_name // ""' 2>/dev/null) || return 2
-        hsha=$(printf '%s' "$pj" | jq -r '.head.sha // ""' 2>/dev/null) || return 2
+    return 0
+}
+
+# 每次写前都和「本次交付开始时确认的」提交、目标分支、来源仓库比：PR 上这三样由调用方给（--basis / --base，
+# --source 不给 = 本仓库），缺了就不写——命令自己第一次读到的值不能当基准（交付开始后、调用之前改投就看不出来）。
+# 最后一次读到的响应决定结果：PR 上最后读的是 PR 资源，issue 上读完关联 PR 列表后再读一次 issue
+rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
+    local rc merged base hrepo hsha prs
+    RL_WHY=""
+    gh api "repos/$REPO/issues/$NUM" > "$TMPD/t-issue.json" 2>/dev/null || return 2
+    rc=0; rl_flow_check "$TMPD/t-issue.json" || rc=$?; [ "$rc" = 0 ] || return "$rc"
+    if jq -e '.pull_request != null' < "$TMPD/t-issue.json" >/dev/null 2>&1; then
+        gh api "repos/$REPO/pulls/$NUM" > "$TMPD/t-pr.json" 2>/dev/null || return 2
+        # PR 响应同样整份核对：状态、派工中标签、保护标签（两次读之间可能变了）
+        rc=0; rl_flow_check "$TMPD/t-pr.json" || rc=$?; [ "$rc" = 0 ] || return "$rc"
+        merged=$(jq -r 'if (.merged | type) == "boolean" then .merged else "?" end' < "$TMPD/t-pr.json" 2>/dev/null) || return 2
+        base=$(jq -r '.base.ref // ""' < "$TMPD/t-pr.json" 2>/dev/null) || return 2
+        hrepo=$(jq -r '.head.repo.full_name // ""' < "$TMPD/t-pr.json" 2>/dev/null) || return 2
+        hsha=$(jq -r '.head.sha // ""' < "$TMPD/t-pr.json" 2>/dev/null) || return 2
         [ "$merged" != "?" ] && [ -n "$base" ] && [ -n "$hrepo" ] && [ -n "$hsha" ] || return 2
         [ "$merged" = false ] || { RL_WHY="已合并"; return 1; }
         RL_KIND=pr
@@ -147,6 +158,10 @@ rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
         prs=$(gh api "repos/$REPO/pulls?state=open&head=${REPO%%/*}:$(branch_name "$NUM")" --jq 'length' 2>/dev/null) || return 2
         case "$prs" in ''|*[!0-9]*) return 2 ;; esac
         [ "$prs" = 0 ] || { RL_WHY="已经有了关联 PR"; return 1; }
+        # 读列表期间 issue 也可能被关掉或改了标签：最后再整份核对一次
+        gh api "repos/$REPO/issues/$NUM" > "$TMPD/t-issue.json" 2>/dev/null || return 2
+        rc=0; rl_flow_check "$TMPD/t-issue.json" || rc=$?; [ "$rc" = 0 ] || return "$rc"
+        jq -e '.pull_request == null' < "$TMPD/t-issue.json" >/dev/null 2>&1 || return 2
     fi
     return 0
 }

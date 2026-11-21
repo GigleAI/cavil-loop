@@ -403,6 +403,58 @@ pr_state_case() {   # <名字> <PR 的 state 改成什么> <期望退出码 结�
 pr_state_case "PR：读 issue 后、读 PR 前被关闭（未合并）" '"closed"' "3 RESULT=expired"
 pr_state_case "PR：PR 的状态读回来是没见过的值" '"weird"' "4 RESULT=unknown"
 pr_state_case "PR：PR 的状态字段缺失" 'null' "4 RESULT=unknown"
+# 最后一次读 PR 时维护者把标签改成了交人（读 issue 时还是派工中）：PR 响应的标签同样要核对（复审重派第 2 轮）。
+# 新发、追加、改写失败后另起三条写入路径都要拦住；对照：标签没变时照常写入
+# hook_lbl <PR 资源第几次读> <标签 JSON>：那一次读之前把 8 号的标签换掉
+hook_lbl() {
+    printf '#!/usr/bin/env bash\njq %s "%s/labels.json" > "%s/l" && mv "%s/l" "%s/labels.json"\n' \
+        "'.[\"8\"] = $2'" "$GD" "$GD" "$GD" "$GD" > "$GD/hook_pulls_8_$1"
+}
+pr_label_case() {   # <名字> <路径：new|append|fallback> <换成的标签 JSON|空=不换> <期望退出码 结果> <期望写请求数>
+    fresh pr
+    local base_args=(--basis aaaa000000000000000000000000000000000001 --base main)
+    if [ "$2" != new ]; then
+        RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" "${base_args[@]}" >/dev/null
+    fi
+    local of; of=$(ofv 8)
+    [ "$2" = fallback ] && : > "$GD/F_patch_comment"
+    local k0; k0=$(cat "$GD/count_pulls_8" 2>/dev/null || echo 0)
+    # 这次写入命令读 PR 资源的次数：开头一次 + 每次写之前一次（另起时改写前、另起前各一次）
+    local last=$((k0 + 2)); [ "$2" = fallback ] && last=$((k0 + 3))
+    [ -z "$3" ] || hook_lbl "$last" "$3"
+    : > "$CALLS"
+    local o rc
+    if [ "$2" = new ]; then
+        o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" "${base_args[@]}"); rc=$?
+    else
+        o=$(RL post 8 --role review --of "$of" --to pending/agent --body "$(mk r1 'x')" "${base_args[@]}"); rc=$?
+    fi
+    rm -f "$GD/F_patch_comment"
+    chk "$1：结果" "$rc $(result "$o")" "$4"
+    chk "$1：写请求数" "$(writes)" "$5"
+    chk "$1：PR 资源确实读到了第 $((last - k0)) 次（换标签的那一次就是写前最后一次）" "$(( $(cat "$GD/count_pulls_8") - k0 ))" "$((last - k0))"
+}
+pr_label_case "PR 新发：最后一次读 PR 时已改成交人" new '["pending/human"]' "3 RESULT=expired" 0
+pr_label_case "PR 追加：最后一次读 PR 时已改成交人" append '["pending/human"]' "3 RESULT=expired" 0
+pr_label_case "PR 改写失败后另起：另起前读 PR 时已改成交人（改写那一次已发出）" fallback '["pending/human"]' "3 RESULT=expired" 1
+pr_label_case "PR 追加：最后一次读 PR 时摘掉了派工中" append '[]' "3 RESULT=expired" 0
+pr_label_case "PR 追加：最后一次读 PR 时挂上了等前置" append '["doing/agent","pending/blocked"]' "3 RESULT=expired" 0
+pr_label_case "对照 PR 新发：标签没变 → 照常写入" new '' "0 RESULT=written" 1
+pr_label_case "对照 PR 追加：标签没变 → 照常写入" append '' "0 RESULT=written" 1
+pr_label_case "对照 PR 改写失败后另起：标签没变 → 另起写入" fallback '' "0 RESULT=written" 2
+# PR 响应里有一个没名字的标签（读不懂）→ 未知，不写
+pr_label_case "PR 追加：PR 响应的标签读不懂" append '[""]' "4 RESULT=unknown" 0
+# issue 上同一时序：读完关联 PR 列表之后 issue 已改成交人 → 不写
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+of=$(ofv 7)
+k0=$(cat "$GD/count_pulls" 2>/dev/null || echo 0)
+printf '#!/usr/bin/env bash\njq %s "%s/labels.json" > "%s/l" && mv "%s/l" "%s/labels.json"\n' \
+    "'.[\"7\"] = [\"doing/agent\",\"pending/human\"]'" "$GD" "$GD" "$GD" "$GD" > "$GD/hook_pulls_$((k0 + 2))"
+: > "$CALLS"
+o=$(RL post 7 --role review --of "$of" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+chk "issue：读关联 PR 列表时 issue 已改成交人 → 已过期、零写入" "$rc $(result "$o") $(writes)" "3 RESULT=expired 0"
+has "issue：已过期的原因是已有人接手" "$o" "已有人接手"
 fresh issue
 python3 - "$GD/items.json" <<'PY'
 import json, sys
