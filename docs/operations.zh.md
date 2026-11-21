@@ -2234,7 +2234,65 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 `PUBLIC_ASSETS_ROOT` 填实际在用的资产目录（旧安装是 `~/.local/state/coding-agent-poll/review-shots`）。对外路径前缀不是 `/review-assets/` 时加一行 `PUBLIC_ASSETS_PREFIX=`。
 
-发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（三份工作说明模板里已写这一步，`publish-asset.sh` 发布前也会跑）。
+发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（发布命令发布前也会跑；配了出图地址的项目，worker 不再自己跑它，见下一节）。
+
+### 目录规则、唯一的发布命令、服务端强制拦截（GitHub#613）
+
+**目录规则**：新发的图一律落在资产目录的 `<项目 key>/<条目编号>/<名字>-rev-<唯一戳>.<扩展名>`，周报是 `<项目 key>/weekly-report/<文件名>`。路径由 cavil-loop 定，worker 不起名、不选目录。项目 key 就是 `~/.config/cavil-loop/<key>.conf` 的名字。
+
+**发布命令**：评论配图和周报共用 `scripts/publish-asset.sh`（托管安装走长期入口 `~/.agents/releases/cavil-loop/entrypoints/publish-asset.sh`；`scripts/weekly-report/publish-asset.sh` 是早期路径，原样转发）。配了出图地址的项目，派工提示词里讲出图的两条（「怎么出图」「评论配图标准」）换成这一条命令，项目 key 和条目编号已写死：`bash '<入口>' --project '<key>' --item <编号> <图片>...`。它依次：
+
+1. 读对外服务自己报告的状态，服务端拦截没生效就拒绝（原因写在 stderr）；目录取服务报告的实际目录，不猜；
+2. 把文件复制成目标目录里的隐藏临时文件，**查这份副本**有没有凭证样式，有就删掉、拒绝；
+3. 改名成最终名字，同名已存在就拒绝（不覆盖）；
+4. 核对公网地址 HTTP 200 且下载到的字节数等于文件大小，不对就删掉刚放的文件、报错；
+5. stdout 只打印地址，一行一个。
+
+不是图片 / 视频的（周报 PDF 等）照旧不公开，放进不公开目录的 `<项目 key>/<子目录>/` 下。
+
+**服务端强制拦截（严格模式）**：对外服务配置里有 `PUBLIC_ASSETS_STRICT=1` 时，它只交出两类文件——项目子目录下的（key 必须是本机登记过的项目），或旧图清单里**路径和内容（SHA-256）都对得上**的旧图；每个文件整份读进内存，在这份内存上判格式、查凭证（所有类型，不只 SVG）、比清单，再从这份内存送出——检查过的就是送出去的。绕过发布命令直接拷进目录的文件，含凭证样式的不给；拷到项目子目录以外的新文件，一律不给。没有这一行时行为和以前一样（这也是切换失败时的退回状态）。
+
+单文件上限默认 256 MB（`PUBLIC_ASSETS_MAX_BYTES=` 调），超过的不交出。
+
+**旧图**：切换时把资产目录里不在项目子目录下的全部图片 / 视频登记成旧图清单（相对路径 + 大小 + SHA-256），写两份：配置目录里的 `public-assets-legacy.json` 和 `~/.local/state/cavil-loop/public-assets/legacy.json`；清单的校验值写进服务配置的 `PUBLIC_ASSETS_LEGACY_SHA=` 一行。**这一行就是唯一的可信状态**：有它 = 清单已生效、以它为准、永不重建；没有它 = 从未生效、可以重建。
+
+- 改权限、改修改时间、按原路径原内容从备份还原：旧图照常能打开；
+- 改名、挪位置、换内容：旧图变 404（已发评论里的那张会破）；
+- 一份清单坏了：服务用另一份，再跑一次切换会把好的那份复制回去；
+- 两份都坏、或校验值那一行格式不对：旧结构一律 404，日志写原因，切换命令不重建——从备份找回任一份（校验值对上即可）；只有人决定时才删掉校验值那一行重建（重建会把此刻目录里项目子目录以外的文件都当旧图）。
+
+**切换**：
+
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --status   # 只读：配置、服务、拦截是否生效、代码是否一致、清单状态
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # 放几个测试文件经本机端口和公网地址各查一遍，再删掉；不改配置
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # 执行切换：备份配置 → 建 / 核对清单 → 写严格模式 → 重启 → 核验；失败自动退回老规则
+```
+
+daemon 每轮调一次 `switch.sh --auto`：服务没在严格模式、或在跑的代码和磁盘上的不一样，就自动切换（会重启一次服务），失败按 1、5、15、60 分钟退避，每个代码版本最多试 5 次。不想让它自动切换：服务配置里加 `PUBLIC_ASSETS_AUTO_SWITCH=0`。核验做四项：一张旧图 200、旧结构位置新放的图 404、`<key>/0/`（0 号条目留给核验）下的正常图 200、带假令牌样式的图 404；只删它自己刚建的文件。
+
+切换出问题时手动退回老规则（不依赖切换命令能运行；先把 `OLD_IMAGE_URL` 设成任一张旧图的公网地址）：
+
+<!-- public-assets-rollback:begin -->
+```bash
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)"
+cp -p "$CONF" "$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
+grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+systemctl --user restart cavil-loop-public-assets.service
+sleep 2
+systemctl --user is-active cavil-loop-public-assets.service
+curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+```
+<!-- public-assets-rollback:end -->
+
+看到 `active` 和 `200` 算恢复。`PUBLIC_ASSETS_LEGACY_SHA=` 那一行保留，下次切换沿用；想恢复自动切换就删掉 `PUBLIC_ASSETS_AUTO_SWITCH=0` 那一行。第一步不是 `active`：`journalctl --user -u cavil-loop-public-assets -n 50` 看原因，配置改坏了就用同目录下最新的 `public-assets.conf.bak-<时间>` 覆盖它再重启。
+
+**占用统计**（只读，不删任何文件）：`bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` 按项目、按条目列出占用，旧结构里归不到项目的单列一行，按名字推出来但对外服务不交出的那个目录也单列。删不删、删哪些由人决定：删掉的图在已发评论里会变成破图。
+
+**脚本查不出来的**：截到的画面里显示了令牌、个人信息（姓名、邮箱、账号、订单……），凭证检查只看文件字节，看不出像素里的内容。这一条仍靠 worker 只截可公开的页面、复审抽查。
+
+**限制**：只有装了这套对外服务的机器能发图；直接把目录交给别的静态服务对外的机器，发布命令一律拒绝。切换会重启一次服务，重启那一下（秒级）的图片请求会失败。
 
 不是图片 / 视频的附件（周报 PDF 等）不公开发布：`publish-asset.sh` 把它放进不公开的目录，项目配置里设了 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL`（只在内网可达的地址前缀，对应目录由 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` 指定，默认资产目录旁的 `private-assets/`）就给那个地址，没设就给本机路径。周报趋势图的矢量版留在本机（`WEEKLY_REPORT_VECTOR_DIR`，默认资产目录旁的 `weekly-report-vector/`），`topdf.mjs` 从本机读。
 

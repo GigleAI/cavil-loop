@@ -7,7 +7,8 @@
 #   ① 对外服务 scripts/public-assets/serve.mjs：图片 / 视频照给（含分段请求），目录、其他类型、
 #      改了扩展名的文件、点开头的路径、指到目录外的符号链接一律同一个 404，且不漏文件名
 #   ② 发图前自查 scripts/public-assets/check.mjs：含凭证样式 → 退出码 1、点名、不输出值
-#   ③ scripts/weekly-report/publish-asset.sh：图片进公网目录；PDF 不公开；含凭证的拒绝；不再造 index.html
+#   ③ scripts/weekly-report/publish-asset.sh（转发到 scripts/publish-asset.sh）：PDF 不公开；含凭证的拒绝；
+#      服务端拦截没生效时图片不发（严格模式下的图片发布见 tests/public-assets-strict.test.sh）
 #   ④ scripts/review-screenshot.mjs：登录状态副本只在原件旁边、权限 600，结束 / 被中断都删；
 #      原件在输出目录里或没被 git 忽略 → 拒绝
 set -uo pipefail
@@ -179,27 +180,26 @@ cat > "$TMP/bin/curl" <<'SH'
 echo "${@: -1}" >> "$FAKE_CURL_LOG"; printf '%s' "${FAKE_CODE:-200}"
 SH
 chmod +x "$TMP/bin/curl"
-pub() { HOME="$H" PATH="$TMP/bin:$PATH" FAKE_CURL_LOG="$TMP/curl.log" bash "$REPO_DIR/scripts/weekly-report/publish-asset.sh" "$@"; }
-url="$(pub p "$ROOT/pr-1/ok.png" shots 2>/dev/null)"; rc=$?
-chk "图片：成功，打印公网地址" "$rc/$(printf '%s' "$url" | grep -cE '^https://example\.invalid/review-assets/shots/ok-rev-[0-9]+\.png$')" "0/1"
-chk "图片进了公网目录" "$(ls "$TMP/pub/shots" 2>/dev/null | grep -cE '^ok-rev-[0-9]+\.png$')" "1"
-chk "不再往目录里放 index.html" "$(find "$TMP/pub" -name index.html | wc -l | tr -d ' ')" "0"
+pub() { PUBLIC_ASSETS_STATUS="$TMP/no-status.json" HOME="$H" PATH="$TMP/bin:$PATH" FAKE_CURL_LOG="$TMP/curl.log" bash "$REPO_DIR/scripts/weekly-report/publish-asset.sh" "$@"; }
+err="$(pub p "$ROOT/pr-1/ok.png" 2>&1 >/dev/null)"; rc=$?
+chk "图片：对外服务没有报告「服务端拦截已生效」→ 拒绝发布，说了原因（发布细节见 public-assets-strict）" "$rc/$(printf '%s' "$err" | grep -c '服务端拦截没有生效')" "1/1"
+chk "被拒的图片哪儿都没进" "$(find "$TMP/pub" -name 'ok*' | wc -l | tr -d ' ')" "0"
 url="$(pub p "$ROOT/pr-1/report.pdf" 2>/dev/null)"; rc=$?
-chk "PDF：成功，打印的是不公开目录里的本机路径" "$rc/$(printf '%s' "$url" | grep -cE "^$TMP/priv/weekly-report/report-rev-[0-9]+\.pdf$")/$([ -f "$url" ] && echo 在)" "0/1/在"
+chk "PDF：成功，打印的是不公开目录里 <项目>/weekly-report/ 下的本机路径" "$rc/$(printf '%s' "$url" | grep -cE "^$TMP/priv/p/weekly-report/report-rev-[0-9]+\.pdf$")/$([ -f "$url" ] && echo 在)" "0/1/在"
 chk "PDF 没进公网目录" "$(find "$TMP/pub" -name '*.pdf' | wc -l | tr -d ' ')" "0"
 chk "不公开目录权限 700" "$(stat -c %a "$TMP/priv")" "700"
 echo "WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL=\"https://intranet.invalid/private\"" >> "$H/.config/cavil-loop/p.conf"
 url="$(pub p "$ROOT/pr-1/report.pdf" 2>/dev/null)"; rc=$?
-chk "配了内网地址：PDF 打印内网地址" "$rc/$(printf '%s' "$url" | grep -cE '^https://intranet\.invalid/private/weekly-report/report-rev-[0-9]+\.pdf$')" "0/1"
+chk "配了内网地址：PDF 打印内网地址" "$rc/$(printf '%s' "$url" | grep -cE '^https://intranet\.invalid/private/p/weekly-report/report-rev-[0-9]+\.pdf$')" "0/1"
 err="$(pub p "$ROOT/pr-1/state.json" 2>&1 >/dev/null)"; rc=$?
 chk "含凭证的文件：拒绝，退出码 1，说了原因" "$rc/$(printf '%s' "$err" | grep -c 'state\.json — 内容里有凭证样式')" "1/1"
 chk "被拒的文件哪儿都没进" "$(find "$TMP/pub" "$TMP/priv" -name 'state*' | wc -l | tr -d ' ')" "0"
 chk "拒绝信息里没有凭证的值" "$(printf '%s' "$err" | grep -c "$FAKE_SECRET")" "0"
 err="$(pub p "$ROOT/pr-1/renamed.png" 2>&1 >/dev/null)"; rc=$?
 chk "改名成 .png 的凭证文件：同样拒绝" "$rc" "1"
-err="$(pub p "$BIG/longjwt.png" shots 2>&1 >/dev/null)"; rc=$?
+err="$(pub p "$BIG/longjwt.png" 7 2>&1 >/dev/null)"; rc=$?
 chk "带跨块长 JWT 的合法图片：拒绝发布，没进公网目录" "$rc/$(find "$TMP/pub" "$TMP/priv" -name 'longjwt*' | wc -l | tr -d ' ')" "1/0"
-err="$(pub p "$BIG/tail.png" shots 2>&1 >/dev/null)"; rc=$?
+err="$(pub p "$BIG/tail.png" 7 2>&1 >/dev/null)"; rc=$?
 chk "33MiB、末尾带凭证的合法图片：拒绝发布，没进公网目录" "$rc/$(find "$TMP/pub" "$TMP/priv" -name 'tail*' | wc -l | tr -d ' ')" "1/0"
 
 echo "④ review-screenshot.mjs：登录状态副本"
