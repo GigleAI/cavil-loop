@@ -7,16 +7,22 @@ name: Client
 #
 # What runs when:
 #   every PR push                 quick tests: typecheck + cargo, vitest in two halves, in parallel (a few minutes)
-#   push to main                  quick tests + the Mac arm64 build (dmg + its checks) + the Windows
-#                                 x64 build (installer + its checks, GitHub#577), then the development
-#                                 build is published as a pre-release (GitHub#215)
+#   push to main                  the same quick tests, nothing else (GitHub#628: builds moved to the night)
+#   nightly (20:30 UTC = 04:30    the development build (GitHub#215 / #628), only when the client changed
+#   Beijing)                      since the last published one (scripts/dev-plan.mjs): quick tests + the Mac
+#                                 arm64 build (dmg + its checks) + the Windows x64 build (installer + its
+#                                 checks, GitHub#577, and a real update of the installed app) + the size
+#                                 gate, then published as a pre-release; a failed night opens / continues
+#                                 an issue (scripts/release_failure_report.py, REPORT_KIND=client-nightly)
+#   manual run on main, "publish" the same as a night, at once ("even without a client change" skips
+#                                 the "anything new?" check); "publish" on any other branch fails at once
 #   client/v* tag                 quick + full tests (Playwright, the real app on Linux) + the Macs,
 #                                 arm64 and x64, + Windows x64; any failure, no Release
 #   called by release.yml         the same as a client/v* tag, for the tag and commit the weekly
 #                                 release planned (GitHub#576: a tag pushed with the workflow's own
 #                                 token starts no run, so the weekly release calls this workflow)
 #   weekly / manual run           quick + full tests + the Mac arm64 build + the Windows build (packaging
-#                                 or end-to-end breakage shows up within a week)
+#                                 or end-to-end breakage shows up within a week); publishes nothing
 # Negative controls run automatically only in the weekly release gate
 # (.github/workflows/release.yml, job gate-client), on the commit that release tags.
 on:
@@ -33,11 +39,23 @@ on:
       - '.github/actions/client-setup/**'
     tags:
       - 'client/v*'
+  # Two schedules, told apart by github.event.schedule: the weekly full run, and the nightly
+  # development build (GitHub#628; the cron string is matched exactly in `concurrency` and `mode`).
   schedule:
     - cron: '40 16 * * 0'
+    - cron: '30 20 * * *'
   # No negative controls here, manual runs included: they run only in negative-controls.yml
   # (GitHub#416).
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'publish a development build (main only), as the nightly run does'
+        type: boolean
+        default: false
+      force:
+        description: 'with publish: even when the client has not changed since the last one'
+        type: boolean
+        default: false
   # GitHub#576: the weekly Release workflow's client release. The tag need not exist yet: the release
   # job creates it on `sha` once everything passed. Versions: scripts/release-version.mjs.
   workflow_call:
@@ -56,9 +74,12 @@ permissions:
 
 concurrency:
   # the weekly run has its own group, so it never cancels (or is cancelled by) a push to main; a
-  # release called by release.yml has one per tag (its github.ref is the caller's, often main)
-  group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && '-weekly' || '' }}
-  cancel-in-progress: true
+  # release called by release.yml has one per tag (its github.ref is the caller's, often main).
+  # GitHub#628: the runs that may publish a development build — the nightly one and a manual one with
+  # "publish" — share one group that queues and never cancels a running one (a third trigger only
+  # replaces one still waiting); a push to main or a pull request never lands in it.
+  group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'dev-publish' || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && github.event.schedule != '30 20 * * *' && '-weekly' || '' }}
+  cancel-in-progress: ${{ !((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
 
 defaults:
   run:
@@ -71,8 +92,19 @@ jobs:
   #   version  X.Y.Z of that tag, checked by scripts/release-version.mjs (not below package.json,
   #            above every other client/vX.Y.Z tag); the build writes it into the three version files
   #   sha      the commit every job checks out: the one release.yml planned, else this run's own
-  #   sign     true when the update packages are signed with the maintainer's key (a release, or the
-  #            development build of a push to main); every other run uses a throw-away key
+  #   publish  true on the runs that publish a development build (GitHub#628): the nightly schedule,
+  #            and a manual run on main with "publish" ticked. "publish" on any other branch fails
+  #            here, before anything is built or signed
+  #   build    whether the Macs and Windows are built at all: every release build, the weekly run, a
+  #            manual run; on a publishing run only when there is something new (scripts/dev-plan.mjs);
+  #            never on a push to main or a pull request (quick tests only)
+  #   quick    whether the quick tests run: everywhere except a publishing run with nothing to build
+  #   sign     true when the update packages are signed with the maintainer's key (a release, or a
+  #            publishing run); every other run uses a throw-away key
+  #   dev_version  on a development build (and on every publishing run), its version, counted once
+  #            here (scripts/dev-version.mjs): the Mac and Windows jobs stamp exactly this one, the
+  #            publish step publishes it, and the failure report checks it — never "the newest one",
+  #            never a second count (GitHub#628 review rounds 3–4)
   mode:
     name: client build mode
     runs-on: ubuntu-latest
@@ -82,17 +114,31 @@ jobs:
       version: ${{ steps.mode.outputs.version }}
       sha: ${{ steps.mode.outputs.sha }}
       sign: ${{ steps.mode.outputs.sign }}
+      publish: ${{ steps.mode.outputs.publish }}
+      build: ${{ steps.build.outputs.build }}
+      quick: ${{ steps.build.outputs.quick }}
+      dev_version: ${{ steps.build.outputs.dev_version }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.sha || github.sha }}
+          # "anything new since the last development build?" compares two commits (scripts/dev-plan.mjs)
+          fetch-depth: 0
       - name: Release or development build
         id: mode
         env:
           CALL_TAG: ${{ inputs.tag }}
           CALL_SHA: ${{ inputs.sha }}
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
+          # A manual "publish" is honoured on main only, and refused before anything else is decided —
+          # a manual run started on a client/v* tag included (it would otherwise become a release build)
+          if [ -z "$CALL_TAG" ] && [ "$EVENT" = workflow_dispatch ] && [ "$PUBLISH" = true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::「发开发版」只能在 main 上运行（这次是 $GITHUB_REF）：没有打包、没有签名、没有写发版页"
+            exit 1
+          fi
           tag=""
           sha="$GITHUB_SHA"
           if [ -n "$CALL_TAG" ]; then
@@ -109,13 +155,61 @@ jobs:
           else
             echo "development build of $sha"
           fi
+          publish=false
+          if [ -z "$tag" ] && [ "$EVENT" = schedule ] && [ "$SCHEDULE" = '30 20 * * *' ]; then
+            publish=true
+          elif [ -z "$tag" ] && [ "$EVENT" = workflow_dispatch ] && [ "$PUBLISH" = true ]; then
+            publish=true
+          fi
           sign=false
-          if [ -n "$tag" ] || { [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; }; then sign=true; fi
+          if [ -n "$tag" ] || [ "$publish" = true ]; then sign=true; fi
+          echo "publish a development build: $publish; the maintainer's update key: $sign"
           {
             echo "tag=$tag"
             echo "version=$version"
             echo "sha=$sha"
             echo "sign=$sign"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+      - name: Anything to build
+        id: build
+        env:
+          TAG: ${{ steps.mode.outputs.tag }}
+          SHA: ${{ steps.mode.outputs.sha }}
+          PUBLISH: ${{ steps.mode.outputs.publish }}
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          build=false
+          quick=true
+          if [ -n "$TAG" ]; then
+            build=true
+          elif [ "$PUBLISH" = true ]; then
+            # a list it cannot read, or two commits it cannot compare, mean "build" (never a lost night)
+            args=(--sha "$SHA" --repo "$GITHUB_REPOSITORY")
+            [ "$FORCE" = true ] && args+=(--force)
+            : > "$RUNNER_TEMP/dev-plan.out"
+            GITHUB_OUTPUT="$RUNNER_TEMP/dev-plan.out" node scripts/dev-plan.mjs "${args[@]}"
+            build="$(sed -n 's/^build=//p' "$RUNNER_TEMP/dev-plan.out")"
+            [ "$build" = true ] || [ "$build" = false ] || { echo "::error::scripts/dev-plan.mjs gave no decision"; exit 1; }
+            [ "$build" = true ] || quick=false
+          elif [ "$EVENT" != push ] && [ "$EVENT" != pull_request ]; then
+            build=true
+          fi
+          # a development build's version, counted once here; every build job and the publish step
+          # stamp exactly this one (a client/v* tag pushed while the run goes would otherwise give a
+          # later job another number — GitHub#628 review round 4)
+          dev_version=""
+          if [ -z "$TAG" ] && { [ "$build" = true ] || [ "$PUBLISH" = true ]; }; then
+            dev_version="$(node scripts/dev-version.mjs)"
+            [ -n "$dev_version" ] || { echo "::error::no development version for $SHA"; exit 1; }
+          fi
+          echo "build the Macs and Windows: $build; quick tests: $quick; development version: ${dev_version:-none}"
+          {
+            echo "build=$build"
+            echo "quick=$quick"
+            echo "dev_version=$dev_version"
           } >> "$GITHUB_OUTPUT"
 
   # The quick tests run as three parallel jobs (GitHub#495: one after another they took ~10 minutes):
@@ -124,6 +218,7 @@ jobs:
   test-rust:
     name: client quick tests — type check + back end (Linux)
     needs: mode
+    if: needs.mode.outputs.quick == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -142,6 +237,7 @@ jobs:
   test-vitest:
     name: client quick tests — vitest ${{ matrix.shard }}/2 (Linux)
     needs: mode
+    if: needs.mode.outputs.quick == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -166,28 +262,32 @@ jobs:
         if: matrix.shard == 1
         run: bash test/mutation/run.sh
 
+  # Skipped only when the mode job ran and said there is nothing to test (a publishing run with nothing
+  # new, GitHub#628), so that run is green; a mode job that failed makes this red, as before.
   test:
     name: client quick tests (Linux)
-    needs: [test-rust, test-vitest]
-    if: always()
+    needs: [mode, test-rust, test-vitest]
+    if: always() && !(needs.mode.result == 'success' && needs.mode.outputs.quick == 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Both quick-test jobs passed
         working-directory: .
         env:
+          MODE: ${{ needs.mode.result }}
           RUST: ${{ needs.test-rust.result }}
           VITEST: ${{ needs.test-vitest.result }}
         run: |
-          echo "type check + back end: $RUST; vitest: $VITEST"
-          [ "$RUST" = success ] && [ "$VITEST" = success ]
+          echo "build mode: $MODE; type check + back end: $RUST; vitest: $VITEST"
+          [ "$MODE" = success ] && [ "$RUST" = success ] && [ "$VITEST" = success ]
 
   # Playwright + the real app on Linux. Each builds the whole app, so only on a release build,
-  # the weekly run and a manual run — not on pull requests, not on pushes to main.
+  # the weekly run and a manual run without "publish" — not on pull requests, not on pushes to main,
+  # not on a run that publishes a development build (it never waited for these, GitHub#215 / #628).
   e2e:
     name: client full tests (Linux)
     needs: mode
-    if: needs.mode.outputs.tag != '' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: needs.mode.outputs.tag != '' || (github.event_name == 'schedule' && github.event.schedule == '40 16 * * 0') || (github.event_name == 'workflow_dispatch' && !inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -217,14 +317,14 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
-    # Not on pull requests (GitHub#195). arm64 alone on a push to main, the weekly run and a manual
-    # run; arm64 and x64 on a release build.
+    # Not on pull requests (GitHub#195), not on a push to main (GitHub#628), only when the mode job
+    # says so. arm64 alone on the nightly, weekly and manual runs; arm64 and x64 on a release build.
     needs: mode
-    if: github.event_name != 'pull_request'
+    if: needs.mode.outputs.build == 'true'
     strategy:
       fail-fast: false
-      # x64 (Intel) only on a release build, where the Release ships both dmgs; a push to main, the
-      # weekly and the manual runs build and check arm64 alone.
+      # x64 (Intel) only on a release build, where the Release ships both dmgs; the nightly, weekly
+      # and manual runs build and check arm64 alone.
       matrix:
         include: ${{ fromJSON(needs.mode.outputs.tag != '' && '[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]' || '[{"arch":"arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}
@@ -259,25 +359,29 @@ jobs:
       - run: npm ci
       # The version is stamped into package.json / tauri.conf.json / Cargo.toml here (never
       # committed). A release build takes its tag's X.Y.Z (GitHub#576); every other build is a
-      # development build, X.Y.(Z+1)-dev.N (GitHub#215). Only a push to main publishes the latter
-      # (job dev-release); the weekly and manual runs build and check the same thing.
+      # development build, X.Y.(Z+1)-dev.N (GitHub#215). Only the nightly run and a manual run with
+      # "publish" publish the latter (job dev-release, GitHub#628); the weekly and other manual runs
+      # build and check the same thing.
       - name: Version
         env:
           TAG: ${{ needs.mode.outputs.tag }}
           VERSION: ${{ needs.mode.outputs.version }}
+          DEV_VERSION: ${{ needs.mode.outputs.dev_version }}
         run: |
           if [ -n "$TAG" ]; then
             [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
             node scripts/release-version.mjs write "$VERSION"
           else
-            node scripts/dev-version.mjs --write
+            # the version the mode job counted, never counted again here (GitHub#628 review round 4)
+            [ -n "$DEV_VERSION" ] || { echo "::error::development build without the mode job's version"; exit 1; }
+            node scripts/dev-version.mjs --set "$DEV_VERSION"
           fi
       # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
       # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
-      # time, the bundler when it signs, the release job when it verifies). A release build and a push to
-      # main (its development build is published, GitHub#215 — the maintainer chose to sign it with the
-      # same key) sign with the maintainer's key (secret) against that public key, and refuse when
-      # either is missing; every other run (weekly, manual) uses a throw-away key pair, passed to the
+      # time, the bundler when it signs, the release job when it verifies). A release build and a
+      # publishing run (its development build is published, GitHub#215 / #628 — the maintainer chose to
+      # sign it with the same key) sign with the maintainer's key (secret) against that public key, and
+      # refuse when either is missing; every other run (weekly, manual) uses a throw-away key pair, passed to the
       # bundler as a matching pair, so it builds and measures the same files (those packages are
       # never published).
       - name: Build the app (Tauri), its update package, and the dmg
@@ -287,7 +391,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           if [ "$SIGN" = true ]; then
-            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a push to main need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a development build to publish need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
             pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
             [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
           else
@@ -352,9 +456,10 @@ jobs:
   package-windows:
     name: Windows installer (x64)
     needs: mode
-    if: github.event_name != 'pull_request'
+    if: needs.mode.outputs.build == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    # the real update check below builds the app a second time (debug, with the test switch)
+    timeout-minutes: 100
     defaults:
       run:
         shell: bash
@@ -405,15 +510,18 @@ jobs:
         env:
           TAG: ${{ needs.mode.outputs.tag }}
           VERSION: ${{ needs.mode.outputs.version }}
+          DEV_VERSION: ${{ needs.mode.outputs.dev_version }}
         run: |
           if [ -n "$TAG" ]; then
             [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
             node scripts/release-version.mjs write "$VERSION"
           else
-            node scripts/dev-version.mjs --write
+            # the version the mode job counted, never counted again here (GitHub#628 review round 4)
+            [ -n "$DEV_VERSION" ] || { echo "::error::development build without the mode job's version"; exit 1; }
+            node scripts/dev-version.mjs --set "$DEV_VERSION"
           fi
       # signing the update package: exactly as on the Macs (the maintainer's key on a release build and a
-      # push to main, a throw-away pair otherwise)
+      # publishing run, a throw-away pair otherwise)
       - name: Build the app and its installer (= its update package)
         env:
           SIGN: ${{ needs.mode.outputs.sign }}
@@ -421,7 +529,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ needs.mode.outputs.sign == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           if [ "$SIGN" = true ]; then
-            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a push to main need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
+            [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::a release build and a development build to publish need the TAURI_SIGNING_PRIVATE_KEY secret (the update key; see client/README.md 发版)"; exit 1; }
             pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
             [ -n "$pub" ] || { echo "::error::plugins.updater.pubkey in src-tauri/tauri.conf.json is empty: the app could not check any update (see client/README.md 发版)"; exit 1; }
           else
@@ -477,6 +585,14 @@ jobs:
           path: client/release/Cavil-Loop-*-windows-x64.exe.sig
           archive: false
           if-no-files-found: error
+      # GitHub#628: the Windows counterpart of the Macs' real update. This commit built once more as a
+      # debug build with the test switch and a version one step lower is installed, finds the installer
+      # above on a loopback stand-in for GitHub, downloads and checks it, and on the restart a person
+      # asks for the waiting installer puts the new version in place; an installer whose bytes no longer
+      # match its signature is served whole, reported as a signature failure, and changes nothing.
+      # Last in the job: the build it makes rewrites the version files for a while.
+      - name: A real update of the installed app
+        run: bash scripts/windows-update-check.sh release/Cavil-Loop-*-windows-x64.exe
 
   size:
     name: download size (every dmg and installer built)
@@ -595,14 +711,21 @@ jobs:
             --notes-file RELEASE_NOTES.md \
             --latest=false
 
-  # GitHub#215: the development build of a push to main, for installed apps on the development
-  # channel: a pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), only after the quick tests,
-  # the Mac build and its real-update check, the Windows build (GitHub#577), and the size gate passed. scripts/dev-release.mjs
-  # publishes it complete or not at all, never on top of a newer one, and keeps the latest 10.
+  # GitHub#215 / #628: the development build, for installed apps on the development channel: a
+  # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), published by the nightly run and a manual
+  # run on main with "publish" (mode: publish), when there is something new (mode: build), only after
+  # the quick tests, the Mac build and its real-update check, the Windows build and its real-update
+  # check (GitHub#577 / #628), and the size gate passed. scripts/dev-release.mjs publishes it complete
+  # or not at all, never on top of a newer one, writes nothing when that version is already out
+  # complete, and keeps the latest 10. Runs that publish queue in one group (the workflow's
+  # `concurrency`); this job has a group of its own as well, so two publishes never overlap.
   dev-release:
     name: publish development build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.mode.outputs.tag == ''
+    if: needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true' && needs.mode.outputs.tag == ''
     needs: [mode, test, package, package-windows, size]
+    concurrency:
+      group: client-dev-release-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -611,13 +734,15 @@ jobs:
         with:
           ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
-      # the same version the Mac build stamped: same commit, same count, same tags
+      # the version the mode job counted and both builds stamped (never counted again here)
       - name: Version
         id: v
+        env:
+          V: ${{ needs.mode.outputs.dev_version }}
         run: |
-          v="$(node scripts/dev-version.mjs)"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "development build $v"
+          [ -n "$V" ] || { echo "::error::no development version from the mode job"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "development build $V"
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: Cavil-Loop-*
@@ -628,15 +753,21 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           ls -la dist-release
-          for f in "Cavil-Loop-$V-arm64.dmg" "Cavil-Loop-$V-arm64.app.tar.gz" "Cavil-Loop-$V-arm64.app.tar.gz.sig" "Cavil-Loop-$V-windows-x64.exe" "Cavil-Loop-$V-windows-x64.exe.sig"; do
+          # the files a development build carries, from the one list (scripts/dev-release.mjs devFiles);
+          # latest.json is written by the next step
+          files="$(node scripts/dev-release.mjs --files "$V")"
+          [ -n "$files" ] || { echo "::error::no file list for $V"; exit 1; }
+          while IFS= read -r f; do
+            [ "$f" = latest.json ] && continue
             [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing"; exit 1; }
-          done
+          done <<<"$files"
       - name: Release notes
         env:
           V: ${{ steps.v.outputs.version }}
+          SHA: ${{ needs.mode.outputs.sha }}
         run: |
           {
-            echo "开发版 $V，构建自 main 的 $GITHUB_SHA：$(git log -1 --format=%s "$GITHUB_SHA")"
+            echo "开发版 $V，构建自 main 的 $SHA：$(git log -1 --format=%s "$SHA")"
             echo
             echo "只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。"
           } > "$RUNNER_TEMP/notes.md"
@@ -650,4 +781,65 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.v.outputs.version }}
-        run: node scripts/dev-release.mjs --version "$V" --sha "$GITHUB_SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --keep 10 --repo "$GITHUB_REPOSITORY"
+          SHA: ${{ needs.mode.outputs.sha }}
+        run: node scripts/dev-release.mjs --version "$V" --sha "$SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --keep 10 --repo "$GITHUB_REPOSITORY"
+
+  # GitHub#628: a failed nightly development build opens an issue labelled for the daemon, or comments
+  # on the open one of the same kind (its own marker and title; never the release or negative-controls
+  # issue). Never on a cancelled run, never on any other trigger. It only creates or comments, never
+  # changes an existing issue's labels: scripts/release_failure_report.py (REPORT_KIND=client-nightly).
+  # Turned off by the repository variable CLIENT_NIGHTLY_REPORT=off.
+  report-failure:
+    name: report failure
+    needs: [mode, test, package, package-windows, size, dev-release]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && github.event.schedule == '30 20 * * *' && contains(needs.*.result, 'failure') && vars.CLIENT_NIGHTLY_REPORT != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The only job that may write issues; actions: read for the run's job list.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.mode.outputs.sha }}
+      # What this run tried to publish, and where that version stands now — read-only, by the same rule
+      # as the publish step (scripts/dev-release.mjs --check). No version (the mode job failed) is said
+      # as such; never "the newest build" instead (GitHub#628 review round 3).
+      - name: The version this run tried to publish
+        id: tried
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.mode.outputs.dev_version }}
+        run: |
+          line=""
+          rc=""
+          if [ -n "$V" ]; then
+            set +e
+            out="$(node client/scripts/dev-release.mjs --check "$V" --repo "$GITHUB_REPOSITORY" 2>&1)"
+            rc=$?
+            set -e
+            line="$(head -1 <<<"$out")"
+          fi
+          echo "version: ${V:-none}; check: ${line:-none} (exit ${rc:-none})"
+          {
+            echo "version=$V"
+            echo "check=$line"
+            echo "rc=$rc"
+          } >> "$GITHUB_OUTPUT"
+      - name: Open or comment on the nightly development build issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEEDS: ${{ toJSON(needs) }}
+          CLIENT_DEV_VERSION: ${{ steps.tried.outputs.version }}
+          CLIENT_DEV_CHECK: ${{ steps.tried.outputs.check }}
+          CLIENT_DEV_CHECK_RC: ${{ steps.tried.outputs.rc }}
+          EVENT: ${{ github.event_name }}
+          # Must match this repo's dispatch label (LABEL_PENDING_AGENT in the daemon's config).
+          DISPATCH_LABEL: ${{ vars.RELEASE_FAILURE_LABEL || 'pending/agent' }}
+          REPORT_KIND: client-nightly
+        run: python3 scripts/release_failure_report.py

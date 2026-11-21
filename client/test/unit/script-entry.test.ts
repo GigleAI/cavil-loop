@@ -35,7 +35,7 @@ describe('release scripts run when started from any path (GitHub#577)', () => {
   it('started from a folder with a space in its name, each one does its work and gives its refusal', () => {
     const dir = join(tempDir(), 'a folder', 'scripts');
     mkdirSync(dir, { recursive: true });
-    for (const f of ['size-gate.mjs', 'update-manifest.mjs', 'release-version.mjs', 'dev-version.mjs', 'dev-release.mjs']) cpSync(join(scripts, f), join(dir, f));
+    for (const f of ['size-gate.mjs', 'update-manifest.mjs', 'release-version.mjs', 'dev-version.mjs', 'dev-release.mjs', 'dev-plan.mjs']) cpSync(join(scripts, f), join(dir, f));
     // size gate: a file that is not there fails (never "small enough")
     const size = run(join(dir, 'size-gate.mjs'), [join(dir, 'missing.exe')]);
     expect(size).toMatchObject({ code: 1 });
@@ -53,5 +53,9 @@ describe('release scripts run when started from any path (GitHub#577)', () => {
     expect(run(join(dir, 'release-version.mjs'), ['write', 'not-a-version', '--root', join(dir, 'nowhere')]).code).not.toBe(0);
     expect(run(join(dir, 'dev-version.mjs'), ['--root', join(dir, 'nowhere')]).code).not.toBe(0);
     expect(run(join(dir, 'dev-release.mjs'), ['--version', 'nope']).code).not.toBe(0);
+    // the nightly "anything new?" check: no full commit, refused, and says why (GitHub#628)
+    const plan = run(join(dir, 'dev-plan.mjs'), ['--sha', 'nope']);
+    expect(plan.code).not.toBe(0);
+    expect(plan.out).toMatch(/不是完整的提交号/);
   });
 });

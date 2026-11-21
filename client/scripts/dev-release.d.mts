@@ -6,7 +6,10 @@ export interface DevRelease {
   parsed: [number, number, number, number];
 }
 export declare function devReleases(list: unknown[]): DevRelease[];
-export declare function decide(list: unknown[], version: string, files: string[]): { action: 'skip'; why: string } | { action: 'done' } | { action: 'create' } | { action: 'fill'; draft: boolean };
+export declare function devFiles(version: string): string[];
+export declare const NOT_UPLOADED: string[];
+export declare function buildState(release: unknown, files: string[]): { state: 'complete' | 'incomplete' | 'unknown'; bad: string[]; unknown: string[] };
+export declare function decide(list: unknown[], version: string, files: string[]): { action: 'skip'; why: string } | { action: 'done' } | { action: 'create' } | { action: 'fill' } | { action: 'keep'; bad: string[]; was?: boolean; tagSha?: string | null } | { action: 'unknown'; files: string[]; why: string };
 export declare function toPrune(list: unknown[], keep: number): DevRelease[];
 export declare function staleDrafts(list: unknown[], version: string): { tag: string; parsed: [number, number, number, number] }[];
 export declare function readReleases(repo: string): unknown[];
@@ -17,3 +20,7 @@ export declare function composeBody(notes: string, added: string[] | null | unde
 export declare const APP_PATHS: string[];
 export declare function untoldCommits(base: string, head: string, root?: string): { sha: string; title: string }[] | null;
 export declare function buildNotes(base: string, head: string, root?: string): { lines: string[]; notes: number; titles: number } | null;
+export declare function tagState(repo: string, tag: string): { state: 'absent' } | { state: 'present'; sha: string | null } | { state: 'unknown'; why: string };
+export declare function tagOn(repo: string, tag: string, sha: string): { ok: true } | { ok: false; kind: 'absent' | 'mismatch' | 'unknown'; why: string };
+export declare function tagVerdict(entries: (string | { name: string; sha: string | null })[], tag: string, sha: string): 'ok' | 'absent' | 'mismatch' | 'unknown';
+export declare const TAG_WORDS: { absent: string; mismatch: string; unknown: string };

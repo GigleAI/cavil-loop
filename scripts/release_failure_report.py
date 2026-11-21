@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """A workflow run failed → open an issue, or comment on the open one of the same kind (GitHub#285).
 
-Two kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416):
+Three kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416 / #628):
   release            the `report failure` job of .github/workflows/release.yml (scheduled, tag push,
                      manual release, manual gate-only)
   negative-controls  the `report failure` job of .github/workflows/negative-controls.yml, the nightly
                      run of every negative control
+  client-nightly     the `report failure` job of .github/workflows/client.yml, the nightly
+                     development build of the desktop client (GitHub#628)
 The kinds differ only in the marker, the title and the wording; finding, re-reading and writing are
 the same code. It only ever does one of two writes, and never touches an existing issue's labels:
 
@@ -26,7 +28,7 @@ All GitHub access goes through `gh api` (REST) with the job's token.
 Input (environment):
   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (default 1), GITHUB_SERVER_URL,
   GITHUB_SHA, GITHUB_REF_NAME   as Actions sets them
-  REPORT_KIND    release (default) or negative-controls; anything else → no write, exit 1
+  REPORT_KIND    release (default), negative-controls or client-nightly; anything else → no write, exit 1
   EVENT          github.event_name
   GATE_ONLY      "true" for a manual gate-only run
   NEEDS          toJSON(needs) of the report job
@@ -62,6 +64,7 @@ KINDS = {
         "client_key": "gate-client",
         "client_job": "gate client",
         "hint": None,
+        "plan_key": "plan",
     },
     "negative-controls": {
         "marker": "<!-- cavil-negative-controls-failure -->",
@@ -76,6 +79,21 @@ KINDS = {
                  "或在被改坏的代码变了时把这个条目指向新代码。修复用普通回归验证；开发期间不跑负对照、"
                  "不新增负对照，是否重新变红由合并后 main 上的下一次每晚运行确认（GitHub#234 / #416）。"
                  "发版不等这里。"),
+        "plan_key": "plan",
+    },
+    "client-nightly": {
+        "marker": "<!-- cavil-client-nightly-failure -->",
+        "title": "客户端每晚开发版失败（自动报告）",
+        "noun": "客户端每晚开发版",
+        "workflow": "Client 工作流（每晚开发版）",
+        "schedule": "定时（每晚）",
+        "manual": "手动",
+        # no client negative-controls job here: nothing for client_section to list
+        "client_key": None,
+        "client_job": None,
+        # which sentence depends on where it failed (client_nightly_hint)
+        "hint": None,
+        "plan_key": "mode",
     },
 }
 KIND_NAME = os.environ.get("REPORT_KIND", "") or "release"
@@ -224,6 +242,44 @@ def release_only_line(needs, jobs):
     return "门禁已通过，发版任务失败（步骤明细读不到）。"
 
 
+def client_nightly_hint(needs):
+    """The client-nightly kind only (GitHub#628): what the failure means for installed apps, about the
+    exact version this run tried to publish (CLIENT_DEV_VERSION, from the mode job) and where that
+    version stands now (CLIENT_DEV_CHECK / _RC: `dev-release.mjs --check`, the publish step's own rule;
+    0 complete, 1 not complete or not there, anything else cannot tell). Never about "the newest
+    build": a run that failed before creating its release leaves the previous build as the newest one."""
+    if KIND_NAME != "client-nightly":
+        return KIND["hint"]
+    res = (needs.get("dev-release") or {}).get("result") if isinstance(needs.get("dev-release"), dict) else None
+    where = ("失败在发布那一步。" if res == "failure"
+             else "失败在发布之前（测试、打包或体积检查），发布那一步没有运行。")
+    v = os.environ.get("CLIENT_DEV_VERSION", "").strip()
+    line = os.environ.get("CLIENT_DEV_CHECK", "").strip()
+    rc = os.environ.get("CLIENT_DEV_CHECK_RC", "").strip()
+    retry = ("这一版还没公开时，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）"
+             "会重新构建，没有新的客户端改动也照常重试；已经公开、只是没带齐文件时，已公开的版本一律不改，"
+             "等 main 上有新提交，下一次运行发一个更高的版本盖过它。")
+    manual = (f"在本仓库的 `client/` 目录跑只读核对 `node scripts/dev-release.mjs --check {v or '<版本号>'}`"
+              "（和发布、每晚判断同一条规则）：要带齐并上传完六个文件——Apple 芯片的 `-arm64.dmg`、"
+              "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"
+              "（页面上列着但大小为 0 的不算），并且这一版的标签要在发版记下的提交上。")
+    if not v:
+        return (where + "没取到这次要发的版本号（构建模式那一步没给出），不能判断发出了什么；"
+                "打包没有完成就不会发出新版，装着开发版的 App 仍是上一版。" + manual)
+    if rc == "0":
+        # two separate facts (review round 4): where this run failed, and where the version stands now
+        if res == "failure":
+            return (where + f"这次要发的 `{v}` 现在已完整在发版页上（核对结果：{line or 'COMPLETE'}），"
+                    "装着开发版的 App 能收到它；红的是发布之后的读回或旧版清理，下一晚不会重发这一版。")
+        return (where + f"这次要发的 `{v}` 现在已完整在发版页上（核对结果：{line or 'COMPLETE'}），"
+                "是之前的运行发出的，不是这次；装着开发版的 App 能收到它，下一晚不会重发这一版。")
+    if rc == "1":
+        return (where + f"这次要发的 `{v}` 没有完整发出（核对结果：{line or 'INCOMPLETE'}）："
+                "装着开发版的 App 收不到这一版，仍是上一版。" + retry)
+    return (where + f"读不出这次要发的 `{v}` 现在的状态（核对结果：{line or '没有结果'}），"
+            "不能判断是否已发出。" + manual)
+
+
 def client_release_line(needs):
     """The release kind only: the client's release failed → say what that means (GitHub#576)."""
     if KIND_NAME != "release":
@@ -277,6 +333,8 @@ def shell_section():
 
 def client_section(needs, jobs):
     key = KIND["client_key"]
+    if not key:
+        return []
     res = needs.get(key, {}).get("result") if isinstance(needs.get(key), dict) else None
     if res != "failure":
         return []
@@ -307,7 +365,7 @@ def trigger_text():
 
 def report_text(needs, jobs):
     sha = ""
-    plan = needs.get("plan")
+    plan = needs.get(KIND["plan_key"])
     if isinstance(plan, dict):
         sha = (plan.get("outputs") or {}).get("sha") or ""
     sha_line = f"`{sha}`" if sha else f"`{os.environ.get('GITHUB_SHA', '?')}`（计划任务没给出受测提交，这是本次运行检出的提交）"
@@ -318,8 +376,9 @@ def report_text(needs, jobs):
     ]
     if EVENT == "workflow_dispatch" and GATE_ONLY:
         lines.append("- 这是诊断运行（只跑门禁，不打 tag、不发版）")
-    if KIND["hint"]:
-        lines += ["", KIND["hint"]]
+    hint = client_nightly_hint(needs)
+    if hint:
+        lines += ["", hint]
     one = release_only_line(needs, jobs)
     if one:
         lines += ["", f"**{one}**"]

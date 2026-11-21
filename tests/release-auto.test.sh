@@ -157,6 +157,8 @@ for j in needs:
     out[j] = {"result": res.get(j, "success"), "outputs": {}}
     if j == "plan":
         out[j]["outputs"] = {"sha": sha, "work": work, "tag": tag, "action": action}
+    if j == "mode":  # client.yml's mode job (GitHub#628: the nightly development build's report)
+        out[j]["outputs"] = {"sha": sha, "tag": "", "publish": "true", "build": "true"}
 print(json.dumps(out))
 PY3
 }
@@ -707,6 +709,9 @@ if os.environ.get("RF_KIND") == "negative-controls":
     names = ["plan"] + [f"negative controls {k}/4" for k in range(1, 5)] \
         + [f"negative controls autopilot {k}/6" for k in range(1, 7)] \
         + ["negative controls client", "negative controls summary"]
+elif os.environ.get("RF_KIND") == "client-nightly":
+    names = ["client build mode", "client quick tests (Linux)", "dmg (arm64)", "Windows installer (x64)",
+             "download size (every dmg and installer built)", "publish development build"]
 else:
     names = ["plan"] + [f"gate {k}/4" for k in range(1, 5)] + ["release gate", "release"]
 over = {}
@@ -732,12 +737,14 @@ run_report() {
     [ -f "$RF/jobs.json" ] || rf_jobs
     local needs wf="$WORKFLOW"
     [ "${RF_KIND:-}" = negative-controls ] && wf="$NC_WORKFLOW"
+    [ "${RF_KIND:-}" = client-nightly ] && wf="${CLIENT_WORKFLOW:-$REPO_DIR/.github/workflows/client.yml}"
     needs="$(NEEDS_WF="$wf" PLAN_SHA="${RF_PLAN_SHA-$RF_SHA}" PLAN_WORK=true needs_json report-failure "$1")"
     set +e
     env -u GITHUB_STEP_SUMMARY PATH="$TMP/rfbin:$PATH" FAKE_GH_DIR="$RF" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=777 \
         GITHUB_RUN_ATTEMPT=1 GITHUB_SERVER_URL=https://github.com GITHUB_SHA=feedfacefeedfacefeedfacefeedfacefeedface \
         GITHUB_REF_NAME="${RF_REF_NAME:-main}" EVENT="${RF_EVENT:-schedule}" GATE_ONLY="${RF_GATE_ONLY:-}" \
         NEEDS="$needs" SUMMARY_DIR="${RF_SUMMARY_DIR:-}" CLIENT_DIR="${RF_CLIENT_DIR:-}" REPORT_KIND="${RF_KIND:-}" \
+        CLIENT_DEV_VERSION="${RF_DEV_V:-}" CLIENT_DEV_CHECK="${RF_DEV_CHECK:-}" CLIENT_DEV_CHECK_RC="${RF_DEV_RC:-}" \
         python3 "${RF_PY:-$REPORT_PY}" > "$TMP/rf-out" 2>&1
     RC=$?
     set -e
@@ -1035,6 +1042,28 @@ check "… the release report's switch still there" "$(has_var RELEASE_FAILURE_R
 check "the variable the steps set is the one the report job reads" \
     "$(grep -c "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$NC_WORKFLOW")" 1
 
+echo "-- docs: turning the client's nightly report off and on again — as written (GitHub#628)"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/docs/$f" > "$TMP/cn-ops-$f.md"
+    sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-$f.md" | grep -v '^```' > "$TMP/cn-ops-$f.sh"
+    grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-$f.md" | tr -d '`' > "$TMP/cn-ops-$f.check"
+done
+check "both docs carry the same steps" "$(cmp -s "$TMP/cn-ops-operations.md.sh" "$TMP/cn-ops-operations.zh.md.sh" && echo same)" same
+check "both docs name the same check" "$(cmp -s "$TMP/cn-ops-operations.md.check" "$TMP/cn-ops-operations.zh.md.check" && echo same)" same
+check "two steps: off, then on" "$(wc -l < "$TMP/cn-ops-operations.md.sh")" 2
+check "one check command" "$(wc -l < "$TMP/cn-ops-operations.md.check")" 1
+printf 'NEGATIVE_CONTROLS_REPORT\toff\t2026-11-01T00:00:00Z\n' > "$VAR_STATE"   # another switch, set before
+vrun "$(sed -n 1p "$TMP/cn-ops-operations.md.sh")"
+check "off: the first line runs" "$RC" 0
+vrun "$(cat "$TMP/cn-ops-operations.md.check")"
+check "check while off: shows CLIENT_NIGHTLY_REPORT off, the other switch untouched" "$RC:$(has_var CLIENT_NIGHTLY_REPORT off):$(has_var NEGATIVE_CONTROLS_REPORT off)" "0:yes:yes"
+vrun "$(sed -n 2p "$TMP/cn-ops-operations.md.sh")"
+check "on: the second line runs" "$RC" 0
+vrun "$(cat "$TMP/cn-ops-operations.md.check")"
+check "check after on: CLIENT_NIGHTLY_REPORT is gone, the other switch still there" "$RC:$(grep -c '^CLIENT_NIGHTLY_REPORT	' "$TMP/var.out" || true):$(has_var NEGATIVE_CONTROLS_REPORT off)" "0:0:yes"
+check "the variable the steps set is the one the client's report job reads" \
+    "$(grep -c "vars.CLIENT_NIGHTLY_REPORT != 'off'" "$REPO_DIR/.github/workflows/client.yml")" 1
+
 
 echo "== the release kind's issues and comments are unchanged (GitHub#416: one script, two kinds)"
 # shellcheck source=lib/compat.sh
@@ -1224,7 +1253,9 @@ for jn, j in wf["jobs"].items():
             hits.append(f"{jn}:{s.get('name')}")
 print("mutation", hits)
 PYT
-    check "$wf.yml: a manual run takes no options" "$(grep '^inputs' "$TMP/nc-$wf")" "inputs []"
+    # client.yml's two manual options publish a development build (GitHub#628); none is about negative controls
+    want="inputs []"; [ "$wf" = client ] && want="inputs ['force', 'publish']"
+    check "$wf.yml: a manual run takes no negative-controls option" "$(grep '^inputs' "$TMP/nc-$wf")" "$want"
     check "$wf.yml: no job or step turns negative controls on" "$(grep '^mutation' "$TMP/nc-$wf")" "mutation []"
 done
 : > "$NC_REC"
@@ -1293,6 +1324,7 @@ PYC
 }
 cstep "$WORKFLOW" client-plan "Decide the client release" > "$TMP/c-plan.sh"
 cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
+cstep "$CLIENT_WORKFLOW" mode "Anything to build" > "$TMP/c-build.sh"
 cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
 cstep "$CLIENT_WORKFLOW" package-windows "Version" > "$TMP/c-version-win.sh"
 cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs and Windows" > "$TMP/c-files.sh"
@@ -1331,6 +1363,29 @@ print("every-job-on-mode", bad)
 print("mode-checkout", cl["mode"]["steps"][0]["with"]["ref"])
 print("matrix", cl["package"]["strategy"]["matrix"]["include"])
 print("dev-release-if", cl["dev-release"]["if"])
+# GitHub#628: what runs on which trigger, and the queue publishing runs share
+print("dev-release-conc", (cl["dev-release"].get("concurrency") or {}).get("group"), (cl["dev-release"].get("concurrency") or {}).get("cancel-in-progress"))
+print("dev-release-needs", sorted(lst(cl["dev-release"]["needs"])))
+for jn in ("package", "package-windows"):
+    print(f"{jn}-if", cl[jn].get("if"))
+for jn in ("test-rust", "test-vitest"):
+    print(f"{jn}-if", cl[jn].get("if"))
+print("test-if", cl["test"].get("if"), sorted(lst(cl["test"]["needs"])))
+print("e2e-if", cl["e2e"]["if"])
+crons = sorted(c["cron"] for c in on["schedule"])
+print("crons", crons)
+d = on["workflow_dispatch"]["inputs"]
+print("dispatch", sorted((k, v.get("type"), v.get("default")) for k, v in d.items()))
+conc = cl_wf["concurrency"]
+print("conc-group", conc["group"])
+print("conc-cancel", conc["cancel-in-progress"])
+rf = cl["report-failure"]
+print("report-if", rf["if"])
+print("report-needs", sorted(lst(rf["needs"])))
+print("report-kind", [s["env"]["REPORT_KIND"] for s in rf["steps"] if (s.get("env") or {}).get("REPORT_KIND")])
+print("report-perms", sorted((rf.get("permissions") or {}).items()))
+win = [s.get("name") for s in cl["package-windows"]["steps"]]
+print("win-last", win[-1], [s.get("run") for s in cl["package-windows"]["steps"] if s.get("name") == win[-1]])
 PYW
 S="$(cat "$TMP/c-static")"
 has "plan-needs ['plan']" "$S" "client plan waits for the plan only, not for the daemon's gate"
@@ -1345,6 +1400,16 @@ has "every-job-on-mode []" "$S" "every build / test job checks out the commit th
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
+has "dev-release-conc client-dev-release-publish False" "$S" "… one publish at a time, never cancelling a running one"
+has "dev-release-needs ['mode', 'package', 'package-windows', 'size', 'test']" "$S" "… only after the quick tests, both builds with their update checks, and the size gate"
+has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly build and the weekly full run"
+has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
+# which jobs run on which trigger, the concurrency group and the report: evaluated below from the
+# workflow's own expressions, after the mode job's steps have run for each trigger (GitHub#628)
+has "report-needs ['dev-release', 'mode', 'package', 'package-windows', 'size', 'test']" "$S" "… looking at every job of the night"
+has "report-kind ['client-nightly']" "$S" "… into its own kind of issue"
+has "report-perms [('actions', 'read'), ('contents', 'read'), ('issues', 'write')]" "$S" "… the only job that may write issues"
+has "win-last A real update of the installed app ['bash scripts/windows-update-check.sh release/Cavil-Loop-*-windows-x64.exe']" "$S" "the Windows job ends with a real update of the installed app (GitHub#628)"
 check "the Windows build stamps its version with the very same step as the Macs (GitHub#577)" "$(cmp -s "$TMP/c-version.sh" "$TMP/c-version-win.sh" && echo same)" "same"
 
 # A repo of its own: client/ with the real version files and scripts, a bare remote, one tag list.
@@ -1367,7 +1432,7 @@ crun() {  # crun <dir> <script> [VAR=value …] → $RC, outputs in $TMP/c-outpu
     local dir="$1" s="$2"; shift 2
     : > "$TMP/c-output"; rm -f "$GH_ARGS"
     set +e
-    (cd "$dir" && env -u EVENT -u GH_FAIL_API GITHUB_OUTPUT="$TMP/c-output" GITHUB_REPOSITORY=o/r GH_RELEASES="$CREL" \
+    (cd "$dir" && env -u EVENT -u GH_FAIL_API -u GH_FAIL_TAGS GITHUB_OUTPUT="$TMP/c-output" GITHUB_REPOSITORY=o/r GH_RELEASES="$CREL" \
         PATH="${CPATH:-}$TMP/bin:$PATH" "$@" bash -e "$s") >"$TMP/c-out" 2>"$TMP/c-err"
     RC=$?
     set -e
@@ -1427,13 +1492,15 @@ check "a planned commit that is not there → the job fails" "$([ "$RC" != 0 ] &
 echo "-- the build mode: release or development build, which version, which key"
 rm -rf "$TMP/client-run"; git clone -q "$CREMOTE" "$TMP/client-run" 2>/dev/null
 cmode() { crun "$TMP/client-run/client" "$TMP/c-mode.sh" "$@"; }
-mode_line() { echo "$RC:$(cout tag):$(cout version):$(cout sha):$(cout sign)"; }
+mode_line() { echo "$RC:$(cout tag):$(cout version):$(cout sha):$(cout sign):$(cout publish)"; }
 cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
-check "called by the weekly release → that tag, its version, the planned commit, the real key" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+check "called by the weekly release → that tag, its version, the planned commit, the real key" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule SCHEDULE='30 20 * * *'
+check "… a release build never publishes a development build, whatever the caller's schedule" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
 cmode CALL_TAG=client/v0.6.0 CALL_SHA= GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
 check "called without a commit → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
 cmode GITHUB_REF=refs/tags/client/v0.6.0 GITHUB_SHA="$C4" EVENT=push
-check "a client tag pushed by hand → the tag's version, no commit needed to change it" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+check "a client tag pushed by hand → the tag's version, no commit needed to change it" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
 cmode GITHUB_REF=refs/tags/client/v0.5.9 GITHUB_SHA="$C4" EVENT=push
 check "a tag below package.json → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
 has "低于 package.json 的版本 0.6.0" "$(cat "$TMP/c-err")" "… says why"
@@ -1445,11 +1512,298 @@ git -C "$CREMOTE" tag -d client/v0.7.0 >/dev/null
 cmode GITHUB_REF=refs/tags/client/v0.6.1-dev.3 GITHUB_SHA="$C4" EVENT=push
 check "a development-shaped tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=push
-check "push to main → development build, the real key" "$(mode_line)" "0:::$C4:true"
-for ev in schedule workflow_dispatch pull_request; do
+check "push to main → development build, a throw-away key, nothing published (GitHub#628)" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='40 16 * * 0'
+check "the weekly schedule → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='30 20 * * *'
+check "the nightly schedule → development build to publish, the real key (GitHub#628)" "$(mode_line)" "0:::$C4:true:true"
+for ev in workflow_dispatch pull_request; do
     cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT="$ev"
-    check "$ev → development build, a throw-away key" "$(mode_line)" "0:::$C4:false"
+    check "$ev → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
 done
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=false
+check "manual run on main, publish not ticked → a check run" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+check "manual run on main, publish ticked → publish, the real key" "$(mode_line)" "0:::$C4:true:true"
+cmode GITHUB_REF=refs/heads/feature/issue-628 GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+check "manual run on another branch, publish ticked → fails at once, no decision written" "$([ "$RC" != 0 ] && echo red):$(cout sign):$(cout publish)" "red::"
+has "只能在 main 上运行" "$(cat "$TMP/c-out")" "… says why"
+cmode GITHUB_REF=refs/heads/feature/issue-628 GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=false
+check "manual run on another branch, publish not ticked → a check run with a throw-away key" "$(mode_line)" "0:::$C4:false:false"
+
+echo "-- anything to build: release, check runs, publishing runs (GitHub#628)"
+for f in dev-plan.mjs dev-release.mjs update-manifest.mjs; do cp "$REPO_DIR/client/scripts/$f" "$TMP/client-run/client/scripts/"; done
+cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
+    printf '%s' "$1" > "$TMP/c-devlist.json"; shift
+    mkdir -p "$TMP/c-devbin" "$TMP/c-rt"
+    [ -f "$TMP/c-devtags.json" ] || printf '[]' > "$TMP/c-devtags.json"
+    # one tag ref (scripts/dev-release.mjs reads it before calling a build done): a published release's
+    # tag is on the commit it recorded; no published release of that name → 404
+    # the tag list (scripts/dev-plan.mjs): the refs a test wrote to c-devtags.json, plus every published
+    # release's own tag on the commit it recorded (GitHub creates it on publishing) unless the test
+    # named that tag itself
+    cat > "$TMP/c-tagrefs.py" <<'PYT'
+import json, sys
+given = json.load(open(sys.argv[1]))
+names = {r["ref"] for r in given}
+for r in json.load(open(sys.argv[2])):
+    ref = "refs/tags/" + str(r.get("tag_name"))
+    if r.get("draft") is False and ref not in names:
+        given.append({"ref": ref, "object": {"type": "commit", "sha": r.get("target_commitish")}})
+print(json.dumps([given]))
+PYT
+    cat > "$TMP/c-tagref.py" <<'PYT'
+import json, sys
+tag = sys.argv[1].split("/git/ref/tags/", 1)[1]
+rel = [r for r in json.load(open(sys.argv[2])) if r.get("tag_name") == tag and r.get("draft") is False]
+if not rel:
+    print("HTTP 404: Not Found", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({"ref": "refs/tags/" + tag, "object": {"type": "commit", "sha": rel[0]["target_commitish"]}}))
+PYT
+    # the release list, or (scripts/dev-plan.mjs's second read) the client/v* tag refs; GH_FAIL_TAGS fails only the latter
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q %q %q;; *git/ref/tags/*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q "$2" %q;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-tagrefs.py" "$TMP/c-devtags.json" "$TMP/c-devlist.json" "$TMP/c-tagref.py" "$TMP/c-devlist.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
+    chmod +x "$TMP/c-devbin/gh"
+    CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
+}
+build_line() { echo "$RC:$(cout build):$(cout quick)"; }
+# a published development build carrying every file a build carries (scripts/dev-release.mjs --files)
+devrel() {
+    local v="0.6.1-dev.$1" assets
+    assets="$(node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$v" | python3 -c 'import json,sys; print(json.dumps([{"name": l.strip(), "state": "uploaded", "size": 10} for l in sys.stdin if l.strip()]))')"
+    printf '[{"id":1,"tag_name":"client/v%s","draft":false,"prerelease":true,"target_commitish":"%s","assets":%s}]' "$v" "$2" "$assets"
+}
+devrel_without() {  # devrel_without <n> <sha> <file suffix> → the same build with that file missing
+    devrel "$1" "$2" | python3 -c 'import json,sys; d=json.load(sys.stdin); d[0]["assets"]=[a for a in d[0]["assets"] if not a["name"].endswith(sys.argv[1])]; print(json.dumps(d))' "$3"
+}
+cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
+check "a release build → build" "$(build_line)" "0:true:true"
+for ev in push pull_request; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev → quick tests only, nothing built" "$(build_line)" "0:false:true"
+done
+for ev in schedule workflow_dispatch; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev (not publishing) → build and check" "$(build_line)" "0:true:true"
+done
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, the commit already published → nothing built, no quick tests either" "$(build_line)" "0:false:false"
+has "就是这个提交" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true
+check "… forced → built and checked again" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, main moved on with a daemon-only commit since the last build → nothing built" "$(build_line)" "0:false:false"
+has "以来客户端没有改动" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true SHA="$C3"
+check "… forced (\"even without a client change\") → built" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C3")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, only the version files changed since (client/) → build" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C1")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, client/ changed since the last build → build" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule GH_FAIL_API=1
+check "publishing run, the release list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule SHA=main
+check "publishing run, no full commit to compare → the step fails" "$([ "$RC" != 0 ] && echo red):$(cout build)" "red:"
+# a public build that is not complete is never changed (PR #630 Q1 = B): on its own commit nothing
+# is built; on any later commit a higher version comes out over it, client change or not
+for gone in -windows-x64.exe latest.json; do
+    cbuild "$(devrel_without 9 "$C4" "$gone")" TAG= PUBLISH=true EVENT=schedule
+    check "publishing run, the commit already published but without its $gone → nothing built (the public build is not changed)" "$(build_line)" "0:false:false"
+    has "已公开的版本一律不改" "$(cat "$TMP/c-out")" "… says why in the log"
+    cbuild "$(devrel_without 9 "$C2" "$gone")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+    check "… after daemon-only commits → build (a higher version over it)" "$(build_line)" "0:true:true"
+done
+# review round 4 #9: a build made and then hidden again (the publish step turned it back into a draft
+# to fill it in and could not finish): its tag is there, its release page is not public — the
+# read-only token cannot see the draft itself. The next night builds, client change or not.
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C2" "$C2" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, no client change, but a higher build is tagged and not public → build" "$(build_line)" "0:true:true"
+has "client/v0.6.1-dev.12" "$(cat "$TMP/c-out")" "… naming it in the log"
+check "… it read the tag refs" "$(grep -c 'matching-refs/tags/client/v' "$GH_ARGS")" 1
+# that hidden build is of this very commit (it was public once; a public build is never changed and
+# the same commit gets the same version): nothing built (PR #630 review #11)
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C3" "$C2" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "… the hidden build is of this very commit → nothing built" "$(build_line)" "0:false:false"
+has "公开过的版本一律不改" "$(cat "$TMP/c-out")" "… says why in the log"
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.3","object":{"type":"commit","sha":"%s"}}]' "$C2" "$C1" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "… only the published build's tag and a lower one (an old build being cleaned up) → nothing built" "$(build_line)" "0:false:false"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3" GH_FAIL_TAGS=1
+check "… the tag list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
+# review round 4 #14: the newest build's files are complete but its tag is on another commit — the
+# plan judges it by the publish step's rule (not done): on its own commit nothing is built (it is not
+# changed), after a daemon-only commit a higher version is built
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C1" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, no client change, but the newest build's tag is on another commit → build" "$(build_line)" "0:true:true"
+has "标签不在发版记下的提交上" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule
+check "… on that build's own commit → nothing built (the public build is not changed)" "$(build_line)" "0:false:false"
+printf '[]' > "$TMP/c-devtags.json"
+STARTER="$(devrel 9 "$C4" | python3 -c 'import json,sys; d=json.load(sys.stdin); [a.update(state="starter", size=0) for a in d[0]["assets"] if a["name"].endswith("-windows-x64.exe")]; print(json.dumps(d))')"
+cbuild "$STARTER" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, the commit already published but its Windows installer only a placeholder (starter, size 0) → nothing built (not complete, and not changed)" "$(build_line)" "0:false:false"
+cbuild "$STARTER" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true
+check "… forced → built and checked (the publish step then refuses to change it)" "$(build_line)" "0:true:true"
+
+echo "-- docs: checking whether a build is complete — the command as written, both languages (review round 2 #6)"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/docs/$f" \
+        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-$f.sh"
+done
+check "both docs carry the same check command" "$(cmp -s "$TMP/cn-check-operations.md.sh" "$TMP/cn-check-operations.zh.md.sh" && echo same):$(wc -l < "$TMP/cn-check-operations.md.sh")" "same:1"
+DOCV="$(grep -o '0\.[0-9]*\.[0-9]*-dev\.[0-9]*' "$TMP/cn-check-operations.md.sh")"
+doclist() {  # doclist <python expression editing the asset list `a`> → a release list for $DOCV
+    node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$DOCV" | python3 -c '
+import json, sys
+a = [{"name": l.strip(), "state": "uploaded", "size": 10} for l in sys.stdin if l.strip()]
+exec(sys.argv[2])
+print(json.dumps([{"id": 1, "tag_name": "client/v" + sys.argv[1], "draft": False, "prerelease": True, "target_commitish": "a" * 40, "assets": a}]))' "$DOCV" "$1"
+}
+docrun() { printf '%s' "$1" > "$TMP/c-devlist.json"; shift; CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/cn-check-operations.md.sh" "$@"; }
+docrun "$(doclist 'pass')"
+check "complete build → COMPLETE, exit 0" "$RC:$(grep -c '^COMPLETE' "$TMP/c-out")" "0:1"
+docrun "$(doclist 'a = [dict(x, state="starter", size=0) if x["name"].endswith("-windows-x64.exe") else x for x in a]')"
+check "Windows installer only a placeholder → INCOMPLETE naming it, exit 1" "$RC:$(grep -c "^INCOMPLETE.*-windows-x64.exe" "$TMP/c-out")" "1:1"
+docrun "$(doclist 'a = [x for x in a if not x["name"].endswith(".app.tar.gz.sig")]')"
+check "Mac update signature missing → INCOMPLETE, exit 1" "$RC:$(grep -c "^INCOMPLETE.*arm64.app.tar.gz.sig" "$TMP/c-out")" "1:1"
+docrun "$(doclist 'pass')" GH_FAIL_API=1
+check "release list unreadable → UNKNOWN, exit 2 (never 'not there')" "$RC:$(grep -c '^UNKNOWN' "$TMP/c-out")" "2:1"
+check "… the check only reads" "$(grep -cE '^(release|-X)$' "$GH_ARGS" || true)" 0
+
+echo "-- the version a publishing run tries, and what checking it says (review round 3 #6)"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule FORCE=true
+check "publishing run → the development version it will build" "$RC:$(cout dev_version)" "0:$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+cbuild '[]' TAG= PUBLISH=false EVENT=workflow_dispatch
+check "a development build that publishes nothing → its version too (every build job stamps it, review round 4 #6)" "$RC:$(cout dev_version)" "0:$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+for ev in push pull_request; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev (nothing built) → no version" "$RC:$(cout dev_version)" "0:"
+done
+cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
+check "a release build → no development version" "$RC:$(cout dev_version)" "0:"
+echo "-- one version per run: counted once in the mode job, stamped as given by both builds and published as given (review round 4 #6)"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule FORCE=true
+MODEV="$(cout dev_version)"
+git -C "$TMP/client-run" tag client/v9.0.0 "$C4"
+LATERV="$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+check "a higher client/v tag appears mid-run: counting again would give another number" "$([ "$LATERV" != "$MODEV" ] && echo differs)" "differs"
+for job in package package-windows; do
+    cstep "$CLIENT_WORKFLOW" "$job" Version > "$TMP/c-ver.sh"
+    (cd "$TMP/client-run/client" && git checkout -q -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml)
+    crun "$TMP/client-run/client" "$TMP/c-ver.sh" TAG= VERSION= DEV_VERSION="$MODEV"
+    check "$job: stamps the mode job's version, not a new count" "$RC:$(node -p "require('$TMP/client-run/client/package.json').version")" "0:$MODEV"
+    crun "$TMP/client-run/client" "$TMP/c-ver.sh" TAG= VERSION= DEV_VERSION=
+    check "$job: no version from the mode job → fails, never counts its own" "$([ "$RC" != 0 ] && echo red)" "red"
+done
+(cd "$TMP/client-run/client" && git checkout -q -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml)
+cstep "$CLIENT_WORKFLOW" dev-release Version > "$TMP/c-ver.sh"
+crun "$TMP/client-run/client" "$TMP/c-ver.sh" V="$MODEV"
+check "dev-release: publishes the mode job's version" "$RC:$(cout version)" "0:$MODEV"
+crun "$TMP/client-run/client" "$TMP/c-ver.sh" V=
+check "dev-release: no version from the mode job → fails" "$([ "$RC" != 0 ] && echo red):$(cout version)" "red:"
+check "… and the report checks that same output" "$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["report-failure"]["steps"][1]["env"]["V"])' "$CLIENT_WORKFLOW")" '${{ needs.mode.outputs.dev_version }}'
+git -C "$TMP/client-run" tag -d client/v9.0.0 >/dev/null
+cstep "$CLIENT_WORKFLOW" report-failure "The version this run tried to publish" > "$TMP/c-tried.sh"
+tried() {  # tried <V> <release list JSON> [VAR=…] → $RC, outputs in $TMP/c-output
+    printf '%s' "$2" > "$TMP/c-devlist.json"; local v="$1"; shift 2
+    CPATH="$TMP/c-devbin:" crun "$TMP/client-run" "$TMP/c-tried.sh" V="$v" GH_TOKEN=x "$@"
+}
+TV=0.6.1-dev.10
+tried "$TV" "$(devrel 9 "$C3")"
+check "a complete older build is the newest, this run's version never created → INCOMPLETE for this version (exit 1)" "$RC:$(cout version):$(cout rc):$(cout check | grep -c "^INCOMPLETE client/v$TV")" "0:$TV:1:1"
+tried "$TV" "$(devrel 10 "$C4")"
+check "this run's version public and complete (the clean-up failed) → COMPLETE (exit 0)" "$RC:$(cout rc):$(cout check | grep -c "^COMPLETE client/v$TV")" "0:0:1"
+tried "$TV" "$(devrel 10 "$C4")" GH_FAIL_API=1
+check "the list cannot be read → UNKNOWN (exit 2), never a verdict" "$RC:$(cout rc):$(cout check | grep -c '^UNKNOWN')" "0:2:1"
+tried "" "$(devrel 10 "$C4")"
+check "no version (the mode job failed) → no check at all" "$RC:$(cout version):$(cout check):$(cout rc)" "0:::"
+
+echo "-- a manual publish is refused off main before anything else, a client tag included (review round 1 #3)"
+git -C "$TMP/client-run" tag client/v0.6.0 "$C4" 2>/dev/null || true
+for ref in refs/tags/client/v0.6.0 refs/heads/feature/x; do
+    cmode GITHUB_REF="$ref" GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+    check "manual publish on $ref → fails, nothing decided (no tag, no key, no publish)" "$([ "$RC" != 0 ] && echo red):$(cout tag):$(cout sign):$(cout publish)" "red:::"
+done
+cmode GITHUB_REF=refs/tags/client/v0.6.0 GITHUB_SHA="$C4" EVENT=push
+check "… the same tag pushed is still a release build" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=workflow_dispatch
+check "… and the weekly release calling with it (from a manual Release run) too" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+git -C "$TMP/client-run" tag -d client/v0.6.0 >/dev/null 2>&1 || true
+
+echo "-- which jobs run, per trigger: the mode job's real steps, then the workflow's own conditions evaluated (review round 1 #5)"
+GHA="$REPO_DIR/tests/lib/gha_expr.py"
+# csim <github ctx JSON> <inputs JSON> <release list for the build step> [scenario extras JSON] → "$SIM": ran=<jobs> group=… cancel=…
+csim() {
+    local gh="$1" inp="$2" list="$3" extra="${4:-{\}}" ev ref sched pub force mo
+    ev="$(jq -r .event_name <<<"$gh")"; ref="$(jq -r .ref <<<"$gh")"; sched="$(jq -r '.event.schedule // ""' <<<"$gh")"
+    pub="$(jq -r 'if .publish == null then "" else (.publish|tostring) end' <<<"$inp")"; force="$(jq -r 'if .force == null then "" else (.force|tostring) end' <<<"$inp")"
+    cmode GITHUB_REF="$ref" GITHUB_SHA="$C4" EVENT="$ev" SCHEDULE="$sched" PUBLISH="$pub"
+    mo="$(jq -n --arg tag "$(cout tag)" --arg version "$(cout version)" --arg sha "$(cout sha)" --arg sign "$(cout sign)" --arg publish "$(cout publish)" '{tag:$tag,version:$version,sha:$sha,sign:$sign,publish:$publish}')"
+    MODE_RC=$RC
+    cbuild "$list" TAG="$(jq -r .tag <<<"$mo")" PUBLISH="$(jq -r .publish <<<"$mo")" EVENT="$ev" FORCE="$force"
+    mo="$(jq --arg build "$(cout build)" --arg quick "$(cout quick)" '. + {build:$build, quick:$quick}' <<<"$mo")"
+    jq -n --argjson gh "$gh" --argjson inp "$inp" --argjson mo "$mo" --argjson x "$extra" \
+        '{github:$gh, inputs:$inp, vars:{}, outputs:{mode:$mo}} + $x' > "$TMP/c-sim.json"
+    python3 "$GHA" simulate "$CLIENT_WORKFLOW" "$TMP/c-sim.json" > "$TMP/c-sim.out" || { SIM="simulate failed: $(cat "$TMP/c-sim.out")"; return; }
+    SIM="$(jq -r '"ran=" + ([.jobs | to_entries[] | select(.value != "skipped") | .key] | sort | join(",")) + " group=" + (.group|tostring) + " cancel=" + (.cancel|tostring)' "$TMP/c-sim.out")"
+}
+job_of() { jq -r --arg j "$1" '.jobs[$j]' "$TMP/c-sim.out"; }
+NIGHT='{"event_name":"schedule","ref":"refs/heads/main","event":{"schedule":"30 20 * * *"}}'
+WEEK='{"event_name":"schedule","ref":"refs/heads/main","event":{"schedule":"40 16 * * 0"}}'
+DISPATCH_MAIN='{"event_name":"workflow_dispatch","ref":"refs/heads/main","event":{}}'
+DISPATCH_BRANCH='{"event_name":"workflow_dispatch","ref":"refs/heads/feature/issue-628","event":{}}'
+PUSH_MAIN='{"event_name":"push","ref":"refs/heads/main","event":{}}'
+PR='{"event_name":"pull_request","ref":"refs/pull/630/merge","event":{"pull_request":{"number":630}}}'
+CHANGED="$(devrel 9 "$C1")"; SAME="$(devrel 9 "$C4")"
+BUILDJOBS="mode,package,package-windows,size,test,test-rust,test-vitest"
+csim "$NIGHT" '{}' "$CHANGED"
+check "nightly, client changed → quick tests, both builds, size gate, publish; one never-cancelling group" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$NIGHT" '{}' "$SAME"
+check "nightly, nothing new → only the mode job runs (and the run is green)" "$SIM" "ran=mode group=client-dev-publish cancel=false"
+csim "$WEEK" '{}' "$SAME"
+check "weekly → quick + full tests, both builds, size gate, nothing published; its own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/main-weekly cancel=true"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED"
+check "manual publish on main, client changed → the nightly run by hand, same group" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$SAME"
+check "manual publish on main, nothing new → only the mode job" "$SIM" "ran=mode group=client-dev-publish cancel=false"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":true}' "$SAME"
+check "manual publish + force on the commit already out → built and checked, publish runs (and writes nothing, dev-release.mjs)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$DISPATCH_BRANCH" '{"publish":false,"force":false}' "$SAME"
+check "manual check run on a branch → quick + full tests, both builds, nothing published; the branch's own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/feature/issue-628 cancel=true"
+csim "$PUSH_MAIN" '{}' "$SAME"
+check "push to main → quick tests only" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-refs/heads/main cancel=true"
+csim "$PR" '{}' "$SAME"
+check "pull request → quick tests only, the PR's own group" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-630 cancel=true"
+
+echo "-- the quick-test verdict: red when the mode job failed, skipped only when it said nothing to test (review round 1 #4)"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"mode":"failure"},"outputs":{}}'
+check "mode job failed → the verdict job still runs (and the report too)" "$(job_of test):$(job_of test-rust):$(job_of report-failure)" "success:skipped:success"
+cstep "$CLIENT_WORKFLOW" test "Both quick-test jobs passed" > "$TMP/c-verdict.sh"
+verdict() { crun "$TMP" "$TMP/c-verdict.sh" "$@"; echo "$RC"; }
+check "… and its step is red when the mode job failed" "$(verdict MODE=failure RUST=skipped VITEST=skipped)" 1
+check "… green when both quick tests passed" "$(verdict MODE=success RUST=success VITEST=success)" 0
+check "… red when one of them failed" "$(verdict MODE=success RUST=success VITEST=failure):$(verdict MODE=success RUST=failure VITEST=success)" "1:1"
+csim "$NIGHT" '{}' "$SAME"
+check "mode said nothing to test → the verdict job is skipped" "$(job_of test)" "skipped"
+
+echo "-- the nightly failure report: only a failed nightly run, never a cancelled one, never when switched off (review round 1 #5)"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"}}'
+check "nightly, the Windows build failed → report (and nothing published)" "$(job_of report-failure):$(job_of dev-release):$(job_of size)" "success:skipped:skipped"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"dev-release":"failure"}}'
+check "nightly, the publish step failed → report" "$(job_of report-failure)" "success"
+csim "$NIGHT" '{}' "$CHANGED"
+check "nightly, all green → no report" "$(job_of report-failure):$(job_of dev-release)" "skipped:success"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"},"cancelled":true}'
+check "nightly, cancelled → no report" "$(job_of report-failure)" "skipped"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"},"vars":{"CLIENT_NIGHTLY_REPORT":"off"}}'
+check "nightly, report switched off → no report" "$(job_of report-failure)" "skipped"
+csim "$WEEK" '{}' "$SAME" '{"results":{"package-windows":"failure"}}'
+check "weekly, a build failed → no report (not the nightly run)" "$(job_of report-failure)" "skipped"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED" '{"results":{"package-windows":"failure"}}'
+check "manual publish, a build failed → no report" "$(job_of report-failure)" "skipped"
 
 echo "-- the version written into the three files"
 cver() { crun "$TMP/client-run/client" "$TMP/c-version.sh" "$@"; }
@@ -1460,11 +1814,14 @@ git -C "$TMP/client-run" checkout -q -- client
 cver TAG=client/v0.6.0 VERSION=
 check "release build without a version → fails, nothing written" "$([ "$RC" != 0 ] && echo red):$(three)" "red:0.6.0 0.6.0 0.6.0"
 N="$(git -C "$TMP/client-run" rev-list --count HEAD)"
-cver TAG= VERSION=
+# a development build stamps the version the mode job counted (review round 4 #6): count it the way
+# the mode job does, in this checkout
+mver() { (cd "$TMP/client-run/client" && node scripts/dev-version.mjs); }
+cver TAG= VERSION= DEV_VERSION="$(mver)"
 check "development build: package.json's version + 1, -dev.<commits>" "$RC:$(three)" "0:0.6.1-dev.$N 0.6.1-dev.$N 0.6.1-dev.$N"
 git -C "$TMP/client-run" checkout -q -- client
 git -C "$TMP/client-run" tag client/v0.6.4 HEAD; git -C "$TMP/client-run" tag client/v0.6.9-dev.2 HEAD
-cver TAG= VERSION=
+cver TAG= VERSION= DEV_VERSION="$(mver)"
 check "… after a release above package.json: counted from that release (dev builds stay newer)" "$RC:$(three)" "0:0.6.5-dev.$N 0.6.5-dev.$N 0.6.5-dev.$N"
 git -C "$TMP/client-run" checkout -q -- client
 
@@ -1543,6 +1900,89 @@ rf_repo; run_report "client-plan=failure client=skipped"
 has "没能判断这次要不要出客户端正式版" "$(body_of 1)" "the client plan failed → said as such"
 rf_repo; run_report "client=skipped client-plan=success"
 check "no client release this week (skipped) → nothing to report" "$RC:$(n_issues)" "0:0"
+
+echo "-- a failed nightly development build is reported in its own issue (GitHub#628)"
+export RF_KIND=client-nightly
+# the version this run tried, and what checking it said (the workflow's "The version this run tried
+# to publish" step; tested below): here it was never created — the previous night's build is the newest
+export RF_DEV_V=0.5.3-dev.640 RF_DEV_RC=1 RF_DEV_CHECK="INCOMPLETE client/v0.5.3-dev.640：没有这个发版"
+rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app" "publish development build=skipped"
+run_report "package-windows=failure size=skipped dev-release=skipped"
+check "red night: green job, one issue, with the dispatch label" "$RC:$(n_issues):$(labels_of 1)" "0:1:pending/agent"
+B="$(body_of 1)"
+has "<!-- cavil-client-nightly-failure -->" "$B" "… its own marker"
+lacks "<!-- cavil-release-failure -->" "$B" "… not the release marker"
+lacks "<!-- cavil-negative-controls-failure -->" "$B" "… not the negative-controls marker"
+check "… its own title" "$(rf_q "$RF/issues.json" 'd[0]["title"]')" "客户端每晚开发版失败（自动报告）"
+has "## 客户端每晚开发版运行失败" "$B" "… heading names the nightly build"
+has "定时（每晚）" "$B" "… says how it started"
+has "失败在发布之前" "$B" "… says where it failed"
+has "这次要发的 \`0.5.3-dev.640\` 没有完整发出" "$B" "… names the version this run tried, and that it did not go out (review round 3 #6)"
+has "仍是上一版" "$B" "… what that means for installed apps"
+has "Windows installer (x64)](" "$B" "… names the failed job"
+has "「A real update of the installed app」" "$B" "… and the failed step"
+has "$RF_SHA" "$B" "… the tested commit, from the mode job"
+lacks "计划任务没给出受测提交" "$B" "… not the 'no tested commit' fallback"
+lacks "### 客户端负对照" "$B" "… no negative-controls section"
+run_report "package=failure size=skipped dev-release=skipped"
+check "second red night: a comment, no new issue" "$(n_issues):$(n_comments 1)" "1:1"
+has "## 又一次客户端每晚开发版运行失败" "$(last_comment 1)" "… comment heading names the nightly build"
+echo "-- the report is about the version this run tried, by what checking it said (review round 3 #6)"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+RF_DEV_RC=1 RF_DEV_CHECK="INCOMPLETE client/v0.5.3-dev.640：没有这个发版" run_report "dev-release=failure"
+B="$(body_of 1)"
+has "失败在发布那一步" "$B" "publish step failed before its release existed (a complete older build is the newest) → says the publish step"
+has "这次要发的 \`0.5.3-dev.640\` 没有完整发出" "$B" "… and that this version did not go out — never judged by the newest build"
+has "没有这个发版" "$B" "… quoting the check"
+lacks "已完整在发版页上" "$B" "… never 'it is out'"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+RF_DEV_RC=0 RF_DEV_CHECK="COMPLETE client/v0.5.3-dev.640：6 个文件都已上传完成" run_report "dev-release=failure"
+B="$(body_of 1)"
+has "这次要发的 \`0.5.3-dev.640\` 现在已完整在发版页上" "$B" "this version public complete, the clean-up failed → says it is out"
+has "红的是发布之后的读回或旧版清理" "$B" "… and that what failed came after publishing"
+has "不会重发" "$B" "… and that it will not be published again"
+lacks "没有完整发出" "$B" "… not 'it did not go out'"
+# review round 4 #6: the version is complete, but this run never reached the publish step (the plan
+# could not read the list, so it built; the Mac build failed) — the two facts are said apart
+rf_repo; rf_jobs "dmg (arm64)=failure:Build the app (Tauri), its update package, and the dmg"
+RF_DEV_RC=0 RF_DEV_CHECK="COMPLETE client/v0.5.3-dev.640：6 个文件都已上传完成" run_report "package=failure size=skipped dev-release=skipped"
+B="$(body_of 1)"
+has "失败在发布之前（测试、打包或体积检查），发布那一步没有运行" "$B" "complete version, publish step not run → says this run failed before publishing"
+has "现在已完整在发版页上" "$B" "… and that the version is complete now"
+has "是之前的运行发出的，不是这次" "$B" "… put out by an earlier run, not this one"
+lacks "红的是发布之后的读回或旧版清理" "$B" "… never 'what failed came after publishing'"
+lacks "失败在发布那一步" "$B" "… nor 'failed in the publish step'"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+RF_DEV_RC=2 RF_DEV_CHECK="UNKNOWN 读不到发版列表：HTTP 502" run_report "dev-release=failure"
+B="$(body_of 1)"
+has "读不出这次要发的 \`0.5.3-dev.640\` 现在的状态" "$B" "check could not tell → says so"
+has "node scripts/dev-release.mjs --check 0.5.3-dev.640" "$B" "… with the command for that very version"
+for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows-x64.exe latest.json; do
+    has "$f" "$B" "… names $f (review round 2 #6)"
+done
+has "大小为 0 的不算" "$B" "… and says a placeholder does not count"
+has "标签要在发版记下的提交上" "$B" "… and that the tag must be on the recorded commit (review #13)"
+lacks "已完整在发版页上" "$B" "… never 'it is out'"
+lacks "没有完整发出" "$B" "… nor 'it did not go out'"
+rf_repo; rf_jobs "client build mode=failure:Release or development build"
+RF_DEV_V= RF_DEV_RC= RF_DEV_CHECK= run_report "mode=failure test=skipped package=skipped package-windows=skipped size=skipped dev-release=skipped"
+has "没取到这次要发的版本号" "$(body_of 1)" "no version (the mode job failed) → says so, never 'the newest build'"
+rf_repo; rf_jobs "client quick tests (Linux)=failure:Both quick-test jobs passed"
+run_report "test=failure package=skipped package-windows=skipped size=skipped dev-release=skipped"
+has "失败在发布之前" "$(body_of 1)" "failed before publishing → says so"
+lacks "失败在发布那一步" "$(body_of 1)" "… not the publish-step sentence"
+rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app"
+run_report "package-windows=failure size=skipped dev-release=skipped"
+run_report "package=failure size=skipped dev-release=skipped"
+RF_KIND=negative-controls run_report "shell=failure summary=failure"
+check "a negative-controls failure next to it: its own new issue, nothing added here" "$(n_issues):$(n_comments 1)" "2:1"
+RF_KIND=release run_report "gate=failure gate-summary=failure release=skipped"
+check "a release failure next to it: its own new issue too" "$(n_issues):$(n_comments 1)" "3:1"
+rf_repo; run_report "test=cancelled package=cancelled package-windows=cancelled size=skipped dev-release=skipped"
+check "cancelled night: no call at all" "$(wc -l < "$RF/calls.log")" 0
+rf_repo; run_report ""
+check "a green night: nothing to report, no write" "$RC:$(n_issues):$(writes)" "0:0:0"
+unset RF_KIND RF_DEV_V RF_DEV_RC RF_DEV_CHECK
 
 
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──

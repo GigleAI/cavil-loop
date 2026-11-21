@@ -17,6 +17,11 @@
 //   node scripts/dev-version.mjs            print the version (nothing changes)
 //   node scripts/dev-version.mjs --write    also write it into the three files (in CI's work tree only;
 //                                           never committed)
+//   node scripts/dev-version.mjs --set <X.Y.Z-dev.N>
+//                                           write exactly that version into the three files (GitHub#628
+//                                           review round 4: the workflow's mode job counts the version
+//                                           once and every build job stamps that one, so a tag pushed
+//                                           while the run is going cannot give two jobs two numbers)
 //   [--root <dir>]                          another client directory (default: the one this script is in)
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -106,7 +111,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const i = process.argv.indexOf('--root');
   const root = i >= 0 ? process.argv[i + 1] : join(dirname(fileURLToPath(import.meta.url)), '..');
   try {
-    console.log(stamp(root, { write: process.argv.includes('--write') }));
+    const s = process.argv.indexOf('--set');
+    if (s >= 0) {
+      const want = process.argv[s + 1];
+      // only what devVersion itself can produce (X.Y.(Z+1)-dev.N, N ≥ 1): one rule for the shape
+      const m = /^(\d+)\.(\d+)\.(\d+)-dev\.(\d+)$/.exec(String(want ?? ''));
+      let ok = false;
+      try {
+        ok = !!m && Number(m[3]) >= 1 && devVersion(`${m[1]}.${m[2]}.${Number(m[3]) - 1}`, Number(m[4])) === want;
+      } catch {}
+      if (!ok) throw new Error(`--set 后面要跟 X.Y.Z-dev.N：${want}`);
+      console.log(writeVersion(root, want));
+    } else console.log(stamp(root, { write: process.argv.includes('--write') }));
   } catch (e) {
     console.error(`❌ ${e.message}`);
     process.exit(1);

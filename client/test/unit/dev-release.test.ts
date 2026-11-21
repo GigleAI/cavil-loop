@@ -9,145 +9,39 @@
 
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
+import { FAKE_GH } from './fake-gh-releases';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(root, 'scripts', 'dev-release.mjs');
 const DEFAULT_SHA = 'a'.repeat(40);
 const SHA = DEFAULT_SHA;
 
-// The fake gh: just the calls the script makes, with GitHub's behaviour where it matters (a draft is
-// a release whose tag does not exist yet; lists are pages of 100; releases have ids; deleting a
-// release leaves its tag, which is a ref of its own). `afterDelete` changes the state right after a
-// given release is deleted — someone editing the list while the clean-up runs.
-const FAKE_GH = String.raw`#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const f = process.env.FAKE_GH_STATE;
-const st = JSON.parse(fs.readFileSync(f, 'utf8'));
-const a = process.argv.slice(2);
-st.calls.push(a.map((x) => (x.includes('/') && fs.existsSync(x) ? path.basename(x) : x)));
-const save = () => fs.writeFileSync(f, JSON.stringify(st));
-const fail = (what) => {
-  const i = st.fail.indexOf(what);
-  if (i < 0) return false;
-  st.fail.splice(i, 1);
-  return true;
-};
-const die = (m) => { save(); process.stderr.write(m + '\n'); process.exit(1); };
-// the files: what follows the tag up to the first option
-const files = (list) => { const i = list.findIndex((x) => x.startsWith('--')); return (i < 0 ? list : list.slice(0, i)).filter((x) => fs.existsSync(x)).map((x) => path.basename(x)); };
-const find = (tag) => st.releases.find((r) => r.tag_name === tag);
-const relPath = (p) => /^repos\/[^/]+\/[^/]+\/(.*)$/.exec(p)?.[1] ?? '';
-if (a[0] === 'api' && a[1] === '-X' && a[2] === 'DELETE') {
-  const p = relPath(a[3]);
-  let m;
-  if ((m = /^releases\/(\d+)$/.exec(p))) {
-    const r = st.releases.find((x) => x.id === Number(m[1]));
-    if (!r) die('HTTP 404: Not Found');
-    if (fail('delete:' + r.tag_name)) die('HTTP 500');
-    st.releases = st.releases.filter((x) => x !== r);
-    st.deleted.push(r.tag_name);
-    for (const h of st.afterDelete?.[r.tag_name] ?? []) {
-      if (h.add) st.releases.push(h.add);
-      else Object.assign(st.releases.find((x) => x.tag_name === h.tag), h.set);
-    }
-    save();
-    process.exit(0);
-  }
-  if ((m = /^git\/refs\/tags\/(.+)$/.exec(p))) {
-    if (!st.tags.includes(m[1])) die('HTTP 422: Reference does not exist');
-    if (fail('tagdel:' + m[1])) die('HTTP 500');
-    st.tags = st.tags.filter((t) => t !== m[1]);
-    st.tagsDeleted.push(m[1]);
-    save();
-    process.exit(0);
-  }
-  die('fake gh: unknown delete ' + p);
-}
-if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH') {
-  const m = /^releases\/(\d+)$/.exec(relPath(a[3]));
-  const r = m && st.releases.find((x) => x.id === Number(m[1]));
-  if (!r) die('HTTP 404: Not Found');
-  if (fail('patch:' + r.tag_name)) die('HTTP 500');
-  if (!fail('patch-noop:' + r.tag_name) && a.includes('draft=true')) r.draft = true;
-  save();
-  process.exit(0);
-}
-if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
-  const t = relPath(a[1]).slice('git/ref/tags/'.length);
-  if (fail('tagread:' + t)) die('HTTP 502: Bad Gateway');
-  if (!st.tags.includes(t)) die('HTTP 404: Not Found');
-  save();
-  process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
-  process.exit(0);
-}
-if (a[0] === 'api') {
-  st.lists = (st.lists ?? 0) + 1;
-  if (fail('list') || fail('list#' + st.lists)) die('HTTP 502: Bad Gateway');
-  const pages = [];
-  for (let i = 0; i < st.releases.length; i += 100) pages.push(st.releases.slice(i, i + 100));
-  if (!pages.length) pages.push([]);
-  save();
-  process.stdout.write(JSON.stringify(pages));
-  process.exit(0);
-}
-const tag = a[2];
-if (a[1] === 'create') {
-  if (find(tag)) die('a release with this tag already exists');
-  const names = files(a.slice(3));
-  if (fail('create')) die('HTTP 500');
-  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
-  st.releases.unshift(r);
-  if (fail('create-partial')) { r.assets = names.slice(0, 1).map((name) => ({ name })); die('upload failed: connection reset'); }
-  r.assets = names.map((name) => ({ name }));
-  save();
-  process.exit(0);
-}
-if (a[1] === 'upload') {
-  const r = find(tag);
-  if (!r) die('release not found');
-  if (fail('upload')) die('HTTP 500');
-  const have = new Set(r.assets.map((x) => x.name));
-  for (const n of files(a.slice(3))) if (!have.has(n)) r.assets.push({ name: n });
-  save();
-  process.exit(0);
-}
-if (a[1] === 'edit') {
-  const r = find(tag);
-  if (!r) die('release not found');
-  if (fail('edit')) die('HTTP 500');
-  // GitHub answering "ok" to an edit that did not take
-  if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; st.tags.push(tag); }
-  if (a.includes('--prerelease')) r.prerelease = true;
-  save();
-  process.exit(0);
-}
-die('fake gh: unknown call ' + a.join(' '));
-`;
 
 interface Rel {
   id?: number;
   target_commitish?: string;
+  published_at?: string | null;
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
-  assets: { name: string }[];
+  assets: { name: string; state?: string; size?: number }[];
   body?: string;
 }
 
-const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, 'latest.json'];
+// every file a development build carries: the script refuses to publish without one of them (GitHub#628)
+const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, `Cavil-Loop-${v}-windows-x64.exe`, `Cavil-Loop-${v}-windows-x64.exe.sig`, 'latest.json'];
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
-const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map((name) => ({ name })), ...o });
+const asset = (name: string) => ({ name, state: 'uploaded', size: 10 });
+const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map(asset), ...o });
 
 function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}, at: { script?: string; sha?: string } = {}) {
   const script = at.script ?? SCRIPT;
   const SHA = at.sha ?? DEFAULT_SHA;
-  const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, ...r }));
+  const releases = input.map((r, i) => ({ id: 1000 + i, target_commitish: SHA, published_at: r.draft ? null : '2026-11-01T00:00:00Z', ...r }));
   const dir = tempDir();
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -178,7 +72,11 @@ function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown>
     s.fail.push(...f);
     writeFileSync(state, JSON.stringify(s));
   };
-  return { build, run, read, fail: fail2, stateFile: state, tmp };
+  const runArgs = (args: string[]) => {
+    const r = spawnSync(process.execPath, [script, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: state, TMPDIR: tmp }, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  return { build, run, runArgs, read, fail: fail2, stateFile: state, tmp };
 }
 
 const writes = (calls: string[][]) =>
@@ -202,6 +100,321 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(readdirSync(bad.tmp)).toEqual([]);
   });
 
+  it('a build missing any of its files (here the Windows installer) is refused before anything is read or written (GitHub#628)', () => {
+    const w = world([pub('client/v0.5.0')]);
+    w.build('0.5.1-dev.387');
+    rmSync(join(w.stateFile, '..', 'dist-release', 'Cavil-Loop-0.5.1-dev.387-windows-x64.exe'));
+    const r = w.run('0.5.1-dev.387');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('Cavil-Loop-0.5.1-dev.387-windows-x64.exe');
+    expect(w.read().calls).toEqual([]);
+    // and the list the workflow checks with is the same one
+    const p = spawnSync(process.execPath, [SCRIPT, '--files', '0.5.1-dev.387'], { encoding: 'utf8' });
+    expect(p.stdout.trim().split('\n').sort()).toEqual(files('0.5.1-dev.387').sort());
+  });
+
+  // One batch of inputs for the three review rounds on asset completeness (GitHub#628 rounds 1–3): the
+  // version being published is already a public pre-release, with one file in each shape.
+  describe('the same version already public with one file in some state (review rounds 1–3)', () => {
+    const v = '0.5.1-dev.387';
+    const tag = `client/v${v}`;
+    const exe = `Cavil-Loop-${v}-windows-x64.exe`;
+    const withExe = (x: object | null) => devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), ...(x ? [{ name: exe, ...x }] : [])] });
+    const writeArgs = (calls: string[][]) => calls.filter((c) => c[0] === 'release').map((c) => [c[1], ...c.filter((x) => x.startsWith('--draft'))].join(' '));
+    const shapes: [string, object | null][] = [
+      ['missing (round 1)', null],
+      ['a failed-upload placeholder: state starter, size 0 (round 2)', { state: 'starter', size: 0 }],
+      ['uploaded with size 0', { state: 'uploaded', size: 0 }],
+    ];
+    // PR #630 Q1 = B (the maintainer's choice): a public release is never changed
+    it.each(shapes)('%s → the public release is left exactly as it is, nothing written, the run fails saying so (Q1 = B)', (_, x) => {
+      const w = world([withExe(x), devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('已公开的版本一律不改');
+      expect(r.out).toContain(exe.endsWith('.exe') ? 'windows-x64.exe' : exe);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api')).toBe(true); // it did read the list
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
+    });
+    it('a public build left incomplete, then the next commit → its higher version comes out complete; the incomplete one is not touched (Q1 = B)', () => {
+      const w = world([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')]);
+      const next = '0.5.1-dev.388';
+      w.build(next);
+      const before = JSON.stringify(w.read().releases.find((r) => r.tag_name === tag));
+      const r = w.run(next);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      expect(published(s, `client/v${next}`)?.assets.map((a) => a.name).sort()).toEqual(files(next).sort());
+      expect(JSON.stringify(s.releases.find((x) => x.tag_name === tag))).toBe(before);
+      expect(writeArgs(s.calls).filter((c) => c.startsWith('edit --draft=true'))).toEqual([]);
+    });
+    it.each([
+      ['no state at all (round 3)', { size: 10 }],
+      ['no size', { state: 'uploaded' }],
+      ['an empty state', { state: '', size: 10 }],
+      ['a state word GitHub never used (round 4)', { state: 'unrecognized', size: 10 }],
+      ['a state word GitHub never used, size 0 (round 4)', { state: 'processing', size: 0 }],
+      ['a failed-upload placeholder with no size (round 4)', { state: 'starter' }],
+      ['a size that is not a whole number (round 4)', { state: 'uploaded', size: '10' }],
+    ])('%s → read again; still unknown → nothing written, the public files left exactly as they are', (_, x) => {
+      const w = world([withExe(x)]);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('读不出是否已上传完成');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(s.calls.filter((c) => c[0] === 'api').length).toBeGreaterThanOrEqual(2); // it did read again
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it.each([
+      ['assets: null', null],
+      ['no assets field', undefined],
+      ['assets: an object', {}],
+    ])('%s (the file list itself unreadable, round 4) → read again; still unknown → nothing written', (_, assets) => {
+      const rel: Record<string, unknown> = { ...devRel(v) };
+      if (assets === undefined) delete rel.assets;
+      else rel.assets = assets;
+      const w = world([rel as unknown as Rel, devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('读不出是否已上传完成');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    // review round 5: what identifies a file, and whether a release is public, are read — never defaulted
+    const edited = (rels: Rel[], f: (rs: any[]) => void) => {
+      const w = world(rels);
+      const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+      f(st.releases);
+      writeFileSync(w.stateFile, JSON.stringify(st));
+      return w;
+    };
+    it.each([
+      ['one of the six files listed without a name', (rs: any[]) => { delete rs[0].assets[0].name; }],
+      ['one of the six files listed with an empty name', (rs: any[]) => { rs[0].assets[0].name = ''; }],
+      ['this version public but without a draft field', (rs: any[]) => { delete rs[0].draft; }],
+      ['this version with draft: null', (rs: any[]) => { rs[0].draft = null; }],
+      ['this version without a prerelease field', (rs: any[]) => { delete rs[0].prerelease; }],
+      ['another development build without a draft field (it could be a newer public one)', (rs: any[]) => { delete rs[1].draft; }],
+      ['a release with no tag name', (rs: any[]) => { delete rs[1].tag_name; }],
+    ])('%s → read again; still unknown → nothing hidden, nothing uploaded, nothing published (round 5)', (_, f) => {
+      // this version's Windows installer is a placeholder, so a wrong verdict would go on to fill it
+      const w = edited([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')], f);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/读不出/);
+      expect(r.out).toContain('什么都不写');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(s.calls.filter((c) => c[0] === 'api').length).toBeGreaterThanOrEqual(2); // it did read again
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it('an explicit draft of this version with a placeholder → filled without hiding (it already is hidden), then published (round 5 positive case)', () => {
+      const w = world([{ ...withExe({ state: 'starter', size: 0 }), draft: true }, devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual(['upload', 'edit --draft=false']);
+      expect(published(w.read(), tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    // PR #630 review (round 1 after Q1 = B) #11: a draft is filled in only when it never was public
+    const draftExe = (o: Partial<Rel> = {}) => ({ ...withExe({ state: 'starter', size: 0 }), draft: true, ...o });
+    const tagged = (w: ReturnType<typeof world>, t: string) => {
+      const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+      st.tags.push(t);
+      writeFileSync(w.stateFile, JSON.stringify(st));
+    };
+    it('a new draft (no publish time, no tag) → filled and published: the tag is read first, then upload + publish', () => {
+      const w = world([draftExe({ published_at: null }), devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(writeArgs(s.calls)).toEqual(['upload', 'edit --draft=false']);
+      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it.each([
+      ['public once, turned back into a draft (publish time kept, tag kept)', { published_at: '2026-11-20T00:00:00Z' }, true, []],
+      ['publish time kept, no tag', { published_at: '2026-11-20T00:00:00Z' }, false, []],
+      ['no publish time, but its tag exists', { published_at: null }, true, []],
+      ['no publish time field at all', { published_at: undefined }, false, []],
+      ['the tag cannot be read', { published_at: null }, false, [`tagread:${tag}`]],
+    ])('a draft: %s → kept as it is, nothing uploaded or published, the run fails (#11)', (_, o, hasTag, fail) => {
+      const w = world([draftExe(o as Partial<Rel>), devRel('0.5.1-dev.380')], fail as string[]);
+      if (o.published_at === undefined) {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        delete st.releases[0].published_at;
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      if (hasTag) tagged(w, tag);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/已公开的版本一律不改|读不出/);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api')).toBe(true);
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it('--check: a release that does not say whether it is a draft → UNKNOWN, exit 2 (round 5)', () => {
+      const w = edited([devRel(v)], (rs) => { delete rs[0].draft; });
+      const r = w.runArgs(['--check', v]);
+      expect(r.code).toBe(2);
+      expect(r.out).toMatch(/^UNKNOWN/m);
+    });
+    it('unknown on the first read, uploaded on the second → already complete, nothing written', () => {
+      const w = world([withExe({ size: 10 })], [], { afterList: { 2: { tag, assets: files(v).map(asset) } } });
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual([]);
+    });
+    it('complete → nothing written', () => {
+      const w = world([devRel(v)]);
+      w.build(v);
+      expect(w.run(v).code).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual([]);
+    });
+  });
+
+  // PR #630 review round 2 #12: before creating a release, the tag must not exist yet (it would be
+  // reused whatever commit it is on); after publishing, the tag must be on the commit that was built
+  describe('the tag, before creating a release and after publishing it (#12)', () => {
+    const v = '0.5.1-dev.387';
+    const tag = `client/v${v}`;
+    const relWrites = (calls: string[][]) => calls.filter((c) => c[0] === 'release').map((c) => c[1]);
+    it('no release, no tag → the tag is read, then the release is created and published; the tag read back is on this commit', () => {
+      const w = world([devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      const order = s.calls.map((c) => (c[0] === 'release' ? c[1] : c[1]?.includes?.(`git/ref/tags/${tag}`) ? 'tag' : c[0])).filter((x) => x === 'tag' || x === 'create' || x === 'edit');
+      expect(order).toEqual(['tag', 'create', 'edit', 'tag']);
+      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it.each([
+      ['a tag of that name on another commit (a release deleted, its tag left)', 'b'.repeat(40), []],
+      ['a tag of that name on this very commit', SHA, []],
+      ['the tag cannot be read', null, [`tagread:${tag}`]],
+    ])('no release, but %s → nothing created, nothing written, the run fails', (_, tagSha, fail) => {
+      const w = world([devRel('0.5.1-dev.380')], fail as string[]);
+      if (tagSha) {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        st.tags.push(tag);
+        st.tagSha = { [tag]: tagSha };
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(relWrites(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+      if (tagSha && tagSha !== SHA) expect(r.out).toContain('不是这次构建的提交');
+    });
+    it('published, but the tag read back is on another commit → the run fails; a rerun fails too and cleans nothing up (#13)', () => {
+      // GitHub reports no tag before the create, yet the tag it ends up with is elsewhere; 11 older
+      // builds are there, so a run that got as far as the clean-up would delete the oldest
+      const olds = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${370 + i}`));
+      const w = world(olds, [], { tagSha: { [tag]: 'c'.repeat(40) } });
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('不是 ' + SHA);
+      expect(published(w.read(), tag)).toBeTruthy(); // it is out (a write cannot be taken back)
+      const cleanups = (calls: string[][]) => calls.filter((c) => c[0] === 'api' && (c[2] === 'DELETE' || c[2] === 'PATCH'));
+      expect(cleanups(w.read().calls)).toEqual([]);
+      // the rerun: files complete, same commit — but the tag is not on it → still red, still no clean-up, nothing written
+      const callsBefore = w.read().calls.length;
+      const again = w.run(v);
+      expect(again.code).toBe(1);
+      expect(again.out).toContain('不当作发过');
+      const later = w.read().calls.slice(callsBefore);
+      expect(later.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(later.filter((c) => c[0] === 'release')).toEqual([]);
+      expect(cleanups(later)).toEqual([]);
+    });
+    it('a rerun of a complete build whose tag is on this commit → done, and the clean-up goes on (#13 positive case)', () => {
+      const olds = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${370 + i}`));
+      const w = world([...olds, devRel(v)]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(r.out).toContain('标签在这次构建的提交上');
+      const s = w.read();
+      expect(s.calls.filter((c) => c[0] === 'release')).toEqual([]);
+      expect(s.deleted.length).toBeGreaterThan(0); // the clean-up ran
+    });
+    it.each([
+      ['on the commit the release recorded', null, [], 0, /^COMPLETE .*标签在发版记下的提交/m],
+      ['on another commit', 'd'.repeat(40), [], 1, /^INCOMPLETE .*文件都已上传完成，但标签指向/m],
+      ['missing', 'absent', [], 1, /^INCOMPLETE .*标签不存在/m],
+      ['unreadable', null, [`tagread:${tag}`], 2, /^UNKNOWN .*标签读不出/m],
+    ])('--check: files complete, tag %s → says the files and the tag apart (#13)', (_, tagSha, fail, code, line) => {
+      const w = world([devRel(v)], fail as string[], tagSha && tagSha !== 'absent' ? { tagSha: { [tag]: tagSha } } : {});
+      if (tagSha === 'absent') {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        st.tags = st.tags.filter((t: string) => t !== tag);
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      const r = w.runArgs(['--check', v]);
+      expect(r.code).toBe(code);
+      expect(r.out).toMatch(line);
+    });
+  });
+
+  it('a create that left a placeholder: the run fails, and the next one fills it in (it was never public)', () => {
+    const v = '0.5.1-dev.387';
+    const w = world([pub('client/v0.5.0')], ['create-starter']);
+    w.build(v);
+    expect(w.run(v).code).toBe(1);
+    const again = w.run(v);
+    expect(again.code, again.out).toBe(0);
+    expect(writes(w.read().calls).slice(-2)).toEqual([`upload client/v${v}`, `edit client/v${v}`]);
+  });
+
+  it('--check: read-only, by the same rule (review round 2 #6)', () => {
+    const v = '0.5.1-dev.387';
+    const exe = `Cavil-Loop-${v}-windows-x64.exe`;
+    const chk = (rels: Rel[], fail: string[] = []) => {
+      const w = world(rels, fail);
+      const p = w.runArgs(['--check', v]);
+      return { ...p, writes: writes(w.read().calls) };
+    };
+    const ok = chk([devRel(v)]);
+    expect(ok).toMatchObject({ code: 0, writes: [] });
+    expect(ok.out).toContain('COMPLETE');
+    const starter = chk([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), { name: exe, state: 'starter', size: 0 }] })]);
+    expect(starter).toMatchObject({ code: 1, writes: [] });
+    expect(starter.out).toContain(`INCOMPLETE client/v${v}`);
+    expect(starter.out).toContain(exe);
+    expect(chk([pub('client/v0.5.0')]).code).toBe(1);
+    expect(chk([devRel(v, { draft: true })]).out).toContain('还是草稿');
+    const noState = chk([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), { name: exe, size: 10 }] })]);
+    expect(noState.code).toBe(2);
+    expect(noState.out).toContain(`UNKNOWN client/v${v}`);
+    const unreadable = chk([devRel(v)], ['list']);
+    expect(unreadable.code).toBe(2);
+    expect(unreadable.out).toContain('UNKNOWN');
+  });
+
   it('a new one: created as a draft with every file, then published as a pre-release (never Latest), and read back', () => {
     const w = world([pub('release/v2026.11.01.1'), pub('client/v0.5.0'), devRel('0.5.1-dev.380')]);
     w.build('0.5.1-dev.387');
@@ -212,7 +425,7 @@ describe('publishing a development build (GitHub#215)', () => {
     const create = s.calls.find((c) => c[1] === 'create')!;
     expect(create).toEqual(expect.arrayContaining(['--draft', '--prerelease', '--latest=false', '--target', SHA, ...files('0.5.1-dev.387')]));
     expect(s.calls.find((c) => c[1] === 'edit')).toEqual(expect.arrayContaining(['--draft=false', '--prerelease', '--latest=false']));
-    expect(published(s, 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true, assets: files('0.5.1-dev.387').map((name) => ({ name })) });
+    expect(published(s, 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true, assets: files('0.5.1-dev.387').map(asset) });
     expect(s.tags).toContain('client/v0.5.1-dev.387');
     // the list was read before writing, after publishing (check) and before pruning (nothing to prune here)
     expect(s.calls.filter((c) => c[0] === 'api' && c[1] === '--paginate').length).toBe(3);
@@ -282,7 +495,7 @@ describe('publishing a development build (GitHub#215)', () => {
   });
 
   it('a release of the same tag published but not as a pre-release is left alone and fails the run', () => {
-    const w = world([pub('client/v0.5.1-dev.387', { assets: files('0.5.1-dev.387').map((name) => ({ name })) })]);
+    const w = world([pub('client/v0.5.1-dev.387', { assets: files('0.5.1-dev.387').map(asset) })]);
     w.build('0.5.1-dev.387');
     const r = w.run('0.5.1-dev.387');
     expect(r.code).toBe(1);

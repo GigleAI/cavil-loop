@@ -11,8 +11,11 @@
 //     that finished late never puts an older build on top)
 //   - this version is already published with every file: nothing to publish (a rerun)
 //   - otherwise it is created as a draft with every file, then published: an installed app never
-//     sees a release with a missing file (drafts are invisible to it). A draft or a published
-//     release of this version left half-done by an earlier run is filled in and published.
+//     sees a release with a missing file (drafts are invisible to it). A draft of this version left
+//     half-done by an earlier run is filled in and published — only when it never was public (no
+//     publish time recorded, no tag yet); a draft that was public once is kept like a public one. A published release of this version
+//     that is not complete is never changed (the maintainer's choice on #628, PR #630 Q1 = B): the
+//     run fails and writes nothing; the next commit's higher version comes out over it.
 //   - read again: it must now be published, a pre-release, with every file — or this run fails.
 // Then the old ones go: of the published development builds (exact tag shape AND marked
 // pre-release), all but the `--keep` highest versions are deleted with their tags; and drafts of a
@@ -24,6 +27,8 @@
 //
 //   node scripts/dev-release.mjs --version 0.5.1-dev.387 --sha <commit> --dir dist-release \
 //        --notes-file notes.md [--keep 10] [--repo GigleAI/cavil-loop]
+//   node scripts/dev-release.mjs --files 0.5.1-dev.387     the files a development build carries, one a line
+//   node scripts/dev-release.mjs --check 0.5.1-dev.387     read-only: is that build published complete
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -55,8 +60,68 @@ export function devReleases(list) {
 }
 
 /**
+ * The files every development build carries (GitHub#628): the Apple-silicon dmg and update package
+ * with its signature, the Windows installer (also its update package) with its signature, and the
+ * manifest installed apps read. One list for the workflow's "the builds are that version" check, this
+ * script's refusal to publish without them, and scripts/dev-plan.mjs's "is the last build complete".
+ */
+export function devFiles(version) {
+  const v = `Cavil-Loop-${version}`;
+  return [`${v}-arm64.dmg`, `${v}-arm64.app.tar.gz`, `${v}-arm64.app.tar.gz.sig`, `${v}-windows-x64.exe`, `${v}-windows-x64.exe.sig`, 'latest.json'];
+}
+
+/**
+ * Whether a release carries `files` (GitHub#628 review rounds 2–4): one verdict, used by every place
+ * that reads a build's files — the publish decision, the read-back after publishing, the nightly plan
+ * and `--check`. A write follows only from what GitHub said for certain; anything else is unknown.
+ *   the release's asset list is not a list (missing, null, anything else), or one of its entries has
+ *   no name (it could be any of the files): every file unknown
+ * Per file:
+ *   ok       one asset of that name, state "uploaded", size a positive integer
+ *   bad      no asset of that name in a list that was read; or one GitHub says is not uploaded — a
+ *            state in NOT_UPLOADED (a failed upload leaves a same-named placeholder, "starter",
+ *            size 0); or "uploaded" with size 0
+ *   unknown  anything else: no state, a state word this does not know, a size that is not a
+ *            non-negative integer, two assets of one name
+ * The build: unknown when any file is unknown (it is not safe to decide either way), else incomplete
+ * when any file is bad, else complete.
+ * → { state: 'complete' | 'incomplete' | 'unknown', bad: [names], unknown: [names] }
+ */
+export const NOT_UPLOADED = ['starter', 'open'];
+
+export function buildState(release, files) {
+  if (!Array.isArray(release?.assets)) return { state: 'unknown', bad: [], unknown: [...files] };
+  // an entry with no name could be any of the files (review round 5): nothing can be said missing
+  if (!release.assets.every((a) => typeof a?.name === 'string' && a.name !== '')) return { state: 'unknown', bad: [], unknown: [...files] };
+  const by = new Map();
+  for (const a of release.assets) by.set(a.name, [...(by.get(a.name) ?? []), a]);
+  const bad = [];
+  const unknown = [];
+  for (const f of files) {
+    const as = by.get(f) ?? [];
+    if (!as.length) {
+      bad.push(f);
+      continue;
+    }
+    const a = as[0];
+    const size = Number.isSafeInteger(a.size) && a.size >= 0 ? a.size : null;
+    if (as.length > 1 || size === null) unknown.push(f);
+    else if (a.state === 'uploaded') {
+      if (size === 0) bad.push(f);
+    } else if (NOT_UPLOADED.includes(a.state)) bad.push(f);
+    else unknown.push(f);
+  }
+  return { state: unknown.length ? 'unknown' : bad.length ? 'incomplete' : 'complete', bad, unknown };
+}
+
+/**
  * What to do for `version`, given the release list and the files it must carry.
- * → { action: 'skip', why } | { action: 'done' } | { action: 'create' } | { action: 'fill', draft }
+ * → { action: 'skip', why } | { action: 'done' } | { action: 'create' }
+ *   | { action: 'fill' } (a draft of this version that never was public: every file put in, then
+ *     published — main also requires its tag not to exist yet)
+ *   | { action: 'keep', bad, was } (public, or a draft that was public once: never changed)
+ *   | { action: 'unknown', files, why } (a file's state, or whether a release is public, cannot be
+ *     judged: write nothing)
  */
 export function decide(list, version, files) {
   const mine = parseDev(version);
@@ -64,14 +129,29 @@ export function decide(list, version, files) {
   const higher = devReleases(list).find((r) => cmp(r.parsed, mine) > 0);
   if (higher) return { action: 'skip', why: `已经有更新的开发版 ${higher.version}` };
   const tag = `${TAG_PREFIX}${version}`;
+  // whether each development build is public must be read, never defaulted (review round 5): a
+  // release of that shape without a true / false draft or prerelease, or without a tag name, could
+  // be this one or a newer public one — nothing is decided from such a list
+  const unsure = list.filter((r) => typeof r?.tag_name !== 'string' || (r.tag_name.startsWith(TAG_PREFIX) && (typeof r.draft !== 'boolean' || typeof r.prerelease !== 'boolean')));
+  if (unsure.length) return { action: 'unknown', files: [], why: `${unsure.map((r) => (typeof r?.tag_name === 'string' ? r.tag_name : '一个没有标签名的发版')).join(', ')} 读不出是不是草稿、是不是预发布` };
   const same = list.filter((r) => r?.tag_name === tag);
   if (same.length > 1) throw new Error(`${tag} 有 ${same.length} 个发版，不知道该用哪个`);
   if (!same.length) return { action: 'create' };
   const r = same[0];
-  const names = new Set((r.assets ?? []).map((a) => a?.name));
-  if (r.draft === false && r.prerelease === true && files.every((f) => names.has(f))) return { action: 'done' };
   if (r.draft === false && r.prerelease !== true) throw new Error(`${tag} 已经发布、但不是预发布：不碰它，请人看一下`);
-  return { action: 'fill', draft: r.draft !== false };
+  const s = buildState(r, files);
+  if (s.state === 'unknown') return { action: 'unknown', files: s.unknown, why: `${s.unknown.join(', ')} 读不出是否已上传完成` };
+  if (r.draft === false && s.state === 'complete') return { action: 'done' };
+  // a public release is never changed (the maintainer's choice on #628, PR #630 Q1 = B): one that is
+  // not complete stays as it is, and the next commit's higher version comes out over it
+  if (r.draft === false) return { action: 'keep', bad: s.bad };
+  // a draft is filled in only when it never was public (PR #630 review, round 1 after Q1 = B): GitHub
+  // records a publish time once a release is published and keeps it when the release is turned back
+  // into a draft. null = never published; a time = it was public → kept as it is; anything else
+  // (missing, not a string) cannot tell → nothing written. The tag is checked as well, in main.
+  if (r.published_at === null) return { action: 'fill' };
+  if (typeof r.published_at === 'string' && r.published_at !== '') return { action: 'keep', bad: s.bad, was: true };
+  return { action: 'unknown', files: [], why: `${tag} 是草稿，但读不出它有没有公开过（没有发布时间这一项）` };
 }
 
 /** The development builds to delete: all published ones but the `keep` highest. */
@@ -263,6 +343,53 @@ function settleTag(repo, release, fresh) {
   }
 }
 
+/**
+ * Does the tag exist, and on which commit? → { state: 'absent' } (GitHub answered 404)
+ * | { state: 'present', sha } (a ref of that name; sha null when it is not a plain commit ref)
+ * | { state: 'unknown', why } (anything else).
+ */
+export function tagState(repo, tag) {
+  try {
+    const ref = JSON.parse(gh(['api', `repos/${repo}/git/ref/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]));
+    if (ref?.ref !== `refs/tags/${tag}`) return { state: 'unknown', why: '回答看不懂' };
+    return { state: 'present', sha: ref?.object?.type === 'commit' && /^[0-9a-f]{40}$/.test(ref?.object?.sha ?? '') ? ref.object.sha : null };
+  } catch (e) {
+    const err = String(e.stderr ?? e.message);
+    return /HTTP 404/.test(err) ? { state: 'absent' } : { state: 'unknown', why: `读不到：${err.trim()}` };
+  }
+}
+
+/**
+ * The one verdict on a build's tag (PR #630 review rounds 2–5 #12–#16), used by every place that
+ * judges it: the nightly plan (on its tag list) and, through `tagOn`, the read-back after
+ * publishing, a rerun that finds the version complete, and `--check`. `entries` are tags as
+ * { name, sha } — sha null when the ref is not a plain commit (an annotated tag object) — or bare
+ * names (no commit known).
+ * → 'ok' (on `sha`) | 'absent' | 'mismatch' (on another commit, known) | 'unknown' (no commit to
+ *   compare: a bare name, a non-commit ref, two entries of one name)
+ */
+export function tagVerdict(entries, tag, sha) {
+  const hit = entries.filter((t) => (typeof t === 'string' ? t : t?.name) === tag);
+  if (!hit.length) return 'absent';
+  if (hit.length > 1 || typeof hit[0] === 'string' || typeof hit[0]?.sha !== 'string' || !/^[0-9a-f]{40}$/.test(hit[0].sha)) return 'unknown';
+  return hit[0].sha === sha ? 'ok' : 'mismatch';
+}
+
+/** The tag's own words for each verdict, one table for every message. */
+export const TAG_WORDS = { absent: '标签不存在', mismatch: '标签不在发版记下的提交上', unknown: '读不出标签指向哪个提交' };
+
+/**
+ * Is the tag on `sha`, by one read of that tag? → { ok: true } | { ok: false, kind: 'absent' |
+ * 'mismatch' | 'unknown', why } — the verdict is `tagVerdict`'s, a read that fails is 'unknown'.
+ */
+export function tagOn(repo, tag, sha) {
+  const t = tagState(repo, tag);
+  const kind = t.state === 'absent' ? 'absent' : t.state === 'present' ? tagVerdict([{ name: tag, sha: t.sha }], tag, sha) : 'unknown';
+  if (kind === 'ok') return { ok: true };
+  const why = kind === 'mismatch' ? `标签指向 ${t.sha}，不是 ${sha}` : kind === 'absent' ? TAG_WORDS.absent : t.state === 'unknown' ? `标签读不出（${t.why}）` : `${TAG_WORDS.unknown}（不是指向提交的标签）`;
+  return { ok: false, kind, why };
+}
+
 function note(what, tag, why) {
   console.log(`::warning::标签 ${tag} ${what === 'kept' ? '不删' : '这次没删成，下次再来'}：${why}`);
   return what;
@@ -319,6 +446,12 @@ function cleanOne(repo, c, keep, version) {
 
 function main() {
   const a = process.argv.slice(2);
+  if (a[0] === '--files') {
+    if (!parseDev(a[1])) throw new Error(`--files 后面要跟 X.Y.Z-dev.N：${a[1]}`);
+    console.log(devFiles(a[1]).join('\n'));
+    return;
+  }
+  if (a[0] === '--check') return check(a);
   const opt = (n) => {
     const i = a.indexOf(`--${n}`);
     return i >= 0 ? a[i + 1] : undefined;
@@ -338,14 +471,41 @@ function main() {
     .map((f) => join(dir, f))
     .sort();
   const files = paths.map((p) => basename(p));
-  if (!files.includes('latest.json') || files.length < 2) throw new Error(`${dir} 里没有 ${version} 的包和 latest.json：${files.join(', ') || '（空）'}`);
+  const missing = devFiles(version).filter((f) => !files.includes(f));
+  if (missing.length) throw new Error(`${dir} 里缺 ${version} 的：${missing.join(', ')}（有：${files.join(', ') || '（空）'}）`);
 
-  const before = readReleases(repo);
-  const d = decide(before, version, files);
+  let before = readReleases(repo);
+  let d = decide(before, version, files);
+  if (d.action === 'unknown') {
+    // GitHub may still be settling an upload: read once more; still unknown → leave everything as it is
+    before = readReleases(repo);
+    d = decide(before, version, files);
+    if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写、不替换，现有文件原样保留`);
+  }
+  if (d.action === 'fill' || d.action === 'create') {
+    // One rule before either write (PR #630 review rounds 1–2 #11 / #12): the tag must not exist yet.
+    // GitHub creates a draft's tag only when it is published and keeps it when a release is turned
+    // back into a draft or deleted, so a tag already there means this version was made before — maybe
+    // public, maybe on another commit (`--target` only applies when the tag is created). Present →
+    // kept like a public build; cannot be read → nothing written.
+    const t = tagState(repo, tag);
+    if (t.state === 'present') d = { action: 'keep', bad: [], was: true, tagSha: t.sha };
+    else if (t.state !== 'absent') throw new Error(`${tag}：读不出它的标签在不在（${t.why}），不能确认这个版本从没公开过：什么都不写、不替换，现有文件原样保留`);
+  }
+  if (d.action === 'keep') {
+    const what = d.tagSha !== undefined
+      ? `的标签已经存在（指向 ${d.tagSha ? d.tagSha.slice(0, 7) : '读不出的提交'}${d.tagSha && d.tagSha !== sha ? '，不是这次构建的提交' : ''}）：这个版本做过`
+      : d.was ? '公开过（现在是草稿，但记着发布时间）' : `已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）`;
+    throw new Error(`${tag} ${what}：按维护者的选择，已公开的版本一律不改（公开过又改回草稿的也算），什么都没写；等 main 上有新提交，下一次运行会发一个更高的版本盖过它`);
+  }
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
   } else if (d.action === 'done') {
-    console.log(`✅ ${tag} 已经发布过了，带齐了文件`);
+    // complete files are not enough: the tag must be on the commit this run built (a first run whose
+    // tag ended up elsewhere failed; its rerun must fail too, and clean nothing up)
+    const t = tagOn(repo, tag, sha);
+    if (!t.ok) throw new Error(`${tag} 已经发布、文件齐全，但${t.why}：不当作发过，不清理旧版本，什么都不写`);
+    console.log(`✅ ${tag} 已经发布过了，带齐了文件，标签在这次构建的提交上`);
   } else {
     const title = `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
     if (d.action === 'create') {
@@ -366,14 +526,19 @@ function main() {
         rmSync(bodyDir, { recursive: true, force: true });
       }
     } else {
+      // Filling in a draft of this version (never public: installed apps cannot see it) replaces every
+      // file from this build: the files depend on each other (latest.json carries each package's
+      // signature), so a file from this build next to one from an earlier build would not verify.
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
     }
     gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease', '--latest=false']);
     const after = readReleases(repo).filter((r) => r?.tag_name === tag);
-    const names = new Set((after[0]?.assets ?? []).map((x) => x?.name));
-    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || !files.every((f) => names.has(f))) {
+    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || buildState(after[0], files).state !== 'complete') {
       throw new Error(`发完再读，${tag} 不是「已发布的预发布、带齐 ${files.length} 个文件」`);
     }
+    // the tag publishing created must be on the commit these files were built from
+    const t = tagOn(repo, tag, sha);
+    if (!t.ok) throw new Error(`发完再读，${tag} 的${t.why}（不是这次构建的提交，或确认不了）：不清理旧版本`);
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
   }
 
@@ -391,6 +556,61 @@ function main() {
     tally[r]++;
   }
   console.log(`保留最近 ${keep} 个开发版；这次删了 ${tally.done} 个，跳过 ${tally.skipped} 个${tally.later ? `，${tally.later} 个留到下次` : ''}`);
+}
+
+/**
+ * Read-only: is the development build `version` published complete, by the same rule the publish step
+ * and the nightly plan use? Prints COMPLETE / INCOMPLETE (with what is missing) / UNKNOWN.
+ * Exit 0 complete, 1 not complete (or not published), 2 cannot tell (the list cannot be read, or a
+ * file's upload state cannot be judged).
+ *   node scripts/dev-release.mjs --check 0.5.3-dev.640 [--repo GigleAI/cavil-loop]
+ */
+function check(a) {
+  const version = a[1];
+  if (!parseDev(version)) throw new Error(`--check 后面要跟 X.Y.Z-dev.N：${version}`);
+  const i = a.indexOf('--repo');
+  const repo = i >= 0 ? a[i + 1] : 'GigleAI/cavil-loop';
+  let list;
+  try {
+    list = readReleases(repo);
+  } catch (e) {
+    console.log(`UNKNOWN 读不到发版列表：${String(e.stderr ?? e.message).trim()}`);
+    process.exit(2);
+  }
+  const tag = `${TAG_PREFIX}${version}`;
+  const same = list.filter((r) => r?.tag_name === tag);
+  if (same.length !== 1) {
+    console.log(`INCOMPLETE ${tag}：${same.length ? `有 ${same.length} 个同名发版` : '没有这个发版'}`);
+    process.exit(1);
+  }
+  const r = same[0];
+  if (typeof r.draft !== 'boolean' || typeof r.prerelease !== 'boolean') {
+    console.log(`UNKNOWN ${tag}：读不出是不是草稿、是不是预发布`);
+    process.exit(2);
+  }
+  const s = buildState(r, devFiles(version));
+  if (s.state === 'unknown') {
+    console.log(`UNKNOWN ${tag}：读不出是否已上传完成：${s.unknown.join(', ')}`);
+    process.exit(2);
+  }
+  const state = r.draft !== false ? '还是草稿（装着的 App 看不到）' : r.prerelease !== true ? '不是预发布' : '';
+  if (s.state === 'complete' && !state) {
+    // files complete is half of it: the tag must be on the commit the release recorded
+    const want = typeof r.target_commitish === 'string' && /^[0-9a-f]{40}$/.test(r.target_commitish) ? r.target_commitish : null;
+    if (!want) {
+      console.log(`UNKNOWN ${tag}：${devFiles(version).length} 个文件都已上传完成，但发版没记下完整的提交号，确认不了标签`);
+      process.exit(2);
+    }
+    const t = tagOn(repo, tag, want);
+    if (t.ok) {
+      console.log(`COMPLETE ${tag}：${devFiles(version).length} 个文件都已上传完成，标签在发版记下的提交 ${want.slice(0, 7)} 上`);
+      return;
+    }
+    console.log(`${t.kind === 'unknown' ? 'UNKNOWN' : 'INCOMPLETE'} ${tag}：${devFiles(version).length} 个文件都已上传完成，但${t.why}`);
+    process.exit(t.kind === 'unknown' ? 2 : 1);
+  }
+  console.log(`INCOMPLETE ${tag}：${[state, s.bad.length ? `缺或没上传完：${s.bad.join(', ')}` : ''].filter(Boolean).join('；')}`);
+  process.exit(1);
 }
 
 // run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)
