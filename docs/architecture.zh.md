@@ -150,7 +150,7 @@ greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡
 
 ## 轮询节奏：空闲退避与故障退避
 
-安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；删掉这个项目状态目录（该项目配置里的 `STATE_DIR`，见[运维 → 用户级状态文件](operations.zh.md#用户级状态文件)）里的 `poll-pace.json` 就回到最快档。
+安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；删掉这份状态文件就回到最快档（是哪个文件见下方细节）。
 
 <details><summary>细节：省的是什么，以及硬边界</summary>
 
@@ -233,8 +233,12 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 
 <details><summary>细节：状态放在哪，以及闸门之外跑的东西</summary>
 
-状态放在 `$STATE_DIR/poll-pace.json`，跟 `state.json` 分开：`rm` 掉它就是立刻回最快档，
-而不会连「哪些评论看过了」那些游标一起清掉。退避中的每个 tick 仍然往 `poll.log` 写一行，
+状态是单独一个文件，跟 `state.json` 分开：删掉它就是立刻回最快档，
+而不会连「哪些评论看过了」那些游标一起清掉。
+是哪个文件：项目配置或它的调度器环境文件里设了 `PACE_FILE` 就是它指的那个；
+否则是该项目 `STATE_DIR` 下的 `poll-pace.json`（默认配置放在 `~/.local/state/cavil-loop/` 下，
+见[运维 → 用户级状态文件](operations.zh.md#用户级状态文件)）。
+删完不用放回任何东西：下一个 tick 马上轮询，daemon 重新写一份，项目要再安静一段时间才会重新退避。退避中的每个 tick 仍然往 `poll.log` 写一行，
 写明现在在哪一档、还要等多久。
 
 有一件事故意放在这道闸门**之外**：base 分支的 CI 失败报告（`CI_FAILURE_REPORT_WORKFLOWS`，默认

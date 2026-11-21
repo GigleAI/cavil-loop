@@ -155,7 +155,7 @@ Overlapping ticks, repeated dispatch and duplicate comments are ruled out by a l
 
 ## Poll pace: idle and failure backoff
 
-A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; deleting `poll-pace.json` from the project's state directory — the `STATE_DIR` set in that project's config, see [operations → User-level state files](operations.md#user-level-state-files) — returns it to full speed.
+A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; deleting that state file returns the project to full speed (which file that is: see the details below).
 
 <details><summary>Details: what is saved, and the hard boundary</summary>
 
@@ -258,9 +258,15 @@ the 7-day tier goes from 30 to 10 minutes).
 
 <details><summary>Details: where the state lives, and what runs outside the gate</summary>
 
-State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
-`rm`-ing it returns the project to full speed without losing the "which comments
-have I seen" cursors. A backed-off tick still writes one line to `poll.log`
+The state is one file, separate from `state.json`, so deleting it returns the
+project to full speed without losing the "which comments have I seen" cursors.
+Which file: the path in `PACE_FILE` when the project's config or its scheduler
+environment file sets it; otherwise `poll-pace.json` inside that project's
+`STATE_DIR` (the default config puts it under `~/.local/state/cavil-loop/`, see
+[operations → User-level state files](operations.md#user-level-state-files)).
+Nothing has to be put back afterwards: the next tick polls at once and the daemon
+writes a fresh file, so the project backs off again only after it has been quiet
+again. A backed-off tick still writes one line to `poll.log`
 saying which tier it is on and how long it will wait.
 
 One thing runs **outside** this gate on purpose: the base-branch CI failure report

@@ -34,7 +34,7 @@
 | 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
 | 派工提示词（每次派工渲染给 worker 的那份） | `$STATE_DIR/prompts/<N>-new.md`、`<N>-cmt-<评论号>.md`、`<N>-pr-<PR号>.md`（目录 700，只有本账号能读） | 条目清理时（`cleanup-issue.sh`，含合并后自动清理）删掉这个编号的几份，交给它处理即可。要手动删，只删没有派工在进行的条目（不是 `doing/agent`，也没有正在跑的轮询）：派工过程中 worker 启动那一刻才读这个文件，codex 启动后核对会话归属还要再读一次，这时删掉，worker 会拿到空提示词启动 | 不值得备份 —— 派工一结束就不再读它，内容也完整留在 tmux 历史和 Claude 对话里。老安装留下的 `/tmp/cavil-loop-*.md` 不再有任何东西读，没人清，重启后自然消失 |
 | 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
-| 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json` | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
+| 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json`；设了 `PACE_FILE` 时是它指的路径（[是哪个文件](architecture.zh.md#轮询节奏空闲退避与故障退避)） | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
 | 用量上限的暂停记录，按 agent 和账号目录 | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |
 | 单个项目的用量上限进度 | `$STATE_DIR/usage-limit.json` | daemon，条目离开 `doing/agent` 时 | 不值得备份；转人工做到一半时别删（可能多出第二条留言） |
 | 轮询运行记录（每轮一条、快照） | `$STATE_DIR/runlog/`（`rounds/`、`snapshots/`、`inflight/`、`acct/`），以及没走到「配置加载完」的轮询留在 `~/.local/state/cavil-loop/runlog/entry/` 的入口记录 | 轮询自己：只留最近 1000 条记录、20 份快照、64 份进度文件、200 条入口记录；任何时候手动删都安全 | 不值得备份 —— 只是诊断信息，没有任何逻辑读它 |
