@@ -251,10 +251,13 @@ def client_nightly_hint(needs):
         return KIND["hint"]
     res = (needs.get("dev-release") or {}).get("result") if isinstance(needs.get("dev-release"), dict) else None
     if res == "failure":
-        return ("失败在发布那一步：这一版可能已经出现在 Releases 页、可能只发了一半，也可能没发出去——"
-                "先到 Releases 页看最新的 `client/v…-dev.N` 预发布带没带齐 Apple 芯片 dmg、Windows 安装包和 "
-                "`latest.json`。没带齐的，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）"
-                "会重新构建并补齐；已经带齐发出的，下一晚不再重发，这次红只是发布之后的核对或清理没做完。")
+        return ("失败在发布那一步：这一版可能已经出现在 Releases 页、可能只发了一半，也可能没发出去。"
+                "核对最新的 `client/v…-dev.N` 预发布是否带齐并上传完这六个文件：Apple 芯片的 `-arm64.dmg`、"
+                "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"
+                "（页面上列着但大小为 0 的不算）；也可以在本仓库的 `client/` 目录跑只读核对 "
+                "`node scripts/dev-release.mjs --check <版本号>`，用的是和发布、每晚判断同一条规则，"
+                "打印 COMPLETE 才算带齐。没带齐的，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾"
+                "「发开发版」）会重新构建并补齐；已经带齐发出的，下一晚不再重发，这次红只是发布之后的核对或清理没做完。")
     return ("这一晚没有发出开发版（失败在发布之前：测试、打包或体积检查）：装着开发版的客户端收不到这一晚的改动。"
             "修好后，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）会再出；之后没有新的"
             "客户端改动也会照常重试，因为这些改动还没有发出去过。")

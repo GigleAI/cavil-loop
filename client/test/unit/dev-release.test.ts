@@ -102,8 +102,12 @@ if (a[1] === 'create') {
   if (fail('create')) die('HTTP 500');
   const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
   st.releases.unshift(r);
-  if (fail('create-partial')) { r.assets = names.slice(0, 1).map((name) => ({ name })); die('upload failed: connection reset'); }
-  r.assets = names.map((name) => ({ name }));
+  // an asset the way GitHub lists it: uploaded with its size, or — an upload that failed — a placeholder
+  // of the same name, state "starter", size 0 (GitHub#628 review round 2)
+  const up = (name) => ({ name, state: 'uploaded', size: 10 });
+  if (fail('create-partial')) { r.assets = names.slice(0, 1).map(up); die('upload failed: connection reset'); }
+  if (fail('create-starter')) { r.assets = names.map((name, i) => (i === 0 ? { name, state: 'starter', size: 0 } : up(name))); die('upload failed: connection reset'); }
+  r.assets = names.map(up);
   save();
   process.exit(0);
 }
@@ -111,8 +115,11 @@ if (a[1] === 'upload') {
   const r = find(tag);
   if (!r) die('release not found');
   if (fail('upload')) die('HTTP 500');
-  const have = new Set(r.assets.map((x) => x.name));
-  for (const n of files(a.slice(3))) if (!have.has(n)) r.assets.push({ name: n });
+  // --clobber: a file of the same name is replaced, whatever state it was in
+  for (const n of files(a.slice(3))) {
+    r.assets = r.assets.filter((x) => x.name !== n);
+    r.assets.push({ name: n, state: 'uploaded', size: 10 });
+  }
   save();
   process.exit(0);
 }
@@ -136,14 +143,15 @@ interface Rel {
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
-  assets: { name: string }[];
+  assets: { name: string; state?: string; size?: number }[];
   body?: string;
 }
 
 // every file a development build carries: the script refuses to publish without one of them (GitHub#628)
 const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, `Cavil-Loop-${v}-windows-x64.exe`, `Cavil-Loop-${v}-windows-x64.exe.sig`, 'latest.json'];
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
-const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map((name) => ({ name })), ...o });
+const asset = (name: string) => ({ name, state: 'uploaded', size: 10 });
+const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map(asset), ...o });
 
 function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown> = {}, at: { script?: string; sha?: string } = {}) {
   const script = at.script ?? SCRIPT;
@@ -179,7 +187,11 @@ function world(input: Rel[], fail: string[] = [], extra: Record<string, unknown>
     s.fail.push(...f);
     writeFileSync(state, JSON.stringify(s));
   };
-  return { build, run, read, fail: fail2, stateFile: state, tmp };
+  const runArgs = (args: string[]) => {
+    const r = spawnSync(process.execPath, [script, ...args], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_STATE: state, TMPDIR: tmp }, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  return { build, run, runArgs, read, fail: fail2, stateFile: state, tmp };
 }
 
 const writes = (calls: string[][]) =>
@@ -216,6 +228,49 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(p.stdout.trim().split('\n').sort()).toEqual(files('0.5.1-dev.387').sort());
   });
 
+  it('a placeholder asset (state starter, size 0) or one with no state counts as missing: filled in, not "already published" (review round 2 #8)', () => {
+    const v = '0.5.1-dev.387';
+    const exe = `Cavil-Loop-${v}-windows-x64.exe`;
+    for (const bad of [{ name: exe, state: 'starter', size: 0 }, { name: exe }, { name: exe, state: 'uploaded', size: 0 }]) {
+      const w = world([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), bad] })]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      expect(writes(s.calls), JSON.stringify(bad)).toEqual([`upload client/v${v}`, `edit client/v${v}`]);
+      expect(published(s, `client/v${v}`)?.assets.find((x) => x.name === exe)).toMatchObject({ state: 'uploaded', size: 10 });
+    }
+    // a create that left a placeholder: the run fails, and the next one fills it in
+    const w = world([pub('client/v0.5.0')], ['create-starter']);
+    w.build(v);
+    expect(w.run(v).code).toBe(1);
+    const again = w.run(v);
+    expect(again.code, again.out).toBe(0);
+    expect(writes(w.read().calls).slice(-2)).toEqual([`upload client/v${v}`, `edit client/v${v}`]);
+  });
+
+  it('--check: read-only, by the same rule (review round 2 #6)', () => {
+    const v = '0.5.1-dev.387';
+    const exe = `Cavil-Loop-${v}-windows-x64.exe`;
+    const chk = (rels: Rel[], fail: string[] = []) => {
+      const w = world(rels, fail);
+      const p = w.runArgs(['--check', v]);
+      return { ...p, writes: writes(w.read().calls) };
+    };
+    const ok = chk([devRel(v)]);
+    expect(ok).toMatchObject({ code: 0, writes: [] });
+    expect(ok.out).toContain('COMPLETE');
+    const starter = chk([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), { name: exe, state: 'starter', size: 0 }] })]);
+    expect(starter).toMatchObject({ code: 1, writes: [] });
+    expect(starter.out).toContain(`INCOMPLETE client/v${v}`);
+    expect(starter.out).toContain(exe);
+    expect(chk([pub('client/v0.5.0')]).code).toBe(1);
+    expect(chk([devRel(v, { draft: true })]).out).toContain('还是草稿');
+    const unreadable = chk([devRel(v)], ['list']);
+    expect(unreadable.code).toBe(2);
+    expect(unreadable.out).toContain('UNKNOWN');
+  });
+
   it('a new one: created as a draft with every file, then published as a pre-release (never Latest), and read back', () => {
     const w = world([pub('release/v2026.11.01.1'), pub('client/v0.5.0'), devRel('0.5.1-dev.380')]);
     w.build('0.5.1-dev.387');
@@ -226,7 +281,7 @@ describe('publishing a development build (GitHub#215)', () => {
     const create = s.calls.find((c) => c[1] === 'create')!;
     expect(create).toEqual(expect.arrayContaining(['--draft', '--prerelease', '--latest=false', '--target', SHA, ...files('0.5.1-dev.387')]));
     expect(s.calls.find((c) => c[1] === 'edit')).toEqual(expect.arrayContaining(['--draft=false', '--prerelease', '--latest=false']));
-    expect(published(s, 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true, assets: files('0.5.1-dev.387').map((name) => ({ name })) });
+    expect(published(s, 'client/v0.5.1-dev.387')).toMatchObject({ prerelease: true, assets: files('0.5.1-dev.387').map(asset) });
     expect(s.tags).toContain('client/v0.5.1-dev.387');
     // the list was read before writing, after publishing (check) and before pruning (nothing to prune here)
     expect(s.calls.filter((c) => c[0] === 'api' && c[1] === '--paginate').length).toBe(3);
@@ -296,7 +351,7 @@ describe('publishing a development build (GitHub#215)', () => {
   });
 
   it('a release of the same tag published but not as a pre-release is left alone and fails the run', () => {
-    const w = world([pub('client/v0.5.1-dev.387', { assets: files('0.5.1-dev.387').map((name) => ({ name })) })]);
+    const w = world([pub('client/v0.5.1-dev.387', { assets: files('0.5.1-dev.387').map(asset) })]);
     w.build('0.5.1-dev.387');
     const r = w.run('0.5.1-dev.387');
     expect(r.code).toBe(1);

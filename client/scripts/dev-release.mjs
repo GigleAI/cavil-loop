@@ -25,6 +25,7 @@
 //   node scripts/dev-release.mjs --version 0.5.1-dev.387 --sha <commit> --dir dist-release \
 //        --notes-file notes.md [--keep 10] [--repo GigleAI/cavil-loop]
 //   node scripts/dev-release.mjs --files 0.5.1-dev.387     the files a development build carries, one a line
+//   node scripts/dev-release.mjs --check 0.5.1-dev.387     read-only: is that build published complete
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -67,6 +68,26 @@ export function devFiles(version) {
 }
 
 /**
+ * The names of a release's assets that are really there (GitHub#628 review round 2): uploaded and not
+ * empty. A failed upload can leave an asset of the right name in state `starter` with size 0; an asset
+ * with no state or size is not known to be there either. One rule for "is this build complete" — the
+ * publish decision, the read-back after publishing, the nightly plan and `--check`.
+ */
+export function usableNames(release) {
+  return new Set(
+    (release?.assets ?? [])
+      .filter((a) => typeof a?.name === 'string' && a?.state === 'uploaded' && Number.isSafeInteger(a?.size) && a.size > 0)
+      .map((a) => a.name),
+  );
+}
+
+/** The files of `files` a release does not carry usably (missing, a placeholder, empty, state unknown). */
+export function missingFiles(release, files) {
+  const names = usableNames(release);
+  return files.filter((f) => !names.has(f));
+}
+
+/**
  * What to do for `version`, given the release list and the files it must carry.
  * → { action: 'skip', why } | { action: 'done' } | { action: 'create' } | { action: 'fill', draft }
  */
@@ -80,8 +101,7 @@ export function decide(list, version, files) {
   if (same.length > 1) throw new Error(`${tag} 有 ${same.length} 个发版，不知道该用哪个`);
   if (!same.length) return { action: 'create' };
   const r = same[0];
-  const names = new Set((r.assets ?? []).map((a) => a?.name));
-  if (r.draft === false && r.prerelease === true && files.every((f) => names.has(f))) return { action: 'done' };
+  if (r.draft === false && r.prerelease === true && !missingFiles(r, files).length) return { action: 'done' };
   if (r.draft === false && r.prerelease !== true) throw new Error(`${tag} 已经发布、但不是预发布：不碰它，请人看一下`);
   return { action: 'fill', draft: r.draft !== false };
 }
@@ -336,6 +356,7 @@ function main() {
     console.log(devFiles(a[1]).join('\n'));
     return;
   }
+  if (a[0] === '--check') return check(a);
   const opt = (n) => {
     const i = a.indexOf(`--${n}`);
     return i >= 0 ? a[i + 1] : undefined;
@@ -388,8 +409,7 @@ function main() {
     }
     gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease', '--latest=false']);
     const after = readReleases(repo).filter((r) => r?.tag_name === tag);
-    const names = new Set((after[0]?.assets ?? []).map((x) => x?.name));
-    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || !files.every((f) => names.has(f))) {
+    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || missingFiles(after[0], files).length) {
       throw new Error(`发完再读，${tag} 不是「已发布的预发布、带齐 ${files.length} 个文件」`);
     }
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
@@ -409,6 +429,41 @@ function main() {
     tally[r]++;
   }
   console.log(`保留最近 ${keep} 个开发版；这次删了 ${tally.done} 个，跳过 ${tally.skipped} 个${tally.later ? `，${tally.later} 个留到下次` : ''}`);
+}
+
+/**
+ * Read-only: is the development build `version` published complete, by the same rule the publish step
+ * and the nightly plan use? Prints COMPLETE / INCOMPLETE (with what is missing) / UNKNOWN.
+ * Exit 0 complete, 1 not complete (or not published), 2 the list cannot be read.
+ *   node scripts/dev-release.mjs --check 0.5.3-dev.640 [--repo GigleAI/cavil-loop]
+ */
+function check(a) {
+  const version = a[1];
+  if (!parseDev(version)) throw new Error(`--check 后面要跟 X.Y.Z-dev.N：${version}`);
+  const i = a.indexOf('--repo');
+  const repo = i >= 0 ? a[i + 1] : 'GigleAI/cavil-loop';
+  let list;
+  try {
+    list = readReleases(repo);
+  } catch (e) {
+    console.log(`UNKNOWN 读不到发版列表：${String(e.stderr ?? e.message).trim()}`);
+    process.exit(2);
+  }
+  const tag = `${TAG_PREFIX}${version}`;
+  const same = list.filter((r) => r?.tag_name === tag);
+  if (same.length !== 1) {
+    console.log(`INCOMPLETE ${tag}：${same.length ? `有 ${same.length} 个同名发版` : '没有这个发版'}`);
+    process.exit(1);
+  }
+  const r = same[0];
+  const miss = missingFiles(r, devFiles(version));
+  const state = r.draft !== false ? '还是草稿' : r.prerelease !== true ? '不是预发布' : '';
+  if (!miss.length && !state) {
+    console.log(`COMPLETE ${tag}：${devFiles(version).length} 个文件都已上传完成`);
+    return;
+  }
+  console.log(`INCOMPLETE ${tag}：${[state, miss.length ? `缺或没上传完：${miss.join(', ')}` : ''].filter(Boolean).join('；')}`);
+  process.exit(1);
 }
 
 // run directly (not imported): compared as URLs, so a Windows path (D:\…) or a space in the path still counts (GitHub#577)

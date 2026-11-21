@@ -61,7 +61,7 @@ const rel = (tag: string, sha: unknown, extra: object = {}) => ({
   draft: false,
   prerelease: true,
   target_commitish: sha,
-  assets: tag.startsWith('client/v') ? devFiles(tag.slice('client/v'.length)).map((name) => ({ name })) : [],
+  assets: tag.startsWith('client/v') ? devFiles(tag.slice('client/v'.length)).map((name) => ({ name, state: 'uploaded', size: 10 })) : [],
   ...extra,
 });
 // the same build with some of its files missing
@@ -143,6 +143,12 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
       const got = run(r, [without(tag, head, ...gone)], ['--sha', head]);
       expect(got, gone.join(',')).toMatchObject({ code: 0, build: 'true' });
       expect(got.why).toContain('没带齐文件');
+    }
+    // an asset of the right name that never finished uploading, or with no state: not there (review round 2 #8)
+    for (const bad of [{ state: 'starter', size: 0 }, {}, { state: 'uploaded', size: 0 }]) {
+      const r2 = rel(tag, head);
+      const assets = r2.assets.map((a) => (a.name.endsWith('-windows-x64.exe') ? { name: a.name, ...bad } : a));
+      expect(run(r, [{ ...r2, assets }], ['--sha', head]).build, JSON.stringify(bad)).toBe('true');
     }
     // no assets at all (the review's example)
     expect(run(r, [rel(tag, head, { assets: [] })], ['--sha', head]).build).toBe('true');

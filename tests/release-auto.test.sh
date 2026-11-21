@@ -1543,7 +1543,7 @@ build_line() { echo "$RC:$(cout build):$(cout quick)"; }
 # a published development build carrying every file a build carries (scripts/dev-release.mjs --files)
 devrel() {
     local v="0.6.1-dev.$1" assets
-    assets="$(node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$v" | python3 -c 'import json,sys; print(json.dumps([{"name": l.strip()} for l in sys.stdin if l.strip()]))')"
+    assets="$(node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$v" | python3 -c 'import json,sys; print(json.dumps([{"name": l.strip(), "state": "uploaded", "size": 10} for l in sys.stdin if l.strip()]))')"
     printf '[{"id":1,"tag_name":"client/v%s","draft":false,"prerelease":true,"target_commitish":"%s","assets":%s}]' "$v" "$2" "$assets"
 }
 devrel_without() {  # devrel_without <n> <sha> <file suffix> → the same build with that file missing
@@ -1583,6 +1583,34 @@ for gone in -windows-x64.exe latest.json; do
     cbuild "$(devrel_without 9 "$C2" "$gone")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
     check "… and after daemon-only commits too" "$(build_line)" "0:true:true"
 done
+STARTER="$(devrel 9 "$C4" | python3 -c 'import json,sys; d=json.load(sys.stdin); [a.update(state="starter", size=0) for a in d[0]["assets"] if a["name"].endswith("-windows-x64.exe")]; print(json.dumps(d))')"
+cbuild "$STARTER" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, the commit already published but its Windows installer only a placeholder (starter, size 0) → build (review round 2 #8)" "$(build_line)" "0:true:true"
+
+echo "-- docs: checking whether a build is complete — the command as written, both languages (review round 2 #6)"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/docs/$f" \
+        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-$f.sh"
+done
+check "both docs carry the same check command" "$(cmp -s "$TMP/cn-check-operations.md.sh" "$TMP/cn-check-operations.zh.md.sh" && echo same):$(wc -l < "$TMP/cn-check-operations.md.sh")" "same:1"
+DOCV="$(grep -o '0\.[0-9]*\.[0-9]*-dev\.[0-9]*' "$TMP/cn-check-operations.md.sh")"
+doclist() {  # doclist <python expression editing the asset list `a`> → a release list for $DOCV
+    node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$DOCV" | python3 -c '
+import json, sys
+a = [{"name": l.strip(), "state": "uploaded", "size": 10} for l in sys.stdin if l.strip()]
+exec(sys.argv[2])
+print(json.dumps([{"id": 1, "tag_name": "client/v" + sys.argv[1], "draft": False, "prerelease": True, "target_commitish": "a" * 40, "assets": a}]))' "$DOCV" "$1"
+}
+docrun() { printf '%s' "$1" > "$TMP/c-devlist.json"; shift; CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/cn-check-operations.md.sh" "$@"; }
+docrun "$(doclist 'pass')"
+check "complete build → COMPLETE, exit 0" "$RC:$(grep -c '^COMPLETE' "$TMP/c-out")" "0:1"
+docrun "$(doclist 'a = [dict(x, state="starter", size=0) if x["name"].endswith("-windows-x64.exe") else x for x in a]')"
+check "Windows installer only a placeholder → INCOMPLETE naming it, exit 1" "$RC:$(grep -c "^INCOMPLETE.*-windows-x64.exe" "$TMP/c-out")" "1:1"
+docrun "$(doclist 'a = [x for x in a if not x["name"].endswith(".app.tar.gz.sig")]')"
+check "Mac update signature missing → INCOMPLETE, exit 1" "$RC:$(grep -c "^INCOMPLETE.*arm64.app.tar.gz.sig" "$TMP/c-out")" "1:1"
+docrun "$(doclist 'pass')" GH_FAIL_API=1
+check "release list unreadable → UNKNOWN, exit 2 (never 'not there')" "$RC:$(grep -c '^UNKNOWN' "$TMP/c-out")" "2:1"
+check "… the check only reads" "$(grep -cE '^(release|-X)$' "$GH_ARGS" || true)" 0
 
 echo "-- a manual publish is refused off main before anything else, a client tag included (review round 1 #3)"
 git -C "$TMP/client-run" tag client/v0.6.0 "$C4" 2>/dev/null || true
@@ -1787,6 +1815,10 @@ run_report "dev-release=failure"
 B="$(body_of 1)"
 has "失败在发布那一步" "$B" "the publish step failed → says so (review round 1 #6)"
 has "可能已经出现在 Releases 页" "$B" "… and that the build may already be out"
+for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows-x64.exe latest.json "node scripts/dev-release.mjs --check"; do
+    has "$f" "$B" "… names $f for the check (review round 2 #6)"
+done
+has "大小为 0 的不算" "$B" "… and says a placeholder does not count"
 lacks "这一晚没有发出开发版" "$B" "… never 'nothing was published'"
 rf_repo; rf_jobs "client quick tests (Linux)=failure:Both quick-test jobs passed"
 run_report "test=failure package=skipped package-windows=skipped size=skipped dev-release=skipped"
