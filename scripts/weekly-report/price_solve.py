@@ -167,9 +167,50 @@ def load_json_file(path, default):
     return v if isinstance(v, dict) else default
 
 
+# 补抓价缓存（fetched-prices.json）的格式，读入时逐层核对的就是这张表（GitHub#606，PR #612 复审第 3 轮）：
+#   {agent: {model: {"prices": {item: 单价}, 其余字段原样}}}
+# agent 只认这两侧；item 只认该侧的计价项；单价必须过 _price_ok；model 名同缺价标记的规则；
+# 一个模型必须 input / output 两项都合法才算「有价」——缺了它们，驱动给这个模型的 token 记缺价，
+# 抓价端就不该把它当成已经补上（复审第 3 轮：1001 的单价被取价丢掉，抓价端却删了缺价标记）。
+FETCH_ITEMS = {
+    "claude": ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h"),
+    "codex": ("in", "out", "cached_in", "cache_write"),
+}
+FETCH_CORE = {"claude": ("input", "output"), "codex": ("in", "out")}
+MODEL_NAME_RE = r"^[A-Za-z0-9._-]{1,100}$"
+
+
+def _clean_fetched(raw):
+    """把读回的补抓价缓存按上面的格式过一遍：不合格式的那一层整个丢掉，其余原样保留。
+    坏掉的一个模型、一侧、一项单价只影响它自己，绝不让一处坏数据拖垮整张表或整次抓价。"""
+    import re
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for agent, items in FETCH_ITEMS.items():
+        group = raw.get(agent)
+        if not isinstance(group, dict):
+            continue
+        clean = {}
+        for model, entry in group.items():
+            if not (isinstance(model, str) and re.match(MODEL_NAME_RE, model)
+                    and isinstance(entry, dict) and isinstance(entry.get("prices"), dict)):
+                continue
+            prices = {k: float(v) for k, v in entry["prices"].items()
+                      if k in items and _price_ok(v)}
+            if not all(k in prices for k in FETCH_CORE[agent]):
+                continue
+            clean[model] = {**entry, "prices": prices}
+        if clean:
+            out[agent] = clean
+    return out
+
+
 def load_fetched():
-    """{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}；没有或坏掉 → {}。"""
-    return load_json_file(fetched_path(), {})
+    """补抓价缓存，已按格式逐层核对：{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}。
+    文件没有、不是普通文件、坏掉 → {}；坏的一层只丢那一层（见 _clean_fetched）。
+    取价（两侧）、周报补算和 daemon 抓价都只从这里读，判断「有没有价」用的是同一份数据。"""
+    return _clean_fetched(load_json_file(fetched_path(), {}))
 
 
 def codex_price_table():
@@ -212,8 +253,7 @@ def codex_price_table():
                 stale = age.days > 90
             except ValueError:
                 stale = False
-        fetched = {m: e["prices"] for m, e in (load_fetched().get("codex") or {}).items()
-                   if isinstance(e, dict) and isinstance(e.get("prices"), dict)}
+        fetched = {m: e["prices"] for m, e in load_fetched().get("codex", {}).items()}
         fetched_models = {m for m in fetched if m not in built}
         table = {**fetched, **built}          # 同名时内置覆盖抓来的
     if all(legacy):
@@ -283,13 +323,9 @@ def fetched_reference():
     见 listed_table）。每天抓的最新价（GitHub#606）里有、内置表里没有的模型也算在内：
     最新价收录了的模型 daemon 不再单独补抓，这里不带上，周报就会把它当成没价。"""
     out = {m: p for m, p in load_latest().items() if m not in REFERENCE}
-    for model, entry in (load_fetched().get("claude") or {}).items():
-        prices = (entry or {}).get("prices") if isinstance(entry, dict) else None
-        if model in REFERENCE or model in out or not isinstance(prices, dict):
-            continue
-        clean = {k: float(v) for k, v in prices.items() if _price_ok(v)}
-        if clean:
-            out[model] = clean
+    for model, entry in load_fetched().get("claude", {}).items():
+        if model not in REFERENCE and model not in out:
+            out[model] = dict(entry["prices"])
     return out
 
 

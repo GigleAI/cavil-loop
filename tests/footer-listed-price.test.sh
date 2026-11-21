@@ -18,6 +18,8 @@
 #   【6】「下次时刻」文件：同一组内容交给钩子和抓价脚本，结论一致
 #   【7】缓存路径上不是普通文件（命名管道）或文件过大：取价、驱动、抓价、钩子都不卡住，当作没有 / 到时；
 #        关掉下载后两类已下载的价照用（文档写的行为）
+#   【8】补抓价缓存 / 抓价状态里结构坏掉的一层：Claude 取价、Codex 取价、周报补算、daemon 补抓四个
+#        使用方都只丢那一层，好的照用；坏记录不算「已有价」，标记留着，抓到合法价后才删
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -135,8 +137,9 @@ for v in "$BIG" "-$BIG" 1e400 1001; do
         "$(jq -c '[.models["claude-sonnet-4-6"].input.status, .models["claude-sonnet-4-6"].input.price, .models["claude-opus-5-5"].input.status]' <<<"$T" 2>/dev/null)" \
         '["reference_only",3,"fetched"]'
     printf '{"claude":{"claude-gap-9":{"prices":{"input":%s,"output":2}}}}\n' "$v" > "$CACHE/fetched-prices.json"
-    chk "补缺价里有一项是 ${v:0:12}…：取价照常出表，坏的那项不收" \
-        "$(jq -c '.models["claude-gap-9"] | keys' <<<"$(listed)" 2>/dev/null)" '["output"]'
+    # input 不合法 = 这个模型的 token 有一大块没法计价：整条补缺记录不算有价（复审第 3 轮），表照常出
+    chk "补缺价里 input 是 ${v:0:12}…：取价照常出表，这条补缺记录不收" \
+        "$(jq -c '[(.models | has("claude-gap-9")), .models["claude-opus-5-5"].input.status]' <<<"$(listed)" 2>/dev/null)" '[false,"fetched"]'
 done
 rm -f "$CACHE/fetched-prices.json"
 
@@ -324,6 +327,77 @@ T=$(listed)
 chk "PRICE_AUTO_FETCH=off：不下载（时刻文件没被改写），每日价和补缺价都照用" \
     "$(cat "$NEXT") $(jq -c '[.models["claude-opus-5-5"].input.status, .models["claude-gap-9"].input.status]' <<<"$T")" \
     '0 ["fetched","fetched"]'
+
+echo "── 8. 补抓价缓存结构坏掉：四个使用方都只丢坏的那层 ──"
+# PR #612 复审第 3 轮：{"claude":[1]} 让取价进程退出、内置价也出不来；单价 1001 的记录被取价丢掉，
+# daemon 却当成已有价删了缺价标记。规则只有一份（price_solve.load_fetched），这里把同一组坏缓存
+# 分别交给每个使用方。
+GOOD_C='"claude-gap-9":{"prices":{"input":1,"output":2}}'
+GOOD_X='"gpt-good-9":{"prices":{"in":1,"out":2}}'
+BADS=(
+  "claude-list|{\"claude\":[1],\"codex\":{$GOOD_X}}"
+  "codex-list|{\"claude\":{$GOOD_C},\"codex\":[1]}"
+  "entry-list|{\"claude\":{$GOOD_C,\"claude-bad-9\":[1]},\"codex\":{$GOOD_X,\"gpt-bad-9\":[1]}}"
+  "prices-list|{\"claude\":{$GOOD_C,\"claude-bad-9\":{\"prices\":[1]}},\"codex\":{$GOOD_X,\"gpt-bad-9\":{\"prices\":[1]}}}"
+  "price-string|{\"claude\":{$GOOD_C,\"claude-bad-9\":{\"prices\":{\"input\":\"1\",\"output\":2}}},\"codex\":{$GOOD_X,\"gpt-bad-9\":{\"prices\":{\"in\":\"1\",\"out\":2}}}}"
+  "price-1001|{\"claude\":{$GOOD_C,\"claude-bad-9\":{\"prices\":{\"input\":1001,\"output\":1001}}},\"codex\":{$GOOD_X,\"gpt-bad-9\":{\"prices\":{\"in\":1001,\"out\":1001}}}}"
+  "price-huge|{\"claude\":{$GOOD_C,\"claude-bad-9\":{\"prices\":{\"input\":$BIG,\"output\":1}}},\"codex\":{$GOOD_X,\"gpt-bad-9\":{\"prices\":{\"in\":$BIG,\"out\":1}}}}"
+  "no-output|{\"claude\":{$GOOD_C,\"claude-bad-9\":{\"prices\":{\"input\":1}}},\"codex\":{$GOOD_X,\"gpt-bad-9\":{\"prices\":{\"in\":1}}}}"
+  "bad-name|{\"claude\":{$GOOD_C,\"../x y\":{\"prices\":{\"input\":1,\"output\":2}}},\"codex\":{$GOOD_X}}"
+  "top-list|[1]"
+  "top-null|null"
+)
+weekly_side() { python3 - "$REPO_DIR/scripts/weekly-report" <<'PY2'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import price_solve as ps
+r, t = ps.fetched_reference(), ps.codex_price_table()["models"]
+print(json.dumps(["claude-gap-9" in r, "claude-bad-9" in r, "gpt-good-9" in t, "gpt-bad-9" in t]))
+PY2
+}
+codex_side() { bash -c 'source "$1/_price_cache.sh"; fetched_prices_json codex' _ "$TU"; }
+for c in "${BADS[@]}"; do
+    name=${c%%|*}; doc=${c#*|}
+    rm -rf "$CACHE"; mkdir -p "$CACHE"; put_latest "$L55"; printf '%s\n' "$doc" > "$CACHE/fetched-prices.json"
+    want_c=true; want_x=true
+    case "$name" in claude-list|top-list|top-null) want_c=false ;; esac
+    case "$name" in codex-list|top-list|top-null) want_x=false ;; esac
+    rc=0; T=$(python3 "$SOLVER" --listed) || rc=$?
+    chk "$name：Claude 取价照常出表，每日价和内置价都在，坏记录不进表，好的补缺价按预期" \
+        "$rc $(jq -c '[.models["claude-opus-5-5"].input.status, .models["claude-haiku-4-5"].input.status, has("models") and (.models | has("claude-bad-9")), (.models | has("claude-gap-9"))]' <<<"$T" 2>/dev/null)" \
+        "0 [\"fetched\",\"reference_only\",false,$want_c]"
+    rc=0; X=$(codex_side) || rc=$?
+    chk "$name：Codex 取价读到的补缺价只含好记录" \
+        "$rc $(jq -c '[has("gpt-bad-9"), has("gpt-good-9")]' <<<"$X" 2>/dev/null)" "0 [false,$want_x]"
+    rc=0; W=$(weekly_side) || rc=$?
+    chk "$name：周报补算两侧都不出错，只留好记录" "$rc $W" "0 [$want_c, false, $want_x, false]"
+done
+# daemon 补抓：坏记录不算已有价，标记留着；抓到两源一致的价才写进去、删标记；好记录保留
+for c in "price-1001|{\"claude\":{$GOOD_C,\"claude-test-9\":{\"prices\":{\"input\":1001,\"output\":1001}}}}" \
+         "entry-list|{\"claude\":{$GOOD_C,\"claude-test-9\":[1]}}" \
+         "claude-list|{\"claude\":[1]}"; do
+    name=${c%%|*}; doc=${c#*|}
+    rm -rf "$CACHE"; mkdir -p "$CACHE/unpriced"; echo 9999999999 > "$NEXT"
+    printf '%s\n' "$doc" > "$CACHE/fetched-prices.json"; : > "$CACHE/unpriced/claude--claude-test-9"
+    OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/nope.md" python3 "$TU/price_fetch.py")
+    chk "$name：抓价失败时坏记录不算有价，缺价标记留着" \
+        "$([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept || echo removed) $(grep -c 'claude-test-9 抓价失败' <<<"$OUT")" "kept 1"
+    rm -f "$CACHE/price-fetch-state.json"
+    OUT=$(python3 "$TU/price_fetch.py")
+    chk "$name：抓到两源一致的价后写进去、删标记，原有好记录保留" \
+        "$([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept || echo removed) $(jq -c '[.claude["claude-test-9"].prices.input, (.claude | has("claude-gap-9"))]' "$CACHE/fetched-prices.json")" \
+        "removed [3.0,$([ "$name" = claude-list ] && echo false || echo true)]"
+    chk "$name：补上后取价用上这个价" "$(jq -r '.models["claude-test-9"].input.price' <<<"$(listed)")" "3.0"
+done
+# 抓价状态文件的一项结构坏了：当作没试过，照常去抓
+for st in '{"claude/claude-test-9":[1]}' '{"claude/claude-test-9":{"last_attempt":"x"}}' \
+          '{"claude/claude-test-9":{"last_attempt":true}}' '[1]'; do
+    rm -rf "$CACHE"; mkdir -p "$CACHE/unpriced"; echo 9999999999 > "$NEXT"
+    printf '%s\n' "$st" > "$CACHE/price-fetch-state.json"; : > "$CACHE/unpriced/claude--claude-test-9"
+    rc=0; python3 "$TU/price_fetch.py" >/dev/null || rc=$?
+    chk "抓价状态是 ${st:0:40}：照常抓到价" \
+        "$rc $(jq -r '.claude["claude-test-9"].prices.input' "$CACHE/fetched-prices.json" 2>/dev/null)" "0 3.0"
+done
 
 report_counts "$pass" "$fail"
 echo

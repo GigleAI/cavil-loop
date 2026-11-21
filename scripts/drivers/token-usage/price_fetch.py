@@ -72,16 +72,14 @@ LATEST_EVERY = _num("PRICE_LATEST_REFRESH_SECS", "86400", int)   # 最新价缓�
 TIMEOUT = _num("PRICE_FETCH_TIMEOUT", "15", float) or 15.0
 MAX_PRICE = price_solve.MAX_PRICE       # 美元 / 百万 token；现役最贵的档位也远低于它。读回时同一上限
 MAX_DIVERGE = price_solve.MAX_DIVERGE   # 与反解那一侧的交叉核对用同一个阈值
-MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+MODEL_RE = re.compile(price_solve.MODEL_NAME_RE)
 AGENTS = ("claude", "codex")
 
-# 每一侧的计价项，以及它们在三个来源里叫什么。顺序即输出顺序。
+# 每一侧的计价项与必须有的两项：和读回缓存时核对的是同一张表（price_solve.FETCH_ITEMS /
+# FETCH_CORE），写进去的和读出来认的永远一致。顺序即输出顺序。
 # claude：键名与 price_solve.REFERENCE 一致；codex：键名与 codex-prices.json 一致。
-ITEMS = {
-    "claude": ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h"),
-    "codex": ("in", "out", "cached_in", "cache_write"),
-}
-CORE = {"claude": ("input", "output"), "codex": ("in", "out")}
+ITEMS = price_solve.FETCH_ITEMS
+CORE = price_solve.FETCH_CORE
 LITELLM_KEYS = {
     "claude": {"input": "input_cost_per_token", "output": "output_cost_per_token",
                "cache_read": "cache_read_input_token_cost",
@@ -476,6 +474,8 @@ def main():
     changed = False
     for agent, model, path in markers:
         key = f"{agent}/{model}"
+        # 「已经有价」用的是读入时已核对过的补抓价（price_solve.load_fetched）：取价丢掉的坏记录，
+        # 这里也不算有价，标记留着、照常去抓（PR #612 复审第 3 轮）。
         # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
         # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
         # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
@@ -485,8 +485,11 @@ def main():
                 or (agent == "claude" and model in latest)):
             _rm(path)                                  # 已经有价：不抓，也不再提
             continue
-        last = (state.get(key) or {}).get("last_attempt") or 0
-        if isinstance(last, (int, float)) and 0 <= now - last < COOLDOWN:
+        # 状态文件同样只当数据：这一项不是对象、时刻不是数，就当没试过（宁可多试一次）
+        entry = state.get(key)
+        last = entry.get("last_attempt") if isinstance(entry, dict) else None
+        if (isinstance(last, (int, float)) and not isinstance(last, bool)
+                and math.isfinite(last) and 0 <= now - last < COOLDOWN):
             continue                                   # 冷却中
         prices, why = resolve(agent, model)
         state[key] = {"last_attempt": now, "result": "ok" if prices else why}
