@@ -272,7 +272,7 @@ export function buildBoard(
   const carryOrder = sort ? itemSorter(sort, projects, [...(carryFrom ?? matched)]) : BY_REPO_NUMBER;
   const carry =
     prsUnderIssues && carryFrom
-      ? carryIssues({ shown: matched, matched: new Set(matched.map((it) => it.key)), all: carryFrom, order: carryOrder, canHost, parents: null, repo: null })
+      ? carryIssues({ shown: matched, matched: new Set(matched.map((it) => it.key)), all: carryFrom, order: carryOrder, canHost, repo: null })
       : null;
   const carriedKeys = new Set(carry ? carry.hosts.values() : []);
   const byKeyAll = new Map((carryFrom ?? []).map((it) => [it.key, it]));

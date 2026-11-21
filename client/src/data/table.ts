@@ -306,23 +306,30 @@ interface Pull {
   stop: ReadonlySet<string>;
 }
 
-/** A group's items plus the pulled ones: walking down from the items already in it, stopping at a matched or sliced-away sub-issue. */
-function withPulled(list: Item[], pull: Pull | null): { items: Item[]; pulled: Set<string> } {
+/**
+ * A group's items plus the pulled ones: walking down from the items already in it, stopping at a matched or
+ * sliced-away sub-issue. `from`: each pulled item -> the item of `list` its walk started at (GitHub#622: the
+ * matched issue a carried issue is anchored to is read off this very walk, run over every picked item).
+ */
+function withPulled(list: Item[], pull: Pull | null): { items: Item[]; pulled: Set<string>; from: Map<string, string> } {
   const pulled = new Set<string>();
-  if (!pull) return { items: list, pulled };
+  const from = new Map<string, string>();
+  if (!pull) return { items: list, pulled, from };
   const inGroup = new Set(list.map((it) => it.key));
   const out = [...list];
   for (let i = 0; i < out.length; i++) {
     if (pull.stop.has(out[i].key)) continue;
+    const root = from.get(out[i].key) ?? out[i].key;
     for (const c of pull.children.get(out[i].key) ?? []) {
       if (inGroup.has(c.key) || pull.matched.has(c.key)) continue;
       if (pull.slice !== null && c.repo.toLowerCase() !== pull.slice) continue;
       inGroup.add(c.key);
       pulled.add(c.key);
+      from.set(c.key, root);
       out.push(c);
     }
   }
-  return { items: out, pulled };
+  return { items: out, pulled, from };
 }
 
 /**
@@ -421,8 +428,11 @@ export function buildTable(
   // GitHub#622: a picked PR with no picked issue to go under brings its issue along. One the hierarchy already
   // brings in under a matched issue (`anchor`) is not placed by itself: it shows up wherever that issue does,
   // and the PR follows the matched issue there. Any other is placed by its own value and walked down from never.
+  // which matched issue the hierarchy brings an issue in under: the groups' own walk, run once over every picked
+  // item (a group's walk starts from its items, and an issue is pulled into every group its matched root is in)
+  const reach = carry && prsUnderIssues ? withPulled(picked, pull).from : new Map<string, string>();
   const carried = prsUnderIssues && carry
-    ? carryIssues({ shown: picked, matched: new Set(items.map((it) => it.key)), all, order: sort, canHost, parents: pull ? parents : null, repo: slice === null ? null : slice.toLowerCase() })
+    ? carryIssues({ shown: picked, matched: new Set(items.map((it) => it.key)), all, order: sort, canHost, anchorOf: (k) => reach.get(k), repo: slice === null ? null : slice.toLowerCase() })
     : null;
   const allByKey = new Map(all.map((it) => [it.key, it]));
   const ownCarried = carried ? [...new Set(carried.hosts.values())].filter((k) => !carried.anchor.has(k)).map((k) => allByKey.get(k)!) : [];

@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { buildBoard } from '../../src/data/board';
 import { carryIssues } from '../../src/data/prNest';
-import { buildTable, validParents, type Table } from '../../src/data/table';
+import { buildTable, type Table } from '../../src/data/table';
 import { CARRIED_TITLE, PULLED_TITLE, TableView, fadedTitle } from '../../src/renderer/TableView';
 import { DEFAULT_TABLE, DEFAULT_VIEW } from '../../src/shared/viewSettings';
 import type { Item, TableSettings } from '../../src/shared/types';
@@ -136,16 +136,63 @@ describe('GitHub#622: which issue comes along', () => {
     expect(table(all, [9], T(), true, false)).toEqual(table(all, [9], T(), false, false));
     expect(buildBoard([all[1]], [A], 'status', false, TODAY, undefined, false, [], all)).toEqual(buildBoard([all[1]], [A], 'status', false, TODAY, undefined, false, [], null));
   });
-  it('carryIssues alone: a hierarchy anchor only through issues that did not match, and only when shown', () => {
-    const all = [issue(1), issue(2, { parent: 'o/a#1' }), issue(3, { parent: 'o/a#2' }), pr('o/a', 9, ['o/a#3'])];
-    const base = { all, order: (a: Item, b: Item) => a.number - b.number, canHost: () => true, parents: validParents(all), repo: null };
-    const via1 = carryIssues({ ...base, shown: [all[0], all[3]], matched: new Set(['o/a#1', 'o/a#9']) });
-    expect([...via1.hosts]).toEqual([['o/a#9', 'o/a#3']]);
-    expect([...via1.anchor]).toEqual([['o/a#3', 'o/a#1']]);
-    // #1 matched but not shown (another repository picked, say): no anchor, #3 is placed by itself
-    const hidden = carryIssues({ ...base, shown: [all[3]], matched: new Set(['o/a#1', 'o/a#9']) });
-    expect([...hidden.anchor]).toEqual([]);
-    expect([...hidden.hosts]).toEqual([['o/a#9', 'o/a#3']]);
+});
+
+describe('GitHub#622: one set of links for hosting and carrying (same input, both entries)', () => {
+  // I is linked to three PRs: P through GitHub's "Linked pull requests" only, Q through Q's description only,
+  // R through both. Matched, I hosts all three (the existing rule); hidden by the search, I is carried for all three.
+  const I = item('o/a', 1, { linkedPrs: [{ key: 'o/a#2', repo: 'o/a', number: 2, url: '', state: 'open' }, { key: 'o/a#4', repo: 'o/a', number: 4, url: '', state: 'open' }] }, [member(A, null, 'Todo')]);
+  const all = [I, pr('o/a', 2, []), pr('o/a', 3, ['o/a#1']), pr('o/a', 4, ['o/a#1'])];
+  const under = (t: Table) => t.groups.flatMap((g) => g.rows.filter((r) => r.under).map((r) => [r.item.number, r.under]));
+  it('issue matched: every PR goes under it, whichever source links it', () => {
+    expect(under(table(all, [1, 2, 3, 4], T()))).toEqual([[2, 'o/a#1'], [3, 'o/a#1'], [4, 'o/a#1']]);
+  });
+  it('issue not matched: it is carried for every one of them, the same three', () => {
+    const t = table(all, [2, 3, 4], T());
+    expect(under(t)).toEqual([[2, 'o/a#1'], [3, 'o/a#1'], [4, 'o/a#1']]);
+    expect(rows(t)).toEqual([['Todo', ['1+', '  ↳2', '  ↳3', '  ↳4']]]);
+    expect(t.carriedCount).toBe(1);
+  });
+  it('carryIssues: the same three hosts on the board input as on the table input', () => {
+    const c = carryIssues({ shown: all.slice(1), matched: new Set(['o/a#2', 'o/a#3', 'o/a#4']), all, order: (a, b) => a.number - b.number, canHost: () => true, repo: null });
+    expect([...c.hosts]).toEqual([['o/a#2', 'o/a#1'], ['o/a#3', 'o/a#1'], ['o/a#4', 'o/a#1']]);
+    const board = buildBoard(all.slice(1), [A], 'status', false, TODAY, { field: 'number', dir: 'asc' }, true, [], all);
+    expect(board.columns.flatMap((col) => col.cards.filter((x) => x.under).map((x) => [x.item.number, x.under]))).toEqual([[2, 'o/a#1'], [3, 'o/a#1'], [4, 'o/a#1']]);
+  });
+});
+
+describe('GitHub#622: the anchor is the hierarchy walk itself (same input, rows and counts)', () => {
+  // A (o/a, matched) → X → B → C, all sub-issues not matched; PR P (matched) names B. A is Todo on 甲, Done on 乙.
+  const chain = (xRepo = 'o/a', bRepo = 'o/a') => [
+    item('o/a', 1, {}, [member(A, null, 'Todo'), member(B, null, 'Done')]),
+    item(xRepo, 2, { parent: 'o/a#1' }, [member(A, null, 'In Progress')]),
+    item(bRepo, 3, { parent: `${xRepo.toLowerCase()}#2` }, [member(A, null, 'In Progress')]),
+    item('o/a', 4, { parent: `${bRepo.toLowerCase()}#3` }, [member(A, null, 'Todo')]),
+    pr('o/a', 9, [`${bRepo.toLowerCase()}#3`]),
+  ];
+  it('several levels, two groups: B is pulled two levels down in both groups with both reasons, P under it, C below', () => {
+    const t = table(chain(), [1, 9], T({ sliceByRepo: true, slice: null }));
+    const g = ['1', '  2*', '    3*+', '      ↳9', '      4*'];
+    expect(rows(t)).toEqual([['Todo', g], ['Done', g]]);
+    expect(counts(t)).toEqual({ groups: [5, 5], sections: [5], matched: 2, pulled: 3, carried: 1 });
+    // the walk with and without carrying pulls the same rows (P aside)
+    const off = table(chain(), [1, 9], T({ sliceByRepo: true, slice: null }), false);
+    expect(off.pulledCount).toBe(t.pulledCount);
+  });
+  it('across repositories, every repository: the walk crosses, so does the anchor; the PR joins A\'s section', () => {
+    const t = table(chain('o/b', 'o/b'), [1, 9], T({ sliceByRepo: true, slice: null }));
+    expect(t.repos!.map((r) => [r.title, r.itemCount])).toEqual([['o/a', 5]]);
+    expect(rows(t)).toEqual([['Todo', ['1', '  2*', '    3*+', '      ↳9', '      4*']], ['Done', ['1', '  2*', '    3*+', '      ↳9', '      4*']]]);
+  });
+  it('one repository picked and the chain leaves it: no walk past X, so B has no anchor and comes along by its own value', () => {
+    // X in o/b cuts the walk; B is in o/a, so it may still be carried — placed by its own status
+    const t = table(chain('o/b', 'o/a'), [1, 9], T({ sliceByRepo: true, slice: 'o/a' }));
+    expect(rows(t)).toEqual([['Todo', ['1']], ['In Progress', ['3+', '  ↳9']], ['Done', ['1']]]);
+    expect(counts(t)).toEqual({ groups: [1, 2, 1], sections: null, matched: 2, pulled: 0, carried: 1 });
+    // and when B itself is in the other repository, nothing is carried
+    const out = table(chain('o/b', 'o/b'), [1, 9], T({ sliceByRepo: true, slice: 'o/a' }));
+    expect(out.carriedCount).toBe(0);
+    expect(rows(out)).toEqual([['Todo', ['1']], ['Done', ['1']], ['无状态', ['9']]]);
   });
 });
 

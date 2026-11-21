@@ -208,9 +208,9 @@ export function nestPrs<T>(entries: T[], itemOf: (t: T) => Item, sort: TableSett
 /**
  * GitHub#622: what a search that matched a PR but not the issue it belongs to brings along.
  * `hosts`: PR key -> the issue (one that did not match) it is shown under; `anchor`: such an issue
- * that the table's "show hierarchy" already brings in under a matched issue above it (GitHub#368)
- * -> that matched issue, whose value then decides where both go. Every other carried issue is
- * placed by its own value.
+ * that the table's "show hierarchy" already brings in under a matched issue (GitHub#368) -> that
+ * matched issue, whose value then decides where both go. Every other carried issue is placed by
+ * its own value.
  */
 export interface Carry {
   hosts: Map<string, string>;
@@ -218,7 +218,7 @@ export interface Carry {
 }
 
 export interface CarryOptions {
-  /** the items shown (matched, and in the picked repository): hosts and anchors come from here */
+  /** the items shown (matched, and in the picked repository): the existing hosting is judged over these */
   shown: readonly Item[];
   /** keys of the items that matched (before any repository pick): an issue among them is never carried */
   matched: ReadonlySet<string>;
@@ -228,8 +228,11 @@ export interface CarryOptions {
   order: (a: Item, b: Item) => number;
   /** may this issue take a PR — asked of the issue whose value decides the place (the anchor, else the issue itself) */
   canHost: (issue: Item) => boolean;
-  /** "show hierarchy" (table only): the parent links that count (`validParents`); null = no anchors */
-  parents: ReadonlyMap<string, string> | null;
+  /**
+   * the matched issue the hierarchy brings this issue in under (the table's own walk, GitHub#368 — the
+   * caller hands over that very result, never a second reading of the parent links); none = no hierarchy
+   */
+  anchorOf?: (issueKey: string) => string | undefined;
   /** the picked repository (lower-cased); null = every repository */
   repo: string | null;
 }
@@ -237,9 +240,10 @@ export interface CarryOptions {
 /**
  * GitHub#622: the one rule for the board and the table. A PR among `shown` that already goes under a
  * shown issue keeps it (`prFollow`, the existing rule — never moved). Every other shown PR gets the first
- * issue, in the view's order, that the sources hold, did not match, is linked to it (GitHub's "Linked pull
- * requests" or the PR's own Closes / Fixes / Resolves / Refs #N) and is in the picked repository, and whose
- * placing issue may take a PR. None such: the PR stays on its own, as before.
+ * issue, in the view's order, that the sources hold, did not match, is linked to it (`linksOf`, the very
+ * links the existing hosting reads: GitHub's "Linked pull requests" and the PR's own Closes / Fixes /
+ * Resolves / Refs #N) and is in the picked repository, and whose placing issue may take a PR. None such:
+ * the PR stays on its own, as before.
  */
 export function carryIssues(o: CarryOptions): Carry {
   const hosts = new Map<string, string>();
@@ -247,38 +251,23 @@ export function carryIssues(o: CarryOptions): Carry {
   const shownKeys = new Set(o.shown.map((it) => it.key));
   const byKey = new Map(o.all.map((it) => [it.key, it]));
   const followed = prFollow([...o.shown].sort(o.order), o.canHost);
-  const inRepo = (it: Item) => o.repo === null || it.repo.toLowerCase() === o.repo;
-  // the matched issue the hierarchy walk reaches this issue from (GitHub#368's rule: down through issues
-  // that did not match, all in the picked repository); null = none
-  const anchorOf = (it: Item): Item | null => {
-    if (!o.parents) return null;
-    let cur = it;
-    for (let n = 0; n <= byKey.size; n++) {
-      const p = o.parents.get(cur.key);
-      const up = p === undefined ? undefined : byKey.get(p);
-      if (!up || up.kind !== 'issue' || !inRepo(up)) return null;
-      if (o.matched.has(up.key)) return shownKeys.has(up.key) ? up : null;
-      cur = up;
-    }
-    return null;
-  };
+  const links = linksOf([...o.all]);
   for (const pr of o.shown) {
     if (pr.kind !== 'pr' || followed.has(pr.key)) continue;
-    const named = new Set(pr.refIssues ?? []);
     const candidates = o.all.filter(
       (it) =>
         it.kind === 'issue' &&
-        it.key !== pr.key &&
         !o.matched.has(it.key) &&
         !shownKeys.has(it.key) &&
-        inRepo(it) &&
-        (named.has(it.key) || (it.linkedPrs ?? []).some((l) => l.key === pr.key)),
+        (o.repo === null || it.repo.toLowerCase() === o.repo) &&
+        (links.get(it.key) ?? []).includes(pr.key),
     );
     for (const c of [...candidates].sort(o.order)) {
-      const a = anchorOf(c);
-      if (!o.canHost(a ?? c)) continue;
+      const a = o.anchorOf?.(c.key);
+      const placing = a === undefined ? c : byKey.get(a);
+      if (!placing || !o.canHost(placing)) continue;
       hosts.set(pr.key, c.key);
-      if (a) anchor.set(c.key, a.key);
+      if (a !== undefined) anchor.set(c.key, a);
       break;
     }
   }
