@@ -46,19 +46,28 @@ HEADING = re.compile(r'^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
 # hold nested balanced parentheses and backslash escapes, and an HTML attribute value
 # may contain ">" or text that looks like another attribute. The forms read (and
 # nothing else):
-#   - inline links / images  [text](dest) ![alt](dest), with an optional "title",
+#   - inline links / images  [text](dest) ![alt](dest): only from an unescaped "[" whose
+#     brackets balance and whose "]" is followed at once by "(", with an optional "title",
 #     'title' or (title); dest is <...> (may hold spaces) or a run without spaces whose
 #     parentheses balance to any depth; "\(" "\)" and other backslash escapes count as
 #     the plain character
-#   - reference definitions  [label]: dest "title"  at the start of a line
+#   - reference definitions  [label]: dest "title"  at the start of a line that does not
+#     continue a paragraph (first line, or after a blank line, a heading or another one)
 #   - HTML tags <img>, <a>, <source> read by Python's HTML parser: src, href and every
 #     URL of srcset, attribute values double-quoted, single-quoted or bare
 # The <img> / <a> / <source> tags that carry one of those attributes are read first and
 # blanked out before the markdown scan, so markdown-looking
-# text inside an attribute value (alt="see [x](y)") is never taken for a link.
+# text inside an attribute value (alt="see [x](y)") is never taken for a link. HTML
+# comments (<!-- ... -->, an unclosed one runs to the end) are blanked first: nothing
+# in them is a link. A link's title is skipped whole, so "](x)" inside it is not one.
+# One deliberate difference from rendering: markdown links written inside an HTML block
+# (lines right after an <img> line, with no blank line between) are still checked —
+# stricter, never looser. tests/doc-links.test.sh cross-checks the markdown forms against
+# markdown-it where that package is installed.
 URL_ATTRS = ('src', 'href', 'srcset')
 URL_TAGS = ('img', 'a', 'source')
 ASCII_PUNCT = set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
+HTML_COMMENT = re.compile(r'<!--.*?(?:-->|\Z)', re.S)
 REF_START = re.compile(r'^ {0,3}\[(?:[^\]\\]|\\.)+\]:', re.M)
 
 
@@ -239,32 +248,110 @@ def _title_end(s, i):
     return i if i < len(s) and s[i] == ')' else None
 
 
-def link_targets(text):
-    """Every link target in markdown text (code already removed), in order of the
-    three forms above."""
-    tags = _Tags(text)
-    tags.feed(text)
-    tags.close()
+def _blank(text, spans):
+    """text with the given (start, end) spans replaced by spaces, line breaks kept."""
     chars = list(text)
-    for a, b in tags.spans:
+    for a, b in spans:
         for k in range(a, min(b, len(chars))):
             if chars[k] != '\n':
                 chars[k] = ' '
-    md = ''.join(chars)
+    return ''.join(chars)
+
+
+def _close_bracket(s, i, end):
+    """Index of the ']' matching the '[' at s[i] (nesting and escapes counted), or -1."""
+    depth, j = 0, i
+    while j < end:
+        c = s[j]
+        if c == '\\':
+            j += 2
+            continue
+        if c == '[':
+            depth += 1
+        elif c == ']':
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
+def _inline_links(s, start, end, found):
+    """Inline links / images in s[start:end]. A link starts only at an unescaped '[',
+    its label's brackets balance, '(' follows the ']' at once, then destination,
+    optional title and ')'. Scanning resumes after the whole link, so the title is
+    never read again; the label is scanned for links inside it (an image in a link)."""
+    i = start
+    while i < end:
+        c = s[i]
+        if c == '\\':
+            i += 2
+            continue
+        if c != '[':
+            i += 1
+            continue
+        j = _close_bracket(s, i, end)
+        if j < 0:
+            i += 1
+            continue
+        if j + 1 < end and s[j + 1] == '(':
+            if s[j + 2:j + 3] == ')':
+                _inline_links(s, i + 1, j, found)
+                found.append('')   # [x]() : an empty target, reported as such
+                i = j + 3
+                continue
+            got = _dest(s, j + 2)
+            close = _title_end(s, got[1]) if got else None
+            if close is not None:
+                _inline_links(s, i + 1, j, found)
+                found.append(got[0])
+                i = close + 1
+                continue
+        i += 1   # not a link: what is inside the brackets may still hold one
+
+
+def link_targets(text):
+    """Every link target in markdown text (code already removed), in order of the
+    three forms above."""
+    text = _blank(text, [m.span() for m in HTML_COMMENT.finditer(text)])
+    tags = _Tags(text)
+    tags.feed(text)
+    tags.close()
+    return _markdown_targets(_blank(text, tags.spans)) + tags.urls
+
+
+def _markdown_targets(md):
     found = []
-    i = md.find('](')
-    while i != -1:
-        got = _dest(md, i + 2)
-        if got and _title_end(md, got[1]) is not None:
-            found.append(got[0])
-        elif md[i + 2:i + 3] == ')':
-            found.append('')   # [x]() : an empty target, reported as such
-        i = md.find('](', i + 2)
+    _inline_links(md, 0, len(md), found)
     for m in REF_START.finditer(md):
+        if not _block_start(md, m.start()):
+            continue   # a definition cannot interrupt a paragraph: that line is text
         got = _dest(md, m.end())
         if got:
             found.append(got[0])
-    return found + tags.urls
+    return found
+
+
+def _block_start(md, at):
+    """Whether the line starting at md[at] may open a reference definition: first
+    line, or the line before is blank, a heading, or itself a definition."""
+    if at == 0:
+        return True
+    prev = md[md.rfind('\n', 0, at - 1) + 1:at - 1]
+    return prev.strip() == '' or bool(re.match(r' {0,3}#{1,6}(\s|$)', prev)) \
+        or bool(REF_START.match(prev))
+
+
+def markdown_targets(text):
+    """Only the markdown forms (inline links / images, reference definitions) of a
+    raw document: what a CommonMark parser reports as link / image destinations.
+    Used to cross-check this scanner against one (tests/doc-links.test.sh)."""
+    text = strip_code(text)
+    text = _blank(text, [m.span() for m in HTML_COMMENT.finditer(text)])
+    tags = _Tags(text)
+    tags.feed(text)
+    tags.close()
+    return _markdown_targets(_blank(text, tags.spans))
 
 
 def links(path):
@@ -283,7 +370,8 @@ def check(root, docs, into=None, listing=None):
             continue
         for target in links(path):
             if target == '':
-                problems.append(f'{doc}: 链接目标为空')
+                if into is None or os.path.relpath(path, root) in into:
+                    problems.append(f'{doc}: 链接目标为空')
                 continue
             if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target) or target.startswith('//'):
                 continue   # absolute URL, mailto:, …

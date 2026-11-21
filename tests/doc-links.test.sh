@@ -114,7 +114,9 @@ cat > "$TMP/v/good.md" <<'MD'
 [单引号标题](img/ok.png 'title')
 [括号标题](img/ok.png (title))
 ![图片](img/ok.png)
+
 [引用]: draft(v(2)).md "标题"
+
 <img alt="示例" src=img/ok.png>
 <img src='img/ok.png' alt=x>
 <a href="draft(v2).md">d</a>
@@ -129,12 +131,15 @@ cat > "$TMP/v/bad.md" <<'MD'
 [两层括号](draft(v(3)).md)
 [转义的括号](x\(2\).md)
 [尖括号带空格](<no such.md>)
+
 [引用]: gone(1).md
+
 <img alt="示例" src=missing.png>
 <img src='gone.png'>
 <a href=nope.md>x</a>
 <img alt="a > b" src="missing2.png">
 <img alt="literal src=ok.png" src="missing3.png">
+
 [空]()
 MD
 chk "全表「存在」的写法全部通过，属性值里像链接 / 像属性的文字没被当成链接" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
@@ -142,6 +147,66 @@ chk "  到达性 · 18 处真链接确实都查了（srcset 里两张算两处�
 chk "全表「缺失」的写法每处都报出，目标完整" \
     "$(python3 "$CHECK" "$TMP/v" bad.md | sed -e 's/.*不存在的文件 //' -e 's/^bad.md: //' | paste -sd'|')" \
     "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|gone(1).md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
+
+# 不是链接的写法：普通文字里的「](」、链接标题里的「](」、HTML 注释（含没闭合的）、转义的方括号、方括号和圆括号
+# 之间隔了空格、代码里的、接在段落里的「[名字]: 目标」行。一处都不能报、也不能被当成链接查
+cat > "$TMP/v/nolink.md" <<'MD'
+A closing bracket ](not-a-link.md) is ordinary text.
+[真链接](draft(v2).md "example ](not-a-link2.md)")
+<!-- [example](not-a-link3.md) -->
+\[escaped](not-a-link4.md) [space] (not-a-link5.md) `[code](not-a-link6.md)`
+[![图片在链接里](img/ok.png)](draft(v2).md) [外 [内] 层](img/ok.png)
+紧跟在段落里的一行不是引用定义：
+[段落里]: not-a-link8.md
+<!-- 没闭合的注释一直到文件结尾 [x](not-a-link7.md)
+MD
+chk "普通文字、标题、注释、转义、隔空格、代码里像链接的：一处都不报" "$(python3 "$CHECK" "$TMP/v" nolink.md; echo "rc=$?")" "rc=0"
+chk "  到达性 · 真链接照查：标题前的目标、链接里的图片、方括号嵌套的链接，共 4 处" \
+    "$(python3 "$CHECK" --list "$TMP/v" nolink.md | sed 's/^OK nolink.md -> //' | paste -sd' ')" "draft(v2).md img/ok.png draft(v2).md img/ok.png"
+# 只查指向某些文件的链接（提示词、AGENTS.md 用的入口）时，空目标这种不指向任何文件的不报；整篇检查照报
+printf '%s\n' '[空]()' '[ok](img/ok.png)' > "$TMP/v/scoped.md"
+chk "限定目标范围时，不在范围里的空目标不报；整篇检查照报" \
+    "$(python3 "$CHECK" --into img/ok.png "$TMP/v" scoped.md; echo "rc=$?") | $(python3 "$CHECK" "$TMP/v" scoped.md | sed 's/^scoped.md: //')" \
+    "rc=0 | 链接目标为空"
+
+# 和成熟的 Markdown 解析器对拍：本机装了 markdown-it-py（CommonMark）时，上面三份夹具和全部外部用户文档、各级
+# AGENTS.md 里的 Markdown 链接 / 图片目标，扫描器读出的集合必须和它一模一样（<https://…> 这种自动链接都是绝对地址、
+# 本来就不查，对拍时不算；引用定义不管用没用到都算，和检查器一样）。CI 上没有这个包，这一组只列出、不算通过
+if python3 -c 'import markdown_it' 2>/dev/null; then
+    cat > "$TMP/mdit.py" <<'PYX'
+import sys, urllib.parse
+sys.path.insert(0, sys.argv[1])
+import doc_links
+from markdown_it import MarkdownIt
+md = MarkdownIt('commonmark')
+def walk(tokens, out):
+    for t in tokens:
+        if t.type == 'link_open' and t.markup != 'autolink':
+            out.add(urllib.parse.unquote(t.attrs.get('href', '')))
+        if t.type == 'image':
+            out.add(urllib.parse.unquote(t.attrs.get('src', '')))
+        if t.children:
+            walk(t.children, out)
+n = 0
+for f in sys.argv[2:]:
+    text = open(f, encoding='utf-8').read()
+    env = {}; ref = set(); walk(md.parse(text, env), ref)
+    # every reference definition counts, used or not (the checker reads them all)
+    ref |= {urllib.parse.unquote(d.get('href', '')) for d in env.get('references', {}).values()}
+    mine = {urllib.parse.unquote(x) for x in doc_links.markdown_targets(text)}
+    n += len(mine)
+    if ref != mine:
+        print(f'{f}: 只有扫描器有 {sorted(mine - ref)}，只有解析器有 {sorted(ref - mine)}')
+print(f'TARGETS {n}')
+PYX
+    files=("$TMP/v/good.md" "$TMP/v/bad.md" "$TMP/v/nolink.md")
+    while IFS= read -r f; do files+=("$REPO_DIR/$f"); done < <(python3 "$CHECK" --external "$REPO_DIR"; cd "$REPO_DIR" && git ls-files -co --exclude-standard -- 'AGENTS.md' '*/AGENTS.md')
+    out=$(python3 "$TMP/mdit.py" "$TEST_DIR/lib" "${files[@]}")
+    chk "和 markdown-it 对拍：${#files[@]} 份文件读出的 Markdown 链接目标一模一样" "$(grep -v '^TARGETS ' <<<"$out")" ""
+    chk "  到达性 · 对拍确实比了很多目标（≥ 250，实比 $(sed -n 's/^TARGETS //p' <<<"$out")）" "$([ "$(sed -n 's/^TARGETS //p' <<<"$out")" -ge 250 ] && echo yes)" yes
+else
+    echo "  ⏭ 本机没有 markdown-it-py，和成熟解析器的对拍跳过（上面的写法全表照常检查）"
+fi
 
 echo "== 4. 中英两份"
 chk "每篇外部用户文档都有另一种语言的版本" "$(python3 "$CHECK" --pairs "$REPO_DIR"; echo "rc=$?")" "rc=0"
