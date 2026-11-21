@@ -314,10 +314,12 @@ make_sandbox
 out=$(check_bot "$SKILL_DIR")
 if [ -z "$out" ]; then ok "合并说明只在先汇报时出现，每份成品一致"; else bad "交接段不满足："; sed 's/^/       /' <<<"$out"; fi
 
-# 不先汇报时：交接段和合并基点（改动前的 _lib.sh + 改动前的交接模板）逐字节相同
+# 不先汇报时：交接段和合并基点的 _lib.sh 拼出来的逐字节相同（守的是「不先汇报时什么都不加」这一条）。
+# 两边用同一份当前的交接模板：模板本身的改动（例如 GitHub#619 加的「答复到了、被派来处理时」）不是这里要拦的
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$TMP/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$TMP/old"
+cp -r "$REPO_DIR/prompts/." "$TMP/old/prompts/"
 old_off=$(bot_env false bash -c 'source "$0" >/dev/null 2>&1; set +e; SKILL_DIR="$1" requester_bot_handoff_section' \
     "$TMP/old/scripts/_lib.sh" "$TMP/old" 2>/dev/null)
 if [ -z "$old_off" ]; then bad "合并基点 ${BASE_REV:0:8} 拼不出交接段（对拍没真跑）"

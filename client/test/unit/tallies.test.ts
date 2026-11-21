@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { flowTally, litTally, tallyClick, tallyEntries, tallyQuery } from '../../src/data/flowTally';
 import { applyFilter, parseFilter } from '../../src/shared/filter';
-import { DEFAULT_TALLIES, defaultTallies, effectiveTallies, normalizeTallies, TALLY_MAX, UNLABELED_QUERY } from '../../src/shared/tallies';
+import { DEFAULT_TALLIES, defaultTallies, effectiveTallies, normalizeTallies, tallyFold, TALLY_FOLDS, TALLY_MAX, UNLABELED_QUERY } from '../../src/shared/tallies';
 import { toQueryRow } from '../../src/renderer/TallySettings';
 import { DEFAULT_HAND_BACK, type Item, type TallyDef } from '../../src/shared/types';
 import { item } from './helpers';
@@ -215,5 +215,142 @@ describe('what is kept', () => {
     ];
     for (const v of bad) expect(normalizeTallies(v), JSON.stringify(v)).toEqual({ tallies: null, broken: true });
     expect(normalizeTallies(Array.from({ length: TALLY_MAX }, (_, i) => query(`r${i}`, 'is:open'))).broken).toBe(false);
+  });
+});
+
+// GitHub#634: a number goes into the fold at the end of the bar by its row's rule — never / at 0 / always.
+// The expected answers are written out here, not computed with the app's functions.
+describe('GitHub#634: folding', () => {
+  const NONE = 'label:"no-such-label"'; // counts 0 over ITEMS
+  const SOME = 'is:open'; // counts > 0 over ITEMS
+
+  it('the default rows: 运行中 never, 稍后处理 always, the other three at 0', () => {
+    expect(DEFAULT_TALLIES.map((d) => [d.id, d.fold])).toEqual([
+      ['unlabeled', 'zero'],
+      ['human', 'zero'],
+      ['agent', 'zero'],
+      ['running', 'never'],
+      ['later', 'always'],
+    ]);
+    expect(TALLY_FOLDS).toEqual(['never', 'zero', 'always']);
+  });
+
+  it('all six combinations of rule × count (0 / not 0)', () => {
+    expect(applyFilter(ITEMS, parseFilter(NONE), { viewer: null, today, projects: [] }).length).toBe(0);
+    const defs: TallyDef[] = [];
+    for (const f of ['never', 'zero', 'always'] as const) {
+      defs.push(query(`${f}-0`, NONE, { fold: f }), query(`${f}-n`, SOME, { fold: f }));
+    }
+    const e = tallyEntries(ITEMS, defs, DEFAULT_HAND_BACK, { viewer: null, today, projects: [] });
+    expect(e.map((x) => [x.kind, x.count > 0, x.folded])).toEqual([
+      ['never-0', false, false],
+      ['never-n', true, false],
+      ['zero-0', false, true],
+      ['zero-n', true, false],
+      ['always-0', false, true],
+      ['always-n', true, true],
+    ]);
+    // flow rows fold by the same rule: "运行中" (1 here) never, "等 agent" at 0, "稍后处理" (0 here) always
+    const hb = DEFAULT_HAND_BACK;
+    const flows = tallyEntries(ITEMS, [flow('a', 'agent', { fold: 'zero' }), flow('b', 'agent', { fold: 'always' }), flow('c', 'later', { fold: 'never' })], hb);
+    expect(flows.map((x) => [x.kind, x.count, x.folded])).toEqual([
+      ['a', 1, false],
+      ['b', 1, true],
+      ['c', 0, false],
+    ]);
+  });
+
+  it('the default table over items: 稍后处理 folded with a count, 运行中 shown, 等 agent folded at 0', () => {
+    const parked = [...ITEMS, item(R, 8, { labels: L('pending/later') })];
+    const e = tallyEntries(parked, defaultTallies(), DEFAULT_HAND_BACK);
+    expect(e.map((x) => [x.kind, x.count, x.folded])).toEqual([
+      ['unlabeled', 1, false],
+      ['human', 2, false],
+      ['agent', 1, false],
+      ['running', 1, false],
+      ['later', 1, true],
+    ]);
+    const quiet = ITEMS.filter((i) => !i.labels.some((l) => ['doing/agent', 'pending/agent'].includes(l.name)));
+    expect(tallyEntries(quiet, defaultTallies(), DEFAULT_HAND_BACK).map((x) => [x.kind, x.count, x.folded])).toEqual([
+      ['unlabeled', 1, false],
+      ['human', 2, false],
+      ['agent', 0, true],
+      ['running', 0, false],
+      ['later', 0, true],
+    ]);
+  });
+
+  it('a row with no rule of its own takes its id\'s default: the default rows\' own, any other row at 0', () => {
+    expect(tallyFold({ id: 'running' })).toBe('never');
+    expect(tallyFold({ id: 'later' })).toBe('always');
+    expect(tallyFold({ id: 'human' })).toBe('zero');
+    expect(tallyFold({ id: 't-abc' })).toBe('zero');
+    // its own rule wins over the id's default
+    expect(tallyFold({ id: 'later', fold: 'never' })).toBe('never');
+    // "改成自己写条件" keeps the id, so the parked row turned into a condition still folds always
+    const later = defaultTallies().find((d) => d.id === 'later')!;
+    const turned = toQueryRow({ id: later.id, name: later.name, color: later.color, source: later.source }, { running: 'doing/agent', agent: 'pending/agent', human: 'pending/human', later: 'pending/later' });
+    expect(tallyFold(turned)).toBe('always');
+  });
+
+  it('a table saved before folding existed reads back unchanged (names, colours, order, conditions) and folds by the defaults', () => {
+    const old = [
+      { id: 'later', name: '以后再说', color: 'red', source: { kind: 'flow', flow: 'later' } },
+      { id: 'running', name: 'running!', color: 'blue', source: { kind: 'flow', flow: 'running' } },
+      { id: 't-mine', name: '我的', color: 'gray', source: { kind: 'query', query: NONE } },
+      { id: 'human', name: '等人处理', color: 'orange', source: { kind: 'query', query: 'label:"pending/human" is:open,closed', from: 'human' } },
+    ];
+    const r = normalizeTallies(JSON.parse(JSON.stringify(old)));
+    expect(r.broken).toBe(false);
+    expect(r.tallies).toEqual(old);
+    expect(r.tallies!.every((d) => !('fold' in d))).toBe(true);
+    const e = tallyEntries(ITEMS, r.tallies!, DEFAULT_HAND_BACK, { viewer: null, today, projects: [] });
+    expect(e.map((x) => [x.kind, x.name, x.color, x.fold, x.folded])).toEqual([
+      ['later', '以后再说', 'red', 'always', true],
+      ['running', 'running!', 'blue', 'never', false],
+      ['t-mine', '我的', 'gray', 'zero', true],
+      ['human', '等人处理', 'orange', 'zero', false],
+    ]);
+    // one row changed and saved: the new rule is kept, nothing else moves
+    const saved = r.tallies!.map((d) => (d.id === 'running' ? { ...d, fold: 'always' as const } : d));
+    const back = normalizeTallies(JSON.parse(JSON.stringify(saved)));
+    expect(back).toEqual({ tallies: saved, broken: false });
+    expect(tallyEntries(ITEMS, back.tallies!, DEFAULT_HAND_BACK).find((x) => x.kind === 'running')!.folded).toBe(true);
+  });
+
+  it('an unknown rule breaks the whole table (the default is shown, flagged) — never half of it', () => {
+    for (const bad of ['sometimes', '', 'Zero', 1, null, true, {}]) {
+      const r = normalizeTallies([{ id: 'a', name: 'a', color: 'blue', source: { kind: 'query', query: SOME }, fold: bad }, { id: 'b', name: 'b', color: 'blue', source: { kind: 'query', query: SOME } }]);
+      expect(r).toEqual({ tallies: null, broken: true });
+      expect(effectiveTallies(r.tallies)).toEqual(defaultTallies());
+    }
+    for (const good of TALLY_FOLDS) {
+      expect(normalizeTallies([{ id: 'a', name: 'a', color: 'blue', source: { kind: 'query', query: SOME }, fold: good }]).broken).toBe(false);
+    }
+  });
+
+  it('rows the bar never shows (empty name, empty condition, an empty flow label) are not in the fold either', () => {
+    const defs: TallyDef[] = [
+      query('blank-name', NONE, { name: ' ', fold: 'always' }),
+      query('blank-cond', '  ', { fold: 'always' }),
+      flow('no-label', 'later', { fold: 'always' }),
+      query('real', NONE, { fold: 'zero' }),
+    ];
+    const e = tallyEntries(ITEMS, defs, { ...DEFAULT_HAND_BACK, later: '' }, { viewer: null, today, projects: [] });
+    expect(e.map((x) => x.kind)).toEqual(['real']);
+    expect(e.filter((x) => x.folded).map((x) => x.kind)).toEqual(['real']);
+  });
+
+  it('which number is lit and what a click gives back are worked out on the whole list, folded or not', () => {
+    const quiet = ITEMS.filter((i) => !i.labels.some((l) => l.name === 'pending/agent'));
+    const shown = tallyEntries(ITEMS, defaultTallies(), DEFAULT_HAND_BACK);
+    const gone = tallyEntries(quiet, defaultTallies(), DEFAULT_HAND_BACK);
+    expect(shown.find((x) => x.kind === 'agent')!.folded).toBe(false);
+    expect(gone.find((x) => x.kind === 'agent')!.folded).toBe(true);
+    // "等 agent" lit from the search "bug"; it drops to 0 and folds: still lit, a click still gives "bug" back
+    const on = tallyClick('bug', null, shown.find((x) => x.kind === 'agent')!, shown);
+    expect(on).toEqual({ query: 'label:"pending/agent"', saved: 'bug', pick: 'agent' });
+    expect(litTally(on.query, gone, on.pick)).toBe('agent');
+    expect(tallyClick(on.query, on.saved, gone.find((x) => x.kind === 'agent')!, gone, on.pick)).toEqual({ query: 'bug', saved: null, pick: null });
   });
 });

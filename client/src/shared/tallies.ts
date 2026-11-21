@@ -12,11 +12,13 @@
 // What is kept: `null` = never changed (the default table); otherwise the whole table. A saved value
 // that is not a valid table is not shown half: the default is shown and Settings says so.
 
-import type { TallyColor, TallyDef, TallyFlow, TallySource } from './types';
+import type { TallyColor, TallyDef, TallyFlow, TallyFold, TallySource } from './types';
 import { t, zhKey } from './i18n';
 
 export const TALLY_COLORS: readonly TallyColor[] = ['green', 'blue', 'orange', 'red', 'purple', 'gray', 'ring'];
 export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human', 'later'];
+/** GitHub#634: the three ways a number can fold, in the order Settings lists them */
+export const TALLY_FOLDS: readonly TallyFold[] = ['never', 'zero', 'always'];
 /** at most this many numbers: the view bar has room for no more */
 export const TALLY_MAX = 8;
 /** the "未处理" number's search — no label at all (GitHub#418); open only while its "显示已关闭" switch is off (GitHub#464) */
@@ -34,12 +36,26 @@ export const tallyFlowText = (flow: TallyFlow): string =>
  * colours, so a number's "显示已关闭" switch (kept by id, GitHub#464) carries over; a saved table is not touched.
  */
 export const DEFAULT_TALLIES: readonly TallyDef[] = Object.freeze([
-  { id: 'unlabeled', name: zhKey('未处理'), color: 'ring', source: { kind: 'query', query: UNLABELED_QUERY } },
-  { id: 'human', name: zhKey('等人处理'), color: 'orange', source: { kind: 'flow', flow: 'human' } },
-  { id: 'agent', name: zhKey('等 agent'), color: 'blue', source: { kind: 'flow', flow: 'agent' } },
-  { id: 'running', name: zhKey('运行中'), color: 'green', source: { kind: 'flow', flow: 'running' } },
-  { id: 'later', name: zhKey('稍后处理'), color: 'purple', source: { kind: 'flow', flow: 'later' } },
+  { id: 'unlabeled', name: zhKey('未处理'), color: 'ring', source: { kind: 'query', query: UNLABELED_QUERY }, fold: 'zero' },
+  { id: 'human', name: zhKey('等人处理'), color: 'orange', source: { kind: 'flow', flow: 'human' }, fold: 'zero' },
+  { id: 'agent', name: zhKey('等 agent'), color: 'blue', source: { kind: 'flow', flow: 'agent' }, fold: 'zero' },
+  { id: 'running', name: zhKey('运行中'), color: 'green', source: { kind: 'flow', flow: 'running' }, fold: 'never' },
+  { id: 'later', name: zhKey('稍后处理'), color: 'purple', source: { kind: 'flow', flow: 'later' }, fold: 'always' },
 ] satisfies TallyDef[]);
+
+/**
+ * GitHub#634: how a row folds. Its own setting when it has one; otherwise (a table saved before folding existed,
+ * or a row added without one) the default row of the same id decides — "运行中" never, "稍后处理" always —
+ * and every other row folds while it counts 0.
+ */
+export function tallyFold(d: Pick<TallyDef, 'id' | 'fold'>): TallyFold {
+  return d.fold ?? DEFAULT_TALLIES.find((x) => x.id === d.id)?.fold ?? 'zero';
+}
+
+/** GitHub#634: does a number with this fold rule and this count go into the fold? */
+export function foldsAt(fold: TallyFold, count: number): boolean {
+  return fold === 'always' || (fold === 'zero' && count === 0);
+}
 
 /** a fresh copy of the default table (the frozen one is never handed out to be edited) */
 export function defaultTallies(): TallyDef[] {
@@ -66,7 +82,11 @@ function readDef(v: unknown): TallyDef | null {
   const o = v as Record<string, unknown>;
   if (!isStr(o.id) || o.id.trim() === '' || !isStr(o.name) || !isStr(o.color) || !(TALLY_COLORS as readonly string[]).includes(o.color)) return null;
   const source = readSource(o.source);
-  return source ? { id: o.id, name: o.name, color: o.color as TallyColor, source } : null;
+  if (!source) return null;
+  // GitHub#634: no fold = the row's default (tables saved before folding existed); an unknown one breaks the table
+  if (o.fold === undefined) return { id: o.id, name: o.name, color: o.color as TallyColor, source };
+  if (!isStr(o.fold) || !(TALLY_FOLDS as readonly string[]).includes(o.fold)) return null;
+  return { id: o.id, name: o.name, color: o.color as TallyColor, source, fold: o.fold as TallyFold };
 }
 
 /**
