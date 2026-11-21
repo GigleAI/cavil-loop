@@ -235,12 +235,12 @@ chk "人工重置后新周期第 1 轮：已写入" "$rc $(result "$o")" "0 RESU
 o=$(RL show 7)
 mat=$(sed -n '/^## 复审轮次的材料/,$p' <<<"$o")
 has "材料：标题写明是全部历史、不是当前轮次" "$mat" "## 复审轮次的材料（全部历史，不是当前轮次）"
-chk "材料：按时间依次是 原有人的评论、标记、人工重置的评论、标记" "$(grep -oE '带复审轮次标记（|@maint 的评论' <<<"$mat" | tr '\n' ' ')" "@maint 的评论 带复审轮次标记（ @maint 的评论 带复审轮次标记（ "
+chk "材料：按时间依次是 原有人的评论、标记、人工重置的评论、标记" "$(grep -oE '复审轮次标记 [0-9]+|@maint 的评论' <<<"$mat" | tr '\n' ' ')" "@maint 的评论 复审轮次标记 1 @maint 的评论 复审轮次标记 1 "
 has "材料：总数标明是全部历史" "$mat" "带复审轮次标记的 2 个，是全部历史"
 has "材料：只改标签、编辑评论要另外查 issue events" "$mat" "只改标签这类动作要照上文分页读评论编辑信息和 issue events 另外确定"
-t1=$(grep '带复审轮次标记' <<<"$mat" | head -1 | awk '{print $2}'); th=$(grep '@maint 的评论' <<<"$mat" | tail -1 | awk '{print $2}'); t2=$(grep '带复审轮次标记' <<<"$mat" | sed -n 2p | awk '{print $2}')
+t1=$(grep '复审轮次标记 [0-9]' <<<"$mat" | head -1 | awk '{print $2}'); th=$(grep '@maint 的评论' <<<"$mat" | tail -1 | awk '{print $2}'); t2=$(grep '复审轮次标记 [0-9]' <<<"$mat" | sed -n 2p | awk '{print $2}')
 chk "材料：时间可用来切分（第 1 个标记 < 人的评论 < 第 2 个标记）" "$([[ "$t1" < "$th" && "$th" < "$t2" ]] && echo ok)" "ok"
-chk "材料：重置点之后只有 1 个带标记单元（当前是第 1 轮，下一轮是第 2 轮）" "$(grep -E '带复审轮次标记（|@maint 的评论' <<<"$mat" | sed -n '3,$p' | grep -c '带复审轮次标记（')" "1"
+chk "材料：重置点之后只有 1 个带标记单元（当前是第 1 轮，下一轮是第 2 轮）" "$(grep -E '复审轮次标记 [0-9]|@maint 的评论' <<<"$mat" | sed -n '3,$p' | grep -c '复审轮次标记 [0-9]')" "1"
 # 同一节在评论区出现两次（改写超时其实成功）：材料里只列一次
 fresh issue
 RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
@@ -248,7 +248,31 @@ RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full
 RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')" >/dev/null
 rm -f "$GD/F_patch_comment_lost"
 chk "同一节出现两次：评论区里那一节确有两份" "$(jq -r '.["7"][] | .body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]* role=review' | sort | uniq -c | awk '{print $1}')" "2"
-chk "同一节出现两次：材料只列一次" "$(RL show 7 | sed -n '/^## 复审轮次的材料/,$p' | grep -c '带复审轮次标记（')" "1"
+chk "同一节出现两次：材料只列一次" "$(RL show 7 | sed -n '/^## 复审轮次的材料/,$p' | grep -c '复审轮次标记 [0-9]')" "1"
+# 只认真正的复审：复审节、loop 账号的单独评论且第一个非空行整行是标记；别人的评论只当可能的重置点列出（复审第 6 轮）
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')" >/dev/null
+python3 - "$GD/comments.json" <<'PY2'
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def add(login, body):
+    d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": body, "user": {"login": login}, "created_at": now})
+add("maint", "<!-- codex-review-round:9 -->\n维护者在讨论里贴了个格式示例，然后：请重新来一遍")
+add("loop-bot", "讨论：标记长这样 <!-- codex-review-round:3 --> ，不是复审")
+add("loop-bot", "<!-- codex-review-round:4 --> 后面还跟着字\n半截写法")
+add("loop-bot", "\n<!-- codex-review-round:2 -->\n## ❌ 单独发的复审")
+json.dump(d, open(sys.argv[1], "w"))
+PY2
+mat=$(RL show 7 | sed -n '/^## 复审轮次的材料/,$p')
+chk "只认真正的复审：材料按时间依次列出" "$(grep -oE '复审轮次标记 [0-9]+（[^，]*|@[a-z-]+ 的评论' <<<"$mat" | tr '\n' '|')" "@maint 的评论|复审轮次标记 1（往返记录里的复审节 $(jq -r '.["7"][] | .body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]* role=review' | head -1 | cut -d= -f2 | cut -d' ' -f1)|@maint 的评论|复审轮次标记 2（单独评论 #$(jq -r '.["7"][-1].id' "$GD/comments.json")|"
+has "维护者贴了标记示例：只当不是 loop 账号写的评论（可能的重置点），带作者" "$mat" "@maint 的评论 #$(jq -r '.["7"][-4].id' "$GD/comments.json")（不是 loop 账号写的）"
+lacks "维护者贴的示例不算复审（轮次 9 不出现）" "$mat" "复审轮次标记 9"
+lacks "loop 账号正文中间的示例不算" "$mat" "复审轮次标记 3"
+lacks "loop 账号半截写法不算" "$mat" "复审轮次标记 4"
+has "loop 账号单独发的复审算一轮、带作者" "$mat" "复审轮次标记 2（单独评论 #$(jq -r '.["7"][-1].id' "$GD/comments.json")，@loop-bot）"
+has "总数只数真正的复审（2 个）" "$mat" "带复审轮次标记的 2 个，是全部历史"
 fresh issue 'ENABLE_ROUND_LOG=""'
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')"); rc=$?
 chk "开关关着：拒收、照现在单独发" "$rc" "2"

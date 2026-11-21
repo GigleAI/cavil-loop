@@ -34,6 +34,8 @@ RE_SEC = re.compile(
     r"at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) after=([0-9]+) of=([0-9a-f]{6,32}|-) -->$")
 # 正文里出现任何一行像标记的东西都不许写进记录（会把记录切坏）
 RE_ANY_MARK = re.compile(r"^\s*<!-- cavil-round-log:")
+# 复审轮次标记：第一个非空行整行就是它（不是前缀匹配，正文里举的例子、半截写法都不算）
+RE_ROUND = re.compile(r"^<!-- codex-review-round:([0-9]{1,4}) -->$")
 MAX_CHARS = 60000
 
 
@@ -140,6 +142,15 @@ def version_of(unit, all_units):
     return None
 
 
+def round_mark(body):
+    """第一个非空行整行是轮次标记 → 轮次号；否则 None。"""
+    for ln in (body or "").split("\n"):
+        if ln.strip():
+            m = RE_ROUND.match(ln.strip())
+            return m.group(1) if m else None
+    return None
+
+
 def desc(u):
     if u["kind"] == "comment":
         return "评论 #%s（@%s，%s）%s" % (u["id"], u["author"], u["at"], (" " + u["url"]) if u["url"] else "")
@@ -179,19 +190,27 @@ def render(us, show_all):
             return ("❌ 版本对不上：最新一节（节 %s）对应的完整版本在记录里找不到。没有输出任何当前版本。"
                     "照读评论失败的规则处理。\n" % last["sec"]), 4
         lines += ["", "## 最新单元对应的完整版本", "", v]
-    # 复审轮次的材料：只列事实（哪些单元带轮次标记、哪些评论不是 loop 账号写的、各自的时间），
-    # 不替复审算当前轮次——重置点还要看评论的编辑和标签事件，这些不在评论视图里（PR #625 复审第 5 轮）
-    marked = [u for u in us if u["body"].lstrip().startswith("<!-- codex-review-round")]
+    # 复审轮次的材料：只列事实，不替复审算当前轮次——重置点还要看评论的编辑和标签事件，这些不在评论视图里
+    # （PR #625 复审第 5 轮）。算作一轮复审的只有两种：往返记录里的复审节、loop 账号写的单独评论，且第一个
+    # 非空行整行是轮次标记；别人写的评论一律只当「不是 loop 账号写的评论」列出（可能是重置点），
+    # loop 账号的其它评论不列（复审第 6 轮）
     lines += ["", "## 复审轮次的材料（全部历史，不是当前轮次）", ""]
+    n_marked = 0
     for u in us:
-        if u in marked:
-            where = ("节 %s" % u["sec"]) if u["kind"] == "section" else ("评论 #%s" % u["id"])
-            lines.append("- %s　带复审轮次标记（%s）" % (u["at"], where))
-        elif u["kind"] == "comment" and not u.get("_trusted"):
+        if u["kind"] == "comment" and not u.get("_trusted"):
             lines.append("- %s　@%s 的评论 #%s（不是 loop 账号写的）" % (u["at"], u["author"], u["id"]))
+            continue
+        if u["kind"] == "section" and u["role"] != "review":
+            continue
+        n = round_mark(u["body"])
+        if n is None:
+            continue
+        n_marked += 1
+        where = ("往返记录里的复审节 %s" % u["sec"]) if u["kind"] == "section" else ("单独评论 #%s" % u["id"])
+        lines.append("- %s　复审轮次标记 %s（%s，@%s）" % (u["at"], n, where, u["author"]))
     lines += ["", "（共 %d 个单元，其中带复审轮次标记的 %d 个，是全部历史；同一节在评论区出现多次的只算一次。"
               "当前轮次照上文规则：先定最近一次人工动作——上面只列了评论，评论的编辑、只改标签这类动作要照上文"
-              "分页读评论编辑信息和 issue events 另外确定——只数它之后的带标记单元）" % (len(us), len(marked))]
+              "分页读评论编辑信息和 issue events 另外确定——只数它之后的带标记单元）" % (len(us), n_marked)]
     return "\n".join(lines) + "\n", 0
 
 
