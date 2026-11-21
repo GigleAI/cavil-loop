@@ -156,9 +156,10 @@ The search box uses GitHub's web syntax and filters the synced data locally as y
 
 </details>
 
-<details><summary>Details: flow numbers in the top bar, view settings</summary>
+<details><summary>Details: flow numbers in the top bar, a PR's issue shown with it, view settings</summary>
 
 - **Flow numbers**: by default, left to right, "未处理 / 等人处理 / 等 agent / 运行中 / 稍后处理" (untouched / waiting for a human / waiting for the agent / running / later). "未处理" counts open items with no label at all; the others count the items of the checked sources that carry their label ("稍后处理" counts the label set in the "暂缓" (parked) field of Settings, default `pending/later`): "等人处理" counts open and closed ones (an autopilot PR's merge closes the issue and leaves `pending/human` on it for a human to look at), the others open ones only. Click a number to filter on that label (`label:"…"`); the list follows that number's own "显示已关闭" switch, so by default it is exactly the items counted. Click it again to get your previous search back. Which numbers are shown and what each counts is set in Settings → "顶栏计数" (top-bar numbers); the preview strip above the table shows the result over the current data as you edit.
+- **A PR's issue comes along when only the PR matches**: while the search box holds a condition (a lit top-bar number included) and "PRs under their issue" is on, a PR that matches whose linked issue does not brings that issue along on the board and in the table, the PR indented under it as usual. The issue is faded: a dashed card with the line "随 PR 显示 · 不在筛选结果里" (shown with its PR · not a search match) on the board, a "随 PR 显示" tag at the end of its table row; it does not drag, and opens as usual. Only issues already read come along, one per PR (the first in the current sort that may take the PR; none when the PR already sits under a matching issue), only from the picked repository when one is picked, and a carried issue brings none of its own sub-issues. In the table with sub-issues indented, an issue that already comes along as a sub-issue of a matching issue stays there (one row per group) and the PR goes under it. The top-bar numbers and "搜索命中 N 条" (N search matches) count matches only; column, group and repository-section counts count what is shown, faded items included; the numbers' tooltip adds "另有 N 个 issue 随命中的 PR 显示" (N more issues shown with matching PRs).
 - **View settings**: column / grouping mode, sort (including "Project 里的顺序", the Project's own order), which columns to show, PRs under issues, sub-issues indented. The search text and view settings are remembered across restarts.
 
 </details>
@@ -322,5 +323,4 @@ In that form, a flow label (such as `pending/human` or `Done`) has "改名…" (
 
 Client issues still open; the issue pages have the current state:
 
-- When a filter (including the "未处理" / "等人处理" counts in the top bar) matches only a PR, its issue is shown too: [#622](https://github.com/GigleAI/cavil-loop/issues/622)
 - A nightly development build for Windows and Mac, updated through the development channel: [#628](https://github.com/GigleAI/cavil-loop/issues/628)
