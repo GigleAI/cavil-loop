@@ -90,6 +90,7 @@ retrospective-directory-lessons 2
 retrospective-global-lock 2
 retrospective-lessons 3
 retrospective-rule-limit 9
+review-converge 70
 review-max-rounds-default 1
 review-verdict-emoji 1
 run 128

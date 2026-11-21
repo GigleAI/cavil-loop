@@ -23,6 +23,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -144,7 +146,7 @@ chk "打分 0 失败" "$(judge_compose "$out")" "0"
 printf 'EXTRA-项目要求\n' > "$PROMPTS/new-issue.extra.md"
 out=$(compose_prompt_template new-issue)
 chk "有项目增量时同样跳过、增量仍在最后" \
-    "$(grep -c 'DIR-SECRET' "$out") $(tail -1 "$out")" "0 EXTRA-项目要求"
+    "$(grep -c 'DIR-SECRET' "$out") $(strip_review_converge < "$out" | tail -1)" "0 EXTRA-项目要求"
 rm -f "$PROMPTS/new-issue.extra.md"
 
 echo "── 1b. Windows 换行（CRLF）的经验文件：两个入口同样跳过目录经验段 ──"
@@ -248,7 +250,7 @@ else
     printf '# 通用公开经验\n\n- GENERAL-通用经验' > "$SKILL_DIR/prompts/lessons.md"   # 故意不带末尾换行
     for overlay in no yes; do
         [ "$overlay" = yes ] && printf 'EXTRA-项目要求\n' > "$PROMPTS/new-issue.extra.md"
-        new_out=$(compose_prompt_template new-issue); cp "$new_out" "$TMP/new.md"
+        new_out=$(compose_prompt_template new-issue); strip_review_converge < "$new_out" > "$TMP/new.md"   # GitHub#621 的段不归这里管
         old_out=$(old_compose_prompt_template new-issue); cp "$old_out" "$TMP/old.md"
         if cmp -s "$TMP/new.md" "$TMP/old.md" && [ -s "$TMP/new.md" ]; then
             ok "项目增量=$overlay：与 $BASE_REV 逐字节相同（$(wc -l < "$TMP/new.md") 行）"
