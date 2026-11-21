@@ -2227,15 +2227,21 @@ bash scripts/preview-serve.sh --list       # 本项目所有 preview 及其死�
 bash scripts/preview-unserve.sh --issue 791  # 手动注销：预期 worktree 按配置推算 #791 的那个
 ```
 
-在清理挂点里一定要带上挂点拿到的 worktree。挂点收到的是真实的 `ISSUE` 和 `WORKTREE`；不带
+在清理挂点里（`CLEANUP_HOOK` 指向的脚本，放在项目自己的目录里）按技能的安装路径调用脚本，并且一定要带上挂点拿到的 worktree。挂点收到的是真实的 `ISSUE` 和 `WORKTREE`；不带
 `--expect-worktree` 时脚本按配置推算该编号的 worktree，遇到同号但不同 worktree 的情况可能注销别人的 preview：
 
+<!-- preview-unserve-hook:begin -->
 ```bash
-# 写在 CLEANUP_HOOK 里：worktree 不可信（为空、形状不符）就跳过
-[ -n "$WORKTREE" ] && bash scripts/preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"
+# CLEANUP_HOOK script: deregister this item's preview / 清理挂点脚本：注销本条目的预览
+# An empty WORKTREE means "not trusted": skip, exit 0 / WORKTREE 为空表示不可信：跳过，退出 0
+if [ -n "${WORKTREE:-}" ]; then
+    cd "$PROJECT_ROOT" || exit 1
+    bash "$HOME/.agents/skills/cavil-loop/scripts/preview-unserve.sh" --issue "$ISSUE" --expect-worktree "$WORKTREE"
+fi
 ```
+<!-- preview-unserve-hook:end -->
 
-端口、主人或 worktree 对不上，一律不注销。
+端口、主人或 worktree 对不上，一律不注销。改名前的安装，技能在旧路径下，换成那个路径。
 
 </details>
 
@@ -3630,6 +3636,8 @@ gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
 
 ## 故障排查
 
+下面每一条从看到的现象（或想问的问题）出发，先给要查的第一件事；命令收在它下面的折叠块里。
+
 ### 最近几轮轮询都干了什么（运行记录）
 
 每一轮轮询退出时写一条记录（时间、结果、走到的最后一步、看到几个候选派了几个、GitHub 调用几次失败几次）；出了
@@ -4304,6 +4312,8 @@ git worktree remove '<占用者目录>'     # 腾出分支，然后重新标 pen
 </details>
 
 ### 调试一次 poll
+
+用本项目的配置手动、立刻跑一轮轮询，再看它写下的日志——改了配置或挂点之后、或者定时跑的那几轮日志看不出问题时用。它和定时的一轮一样会真的干活（可能派工）。
 
 <details><summary>命令</summary>
 

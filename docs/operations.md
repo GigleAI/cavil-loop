@@ -2625,16 +2625,22 @@ bash scripts/preview-serve.sh --list       # every preview in this project and w
 bash scripts/preview-unserve.sh --issue 791  # deregister by hand: the expected worktree is the one the config gives #791
 ```
 
-From the cleanup hook, always pass the worktree the hook was given. The hook is handed the real
+From the cleanup hook (the script `CLEANUP_HOOK` names, run from the project's own directory), call the script by the skill's installed path and always pass the worktree the hook was given. The hook is handed the real
 `ISSUE` and `WORKTREE`; without `--expect-worktree` the script assumes the worktree the config would
 give that number, and could deregister a preview that belongs to another worktree with the same number:
 
+<!-- preview-unserve-hook:begin -->
 ```bash
-# in CLEANUP_HOOK: skip when the worktree is not trusted (empty, or not the expected shape)
-[ -n "$WORKTREE" ] && bash scripts/preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"
+# CLEANUP_HOOK script: deregister this item's preview / 清理挂点脚本：注销本条目的预览
+# An empty WORKTREE means "not trusted": skip, exit 0 / WORKTREE 为空表示不可信：跳过，退出 0
+if [ -n "${WORKTREE:-}" ]; then
+    cd "$PROJECT_ROOT" || exit 1
+    bash "$HOME/.agents/skills/cavil-loop/scripts/preview-unserve.sh" --issue "$ISSUE" --expect-worktree "$WORKTREE"
+fi
 ```
+<!-- preview-unserve-hook:end -->
 
-A port, owner or worktree that does not match means nothing is deregistered.
+A port, owner or worktree that does not match means nothing is deregistered. An install from before the rename has the skill at its old path; use that path instead.
 
 </details>
 
@@ -4089,6 +4095,8 @@ Run only the first line to turn it off, only the second to turn it back on. Chec
 
 ## Troubleshooting
 
+Each entry below starts from what you see (a symptom or a question) and gives the first thing to check; the commands are folded under it.
+
 ### What did the last polls do? (run log)
 
 Every poll round writes one record when it exits (times, result, last step reached, candidates seen and
@@ -4823,6 +4831,8 @@ escalated, so re-labelling by hand always gives it a fresh set of attempts. To c
 </details>
 
 ### Debug a single poll
+
+Run one poll round by hand, right now, with this project's config, and read what it logged — useful after changing the config or a hook, or when the timer's own runs show nothing useful. It does real work (it can dispatch), like any scheduled round.
 
 <details><summary>Commands</summary>
 
