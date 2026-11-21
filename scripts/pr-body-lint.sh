@@ -14,7 +14,7 @@
 # 「几章挤进同一个折叠块」「改写时关联行被增删」要读懂内容或对比历史，这里不判。
 # 块和行内的种类（标题、段落、代码、HTML、分隔线、列表）都由 CommonMark 解析器认：仓库里已有的 markdown-it-py
 # （tests/lib/vendor/，随发布一起带着），不另写逐行的猜测——行内代码（跨行的也算）、代码块、HTML 注释里的
-# 标签都不算折叠，加粗、链接等写法的下划线式标题照样是标题。PR #650 复审两轮各找出逐行猜测漏掉的写法。
+# 标签、HTML 属性值里的字都不算折叠，加粗、链接等写法的下划线式标题照样是标题。PR #650 复审三轮各找出逐行猜测漏掉的写法（最后一处是属性值里的标签）。
 # 退出码：0 = 合格；1 = 不合格；2 = 用法错误、文件读不了或解析器加载不了（不输出 ok）。
 set -euo pipefail
 
@@ -31,12 +31,15 @@ vendor="$here/../tests/lib/vendor"
 
 body_summary=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence' < "$f") || { echo "读不了正文文件" >&2; exit 2; }
 
-PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" python3 - "$f" <<'PYEOF'
+PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" python3 -B - "$f" <<'PYEOF'
 import os, re, subprocess, sys
 
+# 只读：发布目录里的解析器不留字节码缓存（__pycache__），不靠调用方的环境
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.environ["PR_BODY_VENDOR"])
 try:
     from markdown_it import MarkdownIt
+    from markdown_it.common.html_re import HTML_TAG_RE
 except Exception:
     print("CommonMark 解析器加载不了", file=sys.stderr)
     sys.exit(2)
@@ -56,14 +59,44 @@ bad = []
 BEGIN = "<!-- autopilot-summary:begin -->"
 END = "<!-- autopilot-summary:end -->"
 LINK = re.compile(r"^\s*((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part of)\b[^#\n]*#[0-9]+)", re.I)
-TAG = re.compile(r"</details\s*>|<details\b", re.I)
+TAG_NAME = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)")
+RAW_TEXT = ("script", "style", "textarea", "title")
 
 
 def tags(html):
     """一段 HTML（HTML 块或行内 HTML）里真正的折叠标签，按出现顺序：(是不是结尾标签, 在这段里的第几行)。
-    注释里的不算（换成等长空白，行号不变）"""
-    html = re.sub(r"<!--[\s\S]*?(-->|$)", lambda m: re.sub(r"[^\n]", " ", m.group(0)), html)
-    return [(m.group(0).startswith("</"), html.count("\n", 0, m.start())) for m in TAG.finditer(html)]
+    标签怎么算一个用解析器自己的写法（markdown_it.common.html_re.HTML_TAG_RE，行内 HTML 也是它认的）：
+    从每个 < 起整段匹配一个标签 / 注释 / 声明，属性值（引号里的也算）、注释里的字随整段跳过，不会被当成标签；
+    解析器的注释写法不收的注释（中间有 --）照浏览器到第一个 --> 为止，没关上的算到这段末尾；script / style / textarea / title 里是原样文字，跳到它们的结尾标签"""
+    out = []
+    pos = 0
+    while True:
+        pos = html.find("<", pos)
+        if pos < 0:
+            return out
+        m = HTML_TAG_RE.match(html[pos:])
+        if m is None:
+            if html.startswith("<!--", pos):
+                close = html.find("-->", pos + 4)
+                if close < 0:
+                    return out
+                pos = close + 3
+                continue
+            pos += 1
+            continue
+        t = m.group(0)
+        name = TAG_NAME.match(t)
+        if name:
+            n = name.group(2).lower()
+            if n == "details":
+                out.append((name.group(1) == "/", html.count("\n", 0, pos)))
+            elif n in RAW_TEXT and name.group(1) == "":
+                end = re.compile(r"</" + n + r"\s*>", re.I).search(html, pos + len(t))
+                if end is None:
+                    return out
+                pos = end.end()
+                continue
+        pos += len(t)
 
 
 # 折叠深度只由 HTML 块和行内 HTML 改变：代码块、行内代码是解析器给的别种 token，碰不到这里。

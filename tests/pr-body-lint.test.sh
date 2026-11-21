@@ -87,6 +87,18 @@ Closes #9
 
 测试通过。'; } > "$S/setext-bold-in.md"
 { printf '正文里有一段列表。\n\n- 第一项\n- 第二项\n\n'; fold 验证 x; } > "$S/list.md"
+# PR #650 复审第 3 轮：HTML 属性值里的标签字样不算折叠（行内 HTML、HTML 块、折叠标签自己的属性；正文和托管总结段）
+{ printf '验证说明里有带属性的 HTML。\n\nCloses #1\n\n'; fold 验证 '参见 <span title="<details>">标签</span>。
+
+<div data-x='"'"'</details>'"'"'>块</div>'; summary3; } > "$S/attr-in.md"
+{ printf '折叠标签自己的属性里有标签字样。\n\nCloses #1\n\n<details data-x="</details>"><summary>验证</summary>\n\n## 里面的标题\n\n</details>\n\n## 外面的标题\n'; } > "$S/attr-out.md"
+{ printf '托管总结段里有带属性的 HTML。\n\nCloses #1\n\n<!-- autopilot-summary:begin -->\n'
+  for t in 改了什么 怎么验证 剩余风险; do printf '<details><summary>%s</summary>\n\n<span title="</details><details>">x</span>\n\n</details>\n\n' "$t"; done
+  printf '<!-- autopilot-summary:end -->\n'; } > "$S/attr-summary.md"
+# 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
+{ printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
+
+x'; } > "$S/comment-dash.md"
 
 # 样例名 → 期望（第一行输出 + 退出码）
 expect=(
@@ -96,6 +108,7 @@ expect=(
     "unclosed|bad section-outside 5|1" "summary2|bad autopilot-summary 5|1"
     "inline-tag|ok|0" "setext-out|bad section-outside 3|1" "setext-in|ok|0" "hr|ok|0"
     "inline-tag-wrap|ok|0" "setext-bold-out|bad section-outside 3|1" "setext-bold-in|ok|0" "list|ok|0"
+    "attr-in|ok|0" "attr-out|bad section-outside 11|1" "attr-summary|ok|0" "comment-dash|ok|0"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
@@ -294,6 +307,26 @@ cmd=$(section "$TMP/out-part/issue-comment.md" | grep -o "bash '[^']*/pr-body-li
 check "少了版式检查的入口：整组退回本次发布的 scripts/" "$cmd" "bash '$REPO_DIR/scripts/pr-body-lint.sh'"
 grep -qF "bash '$REPO_DIR/scripts'/\"\$1\".sh" "$TMP/out-part/issue-comment.md" \
     && ok "……翻标签等步骤命令也一起退回 scripts/（同一个目录）" || bad "步骤命令没有和版式检查用同一个目录"
+
+# ════════ 【6】只读：干净的发布目录跑一次，文件一个不多 ════════
+echo "── 【6】在没设 PYTHONDONTWRITEBYTECODE 的环境里跑，发布目录里不留 __pycache__ ──"
+mk_release() {
+    mkdir -p "$1/scripts" "$1/tests/lib"
+    cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$1/scripts/"
+    cp -r "$REPO_DIR/tests/lib/vendor" "$1/tests/lib/"
+    find "$1" -name __pycache__ -type d -prune -exec rm -rf {} +
+}
+R1="$TMP/rel-clean"; mk_release "$R1"
+before=$(cd "$R1" && find . | LC_ALL=C sort)
+out=$(env -u PYTHONDONTWRITEBYTECODE bash "$R1/scripts/pr-body-lint.sh" "$S/good.md" 2>&1); rc=$?
+check "干净发布目录：合格样例输出 ok" "$out|$rc" "ok|0"
+after=$(cd "$R1" && find . | LC_ALL=C sort)
+check "干净发布目录：运行前后文件清单相同" "$after" "$before"
+# 到达性：同一份目录，普通地导入一次解析器就会留下缓存（上一条的比较确实能看出来）
+R2="$TMP/rel-plain"; mk_release "$R2"
+env -u PYTHONDONTWRITEBYTECODE python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import markdown_it' "$R2/tests/lib/vendor"
+n=$(find "$R2" -name __pycache__ -type d | wc -l | tr -d ' ')
+[ "$n" -gt 0 ] && ok "对照：普通导入会在发布目录里写出 $n 个 __pycache__" || bad "对照：普通导入没写缓存，上面的比较证明不了什么"
 
 report_counts "$pass" "$fail"
 echo
