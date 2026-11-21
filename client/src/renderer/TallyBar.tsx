@@ -147,6 +147,12 @@ export function TallyBar({
     };
     const key = (ev: KeyboardEvent) => {
       if (ev.key !== 'Escape') return;
+      // only an Esc meant for the fold: focus on its button or in its panel, or on nothing while the fold is on
+      // screen. An Esc with focus anywhere else (the search box, a detail page in front) is that place's own.
+      const fold = box.current?.querySelector<HTMLElement>('.tally-fold') ?? null;
+      const active = document.activeElement;
+      const ours = active && active !== document.body ? Boolean(fold?.contains(active)) : Boolean(fold && fold.offsetParent !== null);
+      if (!ours) return;
       ev.preventDefault();
       ev.stopPropagation();
       setOpen(false);
@@ -193,7 +199,16 @@ export function TallyBar({
             {folded.map((e) => button(e, 'fold'))}
           </span>
         ) : (
-          <span className="tally-fold">
+          <span
+            className="tally-fold"
+            onBlur={(ev) => {
+              // focus moved on, out of the fold (Tab, a click elsewhere): the open panel closes behind it. A button
+              // removed while focused (its number left the fold) is not a move: the focus rules above handle that.
+              const next = ev.relatedTarget;
+              if (next instanceof Node && ev.currentTarget.contains(next)) return;
+              if (ev.target instanceof Node && ev.target.isConnected && next instanceof Node) setOpen(false);
+            }}
+          >
             <button
               type="button"
               className={`tally-fold-toggle${litFolded ? ' on' : ''}`}

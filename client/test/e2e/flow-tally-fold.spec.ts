@@ -191,6 +191,34 @@ test('GitHub#634: the default rules over the recorded board; the fold opens, its
   await expect(pop(page)).toBeVisible();
   await page.getByTestId('table').click({ position: { x: 5, y: 5 } });
   await expect(pop(page)).toBeHidden();
+
+  // PR #640 review round 1: once the focus has left the fold, Esc belongs to where it is now. Opened with the
+  // keyboard, then the focus moves to the search box: the fold closes behind it, and the box's own Esc (put the
+  // box away, keep the text) runs — the focus does not jump back to the fold button.
+  await toggle(page).focus();
+  await page.keyboard.press('Enter');
+  await expect(pop(page)).toBeVisible();
+  await page.getByTestId('search').focus();
+  await expect.poll(() => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.testid)).toBe('search');
+  await expect(pop(page)).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect.poll(() => page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.testid ?? null)).not.toBe('search');
+  expect(await focused(page)).not.toBe('toggle');
+  await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+  // Shift+Tab out of the open fold closes it too; Esc inside it still closes it and comes back to its button
+  await toggle(page).focus();
+  await page.keyboard.press('Enter');
+  await expect(pop(page)).toBeVisible();
+  await page.keyboard.press('Shift+Tab');
+  await expect(pop(page)).toBeHidden();
+  expect(await focused(page)).not.toBe('toggle');
+  await toggle(page).focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Tab');
+  expect(await focused(page)).toMatch(/^fold:/);
+  await page.keyboard.press('Escape');
+  await expect(pop(page)).toBeHidden();
+  await expect.poll(() => focused(page)).toBe('toggle');
 });
 
 test('GitHub#634: a lit number goes 1 → 0 → 1 — it moves into the fold and back, stays lit, and a click still gives the search from before', async () => {
