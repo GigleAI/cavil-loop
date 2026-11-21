@@ -155,7 +155,7 @@ Overlapping ticks, repeated dispatch and duplicate comments are ruled out by a l
 
 ## Poll pace: idle and failure backoff
 
-A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; `rm $STATE_DIR/poll-pace.json` returns the project to full speed.
+A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; deleting the project's `poll-pace.json` (in its state directory, `~/.local/state/cavil-loop/<project key>/`) returns it to full speed.
 
 <details><summary>Details: what is saved, and the hard boundary</summary>
 
@@ -392,18 +392,6 @@ Claude Code CLI has a `--from-pr` flag, but it depends on Anthropic's official G
 ### Why poll instead of subscribing to GitHub
 
 GitHub has no subscription a local process can use, and its only push — a webhook — needs a public receiver set up by a repo admin. So the daemon polls, and while idle uses a conditional request that costs nothing when unchanged to bring pickup latency back to about one tick.
-
-<details><summary>Details: the alternatives that were looked at</summary>
-
-GitHub has no WebSocket / SSE and no GraphQL subscriptions; the web UI's live
-updates use a private channel. A webhook needs a publicly reachable receiver
-configured by a repo admin in the repo settings — at odds with "runs on a
-personal machine, talks only to github.com" (workers are also forbidden to touch
-repo webhooks). The repo events feed (`/repos/{owner}/{repo}/events`) can be
-polled, but GitHub documents its latency as anywhere from 30 seconds to 6 hours;
-notifications only cover threads the account is subscribed to.
-
-</details>
 
 ### Why this stack is cheap (vs webhook + Claude API)
 

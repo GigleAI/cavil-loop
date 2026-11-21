@@ -150,7 +150,7 @@ greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡
 
 ## 轮询节奏：空闲退避与故障退避
 
-安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；`rm $STATE_DIR/poll-pace.json` 就回到最快档。
+安静了一天以上的项目轮询得更稀（`POLL_BACKOFF_LADDER`），读 GitHub 失败走自己那套退避，退避中还有一个很省的条件请求（`POLL_IDLE_PROBE`，默认开），一有变化就把这一轮提前。这套状态只决定一轮**要不要**去打 GitHub，绝不决定怎么做；删掉项目状态目录（`~/.local/state/cavil-loop/<项目 key>/`）里的 `poll-pace.json` 就回到最快档。
 
 <details><summary>细节：省的是什么，以及硬边界</summary>
 
@@ -358,15 +358,6 @@ Claude Code CLI 有 `--from-pr` flag 但依赖 Anthropic 官方 GitHub App / Act
 ### 为什么不订阅 GitHub 的推送、而是轮询
 
 GitHub 没有给本机进程用的订阅接口，唯一的推送 webhook 又要一个由仓库管理员配置的公网接收地址。所以 daemon 轮询，空闲时用一个「没变化不占主额度」的条件请求把接活延迟压回约一个 tick。
-
-<details><summary>细节：看过的几种替代办法</summary>
-
-GitHub 没有 WebSocket / SSE，GraphQL 也没有 subscription；网页上的实时刷新是私有接口。webhook
-要一个公网能访问的接收地址，并由仓库管理员在仓库设置里配置——跟「跑在个人电脑上、只连 github.com」
-的定位冲突（worker 也被禁止改仓库 webhook）。仓库事件流（`/repos/{owner}/{repo}/events`）能轮询，
-但官方写明延迟 30 秒到 6 小时不等；通知接口只含当前账号订阅的条目。
-
-</details>
 
 ### 为什么这套架构便宜（对比 webhook + Claude API 方案）
 

@@ -54,7 +54,7 @@ Six layers are on without any setting: the label permission gate, hardened promp
 
 ## Splitting the polling identity from the writing identity
 
-By default one token does everything. Set `WRITE_GH_TOKEN` (in `cavil-loop.config`, or in the scheduler's EnvironmentFile) to give polling its own read-only token; empty falls back to `GH_TOKEN`, so single-account setups are unaffected. Any file holding a token must be mode `0600`.
+By default one token does everything. To split them, keep `GH_TOKEN` for polling and every read (it can then be read-only) and set `WRITE_GH_TOKEN` (in `cavil-loop.config`, or in the scheduler's EnvironmentFile) to a token with write access, used for every write; left empty, writes fall back to `GH_TOKEN`, so single-account setups are unaffected. Any file holding a token must be mode `0600`.
 
 <details><summary>Details: why split, and what each token is used for</summary>
 

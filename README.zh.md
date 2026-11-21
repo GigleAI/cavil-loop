@@ -295,7 +295,9 @@ gh pr edit N --add-label pending/agent --remove-label pending/human
 
 ## 客户端（桌面看板）
 
-Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口：
+Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以单独使用**的 GitHub issue / PR 客户端——装不装 daemon、建不建 GitHub Project 都能用。它把多个仓库和 GitHub Project 看板合进一个窗口，有看板、表格、依赖图三种视图，也能替人安装 daemon、把条目交给它。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。**
+
+<details><summary>细节：能做什么</summary>
 
 - **看板**：按迭代 / 状态 / 里程碑分列，可按仓库分泳道；PR 跟在它关联的 issue 下面。
 - **表格**：按仓库 / 迭代 / 状态 / 里程碑分组，子 issue 缩进在父 issue 下并显示完成进度，格子里直接改。
@@ -304,7 +306,9 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 - **修改直接发给 GitHub**：标签、迭代、状态、里程碑、回复、新建 issue、关闭、合并；详情浮在看板右侧，也能开成标签页。
 - **接上 daemon（可选）**：在设置里安装 daemon、把仓库接上去，一个按钮把条目交给 agent 或托管，`pending/human` 有新条目时发系统通知。
 
-三个视图的截图见上方「[它是什么](#它是什么)」。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。**
+三个视图的截图见上方「[它是什么](#它是什么)」。
+
+</details>
 
 <details><summary>细节：登录、网络边界、在本机代跑什么</summary>
 
@@ -314,7 +318,7 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 
 <details><summary>细节：安装包在哪</summary>
 
-安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`（第一个是 `client/v0.5.2`），有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。改代码的规则在开发文档 [client/README.md](client/README.md)。
+安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`，有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。改代码的规则在开发文档 [client/README.md](client/README.md)。
 
 </details>
 

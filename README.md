@@ -295,7 +295,9 @@ gh pr edit N --add-label pending/agent --remove-label pending/human
 
 ## Client (desktop board)
 
-The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window:
+The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue / PR client you can use **on its own** — with or without the daemon, with or without a GitHub Project. It puts several repositories and GitHub Project boards into one window as a board, a table and a dependency graph, and can also install the daemon and hand items to it. **Install, first run and every feature: [docs/client.md](docs/client.md).**
+
+<details><summary>Details: what it does</summary>
 
 - **Board** with columns by iteration / status / milestone, optional swimlanes per repository; each PR sits under the issue it links to.
 - **Table** grouped by repository / iteration / status / milestone, sub-issues indented under their parent with their progress, cells editable in place.
@@ -304,7 +306,9 @@ The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue /
 - **Changes** sent straight to GitHub: labels, iteration, status, milestone, replies, new issues, closing and merging; details float over the board or open as tabs.
 - **With the daemon** (optional): install it and connect a repository from Settings, hand an item to the agent or put it on autopilot with one button, and get a system notification when something lands on `pending/human`.
 
-Screenshots of the three views are under [What it is](#what-it-is) above. **Install, first run and every feature: [docs/client.md](docs/client.md).**
+Screenshots of the three views are under [What it is](#what-it-is) above.
+
+</details>
 
 <details><summary>Details: sign-in, network boundary, what it runs on this machine</summary>
 
@@ -314,7 +318,7 @@ You sign in through the browser (GitHub's device flow); the credential goes into
 
 <details><summary>Details: where the packages are</summary>
 
-Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` (the first is `client/v0.5.2`) and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. The developer notes are in [client/README.md](client/README.md) (Chinese).
+Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. The developer notes are in [client/README.md](client/README.md) (Chinese).
 
 </details>
 

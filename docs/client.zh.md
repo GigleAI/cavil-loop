@@ -45,7 +45,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 
 <details><summary>细节：下载哪个文件、放行第一次打开、登录、只加仓库不加 Project</summary>
 
-- **下哪一条**：标签形如 `client/vX.Y.Z`、没有 Pre-release 标记的最新一条是客户端正式版（第一个是 `client/v0.5.2`）。页面顶上标着 Latest 的是后台工具（daemon）的每周发版，不是客户端。Windows 安装包在 0.5.2 之后的正式版里。想先用上最新改动，可以改装开发版：标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release 的那些，有 Apple 芯片的 dmg 和 Windows 安装包。
+- **下哪一条**：标签形如 `client/vX.Y.Z`、没有 Pre-release 标记的最新一条是客户端正式版。页面顶上标着 Latest 的是后台工具（daemon）的每周发版，不是客户端。正式版也带 Windows 安装包。想先用上最新改动，可以改装开发版：标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release 的那些，有 Apple 芯片的 dmg 和 Windows 安装包。
 - **Apple 芯片还是 Intel？** 点屏幕左上角苹果菜单 →「关于本机」，「芯片」一行写 Apple M… 就是 Apple 芯片，「处理器」一行写 Intel 就是 Intel。
 - **macOS 拦下第一次打开**：照 dmg 窗口里写的两种办法之一放行：「系统设置 → 隐私与安全性 → 仍要打开」，或双击 dmg 里的「复制放行命令」，复制一条命令到终端里运行。
 - **Windows**：安装包没有代码签名，第一次运行时 Windows 会弹「Windows 已保护你的电脑」（Microsoft Defender SmartScreen）：点「更多信息」，核对应用名是「Cavil Loop」、文件来自本仓库的 Releases 页，再点「仍要运行」。只装给当前用户（不用管理员权限），开始菜单里会有它；之后的更新自己装，不再弹这个提示。

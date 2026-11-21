@@ -54,7 +54,7 @@ contents as a new comment on this issue.
 
 ## 把轮询身份和写身份分开
 
-默认是一把 token 干所有事。设 `WRITE_GH_TOKEN`（写在 `cavil-loop.config` 里，或调度器的 EnvironmentFile 里）就让轮询单用一把只读 token；留空 = 回落 `GH_TOKEN`，单账号部署完全不受影响。任何装着 token 的文件都必须是 `0600`。
+默认是一把 token 干所有事。要分开：`GH_TOKEN` 只管轮询和所有读（这时可以是只读 token），`WRITE_GH_TOKEN`（写在 `cavil-loop.config` 里，或调度器的 EnvironmentFile 里）填一把有写权限的 token，所有写都用它；留空 = 写也回落 `GH_TOKEN`，单账号部署完全不受影响。任何装着 token 的文件都必须是 `0600`。
 
 <details><summary>详情：为什么要分开，每把 token 干什么</summary>
 
