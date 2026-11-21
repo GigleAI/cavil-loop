@@ -33,7 +33,7 @@ cp "$REPO_DIR/scripts/heavy-test.sh" "$REPO_DIR/scripts/_heavy.sh" "$SRC/scripts
 cp "$REPO_DIR/scripts/human-paths-check.sh" "$REPO_DIR/scripts/_human_paths.sh" "$SRC/scripts/"
 cp "$REPO_DIR/scripts/flip-label.sh" "$REPO_DIR/scripts/conflict-check.sh" "$REPO_DIR/scripts/pr-feedback.sh" \
    "$REPO_DIR/scripts/_step.sh" "$REPO_DIR/scripts/step-result.jq" "$SRC/scripts/"   # 步骤脚本（GitHub#599）
-cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$SRC/scripts/"   # PR 正文版式检查（GitHub#644）
+cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$REPO_DIR/scripts/_autopilot_summary.sh" "$SRC/scripts/"   # PR 正文版式检查（GitHub#644）
 mkdir -p "$SRC/tests/lib"; cp -r "$REPO_DIR/tests/lib/vendor" "$SRC/tests/lib/"   # 它用的 CommonMark 解析器
 mkdir -p "$SRC/prompts"; cp "$REPO_DIR/prompts/review.template.md" "$SRC/prompts/"     # 跨版本：用发布里的模板渲染
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'

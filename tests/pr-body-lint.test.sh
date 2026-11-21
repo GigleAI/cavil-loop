@@ -105,6 +105,10 @@ Closes #9
 { printf '跨行行内代码后面的关联行。\n\n'; fold 验证 '跨行 `a
 b` 之后
 Closes #1'; } > "$S/link-after-code.md"
+# PR #650 复审第 5 轮：总结段标记的字样出现在文本框、行内代码里——daemon 合并后按字面截取（_autopilot_summary.sh），
+# 会从那一行起照搬，所以检查照同一条规则报出来
+{ printf '文本框里有总结段标记字样。\n\nCloses #644\n\n<details><summary>验证</summary>\n\n<textarea>\n<!-- autopilot-summary:begin -->\n</textarea>\n\n</details>\n'; } > "$S/mark-in-textarea.md"
+{ printf '行内代码里有总结段标记字样。\n\nCloses #1\n\n'; fold 验证 '写法是 `<!-- autopilot-summary:end -->`。'; summary3; } > "$S/mark-in-code.md"
 # 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
 { printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
 
@@ -120,6 +124,7 @@ expect=(
     "inline-tag-wrap|ok|0" "setext-bold-out|bad section-outside 3|1" "setext-bold-in|ok|0" "list|ok|0"
     "attr-in|ok|0" "attr-out|bad section-outside 11|1" "attr-summary|ok|0" "comment-dash|ok|0"
     "raw-inline|ok|0" "raw-summary|ok|0" "link-block-in|bad link-folded 4|1" "link-block-out|ok|0" "link-after-code|bad link-folded 7|1"
+    "mark-in-textarea|bad autopilot-summary 8|1" "mark-in-code|bad autopilot-summary 7|1"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
@@ -148,6 +153,16 @@ sum=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence' < "$S/good.md")
 check "摘要 = 第一行那句（去掉句末标点）" "$sum" "PR 正文改成按章节折叠，$SECRET"
 sum=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence' < "$S/short-head.md")
 [ "$sum" != "短标题" ] && ok "短标题开头的正文，摘要读不成那个标题（所以检查报 first-line）" || bad "短标题被读成了摘要"
+
+# ════════ 【2b】总结段：检查和 daemon 用同一个截取函数 ════════
+echo "── 【2b】总结段按 daemon 合并后照搬的同一条规则截 ──"
+# shellcheck source=../scripts/_autopilot_summary.sh
+source "$REPO_DIR/scripts/_autopilot_summary.sh"
+ext=$(autopilot_summary_extract < "$S/mark-in-textarea.md")
+check "文本框里的标记字样：daemon 会从那一行起照搬（截出的第一行是文本框的结尾标签）" "${ext%%$'\n'*}" "</textarea>"
+ext=$(autopilot_summary_extract < "$S/good.md")
+n=$(printf '%s\n' "$ext" | grep -c '^<details>')
+check "合格正文：daemon 截出的正是三个折叠块" "$n" "3"
 
 # ════════ 【3】【4】【5】真实派工 ════════
 CLEAN_ENV=(-u DISPATCH_PROMPT_KIND -u DISPATCH_AUTOPILOT -u DISPATCH_AUTOPILOT_ISSUE -u DISPATCH_AUTOPILOT_PR
@@ -323,7 +338,7 @@ grep -qF "bash '$REPO_DIR/scripts'/\"\$1\".sh" "$TMP/out-part/issue-comment.md" 
 echo "── 【6】在没设 PYTHONDONTWRITEBYTECODE 的环境里跑，发布目录里不留 __pycache__ ──"
 mk_release() {
     mkdir -p "$1/scripts" "$1/tests/lib"
-    cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$1/scripts/"
+    cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$REPO_DIR/scripts/_autopilot_summary.sh" "$1/scripts/"
     cp -r "$REPO_DIR/tests/lib/vendor" "$1/tests/lib/"
     find "$1" -name __pycache__ -type d -prune -exec rm -rf {} +
 }

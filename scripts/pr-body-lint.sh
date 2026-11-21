@@ -26,12 +26,13 @@ f="$1"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_concurrent_work_defs.sh
 source "$here/_concurrent_work_defs.sh"
+[ -f "$here/_autopilot_summary.sh" ] || { echo "找不到总结段截取规则（_autopilot_summary.sh）" >&2; exit 2; }
 vendor="$here/../tests/lib/vendor"
 [ -f "$vendor/markdown_it/__init__.py" ] || { echo "找不到 CommonMark 解析器（tests/lib/vendor/）" >&2; exit 2; }
 
 body_summary=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence' < "$f") || { echo "读不了正文文件" >&2; exit 2; }
 
-PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" python3 -B - "$f" <<'PYEOF'
+PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" PR_BODY_SUMMARY_LIB="$here/_autopilot_summary.sh" python3 -B - "$f" <<'PYEOF'
 import os, re, subprocess, sys
 
 # 只读：发布目录里的解析器不留字节码缓存（__pycache__），不靠调用方的环境
@@ -53,7 +54,6 @@ except (OSError, UnicodeDecodeError):
 
 text = raw.replace("\r\n", "\n").replace("\r", "\n")
 lines = text.split("\n")
-tokens = MarkdownIt("commonmark").parse(text)
 bad = []
 
 BEGIN = "<!-- autopilot-summary:begin -->"
@@ -80,12 +80,23 @@ class Scan:
         self.unbalanced = None
         self.detail_opens = [] # 每个 <details> 打开时：(行号, 打开前的深度)
         self.pieces = {}       # 行号 → [(文字, 当时的深度)]，只收看得见的文字
+        self.events = []       # 每个折叠标签：(行号, 是不是结尾标签)，按出现顺序
+
+    def depth_before(self, line):
+        """第 line 行开头时的折叠深度（只算它之前各行的标签，多出来的结尾标签不往负数走）"""
+        d = 0
+        for ln, closing in self.events:
+            if ln >= line:
+                break
+            d = max(d - 1, 0) if closing else d + 1
+        return d
 
     def text(self, s, line):
         if self.mode is None and s:
             self.pieces.setdefault(line, []).append((s, self.depth))
 
     def _tag(self, closing, line):
+        self.events.append((line, closing))
         if closing:
             self.depth -= 1
             if self.opens:
@@ -140,58 +151,55 @@ class Scan:
             pos = lt + len(t)
 
 
-sc = Scan()
-marks = []          # (b|e, 行号, 当时的深度)
-first_block = None  # 第一个不是纯注释的块：(token, 深度)
-
-for i, tok in enumerate(tokens):
-    line = tok.map[0] + 1 if tok.map else None
-    if tok.type == "html_block":
-        content = tok.content
-        only_comment = re.fullmatch(r"\s*(<!--[\s\S]*?-->\s*)+", content) is not None
-        if first_block is None and not only_comment:
+def walk(text):
+    """解析一份正文，按文档顺序喂给一个新的扫描器；返回 (扫描器, 第一个块, 折叠区外的标题行)"""
+    sc = Scan()
+    first_block = None  # 第一个不是纯注释的块：(token, 深度)
+    heads = []
+    tokens = MarkdownIt("commonmark").parse(text)
+    for i, tok in enumerate(tokens):
+        line = tok.map[0] + 1 if tok.map else None
+        if tok.type == "html_block":
+            content = tok.content
+            only_comment = re.fullmatch(r"\s*(<!--[\s\S]*?-->\s*)+", content) is not None
+            if first_block is None and not only_comment:
+                first_block = (tok, sc.depth)
+            sc.html(content, line)
+            continue
+        if tok.type == "inline":
+            # 行号：在这段的原文里顺着找每个换行、行内 HTML、行内代码的位置（文字不含换行，不用找）
+            src, cur, base = tok.content, 0, tok.map[0] + 1
+            ln = lambda p, src=src, base=base: base + src.count("\n", 0, p)
+            for ch in tok.children or []:
+                if ch.type in ("softbreak", "hardbreak"):
+                    o = src.find("\n", cur)
+                    cur = o + 1 if o >= 0 else cur
+                elif ch.type == "html_inline":
+                    o = src.find(ch.content, cur)
+                    o = cur if o < 0 else o
+                    sc.html(ch.content, ln(o))
+                    cur = o + len(ch.content)
+                elif ch.type == "text":
+                    sc.text(ch.content, ln(cur))
+                elif ch.type == "code_inline":
+                    o = src.find(ch.markup, cur)
+                    o = cur if o < 0 else o
+                    sc.text("\x00", ln(o))
+                    e = re.compile(r"(?<!`)" + re.escape(ch.markup) + r"(?!`)").search(src, o + len(ch.markup))
+                    cur = e.end() if e else o + len(ch.markup)
+            continue
+        if tok.type.endswith("_close"):
+            continue
+        if first_block is None and tok.map is not None:
             first_block = (tok, sc.depth)
-        # 托管总结段的标记是独占一行的注释：在它之前的内容先喂完，标记记下的是它那一刻的深度
-        chunk, start = [], 0
-        for off, l in enumerate(content.split("\n")):
-            if l.strip() in (BEGIN, END) and sc.mode is None:
-                if chunk:
-                    sc.html("\n".join(chunk), line + start)
-                marks.append(("b" if l.strip() == BEGIN else "e", line + off, sc.depth))
-                chunk, start = [], off + 1
-            else:
-                chunk.append(l)
-        if chunk:
-            sc.html("\n".join(chunk), line + start)
-        continue
-    if tok.type == "inline":
-        # 行号：在这段的原文里顺着找每个换行、行内 HTML、行内代码的位置（文字不含换行，不用找）
-        src, cur, base = tok.content, 0, tok.map[0] + 1
-        ln = lambda p: base + src.count("\n", 0, p)
-        for ch in tok.children or []:
-            if ch.type in ("softbreak", "hardbreak"):
-                o = src.find("\n", cur)
-                cur = o + 1 if o >= 0 else cur
-            elif ch.type == "html_inline":
-                o = src.find(ch.content, cur)
-                o = cur if o < 0 else o
-                sc.html(ch.content, ln(o))
-                cur = o + len(ch.content)
-            elif ch.type == "text":
-                sc.text(ch.content, ln(cur))
-            elif ch.type == "code_inline":
-                o = src.find(ch.markup, cur)
-                o = cur if o < 0 else o
-                sc.text("\x00", ln(o))
-                e = re.compile(r"(?<!`)" + re.escape(ch.markup) + r"(?!`)").search(src, o + len(ch.markup))
-                cur = e.end() if e else o + len(ch.markup)
-        continue
-    if tok.type.endswith("_close"):
-        continue
-    if first_block is None and tok.map is not None:
-        first_block = (tok, sc.depth)
-    if tok.type == "heading_open" and sc.depth == 0:
-        bad.append(("section-outside", line))
+        if tok.type == "heading_open" and sc.depth == 0:
+            heads.append(line)
+    return sc, first_block, heads
+
+
+sc, first_block, heads = walk(text)
+for ln in heads:
+    bad.append(("section-outside", ln))
 
 # 关联行：每一行看得见的文字从第一个非空字起拼起来，按那个字所在的折叠深度判
 for ln, ps in sc.pieces.items():
@@ -201,7 +209,7 @@ for ln, ps in sc.pieces.items():
     if k < len(ps) and ps[k][1] > 0 and LINK.match("".join(x for x, _ in ps[k:])):
         bad.append(("link-folded", ln))
 
-depth, opens, unbalanced, detail_opens = sc.depth, sc.opens, sc.unbalanced, sc.detail_opens
+depth, opens, unbalanced = sc.depth, sc.opens, sc.unbalanced
 if depth != 0 and unbalanced is None:
     unbalanced = opens[0] if opens else len(lines)
 if unbalanced is not None:
@@ -229,14 +237,36 @@ else:
     if not ok_first:
         bad.append(("first-line", tok.map[0] + 1))
 
-# 托管总结段：恰好一对标记、先开后关、都在折叠区外，中间恰好三个最外层折叠块
-if marks:
-    if [k for k, _, _ in marks] != ["b", "e"] or marks[0][2] != 0 or marks[1][2] != 0:
-        bad.append(("autopilot-summary", marks[0][1]))
+# 托管总结段：daemon 合并后照搬的那一段，就照 daemon 的同一条规则截（_autopilot_summary.sh 的
+# autopilot_summary_extract：按字面找含标记的行，不管它在注释、文本框还是代码里）。要求：含开始标记的行、
+# 含结束标记的行各恰好一行，先开后关，各自整行就是标记、在折叠区外；截出来的那段单独解析，恰好三个最外层折叠块、
+# 成对，折叠块外面除了空白没有别的字
+mark_b = [i + 1 for i, l in enumerate(lines) if BEGIN in l]
+mark_e = [i + 1 for i, l in enumerate(lines) if END in l]
+if mark_b or mark_e:
+    first_mark = min(mark_b + mark_e)
+    ok_marks = (len(mark_b) == 1 and len(mark_e) == 1 and mark_b[0] < mark_e[0]
+                and lines[mark_b[0] - 1].strip() == BEGIN and lines[mark_e[0] - 1].strip() == END
+                and sc.depth_before(mark_b[0]) == 0 and sc.depth_before(mark_e[0]) == 0)
+    if not ok_marks:
+        bad.append(("autopilot-summary", first_mark))
     else:
-        b, e = marks[0][1], marks[1][1]
-        if sum(1 for ln, d in detail_opens if b < ln < e and d == 0) != 3:
-            bad.append(("autopilot-summary", b))
+        r = subprocess.run(["bash", "-c", 'source "$1" && autopilot_summary_extract', "_", os.environ["PR_BODY_SUMMARY_LIB"]],
+                           input=raw, capture_output=True, text=True)
+        if r.returncode != 0:
+            print("总结段截取规则跑不了", file=sys.stderr)
+            sys.exit(2)
+        ssc, _, _ = walk(r.stdout)
+        d, tops = 0, 0
+        for _, closing in ssc.events:
+            if closing:
+                d -= 1
+            else:
+                tops += d == 0
+                d += 1
+        stray = any(x.strip() for ps in ssc.pieces.values() for x, dd in ps if dd == 0)
+        if tops != 3 or ssc.depth != 0 or ssc.unbalanced is not None or stray:
+            bad.append(("autopilot-summary", mark_b[0]))
 
 if bad:
     seen = set()

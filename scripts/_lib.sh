@@ -6141,12 +6141,12 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
 # 托管合并后发的那条说明（GitHub#233）：外面一句话结论 +「要人做什么」，背景 / 采用的方案 / 排除的方案和原因
 # 照搬 worker 写在 PR 正文里的总结段（AUTOPILOT_SUMMARY_BEGIN / _END 之间，各自折叠），合并依据折叠在最后。
 # 读的是 autopilot_permit 刚现读的 PR 正文（AP_BODY）和标题（AP_TITLE）。最后一行是标记，重发前按它去重。
-AUTOPILOT_SUMMARY_BEGIN='<!-- autopilot-summary:begin -->'
-AUTOPILOT_SUMMARY_END='<!-- autopilot-summary:end -->'
+# 标记和截取规则放在 _autopilot_summary.sh，和 PR 正文检查命令共用（GitHub#644）
+# shellcheck source=_autopilot_summary.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_autopilot_summary.sh"
 autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <授权在哪（给人看）> <完整提交号> [closes]
     local pr="$1" kind="$2" short="$3" base="$4" where="$5" head="$6" closes="${7:-}" summary todo
-    summary=$(printf '%s\n' "$AP_BODY" | awk -v b="$AUTOPILOT_SUMMARY_BEGIN" -v e="$AUTOPILOT_SUMMARY_END" '
-        index($0, e) { on = 0 } on { print } index($0, b) { on = 1; found = 1 }' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+    summary=$(printf '%s\n' "$AP_BODY" | autopilot_summary_extract)
     [ -n "$summary" ] || summary="⚠️ PR #$pr 的正文里没有总结段（背景 / 采用的方案 / 排除的方案和原因），细节请看 PR #${pr}。"
     if [ "$kind" = issue ] && [ "$closes" = closes ]; then
         # 合并即关（GitHub#461）：issue 已随合并关闭，daemon 打 Done、挂 pending/human 提醒人看
