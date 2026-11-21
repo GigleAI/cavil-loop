@@ -29,6 +29,8 @@ new_installer="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 [ -f "$new_installer" ] || { echo "❌ no installer at $1"; exit 1; }
 cd "$client"
 py="$(command -v python3 || command -v python)"
+# the app's status carries Chinese text; a Windows console's code page cannot print it
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 win() { cygpath -w "$1"; }
 installed_dir="$(cygpath -u "$LOCALAPPDATA")/Cavil Loop"
 installed="$installed_dir/Cavil Loop.exe"
@@ -200,7 +202,7 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         continue
     if r.get("op") == "update":
         last = r["status"]
-print(json.dumps(last, ensure_ascii=False))
+print(json.dumps(last))
 EOF
 }
 ever_phase() {
