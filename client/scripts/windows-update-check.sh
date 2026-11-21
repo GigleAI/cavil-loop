@@ -12,8 +12,10 @@
 #      installer); it finds the new version, downloads it, checks its signature and reports it ready
 #   2. the restart a person asks for (the app's own restart, sent through the test control file): the
 #      waiting installer runs and puts the new version in place
-#   3. checks: the installed program is byte for byte the new build's; the stand-in served the whole
-#      installer; it starts (--smoke-test)
+#   3. checks: the installed program is byte for byte what the new installer puts in place (each
+#      installer is first installed once on its own to learn that: it stamps the program it installs,
+#      so the build folder's copy differs); the stand-in served the whole installer; it starts
+#      (--smoke-test)
 #   4. the old version installed again; an installer whose bytes no longer match its signature (same
 #      signature, bytes appended): the stand-in served it whole, the app reports "signature check
 #      failed" (not a network error, not "nothing found"), no installer ran (every installed file
@@ -62,13 +64,7 @@ rm -rf src-tauri/target/debug/bundle/nsis
 npx tauri build --debug --bundles nsis --features update-test --config '{"bundle":{"createUpdaterArtifacts":false}}'
 node --input-type=module -e "import('./scripts/dev-version.mjs').then((m) => m.writeVersion('.', process.argv[1]))" "$new"
 old_installer="$(ls src-tauri/target/debug/bundle/nsis/*_x64-setup.exe)"
-old_exe="src-tauri/target/debug/Cavil Loop.exe"
-new_exe="src-tauri/target/release/Cavil Loop.exe"
-[ -f "$old_exe" ] && [ -f "$new_exe" ] || { echo "❌ the built programs are not where expected ($old_exe, $new_exe)"; exit 1; }
 sum() { sha256sum "$1" | cut -d' ' -f1; }
-old_sum="$(sum "$old_exe")"
-new_sum="$(sum "$new_exe")"
-[ "$old_sum" != "$new_sum" ] || { echo "❌ the old and the new program are the same file"; exit 1; }
 
 echo "== the new version's installer, signed with a throw-away key; a loopback stand-in for GitHub"
 npx tauri signer generate --ci -p "" -w "$work/key" >/dev/null
@@ -142,8 +138,8 @@ uninstall() {
   # whatever is left in the folder (a log, an empty folder) goes too, so the next install starts clean
   rm -rf "$installed_dir"
 }
-# the installed program is this build, byte for byte: waits for it, since the file appears before the
-# installer has finished writing it (and the installer itself may still be running in the background)
+# the installed program is the one an installer puts in place, byte for byte: waits for it, since the
+# file appears before the installer has finished writing it
 wait_installed() {  # wait_installed <sum> <seconds>
   local i
   for i in $(seq 1 "$2"); do
@@ -153,13 +149,32 @@ wait_installed() {  # wait_installed <sum> <seconds>
   echo "installed: $(ls -l "$installed" 2>&1); its sha256 $(sum "$installed" 2>/dev/null || echo '(unreadable)'), expected $1"
   return 1
 }
+# what an installer puts in place (the installer stamps the program it installs, so the build folder's
+# copy is not it): install it alone, wait until the program stops changing, take its sha256
+installed_by() {  # installed_by <installer> → sha256 of the installed program
+  uninstall >&2
+  local rc=0 a="" b="" n=0
+  "$1" //S >&2 || rc=$?
+  [ "$rc" = 0 ] || { echo "❌ $1 exited $rc" >&2; exit 1; }
+  for _ in $(seq 1 120); do
+    b="$( [ -f "$installed" ] && sum "$installed" 2>/dev/null || true)"
+    if [ -n "$b" ] && [ "$b" = "$a" ]; then n=$((n + 1)); [ "$n" -ge 3 ] && break; else n=0; fi
+    a="$b"
+    sleep 1
+  done
+  [ "$n" -ge 3 ] || { echo "❌ $1 put no settled program in place" >&2; exit 1; }
+  echo "$b"
+}
 install_old() {
   uninstall
-  local rc=0
-  "$old_installer" //S || rc=$?
-  echo "old installer exit $rc"
+  "$old_installer" //S
   wait_installed "$old_sum" 120 || { echo "❌ the old version is not what got installed"; ls -la "$installed_dir" || true; exit 1; }
 }
+echo "== what each installer puts in place"
+new_sum="$(installed_by "$new_installer")"
+old_sum="$(installed_by "$old_installer")"
+echo "new $new_sum, old $old_sum"
+[ "$old_sum" != "$new_sum" ] || { echo "❌ the old and the new installer put the same program in place"; exit 1; }
 
 # start the installed app in test mode (loopback GitHub, its own profile); its updater looks at once
 run_old() {
