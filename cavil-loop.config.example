@@ -357,6 +357,23 @@ LABEL_PENDING_LATER="pending/later"
 # 逐字节一样。
 ENABLE_CONCURRENT_WORK_HINT=true
 
+# Round log (GitHub#610): one back-and-forth between agents (proposal / PR → review → revision → …) takes one
+# comment. Each delivery that goes to another agent (flipped to the review label or back to the dispatch label)
+# is appended to that comment as a short section — what changed, what the next agent must know, the usage
+# footer — instead of a new comment with the whole text again. Comments to a human, the review verdict that
+# queues an autopilot merge, daemon comments and waiting-on-prerequisite notes stay separate. Only the loop's
+# own comments are ever edited; people are asked to reply in the hand-off comments, not to edit the record.
+# The weekly report and the per-PR time stats count each section as one comment would have been counted.
+# Empty / false / line missing = off: prompts and GitHub calls are byte-identical to before.
+#
+# 设成 true 时，agent 之间的来回（交方案 / 交 PR → 复审 → 修订 → ……）写进同一条「往返记录」评论：每次交给
+# agent 的交付（发完翻复审标签或派工标签）在末尾追加一节，只写改了什么、给下一个 agent 的交代和用量；完整版本
+# 放在记录顶部、换成最新的。交给人的评论、托管交合并的复审结论、daemon 的评论、等前置登记照现在单独发。只改
+# loop 自己发的往返记录，不改任何人的评论；人请在交人评论里回复，不要编辑往返记录。周报和单 PR 耗时统计把每一节
+# 当作一条评论来算，结果与以前一样。改写不成就另起一条完整的新记录。留空 / false / 不写这一行 = 关闭，提示词和
+# GitHub 调用与以前逐字节一样（以后要改成默认打开：把 scripts/_lib.sh 里 ENABLE_ROUND_LOG 的默认值改掉即可）。
+ENABLE_ROUND_LOG=true
+
 # The most bytes the list above may take (whole lines only; the closing "N more not listed" line counts).
 # 2000–20000; anything else (not a whole number, out of range) is treated as 6000 with one poll.log line.
 # This caps the list alone, not the whole prompt: a prompt over one command-line argument's limit is

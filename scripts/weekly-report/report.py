@@ -542,11 +542,15 @@ def main():
     # ── 单价可信度：金额按「这个价站不站得住」分桶（GitHub#934 交叉 review 第 1 轮）──
     # 不带到这里的后果：用参照兜底的存疑金额，和已与参照核对过的金额，在报告上长得
     # 一模一样，设计里承诺的「报红」就不存在。
+    # 「自动联网获取」两桶（fetched / disputed_fetched）的价是同一处来的，出处说明只写这一份：
+    # 每天的最新价只取官方价目页（GitHub#606），内置表里没有的模型缺价补抓还要两边一致（GitHub#51）
+    _FETCHED_SRC = ("daemon 联网抓来的公开价（每天的最新价**只取官方价目页一处**、不与别的来源对照；"
+                    "内置价目里没有的模型缺价补抓时，还要官方页与 LiteLLM 社区价目表一致才采用）")
     _TRUST = [
         ("disputed",       "⚠️ 与参照冲突（存疑）", "反解值与外部参照对不上，**两边都没有被判为对**，这部分金额只能当线索看"),
-        ("disputed_fetched", "⚠️ 与自动联网获取的参照冲突（存疑）", "反解值与 daemon 缺价时联网抓来的参照对不上，金额取的是抓来的价；**两边都没有被判为对**，只能当线索看"),
+        ("disputed_fetched", "⚠️ 与自动联网获取的参照冲突（存疑）", "反解值与参照对不上，参照是" + _FETCHED_SRC + "，金额取的是抓来的价；**两边都没有被判为对**，只能当线索看"),
         ("unstable",       "反解不出、用外部参照兜底",   "本机样本不足以解出这个单价，取的是参照价，**没有本机证据支持**"),
-        ("fetched",        "自动联网获取的单价",         "内置价目里没有这个模型，daemon 缺价时从官方价目页抓取、与 LiteLLM 社区价目表一致才采用；**没经人工核对，也没有本机证据支持**"),
+        ("fetched",        "自动联网获取的单价",         "用的是" + _FETCHED_SRC + "；**没经人工核对，也没有本机证据支持**"),
         ("uncorroborated", "反解稳定但无参照可比",       "解得稳，但没有可比的外部参照，属候选估算"),
         ("reference_only", "直接取参照价",               "加速档没有可反解的样本，直接用参照价"),
         ("corroborated",   "反解稳定且与参照一致",       "两个独立来源对上了 —— 只说明**和那份参照一致**，不等于已证明为真值"),
@@ -562,8 +566,8 @@ def main():
     _ref = (D.get("price_reference") or {}).get("source") or "未记录"
     price_trust = ("；".join(_parts) + "。" if _parts else "本次区间没有算出金额，无从谈可信度。") + \
         f"参照出处：`{_ref}` —— 是**本机缓存的一份公开价目**，本次**没有联网核验**；参照若已过期，反解值与它会一起错，这套机制发现不了。" + \
-        ("「自动联网获取」那一桶例外：那是内置价目里没有的新模型，daemon 缺价时联网抓的，两份公开资料彼此一致**不等于**与账单核对过。" if (t("price_usd_fetched") or t("price_usd_disputed_fetched")) else "") + \
-        f"另：本 worker 那一侧的单价是**本机反解**的（{t('price_src_solved'):.0f} 条）；交叉 review 那一侧取**内置 API 参考价**（{t('price_src_default'):.0f} 条）或**人工配置**（{t('price_src_configured'):.0f} 条），都未与账单独立核验，两侧不是同一把尺子。" + \
+        ("「自动联网获取」那一桶例外：那是 daemon 联网抓的公开价——每天的最新价只看官方价目页一处，缺价补抓要官方页与 LiteLLM 彼此一致，两种都**不等于**与账单核对过。" if (t("price_usd_fetched") or t("price_usd_disputed_fetched")) else "") + \
+        f"另：本 worker 那一侧的单价是**本机反解**的（{t('price_src_solved'):.0f} 条）；直接取公开价、不反解的（交叉 review 一侧，以及 GitHub#606 起的 Claude 评论 footer）用**内置 API 参考价或 daemon 抓来的官方价**（{t('price_src_default'):.0f} 条），另有**人工配置**（{t('price_src_configured'):.0f} 条），都未与账单独立核验，两侧不是同一把尺子。" + \
         (f"其中 {t('price_stale_records'):.0f} 条使用内置价时已超过 90 天未复核。" if t("price_stale_records") else "")
 
     L.append("<details>\n<summary><b>📐 数据口径 & 已知误差</b></summary>\n")

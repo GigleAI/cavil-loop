@@ -10,12 +10,18 @@
 
 price_cache_dir() { printf '%s/cavil-loop' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
 
-# 抓来的单价缓存（fetched-prices.json）里某一侧的 {model: prices}；没有 / 坏掉 → {}
+PRICE_CACHE_SOLVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../weekly-report" 2>/dev/null && pwd)"
+
+# 抓来的单价缓存（fetched-prices.json）里某一侧的 {model: prices}；没有 / 坏掉 → {}。
+# 读法与核对规则只有一份：price_solve.load_fetched（不阻塞、只认普通文件、逐层核对格式，
+# 坏的一层只丢那一层，PR #612 复审第 3 轮）。这里不再另用 jq 读一遍。
 fetched_prices_json() {
-    local f; f="$(price_cache_dir)/fetched-prices.json"
-    [ -f "$f" ] || { echo '{}'; return; }
-    jq -c --arg a "$1" '(.[$a] // {}) | with_entries(select(.value.prices | type == "object")
-        | .value = .value.prices)' "$f" 2>/dev/null || echo '{}'
+    PRICE_SOLVE_DIR="$PRICE_CACHE_SOLVER_DIR" python3 -c '
+import json, os, sys
+sys.path.insert(0, os.environ["PRICE_SOLVE_DIR"])
+import price_solve
+print(json.dumps({m: e["prices"] for m, e in price_solve.load_fetched().get(sys.argv[1], {}).items()},
+                 separators=(",", ":")))' "$1" 2>/dev/null || echo '{}'
 }
 
 mark_unpriced() {
