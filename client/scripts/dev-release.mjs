@@ -344,16 +344,18 @@ function settleTag(repo, release, fresh) {
 }
 
 /**
- * Does the tag exist? → 'absent' (GitHub answered 404) | 'present' (a ref of that name) | a reason
- * (anything else: cannot tell).
+ * Does the tag exist, and on which commit? → { state: 'absent' } (GitHub answered 404)
+ * | { state: 'present', sha } (a ref of that name; sha null when it is not a plain commit ref)
+ * | { state: 'unknown', why } (anything else).
  */
-function tagState(repo, tag) {
+export function tagState(repo, tag) {
   try {
     const ref = JSON.parse(gh(['api', `repos/${repo}/git/ref/tags/${encodeURIComponent(tag).replace(/%2F/g, '/')}`]));
-    return ref?.ref === `refs/tags/${tag}` ? 'present' : '回答看不懂';
+    if (ref?.ref !== `refs/tags/${tag}`) return { state: 'unknown', why: '回答看不懂' };
+    return { state: 'present', sha: ref?.object?.type === 'commit' && /^[0-9a-f]{40}$/.test(ref?.object?.sha ?? '') ? ref.object.sha : null };
   } catch (e) {
     const err = String(e.stderr ?? e.message);
-    return /HTTP 404/.test(err) ? 'absent' : `读不到：${err.trim()}`;
+    return /HTTP 404/.test(err) ? { state: 'absent' } : { state: 'unknown', why: `读不到：${err.trim()}` };
   }
 }
 
@@ -449,15 +451,20 @@ function main() {
     d = decide(before, version, files);
     if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写、不替换，现有文件原样保留`);
   }
-  if (d.action === 'fill') {
-    // never public also means no tag yet: GitHub creates a draft's tag only when it is published, and a
-    // release turned back into a draft keeps it. A tag there, or one that cannot be read → not filled
+  if (d.action === 'fill' || d.action === 'create') {
+    // One rule before either write (PR #630 review rounds 1–2 #11 / #12): the tag must not exist yet.
+    // GitHub creates a draft's tag only when it is published and keeps it when a release is turned
+    // back into a draft or deleted, so a tag already there means this version was made before — maybe
+    // public, maybe on another commit (`--target` only applies when the tag is created). Present →
+    // kept like a public build; cannot be read → nothing written.
     const t = tagState(repo, tag);
-    if (t === 'present') d = { action: 'keep', bad: [], was: true };
-    else if (t !== 'absent') throw new Error(`${tag} 是草稿，但读不出它的标签在不在（${t}），不能确认它从没公开过：什么都不写、不替换，现有文件原样保留`);
+    if (t.state === 'present') d = { action: 'keep', bad: [], was: true, tagSha: t.sha };
+    else if (t.state !== 'absent') throw new Error(`${tag}：读不出它的标签在不在（${t.why}），不能确认这个版本从没公开过：什么都不写、不替换，现有文件原样保留`);
   }
   if (d.action === 'keep') {
-    const what = d.was ? '公开过（现在是草稿，但记着发布时间或已有标签）' : `已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）`;
+    const what = d.tagSha !== undefined
+      ? `的标签已经存在（指向 ${d.tagSha ? d.tagSha.slice(0, 7) : '读不出的提交'}${d.tagSha && d.tagSha !== sha ? '，不是这次构建的提交' : ''}）：这个版本做过`
+      : d.was ? '公开过（现在是草稿，但记着发布时间）' : `已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）`;
     throw new Error(`${tag} ${what}：按维护者的选择，已公开的版本一律不改（公开过又改回草稿的也算），什么都没写；等 main 上有新提交，下一次运行会发一个更高的版本盖过它`);
   }
   if (d.action === 'skip') {
@@ -493,6 +500,11 @@ function main() {
     const after = readReleases(repo).filter((r) => r?.tag_name === tag);
     if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || buildState(after[0], files).state !== 'complete') {
       throw new Error(`发完再读，${tag} 不是「已发布的预发布、带齐 ${files.length} 个文件」`);
+    }
+    // the tag publishing created must be on the commit these files were built from
+    const t = tagState(repo, tag);
+    if (t.state !== 'present' || t.sha !== sha) {
+      throw new Error(`发完再读，${tag} 的标签${t.state === 'present' ? `指向 ${t.sha ?? '读不出的提交'}，不是这次构建的 ${sha}` : t.state === 'absent' ? '不存在' : `读不出（${t.why}）`}`);
     }
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
   }

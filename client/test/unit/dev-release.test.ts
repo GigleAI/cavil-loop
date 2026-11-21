@@ -291,6 +291,54 @@ describe('publishing a development build (GitHub#215)', () => {
     });
   });
 
+  // PR #630 review round 2 #12: before creating a release, the tag must not exist yet (it would be
+  // reused whatever commit it is on); after publishing, the tag must be on the commit that was built
+  describe('the tag, before creating a release and after publishing it (#12)', () => {
+    const v = '0.5.1-dev.387';
+    const tag = `client/v${v}`;
+    const relWrites = (calls: string[][]) => calls.filter((c) => c[0] === 'release').map((c) => c[1]);
+    it('no release, no tag → the tag is read, then the release is created and published; the tag read back is on this commit', () => {
+      const w = world([devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      const s = w.read();
+      const order = s.calls.map((c) => (c[0] === 'release' ? c[1] : c[1]?.includes?.(`git/ref/tags/${tag}`) ? 'tag' : c[0])).filter((x) => x === 'tag' || x === 'create' || x === 'edit');
+      expect(order).toEqual(['tag', 'create', 'edit', 'tag']);
+      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it.each([
+      ['a tag of that name on another commit (a release deleted, its tag left)', 'b'.repeat(40), []],
+      ['a tag of that name on this very commit', SHA, []],
+      ['the tag cannot be read', null, [`tagread:${tag}`]],
+    ])('no release, but %s → nothing created, nothing written, the run fails', (_, tagSha, fail) => {
+      const w = world([devRel('0.5.1-dev.380')], fail as string[]);
+      if (tagSha) {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        st.tags.push(tag);
+        st.tagSha = { [tag]: tagSha };
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(relWrites(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+      if (tagSha && tagSha !== SHA) expect(r.out).toContain('不是这次构建的提交');
+    });
+    it('published, but the tag read back is on another commit → the run fails saying so', () => {
+      // GitHub reports no tag before the create, yet the tag it ends up with is elsewhere
+      const w = world([devRel('0.5.1-dev.380')], [], { tagSha: { [tag]: 'c'.repeat(40) } });
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('不是这次构建的');
+    });
+  });
+
   it('a create that left a placeholder: the run fails, and the next one fills it in (it was never public)', () => {
     const v = '0.5.1-dev.387';
     const w = world([pub('client/v0.5.0')], ['create-starter']);

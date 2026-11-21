@@ -133,7 +133,7 @@ if (a[1] === 'edit') {
   if (fail('edit')) die('HTTP 500');
   // GitHub answering "ok" to an edit that did not take
   if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; if (!r.published_at) r.published_at = '2026-11-21T00:00:00Z'; if (!st.tags.includes(tag)) { st.tags.push(tag); st.tagSha = { ...(st.tagSha ?? {}), [tag]: r.target_commitish }; } }
+  if (a.includes('--draft=false')) { r.draft = false; if (!r.published_at) r.published_at = '2026-11-21T00:00:00Z'; if (!st.tags.includes(tag)) { st.tags.push(tag); st.tagSha = { [tag]: r.target_commitish, ...(st.tagSha ?? {}) }; } }
   if (a.includes('--draft=true')) r.draft = true;
   if (a.includes('--prerelease')) r.prerelease = true;
   save();
