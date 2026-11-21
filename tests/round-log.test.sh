@@ -388,6 +388,46 @@ o=$(RL show 7)
 has "重新读到第 2 版再发：打回意见附着第 2 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "方案全文 V2"
 has "重新读到第 2 版再发：最新单元是第 2 版的打回" "$(sed -n '/^## 最新单元：/,/^## 最新单元对应/p' <<<"$o")" "打回第 2 版"
 
+echo "── 首次开 PR：交付说明只写在 PR 正文里（线程里一条评论都没有）──"
+fresh pr
+echo '{"8": []}' > "$GD/comments.json"
+o=$(RL show 8); rc=$?
+chk "只有 PR 正文：读取成功" "$rc" "0"
+READ_OF=$(ofv 8)
+chk "只有 PR 正文：读取命令标出 --of body" "$READ_OF" "body"
+B='--basis aaaa000000000000000000000000000000000001 --base main'
+: > "$CALLS"
+# shellcheck disable=SC2086
+o=$(RL post 8 --role review --of "$READ_OF" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回首次交付')" $B); rc=$?
+chk "只有 PR 正文、它仍是最新交付：复审结论拒收，照现在单独发（不是停下）" "$rc $(result "$o")" "2 RESULT=rejected"
+has "只有 PR 正文：说明是正文本身" "$o" "所审的交付是正文本身"
+chk "只有 PR 正文：命令自己零写入（结论由复审照现在单独发）" "$(writes)" "0"
+# 复审照现在单独发了打回，worker 修完交下一版：从这里起进往返记录
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["8"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "<!-- codex-review-round:1 -->\n打回首次交付（单独发的）", "user": {"login": "loop-bot"}, "created_at": "2026-01-02T00:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+# shellcheck disable=SC2086
+o=$(RL post 8 --role worker --to pending/review --body "$(mk b2 '修了打回的两处')" --full "$(mk f2 'PR 说明 第 2 版')" $B); rc=$?
+chk "worker 交下一版：开第一条往返记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=new"
+: > "$CALLS"
+# shellcheck disable=SC2086
+o=$(RL post 8 --role review --of body --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n对首次交付的旧结论')" $B); rc=$?
+chk "期间已有新交付：按 PR 正文写的旧结论过期，不发" "$rc $(result "$o")" "3 RESULT=expired"
+chk "期间已有新交付：零写入" "$(writes)" "0"
+READ_OF=$(ofv 8)
+# shellcheck disable=SC2086
+o=$(RL post 8 --role review --of "$READ_OF" --to pending/agent --body "$(mk r3 $'<!-- codex-review-round:2 -->\n打回第 2 版')" $B); rc=$?
+chk "重读后对第 2 版发结论：追加进记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
+o=$(RL show 8)
+has "重读后：打回附着第 2 版 PR 说明" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "PR 说明 第 2 版"
+# 受保护读取的视图（PR 没有对话评论）：同样标出 --of body
+o=$(OS_RES='{"view": []}' OS_TARGET_KIND=pr CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; round_log_view_from_scan' _ "$REPO_DIR"); rc=$?
+chk "受保护读取视图、PR 没有对话评论：成功" "$rc" "0"
+has "受保护读取视图、PR 没有对话评论：标出 --of body" "$o" "--of body"
+
 echo "── 托管 + 外部内容保护：写入路径也走受保护读取 ──"
 GUARD=('LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""')
 fresh issue "${GUARD[@]}"
@@ -590,6 +630,7 @@ has "开着：缺本次依据时提示词要求补齐重跑、不改成单独发
 has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补不齐就不发评论、不翻标签，停下"
 has "开着：复审必须带读取时标出的 --of、原样照抄" "$sec" "复审**必须**带 \`--of\`"
 has "开着：过期的复审结论不改成单独发" "$sec" "**也不改成单独发**"
+has "开着：首次交付只有正文时的 --of 写法" "$sec" "| 正文本身（线程里还没有任何交付，如首次开 PR 时交付说明只写在 PR 正文里） | \`body\` | 拒收：照上文单独发 | 过期：不发、不翻标签 |"
 fresh issue 'ENABLE_ROUND_LOG=""'
 sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template review); cat "$f"' _ "$REPO_DIR")
 lacks "关着：不加这一段" "$sec" "# 往返记录（本项目开启了"

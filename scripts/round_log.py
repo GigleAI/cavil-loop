@@ -151,7 +151,9 @@ def render(us, show_all):
     """给 agent 看的文字。→ (文字, 退出码)；退出码 4 = 最新一节的完整版本对不上（不给任何当前版本）。"""
     lines = ["<!-- 下面是 cavil-loop 往返记录视图（GitHub#610）：评论按「单元」排好，最新的在最后 -->"]
     if not us:
-        lines.append("（还没有任何评论）")
+        # 一条评论都没有：交付就是正文本身（首次开 PR 时交付说明写在 PR 正文里）
+        lines += ["（还没有任何评论：这一轮的交付就是正文本身）", "",
+                  "（复审对这次交付发结论时，写入命令带上 `--of body`）"]
         return "\n".join(lines) + "\n", 0
     if show_all:
         for i, u in enumerate(us, 1):
@@ -168,8 +170,8 @@ def render(us, show_all):
         if u["kind"] == "comment" and u.get("_trusted"):
             rev = "comment-%s" % u["id"]
             break
-    if rev:
-        lines += ["（复审对这次交付发结论时，写入命令带上 `--of %s`）" % rev, ""]
+    # 线程里还没有任何交付（agent 的评论或记录里的一节）：所审的交付是正文本身
+    lines += ["（复审对这次交付发结论时，写入命令带上 `--of %s`）" % (rev or "body"), ""]
     lines.append(last["body"])
     if last["kind"] == "section":
         v = version_of(last, us)
@@ -237,7 +239,8 @@ def plan(inp):
         # 复审依据的交付由调用方给（--of = 读取时最新单元标出的那个值）：读取之后线程可能又多了新的交付，
         # 写入时不能按当时的线程重新挑一版。结果只有三种：
         #   ① 所审的就是记录里最新的那一节 worker 交付 → 照常写（of = 它）
-        #   ② 所审的是一条单独的评论（开关打开前的旧式交付等），且它仍是最新交付 → 拒收，照现在单独发
+        #   ② 所审的是一条单独的评论（开关打开前的旧式交付等）或正文本身（--of body：线程里还没有任何交付，
+        #      如首次开 PR 时交付说明只写在 PR 正文里），且它仍是最新交付 → 拒收，照现在单独发
         #   ③ 所审的那一版之后又有了交付（新的一节，或 loop 账号又单独发了评论），或者它已经找不到 → 过期，不发
         if not of:
             raise FormatError("复审要给 --of（读取时最新单元标出的值）")
@@ -246,9 +249,12 @@ def plan(inp):
             if (u["kind"] == "section" and u["role"] == "worker") or (u["kind"] == "comment" and u.get("_trusted")):
                 latest = u
                 break
-        latest_key = None if latest is None else (latest["sec"] if latest["kind"] == "section" else "comment-%s" % latest["id"])
+        # 还没有任何交付（只有正文，如首次开 PR 时交付说明写在 PR 正文里）= 所审的是正文：记作 body
+        latest_key = "body" if latest is None else (latest["sec"] if latest["kind"] == "section" else "comment-%s" % latest["id"])
         if latest_key != of:
             raise Superseded("所审的那一版（%s）读取之后已经不是最新的交付（现在是 %s），这条复审结论过期了" % (of, latest_key or "无"))
+        if latest is None:
+            raise FormatError("所审的交付是正文本身、不在往返记录里，这一条复审结论照现在单独发")
         if latest["kind"] == "comment":
             raise FormatError("所审的交付是一条单独的评论、不在往返记录里，这一条复审结论照现在单独发")
     sec, at = inp["sec"], inp["at"]
