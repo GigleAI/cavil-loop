@@ -45,7 +45,7 @@ daemon 每轮只读这个数，没到时间不启动本脚本。
       PRICE_FETCH_TIMEOUT（单次请求秒数，默认 15）
       XDG_CACHE_HOME（缓存目录的父目录，同 price_solve）
 """
-import datetime, fcntl, json, math, os, re, sys, time, urllib.request
+import datetime, fcntl, json, math, os, re, stat, sys, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "weekly-report"))
@@ -119,12 +119,10 @@ DUE_RE = re.compile(rb"[0-9]{1,18}\n*")
 
 def latest_due(now):
     """到时间了吗。文件没有、读不出、不合上面的格式 → 到了（宁可多抓一次，不要永远不抓）。"""
-    try:
-        with open(latest_due_path(), "rb") as f:
-            raw = f.read(65)
-    except OSError:
-        return True
-    if len(raw) > 64 or not DUE_RE.fullmatch(raw):
+    # 不是普通文件（命名管道之类）也算到时：读它会一直等下去（PR #612 复审第 2 轮），
+    # 钩子那边 `[ -f ]` 同样判到时；抓完写回的时刻文件会把它换成普通文件
+    raw = price_solve.read_regular(latest_due_path(), limit=64)
+    if raw is None or not DUE_RE.fullmatch(raw):
         return True
     return now >= int(raw.rstrip(b"\n"))
 
@@ -141,12 +139,7 @@ def _write_due(epoch):
 
 
 def _load_json(path, default):
-    try:
-        with open(path, encoding="utf-8") as f:
-            v = json.load(f)
-        return v if isinstance(v, dict) else default
-    except Exception:
-        return default
+    return price_solve.load_json_file(path, default)   # 不阻塞、有界、只认普通文件
 
 
 def _save_json(path, obj):
@@ -458,7 +451,18 @@ def main():
         return
     os.makedirs(price_solve.cache_dir(), exist_ok=True)
     # 多个项目的 daemon 共用这份缓存：同一时刻只让一个在抓，其余这一轮直接跳过
-    lock = open(os.path.join(price_solve.cache_dir(), "price-fetch.lock"), "w")
+    # 锁文件同样不阻塞地打开、只认普通文件：路径上若是命名管道，普通的 open(…, "w") 会一直等
+    lock_path = os.path.join(price_solve.cache_dir(), "price-fetch.lock")
+    try:
+        fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o644)
+    except OSError as e:
+        log(f"抓价锁文件打不开，本轮跳过：{lock_path}：{e}")
+        return
+    lock = os.fdopen(fd, "w")
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        lock.close()
+        log(f"抓价锁文件不是普通文件，本轮跳过：{lock_path}")
+        return
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

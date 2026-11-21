@@ -1543,9 +1543,9 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
   and `reference_only` (built-in). The footer calls the Claude driver once with `--both`, which
   prints the readable line and the machine record from one table; anything but exactly two lines
   counts as "usage unknown" for both, and the driver is not called again (the Codex driver is
-  still called twice). `PRICE_AUTO_FETCH=off` stops the download only: the footer keeps using the last downloaded
-  `latest-prices.json` if there is one, and the built-in table for models it does not list; delete
-  that file to price with the built-in table alone. Taking the prices reads no session log; counting
+  still called twice). `PRICE_AUTO_FETCH=off` stops the downloads only (the daily one and the gap-fill): prices already
+  downloaded keep being used — the last `latest-prices.json`, and the gap-fill prices in
+  `fetched-prices.json` for models neither that file nor the built-in table lists. Taking the prices reads no session log; counting
   this dispatch's usage still reads the sessions of the current working directory, as before. The
   weekly report still solves prices from the logs, as before.
 

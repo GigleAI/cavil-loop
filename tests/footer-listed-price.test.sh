@@ -15,6 +15,9 @@
 #   【4】每天抓一次（price_fetch.py）：没到时间不联网；到时间抓、写下次时刻；抓失败旧文件不动、
 #        冷却后再试；下次时刻文件读不出 = 到时间
 #   【5】daemon 钩子（_lib.sh 的 price_fetch_tick）：没标记、没到时间 → 不启动脚本；到时间 → 启动
+#   【6】「下次时刻」文件：同一组内容交给钩子和抓价脚本，结论一致
+#   【7】缓存路径上不是普通文件（命名管道）或文件过大：取价、驱动、抓价、钩子都不卡住，当作没有 / 到时；
+#        关掉下载后两类已下载的价照用（文档写的行为）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -272,6 +275,55 @@ rm -rf "$CACHE"; mkdir -p "$CACHE"
 chk "文件不在：抓价脚本判到时" "$(due_py)" "due"
 tick
 chk "文件不在：钩子启动了抓价脚本" "$([ -s "$LATEST" ] && echo due || echo wait)" "due"
+
+echo "── 7. 缓存路径上不是普通文件 / 文件过大：不卡住，当作没有 ──"
+# PR #612 复审第 2 轮：路径上是没有写端的命名管道时，普通的 open() 一直等下去。
+# 每条命令都套 timeout：卡住就是 124，断言里能看出来，不会把测试拖死
+T_OUT=20
+fifo_at() { rm -rf "$1"; mkfifo "$1"; }
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+fifo_at "$NEXT"
+rc=0; out=$(TU="$TU" timeout $T_OUT python3 -c '
+import os, sys, time
+sys.path.insert(0, os.environ["TU"])
+import price_fetch
+print("due" if price_fetch.latest_due(time.time()) else "wait")' 2>&1) || rc=$?
+chk "下次时刻文件是命名管道：抓价脚本判到时，不卡住" "$rc $out" "0 due"
+# 钩子是 shell 函数，套不了 timeout：放到后台，超时就杀掉（被杀的退出码不是 0，断言会红）
+tick & pid=$!
+( sleep $T_OUT; kill $pid 2>/dev/null ) & killer=$!
+rc=0; wait $pid || rc=$?; kill $killer 2>/dev/null; wait $killer 2>/dev/null
+chk "下次时刻文件是命名管道：钩子启动抓价、抓到最新价、把时刻写回成普通文件" \
+    "$rc $([ -s "$LATEST" ] && echo fetched) $([ -f "$NEXT" ] && [ ! -p "$NEXT" ] && echo regular)" "0 fetched regular"
+for f in latest-prices.json fetched-prices.json; do
+    rm -rf "$CACHE"; mkdir -p "$CACHE"; fifo_at "$CACHE/$f"
+    rc=0; T=$(timeout $T_OUT python3 "$SOLVER" --listed) || rc=$?
+    chk "$f 是命名管道：取价照常出表（opus-5-5 用内置价）" \
+        "$rc $(jq -r '.models["claude-opus-5-5"].input.status' <<<"$T" 2>/dev/null)" "0 reference_only"
+    rc=0; KV=$(cd "$WT" && timeout $T_OUT bash "$TU/claude.sh" "$START" --kv) || rc=$?
+    chk "$f 是命名管道：驱动照常出机器记录" "$rc $(kvget "$KV" cost_state)" "0 partial"
+    rc=0; timeout $T_OUT python3 "$TU/price_fetch.py" >/dev/null || rc=$?
+    chk "$f 是命名管道：抓价脚本照常跑完" "$rc" "0"
+done
+rm -rf "$CACHE"; mkdir -p "$CACHE"; fifo_at "$CACHE/price-fetch.lock"
+rc=0; OUT=$(timeout $T_OUT python3 "$TU/price_fetch.py") || rc=$?
+chk "抓价锁文件是命名管道：本轮跳过并留日志，不卡住" "$rc $(grep -c '抓价锁文件' <<<"$OUT")" "0 1"
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+python3 - "$LATEST" <<'PY2'
+import json, sys
+m = {"input": 5, "output": 25, "cache_read": 0.5, "cache_write_5m": 6.25, "cache_write_1h": 10}
+doc = {"claude": {"models": {"claude-opus-5-5": m}}, "pad": "x" * (9 * 1024 * 1024)}
+open(sys.argv[1], "w").write(json.dumps(doc))
+PY2
+chk "最新价文件超过 8 MB：当作没有，opus-5-5 用内置价" \
+    "$(jq -r '.models["claude-opus-5-5"].input.status' <<<"$(listed)")" "reference_only"
+# 文档写的行为：关掉下载只停下载，两类已经下载下来的价照用
+rm -rf "$CACHE"; mkdir -p "$CACHE"; put_latest "$L55"; put_gap; echo 0 > "$NEXT"
+OUT=$(PRICE_AUTO_FETCH=off python3 "$TU/price_fetch.py"; echo "rc=$?")
+T=$(listed)
+chk "PRICE_AUTO_FETCH=off：不下载（时刻文件没被改写），每日价和补缺价都照用" \
+    "$(cat "$NEXT") $(jq -c '[.models["claude-opus-5-5"].input.status, .models["claude-gap-9"].input.status]' <<<"$T")" \
+    '0 ["fetched","fetched"]'
 
 report_counts "$pass" "$fail"
 echo

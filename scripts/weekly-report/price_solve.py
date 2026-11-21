@@ -48,7 +48,7 @@
     python3 price_solve.py --listed         # 评论 footer 用：官方最新价目，不读任何日志（GitHub#606）
     环境变量 CLAUDE_PROJECTS_DIR 可覆盖 transcript 目录（测试用）。
 """
-import argparse, datetime, hashlib, json, glob, math, os, random, statistics, sys
+import argparse, datetime, hashlib, json, glob, math, os, random, stat, statistics, sys
 
 # ── 阈值（可配置；标定依据写在旁边，别改成拍脑袋的数）────────────────────────
 MAX_AMPLIFY = float(os.environ.get("PRICE_MAX_AMPLIFY", "5"))
@@ -123,14 +123,53 @@ def fetched_path():
     return os.path.join(cache_dir(), "fetched-prices.json")
 
 
+CACHE_READ_LIMIT = 8 * 1024 * 1024     # 缓存文件读回的上限；更大的当作坏掉
+
+
+def read_regular(path, limit=CACHE_READ_LIMIT):
+    """有界地读一个缓存文件 → bytes；不在、不是普通文件、超过 limit、读失败 → None。
+
+    先以不阻塞方式打开、确认是普通文件再读（PR #612 复审第 2 轮：缓存路径上是一个没有写端的
+    命名管道时，普通的 open() 一直等下去，daemon 同步调用的抓价入口和评论 footer 都卡住）。
+    缓存目录里的东西只当数据看：读不了就是「没有」，绝不让它拖住调用方。"""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks, size = [], 0
+        while True:
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            size += len(b)
+            if size > limit:
+                return None
+            chunks.append(b)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def load_json_file(path, default):
+    """缓存里的一个 JSON 对象；没有、不是普通文件、太大、坏掉、不是对象 → default。"""
+    raw = read_regular(path)
+    if raw is None:
+        return default
+    try:
+        v = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return default
+    return v if isinstance(v, dict) else default
+
+
 def load_fetched():
     """{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}；没有或坏掉 → {}。"""
-    try:
-        with open(fetched_path(), encoding="utf-8") as f:
-            v = json.load(f)
-        return v if isinstance(v, dict) else {}
-    except Exception:
-        return {}
+    return load_json_file(fetched_path(), {})
 
 
 def codex_price_table():
@@ -283,9 +322,7 @@ def load_latest():
     """{model: {五项单价}}。文件没有、坏掉、某个模型缺项或有项不是合法数 → 那个模型不要（整份坏 → {}）。
     只收五项齐全的模型：缺一项就会把那部分 token 当成缺价，不如整模型退回内置价。"""
     try:
-        with open(latest_path(), encoding="utf-8") as f:
-            v = json.load(f)
-        models = v.get("claude", {}).get("models", {})
+        models = load_json_file(latest_path(), {}).get("claude", {}).get("models", {})
     except Exception:
         return {}
     out = {}
@@ -549,8 +586,7 @@ def build_cached(policy="A", projects_dir=None):
     sig = _signature(projects_dir)
     path = cache_path()
     try:
-        with open(path, encoding="utf-8") as f:
-            c = json.load(f)
+        c = load_json_file(path, {})
         if c.get("signature") == sig and c.get("table", {}).get("policy") == policy:
             return c["table"]
     except Exception:

@@ -1235,8 +1235,8 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   `python3 scripts/weekly-report/price_solve.py --listed` 取单价（这一步不读会话日志）：模型有最新价用最新价，
   没有用内置表，再没有用缺价时补抓来的价。机器记录里是 `price_source=default`，金额拆成 `fetched`（下载来的）和
   `reference_only`（内置表）。footer 对 Claude 驱动只调一次 `--both`，人读行和机器记录出自同一张表；拿到的不是恰好两行就
-  两行一起算「用量未知」，不再调第二次（Codex 驱动照旧调两次）。`PRICE_AUTO_FETCH=off` 只停掉下载：已有 `latest-prices.json` 时 footer 继续用这份上次下载的价，
-  它没收录的模型用内置表；要只用内置表，删掉这个文件。取单价不读会话日志；统计本次用量照旧读当前工作目录对应的会话。
+  两行一起算「用量未知」，不再调第二次（Codex 驱动照旧调两次）。`PRICE_AUTO_FETCH=off` 只停掉下载（每日下载和缺价补抓都停）：已经下载下来的价照用——上次的
+  `latest-prices.json`，以及 `fetched-prices.json` 里补抓来的、这份文件和内置表都没收录的模型的价。取单价不读会话日志；统计本次用量照旧读当前工作目录对应的会话。
   周报照旧从日志反解单价。
 
 ### 每个已合并 PR 的平均 AI 与测试耗时（估算，GitHub#593）
