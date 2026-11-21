@@ -26,7 +26,7 @@ Which lines are records is decided in one place, record_lines(): a whole line ou
 the same parser finds the record in a saved file and tells answer comments from ordinary ones, so a
 proposal that explains the format in inline code is still an ordinary comment.
 
-Every question's ticks (one entry per question, t<comment>q<n>) also carry when they last changed and who changed them, from the loop
+Every question's ticks (one entry per question, t<comment>q<n>, n = the Q number in its heading) also carry when they last changed and who changed them, from the loop
 comment's edit history (tick_change()); that is shown to the worker, never fingerprinted, and a
 history that cannot pin it down says so — the worker then treats the ticks as changed this round.
 Whether this dispatch still holds the item (`holding yes|no`) and the write gate (`write ok <label>`
@@ -51,7 +51,7 @@ ANSWER_MARK = "<!-- agent-answer-only"
 WAIT_MARK = "<!-- agent-answer-only need=continue -->"
 SRC_KEY = {"conversation": "c", "inline": "i", "review": "r"}
 # a question heading: **Q<number> followed by a half-/full-width colon, a full stop, 、 or a space
-QUESTION = re.compile(r"^\s*\*\*Q\d+(?:[:：.、 ]|\*\*)")
+QUESTION = re.compile(r"^\s*\*\*Q(\d+)(?:[:：.、 ]|\*\*)")
 TICK = re.compile(r"^\s*[-*+]\s+\[([ xX])\]")
 FENCE = re.compile(r"^\s*(```|~~~)")
 HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
@@ -185,20 +185,38 @@ def edited(it):
 ROLE_NAME = {"maintainer": "维护者", "bot": "外部需求机器人", "loop": "loop 账号", "outsider": "外部账号"}
 
 
+AMBIGUOUS = object()   # one question number used twice in one version: no identity
+
+
+def qnum(head):
+    """A question's identity across versions of one comment: its number in the heading (Q<n>),
+    never its position — inserting, removing or reordering questions does not move a question's
+    ticks onto another one."""
+    return int(QUESTION.match(head).group(1))
+
+
 def question_states(body):
-    """Question number in the comment (1-based) → its tick state."""
-    return {n: tick_state(opts) for n, (_, opts) in enumerate(tick_groups(body), 1)}
+    """Question number → its tick state in this version, or AMBIGUOUS when the number appears twice."""
+    out = {}
+    for head, opts in tick_groups(body):
+        n = qnum(head)
+        out[n] = AMBIGUOUS if n in out else tick_state(opts)
+    return out
 
 
 def tick_change(it, n, edits):
-    """When question n of this comment last changed its ticks, and who changed it, from the
-    comment's edit history: (sort time, text, editor role or None). Only that question's checked
-    boxes are compared — another question, or a rewording, is not its change. Never edited, or no
-    version changed this question → since it was posted. A deleted version, a history that does not
-    end at the current ticks, or an edited comment with no history cannot be dated → UNKNOWN_TIME
-    (treated as this round)."""
+    """When question Q<n> of this comment last changed its ticks, and who changed it, from the
+    comment's edit history: (sort time, text, editor role or None). Questions are matched across
+    versions by number (qnum); only that question's checked boxes are compared — another question, a
+    move, or a rewording is not its change; a version that adds the question counts as a change by
+    whoever added it. Never edited, or no version changed this question → since it was posted. A
+    deleted version, a history that does not end at the current ticks, an edited comment with no
+    history, a number used twice in one version, or a change with no known editor cannot be dated →
+    UNKNOWN_TIME (treated as this round)."""
     created = it.get("created") or ""
     since = (created, "勾选自发表（%s）起没有变过" % created, None)
+    if question_states(it.get("body") or "").get(n) is AMBIGUOUS:
+        return UNKNOWN_TIME, "勾选变化时间无法确认（这条评论里有两道 Q%d），按本轮内的变化对待" % n, None
     if not edited(it):
         return since
     hist = (edits or {}).get(str(it["id"]))
@@ -208,13 +226,17 @@ def tick_change(it, n, edits):
     if any(v.get("deleted") or not isinstance(v.get("body"), str) for v in versions):
         return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待", None
     states = [question_states(v["body"]).get(n) for v in versions]
+    if any(st is AMBIGUOUS for st in states):
+        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史里有一版出现两道 Q%d），按本轮内的变化对待" % n, None
     if states[-1] != question_states(it.get("body") or "").get(n):
         return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史和现在的正文对不上），按本轮内的变化对待", None
     for i in range(len(states) - 1, 0, -1):
         if states[i] != states[i - 1]:
             v = versions[i]
+            if not v.get("editor") or not v.get("editor_role"):
+                return UNKNOWN_TIME, "勾选变化时间无法确认（%s 那一版改的人不明），按本轮内的变化对待" % v["at"], None
             role = v.get("editor_role")
-            who = "@%s（%s）" % (v["editor"], ROLE_NAME.get(role, "身份未知")) if v.get("editor") else "（账号未知）"
+            who = "@%s（%s）" % (v["editor"], ROLE_NAME.get(role, "身份未知"))
             return v["at"], "勾选最后变化 %s，由 %s改的" % (v["at"], who), role
     return since
 
@@ -232,8 +254,12 @@ def build(data):
             if is_answer(body):
                 answers.append(it)
                 continue
-            for n, (head, opts) in enumerate(tick_groups(body), 1):
-                key = "t%dq%d" % (iid, n)
+            counts = {}
+            for head, opts in tick_groups(body):
+                n = qnum(head)
+                counts[n] = counts.get(n, 0) + 1
+                # a repeated number keeps its own entry (…q<n>d<k>) and is reported as cannot-date
+                key = "t%dq%d" % (iid, n) + ("d%d" % counts[n] if counts[n] > 1 else "")
                 seen.append((key, fp("ticks", iid, n, tick_state(opts))))
                 at, note, _ = tick_change(it, n, edits)
                 content.append((key, {"src": "ticks", "id": iid, "role": "loop", "q": n,
@@ -265,7 +291,7 @@ def show(key, it):
     src = {"conversation": "对话", "inline": "行内评论", "review": "review", "ticks": "选择题勾选"}[it["src"]]
     head = "### %s ｜ %s ｜ %s ｜ 编号 %s" % (key, src, who, it["id"])
     if it["src"] == "ticks":
-        head += " ｜ 第 %d 题" % it["q"]
+        head += " ｜ Q%d" % it["q"]
     if it.get("state"):
         head += " ｜ %s" % it["state"]
     head += " ｜ " + (it["tick_note"] if it["src"] == "ticks" else when(it))
@@ -353,7 +379,7 @@ def parse_seen(s):
     d = {}
     for part in s.split(","):
         k, _, f = part.partition(":")
-        if not re.fullmatch(r"[cir]\d+|t\d+q\d+", k) or not re.fullmatch(r"[0-9a-f]{12}", f) or k in d:
+        if not re.fullmatch(r"[cir]\d+|t\d+q\d+(?:d\d+)?", k) or not re.fullmatch(r"[0-9a-f]{12}", f) or k in d:
             raise ValueError(part)
         d[k] = f
     return d

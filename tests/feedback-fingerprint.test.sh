@@ -27,6 +27,8 @@
 #      loop 账号改选项措辞不算勾选；loop 账号自己改了勾选会标明身份；改的人身份查不到 → unreadable
 #  15. 写前闸门（复审第 3 轮 #6）：答复和等继续提示共用的 `write ok <标签>` / `write stop <原因>`：打开且持有 →
 #      pending/human，issue 有关联打开 PR → pending/PR，没持有 / 已关闭 → stop；比对（含 need-continue）也带它；读失败没有闸门行
+#  16. 题目跨版本按题号认（复审第 4 轮 #2）：插入新题、调换两题顺序、删掉一题、同一题改措辞都不算已有题的勾选变化，
+#      真改勾才算；新插入的题算插入者的改动；一版里题号重复、改的人不明 → 无法确认
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -349,7 +351,7 @@ add_conv 90 902 alice "为什么默认是 A？" "2026-11-01T03:30:00Z"
 edits_fx IC_901 "[$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
 s=$(snap 90); rc=$?
 chk "snapshot 退出码 0" "$rc" 0
-grep -q '^### t901q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 901 ｜ 第 1 题 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
+grep -q '^### t901q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 901 ｜ Q1 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
     && ok "本轮新勾的：给出勾选变化的时间（晚于起点 f901 的 01:00）和改的人" || bad "勾选缺时间或来源" "$s"
 t=$(grep -n '^### t901q1 ' <<<"$s" | cut -d: -f1); c=$(grep -n '^### c902 ' <<<"$s" | cut -d: -f1)
 [ -n "$t" ] && [ -n "$c" ] && [ "$t" -lt "$c" ] && ok "勾选按变化时间排在 03:30 的提问之前" || bad "勾选排序不对" "$s"
@@ -477,9 +479,9 @@ add_conv 97 973 alice "为什么第 2 题默认快？" "2026-11-01T05:00:00Z"
 edits_fx IC_971 "[$(v 2026-11-01T04:00:00Z "$Q12R" loop-bot),$(v 2026-11-01T03:00:00Z "$Q12T" alice),$(v 2026-11-01T01:30:00Z "$Q1T" alice),$(v 2026-11-01T01:00:00Z "$Q0" loop-bot)]"
 s=$(snap 97); rc=$?
 chk "snapshot 退出码 0" "$rc" 0
-grep -q '^### t971q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ 第 1 题 ｜ 勾选最后变化 2026-11-01T01:30:00Z，由 @alice（维护者）改的$' <<<"$s" \
+grep -q '^### t971q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ Q1 ｜ 勾选最后变化 2026-11-01T01:30:00Z，由 @alice（维护者）改的$' <<<"$s" \
     && ok "第 1 题：上轮（01:30，早于起点 f972 的 02:00）由维护者勾的" || bad "第 1 题的时间 / 来源不对" "$s"
-grep -q '^### t971q2 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ 第 2 题 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
+grep -q '^### t971q2 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ Q2 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
     && ok "第 2 题：本轮（03:00）由维护者勾的，和第 1 题分开" || bad "第 2 题的时间 / 来源不对" "$s"
 grep -q '04:00:00Z，由 @loop-bot' <<<"$s" && bad "loop 账号改措辞被当成勾选变化" "$s" || ok "loop 账号 04:00 改选项措辞不算勾选变化"
 grep -A2 '^### t971q2 ' <<<"$s" | grep -q '^\*\*Q2：快还是稳？\*\*$' && ok "每题条目带上自己的题目行" || bad "题目行缺失" "$s"
@@ -530,6 +532,53 @@ rm -f "$FX/fail-repos_acme_widget_issues_99_comments"
 chk "对照：恢复后闸门又是 ok" "$(field "$(cmp_ 99 "$TMP/rec-99")" write)" "ok pending/human"
 set_item 20 "PR 正文" pr open '["doing/agent"]'
 chk "PR 本身 → write ok pending/human" "$(grep '^write ' <<<"$(snap 20)")" "write ok pending/human"
+
+echo "── 16. 题目跨版本按题号认（复审第 4 轮 #2）──"
+qa() { printf '**Q%s：%s**\n\n- [%s] **A. 甲**\n- [%s] **B. 乙**\n\n不勾会怎样：按 A。\n\n' "$1" "$2" "$3" "$4"; }
+B0="## 方案"$'\n\n'"$(qa 1 一 x ' ')"$'\n\n'"$(qa 2 二 ' ' x)"
+BINS="## 方案"$'\n\n'"$(qa 1 一 x ' ')"$'\n\n'"$(qa 3 新题 ' ' ' ')"$'\n\n'"$(qa 2 二 ' ' x)"
+BSWP="## 方案"$'\n\n'"$(qa 2 二 ' ' x)"$'\n\n'"$(qa 1 一 x ' ')"
+BDEL="## 方案"$'\n\n'"$(qa 2 二 ' ' x)"
+BREW="## 方案"$'\n\n'"$(qa 1 一（改过措辞） x ' ')"$'\n\n'"$(qa 2 二 ' ' x)"
+BTCK="## 方案"$'\n\n'"$(qa 1 一 x ' ')"$'\n\n'"$(qa 2 二 x ' ')"
+BDUP="## 方案"$'\n\n'"$(qa 1 一 x ' ')"$'\n\n'"$(qa 1 重复 ' ' ' ')"$'\n\n'"$(qa 2 二 ' ' x)"
+case16() {   # <编号> <现在的正文> <历史 JSON（新的在前）>
+    set_item "$1" "需求" issue
+    add_conv "$1" "${1}1" loop-bot "$B0" "2026-11-01T01:00:00Z"
+    edit_conv "$1" "${1}1" "$2"; set_updated "$1" "${1}1" "2026-11-01T04:00:00Z"
+    edits_fx "IC_${1}1" "$3"
+    snap "$1"
+}
+V0=$(v 2026-11-01T01:00:00Z "$B0" loop-bot)
+s=$(case16 61 "$BINS" "[$(v 2026-11-01T04:00:00Z "$BINS" loop-bot),$V0]")
+grep -q '^### t611q1 .*勾选自发表' <<<"$s" && grep -q '^### t611q2 .*勾选自发表' <<<"$s" \
+    && ok "中间插入新题：Q1、Q2 的勾选都不算变化" || bad "插题后已有题被算成变化" "$s"
+grep -q '^### t611q3 .*勾选最后变化 2026-11-01T04:00:00Z，由 @loop-bot（loop 账号）改的$' <<<"$s" \
+    && ok "新插入的 Q3 算插入者（loop 账号）的改动，不是人的勾选" || bad "新题来源不对" "$s"
+s=$(case16 62 "$BSWP" "[$(v 2026-11-01T04:00:00Z "$BSWP" loop-bot),$V0]")
+grep -q '^### t621q1 .*勾选自发表' <<<"$s" && grep -q '^### t621q2 .*勾选自发表' <<<"$s" \
+    && ok "调换两题顺序（两题勾选不同）：都不算变化" || bad "重排被算成勾选变化" "$s"
+s=$(case16 63 "$BDEL" "[$(v 2026-11-01T04:00:00Z "$BDEL" loop-bot),$V0]")
+grep -q '^### t631q2 .*勾选自发表' <<<"$s" && ! grep -q '^### t631q1 ' <<<"$s" \
+    && ok "删掉 Q1：剩下的 Q2 不算变化，Q1 不再列出" || bad "删题处理不对" "$s"
+s=$(case16 64 "$BREW" "[$(v 2026-11-01T04:00:00Z "$BREW" loop-bot),$V0]")
+grep -q '^### t641q1 .*勾选自发表' <<<"$s" && ok "同一题改措辞：不算勾选变化" || bad "改措辞被算成勾选" "$s"
+s=$(case16 65 "$BTCK" "[$(v 2026-11-01T04:00:00Z "$BTCK" alice),$V0]")
+grep -q '^### t651q2 .*勾选最后变化 2026-11-01T04:00:00Z，由 @alice（维护者）改的$' <<<"$s" && grep -q '^### t651q1 .*勾选自发表' <<<"$s" \
+    && ok "对照：维护者真改了 Q2 的勾选 → 只有 Q2 算变化" || bad "真改勾没认出" "$s"
+s=$(case16 66 "$BSWP" "[$(v 2026-11-01T04:00:00Z "$BSWP" loop-bot),$(v 2026-11-01T03:00:00Z "$BTCK" alice),$V0]")
+grep -q '^### t661q2 .*勾选最后变化 2026-11-01T04:00:00Z，由 @loop-bot' <<<"$s" && grep -q '^### t661q1 .*勾选自发表' <<<"$s" \
+    && ok "维护者先改勾、loop 账号再重排并改回：按题号逐版比，Q2 的最后变化记在 loop 账号名下" || bad "多版本按题号比对不对" "$s"
+s=$(case16 67 "$BDUP" "[$(v 2026-11-01T04:00:00Z "$BDUP" loop-bot),$V0]")
+grep -q '^### t671q1 .*无法确认（这条评论里有两道 Q1）' <<<"$s" && grep -q '^### t671q1d2 .*无法确认（这条评论里有两道 Q1）' <<<"$s" \
+    && grep -q '^### t671q2 .*勾选自发表' <<<"$s" \
+    && ok "题号重复：两项都报无法确认、各有自己的条目，Q2 照常" || bad "重复题号没报无法确认" "$s"
+s=$(case16 68 "$BTCK" "[$(jq -nc --arg b "$BTCK" '{at: "2026-11-01T04:00:00Z", body: $b, editor: null, deleted: false}'),$V0]")
+grep -q '^### t681q2 .*无法确认（2026-11-01T04:00:00Z 那一版改的人不明）' <<<"$s" && ok "改勾那一版没有编辑者 → 无法确认" || bad "编辑者不明没报无法确认" "$s"
+s=$(case16 69 "$BSWP" "[$(v 2026-11-01T04:00:00Z "$BSWP" loop-bot),$V0]"); answer 69 692 "$s"
+edit_conv 69 691 "$B0"
+o=$(cmp_ 69 "$TMP/rec-69")
+chk "答复后 loop 账号把题目顺序换回来：勾选项不变（edited 为空），只算绑定那一步变了 → need-continue" "$(field "$o" edited)|$(verdict "$o")|$(field "$o" reason)" "-|need-continue|resume-record-gone-or-changed"
 
 report_counts "$pass" "$fail"
 echo

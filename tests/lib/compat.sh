@@ -75,7 +75,11 @@ compat_feedback_fp_patch() {
     for f in "$1"/scripts/dispatch-new-issue.sh "$1"/scripts/dispatch-issue-comment.sh "$1"/scripts/dispatch-pr-comment.sh; do
         [ -f "$f" ] || continue
         grep -q 'FEEDBACK_FP_CMD' "$f" && continue
-        awk -v add="$line" '{ print } /^        -e "s\|\\\$\{CAVIL_STEP_DIR\}\|/ { print add }' "$f" > "$f.compat" && mv "$f.compat" "$f"
+        # literal match through ENVIRON: `-v` and regex escapes differ between mawk and gawk (gawk
+        # turned `\$` into `$` and matched nothing on CI), ENVIRON values are taken as they are
+        COMPAT_ADD="$line" COMPAT_AT='        -e "s|\${CAVIL_STEP_DIR}|' \
+            awk '{ print } index($0, ENVIRON["COMPAT_AT"]) == 1 { print ENVIRON["COMPAT_ADD"] }' "$f" > "$f.compat" \
+            && cat "$f.compat" > "$f" && rm -f "$f.compat"
         grep -q 'FEEDBACK_FP_CMD' "$f" || { echo "compat_feedback_fp_patch: 没能给 $f 补上 \${FEEDBACK_FP_CMD}" >&2; return 1; }
     done
 }
