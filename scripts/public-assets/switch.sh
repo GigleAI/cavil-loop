@@ -114,8 +114,8 @@ cmd_verify() {
     VERIFIED_ID=""
     id0="$(jget "$j" .pid) $(jget "$j" .start) $(jget "$j" .code) $(jget "$j" .legacy_sha)"
     root="$(jget "$j" .root)"; port="$(jget "$j" .port)"; prefix="$(jget "$j" .prefix)"
-    [ -n "$port" ] || port="$(conf_get PUBLIC_ASSETS_PORT || true)"
-    [ -n "$prefix" ] || prefix=/review-assets/
+    # 端口和路径前缀只取服务自己报告的（状态检查已核对过字段在、进程对得上）；缺了就是读不出，不猜默认值
+    [[ "$port" =~ ^[1-9][0-9]*$ ]] && [[ "$prefix" == /* ]] || { say "核验：服务状态里没有可用的监听端口 / 路径前缀，不核验"; return 1; }
     keys="$(registered_keys)" || { say "核验：读不出登记的项目"; return 1; }
     key="$(printf '%s\n' "$keys" | head -n 1)"
     [ -n "$key" ] || { say "核验：本机没有登记的项目，没法核验项目子目录"; return 1; }

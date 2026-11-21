@@ -275,7 +275,8 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new 
           rules: RULES_VERSION,
           strict: !!strict,
           root: realRoot,
-          prefix,
+          // 实际生效的路径前缀（和 createServer 里一样补上末尾的 /）和实际监听的端口：切换核验只按这两项去请求
+          prefix: prefix.endsWith('/') ? prefix : prefix + '/',
           port: p,
           pid: process.pid,
           start: procStart(process.pid) || '',

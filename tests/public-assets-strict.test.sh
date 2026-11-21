@@ -18,6 +18,7 @@
 #   ⑥ 派工提示词：配了地址且找得到 key → 两条换成发布命令；找不到 key → 写明发不了；没配地址 → 不动
 #   ⑦ 周报 run.sh：发布模式下图链 = 发布命令返回的地址；未生效时出图前就停；只有旧周报地址且已严格 → 停
 #   ⑨ 同一文件身份的几个路径（硬链接）：各按自己的路径判，不随缓存冷热和请求先后变
+#   ⑩ 非默认路径前缀：切换核验和发布按服务报告的前缀 / 端口走；状态缺这两项 = 判断不了
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -579,6 +580,34 @@ chk "同上，先项目后旧图" "$(code "$B/acme/12/hl.png")/$(code "$B/issue-
 mkdir -p "$ROOT/nobody/4"; ln -f "$ROOT/issue-464/old-a.png" "$ROOT/nobody/4/hl.png"
 chk "未登记的路径挂在已缓存的同一身份上：仍 404" "$(code "$B/acme/12/hl.png")/$(code "$B/nobody/4/hl.png")" "200/404"
 rm -f "$ROOT/acme/12/hl.png" "$ROOT/nobody/4/hl.png"
+
+echo "⑩ 服务配了非默认的路径前缀：切换核验、发布都按服务报告的前缀和端口走"
+cp "$CONF" "$TMP/conf.pre10"; cp "$AC" "$TMP/ac.pre10"; cp "$C9" "$TMP/c9.pre10"
+printf 'PUBLIC_ASSETS_PREFIX=/team-assets/\n' >> "$CONF"
+for f in "$AC" "$C9"; do sed -i "s|^WEEKLY_REPORT_ASSET_ROOT_URL=.*|WEEKLY_REPORT_ASSET_ROOT_URL=\"http://127.0.0.1:$PORT/team-assets\"|" "$f"; done
+T="http://127.0.0.1:$PORT/team-assets"
+sw; rc=$?
+chk "自定义前缀：切换成功、拦截生效，状态里记的是实际前缀和端口" \
+    "$rc/$(state_of)/$(node "$REPO_DIR/scripts/public-assets/strict.mjs" status-check "$STATE/status.json" | jq -r '.prefix + " " + (.port|tostring)')" \
+    "0/enforced//team-assets/ $PORT"
+chk "核验请求的是自定义前缀下的地址（没有去请求默认前缀）" \
+    "$(grep -c "127.0.0.1:$PORT/team-assets/" "$TMP/sw.err" | awk '{print ($1>0)?"有":"无"}')/$(grep -c "127.0.0.1:$PORT/review-assets/" "$TMP/sw.err")" "有/0"
+png "$TMP/team.png"
+url="$(pub --project acme --item 12 "$TMP/team.png")"; rc=$?
+chk "自定义前缀下发布：地址在新前缀下，公网（本机回环）200 且字节一样" \
+    "$rc/$(printf '%s' "$url" | grep -cE "^$T/acme/12/team-rev-[0-9]+\.png$")/$(curl -s "$url" | cmp -s - "$TMP/team.png" && echo same)" "0/1/same"
+chk "默认前缀下同一张图：404（服务不认没配的前缀）" "$(code "$B/acme/12/$(basename "$url")")" "404"
+# 状态文件缺了前缀 / 端口：判断不了，核验和发布都不做（不猜默认值）
+cp "$STATE/status.json" "$TMP/status.keep"
+jq -c 'del(.prefix)' "$TMP/status.keep" > "$STATE/status.json"
+chk "状态文件缺路径前缀：状态未知，核验拒绝，发布拒绝" \
+    "$(state_of)/$(bash "$SWITCH" --verify >/dev/null 2>&1; echo $?)/$(pub --project acme --item 12 "$TMP/team.png" >/dev/null; echo $?)" "unknown/1/1"
+jq -c 'del(.port)' "$TMP/status.keep" > "$STATE/status.json"
+chk "状态文件缺监听端口：同样状态未知" "$(state_of)" "unknown"
+cp "$TMP/status.keep" "$STATE/status.json"
+cp "$TMP/conf.pre10" "$CONF"; cp "$TMP/ac.pre10" "$AC"; cp "$TMP/c9.pre10" "$C9"
+sw; rc=$?
+chk "（改回默认前缀后再切换：成功，默认前缀下的图 200）" "$rc/$(state_of)/$(code "$B/issue-464/old-b.png")" "0/enforced/200"
 
 echo
 echo "结果：$pass 通过，$fail 失败"

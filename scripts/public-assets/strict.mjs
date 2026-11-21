@@ -82,14 +82,15 @@ export function statusCheck(file, acceptFile = acceptFileFor(file)) {
   } catch (e) {
     return { state: 'unknown', reason: e.code === 'ENOENT' ? '没有状态文件（服务没跑过新版本）' : '状态文件读不出' };
   }
-  const need = { rules: 'number', strict: 'boolean', root: 'string', pid: 'number', start: 'string', code: 'string', legacy_ok: 'boolean' };
+  const need = { rules: 'number', strict: 'boolean', root: 'string', prefix: 'string', port: 'number', pid: 'number', start: 'string', code: 'string', legacy_ok: 'boolean' };
   for (const [k, t] of Object.entries(need)) {
     if (typeof st[k] !== t) return { state: 'unknown', reason: `状态文件缺字段 ${k}` };
   }
   const alive = procStart(st.pid);
   if (alive === null) return { state: 'unknown', reason: '状态文件记录的进程已不在' };
   if (alive !== st.start) return { state: 'unknown', reason: '状态文件记录的进程号已被别的进程占用' };
-  const base = { root: st.root, code: st.code, pid: st.pid, start: st.start, legacy_sha: st.legacy_sha || '' };
+  // 服务实际交图的位置（目录、监听端口、路径前缀）随结论一起交出：用的人只认这一份，不再自己猜默认值
+  const base = { root: st.root, port: st.port, prefix: st.prefix, code: st.code, pid: st.pid, start: st.start, legacy_sha: st.legacy_sha || '' };
   if (st.rules < RULES_VERSION) return { ...base, state: 'not-enforced', reason: '服务跑的是旧规则版本' };
   if (!st.strict) return { ...base, state: 'not-enforced', reason: '服务报告严格模式关' };
   if (!st.legacy_ok) return { ...base, state: 'not-enforced', reason: `旧图清单不可用（${st.legacy_why || '原因未记'}）` };
