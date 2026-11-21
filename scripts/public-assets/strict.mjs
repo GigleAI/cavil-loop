@@ -4,7 +4,7 @@
 //
 //   code-id <目录>                   这套服务代码的指纹（serve.mjs + rules.mjs + strict.mjs 的内容）
 //   status-check <状态文件>          对外服务自己报告的状态 + 切换验收，按 enforced / strict-unverified / not-enforced / unknown 归类
-//   accept <状态文件>                切换命令核验通过后写验收记录（只对状态文件此刻记录的那个进程）
+//   accept <状态文件> <进程号> <启动时刻> <代码> <清单校验值>   核验通过后写验收记录（只当状态文件此刻仍是核验开始时那个进程）
 //   keys <配置目录>...               本机登记过的项目 key（目录里带 PROJECT_ROOT= 行的 <key>.conf）
 //   build <资产目录> <输出> <上限字节> <配置目录>...   建旧图清单
 //   verify <清单> <校验值>            清单文件的 SHA-256 是否等于校验值（退出码 0 / 1）
@@ -89,7 +89,7 @@ export function statusCheck(file, acceptFile = acceptFileFor(file)) {
   const alive = procStart(st.pid);
   if (alive === null) return { state: 'unknown', reason: '状态文件记录的进程已不在' };
   if (alive !== st.start) return { state: 'unknown', reason: '状态文件记录的进程号已被别的进程占用' };
-  const base = { root: st.root, code: st.code, pid: st.pid, legacy_sha: st.legacy_sha || '' };
+  const base = { root: st.root, code: st.code, pid: st.pid, start: st.start, legacy_sha: st.legacy_sha || '' };
   if (st.rules < RULES_VERSION) return { ...base, state: 'not-enforced', reason: '服务跑的是旧规则版本' };
   if (!st.strict) return { ...base, state: 'not-enforced', reason: '服务报告严格模式关' };
   if (!st.legacy_ok) return { ...base, state: 'not-enforced', reason: `旧图清单不可用（${st.legacy_why || '原因未记'}）` };
@@ -107,11 +107,16 @@ export function statusCheck(file, acceptFile = acceptFileFor(file)) {
   return { ...base, state: 'enforced', reason: '' };
 }
 
-// 验收：只在状态文件此刻正是这个进程、严格模式在跑时写，内容取自状态文件本身。
-export function acceptNow(file, acceptFile = acceptFileFor(file)) {
+// 验收：expect 是核验**开始时**固定下来的那个服务进程（进程号、启动时刻、代码、清单校验值）。
+// 只有状态文件此刻记的仍是它、而且严格模式在跑，才写记录——核验之后服务换了进程，就不写，
+// 新进程保持「核验没完成」，下次再核验。
+export function acceptNow(file, expect, acceptFile = acceptFileFor(file)) {
   const v = statusCheck(file, acceptFile);
   if (v.state !== 'strict-unverified' && v.state !== 'enforced') return { ok: false, why: v.reason || v.state };
   const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const k of ['pid', 'start', 'code', 'legacy_sha']) {
+    if (String(st[k]) !== String(expect[k])) return { ok: false, why: '核验期间服务换了进程，核验结果不算这个进程的' };
+  }
   const rec = { pid: st.pid, start: st.start, code: st.code, legacy_sha: st.legacy_sha, at: new Date().toISOString() };
   const tmp = `${acceptFile}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', { mode: 0o600 });
@@ -209,7 +214,12 @@ function main(argv) {
       console.log(JSON.stringify(statusCheck(a[0])));
       return 0;
     case 'accept': {
-      const r = acceptNow(a[0]);
+      const [file, pid, start, code, sha] = a;
+      if (!file || !pid || !start || !code || !sha) {
+        console.error('用法：strict.mjs accept <状态文件> <进程号> <启动时刻> <代码> <清单校验值>');
+        return 2;
+      }
+      const r = acceptNow(file, { pid, start, code, legacy_sha: sha });
       if (!r.ok) console.error(`没写验收记录：${r.why}`);
       return r.ok ? 0 : 1;
     }

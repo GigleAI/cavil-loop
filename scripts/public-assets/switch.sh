@@ -109,6 +109,10 @@ cmd_verify() {
         enforced|strict-unverified) ;;
         *) say "核验：服务没在严格模式（$(jget "$j" .reason)），不核验"; return 1 ;;
     esac
+    # 核验对的是哪个服务进程：开始时固定下来，结束时再比一次，写验收记录时还要用它（VERIFIED_ID）
+    local id0 id1
+    VERIFIED_ID=""
+    id0="$(jget "$j" .pid) $(jget "$j" .start) $(jget "$j" .code) $(jget "$j" .legacy_sha)"
     root="$(jget "$j" .root)"; port="$(jget "$j" .port)"; prefix="$(jget "$j" .prefix)"
     [ -n "$port" ] || port="$(conf_get PUBLIC_ASSETS_PORT || true)"
     [ -n "$prefix" ] || prefix=/review-assets/
@@ -151,7 +155,12 @@ cmd_verify() {
         expect "$badf" 404 "项目子目录下带凭证样式的图"
     done
     verify_cleanup; trap - EXIT
-    [ "$ok" = 1 ]
+    [ "$ok" = 1 ] || return 1
+    j="$(status_json)"
+    id1="$(jget "$j" .pid) $(jget "$j" .start) $(jget "$j" .code) $(jget "$j" .legacy_sha)"
+    if [ "$id1" != "$id0" ]; then say "核验：核验期间服务换了进程，这次核验不算数"; return 2; fi
+    VERIFIED_ID="$id0"
+    return 0
 }
 
 # ── 切换 ──
@@ -198,14 +207,20 @@ EOF
 }
 # 只配了早期的「周报图片地址」、没配出图地址的项目：严格模式下它们的周报图放的位置不会被交出，
 # 而新地址没法从旧地址推出来（公网路径可以自定义）。有这样的项目就不切换，点名要加哪一行。
-old_weekly_projects() {
-    local d f
+# 判断和周报 run.sh 是同一个函数（scripts/weekly-report/_asset_mode.sh），配置也按周报的方式加载：
+# 看加载之后的值，不看文件里的字面写法。读不出的配置一样不切换——判断不了就保留原状。
+# shellcheck source=../weekly-report/_asset_mode.sh
+source "$HERE/../weekly-report/_asset_mode.sh"
+old_weekly_projects() {   # 每个不兼容的项目一行：<配置文件>（<原因>）
+    local d f mode
     for d in ${PROJECT_DIRS//:/ }; do
         for f in "$d"/*.conf; do
             [ -f "$f" ] && grep -q '^PROJECT_ROOT=' "$f" || continue
-            grep -Eq '^WEEKLY_REPORT_ASSET_URL=.+' "$f" || continue
-            grep -Eq '^WEEKLY_REPORT_ASSET_ROOT_URL=("[^"]+"|[^"].*)$' "$f" && continue
-            printf '%s\n' "$f"
+            mode="$(weekly_asset_mode_of_conf "$f")"
+            case "$mode" in
+                legacy) printf '%s（只配了早期的周报图片地址）\n' "$f" ;;
+                unreadable) printf '%s（配置读不出，判断不了周报走哪条路）\n' "$f" ;;
+            esac
         done
     done
 }
@@ -215,8 +230,8 @@ cmd_apply() {
     [ "$(service_state)" = active ] || { say "对外服务没在跑（$(service_state)），不切换"; return 1; }
     olds="$(old_weekly_projects)"
     if [ -n "$olds" ]; then
-        say "下面这些项目只配了早期的周报图片地址（WEEKLY_REPORT_ASSET_URL），没配出图地址：切换后它们的周报会停。不切换，什么都没改。"
-        printf '  %s\n' $olds >&2
+        say "下面这些项目的周报和严格模式不兼容（只配了早期的周报图片地址 WEEKLY_REPORT_ASSET_URL、没配出图地址，切换后周报会停），或者判断不了。不切换，什么都没改。"
+        printf '%s\n' "$olds" | sed 's/^/  /' >&2
         say "在每个文件里加一行出图地址（周报图片地址去掉末尾那一段 /weekly-report 通常就是它；以公网入口实际挂的路径为准），例如："
         say "  WEEKLY_REPORT_ASSET_ROOT_URL=\"https://<公网主机>/review-assets\""
         return 1
@@ -253,9 +268,19 @@ cmd_apply() {
     write_conf 1 "$sha" || { say "写配置失败；配置保持原样"; return 1; }
     svc restart "$UNIT" 2>/dev/null || { rollback "重启服务失败"; return $?; }
     wait_status strict-unverified "$pid" || { rollback "重启后服务没有报告严格模式在跑"; return $?; }
-    cmd_verify || { rollback "核验没过"; return $?; }
-    # 验收记录：核验对的就是这个进程。发布命令和自动切换只认有它的状态（核验没跑完、服务自己重启过都没有）
-    "$NODE" "$STRICT" accept "$STATUS_FILE" || { rollback "验收记录写不成"; return $?; }
+    local vrc=0
+    cmd_verify || vrc=$?
+    # 核验期间服务换了进程：新进程的规则没被核验过。不退回（它跑的就是新规则），保持「核验没完成」，
+    # 发布命令不认它；自动切换下次会再核验
+    if [ "$vrc" = 2 ]; then note "核验期间服务换了进程，保持「严格模式在跑、核验没完成」，下次再核验"; return 1; fi
+    [ "$vrc" = 0 ] || { rollback "核验没过"; return $?; }
+    # 验收记录：只写给核验开始时那个进程（写之前再比一次）。发布命令和自动切换只认有它的状态
+    local vid
+    read -r -a vid <<<"$VERIFIED_ID"
+    if ! "$NODE" "$STRICT" accept "$STATUS_FILE" "${vid[@]}"; then
+        note "验收记录没写：服务在核验之后换了进程（或状态读不出），保持「核验没完成」，下次再核验"
+        return 1
+    fi
     note "已切换：服务端拦截已生效（旧图清单 ${sha}）"
     return 0
 }

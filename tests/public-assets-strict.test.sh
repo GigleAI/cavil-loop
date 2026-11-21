@@ -285,6 +285,33 @@ chk "服务自己重启过（进程换了）：旧验收记录不算数，strict
 sw >/dev/null 2>&1
 chk "（重新切换后 enforced）" "$(state_of)" "enforced"
 
+echo "④ 核验期间服务换了进程"
+REALCURL="$(PATH="$REAL_PATH" command -v curl)"
+cat > "$TMP/bin/curl" <<SH
+#!/usr/bin/env bash
+# 透传给真 curl；FAKE_RESTART_ON_VERIFY=1 时，在第 2 次请求「带假令牌的核验图」之后重启服务（核验的最后一个请求）
+"$REALCURL" "\$@"; rc=\$?
+if [ "\${FAKE_RESTART_ON_VERIFY:-0}" = 1 ] && printf '%s' "\$*" | grep -q 'cavil-verify-secret'; then
+    n=\$(( \$(cat "$TMP/verify-hits" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$TMP/verify-hits"
+    [ "\$n" = 2 ] && systemctl --user restart cavil-loop-public-assets.service >/dev/null 2>&1
+fi
+exit \$rc
+SH
+chmod +x "$TMP/bin/curl"
+rm -f "$STATE/accepted.json" "$TMP/verify-hits"
+pid_before="$(cat "$TMP/svc.pid")"
+FAKE_RESTART_ON_VERIFY=1 sw; rc=$?
+chk "核验的四项都过了、但最后一刻服务重启：切换不算成功（退出码 1），不写验收记录，不退回" \
+    "$rc/$(grep -c '核验期间服务换了进程' "$TMP/sw.err")/$([ -e "$STATE/accepted.json" ] && echo 写了 || echo 没写)/$(grep -c '^PUBLIC_ASSETS_STRICT=1$' "$CONF")" "1/2/没写/1"
+chk "新进程保持「严格模式在跑、核验没完成」，发布命令不发图" "$(state_of)/$(bash "$PUBLISH" --project acme --check-ready 2>/dev/null; echo $?)" "strict-unverified/1"
+# 写验收记录那一步自己也比身份：拿换进程前的身份去写，被拒
+old_id="$(jq -r '"\(.pid) \(.start) \(.code) \(.legacy_sha)"' "$STATE/status.json")"
+systemctl --user restart cavil-loop-public-assets.service
+node "$REPO_DIR/scripts/public-assets/strict.mjs" accept "$STATE/status.json" $old_id 2> "$TMP/acc.err"; rc=$?
+chk "写验收记录时状态文件已是另一个进程：拒绝写（退出码 1），说了原因" "$rc/$(grep -c '核验期间服务换了进程' "$TMP/acc.err")/$([ -e "$STATE/accepted.json" ] && echo 写了 || echo 没写)" "1/1/没写"
+sw >/dev/null 2>&1
+chk "（没有干扰时重新切换：enforced）" "$(state_of)" "enforced"
+
 echo "⑤ 发布命令"
 pub() { bash "$PUBLISH" "$@" 2> "$TMP/pub.err"; }
 png "$TMP/a b#c.png"
@@ -449,6 +476,25 @@ bash "$SWITCH" --auto 2> "$TMP/sw.err"
 chk "自动切换同样不切换（周报不会被自动切换停掉）" "$(state_of)/$(grep -c "$AC" "$TMP/sw.err")" "not-enforced/1"
 rm -f "$HOME/weekly-report-dryrun.md"; wr; rc=$?
 chk "没切换：周报照常出" "$rc" "0"
+# 出图地址写成空值（合法的 bash 写法）或者先写后被覆盖成空：加载后都是空，和周报看到的一致
+for v in "''" '""' "\"$B\"\nWEEKLY_REPORT_ASSET_ROOT_URL=''"; do
+    cp "$AC" "$TMP/ac.pre"; printf "WEEKLY_REPORT_ASSET_ROOT_URL=$v\n" >> "$AC"
+    rm -f "$HOME/weekly-report-dryrun.md"; wr; wrc=$?
+    sw; rc=$?
+    jq '.next = 0 | .tries = 0' "$STATE/auto.json" > "$STATE/auto.json.t" && mv "$STATE/auto.json.t" "$STATE/auto.json"
+    bash "$SWITCH" --auto 2> "$TMP/auto.err"
+    chk "出图地址加载后为空（写法：$(printf "$v" | tr '\n' ' ')）：周报照旧路出、手动和自动切换都拒绝" \
+        "$wrc/$rc/$(grep -c "$AC" "$TMP/sw.err")/$(grep -c "$AC" "$TMP/auto.err")/$(state_of)" "0/1/1/1/not-enforced"
+    cp "$TMP/ac.pre" "$AC"
+done
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\nWEEKLY_REPORT_ASSET_ROOT_URL=""\nWEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" "$B" > "$TMP/multi.conf"
+cp "$AC" "$TMP/ac.pre"; cat "$TMP/multi.conf" >> "$AC"
+chk "同一键写了几次、最后一次非空：按加载结果算出图地址已配（不点名这个项目）" \
+    "$(bash -c 'source "$1/scripts/weekly-report/_asset_mode.sh"; weekly_asset_mode_of_conf "$2"' _ "$REPO_DIR" "$AC")" "publish"
+cp "$TMP/ac.pre" "$AC"
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="unterminated\n' > "$TMP/broken.conf"
+chk "配置读不出：判断结果是「读不出」（切换命令据此不切换）" \
+    "$(bash -c 'source "$1/scripts/weekly-report/_asset_mode.sh"; weekly_asset_mode_of_conf "$2"' _ "$REPO_DIR" "$TMP/broken.conf")" "unreadable"
 printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
 sw; rc=$?
 chk "按提示补上出图地址：切换成功" "$rc/$(state_of)" "0/enforced"

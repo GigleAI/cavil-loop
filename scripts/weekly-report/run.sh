@@ -56,8 +56,10 @@ REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/de
 #     但对外服务已切到严格模式时（这种位置的新文件它不交出），在出图之前停下，说明要加哪一行。
 PUBLISH="$(dirname "$HERE")/publish-asset.sh"
 STRICT_JS="$(dirname "$HERE")/public-assets/strict.mjs"
+# shellcheck source=_asset_mode.sh
+source "$HERE/_asset_mode.sh"
 ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
-if [ -n "$ROOT_URL" ]; then
+if [ "$(weekly_asset_mode "$ROOT_URL" "${WEEKLY_REPORT_ASSET_URL:-}")" = publish ]; then
     USE_PUBLISH=1
     ASSET_URL="${ROOT_URL%/}/$PROJECT/weekly-report"
 else
