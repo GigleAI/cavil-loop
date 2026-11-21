@@ -109,6 +109,11 @@ Closes #1'; } > "$S/link-after-code.md"
 # 会从那一行起照搬，所以检查照同一条规则报出来
 { printf '文本框里有总结段标记字样。\n\nCloses #644\n\n<details><summary>验证</summary>\n\n<textarea>\n<!-- autopilot-summary:begin -->\n</textarea>\n\n</details>\n'; } > "$S/mark-in-textarea.md"
 { printf '行内代码里有总结段标记字样。\n\nCloses #1\n\n'; fold 验证 '写法是 `<!-- autopilot-summary:end -->`。'; summary3; } > "$S/mark-in-code.md"
+# 维护者在 PR #650 选了 B：章节在不在折叠里、折叠块成不成对不再查（上面 section-out / unclosed / setext-out /
+# setext-bold-out / attr-out 现在都是 ok）。折叠深度照样算，只用来判关联行和总结段：属性值里的结尾标签不关上
+# 折叠，没关上的折叠块里的关联行照样报
+{ printf '属性值里的结尾标签不关上折叠。\n\n<details data-x="</details>"><summary>验证</summary>\n\nCloses #1\n\n</details>\n'; } > "$S/attr-link.md"
+{ printf '没关上的折叠块里有关联行。\n\n<details><summary>验证</summary>\n\nCloses #1\n'; } > "$S/unclosed-link.md"
 # 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
 { printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
 
@@ -117,14 +122,15 @@ x'; } > "$S/comment-dash.md"
 # 样例名 → 期望（第一行输出 + 退出码）
 expect=(
     "good|ok|0" "refs|ok|0" "nolink|ok|0" "sub|ok|0"
-    "short-head|bad section-outside 1+bad first-line 1|1" "fold-first|bad first-line 1|1"
-    "link-folded|bad link-folded 5|1" "section-out|bad section-outside 5|1"
-    "unclosed|bad section-outside 5|1" "summary2|bad autopilot-summary 5|1"
-    "inline-tag|ok|0" "setext-out|bad section-outside 3|1" "setext-in|ok|0" "hr|ok|0"
-    "inline-tag-wrap|ok|0" "setext-bold-out|bad section-outside 3|1" "setext-bold-in|ok|0" "list|ok|0"
-    "attr-in|ok|0" "attr-out|bad section-outside 11|1" "attr-summary|ok|0" "comment-dash|ok|0"
+    "short-head|bad first-line 1|1" "fold-first|bad first-line 1|1"
+    "link-folded|bad link-folded 5|1" "section-out|ok|0"
+    "unclosed|ok|0" "summary2|bad autopilot-summary 5|1"
+    "inline-tag|ok|0" "setext-out|ok|0" "setext-in|ok|0" "hr|ok|0"
+    "inline-tag-wrap|ok|0" "setext-bold-out|ok|0" "setext-bold-in|ok|0" "list|ok|0"
+    "attr-in|ok|0" "attr-out|ok|0" "attr-summary|ok|0" "comment-dash|ok|0"
     "raw-inline|ok|0" "raw-summary|ok|0" "link-block-in|bad link-folded 4|1" "link-block-out|ok|0" "link-after-code|bad link-folded 7|1"
     "mark-in-textarea|bad autopilot-summary 8|1" "mark-in-code|bad autopilot-summary 7|1"
+    "attr-link|bad link-folded 5|1" "unclosed-link|bad link-folded 5|1"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
