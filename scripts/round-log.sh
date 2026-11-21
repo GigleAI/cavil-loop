@@ -14,15 +14,17 @@
 #   4 RESULT=unknown   目标状态读不到 → 什么都没写；不翻标签，停下
 #   5 RESULT=unreadable 评论读不全 → 什么都没写；照现在读评论失败的规则处理
 #   6 RESULT=failed    该写的写不进去（另起也失败）→ 照现在发评论失败的做法处理
-#   2 RESULT=rejected  用法不对 / 这类交付不该进记录（交合并、交人等）/ 正文里有记录标记 → 什么都没写，照现在单独发
+#   2 RESULT=rejected  这类交付不该进记录（交合并、交人等）/ 所审的交付不在记录里 / 正文里有记录标记 → 什么都没写，照现在单独发
+#  64 RESULT=usage     用法不对，含 PR 上缺 --basis / --base → 什么都没写；补齐参数重跑，补不齐就不发、不翻标签（不改成单独发）
 # 「已过期 / 状态未知」若发生在改写请求已经发出之后，那次请求生效与否按事实保留：不撤回、不补写、不另起。
 #
 # show：本条（issue 或 PR 的对话评论）按单元排好，打印最新单元和它对应的完整版本；--all 打印全部单元。
-#   退出码 0 = 读到了；4 = 最新一节的完整版本对不上（不给任何当前版本）；5 = 读不全；2 = 用法不对。
+#   退出码 0 = 读到了；4 = 最新一节的完整版本对不上（不给任何当前版本）；5 = 读不全；64 = 用法不对。
 #   托管条目开了外部内容保护时不用它：受保护读取命令的输出末尾就带着同样的视图。
 set -uo pipefail
 
-usage() { echo "RESULT=rejected"; echo "用法: round-log.sh --config <项目配置> post|show <编号> …" >&2; exit 2; }
+# 用法不对（含 PR 上缺本次依据）≠ 拒收：拒收（2）是「这条照现在单独发」，用法不对（64）是「改好参数重跑，改不好就什么都不发」
+usage() { echo "RESULT=usage"; echo "用法: round-log.sh --config <项目配置> post|show <编号> …" >&2; exit 64; }
 
 CFG=""
 [ "${1:-}" = --config ] && { CFG="${2:-}"; shift 2 || usage; }
@@ -66,7 +68,7 @@ finish() {   # <退出码> <RESULT> [说明]
 rl_read_comments() {   # <输出文件>
     local raw="$TMPD/raw.jsonl"
     gh api --paginate "repos/$REPO/issues/$NUM/comments" \
-        --jq '.[] | {id, author: (.user.login // ""), at: .created_at, body: (.body // ""), url: (.html_url // "")}' \
+        --jq '.[] | {id, author: (.user.login // ""), at: .created_at, updated: (.updated_at // .created_at), body: (.body // ""), url: (.html_url // "")}' \
         > "$raw" 2>/dev/null || return 1
     jq -cs '.' < "$raw" > "$1" 2>/dev/null || return 1
 }
@@ -152,7 +154,7 @@ rl_gate() {   # 每一次写之前都跑；不通过就按结果收尾
     case "$rc" in
         0) return 0 ;;
         1) finish 3 expired "目标已不归这次派工：$RL_WHY" ;;
-        3) finish 2 rejected "PR 上的交付要给本次依据的提交和目标分支（--basis / --base），照现在单独发" ;;
+        3) finish 64 usage "PR 上的交付必须给本次依据的提交和目标分支（--basis / --base）：补上重跑；不要改成单独发" ;;
         *) finish 4 unknown "目标状态读不到" ;;
     esac
 }
@@ -165,10 +167,12 @@ if outsider_guard_on; then
     rc=0; outsider_scan "$NUM" read || rc=$?
     [ "$rc" = 0 ] || finish 5 unreadable "受保护读取没读全：${OS_WHY:-原因没记下}"
     src=issue-comment; [ "${OS_TARGET_KIND:-issue}" != pr ] || src=pr-comment
-    view_ids=$(printf '%s' "$OS_RES" | jq -r --arg s "$src" '[.view[]? | select(.src == $s) | .id | tostring] | sort | join(",")' 2>/dev/null) \
+    # 同一批 = 编号和每条的修改时间都一样（两次读之间有评论被改过，修改时间就不同）：写入计划用的原样正文和
+    # 受保护读取判的作者 / 内容必须出自同一版本
+    view_ids=$(printf '%s' "$OS_RES" | jq -r --arg s "$src" '[.view[]? | select(.src == $s) | "\(.id)@\(.updated // "")"] | sort | join(",")' 2>/dev/null) \
         || finish 5 unreadable "受保护读取的结果读不懂"
-    raw_ids=$(jq -r '[.[].id | tostring] | sort | join(",")' < "$TMPD/c.json") || finish 5 unreadable "评论读不懂"
-    [ "$view_ids" = "$raw_ids" ] || finish 5 unreadable "受保护读取和原样读取看到的评论不是同一批"
+    raw_ids=$(jq -r '[.[] | "\(.id)@\(.updated // "")"] | sort | join(",")' < "$TMPD/c.json") || finish 5 unreadable "评论读不懂"
+    [ "$view_ids" = "$raw_ids" ] || finish 5 unreadable "受保护读取和原样读取看到的评论不是同一批（编号或版本不同）"
     printf '%s' "$OS_RES" | jq -c --arg s "$src" '[.view[]? | select(.src == $s) | {key: (.id | tostring), value: .trusted}] | from_entries' \
         > "$TMPD/trust.json" || finish 5 unreadable "受保护读取的结果读不懂"
     jq -c --slurpfile t "$TMPD/trust.json" 'map(. + {trusted: ($t[0][(.id | tostring)] // false)})' < "$TMPD/c.json" > "$TMPD/c2.json" \

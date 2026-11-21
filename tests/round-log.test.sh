@@ -192,19 +192,22 @@ RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full
 python3 - "$GD/comments.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-d["7"].append({"id": 5000, "body": "daemon：提醒一下", "user": {"login": "loop-bot"}, "created_at": "2026-01-02T00:00:00Z"})
+d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "daemon：提醒一下", "user": {"login": "loop-bot"}, "created_at": "2026-01-02T00:00:00Z"})
 json.dump(d, open(sys.argv[1], "w"))
 PY
 o=$(RL show 7)
 has "插入 daemon 提醒后，最新单元是那条提醒" "$o" "daemon：提醒一下"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')")
-has "插入别的评论之后：另起一条新记录" "$o" "MODE=new"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+chk "交付之后插入了 loop 账号的单独评论：分不清最新交付是哪条，复审结论拒收（照现在单独发）" "$rc $(result "$o")" "2 RESULT=rejected"
+o=$(RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版')" --full "$(mk f2 'V2')")
+has "插入别的评论之后：下一次交付另起一条新记录" "$o" "MODE=new"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:1 -->\n打回')")
 o=$(RL show 7)
-has "另起之后：复审节仍附着它所审那一版（第 1 版）" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V1"
+has "另起之后：复审节附着它所审那一版（第 2 版）" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V2"
 python3 - "$GD/comments.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-d["7"].append({"id": 9000, "body": "人：等一下，先别改", "user": {"login": "maint"}, "created_at": "2026-01-03T00:00:00Z"})
+d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "人：等一下，先别改", "user": {"login": "maint"}, "created_at": "2026-01-03T00:00:00Z"})
 json.dump(d, open(sys.argv[1], "w"))
 PY
 o=$(RL show 7)
@@ -265,7 +268,7 @@ fresh pr
 for miss in "--base main" "--basis aaaa000000000000000000000000000000000001" ""; do
     # shellcheck disable=SC2086
     o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" $miss); rc=$?
-    chk "PR：漏传本次依据（只给了「${miss:-什么都没给}」）→ 拒收" "$rc $(result "$o")" "2 RESULT=rejected"
+    chk "PR：漏传本次依据（只给了「${miss:-什么都没给}」）→ 用法不对（不是「照现在单独发」的拒收）" "$rc $(result "$o")" "64 RESULT=usage"
 done
 chk "PR：漏传依据的三次都零写入" "$(writes)" "0"
 o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
@@ -333,6 +336,36 @@ chk "之后读取照常（退出码 0）" "$rc" "0"
 has "之后读取：附着第 4 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V4 全文"
 has "之后读取：轮次 2 个（单独发的 1 个 + 记录里 1 个）" "$o" "带复审轮次标记的 2 个"
 
+echo "── 新旧混合：记录里的第 1 版 → 单独发的第 2 版 → 打回 → 续跑 ──"
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 '方案全文 V1')" >/dev/null
+V1SEC=$(jq -r '.["7"][-1].body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]*' | head -1 | cut -d= -f2)
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "## 方案第 2 版（单独发的）\n方案全文 V2", "user": {"login": "loop-bot"}, "created_at": "2026-01-03T00:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+: > "$CALLS"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
+chk "最新交付是单独的评论：复审结论拒收（不挂到记录里的第 1 版上）" "$rc $(result "$o")" "2 RESULT=rejected"
+o=$(RL post 7 --role review --to pending/agent --of "$V1SEC" --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
+chk "明确给 --of 第 1 版也拒收（它不是最新的交付）" "$rc" "2"
+chk "两次都零写入" "$(writes)" "0"
+python3 - "$GD/comments.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "<!-- codex-review-round:1 -->\n打回第 2 版（单独发的）", "user": {"login": "loop-bot"}, "created_at": "2026-01-03T01:00:00Z"})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+RL post 7 --role worker --to pending/review --body "$(mk b3 '第 3 版')" --full "$(mk f3 '方案全文 V3')" >/dev/null
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r3 $'<!-- codex-review-round:2 -->\n打回第 3 版')"); rc=$?
+chk "续跑：第 3 版之后的复审追加进新记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
+o=$(RL show 7); rc=$?
+chk "续跑：读取成功" "$rc" "0"
+has "续跑：打回意见附着的是第 3 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "方案全文 V3"
+lacks "续跑：没有附上第 1 版" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V1"
+
 echo "── 托管 + 外部内容保护：写入路径也走受保护读取 ──"
 GUARD=('LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""')
 fresh issue "${GUARD[@]}"
@@ -349,6 +382,13 @@ has "受保护读取失败：原样评论确实读成功了（失败的只是受
 rm -f "$GD/F_collaborators_maint_permission"
 o=$(RL show 7); rc=$?
 chk "保护开着：读取命令也走受保护读取、成功" "$rc" "0"
+# 两次读之间同一条评论被改了（编号不变、版本变了）：不写
+printf '#!/usr/bin/env bash\npython3 - "%s/comments.json" <<'"'"'PY'"'"'\nimport json, sys\nd = json.load(open(sys.argv[1]))\nd["7"][0]["body"] = "人改过的需求"\nd["7"][0]["updated_at"] = "2026-02-01T00:00:00Z"\njson.dump(d, open(sys.argv[1], "w"))\nPY\n' "$GD" > "$GD/hook_issues_7_comments_$(( $(cat "$GD/count_issues_7_comments" 2>/dev/null || echo 0) + 2 ))"
+: > "$CALLS"
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+chk "两次读之间评论被改：不写" "$rc $(result "$o")" "5 RESULT=unreadable"
+has "两次读之间评论被改：原因是版本不同" "$o" "编号或版本不同"
+chk "两次读之间评论被改：零写入" "$(writes)" "0"
 # 记录作者是别的机器人账号（名字也以 -bot 结尾）：写入、读取都只当普通评论
 fresh issue
 python3 - "$GD/comments.json" "$REPO_DIR/scripts" <<'PY'
@@ -521,6 +561,8 @@ sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/nul
 has "开着：复审提示词多了往返记录一段" "$sec" "# 往返记录（本项目开启了"
 lacks "开着：占位符都填上了" "$sec" "@@"
 has "开着：写入命令指向本次的脚本" "$sec" "round-log.sh' --config '$CONF' post <编号>"
+has "开着：缺本次依据时提示词要求补齐重跑、不改成单独发" "$sec" "| \`RESULT=usage\`（64） | 用法不对，包括发到 PR 上没给"
+has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补不齐就不发评论、不翻标签，停下"
 fresh issue 'ENABLE_ROUND_LOG=""'
 sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template review); cat "$f"' _ "$REPO_DIR")
 lacks "关着：不加这一段" "$sec" "# 往返记录（本项目开启了"

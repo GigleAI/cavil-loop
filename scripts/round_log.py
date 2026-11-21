@@ -216,11 +216,22 @@ def plan(inp):
     us = units(comments, trusted)
     latest_id = int(comments[-1]["id"]) if comments else 0
     of = inp.get("of") or None
-    if role == "review" and not of:
+    if role == "review":
+        # 复审依据的交付 = 往返记录里最近的那一节 worker 交付，且它之后没有 agent 单独发的评论（loop 账号发的普通评论：
+        # 开关打开前的旧式交付、改走单独发的交付、daemon 的提醒）。有这样一条 → 最新交付不在记录里，这条复审结论单独发；
+        # 不往前找一节旧版本来顶替。给了 --of 也必须正好是这一节
+        found = None
         for u in reversed(us):
             if u["kind"] == "section" and u["role"] == "worker":
-                of = u["sec"]
+                found = u["sec"]
                 break
+            if u["kind"] == "comment" and _trusted(u, trusted):
+                break
+        if found is None:
+            raise FormatError("所审的交付不在往返记录里（最新的交付是一条单独的评论），这一条复审结论照现在单独发")
+        if of and of != found:
+            raise FormatError("--of 给的不是往返记录里最新的那一节交付，这一条复审结论照现在单独发")
+        of = found
     sec, at = inp["sec"], inp["at"]
     # 新开记录时顶部放的版本：worker = 本次完整版本；复审 = 所审那一节的完整版本（取不到就不放，读的时候报对不上）
     if role == "worker":

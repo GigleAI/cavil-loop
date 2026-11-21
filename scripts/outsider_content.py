@@ -692,7 +692,7 @@ def run(inp):
             # 头两行（标题、出处）之后的文字就是这条评论展示出来的样子
             body_at = next((i for i, ln in enumerate(shown) if ln == ""), len(shown))
             view.append({"src": e["src"], "id": e["id"], "author": e.get("author") or "", "trusted": e["role"] == "loop",
-                         "at": e.get("at", ""), "url": e.get("url", ""),
+                         "at": e.get("at", ""), "updated": e.get("updated", ""), "url": e.get("url", ""),
                          "notes": shown[2:body_at], "body": "\n".join(shown[body_at + 1:]).rstrip("\n")})
     res["text"] = "\n".join(out)
     res["view"] = view

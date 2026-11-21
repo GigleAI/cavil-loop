@@ -228,7 +228,7 @@ outsider_list_entries() {   # <src> <仓库> <编号> <endpoint> <评论 | revie
                   author: ($c.user.login // ""), role: $role, at: $at,
                   after_auth: ($t != "" and $role == "outsider"
                                and ($at >= $t or (($c.updated_at // "") >= $t and ($c.updated_at // "") != ""))),
-                  text: ($c.body // ""),
+                  text: ($c.body // ""), updated: ($c.updated_at // $at),
                   notes: ( (if $c.path then ["在文件 " + $c.path + (if $c.line then " 第 \($c.line) 行" else "" end)] else [] end)
                          + (if $kind == "review" and $c.state then ["review 结论：" + $c.state] else [] end)) })
         | sort_by(.at)') || { OS_WHY="读不懂 $repo#$num 的评论"; return 2; }
