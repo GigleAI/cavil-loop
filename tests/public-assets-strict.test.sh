@@ -141,7 +141,7 @@ cp "$TMP/conf.before" "$CONF"
 
 sw; rc=$?
 chk "切换成功：退出码 0、服务报告 enforced" "$rc/$(state_of)" "0/enforced"
-chk "配置里写了校验值和严格模式各一行，另有一份切换前的备份" "$(grep -c '^PUBLIC_ASSETS_LEGACY_SHA=[0-9a-f]\{64\}$' "$CONF")/$(grep -c '^PUBLIC_ASSETS_STRICT=1$' "$CONF")/$(ls "$HOME/.config/cavil-loop" | grep -c '^public-assets.conf.bak-')" "1/1/1"
+chk "配置里写了校验值和严格模式各一行，另有切换前的备份（备份名按秒，前面超限那次也留了一份，同一秒会合成一份）" "$(grep -c '^PUBLIC_ASSETS_LEGACY_SHA=[0-9a-f]\{64\}$' "$CONF")/$(grep -c '^PUBLIC_ASSETS_STRICT=1$' "$CONF")/$(ls "$HOME/.config/cavil-loop" | grep -c '^public-assets.conf.bak-' | awk '{print ($1>=1)?"有":"无"}')" "1/1/有"
 SHA="$(sed -n 's/^PUBLIC_ASSETS_LEGACY_SHA=//p' "$CONF")"
 chk "两份清单都在、校验值对得上" "$(sha256sum "$LIST1" | cut -d' ' -f1)/$(sha256sum "$LIST2" | cut -d' ' -f1)" "$SHA/$SHA"
 chk "核验做了四项、两个地址各一遍（全部 ✓）" "$(grep -c '  ✓ ' "$TMP/sw.err")/$(grep -c '  ✗ ' "$TMP/sw.err")" "8/0"
@@ -503,6 +503,37 @@ chk "补上之后：周报走发布命令，图链在 acme/weekly-report/ 下" "
 sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$AC"
 wr; rc=$?
 chk "切换之后又删掉出图地址：出图之前停下，说明要加出图地址那一行" "$rc/$(grep -c 'WEEKLY_REPORT_ASSET_ROOT_URL=' "$WR/out")/$(grep -c '== 2/4 出图' "$WR/out")" "1/1/0"
+
+echo "⑧ 同一组配置走过切换、自动切换、核验、发布和周报"
+C9="$HOME/.config/cavil-loop/919.club.conf"
+cp "$C9" "$TMP/c9.pre"; cp "$AC" "$TMP/ac.pre"
+sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$C9" "$AC"
+printf "WEEKLY_REPORT_ASSET_ROOT_URL='%s'\n" "$B" >> "$AC"     # 合法的单引号写法，且是唯一配了公网地址的项目
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"; systemctl --user restart cavil-loop-public-assets.service
+sw; rc=$?
+chk "单引号的出图地址：手动切换成功，核验用的是加载后的地址（两个地址各四项全 ✓）" "$rc/$(state_of)/$(grep -c '  ✓ ' "$TMP/sw.err")/$(grep -c "  ✓ $B/" "$TMP/sw.err")/$(grep -c '  ✗ ' "$TMP/sw.err")" "0/enforced/8/8/0"
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"; systemctl --user restart cavil-loop-public-assets.service
+jq '.next = 0 | .tries = 0' "$STATE/auto.json" > "$STATE/auto.json.t" && mv "$STATE/auto.json.t" "$STATE/auto.json"
+bash "$SWITCH" --auto 2> "$TMP/auto.err"
+chk "单引号的出图地址：自动切换也成功" "$(state_of)/$(grep -c '  ✗ ' "$TMP/auto.err")" "enforced/0"
+url="$(bash "$PUBLISH" --project acme --item 12 "$TMP/a b#c.png" 2>/dev/null)"; rc=$?
+chk "单引号的出图地址：发布命令发出的地址就是加载后的地址" "$rc/$(printf '%s' "$url" | grep -cE "^$B/acme/12/")" "0/1"
+rm -f "$HOME/weekly-report-dryrun.md"; wr; rc=$?
+chk "单引号的出图地址：周报走发布命令，图链在加载后的地址下" "$rc/$(grep -cE "$B/acme/weekly-report/delivery-wk-" "$HOME/weekly-report-dryrun.md" 2>/dev/null)" "0/1"
+# 读不出的项目配置：项目清单就读不出，所有入口都当「判断不了」
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"; systemctl --user restart cavil-loop-public-assets.service
+chmod 000 "$C9"
+sw; rc=$?
+chk "有项目配置读不出：手动切换不切换，说了读不出，配置没写严格模式" "$rc/$(grep -c '读不出' "$TMP/sw.err" | awk '{print ($1>0)?"有":"无"}')/$(grep -c '^PUBLIC_ASSETS_STRICT=' "$CONF")/$(state_of)" "1/有/0/not-enforced"
+jq '.next = 0 | .tries = 0' "$STATE/auto.json" > "$STATE/auto.json.t" && mv "$STATE/auto.json.t" "$STATE/auto.json"
+bash "$SWITCH" --auto 2> "$TMP/auto.err"
+chk "有项目配置读不出：自动切换也不切换" "$(state_of)/$(grep -c '读不出' "$TMP/auto.err" | awk '{print ($1>0)?"有":"无"}')" "not-enforced/有"
+chk "有项目配置读不出：核验命令也不核验（服务没在严格模式之外，项目清单读不出同样拒绝）" "$(bash "$SWITCH" --verify 2>/dev/null; echo $?)" "1"
+chmod 644 "$C9"
+cp "$TMP/c9.pre" "$C9"; cp "$TMP/ac.pre" "$AC"
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
+sw; rc=$?
+chk "（配置恢复后切换成功）" "$rc/$(state_of)" "0/enforced"
 
 echo
 echo "结果：$pass 通过，$fail 失败"

@@ -116,17 +116,15 @@ cmd_verify() {
     root="$(jget "$j" .root)"; port="$(jget "$j" .port)"; prefix="$(jget "$j" .prefix)"
     [ -n "$port" ] || port="$(conf_get PUBLIC_ASSETS_PORT || true)"
     [ -n "$prefix" ] || prefix=/review-assets/
-    keys="$("$NODE" "$STRICT" keys ${PROJECT_DIRS//:/ } 2>/dev/null)" || { say "核验：读不出登记的项目"; return 1; }
+    keys="$(registered_keys)" || { say "核验：读不出登记的项目"; return 1; }
     key="$(printf '%s\n' "$keys" | head -n 1)"
     [ -n "$key" ] || { say "核验：本机没有登记的项目，没法核验项目子目录"; return 1; }
     pub_url=""
-    local d f v
-    for d in ${PROJECT_DIRS//:/ }; do
-        for f in "$d"/*.conf; do
-            [ -f "$f" ] || continue
-            v="$(grep -E '^WEEKLY_REPORT_ASSET_ROOT_URL=' "$f" | tail -n 1 | sed -E 's/^[^=]*=//; s/^"//; s/"$//')" || true
-            [ -n "$v" ] && { pub_url="${v%/}"; break 2; }
-        done
+    local k vals v
+    for k in $keys; do
+        vals="$(project_conf_load "$(cavil_project_env "$k")")" || { say "核验：项目 $k 的配置读不出"; return 1; }
+        v="$(printf '%s\n' "$vals" | sed -n 1p)"
+        [ -n "$v" ] && { pub_url="${v%/}"; break; }
     done
     stamp="$(date +%s%N)"
     VERIFY_KEYDIR="$root/$key"
@@ -207,21 +205,21 @@ EOF
 }
 # 只配了早期的「周报图片地址」、没配出图地址的项目：严格模式下它们的周报图放的位置不会被交出，
 # 而新地址没法从旧地址推出来（公网路径可以自定义）。有这样的项目就不切换，点名要加哪一行。
-# 判断和周报 run.sh 是同一个函数（scripts/weekly-report/_asset_mode.sh），配置也按周报的方式加载：
-# 看加载之后的值，不看文件里的字面写法。读不出的配置一样不切换——判断不了就保留原状。
+# 读项目配置只有一种方式（scripts/weekly-report/_asset_mode.sh），和周报、发布命令同一口径；
+# 哪些是登记的项目只认 strict.mjs keys。任何一步读不出都当「判断不了」——不切换，保留原状。
 # shellcheck source=../weekly-report/_asset_mode.sh
 source "$HERE/../weekly-report/_asset_mode.sh"
-old_weekly_projects() {   # 每个不兼容的项目一行：<配置文件>（<原因>）
-    local d f mode
-    for d in ${PROJECT_DIRS//:/ }; do
-        for f in "$d"/*.conf; do
-            [ -f "$f" ] && grep -q '^PROJECT_ROOT=' "$f" || continue
-            mode="$(weekly_asset_mode_of_conf "$f")"
-            case "$mode" in
-                legacy) printf '%s（只配了早期的周报图片地址）\n' "$f" ;;
-                unreadable) printf '%s（配置读不出，判断不了周报走哪条路）\n' "$f" ;;
-            esac
-        done
+registered_keys() { "$NODE" "$STRICT" keys ${PROJECT_DIRS//:/ } 2>/dev/null; }
+old_weekly_projects() {   # 每个不兼容 / 判断不了的项目一行：<配置文件或说明>（<原因>）
+    local keys key f mode
+    keys="$(registered_keys)" || { printf '（登记的项目读不出：配置目录或其中某个 .conf 没有读权限）\n'; return 0; }
+    for key in $keys; do
+        f="$(cavil_project_env "$key")"
+        mode="$(weekly_asset_mode_of_conf "$f")"
+        case "$mode" in
+            legacy) printf '%s（只配了早期的周报图片地址）\n' "$f" ;;
+            unreadable) printf '%s（配置读不出，判断不了周报走哪条路）\n' "$f" ;;
+        esac
     done
 }
 cmd_apply() {

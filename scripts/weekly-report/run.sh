@@ -41,7 +41,9 @@ done
 CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
-set -a; . "$CONF"; set +a
+# shellcheck source=_asset_mode.sh
+source "$HERE/_asset_mode.sh"
+project_conf_source "$CONF"
 : "${PROJECT_ROOT:?项目配置里缺 PROJECT_ROOT}"
 
 # REPO 从项目配置读；没有就从 PROJECT_ROOT 的 git remote 推
@@ -56,8 +58,6 @@ REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/de
 #     但对外服务已切到严格模式时（这种位置的新文件它不交出），在出图之前停下，说明要加哪一行。
 PUBLISH="$(dirname "$HERE")/publish-asset.sh"
 STRICT_JS="$(dirname "$HERE")/public-assets/strict.mjs"
-# shellcheck source=_asset_mode.sh
-source "$HERE/_asset_mode.sh"
 ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
 if [ "$(weekly_asset_mode "$ROOT_URL" "${WEEKLY_REPORT_ASSET_URL:-}")" = publish ]; then
     USE_PUBLISH=1

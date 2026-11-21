@@ -67,7 +67,10 @@ fi
 CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
-set -a; . "$CONF"; set +a
+# 加载口径和周报、切换命令同一份（去掉继承来的同名值）
+# shellcheck source=weekly-report/_asset_mode.sh
+source "$HERE/weekly-report/_asset_mode.sh"
+project_conf_source "$CONF"
 ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
 ROOT_URL="${ROOT_URL%/}"
 
