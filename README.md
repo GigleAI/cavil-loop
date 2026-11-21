@@ -261,6 +261,7 @@ Packages are attached to the `client/v…` entries on this repository's [Release
 | [docs/requester-bot.md](docs/requester-bot.md) | Hooking up an external requester bot (grokbot as the example): integration steps, what the bot does on its side, troubleshooting |
 | [docs/persistence.md](docs/persistence.md) | Where design proposals / discussions / code / Claude conversations / tmux history live, how to look them up later, how to resume from a break point |
 | [docs/security.md](docs/security.md) | **Public-repo users must read.** Anonymous comments can contain prompt injection; how the defenses work |
+| [docs/orchestration.md](docs/orchestration.md) | Orchestration: where a project plugs in its own commands and prompts (setup, prompt additions, PR opened, review, cleanup, latest-site refresh, retrospective), and how to tailor review / testing / previews / deployment |
 | [docs/operations.md](docs/operations.md) | Full config, dispatch modes and queue order, prompt templates (base + project delta), multi-project, upgrades, macOS launchd, webhook trigger, swapping AI worker, troubleshooting |
 | [docs/drivers.md](docs/drivers.md) | Worker agent drivers — built-in `claude` / `opencode` / `codex` / `cursor`, plus how to add your own |
 

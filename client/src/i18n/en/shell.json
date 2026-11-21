@@ -411,5 +411,9 @@
   "高级设置": "Advanced settings",
   "常用": "Common",
   "登录方式、Client ID": "Sign-in method, Client ID",
-  "（Client ID 要处理，保持展开）": "(the Client ID needs attention, kept open)"
+  "（Client ID 要处理，保持展开）": "(the Client ID needs attention, kept open)",
+  "另有 {n} 个 issue 随命中的 PR 显示": {
+    "one": "{n} more issue shown with a matching PR",
+    "other": "{n} more issues shown with matching PRs"
+  }
 }

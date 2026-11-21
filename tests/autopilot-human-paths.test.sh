@@ -22,6 +22,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -616,7 +618,7 @@ chk "文档命令验算的清单值就是示例块里新加的那一行" \
 section "【12】托管复审提示词：配了清单才多一段「钩子调用的文件」；没配时和改动前逐字节一样"
 compose() {   # <scripts 根> <模板名> [环境变量…]
     local root="$1" name="$2"; shift 2
-    (cd "$W/project" && env "$@" CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template "$2"); [ -n "$f" ] && cat "$f"' _ "$root" "$name" 2>/dev/null)
+    (cd "$W/project" && env "$@" CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template "$2"); [ -n "$f" ] && cat "$f"' _ "$root" "$name" 2>/dev/null | strip_review_converge)   # GitHub#621 的两段不归这里的对拍管
 }
 AP=(DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE=7)
 SEC='^# 托管复审加一步：钩子调用的文件'
