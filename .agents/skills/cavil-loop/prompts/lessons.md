@@ -8,7 +8,7 @@
 
 为满足复盘 8 条上限，本版仅保留硬规则与高价值观察项，其余低频观察项（L6–L8、L10、L12–L28）已移出共享文件，历史见迁移表。
 
-<!-- next-id: 77 -->
+<!-- next-id: 78 -->
 
 ## 硬规则
 
@@ -17,28 +17,28 @@
 - 适用：返工轮次里，复审指出的问题与前几轮同源时。
 - 为什么：数值合法性、失败重试、会话归属、外部配置解析都曾各自返工 5 轮以上，每轮只补上一个变体。PR #170 的关闭证据与重开时间在代码复审里又被连续指出多个变体。PR #623 的项目配置读取（旧地址、空值、单引号、读失败）也在第 3 轮才收口。
 - 这样做是对的：PR #39 改用写入方恒满足的不变式；PR #57 从复刻规则改为直接问 CLI。PR #73 在第 2 个同源变体时就列出全部能碰状态目录的入口一次收口。PR #79 最后一轮把换回流程的输入、读、写、重跑一次理清并配故障注入测试。PR #110 把路径解析改为以内核真实打开结果为标准答案、整体对拍。PR #115 在第 1 轮打回后把全部写入点列全一次收口，第 2 轮复审直接通过（https://github.com/GigleAI/cavil-loop/pull/115#issuecomment-6576980505）。PR #134 去掉「编辑评论」这一步本身，并在每个脚本步骤后跑独立消费者参考实现（https://github.com/GigleAI/cavil-loop/pull/134#issuecomment-6633742704）。PR #96 最终改设计：不改旧代码，叫醒脚本只消费原有两处解析一致的结论（https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6539296288）。PR #170 第 1 轮返工把开关开 / 关 × 时间文件 × 标记列成转移表一次重写，并补跨轮用例，第 3 轮复审通过（https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676666474）。PR #620 在自写链接识别被连续指出 4 轮后，把「换不换成熟解析器」做成选择题交维护者，选定后整段替换（https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7054420883）。PR #623 第 3 轮后把项目清单与配置读法各收成一处，并用同一组配置跨手动切换、自动切换、核验、周报对拍（https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055799292）。
-- Seen 12×: #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050467714 · #39 https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5774726460 · #44 https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882615439 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6052366557 · #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6356247734 · #110 https://github.com/GigleAI/cavil-loop/pull/110#issuecomment-6568519638 · #134 https://github.com/GigleAI/cavil-loop/issues/133#issuecomment-6630889716 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6622602816 · #96 https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6539118408 · #170 https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676039125 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7054096910 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055506707
+- Seen 13×: #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050467714 · #39 https://github.com/GigleAI/cavil-loop/pull/39#issuecomment-5774726460 · #44 https://github.com/GigleAI/cavil-loop/pull/44#issuecomment-5882615439 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6052366557 · #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6356247734 · #110 https://github.com/GigleAI/cavil-loop/pull/110#issuecomment-6568519638 · #134 https://github.com/GigleAI/cavil-loop/issues/133#issuecomment-6630889716 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6622602816 · #96 https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6539118408 · #170 https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676039125 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7054096910 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055506707 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055774446
 
 ### L3
 - 规则：同一条规则有多个实现或调用点（生产者与消费者、jq 与 Python、汇总与明细、多个交付入口）时，复用同一个函数、同一份文字或同一份中间结果；做不到就用同一份输入对拍全部输出，每个调用点都要被测到。
 - 适用：计价、计数、去重、判断「是否已有值」，以及要求同时写进多份 prompt 模板时。
-- 为什么：新增 token 合计绕过金额去重；PR #62 的自审表漏了首次开 PR 和子 issue；PR #72 端口登记各按不同依据取源；PR #73 的 worker 会话判断有两份实现；PR #115 版式测试的去重掩盖了附加段缺失；PR #134 参考消费者与发送端分流依据不同；PR #104 负对照开关在 13 个入口里有 3 个放在准备步骤之后；PR #150 「迟到响应是否有效」在四个入口各一套判断；PR #96 叫醒脚本复制了一份 PR 正文关联编号规则；PR #98 叫醒脚本核对写身份允许名单而 daemon 通知漏了；PR #174 颜色函数虽只有一份，但三个调用点传参不同；PR #620 托管复审的去向在中英指南与图源多处写成「交人」，同步遗漏；PR #623 切换预检与周报运行时对「出图地址是否为空」各有一套取值规则。
+- 为什么：新增 token 合计绕过金额去重；PR #62 的自审表漏了首次开 PR 和子 issue；PR #72 端口登记各按不同依据取源；PR #73 的 worker 会话判断有两份实现；PR #115 版式测试的去重掩盖了附加段缺失；PR #134 参考消费者与发送端分流依据不同；PR #104 负对照开关在 13 个入口里有 3 个放在准备步骤之后；PR #150 「迟到响应是否有效」在四个入口各一套判断；PR #96 叫醒脚本复制了一份 PR 正文关联编号规则；PR #98 叫醒脚本核对写身份允许名单而 daemon 通知漏了；PR #174 颜色函数虽只有一份，但三个调用点传参不同；PR #620 托管复审的去向在中英指南与图源多处写成「交人」，同步遗漏；PR #623 切换预检与周报运行时对「出图地址是否为空」各有一套取值规则；PR #624 托管评论既有受保护读取、范围脚本又另走原始接口读正文。
 - 这样做是对的：PR #64 把同一段文字写进三份指令，测试走真实拼装函数对拍成品，并对 7 个写入点逐个负对照。PR #72 认主、列表、注销共用同一枚举函数。PR #78 同一条规矩写进 5 个位置，成品逐字对拍并逐点反例（https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753）。PR #83 冲突检查命令只保留一份原文，测试对每个写入点单独负对照。PR #87 daemon 与 worker 的冲突判定用同一批 6 个 PR 对拍。PR #110 信任目录规则部署与派工共用同一函数并逐入口负对照。PR #134 返工后用 7 种条目跑真实脚本与参考消费者对拍。PR #101 webhook 只有一个共用函数，两条路径各有断言。PR #104 三个入口共用 `neg_sandbox`。PR #150 四类异步入口共用同一判断。PR #121 本机、分组、CI 汇总共用同一个 `tests/run.sh`。PR #96 三个派工脚本共用 `flip_to_doing`。PR #98 返工后账号资格、挑新旧名各只剩一份实现。PR #170 「这轮写不写目录经验」只算一次传入四个出口。PR #171 的 PR 归组只有一份纯函数，三个调用点各有负对照。PR #176 合并方式的默认值规则只在共享纯函数里实现一份。PR #174 返工后草稿标记经三条读取路径对拍。PR #188 三处标签颜色统一走 `labelStyle`。PR #620 链接解析和外部文档清单只有一份模块，客户端说明测试与全仓库检查共用（https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694）。
-- Seen 16×: #48 https://github.com/GigleAI/cavil-loop/pull/48#issuecomment-6013473233 · #50 https://github.com/GigleAI/cavil-loop/pull/50#issuecomment-6049612213 · #55 https://github.com/GigleAI/cavil-loop/pull/55#issuecomment-6050704401 · #59 https://github.com/GigleAI/cavil-loop/pull/59#issuecomment-6052446031 · #72 https://github.com/GigleAI/cavil-loop/pull/72#issuecomment-6283696025 · #73 https://github.com/GigleAI/cavil-loop/pull/73#issuecomment-6284402396 · #115 https://github.com/GigleAI/cavil-loop/pull/115#issuecomment-6576908182 · #134 https://github.com/GigleAI/cavil-loop/pull/134#issuecomment-6634119400 · #104 https://github.com/GigleAI/cavil-loop/pull/104#issuecomment-6551273717 · #150 https://github.com/GigleAI/cavil-loop/pull/150#issuecomment-6662760973 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6622602816 · #96 https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6538530030 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677855164 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055235776
+- Seen 17×: #48 https://github.com/GigleAI/cavil-loop/pull/48#issuecomment-6013473233 · #50 https://github.com/GigleAI/cavil-loop/pull/50#issuecomment-6049612213 · #55 https://github.com/GigleAI/cavil-loop/pull/55#issuecomment-6050704401 · #59 https://github.com/GigleAI/cavil-loop/pull/59#issuecomment-6052446031 · #72 https://github.com/GigleAI/cavil-loop/pull/72#issuecomment-6283696025 · #73 https://github.com/GigleAI/cavil-loop/pull/73#issuecomment-6284402396 · #115 https://github.com/GigleAI/cavil-loop/pull/115#issuecomment-6576908182 · #134 https://github.com/GigleAI/cavil-loop/pull/134#issuecomment-6634119400 · #104 https://github.com/GigleAI/cavil-loop/pull/104#issuecomment-6551273717 · #150 https://github.com/GigleAI/cavil-loop/pull/150#issuecomment-6662760973 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6622602816 · #96 https://github.com/GigleAI/cavil-loop/pull/96#issuecomment-6538530030 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677855164 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055235776 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055127030
 
 ### L4
 - 规则：测试走真实执行路径和真实形状——真实子进程边界、仓库自带的多行模板与真实日志结构、真实目录布局（如 git worktree）——并断言行为，不断言源码文本。
 - 适用：新增或修改测试。
-- 为什么：只匹配源码的测试在 bug 存在时仍全绿；单行夹具绕过多行 prompt 缺陷；普通临时目录测不出 worktree 差异；PR #98 的安装兼容测试抽取脚本三行再 eval，没跑真实入口。
-- 这样做是对的：PR #64 读仓库真实多行模板、调用派工真正使用的拼装函数断言成品。PR #73 把源码文本断言改成在主轮询子进程里探测锁是否已释放。PR #79 返工后用 `env -i` 干净环境调用真实脚本。PR #81 用真实 bare remote 与全新 clone。PR #83 把检查命令放进真实 git worktree 由子进程实跑。PR #87 起真实轮询子进程、bare origin 与冲突提交。PR #110 用真实 git 布局，屏幕夹具取自真机截屏。PR #134 真跑叫醒脚本，用状态式假 GitHub 注入外部编辑。PR #143 把配置样例原样复制成项目配置在干净子进程里断言生效值。PR #101 真 curl 打本地真 HTTP 服务。PR #131 在隔离 HOME 下真跑安装脚本。PR #163 每轮真起轮询子进程加有状态假 GitHub 与假 tmux。PR #150 驱动真实 Electron 窗口。PR #121 真子进程调用真实入口。PR #96 起真实轮询与派工脚本、真 git 仓库。PR #98 返工后在隔离目录真跑 `setup.sh`。PR #170 用 `env -i` 跑真实入口与真实 bare origin，恢复步骤按文档原文逐字执行。PR #171 缩放走真实后台子进程加真 SQLite 重启读回。PR #176 控制器测试走真实 Rust 子进程加真 SQLite，窗口测试断言假 GitHub 收到的合并请求。PR #188 多来源回归在真实窗口里用真实滚轮和点击，套到旧样式上变红。PR #623 用真服务、真切换命令、真起停进程的假 systemctl 和真 HTTP 请求，新用例换回上一提交的代码即变红（https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056197641）。
-- Seen 7×: #30 https://github.com/GigleAI/cavil-loop/pull/30#issuecomment-5709274794 · #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050298312 · #48 https://github.com/GigleAI/cavil-loop/pull/48#issuecomment-6013196195 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6051560673 · #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6356118759 · #143 https://github.com/GigleAI/cavil-loop/pull/143#issuecomment-6658681202 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334
+- 为什么：只匹配源码的测试在 bug 存在时仍全绿；单行夹具绕过多行 prompt 缺陷；普通临时目录测不出 worktree 差异；PR #98 的安装兼容测试抽取脚本三行再 eval，没跑真实入口；PR #624 首版三态矩阵直接调拼装函数、子 issue 手工拼接，且新用例继承了外部派工模式变量。
+- 这样做是对的：PR #64 读仓库真实多行模板、调用派工真正使用的拼装函数断言成品。PR #73 把源码文本断言改成在主轮询子进程里探测锁是否已释放。PR #79 返工后用 `env -i` 干净环境调用真实脚本。PR #81 用真实 bare remote 与全新 clone。PR #83 把检查命令放进真实 git worktree 由子进程实跑。PR #87 起真实轮询子进程、bare origin 与冲突提交。PR #110 用真实 git 布局，屏幕夹具取自真机截屏。PR #134 真跑叫醒脚本，用状态式假 GitHub 注入外部编辑。PR #143 把配置样例原样复制成项目配置在干净子进程里断言生效值。PR #101 真 curl 打本地真 HTTP 服务。PR #131 在隔离 HOME 下真跑安装脚本。PR #163 每轮真起轮询子进程加有状态假 GitHub 与假 tmux。PR #150 驱动真实 Electron 窗口。PR #121 真子进程调用真实入口。PR #96 起真实轮询与派工脚本、真 git 仓库。PR #98 返工后在隔离目录真跑 `setup.sh`。PR #170 用 `env -i` 跑真实入口与真实 bare origin，恢复步骤按文档原文逐字执行。PR #171 缩放走真实后台子进程加真 SQLite 重启读回。PR #176 控制器测试走真实 Rust 子进程加真 SQLite，窗口测试断言假 GitHub 收到的合并请求。PR #188 多来源回归在真实窗口里用真实滚轮和点击，套到旧样式上变红。PR #623 用真服务、真切换命令、真起停进程的假 systemctl 和真 HTTP 请求，新用例换回上一提交的代码即变红（https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056197641）。PR #624 返工后六个入口全经真实派工脚本，并清掉继承的派工环境变量，评论接口设为必失败来断言没发评论请求。
+- Seen 8×: #30 https://github.com/GigleAI/cavil-loop/pull/30#issuecomment-5709274794 · #33 https://github.com/GigleAI/cavil-loop/pull/33#issuecomment-6050298312 · #48 https://github.com/GigleAI/cavil-loop/pull/48#issuecomment-6013196195 · #57 https://github.com/GigleAI/cavil-loop/pull/57#issuecomment-6051560673 · #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6356118759 · #143 https://github.com/GigleAI/cavil-loop/pull/143#issuecomment-6658681202 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055127030
 
 ### L34
 - 规则：PR 正文里的实测数字（尤其是新测试套到旧版本的通过/失败/未拦下个数）写明命令与口径，交付前复跑核对；独立复审复跑得出不同数字时，以复跑为准并在正文更正。
 - 适用：PR 正文或交人评论引用对拍或测试计数时。
-- 为什么：PR #78 正文称旧 main 上「另有 1 个反例没被拦下」，复审复跑为 4 个；PR #132 正文写负对照 58 份、已跑 12 份，复审实测当前为 55 项；PR #98 两轮正文数字及三项负对照失败条数均与复审复跑不符；PR #174 首版正文的负对照命令写成区间，原样执行即报错；PR #620 首版正文旧解析误报写 6 处（只数了 20 篇）、链接 285 条，复审复跑为 8 处和 307 条；PR #623 正文写快速检查全绿，复审独立复跑为 2166 通过、2 失败，此前也有数字过期与历史数字张冠李戴。
+- 为什么：PR #78 正文称旧 main 上「另有 1 个反例没被拦下」，复审复跑为 4 个；PR #132 正文写负对照 58 份、已跑 12 份，复审实测当前为 55 项；PR #98 两轮正文数字及三项负对照失败条数均与复审复跑不符；PR #174 首版正文的负对照命令写成区间，原样执行即报错；PR #620 首版正文旧解析误报写 6 处（只数了 20 篇）、链接 285 条，复审复跑为 8 处和 307 条；PR #623 正文写快速检查全绿，复审独立复跑为 2166 通过、2 失败，此前也有数字过期与历史数字张冠李戴；PR #624 正文快速检查 59/60 与回复称 60/60 并存，未标注对应提交与环境。
 - 这样做是对的：PR #83、#85、#87、#131、#163、#121 正文的通过/失败数经复审复跑完全一致，并说明通过项为何天然满足（如 https://github.com/GigleAI/cavil-loop/pull/87#issuecomment-6392752532）。PR #170 终轮正文的 26 个用例 / 29 项负对照 / 旧基准 18 个红，经复审复跑一致。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开。PR #176 正文每个数字都写了命令，并注明只跑了新增 7 项负对照。PR #198 正文写明命令与口径，复审复跑一致。PR #620 返工后正文写明文件范围（22 篇）与两条复跑命令，后续复审独立复跑一致。
-- Seen 6×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022
+- Seen 7×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153
 
 ### L41
 - 规则：daemon 在判定与写 GitHub（评论、翻标签）之间必须重读目标，并把判定所依据的全部身份与状态（是否打开、是否已合并、目标分支、最新提交、来源属性、标签保护）逐项比对；任一项不符或缺字段，本轮不写、不记已处理。
@@ -50,9 +50,9 @@
 ### L36
 - 规则：读取外部服务状态时区分「明确的否」与「查不到」：只认已知状态词，空输出或连接失败一律算未知，未知时不记录原状、不确认停止、不收尾，保留旧状态留待下一轮。
 - 适用：脚本依赖 systemctl 等状态查询来决定迁移、停止或删除时。
-- 为什么：PR #79 初版把服务管理器连不上当成「原本不开」和「已停」，收走旧登记并删除旧入口；PR #98 初版把打开 PR 列表读取失败当成「没有别的 PR」，照发关闭通知；PR #170 初版把目标分支取不到当成「主干上没有报告」而永久跳过任务，并把读不出的时间文件当成「已关闭」；PR #623 的切换核验在状态缺前缀与端口时假定默认值，配置筛选又把读取失败当成「不是项目」。
+- 为什么：PR #79 初版把服务管理器连不上当成「原本不开」和「已停」，收走旧登记并删除旧入口；PR #98 初版把打开 PR 列表读取失败当成「没有别的 PR」，照发关闭通知；PR #170 初版把目标分支取不到当成「主干上没有报告」而永久跳过任务，并把读不出的时间文件当成「已关闭」；PR #623 的切换核验在状态缺前缀与端口时假定默认值，配置筛选又把读取失败当成「不是项目」；PR #624 复审说明把受保护读取失败与「读完了没有基线」并成同一个全量分支，与外部内容段「重试、仍失败交人」冲突。
 - 这样做是对的：PR #79 返工后列出全部 4 处读状态点，各自做反例并配对旧提交的负对照。PR #81 查 Release 列表失败时直接失败，不猜有无。PR #83 冲突检查取不到时判「检查失败」而非「无冲突」。PR #87 daemon 判不了时不写任何东西、下轮再判。PR #98 返工后列表读失败判未知、留队，恢复后再判。PR #170 返工后先确认分支能解析成提交再读目录树，失败算未知、任务字节不变。PR #176 详情没读到允许的合并方式时不显示合并区、不写记录。PR #174 详情读取失败时草稿标记回退到看板值，两处都没有就不判草稿。
-- Seen 4×: #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6355975783 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334 · #170 https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676039125 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056244723
+- Seen 5×: #79 https://github.com/GigleAI/cavil-loop/pull/79#issuecomment-6355975783 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6540708334 · #170 https://github.com/GigleAI/cavil-loop/pull/170#issuecomment-6676039125 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056244723 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7056160102
 
 ### L38
 - 规则：写给人照做的恢复或运维步骤，要在干净环境按文档字面逐条执行验证，覆盖进入、操作、退出、检查到回退的完整生命周期，且不由夹具额外导出变量；文档承诺的回退条件必须在回退时点仍成立。
@@ -295,8 +295,8 @@
 ### L74
 - 规则：worker 返工回复里「怎么改的、为什么换实现、第几个变体」这类过程叙述放进折叠块，折叠区外只留复测结论和读者需要知道的限制。
 - 适用：worker 在 PR 上回复复审、交人的评论。
-- 为什么：PR #620 的返工回复两次把实现演变与扫描器细节放在折叠区外，被复审打回要求重排。
-- Seen 1×: #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7054096910
+- 为什么：PR #620 的返工回复两次把实现演变与扫描器细节放在折叠区外，被复审打回要求重排；PR #624 第 2 轮返工回复同样在编号表之后逐项摊开修订过程。
+- Seen 2×: #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7054096910 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153
 
 ## 目录经验
 
@@ -383,3 +383,10 @@
 - 为什么：PR #623 首版服务一监听就写入「严格模式开启」，发布脚本据此放行，切换核验中断后下次自动切换看到已开启就直接返回；第 2 轮又发现验收记录写入时重读当前状态，可能记到另一个进程。
 - 这样做是对的：PR #623 返工后验收记录另存，核验期间换进程则不写、不退回、保持待核验，下次自动重试（https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055391670）。
 - Seen 1×: #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7055027968 [scripts/public-assets/]
+
+### L77
+- 规则：复审范围脚本记录的基线指纹，必须与复审实际读到的那份正文来自同一次读取，写基线前只核对版本未变；测试覆盖展示与指纹之间评论被原地编辑，断言不写基线、下一轮回到全量。
+- 适用：scripts/ 下按评论正文与指纹计算复审基线的脚本。
+- 为什么：PR #624 首版把范围命令给出的当前指纹当作审阅版本，评论在审阅与指纹之间被改成另一版时，写前校验仍会通过，下一轮会漏掉未审的编辑。
+- 这样做是对的：PR #624 返工后全文与指纹出自同一次读取，指纹命令必须带期望值，不符就退出码 3、不写基线（https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055708172）。
+- Seen 1×: #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153 [scripts/]
