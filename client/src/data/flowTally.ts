@@ -33,7 +33,7 @@ import type { FilterContext } from '../shared/filter';
 import { hasLabel, isPending } from './pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
 import type { Layout, ShowClosedKey } from '../shared/types';
-import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies, effectiveTallies, foldsAt, tallyFold } from '../shared/tallies';
+import { DEFAULT_TALLIES, UNLABELED_QUERY, commonParked, defaultTallies, effectiveTallies, foldsAt, tallyFold, type ParkedFold, type ParkedScope } from '../shared/tallies';
 import { tKey } from '../shared/i18n';
 
 export { UNLABELED_QUERY };
@@ -195,8 +195,8 @@ export function searchList(items: Item[], parsed: ReturnType<typeof parseFilter>
 }
 
 /** GitHub#634: a row's fold rule and, with this count, whether the number is in the fold */
-function folding(d: TallyDef, count: number): { fold: TallyFold; folded: boolean } {
-  const fold = tallyFold(d);
+function folding(d: TallyDef, count: number, parked?: ParkedFold): { fold: TallyFold; folded: boolean } {
+  const fold = tallyFold(d, parked);
   return { fold, folded: foldsAt(fold, count) };
 }
 
@@ -205,7 +205,16 @@ function folding(d: TallyDef, count: number): { fold: TallyFold; folded: boolean
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
  * condition is empty (that would be "every item", not a number).
  */
-export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: TallyLabels, ctx: FilterContext = NO_CONTEXT, byRepo?: (repo: string) => TallyLabels, repos: readonly string[] = []): TallyEntry[] {
+export function tallyEntries(
+  items: Item[],
+  defs: readonly TallyDef[],
+  labels: TallyLabels,
+  ctx: FilterContext = NO_CONTEXT,
+  byRepo?: (repo: string) => TallyLabels,
+  repos: readonly string[] = [],
+  /** GitHub#643: the parked label as the default fold rule sees it (`viewBarParked`); absent = by row id only */
+  parked?: ParkedFold,
+): TallyEntry[] {
   const out: TallyEntry[] = [];
   for (const d of defs) {
     const name = d.name.trim();
@@ -235,7 +244,7 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       // repository, so while such a number is lit the board narrows the list by each repository's own name
       // (`tallyScoped`): the list is what the number counts.
       const scope: TallyScope | null = names.length > 1 ? { names: map, fallback: label } : null;
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}), ...folding(d, counted.length) });
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}), ...folding(d, counted.length, parked) });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
@@ -244,7 +253,7 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       const parsed = parseFilter(q);
       const pool = statesStated(parsed) ? items : openOnly(items);
       const count = applyFilter(pool, parsed, ctx).length;
-      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count, query: q, ...folding(d, count) });
+      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count, query: q, ...folding(d, count, parked) });
     }
   }
   return out;
@@ -263,8 +272,25 @@ export function viewBarTallies(
   handBackFor?: (repo: string) => HandBackLabels,
   /** GitHub#569: the repositories that have label names of their own (the keys of the label settings) */
   repos: readonly string[] = [],
+  /** GitHub#643: which repositories the ticked sources can hold (`parkedScope`); absent = folding by row id only */
+  scope?: ParkedScope,
 ): TallyEntry[] {
-  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined, repos);
+  const parked = scope ? viewBarParked(handBack, handBackFor, repos, scope) : undefined;
+  return tallyEntries(items, effectiveTallies(saved), tallyLabels(handBack), ctx, handBackFor ? (repo) => tallyLabels(handBackFor(repo)) : undefined, repos, parked);
+}
+
+/**
+ * GitHub#643: the parked label as the default fold rule sees it, from the label settings and the ticked sources.
+ * The view bar (through `viewBarTallies`) and Settings' fold picker both take it from here, with the same inputs.
+ */
+export function viewBarParked(
+  handBack: HandBackLabels,
+  handBackFor: ((repo: string) => HandBackLabels) | undefined,
+  repos: readonly string[],
+  scope: ParkedScope,
+): ParkedFold {
+  const laterOf = (repo: string) => (handBackFor ? handBackFor(repo) : handBack).later;
+  return { shared: handBack.later, common: commonParked(handBack.later, laterOf, scope, repos) };
 }
 
 /**

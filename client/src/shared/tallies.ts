@@ -12,8 +12,9 @@
 // What is kept: `null` = never changed (the default table); otherwise the whole table. A saved value
 // that is not a valid table is not shown half: the default is shown and Settings says so.
 
-import type { TallyColor, TallyDef, TallyFlow, TallyFold, TallySource } from './types';
+import type { SourceConfig, TallyColor, TallyDef, TallyFlow, TallyFold, TallySource } from './types';
 import { t, zhKey } from './i18n';
+import { parseFilter } from './filter';
 
 export const TALLY_COLORS: readonly TallyColor[] = ['green', 'blue', 'orange', 'red', 'purple', 'gray', 'ring'];
 export const TALLY_FLOWS: readonly TallyFlow[] = ['running', 'agent', 'human', 'later'];
@@ -44,12 +45,86 @@ export const DEFAULT_TALLIES: readonly TallyDef[] = Object.freeze([
 ] satisfies TallyDef[]);
 
 /**
- * GitHub#634: how a row folds. Its own setting when it has one; otherwise (a table saved before folding existed,
- * or a row added without one) the default row of the same id decides — "运行中" never, "稍后处理" always —
- * and every other row folds while it counts 0.
+ * GitHub#643: what the default fold rule needs to know about the parked label ("暂缓", LABEL_PENDING_LATER).
+ * `shared`: the shared name ('' = "稍后处理" switched off). `common`: the one name every repository the ticked
+ * sources can hold uses for its parked label ('' = there is no such name, or it cannot be told) — from
+ * `commonParked`. Absent = neither: only a row's own setting and its id decide, as before.
  */
-export function tallyFold(d: Pick<TallyDef, 'id' | 'fold'>): TallyFold {
-  return d.fold ?? DEFAULT_TALLIES.find((x) => x.id === d.id)?.fold ?? 'zero';
+export interface ParkedFold {
+  shared: string;
+  common: string;
+}
+
+/**
+ * GitHub#643: which repositories the ticked sources can hold. Only repository sources ticked: exactly those
+ * repositories; any Project ticked: not known in advance; nothing ticked: none. `selected` is the view's
+ * ticked keys (null = every source), judged against the configured sources only, as the board merges them.
+ */
+export type ParkedScope = { kind: 'repos'; repos: string[] } | { kind: 'unknown' } | { kind: 'none' };
+
+export function parkedScope(sources: readonly SourceConfig[], selected: readonly string[] | null): ParkedScope {
+  const ticked = selected === null ? sources : sources.filter((s) => selected.includes(s.key));
+  if (ticked.length === 0) return { kind: 'none' };
+  if (ticked.some((s) => s.kind !== 'repo')) return { kind: 'unknown' };
+  return { kind: 'repos', repos: ticked.map((s) => (s.kind === 'repo' ? `${s.owner}/${s.name}` : '')) };
+}
+
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/**
+ * GitHub#643: the parked label every repository in `scope` really uses (its own name where it has one, the
+ * shared one elsewhere — `laterOf`, the settings' one lookup), or '' when there is none:
+ *  - the shared name is empty ("稍后处理" switched off) → ''
+ *  - known repositories → their names, when all equal (case-insensitive) and not empty
+ *  - not known (a Project) → the shared name, only when no repository with names of its own (`ownRepos`) renamed it
+ *  - no repository → the shared name
+ * Settings and the ticked sources only — never the items in hand, so a sync or an empty source changes nothing.
+ */
+export function commonParked(shared: string, laterOf: (repo: string) => string, scope: ParkedScope, ownRepos: readonly string[]): string {
+  const s = shared.trim();
+  if (s === '') return '';
+  const repos = scope.kind === 'repos' ? scope.repos : scope.kind === 'unknown' ? [...ownRepos] : [];
+  const names = repos.map((r) => laterOf(r).trim());
+  if (scope.kind === 'unknown') return names.every((n) => same(n, s)) ? s : '';
+  if (names.length === 0) return s;
+  return names.every((n) => n !== '' && same(n, names[0])) ? names[0] : '';
+}
+
+/**
+ * GitHub#643: the one label name a written condition picks, or null — read by the search box's own parser:
+ * exactly one `label:` with one name, not negated, optionally with `is:open`; nothing else, nothing it ignored.
+ */
+export function soleLabel(query: string): string | null {
+  const { clauses, unsupported } = parseFilter(query);
+  if (unsupported.length) return null;
+  let label: string | null = null;
+  let open = false;
+  for (const c of clauses) {
+    if (c.kind !== 'field' || c.negated) return null;
+    if (c.field === 'label' && label === null && c.values.length === 1) label = c.values[0];
+    else if (c.field === 'is' && !open && c.values.length === 1 && c.values[0].toLowerCase() === 'open') open = true;
+    else return null;
+  }
+  return label;
+}
+
+/**
+ * GitHub#634: how a row folds. Its own setting when it has one. GitHub#643: then, while "稍后处理" is on
+ * (`parked.shared`), a row counting the parked label always folds — one following the parked flow label, or a
+ * condition of one's own picking exactly the name all the ticked sources' repositories use (`parked.common`) —
+ * whatever its id. Otherwise the default row of the same id decides — "运行中" never, "稍后处理" always — and
+ * every other row folds while it counts 0.
+ */
+export function tallyFold(d: Pick<TallyDef, 'id' | 'fold'> & { source?: TallySource }, parked?: ParkedFold): TallyFold {
+  if (d.fold) return d.fold;
+  if (parked && parked.shared.trim() !== '' && d.source) {
+    if (d.source.kind === 'flow' && d.source.flow === 'later') return 'always';
+    if (d.source.kind === 'query' && parked.common !== '') {
+      const l = soleLabel(d.source.query);
+      if (l !== null && same(l.trim(), parked.common.trim())) return 'always';
+    }
+  }
+  return DEFAULT_TALLIES.find((x) => x.id === d.id)?.fold ?? 'zero';
 }
 
 /** GitHub#634: does a number with this fold rule and this count go into the fold? */

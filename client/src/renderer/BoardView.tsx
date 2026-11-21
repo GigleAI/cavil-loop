@@ -37,6 +37,7 @@ import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
 import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { parkedScope } from '../shared/tallies';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
 import { SaidText, SourceName, Verbatim, verbatimParts } from './Verbatim';
@@ -525,8 +526,18 @@ export function BoardView({
   const tallyDefs = state.tallies;
   const handBack = state.handBack;
   const tally = useMemo(
-    () => viewBarTallies(data.items, tallyDefs, handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor({ handBack, repoLabels }, repo), Object.keys(repoLabels)),
-    [data.items, data.projects, tallyDefs, handBack, repoLabels, state.viewer, today],
+    () =>
+      viewBarTallies(
+        data.items,
+        tallyDefs,
+        handBack,
+        { viewer: state.viewer, today, projects: data.projects },
+        (repo) => handBackFor({ handBack, repoLabels }, repo),
+        Object.keys(repoLabels),
+        // GitHub#643: which repositories the ticked sources can hold — decides whether a written "稍后处理" row folds
+        parkedScope(state.sources, view.selected),
+      ),
+    [data.items, data.projects, tallyDefs, handBack, repoLabels, state.viewer, today, state.sources, view.selected],
   );
   // a window without its own memory (tests mounting the board alone) keeps the pick here
   const [ownPick, setOwnPick] = useState<string | null>(null);

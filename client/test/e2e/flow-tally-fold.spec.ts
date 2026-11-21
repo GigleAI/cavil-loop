@@ -19,7 +19,7 @@ import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-
 import { findCopies } from '../fake-github/writes';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { unfoldSettings } from './unfold';
-import { tally } from './tally';
+import { press, tally } from './tally';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -479,5 +479,146 @@ test('GitHub#634: Settings → 顶栏计数 sets each row\'s rule; the preview s
   await expect
     .poll(async () => (await stored(app)).tallies)
     .toEqual(old.map((d) => (d.id === 't-mine' ? { ...d, fold: 'never' } : d)));
+  await app.close();
+});
+
+// GitHub#643: a "稍后处理" number written by hand — a condition of one's own that picks just the parked label, as
+// a table saved before 稍后处理 joined the default table has it — folds always by default, whatever its count.
+const WRITTEN = [
+  { id: 'unlabeled', name: '未处理', color: 'ring', source: { kind: 'query', query: 'no:label' } },
+  { id: 'human', name: '等人处理', color: 'orange', source: { kind: 'flow', flow: 'human' } },
+  { id: 'agent', name: '等 agent', color: 'blue', source: { kind: 'flow', flow: 'agent' } },
+  { id: 'running', name: '运行中', color: 'green', source: { kind: 'flow', flow: 'running' } },
+];
+const writtenRow = (query: string) => ({ id: 't-mine', name: '稍后处理', color: 'purple', source: { kind: 'query', query } });
+const foldSel = (page: Page) => page.locator('[data-testid="tally-row"][data-id="t-mine"]').getByTestId('tally-fold');
+async function toSettings(page: Page) {
+  await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
+  await page.evaluate(() => document.getElementById('set-tallies')!.scrollIntoView({ block: 'start' }));
+}
+const savedFold = async (app: RunningApp) => (((await stored(app)).tallies as any[] | undefined) ?? []).find((d) => d.id === 't-mine')?.fold;
+
+test('GitHub#643: a written 稍后处理 number folds always by default — a click works from the fold, a rule picked in Settings wins and is kept, no source ticked still folds', async () => {
+  let app = await launchApp(env);
+  let page = app.page;
+  await ready(page);
+  await only(page, 'pending/later', 3);
+  await page.evaluate((t) => (window as any).cavil.setTallies(t), [...WRITTEN, writtenRow('label:"pending/later"')]);
+
+  // 1. default: in the fold with 3, "总是折叠"; Settings' picker and preview agree; the same after a restart
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold');
+  await expect(tally(page, 't-mine').getByTestId('tally-count')).toHaveText('3');
+  await toggle(page).click();
+  await expect(tally(page, 't-mine').getByTestId('tally-fold-why')).toHaveText('总是折叠');
+  await page.keyboard.press('Escape');
+  await toSettings(page);
+  await expect(foldSel(page)).toHaveValue('always');
+  await expect(page.getByTestId('tally-preview-fold').locator('[data-kind="t-mine"]')).toHaveCount(1);
+  await shot(page, 'flow-tally-fold-643-settings');
+  await page.getByTestId('back').click();
+  expect(await savedFold(app)).toBeUndefined();
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold', { timeout: 15_000 });
+
+  // 2. a click from the fold: the search becomes its condition and lists what it counts; again: the old search; it stays folded
+  await page.getByTestId('search').fill('bug');
+  await page.getByTestId('search').press('Enter');
+  await toggle(page).click();
+  await tally(page, 't-mine').click();
+  await expect(page.getByTestId('search')).toHaveValue('label:"pending/later"');
+  await expect(tally(page, 't-mine')).toHaveAttribute('aria-pressed', 'true');
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold');
+  await shot(page, 'flow-tally-fold-643-lit');
+  await press(page, 't-mine');
+  await expect(page.getByTestId('search')).toHaveValue('bug');
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold');
+
+  // 3. a rule picked in Settings wins: 不折叠 → in the bar at once, saved, kept after a restart; 总是折叠 → back in the fold
+  await toSettings(page);
+  await foldSel(page).selectOption('never');
+  await expect(foldSel(page)).toHaveValue('never');
+  await expect(page.getByTestId('tally-preview-fold').locator('[data-kind="t-mine"]')).toHaveCount(0);
+  await expect.poll(() => savedFold(app)).toBe('never');
+  await page.getByTestId('back').click();
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'row');
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'row', { timeout: 15_000 });
+  await toSettings(page);
+  await expect(foldSel(page)).toHaveValue('never');
+  await foldSel(page).selectOption('always');
+  await expect.poll(() => savedFold(app)).toBe('always');
+  await page.getByTestId('back').click();
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold');
+
+  // 5. no source ticked: every number 0; the written row is still judged against the shared name and folds always
+  await page.evaluate((t) => (window as any).cavil.setTallies(t), [...WRITTEN, writtenRow('label:"pending/later"')]);
+  await page.evaluate(() => (window as any).cavil.setView({ selected: [] }));
+  await expect(tally(page, 't-mine').getByTestId('tally-count')).toHaveText('0');
+  await expect(tally(page, 't-mine')).toHaveAttribute('data-at', 'fold');
+  await toSettings(page);
+  await expect(foldSel(page)).toHaveValue('always');
+  await app.close();
+});
+
+test('GitHub#643: the ticked sources decide — only the repository that renamed its parked label folds the written row; a Project ticked too puts it back in the bar; untick it and it folds again', async () => {
+  let app = await launchApp(env);
+  let page = app.page;
+  await ready(page);
+  // the repository as a source of its own, beside the Project
+  await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
+  await page.getByTestId('source-input').fill('https://github.com/GigleAI/cavil-loop');
+  await page.getByTestId('source-add').click();
+  await page.getByTestId('back').click();
+  const all = await items(page);
+  const parked = all.filter((i) => i.state === 'open' && i.repo.toLowerCase() === REPO.toLowerCase()).slice(0, 2);
+  for (const i of parked) setLabel(i, '待排期', true);
+  await sync(page, (xs) => xs.filter((i) => has(i, '待排期')).length >= 2);
+  // this repository calls its parked label 待排期 (a rename done for it alone)
+  await app.backend.call('setSetting', { key: 'repoLabels', value: { 'gigleai/cavil-loop': { hand: { later: '待排期' } } } });
+  await page.evaluate((t) => (window as any).cavil.setTallies(t), [...WRITTEN, writtenRow('label:"待排期"')]);
+  await expect.poll(async () => (((await stored(app)).tallies as any[] | undefined) ?? []).map((d) => d.id)).toContain('t-mine');
+  expect((await stored(app)).repoLabels).toEqual({ 'gigleai/cavil-loop': { hand: { later: '待排期' } } });
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  const keys: string[] = (await page.evaluate(async () => (await (window as any).cavil.get()).state.sources)).map((s: any) => s.key);
+  const repoKey = keys.find((k) => k.startsWith('repo:'))!;
+  expect(repoKey).toBe('repo:gigleai/cavil-loop');
+  const at = async () => [await tally(page, 't-mine').getAttribute('data-at'), await tally(page, 't-mine').getByTestId('tally-count').textContent()];
+  const clickText = async () => {
+    await press(page, 't-mine');
+    const q = await page.getByTestId('search').inputValue();
+    await press(page, 't-mine');
+    return q;
+  };
+
+  // ① only the repository: folded
+  await page.evaluate((k) => (window as any).cavil.setView({ selected: [k] }), repoKey);
+  await expect.poll(at, { timeout: 15_000 }).toEqual(['fold', '2']);
+  expect(await clickText()).toBe('label:"待排期"');
+  await shot(page, 'flow-tally-fold-643-repo-only');
+  // ② the Project too (which repositories it holds cannot be told, and one repository renamed its parked label): in the bar
+  await page.evaluate((k) => (window as any).cavil.setView({ selected: k }), keys);
+  await expect.poll(at, { timeout: 15_000 }).toEqual(['row', '2']);
+  expect(await clickText()).toBe('label:"待排期"');
+  await toSettings(page);
+  await expect(foldSel(page)).toHaveValue('zero');
+  await page.getByTestId('back').click();
+  // a sync running reads the same
+  await page.evaluate(() => (window as any).cavil.syncNow());
+  expect((await at())[0]).toBe('row');
+  // ③ the Project unticked again: folded
+  await page.evaluate((k) => (window as any).cavil.setView({ selected: [k] }), repoKey);
+  await expect.poll(at, { timeout: 15_000 }).toEqual(['fold', '2']);
+  expect(await clickText()).toBe('label:"待排期"');
   await app.close();
 });
