@@ -164,7 +164,7 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 - The app checks for, downloads and installs updates itself; Settings lists what changed in each version.
 - "更新渠道" (update channel), in Settings, is one of:
   - **正式版** (stable, the default): only the stable releases tagged `client/vX.Y.Z`, which pass the full tests and have update packages for Apple silicon, Intel and Windows. A new one comes out with the weekly release whenever the client changed that week. The one for everyday use.
-  - **开发版** (development): stable releases too, and on top a new one can appear with every client change merged into main (tag `client/vX.Y.Z-dev.N`) — new features first, but only the quick tests have run, it may be unstable, and there are update packages for Apple silicon and Windows only (an Intel Mac stays on stable).
+  - **开发版** (development): stable releases too, and on top at most one new build a night (tag `client/vX.Y.Z-dev.N`, around 06:00 Beijing time; none on a night the client did not change) — new features first, but only the quick tests and the packaging checks have run, it may be unstable, and there are update packages for Apple silicon and Windows only (an Intel Mac stays on stable).
 - Switching from development back to stable never downgrades; it waits for the next stable version above the current one. A development version sorts before the stable one with the same number (`0.5.3-dev.N` is below `0.5.3` and above `0.5.2`), so someone on a 0.5.3 development build who switches back to stable gets the next update at 0.5.3 or later.
 
 ## Language

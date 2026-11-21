@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """A workflow run failed → open an issue, or comment on the open one of the same kind (GitHub#285).
 
-Two kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416):
+Three kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416 / #628):
   release            the `report failure` job of .github/workflows/release.yml (scheduled, tag push,
                      manual release, manual gate-only)
   negative-controls  the `report failure` job of .github/workflows/negative-controls.yml, the nightly
                      run of every negative control
+  client-nightly     the `report failure` job of .github/workflows/client.yml, the nightly
+                     development build of the desktop client (GitHub#628)
 The kinds differ only in the marker, the title and the wording; finding, re-reading and writing are
 the same code. It only ever does one of two writes, and never touches an existing issue's labels:
 
@@ -26,7 +28,7 @@ All GitHub access goes through `gh api` (REST) with the job's token.
 Input (environment):
   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (default 1), GITHUB_SERVER_URL,
   GITHUB_SHA, GITHUB_REF_NAME   as Actions sets them
-  REPORT_KIND    release (default) or negative-controls; anything else → no write, exit 1
+  REPORT_KIND    release (default), negative-controls or client-nightly; anything else → no write, exit 1
   EVENT          github.event_name
   GATE_ONLY      "true" for a manual gate-only run
   NEEDS          toJSON(needs) of the report job
@@ -62,6 +64,7 @@ KINDS = {
         "client_key": "gate-client",
         "client_job": "gate client",
         "hint": None,
+        "plan_key": "plan",
     },
     "negative-controls": {
         "marker": "<!-- cavil-negative-controls-failure -->",
@@ -76,6 +79,22 @@ KINDS = {
                  "或在被改坏的代码变了时把这个条目指向新代码。修复用普通回归验证；开发期间不跑负对照、"
                  "不新增负对照，是否重新变红由合并后 main 上的下一次每晚运行确认（GitHub#234 / #416）。"
                  "发版不等这里。"),
+        "plan_key": "plan",
+    },
+    "client-nightly": {
+        "marker": "<!-- cavil-client-nightly-failure -->",
+        "title": "客户端每晚开发版失败（自动报告）",
+        "noun": "客户端每晚开发版",
+        "workflow": "Client 工作流（每晚开发版）",
+        "schedule": "定时（每晚）",
+        "manual": "手动",
+        # no client negative-controls job here: nothing for client_section to list
+        "client_key": None,
+        "client_job": None,
+        "hint": ("这一晚没有发出开发版：装着开发版的客户端收不到这一晚的改动。修好后，下一晚（或在 Actions 页"
+                 "手动运行 Client 工作流、在 main 上勾「发开发版」）会再出；之后没有新的客户端改动也会照常重试，"
+                 "因为这些改动还没有发出去过。"),
+        "plan_key": "mode",
     },
 }
 KIND_NAME = os.environ.get("REPORT_KIND", "") or "release"
@@ -277,6 +296,8 @@ def shell_section():
 
 def client_section(needs, jobs):
     key = KIND["client_key"]
+    if not key:
+        return []
     res = needs.get(key, {}).get("result") if isinstance(needs.get(key), dict) else None
     if res != "failure":
         return []
@@ -307,7 +328,7 @@ def trigger_text():
 
 def report_text(needs, jobs):
     sha = ""
-    plan = needs.get("plan")
+    plan = needs.get(KIND["plan_key"])
     if isinstance(plan, dict):
         sha = (plan.get("outputs") or {}).get("sha") or ""
     sha_line = f"`{sha}`" if sha else f"`{os.environ.get('GITHUB_SHA', '?')}`（计划任务没给出受测提交，这是本次运行检出的提交）"

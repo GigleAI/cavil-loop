@@ -2028,6 +2028,29 @@ gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
 停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `NEGATIVE_CONTROLS_REPORT off`，恢复后没有这一项。
 <!-- negative-controls-ops:end -->
 
+### 客户端开发版每晚出
+
+客户端的开发版（标签 `client/vX.Y.Z-dev.N`，标着 Pre-release）由 `.github/workflows/client.yml` 每晚出一次，不再是每次合进 main 就出：
+
+- **何时**：每晚 04:30 北京时间（20:30 UTC）起跑，约一个小时，取 main 最新提交。GitHub 的定时任务高峰期会晚几十分钟，偶尔整次不跑，那一晚就顺延到下一晚。
+- **有改动才出**：先看最新一个已发的开发版构建自哪个提交，再比那个提交和 main 最新提交在 `client/`、`.github/workflows/client.yml`、`.github/actions/client-setup/` 上有没有差别。没有差别就到此为止，不打包、不发，这一轮是绿的。读不到发版列表、比不出差别，都按「有改动」照常构建。上一晚失败了，这些改动就还没发出去，下一晚照样重试。
+- **跑什么**：快速测试、Apple 芯片的 Mac 打包和它的真实更新检查、Windows x64 打包和它的真实更新检查（装上低一版的测试版，让它在开发版渠道上自己找到新版、下载、验签、重启后装好；字节被改过的安装包必须被它拒绝、什么都不改）、体积门。全部通过才发成预发布，只留最近 10 个。完整测试不在这里，仍在每周日那一次。
+- **合进 main 时**：只跑快速测试，不打包、不发版。
+- **手动出一版**：Actions → Client → Run workflow，选 main，勾 `publish`。和每晚那一轮完全一样；再勾 `force` 时跳过「有没有改动」那一步：main 自上一版以来前进过，就出一个内容一样、版本号更高的新版；还是同一个提交，就照样打包检查一遍，发布那一步发现这个版本已经发过，什么都不写。在别的分支上勾 `publish`，第一步就失败，不打包、不签名、不写发版页；不勾 `publish` 的手动运行在任何分支上都只打包检查（用一次性密钥），不发。
+- **一次只发一个**：每晚的和手动勾 `publish` 的运行排在同一个队里，后来的等前一个跑完，不会取消正在跑的；合进 main 的快速测试和 PR 上的检查不在这个队里。
+- **红了自动开 issue**：和发版失败同一个脚本、同样的规则（只新建或评论、写前重读、从不改已有 issue 的标签），单独一条：标题 `客户端每晚开发版失败（自动报告）`，标记 `<!-- cavil-client-nightly-failure -->`，带 `pending/agent`（`RELEASE_FAILURE_LABEL`）。只有每晚那一轮会开，手动运行红了不开。
+
+<!-- client-nightly-ops:begin -->
+**停用每晚报告**（照常每晚出版，红了只是不开 issue）与**恢复**：
+
+```bash
+gh variable set CLIENT_NIGHTLY_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete CLIENT_NIGHTLY_REPORT --repo GigleAI/cavil-loop
+```
+
+停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `CLIENT_NIGHTLY_REPORT off`，恢复后没有这一项。
+<!-- client-nightly-ops:end -->
+
 ## 改名前的安装
 
 本项目原名 `coding-agent-work-loop`。新安装一律用 `cavil-loop`；改名前装好的机器在迁移之前

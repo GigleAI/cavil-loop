@@ -2370,6 +2370,29 @@ gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
 Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `NEGATIVE_CONTROLS_REPORT off` while it is off, and nothing of that name once it is on again.
 <!-- negative-controls-ops:end -->
 
+### The client's development build comes out every night
+
+The client's development builds (tag `client/vX.Y.Z-dev.N`, marked Pre-release) come out of `.github/workflows/client.yml` once a night, no longer with every merge into main:
+
+- **When**: every night from 04:30 Beijing time (20:30 UTC), about an hour, on main's tip. GitHub's scheduled runs can start tens of minutes late at busy times and are occasionally skipped; that night's build then moves to the next night.
+- **Only when the client changed**: it first looks up which commit the newest published development build was made from, then compares that commit with main's tip on `client/`, `.github/workflows/client.yml` and `.github/actions/client-setup/`. No difference: it stops there, builds nothing, publishes nothing, and the run is green. A release list it cannot read, or two commits it cannot compare, count as "changed" and it builds as usual. If last night failed, those changes have not gone out yet, so the next night tries again.
+- **What it runs**: the quick tests, the Apple-silicon Mac build and its real update check, the Windows x64 build and its real update check (a test build one version lower is installed, finds the new one on the development channel, downloads and checks it, and puts it in place on restart; an installer whose bytes were changed must be refused and change nothing), and the size gate. Only when all pass is it published as a pre-release; the latest 10 are kept. The full tests are not part of it; they stay in the Sunday run.
+- **On a merge into main**: the quick tests only, nothing built or published.
+- **A build by hand**: Actions → Client → Run workflow, on main, tick `publish`. Exactly the nightly run; with `force` ticked as well it skips the "did the client change?" step: if main moved on since the last build, a new build with the same content and a higher version comes out; on the very commit already published it builds and checks once more, and the publish step finds that version already out and writes nothing. `publish` ticked on any other branch fails at the first step: nothing built, nothing signed, no release page. A manual run without `publish` only builds and checks (with a throw-away key) on any branch, and publishes nothing.
+- **One publish at a time**: the nightly runs and the manual runs with `publish` queue in one line; a later one waits for the one before it and never cancels it. The quick tests of a merge into main and the checks on a pull request are not in that line.
+- **A red night opens an issue** the same way a failed Release run does (the same script, the same rules: only create or comment, re-read before writing, never touch an existing issue's labels) — but its own: titled `客户端每晚开发版失败（自动报告）`, marker `<!-- cavil-client-nightly-failure -->`, labelled `pending/agent` (`RELEASE_FAILURE_LABEL`). Only the nightly run reports; a red manual run does not.
+
+<!-- client-nightly-ops:begin -->
+**Turning the nightly report off** (the builds go on, a red night just opens no issue) and **back on**:
+
+```bash
+gh variable set CLIENT_NIGHTLY_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete CLIENT_NIGHTLY_REPORT --repo GigleAI/cavil-loop
+```
+
+Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `CLIENT_NIGHTLY_REPORT off` while it is off, and nothing of that name once it is on again.
+<!-- client-nightly-ops:end -->
+
 ## Installations from before the rename
 
 The project used to be called `coding-agent-work-loop`. New installations use `cavil-loop`

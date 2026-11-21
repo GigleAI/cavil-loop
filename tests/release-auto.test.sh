@@ -157,6 +157,8 @@ for j in needs:
     out[j] = {"result": res.get(j, "success"), "outputs": {}}
     if j == "plan":
         out[j]["outputs"] = {"sha": sha, "work": work, "tag": tag, "action": action}
+    if j == "mode":  # client.yml's mode job (GitHub#628: the nightly development build's report)
+        out[j]["outputs"] = {"sha": sha, "tag": "", "publish": "true", "build": "true"}
 print(json.dumps(out))
 PY3
 }
@@ -707,6 +709,9 @@ if os.environ.get("RF_KIND") == "negative-controls":
     names = ["plan"] + [f"negative controls {k}/4" for k in range(1, 5)] \
         + [f"negative controls autopilot {k}/6" for k in range(1, 7)] \
         + ["negative controls client", "negative controls summary"]
+elif os.environ.get("RF_KIND") == "client-nightly":
+    names = ["client build mode", "client quick tests (Linux)", "dmg (arm64)", "Windows installer (x64)",
+             "download size (every dmg and installer built)", "publish development build"]
 else:
     names = ["plan"] + [f"gate {k}/4" for k in range(1, 5)] + ["release gate", "release"]
 over = {}
@@ -732,6 +737,7 @@ run_report() {
     [ -f "$RF/jobs.json" ] || rf_jobs
     local needs wf="$WORKFLOW"
     [ "${RF_KIND:-}" = negative-controls ] && wf="$NC_WORKFLOW"
+    [ "${RF_KIND:-}" = client-nightly ] && wf="${CLIENT_WORKFLOW:-$REPO_DIR/.github/workflows/client.yml}"
     needs="$(NEEDS_WF="$wf" PLAN_SHA="${RF_PLAN_SHA-$RF_SHA}" PLAN_WORK=true needs_json report-failure "$1")"
     set +e
     env -u GITHUB_STEP_SUMMARY PATH="$TMP/rfbin:$PATH" FAKE_GH_DIR="$RF" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=777 \
@@ -1035,6 +1041,28 @@ check "… the release report's switch still there" "$(has_var RELEASE_FAILURE_R
 check "the variable the steps set is the one the report job reads" \
     "$(grep -c "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$NC_WORKFLOW")" 1
 
+echo "-- docs: turning the client's nightly report off and on again — as written (GitHub#628)"
+for f in operations.md operations.zh.md; do
+    sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/docs/$f" > "$TMP/cn-ops-$f.md"
+    sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-$f.md" | grep -v '^```' > "$TMP/cn-ops-$f.sh"
+    grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-$f.md" | tr -d '`' > "$TMP/cn-ops-$f.check"
+done
+check "both docs carry the same steps" "$(cmp -s "$TMP/cn-ops-operations.md.sh" "$TMP/cn-ops-operations.zh.md.sh" && echo same)" same
+check "both docs name the same check" "$(cmp -s "$TMP/cn-ops-operations.md.check" "$TMP/cn-ops-operations.zh.md.check" && echo same)" same
+check "two steps: off, then on" "$(wc -l < "$TMP/cn-ops-operations.md.sh")" 2
+check "one check command" "$(wc -l < "$TMP/cn-ops-operations.md.check")" 1
+printf 'NEGATIVE_CONTROLS_REPORT\toff\t2026-11-01T00:00:00Z\n' > "$VAR_STATE"   # another switch, set before
+vrun "$(sed -n 1p "$TMP/cn-ops-operations.md.sh")"
+check "off: the first line runs" "$RC" 0
+vrun "$(cat "$TMP/cn-ops-operations.md.check")"
+check "check while off: shows CLIENT_NIGHTLY_REPORT off, the other switch untouched" "$RC:$(has_var CLIENT_NIGHTLY_REPORT off):$(has_var NEGATIVE_CONTROLS_REPORT off)" "0:yes:yes"
+vrun "$(sed -n 2p "$TMP/cn-ops-operations.md.sh")"
+check "on: the second line runs" "$RC" 0
+vrun "$(cat "$TMP/cn-ops-operations.md.check")"
+check "check after on: CLIENT_NIGHTLY_REPORT is gone, the other switch still there" "$RC:$(grep -c '^CLIENT_NIGHTLY_REPORT	' "$TMP/var.out" || true):$(has_var NEGATIVE_CONTROLS_REPORT off)" "0:0:yes"
+check "the variable the steps set is the one the client's report job reads" \
+    "$(grep -c "vars.CLIENT_NIGHTLY_REPORT != 'off'" "$REPO_DIR/.github/workflows/client.yml")" 1
+
 
 echo "== the release kind's issues and comments are unchanged (GitHub#416: one script, two kinds)"
 # shellcheck source=lib/compat.sh
@@ -1224,7 +1252,9 @@ for jn, j in wf["jobs"].items():
             hits.append(f"{jn}:{s.get('name')}")
 print("mutation", hits)
 PYT
-    check "$wf.yml: a manual run takes no options" "$(grep '^inputs' "$TMP/nc-$wf")" "inputs []"
+    # client.yml's two manual options publish a development build (GitHub#628); none is about negative controls
+    want="inputs []"; [ "$wf" = client ] && want="inputs ['force', 'publish']"
+    check "$wf.yml: a manual run takes no negative-controls option" "$(grep '^inputs' "$TMP/nc-$wf")" "$want"
     check "$wf.yml: no job or step turns negative controls on" "$(grep '^mutation' "$TMP/nc-$wf")" "mutation []"
 done
 : > "$NC_REC"
@@ -1293,6 +1323,7 @@ PYC
 }
 cstep "$WORKFLOW" client-plan "Decide the client release" > "$TMP/c-plan.sh"
 cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
+cstep "$CLIENT_WORKFLOW" mode "Anything to build" > "$TMP/c-build.sh"
 cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
 cstep "$CLIENT_WORKFLOW" package-windows "Version" > "$TMP/c-version-win.sh"
 cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs and Windows" > "$TMP/c-files.sh"
@@ -1331,6 +1362,29 @@ print("every-job-on-mode", bad)
 print("mode-checkout", cl["mode"]["steps"][0]["with"]["ref"])
 print("matrix", cl["package"]["strategy"]["matrix"]["include"])
 print("dev-release-if", cl["dev-release"]["if"])
+# GitHub#628: what runs on which trigger, and the queue publishing runs share
+print("dev-release-conc", (cl["dev-release"].get("concurrency") or {}).get("group"), (cl["dev-release"].get("concurrency") or {}).get("cancel-in-progress"))
+print("dev-release-needs", sorted(lst(cl["dev-release"]["needs"])))
+for jn in ("package", "package-windows"):
+    print(f"{jn}-if", cl[jn].get("if"))
+for jn in ("test-rust", "test-vitest"):
+    print(f"{jn}-if", cl[jn].get("if"))
+print("test-if", cl["test"].get("if"), sorted(lst(cl["test"]["needs"])))
+print("e2e-if", cl["e2e"]["if"])
+crons = sorted(c["cron"] for c in on["schedule"])
+print("crons", crons)
+d = on["workflow_dispatch"]["inputs"]
+print("dispatch", sorted((k, v.get("type"), v.get("default")) for k, v in d.items()))
+conc = cl_wf["concurrency"]
+print("conc-group", conc["group"])
+print("conc-cancel", conc["cancel-in-progress"])
+rf = cl["report-failure"]
+print("report-if", rf["if"])
+print("report-needs", sorted(lst(rf["needs"])))
+print("report-kind", [s.get("env", {}).get("REPORT_KIND") for s in rf["steps"] if s.get("env")])
+print("report-perms", sorted((rf.get("permissions") or {}).items()))
+win = [s.get("name") for s in cl["package-windows"]["steps"]]
+print("win-last", win[-1], [s.get("run") for s in cl["package-windows"]["steps"] if s.get("name") == win[-1]])
 PYW
 S="$(cat "$TMP/c-static")"
 has "plan-needs ['plan']" "$S" "client plan waits for the plan only, not for the daemon's gate"
@@ -1345,6 +1399,31 @@ has "every-job-on-mode []" "$S" "every build / test job checks out the commit th
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
+has "needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true'" "$(grep '^dev-release-if' "$TMP/c-static")" "a development build is published only by a publishing run with something to build (GitHub#628)"
+lacks "github.event_name == 'push'" "$(grep '^dev-release-if' "$TMP/c-static")" "… no longer by a push to main"
+has "dev-release-conc client-dev-release-publish False" "$S" "… one publish at a time, never cancelling a running one"
+has "dev-release-needs ['mode', 'package', 'package-windows', 'size', 'test']" "$S" "… only after the quick tests, both builds with their update checks, and the size gate"
+for jn in package package-windows; do
+    check "$jn runs exactly when the mode job says build (never on a push to main or a PR)" "$(sed -n "s/^$jn-if //p" "$TMP/c-static")" "needs.mode.outputs.build == 'true'"
+done
+for jn in test-rust test-vitest; do
+    check "$jn: skipped only when the mode job says no quick tests" "$(sed -n "s/^$jn-if //p" "$TMP/c-static")" "needs.mode.outputs.quick == 'true'"
+done
+has "test-if always() && needs.mode.outputs.quick == 'true' ['mode', 'test-rust', 'test-vitest']" "$S" "the quick-test verdict is skipped with them, so a night with nothing new is green"
+has "(github.event_name == 'schedule' && github.event.schedule == '40 16 * * 0')" "$(grep '^e2e-if' "$TMP/c-static")" "full tests on the weekly schedule only, not the nightly one"
+has "(github.event_name == 'workflow_dispatch' && !inputs.publish)" "$(grep '^e2e-if' "$TMP/c-static")" "… and on a manual run that does not publish (a publishing one is the nightly run, by hand)"
+has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly build and the weekly full run"
+has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
+has "'dev-publish'" "$(grep '^conc-group' "$TMP/c-static")" "publishing runs share one concurrency group"
+has "github.event.schedule == '30 20 * * *'" "$(grep '^conc-group' "$TMP/c-static")" "… the nightly run is one of them"
+has "inputs.publish" "$(grep '^conc-group' "$TMP/c-static")" "… and a manual run with publish"
+check "… and that group never cancels a running one; every other group still does" "$(sed -n 's/^conc-cancel //p' "$TMP/c-static")" "\${{ !((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}"
+has "github.event.schedule == '30 20 * * *'" "$(grep '^report-if' "$TMP/c-static")" "the failure report is for the nightly run only"
+has "!cancelled()" "$(grep '^report-if' "$TMP/c-static")" "… never for a cancelled one"
+has "report-needs ['dev-release', 'mode', 'package', 'package-windows', 'size', 'test']" "$S" "… looking at every job of the night"
+has "report-kind ['client-nightly']" "$S" "… into its own kind of issue"
+has "report-perms [('actions', 'read'), ('contents', 'read'), ('issues', 'write')]" "$S" "… the only job that may write issues"
+has "win-last A real update of the installed app ['bash scripts/windows-update-check.sh release/Cavil-Loop-*-windows-x64.exe']" "$S" "the Windows job ends with a real update of the installed app (GitHub#628)"
 check "the Windows build stamps its version with the very same step as the Macs (GitHub#577)" "$(cmp -s "$TMP/c-version.sh" "$TMP/c-version-win.sh" && echo same)" "same"
 
 # A repo of its own: client/ with the real version files and scripts, a bare remote, one tag list.
@@ -1427,13 +1506,15 @@ check "a planned commit that is not there → the job fails" "$([ "$RC" != 0 ] &
 echo "-- the build mode: release or development build, which version, which key"
 rm -rf "$TMP/client-run"; git clone -q "$CREMOTE" "$TMP/client-run" 2>/dev/null
 cmode() { crun "$TMP/client-run/client" "$TMP/c-mode.sh" "$@"; }
-mode_line() { echo "$RC:$(cout tag):$(cout version):$(cout sha):$(cout sign)"; }
+mode_line() { echo "$RC:$(cout tag):$(cout version):$(cout sha):$(cout sign):$(cout publish)"; }
 cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
-check "called by the weekly release → that tag, its version, the planned commit, the real key" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+check "called by the weekly release → that tag, its version, the planned commit, the real key" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule SCHEDULE='30 20 * * *'
+check "… a release build never publishes a development build, whatever the caller's schedule" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
 cmode CALL_TAG=client/v0.6.0 CALL_SHA= GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=schedule
 check "called without a commit → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
 cmode GITHUB_REF=refs/tags/client/v0.6.0 GITHUB_SHA="$C4" EVENT=push
-check "a client tag pushed by hand → the tag's version, no commit needed to change it" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true"
+check "a client tag pushed by hand → the tag's version, no commit needed to change it" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
 cmode GITHUB_REF=refs/tags/client/v0.5.9 GITHUB_SHA="$C4" EVENT=push
 check "a tag below package.json → fails" "$([ "$RC" != 0 ] && echo red):$(cout tag)" "red:"
 has "低于 package.json 的版本 0.6.0" "$(cat "$TMP/c-err")" "… says why"
@@ -1445,11 +1526,64 @@ git -C "$CREMOTE" tag -d client/v0.7.0 >/dev/null
 cmode GITHUB_REF=refs/tags/client/v0.6.1-dev.3 GITHUB_SHA="$C4" EVENT=push
 check "a development-shaped tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=push
-check "push to main → development build, the real key" "$(mode_line)" "0:::$C4:true"
-for ev in schedule workflow_dispatch pull_request; do
+check "push to main → development build, a throw-away key, nothing published (GitHub#628)" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='40 16 * * 0'
+check "the weekly schedule → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='30 20 * * *'
+check "the nightly schedule → development build to publish, the real key (GitHub#628)" "$(mode_line)" "0:::$C4:true:true"
+for ev in workflow_dispatch pull_request; do
     cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT="$ev"
-    check "$ev → development build, a throw-away key" "$(mode_line)" "0:::$C4:false"
+    check "$ev → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
 done
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=false
+check "manual run on main, publish not ticked → a check run" "$(mode_line)" "0:::$C4:false:false"
+cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+check "manual run on main, publish ticked → publish, the real key" "$(mode_line)" "0:::$C4:true:true"
+cmode GITHUB_REF=refs/heads/feature/issue-628 GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+check "manual run on another branch, publish ticked → fails at once, no decision written" "$([ "$RC" != 0 ] && echo red):$(cout sign):$(cout publish)" "red::"
+has "只能在 main 上运行" "$(cat "$TMP/c-out")" "… says why"
+cmode GITHUB_REF=refs/heads/feature/issue-628 GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=false
+check "manual run on another branch, publish not ticked → a check run with a throw-away key" "$(mode_line)" "0:::$C4:false:false"
+
+echo "-- anything to build: release, check runs, publishing runs (GitHub#628)"
+for f in dev-plan.mjs dev-release.mjs update-manifest.mjs; do cp "$REPO_DIR/client/scripts/$f" "$TMP/client-run/client/scripts/"; done
+cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
+    printf '%s' "$1" > "$TMP/c-devlist.json"; shift
+    mkdir -p "$TMP/c-devbin" "$TMP/c-rt"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
+    chmod +x "$TMP/c-devbin/gh"
+    CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
+}
+build_line() { echo "$RC:$(cout build):$(cout quick)"; }
+devrel() { printf '[{"id":1,"tag_name":"client/v0.6.1-dev.%s","draft":false,"prerelease":true,"target_commitish":"%s"}]' "$1" "$2"; }
+cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
+check "a release build → build" "$(build_line)" "0:true:true"
+for ev in push pull_request; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev → quick tests only, nothing built" "$(build_line)" "0:false:true"
+done
+for ev in schedule workflow_dispatch; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev (not publishing) → build and check" "$(build_line)" "0:true:true"
+done
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, the commit already published → nothing built, no quick tests either" "$(build_line)" "0:false:false"
+has "就是这个提交" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true
+check "… forced → built and checked again" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, main moved on with a daemon-only commit since the last build → nothing built" "$(build_line)" "0:false:false"
+has "以来客户端没有改动" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true SHA="$C3"
+check "… forced (\"even without a client change\") → built" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C3")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, only the version files changed since (client/) → build" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C1")" TAG= PUBLISH=true EVENT=schedule
+check "publishing run, client/ changed since the last build → build" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule GH_FAIL_API=1
+check "publishing run, the release list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule SHA=main
+check "publishing run, no full commit to compare → the step fails" "$([ "$RC" != 0 ] && echo red):$(cout build)" "red:"
 
 echo "-- the version written into the three files"
 cver() { crun "$TMP/client-run/client" "$TMP/c-version.sh" "$@"; }
@@ -1543,6 +1677,37 @@ rf_repo; run_report "client-plan=failure client=skipped"
 has "没能判断这次要不要出客户端正式版" "$(body_of 1)" "the client plan failed → said as such"
 rf_repo; run_report "client=skipped client-plan=success"
 check "no client release this week (skipped) → nothing to report" "$RC:$(n_issues)" "0:0"
+
+echo "-- a failed nightly development build is reported in its own issue (GitHub#628)"
+export RF_KIND=client-nightly
+rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app" "publish development build=skipped"
+run_report "package-windows=failure size=skipped dev-release=skipped"
+check "red night: green job, one issue, with the dispatch label" "$RC:$(n_issues):$(labels_of 1)" "0:1:pending/agent"
+B="$(body_of 1)"
+has "<!-- cavil-client-nightly-failure -->" "$B" "… its own marker"
+lacks "<!-- cavil-release-failure -->" "$B" "… not the release marker"
+lacks "<!-- cavil-negative-controls-failure -->" "$B" "… not the negative-controls marker"
+check "… its own title" "$(rf_q "$RF/issues.json" 'd[0]["title"]')" "客户端每晚开发版失败（自动报告）"
+has "## 客户端每晚开发版运行失败" "$B" "… heading names the nightly build"
+has "定时（每晚）" "$B" "… says how it started"
+has "这一晚没有发出开发版" "$B" "… says what it means for installed apps"
+has "Windows installer (x64)](" "$B" "… names the failed job"
+has "「A real update of the installed app」" "$B" "… and the failed step"
+has "$RF_SHA" "$B" "… the tested commit, from the mode job"
+lacks "计划任务没给出受测提交" "$B" "… not the 'no tested commit' fallback"
+lacks "### 客户端负对照" "$B" "… no negative-controls section"
+run_report "package=failure size=skipped dev-release=skipped"
+check "second red night: a comment, no new issue" "$(n_issues):$(n_comments 1)" "1:1"
+has "## 又一次客户端每晚开发版运行失败" "$(last_comment 1)" "… comment heading names the nightly build"
+RF_KIND=negative-controls run_report "shell=failure summary=failure"
+check "a negative-controls failure next to it: its own new issue, nothing added here" "$(n_issues):$(n_comments 1)" "2:1"
+RF_KIND=release run_report "gate=failure gate-summary=failure release=skipped"
+check "a release failure next to it: its own new issue too" "$(n_issues):$(n_comments 1)" "3:1"
+rf_repo; run_report "test=cancelled package=cancelled package-windows=cancelled size=skipped dev-release=skipped"
+check "cancelled night: no call at all" "$(wc -l < "$RF/calls.log")" 0
+rf_repo; run_report ""
+check "a green night: nothing to report, no write" "$RC:$(n_issues):$(writes)" "0:0:0"
+unset RF_KIND
 
 
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──
