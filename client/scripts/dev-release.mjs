@@ -71,7 +71,8 @@ export function devFiles(version) {
  * Whether a release carries `files` (GitHub#628 review rounds 2–4): one verdict, used by every place
  * that reads a build's files — the publish decision, the read-back after publishing, the nightly plan
  * and `--check`. A write follows only from what GitHub said for certain; anything else is unknown.
- *   the release's asset list is not a list (missing, null, anything else): every file unknown
+ *   the release's asset list is not a list (missing, null, anything else), or one of its entries has
+ *   no name (it could be any of the files): every file unknown
  * Per file:
  *   ok       one asset of that name, state "uploaded", size a positive integer
  *   bad      no asset of that name in a list that was read; or one GitHub says is not uploaded — a
@@ -87,11 +88,10 @@ export const NOT_UPLOADED = ['starter', 'open'];
 
 export function buildState(release, files) {
   if (!Array.isArray(release?.assets)) return { state: 'unknown', bad: [], unknown: [...files] };
+  // an entry with no name could be any of the files (review round 5): nothing can be said missing
+  if (!release.assets.every((a) => typeof a?.name === 'string' && a.name !== '')) return { state: 'unknown', bad: [], unknown: [...files] };
   const by = new Map();
-  for (const a of release.assets) {
-    if (typeof a?.name !== 'string') continue;
-    by.set(a.name, [...(by.get(a.name) ?? []), a]);
-  }
+  for (const a of release.assets) by.set(a.name, [...(by.get(a.name) ?? []), a]);
   const bad = [];
   const unknown = [];
   for (const f of files) {
@@ -115,7 +115,8 @@ export function buildState(release, files) {
  * What to do for `version`, given the release list and the files it must carry.
  * → { action: 'skip', why } | { action: 'done' } | { action: 'create' }
  *   | { action: 'fill', draft } (draft false = it is public now: hide it first, see main)
- *   | { action: 'unknown', files } (some file's state cannot be judged: write nothing)
+ *   | { action: 'unknown', files, why } (a file's state, or whether a release is public, cannot be
+ *     judged: write nothing)
  */
 export function decide(list, version, files) {
   const mine = parseDev(version);
@@ -123,15 +124,20 @@ export function decide(list, version, files) {
   const higher = devReleases(list).find((r) => cmp(r.parsed, mine) > 0);
   if (higher) return { action: 'skip', why: `已经有更新的开发版 ${higher.version}` };
   const tag = `${TAG_PREFIX}${version}`;
+  // whether each development build is public must be read, never defaulted (review round 5): a
+  // release of that shape without a true / false draft or prerelease, or without a tag name, could
+  // be this one or a newer public one — nothing is decided from such a list
+  const unsure = list.filter((r) => typeof r?.tag_name !== 'string' || (r.tag_name.startsWith(TAG_PREFIX) && (typeof r.draft !== 'boolean' || typeof r.prerelease !== 'boolean')));
+  if (unsure.length) return { action: 'unknown', files: [], why: `${unsure.map((r) => (typeof r?.tag_name === 'string' ? r.tag_name : '一个没有标签名的发版')).join(', ')} 读不出是不是草稿、是不是预发布` };
   const same = list.filter((r) => r?.tag_name === tag);
   if (same.length > 1) throw new Error(`${tag} 有 ${same.length} 个发版，不知道该用哪个`);
   if (!same.length) return { action: 'create' };
   const r = same[0];
   if (r.draft === false && r.prerelease !== true) throw new Error(`${tag} 已经发布、但不是预发布：不碰它，请人看一下`);
   const s = buildState(r, files);
-  if (s.state === 'unknown') return { action: 'unknown', files: s.unknown };
+  if (s.state === 'unknown') return { action: 'unknown', files: s.unknown, why: `${s.unknown.join(', ')} 读不出是否已上传完成` };
   if (r.draft === false && s.state === 'complete') return { action: 'done' };
-  return { action: 'fill', draft: r.draft !== false };
+  return { action: 'fill', draft: r.draft === true };
 }
 
 /** The development builds to delete: all published ones but the `keep` highest. */
@@ -413,7 +419,7 @@ function main() {
     // GitHub may still be settling an upload: read once more; still unknown → leave everything as it is
     before = readReleases(repo);
     d = decide(before, version, files);
-    if (d.action === 'unknown') throw new Error(`${tag} 的 ${d.files.join(', ')} 读不出是否已上传完成：什么都不写、不替换，现有文件原样保留`);
+    if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写、不替换，现有文件原样保留`);
   }
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
@@ -502,6 +508,10 @@ function check(a) {
     process.exit(1);
   }
   const r = same[0];
+  if (typeof r.draft !== 'boolean' || typeof r.prerelease !== 'boolean') {
+    console.log(`UNKNOWN ${tag}：读不出是不是草稿、是不是预发布`);
+    process.exit(2);
+  }
   const s = buildState(r, devFiles(version));
   if (s.state === 'unknown') {
     console.log(`UNKNOWN ${tag}：读不出是否已上传完成：${s.unknown.join(', ')}`);

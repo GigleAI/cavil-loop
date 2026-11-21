@@ -177,6 +177,50 @@ describe('publishing a development build (GitHub#215)', () => {
       expect(writeArgs(s.calls)).toEqual([]);
       expect(JSON.stringify(s.releases)).toBe(before);
     });
+    // review round 5: what identifies a file, and whether a release is public, are read — never defaulted
+    const edited = (rels: Rel[], f: (rs: any[]) => void) => {
+      const w = world(rels);
+      const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+      f(st.releases);
+      writeFileSync(w.stateFile, JSON.stringify(st));
+      return w;
+    };
+    it.each([
+      ['one of the six files listed without a name', (rs: any[]) => { delete rs[0].assets[0].name; }],
+      ['one of the six files listed with an empty name', (rs: any[]) => { rs[0].assets[0].name = ''; }],
+      ['this version public but without a draft field', (rs: any[]) => { delete rs[0].draft; }],
+      ['this version with draft: null', (rs: any[]) => { rs[0].draft = null; }],
+      ['this version without a prerelease field', (rs: any[]) => { delete rs[0].prerelease; }],
+      ['another development build without a draft field (it could be a newer public one)', (rs: any[]) => { delete rs[1].draft; }],
+      ['a release with no tag name', (rs: any[]) => { delete rs[1].tag_name; }],
+    ])('%s → read again; still unknown → nothing hidden, nothing uploaded, nothing published (round 5)', (_, f) => {
+      // this version's Windows installer is a placeholder, so a wrong verdict would go on to fill it
+      const w = edited([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')], f);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/读不出/);
+      expect(r.out).toContain('什么都不写');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(s.calls.filter((c) => c[0] === 'api').length).toBeGreaterThanOrEqual(2); // it did read again
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it('an explicit draft of this version with a placeholder → filled without hiding (it already is hidden), then published (round 5 positive case)', () => {
+      const w = world([{ ...withExe({ state: 'starter', size: 0 }), draft: true }, devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual(['upload', 'edit --draft=false']);
+      expect(published(w.read(), tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it('--check: a release that does not say whether it is a draft → UNKNOWN, exit 2 (round 5)', () => {
+      const w = edited([devRel(v)], (rs) => { delete rs[0].draft; });
+      const r = w.runArgs(['--check', v]);
+      expect(r.code).toBe(2);
+      expect(r.out).toMatch(/^UNKNOWN/m);
+    });
     it('unknown on the first read, uploaded on the second → already complete, nothing written', () => {
       const w = world([withExe({ size: 10 })], [], { afterList: { 2: { tag, assets: files(v).map(asset) } } });
       w.build(v);
