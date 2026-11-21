@@ -65,6 +65,8 @@ install_entrypoints() {
     ln -sfn release-entry.sh "$root/heavy-test.sh"   # 重测试排队命令（GitHub#343）
     ln -sfn release-entry.sh "$root/outsider-read.sh"   # 托管条目读正文和评论的命令（GitHub#391）
     ln -sfn release-entry.sh "$root/human-paths-check.sh"   # 复审验算「合并前需人过目」清单的命令（GitHub#560）
+    ln -sfn release-entry.sh "$root/publish-asset.sh"   # 评论配图 / 周报的发布命令（GitHub#613）
+    ln -sfn release-entry.sh "$root/review-scope.sh"     # 复审算修复范围的命令（GitHub#621）
     ln -sfn release-entry.sh "$root/flip-label.sh"       # worker / 复审翻标签（GitHub#599）
     ln -sfn release-entry.sh "$root/conflict-check.sh"   # 交 PR 前的冲突检查（GitHub#599）
     ln -sfn release-entry.sh "$root/pr-feedback.sh"      # 读 PR 全部评论（GitHub#599）

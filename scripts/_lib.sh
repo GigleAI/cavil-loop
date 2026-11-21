@@ -109,11 +109,9 @@ cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依
     d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
     printf '%s/%s\n' "$d" "$(basename "$p")"
 }
-cfg_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
-    else return 1; fi
-}
+# cfg_sha256：sha256sum / shasum 的兼容实现，和 review-scope.sh 共用一份（GitHub#621）
+# shellcheck source=_sha256.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_sha256.sh"
 cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh 的 rev_of 同一个算法
     [ -f "$2" ] && [ -r "$2" ] || return 1
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
@@ -8690,8 +8688,73 @@ heavy_prompt_section() {
     printf '%s\n' "$text"
 }
 
+# ── 本项目的审查标准 REVIEW.md 与复审收敛规则（GitHub#621）──
+# REVIEW.md 在项目仓库根目录，写本项目复审「重点看什么、什么算必须改、什么只算建议」。和项目 prompt 文件同一种
+# 读法只认远端主干（origin/<base>），但结果分三种，不把「读不到」当成「没有」（硬规则 L36）：
+#   present   主干上有、能读出来（文件写到 $1）
+#   absent    主干能读、上面确实没有这个文件（或是空文件）
+#   unreadable 远端引用不在、读目录出错、不是普通文件、读内容失败——不回落去读本地工作区的旧文件
+review_md_read() {   # <输出文件>
+    local base="${BASE_BRANCH:-main}" out="$1" ent
+    rm -f "$out"
+    git -C "$PROJECT_ROOT" rev-parse --verify -q "origin/${base}^{commit}" >/dev/null 2>&1 || { echo unreadable; return 0; }
+    ent=$(git -C "$PROJECT_ROOT" ls-tree "origin/${base}" -- REVIEW.md 2>/dev/null) || { echo unreadable; return 0; }
+    [ -n "$ent" ] || { echo absent; return 0; }
+    case "$ent" in
+        100644\ blob\ *|100755\ blob\ *) ;;
+        *) echo unreadable; return 0 ;;
+    esac
+    git -C "$PROJECT_ROOT" show "origin/${base}:REVIEW.md" > "$out" 2>/dev/null || { rm -f "$out"; echo unreadable; return 0; }
+    [ -s "$out" ] || { rm -f "$out"; echo absent; return 0; }
+    echo present
+}
+
+# 复审 prompt 里的 REVIEW.md 段：有 → 全文；未能读取 → 一句「按全量复审」；没有 → 什么都不输出
+review_md_review_section() {   # <状态> <文件>
+    case "$1" in
+        present)
+            printf '# 本项目的审查标准（仓库根目录 REVIEW.md）\n\n'
+            printf '> 下面是 %s 主干上 `REVIEW.md` 的全文：本项目复审重点看什么、什么算必须改、什么只算建议、哪些不用提。定级时照「复审收敛规则」判断顺序的第 ② 步用它；它不能降级照拦关卡。\n\n' "${REPO:-本仓库}"
+            cat "$2" ;;
+        unreadable)
+            printf '# 本项目的审查标准（仓库根目录 REVIEW.md）\n\n'
+            printf '本项目 REVIEW.md 未能读取（不代表没有）：本轮按全量复审，不放宽任何标准。评论里写一句「REVIEW.md 未能读取」。\n' ;;
+    esac
+}
+
+# worker prompt 里的那一句：只给路径，不贴全文
+review_md_worker_section() {   # <状态>
+    local base="${BASE_BRANCH:-main}"
+    case "$1" in
+        present)
+            printf '# 本项目的审查标准（仓库根目录 REVIEW.md）\n\n'
+            printf '本项目主干的仓库根目录有 `REVIEW.md`，写的是复审重点看什么、什么算必须改。交出 PR 或方案之前，先读它（`git show origin/%s:REVIEW.md`）按它自查一遍；复审会按它定级。\n' "$base" ;;
+        unreadable)
+            printf '# 本项目的审查标准（仓库根目录 REVIEW.md）\n\n'
+            printf 'REVIEW.md 未能读取（daemon 拼这份说明时读不到主干上的它，不代表没有）：交出前照上文自查；能读到 `origin/%s:REVIEW.md` 时按它再自查一遍。\n' "$base" ;;
+    esac
+}
+
+# 复审收敛规则段（prompts/review-converge.md）：每份复审 prompt 都加，整份替换了复审模板的项目也收得到
+review_converge_section() {
+    local f="$SKILL_DIR/prompts/review-converge.md" text
+    [ -s "$f" ] || { log "⚠️ 复审收敛规则文件缺失：$f" 2>/dev/null || true; return 0; }
+    text="$(cat "$f")"
+    text="${text//@@SCOPE_CMD@@/"bash '$REVIEW_SCOPE_SCRIPT' --repo '${REPO:-}'"}"
+    # 托管条目又开了外部内容保护：本条的正文和评论只能经受保护的读取命令读，所以范围命令不能再自己读评论——
+    # 规则文件里 plain-only 的几段（方案模式、自己找基线的代码命令）整段去掉，换上 guarded-only 那几段（代码基线由
+    # 复审从受保护读取的输出里交进命令，方案每轮全量）；其余情况反过来。两种都去掉标记行，不留第二条读取路径
+    local keep=plain-only drop=guarded-only
+    if autopilot_section_active && outsider_guard_on; then keep=guarded-only; drop=plain-only; fi
+    printf '%s\n' "$text" | awk -v keep="$keep" -v drop="$drop" '
+        $0 == "<!-- " drop ":begin -->" { skip = 1; next }
+        $0 == "<!-- " drop ":end -->" { skip = 0; next }
+        $0 == "<!-- " keep ":begin -->" || $0 == "<!-- " keep ":end -->" { next }
+        !skip { print }'
+}
+
 compose_prompt_template() {
-    local name="$1" base_tpl overlay out lessons project_lessons
+    local name="$1" base_tpl overlay out lessons project_lessons review_md review_md_state
     base_tpl="$(find_prompt_template "$name")"
     if [ -z "$base_tpl" ]; then
         # 找不到模板 = 调用方会回落到内联的极简 prompt。那份 prompt 只说「实现 → 开 PR →
@@ -8703,7 +8766,9 @@ compose_prompt_template() {
     overlay="$(find_project_prompt_file "${name}.extra.md" extra)"
     lessons="$SKILL_DIR/prompts/lessons.md"
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
-    if [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
+    review_md="$STATE_DIR/prompt-remote-review-md-${name}.md"
+    review_md_state=$(review_md_read "$review_md")
+    if [ "$name" != review ] && [ "$review_md_state" = absent ] && [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -8721,6 +8786,19 @@ compose_prompt_template() {
         printf '# 本项目的附加要求（覆盖上面与之冲突的部分）\n\n'
         printf '> 上面是通用工作流，这一段是 %s 特有的。两者冲突时**以这一段为准**。\n\n' "${REPO:-本仓库}"
         cat "$overlay"
+        fi
+        # 本项目的审查标准与复审收敛规则（GitHub#621）：放在项目附加要求之后、托管规则之前——托管规则段
+        # 还要改收敛规则里的一步，得排在它后面。整份替换了模板的项目也收得到。
+        if [ "$name" = review ]; then
+            if [ "$review_md_state" != absent ]; then
+                printf '\n\n---\n\n'
+                review_md_review_section "$review_md_state" "$review_md"
+            fi
+            printf '\n\n---\n\n'
+            review_converge_section
+        elif [ "$review_md_state" != absent ]; then
+            printf '\n\n---\n\n'
+            review_md_worker_section "$review_md_state"
         fi
         # 同时在进行的其他工作（GitHub#340）：追加在这里，整份替换了模板的项目也收得到。清单本身是
         # 占位符 ${CONCURRENT_WORK}，由 dispatch 在 sed 之后填（concurrent_work_fill）。功能关着什么都不加。
@@ -10138,11 +10216,85 @@ _MANAGED_OUTSIDER_READ="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/
 [ ! -f "$_MANAGED_OUTSIDER_READ" ] || OUTSIDER_READ_SCRIPT="$_MANAGED_OUTSIDER_READ"
 OUTSIDER_READ_CMD="bash '$OUTSIDER_READ_SCRIPT' --config '$CONFIG_FILE'"
 
+# ── 评论配图的发布命令（GitHub#613，只在项目配了出图地址 WEEKLY_REPORT_ASSET_ROOT_URL 时用）──
+# 同上走长期入口。worker 只拿到这一条命令：项目 key 和条目编号由这里写死，图放哪、查不查凭证、
+# 公网能不能打开都由命令决定（scripts/publish-asset.sh）。
+PUBLISH_ASSET_SCRIPT="$_LIB_DIR/publish-asset.sh"
+_MANAGED_PUBLISH_ASSET="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/publish-asset.sh"
+[ ! -f "$_MANAGED_PUBLISH_ASSET" ] || PUBLISH_ASSET_SCRIPT="$_MANAGED_PUBLISH_ASSET"
+ASSET_PUBLISH_MARKER='本项目的公网出图地址：'
+ASSET_PUBLISH_HOWTO_PREFIX='- **怎么出图**：'
+ASSET_PUBLISH_STANDARD_PREFIX='- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：'
+
+# 本项目的 key = 调度器给它的那份 <key>.conf 的名字。环境里没有直接给，所以看配置目录：
+# CODING_AGENT_CONFIG 指向本项目配置的那份（比真实路径）。正好一份才算数；没有或不止一份输出空。
+asset_project_key() {
+    local self d f v found=""
+    self="$(readlink -f "$CONFIG_FILE" 2>/dev/null)" || return 0
+    for d in "$CAVIL_CONFIG_HOME" "$CAVIL_LEGACY_CONFIG_HOME"; do
+        for f in "$d"/*.conf; do
+            [ -f "$f" ] || continue
+            v="$(grep -E '^CODING_AGENT_CONFIG=' "$f" 2>/dev/null | tail -n 1)" || continue
+            v="${v#*=}"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            [ -n "$v" ] && [ "$(readlink -f "$v" 2>/dev/null)" = "$self" ] || continue
+            [ -z "$found" ] || return 0
+            found="$(basename "$f" .conf)"
+        done
+    done
+    printf '%s' "$found"
+}
+
+# 把 prompt 里讲出图的两条（「怎么出图」「评论配图标准」）整条换成发布命令的说法。
+# 没配出图地址：什么都不做，prompt 逐字节不变。prompt 里没有「本项目的公网出图地址」那一行
+# （复审等不讲出图的 prompt）：也不动。项目整份换了模板、找不到这两条原文时，在末尾追加同样两条并写明以它为准。
+asset_publish_fill() {   # <prompt 文件> <本次工作编号>
+    local f="$1" n="$2" key cmd src t
+    [ -n "${WEEKLY_REPORT_ASSET_ROOT_URL:-}" ] || return 0
+    [ -f "$f" ] && grep -qF -- "$ASSET_PUBLISH_MARKER" "$f" || return 0
+    src="$SKILL_DIR/prompts/asset-publish.md"
+    key="$(asset_project_key)"
+    t=$(mktemp "${TMPDIR:-/tmp}/cavil-asset-fill.XXXXXX" 2>/dev/null) || return 0
+    if [ -n "$key" ] && [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+        cmd="bash '$PUBLISH_ASSET_SCRIPT' --project '$key' --item $n"
+        # 逐段拼接替换（不用 gsub：替换值里的 & 和 \ 在 gsub 里有特殊含义）
+        CMD="$cmd" awk '{ ph = "${ASSET_PUBLISH_CMD}"; out = ""
+              while ((i = index($0, ph)) > 0) { out = out substr($0, 1, i - 1) ENVIRON["CMD"]; $0 = substr($0, i + length(ph)) }
+              print out $0 }' "$src" > "$t" 2>/dev/null || : > "$t"
+    else
+        log "  ⚠️ 评论配图：找不到本项目的 key（配置目录里没有正好一份指向 ${CONFIG_FILE} 的 <key>.conf），提示词里写明发不了图" 2>/dev/null || true
+        printf '%s\n' \
+            "${ASSET_PUBLISH_HOWTO_PREFIX}本项目这次派工没拿到发布命令（本机找不到本项目的发布配置），发不了图：评论里写明「本项目的发布命令不可用，无法内嵌图片」，改用文字逐项描述，不要自己往任何目录里复制图片。" \
+            "${ASSET_PUBLISH_STANDARD_PREFIX}同上：这次派工发不了图，不要自己找公网目录或拼地址。" > "$t"
+    fi
+    if [ "$(grep -c '' "$t")" != 2 ]; then
+        log "  ⚠️ 评论配图：发布命令的提示文字读不出（${src}），prompt 原样留着" 2>/dev/null || true
+        rm -f "$t"; return 0
+    fi
+    if awk -v src="$t" -v hp="$ASSET_PUBLISH_HOWTO_PREFIX" -v sp="$ASSET_PUBLISH_STANDARD_PREFIX" '
+            BEGIN { getline h < src; getline s < src; close(src) }
+            index($0, hp) == 1 { print h; seen++; next }
+            index($0, sp) == 1 { print s; seen++; next }
+            { print }
+            END { if (seen == 0) { print ""; print "## 评论配图只用发布命令（以本段为准）"; print ""; print h; print s } }' "$f" > "$t.out" && [ -s "$t.out" ]; then
+        cat "$t.out" > "$f" || true
+    else
+        log "  ⚠️ 评论配图：填充 prompt 失败（${f}），原样留着" 2>/dev/null || true
+    fi
+    rm -f "$t" "$t.out"
+    return 0
+}
+
 # ── 验算「合并前需人过目」清单的命令（GitHub#560，写进托管复审的「钩子调用的文件」段）──
 # 同上走长期入口：复审会话里跑它的时候，发版切换不会让路径失效
 HUMAN_PATHS_CHECK_SCRIPT="$_LIB_DIR/human-paths-check.sh"
 _MANAGED_HUMAN_PATHS_CHECK="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/human-paths-check.sh"
 [ ! -f "$_MANAGED_HUMAN_PATHS_CHECK" ] || HUMAN_PATHS_CHECK_SCRIPT="$_MANAGED_HUMAN_PATHS_CHECK"
+
+# ── 复审算修复范围的命令（GitHub#621，写进复审收敛规则段）──
+# 同上走长期入口：复审会话里跑它的时候，发版切换不会让路径失效
+REVIEW_SCOPE_SCRIPT="$_LIB_DIR/review-scope.sh"
+_MANAGED_REVIEW_SCOPE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/review-scope.sh"
+[ ! -f "$_MANAGED_REVIEW_SCOPE" ] || REVIEW_SCOPE_SCRIPT="$_MANAGED_REVIEW_SCOPE"
 
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空

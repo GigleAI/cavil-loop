@@ -78,6 +78,8 @@ if [ -n "$TEMPLATE" ]; then
         "$TEMPLATE" > "$PROMPT_FILE"
     # 同时在进行的其他工作（GitHub#340）：清单是多行的、含别人写的标题，放在 sed 之后单独填
     concurrent_work_fill "$PROMPT_FILE" "$BRANCH" "$ISSUE" || true
+    # 评论配图（GitHub#613）：配了出图地址时把讲出图的两条换成发布命令的说法；没配什么都不动
+    asset_publish_fill "$PROMPT_FILE" "$ISSUE" || true
 else
     cat > "$PROMPT_FILE" <<EOF
 Issue #$ISSUE 有新评论。读 \`gh issue view $ISSUE --repo $REPO --comments\` 看最新一段，按内容判断：

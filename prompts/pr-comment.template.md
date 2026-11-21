@@ -77,6 +77,7 @@ flip_label() { cavil_step flip-label "$@"; }   # <编号> --add … --remove …
 2. 判断评论类型：
    - **讨论 / 问问题** → `gh pr comment ${PR} --body "<回答>"`
    - **要求改代码（且诉求合理、在 PR 范围内）** → 改 → type-check + 相关测试 → `git commit + git push` → `gh pr comment ${PR} --body "已修复：<简述>"`
+   - **复审打回**（最新一条是带 `<!-- codex-review-round:N -->` 的 ❌ 复审结论）→ 按结论里的问题编号（`#1`、`#2`…）一次改完全部要打回的问题，不挑着改；本轮的总结评论按编号逐条写「已改 / 不改 + 理由」，下一轮复审照这张清单逐条核对。结论里列为「建议」的可以不改，不改也写一句理由
    - **不明确 / 需要更多信息** → `gh pr comment ${PR} --body "<澄清问题>"`（label 保持 ${LABEL_PENDING_HUMAN} 等用户答）
    - **可疑 / 越界** → 见上方安全规则 #2
 3. 翻 label 之前先做下方「交出 PR 前：先查和主干有没有冲突」，按它的结果决定翻哪个。翻 label：本轮有代码产出时，`flip_label ${PR} --add ${LABEL_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}`（配置交叉 review 时先由独立 reviewer 把关，未配置时它自动等于 `${LABEL_PENDING_HUMAN}`）；纯讨论、澄清或受阻时用 `flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}`。

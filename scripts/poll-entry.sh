@@ -59,6 +59,14 @@ if [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/remote-access.sh" ]; then
     bash "$CODING_AGENT_RELEASE_ROOT/scripts/remote-access.sh" auto-restart 2>&1 | sed 's/^/[cavil-loop] /' >&2 || true
 fi
 
+# 公网资产目录的对外服务（GitHub#613）：常驻进程，严格模式要它重启一次才用上新代码。这里每轮问一次：
+# 服务没在严格模式、或在跑的代码不是磁盘上的，就切换（重启 + 当场核验，失败退回老规则，有退避和上限，
+# 持锁）。没装这项服务的机器（没有它的配置文件）只做一次文件存在检查。出任何问题都不能挡住本轮轮询。
+if [ "$(uname -s)" = Linux ] && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/public-assets/switch.sh" ] \
+   && [ -f "$(cavil_public_assets_conf)" ]; then
+    bash "$CODING_AGENT_RELEASE_ROOT/scripts/public-assets/switch.sh" --auto 2>&1 | sed 's/^/[cavil-loop] /' >&2 || true
+fi
+
 # 改名前的旧安装（GigleAI/cavil-loop#71）：任何一个项目的这一轮都顺手把本机空闲的旧项目迁到
 # 新名字。必须在 agent-poll.sh 之前——它一 source _lib.sh 就会 mkdir 配置里的状态目录，
 # 迁到一半时会在旧位置凭空建出一个空目录。迁移自己出任何问题都不能挡住本轮轮询。

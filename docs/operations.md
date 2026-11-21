@@ -624,6 +624,97 @@ Design notes:
 
 Leave it empty to keep the previous behaviour exactly.
 
+### Review converges: everything in round one, then only the fixes (GitHub#621)
+
+Before this, a PR often took several rounds to collect the full review: every round reviewed
+everything again, and every round found one more thing somewhere the previous round had not
+looked. Now the reviewer's prompt always carries one more section (`prompts/review-converge.md`,
+appended by the common prompt assembly, so projects that replace the whole review template get it
+too):
+
+- **Full round** — the first round after the last human action, or any round whose baseline
+  cannot be worked out: requirement, diff (or the whole proposal), tests and docs in one pass;
+  every problem listed and numbered (`#1`, `#2`, … kept across rounds).
+- **Re-check round** — from round 2 on, when the baseline is usable: the list is checked item by
+  item (fixed / not fixed / the worker's reason for not changing it holds or not), new problems
+  *inside the fix* are numbered and can bounce, and the always-blocking checks still cover the
+  whole PR.
+- **One decision order per problem**, stopping at the first step that gives an answer:
+  ① always blocks — failed or cancelled checks, a conflict with the base branch, an applicable
+  hard rule broken, a security boundary crossed, data deleted or corrupted (no project rule can
+  lower this); ② grade it from the project's review extra → `REVIEW.md` → the built-in split
+  (wrong behaviour / data / tests = must fix; wording, naming, readability = suggestion) — a
+  suggestion never bounces, it is listed in a fold; ③ full round, or inside the fix → bounce;
+  ④ a must-fix found late, outside the fix → on an ordinary item it is written under "needs your
+  attention" and does not bounce (the human decides before merging); on an autopilot item it
+  bounces, since nobody reads the note before the daemon merges.
+  Every checklist item the review template already says must fail the review (the hard rules, a
+  code name in a question for the human, "you" / "I" for a party, the hand-off layout items, a
+  conflict, the design-review points) is a must-fix, never a suggestion; and what the worker wrote
+  this round (comments, the proposal, the PR body) is always inside the review's scope, so those
+  bounce at step ③ and never reach step ④.
+- The round marker keeps its format (the weekly report reads it); the line after it is a hidden
+  baseline the next round computes the fix from (only the first two lines of a verdict comment
+  count — a marker quoted anywhere else is ignored):
+  `<!-- review-baseline: code head=<sha> base=<branch> -->` or
+  `<!-- review-baseline: plan comment=<id> sha256=<fingerprint> -->`.
+
+**What "the fix" is** comes from `scripts/review-scope.sh` (managed entrypoint
+`entrypoints/review-scope.sh`, read-only). It reads the latest review verdict posted by the
+dispatch account, and checks top to bottom, stopping at the first match:
+
+| # | Code | Output |
+|---|---|---|
+| 1 | round 1 after the last human action | `full first-round` |
+| 2 | reading the comments / the PR failed | `full read-failed` |
+| 3 | no baseline line, or a malformed one | `full no-baseline` |
+| 4 | the PR's base branch differs from the baseline's | `full base-changed` |
+| 5 | fetch failed, or the reviewed commit is not available | `full baseline-missing` |
+| 6 | the reviewed commit is not an ancestor of the current one (rebase / force push) | `full history-rewritten` |
+| 7 | the fork point with the base cannot be computed | `full read-failed` |
+| 8 | merging "reviewed commit + fork point" conflicts (also when the PR resolved a conflict with the base this round) | `full merge-conflict` |
+| 9 | that merge fails otherwise | `full read-failed` |
+| 10 | comparing the merged tree with the current commit fails | `full read-failed` |
+| 11 | no difference (only synced with the base, or no new commit) | `scope 0` |
+| 12 | a difference | `scope <files>` + the diff |
+
+The merged tree is `git merge-tree --write-tree <reviewed commit> <fork point>`: what the reviewer
+saw last round plus whatever the base brought in since, so a plain merge of `main` into the branch
+is not counted as part of the fix. For a design proposal: round 1, an unreadable comment list or
+no baseline → full; the previous proposal comment deleted (`deleted`), edited in place since
+(`edited`), the same comment as this round's (`same-comment`), either comment not posted by the
+dispatch account (`not-own`) or not on this issue (`not-this-issue`) → full; otherwise `scope` plus
+the diff from the previous proposal's text to this one. The command only ever shows text the
+dispatch account posted on this issue itself (the guarded read command shows such comments verbatim
+too); on an autopilot item everything else is still read through the guarded read command. A
+proposal run also prints `current sha256=<fingerprint>` and the full text of this round's comment,
+both from one read — the reviewer reviews exactly that printed text, so the fingerprint is the
+version it saw — and the baseline is written only through
+`review-scope.sh fingerprint <id> --issue <N> --expect <that fingerprint>`, which refuses (exit 3)
+when the comment was edited while it was being reviewed — then no baseline is written and the next
+round is full. On an autopilot item with the outsider guard on (`AUTOPILOT_OUTSIDER_GUARD`), every
+comment on the item is read only through the guarded read command, so the review prompt carries no
+proposal mode at all there: proposal reviews are full every round and write no proposal baseline.
+Code mode reads no comments there either: the reviewer copies the second line of its own last
+verdict out of the guarded read output and passes it with `--baseline-mark '<line>'`; when the
+guarded read succeeds but holds no such line (or a malformed one), the round is full; when the
+guarded read itself fails, that is not "no baseline" — the outsider rules apply (retry once, then
+hand to a human with the command's error), and the review does not go on as a full round. Elsewhere code mode reads the comment
+list only to find that line and never shows comment text. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
+config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
+other first line is treated as full.
+
+**`REVIEW.md`** — a project may put a `REVIEW.md` at its repository root: what its reviews look
+at, what counts as must-fix, what is only a suggestion, what not to raise. The daemon reads it from
+`origin/<base>` like the project prompt files, with three outcomes: present → the review prompt
+gets the whole file, and the four worker prompts (new issue, issue comment, PR comment, split
+sub-issue) get one line pointing at it; confirmed absent on the base branch → nothing is added;
+unreadable (no remote ref, the tree cannot be listed, not a regular file) → the review prompt says
+"REVIEW.md could not be read: review in full, relax nothing" and the worker prompts say it could
+not be read. A local copy in the main checkout is never used instead. This repository's own
+`REVIEW.md` holds what used to be the "test evidence" section of its `review.extra.md`; the extra
+keeps the comment-writing rules.
+
 ## Autopilot label (optional, **off by default**)
 
 GitHub#114. Set `LABEL_AUTOPILOT` (e.g. `autopilot`) — together with `LABEL_PENDING_REVIEW`,
@@ -2644,7 +2735,78 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 Set `PUBLIC_ASSETS_ROOT` to the asset directory actually in use (`~/.local/state/coding-agent-poll/review-shots` on a pre-rename install). Add `PUBLIC_ASSETS_PREFIX=` when the public path prefix is not `/review-assets/`.
 
-Before posting images, run `node scripts/public-assets/check.mjs <dir or file>`: it reports per file whether the public can fetch it, and names any file containing a token / key pattern and exits 1 (the three worker prompt templates include this step, and `publish-asset.sh` runs it before publishing).
+Before posting images, run `node scripts/public-assets/check.mjs <dir or file>`: it reports per file whether the public can fetch it, and names any file containing a token / key pattern and exits 1 (the publish command runs it before publishing; workers of projects with an image address no longer run it themselves, see the next section).
+
+### Directory rule, one publish command, enforced server-side check (GitHub#613)
+
+**Directory rule**: every new image lands at `<project key>/<item number>/<name>-rev-<unique stamp>.<ext>` in the asset directory, the weekly report at `<project key>/weekly-report/<file name>`. cavil-loop decides the path; workers neither name nor pick directories. The project key is the name of `~/.config/cavil-loop/<key>.conf`.
+
+**Publish command**: comment images and the weekly report share `scripts/publish-asset.sh` (managed installs use the durable entry `~/.agents/releases/cavil-loop/entrypoints/publish-asset.sh`; `scripts/weekly-report/publish-asset.sh` is the early path and forwards unchanged). For projects with an image address, the two image bullets of the dispatch prompt ("how to make images", "comment image standard") are replaced by this one command with the project key and item number filled in: `bash '<entry>' --project '<key>' --item <number> <image>...`. It:
+
+1. reads the state the public-asset service reports about itself and refuses when the server-side check is not in force (reason on stderr); the directory is the one the service reports, never guessed;
+2. copies the file to a hidden temporary file inside the target directory and **scans that copy** for credential patterns, deleting it and refusing on a hit;
+3. renames it to the final name, refusing when that name exists (no overwrite);
+4. checks that the public URL answers HTTP 200 with exactly the file's size, deleting the file it just placed otherwise;
+5. prints only the URLs on stdout, one per line.
+
+Files that are not images / videos (the weekly-report PDF, …) stay private as before, under `<project key>/<subdir>/` of the private directory.
+
+**Enforced server-side check (strict mode)**: with `PUBLIC_ASSETS_STRICT=1` in the service config the service serves only two kinds of file — files under a project subdirectory (the key must be a project registered on this machine), or old images in the legacy list whose **path and content (SHA-256) both match**; each file is read whole into memory, its format, credential patterns (every type, not only SVG) and list entry are judged on that buffer, and the response is sent from the same buffer — what was checked is what goes out. A file copied in without the publish command is not served when it carries a credential pattern; a new file outside the project subdirectories is never served. Without the line the behaviour is the old one (this is also the state a failed switch returns to).
+
+The single-file limit is 256 MB by default (`PUBLIC_ASSETS_MAX_BYTES=`); larger files are not served.
+
+**Old images**: the switch records every image / video outside the project subdirectories as the legacy list (relative path + size + SHA-256), written twice: `public-assets-legacy.json` in the config directory and `~/.local/state/cavil-loop/public-assets/legacy.json`; the list's checksum goes into the service config as one line `PUBLIC_ASSETS_LEGACY_SHA=`. **That line is the only trusted state**: present = the list is in force, it governs, it is never rebuilt; absent = never in force, may be (re)built.
+
+- changing permissions or modification time, restoring from a backup at the same path with the same content: the old image still opens;
+- renaming, moving or changing the content: the old image becomes 404 (that image breaks in comments already posted);
+- one list damaged: the service uses the other, and running the switch again copies the good one back;
+- both damaged, or the checksum line malformed: every old-structure file is 404 with the reason in the log, and the switch does not rebuild — restore either copy from a backup (the checksum must match); only when a person decides, delete the checksum line and rebuild (a rebuild takes every file outside the project subdirectories at that moment as an old image).
+
+**Switching**:
+
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --status   # read-only: config, service, check in force, code current, list state
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # places a few test files, checks them via the local port and the public URL, deletes them; config unchanged
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # switch: back up config → build / check list → write strict mode → restart → verify; rolls back on failure
+```
+
+After its verification passes, the switch also writes an acceptance record (`accepted.json` in the state directory, naming the service process it verified). **The check counts as in force only when the service runs in strict mode and the acceptance record names exactly the running process**: a switch interrupted before its verification, or a service that restarted on its own, turns it into "strict mode running, verification not done" — the publish command then refuses, and the automatic switch verifies again.
+
+When any project has only the early weekly-report image address (`WEEKLY_REPORT_ASSET_URL`) and no image address, the switch refuses and names those projects: in strict mode their weekly-report images would not be served, and the new address cannot be derived from the old one. Add a `WEEKLY_REPORT_ASSET_ROOT_URL=` line (the prefix the public entry really mounts) to those projects' `<key>.conf`, then switch.
+
+The daemon calls `switch.sh --auto` every round: when the service is not in strict mode, or the running code differs from the code on disk, it switches (restarting the service once); failures back off 1, 5, 15, 60 minutes, at most 5 tries per code version. To stop it switching automatically, add `PUBLIC_ASSETS_AUTO_SWITCH=0` to the service config. The verification has four checks: an old image 200, a new file in an old-structure position 404, a normal image under `<key>/0/` (item 0 is reserved for this) 200, an image with a fake token pattern 404; it deletes only the files it just created.
+
+When a switch goes wrong, return to the old rules by hand (this does not need the switch command to run; first set `OLD_IMAGE_URL` to the public URL of any old image):
+
+<!-- public-assets-rollback:begin -->
+```bash
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
+grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
+systemctl --user restart cavil-loop-public-assets.service
+sleep 2
+systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
+curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
+```
+<!-- public-assets-rollback:end -->
+
+`active`, `true`, `200` and a last line `ROLLED-BACK` mean it is back: `true` is the service itself reporting "this process runs with strict mode off" (it counts only when the process id matches). Any failing step stops the block on the spot and nothing after it runs: `NO-CONFIG` / `BACKUP-FAILED` mean nothing was changed; `EDIT-FAILED` means the config is half edited — copy the backup it names back over it; a failing `systemctl` or `jq` line means the service did not come up on the old rules — see `journalctl --user -u cavil-loop-public-assets -n 50`. The `PUBLIC_ASSETS_LEGACY_SHA=` line stays, the next switch reuses it; to turn automatic switching back on, delete the `PUBLIC_ASSETS_AUTO_SWITCH=0` line.
+
+**Usage** (read-only, deletes nothing): `bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` lists usage per project and per item, old-structure files that belong to no project on one line, and the directory the names point at but the service does not serve on its own line. Whether and what to delete is a person's call: a deleted image breaks in the comments already posted.
+
+**What scripts cannot see**: a token or personal data (names, e-mail addresses, accounts, orders, …) shown in the captured page. The credential check reads file bytes, not pixels. That still rests on the worker capturing only public pages and on the reviewer's spot check.
+
+**Limits**: only machines running this service can publish images; a machine that exposes the directory through another static server is refused by the publish command. A switch restarts the service once; image requests in that moment (seconds) fail.
 
 Attachments that are not images / videos (the weekly-report PDF, …) are not published publicly: `publish-asset.sh` puts them in a non-public directory and prints an internal-only URL when the project config sets `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL` (the directory is `WEEKLY_REPORT_PRIVATE_ASSET_ROOT`, default `private-assets/` next to the asset directory), otherwise the local path. The vector versions of the weekly-report charts stay on the machine (`WEEKLY_REPORT_VECTOR_DIR`, default `weekly-report-vector/` next to the asset directory); `topdf.mjs` reads them locally.
 

@@ -1145,7 +1145,7 @@ function rawIteration(): Map<string, string> {
 /** per group, the rows that matched the search (not the sub-issues added under them, GitHub#368) */
 async function matchedGroupCounts(page: Page): Promise<Record<string, number>> {
   return page.$$eval('[data-testid="group"]', (gs) =>
-    Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), g.querySelectorAll('[data-testid="row"]:not([data-pulled])').length])),
+    Object.fromEntries(gs.map((g) => [g.getAttribute('data-title'), g.querySelectorAll('[data-testid="row"]:not([data-pulled]):not([data-carried])').length])),
   );
 }
 /** per group, every row it shows */
@@ -1193,7 +1193,7 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   // GitHub#368: with "show hierarchy" on, sub-issues of a matched issue are added under it, faded
   // ("pulled"); what matched is exactly GitHub's own result, and each group's count is the rows it shows
   await expect.poll(() => matchedGroupCounts(page)).toEqual(want);
-  const rows = await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.map((r) => r.getAttribute('data-key')!));
+  const rows = await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.map((r) => r.getAttribute('data-key')!));
   expect([...rows].sort()).toEqual(server);
   expect(await groupCounts(page)).toEqual(await shownGroupRows(page));
   await expect(page.getByTestId('filter-unsupported')).toHaveCount(0);
@@ -1206,11 +1206,11 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
 
   // search: GitHub syntax, and Chinese in the middle of a word
   await page.getByTestId('search').fill('label:pending/human');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
   await page.getByTestId('search').fill('客户端');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBeGreaterThan(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.length))).toBeGreaterThan(
     filterResults.find((r) => r.query === '客户端')!.server.length,
   );
 
@@ -1218,14 +1218,14 @@ test('saved web view imported as a table; search with GitHub syntax; yellow bar 
   await page.getByTestId('search').fill('label:pending/human updated:>2026-01-01 priority:High');
   await expect(page.getByTestId('filter-unsupported')).toContainText('updated:>2026-01-01');
   await expect(page.getByTestId('filter-unsupported')).toContainText('priority:High');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
   await shot(page, '11-unsupported-words');
   // a Chinese custom field is named and ignored too, not searched as text
   await page.getByTestId('search').fill('优先级:高 label:pending/human');
   await expect(page.getByTestId('filter-unsupported')).toContainText('优先级:高');
-  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.length))).toBe(
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.length))).toBe(
     filterResults.find((r) => r.query === 'label:pending/human')!.server.length,
   );
 
@@ -2452,11 +2452,12 @@ test('detail badge: issue and PR differ by icon and full name; GitHub state colo
   expect(icons.pr).toBeTruthy();
   expect(icons.issue).not.toBe(icons.pr);
 
-  // the card says the same as the badge, text included
+  // the card says the same as the badge, text included. GitHub#622: searching a PR's number alone brings the issue
+  // it belongs to along, so the PR card may sit under it with the "↳" mark in front
   await open(147);
-  await expect(card(page, 147).getByTestId('card-state')).toHaveText('PR · 草稿');
+  await expect(card(page, 147).getByTestId('card-state')).toHaveText(/^(↳ )?PR · 草稿$/);
   await open(129);
-  await expect(card(page, 129).getByTestId('card-state')).toHaveText('PR · 已关闭');
+  await expect(card(page, 129).getByTestId('card-state')).toHaveText(/^(↳ )?PR · 已关闭$/);
 
   // became a draft after the board's last read: the badge follows the fresher detail read, the card the board's read …
   await open(149);

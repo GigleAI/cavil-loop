@@ -23,7 +23,7 @@ import { FailureNote } from './FailureNote';
 import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf, hhmm } from '../shared/readFailure';
-import { TableView } from './TableView';
+import { CARRIED_TITLE, TableView } from './TableView';
 import { pinnedLabels } from '../shared/pickOrder';
 import { handBackFor } from '../shared/repoLabels';
 import { buildTable, repoSources } from '../data/table';
@@ -80,13 +80,16 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
   const [adding, setAdding] = useState<RepoOptions | null>(null);
   return (
     <div
-      className={`card${card.under ? ' nested' : ''}${ops.openKey === it.key ? ' open-item' : ''}`}
+      className={`card${card.under ? ' nested' : ''}${card.carried ? ' carried' : ''}${ops.openKey === it.key ? ' open-item' : ''}`}
       data-testid="card"
       data-key={it.key}
       data-open-item={ops.openKey === it.key ? 'yes' : undefined}
       {...{ [OPENS_ITEM]: '' }}
       data-under={card.under ?? undefined}
-      draggable={ops.canWrite}
+      data-carried={card.carried ? '' : undefined}
+      // GitHub#622: an issue shown only because a matched PR goes under it — it did not match, so it does not drag
+      title={card.carried ? tKey(CARRIED_TITLE) : undefined}
+      draggable={ops.canWrite && !card.carried}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/plain', it.key);
         e.dataTransfer.effectAllowed = 'move';
@@ -174,6 +177,11 @@ function CardView({ card, mode, col, ops }: { card: Card; mode: ColumnMode; col:
             </button>
           ))}
       </div>
+      {card.carried && (
+        <div className="carried-note" data-testid="carried-note">
+          {t('随 PR 显示 · 不在筛选结果里')}
+        </div>
+      )}
       <div className="meta">
         {iterations.length > 0 && (
           <span title={t('迭代')}>
@@ -533,6 +541,9 @@ export function BoardView({
   // a number not switched yet starts as it counts (on for "等人处理", GitHub#462); a layout is always stored
   const closedOn = view.showClosed[closedKey] ?? showClosedDefault(litEntry);
   const hideClosed = !statesInSearch && !closedOn;
+  // GitHub#622: while the search box holds a condition (a lit number included), a matched PR whose issue did not
+  // match brings that issue along, faded (board and table, with PRs under issues on — the builders check that)
+  const carrying = isFiltering(parsed);
   const items = useMemo(() => {
     // GitHub#569: a lit number whose repositories name its label differently narrows the search to each
     // repository's own name (the search box cannot say "this name in that repository")
@@ -542,17 +553,17 @@ export function BoardView({
   // the column / group lines are worded when built: built again when the language changes
   const lang = getLang();
   const board = useMemo(
-    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder),
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, carrying ? data.items : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang],
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang, carrying, data.items],
   );
   // GitHub#368: built once here, so the view bar's counts and the table come from the same result
   // GitHub#587: the repository sources shown on the board keep their place in the table when nothing of theirs is shown
   const tableRepos = useMemo(() => repoSources(state.sources, view.selected, sync.times), [state.sources, view.selected, sync.times]);
   const table = useMemo(
-    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos) : null),
+    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, carrying) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, lang],
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, lang, carrying],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -725,6 +736,8 @@ export function BoardView({
     }
   };
   const filtering = isFiltering(parsed);
+  // GitHub#622: the issues shown only because a matched PR goes under them, in the layout shown
+  const carriedCount = table ? table.carriedCount : view.layout === 'board' ? board.carriedCount : 0;
   const hasText = parsed.clauses.some((c) => c.kind === 'text');
 
   const ended = board.columns.filter((c) => c.ended);
@@ -966,6 +979,7 @@ export function BoardView({
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
+                  ...(filtering && carriedCount > 0 ? [t('另有 {n} 个 issue 随命中的 PR 显示', { n: carriedCount })] : []),
                 ].join('\n')
               }
             />

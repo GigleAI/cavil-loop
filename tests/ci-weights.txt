@@ -75,6 +75,7 @@ project-priority 1
 prompt-compose 1
 prompt-files 65
 public-assets 6
+public-assets-strict 45
 reap-finished-workers 11
 release-auto 32
 remote-access 26
@@ -90,6 +91,7 @@ retrospective-directory-lessons 2
 retrospective-global-lock 2
 retrospective-lessons 3
 retrospective-rule-limit 9
+review-converge 70
 review-max-rounds-default 1
 review-verdict-emoji 1
 run 128
