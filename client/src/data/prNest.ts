@@ -131,6 +131,15 @@ export interface PrLink extends LinkedPr {
 }
 
 /**
+ * The pull requests of `all` whose description names the issue `issueKey` (GitHub#275), in list order.
+ * The one rule for "a PR's own word links it to this issue": `issuePrLinks` uses it for an issue a source
+ * holds, the dependency graph (GitHub#636) for an issue node known only from another item's relations.
+ */
+export function prsNaming(issueKey: string, all: Item[]): Item[] {
+  return all.filter((pr) => pr.kind === 'pr' && pr.key !== issueKey && pr.refIssues?.includes(issueKey) === true);
+}
+
+/**
  * The PRs shown as linked to `issue` (GitHub#275): GitHub's links, then the PRs
  * of `all` whose description names it. null = GitHub's links are not known
  * (repository source) and no PR here names it.
@@ -138,8 +147,8 @@ export interface PrLink extends LinkedPr {
 export function issuePrLinks(issue: Item, all: Item[]): PrLink[] | null {
   const out: PrLink[] = (issue.linkedPrs ?? []).map((l) => ({ ...l, via: 'github' }));
   if (issue.kind === 'issue') {
-    for (const pr of all) {
-      if (pr.kind !== 'pr' || pr.key === issue.key || !pr.refIssues?.includes(issue.key) || out.some((l) => l.key === pr.key)) continue;
+    for (const pr of prsNaming(issue.key, all)) {
+      if (out.some((l) => l.key === pr.key)) continue;
       out.push({ key: pr.key, repo: pr.repo, number: pr.number, url: pr.url, state: pr.state, via: 'body' });
     }
   }

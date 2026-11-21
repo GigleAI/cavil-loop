@@ -722,7 +722,7 @@ test('GitHub#526: a registration on a pull request — the PR and its prerequisi
 test('GitHub#636: a PR is joined to the issue it closes by a dashed link; the count runs across it; the issue says its PR is blocked', async () => {
   const R = 'octo-demo/sample';
   const RK = (n: number) => `${R}#${n}`;
-  const issue = (n: number, labels: string[]) => ({
+  const issue = (n: number, labels: string[], blockedBy = 0) => ({
     number: n,
     node_id: `I_demo_${n}`,
     title: `示例条目 ${n}`,
@@ -735,14 +735,24 @@ test('GitHub#636: a PR is joined to the issue it closes by a dashed link; the co
     user: { login: 'demo' },
     parent_issue_url: null,
     sub_issues_summary: { total: 0, completed: 0, percent_completed: 0 },
-    issue_dependencies_summary: { blocked_by: 0, total_blocked_by: 0, blocking: 0, total_blocking: 0 },
+    issue_dependencies_summary: { blocked_by: blockedBy, total_blocked_by: blockedBy, blocking: 0, total_blocking: 0 },
   });
+  // PR #641 review round 1: the PR also refers to octo-demo/other#5, an issue in no source that is drawn only
+  // because #14 is blocked by it on GitHub — its card and its summary must both say its PR is blocked
+  const FAR = 'octo-demo/other#5';
   env.fake.state.repos.set(R, [
     issue(10, ['doing/agent']),
     issue(11, ['pending/PR']),
-    { ...issue(12, ['pending/blocked']), node_id: 'PR_demo_12', title: 'perf: 示例 PR', body: 'Closes #11', pull_request: { merged_at: null }, draft: false },
+    { ...issue(12, ['pending/blocked']), node_id: 'PR_demo_12', title: 'perf: 示例 PR', body: 'Closes #11\nRefs octo-demo/other#5', pull_request: { merged_at: null }, draft: false },
     issue(13, ['pending/blocked']),
+    issue(14, [], 1),
   ]);
+  env.fake.state.w.relations.set(RK(14), {
+    parent: null,
+    subIssues: [],
+    blockedBy: [{ number: 5, title: '别的仓库的条目 5', url: 'https://github.com/octo-demo/other/issues/5', state: 'OPEN', stateReason: null, repository: { nameWithOwner: 'octo-demo/other' } }],
+    blocking: [],
+  } as any);
   let i = 0;
   for (const [n, waits] of [
     [12, 10],
@@ -761,12 +771,14 @@ test('GitHub#636: a PR is joined to the issue it closes by a dashed link; the co
   const link = page.locator(`[data-testid="graph-link"][data-from="${RK(12)}"][data-to="${RK(11)}"]`);
   await expect(link).toHaveCount(1);
   await expect(link).toHaveAttribute('data-open', 'yes');
-  await expect(page.locator('[data-testid="graph-link"]')).toHaveCount(1);
+  await expect(page.locator(`[data-testid="graph-link"][data-from="${RK(12)}"][data-to="${FAR}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-testid="graph-link"]')).toHaveCount(2);
   // dashed, and not the colour of a blocking arrow
   expect(await link.evaluate((e) => getComputedStyle(e).strokeDasharray)).not.toBe('none');
   expect(await stroke(link)).not.toBe(await stroke(edgeOf(page, RK(10), RK(12))));
   await expect(page.getByTestId('graph-legend-link')).toHaveText('PR → 它关联的 issue');
-  await expect(nodeOf(page, RK(10)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 3 项');
+  // #12, #11, #13, and across the second link other#5 and #14
+  await expect(nodeOf(page, RK(10)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 5 项');
   await expect(nodeOf(page, RK(11)).getByTestId('graph-pr-blocked')).toHaveText('它的 PR 被挡住');
   await expect(nodeOf(page, RK(11)).getByTestId('graph-blocking-ahead')).toHaveCount(0);
   await expect(nodeOf(page, RK(13)).getByTestId('graph-blocked-by')).toHaveText('被 1 项挡住');
@@ -784,6 +796,14 @@ test('GitHub#636: a PR is joined to the issue it closes by a dashed link; the co
   await expect(pop.getByTestId('graph-summary-blockers')).toContainText('被挡住');
   await expect(pop.getByTestId('graph-summary-pr').filter({ hasText: '#12' })).toHaveCount(1);
   await shot(page, 'graph-15-pr-blocked-summary');
+  // the issue in no source: the card's badge and the summary's line from the same data
+  await expect(nodeOf(page, FAR).getByTestId('graph-pr-blocked')).toHaveText('它的 PR 被挡住');
+  await nodeOf(page, FAR).click();
+  await expect(pop).toHaveAttribute('data-key', FAR);
+  await expect(pop.getByTestId('graph-outside')).toHaveCount(1);
+  await expect(pop.getByTestId('graph-summary-pr-blocked')).toHaveText('它的 PR #12 被挡住（未完成）');
+  await shot(page, 'graph-15b-pr-blocked-summary-outside');
+  await nodeOf(page, RK(11)).click();
   // dark: the link keeps a colour of its own
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect.poll(() => stroke(link)).not.toBe('rgb(14, 127, 153)');

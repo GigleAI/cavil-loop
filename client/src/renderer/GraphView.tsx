@@ -589,6 +589,29 @@ function Summary({
   const parent = n.parent ? model.nodes.get(n.parent)! : (n.item?.relations?.parent ?? null);
   const line = (x: { repo: string; number: number; title: string }) => `${refOf(x as GraphNode)} ${x.title}`;
   const prs = useMemo(() => summaryPrs(n, items), [n, items]);
+  // GitHub#636: the "被挡住" section — direct blockers (read only for an item a source holds) and the held PRs
+  // linked to it; the second part also for an issue known only from another item's relations, so its card's
+  // "它的 PR 被挡住" always has the line saying which PR (PR #641 review round 1)
+  const shownBlockers = n.item ? blockers : [];
+  const blockedSec = (shownBlockers.length > 0 || n.prBlocked.length > 0) && (
+
+            <div className="gpop-sec" data-testid="graph-summary-blockers">
+              <div className="muted small">{t('被挡住')}</div>
+              {shownBlockers.map((b) => (
+                <div key={b.n.key} className="gpop-rel">
+                  <span className={`gdot ${b.open ? 'open' : 'done'}`} />
+                  {b.open ? tNode('{item}（未完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> }) : tNode('{item}（已完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> })}
+                </div>
+              ))}
+              {/* GitHub#636: no open blocker of its own, but its PR is held */}
+              {n.prBlocked.map((k) => (
+                <div key={k} className="gpop-rel" data-testid="graph-summary-pr-blocked" data-key={k}>
+                  <span className="gdot open" />
+                  {tNode('它的 PR {item} 被挡住（未完成）', { item: <Verbatim from="github">{refOf(model.nodes.get(k)!)}</Verbatim> })}
+                </div>
+              ))}
+            </div>
+  );
   return (
     <div className="gpop" ref={pop} data-testid="graph-summary" data-key={n.key} style={{ left: x, top: y, width: W, maxHeight: maxH }} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
       <div className="gpop-head">
@@ -615,26 +638,10 @@ function Summary({
         </div>
       )}
       {!n.item && <div className="small muted gpop-outside"><Outside /> {t('GitHub 读关系时顺带给的基本信息；这个仓库没有添加为来源，没有读它的标签和详情。')}</div>}
+      {!n.item && blockedSec}
       {n.item && (
         <>
-          {(blockers.length > 0 || n.prBlocked.length > 0) && (
-            <div className="gpop-sec" data-testid="graph-summary-blockers">
-              <div className="muted small">{t('被挡住')}</div>
-              {blockers.map((b) => (
-                <div key={b.n.key} className="gpop-rel">
-                  <span className={`gdot ${b.open ? 'open' : 'done'}`} />
-                  {b.open ? tNode('{item}（未完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> }) : tNode('{item}（已完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> })}
-                </div>
-              ))}
-              {/* GitHub#636: no open blocker of its own, but its PR is held */}
-              {n.prBlocked.map((k) => (
-                <div key={k} className="gpop-rel" data-testid="graph-summary-pr-blocked" data-key={k}>
-                  <span className="gdot open" />
-                  {tNode('它的 PR {item} 被挡住（未完成）', { item: <Verbatim from="github">{refOf(model.nodes.get(k)!)}</Verbatim> })}
-                </div>
-              ))}
-            </div>
-          )}
+          {blockedSec}
           {blocked.length > 0 && (
             <div className="gpop-sec" data-testid="graph-summary-blocking">
               <div className="muted small">{t('挡住')}</div>

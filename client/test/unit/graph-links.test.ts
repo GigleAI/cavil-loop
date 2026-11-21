@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { GitHubClient } from '../../src/data/github';
 import { fetchRepo } from '../../src/data/fetchSources';
 import { buildGraph, summaryPrs, type GraphModel } from '../../src/data/graph';
+import { prsNaming } from '../../src/data/prNest';
 import { edgePath, layoutGraph } from '../../src/data/graphLayout';
 import { parseSource } from '../../src/shared/sources';
 import type { Item, SourceConfig } from '../../src/shared/types';
@@ -55,7 +56,11 @@ function pr(n: number, body: string, o: { state?: 'open' | 'closed'; merged?: bo
     pull_request: { merged_at: o.merged ? RECENT : null },
   };
 }
-const rel = (n: number, state: 'OPEN' | 'CLOSED' = 'OPEN') => ({ number: n, title: `issue ${n}`, url: `https://github.com/${REPO}/issues/${n}`, state, stateReason: state === 'CLOSED' ? 'COMPLETED' : null, repository: { nameWithOwner: REPO } });
+/** what GitHub says about the other end of a relation; `n` may be `owner/repo#N` for another repository */
+const rel = (end: number | string, state: 'OPEN' | 'CLOSED' = 'OPEN') => {
+  const [repo, n] = typeof end === 'number' ? [REPO, end] : [end.split('#')[0], Number(end.split('#')[1])];
+  return { number: n, title: `issue ${n}`, url: `https://github.com/${repo}/issues/${n}`, state, stateReason: state === 'CLOSED' ? 'COMPLETED' : null, repository: { nameWithOwner: repo } };
+};
 
 let fake: FakeGitHub;
 let seq = 0;
@@ -68,7 +73,7 @@ interface Case {
   /** n → the prerequisites registered on it (the loop's hidden comment) */
   marks?: Record<number, number[]>;
   /** GitHub's own "Blocked by" / parent relations, keyed by issue number */
-  relations?: Record<number, { parent?: number; subIssues?: number[]; blockedBy?: [number, 'OPEN' | 'CLOSED'][]; blocking?: [number, 'OPEN' | 'CLOSED'][] }>;
+  relations?: Record<number, { parent?: number; subIssues?: number[]; blockedBy?: [number | string, 'OPEN' | 'CLOSED'][]; blocking?: [number | string, 'OPEN' | 'CLOSED'][] }>;
 }
 async function read(c: Case): Promise<Item[]> {
   fake = await startFakeGitHub({ repos: new Map([[KEY, c.items]]) });
@@ -305,8 +310,9 @@ describe('which issues a PR is joined to', () => {
     const g = graph(items);
     expect(g.nodes.has(K(22))).toBe(false);
     for (const n of g.nodes.values()) {
-      if (n.kind !== 'issue' || !n.item) continue;
-      const listed = (summaryPrs(n, items) ?? []).map((p) => p.key);
+      if (n.kind !== 'issue') continue;
+      // an issue in no source has no summary list (GitHub's links were not read): the PRs naming it
+      const listed = n.item ? (summaryPrs(n, items) ?? []).map((p) => p.key) : prsNaming(n.key, items).map((p) => p.key);
       const drawn = listed.filter((k) => g.nodes.get(k)?.kind === 'pr').sort();
       expect(g.links.filter((l) => l.to === n.key).map((l) => l.from).sort(), n.key).toEqual(drawn);
     }
@@ -344,5 +350,31 @@ describe('layout', () => {
     expect(with_.rects).toEqual(without.rects);
     const d = edgePath(with_.rects.get(K(521))!, with_.rects.get(K(466))!, false, true).d;
     expect(d).toMatch(/^M[\d.]+,[\d.]+ C/);
+  });
+});
+
+// PR #641 review round 1: an issue known only from another item's relations (its repository is no source)
+// gets the link, the badge and — in the window — the summary line from the same data
+describe('an issue in no source, known from another item\'s relations', () => {
+  const OTHER = 'octo-demo/other#5';
+  const OK = OTHER.toLowerCase();
+  const shape: Case = {
+    // #14 (in the source) is blocked by octo-demo/other#5 on GitHub; PR #20 refers to that issue and waits for #10
+    items: [issue(10), pr(20, 'Refs octo-demo/other#5', { waits: true }), issue(14, { blockedBy: 1 })],
+    marks: { 20: [10] },
+    relations: { 14: { blockedBy: [[OTHER, 'OPEN']] } },
+  };
+  it('the link from the PR, the count across it, "its PR is blocked" on the node', async () => {
+    const items = await read(shape);
+    const g = graph(items);
+    const far = g.nodes.get(OK)!;
+    expect(far.item).toBeNull();
+    expect(g.links).toEqual([{ from: K(20), to: OK, open: true }]);
+    expect(far.prBlocked).toEqual([K(20)]);
+    expect(far.blockedByOpen).toBe(0);
+    // #10 → PR #20 ⇢ other#5 → #14
+    expect(badges(g)[10]).toEqual({ ahead: 3, by: 0, pr: [] });
+    expect(g.links.filter((l) => l.to === OK).map((l) => l.from)).toEqual(prsNaming(OK, items).map((p) => p.key));
+    sameReversed(items);
   });
 });

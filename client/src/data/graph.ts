@@ -30,7 +30,7 @@
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { labelAt, loopCandidate, type LabelFor } from './loopBlocked';
-import { issuePrLinks, prHosts } from './prNest';
+import { issuePrLinks, prHosts, prsNaming } from './prNest';
 import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
@@ -241,18 +241,14 @@ export function buildGraph(
   // an in-source node's state is the fresher one: it is read with the item, not with the other end's relations
   const edges: GraphEdge[] = pairs.map(([from, to]) => ({ from, to, open: nodes.get(from)!.state === 'open' }));
 
-  // GitHub#636: PR ⇢ issue links, both ends drawn, from either side's word (never from the order of `all`)
+  // GitHub#636: PR ⇢ issue links, both ends drawn — for every issue node, the PRs linked to it by the one
+  // rule the summary's "linked PRs" list uses (an issue in no source: only the PRs whose description names
+  // it, since GitHub's own links were not read); never from the order of `all`
   const linkKeys = new Set<string>();
-  const addLink = (pr: string, issue: string) => {
-    const a = nodes.get(pr);
-    const b = nodes.get(issue);
-    if (!a || !b || a.kind !== 'pr' || b.kind !== 'issue') return;
-    linkKeys.add(`${pr}\u0000${issue}`);
-  };
   for (const n of nodes.values()) {
-    if (!n.item) continue;
-    if (n.kind === 'issue') for (const l of issuePrLinks(n.item, all) ?? []) addLink(l.key, n.key);
-    else for (const k of n.item.refIssues ?? []) addLink(n.key, k);
+    if (n.kind !== 'issue') continue;
+    const prs = n.item ? (issuePrLinks(n.item, all) ?? []).map((l) => l.key) : prsNaming(n.key, all).map((p) => p.key);
+    for (const k of prs) if (nodes.get(k)?.kind === 'pr') linkKeys.add(`${k}\u0000${n.key}`);
   }
   const links: GraphLink[] = [...linkKeys]
     .sort()
