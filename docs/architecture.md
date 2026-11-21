@@ -4,34 +4,56 @@
 
 ## Label state machine (five states)
 
+Every issue and PR moves through five labels. You hand work to the agent with `pending/agent`; the daemon and the worker move the rest, and you never need to attach to a session to see where an item stands.
+
 | Label | Set by | Meaning |
 |-------|--------|---------|
 | `pending/agent` | You | Wait for the agent to pick it up (issue waiting for dispatch / PR has review feedback to address) |
 | `doing/agent`   | Daemon | Daemon is dispatching / worker tmux is running |
 | `pending/human` | Worker / daemon | Wait for you to review / merge / decide |
 | `pending/PR`    | Worker (when opening a PR) | Issue work moved to the PR for tracking; go look at the PR |
-| `Done`          | Daemon (auto-cleanup) | On a PR once merged; on an issue once it is **closed as completed** — by a `Closes #N` merge, or by you closing it by hand with "Close as completed", which also strips leftover workflow labels (GitHub#159). Closing an issue is always your call; the daemon never closes one. Issues closed as "not planned" / "duplicate" get no `Done` |
+| `Done`          | Daemon (auto-cleanup) | On a PR once merged; on an issue once it is **closed as completed** |
 
-Optional extras: `pending/review` (review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default)) and, with the autopilot label configured (GitHub#114), `pending/merge` on a PR = "review passed, waiting for the daemon to check and merge", plus `pending/blocked` (GitHub#157, on unless `LABEL_PENDING_BLOCKED` is set to an empty value) = "waiting for another issue / PR (of this repo, or of a repo on the trusted list, GitHub#243); the daemon puts it back on `pending/agent` once every prerequisite is done", plus `pending/later` (GitHub#463, on unless `LABEL_PENDING_LATER` is set to an empty value) = "parked: never picked up automatically; a trigger label still dispatches it", plus the autopilot *mode* label itself on an issue (or on an existing PR, GitHub#128; the daemon never removes a label a maintainer added — it only copies the issue's label onto the bound PR and takes that copy back once the authorization is gone, GitHub#190; its merge closes an autopilot issue, which then carries `Done` plus `pending/human` as a reminder for a human to look at, GitHub#461; sub-issues split from it inherit its autopilot, GitHub#233) — see [operations](operations.md#autopilot-label-optional-off-by-default).
+<details><summary>Details: when an issue gets <code>Done</code></summary>
+
+An issue gets `Done` when it is closed as completed — by a `Closes #N` merge, or by you closing it by hand with "Close as completed", which also strips leftover workflow labels. Closing an issue is always your call; the daemon never closes one. Issues closed as "not planned" / "duplicate" get no `Done`.
+
+</details>
+
+<details><summary>Details: the optional labels</summary>
+
+- `pending/review` — the review gate, see [operations](operations.md#optional-cross-review-gate-off-by-default).
+- `pending/merge` (only with the autopilot label configured) — on a PR: "review passed, waiting for the daemon to check and merge".
+- `pending/blocked` (on unless `LABEL_PENDING_BLOCKED` is set to an empty value) — "waiting for another issue / PR (of this repo, or of a repo on the trusted list); the daemon puts it back on `pending/agent` once every prerequisite is done".
+- `pending/later` (on unless `LABEL_PENDING_LATER` is set to an empty value) — "parked: never picked up automatically; a trigger label still dispatches it".
+- The autopilot *mode* label itself, on an issue or on an existing PR. The daemon never removes a label a maintainer added — it only copies the issue's label onto the bound PR and takes that copy back once the authorization is gone. Its merge closes an autopilot issue, which then carries `Done` plus `pending/human` as a reminder for a human to look at; sub-issues split from it inherit its autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).
+
+</details>
 
 ### PR↔Issue closure: decided at design time
+
+The worker's design proposal picks one of two shapes, and you confirm it before any code is written: **A** — one PR closes the issue; **B** — the issue is split into sub-issues, each with its own PR. "One PR or several" is a design-time agreement, not the worker's default.
 
 | Scenario | PR body uses | Issue state at merge | Daemon auto-cleanup |
 |----------|--------------|----------------------|---------------------|
 | **A. One PR**: one PR fully resolves the issue | `Closes #N` | GitHub auto-closes | Issue gets `Done` (in sync with the PR) |
 | **B. Split into sub-issues**: more than one PR is needed | No PR on the parent; each sub-issue's PR uses `Closes #<sub>` | Parent stays open as the overview (`pending/PR`) | Each sub-issue gets `Done`; when **all** of them are closed the parent flips to `pending/human` with a summary comment. The daemon never closes the parent |
 
-In its "design proposal" comment, the worker picks A or B (with a split plan: per sub-issue title / scope / prerequisite / acceptance) and asks you to confirm before coding. So "one PR or several" is a **design-time consensus**, not the worker's default.
+<details><summary>Details: why sub-issues and not several PRs on one issue</summary>
 
-**Why sub-issues and not several `Refs #N` PRs on one issue** (the old "partial implementation" mode, removed in #43): the whole tool is "one number = one branch = one worktree = one session". Several PRs on one issue meant the follow-up PR existed only as a sentence in a comment — nothing to queue, label or track — and had to reuse a branch/worktree the merge hook considered finished. A sub-issue has its own number, so dispatch / worktree / cleanup / weekly report apply unchanged.
+The whole tool is "one number = one branch = one worktree = one session". Several `Refs #N` PRs on one issue would leave the follow-up PR existing only as a sentence in a comment — nothing to queue, label or track — and it would have to reuse a branch / worktree the merge hook considers finished. A sub-issue has its own number, so dispatch / worktree / cleanup / weekly report apply unchanged.
 
-How a split runs:
+An issue that already had one `Refs` PR merged with work remaining gets its remainder split into sub-issues on its next dispatch. `Refs #N` PRs opened by hand are handled as usual (issue → `pending/human` on merge).
 
-1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges. With the waiting label on (GitHub#157; the default unless `LABEL_PENDING_BLOCKED` is set to an empty value) they get `pending/blocked` plus a prerequisite marker instead, and the daemon flips them to `pending/agent` by itself once the prerequisite merges
+</details>
+
+<details><summary>Details: how a split runs</summary>
+
+1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges. With the waiting label on (the default unless `LABEL_PENDING_BLOCKED` is set to an empty value) they get `pending/blocked` plus a prerequisite marker instead, and the daemon flips them to `pending/agent` by itself once the prerequisite merges
 2. A sub-issue skips the design round: `dispatch-new-issue.sh` renders the development prompt (`issue-comment` + `sub-issue.template.md`) instead of the design one, **only if** all three hold — GitHub says it has a parent in this repo, its body carries `<!-- agent-split-from: #<parent> -->` naming that parent, and it was created by the write identity (bot). Any check failing (or erroring) falls back to the normal design round
-3. The merge hook **unconditionally enqueues** the merged PR's issue — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error — and it (`state.json` `split_rollup_queue`); every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own label (`Done` if closed, `pending/human` if still open) follows the same rule: if its state cannot be read, no label is written and it goes to `merged_label_queue` — it is never guessed as OPEN
+3. The merge hook **unconditionally enqueues** the merged PR's issue (`state.json` `split_rollup_queue`) — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error; every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own label (`Done` if closed, `pending/human` if still open) follows the same rule: if its state cannot be read, no label is written and it goes to `merged_label_queue` — it is never guessed as OPEN
 
-An issue left over from the old partial mode (one `Refs` PR merged, work remaining) gets its remainder split into sub-issues on its next dispatch. `Refs #N` PRs opened by hand are still handled as before (issue → `pending/human` on merge).
+</details>
 
 ### State flow
 
@@ -60,22 +82,36 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                             parent issue → pending/human (you decide whether to close it)
 ```
 
-**Before a PR is handed on, it must not conflict with its base** (GitHub#82). Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. The check snippet is copied verbatim into `issue-comment.template.md`, `pr-comment.template.md` and `review.template.md`; `tests/conflict-check-prompts.test.sh` diffs the composed prompts and runs the snippet in a real git worktree. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next paragraph.
+A PR is never handed on while it conflicts with its base: the worker test-merges before every hand-off, and while a PR waits at `pending/human` the daemon re-checks it whenever its base moves (on by default; `PENDING_HUMAN_CONFLICT_CHECK=false` turns the daemon's re-check off).
 
-**A PR waiting for you is re-checked when its base moves** (GitHub#86). While a PR sits at `pending/human` (and carries no `doing/agent` / trigger label — a review-capped PR waiting on your call is left alone), every tick compares the latest commit of its base branch (`git ls-remote`, which costs no GitHub API quota) and the PR's own head commit with the pair it last judged. Only when that pair changed does it judge that one PR, locally: fetch the base and `refs/pull/N/head` into the main checkout's object store (`--no-write-fetch-head --refmap=`, so no ref — not even `origin/<base>` — moves and the working tree is untouched) and run the same `git merge-tree --write-tree` test as the worker's hand-off check. A clean PR costs no GitHub API call at all; a conflicting one costs one `GET /pulls/N` (fresh labels and update time) right before the daemon writes. That is about once per PR per base move, never per tick. A conflict is handled once per PR head commit:
+<details><summary>Details: the worker's conflict check before a hand-off</summary>
+
+Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next block.
+
+</details>
+
+<details><summary>Details: the daemon's re-check of a PR waiting for you</summary>
+
+While a PR sits at `pending/human` (and carries no `doing/agent` / trigger label — a review-capped PR waiting on your call is left alone), every tick compares the latest commit of its base branch (`git ls-remote`, which costs no GitHub API quota) and the PR's own head commit with the pair it last judged. Only when that pair changed does it judge that one PR, locally: fetch the base and `refs/pull/N/head` into the main checkout's object store (`--no-write-fetch-head --refmap=`, so no ref — not even `origin/<base>` — moves and the working tree is untouched) and run the same `git merge-tree --write-tree` test as the worker's hand-off check. A clean PR costs no GitHub API call at all; a conflicting one costs one `GET /pulls/N` (fresh labels and update time) right before the daemon writes. That is about once per PR per base move, never per tick. A conflict is handled once per PR head commit:
 
 | PR | What the daemon does |
 |---|---|
 | updated within `PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS` (default 2) days, same repository | one comment, then label `pending/human` → `pending/agent` (or the fable / extra trigger label it was last dispatched with); the worker merges the base in and hands back as usual |
 | older than that, or from a fork | one reminder comment, label unchanged; relabel `pending/agent` yourself to have it fixed |
 
-GitHub's own `mergeable` field is deliberately not used. It is computed lazily and goes stale: measured on GigleTutor-Web PR #571, `mergeable: true / clean` came from a test merge against a `main` three commits old (parent `e98338a` while `main` was at `1207fdc`), and asking four more times over 80 seconds did not recompute it; other PRs sat at `null / unknown`. Using it means either trusting stale verdicts or never knowing. "Can't tell" never counts as "no conflict": a failed fetch, a missing object or a `merge-tree` error is retried next tick, at most `PENDING_HUMAN_CONFLICT_MAX_TRIES` (default 10) times per pair. If the base commit cannot be read, the tick checks nothing. Right before writing, the daemon re-reads the PR and requires every identity it acted on to still hold — open and not merged, same base branch, same head commit, same same-repo/fork status, still `pending/human` with no busy label; a missing field counts as a mismatch (a closed PR keeps its labels, so labels alone cannot stand in for "open"). On any mismatch it writes nothing, does not mark the commit handled, and judges the PR afresh next tick. Each comment carries a hidden marker with the head commit and its kind (`mode=worker` / `mode=remind`); a marker already on the PR means the commit was handled (state lost, or another machine got there first), so it is neither repeated nor escalated from a reminder into an auto-fix — the reminder comment itself bumps the PR's "updated" time, which is why the two kinds need separate markers. Per-PR progress lives in `state.json` `pr_conflict`; `PENDING_HUMAN_CONFLICT_CHECK=false` turns the whole check off. `tests/pending-human-conflict.test.sh` runs the real poller against a fake GitHub and a real git origin, counts every call, and has a negative control for each wrong implementation above.
+GitHub's own `mergeable` field is deliberately not used. It is computed lazily and goes stale: measured on a real PR, `mergeable: true / clean` came from a test merge against a `main` three commits old, and asking four more times over 80 seconds did not recompute it; other PRs sat at `null / unknown`.
+
+"Can't tell" never counts as "no conflict": a failed fetch, a missing object or a `merge-tree` error is retried next tick, at most `PENDING_HUMAN_CONFLICT_MAX_TRIES` (default 10) times per pair. If the base commit cannot be read, the tick checks nothing. Right before writing, the daemon re-reads the PR and requires every identity it acted on to still hold — open and not merged, same base branch, same head commit, same same-repo/fork status, still `pending/human` with no busy label; a missing field counts as a mismatch (a closed PR keeps its labels, so labels alone cannot stand in for "open"). On any mismatch it writes nothing, does not mark the commit handled, and judges the PR afresh next tick.
+
+Each comment carries a hidden marker with the head commit and its kind (`mode=worker` / `mode=remind`); a marker already on the PR means the commit was handled (state lost, or another machine got there first), so it is neither repeated nor escalated from a reminder into an auto-fix — the reminder comment itself bumps the PR's "updated" time, which is why the two kinds need separate markers. Per-PR progress lives in `state.json` `pr_conflict`.
+
+</details>
 
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
 
 ## Dispatch modes: label / greedy
 
-`DISPATCH_MODE` switches what the daemon considers actionable:
+`DISPATCH_MODE` switches what the daemon considers actionable. `label` (the default) only takes items carrying a trigger label; `greedy` takes every open issue / PR that no blocking label stops.
 
 | | `label` (default) | `greedy` |
 |---|---|---|
@@ -83,6 +119,12 @@ GitHub's own `mergeable` field is deliberately not used. It is computed lazily a
 | Blocking labels | — | `pending/human`, `doing/agent`, `Done`, `pending/PR`, `pending/review`, plus `GREEDY_SKIP_LABELS` |
 | With nothing labelled | nothing happens | work starts immediately |
 | Fits | a human picks what the agent works on | "anything filed here is work to do" |
+
+> ⚠️ Under greedy, **anyone opening an issue immediately spends a worker's tokens** —
+> anonymous outside users included on a public repo. Only enable it where "filed here
+> means do it" is actually true.
+
+<details><summary>Details: how the two modes combine, and how greedy closes its loop</summary>
 
 The two are **not either/or**: in greedy mode the label passes still run first
 (collection order: fable → default → review → greedy sweep), and whoever enqueues an
@@ -96,14 +138,14 @@ is never re-opened in a loop. If a worker dies before flipping, self-heal return
 to the `pending/agent` queue. A worker that stopped empty-handed (no comment, no flip) while
 its session is still alive is out of reach for both self-heal and the reaper; with
 `STUCK_WORKER_QUIET_SECS` set the stuck-worker check handles it: one nudge → end the session
-and redispatch → `pending/human` (GitHub#339, see
+and redispatch → `pending/human` (see
 [operations.md](operations.md#an-item-stays-on-doingagent-the-session-is-alive-nobody-is-working)).
 
-> ⚠️ Under greedy, **anyone opening an issue immediately spends a worker's tokens** —
-> anonymous outside users included on a public repo. Only enable it where "filed here
-> means do it" is actually true.
+</details>
 
 ## Re-entry and concurrency safety
+
+Overlapping ticks, repeated dispatch and duplicate comments are ruled out by a lock, an immediate label flip and a per-item comment cursor:
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding
 - **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `doing/agent`**. Next tick the daemon sees `doing/agent`, which isn't in the `pending/agent` scan set, so no re-dispatch
@@ -112,6 +154,10 @@ and redispatch → `pending/human` (GitHub#339, see
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached
 
 ## Poll pace: idle and failure backoff
+
+A project that has been quiet for a day or more is polled less often (`POLL_BACKOFF_LADDER`), failed GitHub reads back off on their own ladder, and while backed off a cheap conditional request (`POLL_IDLE_PROBE`, on by default) brings a round forward as soon as something changes. This state only decides *whether* a tick talks to GitHub, never what it does; `rm $STATE_DIR/poll-pace.json` returns the project to full speed.
+
+<details><summary>Details: what is saved, and the hard boundary</summary>
 
 The scheduler wakes `agent-poll.sh` every `POLL_INTERVAL_SECS` and always will —
 the script cannot change when its own alarm next rings, so the thing being saved
@@ -125,6 +171,10 @@ which session to reap — all of that is still read fresh from GitHub labels eve
 real poll. A corrupted pace file can only produce the wrong cadence; it cannot
 produce a wrong dispatch or kill a live worker.
 
+</details>
+
+<details><summary>Details: the idle ladder and what counts as activity</summary>
+
 **The ladder is keyed on how long the project has been quiet**, not on how many
 idle polls have gone by (`POLL_BACKOFF_LADDER`, `<quiet secs>:<interval secs>`):
 
@@ -136,9 +186,7 @@ idle polls have gone by (`POLL_BACKOFF_LADDER`, `<quiet secs>:<interval secs>`):
 | 7 days or more | 30 min | 1/30 |
 
 The top tier is "no gate at all", not "at most once per `POLL_INTERVAL_SECS`" —
-an instance whose timer drop-in ticks faster than that keeps its cadence. Making
-it a floor instead is a silent slowdown with no error anywhere, which is exactly
-the failure mode this whole area exists to avoid.
+an instance whose timer drop-in ticks faster than that keeps its cadence.
 
 Any of these resets the quiet timer to zero on the spot: the daemon did
 something (dispatch, self-heal, reap, cleanup); a worker is still running
@@ -155,35 +203,45 @@ another machine's churn on labels this machine does not watch will not wake it.
 open item in the repo, so everything is in scope. That is greedy's semantics, not
 a bug.
 
+</details>
+
+<details><summary>Details: failure backoff</summary>
+
 **Failing to read GitHub is not the same as having nothing to do.** Failures run
 their own ladder — starting at `POLL_INTERVAL_SECS`, doubling on each further
 failure, capped at `POLL_FAIL_BACKOFF_MAX_SECS` — and
 deliberately **freeze** the quiet timer, so an outage never slows a busy project
-down and recovery resumes at the pre-outage tier. Measured 2026-09-18..22: five
-projects burned 30040 polls across 88 hours, every single one a 403 "account
-suspended"; the same window under this ladder is 905.
+down and recovery resumes at the pre-outage tier. Measured over 88 hours in which
+every read failed with a 403 "account suspended": five projects ran 30040 polls;
+the same window under this ladder is 905.
 
-**Three defences keep a bad local file from wedging a project**, all failing
-*open* (broken state means poll, never means wait):
+</details>
+
+<details><summary>Details: three defences against a bad local file</summary>
+
+All three fail *open* (broken state means poll, never means wait):
 
 | Defence | What it covers |
 |---|---|
 | Heartbeat (`POLL_FORCE_SYNC_SECS`) | More than this since the last successful GitHub read → poll unconditionally, whatever the ladder, the fingerprint, or a bug in this logic says. It does **not** override the failure ladder: re-reading GitHub is precisely what that ladder exists to avoid, and a failure state is self-evident rather than inferred. |
-| Only a state the writer could have produced | Before any decision to wait, the file must pass two tests. Each numeric field is checked for character class *and* digit width, since bash arithmetic silently wraps an oversized all-digit value into a plausible-looking timestamp. Then the fields are checked against each other: the writer always leaves `last_active <= last_poll <= next_due <= last_poll + the cap for whichever ladder it used`, so anything else cannot have come from this program and counts as corrupt. Stating it as one closed rule rather than a list of field checks is deliberate — a list only ever covers the variants someone thought of, and the combinations are unbounded. Corrupt means "due now"; the next real poll rewrites the file clean. |
-| Two timestamps | Bash has no monotonic clock (`date +%s` is wall time), so both "next due" and "last polled" are stored. Clock jumps forward → poll; jumps backward → state is untrustworthy → poll; file cannot be written (full/read-only disk) → every tick polls, i.e. the pre-#35 behaviour. |
+| Only a state the writer could have produced | Before any decision to wait, the file must pass two tests. Each numeric field is checked for character class *and* digit width, since bash arithmetic silently wraps an oversized all-digit value into a plausible-looking timestamp. Then the fields are checked against each other: the writer always leaves `last_active <= last_poll <= next_due <= last_poll + the cap for whichever ladder it used`, so anything else cannot have come from this program and counts as corrupt. Corrupt means "due now"; the next real poll rewrites the file clean. |
+| Two timestamps | Bash has no monotonic clock (`date +%s` is wall time), so both "next due" and "last polled" are stored. Clock jumps forward → poll; jumps backward → state is untrustworthy → poll; file cannot be written (full/read-only disk) → every tick polls, as if there were no backoff. |
 
-**Idle probe** (GitHub#252, `POLL_IDLE_PROBE`, on by default). Backoff saves
-calls at the price of a quiet project only noticing a new `pending/agent` at its
-next tier. So while backed off, each tick that would be skipped first sends one
-conditional request: `issues?state=all&sort=updated&direction=desc&per_page=1`
-with the last ETag. Any item whose updated time changes moves to the top and the
-ETag changes with it. Unchanged → `304`, which does not count against the
-primary rate limit when authenticated → skip as before; `200` → run a full poll
-now; unreachable, an unexpected status, a broken local tag → poll too (fail
-open). A new tag is stored as pending and only committed once that round has
-read GitHub in full — committing first and then failing mid-round would make the
-next probe answer 304 and swallow the change. Not sent when not backed off, nor
-during failure backoff.
+</details>
+
+<details><summary>Details: the idle probe (<code>POLL_IDLE_PROBE</code>)</summary>
+
+Backoff saves calls at the price of a quiet project only noticing a new
+`pending/agent` at its next tier. So while backed off, each tick that would be
+skipped first sends one conditional request:
+`issues?state=all&sort=updated&direction=desc&per_page=1` with the last ETag. Any
+item whose updated time changes moves to the top and the ETag changes with it.
+Unchanged → `304`, which does not count against the primary rate limit when
+authenticated → skip as before; `200` → run a full poll now; unreachable, an
+unexpected status, a broken local tag → poll too (fail open). A new tag is stored
+as pending and only committed once that round has read GitHub in full —
+committing first and then failing mid-round would make the next probe answer 304
+and swallow the change. Not sent when not backed off, nor during failure backoff.
 
 It only decides whether a tick runs, and can only bring a round forward, never
 delay one; whether the woken round counts as activity is still the fingerprint's
@@ -195,6 +253,10 @@ cross-referenced does **not**). It does not see new commits on the base branch
 or CI results — those wait for a full poll, so while the probe is on
 full polls are additionally capped at `POLL_IDLE_PROBE_MAX_SECS` (default 600 s:
 the 7-day tier goes from 30 to 10 minutes).
+
+</details>
+
+<details><summary>Details: where the state lives, and what runs outside the gate</summary>
 
 State lives in `$STATE_DIR/poll-pace.json`, separate from `state.json` so that
 `rm`-ing it returns the project to full speed without losing the "which comments
@@ -211,27 +273,49 @@ writes `state.json`, and does nothing at all when the setting is empty. It runs 
 because it changes labels on its report issues, and its *do not dispatch* list is consulted at
 every dispatch entry of the same round.
 
-## When an agent hits its usage limit (GitHub#341)
+</details>
 
-Optional (`ENABLE_USAGE_LIMIT_PAUSE`). A subscription's usage limit shows up as a notice on the worker pane: the session stays alive, the label stays `doing/agent`, and none of the other safety nets apply (self-heal needs the session gone, the reaper needs the label gone). The daemon recognises the notice from the pane plus the session's own record, then (1) stops dispatching **to that agent** until the reset time — machine-wide, per agent and account directory, other agents carry on — and (2) comments on the interrupted item and moves it from `doing/agent` to `pending/human`. It does not touch the session. A human puts the trigger label back after the reset time; the next dispatch resumes the registered conversation. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+## When an agent hits its usage limit
+
+Optional (`ENABLE_USAGE_LIMIT_PAUSE`). When a worker pane shows its subscription's usage-limit notice, the daemon stops dispatching to that agent until the reset time and hands the interrupted item to a human; the session itself is left alone. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+
+<details><summary>Details: what the daemon does</summary>
+
+A usage limit shows up as a notice on the worker pane: the session stays alive, the label stays `doing/agent`, and none of the other safety nets apply (self-heal needs the session gone, the reaper needs the label gone). The daemon recognises the notice from the pane plus the session's own record, then (1) stops dispatching **to that agent** until the reset time — machine-wide, per agent and account directory, other agents carry on — and (2) comments on the interrupted item and moves it from `doing/agent` to `pending/human`. It does not touch the session. A human puts the trigger label back after the reset time; the next dispatch resumes the registered conversation.
+
+</details>
 
 ## Worker session model
 
+Each work item gets one git worktree, one tmux session and one agent process, all named after its number. A worker that dies is resumed into the same conversation on the next trigger, and the pane's output is kept in a log after the session ends.
+
 - Each issue → one git worktree → one tmux session → one `claude -n issue<N> --dangerously-skip-permissions` process
 - Naming: tmux session = `<TMUX_PREFIX>-issue<N>`, worktree = `<WORKTREE_BASE>/issue-<N>`, branch = `<BRANCH_PREFIX><N>`
+
+<details><summary>Details: numbering, injection, roles, switching, resume, logs</summary>
+
 - **Where N comes from for PR dispatch**: `pr_to_issue_num` runs a fallback chain — branch matches `<BRANCH_PREFIX>N` → use it; else PR body has `Closes/Fixes/Resolves/Refs #N` → use it; else fallback to the PR number itself. So an external PR or hand-opened meta PR (no `feature/issue-N` branch, no linked issue) still gets a stable N to drive worktree/session naming. GitHub-only assumption (issue/PR share namespace); see [AGENTS.md](../AGENTS.md#session--worktree--branch-naming) for cross-platform notes
 - PR comment trigger: find the corresponding session, use `tmux load-buffer + paste-buffer -p` (bracketed paste) to inject the multi-line prompt, then `send-keys Enter` to submit
 - **Two roles per work item**: every dispatch is either the `worker` role or the `review` role (derived from the prompt template kind). One tmux session still serves both, but the *model* conversations are kept apart — see "Session isolation" below.
-- **Switching programs keeps the tmux session** (GitHub#197): when a dispatch needs a different agent, model or role than the one running (e.g. coding → review), or the running program stops responding, the daemon does not delete the session. It stops the old program (process group TERM, then KILL — Claude ignores the SIGHUP tmux sends), starts the new one in the worker's own pane with `respawn-pane` (the pane is identified by the id recorded when the daemon created it, so panes a human split off are never touched; if the worker's pane is gone while a human's pane keeps the session open, the worker starts in a new window), and then restores "pane closes when its program exits". A terminal attached to the session stays attached and watches the new agent start; the scrollback and the session log carry on. A program that exits still takes the session with it, so "session gone = worker dead" holds.
+- **Switching programs keeps the tmux session**: when a dispatch needs a different agent, model or role than the one running (e.g. coding → review), or the running program stops responding, the daemon does not delete the session. It stops the old program (process group TERM, then KILL — Claude ignores the SIGHUP tmux sends), starts the new one in the worker's own pane with `respawn-pane` (the pane is identified by the id recorded when the daemon created it, so panes a human split off are never touched; if the worker's pane is gone while a human's pane keeps the session open, the worker starts in a new window), and then restores "pane closes when its program exits". A terminal attached to the session stays attached and watches the new agent start; the scrollback and the session log carry on. A program that exits still takes the session with it, so "session gone = worker dead" holds.
 - **Auto-resume**: if the worker session dies (`/quit` / restart / crash) and another trigger comes in, the dispatch script looks up the session id recorded for this `(work number, agent, role)` and resumes exactly that conversation (all context + tool history preserved); if there is none it starts fresh. User-initiated `/quit` in the middle of work doesn't lose progress.
+- Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)
+- **Pane log persistence**: each worker session opens with a `tmux pipe-pane` that appends pane output to `$SESSION_LOG_DIR/<tmux-session>.log` (default `$STATE_DIR/sessions/`). The file lives on after the tmux session exits — `cat` / `less` to review
+
+</details>
+
+> Where every artifact lives, how to look things up after the fact, and how to resume from a break point: see [persistence.md](persistence.md).
 
 ### Session isolation
 
-`REVIEW_WORKER_AGENT` may name the same CLI as `WORKER_AGENT`. Both roles then
-share one worktree, and every built-in agent resolves "resume" as *the most
-recent conversation in this directory* — so the review would inherit the
-worker's context and stop being an independent review, while the worker's next
-dispatch would inherit the review's. Both directions are blocked:
+When the reviewer runs the same CLI as the worker (`REVIEW_WORKER_AGENT` = `WORKER_AGENT`), both roles share one worktree, and "resume the latest conversation here" would hand each role the other's context. The daemon keeps one conversation per `(work number, agent, role)` so the review stays independent; review rounds 2..N reuse the review's own session, so the reviewer can check whether its earlier findings were addressed.
+
+<details><summary>Details: what blocks each way of crossing roles</summary>
+
+Every built-in agent resolves "resume" as *the most recent conversation in this
+directory* — so the review would inherit the worker's context and stop being an
+independent review, while the worker's next dispatch would inherit the review's.
+Both directions are blocked:
 
 | Mechanism | What it stops |
 |---|---|
@@ -241,10 +325,11 @@ dispatch would inherit the review's. Both directions are blocked:
 | The worker role adopts only conversations snapshotted in `.preexisting` | Any conversation created *after* role tracking began — whoever created it, we knew its role at the time — becoming adoptable because its registration went missing |
 | A forced new session retires the old id instead of deleting it | The "resume died in 2s" fallback turning the reviewer's previous conversation into an unowned one |
 | The post-launch read-back must prove the candidate was started with this dispatch's prompt | An earlier role's unclaimed session file landing inside this role's window and being claimed by it |
-| Autopilot items with the outside-content protection on (GitHub#391): only a session recorded in `.guarded` (started with the protection on) is resumed; any other is retired and a fresh one started, and a live one is not injected into | An old session that read outside accounts' original text — while the item was an ordinary one, or before the setting was turned on — being carried into an autopilot flow that is supposed to filter that text |
+| Autopilot items with the outside-content protection on: only a session recorded in `.guarded` (started with the protection on) is resumed; any other is retired and a fresh one started, and a live one is not injected into | An old session that read outside accounts' original text — while the item was an ordinary one, or before the setting was turned on — being carried into an autopilot flow that is supposed to filter that text |
 
-Review rounds 2..N reuse the review's own session, so the reviewer can check
-whether its earlier findings were addressed.
+</details>
+
+<details><summary>Details: when a driver cannot prove which session is its own</summary>
 
 When a driver cannot pin an id at launch (codex) and the post-launch read-back
 cannot prove which candidate is ours, that conversation stays unowned: nobody
@@ -255,24 +340,30 @@ context for never crossing roles, which is the direction this whole mechanism
 exists to protect. Drivers opt in by implementing
 three functions ([docs/drivers.md](drivers.md#optional-hooks-session-isolation));
 a driver that doesn't only gets the "review always starts fresh" half.
-- Session gone (and worktree also cleaned up) → automatically rebuilds the worktree from PR head branch + spawns a new session (applies the same resume logic above)
-- **Pane log persistence**: each worker session opens with a `tmux pipe-pane` that appends pane output to `$SESSION_LOG_DIR/<tmux-session>.log` (default `$STATE_DIR/sessions/`). The file lives on after the tmux session exits — `cat` / `less` to review
 
-> Where every artifact lives, how to look things up after the fact, and how to resume from a break point: see [persistence.md](persistence.md).
+</details>
 
 ### From a comment to the worker's prompt
+
+Every dispatch stacks four layers into one prompt, fills in the placeholders, and hands it to the agent by pasting into the live session, resuming the role's conversation, or starting a fresh one. How a project replaces or extends the templates: [orchestration](orchestration.md#compose-prompt-templates-and-additions).
 
 ![How a comment becomes the worker's instructions: four layers stacked into one prompt, then pasted into a live session, resumed by number + role, or started fresh](images/prompt-assembly.en.svg)
 
 <sub>No animation? [Static version](images/prompt-assembly.en.static.svg).</sub>
 
-Every dispatch renders its prompt from four layers, in this order: the skill's base workflow template (a project may replace it wholesale with its own `<name>.template.md`), the skill's public lessons (`prompts/lessons.md`), the project's own lessons (only the hard rules and rules awaiting confirmation, without their examples and sighting records), and the project's additions (`<name>.extra.md`) — the last one wins on conflict. Placeholders such as issue number, branch and worktree are then filled in. Comment text is never pasted into the prompt; the worker reads it from GitHub itself, and every template tells it to treat that text as data.
+<details><summary>Details: the four layers and the three ways in</summary>
+
+The layers, in order: the skill's base workflow template (a project may replace it wholesale with its own `<name>.template.md`), the skill's public lessons (`prompts/lessons.md`), the project's own lessons (only the hard rules and rules awaiting confirmation, without their examples and sighting records), and the project's additions (`<name>.extra.md`) — the last one wins on conflict. Placeholders such as issue number, branch and worktree are then filled in. Comment text is never pasted into the prompt; the worker reads it from GitHub itself, and every template tells it to treat that text as data.
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
 Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 
+</details>
+
 ## Design choice FAQ
+
+Short answers to why the loop is built from worktrees, tmux, systemd templates and polling.
 
 ### Why git worktree
 
@@ -300,18 +391,27 @@ Claude Code CLI has a `--from-pr` flag, but it depends on Anthropic's official G
 
 ### Why poll instead of subscribing to GitHub
 
-GitHub has no subscription a local process can use: no WebSocket / SSE, no
-GraphQL subscriptions; the web UI's live updates use a private channel. The only
-push is a webhook, which needs a publicly reachable receiver configured by a repo
-admin in the repo settings — at odds with "runs on a personal machine, talks only
-to github.com" (workers are also forbidden to touch repo webhooks). The repo
-events feed (`/repos/{owner}/{repo}/events`) can be polled, but GitHub documents
-its latency as anywhere from 30 seconds to 6 hours; notifications only cover
-threads the account is subscribed to. So the daemon keeps polling, and while
-idle uses the free-when-unchanged conditional request above to bring pickup
-latency back to about one tick (GitHub#252).
+GitHub has no subscription a local process can use, and its only push — a webhook — needs a public receiver set up by a repo admin. So the daemon polls, and while idle uses a conditional request that costs nothing when unchanged to bring pickup latency back to about one tick.
+
+<details><summary>Details: the alternatives that were looked at</summary>
+
+GitHub has no WebSocket / SSE and no GraphQL subscriptions; the web UI's live
+updates use a private channel. A webhook needs a publicly reachable receiver
+configured by a repo admin in the repo settings — at odds with "runs on a
+personal machine, talks only to github.com" (workers are also forbidden to touch
+repo webhooks). The repo events feed (`/repos/{owner}/{repo}/events`) can be
+polled, but GitHub documents its latency as anywhere from 30 seconds to 6 hours;
+notifications only cover threads the account is subscribed to.
+
+</details>
 
 ### Why this stack is cheap (vs webhook + Claude API)
 
+The polling loop never calls a model, and workers run on your flat-rate CLI subscription rather than a per-token API key.
+
+<details><summary>Details: where the tokens go</summary>
+
 1. **The polling loop burns zero tokens**: `agent-poll.sh` running every 60 seconds is plain shell + `gh` API calls — **no model calls**. Idle = 0 token consumption. Only when it actually finds a `pending/agent` issue / PR does it dispatch to a Claude Code process.
 2. **Dispatch goes through the Claude Code CLI, which is on your Max subscription**: workers are local `claude` CLI processes, billed under your Pro/Max plan; no API key, no per-token pricing. **This is why the weekly report's money column is a *list-price equivalent*, not a bill** — there is no per-token invoice to reconcile against, so the report shows the project's converted value and the flat subscription outlay as two separate rows and never divides one by the other. Versus the traditional webhook + Anthropic API approach (every trigger costs tokens), this is much cheaper long-term.
+
+</details>

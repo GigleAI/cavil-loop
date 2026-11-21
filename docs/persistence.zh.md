@@ -8,6 +8,10 @@
 
 ## 资产全清单
 
+活本身在 GitHub 和 git 里；对话在 tmux pane log 和 Claude 的会话文件里；daemon 自己在 `$STATE_DIR` 下留几份小状态文件。合并后只删 worktree 和 tmux 活会话（见 [auto-cleanup 边界](#auto-cleanup-边界)）。
+
+<details><summary>表：工作产物、历史与对话</summary>
+
 | 资产 | 路径 / 位置 | 谁会清理 | 备份建议 |
 |------|------|------|------|
 | 设计方案 | GitHub issue comment（worker 第一阶段产物） | 没人；issue 关了也在 | 无（GitHub 永久） |
@@ -17,32 +21,45 @@
 | Worktree | `$WORKTREE_BASE/issue-N/` | `AUTO_CLEANUP_ON_MERGE=true` 时 daemon 在 PR merge 后删 | 不需要备份（branch 在 remote） |
 | Tmux 活会话 | tmux session `<TMUX_PREFIX>-issue<N>` | `AUTO_CLEANUP_ON_MERGE=true` 时 daemon 在 PR merge 后杀；机器重启自然消失 | 不可备份（运行时状态） |
 | Tmux 历史输出 | `$STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log`（append-only） | 没人；同一 issue 重起 session 续写同一份 | 文件即备份 |
-| Claude 对话历史（含 thinking + tool_use 全程） | `~/.claude/projects/<encoded-cwd>/*.jsonl` | **没人**；`AUTO_CLEANUP_ON_MERGE` 不动这里 | 文件即备份 |
-| 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
-| 派工提示词（每次派工渲染给 worker 的那份；GitHub#396） | `$STATE_DIR/prompts/<N>-new.md`、`<N>-cmt-<评论号>.md`、`<N>-pr-<PR号>.md`（目录 700，只有本账号能读） | 条目清理时（`cleanup-issue.sh`，含合并后自动清理）删掉这个编号的几份，交给它处理即可。要手动删，只删没有派工在进行的条目（不是 `doing/agent`，也没有正在跑的轮询）：派工过程中 worker 启动那一刻才读这个文件，codex 启动后核对会话归属还要再读一次，这时删掉，worker 会拿到空提示词启动 | 不值得备份 —— 派工一结束就不再读它，内容也完整留在 tmux 历史和 Claude 对话里。GitHub#396 之前写在 `/tmp/cavil-loop-*.md`，那些旧文件没人清，重启后自然消失 |
-| 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
-| 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json` | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
-| 用量上限的暂停记录，按 agent 和账号目录（GitHub#341） | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |
-| 单个项目的用量上限进度（GitHub#341） | `$STATE_DIR/usage-limit.json` | daemon，条目离开 `doing/agent` 时 | 不值得备份；转人工做到一半时别删（可能多出第二条留言） |
-| 轮询运行记录（每轮一条、快照；GitHub#344） | `$STATE_DIR/runlog/`（`rounds/`、`snapshots/`、`inflight/`、`acct/`），以及没走到「配置加载完」的轮询留在 `~/.local/state/cavil-loop/runlog/entry/` 的入口记录 | 轮询自己：只留最近 1000 条记录、20 份快照、64 份进度文件、200 条入口记录；任何时候手动删都安全 | 不值得备份 —— 只是诊断信息，没有任何逻辑读它 |
-| 托管条目上外部账号内容的记录（GitHub#391） | `$STATE_DIR/outsider/<条目编号>/`（每条外部内容的每个查到过的版本一个文件，只存指纹不存原文），预筛结论 `$STATE_DIR/outsider-screen/` | 条目收尾清理（`cleanup-issue.sh`）时删本条目的目录；预筛结论没人清 | 不值得备份；**托管条目还开着时别删**：删了，已删掉的外部评论就不再拦合并 |
-| 合并后复盘的全机锁 | `~/.local/state/cavil-loop/retrospective.lock`（每台机器一份，所有项目、所有部署版本共用；GitHub#165） | 没人；空文件，进程退出锁就释放 | 不值得备份 —— 没有复盘在跑时删了也安全 |
-| 内置价目里没有的模型、自动联网补来的单价 | `~/.cache/cavil-loop/fetched-prices.json`（另有 `unpriced/` 缺价标记、`price-fetch-state.json` 重试状态） | 没人；模型补上价后标记自动删 | 不值得备份 —— 删了只是下次再缺价时重新抓 |
+| Claude 对话历史（含 thinking + tool_use 全程） | `~/.claude/projects/<encoded-cwd>/*.jsonl` | 不是本工具——`AUTO_CLEANUP_ON_MERGE` 不动这里；Claude Code 自己会删旧会话文件（它的 `cleanupPeriodDays` 设置） | 想留就自己拷一份到别处 |
 
 > `<encoded-cwd>` 是把绝对路径的 `/` 全替换成 `-`。例如 `/home/sky/github/worktree/myproject/issue-42` → `-home-sky-github-worktree-myproject-issue-42`。
 
+</details>
+
+<details><summary>表：daemon 的本机状态文件</summary>
+
+| 资产 | 路径 / 位置 | 谁会清理 | 备份建议 |
+|------|------|------|------|
+| 派工去重 / 进度 | `$STATE_DIR/state.json` | 没人；daemon 重启不丢 | 偶尔 cp 一份 |
+| 派工提示词（每次派工渲染给 worker 的那份） | `$STATE_DIR/prompts/<N>-new.md`、`<N>-cmt-<评论号>.md`、`<N>-pr-<PR号>.md`（目录 700，只有本账号能读） | 条目清理时（`cleanup-issue.sh`，含合并后自动清理）删掉这个编号的几份，交给它处理即可。要手动删，只删没有派工在进行的条目（不是 `doing/agent`，也没有正在跑的轮询）：派工过程中 worker 启动那一刻才读这个文件，codex 启动后核对会话归属还要再读一次，这时删掉，worker 会拿到空提示词启动 | 不值得备份 —— 派工一结束就不再读它，内容也完整留在 tmux 历史和 Claude 对话里。老安装留下的 `/tmp/cavil-loop-*.md` 不再有任何东西读，没人清，重启后自然消失 |
+| 重试计数（连续派工失败 / self-heal 次数） | `$STATE_DIR/dispatch-fail/<kind>-<N>`、`$STATE_DIR/selfheal/<N>` | 第一次成功时清零；升级转 `pending/human` 时也清零 | 不值得备份 —— 丢了只是重新获得一整套重试次数 |
+| 轮询节奏（空闲 + 故障退避） | `$STATE_DIR/poll-pace.json` | 没人；任何时候手动删都安全 | 不值得备份 —— 删了只是让这个项目重新按最快档轮询 |
+| 用量上限的暂停记录，按 agent 和账号目录 | `~/.local/state/cavil-loop/usage-limit/<agent>-<hash>.json`（整机共用，所有项目读同一份） | 没人；到 `until` 那个时刻自然失效。删掉 = 立刻解除暂停 | 不值得备份 —— 账号如果还在上限里，下一个撞上的 worker 会让它重新出现 |
+| 单个项目的用量上限进度 | `$STATE_DIR/usage-limit.json` | daemon，条目离开 `doing/agent` 时 | 不值得备份；转人工做到一半时别删（可能多出第二条留言） |
+| 轮询运行记录（每轮一条、快照） | `$STATE_DIR/runlog/`（`rounds/`、`snapshots/`、`inflight/`、`acct/`），以及没走到「配置加载完」的轮询留在 `~/.local/state/cavil-loop/runlog/entry/` 的入口记录 | 轮询自己：只留最近 1000 条记录、20 份快照、64 份进度文件、200 条入口记录；任何时候手动删都安全 | 不值得备份 —— 只是诊断信息，没有任何逻辑读它 |
+| 托管条目上外部账号内容的记录 | `$STATE_DIR/outsider/<条目编号>/`（每条外部内容的每个查到过的版本一个文件，只存指纹不存原文），预筛结论 `$STATE_DIR/outsider-screen/` | 条目收尾清理（`cleanup-issue.sh`）时删本条目的目录；预筛结论没人清 | 不值得备份；**托管条目还开着时别删**：删了，已删掉的外部评论就不再拦合并 |
+| 合并后复盘的全机锁 | `~/.local/state/cavil-loop/retrospective.lock`（每台机器一份，所有项目、所有部署版本共用） | 没人；空文件，进程退出锁就释放 | 不值得备份 —— 没有复盘在跑时删了也安全 |
+| 内置价目里没有的模型、自动联网补来的单价 | `~/.cache/cavil-loop/fetched-prices.json`（另有 `unpriced/` 缺价标记、`price-fetch-state.json` 重试状态） | 没人；模型补上价后标记自动删 | 不值得备份 —— 删了只是下次再缺价时重新抓 |
+
+</details>
+
 ## 保留多久
 
-短答：**只要你不删、磁盘还在，就一直在**。本工具 + Claude Code + git 都没有自动 GC 机制——
+除了 [auto-cleanup](#auto-cleanup-边界) 删的那些，本工具和 git 自己什么都不删；GitHub 永久保留 issue、PR 和评论。会缩水的只有两样：既没 push 也没 merge 的 commit，和 Claude Code 的旧会话文件。
+
+<details><summary>细节：每类产物</summary>
 
 - **GitHub issue / PR / comment**：GitHub 永久保留，issue 关掉、PR merge 都不会消失
-- **git branch + commit**：本地 + remote 都没自动清理；只有 `git gc` 清的是**没引用**的对象，所以只要 push 上去 / merge 进 main 就稳
-- **`~/.claude/projects/<encoded-cwd>/*.jsonl`**：Claude Code 不自动清理（help 里没有 `--gc/--prune/--retain` 这类 flag、settings.json 也没保留期字段，截至 2026-05）。注意：Anthropic 未来策略可能加，长期归档想稳，自己 `cp -r ~/.claude/projects/` 到备份盘
+- **git branch + commit**：本地 + remote 都没自动清理；`git gc` 清的只是**没引用**的对象，所以只要 push 上去 / merge 进 main 就稳。worktree 里的"中间 commit"如果**既没 push 也没 merge**，超过 90 天会被 `git gc` 当孤儿对象清掉——养成 push 习惯就稳
+- **`~/.claude/projects/<encoded-cwd>/*.jsonl`**：Claude Code 会删超过它 `cleanupPeriodDays` 设置的会话文件；长期归档想稳，调大这个设置，或自己 `cp -r ~/.claude/projects/` 到备份盘
 - **`$STATE_DIR/sessions/*.log`、`$STATE_DIR/state.json`**：纯本机文件，没人清
 
-**唯一会缩水的**：worktree 里的"中间 commit"如果**既没 push 也没 merge**，超过 90 天会被 `git gc` 当孤儿对象清掉。所以养成 push 习惯就稳。
+</details>
 
 ## 事后查阅 SOP
+
+设计和讨论去 GitHub 看，推导过程看 pane log 和 Claude 会话文件，代码历史看 git。
 
 ### 「半年后想知道当时为什么这样设计」
 
@@ -77,13 +94,15 @@ gh pr diff <P>                             # 最终合入的 diff
 
 ## 断点续写 SOP
 
+丢了的 worktree 和 session daemon 会自己重建；Claude 对话要靠磁盘上的会话文件手动续上。
+
 ### Worker 干到一半电脑重启了
 
 机器恢复后，daemon 下一轮 poll（最多 60s）自动重派工：发现 worktree + session 都没了，从 PR head branch 重建 worktree、起新 tmux session。**Claude 的对话历史不会自动续上**（新 session 是新对话），但磁盘上的 jsonl 还在 —— 想接上参考下一节。
 
 ### Tmux session 被误关 / `auto-cleanup` 清了 worktree
 
-数据**没丢**，恢复路径四选一：
+数据**没丢**；按 session ID、按 PR 号、在原目录用 picker，或者直接读源文件，四选一：
 
 ```bash
 # ① 知道 session ID（看 jsonl 文件名）
@@ -101,17 +120,21 @@ claude --resume                        # picker 列当前 cwd 的所有会话
 jq . ~/.claude/projects/<encoded-cwd>/*.jsonl
 ```
 
-> `claude --continue`（`-c`）只看**当前目录最近一次会话**，cleanup 后切目录就用不上；要跨目录恢复必须 `--resume`/`--from-pr`。
+<details><summary>细节：--continue、--from-pr 怎么对上 PR、session ID</summary>
 
-**`--from-pr` 是怎么对上 PR 的**：每条 jsonl 消息里有 `cwd`（当时的工作目录）和 `gitBranch`（当时的 git 分支）字段。`--from-pr <P>` 通过 `gh pr view <P>` 拿到 PR 的 head ref（比如 `feature/issue-42`），再到 `~/.claude/projects/` 下扫所有 jsonl，匹配 `gitBranch` = head ref 的会话拉起。所以**前提是 worker 当年用 `git checkout feature/issue-42` 启动 Claude**——本工具的 dispatch 脚本就是这么做的，天然兼容。
+`claude --continue`（`-c`）只看**当前目录最近一次会话**，cleanup 后切目录就用不上；要跨目录恢复必须 `--resume`/`--from-pr`。
 
-> 想自己 100% 锁定恢复目标 → 用 session ID（`claude --resume <uuid>`）。session ID 就是 `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` 的文件名 uuid。
->
-> 进一步想让 worker 启动后自动把自己的 session ID 评论到 issue/PR（方便事后 `--resume <uuid>` 一键定位），是个**值得做但超出本 doc 范围的增强**，欢迎开新 issue 跟踪。
+**`--from-pr` 是怎么对上 PR 的**：每条 jsonl 消息里有 `cwd`（当时的工作目录）和 `gitBranch`（当时的 git 分支）字段。`--from-pr <P>` 通过 `gh pr view <P>` 拿到 PR 的 head ref（比如 `feature/issue-42`），再到 `~/.claude/projects/` 下扫所有 jsonl，匹配 `gitBranch` = head ref 的会话拉起。所以**前提是 worker 用 `git checkout feature/issue-42` 之后才启动 Claude**——本工具的 dispatch 脚本就是这么做的，天然兼容。
+
+想 100% 锁定恢复目标 → 用 session ID（`claude --resume <uuid>`）。session ID 就是 `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` 的文件名 uuid。worker 不会把自己的 session ID 评论到 issue / PR 上；想要这个就开 issue。
+
+</details>
 
 ## auto-cleanup 边界
 
-`AUTO_CLEANUP_ON_MERGE=true`（默认开）在 daemon 看到 PR merged 时触发，**只清运行时状态**：
+`AUTO_CLEANUP_ON_MERGE=true`（默认开）在 daemon 看到 PR merged 时触发，**只清运行时状态**：worktree、tmux session，以及 `CLEANUP_HOOK` 做的事。在 `cavil-loop.config` 里设 `AUTO_CLEANUP_ON_MERGE=false` 就什么都不动，想清时自己跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>`（flag 见 [operations.zh.md](operations.zh.md)）。
+
+<details><summary>表：清什么、不清什么</summary>
 
 | 会清 | 不会清 |
 |------|------|
@@ -121,11 +144,4 @@ jq . ~/.claude/projects/<encoded-cwd>/*.jsonl
 |  | `$STATE_DIR/state.json` |
 |  | GitHub issue / PR / comment |
 
-想关掉自动清理（merge 后什么都不动，留全人工）：
-
-```bash
-# cavil-loop.config
-AUTO_CLEANUP_ON_MERGE=false
-```
-
-之后想清就跑 `bash $SKILL_DIR/scripts/cleanup-issue.sh <N>`，flag 见 [operations.md](operations.zh.md)。
+</details>

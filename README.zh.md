@@ -27,7 +27,13 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 ![在 GitHub 上给 Agent 建 issue，review PR](./docs/github_project.png)
 
-一个**基于 GitHub issue / PR 的轻量多 agent 并行调度器**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）：给 issue 打上约定的标签就是派工，本机的 AI agent 接走，做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。不同的工作项各有独立的 git worktree 和分支，互不干扰；配置允许、又有空闲名额时同时处理，名额满了就排队（同时运行几个由 `MAX_CONCURRENT_WORKERS` 决定，模板默认 1，即一次一个）。issue 后续开出的 PR 接着在原工作项里做，不另起一份。
+一个**基于 GitHub issue / PR 的轻量多 agent 并行调度器**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）：给 issue 打上约定的标签就是派工，本机的 AI agent 接走，做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。
+
+<details><summary>细节：工作项、同时运行和排队</summary>
+
+不同的工作项各有独立的 git worktree 和分支，互不干扰；配置允许、又有空闲名额时同时处理，名额满了就排队（同时运行几个由 `MAX_CONCURRENT_WORKERS` 决定，模板默认 1，即一次一个）。issue 后续开出的 PR 接着在原工作项里做，不另起一份。
+
+</details>
 
 「轻量」是说它只有本机一个定时轮询脚本加上 GitHub：以 [Agent Skill](https://agentskills.io/home) 形式安装在你本机，后台每 60 秒轮询一次 GitHub，不需要服务器、数据库，也没有要学的新网页界面。
 
@@ -44,7 +50,13 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 - **GitHub 当 UI**：所有触发靠 label 标签（`pending/agent` / `pending/human` / `doing/agent`），没有要学的新 web UI
 - **你掌控权**：所有改动都通过 PR review 由你签字才合入；除非你给某个 issue 打了托管标签（默认关闭），工具不会自己合并任何东西
 
-**只要一个 GitHub 仓库就能用，不需要建 GitHub Project。** 派工只看 issue / PR 上的标签。GitHub Project 只在三个可选功能里用到，不用就不必建：按 Project 的 Priority 字段排队（默认按 `priority/p*` 标签）、把多个仓库的 issue / PR 自动汇进一个 Project（默认关）、客户端里按「迭代」「状态」分列（这两个值存在 Project 里）。
+**只要一个 GitHub 仓库就能用，不需要建 GitHub Project。** 派工只看 issue / PR 上的标签。
+
+<details><summary>细节：用到 GitHub Project 的三个可选功能</summary>
+
+GitHub Project 只在三个可选功能里用到，不用就不必建：按 Project 的 Priority 字段排队（默认按 `priority/p*` 标签）、把多个仓库的 issue / PR 自动汇进一个 Project（默认关）、客户端里按「迭代」「状态」分列（这两个值存在 Project 里）。
+
+</details>
 
 ## 它好在哪
 
@@ -56,6 +68,8 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 你的角色从「陪 AI 对话的人」变成「批阅 AI 提的 PR 的人」。
 
+<details><summary>细节：一个典型的晚上、并行、手机上批</summary>
+
 ```
 睡前：批量开 10 个 issue，每个打 pending/agent，关电脑去睡。
 睡醒：GitHub 上躺着 10 个 PR / 设计提案——挨个 review，
@@ -65,9 +79,13 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分支，互不干扰；同时跑几个由 `MAX_CONCURRENT_WORKERS` 决定（模板默认 1，名额满了就按优先级排队）。进度看 GitHub 标签一眼清楚。手机端 [GitHub 官方 app](https://github.com/mobile) 也能 review + 评论 + 改标签，通勤路上也能推进。
 
+</details>
+
 ### 2. 全过程 + 交付物可回溯
 
-每个 issue 的所有产物都按它的**编号**归档：
+每个 issue 的所有产物都按它的**编号**归档，想知道「当时为啥这么写」先看 issue 讨论，不够再接回 AI 自己的对话。完整保留期 + 查找 / 断点续上 SOP：[docs/persistence.md](docs/persistence.zh.md)。
+
+<details><summary>细节：每样产物存哪、两层查询</summary>
 
 | 产物 | 存哪 |
 |---|---|
@@ -84,9 +102,13 @@ N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分
 
 两种都不是"靠一行 commit message 反推意图"或"在无名 AI 聊天 session 里翻找"。
 
+</details>
+
 #### 复利效应：用得越久，你的 agent 越懂你的项目
 
-这是真正长期复利的部分——**决策历史可回溯，人 + AI agent 都能读**。
+这是真正长期复利的部分——**决策历史可回溯，人 + AI agent 都能读**：做新 issue 的 worker 会自己去读以前 issue 的讨论，不用人每次重讲背景。
+
+<details><summary>细节：agent 怎么接上以前的决策、谁受益</summary>
 
 新 issue 涉及之前 #42 改过的代码时，AI worker 自己跑 `gh issue view 42 --comments` 拉到完整上下文（设计依据、替代方案、被接受的取舍），然后带着这些信息开干。**不需要**每次人工给它从 0 讲"这块当时考虑过 A 没选、用 B 是因为 C..."。
 
@@ -96,9 +118,13 @@ N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分
 - **人**：debug 老代码、接手 / onboarding、regression 复盘——先看 issue 评论，需要细节再 resume session
 - **AI agent**：接手相关活时自助 `gh issue view <N> --comments` 拉上下文，不再需要人介入讲背景
 
-完整保留期 + 查找 / 断点续上 SOP：[docs/persistence.md](docs/persistence.zh.md)。
+</details>
 
 ### 3. 便宜（吃 Pro/Max 月费、不烧 API token）
+
+Worker 用的是你本来就付月费的 `claude` CLI（或其他 coding CLI），60 秒一次的轮询只调 GitHub API，闲着不花钱。
+
+<details><summary>细节：和 webhook + API 方案对比</summary>
 
 | 　　　　　　　　　　　　　　　　　| Webhook + Anthropic API 方案 | 本工具　　　　　　　　　　　　　　　　　　　　　 |
 | -----------------------------------| ------------------------------| --------------------------------------------------|
@@ -107,6 +133,8 @@ N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分
 | 长期跑 6 个月（每周几十个 issue） | 几百到几千刀的额外费用　　　 | 原本就在用的 coding agent subscription　　　　　 |
 
 特别适合「24/7 AI 自动 review + 自动 fix」场景——webhook + API 方案 6 个月成本上千刀，本工具只有原本的月费固定成本。
+
+</details>
 
 ## 工作机制
 
@@ -125,6 +153,10 @@ N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分
 
 ### 可以调的地方（默认值都能直接用，下面这些是按需改）
 
+什么算待办、取工顺序、多个仓库汇到一个看板、prompt、用哪个 AI CLI、先过另一个 AI 复审、托管、接外部需求机器人，都各是一行配置。每个配置项的说明在 [docs/operations.md](docs/operations.zh.md)。
+
+<details><summary>细节：可调的地方，一行一个</summary>
+
 | 想改什么 | 怎么改 | 细节 |
 |---|---|---|
 | **什么算待办** | `DISPATCH_MODE=greedy` —— 不用逐条打 `pending/agent`，开着的 issue / PR 一律干，除非挂了 `pending/human` 等挡工标签 | [architecture](docs/architecture.zh.md) |
@@ -133,8 +165,10 @@ N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分
 | **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
 | **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
 | **编排流程：交人之前先过另一个 AI** | 配 `LABEL_PENDING_REVIEW` 开复审关卡：PR 每次有代码改动，先交另一个 AI（默认 codex）审，不通过带意见打回给写代码的 AI 改，最多 `REVIEW_MAX_ROUNDS` 轮（默认 6），审过才交你验收；两个 AI 谈不拢就停下等你拍板。再加 `REVIEW_DESIGN_PROPOSALS=true`，设计方案也先审一遍才到你面前。PM → 开发 → 测试这种多角色接力也能用标签编排 | [operations](docs/operations.zh.md#交叉-review-关卡可选默认关闭) · [collaboration](docs/collaboration.zh.md) |
-| **托管：一条 issue 从头交到尾** | 配 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）并在 issue 上打这个标签：方案只过复审、不等你确认，代码复审通过后 daemon 自己合并——只合复审亲眼看过的那个提交，且标签必须是有写权限的维护者在 issue（或已开好的 PR）上亲手打的、检查全绿、没有冲突。随时摘掉标签、或在 issue / PR 上打 `pending/human` 就能叫停 | [operations](docs/operations.zh.md#托管标签可选默认关闭) · [security](docs/security.zh.md) |
+| **托管：一条 issue 从头交到尾** | 配 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）并在 issue 上打这个标签：方案只过复审、不等你确认，代码复审通过后 daemon 自己合并，合并条件见 operations（维护者亲手打的标签、复审看过的那个提交、检查全绿、没有冲突）。随时摘掉标签、或在 issue / PR 上打 `pending/human` 就能叫停 | [operations](docs/operations.zh.md#托管标签可选默认关闭) · [security](docs/security.zh.md) |
 | **接外部需求机器人（例：grokbot）** | 让另一个 AI 助手直接来提 issue：有问题要问它、或者做完了，自动挂等待标签并调它的 webhook 叫它来看；PR 合并或关闭时也告诉它。默认关 | [对接文档](docs/requester-bot.zh.md) · [Grok 机器人](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ) |
+
+</details>
 
 ## 它**不**做什么
 
@@ -163,6 +197,7 @@ ln -s ~/.agents/skills/cavil-loop ~/.claude/skills/cavil-loop
 ```
 
 `setup.sh` 会把 Linux 安装迁移到不可变的受管 release。checkout 仍可用于开发，但实际 daemon 跟随配置的远端 base 分支，不会再改动这份 checkout。
+
 </details>
 
 ### 2. 接入一个项目
@@ -173,13 +208,7 @@ bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 
 或者直接在 Claude Code 里说「帮我把 cavil-loop 装到 ~/path/to/your-project」，AI 会自己跑。
 
-一条命令搞定：
-- 建项目专属配置
-- 登记后台轮询
-- 在 GitHub 仓库建好 `pending/agent` / `pending/human` 等标签
-- 启动定时任务。
-
-无破坏性、可重复跑。
+一条命令搞定：建项目专属配置、登记后台轮询、在 GitHub 仓库建好 `pending/agent` / `pending/human` 等标签、启动定时任务。无破坏性、可重复跑。
 
 ### 3. logout 也要继续运行（可选）
 
@@ -191,7 +220,9 @@ Linux 默认你登出就停所有后台服务，这条让它在你不在的时�
 
 ### 也可以从桌面客户端开始（macOS）
 
-不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板)，在它的设置页里完成第 1、2 步：
+不想敲上面的命令，可以先装[桌面客户端](#客户端桌面看板)，在它的设置页里完成第 1、2 步。下载地址和每一步的细节见[客户端使用说明](docs/client.zh.md#可选接上-daemon)。
+
+<details><summary>细节：客户端里的五步</summary>
 
 1. 先装好[依赖](#依赖)并 `gh auth login`——客户端只检查缺什么，不替人装系统软件。
 2. 下载安装客户端，用 GitHub 账号登录（浏览器里输入短码授权）。
@@ -199,49 +230,66 @@ Linux 默认你登出就停所有后台服务，这条让它在你不在的时�
 4. 设置 →「本机 daemon」：点「安装」（等于上面第 1 步的手动安装）。
 5. 回到「数据来源」，在仓库那一行点「接上 daemon」：选本机已有的目录或让它克隆一份、选 agent、预检通过后点「开始」（等于上面第 2 步的 `setup.sh`）。
 
-之后给 issue 打 `pending/agent` 就会被接走。下载地址和每一步的细节见[客户端使用说明](docs/client.zh.md#可选接上-daemon)。
+之后给 issue 打 `pending/agent` 就会被接走。
+
+</details>
 
 ## 依赖
 
-- `git`
-- `gh`（先 `gh auth login`）
-- `tmux`
-- `jq`
-- `flock`
-- `claude code`（或其他 coding CLI）。
+`git`、`gh`（先 `gh auth login`）、`tmux`、`jq`、`flock`、`claude`（Pro/Max 套餐，或其他 coding CLI）。Linux 或 macOS。
 
-测过 Ubuntu 22.04 / 24.04；macOS 支持，欢迎社区测试。
+<details><summary>细节：定时调度和测过的系统</summary>
+
+`setup.sh` 自动识别系统：Linux 用自带的 `systemd` 用户定时器；macOS 用 `launchd` LaunchAgent（见 [docs/operations.md → 按 OS 选调度器](docs/operations.zh.md#按-os-选调度器)）。测过 Ubuntu 22.04 / 24.04；macOS 支持，欢迎社区测试。
+
+</details>
 
 ---
 
 ## 用法
 
+三种日常情况：issue 上的新需求、PR 上的 review 反馈、只需要回答的问题。都是写一条评论、打上 `pending/agent`。
+
 ### 场景 1：新需求
+
+开一个 issue、打上 `pending/agent`。60 秒内后台接活：建独立工作目录、起 Claude Code、写完开 PR（body 里 `Closes #42`；一个 PR 装不下的先拆成 sub-issue），标签翻 `pending/human` 等你 review。
+
+<details><summary>命令，以及怎么看 AI 在干啥</summary>
 
 ```bash
 gh issue create --title "..." --body "..."     # 假设拿到 #42
 gh issue edit 42 --add-label pending/agent
 ```
 
-60 秒内后台接活：建独立工作目录、起 Claude Code、写完开 PR（body 里 `Closes #42`；一个 PR 装不下的先拆成 sub-issue），标签翻 `pending/human` 等你 review。想看 AI 在干啥：`tmux attach -t <project>-issue42`。
+想看 AI 在干啥：`tmux attach -t <project>-issue42`。
+
+</details>
 
 ### 场景 2：PR Review 反馈
+
+在 PR 上写评论，把 `pending/human` 换成 `pending/agent`。60 秒内后台找到对应的 AI 会话，把你的评论喂进去 → 改代码 → 测试 → 推送 → 回评论 → 翻标签。
+
+<details><summary>命令</summary>
 
 ```bash
 gh pr comment N --body "把 foo 改成 bar"
 gh pr edit N --add-label pending/agent --remove-label pending/human
 ```
 
-60 秒内后台找到对应的 AI 会话，把你的评论喂进去 → 改代码 → 测试 → 推送 → 回评论 → 翻标签。
+</details>
 
 ### 场景 3：澄清问题
+
+在评论里提问，同样换标签。AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/human` 等你下一句。
+
+<details><summary>命令</summary>
 
 ```bash
 gh pr comment N --body "这里为什么不用 X 模式？"
 gh pr edit N --add-label pending/agent --remove-label pending/human
 ```
 
-AI 看是讨论性问题，只回评论不动代码，标签保持 `pending/human` 等你下一句。
+</details>
 
 ---
 
@@ -256,11 +304,19 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 - **修改直接发给 GitHub**：标签、迭代、状态、里程碑、回复、新建 issue、关闭、合并；详情浮在看板右侧，也能开成标签页。
 - **接上 daemon（可选）**：在设置里安装 daemon、把仓库接上去，一个按钮把条目交给 agent 或托管，`pending/human` 有新条目时发系统通知。
 
-三个视图的截图见上方「[它是什么](#它是什么)」。
+三个视图的截图见上方「[它是什么](#它是什么)」。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。**
+
+<details><summary>细节：登录、网络边界、在本机代跑什么</summary>
 
 登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串（Windows 上存进 Windows 凭据管理器）。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 
-安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`（第一个是 `client/v0.5.2`），有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。**安装、第一次用和全部功能：[docs/client.zh.md](docs/client.zh.md)。** 改代码的规则在开发文档 [client/README.md](client/README.md)。
+</details>
+
+<details><summary>细节：安装包在哪</summary>
+
+安装包挂在本仓库 [Releases](https://github.com/GigleAI/cavil-loop/releases) 里 `client/v…` 的发版上：正式版标签形如 `client/vX.Y.Z`（第一个是 `client/v0.5.2`），有 Apple 芯片和 Intel 两种 dmg，外加 Windows x64 安装包（`-windows-x64.exe`，没有代码签名：Windows 第一次会拦一下，点「更多信息」→「仍要运行」；Windows 上不能运行 daemon 本身，要接另一台机器上的）；开发版标签形如 `client/vX.Y.Z-dev.N`、标着 Pre-release，有 Apple 芯片的 dmg 和 Windows 安装包。改代码的规则在开发文档 [client/README.md](client/README.md)。
+
+</details>
 
 ---
 

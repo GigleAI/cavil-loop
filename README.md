@@ -27,7 +27,13 @@ Each one works without the other, and they work best together.
 
 ![create issues and review PRs from AI agent in github](./docs/github_project.png)
 
-A **lightweight multi-agent parallel scheduler built on GitHub issues and PRs** (Claude Code / OpenCode / Codex / your own driver): putting the agreed label on an issue dispatches it, a local AI agent picks it up to do the design / coding / review work, and everything is posted back as GitHub comments + PR commits. Separate work items each get their own git worktree and branch, so they never interfere; they run at the same time when the configuration allows it and a slot is free, and queue when every slot is taken (`MAX_CONCURRENT_WORKERS` sets how many, 1 — one at a time — in the template); the PR an issue later opens carries on in that issue's work item rather than starting another one.
+A **lightweight multi-agent parallel scheduler built on GitHub issues and PRs** (Claude Code / OpenCode / Codex / your own driver): putting the agreed label on an issue dispatches it, a local AI agent picks it up to do the design / coding / review work, and everything is posted back as GitHub comments + PR commits.
+
+<details><summary>Details: work items, parallel runs and the queue</summary>
+
+Separate work items each get their own git worktree and branch, so they never interfere; they run at the same time when the configuration allows it and a slot is free, and queue when every slot is taken (`MAX_CONCURRENT_WORKERS` sets how many, 1 — one at a time — in the template); the PR an issue later opens carries on in that issue's work item rather than starting another one.
+
+</details>
 
 "Lightweight" means it is just a scheduled poller on your machine plus GitHub: installed as an [Agent Skill](https://agentskills.io/home), it polls GitHub every 60 seconds in the background — no server, no database, no new web UI to learn.
 
@@ -44,7 +50,13 @@ Three things you should know up front:
 - **GitHub is the interface**: labels (`pending/agent` / `pending/human` / `doing/agent`) drive everything; no web UI to learn
 - **You stay in control**: every change goes through a PR review you sign off on; the tool merges nothing on its own unless you hand a specific issue over with the autopilot label (off by default)
 
-**One GitHub repository is all you need — no GitHub Project required.** Dispatch looks only at the labels on issues / PRs. A GitHub Project is used by three optional features only, so skip it unless you want one of them: queueing by the Project's Priority field (the default is `priority/p*` labels), collecting several repositories' issues / PRs into one Project (off by default), and the client's columns by iteration or status (both values live in a Project).
+**One GitHub repository is all you need — no GitHub Project required.** Dispatch looks only at the labels on issues / PRs.
+
+<details><summary>Details: the three optional features that use a GitHub Project</summary>
+
+A GitHub Project is used by three optional features only, so skip it unless you want one of them: queueing by the Project's Priority field (the default is `priority/p*` labels), collecting several repositories' issues / PRs into one Project (off by default), and the client's columns by iteration or status (both values live in a Project).
+
+</details>
 
 ## Why use it
 
@@ -56,6 +68,8 @@ This tool fixes three things at once:
 
 You stop being "the person chatting with the AI" and become "the person reviewing the AI's PRs."
 
+<details><summary>Details: a typical night, parallel runs, reviewing from your phone</summary>
+
 ```
 Before bed: open 10 issues, label each pending/agent, close laptop, sleep.
 Morning:    10 PRs / design proposals sit on GitHub. Review them like a reviewer—
@@ -65,9 +79,13 @@ Morning:    10 PRs / design proposals sit on GitHub. Review them like a reviewer
 
 Multiple requests **can run in parallel** — each issue gets its own worker / worktree / git branch, so they never interfere; `MAX_CONCURRENT_WORKERS` sets how many run at once (1 in the template; the rest queue by priority). Progress is visible at a glance via GitHub labels. The [official GitHub mobile app](https://github.com/mobile) handles review + comment + label, so you can keep things moving during the commute.
 
+</details>
+
 ### 2. All process + artifacts traceable by issue number
 
-Every artifact from an issue's run is filed under its **issue number**:
+Every artifact from an issue's run is filed under its **issue number**, so "why was this written that way?" is answered by reading the issue thread first and, if needed, resuming the AI's own conversation. Full retention policy + lookup / resume SOPs: [docs/persistence.md](docs/persistence.md).
+
+<details><summary>Details: where each artifact lives, and the two levels of lookup</summary>
 
 | Artifact | Where |
 |---|---|
@@ -84,9 +102,13 @@ Six months later debugging some hairy code, wondering *why* it was written that 
 
 Either way: **not** scrubbing through nameless AI chat sessions or reconstructing intent from a one-line commit message.
 
+</details>
+
 #### Compounding effect: the longer you use this, the smarter your agent gets
 
-This is the part that compounds over time — **decision history is readable by both humans and AI agents**.
+This is the part that compounds over time — **decision history is readable by both humans and AI agents**: a worker on a new issue reads the earlier issues' threads itself, so nobody has to re-explain the background.
+
+<details><summary>Details: how the agent picks up earlier decisions, and who benefits</summary>
 
 When a *new* issue touches code that was last changed in issue #42, the AI worker runs `gh issue view 42 --comments` itself, pulls the full prior context (design rationale, alternatives weighed, trade-offs accepted), and proceeds informed. **No one has to spoon-feed it "here's the background, X was tried, Y didn't work because…" every single time.**
 
@@ -96,9 +118,13 @@ Useful for:
 - **Humans** debugging old code, onboarding teammates, post-mortem on regressions — read the issue thread first, resume session if needed
 - **AI agents** picking up related work — they self-serve context via `gh issue view <N> --comments`, no human-in-the-loop briefing needed
 
-Full retention policy + lookup / resume SOPs: [docs/persistence.md](docs/persistence.md).
+</details>
 
 ### 3. Cheap (Pro/Max subscription, not API tokens)
+
+The worker is the `claude` CLI (or another coding CLI) under the subscription you already pay for, and the 60-second poll only calls the GitHub API, so idle costs nothing.
+
+<details><summary>Details: compared with a webhook + API setup</summary>
 
 | | Webhook + Anthropic API | This tool |
 |---|---|---|
@@ -107,6 +133,8 @@ Full retention policy + lookup / resume SOPs: [docs/persistence.md](docs/persist
 | Long-running cost (6 months, dozens of issues/wk) | hundreds–thousands USD | flat \$20–\$200/month Pro/Max |
 
 Especially good fit for 24/7 "AI auto-reviews + auto-fixes" patterns where webhook+API costs balloon.
+
+</details>
 
 ## How it works
 
@@ -125,6 +153,10 @@ Two trigger scenarios:
 
 ### Knobs (defaults work as-is; reach for these when you need them)
 
+What counts as actionable, queue order, several repos on one board, the prompt, which AI CLI runs, a second AI reviewing first, autopilot, and an external requester bot are all one config line each. Every setting is described in [docs/operations.md](docs/operations.md).
+
+<details><summary>Details: the knobs, one line each</summary>
+
 | To change | How | Details |
 |---|---|---|
 | **What counts as actionable** | `DISPATCH_MODE=greedy` — stop labelling items one by one; every open issue / PR is worked unless a blocking label (`pending/human` and friends) stops it | [architecture](docs/architecture.md) |
@@ -133,8 +165,10 @@ Two trigger scenarios:
 | **The prompt the AI reads** | The generic workflow ships with the skill; a project only writes its own delta (`<name>.extra.md`), appended after it. No need to fork the whole template — forking means never receiving upstream updates again | [operations](docs/operations.md) |
 | **Which AI CLI runs** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`, or write your own driver | [drivers](docs/drivers.md) |
 | **Orchestration: another AI checks before you do** | Set `LABEL_PENDING_REVIEW` to turn on the review gate: every PR round with code changes goes to another AI (codex by default) first; a fail bounces back to the coding AI with concrete feedback, at most `REVIEW_MAX_ROUNDS` rounds (default 6), and only a pass reaches you. If the two AIs cannot agree it stops and waits for you. Add `REVIEW_DESIGN_PROPOSALS=true` and design proposals are reviewed before they reach you too. Multi-role relays (PM → dev → QA) are wired up with labels as well | [operations](docs/operations.md#optional-cross-review-gate-off-by-default) · [collaboration](docs/collaboration.md) |
-| **Autopilot: hand an issue over end to end** | Set `LABEL_AUTOPILOT` (off by default; needs the review gate) and put that label on an issue: the design goes through the review gate only, and once the code review passes the daemon merges the PR itself — only the exact commit the reviewer saw, only if the label was put on the issue (or on an already-open PR) by a maintainer with write access, checks are green and nothing conflicts. Pull the label or add `pending/human` on the issue or the PR to stop it at any point | [operations](docs/operations.md#autopilot-label-optional-off-by-default) · [security](docs/security.md) |
+| **Autopilot: hand an issue over end to end** | Set `LABEL_AUTOPILOT` (off by default; needs the review gate) and put that label on an issue: the design goes through the review gate only, and once the code review passes the daemon merges the PR itself, under the merge conditions listed in operations (a maintainer put the label on, the reviewed commit, green checks, no conflict). Pull the label or add `pending/human` on the issue or the PR to stop it at any point | [operations](docs/operations.md#autopilot-label-optional-off-by-default) · [security](docs/security.md) |
 | **Hook up an external requester bot (e.g. grokbot)** | Let another AI assistant file issues directly: when there is a question for it or the work is done, the item gets a waiting label and its webhook is called; it also hears when the PR is merged or closed. Off by default | [integration guide](docs/requester-bot.md) · [Grok bot](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ) |
+
+</details>
 
 ## What it **doesn't** do
 
@@ -163,6 +197,7 @@ ln -s ~/.agents/skills/cavil-loop ~/.claude/skills/cavil-loop
 ```
 
 `setup.sh` migrates Linux installations to immutable managed releases. The checkout remains available for development, but the running daemon follows the configured remote base branch instead of mutating that checkout.
+
 </details>
 
 ### 2. Connect a project
@@ -185,7 +220,9 @@ Linux stops user services on logout by default; this keeps the poller alive when
 
 ### Or start from the desktop client (macOS)
 
-Instead of the commands above, install the [desktop client](#client-desktop-board) and do steps 1 and 2 from its Settings page:
+Instead of the commands above, install the [desktop client](#client-desktop-board) and do steps 1 and 2 from its Settings page. Where to download and the details of each step are in the [client guide](docs/client.md#optional-connect-the-daemon) (the client's interface is Chinese for now).
+
+<details><summary>Details: the five steps in the client</summary>
 
 1. Install the [dependencies](#dependencies) and run `gh auth login` first — the client only checks what is missing, it does not install system software.
 2. Download and install the client, then sign in with your GitHub account (enter the short code in the browser).
@@ -193,42 +230,66 @@ Instead of the commands above, install the [desktop client](#client-desktop-boar
 4. Settings → "本机 daemon" (local daemon): click "安装" (install) — the same as the manual install in step 1 above.
 5. Back in the sources list, click "接上 daemon" (connect) on the repository's row: pick an existing local copy or let it clone one, pick the agent, and click "开始" (start) once the pre-check passes — the same as `setup.sh` in step 2 above.
 
-From then on, an issue labeled `pending/agent` gets picked up. Where to download and the details of each step are in the [client guide](docs/client.md#optional-connect-the-daemon) (the client's interface is Chinese for now).
+From then on, an issue labeled `pending/agent` gets picked up.
+
+</details>
 
 ## Dependencies
 
-`git`, `gh` (run `gh auth login` first), `tmux`, `jq`, `flock`, `claude` (Pro/Max plan). `setup.sh` auto-detects the OS: Linux uses the built-in `systemd` user timer; macOS uses a `launchd` LaunchAgent (see [docs/operations.md → Scheduler by OS](docs/operations.md#scheduler-by-os)). Tested on Ubuntu 22.04 / 24.04; macOS supported, community testing welcome.
+`git`, `gh` (run `gh auth login` first), `tmux`, `jq`, `flock`, `claude` (Pro/Max plan). Linux or macOS.
+
+<details><summary>Details: schedulers and tested systems</summary>
+
+`setup.sh` auto-detects the OS: Linux uses the built-in `systemd` user timer; macOS uses a `launchd` LaunchAgent (see [docs/operations.md → Scheduler by OS](docs/operations.md#scheduler-by-os)). Tested on Ubuntu 22.04 / 24.04; macOS supported, community testing welcome.
+
+</details>
 
 ---
 
 ## Usage
 
+Three everyday cases: a new request on an issue, review feedback on a PR, and a question that needs only an answer. Each starts with a comment and the `pending/agent` label.
+
 ### Scenario 1: New request
+
+Open an issue and label it `pending/agent`. Within 60s the poller picks it up: builds an isolated working dir, starts Claude Code, writes code, opens a PR (with `Closes #42` in the body — work too big for one PR is split into sub-issues first), flips the label to `pending/human` for your review.
+
+<details><summary>Commands, and how to watch the AI work</summary>
 
 ```bash
 gh issue create --title "..." --body "..."     # say you get #42
 gh issue edit 42 --add-label pending/agent
 ```
 
-Within 60s the poller picks it up: builds an isolated working dir, starts Claude Code, writes code, opens a PR (with `Closes #42` in the body — work too big for one PR is split into sub-issues first), flips the label to `pending/human` for your review. Watch what the AI does: `tmux attach -t <project>-issue42`.
+Watch what the AI does: `tmux attach -t <project>-issue42`.
+
+</details>
 
 ### Scenario 2: PR review feedback
+
+Comment on the PR and swap `pending/human` for `pending/agent`. Within 60s the poller finds the AI session for this PR, feeds in your comment → AI edits → tests → push → reply → flip label.
+
+<details><summary>Commands</summary>
 
 ```bash
 gh pr comment N --body "rename foo to bar"
 gh pr edit N --add-label pending/agent --remove-label pending/human
 ```
 
-Within 60s the poller finds the AI session for this PR, feeds in your comment → AI edits → tests → push → reply → flip label.
+</details>
 
 ### Scenario 3: Clarification question
+
+Ask the question in a comment and label it the same way. The AI sees it's a discussion question, replies without touching code, keeps label `pending/human` waiting for your next turn.
+
+<details><summary>Commands</summary>
 
 ```bash
 gh pr comment N --body "why not pattern X here?"
 gh pr edit N --add-label pending/agent --remove-label pending/human
 ```
 
-AI sees it's a discussion question, replies without touching code, keeps label `pending/human` waiting for your next turn.
+</details>
 
 ---
 
@@ -243,11 +304,19 @@ The Cavil Loop desktop client (`client/`, macOS and Windows) is a GitHub issue /
 - **Changes** sent straight to GitHub: labels, iteration, status, milestone, replies, new issues, closing and merging; details float over the board or open as tabs.
 - **With the daemon** (optional): install it and connect a repository from Settings, hand an item to the agent or put it on autopilot with one button, and get a system notification when something lands on `pending/human`.
 
-Screenshots of the three views are under [What it is](#what-it-is) above.
+Screenshots of the three views are under [What it is](#what-it-is) above. **Install, first run and every feature: [docs/client.md](docs/client.md).**
+
+<details><summary>Details: sign-in, network boundary, what it runs on this machine</summary>
 
 You sign in through the browser (GitHub's device flow); the credential goes into the macOS keychain (on Windows: Windows Credential Manager). By default the client talks only to GitHub (`api.github.com`, `github.com` and GitHub's own avatar, image, file and release-download addresses); Tailscale machines are contacted only when you use the remote-daemon settings: opening the "add remote daemon" window asks every online device on your tailnet whether its remote entry is open, pairing talks to the one machine you picked, and afterwards only paired machines are contacted — always over HTTPS to `*.ts.net` names, never with a GitHub credential (details in the [client guide](docs/client.md#network-credentials-and-offline-use)). When it installs or connects the daemon, it runs the daemon's own scripts and a few fixed `git` / `systemctl` / `launchctl` commands on this machine; the window can send only fixed requests, the back end checks every argument, and the client's credential is never handed to the daemon, which keeps using `gh`'s own sign-in.
 
-Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` (the first is `client/v0.5.2`) and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. **Install, first run and every feature: [docs/client.md](docs/client.md).** The developer notes are in [client/README.md](client/README.md) (Chinese).
+</details>
+
+<details><summary>Details: where the packages are</summary>
+
+Packages are attached to the `client/v…` entries on this repository's [Releases](https://github.com/GigleAI/cavil-loop/releases) page: stable releases are tagged `client/vX.Y.Z` (the first is `client/v0.5.2`) and come with an Apple-silicon and an Intel dmg plus a Windows x64 installer (`-windows-x64.exe`, not code-signed: Windows asks once, "More info" → "Run anyway"; Windows cannot run the daemon itself, it connects to one on another machine); development builds are tagged `client/vX.Y.Z-dev.N`, marked Pre-release, with an Apple-silicon dmg and a Windows installer. The developer notes are in [client/README.md](client/README.md) (Chinese).
+
+</details>
 
 ---
 
