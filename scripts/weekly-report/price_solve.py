@@ -248,9 +248,7 @@ def fetched_reference():
         prices = (entry or {}).get("prices") if isinstance(entry, dict) else None
         if model in REFERENCE or model in out or not isinstance(prices, dict):
             continue
-        clean = {k: float(v) for k, v in prices.items()
-                 if isinstance(v, (int, float)) and not isinstance(v, bool)
-                 and math.isfinite(v) and v >= 0}
+        clean = {k: float(v) for k, v in prices.items() if _price_ok(v)}
         if clean:
             out[model] = clean
     return out
@@ -264,9 +262,21 @@ def latest_path():
     return os.path.join(cache_dir(), "latest-prices.json")
 
 
+# 抓来 / 读回的单价的合法范围：美元 / 百万 token，0 ≤ 价 ≤ MAX_PRICE。price_fetch.py 写缓存时
+# 按同一个上限收，这里读回时再按它查一遍（缓存文件可能被改坏）。
+MAX_PRICE = 1000.0
+
+
 def _price_ok(v):
-    return (isinstance(v, (int, float)) and not isinstance(v, bool)
-            and math.isfinite(v) and v >= 0)
+    """合法单价：真的数（不是布尔），有限、在 [0, MAX_PRICE] 内。先比大小、再转浮点：
+    JSON 里的超大整数（如 10**400）转浮点会抛 OverflowError（PR #612 复审第 1 轮），
+    任何异常都算不合法，绝不让一个坏数拖垮整张表。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return 0 <= v <= MAX_PRICE and math.isfinite(float(v))
+    except (OverflowError, ValueError, TypeError):
+        return False
 
 
 def load_latest():

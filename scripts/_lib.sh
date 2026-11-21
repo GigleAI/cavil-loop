@@ -10259,15 +10259,30 @@ redact_scan_tick() {
     return 0
 }
 
+# 「下次抓最新价的时刻」还没到 → 0；到了或文件不合格式 → 1。规则与 price_fetch.py 的
+# latest_due 一字不差（不超过 64 字节、1–18 位数字、后面只跟换行，别的一律当作到时），
+# 两处对同一个文件必须给同一个答案（PR #612 复审第 1 轮），tests/footer-listed-price.test.sh 对拍
+price_latest_not_due() {
+    local f="$1" size rest next
+    [ -f "$f" ] || return 1
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 1
+    [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -le 64 ] || return 1
+    # 只许数字和换行：先查（NUL 之类在命令替换里会被 bash 吞掉，不能等读进变量再看）
+    rest="$(LC_ALL=C tr -d '0-9\n' < "$f" 2>/dev/null | wc -c | tr -d ' ')" || return 1
+    [ "$rest" = 0 ] || return 1
+    next="$(cat "$f" 2>/dev/null)" || return 1
+    [[ "$next" =~ ^[0-9]{1,18}$ ]] || return 1
+    [ "$(date +%s)" -lt "$((10#$next))" ]
+}
+
 price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
-    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop" next=""
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop"
     local dir="$cache/unpriced"
-    # 两件事各自到时才启动脚本：有缺价标记；或到了每天抓一次 Claude 最新价的时刻（GitHub#606，
-    # 时刻写在 latest-prices.next，读不出 = 到时）。都没到就只是一次 ls 和一次读文件，不碰网络
+    # 两件事各自到时才启动脚本：有缺价标记；或到了每天抓一次 Claude 最新价的时刻（GitHub#606）。
+    # 都没到就只读一个文件，不碰网络
     if ! { [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; }; then
-        [ -f "$cache/latest-prices.next" ] && next="$(head -c 32 "$cache/latest-prices.next" 2>/dev/null | tr -d '[:space:]')"
-        [[ "$next" =~ ^[0-9]+$ ]] && [ "$(date +%s)" -lt "$next" ] && return 0
+        price_latest_not_due "$cache/latest-prices.next" && return 0
     fi
     # cavil-loop.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
     # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。

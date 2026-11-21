@@ -70,7 +70,7 @@ def _num(name, default, cast):
 COOLDOWN = _num("PRICE_FETCH_COOLDOWN_SECS", "21600", int)
 LATEST_EVERY = _num("PRICE_LATEST_REFRESH_SECS", "86400", int)   # 最新价缓存一天（GitHub#606）
 TIMEOUT = _num("PRICE_FETCH_TIMEOUT", "15", float) or 15.0
-MAX_PRICE = 1000.0                      # 美元 / 百万 token；现役最贵的档位也远低于它
+MAX_PRICE = price_solve.MAX_PRICE       # 美元 / 百万 token；现役最贵的档位也远低于它。读回时同一上限
 MAX_DIVERGE = price_solve.MAX_DIVERGE   # 与反解那一侧的交叉核对用同一个阈值
 MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 AGENTS = ("claude", "codex")
@@ -111,14 +111,22 @@ def latest_due_path():
     return os.path.join(price_solve.cache_dir(), "latest-prices.next")
 
 
+# 「下次时刻」文件合法的样子：不超过 64 字节，1–18 位数字，后面只跟换行。别的一律当作到时间。
+# daemon 的 price_fetch_tick（_lib.sh）按同一条规则判断，两处对同一个文件必须给同一个答案
+# （PR #612 复审第 1 轮：一边删掉中间空格读成未来时刻跳过，一边判到时，坏文件永远没人重写）。
+DUE_RE = re.compile(rb"[0-9]{1,18}\n*")
+
+
 def latest_due(now):
-    """到时间了吗。文件没有、读不出、不是整数 → 到了（宁可多抓一次，不要永远不抓）。"""
+    """到时间了吗。文件没有、读不出、不合上面的格式 → 到了（宁可多抓一次，不要永远不抓）。"""
     try:
-        with open(latest_due_path(), encoding="utf-8") as f:
-            nxt = int(f.read().strip())
-    except (OSError, ValueError):
+        with open(latest_due_path(), "rb") as f:
+            raw = f.read(65)
+    except OSError:
         return True
-    return now >= nxt
+    if len(raw) > 64 or not DUE_RE.fullmatch(raw):
+        return True
+    return now >= int(raw.rstrip(b"\n"))
 
 
 def _write_due(epoch):

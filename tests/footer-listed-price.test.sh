@@ -122,6 +122,20 @@ for bad_latest in 'not json' '[]' '{"claude":{"models":[]}}' \
     chk "最新价坏掉（${bad_latest:0:40}…）→ opus-5-5 退回内置参照" \
         "$(jq -c '.models["claude-opus-5-5"].input' <<<"$(listed)")" '{"status":"reference_only","price":4}'
 done
+# 一项超大 / 越界的单价只让那个模型退回内置价，其余下载来的价照用（PR #612 复审第 1 轮：
+# JSON 里的 10**400 转浮点抛异常，整张表取价失败）
+BIG=$(python3 -c 'print(10**400)')
+for v in "$BIG" "-$BIG" 1e400 1001; do
+    put_latest "{\"claude\":{\"models\":{\"claude-sonnet-4-6\":{\"input\":$v,\"output\":1,\"cache_read\":1,\"cache_write_5m\":1,\"cache_write_1h\":1},$(jq -c '.claude.models | to_entries[0] | "\(.key|tojson):\(.value|tojson)"' -r <<<"$L55")}}}"
+    T=$(listed)
+    chk "最新价里有一项单价是 ${v:0:12}…：取价照常出表，这个模型退回内置、别的模型仍用下载价" \
+        "$(jq -c '[.models["claude-sonnet-4-6"].input.status, .models["claude-sonnet-4-6"].input.price, .models["claude-opus-5-5"].input.status]' <<<"$T" 2>/dev/null)" \
+        '["reference_only",3,"fetched"]'
+    printf '{"claude":{"claude-gap-9":{"prices":{"input":%s,"output":2}}}}\n' "$v" > "$CACHE/fetched-prices.json"
+    chk "补缺价里有一项是 ${v:0:12}…：取价照常出表，坏的那项不收" \
+        "$(jq -c '.models["claude-gap-9"] | keys' <<<"$(listed)" 2>/dev/null)" '["output"]'
+done
+rm -f "$CACHE/fetched-prices.json"
 
 echo "── 2. 驱动：不读别的会话，金额跟着价目表走 ──"
 rm -rf "$CACHE"; mkdir -p "$CACHE"; : > "$PLOG"
@@ -229,6 +243,35 @@ rm -f "$NEXT" "$LATEST"; tick
 chk "下次时刻文件不在 → 当作到时间" "$([ -s "$LATEST" ] && echo fetched || echo idle)" "fetched"
 rm -f "$LATEST"; echo 0 > "$NEXT"; PRICE_AUTO_FETCH=off tick
 chk "PRICE_AUTO_FETCH=off → 不启动" "$([ -e "$LATEST" ] && echo ran || echo idle)" "idle"
+
+echo "── 6. 「下次时刻」文件：daemon 钩子与抓价脚本对同一个文件给同一个答案 ──"
+# 两处各自判断「到没到时间」，规则必须一致（PR #612 复审第 1 轮：`12 9999999999` 被钩子删掉空格
+# 读成未来时刻、跳过启动，抓价脚本却判到时——没有缺价标记时坏文件永远没人重写）。
+# 每个文件分别交给真实钩子（看抓价脚本有没有被启动、写出最新价）和抓价脚本自己的判断。
+due_py() { python3 - "$TU" <<'PY2'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import price_fetch
+print("due" if price_fetch.latest_due(time.time()) else "wait")
+PY2
+}
+FUT=$(( $(date +%s) + 86400 ))
+CASES=("future|wait|$FUT" "future-nl|wait|$FUT\n" "future-nl2|wait|$FUT\n\n" "zero-padded|wait|000$FUT"
+       "past|due|0" "empty|due|" "junk|due|abc" "space-split|due|12 $FUT" "lead-space|due| $FUT"
+       "lead-nl|due|\n$FUT" "plus|due|+$FUT" "underscore|due|1_${FUT}" "nul|due|$FUT\0" "cr|due|$FUT\r\n"
+       "19-digits|due|9999999999999999999" "over-64-bytes|due|$FUT$(printf '\\n%.0s' $(seq 60))")
+for c in "${CASES[@]}"; do
+    name=${c%%|*}; rest=${c#*|}; want=${rest%%|*}; content=${rest#*|}
+    rm -rf "$CACHE"; mkdir -p "$CACHE"; printf "$content" > "$NEXT"
+    py=$(due_py)
+    tick
+    sh=$([ -s "$LATEST" ] && echo due || echo wait)
+    chk "$name：钩子 $sh / 抓价脚本 $py，都是 $want" "$sh $py" "$want $want"
+done
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+chk "文件不在：抓价脚本判到时" "$(due_py)" "due"
+tick
+chk "文件不在：钩子启动了抓价脚本" "$([ -s "$LATEST" ] && echo due || echo wait)" "due"
 
 report_counts "$pass" "$fail"
 echo
