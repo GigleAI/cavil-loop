@@ -52,8 +52,10 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "weekly-report"))
 sys.path.insert(0, os.path.join(HERE, "drivers", "token-usage"))
+sys.path.insert(0, HERE)
 import record      # noqa: E402  footer 机器记录：最后一个非空行、作者是机器人、派工身份去重
 import test_time   # noqa: E402  流水路径、时间段并集（footer 用的同一份）
+import round_log   # noqa: E402  往返记录拆单元（GitHub#610；与周报、读取命令同一份）
 
 UTC = datetime.timezone.utc
 LOCAL_CATS = ("smoke", "quick", "kind", "related", "all", "other")
@@ -432,10 +434,10 @@ def collect(a, since, until):
     for n, plist in groups.items():
         # 工作编号是 issue 号（不是这组里某个 PR 自己的号）时，issue 上的派工也算进来
         is_issue = n not in {str(p["number"]) for p in plist}
-        issue_comments = pages(f"repos/{repo}/issues/{n}/comments") if is_issue else []
+        issue_comments = round_log.expand_github_comments(pages(f"repos/{repo}/issues/{n}/comments"), record.is_bot) if is_issue else []
         prev_merge = float("-inf")
         for p in plist:
-            own = pages(f"repos/{repo}/issues/{p['number']}/comments")
+            own = round_log.expand_github_comments(pages(f"repos/{repo}/issues/{p['number']}/comments"), record.is_bot)
             lo, hi = prev_merge, ts(p["merged_at"])
             mine = [c for c in issue_comments if lo < (ts(c.get("created_at")) or 0) <= hi]
             ds, sk = footers(own + mine, n)

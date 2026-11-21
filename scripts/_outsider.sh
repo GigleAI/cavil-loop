@@ -308,13 +308,13 @@ outsider_auth_from_globals() {   # <授权返回码>
 # OS_AUTH_RC = 授权的返回码（0 成立 / 1 不成立）；return 2 = 判不了
 outsider_scan() {   # <编号> <mode> [整理稿文件]
     local target="$1" mode="$2" out_file="${3:-}" it ij="" pj="" inum="" pr="" rc
-    OS_AUTH_RC=""; OS_WHY=""; OS_RES=""; OS_REC_FAIL=""
+    OS_AUTH_RC=""; OS_WHY=""; OS_RES=""; OS_REC_FAIL=""; OS_TARGET_KIND=issue
     SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WHY=""
     if ! it=$(gh api "repos/$REPO/issues/$target" 2>/dev/null) || [ -z "$it" ]; then
         OS_WHY="读不到 #$target"; return 2
     fi
     if printf '%s' "$it" | jq -e '.pull_request != null' >/dev/null 2>&1; then
-        pr="$target"
+        pr="$target"; OS_TARGET_KIND=pr
         if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then OS_WHY="读不到 PR #$pr"; return 2; fi
         autopilot_pr_kind "$pj"
         if [ "$AUTOPILOT_PR_KIND" = issue ]; then

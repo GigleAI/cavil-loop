@@ -1413,6 +1413,36 @@ Operationally:
 - Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
 - Full guide, exit codes, evidence rules and a worked example: [Hooking up an external requester bot](requester-bot.md)
 
+## Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`, GitHub#610)
+
+Off unless the config says `ENABLE_ROUND_LOG=true` (the template does; a project whose config lacks the line gets
+one `poll.log` notice and stays off). When on, one back-and-forth between agents — a proposal or PR, the review,
+the revision, the next review … — takes **one** comment, the *round log*. Each delivery that goes to another agent
+(the comment after which the agent flips the item to the review label or back to the dispatch label) is appended
+as a short section: what changed, what the next agent needs, the usage footer. The full current version (whole
+proposal / whole delivery summary) sits at the top of the record and is replaced by the latest one.
+
+- **Stay separate, as before**: every comment to a human, the review verdict that queues an autopilot merge
+  (the merge check only accepts the test record in a comment created after the review was dispatched), daemon
+  comments, waiting-on-prerequisite notes. A new comment by anyone in between ends the record; the next delivery
+  starts a new one
+- **Only the loop edits it**: the record is written and edited only by the loop's write account; no other comment
+  is ever edited. Reply and tick boxes in the hand-off comments, not in the record. Editing a record is not
+  protected against: a human edit can be overwritten by the next section (accepted in #610)
+- **Commands**: agents run `round-log.sh post` / `show` through the durable entry
+  `~/.agents/releases/cavil-loop/entrypoints/round-log.sh`. Before every write the target is re-read (open, still
+  `doing/agent`, no `pending/human` / waiting label, PR not merged, same base branch and source, head commit equal to
+  the delivery's). An edit that fails or times out is replaced by a complete new record carrying the same section id;
+  readers and statistics count a section once. Each run logs one `round-log #<n> post：<result>` line to `poll.log`
+- **Autopilot items with the outsider guard on** read through the protected read command as before; its output ends
+  with the same unit view. A comment by another account that carries the record marker is an ordinary comment
+- **Statistics**: the weekly report and `pr-time-stats.py` split records into sections (each with its own append
+  time) through the same function; for every item that has a record, the weekly report re-reads that item's whole
+  comment thread before applying the week window, and stops with an error when that read fails
+- **Turn it off**: set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
+  read and counted; new deliveries are plain comments again. To make it the default for every project later, change
+  the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every project without the line then has it on
+
 ## Comment usage footer
 
 With `COMMENT_FOOTER="on"`, the hand-off comment ends with a footer generated whole by

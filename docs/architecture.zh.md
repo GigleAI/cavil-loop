@@ -231,6 +231,8 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
 
+开了 `ENABLE_ROUND_LOG`（GitHub#610）时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_loggithub610)。
+
 项目还可以自己装 agent hook，例如 Claude Code 的 `PreToolUse` 在改文件前注入目录规矩。这是宿主项目侧的做法，cavil-loop 不自带、也不管理。图里最右一栏（第 ⑤⑥ 步）画的就是这样一个钩子，只作示例。
 
 ## 设计选择 FAQ

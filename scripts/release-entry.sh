@@ -29,6 +29,7 @@ case "$0" in
     */flip-label.sh) relative="scripts/flip-label.sh" ;;          # worker / 复审翻标签（GitHub#599）
     */conflict-check.sh) relative="scripts/conflict-check.sh" ;;  # 交 PR 前的冲突检查（GitHub#599）
     */pr-feedback.sh) relative="scripts/pr-feedback.sh" ;;        # 读 PR 全部评论（GitHub#599）
+    */round-log.sh) relative="scripts/round-log.sh" ;;            # 往返记录的写入 / 读取（GitHub#610）
     */notify-relay.sh) relative="scripts/notify-relay.sh" ;;   # 同上的早期入口名，转发到新脚本
     *) echo "unknown managed entrypoint: $0" >&2; exit 2 ;;
 esac
