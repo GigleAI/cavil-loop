@@ -1655,6 +1655,31 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
+- **The Claude footer takes the latest published prices; it does not solve prices from logs**
+  (GitHub#606). Once a day the daemon downloads the official Claude pricing page (only in polls the scheduler
+  started; a hand-run `agent-poll.sh` skips the daily refresh, but still fetches the price of a
+  model that has a missing-price marker) and uses only
+  its prices (no cross-check against LiteLLM; the gap-fill for missing models still needs both to
+  agree), keeping every model whose five prices (input, output, cache read, 5-minute and 1-hour
+  cache write) are all there and pass the sanity checks, in
+  `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`; the time of the next download is in
+  `latest-prices.next` next to it (a failed download is retried after `PRICE_FETCH_COOLDOWN_SECS`,
+  6 hours by default; a download that could not be written to the cache after 10 minutes; either
+  way the previous file stays in use. When the next time cannot be written either, `poll.log` says
+  "下次刷新时刻没能保存，下一轮会再抓" and every round downloads again until the cache directory is
+  writable). The usage driver prices each call with
+  `python3 scripts/weekly-report/price_solve.py --listed`, which reads no session log: the latest
+  price for the model, else the built-in table, else a price fetched for a missing model. In the
+  machine record that is `price_source=default`, with the amount split into `fetched` (downloaded)
+  and `reference_only` (built-in). The footer calls the Claude driver once with `--both`, which
+  prints the readable line and the machine record from one table; anything but exactly two lines
+  counts as "usage unknown" for both, and the driver is not called again (the Codex driver is
+  still called twice). `PRICE_AUTO_FETCH=off` stops the downloads only (the daily one and the gap-fill): prices already
+  downloaded keep being used — the last `latest-prices.json`, and the gap-fill prices in
+  `fetched-prices.json` for models neither that file nor the built-in table lists. Taking the prices reads no session log; counting
+  this dispatch's usage still reads the sessions of the current working directory, as before. The
+  weekly report still solves prices from the logs, as before.
+
 ### Average AI and test time per merged PR (estimate, GitHub#593)
 
 `scripts/pr-time-stats.py` adds up, for every PR merged in a window, the AI time and the test time
