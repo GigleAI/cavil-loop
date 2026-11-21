@@ -1514,3 +1514,45 @@ test('GitHub#633 (PR #638 code review round 2): left and come back to the tab be
   expect(posted(A, 'comments')).toHaveLength(1);
   await app.close();
 });
+
+for (const previewState of ['shown', 'on its way'] as const) {
+  test(`GitHub#633 (PR #638 code review round 3): back in the tab before the client answered, the sent reply's preview ${previewState} and a title being edited — the tab stays for the title, and the sent reply goes with everything hanging off it`, async () => {
+    const app = await launchApp(env);
+    const page = app.page;
+    await signIn(page);
+    await row(page, A).click({ modifiers: ['Control'] });
+    await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+    await detail(page).getByTestId('reply-input').fill('按这个方向做');
+    const gate = await holdAcceptance(page);
+    await detail(page).getByTestId('hand-back').click();
+    await expect.poll(() => gate.answered(), { timeout: 15_000 }).toBe(1);
+    // away and back: the detail is mounted again from the kept draft, the sent words still in its box
+    await home(page).click();
+    await tab(page, A).click();
+    await expect(detail(page)).toHaveAttribute('data-key', K(A));
+    await expect(detail(page).getByTestId('reply-input')).toHaveValue('按这个方向做');
+    const markdown = () => env.fake.log.filter((l) => l.method === 'POST' && l.path === '/api/markdown').length;
+    const before = markdown();
+    const release = previewState === 'on its way' ? env.fake.holdWhen((l) => l.method === 'POST' && l.path === '/api/markdown') : () => {};
+    await detail(page).getByTestId('reply-preview-toggle').click();
+    if (previewState === 'shown') await expect(detail(page).getByTestId('reply-preview')).toBeVisible({ timeout: 15_000 });
+    // the preview request really went out (held back in the second case)
+    await expect.poll(markdown, { timeout: 15_000 }).toBe(before + 1);
+    // a title edit not saved yet: text not sent, so the tab must stay
+    await detail(page).getByTestId('detail-edit-title').click();
+    await page.getByTestId('edit-title-input').fill('改了一半的标题');
+    await gate.release();
+    release();
+    await expect.poll(() => posted(A, 'comments').length, { timeout: 15_000 }).toBe(1);
+    await expect(held(page)).toHaveCount(1, { timeout: 15_000 });
+    await expect(held(page)).toContainText('已开始交给 agent');
+    await expect(page.getByTestId('edit-title-input')).toHaveValue('改了一半的标题');
+    await expect(detail(page).getByTestId('reply-input')).toHaveValue('');
+    // a late preview answer does not bring it back either
+    await page.waitForTimeout(800);
+    await expect(detail(page).getByTestId('reply-preview')).toHaveCount(0);
+    await expect(tab(page, A)).toHaveCount(1);
+    expect(posted(A, 'comments')).toHaveLength(1);
+    await app.close();
+  });
+}

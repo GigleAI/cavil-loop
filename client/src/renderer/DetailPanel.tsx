@@ -538,11 +538,10 @@ export function DetailPanel({
     const inFlight = sendingReply !== null && sendingReply === reply;
     onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit, replyVer: replyVer.current!.n });
   }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
+  // GitHub#633: mounted again from a kept draft before the client answered — the same draft is dropped here
+  // too, by the same function as in the opening that sent it (PR #638 review round 3)
   useEffect(() => {
-    if (replyVer.current && droppedReplies.includes(replyVer.current.n) && reply !== '') {
-      setReply('');
-      setReplyFromOp(null);
-    }
+    for (const ver of droppedReplies) dropSentReplyHere(ver);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [droppedReplies]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
@@ -710,6 +709,23 @@ export function DetailPanel({
     onCloseStarted?.(id, { kind, sentVer: boxSent });
   };
   /**
+   * GitHub#633: the one way a reply draft that went with a hand-over leaves a detail — the opening that sent
+   * it and an opening mounted again from the kept draft both call this (the window's kept draft is cleared
+   * by `dropSentReply` in App.tsx, by the same number). Only that draft, by its number: text typed since
+   * (even the same words) is another draft and keeps everything. Everything that hangs off the box goes
+   * with it — the kept-comment link, the preview and a preview request still on its way, the pasted-image
+   * line, the Esc note — or a preview of words already sent would stay with no button to put it away.
+   */
+  const dropSentReplyHere = (ver: number) => {
+    if (!replyVer.current || replyVer.current.n !== ver) return;
+    setReply('');
+    setReplyFromOp(null);
+    session.supersede('preview');
+    setPreview(null);
+    setEscKept(false);
+    setPasted(null);
+  };
+  /**
    * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
    * once it went out. A dialog opened again from a notice ("重新托管…") carries that operation's kept
    * comment instead, never the reply box's. Blank = labels only, as before.
@@ -726,15 +742,7 @@ export function DetailPanel({
     const boxSent = fromBox && comment.trim() ? replyVer.current!.n : null;
     const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog, handOffStarted(kind, boxSent));
     // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
-    if (ok && boxSent !== null) {
-      // GitHub#633: only that draft is emptied — text typed meanwhile (even the same words) is a new one and stays
-      if (replyVer.current!.n === boxSent) setReply('');
-      setReplyFromOp(null);
-      session.supersede('preview');
-      setPreview(null);
-      setEscKept(false);
-      setPasted(null);
-    }
+    if (ok && boxSent !== null) dropSentReplyHere(boxSent);
     return ok;
   };
   const runAutopilot = () => handOff('autopilot', ask === 'autopilot');
