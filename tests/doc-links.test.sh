@@ -100,7 +100,7 @@ got=$(python3 "$CHECK" "$TMP/u" b.md; echo "rc=$?")
 chk "代码块里的「# …」不算标题、不存在的第三个重复、把代码删掉算出的旧锚点：4 处都报错" \
     "$(grep -c '锚点不存在' <<<"$got") $(tail -1 <<<"$got")" "4 rc=1"
 
-# 链接写法的全表（tests/lib/doc_links.py 开头列的那几种），一个写法一行：每行「存在」的版本必须通过、被查到，
+# 链接写法的全表（Markdown 的交给随仓库带的解析器 markdown-it，HTML 标签的由 doc_links.py 自己读），一个写法一行：每行「存在」的版本必须通过、被查到，
 # 「缺失」的版本必须报出完整目标；HTML 属性值里像链接、像别的属性的文字一律不当链接
 mkdir -p "$TMP/v/img"
 touch "$TMP/v/draft(v2).md" "$TMP/v/draft(v(2)).md" "$TMP/v/x(1).md" "$TMP/v/a b.md" "$TMP/v/img/ok.png"
@@ -155,11 +155,11 @@ sample
 [g]: missing-after-fence.md
 MD
 chk "全表「存在」的写法全部通过，属性值里像链接 / 像属性的文字没被当成链接" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
-chk "  到达性 · 19 处真链接确实都查了（srcset 里两张算两处，「不是链接」那行不算，围栏代码块后面的引用定义算）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 19
+chk "  到达性 · 18 处真链接确实都查了（srcset 里两张算两处，「不是链接」那行不算，围栏代码块后面的引用定义算；没被用到的引用定义指向的文件已被别的链接查过，不重复列）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 18
 chk "  到达性 · 围栏代码块后面那条引用定义确实被查了（指向 draft(v2).md 的共 4 处，其余 3 处是一层括号、尖括号和 HTML 链接）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK good.md -> draft(v2).md$')" 4
 chk "全表「缺失」的写法每处都报出，目标完整" \
     "$(python3 "$CHECK" "$TMP/v" bad.md | sed -e 's/.*不存在的文件 //' -e 's/^bad.md: //' | paste -sd'|')" \
-    "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|gone(1).md|missing-after-fence.md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
+    "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|missing-after-fence.md|gone(1).md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
 
 # 不是链接的写法：普通文字里的「](」、链接标题里的「](」、HTML 注释（含没闭合的）、转义的方括号、方括号和圆括号
 # 之间隔了空格、代码里的、接在段落里的「[名字]: 目标」行。一处都不能报、也不能被当成链接查
@@ -175,51 +175,33 @@ A closing bracket ](not-a-link.md) is ordinary text.
 MD
 chk "普通文字、标题、注释、转义、隔空格、代码里像链接的：一处都不报" "$(python3 "$CHECK" "$TMP/v" nolink.md; echo "rc=$?")" "rc=0"
 chk "  到达性 · 真链接照查：标题前的目标、链接里的图片、方括号嵌套的链接，共 4 处" \
-    "$(python3 "$CHECK" --list "$TMP/v" nolink.md | sed 's/^OK nolink.md -> //' | paste -sd' ')" "draft(v2).md img/ok.png draft(v2).md img/ok.png"
+    "$(python3 "$CHECK" --list "$TMP/v" nolink.md | sed 's/^OK nolink.md -> //' | paste -sd' ')" "draft(v2).md draft(v2).md img/ok.png img/ok.png"
 # 只查指向某些文件的链接（提示词、AGENTS.md 用的入口）时，空目标这种不指向任何文件的不报；整篇检查照报
 printf '%s\n' '[空]()' '[ok](img/ok.png)' > "$TMP/v/scoped.md"
 chk "限定目标范围时，不在范围里的空目标不报；整篇检查照报" \
     "$(python3 "$CHECK" --into img/ok.png "$TMP/v" scoped.md; echo "rc=$?") | $(python3 "$CHECK" "$TMP/v" scoped.md | sed 's/^scoped.md: //')" \
     "rc=0 | 链接目标为空"
 
-# 和成熟的 Markdown 解析器对拍：本机装了 markdown-it-py（CommonMark）时，上面三份夹具和全部外部用户文档、各级
-# AGENTS.md 里的 Markdown 链接 / 图片目标，扫描器读出的集合必须和它一模一样（<https://…> 这种自动链接都是绝对地址、
-# 本来就不查，对拍时不算；引用定义不管用没用到都算，和检查器一样）。CI 上没有这个包，这一组只列出、不算通过
-if python3 -c 'import markdown_it' 2>/dev/null; then
-    cat > "$TMP/mdit.py" <<'PYX'
-import sys, urllib.parse
-sys.path.insert(0, sys.argv[1])
-import doc_links
-from markdown_it import MarkdownIt
-md = MarkdownIt('commonmark')
-def walk(tokens, out):
-    for t in tokens:
-        if t.type == 'link_open' and t.markup != 'autolink':
-            out.add(urllib.parse.unquote(t.attrs.get('href', '')))
-        if t.type == 'image':
-            out.add(urllib.parse.unquote(t.attrs.get('src', '')))
-        if t.children:
-            walk(t.children, out)
-n = 0
-for f in sys.argv[2:]:
-    text = open(f, encoding='utf-8').read()
-    env = {}; ref = set(); walk(md.parse(text, env), ref)
-    # every reference definition counts, used or not (the checker reads them all)
-    ref |= {urllib.parse.unquote(d.get('href', '')) for d in env.get('references', {}).values()}
-    mine = {urllib.parse.unquote(x) for x in doc_links.markdown_targets(text)}
-    n += len(mine)
-    if ref != mine:
-        print(f'{f}: 只有扫描器有 {sorted(mine - ref)}，只有解析器有 {sorted(ref - mine)}')
-print(f'TARGETS {n}')
-PYX
-    files=("$TMP/v/good.md" "$TMP/v/bad.md" "$TMP/v/nolink.md")
-    while IFS= read -r f; do files+=("$REPO_DIR/$f"); done < <(python3 "$CHECK" --external "$REPO_DIR"; cd "$REPO_DIR" && git ls-files -co --exclude-standard -- 'AGENTS.md' '*/AGENTS.md')
-    out=$(python3 "$TMP/mdit.py" "$TEST_DIR/lib" "${files[@]}")
-    chk "和 markdown-it 对拍：${#files[@]} 份文件读出的 Markdown 链接目标一模一样" "$(grep -v '^TARGETS ' <<<"$out")" ""
-    chk "  到达性 · 对拍确实比了很多目标（≥ 250，实比 $(sed -n 's/^TARGETS //p' <<<"$out")）" "$([ "$(sed -n 's/^TARGETS //p' <<<"$out")" -ge 250 ] && echo yes)" yes
-else
-    echo "  ⏭ 本机没有 markdown-it-py，和成熟解析器的对拍跳过（上面的写法全表照常检查）"
-fi
+# 链接交给随仓库带的 CommonMark 解析器 markdown-it-py（tests/lib/vendor/）识别：确实用的是这份，不是本机另装的；
+# 它不依赖本机装了什么，CI 上同样可用
+chk "到达性 · 链接识别用的是随仓库带的解析器（tests/lib/vendor/markdown_it）" \
+    "$(cd "$TEST_DIR/lib" && python3 -c 'import doc_links, markdown_it, os; print(os.path.relpath(markdown_it.__file__))')" "vendor/markdown_it/__init__.py"
+chk "  随仓库带的两份代码都带着许可证" "$(ls "$TEST_DIR/lib/vendor/markdown_it/LICENSE" "$TEST_DIR/lib/vendor/mdurl/LICENSE" 2>/dev/null | wc -l | tr -d ' ')" 2
+# 列表、引用块、缩进代码块、HTML 块里的写法，交给解析器后和 GitHub 渲染一致：列表和引用块里的链接照查，
+# 缩进代码块里的不查
+cat > "$TMP/v/blocks.md" <<'MD'
+- 列表里的 [链接](missing-in-list.md)
+> 引用块里的 [链接](missing-in-quote.md)
+
+    缩进代码块里的 [不是链接](not-a-link9.md)
+
+1. 有序列表
+
+   [第二段](missing-in-item.md)
+MD
+chk "列表、引用块、列表第二段里的坏链接都报出，缩进代码块里的不报" \
+    "$(python3 "$CHECK" "$TMP/v" blocks.md | sed 's/.*不存在的文件 //' | paste -sd' ')" "missing-in-list.md missing-in-quote.md missing-in-item.md"
+
 
 echo "== 4. 中英两份"
 chk "每篇外部用户文档都有另一种语言的版本" "$(python3 "$CHECK" --pairs "$REPO_DIR"; echo "rc=$?")" "rc=0"
