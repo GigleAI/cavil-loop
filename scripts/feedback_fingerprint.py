@@ -14,8 +14,9 @@ The record has exactly one format, made here:
   <!-- agent-answer-only v=2 seen=<items> item=<fp> resume=<f<id>:<fp>|none> flow=<fp> -->
   seen   one entry per piece of human feedback (maintainers and the requester bot: conversation,
          inline, review) and per question's ticked state in the loop account's comments
-  item   the item itself: description, open / closed, its labels other than the flow labels, and for a
-         PR its head commit and base branch
+  item   the item itself: description, open / closed, its labels other than the flow labels, for a
+         PR its head commit and base branch, for an issue its open PRs (they decide where an answer
+         leaves the issue)
   resume the loop-account comment the paused step came from (or none: there was none at all)
   flow   every loop-account comment except answer / wait records — a deleted, edited or new review
          verdict or daemon notice changes it
@@ -25,9 +26,18 @@ Which lines are records is decided in one place, record_lines(): a whole line ou
 the same parser finds the record in a saved file and tells answer comments from ordinary ones, so a
 proposal that explains the format in inline code is still an ordinary comment.
 
-Input JSON: {"body": str, "item": {"state": str, "labels": [str], "head": str?, "base": str?},
+Every question's ticks also carry when they last changed and who changed them, from the loop
+comment's edit history (tick_change()); that is shown to the worker, never fingerprinted, and a
+history that cannot pin it down says so — the worker then treats the ticks as changed this round.
+Whether this dispatch still holds the item (`holding yes|no`) is printed on its own: it decides
+whether an answer may be posted, and is never part of the resume fingerprint.
+
+Input JSON: {"body": str, "holding": bool,
+             "item": {"state": str, "labels": [str], "head": str?, "base": str?, "open_prs": [int]?},
              "items": [{"src": "conversation|inline|review", "id": int, "role": "maintainer|bot|loop",
-                        "body": str, "created": str, "updated": str?, "state": str?}]}
+                        "body": str, "created": str, "updated": str?, "state": str?}],
+             "edits": {"<comment id>": [{"at": str, "deleted": bool, "body": str|null, "editor": str|null}]}?}
+  (edits: newest first, as GitHub returns them; the oldest version is the comment as first posted)
 """
 import hashlib
 import json
@@ -143,12 +153,46 @@ def title_of(body):
 
 def item_fp(data):
     it = data["item"]
+    prs = it.get("open_prs")
     return fp("item", data.get("body") or "", it.get("state") or "", "\n".join(sorted(it.get("labels") or [])),
-              it.get("head") or "", it.get("base") or "")
+              it.get("head") or "", it.get("base") or "",
+              "-" if prs is None else ",".join(str(n) for n in sorted(prs)))
+
+
+UNKNOWN_TIME = "~"   # sorts after every ISO time: a change that cannot be dated counts as the newest
+
+
+def edited(it):
+    return bool(it.get("updated")) and it.get("updated") != it.get("created")
+
+
+def tick_change(it, edits):
+    """When this comment's question ticks last changed, from its edit history:
+    (sort time, text). Never edited, or no version changed the ticks → since it was posted. A deleted
+    version, a history that does not end at the current ticks, or an edited comment with no history
+    cannot be dated → UNKNOWN_TIME (treated as this round)."""
+    created = it.get("created") or ""
+    if not edited(it):
+        return created, "勾选自发表（%s）起没有变过" % created
+    hist = (edits or {}).get(str(it["id"]))
+    if not hist:
+        return UNKNOWN_TIME, "勾选变化时间无法确认（评论改过、读不到修改历史），按本轮内的变化对待"
+    versions = sorted(hist, key=lambda v: v.get("at") or "")
+    if any(v.get("deleted") or not isinstance(v.get("body"), str) for v in versions):
+        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待"
+    states = [tick_lines(v["body"]) for v in versions]
+    if states[-1] != tick_lines(it.get("body") or ""):
+        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史和现在的正文对不上），按本轮内的变化对待"
+    for i in range(len(states) - 1, 0, -1):
+        if states[i] != states[i - 1]:
+            v = versions[i]
+            return v["at"], "勾选最后变化 %s，由 @%s 改的" % (v["at"], v.get("editor") or "（账号未知）")
+    return created, "勾选自发表（%s）起没有变过" % created
 
 
 def build(data):
     seen, content, flow, answers = [], [], [], []
+    edits = data.get("edits") or {}
     for it in data.get("items", []):
         src, iid, role, body = it["src"], int(it["id"]), it["role"], it.get("body") or ""
         if role in ("maintainer", "bot"):
@@ -163,7 +207,9 @@ def build(data):
             if ticks:
                 key = "t%d" % iid
                 seen.append((key, fp("ticks", iid, "\n".join(ticks))))
-                content.append((key, {"src": "ticks", "id": iid, "role": "loop", "body": "\n".join(ticks)}))
+                at, note = tick_change(it, edits)
+                content.append((key, {"src": "ticks", "id": iid, "role": "loop", "body": "\n".join(ticks),
+                                      "created": at, "tick_note": note}))
             flow.append(("f%d" % iid, fp("flow", iid, untick(body)), it))
     flow_fp = fp("flow-set", ",".join("%s:%s" % (k, f) for k, f, _ in flow))
     return seen, content, flow, flow_fp, item_fp(data), answers
@@ -192,8 +238,7 @@ def show(key, it):
     head = "### %s ｜ %s ｜ %s ｜ 编号 %s" % (key, src, who, it["id"])
     if it.get("state"):
         head += " ｜ %s" % it["state"]
-    if it["src"] != "ticks":
-        head += " ｜ " + when(it)
+    head += " ｜ " + (it["tick_note"] if it["src"] == "ticks" else when(it))
     return head + "\n" + (it.get("body") or "") + "\n"
 
 
@@ -210,7 +255,11 @@ def cmd_snapshot(data):
     desc = "状态 %s ｜ 标签 %s" % (st.get("state"), ", ".join(st.get("labels") or []) or "（无）")
     if st.get("head"):
         desc += " ｜ 最新提交 %s ｜ 目标分支 %s" % (st["head"], st.get("base"))
-    out += [desc, "", "## 正文", data.get("body") or "", ""]
+    if "open_prs" in st:
+        desc += " ｜ 关联的打开 PR %s" % (", ".join("#%d" % n for n in st["open_prs"]) or "（无）")
+    out.append(desc)
+    out.append(holding_line(data))
+    out += ["", "## 正文", data.get("body") or "", ""]
     out.append("## 人的反馈（维护者 / 外部需求机器人，按发表时间从早到晚；外部账号的内容不在这里）")
     out += [show(k, it) for k, it in by_time(content)] or ["（没有）"]
     out.append("## 流程记录（loop 账号的评论，答复记录除外；按时间从早到晚）")
@@ -231,6 +280,22 @@ def cmd_snapshot(data):
     else:
         out.append("（没有）")
     sys.stdout.write("\n".join(out) + "\n")
+    return 0
+
+
+def holding_line(data):
+    """Not fingerprinted: whether this dispatch still holds the item (the dispatch label is on it)."""
+    return "holding " + ("yes" if data.get("holding") else "no")
+
+
+def tick_ids(data):
+    """Loop conversation comments whose ticks need their edit history read: they carry question ticks
+    and were edited. Answer records are left out, exactly as build() leaves them out."""
+    for it in data.get("items", []):
+        body = it.get("body") or ""
+        if it["role"] == "loop" and it["src"] == "conversation" and not is_answer(body) \
+                and tick_lines(body) and edited(it):
+            print(int(it["id"]))
     return 0
 
 
@@ -258,6 +323,7 @@ def cmd_compare(data, mark):
     lines = []
 
     def verdict(v, reason):
+        lines.insert(0, holding_line(data))
         lines.insert(0, "reason " + reason)
         lines.insert(0, "verdict " + v)
 
@@ -307,8 +373,8 @@ def cmd_compare(data, mark):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("snapshot", "compare") or (argv[1] == "compare" and len(argv) != 3):
-        sys.stderr.write("usage: feedback_fingerprint.py snapshot | compare <record file>\n")
+    if len(argv) < 2 or argv[1] not in ("snapshot", "compare", "tick-ids") or (argv[1] == "compare" and len(argv) != 3):
+        sys.stderr.write("usage: feedback_fingerprint.py snapshot | tick-ids | compare <record file>\n")
         return 2
     try:
         data = json.load(sys.stdin)
@@ -319,11 +385,16 @@ def main(argv):
             if it.get("src") not in SRC_KEY or not isinstance(it.get("id"), int) \
                     or it.get("role") not in ("maintainer", "bot", "loop") or not isinstance(it.get("body"), str):
                 raise ValueError("item")
+        if not isinstance(data.get("edits", {}), dict) or not isinstance(data["item"].get("labels"), list) \
+                or not isinstance(data["item"].get("open_prs", []), list):
+            raise ValueError("shape")
     except (ValueError, KeyError):
         sys.stdout.write("unreadable bad-input\n")
         return 3
     if argv[1] == "snapshot":
         return cmd_snapshot(data)
+    if argv[1] == "tick-ids":
+        return tick_ids(data)
     try:
         with open(argv[2], encoding="utf-8") as f:
             mark = f.read()

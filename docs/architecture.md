@@ -119,7 +119,7 @@ When a human only asks a question on an issue or PR, the agent answers in that t
 
 <details><summary>Details: what "nothing changed" means</summary>
 
-The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` from one read of the item: content fingerprints of every piece of human feedback (maintainers and the requester bot; outside accounts do not count), the ticked options, the item itself (description, open / closed, labels other than the flow labels, a PR's head commit and base branch), the loop account's flow comments, and the step to continue. On hand-back the same command compares: all equal → that step, done once (the skipped conflict handling then happens as usual); new or edited feedback → treated as this round's input; a changed item, deleted feedback, a missing or changed step record, changed flow comments, an old or broken record, or an incomplete read → the agent asks for 「继续」.
+The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` from one read of the item: content fingerprints of every piece of human feedback (maintainers and the requester bot; outside accounts do not count), the ticked options, the item itself (description, open / closed, labels other than the flow labels, a PR's head commit and base branch, an issue's open PRs), the loop account's flow comments, and the step to continue. On hand-back the same command compares: all equal → that step, done once (the skipped conflict handling then happens as usual); new or edited feedback → treated as this round's input; a changed item, deleted feedback, a missing or changed step record, changed flow comments, an old or broken record, or an incomplete read → the agent asks for 「继续」.
 
 </details>
 

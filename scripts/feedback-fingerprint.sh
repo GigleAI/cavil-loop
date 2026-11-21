@@ -42,28 +42,52 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 unreadable() { echo "unreadable $1"; exit 3; }
 
-# each read: every page, one compact record per line (the filter runs per page)
+# each read: every page, one compact record per line (the filter runs per page). Raw fields are checked
+# before anything is derived from them: a missing `labels` must never read as "no labels"
 gh api "repos/$REPO/issues/$NUM" \
-    --jq '{body: (.body // ""), pr: (.pull_request != null), state, labels: [.labels[]?.name]}' \
+    --jq '{body: (.body // ""), pr: (.pull_request != null), state, labels}' \
     > "$TMP/issue" 2>/dev/null || unreadable read-item
-jq -e 'type == "object" and (.body | type) == "string" and (.state | type) == "string" and (.state | length) > 0
-       and (.labels | type) == "array" and all(.labels[]; type == "string" and length > 0)' \
+jq -e 'type == "object" and (.body | type) == "string" and (.state == "open" or .state == "closed")
+       and (.labels | type) == "array"
+       and all(.labels[]; type == "object" and (.name | type) == "string" and (.name | length) > 0)' \
     "$TMP/issue" >/dev/null 2>&1 || unreadable read-item
+jq -c '.labels |= map(.name)' "$TMP/issue" > "$TMP/issue.n" && mv "$TMP/issue.n" "$TMP/issue" || unreadable read-item
 IS_PR=$(jq -r '.pr' "$TMP/issue")
 echo '{}' > "$TMP/pr"
 if [ "$IS_PR" = true ]; then
     gh api "repos/$REPO/pulls/$NUM" --jq '{head: .head.sha, base: .base.ref}' > "$TMP/pr" 2>/dev/null || unreadable read-pr
     jq -e '(.head | type) == "string" and (.head | length) > 0 and (.base | type) == "string" and (.base | length) > 0' \
         "$TMP/pr" >/dev/null 2>&1 || unreadable read-pr
+else
+    # an issue: its open PRs decide where a question-only answer leaves it (pending/PR vs pending/human),
+    # so they are part of the item. The same work-number rule as session naming (pr_work_num_local):
+    # branch name first, then the body's Closes / Fixes / Resolves / Refs #N
+    gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+        --jq '.[] | {number, head: .head.ref, body: (.body // "")}' > "$TMP/pulls" 2>/dev/null || unreadable read-open-prs
+    jq -se 'all(.[]; (.number | type) == "number" and (.head | type) == "string" and (.body | type) == "string")' \
+        "$TMP/pulls" >/dev/null 2>&1 || unreadable read-open-prs
+    : > "$TMP/linked"
+    n_pulls=$(jq -s 'length' "$TMP/pulls") || unreadable read-open-prs
+    for ((i = 0; i < n_pulls; i++)); do
+        pr_n=$(jq -rs --argjson i "$i" '.[$i].number' "$TMP/pulls") || unreadable read-open-prs
+        pr_head=$(jq -rs --argjson i "$i" '.[$i].head' "$TMP/pulls") || unreadable read-open-prs
+        pr_link=$(jq -rs --argjson i "$i" '.[$i].body' "$TMP/pulls" | pr_body_linked_issue)
+        [ "$(pr_work_num_local "$pr_n" "$pr_head" "$pr_link")" != "$NUM" ] || echo "$pr_n" >> "$TMP/linked"
+    done
+    jq -Rn '{open_prs: ([inputs | tonumber] | sort)}' < "$TMP/linked" > "$TMP/pr" || unreadable read-open-prs
 fi
+# does this dispatch still hold the item? Checked on its own (the pre-send compare needs it), never part
+# of the resume fingerprint — the daemon flips flow labels at every dispatch
+HOLDING=$(jq -r --arg d "$LABEL_AGENT_DOING" 'if (.labels | index($d)) != null then "yes" else "no" end' "$TMP/issue") \
+    || unreadable read-item
 # the item's own labels minus the flow labels (the daemon flips those at every dispatch)
 ci_report_flow_labels | jq -Rn '[inputs]' > "$TMP/flow" || unreadable flow-labels
-jq -s '.[0] as $i | .[1] as $p | .[2] as $f
-       | {body: $i.body, item: ({state: $i.state, labels: ($i.labels - $f | sort)} + $p)}' \
+jq -s --arg h "$HOLDING" '.[0] as $i | .[1] as $p | .[2] as $f
+       | {body: $i.body, holding: ($h == "yes"), item: ({state: $i.state, labels: ($i.labels - $f | sort)} + $p)}' \
     "$TMP/issue" "$TMP/pr" "$TMP/flow" > "$TMP/item" || unreadable assemble
 
 gh api --paginate "repos/$REPO/issues/$NUM/comments" \
-    --jq '.[] | {src: "conversation", id, login: .user.login, type: .user.type, body, created: .created_at, updated: .updated_at}' \
+    --jq '.[] | {src: "conversation", id, node: .node_id, login: .user.login, type: .user.type, body, created: .created_at, updated: .updated_at}' \
     > "$TMP/items" 2>/dev/null || unreadable read-conversation
 if [ "$IS_PR" = true ]; then
     gh api --paginate "repos/$REPO/pulls/$NUM/comments" \
@@ -78,7 +102,9 @@ fi
 # left out above). Anything missing is "cannot read" — never filtered out as an outside account
 jq -se 'all(.[]; (.id | type) == "number" and (.login | type) == "string" and (.login | length) > 0
                and (.type | type) == "string" and (.type | length) > 0
-               and ((.body // "") | type) == "string" and (.created | type) == "string")' \
+               and ((.body // "") | type) == "string" and (.created | type) == "string"
+               and (.src != "conversation" or ((.node | type) == "string" and (.node | length) > 0
+                                               and (.updated | type) == "string")))' \
     "$TMP/items" >/dev/null 2>&1 || unreadable incomplete-record
 
 # who wrote what: the same judgement the outside-content guard uses (outsider_role → repo_maintainer_check).
@@ -99,6 +125,38 @@ jq -s --slurpfile r "$TMP/rolemap" --slurpfile it "$TMP/item" '
                        | {src, id, role, body: (.body // ""), created} + (if .updated then {updated} else {} end)
                          + (if .state then {state} else {} end) ]}' \
     "$TMP/items" > "$TMP/input" || unreadable assemble
+
+# when did each question's ticks last change, and who changed them: a loop comment's edit history
+# (GraphQL userContentEdits, every page, newest first; each version carries its full text). Read only for
+# loop comments that carry question ticks and were edited at all; an unreadable history is "cannot read"
+EDITS_QUERY='query($id: ID!, $after: String) { node(id: $id) { ... on IssueComment {
+  userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt deletedAt diff editor { login } } } } } }'
+echo '{}' > "$TMP/edits"
+python3 "$SCRIPT_DIR/feedback_fingerprint.py" tick-ids < "$TMP/input" > "$TMP/tick-ids" || unreadable assemble
+while read -r cid; do
+    [[ "$cid" =~ ^[0-9]+$ ]] || unreadable assemble
+    node=$(jq -r --argjson id "$cid" 'select(.src == "conversation" and .id == $id) | .node' "$TMP/items" | head -1)
+    [ -n "$node" ] || unreadable "edit-history:$cid"
+    after="" hist='[]'
+    while :; do
+        args=(api graphql -f query="$EDITS_QUERY" -f id="$node")
+        [ -z "$after" ] || args+=(-f after="$after")
+        gh "${args[@]}" > "$TMP/page" 2>/dev/null || unreadable "edit-history:$cid"
+        jq -e '.data.node.userContentEdits | (.nodes | type) == "array" and (.pageInfo.hasNextPage | type) == "boolean"
+               and all(.nodes[]; (.editedAt | type) == "string" and ((.diff | type) == "string" or .diff == null))' \
+            "$TMP/page" >/dev/null 2>&1 || unreadable "edit-history:$cid"
+        hist=$(printf '%s\n' "$hist" | jq -c --slurpfile p "$TMP/page" '. + [$p[0].data.node.userContentEdits.nodes[]
+                 | {at: .editedAt, deleted: (.deletedAt != null), body: .diff, editor: (.editor.login // null)}]') \
+            || unreadable "edit-history:$cid"
+        [ "$(jq -r '.data.node.userContentEdits.pageInfo.hasNextPage' "$TMP/page")" = true ] || break
+        after=$(jq -r '.data.node.userContentEdits.pageInfo.endCursor // ""' "$TMP/page")
+        [ -n "$after" ] || unreadable "edit-history:$cid"
+    done
+    printf '%s\n' "$hist" | jq -c --slurpfile e "$TMP/edits" --arg id "$cid" '. as $h | $e[0] + {($id): $h}' \
+        > "$TMP/edits.n" && mv "$TMP/edits.n" "$TMP/edits" || unreadable assemble
+done < "$TMP/tick-ids"
+jq -c --slurpfile e "$TMP/edits" '. + {edits: $e[0]}' "$TMP/input" > "$TMP/input.n" && mv "$TMP/input.n" "$TMP/input" \
+    || unreadable assemble
 
 if [ "$MODE" = snapshot ]; then
     python3 "$SCRIPT_DIR/feedback_fingerprint.py" snapshot < "$TMP/input"

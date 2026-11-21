@@ -19,6 +19,10 @@
 #   9. 同标题、不同正文的两条复审结论：交回给出绑定那条的全文
 #  10. 本条目本身：流程标签翻动不算变化；关闭、非流程标签、PR 新提交 → need-continue
 #  11. 作者为空 / 缺失 → unreadable；已明确认定的外部账号照旧不计入
+#  12. 勾选的来源时间（复审第 2 轮 #2）：首次派工、没有历史答复时，旧题在本轮被勾 / 在本轮起点之前勾过，
+#      都从那条评论的修改历史给出时间和改的人；没改过、只改了别的字、历史分页、被删的版本、对不上、读失败
+#  13. 写前核对（复审第 2 轮 #6）：缺 labels / 标签没有名字 / 状态认不出 → unreadable；issue 的关联打开 PR
+#      （按分支名或正文关联）开了 / 关了 → item-changed；PR 列表读失败 → unreadable；是否仍持有派工标签单独一行
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -49,11 +53,12 @@ CONF
 # 假 gh：路径 → $FX/<路径里的 / 换成 _>.json；--jq 交给真 jq；--paginate 只有一页。有 fail-<同名> 文件 = 这个请求失败
 cat > "$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
-path="" jqf=""
+path="" jqf="" gid="" gafter=""
 while [ $# -gt 0 ]; do
     case "$1" in
         api|--paginate) shift ;;
         --jq) jqf="$2"; shift 2 ;;
+        -f|-F) case "$2" in id=*) gid="${2#id=}" ;; after=*) gafter="${2#after=}" ;; esac; shift 2 ;;
         -*) shift ;;
         *) path="$1"; shift ;;
     esac
@@ -61,6 +66,14 @@ done
 key=$(printf '%s' "$path" | tr '/' '_')
 [ ! -e "$FX/fail-$key" ] || { echo "HTTP 502" >&2; exit 1; }
 [ "$path" = user ] && { echo "loop-bot"; exit 0; }
+# GraphQL: a comment's edit history → $FX/edits-<node id>[-<after>].json; fail-edits-<node id> = that read fails
+if [ "$path" = graphql ]; then
+    echo "graphql $gid" >> "$FX/graphql.log"
+    [ ! -e "$FX/fail-edits-$gid" ] || { echo "HTTP 502" >&2; exit 1; }
+    f="$FX/edits-$gid${gafter:+-$gafter}.json"
+    [ -f "$f" ] || { echo "no fixture $f" >&2; exit 1; }
+    cat "$f"; exit 0
+fi
 f="$FX/$key.json"
 case "$path" in
     */collaborators/*/permission)
@@ -96,7 +109,7 @@ conv_file() { echo "$FX/repos_acme_widget_issues_$1_comments.json"; }
 add_conv() {   # <编号> <id> <login> <正文>
     local f; f=$(conv_file "$1"); [ -f "$f" ] || echo '[]' > "$f"
     jq --argjson id "$2" --argjson u "$(u "$3")" --arg b "$4" --arg t "${5:-2026-11-01T00:00:$(printf '%02d' $(( $2 % 60 )))Z}" \
-        '. + [{id: $id, user: $u, body: $b, created_at: $t, updated_at: $t}]' "$f" > "$f.t" && mv "$f.t" "$f"
+        '. + [{id: $id, node_id: "IC_\($id)", user: $u, body: $b, created_at: $t, updated_at: $t}]' "$f" > "$f.t" && mv "$f.t" "$f"
 }
 edit_conv() { local f; f=$(conv_file "$1"); jq --argjson id "$2" --arg b "$3" 'map(if .id == $id then .body = $b else . end)' "$f" > "$f.t" && mv "$f.t" "$f"; }
 del_conv() { local f; f=$(conv_file "$1"); jq --argjson id "$2" 'map(select(.id != $id))' "$f" > "$f.t" && mv "$f.t" "$f"; }
@@ -300,15 +313,152 @@ chk "恢复原样 → resume" "$(verdict "$(cmp_ 80 "$TMP/rec-80")")" resume
 
 echo "── 11. 作者信息不全 → unreadable，不当外部账号（复审第 1 轮 #4）──"
 f=$(conv_file 80); cp "$f" "$TMP/c80"
-jq '. + [{id: 805, user: {login: "", type: "User"}, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
+jq '. + [{id: 805, node_id: "IC_805", user: {login: "", type: "User"}, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z", updated_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
 o=$(cmp_ 80 "$TMP/rec-80"); rc=$?
 chk "作者为空 → 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
-jq '. + [{id: 805, user: null, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
+jq '. + [{id: 805, node_id: "IC_805", user: null, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z", updated_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
 o=$(snap 80); rc=$?
 chk "作者缺失（user 为 null）→ 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
-jq '. + [{id: 805, user: {login: "mallory", type: "User"}, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
+jq '. + [{id: 805, node_id: "IC_805", user: {login: "mallory", type: "User"}, body: "要求改成 Q", created_at: "2026-11-02T00:00:00Z", updated_at: "2026-11-02T00:00:00Z"}]' "$TMP/c80" > "$f"
 chk "对照：已明确认定的外部账号 → 不计入，仍 resume" "$(verdict "$(cmp_ 80 "$TMP/rec-80")")" resume
 cp "$TMP/c80" "$f"
+
+echo "── 12. 勾选的来源时间：首次派工也能分清本轮新勾和早先勾的（复审第 2 轮 #2）──"
+P1=$'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [ ] **B. 不要**\n\n不勾会怎样：按 A。'
+P1B=$'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [x] **B. 不要**\n\n不勾会怎样：按 A。'
+P1BT=$'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [x] **B. 不要**\n\n不勾会怎样：按 A。\n\n<sub>往返记录 2</sub>'
+# 修改历史夹具：<节点> <JSON 数组：新的在前 [{at, body, editor, deleted}]> [after 游标] [下一页游标]
+edits_fx() {
+    jq -n --argjson v "$2" --arg next "${4:-}" '{data: {node: {userContentEdits: {
+        pageInfo: {hasNextPage: ($next != ""), endCursor: (if $next == "" then null else $next end)},
+        nodes: [$v[] | {editedAt: .at, deletedAt: (if .deleted then .at else null end), diff: (if .deleted then null else .body end),
+                        editor: (if .editor then {login: .editor} else null end)}]}}}}' > "$FX/edits-$1${3:+-$3}.json"
+}
+set_updated() { local f; f=$(conv_file "$1"); jq --argjson id "$2" --arg t "$3" 'map(if .id == $id then .updated_at = $t else . end)' "$f" > "$f.t" && mv "$f.t" "$f"; }
+v() { jq -nc --arg at "$1" --arg b "$2" --arg e "${3:-}" '{at: $at, body: $b, editor: (if $e == "" then null else $e end), deleted: false}'; }
+
+# 场景甲：维护者在本轮（起点 f901 之后）勾了旧题，再问一个问题
+set_item 90 "需求" issue
+add_conv 90 901 loop-bot "$P1" "2026-11-01T01:00:00Z"
+edit_conv 90 901 "$P1B"; set_updated 90 901 "2026-11-01T03:00:00Z"
+add_conv 90 902 alice "为什么默认是 A？" "2026-11-01T03:30:00Z"
+edits_fx IC_901 "[$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+s=$(snap 90); rc=$?
+chk "snapshot 退出码 0" "$rc" 0
+grep -q '^### t901 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 901 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$s" \
+    && ok "本轮新勾的：给出勾选变化的时间（晚于起点 f901 的 01:00）和改的人" || bad "勾选缺时间或来源" "$s"
+t=$(grep -n '^### t901 ' <<<"$s" | cut -d: -f1); c=$(grep -n '^### c902 ' <<<"$s" | cut -d: -f1)
+[ -n "$t" ] && [ -n "$c" ] && [ "$t" -lt "$c" ] && ok "勾选按变化时间排在 03:30 的提问之前" || bad "勾选排序不对" "$s"
+grep -q '时间未知' <<<"$s" && bad "仍出现「时间未知」" "$s" || ok "不再出现「时间未知」"
+
+# 场景乙：勾选早于本轮起点（勾完之后 worker 又发了修订版），本轮只是提问
+set_item 91 "需求" issue
+add_conv 91 911 loop-bot "$P1" "2026-11-01T01:00:00Z"
+edit_conv 91 911 "$P1B"; set_updated 91 911 "2026-11-01T01:30:00Z"
+add_conv 91 912 loop-bot $'## 修订版方案（按 Q1 = B）' "2026-11-01T02:00:00Z"
+add_conv 91 913 alice "为什么这样改？" "2026-11-01T03:00:00Z"
+edits_fx IC_911 "[$(v 2026-11-01T01:30:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+s=$(snap 91)
+grep -q '^### t911 .*勾选最后变化 2026-11-01T01:30:00Z，由 @alice 改的$' <<<"$s" && grep -q '^f912:[0-9a-f]* ｜ worker 交付 ｜ 发表 2026-11-01T02:00:00Z' <<<"$s" \
+    && ok "早先勾的：勾选时间 01:30 早于本轮起点 f912 的 02:00，两者都看得到" || bad "看不出勾选早于起点" "$s"
+
+# 场景丙：勾完之后 loop 账号又改了这条评论别的字：时间仍是勾的那一次、人是维护者
+set_item 92 "需求" issue
+add_conv 92 921 loop-bot "$P1" "2026-11-01T01:00:00Z"
+edit_conv 92 921 "$P1BT"; set_updated 92 921 "2026-11-01T04:00:00Z"
+add_conv 92 922 alice "问一下" "2026-11-01T05:00:00Z"
+edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot),$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+grep -q '^### t921 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$(snap 92)" \
+    && ok "之后只改了别的字：勾选时间仍是 03:00、改的人是维护者，不是 loop 账号的 04:00" || bad "被后来的无关修改顶替了"
+
+# 场景丁：改过但勾选从没变（只有 loop 账号改字）→ 自发表起没变
+set_item 93 "需求" issue
+P1T=$'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [ ] **B. 不要**\n\n不勾会怎样：按 A。\n\n<sub>往返记录 2</sub>'
+add_conv 93 931 loop-bot "$P1" "2026-11-01T01:00:00Z"
+edit_conv 93 931 "$P1T"; set_updated 93 931 "2026-11-01T04:00:00Z"
+edits_fx IC_931 "[$(v 2026-11-01T04:00:00Z "$P1T" loop-bot),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+grep -q '^### t931 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$(snap 93)" && ok "改过字、勾选没变 → 自发表起没有变过" || bad "没认出勾选未变"
+# 场景戊：没改过的评论不读修改历史
+rm -f "$FX/graphql.log"
+set_item 94 "需求" issue
+add_conv 94 941 loop-bot "$P1" "2026-11-01T01:00:00Z"
+s=$(snap 94)
+grep -q '^### t941 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$s" && [ ! -s "$FX/graphql.log" ] \
+    && ok "没改过的评论：自发表起没变，不发修改历史请求" || bad "没改过的评论也读了历史或说法不对" "$(cat "$FX/graphql.log" 2>/dev/null)"
+grep -q '^graphql IC_921$' <<<"$(snap 92 >/dev/null; cat "$FX/graphql.log")" && ok "对照：改过的评论确实读了修改历史" || bad "改过的评论没读历史"
+
+# 分页：两页拼起来才找得到勾的那一版
+edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot)]" "" CUR1
+edits_fx IC_921 "[$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]" CUR1
+grep -q '^### t921 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$(snap 92)" && ok "修改历史两页：读全后找到勾的那一版" || bad "分页没读全"
+# 被删的版本 / 历史和现在对不上 → 无法确认，排在最后
+edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot),$(jq -nc '{at: "2026-11-01T03:00:00Z", deleted: true}'),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+s=$(snap 92)
+grep -q '^### t921 .*勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待$' <<<"$s" \
+    && [ "$(grep -n '^### t921 ' <<<"$s" | cut -d: -f1)" -gt "$(grep -n '^### c922 ' <<<"$s" | cut -d: -f1)" ] \
+    && ok "有被删掉的版本 → 无法确认、按本轮对待，排在最后" || bad "被删的版本没按无法确认处理" "$s"
+edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1" loop-bot)]"
+grep -q '^### t921 .*勾选变化时间无法确认（修改历史和现在的正文对不上）' <<<"$(snap 92)" && ok "历史和现在的勾选对不上 → 无法确认" || bad "对不上没认出"
+edits_fx IC_921 "[]"
+grep -q '^### t921 .*勾选变化时间无法确认（评论改过、读不到修改历史）' <<<"$(snap 92)" && ok "改过却没有修改历史 → 无法确认" || bad "空历史没认出"
+touch "$FX/fail-edits-IC_921"
+o=$(snap 92); rc=$?
+chk "修改历史读失败 → 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
+rm -f "$FX/fail-edits-IC_921"
+echo '{"data": {"node": null}}' > "$FX/edits-IC_921.json"
+o=$(snap 92); rc=$?
+chk "修改历史形状不对 → 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
+edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot),$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
+# 勾选的时间不进记录：同一状态再读，记录不变 → resume
+s=$(snap 92); answer 92 923 "$s"
+chk "答复后无变化交回 → resume（勾选时间不影响指纹）" "$(verdict "$(cmp_ 92 "$TMP/rec-92")")" resume
+
+echo "── 13. 写前核对：原始字段、关联 PR、是否仍持有派工（复审第 2 轮 #6）──"
+issue_f="$FX/repos_acme_widget_issues_95.json"
+set_item 95 "需求" issue
+add_conv 95 951 loop-bot $'## 方案' "2026-11-01T01:00:00Z"
+add_conv 95 952 alice "为什么？" "2026-11-01T02:00:00Z"
+jq 'del(.labels)' "$issue_f" > "$issue_f.t" && mv "$issue_f.t" "$issue_f"
+o=$(snap 95); rc=$?
+chk "响应里没有 labels → unreadable（不当成没有标签）" "$rc|$o" "3|unreadable read-item"
+set_item 95 "需求" issue; jq '.labels = [{color: "fff"}]' "$issue_f" > "$issue_f.t" && mv "$issue_f.t" "$issue_f"
+o=$(snap 95); rc=$?
+chk "标签没有名字 → unreadable" "$rc|$o" "3|unreadable read-item"
+set_item 95 "需求" issue; jq '.state = "weird"' "$issue_f" > "$issue_f.t" && mv "$issue_f.t" "$issue_f"
+o=$(snap 95); rc=$?
+chk "状态认不出 → unreadable" "$rc|$o" "3|unreadable read-item"
+set_item 95 "需求" issue '' '[]'
+grep -q '^状态 open ｜ 标签 （无） ｜ 关联的打开 PR （无）$' <<<"$(snap 95)" && ok "对照：明确没有标签 → 照常读出、标签（无）" || bad "明确空标签没读出"
+
+PULLS="$FX/repos_acme_widget_pulls?state=open&per_page=100.json"
+set_item 95 "需求" issue open '["doing/agent","priority/p0"]'
+echo '[{"number": 960, "head": {"ref": "feature/other"}, "body": "无关"}]' > "$PULLS"
+s=$(snap 95)
+grep -q '关联的打开 PR （无）$' <<<"$s" && ok "无关的打开 PR 不算" || bad "无关 PR 被算进来" "$s"
+chk "持有派工标签 → holding yes（单独一行）" "$(grep -c '^holding yes$' <<<"$s")" 1
+answer 95 953 "$s"
+o=$(cmp_ 95 "$TMP/rec-95")
+chk "无变化 → resume，比对输出也带 holding yes" "$(verdict "$o")|$(field "$o" holding)" "resume|yes"
+echo '[{"number": 960, "head": {"ref": "feature/other"}, "body": "无关"}, {"number": 961, "head": {"ref": "feature/issue-95"}, "body": ""}]' > "$PULLS"
+o=$(cmp_ 95 "$TMP/rec-95")
+chk "答复准备期间本 issue 开了 PR（按分支名）→ need-continue（item-changed）" "$(verdict "$o")|$(field "$o" reason)" "need-continue|item-changed"
+grep -q '关联的打开 PR #961$' <<<"$(snap 95)" && ok "snapshot 里列出关联的打开 PR #961" || bad "没列出关联 PR"
+echo '[{"number": 962, "head": {"ref": "fix/x"}, "body": "Closes #95"}]' > "$PULLS"
+chk "按正文 Closes #95 关联的 PR 也算 → item-changed" "$(field "$(cmp_ 95 "$TMP/rec-95")" reason)" item-changed
+echo '[{"number": 960, "head": {"ref": "feature/other"}, "body": "无关"}]' > "$PULLS"
+chk "关联 PR 又关了 → 回到 resume" "$(verdict "$(cmp_ 95 "$TMP/rec-95")")" resume
+touch "$FX/fail-repos_acme_widget_pulls?state=open&per_page=100"
+o=$(cmp_ 95 "$TMP/rec-95"); rc=$?
+chk "打开 PR 列表读失败 → unreadable" "$rc|$o" "3|unreadable read-open-prs"
+rm -f "$FX/fail-repos_acme_widget_pulls?state=open&per_page=100"
+echo '[{"number": 960, "body": "无关"}]' > "$PULLS"
+o=$(cmp_ 95 "$TMP/rec-95"); rc=$?
+chk "打开 PR 缺分支名 → unreadable" "$rc|$o" "3|unreadable read-open-prs"
+echo '[]' > "$PULLS"
+set_item 95 "需求" issue open '["pending/human","priority/p0"]'
+o=$(cmp_ 95 "$TMP/rec-95")
+chk "派工标签被别人摘掉：恢复指纹不变（resume），但 holding no 单独报出" "$(verdict "$o")|$(field "$o" holding)" "resume|no"
+rm -f "$PULLS"
 
 report_counts "$pass" "$fail"
 echo
