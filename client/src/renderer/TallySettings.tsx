@@ -7,8 +7,8 @@
 
 import { InfoTip } from './InfoTip';
 import { useMemo } from 'react';
-import type { AppState, BoardData, TallyColor, TallyDef } from '../shared/types';
-import { effectiveTallies, TALLY_COLORS, tallyFlowText, TALLY_MAX } from '../shared/tallies';
+import type { AppState, BoardData, TallyColor, TallyDef, TallyFold } from '../shared/types';
+import { effectiveTallies, TALLY_COLORS, TALLY_FOLDS, tallyFlowText, tallyFold, TALLY_MAX } from '../shared/tallies';
 import { flowCondition, tallyLabels, tallyName, viewBarTallies, type TallyLabels } from '../data/flowTally';
 import { handBackFor } from '../shared/repoLabels';
 import { TallyBar } from './TallyBar';
@@ -19,6 +19,9 @@ import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
 import { parseFilter } from '../shared/filter';
 import { api } from './api';
+
+/** GitHub#634: the three ways a number folds, as Settings names them */
+export const foldText = (f: TallyFold): string => ({ never: t('不折叠'), zero: t('为 0 时折叠'), always: t('总是折叠') })[f];
 
 const colorText = (c: TallyColor): string => ({ green: t('绿'), blue: t('蓝'), orange: t('橙'), red: t('红'), purple: t('紫'), gray: t('灰'), ring: t('空心圆') })[c];
 
@@ -87,6 +90,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
             <th>{t('名称')}</th>
             <th>{t('数什么')}</th>
             <th>{t('颜色')}</th>
+            <th>{t('折叠')}</th>
             <th />
           </tr>
         </thead>
@@ -186,6 +190,21 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
                     ))}
                   </span>
                 </td>
+                <td className="tally-fold-cell">
+                  {/* GitHub#634: a row without its own setting shows (and keeps) its default until changed here */}
+                  <select
+                    data-testid="tally-fold"
+                    aria-label={t('折叠')}
+                    value={tallyFold(d)}
+                    onChange={(e) => e.target.value !== tallyFold(d) && patch(i, { ...d, fold: e.target.value as TallyFold })}
+                  >
+                    {TALLY_FOLDS.map((f) => (
+                      <option key={f} value={f}>
+                        {foldText(f)}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td className="tally-moves">
                   <button className="ghost" data-testid="tally-up" title={t('上移')} aria-label={t('上移')} disabled={i === 0} onClick={() => move(i, -1)}>
                     ↑
@@ -202,7 +221,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="muted small" data-testid="tally-empty">
+              <td colSpan={5} className="muted small" data-testid="tally-empty">
                 {t('一个都没有：顶栏不显示计数')}
               </td>
             </tr>
@@ -230,6 +249,8 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
           a: <code>is:open label:"bug"</code>,
           b: <code>is:pr author:@me</code>,
         })}
+        <br />
+        {t('「折叠」决定一个数摊在顶栏上，还是收进顶栏末尾的「⋯ 折叠 N」里（点开照样能看、能点）：不折叠 = 一直摊开；为 0 时折叠 = 数到 0 个时收起，不为 0 时摊开；总是折叠 = 一直收着。默认「运行中」不折叠、「稍后处理」总是折叠，其余为 0 时折叠。')}
         <br />
         {t('一个数都不留 = 顶栏不显示计数。系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。')}
       </SettingsMore>
