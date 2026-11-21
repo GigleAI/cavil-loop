@@ -1228,7 +1228,7 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
-- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页，只用这一处的价
+- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页（只在调度器起的轮询里做；手动直接跑 `agent-poll.sh` 试跑不下载），只用这一处的价
   （不拿 LiteLLM 对照；缺价补抓仍要两边一致），五项单价（input、output、缓存读、5 分钟和 1 小时缓存写入）齐全、
   通过合理性校验的模型存进
   `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`；下次下载的时刻写在旁边的 `latest-prices.next`（下载失败过

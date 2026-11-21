@@ -1531,7 +1531,8 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
 - **The Claude footer takes the latest published prices; it does not solve prices from logs**
-  (GitHub#606). Once a day the daemon downloads the official Claude pricing page and uses only
+  (GitHub#606). Once a day the daemon downloads the official Claude pricing page (only in polls the scheduler
+  started; a hand-run `agent-poll.sh` does not download) and uses only
   its prices (no cross-check against LiteLLM; the gap-fill for missing models still needs both to
   agree), keeping every model whose five prices (input, output, cache read, 5-minute and 1-hour
   cache write) are all there and pass the sanity checks, in

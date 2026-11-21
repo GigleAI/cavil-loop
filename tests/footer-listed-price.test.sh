@@ -244,6 +244,9 @@ tick() {
       # shellcheck source=../scripts/_lib.sh
       source "$REPO_DIR/scripts/_lib.sh"
       exec 2>&8 8>&-
+      # 调度器经 poll-entry.sh 起的轮询（agent-poll.sh 收下 CAVIL_SCHEDULED_POLL 后设的就是它）；
+      # TICK_SCHEDULED= 模拟手动 / 测试直接起的轮询
+      POLL_SCHEDULED="${TICK_SCHEDULED-1}"
       price_fetch_tick ) 2>/dev/null
 }
 rm -rf "$CACHE"; mkdir -p "$CACHE"; echo $(( $(date +%s) + 3600 )) > "$NEXT"; : > "$PLOG"
@@ -253,6 +256,14 @@ echo 0 > "$NEXT"; rm -f "$SB/state/poll.log"
 tick
 chk "到时间 → 启动，抓到的结果带前缀进 poll.log" \
     "$([ -s "$LATEST" ] && echo fetched) $(grep -c '\[lptest\].*抓价：已更新 Claude 最新价目' "$SB/state/poll.log")" "fetched 1"
+# PR #612 CI：每日刷新只在调度器起的轮询里做——直接起 agent-poll.sh 的测试 / 手动试跑不联网抓最新价
+rm -rf "$CACHE"; mkdir -p "$CACHE"; TICK_SCHEDULED= tick
+chk "不是调度器起的轮询：到时间也不抓最新价、不写任何缓存文件" "$(ls -A "$CACHE" | tr '\n' ' ')" ""
+mkdir -p "$CACHE/unpriced"; : > "$CACHE/unpriced/codex--gpt-test-9"; TICK_SCHEDULED= tick
+chk "不是调度器起的轮询、有缺价标记：只补缺（标记那个模型补上），不抓最新价" \
+    "$(jq -r '.codex["gpt-test-9"].prices.in' "$CACHE/fetched-prices.json" 2>/dev/null) $([ -e "$LATEST" ] && echo latest || echo no-latest) $([ -e "$NEXT" ] && echo next || echo no-next)" "2.0 no-latest no-next"
+rm -rf "$CACHE"; mkdir -p "$CACHE"; tick
+chk "调度器起的轮询：下次时刻文件不在 → 当作到时间，照抓" "$([ -s "$LATEST" ] && echo fetched || echo idle)" "fetched"
 rm -f "$NEXT" "$LATEST"; tick
 chk "下次时刻文件不在 → 当作到时间" "$([ -s "$LATEST" ] && echo fetched || echo idle)" "fetched"
 rm -f "$LATEST"; echo 0 > "$NEXT"; PRICE_AUTO_FETCH=off tick

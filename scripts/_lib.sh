@@ -10280,13 +10280,18 @@ price_fetch_tick() {
     local cache="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop"
     local dir="$cache/unpriced"
     # 两件事各自到时才启动脚本：有缺价标记；或到了每天抓一次 Claude 最新价的时刻（GitHub#606）。
-    # 都没到就只读一个文件，不碰网络
+    # 都没到就只读一个文件，不碰网络。每日刷新只在调度器经 poll-entry.sh 起的轮询里做（POLL_SCHEDULED=1，
+    # 同 config_notice_tick）：手动试跑、worker 会话里跑、直接起 agent-poll.sh 的测试都不联网抓最新价
+    # （PR #612：否则每个直接跑轮询的测试都会去下官方价目页，还在临时 HOME 下多写缓存文件）
+    local latest=off
+    [ "${POLL_SCHEDULED:-}" = 1 ] && latest=on
     if ! { [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; }; then
+        [ "$latest" = on ] || return 0
         price_latest_not_due "$cache/latest-prices.next" && return 0
     fi
     # cavil-loop.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
     # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。
-    local line v envs=()
+    local line v envs=("PRICE_FETCH_LATEST=$latest")
     for v in PRICE_FETCH_ANTHROPIC_URL PRICE_FETCH_OPENAI_URL PRICE_FETCH_LITELLM_URL \
              PRICE_FETCH_COOLDOWN_SECS PRICE_FETCH_TIMEOUT; do
         [ -n "${!v:-}" ] && envs+=("$v=${!v}")

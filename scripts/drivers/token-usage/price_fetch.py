@@ -496,7 +496,10 @@ def main():
         return
     now = time.time()
     markers = pending_markers()
-    want_latest = latest_due(now)
+    # daemon 只在调度器起的轮询里让本脚本做每日刷新（_lib.sh 的 price_fetch_tick 传 PRICE_FETCH_LATEST=off
+    # 表示「这一轮只补缺」）；手动直接跑本脚本照旧两件都做
+    latest_on = os.environ.get("PRICE_FETCH_LATEST", "on") not in ("0", "false", "no", "off")
+    want_latest = latest_on and latest_due(now)
     if not markers and not want_latest:
         return
     os.makedirs(price_solve.cache_dir(), exist_ok=True)
@@ -518,7 +521,7 @@ def main():
     except OSError:
         return
     # 拿到锁之后再看一次：别的项目的 daemon 可能刚抓完
-    if latest_due(now):
+    if latest_on and latest_due(now):
         # 每日刷新出了意外也只影响它自己，不挡住下面的补缺
         try:
             refresh_latest(now)
