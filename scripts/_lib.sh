@@ -7939,6 +7939,7 @@ lessons_for_prompt() {   # <经验文件>
 #     再被渲染。
 #   · 任何失败都不挡派工。
 ENABLE_CONCURRENT_WORK_HINT="${ENABLE_CONCURRENT_WORK_HINT:-}"
+ENABLE_ROUND_LOG="${ENABLE_ROUND_LOG:-}"   # 往返记录（GitHub#610）：空 = 关，判定只在 round_log_enabled
 CONCURRENT_WORK_MAX_BYTES="${CONCURRENT_WORK_MAX_BYTES:-6000}"
 CONCURRENT_WORK_BYTES_DEFAULT=6000
 CONCURRENT_WORK_BYTES_MIN=2000
@@ -8768,7 +8769,7 @@ compose_prompt_template() {
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
     review_md="$STATE_DIR/prompt-remote-review-md-${name}.md"
     review_md_state=$(review_md_read "$review_md")
-    if [ "$name" != review ] && [ "$review_md_state" = absent ] && [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
+    if [ "$name" != review ] && [ "$review_md_state" = absent ] && [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled && ! round_log_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -8805,6 +8806,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 往返记录（GitHub#610）：开关开着才加，整份替换了模板的项目也收得到；关着什么都不加。
+        if round_log_enabled; then
+            printf '\n\n---\n\n'
+            round_log_prompt_section "$name"
         fi
         # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
         if heavy_enabled; then
@@ -10208,6 +10214,49 @@ REQUESTER_BOT_NOTIFY_SCRIPT="$_LIB_DIR/notify-requester-bot.sh"
 _MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/notify-requester-bot.sh"
 [ ! -f "$_MANAGED_REQUESTER_BOT" ] || REQUESTER_BOT_NOTIFY_SCRIPT="$_MANAGED_REQUESTER_BOT"
 REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
+
+# ── 往返记录（GitHub#610）：agent 之间的来回写进同一条评论 ──
+# 开关只在这里判定（以后改成默认打开：把下面空值的那一支改成「开」即可，其余代码不用动）。
+# 记录格式、拆单元、去重只在 round_log.py；写入 / 读取命令是 round-log.sh，同 footer 走长期入口。
+round_log_enabled() {
+    case "$(printf '%s' "${ENABLE_ROUND_LOG:-}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+ROUND_LOG_SCRIPT="$_LIB_DIR/round-log.sh"
+_MANAGED_ROUND_LOG="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/round-log.sh"
+[ ! -f "$_MANAGED_ROUND_LOG" ] || ROUND_LOG_SCRIPT="$_MANAGED_ROUND_LOG"
+ROUND_LOG_CMD="bash '$ROUND_LOG_SCRIPT' --config '$CONFIG_FILE'"
+
+round_log_prompt_section() {   # <模板名>
+    local f="$SKILL_DIR/prompts/round-log.md" text read_cmd
+    [ -s "$f" ] || { log "⚠️ 往返记录说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    text="$(cat "$f")"
+    if autopilot_section_active && outsider_guard_on; then
+        read_cmd="$OUTSIDER_READ_CMD <编号>"
+    else
+        read_cmd="$ROUND_LOG_CMD show <编号>"
+    fi
+    text="${text//@@ROUND_LOG_CMD@@/"$ROUND_LOG_CMD"}"
+    text="${text//@@READ_CMD@@/"$read_cmd"}"
+    text="${text//@@LABEL_PENDING_REVIEW@@/"${LABEL_PENDING_REVIEW:-（本项目没开复审标签）}"}"
+    text="${text//@@LABEL_PENDING_AGENT@@/"$LABEL_PENDING_AGENT_DEFAULT"}"
+    text="${text//@@LABEL_PENDING_MERGE@@/"$LABEL_PENDING_MERGE"}"
+    text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+    printf '%s\n' "$text"
+}
+
+# 受保护读取（outsider_scan 刚跑完、OS_RES 在手）之后接一段往返记录视图：只拿本条自己的对话评论，
+# 文字用受保护读取展示出来的那一份（外人内容已剥离 / 隐藏），只认 loop 账号写的记录。
+round_log_view_from_scan() {   # [--all] → 打印视图，返回 round_log.py 的退出码
+    local all=false src=issue-comment
+    [ "${1:-}" != --all ] || all=true
+    [ "${OS_TARGET_KIND:-issue}" != pr ] || src=pr-comment
+    printf '%s' "$OS_RES" | jq -c --arg src "$src" --argjson all "$all" \
+        '{comments: [.view[]? | select(.src == $src) | {id, author, trusted, at, url, body}], all: $all}' \
+        | python3 "$_LIB_DIR/round_log.py" show
+}
 
 # ── 托管条目读正文和评论的命令（GitHub#391，写进「外部账号的内容」规则段）──
 # 同上走长期入口；配置路径由这里给定

@@ -31,6 +31,7 @@ case "$0" in
     */conflict-check.sh) relative="scripts/conflict-check.sh" ;;  # 交 PR 前的冲突检查（GitHub#599）
     */pr-feedback.sh) relative="scripts/pr-feedback.sh" ;;        # 读 PR 全部评论（GitHub#599）
     */feedback-fingerprint.sh) relative="scripts/feedback-fingerprint.sh" ;;   # 纯提问的答复记录（GitHub#614）
+    */round-log.sh) relative="scripts/round-log.sh" ;;            # 往返记录的写入 / 读取（GitHub#610）
     */publish-asset.sh) relative="scripts/publish-asset.sh" ;;    # 评论配图 / 周报的发布命令（GitHub#613）
     */notify-relay.sh) relative="scripts/notify-relay.sh" ;;   # 同上的早期入口名，转发到新脚本
     *) echo "unknown managed entrypoint: $0" >&2; exit 2 ;;
