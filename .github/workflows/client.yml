@@ -101,6 +101,9 @@ jobs:
   #   quick    whether the quick tests run: everywhere except a publishing run with nothing to build
   #   sign     true when the update packages are signed with the maintainer's key (a release, or a
   #            publishing run); every other run uses a throw-away key
+  #   dev_version  on a publishing run, the development version it builds and tries to publish
+  #            (scripts/dev-version.mjs, the same number every build job stamps): the failure report
+  #            checks exactly this version, never "the newest one" (GitHub#628 review round 3)
   mode:
     name: client build mode
     runs-on: ubuntu-latest
@@ -113,6 +116,7 @@ jobs:
       publish: ${{ steps.mode.outputs.publish }}
       build: ${{ steps.build.outputs.build }}
       quick: ${{ steps.build.outputs.quick }}
+      dev_version: ${{ steps.build.outputs.dev_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -192,10 +196,16 @@ jobs:
           elif [ "$EVENT" != push ] && [ "$EVENT" != pull_request ]; then
             build=true
           fi
-          echo "build the Macs and Windows: $build; quick tests: $quick"
+          dev_version=""
+          if [ "$PUBLISH" = true ]; then
+            dev_version="$(node scripts/dev-version.mjs)"
+            [ -n "$dev_version" ] || { echo "::error::no development version for $SHA"; exit 1; }
+          fi
+          echo "build the Macs and Windows: $build; quick tests: $quick; development version: ${dev_version:-none}"
           {
             echo "build=$build"
             echo "quick=$quick"
+            echo "dev_version=$dev_version"
           } >> "$GITHUB_OUTPUT"
 
   # The quick tests run as three parallel jobs (GitHub#495: one after another they took ~10 minutes):
@@ -785,10 +795,37 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.mode.outputs.sha }}
+      # What this run tried to publish, and where that version stands now — read-only, by the same rule
+      # as the publish step (scripts/dev-release.mjs --check). No version (the mode job failed) is said
+      # as such; never "the newest build" instead (GitHub#628 review round 3).
+      - name: The version this run tried to publish
+        id: tried
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.mode.outputs.dev_version }}
+        run: |
+          line=""
+          rc=""
+          if [ -n "$V" ]; then
+            set +e
+            out="$(node client/scripts/dev-release.mjs --check "$V" --repo "$GITHUB_REPOSITORY" 2>&1)"
+            rc=$?
+            set -e
+            line="$(head -1 <<<"$out")"
+          fi
+          echo "version: ${V:-none}; check: ${line:-none} (exit ${rc:-none})"
+          {
+            echo "version=$V"
+            echo "check=$line"
+            echo "rc=$rc"
+          } >> "$GITHUB_OUTPUT"
       - name: Open or comment on the nightly development build issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEEDS: ${{ toJSON(needs) }}
+          CLIENT_DEV_VERSION: ${{ steps.tried.outputs.version }}
+          CLIENT_DEV_CHECK: ${{ steps.tried.outputs.check }}
+          CLIENT_DEV_CHECK_RC: ${{ steps.tried.outputs.rc }}
           EVENT: ${{ github.event_name }}
           # Must match this repo's dispatch label (LABEL_PENDING_AGENT in the daemon's config).
           DISPATCH_LABEL: ${{ vars.RELEASE_FAILURE_LABEL || 'pending/agent' }}

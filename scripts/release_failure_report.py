@@ -243,24 +243,36 @@ def release_only_line(needs, jobs):
 
 
 def client_nightly_hint(needs):
-    """The client-nightly kind only (GitHub#628): what the failure means for installed apps. Failing
-    before the publish job (tests, packaging, the size gate, the mode job) means nothing was published;
-    the publish job itself publishes first and checks and cleans up afterwards, so a failure there may
-    have left the build out, half out, or not out at all — never say "not published" then."""
+    """The client-nightly kind only (GitHub#628): what the failure means for installed apps, about the
+    exact version this run tried to publish (CLIENT_DEV_VERSION, from the mode job) and where that
+    version stands now (CLIENT_DEV_CHECK / _RC: `dev-release.mjs --check`, the publish step's own rule;
+    0 complete, 1 not complete or not there, anything else cannot tell). Never about "the newest
+    build": a run that failed before creating its release leaves the previous build as the newest one."""
     if KIND_NAME != "client-nightly":
         return KIND["hint"]
     res = (needs.get("dev-release") or {}).get("result") if isinstance(needs.get("dev-release"), dict) else None
-    if res == "failure":
-        return ("失败在发布那一步：这一版可能已经出现在 Releases 页、可能只发了一半，也可能没发出去。"
-                "核对最新的 `client/v…-dev.N` 预发布是否带齐并上传完这六个文件：Apple 芯片的 `-arm64.dmg`、"
-                "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"
-                "（页面上列着但大小为 0 的不算）；也可以在本仓库的 `client/` 目录跑只读核对 "
-                "`node scripts/dev-release.mjs --check <版本号>`，用的是和发布、每晚判断同一条规则，"
-                "打印 COMPLETE 才算带齐。没带齐的，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾"
-                "「发开发版」）会重新构建并补齐；已经带齐发出的，下一晚不再重发，这次红只是发布之后的核对或清理没做完。")
-    return ("这一晚没有发出开发版（失败在发布之前：测试、打包或体积检查）：装着开发版的客户端收不到这一晚的改动。"
-            "修好后，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）会再出；之后没有新的"
-            "客户端改动也会照常重试，因为这些改动还没有发出去过。")
+    where = ("失败在发布那一步。" if res == "failure"
+             else "失败在发布之前（测试、打包或体积检查），发布那一步没有运行。")
+    v = os.environ.get("CLIENT_DEV_VERSION", "").strip()
+    line = os.environ.get("CLIENT_DEV_CHECK", "").strip()
+    rc = os.environ.get("CLIENT_DEV_CHECK_RC", "").strip()
+    retry = ("下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）会重新构建；"
+             "之后没有新的客户端改动也会照常重试，因为这一版还没有完整发出。")
+    manual = (f"在本仓库的 `client/` 目录跑只读核对 `node scripts/dev-release.mjs --check {v or '<版本号>'}`"
+              "（和发布、每晚判断同一条规则）：要带齐并上传完六个文件——Apple 芯片的 `-arm64.dmg`、"
+              "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"
+              "（页面上列着但大小为 0 的不算）。")
+    if not v:
+        return (where + "没取到这次要发的版本号（构建模式那一步没给出），不能判断发出了什么；"
+                "打包没有完成就不会发出新版，装着开发版的 App 仍是上一版。" + manual)
+    if rc == "0":
+        return (where + f"这次要发的 `{v}` 已完整发出（核对结果：{line or 'COMPLETE'}），装着开发版的 App 能收到它；"
+                "红的是发布之后的读回或旧版清理，下一晚不会重发这一版。")
+    if rc == "1":
+        return (where + f"这次要发的 `{v}` 没有完整发出（核对结果：{line or 'INCOMPLETE'}）："
+                "装着开发版的 App 收不到这一版，仍是上一版。" + retry)
+    return (where + f"读不出这次要发的 `{v}` 现在的状态（核对结果：{line or '没有结果'}），"
+            "不能判断是否已发出。" + manual)
 
 
 def client_release_line(needs):

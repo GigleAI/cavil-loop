@@ -10,8 +10,10 @@
 //   latest published development build (exact tag shape, marked pre-release, not a draft; highest
 //   version first — scripts/dev-release.mjs `devReleases`) and the full commit it was built from:
 //     none, or no full commit recorded                      → build ("nothing to compare with")
-//     not carrying every file a build carries (`devFiles`,
-//     judged by the publish step's own `decide`: not "done") → build (the publish step fills it in)
+//     not carrying every file a build carries, uploaded
+//     (`devFiles` + `buildState`, the publish step's own
+//     verdict): incomplete, or a file it cannot judge      → build (the publish step fills it in, or
+//                                                            refuses while a file cannot be judged)
 //     the same commit as this run's                         → no build, unless forced
 //     another commit, those paths differ (git diff)         → build
 //     another commit, those paths identical                 → no build, unless forced
@@ -27,7 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { decide, devFiles, devReleases, readReleases } from './dev-release.mjs';
+import { buildState, devFiles, devReleases, readReleases } from './dev-release.mjs';
 
 /** What starts the Client workflow (its `paths` filter), as pathspecs from the repository root. */
 export const CLIENT_INPUTS = ['client', '.github/workflows/client.yml', '.github/actions/client-setup'];
@@ -37,21 +39,17 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /**
  * The newest published development build, the commit it was made from, and whether it carries every
- * file (the publish step's own judgement: `decide` says "done" — anything else, including a list it
- * cannot judge, is "not complete").
- * → { tag, sha, complete } (sha null = no full commit recorded) | null (there is none)
+ * file, uploaded (the publish step's own verdict, `buildState`).
+ * → { tag, sha, complete, state } (sha null = no full commit recorded; state complete / incomplete /
+ *   unknown) | null (there is none)
  */
 export function latestBuild(list) {
   const top = devReleases(list)[0];
   if (!top) return null;
-  const sha = list.find((r) => r?.tag_name === top.tag && r?.draft === false)?.target_commitish;
-  let complete = false;
-  try {
-    complete = decide(list, top.version, devFiles(top.version)).action === 'done';
-  } catch {
-    complete = false;
-  }
-  return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete };
+  const rel = list.find((r) => r?.tag_name === top.tag && r?.draft === false);
+  const sha = rel?.target_commitish;
+  const state = buildState(rel, devFiles(top.version)).state;
+  return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete: state === 'complete', state };
 }
 
 /**
@@ -76,7 +74,11 @@ export function plan({ latest, head, force, changed }) {
   if (latest === 'unreadable') return { build: true, why: '读不到发版列表，不知道上一个开发版是哪个提交：照常构建' };
   if (!latest) return { build: true, why: '还没有发布过开发版：照常构建' };
   if (!latest.sha) return { build: true, why: `上一个开发版 ${latest.tag} 没记下完整的提交号：照常构建` };
-  if (latest.complete !== true) return { build: true, why: `上一个开发版 ${latest.tag} 没带齐文件（Mac、Windows 的包或更新清单缺了）：照常构建，发布那一步把它补齐或发新版` };
+  if (latest.complete !== true) {
+    return latest.state === 'unknown'
+      ? { build: true, why: `读不出上一个开发版 ${latest.tag} 的文件是否已上传完成：照常构建，发布那一步再核对，仍读不出就什么都不写` }
+      : { build: true, why: `上一个开发版 ${latest.tag} 没带齐文件（Mac、Windows 的包、签名或更新清单缺了或没上传完）：照常构建，发布那一步把它补齐或发新版` };
+  }
   const last = `上一个开发版 ${latest.tag}（${latest.sha.slice(0, 7)}）`;
   if (latest.sha === head) {
     return force

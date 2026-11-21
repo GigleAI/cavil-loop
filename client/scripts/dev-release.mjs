@@ -68,28 +68,42 @@ export function devFiles(version) {
 }
 
 /**
- * The names of a release's assets that are really there (GitHub#628 review round 2): uploaded and not
- * empty. A failed upload can leave an asset of the right name in state `starter` with size 0; an asset
- * with no state or size is not known to be there either. One rule for "is this build complete" — the
- * publish decision, the read-back after publishing, the nightly plan and `--check`.
+ * Whether a release carries `files` (GitHub#628 review rounds 2–3): one verdict, used by every place
+ * that reads a build's files — the publish decision, the read-back after publishing, the nightly plan
+ * and `--check`. Per file:
+ *   ok       one asset of that name, state "uploaded", size > 0
+ *   bad      no asset of that name, or one GitHub says is not uploaded (a failed upload leaves a
+ *            same-named placeholder in state "starter", size 0), or uploaded with size 0
+ *   unknown  listed, but without a state or size this can judge (missing fields, two of one name, …)
+ * The build: unknown when any file is unknown (it is not safe to decide either way), else incomplete
+ * when any file is bad, else complete.
+ * → { state: 'complete' | 'incomplete' | 'unknown', bad: [names], unknown: [names] }
  */
-export function usableNames(release) {
-  return new Set(
-    (release?.assets ?? [])
-      .filter((a) => typeof a?.name === 'string' && a?.state === 'uploaded' && Number.isSafeInteger(a?.size) && a.size > 0)
-      .map((a) => a.name),
-  );
-}
-
-/** The files of `files` a release does not carry usably (missing, a placeholder, empty, state unknown). */
-export function missingFiles(release, files) {
-  const names = usableNames(release);
-  return files.filter((f) => !names.has(f));
+export function buildState(release, files) {
+  const by = new Map();
+  for (const a of release?.assets ?? []) if (typeof a?.name === 'string') by.set(a.name, [...(by.get(a.name) ?? []), a]);
+  const bad = [];
+  const unknown = [];
+  for (const f of files) {
+    const as = by.get(f) ?? [];
+    if (!as.length) {
+      bad.push(f);
+      continue;
+    }
+    const a = as[0];
+    if (as.length > 1) unknown.push(f);
+    else if (a.state === 'uploaded' && Number.isSafeInteger(a.size) && a.size > 0) continue;
+    else if ((typeof a.state === 'string' && a.state !== '' && a.state !== 'uploaded') || (a.state === 'uploaded' && a.size === 0)) bad.push(f);
+    else unknown.push(f);
+  }
+  return { state: unknown.length ? 'unknown' : bad.length ? 'incomplete' : 'complete', bad, unknown };
 }
 
 /**
  * What to do for `version`, given the release list and the files it must carry.
- * → { action: 'skip', why } | { action: 'done' } | { action: 'create' } | { action: 'fill', draft }
+ * → { action: 'skip', why } | { action: 'done' } | { action: 'create' }
+ *   | { action: 'fill', draft } (draft false = it is public now: hide it first, see main)
+ *   | { action: 'unknown', files } (some file's state cannot be judged: write nothing)
  */
 export function decide(list, version, files) {
   const mine = parseDev(version);
@@ -101,8 +115,10 @@ export function decide(list, version, files) {
   if (same.length > 1) throw new Error(`${tag} 有 ${same.length} 个发版，不知道该用哪个`);
   if (!same.length) return { action: 'create' };
   const r = same[0];
-  if (r.draft === false && r.prerelease === true && !missingFiles(r, files).length) return { action: 'done' };
   if (r.draft === false && r.prerelease !== true) throw new Error(`${tag} 已经发布、但不是预发布：不碰它，请人看一下`);
+  const s = buildState(r, files);
+  if (s.state === 'unknown') return { action: 'unknown', files: s.unknown };
+  if (r.draft === false && s.state === 'complete') return { action: 'done' };
   return { action: 'fill', draft: r.draft !== false };
 }
 
@@ -379,8 +395,14 @@ function main() {
   const missing = devFiles(version).filter((f) => !files.includes(f));
   if (missing.length) throw new Error(`${dir} 里缺 ${version} 的：${missing.join(', ')}（有：${files.join(', ') || '（空）'}）`);
 
-  const before = readReleases(repo);
-  const d = decide(before, version, files);
+  let before = readReleases(repo);
+  let d = decide(before, version, files);
+  if (d.action === 'unknown') {
+    // GitHub may still be settling an upload: read once more; still unknown → leave everything as it is
+    before = readReleases(repo);
+    d = decide(before, version, files);
+    if (d.action === 'unknown') throw new Error(`${tag} 的 ${d.files.join(', ')} 读不出是否已上传完成：什么都不写、不替换，现有文件原样保留`);
+  }
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
   } else if (d.action === 'done') {
@@ -405,11 +427,22 @@ function main() {
         rmSync(bodyDir, { recursive: true, force: true });
       }
     } else {
+      // Filling in an existing release replaces every file from this build: the files depend on each
+      // other (latest.json carries each package's signature), so a file from this build next to one
+      // from an earlier build would not verify. A release apps can see is hidden first (a draft is
+      // invisible to them): a failure part-way leaves a hidden draft — the apps keep the previous
+      // build — never a public release with a missing or mismatched file. The next run fills it in.
+      if (!d.draft) {
+        gh(['release', 'edit', tag, '--repo', repo, '--draft=true']);
+        const hidden = readReleases(repo).filter((r) => r?.tag_name === tag);
+        if (hidden.length !== 1 || hidden[0].draft !== true) throw new Error(`${tag} 没能先改回草稿：不替换它的文件`);
+        console.log(`${tag} 已先改回草稿（装着的 App 暂时看不到它），换上这次构建的全部文件后再发布`);
+      }
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
     }
     gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease', '--latest=false']);
     const after = readReleases(repo).filter((r) => r?.tag_name === tag);
-    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || missingFiles(after[0], files).length) {
+    if (after.length !== 1 || after[0].draft !== false || after[0].prerelease !== true || buildState(after[0], files).state !== 'complete') {
       throw new Error(`发完再读，${tag} 不是「已发布的预发布、带齐 ${files.length} 个文件」`);
     }
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
@@ -434,7 +467,8 @@ function main() {
 /**
  * Read-only: is the development build `version` published complete, by the same rule the publish step
  * and the nightly plan use? Prints COMPLETE / INCOMPLETE (with what is missing) / UNKNOWN.
- * Exit 0 complete, 1 not complete (or not published), 2 the list cannot be read.
+ * Exit 0 complete, 1 not complete (or not published), 2 cannot tell (the list cannot be read, or a
+ * file's upload state cannot be judged).
  *   node scripts/dev-release.mjs --check 0.5.3-dev.640 [--repo GigleAI/cavil-loop]
  */
 function check(a) {
@@ -456,13 +490,17 @@ function check(a) {
     process.exit(1);
   }
   const r = same[0];
-  const miss = missingFiles(r, devFiles(version));
-  const state = r.draft !== false ? '还是草稿' : r.prerelease !== true ? '不是预发布' : '';
-  if (!miss.length && !state) {
+  const s = buildState(r, devFiles(version));
+  if (s.state === 'unknown') {
+    console.log(`UNKNOWN ${tag}：读不出是否已上传完成：${s.unknown.join(', ')}`);
+    process.exit(2);
+  }
+  const state = r.draft !== false ? '还是草稿（装着的 App 看不到）' : r.prerelease !== true ? '不是预发布' : '';
+  if (s.state === 'complete' && !state) {
     console.log(`COMPLETE ${tag}：${devFiles(version).length} 个文件都已上传完成`);
     return;
   }
-  console.log(`INCOMPLETE ${tag}：${[state, miss.length ? `缺或没上传完：${miss.join(', ')}` : ''].filter(Boolean).join('；')}`);
+  console.log(`INCOMPLETE ${tag}：${[state, s.bad.length ? `缺或没上传完：${s.bad.join(', ')}` : ''].filter(Boolean).join('；')}`);
   process.exit(1);
 }
 

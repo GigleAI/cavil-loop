@@ -88,6 +88,9 @@ if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
 if (a[0] === 'api') {
   st.lists = (st.lists ?? 0) + 1;
   if (fail('list') || fail('list#' + st.lists)) die('HTTP 502: Bad Gateway');
+  // the list GitHub shows can change between two reads (an upload settling): { "<n>": { tag, assets } }
+  const after = st.afterList?.[st.lists];
+  if (after) find(after.tag).assets = after.assets;
   const pages = [];
   for (let i = 0; i < st.releases.length; i += 100) pages.push(st.releases.slice(i, i + 100));
   if (!pages.length) pages.push([]);
@@ -115,6 +118,12 @@ if (a[1] === 'upload') {
   const r = find(tag);
   if (!r) die('release not found');
   if (fail('upload')) die('HTTP 500');
+  // --clobber deletes the same-named asset first; an upload that then fails leaves it gone
+  if (fail('upload-partial')) {
+    const first = files(a.slice(3))[0];
+    r.assets = r.assets.filter((x) => x.name !== first);
+    die('upload failed: connection reset');
+  }
   // --clobber: a file of the same name is replaced, whatever state it was in
   for (const n of files(a.slice(3))) {
     r.assets = r.assets.filter((x) => x.name !== n);
@@ -129,7 +138,8 @@ if (a[1] === 'edit') {
   if (fail('edit')) die('HTTP 500');
   // GitHub answering "ok" to an edit that did not take
   if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; st.tags.push(tag); }
+  if (a.includes('--draft=false')) { r.draft = false; if (!st.tags.includes(tag)) st.tags.push(tag); }
+  if (a.includes('--draft=true')) r.draft = true;
   if (a.includes('--prerelease')) r.prerelease = true;
   save();
   process.exit(0);
@@ -228,19 +238,84 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(p.stdout.trim().split('\n').sort()).toEqual(files('0.5.1-dev.387').sort());
   });
 
-  it('a placeholder asset (state starter, size 0) or one with no state counts as missing: filled in, not "already published" (review round 2 #8)', () => {
+  // One batch of inputs for the three review rounds on asset completeness (GitHub#628 rounds 1–3): the
+  // version being published is already a public pre-release, with one file in each shape.
+  describe('the same version already public with one file in some state (review rounds 1–3)', () => {
     const v = '0.5.1-dev.387';
+    const tag = `client/v${v}`;
     const exe = `Cavil-Loop-${v}-windows-x64.exe`;
-    for (const bad of [{ name: exe, state: 'starter', size: 0 }, { name: exe }, { name: exe, state: 'uploaded', size: 0 }]) {
-      const w = world([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), bad] })]);
+    const withExe = (x: object | null) => devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), ...(x ? [{ name: exe, ...x }] : [])] });
+    const writeArgs = (calls: string[][]) => calls.filter((c) => c[0] === 'release').map((c) => [c[1], ...c.filter((x) => x.startsWith('--draft'))].join(' '));
+    const shapes: [string, object | null][] = [
+      ['missing (round 1)', null],
+      ['a failed-upload placeholder: state starter, size 0 (round 2)', { state: 'starter', size: 0 }],
+      ['uploaded with size 0', { state: 'uploaded', size: 0 }],
+    ];
+    it.each(shapes)('%s → hidden first, every file of this build put in, published again', (_, x) => {
+      const w = world([withExe(x), devRel('0.5.1-dev.380')]);
       w.build(v);
       const r = w.run(v);
       expect(r.code, r.out).toBe(0);
       const s = w.read();
-      expect(writes(s.calls), JSON.stringify(bad)).toEqual([`upload client/v${v}`, `edit client/v${v}`]);
-      expect(published(s, `client/v${v}`)?.assets.find((x) => x.name === exe)).toMatchObject({ state: 'uploaded', size: 10 });
-    }
-    // a create that left a placeholder: the run fails, and the next one fills it in
+      expect(writeArgs(s.calls)).toEqual(['edit --draft=true', 'upload', 'edit --draft=false']);
+      // every one of the six files from this build, not only the broken one
+      const up = s.calls.find((c) => c[0] === 'release' && c[1] === 'upload')!;
+      expect(up).toEqual(expect.arrayContaining([...files(v).filter((f) => f !== 'latest.json'), '--clobber']));
+      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+      expect(published(s, tag)?.assets.every((a) => a.state === 'uploaded' && (a.size ?? 0) > 0)).toBe(true);
+      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
+    });
+    it.each([
+      ['no state at all (round 3)', { size: 10 }],
+      ['no size', { state: 'uploaded' }],
+      ['an empty state', { state: '', size: 10 }],
+    ])('%s → read again; still unknown → nothing written, the public files left exactly as they are', (_, x) => {
+      const w = world([withExe(x)]);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('读不出是否已上传完成');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(s.calls.filter((c) => c[0] === 'api').length).toBeGreaterThanOrEqual(2); // it did read again
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it('unknown on the first read, uploaded on the second → already complete, nothing written', () => {
+      const w = world([withExe({ size: 10 })], [], { afterList: { 2: { tag, assets: files(v).map(asset) } } });
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual([]);
+    });
+    it('complete → nothing written', () => {
+      const w = world([devRel(v)]);
+      w.build(v);
+      expect(w.run(v).code).toBe(0);
+      expect(writeArgs(w.read().calls)).toEqual([]);
+    });
+    it('the upload fails part-way after it was hidden → still hidden (apps keep the previous build), never public with a file missing; the next run finishes it', () => {
+      const w = world([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')], ['upload-partial']);
+      w.build(v);
+      expect(w.run(v).code).toBe(1);
+      const s = w.read();
+      expect(s.releases.find((r) => r.tag_name === tag)?.draft).toBe(true);
+      expect(published(s, tag)).toBeUndefined();
+      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
+      const again = w.run(v);
+      expect(again.code, again.out).toBe(0);
+      expect(published(w.read(), tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
+    });
+    it('hiding it did not take (GitHub answered ok, still public) → no file replaced', () => {
+      const w = world([withExe({ state: 'starter', size: 0 })], ['edit-noop']);
+      w.build(v);
+      expect(w.run(v).code).toBe(1);
+      expect(writeArgs(w.read().calls)).toEqual(['edit --draft=true']);
+    });
+  });
+
+  it('a create that left a placeholder: the run fails, and the next one fills it in (it was never public)', () => {
+    const v = '0.5.1-dev.387';
     const w = world([pub('client/v0.5.0')], ['create-starter']);
     w.build(v);
     expect(w.run(v).code).toBe(1);
@@ -266,6 +341,9 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(starter.out).toContain(exe);
     expect(chk([pub('client/v0.5.0')]).code).toBe(1);
     expect(chk([devRel(v, { draft: true })]).out).toContain('还是草稿');
+    const noState = chk([devRel(v, { assets: [...files(v).filter((f) => f !== exe).map(asset), { name: exe, size: 10 }] })]);
+    expect(noState.code).toBe(2);
+    expect(noState.out).toContain(`UNKNOWN client/v${v}`);
     const unreadable = chk([devRel(v)], ['list']);
     expect(unreadable.code).toBe(2);
     expect(unreadable.out).toContain('UNKNOWN');

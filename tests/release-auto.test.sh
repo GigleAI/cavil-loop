@@ -744,6 +744,7 @@ run_report() {
         GITHUB_RUN_ATTEMPT=1 GITHUB_SERVER_URL=https://github.com GITHUB_SHA=feedfacefeedfacefeedfacefeedfacefeedface \
         GITHUB_REF_NAME="${RF_REF_NAME:-main}" EVENT="${RF_EVENT:-schedule}" GATE_ONLY="${RF_GATE_ONLY:-}" \
         NEEDS="$needs" SUMMARY_DIR="${RF_SUMMARY_DIR:-}" CLIENT_DIR="${RF_CLIENT_DIR:-}" REPORT_KIND="${RF_KIND:-}" \
+        CLIENT_DEV_VERSION="${RF_DEV_V:-}" CLIENT_DEV_CHECK="${RF_DEV_CHECK:-}" CLIENT_DEV_CHECK_RC="${RF_DEV_RC:-}" \
         python3 "${RF_PY:-$REPORT_PY}" > "$TMP/rf-out" 2>&1
     RC=$?
     set -e
@@ -1381,7 +1382,7 @@ print("conc-cancel", conc["cancel-in-progress"])
 rf = cl["report-failure"]
 print("report-if", rf["if"])
 print("report-needs", sorted(lst(rf["needs"])))
-print("report-kind", [s.get("env", {}).get("REPORT_KIND") for s in rf["steps"] if s.get("env")])
+print("report-kind", [s["env"]["REPORT_KIND"] for s in rf["steps"] if (s.get("env") or {}).get("REPORT_KIND")])
 print("report-perms", sorted((rf.get("permissions") or {}).items()))
 win = [s.get("name") for s in cl["package-windows"]["steps"]]
 print("win-last", win[-1], [s.get("run") for s in cl["package-windows"]["steps"] if s.get("name") == win[-1]])
@@ -1612,6 +1613,26 @@ docrun "$(doclist 'pass')" GH_FAIL_API=1
 check "release list unreadable → UNKNOWN, exit 2 (never 'not there')" "$RC:$(grep -c '^UNKNOWN' "$TMP/c-out")" "2:1"
 check "… the check only reads" "$(grep -cE '^(release|-X)$' "$GH_ARGS" || true)" 0
 
+echo "-- the version a publishing run tries, and what checking it says (review round 3 #6)"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule FORCE=true
+check "publishing run → the development version it will build" "$RC:$(cout dev_version)" "0:$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+cbuild '[]' TAG= PUBLISH=false EVENT=workflow_dispatch
+check "a run that publishes nothing → no version" "$RC:$(cout dev_version)" "0:"
+cstep "$CLIENT_WORKFLOW" report-failure "The version this run tried to publish" > "$TMP/c-tried.sh"
+tried() {  # tried <V> <release list JSON> [VAR=…] → $RC, outputs in $TMP/c-output
+    printf '%s' "$2" > "$TMP/c-devlist.json"; local v="$1"; shift 2
+    CPATH="$TMP/c-devbin:" crun "$TMP/client-run" "$TMP/c-tried.sh" V="$v" GH_TOKEN=x "$@"
+}
+TV=0.6.1-dev.10
+tried "$TV" "$(devrel 9 "$C3")"
+check "a complete older build is the newest, this run's version never created → INCOMPLETE for this version (exit 1)" "$RC:$(cout version):$(cout rc):$(cout check | grep -c "^INCOMPLETE client/v$TV")" "0:$TV:1:1"
+tried "$TV" "$(devrel 10 "$C4")"
+check "this run's version public and complete (the clean-up failed) → COMPLETE (exit 0)" "$RC:$(cout rc):$(cout check | grep -c "^COMPLETE client/v$TV")" "0:0:1"
+tried "$TV" "$(devrel 10 "$C4")" GH_FAIL_API=1
+check "the list cannot be read → UNKNOWN (exit 2), never a verdict" "$RC:$(cout rc):$(cout check | grep -c '^UNKNOWN')" "0:2:1"
+tried "" "$(devrel 10 "$C4")"
+check "no version (the mode job failed) → no check at all" "$RC:$(cout version):$(cout check):$(cout rc)" "0:::"
+
 echo "-- a manual publish is refused off main before anything else, a client tag included (review round 1 #3)"
 git -C "$TMP/client-run" tag client/v0.6.0 "$C4" 2>/dev/null || true
 for ref in refs/tags/client/v0.6.0 refs/heads/feature/x; do
@@ -1791,6 +1812,9 @@ check "no client release this week (skipped) → nothing to report" "$RC:$(n_iss
 
 echo "-- a failed nightly development build is reported in its own issue (GitHub#628)"
 export RF_KIND=client-nightly
+# the version this run tried, and what checking it said (the workflow's "The version this run tried
+# to publish" step; tested below): here it was never created — the previous night's build is the newest
+export RF_DEV_V=0.5.3-dev.640 RF_DEV_RC=1 RF_DEV_CHECK="INCOMPLETE client/v0.5.3-dev.640：没有这个发版"
 rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app" "publish development build=skipped"
 run_report "package-windows=failure size=skipped dev-release=skipped"
 check "red night: green job, one issue, with the dispatch label" "$RC:$(n_issues):$(labels_of 1)" "0:1:pending/agent"
@@ -1801,7 +1825,9 @@ lacks "<!-- cavil-negative-controls-failure -->" "$B" "… not the negative-cont
 check "… its own title" "$(rf_q "$RF/issues.json" 'd[0]["title"]')" "客户端每晚开发版失败（自动报告）"
 has "## 客户端每晚开发版运行失败" "$B" "… heading names the nightly build"
 has "定时（每晚）" "$B" "… says how it started"
-has "这一晚没有发出开发版" "$B" "… says what it means for installed apps"
+has "失败在发布之前" "$B" "… says where it failed"
+has "这次要发的 \`0.5.3-dev.640\` 没有完整发出" "$B" "… names the version this run tried, and that it did not go out (review round 3 #6)"
+has "仍是上一版" "$B" "… what that means for installed apps"
 has "Windows installer (x64)](" "$B" "… names the failed job"
 has "「A real update of the installed app」" "$B" "… and the failed step"
 has "$RF_SHA" "$B" "… the tested commit, from the mode job"
@@ -1810,19 +1836,37 @@ lacks "### 客户端负对照" "$B" "… no negative-controls section"
 run_report "package=failure size=skipped dev-release=skipped"
 check "second red night: a comment, no new issue" "$(n_issues):$(n_comments 1)" "1:1"
 has "## 又一次客户端每晚开发版运行失败" "$(last_comment 1)" "… comment heading names the nightly build"
+echo "-- the report is about the version this run tried, by what checking it said (review round 3 #6)"
 rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
-run_report "dev-release=failure"
+RF_DEV_RC=1 RF_DEV_CHECK="INCOMPLETE client/v0.5.3-dev.640：没有这个发版" run_report "dev-release=failure"
 B="$(body_of 1)"
-has "失败在发布那一步" "$B" "the publish step failed → says so (review round 1 #6)"
-has "可能已经出现在 Releases 页" "$B" "… and that the build may already be out"
-for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows-x64.exe latest.json "node scripts/dev-release.mjs --check"; do
-    has "$f" "$B" "… names $f for the check (review round 2 #6)"
+has "失败在发布那一步" "$B" "publish step failed before its release existed (a complete older build is the newest) → says the publish step"
+has "这次要发的 \`0.5.3-dev.640\` 没有完整发出" "$B" "… and that this version did not go out — never judged by the newest build"
+has "没有这个发版" "$B" "… quoting the check"
+lacks "已完整发出" "$B" "… never 'it is out'"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+RF_DEV_RC=0 RF_DEV_CHECK="COMPLETE client/v0.5.3-dev.640：6 个文件都已上传完成" run_report "dev-release=failure"
+B="$(body_of 1)"
+has "这次要发的 \`0.5.3-dev.640\` 已完整发出" "$B" "this version public complete, the clean-up failed → says it is out"
+has "不会重发" "$B" "… and that it will not be published again"
+lacks "没有完整发出" "$B" "… not 'it did not go out'"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+RF_DEV_RC=2 RF_DEV_CHECK="UNKNOWN 读不到发版列表：HTTP 502" run_report "dev-release=failure"
+B="$(body_of 1)"
+has "读不出这次要发的 \`0.5.3-dev.640\` 现在的状态" "$B" "check could not tell → says so"
+has "node scripts/dev-release.mjs --check 0.5.3-dev.640" "$B" "… with the command for that very version"
+for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows-x64.exe latest.json; do
+    has "$f" "$B" "… names $f (review round 2 #6)"
 done
 has "大小为 0 的不算" "$B" "… and says a placeholder does not count"
-lacks "这一晚没有发出开发版" "$B" "… never 'nothing was published'"
+lacks "已完整发出" "$B" "… never 'it is out'"
+lacks "没有完整发出" "$B" "… nor 'it did not go out'"
+rf_repo; rf_jobs "client build mode=failure:Release or development build"
+RF_DEV_V= RF_DEV_RC= RF_DEV_CHECK= run_report "mode=failure test=skipped package=skipped package-windows=skipped size=skipped dev-release=skipped"
+has "没取到这次要发的版本号" "$(body_of 1)" "no version (the mode job failed) → says so, never 'the newest build'"
 rf_repo; rf_jobs "client quick tests (Linux)=failure:Both quick-test jobs passed"
 run_report "test=failure package=skipped package-windows=skipped size=skipped dev-release=skipped"
-has "这一晚没有发出开发版" "$(body_of 1)" "failed before publishing → nothing went out that night"
+has "失败在发布之前" "$(body_of 1)" "failed before publishing → says so"
 lacks "失败在发布那一步" "$(body_of 1)" "… not the publish-step sentence"
 rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app"
 run_report "package-windows=failure size=skipped dev-release=skipped"
@@ -1835,7 +1879,7 @@ rf_repo; run_report "test=cancelled package=cancelled package-windows=cancelled 
 check "cancelled night: no call at all" "$(wc -l < "$RF/calls.log")" 0
 rf_repo; run_report ""
 check "a green night: nothing to report, no write" "$RC:$(n_issues):$(writes)" "0:0:0"
-unset RF_KIND
+unset RF_KIND RF_DEV_V RF_DEV_RC RF_DEV_CHECK
 
 
 # ── negative controls (MUTATION=1): a broken copy of release.yml must turn this file red ──

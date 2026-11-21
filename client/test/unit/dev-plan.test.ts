@@ -150,6 +150,11 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
       const assets = r2.assets.map((a) => (a.name.endsWith('-windows-x64.exe') ? { name: a.name, ...bad } : a));
       expect(run(r, [{ ...r2, assets }], ['--sha', head]).build, JSON.stringify(bad)).toBe('true');
     }
+    // a file whose upload state cannot be judged: built, and said so
+    const r3 = rel(tag, head);
+    const noState = run(r, [{ ...r3, assets: r3.assets.map((a) => (a.name.endsWith('latest.json') ? { name: a.name, size: 10 } : a)) }], ['--sha', head]);
+    expect(noState.build).toBe('true');
+    expect(noState.why).toContain('读不出');
     // no assets at all (the review's example)
     expect(run(r, [rel(tag, head, { assets: [] })], ['--sha', head]).build).toBe('true');
     expect(run(r, [rel(tag, head)], ['--sha', head]).build).toBe('false');
