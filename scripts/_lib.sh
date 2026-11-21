@@ -568,18 +568,31 @@ requester_bot_wait_hold() {   # <编号>
 # 和今天机器人或人打了派工标签之后一样；机器人自己的派工标签在派工摘掉之后才到，会再派一次。
 REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""; REQUESTER_BOT_BACKFILL_FIRSTKEY=""
 # 第一次判定和写前现读比较的那份身份，两边用同一个函数从各自读到的 JSON 里取（JSON 从标准输入进，正文长度没有上限）：
-#   item：状态 + 排好序的全部标签名；pr：草稿标记、目标分支、最新提交、来源分支、来源仓库。缺字段或为空 = 失败，什么都不打印
+#   item：状态 + 排好序的全部标签名 + 作者 + 父 issue 地址 + 正文指纹；pr：草稿标记、目标分支、最新提交、来源分支、
+#   来源仓库（PR 绑哪个 issue 只由来源仓库、分支名和正文决定，三样都在里面）。缺字段或为空 = 失败，什么都不打印
 requester_bot_ident() {   # <item|pr>，标准输入：条目 / PR 的 JSON
-    jq -r --arg m "$1" '
-        if $m == "item" then
+    local j head h
+    j=$(cat)
+    if [ "$1" = item ]; then
+        # 正文决定 PR 绑哪个 issue、是不是拆分子项（拆分标记），作者和父 issue 地址也是拆分判定的输入：
+        # 记的是这些输入本身（正文记指纹），不是判出来的结果——换了判法也不会漏比
+        head=$(printf '%s' "$j" | jq -r '
             select((.state | type) == "string" and (.labels | type) == "array"
-                and all(.labels[]; (.name | type) == "string" and .name != ""))
-            | .state + ";" + ([.labels[] | .name] | sort | join(","))
-        else
+                and all(.labels[]; (.name | type) == "string" and .name != "")
+                and (.user.login | type) == "string" and .user.login != ""
+                and ((.parent_issue_url // "") | type) == "string"
+                and ((.body // "") | type) == "string")
+            | [.state, ([.labels[] | .name] | sort | join(",")), .user.login, (.parent_issue_url // "")] | join(";")' 2>/dev/null) || head=""
+        [ -n "$head" ] || return 0
+        h=$(printf '%s' "$j" | jq -j '.body // ""' 2>/dev/null | cfg_sha256) || h=""
+        [ -n "$h" ] || return 0
+        printf '%s;body=%s' "$head" "$h"
+    else
+        printf '%s' "$j" | jq -r '
             select((.draft | type) == "boolean"
                 and all([.base.ref, .head.sha, .head.ref, .head.repo.full_name][]; (type == "string") and . != ""))
-            | [(.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")
-        end' 2>/dev/null
+            | [(.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")' 2>/dev/null
+    fi
 }
 # greedy / 只挂托管标签的 issue：调用方第一次判定（快照上的条目 + 它判出的授权 + 等待判断的 3）的依据。
 # 和 requester_bot_backfill_doc 里的 firstkey 同一格式；任何一项取不到就打印空串（补打函数见空即不写）
@@ -636,6 +649,7 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
             rc=0; autopilot_authorization "$n" "$ij" || rc=$?
             case "$rc" in 0) ;; 1) return 1 ;; *) REQUESTER_BOT_WAIT_REASON="$AUTOPILOT_REASON"; return 2 ;; esac
             pathdoc="$(requester_bot_auth_doc)"
+            [ -n "$pathdoc" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的父 issue 读不全"; return 2; }
             firstkey="$ik|$pk|$pathdoc|$wait" ;;
         takeover)
             autopilot_takeover_permit "$n"
@@ -647,20 +661,29 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
             firstkey="$pathdoc;$wait" ;;
         *) return 2 ;;
     esac
-    REQUESTER_BOT_BACKFILL_DOC="$kind|$n|$item|$prpart|$wait|$pathdoc"
+    # 两次现读比较的整串和第一次判定的依据用同一组字段（ik / pk 两边都在），另加只在现读里才有的合并状态
+    REQUESTER_BOT_BACKFILL_DOC="$kind|$n|$item|$prpart|$ik|$pk|$wait|$pathdoc"
     REQUESTER_BOT_BACKFILL_FIRSTKEY="$firstkey"
 }
 
 # 「该补打」要三份判定一致才写（获批方案第 14 版、验收 10）：调用方第一次判定的依据、补打函数的两次现读，
-# 三者取同一组字段逐字相等——条目状态和全部标签（普通分类标签也算）、PR 的草稿标记 / 目标分支 / 最新提交 /
-# 来源分支 / 来源仓库（requester_bot_ident，两边同一个函数）、托管授权的身份（授权所在条目、事件位置 / 时间、
-# 操作人）、托管接手判定的身份及它读到的 PR 和绑定 issue 的状态与全部标签、等待批次和答复身份。第一次判定之后
+# 三者取同一组字段逐字相等——条目状态、全部标签（普通分类标签也算）、作者、父 issue 地址、正文指纹，PR 的草稿
+# 标记 / 目标分支 / 最新提交 / 来源分支 / 来源仓库（requester_bot_ident，两边同一个函数；记判定读到的输入本身，
+# 不记判出的结果：PR 绑哪个 issue 由来源仓库、分支名和正文决定，是不是拆分子项由作者、父 issue 地址和正文决定，
+# 输入都在里面，换了判法也不会漏比）、托管授权的身份（授权所在条目、事件位置 / 时间、操作人，拆分子项再加授权
+# 判定读到的父 issue 的同一组字段）、托管接手判定的身份及它读到的 PR 和绑定 issue 的同一组字段、等待批次和答复身份。第一次判定之后
 # 任何一项变了（维护者摘掉再重打托管标签、PR 推了新提交或转成草稿、加减了任何标签、答复被原地编辑……）本轮都
 # 不写，下一轮按新状态重新判断。三条入口取依据的地方：greedy 是本轮快照里这一条（requester_bot_first_key），只挂托管标签的 issue
 # 是快照里这一条 + 调用方刚判出的授权，托管接手是接手判定第一次给出 backfill 时的身份（requester_bot_take_doc）。
 # 不用快照按 tab 拆出来的标签串：标签为空的条目会被 read 把空字段并掉、把标题当成标签——改从快照的 JSON 里取。
-requester_bot_auth_doc() {   # 用当前 AUTOPILOT_AUTH_* 拼托管授权的身份
-    printf 'auth=%s:%s:%s:%s:%s:%s' "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"
+requester_bot_auth_doc() {   # 用当前 AUTOPILOT_AUTH_* 拼托管授权的身份；拆分子项再带上授权判定读到的父 issue
+    local par=""
+    if [ -n "$SPLIT_PARENT_NUM" ]; then
+        par=$(printf '%s' "$SPLIT_PARENT_JSON" | requester_bot_ident item) || par=""
+        [ -n "$par" ] || return 0   # 父 issue 读不全：什么都不打印，调用方按判不了处理
+    fi
+    printf 'auth=%s:%s:%s:%s:%s:%s;parent=%s#%s:%s' "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR" \
+        "$SPLIT_PARENT_REPO" "$SPLIT_PARENT_NUM" "$par"
 }
 requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定的身份；PR、绑定的 issue 取不全就打印空串
     local pi pp bi=""
@@ -671,8 +694,9 @@ requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定
         bi=$(printf '%s' "$AT_IJ" | requester_bot_ident item) || bi=""
         [ -n "$bi" ] || return 0
     fi
+    local ad; ad=$(requester_bot_auth_doc); [ -n "$ad" ] || return 0
     printf 'take=%s:%s:%s:%s:%s:%s:%s;pr=%s|%s;issue=%s;%s' "$AT_MODE" "$AT_KIND" "$AT_N" "$AT_HEAD" "$AT_BASE" "$AT_REF" "$AT_REPO" \
-        "$pi" "$pp" "$bi" "$(requester_bot_auth_doc)"
+        "$pi" "$pp" "$bi" "$ad"
 }
 
 requester_bot_backfill() {   # <issue|pr> <编号> <路径> <调用方第一次判定的依据>
@@ -5001,6 +5025,7 @@ autopilot_authorization() {   # <issue 编号> <issue JSON> [<PR 编号> <PR JSO
     AUTOPILOT_REASON=""; AUTOPILOT_DENY=""; AUTOPILOT_ACTOR=""
     AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AUTH_IDX=""; AUTOPILOT_AUTH_REPO=""
     AUTOPILOT_PR_EVENTS=""; AUTOPILOT_AUTH_CANDS=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
+    SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WHY=""
     if [ -z "$num" ]; then
         autopilot_authorization_pr_only "$pr" "$pj"; return $?
     fi

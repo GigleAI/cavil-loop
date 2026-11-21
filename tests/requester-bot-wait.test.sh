@@ -514,6 +514,57 @@ Closes #7" "autopilot"
         done
     done
 
+    # 输入本身变了、判出的条目身份和标签都没变：greedy PR 正文去掉 `Closes #7`（绑定的 issue 跟着变），
+    # 托管接手的拆分子项 PR：父 issue 加了普通标签 / 子项和父 issue 解除关系。第 1 / 2 次现读前注入 → 本轮不补打，下一轮补打一次
+    for k in 1 2; do
+        fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+        mkshim 9
+        mkissue 7 "pending/PR"; mkpr 9 feature/issue-7 "做了 X。
+
+Closes #7" ""; waitid 9 8961 8962
+        mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+        echo "jq '.[\"9\"].body = \"做了 X。\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_$k"
+        tick
+        chk "greedy PR · 第 $k 次现读前正文去掉 Closes #7 → 本轮不补打" "$(backfills 9)" 0
+        chk "  到达性 · 确实读到了第 $k 次" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge "$k" ] && echo yes || echo no)" yes
+        tick
+        chk "  下一轮按新正文重判 → 补打一次" "$(backfills 9)" 1
+        for change in parent-label unlink; do
+            fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
+            mkshim 8
+            mkissue 50 "autopilot" maint; ev 50 labeled autopilot maint 8890
+            mkissue 7 "pending/PR" loop-bot
+            jset items.json '.["7"].body = "子项\n\n<!-- agent-split-from: #50 -->" | .["7"].parent_issue_url = "https://api.github.com/repos/example/ap/issues/50"'
+            mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+            ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+            mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+            case "$change" in
+                parent-label) echo "jq '.[\"50\"] += [\"kind/docs\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_$k" ;;
+                unlink)       echo "jq '.[\"7\"] |= del(.parent_issue_url)' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_$k" ;;
+            esac
+            tick
+            chk "托管拆分子项 PR · 第 $k 次现读前「$change」→ 本轮不补打" "$(backfills 8)" 0
+            chk "  到达性 · 确实读到了第 $k 次" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge "$k" ] && echo yes || echo no)" yes
+            tick
+            chk "  下一轮按新状态重判 → 补打一次" "$(backfills 8)" 1
+        done
+    done
+    # 对照：拆分子项的托管 PR 不注入变化 → 补打一次（证明上面的「不补打」来自变化，不是拆分子项本来就判不过）
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+    mkissue 50 "autopilot" maint; ev 50 labeled autopilot maint 8890
+    mkissue 7 "pending/PR" loop-bot
+    jset items.json '.["7"].body = "子项\n\n<!-- agent-split-from: #50 -->" | .["7"].parent_issue_url = "https://api.github.com/repos/example/ap/issues/50"'
+    mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+    ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+    mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+    tick
+    chk "对照 · 拆分子项的托管 PR 不注入变化 → 补打一次" "$(backfills 8)" 1
+    chk "  到达性 · 授权判定确实读了父 issue #50" "$([ "$(n_calls "$R/issues/50")" -ge 1 ] && echo yes || echo no)" yes
+
     section "【6d2】PR / 标签缺字段或为空（草稿标记 / 来源仓库读不到或为空 / 标签名为空）→ 判不了，不补打"
     for miss in draft repo repo-empty label-empty; do
         fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'

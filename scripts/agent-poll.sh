@@ -822,7 +822,8 @@ collect_autopilot_rows() {
                     2) log "托管：issue #$num 本轮不自动开工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                        continue ;;
                     # 机器人贴回了答复却没打派工标签（GitHub#619）：替它补打，下一轮明确派工
-                    3) first=$(printf '%s' "$ij" | requester_bot_first_key issue "$(requester_bot_auth_doc)" "$REQUESTER_BOT_WAIT_DOC") || first=""
+                    3) first=$(ad=$(requester_bot_auth_doc) && [ -n "$ad" ] \
+                               && printf '%s' "$ij" | requester_bot_first_key issue "$ad" "$REQUESTER_BOT_WAIT_DOC") || first=""
                        requester_bot_backfill issue "$num" autopilot-issue "$first"
                        continue ;;
                 esac
