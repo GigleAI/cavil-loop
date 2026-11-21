@@ -10,7 +10,7 @@ import { TabBar } from './TabBar';
 import { TopBar, useWindowFrame } from './TopBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { HOME, afterClose, autoCloseVerdict, stepTab, tabAt } from '../shared/tabs';
+import { HOME, afterClose, autoCloseVerdict, handOffCloseVerdict, stepTab, tabAt, type AutoCloseKind } from '../shared/tabs';
 import { NoticeArea } from './NoticeArea';
 import { OpenMenu, type OpenHow, type OpenMenuAt } from './OpenMenu';
 import type { WriteAction } from '../shared/actions';
@@ -36,6 +36,8 @@ const FLOAT = '\u0000float';
  * another item, or opened again, is another place)
  */
 type CloseOrigin = { where: 'tab'; key: string; life: number } | { where: 'float'; key: string; n: number };
+/** a place kept open with the line saying why, and what it was kept after (GitHub#633) */
+type Held = { id: string; kind: AutoCloseKind } & CloseOrigin;
 
 /** a shortcut that needs the board (GitHub#192): taken once by the board, then dropped */
 export type BoardRequest = { kind: 'search' | 'newIssue'; seq: number; /** GitHub#488: a failed create's 重新打开草稿 (from the notice area) */ draft?: CreateJob['draft'] };
@@ -127,6 +129,7 @@ export function App() {
     floatDraft.current = null;
     setMenu(null);
     closeOrigins.current = new Map();
+    handOffs.current = new Map();
     setHeld([]);
   }, [gen]);
   // ---- GitHub#442: the floating detail, the default way to open an item ----
@@ -148,8 +151,10 @@ export function App() {
   // ---- GitHub#447: a close made in a tab / the floating panel puts it away once GitHub took it ----
   /** the closes started from a detail of this account and not decided yet: operation id → where */
   const closeOrigins = useRef(new Map<string, CloseOrigin>());
-  /** closes that went through while their place held unsent text: the place stayed and says why */
-  const [held, setHeld] = useState<({ id: string } & CloseOrigin)[]>([]);
+  /** GitHub#633: which of those are a hand-over (交给 agent / 托管), and whether the panel held other unsent text when it was accepted */
+  const handOffs = useRef(new Map<string, { kind: Exclude<AutoCloseKind, 'close'>; dirty: boolean }>());
+  /** closes / hand-overs that went through while their place held unsent text: the place stayed and says why */
+  const [held, setHeld] = useState<Held[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
   /** `keepFocus` (GitHub#467): the keys are being typed into the window's top row, which does not go behind — leave its focus */
@@ -212,7 +217,11 @@ export function App() {
     drafts.current.delete(key);
     setHeld((h) => (h.some((x) => x.where === 'tab' && x.key === key) ? h.filter((x) => !(x.where === 'tab' && x.key === key)) : h));
     // this tab's life ends here: a close it started can no longer put anything away (the snapshot may still list the key a moment)
-    for (const [id, o] of closeOrigins.current) if (o.where === 'tab' && o.key === key) closeOrigins.current.delete(id);
+    for (const [id, o] of closeOrigins.current)
+      if (o.where === 'tab' && o.key === key) {
+        closeOrigins.current.delete(id);
+        handOffs.current.delete(id);
+      }
     tabLife.current.delete(key);
     setActive(afterClose(keysRef.current, key, frontRef.current));
     void api().closeTab(key);
@@ -230,13 +239,18 @@ export function App() {
         o.where === 'tab'
           ? { present: keysRef.current.includes(o.key) && tabLife.current.get(o.key) === o.life, dirty: draftDirty(drafts.current.get(o.key)) }
           : { present: f !== null && f.key === o.key && f.n === o.n, dirty: floatDraft.current?.key === o.key && draftDirty(floatDraft.current.draft) };
-      const v = autoCloseVerdict(ops.find((r) => r.id === id), place);
+      // GitHub#633: a hand-over is decided at acceptance, on the panel's own view of what is unsent (it knows
+      // which reply text went with the operation); a close waits for GitHub (GitHub#447)
+      const h = handOffs.current.get(id);
+      const v = h ? handOffCloseVerdict({ present: place.present, dirty: h.dirty }) : autoCloseVerdict(ops.find((r) => r.id === id), place);
       if (v === 'wait') continue;
       closeOrigins.current.delete(id);
+      handOffs.current.delete(id);
+      const kind: AutoCloseKind = h ? h.kind : 'close';
       if (v === 'close') {
         if (o.where === 'tab') closeNow(o.key);
         else closeFloatNow();
-      } else if (v === 'hold') setHeld((h) => [...h.filter((x) => x.id !== id), { id, ...o }]);
+      } else if (v === 'hold') setHeld((hs) => [...hs.filter((x) => x.id !== id), { id, kind, ...o }]);
     }
   };
   const settleRef = useRef(settleCloses);
@@ -245,10 +259,11 @@ export function App() {
   useEffect(() => {
     settleRef.current();
   }, [ops]);
-  /** a detail of this account (`g`) started a close from `o` */
-  const closeStarted = (g: number, o: CloseOrigin) => (id: string) => {
+  /** a detail of this account (`g`) started a close — or (GitHub#633) a hand-over, `handOff` — from `o` */
+  const closeStarted = (g: number, o: CloseOrigin) => (id: string, handOff?: { kind: Exclude<AutoCloseKind, 'close'>; dirty: boolean }) => {
     if (accountGen.current !== g) return;
     closeOrigins.current.set(id, o);
+    if (handOff) handOffs.current.set(id, handOff);
     settleRef.current();
   };
   /** The tab's ×, the middle button, ⌘W: text that was not sent is never dropped without asking. */
@@ -572,12 +587,9 @@ export function App() {
 }
 
 /** GitHub#447: the "kept because of unsent text" line of a place, if it has one; its × removes it */
-function heldFor(
-  held: ({ id: string } & CloseOrigin)[],
-  o: CloseOrigin,
-  setHeld: (f: (h: ({ id: string } & CloseOrigin)[]) => ({ id: string } & CloseOrigin)[]) => void,
-): { onDismiss: () => void } | null {
+function heldFor(held: Held[], o: CloseOrigin, setHeld: (f: (h: Held[]) => Held[]) => void): { onDismiss: () => void; kind: AutoCloseKind } | null {
   const same = (x: CloseOrigin) => x.where === o.where && x.key === o.key && (x.where === 'tab' ? o.where === 'tab' && x.life === o.life : o.where === 'float' && x.n === o.n);
-  if (!held.some(same)) return null;
-  return { onDismiss: () => setHeld((h) => h.filter((x) => !same(x))) };
+  const last = [...held].reverse().find(same);
+  if (!last) return null;
+  return { onDismiss: () => setHeld((h) => h.filter((x) => !same(x))), kind: last.kind };
 }

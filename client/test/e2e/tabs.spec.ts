@@ -1282,3 +1282,93 @@ test('GitHub#447 (PR #454 code review round 1): a tab closed by hand while its c
 function store() {
   return { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
 }
+
+// ---- GitHub#633: 交给 agent / 托管 put the tab / floating panel away as soon as the client accepted them ----
+
+/** the requests of one kind that reached the fake for item `n` (labels added / comments posted) */
+const posted = (n: number, what: 'labels' | 'comments') => env.fake.log.filter((l) => l.method === 'POST' && l.path.endsWith(`/repos/${REPO}/issues/${n}/${what}`));
+
+test('GitHub#633: 交给 agent / 托管 put the floating panel or the tab away once the client accepted them — before GitHub answers; a later refusal is said in the notice area', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
+
+  // ---- 1. floating panel, 交给 agent with text in the reply box: the panel goes while the comment is still on its way ----
+  await row(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('reply-input').fill('按这个方向做');
+  let release = env.fake.holdWhen((l) => l.method === 'POST' && l.path.endsWith(`/repos/${REPO}/issues/${A}/comments`));
+  await detail(page).getByTestId('hand-back').click();
+  await expect(detail(page)).toHaveCount(0);
+  await expect(page.getByTestId('board')).toBeVisible();
+  await expect(inStrip(page, A)).toBeVisible();
+  // accepted, not answered: no label went out yet — the panel did not wait for GitHub
+  expect(posted(A, 'labels')).toHaveLength(0);
+  await shot(page, '633-01-float-gone-on-its-way');
+  release();
+  await expect(inStrip(page, A).getByTestId('op-notice-text')).toContainText('已评论并交给 agent', { timeout: 15_000 });
+  expect(posted(A, 'comments')).toHaveLength(1);
+  expect(posted(A, 'labels')).toHaveLength(1);
+  await expect(detail(page)).toHaveCount(0);
+
+  // ---- 2. a tab, 托管 through its dialog: the tab goes, home comes forward, the result in the notice area ----
+  await row(page, B).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-mode', 'tab');
+  await expect(detail(page).getByTestId('autopilot')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('autopilot').click();
+  await page.getByTestId('confirm-ok').click();
+  await expect(tab(page, B)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByTestId('tabs')).toHaveCount(0);
+  await expect(page.getByTestId('tab-page-home')).toHaveAttribute('data-front', 'yes');
+  await expect(inStrip(page, B).getByTestId('op-notice-text')).toContainText('已托管', { timeout: 15_000 });
+  expect(posted(B, 'labels').length).toBeGreaterThan(0);
+
+  // ---- 3. GitHub refuses after the client accepted: the panel is already gone; the refusal and 重新交给 agent are in the notice area ----
+  store().w.readOnlyRepos.add('gigleai/cavil-loop');
+  await row(page, C).click();
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('hand-back').click();
+  await expect(detail(page)).toHaveCount(0);
+  await expect(inStrip(page, C)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
+  await expect(inStrip(page, C).getByTestId('op-retry')).toHaveText('重新交给 agent');
+  expect(posted(C, 'labels').map((l) => l.status)).toEqual([403]);
+  await shot(page, '633-02-refused-later-in-notice-area');
+  store().w.readOnlyRepos.delete('gigleai/cavil-loop');
+  await app.close();
+});
+
+test('GitHub#633: a hand-over refused before anything was sent leaves the floating panel and the reply text as they were', async () => {
+  const E = 136;
+  change(E, { state: 'open', labels: [] });
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
+
+  // (a hand-over that finds other unsent text keeps the panel with a line saying why: the only way to get there is
+  // typing into the reply box in the instant between the press and the client's answer — a comment or title editor
+  // is a dialog that covers the buttons — so that rule is pinned by the unit tests of handOffCloseVerdict /
+  // replyLeftAfterHandOff, and the line itself is the one GitHub#447's tests show)
+  // ---- 4. refused before anything was sent (the same words are still on their way from the reply box): nothing moves, the text stays ----
+  await row(page, E).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(E));
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  const release = env.fake.holdWhen((l) => l.method === 'POST' && l.path.endsWith(`/repos/${REPO}/issues/${E}/comments`));
+  await detail(page).getByTestId('reply-input').fill('同一段话');
+  await detail(page).getByTestId('reply-send').click();
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('');
+  await detail(page).getByTestId('reply-input').fill('同一段话');
+  await detail(page).getByTestId('hand-back').click();
+  // the refusal really came (said in the panel: nothing was sent, so nothing is said in the notice area)
+  await expect(detail(page).getByTestId('detail-notices-toggle')).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+  await expect(detail(page).getByTestId('detail-notices')).toContainText('同样的一段评论刚从回复框发过');
+  await expect(detail(page)).toHaveAttribute('data-key', K(E));
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('同一段话');
+  await expect(held(page)).toHaveCount(0);
+  expect(posted(E, 'labels')).toHaveLength(0);
+  release();
+  await app.close();
+});

@@ -29,6 +29,7 @@ import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '.
 import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
+import { replyLeftAfterHandOff, type AutoCloseKind } from '../shared/tabs';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
@@ -274,10 +275,20 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
  * GitHub#447: the close went through, but this tab / panel holds text not sent yet, so it was not put
  * away by itself. Stays until its × (it says something the person has to act on: send or clear, then close).
  */
-function HeldLine({ floating, onDismiss }: { floating: boolean; onDismiss: () => void }) {
-  const text = floating
-    ? t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
-    : t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。');
+function HeldLine({ floating, kind, onDismiss }: { floating: boolean; kind: AutoCloseKind; onDismiss: () => void }) {
+  // GitHub#633: a hand-over is kept at the moment the client accepted it — GitHub's answer is said in the notice area
+  const text =
+    kind === 'handBack'
+      ? floating
+        ? t('已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+        : t('已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。')
+      : kind === 'autopilot'
+        ? floating
+          ? t('已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+          : t('已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。')
+        : floating
+          ? t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+          : t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。');
   return (
     <div className="detail-held small" data-testid="auto-close-held" data-mode={floating ? 'float' : 'tab'} role="status">
       <Icon name="warn" size={13} />
@@ -422,9 +433,9 @@ export function DetailPanel({
    * GitHub#447: a close of this item (issue or PR) was started from this opening; the window puts the
    * opening away once GitHub took it (and keeps it when it holds unsent text)
    */
-  onCloseStarted?: (opId: string) => void;
+  onCloseStarted?: (opId: string, handOff?: { kind: 'handBack' | 'autopilot'; dirty: boolean }) => void;
   /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
-  autoCloseHeld?: { onDismiss: () => void } | null;
+  autoCloseHeld?: { onDismiss: () => void; kind: AutoCloseKind } | null;
 }) {
   // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
   // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
@@ -454,6 +465,16 @@ export function DetailPanel({
   const [editNote, setEditNote] = useState<ResultNote | null>(null);
   /** GitHub#299: the title being edited (the title shown when the edit started), and the text so far */
   const [titleEdit, setTitleEdit] = useState<{ seen: string; text: string } | null>(draft?.titleEdit ?? null);
+  /**
+   * GitHub#633: which draft the reply box holds — a number that moves on every change of its text (typed,
+   * pasted, emptied). A hand-over knows the reply text that went with it by this number, never by the words:
+   * the box emptied and the same words typed again is a new draft, kept and counted as unsent.
+   */
+  const replyVer = useRef({ text: reply, n: 0 });
+  if (replyVer.current.text !== reply) replyVer.current = { text: reply, n: replyVer.current.n + 1 };
+  /** the unsent text as it is now — read after an await, where the render's own values are old */
+  const unsentNow = useRef({ reply, editing, titleEdit });
+  unsentNow.current = { reply, editing, titleEdit };
   const [titleNote, setTitleNote] = useState<ResultNote | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const titleOpen = titleEdit !== null;
@@ -626,7 +647,7 @@ export function DetailPanel({
    * GitHub#250: close / merge / autopilot / hand-back start in the background and hold nothing:
    * true = started (the dialog closes), false = refused before anything was sent (said here).
    */
-  const startOp = async (action: Parameters<ReturnType<typeof api>['startOp']>[0], inDialog: boolean): Promise<boolean> => {
+  const startOp = async (action: Parameters<ReturnType<typeof api>['startOp']>[0], inDialog: boolean, started?: (id: string) => void): Promise<boolean> => {
     // GitHub#226: a read already on its way carries GitHub as it was before this change — it never lands
     session.supersede('detail');
     setLoading(false);
@@ -643,7 +664,19 @@ export function DetailPanel({
     setDialogNote(null);
     setNote(null);
     if ((action.kind === 'closeIssue' || action.kind === 'closePr') && r.id) onCloseStarted?.(r.id);
+    if (r.id) started?.(r.id);
     return true;
+  };
+  /**
+   * GitHub#633: a hand-over (交给 agent / 托管) the client accepted puts this tab / panel away at once (the
+   * maintainer's choice in #633: no waiting for GitHub; its result is said in the window's notice area).
+   * It stays, with the line saying why, while it holds text not sent: an edit of a comment or the title,
+   * or reply text that did not go with the operation (`boxSent`: the reply box's draft number that did).
+   */
+  const handOffStarted = (kind: 'handBack' | 'autopilot', boxSent: number | null) => (id: string) => {
+    const now = unsentNow.current;
+    const replyLeft = replyLeftAfterHandOff(boxSent, { n: replyVer.current.n, text: now.reply });
+    onCloseStarted?.(id, { kind, dirty: draftDirty({ reply: replyLeft, replyFromOp: null, editing: now.editing, titleEdit: now.titleEdit }) });
   };
   /**
    * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
@@ -658,10 +691,13 @@ export function DetailPanel({
   const handOff = async (kind: 'handBack' | 'autopilot', inDialog: boolean): Promise<boolean> => {
     const { comment, fromBox } = handOffComment();
     const withComment = comment.trim() ? { comment, ...(fromBox && replyFromOp ? { draftOf: replyFromOp } : {}) } : {};
-    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog);
+    // GitHub#633: the reply box's draft that goes with it, by its number (the box may change during the await)
+    const boxSent = fromBox && comment.trim() ? replyVer.current.n : null;
+    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog, handOffStarted(kind, boxSent));
     // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
-    if (ok && fromBox && comment.trim()) {
-      setReply((cur) => (cur === comment ? '' : cur));
+    if (ok && boxSent !== null) {
+      // GitHub#633: only that draft is emptied — text typed meanwhile (even the same words) is a new one and stays
+      if (replyVer.current.n === boxSent) setReply('');
       setReplyFromOp(null);
       session.supersede('preview');
       setPreview(null);
@@ -702,6 +738,8 @@ export function DetailPanel({
         if (!session.current()) return;
         setRetryFrom(null);
         setNote(res.ok ? null : { kind: 'error', text: res.error ?? t('没有发送') });
+        // GitHub#633: done again from here, it puts this place away like the first one (the reply box had no part in it)
+        if (res.ok && res.id) handOffStarted('handBack', null)(res.id);
       })();
     }
   };
@@ -1495,7 +1533,7 @@ export function DetailPanel({
           </button>
         )}
       </div>
-      {autoCloseHeld && <HeldLine floating={floating} onDismiss={autoCloseHeld.onDismiss} />}
+      {autoCloseHeld && <HeldLine floating={floating} kind={autoCloseHeld.kind} onDismiss={autoCloseHeld.onDismiss} />}
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
           {loading ? t('显示 {time} 读到的内容 · 正在更新…', { time: clock(fromCache) }) : t('显示 {time} 读到的内容', { time: clock(fromCache) })}

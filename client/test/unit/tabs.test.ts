@@ -6,6 +6,8 @@ import {
   TAB_STATUS_TEXT,
   afterClose,
   autoCloseVerdict,
+  handOffCloseVerdict,
+  replyLeftAfterHandOff,
   listedNow,
   moveTab,
   newestCopy,
@@ -248,5 +250,37 @@ describe('autoCloseVerdict', () => {
     expect(autoCloseVerdict(op('merge', ['ok']), here)).toBe('drop');
     expect(autoCloseVerdict(op('handBack', ['ok', 'ok']), here)).toBe('drop');
     expect(autoCloseVerdict(op('autopilot', ['ok']), here)).toBe('drop');
+  });
+});
+
+describe('handOffCloseVerdict (GitHub#633: 交给 agent / 托管 put the place away once the client accepted them)', () => {
+  it('the opening it was started from, nothing unsent: put away at once — no waiting for GitHub', () => {
+    expect(handOffCloseVerdict({ present: true, dirty: false })).toBe('close');
+  });
+  it('unsent text left in that opening: it stays and says why', () => {
+    expect(handOffCloseVerdict({ present: true, dirty: true })).toBe('hold');
+  });
+  it('the place is gone (tab closed, panel moved to another opening): nothing is touched', () => {
+    expect(handOffCloseVerdict({ present: false, dirty: false })).toBe('drop');
+    expect(handOffCloseVerdict({ present: false, dirty: true })).toBe('drop');
+  });
+  it('never waits: GitHub\'s answer is said in the notice area, not by keeping the place', () => {
+    for (const present of [true, false]) for (const dirty of [true, false]) expect(handOffCloseVerdict({ present, dirty })).not.toBe('wait');
+  });
+});
+
+describe('replyLeftAfterHandOff (GitHub#633: which reply text is still unsent after 交给 agent / 托管)', () => {
+  it('the draft that went with the operation, not cleared yet (the answer came first): nothing left', () => {
+    expect(replyLeftAfterHandOff(4, { n: 4, text: '按这个方向做' })).toBe('');
+  });
+  it('the box emptied and the same words typed again: a new draft, kept — told by the number, not the words', () => {
+    expect(replyLeftAfterHandOff(4, { n: 6, text: '按这个方向做' })).toBe('按这个方向做');
+  });
+  it('other text typed meanwhile: kept', () => {
+    expect(replyLeftAfterHandOff(4, { n: 5, text: '再补一句' })).toBe('再补一句');
+  });
+  it('no reply went with it (labels only, or another operation\'s kept comment): whatever the box holds is unsent', () => {
+    expect(replyLeftAfterHandOff(null, { n: 4, text: '没发的字' })).toBe('没发的字');
+    expect(replyLeftAfterHandOff(null, { n: 4, text: '' })).toBe('');
   });
 });

@@ -244,6 +244,31 @@ export function autoCloseVerdict(r: Pick<OpRecord, 'kind' | 'steps' | 'running' 
   return 'drop';
 }
 
+/** GitHub#633: what put a place away (or kept it, with the line saying why) — a close, or a hand-over to the agent */
+export type AutoCloseKind = 'close' | 'handBack' | 'autopilot';
+
+/**
+ * GitHub#633: "交给 agent" / "托管" started from a tab or the floating panel put it away as soon as the
+ * client accepted the operation (the maintainer's choice in #633: no waiting for GitHub — its result,
+ * success or failure, is said in the window's notice area, where a failure is retried). Only the
+ * opening it was started from (`present`); kept, with the line saying why, while it holds text not
+ * sent (`dirty` — judged by the panel at acceptance, without the reply text that went with the operation).
+ */
+export function handOffCloseVerdict(place: { present: boolean; dirty: boolean }): Exclude<AutoCloseVerdict, 'wait'> {
+  if (!place.present) return 'drop';
+  return place.dirty ? 'hold' : 'close';
+}
+
+/**
+ * GitHub#633: the reply text still unsent once a hand-over was accepted. `sent` is the number of the reply
+ * box's draft that went with the operation (null: none did — no reply text, or a kept comment of another
+ * operation went instead); `now` is the box's draft number and text at this moment. Told apart by the
+ * number, never by the words: the box emptied and the same words typed again is a new draft and stays.
+ */
+export function replyLeftAfterHandOff(sent: number | null, now: { n: number; text: string }): string {
+  return sent !== null && now.n === sent ? '' : now.text;
+}
+
 /** The next (`by` = 1) or previous (-1) tab, home included, going round. */
 export function stepTab(keys: string[], active: string, by: 1 | -1): string {
   const all = [HOME, ...keys];
