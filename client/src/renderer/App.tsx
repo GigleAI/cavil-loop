@@ -5,7 +5,7 @@ import { parseFilter } from '../shared/filter';
 import { api } from './api';
 import { LoginView } from './LoginView';
 import { BoardView, type BoardWarnings, type OpenIntent } from './BoardView';
-import { DetailPanel, draftDirty, type ResultNote, type TabDraft } from './DetailPanel';
+import { DetailPanel, draftDirty, type HandOffStart, type ResultNote, type TabDraft } from './DetailPanel';
 import { TabBar } from './TabBar';
 import { TopBar, useWindowFrame } from './TopBar';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -259,11 +259,29 @@ export function App() {
   useEffect(() => {
     settleRef.current();
   }, [ops]);
+  /** GitHub#633: the place's kept draft, if it still holds the reply draft numbered `ver`, loses that reply */
+  const dropSentReply = (o: CloseOrigin, ver: number) => {
+    const clear = (d: TabDraft): TabDraft => (d.replyVer === ver ? { ...d, reply: '', replyFromOp: null, replyVer: undefined } : d);
+    if (o.where === 'tab') {
+      const d = drafts.current.get(o.key);
+      if (d && tabLife.current.get(o.key) === o.life) drafts.current.set(o.key, clear(d));
+    } else {
+      const f = floatRef.current;
+      const d = floatDraft.current;
+      if (f && f.key === o.key && f.n === o.n && d && d.key === o.key) floatDraft.current = { key: d.key, draft: clear(d.draft) };
+    }
+  };
   /** a detail of this account (`g`) started a close — or (GitHub#633) a hand-over, `handOff` — from `o` */
-  const closeStarted = (g: number, o: CloseOrigin) => (id: string, handOff?: { kind: Exclude<AutoCloseKind, 'close'>; dirty: boolean }) => {
+  const closeStarted = (g: number, o: CloseOrigin) => (id: string, handOff?: HandOffStart) => {
     if (accountGen.current !== g) return;
     closeOrigins.current.set(id, o);
-    if (handOff) handOffs.current.set(id, handOff);
+    if (handOff) {
+      handOffs.current.set(id, { kind: handOff.kind, dirty: handOff.dirty });
+      // GitHub#633: the reply text that went with it lives in the operation now. The place's kept draft (the
+      // detail may have gone before the client answered: another tab in front, the panel hidden behind one)
+      // drops it — only that draft, by its number; later text, even the same words, is another draft and stays
+      if (handOff.sentVer !== null) dropSentReply(o, handOff.sentVer);
+    }
     settleRef.current();
   };
   /** The tab's ×, the middle button, ⌘W: text that was not sent is never dropped without asking. */

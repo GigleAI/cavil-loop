@@ -61,7 +61,24 @@ export interface TabDraft {
   replyFromOp: string | null;
   editing: { entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null;
   titleEdit: { seen: string; text: string } | null;
+  /**
+   * GitHub#633: the reply box's draft number (see `nextReplyDraft`), kept with the text so a detail mounted
+   * again from this draft is the same draft — and a hand-over accepted after its detail went away can clear
+   * exactly the draft it took. Absent in a draft from before.
+   */
+  replyVer?: number;
 }
+
+/**
+ * GitHub#633: draft numbers of the reply box, one sequence for the whole window: a number is never reused,
+ * not even by another detail mounted later, so "the draft that went with the operation" can be told
+ * from any later text, the same words included.
+ */
+let replyDraftSeq = 0;
+export const nextReplyDraft = (): number => ++replyDraftSeq;
+
+/** GitHub#633: a hand-over the client accepted, as the detail it was started from reports it to the window */
+export type HandOffStart = { kind: 'handBack' | 'autopilot'; dirty: boolean; sentVer: number | null };
 
 /** Text that closing the tab would lose. */
 export function draftDirty(d: TabDraft | null | undefined): boolean {
@@ -433,7 +450,7 @@ export function DetailPanel({
    * GitHub#447: a close of this item (issue or PR) was started from this opening; the window puts the
    * opening away once GitHub took it (and keeps it when it holds unsent text)
    */
-  onCloseStarted?: (opId: string, handOff?: { kind: 'handBack' | 'autopilot'; dirty: boolean }) => void;
+  onCloseStarted?: (opId: string, handOff?: HandOffStart) => void;
   /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
   autoCloseHeld?: { onDismiss: () => void; kind: AutoCloseKind } | null;
 }) {
@@ -470,8 +487,10 @@ export function DetailPanel({
    * pasted, emptied). A hand-over knows the reply text that went with it by this number, never by the words:
    * the box emptied and the same words typed again is a new draft, kept and counted as unsent.
    */
-  const replyVer = useRef({ text: reply, n: 0 });
-  if (replyVer.current.text !== reply) replyVer.current = { text: reply, n: replyVer.current.n + 1 };
+  const replyVer = useRef<{ text: string; n: number } | null>(null);
+  // mounted again from a kept draft: the same draft (its number goes with it); otherwise a new one
+  if (replyVer.current === null) replyVer.current = { text: reply, n: draft?.replyVer !== undefined && draft.reply === reply ? draft.replyVer : nextReplyDraft() };
+  else if (replyVer.current.text !== reply) replyVer.current = { text: reply, n: nextReplyDraft() };
   /** the unsent text as it is now — read after an await, where the render's own values are old */
   const unsentNow = useRef({ reply, editing, titleEdit });
   unsentNow.current = { reply, editing, titleEdit };
@@ -514,7 +533,7 @@ export function DetailPanel({
   const [escKept, setEscKept] = useState(false);
   useEffect(() => {
     const inFlight = sendingReply !== null && sendingReply === reply;
-    onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit });
+    onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit, replyVer: replyVer.current!.n });
   }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
@@ -653,6 +672,9 @@ export function DetailPanel({
     setLoading(false);
     const from = retryFrom ?? undefined;
     const r = await api().startOp(action, from);
+    // GitHub#633: told whether or not this opening is still the one on screen — a hand-over accepted after the
+    // panel went away (another tab in front, the panel moved on) must still settle the place it came from
+    if (r.ok && r.id) started?.(r.id);
     if (!session.current()) return r.ok;
     if (!r.ok) {
       const n: ResultNote = { kind: 'error', text: r.error ?? t('没有发送') };
@@ -664,7 +686,6 @@ export function DetailPanel({
     setDialogNote(null);
     setNote(null);
     if ((action.kind === 'closeIssue' || action.kind === 'closePr') && r.id) onCloseStarted?.(r.id);
-    if (r.id) started?.(r.id);
     return true;
   };
   /**
@@ -672,11 +693,13 @@ export function DetailPanel({
    * maintainer's choice in #633: no waiting for GitHub; its result is said in the window's notice area).
    * It stays, with the line saying why, while it holds text not sent: an edit of a comment or the title,
    * or reply text that did not go with the operation (`boxSent`: the reply box's draft number that did).
+   * Runs even when this opening has gone meanwhile (unmounted: its last values are in the refs, and the
+   * window still holds its draft); `sentVer` lets the window drop exactly the draft that went with it.
    */
   const handOffStarted = (kind: 'handBack' | 'autopilot', boxSent: number | null) => (id: string) => {
     const now = unsentNow.current;
-    const replyLeft = replyLeftAfterHandOff(boxSent, { n: replyVer.current.n, text: now.reply });
-    onCloseStarted?.(id, { kind, dirty: draftDirty({ reply: replyLeft, replyFromOp: null, editing: now.editing, titleEdit: now.titleEdit }) });
+    const replyLeft = replyLeftAfterHandOff(boxSent, { n: replyVer.current!.n, text: now.reply });
+    onCloseStarted?.(id, { kind, dirty: draftDirty({ reply: replyLeft, replyFromOp: null, editing: now.editing, titleEdit: now.titleEdit }), sentVer: boxSent });
   };
   /**
    * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
@@ -692,12 +715,12 @@ export function DetailPanel({
     const { comment, fromBox } = handOffComment();
     const withComment = comment.trim() ? { comment, ...(fromBox && replyFromOp ? { draftOf: replyFromOp } : {}) } : {};
     // GitHub#633: the reply box's draft that goes with it, by its number (the box may change during the await)
-    const boxSent = fromBox && comment.trim() ? replyVer.current.n : null;
+    const boxSent = fromBox && comment.trim() ? replyVer.current!.n : null;
     const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog, handOffStarted(kind, boxSent));
     // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
     if (ok && boxSent !== null) {
       // GitHub#633: only that draft is emptied — text typed meanwhile (even the same words) is a new one and stays
-      if (replyVer.current.n === boxSent) setReply('');
+      if (replyVer.current!.n === boxSent) setReply('');
       setReplyFromOp(null);
       session.supersede('preview');
       setPreview(null);

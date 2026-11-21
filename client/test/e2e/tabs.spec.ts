@@ -1347,11 +1347,7 @@ test('GitHub#633: a hand-over refused before anything was sent leaves the floati
   await signIn(page);
   await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
 
-  // (a hand-over that finds other unsent text keeps the panel with a line saying why: the only way to get there is
-  // typing into the reply box in the instant between the press and the client's answer — a comment or title editor
-  // is a dialog that covers the buttons — so that rule is pinned by the unit tests of handOffCloseVerdict /
-  // replyLeftAfterHandOff, and the line itself is the one GitHub#447's tests show)
-  // ---- 4. refused before anything was sent (the same words are still on their way from the reply box): nothing moves, the text stays ----
+  // ---- refused before anything was sent (the same words are still on their way from the reply box): nothing moves, the text stays ----
   await row(page, E).click();
   await expect(detail(page)).toHaveAttribute('data-key', K(E));
   await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
@@ -1370,5 +1366,94 @@ test('GitHub#633: a hand-over refused before anything was sent leaves the floati
   await expect(held(page)).toHaveCount(0);
   expect(posted(E, 'labels')).toHaveLength(0);
   release();
+  await app.close();
+});
+
+/**
+ * GitHub#633 (PR #638 code review round 1): hold the client's answer to the next hand-overs — the operation itself
+ * is accepted and goes ahead (it reaches the fake GitHub); only the answer to the window waits for `release`
+ */
+async function holdAcceptance(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any;
+    const orig = w.cavil.startOp.bind(w.cavil);
+    w.__accept = { released: false, waiters: [] as (() => void)[], answered: 0 };
+    w.cavil.startOp = async (...args: unknown[]) => {
+      const r = await orig(...args);
+      w.__accept.answered++;
+      if (!w.__accept.released) await new Promise<void>((res) => w.__accept.waiters.push(res));
+      return r;
+    };
+  });
+  return {
+    answered: () => page.evaluate(() => (window as any).__accept.answered as number),
+    release: () => page.evaluate(() => {
+      const a = (window as any).__accept;
+      a.released = true;
+      for (const f of a.waiters.splice(0)) f();
+    }),
+  };
+}
+
+test('GitHub#633 (PR #638 code review round 1): the client answers after the tab went behind — the tab it came from is put away all the same, the reply that went with it never comes back, the tab in front is left alone', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await row(page, B).click({ modifiers: ['Control'] });
+  await home(page).click();
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('reply-input').fill('按这个方向做');
+  const gate = await holdAcceptance(page);
+  await detail(page).getByTestId('hand-back').click();
+  // accepted by the client (its answer held back): then another tab comes forward, the detail of #A goes
+  await expect.poll(() => gate.answered(), { timeout: 15_000 }).toBe(1);
+  await tab(page, B).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await detail(page).getByTestId('reply-input').fill('B 自己的草稿');
+  await gate.release();
+  // the operation really went out
+  await expect.poll(() => posted(A, 'comments').length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => posted(A, 'labels').length, { timeout: 15_000 }).toBe(1);
+  // the tab it came from is put away; the tab in front stays, its own text untouched
+  await expect(tab(page, A)).toHaveCount(0, { timeout: 15_000 });
+  await expect(tab(page, B)).toHaveAttribute('data-front', 'yes');
+  await expect(detail(page)).toHaveAttribute('data-key', K(B));
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('B 自己的草稿');
+  // opened again: the reply that went with the hand-over is not there to be sent twice
+  await home(page).click();
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('');
+  expect(posted(A, 'comments')).toHaveLength(1);
+  await app.close();
+});
+
+test('GitHub#633 (PR #638 code review round 1): the reply box emptied and the same words typed again before the client answered — a new draft: the panel stays and says why, the words stay, the first ones went out once', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
+  await row(page, C).click();
+  await expect(detail(page)).toHaveAttribute('data-mode', 'float');
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  const box = detail(page).getByTestId('reply-input');
+  await box.fill('按这个方向做');
+  const gate = await holdAcceptance(page);
+  await detail(page).getByTestId('hand-back').click();
+  await expect.poll(() => gate.answered(), { timeout: 15_000 }).toBe(1);
+  // while the answer is held: emptied, the same words typed again — a new draft
+  await box.fill('');
+  await box.fill('按这个方向做');
+  await gate.release();
+  await expect(held(page)).toBeVisible({ timeout: 15_000 });
+  await expect(held(page)).toHaveAttribute('data-mode', 'float');
+  await expect(held(page)).toContainText('已开始交给 agent');
+  await expect(detail(page)).toHaveAttribute('data-key', K(C));
+  await expect(box).toHaveValue('按这个方向做');
+  await expect.poll(() => posted(C, 'labels').length, { timeout: 15_000 }).toBe(1);
+  expect(posted(C, 'comments')).toHaveLength(1);
+  await shot(page, '633-03-new-draft-kept');
   await app.close();
 });
