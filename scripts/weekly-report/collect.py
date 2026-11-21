@@ -17,6 +17,8 @@ import attribute
 import price_solve      # noqa: E402  记账记录提取 + 派工去重
 import worktime    # noqa: E402  处理时长（按轮起止，不含轮与轮之间的等待）
 import bymodel     # noqa: E402  目标周按模型拆分 + 自检
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import round_log   # noqa: E402  往返记录拆单元（GitHub#610；与读取命令、单 PR 统计同一份）
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))  # 报告按北京时间切周
 
@@ -67,6 +69,39 @@ def gh(path):
     except json.JSONDecodeError as e:
         print(f"[warn] gh api {path} 返回无法解析: {e}", file=sys.stderr)
         return []
+
+def gh_whole(path):
+    """必须读全的列表：读不到就整次退出（不管是不是严格模式），不出半份数字。"""
+    global STRICT
+    keep, STRICT = STRICT, True
+    try:
+        return gh(path)
+    except StrictFail as e:
+        print(f"[error] {e}", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        STRICT = keep
+
+
+def expand_round_logs(repo, comments):
+    """往返记录（GitHub#610）：`since` 列表只用来找出哪些条目有往返记录；这些条目的评论整串重读，
+    拆成「一节一条」（每节的 created_at = 它的追加时间、同一节多份只留一份），再交给下面按周统计。
+    这样旧记录在下一周才被改写时，统计看到的仍是各节真正的追加时间。只认 loop 写评论账号写的记录
+    （round_log.trusted_by，与写入、读取命令同一种判法）；问不到账号、记录读不懂 → 整次退出。"""
+    if not any(round_log.is_record(c.get("body")) for c in comments):
+        return comments
+    try:
+        trusted = round_log.trusted_by(round_log.loop_login())
+        nums = sorted({int(c["issue_url"].rsplit("/", 1)[-1]) for c in comments
+                       if round_log.is_record(c.get("body")) and trusted(((c.get("user") or {}).get("login")) or "")})
+        keep = [c for c in comments if int(c["issue_url"].rsplit("/", 1)[-1]) not in set(nums)]
+        for n in nums:
+            keep.extend(round_log.expand_github_comments(gh_whole(f"repos/{repo}/issues/{n}/comments?per_page=100"), trusted))
+    except round_log.FormatError as e:
+        print(f"[error] 往返记录：{e}", file=sys.stderr)
+        sys.exit(2)
+    return keep
+
 
 # 机器人账号判定只有 record.is_bot 一份（含 WEEKLY_REPORT_BOT_LOGINS 配置），这里直接复用。
 is_bot = record.is_bot
@@ -150,6 +185,7 @@ def _main(a):
     items = gh(f"repos/{R}/issues?state=all&per_page=100")
     comments = gh(f"repos/{R}/issues/comments?since={start}&per_page=100")
     prs = gh(f"repos/{R}/pulls?state=all&per_page=100&sort=updated&direction=desc")
+    comments = expand_round_logs(R, comments)
 
     # PR → 关联 issue。评论循环里要用它把一条 PR 评论定位回它的 worktree。
     link = {}

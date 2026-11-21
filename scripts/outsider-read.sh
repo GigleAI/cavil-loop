@@ -67,3 +67,12 @@ fi
     echo
     cat "$OUT"
 }
+# 往返记录（GitHub#610）：开着时末尾接一段按单元排好的视图，文字就是上面这一份（外人内容已剥离 / 隐藏）
+if round_log_enabled; then
+    vrc=0; VIEW="$(round_log_view_from_scan)" || vrc=$?
+    printf '\n%s\n' "$VIEW"
+    if [ "$vrc" != 0 ]; then
+        log "outsider-read #$NUM: 往返记录视图出不来（退出码 ${vrc}）" 2>/dev/null || true
+        exit 3
+    fi
+fi
