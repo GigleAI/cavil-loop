@@ -49,10 +49,9 @@ systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WEEKLY_REPORT_REPO` | 从 `PROJECT_ROOT` 的 git remote 推 | `owner/name` |
-| `WEEKLY_REPORT_ASSET_DIR` | `~/.local/state/cavil-loop/review-shots/weekly-report` | 配图落盘目录 |
-| `WEEKLY_REPORT_ASSET_URL` | **必填，无默认** | 配图公网 URL 前缀。GitHub 要能抓到，必须公网可达；主机名属于部署环境，不写在本仓库里 |
-| `WEEKLY_REPORT_ASSET_ROOT_URL` | **必填，无默认** | `publish-asset.sh` 用的公网 URL 根（配图前缀去掉末段） |
-| `WEEKLY_REPORT_ASSET_ROOT` | `~/.local/state/cavil-loop/review-shots` | `publish-asset.sh` 的落盘根目录 |
+| `WEEKLY_REPORT_ASSET_ROOT_URL` | 空 | **出图地址**（公网 URL 根，例如 `https://<公网主机>/review-assets`，以公网入口实际挂的前缀为准）。配了它，周报四张图经发布命令（`scripts/publish-asset.sh`）发到 `<出图地址>/<项目 key>/weekly-report/<文件名>`，报告里的图链就是发布命令返回的地址；对外服务的拦截没生效时，周报在出图之前就停下 |
+| `WEEKLY_REPORT_ASSET_URL` | 空 | 早期的**周报图片地址**。只在没配出图地址时用：图照旧复制进 `WEEKLY_REPORT_ASSET_DIR`、按这个前缀拼地址。对外服务切到严格模式后这条路走不通（这种位置的新文件不交出），切换命令会点名只配了它的项目、不切换；新地址不从它推导（公网路径可以自定义），要人补一行出图地址 |
+| `WEEKLY_REPORT_ASSET_DIR` | `~/.local/state/cavil-loop/review-shots/weekly-report` | 只配早期周报图片地址时的配图落盘目录；配了出图地址时不用 |
 | `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` | 资产目录旁的 `private-assets/` | `publish-asset.sh` 放非图片 / 视频附件（PDF 等）的目录，不公开 |
 | `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL` | 空 | 上面那个目录对应的、只在内网可达的 URL 根；空 = `publish-asset.sh` 只给本机路径 |
 | `WEEKLY_REPORT_VECTOR_DIR` | 资产目录旁的 `weekly-report-vector/` | 趋势图矢量版的落盘目录，不公开；`topdf.mjs` 从这里读 |
@@ -61,6 +60,8 @@ systemctl --user enable --now cavil-loop-weekly-report@<project>.timer
 | `WEEKLY_REPORT_BOT_LOGINS` | 空 | 名字**不以** `-bot` / `[bot]` 结尾的机器人账号，逗号或空白分隔、整名匹配（不按前缀放宽；和 GitHub 一样不区分大小写）。漏配的后果：它发的评论算进「你发的」，它的记账行被丢弃、AI 用量显示 0 |
 | `WEEKLY_REPORT_LABEL` | `pending/agent` | 开出的 issue 打什么 label。设成 `pending/human` 就只出数据、不叫 agent 写解读 |
 | `WEEKLY_REPORT_EXTRA_PROJECTS` | 空 | 再算进来的项目：本机另外几个已部署项目的实例配置名（`~/.config/cavil-loop/<名字>.conf` 里的 `<名字>`），空格或逗号分隔。配了就把它们和本项目合并成一份周报，见下面「多个项目合并成一份」；不配 = 只算本项目，产物与以前逐字节相同 |
+
+**从只配早期周报图片地址升级**：给 `~/.config/cavil-loop/<项目 key>.conf` 加一行 `WEEKLY_REPORT_ASSET_ROOT_URL="<公网前缀>"`。公网前缀是公网入口实际挂到对外服务的那一段，不是周报图片地址机械去掉末段：可以打开一张已发评论里的旧图地址，取到资产目录根为止的那部分；或在本机看公网入口的配置（例如 `tailscale serve status` 里转发到对外服务端口的那条路径）。加完后用 `curl -sk -o /dev/null -w '%{http_code}\n' "<公网前缀>/<资产目录里任一张旧图的相对路径>"` 确认：看到 `200` 才算前缀对。
 
 ### 多个项目合并成一份
 
