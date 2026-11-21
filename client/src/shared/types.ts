@@ -593,12 +593,19 @@ export type TallyColor = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray'
  *    the box. `from` = the flow label the row was turned from, so it can be turned back
  */
 export type TallySource = { kind: 'flow'; flow: TallyFlow } | { kind: 'query'; query: string; from?: TallyFlow };
+/**
+ * GitHub#634: whether a view-bar number goes into the fold at the end of the bar ("⋯ 折叠 N"):
+ * never / only while it counts 0 / always. Absent on a row = the row's default (`tallyFold`).
+ */
+export type TallyFold = 'never' | 'zero' | 'always';
 /** GitHub#468: one number of the view bar, as set in Settings */
 export interface TallyDef {
   id: string;
   name: string;
   color: TallyColor;
   source: TallySource;
+  /** GitHub#634: absent = the default for this row's id (a table saved before folding existed has none) */
+  fold?: TallyFold;
 }
 /**
  * GitHub#464: the "显示已关闭" switch, one per view — the three layouts (`board` / `table` / `graph`), and each

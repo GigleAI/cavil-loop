@@ -199,7 +199,7 @@ json.dump(d, open(p, "w"))
 PY
 run_report
 chk "来源分别披露，过期内置表也提示复核" \
-    "$(grep -qF '内置 API 参考价**（2 条）' "$TMP/r.md" && \
+    "$(grep -qF '内置 API 参考价或 daemon 抓来的官方价**（2 条）' "$TMP/r.md" && \
        grep -qF '人工配置**（1 条）' "$TMP/r.md" && \
        grep -qF '1 条使用内置价时已超过 90 天未复核' "$TMP/r.md" && echo yes || echo no)" "yes"
 
