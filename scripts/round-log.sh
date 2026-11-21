@@ -115,7 +115,7 @@ me=$(write_identity_login)
 # 每次写前都和「本次交付开始时确认的」提交、目标分支、来源仓库比：PR 上这三样由调用方给（--basis / --base，
 # --source 不给 = 本仓库），缺了就不写——命令自己第一次读到的值不能当基准（交付开始后、调用之前改投就看不出来）
 rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
-    local it labels pj st merged base hrepo hsha prs
+    local it labels pj pst st merged base hrepo hsha prs
     RL_WHY=""
     it=$(gh api "repos/$REPO/issues/$NUM" 2>/dev/null) || return 2
     st=$(printf '%s' "$it" | jq -r '.state // ""' 2>/dev/null) || return 2
@@ -127,6 +127,9 @@ rl_target() {   # → 0 仍归这次派工 / 1 已变（RL_WHY）/ 2 读不到
     done
     if printf '%s' "$it" | jq -e '.pull_request != null' >/dev/null 2>&1; then
         pj=$(gh api "repos/$REPO/pulls/$NUM" 2>/dev/null) || return 2
+        # PR 自己的状态也要看：issue 资源读到打开之后、读 PR 之前它可能被关掉（未合并）
+        pst=$(printf '%s' "$pj" | jq -r '.state // ""' 2>/dev/null) || return 2
+        case "$pst" in open) ;; closed) RL_WHY="已关闭"; return 1 ;; *) return 2 ;; esac
         merged=$(printf '%s' "$pj" | jq -r 'if (.merged | type) == "boolean" then .merged else "?" end' 2>/dev/null) || return 2
         base=$(printf '%s' "$pj" | jq -r '.base.ref // ""' 2>/dev/null) || return 2
         hrepo=$(printf '%s' "$pj" | jq -r '.head.repo.full_name // ""' 2>/dev/null) || return 2
@@ -192,8 +195,12 @@ python3 "$RL_PY" plan < "$TMPD/in.json" > "$TMPD/plan.json" || plan_rc=$?
 case "$plan_rc" in
     0) ;;
     7) finish 3 expired "$(head -c 300 "$TMPD/plan.json")；不发、不翻标签" ;;
-    *) grep -q -- '要给 --of' "$TMPD/plan.json" && finish 64 usage "$(head -c 300 "$TMPD/plan.json")；补上重跑，不要改成单独发"
-       finish 2 rejected "$(head -c 300 "$TMPD/plan.json")；照现在单独发" ;;
+    # 评论区里已有的记录读不懂：分不清最新交付，和读评论失败一样处理——不改成单独发、不翻标签
+    6) finish 5 unreadable "$(head -c 300 "$TMPD/plan.json")；什么都没写，照读评论失败的规则处理，不改成单独发" ;;
+    8) finish 64 usage "$(head -c 300 "$TMPD/plan.json")；补上重跑，不要改成单独发" ;;
+    # 只有「这一条本身不该进记录」才是拒收（3）；其余退出码（输入读不懂等）一律算读不全，不让它走单独发
+    3) finish 2 rejected "$(head -c 300 "$TMPD/plan.json")；照现在单独发" ;;
+    *) finish 5 unreadable "写入计划没算出来（退出码 ${plan_rc}）；什么都没写，照读评论失败的规则处理" ;;
 esac
 mode=$(jq -r '.mode' < "$TMPD/plan.json") || finish 6 failed "写入计划读不懂"
 jq -c '{body: .new_body}' < "$TMPD/plan.json" > "$TMPD/new.json" || finish 6 failed "写入计划读不懂"

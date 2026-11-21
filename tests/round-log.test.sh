@@ -175,6 +175,36 @@ chk "顶部节号对不上：读取退出码 4" "$rc" "4"
 has "顶部节号对不上：说「版本对不上」" "$o" "版本对不上"
 lacks "顶部节号对不上：不给任何当前版本" "$o" "最新单元对应的完整版本"
 
+# 复审读完之后记录坏了（复审重派第 1 轮）：写入命令按「读不懂」处理，不改成单独发、零写入
+corrupt_case() {   # <名字> <python 改法>
+    fresh issue
+    RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+    local of; of=$(ofv 7)
+    python3 - "$GD/comments.json" "$2" <<'PY2'
+import json, sys, re
+d = json.load(open(sys.argv[1]))
+c = d["7"][-1]
+c["body"] = eval(sys.argv[2], {"re": re, "b": c["body"]})
+json.dump(d, open(sys.argv[1], "w"))
+PY2
+    local o so rc src
+    so=$(RL show 7); src=$?
+    chk "$1：读取命令报读不懂（退出码 4）" "$src" "4"
+    : > "$CALLS"
+    o=$(RL post 7 --role review --of "$of" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+    chk "$1：写入命令也是读不懂（unreadable，不是照现在单独发）" "$rc $(result "$o")" "5 RESULT=unreadable"
+    lacks "$1：不叫改成单独发" "$o" "照现在单独发"
+    chk "$1：零写入" "$(writes)" "0"
+    chk "$1：写入命令确实读了评论（不是一上来就退出）" "$(grep -c 'issues/7/comments' "$CALLS")" "1"
+}
+corrupt_case "记录缺了节结束标记" 're.sub(r"<!-- cavil-round-log:sec-end -->\n?", "", b, count=1)'
+corrupt_case "记录顶部节号对不上" 're.sub(r"top sec=[0-9a-f]+", "top sec=ffffffffffff", b)'
+# 对照：记录读得懂、只是这一条本身不该进记录 → 仍是拒收、照现在单独发
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/human --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ✅ 交人')"); rc=$?
+chk "对照：记录完好、结论是交人 → 仍是拒收（照现在单独发）" "$rc $(result "$o")" "2 RESULT=rejected"
+
 echo "── 2. 不该进记录的交付：拒收、零写入 ──"
 fresh issue
 for to in pending/merge pending/human; do
@@ -266,7 +296,7 @@ add("loop-bot", "\n<!-- codex-review-round:2 -->\n## ❌ 单独发的复审")
 json.dump(d, open(sys.argv[1], "w"))
 PY2
 mat=$(RL show 7 | sed -n '/^## 复审轮次的材料/,$p')
-chk "只认真正的复审：材料按时间依次列出" "$(grep -oE '复审轮次标记 [0-9]+（[^，]*|@[a-z-]+ 的评论' <<<"$mat" | tr '\n' '|')" "@maint 的评论|复审轮次标记 1（往返记录里的复审节 $(jq -r '.["7"][] | .body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]* role=review' | head -1 | cut -d= -f2 | cut -d' ' -f1)|@maint 的评论|复审轮次标记 2（单独评论 #$(jq -r '.["7"][-1].id' "$GD/comments.json")|"
+chk "只认真正的复审：材料按时间依次列出" "$(grep -oE '复审轮次标记 [0-9]+（(往返记录里的复审节 [0-9a-f]+|单独评论 #[0-9]+)|@[a-z-]+ 的评论' <<<"$mat" | tr '\n' '|')" "@maint 的评论|复审轮次标记 1（往返记录里的复审节 $(jq -r '.["7"][] | .body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]* role=review' | head -1 | cut -d= -f2 | cut -d' ' -f1)|@maint 的评论|复审轮次标记 2（单独评论 #$(jq -r '.["7"][-1].id' "$GD/comments.json")|"
 has "维护者贴了标记示例：只当不是 loop 账号写的评论（可能的重置点），带作者" "$mat" "@maint 的评论 #$(jq -r '.["7"][-4].id' "$GD/comments.json")（不是 loop 账号写的）"
 lacks "维护者贴的示例不算复审（轮次 9 不出现）" "$mat" "复审轮次标记 9"
 lacks "loop 账号正文中间的示例不算" "$mat" "复审轮次标记 3"
@@ -356,6 +386,23 @@ chk "PR：给了 --source 且对得上 → 写入" "$rc" "0"
 jq '.["8"].merged = true' "$GD/items.json" > "$GD/i" && mv "$GD/i" "$GD/items.json"
 o=$(RL post 8 --role review --of "$(ofv 8)" --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：已合并 → 已过期" "$rc" "3"
+# 写前读 issue 时还开着，紧接着读 PR 时已经关了（未合并、提交没变）：PR 自己的状态也要核对（复审重派第 1 轮）
+pr_state_case() {   # <名字> <PR 的 state 改成什么> <期望退出码 结果>
+    fresh pr
+    RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main >/dev/null
+    local of; of=$(ofv 8)
+    local k0; k0=$(cat "$GD/count_pulls_8" 2>/dev/null || echo 0)
+    printf '#!/usr/bin/env bash\njq %s "%s/items.json" > "%s/i" && mv "%s/i" "%s/items.json"\n' \
+        "'.[\"8\"].state = $2'" "$GD" "$GD" "$GD" "$GD" > "$GD/hook_pulls_8_$((k0 + 1))"
+    : > "$CALLS"
+    local o rc
+    o=$(RL post 8 --role review --of "$of" --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+    chk "$1：$3、零写入" "$rc $(result "$o") $(writes)" "$3 0"
+    chk "$1：issue 资源确实读到的是打开（关闭是在读 PR 时才看到的）" "$(grep -c 'api repos/example/rl/issues/8\b' "$CALLS" | awk '{print ($1 >= 1) ? "yes" : "no"}')" "yes"
+}
+pr_state_case "PR：读 issue 后、读 PR 前被关闭（未合并）" '"closed"' "3 RESULT=expired"
+pr_state_case "PR：PR 的状态读回来是没见过的值" '"weird"' "4 RESULT=unknown"
+pr_state_case "PR：PR 的状态字段缺失" 'null' "4 RESULT=unknown"
 fresh issue
 python3 - "$GD/items.json" <<'PY'
 import json, sys
@@ -688,6 +735,7 @@ has "开着：缺本次依据时提示词要求补齐重跑、不改成单独发
 has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补不齐就不发评论、不翻标签，停下"
 has "开着：复审必须带读取时标出的 --of、原样照抄" "$sec" "复审**必须**带 \`--of\`"
 has "开着：过期的复审结论不改成单独发" "$sec" "**也不改成单独发**"
+has "开着：记录读不懂按读评论失败处理、不改成单独发" "$sec" "| \`RESULT=unreadable\`（5） | 评论读不全，或评论区里已有的往返记录读不懂（缺标记、版本对不上） | 什么都没写；照上文读评论失败的规则处理，**不改成单独发**、不翻标签 |"
 has "开着：首次交付只有正文时的 --of 写法" "$sec" "| 正文本身（线程里还没有任何交付，如首次开 PR 时交付说明只写在 PR 正文里） | \`body\` | 拒收：照上文单独发 | 过期：不发、不翻标签 |"
 has "开着：轮次仍按最近一次人工动作重置（照上文的办法定重置点）" "$sec" "仍是「最近一次人工动作之后本目标第几轮」"
 has "开着：材料里的总数是全部历史、只数重置点之后的" "$sec" "那里的总数是**全部历史**，不是当前轮次——只数重置点之后的带标记单元"

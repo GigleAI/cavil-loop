@@ -43,6 +43,15 @@ class FormatError(Exception):
     pass
 
 
+class Unreadable(FormatError):
+    """评论区里已有的往返记录读不懂（缺标记、版本对不上）：分不清最新交付是哪一版，什么都不写，
+    照读评论失败处理——不能当成「这一条不进记录」改为单独发（PR #625 复审重派第 1 轮）。"""
+
+
+class Usage(FormatError):
+    """调用方少给了参数（复审没给 --of）：补齐重跑，不改成单独发。"""
+
+
 class Superseded(FormatError):
     """复审所审的那一版在读取之后已经被新的交付取代：这条结论过期了，不发、不翻标签。"""
 
@@ -262,7 +271,10 @@ def plan(inp):
     if not body.strip():
         raise FormatError("本节正文是空的")
     comments = sorted(inp["comments"], key=lambda c: int(c["id"]))
-    us = units(comments, trusted)
+    try:
+        us = units(comments, trusted)
+    except FormatError as e:
+        raise Unreadable("评论区里的往返记录读不懂：%s" % e)
     latest_id = int(comments[-1]["id"]) if comments else 0
     of = inp.get("of") or None
     if role == "review":
@@ -273,7 +285,7 @@ def plan(inp):
         #      如首次开 PR 时交付说明只写在 PR 正文里），且它仍是最新交付 → 拒收，照现在单独发
         #   ③ 所审的那一版之后又有了交付（新的一节，或 loop 账号又单独发了评论），或者它已经找不到 → 过期，不发
         if not of:
-            raise FormatError("复审要给 --of（读取时最新单元标出的值）")
+            raise Usage("复审要给 --of（读取时最新单元标出的值）")
         latest = None
         for u in reversed(us):
             if (u["kind"] == "section" and u["role"] == "worker") or (u["kind"] == "comment" and u.get("_trusted")):
@@ -298,9 +310,9 @@ def plan(inp):
                 if u["kind"] == "section" and u["sec"] == of:
                     top_body = version_of(u, us)
         if top_body is None:
-            # 所审的交付不在往返记录里（开关打开前的旧式独立评论，或版本取不到）：这一条复审结论照现在单独发，
-            # 不写一条下一轮读不出版本的记录
-            raise FormatError("所审的交付不在往返记录里（取不到它的完整版本），这一条复审结论照现在单独发")
+            # 走到这里，所审的一定是记录里最新的那一节（单独评论、正文在上面已经拒收）：它的完整版本取不到 =
+            # 记录读不懂（读取命令此时报「版本对不上」），同样什么都不写、照读评论失败处理
+            raise Unreadable("所审那一节（%s）的完整版本在记录里找不到" % of)
     out = {"mode": "new", "comment_id": None, "of": of, "sec": sec}
     cap = int(inp.get("max") or MAX_CHARS)
     nb = new_record(top_sec, top_body or "", section_text(sec, role, at, latest_id, of, body))
@@ -406,6 +418,12 @@ def main():
     except Superseded as e:
         sys.stdout.write("❌ %s\n" % e)
         return 4 if cmd == "show" else 7
+    except Unreadable as e:
+        sys.stdout.write("❌ %s\n" % e)
+        return 4 if cmd == "show" else 6
+    except Usage as e:
+        sys.stdout.write("❌ %s\n" % e)
+        return 4 if cmd == "show" else 8
     except FormatError as e:
         sys.stdout.write("❌ %s\n" % e)
         return 4 if cmd == "show" else 3
