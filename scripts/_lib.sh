@@ -568,7 +568,7 @@ requester_bot_wait_hold() {   # <编号>
 # 和今天机器人或人打了派工标签之后一样；机器人自己的派工标签在派工摘掉之后才到，会再派一次。
 REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""; REQUESTER_BOT_BACKFILL_FIRSTKEY=""
 # 第一次判定和写前现读比较的那份身份，两边用同一个函数从各自读到的 JSON 里取（JSON 从标准输入进，正文长度没有上限）：
-#   item：状态 + 排好序的标签名；pr：目标分支、最新提交、来源分支、来源仓库。缺字段或为空 = 失败，什么都不打印
+#   item：状态 + 排好序的全部标签名；pr：草稿标记、目标分支、最新提交、来源分支、来源仓库。缺字段或为空 = 失败，什么都不打印
 requester_bot_ident() {   # <item|pr>，标准输入：条目 / PR 的 JSON
     jq -r --arg m "$1" '
         if $m == "item" then
@@ -576,8 +576,9 @@ requester_bot_ident() {   # <item|pr>，标准输入：条目 / PR 的 JSON
                 and all(.labels[]; (.name | type) == "string" and .name != ""))
             | .state + ";" + ([.labels[] | .name] | sort | join(","))
         else
-            select(all([.base.ref, .head.sha, .head.ref, .head.repo.full_name][]; (type == "string") and . != ""))
-            | [.base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")
+            select((.draft | type) == "boolean"
+                and all([.base.ref, .head.sha, .head.ref, .head.repo.full_name][]; (type == "string") and . != ""))
+            | [(.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")
         end' 2>/dev/null
 }
 # greedy / 只挂托管标签的 issue：调用方第一次判定（快照上的条目 + 它判出的授权 + 等待判断的 3）的依据。
@@ -641,7 +642,9 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
             case "$AT_V" in backfill) ;; unknown) REQUESTER_BOT_WAIT_REASON="$AT_REASON"; return 2 ;; *) return 1 ;; esac
             # 接手判定在里面又跑了一次等待判断：答复身份以它为准（两者读的是同一份现读结果之后的数据）
             wait="$REQUESTER_BOT_WAIT_DOC"
-            pathdoc="$(requester_bot_take_doc)"; firstkey="$pathdoc;$wait" ;;
+            pathdoc="$(requester_bot_take_doc)"
+            [ -n "$pathdoc" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 或它绑定的 issue 的状态 / 标签 / 分支读不全"; return 2; }
+            firstkey="$pathdoc;$wait" ;;
         *) return 2 ;;
     esac
     REQUESTER_BOT_BACKFILL_DOC="$kind|$n|$item|$prpart|$wait|$pathdoc"
@@ -649,18 +652,27 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
 }
 
 # 「该补打」要三份判定一致才写（获批方案第 14 版、验收 10）：调用方第一次判定的依据、补打函数的两次现读，
-# 三者取同一组字段逐字相等——条目状态和标签、PR 的目标分支 / 最新提交 / 来源分支 / 来源仓库、托管授权的身份
-# （授权所在条目、事件位置 / 时间、操作人）、托管接手判定的身份、等待批次和答复身份。第一次判定之后任何一项
-# 变了（维护者摘掉再重打托管标签、PR 推了新提交、答复被原地编辑、挂了挡工标签……）本轮都不写，下一轮按新状态
-# 重新判断。三条入口取依据的地方：greedy 是本轮快照里这一条（requester_bot_first_key），只挂托管标签的 issue
+# 三者取同一组字段逐字相等——条目状态和全部标签（普通分类标签也算）、PR 的草稿标记 / 目标分支 / 最新提交 /
+# 来源分支 / 来源仓库（requester_bot_ident，两边同一个函数）、托管授权的身份（授权所在条目、事件位置 / 时间、
+# 操作人）、托管接手判定的身份及它读到的 PR 和绑定 issue 的状态与全部标签、等待批次和答复身份。第一次判定之后
+# 任何一项变了（维护者摘掉再重打托管标签、PR 推了新提交或转成草稿、加减了任何标签、答复被原地编辑……）本轮都
+# 不写，下一轮按新状态重新判断。三条入口取依据的地方：greedy 是本轮快照里这一条（requester_bot_first_key），只挂托管标签的 issue
 # 是快照里这一条 + 调用方刚判出的授权，托管接手是接手判定第一次给出 backfill 时的身份（requester_bot_take_doc）。
 # 不用快照按 tab 拆出来的标签串：标签为空的条目会被 read 把空字段并掉、把标题当成标签——改从快照的 JSON 里取。
 requester_bot_auth_doc() {   # 用当前 AUTOPILOT_AUTH_* 拼托管授权的身份
     printf 'auth=%s:%s:%s:%s:%s:%s' "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"
 }
-requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定的身份
-    printf 'take=%s:%s:%s:%s:%s:%s:%s;auth=%s:%s:%s:%s:%s:%s' "$AT_MODE" "$AT_KIND" "$AT_N" "$AT_HEAD" "$AT_BASE" "$AT_REF" "$AT_REPO" \
-        "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"
+requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定的身份；PR、绑定的 issue 取不全就打印空串
+    local pi pp bi=""
+    pi=$(printf '%s' "$AT_PJ" | requester_bot_ident item) || pi=""
+    pp=$(printf '%s' "$AT_PJ" | requester_bot_ident pr) || pp=""
+    [ -n "$pi" ] && [ -n "$pp" ] || return 0
+    if [ "$AT_KIND" = issue ]; then
+        bi=$(printf '%s' "$AT_IJ" | requester_bot_ident item) || bi=""
+        [ -n "$bi" ] || return 0
+    fi
+    printf 'take=%s:%s:%s:%s:%s:%s:%s;pr=%s|%s;issue=%s;%s' "$AT_MODE" "$AT_KIND" "$AT_N" "$AT_HEAD" "$AT_BASE" "$AT_REF" "$AT_REPO" \
+        "$pi" "$pp" "$bi" "$(requester_bot_auth_doc)"
 }
 
 requester_bot_backfill() {   # <issue|pr> <编号> <路径> <调用方第一次判定的依据>
@@ -6414,7 +6426,7 @@ autopilot_takeover_permit() {   # <PR 编号>
     AT_V=unknown; AT_MODE=""; AT_N=""; AT_KIND=""; AT_HEAD=""; AT_BASE=""; AT_REF=""; AT_REPO=""; AT_REASON=""
     AT_WHY=""; AT_HUMAN_BY=""; AT_BACKFILL=""
     AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
-    AT_PJ=""
+    AT_PJ=""; AT_IJ=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ] \
        || ! printf '%s' "$pj" | jq -e '(.state | type) == "string" and (.merged | type) == "boolean" and (.labels | type) == "array"' >/dev/null 2>&1; then
         AT_REASON="读不到 PR #${pr}（或缺字段）"; return 0
@@ -6467,6 +6479,7 @@ autopilot_takeover_permit() {   # <PR 编号>
     if [ "$AT_KIND" = issue ] && { ! ij=$(gh api "repos/$REPO/issues/$AT_N" 2>/dev/null) || [ -z "$ij" ]; }; then
         AT_REASON="读不到 issue #$AT_N"; return 0
     fi
+    AT_IJ="$ij"
     # 两处都没挂托管标签：不是托管的 PR（普通的等人 PR 一概不碰）。拆分子项的标签可以只在父 issue 上（GitHub#233）
     if [ "$pl" = no ]; then
         rc=0; autopilot_labeled_or_parent "$AT_N" "$ij" || rc=$?

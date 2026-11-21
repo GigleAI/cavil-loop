@@ -449,7 +449,7 @@ Closes #7" "autopilot"
     chk "  下一轮按新提交重判 → 补打一次" "$(backfills 9)" 1
     # 托管接手：接手判定第一次给出 backfill 之后、补打函数第一次现读之前重新授权 / 推新提交 → 本轮不补打，下一轮补打
     for k in 1 2; do
-        for change in reauth push; do
+        for change in reauth push pr-label issue-label; do
             fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
             mkshim 8
             mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
@@ -460,6 +460,9 @@ Closes #7" "autopilot"
             case "$change" in
                 reauth) echo "jq '.[\"8\"] += [{event:\"unlabeled\", id:8903, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}, {event:\"labeled\", id:8904, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:01Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_$k" ;;
                 push)   echo "jq '.[\"8\"].head.sha = \"2222222222222222222222222222222222222222\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_$k" ;;
+                # 不影响接手资格的普通分类标签：加在 PR 上 / 加在绑定的 issue 上
+                pr-label)    echo "jq '.[\"8\"] += [\"kind/docs\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_$k" ;;
+                issue-label) echo "jq '.[\"7\"] += [\"kind/docs\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_$k" ;;
             esac
             tick
             chk "托管 PR · 第 $k 次现读前「$change」→ 本轮不补打" "$(backfills 8)" 0
@@ -488,6 +491,27 @@ Closes #7" "autopilot"
         chk "  到达性 · 确实读到了第 2 次" "$(cat "$W/shim/count" 2>/dev/null)" 2
         tick
         chk "  下一轮按新状态重判 → 补打一次" "$(backfills "$tn")" 1
+    done
+
+    # greedy PR：第一次判定之后、第 1 / 2 次现读之前转成草稿，或加一个普通分类标签 → 本轮不补打；标签那组下一轮补打一次
+    for k in 1 2; do
+        for change in draft label; do
+            fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+            mkshim 9
+            mkpr 9 feature/x "无关联的 PR" ""; waitid 9 8961 8962
+            mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+            case "$change" in
+                draft) echo "jq '.[\"9\"].draft = true' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_$k" ;;
+                label) echo "jq '.[\"9\"] += [\"kind/docs\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_$k" ;;
+            esac
+            tick
+            chk "greedy PR · 第 $k 次现读前「$change」→ 本轮不补打" "$(backfills 9)" 0
+            chk "  到达性 · 确实读到了第 $k 次" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge "$k" ] && echo yes || echo no)" yes
+            if [ "$change" = label ]; then
+                tick
+                chk "  下一轮按新标签重判 → 补打一次" "$(backfills 9)" 1
+            fi
+        done
     done
 
     section "【6d2】PR / 标签缺字段或为空（草稿标记 / 来源仓库读不到或为空 / 标签名为空）→ 判不了，不补打"
