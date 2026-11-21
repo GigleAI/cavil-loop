@@ -25,6 +25,7 @@
 #   【10】价格缓存写不进去：这个模型什么都不提交（不记尝试、标记留着），同轮另一个模型照常处理并保存
 #        状态；写入恢复后下一轮补上。每日刷新写不进去：不算刷新过，10 分钟后再试；连下次时刻也写不进去：
 #        日志如实说下一轮会再抓，不留临时文件，恢复后重新排定
+#   【11】实际抓价 → 驱动计价 → 周报渲染：每日最新价只取官方页，周报不把它说成两源核对
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -502,6 +503,54 @@ rmdir "$NEXT"; NOW=$(date +%s); python3 "$TU/price_fetch.py" >/dev/null
 N=$(cat "$NEXT")
 chk "时刻文件恢复后：重新排定为一天后，最新价在" \
     "$([ $((N - NOW)) -ge 86399 ] && [ $((N - NOW)) -le 86401 ] && echo 1day || echo "$((N - NOW))") $(jq -c '.claude.models | keys | length' "$LATEST")" "1day 6"
+
+echo "── 11. 实际抓价 → 计价 → 周报：单来源的价不说成两源核对 ──"
+# PR #612 第 7 轮复审：每日刷新只取官方页之后，周报仍写「与 LiteLLM 社区价目表一致才采用」
+# 「两份公开资料彼此一致」。这里全走真实脚本：抓价（LiteLLM 地址是坏的）→ 驱动计价 → 周报渲染
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+{ cat "$FX/anthropic.md"; } | awk '{print} /^\| Claude Test 9 /{print "| Claude Opus 5.5 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |"}' > "$TMP/anthropic-55.md"
+OUT=$(PRICE_FETCH_ANTHROPIC_URL="file://$TMP/anthropic-55.md" PRICE_FETCH_LITELLM_URL="file://$TMP/no-litellm.json" python3 "$TU/price_fetch.py")
+chk "抓价：只记官方页一处来源，收下 claude-opus-5-5" \
+    "$(jq -c '[(.claude.sources | length), (.claude.models | has("claude-opus-5-5"))]' "$LATEST")" "[1,true]"
+KV=$(drv --kv)
+AMT=$(kvget "$KV" price_status | sed -n 's/^fetched:\([0-9.]*\).*/\1/p')
+chk "驱动：金额全进 fetched 一桶，出处是公开价（default）" \
+    "$(r6 "$(kvget "$KV" price_status)") $(kvget "$KV" price_source)" "fetched:0.817500 default"
+python3 - "$TMP/d11.json" "$AMT" <<'PY11'
+import json, sys
+tw, prev = "2026-10-05", "2026-09-28"
+ZERO = {k: 0 for k in (
+  "iss_open","iss_closed","pr_open","pr_merged","comments","human","bot","wall","work","cost",
+  "out","commits","add","del","records","dupes","footers","cost_footers","long_windows",
+  "long_turns","work_records","work_missing","codex","sess_med","backlog","wall_claude",
+  "wall_codex","cost_claude","cost_codex","work_claude","work_codex","records_claude",
+  "records_codex","cost_records","cost_records_claude","cost_records_codex","src_recomputed",
+  "src_original","state_full","state_partial","state_none","log_no_shortfall_detected",
+  "log_shortfall_detected","log_unknown","log_true_zero","cost_not_summable",
+  "records_not_summable","price_usd_corroborated","price_usd_uncorroborated","price_usd_disputed",
+  "price_usd_unstable","price_usd_reference_only","price_usd_unrated","price_src_solved",
+  "price_src_configured")}
+amt = float(sys.argv[2])
+cur = dict(ZERO); cur.update({"cost": amt, "records": 1, "cost_records": 1, "state_full": 1,
+       "price_usd_fetched": amt, "price_src_default": 1, "records_claude": 1, "cost_records_claude": 1})
+json.dump({"repo": "acme/widget", "generated_at": "2026-10-08T00:00:00",
+           "price_reference": {"source": "ref-x", "policy": "A"},
+           "switch_week": None, "long_windows": [], "long_turns": [],
+           "target_week": {"start": tw, "end": "2026-10-12"},
+           "weeks": [prev, tw], "weekly": {prev: dict(ZERO), tw: cur}, "detail": [], "loose_prs": []},
+          open(sys.argv[1], "w"))
+PY11
+rc=0; python3 "$REPO_DIR/scripts/weekly-report/report.py" --data "$TMP/d11.json" --out "$TMP/r11.md" \
+    --asset-url-base x --rev y >/dev/null 2>"$TMP/err11.log" || rc=$?
+TL=$(grep -o '单价可信度.*' "$TMP/r11.md" | head -1)
+chk "周报：渲染成功，fetched 一桶带着驱动算出的金额" "$rc $(grep -cF '**自动联网获取的单价** $0.82' <<<"$TL")" "0 1"
+chk "周报：写明每天的最新价只取官方价目页一处" "$(grep -cF '每天的最新价**只取官方价目页一处**' <<<"$TL")" "1"
+chk "周报：不把它说成「与 LiteLLM 一致才采用」或「两份公开资料彼此一致」" \
+    "$(grep -cF '缺价时从官方价目页抓取、与 LiteLLM 社区价目表一致才采用' <<<"$TL") $(grep -cF '两份公开资料彼此一致' <<<"$TL")" "0 0"
+chk "周报：补抓价仍要两边一致的说明保留，仍说不等于与账单核对过" \
+    "$(grep -cF '缺价补抓时，还要官方页与 LiteLLM 社区价目表一致才采用' <<<"$TL") $(grep -cF '不等于**与账单核对过' <<<"$TL")" "1 1"
+chk "周报：直接取公开价的条数不再只说成「内置 API 参考价」" \
+    "$(grep -cF '内置 API 参考价或 daemon 抓来的官方价**（1 条）' "$TMP/r11.md")" "1"
 
 report_counts "$pass" "$fail"
 echo

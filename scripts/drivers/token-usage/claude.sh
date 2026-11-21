@@ -48,9 +48,9 @@
 # ── 单价：直接取官方最新价目，不反推（GitHub#606）─────────────────────────
 # 每条调用**按它自己的模型和缓存档位**取价。价目由
 # `scripts/weekly-report/price_solve.py --listed` 给出，一个日志文件都不读：
-#   ① daemon 每天从官方价目页抓一次的最新价（与 LiteLLM 一致才用，price_fetch.py）→ fetched
+#   ① daemon 每天从官方价目页抓一次的最新价（只取官方页，不找别的来源，price_fetch.py）→ fetched
 #   ② 没抓到时用内置参照表（price_solve.REFERENCE，人工核对过的那份官方价）        → reference_only
-#   ③ 两样都没有的模型，用缺价时补抓来的价（GitHub#51）                             → fetched
+#   ③ 两样都没有的模型，用缺价时补抓来的价（GitHub#51，官方页与 LiteLLM 一致才用）  → fetched
 # 以前这里从本机**全部** Claude 会话日志反解单价，每条 footer 要读几 GB 日志、几十秒；
 # 维护者在 PR #612 定了「不要反推，取最新的，缓存一天」。周报那一侧仍按原样反解
 # （scripts/weekly-report/collect.py），它会按日志重算每条派工的金额。
