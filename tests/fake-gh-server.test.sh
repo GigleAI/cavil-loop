@@ -15,6 +15,9 @@
 #   3. 10 个并发调用每个恰好记一次、输出各自正确
 #   4. 中断时序：正例 / 两次调用之间服务被杀 / 已接手未执行就断开 / 已执行未回结果就断开 / 服务回复退回
 #      ——退出码、stderr、评论条数、调用记录行数、观察回调次数
+#   5. 原始环境（GitHub#648）：python 启动时自己改的环境（没设区域变量时补 LC_CTYPE=C.UTF-8）——5 种区域设置
+#      下与原方式逐字节相同且都由服务接手、不设区域变量时并发 10 次全接手、经 python 转手的退回、启动脚本
+#      五种情形（含钉住的已知限制）；退回原因写进 server.log / fallback，「走了常驻服务」类检查红时打印线索
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -45,6 +48,10 @@ cap() {
     python3 -I - "$pre" "$@" <<'PY'
 import subprocess, sys
 pre, args = sys.argv[1], sys.argv[2:]
+# 把自己收到的原始环境原样传下去：python 启动时会改自己的环境（没设区域变量时补 LC_CTYPE=C.UTF-8），
+# 那不是调用方给 gh 的环境（GitHub#648）
+with open("/proc/self/environ", "rb") as f:
+    raw_env = dict(kv.partition(b"=")[::2] for kv in f.read().split(b"\0")[:-1] if b"=" in kv)
 stdin_data, out_file = None, None
 while args[0] != "--":
     if args[0] == "--stdin":
@@ -55,12 +62,12 @@ cmd = args[1:]
 if out_file:
     # 调用方把 stdout 接到一个已有内容的普通文件（追加方式），stderr 照样是管道
     with open(out_file, "ab") as f:
-        r = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE,
+        r = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env=raw_env,
                            input=stdin_data if stdin_data is not None else None,
                            stdin=None if stdin_data is not None else subprocess.DEVNULL)
     out = b""
 else:
-    r = subprocess.run(cmd, capture_output=True, input=stdin_data,
+    r = subprocess.run(cmd, capture_output=True, input=stdin_data, env=raw_env,
                        stdin=None if stdin_data is not None else subprocess.DEVNULL)
     out = r.stdout
 open(pre + ".out", "wb").write(out)
@@ -69,6 +76,16 @@ open(pre + ".rc", "w").write(str(r.returncode))
 PY
 }
 served() { local n; n=$( { wc -c < "$1.d/served"; } 2>/dev/null) || n=0; echo "${n:-0}" | tr -d ' '; }
+# 「走了常驻服务 N 次」类检查：红的时候把能看出是哪条路的线索打出来（GitHub#648）——server.log 末尾、
+# 退回原因字母（c = 连不上，f = 服务回了退回）、服务进程和端口文件还在不在
+chk_served() {   # <说明> <实得> <期望> <gh 路径>
+    local before=$fail d="$4.d" pid
+    chk "$1" "$2" "$3"
+    [ "$fail" -gt "$before" ] && [ "$QUIET" != 1 ] || return 0
+    pid=$( { cat "$d/pid"; } 2>/dev/null)
+    echo "     线索：退回原因 [$( { cat "$d/fallback"; } 2>/dev/null)]；服务进程 ${pid:-?} $(kill -0 "${pid:-0}" 2>/dev/null && echo 在 || echo 不在)；端口文件 $([ -s "$d/port" ] && echo 在 || echo 不在)"
+    echo "     server.log 末尾："; tail -n 15 "$d/server.log" 2>/dev/null | sed 's/^/       /'
+}
 # 状态目录逐字节比较（ISO 时间换占位）；输出 same 或第一处不同
 dir_same() {
     python3 -I - "$1" "$2" <<'PY'
@@ -180,9 +197,11 @@ suite() {
 第二行 \"引号\" \$HOME"
     chk "到达性 · 工作目录传到了（--input 相对路径读到了调用方目录下的文件）" "$(jq -r '.items."50".comments[-1].body' "$W/rb-new/state.json")" "来自文件"
     chk "到达性 · 环境变量传到了（tokens.log 记下了 tok-xyz）" "$(grep -c '^tok-xyz gh api user' "$W/ap-new/tokens.log")" 1
-    chk "常驻方式确实被用上（服务端计数 > 0）" "$([ "$(served "$W/new-bin/gh")" -gt 0 ] && echo yes || echo no)" yes
+    chk_served "常驻方式确实被用上（服务端计数 > 0）" "$([ "$(served "$W/new-bin/gh")" -gt 0 ] && echo yes || echo no)" yes "$W/new-bin/gh"
     # 计数：fake_github 那份共 16 次调用，其中输出写进文件那 1 次退回 → 15
-    chk "输出写进普通文件那次退回了旧方式（服务只接了另外 15 次）" "$(( $(served "$W/new-bin/gh") - before_file ))" 15
+    chk_served "输出写进普通文件那次退回了旧方式（服务只接了另外 15 次）" "$(( $(served "$W/new-bin/gh") - before_file ))" 15 "$W/new-bin/gh"
+    chk "  …那次退回的原因是「服务回了退回」，server.log 写明是输出不是管道" \
+        "$(cat "$W/new-bin/gh.d/fallback" 2>/dev/null)/$(grep -c '^FALLBACK pid=[0-9]*: fd 1 is not a pipe' "$W/new-bin/gh.d/server.log")" "f/1"
 
     # ── 10 个并发调用：每个恰好记一次、输出各自正确 ──
     # 用 `api user`：假 GitHub 自己给每个读路径记的次数文件（count_*）不带锁，并发读同一路径时
@@ -196,7 +215,7 @@ suite() {
     wait
     chk "并发 10 次：每次的输出都对" "$(cat "$W"/conc-* | sort -n | paste -sd' ')" "1:loop-bot 2:loop-bot 3:loop-bot 4:loop-bot 5:loop-bot 6:loop-bot 7:loop-bot 8:loop-bot 9:loop-bot 10:loop-bot"
     chk "并发 10 次：调用记录 10 行、每个只出现一次" "$(wc -l < "$W/ap-new/calls.log" | tr -d ' ')/$(sort "$W/ap-new/calls.log" | uniq -d | wc -l | tr -d ' ')" "10/0"
-    chk "并发 10 次：都走了常驻服务" "$(( $(served "$W/new-bin/gh") - s0 ))" 10
+    chk_served "并发 10 次：都走了常驻服务" "$(( $(served "$W/new-bin/gh") - s0 ))" 10 "$W/new-bin/gh"
 
     # ── 中断时序（只有测试打开的开关能让服务在指定时点退出） ──
     local FF="$W/fault" G="$W/int-bin/gh-rb" D
@@ -217,7 +236,7 @@ suite() {
     local s1
     rm -f "$FF"; s1=$(served "$G"); post ok
     chk "中断 · 正例：退出码 0，评论 1 条，记录 1 行，回调 1 次" "$(tally ok)" "0/1/1/1"
-    chk "中断 · 正例：走的是常驻服务" "$(( $(served "$G") - s1 ))" 1
+    chk_served "中断 · 正例：走的是常驻服务" "$(( $(served "$G") - s1 ))" 1 "$G"
 
     echo after-ack > "$FF"; post ack
     chk "中断 · 已接手、还没执行就断开：退出码 70；评论 0、记录 0、回调 0（没有第二次执行）" "$(tally ack)" "70/0/0/0"
@@ -241,6 +260,7 @@ suite() {
     post killed
     chk "中断 · 服务在两次调用之间被杀，下一次调用：连不上 → 退回旧方式执行一次，结果与正例相同" "$(tally killed)" "0/1/1/1"
     chk "  …输出与正例相同、stderr 为空" "$(cat "$W/int-killed.out")/$(wc -c < "$W/int-killed.err" | tr -d ' ')" "$(cat "$W/int-ok.out")/0"
+    chk "  …退回原因记的是「连不上」（之前输出写进文件那次是「服务回了退回」）" "$(cat "$G.d/fallback")" "fc"
 
     # ── 解释器启动设置（PR #221 复审第 1 轮）：输出编码、出错时的处理方式、不缓冲、区域设置 ──
     # 原方式每次起一个 python3，这些设置按调用方当时的环境定；常驻服务的在它启动时就定了。
@@ -293,6 +313,102 @@ suite() {
         "$(cat "$EW/same-ascii.rc")/$(head -1 "$EW/same-ascii.err")/$(grep -c UnicodeEncodeError "$EW/same-ascii.err")" \
         "1/Traceback (most recent call last):/1"
 
+    # ── 原始环境（GitHub#648）：python 启动时自己改环境（没设区域变量或 LANG=C 时补 LC_CTYPE=C.UTF-8）──
+    # 服务拿原始环境比原始环境；接手后给假脚本的环境 = 调用方原始环境 + python 自己的那份改动。
+    # 探针假脚本打印 UTF-8 模式、首选编码、输出出错处理、区域变量，再起子进程看它拿到的 LC_CTYPE。
+    local LW="$W/loc" PROBE="$W/loc/probe.py" le k=0 loc_same=0 loc_served=0
+    mkdir -p "$LW"
+    printf '%s\n' \
+        'import locale, os, subprocess, sys' \
+        'print("utf8=%d enc=%s err=%s" % (sys.flags.utf8_mode, locale.getpreferredencoding(False), sys.stdout.errors))' \
+        'for k in ("LC_ALL", "LC_CTYPE", "LANG", "HOOKVAL"):' \
+        '    print(k, os.environ.get(k))' \
+        'sys.stdout.flush()' \
+        'subprocess.run(["sh", "-c", "echo \"child LC_CTYPE=${LC_CTYPE-unset}\"; locale charmap 2>/dev/null"])' > "$PROBE"
+    # loc_install <gh 路径> <区域设置等（空格分开的 NAME=VALUE）> [old]：去掉外面的区域变量再装
+    loc_install() {
+        # shellcheck disable=SC2086
+        ( unset LC_ALL LC_CTYPE LANG; [ -z "$2" ] || export $2
+          if [ "${3:-}" = old ]; then FAKE_GH_SERVER=0 bash "$LIB/fake_gh_client.sh" install "$1" python3 "$PROBE"
+          else FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$1" python3 "$PROBE"; fi )
+    }
+    loc_call() {   # <前缀> <gh 路径> <区域设置等>：经 cap 调用（cap 把它收到的原始环境原样传给 gh）
+        # shellcheck disable=SC2086
+        ( unset LC_ALL LC_CTYPE LANG; [ -z "$3" ] || export $3; cap "$1" -- "$2" )
+    }
+    for le in "" "LANG=C" "LANG=C.UTF-8" "LC_CTYPE=C.UTF-8" "LANG=en_US.UTF-8"; do
+        k=$((k + 1)); mkdir -p "$LW/o$k-bin" "$LW/n$k-bin"
+        loc_install "$LW/o$k-bin/gh" "$le" old; loc_install "$LW/n$k-bin/gh" "$le"
+        loc_call "$LW/o$k" "$LW/o$k-bin/gh" "$le"; loc_call "$LW/n$k" "$LW/n$k-bin/gh" "$le"
+        if cmp -s "$LW/o$k.out" "$LW/n$k.out" && cmp -s "$LW/o$k.err" "$LW/n$k.err" && cmp -s "$LW/o$k.rc" "$LW/n$k.rc"; then
+            loc_same=$((loc_same + 1))
+        elif [ "$QUIET" != 1 ]; then
+            echo "     不同：区域设置「$le」"; diff "$LW/o$k.out" "$LW/n$k.out" | sed 's/^/       /'
+        fi
+        if [ "$(served "$LW/n$k-bin/gh")" = 1 ]; then loc_served=$((loc_served + 1))
+        elif [ "$QUIET" != 1 ]; then
+            echo "     没接手：区域设置「$le」"; tail -n 3 "$LW/n$k-bin/gh.d/server.log" 2>/dev/null | sed 's/^/       /'
+        fi
+    done
+    chk "5 种区域设置（不设 / LANG=C / LANG=C.UTF-8 / LC_CTYPE=C.UTF-8 / LANG=en_US.UTF-8）：输出、子进程看到的区域与原方式逐字节相同" "$loc_same" 5
+    chk_served "  …而且每种都由常驻服务接手" "$loc_served" 5 "$LW/n1-bin/gh"
+    chk "到达性 · 不设区域变量时原方式里确实被补了 LC_CTYPE=C.UTF-8（假脚本和它的子进程都看到）" \
+        "$(grep -c '^LC_CTYPE C.UTF-8$' "$LW/o1.out")/$(grep -c '^child LC_CTYPE=C.UTF-8$' "$LW/o1.out")" "1/1"
+
+    # 不设区域变量，从 bash 并发 10 次：都由常驻服务接手（issue 里那一条在这种环境下原先全部退回）
+    local NG="$LW/n1-bin/gh" s2; s2=$(served "$NG")
+    for i in $(seq 1 10); do
+        ( unset LC_ALL LC_CTYPE LANG; out=$("$NG" 2>/dev/null | head -1); echo "$i:$out" > "$LW/conc-$i" ) &
+    done
+    wait
+    chk "不设区域变量、并发 10 次：每次的输出都对" "$(cut -d: -f2- "$LW"/conc-* | sort -u)" "$(head -1 "$LW/o1.out")"
+    chk_served "不设区域变量、并发 10 次：都走了常驻服务" "$(( $(served "$NG") - s2 ))" 10 "$NG"
+
+    # 经 python 转手、没把原始环境传下去：调用方的原始环境里多了 python 补的 LC_CTYPE，与服务不同 → 退回
+    local relay='import subprocess, sys; r = subprocess.run(sys.argv[1:2], capture_output=True); open(sys.argv[2], "wb").write(r.stdout)'
+    ( unset LC_ALL LC_CTYPE LANG
+      python3 -c "$relay" "$LW/o1-bin/gh" "$LW/relay-old.out"; python3 -c "$relay" "$NG" "$LW/relay-new.out" )
+    chk "经 python 转手、原始环境比服务多一个 LC_CTYPE：退回原方式，输出相同，原因写进 server.log" \
+        "$(cmp -s "$LW/relay-old.out" "$LW/relay-new.out" && echo same || echo diff)/$(tail -c 1 "$NG.d/fallback" 2>/dev/null)/$(grep -c "^FALLBACK pid=[0-9]*: interpreter startup settings differ from the server's: LC_CTYPE caller='C.UTF-8' server=None$" "$NG.d/server.log")" \
+        "same/f/1"
+
+    # 启动脚本（python 每次启动时自动执行的 sitecustomize，PYTHONPATH 指过去）。服务装的时候带 ROLE=server，
+    # 调用方不带：脚本据此在服务和调用方身上做不同的事
+    hook_case() {   # <名> <区域设置> <sitecustomize 内容>：装旧 / 新两份，各调一次
+        local hd="$LW/hook-$1"; mkdir -p "$hd/site" "$hd/old-bin" "$hd/new-bin"
+        printf '%s\n' "$3" > "$hd/site/sitecustomize.py"
+        loc_install "$hd/old-bin/gh" "$2 PYTHONPATH=$hd/site WHO=caller" old
+        loc_install "$hd/new-bin/gh" "$2 PYTHONPATH=$hd/site ROLE=server WHO=server"
+        loc_call "$hd/old" "$hd/old-bin/gh" "$2 PYTHONPATH=$hd/site WHO=caller"
+        loc_call "$hd/new" "$hd/new-bin/gh" "$2 PYTHONPATH=$hd/site WHO=caller"
+    }
+    hook_res() {   # <名> → 接手次数/新旧输出是否相同/server.log 里「不接手」的行数
+        local hd="$LW/hook-$1"
+        echo "$(served "$hd/new-bin/gh")/$(cmp -s "$hd/old.out" "$hd/new.out" && cmp -s "$hd/old.rc" "$hd/new.rc" && echo same || echo diff)/$(grep -c '^not serving any call: startup environment differs' "$hd/new-bin/gh.d/server.log")"
+    }
+    hook_case plain "LANG=C.UTF-8" 'import os
+os.environ["HOOKVAL"] = os.environ.get("WHO", "none")'
+    chk "启动脚本 · 有 LANG、按普通变量写普通变量：服务不接手、退回原方式，值与原方式相同（caller）" \
+        "$(hook_res plain)/$(grep '^HOOKVAL' "$LW/hook-plain/new.out")" "0/same/1/HOOKVAL caller"
+    hook_case srvloc "LANG=C.UTF-8" 'import os
+if os.environ.get("ROLE") == "server": os.environ["LC_CTYPE"] = "C.UTF-8"'
+    chk "启动脚本 · 有 LANG、只给服务写 LC_CTYPE=C.UTF-8：服务不接手，值与原方式相同（不设）" \
+        "$(hook_res srvloc)/$(grep '^LC_CTYPE' "$LW/hook-srvloc/new.out")" "0/same/1/LC_CTYPE None"
+    hook_case srvsame "" 'import os
+if os.environ.get("ROLE") == "server": os.environ["LC_CTYPE"] = "C.UTF-8"'
+    chk "启动脚本 · 不设区域变量、只给服务写与 python 自己补的同名同值的 LC_CTYPE：接手，与原方式逐字节相同" \
+        "$(hook_res srvsame)" "1/same/0"
+    hook_case noop "" 'import os'
+    chk "启动脚本 · 不改环境：接手，与原方式逐字节相同" "$(hook_res noop)" "1/same/0"
+    # 已知限制（GitHub#648 Q1 = A）：脚本按调用方自己的普通变量改区域，服务看不见——钉住现状，行为一变就提醒
+    hook_case caller "" 'import os
+if os.environ.get("ROLE") != "server": os.environ["LC_CTYPE"] = "en_US.UTF-8"'
+    chk "启动脚本 · 已知限制：不设区域变量、脚本只给调用方写 LC_CTYPE=en_US.UTF-8 → 接手；原方式读到 en_US.UTF-8，常驻方式读到 C.UTF-8" \
+        "$(served "$LW/hook-caller/new-bin/gh")/$(grep '^LC_CTYPE' "$LW/hook-caller/old.out")/$(grep '^LC_CTYPE' "$LW/hook-caller/new.out")" \
+        "1/LC_CTYPE en_US.UTF-8/LC_CTYPE C.UTF-8"
+
+    for f in "$LW"/*-bin/*.d/pid "$LW"/hook-*/new-bin/*.d/pid; do kill "$(cat "$f")" 2>/dev/null; done
+
     # ── 安全：没带对令牌的请求不执行任何东西 ──
     local P; P=$(cat "$W/new-bin/gh.d/port"); D="$W/tok"; seed_ap "$D"
     python3 -I - "$P" "$$" <<'PY' > "$W/tok.reply"
@@ -337,12 +453,12 @@ PY
     local got=$((fail - before)); fail=$before
     chk "负对照：$1 → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
 }
-neg "服务端丢掉调用方的环境变量" fake_gh_server.py '        os.environ.update(env)' '        os.environ.update({k: v for k, v in env.items() if k != "GH_TOKEN"})'
+neg "服务端丢掉调用方的环境变量" fake_gh_server.py 'os.environ.update(env_apply(env, REF_DIFF))' 'os.environ.update({k: v for k, v in env_apply(env, REF_DIFF).items() if k != "GH_TOKEN"})'
 neg "服务端丢掉退出码（一律回 0）" fake_gh_server.py '        conn.sendall(b"EXIT %d\n" % (code & 0xFF))' '        conn.sendall(b"EXIT 0\n")'
 neg "该退回时不退回（普通文件也直接写）" fake_gh_server.py \
     '                if not (stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode)):' '                if False:'
 neg "服务端不核对解释器启动设置（调用方的输出编码等被忽略）" fake_gh_server.py \
-    '            if startup_env(env) != START_ENV:' '            if False:'
+    '            if got != START_ENV:' '            if False:'
 neg "原脚本抛异常时，调用栈带上服务自己的执行入口" fake_gh_server.py \
     '                traceback.print_exception(type(e), e, tb)' '                traceback.print_exc()'
 neg "结果未知时改成重跑" fake_gh_client.sh \

@@ -8,7 +8,8 @@
 # the fallback command (the last argument; a `-I` before it is kept) and writes <gh path>: a bash
 # script that forwards each call to that server over 127.0.0.1 using only bash builtins — no fork —
 # and otherwise runs the fallback command exactly as the old wrapper did. Server state (port, token,
-# pid, log, "served" / "fallback" counters, one byte per call) lives in "<gh path>.d/".
+# pid, log, "served" / "fallback" counters, one byte per call — a fallback byte is its reason, `c` could
+# not connect, `f` the server answered FALLBACK) lives in "<gh path>.d/".
 #
 # The forwarder runs the fallback command only when the call provably did not run:
 #   · it cannot connect (no server yet, or it has exited since the previous call), or
@@ -27,7 +28,7 @@ set -euo pipefail
 # The forwarder body. `install` copies it verbatim into the generated gh (declare -f), after
 # FAKE_GH_STATE / FAKE_GH_FALLBACK are set.
 fake_gh_forward() {
-    local port token reply
+    local port token reply why=c
     if { read -r port < "$FAKE_GH_STATE/port" && read -r token < "$FAKE_GH_STATE/token" \
          && exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
         # Sent from a subshell on purpose: `printf … >&3` in this shell would point this process's
@@ -41,7 +42,7 @@ fake_gh_forward() {
             exit 70
         fi
         case "$reply" in
-            FALLBACK) exec 3>&- ;;
+            FALLBACK) exec 3>&-; why=f ;;
             ACK)
                 if IFS= read -r reply <&3 && [[ "$reply" =~ ^EXIT\ ([0-9]+)$ ]]; then
                     exit "${BASH_REMATCH[1]}"
@@ -53,8 +54,9 @@ fake_gh_forward() {
                 exit 70 ;;
         esac
     fi
-    # 退回旧方式的次数（只为看得见：服务端另有 served 计数）
-    { printf 1 >> "$FAKE_GH_STATE/fallback"; } 2>/dev/null
+    # 退回旧方式：每次一个字节，字节数是次数，字母是原因（c = 连不上 / 读不到端口或令牌，f = 服务回了
+    # FALLBACK，原因在 server.log）。只为看得见：服务端另有 served 计数
+    { printf %s "$why" >> "$FAKE_GH_STATE/fallback"; } 2>/dev/null
     exec "${FAKE_GH_FALLBACK[@]}" "$@"
 }
 
