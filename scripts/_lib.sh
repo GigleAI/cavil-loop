@@ -8186,53 +8186,9 @@ CONCURRENT_WORK_MAX_DIRS=8
 CONCURRENT_WORK_DEFAULT_BASE="main"
 CONCURRENT_WORK_PLACEHOLDER='${CONCURRENT_WORK}'
 CONCURRENT_WORK_UNREAD="未能读取当前进行中的其他工作（不代表没有）；交接前照常做冲突检查。"
-# 别人写的文字压成一行的规则：标题、PR 正文摘要、提交标题、目录名都用这一份（jq 定义，拼在各个程序前面）
-CONCURRENT_WORK_JQ_DEFS='
-def cw_flat($n): (. // "") | tostring
-    | gsub("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\s]+"; " ") | gsub("`"; "") | gsub("「"; "『") | gsub("」"; "』")
-    | sub("^ +"; "") | sub(" +$"; "")
-    | if length > $n then .[0:$n] + "…" else . end;
-def cw_line:
-    sub("^\\s+"; "") | sub("\\s+$"; "")
-    | if . == "" then null
-      elif test("^(\\||!\\[|<|-{3,}$|\\*{3,}$|_{3,}$|={3,}$)") then null
-      elif test("^(>\\s*)*((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part of)\\b[^#]*#[0-9]+|#[0-9]+\\s*$)"; "i") then null
-      elif test("^#{1,6}(\\s|$)") then (sub("^#{1,6}\\s*"; "") | sub("\\s+#+$"; "") | if length < 8 then null else . end)
-      else sub("^(>\\s*)+"; "") | sub("^([-*+]|[0-9]+[.)])\\s+"; "") | sub("^\\[[ xX]\\]\\s+"; "")
-      end
-    | if . == null then null
-      else gsub("!\\[[^\\]]*\\]\\([^)]*\\)"; "") | gsub("\\[(?<t>[^\\]]*)\\]\\([^)]*\\)"; .t)
-           | gsub("\\*\\*|__"; "") | sub("^\\s+"; "") | sub("\\s+$"; "")
-           | if test("[\\p{L}\\p{N}]") then . else null end
-      end;
-def cw_first_sentence:
-    (. // "") | tostring | gsub("\r\n?"; "\n")
-    | gsub("<!--[\\s\\S]*?-->"; "") | sub("<!--[\\s\\S]*$"; "")
-    # 第一个可用的行找到后，同一段里接着的普通行（软换行）也并进来，句子跨行时不会只剩半句；
-    # 空行或另一种块（标题、列表、引用、表格、代码块、图片、HTML、关联行）开头就到段尾。
-    # 标题自成一块：取标题当摘要时，下一行即使紧挨着也不并进来。
-    # 两行相接时只有两边都是中日文字（汉字、假名、全角标点）才直接相连，别的文字之间补一个空格
-    | reduce (split("\n")[]) as $l ({fence: null, out: null, done: false};
-        if .done then .
-        elif .out != null then
-            (if ($l | test("^\\s*$") or test("^\\s{0,3}(#|[-*+]\\s|[0-9]+[.)]\\s|>|\\||!\\[|<|```|~~~)")) then .done = true
-             else (($l | cw_line) as $c
-                   | if $c == null then .done = true
-                     elif ((.out | test("[\\p{Han}\\p{Hiragana}\\p{Katakana}\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]$"))
-                           and ($c | test("^[\\p{Han}\\p{Hiragana}\\p{Katakana}\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]"))) then .out += $c
-                     else .out += " " + $c end) end)
-        elif .fence != null then (.fence as $f | if ($l | test("^\\s{0,3}" + $f)) then .fence = null else . end)
-        elif ($l | test("^\\s{0,3}(```|~~~)")) then .fence = ($l | capture("^\\s{0,3}(?<f>```|~~~)").f)
-        elif ($l | test("^( {4}|\\t)")) then .
-        else (($l | cw_line) as $c
-              | if $c == null then .
-                elif ($l | test("^\\s{0,3}#{1,6}(\\s|$)")) then .out = $c | .done = true
-                else .out = $c end) end)
-    | (.out // "")
-    | (capture("^(?<s>.*?(?:[。！？]|[.!?](?=\\s|$)))") // {s: .}).s
-    | sub("[。！？.!?]+$"; "")
-    | cw_flat(120);
-'
+# 别人写的文字压成一行的规则、PR 正文第一句的取法：放在 _concurrent_work_defs.sh，和 PR 正文检查命令共用（GitHub#644）
+# shellcheck source=_concurrent_work_defs.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_concurrent_work_defs.sh"
 
 concurrent_work_enabled() {
     case "$(printf '%s' "${ENABLE_CONCURRENT_WORK_HINT:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -10436,11 +10392,12 @@ _MANAGED_FOOTER="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypo
 COMMENT_FOOTER_CMD="bash '$COMMENT_FOOTER_SCRIPT' --agent '$WORKER_AGENT' --driver '$AGENT_TOKEN_USAGE_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 随发布的步骤脚本（GitHub#599：翻标签 / 冲突检查 / 读 PR 评论，模板里的 cavil_step 用 ${CAVIL_STEP_DIR}）──
-# 同 footer 走长期入口；三个入口都装好了才用长期入口目录，缺任何一个（旧部署器装的入口）就用本次的 scripts/，
-# 免得一个提示词里三条命令指向不同版本
+# 同 footer 走长期入口；这几个入口都装好了才用长期入口目录，缺任何一个（旧部署器装的入口）就用本次的 scripts/，
+# 免得一个提示词里几条命令指向不同版本。PR 正文版式检查（GitHub#644）也用这个目录：${CAVIL_STEP_DIR}/pr-body-lint.sh
 CAVIL_STEP_DIR="$_LIB_DIR"
 _MANAGED_STEP_DIR="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints"
-if [ -e "$_MANAGED_STEP_DIR/flip-label.sh" ] && [ -e "$_MANAGED_STEP_DIR/conflict-check.sh" ] && [ -e "$_MANAGED_STEP_DIR/pr-feedback.sh" ]; then
+if [ -e "$_MANAGED_STEP_DIR/flip-label.sh" ] && [ -e "$_MANAGED_STEP_DIR/conflict-check.sh" ] && [ -e "$_MANAGED_STEP_DIR/pr-feedback.sh" ] \
+        && [ -e "$_MANAGED_STEP_DIR/pr-body-lint.sh" ]; then
     CAVIL_STEP_DIR="$_MANAGED_STEP_DIR"
 fi
 
