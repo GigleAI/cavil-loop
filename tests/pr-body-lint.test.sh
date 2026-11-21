@@ -78,6 +78,15 @@ Closes #9
 
 测试通过。'; } > "$S/setext-in.md"
 { printf '正文中间有一条分隔线。\n\n---\n\n'; fold 验证 x; } > "$S/hr.md"
+# PR #650 复审第 2 轮：跨行的行内代码；加粗的下划线式标题（折叠内外对拍）
+{ printf '验证说明里有跨行的行内代码。\n\nCloses #1\n\n'; fold 验证 '说明中提到 `<details>
+` 标签。'; } > "$S/inline-tag-wrap.md"
+{ printf '有一章用加粗的下划线式标题留在了外面。\n\n**验证**\n----\n\n测试通过。\n'; } > "$S/setext-bold-out.md"
+{ printf '加粗的下划线式标题写在折叠块里。\n\n'; fold 验证 '**验证**
+----
+
+测试通过。'; } > "$S/setext-bold-in.md"
+{ printf '正文里有一段列表。\n\n- 第一项\n- 第二项\n\n'; fold 验证 x; } > "$S/list.md"
 
 # 样例名 → 期望（第一行输出 + 退出码）
 expect=(
@@ -86,6 +95,7 @@ expect=(
     "link-folded|bad link-folded 5|1" "section-out|bad section-outside 5|1"
     "unclosed|bad section-outside 5|1" "summary2|bad autopilot-summary 5|1"
     "inline-tag|ok|0" "setext-out|bad section-outside 3|1" "setext-in|ok|0" "hr|ok|0"
+    "inline-tag-wrap|ok|0" "setext-bold-out|bad section-outside 3|1" "setext-bold-in|ok|0" "list|ok|0"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
