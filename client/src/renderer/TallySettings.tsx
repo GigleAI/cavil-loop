@@ -8,8 +8,8 @@
 import { InfoTip } from './InfoTip';
 import { useMemo } from 'react';
 import type { AppState, BoardData, TallyColor, TallyDef, TallyFold } from '../shared/types';
-import { effectiveTallies, TALLY_COLORS, TALLY_FOLDS, tallyFlowText, tallyFold, TALLY_MAX } from '../shared/tallies';
-import { flowCondition, tallyLabels, tallyName, viewBarTallies, type TallyLabels } from '../data/flowTally';
+import { effectiveTallies, parkedScope, TALLY_COLORS, TALLY_FOLDS, tallyFlowText, tallyFold, TALLY_MAX } from '../shared/tallies';
+import { flowCondition, tallyLabels, tallyName, viewBarParked, viewBarTallies, type TallyLabels } from '../data/flowTally';
 import { handBackFor } from '../shared/repoLabels';
 import { TallyBar } from './TallyBar';
 import { SettingsMore } from './SettingsMore';
@@ -48,11 +48,24 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
   const labels = tallyLabels(state.handBack);
   const today = localToday(Date.now());
   // GitHub#514: the view bar's own numbers, from the view bar's own function and context
+  // GitHub#643: the ticked sources' repositories decide whether a written "稍后处理" row folds — the preview and the
+  // fold picker below take the same inputs as the view bar
+  const scope = parkedScope(state.sources, state.view.selected);
   const preview = useMemo(
-    () => viewBarTallies(data.items, state.tallies, state.handBack, { viewer: state.viewer, today, projects: data.projects }, (repo) => handBackFor(state, repo), Object.keys(state.repoLabels)),
+    () =>
+      viewBarTallies(
+        data.items,
+        state.tallies,
+        state.handBack,
+        { viewer: state.viewer, today, projects: data.projects },
+        (repo) => handBackFor(state, repo),
+        Object.keys(state.repoLabels),
+        parkedScope(state.sources, state.view.selected),
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, today],
+    [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, today, state.sources, state.view.selected],
   );
+  const parked = viewBarParked(state.handBack, (repo) => handBackFor(state, repo), Object.keys(state.repoLabels), scope);
   const save = (next: TallyDef[]) => void api().setTallies(next);
   const patch = (i: number, d: TallyDef) => save(rows.map((x, j) => (j === i ? d : x)));
   const move = (i: number, by: -1 | 1) => {
@@ -195,8 +208,8 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
                   <select
                     data-testid="tally-fold"
                     aria-label={t('折叠')}
-                    value={tallyFold(d)}
-                    onChange={(e) => e.target.value !== tallyFold(d) && patch(i, { ...d, fold: e.target.value as TallyFold })}
+                    value={tallyFold(d, parked)}
+                    onChange={(e) => e.target.value !== tallyFold(d, parked) && patch(i, { ...d, fold: e.target.value as TallyFold })}
                   >
                     {TALLY_FOLDS.map((f) => (
                       <option key={f} value={f}>
@@ -250,7 +263,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
           b: <code>is:pr author:@me</code>,
         })}
         <br />
-        {t('「折叠」决定一个数摊在顶栏上，还是收进顶栏末尾的「⋯ 折叠 N」里（点开照样能看、能点）：不折叠 = 一直摊开；为 0 时折叠 = 数到 0 个时收起，不为 0 时摊开；总是折叠 = 一直收着。默认「运行中」不折叠、「稍后处理」总是折叠，其余为 0 时折叠。')}
+        {t('「折叠」决定一个数摊在顶栏上，还是收进顶栏末尾的「⋯ 折叠 N」里（点开照样能看、能点）：不折叠 = 一直摊开；为 0 时折叠 = 数到 0 个时收起，不为 0 时摊开；总是折叠 = 一直收着。默认「运行中」不折叠、「稍后处理」总是折叠，其余为 0 时折叠。自己写条件、只筛一个暂缓标签的数也默认总是折叠——前提是勾选的来源里每个仓库都用这个名字当暂缓标签（勾了 Project 时，要求没有仓库给暂缓标签改过名）；「暂缓」的标签留空时这条不起作用，哪怕某个仓库有自己的暂缓标签名。')}
         <br />
         {t('一个数都不留 = 顶栏不显示计数。系统通知和 Dock 角标仍按「等人处理的标签」数，不随这里变。')}
       </SettingsMore>
