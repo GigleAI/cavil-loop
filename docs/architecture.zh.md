@@ -86,7 +86,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
 
 <details><summary>细节：之后各轮看什么、什么会打回</summary>
 
-最近一次人工动作之后的第 1 轮复审把能找到的问题一次列全、编号；之后各轮只逐条核对这份清单，再看修复本身——上一轮审过的提交到本轮提交之间的改动，扣掉单纯合入主干带进来的部分（`scripts/review-scope.sh`；算不出来的一律回到全量复审）。建议类（措辞、命名、可读性）一律不打回；检查失败、冲突、违反硬规则、安全和丢数据一律打回。复审拿到项目 `REVIEW.md` 的全文，worker 拿到一句指向它的提示。完整判断表见 [operations](operations.zh.md#复审收敛首轮一次报全之后只复核修复github621)。
+最近一次人工动作之后的第 1 轮复审把能找到的问题一次列全、编号；之后各轮只逐条核对这份清单，再看修复本身——上一轮审过的提交到本轮提交之间的改动，扣掉单纯合入主干带进来的部分（`scripts/review-scope.sh`；算不出来的一律回到全量复审）。建议类（措辞、命名、可读性）一律不打回；检查失败、冲突、违反硬规则、安全和丢数据一律打回。复审拿到项目 `REVIEW.md` 的全文，worker 拿到一句指向它的提示。完整判断表见 [operations](operations.zh.md#复审收敛首轮一次报全之后只复核修复)。
 
 </details>
 
@@ -268,7 +268,7 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 
 ## agent 撞到用量上限时
 
-可选（`ENABLE_USAGE_LIMIT_PAUSE`）。worker 窗格上出现订阅的用量上限提示时，daemon 在解除时间之前不再派工给这个 agent，并把被打断的条目转给人；会话本身不碰。细节、限制和手动解除见[运维文档](operations.zh.md#agent-撞到用量上限停派这个-agent被打断的条目转人工github341)。
+可选（`ENABLE_USAGE_LIMIT_PAUSE`）。worker 窗格上出现订阅的用量上限提示时，daemon 在解除时间之前不再派工给这个 agent，并把被打断的条目转给人；会话本身不碰。细节、限制和手动解除见[运维文档](operations.zh.md#agent-撞到用量上限停派这个-agent被打断的条目转人工)。
 
 <details><summary>细节：daemon 做了什么</summary>
 
@@ -343,7 +343,7 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
 
-开了 `ENABLE_ROUND_LOG`（GitHub#610）时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_loggithub610)。
+开了 `ENABLE_ROUND_LOG`时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_log)。
 
 项目还可以自己装 agent hook，例如 Claude Code 的 `PreToolUse` 在改文件前注入目录规矩。这是宿主项目侧的做法，cavil-loop 不自带、也不管理。图里最右一栏（第 ⑤⑥ 步）画的就是这样一个钩子，只作示例。
 

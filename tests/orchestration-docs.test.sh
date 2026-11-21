@@ -7,7 +7,12 @@
 #
 # 管五件事：
 #   1. 文中出现的每个设置名（反引号里、代码块里的大写名字）都是 cavil-loop.config.example 里的设置；
-#      不是设置的，只能是文中说挂点脚本拿到的环境变量，而且确实由调起那个脚本的地方传进去
+#      不是设置的，只能是文中说挂点脚本拿到的环境变量，而且确实由调起那个脚本的地方传进去；
+#      按出现位置判断：「拼提示词」一节里写成 ${NAME}、且列在占位符表里的是模板占位符（派工脚本真的把它换掉，
+#      由 tests/orchestration-placeholders.test.sh 跑真实派工核对）；挂点一节里读取的变量只认调起那个挂点的脚本真传进去的
+#      （配置名不会作为环境变量交给挂点，在那里读它也报错）。每一处出现单独判断，同一行的赋值不掩盖读取。
+#      不推断 shell 的赋值时机：示例脚本自己的变量写小写（docs/AGENTS.md），大写名字一律按设置 / 传入的变量判
+#      读法、占位符表和判断只在 tests/lib/doc_placeholders.py 一处
 #   2. 中英两份提到的名字一样、## / ### 标题数一样
 #   3. 折叠块成对、标题（## / ###）不在折叠块里、<summary> 后空一行
 #   4. 两个示例脚本（开 PR 后、合并后清理）中英两份一字不差，并且照字面在只有 HOME / PATH 的环境里跑：
@@ -27,6 +32,8 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 EN="$REPO_DIR/docs/orchestration.md"
 ZH="$REPO_DIR/docs/orchestration.zh.md"
 CONF_EX="$REPO_DIR/cavil-loop.config.example"
+# 名字、占位符表的读法和按位置的判断只有一份：tests/lib/doc_placeholders.py（派工那个测试也用它）
+DP="$TEST_DIR/lib/doc_placeholders.py"
 
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP_TMP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
@@ -57,53 +64,9 @@ cat > "$TMP/names.py" <<'PY'
 import re, sys
 FENCE = re.compile(r'^\s*(```|~~~)')
 
-def names(path):
-    out, fence = set(), False
-    for line in open(path, encoding='utf-8'):
-        if FENCE.match(line):
-            fence = not fence
-            continue
-        if fence:
-            m = re.match(r'^\s*([A-Z][A-Z0-9_]{1,})=', line)
-            if m:
-                out.add(m.group(1))
-            continue
-        for code in re.findall(r'`([^`]+)`', line):
-            code = code.strip()
-            m = re.match(r'^\$?\{?([A-Z][A-Z0-9_]{1,})\}?(=.*)?$', code) or re.match(r'^([A-Z][A-Z0-9_]{1,})=', code)
-            if m:
-                out.add(m.group(1))
-            for v in re.findall(r'\$\{?([A-Z][A-Z0-9_]{1,})\}?', code):
-                out.add(v)
-    return out
-
-def config_keys(path):
-    return set(re.findall(r'^\s*#?\s*([A-Z][A-Z0-9_]{1,})=', open(path, encoding='utf-8').read(), re.M))
-
 mode, *args = sys.argv[1:]
-if mode == 'names':
-    print('\n'.join(sorted(names(args[0]))))
-elif mode == 'check':   # <doc> <config example> <envs.txt> <repo>
-    doc, conf, envs, repo = args
-    keys = config_keys(conf)
-    env = {}
-    for line in open(envs):
-        n, *files = line.split()
-        env[n] = files
-    bad = []
-    for n in sorted(names(doc)):
-        if n in keys:
-            continue
-        if n not in env:
-            bad.append(f'{n}: 不是配置样例里的设置，也不是登记过的挂点环境变量')
-            continue
-        for f in env[n]:
-            text = open(f'{repo}/{f}', encoding='utf-8').read()
-            if not re.search(rf'(^|[^A-Z0-9_]){n}=|["\']{n}["\']|\$\{{{n}[:}}]', text):
-                bad.append(f'{n}: {f} 里没有把它传给挂点脚本')
-    if bad:
-        print('\n'.join(bad))
-    sys.exit(1 if bad else 0)
+if mode == 'none':
+    pass
 elif mode == 'layout':   # <doc>: folds balanced, no heading inside a fold, blank line after <summary>
     depth, bad, lines = 0, [], open(args[0], encoding='utf-8').read().splitlines()
     fence = False
@@ -130,23 +93,141 @@ PY
 echo "== 1. 文中的设置名都存在"
 for doc in "$EN" "$ZH"; do
     name=${doc#"$REPO_DIR"/}
-    out=$(cd "$REPO_DIR" && python3 "$TMP/names.py" check "$doc" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+    out=$(cd "$REPO_DIR" && python3 "$DP" check "$doc" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
     chk "$name：每个大写名字都是配置样例里的设置或登记过的挂点环境变量" "$rc|$out" "0|"
-    n=$(python3 "$TMP/names.py" names "$doc" | wc -l | tr -d ' ')
+    n=$(python3 "$DP" names "$doc" | wc -l | tr -d ' ')
     chk "  到达性 · 确实认出了很多名字（≥ 25，实认 $n）" "$([ "$n" -ge 25 ] && echo yes)" yes
 done
 for want in WORKTREE_SETUP_CMD PR_CREATED_HOOK CLEANUP_HOOK LATEST_SITE_REFRESH POST_RETROSPECTIVE_PROJECT_CMD AUTO_CLEANUP_ON_MERGE; do
-    chk "  到达性 · 认出了 $want" "$(python3 "$TMP/names.py" names "$EN" | grep -cx "$want")" 1
+    chk "  到达性 · 认出了 $want" "$(python3 "$DP" names "$EN" | grep -cx "$want")" 1
 done
 cp "$EN" "$TMP/typo.md"; echo 'Set `LATEST_SITE_REFRSH=true`.' >> "$TMP/typo.md"
-out=$(cd "$REPO_DIR" && python3 "$TMP/names.py" check "$TMP/typo.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
-chk "拼错的设置名会报出来" "$out" "LATEST_SITE_REFRSH: 不是配置样例里的设置，也不是登记过的挂点环境变量"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/typo.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "拼错的设置名会报出来" "$(grep -c '^LATEST_SITE_REFRSH: 第 [0-9]* 行，不是配置样例里的设置' <<<"$out")/$(wc -l <<<"$out" | tr -d ' ')" "1/1"
 sed 's/^PORT .*/PORT scripts\/cleanup-issue.sh/' "$TMP/envs.txt" > "$TMP/envs-bad.txt"
-out=$(cd "$REPO_DIR" && python3 "$TMP/names.py" check "$EN" "$CONF_EX" "$TMP/envs-bad.txt" "$REPO_DIR")
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$EN" "$CONF_EX" "$TMP/envs-bad.txt" "$REPO_DIR")
 chk "登记的环境变量在那个文件里没传，也会报出来" "$out" "PORT: scripts/cleanup-issue.sh 里没有把它传给挂点脚本"
+# 名字按出现位置判断：模板占位符只在「拼提示词」一节（含占位符表）里算数；挂点一节里只认调起它的脚本真传进去的
+inject() {   # <out> <section heading prefix> <line>：在这一节标题后插一行
+    awk -v h="$2" -v l="$3" '{print} index($0, h) == 1 {print ""; print l}' "$EN" > "$1"
+}
+inject "$TMP/ph1.md" '## Cleanup on merge' 'The cleanup hook receives `$CONCURRENT_WORK`.'
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph1.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+chk "清理挂点一节写「收到 \$CONCURRENT_WORK」：占位符表里有这个名字也报出来" "$rc|$(grep -c '^CONCURRENT_WORK: 第 [0-9]* 行在 scripts/cleanup-issue.sh 调起的挂点一节' <<<"$out")" "1|1"
+inject "$TMP/ph2.md" '## Cleanup on merge' 'The cleanup hook placeholder `${CONCURRENT_WORK}` is set.'
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph2.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+chk "清理挂点一节写成 \${CONCURRENT_WORK}、哪怕标明是占位符，也报出来" "$rc|$(grep -c '^CONCURRENT_WORK: ' <<<"$out")" "1|1"
+inject "$TMP/ph3.md" '## PR opened' 'The hook also gets `$PORT`.'
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph3.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+chk "开 PR 后挂点一节写别的挂点才有的 \$PORT：报出来" "$rc|$(grep -c '^PORT: 第 [0-9]* 行在 prompts/issue-comment.template.md 调起的挂点一节' <<<"$out")" "1|1"
+inject "$TMP/ph6.md" '## Cleanup on merge' 'The cleanup hook receives `$WORKTREE_SETUP_CMD`.'
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph6.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+chk "清理挂点一节读一个配置名 \$WORKTREE_SETUP_CMD（设置不会作为环境变量交给挂点）：报出来" "$rc|$(grep -c '^WORKTREE_SETUP_CMD: 第 [0-9]* 行在 scripts/cleanup-issue.sh 调起的挂点一节' <<<"$out")" "1|1"
+inject "$TMP/ph7.md" '## Cleanup on merge' 'The cleanup hook receives `$PORT`, falling back to `PORT=5555`.'
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph7.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+chk "同一行既读 \$PORT 又赋值 PORT=5555：赋值不掩盖读取，报出来" "$rc|$(grep -c '^PORT: 第 [0-9]* 行在 scripts/cleanup-issue.sh 调起的挂点一节' <<<"$out")" "1|1"
+inject "$TMP/ph8.md" '## Cleanup on merge' 'Set `CLEANUP_HOOK=.agents/hook.sh` in the config; the hook gets `WORKTREE` and `$ISSUE`.'
+chk "挂点一节写配置行、点名设置、读挂点真拿到的变量：放行" "$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph8.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"; echo "rc=$?")" "rc=0"
+inject "$TMP/ph4.md" '## Compose prompt' 'A template line may say `${CONCURRENT_WORK}`.'
+chk "同一个名字写在「拼提示词」一节：按占位符放行" "$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph4.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"; echo "rc=$?")" "rc=0"
+cp "$EN" "$TMP/ph5.md"; echo 'A template may write `${ISSUE_NUMBR}`.' >> "$TMP/ph5.md"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph5.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "占位符表里没有的名字写成 \${…} 也报出来" "$(grep -c '^ISSUE_NUMBR: ' <<<"$out")" 1
+# 跨轮矩阵：读取边界（普通文字 / 标题 / 表格 / 代码示例）和变量来源，一次核对。
+# injectf <out> <标题前缀> <文件>：把一段多行文字插到这一节标题后
+injectf() { awk -v h="$2" -v f="$3" '{print} index($0, h) == 1 {print ""; while ((getline l < f) > 0) print l; close(f)}' "$EN" > "$1"; }
+mx() {   # <名称> <期望 rc> <标题前缀> <多行文字>：插入后跑检查，比退出码
+    printf '%s\n' "$4" > "$TMP/mx.txt"; injectf "$TMP/mx.md" "$3" "$TMP/mx.txt"
+    local out rc; out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/mx.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+    chk "$1" "$rc" "$2"; [ "$rc" = "$2" ] || printf '     %s\n' "$out" | head -3
+}
+CL='## Cleanup on merge'
+FB='```'
+mx "代码块里的示例标题（## 合并后清理 / ### Placeholders）不改变真实章节：放行" 0 "$CL" "$FB"'bash
+# ## Cleanup on merge: `CLEANUP_HOOK`
+# ### Placeholders
+echo "$ISSUE"
+'"$FB"
+mx "同上，用 ~~~ 围栏：放行" 0 "$CL" '~~~bash
+## Cleanup on merge: `CLEANUP_HOOK`
+### Placeholders
+echo "$WORKTREE"
+~~~'
+# 挂点示例自己的变量写小写（docs/AGENTS.md 的写法规则）：检查不推断 shell 的赋值时机，
+# 大写名字一律当设置或工具传进来的变量判。小写变量怎么赋值、怎么缩进都不查。
+mx "挂点示例里小写变量：先赋值再读、缩进、for / read、子 shell、命令前赋值：放行" 0 "$CL" "$FB"'bash
+port=5555
+echo "$port"
+if true; then
+  dir="$WORKTREE"
+  echo "$dir"
+fi
+for name_x in a b; do echo "$name_x"; done
+read -r line_x < /dev/null; echo "${line_x}"
+(tmp=1; echo "$tmp")
+lang=C printf '%s\n' "$ISSUE"
+'"$FB"
+mx "挂点示例里用大写名字当自己的变量（PORT=5555 后读）：报错，自己的变量要写小写" 1 "$CL" "$FB"'bash
+PORT=5555
+echo "$PORT"
+'"$FB"
+mx "同上，缩进在 if 里：报错" 1 "$CL" "$FB"'bash
+if true; then
+  PORT=5555
+  echo "$PORT"
+fi
+'"$FB"
+mx "PORT=\"\$PORT\"（右侧先读）：报错" 1 "$CL" "$FB"'bash
+PORT="$PORT"
+'"$FB"
+mx "PORT=5555 printf … \"\$PORT\"（参数先展开）：报错" 1 "$CL" "$FB"'bash
+PORT=5555 printf '"'"'%s\n'"'"' "$PORT"
+'"$FB"
+mx "注释掉的 # export PORT=5555 之后读：报错" 1 "$CL" "$FB"'bash
+# export PORT=5555
+echo "$PORT"
+'"$FB"
+mx "(PORT=5555) 子 shell 赋值之后读：报错" 1 "$CL" "$FB"'bash
+(PORT=5555)
+echo "$PORT"
+'"$FB"
+mx "挂点示例里先读后赋值（echo \$PORT 在 PORT=5555 前）：报错" 1 "$CL" "$FB"'bash
+echo "$PORT"
+PORT=5555
+'"$FB"
+mx "挂点示例里读挂点拿不到的 \$CONCURRENT_WORK：报错" 1 "$CL" "$FB"'bash
+echo "$CONCURRENT_WORK"
+'"$FB"
+mx "赋值在一个代码块、读取在另一个代码块：报错" 1 "$CL" "$FB"'bash
+PORT=5555
+'"$FB"'
+
+'"$FB"'bash
+echo "$PORT"
+'"$FB"
+mx "配置片段代码块里拼错的设置名（只赋值不读）：报错" 1 "## Refresh latest site" "$FB"'bash
+LATEST_SITE_REFRSH=true
+'"$FB"
+mx "代码块里真实存在的设置照常放行" 0 "## Refresh latest site" "$FB"'bash
+LATEST_SITE_REFRESH=true
+'"$FB"
+# 真标题照常生效：同一句话放在文末（定制做法一节）与放在一个新的真「合并后清理」标题下，报的理由不同
+printf '\n## Cleanup on merge: `CLEANUP_HOOK`\n\nThe hook reads `$CONCURRENT_WORK`.\n' > "$TMP/realh.txt"; cat "$EN" "$TMP/realh.txt" > "$TMP/realh.md"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/realh.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "文末加一个真的「合并后清理」标题：下面那句按清理挂点判（说清理脚本没传）" "$(grep -c '^CONCURRENT_WORK: 第 [0-9]* 行在 scripts/cleanup-issue.sh 调起的挂点一节' <<<"$out")" 1
+printf '\nThe hook reads `$CONCURRENT_WORK`.\n' > "$TMP/noh.txt"; cat "$EN" "$TMP/noh.txt" > "$TMP/noh.md"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/noh.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "  对照 · 不加标题时同一句按普通文字判" "$(grep -c '^CONCURRENT_WORK: 第 [0-9]* 行，不是配置样例里的设置' <<<"$out")" 1
+# 表格只认文字行：占位符一节里放一段围栏里的表格示例，表里不多出名字
+printf '%s\n' "$FB"'markdown' '| `${FAKE_TABLE_NAME}` | example |' "$FB" > "$TMP/ft.txt"
+awk -v f="$TMP/ft.txt" '{print} /^### Placeholders/ {print ""; while ((getline l < f) > 0) print l; close(f)}' "$EN" > "$TMP/ft.md"
+chk "围栏里的表格示例不算占位符表的一行" "$(python3 "$DP" table "$TMP/ft.md" | grep -c FAKE_TABLE_NAME)/$(python3 "$DP" table "$TMP/ft.md" | wc -l | tr -d ' ')" "0/$(python3 "$DP" table "$EN" | wc -l | tr -d ' ')"
+chk "  到达性 · 占位符表认出了 ≥ 20 个名字，含 \${ISSUE_N}、\${CONCURRENT_WORK}" \
+    "$(t=$(python3 "$DP" table "$EN"); [ "$(wc -l <<<"$t")" -ge 20 ] && grep -cxE 'ISSUE_N|CONCURRENT_WORK' <<<"$t")" 2
+chk "两份的占位符表一样" "$(diff <(python3 "$DP" table "$EN") <(python3 "$DP" table "$ZH") && echo same)" same
 
 echo "== 2. 中英两份对得上"
-chk "两份提到的名字一样" "$(diff <(python3 "$TMP/names.py" names "$EN") <(python3 "$TMP/names.py" names "$ZH") && echo same)" same
+chk "两份提到的名字一样" "$(diff <(python3 "$DP" names "$EN") <(python3 "$DP" names "$ZH") && echo same)" same
 chk "两份的 ## / ### 标题数一样" "$(grep -c '^##\{1,2\} ' "$EN")" "$(grep -c '^##\{1,2\} ' "$ZH")"
 chk "两份的折叠块数一样" "$(grep -c '<details>' "$EN")" "$(grep -c '<details>' "$ZH")"
 

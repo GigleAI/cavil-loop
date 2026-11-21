@@ -38,12 +38,12 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
 
 用户要看状态。你的步骤：
 
-1. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/install-status.sh"` — 一个 JSON 对象（只读）：daemon 装在哪、哪个版本、`gh` 是否登录、每个已接项目（新旧名字都列）的后台任务状态（`running` / `stopped` / `unknown`——`unknown` 是读不到，不要报成已停）、上次轮询时间、配置里用的 agent 缺哪些依赖。字段说明见 [docs/operations.zh.md](docs/operations.zh.md#用脚本安装查状态断开github313)
+1. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/install-status.sh"` — 一个 JSON 对象（只读）：daemon 装在哪、哪个版本、`gh` 是否登录、每个已接项目（新旧名字都列）的后台任务状态（`running` / `stopped` / `unknown`——`unknown` 是读不到，不要报成已停）、上次轮询时间、配置里用的 agent 缺哪些依赖。字段说明见 [docs/operations.zh.md](docs/operations.zh.md#用脚本安装查状态断开)
 2. 只有第 1 步出现 `unknown` 或要看更多细节时：`systemctl --user list-timers 'cavil-loop-poll@*' --no-pager` / `systemctl --user list-units 'cavil-loop-poll@*.service' --no-pager`（macOS：`launchctl print gui/$UID/dev.luosky.cavil-loop.<key>`）
 3. 对第 1 步 `projects[]` 里的每个项目：
    - `tail -20 $STATE_DIR/poll.log`（第 1 步输出里的 `state_dir`）
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
-   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR`——最近几轮轮询各干了什么（结果、最后一步、派工数、GitHub 调用数）、没正常结束的轮次、最近一份快照（GitHub#344，见 [docs/operations.zh.md](docs/operations.zh.md#最近几轮轮询都干了什么运行记录github344)）。只读
+   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR`——最近几轮轮询各干了什么（结果、最后一步、派工数、GitHub 调用数）、没正常结束的轮次、最近一份快照（GitHub#344，见 [docs/operations.zh.md](docs/operations.zh.md#最近几轮轮询都干了什么运行记录)）。只读
    - `jq . $STATE_DIR/config-notice.json`（有这个文件时）——本项目配置里缺的新功能设置：这些功能在本项目上是关着的，新装项目却是开的（GitHub#289，见 [docs/operations.zh.md](docs/operations.zh.md#升级不会自动补上的新配置)）。逐项列出缺的配置项和要开时写的那一行
 4. 汇总报告给用户
 

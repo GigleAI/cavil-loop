@@ -232,6 +232,60 @@ for how in missing empty; do
     chk "$how：没绑 tailscale" "$(route_on 4042) $(grep -c '^BIND ' "$CALLS")" "0 0"
 done
 
+echo "【13】文档里给清理挂点的注销示例（docs/operations{,.zh}.md 的 preview-unserve-hook 块）照字面跑：技能装在 ~/.agents/skills/cavil-loop、项目在别处"
+hook_of() { awk '/<!-- preview-unserve-hook:begin -->/{f=1;next} /<!-- preview-unserve-hook:end -->/{f=0} f && /^```/{g=!g;next} f && g' "$1"; }
+HK_EN="$(hook_of "$REPO_DIR/docs/operations.md")"; HK_ZH="$(hook_of "$REPO_DIR/docs/operations.zh.md")"
+chk "两份文档的示例一字不差、不是空的" "$([ -n "$HK_EN" ] && [ "$HK_EN" = "$HK_ZH" ] && echo same)" same
+mkdir -p "$HOME/.agents/skills"; ln -sfn "$REPO_DIR" "$HOME/.agents/skills/cavil-loop"
+HOST="$SANDBOX/host"; mkdir -p "$HOST" "$SANDBOX/state-host"
+git -C "$HOST" init -q -b main 2>/dev/null || git -C "$HOST" init -q
+printf '%s\n' "$HK_EN" > "$HOST/hook.sh"
+cat > "$HOST/cavil-loop.config" <<CONF
+REPO="acme/host"
+PROJECT_ROOT="$HOST"
+WORKTREE_BASE="$SANDBOX/wt"
+STATE_DIR="$SANDBOX/state-host"
+TMUX_PREFIX="host"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+PREVIEW_EXEC="node server.mjs"
+PREVIEW_PORT_BASE=4000
+PREVIEW_TAILSCALE_SERVE=true
+CLEANUP_HOOK="hook.sh"
+CONF
+cat > "$BIN/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$1" in list-sessions|ls) exit 0 ;; esac
+exit 1
+SH
+chmod +x "$BIN/tmux"
+hserve() { CODING_AGENT_CONFIG="$HOST/cavil-loop.config" bash "$REPO_DIR/scripts/preview-serve.sh" "$@"; }
+reset; W7="$(wt 7)"
+hserve 7 > "$SANDBOX/out" 2>&1
+chk "  先注册 #7：登记在 4007" "$(owner 4007)" "host|7|$W7"
+# ① 走完整挂点入口：真实的 cleanup-issue.sh 从别的目录启动、读项目配置、跑 CLEANUP_HOOK
+(cd / && env -i HOME="$HOME" PATH="$PATH" CALLS="$CALLS" ROUTES="$ROUTES" CODING_AGENT_CONFIG="$HOST/cavil-loop.config" \
+    bash "$REPO_DIR/scripts/cleanup-issue.sh" 7 --keep-worktree) > "$SANDBOX/out" 2>&1; rc=$?
+chk "清理入口退出 0" "$rc" "0"
+chk "挂点确实跑了，没有「挂点非零退出」" "$(grep -c 'running cleanup hook' "$SANDBOX/state-host/poll.log") $(grep -c 'hook 非零退出' "$SANDBOX/state-host/poll.log")" "1 0"
+chk "#7 的预览注销了：登记删掉、路由解绑" "$(owner 4007) $(route_on 4007) $(grep -c '^OFF 4007$' "$CALLS")" "- 0 1"
+# ② 挂点只拿到它该拿到的环境（没有 CODING_AGENT_CONFIG）：靠项目目录找到配置
+hserve 7 > "$SANDBOX/out" 2>&1
+(cd / && env -i HOME="$HOME" PATH="$PATH" CALLS="$CALLS" ROUTES="$ROUTES" ISSUE=7 WORKTREE="$W7" BRANCH=feature/issue-7 REPO=acme/host PROJECT_ROOT="$HOST" \
+    bash "$HOST/hook.sh") > "$SANDBOX/out" 2>&1; rc=$?
+chk "不带 CODING_AGENT_CONFIG 也退出 0、注销掉" "$rc $(owner 4007)" "0 -"
+# ③ worktree 不可信（空）：跳过、退出 0、什么都不动
+hserve 7 > "$SANDBOX/out" 2>&1; : > "$CALLS"
+(cd / && env -i HOME="$HOME" PATH="$PATH" CALLS="$CALLS" ROUTES="$ROUTES" ISSUE=7 WORKTREE= BRANCH=feature/issue-7 REPO=acme/host PROJECT_ROOT="$HOST" \
+    bash "$HOST/hook.sh") > "$SANDBOX/out" 2>&1; rc=$?
+chk "WORKTREE 为空：退出 0，登记还在，零写操作" "$rc $(owner 4007) $(calls_on 4007)" "0 host|7|$W7 0"
+# ④ 同号但别的 worktree：不注销
+(cd / && env -i HOME="$HOME" PATH="$PATH" CALLS="$CALLS" ROUTES="$ROUTES" ISSUE=7 WORKTREE="$SANDBOX/other/issue-7" BRANCH=feature/issue-7 REPO=acme/host PROJECT_ROOT="$HOST" \
+    bash "$HOST/hook.sh") > "$SANDBOX/out" 2>&1
+chk "别的 worktree 来注销 #7：登记还在、零写操作" "$(owner 4007) $(calls_on 4007)" "host|7|$W7 0"
+
 echo
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"

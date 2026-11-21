@@ -38,12 +38,12 @@ The user gives you a host project path (e.g. `~/github/myproject`). Steps:
 
 User wants the state. Steps:
 
-1. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/install-status.sh"` — one JSON object (read-only): where the daemon is installed and which version, `gh` login, every connected project (new and pre-rename names alike) with its scheduler state (`running` / `stopped` / `unknown` — `unknown` means the read failed, never report it as stopped), last poll time and missing dependencies of the agents its config uses. Fields: [docs/operations.md](docs/operations.md#scripted-install-status-and-disconnect-github313)
+1. `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/install-status.sh"` — one JSON object (read-only): where the daemon is installed and which version, `gh` login, every connected project (new and pre-rename names alike) with its scheduler state (`running` / `stopped` / `unknown` — `unknown` means the read failed, never report it as stopped), last poll time and missing dependencies of the agents its config uses. Fields: [docs/operations.md](docs/operations.md#scripted-install-status-and-disconnect)
 2. Only when step 1 shows `unknown` or you need more detail: `systemctl --user list-timers 'cavil-loop-poll@*' --no-pager` / `systemctl --user list-units 'cavil-loop-poll@*.service' --no-pager` (macOS: `launchctl print gui/$UID/dev.luosky.cavil-loop.<key>`)
 3. For each project in step 1's `projects[]`:
    - `tail -20 $STATE_DIR/poll.log` (`state_dir` in step 1's output)
    - `gh issue list --repo $REPO --label pending/agent` + `gh pr list --repo $REPO --label pending/agent`
-   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR` — what the last poll rounds did (result, last step, dispatches, GitHub calls), rounds that did not finish, and the latest snapshot (GitHub#344; see [docs/operations.md](docs/operations.md#what-did-the-last-polls-do-run-log-github344)). Read-only
+   - `bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/scripts/poll-history.sh" --state-dir $STATE_DIR` — what the last poll rounds did (result, last step, dispatches, GitHub calls), rounds that did not finish, and the latest snapshot (GitHub#344; see [docs/operations.md](docs/operations.md#what-did-the-last-polls-do-run-log)). Read-only
    - `jq . $STATE_DIR/config-notice.json` (if present) — new optional settings this project's config lacks, so the feature is off here while new installs have it on (GitHub#289; see [docs/operations.md](docs/operations.md#new-settings-an-upgrade-does-not-add-to-your-config)). List each missing key with the line that turns it on
 4. Summarize for the user
 
