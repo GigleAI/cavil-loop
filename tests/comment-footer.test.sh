@@ -363,7 +363,7 @@ REAL_HOME="$HOME"
 export HOME="$TMP/home"          # _lib.sh 找托管入口用 HOME；沙盘里没有，落到仓库里的脚本
 export CODING_AGENT_CONFIG="$TMP/lib.config"
 # 在托管安装 / worker 里跑测试时这个变量指向线上那份发布，_lib.sh 会去那里找脚本
-unset CODING_AGENT_RELEASE_ROOT CODING_AGENT_RELEASE_LEASE_FD
+unset CODING_AGENT_RELEASE_ROOT CODING_AGENT_RELEASE_LEASE_FD CAVIL_DEPLOY_ROOT DISPATCH_PROMPT_KIND DISPATCH_WORKER_AGENT   # worker 会话里跑时继承的这几个会把命令指向线上那份安装
 exec 8>&2
 # shellcheck source=../scripts/_lib.sh
 source "$REPO_DIR/scripts/_lib.sh"
@@ -394,7 +394,7 @@ for name in new-issue issue-comment pr-comment review; do
     # 开始时刻取夹具起点：真驱动读夹具会话，AI 时间应是夹具算好的 31 秒
     rendered=$(printf '%s' "$block" | sed -e "s|\${COMMENT_FOOTER_CMD}|${COMMENT_FOOTER_CMD:-}|g" \
         -e "s|\${TASK_START_TS}|$(date -d "@$START" '+%Y-%m-%d %H:%M:%S')|g" \
-        -e "s|\${WORK_NUM}|7|g" -e "s|^BODY=.*|BODY=$TMP/body-$name.md|")
+        -e "s|\${WORK_NUM}|7|g" -e "s|/path/to/body.md|$TMP/body-$name.md|g")
     printf '## 正文\n' > "$TMP/body-$name.md"
     (cd "$WT" && HOME="$TMP/home" CLAUDE_PROJECTS_DIR="$TMP/home/.claude/projects" bash -c "$rendered") 2>/dev/null
     got="$TMP/body-$name.md.footer"
@@ -468,21 +468,22 @@ N_NEW=987601; N_CMT=987602; N_PR=987603
 dispatch_check() { # $1 = scripts 目录；打印 PASS / FAIL
     local sd="$1" kind f
     prompt_files_clear "${sd%/scripts}" "$DSB/state"
-    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
+    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT -u CAVIL_DEPLOY_ROOT -u DISPATCH_PROMPT_KIND -u DISPATCH_WORKER_AGENT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-new-issue.sh" "$N_NEW") >/dev/null 2>&1
-    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
+    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT -u CAVIL_DEPLOY_ROOT -u DISPATCH_PROMPT_KIND -u DISPATCH_WORKER_AGENT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-issue-comment.sh" "$N_CMT" 0) >/dev/null 2>&1
-    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
+    (cd "$DSB/project" && env -u CODING_AGENT_RELEASE_ROOT -u CAVIL_DEPLOY_ROOT -u DISPATCH_PROMPT_KIND -u DISPATCH_WORKER_AGENT HOME="$TMP/home" CODING_AGENT_CONFIG="$DSB/config" \
         bash "$sd/dispatch-pr-comment.sh" "$N_PR" "feature/issue-$N_PR" 0) >/dev/null 2>&1
     for kind in new-issue:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" new "$N_NEW")" \
                 issue-comment:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" cmt "$N_CMT" 0)" \
                 pr-comment:"$(prompt_file_of "${sd%/scripts}" "$DSB/state" pr "$N_PR")"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ ! -s "$f" ]; then echo "FAIL dispatch_$kind :: 没写出 prompt"
-        elif grep -q 'COMMENT_FOOTER_CMD' "$f"; then echo "FAIL dispatch_$kind :: 占位没被换掉"
-        elif grep -q "^FOOTER=\$(bash '$sd/drivers/token-usage/comment-footer.sh' --agent 'claude' --driver '[^']*/claude.sh' --config '$DSB/config' --start \"20[0-9-]* [0-9:]*\" --wt \"[0-9]*\")\$" "$f"; then
+        elif grep -q 'COMMENT_FOOTER_CMD\|CAVIL_STEP_DIR' "$f"; then echo "FAIL dispatch_$kind :: 占位没被换掉"
+        elif ! grep -qF "out=\$(bash '$sd'/\"\$1\".sh" "$f"; then echo "FAIL dispatch_$kind :: 步骤脚本目录没换成 $sd（GitHub#599）"
+        elif grep -q "^ *bash '$sd/drivers/token-usage/comment-footer.sh' --agent 'claude' --driver '[^']*/claude.sh' --config '$DSB/config' --start \"20[0-9-]* [0-9:]*\" --wt \"[0-9]*\" --body /path/to/body.md\$" "$f"; then
             echo "PASS dispatch_$kind"
-        else echo "FAIL dispatch_$kind :: 渲染出的命令不对：$(grep -m1 '^FOOTER=' "$f")"; fi
+        else echo "FAIL dispatch_$kind :: 渲染出的命令不对：$(grep -m1 'comment-footer.sh' "$f")"; fi
     done
     prompt_files_clear "${sd%/scripts}" "$DSB/state"
 }

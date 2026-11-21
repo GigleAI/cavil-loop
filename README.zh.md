@@ -4,6 +4,8 @@
 
 > [English](README.md) · **中文**
 
+> **基于 GitHub issue / PR 的轻量多 agent 并行调度器。**
+>
 > 对 AI 批量提需求，异步 review PR，就像和真人同事一起工作一样。
 >
 > 把「陪 AI 一步步写代码」变成「睡一觉起来批 PR」。
@@ -16,7 +18,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 | | 是什么 | 需要什么 | 从哪开始 |
 |---|---|---|---|
-| **daemon** | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。这张表以下讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
+| **daemon** | 本机后台轮询：给 issue 打 `pending/agent`，本机的 AI agent 接走，写方案、开 PR，过程都留在 GitHub 上。除「它是什么」里的客户端截图和「客户端」一节外，下文讲的都是它。 | `git`、`gh`、`tmux`、`jq`、`flock`、一个 agent 命令行程序；Linux 或 macOS | [快速开始](#快速开始) |
 | **Cavil Loop 桌面客户端** | 可以单独使用的 GitHub issue / PR 客户端：issue 和关联的 PR 放在一起，按迭代 / 里程碑分组，把 issue 之间的依赖画成图（可跨仓库）。也能替人安装 daemon、把条目交给它。 | 一个 GitHub 账号、一台 Mac 或 Windows 电脑——不需要 daemon、不需要 GitHub Project、不需要命令行程序 | [客户端使用说明](docs/client.zh.md) |
 
 两样东西互不依赖，可以只用其中一样；搭配使用更佳。
@@ -25,7 +27,16 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
 
 ![在 GitHub 上给 Agent 建 issue，review PR](./docs/github_project.png)
 
-一个用 GitHub label 驱动的 **AI coding agent 工作流**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）。以 [Agent Skill](https://agentskills.io/home) 形式安装在你本机——后台每 60 秒轮询一次 GitHub，看到约定的标签触发，就在独立 git worktree 里起一个本机 AI worker，让它做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。
+一个**基于 GitHub issue / PR 的轻量多 agent 并行调度器**（支持 Claude Code / OpenCode / Codex / 你自己的 driver）：给 issue 打上约定的标签就是派工，本机的 AI agent 接走，做设计 / 写代码 / review 的活，过程和结果通过 GitHub 评论和 PR commit 留痕。不同的工作项各有独立的 git worktree 和分支，互不干扰；配置允许、又有空闲名额时同时处理，名额满了就排队（同时运行几个由 `MAX_CONCURRENT_WORKERS` 决定，模板默认 1，即一次一个）。issue 后续开出的 PR 接着在原工作项里做，不另起一份。
+
+「轻量」是说它只有本机一个定时轮询脚本加上 GitHub：以 [Agent Skill](https://agentskills.io/home) 形式安装在你本机，后台每 60 秒轮询一次 GitHub，不需要服务器、数据库，也没有要学的新网页界面。
+
+想在一个窗口里看全部条目，可以配上桌面客户端（可单独使用，见[客户端](#客户端桌面看板)）：
+
+| 看板 | 表格 | 依赖图 |
+|---|---|---|
+| ![看板：按状态分列，PR 跟在关联的 issue 下面](docs/client-screens/board.png) | ![表格：按分组列出条目，格子里直接改](docs/client-screens/table.png) | ![依赖图：父 issue 画成框，阻塞关系画成箭头](docs/client-screens/graph.png) |
+| issue 和关联的 PR 放在一起，按状态 / 迭代 / 里程碑分列 | 按仓库 / 迭代 / 状态分组，子 issue 缩进显示进度 | 父子关系画成框，阻塞关系画成箭头，可跨仓库 |
 
 三个前置认知：
 
@@ -52,7 +63,7 @@ Cavil 是《太空堡垒卡拉狄加》（*Battlestar Galactica*）里那个说�
      AI 自己再下一轮（你这边不用动）。
 ```
 
-N 个需求**真并行**——每个 issue 独立 worker / worktree / git 分支，互不阻塞。进度看 GitHub 标签一眼清楚。手机端 [GitHub 官方 app](https://github.com/mobile) 也能 review + 评论 + 改标签，通勤路上也能推进。
+N 个需求**可以并行**——每个 issue 独立 worker / worktree / git 分支，互不干扰；同时跑几个由 `MAX_CONCURRENT_WORKERS` 决定（模板默认 1，名额满了就按优先级排队）。进度看 GitHub 标签一眼清楚。手机端 [GitHub 官方 app](https://github.com/mobile) 也能 review + 评论 + 改标签，通勤路上也能推进。
 
 ### 2. 全过程 + 交付物可回溯
 
@@ -245,9 +256,7 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 - **修改直接发给 GitHub**：标签、迭代、状态、里程碑、回复、新建 issue、关闭、合并；详情浮在看板右侧，也能开成标签页。
 - **接上 daemon（可选）**：在设置里安装 daemon、把仓库接上去，一个按钮把条目交给 agent 或托管，`pending/human` 有新条目时发系统通知。
 
-| 看板 | 表格 | 依赖图 |
-|---|---|---|
-| ![看板](docs/client-screens/board.png) | ![表格](docs/client-screens/table.png) | ![依赖图](docs/client-screens/graph.png) |
+三个视图的截图见上方「[它是什么](#它是什么)」。
 
 登录走浏览器授权（GitHub 设备授权），凭据存进 macOS 钥匙串（Windows 上存进 Windows 凭据管理器）。默认只和 GitHub 通信（`api.github.com`、`github.com`，以及 GitHub 自己的头像、图片、仓库文件、发版下载地址）；只有人用到设置里的「远程 daemon」时才会连 Tailscale 上的机器：打开「添加远程 daemon」窗口时，向本机 Tailscale 网络里每台在线设备问一声远程入口开没开；配对时只连人选定的那一台；之后只连已配对的机器——都走 HTTPS、只认 `*.ts.net` 机器名、不带 GitHub 凭据（细节见[使用说明](docs/client.zh.md#网络凭据和离线)）。替人安装、接上 daemon 时，客户端在本机代跑 daemon 自带的脚本和几条固定的 `git` / `systemctl` / `launchctl` 命令；窗口只能发固定请求，后台逐个校验参数，客户端自己的 GitHub 凭据不交给 daemon，daemon 继续用 `gh` 自己的登录。
 

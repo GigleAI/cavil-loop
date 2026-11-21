@@ -78,7 +78,7 @@ check_review() {
 
     l_rule=$(line_of "$f" "$RULE_HEAD")
     l_step=$(line_of "$f" "3. 在该目标发一条 review 结论评论")
-    l_flip=$(line_of "$f" "5. 通过：REST 翻")
+    l_flip=$(line_of "$f" "5. 翻 label（")
     { [ -n "$l_step" ] && [ "$l_rule" = "$l_step" ]; } || echo "$tag: 规矩不在发结论评论那一步"
     { [ -n "$l_flip" ] && [ "$l_rule" -lt "$l_flip" ]; } || echo "$tag: 规矩排在翻 label 之后"
 

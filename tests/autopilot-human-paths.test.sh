@@ -64,6 +64,8 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 mkdir -p "$SANDBOX/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old"
 rm -rf "$SANDBOX/old/prompts"; cp -r "$REPO_DIR/prompts" "$SANDBOX/old/prompts"
+# GitHub#599 的新占位：旧派工脚本照新脚本的办法换掉（tests/lib/compat.sh）
+compat_step_dir_patch "$SANDBOX/old" || exit 1
 
 H1=1111111111111111111111111111111111111111
 H2=2222222222222222222222222222222222222222

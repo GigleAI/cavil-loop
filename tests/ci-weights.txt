@@ -97,6 +97,7 @@ session-switch-keeps-client 78
 setup-label-colors 3
 skill-deploy 8
 smoke 7
+step-scripts 6
 stuck-worker:1/6 162
 stuck-worker:2/6 250
 stuck-worker:3/6 346

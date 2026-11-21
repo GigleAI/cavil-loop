@@ -936,6 +936,8 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 OLD="$TMP/old"; mkdir -p "$OLD" "$TMP/newcopy"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts | tar -x -C "$OLD"
 cp -r "$REPO_DIR/prompts" "$OLD/"
+# GitHub#599 的新占位：旧派工脚本照新脚本的办法换掉（tests/lib/compat.sh）
+compat_step_dir_patch "$OLD" || exit 1
 cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$TMP/newcopy/"
 # 旧脚本还写 /tmp 下的固定提示词文件名时，改到本次运行自己的目录（GitHub#396）
 prompt_tree_isolate "$OLD" "$TMP/old-prompts" || { echo "❌ 改动前的派工脚本认不出提示词写在哪"; exit 1; }
