@@ -10,7 +10,7 @@ import { TabBar } from './TabBar';
 import { TopBar, useWindowFrame } from './TopBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { OPENS_ITEM } from './outsideClick';
-import { HOME, afterClose, autoCloseVerdict, handOffCloseVerdict, stepTab, tabAt, type AutoCloseKind } from '../shared/tabs';
+import { HOME, afterClose, autoCloseVerdict, handOffCloseVerdict, replyLeftAfterHandOff, stepTab, tabAt, type AutoCloseKind } from '../shared/tabs';
 import { NoticeArea } from './NoticeArea';
 import { OpenMenu, type OpenHow, type OpenMenuAt } from './OpenMenu';
 import type { WriteAction } from '../shared/actions';
@@ -152,9 +152,11 @@ export function App() {
   /** the closes started from a detail of this account and not decided yet: operation id → where */
   const closeOrigins = useRef(new Map<string, CloseOrigin>());
   /** GitHub#633: which of those are a hand-over (交给 agent / 托管), and whether the panel held other unsent text when it was accepted */
-  const handOffs = useRef(new Map<string, { kind: Exclude<AutoCloseKind, 'close'>; dirty: boolean }>());
+  const handOffs = useRef(new Map<string, { kind: Exclude<AutoCloseKind, 'close'> }>());
   /** closes / hand-overs that went through while their place held unsent text: the place stayed and says why */
   const [held, setHeld] = useState<Held[]>([]);
+  /** GitHub#633: reply draft numbers that went with an accepted hand-over (numbers are never reused: safe for every detail) */
+  const [droppedReplies, setDroppedReplies] = useState<number[]>([]);
   const [menu, setMenu] = useState<OpenMenuAt | null>(null);
   const [leftNote, setLeftNote] = useState<{ note: ResultNote; about?: WriteAction; seq: number } | null>(null);
   /** `keepFocus` (GitHub#467): the keys are being typed into the window's top row, which does not go behind — leave its focus */
@@ -239,10 +241,11 @@ export function App() {
         o.where === 'tab'
           ? { present: keysRef.current.includes(o.key) && tabLife.current.get(o.key) === o.life, dirty: draftDirty(drafts.current.get(o.key)) }
           : { present: f !== null && f.key === o.key && f.n === o.n, dirty: floatDraft.current?.key === o.key && draftDirty(floatDraft.current.draft) };
-      // GitHub#633: a hand-over is decided at acceptance, on the panel's own view of what is unsent (it knows
-      // which reply text went with the operation); a close waits for GitHub (GitHub#447)
+      // GitHub#633: a hand-over is decided at once, on the same place and the same kept draft as a close — the
+      // draft as it is now (the detail may have been left and come back meanwhile, with new text in it), the
+      // reply that went with the operation already taken out of it (`dropSentReply`); a close waits for GitHub (GitHub#447)
       const h = handOffs.current.get(id);
-      const v = h ? handOffCloseVerdict({ present: place.present, dirty: h.dirty }) : autoCloseVerdict(ops.find((r) => r.id === id), place);
+      const v = h ? handOffCloseVerdict(place) : autoCloseVerdict(ops.find((r) => r.id === id), place);
       if (v === 'wait') continue;
       closeOrigins.current.delete(id);
       handOffs.current.delete(id);
@@ -261,22 +264,37 @@ export function App() {
   }, [ops]);
   /** GitHub#633: the place's kept draft, if it still holds the reply draft numbered `ver`, loses that reply */
   const dropSentReply = (o: CloseOrigin, ver: number) => {
-    const clear = (d: TabDraft): TabDraft => (d.replyVer === ver ? { ...d, reply: '', replyFromOp: null, replyVer: undefined } : d);
+    // the rule is replyLeftAfterHandOff's: by the draft number only, never by the words
+    const clear = (d: TabDraft): TabDraft => {
+      const left = replyLeftAfterHandOff(ver, { n: d.replyVer ?? -1, text: d.reply });
+      return left === d.reply ? d : { ...d, reply: left, replyFromOp: null, replyVer: undefined };
+    };
+    let dropped = false;
     if (o.where === 'tab') {
       const d = drafts.current.get(o.key);
-      if (d && tabLife.current.get(o.key) === o.life) drafts.current.set(o.key, clear(d));
+      if (d && tabLife.current.get(o.key) === o.life) {
+        const c = clear(d);
+        dropped = c !== d;
+        drafts.current.set(o.key, c);
+      }
     } else {
       const f = floatRef.current;
       const d = floatDraft.current;
-      if (f && f.key === o.key && f.n === o.n && d && d.key === o.key) floatDraft.current = { key: d.key, draft: clear(d.draft) };
+      if (f && f.key === o.key && f.n === o.n && d && d.key === o.key) {
+        const c = clear(d.draft);
+        dropped = c !== d.draft;
+        floatDraft.current = { key: d.key, draft: c };
+      }
     }
+    // a detail mounted again from that draft before the client answered still shows the words: it drops them too
+    if (dropped) setDroppedReplies((v) => [...v.slice(-19), ver]);
   };
   /** a detail of this account (`g`) started a close — or (GitHub#633) a hand-over, `handOff` — from `o` */
   const closeStarted = (g: number, o: CloseOrigin) => (id: string, handOff?: HandOffStart) => {
     if (accountGen.current !== g) return;
     closeOrigins.current.set(id, o);
     if (handOff) {
-      handOffs.current.set(id, { kind: handOff.kind, dirty: handOff.dirty });
+      handOffs.current.set(id, { kind: handOff.kind });
       // GitHub#633: the reply text that went with it lives in the operation now. The place's kept draft (the
       // detail may have gone before the client answered: another tab in front, the panel hidden behind one)
       // drops it — only that draft, by its number; later text, even the same words, is another draft and stays
@@ -521,6 +539,7 @@ export function App() {
                       intent={float.intent}
                       onCloseStarted={closeStarted(gen, { where: 'float', key: float.key, n: float.n })}
                       autoCloseHeld={heldFor(held, { where: 'float', key: float.key, n: float.n }, setHeld)}
+                      droppedReplies={droppedReplies}
                       key={`${gen}:float:${float.key}:${float.n}`}
                       draft={floatDraft.current?.key === float.key ? floatDraft.current.draft : null}
                       onDraft={(d) => {
@@ -556,6 +575,7 @@ export function App() {
                 intent={opening.intent}
                 onCloseStarted={closeStarted(gen, { where: 'tab', key: front, life: lifeOf(front) })}
                 autoCloseHeld={heldFor(held, { where: 'tab', key: front, life: lifeOf(front) }, setHeld)}
+                droppedReplies={droppedReplies}
                 key={`${gen}:${front}:${opening.n}`}
                 draft={drafts.current.get(front) ?? null}
                 onDraft={(d) => {

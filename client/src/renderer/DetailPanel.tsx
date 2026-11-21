@@ -29,7 +29,7 @@ import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '.
 import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
-import { replyLeftAfterHandOff, type AutoCloseKind } from '../shared/tabs';
+import type { AutoCloseKind } from '../shared/tabs';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
@@ -78,7 +78,7 @@ let replyDraftSeq = 0;
 export const nextReplyDraft = (): number => ++replyDraftSeq;
 
 /** GitHub#633: a hand-over the client accepted, as the detail it was started from reports it to the window */
-export type HandOffStart = { kind: 'handBack' | 'autopilot'; dirty: boolean; sentVer: number | null };
+export type HandOffStart = { kind: 'handBack' | 'autopilot'; sentVer: number | null };
 
 /** Text that closing the tab would lose. */
 export function draftDirty(d: TabDraft | null | undefined): boolean {
@@ -424,6 +424,7 @@ export function DetailPanel({
   onDraft,
   onCloseStarted,
   autoCloseHeld = null,
+  droppedReplies = [],
 }: {
   itemKey: string;
   state: AppState;
@@ -453,6 +454,11 @@ export function DetailPanel({
   onCloseStarted?: (opId: string, handOff?: HandOffStart) => void;
   /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
   autoCloseHeld?: { onDismiss: () => void; kind: AutoCloseKind } | null;
+  /**
+   * GitHub#633: reply draft numbers that went with an accepted hand-over. A detail showing one of them (mounted
+   * again from the kept draft before the client answered) empties its reply box: those words live in the operation
+   */
+  droppedReplies?: readonly number[];
 }) {
   // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
   // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
@@ -491,9 +497,6 @@ export function DetailPanel({
   // mounted again from a kept draft: the same draft (its number goes with it); otherwise a new one
   if (replyVer.current === null) replyVer.current = { text: reply, n: draft?.replyVer !== undefined && draft.reply === reply ? draft.replyVer : nextReplyDraft() };
   else if (replyVer.current.text !== reply) replyVer.current = { text: reply, n: nextReplyDraft() };
-  /** the unsent text as it is now — read after an await, where the render's own values are old */
-  const unsentNow = useRef({ reply, editing, titleEdit });
-  unsentNow.current = { reply, editing, titleEdit };
   const [titleNote, setTitleNote] = useState<ResultNote | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const titleOpen = titleEdit !== null;
@@ -535,6 +538,13 @@ export function DetailPanel({
     const inFlight = sendingReply !== null && sendingReply === reply;
     onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit, replyVer: replyVer.current!.n });
   }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
+  useEffect(() => {
+    if (replyVer.current && droppedReplies.includes(replyVer.current.n) && reply !== '') {
+      setReply('');
+      setReplyFromOp(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedReplies]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
   const offlineWhy = canWrite ? undefined : t('离线时不能修改');
@@ -691,15 +701,13 @@ export function DetailPanel({
   /**
    * GitHub#633: a hand-over (交给 agent / 托管) the client accepted puts this tab / panel away at once (the
    * maintainer's choice in #633: no waiting for GitHub; its result is said in the window's notice area).
-   * It stays, with the line saying why, while it holds text not sent: an edit of a comment or the title,
-   * or reply text that did not go with the operation (`boxSent`: the reply box's draft number that did).
-   * Runs even when this opening has gone meanwhile (unmounted: its last values are in the refs, and the
-   * window still holds its draft); `sentVer` lets the window drop exactly the draft that went with it.
+   * Runs even when this opening has gone meanwhile. Whether the place holds text not sent is decided by the
+   * window, on the place's kept draft as it is then (never on this detail's own view, which may be an
+   * unmounted one: PR #638 review round 2); `sentVer` (the reply box's draft number that went with the
+   * operation, see `nextReplyDraft`) lets it take exactly that draft out first.
    */
   const handOffStarted = (kind: 'handBack' | 'autopilot', boxSent: number | null) => (id: string) => {
-    const now = unsentNow.current;
-    const replyLeft = replyLeftAfterHandOff(boxSent, { n: replyVer.current!.n, text: now.reply });
-    onCloseStarted?.(id, { kind, dirty: draftDirty({ reply: replyLeft, replyFromOp: null, editing: now.editing, titleEdit: now.titleEdit }), sentVer: boxSent });
+    onCloseStarted?.(id, { kind, sentVer: boxSent });
   };
   /**
    * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only

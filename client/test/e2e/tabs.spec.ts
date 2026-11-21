@@ -1457,3 +1457,60 @@ test('GitHub#633 (PR #638 code review round 1): the reply box emptied and the sa
   await shot(page, '633-03-new-draft-kept');
   await app.close();
 });
+
+test('GitHub#633 (PR #638 code review round 2): left and come back to the tab before the client answered, new words typed there — the tab stays and says why, the new words stay, the first ones went out once', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('reply-input').fill('按这个方向做');
+  const gate = await holdAcceptance(page);
+  await detail(page).getByTestId('hand-back').click();
+  await expect.poll(() => gate.answered(), { timeout: 15_000 }).toBe(1);
+  // away to the board and back: the tab's detail is mounted again from its kept draft
+  await home(page).click();
+  await expect(detail(page)).toHaveCount(0);
+  await tab(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  const box = detail(page).getByTestId('reply-input');
+  await box.fill('另起一段新的话');
+  await gate.release();
+  // the operation really went out, once
+  await expect.poll(() => posted(A, 'comments').length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => posted(A, 'labels').length, { timeout: 15_000 }).toBe(1);
+  // the tab stays, in front, with its new words and the line saying why
+  await expect(held(page)).toBeVisible({ timeout: 15_000 });
+  await expect(held(page)).toHaveAttribute('data-mode', 'tab');
+  await expect(held(page)).toContainText('已开始交给 agent');
+  await expect(tab(page, A)).toHaveAttribute('data-front', 'yes');
+  await expect(box).toHaveValue('另起一段新的话');
+  await page.waitForTimeout(500);
+  await expect(tab(page, A)).toHaveCount(1);
+  expect(posted(A, 'comments')).toHaveLength(1);
+  await app.close();
+});
+
+test('GitHub#633 (PR #638 code review round 2): left and come back to the tab before the client answered, nothing typed — the tab is put away and the words that went out do not come back', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await signIn(page);
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page).getByTestId('hand-back')).toBeEnabled({ timeout: 15_000 });
+  await detail(page).getByTestId('reply-input').fill('按这个方向做');
+  const gate = await holdAcceptance(page);
+  await detail(page).getByTestId('hand-back').click();
+  await expect.poll(() => gate.answered(), { timeout: 15_000 }).toBe(1);
+  await home(page).click();
+  await tab(page, A).click();
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await gate.release();
+  await expect.poll(() => posted(A, 'comments').length, { timeout: 15_000 }).toBe(1);
+  await expect(tab(page, A)).toHaveCount(0, { timeout: 15_000 });
+  await row(page, A).click({ modifiers: ['Control'] });
+  await expect(detail(page)).toHaveAttribute('data-key', K(A));
+  await expect(detail(page).getByTestId('reply-input')).toHaveValue('');
+  expect(posted(A, 'comments')).toHaveLength(1);
+  await app.close();
+});
