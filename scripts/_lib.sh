@@ -575,13 +575,15 @@ requester_bot_ident() {   # <item|pr>，标准输入：条目 / PR 的 JSON
     j=$(cat)
     if [ "$1" = item ]; then
         # 正文决定 PR 绑哪个 issue、是不是拆分子项（拆分标记），作者和父 issue 地址也是拆分判定的输入：
-        # 记的是这些输入本身（正文记指纹），不是判出来的结果——换了判法也不会漏比
+        # 记的是这些输入本身（正文记指纹），不是判出来的结果——换了判法也不会漏比。
+        # 正文必须真的在：字符串或 null（GitHub 对空正文给 null）算读到了，缺这个字段或类型不对 = 读不全（复审第 6 轮）；
+        # 父 issue 地址缺字段或 null = 没有父（和 split_parent_check 同一条），别的类型 = 读不全
         head=$(printf '%s' "$j" | jq -r '
             select((.state | type) == "string" and (.labels | type) == "array"
                 and all(.labels[]; (.name | type) == "string" and .name != "")
                 and (.user.login | type) == "string" and .user.login != ""
-                and ((.parent_issue_url // "") | type) == "string"
-                and ((.body // "") | type) == "string")
+                and ((.parent_issue_url | type) == "string" or (.parent_issue_url | type) == "null")
+                and has("body") and ((.body | type) == "string" or (.body | type) == "null"))
             | [.state, ([.labels[] | .name] | sort | join(",")), .user.login, (.parent_issue_url // "")] | join(";")' 2>/dev/null) || head=""
         [ -n "$head" ] || return 0
         h=$(printf '%s' "$j" | jq -j '.body // ""' 2>/dev/null | cfg_sha256) || h=""

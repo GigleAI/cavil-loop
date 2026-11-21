@@ -584,6 +584,33 @@ Closes #7" "autopilot"
         chk "  到达性 · 补打函数确实读过 PR #8" "$([ "$(n_calls "$R/pulls/8 ")$(n_calls "$R/pulls/8\$")" != 00 ] && echo yes || echo no)" yes
     done
 
+    # 正文读不全（字段缺失 / 类型不对）≠ 正文明确为空（复审第 6 轮，维护者选 A）：
+    # 第一次判定看到正文，写前两次现读都读不到 → 本轮不补打；读取恢复后下一轮补打一次。正文明确为空（""、null）照常补打
+    for bad in missing false; do
+        fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+        mkshim 9
+        mkpr 9 feature/x "" ""; waitid 9 8961 8962
+        mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+        case "$bad" in
+            missing) echo "jq '.[\"9\"] |= del(.body)' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_1" ;;
+            false)   echo "jq '.[\"9\"].body = false' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_1" ;;
+        esac
+        tick
+        chk "greedy PR · 写前现读正文「$bad」→ 本轮不补打" "$(backfills 9)" 0
+        chk "  到达性 · 补打函数确实现读过" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge 1 ] && echo yes || echo no)" yes
+        jset items.json '.["9"].body = ""'
+        tick
+        chk "  正文读取恢复 → 下一轮补打一次" "$(backfills 9)" 1
+    done
+    for empty in '""' null; do
+        fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+        mkpr 9 feature/x "" ""; waitid 9 8961 8962
+        jset items.json ".[\"9\"].body = $empty"
+        mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+        tick
+        chk "greedy PR · 正文明确为空（$empty）→ 补打一次" "$(backfills 9)" 1
+    done
+
     section "【6d3】只有 shasum、没有 sha256sum 的机器：带说明的答复照样补打"
     fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
     mkdir -p "$W/nosha"
