@@ -19,7 +19,7 @@ import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan,
 import { itemSorter } from './sort';
 import { repoComparator } from '../shared/repoOrder';
 import { t, tKey, zhKey } from '../shared/i18n';
-import { listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
+import { carryIssues, listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
 
 export const GROUP_NONE_KEY = 'none';
 
@@ -31,6 +31,11 @@ export interface Row {
   depth: number;
   /** did not match the search; shown only because an issue above it in this group did (GitHub#368) */
   pulled: boolean;
+  /**
+   * GitHub#622: an issue that did not match the search, shown because a matched PR goes under it. A row can be
+   * both this and `pulled` (a sub-issue the hierarchy brings in that is also the PR's issue): one row, both reasons.
+   */
+  carried: boolean;
   /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null otherwise */
   under: string | null;
   /** what dragging this row to another group changes: the same as the board card in that column (GitHub#294) */
@@ -105,6 +110,8 @@ export interface Table {
   matchCount: number;
   /** distinct items shown as pulled rows anywhere in the table (GitHub#368) */
   pulledCount: number;
+  /** GitHub#622: distinct issues shown anywhere in the table because a matched PR goes under them */
+  carriedCount: number;
   /**
    * GitHub#587: the one picked repository is a repository source with nothing to show — the table
    * says so in a line of its own (with a "+" unless it was never read). Absent otherwise.
@@ -222,9 +229,10 @@ function arrange(
   follow: Map<string, string> | undefined,
   parents: Map<string, string>,
   pulled: ReadonlySet<string>,
+  carried: ReadonlySet<string>,
 ): Row[] {
   const sorted = [...items].sort(sort);
-  const row = (item: Item, depth: number, under: string | null): Row => ({ id: `${item.key}@${groupKey}`, item, depth, under, pulled: pulled.has(item.key), projectKeys: [], projectTitles: [] });
+  const row = (item: Item, depth: number, under: string | null): Row => ({ id: `${item.key}@${groupKey}`, item, depth, under, pulled: pulled.has(item.key), carried: carried.has(item.key), projectKeys: [], projectTitles: [] });
   if (!hierarchy) {
     if (!prs) return sorted.map((item) => row(item, 0, null));
     return nestPrs(sorted, (it) => it, sortSetting, follow).map(({ entry, under }) => row(entry, under ? 1 : 0, under));
@@ -294,6 +302,8 @@ interface Pull {
   matched: ReadonlySet<string>;
   /** the picked repository (lower-cased); null = every repository */
   slice: string | null;
+  /** GitHub#622: issues shown only because a matched PR goes under them — nothing is walked down from them */
+  stop: ReadonlySet<string>;
 }
 
 /** A group's items plus the pulled ones: walking down from the items already in it, stopping at a matched or sliced-away sub-issue. */
@@ -303,6 +313,7 @@ function withPulled(list: Item[], pull: Pull | null): { items: Item[]; pulled: S
   const inGroup = new Set(list.map((it) => it.key));
   const out = [...list];
   for (let i = 0; i < out.length; i++) {
+    if (pull.stop.has(out[i].key)) continue;
     for (const c of pull.children.get(out[i].key) ?? []) {
       if (inGroup.has(c.key) || pull.matched.has(c.key)) continue;
       if (pull.slice !== null && c.repo.toLowerCase() !== pull.slice) continue;
@@ -346,6 +357,11 @@ export function buildTable(
   all: readonly Item[] = items,
   /** GitHub#587: the repository sources shown on the board; each keeps its place when it has nothing to show */
   sources: readonly RepoSource[] = [],
+  /**
+   * GitHub#622: a matched PR whose issue did not match brings that issue (from `all`) along (`carryIssues`,
+   * with PRs under issues on); false = nothing is brought along (no search).
+   */
+  carry = false,
 ): Table {
   const compareRepo = repoComparator(repoOrder);
   // GitHub#587: the repository sources by their lower-cased name, the one key every repository list uses
@@ -394,26 +410,43 @@ export function buildTable(
       const c = byKey.get(child);
       if (c && c.kind === 'issue') children.set(parent, [...(children.get(parent) ?? []), c]);
     }
-    pull = { children, matched: new Set(items.map((it) => it.key)), slice: slice === null ? null : slice.toLowerCase() };
+    pull = { children, matched: new Set(items.map((it) => it.key)), slice: slice === null ? null : slice.toLowerCase(), stop: new Set() };
   }
   const byKey = new Map(projects.map((p) => [p.key, p]));
   // GitHub#275: a PR goes to the group(s) of the issue it is shown under, never by its own value then.
   // An issue on none of the selected Projects (iteration / status grouping) does not pull its PRs into "no value".
   const boardGrouping = settings.groupBy === 'iteration' || settings.groupBy === 'status';
-  const follow = prsUnderIssues
-    ? prFollow([...picked].sort(sort), (it) => !boardGrouping || it.projects.some((m) => byKey.has(m.projectKey)))
-    : new Map<string, string>();
-  const pickedByKey = new Map(picked.map((it) => [it.key, it]));
-  /** whose value decides where an item goes: its own, or the issue it follows */
-  const placedBy = (it: Item) => pickedByKey.get(follow.get(it.key) ?? '') ?? it;
-  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy, compareRepo, parents, pull);
+  const canHost = (it: Item) => !boardGrouping || it.projects.some((m) => byKey.has(m.projectKey));
+  const follow = prsUnderIssues ? prFollow([...picked].sort(sort), canHost) : new Map<string, string>();
+  // GitHub#622: a picked PR with no picked issue to go under brings its issue along. One the hierarchy already
+  // brings in under a matched issue (`anchor`) is not placed by itself: it shows up wherever that issue does,
+  // and the PR follows the matched issue there. Any other is placed by its own value and walked down from never.
+  const carried = prsUnderIssues && carry
+    ? carryIssues({ shown: picked, matched: new Set(items.map((it) => it.key)), all, order: sort, canHost, parents: pull ? parents : null, repo: slice === null ? null : slice.toLowerCase() })
+    : null;
+  const allByKey = new Map(all.map((it) => [it.key, it]));
+  const ownCarried = carried ? [...new Set(carried.hosts.values())].filter((k) => !carried.anchor.has(k)).map((k) => allByKey.get(k)!) : [];
+  for (const [pr, host] of carried?.hosts ?? []) follow.set(pr, host);
+  if (pull && ownCarried.length) pull.stop = new Set(ownCarried.map((it) => it.key));
+  const carriedKeys: ReadonlySet<string> = new Set(carried ? carried.hosts.values() : []);
+  /** what is laid out: the picked items plus the carried issues placed by their own value */
+  const placed = ownCarried.length ? [...picked, ...ownCarried] : picked;
+  const pickedByKey = new Map(placed.map((it) => [it.key, it]));
+  /** whose value decides where an item goes: its own, or the issue it follows (that issue's matched anchor, GitHub#622) */
+  const placedBy = (it: Item) => {
+    const host = follow.get(it.key);
+    return pickedByKey.get(host === undefined ? '' : (carried?.anchor.get(host) ?? host)) ?? it;
+  };
+  const group = (list: Item[], prefix: string, section: string | null) => groupItems(list, prefix, section, settings, byKey, today, sort, prsUnderIssues, follow, placedBy, compareRepo, parents, pull, carriedKeys);
   /** distinct items shown as pulled rows in these groups */
   const pulledIn = (gs: Group[]) => new Set(gs.flatMap((g) => g.rows.filter((r) => r.pulled).map((r) => r.item.key))).size;
+  /** distinct items shown as carried rows in these groups (GitHub#622) */
+  const carriedIn = (gs: Group[]) => new Set(gs.flatMap((g) => g.rows.filter((r) => r.carried).map((r) => r.item.key))).size;
 
   // "all repositories" picked in the slice list: repository first, then the chosen grouping inside it (GitHub#213)
   if (settings.sliceByRepo && !settings.slice && settings.groupBy !== 'repo') {
     const byRepo = new Map<string, { title: string; items: Item[] }>();
-    for (const it of picked) {
+    for (const it of placed) {
       // a PR from another repository follows its issue into the issue's repository (as on the board's swimlanes)
       const home = placedBy(it).repo;
       const k = repoKey(home);
@@ -423,6 +456,8 @@ export function buildTable(
     }
     const repos = [...byRepo].map(([key, r]): RepoSection => {
       const groups = group(r.items, `${key}|`, key);
+      // distinct items in this section: what was placed here, plus the pulled rows (a carried issue placed by its
+      // own value is among the placed; one the hierarchy brings in is a pulled row) — each counted once
       return { key, title: r.title, itemCount: r.items.length + pulledIn(groups), groups };
     });
     // GitHub#587: a repository source with nothing to show keeps a section of its own, with no groups
@@ -430,10 +465,10 @@ export function buildTable(
       repos.push(s.read ? { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [] } : { key: repoKey(s.repo), title: s.repo, itemCount: 0, groups: [], unread: true });
     repos.sort((a, b) => compareRepo(a.title, b.title));
     const groups = repos.flatMap((r) => r.groups);
-    return { groups, repos, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
+    return { groups, repos, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups), carriedCount: carriedIn(groups) };
   }
-  const groups = group(picked, '', null);
-  const out: Table = { groups, repos: null, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups) };
+  const groups = group(placed, '', null);
+  const out: Table = { groups, repos: null, slices, slice, itemCount: picked.length, matchCount: items.length, pulledCount: pulledIn(groups), carriedCount: carriedIn(groups) };
   if (slice !== null) {
     // GitHub#587: the picked repository is a source with nothing to show
     const s = rowRepos(groups).has(slice.toLowerCase()) ? undefined : sourceOf.get(slice.toLowerCase());
@@ -470,10 +505,11 @@ function groupItems(
   compareRepo: (a: string, b: string) => number,
   parents: Map<string, string>,
   pull: Pull | null,
+  carried: ReadonlySet<string>,
 ): Group[] {
   const lay = (list: Item[], key: string) => {
     const w = withPulled(list, pull);
-    return arrange(w.items, key, settings.sort, sort, settings.hierarchy, prs, follow, parents, w.pulled);
+    return arrange(w.items, key, settings.sort, sort, settings.hierarchy, prs, follow, parents, w.pulled, carried);
   };
   if (settings.groupBy === 'none') {
     const key = `${prefix}all`;
