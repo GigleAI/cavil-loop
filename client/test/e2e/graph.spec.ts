@@ -702,7 +702,10 @@ test('GitHub#526: a registration on a pull request — the PR and its prerequisi
   await expect(edgeOf(page, TK(523), TK(521))).toHaveCount(1);
   await expect(page.locator('[data-testid="graph-edge"]')).toHaveCount(1);
   await expect(nodeOf(page, TK(521)).getByTestId('graph-blocked-by')).toHaveText('被 1 项挡住');
-  await expect(nodeOf(page, TK(523)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 1 项');
+  // GitHub#636: PR #521 closes #473 — joined by a dashed link, so #523 counts #473 behind the PR it holds
+  await expect(nodeOf(page, TK(523)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 2 项');
+  await expect(page.locator(`[data-testid="graph-link"][data-from="${TK(521)}"][data-to="${TK(473)}"]`)).toHaveCount(1);
+  await expect(nodeOf(page, TK(473)).getByTestId('graph-pr-blocked')).toHaveText('它的 PR 被挡住');
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(521))), 'PR #521 in #466').toBe(true);
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(473))), '#473 in #466').toBe(true);
   expect(await inside(boxOf(page, TK(466)), nodeOf(page, TK(523))), '#523 outside #466').toBe(false);
@@ -711,6 +714,102 @@ test('GitHub#526: a registration on a pull request — the PR and its prerequisi
   await expect(page.getByTestId('graph-hidden')).toHaveCount(0);
   await page.getByTestId('graph-fit').click();
   await shot(page, 'graph-13-pr-registration');
+  await app.close();
+});
+
+// GigleAI/cavil-loop#636: the chain that started it ran through a PR — #10 holds PR #12, PR #12 closes #11,
+// #11 holds #13 — and the graph drew "#10 → PR #12" and "#11 → #13" with nothing between. Synthetic data.
+test('GitHub#636: a PR is joined to the issue it closes by a dashed link; the count runs across it; the issue says its PR is blocked', async () => {
+  const R = 'octo-demo/sample';
+  const RK = (n: number) => `${R}#${n}`;
+  const issue = (n: number, labels: string[], blockedBy = 0) => ({
+    number: n,
+    node_id: `I_demo_${n}`,
+    title: `示例条目 ${n}`,
+    state: 'open',
+    html_url: `https://github.com/${R}/issues/${n}`,
+    updated_at: '2026-11-21T05:00:00Z',
+    labels: labels.map((name) => ({ name, color: 'c5def5' })),
+    assignees: [],
+    milestone: null,
+    user: { login: 'demo' },
+    parent_issue_url: null,
+    sub_issues_summary: { total: 0, completed: 0, percent_completed: 0 },
+    issue_dependencies_summary: { blocked_by: blockedBy, total_blocked_by: blockedBy, blocking: 0, total_blocking: 0 },
+  });
+  // PR #641 review round 1: the PR also refers to octo-demo/other#5, an issue in no source that is drawn only
+  // because #14 is blocked by it on GitHub — its card and its summary must both say its PR is blocked
+  const FAR = 'octo-demo/other#5';
+  env.fake.state.repos.set(R, [
+    issue(10, ['doing/agent']),
+    issue(11, ['pending/PR']),
+    { ...issue(12, ['pending/blocked']), node_id: 'PR_demo_12', title: 'perf: 示例 PR', body: 'Closes #11\nRefs octo-demo/other#5', pull_request: { merged_at: null }, draft: false },
+    issue(13, ['pending/blocked']),
+    issue(14, [], 1),
+  ]);
+  env.fake.state.w.relations.set(RK(14), {
+    parent: null,
+    subIssues: [],
+    blockedBy: [{ number: 5, title: '别的仓库的条目 5', url: 'https://github.com/octo-demo/other/issues/5', state: 'OPEN', stateReason: null, repository: { nameWithOwner: 'octo-demo/other' } }],
+    blocking: [],
+  } as any);
+  let i = 0;
+  for (const [n, waits] of [
+    [12, 10],
+    [13, 11],
+  ]) {
+    const body = `## 等前置 #${waits}\n\n<!-- agent-blocked-by: #${waits} resume=pending/agent -->`;
+    env.fake.state.w.comments.set(RK(n), [
+      { id: `IC_demo_${++i}`, url: `https://github.com/${R}/issues/${n}#c${i}`, createdAt: `2026-11-21T05:00:0${i}Z`, bodyHTML: body, body, author: { login: 'demo-bot' }, authorAssociation: 'MEMBER' },
+    ]);
+  }
+  const app = await launchApp(env);
+  const { page } = app;
+  await signInToGraph(page, [R]);
+  await expect(edgeOf(page, RK(10), RK(12))).toHaveCount(1);
+  await expect(edgeOf(page, RK(11), RK(13))).toHaveCount(1);
+  const link = page.locator(`[data-testid="graph-link"][data-from="${RK(12)}"][data-to="${RK(11)}"]`);
+  await expect(link).toHaveCount(1);
+  await expect(link).toHaveAttribute('data-open', 'yes');
+  await expect(page.locator(`[data-testid="graph-link"][data-from="${RK(12)}"][data-to="${FAR}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-testid="graph-link"]')).toHaveCount(2);
+  // dashed, and not the colour of a blocking arrow
+  expect(await link.evaluate((e) => getComputedStyle(e).strokeDasharray)).not.toBe('none');
+  expect(await stroke(link)).not.toBe(await stroke(edgeOf(page, RK(10), RK(12))));
+  await expect(page.getByTestId('graph-legend-link')).toHaveText('PR → 它关联的 issue');
+  // #12, #11, #13, and across the second link other#5 and #14
+  await expect(nodeOf(page, RK(10)).getByTestId('graph-blocking-ahead')).toHaveText('挡住后面 5 项');
+  await expect(nodeOf(page, RK(11)).getByTestId('graph-pr-blocked')).toHaveText('它的 PR 被挡住');
+  await expect(nodeOf(page, RK(11)).getByTestId('graph-blocking-ahead')).toHaveCount(0);
+  await expect(nodeOf(page, RK(13)).getByTestId('graph-blocked-by')).toHaveText('被 1 项挡住');
+  // the PR left of its issue, the issue left of what it holds
+  const boxes = await nodeBoxes(page);
+  expect(boxes[RK(12)][0] + boxes[RK(12)][2]).toBeLessThan(boxes[RK(11)][0]);
+  expect(boxes[RK(11)][0] + boxes[RK(11)][2]).toBeLessThan(boxes[RK(13)][0]);
+  await page.getByTestId('graph-fit').click();
+  await shot(page, 'graph-14-pr-link');
+  // the summary of #11: "被挡住" though nothing holds #11 itself; its linked PRs unchanged
+  await nodeOf(page, RK(11)).click();
+  const pop = page.getByTestId('graph-summary');
+  await expect(pop).toHaveAttribute('data-key', RK(11));
+  await expect(pop.getByTestId('graph-summary-pr-blocked')).toHaveText('它的 PR #12 被挡住（未完成）');
+  await expect(pop.getByTestId('graph-summary-blockers')).toContainText('被挡住');
+  await expect(pop.getByTestId('graph-summary-pr').filter({ hasText: '#12' })).toHaveCount(1);
+  await shot(page, 'graph-15-pr-blocked-summary');
+  // the issue in no source: the card's badge and the summary's line from the same data
+  await expect(nodeOf(page, FAR).getByTestId('graph-pr-blocked')).toHaveText('它的 PR 被挡住');
+  await nodeOf(page, FAR).click();
+  await expect(pop).toHaveAttribute('data-key', FAR);
+  await expect(pop.getByTestId('graph-outside')).toHaveCount(1);
+  await expect(pop.getByTestId('graph-summary-pr-blocked')).toHaveText('它的 PR #12 被挡住（未完成）');
+  await shot(page, 'graph-15b-pr-blocked-summary-outside');
+  await nodeOf(page, RK(11)).click();
+  // dark: the link keeps a colour of its own
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(() => stroke(link)).not.toBe('rgb(14, 127, 153)');
+  expect(await stroke(link)).not.toBe(await stroke(edgeOf(page, RK(10), RK(12))));
+  await shot(page, 'graph-16-pr-link-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
   await app.close();
 });
 
