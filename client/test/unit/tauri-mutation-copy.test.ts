@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
 // @ts-expect-error plain .mjs runner without type declarations
-import { prepareCopy, checkCopies, copySources } from '../tauri/mutations.mjs';
+import { prepareCopy, checkCopies, copySources, checkSources } from '../tauri/mutations.mjs';
 
 const clientRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -121,7 +121,7 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
   }
 
   // Review round 4 on PR #592: the nightly path lost the folder it builds into and runs the app from.
-  // Run the real `--one 0` of a copy of the runner in a sandbox client tree (the real back-end sources),
+  // Run the real `--one 4` (a shell entry: 关窗不拦) of a copy of the runner in a sandbox client tree (the real back-end sources),
   // with stand-ins for cargo and Playwright that record what they were given.
   const nightly = (override?: string) => {
     const r = made();
@@ -135,7 +135,7 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const bin = made();
     writeFileSync(
       join(bin, 'cargo'),
-      '#!/bin/sh\nprintf \'%s\\n\' "$CARGO_TARGET_DIR" "$*" "$(grep -cF \'let _ = (&engine, &url);\' src/main.rs)" > "$REC/cargo.txt"\nexit 0\n',
+      '#!/bin/sh\nprintf \'%s\\n\' "$CARGO_TARGET_DIR" "$*" "$(grep -cF \'if false && d.hide_on_close() {\' src/main.rs)" > "$REC/cargo.txt"\nexit 0\n',
     );
     chmodSync(join(bin, 'cargo'), 0o755);
     mkdirSync(join(r, 'node_modules', '@playwright', 'test'), { recursive: true });
@@ -143,7 +143,7 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, REC: rec };
     delete env.CAVIL_TAURI_MUT_TARGET;
     if (override) env.CAVIL_TAURI_MUT_TARGET = override;
-    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), '--one', '0'], { cwd: r, env, encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), '--one', '4'], { cwd: r, env, encoding: 'utf8' });
     const read = (f: string) => (existsSync(join(rec, f)) ? readFileSync(join(rec, f), 'utf8') : '');
     return { r, run, cargo: read('cargo.txt').split('\n'), app: read('app.txt') };
   };
@@ -153,8 +153,8 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const want = join(r, 'src-tauri', 'target', 'tauri-mutation');
     expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
     // it really got past preparing and breaking the copy: cargo ran inside it, on the broken main.rs
-    // (the marker is the first entry's edit, absent from the real main.rs)
-    expect(readFileSync(join(clientRoot, 'src-tauri', 'src', 'main.rs'), 'utf8')).not.toContain('let _ = (&engine, &url);');
+    // (the marker is that entry's edit, absent from the real main.rs)
+    expect(readFileSync(join(clientRoot, 'src-tauri', 'src', 'main.rs'), 'utf8')).not.toContain('if false && d.hide_on_close() {');
     expect(cargo[1]).toBe('build -q -p cavil-loop-client');
     expect(cargo[2]).toBe('1');
     expect(cargo[0]).toBe(want);
@@ -170,5 +170,33 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
     expect(cargo[0]).toBe(custom);
     expect(app).toBe(join(custom, 'debug', 'cavil-loop-client'));
+  });
+
+  // GitHub#631: each entry's text must occur exactly once in its file — 0 = the code moved on and the entry did not
+  // follow (it only failed to prepare, at night), 2 = which spot it breaks depends on the order
+  it('每条要改的原文在目标文件里恰好出现一次：0 次、2 次、读不到都报出来，1 次不报', () => {
+    const from = tree({
+      'src-tauri/src/main.rs': 'fn a() {}\nfn b() {}\nfn b() {}\n',
+      'src/renderer/x.tsx': "else if (m.cavil === 'link') go();\n",
+    });
+    const m = (what: string, file: string | undefined, text: string) => ({ what, file, from: text, to: '', expect: '' });
+    const problems: string[] = checkSources({
+      from,
+      mutations: [
+        m('一次（外壳，默认文件）', undefined, 'fn a() {}'),
+        m('一次（界面）', 'src/renderer/x.tsx', "else if (m.cavil === 'link') go();\n"),
+        m('零次', undefined, 'fn c() {}'),
+        m('两次', undefined, 'fn b() {}'),
+        m('文件不在', 'src/renderer/gone.tsx', 'x'),
+      ],
+    });
+    expect(problems).toHaveLength(3);
+    expect(problems[0]).toBe('要改的原文在 src-tauri/src/main.rs 里出现 0 次（应为 1 次）：零次');
+    expect(problems[1]).toBe('要改的原文在 src-tauri/src/main.rs 里出现 2 次（应为 1 次）：两次');
+    expect(problems[2]).toMatch(/^读不到 src\/renderer\/gone\.tsx（.*）：文件不在$/);
+  });
+
+  it('仓库里现有的每条真实窗口负对照，原文都在目标文件里恰好出现一次', () => {
+    expect(checkSources()).toEqual([]);
   });
 });

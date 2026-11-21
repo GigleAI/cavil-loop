@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Negative controls for the real-window test (GitHub#151 review round 1): each
-// breaks one production handler of the app shell (src-tauri/src/main.rs, desktop.rs), rebuilds
-// the real app into its own target dir, runs test/tauri against it, and requires
+// breaks one production handler of the app (the shell, src-tauri/src/main.rs / desktop.rs, or the
+// window's own code under src/), rebuilds the real app into its own target dir, runs test/tauri against it, and requires
 // the test to fail at the step that handler is responsible for. Off by default
 // (GitHub#103); entry point test/tauri/mutations.sh. CI: Linux, under xvfb.
 //
@@ -18,10 +18,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MAIN = 'src-tauri/src/main.rs';
 
 const MUTATIONS = [
+  // GitHub#590 / #631: a link clicked in the discussion is handed to the window by the frame's own script and from
+  // there to the back end; the shell's new-window handler is only a fallback the test no longer goes through
   {
     what: '详情里 GitHub 正文的链接（要开新窗口的那种）不交给浏览器',
-    from: '                    let e = engine.clone();\n                    let u = url.to_string();\n',
-    to: '                    let _ = (&engine, &url);\n                    return NewWindowResponse::Deny;\n                    #[allow(unreachable_code)]\n                    let e = engine.clone();\n                    let u = url.to_string();\n',
+    file: 'src/renderer/DetailPanel.tsx',
+    from: "      else if (m.cavil === 'link') openFrameLink(m.url, 'frame');\n",
+    to: '',
     expect: 'frame link opened in the browser',
   },
   {
@@ -94,6 +97,29 @@ export function prepareCopy(work, windowCode, from = root) {
   } else {
     cpSync(join(from, 'dist'), join(work, 'dist'), { recursive: true });
   }
+}
+
+/**
+ * GitHub#631: the text each entry replaces must occur exactly once in its file. 0 = the code moved on and the entry
+ * did not follow (it would only fail to prepare, at night); 2 or more = which spot it breaks depends on the order.
+ * Run with --check-copy on every push. It cannot tell an entry whose text is still there but no longer on the path
+ * the test takes — only the nightly run shows that. Returns the problems, [] = every entry's text is found once.
+ */
+export function checkSources({ from = root, mutations = MUTATIONS } = {}) {
+  const problems = [];
+  for (const m of mutations) {
+    const rel = m.file ?? MAIN;
+    let text;
+    try {
+      text = readFileSync(join(from, rel), 'utf8');
+    } catch (e) {
+      problems.push(`读不到 ${rel}（${e.message}）：${m.what}`);
+      continue;
+    }
+    const n = text.split(m.from).length - 1;
+    if (n !== 1) problems.push(`要改的原文在 ${rel} 里出现 ${n} 次（应为 1 次）：${m.what}`);
+  }
+  return problems;
 }
 
 const tailOf = (t) => (t ?? '').split('\n').slice(-8).join('\n');
@@ -180,7 +206,8 @@ function fail(msg) {
 // Driven by test/tauri/mutations.sh, which passes every entry through tests/lib/mutation.sh's
 // mutation_gate (so "skipped N" and "ran N" come from the project's one counter):
 //   node mutations.mjs --count | --name I | --one I
-//   node mutations.mjs --check-copy  an unbroken copy of each entry shape compiles (run by npm run test:rust;
+//   node mutations.mjs --check-copy  each entry's text occurs once in its file, and an unbroken copy of each
+//                                    entry shape compiles (run by npm run test:rust;
 //                                    not a negative control, so not behind MUTATION)
 //   node mutations.mjs --related   exit 0 = this change touches what these entries check, 1 = it does
 //                                  not (both print why), 2 = cannot tell (GitHub#178)
@@ -196,9 +223,12 @@ const [cmd, arg] = isMain ? process.argv.slice(2) : [];
 if (!isMain) {
   // imported: nothing to do
 } else if (cmd === '--check-copy') {
-  const problems = checkCopies();
-  for (const p of problems) console.log(`❌ ${p}`);
-  if (!problems.length) console.log('✅ 真实窗口负对照的副本（没改坏）能编译');
+  const sources = checkSources();
+  for (const p of sources) console.log(`❌ ${p}`);
+  if (!sources.length) console.log(`✅ ${MUTATIONS.length} 个真实窗口负对照要改的原文，各自在目标文件里恰好出现一次`);
+  const problems = [...sources, ...checkCopies()];
+  for (const p of problems.slice(sources.length)) console.log(`❌ ${p}`);
+  if (problems.length === sources.length) console.log('✅ 真实窗口负对照的副本（没改坏）能编译');
   process.exitCode = problems.length ? 1 : 0;
 } else if (cmd === '--count') console.log(MUTATIONS.length);
 else if (cmd === '--related') {
