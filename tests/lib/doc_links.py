@@ -79,8 +79,11 @@ def slug(text):
     return keep.replace(' ', '-')
 
 
-def outside_fences(text):
-    """The lines of text that are not inside a fenced code block."""
+def outside_fences(text, keep_breaks=False):
+    """The lines of text that are not inside a fenced code block. With keep_breaks,
+    every line of a fenced block (fence lines included) becomes an empty line instead
+    of disappearing: a fenced block ends the paragraph before it, and the line after it
+    starts a new block (a reference definition may follow it)."""
     out, fence = [], None
     for line in text.splitlines():
         m = FENCE.match(line)
@@ -88,9 +91,13 @@ def outside_fences(text):
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) \
                     and line.strip() == m.group(1)[0] * len(line.strip()):
                 fence = None
+            if keep_breaks:
+                out.append('')
             continue
         if m:
             fence = m.group(1)
+            if keep_breaks:
+                out.append('')
             continue
         out.append(line)
     return out
@@ -98,7 +105,7 @@ def outside_fences(text):
 
 def strip_code(text):
     """Text with fenced blocks and inline code removed (for finding links)."""
-    body = '\n'.join(outside_fences(text))
+    body = '\n'.join(outside_fences(text, keep_breaks=True))
     return re.sub(r'(`+)(?:(?!\1).)+?\1', '', body, flags=re.S)
 
 

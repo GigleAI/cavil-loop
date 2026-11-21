@@ -125,6 +125,12 @@ cat > "$TMP/v/good.md" <<'MD'
 <img alt="literal src=ghost.png" src="img/ok.png">
 <a href="img/ok.png" title="see [x](ghost2.md)">y</a>
 不是链接](ghost3.md 后面还有字)
+
+见[围栏后的引用][fx]。
+```text
+sample
+```
+[fx]: draft(v2).md
 MD
 cat > "$TMP/v/bad.md" <<'MD'
 [一层括号](draft(v3).md)
@@ -141,12 +147,19 @@ cat > "$TMP/v/bad.md" <<'MD'
 <img alt="literal src=ok.png" src="missing3.png">
 
 [空]()
+
+见[g]。
+```text
+sample
+```
+[g]: missing-after-fence.md
 MD
 chk "全表「存在」的写法全部通过，属性值里像链接 / 像属性的文字没被当成链接" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
-chk "  到达性 · 18 处真链接确实都查了（srcset 里两张算两处，最后一行不是链接）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 18
+chk "  到达性 · 19 处真链接确实都查了（srcset 里两张算两处，「不是链接」那行不算，围栏代码块后面的引用定义算）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 19
+chk "  到达性 · 围栏代码块后面那条引用定义确实被查了（指向 draft(v2).md 的共 4 处，其余 3 处是一层括号、尖括号和 HTML 链接）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK good.md -> draft(v2).md$')" 4
 chk "全表「缺失」的写法每处都报出，目标完整" \
     "$(python3 "$CHECK" "$TMP/v" bad.md | sed -e 's/.*不存在的文件 //' -e 's/^bad.md: //' | paste -sd'|')" \
-    "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|gone(1).md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
+    "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|gone(1).md|missing-after-fence.md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
 
 # 不是链接的写法：普通文字里的「](」、链接标题里的「](」、HTML 注释（含没闭合的）、转义的方括号、方括号和圆括号
 # 之间隔了空格、代码里的、接在段落里的「[名字]: 目标」行。一处都不能报、也不能被当成链接查
