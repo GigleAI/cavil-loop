@@ -102,7 +102,7 @@ The tool's template and the project's addition are looked up independently, both
   └── pr-comment.template.md  ← full replacement, only for structural differences
   ```
 
-- A replaced template silently stops receiving template updates: in replaced copies measured on a real project only half of the tool's lines survived, and rules the tool added later (how to write decisions the human must make) never reached them.
+- A replaced template silently stops receiving template updates: nothing the tool's template gains later (new rules, changed wording) ever reaches the project's copy, and nothing warns about it.
 
 </details>
 
@@ -131,6 +131,8 @@ Templates are rendered with `sed`; these placeholders are replaced at dispatch. 
 | `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review step it would bounce work back to the reviewer itself: an infinite loop |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
 | `${COMMENT_FOOTER_CMD}` | full command that generates the comment usage footer (agent, usage driver and project config already filled in); templates only add `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`. It prints the whole footer, appended to the comment as-is; with `--body <file>` it writes `<file>.footer` (the body, a blank line, the footer — or a fixed "footer could not be generated" line) instead. For the project test-time hook see `COMMENT_FOOTER_EXTRA_CMD` in the config example |
+| `${TASK_START_TS}` | when this dispatch started (`YYYY-MM-DD HH:MM:SS`), for the footer command's `--start` |
+| `${WORK_NUM}` | the work number this dispatch belongs to, for the footer command's `--wt` |
 | `${CAVIL_STEP_DIR}` | folder holding the step scripts the templates' `cavil_step` runs — `flip-label.sh`, `conflict-check.sh`, `pr-feedback.sh`. On a managed install the durable `entrypoints/` folder when all three entries are there, otherwise this release's `scripts/`. Each script reports one checked result that `cavil_step` prints; the built-in templates show how to read it |
 | `${CONCURRENT_WORK}` | the list of other items in progress, one line each with a one-sentence summary of the change and the directories it touches; the whole list is capped at `CONCURRENT_WORK_MAX_BYTES`. Filled in **after** every other placeholder, and only where the placeholder is a whole line by itself — the list is multi-line and carries titles other people wrote, so it never goes through the `sed` pass. With `ENABLE_CONCURRENT_WORK_HINT` on, the tool appends its own section (`prompts/concurrent-work.md`: the list plus the "mind any overlap, keep it out of comments" rule) to the three worker templates, so a project template does not need to write it. Written in a project template with the switch off, it renders as "not enabled" and nothing is read. Unreadable lists render as "could not read", never as "nothing else" |
 

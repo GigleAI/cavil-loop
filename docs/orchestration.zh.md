@@ -102,7 +102,7 @@ worker 每次拿到的提示词由 daemon 现拼：工具自带的模板 → 通
   └── pr-comment.template.md  ← 仅在结构上就不同时才整份覆写
   ```
 
-- 整份覆写的模板从此拿不到工具模板的任何更新，且没有任何迹象：在一个真实项目的几份覆写里实测，跟工具模板相同的行只剩一半，工具后来加的规范（例如「拍板问题要讲清上下文」）一条都没进去。
+- 整份覆写的模板从此拿不到工具模板的任何更新，且没有任何迹象：工具模板之后新增的规则、改过的写法都进不了项目这份。
 
 </details>
 
@@ -131,6 +131,8 @@ worker 每次拿到的提示词由 daemon 现拼：工具自带的模板 → 通
 | `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在复审环节里拿它打回等于打回自己，死循环 |
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
 | `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；加 `--body <文件>` 时改为写出 `<文件>.footer`（正文 + 空行 + footer；生成失败时末尾是一句固定的「用量 footer 生成失败」）。项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |
+| `${TASK_START_TS}` | 本次派工的开始时间（`YYYY-MM-DD HH:MM:SS`），给 footer 命令的 `--start` 用 |
+| `${WORK_NUM}` | 本次派工所属的工作编号，给 footer 命令的 `--wt` 用 |
 | `${CAVIL_STEP_DIR}` | 模板里 `cavil_step` 运行的步骤脚本所在目录：`flip-label.sh`、`conflict-check.sh`、`pr-feedback.sh`。托管安装下三个长期入口都在时是 `entrypoints/`，否则是本次发布的 `scripts/`。每个脚本给出一个经过核对的结果，由 `cavil_step` 打印；怎么读见工具自带的模板 |
 | `${CONCURRENT_WORK}` | 其他进行中条目的清单，每条一行：一句改动摘要和涉及的目录，整份不超过 `CONCURRENT_WORK_MAX_BYTES` 字节。它在其余占位符**全部渲染完之后**才填入，而且只认独占一行的写法——清单是多行的，里面的标题是别人写的，不能过那一遍 `sed`。`ENABLE_CONCURRENT_WORK_HINT` 开着时，工具会把自带的一段（`prompts/concurrent-work.md`：清单 +「有重叠时留意冲突、不写进评论」的规则）追加到三份 worker 模板末尾，项目模板不用自己写。开关关着而项目模板里写了它 → 渲染成「没有开启」，不读任何东西。列表读不到时渲染成「未能读取」，绝不写成「没有」 |
 

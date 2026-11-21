@@ -477,6 +477,8 @@ worker 的代码先由另一个 agent 复审，再交到人手上。默认关闭
 `prompts/review.template.md` 起一个独立 session 把关。通过 → `pending/human`；不通过 → 带具体意见
 打回 `pending/agent`。留空即关闭。
 
+<details><summary>流程图</summary>
+
 ```
 pending/agent ──claude──> 代码产出 or 设计方案? ──否──> pending/human（提问 / 受阻 / 安全停机）
                               │是
@@ -487,6 +489,8 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
                               │
                               └── 轮次用尽 ──> pending/review + pending/human（daemon 停手，等人）
 ```
+
+</details>
 
 <details><summary>「等人」有两种状态</summary>
 
@@ -645,6 +649,8 @@ daemon 自动合并。默认关闭：配 `LABEL_AUTOPILOT`（例如 `autopilot`�
 即开启；把 `LABEL_AUTOPILOT` 留空即关闭（见[怎么整体关闭托管](#怎么整体关闭托管)）。没打标签的 issue 不受影响；从没开过
 托管的项目，`LABEL_AUTOPILOT` 留空时一切照旧。
 
+<details><summary>流程图</summary>
+
 ```
 issue：autopilot ──> 写方案 ──> pending/review ──通过──> pending/agent ──> 写代码 + 开 PR
                                      │不通过（改方案）                               │
@@ -653,6 +659,8 @@ PR：  pending/review ──通过 + 测试记录──> pending/merge ──dae
                                                │ 检查没过 / 冲突 ──> 交回 worker
                                                └ 其他不对 ────────> pending/human
 ```
+
+</details>
 
 <details><summary>开工、方案阶段与代码阶段</summary>
 
@@ -917,6 +925,8 @@ daemon 合并（`PUT /pulls/N/merge`，带复审时的提交号，方式 `AUTOPI
 
 开启：在项目配置里加一行，下一轮轮询生效。关闭：删掉这一行（或写成 `""`）；已经交给人的 PR 仍在人手上。
 
+<details><summary>示例配置行</summary>
+
 <!-- autopilot-human-paths:examples:begin -->
 ```bash
 AUTOPILOT_HUMAN_PATHS="default"
@@ -925,6 +935,8 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"
 ```
 <!-- autopilot-human-paths:examples:end -->
+
+</details>
 
 <details><summary><code>default</code> 里有什么、条目怎么读</summary>
 
@@ -1097,11 +1109,15 @@ ls "$STATE_DIR/outsider/" 2>/dev/null || echo "no records yet / 本机还没有�
 开托管前，确认**只有一台机器**在跑这个仓库的轮询：在**每台别的机器**上跑下面的主机检查（`REPO=<仓库> bash host-check.sh`），
 按最后一行处理。
 
+<details><summary>每种结论怎么处理</summary>
+
 | 最后一行 | 怎么做 |
 |---|---|
 | `HOST_VERDICT=STOPPED` | 那台不跑这个仓库，可以继续 |
 | `HOST_VERDICT=RUNNING` | **先**停调度、**再**等会话跑完（不留「看着空闲、停之前又派出去」的空档）：Linux `systemctl --user disable --now cavil-loop-poll@<实例名>.timer`（改名前装的是 `coding-agent-poll@<实例名>.timer`）；macOS `launchctl bootout gui/$UID/dev.luosky.cavil-loop.<实例名>`。等它的会话自己结束——**不要杀**：别的机器不接手它派的活，杀了就卡在 `doing/agent`。重跑直到 `STOPPED` |
 | `HOST_VERDICT=UNKNOWN` | 查不清，**不要开托管** |
+
+</details>
 
 <details><summary>为什么另一台机器会把托管弄断</summary>
 
@@ -1497,11 +1513,15 @@ Claude 一侧 footer 按 daemon 每天下载一次的最新 Claude 公开价给�
 本机 `tests/run.sh` 测试流水和 GitHub Actions。只读：只读 GitHub（用 `gh` 当前登录的身份）和测试流水，
 不写任何地方。
 
+<details><summary>命令</summary>
+
 ```bash
 python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
     --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop 写评论的账号> \
     [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--no-cache] [--json]
 ```
+
+</details>
 
 <details><summary>读哪些 PR 和评论</summary>
 
@@ -1730,7 +1750,13 @@ echo "pause records left for $AGENT: $left  (0 = lifted / 0 = 已解除)"
 HEAVY_TEST_COMMANDS="bash tests/run.sh"
 ```
 
+把 `HEAVY_TEST_COMMANDS` 留空（或删掉这一行）即关闭。
+
+<details><summary>对 worker 有什么变化、怎么关</summary>
+
 下一次派工起，worker 的提示词多一段，要求这些命令写成 `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh` 来跑；只跑一个测试文件不用排队。已经在跑的 worker 不受影响（它们的提示词是启动时定的）。关掉就把 `HEAVY_TEST_COMMANDS` 留空（或删掉这一行）。
+
+</details>
 
 <details><summary>怎么排的</summary>
 
@@ -1913,11 +1939,15 @@ CODING_AGENT_CONFIG="$CONF" bash "$SKILL/scripts/ci-failure-report.sh" --restart
 
 worker 的环境里有 GitHub 令牌，agent 运行时可能把它原样打印出来（执行 `env`、调试 `gh`、报错带出请求头）。daemon 把会留下这类输出的文件里的 GitHub 令牌替换掉，匹配规则只有一份（`scripts/redact_tokens.py`）。daemon 自己的日志始终处理；另外两处各有开关（见下表）。
 
+<details><summary>处理哪些文件</summary>
+
 | 文件 | 谁写的 | 怎么处理 | 开关 |
 |---|---|---|---|
 | `poll.log`、窗格历史（`$STATE_DIR/sessions/*.log`） | daemon | **落盘前**替换 | 始终开着 |
 | claude / codex 的会话记录（`~/.claude/projects`、`~/.codex/sessions`） | agent 的 CLI | 每 10 分钟扫一次、**原地**替换，只碰工作目录在本项目 `WORKTREE_BASE` 之下的会话 | `REDACT_AGENT_RECORDS`（默认开；留空 / `false` = 不改） |
 | codex 的环境快照（`~/.codex/shell_snapshots/*.sh`） | codex | 不改：起 codex worker 时关掉这项功能（`--disable shell_snapshot`），**不再产生新快照**；已有的清一次（见下一节） | `CODEX_SHELL_SNAPSHOT`（默认 `off`；`on` = 保留 codex 的默认行为） |
+
+</details>
 
 <details><summary>每一处具体怎么做</summary>
 
@@ -2184,19 +2214,35 @@ esac
 
 给每个待验收的 issue 一条可点的预览 URL，又不为每个 open 的 issue 常驻一份 web server：URL 一直在监听，
 app 在第一次访问时才起、闲置到点再停。默认关闭；配了 `PREVIEW_EXEC`（启动 app 的命令）就打开，用
-`scripts/preview-serve.sh` 注册一个 preview。
+`scripts/preview-serve.sh` 注册一个 preview，由清理挂点注销。
+
+<details><summary>命令：注册、查看、手动注销、在清理挂点里注销</summary>
+
+手动操作：
 
 ```bash
 bash scripts/preview-serve.sh 791          # 注册 + 起监听，打印 URL
 bash scripts/preview-serve.sh 791 --warm   # 顺便立刻预热（验收前想省那 1 秒）
 bash scripts/preview-serve.sh --list       # 本项目所有 preview 及其死活
-bash scripts/preview-unserve.sh --issue 791  # 注销（cleanup hook 里调）
+bash scripts/preview-unserve.sh --issue 791  # 手动注销：预期 worktree 按配置推算 #791 的那个
 ```
+
+在清理挂点里一定要带上挂点拿到的 worktree。挂点收到的是真实的 `ISSUE` 和 `WORKTREE`；不带
+`--expect-worktree` 时脚本按配置推算该编号的 worktree，遇到同号但不同 worktree 的情况可能注销别人的 preview：
+
+```bash
+# 写在 CLEANUP_HOOK 里：worktree 不可信（为空、形状不符）就跳过
+[ -n "$WORKTREE" ] && bash scripts/preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"
+```
+
+端口、主人或 worktree 对不上，一律不注销。
+
+</details>
 
 <details><summary>为什么用 socket 激活，各个单元怎么接</summary>
 
-每个 issue 起一个常驻 `tmux` session 跑 web server，没人看的时候也占着内存——某台机器上 10 个
-`pending/PR` 的 issue 占着 10 个 `node` 进程、共约 930 MiB，有的空转了好几天。socket 激活把「URL 常在」和
+每个 issue 起一个常驻 `tmux` session 跑 web server，没人看的时候也占着内存——10 个等验收的 issue 就是 10 个空转的
+server，接近 1 GiB 内存。socket 激活把「URL 常在」和
 「进程常驻」拆开：
 
 ```
@@ -2774,10 +2820,14 @@ drop-in，而不是去改共享模板。手写的 `interval.conf` 永远不会�
 
 skill 和调度器模板各装一次，每个 project 跑一次 `setup.sh`；每个项目各有自己的 timer、日志和 state，互不干扰。
 
+<details><summary>命令</summary>
+
 ```bash
 bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectA
 bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectB
 ```
+
+</details>
 
 <details><summary>装完得到什么</summary>
 
@@ -2805,6 +2855,8 @@ launchctl list | grep dev.luosky.cavil-loop
 
 程序（桌面客户端，或人自己写的脚本）通过 skill 目录里的这几个脚本安装、查看、断开项目，不用自己重写安装逻辑。对改名前的旧安装同样有效（新旧名字统一由 `scripts/_names.sh` 挑）。
 
+<details><summary>各个脚本</summary>
+
 | 脚本 | 做什么 | 会写东西吗 |
 |---|---|---|
 | `setup.sh --yes <host> [key]` | 和 `setup.sh` 一样，但最后不问 y/N，直接启用并启动后台任务；不带 `--yes` 就是普通的 `setup.sh` | 会（同 `setup.sh`） |
@@ -2812,6 +2864,10 @@ launchctl list | grep dev.luosky.cavil-loop
 | `scripts/disconnect-project.sh <key>` | 停掉一个项目的后台任务、撤掉登记；保留项目配置和状态 | 会 |
 | `scripts/launchd-refresh.sh <key>` | 只用于 macOS：模板变了之后换新一个项目的 launchd plist，先备份、失败就恢复 | 会 |
 | `scripts/project-service.sh <key> stop\|start` | 停 / 启一个项目的后台轮询任务（远程入口用）：只在「在跑 → 停」「已停 → 启」时执行，读不到不动，执行后读回 | 会 |
+
+</details>
+
+<details><summary>命令：接入、列出、检查、断开</summary>
 
 <!-- install-scripts-ops:begin -->
 ```bash
@@ -2825,6 +2881,8 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 <!-- install-scripts-ops:end -->
 
 上面几行依次是：不经 y/N 提问接上一个项目；列出每个已接项目的后台任务状态和依赖结论；接一个用 `codex` 的新项目前先查缺什么；再把它断开。`myproject` 是实例名（默认是目录名，即状态输出里的 `.projects[].key`）。
+
+</details>
 
 <details><summary>状态输出：每个字段</summary>
 
@@ -2843,6 +2901,8 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 
 </details>
 
+<details><summary>换新 launchd plist（macOS）</summary>
+
 **换新 launchd plist（macOS）。** plist 是生成的、不是软链，重跑 `setup.sh` 看到已存在就跳过；daemon 更新、模板变了之后，每个项目跑一次下面的命令。
 
 <!-- install-scripts-mac-ops:begin -->
@@ -2851,6 +2911,8 @@ SKILL="$HOME/.agents/skills/cavil-loop"
 bash "$SKILL/scripts/launchd-refresh.sh" myproject
 ```
 <!-- install-scripts-mac-ops:end -->
+
+</details>
 
 <details><summary>换新时做了什么、各种结果</summary>
 
@@ -2861,6 +2923,8 @@ bash "$SKILL/scripts/launchd-refresh.sh" myproject
 ## 用脚本读 / 改一个项目的常用配置
 
 `scripts/project-config.sh` 读、改一个已接项目的常用配置项；桌面客户端的「项目配置」弹窗就是调它，人也可以直接跑。只读写 `scripts/config-fields.txt` 里登记的项；保存要么全写要么全不写，并留备份。`myproject` 是实例名。
+
+<details><summary>命令</summary>
 
 <!-- project-config-ops:begin -->
 ```bash
@@ -2876,6 +2940,8 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 <!-- project-config-ops:end -->
 
 依次是：列出能改的配置项和当前值；取配置文件的指纹；改一项；打印结果行；读回新值；最后用这次保存留下的备份把保存前的版本放回去（还原就是最后两行，别的什么都没动过）。
+
+</details>
 
 ⚠️ 保存时不要同时在编辑器里改同一个文件：保存前后在编辑器里存的修改可能丢失，即使结果是 `saved`（细节见最后一个折叠块）。
 
@@ -2918,6 +2984,8 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 
 流程标签（派工、干活中、等人、转 PR 跟踪、已完成，以及复审、托管、等合并、等前置、暂缓、等外部需求机器人这几个可选标签）存在三个地方：项目配置、GitHub 上的标签本身（和挂着它的每个 issue / PR）、桌面客户端自己记的标签名。`scripts/label-rename.sh` 一次改前两处；桌面客户端的「改名…」按钮调用它，然后只给这个仓库存新名字。只有一个设置一个名字的才能改名；列表类设置（`LABEL_PENDING_AGENT_EXTRA`、`GREEDY_SKIP_LABELS`、`PRIORITY_LABELS`）不能，它们里面用到了新旧名字时改名会被拦下。
 
+<details><summary>命令</summary>
+
 <!-- label-rename-ops:begin -->
 ```bash
 SKILL="$HOME/.agents/skills/cavil-loop"
@@ -2929,6 +2997,8 @@ bash "$SKILL/scripts/label-rename.sh" myproject finish --no-client | tail -1
 <!-- label-rename-ops:end -->
 
 依次是：检查（只读，每一项和原因都在 `DETAIL=` 那一行）；取配置的指纹；改名——GitHub 和配置都换成新名字后最后一行是 `RESULT=awaiting_client`；结束暂停。`--others-stopped` 是人确认「没有别的机器在轮询本仓库，或已经停掉」（见下文）。`finish --no-client` 表示这次不改客户端的名字，要在客户端设置里手动改。
+
+</details>
 
 <details><summary>各种结果、接下来做什么</summary>
 
@@ -2989,6 +3059,8 @@ daemon 装在一台机器上、桌面客户端装在另一台电脑上时，客�
 
 </details>
 
+<details><summary>命令</summary>
+
 <!-- remote-access-ops:begin -->
 ```bash
 RA="$HOME/.agents/skills/cavil-loop/scripts/remote-access.sh"
@@ -3002,6 +3074,8 @@ bash "$RA" disable
 <!-- remote-access-ops:end -->
 
 依次是：打开入口；生成一个配对码（入口没开时 `pair` 会先打开，所以平时只跑 `pair` 就够）；看入口状态；列出已配对设备；撤销名叫 `MacBook-Pro` 的那台；关闭入口。
+
+</details>
 
 <details><summary>不用终端：桌面客户端</summary>
 
@@ -3153,7 +3227,7 @@ bash ~/.agents/skills/cavil-loop/setup.sh <host>
 
 ### 升级不会自动补上的新配置
 
-升级不改项目的 `cavil-loop.config`，所以「不写这一行就关」的新功能在老项目上一直关着。每轮调度轮询给每个这样的缺项在 `poll.log` 里写一行提示，别的什么都不做。
+升级不改项目的 `cavil-loop.config`，所以「不写这一行就关」的新功能在老项目上一直关着。调度轮询每轮都检查这类缺项，每个缺项第一次缺失时在 `poll.log` 里写一行提示（补上又去掉会再提示一次），别的什么都不做。
 
 <details><summary>哪些配置会提示、什么时候提示</summary>
 
@@ -3244,7 +3318,10 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
 
 ### 旧安装自动迁移
 
-`scripts/migrate-legacy.sh` 把一个旧项目迁到新名字。不用人去跑：
+`scripts/migrate-legacy.sh` 把一个旧项目迁到新名字。不用人去跑：Linux 上任何一个项目的轮询都会把本机空闲的旧项目迁掉；
+macOS 上重跑一次 `setup.sh <host>`。
+
+<details><summary>两种系统上各在什么时候迁</summary>
 
 - **Linux**：**任何一个**项目的每一轮轮询（`poll-entry.sh`，在主轮询读配置之前）都会顺手把本机
   所有空闲的旧项目迁掉。所以它随部署生效——受管安装合并后约 10 分钟内。开发模式的机器（技能
@@ -3252,6 +3329,8 @@ grep -s '配置提示' "$STATE_DIR/poll.log" | tail -5
   所属的项目时，这一轮到此结束，迁移刚启用的新 timer 约 30 秒后跑下一轮。
 - **macOS**：重跑一次 `setup.sh <host>`。它先迁移，再生成新的 LaunchAgent——plist 是生成出来的，
   后台轮询自己换不了。
+
+</details>
 
 <details><summary>只迁空闲的项目</summary>
 
@@ -3416,11 +3495,15 @@ macOS 上迁到一半时重跑 `setup.sh` 会接着迁完；这种状态下 setu
 
 [按 OS 选调度器](#按-os-选调度器)里的两种调度器不是硬要求：`agent-poll.sh` 无状态，任何调度器都能驱动。适用于 `setup.sh` 不自动配的系统（BSD、不带 systemd 的 WSL、容器、……），或者就不想用 systemd / launchd。
 
+<details><summary>cron 配置行</summary>
+
 **cron**（任何 Unix）：
 
 ```cron
 * * * * * CODING_AGENT_CONFIG=$HOME/myproject/cavil-loop.config bash $HOME/.agents/skills/cavil-loop/scripts/poll-entry.sh >> /tmp/cavil-loop-cron.log 2>&1
 ```
+
+</details>
 
 <details><summary>改用 Claude Code 的 <code>/loop</code> 会话驱动</summary>
 
@@ -3552,6 +3635,8 @@ gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
 每一轮轮询退出时写一条记录（时间、结果、走到的最后一步、看到几个候选派了几个、GitHub 调用几次失败几次）；出了
 问题的那一轮还会另存一份快照。默认开启。查看最近几轮：
 
+<details><summary>命令</summary>
+
 <!-- poll-history-ops:begin -->
 ```bash
 KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
@@ -3561,6 +3646,8 @@ CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
 bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
 ```
 <!-- poll-history-ops:end -->
+
+</details>
 
 <details><summary>命令打印什么、每种结果是什么意思</summary>
 
@@ -3642,9 +3729,13 @@ echo "run log off, records removed: $STATE_DIR/runlog / 已关闭并删除记录
 多半没死：一整天没人碰的项目会**故意**少轮询（`POLL_BACKOFF_LADDER`），退避中的每个 tick 仍然写一行，写明现在
 在哪一档。日志**真**的一行都没有（连跳过那行也没有），才是 daemon 真的停了，往下看。
 
+<details><summary>日志长什么样</summary>
+
 ```
 [...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
 ```
+
+</details>
 
 <details><summary>按顺序查，以及怎么立刻回最快档</summary>
 
@@ -3932,9 +4023,13 @@ oomd 解除之后，兜底的是 worker slice 自己的 `MemoryMax=`：超出它
 `tmux ls` 显示「no server running」时，是轮询单元自己起的 tmux server 在轮询退出时被一起杀掉，新的 worker 会话也跟着
 没了。轮询单元自带 `KillMode=process` 来防这件事——确认它还在：
 
+<details><summary>命令</summary>
+
 ```bash
 systemctl --user show cavil-loop-poll@<instance>.service -p KillMode   # want: process
 ```
+
+</details>
 
 <details><summary>poll.log 里的现象</summary>
 
@@ -3987,9 +4082,13 @@ sleep 3 && tmux ls   # session gone → control-group; session listed → proces
 `poll.lock` 的 flock 卡住了：有个长期存在的进程（tmux server、某个 worker）还拿着它的文件描述符。删掉锁文件就能解开，
 不用杀任何进程：
 
+<details><summary>命令</summary>
+
 ```bash
 rm -f "$STATE_DIR/poll.lock"
 ```
+
+</details>
 
 <details><summary>原因，以及怎么找出占锁的进程</summary>
 
@@ -4017,9 +4116,13 @@ done 2>/dev/null | sort -u
 ### Daemon 不停 re-dispatch 同一 PR
 
 可能是 worker 没翻 label。检查 prompt 模板是否要求 worker 翻 label。或手动：
+<details><summary>命令</summary>
+
 ```bash
 gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
+
+</details>
 
 <details><summary>另一个原因：worker 没留评论</summary>
 
@@ -4157,9 +4260,13 @@ bash ~/.agents/skills/cavil-loop/scripts/stuck-release.sh "$KEY" "$N"
 派工失败什么都不改，下一轮 poll 会把同一条活再捡起来——最多连续 `DISPATCH_MAX_RETRIES`（默认 3）次，到上限就摘掉
 触发 label、把这条活转 `pending/human`。原因在 `poll.log` 里：
 
+<details><summary>命令</summary>
+
 ```bash
 grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
 ```
+
+</details>
 
 <details><summary>怎么看失败原因</summary>
 
@@ -4198,19 +4305,27 @@ git worktree remove '<占用者目录>'     # 腾出分支，然后重新标 pen
 
 ### 调试一次 poll
 
+<details><summary>命令</summary>
+
 ```bash
 CODING_AGENT_CONFIG=~/myproject/cavil-loop.config \
     bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh
 tail -50 ~/.local/state/cavil-loop/myproject/poll.log
 ```
 
+</details>
+
 ### 浏览存活的 worker session
 
 先按 `Ctrl+b`，再按 `s`。列表保留 tmux 原生 `choose-tree` 布局，并在每个 worker session 行末追加 GitHub issue 标题：
 
+<details><summary>输出示例</summary>
+
 ```text
 myproject-issue42: 1 windows | 优化首页加载性能
 ```
+
+</details>
 
 <details><summary>标题从哪来</summary>
 
@@ -4223,6 +4338,8 @@ myproject-issue42: 1 windows | 优化首页加载性能
 
 tmux session 一旦 exit，原 pane 的 scrollback 就消失了，所以每个 worker session 的输出都用 `tmux pipe-pane` 旁路到磁盘：
 
+<details><summary>命令</summary>
+
 ```bash
 # 路径（默认值；可通过 SESSION_LOG_DIR 改）
 $STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log
@@ -4232,6 +4349,8 @@ bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42        # 打印路径
 bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -c     # cat
 bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -f     # tail -F 跟随
 ```
+
+</details>
 
 <details><summary>文件格式，以及让对话本身续上</summary>
 

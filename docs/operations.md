@@ -540,6 +540,8 @@ the daemon then dispatches `REVIEW_WORKER_AGENT` (`codex` by default) with
 `prompts/review.template.md` in its own session. Pass → `pending/human`; fail → bounced back to
 `pending/agent` with concrete feedback. Leave it empty to turn the gate off.
 
+<details><summary>Flow</summary>
+
 ```
 pending/agent ──claude──> code or design doc? ──no──> pending/human  (questions,
                               │yes                                    blocked runs)
@@ -550,6 +552,8 @@ pending/agent ──claude──> code or design doc? ──no──> pending/hu
                               │
                               └── rounds exhausted ──> pending/review + pending/human
 ```
+
+</details>
 
 <details><summary>"Waiting for a human" has two states</summary>
 
@@ -752,6 +756,8 @@ by setting `LABEL_AUTOPILOT` (e.g. `autopilot`) together with the review gate `L
 turn it off by leaving `LABEL_AUTOPILOT` empty (see [Turning autopilot off](#turning-autopilot-off)). Issues without the
 label are not affected, and with `LABEL_AUTOPILOT` empty nothing changes for a project that never turned it on.
 
+<details><summary>Flow</summary>
+
 ```
 issue: autopilot ──> design ──> pending/review ──pass──> pending/agent ──> code + PR
                                      │fail (revise)                              │
@@ -760,6 +766,8 @@ PR:  pending/review ──pass + test record──> pending/merge ──daemon c
                                                   │ checks fail / conflict ──> back to the worker
                                                   └ anything else wrong ─────> pending/human
 ```
+
+</details>
 
 <details><summary>Starting it, the design phase and the code phase</summary>
 
@@ -1100,6 +1108,8 @@ listed file is not merged: it goes to `pending/human` with a note naming the fil
 To turn it on, add one line to the project's config; it takes effect on the next poll. To turn it off, delete the line
 (or set it to `""`); PRs already handed to a human stay with the human.
 
+<details><summary>Example lines</summary>
+
 <!-- autopilot-human-paths:examples:begin -->
 ```bash
 AUTOPILOT_HUMAN_PATHS="default"
@@ -1108,6 +1118,8 @@ AUTOPILOT_HUMAN_PATHS="default /scripts/ /prompts/ /systemd/ /launchd/ /setup.sh
 AUTOPILOT_HUMAN_PATHS="default /setup.sh /scripts/check-commit.sh"
 ```
 <!-- autopilot-human-paths:examples:end -->
+
+</details>
 
 <details><summary>What <code>default</code> contains and how an entry is read</summary>
 
@@ -1317,11 +1329,15 @@ are not shared between machines.
 Before turning autopilot on, make sure **exactly one machine** polls the repo: run the host check below on **every other
 machine** (`REPO=<owner/repo> bash host-check.sh`) and act on its last line.
 
+<details><summary>What each verdict means and what to do</summary>
+
 | Last line | What to do |
 |---|---|
 | `HOST_VERDICT=STOPPED` | That machine does not poll the repo; go on |
 | `HOST_VERDICT=RUNNING` | Stop the scheduler **first**, **then** wait for its sessions (no "looked idle, dispatched before the stop" gap): Linux `systemctl --user disable --now cavil-loop-poll@<key>.timer` (`coding-agent-poll@<key>.timer` on a pre-rename install); macOS `launchctl bootout gui/$UID/dev.luosky.cavil-loop.<key>`. Let the sessions end on their own — **do not kill them**: no other machine picks up its work, so it would stay on `doing/agent`. Rerun until `STOPPED` |
 | `HOST_VERDICT=UNKNOWN` | Cannot tell; **do not turn autopilot on** |
+
+</details>
 
 <details><summary>Why a second machine breaks autopilot</summary>
 
@@ -1789,11 +1805,15 @@ and prices already downloaded keep being used.
 recorded by the footers above, the local `tests/run.sh` run log and GitHub Actions. It is read-only:
 it reads GitHub (with whatever `gh` is logged in as) and the run log, and writes nothing.
 
+<details><summary>Command</summary>
+
 ```bash
 python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
     --repo OWNER/REPO --worktree-base "$WORKTREE_BASE" --bot-login <loop write account> \
     [--since 2026-11-07] [--until YYYY-MM-DD] [--no-ci-selection] [--no-cache] [--json]
 ```
+
+</details>
 
 <details><summary>Which PRs and comments it reads</summary>
 
@@ -2062,7 +2082,13 @@ Several workers running the full test suite at once stack memory and CPU until t
 HEAVY_TEST_COMMANDS="bash tests/run.sh"
 ```
 
+Leave `HEAVY_TEST_COMMANDS` empty (or remove the line) to turn it off.
+
+<details><summary>What changes for workers, and turning it off</summary>
+
 From the next dispatch on, the worker prompt gets one more section telling the agent to run these as `bash <skill>/scripts/heavy-test.sh -- bash tests/run.sh`; a single test file needs no queue. Workers already running are not affected (their prompt was fixed at start). To turn it off, leave `HEAVY_TEST_COMMANDS` empty (or remove the line).
+
+</details>
 
 <details><summary>How the queue works</summary>
 
@@ -2260,11 +2286,15 @@ file.
 
 A worker's environment holds a GitHub token, and an agent can print it verbatim while it works (running `env`, debugging `gh`, an error that echoes request headers). The daemon replaces GitHub tokens in the files that keep such output, with one set of matching rules (`scripts/redact_tokens.py`). It is always on for the daemon's own logs; the two other places have their own switch (table below).
 
+<details><summary>Which files are cleaned</summary>
+
 | File | Written by | What happens | Switch |
 |---|---|---|---|
 | `poll.log`, pane history (`$STATE_DIR/sessions/*.log`) | the daemon | Replaced **before it reaches disk** | always on |
 | claude / codex session records (`~/.claude/projects`, `~/.codex/sessions`) | the agent's CLI | Scanned every 10 minutes and replaced **in place**, only for sessions whose working directory is under this project's `WORKTREE_BASE` | `REDACT_AGENT_RECORDS` (on by default; empty / `false` = leave them alone) |
 | codex environment snapshots (`~/.codex/shell_snapshots/*.sh`) | codex | Not rewritten: codex workers start with the feature turned off (`--disable shell_snapshot`), so **no new snapshot is written**; clean the existing ones once (next section) | `CODEX_SHELL_SNAPSHOT` (`off` by default; `on` = keep codex's default behaviour) |
+
+</details>
 
 <details><summary>What each place does in detail</summary>
 
@@ -2582,20 +2612,36 @@ parked until a human sets its job file back to `pending`. Status, evidence and r
 Gives every issue awaiting acceptance a clickable preview URL without keeping one web server resident
 per open issue: the URL is always listening, the app starts on the first visit and stops again once
 idle. Off by default; setting `PREVIEW_EXEC` (the command that starts your app) turns it on, and
-`scripts/preview-serve.sh` registers a preview.
+`scripts/preview-serve.sh` registers a preview; your cleanup hook deregisters it.
+
+<details><summary>Commands: register, list, deregister by hand, deregister from the cleanup hook</summary>
+
+By hand:
 
 ```bash
 bash scripts/preview-serve.sh 791          # register + listen, print the URL
 bash scripts/preview-serve.sh 791 --warm   # also warm it up now (skip the 1s before a review)
 bash scripts/preview-serve.sh --list       # every preview in this project and whether it is up
-bash scripts/preview-unserve.sh --issue 791  # deregister (call this from your cleanup hook)
+bash scripts/preview-unserve.sh --issue 791  # deregister by hand: the expected worktree is the one the config gives #791
 ```
+
+From the cleanup hook, always pass the worktree the hook was given. The hook is handed the real
+`ISSUE` and `WORKTREE`; without `--expect-worktree` the script assumes the worktree the config would
+give that number, and could deregister a preview that belongs to another worktree with the same number:
+
+```bash
+# in CLEANUP_HOOK: skip when the worktree is not trusted (empty, or not the expected shape)
+[ -n "$WORKTREE" ] && bash scripts/preview-unserve.sh --issue "$ISSUE" --expect-worktree "$WORKTREE"
+```
+
+A port, owner or worktree that does not match means nothing is deregistered.
+
+</details>
 
 <details><summary>Why socket activation, and how the units fit together</summary>
 
 A resident `tmux` session running a web server per issue keeps every open issue's server in memory
-while nobody looks at it — on one host ten `pending/PR` issues held ten `node` servers, about 930 MiB,
-some idle for days. Socket activation separates "the URL is always up" from "the process is always
+while nobody looks at it — ten waiting issues mean ten idle servers, close to 1 GiB of memory. Socket activation separates "the URL is always up" from "the process is always
 resident":
 
 ```
@@ -3189,10 +3235,14 @@ A per-user LaunchAgent, loaded with `launchctl bootstrap`; it needs `brew instal
 
 Install the skill and the scheduler template once, then run `setup.sh` once per project; each project gets its own timer, log and state, with no interference.
 
+<details><summary>Commands</summary>
+
 ```bash
 bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectA
 bash ~/.agents/skills/cavil-loop/setup.sh ~/github/projectB
 ```
+
+</details>
 
 <details><summary>What you get</summary>
 
@@ -3220,6 +3270,8 @@ Independent logs, independent state, no interference.
 
 A program (the desktop client, or a script of your own) installs, inspects and disconnects projects through four scripts in the skill directory instead of re-implementing the install logic. They work for installations from before the rename too (old names are picked through `scripts/_names.sh`).
 
+<details><summary>The scripts</summary>
+
 | Script | What it does | Writes anything? |
 |---|---|---|
 | `setup.sh --yes <host> [key]` | Same as `setup.sh`, but does not ask the final y/N: enables and starts the poller right away; without `--yes` it is plain `setup.sh` | yes (as `setup.sh`) |
@@ -3227,6 +3279,10 @@ A program (the desktop client, or a script of your own) installs, inspects and d
 | `scripts/disconnect-project.sh <key>` | Stops one project's poller and removes its registration; keeps the project config and state | yes |
 | `scripts/launchd-refresh.sh <key>` | macOS only: replaces one project's launchd plist after the template changed, with backup and rollback | yes |
 | `scripts/project-service.sh <key> stop\|start` | Stops / starts one project's background poller (used by remote access): only "running → stop" and "stopped → start", nothing when the state cannot be read, read back afterwards | yes |
+
+</details>
+
+<details><summary>Commands: connect, list, check, disconnect</summary>
 
 <!-- install-scripts-ops:begin -->
 ```bash
@@ -3240,6 +3296,8 @@ bash "$SKILL/scripts/disconnect-project.sh" myproject
 <!-- install-scripts-ops:end -->
 
 The lines above, in order: connect a project without the y/N question; list every connected project with its scheduler state and dependency verdict; check what is missing before connecting a new project with `codex`; disconnect it again. `myproject` is the instance key (by default the directory name; `.projects[].key` in the status output).
+
+</details>
 
 <details><summary>Status output: every field</summary>
 
@@ -3258,6 +3316,8 @@ The lines above, in order: connect a project without the y/N question; list ever
 
 </details>
 
+<details><summary>Refreshing a launchd plist (macOS)</summary>
+
 **Refreshing a launchd plist (macOS).** The plist is generated, not a symlink, and re-running `setup.sh` skips an existing one; after a daemon update that changed the template, run this once per project.
 
 <!-- install-scripts-mac-ops:begin -->
@@ -3266,6 +3326,8 @@ SKILL="$HOME/.agents/skills/cavil-loop"
 bash "$SKILL/scripts/launchd-refresh.sh" myproject
 ```
 <!-- install-scripts-mac-ops:end -->
+
+</details>
 
 <details><summary>What the refresh does, and its results</summary>
 
@@ -3276,6 +3338,8 @@ It renders the new plist with the same function `setup.sh` uses, checks it with 
 ## Edit a project's settings from a script
 
 `scripts/project-config.sh` reads and changes the everyday settings of one connected project; the desktop client's "项目配置" dialog is built on it, and a person can run it too. Only settings registered in `scripts/config-fields.txt` are read or written; a save writes all values or none and keeps a backup. `myproject` is the instance key.
+
+<details><summary>Commands</summary>
 
 <!-- project-config-ops:begin -->
 ```bash
@@ -3291,6 +3355,8 @@ cp "$BACKUP" "$(bash "$SKILL/scripts/project-config.sh" get myproject | jq -r .r
 <!-- project-config-ops:end -->
 
 In order: list the settings that can be changed with their current values; take the file's fingerprint; change one setting; print the result line; read the new value back; then put the pre-save version back from the backup the save made (the last two lines are the whole way back — nothing else was touched).
+
+</details>
 
 ⚠️ Do not edit the same file in an editor while saving: an edit stored around the save can be lost even when the result is `saved` (details in the last fold).
 
@@ -3333,6 +3399,8 @@ In order: list the settings that can be changed with their current values; take 
 
 A flow label (dispatch, working, waiting for a human, moved to PR, done, and the optional review / autopilot / merge / blocked / later / requester-bot labels) lives in three places: the project's config, the label itself on GitHub (and every issue / PR carrying it), and the desktop client's own label names. `scripts/label-rename.sh` changes the first two in one go; the desktop client's 「改名…」 button runs it and then saves its own names for that repository only. Only a setting that holds one label name can be renamed; list settings (`LABEL_PENDING_AGENT_EXTRA`, `GREEDY_SKIP_LABELS`, `PRIORITY_LABELS`) cannot, and a rename is refused while one of them names the old or the new name.
 
+<details><summary>Commands</summary>
+
 <!-- label-rename-ops:begin -->
 ```bash
 SKILL="$HOME/.agents/skills/cavil-loop"
@@ -3344,6 +3412,8 @@ bash "$SKILL/scripts/label-rename.sh" myproject finish --no-client | tail -1
 <!-- label-rename-ops:end -->
 
 In order: check (read-only: every check with its reason is in the `DETAIL=` line); take the config's fingerprint; rename — the last line is `RESULT=awaiting_client` once GitHub and the config both hold the new name; then end the pause. `--others-stopped` is the person's statement that no other machine polls this repository, or that it has been stopped (see below). `finish --no-client` says the client's names are not being changed this time; change them in the client's settings by hand.
+
+</details>
 
 <details><summary>Results and what to do next</summary>
 
@@ -3404,6 +3474,8 @@ When the daemon runs on one machine and the desktop client on another, the clien
 
 </details>
 
+<details><summary>Commands</summary>
+
 <!-- remote-access-ops:begin -->
 ```bash
 RA="$HOME/.agents/skills/cavil-loop/scripts/remote-access.sh"
@@ -3417,6 +3489,8 @@ bash "$RA" disable
 <!-- remote-access-ops:end -->
 
 In order: open the entry; make a pairing code (`pair` opens the entry first when it is closed, so `pair` alone is usually enough); show the entry's state; list paired devices; revoke the one named `MacBook-Pro`; close the entry.
+
+</details>
 
 <details><summary>Without a terminal: the desktop client</summary>
 
@@ -3568,7 +3642,7 @@ Only managed Linux installations fetch script-only updates automatically.
 
 ### New settings an upgrade does not add to your config
 
-An upgrade never edits your `cavil-loop.config`, so a new feature that is off when its line is missing stays off on an existing project. Each scheduled poll writes one `poll.log` line per such missing setting; nothing else happens.
+An upgrade never edits your `cavil-loop.config`, so a new feature that is off when its line is missing stays off on an existing project. Scheduled polls check for such missing settings and write one `poll.log` line the first time each one is missing (a setting added and then removed again is reported again); nothing else happens.
 
 <details><summary>Which settings are reported, and when</summary>
 
@@ -3670,7 +3744,10 @@ otherwise create the new one.** When both exist the new one wins.
 
 ### Automatic migration of old installations
 
-`scripts/migrate-legacy.sh` moves one old project to the new names. Nobody has to run it:
+`scripts/migrate-legacy.sh` moves one old project to the new names. Nobody has to run it: on Linux
+any project's poll migrates every idle old project on the machine; on macOS re-run `setup.sh <host>`.
+
+<details><summary>When it runs on each system</summary>
 
 - **Linux**: every poll tick of *any* project (`poll-entry.sh`, before the poller loads its
   config) migrates every idle old project on the machine. So it takes effect once the release
@@ -3680,6 +3757,8 @@ otherwise create the new one.** When both exist the new one wins.
   right there and the new timer (enabled by the migration) runs the next one ~30 s later.
 - **macOS**: re-run `setup.sh <host>`. It migrates first and then generates the new LaunchAgent.
   launchd plists are generated, so the background poller cannot swap them itself.
+
+</details>
 
 <details><summary>Only an idle project is migrated</summary>
 
@@ -3875,11 +3954,15 @@ exist (`cavil_legacy_leftovers` in `_names.sh`). With none of the three it is no
 
 The schedulers in [Scheduler by OS](#scheduler-by-os) aren't required: `agent-poll.sh` is stateless and any scheduler can drive it. Use this on a system `setup.sh` doesn't configure (BSD, WSL without systemd, a container, …) or when you'd rather not use systemd / launchd.
 
+<details><summary>cron line</summary>
+
 **cron** (any Unix):
 
 ```cron
 * * * * * CODING_AGENT_CONFIG=$HOME/myproject/cavil-loop.config bash $HOME/.agents/skills/cavil-loop/scripts/poll-entry.sh >> /tmp/cavil-loop-cron.log 2>&1
 ```
+
+</details>
 
 <details><summary>Driving it from a Claude Code <code>/loop</code> session instead</summary>
 
@@ -4012,6 +4095,8 @@ Every poll round writes one record when it exits (times, result, last step reach
 dispatched, GitHub calls made and failed); rounds that go wrong also save a snapshot. It is on by default. To read
 the last rounds:
 
+<details><summary>Commands</summary>
+
 <!-- poll-history-ops:begin -->
 ```bash
 KEY=myproject    # the instance name / 实例名: systemctl --user list-timers 'cavil-loop-poll@*'
@@ -4021,6 +4106,8 @@ CONF=$(sed -n 's/^CODING_AGENT_CONFIG=//p' "$ENV_FILE" | tr -d '"')
 bash "$HOME/.agents/skills/cavil-loop/scripts/poll-history.sh" --config "$CONF" -n 20
 ```
 <!-- poll-history-ops:end -->
+
+</details>
 
 <details><summary>What the command prints, and what each result means</summary>
 
@@ -4109,9 +4196,13 @@ Probably not: a project nobody has touched for a day or more polls less often on
 (`POLL_BACKOFF_LADDER`), and every skipped tick still writes one line saying which tier it is on. Only a log with
 no lines at all, not even skip lines, means the daemon is down — then carry on below.
 
+<details><summary>What the log line looks like</summary>
+
 ```
 [...] [myproj] 本轮跳过（已安静 3d4h，当前档位 10m0s，还差 7m12s）
 ```
+
+</details>
 
 <details><summary>Checks, and how to go back to full speed</summary>
 
@@ -4411,9 +4502,13 @@ If `tmux ls` says "no server running", a tmux server started by the poll unit is
 exits, taking every new worker session with it. The poll unit ships with `KillMode=process` to prevent this —
 check that it is still set.
 
+<details><summary>Command</summary>
+
 ```bash
 systemctl --user show cavil-loop-poll@<instance>.service -p KillMode   # want: process
 ```
+
+</details>
 
 <details><summary>Symptom in poll.log</summary>
 
@@ -4470,9 +4565,13 @@ Fix the `KillMode` first — anything you re-label before that just dies again.
 The `poll.lock` flock is stuck because a long-lived process (the tmux server, a worker) still holds its file
 descriptor. Deleting the lock file unsticks it without killing anything:
 
+<details><summary>Command</summary>
+
 ```bash
 rm -f "$STATE_DIR/poll.lock"
 ```
+
+</details>
 
 <details><summary>Why, and how to find the holder</summary>
 
@@ -4503,9 +4602,13 @@ process keeps a lock on the now-unlinked inode.
 ### Daemon keeps re-dispatching the same PR
 
 Likely the worker didn't flip the label. Check that the prompt template tells the worker to flip. Or manually:
+<details><summary>Command</summary>
+
 ```bash
 gh pr edit N --add-label pending/human --remove-label pending/agent
 ```
+
+</details>
 
 <details><summary>Another cause: the worker left no comment</summary>
 
@@ -4671,9 +4774,13 @@ A failed dispatch changes nothing, so the next poll picks the same item up again
 `DISPATCH_MAX_RETRIES` (default 3) times in a row, after which the daemon strips the trigger labels and hands the
 item to `pending/human`. The reason is in `poll.log`:
 
+<details><summary>Command</summary>
+
 ```bash
 grep -E '派工失败|连续 .* 次派工失败' "$STATE_DIR/poll.log" | tail
 ```
+
+</details>
 
 <details><summary>Reading the reason</summary>
 
@@ -4717,20 +4824,28 @@ escalated, so re-labelling by hand always gives it a fresh set of attempts. To c
 
 ### Debug a single poll
 
+<details><summary>Commands</summary>
+
 ```bash
 CODING_AGENT_CONFIG=~/myproject/cavil-loop.config \
     bash ~/.agents/skills/cavil-loop/scripts/poll-entry.sh
 tail -50 ~/.local/state/cavil-loop/myproject/poll.log
 ```
 
+</details>
+
 ### Browse live worker sessions
 
 Press `Ctrl+b`, then `s`. The workflow keeps tmux's normal `choose-tree` layout and appends the GitHub issue
 title to each worker session row:
 
+<details><summary>Example output</summary>
+
 ```text
 myproject-issue42: 1 windows | Optimize homepage load performance
 ```
+
+</details>
 
 <details><summary>Where the title comes from</summary>
 
@@ -4744,6 +4859,8 @@ is created or reused. Non-worker sessions without `@desc` keep the normal tmux d
 Once a tmux session exits, the pane's scrollback is gone, so each worker session's output is mirrored to disk with
 `tmux pipe-pane`:
 
+<details><summary>Commands</summary>
+
 ```bash
 # Path (default; tunable via SESSION_LOG_DIR in cavil-loop.config)
 $STATE_DIR/sessions/<TMUX_PREFIX>-issue<N>.log
@@ -4753,6 +4870,8 @@ bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42        # print path
 bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -c     # cat
 bash ~/.agents/skills/cavil-loop/scripts/session-log.sh 42 -f     # tail -F
 ```
+
+</details>
 
 <details><summary>File format, and resuming the conversation itself</summary>
 
