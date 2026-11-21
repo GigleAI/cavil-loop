@@ -132,6 +132,65 @@ chk "同一个名字写在「拼提示词」一节：按占位符放行" "$(cd "
 cp "$EN" "$TMP/ph5.md"; echo 'A template may write `${ISSUE_NUMBR}`.' >> "$TMP/ph5.md"
 out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/ph5.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
 chk "占位符表里没有的名字写成 \${…} 也报出来" "$(grep -c '^ISSUE_NUMBR: ' <<<"$out")" 1
+# 跨轮矩阵：读取边界（普通文字 / 标题 / 表格 / 代码示例）和变量来源，一次核对。
+# injectf <out> <标题前缀> <文件>：把一段多行文字插到这一节标题后
+injectf() { awk -v h="$2" -v f="$3" '{print} index($0, h) == 1 {print ""; while ((getline l < f) > 0) print l; close(f)}' "$EN" > "$1"; }
+mx() {   # <名称> <期望 rc> <标题前缀> <多行文字>：插入后跑检查，比退出码
+    printf '%s\n' "$4" > "$TMP/mx.txt"; injectf "$TMP/mx.md" "$3" "$TMP/mx.txt"
+    local out rc; out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/mx.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR"); rc=$?
+    chk "$1" "$rc" "$2"; [ "$rc" = "$2" ] || printf '     %s\n' "$out" | head -3
+}
+CL='## Cleanup on merge'
+FB='```'
+mx "代码块里的示例标题（## 合并后清理 / ### Placeholders）不改变真实章节：放行" 0 "$CL" "$FB"'bash
+# ## Cleanup on merge: `CLEANUP_HOOK`
+# ### Placeholders
+echo "$ISSUE"
+'"$FB"
+mx "同上，用 ~~~ 围栏：放行" 0 "$CL" '~~~bash
+## Cleanup on merge: `CLEANUP_HOOK`
+### Placeholders
+echo "$WORKTREE"
+~~~'
+mx "挂点示例里先赋值再读（PORT=5555 后 echo \$PORT）：放行" 0 "$CL" "$FB"'bash
+PORT=5555
+echo "$PORT"
+'"$FB"
+mx "挂点示例里 for / read 赋值后读：放行" 0 "$CL" "$FB"'bash
+for NAME_X in a b; do echo "$NAME_X"; done
+read -r LINE_X < /dev/null; echo "${LINE_X}"
+'"$FB"
+mx "挂点示例里先读后赋值（echo \$PORT 在 PORT=5555 前）：报错" 1 "$CL" "$FB"'bash
+echo "$PORT"
+PORT=5555
+'"$FB"
+mx "挂点示例里读挂点拿不到的 \$CONCURRENT_WORK：报错" 1 "$CL" "$FB"'bash
+echo "$CONCURRENT_WORK"
+'"$FB"
+mx "赋值在一个代码块、读取在另一个代码块：报错" 1 "$CL" "$FB"'bash
+PORT=5555
+'"$FB"'
+
+'"$FB"'bash
+echo "$PORT"
+'"$FB"
+mx "配置片段代码块里拼错的设置名（只赋值不读）：报错" 1 "## Refresh latest site" "$FB"'bash
+LATEST_SITE_REFRSH=true
+'"$FB"
+mx "代码块里真实存在的设置照常放行" 0 "## Refresh latest site" "$FB"'bash
+LATEST_SITE_REFRESH=true
+'"$FB"
+# 真标题照常生效：同一句话放在文末（定制做法一节）与放在一个新的真「合并后清理」标题下，报的理由不同
+printf '\n## Cleanup on merge: `CLEANUP_HOOK`\n\nThe hook reads `$CONCURRENT_WORK`.\n' > "$TMP/realh.txt"; cat "$EN" "$TMP/realh.txt" > "$TMP/realh.md"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/realh.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "文末加一个真的「合并后清理」标题：下面那句按清理挂点判（说清理脚本没传）" "$(grep -c '^CONCURRENT_WORK: 第 [0-9]* 行在 scripts/cleanup-issue.sh 调起的挂点一节' <<<"$out")" 1
+printf '\nThe hook reads `$CONCURRENT_WORK`.\n' > "$TMP/noh.txt"; cat "$EN" "$TMP/noh.txt" > "$TMP/noh.md"
+out=$(cd "$REPO_DIR" && python3 "$DP" check "$TMP/noh.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "  对照 · 不加标题时同一句按普通文字判" "$(grep -c '^CONCURRENT_WORK: 第 [0-9]* 行，不是配置样例里的设置' <<<"$out")" 1
+# 表格只认文字行：占位符一节里放一段围栏里的表格示例，表里不多出名字
+printf '%s\n' "$FB"'markdown' '| `${FAKE_TABLE_NAME}` | example |' "$FB" > "$TMP/ft.txt"
+awk -v f="$TMP/ft.txt" '{print} /^### Placeholders/ {print ""; while ((getline l < f) > 0) print l; close(f)}' "$EN" > "$TMP/ft.md"
+chk "围栏里的表格示例不算占位符表的一行" "$(python3 "$DP" table "$TMP/ft.md" | grep -c FAKE_TABLE_NAME)/$(python3 "$DP" table "$TMP/ft.md" | wc -l | tr -d ' ')" "0/$(python3 "$DP" table "$EN" | wc -l | tr -d ' ')"
 chk "  到达性 · 占位符表认出了 ≥ 20 个名字，含 \${ISSUE_N}、\${CONCURRENT_WORK}" \
     "$(t=$(python3 "$DP" table "$EN"); [ "$(wc -l <<<"$t")" -ge 20 ] && grep -cxE 'ISSUE_N|CONCURRENT_WORK' <<<"$t")" 2
 chk "两份的占位符表一样" "$(diff <(python3 "$DP" table "$EN") <(python3 "$DP" table "$ZH") && echo same)" same

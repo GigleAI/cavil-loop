@@ -66,21 +66,34 @@ def slug(text):
     return keep.replace(' ', '-')
 
 
-def outside_fences(text):
-    """The lines of text that are not inside a fenced code block (for headings)."""
+def fence_kinds(lines):
+    """For every line: 'open' / 'close' (a fence line), 'code' (inside a fenced block) or
+    'text'. The one reading of where fenced code starts and ends: headings and table rows
+    are only looked for on 'text' lines, by every doc check (tests/lib/doc_placeholders.py
+    too). An unclosed fence runs to the end, as GitHub renders it."""
     out, fence = [], None
-    for line in text.splitlines():
+    for line in lines:
         m = FENCE.match(line)
         if fence:
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) \
                     and line.strip() == m.group(1)[0] * len(line.strip()):
                 fence = None
+                out.append('close')
+            else:
+                out.append('code')
             continue
         if m:
             fence = m.group(1)
+            out.append('open')
             continue
-        out.append(line)
+        out.append('text')
     return out
+
+
+def outside_fences(text):
+    """The lines of text that are not inside a fenced code block (for headings)."""
+    lines = text.splitlines()
+    return [l for l, k in zip(lines, fence_kinds(lines)) if k == 'text']
 
 
 ROOT_DOCS = ('README.md', 'README.zh.md', 'CONTRIBUTING.md', 'CONTRIBUTING.zh.md')
