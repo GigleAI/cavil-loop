@@ -12,24 +12,21 @@ ever taken from text lines, so a heading or a table quoted inside a code block c
 nothing. Every rule below reads that one result — never a second scan with its own idea of
 where a section or a code block starts.
 
-Every occurrence of a name is judged where it stands, one occurrence at a time:
+Every occurrence of an upper-case name is judged where it stands, one occurrence at a time:
   - kind "set":     `NAME=…` in inline code, or an assignment in a code block
-                    (`NAME=`, `export` / `local` / `readonly` / `declare NAME=`,
-                    `for NAME in`, `read NAME`)
   - kind "ref":     `$NAME` / `${NAME}` read in a command or in prose
   - kind "mention": a bare `NAME` in inline code
-  - "local" / "own": in a code block, a ref to a name an earlier statement of the same block
-                    set, and that assignment — the example's own variable, not something it
-                    gets from outside; an assignment the block never reads stays "set" and is
-                    judged like a config line (a mistyped setting in a snippet is still caught)
+No shell semantics are inferred (see occurrences()): an example script's own variables are
+written in lower case (the rule in docs/AGENTS.md), so they are never looked at, and an
+upper-case name is always a setting or a variable the tool passes.
 Placement rules (check()):
   - a ${NAME} in the "compose prompt" section (the ## section holding the placeholder table)
     is a template placeholder, valid when the table lists it;
-  - in a hook's section (its heading names the hook's setting) a non-local "ref" or a
-    "mention" of an environment variable must be one that hook's caller passes; a config
-    setting is never something a hook receives, so a "ref" of a setting there is an error too;
-  - elsewhere: a config setting, a registered hook variable, a local, or a ${NAME} from the
-    table on a line that says it is a placeholder.
+  - in a hook's section (its heading names the hook's setting) a "ref" or a "mention" of an
+    environment variable must be one that hook's caller passes; a config setting is never
+    something a hook receives, so a "ref" of a setting there is an error too;
+  - elsewhere: a config setting, a registered hook variable, or a ${NAME} from the table on a
+    line that says it is a placeholder.
 Usage:
   python3 tests/lib/doc_placeholders.py table <doc>
   python3 tests/lib/doc_placeholders.py names <doc>
@@ -50,8 +47,8 @@ HOOK_FILE = {'PR_CREATED_HOOK': 'prompts/issue-comment.template.md',
              'CLEANUP_HOOK': 'scripts/cleanup-issue.sh',
              'LATEST_SITE_REFRESH': 'scripts/refresh-latest-site.sh',
              'POST_RETROSPECTIVE_PROJECT_CMD': 'scripts/post-merge-retrospective.py'}
-# Statements in a code block that give a name a value of the block's own.
-SET_RES = [re.compile(r'(?:^|[;&|(]\s*|\b(?:export|local|readonly|declare(?:\s+-\w+)*)\s+)(' + NAME + r')='),
+# Assignments in a code block (an upper-case one must be a setting or a registered variable).
+SET_RES = [re.compile(r'(?:^\s*|[;&|(]\s*|\b(?:export|local|readonly|declare(?:\s+-\w+)*)\s+)(' + NAME + r')='),
            re.compile(r'\bfor\s+(' + NAME + r')\s+in\b'),
            re.compile(r'\bread\s+(?:-\w+\s+)*(' + NAME + r')\b')]
 REF_RE = re.compile(r'\$(\{)?(' + NAME + r')')
@@ -90,44 +87,22 @@ def table(lines):
 
 
 def occurrences(lines):
-    """(Line, name, kind, braced) for every name, in reading order; kind is set / ref /
-    mention / local / own (see the module comment). In a code block, a ref to a name an
-    earlier statement of the same block set is "local", and that assignment is "own" (the
-    block's own variable); an assignment the block never reads stays "set" and is judged
-    like a config line, so a mistyped setting in a config snippet is still caught."""
-    out, block = [], []
-
-    def flush():
-        local, events = set(), []
-        for ln, ev in block:
-            for _, kind, n, brace in ev:
-                if kind == 'set':
-                    local.add(n)
-                    events.append([ln, n, 'set', False])
-                else:
-                    events.append([ln, n, 'local' if n in local else 'ref', brace])
-        read_local = {e[1] for e in events if e[2] == 'local'}
-        for e in events:
-            if e[2] == 'set' and e[1] in read_local:
-                e[2] = 'own'
-            out.append(tuple(e))
-        block.clear()
-
-    cur = None
+    """(Line, name, kind, braced) for every upper-case name, in reading order; kind is
+    set / ref / mention. No shell semantics are inferred: whether a line in a code block
+    assigns a variable before another line reads it depends on how the shell runs it
+    (indentation, subshells, command-prefix assignments, the right-hand side read first,
+    commented-out lines), and every textual guess at that got cases wrong both ways. Instead
+    the guide follows one writing rule (docs/AGENTS.md): an example script's own variables
+    are lower-case, so every upper-case name is a setting or a variable the tool passes."""
+    out = []
     for ln in lines:
         if ln.kind == 'code':
-            if ln.block != cur:
-                flush()
-                cur = ln.block
             ev = []
             for rx in SET_RES:
                 ev += [(m.start(1), 'set', m.group(1), False) for m in rx.finditer(ln.text)]
             ev += [(m.start(), 'ref', m.group(2), bool(m.group(1))) for m in REF_RE.finditer(ln.text)]
-            block.append((ln, sorted(ev, key=lambda e: e[0])))
+            out += [(ln, n, kind, brace) for _, kind, n, brace in sorted(ev, key=lambda e: e[0])]
             continue
-        if block:
-            flush()
-            cur = None
         if ln.kind != 'text':
             continue
         for code in re.findall(r'`([^`]+)`', ln.text):
@@ -139,7 +114,6 @@ def occurrences(lines):
                 out.append((ln, code, 'mention', False))
             for m in REF_RE.finditer(code):
                 out.append((ln, m.group(2), 'ref', bool(m.group(1))))
-    flush()
     return out
 
 
@@ -161,8 +135,8 @@ def check(doc, conf, envs, repo):
     if not tab:
         bad.append('没找到占位符表')
     for ln, n, kind, brace in occurrences(lines):
-        if n in SHELL or kind in ('local', 'own'):
-            continue                                # the shell's own, or a code block's own variable
+        if n in SHELL:
+            continue                                # the shell's own
         sect = ln.h2
         hook = next((f for k, f in HOOK_FILE.items() if sect and '`' + k + '`' in sect), None)
         if sect == owner and brace and n in tab:

@@ -11,6 +11,7 @@
 #      按出现位置判断：「拼提示词」一节里写成 ${NAME}、且列在占位符表里的是模板占位符（派工脚本真的把它换掉，
 #      由 tests/orchestration-placeholders.test.sh 跑真实派工核对）；挂点一节里读取的变量只认调起那个挂点的脚本真传进去的
 #      （配置名不会作为环境变量交给挂点，在那里读它也报错）。每一处出现单独判断，同一行的赋值不掩盖读取。
+#      不推断 shell 的赋值时机：示例脚本自己的变量写小写（docs/AGENTS.md），大写名字一律按设置 / 传入的变量判
 #      读法、占位符表和判断只在 tests/lib/doc_placeholders.py 一处
 #   2. 中英两份提到的名字一样、## / ### 标题数一样
 #   3. 折叠块成对、标题（## / ###）不在折叠块里、<summary> 后空一行
@@ -152,13 +153,43 @@ mx "同上，用 ~~~ 围栏：放行" 0 "$CL" '~~~bash
 ### Placeholders
 echo "$WORKTREE"
 ~~~'
-mx "挂点示例里先赋值再读（PORT=5555 后 echo \$PORT）：放行" 0 "$CL" "$FB"'bash
+# 挂点示例自己的变量写小写（docs/AGENTS.md 的写法规则）：检查不推断 shell 的赋值时机，
+# 大写名字一律当设置或工具传进来的变量判。小写变量怎么赋值、怎么缩进都不查。
+mx "挂点示例里小写变量：先赋值再读、缩进、for / read、子 shell、命令前赋值：放行" 0 "$CL" "$FB"'bash
+port=5555
+echo "$port"
+if true; then
+  dir="$WORKTREE"
+  echo "$dir"
+fi
+for name_x in a b; do echo "$name_x"; done
+read -r line_x < /dev/null; echo "${line_x}"
+(tmp=1; echo "$tmp")
+lang=C printf '%s\n' "$ISSUE"
+'"$FB"
+mx "挂点示例里用大写名字当自己的变量（PORT=5555 后读）：报错，自己的变量要写小写" 1 "$CL" "$FB"'bash
 PORT=5555
 echo "$PORT"
 '"$FB"
-mx "挂点示例里 for / read 赋值后读：放行" 0 "$CL" "$FB"'bash
-for NAME_X in a b; do echo "$NAME_X"; done
-read -r LINE_X < /dev/null; echo "${LINE_X}"
+mx "同上，缩进在 if 里：报错" 1 "$CL" "$FB"'bash
+if true; then
+  PORT=5555
+  echo "$PORT"
+fi
+'"$FB"
+mx "PORT=\"\$PORT\"（右侧先读）：报错" 1 "$CL" "$FB"'bash
+PORT="$PORT"
+'"$FB"
+mx "PORT=5555 printf … \"\$PORT\"（参数先展开）：报错" 1 "$CL" "$FB"'bash
+PORT=5555 printf '"'"'%s\n'"'"' "$PORT"
+'"$FB"
+mx "注释掉的 # export PORT=5555 之后读：报错" 1 "$CL" "$FB"'bash
+# export PORT=5555
+echo "$PORT"
+'"$FB"
+mx "(PORT=5555) 子 shell 赋值之后读：报错" 1 "$CL" "$FB"'bash
+(PORT=5555)
+echo "$PORT"
 '"$FB"
 mx "挂点示例里先读后赋值（echo \$PORT 在 PORT=5555 前）：报错" 1 "$CL" "$FB"'bash
 echo "$PORT"
