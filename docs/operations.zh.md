@@ -1530,6 +1530,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
 | `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；加 `--body <文件>` 时改为写出 `<文件>.footer`（正文 + 空行 + footer；生成失败时末尾是一句固定的「用量 footer 生成失败」，GitHub#599）。项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |
 | `${CAVIL_STEP_DIR}` | 模板里 `cavil_step` 运行的步骤脚本所在目录：`flip-label.sh`、`conflict-check.sh`、`pr-feedback.sh`（GitHub#599）。托管安装下三个长期入口都在时是 `entrypoints/`，否则是本次发布的 `scripts/`。脚本只往第 3 号输出写 `STARTED` 和一个 JSON 结果；`cavil_step` 只认属于这个脚本、状态和字段符合它内联的稳定表（`tests/fixtures/step-result-stable.jq`，永不修改，发布切换前渲染的模板也能读切换后新脚本的结果；之后的脚本只能加状态、加字段，交出前各自用 `scripts/step-result.jq` 核对）的结果，打印 `EXIT=<退出码>` 和结果，或 `RESULT=not-started`（确定没发出请求）/ `RESULT=none`（没跑完，结果未知） |
+| `${FEEDBACK_FP_CMD}` | issue / PR 回复说明「先判断是不是纯提问」段用的答复记录命令（GitHub#614）：`bash '<entrypoints 或 scripts>/feedback-fingerprint.sh' --config '<项目配置>'`，后接 `snapshot <编号>` 或 `compare <编号> --record <文件>`。只读 GitHub；外部账号写的内容不读入、不显示 |
 | `${CONCURRENT_WORK}` | 其他进行中条目的清单，每条一行：一句改动摘要和涉及的目录（GitHub#340；GitHub#598 起不再列文件名，整份不超过 `CONCURRENT_WORK_MAX_BYTES` 字节）。它在其余占位符**全部渲染完之后**才由 `concurrent_work_fill` 填入，而且只认独占一行的写法——清单是多行的，里面的标题是别人写的，不能过那一遍 `sed`。`ENABLE_CONCURRENT_WORK_HINT` 开着时，工具会把自带的一段（`prompts/concurrent-work.md`：清单 +「有重叠时留意冲突、不写进评论」的规则）追加到三份 worker 模板末尾，项目模板不用自己写。开关关着而项目模板里写了它 → 渲染成「没有开启」，不读任何东西。列表读不到时渲染成「未能读取」，绝不写成「没有」 |
 
 ## Cleanup hook（`CLEANUP_HOOK`）

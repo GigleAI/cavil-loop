@@ -274,7 +274,9 @@ dispatch() {
     DISPATCH_PROMPT_BYTES=$( [ -s "$f" ] && wc -c < "$f" | tr -d ' ' || echo 0)
     DISPATCH_ARGV=no; [ -e "$f.argv.md" ] && DISPATCH_ARGV=yes
     local full; for full in "$f".full-*.md; do [ -s "$full" ] && cp "$full" "$OUT.full"; break; done
-    [ -s "$f" ] && sed -e "s|$root|<ROOT>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$OUT"
+    # GitHub#614 加了 ${FEEDBACK_FP_CMD}：改动前的派工脚本不认识它，按它在当前脚本里的值对齐
+    [ -s "$f" ] && sed -e "s|$root|<ROOT>|g" -e "s|\\\${FEEDBACK_FP_CMD}|bash '<ROOT>/scripts/feedback-fingerprint.sh' --config '$CONF'|g" \
+        -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$OUT"
     prompt_files_clear "$root" "$W/state"
 }
 # 提示词里「同时在进行的其他工作」那一段（从标题到文件结尾；本测试里它后面没有别的追加段）

@@ -60,4 +60,26 @@ compat_step_dir_patch() {
         sed -i 's#^\(        -e "s|\\${COMMENT_FOOTER_CMD}|$COMMENT_FOOTER_CMD|g" \\\)$#\1\n        -e "s|\\${CAVIL_STEP_DIR}|$_LIB_DIR|g" \\#' "$f"
         grep -q 'CAVIL_STEP_DIR' "$f" || { echo "compat_step_dir_patch: 没能给 $f 补上 \${CAVIL_STEP_DIR}" >&2; return 1; }
     done
+    compat_feedback_fp_patch "$1"
+}
+
+# compat_feedback_fp_patch <old root>: the same for GitHub#614's ${FEEDBACK_FP_CMD} (the answer-record
+# command in the issue / PR reply templates). The value is what the current _lib.sh gives when no
+# managed entrypoints exist: the tree's own scripts/feedback-fingerprint.sh with the project config.
+# Called by compat_step_dir_patch, so every test that already patches old trees gets it; a tree that
+# already renders the placeholder is left alone.
+compat_feedback_fp_patch() {
+    local f line
+    # shellcheck disable=SC2016  # written into the old script verbatim, expanded there
+    line='        -e "s|\${FEEDBACK_FP_CMD}|bash '"'"'$_LIB_DIR/feedback-fingerprint.sh'"'"' --config '"'"'${CONFIG_FILE:-}'"'"'|g" \'
+    for f in "$1"/scripts/dispatch-new-issue.sh "$1"/scripts/dispatch-issue-comment.sh "$1"/scripts/dispatch-pr-comment.sh; do
+        [ -f "$f" ] || continue
+        grep -q 'FEEDBACK_FP_CMD' "$f" && continue
+        # literal match through ENVIRON: `-v` and regex escapes differ between mawk and gawk (gawk
+        # turned `\$` into `$` and matched nothing on CI), ENVIRON values are taken as they are
+        COMPAT_ADD="$line" COMPAT_AT='        -e "s|\${CAVIL_STEP_DIR}|' \
+            awk '{ print } index($0, ENVIRON["COMPAT_AT"]) == 1 { print ENVIRON["COMPAT_ADD"] }' "$f" > "$f.compat" \
+            && cat "$f.compat" > "$f" && rm -f "$f.compat"
+        grep -q 'FEEDBACK_FP_CMD' "$f" || { echo "compat_feedback_fp_patch: 没能给 $f 补上 \${FEEDBACK_FP_CMD}" >&2; return 1; }
+    done
 }
