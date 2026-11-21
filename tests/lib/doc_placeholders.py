@@ -17,7 +17,7 @@ Every occurrence of an upper-case name is judged where it stands, one occurrence
   - kind "ref":     `$NAME` / `${NAME}` read in a command or in prose
   - kind "mention": a bare `NAME` in inline code
 No shell semantics are inferred (see occurrences()): an example script's own variables are
-written in lower case (the rule in docs/AGENTS.md), so they are never looked at, and an
+written in lower case (the rule in docs/AGENTS.md, which binds this guide only), so they are never looked at, and an
 upper-case name is always a setting or a variable the tool passes.
 Placement rules (check()):
   - a ${NAME} in the "compose prompt" section (the ## section holding the placeholder table)
@@ -92,7 +92,7 @@ def occurrences(lines):
     assigns a variable before another line reads it depends on how the shell runs it
     (indentation, subshells, command-prefix assignments, the right-hand side read first,
     commented-out lines), and every textual guess at that got cases wrong both ways. Instead
-    the guide follows one writing rule (docs/AGENTS.md): an example script's own variables
+    the guide follows one writing rule (docs/AGENTS.md, for this guide only): an example script's own variables
     are lower-case, so every upper-case name is a setting or a variable the tool passes."""
     out = []
     for ln in lines:

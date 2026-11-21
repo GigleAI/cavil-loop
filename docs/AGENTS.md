@@ -43,13 +43,16 @@ use it. A new page directly under `docs/` is covered automatically — give it b
   docs, templates and AGENTS.md link to them); a heading inside `<details>` is hidden until
   someone opens the block.
 - **Both languages say the same thing.** Change `x.md` and `x.zh.md` in the same commit.
-- **Upper case is for settings and the tool's variables only.** In an example script (a hook, a
-  command block), the script's own variables are written in lower case (`port=5555`,
-  `dir="$WORKTREE"`); an upper-case name always means a setting from the config example or a
-  variable the tool passes in. `tests/orchestration-docs.test.sh` relies on this: it does not try
-  to work out from the text when a shell assignment takes effect (indentation, subshells,
-  command-prefix assignments and commented-out lines made every such guess wrong in both
-  directions), it checks every upper-case name it sees.
+- **In the orchestration guide, upper case is for settings and the tool's variables only.** This
+  applies to `docs/orchestration.md` / `docs/orchestration.zh.md` alone — the only documents whose
+  upper-case names are checked. In an example script there (a hook, a command block), the
+  script's own variables are written in lower case (`port=5555`, `dir="$WORKTREE"`); an
+  upper-case name always means a setting from the config example or a variable the tool passes
+  in. `tests/orchestration-docs.test.sh` relies on this: it does not try to work out from the
+  text when a shell assignment takes effect (indentation, subshells, command-prefix assignments
+  and commented-out lines made every such guess wrong in both directions), it checks every
+  upper-case name it sees. Other documents' command blocks are not bound by it (the operations
+  guide's verbatim blocks keep names like `KEY=…` / `CONF=…`, and tests run them as written).
 
 ## Where the reasons go
 
