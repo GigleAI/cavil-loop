@@ -10216,6 +10216,74 @@ _MANAGED_OUTSIDER_READ="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/
 [ ! -f "$_MANAGED_OUTSIDER_READ" ] || OUTSIDER_READ_SCRIPT="$_MANAGED_OUTSIDER_READ"
 OUTSIDER_READ_CMD="bash '$OUTSIDER_READ_SCRIPT' --config '$CONFIG_FILE'"
 
+# ── 评论配图的发布命令（GitHub#613，只在项目配了出图地址 WEEKLY_REPORT_ASSET_ROOT_URL 时用）──
+# 同上走长期入口。worker 只拿到这一条命令：项目 key 和条目编号由这里写死，图放哪、查不查凭证、
+# 公网能不能打开都由命令决定（scripts/publish-asset.sh）。
+PUBLISH_ASSET_SCRIPT="$_LIB_DIR/publish-asset.sh"
+_MANAGED_PUBLISH_ASSET="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/publish-asset.sh"
+[ ! -f "$_MANAGED_PUBLISH_ASSET" ] || PUBLISH_ASSET_SCRIPT="$_MANAGED_PUBLISH_ASSET"
+ASSET_PUBLISH_MARKER='本项目的公网出图地址：'
+ASSET_PUBLISH_HOWTO_PREFIX='- **怎么出图**：'
+ASSET_PUBLISH_STANDARD_PREFIX='- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：'
+
+# 本项目的 key = 调度器给它的那份 <key>.conf 的名字。环境里没有直接给，所以看配置目录：
+# CODING_AGENT_CONFIG 指向本项目配置的那份（比真实路径）。正好一份才算数；没有或不止一份输出空。
+asset_project_key() {
+    local self d f v found=""
+    self="$(readlink -f "$CONFIG_FILE" 2>/dev/null)" || return 0
+    for d in "$CAVIL_CONFIG_HOME" "$CAVIL_LEGACY_CONFIG_HOME"; do
+        for f in "$d"/*.conf; do
+            [ -f "$f" ] || continue
+            v="$(grep -E '^CODING_AGENT_CONFIG=' "$f" 2>/dev/null | tail -n 1)" || continue
+            v="${v#*=}"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            [ -n "$v" ] && [ "$(readlink -f "$v" 2>/dev/null)" = "$self" ] || continue
+            [ -z "$found" ] || return 0
+            found="$(basename "$f" .conf)"
+        done
+    done
+    printf '%s' "$found"
+}
+
+# 把 prompt 里讲出图的两条（「怎么出图」「评论配图标准」）整条换成发布命令的说法。
+# 没配出图地址：什么都不做，prompt 逐字节不变。prompt 里没有「本项目的公网出图地址」那一行
+# （复审等不讲出图的 prompt）：也不动。项目整份换了模板、找不到这两条原文时，在末尾追加同样两条并写明以它为准。
+asset_publish_fill() {   # <prompt 文件> <本次工作编号>
+    local f="$1" n="$2" key cmd src t
+    [ -n "${WEEKLY_REPORT_ASSET_ROOT_URL:-}" ] || return 0
+    [ -f "$f" ] && grep -qF -- "$ASSET_PUBLISH_MARKER" "$f" || return 0
+    src="$SKILL_DIR/prompts/asset-publish.md"
+    key="$(asset_project_key)"
+    t=$(mktemp "${TMPDIR:-/tmp}/cavil-asset-fill.XXXXXX" 2>/dev/null) || return 0
+    if [ -n "$key" ] && [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+        cmd="bash '$PUBLISH_ASSET_SCRIPT' --project '$key' --item $n"
+        # 逐段拼接替换（不用 gsub：替换值里的 & 和 \ 在 gsub 里有特殊含义）
+        CMD="$cmd" awk '{ ph = "${ASSET_PUBLISH_CMD}"; out = ""
+              while ((i = index($0, ph)) > 0) { out = out substr($0, 1, i - 1) ENVIRON["CMD"]; $0 = substr($0, i + length(ph)) }
+              print out $0 }' "$src" > "$t" 2>/dev/null || : > "$t"
+    else
+        log "  ⚠️ 评论配图：找不到本项目的 key（配置目录里没有正好一份指向 ${CONFIG_FILE} 的 <key>.conf），提示词里写明发不了图" 2>/dev/null || true
+        printf '%s\n' \
+            "${ASSET_PUBLISH_HOWTO_PREFIX}本项目这次派工没拿到发布命令（本机找不到本项目的发布配置），发不了图：评论里写明「本项目的发布命令不可用，无法内嵌图片」，改用文字逐项描述，不要自己往任何目录里复制图片。" \
+            "${ASSET_PUBLISH_STANDARD_PREFIX}同上：这次派工发不了图，不要自己找公网目录或拼地址。" > "$t"
+    fi
+    if [ "$(grep -c '' "$t")" != 2 ]; then
+        log "  ⚠️ 评论配图：发布命令的提示文字读不出（${src}），prompt 原样留着" 2>/dev/null || true
+        rm -f "$t"; return 0
+    fi
+    if awk -v src="$t" -v hp="$ASSET_PUBLISH_HOWTO_PREFIX" -v sp="$ASSET_PUBLISH_STANDARD_PREFIX" '
+            BEGIN { getline h < src; getline s < src; close(src) }
+            index($0, hp) == 1 { print h; seen++; next }
+            index($0, sp) == 1 { print s; seen++; next }
+            { print }
+            END { if (seen == 0) { print ""; print "## 评论配图只用发布命令（以本段为准）"; print ""; print h; print s } }' "$f" > "$t.out" && [ -s "$t.out" ]; then
+        cat "$t.out" > "$f" || true
+    else
+        log "  ⚠️ 评论配图：填充 prompt 失败（${f}），原样留着" 2>/dev/null || true
+    fi
+    rm -f "$t" "$t.out"
+    return 0
+}
+
 # ── 验算「合并前需人过目」清单的命令（GitHub#560，写进托管复审的「钩子调用的文件」段）──
 # 同上走长期入口：复审会话里跑它的时候，发版切换不会让路径失效
 HUMAN_PATHS_CHECK_SCRIPT="$_LIB_DIR/human-paths-check.sh"

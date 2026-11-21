@@ -104,6 +104,13 @@ cavil_project_env()  { cavil_pick "$CAVIL_CONFIG_HOME/$1.conf" "$CAVIL_LEGACY_CO
 cavil_project_config() { cavil_pick "$1/$CAVIL_PROJECT_CONFIG_NAME" "$1/$CAVIL_LEGACY_PROJECT_CONFIG_NAME"; }
 # 评论配图 / 周报配图的公开落盘根目录
 cavil_review_shots() { cavil_pick "$CAVIL_STATE_HOME/review-shots" "$CAVIL_LEGACY_STATE_HOME/review-shots"; }
+# 公网资产目录的对外服务（GitHub#613）：服务配置、旧图清单的两份、服务自己写的状态文件、切换锁。
+# 状态目录是新功能，只有新名字；配置跟着服务配置文件走（旧安装的服务配置在旧目录，清单也在那里）。
+cavil_public_assets_conf() { cavil_pick "$CAVIL_CONFIG_HOME/public-assets.conf" "$CAVIL_LEGACY_CONFIG_HOME/public-assets.conf"; }
+CAVIL_PUBLIC_ASSETS_STATE="$CAVIL_STATE_HOME/public-assets"
+cavil_public_assets_lists() { printf '%s:%s\n' "$(dirname "$(cavil_public_assets_conf)")/public-assets-legacy.json" "$CAVIL_PUBLIC_ASSETS_STATE/legacy.json"; }
+cavil_public_assets_status() { printf '%s\n' "$CAVIL_PUBLIC_ASSETS_STATE/status.json"; }
+cavil_public_assets_project_dirs() { printf '%s:%s\n' "$CAVIL_CONFIG_HOME" "$CAVIL_LEGACY_CONFIG_HOME"; }
 
 # ── 预览（按需 preview）──
 # 预览不能按「整台机器用哪套」来挑：旧项目注册的预览跑在旧单元上、登记在旧目录，
