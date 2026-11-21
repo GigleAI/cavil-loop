@@ -3,7 +3,8 @@
 // （scripts/publish-asset.sh）都只经这里判断同一件事，不各写一份。
 //
 //   code-id <目录>                   这套服务代码的指纹（serve.mjs + rules.mjs + strict.mjs 的内容）
-//   status-check <状态文件>          对外服务自己报告的状态，按 enforced / not-enforced / unknown 归类
+//   status-check <状态文件>          对外服务自己报告的状态 + 切换验收，按 enforced / strict-unverified / not-enforced / unknown 归类
+//   accept <状态文件>                切换命令核验通过后写验收记录（只对状态文件此刻记录的那个进程）
 //   keys <配置目录>...               本机登记过的项目 key（目录里带 PROJECT_ROOT= 行的 <key>.conf）
 //   build <资产目录> <输出> <上限字节> <配置目录>...   建旧图清单
 //   verify <清单> <校验值>            清单文件的 SHA-256 是否等于校验值（退出码 0 / 1）
@@ -65,10 +66,16 @@ export function projectKeys(dirs) {
   return keys;
 }
 
-// 对外服务写的状态文件，归成三类。只有 enforced 才算「服务端拦截已生效」：
-// 文件能读、字段齐、规则版本够、严格模式开、旧图清单可用、记录的进程此刻还在且启动时刻对得上。
-// 其余能确定的是 not-enforced（服务明说严格模式关），其他一律 unknown。
-export function statusCheck(file) {
+// 切换命令核验通过后写的验收记录：和状态文件放在同一个目录。
+export const acceptFileFor = (statusFile) => path.join(path.dirname(statusFile), 'accepted.json');
+
+// 对外服务写的状态文件，加上切换命令写的验收记录，归成四类。只有 enforced 才算「服务端拦截已生效」：
+// 文件能读、字段齐、规则版本够、严格模式开、旧图清单可用、记录的进程此刻还在且启动时刻对得上，
+// **而且**验收记录对的正是这个进程（进程号、启动时刻、代码、清单校验值都一样）。
+// 服务已在严格模式、但还没有对得上的验收记录 → strict-unverified（新规则在跑，核验没完成：
+// 切换被中断、服务自己重启过……），发布命令不认它，自动切换会重新核验。
+// 服务明说严格模式关 → not-enforced；其他一律 unknown。
+export function statusCheck(file, acceptFile = acceptFileFor(file)) {
   let st;
   try {
     st = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -86,7 +93,30 @@ export function statusCheck(file) {
   if (st.rules < RULES_VERSION) return { ...base, state: 'not-enforced', reason: '服务跑的是旧规则版本' };
   if (!st.strict) return { ...base, state: 'not-enforced', reason: '服务报告严格模式关' };
   if (!st.legacy_ok) return { ...base, state: 'not-enforced', reason: `旧图清单不可用（${st.legacy_why || '原因未记'}）` };
+  let acc;
+  try {
+    acc = JSON.parse(fs.readFileSync(acceptFile, 'utf8'));
+  } catch (e) {
+    return { ...base, state: 'strict-unverified', reason: e.code === 'ENOENT' ? '严格模式在跑，切换核验还没完成' : '验收记录读不出' };
+  }
+  for (const k of ['pid', 'start', 'code', 'legacy_sha']) {
+    if (acc === null || typeof acc !== 'object' || acc[k] !== st[k]) {
+      return { ...base, state: 'strict-unverified', reason: '验收记录对的不是现在这个服务进程（服务重启过或核验没完成）' };
+    }
+  }
   return { ...base, state: 'enforced', reason: '' };
+}
+
+// 验收：只在状态文件此刻正是这个进程、严格模式在跑时写，内容取自状态文件本身。
+export function acceptNow(file, acceptFile = acceptFileFor(file)) {
+  const v = statusCheck(file, acceptFile);
+  if (v.state !== 'strict-unverified' && v.state !== 'enforced') return { ok: false, why: v.reason || v.state };
+  const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const rec = { pid: st.pid, start: st.start, code: st.code, legacy_sha: st.legacy_sha, at: new Date().toISOString() };
+  const tmp = `${acceptFile}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, acceptFile);
+  return { ok: true };
 }
 
 // 读旧图清单：文件的 SHA-256 必须等于校验值、记录的目录必须是服务实际交出的目录。
@@ -178,6 +208,11 @@ function main(argv) {
     case 'status-check':
       console.log(JSON.stringify(statusCheck(a[0])));
       return 0;
+    case 'accept': {
+      const r = acceptNow(a[0]);
+      if (!r.ok) console.error(`没写验收记录：${r.why}`);
+      return r.ok ? 0 : 1;
+    }
     case 'keys': {
       let keys;
       try {

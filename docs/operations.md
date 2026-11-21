@@ -2656,24 +2656,37 @@ bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # pl
 bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # switch: back up config → build / check list → write strict mode → restart → verify; rolls back on failure
 ```
 
+After its verification passes, the switch also writes an acceptance record (`accepted.json` in the state directory, naming the service process it verified). **The check counts as in force only when the service runs in strict mode and the acceptance record names exactly the running process**: a switch interrupted before its verification, or a service that restarted on its own, turns it into "strict mode running, verification not done" — the publish command then refuses, and the automatic switch verifies again.
+
+When any project has only the early weekly-report image address (`WEEKLY_REPORT_ASSET_URL`) and no image address, the switch refuses and names those projects: in strict mode their weekly-report images would not be served, and the new address cannot be derived from the old one. Add a `WEEKLY_REPORT_ASSET_ROOT_URL=` line (the prefix the public entry really mounts) to those projects' `<key>.conf`, then switch.
+
 The daemon calls `switch.sh --auto` every round: when the service is not in strict mode, or the running code differs from the code on disk, it switches (restarting the service once); failures back off 1, 5, 15, 60 minutes, at most 5 tries per code version. To stop it switching automatically, add `PUBLIC_ASSETS_AUTO_SWITCH=0` to the service config. The verification has four checks: an old image 200, a new file in an old-structure position 404, a normal image under `<key>/0/` (item 0 is reserved for this) 200, an image with a fake token pattern 404; it deletes only the files it just created.
 
 When a switch goes wrong, return to the old rules by hand (this does not need the switch command to run; first set `OLD_IMAGE_URL` to the public URL of any old image):
 
 <!-- public-assets-rollback:begin -->
 ```bash
-CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)"
-cp -p "$CONF" "$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
 sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
 grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
 systemctl --user restart cavil-loop-public-assets.service
 sleep 2
 systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
 curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
 ```
 <!-- public-assets-rollback:end -->
 
-`active` and `200` mean it is back. The `PUBLIC_ASSETS_LEGACY_SHA=` line stays, the next switch reuses it; to turn automatic switching back on, delete the `PUBLIC_ASSETS_AUTO_SWITCH=0` line. If the first check is not `active`: see `journalctl --user -u cavil-loop-public-assets -n 50`; if the config got broken, overwrite it with the newest `public-assets.conf.bak-<time>` in the same directory and restart.
+`active`, `true`, `200` and a last line `ROLLED-BACK` mean it is back: `true` is the service itself reporting "this process runs with strict mode off" (it counts only when the process id matches). Any failing step stops the block on the spot and nothing after it runs: `NO-CONFIG` / `BACKUP-FAILED` mean nothing was changed; `EDIT-FAILED` means the config is half edited — copy the backup it names back over it; a failing `systemctl` or `jq` line means the service did not come up on the old rules — see `journalctl --user -u cavil-loop-public-assets -n 50`. The `PUBLIC_ASSETS_LEGACY_SHA=` line stays, the next switch reuses it; to turn automatic switching back on, delete the `PUBLIC_ASSETS_AUTO_SWITCH=0` line.
 
 **Usage** (read-only, deletes nothing): `bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` lists usage per project and per item, old-structure files that belong to no project on one line, and the directory the names point at but the service does not serve on its own line. Whether and what to delete is a person's call: a deleted image breaks in the comments already posted.
 

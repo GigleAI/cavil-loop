@@ -81,6 +81,7 @@ pidf="$TMP/svc.pid"
 alive() { [ -f "\$pidf" ] && kill -0 "\$(cat "\$pidf")" 2>/dev/null; }
 case "\$*" in
     "--user is-active cavil-loop-public-assets.service") if alive; then echo active; else echo inactive; exit 3; fi ;;
+    "--user show -p MainPID --value cavil-loop-public-assets.service") if alive; then cat "\$pidf"; else echo 0; fi ;;
     "--user restart cavil-loop-public-assets.service"|"--user start cavil-loop-public-assets.service")
         if alive; then p="\$(cat "\$pidf")"; kill "\$p"; for _ in \$(seq 1 50); do kill -0 "\$p" 2>/dev/null || break; sleep 0.1; done; fi
         extra=()
@@ -203,7 +204,7 @@ printf 'x' >> "$LIST2"
 sw --status > /dev/null
 chk "一份损坏：--status 点名坏的那份" "$(grep -c "一份损坏（$LIST2）" "$TMP/sw.err")" "1"
 systemctl --user restart cavil-loop-public-assets.service
-chk "一份损坏：服务用另一份，旧图照常 200" "$(state_of)/$(code "$B/issue-464/old-b.png")" "enforced/200"
+chk "一份损坏、服务重启后：用另一份，旧图照常 200（重启后核验没重做，状态是 strict-unverified）" "$(state_of)/$(code "$B/issue-464/old-b.png")" "strict-unverified/200"
 sw; rc=$?
 chk "再跑一次切换：把好的那份复制回去，两份都正常" "$rc/$(sha256sum "$LIST2" | cut -d' ' -f1)" "0/$SHA"
 printf 'x' >> "$LIST1"; printf 'x' >> "$LIST2"
@@ -251,15 +252,38 @@ sw >/dev/null 2>&1
 chk "（重新切换后 enforced）" "$(state_of)" "enforced"
 
 echo "④ 文档里的手动退回步骤，按原文执行"
+blk_of() { awk '/<!-- public-assets-rollback:begin -->/{f=1;next} /<!-- public-assets-rollback:end -->/{f=0} f' "$REPO_DIR/docs/$1" | sed -n '/^```bash$/,/^```$/p' | sed '1d;$d'; }
+run_blk() { env -i HOME="$HOME" PATH="$TMP/bin:$REAL_PATH" LANG=C.UTF-8 OLD_IMAGE_URL="$B/issue-464/old-b.png" bash -c "$1" 2>&1; }
+# 备份写不进去：命令块就地停下，配置和服务都不动
+cp "$CONF" "$TMP/conf.pre"; chmod 500 "$HOME/.config/cavil-loop"
+out="$(run_blk "$(blk_of operations.md)")"; rc=$?
+chmod 700 "$HOME/.config/cavil-loop"
+chk "备份失败：命令块退出非 0、说 BACKUP-FAILED，配置一字没动，服务仍是 enforced" \
+    "$([ "$rc" != 0 ] && echo 非0)/$(printf '%s\n' "$out" | grep -c '^BACKUP-FAILED')/$(cmp -s "$CONF" "$TMP/conf.pre" && echo 没动)/$(state_of)" "非0/1/没动/enforced"
 for doc in operations.md operations.zh.md; do
     blk="$(awk '/<!-- public-assets-rollback:begin -->/{f=1;next} /<!-- public-assets-rollback:end -->/{f=0} f' "$REPO_DIR/docs/$doc" | sed -n '/^```bash$/,/^```$/p' | sed '1d;$d')"
     [ -n "$blk" ] || { chk "$doc 有手动退回的命令块" "无" "有"; continue; }
-    out="$(env -i HOME="$HOME" PATH="$TMP/bin:$REAL_PATH" LANG=C.UTF-8 OLD_IMAGE_URL="$B/issue-464/old-b.png" bash -c "$blk" 2>&1)"; rc=$?
-    chk "$doc：手动退回命令块跑通，看到 active 和 200，服务报告严格模式关" "$rc/$(printf '%s\n' "$out" | grep -cx 'active')/$(printf '%s\n' "$out" | grep -cx '200')/$(node "$REPO_DIR/scripts/public-assets/strict.mjs" status-check "$STATE/status.json" | jq -r .state)" "0/1/1/not-enforced"
+    out="$(run_blk "$blk")"; rc=$?
+    chk "$doc：手动退回命令块跑通，看到 active、服务自报严格模式关（true）、旧图 200、ROLLED-BACK" "$rc/$(printf '%s\n' "$out" | grep -cx 'active')/$(printf '%s\n' "$out" | grep -cx 'true')/$(printf '%s\n' "$out" | grep -cx '200')/$(printf '%s\n' "$out" | tail -n 1)/$(state_of)" "0/1/1/1/ROLLED-BACK/not-enforced"
     sw >/dev/null 2>&1
 done
 chk "两份文档的手动退回命令块一字不差" "$(diff <(awk '/<!-- public-assets-rollback:begin -->/{f=1;next} /<!-- public-assets-rollback:end -->/{f=0} f' "$REPO_DIR/docs/operations.md" | sed -n '/^```bash$/,/^```$/p') <(awk '/<!-- public-assets-rollback:begin -->/{f=1;next} /<!-- public-assets-rollback:end -->/{f=0} f' "$REPO_DIR/docs/operations.zh.md" | sed -n '/^```bash$/,/^```$/p') >/dev/null && echo same)" "same"
+chk "文档步骤加上了「不再自动切换」那一行" "$(grep -c '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF")" "1"
+sed -i '/^PUBLIC_ASSETS_AUTO_SWITCH=/d' "$CONF"
 chk "（文档步骤之后重新切换，enforced）" "$(state_of)" "enforced"
+
+echo "④ 验收记录：服务在严格模式不等于核验已完成"
+chk "切换成功后有验收记录" "$([ -s "$STATE/accepted.json" ] && echo 有)" "有"
+rm -f "$STATE/accepted.json"
+chk "切换在核验前被中断（没有验收记录）：服务仍在严格模式，但状态是 strict-unverified" "$(state_of)/$(code "$B/issue-464/new-after-switch.png")" "strict-unverified/404"
+chk "strict-unverified 时发布命令不发图" "$(bash "$PUBLISH" --project acme --check-ready 2>/dev/null; echo $?)" "1"
+jq '.next = 0 | .tries = 0' "$STATE/auto.json" > "$STATE/auto.json.t" && mv "$STATE/auto.json.t" "$STATE/auto.json"
+bash "$SWITCH" --auto 2> "$TMP/sw.err"
+chk "自动切换看到核验没完成：重新切换、核验、写验收记录 → enforced" "$(state_of)/$([ -s "$STATE/accepted.json" ] && echo 有)" "enforced/有"
+systemctl --user restart cavil-loop-public-assets.service
+chk "服务自己重启过（进程换了）：旧验收记录不算数，strict-unverified，发布命令不发图" "$(state_of)/$(bash "$PUBLISH" --project acme --check-ready 2>/dev/null; echo $?)" "strict-unverified/1"
+sw >/dev/null 2>&1
+chk "（重新切换后 enforced）" "$(state_of)" "enforced"
 
 echo "⑤ 发布命令"
 pub() { bash "$PUBLISH" "$@" 2> "$TMP/pub.err"; }
@@ -320,7 +344,7 @@ case "$1" in has-session) exit 1 ;; esac
 exit 0
 SH
 chmod +x "$DSB/bin/gh" "$DSB/bin/tmux"
-N7=$((900000000 + ($$ % 1000000)))
+N7=$((900000000 + ($$ % 1000000) * 3)); N8=$((N7 + 1)); N9=$((N7 + 2))
 render() {   # <出图地址> <是否登记 key 1/0> <输出>
     local url="$1" reg="$2" out="$3" w="$DSB/w-$RANDOM"
     mkdir -p "$w/state" "$w/wt"; git clone -q "$DSB/upstream.git" "$w/project" 2>/dev/null
@@ -347,6 +371,12 @@ CONF
     (cd "$w/project" && env -u CODING_AGENT_RELEASE_ROOT -u WEEKLY_REPORT_ASSET_ROOT_URL HOME="$DSB/home" CODING_AGENT_CONFIG="$w/config" \
         bash "$REPO_DIR/scripts/dispatch-new-issue.sh" "$N7") >/dev/null 2>&1
     cp "$(prompt_file_of "$REPO_DIR" "$w/state" new "$N7")" "$out" 2>/dev/null || : > "$out"
+    (cd "$w/project" && env -u CODING_AGENT_RELEASE_ROOT -u WEEKLY_REPORT_ASSET_ROOT_URL HOME="$DSB/home" CODING_AGENT_CONFIG="$w/config" \
+        bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$N8" 0) >/dev/null 2>&1
+    cp "$(prompt_file_of "$REPO_DIR" "$w/state" cmt "$N8" 0)" "$out.cmt" 2>/dev/null || : > "$out.cmt"
+    (cd "$w/project" && env -u CODING_AGENT_RELEASE_ROOT -u WEEKLY_REPORT_ASSET_ROOT_URL HOME="$DSB/home" CODING_AGENT_CONFIG="$w/config" \
+        bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" "$N9" "feature/issue-$N9" 0) >/dev/null 2>&1
+    cp "$(prompt_file_of "$REPO_DIR" "$w/state" pr "$N9")" "$out.pr" 2>/dev/null || : > "$out.pr"
 }
 render "https://assets.example.invalid/review-assets" 1 "$TMP/p-reg.md"
 render "https://assets.example.invalid/review-assets" 0 "$TMP/p-noreg.md"
@@ -354,6 +384,14 @@ render "" 1 "$TMP/p-none.md"
 chk "三种情况都写出了 prompt" "$([ -s "$TMP/p-reg.md" ] && [ -s "$TMP/p-noreg.md" ] && [ -s "$TMP/p-none.md" ] && echo yes)" "yes"
 chk "配了地址、找得到 key：两条都换成了带本项目 key 和本条编号的发布命令" \
     "$(grep -c -- "--project 'demo' --item $N7" "$TMP/p-reg.md")/$(grep -c '^- \*\*怎么出图\*\*：' "$TMP/p-reg.md")/$(grep -c '^- \*\*评论配图标准' "$TMP/p-reg.md")" "2/1/1"
+for k in cmt:$N8 pr:$N9; do
+    f="$TMP/p-reg.md.${k%%:*}"; n="${k#*:}"
+    chk "配了地址、找得到 key（${k%%:*} 入口）：两条都换成带本条编号的发布命令，旧说法不再出现" \
+        "$(grep -c -- "--project 'demo' --item $n" "$f")/$(grep -cE 'public-assets/check\.mjs|curl -skI|放进截图目录' "$f")" "2/0"
+    f="$TMP/p-none.md.${k%%:*}"
+    chk "没配地址（${k%%:*} 入口）：讲出图的两条和模板原文一字不差，没有发布命令" \
+        "$(grep -cF -- "$(grep '^- \*\*评论配图标准' "$REPO_DIR/prompts/new-issue.template.md")" "$f")/$(grep -c 'publish-asset.sh' "$f")" "1/0"
+done
 chk "配了地址：旧说法（跑自查脚本、curl 核对、放进截图目录）不再出现" \
     "$(grep -cE 'public-assets/check\.mjs|curl -skI|放进截图目录' "$TMP/p-reg.md")" "0"
 chk "配了地址、找不到 key：写明发不了图，不给任何命令" \
@@ -394,11 +432,31 @@ sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"; systemctl --user restart cavil-loop-
 rm -f "$HOME/weekly-report-dryrun.md"
 wr; rc=$?
 chk "服务端拦截没生效：出图之前就停（退出码 1、没截图、没出报告）" "$rc/$(grep -c '== 2/4 出图' "$WR/out")/$([ -e "$HOME/weekly-report-dryrun.md" ] && echo 出了 || echo 没出)" "1/0/没出"
-sw >/dev/null 2>&1
-sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$HOME/.config/cavil-loop/acme.conf"
-printf 'WEEKLY_REPORT_ASSET_URL=%s/weekly-report\nWEEKLY_REPORT_ASSET_DIR=%s/weekly-report\n' "$B" "$ROOT" >> "$HOME/.config/cavil-loop/acme.conf"
+# 升级链路：项目只配了早期的周报图片地址（自定义公网路径），没配出图地址
+AC="$HOME/.config/cavil-loop/acme.conf"
+sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$AC"
+printf 'WEEKLY_REPORT_ASSET_URL=%s/custom-wr\nWEEKLY_REPORT_ASSET_DIR=%s/custom-wr\n' "$B" "$ROOT" >> "$AC"
+rm -f "$HOME/weekly-report-dryrun.md"
 wr; rc=$?
-chk "只有早期的周报图片地址、服务已是严格模式：出图之前停下，说明要加出图地址那一行" "$rc/$(grep -c 'WEEKLY_REPORT_ASSET_ROOT_URL=' "$WR/out")/$(grep -c '== 2/4 出图' "$WR/out")" "1/1/0"
+chk "老规则下、只有自定义的旧周报地址：周报照旧出（图在旧目录、图链是旧地址、公网能打开）" \
+    "$rc/$(grep -oE "$B/custom-wr/delivery-wk-[0-9]+-[0-9]+\.png" "$HOME/weekly-report-dryrun.md" 2>/dev/null | sort -u | wc -l | tr -d ' ')/$(code "$(grep -oE "$B/custom-wr/delivery-wk-[0-9]+-[0-9]+\.png" "$HOME/weekly-report-dryrun.md" | head -1)")" "0/1/200"
+cp "$CONF" "$TMP/conf.pre"
+sw; rc=$?
+chk "有这样的项目：切换命令不切换、点名它、配置一字没动，服务仍是老规则" \
+    "$rc/$(grep -c "$AC" "$TMP/sw.err")/$(cmp -s "$CONF" "$TMP/conf.pre" && echo 没动)/$(state_of)" "1/1/没动/not-enforced"
+jq '.next = 0 | .tries = 0' "$STATE/auto.json" > "$STATE/auto.json.t" && mv "$STATE/auto.json.t" "$STATE/auto.json"
+bash "$SWITCH" --auto 2> "$TMP/sw.err"
+chk "自动切换同样不切换（周报不会被自动切换停掉）" "$(state_of)/$(grep -c "$AC" "$TMP/sw.err")" "not-enforced/1"
+rm -f "$HOME/weekly-report-dryrun.md"; wr; rc=$?
+chk "没切换：周报照常出" "$rc" "0"
+printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
+sw; rc=$?
+chk "按提示补上出图地址：切换成功" "$rc/$(state_of)" "0/enforced"
+rm -f "$HOME/weekly-report-dryrun.md"; wr; rc=$?
+chk "补上之后：周报走发布命令，图链在 acme/weekly-report/ 下" "$rc/$(grep -cE "$B/acme/weekly-report/delivery-wk-" "$HOME/weekly-report-dryrun.md" 2>/dev/null)" "0/1"
+sed -i '/^WEEKLY_REPORT_ASSET_ROOT_URL=/d' "$AC"
+wr; rc=$?
+chk "切换之后又删掉出图地址：出图之前停下，说明要加出图地址那一行" "$rc/$(grep -c 'WEEKLY_REPORT_ASSET_ROOT_URL=' "$WR/out")/$(grep -c '== 2/4 出图' "$WR/out")" "1/1/0"
 
 echo
 echo "结果：$pass 通过，$fail 失败"

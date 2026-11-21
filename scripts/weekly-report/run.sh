@@ -196,7 +196,8 @@ fi
 
 if [ "$USE_PUBLISH" = 1 ]; then
     bash "$PUBLISH" --project "$PROJECT" --check-ready || { echo "配图发不出去，周报中止（还没出图）" >&2; exit 1; }
-elif [ "$(node "$STRICT_JS" status-check "${PUBLIC_ASSETS_STATUS:-$(cavil_public_assets_status)}" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" = enforced ]; then
+elif case "$(node "$STRICT_JS" status-check "${PUBLIC_ASSETS_STATUS:-$(cavil_public_assets_status)}" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" in
+        enforced|strict-unverified) true ;; *) false ;; esac; then
     echo "对外服务已切到严格模式，WEEKLY_REPORT_ASSET_DIR 里新放的图不会被交出，周报中止（还没出图）。" >&2
     echo "在 $CONF 里加一行出图地址，例如：WEEKLY_REPORT_ASSET_ROOT_URL=\"https://<你的公网主机>/review-assets\"" >&2
     exit 1

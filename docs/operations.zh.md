@@ -2269,24 +2269,37 @@ bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # �
 bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # 执行切换：备份配置 → 建 / 核对清单 → 写严格模式 → 重启 → 核验；失败自动退回老规则
 ```
 
+切换命令核验通过后另写一份验收记录（状态目录里的 `accepted.json`，记的是核验时那个服务进程）。**只有服务在严格模式、而且验收记录对的正是现在这个进程，才算拦截已生效**：切换在核验之前被中断、服务自己重启过，都会让它变成「严格模式在跑、核验没完成」，这时发布命令不发图，自动切换会重新核验。
+
+只配了早期周报图片地址（`WEEKLY_REPORT_ASSET_URL`）、没配出图地址的项目，切换命令一律不切换、点名这些项目：严格模式下它们的周报图不会被交出，而新地址没法从旧地址推出来。给这些项目的 `<key>.conf` 加一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`（公网入口实际挂的前缀）后再切换。
+
 daemon 每轮调一次 `switch.sh --auto`：服务没在严格模式、或在跑的代码和磁盘上的不一样，就自动切换（会重启一次服务），失败按 1、5、15、60 分钟退避，每个代码版本最多试 5 次。不想让它自动切换：服务配置里加 `PUBLIC_ASSETS_AUTO_SWITCH=0`。核验做四项：一张旧图 200、旧结构位置新放的图 404、`<key>/0/`（0 号条目留给核验）下的正常图 200、带假令牌样式的图 404；只删它自己刚建的文件。
 
 切换出问题时手动退回老规则（不依赖切换命令能运行；先把 `OLD_IMAGE_URL` 设成任一张旧图的公网地址）：
 
 <!-- public-assets-rollback:begin -->
 ```bash
-CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)"
-cp -p "$CONF" "$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
 sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
 grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
 systemctl --user restart cavil-loop-public-assets.service
 sleep 2
 systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
 curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
 ```
 <!-- public-assets-rollback:end -->
 
-看到 `active` 和 `200` 算恢复。`PUBLIC_ASSETS_LEGACY_SHA=` 那一行保留，下次切换沿用；想恢复自动切换就删掉 `PUBLIC_ASSETS_AUTO_SWITCH=0` 那一行。第一步不是 `active`：`journalctl --user -u cavil-loop-public-assets -n 50` 看原因，配置改坏了就用同目录下最新的 `public-assets.conf.bak-<时间>` 覆盖它再重启。
+看到 `active`、`true`、`200` 和最后一行 `ROLLED-BACK` 算恢复：`true` 是服务自己报告「现在这个进程严格模式关」（进程号对得上才算）。中途任何一步失败，命令块就地停下、后面的步骤都不做：`NO-CONFIG` / `BACKUP-FAILED` 表示什么都没改；`EDIT-FAILED` 表示配置改了一半，用它打印的备份文件覆盖回去；`systemctl` 或 `jq` 那一行失败表示服务没按老规则起来，看 `journalctl --user -u cavil-loop-public-assets -n 50`。`PUBLIC_ASSETS_LEGACY_SHA=` 那一行保留，下次切换沿用；想恢复自动切换就删掉 `PUBLIC_ASSETS_AUTO_SWITCH=0` 那一行。
 
 **占用统计**（只读，不删任何文件）：`bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` 按项目、按条目列出占用，旧结构里归不到项目的单列一行，按名字推出来但对外服务不交出的那个目录也单列。删不删、删哪些由人决定：删掉的图在已发评论里会变成破图。
 

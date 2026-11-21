@@ -105,7 +105,10 @@ verify_cleanup() {
 cmd_verify() {
     local j root port prefix key keys stamp pub_url sample ok=1 base bases
     j="$(status_json)"
-    [ "$(jget "$j" .state)" = enforced ] || { say "核验：服务端拦截没有生效（$(jget "$j" .reason)），不核验"; return 1; }
+    case "$(jget "$j" .state)" in
+        enforced|strict-unverified) ;;
+        *) say "核验：服务没在严格模式（$(jget "$j" .reason)），不核验"; return 1 ;;
+    esac
     root="$(jget "$j" .root)"; port="$(jget "$j" .port)"; prefix="$(jget "$j" .prefix)"
     [ -n "$port" ] || port="$(conf_get PUBLIC_ASSETS_PORT || true)"
     [ -n "$prefix" ] || prefix=/review-assets/
@@ -193,10 +196,31 @@ rollback() {   # <原因>
 EOF
     return 3
 }
+# 只配了早期的「周报图片地址」、没配出图地址的项目：严格模式下它们的周报图放的位置不会被交出，
+# 而新地址没法从旧地址推出来（公网路径可以自定义）。有这样的项目就不切换，点名要加哪一行。
+old_weekly_projects() {
+    local d f
+    for d in ${PROJECT_DIRS//:/ }; do
+        for f in "$d"/*.conf; do
+            [ -f "$f" ] && grep -q '^PROJECT_ROOT=' "$f" || continue
+            grep -Eq '^WEEKLY_REPORT_ASSET_URL=.+' "$f" || continue
+            grep -Eq '^WEEKLY_REPORT_ASSET_ROOT_URL=("[^"]+"|[^"].*)$' "$f" && continue
+            printf '%s\n' "$f"
+        done
+    done
+}
 cmd_apply() {
-    local sha root max ls pid tmp
+    local sha root max ls pid tmp olds
     [ -r "$CONF" ] || { say "没有对外服务的配置（${CONF}），这台机器没装对外服务，不切换"; return 1; }
     [ "$(service_state)" = active ] || { say "对外服务没在跑（$(service_state)），不切换"; return 1; }
+    olds="$(old_weekly_projects)"
+    if [ -n "$olds" ]; then
+        say "下面这些项目只配了早期的周报图片地址（WEEKLY_REPORT_ASSET_URL），没配出图地址：切换后它们的周报会停。不切换，什么都没改。"
+        printf '  %s\n' $olds >&2
+        say "在每个文件里加一行出图地址（周报图片地址去掉末尾那一段 /weekly-report 通常就是它；以公网入口实际挂的路径为准），例如："
+        say "  WEEKLY_REPORT_ASSET_ROOT_URL=\"https://<公网主机>/review-assets\""
+        return 1
+    fi
     root="$(conf_get PUBLIC_ASSETS_ROOT)" && [ -d "$root" ] || { say "配置里的 PUBLIC_ASSETS_ROOT 不是目录，不切换"; return 1; }
     max="$(conf_get PUBLIC_ASSETS_MAX_BYTES || true)"; [[ "$max" =~ ^[1-9][0-9]*$ ]] || max=$((256 * 1024 * 1024))
     cp -p "$CONF" "$CONF.bak-$(date +%Y%m%d-%H%M%S)" || { say "备份配置失败，不切换"; return 1; }
@@ -228,8 +252,10 @@ cmd_apply() {
     pid="$(jget "$(status_json)" .pid)"
     write_conf 1 "$sha" || { say "写配置失败；配置保持原样"; return 1; }
     svc restart "$UNIT" 2>/dev/null || { rollback "重启服务失败"; return $?; }
-    wait_status enforced "$pid" || { rollback "重启后服务没有报告严格模式生效"; return $?; }
+    wait_status strict-unverified "$pid" || { rollback "重启后服务没有报告严格模式在跑"; return $?; }
     cmd_verify || { rollback "核验没过"; return $?; }
+    # 验收记录：核验对的就是这个进程。发布命令和自动切换只认有它的状态（核验没跑完、服务自己重启过都没有）
+    "$NODE" "$STRICT" accept "$STATUS_FILE" || { rollback "验收记录写不成"; return $?; }
     note "已切换：服务端拦截已生效（旧图清单 ${sha}）"
     return 0
 }
