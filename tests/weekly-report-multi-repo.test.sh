@@ -402,7 +402,10 @@ echo "── 5. 不配附加项目：与合并基线逐字节一致（含单项�
 # 正文开头那段写给 agent 的派工说明（到第一条 `---` 为止）不在对拍范围：它是 run.sh 里的固定文字，
 # 别的 issue 改它是有意为之（GitHub#273 补了出 PDF 用矢量图的说明），和「配不配附加项目」无关；
 # 数据部分、退出码、GitHub 调用仍逐字节对拍。
-norm() { sed -E '1,/^---$/d' "$1" | sed -E 's/wk-[0-9]{8}-[0-9]+/wk-REV/g; s/(数据生成时间\*\*：)[0-9: -]+/\1T/'; }
+# 「单价可信度」里说明价格出处的固定文字，GitHub#606 有意改过（Claude footer 改为直接取公开价）：
+# 合并基线一侧的旧说法换成新说法再对拍，条数等数字仍逐字节比
+norm() { sed -E '1,/^---$/d' "$1" | sed -E 's/wk-[0-9]{8}-[0-9]+/wk-REV/g; s/(数据生成时间\*\*：)[0-9: -]+/\1T/' \
+    | sed -E 's/交叉 review 那一侧取\*\*内置 API 参考价\*\*（([0-9]+) 条）或\*\*人工配置\*\*/直接取公开价、不反解的（交叉 review 一侧，以及 GitHub#606 起的 Claude 评论 footer）用**内置 API 参考价或 daemon 抓来的官方价**（\1 条），另有**人工配置**/'; }
 if ! compat_skip "不配附加项目：开出的 issue 正文与改动前" "$TMP/old" "$TMP/new" scripts/weekly-report scripts/_names.sh; then
     for variant in normal fail; do
         for side in old new; do

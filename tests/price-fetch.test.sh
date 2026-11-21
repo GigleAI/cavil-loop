@@ -40,7 +40,10 @@ has() { [ -e "$MARK/$1" ] && echo yes || echo no; }
 fetch() { python3 "$TU/price_fetch.py"; }
 # 键排序、3.0 规整成 3，只比数值
 fprice() { jq -cS --arg a "$1" --arg m "$2" '.[$a][$m].prices // null | if . then map_values(. + 0) else . end' "$FETCHED" 2>/dev/null || echo null; }
-reset() { rm -rf "$CACHE"; mkdir -p "$MARK"; }
+# 每天抓一次最新价（GitHub#606）另有 tests/footer-listed-price.test.sh；这里只测补缺，
+# 把下次抓最新价的时刻定在很远的将来，抓价脚本就只处理缺价标记
+no_latest() { echo 9999999999 > "$CACHE/latest-prices.next"; }
+reset() { rm -rf "$CACHE"; mkdir -p "$MARK"; no_latest; }
 
 echo "── 1. 抓价：两源一致才写，逐条规则各有负对照 ──"
 reset
@@ -286,7 +289,7 @@ echo "── 10. 本机有记账样本时（走 classify）：零价不丢、冲
 # 每个子用例换一个干净的 HOME，样本互不干扰。驱动和周报重算各跑一遍对拍。
 fresh() { export HOME="$TMP/h$1" XDG_CACHE_HOME="$TMP/h$1/.cache"
           CACHE="$XDG_CACHE_HOME/cavil-loop"; MARK="$CACHE/unpriced"; FETCHED="$CACHE/fetched-prices.json"
-          mkdir -p "$MARK"; CW="$TMP/h$1/wt/issue-9"; mkdir -p "$CW"
+          mkdir -p "$MARK"; no_latest; CW="$TMP/h$1/wt/issue-9"; mkdir -p "$CW"
           ENC=$(cd "$CW" && pwd | tr / -); PJ="$HOME/.claude/projects"; mkdir -p "$PJ/$ENC"; }
 call() {  # $1 模型 $2 usage JSON → 本 worktree 的一次调用
     printf '{"type":"assistant","timestamp":"%s","requestId":"q%s","message":{"model":"%s","usage":%s}}\n' \
@@ -339,12 +342,13 @@ for comp, price in real.items():
 PY
 call claude-test-9 '{"input_tokens":1000000,"output_tokens":0}'
 KV=$(cl --kv); HM=$(cl)
+# 评论 footer 直接取价、不反推（GitHub#606）：驱动不看本机解出的 $6，也就没有冲突可报
 chk "10b 金额按抓来的 \$3 算（不是本机解出的 \$6）" "$(grep -o 'cost_usd=[0-9.]*' <<< "$KV")" "cost_usd=3"
-chk "10b 可信度桶：冲突 + 来自自动抓取，两件事都在" \
-    "$(grep -o 'price_status=[^ ]*' <<< "$KV")" "price_status=disputed_fetched:3"
-chk "10b 人读行：冲突警示还在" "$(grep -c '与外部参照冲突（存疑）' <<< "$HM")" "1"
-chk "10b 人读行：也注明含自动联网获取的单价" "$(grep -c '（含自动联网获取的单价）' <<< "$HM")" "1"
-chk "10b 周报重算与驱动一致" "$(wk claude-test-9 '{"input":1000000}')" \
+chk "10b 驱动直接取价：可信度桶只有 fetched" \
+    "$(grep -o 'price_status=[^ ]*' <<< "$KV")" "price_status=fetched:3"
+chk "10b 人读行：注明含自动联网获取的单价" "$(grep -c '（含自动联网获取的单价）' <<< "$HM")" "1"
+# 周报那一侧仍反解：冲突警示和来源两件事都在，金额与驱动相同
+chk "10b 周报重算：金额与驱动相同，冲突 + 来自自动抓取两件事都在" "$(wk claude-test-9 '{"input":1000000}')" \
     'usd=3 unk=0 state=full buckets={"disputed_fetched": 3.0}'
 
 echo "── 11. 带日期后缀的模型：先补过基名，日期名照样补上（PR #55 复审第 2 轮）──"

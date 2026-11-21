@@ -24,6 +24,16 @@ LiteLLM 是第三方，可能抄错或晚收录。一个看起来正常、其实
   · 只有一边有的项不采用（该项照旧计入缺价），input / output 两边都必须有
 
 失败的模型冷却 COOLDOWN 秒再试，不会每轮都去打外网；成功的模型删掉标记。
+
+每日最新价（GitHub#606）：除了补缺，每天还把官方价目页上**全部** Claude 模型的价抓一遍，
+写进 `latest-prices.json`。评论 footer 直接用它计价，不再从本机日志反推（维护者在 PR #612
+定的：「不要反推，取最新的，缓存一天」）。这一步**只用官方页**，不拿 LiteLLM 对照（维护者在
+PR #612：「使用当前的 api 返回的价格即可，不用再找别的」）；页面上的值仍要过上面的合理性校验、
+五项齐全才收。上面「两个来源」的规则只管补缺。
+成功后 LATEST_EVERY 秒（一天）内不再抓；下载失败冷却 COOLDOWN 秒再试，抓到却写不进缓存
+WRITE_RETRY 秒后再试，旧文件都保留不动；连下次时刻也存不上时日志如实说下一轮会再抓。
+一份都没抓到时 footer 用内置参照表。下次该抓的时刻写在 `latest-prices.next`（一个整数），
+daemon 每轮只读这个数，没到时间不启动本脚本。
 本脚本只往 stdout 打日志行（daemon 逐行转进 poll.log），退出码恒为 0——抓价失败
 不能影响派工。
 
@@ -38,7 +48,7 @@ LiteLLM 是第三方，可能抄错或晚收录。一个看起来正常、其实
       PRICE_FETCH_TIMEOUT（单次请求秒数，默认 15）
       XDG_CACHE_HOME（缓存目录的父目录，同 price_solve）
 """
-import datetime, fcntl, json, math, os, re, sys, time, urllib.request
+import datetime, fcntl, json, math, os, re, stat, sys, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "weekly-report"))
@@ -61,19 +71,19 @@ def _num(name, default, cast):
 
 
 COOLDOWN = _num("PRICE_FETCH_COOLDOWN_SECS", "21600", int)
+LATEST_EVERY = _num("PRICE_LATEST_REFRESH_SECS", "86400", int)   # 最新价缓存一天（GitHub#606）
+WRITE_RETRY = 600            # 抓到了价却写不进缓存时，多久后再试（PR #612 复审第 5 轮）
 TIMEOUT = _num("PRICE_FETCH_TIMEOUT", "15", float) or 15.0
-MAX_PRICE = 1000.0                      # 美元 / 百万 token；现役最贵的档位也远低于它
+MAX_PRICE = price_solve.MAX_PRICE       # 美元 / 百万 token；现役最贵的档位也远低于它。读回时同一上限
 MAX_DIVERGE = price_solve.MAX_DIVERGE   # 与反解那一侧的交叉核对用同一个阈值
-MODEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+MODEL_RE = re.compile(price_solve.MODEL_NAME_RE)
 AGENTS = ("claude", "codex")
 
-# 每一侧的计价项，以及它们在三个来源里叫什么。顺序即输出顺序。
+# 每一侧的计价项与必须有的两项：和读回缓存时核对的是同一张表（price_solve.FETCH_ITEMS /
+# FETCH_CORE），写进去的和读出来认的永远一致。顺序即输出顺序。
 # claude：键名与 price_solve.REFERENCE 一致；codex：键名与 codex-prices.json 一致。
-ITEMS = {
-    "claude": ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h"),
-    "codex": ("in", "out", "cached_in", "cache_write"),
-}
-CORE = {"claude": ("input", "output"), "codex": ("in", "out")}
+ITEMS = price_solve.FETCH_ITEMS
+CORE = price_solve.FETCH_CORE
 LITELLM_KEYS = {
     "claude": {"input": "input_cost_per_token", "output": "output_cost_per_token",
                "cache_read": "cache_read_input_token_cost",
@@ -98,24 +108,93 @@ def state_path():
     return os.path.join(price_solve.cache_dir(), "price-fetch-state.json")
 
 
-def _load_json(path, default):
+def latest_due_path():
+    """下次该抓最新价的时刻（epoch 整数）。daemon 的 price_fetch_tick 读同一个文件。"""
+    return os.path.join(price_solve.cache_dir(), "latest-prices.next")
+
+
+# 「下次时刻」文件合法的样子：不超过 64 字节，1–18 位数字，后面只跟换行。别的一律当作到时间。
+# daemon 的 price_fetch_tick（_lib.sh）按同一条规则判断，两处对同一个文件必须给同一个答案
+# （PR #612 复审第 1 轮：一边删掉中间空格读成未来时刻跳过，一边判到时，坏文件永远没人重写）。
+DUE_RE = re.compile(rb"[0-9]{1,18}\n*")
+
+
+def latest_due(now):
+    """到时间了吗。文件没有、读不出、不合上面的格式 → 到了（宁可多抓一次，不要永远不抓）。"""
+    # 不是普通文件（命名管道之类）也算到时：读它会一直等下去（PR #612 复审第 2 轮），
+    # 钩子那边 `[ -f ]` 同样判到时；抓完写回的时刻文件会把它换成普通文件
+    raw = price_solve.read_regular(latest_due_path(), limit=64)
+    if raw is None or not DUE_RE.fullmatch(raw):
+        return True
+    return now >= int(raw.rstrip(b"\n"))
+
+
+def _write_due(epoch):
+    """写下次该抓的时刻。返回 None 表示写好了，否则是给日志用的一句话（PR #612 复审第 6 轮：
+    以前吞掉失败，日志说「10 分钟后再试」，其实时刻没保存、下一轮立刻又抓，还留下临时文件）。
+    时刻没保存时文件里还是旧值（或没有）→ 按 latest_due 的规则多半已到时，下一轮会再抓。"""
     try:
-        with open(path, encoding="utf-8") as f:
-            v = json.load(f)
-        return v if isinstance(v, dict) else default
-    except Exception:
-        return default
+        _replace_file(latest_due_path(), f"{int(epoch)}\n")
+    except Exception as e:
+        return f"下次刷新时刻没能保存（{type(e).__name__}: {e}），下一轮会再抓"
+    return None
+
+
+def _when(secs):
+    return f"{secs // 3600} 小时" if secs >= 3600 else f"{secs // 60} 分钟"
+
+
+def _retry_note(due_err, secs):
+    """日志里「什么时候再试」：时刻存上了才说过多久再试，没存上就如实说下一轮再抓。"""
+    return due_err if due_err else f"{_when(secs)}后再试"
+
+
+def _load_json(path, default):
+    return price_solve.load_json_file(path, default)   # 不阻塞、有界、只认普通文件
+
+
+STATE_TIME_MAX = 1e11        # 「上次尝试时刻」合法上限（约公元 5138 年）；超过的当作坏数据
+
+
+def load_state():
+    """抓价状态，读入时逐项核对（PR #612 复审第 4 轮：一个超大的尝试时刻让整轮抓价提前结束）。
+    {"<agent>/<model>": {"last_attempt": 秒, "result": 文本}}：键不是字符串、项不是对象、时刻不是
+    合法数的一律丢掉 —— 当作没试过，宁可多抓一次，不让一处坏数据挡住补价。"""
+    out = {}
+    for key, entry in _load_json(state_path(), {}).items():
+        if not (isinstance(key, str) and isinstance(entry, dict)):
+            continue
+        last = price_solve.number_in(entry.get("last_attempt"), 0, STATE_TIME_MAX)
+        if last is None:
+            continue
+        clean = {"last_attempt": last}
+        if isinstance(entry.get("result"), str):
+            clean["result"] = entry["result"]
+        out[key] = clean
+    return out
+
+
+def _replace_file(path, text):
+    """整份写到临时文件再换名——价格缓存、抓价状态、最新价、下次时刻都走这一处。
+    失败就抛出（调用方据此不提交这一步），临时文件不留。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _save_json(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    _replace_file(path, json.dumps(obj, ensure_ascii=False, indent=1, sort_keys=True))
 
 
-# ── 已有单价：内置表里有的模型从不抓 ─────────────────────────────────────────
 def builtin_models(agent):
     if agent == "claude":
         return set(price_solve.REFERENCE)
@@ -268,7 +347,9 @@ def parse_litellm(text, agent):
         vals = {}
         for item, field in LITELLM_KEYS[agent].items():
             v = entry.get(field)
-            vals[item] = v * 1e6 if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+            # 每 token 单价：同一个数值检查（超大整数 / 越界都算没有），再换算成每百万 token
+            per = price_solve.number_in(v, 0, MAX_PRICE / 1e6)
+            vals[item] = per * 1e6 if per is not None else None
         out[key.lower()] = vals
     return out
 
@@ -343,6 +424,47 @@ def resolve(agent, model):
     return reconcile(agent, o, c)
 
 
+def refresh_latest(now):
+    """抓官方价目页上全部 Claude 模型的最新价（GitHub#606）。只用官方页这一处的价，不再拿别的
+    来源对照（维护者在 PR #612：「使用当前的 api 返回的价格即可，不用再找别的」）；页面上的值
+    自身站得住（sane）、五项齐全的模型才收。一个都收不到算失败：旧的 latest-prices.json 不动，
+    COOLDOWN 秒后再试。"""
+    o_text, o_err = fetch(ANTHROPIC_URL)
+    official = parse_anthropic(o_text) if o_text is not None else None
+    why = (f"官方页下载失败：{o_err}" if o_text is None
+           else "官方页解析不出价目表（页面可能改版）" if not official else None)
+    ok, skipped = {}, []
+    if why is None:
+        for model, vals in official.items():
+            bad = "有歧义" if vals is None else sane("claude", vals)
+            prices = None if bad else {k: v for k, v in vals.items() if v is not None}
+            if prices is not None and set(prices) != set(price_solve.LATEST_ITEMS):
+                prices, bad = None, "缺项"
+            if prices is None:
+                skipped.append(f"{model}（{bad}）")
+            else:
+                ok[model] = prices
+        if not ok:
+            why = "没有一个模型的价站得住、五项齐全"
+    if why:
+        log(f"Claude 最新价目抓取失败，{_retry_note(_write_due(now + COOLDOWN), COOLDOWN)}"
+            f"（评论 footer 继续用上次的价或内置价）：{why}")
+        return
+    try:
+        _save_json(price_solve.latest_path(), {"claude": {
+            "fetched_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "sources": [ANTHROPIC_URL], "models": ok}})
+    except Exception as e:
+        # 抓到了却没写进去：不算这一天已刷新，WRITE_RETRY 秒后再来（不是一天、也不是冷却期）
+        log(f"Claude 最新价目已抓到但写不进缓存，{_retry_note(_write_due(now + WRITE_RETRY), WRITE_RETRY)}："
+            f"{type(e).__name__}: {e}")
+        return
+    due_err = _write_due(now + LATEST_EVERY)
+    log(f"已更新 Claude 最新价目：{len(ok)} 个模型"
+        + (f"；未采用 {len(skipped)} 个：{'、'.join(skipped)}" if skipped else "")
+        + (f"；{due_err}" if due_err else ""))
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def pending_markers():
     """[(agent, model, 标记路径)]。名字不合规的标记直接删掉（不是驱动写的）。"""
@@ -372,50 +494,98 @@ def _rm(p):
 def main():
     if os.environ.get("PRICE_AUTO_FETCH", "1") in ("0", "false", "no", "off"):
         return
+    now = time.time()
     markers = pending_markers()
-    if not markers:
+    # daemon 只在调度器起的轮询里让本脚本做每日刷新（_lib.sh 的 price_fetch_tick 传 PRICE_FETCH_LATEST=off
+    # 表示「这一轮只补缺」）；手动直接跑本脚本照旧两件都做
+    latest_on = os.environ.get("PRICE_FETCH_LATEST", "on") not in ("0", "false", "no", "off")
+    want_latest = latest_on and latest_due(now)
+    if not markers and not want_latest:
         return
     os.makedirs(price_solve.cache_dir(), exist_ok=True)
     # 多个项目的 daemon 共用这份缓存：同一时刻只让一个在抓，其余这一轮直接跳过
-    lock = open(os.path.join(price_solve.cache_dir(), "price-fetch.lock"), "w")
+    # 锁文件同样不阻塞地打开、只认普通文件：路径上若是命名管道，普通的 open(…, "w") 会一直等
+    lock_path = os.path.join(price_solve.cache_dir(), "price-fetch.lock")
+    try:
+        fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o644)
+    except OSError as e:
+        log(f"抓价锁文件打不开，本轮跳过：{lock_path}：{e}")
+        return
+    lock = os.fdopen(fd, "w")
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        lock.close()
+        log(f"抓价锁文件不是普通文件，本轮跳过：{lock_path}")
+        return
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return
+    # 拿到锁之后再看一次：别的项目的 daemon 可能刚抓完
+    if latest_on and latest_due(now):
+        # 每日刷新出了意外也只影响它自己，不挡住下面的补缺
+        try:
+            refresh_latest(now)
+        except Exception as e:
+            log(f"Claude 最新价目抓取异常（已忽略），{_retry_note(_write_due(now + COOLDOWN), COOLDOWN)}："
+                f"{type(e).__name__}: {e}")
     fetched = price_solve.load_fetched()
-    state = _load_json(state_path(), {})
-    now = time.time()
+    latest = price_solve.load_latest()
+    state = load_state()
     changed = False
     for agent, model, path in markers:
-        key = f"{agent}/{model}"
-        # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
-        # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
-        # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
-        # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
-        # 按驱动看到的实际模型名落缓存。
-        if model in builtin_models(agent) or model in fetched.get(agent, {}):
-            _rm(path)                                  # 已经有价：不抓，也不再提
-            continue
-        last = (state.get(key) or {}).get("last_attempt") or 0
-        if isinstance(last, (int, float)) and 0 <= now - last < COOLDOWN:
-            continue                                   # 冷却中
-        prices, why = resolve(agent, model)
-        state[key] = {"last_attempt": now, "result": "ok" if prices else why}
-        changed = True
-        if not prices:
-            log(f"{agent} 模型 {model} 抓价失败，{COOLDOWN // 3600} 小时后再试：{why}")
-            continue
-        fetched.setdefault(agent, {})[model] = {
-            "prices": prices,
-            "fetched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "sources": [ANTHROPIC_URL if agent == "claude" else OPENAI_URL, LITELLM_URL],
-        }
-        _save_json(price_solve.fetched_path(), fetched)
-        _rm(path)
-        log(f"{agent} 模型 {model} 已自动补上单价（官方页与 LiteLLM 一致）："
-            + ", ".join(f"{k}=${v:g}/M" for k, v in prices.items()))
+        # 一个模型出了意外只影响它自己：记下来、留着标记，接着处理下一个
+        try:
+            changed = _fetch_one(agent, model, path, now, fetched, latest, state) or changed
+        except Exception as e:
+            log(f"{agent} 模型 {model} 抓价异常（已忽略，标记留着，下一轮再试）：{type(e).__name__}: {e}")
     if changed:
         _save_json(state_path(), state)
+
+
+def _fetch_one(agent, model, path, now, fetched, latest, state):
+    """补一个缺价标记。返回是否改了抓价状态。"""
+    key = f"{agent}/{model}"
+    # 「已经有价」用的是读入时已核对过的补抓价（price_solve.load_fetched）：取价丢掉的坏记录，
+    # 这里也不算有价，标记留着、照常去抓（PR #612 复审第 3 轮）。
+    # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
+    # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
+    # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
+    # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
+    # 按驱动看到的实际模型名落缓存。
+    if (model in builtin_models(agent) or model in fetched.get(agent, {})
+            or (agent == "claude" and model in latest)):
+        _rm(path)                                  # 已经有价：不抓，也不再提
+        return False
+    # 状态读入时已核对过（load_state）：在这里的时刻一定是合法的数
+    last = (state.get(key) or {}).get("last_attempt")
+    if last is not None and 0 <= now - last < COOLDOWN:
+        return False                               # 冷却中
+    prices, why = resolve(agent, model)
+    if not prices:
+        state[key] = {"last_attempt": now, "result": why}
+        log(f"{agent} 模型 {model} 抓价失败，{COOLDOWN // 3600} 小时后再试：{why}")
+        return True
+    # 提交点是「价格缓存写进了磁盘」（PR #612 复审第 5 轮：写入失败后，内存里的价和 ok 状态被同轮
+    # 另一个模型的状态保存带了出去，下一轮以为已补上、冷却 6 小时）。先在副本上写；写成功了才改
+    # 共享的价格表和状态、删标记。写不进去就什么都不提交：不记这次尝试，标记留着，下一轮再来
+    entry = {
+        "prices": prices,
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sources": [ANTHROPIC_URL if agent == "claude" else OPENAI_URL, LITELLM_URL],
+    }
+    new = {a: dict(g) for a, g in fetched.items()}
+    new.setdefault(agent, {})[model] = entry
+    try:
+        _save_json(price_solve.fetched_path(), new)
+    except Exception as e:
+        log(f"{agent} 模型 {model} 抓到了价但写不进缓存，标记留着，下一轮再试：{type(e).__name__}: {e}")
+        return False
+    fetched.setdefault(agent, {})[model] = entry
+    state[key] = {"last_attempt": now, "result": "ok"}
+    _rm(path)
+    log(f"{agent} 模型 {model} 已自动补上单价（官方页与 LiteLLM 一致）："
+        + ", ".join(f"{k}=${v:g}/M" for k, v in prices.items()))
+    return True
 
 
 if __name__ == "__main__":

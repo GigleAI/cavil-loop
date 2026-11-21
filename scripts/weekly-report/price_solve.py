@@ -27,8 +27,8 @@
     uncorroborated  稳定 但没有可比参照（含参照为 0 / 缺失）      → 用反解值，算**候选估算**
     disputed        稳定 但与参照偏差 > MAX_DIVERGE               → 报红；取值按 policy
     unstable        过不了闸门 / 无解 / 非有限值                   → 取值按 policy
-    fetched         同 unstable，但兜底用的参照是 daemon 缺价时**联网抓来的**
-                    （内置参照里没有这个模型，GitHub#51）           → 取值按 policy
+    fetched         同 unstable，但兜底用的参照是 daemon **联网抓来的**（内置参照里没有这个
+                    模型；每天的最新价只取官方页 GitHub#606，缺价补抓两源一致 GitHub#51）→ 取值按 policy
     disputed_fetched 同 disputed，但冲突的那份参照是**联网抓来的**   → 报红；取值按 policy
                     （单独一态：既不能丢掉冲突警示，也不能丢掉「这个价是自动抓的」）
 
@@ -45,9 +45,10 @@
     python3 price_solve.py --table          # 输出给 driver 用的 JSON 价目表
     python3 price_solve.py --report         # 人读：逐项状态与闸门指标
     python3 price_solve.py --table --policy B
+    python3 price_solve.py --listed         # 评论 footer 用：官方最新价目，不读任何日志（GitHub#606）
     环境变量 CLAUDE_PROJECTS_DIR 可覆盖 transcript 目录（测试用）。
 """
-import argparse, datetime, hashlib, json, glob, math, os, random, statistics, sys
+import argparse, datetime, hashlib, json, glob, math, os, random, stat, statistics, sys
 
 # ── 阈值（可配置；标定依据写在旁边，别改成拍脑袋的数）────────────────────────
 MAX_AMPLIFY = float(os.environ.get("PRICE_MAX_AMPLIFY", "5"))
@@ -118,18 +119,98 @@ def cache_dir():
 
 
 def fetched_path():
-    """缺价时 daemon 联网抓来的单价（GitHub#51，见 drivers/token-usage/price_fetch.py）。"""
+    """缺价时 daemon 补抓来的单价（GitHub#51，官方页与 LiteLLM 一致才收，见 drivers/token-usage/price_fetch.py）。"""
     return os.path.join(cache_dir(), "fetched-prices.json")
 
 
-def load_fetched():
-    """{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}；没有或坏掉 → {}。"""
+CACHE_READ_LIMIT = 8 * 1024 * 1024     # 缓存文件读回的上限；更大的当作坏掉
+
+
+def read_regular(path, limit=CACHE_READ_LIMIT):
+    """有界地读一个缓存文件 → bytes；不在、不是普通文件、超过 limit、读失败 → None。
+
+    先以不阻塞方式打开、确认是普通文件再读（PR #612 复审第 2 轮：缓存路径上是一个没有写端的
+    命名管道时，普通的 open() 一直等下去，daemon 同步调用的抓价入口和评论 footer 都卡住）。
+    缓存目录里的东西只当数据看：读不了就是「没有」，绝不让它拖住调用方。"""
     try:
-        with open(fetched_path(), encoding="utf-8") as f:
-            v = json.load(f)
-        return v if isinstance(v, dict) else {}
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks, size = [], 0
+        while True:
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            size += len(b)
+            if size > limit:
+                return None
+            chunks.append(b)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def load_json_file(path, default):
+    """缓存里的一个 JSON 对象；没有、不是普通文件、太大、坏掉、不是对象 → default。"""
+    raw = read_regular(path)
+    if raw is None:
+        return default
+    try:
+        v = json.loads(raw.decode("utf-8"))
     except Exception:
-        return {}
+        return default
+    return v if isinstance(v, dict) else default
+
+
+# 补抓价缓存（fetched-prices.json）的格式，读入时逐层核对的就是这张表（GitHub#606，PR #612 复审第 3 轮）：
+#   {agent: {model: {"prices": {item: 单价}, 其余字段原样}}}
+# agent 只认这两侧；item 只认该侧的计价项；单价必须过 _price_ok；model 名同缺价标记的规则；
+# 一个模型必须 input / output 两项都合法才算「有价」——缺了它们，驱动给这个模型的 token 记缺价，
+# 抓价端就不该把它当成已经补上（复审第 3 轮：1001 的单价被取价丢掉，抓价端却删了缺价标记）。
+FETCH_ITEMS = {
+    "claude": ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h"),
+    "codex": ("in", "out", "cached_in", "cache_write"),
+}
+FETCH_CORE = {"claude": ("input", "output"), "codex": ("in", "out")}
+MODEL_NAME_RE = r"^[A-Za-z0-9._-]{1,100}$"
+
+
+def _clean_fetched(raw):
+    """把读回的补抓价缓存按上面的格式过一遍：不合格式的那一层整个丢掉，其余原样保留。
+    坏掉的一个模型、一侧、一项单价只影响它自己，绝不让一处坏数据拖垮整张表或整次抓价。"""
+    import re
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for agent, items in FETCH_ITEMS.items():
+        group = raw.get(agent)
+        if not isinstance(group, dict):
+            continue
+        clean = {}
+        for model, entry in group.items():
+            if not (isinstance(model, str) and re.match(MODEL_NAME_RE, model)
+                    and isinstance(entry, dict) and isinstance(entry.get("prices"), dict)):
+                continue
+            prices = {k: float(v) for k, v in entry["prices"].items()
+                      if k in items and _price_ok(v)}
+            if not all(k in prices for k in FETCH_CORE[agent]):
+                continue
+            clean[model] = {**entry, "prices": prices}
+        if clean:
+            out[agent] = clean
+    return out
+
+
+def load_fetched():
+    """补抓价缓存，已按格式逐层核对：{"claude": {model: {"prices": {...}, ...}}, "codex": {...}}。
+    文件没有、不是普通文件、坏掉 → {}；坏的一层只丢那一层（见 _clean_fetched）。
+    取价（两侧）、周报补算和 daemon 抓价都只从这里读，判断「有没有价」用的是同一份数据。"""
+    return _clean_fetched(load_json_file(fetched_path(), {}))
 
 
 def codex_price_table():
@@ -172,8 +253,7 @@ def codex_price_table():
                 stale = age.days > 90
             except ValueError:
                 stale = False
-        fetched = {m: e["prices"] for m, e in (load_fetched().get("codex") or {}).items()
-                   if isinstance(e, dict) and isinstance(e.get("prices"), dict)}
+        fetched = {m: e["prices"] for m, e in load_fetched().get("codex", {}).items()}
         fetched_models = {m for m in fetched if m not in built}
         table = {**fetched, **built}          # 同名时内置覆盖抓来的
     if all(legacy):
@@ -239,18 +319,81 @@ def codex_reprice(rec, pt):
 
 def fetched_reference():
     """claude 那一侧抓来的单价，形状同 REFERENCE。**内置参照里已有的模型一律不取**——
-    抓来的价只补缺，从不覆盖人工核对过的那张表。"""
-    out = {}
-    for model, entry in (load_fetched().get("claude") or {}).items():
-        prices = (entry or {}).get("prices") if isinstance(entry, dict) else None
-        if model in REFERENCE or not isinstance(prices, dict):
-            continue
-        clean = {k: float(v) for k, v in prices.items()
-                 if isinstance(v, (int, float)) and not isinstance(v, bool)
-                 and math.isfinite(v) and v >= 0}
-        if clean:
-            out[model] = clean
+    抓来的价只补缺，从不覆盖人工核对过的那张表（反解这一侧的规则；评论 footer 直接取最新价，
+    见 listed_table）。每天抓的最新价（GitHub#606）里有、内置表里没有的模型也算在内：
+    最新价收录了的模型 daemon 不再单独补抓，这里不带上，周报就会把它当成没价。"""
+    out = {m: p for m, p in load_latest().items() if m not in REFERENCE}
+    for model, entry in load_fetched().get("claude", {}).items():
+        if model not in REFERENCE and model not in out:
+            out[model] = dict(entry["prices"])
     return out
+
+
+LATEST_ITEMS = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h")
+
+
+def latest_path():
+    """daemon 每天抓一次的 Claude 官方最新价目（GitHub#606，见 drivers/token-usage/price_fetch.py）。"""
+    return os.path.join(cache_dir(), "latest-prices.json")
+
+
+# 抓来 / 读回的单价的合法范围：美元 / 百万 token，0 ≤ 价 ≤ MAX_PRICE。price_fetch.py 写缓存时
+# 按同一个上限收，这里读回时再按它查一遍（缓存文件可能被改坏）。
+MAX_PRICE = 1000.0
+
+
+def number_in(v, lo, hi):
+    """从缓存 / 网络读回的一个数 → float；不是数（含布尔）、不在 [lo, hi] 内、转不成有限浮点 → None。
+    先比大小、再转浮点：JSON 里的超大整数（如 10**400）转浮点会抛 OverflowError（PR #612 复审
+    第 1 轮单价、第 4 轮重试时间都栽在这里）。读回的每个数都过这一个函数，任何异常都算不合法。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        if not lo <= v <= hi:
+            return None
+        f = float(v)
+    except (OverflowError, ValueError, TypeError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _price_ok(v):
+    """合法单价：真的数，有限、在 [0, MAX_PRICE] 内（number_in）。"""
+    return number_in(v, 0, MAX_PRICE) is not None
+
+
+def load_latest():
+    """{model: {五项单价}}。文件没有、坏掉、某个模型缺项或有项不是合法数 → 那个模型不要（整份坏 → {}）。
+    只收五项齐全的模型：缺一项就会把那部分 token 当成缺价，不如整模型退回内置价。"""
+    try:
+        models = load_json_file(latest_path(), {}).get("claude", {}).get("models", {})
+    except Exception:
+        return {}
+    out = {}
+    if not isinstance(models, dict):
+        return out
+    for model, prices in models.items():
+        if (isinstance(prices, dict) and set(prices) == set(LATEST_ITEMS)
+                and all(_price_ok(prices[k]) for k in LATEST_ITEMS)):
+            out[model] = {k: float(prices[k]) for k in LATEST_ITEMS}
+    return out
+
+
+def listed_table():
+    """评论 footer 的价目表：直接取价，**不反推**（GitHub#606，维护者在 PR #612 定的）。
+
+    每个模型按这个顺序取第一份有的：
+      ① daemon 每天抓的官方最新价目（latest-prices.json）→ 可信度 fetched
+      ② 内置参照表 REFERENCE                                → 可信度 reference_only
+      ③ 缺价时抓来的补缺价（fetched-prices.json，GitHub#51）→ 可信度 fetched
+    形状与 --table 相同（models / fast），驱动不用改读法。一个日志文件都不读。"""
+    models = {}
+    for src, st in ((load_latest(), "fetched"), (REFERENCE, "reference_only"),
+                    (fetched_reference(), "fetched")):
+        for model, ref in src.items():
+            if model not in models:
+                models[model] = {it: {"status": st, "price": p} for it, p in ref.items()}
+    return {"reference_source": REFERENCE_SOURCE, "fast": dict(REFERENCE_FAST), "models": models}
 
 
 def norm_model(m):
@@ -487,8 +630,7 @@ def build_cached(policy="A", projects_dir=None):
     sig = _signature(projects_dir)
     path = cache_path()
     try:
-        with open(path, encoding="utf-8") as f:
-            c = json.load(f)
+        c = load_json_file(path, {})
         if c.get("signature") == sig and c.get("table", {}).get("policy") == policy:
             return c["table"]
     except Exception:
@@ -509,9 +651,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--table", action="store_true", help="输出 JSON 价目表（给 driver）")
     ap.add_argument("--report", action="store_true", help="人读的逐项状态")
+    ap.add_argument("--listed", action="store_true",
+                    help="输出直接取价的 JSON 价目表（评论 footer 用，不读日志、不反推）")
     ap.add_argument("--no-cache", action="store_true", help="跳过缓存，强制重算")
     ap.add_argument("--policy", default=os.environ.get("PRICE_POLICY", "A"), choices=["A", "B"])
     a = ap.parse_args()
+    if a.listed:
+        json.dump(listed_table(), sys.stdout, ensure_ascii=False)
+        print()
+        return
     t = build(a.policy) if a.no_cache else build_cached(a.policy)
     if a.report or not a.table:
         print(f"参照来源：{t['reference_source']}")

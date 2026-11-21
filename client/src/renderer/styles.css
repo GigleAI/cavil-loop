@@ -240,6 +240,20 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 /* GitHub#418: "未处理" (no label at all) — a hollow ring, set apart from the three flow dots */
 .tally-item .dot.c-ring, .tally-swatch.c-ring { background: transparent; box-shadow: inset 0 0 0 1.5px var(--icon); }
 .tally-item.zero .dot.c-ring { background: transparent; box-shadow: inset 0 0 0 1.5px var(--border); }
+/* GitHub#634: the fold at the end of the bar — a button, and the small panel it opens below it */
+.tally-fold { position: relative; display: inline-flex; margin-left: 2px; }
+.tally-fold-toggle { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--ctl); color: var(--muted); font-size: 12px; cursor: pointer; }
+.tally-fold-toggle:hover { background: var(--hover); }
+.tally-fold-toggle b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tally-fold-toggle.on, .tally-fold-toggle[aria-expanded='true'] { background: var(--accent-subtle); border-color: var(--accent); color: var(--fg); }
+.tally-fold-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 2px; min-width: 200px; padding: 6px; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); white-space: nowrap; }
+.tally-fold-pop[hidden] { display: none; }
+.tally-fold-head { padding: 2px 6px 4px; font-size: 11px; color: var(--muted); }
+.tally-fold-pop .tally-item { justify-content: flex-start; min-height: 28px; border-radius: 6px; }
+.tally-why { margin-left: auto; padding-left: 16px; font-size: 11px; color: var(--muted); }
+.tally-fold-preview { display: inline-flex; align-items: center; gap: 2px; }
+.tally-fold-mark { margin: 0 2px 0 4px; font-size: 12px; color: var(--muted); }
+.tally-fold-preview .tally-why { display: none; }
 /* GitHub#468: the "顶栏计数" table in Settings */
 .tally-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
 .tally-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 6px; border-bottom: 1px solid var(--border-muted); }

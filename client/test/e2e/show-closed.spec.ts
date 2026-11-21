@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { unfoldSettings } from './unfold';
+import { press, tally } from './tally';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -46,7 +47,6 @@ const human = (i: Item) => i.labels.some((l) => l.name.toLowerCase() === 'pendin
 const rowKeys = (page: Page) => page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.map((r) => r.getAttribute('data-key')!).sort());
 const toggle = (page: Page) => page.getByTestId('show-closed-toggle');
 const box = (page: Page) => page.getByTestId('show-closed');
-const tally = (page: Page, kind: string) => page.locator(`[data-testid="tally"][data-kind="${kind}"]`);
 const layout = (page: Page, l: string) => page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
 
 async function shot(page: Page, name: string) {
@@ -123,7 +123,7 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
 
   // ---- "等人处理" lit: its own switch, which starts on — the number counts closed items too (GitHub#462),
   // so the list is exactly the counted items ----
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(toggle(page)).toHaveAttribute('data-view', 'human');
   await expect(toggle(page)).toHaveText('显示已关闭（等人处理）');
@@ -144,11 +144,11 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await layout(page, 'table');
 
   // ---- another number lit: its own switch, off ----
-  await tally(page, 'agent').click();
+  await press(page, 'agent');
   await expect(toggle(page)).toHaveAttribute('data-view', 'agent');
   await expect(box(page)).not.toBeChecked();
   // unlit: back to the table's, which was on
-  await tally(page, 'agent').click();
+  await press(page, 'agent');
   await expect(page.getByTestId('search')).toHaveValue('');
   await expect(toggle(page)).toHaveAttribute('data-view', 'table');
   await expect(box(page)).toBeChecked();
@@ -189,7 +189,7 @@ test('GitHub#464: one "显示已关闭" switch per view — layouts and lit flow
   await expect(box(page)).not.toBeChecked();
   await layout(page, 'table');
   await expect(box(page)).toBeChecked();
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(box(page)).not.toBeChecked();
   await app.close();
 });
@@ -217,7 +217,7 @@ test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one
   await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(everyOne.length));
 
   // "等人处理": lit, its own switch (on as it starts), everything it counts
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'false');
@@ -227,7 +227,7 @@ test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one
   await expect.poll(() => rowKeys(page)).toEqual(everyOne);
 
   // "运行中": the same box, but it is the one lit now, with its own switch (off): open ones only
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'false');
@@ -240,15 +240,15 @@ test('GitHub#464 (PR #500 review round 1): "运行中" and "等人处理" on one
   expect((await viewState(page)).showClosed.human).toBeUndefined();
 
   // back to "等人处理": its switch as it was; clicking it again gives the empty box back
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(toggle(page)).toHaveAttribute('data-view', 'human');
   await expect(box(page)).toBeChecked();
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(page.getByTestId('search')).toHaveValue('');
   await expect(toggle(page)).toHaveAttribute('data-view', 'table');
 
   // the settings page in between keeps which one was clicked
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await page.getByTestId('open-settings').click();
   await unfoldSettings(page);
   await page.getByTestId('back').click();

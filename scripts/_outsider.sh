@@ -228,7 +228,7 @@ outsider_list_entries() {   # <src> <仓库> <编号> <endpoint> <评论 | revie
                   author: ($c.user.login // ""), role: $role, at: $at,
                   after_auth: ($t != "" and $role == "outsider"
                                and ($at >= $t or (($c.updated_at // "") >= $t and ($c.updated_at // "") != ""))),
-                  text: ($c.body // ""),
+                  text: ($c.body // ""), updated: ($c.updated_at // $at),
                   notes: ( (if $c.path then ["在文件 " + $c.path + (if $c.line then " 第 \($c.line) 行" else "" end)] else [] end)
                          + (if $kind == "review" and $c.state then ["review 结论：" + $c.state] else [] end)) })
         | sort_by(.at)') || { OS_WHY="读不懂 $repo#$num 的评论"; return 2; }
@@ -308,13 +308,13 @@ outsider_auth_from_globals() {   # <授权返回码>
 # OS_AUTH_RC = 授权的返回码（0 成立 / 1 不成立）；return 2 = 判不了
 outsider_scan() {   # <编号> <mode> [整理稿文件]
     local target="$1" mode="$2" out_file="${3:-}" it ij="" pj="" inum="" pr="" rc
-    OS_AUTH_RC=""; OS_WHY=""; OS_RES=""; OS_REC_FAIL=""
+    OS_AUTH_RC=""; OS_WHY=""; OS_RES=""; OS_REC_FAIL=""; OS_TARGET_KIND=issue
     SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WHY=""
     if ! it=$(gh api "repos/$REPO/issues/$target" 2>/dev/null) || [ -z "$it" ]; then
         OS_WHY="读不到 #$target"; return 2
     fi
     if printf '%s' "$it" | jq -e '.pull_request != null' >/dev/null 2>&1; then
-        pr="$target"
+        pr="$target"; OS_TARGET_KIND=pr
         if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ]; then OS_WHY="读不到 PR #$pr"; return 2; fi
         autopilot_pr_kind "$pj"
         if [ "$AUTOPILOT_PR_KIND" = issue ]; then
