@@ -624,6 +624,73 @@ Design notes:
 
 Leave it empty to keep the previous behaviour exactly.
 
+### Review converges: everything in round one, then only the fixes (GitHub#621)
+
+Before this, a PR often took several rounds to collect the full review: every round reviewed
+everything again, and every round found one more thing somewhere the previous round had not
+looked. Now the reviewer's prompt always carries one more section (`prompts/review-converge.md`,
+appended by the common prompt assembly, so projects that replace the whole review template get it
+too):
+
+- **Full round** — the first round after the last human action, or any round whose baseline
+  cannot be worked out: requirement, diff (or the whole proposal), tests and docs in one pass;
+  every problem listed and numbered (`#1`, `#2`, … kept across rounds).
+- **Re-check round** — from round 2 on, when the baseline is usable: the list is checked item by
+  item (fixed / not fixed / the worker's reason for not changing it holds or not), new problems
+  *inside the fix* are numbered and can bounce, and the always-blocking checks still cover the
+  whole PR.
+- **One decision order per problem**, stopping at the first step that gives an answer:
+  ① always blocks — failed or cancelled checks, a conflict with the base branch, an applicable
+  hard rule broken, a security boundary crossed, data deleted or corrupted (no project rule can
+  lower this); ② grade it from the project's review extra → `REVIEW.md` → the built-in split
+  (wrong behaviour / data / tests = must fix; wording, naming, readability = suggestion) — a
+  suggestion never bounces, it is listed in a fold; ③ full round, or inside the fix → bounce;
+  ④ a must-fix found late, outside the fix → on an ordinary item it is written under "needs your
+  attention" and does not bounce (the human decides before merging); on an autopilot item it
+  bounces, since nobody reads the note before the daemon merges.
+- The round marker keeps its format (the weekly report reads it); the line after it is a hidden
+  baseline the next round computes the fix from:
+  `<!-- review-baseline: code head=<sha> base=<branch> -->` or
+  `<!-- review-baseline: plan comment=<id> sha256=<fingerprint> -->`.
+
+**What "the fix" is** comes from `scripts/review-scope.sh` (managed entrypoint
+`entrypoints/review-scope.sh`, read-only). It reads the latest review verdict posted by the
+dispatch account, and checks top to bottom, stopping at the first match:
+
+| # | Code | Output |
+|---|---|---|
+| 1 | round 1 after the last human action | `full first-round` |
+| 2 | reading the comments / the PR failed | `full read-failed` |
+| 3 | no baseline line, or a malformed one | `full no-baseline` |
+| 4 | the PR's base branch differs from the baseline's | `full base-changed` |
+| 5 | fetch failed, or the reviewed commit is not available | `full baseline-missing` |
+| 6 | the reviewed commit is not an ancestor of the current one (rebase / force push) | `full history-rewritten` |
+| 7 | the fork point with the base cannot be computed | `full read-failed` |
+| 8 | merging "reviewed commit + fork point" conflicts (also when the PR resolved a conflict with the base this round) | `full merge-conflict` |
+| 9 | that merge fails otherwise | `full read-failed` |
+| 10 | comparing the merged tree with the current commit fails | `full read-failed` |
+| 11 | no difference (only synced with the base, or no new commit) | `scope 0` |
+| 12 | a difference | `scope <files>` + the diff |
+
+The merged tree is `git merge-tree --write-tree <reviewed commit> <fork point>`: what the reviewer
+saw last round plus whatever the base brought in since, so a plain merge of `main` into the branch
+is not counted as part of the fix. For a design proposal: round 1, an unreadable comment list or
+no baseline → full; the previous proposal comment deleted (`deleted`), edited in place since
+(`edited`), or the same comment as this round's (`same-comment`) → full; otherwise `scope` plus
+the diff from the previous proposal's text to this one. No output, a non-zero exit or any other
+first line is treated as full.
+
+**`REVIEW.md`** — a project may put a `REVIEW.md` at its repository root: what its reviews look
+at, what counts as must-fix, what is only a suggestion, what not to raise. The daemon reads it from
+`origin/<base>` like the project prompt files, with three outcomes: present → the review prompt
+gets the whole file, and the four worker prompts (new issue, issue comment, PR comment, split
+sub-issue) get one line pointing at it; confirmed absent on the base branch → nothing is added;
+unreadable (no remote ref, the tree cannot be listed, not a regular file) → the review prompt says
+"REVIEW.md could not be read: review in full, relax nothing" and the worker prompts say it could
+not be read. A local copy in the main checkout is never used instead. This repository's own
+`REVIEW.md` holds what used to be the "test evidence" section of its `review.extra.md`; the extra
+keeps the comment-writing rules.
+
 ## Autopilot label (optional, **off by default**)
 
 GitHub#114. Set `LABEL_AUTOPILOT` (e.g. `autopilot`) — together with `LABEL_PENDING_REVIEW`,
