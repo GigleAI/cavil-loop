@@ -176,6 +176,23 @@ MD
 chk "普通文字、标题、注释、转义、隔空格、代码里像链接的：一处都不报" "$(python3 "$CHECK" "$TMP/v" nolink.md; echo "rc=$?")" "rc=0"
 chk "  到达性 · 真链接照查：标题前的目标、链接里的图片、方括号嵌套的链接，共 4 处" \
     "$(python3 "$CHECK" --list "$TMP/v" nolink.md | sed 's/^OK nolink.md -> //' | paste -sd' ')" "draft(v2).md draft(v2).md img/ok.png img/ok.png"
+# 文件名里的 %23 是文件名的一部分，不是锚点分隔符：先在编码的地址上分开文件和锚点，再各自解码；
+# 限定目标范围时同样按解码后的真实文件名匹配。报错里文件名中的「#」仍显示成 %23，和锚点分隔符分得开
+mkdir -p "$TMP/p/docs"
+printf '# Heading\n' > "$TMP/p/guide#part.md"
+touch "$TMP/p/docs/guide"
+printf '%s\n' '[有效](guide%23part.md#heading)' '[断链](docs/guide%23missing.md)' > "$TMP/p/README.md"
+chk "文件名里带 %23：存在的文件和锚点查通过，缺失的文件报出（不会误查成 docs/guide）" \
+    "$(python3 "$CHECK" --list "$TMP/p" README.md; echo "rc=$?")" \
+    "OK README.md -> guide%23part.md#heading
+README.md: 链接指向不存在的文件 docs/guide%23missing.md
+rc=1"
+chk "  限定目标范围时按真实文件名匹配：限定 guide#part.md 查到并通过、限定 docs/guide#missing.md 报出、限定 docs/guide 不相干" \
+    "$(python3 "$CHECK" --list --into 'guide#part.md' "$TMP/p" README.md; echo "rc=$?") | $(python3 "$CHECK" --into 'docs/guide#missing.md' "$TMP/p" README.md; echo "rc=$?") | $(python3 "$CHECK" --list --into docs/guide "$TMP/p" README.md; echo "rc=$?")" \
+    "OK README.md -> guide%23part.md#heading
+rc=0 | README.md: 链接指向不存在的文件 docs/guide%23missing.md
+rc=1 | rc=0"
+
 # 只查指向某些文件的链接（提示词、AGENTS.md 用的入口）时，空目标这种不指向任何文件的不报；整篇检查照报
 printf '%s\n' '[空]()' '[ok](img/ok.png)' > "$TMP/v/scoped.md"
 chk "限定目标范围时，不在范围里的空目标不报；整篇检查照报" \

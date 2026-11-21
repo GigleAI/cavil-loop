@@ -193,16 +193,21 @@ def check(root, docs, into=None, listing=None):
         if not os.path.isfile(path):
             problems.append(f'{doc}: 文件不存在')
             continue
-        for target in links(path):
-            # markdown-it percent-encodes destinations; report them as written
-            target = urllib.parse.unquote(target)
-            if target == '':
+        for raw in links(path):
+            # markdown-it percent-encodes destinations. Split file and anchor on the
+            # still-encoded text first, then decode each part: a "%23" in a file name is
+            # part of the name, never the "#" that starts the anchor. The target is
+            # reported decoded, with a "#" inside the file name shown as %23 again
+            raw_file, sep, raw_frag = raw.partition('#')
+            file_part = urllib.parse.unquote(raw_file)
+            frag = urllib.parse.unquote(raw_frag)
+            target = file_part.replace('#', '%23') + sep + frag
+            if raw == '':
                 if into is None or os.path.relpath(path, root) in into:
                     problems.append(f'{doc}: 链接目标为空')
                 continue
-            if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target) or target.startswith('//'):
+            if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', raw) or raw.startswith('//'):
                 continue   # absolute URL, mailto:, …
-            file_part, _, frag = target.partition('#')
             if file_part == '':
                 dest = path
             elif file_part.startswith('/'):
