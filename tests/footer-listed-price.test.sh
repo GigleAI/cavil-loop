@@ -552,6 +552,34 @@ chk "周报：补抓价仍要两边一致的说明保留，仍说不等于与账
 chk "周报：直接取公开价的条数不再只说成「内置 API 参考价」" \
     "$(grep -cF '内置 API 参考价或 daemon 抓来的官方价**（1 条）' "$TMP/r11.md")" "1"
 
+# PR #612 第 8 轮复审：本机反解价与每日官方价冲突（disputed_fetched）时，周报仍写成「缺价时联网抓来的参照」。
+# 真实抓价（每日刷新，LiteLLM 地址是坏的）→ 真实分类（price_solve.classify：input 反解出稳定的 $30，
+# 每日官方价 $3）→ 真实周报渲染
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+PRICE_FETCH_LITELLM_URL="file://$TMP/no-litellm.json" python3 "$TU/price_fetch.py" >/dev/null
+CLS=$(PYTHONPATH="$REPO_DIR/scripts/weekly-report" python3 - <<'PYC'
+import json, price_solve as ps
+m = {"amplify": 1, "spread": 0, "share": 1, "n": 10}
+g = {it: dict(m, price=None, stable=False, reason="样本不足") for it in ("input", "output", "cache_read", "cache_write")}
+g["input"] = dict(m, price=30.0, stable=True)
+r = ps.classify("claude-test-9", g, {})["input"]
+print(json.dumps({"status": r["status"], "price": r["price"], "usd": 1_000_000 * r["price"] / 1e6}))
+PYC
+)
+chk "分类：反解 \$30 与每日官方价 \$3 冲突 → disputed_fetched，取官方价" \
+    "$(jq -c '[.status, .price]' <<<"$CLS")" '["disputed_fetched",3.0]'
+jq --argjson u "$(jq '.usd' <<<"$CLS")" '.weekly["2026-10-05"] |= (.price_usd_fetched = 0 | .price_usd_disputed_fetched = $u | .price_src_default = 0 | .price_src_solved = 1)' \
+    "$TMP/d11.json" > "$TMP/d11b.json"
+rc=0; python3 "$REPO_DIR/scripts/weekly-report/report.py" --data "$TMP/d11b.json" --out "$TMP/r11b.md" \
+    --asset-url-base x --rev y >/dev/null 2>"$TMP/err11.log" || rc=$?
+TL=$(grep -o '单价可信度.*' "$TMP/r11b.md" | head -1)
+chk "周报（冲突）：渲染成功，报红一桶带着分类算出的金额" "$rc $(grep -cF '**⚠️ 与自动联网获取的参照冲突（存疑）** $3' <<<"$TL")" "0 1"
+chk "周报（冲突）：不再说成「daemon 缺价时联网抓来的参照」" "$(grep -cF 'daemon 缺价时联网抓来的参照' <<<"$TL")" "0"
+chk "周报（冲突）：写明每天的最新价只取官方价目页一处，补抓价仍要两边一致" \
+    "$(grep -cF '参照是daemon 联网抓来的公开价（每天的最新价**只取官方价目页一处**' <<<"$TL") $(grep -cF '缺价补抓时，还要官方页与 LiteLLM 社区价目表一致才采用' <<<"$TL")" "1 1"
+chk "周报（冲突）：「自动联网获取」两桶用的是同一句出处说明" \
+    "$(grep -lF '（每天的最新价**只取官方价目页一处**、不与别的来源对照；内置价目里没有的模型缺价补抓时，还要官方页与 LiteLLM 社区价目表一致才采用）' "$TMP/r11.md" "$TMP/r11b.md" | wc -l)" "2"
+
 report_counts "$pass" "$fail"
 echo
 echo "通过 $pass，失败 $fail"

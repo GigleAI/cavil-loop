@@ -27,8 +27,8 @@
     uncorroborated  稳定 但没有可比参照（含参照为 0 / 缺失）      → 用反解值，算**候选估算**
     disputed        稳定 但与参照偏差 > MAX_DIVERGE               → 报红；取值按 policy
     unstable        过不了闸门 / 无解 / 非有限值                   → 取值按 policy
-    fetched         同 unstable，但兜底用的参照是 daemon 缺价时**联网抓来的**
-                    （内置参照里没有这个模型，GitHub#51）           → 取值按 policy
+    fetched         同 unstable，但兜底用的参照是 daemon **联网抓来的**（内置参照里没有这个
+                    模型；每天的最新价只取官方页 GitHub#606，缺价补抓两源一致 GitHub#51）→ 取值按 policy
     disputed_fetched 同 disputed，但冲突的那份参照是**联网抓来的**   → 报红；取值按 policy
                     （单独一态：既不能丢掉冲突警示，也不能丢掉「这个价是自动抓的」）
 
@@ -119,7 +119,7 @@ def cache_dir():
 
 
 def fetched_path():
-    """缺价时 daemon 联网抓来的单价（GitHub#51，见 drivers/token-usage/price_fetch.py）。"""
+    """缺价时 daemon 补抓来的单价（GitHub#51，官方页与 LiteLLM 一致才收，见 drivers/token-usage/price_fetch.py）。"""
     return os.path.join(cache_dir(), "fetched-prices.json")
 
 
