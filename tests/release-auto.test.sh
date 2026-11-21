@@ -1539,6 +1539,19 @@ cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
     [ -f "$TMP/c-devtags.json" ] || printf '[]' > "$TMP/c-devtags.json"
     # one tag ref (scripts/dev-release.mjs reads it before calling a build done): a published release's
     # tag is on the commit it recorded; no published release of that name → 404
+    # the tag list (scripts/dev-plan.mjs): the refs a test wrote to c-devtags.json, plus every published
+    # release's own tag on the commit it recorded (GitHub creates it on publishing) unless the test
+    # named that tag itself
+    cat > "$TMP/c-tagrefs.py" <<'PYT'
+import json, sys
+given = json.load(open(sys.argv[1]))
+names = {r["ref"] for r in given}
+for r in json.load(open(sys.argv[2])):
+    ref = "refs/tags/" + str(r.get("tag_name"))
+    if r.get("draft") is False and ref not in names:
+        given.append({"ref": ref, "object": {"type": "commit", "sha": r.get("target_commitish")}})
+print(json.dumps([given]))
+PYT
     cat > "$TMP/c-tagref.py" <<'PYT'
 import json, sys
 tag = sys.argv[1].split("/git/ref/tags/", 1)[1]
@@ -1549,7 +1562,7 @@ if not rel:
 print(json.dumps({"ref": "refs/tags/" + tag, "object": {"type": "commit", "sha": rel[0]["target_commitish"]}}))
 PYT
     # the release list, or (scripts/dev-plan.mjs's second read) the client/v* tag refs; GH_FAIL_TAGS fails only the latter
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; printf "[%%s]" "$(cat %q)"; exit 0;; *git/ref/tags/*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q "$2" %q;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devtags.json" "$TMP/c-tagref.py" "$TMP/c-devlist.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q %q %q;; *git/ref/tags/*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q "$2" %q;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-tagrefs.py" "$TMP/c-devtags.json" "$TMP/c-devlist.json" "$TMP/c-tagref.py" "$TMP/c-devlist.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
     chmod +x "$TMP/c-devbin/gh"
     CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
 }
@@ -1619,6 +1632,15 @@ cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
 check "… only the published build's tag and a lower one (an old build being cleaned up) → nothing built" "$(build_line)" "0:false:false"
 cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3" GH_FAIL_TAGS=1
 check "… the tag list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
+# review round 4 #14: the newest build's files are complete but its tag is on another commit — the
+# plan judges it by the publish step's rule (not done): on its own commit nothing is built (it is not
+# changed), after a daemon-only commit a higher version is built
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C1" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, no client change, but the newest build's tag is on another commit → build" "$(build_line)" "0:true:true"
+has "标签不在发版记下的提交上" "$(cat "$TMP/c-out")" "… says why in the log"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule
+check "… on that build's own commit → nothing built (the public build is not changed)" "$(build_line)" "0:false:false"
 printf '[]' > "$TMP/c-devtags.json"
 STARTER="$(devrel 9 "$C4" | python3 -c 'import json,sys; d=json.load(sys.stdin); [a.update(state="starter", size=0) for a in d[0]["assets"] if a["name"].endswith("-windows-x64.exe")]; print(json.dumps(d))')"
 cbuild "$STARTER" TAG= PUBLISH=true EVENT=schedule

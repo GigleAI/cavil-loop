@@ -12,7 +12,9 @@
 //     none, or no full commit recorded                      → build ("nothing to compare with")
 //     not carrying every file a build carries, uploaded
 //     (`devFiles` + `buildState`, the publish step's own
-//     verdict): incomplete, or a file it cannot judge —
+//     verdict), or its tag not on the commit it recorded
+//     (missing, elsewhere, cannot tell: `tagOnList`, the
+//     same outcomes as the publish step's `tagOn`) —
 //       on this very commit                                 → no build, unless forced (a public build
 //                                                            is never changed — PR #630 Q1 = B — and
 //                                                            the same commit has the same version)
@@ -89,9 +91,26 @@ export function latestBuild(list, tags = []) {
   const extra = { hidden, tags: tags === 'unreadable' ? 'unreadable' : 'ok' };
   if (!top) return hidden || tags === 'unreadable' ? { none: true, ...extra } : null;
   const rel = list.find((r) => r?.tag_name === top.tag && r?.draft === false);
-  const sha = rel?.target_commitish;
-  const state = buildState(rel, devFiles(top.version)).state;
-  return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete: state === 'complete', state, ...extra };
+  const raw = rel?.target_commitish;
+  const sha = typeof raw === 'string' && FULL_SHA.test(raw) ? raw : null;
+  let state = buildState(rel, devFiles(top.version)).state;
+  // complete also means its tag is on the commit the release recorded — the publish step's rule
+  // (dev-release.mjs tagOn), read here from the tag list (PR #630 review round 4 #14)
+  const tagCheck = tags === 'unreadable' || !sha ? null : tagOnList(tags, top.tag, sha);
+  if (state === 'complete' && tagCheck && tagCheck !== 'ok') state = tagCheck === 'unknown' ? 'unknown' : 'incomplete';
+  return { tag: top.tag, sha, complete: state === 'complete', state, tagCheck, ...extra };
+}
+
+/**
+ * Is `tag` on `sha`, by the tag list readTags gives? → 'ok' | 'absent' | 'mismatch' | 'unknown' (a
+ * name-only entry, or a tag that is not a plain commit ref). The same three outcomes as
+ * dev-release.mjs tagOn, which the publish step, a rerun and --check use.
+ */
+export function tagOnList(tags, tag, sha) {
+  const hit = tags.filter((t) => (typeof t === 'string' ? t : t?.name) === tag);
+  if (!hit.length) return 'absent';
+  if (hit.length > 1 || typeof hit[0] === 'string' || !hit[0]?.sha) return 'unknown';
+  return hit[0].sha === sha ? 'ok' : 'mismatch';
 }
 
 /** The repository's client/v* tags (every page) as { name, sha } (sha null for a tag object); throws when a read fails. */
@@ -138,7 +157,11 @@ export function plan({ latest, head, force, changed }) {
   if (latest.complete !== true) {
     // a public build is never changed (PR #630 Q1 = B): on its own commit nothing can be put out;
     // on any later commit a higher version comes out over it, client change or not
-    const what = latest.state === 'unknown' ? '读不出文件是否已上传完成' : '没带齐文件（Mac、Windows 的包、签名或更新清单缺了或没上传完）';
+    const what =
+      latest.tagCheck === 'mismatch' ? '文件齐全，但标签不在发版记下的提交上'
+      : latest.tagCheck === 'absent' ? '文件齐全，但标签不存在'
+      : latest.state === 'unknown' ? (latest.tagCheck === 'unknown' ? '文件齐全，但读不出标签指向哪个提交' : '读不出文件是否已上传完成')
+      : '没带齐文件（Mac、Windows 的包、签名或更新清单缺了或没上传完）';
     if (latest.sha === head) {
       return force
         ? { build: true, why: `上一个开发版 ${latest.tag} ${what}，就是这个提交；勾了「客户端没改动也出」：照样构建检查，发布那一步不改动已公开的版本，会报失败、什么都不写` }

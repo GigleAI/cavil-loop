@@ -77,7 +77,14 @@ const without = (tag: string, sha: string, ...gone: string[]) => {
   return { ...r, assets: r.assets.filter((a) => !gone.some((g) => a.name.endsWith(g))) };
 };
 
-function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[], tags: (string | { name: string; sha: string })[] | 'fail' = []) {
+// the tags GitHub has for a list: by default every published release's tag, on the commit it
+// recorded (GitHub creates the tag when a release is published) — a test that wants other tags says so
+const tagsOf = (list: unknown[]) =>
+  (list as { tag_name?: string; draft?: boolean; target_commitish?: string }[])
+    .filter((x) => x.draft === false && typeof x.tag_name === 'string')
+    .map((x) => ({ name: x.tag_name as string, sha: String(x.target_commitish) }));
+function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[], tagsIn?: (string | { name: string; sha: string })[] | 'fail') {
+  const tags = tagsIn ?? (list === 'fail' ? [] : tagsOf(list));
   const listFile = join(r.dir, '..', `${r.dir.split('/').pop()}-list.json`);
   const out = join(r.dir, '..', `${r.dir.split('/').pop()}-output`);
   const calls = join(r.dir, '..', `${r.dir.split('/').pop()}-calls`);
@@ -208,21 +215,22 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     const base = r.head();
     const head = r.commit('scripts/daemon.sh');
     const list = [rel('client/v0.5.3-dev.10', base)];
-    expect(run(r, list, ['--sha', head], ['client/v0.5.3-dev.10']).build).toBe('false');
-    const hidden = run(r, list, ['--sha', head], ['client/v0.5.3-dev.10', 'client/v0.5.3-dev.12']);
+    const pubTag = { name: 'client/v0.5.3-dev.10', sha: base };
+    expect(run(r, list, ['--sha', head], [pubTag]).build).toBe('false');
+    const hidden = run(r, list, ['--sha', head], [pubTag, 'client/v0.5.3-dev.12']);
     expect(hidden).toMatchObject({ code: 0, build: 'true' });
     expect(hidden.why).toContain('client/v0.5.3-dev.12');
     expect(hidden.why).toContain('没有公开');
     expect(hidden.calls.some((c: string[]) => c.some((x) => x.includes('git/matching-refs/tags/client/v')))).toBe(true);
     // a lower one (an old build the clean-up is removing), other shapes, a release tag: nothing
-    expect(run(r, list, ['--sha', head], ['client/v0.5.3-dev.9', 'client/v0.6.0', 'client/v0.5.3-dev.x', 'release/v2026.11.15.1']).build).toBe('false');
+    expect(run(r, list, ['--sha', head], [pubTag, 'client/v0.5.3-dev.9', 'client/v0.6.0', 'client/v0.5.3-dev.x', 'release/v2026.11.15.1']).build).toBe('false');
     // a draft of a higher version, when the token does see drafts
-    const draft = run(r, [...list, rel('client/v0.5.3-dev.11', head, { draft: true })], ['--sha', head]);
+    const draft = run(r, [...list, rel('client/v0.5.3-dev.11', head, { draft: true })], ['--sha', head], [pubTag]);
     expect(draft.build).toBe('true');
     expect(draft.why).toContain('停在草稿');
     // that hidden build is of this very commit: nothing can be put out (it was public once, or its
     // version is taken) — no build; forced → build (the publish step then refuses to change it)
-    const own = [{ name: 'client/v0.5.3-dev.10', sha: base }, { name: 'client/v0.5.3-dev.12', sha: head }];
+    const own = [pubTag, { name: 'client/v0.5.3-dev.12', sha: head }];
     const mine = run(r, list, ['--sha', head], own);
     expect(mine).toMatchObject({ code: 0, build: 'false' });
     expect(mine.why).toContain('公开过的版本一律不改');
@@ -384,5 +392,35 @@ describe('a public build that broke is never changed; the next commit puts out a
     expect(pw.code, pw.out).toBe(0);
     expect(complete(W)).toBe(true);
     xStays('after W came out');
+
+    // review round 4 #14: W's files are complete but its tag ends up on another commit. Every entry
+    // gives the same answer: not done. The nightly plan (read-only view, from the tag list), a rerun of
+    // the publish step, and --check all refuse to call it complete; W itself is never changed; the next
+    // commit — here a docs-only one — publishes a higher version
+    edit((w) => {
+      w.tagSha = { ...(w.tagSha ?? {}), [tag(W)]: 'e'.repeat(40) };
+    });
+    const wrongW = JSON.stringify(rel(W));
+    const t1 = plan(d);
+    expect(t1.build, t1.why).toBe('false'); // the same commit: same version, and W is not changed
+    expect(t1.why).toContain('标签不在发版记下的提交上');
+    const before = releaseWrites();
+    const rerun = publish(W, d);
+    expect(rerun.code).toBe(1);
+    expect(rerun.out).toContain('不当作发过');
+    expect(releaseWrites()).toBe(before);
+    const chk = spawnSync(process.execPath, [join(r.dir, 'client', 'scripts', 'dev-release.mjs'), '--check', W], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(true) });
+    expect([chk.status, /^INCOMPLETE .*标签指向/m.test(chk.stdout)]).toEqual([1, true]);
+    const docs = r.commit('README.md');
+    const t2 = plan(docs);
+    expect(t2.build, t2.why).toBe('true');
+    expect(t2.why).toContain('更高的版本');
+    const V = '0.5.3-dev.14';
+    const pv = publish(V, docs);
+    expect(pv.code, pv.out).toBe(0);
+    expect(complete(V)).toBe(true);
+    expect(JSON.stringify(rel(W))).toBe(wrongW);
+    xStays('after V came out over the wrongly tagged W');
+    expect(plan(docs).build).toBe('false');
   });
 });
