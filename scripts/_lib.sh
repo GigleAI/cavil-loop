@@ -567,6 +567,32 @@ requester_bot_wait_hold() {   # <编号>
 # 已知窗口（维护者选 A 时接受，GitHub#619）：补打之后、下一轮派工之前，维护者的叫停可能被这次派工盖过，
 # 和今天机器人或人打了派工标签之后一样；机器人自己的派工标签在派工摘掉之后才到，会再派一次。
 REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""; REQUESTER_BOT_BACKFILL_FIRSTKEY=""
+# 第一次判定和写前现读比较的那份身份，两边用同一个函数从各自读到的 JSON 里取（JSON 从标准输入进，正文长度没有上限）：
+#   item：状态 + 排好序的标签名；pr：目标分支、最新提交、来源分支、来源仓库。缺字段或为空 = 失败，什么都不打印
+requester_bot_ident() {   # <item|pr>，标准输入：条目 / PR 的 JSON
+    jq -r --arg m "$1" '
+        if $m == "item" then
+            select((.state | type) == "string" and (.labels | type) == "array"
+                and all(.labels[]; (.name | type) == "string" and .name != ""))
+            | .state + ";" + ([.labels[] | .name] | sort | join(","))
+        else
+            select(all([.base.ref, .head.sha, .head.ref, .head.repo.full_name][]; (type == "string") and . != ""))
+            | [.base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")
+        end' 2>/dev/null
+}
+# greedy / 只挂托管标签的 issue：调用方第一次判定（快照上的条目 + 它判出的授权 + 等待判断的 3）的依据。
+# 和 requester_bot_backfill_doc 里的 firstkey 同一格式；任何一项取不到就打印空串（补打函数见空即不写）
+requester_bot_first_key() {   # <issue|pr> <路径文档> <等待身份>，标准输入：快照里这一条的 JSON
+    local kind="$1" pathdoc="$2" wait="$3" j ik pk=""
+    j=$(cat)
+    ik=$(printf '%s' "$j" | requester_bot_ident item) || ik=""
+    [ -n "$ik" ] || return 0
+    if [ "$kind" = pr ]; then
+        pk=$(printf '%s' "$j" | requester_bot_ident pr) || pk=""
+        [ -n "$pk" ] || return 0
+    fi
+    printf '%s|%s|%s|%s' "$ik" "$pk" "$pathdoc" "$wait"
+}
 requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打（整串在 REQUESTER_BOT_BACKFILL_DOC）；1 = 现在不该补；2 = 判不了
     # 在调用方自己的 shell 里跑（不放进 $( )）：判不了的原因要留给调用方记日志
     local kind="$1" n="$2" path="$3" ij pj item prpart="" labels rc
@@ -579,6 +605,9 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
     [ -n "$item" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的状态 / 标签读不全"; return 2; }
     [ "${item%%$'\t'*}" = open ] || return 1
     labels="${item#*$'\t'}"
+    local ik pk=""
+    ik=$(printf '%s' "$ij" | requester_bot_ident item) || ik=""
+    [ -n "$ik" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的状态 / 标签读不全"; return 2; }
     if [ "$kind" = pr ]; then
         pj=$(gh api "repos/$REPO/pulls/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 PR #$n"; return 2; }
         prpart=$(printf '%s' "$pj" | jq -r 'select((.merged | type) == "boolean" and (.draft | type) == "boolean"
@@ -587,6 +616,8 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
             | [(.merged | tostring), (.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")' 2>/dev/null) || prpart=""
         [ -n "$prpart" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 的合并状态 / 分支 / 提交读不全"; return 2; }
         case "$prpart" in true:*) return 1 ;; esac
+        pk=$(printf '%s' "$pj" | requester_bot_ident pr) || pk=""
+        [ -n "$pk" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 的分支 / 提交读不全"; return 2; }
     fi
     rc=0; requester_bot_wait_hold "$n" || rc=$?
     case "$rc" in 3) ;; 2) return 2 ;; *) return 1 ;; esac
@@ -596,15 +627,15 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
             greedy_skip_reason "$labels" >/dev/null && return 1
             stuck_dispatch_hold "$kind" "$n" "" && return 1
             [ "$kind" = issue ] && ci_report_dispatch_hold "$n" && return 1
-            pathdoc="greedy"; firstkey="$wait" ;;
+            pathdoc="greedy"; firstkey="$ik|$pk|$pathdoc|$wait" ;;
         autopilot-issue)
             autopilot_labels_in_flow "$labels" && return 1
             stuck_dispatch_hold issue "$n" "" && return 1
             ci_report_dispatch_hold "$n" && return 1
             rc=0; autopilot_authorization "$n" "$ij" || rc=$?
             case "$rc" in 0) ;; 1) return 1 ;; *) REQUESTER_BOT_WAIT_REASON="$AUTOPILOT_REASON"; return 2 ;; esac
-            pathdoc="auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR"
-            firstkey="$wait" ;;
+            pathdoc="$(requester_bot_auth_doc)"
+            firstkey="$ik|$pk|$pathdoc|$wait" ;;
         takeover)
             autopilot_takeover_permit "$n"
             case "$AT_V" in backfill) ;; unknown) REQUESTER_BOT_WAIT_REASON="$AT_REASON"; return 2 ;; *) return 1 ;; esac
@@ -617,16 +648,16 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
     REQUESTER_BOT_BACKFILL_FIRSTKEY="$firstkey"
 }
 
-# 「该补打」这个决定本身是补打函数里的完整现读判定（等待规则 + 这条路自己的全部放行条件 + 全部身份，
-# requester_bot_backfill_doc），判两次、两次逐字相等才写——和托管交人那套规矩一样：判定被前后两份现读夹住，
-# 更早的判断只是触发（GitHub#382）。调用方在快照上那一轮判断只是触发：触发之后、第一次现读之前维护者重新打
-# 托管标签、PR 推了新提交，补打函数按现读的新状态完整重判，结论仍是「该补打」就写——方案第 11 版定的就是
-# 「重新授权 = 维护者要继续」「推了新提交按现状重判、答复仍有效就派」，下一轮按新状态也会得出同一个结论。
-# 另外多核一项（比上面更保守）：调用方第一次判定（拿到等待判断的 3）那一刻的依据，拼成和 requester_bot_backfill_doc 里 firstkey 同样的格式，
-# 补打前现读的结果必须和它逐字一致（代码复审第 1 轮：只比补打函数自己的两次现读，判定之后、第一次现读之前
-# 被原地编辑的答复会被当成依据写下去）。greedy / 只挂托管标签的 issue：等待身份（REQUESTER_BOT_WAIT_DOC——
-# 规则 4 只凭它放行；挡工标签、授权等其余条件在补打函数的两次现读里各判一次）。不用快照里的标签：快照按 tab
-# 读进来，标签为空的条目会被 read 把空字段并掉、把标题当成标签。托管接手：接手判定的身份 + 等待身份
+# 「该补打」要三份判定一致才写（获批方案第 14 版、验收 10）：调用方第一次判定的依据、补打函数的两次现读，
+# 三者取同一组字段逐字相等——条目状态和标签、PR 的目标分支 / 最新提交 / 来源分支 / 来源仓库、托管授权的身份
+# （授权所在条目、事件位置 / 时间、操作人）、托管接手判定的身份、等待批次和答复身份。第一次判定之后任何一项
+# 变了（维护者摘掉再重打托管标签、PR 推了新提交、答复被原地编辑、挂了挡工标签……）本轮都不写，下一轮按新状态
+# 重新判断。三条入口取依据的地方：greedy 是本轮快照里这一条（requester_bot_first_key），只挂托管标签的 issue
+# 是快照里这一条 + 调用方刚判出的授权，托管接手是接手判定第一次给出 backfill 时的身份（requester_bot_take_doc）。
+# 不用快照按 tab 拆出来的标签串：标签为空的条目会被 read 把空字段并掉、把标题当成标签——改从快照的 JSON 里取。
+requester_bot_auth_doc() {   # 用当前 AUTOPILOT_AUTH_* 拼托管授权的身份
+    printf 'auth=%s:%s:%s:%s:%s:%s' "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"
+}
 requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定的身份
     printf 'take=%s:%s:%s:%s:%s:%s:%s;auth=%s:%s:%s:%s:%s:%s' "$AT_MODE" "$AT_KIND" "$AT_N" "$AT_HEAD" "$AT_BASE" "$AT_REF" "$AT_REPO" \
         "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"

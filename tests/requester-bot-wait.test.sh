@@ -425,25 +425,70 @@ Closes #7" "autopilot"
         done
     done
 
-    # 调用方在快照上的那轮判断只是触发：触发之后、补打函数第一次现读之前，维护者摘掉再重新打托管标签、PR 推了新提交，
-    # 补打函数按现读的新状态完整重判（方案第 11 版：重新授权 = 维护者要继续；新提交按现状重判、答复仍有效就派）→ 照样补打；
-    # 同一时点挂上挡工标签 → 不补打（上面 greedy 「human」那组）
+    # 第一次判定之后、补打函数第一次现读之前，维护者摘掉再重新打托管标签、PR 推了新提交（获批方案第 14 版验收 10）
+    # → 本轮零写；下一轮按新状态重新判断（重新授权仍成立、答复仍有效）→ 补打一次
     fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
     mkshim 80
     mkissue 80 "autopilot"; ev 80 labeled autopilot maint 8800; waitid 80 8801 8802
     mkreply 80 981 req-bot "<!-- requester-bot-reply wait=8801 -->"
     echo "jq '.[\"80\"] += [{event:\"unlabeled\", id:8803, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}, {event:\"labeled\", id:8804, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:01Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_1"
     tick
-    chk "托管 issue · 触发之后维护者重新授权 → 按新授权完整重判，照样补打" "$(backfills 80)" 1
-    chk "  到达性 · 重新授权确实发生在补打函数现读之前" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["80"] | map(select(.event == "unlabeled" and .label.name == "autopilot")) | length' "$GD/events.json")" "2/1"
+    chk "托管 issue · 第一次判定之后维护者重新授权 → 本轮不补打" "$(backfills 80)" 0
+    chk "  到达性 · 重新授权确实发生在补打函数现读之前" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["80"] | map(select(.event == "unlabeled" and .label.name == "autopilot")) | length' "$GD/events.json")" "1/1"
+    tick
+    chk "  下一轮按新授权重判 → 补打一次" "$(backfills 80)" 1
     fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
     mkshim 9
     mkpr 9 feature/x "无关联的 PR" ""; waitid 9 8961 8962
     mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
     echo "jq '.[\"9\"].head.sha = \"2222222222222222222222222222222222222222\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_1"
     tick
-    chk "greedy PR · 触发之后 PR 推了新提交 → 按现状重判，照样补打" "$(backfills 9)" 1
-    chk "  到达性 · 补打函数现读之前确实换了提交" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["9"].head.sha' "$GD/items.json")" "2/2222222222222222222222222222222222222222"
+    chk "greedy PR · 第一次判定之后 PR 推了新提交 → 本轮不补打" "$(backfills 9)" 0
+    chk "  到达性 · 补打函数现读之前确实换了提交" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["9"].head.sha' "$GD/items.json")" "1/2222222222222222222222222222222222222222"
+    tick
+    chk "  下一轮按新提交重判 → 补打一次" "$(backfills 9)" 1
+    # 托管接手：接手判定第一次给出 backfill 之后、补打函数第一次现读之前重新授权 / 推新提交 → 本轮不补打，下一轮补打
+    for k in 1 2; do
+        for change in reauth push; do
+            fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
+            mkshim 8
+            mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+            ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+            mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+            case "$change" in
+                reauth) echo "jq '.[\"8\"] += [{event:\"unlabeled\", id:8903, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}, {event:\"labeled\", id:8904, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:01Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_$k" ;;
+                push)   echo "jq '.[\"8\"].head.sha = \"2222222222222222222222222222222222222222\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_$k" ;;
+            esac
+            tick
+            chk "托管 PR · 第 $k 次现读前「$change」→ 本轮不补打" "$(backfills 8)" 0
+            chk "  到达性 · 确实读到了第 $k 次" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge "$k" ] && echo yes || echo no)" yes
+            tick
+            chk "  下一轮按新状态重判 → 补打一次" "$(backfills 8)" 1
+        done
+    done
+    # greedy / 只挂托管标签的 issue 的第 2 次现读前同样两种变化（第 1 次的见上面两组）
+    for target in issue pr; do
+        if [ "$target" = issue ]; then
+            fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
+            tn=80; mkshim 80
+            mkissue 80 "autopilot"; ev 80 labeled autopilot maint 8800; waitid 80 8801 8802
+            mkreply 80 981 req-bot "<!-- requester-bot-reply wait=8801 -->"
+            echo "jq '.[\"80\"] += [{event:\"unlabeled\", id:8803, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}, {event:\"labeled\", id:8804, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:01Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_2"
+        else
+            fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+            tn=9; mkshim 9
+            mkpr 9 feature/x "无关联的 PR" ""; waitid 9 8961 8962
+            mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+            echo "jq '.[\"9\"].head.sha = \"2222222222222222222222222222222222222222\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_2"
+        fi
+        tick
+        chk "$target · 第 2 次现读前重新授权 / 推新提交 → 本轮不补打" "$(backfills "$tn")" 0
+        chk "  到达性 · 确实读到了第 2 次" "$(cat "$W/shim/count" 2>/dev/null)" 2
+        tick
+        chk "  下一轮按新状态重判 → 补打一次" "$(backfills "$tn")" 1
+    done
 
     section "【6d2】PR / 标签缺字段或为空（草稿标记 / 来源仓库读不到或为空 / 标签名为空）→ 判不了，不补打"
     for miss in draft repo repo-empty label-empty; do

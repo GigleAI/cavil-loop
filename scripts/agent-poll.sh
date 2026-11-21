@@ -691,7 +691,7 @@ dispatch_one_pr() {
 # 那套 label 和模板），self-heal 也会因此把死掉的 worker 送回 pending/agent 队列。
 collect_queue_rows_greedy() {
     local kind="$1"
-    local raw num branch updated labels_csv title prio stage key blocked rc
+    local raw num branch updated labels_csv title prio stage key blocked rc first
     # 快照已经是全量 open（分页拉完），这里只保留 GREEDY_SCAN_LIMIT 的语义：
     # 仍然只看前 N 条，配置含义不变。数值到了 10 亿（去掉前导 0 后十位数及以上）的不交给 head：
     # macOS 的 head 只收到 2^31-1（再大报错 → 一条都不看），GNU 的收到 2^64-1；任何快照都远不到
@@ -733,7 +733,9 @@ collect_queue_rows_greedy() {
             2) log "greedy：${kind} #${num} 本轮不续工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                continue ;;
             # 机器人贴回了答复却没打派工标签（GitHub#619）：本轮不入队，替它补打派工标签，下一轮明确派工
-            3) requester_bot_backfill "$kind" "$num" greedy "$REQUESTER_BOT_WAIT_DOC"
+            3) first=$(autopilot_snapshot_item "$([ "$kind" = issue ] && echo issues || echo pulls)" "$num" \
+                       | requester_bot_first_key "$kind" greedy "$REQUESTER_BOT_WAIT_DOC") || first=""
+               requester_bot_backfill "$kind" "$num" greedy "$first"
                continue ;;
         esac
         queued_keys[$key]=1
@@ -775,7 +777,7 @@ fi
 # 被拒的结果按 issue 的更新时间记下，issue 没动过就不再每轮去查标签记录。
 collect_autopilot_rows() {
     autopilot_configured || return 0
-    local raw num branch updated labels_csv title key ij rc prio stage
+    local raw num branch updated labels_csv title key ij rc prio stage first
     raw=$(snapshot_rows issue "$LABEL_AUTOPILOT" 2>/dev/null || true)
     [ -n "$raw" ] || return 0
     while IFS=$'\t' read -r num branch updated labels_csv title; do
@@ -820,7 +822,8 @@ collect_autopilot_rows() {
                     2) log "托管：issue #$num 本轮不自动开工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                        continue ;;
                     # 机器人贴回了答复却没打派工标签（GitHub#619）：替它补打，下一轮明确派工
-                    3) requester_bot_backfill issue "$num" autopilot-issue "$REQUESTER_BOT_WAIT_DOC"
+                    3) first=$(printf '%s' "$ij" | requester_bot_first_key issue "$(requester_bot_auth_doc)" "$REQUESTER_BOT_WAIT_DOC") || first=""
+                       requester_bot_backfill issue "$num" autopilot-issue "$first"
                        continue ;;
                 esac
                 queued_keys[$key]=1
