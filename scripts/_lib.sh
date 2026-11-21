@@ -8741,18 +8741,16 @@ review_converge_section() {
     [ -s "$f" ] || { log "⚠️ 复审收敛规则文件缺失：$f" 2>/dev/null || true; return 0; }
     text="$(cat "$f")"
     text="${text//@@SCOPE_CMD@@/"bash '$REVIEW_SCOPE_SCRIPT' --repo '${REPO:-}'"}"
-    # 托管条目又开了外部内容保护：本条的正文和评论只能经受保护的读取命令读，范围命令的方案模式会另读评论
-    # 原文，所以这类条目上方案复审不用它——标着 plan-only 的几段整段换成一句「B 类每轮全量」，不留第二条读取路径
-    local mode=plain
-    if autopilot_section_active && outsider_guard_on; then mode=guarded; fi
-    printf '%s\n' "$text" | awk -v mode="$mode" '
-        /^<!-- plan-only:begin -->$/ { inb = 1; n++
-            if (mode == "guarded" && n == 1)
-                print "- B 类（设计方案）：本条是托管条目，又开了外部内容保护，方案只经受保护的读取命令读。**不跑范围命令，B 类每一轮都按全量轮审**，结论评论也不写方案的基线标记。"
-            next }
-        /^<!-- plan-only:end -->$/ { inb = 0; next }
-        inb && mode == "guarded" { next }
-        { print }'
+    # 托管条目又开了外部内容保护：本条的正文和评论只能经受保护的读取命令读，所以范围命令不能再自己读评论——
+    # 规则文件里 plain-only 的几段（方案模式、自己找基线的代码命令）整段去掉，换上 guarded-only 那几段（代码基线由
+    # 复审从受保护读取的输出里交进命令，方案每轮全量）；其余情况反过来。两种都去掉标记行，不留第二条读取路径
+    local keep=plain-only drop=guarded-only
+    if autopilot_section_active && outsider_guard_on; then keep=guarded-only; drop=plain-only; fi
+    printf '%s\n' "$text" | awk -v keep="$keep" -v drop="$drop" '
+        $0 == "<!-- " drop ":begin -->" { skip = 1; next }
+        $0 == "<!-- " drop ":end -->" { skip = 0; next }
+        $0 == "<!-- " keep ":begin -->" || $0 == "<!-- " keep ":end -->" { next }
+        !skip { print }'
 }
 
 compose_prompt_template() {

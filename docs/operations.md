@@ -695,8 +695,10 @@ when the comment was edited while it was being reviewed — then no baseline is 
 round is full. On an autopilot item with the outsider guard on (`AUTOPILOT_OUTSIDER_GUARD`), every
 comment on the item is read only through the guarded read command, so the review prompt carries no
 proposal mode at all there: proposal reviews are full every round and write no proposal baseline.
-Code mode never shows comment text either way — it only looks for the second line of the dispatch
-account's own last verdict. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
+Code mode reads no comments there either: the reviewer copies the second line of its own last
+verdict out of the guarded read output and passes it with `--baseline-mark '<line>'`; when the
+guarded read fails or has no such line, the round is full. Elsewhere code mode reads the comment
+list only to find that line and never shows comment text. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
 config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
 other first line is treated as full.
 

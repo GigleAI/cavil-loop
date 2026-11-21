@@ -5,6 +5,8 @@
 #
 # 用法（在被审 PR 的 worktree 里跑）：
 #   bash review-scope.sh --repo OWNER/REPO pr <PR 编号> --round <本轮轮次> [--on <结论评论所在的 issue / PR 编号>]
+#       --baseline-mark '<上一条结论的第二行>'：基线由复审从受保护读取的输出里交进来，本命令不读任何评论
+#       （托管 + 外部内容保护的条目用这一种）
 #   bash review-scope.sh --repo OWNER/REPO plan <issue 编号> --round <本轮轮次> --comment <本轮要审的方案评论 id>
 #   bash review-scope.sh --repo OWNER/REPO fingerprint <评论 id> --issue <issue 编号> --expect <指纹>
 #       复审审完方案后确认评论还是审的那个版本（指纹取自 plan 输出的 current 行），一致才打印指纹，
@@ -27,19 +29,20 @@
 set -euo pipefail
 
 usage() {
-    echo "用法：bash $(basename "$0") --repo OWNER/REPO pr <PR> --round <N> [--on <编号>]" >&2
+    echo "用法：bash $(basename "$0") --repo OWNER/REPO pr <PR> --round <N> [--on <编号> | --baseline-mark <结论第二行>]" >&2
     echo "      bash $(basename "$0") --repo OWNER/REPO plan <issue> --round <N> --comment <评论 id>" >&2
     echo "      bash $(basename "$0") --repo OWNER/REPO fingerprint <评论 id> --issue <issue> --expect <指纹>" >&2
     exit 2
 }
 
-repo="" mode="" num="" round="" on="" comment="" issue=""
+repo="" mode="" num="" round="" on="" comment="" issue="" given_mark="" has_mark=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) [ $# -ge 2 ] || usage; repo="$2"; shift 2 ;;
         --round) [ $# -ge 2 ] || usage; round="$2"; shift 2 ;;
         --on) [ $# -ge 2 ] || usage; on="$2"; shift 2 ;;
         --comment) [ $# -ge 2 ] || usage; comment="$2"; shift 2 ;;
+        --baseline-mark) [ $# -ge 2 ] || usage; given_mark="$2"; has_mark=1; shift 2 ;;
         pr|plan) [ -z "$mode" ] && [ $# -ge 2 ] || usage; mode="$1"; num="$2"; shift 2 ;;
         fingerprint) [ -z "$mode" ] && [ $# -ge 2 ] || usage; mode="$1"; num="$2"; shift 2; break ;;
         *) usage ;;
@@ -50,8 +53,8 @@ done
 case "$mode" in
     pr) [[ "$round" =~ ^[0-9]+$ ]] || usage; [ -z "$comment" ] || usage
         [ -n "$on" ] || on="$num"; [[ "$on" =~ ^[0-9]+$ ]] || usage ;;
-    plan) [[ "$round" =~ ^[0-9]+$ ]] || usage; [[ "$comment" =~ ^[0-9]+$ ]] || usage; [ -z "$on" ] || usage ;;
-    fingerprint) [ -z "$round$on$comment" ] || usage ;;   # 后面只能跟 --expect <指纹>，下面查
+    plan) [[ "$round" =~ ^[0-9]+$ ]] || usage; [[ "$comment" =~ ^[0-9]+$ ]] || usage; [ -z "$on$has_mark" ] || usage ;;
+    fingerprint) [ -z "$round$on$comment$has_mark" ] || usage ;;   # 后面只能跟 --expect <指纹>，下面查
     *) usage ;;
 esac
 
@@ -128,6 +131,11 @@ fi
 
 # ② 基线：派工账号自己发的最近一条复审结论评论——第一行是轮次标记、第二行是基线标记。只认这个位置：
 # 别的评论里引用了旧标记（不在第一行）不算复审结论
+# 托管 + 外部内容保护的条目上，复审从受保护读取命令的输出里抄下自己上一条结论的第二行，用 --baseline-mark
+# 交进来：这时本命令一条评论都不读，基线只认交进来的这一行
+if [ -n "$has_mark" ]; then
+    mark="${given_mark%$'\r'}"
+else
 target="$num"; [ "$mode" = plan ] || target="$on"
 gh api --paginate "repos/$repo/issues/$target/comments" \
     --jq '.[] | {id, user: (.user.login // ""), body: (.body // "")}' > "$TMP/comments" 2>/dev/null || full read-failed
@@ -137,6 +145,7 @@ jq -rs --arg me "$login" '
     | .[1] // ""' < "$TMP/comments" > "$TMP/mark" 2>/dev/null || full read-failed
 [ -s "$TMP/mark" ] || full no-baseline
 mark=$(head -1 "$TMP/mark")
+fi
 PLAN_RE='^<!-- review-baseline: plan comment=([0-9]+) sha256=([0-9a-f]{64}) -->$'
 CODE_RE='^<!-- review-baseline: code head=([0-9a-f]{40}) base=([A-Za-z0-9._/-]+) -->$'
 

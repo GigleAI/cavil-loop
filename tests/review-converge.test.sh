@@ -203,14 +203,17 @@ P=$(make_project guarded remote); echo 'AUTOPILOT_OUTSIDER_GUARD="on"' >> "$P/co
 dispatch_all "$P" "$TMP/out-guarded"
 f="$TMP/out-guarded/review-autopilot.md"
 if [ -s "$f" ] && has "$f" 'B 类每一轮都按全量轮审' && ! has "$f" ' plan <issue 编号>' && ! has "$f" 'fingerprint <评论 id>' \
-   && ! has "$f" 'review-baseline: plan' && has "$f" "--repo 'example/rc' pr"; then
-    ok "托管 + 外部内容保护：复审说明里没有方案模式的命令和基线，B 类每轮全量，A 类命令照旧"
+   && ! has "$f" 'review-baseline: plan' && has "$f" "--repo 'example/rc' pr <被审 PR 的编号> --round <N> --baseline-mark" \
+   && ! has "$f" 'A 类命令读评论只为找'; then
+    ok "托管 + 外部内容保护：没有方案模式；A 类命令只带交进来的基线、不自己读评论；B 类每轮全量"
 else bad "托管 + 外部内容保护：复审说明不对" "$(grep -n 'B 类' "$f" 2>/dev/null | head -5)"; fi
 has "$f" '# 外部账号的内容' && ok "到达性：这份确实带着外部内容保护段" || bad "这份没带外部内容保护段（测的不是保护开着的情形）"
 f="$TMP/out-guarded/review.md"
-has "$f" ' plan <issue 编号>' && ! has "$f" 'B 类每一轮都按全量轮审' && ok "同一项目的非托管复审：方案模式照常" || bad "同一项目的非托管复审不该去掉方案模式"
-if grep -l 'plan-only' "$TMP"/out-*/*.md >/dev/null 2>&1; then bad "成品里留下了 plan-only 标记行" "$(grep -l 'plan-only' "$TMP"/out-*/*.md | head -3)"
-else ok "成品里没有 plan-only 标记行"; fi
+if has "$f" ' plan <issue 编号>' && ! has "$f" 'B 类每一轮都按全量轮审' && ! has "$f" '--baseline-mark' && has "$f" 'A 类命令读评论只为找'; then
+    ok "同一项目的非托管复审：方案模式和自己找基线的代码命令照常"
+else bad "同一项目的非托管复审不该换成受保护的写法"; fi
+if grep -lE '<!-- (plain|guarded)-only:(begin|end) -->' "$TMP"/out-*/*.md >/dev/null 2>&1; then bad "成品里留下了标记行" "$(grep -lE 'only:(begin|end)' "$TMP"/out-*/*.md | head -3)"
+else ok "成品里没有标记行"; fi
 
 # 顺序：REVIEW.md 段 → 收敛段 → 托管规则段（托管段改收敛规则的第 ④ 步，得在后面）
 f="$TMP/out-present/review-autopilot.md"
@@ -246,6 +249,7 @@ while [ $# -gt 0 ]; do
     case "$1" in --paginate) shift ;; --jq) jqx="$2"; shift 2 ;; *) path="$1"; shift ;; esac
 done
 key=$(printf '%s' "$path" | tr '/' '_')
+printf '%s\n' "$path" >> "$GH_DATA/calls"
 [ ! -e "$GH_DATA/fail-$key" ] || { echo "HTTP 500" >&2; exit 1; }
 f="$GH_DATA/$key.json"
 [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
@@ -363,6 +367,19 @@ g checkout -q pr2; g merge -q --no-edit main >/dev/null 2>&1
 sed -i -e '/^<<<<<<<\|^=======\|^>>>>>>>/d' -e '/^line 3 main$/d' "$SEED/b.txt"; g commit -qam "resolve" >/dev/null 2>&1
 set_pr 2 pr2
 check "代码 8：PR 手工解决了与主干的冲突 → full merge-conflict" "$(run_scope pr 2 --round 3)" "rc=0 full merge-conflict"
+
+# 基线由复审从受保护读取的输出里交进来（--baseline-mark）：命令一条评论都不读——评论接口设成必失败也照样算出范围
+g checkout -q pr1
+touch "$G/fail-repos_o_r_issues_1_comments"; rm -f "$G/calls"; set_pr 1 pr1
+check "交进来的基线 → 照样 scope 1" "$(run_scope pr 1 --round 2 --baseline-mark "$(code_mark "$P1")")" "rc=0 scope 1"
+if [ -s "$G/calls" ] && ! grep -q '/comments' "$G/calls"; then ok "交进来的基线时没有任何评论请求（只读了 PR）"
+else bad "交进来的基线时仍请求了评论（或一条请求都没记下）" "$(cat "$G/calls" 2>/dev/null)"; fi
+check "交进来的基线格式不对 → full no-baseline" "$(run_scope pr 1 --round 2 --baseline-mark '## ❌ 复审未通过')" "rc=0 full no-baseline"
+check "交进来的基线为空（受保护读取里没找到）→ full no-baseline" "$(run_scope pr 1 --round 2 --baseline-mark '')" "rc=0 full no-baseline"
+check "交进来的基线 + 第 1 轮 → full first-round" "$(run_scope pr 1 --round 1 --baseline-mark "$(code_mark "$P1")")" "rc=0 full first-round"
+rm -f "$G/fail-repos_o_r_issues_1_comments"
+out=$(cd "$WT" && PATH="$TMP/bin3:$PATH" GH_DATA="$G" bash "$SCOPE" --repo o/r plan 9 --round 2 --comment 1 --baseline-mark x 2>/dev/null); rc=$?
+check "方案模式不接受 --baseline-mark → 用法错误" "rc=$rc out=$out" "rc=2 out="
 
 # 用法错误：退出码 2，不输出结论
 out=$(cd "$WT" && PATH="$TMP/bin3:$PATH" GH_DATA="$G" bash "$SCOPE" --repo o/r pr 1 2>/dev/null); rc=$?
