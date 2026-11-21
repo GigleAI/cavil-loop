@@ -1504,6 +1504,40 @@ Operationally:
 - Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
 - Full guide, exit codes, evidence rules and a worked example: [Hooking up an external requester bot](requester-bot.md)
 
+## Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`, GitHub#610)
+
+Off unless the config says `ENABLE_ROUND_LOG=true` (the template does; a project whose config lacks the line gets
+one `poll.log` notice and stays off). When on, one back-and-forth between agents — a proposal or PR, the review,
+the revision, the next review … — takes **one** comment, the *round log*. Each delivery that goes to another agent
+(the comment after which the agent flips the item to the review label or back to the dispatch label) is appended
+as a short section: what changed, what the next agent needs, the usage footer. The full current version (whole
+proposal / whole delivery summary) sits at the top of the record and is replaced by the latest one.
+
+- **Stay separate, as before**: every comment to a human, the review verdict that queues an autopilot merge
+  (the merge check only accepts the test record in a comment created after the review was dispatched), daemon
+  comments, waiting-on-prerequisite notes. A new comment by anyone in between ends the record; the next delivery
+  starts a new one
+- **Only the loop edits it**: the record is written and edited only by the loop's write account; no other comment
+  is ever edited. Reply and tick boxes in the hand-off comments, not in the record. Editing a record is not
+  protected against: a human edit can be overwritten by the next section (accepted in #610)
+- **Commands**: agents run `round-log.sh post` / `show` through the durable entry
+  `~/.agents/releases/cavil-loop/entrypoints/round-log.sh`. Before every write the target is re-read (open, still
+  `doing/agent`, no `pending/human` / waiting / `pending/merge` / `pending/PR` label, PR not merged, same base branch and source, head commit equal to
+  the delivery's). State and labels are checked on every response read — the issue and then the PR on a PR, the issue again after the linked-PR list on an issue — and a missing or unrecognised field means nothing is written. An edit that fails or times out is replaced by a complete new record carrying the same section id;
+  readers and statistics count a section once. On a PR the caller must pass the commit and base branch the delivery was made against (`--basis` / `--base`; `--source` for a PR from another repository) — the command never takes its own first read as the baseline and refuses without them. A missing `--basis` / `--base` is a usage error (exit 64): the agent completes the call, and never falls back to a plain comment. A review must pass `--of` — the value the read command printed under the latest unit when the review started (a section id, `comment-<id>` for a plain comment, or `body` when the thread has no delivery yet, e.g. a first PR whose delivery is its description); if another delivery arrived since, the verdict is expired (exit 3) and is neither posted nor turned into a plain comment. A review whose latest delivery is not a section of a record (a plain comment from before the switch, a delivery that was posted on its own, or any later plain comment by the loop's account) is refused (exit 2) and posted as before — it is never attached to an older section. A record already in the thread that cannot be parsed (a missing marker, a version that does not match) is treated like an unreadable thread (exit 5): nothing is written, and the agent neither posts on its own nor flips the label. Review rounds are still counted from the last human action: the read command lists the review units (review sections of a record, or a plain comment by the loop's account whose first non-empty line is exactly a round marker — an example quoted in a discussion does not count) and the comments not written by the loop's account, with their times, and says its total is the whole history; edits and label-only actions are read from the comment edit data and issue events as before. Each run logs one `round-log #<n> post：<result>` line to `poll.log`
+- **Autopilot items with the outsider guard on** read through the protected read command as before; its output ends
+  with the same unit view. Writing goes through the same protected read first, and writes nothing when it fails
+- **One rule for whose record it is**: a record counts only when its author is the loop's write account (the login of
+  `WRITE_GH_TOKEN`, or gh's own login without it) — for the commands, the weekly report and `pr-time-stats.py`
+  alike. A comment by any other account that carries the record marker is an ordinary comment, a bot-suffixed name
+  included. A record by the write account that cannot be parsed stops the read and both statistics with an error
+- **Statistics**: the weekly report and `pr-time-stats.py` split records into sections (each with its own append
+  time) through the same function; for every item that has a record, the weekly report re-reads that item's whole
+  comment thread before applying the week window, and stops with an error when that read fails
+- **Turn it off**: set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
+  read and counted; new deliveries are plain comments again. To make it the default for every project later, change
+  the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every project without the line then has it on
+
 ## Comment usage footer
 
 With `COMMENT_FOOTER="on"`, the hand-off comment ends with a footer generated whole by

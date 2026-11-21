@@ -191,6 +191,10 @@ while i < len(argv):
         paginate = True; i += 1; continue
     if a == "--slurp":
         slurp = True; i += 1; continue
+    if a == "--input":   # 真 gh：--input 文件 = 请求体（GitHub#610 往返记录按文件传正文）
+        with open(argv[i + 1], encoding="utf-8") as fh:
+            fields.update(json.load(fh))
+        i += 2; continue
     if a in ("-f", "-F"):
         k, _, v = argv[i + 1].partition("=")
         if a == "-F" and v.startswith("@"):   # 真 gh：-F key=@文件 读文件内容当值（GitHub#426：大正文经文件传）
@@ -514,6 +518,9 @@ if method == "GET":
         for n in sorted(items, key=int):
             kind, it = view(n)
             if kind == "pr" and it.get("state") == "open" and not it.get("merged"):
+                # head=<owner>:<分支>（GitHub#610）：只给这个分支的 PR
+                if "head" in QUERY and QUERY["head"].split(":", 1)[-1] != it.get("head", {}).get("ref", ""):
+                    continue
                 out.append(it)
         emit(out, pages=True)
     # GitHub#382：jq_<key> 文件里的 jq 表达式套在这次 PR / issue 详情的响应上（删字段、改成不认识的状态词），
@@ -699,7 +706,34 @@ if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] ==
         subprocess.run(["bash", _ah], check=False, stdin=subprocess.DEVNULL, timeout=30)
     if os.path.exists(p("F_post_comment_lost")):
         fail("HTTP 502: injected: comment was created but the response was lost")
-    emit({"id": lst[-1]["id"]})
+    emit({"id": lst[-1]["id"], "html_url": "https://github.com/%s/issues/%s#issuecomment-%s" % (REPO, parts[1], lst[-1]["id"])})
+
+# 改一条评论的正文（GitHub#610 往返记录）：PATCH issues/comments/<id>。
+# F_patch_comment = 明确失败、没改；F_patch_comment_lost = 已经改了、却向调用方报失败（响应丢了）；
+# hook_PATCH_comment_<k> 在第 k 次改评论之前运行（模拟「核对通过之后、请求生效之前」GitHub 上有了变化）
+if method == "PATCH" and len(parts) == 3 and parts[0] == "issues" and parts[1] == "comments":
+    _pc = p("count_PATCH_comment")
+    _k = int(open(_pc).read()) + 1 if os.path.exists(_pc) else 1
+    open(_pc, "w").write(str(_k))
+    _ph = p("hook_PATCH_comment_%d" % _k)
+    if os.path.exists(_ph):
+        subprocess.run(["bash", _ph], check=False, stdin=subprocess.DEVNULL, timeout=30)
+    if os.path.exists(p("F_patch_comment")):
+        fail("HTTP 500: injected comment edit failure")
+    cm = load("comments.json", {})
+    hit = None
+    for n_, lst in cm.items():
+        for c in lst:
+            if str(c["id"]) == parts[2]:
+                hit = (n_, c)
+    if hit is None:
+        fail("HTTP 404: Not Found")
+    hit[1]["body"] = fields.get("body", "")
+    hit[1]["updated_at"] = now_iso()
+    save("comments.json", cm)
+    if os.path.exists(p("F_patch_comment_lost")):
+        fail("HTTP 502: injected: comment was edited but the response was lost")
+    emit({"id": hit[1]["id"], "html_url": "https://github.com/%s/issues/%s#issuecomment-%s" % (REPO, hit[0], hit[1]["id"])})
 
 if method == "POST" and len(parts) == 3 and parts[0] == "issues" and parts[2] == "labels":
     if os.path.exists(p("F_post_labels")):
