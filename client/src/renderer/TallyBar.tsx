@@ -215,7 +215,15 @@ export function TallyBar({
               aria-haspopup="true"
               title={foldTip}
               onFocus={() => (focus.current = { at: 'toggle' })}
-              onClick={() => setOpen(!shownOpen)}
+              onClick={(ev) => {
+                const opening = !shownOpen;
+                setOpen(opening);
+                // PR #640 review round 3: an open panel always has the focus inside the fold, however it was opened —
+                // a mouse click that gives a button no focus (WebKit, or a press whose default was stopped) included —
+                // so Esc, Tab and the blur rule all reach the fold through its own events, never through the window
+                const fold = ev.currentTarget.parentElement;
+                if (opening && !(fold && document.activeElement && fold.contains(document.activeElement))) ev.currentTarget.focus();
+              }}
             >
               {t('⋯ 折叠')} <b>{folded.length}</b> <span aria-hidden="true">{shownOpen ? '▴' : '▾'}</span>
             </button>

@@ -180,7 +180,49 @@ test('GitHub#634: the default rules over the recorded board; the fold opens, its
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
   await expect(toggle(page)).not.toHaveClass(/\bon\b/);
 
-  // Esc closes it, focus back on its button; a press elsewhere closes it too
+  // Esc and a press elsewhere close it (every Esc case is in the next test)
+  await toggle(page).click();
+  await expect(pop(page)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(pop(page)).toBeHidden();
+  await toggle(page).click();
+  await expect(pop(page)).toBeVisible();
+  await page.getByTestId('table').click({ position: { x: 5, y: 5 } });
+  await expect(pop(page)).toBeHidden();
+});
+
+test('GitHub#634 (PR #640 review rounds 1–3): Esc belongs to the fold only when pressed on it — every way of opening it, moving inside it and leaving it', async () => {
+  const { page } = await launchApp(env);
+  await ready(page);
+  await page.getByTestId('search').fill('新增依赖图视图');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  // round 3: opened with the mouse by a press that gives the button no focus (WebKit's buttons, or a press whose
+  // default was stopped): opening puts the focus on the fold's button, so Esc closes the panel and stays there
+  await page.evaluate(() =>
+    document.querySelector('[data-testid="tally-fold-toggle"]')!.addEventListener('mousedown', (e) => e.preventDefault(), { once: true, capture: true }),
+  );
+  await toggle(page).click();
+  await expect(pop(page)).toBeVisible();
+  await expect.poll(() => focused(page)).toBe('toggle');
+  await page.keyboard.press('Escape');
+  await expect(pop(page)).toBeHidden();
+  await expect.poll(() => focused(page)).toBe('toggle');
+  await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+  // the same with focus somewhere else first (the search box): the panel opens with focus in it, Esc closes it, and
+  // the search box keeps its text
+  await page.getByTestId('search').focus();
+  await page.evaluate(() =>
+    document.querySelector('[data-testid="tally-fold-toggle"]')!.addEventListener('mousedown', (e) => e.preventDefault(), { once: true, capture: true }),
+  );
+  await toggle(page).click();
+  await expect(pop(page)).toBeVisible();
+  await expect.poll(() => focused(page)).toBe('toggle');
+  await page.keyboard.press('Escape');
+  await expect(pop(page)).toBeHidden();
+  await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+
+  // an ordinary click: Esc closes it, focus back on its button; a press elsewhere closes it too
   await toggle(page).click();
   await expect(pop(page)).toBeVisible();
   await page.keyboard.press('Escape');
@@ -237,6 +279,9 @@ test('GitHub#634: the default rules over the recorded board; the fold opens, its
   await expect(pop(page)).toBeHidden();
   await toggle(page).click();
   await expect(pop(page)).toBeVisible();
+  // the window losing focus closes it too
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(pop(page)).toBeHidden();
 });
 
 test('GitHub#634: a lit number goes 1 → 0 → 1 — it moves into the fold and back, stays lit, and a click still gives the search from before', async () => {
