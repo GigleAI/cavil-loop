@@ -183,6 +183,38 @@ def links(path):
     return link_targets(open(path, encoding='utf-8').read())
 
 
+ABSOLUTE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*:')
+
+
+def split_target(raw):
+    """One link address -> (kind, path, query, anchor); kind is 'empty', 'absolute' or
+    'relative'. The single place that decides how an address splits:
+      - '' is empty; "scheme:..." and "//host/..." are absolute and nothing else of
+        them is looked at (so an address only a URL library would reject, such as
+        https://[invalid]/, is skipped like any other absolute one)
+      - otherwise the still-encoded text is cut at the first "#" (anchor), then the
+        part before it at the first "?" (query); only then are path and anchor
+        percent-decoded. So "%23" / "%3F" in a file name stay part of the name and a
+        "?query" never becomes part of the file
+    query is None when there is no "?", anchor is None when there is no "#"."""
+    if raw == '':
+        return 'empty', '', None, None
+    if ABSOLUTE.match(raw) or raw.startswith('//'):
+        return 'absolute', '', None, None
+    rest, hash_, frag = raw.partition('#')
+    path, qmark, query = rest.partition('?')
+    return ('relative', urllib.parse.unquote(path), query if qmark else None,
+            urllib.parse.unquote(frag) if hash_ else None)
+
+
+def shown(path, query, frag):
+    """How a relative target is reported: decoded, with "%", "#" and "?" inside the
+    path encoded again so they cannot be mistaken for separators."""
+    return (path.replace('%', '%25').replace('#', '%23').replace('?', '%3F')
+            + ('' if query is None else '?' + query)
+            + ('' if frag is None else '#' + frag))
+
+
 def check(root, docs, into=None, listing=None):
     """Problems (one string each) for the relative links in docs. into: a set of
     repo-relative paths; when given, only links whose target is one of them count."""
@@ -194,24 +226,18 @@ def check(root, docs, into=None, listing=None):
             problems.append(f'{doc}: 文件不存在')
             continue
         for raw in links(path):
-            # markdown-it percent-encodes destinations. The whole address is split once,
-            # on the still-encoded text, into scheme / host / path / query / anchor
-            # (urlsplit, RFC 3986); only then is each part decoded. So "%23" and "%3F" in
-            # a file name stay part of the name, a "?query" never becomes part of the
-            # file, and only the decoded path locates the file and matches --into. The
-            # target is reported decoded, with a "#" / "?" inside the path shown encoded
-            parts = urllib.parse.urlsplit(raw)
-            file_part = urllib.parse.unquote(parts.path)
-            frag = urllib.parse.unquote(parts.fragment)
-            target = (file_part.replace('%', '%25').replace('#', '%23').replace('?', '%3F')
-                      + ('?' + parts.query if '?' in raw.partition('#')[0] else '')
-                      + ('#' + frag if '#' in raw else ''))
-            if raw == '':
+            try:
+                kind, file_part, query, frag = split_target(raw)
+            except Exception as e:  # never stop the whole document on one address
+                problems.append(f'{doc}: 链接地址无法解析 {raw}（{type(e).__name__}）')
+                continue
+            if kind == 'empty':
                 if into is None or os.path.relpath(path, root) in into:
                     problems.append(f'{doc}: 链接目标为空')
                 continue
-            if parts.scheme or parts.netloc or raw.startswith('//'):
-                continue   # absolute URL, mailto:, …
+            if kind == 'absolute':
+                continue   # absolute URL, mailto:, //host/…
+            target = shown(file_part, query, frag)
             if file_part == '':
                 dest = path
             elif file_part.startswith('/'):

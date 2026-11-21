@@ -217,6 +217,20 @@ README.md: 锚点不存在 docs/guide.md?plain=1#missing
 rc=1 | OK README.md -> a%3Fb.md#heading
 OK README.md -> c%23d.md?x=1#heading
 rc=0"
+# 绝对地址（协议开头、// 开头）一律跳过，连 URL 库会拒绝的写法（https://[invalid]/）也不再往下解析；
+# 跳过之后，同一篇里后面的仓库内断链照报，整篇检查和限定目标范围两种入口都一样
+mkdir -p "$TMP/abs"
+printf '%s\n' '<a href="https://[invalid]/">External</a>' '' '[v6](http://[::1)' '[mail](mailto:a@b)' \
+    '[proto](//[bad/x)' '<img src="HTTPS://[x">' '' '[bad](missing.md)' > "$TMP/abs/README.md"
+chk "应跳过的外部地址（含 URL 库会拒绝的写法）之后，仓库内断链照报，不中断整篇" \
+    "$(python3 "$CHECK" --list "$TMP/abs" README.md 2>&1; echo "rc=$?")" \
+    "README.md: 链接指向不存在的文件 missing.md
+rc=1"
+chk "  限定目标范围时同样：外部地址跳过、限定 missing.md 时断链照报" \
+    "$(python3 "$CHECK" --into missing.md "$TMP/abs" README.md 2>&1; echo "rc=$?")" \
+    "README.md: 链接指向不存在的文件 missing.md
+rc=1"
+
 
 
 # 只查指向某些文件的链接（提示词、AGENTS.md 用的入口）时，空目标这种不指向任何文件的不报；整篇检查照报
