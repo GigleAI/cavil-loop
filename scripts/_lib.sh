@@ -7939,6 +7939,7 @@ lessons_for_prompt() {   # <经验文件>
 #     再被渲染。
 #   · 任何失败都不挡派工。
 ENABLE_CONCURRENT_WORK_HINT="${ENABLE_CONCURRENT_WORK_HINT:-}"
+ENABLE_ROUND_LOG="${ENABLE_ROUND_LOG:-}"   # 往返记录（GitHub#610）：空 = 关，判定只在 round_log_enabled
 CONCURRENT_WORK_MAX_BYTES="${CONCURRENT_WORK_MAX_BYTES:-6000}"
 CONCURRENT_WORK_BYTES_DEFAULT=6000
 CONCURRENT_WORK_BYTES_MIN=2000
@@ -8768,7 +8769,7 @@ compose_prompt_template() {
     project_lessons="$(find_project_prompt_file lessons.md lessons)"
     review_md="$STATE_DIR/prompt-remote-review-md-${name}.md"
     review_md_state=$(review_md_read "$review_md")
-    if [ "$name" != review ] && [ "$review_md_state" = absent ] && [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled; then echo "$base_tpl"; return; fi
+    if [ "$name" != review ] && [ "$review_md_state" = absent ] && [ -z "$overlay" ] && [ ! -s "$lessons" ] && [ -z "$project_lessons" ] && ! requester_bot_enabled && ! blocked_enabled && ! autopilot_section_active && ! concurrent_work_section_active "$name" && ! heavy_enabled && ! round_log_enabled; then echo "$base_tpl"; return; fi
 
     out="$STATE_DIR/prompt-composed-${name}.md"
     {
@@ -8805,6 +8806,11 @@ compose_prompt_template() {
         if concurrent_work_section_active "$name"; then
             printf '\n\n---\n\n'
             concurrent_work_section
+        fi
+        # 往返记录（GitHub#610）：开关开着才加，整份替换了模板的项目也收得到；关着什么都不加。
+        if round_log_enabled; then
+            printf '\n\n---\n\n'
+            round_log_prompt_section "$name"
         fi
         # 重测试排队（GitHub#343）：项目配了重测试命令才加，整份替换了模板的项目也收得到。
         if heavy_enabled; then
@@ -10209,6 +10215,49 @@ _MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/
 [ ! -f "$_MANAGED_REQUESTER_BOT" ] || REQUESTER_BOT_NOTIFY_SCRIPT="$_MANAGED_REQUESTER_BOT"
 REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
 
+# ── 往返记录（GitHub#610）：agent 之间的来回写进同一条评论 ──
+# 开关只在这里判定（以后改成默认打开：把下面空值的那一支改成「开」即可，其余代码不用动）。
+# 记录格式、拆单元、去重只在 round_log.py；写入 / 读取命令是 round-log.sh，同 footer 走长期入口。
+round_log_enabled() {
+    case "$(printf '%s' "${ENABLE_ROUND_LOG:-}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+ROUND_LOG_SCRIPT="$_LIB_DIR/round-log.sh"
+_MANAGED_ROUND_LOG="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/entrypoints/round-log.sh"
+[ ! -f "$_MANAGED_ROUND_LOG" ] || ROUND_LOG_SCRIPT="$_MANAGED_ROUND_LOG"
+ROUND_LOG_CMD="bash '$ROUND_LOG_SCRIPT' --config '$CONFIG_FILE'"
+
+round_log_prompt_section() {   # <模板名>
+    local f="$SKILL_DIR/prompts/round-log.md" text read_cmd
+    [ -s "$f" ] || { log "⚠️ 往返记录说明文件缺失：$f" 2>/dev/null || true; return 0; }
+    text="$(cat "$f")"
+    if autopilot_section_active && outsider_guard_on; then
+        read_cmd="$OUTSIDER_READ_CMD <编号>"
+    else
+        read_cmd="$ROUND_LOG_CMD show <编号>"
+    fi
+    text="${text//@@ROUND_LOG_CMD@@/"$ROUND_LOG_CMD"}"
+    text="${text//@@READ_CMD@@/"$read_cmd"}"
+    text="${text//@@LABEL_PENDING_REVIEW@@/"${LABEL_PENDING_REVIEW:-（本项目没开复审标签）}"}"
+    text="${text//@@LABEL_PENDING_AGENT@@/"$LABEL_PENDING_AGENT_DEFAULT"}"
+    text="${text//@@LABEL_PENDING_MERGE@@/"$LABEL_PENDING_MERGE"}"
+    text="${text//@@LABEL_PENDING_HUMAN@@/"$LABEL_PENDING_HUMAN"}"
+    printf '%s\n' "$text"
+}
+
+# 受保护读取（outsider_scan 刚跑完、OS_RES 在手）之后接一段往返记录视图：只拿本条自己的对话评论，
+# 文字用受保护读取展示出来的那一份（外人内容已剥离 / 隐藏），只认 loop 账号写的记录。
+round_log_view_from_scan() {   # [--all] → 打印视图，返回 round_log.py 的退出码
+    local all=false src=issue-comment
+    [ "${1:-}" != --all ] || all=true
+    [ "${OS_TARGET_KIND:-issue}" != pr ] || src=pr-comment
+    printf '%s' "$OS_RES" | jq -c --arg src "$src" --argjson all "$all" \
+        '{comments: [.view[]? | select(.src == $src) | {id, author, trusted, at, url, body}], all: $all}' \
+        | python3 "$_LIB_DIR/round_log.py" show
+}
+
 # ── 托管条目读正文和评论的命令（GitHub#391，写进「外部账号的内容」规则段）──
 # 同上走长期入口；配置路径由这里给定
 OUTSIDER_READ_SCRIPT="$_LIB_DIR/outsider-read.sh"
@@ -10299,7 +10348,8 @@ _MANAGED_REVIEW_SCOPE="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/e
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
 # 标记；daemon 每轮调这里，有标记才去跑 price_fetch.py（官方价目页 + LiteLLM 两边一致
-# 才用，写进本机缓存，只补缺不覆盖）。没有标记时只是一次 ls，不碰网络。
+# 才用，写进本机缓存，只补缺不覆盖）。另外每天跑一次，抓 Claude 全部模型的最新价给评论
+# footer 用（GitHub#606）。两样都没到时只是一次 ls 和一次读文件，不碰网络。
 #
 # 开关 PRICE_AUTO_FETCH：默认开（issue #51 Q2=A），0 / false / no / off 关。
 # 抓价永远不许拖垮派工：脚本自己吞掉所有异常、恒返回 0，单次请求有超时，失败的模型
@@ -10410,13 +10460,39 @@ redact_scan_tick() {
     return 0
 }
 
+# 「下次抓最新价的时刻」还没到 → 0；到了或文件不合格式 → 1。规则与 price_fetch.py 的
+# latest_due 一字不差（不超过 64 字节、1–18 位数字、后面只跟换行，别的一律当作到时），
+# 两处对同一个文件必须给同一个答案（PR #612 复审第 1 轮），tests/footer-listed-price.test.sh 对拍
+price_latest_not_due() {
+    local f="$1" size rest next
+    [ -f "$f" ] || return 1
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 1
+    [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -le 64 ] || return 1
+    # 只许数字和换行：先查（NUL 之类在命令替换里会被 bash 吞掉，不能等读进变量再看）
+    rest="$(LC_ALL=C tr -d '0-9\n' < "$f" 2>/dev/null | wc -c | tr -d ' ')" || return 1
+    [ "$rest" = 0 ] || return 1
+    next="$(cat "$f" 2>/dev/null)" || return 1
+    [[ "$next" =~ ^[0-9]{1,18}$ ]] || return 1
+    [ "$(date +%s)" -lt "$((10#$next))" ]
+}
+
 price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
-    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"
-    [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] || return 0
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop"
+    local dir="$cache/unpriced"
+    # 两件事各自到时才启动脚本：有缺价标记；或到了每天抓一次 Claude 最新价的时刻（GitHub#606）。
+    # 都没到就只读一个文件，不碰网络。每日刷新只在调度器经 poll-entry.sh 起的轮询里做（POLL_SCHEDULED=1，
+    # 同 config_notice_tick）：手动试跑、worker 会话里跑、直接起 agent-poll.sh 的测试都不联网抓最新价
+    # （PR #612：否则每个直接跑轮询的测试都会去下官方价目页，还在临时 HOME 下多写缓存文件）
+    local latest=off
+    [ "${POLL_SCHEDULED:-}" = 1 ] && latest=on
+    if ! { [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; }; then
+        [ "$latest" = on ] || return 0
+        price_latest_not_due "$cache/latest-prices.next" && return 0
+    fi
     # cavil-loop.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
     # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。
-    local line v envs=()
+    local line v envs=("PRICE_FETCH_LATEST=$latest")
     for v in PRICE_FETCH_ANTHROPIC_URL PRICE_FETCH_OPENAI_URL PRICE_FETCH_LITELLM_URL \
              PRICE_FETCH_COOLDOWN_SECS PRICE_FETCH_TIMEOUT; do
         [ -n "${!v:-}" ] && envs+=("$v=${!v}")

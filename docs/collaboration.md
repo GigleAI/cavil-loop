@@ -20,7 +20,9 @@ Examples:
 
 ## Why use it
 
-Plain `pending/human` works for solo projects. A name suffix disambiguates and enables **handoff chains** instead of a single back-and-forth:
+Plain `pending/human` works for solo projects. A name suffix disambiguates and enables **handoff chains** instead of a single back-and-forth; each step's label is the routing instruction.
+
+<details><summary>Example: a handoff chain</summary>
 
 ```
 issue → PM-agent (drafts spec)
@@ -30,13 +32,17 @@ issue → PM-agent (drafts spec)
      → human/Sam (final review + merge)
 ```
 
-Each step's label is the routing instruction.
+</details>
 
 ## How to set it up today
 
 Each AI role runs as its own daemon instance, configured to listen for its specific sub-label. The skill already supports this — you just pick different label values per config.
 
 ### One config per agent role
+
+Each role gets its own config file with its own label values, prefixes and setup command.
+
+<details><summary>Example: PM and QA configs</summary>
 
 `/path/to/pm-agent.config`:
 ```bash
@@ -70,11 +76,17 @@ WORKTREE_SETUP_CMD="npm ci"
 CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"
 ```
 
+</details>
+
 ### Project-specific prompt per role
 
-Each role wants a different worker prompt. Drop role-specific overrides at `<host>/.agents/skills/cavil-loop/prompts/` and switch by config — or split prompts/ per role and point each instance at its own override. (The lookup is hard-coded today; if you need per-role prompt selection, see "Roadmap" below.)
+Each role wants a different worker prompt. Drop role-specific overrides at `<host>/.agents/skills/cavil-loop/prompts/` and switch by config — or split prompts/ per role and point each instance at its own override. The lookup is fixed to one prompt set per host project; per-role prompt selection is listed under [Roadmap](#roadmap-not-yet-implemented).
 
 ### One systemd timer per role
+
+Install each role with `setup.sh` and enable its timer; each timer ticks independently and each daemon scans only its sub-label.
+
+<details><summary>Commands</summary>
 
 ```bash
 bash setup.sh ~/myproject pm-agent
@@ -86,11 +98,17 @@ systemctl --user enable --now cavil-loop-poll@qa-agent.timer
 systemctl --user enable --now cavil-loop-poll@dev-agent.timer
 ```
 
-Each timer ticks independently; each daemon scans only its sub-label.
+</details>
 
 ## Common workflows
 
+Three typical ways to combine roles and names follow.
+
 ### 1. PM → dev → QA handoff (full SDLC chain)
+
+The PM agent drafts, a human approves, the dev agent codes and opens a PR, the QA agent tests it and hands it to a human for the merge. A regression found by QA goes back to `pending/agent/Dev` with a comment.
+
+<details><summary>The chain step by step</summary>
 
 ```
 You open issue, label: pending/agent/PM
@@ -112,55 +130,77 @@ Daemon auto-cleanup → Done
 
 Failure path: QA finds a regression → flips back to `pending/agent/Dev` with a comment. Dev-agent rereads, fixes, re-hands to QA.
 
+</details>
+
 ### 2. Multi-human review routing
 
 Dev-agent opens a PR. Instead of a generic `pending/human`, it picks a reviewer (CODEOWNERS-driven, round-robin, or random) and applies `pending/human/Alex`. Alex sees their name on it → knows it's their queue.
+
+<details><summary>What the reviewer does next</summary>
 
 Alex review:
 - LGTM → `Done` (or just merge)
 - Changes needed → `pending/agent/Dev` with comment
 - Wants Sam's eyes → `pending/human/Sam`
 
+</details>
+
 ### 3. Specialized coding agents by stack
 
-Repo is monorepo with `frontend/` (React) + `backend/` (Go). Two cavil-loop instances:
+In a monorepo with `frontend/` (React) and `backend/` (Go), run two cavil-loop instances, one per stack. Triage routes an issue by its file paths / area labels (`area/frontend`, `area/backend`) to the matching sub-label.
+
+<details><summary>Example: the two instances</summary>
 
 | Role | Label | Worktree setup | Prompt focus |
 |------|-------|----------------|--------------|
 | `pending/agent/Frontend` | npm-driven | `(cd frontend && npm ci)` | Component patterns, TS strictness, e2e |
 | `pending/agent/Backend`  | Go-driven  | `(cd backend && go mod download)` | API contracts, migrations, test coverage |
 
-Routing rule for triage: the issue's file path / labels (`area/frontend`, `area/backend`) → triggers the corresponding sub-label.
+</details>
 
 ## External requester bot
 
-Some projects let another AI assistant file requests directly (the "requester bot"). The bot opens issues and cavil-loop handles them as usual; when there is a question the requester must answer, or the work is done, the item gets a waiting label and the bot's webhook is called, and the daemon also tells it when the PR is merged or closed — closing the loop. Off by default, switched on through config (GitHub#95 / #97 / #100).
-
-Integration steps, what the bot has to do on its side, settings, the wake-up script, the webhook format and troubleshooting are in a separate guide: [Hooking up an external requester bot](requester-bot.md).
+Another AI assistant can file requests directly and get called back when an item needs its answer or is finished; off by default. Setup and the bot-side protocol: [Hooking up an external requester bot](requester-bot.md).
 
 ## Autopilot: one issue end to end
 
-With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue over completely: the design goes through review only and, once the code review passes, the daemon merges the PR itself under fixed checks. The label is a *mode* label on the issue, not another dispatch label, so it coexists with the routing above (host labels, fable, review). For a PR that already exists, a maintainer can also put the label on the PR itself (GitHub#128): the daemon takes it over and runs it from review to merge — also for a PR that is bound to no issue (e.g. the other half of a cross-repo task), where authorization and stops come from the PR alone (GitHub#142). Details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
+With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue — or an existing PR — over completely: design and code go through review only, and the daemon merges the PR itself under fixed checks. It is a *mode* label, so it coexists with the routing above; details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
 
 ## Practical considerations
 
+Keep label names consistent, give each instance its own state and worktree base, and make each role's prompt name the label to hand on with.
+
+<details><summary>Details</summary>
+
 - **Naming convention**: keep `<state>` consistent (`pending`, `agent`, `Done`); role goes after the third `/`. Avoid mixing styles like `pending/PM` vs `pending/agent/PM` in the same repo
 - **Concurrency**: each instance has its own state.json + worktree base (set `WORKTREE_BASE` differently per role to prevent collisions), so they don't trip over each other
-- **Worker prompts per role**: easiest is one host project per role's worktree base + per-role `.agents/skills/cavil-loop/prompts/` overrides. Alternatively, a future enhancement could let one host project switch prompt sets by role suffix
+- **Worker prompts per role**: easiest is one host project per role's worktree base + per-role `.agents/skills/cavil-loop/prompts/` overrides
 - **Handoff in prompts**: each role's prompt should explicitly list "label to apply when done." E.g., PM-agent's prompt ends with "apply `pending/human` for spec approval, **not** any other label"
 - **State pollution**: if Alex's `pending/human/Alex` work also fits Sam's queue later, just change the label — no state to migrate
 - **GitHub assignees as alternative**: you could mirror reviewer routing onto GitHub's native "Assignees" field instead of label suffixes. Labels are simpler to filter; assignees are first-class but lack the per-state breakdown
 
+</details>
+
 ## Race conditions to avoid
+
+Keep the labels the instances listen to disjoint: two instances whose labels overlap both dispatch the same item.
+
+<details><summary>Details</summary>
 
 - **Overlapping label patterns**: if instance A listens to `pending/agent/Frontend` and instance B mistakenly listens to `pending/agent/*`, both will dispatch. Keep instance labels disjoint
 - **Concurrent label flips**: if two daemons try to flip the same issue near-simultaneously, GitHub's last-write-wins. Probably rare in practice (each daemon dispatches on its own sub-label, so they never target the same issue at the same time)
 
+</details>
+
 ## Roadmap (not yet implemented)
 
-These are extensions worth exploring; open an issue to track:
+None of these exist today: one daemon routing many roles by suffix, built-in reviewer rotation, a standard "next label" instruction, and a status page across instances. Open an issue to track one.
+
+<details><summary>What each would do</summary>
 
 - **Single daemon with prefix matching**: scan `pending/agent/*` and route by suffix to per-role prompt + per-role config. Replaces N daemon instances with 1 instance for many roles. Simpler ops, harder per-role isolation.
 - **Built-in reviewer rotation**: pick `pending/human/<name>` from a configured pool (round-robin / by file ownership) when worker finishes
 - **Cross-agent handoff via prompt directives**: standardize the "next label" instruction across prompt templates, with a small env field like `NEXT_HANDOFF_LABEL`
 - **Status pages**: aggregated dashboard of `<role> in flight / queued / done today` across all daemon instances
+
+</details>
