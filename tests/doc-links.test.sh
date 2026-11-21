@@ -100,18 +100,48 @@ got=$(python3 "$CHECK" "$TMP/u" b.md; echo "rc=$?")
 chk "代码块里的「# …」不算标题、不存在的第三个重复、把代码删掉算出的旧锚点：4 处都报错" \
     "$(grep -c '锚点不存在' <<<"$got") $(tail -1 <<<"$got")" "4 rc=1"
 
-# 目标里带成对括号、尖括号包住、带标题；HTML 属性用双引号 / 单引号 / 不加引号：存在的都通过，缺的都报出
-mkdir -p "$TMP/v/img"; touch "$TMP/v/draft(v2).md" "$TMP/v/img/ok.png"
+# 链接写法的全表（tests/lib/doc_links.py 开头列的那几种），一个写法一行：每行「存在」的版本必须通过、被查到，
+# 「缺失」的版本必须报出完整目标；HTML 属性值里像链接、像别的属性的文字一律不当链接
+mkdir -p "$TMP/v/img"
+touch "$TMP/v/draft(v2).md" "$TMP/v/draft(v(2)).md" "$TMP/v/x(1).md" "$TMP/v/a b.md" "$TMP/v/img/ok.png"
 cat > "$TMP/v/good.md" <<'MD'
-[a](draft(v2).md) [b](<draft(v2).md>) [c](img/ok.png "标题") <img alt="示例" src=img/ok.png> <img src='img/ok.png' alt=x>
-<a href="draft(v2).md">d</a> <img srcset="img/ok.png 1x, img/ok.png 2x">
+[一层括号](draft(v2).md)
+[两层括号](draft(v(2)).md)
+[转义的括号](x\(1\).md)
+[尖括号](<draft(v2).md>)
+[尖括号带空格](<a b.md>)
+[双引号标题](img/ok.png "标题")
+[单引号标题](img/ok.png 'title')
+[括号标题](img/ok.png (title))
+![图片](img/ok.png)
+[引用]: draft(v(2)).md "标题"
+<img alt="示例" src=img/ok.png>
+<img src='img/ok.png' alt=x>
+<a href="draft(v2).md">d</a>
+<img srcset="img/ok.png 1x, img/ok.png 2x">
+<img alt="a > b" src="img/ok.png">
+<img alt="literal src=ghost.png" src="img/ok.png">
+<a href="img/ok.png" title="see [x](ghost2.md)">y</a>
+不是链接](ghost3.md 后面还有字)
 MD
 cat > "$TMP/v/bad.md" <<'MD'
-[a](draft(v3).md) <img alt="示例" src=missing.png> <img src='gone.png'> <a href=nope.md>x</a>
+[一层括号](draft(v3).md)
+[两层括号](draft(v(3)).md)
+[转义的括号](x\(2\).md)
+[尖括号带空格](<no such.md>)
+[引用]: gone(1).md
+<img alt="示例" src=missing.png>
+<img src='gone.png'>
+<a href=nope.md>x</a>
+<img alt="a > b" src="missing2.png">
+<img alt="literal src=ok.png" src="missing3.png">
+[空]()
 MD
-chk "带括号 / 尖括号 / 标题的目标、三种引号写法的 HTML 属性：存在的全部通过" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
-chk "  到达性 · 上面 8 处链接确实都查了（srcset 里两张算两处）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 8
-chk "同样写法指向不存在的文件：4 处都报出（目标没被截断）" "$(python3 "$CHECK" "$TMP/v" bad.md | sed 's/.*不存在的文件 //' | paste -sd' ')" "draft(v3).md missing.png gone.png nope.md"
+chk "全表「存在」的写法全部通过，属性值里像链接 / 像属性的文字没被当成链接" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
+chk "  到达性 · 18 处真链接确实都查了（srcset 里两张算两处，最后一行不是链接）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 18
+chk "全表「缺失」的写法每处都报出，目标完整" \
+    "$(python3 "$CHECK" "$TMP/v" bad.md | sed -e 's/.*不存在的文件 //' -e 's/^bad.md: //' | paste -sd'|')" \
+    "draft(v3).md|draft(v(3)).md|x(2).md|no such.md|链接目标为空|gone(1).md|missing.png|gone.png|nope.md|missing2.png|missing3.png"
 
 echo "== 4. 中英两份"
 chk "每篇外部用户文档都有另一种语言的版本" "$(python3 "$CHECK" --pairs "$REPO_DIR"; echo "rc=$?")" "rc=0"

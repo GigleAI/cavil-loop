@@ -157,7 +157,7 @@ done
 
 ## Refresh latest site: `LATEST_SITE_REFRESH`
 
-When on, every poll that sees a newly merged PR, after the post-merge cleanup scan, fast-forwards the project's main checkout to the latest base branch, then rebuilds a resident production site from its current commit and restarts it in the background, so one fixed URL keeps up with the base branch. Off by default.
+When on, every poll that sees a newly merged PR, after the post-merge cleanup scan, rebuilds a resident production site from the files in the project's main checkout and restarts it in the background, so one fixed URL keeps up with the base branch. ⚠️ The build reads whatever files are in the main checkout's working tree, uncommitted changes included; it fast-forwards to the latest base first only when the main checkout is on the base branch, has no uncommitted changes and can fast-forward. Off by default.
 
 <details><summary>Details: when it refreshes and when it does not</summary>
 
@@ -167,12 +167,12 @@ It refreshes only when all three hold: cleanup on merge is on (`AUTO_CLEANUP_ON_
 |---|---|
 | Cleanup on merge off (`AUTO_CLEANUP_ON_MERGE=false`), refresh on | No: the refresh is started from inside the automatic cleanup |
 | The cleanup script fails (e.g. the worktree cannot be removed) | Yes: the refresh does not look at the cleanup result. That PR is not marked cleaned, so the next poll sees it again and starts the refresh once more |
-| The base branch did not move and the resident session is alive | The refresh script skips itself, no rebuild |
+| The main checkout's current commit is the one built last time and the resident session is alive | The refresh script skips itself, no rebuild (uncommitted edits alone do not trigger one) |
 | The build fails | The old resident session stays |
 
 So a refresh having run does not mean the worktree is gone.
 
-**It builds the main checkout's current commit, which is not always the latest base.** It fast-forwards first only when the main checkout is on the base branch, has no uncommitted changes and can fast-forward; when the remote cannot be fetched, the checkout is on another branch, has uncommitted changes, or has diverged, the working tree is left alone and the current commit is built anyway — the fixed URL may keep serving an old version or another branch.
+**It builds the files in the main checkout's working tree — not always the latest base, and not necessarily any one commit.** It fast-forwards first only when the checkout is on the base branch, has no uncommitted changes and can fast-forward. When the remote cannot be fetched, the checkout is on another branch, has uncommitted changes, or has diverged, the working tree is left alone and built as it is; uncommitted changes then go into the build, while the commit recorded as built is still the current one (HEAD). So the fixed URL may serve an old version, another branch, or content that was never committed. To use it as production, keep the main checkout clean and on the base branch.
 
 The refresh runs in the background and never blocks polling; its log is `latest-site.log` in the state directory. Settings (given as comments in the config template):
 
@@ -258,7 +258,7 @@ The daemon stops at the merge: deploy a preview build after the PR opens with `P
 <details><summary>Details: what each hook covers</summary>
 
 - **Preview build**: `PR_CREATED_HOOK` runs after the worker opened the PR — the place to build a preview and post its URL or QR code on the PR (example under "PR opened" above). It runs once, when the PR is first opened; rework commits do not redeploy by themselves — if that is needed, say in `pr-comment.extra.md` what to do after every push.
-- **Resident latest site**: `LATEST_SITE_REFRESH` rebuilds a site resident on this machine to the latest base after a merge. It needs cleanup on merge on as well, and does not wait for the cleanup to succeed (see "Refresh latest site" above).
+- **Resident latest site**: `LATEST_SITE_REFRESH` rebuilds a site resident on this machine from the files in the main checkout after a merge (the latest base when that checkout is clean and on the base branch). It needs cleanup on merge on as well, and does not wait for the cleanup to succeed (see "Refresh latest site" above).
 - **Production**: releasing to production, tagging, pushing images belong in the project's own CI, triggered by "merged to the base branch" or "tag pushed". The daemon holds no deployment credentials, and should not.
 
 </details>

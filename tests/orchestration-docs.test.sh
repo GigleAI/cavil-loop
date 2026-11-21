@@ -16,8 +16,8 @@
 #   5. 常驻站刷新的两条边界写进了两份文档：关掉合并后清理就不刷新；清理脚本报错照样刷新。
 #      这两条行为本身由 tests/project-config-poll.test.sh 跑真实 agent-poll.sh 核对
 #   6. 文档里「强制重建常驻站」的命令照字面跑真实 refresh-latest-site.sh（工具装在 ~/.agents/skills/cavil-loop、
-#      项目在别处，只有 HOME / PATH）：退出 0、站点真的起来、记下的是主 checkout 当前提交——主 checkout 停在别的
-#      分支时也是那个分支的提交（文档写明的「不一定是最新主干」）；不带项目配置、在工具目录下跑会找不到配置
+#      项目在别处，只有 HOME / PATH）：退出 0、站点真的起来、构建的是主 checkout 工作区里的文件——有没提交的
+#      改动时产物里就是它、记下的仍是 HEAD；停在别的分支时是那个分支的内容（文档写明的「不一定是最新主干」）；不带项目配置、在工具目录下跑会找不到配置
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -241,24 +241,31 @@ LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 BASE_BRANCH="main"
 LATEST_SITE_PORT=$PORT
-LATEST_SITE_BUILD_CMD="true"
+LATEST_SITE_BUILD_CMD="cp index.html built.html"
 LATEST_SITE_SERVER_CMD="python3 -m http.server --bind 127.0.0.1 $PORT"
 PATH="$H/fake:\$PATH"
 CONF
-echo cavil-loop.config > "$H/proj/.git/info/exclude"
+printf '%s\n' cavil-loop.config built.html > "$H/proj/.git/info/exclude"
 mkdir -p "$H/state"
 force_run() {   # 在项目根目录下照字面跑文档的第二行
     (cd "$H/proj" && env -i HOME="$H" PATH="/usr/bin:/bin" FAKE_TMUX_DIR="$H/tmuxd" bash -c "$(sed -n 2p "$TMP/lsf.en.sh")" >/dev/null 2>&1)
 }
 force_run; rc=$?
-chk "照字面跑：退出 0，常驻站真的在监听，记下的是主干当前提交" \
-    "$rc $(curl -s --max-time 2 "http://127.0.0.1:$PORT/index.html") $(cat "$H/state/latest-site-commit" 2>/dev/null)" \
+chk "照字面跑：退出 0，常驻站真的在监听，构建产物是主干上的内容，记下的是主干当前提交" \
+    "$rc $(curl -s --max-time 2 "http://127.0.0.1:$PORT/built.html") $(cat "$H/state/latest-site-commit" 2>/dev/null)" \
     "0 v1 $(git -C "$H/proj" rev-parse HEAD)"
+# 工作区有没提交的改动：不快进，构建读的是工作区里的文件（没提交的内容进了产物），记下的仍是 HEAD
+echo dirty > "$H/proj/index.html"
+force_run; rc=$?
+chk "主 checkout 有未提交改动：构建产物是没提交的内容，记下的「已构建提交」仍是 HEAD（文档写明的限制）" \
+    "$rc $(curl -s --max-time 2 "http://127.0.0.1:$PORT/built.html") $(cat "$H/state/latest-site-commit" 2>/dev/null)" \
+    "0 dirty $(git -C "$H/proj" rev-parse HEAD)"
+git -C "$H/proj" checkout -q -- index.html
 (cd "$H/proj" && G checkout -q -b other && echo other > index.html && G commit -q -am other) >/dev/null 2>&1
 force_run; rc=$?
-chk "主 checkout 停在别的分支：不切回主干，构建的是那个分支的提交（主干上没有它）" \
-    "$rc $(cat "$H/state/latest-site-commit" 2>/dev/null) $(git -C "$H/proj" merge-base --is-ancestor HEAD origin/main && echo on-main || echo not-on-main)" \
-    "0 $(git -C "$H/proj" rev-parse other) not-on-main"
+chk "主 checkout 停在别的分支：不切回主干，构建的是那个分支的内容（主干上没有它）" \
+    "$rc $(curl -s --max-time 2 "http://127.0.0.1:$PORT/built.html") $(cat "$H/state/latest-site-commit" 2>/dev/null) $(git -C "$H/proj" merge-base --is-ancestor HEAD origin/main && echo on-main || echo not-on-main)" \
+    "0 other $(git -C "$H/proj" rev-parse other) not-on-main"
 (cd "$H/.agents/skills/cavil-loop" && env -i HOME="$H" PATH="/usr/bin:/bin" FORCE=1 bash scripts/refresh-latest-site.sh >/dev/null 2>&1); rc=$?
 chk "不带项目配置、在工具目录下跑：找不到配置，退出 2（所以文档要带上配置）" "$rc" 2
 [ -f "$H/tmuxd/lsf-latest.pid" ] && kill "$(cat "$H/tmuxd/lsf-latest.pid")" 2>/dev/null

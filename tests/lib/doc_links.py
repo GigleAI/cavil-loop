@@ -33,6 +33,7 @@ Usage as a program:
                                                       its other-language copy
 Exit 0 = no problem; each problem is one line on stdout.
 """
+import html.parser
 import os
 import re
 import sys
@@ -41,12 +42,24 @@ import urllib.parse
 
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 HEADING = re.compile(r'^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
-# a target may hold balanced parentheses (draft(v2).md) or be wrapped in <...>
-MD_LINK = re.compile(r'!?\[[^\]]*\]\(\s*(?:<([^<>\n]*)>|((?:[^()\s]|\((?:[^()\s])*\))+))(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*\)')
-REF_DEF = re.compile(r'^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+"[^"]*")?\s*$', re.M)
-# HTML attribute values double-quoted, single-quoted or unquoted, any order of attributes
-HTML_TAG = re.compile(r'<(?:img|a|source)\b[^>]*>', re.I)
-HTML_ATTR = re.compile(r'\s(src|href|srcset)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+))', re.I)
+# Link syntax is scanned, not matched with one regular expression: a destination may
+# hold nested balanced parentheses and backslash escapes, and an HTML attribute value
+# may contain ">" or text that looks like another attribute. The forms read (and
+# nothing else):
+#   - inline links / images  [text](dest) ![alt](dest), with an optional "title",
+#     'title' or (title); dest is <...> (may hold spaces) or a run without spaces whose
+#     parentheses balance to any depth; "\(" "\)" and other backslash escapes count as
+#     the plain character
+#   - reference definitions  [label]: dest "title"  at the start of a line
+#   - HTML tags <img>, <a>, <source> read by Python's HTML parser: src, href and every
+#     URL of srcset, attribute values double-quoted, single-quoted or bare
+# The <img> / <a> / <source> tags that carry one of those attributes are read first and
+# blanked out before the markdown scan, so markdown-looking
+# text inside an attribute value (alt="see [x](y)") is never taken for a link.
+URL_ATTRS = ('src', 'href', 'srcset')
+URL_TAGS = ('img', 'a', 'source')
+ASCII_PUNCT = set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
+REF_START = re.compile(r'^ {0,3}\[(?:[^\]\\]|\\.)+\]:', re.M)
 
 
 def slug(text):
@@ -125,17 +138,137 @@ def anchors(path):
     return _anchor_cache[path]
 
 
-def links(path):
-    text = strip_code(open(path, encoding='utf-8').read())
-    found = [a or b for a, b in MD_LINK.findall(text)] + REF_DEF.findall(text)
-    for tag in HTML_TAG.findall(text):
-        for name, dq, sq, bare in HTML_ATTR.findall(tag):
-            v = dq or sq or bare
+class _Tags(html.parser.HTMLParser):
+    """Collects URL attributes of <img> / <a> / <source> and where each tag sits."""
+
+    def __init__(self, text):
+        super().__init__(convert_charrefs=True)
+        self.urls, self.spans = [], []
+        self._starts = [0]
+        for line in text.splitlines(keepends=True):
+            self._starts.append(self._starts[-1] + len(line))
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() not in URL_TAGS or not any(
+                v is not None and n.lower() in URL_ATTRS for n, v in attrs):
+            return   # not ours; also keeps a markdown <dest with spaces> out of the way
+        raw = self.get_starttag_text() or ''
+        line, col = self.getpos()
+        at = self._starts[line - 1] + col
+        self.spans.append((at, at + len(raw)))
+        for name, value in attrs:
+            if value is None or name.lower() not in URL_ATTRS:
+                continue
             if name.lower() == 'srcset':
-                found += [p.split()[0] for p in v.split(',') if p.strip()]
+                self.urls += [p.split()[0] for p in value.split(',') if p.strip()]
             else:
-                found.append(v)
-    return [f for f in found if f]
+                self.urls.append(value.strip())
+
+    handle_startendtag = handle_starttag
+
+
+def _unescape(dest):
+    out, i = [], 0
+    while i < len(dest):
+        if dest[i] == '\\' and i + 1 < len(dest) and dest[i + 1] in ASCII_PUNCT:
+            out.append(dest[i + 1])
+            i += 2
+        else:
+            out.append(dest[i])
+            i += 1
+    return ''.join(out)
+
+
+def _dest(s, i):
+    """Parse a link destination starting at s[i] (after optional blanks).
+    Returns (destination, index after it) or None when there is no valid one."""
+    while i < len(s) and s[i] in ' \t':
+        i += 1
+    if i < len(s) and s[i] == '\n':
+        i += 1
+        while i < len(s) and s[i] in ' \t':
+            i += 1
+    if i >= len(s):
+        return None
+    if s[i] == '<':
+        j = i + 1
+        while j < len(s):
+            if s[j] == '\\' and j + 1 < len(s):
+                j += 2
+                continue
+            if s[j] in '<\n':
+                return None
+            if s[j] == '>':
+                return _unescape(s[i + 1:j]), j + 1
+            j += 1
+        return None
+    j, depth = i, 0
+    while j < len(s):
+        c = s[j]
+        if c == '\\' and j + 1 < len(s) and s[j + 1] in ASCII_PUNCT:
+            j += 2
+            continue
+        if c.isspace() or ord(c) < 0x20:
+            break
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            if depth == 0:
+                break
+            depth -= 1
+        j += 1
+    if j == i or depth != 0:
+        return None
+    return _unescape(s[i:j]), j
+
+
+def _title_end(s, i):
+    """Skip an optional title and blanks; return the index of the closing ')' or None."""
+    while i < len(s) and s[i].isspace():
+        i += 1
+    if i < len(s) and s[i] in '"\'(':
+        close = ')' if s[i] == '(' else s[i]
+        j = i + 1
+        while j < len(s) and s[j] != close:
+            j += 2 if s[j] == '\\' else 1
+        if j >= len(s):
+            return None
+        i = j + 1
+        while i < len(s) and s[i].isspace():
+            i += 1
+    return i if i < len(s) and s[i] == ')' else None
+
+
+def link_targets(text):
+    """Every link target in markdown text (code already removed), in order of the
+    three forms above."""
+    tags = _Tags(text)
+    tags.feed(text)
+    tags.close()
+    chars = list(text)
+    for a, b in tags.spans:
+        for k in range(a, min(b, len(chars))):
+            if chars[k] != '\n':
+                chars[k] = ' '
+    md = ''.join(chars)
+    found = []
+    i = md.find('](')
+    while i != -1:
+        got = _dest(md, i + 2)
+        if got and _title_end(md, got[1]) is not None:
+            found.append(got[0])
+        elif md[i + 2:i + 3] == ')':
+            found.append('')   # [x]() : an empty target, reported as such
+        i = md.find('](', i + 2)
+    for m in REF_START.finditer(md):
+        got = _dest(md, m.end())
+        if got:
+            found.append(got[0])
+    return found + tags.urls
+
+
+def links(path):
+    return link_targets(strip_code(open(path, encoding='utf-8').read()))
 
 
 def check(root, docs, into=None, listing=None):
@@ -149,6 +282,9 @@ def check(root, docs, into=None, listing=None):
             problems.append(f'{doc}: 文件不存在')
             continue
         for target in links(path):
+            if target == '':
+                problems.append(f'{doc}: 链接目标为空')
+                continue
             if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', target) or target.startswith('//'):
                 continue   # absolute URL, mailto:, …
             file_part, _, frag = target.partition('#')
