@@ -360,17 +360,34 @@ export function tagState(repo, tag) {
 }
 
 /**
- * Is the tag on `sha`? One check for every place that calls a published build "done" (PR #630
- * review rounds 2–3 #12 / #13): the read-back after publishing, a rerun that finds the version
- * already complete, and `--check`. → { ok: true } | { ok: false, kind: 'absent' | 'mismatch' |
- * 'unknown', why }
+ * The one verdict on a build's tag (PR #630 review rounds 2–5 #12–#16), used by every place that
+ * judges it: the nightly plan (on its tag list) and, through `tagOn`, the read-back after
+ * publishing, a rerun that finds the version complete, and `--check`. `entries` are tags as
+ * { name, sha } — sha null when the ref is not a plain commit (an annotated tag object) — or bare
+ * names (no commit known).
+ * → 'ok' (on `sha`) | 'absent' | 'mismatch' (on another commit, known) | 'unknown' (no commit to
+ *   compare: a bare name, a non-commit ref, two entries of one name)
+ */
+export function tagVerdict(entries, tag, sha) {
+  const hit = entries.filter((t) => (typeof t === 'string' ? t : t?.name) === tag);
+  if (!hit.length) return 'absent';
+  if (hit.length > 1 || typeof hit[0] === 'string' || typeof hit[0]?.sha !== 'string' || !/^[0-9a-f]{40}$/.test(hit[0].sha)) return 'unknown';
+  return hit[0].sha === sha ? 'ok' : 'mismatch';
+}
+
+/** The tag's own words for each verdict, one table for every message. */
+export const TAG_WORDS = { absent: '标签不存在', mismatch: '标签不在发版记下的提交上', unknown: '读不出标签指向哪个提交' };
+
+/**
+ * Is the tag on `sha`, by one read of that tag? → { ok: true } | { ok: false, kind: 'absent' |
+ * 'mismatch' | 'unknown', why } — the verdict is `tagVerdict`'s, a read that fails is 'unknown'.
  */
 export function tagOn(repo, tag, sha) {
   const t = tagState(repo, tag);
-  if (t.state === 'present' && t.sha === sha) return { ok: true };
-  if (t.state === 'present') return { ok: false, kind: 'mismatch', why: `标签指向 ${t.sha ?? '读不出的提交'}，不是 ${sha}` };
-  if (t.state === 'absent') return { ok: false, kind: 'absent', why: '标签不存在' };
-  return { ok: false, kind: 'unknown', why: `标签读不出（${t.why}）` };
+  const kind = t.state === 'absent' ? 'absent' : t.state === 'present' ? tagVerdict([{ name: tag, sha: t.sha }], tag, sha) : 'unknown';
+  if (kind === 'ok') return { ok: true };
+  const why = kind === 'mismatch' ? `标签指向 ${t.sha}，不是 ${sha}` : kind === 'absent' ? TAG_WORDS.absent : t.state === 'unknown' ? `标签读不出（${t.why}）` : `${TAG_WORDS.unknown}（不是指向提交的标签）`;
+  return { ok: false, kind, why };
 }
 
 function note(what, tag, why) {

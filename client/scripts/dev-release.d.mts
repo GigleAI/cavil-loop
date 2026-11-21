@@ -22,3 +22,5 @@ export declare function untoldCommits(base: string, head: string, root?: string)
 export declare function buildNotes(base: string, head: string, root?: string): { lines: string[]; notes: number; titles: number } | null;
 export declare function tagState(repo: string, tag: string): { state: 'absent' } | { state: 'present'; sha: string | null } | { state: 'unknown'; why: string };
 export declare function tagOn(repo: string, tag: string, sha: string): { ok: true } | { ok: false; kind: 'absent' | 'mismatch' | 'unknown'; why: string };
+export declare function tagVerdict(entries: (string | { name: string; sha: string | null })[], tag: string, sha: string): 'ok' | 'absent' | 'mismatch' | 'unknown';
+export declare const TAG_WORDS: { absent: string; mismatch: string; unknown: string };

@@ -67,14 +67,15 @@ if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
   if (fail('tagread:' + t)) die('HTTP 502: Bad Gateway');
   if (!st.tags.includes(t)) die('HTTP 404: Not Found');
   save();
-  process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
+  // an annotated tag is a ref to a tag object, not to a commit (st.tagType: { tag: 'tag' })
+  process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: st.tagType?.[t] ?? 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
   process.exit(0);
 }
 // the client/v* tag refs (scripts/dev-plan.mjs): pages of { ref, object }
 if (a[0] === 'api' && a.some((x) => /\/git\/matching-refs\/tags\//.test(x))) {
   if (fail('tags')) die('HTTP 502: Bad Gateway');
   save();
-  process.stdout.write(JSON.stringify([st.tags.filter((t) => t.startsWith('client/v')).map((t) => ({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }))]));
+  process.stdout.write(JSON.stringify([st.tags.filter((t) => t.startsWith('client/v')).map((t) => ({ ref: 'refs/tags/' + t, object: { type: st.tagType?.[t] ?? 'commit', sha: st.tagSha?.[t] ?? st.sha } }))]));
   process.exit(0);
 }
 if (a[0] === 'api') {
@@ -133,7 +134,7 @@ if (a[1] === 'edit') {
   if (fail('edit')) die('HTTP 500');
   // GitHub answering "ok" to an edit that did not take
   if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; if (!r.published_at) r.published_at = '2026-11-21T00:00:00Z'; if (!st.tags.includes(tag)) { st.tags.push(tag); st.tagSha = { [tag]: r.target_commitish, ...(st.tagSha ?? {}) }; } }
+  if (a.includes('--draft=false')) { r.draft = false; if (!r.published_at) r.published_at = '2026-11-21T00:00:00Z'; if (!st.tags.includes(tag) && !(st.noTagOnPublish ?? []).includes(tag)) { st.tags.push(tag); st.tagSha = { [tag]: r.target_commitish, ...(st.tagSha ?? {}) }; } }
   if (a.includes('--draft=true')) r.draft = true;
   if (a.includes('--prerelease')) r.prerelease = true;
   save();

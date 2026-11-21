@@ -424,3 +424,96 @@ describe('a public build that broke is never changed; the next commit puts out a
     expect(plan(docs).build).toBe('false');
   });
 });
+
+// Review round 5 #16 / #17: one tag verdict, four entries. The same tag answers — not resolvable to a
+// commit (an annotated tag), missing, on another commit, on this commit — go to the nightly plan
+// (on its own commit and on a later one), --check, a rerun of the publish step and the read-back
+// right after publishing; each entry must give the matching answer, never a different class.
+describe('one tag verdict across the four entries (PR #630 review round 5 #16 / #17)', () => {
+  const asset = (name: string) => ({ name, state: 'uploaded', size: 10 });
+  const tag = (v: string) => `client/v${v}`;
+  const V = '0.5.3-dev.20';
+  const N = '0.5.3-dev.21';
+  const setup = (shape: string) => {
+    const r = repo();
+    const a = r.commit('client/app.txt');
+    const later = r.commit('README.md');
+    const state = join(r.dir, '..', `${r.dir.split('/').pop()}-w.json`);
+    const tagSha: Record<string, string> = { [tag(V)]: a };
+    const tagType: Record<string, string> = {};
+    const tags = [tag(V)];
+    if (shape === 'mismatch') tagSha[tag(V)] = 'e'.repeat(40);
+    if (shape === 'unknown') tagType[tag(V)] = 'tag';
+    if (shape === 'absent') tags.length = 0;
+    // the same answer for the tag the read-back after publishing N will find
+    const noTag: string[] = [];
+    if (shape === 'mismatch') tagSha[tag(N)] = 'e'.repeat(40);
+    if (shape === 'unknown') tagType[tag(N)] = 'tag';
+    if (shape === 'absent') noTag.push(tag(N));
+    writeFileSync(state, JSON.stringify({ releases: [{ id: 1, tag_name: tag(V), draft: false, prerelease: true, published_at: '2026-11-20T00:00:00Z', target_commitish: a, assets: devFiles(V).map(asset) }], tags, tagSha, tagType, noTagOnPublish: noTag, fail: [], calls: [], deleted: [], tagsDeleted: [], nextId: 100, sha: a }));
+    const sbin = join(r.dir, '..', `${r.dir.split('/').pop()}-sb`);
+    mkdirSync(sbin, { recursive: true });
+    writeFileSync(join(sbin, 'gh'), STATEFUL_GH);
+    chmodSync(join(sbin, 'gh'), 0o755);
+    const env = (readonly: boolean, out = '') => ({ ...process.env, PATH: `${sbin}:${process.env.PATH}`, FAKE_GH_STATE: state, FAKE_GH_READONLY: readonly ? '1' : '', GITHUB_OUTPUT: out });
+    const script = (n: string) => join(r.dir, 'client', 'scripts', n);
+    const plan = (head: string) => {
+      const out = join(r.dir, '..', `${r.dir.split('/').pop()}-o`);
+      writeFileSync(out, '');
+      spawnSync(process.execPath, [script('dev-plan.mjs'), '--sha', head], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(true, out) });
+      const o = readFileSync(out, 'utf8');
+      return { build: /^build=(.*)$/m.exec(o)?.[1], why: /^why=(.*)$/m.exec(o)?.[1] ?? '' };
+    };
+    const check = () => spawnSync(process.execPath, [script('dev-release.mjs'), '--check', V], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(true) });
+    const dist = join(r.dir, '..', `${r.dir.split('/').pop()}-d`);
+    const notes = join(r.dir, '..', `${r.dir.split('/').pop()}-n.md`);
+    writeFileSync(notes, '开发版\n');
+    const publish = (v: string, sha: string) => {
+      rmSync(dist, { recursive: true, force: true });
+      mkdirSync(dist);
+      for (const f of devFiles(v)) writeFileSync(join(dist, f), f);
+      const p = spawnSync(process.execPath, [script('dev-release.mjs'), '--version', v, '--sha', sha, '--dir', dist, '--notes-file', notes], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(false) });
+      return { code: p.status, out: p.stdout + p.stderr };
+    };
+    const writes = () => (JSON.parse(readFileSync(state, 'utf8')).calls as string[][]).filter((c) => c[0] === 'release' || (c[0] === 'api' && (c[2] === 'DELETE' || c[2] === 'PATCH'))).length;
+    return { a, later, plan, check, publish, writes };
+  };
+  const table: [string, { words: string | null; check: number; done: boolean }][] = [
+    ['ok', { words: null, check: 0, done: true }],
+    ['mismatch', { words: '标签不在发版记下的提交上', check: 1, done: false }],
+    ['absent', { words: '标签不存在', check: 1, done: false }],
+    ['unknown', { words: '读不出标签指向哪个提交', check: 2, done: false }],
+  ];
+  it.each(table)('tag %s → the plan, --check, a rerun and the read-back after publishing agree', (shape, want) => {
+    const w = setup(shape);
+    // the nightly plan: on the build's own commit never a build; on a later one a build exactly when it is not done
+    const own = w.plan(w.a);
+    expect(own.build, own.why).toBe('false');
+    if (want.words) expect(own.why).toContain(`文件齐全，${want.words}`);
+    const next = w.plan(w.later);
+    expect(next.build, next.why).toBe(want.done ? 'false' : 'true');
+    // --check: COMPLETE 0 / INCOMPLETE 1 / UNKNOWN 2
+    expect(w.check().status).toBe(want.check);
+    // a rerun of the publish step on the build's own commit: done (and the clean-up may run) or red with nothing written
+    const before = w.writes();
+    const rerun = w.publish(V, w.a);
+    expect(rerun.code, rerun.out).toBe(want.done ? 0 : 1);
+    if (!want.done) expect(w.writes()).toBe(before);
+    // the read-back right after publishing a new version whose tag ends up the same way
+    const pub = w.publish(N, w.later);
+    expect(pub.code, pub.out).toBe(want.done ? 0 : 1);
+  });
+  it('#17: files missing and the tag missing — the plan says both, never "files complete"', () => {
+    const r = repo();
+    const a = r.commit('client/app.txt');
+    const list = [rel(tag(V), a, { assets: [] })];
+    const got = run(r, list, ['--sha', a], []);
+    expect(got.build).toBe('false');
+    expect(got.why).toContain('没带齐文件');
+    expect(got.why).toContain('标签不存在');
+    expect(got.why).not.toContain('文件齐全');
+    const unk = run(r, [rel(tag(V), a, { assets: [{ name: 'latest.json', size: 10 }] })], ['--sha', a], [{ name: tag(V), sha: 'e'.repeat(40) }]);
+    expect(unk.why).toContain('读不出文件是否已上传完成');
+  });
+});
+
