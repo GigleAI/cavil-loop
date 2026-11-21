@@ -20,6 +20,8 @@
 #        关掉下载后两类已下载的价照用（文档写的行为）
 #   【8】补抓价缓存 / 抓价状态里结构坏掉的一层：Claude 取价、Codex 取价、周报补算、daemon 补抓四个
 #        使用方都只丢那一层，好的照用；坏记录不算「已有价」，标记留着，抓到合法价后才删
+#   【9】读回的每个数都过同一个数值检查：抓价状态里的重试时刻、网络上 LiteLLM 的单价是超大整数 /
+#        无穷 / NaN / 负数时，那一项当作没有，别的模型照常补价；正常的冷却照样挡住重复抓取
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -398,6 +400,46 @@ for st in '{"claude/claude-test-9":[1]}' '{"claude/claude-test-9":{"last_attempt
     chk "抓价状态是 ${st:0:40}：照常抓到价" \
         "$rc $(jq -r '.claude["claude-test-9"].prices.input' "$CACHE/fetched-prices.json" 2>/dev/null)" "0 3.0"
 done
+
+echo "── 9. 读回的数：超大整数 / 无穷 / NaN 只影响那一项，抓价整轮照常 ──"
+# PR #612 复审第 4 轮：抓价状态里 last_attempt 是 10**400 时，转浮点抛异常，整轮抓价提前结束，
+# 别的缺价标记也补不上。现在每个读回的数都过 price_solve.number_in，且一个模型出了意外只影响它自己
+two_markers() { rm -rf "$CACHE"; mkdir -p "$CACHE/unpriced"; echo 9999999999 > "$NEXT"
+                : > "$CACHE/unpriced/claude--claude-test-9"; : > "$CACHE/unpriced/codex--gpt-test-9"; }
+for t in "$BIG" "-$BIG" 1e400 -1 NaN Infinity '"12"' true null '[1]'; do
+    two_markers
+    printf '{"claude/claude-test-9":{"last_attempt":%s},"codex/gpt-test-9":{"last_attempt":%s}}\n' "$t" "$t" > "$CACHE/price-fetch-state.json"
+    rc=0; OUT=$(python3 "$TU/price_fetch.py") || rc=$?
+    chk "重试时刻是 ${t:0:12}…：当作没试过，两个模型都补上价，没有异常" \
+        "$rc $(jq -c '[.claude["claude-test-9"].prices.input, .codex["gpt-test-9"].prices.in]' "$CACHE/fetched-prices.json" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" \
+        "0 [3.0,2.0] 0"
+    chk "重试时刻是 ${t:0:12}…：写回的状态是合法的时刻" \
+        "$(jq -c '[.["claude/claude-test-9"].last_attempt, .["codex/gpt-test-9"].last_attempt] | map(type)' "$CACHE/price-fetch-state.json")" '["number","number"]'
+done
+# 正常冷却照样有效：一个刚试过、一个坏时刻——前者不抓，后者照抓
+two_markers
+printf '{"claude/claude-test-9":{"last_attempt":%s},"codex/gpt-test-9":{"last_attempt":%s}}\n' "$(( $(date +%s) - 10 ))" "$BIG" > "$CACHE/price-fetch-state.json"
+OUT=$(python3 "$TU/price_fetch.py")
+chk "刚试过的模型仍在冷却：不抓、标记留着；坏时刻的另一个照常补上" \
+    "$([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept) $(jq -c '[.claude["claude-test-9"], .codex["gpt-test-9"].prices.in]' "$CACHE/fetched-prices.json" 2>/dev/null)" \
+    "kept [null,2.0]"
+# 网络上 LiteLLM 的单价是超大整数：那个模型两源对不上、不收，别的照常
+python3 - "$FX/litellm.json" "$TMP/litellm-big.json" <<'PY2'
+import sys
+raw = open(sys.argv[1]).read()
+raw = raw.replace('"claude-test-9": {"input_cost_per_token": 3e-06', '"claude-test-9": {"input_cost_per_token": ' + str(10**400), 1)
+open(sys.argv[2], "w").write(raw)
+PY2
+two_markers
+rc=0; OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/litellm-big.json" python3 "$TU/price_fetch.py") || rc=$?
+chk "LiteLLM 里 claude-test-9 的单价是超大整数：它不收、标记留着，codex 那个照常补上，没有异常" \
+    "$rc $([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept) $(jq -c '[.claude["claude-test-9"], .codex["gpt-test-9"].prices.in]' "$CACHE/fetched-prices.json" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" \
+    "0 kept [null,2.0] 0"
+# 每日刷新遇到同样的超大整数：那个模型不收，别的照收
+rm -rf "$CACHE"; mkdir -p "$CACHE"
+rc=0; OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/litellm-big.json" python3 "$TU/price_fetch.py") || rc=$?
+chk "每日刷新遇到超大整数：claude-test-9 不收，claude-zero-9 照收，没有异常" \
+    "$rc $(jq -c '.claude.models | keys' "$LATEST" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" '0 ["claude-zero-9"] 0'
 
 report_counts "$pass" "$fail"
 echo

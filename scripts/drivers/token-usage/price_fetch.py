@@ -140,6 +140,27 @@ def _load_json(path, default):
     return price_solve.load_json_file(path, default)   # 不阻塞、有界、只认普通文件
 
 
+STATE_TIME_MAX = 1e11        # 「上次尝试时刻」合法上限（约公元 5138 年）；超过的当作坏数据
+
+
+def load_state():
+    """抓价状态，读入时逐项核对（PR #612 复审第 4 轮：一个超大的尝试时刻让整轮抓价提前结束）。
+    {"<agent>/<model>": {"last_attempt": 秒, "result": 文本}}：键不是字符串、项不是对象、时刻不是
+    合法数的一律丢掉 —— 当作没试过，宁可多抓一次，不让一处坏数据挡住补价。"""
+    out = {}
+    for key, entry in _load_json(state_path(), {}).items():
+        if not (isinstance(key, str) and isinstance(entry, dict)):
+            continue
+        last = price_solve.number_in(entry.get("last_attempt"), 0, STATE_TIME_MAX)
+        if last is None:
+            continue
+        clean = {"last_attempt": last}
+        if isinstance(entry.get("result"), str):
+            clean["result"] = entry["result"]
+        out[key] = clean
+    return out
+
+
 def _save_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
@@ -301,7 +322,9 @@ def parse_litellm(text, agent):
         vals = {}
         for item, field in LITELLM_KEYS[agent].items():
             v = entry.get(field)
-            vals[item] = v * 1e6 if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+            # 每 token 单价：同一个数值检查（超大整数 / 越界都算没有），再换算成每百万 token
+            per = price_solve.number_in(v, 0, MAX_PRICE / 1e6)
+            vals[item] = per * 1e6 if per is not None else None
         out[key.lower()] = vals
     return out
 
@@ -467,47 +490,59 @@ def main():
         return
     # 拿到锁之后再看一次：别的项目的 daemon 可能刚抓完
     if latest_due(now):
-        refresh_latest(now)
+        # 每日刷新出了意外也只影响它自己，不挡住下面的补缺
+        try:
+            refresh_latest(now)
+        except Exception as e:
+            _write_due(now + COOLDOWN)
+            log(f"Claude 最新价目抓取异常（已忽略），{COOLDOWN // 3600} 小时后再试：{type(e).__name__}: {e}")
     fetched = price_solve.load_fetched()
     latest = price_solve.load_latest()
-    state = _load_json(state_path(), {})
+    state = load_state()
     changed = False
     for agent, model, path in markers:
-        key = f"{agent}/{model}"
-        # 「已经有价」用的是读入时已核对过的补抓价（price_solve.load_fetched）：取价丢掉的坏记录，
-        # 这里也不算有价，标记留着、照常去抓（PR #612 复审第 3 轮）。
-        # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
-        # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
-        # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
-        # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
-        # 按驱动看到的实际模型名落缓存。
-        if (model in builtin_models(agent) or model in fetched.get(agent, {})
-                or (agent == "claude" and model in latest)):
-            _rm(path)                                  # 已经有价：不抓，也不再提
-            continue
-        # 状态文件同样只当数据：这一项不是对象、时刻不是数，就当没试过（宁可多试一次）
-        entry = state.get(key)
-        last = entry.get("last_attempt") if isinstance(entry, dict) else None
-        if (isinstance(last, (int, float)) and not isinstance(last, bool)
-                and math.isfinite(last) and 0 <= now - last < COOLDOWN):
-            continue                                   # 冷却中
-        prices, why = resolve(agent, model)
-        state[key] = {"last_attempt": now, "result": "ok" if prices else why}
-        changed = True
-        if not prices:
-            log(f"{agent} 模型 {model} 抓价失败，{COOLDOWN // 3600} 小时后再试：{why}")
-            continue
-        fetched.setdefault(agent, {})[model] = {
-            "prices": prices,
-            "fetched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "sources": [ANTHROPIC_URL if agent == "claude" else OPENAI_URL, LITELLM_URL],
-        }
-        _save_json(price_solve.fetched_path(), fetched)
-        _rm(path)
-        log(f"{agent} 模型 {model} 已自动补上单价（官方页与 LiteLLM 一致）："
-            + ", ".join(f"{k}=${v:g}/M" for k, v in prices.items()))
+        # 一个模型出了意外只影响它自己：记下来、留着标记，接着处理下一个
+        try:
+            changed = _fetch_one(agent, model, path, now, fetched, latest, state) or changed
+        except Exception as e:
+            log(f"{agent} 模型 {model} 抓价异常（已忽略，标记留着，下一轮再试）：{type(e).__name__}: {e}")
     if changed:
         _save_json(state_path(), state)
+
+
+def _fetch_one(agent, model, path, now, fetched, latest, state):
+    """补一个缺价标记。返回是否改了抓价状态。"""
+    key = f"{agent}/{model}"
+    # 「已经有价」用的是读入时已核对过的补抓价（price_solve.load_fetched）：取价丢掉的坏记录，
+    # 这里也不算有价，标记留着、照常去抓（PR #612 复审第 3 轮）。
+    # 「已经有价」必须和两个驱动取价用**同一个键**——它们只认精确模型名。拿去掉日期
+    # 后缀的基名来判，会出现「缓存里有基名 → 删标记，驱动却仍取不到日期名的价」，
+    # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
+    # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
+    # 按驱动看到的实际模型名落缓存。
+    if (model in builtin_models(agent) or model in fetched.get(agent, {})
+            or (agent == "claude" and model in latest)):
+        _rm(path)                                  # 已经有价：不抓，也不再提
+        return False
+    # 状态读入时已核对过（load_state）：在这里的时刻一定是合法的数
+    last = (state.get(key) or {}).get("last_attempt")
+    if last is not None and 0 <= now - last < COOLDOWN:
+        return False                               # 冷却中
+    prices, why = resolve(agent, model)
+    state[key] = {"last_attempt": now, "result": "ok" if prices else why}
+    if not prices:
+        log(f"{agent} 模型 {model} 抓价失败，{COOLDOWN // 3600} 小时后再试：{why}")
+        return True
+    fetched.setdefault(agent, {})[model] = {
+        "prices": prices,
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sources": [ANTHROPIC_URL if agent == "claude" else OPENAI_URL, LITELLM_URL],
+    }
+    _save_json(price_solve.fetched_path(), fetched)
+    _rm(path)
+    log(f"{agent} 模型 {model} 已自动补上单价（官方页与 LiteLLM 一致）："
+        + ", ".join(f"{k}=${v:g}/M" for k, v in prices.items()))
+    return True
 
 
 if __name__ == "__main__":

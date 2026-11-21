@@ -342,16 +342,24 @@ def latest_path():
 MAX_PRICE = 1000.0
 
 
-def _price_ok(v):
-    """合法单价：真的数（不是布尔），有限、在 [0, MAX_PRICE] 内。先比大小、再转浮点：
-    JSON 里的超大整数（如 10**400）转浮点会抛 OverflowError（PR #612 复审第 1 轮），
-    任何异常都算不合法，绝不让一个坏数拖垮整张表。"""
+def number_in(v, lo, hi):
+    """从缓存 / 网络读回的一个数 → float；不是数（含布尔）、不在 [lo, hi] 内、转不成有限浮点 → None。
+    先比大小、再转浮点：JSON 里的超大整数（如 10**400）转浮点会抛 OverflowError（PR #612 复审
+    第 1 轮单价、第 4 轮重试时间都栽在这里）。读回的每个数都过这一个函数，任何异常都算不合法。"""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return False
+        return None
     try:
-        return 0 <= v <= MAX_PRICE and math.isfinite(float(v))
+        if not lo <= v <= hi:
+            return None
+        f = float(v)
     except (OverflowError, ValueError, TypeError):
-        return False
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _price_ok(v):
+    """合法单价：真的数，有限、在 [0, MAX_PRICE] 内（number_in）。"""
+    return number_in(v, 0, MAX_PRICE) is not None
 
 
 def load_latest():
