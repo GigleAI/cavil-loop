@@ -458,7 +458,13 @@ labels_have_requester_bot_wait() {
 #   否则 → 拦住
 # 看历史而不是本机见没见过等待标签：挂上和摘掉都发生在两次轮询之间也拦得住，换机器、删状态目录也不影响。
 # 谁摘的等待标签不看——机器人、维护者、worker 摘的都要等派工标签。
-# 0 = 拦住（REQUESTER_BOT_WAIT_REASON）；1 = 放行；2 = 判不了（读不到 / 事件缺编号：本轮不续工，下轮再判）
+# 0 = 拦住（REQUESTER_BOT_WAIT_REASON）；1 = 放行；2 = 判不了（读不到 / 事件缺编号：本轮不续工，下轮再判）；
+# 3 = 该补打（GitHub#619）：E 之后等待标签已被摘掉（有「摘掉等待标签」事件 U），且机器人账号
+#     （REQUESTER_BOT_ACCOUNT）发过一条独占一行写着 `<!-- requester-bot-reply wait=E -->` 的评论——机器人照约定
+#     贴回了这一次等待的答复、却没打派工标签。调用方本轮不自己续工，改调 requester_bot_backfill 替机器人
+#     补打派工标签，之后走现有的明确派工。REQUESTER_BOT_WAIT_DOC = 这次判定依据的身份串（等待事件、摘标签
+#     事件和操作账号、每条带说明答复的编号 / 作者 / 正文指纹 / 更新时间），补打前现读重拼、整串比较。
+#     评论只在「等待之后没人打派工标签、等待标签已摘」时才读；读不到 / 编号不是数字 → 2。
 # 功能关着（requester_bot_enabled 不成立）→ 1，一次 GitHub 调用都不发。
 # **不缓存结论**（代码复审第 1 轮）：GitHub 的 updated_at 只到秒，同一秒里又挂上又摘掉等待标签时它不变，
 # 按它缓存的「放行」会放过新的一次等待；改了等待标签 / 触发标签的配置，旧结论也会被沿用。所以每次都现读。
@@ -468,11 +474,13 @@ labels_have_requester_bot_wait() {
 # REQUESTER_BOT_WAIT_LOGGED=1 = 这一次拦住的原因（同一个等待标签、同一次挂上）已经记过日志。
 REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
 requester_bot_wait_hold() {   # <编号>
-    local n="$1" rows sorted e L lf key tmp
+    local n="$1" rows sorted e L lf key tmp u cm cid clogin cupd cb64 csha reps="" other_mark="" plain=""
+    # 每行：事件编号、labeled / unlabeled、标签名、操作账号（摘标签的事件用来认 GitHub#619 的「等待已摘」）
+    REQUESTER_BOT_WAIT_DOC=""; REQUESTER_BOT_WAIT_REPLY=""
     REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
     requester_bot_enabled || return 1
     if ! rows=$(gh api --paginate "repos/$REPO/issues/$n/events" \
-            --jq '.[] | select(.event == "labeled") | [(.id // "" | tostring), (.label.name // "")] | @tsv' 2>/dev/null); then
+            --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [(.id // "" | tostring), .event, (.label.name // ""), (.actor.login // "")] | @tsv' 2>/dev/null); then
         REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 2
     fi
     rows=$(printf '%s\n' "$rows" | awk -F'\t' 'NF')
@@ -482,14 +490,53 @@ requester_bot_wait_hold() {   # <编号>
     [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
     # 排序在拿全所有页之后做（--paginate 下 --jq 逐页执行）；排序和挑事件分两步，退出码各自查
     sorted=$(printf '%s\n' "$rows" | awk -F'\t' 'NF' | sort -t$'\t' -k1,1n) || { REQUESTER_BOT_WAIT_REASON="#$n 的标签记录排不了序"; return 2; }
-    e=$(printf '%s\n' "$sorted" | awk -F'\t' -v W="$LABEL_PENDING_REQUESTER_BOT" '$2 == W { e = $1 } END { print e }')
+    e=$(printf '%s\n' "$sorted" | awk -F'\t' -v W="$LABEL_PENDING_REQUESTER_BOT" '$2 == "labeled" && $3 == W { e = $1 } END { print e }')
     [ -n "$e" ] || return 1
     for L in "${TRIGGER_LABELS_ALL[@]}"; do
-        if printf '%s\n' "$sorted" | awk -F'\t' -v E="$e" -v T="$L" '($1 + 0) > (E + 0) && $2 == T { f = 1 } END { exit !f }'; then
+        if printf '%s\n' "$sorted" | awk -F'\t' -v E="$e" -v T="$L" '($1 + 0) > (E + 0) && $2 == "labeled" && $3 == T { f = 1 } END { exit !f }'; then
             return 1
         fi
     done
     REQUESTER_BOT_WAIT_REASON="#$n 最近一次挂上等待标签 $LABEL_PENDING_REQUESTER_BOT 之后，没人打过派工标签（等待标签已被摘掉）"
+    # GitHub#619：等待标签被摘掉（E 之后第一次摘掉它的事件 U）之后，看机器人有没有贴回这一次等待的答复
+    u=$(printf '%s\n' "$sorted" | awk -F'\t' -v E="$e" -v W="$LABEL_PENDING_REQUESTER_BOT" \
+        '($1 + 0) > (E + 0) && $2 == "unlabeled" && $3 == W { print $1 ":" $4; exit }')
+    if [ -n "$u" ]; then
+        if ! cm=$(gh api --paginate "repos/$REPO/issues/$n/comments" \
+                --jq '.[] | [(.id // "" | tostring), (.user.login // ""), (.updated_at // .created_at // ""), ((.body // "") | @base64)] | @tsv' 2>/dev/null); then
+            REQUESTER_BOT_WAIT_REASON="读不到 #$n 的评论"; return 2
+        fi
+        while IFS=$'\t' read -r cid clogin cupd cb64; do
+            [ -n "$cid" ] || continue
+            [[ "$cid" =~ ^[0-9]+$ ]] || { REQUESTER_BOT_WAIT_REASON="#$n 的评论缺编号"; return 2; }
+            [ "$clogin" = "$REQUESTER_BOT_ACCOUNT" ] || continue
+            # 说明行要独占一行（行尾空白、CR 不算），别处引用的半行不算
+            if printf '%s' "$cb64" | base64 -d 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//' \
+                    | grep -qxF "<!-- requester-bot-reply wait=$e -->"; then
+                csha=$(printf '%s' "$cb64" | base64 -d 2>/dev/null | sha256sum | cut -c1-64) || csha=""
+                [ -n "$csha" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的评论 $cid 算不出指纹"; return 2; }
+                reps+="${reps:+,}$cid:$clogin:$csha:$cupd"
+                [ -n "$REQUESTER_BOT_WAIT_REPLY" ] || REQUESTER_BOT_WAIT_REPLY="$cid"
+            elif printf '%s' "$cb64" | base64 -d 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//' \
+                    | grep -qxE '<!-- requester-bot-reply wait=[0-9]+ -->'; then
+                other_mark=1
+            else
+                plain=1
+            fi
+        done <<< "$cm"
+        if [ -n "$reps" ]; then
+            REQUESTER_BOT_WAIT_DOC="wait=$e;unlabeled=$u;replies=$reps"
+            REQUESTER_BOT_WAIT_REASON="#$n 等待标签已摘，机器人贴回了这一次等待（事件 ${e}）的答复（评论 ${REQUESTER_BOT_WAIT_REPLY}），之后没人打派工标签"
+            return 3
+        fi
+        if [ -n "$other_mark" ]; then
+            REQUESTER_BOT_WAIT_REASON+="；机器人答复里的说明对应的不是最近这一次等待"
+        elif [ -n "$plain" ]; then
+            REQUESTER_BOT_WAIT_REASON+="；机器人只有不带说明的评论（转达），没有这一次等待的答复"
+        else
+            REQUESTER_BOT_WAIT_REASON+="；机器人没有评论"
+        fi
+    fi
     # 日志去重（不影响上面的结论）
     lf="$STATE_DIR/requester-bot-wait-log.json"; key="$LABEL_PENDING_REQUESTER_BOT|$e"
     if [ "$(jq -r --arg n "$n" '.[$n] // ""' "$lf" 2>/dev/null)" = "$key" ]; then
@@ -501,6 +548,89 @@ requester_bot_wait_hold() {   # <编号>
                 | jq --arg n "$n" --arg k "$key" '(if type == "object" then . else {} end) | .[$n] = $k' \
                 > "$tmp" 2>/dev/null && mv "$tmp" "$lf" || rm -f "$tmp"
         fi
+    fi
+    return 0
+}
+
+# ── 替机器人补打派工标签（GitHub#619）──
+# 等待判断给出 3（机器人贴回了这一次等待的答复、等待标签已摘、之后没人打派工标签）时，三条自动续工的路
+# 本轮都不自己续工，改调这一个函数：写之前现读两次、用同一个函数拼整串身份，两次都给出「该补打」且逐字
+# 相等才写；只写一次——给条目加 LABEL_PENDING_AGENT_DEFAULT（对接约定里机器人本该打的那个），不摘任何标签。
+# 之后下一轮由现有的明确派工派 worker；派工、自愈、叫停规则全是现有的。
+#   路径 greedy          ：greedy 兜底（挡工标签名单 + 卡住检测 + 测试失败报告，同 collect_queue_rows_greedy）
+#   路径 autopilot-issue ：只挂托管标签的 issue（托管授权：授权所在条目、事件位置 / 时间、操作人）
+#   路径 takeover        ：托管模式下没有流程标签的 PR（现有接手判定 autopilot_takeover_permit 给出 backfill）
+# 一轮只补一次：REQUESTER_BOT_BACKFILLED 记本轮补过的条目（只在内存里，greedy 和托管都开时同一条目会先后经过
+# 两处）；而且补过之后条目已带派工标签，现读的整串本来也对不上。写请求没回音 / 失败：不重发、不记任何东西，
+# 下一轮看 GitHub——标签在就走明确派工，不在就重新判断。重复加同一个标签对 GitHub 无害。
+# 已知窗口（维护者选 A 时接受，GitHub#619）：补打之后、下一轮派工之前，维护者的叫停可能被这次派工盖过，
+# 和今天机器人或人打了派工标签之后一样；机器人自己的派工标签在派工摘掉之后才到，会再派一次。
+REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""
+requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打（整串在 REQUESTER_BOT_BACKFILL_DOC）；1 = 现在不该补；2 = 判不了
+    # 在调用方自己的 shell 里跑（不放进 $( )）：判不了的原因要留给调用方记日志
+    local kind="$1" n="$2" path="$3" ij pj item prpart="" labels rc
+    REQUESTER_BOT_BACKFILL_DOC=""
+    ij=$(gh api "repos/$REPO/issues/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 #$n"; return 2; }
+    item=$(printf '%s' "$ij" | jq -r 'select((.state | type) == "string" and (.labels | type) == "array")
+        | [.state, ([.labels[] | .name // empty] | sort | join(","))] | @tsv' 2>/dev/null) || item=""
+    [ -n "$item" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的状态 / 标签读不全"; return 2; }
+    [ "${item%%$'\t'*}" = open ] || return 1
+    labels="${item#*$'\t'}"
+    if [ "$kind" = pr ]; then
+        pj=$(gh api "repos/$REPO/pulls/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 PR #$n"; return 2; }
+        prpart=$(printf '%s' "$pj" | jq -r 'select((.merged | type) == "boolean" and ((.head.sha // "") != "") and ((.base.ref // "") != "") and ((.head.ref // "") != ""))
+            | [(.merged | tostring), ((.draft // false) | tostring), .base.ref, .head.sha, .head.ref, (.head.repo.full_name // "")] | join(":")' 2>/dev/null) || prpart=""
+        [ -n "$prpart" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 的合并状态 / 分支 / 提交读不全"; return 2; }
+        case "$prpart" in true:*) return 1 ;; esac
+    fi
+    rc=0; requester_bot_wait_hold "$n" || rc=$?
+    case "$rc" in 3) ;; 2) return 2 ;; *) return 1 ;; esac
+    local wait="$REQUESTER_BOT_WAIT_DOC" pathdoc=""
+    case "$path" in
+        greedy)
+            greedy_skip_reason "$labels" >/dev/null && return 1
+            stuck_dispatch_hold "$kind" "$n" "" && return 1
+            [ "$kind" = issue ] && ci_report_dispatch_hold "$n" && return 1
+            pathdoc="greedy" ;;
+        autopilot-issue)
+            autopilot_labels_in_flow "$labels" && return 1
+            stuck_dispatch_hold issue "$n" "" && return 1
+            ci_report_dispatch_hold "$n" && return 1
+            rc=0; autopilot_authorization "$n" "$ij" || rc=$?
+            case "$rc" in 0) ;; 1) return 1 ;; *) REQUESTER_BOT_WAIT_REASON="$AUTOPILOT_REASON"; return 2 ;; esac
+            pathdoc="auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR" ;;
+        takeover)
+            autopilot_takeover_permit "$n"
+            case "$AT_V" in backfill) ;; unknown) REQUESTER_BOT_WAIT_REASON="$AT_REASON"; return 2 ;; *) return 1 ;; esac
+            # 接手判定在里面又跑了一次等待判断：答复身份以它为准（两者读的是同一份现读结果之后的数据）
+            wait="$REQUESTER_BOT_WAIT_DOC"
+            pathdoc="take=$AT_MODE:$AT_KIND:$AT_N:$AT_HEAD:$AT_BASE:$AT_REF:$AT_REPO;auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR" ;;
+        *) return 2 ;;
+    esac
+    REQUESTER_BOT_BACKFILL_DOC="$kind|$n|$item|$prpart|$wait|$pathdoc"
+}
+
+requester_bot_backfill() {   # <issue|pr> <编号> <路径>
+    local kind="$1" n="$2" path="$3" d1 d2 rc
+    case "$REQUESTER_BOT_BACKFILLED" in *" $kind:$n "*)
+        log "外部需求机器人：${kind} #${n} 本轮已补打过派工标签，跳过"; return 0 ;; esac
+    rc=0; requester_bot_backfill_doc "$kind" "$n" "$path" || rc=$?; d1="$REQUESTER_BOT_BACKFILL_DOC"
+    if [ "$rc" != 0 ]; then
+        [ "$rc" = 1 ] || log "外部需求机器人：${kind} #${n} 本轮不补打（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
+        return 0
+    fi
+    rc=0; requester_bot_backfill_doc "$kind" "$n" "$path" || rc=$?; d2="$REQUESTER_BOT_BACKFILL_DOC"
+    if [ "$rc" != 0 ] || [ "$d1" != "$d2" ]; then
+        log "外部需求机器人：${kind} #${n} 判定补打之后条目有变化（或读不全），本轮不写"
+        return 0
+    fi
+    REQUESTER_BOT_BACKFILLED+="$kind:$n "
+    pace_mark_acted
+    if run_gh "补打派工标签 (${kind} #${n} → ${LABEL_PENDING_AGENT_DEFAULT})" \
+            gh_write api -X POST "repos/$REPO/issues/$n/labels" -f "labels[]=$LABEL_PENDING_AGENT_DEFAULT"; then
+        log "外部需求机器人：${kind} #${n} 等待标签已摘、机器人贴回了答复却没打派工标签 → 替它补打 ${LABEL_PENDING_AGENT_DEFAULT}（依据：机器人的评论 ${REQUESTER_BOT_WAIT_REPLY}），下一轮照常派工"
+    else
+        log "外部需求机器人：${kind} #${n} 补打 ${LABEL_PENDING_AGENT_DEFAULT} 没成功或结果不明，不重发；下一轮看 GitHub 上的标签再判"
     fi
     return 0
 }
@@ -4778,7 +4908,7 @@ autopilot_body_at() {   # <PR 编号> <打标签时间> <PR JSON>
 # .autopilot.takeover）的值里。规则改了、旧的「不」可能变成「是」时**必须改这个值**：旧版留下的记录对不上，
 # 每个条目按新规则重判一次后再记。GitHub#162 放开了机器人需求的托管，旧版记下的拒绝若照旧复用，升级后
 # 新授权永远不生效（代码复审第 2 轮）。只让旧记录失效一次，不删 state、不碰暂停 / 授权的判断本身。
-AUTOPILOT_JUDGE_REV="r233"
+AUTOPILOT_JUDGE_REV="r619"
 
 # 托管授权是否有效。两种调法：
 #   autopilot_authorization <issue> <issue JSON>                   只看 issue 一处（issue 自己的派工）
@@ -6225,7 +6355,7 @@ autopilot_merge_tick() {   # <state_file>
 autopilot_takeover_permit() {   # <PR 编号>
     local pr="$1" pj ij labels rest when rc pl
     AT_V=unknown; AT_MODE=""; AT_N=""; AT_KIND=""; AT_HEAD=""; AT_BASE=""; AT_REF=""; AT_REPO=""; AT_REASON=""
-    AT_WHY=""; AT_HUMAN_BY=""
+    AT_WHY=""; AT_HUMAN_BY=""; AT_BACKFILL=""
     AUTOPILOT_DENY=""; AUTOPILOT_REASON=""
     AT_PJ=""
     if ! pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || [ -z "$pj" ] \
@@ -6254,6 +6384,9 @@ autopilot_takeover_permit() {   # <PR 编号>
         case "$rc" in
             0) AT_V=skip; AT_WHY=requester-wait; return 0 ;;
             2) AT_REASON="$REQUESTER_BOT_WAIT_REASON"; return 0 ;;
+            # 机器人贴回了答复却没打派工标签（GitHub#619）：其余接手条件照常判，都满足时结论是
+            # backfill（替机器人补打派工标签），不是接手——不加复审标签、不发接手说明
+            3) AT_BACKFILL=1 ;;
         esac
     fi
     AT_HEAD=$(printf '%s' "$pj" | jq -r '.head.sha // ""')
@@ -6333,6 +6466,7 @@ autopilot_takeover_permit() {   # <PR 编号>
         esac
     fi
     AT_V=take
+    [ -z "$AT_BACKFILL" ] || AT_V=backfill
 }
 
 autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
@@ -6355,6 +6489,12 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
             autopilot_state_set "$sf" '.takeover[$p] = $k' --arg p "$pr" --arg k "$key" || true
             return 0 ;;
         take) ;;
+        # GitHub#619：补打派工标签（写前现读两次、整串比较都在 requester_bot_backfill 里）；不记接手缓存，
+        # 下一轮条目带着派工标签，走明确派工
+        backfill)
+            autopilot_takeover_reset "$sf" "$pr"
+            requester_bot_backfill pr "$pr" takeover
+            return 0 ;;
         *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;
     esac
     n="$AT_N"; kind="$AT_KIND"; head="$AT_HEAD"; base="$AT_BASE"; ref="$AT_REF"; repo="$AT_REPO"; mode="$AT_MODE"

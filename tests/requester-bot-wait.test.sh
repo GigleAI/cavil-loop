@@ -292,6 +292,172 @@ Closes #7" "autopilot"
     chk "到达性 · 旧版确实记下了拒绝" "$(jq -r '.autopilot.denied["60"] // "" | length > 0' "$W/state/state.json" 2>/dev/null)" true
     tick
     chk "升级后（状态原样保留、issue 没变）→ 按新规则重判、开工" "$(queued issue 60)" yes
+
+    # ── 【6】机器人贴回带说明的答复、摘了等待标签、没打派工标签 → daemon 替它补打 pending/agent（GitHub#619）──
+    # 机器人答复：mkreply <n> <评论编号> <作者> <正文>
+    mkreply() {
+        jset comments.json '.[$n] = ((.[$n] // []) + [{id:($id|tonumber), body:$b, user:{login:$a}, created_at:"2026-01-02T00:00:00Z", updated_at:"2026-01-02T00:00:00Z"}])' \
+            --arg n "$1" --arg id "$2" --arg a "$3" --arg b "$4"
+    }
+    # 带编号的一次等待：挂上（编号 $2）→ 被机器人摘掉（编号 $3）
+    waitid() { ev "$1" labeled pending/req loop-bot "$2"; ev "$1" unlabeled pending/req req-bot "$3"; }
+    nfix() { grep -cF -- "$1" "$CALLS" 2>/dev/null || true; }
+    backfills() { nfix "api -X POST $R/issues/$1/labels -f labels[]=pending/agent"; }
+
+    section "【6a】greedy：带说明的答复 → 本轮只补打一次 pending/agent、不派；下一轮按明确派工派"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 70 ""; waitid 70 8001 8002
+    mkreply 70 901 req-bot "提需求方认可了。
+
+<!-- requester-bot-reply wait=8001 -->"
+    mkissue 51 ""
+    tick
+    chk "本轮恰好一个补打写请求（加 pending/agent，不摘任何标签）" "$(backfills 70)/$(nfix "api -X DELETE $R/issues/70/labels")" "1/0"
+    chk "补打的这一轮 #70 不进派工队列（不自己续工）" "$(queued issue 70)" no
+    chk "#70 现在挂着 pending/agent" "$(has_label 70 pending/agent)" yes
+    chk "日志写明替机器人补打、依据哪条答复" "$(log_has '替它补打 pending/agent（依据：机器人的评论 901）')" 1
+    chk "到达性 · #51（从没等过）照常进派工队列" "$(queued issue 51)" yes
+    tick
+    chk "下一轮：#70 走明确派工进派工队列，不再补打" "$(queued issue 70)/$(backfills 70)" "yes/0"
+
+    section "【6b】不该补打的答复：只有转达 / 说明对应的是更早一次等待 / 别人抄的说明 / 说明不独占一行"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 71 ""; waitid 71 8101 8102
+    mkreply 71 911 req-bot "已转给提需求的人"
+    mkreply 71 912 req-bot "又转了一次"
+    mkissue 72 ""; waitid 72 8201 8202; waitid 72 8203 8204
+    mkreply 72 921 req-bot "旧的答复
+
+<!-- requester-bot-reply wait=8201 -->"
+    mkissue 73 ""; waitid 73 8301 8302
+    mkreply 73 931 someone "<!-- requester-bot-reply wait=8301 -->"
+    mkissue 74 ""; waitid 74 8401 8402
+    mkreply 74 941 req-bot "引用：<!-- requester-bot-reply wait=8401 --> 这行不算"
+    tick
+    chk "只有转达 → 不补打、不派" "$(backfills 71)/$(queued issue 71)" "0/no"
+    chk "  → 日志写明只有转达" "$(grep -F 'greedy：issue #71 不续工' "$W/state/poll.log" | grep -cF '机器人只有不带说明的评论（转达）')" 1
+    chk "到达性 · 这一轮确实读了 #71 的评论" "$([ "$(n_calls "$R/issues/71/comments")" -gt 0 ] && echo yes || echo no)" yes
+    chk "说明对应的是更早一次等待 → 不补打" "$(backfills 72)/$(queued issue 72)" "0/no"
+    chk "  → 日志写明编号不是最近一次等待" "$(log_has '说明对应的不是最近这一次等待')" 1
+    chk "别人的评论里抄了说明 → 不补打" "$(backfills 73)/$(queued issue 73)" "0/no"
+    chk "说明不独占一行 → 不补打" "$(backfills 74)/$(queued issue 74)" "0/no"
+
+    section "【6c】读不到评论 → 本轮不写、不派；恢复后补打；机器人已经自己打过派工标签 → 不补打、照常派"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 75 ""; waitid 75 8501 8502
+    mkreply 75 951 req-bot "<!-- requester-bot-reply wait=8501 -->"
+    touch "$GD/F_issues_75_comments"
+    mkissue 76 ""; ev 76 labeled pending/req loop-bot 8601; ev 76 labeled pending/agent req-bot 8602; ev 76 unlabeled pending/req req-bot 8603; ev 76 unlabeled pending/agent loop-bot 8604
+    mkreply 76 961 req-bot "<!-- requester-bot-reply wait=8601 -->"
+    tick
+    chk "读不到 #75 的评论 → 不补打、不派" "$(backfills 75)/$(queued issue 75)" "0/no"
+    chk "  → 日志写「下轮再判」" "$(log_has 'greedy：issue #75 本轮不续工（读不到 #75 的评论）')" 1
+    chk "机器人等待之后自己打过 pending/agent（规则 3）→ 不补打、照常派" "$(backfills 76)/$(queued issue 76)" "0/yes"
+    rm -f "$GD/F_issues_75_comments"
+    tick
+    chk "读取恢复 → 补打" "$(backfills 75)" 1
+
+    section "【6d】写之前现读时条目变了 → 本轮一个写请求都不发；不注入变化时确实发"
+    # 在 gh 前面套一层：第 K 次单独读 issue #77 之前先跑一段钩子（模拟「两次现读之间有人改了 GitHub」）
+    for change in human relabel reply-edit; do
+        fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+        mkdir -p "$W/shim"; rm -f "$W/shim/count" "$W/shim/hook_"*
+        cat > "$W/shim/gh" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "api $R/issues/77" ] && [ \$# -eq 2 ]; then
+    c=\$(( \$(cat "$W/shim/count" 2>/dev/null || echo 0) + 1 )); echo "\$c" > "$W/shim/count"
+    [ -f "$W/shim/hook_\$c" ] && bash "$W/shim/hook_\$c"
+fi
+exec "$SANDBOX/bin/gh" "\$@"
+SHIM
+        chmod +x "$W/shim/gh"
+        mkissue 77 ""; waitid 77 8701 8702
+        mkreply 77 971 req-bot "<!-- requester-bot-reply wait=8701 -->"
+        case "$change" in
+            human)      echo "jq '.[\"77\"] = [\"pending/human\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_2" ;;
+            relabel)    echo "jq '.[\"77\"] += [{event:\"labeled\", id:8703, label:{name:\"pending/req\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_2" ;;
+            reply-edit) echo "jq '.[\"77\"][0].body = \"请继续修改\n\n<!-- requester-bot-reply wait=8701 -->\" | .[\"77\"][0].updated_at = \"2026-01-04T00:00:00Z\"' '$GD/comments.json' > '$GD/c.tmp' && mv '$GD/c.tmp' '$GD/comments.json'" > "$W/shim/hook_2" ;;
+        esac
+        tick
+        chk "第二次现读前「$change」→ 本轮不补打" "$(backfills 77)" 0
+        chk "  到达性 · 确实读了两次 #77" "$(cat "$W/shim/count" 2>/dev/null)" 2
+    done
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+    mkdir -p "$W/shim"; rm -f "$W/shim/count" "$W/shim/hook_"*
+    cat > "$W/shim/gh" <<SHIM
+#!/usr/bin/env bash
+exec "$SANDBOX/bin/gh" "\$@"
+SHIM
+    chmod +x "$W/shim/gh"
+    mkissue 77 ""; waitid 77 8701 8702
+    mkreply 77 971 req-bot "<!-- requester-bot-reply wait=8701 -->"
+    tick
+    chk "对照 · 不注入变化 → 补打一次" "$(backfills 77)" 1
+
+    section "【6e】按标签派工 + 托管：只挂托管标签的 issue、托管 PR 都由 daemon 补打；托管 PR 不加 pending/review、不发接手说明"
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+    mkissue 80 "autopilot"; ev 80 labeled autopilot maint 8800; waitid 80 8801 8802
+    mkreply 80 981 req-bot "<!-- requester-bot-reply wait=8801 -->"
+    mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+    ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+    mkreply 8 991 req-bot "认可当前提交。
+
+<!-- requester-bot-reply wait=8901 -->"
+    mkissue 81 ""; waitid 81 8951 8952
+    mkreply 81 995 req-bot "<!-- requester-bot-reply wait=8951 -->"
+    tick
+    chk "只挂托管标签的 issue #80 → 补打一次、本轮不派" "$(backfills 80)/$(queued issue 80)" "1/no"
+    chk "托管 PR #8 → 补打一次" "$(backfills 8)" 1
+    chk "托管 PR #8 没加 pending/review、没发接手说明" "$(has_label 8 pending/review)/$(comments_with 8 'autopilot-takeover pr=8')" "no/0"
+    chk "按标签派工的普通条目 #81 → 不补打（只认机器人自己的标签，和今天一样）" "$(backfills 81)" 0
+    tick
+    chk "下一轮：#80、PR #8 都走明确派工进队列" "$(queued issue 80)/$(queued PR 8)" "yes/yes"
+    chk "下一轮仍没有接手说明、不再补打" "$(comments_with 8 'autopilot-takeover pr=8')/$(backfills 8)" "0/0"
+
+    section "【6f】greedy + 托管都开：同一个托管 PR 先后经过两处入口，整轮只有一个写请求"
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' 'DISPATCH_MODE="greedy"'
+    mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+    ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+    mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+    tick
+    chk "整轮只有一个补打写请求、没加 pending/review" "$(backfills 8)/$(has_label 8 pending/review)" "1/no"
+
+    section "【6g】机器人的派工标签晚到（派工已摘掉补打的标签之后才打）→ 不再补打，按现有明确派工再派"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 78 ""; waitid 78 8781 8782
+    mkreply 78 978 req-bot "<!-- requester-bot-reply wait=8781 -->"
+    tick
+    chk "第 1 轮补打" "$(backfills 78)" 1
+    # 模拟派工：daemon 摘掉 pending/agent、交出后条目回到没有流程标签；机器人此时才打上自己的 pending/agent
+    jset labels.json '.["78"] = []'; ev 78 unlabeled pending/agent loop-bot 8784
+    ev 78 labeled pending/agent req-bot 8785; jset labels.json '.["78"] = ["pending/agent"]'
+    tick
+    chk "机器人晚到的标签 → 照现有明确派工再派一次，不补打" "$(queued issue 78)/$(backfills 78)" "yes/0"
+
+    section "【6h】对接文档里读等待事件编号的命令：只给 HOME / PATH 照字面跑，产出的说明被 daemon 认出"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkissue 79 ""; waitid 79 8791 8792; waitid 79 8793 8794
+    mkdir -p "$W/docbin"
+    printf '#!/usr/bin/env bash\nexport FAKE_GH_DIR=%q FAKE_GH_REPO=example/ap\nexec %q "$@"\n' "$GD" "$SANDBOX/bin/gh" > "$W/docbin/gh"
+    chmod +x "$W/docbin/gh"
+    local doc_e
+    doc_e=$(sed -n '/<!-- requester-bot-reply-ops:begin -->/,/<!-- requester-bot-reply-ops:end -->/p' "$REPO_DIR/docs/requester-bot.zh.md" \
+        | sed -n '/^ *```bash/,/^ *```$/p' | sed '1d;$d' | sed 's/^   //' \
+        | sed -e 's|OWNER/REPO|example/ap|' -e 's|/issues/123/|/issues/79/|' -e 's|pending/requester-bot|pending/req|' \
+        | env -i HOME="$HOME" PATH="$W/docbin:/usr/bin:/bin" bash 2>/dev/null)
+    chk "文档命令读出的是最近一次挂等待标签的编号" "$doc_e" 8793
+    mkreply 79 979 req-bot "答复
+
+<!-- requester-bot-reply wait=$doc_e -->"
+    tick
+    chk "按文档写的说明 → 被认出、补打" "$(backfills 79)" 1
+    chk "中英文两份文档里的命令块一致（除注释）" \
+        "$(diff <(sed -n '/requester-bot-reply-ops:begin/,/requester-bot-reply-ops:end/p' "$REPO_DIR/docs/requester-bot.zh.md" | grep -v '^ *#') \
+                <(sed -n '/requester-bot-reply-ops:begin/,/requester-bot-reply-ops:end/p' "$REPO_DIR/docs/requester-bot.md" | grep -v '^ *#') >/dev/null && echo same || echo diff)" same
 }
 
 # ── 提示词：机器人需求 + 托管的合并规则 ──
