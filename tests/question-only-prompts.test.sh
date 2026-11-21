@@ -98,6 +98,8 @@ echo "── 2. 答复记录只有一种来源 ──"
 if grep -qF '原样使用，不手写、不改动' "$TMP/q-issue" && ! grep -qE 'agent-answer-only (seen|v=2 seen)=<' "$TMP/q-issue"; then ok "只让原样粘贴命令生成的记录，没有手写格式"
 else bad "规则段里有手写的答复记录格式"; fi
 grep -qF '<!-- agent-answer-only need=continue -->' "$TMP/q-issue" && ok "等继续记录写明了固定写法" || bad "缺等继续记录"
+grep -qF '把 snapshot 第一行原样存进一个文件' "$TMP/q-issue" && ! grep -qF '`record `' "$TMP/q-issue" \
+    && ok "发前比对存的就是 snapshot 第一行，没有要剥掉的前缀（PR #639 复审第 1 轮 #1）" || bad "规则段对第一行的说法和命令输出对不上"
 
 echo "── 3. 冲突一节与 PR 回复第 3 步 ──"
 section "$TMP/issue-comment.md" "$C" > "$TMP/c-issue"
