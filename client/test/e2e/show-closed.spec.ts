@@ -43,7 +43,7 @@ const items = (page: Page) => page.evaluate(async () => (await (window as any).c
 const storedView = async (app: RunningApp) => (((await app.backend.call('init')) as { settings: Record<string, any> }).settings.view ?? {}) as Record<string, any>;
 const viewState = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.view);
 const human = (i: Item) => i.labels.some((l) => l.name.toLowerCase() === 'pending/human');
-const rowKeys = (page: Page) => page.$$eval('[data-testid="row"]:not([data-pulled])', (rs) => rs.map((r) => r.getAttribute('data-key')!).sort());
+const rowKeys = (page: Page) => page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.map((r) => r.getAttribute('data-key')!).sort());
 const toggle = (page: Page) => page.getByTestId('show-closed-toggle');
 const box = (page: Page) => page.getByTestId('show-closed');
 const tally = (page: Page, kind: string) => page.locator(`[data-testid="tally"][data-kind="${kind}"]`);
