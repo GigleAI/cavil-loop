@@ -24,6 +24,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -230,7 +232,8 @@ off_suite "$NEW"
 
 compose_out() {   # <scripts 副本> <kind>
     env FAKE_GH_DIR="$RW/gh" CODING_AGENT_CONFIG="$RW/cavil-loop.config" bash -c '
-        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$2"
+        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$2" \
+        | strip_review_converge   # GitHub#621 起复审 prompt 总多一段收敛规则，不归这里的对拍管
 }
 # 改动前的拼装代码配本版的 prompts/（同 tests/requester-bot.test.sh 第 1 组的理由）
 OLD_P="$SANDBOX/old-scripts-new-prompts"; copy_tree "$SANDBOX/old-src" "$OLD_P"

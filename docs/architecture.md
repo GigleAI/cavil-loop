@@ -82,6 +82,14 @@ pending/agent ──► daemon dispatch ──► label: doing/agent   ← visib
                                             parent issue → pending/human (you decide whether to close it)
 ```
 
+Review converges instead of digging deeper each round: the first round after the last human action lists every problem it finds, later rounds only re-check that list and the fix. A project can write its own review standard in a `REVIEW.md` at its repository root.
+
+<details><summary>Details: what later rounds look at, what bounces</summary>
+
+The first review round after the last human action lists every problem it can find, numbered; later rounds only check that list item by item plus the fix itself — what changed between the commit the previous round reviewed and the current one, with whatever a plain merge of the base brought in subtracted (`scripts/review-scope.sh`; anything it cannot work out means a full review again). Suggestions (wording, naming, readability) never bounce; failed checks, conflicts, a broken hard rule, security and data loss always do. The reviewer gets a project's `REVIEW.md` in full, workers get a pointer to it. The full decision table: [operations](operations.md#review-converges-everything-in-round-one-then-only-the-fixes-github621).
+
+</details>
+
 A PR is never handed on while it conflicts with its base: the worker test-merges before every hand-off, and while a PR waits at `pending/human` the daemon re-checks it whenever its base moves (on by default; `PENDING_HUMAN_CONFLICT_CHECK=false` turns the daemon's re-check off).
 
 <details><summary>Details: the worker's conflict check before a hand-off</summary>

@@ -17,6 +17,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -791,7 +793,8 @@ CONF
     } > "$c"
     mkdir -p "$SANDBOX/cstate-$2"
     env -u CODING_AGENT_RELEASE_ROOT -u LABEL_PENDING_BLOCKED HOME="$SANDBOX/home" CODING_AGENT_CONFIG="$c" \
-        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3"
+        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3" \
+        | strip_review_converge   # GitHub#621 起复审 prompt 总多一段收敛规则，不归这里的对拍管
 }
 
 # 一组提示词检查。$1 = 根目录。打印每条检查的结果（chk）

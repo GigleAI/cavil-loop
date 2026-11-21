@@ -82,6 +82,14 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
                                             父 issue → pending/human（由你决定是否关闭）
 ```
 
+复审收敛，而不是一轮比一轮挖得深：最近一次人工动作之后的第 1 轮把能找到的问题一次列全，之后各轮只核对这份清单和修复本身。项目可以在仓库根目录写一份 `REVIEW.md` 作为本项目的审查标准。
+
+<details><summary>细节：之后各轮看什么、什么会打回</summary>
+
+最近一次人工动作之后的第 1 轮复审把能找到的问题一次列全、编号；之后各轮只逐条核对这份清单，再看修复本身——上一轮审过的提交到本轮提交之间的改动，扣掉单纯合入主干带进来的部分（`scripts/review-scope.sh`；算不出来的一律回到全量复审）。建议类（措辞、命名、可读性）一律不打回；检查失败、冲突、违反硬规则、安全和丢数据一律打回。复审拿到项目 `REVIEW.md` 的全文，worker 拿到一句指向它的提示。完整判断表见 [operations](operations.zh.md#复审收敛首轮一次报全之后只复核修复github621)。
+
+</details>
+
 PR 和目标分支有冲突时绝不交出去：worker 每次交出前都先试合并；PR 停在 `pending/human` 等你时，目标分支一动 daemon 就重查一次（默认开；`PENDING_HUMAN_CONFLICT_CHECK=false` 关掉 daemon 这一段）。
 
 <details><summary>细节：worker 交出 PR 前的冲突检查</summary>
