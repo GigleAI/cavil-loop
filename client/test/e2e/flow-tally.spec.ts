@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { loadRelationIssues, loadRelationPages, startFakeGitHub } from '../fake-github/server';
 import { launchApp, closeEngine, type AppEnv, type RunningApp } from './bridge';
 import { unfoldSettings } from './unfold';
+import { press, tally } from './tally';
 import type { Item } from '../../src/shared/types';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -62,7 +63,6 @@ const items = (page: Page) => page.evaluate(async () => (await (window as any).c
 /** open items carrying the label (whole name, any case) — written out here, independent of the app; `anyState` = closed ones too ("等人处理", GitHub#462) */
 const expected = async (page: Page, label: string, anyState = false) =>
   (await items(page)).filter((i) => (anyState || i.state === 'open') && i.labels.some((l) => l.name.toLowerCase() === label.toLowerCase())).length;
-const tally = (page: Page, kind: string) => page.locator(`[data-testid="tally"][data-kind="${kind}"]`);
 const countOf = async (page: Page, kind: string) => Number(await tally(page, kind).getByTestId('tally-count').textContent());
 const shown = (page: Page) => page.locator('[data-testid="row"]:not([data-pulled]):not([data-carried])');
 
@@ -97,8 +97,9 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   // ---- the numbers: open items per label, counted from what the window holds ----
   // GitHub#514: five numbers, 未处理 first, 稍后处理 last
   await expect(page.getByTestId('tally')).toHaveCount(5);
-  await expect(page.getByTestId('tally').first()).toHaveAttribute('data-kind', 'unlabeled');
-  await expect(page.getByTestId('tally').last()).toHaveAttribute('data-kind', 'later');
+  // (in the table's order; GitHub#634 moves folded ones into the fold, tested in flow-tally-fold.spec.ts)
+  await expect(page.locator('[data-testid="tally"][data-order="0"]')).toHaveAttribute('data-kind', 'unlabeled');
+  await expect(page.locator('[data-testid="tally"][data-order="4"]')).toHaveAttribute('data-kind', 'later');
   const want = { running: await expected(page, 'doing/agent'), agent: await expected(page, 'pending/agent'), human: await expected(page, 'pending/human', true) };
   // the recorded board really has items in flow, so equality is not 0 = 0
   expect(want.running).toBeGreaterThan(0);
@@ -126,7 +127,7 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
 
   // ---- a search, click 运行中, click again: the search comes back whole ----
   await page.getByTestId('search').fill('新增依赖图视图');
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('title', /再点一下回到之前的搜索/);
@@ -140,40 +141,40 @@ test('GitHub#404: three flow numbers replace "显示 N / M 条…"; the same wit
   await page.emulateMedia({ colorScheme: 'dark' });
   await shot(page, 'flow-tally-03-running-on-dark');
   await page.emulateMedia({ colorScheme: 'light' });
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'false');
 
   // ---- switching numbers keeps the first search ----
-  await tally(page, 'running').click();
-  await tally(page, 'human').click();
+  await press(page, 'running');
+  await press(page, 'human');
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
   await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'true');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'false');
-  await tally(page, 'human').click();
+  await press(page, 'human');
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
 
   // ---- the settings page in between does not lose the remembered search ----
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await page.getByTestId('open-settings').click();
   await unfoldSettings(page);
   await page.getByTestId('back').click();
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
 
   // ---- a hand edit voids it: typed back to a number's query, a click gives an empty box ----
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await page.getByTestId('search').fill('bug');
   await page.getByTestId('search').fill('label:"doing/agent"');
   await expect(tally(page, 'running')).toHaveAttribute('aria-pressed', 'true');
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('');
 
   // ---- an empty box: click, click again → empty ----
-  await tally(page, 'agent').click();
+  await press(page, 'agent');
   await expect(page.getByTestId('search')).toHaveValue('label:"pending/agent"');
-  await tally(page, 'agent').click();
+  await press(page, 'agent');
   await expect(page.getByTestId('search')).toHaveValue('');
 
   // ---- the board layout shows them too; the graph keeps its own sentence ----
@@ -289,7 +290,7 @@ test('GitHub#418: 未处理 counts open issues / PRs with no label; a click show
   await page.emulateMedia({ colorScheme: 'light' });
 
   // switching to another number and back keeps the first search; the lit one again gives it back
-  await tally(page, 'running').click();
+  await press(page, 'running');
   await expect(page.getByTestId('search')).toHaveValue('label:"doing/agent"');
   await expect(u).toHaveAttribute('aria-pressed', 'false');
   await u.click();
@@ -312,7 +313,9 @@ const state = (page: Page) => page.evaluate(async () => (await (window as any).c
  */
 const stored = async (app: RunningApp) => ((await app.backend.call('init')) as { settings: Record<string, unknown> }).settings;
 const rowOf = (page: Page, id: string) => page.locator(`[data-testid="tally-row"][data-id="${id}"]`);
-const barOrder = (page: Page) => page.getByTestId('tally').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
+/** the numbers' ids in the table's order (GitHub#634: folded ones included, wherever they are drawn) */
+const barOrder = (page: Page) =>
+  page.getByTestId('tally').evaluateAll((els) => els.slice().sort((a, b) => Number(a.getAttribute('data-order')) - Number(b.getAttribute('data-order'))).map((e) => e.getAttribute('data-kind')));
 
 test('GitHub#468: Settings → 顶栏计数 — add a number with a condition of its own, rename, recolour, move, delete; kept across a restart; the reminders do not move', async () => {
   let app = await launchApp(env);
@@ -445,8 +448,17 @@ test('GitHub#468: a row following a label the search box cannot carry counts exa
 });
 
 /** what a row of numbers shows, number by number: id, the text on it, its colour, enabled or not */
+/** each number's id, "name count" and colour in the table's order (GitHub#634: wherever it is drawn — the row or the fold) */
 const shapeOf = (page: Page, testid: string) =>
-  page.getByTestId(testid).evaluateAll((els) => els.map((e) => [e.getAttribute('data-kind'), (e.textContent ?? '').replace(/\s+/g, ' ').trim(), e.getAttribute('data-color')]));
+  page.getByTestId(testid).evaluateAll((els) =>
+    els
+      .slice()
+      .sort((a, b) => Number(a.getAttribute('data-order')) - Number(b.getAttribute('data-order')))
+      .map((e) => {
+        const why = e.querySelector('[data-testid="tally-fold-why"]')?.textContent ?? '';
+        return [e.getAttribute('data-kind'), (e.textContent ?? '').replace(why, '').replace(/\s+/g, ' ').trim(), e.getAttribute('data-color')];
+      }),
+  );
 
 test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s own numbers, changed at once by every edit; the parked label drives "稍后处理"', async () => {
   const { page } = await launchApp(env);
