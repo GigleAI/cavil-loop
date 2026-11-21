@@ -70,6 +70,14 @@ Closes #9
 { printf '有一章留在了折叠区外。\n\nCloses #1\n\n## 验证\n\n测试全绿。\n'; } > "$S/section-out.md"
 { printf '少了一个折叠块结尾。\n\nCloses #1\n\n<details><summary>动机</summary>\n\nx\n'; } > "$S/unclosed.md"
 { printf '托管总结段少了一块。\n\nCloses #1\n\n'; summary3 2; } > "$S/summary2.md"
+# PR #650 复审第 1 轮：行内代码里的标签不算折叠；下划线式标题也是标题
+{ printf '验证说明里提到了标签。\n\nCloses #1\n\n'; fold 验证 '说明中提到 `<details>` 和 `</details>` 标签。'; summary3; } > "$S/inline-tag.md"
+{ printf '有一章用下划线式标题留在了外面。\n\n验证\n----\n\n测试通过。\n'; } > "$S/setext-out.md"
+{ printf '下划线式标题写在折叠块里。\n\n'; fold 验证 '验证
+====
+
+测试通过。'; } > "$S/setext-in.md"
+{ printf '正文中间有一条分隔线。\n\n---\n\n'; fold 验证 x; } > "$S/hr.md"
 
 # 样例名 → 期望（第一行输出 + 退出码）
 expect=(
@@ -77,6 +85,7 @@ expect=(
     "short-head|bad section-outside 1+bad first-line 1|1" "fold-first|bad first-line 1|1"
     "link-folded|bad link-folded 5|1" "section-out|bad section-outside 5|1"
     "unclosed|bad section-outside 5|1" "summary2|bad autopilot-summary 5|1"
+    "inline-tag|ok|0" "setext-out|bad section-outside 3|1" "setext-in|ok|0" "hr|ok|0"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do

@@ -8,7 +8,7 @@
 #   first-line         第一行（去掉 HTML 注释后的第一个非空行）不是普通句子，或 daemon 列「同时在进行的工作」
 #                      时从这份正文读出的摘要不是这一行的那句（同一份规则：_concurrent_work_defs.sh 的 cw_first_sentence）
 #   link-folded        关联行（Closes / Fixes / Resolves / Refs / Part of #N）在折叠块里
-#   section-outside    折叠区外有 Markdown 标题，或 <details> / </details> 不成对（报没关上的那个 <details> 所在行）
+#   section-outside    折叠区外有 Markdown 标题（井号式或下划线式），或 <details> / </details> 不成对（报没关上的那个 <details> 所在行）
 #   autopilot-summary  有托管总结段标记，但标记不成对、次序反了，或两个标记之间不是恰好三个折叠块
 # 「几章挤进同一个折叠块」「改写时关联行被增删」要读懂内容或对比历史，这里不判。
 # 代码块（``` / ~~~ 围起来的）里的行不参与判定。
@@ -56,8 +56,13 @@ vis = blank.split("\n")
 # 逐行：围栏代码块里的行跳过；数 <details> 深度
 LINK = re.compile(r"^\s*(>\s*)*((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part of)\b[^#\n]*#[0-9]+)", re.I)
 HEAD = re.compile(r"^\s{0,3}#{1,6}(\s|$)")
-OPEN = re.compile(r"<details\b", re.I)
-CLOSE = re.compile(r"</details\s*>", re.I)
+SETEXT = re.compile(r"^\s{0,3}(=+|-+)\s*$")
+TAG = re.compile(r"</details\s*>|<details\b", re.I)
+
+def tags(line):
+    """这一行里真正的折叠标签：(是不是结尾标签, …)。行内代码里的标签只是文字，先去掉再找（正文和总结段共用这一份）"""
+    plain = re.sub(r"(`+)(?:(?!\1).)+?\1", lambda m: " " * len(m.group(0)), line)
+    return [t.group(0).startswith("</") for t in TAG.finditer(plain)]
 fence = None
 depth = 0
 opens = []      # 还没关上的 <details> 所在行
@@ -77,10 +82,14 @@ for i, l in enumerate(vis):
     depth_at.append(depth)
     if depth == 0 and HEAD.match(l):
         bad.append(("section-outside", i + 1))
+    # 下划线式标题（上一行文字、这一行全是 = 或 -）：上一行不是空行、也不是列表 / 引用 / 标签行，就是一个标题
+    if (depth == 0 and i > 0 and SETEXT.match(l) and depth_at[i - 1] == 0 and vis[i - 1].strip()
+            and not re.match(r"^\s*([-*+>|<]|[0-9]+[.)]\s|#)", vis[i - 1])):
+        bad.append(("section-outside", i))
     if depth > 0 and LINK.match(l):
         bad.append(("link-folded", i + 1))
-    for tok in re.finditer(r"</details\s*>|<details\b", l, re.I):
-        if tok.group(0).lower().startswith("</"):
+    for closing in tags(l):
+        if closing:
             depth -= 1
             if opens:
                 opens.pop()
@@ -129,8 +138,8 @@ if marks:
         for i in range(b + 1, e):
             if depth_at[i] is None:
                 continue
-            for tok in re.finditer(r"</details\s*>|<details\b", vis[i], re.I):
-                if tok.group(0).lower().startswith("</"):
+            for closing in tags(vis[i]):
+                if closing:
                     d -= 1
                     if d < 0:
                         okd = False
