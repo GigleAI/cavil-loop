@@ -649,7 +649,8 @@ so projects that replace the whole review template get it too).
 
 - **Full round** — the first round after the last human action, or any round whose baseline
   cannot be worked out: requirement, diff (or the whole proposal), tests and docs in one pass;
-  every problem listed and numbered (`#1`, `#2`, … kept across rounds).
+  every problem listed and numbered "problem 1", "problem 2", … kept across rounds — never `#1`,
+  which GitHub turns into a link to issue 1 (a list written with `#N` earlier is read as problem N).
 - **Re-check round** — from round 2 on, when the baseline is usable: the list is checked item by
   item (fixed / not fixed / the worker's reason for not changing it holds or not), new problems
   *inside the fix* are numbered and can bounce, and the always-blocking checks still cover the
@@ -1609,8 +1610,50 @@ nothing when it fails.
 <details><summary>Turning it off</summary>
 
 Set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
-read and counted; new deliveries are plain comments again. To make it the default for every
-project, change the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every
+read and counted; deliveries made by dispatches that start after the change are plain comments again
+(a worker or reviewer session already running keeps the rule it was started with).
+
+To do it with the project settings script instead of an editor (`myproject` is the instance key),
+first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
+
+<!-- round-log-check-ops:begin -->
+```bash
+bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "ENABLE_ROUND_LOG") | "\(.name)=\(.value)"'
+```
+<!-- round-log-check-ops:end -->
+
+Then run this whole block and read its last line:
+
+- `ROUND_LOG=off` — saved and read back as `false` (the line above it is `RESULT=saved`, or
+  `RESULT=unchanged` when it was already off).
+- `NOT_WRITTEN: …` — nothing was written (the config could not be read, it changed between the read
+  and the save, the backup could not be made, …); the config is untouched and the block can simply
+  be run again.
+- `UNCONFIRMED: …` — the config was written but the current value could not be confirmed (another
+  save landed right after it, or the read-back failed): run the check command above; `false` means
+  it is off, anything else means run the block again.
+
+<!-- round-log-off-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  RC=0; OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || RC=$?
+  printf '%s\n' "$OUT" | tail -1
+  case "$RC" in
+    0) ;;
+    4) echo "UNCONFIRMED: written, then changed elsewhere"; exit 1 ;;
+    *) echo "NOT_WRITTEN: exit $RC"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = false ]; then echo "ROUND_LOG=off"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-off-ops:end -->
+
+To make it the default for every project, change the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every
 project without the line then has it on.
 
 </details>

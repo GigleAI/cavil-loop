@@ -566,7 +566,8 @@ actor 与 `gh api user` 的账号，不需要揣摩评论文字的意图。轮�
 <details><summary>全量轮、复核轮与判断顺序</summary>
 
 - **全量轮**——最近一次人工动作之后的第 1 轮，或任何算不出基线的轮次：需求、diff（方案就是全文）、测试、
-  文档一次过完，问题全部列出、编号（`#1`、`#2`…，之后各轮沿用）。
+  文档一次过完，问题全部列出、编号（「问题 1」「问题 2」…，之后各轮沿用；不写 `#1`，GitHub 会把它链到 1 号 issue；
+  之前用 `#N` 写的清单当作问题 N 照常核对）。
 - **复核轮**——第 2 轮起、基线可用时：清单逐条核对（改好 / 没改好 / worker 给的不改理由成立否），**修复本身**
   里的新问题照常编号、可以打回，照拦关卡仍对整个 PR 照查。
 - **每个问题一条判断顺序**，停在第一个给出结果的一步：① 照拦——检查有失败或被取消的行、与主干冲突、违反
@@ -1363,8 +1364,45 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 
 <details><summary>关掉</summary>
 
-写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；之后的交付恢复成普通评论。要让
-所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
+写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；改完之后**开始的派工**交付恢复成普通评论
+（已经开着的 worker / 复审会话照它开始时的规则写）。
+
+不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
+
+<!-- round-log-check-ops:begin -->
+```bash
+bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "ENABLE_ROUND_LOG") | "\(.name)=\(.value)"'
+```
+<!-- round-log-check-ops:end -->
+
+再整段运行下面这一段，看最后一行：
+
+- `ROUND_LOG=off`：已保存，读回是 `false`（上一行是 `RESULT=saved`；本来就是关的时是 `RESULT=unchanged`）。
+- `NOT_WRITTEN: …`：什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
+- `UNCONFIRMED: …`：配置已经写过，但没能确认现在的值（紧接着又被别处存了一版，或读回失败）：跑上面查值的命令，
+  显示 `false` 就是已关上，不是 `false` 再重跑这一段。
+
+<!-- round-log-off-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  RC=0; OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || RC=$?
+  printf '%s\n' "$OUT" | tail -1
+  case "$RC" in
+    0) ;;
+    4) echo "UNCONFIRMED: written, then changed elsewhere"; exit 1 ;;
+    *) echo "NOT_WRITTEN: exit $RC"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = false ]; then echo "ROUND_LOG=off"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-off-ops:end -->
+
+要让所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
 
 </details>
 

@@ -20,6 +20,9 @@
 # 本项目 review 增量第 10 条、通用 review 模板 review 评论那一段各一份，逐字一致；review 模板另有
 # 2R 打回依据。交人评论那段里给 agent 照抄的范例句（以及方案 / 修订版结尾句、拆分交人评论）
 # 不许再带「你」「我」——只改规则不改范例，agent 照范例写，规则形同虚设。
+#
+# 「只有真的 issue / PR 才写 #编号」（GitHub#646）同理：三份 worker 模板第 11 条、本项目 review 增量第 11 条、
+# 通用 review 模板 review 评论那一段各一份，逐字一致。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -78,6 +81,9 @@ SELF_CHECK='**只读这一条评论、不点任何链接，能不能知道发生
 # 人称规则（GitHub#237）：同样从加粗开头截到行尾，所有出现逐字相同
 PRON_HEAD='**写明是人还是 agent，不用「你」「我」**'
 pron_texts() { grep -o -- "\*\*写明是人还是 agent，不用「你」「我」\*\*。.*" "$1"; }
+# 「只有真的 issue / PR 才写 #编号」（GitHub#646）：同样从加粗开头截到行尾
+NUM_HEAD='**只有真的 issue / PR 才写 `#编号`**'
+num_texts() { grep -o -- '\*\*只有真的 issue / PR 才写 `#编号`\*\*。.*' "$1"; }
 # 交人评论那段里给 agent 照抄的范例句（「」里的话），去掉人称规则本身那一行后不许带你 / 我 / 他
 handoff()   { sed -n '/^## 交人评论怎么写/,/^反面（读不懂的那版/p' "$1"; }
 quoted_pronouns() { handoff "$1" | grep -vF -- "$PRON_HEAD" | grep -oE '「[^」]*[你我他][^」]*」'; }
@@ -153,6 +159,21 @@ check_prompts() {
         # 会被原样抄进评论的结尾句 / 勾选项 / 拆分交人评论
         q=$(grep -E '@<author>|- \[ \] \*\*B\. 拆成 sub-issue\*\*|^5\. \*\*交人评论\*\*（发在本 issue）|「待.{1,2}确认的问题」' "$f" | grep -E '[你我]' | cut -c1-60)
         [ -z "$q" ] || echo "$name: 范例句带「你」「我」：$q"
+    done
+
+    # 「只有真的 issue / PR 才写 #编号」（GitHub#646）：三份 worker 第 11 条、review 增量第 11 条 + 通用模板 review 评论那一段
+    local ref_num=""
+    for name in "${ALL[@]}"; do
+        f="$TMP/composed-$name.md"; [ -s "$f" ] || continue
+        t=$(num_texts "$f" | sort -u); n=$(num_texts "$f" | wc -l)
+        if [ -z "$t" ]; then echo "$name: 没有「只有真的 issue / PR 才写 #编号」"; continue; fi
+        [ "$(wc -l <<<"$t")" -eq 1 ] || echo "$name: 「只有真的 issue / PR 才写 #编号」有不同写法"
+        if [ -z "$ref_num" ]; then ref_num="$t"; elif [ "$t" != "$ref_num" ]; then echo "$name: 「只有真的 issue / PR 才写 #编号」和 ${ALL[0]} 不一致"; fi
+        if [ "$name" = review ]; then
+            [ "$n" -ge 2 ] || echo "review: 「只有真的 issue / PR 才写 #编号」只出现 $n 处（应在本项目增量第 11 条和通用模板 review 评论那一段各一处）"
+        else
+            grep -qF -- "11. $NUM_HEAD" "$f" || echo "$name: 「只有真的 issue / PR 才写 #编号」不在交人评论那段的第 11 条"
+        fi
     done
 
     f="$TMP/composed-pr-comment.md"

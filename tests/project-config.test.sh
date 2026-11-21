@@ -16,6 +16,7 @@
 #   6. 备份是内容快照、只留最近 10 份
 #   7. 登记表：每项都在配置模板里；「不写时的值」和登记册、和真实加载 _lib.sh 后的值一致；禁止的类别不在里面
 #   8. 文档里写给人照做的命令，按字面在空环境跑通（中英两份一字不差）
+#   9. 关掉往返记录的文档步骤：同样照字面跑，正常、已关、读不了、保存前被改、没地方备份、写入后被改、读回失败
 #
 #   bash tests/project-config.test.sh
 set -uo pipefail
@@ -799,6 +800,82 @@ chk_has "保存成功" "$out" "RESULT=saved"
 chk_has "改完读回是新值" "$out" "MAX_CONCURRENT_WORKERS=2"
 chk "照文档还原后，配置文件和保存前一字不差" "$(cmp -s "$CONF" "$SANDBOX/orig" && echo same)" "same"
 [ "$fail" = 0 ] || printf '%s\n' "$out" | sed 's/^/     | /'
+
+echo "── 9. 关掉往返记录的文档步骤：照字面在空环境跑，七种情况各有一个结局 ──"
+# 查值、关掉两段命令（docs/operations{,.zh}.md 的 round-log-check-ops / round-log-off-ops），中英两份一字不差；
+# 失败时机用包一层的 jq / mv 做出来（包装命令把路径写死：空环境里没有别的变量可传）
+for b in round-log-check-ops round-log-off-ops; do
+    chk "$b：中英两份文档里的命令一字不差" "$(doc_block operations.zh.md "$b")" "$(doc_block operations.md "$b")"
+done
+doc_block operations.md round-log-check-ops > "$SANDBOX/rl-check.sh"
+doc_block operations.md round-log-off-ops > "$SANDBOX/rl-off.sh"
+chk "两段命令都非空" "$(grep -c . "$SANDBOX/rl-check.sh" | awk '{print ($1>0)}') $(grep -c . "$SANDBOX/rl-off.sh" | awk '{print ($1>5)}')" "1 1"
+RL_W="$SANDBOX/rl-wrap"; REAL_JQ="$(command -v jq)"; REAL_MV2="$(command -v mv)"
+rl_world() {   # <ENABLE_ROUND_LOG 的值>：myproject 这个实例，配置里写着这一行
+    fresh_world; mv "$H/.config/cavil-loop/widget.conf" "$H/.config/cavil-loop/myproject.conf"
+    printf 'ENABLE_ROUND_LOG="%s"\n' "$1" >> "$CONF"
+    mkdir -p "$H/.agents/skills"; ln -s "$REPO_DIR" "$H/.agents/skills/cavil-loop"
+    rm -rf "$RL_W"; mkdir -p "$RL_W"
+}
+rl_wrap_jq() {   # <匹配的过滤器> <动作>：只在文档命令那一次 jq 调用上动手，脚本自己的 jq 调用照常
+    cat > "$RL_W/jq" <<W
+#!/usr/bin/env bash
+if [ "\$1" = -er ] && [ "\$2" = '$1' ]; then
+    case '$2' in
+        fail) cat >/dev/null; exit 5 ;;
+        edit) "$REAL_JQ" "\$@"; rc=\$?; printf '\n# 别处改的一行\nEXT_MARK="1"\n' >> "$CONF"; exit \$rc ;;
+    esac
+fi
+exec "$REAL_JQ" "\$@"
+W
+    chmod +x "$RL_W/jq"
+}
+rl_run() {   # <脚本>：只带 HOME / PATH / LANG
+    RL_RC=0; RL_OUT="$(env -i HOME="$H" PATH="$RL_W:$SYS_PATH" LANG=C.UTF-8 bash "$1" 2>&1)" || RL_RC=$?
+}
+rl_val() { sed -n 's/^ENABLE_ROUND_LOG="\(.*\)"$/\1/p' "$CONF"; }
+rl_last() { printf '%s\n' "$RL_OUT" | tail -1; }
+
+rl_world true; rl_run "$SANDBOX/rl-check.sh"
+chk "查值：开着时输出 ENABLE_ROUND_LOG=true" "$RL_OUT" "ENABLE_ROUND_LOG=true"
+rl_run "$SANDBOX/rl-off.sh"
+chk "正常关闭：最后一行 ROUND_LOG=off、退出 0" "$(rl_last) $RL_RC" "ROUND_LOG=off 0"
+chk_has "正常关闭：上一行是 RESULT=saved" "$RL_OUT" "RESULT=saved"
+chk "正常关闭：配置里变成 false" "$(rl_val)" "false"
+rl_run "$SANDBOX/rl-check.sh"
+chk "关掉之后查值输出 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
+rl_run "$SANDBOX/rl-off.sh"
+chk "已经关着再跑一次：ROUND_LOG=off、RESULT=unchanged" "$(rl_last) $(grep -c '^RESULT=unchanged$' <<<"$RL_OUT")" "ROUND_LOG=off 1"
+
+rl_world true; chmod 000 "$CONF"; rl_run "$SANDBOX/rl-off.sh"; chmod 640 "$CONF"
+chk "配置读不了：没写入、退出非 0" "$(rl_last) $([ "$RL_RC" != 0 ] && echo nz)" "NOT_WRITTEN: config unreadable nz"
+chk "配置读不了：文件不变" "$(rl_val)" "true"
+
+rl_world true; rl_wrap_jq .rev edit; rl_run "$SANDBOX/rl-off.sh"
+chk "取指纹后、保存前被别处改过：没写入（RESULT=changed，退出码 2）" "$(rl_last) $(grep -c '^RESULT=changed$' <<<"$RL_OUT")" "NOT_WRITTEN: exit 2 1"
+chk "取指纹后被改过：值仍是 true，别处那一行还在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "true 1"
+
+rl_world true; mkdir -p "$ST"; : > "$ST/config-backups"; rl_run "$SANDBOX/rl-off.sh"
+chk "没地方放备份：没写入（RESULT=backup_failed）" "$(rl_last) $(grep -c '^RESULT=backup_failed$' <<<"$RL_OUT")" "NOT_WRITTEN: exit 2 1"
+chk "没地方放备份：文件不变" "$(rl_val)" "true"
+
+rl_world true
+cat > "$RL_W/mv" <<W
+#!/usr/bin/env bash
+"$REAL_MV2" "\$@"; rc=\$?
+[ "\${@: -1}" = "$CONF" ] && printf '\n# 换上之后别处又存了一版\nEXT_MARK="1"\n' >> "$CONF"
+exit \$rc
+W
+chmod +x "$RL_W/mv"; rl_run "$SANDBOX/rl-off.sh"
+chk "写入后马上被别处改：UNCONFIRMED（RESULT=saved_then_changed）、退出非 0" \
+    "$(rl_last) $(grep -c '^RESULT=saved_then_changed$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: written, then changed elsewhere 1 nz"
+chk "写入后被改：已是 false，别处那一行也在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "false 1"
+
+rl_world true; rl_wrap_jq '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' fail; rl_run "$SANDBOX/rl-off.sh"
+chk "保存成功、读回失败：UNCONFIRMED、退出非 0" "$(rl_last) $(grep -c '^RESULT=saved$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: saved, read-back failed 1 nz"
+chk "读回失败：文件里已是 false" "$(rl_val)" "false"
+rm -f "$RL_W/jq"; rl_run "$SANDBOX/rl-check.sh"
+chk "读回失败之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
 
 echo
 echo "通过 $pass，失败 $fail"
