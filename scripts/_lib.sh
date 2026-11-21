@@ -10147,7 +10147,8 @@ _MANAGED_HUMAN_PATHS_CHECK="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-lo
 # ── 缺价自动抓价（GitHub#51）──
 # 计价驱动（跑在 worker 里，不许联网）发现「某模型有用量却没单价」时只在本机留一个空
 # 标记；daemon 每轮调这里，有标记才去跑 price_fetch.py（官方价目页 + LiteLLM 两边一致
-# 才用，写进本机缓存，只补缺不覆盖）。没有标记时只是一次 ls，不碰网络。
+# 才用，写进本机缓存，只补缺不覆盖）。另外每天跑一次，抓 Claude 全部模型的最新价给评论
+# footer 用（GitHub#606）。两样都没到时只是一次 ls 和一次读文件，不碰网络。
 #
 # 开关 PRICE_AUTO_FETCH：默认开（issue #51 Q2=A），0 / false / no / off 关。
 # 抓价永远不许拖垮派工：脚本自己吞掉所有异常、恒返回 0，单次请求有超时，失败的模型
@@ -10260,8 +10261,14 @@ redact_scan_tick() {
 
 price_fetch_tick() {
     case "${PRICE_AUTO_FETCH:-1}" in 0|false|no|off) return 0 ;; esac
-    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop/unpriced"
-    [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] || return 0
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/cavil-loop" next=""
+    local dir="$cache/unpriced"
+    # 两件事各自到时才启动脚本：有缺价标记；或到了每天抓一次 Claude 最新价的时刻（GitHub#606，
+    # 时刻写在 latest-prices.next，读不出 = 到时）。都没到就只是一次 ls 和一次读文件，不碰网络
+    if ! { [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; }; then
+        [ -f "$cache/latest-prices.next" ] && next="$(head -c 32 "$cache/latest-prices.next" 2>/dev/null | tr -d '[:space:]')"
+        [[ "$next" =~ ^[0-9]+$ ]] && [ "$(date +%s)" -lt "$next" ] && return 0
+    fi
     # cavil-loop.config 里的赋值是**不带 export 的**，子进程看不到——显式传过去，
     # 否则部署者改的地址 / 冷却时间静默不生效。没设的不传，让脚本用自己的默认值。
     local line v envs=()

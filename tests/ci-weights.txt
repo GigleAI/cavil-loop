@@ -44,6 +44,7 @@ dispatch-backoff 5
 doc-diagrams 1
 fake-gh-server 8
 footer-ci-wait 10
+footer-listed-price 4
 footer-test-time 39
 greedy-dispatch 1
 heavy-test 173
@@ -65,7 +66,6 @@ preview-rename-coexist 1
 preview-socket-activation 7
 price-fetch 8
 price-identifiability 2
-price-sample-cache 5
 project-auto-add 85
 project-config 133
 project-config-poll 29

@@ -45,7 +45,7 @@
     python3 price_solve.py --table          # 输出给 driver 用的 JSON 价目表
     python3 price_solve.py --report         # 人读：逐项状态与闸门指标
     python3 price_solve.py --table --policy B
-    python3 price_solve.py --table --no-cache   # 不读也不写缓存，全量重扫（缓存见 load_samples_cached）
+    python3 price_solve.py --listed         # 评论 footer 用：官方最新价目，不读任何日志（GitHub#606）
     环境变量 CLAUDE_PROJECTS_DIR 可覆盖 transcript 目录（测试用）。
 """
 import argparse, datetime, hashlib, json, glob, math, os, random, statistics, sys
@@ -240,11 +240,13 @@ def codex_reprice(rec, pt):
 
 def fetched_reference():
     """claude 那一侧抓来的单价，形状同 REFERENCE。**内置参照里已有的模型一律不取**——
-    抓来的价只补缺，从不覆盖人工核对过的那张表。"""
-    out = {}
+    抓来的价只补缺，从不覆盖人工核对过的那张表（反解这一侧的规则；评论 footer 直接取最新价，
+    见 listed_table）。每天抓的最新价（GitHub#606）里有、内置表里没有的模型也算在内：
+    最新价收录了的模型 daemon 不再单独补抓，这里不带上，周报就会把它当成没价。"""
+    out = {m: p for m, p in load_latest().items() if m not in REFERENCE}
     for model, entry in (load_fetched().get("claude") or {}).items():
         prices = (entry or {}).get("prices") if isinstance(entry, dict) else None
-        if model in REFERENCE or not isinstance(prices, dict):
+        if model in REFERENCE or model in out or not isinstance(prices, dict):
             continue
         clean = {k: float(v) for k, v in prices.items()
                  if isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -252,6 +254,55 @@ def fetched_reference():
         if clean:
             out[model] = clean
     return out
+
+
+LATEST_ITEMS = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h")
+
+
+def latest_path():
+    """daemon 每天抓一次的 Claude 官方最新价目（GitHub#606，见 drivers/token-usage/price_fetch.py）。"""
+    return os.path.join(cache_dir(), "latest-prices.json")
+
+
+def _price_ok(v):
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and v >= 0)
+
+
+def load_latest():
+    """{model: {五项单价}}。文件没有、坏掉、某个模型缺项或有项不是合法数 → 那个模型不要（整份坏 → {}）。
+    只收五项齐全的模型：缺一项就会把那部分 token 当成缺价，不如整模型退回内置价。"""
+    try:
+        with open(latest_path(), encoding="utf-8") as f:
+            v = json.load(f)
+        models = v.get("claude", {}).get("models", {})
+    except Exception:
+        return {}
+    out = {}
+    if not isinstance(models, dict):
+        return out
+    for model, prices in models.items():
+        if (isinstance(prices, dict) and set(prices) == set(LATEST_ITEMS)
+                and all(_price_ok(prices[k]) for k in LATEST_ITEMS)):
+            out[model] = {k: float(prices[k]) for k in LATEST_ITEMS}
+    return out
+
+
+def listed_table():
+    """评论 footer 的价目表：直接取价，**不反推**（GitHub#606，维护者在 PR #612 定的）。
+
+    每个模型按这个顺序取第一份有的：
+      ① daemon 每天抓的官方最新价目（latest-prices.json）→ 可信度 fetched
+      ② 内置参照表 REFERENCE                                → 可信度 reference_only
+      ③ 缺价时抓来的补缺价（fetched-prices.json，GitHub#51）→ 可信度 fetched
+    形状与 --table 相同（models / fast），驱动不用改读法。一个日志文件都不读。"""
+    models = {}
+    for src, st in ((load_latest(), "fetched"), (REFERENCE, "reference_only"),
+                    (fetched_reference(), "fetched")):
+        for model, ref in src.items():
+            if model not in models:
+                models[model] = {it: {"status": st, "price": p} for it, p in ref.items()}
+    return {"reference_source": REFERENCE_SOURCE, "fast": dict(REFERENCE_FAST), "models": models}
 
 
 def norm_model(m):
@@ -278,240 +329,54 @@ def _solve(A, b):
     return None if any(not math.isfinite(v) for v in x) else x
 
 
-def projects_base(projects_dir=None):
-    return projects_dir or os.environ.get("CLAUDE_PROJECTS_DIR") \
-        or os.path.expanduser("~/.claude/projects")
-
-
-def _log_files(base):
-    """全部会话日志，**按 glob 返回的顺序**。样本顺序决定 bootstrap 抽到哪些下标（固定种子），
-    所以增量路径也必须按这个顺序拼样本，否则同一批日志会解出不同的数（GitHub#606）。"""
-    return glob.glob(os.path.join(base, "*", "*.jsonl"))
-
-
-def _extract(fh):
-    """一个文件能给出的全部计价原料：最后一条带 modelUsage 的 cost-state 总账 + 本文件
-    assistant 记录里 5m / 1h 缓存写入的累计。只留后面用得到的字段，按原值保存（不舍入）。
-    过滤（单模型、金额门槛）不在这里做：缓存的是原料，规则只在 _accumulate 一处。"""
-    last = None
-    w5 = w1 = 0
-    for line in fh:
-        if '"cost-state"' not in line and '"assistant"' not in line:
-            continue
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        t = r.get("type")
-        if t == "cost-state" and r.get("modelUsage"):
-            last = r
-        elif t == "assistant":
-            cc = ((r.get("message") or {}).get("usage") or {}).get("cache_creation") or {}
-            w5 += cc.get("ephemeral_5m_input_tokens") or 0
-            w1 += cc.get("ephemeral_1h_input_tokens") or 0
-    if last is not None:
-        last = {"modelUsage": last["modelUsage"], "totalCostUSD": last.get("totalCostUSD")}
-    return {"last": last, "w5": w5, "w1": w1}
-
-
-def _accumulate(rows, ttl, raw):
-    """把一个文件的原料并进样本。全量与增量两条路径共用这一份规则。"""
-    last = raw["last"]
-    if not last or len(last["modelUsage"]) != 1:
-        return
-    cost = last.get("totalCostUSD") or 0
-    if cost < 0.05:          # 太小的会话噪声占比过大，进方程只添乱
-        return
-    key, mu = list(last["modelUsage"].items())[0]
-    key = norm_model(key)
-    rows.setdefault(key, []).append((
-        mu.get("inputTokens", 0) / 1e6, mu.get("outputTokens", 0) / 1e6,
-        mu.get("cacheReadInputTokens", 0) / 1e6, mu.get("cacheCreationInputTokens", 0) / 1e6,
-        cost))
-    d = ttl.setdefault(key, {"w5": 0, "w1": 0})
-    d["w5"] += raw["w5"]
-    d["w1"] += raw["w1"]
-
-
 def load_samples(projects_dir=None):
     """{model: [(input, output, cache_read, cache_write, costUSD), ...]}，只收单模型会话。
 
     多模型会话的 totalCostUSD 拆不回每个模型，收进来只会污染方程组。
     另外统计每个模型本机 cache 写入的 5m / 1h 构成，用来判断两档能不能分开。
-    这是全量路径（--no-cache）：每个文件都读一遍。
     """
+    base = projects_dir or os.environ.get("CLAUDE_PROJECTS_DIR") \
+        or os.path.expanduser("~/.claude/projects")
     rows, ttl = {}, {}
-    for f in _log_files(projects_base(projects_dir)):
+    for f in glob.glob(os.path.join(base, "*", "*.jsonl")):
+        last = None
+        w5 = w1 = 0
         try:
             fh = open(f, encoding="utf-8", errors="replace")
         except OSError:
             continue
         with fh:
-            raw = _extract(fh)
-        _accumulate(rows, ttl, raw)
-    return rows, ttl
-
-
-# ── 计价样本按文件缓存（GitHub#606）──────────────────────────────────────────
-# 原来每次取表都把全部会话日志读一遍（本机 1,660 个文件 / 7.3 GB，约 25 秒），而判断
-# 「能不能用旧表」的目录指纹（文件数 + 最新 mtime + 总字节数）在有 agent 写日志时隔几秒
-# 就变，缓存几乎从不命中。现在逐文件缓存「这个文件读出的原料」，只重读变过的文件。
-#
-# 对号身份是五项：设备、inode、大小、mtime_ns、ctime_ns，全等才复用。ctime 是关键：等长
-# 改写后再用 os.utime 恢复 mtime，大小 / mtime / inode 都不变，只有 ctime 变（本机实测）。
-# 读之前 stat、读完对同一个打开的文件 fstat，两次不同 = 读的时候还在写：这次照常用读到的
-# 原料（与全量扫描读到的一样），但不进缓存，下次重读。
-#
-# 不加有效期、不改成「只认已结束会话」：已写过总账的文件后面还会追加缓存写入记录，原料
-# 照样会变（issue #606）。
-#
-# ⚠️ 「热缓存结果与全量重扫一致」的边界：日志只通过正常的写入、追加、替换、删除变化。
-#   系统时钟回拨到原值、再等长改写文件这种情况不覆盖——那时用 --no-cache。
-#
-# 缓存坏掉（读不出、不是 JSON、结构不对）、程序版本或日志目录不是这次的，一律整份作废
-# 重读；写不进去只影响下一次，不影响这一次的结果。
-SAMPLE_CACHE_FORMAT = 2
-
-
-def code_rev():
-    """本文件内容的哈希：改了取样或反解的代码，旧缓存就不算数，不靠人记得升版本号。"""
-    try:
-        with open(os.path.abspath(__file__), "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()[:16]
-    except OSError:
-        return "unknown"
-
-
-def _ident(st):
-    return [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
-
-
-def sample_cache_path(base):
-    key = hashlib.sha256(os.path.abspath(base).encode("utf-8", "surrogateescape")).hexdigest()[:16]
-    return os.path.join(cache_dir(), f"price-samples-{key}.json")
-
-
-def _num(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-# _accumulate 从单模型总账里取的四个用量字段：缓存里的值必须是 _accumulate 吃得下的，
-# 否则一份坏缓存会让求解器崩溃（PR #612 复审第 1 轮）。缺省照旧按 0 算，与全量扫描一致。
-USAGE_KEYS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
-
-
-def _valid_raw(raw):
-    """一个文件的原料是否完整、且 _accumulate 要用的每个值类型都对。
-
-    只查 _accumulate 真正读的东西：多模型总账在那里直接跳过，它的内容不查。"""
-    if not isinstance(raw, dict) or set(raw) != {"last", "w5", "w1"}:
-        return False
-    if not (_num(raw["w5"]) and _num(raw["w1"])):
-        return False
-    last = raw["last"]
-    if last is None:
-        return True
-    if not (isinstance(last, dict) and set(last) == {"modelUsage", "totalCostUSD"}
-            and isinstance(last["modelUsage"], dict) and last["modelUsage"]):
-        return False
-    if len(last["modelUsage"]) != 1:
-        return True
-    mu = next(iter(last["modelUsage"].values()))
-    cost = last["totalCostUSD"]
-    return (isinstance(mu, dict) and (cost is None or _num(cost))
-            and all(_num(mu[k]) for k in USAGE_KEYS if k in mu))
-
-
-def _content_sum(obj):
-    """缓存内容的校验和：读回时重算，对不上就整份当作没有。结构检查只能查出认得的坏法，
-    这一道查的是「和写进去的不是同一份」（PR #612 复审第 1 轮：两种结构损坏都绕过了检查）。
-
-    ⚠️ 按原样的键顺序算，**不排序**：输出的字节跟着键顺序走，排序后再算的校验和认不出
-    「内容一样、顺序变了」的缓存，热缓存就会吐出和全量重扫顺序不同的表（复审第 2 轮）。"""
-    blob = json.dumps(obj, ensure_ascii=False, allow_nan=True)
-    return hashlib.sha256(blob.encode("utf-8", "surrogatepass")).hexdigest()
-
-
-def _load_sample_cache(path, base, rev):
-    """整份缓存：合格就返回 {文件: {"id": [...], "raw": {...}}}，任何一处不对都返回 {}。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            c = json.load(f)
-    except Exception:
-        return {}
-    if not (isinstance(c, dict) and c.get("format") == SAMPLE_CACHE_FORMAT
-            and c.get("code") == rev and c.get("base") == os.path.abspath(base)
-            and isinstance(c.get("files"), dict)):
-        return {}
-    files = c["files"]
-    try:
-        if c.get("sum") != _content_sum(files):
-            return {}
-    except (TypeError, ValueError):
-        return {}
-    for k, e in files.items():
-        if not (isinstance(e, dict) and set(e) == {"id", "raw"}
-                and isinstance(e["id"], list) and len(e["id"]) == 5
-                and all(isinstance(x, int) and not isinstance(x, bool) for x in e["id"])
-                and _valid_raw(e["raw"])):
-            return {}
-    return files
-
-
-def _write_json_atomic(path, obj):
-    """临时文件（带进程号，几个 worker 同时写互不踩）+ 原子改名。写不进去静默放弃：
-    缓存只决定下一次要不要重读，不影响这一次的结果。"""
-    tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-
-def load_samples_cached(projects_dir=None):
-    """同 load_samples()，但只读上次之后变过的文件。结果与全量扫描逐项一致（顺序也一致）。"""
-    base = projects_base(projects_dir)
-    rev = code_rev()
-    path = sample_cache_path(base)
-    old = _load_sample_cache(path, base, rev)
-    new = {}
-    rows, ttl = {}, {}
-    for f in _log_files(base):
-        try:
-            st = os.stat(f)
-        except OSError:
-            st = None
-        e = old.get(f)
-        if st is not None and e is not None and e["id"] == _ident(st):
-            raw = e["raw"]
-            new[f] = e
-        else:
-            try:
-                fh = open(f, encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            with fh:
-                raw = _extract(fh)
+            for line in fh:
+                if '"cost-state"' not in line and '"assistant"' not in line:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    after = os.fstat(fh.fileno())
-                except OSError:
-                    after = None
-            if st is not None and after is not None and _ident(after) == _ident(st):
-                new[f] = {"id": _ident(st), "raw": raw}
-        _accumulate(rows, ttl, raw)
-    if new != old:
-        _write_json_atomic(path, {"format": SAMPLE_CACHE_FORMAT, "code": rev,
-                                  "base": os.path.abspath(base), "files": new,
-                                  "sum": _content_sum(new)})
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                t = r.get("type")
+                if t == "cost-state" and r.get("modelUsage"):
+                    last = r
+                elif t == "assistant":
+                    cc = ((r.get("message") or {}).get("usage") or {}).get("cache_creation") or {}
+                    w5 += cc.get("ephemeral_5m_input_tokens") or 0
+                    w1 += cc.get("ephemeral_1h_input_tokens") or 0
+        if not last or len(last["modelUsage"]) != 1:
+            continue
+        cost = last.get("totalCostUSD") or 0
+        if cost < 0.05:          # 太小的会话噪声占比过大，进方程只添乱
+            continue
+        key, mu = list(last["modelUsage"].items())[0]
+        key = norm_model(key)
+        rows.setdefault(key, []).append((
+            mu.get("inputTokens", 0) / 1e6, mu.get("outputTokens", 0) / 1e6,
+            mu.get("cacheReadInputTokens", 0) / 1e6, mu.get("cacheCreationInputTokens", 0) / 1e6,
+            cost))
+        d = ttl.setdefault(key, {"w5": 0, "w1": 0})
+        d["w5"] += w5
+        d["w1"] += w1
     return rows, ttl
 
 
@@ -617,13 +482,8 @@ def classify(model, gated, ttl, policy="A", fetched=None):
 
 
 def build(policy="A", projects_dir=None):
-    """全量：每个日志文件都读一遍再反解（--no-cache 走这里）。"""
     rows, ttl = load_samples(projects_dir)
-    return solve_table(rows, ttl, policy, fetched_reference())
-
-
-def solve_table(rows, ttl, policy, fetched):
-    """样本 → 价目表。全量与带缓存两条路径共用。"""
+    fetched = fetched_reference()
     table = {}
     for model, samples in sorted(rows.items()):
         gated, _ = gate(samples)
@@ -649,65 +509,67 @@ def cache_path():
     return os.path.join(cache_dir(), "price-table.json")
 
 
-def solve_fingerprint(rows, ttl, policy, fetched, rev=None):
-    """反解的全部输入：样本（含顺序）、5m/1h 构成、参照、抓来的价、取值策略、阈值与抽样参数、
-    程序版本。这些都没变，反解结果就一定相同，可以直接复用（GitHub#606）。
+def _signature(projects_dir=None):
+    """目录指纹：文件数 + 最新 mtime + 总字节数 + 参照表哈希。日志一变就重算，不靠固定 TTL 猜。
 
-    原来的判据是日志目录的「文件数 + 最新 mtime + 总字节数」：有 agent 在写日志时隔几秒
-    就变，可表本身没变；而阈值、抽样参数这些环境变量改了，判据却不变。
-
-    ⚠️ 按原样的顺序序列化，**不排序**：没有本机样本的模型，单价各项按参照 / 抓来的价里的
-    原顺序写进表，同一组价换个键顺序，输出的字节就不同。排序后的指纹会把两者当成一样、
-    返回旧顺序的表（复审第 2 轮）。顺序多算进去只会让重算变多，不会让结果出错。"""
-    blob = json.dumps([rev or code_rev(), policy, rows, ttl,
-                       REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST, fetched,
-                       [MAX_AMPLIFY, MAX_SPREAD, MAX_DIVERGE, MIN_SESSIONS,
-                        BOOTSTRAP_N, NOISE, SEED]],
-                      allow_nan=True)
-    return hashlib.sha256(blob.encode()).hexdigest()
+    带上总字节数是因为 mtime 只精确到秒：同一秒内换掉一批同样数量的文件时，
+    只看「文件数 + mtime」会撞上同一个指纹、返回过期的表（写测试时踩到过）。"""
+    base = projects_dir or os.environ.get("CLAUDE_PROJECTS_DIR") \
+        or os.path.expanduser("~/.claude/projects")
+    n, newest, size = 0, 0.0, 0
+    for f in glob.glob(os.path.join(base, "*", "*.jsonl")):
+        try:
+            st = os.stat(f)
+            n += 1
+            newest = max(newest, st.st_mtime)
+            size += st.st_size
+        except OSError:
+            pass
+    # 参照表也进指纹：只改参照、transcript 没动时，不能继续读旧表（GigleTutor-Web#982）。
+    # 抓来的价同理（GitHub#51）：daemon 刚补上一个模型，下一次取表就得用上。
+    ref = hashlib.sha256(json.dumps([REFERENCE_SOURCE, REFERENCE, REFERENCE_FAST,
+                                     fetched_reference()],
+                                    sort_keys=True).encode()).hexdigest()[:16]
+    return f"{n}:{newest:.0f}:{size}:{ref}"
 
 
 def build_cached(policy="A", projects_dir=None):
-    """带缓存的 build()：样本按文件增量读（load_samples_cached），反解按输入指纹复用。
-    缓存坏掉一律当没有，不让它挡路；结果与 build() 逐字节一致。"""
-    rows, ttl = load_samples_cached(projects_dir)
-    fetched = fetched_reference()
-    sig = solve_fingerprint(rows, ttl, policy, fetched)
+    """带缓存的 build()。反解要扫全部 transcript（本机约 3 秒），而 driver 每发一条评论
+    都会调一次，所以按目录指纹缓存；指纹变了就重算。缓存坏掉一律当没有，不让它挡路。"""
+    sig = _signature(projects_dir)
     path = cache_path()
     try:
         with open(path, encoding="utf-8") as f:
             c = json.load(f)
-        t = c.get("table")
-        if (c.get("signature") == sig and _valid_table(t, policy)
-                and c.get("sum") == _content_sum(t)):
-            return t
+        if c.get("signature") == sig and c.get("table", {}).get("policy") == policy:
+            return c["table"]
     except Exception:
         pass
-    table = solve_table(rows, ttl, policy, fetched)
-    _write_json_atomic(path, {"signature": sig, "table": table, "sum": _content_sum(table)})
+    table = build(policy, projects_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"signature": sig, "table": table}, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
     return table
-
-
-def _valid_table(t, policy):
-    """价目表有 solve_table() 产出的那几层：--report / --table 和两个驱动读的就是这些。"""
-    if not (isinstance(t, dict)
-            and set(t) == {"policy", "reference_source", "thresholds", "fast", "models"}
-            and t["policy"] == policy and isinstance(t["reference_source"], str)
-            and isinstance(t["thresholds"], dict) and isinstance(t["fast"], dict)
-            and isinstance(t["models"], dict)):
-        return False
-    return all(isinstance(items, dict) and all(isinstance(v, dict) and "status" in v and "price" in v
-                                               for v in items.values())
-               for items in t["models"].values())
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--table", action="store_true", help="输出 JSON 价目表（给 driver）")
     ap.add_argument("--report", action="store_true", help="人读的逐项状态")
+    ap.add_argument("--listed", action="store_true",
+                    help="输出直接取价的 JSON 价目表（评论 footer 用，不读日志、不反推）")
     ap.add_argument("--no-cache", action="store_true", help="跳过缓存，强制重算")
     ap.add_argument("--policy", default=os.environ.get("PRICE_POLICY", "A"), choices=["A", "B"])
     a = ap.parse_args()
+    if a.listed:
+        json.dump(listed_table(), sys.stdout, ensure_ascii=False)
+        print()
+        return
     t = build(a.policy) if a.no_cache else build_cached(a.policy)
     if a.report or not a.table:
         print(f"参照来源：{t['reference_source']}")

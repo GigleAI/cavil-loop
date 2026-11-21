@@ -1530,22 +1530,21 @@ toggle) and a hidden `agent-metrics` record on the last line for the weekly repo
     told); waits with no end on record are left out of the total; overlap with local tests cannot
     be taken out (tests only report a total) — see the "other is 0" rule above.
 
-- **One price table per footer, and the table is cached per log file** (GitHub#606). The Claude
-  usage driver prices each call with a table solved from every Claude session log on the
-  machine (`scripts/weekly-report/price_solve.py`). The footer calls the Claude driver once
-  with `--both`, which prints the readable line and the machine record from one table and one
-  pass over the logs; anything but exactly two lines counts as "usage unknown" for both, and the
-  driver is not called again (the Codex driver is still called twice). The table keeps two
-  caches under `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/`: `price-samples-<hash>.json` holds what
-  each log file contributed, reused only while the file's device, inode, size, modification time
-  and change time (`ctime`) are all unchanged, so only files written since the last run are read
-  again; `price-table.json` holds the solved table, reused while its inputs (the samples, the
-  built-in and fetched reference prices, the policy, the solver's settings and code) are
-  unchanged. A cached run gives byte-identical output to a full scan as long as logs only change
-  through ordinary writes, appends, replacements and deletions. ⚠️ Not covered: the system clock
-  set back to an earlier moment and a file then rewritten at the same length. Force a full scan
-  with `python3 scripts/weekly-report/price_solve.py --table --no-cache` (reads every log, uses
-  and writes no cache); deleting the two files has the same effect on the next run.
+- **The Claude footer takes the latest published prices; it does not solve prices from logs**
+  (GitHub#606). Once a day the daemon downloads the official Claude pricing page and the LiteLLM
+  price list and keeps every model whose five prices (input, output, cache read, 5-minute and
+  1-hour cache write) are listed on both and agree, in
+  `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`; the time of the next download is in
+  `latest-prices.next` next to it (a failed download is retried after `PRICE_FETCH_COOLDOWN_SECS`,
+  6 hours by default, and the previous file stays in use). The usage driver prices each call with
+  `python3 scripts/weekly-report/price_solve.py --listed`, which reads no session log: the latest
+  price for the model, else the built-in table, else a price fetched for a missing model. In the
+  machine record that is `price_source=default`, with the amount split into `fetched` (downloaded)
+  and `reference_only` (built-in). The footer calls the Claude driver once with `--both`, which
+  prints the readable line and the machine record from one table; anything but exactly two lines
+  counts as "usage unknown" for both, and the driver is not called again (the Codex driver is
+  still called twice). `PRICE_AUTO_FETCH=off` turns the download off too; the footer then uses the
+  built-in table. The weekly report still solves prices from the logs, as before.
 
 ### Average AI and test time per merged PR (estimate, GitHub#593)
 

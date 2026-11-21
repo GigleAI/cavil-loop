@@ -1228,15 +1228,15 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
 
-- **一条 footer 只取一次价目表，价目表按日志文件缓存**（GitHub#606）。Claude 用量驱动按一张价目表给每次调用计价，
-  这张表由 `scripts/weekly-report/price_solve.py` 从本机全部 Claude 会话日志反解出来。footer 对 Claude 驱动只调一次
-  `--both`，人读行和机器记录出自同一张表、同一遍读日志；拿到的不是恰好两行就两行一起算「用量未知」，不再调第二次
-  （Codex 驱动照旧调两次）。价目表在 `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/` 下有两份缓存：`price-samples-<哈希>.json`
-  记每个日志文件读出的样本，只有文件的设备、inode、大小、修改时间、状态改变时间（`ctime`）五项都没变才沿用，所以只重读
-  上次之后写过的文件；`price-table.json` 记反解好的表，输入（样本、内置与抓来的参照价、取值策略、求解参数和代码）都没变就
-  直接沿用。只要日志是通过正常的写入、追加、替换、删除变化的，用缓存的结果与全量重扫逐字节一致。⚠️ 不覆盖：系统时钟回拨到
-  更早的时刻、再等长改写某个文件。这时强制全量重扫：`python3 scripts/weekly-report/price_solve.py --table --no-cache`
-  （每个日志都读，不读也不写缓存）；删掉这两个文件，下一次也会全量重读。
+- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页和
+  LiteLLM 价目表，五项单价（input、output、缓存读、5 分钟和 1 小时缓存写入）两边都有且一致的模型存进
+  `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`；下次下载的时刻写在旁边的 `latest-prices.next`（下载失败过
+  `PRICE_FETCH_COOLDOWN_SECS`、默认 6 小时再试，期间继续用上一份）。用量驱动用
+  `python3 scripts/weekly-report/price_solve.py --listed` 给每次调用计价，一个会话日志都不读：模型有最新价用最新价，
+  没有用内置表，再没有用缺价时补抓来的价。机器记录里是 `price_source=default`，金额拆成 `fetched`（下载来的）和
+  `reference_only`（内置表）。footer 对 Claude 驱动只调一次 `--both`，人读行和机器记录出自同一张表；拿到的不是恰好两行就
+  两行一起算「用量未知」，不再调第二次（Codex 驱动照旧调两次）。`PRICE_AUTO_FETCH=off` 同时关掉这项下载，footer 就用内置表。
+  周报照旧从日志反解单价。
 
 ### 每个已合并 PR 的平均 AI 与测试耗时（估算，GitHub#593）
 

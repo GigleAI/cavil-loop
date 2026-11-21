@@ -24,6 +24,13 @@ LiteLLM 是第三方，可能抄错或晚收录。一个看起来正常、其实
   · 只有一边有的项不采用（该项照旧计入缺价），input / output 两边都必须有
 
 失败的模型冷却 COOLDOWN 秒再试，不会每轮都去打外网；成功的模型删掉标记。
+
+每日最新价（GitHub#606）：除了补缺，每天还把官方价目页上**全部** Claude 模型的价抓一遍
+（同样两源一致、五项齐全才收），写进 `latest-prices.json`。评论 footer 直接用它计价，
+不再从本机日志反推（维护者在 PR #612 定的：「不要反推，取最新的，缓存一天」）。
+成功后 LATEST_EVERY 秒（一天）内不再抓；失败冷却 COOLDOWN 秒再试，旧文件保留不动，
+一份都没抓到时 footer 用内置参照表。下次该抓的时刻写在 `latest-prices.next`（一个整数），
+daemon 每轮只读这个数，没到时间不启动本脚本。
 本脚本只往 stdout 打日志行（daemon 逐行转进 poll.log），退出码恒为 0——抓价失败
 不能影响派工。
 
@@ -61,6 +68,7 @@ def _num(name, default, cast):
 
 
 COOLDOWN = _num("PRICE_FETCH_COOLDOWN_SECS", "21600", int)
+LATEST_EVERY = _num("PRICE_LATEST_REFRESH_SECS", "86400", int)   # 最新价缓存一天（GitHub#606）
 TIMEOUT = _num("PRICE_FETCH_TIMEOUT", "15", float) or 15.0
 MAX_PRICE = 1000.0                      # 美元 / 百万 token；现役最贵的档位也远低于它
 MAX_DIVERGE = price_solve.MAX_DIVERGE   # 与反解那一侧的交叉核对用同一个阈值
@@ -96,6 +104,32 @@ def marker_dir():
 
 def state_path():
     return os.path.join(price_solve.cache_dir(), "price-fetch-state.json")
+
+
+def latest_due_path():
+    """下次该抓最新价的时刻（epoch 整数）。daemon 的 price_fetch_tick 读同一个文件。"""
+    return os.path.join(price_solve.cache_dir(), "latest-prices.next")
+
+
+def latest_due(now):
+    """到时间了吗。文件没有、读不出、不是整数 → 到了（宁可多抓一次，不要永远不抓）。"""
+    try:
+        with open(latest_due_path(), encoding="utf-8") as f:
+            nxt = int(f.read().strip())
+    except (OSError, ValueError):
+        return True
+    return now >= nxt
+
+
+def _write_due(epoch):
+    try:
+        os.makedirs(price_solve.cache_dir(), exist_ok=True)
+        tmp = f"{latest_due_path()}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(f"{int(epoch)}\n")
+        os.replace(tmp, latest_due_path())
+    except OSError:
+        pass
 
 
 def _load_json(path, default):
@@ -343,6 +377,43 @@ def resolve(agent, model):
     return reconcile(agent, o, c)
 
 
+def refresh_latest(now):
+    """抓官方价目页上全部 Claude 模型的最新价（GitHub#606）。两源一致、五项齐全的模型才收；
+    一个都收不到算失败：旧的 latest-prices.json 不动，COOLDOWN 秒后再试。"""
+    o_text, o_err = fetch(ANTHROPIC_URL)
+    c_text, c_err = (None, None) if o_text is None else fetch(LITELLM_URL)
+    official = parse_anthropic(o_text) if o_text is not None else None
+    community = parse_litellm(c_text, "claude") if c_text is not None else None
+    why = (f"官方页下载失败：{o_err}" if o_text is None
+           else f"LiteLLM 下载失败：{c_err}" if c_text is None
+           else "官方页解析不出价目表（页面可能改版）" if not official
+           else "LiteLLM 解析不出价目表" if community is None else None)
+    ok, skipped = {}, []
+    if why is None:
+        for model, vals in official.items():
+            c = community.get(model)
+            prices, bad = (None, "有歧义") if vals is None else \
+                (None, "LiteLLM 没有收录") if c is None else reconcile("claude", vals, c)
+            if prices is not None and set(prices) != set(price_solve.LATEST_ITEMS):
+                prices, bad = None, "缺项"
+            if prices is None:
+                skipped.append(f"{model}（{bad}）")
+            else:
+                ok[model] = prices
+        if not ok:
+            why = "没有一个模型两边一致、五项齐全"
+    if why:
+        _write_due(now + COOLDOWN)
+        log(f"Claude 最新价目抓取失败，{COOLDOWN // 3600} 小时后再试（评论 footer 继续用上次的价或内置价）：{why}")
+        return
+    _save_json(price_solve.latest_path(), {"claude": {
+        "fetched_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sources": [ANTHROPIC_URL, LITELLM_URL], "models": ok}})
+    _write_due(now + LATEST_EVERY)
+    log(f"已更新 Claude 最新价目：{len(ok)} 个模型"
+        + (f"；未采用 {len(skipped)} 个：{'、'.join(skipped)}" if skipped else ""))
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def pending_markers():
     """[(agent, model, 标记路径)]。名字不合规的标记直接删掉（不是驱动写的）。"""
@@ -372,8 +443,10 @@ def _rm(p):
 def main():
     if os.environ.get("PRICE_AUTO_FETCH", "1") in ("0", "false", "no", "off"):
         return
+    now = time.time()
     markers = pending_markers()
-    if not markers:
+    want_latest = latest_due(now)
+    if not markers and not want_latest:
         return
     os.makedirs(price_solve.cache_dir(), exist_ok=True)
     # 多个项目的 daemon 共用这份缓存：同一时刻只让一个在抓，其余这一轮直接跳过
@@ -382,9 +455,12 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return
+    # 拿到锁之后再看一次：别的项目的 daemon 可能刚抓完
+    if latest_due(now):
+        refresh_latest(now)
     fetched = price_solve.load_fetched()
+    latest = price_solve.load_latest()
     state = _load_json(state_path(), {})
-    now = time.time()
     changed = False
     for agent, model, path in markers:
         key = f"{agent}/{model}"
@@ -393,7 +469,8 @@ def main():
         # 之后每条 footer 留标记、每轮又被删，日期名永远补不上（PR #55 复审第 2 轮）。
         # 基名只用于在**价目来源**里查找（官方页只写显示名，没有日期），查到后两源核验，
         # 按驱动看到的实际模型名落缓存。
-        if model in builtin_models(agent) or model in fetched.get(agent, {}):
+        if (model in builtin_models(agent) or model in fetched.get(agent, {})
+                or (agent == "claude" and model in latest)):
             _rm(path)                                  # 已经有价：不抓，也不再提
             continue
         last = (state.get(key) or {}).get("last_attempt") or 0

@@ -45,19 +45,21 @@
 # 极少数 usage 记录的**顶层**计数被写成 0，真值只落在 `usage.iterations[]` 里。
 # 5 个求和项各走一次「顶层 > 0 用顶层，否则用明细同名项的合计」，两者**永不相加**。
 #
-# ── 单价：运行时反解 + 两道检验（GigleTutor-Web#934）─────────────────────
-# 不再硬编价目表——原来那张表过期了没人发现，实测 Opus 档是当前标价的 3 倍，算出来的
-# 金额比 CLI 自记高 193%。现在每条调用**按它自己的模型和缓存档位**取价，价目由
-# scripts/weekly-report/price_solve.py 从本机 CLI 记账反解，并给出四态：
-#   corroborated 稳定且与外部参照一致 / uncorroborated 稳定但无参照（候选估算）/
-#   disputed 稳定但与参照冲突（报红）/ unstable 不可解
-# ⚠️ 「稳定」不等于「准确」：稳定性检验测不出系统性计数误差。详见该模块的文件头。
+# ── 单价：直接取官方最新价目，不反推（GitHub#606）─────────────────────────
+# 每条调用**按它自己的模型和缓存档位**取价。价目由
+# `scripts/weekly-report/price_solve.py --listed` 给出，一个日志文件都不读：
+#   ① daemon 每天从官方价目页抓一次的最新价（与 LiteLLM 一致才用，price_fetch.py）→ fetched
+#   ② 没抓到时用内置参照表（price_solve.REFERENCE，人工核对过的那份官方价）        → reference_only
+#   ③ 两样都没有的模型，用缺价时补抓来的价（GitHub#51）                             → fetched
+# 以前这里从本机**全部** Claude 会话日志反解单价，每条 footer 要读几 GB 日志、几十秒；
+# 维护者在 PR #612 定了「不要反推，取最新的，缓存一天」。周报那一侧仍按原样反解
+# （scripts/weekly-report/collect.py），它会按日志重算每条派工的金额。
 #
-# 输出里因此多了三个字段：
+# 输出里因此多了这些字段：
 #   cost_state           full / partial / none —— **价格**覆盖（模型有没有单价）
 #   cost_unknown_tokens  没算进金额的 token 数
-#   price_source         solved（本机反解）—— codex 那一侧写 configured（人工配置）
-#   price_status         金额按单价可信度拆开，如 corroborated:41.20,disputed:2.16
+#   price_source         default（取的是官方公开价，同 codex 那一侧的内置价）
+#   price_status         金额按单价出处拆开，如 fetched:41.20,reference_only:2.16
 #   models               本窗口实际产生非零用量的模型 ID，去重、排序、逗号分隔
 #   model_unknown        yes / no —— 是否另有非零用量无法归属到模型
 #   ai_secs / ai_requests  AI 时间估算（秒，毫秒精度）与参与估算的请求数（ai_time.py，
@@ -67,12 +69,11 @@
 #   （格式见 ci_wait.py 文件头）。人读行和 --kv 行都不变；找不到会话文件时同样什么也不输出。
 #
 # 缺价（GitHub#51）：某个认得出的模型有用量却取不到价时，留一个本机缺价标记
-#   （_price_cache.sh，不联网）；daemon 下一轮联网补价，补来的价在价目表里状态是
-#   fetched，人读行注明「含自动联网获取的单价」。
+#   （_price_cache.sh，不联网）；daemon 下一轮联网补价。用上联网抓来的价（每天的最新价
+#   或补缺价）时，人读行注明「含自动联网获取的单价」。
 #
-# ⚠️ price_status 必须真的发出去。它原来算了却没进输出，结果「用参照兜底的存疑金额」
-#   和「已与参照核对过的金额」在周报里长得一模一样，设计承诺的报红形同虚设
-#   （#934 交叉 review 第 1 轮打回）。
+# ⚠️ price_status 必须真的发出去：抓来的价和内置价要在周报里分得开
+#   （#934 交叉 review 第 1 轮打回过「算了却没进输出」）。
 #
 # 漏算：worker 调本脚本的 Bash 调用本身 + 之后到 gh comment 完成那一小段，
 # transcript 还没 flush 进去，会漏 < 1%（整任务比例）。可忽略。
@@ -122,7 +123,8 @@ if [ "$MODE" = "--ci-wait" ]; then
     exit $?
 fi
 
-PRICES=$(python3 "$SOLVER" --table 2>/dev/null)
+# 直接取价，不读日志（GitHub#606）；取不到就是空表，所有 token 记缺价
+PRICES=$(python3 "$SOLVER" --listed 2>/dev/null)
 [ -z "$PRICES" ] && PRICES='{"models":{},"fast":{}}'
 
 RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices "$PRICES" '
@@ -180,9 +182,8 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
           | (if $c.speed == "fast" then ($prices.fast[$c.model] // null) else null end) as $fast
           | ($prices.models[$c.model] // null) as $tbl
           | ($c.model == "<synthetic>") as $syn
-          # 每一项：取到的价 + 这个价的可信度（corroborated / uncorroborated /
-          # disputed / unstable / reference_only）。可信度要跟着金额一路带到周报，
-          # 否则用参照兜底的存疑金额和已核对的金额在报告上长得一样。
+          # 每一项：取到的价 + 这个价的出处（fetched 联网抓来的 / reference_only 内置表）。
+          # 出处要跟着金额一路带到周报，否则自动抓的价和人工核对过的价在报告上长得一样。
           | ([$c.tok | to_entries[]
               | . as $e
               | (if $syn then null
@@ -237,11 +238,11 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
     | (if .unk == 0 then "full"
        elif .known > 0 then "partial"
        else "none" end) as $state
-    # 金额按单价可信度拆开，形如 corroborated:41.20,disputed:2.16（无空格，进标记不破格式）。
+    # 金额按单价出处拆开，形如 fetched:41.20,reference_only:2.16（无空格，进标记不破格式）。
     # 发原值而不是 usd2：舍成 0.00 的桶，可信状态就在源头没了。
     | ([.bystat | to_entries[] | select(.value > 0)
         | "\(.key):\(.value)"] | join(",")) as $pstat
-    # 冲突警示两态都要报：与内置参照冲突、与抓来的参照冲突
+    # 冲突警示：直接取价时不会出现（没有反解值可冲突），价目表若带上这两态照样报
     | ((.bystat.disputed // 0) + (.bystat.disputed_fetched // 0)) as $dsp
     # 模型集合只描述真正产生用量的调用；<synthetic> 和全零记录都不能冒充证据。
     # unknown 是归属状态而非模型 ID，单独输出，避免污染 models 列表。
@@ -254,8 +255,8 @@ RES=$(jq -sr --argjson start "$START_EPOCH" --arg mode "$MODE" --argjson prices 
     | ("in=\(.in) out=\(.out) cache_r=\(.cr) cache_w=\($cw)"
            + (if $state == "none" then "" else " cost_usd=\(.usd)" end)
            + " cost_state=\($state) cost_unknown_tokens=\(.unk)"
-           # 单价出处：这一侧是本机反解的（codex 那侧是人工配置，写 configured）
-           + " price_source=solved"
+           # 单价出处：官方公开价（每天抓的最新价或内置表），同 codex 那侧的 default
+           + " price_source=default"
            + (if $pstat == "" then "" else " price_status=\($pstat)" end)
            + " models=\($models) model_unknown=\($model_unknown)") as $kvline
     | ("\(.in | fmt) input, \(.out | fmt) output, \(.cr | fmt) cache read, \($cw | fmt) cache write"
