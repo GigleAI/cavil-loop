@@ -104,7 +104,7 @@
 <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.428571;0.437500;0.553571;0.562500;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">4  Review  ·  review.extra.md</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Only with LABEL_PENDING_REVIEW set: another agent reviews with the tool's review template plus review.extra.md.</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">A pass goes to the human; a fail bounces back to the worker with feedback, at most REVIEW_MAX_ROUNDS rounds.</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">Fail: back to the worker. Pass: to the human; on autopilot, design to build, code to the merge check.</text>
 </g>
 <g class="cap" transform="translate(72 502)" opacity="0">
 <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.571429;0.580357;0.696429;0.705357;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>

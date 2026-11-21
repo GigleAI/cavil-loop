@@ -17,7 +17,7 @@ cavil-loop 的流程本身是固定的：派工、写方案、开发、复审、
 | ① 建 worktree 后 | `WORKTREE_SETUP_CMD` | daemon | 每次给条目新建 worktree 之后 | 配置模板里是 `npm ci \|\| npm install` |
 | ② 拼提示词 | `<模板名>.extra.md` | daemon | 每次派工 | 没有文件 = 只用工具自带的模板 |
 | ③ 开 PR 后 | `PR_CREATED_HOOK` | worker | worker 开完 PR、翻完标签之后 | 空 = 不跑 |
-| ④ 复审 | `review.extra.md` | 复审 agent | 设了 `LABEL_PENDING_REVIEW`，worker 交出代码或方案时 | 关 |
+| ④ 复审 | `review.extra.md` | 复审 agent | 设了 `LABEL_PENDING_REVIEW`，worker 交出代码或方案时；通过后普通条目交人，托管条目不交人 | 关 |
 | ⑤ 合并后清理 | `CLEANUP_HOOK` | daemon | 清理一个条目时，在关会话、删 worktree 之前 | 空 = 不跑 |
 | ⑥ 刷新常驻站 | `LATEST_SITE_REFRESH` | daemon | 合并后清理扫描结束之后，后台 | 关 |
 | ⑦ 合并后复盘 | `POST_RETROSPECTIVE_PROJECT_CMD` | daemon | 复盘写完、提交之前 | 空 = 不跑 |
@@ -109,7 +109,7 @@ gh pr comment "$PR" --repo "$REPO" --body "Preview of $BRANCH: https://preview.e
 
 ## 复审：`review.extra.md`
 
-设了 `LABEL_PENDING_REVIEW`，worker 交出代码（开了方案复审时还有方案）后先翻到这个标签，daemon 派**另一个** agent 用工具的复审模板加项目的 `review.extra.md` 独立审：通过才交人，不通过带具体意见打回 worker。项目的打回标准写在 `review.extra.md` 里。
+设了 `LABEL_PENDING_REVIEW`，worker 交出代码（开了方案复审时还有方案）后先翻到这个标签，daemon 派**另一个** agent 用工具的复审模板加项目的 `review.extra.md` 独立审，不通过带具体意见打回 worker。通过后的去向分两路：普通条目交人；托管条目（维护者打了托管标签的）不交人——方案通过直接进入实现，代码通过进入 daemon 的自动合并检查。项目的打回标准写在 `review.extra.md` 里。
 
 <details><summary>细节：相关设置</summary>
 
@@ -122,6 +122,7 @@ gh pr comment "$PR" --repo "$REPO" --body "Preview of $BRANCH: https://preview.e
 | `REVIEW_DESIGN_PROPOSALS` | 设计方案也先过复审再交人 | `false` |
 
 - 复审 agent 从全新的对话开始审，不续写代码的那条对话。
+- 托管条目通过后：方案复审通过 → 翻回派工标签，worker 直接开始实现；代码复审通过 → 翻 `pending/merge`，daemon 再核对授权、提交、自动检查和冲突，全部满足才合并。
 - 两个 agent 谈不拢时，条目同时挂着复审标签和 `pending/human`：daemon 不再派它，等人读完总结评论再决定。
 
 </details>
@@ -156,7 +157,7 @@ done
 
 ## 刷新常驻站：`LATEST_SITE_REFRESH`
 
-打开后，daemon 每轮扫到新合并的 PR，就在合并后清理扫描结束之后，在后台把主 checkout 快进到最新主干、重新构建并重启一个常驻的正式站，让一个固定地址始终是主干最新版。默认关。
+打开后，daemon 每轮扫到新合并的 PR，就在合并后清理扫描结束之后，在后台把项目主 checkout 快进到最新主干、按它当前的提交重新构建并重启一个常驻的正式站，让一个固定地址跟上主干。默认关。
 
 <details><summary>细节：什么条件下会刷新、不会刷新</summary>
 
@@ -171,6 +172,8 @@ done
 
 所以别把「刷新跑过了」当成「worktree 已经清掉」的保证。
 
+**构建的是主 checkout 当前的提交，不一定是最新主干。** 只有主 checkout 停在主干分支上、没有未提交改动、能快进时才会先快进；取不到远端、停在别的分支、有未提交改动、本地和远端分叉时都不动工作区，照样按当前提交构建——固定地址可能继续提供旧版本或别的分支的内容。
+
 刷新在后台跑，不阻塞轮询，日志在状态目录的 `latest-site.log`。相关设置（配置模板里以注释形式给出）：
 
 | 设置 | 作用 | 默认 |
@@ -180,7 +183,14 @@ done
 | `LATEST_SITE_BUILD_CMD` | 构建命令 | `npm run build` |
 | `LATEST_SITE_SERVER_CMD` | 启动正式站的命令 | `node server/index.mjs` |
 
-第一次拉起或强制重建：在工具目录下跑 `FORCE=1 bash scripts/refresh-latest-site.sh`。
+第一次拉起或强制重建：在项目根目录下，用项目的配置跑工具自带的刷新脚本（`~/.agents/skills/cavil-loop` 是工具的固定入口；配置不叫 `cavil-loop.config` 时把文件名换掉）：
+
+<!-- orchestration-example:latest-site-force:begin -->
+```bash
+cd /path/to/project   # project root, where cavil-loop.config lives
+CODING_AGENT_CONFIG="$PWD/cavil-loop.config" FORCE=1 bash "$HOME/.agents/skills/cavil-loop/scripts/refresh-latest-site.sh"
+```
+<!-- orchestration-example:latest-site-force:end -->
 
 </details>
 

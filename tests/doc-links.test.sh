@@ -100,6 +100,19 @@ got=$(python3 "$CHECK" "$TMP/u" b.md; echo "rc=$?")
 chk "代码块里的「# …」不算标题、不存在的第三个重复、把代码删掉算出的旧锚点：4 处都报错" \
     "$(grep -c '锚点不存在' <<<"$got") $(tail -1 <<<"$got")" "4 rc=1"
 
+# 目标里带成对括号、尖括号包住、带标题；HTML 属性用双引号 / 单引号 / 不加引号：存在的都通过，缺的都报出
+mkdir -p "$TMP/v/img"; touch "$TMP/v/draft(v2).md" "$TMP/v/img/ok.png"
+cat > "$TMP/v/good.md" <<'MD'
+[a](draft(v2).md) [b](<draft(v2).md>) [c](img/ok.png "标题") <img alt="示例" src=img/ok.png> <img src='img/ok.png' alt=x>
+<a href="draft(v2).md">d</a> <img srcset="img/ok.png 1x, img/ok.png 2x">
+MD
+cat > "$TMP/v/bad.md" <<'MD'
+[a](draft(v3).md) <img alt="示例" src=missing.png> <img src='gone.png'> <a href=nope.md>x</a>
+MD
+chk "带括号 / 尖括号 / 标题的目标、三种引号写法的 HTML 属性：存在的全部通过" "$(python3 "$CHECK" "$TMP/v" good.md; echo "rc=$?")" "rc=0"
+chk "  到达性 · 上面 8 处链接确实都查了（srcset 里两张算两处）" "$(python3 "$CHECK" --list "$TMP/v" good.md | grep -c '^OK ')" 8
+chk "同样写法指向不存在的文件：4 处都报出（目标没被截断）" "$(python3 "$CHECK" "$TMP/v" bad.md | sed 's/.*不存在的文件 //' | paste -sd' ')" "draft(v3).md missing.png gone.png nope.md"
+
 echo "== 4. 中英两份"
 chk "每篇外部用户文档都有另一种语言的版本" "$(python3 "$CHECK" --pairs "$REPO_DIR"; echo "rc=$?")" "rc=0"
 chk "到达性 · docs/AGENTS.md 存在（它只有英文一份，上面没被当成缺中文版）" "$([ -f "$REPO_DIR/docs/AGENTS.md" ] && echo yes)" yes

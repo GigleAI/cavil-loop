@@ -15,6 +15,9 @@
 #      tmux 没在跑时也正常退出
 #   5. 常驻站刷新的两条边界写进了两份文档：关掉合并后清理就不刷新；清理脚本报错照样刷新。
 #      这两条行为本身由 tests/project-config-poll.test.sh 跑真实 agent-poll.sh 核对
+#   6. 文档里「强制重建常驻站」的命令照字面跑真实 refresh-latest-site.sh（工具装在 ~/.agents/skills/cavil-loop、
+#      项目在别处，只有 HOME / PATH）：退出 0、站点真的起来、记下的是主 checkout 当前提交——主 checkout 停在别的
+#      分支时也是那个分支的提交（文档写明的「不一定是最新主干」）；不带项目配置、在工具目录下跑会找不到配置
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -26,7 +29,7 @@ ZH="$REPO_DIR/docs/orchestration.zh.md"
 CONF_EX="$REPO_DIR/cavil-loop.config.example"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap '[ -n "${KEEP_TMP:-}" ] && echo "TMP=$TMP" || rm -rf "$TMP"' EXIT
 
 PASS=0 FAIL=0
 ok()   { PASS=$((PASS + 1)); echo "  ✓ $1"; }
@@ -47,6 +50,7 @@ RETROSPECTIVE_REPORT_FILE scripts/post-merge-retrospective.py
 PORT scripts/preview-run.sh
 HOST scripts/preview-run.sh
 FORCE scripts/refresh-latest-site.sh
+CODING_AGENT_CONFIG scripts/_lib.sh
 TXT
 
 cat > "$TMP/names.py" <<'PY'
@@ -95,7 +99,7 @@ elif mode == 'check':   # <doc> <config example> <envs.txt> <repo>
             continue
         for f in env[n]:
             text = open(f'{repo}/{f}', encoding='utf-8').read()
-            if not re.search(rf'(^|[^A-Z0-9_]){n}=|["\']{n}["\']', text):
+            if not re.search(rf'(^|[^A-Z0-9_]){n}=|["\']{n}["\']|\$\{{{n}[:}}]', text):
                 bad.append(f'{n}: {f} 里没有把它传给挂点脚本')
     if bad:
         print('\n'.join(bad))
@@ -199,6 +203,65 @@ chk "英文：关掉合并后清理不刷新、清理脚本报错照样刷新" \
     "$(grep -c 'Cleanup on merge off (`AUTO_CLEANUP_ON_MERGE=false`), refresh on | No' "$EN") $(grep -c 'The cleanup script fails .* | Yes' "$EN")" "1 1"
 chk "中文：关掉合并后清理不刷新、清理脚本报错照样刷新" \
     "$(grep -c '合并后清理关着（`AUTO_CLEANUP_ON_MERGE=false`），刷新开着 | 不刷新' "$ZH") $(grep -c '清理脚本报错.* | 照样刷新' "$ZH")" "1 1"
+
+echo "== 6. 强制重建常驻站的命令照字面能跑"
+block "$EN" latest-site-force > "$TMP/lsf.en.sh"; block "$ZH" latest-site-force > "$TMP/lsf.zh.sh"
+chk "两份文档里的命令一字不差，且是「cd 到项目根目录」加一行命令" \
+    "$(cmp -s "$TMP/lsf.en.sh" "$TMP/lsf.zh.sh" && echo same) $(wc -l < "$TMP/lsf.en.sh" | tr -d ' ') $(head -1 "$TMP/lsf.en.sh" | grep -c '^cd /path/to/project ')" "same 2 1"
+H="$TMP/h"; mkdir -p "$H/.agents/skills" "$H/fake"
+ln -s "$REPO_DIR" "$H/.agents/skills/cavil-loop"
+# tmux 替身：new-session 在后台真的跑那条命令；has-session / kill-session 按记下的进程号
+cat > "$H/fake/tmux" <<'SH'
+#!/usr/bin/env bash
+d="$FAKE_TMUX_DIR"; mkdir -p "$d"
+case "$1" in
+    new-session) shift; s=""; c="."
+        while [ $# -gt 1 ]; do case "$1" in -s) s="$2"; shift 2 ;; -c) c="$2"; shift 2 ;; -d) shift ;; *) break ;; esac; done
+        ( cd "$c" && exec bash -c "$1" ) </dev/null >/dev/null 2>&1 & echo $! > "$d/$s.pid" ;;
+    has-session) s="${3#=}"; [ -f "$d/$s.pid" ] && kill -0 "$(cat "$d/$s.pid")" 2>/dev/null ;;
+    kill-session) s="${3#=}"; [ -f "$d/$s.pid" ] && { kill "$(cat "$d/$s.pid")" 2>/dev/null; rm -f "$d/$s.pid"; }; exit 0 ;;
+    *) exit 0 ;;
+esac
+SH
+chmod +x "$H/fake/tmux"
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+G() { git -c user.email=t@x -c user.name=t "$@"; }
+git init -q --bare -b main "$H/origin.git"
+git clone -q "$H/origin.git" "$H/proj" 2>/dev/null
+(cd "$H/proj" && echo v1 > index.html && G add index.html && G commit -q -m v1 && G push -q origin HEAD:main) >/dev/null 2>&1
+cat > "$H/proj/cavil-loop.config" <<CONF
+REPO="example/site"
+PROJECT_ROOT="$H/proj"
+STATE_DIR="$H/state"
+TMUX_PREFIX="lsf"
+WORKTREE_BASE="$H/wt"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+BASE_BRANCH="main"
+LATEST_SITE_PORT=$PORT
+LATEST_SITE_BUILD_CMD="true"
+LATEST_SITE_SERVER_CMD="python3 -m http.server --bind 127.0.0.1 $PORT"
+PATH="$H/fake:\$PATH"
+CONF
+echo cavil-loop.config > "$H/proj/.git/info/exclude"
+mkdir -p "$H/state"
+force_run() {   # 在项目根目录下照字面跑文档的第二行
+    (cd "$H/proj" && env -i HOME="$H" PATH="/usr/bin:/bin" FAKE_TMUX_DIR="$H/tmuxd" bash -c "$(sed -n 2p "$TMP/lsf.en.sh")" >/dev/null 2>&1)
+}
+force_run; rc=$?
+chk "照字面跑：退出 0，常驻站真的在监听，记下的是主干当前提交" \
+    "$rc $(curl -s --max-time 2 "http://127.0.0.1:$PORT/index.html") $(cat "$H/state/latest-site-commit" 2>/dev/null)" \
+    "0 v1 $(git -C "$H/proj" rev-parse HEAD)"
+(cd "$H/proj" && G checkout -q -b other && echo other > index.html && G commit -q -am other) >/dev/null 2>&1
+force_run; rc=$?
+chk "主 checkout 停在别的分支：不切回主干，构建的是那个分支的提交（主干上没有它）" \
+    "$rc $(cat "$H/state/latest-site-commit" 2>/dev/null) $(git -C "$H/proj" merge-base --is-ancestor HEAD origin/main && echo on-main || echo not-on-main)" \
+    "0 $(git -C "$H/proj" rev-parse other) not-on-main"
+(cd "$H/.agents/skills/cavil-loop" && env -i HOME="$H" PATH="/usr/bin:/bin" FORCE=1 bash scripts/refresh-latest-site.sh >/dev/null 2>&1); rc=$?
+chk "不带项目配置、在工具目录下跑：找不到配置，退出 2（所以文档要带上配置）" "$rc" 2
+[ -f "$H/tmuxd/lsf-latest.pid" ] && kill "$(cat "$H/tmuxd/lsf-latest.pid")" 2>/dev/null
 
 echo
 report_counts "$PASS" "$FAIL"

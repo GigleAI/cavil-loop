@@ -104,7 +104,7 @@
 <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.428571;0.437500;0.553571;0.562500;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>
 <text x="0" y="0" font-family="Georgia, 'Noto Serif CJK SC', 'Songti SC', serif" font-size="22" font-weight="400" fill="#C2412D" text-anchor="start">④ 复审　·　review.extra.md</text>
 <text x="0" y="40" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">设了 LABEL_PENDING_REVIEW 才有：另一个 agent 用工具的复审模板加项目的 review.extra.md 独立审。</text>
-<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">通过才交人；不通过带意见打回 worker，最多 REVIEW_MAX_ROUNDS 轮。</text>
+<text x="0" y="70" font-family="system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17" font-weight="400" fill="#1F1D1A" text-anchor="start">不通过打回 worker；通过后普通条目交人，托管条目方案直接开发、代码进自动合并检查。</text>
 </g>
 <g class="cap" transform="translate(72 502)" opacity="0">
 <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0.000000;0.571429;0.580357;0.696429;0.705357;1.000000" keySplines="0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1;0.42 0 0.58 1" dur="28s" begin="0s" repeatCount="indefinite" calcMode="spline"/>

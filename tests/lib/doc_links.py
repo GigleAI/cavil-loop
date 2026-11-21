@@ -41,9 +41,12 @@ import urllib.parse
 
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 HEADING = re.compile(r'^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$')
-MD_LINK = re.compile(r'!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)')
+# a target may hold balanced parentheses (draft(v2).md) or be wrapped in <...>
+MD_LINK = re.compile(r'!?\[[^\]]*\]\(\s*(?:<([^<>\n]*)>|((?:[^()\s]|\((?:[^()\s])*\))+))(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*\)')
 REF_DEF = re.compile(r'^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+"[^"]*")?\s*$', re.M)
-HTML_ATTR = re.compile(r'<(?:img|a|source)\b[^>]*?\s(?:src|href|srcset)="([^"]+)"', re.I)
+# HTML attribute values double-quoted, single-quoted or unquoted, any order of attributes
+HTML_TAG = re.compile(r'<(?:img|a|source)\b[^>]*>', re.I)
+HTML_ATTR = re.compile(r'\s(src|href|srcset)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+))', re.I)
 
 
 def slug(text):
@@ -124,10 +127,15 @@ def anchors(path):
 
 def links(path):
     text = strip_code(open(path, encoding='utf-8').read())
-    found = MD_LINK.findall(text) + REF_DEF.findall(text)
-    for v in HTML_ATTR.findall(text):
-        found += [p.split()[0] for p in v.split(',')] if ' ' in v.strip() else [v]
-    return found
+    found = [a or b for a, b in MD_LINK.findall(text)] + REF_DEF.findall(text)
+    for tag in HTML_TAG.findall(text):
+        for name, dq, sq, bare in HTML_ATTR.findall(tag):
+            v = dq or sq or bare
+            if name.lower() == 'srcset':
+                found += [p.split()[0] for p in v.split(',') if p.strip()]
+            else:
+                found.append(v)
+    return [f for f in found if f]
 
 
 def check(root, docs, into=None, listing=None):

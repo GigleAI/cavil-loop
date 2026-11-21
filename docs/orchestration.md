@@ -17,7 +17,7 @@ Every setting lives in the project's `cavil-loop.config` (all fields: `cavil-loo
 | 1 Worktree ready | `WORKTREE_SETUP_CMD` | daemon | after every new worktree for an item | `npm ci \|\| npm install` in the config template |
 | 2 Compose prompt | `<name>.extra.md` | daemon | every dispatch | no file = the tool's template alone |
 | 3 PR opened | `PR_CREATED_HOOK` | worker | after the worker opened the PR and flipped labels | empty = not run |
-| 4 Review | `review.extra.md` | review agent | with `LABEL_PENDING_REVIEW` set, when the worker hands over code or a design | off |
+| 4 Review | `review.extra.md` | review agent | with `LABEL_PENDING_REVIEW` set, when the worker hands over code or a design; a pass goes to the human on ordinary items, not on autopilot items | off |
 | 5 Cleanup on merge | `CLEANUP_HOOK` | daemon | when an item is cleaned up, before its session ends and its worktree goes | empty = not run |
 | 6 Refresh latest site | `LATEST_SITE_REFRESH` | daemon | after the post-merge cleanup scan, in the background | off |
 | 7 Retrospective | `POST_RETROSPECTIVE_PROJECT_CMD` | daemon | after the retrospective is written, before it is committed | empty = not run |
@@ -109,7 +109,7 @@ gh pr comment "$PR" --repo "$REPO" --body "Preview of $BRANCH: https://preview.e
 
 ## Review: `review.extra.md`
 
-With `LABEL_PENDING_REVIEW` set, the worker flips its code (and, with design review on, its design) to that label first, and the daemon dispatches a *different* agent that reviews it with the tool's review template plus the project's `review.extra.md`: a pass goes to the human, a fail bounces back to the worker with concrete feedback. The project's own rejection criteria go in `review.extra.md`.
+With `LABEL_PENDING_REVIEW` set, the worker flips its code (and, with design review on, its design) to that label first, and the daemon dispatches a *different* agent that reviews it with the tool's review template plus the project's `review.extra.md`; a fail bounces back to the worker with concrete feedback. A pass goes one of two ways: on an ordinary item, to the human; on an autopilot item (a maintainer put the autopilot label on it), not to a person — a passed design goes straight to implementation, passed code goes to the daemon's automatic merge check. The project's own rejection criteria go in `review.extra.md`.
 
 <details><summary>Details: settings</summary>
 
@@ -122,6 +122,7 @@ With `LABEL_PENDING_REVIEW` set, the worker flips its code (and, with design rev
 | `REVIEW_DESIGN_PROPOSALS` | designs also go through review before they reach the human | `false` |
 
 - The reviewer starts from a fresh conversation; it never continues the coding conversation.
+- On an autopilot item: a passed design flips back to the dispatch label and the worker starts implementing; passed code flips to `pending/merge`, and the daemon checks authorization, the commit, automatic checks and conflicts, merging only when all hold.
 - When the two agents cannot agree, the item carries both the review label and `pending/human`: the daemon stops dispatching it until a person has read the summary comment and decided.
 
 </details>
@@ -156,7 +157,7 @@ done
 
 ## Refresh latest site: `LATEST_SITE_REFRESH`
 
-When on, every poll that sees a newly merged PR fast-forwards the main checkout to the latest base branch after the post-merge cleanup scan, then rebuilds and restarts a resident production site in the background, so one fixed URL always serves the latest base. Off by default.
+When on, every poll that sees a newly merged PR, after the post-merge cleanup scan, fast-forwards the project's main checkout to the latest base branch, then rebuilds a resident production site from its current commit and restarts it in the background, so one fixed URL keeps up with the base branch. Off by default.
 
 <details><summary>Details: when it refreshes and when it does not</summary>
 
@@ -171,6 +172,8 @@ It refreshes only when all three hold: cleanup on merge is on (`AUTO_CLEANUP_ON_
 
 So a refresh having run does not mean the worktree is gone.
 
+**It builds the main checkout's current commit, which is not always the latest base.** It fast-forwards first only when the main checkout is on the base branch, has no uncommitted changes and can fast-forward; when the remote cannot be fetched, the checkout is on another branch, has uncommitted changes, or has diverged, the working tree is left alone and the current commit is built anyway — the fixed URL may keep serving an old version or another branch.
+
 The refresh runs in the background and never blocks polling; its log is `latest-site.log` in the state directory. Settings (given as comments in the config template):
 
 | Setting | What it does | Default |
@@ -180,7 +183,14 @@ The refresh runs in the background and never blocks polling; its log is `latest-
 | `LATEST_SITE_BUILD_CMD` | build command | `npm run build` |
 | `LATEST_SITE_SERVER_CMD` | command that starts the production site | `node server/index.mjs` |
 
-First bring-up or a forced rebuild: run `FORCE=1 bash scripts/refresh-latest-site.sh` in the tool's directory.
+First bring-up or a forced rebuild: from the project root, run the tool's refresh script with the project's config (`~/.agents/skills/cavil-loop` is the tool's fixed entry; change the file name if the config is not called `cavil-loop.config`):
+
+<!-- orchestration-example:latest-site-force:begin -->
+```bash
+cd /path/to/project   # project root, where cavil-loop.config lives
+CODING_AGENT_CONFIG="$PWD/cavil-loop.config" FORCE=1 bash "$HOME/.agents/skills/cavil-loop/scripts/refresh-latest-site.sh"
+```
+<!-- orchestration-example:latest-site-force:end -->
 
 </details>
 
