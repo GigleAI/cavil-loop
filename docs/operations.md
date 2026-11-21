@@ -648,8 +648,14 @@ too):
   ④ a must-fix found late, outside the fix → on an ordinary item it is written under "needs your
   attention" and does not bounce (the human decides before merging); on an autopilot item it
   bounces, since nobody reads the note before the daemon merges.
+  Every checklist item the review template already says must fail the review (the hard rules, a
+  code name in a question for the human, "you" / "I" for a party, the hand-off layout items, a
+  conflict, the design-review points) is a must-fix, never a suggestion; and what the worker wrote
+  this round (comments, the proposal, the PR body) is always inside the review's scope, so those
+  bounce at step ③ and never reach step ④.
 - The round marker keeps its format (the weekly report reads it); the line after it is a hidden
-  baseline the next round computes the fix from:
+  baseline the next round computes the fix from (only the first two lines of a verdict comment
+  count — a marker quoted anywhere else is ignored):
   `<!-- review-baseline: code head=<sha> base=<branch> -->` or
   `<!-- review-baseline: plan comment=<id> sha256=<fingerprint> -->`.
 
@@ -676,9 +682,16 @@ The merged tree is `git merge-tree --write-tree <reviewed commit> <fork point>`:
 saw last round plus whatever the base brought in since, so a plain merge of `main` into the branch
 is not counted as part of the fix. For a design proposal: round 1, an unreadable comment list or
 no baseline → full; the previous proposal comment deleted (`deleted`), edited in place since
-(`edited`), or the same comment as this round's (`same-comment`) → full; otherwise `scope` plus
-the diff from the previous proposal's text to this one. No output, a non-zero exit or any other
-first line is treated as full.
+(`edited`), the same comment as this round's (`same-comment`), or either comment not posted by the
+dispatch account (`not-own`) → full; otherwise `scope` plus the diff from the previous proposal's
+text to this one. The command only ever shows text the dispatch account posted itself; on an
+autopilot item everything else is still read through the guarded read command. A proposal run
+also prints `current sha256=<fingerprint>` of this round's comment, and the baseline is written only
+through `review-scope.sh fingerprint <id> --expect <that fingerprint>`, which refuses (exit 3) when
+the comment was edited while it was being reviewed — then no baseline is written and the next round
+is full. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
+config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
+other first line is treated as full.
 
 **`REVIEW.md`** — a project may put a `REVIEW.md` at its repository root: what its reviews look
 at, what counts as must-fix, what is only a suggestion, what not to raise. The daemon reads it from

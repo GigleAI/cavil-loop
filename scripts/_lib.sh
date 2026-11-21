@@ -109,11 +109,9 @@ cfg_real_path() {   # <路径> → 解析掉软链接后的真实位置（不依
     d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
     printf '%s/%s\n' "$d" "$(basename "$p")"
 }
-cfg_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
-    else return 1; fi
-}
+# cfg_sha256：sha256sum / shasum 的兼容实现，和 review-scope.sh 共用一份（GitHub#621）
+# shellcheck source=_sha256.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_sha256.sh"
 cfg_rev_of() {   # <真实位置> <读内容的文件> → 和 project-config.sh 的 rev_of 同一个算法
     [ -f "$2" ] && [ -r "$2" ] || return 1
     { printf '%s\n' "$1"; cat "$2"; } | cfg_sha256
