@@ -1537,8 +1537,19 @@ cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
     printf '%s' "$1" > "$TMP/c-devlist.json"; shift
     mkdir -p "$TMP/c-devbin" "$TMP/c-rt"
     [ -f "$TMP/c-devtags.json" ] || printf '[]' > "$TMP/c-devtags.json"
+    # one tag ref (scripts/dev-release.mjs reads it before calling a build done): a published release's
+    # tag is on the commit it recorded; no published release of that name → 404
+    cat > "$TMP/c-tagref.py" <<'PYT'
+import json, sys
+tag = sys.argv[1].split("/git/ref/tags/", 1)[1]
+rel = [r for r in json.load(open(sys.argv[2])) if r.get("tag_name") == tag and r.get("draft") is False]
+if not rel:
+    print("HTTP 404: Not Found", file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({"ref": "refs/tags/" + tag, "object": {"type": "commit", "sha": rel[0]["target_commitish"]}}))
+PYT
     # the release list, or (scripts/dev-plan.mjs's second read) the client/v* tag refs; GH_FAIL_TAGS fails only the latter
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; printf "[%%s]" "$(cat %q)"; exit 0;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devtags.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; printf "[%%s]" "$(cat %q)"; exit 0;; *git/ref/tags/*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q "$2" %q;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devtags.json" "$TMP/c-tagref.py" "$TMP/c-devlist.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
     chmod +x "$TMP/c-devbin/gh"
     CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
 }
@@ -1928,6 +1939,7 @@ for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows
     has "$f" "$B" "… names $f (review round 2 #6)"
 done
 has "大小为 0 的不算" "$B" "… and says a placeholder does not count"
+has "标签要在发版记下的提交上" "$B" "… and that the tag must be on the recorded commit (review #13)"
 lacks "已完整在发版页上" "$B" "… never 'it is out'"
 lacks "没有完整发出" "$B" "… nor 'it did not go out'"
 rf_repo; rf_jobs "client build mode=failure:Release or development build"

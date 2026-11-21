@@ -262,7 +262,7 @@ def client_nightly_hint(needs):
     manual = (f"在本仓库的 `client/` 目录跑只读核对 `node scripts/dev-release.mjs --check {v or '<版本号>'}`"
               "（和发布、每晚判断同一条规则）：要带齐并上传完六个文件——Apple 芯片的 `-arm64.dmg`、"
               "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"
-              "（页面上列着但大小为 0 的不算）。")
+              "（页面上列着但大小为 0 的不算），并且这一版的标签要在发版记下的提交上。")
     if not v:
         return (where + "没取到这次要发的版本号（构建模式那一步没给出），不能判断发出了什么；"
                 "打包没有完成就不会发出新版，装着开发版的 App 仍是上一版。" + manual)

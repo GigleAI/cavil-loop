@@ -21,3 +21,4 @@ export declare const APP_PATHS: string[];
 export declare function untoldCommits(base: string, head: string, root?: string): { sha: string; title: string }[] | null;
 export declare function buildNotes(base: string, head: string, root?: string): { lines: string[]; notes: number; titles: number } | null;
 export declare function tagState(repo: string, tag: string): { state: 'absent' } | { state: 'present'; sha: string | null } | { state: 'unknown'; why: string };
+export declare function tagOn(repo: string, tag: string, sha: string): { ok: true } | { ok: false; kind: 'absent' | 'mismatch' | 'unknown'; why: string };

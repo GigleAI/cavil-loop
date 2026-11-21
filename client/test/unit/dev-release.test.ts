@@ -329,13 +329,54 @@ describe('publishing a development build (GitHub#215)', () => {
       expect(JSON.stringify(s.releases)).toBe(before);
       if (tagSha && tagSha !== SHA) expect(r.out).toContain('不是这次构建的提交');
     });
-    it('published, but the tag read back is on another commit → the run fails saying so', () => {
-      // GitHub reports no tag before the create, yet the tag it ends up with is elsewhere
-      const w = world([devRel('0.5.1-dev.380')], [], { tagSha: { [tag]: 'c'.repeat(40) } });
+    it('published, but the tag read back is on another commit → the run fails; a rerun fails too and cleans nothing up (#13)', () => {
+      // GitHub reports no tag before the create, yet the tag it ends up with is elsewhere; 11 older
+      // builds are there, so a run that got as far as the clean-up would delete the oldest
+      const olds = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${370 + i}`));
+      const w = world(olds, [], { tagSha: { [tag]: 'c'.repeat(40) } });
       w.build(v);
       const r = w.run(v);
       expect(r.code).toBe(1);
-      expect(r.out).toContain('不是这次构建的');
+      expect(r.out).toContain('不是 ' + SHA);
+      expect(published(w.read(), tag)).toBeTruthy(); // it is out (a write cannot be taken back)
+      const cleanups = (calls: string[][]) => calls.filter((c) => c[0] === 'api' && (c[2] === 'DELETE' || c[2] === 'PATCH'));
+      expect(cleanups(w.read().calls)).toEqual([]);
+      // the rerun: files complete, same commit — but the tag is not on it → still red, still no clean-up, nothing written
+      const callsBefore = w.read().calls.length;
+      const again = w.run(v);
+      expect(again.code).toBe(1);
+      expect(again.out).toContain('不当作发过');
+      const later = w.read().calls.slice(callsBefore);
+      expect(later.some((c) => c[0] === 'api' && c[1].includes(`git/ref/tags/${tag}`))).toBe(true);
+      expect(later.filter((c) => c[0] === 'release')).toEqual([]);
+      expect(cleanups(later)).toEqual([]);
+    });
+    it('a rerun of a complete build whose tag is on this commit → done, and the clean-up goes on (#13 positive case)', () => {
+      const olds = Array.from({ length: 11 }, (_, i) => devRel(`0.5.1-dev.${370 + i}`));
+      const w = world([...olds, devRel(v)]);
+      w.build(v);
+      const r = w.run(v);
+      expect(r.code, r.out).toBe(0);
+      expect(r.out).toContain('标签在这次构建的提交上');
+      const s = w.read();
+      expect(s.calls.filter((c) => c[0] === 'release')).toEqual([]);
+      expect(s.deleted.length).toBeGreaterThan(0); // the clean-up ran
+    });
+    it.each([
+      ['on the commit the release recorded', null, [], 0, /^COMPLETE .*标签在发版记下的提交/m],
+      ['on another commit', 'd'.repeat(40), [], 1, /^INCOMPLETE .*文件都已上传完成，但标签指向/m],
+      ['missing', 'absent', [], 1, /^INCOMPLETE .*标签不存在/m],
+      ['unreadable', null, [`tagread:${tag}`], 2, /^UNKNOWN .*标签读不出/m],
+    ])('--check: files complete, tag %s → says the files and the tag apart (#13)', (_, tagSha, fail, code, line) => {
+      const w = world([devRel(v)], fail as string[], tagSha && tagSha !== 'absent' ? { tagSha: { [tag]: tagSha } } : {});
+      if (tagSha === 'absent') {
+        const st = JSON.parse(readFileSync(w.stateFile, 'utf8'));
+        st.tags = st.tags.filter((t: string) => t !== tag);
+        writeFileSync(w.stateFile, JSON.stringify(st));
+      }
+      const r = w.runArgs(['--check', v]);
+      expect(r.code).toBe(code);
+      expect(r.out).toMatch(line);
     });
   });
 

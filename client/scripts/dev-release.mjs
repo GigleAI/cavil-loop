@@ -359,6 +359,20 @@ export function tagState(repo, tag) {
   }
 }
 
+/**
+ * Is the tag on `sha`? One check for every place that calls a published build "done" (PR #630
+ * review rounds 2–3 #12 / #13): the read-back after publishing, a rerun that finds the version
+ * already complete, and `--check`. → { ok: true } | { ok: false, kind: 'absent' | 'mismatch' |
+ * 'unknown', why }
+ */
+export function tagOn(repo, tag, sha) {
+  const t = tagState(repo, tag);
+  if (t.state === 'present' && t.sha === sha) return { ok: true };
+  if (t.state === 'present') return { ok: false, kind: 'mismatch', why: `标签指向 ${t.sha ?? '读不出的提交'}，不是 ${sha}` };
+  if (t.state === 'absent') return { ok: false, kind: 'absent', why: '标签不存在' };
+  return { ok: false, kind: 'unknown', why: `标签读不出（${t.why}）` };
+}
+
 function note(what, tag, why) {
   console.log(`::warning::标签 ${tag} ${what === 'kept' ? '不删' : '这次没删成，下次再来'}：${why}`);
   return what;
@@ -470,7 +484,11 @@ function main() {
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
   } else if (d.action === 'done') {
-    console.log(`✅ ${tag} 已经发布过了，带齐了文件`);
+    // complete files are not enough: the tag must be on the commit this run built (a first run whose
+    // tag ended up elsewhere failed; its rerun must fail too, and clean nothing up)
+    const t = tagOn(repo, tag, sha);
+    if (!t.ok) throw new Error(`${tag} 已经发布、文件齐全，但${t.why}：不当作发过，不清理旧版本，什么都不写`);
+    console.log(`✅ ${tag} 已经发布过了，带齐了文件，标签在这次构建的提交上`);
   } else {
     const title = `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
     if (d.action === 'create') {
@@ -502,10 +520,8 @@ function main() {
       throw new Error(`发完再读，${tag} 不是「已发布的预发布、带齐 ${files.length} 个文件」`);
     }
     // the tag publishing created must be on the commit these files were built from
-    const t = tagState(repo, tag);
-    if (t.state !== 'present' || t.sha !== sha) {
-      throw new Error(`发完再读，${tag} 的标签${t.state === 'present' ? `指向 ${t.sha ?? '读不出的提交'}，不是这次构建的 ${sha}` : t.state === 'absent' ? '不存在' : `读不出（${t.why}）`}`);
-    }
+    const t = tagOn(repo, tag, sha);
+    if (!t.ok) throw new Error(`发完再读，${tag} 的${t.why}（不是这次构建的提交，或确认不了）：不清理旧版本`);
     console.log(`✅ 已发布 ${tag}（预发布）：${files.join(', ')}`);
   }
 
@@ -562,8 +578,19 @@ function check(a) {
   }
   const state = r.draft !== false ? '还是草稿（装着的 App 看不到）' : r.prerelease !== true ? '不是预发布' : '';
   if (s.state === 'complete' && !state) {
-    console.log(`COMPLETE ${tag}：${devFiles(version).length} 个文件都已上传完成`);
-    return;
+    // files complete is half of it: the tag must be on the commit the release recorded
+    const want = typeof r.target_commitish === 'string' && /^[0-9a-f]{40}$/.test(r.target_commitish) ? r.target_commitish : null;
+    if (!want) {
+      console.log(`UNKNOWN ${tag}：${devFiles(version).length} 个文件都已上传完成，但发版没记下完整的提交号，确认不了标签`);
+      process.exit(2);
+    }
+    const t = tagOn(repo, tag, want);
+    if (t.ok) {
+      console.log(`COMPLETE ${tag}：${devFiles(version).length} 个文件都已上传完成，标签在发版记下的提交 ${want.slice(0, 7)} 上`);
+      return;
+    }
+    console.log(`${t.kind === 'unknown' ? 'UNKNOWN' : 'INCOMPLETE'} ${tag}：${devFiles(version).length} 个文件都已上传完成，但${t.why}`);
+    process.exit(t.kind === 'unknown' ? 2 : 1);
   }
   console.log(`INCOMPLETE ${tag}：${[state, s.bad.length ? `缺或没上传完：${s.bad.join(', ')}` : ''].filter(Boolean).join('；')}`);
   process.exit(1);
