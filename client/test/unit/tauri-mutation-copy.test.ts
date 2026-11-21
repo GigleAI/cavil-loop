@@ -131,7 +131,12 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     mkdirSync(join(r, 'dist', 'renderer'), { recursive: true });
     mkdirSync(join(r, 'scripts'), { recursive: true });
     mkdirSync(join(r, 'build'), { recursive: true });
-    writeFileSync(join(r, 'scripts', 'build.mjs'), '');
+    // the window build stand-in records the window source it was run on (the entry's copy, cwd = that copy);
+    // it builds fine without it, so a case that removes the file still reaches the compile step
+    writeFileSync(
+      join(r, 'scripts', 'build.mjs'),
+      "import { existsSync, readFileSync, writeFileSync } from 'node:fs';\nconst f = 'src/renderer/DetailPanel.tsx';\nif (existsSync(f)) writeFileSync(process.env.REC + '/web.txt', readFileSync(f, 'utf8'));\n",
+    );
     writeFileSync(join(r, 'package.json'), '{}');
     writeFileSync(join(r, 'tsconfig.json'), '{}');
     edit?.(r);
@@ -153,7 +158,7 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     if (override) env.CAVIL_TAURI_MUT_TARGET = override;
     const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), ...args], { cwd: r, env, encoding: 'utf8' });
     const read = (f: string) => (existsSync(join(rec, f)) ? readFileSync(join(rec, f), 'utf8') : '');
-    return { r, run, cargo: read('cargo.txt').split('\n'), cargoRan: existsSync(join(rec, 'cargo.txt')), app: read('app.txt') };
+    return { r, run, cargo: read('cargo.txt').split('\n'), cargoRan: existsSync(join(rec, 'cargo.txt')), app: read('app.txt'), webRan: existsSync(join(rec, 'web.txt')), web: read('web.txt') };
   };
   const nightly = (override?: string) => runCli(['--one', '4'], { override });
 
@@ -258,8 +263,14 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
   });
 
   it('每晚的执行路径：原文恰好一次时照常改坏、构建、跑测试（界面代码的条目）', () => {
-    const { run, cargoRan, app } = runCli(['--one', '0']);
+    const { r, run, cargoRan, app, webRan, web } = runCli(['--one', '0']);
     expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
+    const source = readFileSync(join(r, PANEL), 'utf8');
+    expect(source.split(LINK)).toHaveLength(2); // the sandbox's own source keeps the line
+    // the window was built from the entry's copy with exactly that one line removed, nothing else changed
+    expect(webRan).toBe(true);
+    expect(web.split(LINK)).toHaveLength(1);
+    expect(web).toBe(source.replace(LINK, ''));
     expect(cargoRan).toBe(true);
     expect(app).not.toBe('');
     expect(run.stdout).toContain('红了，但不是在预期那一步');
