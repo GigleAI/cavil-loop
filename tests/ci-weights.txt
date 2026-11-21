@@ -75,6 +75,7 @@ project-priority 1
 prompt-compose 1
 prompt-files 65
 public-assets 6
+public-assets-strict 45
 reap-finished-workers 11
 release-auto 32
 remote-access 26

@@ -71,35 +71,46 @@ export const SCAN_MIN_OVERLAP_BYTES = 256;
 export const SCAN_MAX_PENDING_BYTES = 1024 * 1024;
 export const UNRESOLVED_KIND = '疑似凭证超过 1MiB 仍未读完，无法判定';
 
-export function findSecretsInFile(file) {
+// 分块扫描的主体：read(buf, pos) 往 buf 里读、返回读到的字节数（0 = 读完）。
+// 文件和内存里的一整份内容走同一段逻辑，结论不随来源变。
+function scanChunks(read) {
   const kinds = new Set();
+  const buf = Buffer.alloc(SCAN_CHUNK_BYTES);
+  let pending = '';
+  let pos = 0;
+  for (;;) {
+    const n = read(buf, pos);
+    if (n <= 0) break;
+    pos += n;
+    const text = pending + buf.toString('latin1', 0, n);
+    for (const k of findSecrets(text)) kinds.add(k);
+    let keepFrom = Math.max(0, text.length - SCAN_MIN_OVERLAP_BYTES);
+    for (const [, , open] of SECRET_PATTERNS) {
+      if (!open) continue;
+      const m = open.exec(text);
+      if (m && m.index < keepFrom) keepFrom = m.index;
+    }
+    if (text.length - keepFrom > SCAN_MAX_PENDING_BYTES) {
+      kinds.add(UNRESOLVED_KIND);
+      keepFrom = text.length - SCAN_MIN_OVERLAP_BYTES;
+    }
+    pending = text.slice(keepFrom);
+  }
+  return [...kinds];
+}
+
+export function findSecretsInFile(file) {
   const fd = fs.openSync(file, 'r');
   try {
-    const buf = Buffer.alloc(SCAN_CHUNK_BYTES);
-    let pending = '';
-    let pos = 0;
-    for (;;) {
-      const n = fs.readSync(fd, buf, 0, SCAN_CHUNK_BYTES, pos);
-      if (n <= 0) break;
-      pos += n;
-      const text = pending + buf.toString('latin1', 0, n);
-      for (const k of findSecrets(text)) kinds.add(k);
-      let keepFrom = Math.max(0, text.length - SCAN_MIN_OVERLAP_BYTES);
-      for (const [, , open] of SECRET_PATTERNS) {
-        if (!open) continue;
-        const m = open.exec(text);
-        if (m && m.index < keepFrom) keepFrom = m.index;
-      }
-      if (text.length - keepFrom > SCAN_MAX_PENDING_BYTES) {
-        kinds.add(UNRESOLVED_KIND);
-        keepFrom = text.length - SCAN_MIN_OVERLAP_BYTES;
-      }
-      pending = text.slice(keepFrom);
-    }
+    return scanChunks((buf, pos) => fs.readSync(fd, buf, 0, SCAN_CHUNK_BYTES, pos));
   } finally {
     fs.closeSync(fd);
   }
-  return [...kinds];
+}
+
+// 内存里的一整份内容（严格模式下对外服务读进来、要送出去的那一份）。
+export function findSecretsInBuffer(data) {
+  return scanChunks((buf, pos) => data.copy(buf, 0, pos, Math.min(data.length, pos + SCAN_CHUNK_BYTES)));
 }
 
 const ascii = (buf, start, end) => buf.subarray(start, end).toString('latin1');
@@ -183,4 +194,48 @@ export function resolveInRoot(root, relPath) {
   const rel = path.relative(root, real);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   return real;
+}
+
+// ── 严格模式（GitHub#613）──
+// 项目 key：字母、数字、点、下划线、连字符，不以点开头（以点开头的路径段一律不对外）。
+export const PROJECT_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+// 项目子目录：<key>/<条目编号>/<文件> 或 <key>/weekly-report/<文件>，正好三段。
+export const ITEM_RE = /^(?:[0-9]+|weekly-report)$/;
+
+// rel 是相对资产目录的真实路径（已解析符号链接）。项目子目录下的返回 {key, item}，其余返回 null。
+export function projectPath(rel, keys) {
+  const segs = rel.split(path.sep);
+  if (segs.length !== 3) return null;
+  const [key, item, name] = segs;
+  if (!PROJECT_KEY_RE.test(key) || !keys.has(key) || !ITEM_RE.test(item)) return null;
+  if (!name || name.startsWith('.')) return null;
+  return { key, item };
+}
+
+// 判内存里的一整份内容能不能对外：类型、开头格式、（SVG）文档形状，以及**所有类型**都查凭证样式。
+// 检查和送出用的是同一份 data，所以「检查过的就是送出去的」。
+// 只看「这个路径的扩展名」和「内容开头是不是那种格式」：随路径而变（同一份内容的两个硬链接
+// 可以是不同扩展名），所以严格模式每个请求都重判，不进缓存。
+export function judgeFormat(file, data) {
+  const ext = path.extname(file).slice(1).toLowerCase();
+  const type = MEDIA_TYPES[ext];
+  if (!type) return { ok: false, reason: `扩展名 .${ext || '(无)'} 不是图片 / 视频` };
+  if (ext === 'svg') {
+    if (!/<svg[\s>]/i.test(data.subarray(0, 4096).toString('utf8'))) return { ok: false, reason: '内容不是 SVG' };
+  } else if (!looksLike(ext, data.subarray(0, HEAD_BYTES))) {
+    return { ok: false, reason: `内容不是 .${ext} 格式` };
+  }
+  return { ok: true, type };
+}
+
+export function secretReason(kinds) {
+  return `内容里有凭证样式（${kinds.join('、')}）`;
+}
+
+export function judgeBuffer(file, data) {
+  const f = judgeFormat(file, data);
+  if (!f.ok) return f;
+  const kinds = findSecretsInBuffer(data);
+  if (kinds.length) return { ok: false, reason: secretReason(kinds) };
+  return f;
 }

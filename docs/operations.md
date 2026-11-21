@@ -2712,7 +2712,78 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 Set `PUBLIC_ASSETS_ROOT` to the asset directory actually in use (`~/.local/state/coding-agent-poll/review-shots` on a pre-rename install). Add `PUBLIC_ASSETS_PREFIX=` when the public path prefix is not `/review-assets/`.
 
-Before posting images, run `node scripts/public-assets/check.mjs <dir or file>`: it reports per file whether the public can fetch it, and names any file containing a token / key pattern and exits 1 (the three worker prompt templates include this step, and `publish-asset.sh` runs it before publishing).
+Before posting images, run `node scripts/public-assets/check.mjs <dir or file>`: it reports per file whether the public can fetch it, and names any file containing a token / key pattern and exits 1 (the publish command runs it before publishing; workers of projects with an image address no longer run it themselves, see the next section).
+
+### Directory rule, one publish command, enforced server-side check (GitHub#613)
+
+**Directory rule**: every new image lands at `<project key>/<item number>/<name>-rev-<unique stamp>.<ext>` in the asset directory, the weekly report at `<project key>/weekly-report/<file name>`. cavil-loop decides the path; workers neither name nor pick directories. The project key is the name of `~/.config/cavil-loop/<key>.conf`.
+
+**Publish command**: comment images and the weekly report share `scripts/publish-asset.sh` (managed installs use the durable entry `~/.agents/releases/cavil-loop/entrypoints/publish-asset.sh`; `scripts/weekly-report/publish-asset.sh` is the early path and forwards unchanged). For projects with an image address, the two image bullets of the dispatch prompt ("how to make images", "comment image standard") are replaced by this one command with the project key and item number filled in: `bash '<entry>' --project '<key>' --item <number> <image>...`. It:
+
+1. reads the state the public-asset service reports about itself and refuses when the server-side check is not in force (reason on stderr); the directory is the one the service reports, never guessed;
+2. copies the file to a hidden temporary file inside the target directory and **scans that copy** for credential patterns, deleting it and refusing on a hit;
+3. renames it to the final name, refusing when that name exists (no overwrite);
+4. checks that the public URL answers HTTP 200 with exactly the file's size, deleting the file it just placed otherwise;
+5. prints only the URLs on stdout, one per line.
+
+Files that are not images / videos (the weekly-report PDF, …) stay private as before, under `<project key>/<subdir>/` of the private directory.
+
+**Enforced server-side check (strict mode)**: with `PUBLIC_ASSETS_STRICT=1` in the service config the service serves only two kinds of file — files under a project subdirectory (the key must be a project registered on this machine), or old images in the legacy list whose **path and content (SHA-256) both match**; each file is read whole into memory, its format, credential patterns (every type, not only SVG) and list entry are judged on that buffer, and the response is sent from the same buffer — what was checked is what goes out. A file copied in without the publish command is not served when it carries a credential pattern; a new file outside the project subdirectories is never served. Without the line the behaviour is the old one (this is also the state a failed switch returns to).
+
+The single-file limit is 256 MB by default (`PUBLIC_ASSETS_MAX_BYTES=`); larger files are not served.
+
+**Old images**: the switch records every image / video outside the project subdirectories as the legacy list (relative path + size + SHA-256), written twice: `public-assets-legacy.json` in the config directory and `~/.local/state/cavil-loop/public-assets/legacy.json`; the list's checksum goes into the service config as one line `PUBLIC_ASSETS_LEGACY_SHA=`. **That line is the only trusted state**: present = the list is in force, it governs, it is never rebuilt; absent = never in force, may be (re)built.
+
+- changing permissions or modification time, restoring from a backup at the same path with the same content: the old image still opens;
+- renaming, moving or changing the content: the old image becomes 404 (that image breaks in comments already posted);
+- one list damaged: the service uses the other, and running the switch again copies the good one back;
+- both damaged, or the checksum line malformed: every old-structure file is 404 with the reason in the log, and the switch does not rebuild — restore either copy from a backup (the checksum must match); only when a person decides, delete the checksum line and rebuild (a rebuild takes every file outside the project subdirectories at that moment as an old image).
+
+**Switching**:
+
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --status   # read-only: config, service, check in force, code current, list state
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # places a few test files, checks them via the local port and the public URL, deletes them; config unchanged
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # switch: back up config → build / check list → write strict mode → restart → verify; rolls back on failure
+```
+
+After its verification passes, the switch also writes an acceptance record (`accepted.json` in the state directory, naming the service process it verified). **The check counts as in force only when the service runs in strict mode and the acceptance record names exactly the running process**: a switch interrupted before its verification, or a service that restarted on its own, turns it into "strict mode running, verification not done" — the publish command then refuses, and the automatic switch verifies again.
+
+When any project has only the early weekly-report image address (`WEEKLY_REPORT_ASSET_URL`) and no image address, the switch refuses and names those projects: in strict mode their weekly-report images would not be served, and the new address cannot be derived from the old one. Add a `WEEKLY_REPORT_ASSET_ROOT_URL=` line (the prefix the public entry really mounts) to those projects' `<key>.conf`, then switch.
+
+The daemon calls `switch.sh --auto` every round: when the service is not in strict mode, or the running code differs from the code on disk, it switches (restarting the service once); failures back off 1, 5, 15, 60 minutes, at most 5 tries per code version. To stop it switching automatically, add `PUBLIC_ASSETS_AUTO_SWITCH=0` to the service config. The verification has four checks: an old image 200, a new file in an old-structure position 404, a normal image under `<key>/0/` (item 0 is reserved for this) 200, an image with a fake token pattern 404; it deletes only the files it just created.
+
+When a switch goes wrong, return to the old rules by hand (this does not need the switch command to run; first set `OLD_IMAGE_URL` to the public URL of any old image):
+
+<!-- public-assets-rollback:begin -->
+```bash
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
+grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
+systemctl --user restart cavil-loop-public-assets.service
+sleep 2
+systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
+curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
+```
+<!-- public-assets-rollback:end -->
+
+`active`, `true`, `200` and a last line `ROLLED-BACK` mean it is back: `true` is the service itself reporting "this process runs with strict mode off" (it counts only when the process id matches). Any failing step stops the block on the spot and nothing after it runs: `NO-CONFIG` / `BACKUP-FAILED` mean nothing was changed; `EDIT-FAILED` means the config is half edited — copy the backup it names back over it; a failing `systemctl` or `jq` line means the service did not come up on the old rules — see `journalctl --user -u cavil-loop-public-assets -n 50`. The `PUBLIC_ASSETS_LEGACY_SHA=` line stays, the next switch reuses it; to turn automatic switching back on, delete the `PUBLIC_ASSETS_AUTO_SWITCH=0` line.
+
+**Usage** (read-only, deletes nothing): `bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` lists usage per project and per item, old-structure files that belong to no project on one line, and the directory the names point at but the service does not serve on its own line. Whether and what to delete is a person's call: a deleted image breaks in the comments already posted.
+
+**What scripts cannot see**: a token or personal data (names, e-mail addresses, accounts, orders, …) shown in the captured page. The credential check reads file bytes, not pixels. That still rests on the worker capturing only public pages and on the reviewer's spot check.
+
+**Limits**: only machines running this service can publish images; a machine that exposes the directory through another static server is refused by the publish command. A switch restarts the service once; image requests in that moment (seconds) fail.
 
 Attachments that are not images / videos (the weekly-report PDF, …) are not published publicly: `publish-asset.sh` puts them in a non-public directory and prints an internal-only URL when the project config sets `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL` (the directory is `WEEKLY_REPORT_PRIVATE_ASSET_ROOT`, default `private-assets/` next to the asset directory), otherwise the local path. The vector versions of the weekly-report charts stay on the machine (`WEEKLY_REPORT_VECTOR_DIR`, default `weekly-report-vector/` next to the asset directory); `topdf.mjs` reads them locally.
 
