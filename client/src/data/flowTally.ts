@@ -28,12 +28,12 @@
 // GitHub#514: a fifth flow label, the parked one ("稍后处理", default pending/later), counted like "运行中" /
 // "等 agent" (open items only); the default table is 未处理 → 等人处理 → 等 agent → 运行中 → 稍后处理.
 
-import type { HandBackLabels, Item, TallyColor, TallyDef, TallyFlow } from '../shared/types';
+import type { HandBackLabels, Item, TallyColor, TallyDef, TallyFlow, TallyFold } from '../shared/types';
 import type { FilterContext } from '../shared/filter';
 import { hasLabel, isPending } from './pending';
 import { applyFilter, openOnly, parseFilter, statesStated } from '../shared/filter';
 import type { Layout, ShowClosedKey } from '../shared/types';
-import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies, effectiveTallies } from '../shared/tallies';
+import { DEFAULT_TALLIES, UNLABELED_QUERY, defaultTallies, effectiveTallies, foldsAt, tallyFold } from '../shared/tallies';
 import { tKey } from '../shared/i18n';
 
 export { UNLABELED_QUERY };
@@ -60,6 +60,11 @@ export interface TallyEntry {
   /** GitHub#569: a flow row whose repositories name the label differently — each repository's own name; the
    *  list a click shows is narrowed by it (`tallyScoped`). Absent when every repository uses the same name. */
   scope?: TallyScope;
+  /** GitHub#634: the row's fold rule, and whether it puts this number into the fold at the end of the bar now.
+   *  Only where the number is drawn depends on it: which number is lit, its switch and the search it gives back
+   *  are always worked out on the whole list. */
+  fold: TallyFold;
+  folded: boolean;
 }
 
 /** each repository (lower-cased owner/repo) → the name this flow label has there */
@@ -189,6 +194,12 @@ export function searchList(items: Item[], parsed: ReturnType<typeof parseFilter>
   return applyFilter(items, parsed, ctx).filter((it) => tallyScoped(lit, it));
 }
 
+/** GitHub#634: a row's fold rule and, with this count, whether the number is in the fold */
+function folding(d: TallyDef, count: number): { fold: TallyFold; folded: boolean } {
+  const fold = tallyFold(d);
+  return { fold, folded: foldsAt(fold, count) };
+}
+
 /**
  * GitHub#468: the numbers of a table, in its order. A row is left out when its name is empty, when it
  * follows a flow label that is empty ("运行中的标签" left empty = not shown, GitHub#404), or when its own
@@ -224,7 +235,7 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       // repository, so while such a number is lit the board narrows the list by each repository's own name
       // (`tallyScoped`): the list is what the number counts.
       const scope: TallyScope | null = names.length > 1 ? { names: map, fallback: label } : null;
-      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}) });
+      out.push({ kind: d.id, name, color: d.color, source: 'flow', flow, label, count: counted.length, query, ...(scope ? { scope } : {}), ...folding(d, counted.length) });
     } else {
       const q = d.source.query.trim();
       if (q === '') continue;
@@ -232,7 +243,8 @@ export function tallyEntries(items: Item[], defs: readonly TallyDef[], labels: T
       // only, unless the condition itself says open / closed / merged — the same rule BoardView applies
       const parsed = parseFilter(q);
       const pool = statesStated(parsed) ? items : openOnly(items);
-      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count: applyFilter(pool, parsed, ctx).length, query: q });
+      const count = applyFilter(pool, parsed, ctx).length;
+      out.push({ kind: d.id, name, color: d.color, source: 'query', flow: null, label: '', count, query: q, ...folding(d, count) });
     }
   }
   return out;

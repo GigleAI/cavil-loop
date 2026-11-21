@@ -513,7 +513,8 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已交给 agent');
   await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
   await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
-  await page.getByTestId('detail-close').click();
+  // GitHub#633: the panel put itself away once the client accepted the hand-over
+  await expect(page.getByTestId('detail')).toHaveCount(0);
 
   // ---- drag a card to another iteration: only that Project's value changes ----
   const before137 = writes().length;
@@ -4391,6 +4392,10 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
     ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
   ]);
   await expect(card(page, 138).locator('.label', { hasText: 'autopilot' })).toBeVisible();
+  // GitHub#633: the panel put itself away once the client accepted 托管 — opened again to go on
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  await card(page, 138).click();
+  await expect(frame.locator('details.entry').first()).toBeVisible({ timeout: 15_000 });
 
   // ---- 2. edit: only where GitHub allows it; the whole new text goes up, read back from GitHub ----
   await frame.locator('details.entry[data-entry="C_THEIRS"] > summary').click({ position: { x: 40, y: 10 } });
@@ -4796,7 +4801,8 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
   expect(writes().slice(b1)).toEqual(autopilotWrites(138));
-  await page.getByTestId('detail-close').click();
+  // GitHub#633: the panel put itself away once the client accepted 托管
+  await expect(page.getByTestId('detail')).toHaveCount(0);
   // another item: the button has no "…", one click writes, no dialog
   await card(page, 139).click();
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）Ctrl+Shift+C');
@@ -4805,6 +4811,8 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已托管');
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   expect(writes().slice(b2)).toEqual(autopilotWrites(139));
+  await expect(page.getByTestId('detail')).toHaveCount(0);
+  await card(page, 139).click();
 
   // ---- 2. the detail's iteration picker: current → upcoming nearest first → ended latest first ----
   const detailPick = page.getByTestId('iteration-select').first();
@@ -5475,7 +5483,10 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   await expect(notice.getByTestId('op-fallback')).toHaveText('到 GitHub 上核对');
   await expect(notice.locator('.op-buttons button')).toHaveCount(2);
   await expect(notice.getByTestId('op-dismiss')).toHaveCount(0);
-  await expect(detail.getByTestId('hand-back')).toBeDisabled();
+  // GitHub#633: the panel put itself away once the client accepted it; opened again, the item is still held
+  await expect(detail).toHaveCount(0);
+  await card(page, 138).click();
+  await expect(detail.getByTestId('hand-back')).toBeDisabled({ timeout: 15_000 });
   expect(late.caught()).toBe(1);
   expect(adds()).toBe(1);
   await shot(page, '359-01-not-sure');
@@ -8438,8 +8449,12 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   const release = env.fake.holdWhen((e) => e.method === 'DELETE' && e.path.includes('/issues/137/labels/'));
   await page.keyboard.press(HAND);
   await expect.poll(() => writes().length).toBe(3);
+  // GitHub#633: the panel put itself away once the client accepted it; opened again, the item is held and the box empty
+  await expect(detail).toHaveCount(0);
+  await open(137);
   await expect(page.getByTestId('hand-back')).toBeDisabled();
   await expect(reply).toHaveValue('');
+  await reply.focus();
   await page.keyboard.press(HAND);
   await page.keyboard.press(CLOSE);
   await page.keyboard.press(AUTO);
@@ -8467,7 +8482,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(137));
   await settled();
   expect(writes().slice(before)).toEqual(autopilotWrites(137));
-  await expect(reply).toHaveValue('');
+  // GitHub#633: put away once the client accepted it
+  await expect(detail).toHaveCount(0);
 
   // ---- 5b. another field (the search box): the three keys do nothing there, while Ctrl+R from the same box still syncs ----
   await page.getByTestId('search').focus();
@@ -8554,8 +8570,10 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.keyboard.press(HAND);
   await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(137));
   await settled();
+  await expect(detail).toHaveCount(0);
 
   // ---- 10. offline: the buttons grey out and the keys do nothing ----
+  await open(137);
   before = writes().length;
   env.fake.state.offline = true;
   await page.getByTestId('refresh').press('Enter');
@@ -8757,7 +8775,8 @@ test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and p
   await page.getByTestId('autopilot').click();
   await page.getByTestId('confirm-ok').click();
   await expect(dialog).toHaveCount(0);
-  await expect(reply).toHaveValue('');
+  // GitHub#633: accepted by the client: the panel put itself away, the text lives in the operation now
+  await expect(detail).toHaveCount(0);
   await expect(notice()).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   expect(writes()).toEqual([comment(138, '补充：只改客户端\n第二行')]);
   await openNotices(page);
@@ -8776,6 +8795,8 @@ test('GitHub#451: text in the reply box — 托管 quotes it in the dialog and p
   await notice().getByTestId('op-retry').click();
   await expect(dialog).toHaveCount(0);
   await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual([comment(138, '补充：只改客户端\n第二行'), ...autopilotWrites(138)]);
+  // opened again: the reply box did not get the text back (it went out with the operation)
+  await card(page, 138).click();
   await expect(reply).toHaveValue('');
   await app.close();
 });

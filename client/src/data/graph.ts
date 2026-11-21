@@ -21,10 +21,16 @@
 //   such a PR goes in as an entry of its own, its prerequisites drawn into it, and it sits in the box
 //   of the issue it is linked to (the board's "a PR goes under its issue" rule, `prHosts`) — top level
 //   when that issue is not drawn or sits at the top. It is the only way a PR goes in as an entry.
+// - GitHub#636: a dashed link joins a PR node to every issue node it is linked to (the issue's linked
+//   PRs, or the PR's description naming the issue — the same relation the summary's "linked PRs" list
+//   shows). It is not an arrow: "被 N 项挡住" never counts it. "挡住后面 N 项" crosses it only on a walk
+//   that reached the PR along arrows through open nodes alone (so a blocker whose path to the PR runs
+//   through a finished item, or the PR itself as the start, never counts the issue behind it); an issue
+//   with no open blocker of its own whose PR is held shows "它的 PR 被挡住" instead.
 
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { labelAt, loopCandidate, type LabelFor } from './loopBlocked';
-import { issuePrLinks, prHosts } from './prNest';
+import { issuePrLinks, prHosts, prsNaming } from './prNest';
 import { badgeText, stateTone, type StateTone } from '../shared/stateTone';
 
 export interface GraphNode {
@@ -51,6 +57,11 @@ export interface GraphNode {
   blockedByOpen: number;
   /** for an open node no open blocker holds: open nodes reachable along its arrows ("挡住后面 N 项") */
   blockingAhead: number;
+  /**
+   * GitHub#636: for an open issue with no open blocker of its own, the open PRs linked to it that an open
+   * blocker holds ("它的 PR 被挡住"), sorted; empty otherwise
+   */
+  prBlocked: string[];
   /** everything a node's drawing depends on, as one string: a node whose `look` is unchanged is not redrawn */
   look: string;
 }
@@ -64,11 +75,23 @@ export interface GraphEdge {
   open: boolean;
 }
 
+/** GitHub#636: a PR joined to an issue it is linked to (dashed) — not a blocking arrow */
+export interface GraphLink {
+  /** the pull request */
+  from: string;
+  /** the issue */
+  to: string;
+  /** both ends are open (teal); false = either is closed / merged (grey, never crossed when counting) */
+  open: boolean;
+}
+
 export interface GraphModel {
   nodes: Map<string, GraphNode>;
   /** top-level node keys, in a stable order */
   roots: string[];
   edges: GraphEdge[];
+  /** GitHub#636: PR → linked issue, both drawn; sorted */
+  links: GraphLink[];
   /** the items the search picked that went in (GitHub#429: or are drawn as the other end of one that did) */
   entries: number;
   /** the items the search picked that have no relation (PRs included): not drawn */
@@ -144,6 +167,7 @@ export function buildGraph(
     children: [],
     blockedByOpen: 0,
     blockingAhead: 0,
+    prBlocked: [],
     look: '',
   });
   for (const e of entries) nodes.set(e.key, blank(e, e));
@@ -217,6 +241,20 @@ export function buildGraph(
   // an in-source node's state is the fresher one: it is read with the item, not with the other end's relations
   const edges: GraphEdge[] = pairs.map(([from, to]) => ({ from, to, open: nodes.get(from)!.state === 'open' }));
 
+  // GitHub#636: PR ⇢ issue links, both ends drawn — for every issue node, the PRs linked to it by the one
+  // rule the summary's "linked PRs" list uses (an issue in no source: only the PRs whose description names
+  // it, since GitHub's own links were not read); never from the order of `all`
+  const linkKeys = new Set<string>();
+  for (const n of nodes.values()) {
+    if (n.kind !== 'issue') continue;
+    const prs = n.item ? (issuePrLinks(n.item, all) ?? []).map((l) => l.key) : prsNaming(n.key, all).map((p) => p.key);
+    for (const k of prs) if (nodes.get(k)?.kind === 'pr') linkKeys.add(`${k}\u0000${n.key}`);
+  }
+  const links: GraphLink[] = [...linkKeys]
+    .sort()
+    .map((k) => k.split('\u0000') as [string, string])
+    .map(([from, to]) => ({ from, to, open: nodes.get(from)!.state === 'open' && nodes.get(to)!.state === 'open' }));
+
   for (const [child, parent] of parentOf) {
     nodes.get(child)!.parent = parent;
     nodes.get(parent)!.children.push(child);
@@ -230,28 +268,47 @@ export function buildGraph(
     if (e.open) nodes.get(e.to)!.blockedByOpen++;
     out.set(e.from, [...(out.get(e.from) ?? []), e.to]);
   }
+  // GitHub#636: an open issue with no open blocker of its own, whose open linked PR an open blocker holds
+  const across = new Map<string, string[]>();
+  for (const l of links) if (l.open) across.set(l.from, [...(across.get(l.from) ?? []), l.to]);
+  for (const l of links) {
+    const b = nodes.get(l.to)!;
+    if (l.open && b.blockedByOpen === 0 && nodes.get(l.from)!.blockedByOpen > 0) b.prBlocked.push(l.from);
+  }
+  for (const n of nodes.values()) n.prBlocked.sort();
+  // "挡住后面 N 项": along the arrows as before (through closed nodes too), and across a link only from a PR
+  // reached along arrows through open nodes alone. A node reached only on a path through a closed one may
+  // be reached again on an all-open path (and then go on across its links); never the other way round.
   for (const n of nodes.values()) {
-    if (n.state !== 'open' || n.blockedByOpen > 0 || !out.has(n.key)) continue;
+    if (n.state !== 'open' || n.blockedByOpen > 0 || n.prBlocked.length > 0 || !out.has(n.key)) continue;
     const seen = new Set<string>([n.key]);
-    const queue = [...out.get(n.key)!];
+    const seenOpen = new Set<string>([n.key]);
+    const queue: [string, boolean][] = [[n.key, true]];
+    const reach = (k: string, ok: boolean) => {
+      if (ok ? seenOpen.has(k) : seen.has(k)) return;
+      if (ok) seenOpen.add(k);
+      if (!seen.has(k)) {
+        seen.add(k);
+        if (nodes.get(k)!.state === 'open') n.blockingAhead++;
+      }
+      queue.push([k, ok]);
+    };
     while (queue.length) {
-      const k = queue.shift()!;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      if (nodes.get(k)!.state === 'open') n.blockingAhead++;
-      queue.push(...(out.get(k) ?? []));
+      const [k, ok] = queue.shift()!;
+      for (const v of out.get(k) ?? []) reach(v, ok && nodes.get(v)!.state === 'open');
+      if (ok && k !== n.key) for (const v of across.get(k) ?? []) reach(v, true);
     }
   }
 
   for (const n of nodes.values()) {
     const it = n.item;
     const sub = it?.subIssues ?? null;
-    n.look = JSON.stringify([n.kind, n.isDraft, n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
+    n.look = JSON.stringify([n.kind, n.isDraft, n.title, n.state, n.stateReason, n.dim, n.item === null, n.blockedByOpen, n.blockingAhead, n.prBlocked, it?.labels.map((l) => [l.name, l.color]) ?? null, sub, it?.edits?.map((m) => [m.label, m.status]) ?? null]);
   }
 
   const roots = [...nodes.values()].filter((n) => n.parent === null).sort(byNumber).map((n) => n.key);
-  const structure = JSON.stringify([[...nodes.keys()].sort(), [...parentOf].sort(), pairs]);
-  return { nodes, roots, edges, entries: entries.length + drawnEnds, noRelation, unknown, structure };
+  const structure = JSON.stringify([[...nodes.keys()].sort(), [...parentOf].sort(), pairs, links.map((l) => [l.from, l.to])]);
+  return { nodes, roots, edges, links, entries: entries.length + drawnEnds, noRelation, unknown, structure };
 }
 
 /** The sub-issue count a box shows: GitHub's own count when the item carries it, else what the graph holds. */

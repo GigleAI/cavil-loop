@@ -176,7 +176,9 @@ off_run() {   # <scripts 根> <配置行（可空）> <场景> → 输出一份�
         case "$sc" in dotgithub|readfail) ;; *) echo "── 第 $i 轮调用"; cat "$CALLS" ;; esac
     done
     # daemon 翻标签时假 GitHub 把条目的更新时间记成「现在」，state 里引用它的地方按秒变：抹成同一个占位
-    echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
+    # 托管判定规则的版本（AUTOPILOT_JUDGE_REV，写进 .autopilot.takeover / .denied 的值开头）按规矩随规则改动而变（GitHub#619 起），
+    # 不是这里要比的行为：两边都抹成同一个占位
+    echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body | sub("\\n<!-- cavil-loop:autopilot-handover [^>]*-->$"; "")]' "$GD/comments.json"
     echo "── 合并后交接记录（去掉时间）"; jq -S '(.autopilot.handoff // {}) | map_values(.body)' "$STATE"
@@ -484,7 +486,7 @@ cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
     happy
     case "$sc" in only) files "$T_ONLY" ;; mix) files "$T_MIX" ;; esac
     for i in 1 2 3; do tick "$root/scripts"; echo "── 第 $i 轮调用"; cat "$CALLS"; done
-    echo "── state"; jq -S . "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
+    echo "── state"; jq -S . "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'   # 规则版本同上
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
 }

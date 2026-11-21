@@ -213,7 +213,7 @@ check_prompts() {
         has '任一项不合格判不通过' "$s" || echo "$e: 版式检查没写不合格打回"
         has '却有候选项没配真实渲染的样例图' "$s" || echo "$e: 版式检查漏了缺样例图"
         has '`${REVIEW_ASSET_BASE_URL}`' "$s" || echo "$e: 版式检查没给出图地址"
-        has '逐条对照下面四项' "$s" || echo "$e: 版式检查的项数没跟上"
+        has '逐条对照下面五项' "$s" || echo "$e: 版式检查的项数没跟上"
         has '④ 方案（含修订版）会改变界面外观' "$s" || echo "$e: 版式检查漏了改界面外观的方案"
         has '有没有选择题都算，托管条目同样适用' "$s" || echo "$e: 版式检查的设计稿一项没写不看选择题 / 托管同样适用"
         has '配了出图地址却没附设计稿' "$s" || echo "$e: 版式检查漏了缺设计稿"
@@ -314,10 +314,12 @@ make_sandbox
 out=$(check_bot "$SKILL_DIR")
 if [ -z "$out" ]; then ok "合并说明只在先汇报时出现，每份成品一致"; else bad "交接段不满足："; sed 's/^/       /' <<<"$out"; fi
 
-# 不先汇报时：交接段和合并基点（改动前的 _lib.sh + 改动前的交接模板）逐字节相同
+# 不先汇报时：交接段和合并基点的 _lib.sh 拼出来的逐字节相同（守的是「不先汇报时什么都不加」这一条）。
+# 两边用同一份当前的交接模板：模板本身的改动（例如 GitHub#619 加的「答复到了、被派来处理时」）不是这里要拦的
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$TMP/old"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$TMP/old"
+cp -r "$REPO_DIR/prompts/." "$TMP/old/prompts/"
 old_off=$(bot_env false bash -c 'source "$0" >/dev/null 2>&1; set +e; SKILL_DIR="$1" requester_bot_handoff_section' \
     "$TMP/old/scripts/_lib.sh" "$TMP/old" 2>/dev/null)
 if [ -z "$old_off" ]; then bad "合并基点 ${BASE_REV:0:8} 拼不出交接段（对拍没真跑）"

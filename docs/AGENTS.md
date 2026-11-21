@@ -43,6 +43,16 @@ use it. A new page directly under `docs/` is covered automatically — give it b
   docs, templates and AGENTS.md link to them); a heading inside `<details>` is hidden until
   someone opens the block.
 - **Both languages say the same thing.** Change `x.md` and `x.zh.md` in the same commit.
+- **In the orchestration guide, upper case is for settings and the tool's variables only.** This
+  applies to `docs/orchestration.md` / `docs/orchestration.zh.md` alone — the only documents whose
+  upper-case names are checked. In an example script there (a hook, a command block), the
+  script's own variables are written in lower case (`port=5555`, `dir="$WORKTREE"`); an
+  upper-case name always means a setting from the config example or a variable the tool passes
+  in. `tests/orchestration-docs.test.sh` relies on this: it does not try to work out from the
+  text when a shell assignment takes effect (indentation, subshells, command-prefix assignments
+  and commented-out lines made every such guess wrong in both directions), it checks every
+  upper-case name it sees. Other documents' command blocks are not bound by it (the operations
+  guide's verbatim blocks keep names like `KEY=…` / `CONF=…`, and tests run them as written).
 
 ## Where the reasons go
 
@@ -70,12 +80,15 @@ reading AGENTS.md need that trail; a user reading the docs does not.
 | The client guide's screenshots, structure and network-boundary wording | `tests/client-docs.test.sh` | `bash tests/client-docs.test.sh` |
 | The diagrams equal the generator's output, animate correctly, and each page references its own language's pictures | `tests/doc-diagrams.test.sh` | `bash tests/doc-diagrams.test.sh` |
 | The orchestration guide names only real settings, and its example commands run as written | `tests/orchestration-docs.test.sh` | `bash tests/orchestration-docs.test.sh` |
+| No issue / PR number in any external document (`GitHub#N`, `PR #N`, `owner/repo#N`, a parenthesised `(#N)`), command blocks included; internal files keep theirs | `tests/doc-numbers.test.sh` (`--numbers`, the `NUMBER` pattern in `tests/lib/doc_links.py`) | `bash tests/doc-numbers.test.sh` |
 
 All of them are `# kind: guard` tests: they run in `bash tests/run.sh --quick`, on every PR and
 in the pre-commit hook.
 
-No text check for issue / PR numbers in these documents is in place yet; until there is one,
-the reviewer checks that rule by reading too.
+The number check deliberately lets two forms through, because telling them from a history
+reference needs a reader: a bare `#42` (the README's worked example, a search example, "sort key
+#1") and a link whose text is the number (`[#628](https://github.com/…/issues/628)`, a feature
+still in progress). The reviewer checks those by reading.
 
 The "no history narrative" rule is **not** checked by a text test: phrases like "at first" or
 "后来" appear in plenty of legitimate sentences, and every pattern tried raised more false alarms

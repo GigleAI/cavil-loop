@@ -86,7 +86,7 @@ pending/agent ──► daemon dispatch ──► label: doing/agent  ← GitHub
 
 <details><summary>细节：之后各轮看什么、什么会打回</summary>
 
-最近一次人工动作之后的第 1 轮复审把能找到的问题一次列全、编号；之后各轮只逐条核对这份清单，再看修复本身——上一轮审过的提交到本轮提交之间的改动，扣掉单纯合入主干带进来的部分（`scripts/review-scope.sh`；算不出来的一律回到全量复审）。建议类（措辞、命名、可读性）一律不打回；检查失败、冲突、违反硬规则、安全和丢数据一律打回。复审拿到项目 `REVIEW.md` 的全文，worker 拿到一句指向它的提示。完整判断表见 [operations](operations.zh.md#复审收敛首轮一次报全之后只复核修复github621)。
+最近一次人工动作之后的第 1 轮复审把能找到的问题一次列全、编号；之后各轮只逐条核对这份清单，再看修复本身——上一轮审过的提交到本轮提交之间的改动，扣掉单纯合入主干带进来的部分（`scripts/review-scope.sh`；算不出来的一律回到全量复审）。建议类（措辞、命名、可读性）一律不打回；检查失败、冲突、违反硬规则、安全和丢数据一律打回。复审拿到项目 `REVIEW.md` 的全文，worker 拿到一句指向它的提示。完整判断表见 [operations](operations.zh.md#复审收敛首轮一次报全之后只复核修复)。
 
 </details>
 
@@ -94,7 +94,7 @@ PR 和目标分支有冲突时绝不交出去：worker 每次交出前都先试�
 
 <details><summary>细节：worker 交出 PR 前的冲突检查</summary>
 
-worker 每次要把 PR 翻成 `pending/review` / `pending/human`——首次开 PR、返工、哪怕只是纯讨论轮——都先拿 PR 在 GitHub 上的最新提交和 PR 的目标分支试合并（`git merge-tree`，不动工作区、不产生提交）。有冲突就把主干合进来（不 rebase、不强推），解掉、重跑相关测试、推上去再交；解不了就放弃这次合并，列出冲突文件交 `pending/human`。只是落后主干、没有冲突时不合。复审下结论前跑同一段检查，因为它不推代码，有冲突就判不通过退回 worker。PR 已经停在 `pending/human` 之后主干再动导致的新冲突，由 daemon 发现——见下一块。
+worker 每次要把 PR 翻成 `pending/review` / `pending/human`——首次开 PR、返工、哪怕只是纯讨论轮（人只是提问的那一轮除外，见下文）——都先拿 PR 在 GitHub 上的最新提交和 PR 的目标分支试合并（`git merge-tree`，不动工作区、不产生提交）。有冲突就把主干合进来（不 rebase、不强推），解掉、重跑相关测试、推上去再交；解不了就放弃这次合并，列出冲突文件交 `pending/human`。只是落后主干、没有冲突时不合。复审下结论前跑同一段检查，因为它不推代码，有冲突就判不通过退回 worker。PR 已经停在 `pending/human` 之后主干再动导致的新冲突，由 daemon 发现——见下一块。
 
 </details>
 
@@ -112,6 +112,14 @@ PR 挂着 `pending/human`（且没有 `doing/agent` / 任何触发 label——�
 「判不了」绝不算「没冲突」：拉取失败、对象不在、`merge-tree` 报错都下轮再判，同一对最多判 `PENDING_HUMAN_CONFLICT_MAX_TRIES`（默认 10）次。取不到目标分支提交的那一轮什么都不查。真要写之前，daemon 现读一次这个 PR，要求判定时用到的每一项身份都还成立——仍开着且没合并、目标分支没换、PR 提交没变、同仓库 / 外部仓库没变、仍挂 `pending/human` 且没有忙碌标签；缺字段也算对不上（关掉的 PR 照样留着标签，标签代替不了「开着」）。对不上就什么都不写、不记为已处理，下轮按现状重新判。
 
 每条评论带一个隐藏标记，写着 PR 提交和评论种类（`mode=worker` / `mode=remind`）；PR 上已有这个提交的标记 = 已处理过（本机状态丢了，或另一台机器先处理了），既不重复，也不会从「只提醒」升级成自动解——提醒评论本身会刷新 PR 的更新时间，所以两种必须分开标。每个 PR 的进度记在 `state.json` 的 `pr_conflict`。
+
+</details>
+
+人在 issue 或 PR 上只是提问时，agent 在提问的那条讨论里回答，然后停下：不写代码、不推送、不合主干、不交复审，托管条目也一样。只有这个条目翻回 `pending/human`（已有 PR 的 issue 翻回 `pending/PR`）。人不留言就交回时，agent 只在答复之后什么都没变的情况下接着原来那一步，只做一次；否则请人留言「继续」。
+
+<details><summary>细节：「什么都没变」指什么</summary>
+
+答复里带一条隐藏记录，由 `scripts/feedback-fingerprint.sh` 从同一次读取生成：每条人的反馈（维护者和外部需求机器人写的；外部账号的不算）、选择题勾选、条目本身（正文、打开 / 关闭、流程标签以外的标签、PR 的最新提交和目标分支、issue 的关联打开 PR）、loop 账号流程评论各自的内容指纹，以及要接着做的那一步。交回时用同一个命令比对：全都一样 → 接着那一步，只做一次（之前跳过的冲突处理这时照常做）；有新增或改过的反馈 → 当本轮的输入；条目本身变了、有反馈被删、那一步的记录没了或变了、流程评论有变化、记录是旧格式或写坏了、读不全 → 请人留言「继续」。
 
 </details>
 
@@ -260,7 +268,7 @@ flock，调用才是稀缺资源）。退避改的是脚本醒来之后的第一
 
 ## agent 撞到用量上限时
 
-可选（`ENABLE_USAGE_LIMIT_PAUSE`）。worker 窗格上出现订阅的用量上限提示时，daemon 在解除时间之前不再派工给这个 agent，并把被打断的条目转给人；会话本身不碰。细节、限制和手动解除见[运维文档](operations.zh.md#agent-撞到用量上限停派这个-agent被打断的条目转人工github341)。
+可选（`ENABLE_USAGE_LIMIT_PAUSE`）。worker 窗格上出现订阅的用量上限提示时，daemon 在解除时间之前不再派工给这个 agent，并把被打断的条目转给人；会话本身不碰。细节、限制和手动解除见[运维文档](operations.zh.md#agent-撞到用量上限停派这个-agent被打断的条目转人工)。
 
 <details><summary>细节：daemon 做了什么</summary>
 
@@ -335,7 +343,7 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
 
-开了 `ENABLE_ROUND_LOG`（GitHub#610）时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_loggithub610)。
+开了 `ENABLE_ROUND_LOG`时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_log)。
 
 项目还可以自己装 agent hook，例如 Claude Code 的 `PreToolUse` 在改文件前注入目录规矩。这是宿主项目侧的做法，cavil-loop 不自带、也不管理。图里最右一栏（第 ⑤⑥ 步）画的就是这样一个钩子，只作示例。
 

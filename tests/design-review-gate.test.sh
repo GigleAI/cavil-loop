@@ -138,7 +138,9 @@ CONF
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ -s "$f" ]; then
             # GitHub#599 加了 ${CAVIL_STEP_DIR}：改动前的派工脚本不认识它，按它在当前脚本里的值对齐
-            sed -e "s|$root|<ROOT>|g" -e 's|\${CAVIL_STEP_DIR}|<ROOT>/scripts|g' -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"
+            # GitHub#614 加了 ${FEEDBACK_FP_CMD}：同上按它在当前脚本里的值对齐
+            sed -e "s|$root|<ROOT>|g" -e 's|\${CAVIL_STEP_DIR}|<ROOT>/scripts|g' \
+                -e "s|\\\${FEEDBACK_FP_CMD}|bash '<ROOT>/scripts/feedback-fingerprint.sh' --config '<W>/config'|g" -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"
         fi
         rm -f "$f"
     done

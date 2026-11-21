@@ -87,7 +87,7 @@ contents as a new comment on this issue.
 
 ## 令牌不留在本机日志里
 
-worker 的环境里有 GitHub 令牌，agent 可能把它原样打印进长期保留的文件——窗格历史、`poll.log`、agent 的会话记录、codex 的环境快照。daemon 在这些文件里把令牌换成 `REDACTED-<指纹>`；这是减少落盘，不是隔离。范围、开关、清理旧快照的命令见 [operations.zh.md](operations.zh.md#github-令牌脱敏github342)。
+worker 的环境里有 GitHub 令牌，agent 可能把它原样打印进长期保留的文件——窗格历史、`poll.log`、agent 的会话记录、codex 的环境快照。daemon 在这些文件里把令牌换成 `REDACTED-<指纹>`；这是减少落盘，不是隔离。范围、开关、清理旧快照的命令见 [operations.zh.md](operations.zh.md#github-令牌脱敏)。
 
 <details><summary>详情：换掉什么、不管什么</summary>
 
@@ -147,8 +147,8 @@ daemon 的 auto-cleanup 也会顺手把 worktree / session 收掉，状态最终
 - **PR 只能从它绑定的那个 issue 继承授权**，绑定要两条独立依据同时对上：分支正好是本仓库的 `BRANCH_PREFIX<N>`，正文只关闭 `#N`。别的 PR 里写一句 `Closes #N`、fork 来的 PR、带后缀的分支，都借不走授权
 - **只合复审看过的那份改动**：派复审时记下提交号和目标分支，合并接口带上提交号；之后有新推送或改投别的分支，都回去重审
 - **叫停永远只差一步**：摘掉 issue 或 PR 上的标签，或在 issue / PR 上打 `pending/human`。判定依据的每一项在调合并接口前都重读一遍，任何变化、任何读不到，本轮都不合
-- **永远不自动合并**：改了 `.github/`（Actions / 仓库自动化；配了 `AUTOPILOT_HUMAN_PATHS` 时还包括清单里其他「之后会运行代码」的文件——hooks、agent 配置、安装 / 构建文件，见 [operations](operations.zh.md#合并前必须人过目的文件autopilot_human_pathsgithub337)）、fork 来的 PR、草稿、GitHub 自己的规则拒绝的（daemon 不绕分支保护）。外部需求机器人提的需求可以托管，但授权必须是维护者亲手打的标签，机器人账号自己打的不算；提需求方的确认照常要，daemon 合并前的检查一条不少
-- **外部账号的评论**（`AUTOPILOT_OUTSIDER_GUARD`，默认关）：外部账号（在本仓库没有写权限）的评论本来就触发不了任何 daemon 动作，但托管条目的 agent 会读到。打开后 agent 改用读取命令读本条，外部账号的文字照常给读、标明是谁写的，其中的链接、附件、代码、HTML 注释和看不见的字符换成占位；`block` 档再加「授权之后有外部内容就不自动合并、交人」，评论事后删掉也照样拦（本机有记录）；可选的模型预筛（不给任何工具）把像在指挥 agent 做事的整条隐藏。**这不是沙箱**：不守规则的 agent 仍能绕开去读原文、运行别人给的文件；纯文字的恶意要求、拆开写的网址、转述认不出来。详见 [operations](operations.zh.md#托管条目上外部账号的内容autopilot_outsider_guardgithub391)
+- **永远不自动合并**：改了 `.github/`（Actions / 仓库自动化；配了 `AUTOPILOT_HUMAN_PATHS` 时还包括清单里其他「之后会运行代码」的文件——hooks、agent 配置、安装 / 构建文件，见 [operations](operations.zh.md#合并前必须人过目的文件autopilot_human_paths)）、fork 来的 PR、草稿、GitHub 自己的规则拒绝的（daemon 不绕分支保护）。外部需求机器人提的需求可以托管，但授权必须是维护者亲手打的标签，机器人账号自己打的不算；提需求方的确认照常要，daemon 合并前的检查一条不少
+- **外部账号的评论**（`AUTOPILOT_OUTSIDER_GUARD`，默认关）：外部账号（在本仓库没有写权限）的评论本来就触发不了任何 daemon 动作，但托管条目的 agent 会读到。打开后 agent 改用读取命令读本条，外部账号的文字照常给读、标明是谁写的，其中的链接、附件、代码、HTML 注释和看不见的字符换成占位；`block` 档再加「授权之后有外部内容就不自动合并、交人」，评论事后删掉也照样拦（本机有记录）；可选的模型预筛（不给任何工具）把像在指挥 agent 做事的整条隐藏。**这不是沙箱**：不守规则的 agent 仍能绕开去读原文、运行别人给的文件；纯文字的恶意要求、拆开写的网址、转述认不出来。详见 [operations](operations.zh.md#托管条目上外部账号的内容autopilot_outsider_guard)
 - **明说的局限**：复审评论里的「重跑过测试」记录和 worker 是同一个账号写的；daemon 能核对它存在、写的是复审过的提交、晚于派复审、失败数为 0——证明不了真的跑过。有真 CI 的仓库再叠一道客观检查（那个提交上的检查必须全过）
 
 </details>
@@ -168,7 +168,7 @@ daemon 的 auto-cleanup 也会顺手把 worktree / session 收掉，状态最终
 
 ## 远程入口（可选，默认关）
 
-`scripts/remote-access.sh` 让另一台电脑上配对过的桌面客户端经 Tailscale 看这台机器上的 daemon。这是 daemon 唯一一条接受别的机器操作的路径，所以默认是关的——不跑 `enable` / `pair` 就没有任何监听和转发。命令和协议见 [运维 → 远程入口](operations.zh.md#远程入口让另一台电脑上的客户端看这台机器的-daemongithub387)。
+`scripts/remote-access.sh` 让另一台电脑上配对过的桌面客户端经 Tailscale 看这台机器上的 daemon。这是 daemon 唯一一条接受别的机器操作的路径，所以默认是关的——不跑 `enable` / `pair` 就没有任何监听和转发。命令和协议见 [运维 → 远程入口](operations.zh.md#远程入口让另一台电脑上的客户端看这台机器的-daemon)。
 
 <details><summary>详情：谁连得上、谁能操作、最坏能做什么</summary>
 

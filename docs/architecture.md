@@ -86,7 +86,7 @@ Review converges instead of digging deeper each round: the first round after the
 
 <details><summary>Details: what later rounds look at, what bounces</summary>
 
-The first review round after the last human action lists every problem it can find, numbered; later rounds only check that list item by item plus the fix itself — what changed between the commit the previous round reviewed and the current one, with whatever a plain merge of the base brought in subtracted (`scripts/review-scope.sh`; anything it cannot work out means a full review again). Suggestions (wording, naming, readability) never bounce; failed checks, conflicts, a broken hard rule, security and data loss always do. The reviewer gets a project's `REVIEW.md` in full, workers get a pointer to it. The full decision table: [operations](operations.md#review-converges-everything-in-round-one-then-only-the-fixes-github621).
+The first review round after the last human action lists every problem it can find, numbered; later rounds only check that list item by item plus the fix itself — what changed between the commit the previous round reviewed and the current one, with whatever a plain merge of the base brought in subtracted (`scripts/review-scope.sh`; anything it cannot work out means a full review again). Suggestions (wording, naming, readability) never bounce; failed checks, conflicts, a broken hard rule, security and data loss always do. The reviewer gets a project's `REVIEW.md` in full, workers get a pointer to it. The full decision table: [operations](operations.md#review-converges-everything-in-round-one-then-only-the-fixes).
 
 </details>
 
@@ -94,7 +94,7 @@ A PR is never handed on while it conflicts with its base: the worker test-merges
 
 <details><summary>Details: the worker's conflict check before a hand-off</summary>
 
-Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next block.
+Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round (a round where the human only asked a question is the exception, below) — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next block.
 
 </details>
 
@@ -112,6 +112,14 @@ GitHub's own `mergeable` field is deliberately not used. It is computed lazily a
 "Can't tell" never counts as "no conflict": a failed fetch, a missing object or a `merge-tree` error is retried next tick, at most `PENDING_HUMAN_CONFLICT_MAX_TRIES` (default 10) times per pair. If the base commit cannot be read, the tick checks nothing. Right before writing, the daemon re-reads the PR and requires every identity it acted on to still hold — open and not merged, same base branch, same head commit, same same-repo/fork status, still `pending/human` with no busy label; a missing field counts as a mismatch (a closed PR keeps its labels, so labels alone cannot stand in for "open"). On any mismatch it writes nothing, does not mark the commit handled, and judges the PR afresh next tick.
 
 Each comment carries a hidden marker with the head commit and its kind (`mode=worker` / `mode=remind`); a marker already on the PR means the commit was handled (state lost, or another machine got there first), so it is neither repeated nor escalated from a reminder into an auto-fix — the reminder comment itself bumps the PR's "updated" time, which is why the two kinds need separate markers. Per-PR progress lives in `state.json` `pr_conflict`.
+
+</details>
+
+When a human only asks a question on an issue or PR, the agent answers in that thread and stops: no code, no push, no merging the base, no review, on autopilot items too. Only that item goes back to `pending/human` (an issue that already has a PR goes back to `pending/PR`). Handed back with no new comment, the agent carries on from where it was, once, but only when nothing changed since the answer; otherwise it asks for a comment 「继续」 ("continue").
+
+<details><summary>Details: what "nothing changed" means</summary>
+
+The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` from one read of the item: content fingerprints of every piece of human feedback (maintainers and the requester bot; outside accounts do not count), the ticked options, the item itself (description, open / closed, labels other than the flow labels, a PR's head commit and base branch, an issue's open PRs), the loop account's flow comments, and the step to continue. On hand-back the same command compares: all equal → that step, done once (the skipped conflict handling then happens as usual); new or edited feedback → treated as this round's input; a changed item, deleted feedback, a missing or changed step record, changed flow comments, an old or broken record, or an incomplete read → the agent asks for 「继续」.
 
 </details>
 
@@ -291,7 +299,7 @@ every dispatch entry of the same round.
 
 ## When an agent hits its usage limit
 
-Optional (`ENABLE_USAGE_LIMIT_PAUSE`). When a worker pane shows its subscription's usage-limit notice, the daemon stops dispatching to that agent until the reset time and hands the interrupted item to a human; the session itself is left alone. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+Optional (`ENABLE_USAGE_LIMIT_PAUSE`). When a worker pane shows its subscription's usage-limit notice, the daemon stops dispatching to that agent until the reset time and hands the interrupted item to a human; the session itself is left alone. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human).
 
 <details><summary>Details: what the daemon does</summary>
 
@@ -371,7 +379,7 @@ The layers, in order: the skill's base workflow template (a project may replace 
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
-With `ENABLE_ROUND_LOG` on (GitHub#610), comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log-github610).
+With `ENABLE_ROUND_LOG` on, comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
 
 Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 
