@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
 import { plan } from '../../scripts/dev-plan.mjs';
+import { devFiles } from '../../scripts/dev-release.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -53,7 +54,21 @@ function repo() {
   return { dir, git, commit, head: () => git('rev-parse', 'HEAD'), bin };
 }
 
-const rel = (tag: string, sha: unknown, extra: object = {}) => ({ id: Math.floor(Math.random() * 1e9), tag_name: tag, draft: false, prerelease: true, target_commitish: sha, ...extra });
+// a published development build carrying every file a build carries, unless `extra` says otherwise
+const rel = (tag: string, sha: unknown, extra: object = {}) => ({
+  id: Math.floor(Math.random() * 1e9),
+  tag_name: tag,
+  draft: false,
+  prerelease: true,
+  target_commitish: sha,
+  assets: tag.startsWith('client/v') ? devFiles(tag.slice('client/v'.length)).map((name) => ({ name })) : [],
+  ...extra,
+});
+// the same build with some of its files missing
+const without = (tag: string, sha: string, ...gone: string[]) => {
+  const r = rel(tag, sha);
+  return { ...r, assets: r.assets.filter((a) => !gone.some((g) => a.name.endsWith(g))) };
+};
 
 function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[]) {
   const listFile = join(r.dir, '..', `${r.dir.split('/').pop()}-list.json`);
@@ -120,6 +135,24 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     expect(forced.why).toContain('已经发过');
   });
 
+  it('the last build is published but not complete → builds, on the same commit and after daemon-only commits; complete → skips (review round 1 #2)', () => {
+    const r = repo();
+    const head = r.commit('client/app.txt');
+    const tag = 'client/v0.5.3-dev.2';
+    for (const gone of [['-windows-x64.exe'], ['latest.json'], ['-arm64.app.tar.gz.sig'], ['-windows-x64.exe', '-windows-x64.exe.sig', 'latest.json']]) {
+      const got = run(r, [without(tag, head, ...gone)], ['--sha', head]);
+      expect(got, gone.join(',')).toMatchObject({ code: 0, build: 'true' });
+      expect(got.why).toContain('没带齐文件');
+    }
+    // no assets at all (the review's example)
+    expect(run(r, [rel(tag, head, { assets: [] })], ['--sha', head]).build).toBe('true');
+    expect(run(r, [rel(tag, head)], ['--sha', head]).build).toBe('false');
+    // main moved on with a daemon-only commit
+    const later = r.commit('scripts/daemon.sh');
+    expect(run(r, [without(tag, head, '-windows-x64.exe')], ['--sha', later]).build).toBe('true');
+    expect(run(r, [rel(tag, head)], ['--sha', later]).build).toBe('false');
+  });
+
   it('last night failed (nothing published since): tonight builds the changes again', () => {
     const r = repo();
     const published = r.head();
@@ -152,11 +185,12 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
   });
 
   it('the decision table itself (no git, no gh)', () => {
-    const latest = { tag: 'client/v0.5.3-dev.10', sha: 'a'.repeat(40) };
+    const latest = { tag: 'client/v0.5.3-dev.10', sha: 'a'.repeat(40), complete: true };
     expect(plan({ latest, head: 'b'.repeat(40), force: false, changed: true }).build).toBe(true);
     expect(plan({ latest, head: 'b'.repeat(40), force: false, changed: false }).build).toBe(false);
     expect(plan({ latest, head: 'b'.repeat(40), force: true, changed: false }).build).toBe(true);
     expect(plan({ latest, head: 'b'.repeat(40), force: false, changed: null }).build).toBe(true);
     expect(plan({ latest, head: 'a'.repeat(40), force: false, changed: () => { throw new Error('not asked'); } }).build).toBe(false);
+    expect(plan({ latest: { ...latest, complete: false }, head: 'a'.repeat(40), force: false, changed: false }).build).toBe(true);
   });
 });

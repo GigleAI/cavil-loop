@@ -91,9 +91,8 @@ KINDS = {
         # no client negative-controls job here: nothing for client_section to list
         "client_key": None,
         "client_job": None,
-        "hint": ("这一晚没有发出开发版：装着开发版的客户端收不到这一晚的改动。修好后，下一晚（或在 Actions 页"
-                 "手动运行 Client 工作流、在 main 上勾「发开发版」）会再出；之后没有新的客户端改动也会照常重试，"
-                 "因为这些改动还没有发出去过。"),
+        # which sentence depends on where it failed (client_nightly_hint)
+        "hint": None,
         "plan_key": "mode",
     },
 }
@@ -243,6 +242,24 @@ def release_only_line(needs, jobs):
     return "门禁已通过，发版任务失败（步骤明细读不到）。"
 
 
+def client_nightly_hint(needs):
+    """The client-nightly kind only (GitHub#628): what the failure means for installed apps. Failing
+    before the publish job (tests, packaging, the size gate, the mode job) means nothing was published;
+    the publish job itself publishes first and checks and cleans up afterwards, so a failure there may
+    have left the build out, half out, or not out at all — never say "not published" then."""
+    if KIND_NAME != "client-nightly":
+        return KIND["hint"]
+    res = (needs.get("dev-release") or {}).get("result") if isinstance(needs.get("dev-release"), dict) else None
+    if res == "failure":
+        return ("失败在发布那一步：这一版可能已经出现在 Releases 页、可能只发了一半，也可能没发出去——"
+                "先到 Releases 页看最新的 `client/v…-dev.N` 预发布带没带齐 Apple 芯片 dmg、Windows 安装包和 "
+                "`latest.json`。没带齐的，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）"
+                "会重新构建并补齐；已经带齐发出的，下一晚不再重发，这次红只是发布之后的核对或清理没做完。")
+    return ("这一晚没有发出开发版（失败在发布之前：测试、打包或体积检查）：装着开发版的客户端收不到这一晚的改动。"
+            "修好后，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）会再出；之后没有新的"
+            "客户端改动也会照常重试，因为这些改动还没有发出去过。")
+
+
 def client_release_line(needs):
     """The release kind only: the client's release failed → say what that means (GitHub#576)."""
     if KIND_NAME != "release":
@@ -339,8 +356,9 @@ def report_text(needs, jobs):
     ]
     if EVENT == "workflow_dispatch" and GATE_ONLY:
         lines.append("- 这是诊断运行（只跑门禁，不打 tag、不发版）")
-    if KIND["hint"]:
-        lines += ["", KIND["hint"]]
+    hint = client_nightly_hint(needs)
+    if hint:
+        lines += ["", hint]
     one = release_only_line(needs, jobs)
     if one:
         lines += ["", f"**{one}**"]

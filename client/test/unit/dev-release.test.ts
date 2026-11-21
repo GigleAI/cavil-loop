@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
@@ -140,7 +140,8 @@ interface Rel {
   body?: string;
 }
 
-const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, 'latest.json'];
+// every file a development build carries: the script refuses to publish without one of them (GitHub#628)
+const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, `Cavil-Loop-${v}-windows-x64.exe`, `Cavil-Loop-${v}-windows-x64.exe.sig`, 'latest.json'];
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
 const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map((name) => ({ name })), ...o });
 
@@ -200,6 +201,19 @@ describe('publishing a development build (GitHub#215)', () => {
     expect(f.code).toBe(1);
     expect(bad.read().calls.some((c) => c[1] === 'create')).toBe(true);
     expect(readdirSync(bad.tmp)).toEqual([]);
+  });
+
+  it('a build missing any of its files (here the Windows installer) is refused before anything is read or written (GitHub#628)', () => {
+    const w = world([pub('client/v0.5.0')]);
+    w.build('0.5.1-dev.387');
+    rmSync(join(w.stateFile, '..', 'dist-release', 'Cavil-Loop-0.5.1-dev.387-windows-x64.exe'));
+    const r = w.run('0.5.1-dev.387');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('Cavil-Loop-0.5.1-dev.387-windows-x64.exe');
+    expect(w.read().calls).toEqual([]);
+    // and the list the workflow checks with is the same one
+    const p = spawnSync(process.execPath, [SCRIPT, '--files', '0.5.1-dev.387'], { encoding: 'utf8' });
+    expect(p.stdout.trim().split('\n').sort()).toEqual(files('0.5.1-dev.387').sort());
   });
 
   it('a new one: created as a draft with every file, then published as a pre-release (never Latest), and read back', () => {

@@ -24,6 +24,7 @@
 //
 //   node scripts/dev-release.mjs --version 0.5.1-dev.387 --sha <commit> --dir dist-release \
 //        --notes-file notes.md [--keep 10] [--repo GigleAI/cavil-loop]
+//   node scripts/dev-release.mjs --files 0.5.1-dev.387     the files a development build carries, one a line
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,17 @@ export function devReleases(list) {
     if (parsed) out.push({ tag: r.tag_name, version, parsed });
   }
   return out.sort((a, b) => cmp(b.parsed, a.parsed));
+}
+
+/**
+ * The files every development build carries (GitHub#628): the Apple-silicon dmg and update package
+ * with its signature, the Windows installer (also its update package) with its signature, and the
+ * manifest installed apps read. One list for the workflow's "the builds are that version" check, this
+ * script's refusal to publish without them, and scripts/dev-plan.mjs's "is the last build complete".
+ */
+export function devFiles(version) {
+  const v = `Cavil-Loop-${version}`;
+  return [`${v}-arm64.dmg`, `${v}-arm64.app.tar.gz`, `${v}-arm64.app.tar.gz.sig`, `${v}-windows-x64.exe`, `${v}-windows-x64.exe.sig`, 'latest.json'];
 }
 
 /**
@@ -319,6 +331,11 @@ function cleanOne(repo, c, keep, version) {
 
 function main() {
   const a = process.argv.slice(2);
+  if (a[0] === '--files') {
+    if (!parseDev(a[1])) throw new Error(`--files 后面要跟 X.Y.Z-dev.N：${a[1]}`);
+    console.log(devFiles(a[1]).join('\n'));
+    return;
+  }
   const opt = (n) => {
     const i = a.indexOf(`--${n}`);
     return i >= 0 ? a[i + 1] : undefined;
@@ -338,7 +355,8 @@ function main() {
     .map((f) => join(dir, f))
     .sort();
   const files = paths.map((p) => basename(p));
-  if (!files.includes('latest.json') || files.length < 2) throw new Error(`${dir} 里没有 ${version} 的包和 latest.json：${files.join(', ') || '（空）'}`);
+  const missing = devFiles(version).filter((f) => !files.includes(f));
+  if (missing.length) throw new Error(`${dir} 里缺 ${version} 的：${missing.join(', ')}（有：${files.join(', ') || '（空）'}）`);
 
   const before = readReleases(repo);
   const d = decide(before, version, files);

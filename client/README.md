@@ -64,8 +64,8 @@ scripts/
   mac-update-check.sh   CI 的 Mac 机器上：装在「应用程序」里的旧版真实更新到新版，被改过的更新包被拒（#184）；旧版是开发版时在开发版渠道上更新到下一个开发版（#215）
   dev-version.mjs       开发版的版本号 X.Y.(Z+1)-dev.N，打包前写进三处版本号（#215）
   release-version.mjs   正式版的版本号（#576）：每周发版定下一个版本、核对标签、打包前按标签写进三处版本号
-  dev-release.mjs       把 main 上的开发版发成预发布，只留最近 10 个（#215）
-  dev-plan.mjs          每晚开发版要不要出：上一个已发的开发版以来客户端有没有改动，读不到、比不出都算有（#628）
+  dev-release.mjs       把 main 上的开发版发成预发布，只留最近 10 个（#215）；`devFiles` / `--files` 是开发版必须带齐的文件清单，发布、流程核对、每晚判断共用（#628）
+  dev-plan.mjs          每晚开发版要不要出：上一个已发的开发版带齐了文件、而且之后客户端没改动才不出；读不到、比不出都算要出（#628）
   windows-update-check.sh  CI 的 Windows 机器上：低一版的测试版装好后真实更新到刚打的安装包，被改过的安装包被拒（#628）
   update-manifest.mjs   发版时生成 latest.json（App 读它更新）：用 App 的公钥逐个验签（minisign：包的内容 + 可信注释），缺包、验不过都拒绝；
                         也给维护者用：--set-pubkey 写入公钥，--verify 验一个签名

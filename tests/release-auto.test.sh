@@ -1399,27 +1399,12 @@ has "every-job-on-mode []" "$S" "every build / test job checks out the commit th
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
-has "needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true'" "$(grep '^dev-release-if' "$TMP/c-static")" "a development build is published only by a publishing run with something to build (GitHub#628)"
-lacks "github.event_name == 'push'" "$(grep '^dev-release-if' "$TMP/c-static")" "… no longer by a push to main"
 has "dev-release-conc client-dev-release-publish False" "$S" "… one publish at a time, never cancelling a running one"
 has "dev-release-needs ['mode', 'package', 'package-windows', 'size', 'test']" "$S" "… only after the quick tests, both builds with their update checks, and the size gate"
-for jn in package package-windows; do
-    check "$jn runs exactly when the mode job says build (never on a push to main or a PR)" "$(sed -n "s/^$jn-if //p" "$TMP/c-static")" "needs.mode.outputs.build == 'true'"
-done
-for jn in test-rust test-vitest; do
-    check "$jn: skipped only when the mode job says no quick tests" "$(sed -n "s/^$jn-if //p" "$TMP/c-static")" "needs.mode.outputs.quick == 'true'"
-done
-has "test-if always() && needs.mode.outputs.quick == 'true' ['mode', 'test-rust', 'test-vitest']" "$S" "the quick-test verdict is skipped with them, so a night with nothing new is green"
-has "(github.event_name == 'schedule' && github.event.schedule == '40 16 * * 0')" "$(grep '^e2e-if' "$TMP/c-static")" "full tests on the weekly schedule only, not the nightly one"
-has "(github.event_name == 'workflow_dispatch' && !inputs.publish)" "$(grep '^e2e-if' "$TMP/c-static")" "… and on a manual run that does not publish (a publishing one is the nightly run, by hand)"
 has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly build and the weekly full run"
 has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
-has "'dev-publish'" "$(grep '^conc-group' "$TMP/c-static")" "publishing runs share one concurrency group"
-has "github.event.schedule == '30 20 * * *'" "$(grep '^conc-group' "$TMP/c-static")" "… the nightly run is one of them"
-has "inputs.publish" "$(grep '^conc-group' "$TMP/c-static")" "… and a manual run with publish"
-check "… and that group never cancels a running one; every other group still does" "$(sed -n 's/^conc-cancel //p' "$TMP/c-static")" "\${{ !((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}"
-has "github.event.schedule == '30 20 * * *'" "$(grep '^report-if' "$TMP/c-static")" "the failure report is for the nightly run only"
-has "!cancelled()" "$(grep '^report-if' "$TMP/c-static")" "… never for a cancelled one"
+# which jobs run on which trigger, the concurrency group and the report: evaluated below from the
+# workflow's own expressions, after the mode job's steps have run for each trigger (GitHub#628)
 has "report-needs ['dev-release', 'mode', 'package', 'package-windows', 'size', 'test']" "$S" "… looking at every job of the night"
 has "report-kind ['client-nightly']" "$S" "… into its own kind of issue"
 has "report-perms [('actions', 'read'), ('contents', 'read'), ('issues', 'write')]" "$S" "… the only job that may write issues"
@@ -1555,7 +1540,15 @@ cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
     CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
 }
 build_line() { echo "$RC:$(cout build):$(cout quick)"; }
-devrel() { printf '[{"id":1,"tag_name":"client/v0.6.1-dev.%s","draft":false,"prerelease":true,"target_commitish":"%s"}]' "$1" "$2"; }
+# a published development build carrying every file a build carries (scripts/dev-release.mjs --files)
+devrel() {
+    local v="0.6.1-dev.$1" assets
+    assets="$(node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$v" | python3 -c 'import json,sys; print(json.dumps([{"name": l.strip()} for l in sys.stdin if l.strip()]))')"
+    printf '[{"id":1,"tag_name":"client/v%s","draft":false,"prerelease":true,"target_commitish":"%s","assets":%s}]' "$v" "$2" "$assets"
+}
+devrel_without() {  # devrel_without <n> <sha> <file suffix> → the same build with that file missing
+    devrel "$1" "$2" | python3 -c 'import json,sys; d=json.load(sys.stdin); d[0]["assets"]=[a for a in d[0]["assets"] if not a["name"].endswith(sys.argv[1])]; print(json.dumps(d))' "$3"
+}
 cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
 check "a release build → build" "$(build_line)" "0:true:true"
 for ev in push pull_request; do
@@ -1584,6 +1577,96 @@ cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule GH_FAIL_API=1
 check "publishing run, the release list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
 cbuild '[]' TAG= PUBLISH=true EVENT=schedule SHA=main
 check "publishing run, no full commit to compare → the step fails" "$([ "$RC" != 0 ] && echo red):$(cout build)" "red:"
+for gone in -windows-x64.exe latest.json; do
+    cbuild "$(devrel_without 9 "$C4" "$gone")" TAG= PUBLISH=true EVENT=schedule
+    check "publishing run, the commit already published but without its $gone → build (review round 1 #2)" "$(build_line)" "0:true:true"
+    cbuild "$(devrel_without 9 "$C2" "$gone")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+    check "… and after daemon-only commits too" "$(build_line)" "0:true:true"
+done
+
+echo "-- a manual publish is refused off main before anything else, a client tag included (review round 1 #3)"
+git -C "$TMP/client-run" tag client/v0.6.0 "$C4" 2>/dev/null || true
+for ref in refs/tags/client/v0.6.0 refs/heads/feature/x; do
+    cmode GITHUB_REF="$ref" GITHUB_SHA="$C4" EVENT=workflow_dispatch PUBLISH=true
+    check "manual publish on $ref → fails, nothing decided (no tag, no key, no publish)" "$([ "$RC" != 0 ] && echo red):$(cout tag):$(cout sign):$(cout publish)" "red:::"
+done
+cmode GITHUB_REF=refs/tags/client/v0.6.0 GITHUB_SHA="$C4" EVENT=push
+check "… the same tag pushed is still a release build" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+cmode CALL_TAG=client/v0.6.0 CALL_SHA="$C4" GITHUB_REF=refs/heads/main GITHUB_SHA="$C1" EVENT=workflow_dispatch
+check "… and the weekly release calling with it (from a manual Release run) too" "$(mode_line)" "0:client/v0.6.0:0.6.0:$C4:true:false"
+git -C "$TMP/client-run" tag -d client/v0.6.0 >/dev/null 2>&1 || true
+
+echo "-- which jobs run, per trigger: the mode job's real steps, then the workflow's own conditions evaluated (review round 1 #5)"
+GHA="$REPO_DIR/tests/lib/gha_expr.py"
+# csim <github ctx JSON> <inputs JSON> <release list for the build step> [scenario extras JSON] → "$SIM": ran=<jobs> group=… cancel=…
+csim() {
+    local gh="$1" inp="$2" list="$3" extra="${4:-{\}}" ev ref sched pub force mo
+    ev="$(jq -r .event_name <<<"$gh")"; ref="$(jq -r .ref <<<"$gh")"; sched="$(jq -r '.event.schedule // ""' <<<"$gh")"
+    pub="$(jq -r 'if .publish == null then "" else (.publish|tostring) end' <<<"$inp")"; force="$(jq -r 'if .force == null then "" else (.force|tostring) end' <<<"$inp")"
+    cmode GITHUB_REF="$ref" GITHUB_SHA="$C4" EVENT="$ev" SCHEDULE="$sched" PUBLISH="$pub"
+    mo="$(jq -n --arg tag "$(cout tag)" --arg version "$(cout version)" --arg sha "$(cout sha)" --arg sign "$(cout sign)" --arg publish "$(cout publish)" '{tag:$tag,version:$version,sha:$sha,sign:$sign,publish:$publish}')"
+    MODE_RC=$RC
+    cbuild "$list" TAG="$(jq -r .tag <<<"$mo")" PUBLISH="$(jq -r .publish <<<"$mo")" EVENT="$ev" FORCE="$force"
+    mo="$(jq --arg build "$(cout build)" --arg quick "$(cout quick)" '. + {build:$build, quick:$quick}' <<<"$mo")"
+    jq -n --argjson gh "$gh" --argjson inp "$inp" --argjson mo "$mo" --argjson x "$extra" \
+        '{github:$gh, inputs:$inp, vars:{}, outputs:{mode:$mo}} + $x' > "$TMP/c-sim.json"
+    python3 "$GHA" simulate "$CLIENT_WORKFLOW" "$TMP/c-sim.json" > "$TMP/c-sim.out" || { SIM="simulate failed: $(cat "$TMP/c-sim.out")"; return; }
+    SIM="$(jq -r '"ran=" + ([.jobs | to_entries[] | select(.value != "skipped") | .key] | sort | join(",")) + " group=" + (.group|tostring) + " cancel=" + (.cancel|tostring)' "$TMP/c-sim.out")"
+}
+job_of() { jq -r --arg j "$1" '.jobs[$j]' "$TMP/c-sim.out"; }
+NIGHT='{"event_name":"schedule","ref":"refs/heads/main","event":{"schedule":"30 20 * * *"}}'
+WEEK='{"event_name":"schedule","ref":"refs/heads/main","event":{"schedule":"40 16 * * 0"}}'
+DISPATCH_MAIN='{"event_name":"workflow_dispatch","ref":"refs/heads/main","event":{}}'
+DISPATCH_BRANCH='{"event_name":"workflow_dispatch","ref":"refs/heads/feature/issue-628","event":{}}'
+PUSH_MAIN='{"event_name":"push","ref":"refs/heads/main","event":{}}'
+PR='{"event_name":"pull_request","ref":"refs/pull/630/merge","event":{"pull_request":{"number":630}}}'
+CHANGED="$(devrel 9 "$C1")"; SAME="$(devrel 9 "$C4")"
+BUILDJOBS="mode,package,package-windows,size,test,test-rust,test-vitest"
+csim "$NIGHT" '{}' "$CHANGED"
+check "nightly, client changed → quick tests, both builds, size gate, publish; one never-cancelling group" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$NIGHT" '{}' "$SAME"
+check "nightly, nothing new → only the mode job runs (and the run is green)" "$SIM" "ran=mode group=client-dev-publish cancel=false"
+csim "$WEEK" '{}' "$SAME"
+check "weekly → quick + full tests, both builds, size gate, nothing published; its own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/main-weekly cancel=true"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED"
+check "manual publish on main, client changed → the nightly run by hand, same group" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$SAME"
+check "manual publish on main, nothing new → only the mode job" "$SIM" "ran=mode group=client-dev-publish cancel=false"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":true}' "$SAME"
+check "manual publish + force on the commit already out → built and checked, publish runs (and writes nothing, dev-release.mjs)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+csim "$DISPATCH_BRANCH" '{"publish":false,"force":false}' "$SAME"
+check "manual check run on a branch → quick + full tests, both builds, nothing published; the branch's own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/feature/issue-628 cancel=true"
+csim "$PUSH_MAIN" '{}' "$SAME"
+check "push to main → quick tests only" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-refs/heads/main cancel=true"
+csim "$PR" '{}' "$SAME"
+check "pull request → quick tests only, the PR's own group" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-630 cancel=true"
+
+echo "-- the quick-test verdict: red when the mode job failed, skipped only when it said nothing to test (review round 1 #4)"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"mode":"failure"},"outputs":{}}'
+check "mode job failed → the verdict job still runs (and the report too)" "$(job_of test):$(job_of test-rust):$(job_of report-failure)" "success:skipped:success"
+cstep "$CLIENT_WORKFLOW" test "Both quick-test jobs passed" > "$TMP/c-verdict.sh"
+verdict() { crun "$TMP" "$TMP/c-verdict.sh" "$@"; echo "$RC"; }
+check "… and its step is red when the mode job failed" "$(verdict MODE=failure RUST=skipped VITEST=skipped)" 1
+check "… green when both quick tests passed" "$(verdict MODE=success RUST=success VITEST=success)" 0
+check "… red when one of them failed" "$(verdict MODE=success RUST=success VITEST=failure):$(verdict MODE=success RUST=failure VITEST=success)" "1:1"
+csim "$NIGHT" '{}' "$SAME"
+check "mode said nothing to test → the verdict job is skipped" "$(job_of test)" "skipped"
+
+echo "-- the nightly failure report: only a failed nightly run, never a cancelled one, never when switched off (review round 1 #5)"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"}}'
+check "nightly, the Windows build failed → report (and nothing published)" "$(job_of report-failure):$(job_of dev-release):$(job_of size)" "success:skipped:skipped"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"dev-release":"failure"}}'
+check "nightly, the publish step failed → report" "$(job_of report-failure)" "success"
+csim "$NIGHT" '{}' "$CHANGED"
+check "nightly, all green → no report" "$(job_of report-failure):$(job_of dev-release)" "skipped:success"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"},"cancelled":true}'
+check "nightly, cancelled → no report" "$(job_of report-failure)" "skipped"
+csim "$NIGHT" '{}' "$CHANGED" '{"results":{"package-windows":"failure"},"vars":{"CLIENT_NIGHTLY_REPORT":"off"}}'
+check "nightly, report switched off → no report" "$(job_of report-failure)" "skipped"
+csim "$WEEK" '{}' "$SAME" '{"results":{"package-windows":"failure"}}'
+check "weekly, a build failed → no report (not the nightly run)" "$(job_of report-failure)" "skipped"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED" '{"results":{"package-windows":"failure"}}'
+check "manual publish, a build failed → no report" "$(job_of report-failure)" "skipped"
 
 echo "-- the version written into the three files"
 cver() { crun "$TMP/client-run/client" "$TMP/c-version.sh" "$@"; }
@@ -1699,6 +1782,19 @@ lacks "### 客户端负对照" "$B" "… no negative-controls section"
 run_report "package=failure size=skipped dev-release=skipped"
 check "second red night: a comment, no new issue" "$(n_issues):$(n_comments 1)" "1:1"
 has "## 又一次客户端每晚开发版运行失败" "$(last_comment 1)" "… comment heading names the nightly build"
+rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
+run_report "dev-release=failure"
+B="$(body_of 1)"
+has "失败在发布那一步" "$B" "the publish step failed → says so (review round 1 #6)"
+has "可能已经出现在 Releases 页" "$B" "… and that the build may already be out"
+lacks "这一晚没有发出开发版" "$B" "… never 'nothing was published'"
+rf_repo; rf_jobs "client quick tests (Linux)=failure:Both quick-test jobs passed"
+run_report "test=failure package=skipped package-windows=skipped size=skipped dev-release=skipped"
+has "这一晚没有发出开发版" "$(body_of 1)" "failed before publishing → nothing went out that night"
+lacks "失败在发布那一步" "$(body_of 1)" "… not the publish-step sentence"
+rf_repo; rf_jobs "Windows installer (x64)=failure:A real update of the installed app"
+run_report "package-windows=failure size=skipped dev-release=skipped"
+run_report "package=failure size=skipped dev-release=skipped"
 RF_KIND=negative-controls run_report "shell=failure summary=failure"
 check "a negative-controls failure next to it: its own new issue, nothing added here" "$(n_issues):$(n_comments 1)" "2:1"
 RF_KIND=release run_report "gate=failure gate-summary=failure release=skipped"

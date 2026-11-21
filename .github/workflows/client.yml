@@ -128,6 +128,12 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           PUBLISH: ${{ inputs.publish }}
         run: |
+          # A manual "publish" is honoured on main only, and refused before anything else is decided —
+          # a manual run started on a client/v* tag included (it would otherwise become a release build)
+          if [ -z "$CALL_TAG" ] && [ "$EVENT" = workflow_dispatch ] && [ "$PUBLISH" = true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::「发开发版」只能在 main 上运行（这次是 $GITHUB_REF）：没有打包、没有签名、没有写发版页"
+            exit 1
+          fi
           tag=""
           sha="$GITHUB_SHA"
           if [ -n "$CALL_TAG" ]; then
@@ -148,10 +154,6 @@ jobs:
           if [ -z "$tag" ] && [ "$EVENT" = schedule ] && [ "$SCHEDULE" = '30 20 * * *' ]; then
             publish=true
           elif [ -z "$tag" ] && [ "$EVENT" = workflow_dispatch ] && [ "$PUBLISH" = true ]; then
-            if [ "$GITHUB_REF" != refs/heads/main ]; then
-              echo "::error::「发开发版」只能在 main 上运行（这次是 $GITHUB_REF）：没有打包、没有签名、没有写发版页"
-              exit 1
-            fi
             publish=true
           fi
           sign=false
@@ -246,22 +248,24 @@ jobs:
         if: matrix.shard == 1
         run: bash test/mutation/run.sh
 
-  # Skipped with them on a publishing run that has nothing to build (GitHub#628), so that run is green.
+  # Skipped only when the mode job ran and said there is nothing to test (a publishing run with nothing
+  # new, GitHub#628), so that run is green; a mode job that failed makes this red, as before.
   test:
     name: client quick tests (Linux)
     needs: [mode, test-rust, test-vitest]
-    if: always() && needs.mode.outputs.quick == 'true'
+    if: always() && !(needs.mode.result == 'success' && needs.mode.outputs.quick == 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Both quick-test jobs passed
         working-directory: .
         env:
+          MODE: ${{ needs.mode.result }}
           RUST: ${{ needs.test-rust.result }}
           VITEST: ${{ needs.test-vitest.result }}
         run: |
-          echo "type check + back end: $RUST; vitest: $VITEST"
-          [ "$RUST" = success ] && [ "$VITEST" = success ]
+          echo "build mode: $MODE; type check + back end: $RUST; vitest: $VITEST"
+          [ "$MODE" = success ] && [ "$RUST" = success ] && [ "$VITEST" = success ]
 
   # Playwright + the real app on Linux. Each builds the whole app, so only on a release build,
   # the weekly run and a manual run without "publish" — not on pull requests, not on pushes to main,
@@ -727,9 +731,14 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           ls -la dist-release
-          for f in "Cavil-Loop-$V-arm64.dmg" "Cavil-Loop-$V-arm64.app.tar.gz" "Cavil-Loop-$V-arm64.app.tar.gz.sig" "Cavil-Loop-$V-windows-x64.exe" "Cavil-Loop-$V-windows-x64.exe.sig"; do
+          # the files a development build carries, from the one list (scripts/dev-release.mjs devFiles);
+          # latest.json is written by the next step
+          files="$(node scripts/dev-release.mjs --files "$V")"
+          [ -n "$files" ] || { echo "::error::no file list for $V"; exit 1; }
+          while IFS= read -r f; do
+            [ "$f" = latest.json ] && continue
             [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing"; exit 1; }
-          done
+          done <<<"$files"
       - name: Release notes
         env:
           V: ${{ steps.v.outputs.version }}
