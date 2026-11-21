@@ -104,20 +104,38 @@ state_of() { node "$REPO_DIR/scripts/public-assets/strict.mjs" status-check "$ST
 echo "② 不开严格模式：和合并基点的服务回答一样"
 BASE_REV="$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || true)"
 if [ -n "$BASE_REV" ] && git -C "$REPO_DIR" cat-file -e "$BASE_REV:scripts/public-assets/serve.mjs" 2>/dev/null; then
-    mkdir -p "$TMP/old-pa"
-    for f in serve.mjs rules.mjs; do git -C "$REPO_DIR" show "$BASE_REV:scripts/public-assets/$f" > "$TMP/old-pa/$f"; done
+    # 基点上整个服务目录原样取出：服务由哪几个文件组成由基点自己决定，测试不点名（GitHub#632）
+    mkdir -p "$TMP/old-src"
+    git -C "$REPO_DIR" archive "$BASE_REV" scripts/public-assets | tar -x -C "$TMP/old-src"
+    OLD_PA="$TMP/old-src/scripts/public-assets"
+    OLD_LOG="$TMP/old-pa.log"
     OPORT="$(free_port)"
-    PUBLIC_ASSETS_ROOT="$ROOT" PUBLIC_ASSETS_PORT="$OPORT" node "$TMP/old-pa/serve.mjs" 2>/dev/null & echo $! >> "$SVC_PIDS"
-    systemctl --user start cavil-loop-public-assets.service
-    sleep 0.3
-    secret_png "$ROOT/issue-464/leak.png"
-    diffs=""
-    for p in issue-464/old-a.png issue-464/page.html issue-464/leak.png issue-464/ weekly-report/delivery-wk-1.png acme/12/none.png missing.png; do
-        a="$(curl -s -D - "http://127.0.0.1:$OPORT/review-assets/$p" | tr -d '\r' | grep -aviE '^(date|last-modified|connection|keep-alive):' | sha256sum)"
-        b="$(curl -s -D - "$B/$p" | tr -d '\r' | grep -aviE '^(date|last-modified|connection|keep-alive):' | sha256sum)"
-        [ "$a" = "$b" ] || diffs="$diffs $p"
+    PUBLIC_ASSETS_ROOT="$ROOT" PUBLIC_ASSETS_PORT="$OPORT" node "$OLD_PA/serve.mjs" > "$OLD_LOG" 2>&1 &
+    OLD_PID=$!; echo "$OLD_PID" >> "$SVC_PIDS"
+    # 起来了 = 本轮启动的这个进程还活着，且它自己打印了监听本端口的那一行（端口上别人的回答不算）
+    old_up=no
+    for _ in $(seq 1 50); do
+        kill -0 "$OLD_PID" 2>/dev/null || break
+        if grep -q "^public-assets: 127\.0\.0\.1:$OPORT " "$OLD_LOG"; then old_up=yes; break; fi
+        sleep 0.1
     done
-    chk "七个请求（图、HTML、带凭证的 PNG、目录、周报图、不存在的）：状态码、响应头、正文都一样" "$diffs" ""
+    old_why=""
+    [ "$old_up" = yes ] || old_why="$(head -n 5 "$OLD_LOG" | tr '\n' '|')"
+    chk "合并基点的旧服务确实起来了（进程活着、它自己报告在分给它的端口上监听）${old_why:+；旧服务日志：$old_why}" "$old_up" "yes"
+    systemctl --user start cavil-loop-public-assets.service
+    secret_png "$ROOT/issue-464/leak.png"
+    if [ "$old_up" = yes ]; then
+        diffs=""
+        for p in issue-464/old-a.png issue-464/page.html issue-464/leak.png issue-464/ weekly-report/delivery-wk-1.png acme/12/none.png missing.png; do
+            a="$(curl -s -D - "http://127.0.0.1:$OPORT/review-assets/$p" | tr -d '\r' | grep -aviE '^(date|last-modified|connection|keep-alive):' | sha256sum)"
+            b="$(curl -s -D - "$B/$p" | tr -d '\r' | grep -aviE '^(date|last-modified|connection|keep-alive):' | sha256sum)"
+            [ "$a" = "$b" ] || diffs="$diffs $p"
+        done
+        chk "七个请求（图、HTML、带凭证的 PNG、目录、周报图、不存在的）：状态码、响应头、正文都一样" "$diffs" ""
+        chk "七个请求问完，旧服务进程还活着（回答都来自它）" "$(kill -0 "$OLD_PID" 2>/dev/null && echo alive || echo gone)" "alive"
+    else
+        echo "  ⏭ 旧服务没起来，七个请求的对拍没有跑（原因见上一条）"
+    fi
     chk "对照确实跑了：老规则下带凭证样式的 PNG 照样交出（这正是严格模式要拦的）" "$(code "$B/issue-464/leak.png")" "200"
     rm -f "$ROOT/issue-464/leak.png"
 else
