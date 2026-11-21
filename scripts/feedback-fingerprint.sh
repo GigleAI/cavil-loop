@@ -82,8 +82,8 @@ HOLDING=$(jq -r --arg d "$LABEL_AGENT_DOING" 'if (.labels | index($d)) != null t
     || unreadable read-item
 # the item's own labels minus the flow labels (the daemon flips those at every dispatch)
 ci_report_flow_labels | jq -Rn '[inputs]' > "$TMP/flow" || unreadable flow-labels
-jq -s --arg h "$HOLDING" '.[0] as $i | .[1] as $p | .[2] as $f
-       | {body: $i.body, holding: ($h == "yes"), item: ({state: $i.state, labels: ($i.labels - $f | sort)} + $p)}' \
+jq -s --arg h "$HOLDING" --arg human "$LABEL_PENDING_HUMAN" --arg prl "$LABEL_PENDING_PR" '.[0] as $i | .[1] as $p | .[2] as $f
+       | {body: $i.body, holding: ($h == "yes"), labels_to: {human: $human, pr: $prl}, item: ({state: $i.state, labels: ($i.labels - $f | sort)} + $p)}' \
     "$TMP/issue" "$TMP/pr" "$TMP/flow" > "$TMP/item" || unreadable assemble
 
 gh api --paginate "repos/$REPO/issues/$NUM/comments" \
@@ -130,7 +130,7 @@ jq -s --slurpfile r "$TMP/rolemap" --slurpfile it "$TMP/item" '
 # (GraphQL userContentEdits, every page, newest first; each version carries its full text). Read only for
 # loop comments that carry question ticks and were edited at all; an unreadable history is "cannot read"
 EDITS_QUERY='query($id: ID!, $after: String) { node(id: $id) { ... on IssueComment {
-  userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt deletedAt diff editor { login } } } } } }'
+  userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt deletedAt diff editor { login __typename } } } } } }'
 echo '{}' > "$TMP/edits"
 python3 "$SCRIPT_DIR/feedback_fingerprint.py" tick-ids < "$TMP/input" > "$TMP/tick-ids" || unreadable assemble
 while read -r cid; do
@@ -146,7 +146,8 @@ while read -r cid; do
                and all(.nodes[]; (.editedAt | type) == "string" and ((.diff | type) == "string" or .diff == null))' \
             "$TMP/page" >/dev/null 2>&1 || unreadable "edit-history:$cid"
         hist=$(printf '%s\n' "$hist" | jq -c --slurpfile p "$TMP/page" '. + [$p[0].data.node.userContentEdits.nodes[]
-                 | {at: .editedAt, deleted: (.deletedAt != null), body: .diff, editor: (.editor.login // null)}]') \
+                 | {at: .editedAt, deleted: (.deletedAt != null), body: .diff, editor: (.editor.login // null),
+                    editor_type: (.editor.__typename // null)}]') \
             || unreadable "edit-history:$cid"
         [ "$(jq -r '.data.node.userContentEdits.pageInfo.hasNextPage' "$TMP/page")" = true ] || break
         after=$(jq -r '.data.node.userContentEdits.pageInfo.endCursor // ""' "$TMP/page")
@@ -155,8 +156,19 @@ while read -r cid; do
     printf '%s\n' "$hist" | jq -c --slurpfile e "$TMP/edits" --arg id "$cid" '. as $h | $e[0] + {($id): $h}' \
         > "$TMP/edits.n" && mv "$TMP/edits.n" "$TMP/edits" || unreadable assemble
 done < "$TMP/tick-ids"
-jq -c --slurpfile e "$TMP/edits" '. + {edits: $e[0]}' "$TMP/input" > "$TMP/input.n" && mv "$TMP/input.n" "$TMP/input" \
-    || unreadable assemble
+# who made each edit: the same classification as the comment authors (a tick by a maintainer is
+# feedback, a rewording by the loop account is not); an editor whose role cannot be told is unreadable
+: > "$TMP/eroles"
+while IFS=$'\t' read -r login type; do
+    [ -n "$login" ] || continue
+    outsider_role "$login" "${type:-User}" || unreadable "editor-role:$(printf '%s' "$login" | tr -cd 'A-Za-z0-9._-')"
+    case "$OS_ROLE" in loop|bot|maintainer|outsider) ;; *) unreadable "editor-role:$(printf '%s' "$login" | tr -cd 'A-Za-z0-9._-')" ;; esac
+    printf '%s\t%s\n' "$login" "$OS_ROLE" >> "$TMP/eroles"
+done < <(jq -r '.[][] | select(.editor != null) | [.editor, (.editor_type // "")] | @tsv' "$TMP/edits" | sort -u)
+jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}' < "$TMP/eroles" > "$TMP/erolemap" || unreadable roles
+jq -c --slurpfile e "$TMP/edits" --slurpfile r "$TMP/erolemap" \
+    '. + {edits: ($e[0] | map_values(map(. + {editor_role: (if .editor then $r[0][.editor] else null end)} | del(.editor_type))))}' \
+    "$TMP/input" > "$TMP/input.n" && mv "$TMP/input.n" "$TMP/input" || unreadable assemble
 
 if [ "$MODE" = snapshot ]; then
     python3 "$SCRIPT_DIR/feedback_fingerprint.py" snapshot < "$TMP/input"

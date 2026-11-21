@@ -26,17 +26,20 @@ Which lines are records is decided in one place, record_lines(): a whole line ou
 the same parser finds the record in a saved file and tells answer comments from ordinary ones, so a
 proposal that explains the format in inline code is still an ordinary comment.
 
-Every question's ticks also carry when they last changed and who changed them, from the loop
+Every question's ticks (one entry per question, t<comment>q<n>) also carry when they last changed and who changed them, from the loop
 comment's edit history (tick_change()); that is shown to the worker, never fingerprinted, and a
 history that cannot pin it down says so — the worker then treats the ticks as changed this round.
-Whether this dispatch still holds the item (`holding yes|no`) is printed on its own: it decides
-whether an answer may be posted, and is never part of the resume fingerprint.
+Whether this dispatch still holds the item (`holding yes|no`) and the write gate (`write ok <label>`
+or `write stop <reason>`, write_line()) are printed on their own, never part of the resume
+fingerprint: every write of the round (the answer, the wait notice, the label) needs `write ok` from
+the read just before it, and goes to the label that line names.
 
-Input JSON: {"body": str, "holding": bool,
+Input JSON: {"body": str, "holding": bool, "labels_to": {"human": str, "pr": str},
              "item": {"state": str, "labels": [str], "head": str?, "base": str?, "open_prs": [int]?},
              "items": [{"src": "conversation|inline|review", "id": int, "role": "maintainer|bot|loop",
                         "body": str, "created": str, "updated": str?, "state": str?}],
-             "edits": {"<comment id>": [{"at": str, "deleted": bool, "body": str|null, "editor": str|null}]}?}
+             "edits": {"<comment id>": [{"at": str, "deleted": bool, "body": str|null, "editor": str|null,
+                                         "editor_role": "maintainer|bot|loop|outsider"|null}]}?}
   (edits: newest first, as GitHub returns them; the oldest version is the comment as first posted)
 """
 import hashlib
@@ -67,33 +70,46 @@ def fp(*parts):
     return h.hexdigest()[:12]
 
 
-def tick_lines(body):
-    """The ticked state of every question's options in one comment: only option lines under a
-    **Q<n> heading, outside quotes and code fences. A question's options end at the next heading,
-    the next question, or the first ordinary paragraph / quote line after an option (「不勾会怎样」),
-    so a plain task list further down does not count. Returns a list."""
-    out, in_q, seen_opt, fence = [], False, False, False
+def tick_groups(body):
+    """Every question's options in one comment, one group per question in order: (heading, [option
+    lines]). Only option lines under a **Q<n> heading, outside quotes and code fences, count. A
+    question's options end at the next heading, the next question, or the first ordinary paragraph /
+    quote line after an option (「不勾会怎样」), so a plain task list further down does not count.
+    A question with no option lines is left out."""
+    groups, cur, seen_opt, fence = [], None, False, False
     for raw in body.replace("\r\n", "\n").split("\n"):
         if FENCE.match(raw):
             fence = not fence
-            in_q = False
+            cur = None
             continue
         if fence:
             continue
         if HEADING.match(raw):
-            in_q = False
+            cur = None
             continue
         if QUESTION.match(raw):
-            in_q, seen_opt = True, False
+            cur, seen_opt = (raw.strip(), []), False
+            groups.append(cur)
             continue
-        if not in_q or not raw.strip():
+        if cur is None or not raw.strip():
             continue
         if TICK.match(raw):
-            out.append(raw.strip())
+            cur[1].append(raw.strip())
             seen_opt = True
         elif raw.lstrip().startswith(">") or (seen_opt and not raw[:1].isspace() and not LIST.match(raw)):
-            in_q = False
-    return out
+            cur = None
+    return [g for g in groups if g[1]]
+
+
+def tick_lines(body):
+    """All option lines of all questions, flat (does this comment carry question ticks at all)."""
+    return [ln for _, opts in tick_groups(body) for ln in opts]
+
+
+def tick_state(opts):
+    """What a person changes by ticking: which boxes are checked, in order — never the wording
+    (the loop account rewording an option is not a tick)."""
+    return "".join("x" if TICK.match(ln).group(1) in "xX" else "-" for ln in opts)
 
 
 def untick(body):
@@ -166,28 +182,41 @@ def edited(it):
     return bool(it.get("updated")) and it.get("updated") != it.get("created")
 
 
-def tick_change(it, edits):
-    """When this comment's question ticks last changed, from its edit history:
-    (sort time, text). Never edited, or no version changed the ticks → since it was posted. A deleted
-    version, a history that does not end at the current ticks, or an edited comment with no history
-    cannot be dated → UNKNOWN_TIME (treated as this round)."""
+ROLE_NAME = {"maintainer": "维护者", "bot": "外部需求机器人", "loop": "loop 账号", "outsider": "外部账号"}
+
+
+def question_states(body):
+    """Question number in the comment (1-based) → its tick state."""
+    return {n: tick_state(opts) for n, (_, opts) in enumerate(tick_groups(body), 1)}
+
+
+def tick_change(it, n, edits):
+    """When question n of this comment last changed its ticks, and who changed it, from the
+    comment's edit history: (sort time, text, editor role or None). Only that question's checked
+    boxes are compared — another question, or a rewording, is not its change. Never edited, or no
+    version changed this question → since it was posted. A deleted version, a history that does not
+    end at the current ticks, or an edited comment with no history cannot be dated → UNKNOWN_TIME
+    (treated as this round)."""
     created = it.get("created") or ""
+    since = (created, "勾选自发表（%s）起没有变过" % created, None)
     if not edited(it):
-        return created, "勾选自发表（%s）起没有变过" % created
+        return since
     hist = (edits or {}).get(str(it["id"]))
     if not hist:
-        return UNKNOWN_TIME, "勾选变化时间无法确认（评论改过、读不到修改历史），按本轮内的变化对待"
+        return UNKNOWN_TIME, "勾选变化时间无法确认（评论改过、读不到修改历史），按本轮内的变化对待", None
     versions = sorted(hist, key=lambda v: v.get("at") or "")
     if any(v.get("deleted") or not isinstance(v.get("body"), str) for v in versions):
-        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待"
-    states = [tick_lines(v["body"]) for v in versions]
-    if states[-1] != tick_lines(it.get("body") or ""):
-        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史和现在的正文对不上），按本轮内的变化对待"
+        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待", None
+    states = [question_states(v["body"]).get(n) for v in versions]
+    if states[-1] != question_states(it.get("body") or "").get(n):
+        return UNKNOWN_TIME, "勾选变化时间无法确认（修改历史和现在的正文对不上），按本轮内的变化对待", None
     for i in range(len(states) - 1, 0, -1):
         if states[i] != states[i - 1]:
             v = versions[i]
-            return v["at"], "勾选最后变化 %s，由 @%s 改的" % (v["at"], v.get("editor") or "（账号未知）")
-    return created, "勾选自发表（%s）起没有变过" % created
+            role = v.get("editor_role")
+            who = "@%s（%s）" % (v["editor"], ROLE_NAME.get(role, "身份未知")) if v.get("editor") else "（账号未知）"
+            return v["at"], "勾选最后变化 %s，由 %s改的" % (v["at"], who), role
+    return since
 
 
 def build(data):
@@ -203,13 +232,12 @@ def build(data):
             if is_answer(body):
                 answers.append(it)
                 continue
-            ticks = tick_lines(body)
-            if ticks:
-                key = "t%d" % iid
-                seen.append((key, fp("ticks", iid, "\n".join(ticks))))
-                at, note = tick_change(it, edits)
-                content.append((key, {"src": "ticks", "id": iid, "role": "loop", "body": "\n".join(ticks),
-                                      "created": at, "tick_note": note}))
+            for n, (head, opts) in enumerate(tick_groups(body), 1):
+                key = "t%dq%d" % (iid, n)
+                seen.append((key, fp("ticks", iid, n, tick_state(opts))))
+                at, note, _ = tick_change(it, n, edits)
+                content.append((key, {"src": "ticks", "id": iid, "role": "loop", "q": n,
+                                      "body": head + "\n" + "\n".join(opts), "created": at, "tick_note": note}))
             flow.append(("f%d" % iid, fp("flow", iid, untick(body)), it))
     flow_fp = fp("flow-set", ",".join("%s:%s" % (k, f) for k, f, _ in flow))
     return seen, content, flow, flow_fp, item_fp(data), answers
@@ -236,6 +264,8 @@ def show(key, it):
     who = {"maintainer": "维护者", "bot": "外部需求机器人", "loop": "loop 账号"}.get(it["role"], it["role"])
     src = {"conversation": "对话", "inline": "行内评论", "review": "review", "ticks": "选择题勾选"}[it["src"]]
     head = "### %s ｜ %s ｜ %s ｜ 编号 %s" % (key, src, who, it["id"])
+    if it["src"] == "ticks":
+        head += " ｜ 第 %d 题" % it["q"]
     if it.get("state"):
         head += " ｜ %s" % it["state"]
     head += " ｜ " + (it["tick_note"] if it["src"] == "ticks" else when(it))
@@ -259,6 +289,7 @@ def cmd_snapshot(data):
         desc += " ｜ 关联的打开 PR %s" % (", ".join("#%d" % n for n in st["open_prs"]) or "（无）")
     out.append(desc)
     out.append(holding_line(data))
+    out.append(write_line(data))
     out += ["", "## 正文", data.get("body") or "", ""]
     out.append("## 人的反馈（维护者 / 外部需求机器人，按发表时间从早到晚；外部账号的内容不在这里）")
     out += [show(k, it) for k, it in by_time(content)] or ["（没有）"]
@@ -288,6 +319,23 @@ def holding_line(data):
     return "holding " + ("yes" if data.get("holding") else "no")
 
 
+def write_line(data):
+    """The one gate for every write of a question-only round — the answer and the wait notice alike:
+    `write ok <label>` (the item is open and this dispatch holds it; <label> is where it goes: an
+    issue with an open PR → the PR-tracking label, anything else → the human label) or
+    `write stop <reason>`. Judged from this read only; a read that fails prints no gate at all."""
+    it = data["item"]
+    if it.get("state") != "open":
+        return "write stop closed"
+    if not data.get("holding"):
+        return "write stop not-holding"
+    lab = data.get("labels_to") or {}
+    to = lab.get("pr") if it.get("open_prs") else lab.get("human")
+    if not isinstance(to, str) or not to:
+        return "write stop no-label"
+    return "write ok " + to
+
+
 def tick_ids(data):
     """Loop conversation comments whose ticks need their edit history read: they carry question ticks
     and were edited. Answer records are left out, exactly as build() leaves them out."""
@@ -305,7 +353,7 @@ def parse_seen(s):
     d = {}
     for part in s.split(","):
         k, _, f = part.partition(":")
-        if not re.fullmatch(r"[cirt]\d+", k) or not re.fullmatch(r"[0-9a-f]{12}", f) or k in d:
+        if not re.fullmatch(r"[cir]\d+|t\d+q\d+", k) or not re.fullmatch(r"[0-9a-f]{12}", f) or k in d:
             raise ValueError(part)
         d[k] = f
     return d
@@ -323,6 +371,7 @@ def cmd_compare(data, mark):
     lines = []
 
     def verdict(v, reason):
+        lines.insert(0, write_line(data))
         lines.insert(0, holding_line(data))
         lines.insert(0, "reason " + reason)
         lines.insert(0, "verdict " + v)

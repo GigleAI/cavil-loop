@@ -9,14 +9,12 @@ issue-comment.template.md: flip_label ${ISSUE} --add ${LABEL_PENDING_PR} --remov
 issue-comment.template.md: flip_label $SUB --add ${LABEL_PENDING_AGENT}
 issue-comment.template.md: flip_label $SUB --add ${LABEL_PENDING_HUMAN}
 issue-comment.template.md: flip_label <P> --add ${LABEL_REVIEW_OR_HUMAN}
-issue-comment.template.md: flip_label <本条目编号> --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}
-issue-comment.template.md: flip_label <本条目编号> --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}
+issue-comment.template.md: flip_label <本条目编号> --add <闸门行里的标签> --remove ${LABEL_AGENT_DOING}
 new-issue.template.md: flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}
 pr-comment.template.md: flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}
 pr-comment.template.md: flip_label ${PR} --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}
 pr-comment.template.md: flip_label ${PR} --add ${LABEL_REVIEW_OR_HUMAN} --remove ${LABEL_AGENT_DOING}
-pr-comment.template.md: flip_label <本条目编号> --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_AGENT_DOING}
-pr-comment.template.md: flip_label <本条目编号> --add ${LABEL_PENDING_PR} --remove ${LABEL_AGENT_DOING}
+pr-comment.template.md: flip_label <本条目编号> --add <闸门行里的标签> --remove ${LABEL_AGENT_DOING}
 review.template.md: flip_label <编号> --add ${LABEL_PENDING_AGENT_DEFAULT} --remove ${LABEL_PENDING_REVIEW} ${LABEL_AGENT_DOING}
 review.template.md: flip_label <编号> --add ${LABEL_PENDING_HUMAN} ${LABEL_PENDING_REVIEW} --remove ${LABEL_AGENT_DOING}
 review.template.md: flip_label <编号> --add ${LABEL_PENDING_HUMAN} --remove ${LABEL_PENDING_REVIEW} ${LABEL_AGENT_DOING}

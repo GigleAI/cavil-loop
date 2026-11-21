@@ -23,6 +23,10 @@
 #      都从那条评论的修改历史给出时间和改的人；没改过、只改了别的字、历史分页、被删的版本、对不上、读失败
 #  13. 写前核对（复审第 2 轮 #6）：缺 labels / 标签没有名字 / 状态认不出 → unreadable；issue 的关联打开 PR
 #      （按分支名或正文关联）开了 / 关了 → item-changed；PR 列表读失败 → unreadable；是否仍持有派工标签单独一行
+#  14. 一条评论里的多道题各算各的（复审第 3 轮 #2）：上轮勾第 1 题、本轮勾第 2 题，各自的时间和改的人；
+#      loop 账号改选项措辞不算勾选；loop 账号自己改了勾选会标明身份；改的人身份查不到 → unreadable
+#  15. 写前闸门（复审第 3 轮 #6）：答复和等继续提示共用的 `write ok <标签>` / `write stop <原因>`：打开且持有 →
+#      pending/human，issue 有关联打开 PR → pending/PR，没持有 / 已关闭 → stop；比对（含 need-continue）也带它；读失败没有闸门行
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -222,11 +226,11 @@ chk "无变化 → resume" "$(verdict "$(cmp_ 50 "$TMP/rec-50")")" resume
 cp "$(conv_file 50)" "$TMP/c50"
 edit_conv 50 501 $'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [x] **B. 不要**\n'
 o=$(cmp_ 50 "$TMP/rec-50")
-chk "全角冒号题头下改勾选 → new-feedback，点出 t501（流程记录不算变化）" "$(verdict "$o")|$(field "$o" edited)" "new-feedback|t501"
+chk "全角冒号题头下改勾选 → new-feedback，点出 t501q1（流程记录不算变化）" "$(verdict "$o")|$(field "$o" edited)" "new-feedback|t501q1"
 cp "$TMP/c50" "$(conv_file 50)"
 edit_conv 50 502 "<!-- codex-review-round:6 -->"$'\n## ❌ 交维护者\n\n**Q1. 怎样恢复？**\n\n- [ ] **A. 等继续**\n- [x] **B. 记快照**\n'
 o=$(cmp_ 50 "$TMP/rec-50")
-chk "句点题头（复审结论里）改勾选 → new-feedback，点出 t502" "$(verdict "$o")|$(field "$o" edited)" "new-feedback|t502"
+chk "句点题头（复审结论里）改勾选 → new-feedback，点出 t502q1" "$(verdict "$o")|$(field "$o" edited)" "new-feedback|t502q1"
 cp "$TMP/c50" "$(conv_file 50)"
 # 引用块和普通任务列表里的方框（第 1 节 #10 的 101 里就有）改了不算勾选，但它们是流程记录的一部分
 edit_conv 10 101 $'## 方案：做 X\n\n**Q1：选哪个？**\n- [x] **A. 甲**\n- [ ] **B. 乙**\n\n> - [x] 引用里的方框\n\n- [x] 普通任务列表'
@@ -345,9 +349,9 @@ add_conv 90 902 alice "为什么默认是 A？" "2026-11-01T03:30:00Z"
 edits_fx IC_901 "[$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
 s=$(snap 90); rc=$?
 chk "snapshot 退出码 0" "$rc" 0
-grep -q '^### t901 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 901 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$s" \
+grep -q '^### t901q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 901 ｜ 第 1 题 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
     && ok "本轮新勾的：给出勾选变化的时间（晚于起点 f901 的 01:00）和改的人" || bad "勾选缺时间或来源" "$s"
-t=$(grep -n '^### t901 ' <<<"$s" | cut -d: -f1); c=$(grep -n '^### c902 ' <<<"$s" | cut -d: -f1)
+t=$(grep -n '^### t901q1 ' <<<"$s" | cut -d: -f1); c=$(grep -n '^### c902 ' <<<"$s" | cut -d: -f1)
 [ -n "$t" ] && [ -n "$c" ] && [ "$t" -lt "$c" ] && ok "勾选按变化时间排在 03:30 的提问之前" || bad "勾选排序不对" "$s"
 grep -q '时间未知' <<<"$s" && bad "仍出现「时间未知」" "$s" || ok "不再出现「时间未知」"
 
@@ -359,7 +363,7 @@ add_conv 91 912 loop-bot $'## 修订版方案（按 Q1 = B）' "2026-11-01T02:00
 add_conv 91 913 alice "为什么这样改？" "2026-11-01T03:00:00Z"
 edits_fx IC_911 "[$(v 2026-11-01T01:30:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
 s=$(snap 91)
-grep -q '^### t911 .*勾选最后变化 2026-11-01T01:30:00Z，由 @alice 改的$' <<<"$s" && grep -q '^f912:[0-9a-f]* ｜ worker 交付 ｜ 发表 2026-11-01T02:00:00Z' <<<"$s" \
+grep -q '^### t911q1 .*勾选最后变化 2026-11-01T01:30:00Z，由 @alice（维护者）改的$' <<<"$s" && grep -q '^f912:[0-9a-f]* ｜ worker 交付 ｜ 发表 2026-11-01T02:00:00Z' <<<"$s" \
     && ok "早先勾的：勾选时间 01:30 早于本轮起点 f912 的 02:00，两者都看得到" || bad "看不出勾选早于起点" "$s"
 
 # 场景丙：勾完之后 loop 账号又改了这条评论别的字：时间仍是勾的那一次、人是维护者
@@ -368,7 +372,7 @@ add_conv 92 921 loop-bot "$P1" "2026-11-01T01:00:00Z"
 edit_conv 92 921 "$P1BT"; set_updated 92 921 "2026-11-01T04:00:00Z"
 add_conv 92 922 alice "问一下" "2026-11-01T05:00:00Z"
 edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot),$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
-grep -q '^### t921 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$(snap 92)" \
+grep -q '^### t921q1 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$(snap 92)" \
     && ok "之后只改了别的字：勾选时间仍是 03:00、改的人是维护者，不是 loop 账号的 04:00" || bad "被后来的无关修改顶替了"
 
 # 场景丁：改过但勾选从没变（只有 loop 账号改字）→ 自发表起没变
@@ -377,30 +381,30 @@ P1T=$'## 方案\n\n**Q1：要不要？**（默认 A）\n\n- [ ] **A. 要**\n- [ 
 add_conv 93 931 loop-bot "$P1" "2026-11-01T01:00:00Z"
 edit_conv 93 931 "$P1T"; set_updated 93 931 "2026-11-01T04:00:00Z"
 edits_fx IC_931 "[$(v 2026-11-01T04:00:00Z "$P1T" loop-bot),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
-grep -q '^### t931 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$(snap 93)" && ok "改过字、勾选没变 → 自发表起没有变过" || bad "没认出勾选未变"
+grep -q '^### t931q1 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$(snap 93)" && ok "改过字、勾选没变 → 自发表起没有变过" || bad "没认出勾选未变"
 # 场景戊：没改过的评论不读修改历史
 rm -f "$FX/graphql.log"
 set_item 94 "需求" issue
 add_conv 94 941 loop-bot "$P1" "2026-11-01T01:00:00Z"
 s=$(snap 94)
-grep -q '^### t941 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$s" && [ ! -s "$FX/graphql.log" ] \
+grep -q '^### t941q1 .*勾选自发表（2026-11-01T01:00:00Z）起没有变过$' <<<"$s" && [ ! -s "$FX/graphql.log" ] \
     && ok "没改过的评论：自发表起没变，不发修改历史请求" || bad "没改过的评论也读了历史或说法不对" "$(cat "$FX/graphql.log" 2>/dev/null)"
 grep -q '^graphql IC_921$' <<<"$(snap 92 >/dev/null; cat "$FX/graphql.log")" && ok "对照：改过的评论确实读了修改历史" || bad "改过的评论没读历史"
 
 # 分页：两页拼起来才找得到勾的那一版
 edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot)]" "" CUR1
 edits_fx IC_921 "[$(v 2026-11-01T03:00:00Z "$P1B" alice),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]" CUR1
-grep -q '^### t921 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice 改的$' <<<"$(snap 92)" && ok "修改历史两页：读全后找到勾的那一版" || bad "分页没读全"
+grep -q '^### t921q1 .*勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$(snap 92)" && ok "修改历史两页：读全后找到勾的那一版" || bad "分页没读全"
 # 被删的版本 / 历史和现在对不上 → 无法确认，排在最后
 edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1BT" loop-bot),$(jq -nc '{at: "2026-11-01T03:00:00Z", deleted: true}'),$(v 2026-11-01T01:00:00Z "$P1" loop-bot)]"
 s=$(snap 92)
-grep -q '^### t921 .*勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待$' <<<"$s" \
-    && [ "$(grep -n '^### t921 ' <<<"$s" | cut -d: -f1)" -gt "$(grep -n '^### c922 ' <<<"$s" | cut -d: -f1)" ] \
+grep -q '^### t921q1 .*勾选变化时间无法确认（修改历史里有被删掉的版本），按本轮内的变化对待$' <<<"$s" \
+    && [ "$(grep -n '^### t921q1 ' <<<"$s" | cut -d: -f1)" -gt "$(grep -n '^### c922 ' <<<"$s" | cut -d: -f1)" ] \
     && ok "有被删掉的版本 → 无法确认、按本轮对待，排在最后" || bad "被删的版本没按无法确认处理" "$s"
 edits_fx IC_921 "[$(v 2026-11-01T04:00:00Z "$P1" loop-bot)]"
-grep -q '^### t921 .*勾选变化时间无法确认（修改历史和现在的正文对不上）' <<<"$(snap 92)" && ok "历史和现在的勾选对不上 → 无法确认" || bad "对不上没认出"
+grep -q '^### t921q1 .*勾选变化时间无法确认（修改历史和现在的正文对不上）' <<<"$(snap 92)" && ok "历史和现在的勾选对不上 → 无法确认" || bad "对不上没认出"
 edits_fx IC_921 "[]"
-grep -q '^### t921 .*勾选变化时间无法确认（评论改过、读不到修改历史）' <<<"$(snap 92)" && ok "改过却没有修改历史 → 无法确认" || bad "空历史没认出"
+grep -q '^### t921q1 .*勾选变化时间无法确认（评论改过、读不到修改历史）' <<<"$(snap 92)" && ok "改过却没有修改历史 → 无法确认" || bad "空历史没认出"
 touch "$FX/fail-edits-IC_921"
 o=$(snap 92); rc=$?
 chk "修改历史读失败 → 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
@@ -459,6 +463,73 @@ set_item 95 "需求" issue open '["pending/human","priority/p0"]'
 o=$(cmp_ 95 "$TMP/rec-95")
 chk "派工标签被别人摘掉：恢复指纹不变（resume），但 holding no 单独报出" "$(verdict "$o")|$(field "$o" holding)" "resume|no"
 rm -f "$PULLS"
+
+echo "── 14. 一条评论里的多道题各算各的（复审第 3 轮 #2）──"
+Q0=$'## 方案\n\n**Q1：要不要？**\n\n- [ ] **A. 要**\n- [ ] **B. 不要**\n\n不勾会怎样：按 A。\n\n**Q2：快还是稳？**\n\n- [ ] **A. 快**\n- [ ] **B. 稳**\n\n不勾会怎样：按 A。'
+Q1T=$'## 方案\n\n**Q1：要不要？**\n\n- [ ] **A. 要**\n- [x] **B. 不要**\n\n不勾会怎样：按 A。\n\n**Q2：快还是稳？**\n\n- [ ] **A. 快**\n- [ ] **B. 稳**\n\n不勾会怎样：按 A。'
+Q12T=$'## 方案\n\n**Q1：要不要？**\n\n- [ ] **A. 要**\n- [x] **B. 不要**\n\n不勾会怎样：按 A。\n\n**Q2：快还是稳？**\n\n- [ ] **A. 快**\n- [x] **B. 稳**\n\n不勾会怎样：按 A。'
+Q12R=$'## 方案\n\n**Q1：要不要？**\n\n- [ ] **A. 要（改过措辞）**\n- [x] **B. 不要**\n\n不勾会怎样：按 A。\n\n**Q2：快还是稳？**\n\n- [ ] **A. 快**\n- [x] **B. 稳**\n\n不勾会怎样：按 A。'
+set_item 97 "需求" issue
+add_conv 97 971 loop-bot "$Q0" "2026-11-01T01:00:00Z"
+edit_conv 97 971 "$Q12R"; set_updated 97 971 "2026-11-01T04:00:00Z"
+add_conv 97 972 loop-bot $'## 修订版方案（按 Q1 = B）' "2026-11-01T02:00:00Z"
+add_conv 97 973 alice "为什么第 2 题默认快？" "2026-11-01T05:00:00Z"
+edits_fx IC_971 "[$(v 2026-11-01T04:00:00Z "$Q12R" loop-bot),$(v 2026-11-01T03:00:00Z "$Q12T" alice),$(v 2026-11-01T01:30:00Z "$Q1T" alice),$(v 2026-11-01T01:00:00Z "$Q0" loop-bot)]"
+s=$(snap 97); rc=$?
+chk "snapshot 退出码 0" "$rc" 0
+grep -q '^### t971q1 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ 第 1 题 ｜ 勾选最后变化 2026-11-01T01:30:00Z，由 @alice（维护者）改的$' <<<"$s" \
+    && ok "第 1 题：上轮（01:30，早于起点 f972 的 02:00）由维护者勾的" || bad "第 1 题的时间 / 来源不对" "$s"
+grep -q '^### t971q2 ｜ 选择题勾选 ｜ loop 账号 ｜ 编号 971 ｜ 第 2 题 ｜ 勾选最后变化 2026-11-01T03:00:00Z，由 @alice（维护者）改的$' <<<"$s" \
+    && ok "第 2 题：本轮（03:00）由维护者勾的，和第 1 题分开" || bad "第 2 题的时间 / 来源不对" "$s"
+grep -q '04:00:00Z，由 @loop-bot' <<<"$s" && bad "loop 账号改措辞被当成勾选变化" "$s" || ok "loop 账号 04:00 改选项措辞不算勾选变化"
+grep -A2 '^### t971q2 ' <<<"$s" | grep -q '^\*\*Q2：快还是稳？\*\*$' && ok "每题条目带上自己的题目行" || bad "题目行缺失" "$s"
+rec=$(sed -n 1p <<<"$s")
+grep -q 't971q1:[0-9a-f]*,t971q2:' <<<"$rec" && ok "记录里两题各有一项" || bad "记录里不是按题分项" "$rec"
+# 只改措辞的版本 → 不算这两题的变化；勾选指纹只看勾了哪几个，措辞变了指纹不变
+answer 97 974 "$s"
+edit_conv 97 971 "$(sed 's/改过措辞/又改了措辞/' <<<"$Q12R")"
+o=$(cmp_ 97 "$TMP/rec-97")
+chk "交回前 loop 账号又改措辞：不算新的勾选反馈（edited 里没有 t971q*），只算流程变化" "$(field "$o" edited)|$(verdict "$o")" "-|need-continue"
+edit_conv 97 971 "$Q12R"
+# loop 账号自己改了勾选：标明身份
+set_item 98 "需求" issue
+add_conv 98 981 loop-bot "$Q0" "2026-11-01T01:00:00Z"
+edit_conv 98 981 "$Q1T"; set_updated 98 981 "2026-11-01T02:00:00Z"
+edits_fx IC_981 "[$(v 2026-11-01T02:00:00Z "$Q1T" loop-bot),$(v 2026-11-01T01:00:00Z "$Q0" loop-bot)]"
+s=$(snap 98)
+grep -q '^### t981q1 .*勾选最后变化 2026-11-01T02:00:00Z，由 @loop-bot（loop 账号）改的$' <<<"$s" && grep -q '^### t981q2 .*勾选自发表' <<<"$s" \
+    && ok "loop 账号自己改的勾选标明是 loop 账号；没动的第 2 题仍是自发表起没变" || bad "编辑身份没标出" "$s"
+edits_fx IC_981 "[$(v 2026-11-01T02:00:00Z "$Q1T" nobody-known),$(v 2026-11-01T01:00:00Z "$Q0" loop-bot)]"
+o=$(snap 98); rc=$?
+chk "改的人身份查不到 → 退出码 3、unreadable" "$rc|${o%% *}" "3|unreadable"
+
+echo "── 15. 写前闸门：答复和等继续提示共用一行（复审第 3 轮 #6）──"
+set_item 99 "需求" issue open '["doing/agent"]'
+add_conv 99 991 loop-bot $'## 方案' "2026-11-01T01:00:00Z"
+add_conv 99 992 alice "为什么？" "2026-11-01T02:00:00Z"
+s=$(snap 99)
+chk "打开、持有、没有关联 PR → write ok pending/human" "$(grep '^write ' <<<"$s")" "write ok pending/human"
+answer 99 993 "$s"
+PULLS="$FX/repos_acme_widget_pulls?state=open&per_page=100.json"
+echo '[{"number": 996, "head": {"ref": "feature/issue-99"}, "body": ""}]' > "$PULLS"
+o=$(cmp_ 99 "$TMP/rec-99")
+chk "两次比对之间开了关联 PR：need-continue，闸门给出新去向 pending/PR" "$(verdict "$o")|$(field "$o" write)" "need-continue|ok pending/PR"
+rm -f "$PULLS"
+set_item 99 "需求" issue open '["pending/human"]'
+o=$(cmp_ 99 "$TMP/rec-99")
+chk "派工标签被摘：write stop not-holding（等继续提示也不能发）" "$(field "$o" write)" "stop not-holding"
+o=$(cmp_ 99 "$TMP/old-rec")
+chk "旧格式记录（need-continue）+ 没持有 → 同样 stop" "$(verdict "$o")|$(field "$o" write)" "need-continue|stop not-holding"
+set_item 99 "需求" issue closed '["doing/agent"]'
+chk "已关闭 → write stop closed" "$(field "$(cmp_ 99 "$TMP/rec-99")" write)" "stop closed"
+set_item 99 "需求" issue open '["doing/agent"]'
+touch "$FX/fail-repos_acme_widget_issues_99_comments"
+o=$(cmp_ 99 "$TMP/rec-99"); rc=$?
+chk "读失败 → 退出码 3、只有 unreadable 一行，没有闸门行（不能拿旧状态写）" "$rc|$(wc -l <<<"$o")|$(grep -c '^write ' <<<"$o")" "3|1|0"
+rm -f "$FX/fail-repos_acme_widget_issues_99_comments"
+chk "对照：恢复后闸门又是 ok" "$(field "$(cmp_ 99 "$TMP/rec-99")" write)" "ok pending/human"
+set_item 20 "PR 正文" pr open '["doing/agent"]'
+chk "PR 本身 → write ok pending/human" "$(grep '^write ' <<<"$(snap 20)")" "write ok pending/human"
 
 report_counts "$pass" "$fail"
 echo
