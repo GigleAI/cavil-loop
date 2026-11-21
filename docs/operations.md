@@ -692,7 +692,11 @@ both from one read — the reviewer reviews exactly that printed text, so the fi
 version it saw — and the baseline is written only through
 `review-scope.sh fingerprint <id> --issue <N> --expect <that fingerprint>`, which refuses (exit 3)
 when the comment was edited while it was being reviewed — then no baseline is written and the next
-round is full. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
+round is full. On an autopilot item with the outsider guard on (`AUTOPILOT_OUTSIDER_GUARD`), every
+comment on the item is read only through the guarded read command, so the review prompt carries no
+proposal mode at all there: proposal reviews are full every round and write no proposal baseline.
+Code mode never shows comment text either way — it only looks for the second line of the dispatch
+account's own last verdict. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
 config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
 other first line is treated as full.
 

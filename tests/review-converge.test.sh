@@ -197,6 +197,21 @@ expect_set "整份替换了模板的项目" "$TMP/out-replace" present
 has "$TMP/out-replace/review.md" '项目自己的复审模板' && ok "替换项目的复审 prompt 用的是项目模板" || bad "替换项目的复审 prompt 没用项目模板"
 has "$TMP/out-replace/new-issue.md" '项目自己的 worker 模板' && ok "替换项目的 worker prompt 用的是项目模板" || bad "替换项目的 worker prompt 没用项目模板"
 
+# 托管条目又开了外部内容保护：方案复审不跑范围命令（不留第二条读正文的路径），B 类每轮全量；不是托管条目的
+# 复审照常带方案模式的命令。标记行一律不留在成品里
+P=$(make_project guarded remote); echo 'AUTOPILOT_OUTSIDER_GUARD="on"' >> "$P/config"
+dispatch_all "$P" "$TMP/out-guarded"
+f="$TMP/out-guarded/review-autopilot.md"
+if [ -s "$f" ] && has "$f" 'B 类每一轮都按全量轮审' && ! has "$f" ' plan <issue 编号>' && ! has "$f" 'fingerprint <评论 id>' \
+   && ! has "$f" 'review-baseline: plan' && has "$f" "--repo 'example/rc' pr"; then
+    ok "托管 + 外部内容保护：复审说明里没有方案模式的命令和基线，B 类每轮全量，A 类命令照旧"
+else bad "托管 + 外部内容保护：复审说明不对" "$(grep -n 'B 类' "$f" 2>/dev/null | head -5)"; fi
+has "$f" '# 外部账号的内容' && ok "到达性：这份确实带着外部内容保护段" || bad "这份没带外部内容保护段（测的不是保护开着的情形）"
+f="$TMP/out-guarded/review.md"
+has "$f" ' plan <issue 编号>' && ! has "$f" 'B 类每一轮都按全量轮审' && ok "同一项目的非托管复审：方案模式照常" || bad "同一项目的非托管复审不该去掉方案模式"
+if grep -l 'plan-only' "$TMP"/out-*/*.md >/dev/null 2>&1; then bad "成品里留下了 plan-only 标记行" "$(grep -l 'plan-only' "$TMP"/out-*/*.md | head -3)"
+else ok "成品里没有 plan-only 标记行"; fi
+
 # 顺序：REVIEW.md 段 → 收敛段 → 托管规则段（托管段改收敛规则的第 ④ 步，得在后面）
 f="$TMP/out-present/review-autopilot.md"
 l_md=$(grep -nF -- "$MD_HEAD" "$f" | head -1 | cut -d: -f1)

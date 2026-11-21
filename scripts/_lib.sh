@@ -8741,7 +8741,18 @@ review_converge_section() {
     [ -s "$f" ] || { log "⚠️ 复审收敛规则文件缺失：$f" 2>/dev/null || true; return 0; }
     text="$(cat "$f")"
     text="${text//@@SCOPE_CMD@@/"bash '$REVIEW_SCOPE_SCRIPT' --repo '${REPO:-}'"}"
-    printf '%s\n' "$text"
+    # 托管条目又开了外部内容保护：本条的正文和评论只能经受保护的读取命令读，范围命令的方案模式会另读评论
+    # 原文，所以这类条目上方案复审不用它——标着 plan-only 的几段整段换成一句「B 类每轮全量」，不留第二条读取路径
+    local mode=plain
+    if autopilot_section_active && outsider_guard_on; then mode=guarded; fi
+    printf '%s\n' "$text" | awk -v mode="$mode" '
+        /^<!-- plan-only:begin -->$/ { inb = 1; n++
+            if (mode == "guarded" && n == 1)
+                print "- B 类（设计方案）：本条是托管条目，又开了外部内容保护，方案只经受保护的读取命令读。**不跑范围命令，B 类每一轮都按全量轮审**，结论评论也不写方案的基线标记。"
+            next }
+        /^<!-- plan-only:end -->$/ { inb = 0; next }
+        inb && mode == "guarded" { next }
+        { print }'
 }
 
 compose_prompt_template() {
