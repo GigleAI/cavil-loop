@@ -16,7 +16,8 @@
 #   6. 备份是内容快照、只留最近 10 份
 #   7. 登记表：每项都在配置模板里；「不写时的值」和登记册、和真实加载 _lib.sh 后的值一致；禁止的类别不在里面
 #   8. 文档里写给人照做的命令，按字面在空环境跑通（中英两份一字不差）
-#   9. 关掉往返记录的文档步骤：同样照字面跑，正常、已关、读不了、保存前被改、没地方备份、写入后被改、读回失败
+#   9. 关掉往返记录的文档步骤：同样照字面跑，正常、已关、读不了、保存前被改、没地方备份、写入后被改、换上后保存进程被杀、
+#      读回失败（关掉之后写入命令立刻拒收，由 tests/round-log.test.sh 第 4a 组测）
 #
 #   bash tests/project-config.test.sh
 set -uo pipefail
@@ -852,11 +853,11 @@ chk "配置读不了：没写入、退出非 0" "$(rl_last) $([ "$RL_RC" != 0 ] 
 chk "配置读不了：文件不变" "$(rl_val)" "true"
 
 rl_world true; rl_wrap_jq .rev edit; rl_run "$SANDBOX/rl-off.sh"
-chk "取指纹后、保存前被别处改过：没写入（RESULT=changed，退出码 2）" "$(rl_last) $(grep -c '^RESULT=changed$' <<<"$RL_OUT")" "NOT_WRITTEN: exit 2 1"
+chk "取指纹后、保存前被别处改过：没写入（RESULT=changed）" "$(rl_last) $(grep -c '^RESULT=changed$' <<<"$RL_OUT")" "NOT_WRITTEN: changed 1"
 chk "取指纹后被改过：值仍是 true，别处那一行还在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "true 1"
 
 rl_world true; mkdir -p "$ST"; : > "$ST/config-backups"; rl_run "$SANDBOX/rl-off.sh"
-chk "没地方放备份：没写入（RESULT=backup_failed）" "$(rl_last) $(grep -c '^RESULT=backup_failed$' <<<"$RL_OUT")" "NOT_WRITTEN: exit 2 1"
+chk "没地方放备份：没写入（RESULT=backup_failed）" "$(rl_last) $(grep -c '^RESULT=backup_failed$' <<<"$RL_OUT")" "NOT_WRITTEN: backup_failed 1"
 chk "没地方放备份：文件不变" "$(rl_val)" "true"
 
 rl_world true
@@ -868,14 +869,29 @@ exit \$rc
 W
 chmod +x "$RL_W/mv"; rl_run "$SANDBOX/rl-off.sh"
 chk "写入后马上被别处改：UNCONFIRMED（RESULT=saved_then_changed）、退出非 0" \
-    "$(rl_last) $(grep -c '^RESULT=saved_then_changed$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: written, then changed elsewhere 1 nz"
+    "$(rl_last) $(grep -c '^RESULT=saved_then_changed$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: RESULT=saved_then_changed 1 nz"
 chk "写入后被改：已是 false，别处那一行也在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "false 1"
+
+# 换上新文件之后保存进程被杀（没给出结果行）：不能报成没写入
+rl_world true
+cat > "$RL_W/mv" <<W
+#!/usr/bin/env bash
+"$REAL_MV2" "\$@"; rc=\$?
+[ "\${@: -1}" = "$CONF" ] && kill -9 "\$PPID"
+exit \$rc
+W
+chmod +x "$RL_W/mv"; rl_run "$SANDBOX/rl-off.sh"
+chk "换上新文件后保存进程被杀：UNCONFIRMED、退出非 0" "$(rl_last) $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: no result line nz"
+chk "保存进程被杀：文件里其实已是 false（所以不能说没写入）" "$(rl_val) $(grep -c '^RESULT=' <<<"$RL_OUT")" "false 0"
+rm -f "$RL_W/mv"; rl_run "$SANDBOX/rl-check.sh"
+chk "保存进程被杀之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
 
 rl_world true; rl_wrap_jq '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' fail; rl_run "$SANDBOX/rl-off.sh"
 chk "保存成功、读回失败：UNCONFIRMED、退出非 0" "$(rl_last) $(grep -c '^RESULT=saved$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: saved, read-back failed 1 nz"
 chk "读回失败：文件里已是 false" "$(rl_val)" "false"
 rm -f "$RL_W/jq"; rl_run "$SANDBOX/rl-check.sh"
 chk "读回失败之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
+
 
 echo
 echo "通过 $pass，失败 $fail"

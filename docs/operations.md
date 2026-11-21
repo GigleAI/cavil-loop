@@ -1609,9 +1609,14 @@ nothing when it fails.
 
 <details><summary>Turning it off</summary>
 
-Set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
-read and counted; deliveries made by dispatches that start after the change are plain comments again
-(a worker or reviewer session already running keeps the rule it was started with).
+Set `ENABLE_ROUND_LOG=false` (or remove the line). It takes effect at once, not only for new
+dispatches: existing records stay as they are and are still counted, but the round-log write and read
+commands check the setting each time they run. A worker or reviewer session already running still has
+the round-log instructions in its prompt; its next delivery or verdict gets `RESULT=rejected` (exit 2)
+and, as those instructions say, is posted as a separate comment, and the read command no longer adds
+the split view. Turning it off halfway through a back-and-forth therefore ends that record there; to
+let the current one finish in the same record, turn it off after it has reached a person (the review
+passed, or the item was handed over).
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
@@ -1626,12 +1631,13 @@ Then run this whole block and read its last line:
 
 - `ROUND_LOG=off` — saved and read back as `false` (the line above it is `RESULT=saved`, or
   `RESULT=unchanged` when it was already off).
-- `NOT_WRITTEN: …` — nothing was written (the config could not be read, it changed between the read
-  and the save, the backup could not be made, …); the config is untouched and the block can simply
-  be run again.
-- `UNCONFIRMED: …` — the config was written but the current value could not be confirmed (another
-  save landed right after it, or the read-back failed): run the check command above; `false` means
-  it is off, anything else means run the block again.
+- `NOT_WRITTEN: …` — the settings script said for sure that nothing was written (the config could
+  not be read, it changed between the read and the save, the backup could not be made, …); the config
+  is untouched and the block can simply be run again.
+- `UNCONFIRMED: …` — the config may have been written but the current value is not confirmed (another
+  save landed right after it, the save stopped without its result line, or the read-back failed): run
+  the check command above; `false` means it is off, anything else (or a check that fails) means it is
+  still not confirmed — run the block again.
 
 <!-- round-log-off-ops:begin -->
 ```bash
@@ -1639,12 +1645,13 @@ Then run this whole block and read its last line:
   SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
   PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
   REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
-  RC=0; OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || RC=$?
-  printf '%s\n' "$OUT" | tail -1
-  case "$RC" in
-    0) ;;
-    4) echo "UNCONFIRMED: written, then changed elsewhere"; exit 1 ;;
-    *) echo "NOT_WRITTEN: exit $RC"; exit 1 ;;
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
   esac
   NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
     || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }

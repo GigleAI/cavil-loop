@@ -1364,8 +1364,10 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 
 <details><summary>关掉</summary>
 
-写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；改完之后**开始的派工**交付恢复成普通评论
-（已经开着的 worker / 复审会话照它开始时的规则写）。
+写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。改完**立刻**生效，不只管新派工：已有的记录原样留着、照常被统计，但往返记录的
+写入和读取命令每次运行都按当时的配置判断。正在跑的 worker / 复审会话，提示词里仍是往返记录的写法；它下一次交付或发结论时
+写入命令返回 `RESULT=rejected`（退出码 2），照提示词的规则改成单独发评论，读取命令也不再附上拆好的往返视图。所以一段来回
+进行到一半时关掉，这条记录就停在那里；想让当前这段来回在同一条记录里收尾，等它交到人手上（复审通过或交人）之后再关。
 
 不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
 
@@ -1378,9 +1380,9 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 再整段运行下面这一段，看最后一行：
 
 - `ROUND_LOG=off`：已保存，读回是 `false`（上一行是 `RESULT=saved`；本来就是关的时是 `RESULT=unchanged`）。
-- `NOT_WRITTEN: …`：什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
-- `UNCONFIRMED: …`：配置已经写过，但没能确认现在的值（紧接着又被别处存了一版，或读回失败）：跑上面查值的命令，
-  显示 `false` 就是已关上，不是 `false` 再重跑这一段。
+- `NOT_WRITTEN: …`：配置脚本明确说了什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
+- `UNCONFIRMED: …`：配置可能已经写过，但没能确认现在的值（紧接着又被别处存了一版、保存中途停下没给出结果行，或读回失败）：
+  跑上面查值的命令，显示 `false` 就是已关上；不是 `false`（或查值命令本身失败）仍算没确认，再重跑这一段。
 
 <!-- round-log-off-ops:begin -->
 ```bash
@@ -1388,12 +1390,13 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
   SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
   PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
   REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
-  RC=0; OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || RC=$?
-  printf '%s\n' "$OUT" | tail -1
-  case "$RC" in
-    0) ;;
-    4) echo "UNCONFIRMED: written, then changed elsewhere"; exit 1 ;;
-    *) echo "NOT_WRITTEN: exit $RC"; exit 1 ;;
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
   esac
   NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
     || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }

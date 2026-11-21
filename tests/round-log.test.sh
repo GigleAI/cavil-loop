@@ -219,6 +219,25 @@ o=$(RL post 7 --role worker --to pending/review --body "$(mk b 'x')"); rc=$?
 chk "worker 没给完整版本：拒收" "$rc" "2"
 chk "以上全部零写入" "$(writes)" "0"
 
+echo "── 4a. 来回进行到一半关掉开关：下一次调用立刻按关着处理（GitHub#646）──"
+# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收（照提示词改成单独发），一笔不写；读取命令（托管条目的
+# 受保护读取，往返视图只附在它的输出里）不再附往返视图
+fresh issue 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""'
+echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+OFV=$(ofv 7)
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+chk "到达性：开着时读取命令成功并附往返视图" "$rc $(grep -c '往返记录视图' <<<"$o")" "0 1"
+chk "到达性：开着时取得了节编号、记录已写进评论区" "$([ -n "$OFV" ] && echo yes) $(records)" "yes 1"
+w0=$(writes)
+sed -i 's/^ENABLE_ROUND_LOG=true$/ENABLE_ROUND_LOG=false/' "$CONF"
+o=$(RL post 7 --role review --of "$OFV" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+chk "关掉之后带着之前的节编号发结论：拒收、退出 2" "$rc $(result "$o")" "2 RESULT=rejected"
+chk "关掉之后：一笔没写" "$(( $(writes) - w0 ))" "0"
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+lacks "关掉之后读取命令不再附往返视图" "$o" "往返记录视图"
+chk "关掉之后读取命令照常成功" "$rc" "0"
+
 echo "── 4. 最新单元：中途有别的评论 → 另起一条 ──"
 fresh issue
 RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
