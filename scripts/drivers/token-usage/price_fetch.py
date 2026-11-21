@@ -69,6 +69,7 @@ def _num(name, default, cast):
 
 COOLDOWN = _num("PRICE_FETCH_COOLDOWN_SECS", "21600", int)
 LATEST_EVERY = _num("PRICE_LATEST_REFRESH_SECS", "86400", int)   # 最新价缓存一天（GitHub#606）
+WRITE_RETRY = 600            # 抓到了价却写不进缓存时，多久后再试（PR #612 复审第 5 轮）
 TIMEOUT = _num("PRICE_FETCH_TIMEOUT", "15", float) or 15.0
 MAX_PRICE = price_solve.MAX_PRICE       # 美元 / 百万 token；现役最贵的档位也远低于它。读回时同一上限
 MAX_DIVERGE = price_solve.MAX_DIVERGE   # 与反解那一侧的交叉核对用同一个阈值
@@ -162,11 +163,19 @@ def load_state():
 
 
 def _save_json(path, obj):
+    """整份写到临时文件再换名。失败就抛出（调用方据此不提交这一步），临时文件不留。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ── 已有单价：内置表里有的模型从不抓 ─────────────────────────────────────────
@@ -428,9 +437,15 @@ def refresh_latest(now):
         _write_due(now + COOLDOWN)
         log(f"Claude 最新价目抓取失败，{COOLDOWN // 3600} 小时后再试（评论 footer 继续用上次的价或内置价）：{why}")
         return
-    _save_json(price_solve.latest_path(), {"claude": {
-        "fetched_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sources": [ANTHROPIC_URL, LITELLM_URL], "models": ok}})
+    try:
+        _save_json(price_solve.latest_path(), {"claude": {
+            "fetched_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "sources": [ANTHROPIC_URL, LITELLM_URL], "models": ok}})
+    except Exception as e:
+        # 抓到了却没写进去：不算这一天已刷新，WRITE_RETRY 秒后再来（不是一天、也不是冷却期）
+        _write_due(now + WRITE_RETRY)
+        log(f"Claude 最新价目已抓到但写不进缓存，{WRITE_RETRY // 60} 分钟后再试：{type(e).__name__}: {e}")
+        return
     _write_due(now + LATEST_EVERY)
     log(f"已更新 Claude 最新价目：{len(ok)} 个模型"
         + (f"；未采用 {len(skipped)} 个：{'、'.join(skipped)}" if skipped else ""))
@@ -529,16 +544,27 @@ def _fetch_one(agent, model, path, now, fetched, latest, state):
     if last is not None and 0 <= now - last < COOLDOWN:
         return False                               # 冷却中
     prices, why = resolve(agent, model)
-    state[key] = {"last_attempt": now, "result": "ok" if prices else why}
     if not prices:
+        state[key] = {"last_attempt": now, "result": why}
         log(f"{agent} 模型 {model} 抓价失败，{COOLDOWN // 3600} 小时后再试：{why}")
         return True
-    fetched.setdefault(agent, {})[model] = {
+    # 提交点是「价格缓存写进了磁盘」（PR #612 复审第 5 轮：写入失败后，内存里的价和 ok 状态被同轮
+    # 另一个模型的状态保存带了出去，下一轮以为已补上、冷却 6 小时）。先在副本上写；写成功了才改
+    # 共享的价格表和状态、删标记。写不进去就什么都不提交：不记这次尝试，标记留着，下一轮再来
+    entry = {
         "prices": prices,
         "fetched_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sources": [ANTHROPIC_URL if agent == "claude" else OPENAI_URL, LITELLM_URL],
     }
-    _save_json(price_solve.fetched_path(), fetched)
+    new = {a: dict(g) for a, g in fetched.items()}
+    new.setdefault(agent, {})[model] = entry
+    try:
+        _save_json(price_solve.fetched_path(), new)
+    except Exception as e:
+        log(f"{agent} 模型 {model} 抓到了价但写不进缓存，标记留着，下一轮再试：{type(e).__name__}: {e}")
+        return False
+    fetched.setdefault(agent, {})[model] = entry
+    state[key] = {"last_attempt": now, "result": "ok"}
     _rm(path)
     log(f"{agent} 模型 {model} 已自动补上单价（官方页与 LiteLLM 一致）："
         + ", ".join(f"{k}=${v:g}/M" for k, v in prices.items()))

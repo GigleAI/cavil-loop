@@ -22,6 +22,8 @@
 #        使用方都只丢那一层，好的照用；坏记录不算「已有价」，标记留着，抓到合法价后才删
 #   【9】读回的每个数都过同一个数值检查：抓价状态里的重试时刻、网络上 LiteLLM 的单价是超大整数 /
 #        无穷 / NaN / 负数时，那一项当作没有，别的模型照常补价；正常的冷却照样挡住重复抓取
+#   【10】价格缓存写不进去：这个模型什么都不提交（不记尝试、标记留着），同轮另一个模型照常处理并保存
+#        状态；写入恢复后下一轮补上。每日刷新写不进去：不算刷新过，10 分钟后再试
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -440,6 +442,31 @@ rm -rf "$CACHE"; mkdir -p "$CACHE"
 rc=0; OUT=$(PRICE_FETCH_LITELLM_URL="file://$TMP/litellm-big.json" python3 "$TU/price_fetch.py") || rc=$?
 chk "每日刷新遇到超大整数：claude-test-9 不收，claude-zero-9 照收，没有异常" \
     "$rc $(jq -c '.claude.models | keys' "$LATEST" 2>/dev/null) $(grep -c '异常' <<<"$OUT")" '0 ["claude-zero-9"] 0'
+
+echo "── 10. 价格缓存写不进去：不提交，恢复后下一轮补上 ──"
+# PR #612 复审第 5 轮：fetched-prices.json 写入失败后，这个模型在内存里的价和 ok 状态被同轮另一个
+# 模型的状态保存带了出去——下一轮以为补过了、冷却 6 小时，标记却还在、价也没有
+rm -rf "$CACHE"; mkdir -p "$CACHE/unpriced" "$CACHE/fetched-prices.json"; echo 9999999999 > "$NEXT"
+: > "$CACHE/unpriced/claude--claude-test-9"; : > "$CACHE/unpriced/claude--claude-clash-9"
+rc=0; OUT=$(python3 "$TU/price_fetch.py") || rc=$?
+chk "写不进去的那个：不记尝试、标记留着、日志说明；同轮另一个照常记下失败并保存状态" \
+    "$rc $(jq -c '[has("claude/claude-test-9"), .["claude/claude-clash-9"].result != null]' "$CACHE/price-fetch-state.json") $([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept) $(grep -c 'claude-test-9 抓到了价但写不进缓存' <<<"$OUT")" \
+    "0 [false,true] kept 1"
+rmdir "$CACHE/fetched-prices.json"
+OUT=$(python3 "$TU/price_fetch.py")
+chk "写入恢复后下一轮：claude-test-9 补上、标记删掉、状态记 ok；clash 仍在冷却" \
+    "$(jq -r '.claude["claude-test-9"].prices.input' "$CACHE/fetched-prices.json") $([ -e "$CACHE/unpriced/claude--claude-test-9" ] && echo kept || echo removed) $(jq -r '.["claude/claude-test-9"].result' "$CACHE/price-fetch-state.json") $(grep -c 'clash' <<<"$OUT")" \
+    "3.0 removed ok 0"
+chk "补上后取价用上这个价" "$(jq -r '.models["claude-test-9"].input.price' <<<"$(listed)")" "3.0"
+# 每日刷新写不进去：最新价文件位置被目录占着
+rm -rf "$CACHE"; mkdir -p "$CACHE/latest-prices.json"; echo 0 > "$NEXT"
+NOW=$(date +%s); rc=0; OUT=$(python3 "$TU/price_fetch.py") || rc=$?
+N=$(cat "$NEXT")
+chk "每日刷新写不进去：不算刷新过，10 分钟后再试，日志说明" \
+    "$rc $([ $((N - NOW)) -ge 599 ] && [ $((N - NOW)) -le 601 ] && echo 10min || echo "$((N - NOW))") $(grep -c '最新价目已抓到但写不进缓存' <<<"$OUT")" "0 10min 1"
+rmdir "$LATEST"; echo 0 > "$NEXT"; python3 "$TU/price_fetch.py" >/dev/null
+chk "写入恢复后：最新价写进去" "$(jq -c '.claude.models | keys' "$LATEST")" '["claude-test-9","claude-zero-9"]'
+chk "没有遗留临时文件" "$(ls -A "$CACHE" | grep -c '\.tmp$')" "0"
 
 report_counts "$pass" "$fail"
 echo
