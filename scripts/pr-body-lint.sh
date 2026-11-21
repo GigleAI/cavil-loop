@@ -25,12 +25,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_concurrent_work_defs.sh
 source "$here/_concurrent_work_defs.sh"
 [ -f "$here/_autopilot_summary.sh" ] || { echo "找不到总结段截取规则（_autopilot_summary.sh）" >&2; exit 2; }
+# shellcheck source=_autopilot_summary.sh
+source "$here/_autopilot_summary.sh"
 vendor="$here/../tests/lib/vendor"
 [ -f "$vendor/markdown_it/__init__.py" ] || { echo "找不到 CommonMark 解析器（tests/lib/vendor/）" >&2; exit 2; }
 
 body_summary=$(jq -Rsr "$CONCURRENT_WORK_JQ_DEFS"' cw_first_sentence' < "$f") || { echo "读不了正文文件" >&2; exit 2; }
 
-PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" PR_BODY_SUMMARY_LIB="$here/_autopilot_summary.sh" python3 -B - "$f" <<'PYEOF'
+PR_BODY_SUMMARY="$body_summary" PR_BODY_DEFS="$CONCURRENT_WORK_JQ_DEFS" PR_BODY_VENDOR="$vendor" PR_BODY_SUMMARY_LIB="$here/_autopilot_summary.sh" PR_BODY_MARK_BEGIN="$AUTOPILOT_SUMMARY_BEGIN" PR_BODY_MARK_END="$AUTOPILOT_SUMMARY_END" python3 -B - "$f" <<'PYEOF'
 import os, re, subprocess, sys
 
 # 只读：发布目录里的解析器不留字节码缓存（__pycache__），不靠调用方的环境
@@ -54,8 +56,8 @@ text = raw.replace("\r\n", "\n").replace("\r", "\n")
 lines = text.split("\n")
 bad = []
 
-BEGIN = "<!-- autopilot-summary:begin -->"
-END = "<!-- autopilot-summary:end -->"
+BEGIN = os.environ["PR_BODY_MARK_BEGIN"]   # 标记只在 _autopilot_summary.sh 里写一份
+END = os.environ["PR_BODY_MARK_END"]
 LINK = re.compile(r"^\s*((close[sd]?|fix(e[sd])?|resolve[sd]?|refs?|part of)\b[^#\n]*#[0-9]+)", re.I)
 TAG_NAME = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)")
 RAW_TEXT = ("script", "style", "textarea", "title")
@@ -68,25 +70,24 @@ RAW_TEXT = ("script", "style", "textarea", "title")
 # 从每个 < 起整段匹配一个标签 / 注释 / 声明，属性值（引号里的也算）、注释里的字随整段跳过；
 # 解析器的注释写法不收的注释（中间有 --）照浏览器到第一个 --> 为止，没关上的算到文末；
 # script / style / textarea / title 里是原样文字，到它们的结尾标签为止。
-# 代码块、行内代码是解析器给的别种 token，不喂标签，只占位（行首是代码的行不算关联行）。
+# 代码块、行内代码、图片、分隔线是解析器给的别种 token，不喂标签，只记一个占位：看得见、所在的折叠深度照记，
+# 但不是文字（行首是这些的行不算关联行）。
 # 正文扫描、关联行检查和托管总结段用的是同一串 token、同一个扫描器。
 class Scan:
     def __init__(self):
         self.depth = 0
         self.mode = None       # None | "comment" | 原样文字元素名
-        self.opens = []        # 还没关上的 <details> 所在行
-        self.unbalanced = None
-        self.detail_opens = [] # 每个 <details> 打开时：(行号, 打开前的深度)
+        self.extra = 0         # 没有对应 <details> 的多余结尾标签个数
         self.pieces = {}       # 行号 → [(文字, 当时的深度)]，只收看得见的文字
-        self.events = []       # 每个折叠标签：(行号, 是不是结尾标签)，按出现顺序
+        self.events = []       # 每个折叠标签：(行号, 是不是结尾标签, 处理后的深度)，按出现顺序
 
     def depth_before(self, line):
-        """第 line 行开头时的折叠深度（只算它之前各行的标签，多出来的结尾标签不往负数走）"""
+        """第 line 行开头时的折叠深度：它之前最后一个标签处理后的深度（同一条规则，见 _tag）"""
         d = 0
-        for ln, closing in self.events:
+        for ln, _, after in self.events:
             if ln >= line:
                 break
-            d = max(d - 1, 0) if closing else d + 1
+            d = after
         return d
 
     def text(self, s, line):
@@ -94,18 +95,14 @@ class Scan:
             self.pieces.setdefault(line, []).append((s, self.depth))
 
     def _tag(self, closing, line):
-        self.events.append((line, closing))
+        """深度只在这里变：开始标签加一；结尾标签减一，最低到零（多余的结尾标签照浏览器不关任何东西）"""
         if closing:
-            self.depth -= 1
-            if self.opens:
-                self.opens.pop()
-            if self.depth < 0 and self.unbalanced is None:
-                self.unbalanced = line
-                self.depth = 0
+            if self.depth == 0:
+                self.extra += 1
+            self.depth = max(self.depth - 1, 0)
         else:
-            self.detail_opens.append((line, self.depth))
             self.depth += 1
-            self.opens.append(line)
+        self.events.append((line, closing, self.depth))
 
     def html(self, h, line):
         """喂一段 HTML，line 是它第一个字所在的行"""
@@ -184,7 +181,11 @@ def walk(text):
                     sc.text("\x00", ln(o))
                     e = re.compile(r"(?<!`)" + re.escape(ch.markup) + r"(?!`)").search(src, o + len(ch.markup))
                     cur = e.end() if e else o + len(ch.markup)
+                elif not ch.type.endswith(("_open", "_close")):
+                    sc.text("\x00", ln(cur))   # 图片等其他看得见的行内内容：占位，不当关联行
             continue
+        if tok.type in ("fence", "code_block", "hr"):
+            sc.text("\x00", line)   # 代码块、分隔线看得见：占位，记下它所在的折叠深度
         if tok.type.endswith("_close"):
             continue
         if first_block is None and tok.map is not None:
@@ -245,15 +246,9 @@ if mark_b or mark_e:
             print("总结段截取规则跑不了", file=sys.stderr)
             sys.exit(2)
         ssc, _ = walk(r.stdout)
-        d, tops = 0, 0
-        for _, closing in ssc.events:
-            if closing:
-                d -= 1
-            else:
-                tops += d == 0
-                d += 1
+        tops = sum(1 for _, closing, after in ssc.events if not closing and after == 1)
         stray = any(x.strip() for ps in ssc.pieces.values() for x, dd in ps if dd == 0)
-        if tops != 3 or ssc.depth != 0 or ssc.unbalanced is not None or stray:
+        if tops != 3 or ssc.depth != 0 or ssc.extra or stray:
             bad.append(("autopilot-summary", mark_b[0]))
 
 if bad:

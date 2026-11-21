@@ -114,6 +114,19 @@ Closes #1'; } > "$S/link-after-code.md"
 # 折叠，没关上的折叠块里的关联行照样报
 { printf '属性值里的结尾标签不关上折叠。\n\n<details data-x="</details>"><summary>验证</summary>\n\nCloses #1\n\n</details>\n'; } > "$S/attr-link.md"
 { printf '没关上的折叠块里有关联行。\n\n<details><summary>验证</summary>\n\nCloses #1\n'; } > "$S/unclosed-link.md"
+# PR #650 收窄后复审第 1 轮：多余的结尾标签不把深度带到负数（之后的折叠照样算，块内的关联行照报）；
+# 总结段两个标记之间、折叠块外面的代码块 / 图片也算多出来的内容（块里的照常允许）
+{ printf '多余结尾标签之后的折叠块里有关联行。\n\n</details>\n</details>\n\n<details><summary>验证</summary>\n\nCloses #644\n\n</details>\n'; } > "$S/extra-close-in.md"
+{ printf '多余结尾标签之后的关联行在折叠外。\n\n</details>\n</details>\n\nCloses #644\n'; } > "$S/extra-close-out.md"
+summary_with() {   # $1 = 插在第一个折叠块前面的内容，$2 = 插在第一个折叠块里面的内容
+    printf '<!-- autopilot-summary:begin -->\n%s' "$1"
+    printf '<details><summary>背景</summary>\n\n原来的情况。\n%s\n</details>\n' "$2"
+    fold 采用的方案 "最后的做法。"; fold 排除的方案和原因 "没有考虑别的方案。"
+    printf '<!-- autopilot-summary:end -->\n'
+}
+{ printf '总结段折叠块外有代码块。\n\nCloses #1\n\n'; summary_with $'```\ncode\n```\n' ''; } > "$S/summary-fence-out.md"
+{ printf '总结段折叠块里有代码块。\n\nCloses #1\n\n'; summary_with '' $'\n```\ncode\n```\n'; } > "$S/summary-fence-in.md"
+{ printf '总结段折叠块外有图片。\n\nCloses #1\n\n'; summary_with $'![图](https://example.com/a.png)\n\n' ''; } > "$S/summary-image-out.md"
 # 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
 { printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
 
@@ -131,6 +144,8 @@ expect=(
     "raw-inline|ok|0" "raw-summary|ok|0" "link-block-in|bad link-folded 4|1" "link-block-out|ok|0" "link-after-code|bad link-folded 7|1"
     "mark-in-textarea|bad autopilot-summary 8|1" "mark-in-code|bad autopilot-summary 7|1"
     "attr-link|bad link-folded 5|1" "unclosed-link|bad link-folded 5|1"
+    "extra-close-in|bad link-folded 8|1" "extra-close-out|ok|0"
+    "summary-fence-out|bad autopilot-summary 5|1" "summary-fence-in|ok|0" "summary-image-out|bad autopilot-summary 5|1"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
