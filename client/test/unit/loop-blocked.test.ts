@@ -431,7 +431,11 @@ describe('a registration on a pull request (GitHub#526)', () => {
     expect(g.nodes.get(K(473))!.parent).toBe(K(466));
     expect(g.nodes.get(K(466))!.children).toEqual([K(473), K(521)]);
     expect(g.nodes.get(K(523))!.parent).toBeNull();
-    expect(g.nodes.get(K(523))!.blockingAhead).toBe(1);
+    // GitHub#636: PR #521 closes #473 — a dashed link, and #523 counts #473 behind the PR it holds
+    expect(g.links).toEqual([{ from: K(521), to: K(473), open: true }]);
+    expect(g.nodes.get(K(523))!.blockingAhead).toBe(2);
+    expect(g.nodes.get(K(473))!.prBlocked).toEqual([K(521)]);
+    expect(g.nodes.get(K(473))!.blockedByOpen).toBe(0);
     // drawn: #466, #473, #521 and #523 (an end); nothing picked is left out or unknown
     expect(g.entries).toBe(4);
     expect(g.noRelation).toBe(0);
