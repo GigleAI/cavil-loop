@@ -29,6 +29,7 @@ import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '.
 import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
+import type { AutoCloseKind } from '../shared/tabs';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
 import { prStatusIcons, type PrTone } from './prStatus';
@@ -60,7 +61,24 @@ export interface TabDraft {
   replyFromOp: string | null;
   editing: { entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null;
   titleEdit: { seen: string; text: string } | null;
+  /**
+   * GitHub#633: the reply box's draft number (see `nextReplyDraft`), kept with the text so a detail mounted
+   * again from this draft is the same draft — and a hand-over accepted after its detail went away can clear
+   * exactly the draft it took. Absent in a draft from before.
+   */
+  replyVer?: number;
 }
+
+/**
+ * GitHub#633: draft numbers of the reply box, one sequence for the whole window: a number is never reused,
+ * not even by another detail mounted later, so "the draft that went with the operation" can be told
+ * from any later text, the same words included.
+ */
+let replyDraftSeq = 0;
+export const nextReplyDraft = (): number => ++replyDraftSeq;
+
+/** GitHub#633: a hand-over the client accepted, as the detail it was started from reports it to the window */
+export type HandOffStart = { kind: 'handBack' | 'autopilot'; sentVer: number | null };
 
 /** Text that closing the tab would lose. */
 export function draftDirty(d: TabDraft | null | undefined): boolean {
@@ -274,10 +292,20 @@ function HeadNote({ note, onExpire }: { note: ResultNote; onExpire: () => void }
  * GitHub#447: the close went through, but this tab / panel holds text not sent yet, so it was not put
  * away by itself. Stays until its × (it says something the person has to act on: send or clear, then close).
  */
-function HeldLine({ floating, onDismiss }: { floating: boolean; onDismiss: () => void }) {
-  const text = floating
-    ? t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
-    : t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。');
+function HeldLine({ floating, kind, onDismiss }: { floating: boolean; kind: AutoCloseKind; onDismiss: () => void }) {
+  // GitHub#633: a hand-over is kept at the moment the client accepted it — GitHub's answer is said in the notice area
+  const text =
+    kind === 'handBack'
+      ? floating
+        ? t('已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+        : t('已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。')
+      : kind === 'autopilot'
+        ? floating
+          ? t('已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+          : t('已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。')
+        : floating
+          ? t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。')
+          : t('已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。');
   return (
     <div className="detail-held small" data-testid="auto-close-held" data-mode={floating ? 'float' : 'tab'} role="status">
       <Icon name="warn" size={13} />
@@ -396,6 +424,7 @@ export function DetailPanel({
   onDraft,
   onCloseStarted,
   autoCloseHeld = null,
+  droppedReplies = [],
 }: {
   itemKey: string;
   state: AppState;
@@ -422,9 +451,14 @@ export function DetailPanel({
    * GitHub#447: a close of this item (issue or PR) was started from this opening; the window puts the
    * opening away once GitHub took it (and keeps it when it holds unsent text)
    */
-  onCloseStarted?: (opId: string) => void;
+  onCloseStarted?: (opId: string, handOff?: HandOffStart) => void;
   /** GitHub#447: the close went through but this opening holds unsent text, so it stayed: say so (× puts the line away) */
-  autoCloseHeld?: { onDismiss: () => void } | null;
+  autoCloseHeld?: { onDismiss: () => void; kind: AutoCloseKind } | null;
+  /**
+   * GitHub#633: reply draft numbers that went with an accepted hand-over. A detail showing one of them (mounted
+   * again from the kept draft before the client answered) empties its reply box: those words live in the operation
+   */
+  droppedReplies?: readonly number[];
 }) {
   // GitHub#397: the controller hands over a tab's item whole when the view does not hold it, or holds an older copy than
   // the tab's own check read — that copy wins, so the badge, the buttons and the tab agree
@@ -454,6 +488,15 @@ export function DetailPanel({
   const [editNote, setEditNote] = useState<ResultNote | null>(null);
   /** GitHub#299: the title being edited (the title shown when the edit started), and the text so far */
   const [titleEdit, setTitleEdit] = useState<{ seen: string; text: string } | null>(draft?.titleEdit ?? null);
+  /**
+   * GitHub#633: which draft the reply box holds — a number that moves on every change of its text (typed,
+   * pasted, emptied). A hand-over knows the reply text that went with it by this number, never by the words:
+   * the box emptied and the same words typed again is a new draft, kept and counted as unsent.
+   */
+  const replyVer = useRef<{ text: string; n: number } | null>(null);
+  // mounted again from a kept draft: the same draft (its number goes with it); otherwise a new one
+  if (replyVer.current === null) replyVer.current = { text: reply, n: draft?.replyVer !== undefined && draft.reply === reply ? draft.replyVer : nextReplyDraft() };
+  else if (replyVer.current.text !== reply) replyVer.current = { text: reply, n: nextReplyDraft() };
   const [titleNote, setTitleNote] = useState<ResultNote | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const titleOpen = titleEdit !== null;
@@ -493,8 +536,14 @@ export function DetailPanel({
   const [escKept, setEscKept] = useState(false);
   useEffect(() => {
     const inFlight = sendingReply !== null && sendingReply === reply;
-    onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit });
+    onDraftRef.current?.({ reply: inFlight ? '' : reply, replyFromOp: inFlight ? null : replyFromOp, editing, titleEdit, replyVer: replyVer.current!.n });
   }, [reply, replyFromOp, editing, titleEdit, sendingReply]);
+  // GitHub#633: mounted again from a kept draft before the client answered — the same draft is dropped here
+  // too, by the same function as in the opening that sent it (PR #638 review round 3)
+  useEffect(() => {
+    for (const ver of droppedReplies) dropSentReplyHere(ver);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [droppedReplies]);
   const replyBox = useRef<HTMLTextAreaElement>(null);
   const canWrite = writesEnabled(state.sync);
   const offlineWhy = canWrite ? undefined : t('离线时不能修改');
@@ -626,12 +675,15 @@ export function DetailPanel({
    * GitHub#250: close / merge / autopilot / hand-back start in the background and hold nothing:
    * true = started (the dialog closes), false = refused before anything was sent (said here).
    */
-  const startOp = async (action: Parameters<ReturnType<typeof api>['startOp']>[0], inDialog: boolean): Promise<boolean> => {
+  const startOp = async (action: Parameters<ReturnType<typeof api>['startOp']>[0], inDialog: boolean, started?: (id: string) => void): Promise<boolean> => {
     // GitHub#226: a read already on its way carries GitHub as it was before this change — it never lands
     session.supersede('detail');
     setLoading(false);
     const from = retryFrom ?? undefined;
     const r = await api().startOp(action, from);
+    // GitHub#633: told whether or not this opening is still the one on screen — a hand-over accepted after the
+    // panel went away (another tab in front, the panel moved on) must still settle the place it came from
+    if (r.ok && r.id) started?.(r.id);
     if (!session.current()) return r.ok;
     if (!r.ok) {
       const n: ResultNote = { kind: 'error', text: r.error ?? t('没有发送') };
@@ -646,6 +698,34 @@ export function DetailPanel({
     return true;
   };
   /**
+   * GitHub#633: a hand-over (交给 agent / 托管) the client accepted puts this tab / panel away at once (the
+   * maintainer's choice in #633: no waiting for GitHub; its result is said in the window's notice area).
+   * Runs even when this opening has gone meanwhile. Whether the place holds text not sent is decided by the
+   * window, on the place's kept draft as it is then (never on this detail's own view, which may be an
+   * unmounted one: PR #638 review round 2); `sentVer` (the reply box's draft number that went with the
+   * operation, see `nextReplyDraft`) lets it take exactly that draft out first.
+   */
+  const handOffStarted = (kind: 'handBack' | 'autopilot', boxSent: number | null) => (id: string) => {
+    onCloseStarted?.(id, { kind, sentVer: boxSent });
+  };
+  /**
+   * GitHub#633: the one way a reply draft that went with a hand-over leaves a detail — the opening that sent
+   * it and an opening mounted again from the kept draft both call this (the window's kept draft is cleared
+   * by `dropSentReply` in App.tsx, by the same number). Only that draft, by its number: text typed since
+   * (even the same words) is another draft and keeps everything. Everything that hangs off the box goes
+   * with it — the kept-comment link, the preview and a preview request still on its way, the pasted-image
+   * line, the Esc note — or a preview of words already sent would stay with no button to put it away.
+   */
+  const dropSentReplyHere = (ver: number) => {
+    if (!replyVer.current || replyVer.current.n !== ver) return;
+    setReply('');
+    setReplyFromOp(null);
+    session.supersede('preview');
+    setPreview(null);
+    setEscKept(false);
+    setPasted(null);
+  };
+  /**
    * GitHub#451: "交给 agent" / "托管" with text in the reply box send it first as a comment, the labels only
    * once it went out. A dialog opened again from a notice ("重新托管…") carries that operation's kept
    * comment instead, never the reply box's. Blank = labels only, as before.
@@ -658,16 +738,11 @@ export function DetailPanel({
   const handOff = async (kind: 'handBack' | 'autopilot', inDialog: boolean): Promise<boolean> => {
     const { comment, fromBox } = handOffComment();
     const withComment = comment.trim() ? { comment, ...(fromBox && replyFromOp ? { draftOf: replyFromOp } : {}) } : {};
-    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog);
+    // GitHub#633: the reply box's draft that goes with it, by its number (the box may change during the await)
+    const boxSent = fromBox && comment.trim() ? replyVer.current!.n : null;
+    const ok = await startOp({ kind, key: item!.key, ...withComment }, inDialog, handOffStarted(kind, boxSent));
     // the text now lives in the operation (kept until it went out, or dropped by hand), like a close's comment
-    if (ok && fromBox && comment.trim()) {
-      setReply((cur) => (cur === comment ? '' : cur));
-      setReplyFromOp(null);
-      session.supersede('preview');
-      setPreview(null);
-      setEscKept(false);
-      setPasted(null);
-    }
+    if (ok && boxSent !== null) dropSentReplyHere(boxSent);
     return ok;
   };
   const runAutopilot = () => handOff('autopilot', ask === 'autopilot');
@@ -702,6 +777,8 @@ export function DetailPanel({
         if (!session.current()) return;
         setRetryFrom(null);
         setNote(res.ok ? null : { kind: 'error', text: res.error ?? t('没有发送') });
+        // GitHub#633: done again from here, it puts this place away like the first one (the reply box had no part in it)
+        if (res.ok && res.id) handOffStarted('handBack', null)(res.id);
       })();
     }
   };
@@ -1495,7 +1572,7 @@ export function DetailPanel({
           </button>
         )}
       </div>
-      {autoCloseHeld && <HeldLine floating={floating} onDismiss={autoCloseHeld.onDismiss} />}
+      {autoCloseHeld && <HeldLine floating={floating} kind={autoCloseHeld.kind} onDismiss={autoCloseHeld.onDismiss} />}
       {fromCache !== null && !loadError && autoFailed === null && (
         <div className="detail-stale muted" data-testid="detail-cached" role="status">
           {loading ? t('显示 {time} 读到的内容 · 正在更新…', { time: clock(fromCache) }) : t('显示 {time} 读到的内容', { time: clock(fromCache) })}

@@ -73,6 +73,7 @@ if [ -n "$TEMPLATE" ]; then
         -e "s|\${AGENT_TOKEN_USAGE_SCRIPT}|$AGENT_TOKEN_USAGE_SCRIPT|g" \
         -e "s|\${COMMENT_FOOTER_CMD}|$COMMENT_FOOTER_CMD|g" \
         -e "s|\${CAVIL_STEP_DIR}|$CAVIL_STEP_DIR|g" \
+        -e "s|\${FEEDBACK_FP_CMD}|$FEEDBACK_FP_CMD|g" \
         -e "s|\${WORKER_AGENT}|$WORKER_AGENT|g" \
         -e "s|\${WORK_NUM}|$ISSUE|g" \
         "$TEMPLATE" > "$PROMPT_FILE"

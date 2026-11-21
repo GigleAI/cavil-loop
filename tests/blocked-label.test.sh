@@ -766,7 +766,8 @@ CONF
                 issue-comment:"$(prompt_file_of "$root" "$w/state" cmt "$N_CMT" 0)"; do
         f="${kind#*:}"; kind="${kind%%:*}"
         if [ -s "$f" ]; then
-            sed -e "s|$root|<ROOT>|g" -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"
+            # GitHub#614 加了 ${FEEDBACK_FP_CMD}：改动前的派工脚本不认识它，按它在当前脚本里的值对齐
+            sed -e "s|$root|<ROOT>|g" -e "s|\\\${FEEDBACK_FP_CMD}|bash '<ROOT>/scripts/feedback-fingerprint.sh' --config '<W>/config'|g" -e "s|$w|<W>|g" -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$out/$kind.md"
         fi
         rm -f "$f"
     done

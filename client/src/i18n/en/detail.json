@@ -173,6 +173,10 @@
   "没能复制你写的文字，请先手动复制。": "Could not copy your text; please copy it by hand first.",
   "已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。": "Closed, but there is unsent text here (a reply, or a comment or title being edited), so the floating panel did not hide by itself. Once it is sent or cleared, click \"Hide ›\".",
   "已关闭，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。": "Closed, but there is unsent text here (a reply, or a comment or title being edited), so this tab did not close by itself. Once it is sent or cleared, close it with the × on the tab.",
+  "已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。": "Handing over to the agent, but there is unsent text here (a reply, or a comment or title being edited), so the floating panel did not hide by itself. Once it is sent or cleared, click \"Hide ›\".",
+  "已开始交给 agent，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。": "Handing over to the agent, but there is unsent text here (a reply, or a comment or title being edited), so this tab did not close by itself. Once it is sent or cleared, close it with the × on the tab.",
+  "已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以浮窗没有自动收起。发出或清空后，点「收起 ›」。": "Autopilot started, but there is unsent text here (a reply, or a comment or title being edited), so the floating panel did not hide by itself. Once it is sent or cleared, click \"Hide ›\".",
+  "已开始托管，但这里还有没发出的文字（回复、正在编辑的评论或标题），所以这个标签页没有自动收起。发出或清空后，点标签页上的 × 关掉。": "Autopilot started, but there is unsent text here (a reply, or a comment or title being edited), so this tab did not close by itself. Once it is sent or cleared, close it with the × on the tab.",
   "{n} 条提示，有操作正在进行（点开看）": {
     "one": "{n} notice, an operation is in progress (click to see)",
     "other": "{n} notices, an operation is in progress (click to see)"

@@ -94,7 +94,7 @@ A PR is never handed on while it conflicts with its base: the worker test-merges
 
 <details><summary>Details: the worker's conflict check before a hand-off</summary>
 
-Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next block.
+Every time a worker is about to flip a PR to `pending/review` / `pending/human` — first PR, rework round, even a pure discussion round (a round where the human only asked a question is the exception, below) — it test-merges the PR's latest pushed commit against the PR's base branch (`git merge-tree`, no working-tree change, no commit). On a conflict it merges the base in (never rebase / force-push), resolves it, reruns the relevant tests, pushes, then hands on; if it cannot resolve it, it aborts the merge and hands the PR to `pending/human` with the conflicting files listed. Being merely *behind* the base is not merged. The reviewer runs the same check before posting its verdict and fails a conflicting PR back to the worker, since it never pushes. A PR that starts conflicting *after* it reached `pending/human` is caught by the daemon instead — next block.
 
 </details>
 
@@ -112,6 +112,14 @@ GitHub's own `mergeable` field is deliberately not used. It is computed lazily a
 "Can't tell" never counts as "no conflict": a failed fetch, a missing object or a `merge-tree` error is retried next tick, at most `PENDING_HUMAN_CONFLICT_MAX_TRIES` (default 10) times per pair. If the base commit cannot be read, the tick checks nothing. Right before writing, the daemon re-reads the PR and requires every identity it acted on to still hold — open and not merged, same base branch, same head commit, same same-repo/fork status, still `pending/human` with no busy label; a missing field counts as a mismatch (a closed PR keeps its labels, so labels alone cannot stand in for "open"). On any mismatch it writes nothing, does not mark the commit handled, and judges the PR afresh next tick.
 
 Each comment carries a hidden marker with the head commit and its kind (`mode=worker` / `mode=remind`); a marker already on the PR means the commit was handled (state lost, or another machine got there first), so it is neither repeated nor escalated from a reminder into an auto-fix — the reminder comment itself bumps the PR's "updated" time, which is why the two kinds need separate markers. Per-PR progress lives in `state.json` `pr_conflict`.
+
+</details>
+
+When a human only asks a question on an issue or PR, the agent answers in that thread and stops: no code, no push, no merging the base, no review, on autopilot items too. Only that item goes back to `pending/human` (an issue that already has a PR goes back to `pending/PR`). Handed back with no new comment, the agent carries on from where it was, once, but only when nothing changed since the answer; otherwise it asks for a comment 「继续」 ("continue").
+
+<details><summary>Details: what "nothing changed" means</summary>
+
+The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` from one read of the item: content fingerprints of every piece of human feedback (maintainers and the requester bot; outside accounts do not count), the ticked options, the item itself (description, open / closed, labels other than the flow labels, a PR's head commit and base branch, an issue's open PRs), the loop account's flow comments, and the step to continue. On hand-back the same command compares: all equal → that step, done once (the skipped conflict handling then happens as usual); new or edited feedback → treated as this round's input; a changed item, deleted feedback, a missing or changed step record, changed flow comments, an old or broken record, or an incomplete read → the agent asks for 「继续」.
 
 </details>
 
