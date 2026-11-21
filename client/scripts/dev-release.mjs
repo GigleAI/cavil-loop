@@ -11,8 +11,10 @@
 //     that finished late never puts an older build on top)
 //   - this version is already published with every file: nothing to publish (a rerun)
 //   - otherwise it is created as a draft with every file, then published: an installed app never
-//     sees a release with a missing file (drafts are invisible to it). A draft or a published
-//     release of this version left half-done by an earlier run is filled in and published.
+//     sees a release with a missing file (drafts are invisible to it). A draft of this version left
+//     half-done by an earlier run is filled in and published. A published release of this version
+//     that is not complete is never changed (the maintainer's choice on #628, PR #630 Q1 = B): the
+//     run fails and writes nothing; the next commit's higher version comes out over it.
 //   - read again: it must now be published, a pre-release, with every file — or this run fails.
 // Then the old ones go: of the published development builds (exact tag shape AND marked
 // pre-release), all but the `--keep` highest versions are deleted with their tags; and drafts of a
@@ -114,7 +116,8 @@ export function buildState(release, files) {
 /**
  * What to do for `version`, given the release list and the files it must carry.
  * → { action: 'skip', why } | { action: 'done' } | { action: 'create' }
- *   | { action: 'fill', draft } (draft false = it is public now: hide it first, see main)
+ *   | { action: 'fill' } (a draft of this version, never public: every file put in, then published)
+ *   | { action: 'keep', bad } (public but not complete: never changed — written to nowhere)
  *   | { action: 'unknown', files, why } (a file's state, or whether a release is public, cannot be
  *     judged: write nothing)
  */
@@ -137,7 +140,10 @@ export function decide(list, version, files) {
   const s = buildState(r, files);
   if (s.state === 'unknown') return { action: 'unknown', files: s.unknown, why: `${s.unknown.join(', ')} 读不出是否已上传完成` };
   if (r.draft === false && s.state === 'complete') return { action: 'done' };
-  return { action: 'fill', draft: r.draft === true };
+  // a public release is never changed (the maintainer's choice on #628, PR #630 Q1 = B): one that is
+  // not complete stays as it is, and the next commit's higher version comes out over it
+  if (r.draft === false) return { action: 'keep', bad: s.bad };
+  return { action: 'fill' };
 }
 
 /** The development builds to delete: all published ones but the `keep` highest. */
@@ -421,6 +427,9 @@ function main() {
     d = decide(before, version, files);
     if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写、不替换，现有文件原样保留`);
   }
+  if (d.action === 'keep') {
+    throw new Error(`${tag} 已经公开、但没带齐文件（缺或没上传完：${d.bad.join(', ')}）：按维护者的选择，已公开的版本一律不改，什么都没写；等 main 上有新提交，下一次运行会发一个更高的版本盖过它`);
+  }
   if (d.action === 'skip') {
     console.log(`⏭ 不发 ${version}：${d.why}`);
   } else if (d.action === 'done') {
@@ -445,17 +454,9 @@ function main() {
         rmSync(bodyDir, { recursive: true, force: true });
       }
     } else {
-      // Filling in an existing release replaces every file from this build: the files depend on each
-      // other (latest.json carries each package's signature), so a file from this build next to one
-      // from an earlier build would not verify. A release apps can see is hidden first (a draft is
-      // invisible to them): a failure part-way leaves a hidden draft — the apps keep the previous
-      // build — never a public release with a missing or mismatched file. The next run fills it in.
-      if (!d.draft) {
-        gh(['release', 'edit', tag, '--repo', repo, '--draft=true']);
-        const hidden = readReleases(repo).filter((r) => r?.tag_name === tag);
-        if (hidden.length !== 1 || hidden[0].draft !== true) throw new Error(`${tag} 没能先改回草稿：不替换它的文件`);
-        console.log(`${tag} 已先改回草稿（装着的 App 暂时看不到它），换上这次构建的全部文件后再发布`);
-      }
+      // Filling in a draft of this version (never public: installed apps cannot see it) replaces every
+      // file from this build: the files depend on each other (latest.json carries each package's
+      // signature), so a file from this build next to one from an earlier build would not verify.
       gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
     }
     gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--prerelease', '--latest=false']);

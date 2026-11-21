@@ -256,8 +256,9 @@ def client_nightly_hint(needs):
     v = os.environ.get("CLIENT_DEV_VERSION", "").strip()
     line = os.environ.get("CLIENT_DEV_CHECK", "").strip()
     rc = os.environ.get("CLIENT_DEV_CHECK_RC", "").strip()
-    retry = ("下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）会重新构建；"
-             "之后没有新的客户端改动也会照常重试，因为这一版还没有完整发出。")
+    retry = ("这一版还没公开时，下一晚（或在 Actions 页手动运行 Client 工作流、在 main 上勾「发开发版」）"
+             "会重新构建，没有新的客户端改动也照常重试；已经公开、只是没带齐文件时，已公开的版本一律不改，"
+             "等 main 上有新提交，下一次运行发一个更高的版本盖过它。")
     manual = (f"在本仓库的 `client/` 目录跑只读核对 `node scripts/dev-release.mjs --check {v or '<版本号>'}`"
               "（和发布、每晚判断同一条规则）：要带齐并上传完六个文件——Apple 芯片的 `-arm64.dmg`、"
               "`-arm64.app.tar.gz` 及其 `.sig`，Windows 的 `-windows-x64.exe` 及其 `.sig`，`latest.json`"

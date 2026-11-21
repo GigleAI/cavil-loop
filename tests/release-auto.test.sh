@@ -1580,11 +1580,14 @@ cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=schedule GH_FAIL_API=1
 check "publishing run, the release list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
 cbuild '[]' TAG= PUBLISH=true EVENT=schedule SHA=main
 check "publishing run, no full commit to compare → the step fails" "$([ "$RC" != 0 ] && echo red):$(cout build)" "red:"
+# a public build that is not complete is never changed (PR #630 Q1 = B): on its own commit nothing
+# is built; on any later commit a higher version comes out over it, client change or not
 for gone in -windows-x64.exe latest.json; do
     cbuild "$(devrel_without 9 "$C4" "$gone")" TAG= PUBLISH=true EVENT=schedule
-    check "publishing run, the commit already published but without its $gone → build (review round 1 #2)" "$(build_line)" "0:true:true"
+    check "publishing run, the commit already published but without its $gone → nothing built (the public build is not changed)" "$(build_line)" "0:false:false"
+    has "已公开的版本一律不改" "$(cat "$TMP/c-out")" "… says why in the log"
     cbuild "$(devrel_without 9 "$C2" "$gone")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
-    check "… and after daemon-only commits too" "$(build_line)" "0:true:true"
+    check "… after daemon-only commits → build (a higher version over it)" "$(build_line)" "0:true:true"
 done
 # review round 4 #9: a build made and then hidden again (the publish step turned it back into a draft
 # to fill it in and could not finish): its tag is there, its release page is not public — the
@@ -1602,7 +1605,9 @@ check "… the tag list cannot be read → build (never a lost night)" "$(build_
 printf '[]' > "$TMP/c-devtags.json"
 STARTER="$(devrel 9 "$C4" | python3 -c 'import json,sys; d=json.load(sys.stdin); [a.update(state="starter", size=0) for a in d[0]["assets"] if a["name"].endswith("-windows-x64.exe")]; print(json.dumps(d))')"
 cbuild "$STARTER" TAG= PUBLISH=true EVENT=schedule
-check "publishing run, the commit already published but its Windows installer only a placeholder (starter, size 0) → build (review round 2 #8)" "$(build_line)" "0:true:true"
+check "publishing run, the commit already published but its Windows installer only a placeholder (starter, size 0) → nothing built (not complete, and not changed)" "$(build_line)" "0:false:false"
+cbuild "$STARTER" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true
+check "… forced → built and checked (the publish step then refuses to change it)" "$(build_line)" "0:true:true"
 
 echo "-- docs: checking whether a build is complete — the command as written, both languages (review round 2 #6)"
 for f in operations.md operations.zh.md; do

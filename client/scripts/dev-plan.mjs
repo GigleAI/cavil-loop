@@ -12,16 +12,19 @@
 //     none, or no full commit recorded                      → build ("nothing to compare with")
 //     not carrying every file a build carries, uploaded
 //     (`devFiles` + `buildState`, the publish step's own
-//     verdict): incomplete, or a file it cannot judge      → build (the publish step fills it in, or
-//                                                            refuses while a file cannot be judged)
+//     verdict): incomplete, or a file it cannot judge —
+//       on this very commit                                 → no build, unless forced (a public build
+//                                                            is never changed — PR #630 Q1 = B — and
+//                                                            the same commit has the same version)
+//       on any other commit                                 → build (a higher version over it)
 //     the same commit as this run's                         → no build, unless forced
 //     another commit, those paths differ (git diff)         → build
 //     another commit, those paths identical                 → no build, unless forced
 //     git cannot tell (the commit is not in this clone, …)  → build ("can't tell")
 //   the release list cannot be read                         → build ("can't tell")
 //   a development build of a higher version than the latest published one that is not public — a
-//   tag with no published release (a public build the publish step hid to fill it in, then could
-//   not finish: GitHub#628 review round 4), or a draft when this token can see drafts
+//   tag with no published release (a build someone turned back into a draft, or a clean-up cut
+//   off), or a draft when this token can see drafts
 //                                                            → build (the publish step finishes it, or
 //                                                              publishes a newer version over it)
 //   the tag list cannot be read                             → build ("can't tell")
@@ -128,9 +131,15 @@ export function plan({ latest, head, force, changed }) {
   if (!latest || latest.none) return { build: true, why: '还没有发布过开发版：照常构建' };
   if (!latest.sha) return { build: true, why: `上一个开发版 ${latest.tag} 没记下完整的提交号：照常构建` };
   if (latest.complete !== true) {
-    return latest.state === 'unknown'
-      ? { build: true, why: `读不出上一个开发版 ${latest.tag} 的文件是否已上传完成：照常构建，发布那一步再核对，仍读不出就什么都不写` }
-      : { build: true, why: `上一个开发版 ${latest.tag} 没带齐文件（Mac、Windows 的包、签名或更新清单缺了或没上传完）：照常构建，发布那一步把它补齐或发新版` };
+    // a public build is never changed (PR #630 Q1 = B): on its own commit nothing can be put out;
+    // on any later commit a higher version comes out over it, client change or not
+    const what = latest.state === 'unknown' ? '读不出文件是否已上传完成' : '没带齐文件（Mac、Windows 的包、签名或更新清单缺了或没上传完）';
+    if (latest.sha === head) {
+      return force
+        ? { build: true, why: `上一个开发版 ${latest.tag} ${what}，就是这个提交；勾了「客户端没改动也出」：照样构建检查，发布那一步不改动已公开的版本，会报失败、什么都不写` }
+        : { build: false, why: `上一个开发版 ${latest.tag} ${what}，就是这个提交：已公开的版本一律不改，等 main 上有新提交再发一个更高的版本；这次不构建、不发` };
+    }
+    return { build: true, why: `上一个开发版 ${latest.tag} ${what}：这次发一个更高的版本盖过它（已公开的那一版不改动）` };
   }
   const last = `上一个开发版 ${latest.tag}（${latest.sha.slice(0, 7)}）`;
   if (latest.sha === head) {

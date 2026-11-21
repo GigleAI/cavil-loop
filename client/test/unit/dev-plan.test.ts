@@ -142,32 +142,38 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     expect(forced.why).toContain('已经发过');
   });
 
-  it('the last build is published but not complete → builds, on the same commit and after daemon-only commits; complete → skips (review round 1 #2)', () => {
+  // PR #630 Q1 = B: a public build is never changed. Not complete on its own commit → nothing to put
+  // out (forced: built and checked; the publish step refuses); on any later commit → a higher version
+  it('the last build is published but not complete: on its own commit → no build (forced → build); after any later commit → build; complete → skips', () => {
     const r = repo();
     const head = r.commit('client/app.txt');
     const tag = 'client/v0.5.3-dev.2';
-    for (const gone of [['-windows-x64.exe'], ['latest.json'], ['-arm64.app.tar.gz.sig'], ['-windows-x64.exe', '-windows-x64.exe.sig', 'latest.json']]) {
-      const got = run(r, [without(tag, head, ...gone)], ['--sha', head]);
-      expect(got, gone.join(',')).toMatchObject({ code: 0, build: 'true' });
-      expect(got.why).toContain('没带齐文件');
+    const later = r.commit('scripts/daemon.sh'); // main moved on with a daemon-only commit
+    const shapes: [string, unknown][] = [
+      ...[['-windows-x64.exe'], ['latest.json'], ['-arm64.app.tar.gz.sig'], ['-windows-x64.exe', '-windows-x64.exe.sig', 'latest.json']].map((g) => [g.join(','), without(tag, head, ...g)] as [string, unknown]),
+      // an asset of the right name that never finished uploading, or with no state (review round 2 #8)
+      ...[{ state: 'starter', size: 0 }, {}, { state: 'uploaded', size: 0 }].map((bad) => {
+        const r2 = rel(tag, head);
+        return [JSON.stringify(bad), { ...r2, assets: r2.assets.map((a) => (a.name.endsWith('-windows-x64.exe') ? { name: a.name, ...bad } : a)) }] as [string, unknown];
+      }),
+      ['no assets at all', rel(tag, head, { assets: [] })],
+    ];
+    for (const [name, rl] of shapes) {
+      const same = run(r, [rl], ['--sha', head]);
+      expect(same, name).toMatchObject({ code: 0, build: 'false' });
+      expect(same.why, name).toContain('已公开的版本一律不改');
+      expect(run(r, [rl], ['--sha', head, '--force']).build, name).toBe('true');
+      const next = run(r, [rl], ['--sha', later]);
+      expect(next, name).toMatchObject({ code: 0, build: 'true' });
+      expect(next.why, name).toContain('更高的版本');
     }
-    // an asset of the right name that never finished uploading, or with no state: not there (review round 2 #8)
-    for (const bad of [{ state: 'starter', size: 0 }, {}, { state: 'uploaded', size: 0 }]) {
-      const r2 = rel(tag, head);
-      const assets = r2.assets.map((a) => (a.name.endsWith('-windows-x64.exe') ? { name: a.name, ...bad } : a));
-      expect(run(r, [{ ...r2, assets }], ['--sha', head]).build, JSON.stringify(bad)).toBe('true');
-    }
-    // a file whose upload state cannot be judged: built, and said so
+    // a file whose upload state cannot be judged: said so
     const r3 = rel(tag, head);
-    const noState = run(r, [{ ...r3, assets: r3.assets.map((a) => (a.name.endsWith('latest.json') ? { name: a.name, size: 10 } : a)) }], ['--sha', head]);
+    const noState = run(r, [{ ...r3, assets: r3.assets.map((a) => (a.name.endsWith('latest.json') ? { name: a.name, size: 10 } : a)) }], ['--sha', later]);
     expect(noState.build).toBe('true');
     expect(noState.why).toContain('读不出');
-    // no assets at all (the review's example)
-    expect(run(r, [rel(tag, head, { assets: [] })], ['--sha', head]).build).toBe('true');
+    // complete: same commit or daemon-only commits since → nothing to do
     expect(run(r, [rel(tag, head)], ['--sha', head]).build).toBe('false');
-    // main moved on with a daemon-only commit
-    const later = r.commit('scripts/daemon.sh');
-    expect(run(r, [without(tag, head, '-windows-x64.exe')], ['--sha', later]).build).toBe('true');
     expect(run(r, [rel(tag, head)], ['--sha', later]).build).toBe('false');
   });
 
@@ -235,15 +241,18 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     expect(plan({ latest, head: 'b'.repeat(40), force: true, changed: false }).build).toBe(true);
     expect(plan({ latest, head: 'b'.repeat(40), force: false, changed: null }).build).toBe(true);
     expect(plan({ latest, head: 'a'.repeat(40), force: false, changed: () => { throw new Error('not asked'); } }).build).toBe(false);
-    expect(plan({ latest: { ...latest, complete: false }, head: 'a'.repeat(40), force: false, changed: false }).build).toBe(true);
+    expect(plan({ latest: { ...latest, complete: false }, head: 'a'.repeat(40), force: false, changed: false }).build).toBe(false);
+    expect(plan({ latest: { ...latest, complete: false }, head: 'a'.repeat(40), force: true, changed: false }).build).toBe(true);
+    expect(plan({ latest: { ...latest, complete: false }, head: 'b'.repeat(40), force: false, changed: false }).build).toBe(true);
   });
 });
 
-// Review round 4 #9, as one lifecycle over several nights: the nightly plan (read-only token: drafts
-// are not listed) and the publish step (a token that can write) run, as the workflow runs them,
-// against one stateful fake GitHub. The previous build stays public and complete the whole time.
-describe('a hidden half-filled build is finished on a later night, the previous build public throughout (GitHub#628 review round 4)', () => {
-  it('forced build of a daemon-only commit → one of its files breaks → the fill is cut off while hidden → the next plain night finishes it → the night after builds nothing', () => {
+// Review rounds 4–5 #9 under the maintainer's choice (PR #630 Q1 = B: a public build is never changed),
+// as one lifecycle over several nights: the nightly plan (read-only token: drafts are not listed) and
+// the publish step (a token that can write) run, as the workflow runs them, against one stateful fake
+// GitHub. The previous build stays public and complete the whole time.
+describe('a public build that broke is never changed; the next commit puts out a higher version over it (GitHub#628, PR #630 Q1 = B)', () => {
+  it('forced build of a daemon-only commit → one of its files breaks → nights on that commit write nothing → the next commit publishes a higher version, the broken one untouched', () => {
     const r = repo();
     const a = r.commit('client/app.txt');
     const b = r.commit('scripts/daemon.sh'); // main moves on with a daemon-only commit
@@ -311,43 +320,35 @@ describe('a hidden half-filled build is finished on a later night, the previous 
       const y = w.releases.find((x: any) => x.tag_name === tag(Y));
       y.assets = y.assets.map((x: any) => (x.name.endsWith('-windows-x64.exe') ? { name: x.name, state: 'starter', size: 0 } : x));
     });
+    const brokenY = JSON.stringify(rel(Y));
 
-    // night 2: the plan sees Y incomplete → build; the fill hides Y first and is cut off part-way
+    // night 2, same commit: nothing to build — the public Y is not changed
     const n2 = plan(b);
-    expect(n2.build).toBe('true');
-    expect(n2.why).toContain('没带齐文件');
-    edit((w) => w.fail.push('upload-partial'));
-    expect(publish(Y, b).code).toBe(1);
-    expect(rel(Y).draft).toBe(true); // hidden: no app sees a mismatched Y
-    xStays('while Y is hidden');
-    const afterNight2 = readFileSync(state, 'utf8');
+    expect(n2.build, n2.why).toBe('false');
+    expect(n2.why).toContain('已公开的版本一律不改');
+    // forced anyway: built, and the publish step refuses — no write at all, Y exactly as it was
+    expect(plan(b, true).build).toBe('true');
+    const writesBefore = world().calls.filter((c: string[]) => c[0] === 'release').length;
+    const p2 = publish(Y, b);
+    expect(p2.code).toBe(1);
+    expect(p2.out).toContain('已公开的版本一律不改');
+    expect(world().calls.filter((c: string[]) => c[0] === 'release').length).toBe(writesBefore);
+    expect(JSON.stringify(rel(Y))).toBe(brokenY);
+    xStays('while Y is broken');
 
-    // night 3: no client change, not forced. The read-only plan cannot see the draft, only Y's tag → build
-    const n3 = plan(b);
-    expect(n3.build, n3.why).toBe('true');
-    expect(n3.why).toContain(tag(Y));
-    // the publish step (it can see drafts) finishes Y: every file of this build, then public again
-    const p3 = publish(Y, b);
-    expect(p3.code, p3.out).toBe(0);
-    expect(complete(Y)).toBe(true);
-    xStays('after Y was finished');
-
-    // night 4: Y is the newest build, complete, of this very commit → nothing to do
-    expect(plan(b).build).toBe('false');
-
-    // the other way night 3 can go: main moved on (another daemon-only commit) → a newer version Z is
-    // published over the hidden Y, and the clean-up removes Y's draft with its tag
-    writeFileSync(state, afterNight2);
+    // the next commit (daemon-only, no client change): a higher version Z comes out over Y
     const c = r.commit('scripts/daemon.sh');
     const Z = '0.5.3-dev.12';
-    const m3 = plan(c);
-    expect(m3.build, m3.why).toBe('true');
-    const pz = publish(Z, c);
-    expect(pz.code, pz.out).toBe(0);
+    const n3 = plan(c);
+    expect(n3.build, n3.why).toBe('true');
+    expect(n3.why).toContain('更高的版本');
+    const p3 = publish(Z, c);
+    expect(p3.code, p3.out).toBe(0);
     expect(complete(Z)).toBe(true);
-    expect(rel(Y)).toBeUndefined();
-    expect(world().tags).not.toContain(tag(Y));
-    xStays('after Z came out over the hidden Y');
+    expect(JSON.stringify(rel(Y))).toBe(brokenY); // the broken public one is never touched
+    xStays('after Z came out');
+
+    // and the night after: Z is complete, of this very commit → nothing to do
     expect(plan(c).build).toBe('false');
   });
 });

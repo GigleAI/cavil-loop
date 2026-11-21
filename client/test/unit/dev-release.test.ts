@@ -125,19 +125,32 @@ describe('publishing a development build (GitHub#215)', () => {
       ['a failed-upload placeholder: state starter, size 0 (round 2)', { state: 'starter', size: 0 }],
       ['uploaded with size 0', { state: 'uploaded', size: 0 }],
     ];
-    it.each(shapes)('%s → hidden first, every file of this build put in, published again', (_, x) => {
+    // PR #630 Q1 = B (the maintainer's choice): a public release is never changed
+    it.each(shapes)('%s → the public release is left exactly as it is, nothing written, the run fails saying so (Q1 = B)', (_, x) => {
       const w = world([withExe(x), devRel('0.5.1-dev.380')]);
       w.build(v);
+      const before = JSON.stringify(w.read().releases);
       const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('已公开的版本一律不改');
+      expect(r.out).toContain(exe.endsWith('.exe') ? 'windows-x64.exe' : exe);
+      const s = w.read();
+      expect(s.calls.some((c) => c[0] === 'api')).toBe(true); // it did read the list
+      expect(writeArgs(s.calls)).toEqual([]);
+      expect(JSON.stringify(s.releases)).toBe(before);
+      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
+    });
+    it('a public build left incomplete, then the next commit → its higher version comes out complete; the incomplete one is not touched (Q1 = B)', () => {
+      const w = world([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')]);
+      const next = '0.5.1-dev.388';
+      w.build(next);
+      const before = JSON.stringify(w.read().releases.find((r) => r.tag_name === tag));
+      const r = w.run(next);
       expect(r.code, r.out).toBe(0);
       const s = w.read();
-      expect(writeArgs(s.calls)).toEqual(['edit --draft=true', 'upload', 'edit --draft=false']);
-      // every one of the six files from this build, not only the broken one
-      const up = s.calls.find((c) => c[0] === 'release' && c[1] === 'upload')!;
-      expect(up).toEqual(expect.arrayContaining([...files(v).filter((f) => f !== 'latest.json'), '--clobber']));
-      expect(published(s, tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
-      expect(published(s, tag)?.assets.every((a) => a.state === 'uploaded' && (a.size ?? 0) > 0)).toBe(true);
-      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
+      expect(published(s, `client/v${next}`)?.assets.map((a) => a.name).sort()).toEqual(files(next).sort());
+      expect(JSON.stringify(s.releases.find((x) => x.tag_name === tag))).toBe(before);
+      expect(writeArgs(s.calls).filter((c) => c.startsWith('edit --draft=true'))).toEqual([]);
     });
     it.each([
       ['no state at all (round 3)', { size: 10 }],
@@ -233,24 +246,6 @@ describe('publishing a development build (GitHub#215)', () => {
       w.build(v);
       expect(w.run(v).code).toBe(0);
       expect(writeArgs(w.read().calls)).toEqual([]);
-    });
-    it('the upload fails part-way after it was hidden → still hidden (apps keep the previous build), never public with a file missing; the next run finishes it', () => {
-      const w = world([withExe({ state: 'starter', size: 0 }), devRel('0.5.1-dev.380')], ['upload-partial']);
-      w.build(v);
-      expect(w.run(v).code).toBe(1);
-      const s = w.read();
-      expect(s.releases.find((r) => r.tag_name === tag)?.draft).toBe(true);
-      expect(published(s, tag)).toBeUndefined();
-      expect(published(s, 'client/v0.5.1-dev.380')).toBeTruthy();
-      const again = w.run(v);
-      expect(again.code, again.out).toBe(0);
-      expect(published(w.read(), tag)?.assets.map((a) => a.name).sort()).toEqual(files(v).sort());
-    });
-    it('hiding it did not take (GitHub answered ok, still public) → no file replaced', () => {
-      const w = world([withExe({ state: 'starter', size: 0 })], ['edit-noop']);
-      w.build(v);
-      expect(w.run(v).code).toBe(1);
-      expect(writeArgs(w.read().calls)).toEqual(['edit --draft=true']);
     });
   });
 
