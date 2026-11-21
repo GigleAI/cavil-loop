@@ -116,9 +116,11 @@ EOF
 "$py" "$work/server.py" "$(win "$work/srv")" "$(win "$work/served.log")" "$port" &
 srv_pid=$!
 for _ in $(seq 1 50); do curl -fsS "$base/api/repos/GigleAI/cavil-loop/releases" >/dev/null 2>&1 && break; sleep 0.2; done
-served_whole() {  # served_whole <path> → the stand-in sent that file completely at least once
+served_whole() {  # served_whole <path without its leading /> → the stand-in sent that file completely at least once
+  # (Git Bash would turn an argument starting with / into a Windows path, so the / is put back here)
   "$py" - "$work/served.log" "$1" <<'EOF'
 import os, sys
+sys.argv[2] = "/" + sys.argv[2]
 lines = open(sys.argv[1]).read().split("\n") if os.path.exists(sys.argv[1]) else []
 for line in filter(None, lines):
     p, sent, size = line.split()
@@ -249,7 +251,7 @@ echo "updater: $st"
 "$py" -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s["phase"]=="ready" and s["version"]==sys.argv[2] else 1)' "$st" "$new" \
   || { echo "❌ the update did not end ready for $new"; exit 1; }
 ever_phase "$work/rec-good.jsonl" downloading || { echo "❌ never reported downloading"; exit 1; }
-served_whole "/web/GigleAI/cavil-loop/releases/download/$tag/setup.exe" || { echo "❌ the stand-in never served the whole installer"; cat "$work/served.log" || true; exit 1; }
+served_whole "web/GigleAI/cavil-loop/releases/download/$tag/setup.exe" || { echo "❌ the stand-in never served the whole installer"; cat "$work/served.log" || true; exit 1; }
 
 echo "== 2. restart, as a person asks for it: the waiting installer puts the new version in place"
 echo restart >> "$work/rec-good.jsonl.control"
@@ -276,7 +278,7 @@ stop_apps
 sleep 2
 "$py" -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(0 if s["phase"]=="idle" and not s["last"]["ok"] and "签名校验失败" in s["last"]["message"] else 1)' "$st" \
   || { echo "❌ a tampered installer was not reported as a signature failure"; exit 1; }
-served_whole "/web/GigleAI/cavil-loop/releases/download/$tag/setup.exe" || { echo "❌ the tampered installer was never served whole: the refusal did not come from the app's own check"; exit 1; }
+served_whole "web/GigleAI/cavil-loop/releases/download/$tag/setup.exe" || { echo "❌ the tampered installer was never served whole: the refusal did not come from the app's own check"; exit 1; }
 after="$(tree_sum)"
 [ "$before" = "$after" ] || { echo "❌ the installed app changed after a refused installer"; exit 1; }
 [ "$(sum "$installed")" = "$old_sum" ] || { echo "❌ the installed program is no longer the old version"; exit 1; }
