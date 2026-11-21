@@ -78,7 +78,61 @@ worker 每次拿到的提示词由 daemon 现拼：工具自带的模板 → 通
 
 在同一目录放一份同名的 `<模板名>.template.md`，就整份替换工具自带的那份。代价是从此收不到工具模板的任何更新，而且不会有任何提示。只有项目的流程**在结构上**不同（阶段不一样、标签含义不一样）时才这样做；整份覆写的模板后面照样会追加增量和按开关的段落。
 
-模板里能用的占位符（`${ISSUE}`、`${WORKTREE}`、`${PREVIEW_URL_HOST}` 等）见运维手册的 [Prompt 模板](operations.zh.md#prompt-模板) 一节。
+模板里能用的占位符（`${ISSUE}`、`${WORKTREE}`、`${PREVIEW_URL_HOST}` 等）见下方[占位符](#占位符)一节。
+
+</details>
+
+### 模板和增量从哪儿找
+
+工具模板和项目增量各自独立查找，都从 `origin/<主干>` 直读（主 checkout 落后也拿得到最新版），都放在项目的 `.agents/skills/cavil-loop/prompts/` 下。优先写增量，别整份覆写模板。
+
+<details><summary>细节：查找规则、两个都放、为什么增量比覆写好</summary>
+
+| | 文件名 | 找不到时 |
+|---|---|---|
+| **模板**（通用工作流） | `<name>.template.md` | 回落到 `<skill>/prompts/<name>.template.md` |
+| **增量**（项目特有） | `<name>.extra.md` | 没有就只用模板 |
+
+- 改名前建的项目用 `.agents/skills/coding-agent-work-loop/prompts/`，更老的 `.agents/skills/coding-agent-workflow/prompts/` 和 `.coding-agent/prompts/` 也仍兼容；同时存在时新名优先。
+- 两个都放也行：项目的 `.template.md` 当模板，`.extra.md` 仍追加在后。
+
+  ```
+  project/.agents/skills/cavil-loop/prompts/
+  ├── new-issue.extra.md      ← 推荐：只写本项目特有的（测试链、目录约定、验收口径…）
+  └── pr-comment.template.md  ← 仅在结构上就不同时才整份覆写
+  ```
+
+- 整份覆写的模板从此拿不到工具模板的任何更新，且没有任何迹象：在一个真实项目的几份覆写里实测，跟工具模板相同的行只剩一半，工具后来加的规范（例如「拍板问题要讲清上下文」）一条都没进去。
+
+</details>
+
+### 占位符
+
+模板用 `sed` 渲染，派工时替换下面这些占位符。标签类占位符跟着项目自己配的标签名走，模板里不用写死。
+
+<details><summary>细节：全部占位符和渲染结果</summary>
+
+| 占位 | 含义 |
+|------|------|
+| `${ISSUE}` | issue 编号 |
+| `${PR}` | PR 编号（仅 pr-comment） |
+| `${REPO}` | 仓库 owner/repo |
+| `${TITLE}` | issue 标题（仅 new-issue） |
+| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-prissue-闭环关系worker-在设计阶段就决定)） |
+| `${WORKTREE}` | worktree 绝对路径 |
+| `${BRANCH}` | branch 全名 |
+| `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
+| `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label 名 |
+| `${LABEL_DESIGN_REVIEW_OR_HUMAN}` | **设计方案 / 修订方案写完翻到哪**：开了方案复审（`REVIEW_DESIGN_PROPOSALS=true` 且配了复审标签）时 = `pending/review`，否则 = `pending/human`。只用在方案出口；澄清答复、提问照旧写 `${LABEL_PENDING_HUMAN}` |
+| `${DESIGN_REVIEW_NOTE}` | 开了方案复审时是一句「复审先审方案、打回是改方案」的说明，否则为空，渲染结果不变 |
+| `${LABEL_REVIEW_OR_HUMAN}` | **产出后该翻到哪**：开了复审环节时 = `pending/review`，没开时自动变成 `pending/human`。模板一律用它，别直接写 `${LABEL_PENDING_REVIEW}`——没配置时那个渲染成空串，活会丢掉 `doing/agent` 又拿不到任何 pending 标签，从看板上彻底消失 |
+| `${PREVIEW_URL_HOST}` | 本机对外提供 PR 预览的主机名。**别在模板里硬写主机名**——同一份模板会在所有盯这个仓库的机器上跑，写死的主机会把审阅者指到一台根本没有这些文件的机器 |
+| `${REVIEW_ASSET_BASE_URL}` | review 截图的公网 base URL，取自项目配的出图地址（见[哪些项目的评论能出图](operations.zh.md#哪些项目的评论能出图)）。同理：截图落在哪台机器上，URL 就得指哪台。工具自带的三份 worker 模板和复审模板也用它判断「本项目有没有配出图地址」：为空时，界面 / 样式选择题改用文字描述候选差异 |
+| `${LABEL_PENDING_AGENT_DEFAULT}` | 默认的 `pending/agent`。review 模板打回时必须用它——`${LABEL_PENDING_AGENT}` 是**触发**标签，在复审环节里拿它打回等于打回自己，死循环 |
+| `${OUTPUT_LANGUAGE}` | ISO 639-1 代码，控制 worker 写回 GitHub 的语言（从 `cavil-loop.config` 读，默认 `en`） |
+| `${COMMENT_FOOTER_CMD}` | 生成评论用量 footer 的完整命令（已带 agent、用量驱动、项目配置），模板只需再补 `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`。输出整段 footer，原样接在评论末尾；加 `--body <文件>` 时改为写出 `<文件>.footer`（正文 + 空行 + footer；生成失败时末尾是一句固定的「用量 footer 生成失败」）。项目测试耗时的接口见配置样例的 `COMMENT_FOOTER_EXTRA_CMD` |
+| `${CAVIL_STEP_DIR}` | 模板里 `cavil_step` 运行的步骤脚本所在目录：`flip-label.sh`、`conflict-check.sh`、`pr-feedback.sh`。托管安装下三个长期入口都在时是 `entrypoints/`，否则是本次发布的 `scripts/`。每个脚本给出一个经过核对的结果，由 `cavil_step` 打印；怎么读见工具自带的模板 |
+| `${CONCURRENT_WORK}` | 其他进行中条目的清单，每条一行：一句改动摘要和涉及的目录，整份不超过 `CONCURRENT_WORK_MAX_BYTES` 字节。它在其余占位符**全部渲染完之后**才填入，而且只认独占一行的写法——清单是多行的，里面的标题是别人写的，不能过那一遍 `sed`。`ENABLE_CONCURRENT_WORK_HINT` 开着时，工具会把自带的一段（`prompts/concurrent-work.md`：清单 +「有重叠时留意冲突、不写进评论」的规则）追加到三份 worker 模板末尾，项目模板不用自己写。开关关着而项目模板里写了它 → 渲染成「没有开启」，不读任何东西。列表读不到时渲染成「未能读取」，绝不写成「没有」 |
 
 </details>
 
@@ -137,7 +191,7 @@ daemon 扫到新合并的 PR 就清理对应条目（`AUTO_CLEANUP_ON_MERGE`，�
 - **环境变量**：`ISSUE`、`WORKTREE`、`BRANCH`、`REPO`、`PROJECT_ROOT`（项目主 checkout 的目录）。
 - **路径**：相对路径按 `PROJECT_ROOT` 解析，跑的是主 checkout 里的那份；文件不存在时记一行日志、跳过。推荐路径：`CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"`。
 - **输出**：每行加 `[hook]` 前缀写进 `poll.log`。
-- **按 worktree 找该清的东西**：worker 起的会话名、端口未必按约定走。按「cwd 在 `$WORKTREE` 下的进程」和它们实际监听的端口去找，比按名字和公式猜可靠；按 cwd 杀进程前先核对 `$WORKTREE` 的形状、排除脚本自己和它的上级进程。完整做法见运维手册的 [Cleanup hook](operations.zh.md#cleanup-hookcleanup_hook) 一节。
+- **按 worktree 找该清的东西**：worker 起的会话名、端口未必按约定走。按「cwd 在 `$WORKTREE` 下的进程」和它们实际监听的端口去找，比按名字和公式猜可靠；按 cwd 杀进程前先核对 `$WORKTREE` 的形状、排除脚本自己和它的上级进程。完整做法见下方[按 worktree 找该清的东西](#按-worktree-找该清的东西)一节。
 
 最小示例——关掉这个条目额外起的 tmux 会话（会话名前缀换成项目自己的；不带后缀的 worker 会话留给清理脚本自己关）：
 
@@ -152,6 +206,39 @@ prefix="myproj-issue${ISSUE}-"   # keep the trailing "-": issue 69 must not matc
 done
 ```
 <!-- orchestration-example:cleanup-hook:end -->
+
+</details>
+
+### 按 worktree 找该清的东西
+
+别假设 worker 只会开约定的那一个会话、只占算得出的那一个端口：按 worktree 找该清的东西——按前缀找会话，按「cwd 在 `$WORKTREE` 下」找进程，端口取那些进程实际监听的。
+
+<details><summary>细节：为什么按名字和端口公式会漏</summary>
+
+典型的漏法：约定是 `<prefix>-issue<N>-server` + 端口 `4000+N`，而 worker 跑 e2e 时按需开了
+
+```
+<prefix>-issue695-e2e-be      PORT=5695
+<prefix>-issue695-e2e-noauth  PORT=5696     ← 注意是 5000+696，连号段公式都对不上
+```
+
+两个后端鉴权配置不同，本来就没法复用同一个预览 server。按约定清理的话一个都清不掉：worktree 删了、进程还活着，变成 cwd 显示 `(deleted)` 的孤儿，一挂好几天，端口和内存一直被占着。
+
+</details>
+
+<details><summary>细节：建议的清理顺序和三道闸</summary>
+
+**名字约定总会有人不遵守，cwd 不会骗人。** 建议的顺序：
+
+1. 杀所有 `<prefix>-issue<N>-*` 前缀的辅助 session（末尾那个 `-` 不能省，否则 `N=69` 会误伤 `<prefix>-issue695-server`），而不是只杀写死的那一个名字
+2. 杀所有 cwd 落在 `$WORKTREE` 下的残留进程（`readlink /proc/<pid>/cwd`；worktree 已删时路径会带 ` (deleted)` 后缀，要一并认）
+3. 端口从上一步那些进程**实际监听**的端口收集，而不是用公式算
+
+按 cwd 批量杀进程有事故风险，三道闸建议照抄：
+
+- **校验 `$WORKTREE` 形状**（例如必须匹配 `.../worktree/<project>/issue-<N>` 且编号与 `$ISSUE` 一致），不符就只做按名字的清理。防 `$WORKTREE` 为空或为 `/` 时扫掉整机进程
+- **排除自己 + 整条祖先链**，否则 hook 会把自己和 `cleanup-issue.sh` 一起杀了
+- **别碰裸 session `<prefix>-issue<N>`**，那个归 `cleanup-issue.sh`，保持分工
 
 </details>
 
@@ -232,7 +319,7 @@ CODING_AGENT_CONFIG="$PWD/cavil-loop.config" FORCE=1 bash "$HOME/.agents/skills/
 <details><summary>细节：三个地方</summary>
 
 - **测试链**：在 `new-issue.extra.md`、`issue-comment.extra.md`、`pr-comment.extra.md` 里写本项目「交出去之前必须跑过什么」：类型检查、单元测试、端到端测试、lint，以及什么时候只跑相关的一部分。
-- **重测试排队**：`HEAVY_TEST_COMMANDS` 每行一条算「重测试」的命令（例如整套测试）。设了之后，worker 的提示词多一段，要求这些命令通过排队包装命令跑：同一个系统账号同一时间只放行一套，其余排队；条目清理时会停掉它还在排队或在跑的那套。详见运维手册的[重测试排队](operations.zh.md#重测试排队可选默认关闭github343)一节。
+- **重测试排队**：`HEAVY_TEST_COMMANDS` 每行一条算「重测试」的命令（例如整套测试）。设了之后，worker 的提示词多一段，要求这些命令通过排队包装命令跑：同一个系统账号同一时间只放行一套，其余排队；条目清理时会停掉它还在排队或在跑的那套。详见运维手册的[重测试排队](operations.zh.md#重测试排队可选默认关闭)一节。
 - **测试耗时进 footer**：`COMMENT_FOOTER_EXTRA_CMD` 是一条在 worktree 里跑的命令（30 秒上限），第一行输出 `test_secs=<秒>` 或 `test_secs=unknown`，评论 footer 的总览就会拆出测试耗时。它故意放在本机配置而不是仓库里：仓库里的脚本任何 PR 都能改。写法见配置模板里这一项的注释。
 
 </details>

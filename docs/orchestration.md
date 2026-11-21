@@ -78,7 +78,61 @@ The daemon builds the worker's prompt fresh for every dispatch: the tool's templ
 
 A file named `<name>.template.md` in the same directory replaces the tool's template of that name entirely. The price: it never receives another update of the tool's template, and nothing tells you it fell behind. Do it only when the project's workflow differs *structurally* (different stages, different label meanings); the addition and the switch sections are still appended after a replaced template.
 
-The placeholders a template can use (`${ISSUE}`, `${WORKTREE}`, `${PREVIEW_URL_HOST}` …) are listed in [Prompt templates](operations.md#prompt-templates) in the operations guide.
+The placeholders a template can use (`${ISSUE}`, `${WORKTREE}`, `${PREVIEW_URL_HOST}` …) are listed under [Placeholders](#placeholders) below.
+
+</details>
+
+### Where the template and the addition are found
+
+The tool's template and the project's addition are looked up independently, both read from `origin/<base branch>` (so a stale main checkout still yields the newest version), both under the project's `.agents/skills/cavil-loop/prompts/`. Prefer an addition over replacing a whole template.
+
+<details><summary>Details: lookup, both files at once, and why an addition beats a replacement</summary>
+
+| | Filename | If absent |
+|---|---|---|
+| **template** (generic workflow) | `<name>.template.md` | falls back to `<skill>/prompts/<name>.template.md` |
+| **addition** (project-specific) | `<name>.extra.md` | the template is used alone |
+
+- Projects set up before the rename keep `.agents/skills/coding-agent-work-loop/prompts/`; the older `.agents/skills/coding-agent-workflow/prompts/` and `.coding-agent/prompts/` still work too. When several exist, the new name wins.
+- Having both is fine: the project's `.template.md` becomes the template and `.extra.md` is still appended.
+
+  ```
+  project/.agents/skills/cavil-loop/prompts/
+  ├── new-issue.extra.md      ← preferred: only what's specific (test chain, layout, acceptance)
+  └── pr-comment.template.md  ← full replacement, only for structural differences
+  ```
+
+- A replaced template silently stops receiving template updates: in replaced copies measured on a real project only half of the tool's lines survived, and rules the tool added later (how to write decisions the human must make) never reached them.
+
+</details>
+
+### Placeholders
+
+Templates are rendered with `sed`; these placeholders are replaced at dispatch. Label placeholders follow the project's own label names, so a template never hard-codes them.
+
+<details><summary>Details: every placeholder and what it renders to</summary>
+
+| Placeholder | Meaning |
+|-------------|---------|
+| `${ISSUE}` | issue number |
+| `${PR}` | PR number (pr-comment only) |
+| `${REPO}` | owner/repo |
+| `${TITLE}` | issue title (new-issue only) |
+| `${PARENT_ISSUE}` | parent issue number (`sub-issue.template.md` only — see [architecture.md → closure](architecture.md#prissue-closure-decided-at-design-time)) |
+| `${WORKTREE}` | absolute worktree path |
+| `${BRANCH}` | full branch name |
+| `${ISSUE_N}` | issue number derived from branch (pr-comment only) |
+| `${LABEL_PENDING_AGENT}` / `${LABEL_PENDING_HUMAN}` / `${LABEL_AGENT_DOING}` / `${LABEL_PENDING_PR}` | label names |
+| `${LABEL_DESIGN_REVIEW_OR_HUMAN}` | **where a design proposal / revised proposal goes**: `pending/review` with design review on (`REVIEW_DESIGN_PROPOSALS=true` and a review label configured), otherwise `pending/human`. Only for the proposal exits; clarifying answers and questions keep `${LABEL_PENDING_HUMAN}` |
+| `${DESIGN_REVIEW_NOTE}` | with design review on, a one-line note ("the reviewer checks the proposal first; a bounce means revise it"); otherwise empty, so the rendered prompt is unchanged |
+| `${LABEL_REVIEW_OR_HUMAN}` | **where output goes next**: `pending/review` when the review step is on, automatically `pending/human` when it is off. Always use this in templates rather than `${LABEL_PENDING_REVIEW}` — the latter renders empty when unconfigured, so the work loses `doing/agent` without gaining any pending label and vanishes from the board |
+| `${PREVIEW_URL_HOST}` | the host serving this machine's PR previews. Use it instead of hard-coding a hostname — the same template runs on every machine that polls the repo, and a baked-in host sends reviewers to a box that has none of the files |
+| `${REVIEW_ASSET_BASE_URL}` | public base URL for review screenshots, from the project's image address (see [Which projects show images in comments](operations.md#which-projects-show-images-in-comments)). Same reasoning: shots are written to the machine that took them, so the URL has to name that machine. The built-in worker templates and the review template also use it to tell whether the project has an image host: when empty, a UI / style choice is described in words instead of mock-up images |
+| `${LABEL_PENDING_AGENT_DEFAULT}` | the plain `pending/agent`. Review templates must bounce back to this — `${LABEL_PENDING_AGENT}` is the *triggering* label, so inside the review step it would bounce work back to the reviewer itself: an infinite loop |
+| `${OUTPUT_LANGUAGE}` | ISO 639-1 code controlling the language of GitHub-facing output (from `cavil-loop.config`, default `en`) |
+| `${COMMENT_FOOTER_CMD}` | full command that generates the comment usage footer (agent, usage driver and project config already filled in); templates only add `--start "${TASK_START_TS}" --wt "${WORK_NUM}"`. It prints the whole footer, appended to the comment as-is; with `--body <file>` it writes `<file>.footer` (the body, a blank line, the footer — or a fixed "footer could not be generated" line) instead. For the project test-time hook see `COMMENT_FOOTER_EXTRA_CMD` in the config example |
+| `${CAVIL_STEP_DIR}` | folder holding the step scripts the templates' `cavil_step` runs — `flip-label.sh`, `conflict-check.sh`, `pr-feedback.sh`. On a managed install the durable `entrypoints/` folder when all three entries are there, otherwise this release's `scripts/`. Each script reports one checked result that `cavil_step` prints; the built-in templates show how to read it |
+| `${CONCURRENT_WORK}` | the list of other items in progress, one line each with a one-sentence summary of the change and the directories it touches; the whole list is capped at `CONCURRENT_WORK_MAX_BYTES`. Filled in **after** every other placeholder, and only where the placeholder is a whole line by itself — the list is multi-line and carries titles other people wrote, so it never goes through the `sed` pass. With `ENABLE_CONCURRENT_WORK_HINT` on, the tool appends its own section (`prompts/concurrent-work.md`: the list plus the "mind any overlap, keep it out of comments" rule) to the three worker templates, so a project template does not need to write it. Written in a project template with the switch off, it renders as "not enabled" and nothing is read. Unreadable lists render as "could not read", never as "nothing else" |
 
 </details>
 
@@ -137,7 +191,7 @@ When the daemon sees a newly merged PR it cleans up the item (`AUTO_CLEANUP_ON_M
 - **Environment**: `ISSUE`, `WORKTREE`, `BRANCH`, `REPO`, `PROJECT_ROOT` (the project's main checkout).
 - **Path**: a relative path is resolved against `PROJECT_ROOT`, so the copy in the main checkout runs; a missing file is one log line and is skipped. Recommended path: `CLEANUP_HOOK=".agents/skills/cavil-loop/cleanup-hook.sh"`.
 - **Output**: every line goes to `poll.log` with a `[hook]` prefix.
-- **Find what to clean by worktree**: the session names and ports a worker used do not always follow the convention. Processes whose cwd is under `$WORKTREE`, and the ports they actually listen on, are more reliable than names and formulas; before killing by cwd, check the shape of `$WORKTREE` and leave out the script itself and its ancestors. The full approach is in [Cleanup hook](operations.md#cleanup-hook-cleanup_hook) in the operations guide.
+- **Find what to clean by worktree**: the session names and ports a worker used do not always follow the convention. Processes whose cwd is under `$WORKTREE`, and the ports they actually listen on, are more reliable than names and formulas; before killing by cwd, check the shape of `$WORKTREE` and leave out the script itself and its ancestors. The full approach is in [Find what to clean by worktree](#find-what-to-clean-by-worktree) below.
 
 Minimal example — stop the extra tmux sessions this item started (use the project's own session prefix; the worker session without a suffix is left to the cleanup script itself):
 
@@ -152,6 +206,39 @@ prefix="myproj-issue${ISSUE}-"   # keep the trailing "-": issue 69 must not matc
 done
 ```
 <!-- orchestration-example:cleanup-hook:end -->
+
+</details>
+
+### Find what to clean by worktree
+
+Do not assume a worker only opens the one session and binds the one port your convention names: find what to clean by the worktree — sessions by prefix, processes whose cwd is under `$WORKTREE`, and the ports those processes actually listen on.
+
+<details><summary>Details: why names and port formulas miss things</summary>
+
+A typical miss: the convention is `<prefix>-issue<N>-server` on port `4000+N`, but the worker spins up its own e2e rig:
+
+```
+<prefix>-issue695-e2e-be      PORT=5695
+<prefix>-issue695-e2e-noauth  PORT=5696     ← 5000+696; not even the same offset formula
+```
+
+Those two backends run different auth configs, so reusing a single preview server was never an option. A cleanup keyed on the convention catches none of them: the worktree is removed, the processes stay alive as orphans whose cwd reads `(deleted)` — for days — holding ports and memory the whole time.
+
+</details>
+
+<details><summary>Details: the recommended order and three guards</summary>
+
+**Naming conventions get broken; cwd does not lie.** Recommended order:
+
+1. Kill every session prefixed `<prefix>-issue<N>-` (keep the trailing `-`, or `N=69` will take out `<prefix>-issue695-server`) instead of one hardcoded name
+2. Kill every process whose cwd is under `$WORKTREE` (`readlink /proc/<pid>/cwd`; once the worktree is gone the path carries a ` (deleted)` suffix — match that too)
+3. Collect ports from what those processes are **actually listening on**, not from a formula
+
+Killing processes by cwd is risky enough to deserve three guards, worth copying verbatim:
+
+- **Validate the shape of `$WORKTREE`** (e.g. require `.../worktree/<project>/issue-<N>` with the number matching `$ISSUE`); fall back to name-based cleanup only if it does not match. This is what stops an empty or `/` value from sweeping the whole machine
+- **Exclude yourself and your entire ancestor chain**, or the hook kills itself along with `cleanup-issue.sh`
+- **Leave the bare `<prefix>-issue<N>` session alone** — that one belongs to `cleanup-issue.sh`; keep the division of labour
 
 </details>
 
@@ -232,7 +319,7 @@ The test chain goes into the prompt additions; when the full suite is heavy enou
 <details><summary>Details: three places</summary>
 
 - **Test chain**: in `new-issue.extra.md`, `issue-comment.extra.md` and `pr-comment.extra.md`, write what must have run before anything is handed over in this project: type check, unit tests, end-to-end tests, lint, and when running only the related part is enough.
-- **Heavy-test queue**: `HEAVY_TEST_COMMANDS` takes one command per line that counts as "heavy" (e.g. the full suite). With it set, the worker's prompt gains a section telling it to run those commands through the queue wrapper: one run at a time per system account, the rest wait; cleaning up an item stops its queued or running one. See [Heavy tests](operations.md#heavy-tests-one-at-a-time-optional-off-by-default-github343) in the operations guide.
+- **Heavy-test queue**: `HEAVY_TEST_COMMANDS` takes one command per line that counts as "heavy" (e.g. the full suite). With it set, the worker's prompt gains a section telling it to run those commands through the queue wrapper: one run at a time per system account, the rest wait; cleaning up an item stops its queued or running one. See [Heavy tests](operations.md#heavy-tests-one-at-a-time-optional-off-by-default) in the operations guide.
 - **Test time in the footer**: `COMMENT_FOOTER_EXTRA_CMD` is a command run in the worktree (30 s limit) whose first output line is `test_secs=<seconds>` or `test_secs=unknown`; the footer's summary line then shows test time separately. It deliberately lives in the local config rather than the repository: a script in the repository could be changed by any PR. The format is in that setting's comment in the config template.
 
 </details>

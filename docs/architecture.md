@@ -86,7 +86,7 @@ Review converges instead of digging deeper each round: the first round after the
 
 <details><summary>Details: what later rounds look at, what bounces</summary>
 
-The first review round after the last human action lists every problem it can find, numbered; later rounds only check that list item by item plus the fix itself — what changed between the commit the previous round reviewed and the current one, with whatever a plain merge of the base brought in subtracted (`scripts/review-scope.sh`; anything it cannot work out means a full review again). Suggestions (wording, naming, readability) never bounce; failed checks, conflicts, a broken hard rule, security and data loss always do. The reviewer gets a project's `REVIEW.md` in full, workers get a pointer to it. The full decision table: [operations](operations.md#review-converges-everything-in-round-one-then-only-the-fixes-github621).
+The first review round after the last human action lists every problem it can find, numbered; later rounds only check that list item by item plus the fix itself — what changed between the commit the previous round reviewed and the current one, with whatever a plain merge of the base brought in subtracted (`scripts/review-scope.sh`; anything it cannot work out means a full review again). Suggestions (wording, naming, readability) never bounce; failed checks, conflicts, a broken hard rule, security and data loss always do. The reviewer gets a project's `REVIEW.md` in full, workers get a pointer to it. The full decision table: [operations](operations.md#review-converges-everything-in-round-one-then-only-the-fixes).
 
 </details>
 
@@ -291,7 +291,7 @@ every dispatch entry of the same round.
 
 ## When an agent hits its usage limit
 
-Optional (`ENABLE_USAGE_LIMIT_PAUSE`). When a worker pane shows its subscription's usage-limit notice, the daemon stops dispatching to that agent until the reset time and hands the interrupted item to a human; the session itself is left alone. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human-github341).
+Optional (`ENABLE_USAGE_LIMIT_PAUSE`). When a worker pane shows its subscription's usage-limit notice, the daemon stops dispatching to that agent until the reset time and hands the interrupted item to a human; the session itself is left alone. Details, limits and the manual lift: [operations](operations.md#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human).
 
 <details><summary>Details: what the daemon does</summary>
 
@@ -371,7 +371,7 @@ The layers, in order: the skill's base workflow template (a project may replace 
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
-With `ENABLE_ROUND_LOG` on (GitHub#610), comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log-github610).
+With `ENABLE_ROUND_LOG` on, comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
 
 Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 

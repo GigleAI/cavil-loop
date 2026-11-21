@@ -7,7 +7,8 @@
 #
 # 管五件事：
 #   1. 文中出现的每个设置名（反引号里、代码块里的大写名字）都是 cavil-loop.config.example 里的设置；
-#      不是设置的，只能是文中说挂点脚本拿到的环境变量，而且确实由调起那个脚本的地方传进去
+#      不是设置的，只能是文中说挂点脚本拿到的环境变量，而且确实由调起那个脚本的地方传进去；
+#      或是写成 ${NAME} 的模板占位符，而且派工脚本（dispatch-*.sh / _lib.sh）里确实有渲染它的规则
 #   2. 中英两份提到的名字一样、## / ### 标题数一样
 #   3. 折叠块成对、标题（## / ###）不在折叠块里、<summary> 后空一行
 #   4. 两个示例脚本（开 PR 后、合并后清理）中英两份一字不差，并且照字面在只有 HOME / PATH 的环境里跑：
@@ -90,9 +91,20 @@ elif mode == 'check':   # <doc> <config example> <envs.txt> <repo>
     for line in open(envs):
         n, *files = line.split()
         env[n] = files
+    # Template placeholders: written as ${NAME} in the doc and rendered by the dispatch code,
+    # i.e. a sed rule `s|\${NAME}|…` or the literal '${NAME}' in scripts/dispatch-*.sh / scripts/_lib.sh.
+    rendered = ''.join(open(f'{repo}/scripts/{f}', encoding='utf-8').read()
+                       for f in ('dispatch-new-issue.sh', 'dispatch-issue-comment.sh',
+                                 'dispatch-pr-comment.sh', '_lib.sh'))
+    doctext = open(doc, encoding='utf-8').read()
     bad = []
     for n in sorted(names(doc)):
         if n in keys:
+            continue
+        if n not in env and '${' + n + '}' in doctext:
+            if re.search(r"s\|\\\$\{" + n + r"\}\||'\$\{" + n + r"\}'", rendered):
+                continue
+            bad.append(f'{n}: 写成占位符 ${{{n}}}，但派工脚本里没有渲染它的规则')
             continue
         if n not in env:
             bad.append(f'{n}: 不是配置样例里的设置，也不是登记过的挂点环境变量')
@@ -144,6 +156,10 @@ chk "拼错的设置名会报出来" "$out" "LATEST_SITE_REFRSH: 不是配置样
 sed 's/^PORT .*/PORT scripts\/cleanup-issue.sh/' "$TMP/envs.txt" > "$TMP/envs-bad.txt"
 out=$(cd "$REPO_DIR" && python3 "$TMP/names.py" check "$EN" "$CONF_EX" "$TMP/envs-bad.txt" "$REPO_DIR")
 chk "登记的环境变量在那个文件里没传，也会报出来" "$out" "PORT: scripts/cleanup-issue.sh 里没有把它传给挂点脚本"
+cp "$EN" "$TMP/ph.md"; echo 'A template may write `${ISSUE_NUMBR}`.' >> "$TMP/ph.md"
+out=$(cd "$REPO_DIR" && python3 "$TMP/names.py" check "$TMP/ph.md" "$CONF_EX" "$TMP/envs.txt" "$REPO_DIR")
+chk "派工脚本不渲染的占位符会报出来" "$out" "ISSUE_NUMBR: 写成占位符 \${ISSUE_NUMBR}，但派工脚本里没有渲染它的规则"
+chk "  到达性 · 占位符表里的名字确实按占位符认出来（\${ISSUE_N}、\${CONCURRENT_WORK}）" "$(python3 "$TMP/names.py" names "$EN" | grep -cxE 'ISSUE_N|CONCURRENT_WORK')" 2
 
 echo "== 2. 中英两份对得上"
 chk "两份提到的名字一样" "$(diff <(python3 "$TMP/names.py" names "$EN") <(python3 "$TMP/names.py" names "$ZH") && echo same)" same

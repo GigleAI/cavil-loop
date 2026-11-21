@@ -37,6 +37,8 @@ Usage as a program:
   python3 tests/lib/doc_links.py --external <root>   print the external user documents
   python3 tests/lib/doc_links.py --pairs <root>      report an external document without
                                                       its other-language copy
+  python3 tests/lib/doc_links.py --numbers <root>    report every issue / PR number written
+                                                      into an external document (see NUMBER)
 Exit 0 = no problem; each problem is one line on stdout.
 """
 import html.parser
@@ -104,6 +106,28 @@ def missing_pairs(root):
         twin = d[:-len('.zh.md')] + '.md' if d.endswith('.zh.md') else d[:-len('.md')] + '.zh.md'
         if twin not in docs:
             problems.append(f'{d}: 缺另一种语言的版本 {twin}')
+    return problems
+
+
+# Issue / PR numbers of this repo's own work, as they get written into prose: "GitHub#461",
+# "PR #620" / "PR#620" / "PRs #1", "owner/repo#12", and a parenthesised "(#337)" / "（#337）".
+# External user documents say how things work now; where a number came from belongs in
+# AGENTS.md (docs/AGENTS.md). Deliberately not matched: a bare "#42" (the README's worked
+# example "say you get #42", a search for "#135", "sort key #1") and a link whose text is
+# the number ("[#628](https://github.com/.../issues/628)", a feature still in progress) —
+# both are legitimate, and telling them from a history reference needs a reader.
+# Code blocks are scanned too: a shell comment in a documented command is read by users.
+NUMBER = re.compile(r'GitHub#\d+|\bPRs? ?#\d+|\b[\w.-]+/[\w.-]+#\d+(?![\w-])|[（(]#\d+')
+
+
+def issue_numbers(root):
+    """Every issue / PR number in an external document: "<doc>:<line>: <match>"."""
+    problems = []
+    for d in external_docs(root):
+        with open(os.path.join(root, d), encoding='utf-8') as f:
+            for n, line in enumerate(f, 1):
+                for m in NUMBER.finditer(line):
+                    problems.append(f'{d}:{n}: 写了编号 {m.group(0)}')
     return problems
 
 
@@ -263,6 +287,11 @@ def main(argv):
     if len(argv) == 2 and argv[0] == '--external':
         print('\n'.join(external_docs(argv[1])))
         return 0
+    if len(argv) == 2 and argv[0] == '--numbers':
+        problems = issue_numbers(argv[1])
+        for p in problems:
+            print(p)
+        return 1 if problems else 0
     if len(argv) == 2 and argv[0] == '--pairs':
         problems = missing_pairs(argv[1])
         for p in problems:

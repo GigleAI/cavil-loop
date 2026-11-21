@@ -70,12 +70,15 @@ reading AGENTS.md need that trail; a user reading the docs does not.
 | The client guide's screenshots, structure and network-boundary wording | `tests/client-docs.test.sh` | `bash tests/client-docs.test.sh` |
 | The diagrams equal the generator's output, animate correctly, and each page references its own language's pictures | `tests/doc-diagrams.test.sh` | `bash tests/doc-diagrams.test.sh` |
 | The orchestration guide names only real settings, and its example commands run as written | `tests/orchestration-docs.test.sh` | `bash tests/orchestration-docs.test.sh` |
+| No issue / PR number in any external document (`GitHub#N`, `PR #N`, `owner/repo#N`, a parenthesised `(#N)`), command blocks included; internal files keep theirs | `tests/doc-numbers.test.sh` (`--numbers`, the `NUMBER` pattern in `tests/lib/doc_links.py`) | `bash tests/doc-numbers.test.sh` |
 
 All of them are `# kind: guard` tests: they run in `bash tests/run.sh --quick`, on every PR and
 in the pre-commit hook.
 
-No text check for issue / PR numbers in these documents is in place yet; until there is one,
-the reviewer checks that rule by reading too.
+The number check deliberately lets two forms through, because telling them from a history
+reference needs a reader: a bare `#42` (the README's worked example, a search example, "sort key
+#1") and a link whose text is the number (`[#628](https://github.com/…/issues/628)`, a feature
+still in progress). The reviewer checks those by reading.
 
 The "no history narrative" rule is **not** checked by a text test: phrases like "at first" or
 "后来" appear in plenty of legitimate sentences, and every pattern tried raised more false alarms
