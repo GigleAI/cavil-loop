@@ -100,11 +100,20 @@ export function prepareCopy(work, windowCode, from = root) {
 }
 
 /**
- * GitHub#631: the text each entry replaces must occur exactly once in its file. 0 = the code moved on and the entry
- * did not follow (it would only fail to prepare, at night); 2 or more = which spot it breaks depends on the order.
- * Run with --check-copy on every push. It cannot tell an entry whose text is still there but no longer on the path
- * the test takes — only the nightly run shows that. Returns the problems, [] = every entry's text is found once.
+ * GitHub#631: the one rule for where an entry breaks its file, used both by the nightly run (one()) and by the check
+ * on every push (checkSources): the text it replaces must occur exactly once. 0 = the code moved on and the entry did
+ * not follow; 2 or more = which spot it would break depends on the order. Returns { problem } or { broken } (the file's
+ * text with that one occurrence replaced). It cannot tell an entry whose text is still there but no longer on the path
+ * the test takes — only the nightly run shows that.
  */
+export function breakText(text, m) {
+  const rel = m.file ?? MAIN;
+  const parts = text.split(m.from);
+  if (parts.length !== 2) return { problem: `要改的原文在 ${rel} 里出现 ${parts.length - 1} 次（应为 1 次）：${m.what}` };
+  return { broken: parts[0] + m.to + parts[1] };
+}
+
+/** Every entry's file read from `from` and judged by breakText. Returns the problems, [] = every entry's text is found once. */
 export function checkSources({ from = root, mutations = MUTATIONS } = {}) {
   const problems = [];
   for (const m of mutations) {
@@ -116,8 +125,8 @@ export function checkSources({ from = root, mutations = MUTATIONS } = {}) {
       problems.push(`读不到 ${rel}（${e.message}）：${m.what}`);
       continue;
     }
-    const n = text.split(m.from).length - 1;
-    if (n !== 1) problems.push(`要改的原文在 ${rel} 里出现 ${n} 次（应为 1 次）：${m.what}`);
+    const r = breakText(text, m);
+    if (r.problem) problems.push(r.problem);
   }
   return problems;
 }
@@ -170,9 +179,9 @@ function one(m) {
     const windowCode = isWindowCode(m);
     prepareCopy(work, windowCode);
     const file = join(work, rel);
-    const text = readFileSync(file, 'utf8');
-    if (!text.includes(m.from)) return fail(`准备失败（原文不在 ${rel}）：${m.what}`);
-    writeFileSync(file, text.replace(m.from, m.to));
+    const r = breakText(readFileSync(file, 'utf8'), m);
+    if (r.problem) return fail(`准备失败（${r.problem}）`);
+    writeFileSync(file, r.broken);
     if (windowCode) {
       const web = spawnSync(process.execPath, [join(work, 'scripts', 'build.mjs')], { cwd: work, encoding: 'utf8' });
       if (web.status !== 0) return fail(`改坏的副本构建窗口失败：${m.what}\n${(web.stderr ?? '').split('\n').slice(-8).join('\n')}`);

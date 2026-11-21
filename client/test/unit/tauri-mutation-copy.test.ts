@@ -123,10 +123,18 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
   // Review round 4 on PR #592: the nightly path lost the folder it builds into and runs the app from.
   // Run the real `--one 4` (a shell entry: 关窗不拦) of a copy of the runner in a sandbox client tree (the real back-end sources),
   // with stand-ins for cargo and Playwright that record what they were given.
-  const nightly = (override?: string) => {
+  // GitHub#631: the same sandbox also runs `--check-copy` (the window shape's build script is a stand-in that does
+  // nothing), and `edit` changes the sandbox's sources first.
+  const runCli = (args: string[], { override, edit }: { override?: string; edit?: (r: string) => void } = {}) => {
     const r = made();
     copySources(r, clientRoot);
     mkdirSync(join(r, 'dist', 'renderer'), { recursive: true });
+    mkdirSync(join(r, 'scripts'), { recursive: true });
+    mkdirSync(join(r, 'build'), { recursive: true });
+    writeFileSync(join(r, 'scripts', 'build.mjs'), '');
+    writeFileSync(join(r, 'package.json'), '{}');
+    writeFileSync(join(r, 'tsconfig.json'), '{}');
+    edit?.(r);
     for (const f of ['test/tauri/mutations.mjs', 'test/mutation/select.mjs']) {
       mkdirSync(dirname(join(r, f)), { recursive: true });
       cpSync(join(clientRoot, f), join(r, f));
@@ -143,10 +151,11 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, REC: rec };
     delete env.CAVIL_TAURI_MUT_TARGET;
     if (override) env.CAVIL_TAURI_MUT_TARGET = override;
-    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), '--one', '4'], { cwd: r, env, encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), ...args], { cwd: r, env, encoding: 'utf8' });
     const read = (f: string) => (existsSync(join(rec, f)) ? readFileSync(join(rec, f), 'utf8') : '');
-    return { r, run, cargo: read('cargo.txt').split('\n'), app: read('app.txt') };
+    return { r, run, cargo: read('cargo.txt').split('\n'), cargoRan: existsSync(join(rec, 'cargo.txt')), app: read('app.txt') };
   };
+  const nightly = (override?: string) => runCli(['--one', '4'], { override });
 
   it('每晚的执行路径：没设覆盖时，编译输出目录和被测程序位置都是默认的那一个', () => {
     const { r, run, cargo, app } = nightly();
@@ -198,5 +207,61 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
 
   it('仓库里现有的每条真实窗口负对照，原文都在目标文件里恰好出现一次', () => {
     expect(checkSources()).toEqual([]);
+  });
+
+  // GitHub#631 review round 1: the real command line, as `npm run test:rust` runs it
+  const LINK = "      else if (m.cavil === 'link') openFrameLink(m.url, 'frame');\n";
+  const PANEL = 'src/renderer/DetailPanel.tsx';
+  const twice = (r: string) => {
+    const f = join(r, PANEL);
+    const t = readFileSync(f, 'utf8');
+    expect(t.split(LINK)).toHaveLength(2); // the real file holds it once
+    writeFileSync(f, t.replace(LINK, LINK + LINK));
+  };
+
+  it('--check-copy 命令：原文都恰好一次时退出 0，并且确实走到了副本编译', () => {
+    const { run, cargoRan } = runCli(['--check-copy']);
+    expect(run.stdout).toContain('7 个真实窗口负对照要改的原文，各自在目标文件里恰好出现一次');
+    expect(run.stdout).toContain('真实窗口负对照的副本（没改坏）能编译');
+    expect(cargoRan).toBe(true);
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+  });
+
+  const BAD: { name: string; edit: (r: string) => void; says: RegExp }[] = [
+    { name: '重复', edit: twice, says: /要改的原文在 src\/renderer\/DetailPanel\.tsx 里出现 2 次（应为 1 次）/ },
+    {
+      name: '缺失',
+      edit: (r) => {
+        const f = join(r, PANEL);
+        writeFileSync(f, readFileSync(f, 'utf8').replace(LINK, ''));
+      },
+      says: /要改的原文在 src\/renderer\/DetailPanel\.tsx 里出现 0 次（应为 1 次）/,
+    },
+    { name: '读不到', edit: (r) => rmSync(join(r, PANEL)), says: /读不到 src\/renderer\/DetailPanel\.tsx（/ },
+  ];
+  for (const c of BAD) {
+    it(`--check-copy 命令：原文${c.name}时退出非零（副本照样编译通过也一样）`, () => {
+      const { run, cargoRan } = runCli(['--check-copy'], { edit: c.edit });
+      expect(run.stdout).toMatch(c.says);
+      expect(cargoRan).toBe(true); // the copies were still checked, and passed
+      expect(run.stdout).toContain('真实窗口负对照的副本（没改坏）能编译');
+      expect(run.status).toBe(1);
+    });
+  }
+
+  it('每晚的执行路径：原文出现两次时在准备时就失败，不改、不编译、不跑测试', () => {
+    const { run, cargoRan, app } = runCli(['--one', '0'], { edit: twice });
+    expect(run.stdout).toContain('准备失败（要改的原文在 src/renderer/DetailPanel.tsx 里出现 2 次（应为 1 次）');
+    expect(cargoRan).toBe(false);
+    expect(app).toBe('');
+    expect(run.status).toBe(1);
+  });
+
+  it('每晚的执行路径：原文恰好一次时照常改坏、构建、跑测试（界面代码的条目）', () => {
+    const { run, cargoRan, app } = runCli(['--one', '0']);
+    expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
+    expect(cargoRan).toBe(true);
+    expect(app).not.toBe('');
+    expect(run.stdout).toContain('红了，但不是在预期那一步');
   });
 });
