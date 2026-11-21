@@ -256,7 +256,33 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
                 <marker id="garrow-done" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
                   <path d="M0,0 L10,5 L0,10 z" className="garrow done" />
                 </marker>
+                <marker id="glink-open" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" className="glink-head open" />
+                </marker>
+                <marker id="glink-done" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" className="glink-head done" />
+                </marker>
               </defs>
+              {/* GitHub#636: a PR ⇢ the issue it is linked to — dashed, never a blocking arrow */}
+              {model.links.map((l) => {
+                const a = layout.rects.get(l.from);
+                const b = layout.rects.get(l.to);
+                if (!a || !b) return null;
+                const p = edgePath(a, b, isBox(l.from), isBox(l.to));
+                const faded = model.nodes.get(l.from)!.dim || model.nodes.get(l.to)!.dim;
+                return (
+                  <path
+                    key={`${l.from}~${l.to}`}
+                    d={p.d}
+                    className={`glink ${l.open ? 'open' : 'done'}${faded ? ' faded' : ''}`}
+                    markerEnd={`url(#glink-${l.open ? 'open' : 'done'})`}
+                    data-testid="graph-link"
+                    data-from={l.from}
+                    data-to={l.to}
+                    data-open={l.open ? 'yes' : 'no'}
+                  />
+                );
+              })}
               {model.edges.map((e) => {
                 const a = layout.rects.get(e.from);
                 const b = layout.rects.get(e.to);
@@ -301,6 +327,15 @@ export function GraphView({ model, items, sources, syncing, now, dark, onOpen: o
               </svg>
               {t('阻塞者已完成')}
             </span>
+            {model.links.length > 0 && (
+              <span className="gleg" data-testid="graph-legend-link">
+                <svg width="34" height="10" aria-hidden="true">
+                  <path d="M1,5 H27" className="glink open" />
+                  <path d="M26,1 L33,5 L26,9 z" className="glink-head open" />
+                </svg>
+                {t('PR → 它关联的 issue')}
+              </span>
+            )}
             <span className="gleg">
               <span className="gleg-box" />
               {t('框 = 父 issue，框里是它的子 issue 和挂在子 issue 上、等前置的 PR')}
@@ -382,6 +417,11 @@ function Badges({ n }: { n: GraphNode }) {
       {n.blockedByOpen > 0 && (
         <span className="gbadge blocked" data-testid="graph-blocked-by">
           {t('被 {n} 项挡住', { n: n.blockedByOpen })}
+        </span>
+      )}
+      {n.prBlocked.length > 0 && (
+        <span className="gbadge viapr" data-testid="graph-pr-blocked">
+          {t('它的 PR 被挡住')}
         </span>
       )}
       {n.blockingAhead > 0 && (
@@ -577,13 +617,20 @@ function Summary({
       {!n.item && <div className="small muted gpop-outside"><Outside /> {t('GitHub 读关系时顺带给的基本信息；这个仓库没有添加为来源，没有读它的标签和详情。')}</div>}
       {n.item && (
         <>
-          {blockers.length > 0 && (
+          {(blockers.length > 0 || n.prBlocked.length > 0) && (
             <div className="gpop-sec" data-testid="graph-summary-blockers">
               <div className="muted small">{t('被挡住')}</div>
               {blockers.map((b) => (
                 <div key={b.n.key} className="gpop-rel">
                   <span className={`gdot ${b.open ? 'open' : 'done'}`} />
                   {b.open ? tNode('{item}（未完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> }) : tNode('{item}（已完成）', { item: <Verbatim from="github">{line(b.n)}</Verbatim> })}
+                </div>
+              ))}
+              {/* GitHub#636: no open blocker of its own, but its PR is held */}
+              {n.prBlocked.map((k) => (
+                <div key={k} className="gpop-rel" data-testid="graph-summary-pr-blocked" data-key={k}>
+                  <span className="gdot open" />
+                  {tNode('它的 PR {item} 被挡住（未完成）', { item: <Verbatim from="github">{refOf(model.nodes.get(k)!)}</Verbatim> })}
                 </div>
               ))}
             </div>

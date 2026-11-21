@@ -4,7 +4,8 @@
 //
 // - inside a box, children are put in columns by the arrows between them, blockers on the left
 //   (longest path; an arrow that would close a loop is set aside for the layering — it is still
-//   drawn)
+//   drawn). GitHub#636: a PR ⇢ issue link is laid out like an arrow; one whose ends lift to the same
+//   member (a PR inside the box of the issue it is linked to) does not take part, as for arrows
 // - at the top level, nodes and boxes joined by arrows form a group laid out the same way; the
 //   groups are then put in rows to fill the window's shape, not one long column, groups with open
 //   issues first
@@ -58,12 +59,15 @@ export function layoutGraph(model: GraphModel, aspect: number): GraphLayout {
     for (let k: string | null = key, n = 0; k !== null && n <= nodes.size; k = nodes.get(k)!.parent, n++) if (set.has(k)) return k;
     return undefined;
   };
-  /** arrows between different members of `keys`, lifted to the members holding their ends */
+  /**
+   * arrows between different members of `keys`, lifted to the members holding their ends; GitHub#636: a
+   * PR ⇢ issue link counts as one too (PR on the left), whatever its state — the layout never reads one
+   */
   const lifted = (keys: string[]) => {
     const set = new Set(keys);
     const out: [string, string][] = [];
     const seen = new Set<string>();
-    for (const e of model.edges) {
+    for (const e of [...model.edges, ...model.links]) {
       const a = within(e.from, set);
       const b = within(e.to, set);
       if (!a || !b || a === b || seen.has(`${a}\u0000${b}`)) continue;

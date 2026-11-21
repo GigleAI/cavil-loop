@@ -38,7 +38,7 @@
   --state-open-fg: #1a7f37; --state-closed-fg: #d1242f; --state-done-fg: #8250df; --state-neutral-fg: #59636e;
   --state-open-bg: #1f883d; --state-closed-bg: #cf222e; --state-done-bg: #8250df; --state-neutral-bg: #59636e;
   /* GitHub#350: the dependency graph's arrows and badges */
-  --edge-open: #bf8700; --edge-done: #8c959f; --blocked-fg: #7d4e00; --blocked-bg: #fff8c5; --blocked-border: #d4a72c;
+  --edge-open: #bf8700; --edge-done: #8c959f; --link-open: #0e7f99; --link-fg: #0b5f73; --link-bg: #e3f5fa; --link-border: #5bbfd6; --blocked-fg: #7d4e00; --blocked-bg: #fff8c5; --blocked-border: #d4a72c;
   --graph-dot: #d1d9e0;
   color-scheme: light;
 }
@@ -79,7 +79,7 @@
     --overlay: rgba(1, 4, 9, 0.6);
     --state-open-fg: #3fb950; --state-closed-fg: #f85149; --state-done-fg: #ab7df8; --state-neutral-fg: #9198a1;
     --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
-    --edge-open: #d29922; --edge-done: #6e7681; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
+    --edge-open: #d29922; --edge-done: #6e7681; --link-open: #39c5cf; --link-fg: #56d4dd; --link-bg: #0d2a30; --link-border: #1b6f7a; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
     --graph-dot: #2a313c;
     color-scheme: dark;
   }
@@ -115,7 +115,7 @@
   --overlay: rgba(1, 4, 9, 0.6);
   --state-open-fg: #3fb950; --state-closed-fg: #f85149; --state-done-fg: #ab7df8; --state-neutral-fg: #9198a1;
   --state-open-bg: #238636; --state-closed-bg: #da3633; --state-done-bg: #8957e5; --state-neutral-bg: #656c76;
-  --edge-open: #d29922; --edge-done: #6e7681; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
+  --edge-open: #d29922; --edge-done: #6e7681; --link-open: #39c5cf; --link-fg: #56d4dd; --link-bg: #0d2a30; --link-border: #1b6f7a; --blocked-fg: #e3b341; --blocked-bg: #2b2111; --blocked-border: #6c4f0c;
   --graph-dot: #2a313c;
   color-scheme: dark;
 }
@@ -905,6 +905,14 @@ table.pcfg-changes td { border-bottom: 1px solid var(--border-muted); padding: 5
 .gedge.faded { opacity: 0.45; }
 .garrow.open { fill: var(--edge-open); }
 .garrow.done { fill: var(--edge-done); }
+/* GitHub#636: PR ⇢ the issue it is linked to */
+.glink { fill: none; stroke-dasharray: 6 4; }
+.glink.open { stroke: var(--link-open); stroke-width: 2; }
+.glink.done { stroke: var(--edge-done); stroke-width: 1.2; }
+.glink.faded { opacity: 0.45; }
+.glink-head.open { fill: var(--link-open); }
+.glink-head.done { fill: var(--edge-done); }
+.gbadge.viapr { color: var(--link-fg); background: var(--link-bg); border-color: var(--link-border); }
 .gnode, .gbox { position: absolute; }
 .gnode { background: var(--raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow-sm); cursor: pointer; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
 .gnode:hover { border-color: var(--accent); }
