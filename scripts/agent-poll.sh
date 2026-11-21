@@ -733,7 +733,7 @@ collect_queue_rows_greedy() {
             2) log "greedy：${kind} #${num} 本轮不续工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                continue ;;
             # 机器人贴回了答复却没打派工标签（GitHub#619）：本轮不入队，替它补打派工标签，下一轮明确派工
-            3) requester_bot_backfill "$kind" "$num" greedy
+            3) requester_bot_backfill "$kind" "$num" greedy "$REQUESTER_BOT_WAIT_DOC"
                continue ;;
         esac
         queued_keys[$key]=1
@@ -820,7 +820,7 @@ collect_autopilot_rows() {
                     2) log "托管：issue #$num 本轮不自动开工（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
                        continue ;;
                     # 机器人贴回了答复却没打派工标签（GitHub#619）：替它补打，下一轮明确派工
-                    3) requester_bot_backfill issue "$num" autopilot-issue
+                    3) requester_bot_backfill issue "$num" autopilot-issue "$REQUESTER_BOT_WAIT_DOC"
                        continue ;;
                 esac
                 queued_keys[$key]=1

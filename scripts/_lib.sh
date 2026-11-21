@@ -513,7 +513,8 @@ requester_bot_wait_hold() {   # <编号>
             # 说明行要独占一行（行尾空白、CR 不算），别处引用的半行不算
             if printf '%s' "$cb64" | base64 -d 2>/dev/null | tr -d '\r' | sed 's/[[:space:]]*$//' \
                     | grep -qxF "<!-- requester-bot-reply wait=$e -->"; then
-                csha=$(printf '%s' "$cb64" | base64 -d 2>/dev/null | sha256sum | cut -c1-64) || csha=""
+                csha=$(printf '%s' "$cb64" | base64 -d 2>/dev/null | cfg_sha256) || csha=""
+                [[ "$csha" =~ ^[0-9a-f]{64}$ ]] || csha=""
                 [ -n "$csha" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的评论 $cid 算不出指纹"; return 2; }
                 reps+="${reps:+,}$cid:$clogin:$csha:$cupd"
                 [ -n "$REQUESTER_BOT_WAIT_REPLY" ] || REQUESTER_BOT_WAIT_REPLY="$cid"
@@ -565,58 +566,78 @@ requester_bot_wait_hold() {   # <编号>
 # 下一轮看 GitHub——标签在就走明确派工，不在就重新判断。重复加同一个标签对 GitHub 无害。
 # 已知窗口（维护者选 A 时接受，GitHub#619）：补打之后、下一轮派工之前，维护者的叫停可能被这次派工盖过，
 # 和今天机器人或人打了派工标签之后一样；机器人自己的派工标签在派工摘掉之后才到，会再派一次。
-REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""
+REQUESTER_BOT_BACKFILLED=" "; REQUESTER_BOT_BACKFILL_DOC=""; REQUESTER_BOT_BACKFILL_FIRSTKEY=""
 requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打（整串在 REQUESTER_BOT_BACKFILL_DOC）；1 = 现在不该补；2 = 判不了
     # 在调用方自己的 shell 里跑（不放进 $( )）：判不了的原因要留给调用方记日志
     local kind="$1" n="$2" path="$3" ij pj item prpart="" labels rc
     REQUESTER_BOT_BACKFILL_DOC=""
     ij=$(gh api "repos/$REPO/issues/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 #$n"; return 2; }
-    item=$(printf '%s' "$ij" | jq -r 'select((.state | type) == "string" and (.labels | type) == "array")
-        | [.state, ([.labels[] | .name // empty] | sort | join(","))] | @tsv' 2>/dev/null) || item=""
+    # 缺字段一律算读不全（判不了），不填默认值：标签都要有名字
+    item=$(printf '%s' "$ij" | jq -r 'select((.state | type) == "string" and (.labels | type) == "array"
+            and all(.labels[]; (.name | type) == "string"))
+        | [.state, ([.labels[] | .name] | sort | join(","))] | @tsv' 2>/dev/null) || item=""
     [ -n "$item" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的状态 / 标签读不全"; return 2; }
     [ "${item%%$'\t'*}" = open ] || return 1
     labels="${item#*$'\t'}"
     if [ "$kind" = pr ]; then
         pj=$(gh api "repos/$REPO/pulls/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 PR #$n"; return 2; }
-        prpart=$(printf '%s' "$pj" | jq -r 'select((.merged | type) == "boolean" and ((.head.sha // "") != "") and ((.base.ref // "") != "") and ((.head.ref // "") != ""))
-            | [(.merged | tostring), ((.draft // false) | tostring), .base.ref, .head.sha, .head.ref, (.head.repo.full_name // "")] | join(":")' 2>/dev/null) || prpart=""
+        prpart=$(printf '%s' "$pj" | jq -r 'select((.merged | type) == "boolean" and (.draft | type) == "boolean"
+                and ((.head.sha | type) == "string") and .head.sha != "" and ((.base.ref | type) == "string") and .base.ref != ""
+                and ((.head.ref | type) == "string") and .head.ref != "" and ((.head.repo.full_name | type) == "string"))
+            | [(.merged | tostring), (.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")' 2>/dev/null) || prpart=""
         [ -n "$prpart" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 的合并状态 / 分支 / 提交读不全"; return 2; }
         case "$prpart" in true:*) return 1 ;; esac
     fi
     rc=0; requester_bot_wait_hold "$n" || rc=$?
     case "$rc" in 3) ;; 2) return 2 ;; *) return 1 ;; esac
-    local wait="$REQUESTER_BOT_WAIT_DOC" pathdoc=""
+    local wait="$REQUESTER_BOT_WAIT_DOC" pathdoc="" firstkey=""
     case "$path" in
         greedy)
             greedy_skip_reason "$labels" >/dev/null && return 1
             stuck_dispatch_hold "$kind" "$n" "" && return 1
             [ "$kind" = issue ] && ci_report_dispatch_hold "$n" && return 1
-            pathdoc="greedy" ;;
+            pathdoc="greedy"; firstkey="$wait" ;;
         autopilot-issue)
             autopilot_labels_in_flow "$labels" && return 1
             stuck_dispatch_hold issue "$n" "" && return 1
             ci_report_dispatch_hold "$n" && return 1
             rc=0; autopilot_authorization "$n" "$ij" || rc=$?
             case "$rc" in 0) ;; 1) return 1 ;; *) REQUESTER_BOT_WAIT_REASON="$AUTOPILOT_REASON"; return 2 ;; esac
-            pathdoc="auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR" ;;
+            pathdoc="auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR"
+            firstkey="$wait" ;;
         takeover)
             autopilot_takeover_permit "$n"
             case "$AT_V" in backfill) ;; unknown) REQUESTER_BOT_WAIT_REASON="$AT_REASON"; return 2 ;; *) return 1 ;; esac
             # 接手判定在里面又跑了一次等待判断：答复身份以它为准（两者读的是同一份现读结果之后的数据）
             wait="$REQUESTER_BOT_WAIT_DOC"
-            pathdoc="take=$AT_MODE:$AT_KIND:$AT_N:$AT_HEAD:$AT_BASE:$AT_REF:$AT_REPO;auth=$AUTOPILOT_AUTH_KIND:$AUTOPILOT_AUTH_REPO:$AUTOPILOT_AUTH_NUM:$AUTOPILOT_AUTH_IDX:$AUTOPILOT_AUTH_T:$AUTOPILOT_ACTOR" ;;
+            pathdoc="$(requester_bot_take_doc)"; firstkey="$pathdoc;$wait" ;;
         *) return 2 ;;
     esac
     REQUESTER_BOT_BACKFILL_DOC="$kind|$n|$item|$prpart|$wait|$pathdoc"
+    REQUESTER_BOT_BACKFILL_FIRSTKEY="$firstkey"
 }
 
-requester_bot_backfill() {   # <issue|pr> <编号> <路径>
-    local kind="$1" n="$2" path="$3" d1 d2 rc
+# 调用方第一次判定（拿到等待判断的 3）那一刻的依据，拼成和 requester_bot_backfill_doc 里 firstkey 同样的格式，
+# 补打前现读的结果必须和它逐字一致（代码复审第 1 轮：只比补打函数自己的两次现读，判定之后、第一次现读之前
+# 被原地编辑的答复会被当成依据写下去）。greedy / 只挂托管标签的 issue：等待身份（REQUESTER_BOT_WAIT_DOC——
+# 规则 4 只凭它放行；挡工标签、授权等其余条件在补打函数的两次现读里各判一次）。不用快照里的标签：快照按 tab
+# 读进来，标签为空的条目会被 read 把空字段并掉、把标题当成标签。托管接手：接手判定的身份 + 等待身份
+requester_bot_take_doc() {   # 用当前 AT_* / AUTOPILOT_AUTH_* 拼接手判定的身份
+    printf 'take=%s:%s:%s:%s:%s:%s:%s;auth=%s:%s:%s:%s:%s:%s' "$AT_MODE" "$AT_KIND" "$AT_N" "$AT_HEAD" "$AT_BASE" "$AT_REF" "$AT_REPO" \
+        "$AUTOPILOT_AUTH_KIND" "$AUTOPILOT_AUTH_REPO" "$AUTOPILOT_AUTH_NUM" "$AUTOPILOT_AUTH_IDX" "$AUTOPILOT_AUTH_T" "$AUTOPILOT_ACTOR"
+}
+
+requester_bot_backfill() {   # <issue|pr> <编号> <路径> <调用方第一次判定的依据>
+    local kind="$1" n="$2" path="$3" first="${4:-}" d1 d2 rc
     case "$REQUESTER_BOT_BACKFILLED" in *" $kind:$n "*)
         log "外部需求机器人：${kind} #${n} 本轮已补打过派工标签，跳过"; return 0 ;; esac
     rc=0; requester_bot_backfill_doc "$kind" "$n" "$path" || rc=$?; d1="$REQUESTER_BOT_BACKFILL_DOC"
     if [ "$rc" != 0 ]; then
         [ "$rc" = 1 ] || log "外部需求机器人：${kind} #${n} 本轮不补打（${REQUESTER_BOT_WAIT_REASON}），下轮再判"
+        return 0
+    fi
+    if [ -z "$first" ] || [ "$REQUESTER_BOT_BACKFILL_FIRSTKEY" != "$first" ]; then
+        log "外部需求机器人：${kind} #${n} 判定补打之后条目有变化（和第一次判定的依据对不上），本轮不写"
         return 0
     fi
     rc=0; requester_bot_backfill_doc "$kind" "$n" "$path" || rc=$?; d2="$REQUESTER_BOT_BACKFILL_DOC"
@@ -6493,7 +6514,7 @@ autopilot_takeover_one() {   # <state_file> <PR 编号> <缓存键>
         # 下一轮条目带着派工标签，走明确派工
         backfill)
             autopilot_takeover_reset "$sf" "$pr"
-            requester_bot_backfill pr "$pr" takeover
+            requester_bot_backfill pr "$pr" takeover "$(requester_bot_take_doc);$REQUESTER_BOT_WAIT_DOC"
             return 0 ;;
         *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;
     esac

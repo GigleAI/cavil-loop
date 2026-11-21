@@ -357,42 +357,105 @@ Closes #7" "autopilot"
     tick
     chk "读取恢复 → 补打" "$(backfills 75)" 1
 
-    section "【6d】写之前现读时条目变了 → 本轮一个写请求都不发；不注入变化时确实发"
-    # 在 gh 前面套一层：第 K 次单独读 issue #77 之前先跑一段钩子（模拟「两次现读之间有人改了 GitHub」）
-    for change in human relabel reply-edit; do
-        fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+    section "【6d】判定之后、写之前条目变了 → 一个写请求都不发；不注入变化时确实发（三条入口各跑一遍）"
+    # 在 gh 前面套一层：第 K 次单独读 issue / PR #<n> 之前先跑一段钩子（模拟「判定之后有人改了 GitHub」）。
+    # 第 1 次单独读是补打函数的第一次现读（调用方判定时只读标签记录和评论列表），所以 hook_1 = 「调用方判定之后、
+    # 补打函数现读之前」，hook_2 = 「补打函数两次现读之间」
+    mkshim() {   # <n>
         mkdir -p "$W/shim"; rm -f "$W/shim/count" "$W/shim/hook_"*
         cat > "$W/shim/gh" <<SHIM
 #!/usr/bin/env bash
-if [ "\$1 \$2" = "api $R/issues/77" ] && [ \$# -eq 2 ]; then
+if [ "\$1 \$2" = "api $R/issues/$1" ] && [ \$# -eq 2 ]; then
     c=\$(( \$(cat "$W/shim/count" 2>/dev/null || echo 0) + 1 )); echo "\$c" > "$W/shim/count"
     [ -f "$W/shim/hook_\$c" ] && bash "$W/shim/hook_\$c"
 fi
 exec "$SANDBOX/bin/gh" "\$@"
 SHIM
         chmod +x "$W/shim/gh"
-        mkissue 77 ""; waitid 77 8701 8702
-        mkreply 77 971 req-bot "<!-- requester-bot-reply wait=8701 -->"
-        case "$change" in
-            human)      echo "jq '.[\"77\"] = [\"pending/human\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_2" ;;
-            relabel)    echo "jq '.[\"77\"] += [{event:\"labeled\", id:8703, label:{name:\"pending/req\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_2" ;;
-            reply-edit) echo "jq '.[\"77\"][0].body = \"请继续修改\n\n<!-- requester-bot-reply wait=8701 -->\" | .[\"77\"][0].updated_at = \"2026-01-04T00:00:00Z\"' '$GD/comments.json' > '$GD/c.tmp' && mv '$GD/c.tmp' '$GD/comments.json'" > "$W/shim/hook_2" ;;
-        esac
-        tick
-        chk "第二次现读前「$change」→ 本轮不补打" "$(backfills 77)" 0
-        chk "  到达性 · 确实读了两次 #77" "$(cat "$W/shim/count" 2>/dev/null)" 2
+    }
+    edit_hook() {   # <k> <n>：第 k 次读之前把 #n 的第一条答复原地改掉（说明行不变）
+        echo "jq '.[\"$2\"][0].body = \"请继续修改\n\n\" + (.[\"$2\"][0].body | split(\"\n\") | last) | .[\"$2\"][0].updated_at = \"2026-01-04T00:00:00Z\"' '$GD/comments.json' > '$GD/c.tmp' && mv '$GD/c.tmp' '$GD/comments.json'" > "$W/shim/hook_$1"
+    }
+    for k in 1 2; do
+        for change in human relabel reply-edit; do
+            fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+            mkshim 77
+            mkissue 77 ""; waitid 77 8701 8702
+            mkreply 77 971 req-bot "<!-- requester-bot-reply wait=8701 -->"
+            case "$change" in
+                human)      echo "jq '.[\"77\"] = [\"pending/human\"]' '$GD/labels.json' > '$GD/l.tmp' && mv '$GD/l.tmp' '$GD/labels.json'" > "$W/shim/hook_$k" ;;
+                relabel)    echo "jq '.[\"77\"] += [{event:\"labeled\", id:8703, label:{name:\"pending/req\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_$k" ;;
+                reply-edit) edit_hook "$k" 77 ;;
+            esac
+            tick
+            chk "greedy · 第 $k 次现读前「$change」→ 本轮不补打" "$(backfills 77)" 0
+            chk "  到达性 · 确实读到了第 $k 次" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge "$k" ] && echo yes || echo no)" yes
+        done
     done
     fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
-    mkdir -p "$W/shim"; rm -f "$W/shim/count" "$W/shim/hook_"*
-    cat > "$W/shim/gh" <<SHIM
-#!/usr/bin/env bash
-exec "$SANDBOX/bin/gh" "\$@"
-SHIM
-    chmod +x "$W/shim/gh"
+    mkshim 77
     mkissue 77 ""; waitid 77 8701 8702
     mkreply 77 971 req-bot "<!-- requester-bot-reply wait=8701 -->"
     tick
-    chk "对照 · 不注入变化 → 补打一次" "$(backfills 77)" 1
+    chk "对照 · greedy 不注入变化 → 补打一次" "$(backfills 77)" 1
+    # 只挂托管标签的 issue、托管 PR：判定之后（第 1 次现读之前）答复被原地编辑
+    for target in issue pr; do
+        for inj in edit none; do
+            fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
+            if [ "$target" = issue ]; then
+                tn=80; mkshim 80
+                mkissue 80 "autopilot"; ev 80 labeled autopilot maint 8800; waitid 80 8801 8802
+                mkreply 80 981 req-bot "<!-- requester-bot-reply wait=8801 -->"
+            else
+                tn=8; mkshim 8
+                mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+                ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+                mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+            fi
+            [ "$inj" = edit ] && edit_hook 1 "$tn"
+            tick
+            if [ "$inj" = edit ]; then
+                chk "托管 $target · 判定之后答复被原地编辑 → 本轮不补打" "$(backfills "$tn")" 0
+                chk "  到达性 · 补打函数确实现读过" "$([ "$(cat "$W/shim/count" 2>/dev/null || echo 0)" -ge 1 ] && echo yes || echo no)" yes
+            else
+                chk "对照 · 托管 $target 不注入变化 → 补打一次" "$(backfills "$tn")" 1
+            fi
+        done
+    done
+
+    section "【6d2】PR 缺字段（草稿标记 / 来源仓库读不到）→ 判不了，不补打"
+    for miss in draft repo; do
+        fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
+        mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
+
+Closes #7" "autopilot"
+        ev 8 labeled autopilot maint 8900; waitid 8 8901 8902
+        mkreply 8 991 req-bot "<!-- requester-bot-reply wait=8901 -->"
+        case "$miss" in
+            draft) jset items.json '.["8"] |= del(.draft)' ;;
+            repo)  jset items.json '.["8"].head.repo = null' ;;
+        esac
+        tick
+        chk "缺 $miss → 不补打" "$(backfills 8)" 0
+    done
+
+    section "【6d3】只有 shasum、没有 sha256sum 的机器：带说明的答复照样补打"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    mkdir -p "$W/nosha"
+    local f b
+    for f in /usr/local/bin/* /usr/bin/* /bin/*; do
+        b=$(basename "$f"); [ "$b" = sha256sum ] && continue
+        [ -e "$W/nosha/$b" ] || ln -s "$f" "$W/nosha/$b" 2>/dev/null || true
+    done
+    printf 'PATH="%s:%s"\n' "$SANDBOX/bin" "$W/nosha" >> "$CONF"
+    mkissue 70 ""; waitid 70 8001 8002
+    mkreply 70 901 req-bot "<!-- requester-bot-reply wait=8001 -->"
+    tick
+    chk "没有 sha256sum 时照样补打" "$(backfills 70)" 1
+    chk "  到达性 · 这台「机器」上确实没有 sha256sum、有 shasum" \
+        "$(PATH="$W/nosha" command -v sha256sum >/dev/null 2>&1 && echo has || echo none)/$(PATH="$W/nosha" command -v shasum >/dev/null 2>&1 && echo has || echo none)" "none/has"
 
     section "【6e】按标签派工 + 托管：只挂托管标签的 issue、托管 PR 都由 daemon 补打；托管 PR 不加 pending/review、不发接手说明"
     fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
@@ -450,6 +513,15 @@ Closes #7" "autopilot"
         | sed -e 's|OWNER/REPO|example/ap|' -e 's|/issues/123/|/issues/79/|' -e 's|pending/requester-bot|pending/req|' \
         | env -i HOME="$HOME" PATH="$W/docbin:/usr/bin:/bin" bash 2>/dev/null)
     chk "文档命令读出的是最近一次挂等待标签的编号" "$doc_e" 8793
+    # 前页已输出、后页失败（gh --paginate 先吐出第一页再退出 22）：命令一个编号都不能输出
+    mkdir -p "$W/docbin-partial"
+    printf '#!/usr/bin/env bash\necho 100\nexit 22\n' > "$W/docbin-partial/gh"; chmod +x "$W/docbin-partial/gh"
+    local doc_partial
+    doc_partial=$(sed -n '/<!-- requester-bot-reply-ops:begin -->/,/<!-- requester-bot-reply-ops:end -->/p' "$REPO_DIR/docs/requester-bot.zh.md" \
+        | sed -n '/^ *```bash/,/^ *```$/p' | sed '1d;$d' | sed 's/^   //' \
+        | sed -e 's|OWNER/REPO|example/ap|' -e 's|/issues/123/|/issues/79/|' -e 's|pending/requester-bot|pending/req|' \
+        | env -i HOME="$HOME" PATH="$W/docbin-partial:/usr/bin:/bin" bash 2>/dev/null)
+    chk "文档命令：前页有输出、后页读失败 → 什么编号都不输出" "[$doc_partial]" "[]"
     mkreply 79 979 req-bot "答复
 
 <!-- requester-bot-reply wait=$doc_e -->"
