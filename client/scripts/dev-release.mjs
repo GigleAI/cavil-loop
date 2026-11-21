@@ -68,20 +68,30 @@ export function devFiles(version) {
 }
 
 /**
- * Whether a release carries `files` (GitHub#628 review rounds 2–3): one verdict, used by every place
+ * Whether a release carries `files` (GitHub#628 review rounds 2–4): one verdict, used by every place
  * that reads a build's files — the publish decision, the read-back after publishing, the nightly plan
- * and `--check`. Per file:
- *   ok       one asset of that name, state "uploaded", size > 0
- *   bad      no asset of that name, or one GitHub says is not uploaded (a failed upload leaves a
- *            same-named placeholder in state "starter", size 0), or uploaded with size 0
- *   unknown  listed, but without a state or size this can judge (missing fields, two of one name, …)
+ * and `--check`. A write follows only from what GitHub said for certain; anything else is unknown.
+ *   the release's asset list is not a list (missing, null, anything else): every file unknown
+ * Per file:
+ *   ok       one asset of that name, state "uploaded", size a positive integer
+ *   bad      no asset of that name in a list that was read; or one GitHub says is not uploaded — a
+ *            state in NOT_UPLOADED (a failed upload leaves a same-named placeholder, "starter",
+ *            size 0); or "uploaded" with size 0
+ *   unknown  anything else: no state, a state word this does not know, a size that is not a
+ *            non-negative integer, two assets of one name
  * The build: unknown when any file is unknown (it is not safe to decide either way), else incomplete
  * when any file is bad, else complete.
  * → { state: 'complete' | 'incomplete' | 'unknown', bad: [names], unknown: [names] }
  */
+export const NOT_UPLOADED = ['starter', 'open'];
+
 export function buildState(release, files) {
+  if (!Array.isArray(release?.assets)) return { state: 'unknown', bad: [], unknown: [...files] };
   const by = new Map();
-  for (const a of release?.assets ?? []) if (typeof a?.name === 'string') by.set(a.name, [...(by.get(a.name) ?? []), a]);
+  for (const a of release.assets) {
+    if (typeof a?.name !== 'string') continue;
+    by.set(a.name, [...(by.get(a.name) ?? []), a]);
+  }
   const bad = [];
   const unknown = [];
   for (const f of files) {
@@ -91,9 +101,11 @@ export function buildState(release, files) {
       continue;
     }
     const a = as[0];
-    if (as.length > 1) unknown.push(f);
-    else if (a.state === 'uploaded' && Number.isSafeInteger(a.size) && a.size > 0) continue;
-    else if ((typeof a.state === 'string' && a.state !== '' && a.state !== 'uploaded') || (a.state === 'uploaded' && a.size === 0)) bad.push(f);
+    const size = Number.isSafeInteger(a.size) && a.size >= 0 ? a.size : null;
+    if (as.length > 1 || size === null) unknown.push(f);
+    else if (a.state === 'uploaded') {
+      if (size === 0) bad.push(f);
+    } else if (NOT_UPLOADED.includes(a.state)) bad.push(f);
     else unknown.push(f);
   }
   return { state: unknown.length ? 'unknown' : bad.length ? 'incomplete' : 'complete', bad, unknown };

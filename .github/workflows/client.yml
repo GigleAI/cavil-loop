@@ -101,9 +101,10 @@ jobs:
   #   quick    whether the quick tests run: everywhere except a publishing run with nothing to build
   #   sign     true when the update packages are signed with the maintainer's key (a release, or a
   #            publishing run); every other run uses a throw-away key
-  #   dev_version  on a publishing run, the development version it builds and tries to publish
-  #            (scripts/dev-version.mjs, the same number every build job stamps): the failure report
-  #            checks exactly this version, never "the newest one" (GitHub#628 review round 3)
+  #   dev_version  on a development build (and on every publishing run), its version, counted once
+  #            here (scripts/dev-version.mjs): the Mac and Windows jobs stamp exactly this one, the
+  #            publish step publishes it, and the failure report checks it — never "the newest one",
+  #            never a second count (GitHub#628 review rounds 3–4)
   mode:
     name: client build mode
     runs-on: ubuntu-latest
@@ -196,8 +197,11 @@ jobs:
           elif [ "$EVENT" != push ] && [ "$EVENT" != pull_request ]; then
             build=true
           fi
+          # a development build's version, counted once here; every build job and the publish step
+          # stamp exactly this one (a client/v* tag pushed while the run goes would otherwise give a
+          # later job another number — GitHub#628 review round 4)
           dev_version=""
-          if [ "$PUBLISH" = true ]; then
+          if [ -z "$TAG" ] && { [ "$build" = true ] || [ "$PUBLISH" = true ]; }; then
             dev_version="$(node scripts/dev-version.mjs)"
             [ -n "$dev_version" ] || { echo "::error::no development version for $SHA"; exit 1; }
           fi
@@ -362,12 +366,15 @@ jobs:
         env:
           TAG: ${{ needs.mode.outputs.tag }}
           VERSION: ${{ needs.mode.outputs.version }}
+          DEV_VERSION: ${{ needs.mode.outputs.dev_version }}
         run: |
           if [ -n "$TAG" ]; then
             [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
             node scripts/release-version.mjs write "$VERSION"
           else
-            node scripts/dev-version.mjs --write
+            # the version the mode job counted, never counted again here (GitHub#628 review round 4)
+            [ -n "$DEV_VERSION" ] || { echo "::error::development build without the mode job's version"; exit 1; }
+            node scripts/dev-version.mjs --set "$DEV_VERSION"
           fi
       # GitHub#184: the update package (.app.tar.gz + .sig) is built next to the dmg. The public key
       # has one home, plugins.updater.pubkey in src-tauri/tauri.conf.json (the app reads it at run
@@ -503,12 +510,15 @@ jobs:
         env:
           TAG: ${{ needs.mode.outputs.tag }}
           VERSION: ${{ needs.mode.outputs.version }}
+          DEV_VERSION: ${{ needs.mode.outputs.dev_version }}
         run: |
           if [ -n "$TAG" ]; then
             [ -n "$VERSION" ] || { echo "::error::release build $TAG without a version"; exit 1; }
             node scripts/release-version.mjs write "$VERSION"
           else
-            node scripts/dev-version.mjs --write
+            # the version the mode job counted, never counted again here (GitHub#628 review round 4)
+            [ -n "$DEV_VERSION" ] || { echo "::error::development build without the mode job's version"; exit 1; }
+            node scripts/dev-version.mjs --set "$DEV_VERSION"
           fi
       # signing the update package: exactly as on the Macs (the maintainer's key on a release build and a
       # publishing run, a throw-away pair otherwise)
@@ -724,13 +734,15 @@ jobs:
         with:
           ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
-      # the same version the Mac build stamped: same commit, same count, same tags
+      # the version the mode job counted and both builds stamped (never counted again here)
       - name: Version
         id: v
+        env:
+          V: ${{ needs.mode.outputs.dev_version }}
         run: |
-          v="$(node scripts/dev-version.mjs)"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "development build $v"
+          [ -n "$V" ] || { echo "::error::no development version from the mode job"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "development build $V"
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: Cavil-Loop-*

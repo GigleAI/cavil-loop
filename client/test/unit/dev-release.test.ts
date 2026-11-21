@@ -13,139 +13,13 @@ import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
+import { FAKE_GH } from './fake-gh-releases';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(root, 'scripts', 'dev-release.mjs');
 const DEFAULT_SHA = 'a'.repeat(40);
 const SHA = DEFAULT_SHA;
 
-// The fake gh: just the calls the script makes, with GitHub's behaviour where it matters (a draft is
-// a release whose tag does not exist yet; lists are pages of 100; releases have ids; deleting a
-// release leaves its tag, which is a ref of its own). `afterDelete` changes the state right after a
-// given release is deleted — someone editing the list while the clean-up runs.
-const FAKE_GH = String.raw`#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const f = process.env.FAKE_GH_STATE;
-const st = JSON.parse(fs.readFileSync(f, 'utf8'));
-const a = process.argv.slice(2);
-st.calls.push(a.map((x) => (x.includes('/') && fs.existsSync(x) ? path.basename(x) : x)));
-const save = () => fs.writeFileSync(f, JSON.stringify(st));
-const fail = (what) => {
-  const i = st.fail.indexOf(what);
-  if (i < 0) return false;
-  st.fail.splice(i, 1);
-  return true;
-};
-const die = (m) => { save(); process.stderr.write(m + '\n'); process.exit(1); };
-// the files: what follows the tag up to the first option
-const files = (list) => { const i = list.findIndex((x) => x.startsWith('--')); return (i < 0 ? list : list.slice(0, i)).filter((x) => fs.existsSync(x)).map((x) => path.basename(x)); };
-const find = (tag) => st.releases.find((r) => r.tag_name === tag);
-const relPath = (p) => /^repos\/[^/]+\/[^/]+\/(.*)$/.exec(p)?.[1] ?? '';
-if (a[0] === 'api' && a[1] === '-X' && a[2] === 'DELETE') {
-  const p = relPath(a[3]);
-  let m;
-  if ((m = /^releases\/(\d+)$/.exec(p))) {
-    const r = st.releases.find((x) => x.id === Number(m[1]));
-    if (!r) die('HTTP 404: Not Found');
-    if (fail('delete:' + r.tag_name)) die('HTTP 500');
-    st.releases = st.releases.filter((x) => x !== r);
-    st.deleted.push(r.tag_name);
-    for (const h of st.afterDelete?.[r.tag_name] ?? []) {
-      if (h.add) st.releases.push(h.add);
-      else Object.assign(st.releases.find((x) => x.tag_name === h.tag), h.set);
-    }
-    save();
-    process.exit(0);
-  }
-  if ((m = /^git\/refs\/tags\/(.+)$/.exec(p))) {
-    if (!st.tags.includes(m[1])) die('HTTP 422: Reference does not exist');
-    if (fail('tagdel:' + m[1])) die('HTTP 500');
-    st.tags = st.tags.filter((t) => t !== m[1]);
-    st.tagsDeleted.push(m[1]);
-    save();
-    process.exit(0);
-  }
-  die('fake gh: unknown delete ' + p);
-}
-if (a[0] === 'api' && a[1] === '-X' && a[2] === 'PATCH') {
-  const m = /^releases\/(\d+)$/.exec(relPath(a[3]));
-  const r = m && st.releases.find((x) => x.id === Number(m[1]));
-  if (!r) die('HTTP 404: Not Found');
-  if (fail('patch:' + r.tag_name)) die('HTTP 500');
-  if (!fail('patch-noop:' + r.tag_name) && a.includes('draft=true')) r.draft = true;
-  save();
-  process.exit(0);
-}
-if (a[0] === 'api' && /^repos\/[^/]+\/[^/]+\/git\/ref\/tags\//.test(a[1])) {
-  const t = relPath(a[1]).slice('git/ref/tags/'.length);
-  if (fail('tagread:' + t)) die('HTTP 502: Bad Gateway');
-  if (!st.tags.includes(t)) die('HTTP 404: Not Found');
-  save();
-  process.stdout.write(JSON.stringify({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: st.tagSha?.[t] ?? st.sha } }));
-  process.exit(0);
-}
-if (a[0] === 'api') {
-  st.lists = (st.lists ?? 0) + 1;
-  if (fail('list') || fail('list#' + st.lists)) die('HTTP 502: Bad Gateway');
-  // the list GitHub shows can change between two reads (an upload settling): { "<n>": { tag, assets } }
-  const after = st.afterList?.[st.lists];
-  if (after) find(after.tag).assets = after.assets;
-  const pages = [];
-  for (let i = 0; i < st.releases.length; i += 100) pages.push(st.releases.slice(i, i + 100));
-  if (!pages.length) pages.push([]);
-  save();
-  process.stdout.write(JSON.stringify(pages));
-  process.exit(0);
-}
-const tag = a[2];
-if (a[1] === 'create') {
-  if (find(tag)) die('a release with this tag already exists');
-  const names = files(a.slice(3));
-  if (fail('create')) die('HTTP 500');
-  const r = { id: st.nextId++, tag_name: tag, draft: a.includes('--draft'), prerelease: a.includes('--prerelease'), target_commitish: a[a.indexOf('--target') + 1], assets: [], body: fs.readFileSync(a[a.indexOf('--notes-file') + 1], 'utf8') };
-  st.releases.unshift(r);
-  // an asset the way GitHub lists it: uploaded with its size, or — an upload that failed — a placeholder
-  // of the same name, state "starter", size 0 (GitHub#628 review round 2)
-  const up = (name) => ({ name, state: 'uploaded', size: 10 });
-  if (fail('create-partial')) { r.assets = names.slice(0, 1).map(up); die('upload failed: connection reset'); }
-  if (fail('create-starter')) { r.assets = names.map((name, i) => (i === 0 ? { name, state: 'starter', size: 0 } : up(name))); die('upload failed: connection reset'); }
-  r.assets = names.map(up);
-  save();
-  process.exit(0);
-}
-if (a[1] === 'upload') {
-  const r = find(tag);
-  if (!r) die('release not found');
-  if (fail('upload')) die('HTTP 500');
-  // --clobber deletes the same-named asset first; an upload that then fails leaves it gone
-  if (fail('upload-partial')) {
-    const first = files(a.slice(3))[0];
-    r.assets = r.assets.filter((x) => x.name !== first);
-    die('upload failed: connection reset');
-  }
-  // --clobber: a file of the same name is replaced, whatever state it was in
-  for (const n of files(a.slice(3))) {
-    r.assets = r.assets.filter((x) => x.name !== n);
-    r.assets.push({ name: n, state: 'uploaded', size: 10 });
-  }
-  save();
-  process.exit(0);
-}
-if (a[1] === 'edit') {
-  const r = find(tag);
-  if (!r) die('release not found');
-  if (fail('edit')) die('HTTP 500');
-  // GitHub answering "ok" to an edit that did not take
-  if (fail('edit-noop')) { save(); process.exit(0); }
-  if (a.includes('--draft=false')) { r.draft = false; if (!st.tags.includes(tag)) st.tags.push(tag); }
-  if (a.includes('--draft=true')) r.draft = true;
-  if (a.includes('--prerelease')) r.prerelease = true;
-  save();
-  process.exit(0);
-}
-die('fake gh: unknown call ' + a.join(' '));
-`;
 
 interface Rel {
   id?: number;
@@ -269,6 +143,10 @@ describe('publishing a development build (GitHub#215)', () => {
       ['no state at all (round 3)', { size: 10 }],
       ['no size', { state: 'uploaded' }],
       ['an empty state', { state: '', size: 10 }],
+      ['a state word GitHub never used (round 4)', { state: 'unrecognized', size: 10 }],
+      ['a state word GitHub never used, size 0 (round 4)', { state: 'processing', size: 0 }],
+      ['a failed-upload placeholder with no size (round 4)', { state: 'starter' }],
+      ['a size that is not a whole number (round 4)', { state: 'uploaded', size: '10' }],
     ])('%s → read again; still unknown → nothing written, the public files left exactly as they are', (_, x) => {
       const w = world([withExe(x)]);
       w.build(v);
@@ -279,6 +157,24 @@ describe('publishing a development build (GitHub#215)', () => {
       const s = w.read();
       expect(writeArgs(s.calls)).toEqual([]);
       expect(s.calls.filter((c) => c[0] === 'api').length).toBeGreaterThanOrEqual(2); // it did read again
+      expect(JSON.stringify(s.releases)).toBe(before);
+    });
+    it.each([
+      ['assets: null', null],
+      ['no assets field', undefined],
+      ['assets: an object', {}],
+    ])('%s (the file list itself unreadable, round 4) → read again; still unknown → nothing written', (_, assets) => {
+      const rel: Record<string, unknown> = { ...devRel(v) };
+      if (assets === undefined) delete rel.assets;
+      else rel.assets = assets;
+      const w = world([rel as unknown as Rel, devRel('0.5.1-dev.380')]);
+      w.build(v);
+      const before = JSON.stringify(w.read().releases);
+      const r = w.run(v);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('读不出是否已上传完成');
+      const s = w.read();
+      expect(writeArgs(s.calls)).toEqual([]);
       expect(JSON.stringify(s.releases)).toBe(before);
     });
     it('unknown on the first read, uploaded on the second → already complete, nothing written', () => {

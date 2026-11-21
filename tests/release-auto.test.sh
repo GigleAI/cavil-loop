@@ -1432,7 +1432,7 @@ crun() {  # crun <dir> <script> [VAR=value …] → $RC, outputs in $TMP/c-outpu
     local dir="$1" s="$2"; shift 2
     : > "$TMP/c-output"; rm -f "$GH_ARGS"
     set +e
-    (cd "$dir" && env -u EVENT -u GH_FAIL_API GITHUB_OUTPUT="$TMP/c-output" GITHUB_REPOSITORY=o/r GH_RELEASES="$CREL" \
+    (cd "$dir" && env -u EVENT -u GH_FAIL_API -u GH_FAIL_TAGS GITHUB_OUTPUT="$TMP/c-output" GITHUB_REPOSITORY=o/r GH_RELEASES="$CREL" \
         PATH="${CPATH:-}$TMP/bin:$PATH" "$@" bash -e "$s") >"$TMP/c-out" 2>"$TMP/c-err"
     RC=$?
     set -e
@@ -1536,7 +1536,9 @@ for f in dev-plan.mjs dev-release.mjs update-manifest.mjs; do cp "$REPO_DIR/clie
 cbuild() {  # cbuild <releases JSON> VAR=… → build/quick outputs
     printf '%s' "$1" > "$TMP/c-devlist.json"; shift
     mkdir -p "$TMP/c-devbin" "$TMP/c-rt"
-    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
+    [ -f "$TMP/c-devtags.json" ] || printf '[]' > "$TMP/c-devtags.json"
+    # the release list, or (scripts/dev-plan.mjs's second read) the client/v* tag refs; GH_FAIL_TAGS fails only the latter
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; printf "[%%s]" "$(cat %q)"; exit 0;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-devtags.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
     chmod +x "$TMP/c-devbin/gh"
     CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
 }
@@ -1584,6 +1586,20 @@ for gone in -windows-x64.exe latest.json; do
     cbuild "$(devrel_without 9 "$C2" "$gone")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
     check "… and after daemon-only commits too" "$(build_line)" "0:true:true"
 done
+# review round 4 #9: a build made and then hidden again (the publish step turned it back into a draft
+# to fill it in and could not finish): its tag is there, its release page is not public — the
+# read-only token cannot see the draft itself. The next night builds, client change or not.
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.12","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}}]' "$C3" "$C2" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "publishing run, no client change, but a higher build is tagged and not public → build" "$(build_line)" "0:true:true"
+has "client/v0.6.1-dev.12" "$(cat "$TMP/c-out")" "… naming it in the log"
+check "… it read the tag refs" "$(grep -c 'matching-refs/tags/client/v' "$GH_ARGS")" 1
+printf '[{"ref":"refs/tags/client/v0.6.1-dev.9","object":{"type":"commit","sha":"%s"}},{"ref":"refs/tags/client/v0.6.1-dev.3","object":{"type":"commit","sha":"%s"}}]' "$C2" "$C1" > "$TMP/c-devtags.json"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3"
+check "… only the published build's tag and a lower one (an old build being cleaned up) → nothing built" "$(build_line)" "0:false:false"
+cbuild "$(devrel 9 "$C2")" TAG= PUBLISH=true EVENT=schedule SHA="$C3" GH_FAIL_TAGS=1
+check "… the tag list cannot be read → build (never a lost night)" "$(build_line)" "0:true:true"
+printf '[]' > "$TMP/c-devtags.json"
 STARTER="$(devrel 9 "$C4" | python3 -c 'import json,sys; d=json.load(sys.stdin); [a.update(state="starter", size=0) for a in d[0]["assets"] if a["name"].endswith("-windows-x64.exe")]; print(json.dumps(d))')"
 cbuild "$STARTER" TAG= PUBLISH=true EVENT=schedule
 check "publishing run, the commit already published but its Windows installer only a placeholder (starter, size 0) → build (review round 2 #8)" "$(build_line)" "0:true:true"
@@ -1617,7 +1633,35 @@ echo "-- the version a publishing run tries, and what checking it says (review r
 cbuild '[]' TAG= PUBLISH=true EVENT=schedule FORCE=true
 check "publishing run → the development version it will build" "$RC:$(cout dev_version)" "0:$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
 cbuild '[]' TAG= PUBLISH=false EVENT=workflow_dispatch
-check "a run that publishes nothing → no version" "$RC:$(cout dev_version)" "0:"
+check "a development build that publishes nothing → its version too (every build job stamps it, review round 4 #6)" "$RC:$(cout dev_version)" "0:$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+for ev in push pull_request; do
+    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
+    check "$ev (nothing built) → no version" "$RC:$(cout dev_version)" "0:"
+done
+cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
+check "a release build → no development version" "$RC:$(cout dev_version)" "0:"
+echo "-- one version per run: counted once in the mode job, stamped as given by both builds and published as given (review round 4 #6)"
+cbuild '[]' TAG= PUBLISH=true EVENT=schedule FORCE=true
+MODEV="$(cout dev_version)"
+git -C "$TMP/client-run" tag client/v9.0.0 "$C4"
+LATERV="$(cd "$TMP/client-run/client" && node scripts/dev-version.mjs)"
+check "a higher client/v tag appears mid-run: counting again would give another number" "$([ "$LATERV" != "$MODEV" ] && echo differs)" "differs"
+for job in package package-windows; do
+    cstep "$CLIENT_WORKFLOW" "$job" Version > "$TMP/c-ver.sh"
+    (cd "$TMP/client-run/client" && git checkout -q -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml)
+    crun "$TMP/client-run/client" "$TMP/c-ver.sh" TAG= VERSION= DEV_VERSION="$MODEV"
+    check "$job: stamps the mode job's version, not a new count" "$RC:$(node -p "require('$TMP/client-run/client/package.json').version")" "0:$MODEV"
+    crun "$TMP/client-run/client" "$TMP/c-ver.sh" TAG= VERSION= DEV_VERSION=
+    check "$job: no version from the mode job → fails, never counts its own" "$([ "$RC" != 0 ] && echo red)" "red"
+done
+(cd "$TMP/client-run/client" && git checkout -q -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml)
+cstep "$CLIENT_WORKFLOW" dev-release Version > "$TMP/c-ver.sh"
+crun "$TMP/client-run/client" "$TMP/c-ver.sh" V="$MODEV"
+check "dev-release: publishes the mode job's version" "$RC:$(cout version)" "0:$MODEV"
+crun "$TMP/client-run/client" "$TMP/c-ver.sh" V=
+check "dev-release: no version from the mode job → fails" "$([ "$RC" != 0 ] && echo red):$(cout version)" "red:"
+check "… and the report checks that same output" "$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["jobs"]["report-failure"]["steps"][1]["env"]["V"])' "$CLIENT_WORKFLOW")" '${{ needs.mode.outputs.dev_version }}'
+git -C "$TMP/client-run" tag -d client/v9.0.0 >/dev/null
 cstep "$CLIENT_WORKFLOW" report-failure "The version this run tried to publish" > "$TMP/c-tried.sh"
 tried() {  # tried <V> <release list JSON> [VAR=…] → $RC, outputs in $TMP/c-output
     printf '%s' "$2" > "$TMP/c-devlist.json"; local v="$1"; shift 2
@@ -1726,11 +1770,14 @@ git -C "$TMP/client-run" checkout -q -- client
 cver TAG=client/v0.6.0 VERSION=
 check "release build without a version → fails, nothing written" "$([ "$RC" != 0 ] && echo red):$(three)" "red:0.6.0 0.6.0 0.6.0"
 N="$(git -C "$TMP/client-run" rev-list --count HEAD)"
-cver TAG= VERSION=
+# a development build stamps the version the mode job counted (review round 4 #6): count it the way
+# the mode job does, in this checkout
+mver() { (cd "$TMP/client-run/client" && node scripts/dev-version.mjs); }
+cver TAG= VERSION= DEV_VERSION="$(mver)"
 check "development build: package.json's version + 1, -dev.<commits>" "$RC:$(three)" "0:0.6.1-dev.$N 0.6.1-dev.$N 0.6.1-dev.$N"
 git -C "$TMP/client-run" checkout -q -- client
 git -C "$TMP/client-run" tag client/v0.6.4 HEAD; git -C "$TMP/client-run" tag client/v0.6.9-dev.2 HEAD
-cver TAG= VERSION=
+cver TAG= VERSION= DEV_VERSION="$(mver)"
 check "… after a release above package.json: counted from that release (dev builds stay newer)" "$RC:$(three)" "0:0.6.5-dev.$N 0.6.5-dev.$N 0.6.5-dev.$N"
 git -C "$TMP/client-run" checkout -q -- client
 
@@ -1843,13 +1890,24 @@ B="$(body_of 1)"
 has "失败在发布那一步" "$B" "publish step failed before its release existed (a complete older build is the newest) → says the publish step"
 has "这次要发的 \`0.5.3-dev.640\` 没有完整发出" "$B" "… and that this version did not go out — never judged by the newest build"
 has "没有这个发版" "$B" "… quoting the check"
-lacks "已完整发出" "$B" "… never 'it is out'"
+lacks "已完整在发版页上" "$B" "… never 'it is out'"
 rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
 RF_DEV_RC=0 RF_DEV_CHECK="COMPLETE client/v0.5.3-dev.640：6 个文件都已上传完成" run_report "dev-release=failure"
 B="$(body_of 1)"
-has "这次要发的 \`0.5.3-dev.640\` 已完整发出" "$B" "this version public complete, the clean-up failed → says it is out"
+has "这次要发的 \`0.5.3-dev.640\` 现在已完整在发版页上" "$B" "this version public complete, the clean-up failed → says it is out"
+has "红的是发布之后的读回或旧版清理" "$B" "… and that what failed came after publishing"
 has "不会重发" "$B" "… and that it will not be published again"
 lacks "没有完整发出" "$B" "… not 'it did not go out'"
+# review round 4 #6: the version is complete, but this run never reached the publish step (the plan
+# could not read the list, so it built; the Mac build failed) — the two facts are said apart
+rf_repo; rf_jobs "dmg (arm64)=failure:Build the app (Tauri), its update package, and the dmg"
+RF_DEV_RC=0 RF_DEV_CHECK="COMPLETE client/v0.5.3-dev.640：6 个文件都已上传完成" run_report "package=failure size=skipped dev-release=skipped"
+B="$(body_of 1)"
+has "失败在发布之前（测试、打包或体积检查），发布那一步没有运行" "$B" "complete version, publish step not run → says this run failed before publishing"
+has "现在已完整在发版页上" "$B" "… and that the version is complete now"
+has "是之前的运行发出的，不是这次" "$B" "… put out by an earlier run, not this one"
+lacks "红的是发布之后的读回或旧版清理" "$B" "… never 'what failed came after publishing'"
+lacks "失败在发布那一步" "$B" "… nor 'failed in the publish step'"
 rf_repo; rf_jobs "publish development build=failure:Publish (pre-release), keep the latest 10"
 RF_DEV_RC=2 RF_DEV_CHECK="UNKNOWN 读不到发版列表：HTTP 502" run_report "dev-release=failure"
 B="$(body_of 1)"
@@ -1859,7 +1917,7 @@ for f in -arm64.dmg -arm64.app.tar.gz '-arm64.app.tar.gz` 及其 `.sig' -windows
     has "$f" "$B" "… names $f (review round 2 #6)"
 done
 has "大小为 0 的不算" "$B" "… and says a placeholder does not count"
-lacks "已完整发出" "$B" "… never 'it is out'"
+lacks "已完整在发版页上" "$B" "… never 'it is out'"
 lacks "没有完整发出" "$B" "… nor 'it did not go out'"
 rf_repo; rf_jobs "client build mode=failure:Release or development build"
 RF_DEV_V= RF_DEV_RC= RF_DEV_CHECK= run_report "mode=failure test=skipped package=skipped package-windows=skipped size=skipped dev-release=skipped"

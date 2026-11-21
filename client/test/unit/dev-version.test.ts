@@ -105,6 +105,22 @@ describe('the development build\'s version (GitHub#215)', () => {
     expect(readVersions(d).pkg).toBe(want);
   });
 
+  it('--set writes exactly the version the workflow counted once (review round 4 #6); anything else is refused, nothing written', () => {
+    const d = repo(3);
+    const cli = (...a: string[]) => spawnSync(process.execPath, [join(root, 'scripts', 'dev-version.mjs'), '--root', d, ...a], { encoding: 'utf8' });
+    const before = readVersions(d).text;
+    for (const bad of ['', '0.6.0', '0.6.1-dev.0', '0.6.0-dev.3', '0.6.1-dev.03', '0.6.1-dev.x', 'v0.6.1-dev.3']) {
+      const r = cli('--set', bad);
+      expect(r.status, bad).toBe(1);
+      expect(readVersions(d).text).toEqual(before);
+    }
+    // a version another count would not give here (a higher release tag appeared since): written as given
+    const r = cli('--set', '9.0.1-dev.3');
+    expect([r.status, r.stdout.trim()]).toEqual([0, '9.0.1-dev.3']);
+    const v = readVersions(d);
+    expect([v.pkg, v.conf, v.cargo]).toEqual(['9.0.1-dev.3', '9.0.1-dev.3', '9.0.1-dev.3']);
+  });
+
   it('what it stamps is a development version to the release job and to the app: newer than the release it came from, older than the next', async () => {
     const v = devVersion('0.5.0', 387);
     expect(VERSION_SHAPE.dev.test(v)).toBe(true);

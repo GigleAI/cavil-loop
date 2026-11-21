@@ -19,6 +19,17 @@
 //     another commit, those paths identical                 → no build, unless forced
 //     git cannot tell (the commit is not in this clone, …)  → build ("can't tell")
 //   the release list cannot be read                         → build ("can't tell")
+//   a development build of a higher version than the latest published one that is not public — a
+//   tag with no published release (a public build the publish step hid to fill it in, then could
+//   not finish: GitHub#628 review round 4), or a draft when this token can see drafts
+//                                                            → build (the publish step finishes it, or
+//                                                              publishes a newer version over it)
+//   the tag list cannot be read                             → build ("can't tell")
+// This run's token can only read (contents: read), and GitHub lists drafts only to tokens that can
+// write — so the tag is what shows a hidden build here: a published release's tag stays when it is
+// turned back into a draft, and a fresh draft has none (it is created on publishing). A draft that
+// never was public and has no tag holds nothing installed apps miss: the plan's commit comparison
+// with the last public build still sees every client change since.
 // Building when it cannot tell costs one extra build; skipping when it cannot tell could lose a
 // night's changes. A forced run on the commit already published builds and checks again; its
 // publish step then finds that version complete and writes nothing (dev-release.mjs).
@@ -29,7 +40,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildState, devFiles, devReleases, readReleases } from './dev-release.mjs';
+import { buildState, devFiles, devReleases, parseDev, readReleases, TAG_PREFIX } from './dev-release.mjs';
 
 /** What starts the Client workflow (its `paths` filter), as pathspecs from the repository root. */
 export const CLIENT_INPUTS = ['client', '.github/workflows/client.yml', '.github/actions/client-setup'];
@@ -37,19 +48,57 @@ export const CLIENT_INPUTS = ['client', '.github/workflows/client.yml', '.github
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
+
 /**
- * The newest published development build, the commit it was made from, and whether it carries every
- * file, uploaded (the publish step's own verdict, `buildState`).
- * → { tag, sha, complete, state } (sha null = no full commit recorded; state complete / incomplete /
- *   unknown) | null (there is none)
+ * A development build that was made but is not public now, of a higher version than the newest
+ * published one (there is none: any version): from `tags` (tag names) without a published release,
+ * and from drafts in `list` (when the token sees them). The highest → { tag, version, kind:
+ * 'tag' | 'draft' } | null.
  */
-export function latestBuild(list) {
+export function hiddenBuild(list, tags) {
   const top = devReleases(list)[0];
-  if (!top) return null;
+  const isPublic = new Set(list.filter((r) => r?.draft === false).map((r) => r?.tag_name));
+  const seen = [
+    ...tags.map((t) => ({ tag: t, kind: 'tag' })),
+    ...list.filter((r) => r?.draft === true && typeof r?.tag_name === 'string').map((r) => ({ tag: r.tag_name, kind: 'draft' })),
+  ];
+  let best = null;
+  for (const c of seen) {
+    if (typeof c.tag !== 'string' || !c.tag.startsWith(TAG_PREFIX) || isPublic.has(c.tag)) continue;
+    const parsed = parseDev(c.tag.slice(TAG_PREFIX.length));
+    if (!parsed || (top && cmp(parsed, top.parsed) <= 0)) continue;
+    if (!best || cmp(parsed, best.parsed) > 0) best = { ...c, parsed };
+  }
+  return best && { tag: best.tag, version: best.tag.slice(TAG_PREFIX.length), kind: best.kind };
+}
+
+/**
+ * The newest published development build, the commit it was made from, whether it carries every
+ * file, uploaded (the publish step's own verdict, `buildState`), and any hidden build above it.
+ * `tags` = the repository's client/v* tag names, or 'unreadable'.
+ * → { tag, sha, complete, state, hidden, tags } | null (there is no published one: hidden/tags then
+ *   travel as `{ none: true, hidden, tags }`)
+ */
+export function latestBuild(list, tags = []) {
+  const top = devReleases(list)[0];
+  const hidden = tags === 'unreadable' ? null : hiddenBuild(list, tags);
+  const extra = { hidden, tags: tags === 'unreadable' ? 'unreadable' : 'ok' };
+  if (!top) return hidden || tags === 'unreadable' ? { none: true, ...extra } : null;
   const rel = list.find((r) => r?.tag_name === top.tag && r?.draft === false);
   const sha = rel?.target_commitish;
   const state = buildState(rel, devFiles(top.version)).state;
-  return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete: state === 'complete', state };
+  return { tag: top.tag, sha: typeof sha === 'string' && FULL_SHA.test(sha) ? sha : null, complete: state === 'complete', state, ...extra };
+}
+
+/** The repository's client/v* tag names (every page); throws when a read fails. */
+export function readTags(repo) {
+  const out = execFileSync('gh', ['api', '--paginate', '--slurp', `repos/${repo}/git/matching-refs/tags/${TAG_PREFIX}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const pages = JSON.parse(out);
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('GitHub 返回的标签列表看不懂');
+  const refs = pages.flat();
+  if (!refs.every((r) => typeof r?.ref === 'string' && r.ref.startsWith('refs/tags/'))) throw new Error('GitHub 返回的标签列表看不懂');
+  return refs.map((r) => r.ref.slice('refs/tags/'.length));
 }
 
 /**
@@ -72,7 +121,11 @@ export function clientChanged(base, head, root = REPO_ROOT) {
  */
 export function plan({ latest, head, force, changed }) {
   if (latest === 'unreadable') return { build: true, why: '读不到发版列表，不知道上一个开发版是哪个提交：照常构建' };
-  if (!latest) return { build: true, why: '还没有发布过开发版：照常构建' };
+  if (latest?.tags === 'unreadable') return { build: true, why: '读不到标签列表，不知道有没有停在草稿、没公开的开发版：照常构建' };
+  if (latest?.hidden) {
+    return { build: true, why: `开发版 ${latest.hidden.tag} 做过但现在没有公开（${latest.hidden.kind === 'tag' ? '标签在、发版页不在：上次补传或发布没做完' : '停在草稿'}）：照常构建，发布那一步把它补齐，或发一个更新的版本` };
+  }
+  if (!latest || latest.none) return { build: true, why: '还没有发布过开发版：照常构建' };
   if (!latest.sha) return { build: true, why: `上一个开发版 ${latest.tag} 没记下完整的提交号：照常构建` };
   if (latest.complete !== true) {
     return latest.state === 'unknown'
@@ -104,7 +157,15 @@ function main() {
   if (!FULL_SHA.test(head ?? '')) throw new Error(`--sha 不是完整的提交号：${head}`);
   let latest;
   try {
-    latest = latestBuild(readReleases(repo));
+    const list = readReleases(repo);
+    let tags;
+    try {
+      tags = readTags(repo);
+    } catch (e) {
+      console.log(`::warning::读标签列表失败：${String(e.stderr ?? e.message).trim()}`);
+      tags = 'unreadable';
+    }
+    latest = latestBuild(list, tags);
   } catch (e) {
     console.log(`::warning::读发版列表失败：${String(e.stderr ?? e.message).trim()}`);
     latest = 'unreadable';

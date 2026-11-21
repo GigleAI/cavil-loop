@@ -266,8 +266,12 @@ def client_nightly_hint(needs):
         return (where + "没取到这次要发的版本号（构建模式那一步没给出），不能判断发出了什么；"
                 "打包没有完成就不会发出新版，装着开发版的 App 仍是上一版。" + manual)
     if rc == "0":
-        return (where + f"这次要发的 `{v}` 已完整发出（核对结果：{line or 'COMPLETE'}），装着开发版的 App 能收到它；"
-                "红的是发布之后的读回或旧版清理，下一晚不会重发这一版。")
+        # two separate facts (review round 4): where this run failed, and where the version stands now
+        if res == "failure":
+            return (where + f"这次要发的 `{v}` 现在已完整在发版页上（核对结果：{line or 'COMPLETE'}），"
+                    "装着开发版的 App 能收到它；红的是发布之后的读回或旧版清理，下一晚不会重发这一版。")
+        return (where + f"这次要发的 `{v}` 现在已完整在发版页上（核对结果：{line or 'COMPLETE'}），"
+                "是之前的运行发出的，不是这次；装着开发版的 App 能收到它，下一晚不会重发这一版。")
     if rc == "1":
         return (where + f"这次要发的 `{v}` 没有完整发出（核对结果：{line or 'INCOMPLETE'}）："
                 "装着开发版的 App 收不到这一版，仍是上一版。" + retry)

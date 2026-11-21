@@ -7,6 +7,7 @@ export interface DevRelease {
 }
 export declare function devReleases(list: unknown[]): DevRelease[];
 export declare function devFiles(version: string): string[];
+export declare const NOT_UPLOADED: string[];
 export declare function buildState(release: unknown, files: string[]): { state: 'complete' | 'incomplete' | 'unknown'; bad: string[]; unknown: string[] };
 export declare function decide(list: unknown[], version: string, files: string[]): { action: 'skip'; why: string } | { action: 'done' } | { action: 'create' } | { action: 'fill'; draft: boolean } | { action: 'unknown'; files: string[] };
 export declare function toPrune(list: unknown[], keep: number): DevRelease[];

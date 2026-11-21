@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
 import { plan } from '../../scripts/dev-plan.mjs';
 import { devFiles } from '../../scripts/dev-release.mjs';
+import { FAKE_GH as STATEFUL_GH } from './fake-gh-releases';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -20,6 +21,12 @@ const FAKE_GH = `#!/usr/bin/env node
 const fs = require('fs');
 fs.appendFileSync(process.env.FAKE_GH_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');
 if (process.env.FAKE_GH_FAIL) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
+if (process.argv.some((x) => x.includes('/git/matching-refs/tags/'))) {
+  if (process.env.FAKE_GH_FAIL_TAGS) { process.stderr.write('HTTP 502: Bad Gateway\\n'); process.exit(1); }
+  const tags = JSON.parse(process.env.FAKE_GH_TAGS || '[]');
+  process.stdout.write(JSON.stringify([tags.map((t) => ({ ref: 'refs/tags/' + t, object: { type: 'commit', sha: 'a'.repeat(40) } }))]));
+  process.exit(0);
+}
 process.stdout.write(JSON.stringify([JSON.parse(fs.readFileSync(process.env.FAKE_GH_LIST, 'utf8'))]));
 `;
 
@@ -70,7 +77,7 @@ const without = (tag: string, sha: string, ...gone: string[]) => {
   return { ...r, assets: r.assets.filter((a) => !gone.some((g) => a.name.endsWith(g))) };
 };
 
-function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[]) {
+function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[], tags: string[] | 'fail' = []) {
   const listFile = join(r.dir, '..', `${r.dir.split('/').pop()}-list.json`);
   const out = join(r.dir, '..', `${r.dir.split('/').pop()}-output`);
   const calls = join(r.dir, '..', `${r.dir.split('/').pop()}-calls`);
@@ -80,7 +87,7 @@ function run(r: ReturnType<typeof repo>, list: unknown[] | 'fail', args: string[
   const p = spawnSync(process.execPath, [join(r.dir, 'client', 'scripts', 'dev-plan.mjs'), ...args], {
     cwd: join(r.dir, 'client'),
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${r.bin}:${process.env.PATH}`, GITHUB_OUTPUT: out, FAKE_GH_LIST: listFile, FAKE_GH_CALLS: calls, FAKE_GH_FAIL: list === 'fail' ? '1' : '' },
+    env: { ...process.env, PATH: `${r.bin}:${process.env.PATH}`, GITHUB_OUTPUT: out, FAKE_GH_LIST: listFile, FAKE_GH_CALLS: calls, FAKE_GH_FAIL: list === 'fail' ? '1' : '', FAKE_GH_TAGS: JSON.stringify(tags === 'fail' ? [] : tags), FAKE_GH_FAIL_TAGS: tags === 'fail' ? '1' : '' },
   });
   const o = readFileSync(out, 'utf8');
   return { code: p.status, stdout: p.stdout, build: /^build=(.*)$/m.exec(o)?.[1], why: /^why=(.*)$/m.exec(o)?.[1] ?? '', calls: readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) };
@@ -187,6 +194,32 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     expect(missing.why).toContain('比不出');
   });
 
+  // review round 4 #9: a build that was public and was hidden again (the publish step turned it back
+  // into a draft to fill it in, and could not finish). The plan's token cannot see drafts; the tag the
+  // build kept shows it.
+  it('a higher build that is tagged but not public → builds, client change or not; tags of public or lower builds do not count', () => {
+    const r = repo();
+    const base = r.head();
+    const head = r.commit('scripts/daemon.sh');
+    const list = [rel('client/v0.5.3-dev.10', base)];
+    expect(run(r, list, ['--sha', head], ['client/v0.5.3-dev.10']).build).toBe('false');
+    const hidden = run(r, list, ['--sha', head], ['client/v0.5.3-dev.10', 'client/v0.5.3-dev.12']);
+    expect(hidden).toMatchObject({ code: 0, build: 'true' });
+    expect(hidden.why).toContain('client/v0.5.3-dev.12');
+    expect(hidden.why).toContain('没有公开');
+    expect(hidden.calls.some((c: string[]) => c.some((x) => x.includes('git/matching-refs/tags/client/v')))).toBe(true);
+    // a lower one (an old build the clean-up is removing), other shapes, a release tag: nothing
+    expect(run(r, list, ['--sha', head], ['client/v0.5.3-dev.9', 'client/v0.6.0', 'client/v0.5.3-dev.x', 'release/v2026.11.15.1']).build).toBe('false');
+    // a draft of a higher version, when the token does see drafts
+    const draft = run(r, [...list, rel('client/v0.5.3-dev.11', head, { draft: true })], ['--sha', head]);
+    expect(draft.build).toBe('true');
+    expect(draft.why).toContain('停在草稿');
+    // the tag list cannot be read → build
+    const unreadable = run(r, list, ['--sha', head], 'fail');
+    expect(unreadable).toMatchObject({ code: 0, build: 'true' });
+    expect(unreadable.why).toContain('读不到标签列表');
+  });
+
   it('refuses a commit that is not a full id, and writes no decision', () => {
     const r = repo();
     const got = run(r, [], ['--sha', 'main']);
@@ -203,5 +236,118 @@ describe('dev-plan: is there anything new to publish (GitHub#628)', () => {
     expect(plan({ latest, head: 'b'.repeat(40), force: false, changed: null }).build).toBe(true);
     expect(plan({ latest, head: 'a'.repeat(40), force: false, changed: () => { throw new Error('not asked'); } }).build).toBe(false);
     expect(plan({ latest: { ...latest, complete: false }, head: 'a'.repeat(40), force: false, changed: false }).build).toBe(true);
+  });
+});
+
+// Review round 4 #9, as one lifecycle over several nights: the nightly plan (read-only token: drafts
+// are not listed) and the publish step (a token that can write) run, as the workflow runs them,
+// against one stateful fake GitHub. The previous build stays public and complete the whole time.
+describe('a hidden half-filled build is finished on a later night, the previous build public throughout (GitHub#628 review round 4)', () => {
+  it('forced build of a daemon-only commit → one of its files breaks → the fill is cut off while hidden → the next plain night finishes it → the night after builds nothing', () => {
+    const r = repo();
+    const a = r.commit('client/app.txt');
+    const b = r.commit('scripts/daemon.sh'); // main moves on with a daemon-only commit
+    const X = '0.5.3-dev.10';
+    const Y = '0.5.3-dev.11';
+    const asset = (name: string) => ({ name, state: 'uploaded', size: 10 });
+    const tag = (v: string) => `client/v${v}`;
+    const state = join(r.dir, '..', `${r.dir.split('/').pop()}-world.json`);
+    writeFileSync(
+      state,
+      JSON.stringify({
+        releases: [{ id: 1, tag_name: tag(X), draft: false, prerelease: true, target_commitish: a, assets: devFiles(X).map(asset) }],
+        tags: [tag(X)],
+        tagSha: { [tag(X)]: a },
+        fail: [],
+        calls: [],
+        deleted: [],
+        tagsDeleted: [],
+        nextId: 100,
+        sha: b,
+      }),
+    );
+    const sbin = join(r.dir, '..', `${r.dir.split('/').pop()}-sbin`);
+    mkdirSync(sbin, { recursive: true });
+    writeFileSync(join(sbin, 'gh'), STATEFUL_GH);
+    chmodSync(join(sbin, 'gh'), 0o755);
+    const world = () => JSON.parse(readFileSync(state, 'utf8'));
+    const edit = (f: (w: any) => void) => {
+      const w = world();
+      f(w);
+      writeFileSync(state, JSON.stringify(w));
+    };
+    const env = (readonly: boolean, out = '') => ({ ...process.env, PATH: `${sbin}:${process.env.PATH}`, FAKE_GH_STATE: state, FAKE_GH_READONLY: readonly ? '1' : '', GITHUB_OUTPUT: out });
+    const plan = (head: string, force = false) => {
+      const out = join(r.dir, '..', `${r.dir.split('/').pop()}-plan-out`);
+      writeFileSync(out, '');
+      const p = spawnSync(process.execPath, [join(r.dir, 'client', 'scripts', 'dev-plan.mjs'), '--sha', head, ...(force ? ['--force'] : [])], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(true, out) });
+      expect(p.status, p.stdout + p.stderr).toBe(0);
+      const o = readFileSync(out, 'utf8');
+      return { build: /^build=(.*)$/m.exec(o)?.[1], why: /^why=(.*)$/m.exec(o)?.[1] ?? '' };
+    };
+    const dist = join(r.dir, '..', `${r.dir.split('/').pop()}-dist`);
+    const notes = join(r.dir, '..', `${r.dir.split('/').pop()}-notes.md`);
+    writeFileSync(notes, '开发版\n');
+    const publish = (v: string, sha: string) => {
+      rmSync(dist, { recursive: true, force: true });
+      mkdirSync(dist);
+      for (const f of devFiles(v)) writeFileSync(join(dist, f), `${f} ${Math.random()}`);
+      const p = spawnSync(process.execPath, [join(r.dir, 'client', 'scripts', 'dev-release.mjs'), '--version', v, '--sha', sha, '--dir', dist, '--notes-file', notes], { cwd: join(r.dir, 'client'), encoding: 'utf8', env: env(false) });
+      return { code: p.status, out: p.stdout + p.stderr };
+    };
+    const rel = (v: string) => world().releases.find((x: any) => x.tag_name === tag(v));
+    const complete = (v: string) => rel(v)?.draft === false && rel(v)?.prerelease === true && devFiles(v).every((f) => rel(v).assets.some((x: any) => x.name === f && x.state === 'uploaded' && x.size > 0));
+    const xStays = (when: string) => expect(complete(X), `${X} public and complete ${when}`).toBe(true);
+
+    // night 1: nothing changed in the client since X; a maintainer forces a build of b → Y, published
+    expect(plan(b).build).toBe('false');
+    expect(plan(b, true).build).toBe('true');
+    expect(publish(Y, b).code).toBe(0);
+    expect(complete(Y)).toBe(true);
+    xStays('after Y came out');
+
+    // one of Y's files breaks (a placeholder left where the Windows installer was)
+    edit((w) => {
+      const y = w.releases.find((x: any) => x.tag_name === tag(Y));
+      y.assets = y.assets.map((x: any) => (x.name.endsWith('-windows-x64.exe') ? { name: x.name, state: 'starter', size: 0 } : x));
+    });
+
+    // night 2: the plan sees Y incomplete → build; the fill hides Y first and is cut off part-way
+    const n2 = plan(b);
+    expect(n2.build).toBe('true');
+    expect(n2.why).toContain('没带齐文件');
+    edit((w) => w.fail.push('upload-partial'));
+    expect(publish(Y, b).code).toBe(1);
+    expect(rel(Y).draft).toBe(true); // hidden: no app sees a mismatched Y
+    xStays('while Y is hidden');
+    const afterNight2 = readFileSync(state, 'utf8');
+
+    // night 3: no client change, not forced. The read-only plan cannot see the draft, only Y's tag → build
+    const n3 = plan(b);
+    expect(n3.build, n3.why).toBe('true');
+    expect(n3.why).toContain(tag(Y));
+    // the publish step (it can see drafts) finishes Y: every file of this build, then public again
+    const p3 = publish(Y, b);
+    expect(p3.code, p3.out).toBe(0);
+    expect(complete(Y)).toBe(true);
+    xStays('after Y was finished');
+
+    // night 4: Y is the newest build, complete, of this very commit → nothing to do
+    expect(plan(b).build).toBe('false');
+
+    // the other way night 3 can go: main moved on (another daemon-only commit) → a newer version Z is
+    // published over the hidden Y, and the clean-up removes Y's draft with its tag
+    writeFileSync(state, afterNight2);
+    const c = r.commit('scripts/daemon.sh');
+    const Z = '0.5.3-dev.12';
+    const m3 = plan(c);
+    expect(m3.build, m3.why).toBe('true');
+    const pz = publish(Z, c);
+    expect(pz.code, pz.out).toBe(0);
+    expect(complete(Z)).toBe(true);
+    expect(rel(Y)).toBeUndefined();
+    expect(world().tags).not.toContain(tag(Y));
+    xStays('after Z came out over the hidden Y');
+    expect(plan(c).build).toBe('false');
   });
 });
