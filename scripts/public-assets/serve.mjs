@@ -15,7 +15,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import { judgeBuffer, judgeFile, projectPath, resolveInRoot } from './rules.mjs';
+import { findSecretsInBuffer, judgeFile, judgeFormat, projectPath, resolveInRoot, secretReason } from './rules.mjs';
 import { RULES_VERSION, codeId, loadLegacy, procStart, projectKeys, sha256 } from './strict.mjs';
 
 const NOT_FOUND = 'Not found.\n';
@@ -35,8 +35,10 @@ export function createServer({ root, prefix = '/review-assets/', log = (m) => co
     res.end(req.method === 'HEAD' ? undefined : NOT_FOUND);
   };
 
-  // 严格模式下的缓存：文件身份（设备号、inode、大小、修改 / 状态变更时间，纳秒）→ 判过的那一份内容。
-  // 原地改写一定改变状态变更时间（普通用户也改不回去），所以身份不变 = 内容没变。
+  // 严格模式下的缓存：文件身份（设备号、inode、大小、修改 / 状态变更时间，纳秒）→ 只和内容有关的事实
+  // （内容本身、SHA-256、凭证样式查到了什么）。原地改写一定改变状态变更时间（普通用户也改不回去），
+  // 所以身份不变 = 内容没变。和路径有关的判断（能不能交、扩展名和格式、旧图清单条目）不进缓存：
+  // 同一个文件身份可以挂在几个路径上（硬链接），每个请求都按它自己的路径重判。
   const cache = new Map();
   let cacheBytes = 0;
   const remember = (id, entry) => {
@@ -80,33 +82,40 @@ export function createServer({ root, prefix = '/review-assets/', log = (m) => co
       if (!st.isFile()) return { ok: false, reason: '不是普通文件（目录不对外）' };
       if (st.size > BigInt(strict.maxBytes)) return { ok: false, reason: `超过单文件上限 ${strict.maxBytes} 字节` };
       const id = identity(st);
-      const hit = cache.get(id);
-      if (hit) {
+      let facts = cache.get(id);
+      if (facts) {
         cache.delete(id);
-        cache.set(id, hit);
-        return hit.ok ? { ...hit, mtimeMs: Number(st.mtimeMs) } : hit;
+        cache.set(id, facts);
+      } else {
+        facts = readFacts(fd, st, id);
+        if (!facts.ok) return facts;
+        remember(id, facts);
       }
-      const size = Number(st.size);
-      const data = Buffer.alloc(size);
-      let got = 0;
-      while (got < size) {
-        const n = fs.readSync(fd, data, got, size - got, got);
-        if (n <= 0) break;
-        got += n;
-      }
-      const extra = fs.readSync(fd, Buffer.alloc(1), 0, 1, size);
-      const after = identity(fs.fstatSync(fd, { bigint: true }));
-      if (got !== size || extra !== 0 || after !== id) return { ok: false, reason: '读取期间文件变化' };
-      let entry;
-      const v = judgeBuffer(file, data);
-      if (!v.ok) entry = { ok: false, reason: v.reason };
-      else if (legacy && (legacy.size !== size || legacy.sha256 !== sha256(data))) entry = { ok: false, reason: '旧图内容和清单不符' };
-      else entry = { ok: true, data, type: v.type };
-      remember(id, entry);
-      return entry.ok ? { ...entry, mtimeMs: Number(st.mtimeMs) } : entry;
+      // 以下每个请求按自己的路径判，缓存冷热、请求先后都不影响结论
+      if (facts.secrets.length) return { ok: false, reason: secretReason(facts.secrets) };
+      const f = judgeFormat(file, facts.data);
+      if (!f.ok) return f;
+      if (legacy && (legacy.size !== facts.data.length || legacy.sha256 !== facts.sha256)) return { ok: false, reason: '旧图内容和清单不符' };
+      return { ok: true, data: facts.data, type: f.type, mtimeMs: Number(st.mtimeMs) };
     } finally {
       fs.closeSync(fd);
     }
+  };
+
+  // 整份读进内存并算出只和内容有关的事实；读取期间文件有变化就不算数（也不进缓存）。
+  const readFacts = (fd, st, id) => {
+    const size = Number(st.size);
+    const data = Buffer.alloc(size);
+    let got = 0;
+    while (got < size) {
+      const n = fs.readSync(fd, data, got, size - got, got);
+      if (n <= 0) break;
+      got += n;
+    }
+    const extra = fs.readSync(fd, Buffer.alloc(1), 0, 1, size);
+    const after = identity(fs.fstatSync(fd, { bigint: true }));
+    if (got !== size || extra !== 0 || after !== id) return { ok: false, reason: '读取期间文件变化' };
+    return { ok: true, data, sha256: sha256(data), secrets: findSecretsInBuffer(data) };
   };
 
   const serveStrict = (req, res, file, deny) => {

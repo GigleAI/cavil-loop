@@ -17,6 +17,7 @@
 #      周报保留文件名、同名不覆盖、早期写法
 #   ⑥ 派工提示词：配了地址且找得到 key → 两条换成发布命令；找不到 key → 写明发不了；没配地址 → 不动
 #   ⑦ 周报 run.sh：发布模式下图链 = 发布命令返回的地址；未生效时出图前就停；只有旧周报地址且已严格 → 停
+#   ⑨ 同一文件身份的几个路径（硬链接）：各按自己的路径判，不随缓存冷热和请求先后变
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -549,6 +550,35 @@ cp "$TMP/c9.pre" "$C9"; cp "$TMP/ac.pre" "$AC"
 printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
 sw; rc=$?
 chk "（配置恢复后切换成功）" "$rc/$(state_of)" "0/enforced"
+
+echo "⑨ 同一个文件身份挂在几个路径上（硬链接）：每个路径按自己的规则判，和缓存冷热、请求先后无关"
+# 项目子目录下一张合法 PNG（不在旧图清单里），再把清单里的旧图位置和一个 .gif 名字都硬链接到它：
+# 三个路径是同一个文件身份。旧图位置的清单条目记的是原内容，所以那里必须 404；.gif 名字格式不对，404。
+cp -a "$ROOT/issue-464/old-a.png" "$TMP/olda.keep"
+png "$ROOT/acme/12/hl.png"
+ln -f "$ROOT/acme/12/hl.png" "$ROOT/issue-464/old-a.png"
+ln -f "$ROOT/acme/12/hl.png" "$ROOT/acme/12/hl.gif"
+hl_round() { local r="" p; for p in "$@"; do r="$r $p=$(code "$B/$p")"; done; echo "$r"; }
+want=" acme/12/hl.png=200 issue-464/old-a.png=404 acme/12/hl.gif=404"
+for order in "acme/12/hl.png issue-464/old-a.png acme/12/hl.gif" "issue-464/old-a.png acme/12/hl.gif acme/12/hl.png" "acme/12/hl.gif acme/12/hl.png issue-464/old-a.png"; do
+    systemctl --user restart cavil-loop-public-assets.service   # 新进程 = 冷缓存
+    # shellcheck disable=SC2086
+    first="$(hl_round $order)"; second="$(hl_round $order)"
+    got=""; for p in acme/12/hl.png issue-464/old-a.png acme/12/hl.gif; do got="$got $p=$(code "$B/$p")"; done
+    chk "请求顺序「$order」：冷缓存第一轮、热缓存第二轮、再按固定顺序一轮，各路径结论一致" \
+        "$(printf '%s\n' $first | sort | tr '\n' ' ')|$(printf '%s\n' $second | sort | tr '\n' ' ')|$got" \
+        "$(printf '%s\n' $want | sort | tr '\n' ' ')|$(printf '%s\n' $want | sort | tr '\n' ' ')|$want"
+done
+# 反过来：旧图位置放回原内容，项目子目录的名字硬链接到它（同一身份，一个是清单条目、一个是项目路径）：两处都 200
+rm -f "$ROOT/acme/12/hl.gif"; cp -a "$TMP/olda.keep" "$ROOT/issue-464/old-a.png"; ln -f "$ROOT/issue-464/old-a.png" "$ROOT/acme/12/hl.png"
+systemctl --user restart cavil-loop-public-assets.service
+chk "旧图和项目子目录同一身份、内容和清单相符：两处都 200（先旧图后项目）" "$(code "$B/issue-464/old-a.png")/$(code "$B/acme/12/hl.png")" "200/200"
+systemctl --user restart cavil-loop-public-assets.service
+chk "同上，先项目后旧图" "$(code "$B/acme/12/hl.png")/$(code "$B/issue-464/old-a.png")" "200/200"
+# 未登记的项目路径硬链接到同一身份：缓存里有这份内容，也仍 404
+mkdir -p "$ROOT/nobody/4"; ln -f "$ROOT/issue-464/old-a.png" "$ROOT/nobody/4/hl.png"
+chk "未登记的路径挂在已缓存的同一身份上：仍 404" "$(code "$B/acme/12/hl.png")/$(code "$B/nobody/4/hl.png")" "200/404"
+rm -f "$ROOT/acme/12/hl.png" "$ROOT/nobody/4/hl.png"
 
 echo
 echo "结果：$pass 通过，$fail 失败"

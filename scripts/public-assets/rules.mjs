@@ -214,7 +214,9 @@ export function projectPath(rel, keys) {
 
 // 判内存里的一整份内容能不能对外：类型、开头格式、（SVG）文档形状，以及**所有类型**都查凭证样式。
 // 检查和送出用的是同一份 data，所以「检查过的就是送出去的」。
-export function judgeBuffer(file, data) {
+// 只看「这个路径的扩展名」和「内容开头是不是那种格式」：随路径而变（同一份内容的两个硬链接
+// 可以是不同扩展名），所以严格模式每个请求都重判，不进缓存。
+export function judgeFormat(file, data) {
   const ext = path.extname(file).slice(1).toLowerCase();
   const type = MEDIA_TYPES[ext];
   if (!type) return { ok: false, reason: `扩展名 .${ext || '(无)'} 不是图片 / 视频` };
@@ -223,7 +225,17 @@ export function judgeBuffer(file, data) {
   } else if (!looksLike(ext, data.subarray(0, HEAD_BYTES))) {
     return { ok: false, reason: `内容不是 .${ext} 格式` };
   }
-  const kinds = findSecretsInBuffer(data);
-  if (kinds.length) return { ok: false, reason: `内容里有凭证样式（${kinds.join('、')}）` };
   return { ok: true, type };
+}
+
+export function secretReason(kinds) {
+  return `内容里有凭证样式（${kinds.join('、')}）`;
+}
+
+export function judgeBuffer(file, data) {
+  const f = judgeFormat(file, data);
+  if (!f.ok) return f;
+  const kinds = findSecretsInBuffer(data);
+  if (kinds.length) return { ok: false, reason: secretReason(kinds) };
+  return f;
 }
