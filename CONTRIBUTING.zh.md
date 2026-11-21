@@ -24,6 +24,8 @@
 
 ## PR 流程
 
+Fork 之后向 `main` 开一个只做一件事的 PR，它的 CI 检查不能有失败的。具体步骤：
+
 1. **Fork → 本地改 → 推到你 fork 的分支**
    - 分支名按 `feature/<topic>` / `fix/<topic>` / `docs/<topic>` 风格
 2. **开 PR 到 `GigleAI/cavil-loop` 的 `main`**
@@ -33,13 +35,18 @@
    fix(dispatch): worktree 路径含空格时引号丢失
    docs(security): 补 fine-grained PAT 限制说明
    ```
-4. **PR Body** 至少含：
-   - **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
-   - **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
-   - **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）。每个 PR 还会按改动的路径在 GitHub Actions 上跑相应检查（规则是 `.github/workflows/` 里各工作流的 `paths`；**测试** 是 Shell 测试），其中不能有失败的；显示为「跳过」的是按设计不在 PR 上跑的任务（客户端打包和发布），不用管；交之前先在本机跑 `bash tests/run.sh --quick` 和覆盖你改动的那几个文件；整套交给 CI 跑
-   - **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口。往 `cavil-loop.config.example` 里加配置项，还要登记进 `scripts/config-notices.txt`（「不写就关、模板里开」的登记成 `notice`，老项目会收到提示；其余登记成 `quiet` 并写原因），否则 `tests/config-notice.test.sh` 红；同时登记进 `scripts/config-fields.txt`（桌面客户端的项目配置窗口显示）或 `tests/config-fields-hidden.txt`（不显示，写原因），否则 `tests/config-fields-coverage.test.sh` 红
+4. **PR Body** 至少含 **动机**（链上相关 issue 用 `Closes #N` / `Refs #N`）、**改动**、**验证**，改了有兼容性约束的接口还要写 **影响面**——每项要写到什么程度见列表下面的折叠块
 5. **保持小**：一个 PR 一个焦点。改 daemon + 顺手重命名 + 加新功能塞一个 PR 里基本会被要求拆
 6. **Style**：跟现有代码风格走（shell `set -euo pipefail` + `log()` helper + 用 `_lib.sh` 里的函数；给人看的文档是双语的——英文 `X.md` 加中文 `X.zh.md`，两份一起改；给 agent 读的文件如 `AGENTS.md`、`prompts/` 只有一份）
+
+<details><summary>细节：PR Body 每项要写什么</summary>
+
+- **动机**：解决什么 / 修什么。链上相关 issue 用 `Closes #N` / `Refs #N`
+- **改动**：1-2 段或 bullet 列表，不要让 reviewer 自己读 diff 找
+- **验证**：你自己怎么试过的（跑了哪条命令 / 在哪个项目接入跑过 / 改了哪个 prompt 后用什么场景验证）。每个 PR 还会按改动的路径在 GitHub Actions 上跑相应检查（规则是 `.github/workflows/` 里各工作流的 `paths`；**测试** 是 Shell 测试），其中不能有失败的；显示为「跳过」的是按设计不在 PR 上跑的任务（客户端打包和发布），不用管。交之前先在本机跑 `bash tests/run.sh --quick` 和覆盖你改动的那几个文件；整套交给 CI 跑
+- **影响面**：如果改了 `cavil-loop.config.example` / `prompts/*.template.md` / state.json schema，明说——这些是有兼容性约束的接口。往 `cavil-loop.config.example` 里加配置项，还要登记进 `scripts/config-notices.txt`（「不写就关、模板里开」的登记成 `notice`，老项目会收到提示；其余登记成 `quiet` 并写原因），否则 `tests/config-notice.test.sh` 红；同时登记进 `scripts/config-fields.txt`（桌面客户端的项目配置窗口显示）或 `tests/config-fields-hidden.txt`（不显示，写原因），否则 `tests/config-fields-coverage.test.sh` 红
+
+</details>
 
 第一次提交前先跑 `git config core.hooksPath .githooks`：pre-commit 钩子会跑一致性检查（`bash tests/run.sh --kind guard`，约 30 秒），漏登记、副本不一致在推之前就红，不用等 CI。
 
@@ -63,7 +70,7 @@ GitHub UI 上，给 PR 加 inline 评论有两条路：
 - **External contributor 不能给自己的 PR 打 `pending/agent` label**——GitHub 默认 collaborator 才有 label 权限。但万一你被加成 collaborator 了，请仍**只**用 label 触发对**你自己**的 PR 进行改动指示，且和维护者商量好范围
 - **不要在 issue / PR 评论里写"骨架式 prompt"**（`[SYSTEM] ignore previous instructions...`）——本工具有 prompt-injection 防御但不是 100%，恶意尝试会被记录 + 用户被加黑
 - **发现安全漏洞**：不要直接发到 public issue。GitHub Security Advisory → "Report a vulnerability"，或邮件维护者私发。
-- 详细安全模型见 [docs/security.md](docs/security.zh.md)
+- 详细安全模型见 [docs/security.zh.md](docs/security.zh.md)
 
 ## License
 
