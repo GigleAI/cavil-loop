@@ -70,15 +70,17 @@ RAW_TEXT = ("script", "style", "textarea", "title")
 # 从每个 < 起整段匹配一个标签 / 注释 / 声明，属性值（引号里的也算）、注释里的字随整段跳过；
 # 解析器的注释写法不收的注释（中间有 --）照浏览器到第一个 --> 为止，没关上的算到文末；
 # script / style / textarea / title 里是原样文字，到它们的结尾标签为止。
-# 代码块、行内代码、图片、分隔线是解析器给的别种 token，不喂标签，只记一个占位：看得见、所在的折叠深度照记，
-# 但不是文字（行首是这些的行不算关联行）。
+# 「看得见」只有一个记录（seen）：总结段检查按白名单判——两个标记之间、三个折叠块外面只许有空白、注释和折叠标签
+# 本身，Markdown 写的也好、HTML 写的也好，其余一切都算多出来的内容。行内代码、图片在文字记录里只留占位（行首是
+# 这些的行不算关联行）。
 # 正文扫描、关联行检查和托管总结段用的是同一串 token、同一个扫描器。
 class Scan:
     def __init__(self):
         self.depth = 0
         self.mode = None       # None | "comment" | 原样文字元素名
         self.extra = 0         # 没有对应 <details> 的多余结尾标签个数
-        self.pieces = {}       # 行号 → [(文字, 当时的深度)]，只收看得见的文字
+        self.pieces = {}       # 行号 → [(文字, 当时的深度)]，只收看得见的文字（关联行检查用）
+        self.visible = []      # 除空白、注释、折叠标签本身以外的一切内容：(行号, 当时的深度)（总结段检查用）
         self.events = []       # 每个折叠标签：(行号, 是不是结尾标签, 处理后的深度)，按出现顺序
 
     def depth_before(self, line):
@@ -93,6 +95,13 @@ class Scan:
     def text(self, s, line):
         if self.mode is None and s:
             self.pieces.setdefault(line, []).append((s, self.depth))
+            if s.strip():
+                self.seen(line)
+
+    def seen(self, line):
+        """记一处看得见的内容。只在这里记：Markdown 的块、行内内容和 HTML 的标签、文字都走这一个口子"""
+        if self.mode is None:
+            self.visible.append((line, self.depth))
 
     def _tag(self, closing, line):
         """深度只在这里变：开始标签加一；结尾标签减一，最低到零（多余的结尾标签照浏览器不关任何东西）"""
@@ -141,8 +150,12 @@ class Scan:
                 n = name.group(2).lower()
                 if n == "details":
                     self._tag(name.group(1) == "/", ln(lt))
-                elif n in RAW_TEXT and name.group(1) == "":
-                    self.mode = n
+                else:
+                    self.seen(ln(lt))   # 折叠标签以外的标签（<hr>、<img>、<span>……）都算看得见的内容
+                    if n in RAW_TEXT and name.group(1) == "":
+                        self.mode = n
+            elif not t.startswith("<!--"):
+                self.seen(ln(lt))       # 声明、处理指令等：注释以外都算
             pos = lt + len(t)
 
 
@@ -184,10 +197,10 @@ def walk(text):
                 elif not ch.type.endswith(("_open", "_close")):
                     sc.text("\x00", ln(cur))   # 图片等其他看得见的行内内容：占位，不当关联行
             continue
-        if tok.type in ("fence", "code_block", "hr"):
-            sc.text("\x00", line)   # 代码块、分隔线看得见：占位，记下它所在的折叠深度
         if tok.type.endswith("_close"):
             continue
+        if tok.map is not None:
+            sc.seen(line)   # HTML 块以外的每个 Markdown 块（段落、标题、代码块、分隔线、列表、引用……）都看得见
         if first_block is None and tok.map is not None:
             first_block = (tok, sc.depth)
     return sc, first_block
@@ -247,7 +260,7 @@ if mark_b or mark_e:
             sys.exit(2)
         ssc, _ = walk(r.stdout)
         tops = sum(1 for _, closing, after in ssc.events if not closing and after == 1)
-        stray = any(x.strip() for ps in ssc.pieces.values() for x, dd in ps if dd == 0)
+        stray = any(d == 0 for _, d in ssc.visible)
         if tops != 3 or ssc.depth != 0 or ssc.extra or stray:
             bad.append(("autopilot-summary", mark_b[0]))
 

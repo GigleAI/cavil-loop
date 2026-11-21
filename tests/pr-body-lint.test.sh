@@ -127,6 +127,19 @@ summary_with() {   # $1 = 插在第一个折叠块前面的内容，$2 = 插在�
 { printf '总结段折叠块外有代码块。\n\nCloses #1\n\n'; summary_with $'```\ncode\n```\n' ''; } > "$S/summary-fence-out.md"
 { printf '总结段折叠块里有代码块。\n\nCloses #1\n\n'; summary_with '' $'\n```\ncode\n```\n'; } > "$S/summary-fence-in.md"
 { printf '总结段折叠块外有图片。\n\nCloses #1\n\n'; summary_with $'![图](https://example.com/a.png)\n\n' ''; } > "$S/summary-image-out.md"
+# 收窄后复审第 2 轮：同一种可见内容的 Markdown 写法和 HTML 写法对拍，块外拒绝、块内允许；注释在块外也允许
+vis_kinds=(md-hr html-hr md-img html-img span comment)
+vis_text() {
+    case "$1" in
+        md-hr) printf -- '---' ;; html-hr) printf '<hr>' ;;
+        md-img) printf '![图](https://example.com/a.png)' ;; html-img) printf '<img src="example.png" alt="示例">' ;;
+        span) printf '<span>说明</span>' ;; comment) printf '<!-- 只是注释 -->' ;;
+    esac
+}
+for k in "${vis_kinds[@]}"; do
+    { printf '总结段里的可见内容。\n\nCloses #1\n\n'; summary_with "$(vis_text "$k")"$'\n\n' ''; } > "$S/vis-out-$k.md"
+    { printf '总结段里的可见内容。\n\nCloses #1\n\n'; summary_with '' $'\n'"$(vis_text "$k")"$'\n'; } > "$S/vis-in-$k.md"
+done
 # 中间带 -- 的注释（解析器的注释写法不收）照浏览器到第一个 --> 为止
 { printf '注释里有两个连字符。\n\n'; fold 验证 '<!-- a -- <details> -->
 
@@ -146,6 +159,10 @@ expect=(
     "attr-link|bad link-folded 5|1" "unclosed-link|bad link-folded 5|1"
     "extra-close-in|bad link-folded 8|1" "extra-close-out|ok|0"
     "summary-fence-out|bad autopilot-summary 5|1" "summary-fence-in|ok|0" "summary-image-out|bad autopilot-summary 5|1"
+    "vis-out-md-hr|bad autopilot-summary 5|1" "vis-out-html-hr|bad autopilot-summary 5|1"
+    "vis-out-md-img|bad autopilot-summary 5|1" "vis-out-html-img|bad autopilot-summary 5|1"
+    "vis-out-span|bad autopilot-summary 5|1" "vis-out-comment|ok|0"
+    "vis-in-md-hr|ok|0" "vis-in-html-hr|ok|0" "vis-in-md-img|ok|0" "vis-in-html-img|ok|0" "vis-in-span|ok|0" "vis-in-comment|ok|0"
 )
 : > "$TMP/gh-calls"
 for e in "${expect[@]}"; do
