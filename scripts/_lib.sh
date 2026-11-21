@@ -572,9 +572,9 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
     local kind="$1" n="$2" path="$3" ij pj item prpart="" labels rc
     REQUESTER_BOT_BACKFILL_DOC=""
     ij=$(gh api "repos/$REPO/issues/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 #$n"; return 2; }
-    # 缺字段一律算读不全（判不了），不填默认值：标签都要有名字
+    # 缺字段一律算读不全（判不了），不填默认值：标签都要有非空的名字
     item=$(printf '%s' "$ij" | jq -r 'select((.state | type) == "string" and (.labels | type) == "array"
-            and all(.labels[]; (.name | type) == "string"))
+            and all(.labels[]; (.name | type) == "string" and .name != ""))
         | [.state, ([.labels[] | .name] | sort | join(","))] | @tsv' 2>/dev/null) || item=""
     [ -n "$item" ] || { REQUESTER_BOT_WAIT_REASON="#$n 的状态 / 标签读不全"; return 2; }
     [ "${item%%$'\t'*}" = open ] || return 1
@@ -583,7 +583,7 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
         pj=$(gh api "repos/$REPO/pulls/$n" 2>/dev/null) || { REQUESTER_BOT_WAIT_REASON="读不到 PR #$n"; return 2; }
         prpart=$(printf '%s' "$pj" | jq -r 'select((.merged | type) == "boolean" and (.draft | type) == "boolean"
                 and ((.head.sha | type) == "string") and .head.sha != "" and ((.base.ref | type) == "string") and .base.ref != ""
-                and ((.head.ref | type) == "string") and .head.ref != "" and ((.head.repo.full_name | type) == "string"))
+                and ((.head.ref | type) == "string") and .head.ref != "" and ((.head.repo.full_name | type) == "string") and .head.repo.full_name != "")
             | [(.merged | tostring), (.draft | tostring), .base.ref, .head.sha, .head.ref, .head.repo.full_name] | join(":")' 2>/dev/null) || prpart=""
         [ -n "$prpart" ] || { REQUESTER_BOT_WAIT_REASON="PR #$n 的合并状态 / 分支 / 提交读不全"; return 2; }
         case "$prpart" in true:*) return 1 ;; esac
@@ -617,7 +617,12 @@ requester_bot_backfill_doc() {   # <issue|pr> <编号> <路径>：0 = 该补打�
     REQUESTER_BOT_BACKFILL_FIRSTKEY="$firstkey"
 }
 
-# 调用方第一次判定（拿到等待判断的 3）那一刻的依据，拼成和 requester_bot_backfill_doc 里 firstkey 同样的格式，
+# 「该补打」这个决定本身是补打函数里的完整现读判定（等待规则 + 这条路自己的全部放行条件 + 全部身份，
+# requester_bot_backfill_doc），判两次、两次逐字相等才写——和托管交人那套规矩一样：判定被前后两份现读夹住，
+# 更早的判断只是触发（GitHub#382）。调用方在快照上那一轮判断只是触发：触发之后、第一次现读之前维护者重新打
+# 托管标签、PR 推了新提交，补打函数按现读的新状态完整重判，结论仍是「该补打」就写——方案第 11 版定的就是
+# 「重新授权 = 维护者要继续」「推了新提交按现状重判、答复仍有效就派」，下一轮按新状态也会得出同一个结论。
+# 另外多核一项（比上面更保守）：调用方第一次判定（拿到等待判断的 3）那一刻的依据，拼成和 requester_bot_backfill_doc 里 firstkey 同样的格式，
 # 补打前现读的结果必须和它逐字一致（代码复审第 1 轮：只比补打函数自己的两次现读，判定之后、第一次现读之前
 # 被原地编辑的答复会被当成依据写下去）。greedy / 只挂托管标签的 issue：等待身份（REQUESTER_BOT_WAIT_DOC——
 # 规则 4 只凭它放行；挡工标签、授权等其余条件在补打函数的两次现读里各判一次）。不用快照里的标签：快照按 tab

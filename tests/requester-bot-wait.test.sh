@@ -425,8 +425,28 @@ Closes #7" "autopilot"
         done
     done
 
-    section "【6d2】PR 缺字段（草稿标记 / 来源仓库读不到）→ 判不了，不补打"
-    for miss in draft repo; do
+    # 调用方在快照上的那轮判断只是触发：触发之后、补打函数第一次现读之前，维护者摘掉再重新打托管标签、PR 推了新提交，
+    # 补打函数按现读的新状态完整重判（方案第 11 版：重新授权 = 维护者要继续；新提交按现状重判、答复仍有效就派）→ 照样补打；
+    # 同一时点挂上挡工标签 → 不补打（上面 greedy 「human」那组）
+    fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"' "PATH=\"$W/shim:\$PATH\""
+    mkshim 80
+    mkissue 80 "autopilot"; ev 80 labeled autopilot maint 8800; waitid 80 8801 8802
+    mkreply 80 981 req-bot "<!-- requester-bot-reply wait=8801 -->"
+    echo "jq '.[\"80\"] += [{event:\"unlabeled\", id:8803, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:00Z\"}, {event:\"labeled\", id:8804, label:{name:\"autopilot\"}, actor:{login:\"maint\", type:\"User\"}, created_at:\"2026-01-03T00:00:01Z\"}]' '$GD/events.json' > '$GD/e.tmp' && mv '$GD/e.tmp' '$GD/events.json'" > "$W/shim/hook_1"
+    tick
+    chk "托管 issue · 触发之后维护者重新授权 → 按新授权完整重判，照样补打" "$(backfills 80)" 1
+    chk "  到达性 · 重新授权确实发生在补打函数现读之前" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["80"] | map(select(.event == "unlabeled" and .label.name == "autopilot")) | length' "$GD/events.json")" "2/1"
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' "PATH=\"$W/shim:\$PATH\""
+    mkshim 9
+    mkpr 9 feature/x "无关联的 PR" ""; waitid 9 8961 8962
+    mkreply 9 996 req-bot "<!-- requester-bot-reply wait=8961 -->"
+    echo "jq '.[\"9\"].head.sha = \"2222222222222222222222222222222222222222\"' '$GD/items.json' > '$GD/i.tmp' && mv '$GD/i.tmp' '$GD/items.json'" > "$W/shim/hook_1"
+    tick
+    chk "greedy PR · 触发之后 PR 推了新提交 → 按现状重判，照样补打" "$(backfills 9)" 1
+    chk "  到达性 · 补打函数现读之前确实换了提交" "$(cat "$W/shim/count" 2>/dev/null)/$(jq -r '.["9"].head.sha' "$GD/items.json")" "2/2222222222222222222222222222222222222222"
+
+    section "【6d2】PR / 标签缺字段或为空（草稿标记 / 来源仓库读不到或为空 / 标签名为空）→ 判不了，不补打"
+    for miss in draft repo repo-empty label-empty; do
         fresh "${REQ_ON[@]}" 'LABEL_AUTOPILOT="autopilot"'
         mkissue 7 "pending/PR"; mkpr 8 feature/issue-7 "做了 X。
 
@@ -436,9 +456,12 @@ Closes #7" "autopilot"
         case "$miss" in
             draft) jset items.json '.["8"] |= del(.draft)' ;;
             repo)  jset items.json '.["8"].head.repo = null' ;;
+            repo-empty)  jset items.json '.["8"].head.repo.full_name = ""' ;;
+            label-empty) jset labels.json '.["8"] += [""]' ;;
         esac
         tick
         chk "缺 $miss → 不补打" "$(backfills 8)" 0
+        chk "  到达性 · 补打函数确实读过 PR #8" "$([ "$(n_calls "$R/pulls/8 ")$(n_calls "$R/pulls/8\$")" != 00 ] && echo yes || echo no)" yes
     done
 
     section "【6d3】只有 shasum、没有 sha256sum 的机器：带说明的答复照样补打"
@@ -489,17 +512,27 @@ Closes #7" "autopilot"
     tick
     chk "整轮只有一个补打写请求、没加 pending/review" "$(backfills 8)/$(has_label 8 pending/review)" "1/no"
 
-    section "【6g】机器人的派工标签晚到（派工已摘掉补打的标签之后才打）→ 不再补打，按现有明确派工再派"
-    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
+    section "【6g】机器人的派工标签晚到（派工已摘掉补打的标签之后才打）→ 不再补打，按现有明确派工再派一次（真实轮询跨三轮）"
+    # 派工脚本换成桩：记一次派工，再走真实的「翻 doing/agent」（摘掉派工标签和等待标签）；其余是真实 agent-poll.sh
+    rm -rf "$SANDBOX/stubscripts"; cp -r "$SCRIPTS" "$SANDBOX/stubscripts"
+    local d
+    for d in dispatch-new-issue.sh dispatch-issue-comment.sh dispatch-pr-comment.sh; do
+        printf '#!/usr/bin/env bash\nset -uo pipefail\nsource "$(dirname "$0")/_lib.sh"\necho "$1" >> "$STATE_DIR/stub-dispatched"\nflip_to_doing "$1" "stub" || true\n' > "$SANDBOX/stubscripts/$d"
+    done
+    fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"' 'MAX_CONCURRENT_WORKERS=1'
+    stick() { : > "$CALLS"; : > "$W/state/poll.log" 2>/dev/null; env CODING_AGENT_CONFIG="$CONF" bash "$SANDBOX/stubscripts/agent-poll.sh" >/dev/null 2>&1; }
+    dispatched() { grep -cx "$1" "$W/state/stub-dispatched" 2>/dev/null || echo 0; }
     mkissue 78 ""; waitid 78 8781 8782
     mkreply 78 978 req-bot "<!-- requester-bot-reply wait=8781 -->"
-    tick
-    chk "第 1 轮补打" "$(backfills 78)" 1
-    # 模拟派工：daemon 摘掉 pending/agent、交出后条目回到没有流程标签；机器人此时才打上自己的 pending/agent
-    jset labels.json '.["78"] = []'; ev 78 unlabeled pending/agent loop-bot 8784
-    ev 78 labeled pending/agent req-bot 8785; jset labels.json '.["78"] = ["pending/agent"]'
-    tick
-    chk "机器人晚到的标签 → 照现有明确派工再派一次，不补打" "$(queued issue 78)/$(backfills 78)" "yes/0"
+    stick
+    chk "第 1 轮：补打、不派" "$(backfills 78)/$(dispatched 78)" "1/0"
+    stick
+    chk "第 2 轮：明确派工派 1 次，派工时摘掉了 pending/agent、挂上 doing/agent" "$(dispatched 78)/$(has_label 78 pending/agent)/$(has_label 78 doing/agent)" "1/no/yes"
+    # worker 干完交出（条目回到没有流程标签）；机器人这时才打上自己的 pending/agent
+    jset labels.json '.["78"] = []'; ev 78 unlabeled doing/agent loop-bot 8786
+    ev 78 labeled pending/agent req-bot 8787; jset labels.json '.["78"] = ["pending/agent"]'
+    stick
+    chk "第 3 轮：机器人晚到的标签 → 再派 1 次（共 2 次），daemon 没再补打" "$(dispatched 78)/$(backfills 78)" "2/0"
 
     section "【6h】对接文档里读等待事件编号的命令：只给 HOME / PATH 照字面跑，产出的说明被 daemon 认出"
     fresh "${REQ_ON[@]}" 'DISPATCH_MODE="greedy"'
@@ -568,6 +601,7 @@ prompts_check() {
         chk "$name：顺序是 交接规则 → 托管规则 → 合并规则" \
             "$(printf '%s' "$n" | awk '/^# 外部需求机器人交接规则/{a=NR} /^# 托管规则（本条是托管条目）/{b=NR} /^# 外部需求机器人提的需求 \+ 托管/{c=NR} END{print (a>0 && b>a && c>b) ? "yes" : "no"}')" yes
         chk "$name：没有没换掉的占位" "$(printf '%s' "$n" | grep -c '@@')" 0
+        chk "$name：带「同一条答复上一轮已处理就不重复做」那一句（第二次派工的提示同样是它）" "$(printf '%s' "$n" | grep -c '这条答复上一轮已处理')" 1
         # shellcheck disable=SC2086
         chk "$name：只开托管（机器人功能关）→ 没有合并规则" "$(compose "$root" "$name" $ap | grep -c '外部需求机器人提的需求 + 托管')" 0
         # shellcheck disable=SC2086
