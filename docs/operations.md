@@ -697,7 +697,9 @@ comment on the item is read only through the guarded read command, so the review
 proposal mode at all there: proposal reviews are full every round and write no proposal baseline.
 Code mode reads no comments there either: the reviewer copies the second line of its own last
 verdict out of the guarded read output and passes it with `--baseline-mark '<line>'`; when the
-guarded read fails or has no such line, the round is full. Elsewhere code mode reads the comment
+guarded read succeeds but holds no such line (or a malformed one), the round is full; when the
+guarded read itself fails, that is not "no baseline" — the outsider rules apply (retry once, then
+hand to a human with the command's error), and the review does not go on as a full round. Elsewhere code mode reads the comment
 list only to find that line and never shows comment text. Fingerprints use `sha256sum` or macOS's `shasum` (`scripts/_sha256.sh`, shared with the
 config fingerprints); with neither, it is `full read-failed`. No output, a non-zero exit or any
 other first line is treated as full.
