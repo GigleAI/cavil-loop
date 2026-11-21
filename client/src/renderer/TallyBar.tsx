@@ -136,7 +136,9 @@ export function TallyBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
 
-  // the open fold goes on a press elsewhere, Esc (focus back to its button), the window losing focus
+  // the open fold goes on a press elsewhere or the window losing focus. Esc is not listened for here: only an Esc
+  // pressed on the fold's own button or panel is the fold's (onKeyDown below) — a window-wide listener also took
+  // the Esc of the search box and of a detail page in front of the board (PR #640 review rounds 1 and 2)
   useEffect(() => {
     if (!shownOpen) return;
     const away = (ev: Event) => {
@@ -145,29 +147,14 @@ export function TallyBar({
       focus.current = null;
       setOpen(false);
     };
-    const key = (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape') return;
-      // only an Esc meant for the fold: focus on its button or in its panel, or on nothing while the fold is on
-      // screen. An Esc with focus anywhere else (the search box, a detail page in front) is that place's own.
-      const fold = box.current?.querySelector<HTMLElement>('.tally-fold') ?? null;
-      const active = document.activeElement;
-      const ours = active && active !== document.body ? Boolean(fold?.contains(active)) : Boolean(fold && fold.offsetParent !== null);
-      if (!ours) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      setOpen(false);
-      focusToggle();
-    };
     const gone = () => {
       focus.current = null;
       setOpen(false);
     };
     window.addEventListener('pointerdown', away, true);
-    window.addEventListener('keydown', key, true);
     window.addEventListener('blur', gone);
     return () => {
       window.removeEventListener('pointerdown', away, true);
-      window.removeEventListener('keydown', key, true);
       window.removeEventListener('blur', gone);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -202,11 +189,21 @@ export function TallyBar({
           <span
             className="tally-fold"
             onBlur={(ev) => {
-              // focus moved on, out of the fold (Tab, a click elsewhere): the open panel closes behind it. A button
-              // removed while focused (its number left the fold) is not a move: the focus rules above handle that.
+              // focus moved on, out of the fold (Tab, a click elsewhere, the board hidden behind a detail tab): the open
+              // panel closes behind it. A button removed while focused (its number left the fold) is not a move: the
+              // focus rules above handle that.
               const next = ev.relatedTarget;
               if (next instanceof Node && ev.currentTarget.contains(next)) return;
-              if (ev.target instanceof Node && ev.target.isConnected && next instanceof Node) setOpen(false);
+              if (ev.target instanceof Node && ev.target.isConnected) setOpen(false);
+            }}
+            onKeyDown={(ev) => {
+              // Esc on the fold's button or in its panel closes an open panel and comes back to the button; it is
+              // marked handled so the window's own Esc (回到首页 and the like) does not also act on it
+              if (ev.key !== 'Escape' || !shownOpen) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              setOpen(false);
+              focusToggle();
             }}
           >
             <button

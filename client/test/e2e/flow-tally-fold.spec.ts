@@ -219,6 +219,24 @@ test('GitHub#634: the default rules over the recorded board; the fold opens, its
   await page.keyboard.press('Escape');
   await expect(pop(page)).toBeHidden();
   await expect.poll(() => focused(page)).toBe('toggle');
+
+  // PR #640 review round 2: the board stays mounted behind a detail tab. Fold opened with the keyboard, then a
+  // detail tab brought to the front with the keyboard: the first Esc is the detail page's own (back to the board),
+  // never eaten by the hidden fold.
+  await page.locator('[data-testid="row"] [data-testid="title-cell"]').first().click({ button: 'middle' });
+  await expect(page.getByTestId('tab')).toHaveCount(1);
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  await toggle(page).focus();
+  await page.keyboard.press('Enter');
+  await expect(pop(page)).toBeVisible();
+  await page.keyboard.press('Control+2');
+  await expect(page.getByTestId('tab')).toHaveAttribute('data-front', 'yes');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('tab-home')).toHaveAttribute('data-front', 'yes');
+  // back on the board: the fold closed when the board went behind, its button still works
+  await expect(pop(page)).toBeHidden();
+  await toggle(page).click();
+  await expect(pop(page)).toBeVisible();
 });
 
 test('GitHub#634: a lit number goes 1 → 0 → 1 — it moves into the fold and back, stays lit, and a click still gives the search from before', async () => {
