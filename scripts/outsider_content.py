@@ -643,9 +643,11 @@ def run(inp):
                 except OSError:
                     pass
         verdicts[s] = v
-    # ④ 整理稿
+    # ④ 整理稿（view = 同一份文字按条目给出，往返记录视图拆单元用，GitHub#610）
     out = []
+    view = []
     for e, e2 in prepared:
+        start = len(out)
         head = "### %s" % SRC_TXT.get(e["src"], e["src"])
         if e["src"].endswith("-body"):
             head += " %s" % e.get("ref", "")
@@ -685,7 +687,15 @@ def run(inp):
             out.append("")
             out.append(text)
         out.append("")
+        if e["src"] in ("issue-comment", "pr-comment"):
+            shown = out[start:]
+            # 头两行（标题、出处）之后的文字就是这条评论展示出来的样子
+            body_at = next((i for i, ln in enumerate(shown) if ln == ""), len(shown))
+            view.append({"src": e["src"], "id": e["id"], "author": e.get("author") or "", "trusted": e["role"] == "loop",
+                         "at": e.get("at", ""), "updated": e.get("updated", ""), "url": e.get("url", ""),
+                         "notes": shown[2:body_at], "body": "\n".join(shown[body_at + 1:]).rstrip("\n")})
     res["text"] = "\n".join(out)
+    res["view"] = view
     return res
 
 

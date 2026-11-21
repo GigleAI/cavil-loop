@@ -292,8 +292,19 @@ test('started hidden (launch at login): no window, still syncing and reminding w
   await startApp();
   await signInWithRepo();
   await wd.click('[data-testid="open-settings"]');
-  // the box is below the fold since GitHub#397 added a field above it, and the settings page scrolls smoothly:
+  // the box sits under the reminder card's own 「高级」 since GitHub#591 (#596), and a folded block renders nothing:
+  // unfold it first, the way a person would (test/e2e/unfold.ts does the same for the window tests).
+  // Both are below the fold since GitHub#397 added a field above them, and the settings page scrolls smoothly:
   // WebDriver's own scroll has not arrived when it clicks ("element not interactable"). Scroll there at once first.
+  if ((await wd.exec<string>(`return document.querySelector('[data-testid="pending-card-more"]').getAttribute('data-open')`)) === 'false') {
+    await wd.exec(`document.querySelector('[data-testid="pending-card-more-toggle"]').scrollIntoView({ block: 'center', behavior: 'instant' })`);
+    await wd.click('[data-testid="pending-card-more-toggle"]');
+  }
+  await until(
+    async () => (await wd.exec<string>(`return document.querySelector('[data-testid="pending-card-more"]').getAttribute('data-open')`)) === 'true',
+    'the reminder card unfolded',
+    10_000,
+  );
   await wd.exec(`document.querySelector('[data-testid="clear-all-on-activate"]').scrollIntoView({ block: 'center', behavior: 'instant' })`);
   await wd.click('[data-testid="clear-all-on-activate"]');
   await until(async () => (await wd.count('[data-testid="clear-all-on-activate"]:checked')) === 1, 'the box is ticked', 10_000);

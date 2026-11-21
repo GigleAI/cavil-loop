@@ -412,7 +412,9 @@ for agent in claude; do
     # The merge-base copy has no CI fields only until this feature is on main; from then on it
     # prints them itself and the two markers must simply be equal (GitHub#329: the unconditional
     # append made this red on every branch cut after the merge).
-    want=$(marker "$old")
+    # 单价出处：Claude 一侧改成直接取官方价后由 solved 改为 default（GitHub#606），这是唯一放过的差别；
+    # 合并后基点自己就写 default，这句什么也不改
+    want=$(marker "$old" | sed 's/ price_source=solved / price_source=default /')
     case "$want" in
         *" ci_wait_secs="*) ;;
         *) want=$(printf '%s\n' "$want" | sed 's/ -->$/ ci_wait_secs=0.000 ci_waits=0 ci_wait_untimed=0 -->/') ;;
@@ -423,7 +425,8 @@ for mode in "" --kv; do
     for agent in claude codex; do
         d="$WT"; [ "$agent" = codex ] && d="$CXWT"
         n=$(cd "$d" && CODEX_PRICES='{}' bash "$TU/$agent.sh" "$START" $mode)
-        o=$(cd "$d" && CODEX_PRICES='{}' bash "$TMP/old/scripts/drivers/token-usage/$agent.sh" "$START" $mode)
+        o=$(cd "$d" && CODEX_PRICES='{}' bash "$TMP/old/scripts/drivers/token-usage/$agent.sh" "$START" $mode \
+            | sed 's/ price_source=solved / price_source=default /')
         eq "driver_same_${agent}${mode:-_human}" "$n" "$o"
     done
 done

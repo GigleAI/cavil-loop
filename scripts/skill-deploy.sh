@@ -65,9 +65,12 @@ install_entrypoints() {
     ln -sfn release-entry.sh "$root/heavy-test.sh"   # 重测试排队命令（GitHub#343）
     ln -sfn release-entry.sh "$root/outsider-read.sh"   # 托管条目读正文和评论的命令（GitHub#391）
     ln -sfn release-entry.sh "$root/human-paths-check.sh"   # 复审验算「合并前需人过目」清单的命令（GitHub#560）
+    ln -sfn release-entry.sh "$root/publish-asset.sh"   # 评论配图 / 周报的发布命令（GitHub#613）
+    ln -sfn release-entry.sh "$root/review-scope.sh"     # 复审算修复范围的命令（GitHub#621）
     ln -sfn release-entry.sh "$root/flip-label.sh"       # worker / 复审翻标签（GitHub#599）
     ln -sfn release-entry.sh "$root/conflict-check.sh"   # 交 PR 前的冲突检查（GitHub#599）
     ln -sfn release-entry.sh "$root/pr-feedback.sh"      # 读 PR 全部评论（GitHub#599）
+    ln -sfn release-entry.sh "$root/round-log.sh"        # 往返记录的写入 / 读取（GitHub#610）
     ln -sfn release-entry.sh "$root/notify-relay.sh"   # 早期入口名（GitHub#97 改名前的提示词还在用）
     # 步骤脚本结果的核对规则 step-result.jq 不往这里复制（PR #607 复审第 2、3 轮）：模板里带着它，
     # 脚本用自己发布里的那份核对自己的结果。以前装过的那份删掉，免得有人读到旧的

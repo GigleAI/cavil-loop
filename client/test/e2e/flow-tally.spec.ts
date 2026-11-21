@@ -64,7 +64,7 @@ const expected = async (page: Page, label: string, anyState = false) =>
   (await items(page)).filter((i) => (anyState || i.state === 'open') && i.labels.some((l) => l.name.toLowerCase() === label.toLowerCase())).length;
 const tally = (page: Page, kind: string) => page.locator(`[data-testid="tally"][data-kind="${kind}"]`);
 const countOf = async (page: Page, kind: string) => Number(await tally(page, kind).getByTestId('tally-count').textContent());
-const shown = (page: Page) => page.locator('[data-testid="row"]:not([data-pulled])');
+const shown = (page: Page) => page.locator('[data-testid="row"]:not([data-pulled]):not([data-carried])');
 
 async function ready(page: Page) {
   await page.getByTestId('oauth-settings-toggle').click();

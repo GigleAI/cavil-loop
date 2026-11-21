@@ -531,6 +531,67 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 留空 = 完全关闭，行为与从前一致。
 
+### 复审收敛：首轮一次报全，之后只复核修复（GitHub#621）
+
+以前一个 PR 常要分多轮才收到完整的复审意见：每轮都从头审一遍，每轮都在上一轮没看到的地方再找出一个。
+现在复审的说明里总会多一段（`prompts/review-converge.md`，由拼 prompt 的公共步骤追加，整份替换了复审模板的
+项目也收得到）：
+
+- **全量轮**——最近一次人工动作之后的第 1 轮，或任何算不出基线的轮次：需求、diff（方案就是全文）、测试、
+  文档一次过完，问题全部列出、编号（`#1`、`#2`…，之后各轮沿用）。
+- **复核轮**——第 2 轮起、基线可用时：清单逐条核对（改好 / 没改好 / worker 给的不改理由成立否），**修复本身**
+  里的新问题照常编号、可以打回，照拦关卡仍对整个 PR 照查。
+- **每个问题一条判断顺序**，停在第一个给出结果的一步：① 照拦——检查有失败或被取消的行、与主干冲突、违反
+  适用的硬规则、突破安全边界、会删 / 写坏数据（任何项目规则都不能降级）；② 定级——依次看项目的复审附加
+  说明 → `REVIEW.md` → 工具默认分界（行为 / 数据 / 测试错 = 必须改；措辞、命名、可读性 = 建议），建议一律
+  不打回，列进折叠块；③ 全量轮或落在修复范围内 → 打回；④ 复核轮在修复范围外迟到的「必须改」→ 普通条目
+  写进「需要人注意」、不打回（人合并前决定）；托管条目打回——daemon 合并前没人看这条提醒。
+  复审模板里本来就写明「判不通过」的条目（硬规则、拍板问题里出现代码名字、用「你」「我」指代参与方、交人评论的
+  版式各项、冲突、方案审查各点）一律是「必须改」，不会被定成建议；worker 这一轮写的评论、方案和 PR 正文总在
+  审查范围内，所以这些在第 ③ 步打回，走不到第 ④ 步。
+- 轮次标记格式不变（周报按它认复审评论）；下一行是隐藏的基线标记，下一轮据此算修复范围（只认结论评论的
+  第一、二行，别处引用的旧标记不算）：
+  `<!-- review-baseline: code head=<sha> base=<分支> -->` 或
+  `<!-- review-baseline: plan comment=<id> sha256=<指纹> -->`。
+
+**「修复本身」是哪些改动**由 `scripts/review-scope.sh`（托管安装走 `entrypoints/review-scope.sh`，只读）算出。
+它读派工账号最近一条复审结论里的基线，从上往下判、停在第一条命中的：
+
+| # | 代码 | 输出 |
+|---|---|---|
+| 1 | 最近一次人工动作后的第 1 轮 | `full first-round` |
+| 2 | 读评论 / 读 PR 失败 | `full read-failed` |
+| 3 | 没有基线标记，或格式不符 | `full no-baseline` |
+| 4 | PR 的目标分支与基线里的不同 | `full base-changed` |
+| 5 | 拉取失败，或上轮审过的提交取不到 | `full baseline-missing` |
+| 6 | 上轮审过的提交不是本轮提交的祖先（变基 / 强推） | `full history-rewritten` |
+| 7 | 与目标分支的分叉点算不出 | `full read-failed` |
+| 8 | 「上轮审过的提交 + 分叉点」合成时冲突（PR 本轮手工解决了与主干的冲突时也是） | `full merge-conflict` |
+| 9 | 合成出别的错 | `full read-failed` |
+| 10 | 合成的树与本轮提交比较失败 | `full read-failed` |
+| 11 | 没有差异（只同步了主干，或没有新提交） | `scope 0` |
+| 12 | 有差异 | `scope <文件数>` + 差异全文 |
+
+合成的树是 `git merge-tree --write-tree <上轮审过的提交> <分叉点>`：上一轮复审看到的内容，加上此后主干带进来
+的改动，所以单纯把 `main` 合进分支不算修复本身。设计方案：第 1 轮、读不到评论、没有基线 → 全量；上一版方案
+评论被删（`deleted`）、此后被原地编辑过（`edited`）、就是本轮这条（`same-comment`）、任一条不是派工账号自己发的
+（`not-own`）或不在本条 issue 下（`not-this-issue`）→ 全量；否则 `scope` 加上一版到这一版的全文差异。命令只输出
+本条 issue 下派工账号自己发的文字（受保护的读取命令对这类评论也是原样显示）；托管条目上别的内容仍只经受保护的
+读取命令读。方案模式还输出本轮这条评论的 `current sha256=<指纹>` 和全文，两者出自同一次读取——复审审的就是印出来
+的这份全文，指纹对应的就是复审看到的版本；基线只经 `review-scope.sh fingerprint <id> --issue <N> --expect <这个指纹>` 写：审阅途中评论被改过就拒绝（退出码 3），那一轮不写基线、
+下一轮全量。托管条目又开了外部内容保护（`AUTOPILOT_OUTSIDER_GUARD`）时，本条的评论只经受保护的读取命令读，复审说明里
+干脆不带方案模式：方案复审每轮全量，不写方案基线。代码模式在这类条目上也不读评论：复审从受保护读取命令的输出里
+抄下自己上一条结论的第二行，用 `--baseline-mark '<那一行>'` 交给命令；受保护读取成功、但找不到这一行（或格式不对），本轮全量；受保护读取本身失败不算「没有基线」，照外部内容保护的规则重试一次，仍失败就交人并写明报错，不按全量继续审。其他
+条目上代码模式读评论列表只为找这一行，不把任何评论文字输出给复审。指纹用 `sha256sum` 或 macOS 的 `shasum`（`scripts/_sha256.sh`，和配置指纹共用一份），两个都没有就是
+`full read-failed`。没输出、退出码非 0、第一行认不出 → 一律按全量。
+
+**`REVIEW.md`**——项目可以在仓库根目录放一份 `REVIEW.md`，写本项目复审重点看什么、什么算必须改、什么只算建议、
+哪些不用提。daemon 和读项目 prompt 文件一样从 `origin/<base>` 读它，结果分三种：有 → 复审 prompt 追加全文，
+四个 worker 入口（新 issue、issue 回复、PR 回复、拆出来的子 issue）各追加一句指向它；主干上确认没有 → 什么都
+不加；读不到（远端引用不在、读目录出错、不是普通文件）→ 复审 prompt 写「REVIEW.md 未能读取：按全量复审，不放宽
+任何标准」，worker prompt 写「未能读取」。不回落去读主 checkout 里的本地副本。本仓库自己的 `REVIEW.md` 装的是
+原来 `review.extra.md` 里「测试证据」那一节，附加说明只留评论怎么写。
+
 ## 托管标签（可选，**默认关闭**）
 
 GitHub#114。配 `LABEL_AUTOPILOT`（例如 `autopilot`），并且开着复审关卡 `LABEL_PENDING_REVIEW`
@@ -1151,6 +1212,33 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
 - 合并 / 关闭通知：没发成的记在 `state.json` 的 `requester_bot_done_queue`；发成一条 `poll.log` 有一行 `✅ 已把 PR #N 的结果…`，连续 30 轮失败放弃时有一行 ⚠️。它跑在合并后清理那一段里，`AUTO_CLEANUP_ON_MERGE=false` 时也一并不发
 - 完整说明、退出码、证据规则和接入示例：[对接外部需求机器人](requester-bot.zh.md)
 
+## 往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`，GitHub#610）
+
+配置里写 `ENABLE_ROUND_LOG=true` 才开（模板里写了；老项目配置里没有这一行时算关，`poll.log` 提示一次）。开着时，
+agent 之间的一段来回——交方案或 PR、复审、修订、再复审……——只占**一条**评论，叫「往返记录」。每次交给 agent 的交付
+（发完要把条目翻到复审标签、或翻回派工标签的那一条）在末尾追加一节，只写改了什么、给下一个 agent 的交代和用量 footer；
+完整的当前版本（整份方案 / 完整交付说明）放在记录顶部，换成最新的。
+
+- **照旧单独发**：所有交给人的评论、托管交合并的复审结论（合并检查只认派复审之后新建的评论里的测试记录）、daemon 的评论、
+  等前置登记。中途有任何人发了新评论，这条记录就结束，下一次交付另起一条
+- **只有 loop 改它**：往返记录只由 loop 写评论的账号写、只由它改，不改任何别的评论。回复和勾选请在交人评论里，不要编辑往返
+  记录；编辑它不受保护，人的改动可能被下一节盖掉（#610 维护者已接受）
+- **命令**：agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh` 跑 `post` / `show`。每次写之前都重读
+  目标（仍打开、仍挂 `doing/agent`、没挂 `pending/human` / 等前置 / `pending/merge` / `pending/PR` 标签、PR 没合并、目标分支和来源没变、最新提交就是本次交付
+  依据的那个）。状态和标签在读到的每一份响应上都核对（PR 上先读 issue 再读 PR，issue 上读完关联 PR 列表后再读一次 issue），字段缺失或读不懂就不写。改写失败或超时就另起一条完整的新记录，节编号不变，读取和统计只算一份。发到 PR 上时调用方必须给本次交付依据的提交和目标分支（`--basis` / `--base`；PR 来自别的仓库再加
+  `--source`）——命令不拿自己第一次读到的值当基准，缺了就拒收。缺 `--basis` / `--base` 是用法不对（退出码 64）：agent
+  补齐参数重跑，不改成单独发。复审必须带 `--of`——开始复审时读取命令在最新单元下标出的值（节编号；单独评论是 `comment-<编号>`；线程里还没有任何交付时是 `body`，如首次开 PR、交付说明只写在 PR 正文里）；这期间又来了新的交付，这条结论就过期了（退出码 3），不发、也不改成单独发。复审时最新的交付不是往返记录里的一节（开关打开前的独立评论、单独发的交付，或之后 loop 账号又
+  单独发了评论）时，这条复审结论被拒收（退出码 2），照以前单独发——不会挂到记录里更早的那一节上。评论区里已有的记录读不懂（缺标记、版本对不上）时按评论读不全处理（退出码 5）：什么都不写，agent 也不改成单独发、不翻标签。复审轮次仍从最近一次人工动作算起：读取命令按时间列出算作一轮复审的单元（记录里的复审节，或 loop 账号单独发、第一个非空行整行就是轮次标记的评论；讨论里举的例子不算）和不是 loop 账号写的评论，并写明那里的总数是全部历史；编辑评论、只改标签这类动作照旧从评论编辑信息和 issue events 读。每次运行在 `poll.log` 留一行 `round-log #<编号> post：<结果>`
+- **托管条目开了外部内容保护**：照旧用受保护读取命令读，它的输出末尾带着同样的单元视图。写入之前也先走同一次受保护读取，
+  读不全就什么都不写
+- **认记录只有一种判法**：作者是 loop 写评论的账号（`WRITE_GH_TOKEN` 的账号，没配时是 gh 自己登录的账号），写入 / 读取命令、
+  周报、`pr-time-stats.py` 都一样。别的账号发的、带着记录标记的评论只当普通评论，名字以 -bot 结尾的也一样。loop 账号写的
+  记录读不懂时，读取和两个统计都报错退出
+- **统计**：周报和 `pr-time-stats.py` 用同一个函数把记录拆成一节一条（每节用自己的追加时间）；周报对每个有往返记录的条目
+  先整串重读评论、再按周筛，读失败就报错退出
+- **关掉**：写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；之后的交付恢复成普通评论。
+  以后要让所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开
+
 ## 评论用量 footer
 
 `COMMENT_FOOTER="on"` 时，交人评论末尾接一段由 `scripts/drivers/token-usage/comment-footer.sh`
@@ -1227,6 +1315,19 @@ webhook 另有三项（`REQUESTER_BOT_WEBHOOK_URL` / `_KEY_HEADER` / `_KEY`）�
     gh run watch 1; }`）会让函数体被当成已执行。多算多少取决于命令里掺了多少别的耗时操作，说不出上限。
   - 限制：上一条「不算」的写法里真在等的那段仍算「其他」；`&&` / `||` / `if` / `case` 分支里的等待按执行算（看不出
     分支走没走）；没记到结束的等待不算进合计；和本机测试的重叠扣不掉（测试只给总数），见上面「其他」记 0 的规则。
+
+- **Claude 一侧 footer 直接取最新公开价，不从日志反推**（GitHub#606）。daemon 每天下载一次 Claude 官方价目页（只在调度器起的轮询里做；手动直接跑 `agent-poll.sh` 的轮询跳过这次每日刷新，但有缺价标记时仍会联网补那个模型的价），只用这一处的价
+  （不拿 LiteLLM 对照；缺价补抓仍要两边一致），五项单价（input、output、缓存读、5 分钟和 1 小时缓存写入）齐全、
+  通过合理性校验的模型存进
+  `${XDG_CACHE_HOME:-~/.cache}/cavil-loop/latest-prices.json`；下次下载的时刻写在旁边的 `latest-prices.next`（下载失败过
+  `PRICE_FETCH_COOLDOWN_SECS`、默认 6 小时再试；下载到了却写不进缓存，10 分钟后再试；两种情况都继续用上一份。连下次时刻也
+  写不进去时，`poll.log` 写「下次刷新时刻没能保存，下一轮会再抓」，每轮都会再下载，直到缓存目录能写）。用量驱动用
+  `python3 scripts/weekly-report/price_solve.py --listed` 取单价（这一步不读会话日志）：模型有最新价用最新价，
+  没有用内置表，再没有用缺价时补抓来的价。机器记录里是 `price_source=default`，金额拆成 `fetched`（下载来的）和
+  `reference_only`（内置表）。footer 对 Claude 驱动只调一次 `--both`，人读行和机器记录出自同一张表；拿到的不是恰好两行就
+  两行一起算「用量未知」，不再调第二次（Codex 驱动照旧调两次）。`PRICE_AUTO_FETCH=off` 只停掉下载（每日下载和缺价补抓都停）：已经下载下来的价照用——上次的
+  `latest-prices.json`，以及 `fetched-prices.json` 里补抓来的、这份文件和内置表都没收录的模型的价。取单价不读会话日志；统计本次用量照旧读当前工作目录对应的会话。
+  周报照旧从日志反解单价。
 
 ### 每个已合并 PR 的平均 AI 与测试耗时（估算，GitHub#593）
 
@@ -1415,7 +1516,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${PR}` | PR 编号（仅 pr-comment） |
 | `${REPO}` | 仓库 owner/repo |
 | `${TITLE}` | issue 标题（仅 new-issue） |
-| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)） |
+| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-prissue-闭环关系worker-在设计阶段就决定)） |
 | `${WORKTREE}` | worktree 绝对路径 |
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
@@ -2234,7 +2335,78 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 `PUBLIC_ASSETS_ROOT` 填实际在用的资产目录（旧安装是 `~/.local/state/coding-agent-poll/review-shots`）。对外路径前缀不是 `/review-assets/` 时加一行 `PUBLIC_ASSETS_PREFIX=`。
 
-发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（三份工作说明模板里已写这一步，`publish-asset.sh` 发布前也会跑）。
+发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（发布命令发布前也会跑；配了出图地址的项目，worker 不再自己跑它，见下一节）。
+
+### 目录规则、唯一的发布命令、服务端强制拦截（GitHub#613）
+
+**目录规则**：新发的图一律落在资产目录的 `<项目 key>/<条目编号>/<名字>-rev-<唯一戳>.<扩展名>`，周报是 `<项目 key>/weekly-report/<文件名>`。路径由 cavil-loop 定，worker 不起名、不选目录。项目 key 就是 `~/.config/cavil-loop/<key>.conf` 的名字。
+
+**发布命令**：评论配图和周报共用 `scripts/publish-asset.sh`（托管安装走长期入口 `~/.agents/releases/cavil-loop/entrypoints/publish-asset.sh`；`scripts/weekly-report/publish-asset.sh` 是早期路径，原样转发）。配了出图地址的项目，派工提示词里讲出图的两条（「怎么出图」「评论配图标准」）换成这一条命令，项目 key 和条目编号已写死：`bash '<入口>' --project '<key>' --item <编号> <图片>...`。它依次：
+
+1. 读对外服务自己报告的状态，服务端拦截没生效就拒绝（原因写在 stderr）；目录取服务报告的实际目录，不猜；
+2. 把文件复制成目标目录里的隐藏临时文件，**查这份副本**有没有凭证样式，有就删掉、拒绝；
+3. 改名成最终名字，同名已存在就拒绝（不覆盖）；
+4. 核对公网地址 HTTP 200 且下载到的字节数等于文件大小，不对就删掉刚放的文件、报错；
+5. stdout 只打印地址，一行一个。
+
+不是图片 / 视频的（周报 PDF 等）照旧不公开，放进不公开目录的 `<项目 key>/<子目录>/` 下。
+
+**服务端强制拦截（严格模式）**：对外服务配置里有 `PUBLIC_ASSETS_STRICT=1` 时，它只交出两类文件——项目子目录下的（key 必须是本机登记过的项目），或旧图清单里**路径和内容（SHA-256）都对得上**的旧图；每个文件整份读进内存，在这份内存上判格式、查凭证（所有类型，不只 SVG）、比清单，再从这份内存送出——检查过的就是送出去的。绕过发布命令直接拷进目录的文件，含凭证样式的不给；拷到项目子目录以外的新文件，一律不给。没有这一行时行为和以前一样（这也是切换失败时的退回状态）。
+
+单文件上限默认 256 MB（`PUBLIC_ASSETS_MAX_BYTES=` 调），超过的不交出。
+
+**旧图**：切换时把资产目录里不在项目子目录下的全部图片 / 视频登记成旧图清单（相对路径 + 大小 + SHA-256），写两份：配置目录里的 `public-assets-legacy.json` 和 `~/.local/state/cavil-loop/public-assets/legacy.json`；清单的校验值写进服务配置的 `PUBLIC_ASSETS_LEGACY_SHA=` 一行。**这一行就是唯一的可信状态**：有它 = 清单已生效、以它为准、永不重建；没有它 = 从未生效、可以重建。
+
+- 改权限、改修改时间、按原路径原内容从备份还原：旧图照常能打开；
+- 改名、挪位置、换内容：旧图变 404（已发评论里的那张会破）；
+- 一份清单坏了：服务用另一份，再跑一次切换会把好的那份复制回去；
+- 两份都坏、或校验值那一行格式不对：旧结构一律 404，日志写原因，切换命令不重建——从备份找回任一份（校验值对上即可）；只有人决定时才删掉校验值那一行重建（重建会把此刻目录里项目子目录以外的文件都当旧图）。
+
+**切换**：
+
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --status   # 只读：配置、服务、拦截是否生效、代码是否一致、清单状态
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # 放几个测试文件经本机端口和公网地址各查一遍，再删掉；不改配置
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # 执行切换：备份配置 → 建 / 核对清单 → 写严格模式 → 重启 → 核验；失败自动退回老规则
+```
+
+切换命令核验通过后另写一份验收记录（状态目录里的 `accepted.json`，记的是核验时那个服务进程）。**只有服务在严格模式、而且验收记录对的正是现在这个进程，才算拦截已生效**：切换在核验之前被中断、服务自己重启过，都会让它变成「严格模式在跑、核验没完成」，这时发布命令不发图，自动切换会重新核验。
+
+只配了早期周报图片地址（`WEEKLY_REPORT_ASSET_URL`）、没配出图地址的项目，切换命令一律不切换、点名这些项目：严格模式下它们的周报图不会被交出，而新地址没法从旧地址推出来。给这些项目的 `<key>.conf` 加一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`（公网入口实际挂的前缀）后再切换。
+
+daemon 每轮调一次 `switch.sh --auto`：服务没在严格模式、或在跑的代码和磁盘上的不一样，就自动切换（会重启一次服务），失败按 1、5、15、60 分钟退避，每个代码版本最多试 5 次。不想让它自动切换：服务配置里加 `PUBLIC_ASSETS_AUTO_SWITCH=0`。核验做四项：一张旧图 200、旧结构位置新放的图 404、`<key>/0/`（0 号条目留给核验）下的正常图 200、带假令牌样式的图 404；只删它自己刚建的文件。
+
+切换出问题时手动退回老规则（不依赖切换命令能运行；先把 `OLD_IMAGE_URL` 设成任一张旧图的公网地址）：
+
+<!-- public-assets-rollback:begin -->
+```bash
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
+grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
+systemctl --user restart cavil-loop-public-assets.service
+sleep 2
+systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
+curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
+```
+<!-- public-assets-rollback:end -->
+
+看到 `active`、`true`、`200` 和最后一行 `ROLLED-BACK` 算恢复：`true` 是服务自己报告「现在这个进程严格模式关」（进程号对得上才算）。中途任何一步失败，命令块就地停下、后面的步骤都不做：`NO-CONFIG` / `BACKUP-FAILED` 表示什么都没改；`EDIT-FAILED` 表示配置改了一半，用它打印的备份文件覆盖回去；`systemctl` 或 `jq` 那一行失败表示服务没按老规则起来，看 `journalctl --user -u cavil-loop-public-assets -n 50`。`PUBLIC_ASSETS_LEGACY_SHA=` 那一行保留，下次切换沿用；想恢复自动切换就删掉 `PUBLIC_ASSETS_AUTO_SWITCH=0` 那一行。
+
+**占用统计**（只读，不删任何文件）：`bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` 按项目、按条目列出占用，旧结构里归不到项目的单列一行，按名字推出来但对外服务不交出的那个目录也单列。删不删、删哪些由人决定：删掉的图在已发评论里会变成破图。
+
+**脚本查不出来的**：截到的画面里显示了令牌、个人信息（姓名、邮箱、账号、订单……），凭证检查只看文件字节，看不出像素里的内容。这一条仍靠 worker 只截可公开的页面、复审抽查。
+
+**限制**：只有装了这套对外服务的机器能发图；直接把目录交给别的静态服务对外的机器，发布命令一律拒绝。切换会重启一次服务，重启那一下（秒级）的图片请求会失败。
 
 不是图片 / 视频的附件（周报 PDF 等）不公开发布：`publish-asset.sh` 把它放进不公开的目录，项目配置里设了 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL`（只在内网可达的地址前缀，对应目录由 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` 指定，默认资产目录旁的 `private-assets/`）就给那个地址，没设就给本机路径。周报趋势图的矢量版留在本机（`WEEKLY_REPORT_VECTOR_DIR`，默认资产目录旁的 `weekly-report-vector/`），`topdf.mjs` 从本机读。
 

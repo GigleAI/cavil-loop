@@ -4,7 +4,7 @@
 import type { ColumnMode, Item, Iteration, ProjectMeta, TableSettings } from '../shared/types';
 import type { WriteAction } from '../shared/actions';
 import { itemSorter } from './sort';
-import { nestPrs, prFollow } from './prNest';
+import { carryIssues, nestPrs, prFollow } from './prNest';
 import { repoComparator } from '../shared/repoOrder';
 import { t, zhKey } from '../shared/i18n';
 
@@ -25,6 +25,8 @@ export interface Card {
   lane: string;
   /** a PR shown right under the issue it is linked to: that issue's key (GitHub#155); null = top level */
   under: string | null;
+  /** GitHub#622: an issue that did not match the search, shown only because a matched PR goes under it */
+  carried?: true;
 }
 
 export interface Column {
@@ -62,6 +64,8 @@ export interface Board {
   columns: Column[];
   /** repositories, in the saved repository order (GitHub#304), when swimlanes are on; null otherwise */
   lanes: string[] | null;
+  /** GitHub#622: distinct issues shown only because a matched PR goes under them */
+  carriedCount: number;
 }
 
 export const NOTICE_NO_ITERATION_FIELD = zhKey('所选 Project 都没有迭代字段，已改按状态分列');
@@ -119,13 +123,11 @@ interface Nest {
  */
 function followIssues(
   items: Item[],
-  order: (a: Item, b: Item) => number,
+  follow: Map<string, string>,
   placements: Map<string, Card[]>,
-  canHost: (issue: Item) => boolean,
   selectedProjects: Map<string, ProjectMeta>,
   mode: ColumnMode,
 ): Map<string, string> {
-  const follow = prFollow([...items].sort(order), canHost);
   if (follow.size === 0) return follow;
   const hostCols = new Map<string, string[]>();
   const own = new Map<string, Card>();
@@ -238,7 +240,7 @@ const RANK_UNBOARDED = 8;
 const RANK_NONE = 9;
 
 export function buildBoard(
-  items: Item[],
+  matched: Item[],
   projects: ProjectMeta[],
   requested: ColumnMode,
   swimlanes: boolean,
@@ -249,9 +251,13 @@ export function buildBoard(
   prsUnderIssues = false,
   /** the saved repository order (GitHub#304): the swimlanes' order; empty = alphabetical */
   repoOrder: readonly string[] = [],
+  /**
+   * GitHub#622: every item the sources hold, `matched` being what the search matched — a matched PR whose
+   * issue did not match brings that issue along (`carryIssues`, with PRs under issues on). null = nothing
+   * is brought along (no search).
+   */
+  carryFrom: readonly Item[] | null = null,
 ): Board {
-  const cardOrder = sort ? itemSorter(sort, projects, items) : BY_REPO_NUMBER;
-  const nest: Nest = { on: prsUnderIssues, sort };
   let mode = requested;
   let notice: string | null = null;
   if (mode === 'iteration' && !projects.some((p) => p.hasIterationField)) {
@@ -259,6 +265,21 @@ export function buildBoard(
     notice = NOTICE_NO_ITERATION_FIELD;
   }
   const selectedProjects = new Map(projects.map((p) => [p.key, p]));
+  const onBoard = (it: Item) => it.projects.some((m) => selectedProjects.has(m.projectKey));
+  // milestones belong to the repository, not to a board: any issue takes its PRs along
+  const canHost = mode === 'milestone' ? () => true : onBoard;
+  // the view's order over every item (a carried issue is not among the matched ones)
+  const carryOrder = sort ? itemSorter(sort, projects, [...(carryFrom ?? matched)]) : BY_REPO_NUMBER;
+  const carry =
+    prsUnderIssues && carryFrom
+      ? carryIssues({ shown: matched, matched: new Set(matched.map((it) => it.key)), all: carryFrom, order: carryOrder, canHost, repo: null })
+      : null;
+  const carriedKeys = new Set(carry ? carry.hosts.values() : []);
+  const byKeyAll = new Map((carryFrom ?? []).map((it) => [it.key, it]));
+  // the carried issues are placed like any other item, by their own value
+  const items = carriedKeys.size ? [...matched, ...[...carriedKeys].map((k) => byKeyAll.get(k)!)] : matched;
+  const cardOrder = sort ? itemSorter(sort, projects, items) : BY_REPO_NUMBER;
+  const nest: Nest = { on: prsUnderIssues, sort };
   const seeds = new Map<string, ColumnSeed>();
   const placements = new Map<string, Card[]>();
   const seed = (s: Omit<ColumnSeed, 'projects'>, project?: string) => {
@@ -268,9 +289,12 @@ export function buildBoard(
   };
   // columns that stand without a card (filled just before the items are placed)
   let standing = new Set<string>();
-  const onBoard = (it: Item) => it.projects.some((m) => selectedProjects.has(m.projectKey));
-  const settle = (canHost: (issue: Item) => boolean) => {
-    if (nest.on) nest.follow = followIssues(items, cardOrder, placements, canHost, selectedProjects, mode);
+  const settle = () => {
+    if (!nest.on) return;
+    // the existing rule over the matched items only — a carried issue never takes a PR that has a matched issue
+    const follow = prFollow([...matched].sort(cardOrder), canHost);
+    for (const [pr, host] of carry?.hosts ?? []) follow.set(pr, host);
+    nest.follow = followIssues(items, follow, placements, selectedProjects, mode);
   };
   const hasUnboarded = items.some((it) => !it.projects.some((m) => selectedProjects.has(m.projectKey)));
   if (mode !== 'milestone' && hasUnboarded) {
@@ -318,7 +342,7 @@ export function buildBoard(
     // gets the Project names underneath so the two can be told apart.
     const titleCount = new Map<string, number>();
     for (const s of seeds.values()) if (s.rank === RANK_REGULAR) titleCount.set(s.title, (titleCount.get(s.title) ?? 0) + 1);
-    settle(onBoard);
+    settle();
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       return { kind: 'from', date: s.sort, projects: (titleCount.get(s.title) ?? 0) > 1 ? [...s.projects] : [] };
@@ -349,7 +373,7 @@ export function buildBoard(
         'status',
       );
     }
-    settle(onBoard);
+    settle();
     columns = finish(seeds, placements, cardOrder, () => null, nest);
   } else {
     // Milestones belong to repositories: same title across repositories = one column.
@@ -369,8 +393,7 @@ export function buildBoard(
       else if (sort < cur.sort) cur.sort = sort;
       place(placements, key, item, []);
     }
-    // milestones belong to the repository, not to a board: any issue takes its PRs along
-    settle(() => true);
+    settle();
     columns = finish(seeds, placements, cardOrder, (s) => {
       if (s.rank !== RANK_REGULAR) return null;
       return s.sort.startsWith('0') ? { kind: 'due', date: s.sort.slice(1, 11) } : { kind: 'noDue' };
@@ -382,8 +405,11 @@ export function buildBoard(
   columns = columns.filter(
     (c) => c.cards.length > 0 || (standing.has(c.key) && ![COL_NO_ITERATION, COL_NO_STATUS, COL_NO_MILESTONE, COL_UNBOARDED].includes(c.key)),
   );
+  if (carriedKeys.size)
+    columns = columns.map((c) => ({ ...c, cards: c.cards.map((x) => (carriedKeys.has(x.item.key) ? { ...x, carried: true as const } : x)) }));
   const lanes = swimlanes ? [...new Set(columns.flatMap((c) => c.cards.map((x) => x.lane)))].sort(repoComparator(repoOrder)) : null;
-  return { mode, notice, columns, lanes };
+  const carriedCount = new Set(columns.flatMap((c) => c.cards.filter((x) => x.carried).map((x) => x.item.key))).size;
+  return { mode, notice, columns, lanes, carriedCount };
 }
 
 /** Writes are only possible while GitHub is reachable: offline, every change entry is grey and nothing is queued. */

@@ -48,6 +48,7 @@ BLOCKED_RECHECK_SECS | quiet | 不写这一行时的行为和模板里的值相�
 BLOCKED_MAX_TRIES | quiet | 不写这一行时的行为和模板里的值相同
 LABEL_PENDING_LATER | quiet | 不写这一行时的行为和模板里的值相同（GitHub#551 起没写这一行就开；写成空值才关）
 ENABLE_CONCURRENT_WORK_HINT | notice | GigleAI/cavil-loop#340 | "" | 派工时告诉 worker 还有哪些条目在进行：worker 的提示词里多一段，列出其他带 `doing/agent`、复审标签、`pending/PR` 的打开条目（每条一行：编号、标题、一句改动摘要、涉及的目录）；这份清单只给 worker 自己参考：动到重叠的目录时留意冲突、交付前照常做冲突检查，不把重叠写进 issue / PR 评论。关着时 worker 只知道自己的条目，重叠要到交接时的冲突检查或对方合并后才发现。只在派工那一刻读（每次派工多 3–4 次只读调用），不需要建标签。这项设置原来叫 `CONCURRENT_WORK_HINT`，那个名字已不再生效，配置里写着它等于没写。
+ENABLE_ROUND_LOG | notice | GigleAI/cavil-loop#610 | "" | agent 之间的来回写进同一条「往返记录」评论：每次交给 agent 的交付（发完翻复审标签或派工标签）在末尾追加一节，只写改了什么、给下一个 agent 的交代和用量，完整版本放在记录顶部；交给人的评论、托管交合并的复审结论照旧单独发。关着时每轮都新发一条完整评论。只改 loop 自己发的往返记录，人请在交人评论里回复。
 ENABLE_USAGE_LIMIT_PAUSE | notice | GigleAI/cavil-loop#341 | "" | agent 撞到用量上限时停派并转人工：daemon 每轮看一眼本机派出去、挂着 `doing/agent` 的会话，窗格最后一块是 CLI 的用量上限提示时，这个 agent 在提示里写的解除时间之前不再接新活（整台机器、同一个账号一起停；排队的条目标签不动、不计失败，到点自动恢复），被打断的那一条留一条评论并转 `pending/human`，由人在解除后把标签改回。关着时撞上限的会话一直占着并发名额，新派给这个 agent 的会话一开口又撞一次。不需要建标签；暂停可以手动解除（见 docs/operations.zh.md「agent 撞到用量上限」）。
 USAGE_LIMIT_FALLBACK_SECS | quiet | 不写这一行时的行为和模板里的值相同
 REDACT_AGENT_RECORDS | quiet | 不写这一行时的行为和模板里的值相同

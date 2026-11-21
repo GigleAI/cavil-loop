@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
 // @ts-expect-error plain .mjs runner without type declarations
-import { prepareCopy, checkCopies, copySources } from '../tauri/mutations.mjs';
+import { prepareCopy, checkCopies, copySources, checkSources } from '../tauri/mutations.mjs';
 
 const clientRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -121,12 +121,25 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
   }
 
   // Review round 4 on PR #592: the nightly path lost the folder it builds into and runs the app from.
-  // Run the real `--one 0` of a copy of the runner in a sandbox client tree (the real back-end sources),
+  // Run the real `--one 4` (a shell entry: 关窗不拦) of a copy of the runner in a sandbox client tree (the real back-end sources),
   // with stand-ins for cargo and Playwright that record what they were given.
-  const nightly = (override?: string) => {
+  // GitHub#631: the same sandbox also runs `--check-copy` (the window shape's build script is a stand-in that does
+  // nothing), and `edit` changes the sandbox's sources first.
+  const runCli = (args: string[], { override, edit }: { override?: string; edit?: (r: string) => void } = {}) => {
     const r = made();
     copySources(r, clientRoot);
     mkdirSync(join(r, 'dist', 'renderer'), { recursive: true });
+    mkdirSync(join(r, 'scripts'), { recursive: true });
+    mkdirSync(join(r, 'build'), { recursive: true });
+    // the window build stand-in records the window source it was run on (the entry's copy, cwd = that copy);
+    // it builds fine without it, so a case that removes the file still reaches the compile step
+    writeFileSync(
+      join(r, 'scripts', 'build.mjs'),
+      "import { existsSync, readFileSync, writeFileSync } from 'node:fs';\nconst f = 'src/renderer/DetailPanel.tsx';\nif (existsSync(f)) writeFileSync(process.env.REC + '/web.txt', readFileSync(f, 'utf8'));\n",
+    );
+    writeFileSync(join(r, 'package.json'), '{}');
+    writeFileSync(join(r, 'tsconfig.json'), '{}');
+    edit?.(r);
     for (const f of ['test/tauri/mutations.mjs', 'test/mutation/select.mjs']) {
       mkdirSync(dirname(join(r, f)), { recursive: true });
       cpSync(join(clientRoot, f), join(r, f));
@@ -135,7 +148,7 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const bin = made();
     writeFileSync(
       join(bin, 'cargo'),
-      '#!/bin/sh\nprintf \'%s\\n\' "$CARGO_TARGET_DIR" "$*" "$(grep -cF \'let _ = (&engine, &url);\' src/main.rs)" > "$REC/cargo.txt"\nexit 0\n',
+      '#!/bin/sh\nprintf \'%s\\n\' "$CARGO_TARGET_DIR" "$*" "$(grep -cF \'if false && d.hide_on_close() {\' src/main.rs)" > "$REC/cargo.txt"\nexit 0\n',
     );
     chmodSync(join(bin, 'cargo'), 0o755);
     mkdirSync(join(r, 'node_modules', '@playwright', 'test'), { recursive: true });
@@ -143,18 +156,19 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, REC: rec };
     delete env.CAVIL_TAURI_MUT_TARGET;
     if (override) env.CAVIL_TAURI_MUT_TARGET = override;
-    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), '--one', '0'], { cwd: r, env, encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [join(r, 'test', 'tauri', 'mutations.mjs'), ...args], { cwd: r, env, encoding: 'utf8' });
     const read = (f: string) => (existsSync(join(rec, f)) ? readFileSync(join(rec, f), 'utf8') : '');
-    return { r, run, cargo: read('cargo.txt').split('\n'), app: read('app.txt') };
+    return { r, run, cargo: read('cargo.txt').split('\n'), cargoRan: existsSync(join(rec, 'cargo.txt')), app: read('app.txt'), webRan: existsSync(join(rec, 'web.txt')), web: read('web.txt') };
   };
+  const nightly = (override?: string) => runCli(['--one', '4'], { override });
 
   it('每晚的执行路径：没设覆盖时，编译输出目录和被测程序位置都是默认的那一个', () => {
     const { r, run, cargo, app } = nightly();
     const want = join(r, 'src-tauri', 'target', 'tauri-mutation');
     expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
     // it really got past preparing and breaking the copy: cargo ran inside it, on the broken main.rs
-    // (the marker is the first entry's edit, absent from the real main.rs)
-    expect(readFileSync(join(clientRoot, 'src-tauri', 'src', 'main.rs'), 'utf8')).not.toContain('let _ = (&engine, &url);');
+    // (the marker is that entry's edit, absent from the real main.rs)
+    expect(readFileSync(join(clientRoot, 'src-tauri', 'src', 'main.rs'), 'utf8')).not.toContain('if false && d.hide_on_close() {');
     expect(cargo[1]).toBe('build -q -p cavil-loop-client');
     expect(cargo[2]).toBe('1');
     expect(cargo[0]).toBe(want);
@@ -170,5 +184,95 @@ describe('真实窗口负对照的副本：由编译器判断能不能编（GitH
     expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
     expect(cargo[0]).toBe(custom);
     expect(app).toBe(join(custom, 'debug', 'cavil-loop-client'));
+  });
+
+  // GitHub#631: each entry's text must occur exactly once in its file — 0 = the code moved on and the entry did not
+  // follow (it only failed to prepare, at night), 2 = which spot it breaks depends on the order
+  it('每条要改的原文在目标文件里恰好出现一次：0 次、2 次、读不到都报出来，1 次不报', () => {
+    const from = tree({
+      'src-tauri/src/main.rs': 'fn a() {}\nfn b() {}\nfn b() {}\n',
+      'src/renderer/x.tsx': "else if (m.cavil === 'link') go();\n",
+    });
+    const m = (what: string, file: string | undefined, text: string) => ({ what, file, from: text, to: '', expect: '' });
+    const problems: string[] = checkSources({
+      from,
+      mutations: [
+        m('一次（外壳，默认文件）', undefined, 'fn a() {}'),
+        m('一次（界面）', 'src/renderer/x.tsx', "else if (m.cavil === 'link') go();\n"),
+        m('零次', undefined, 'fn c() {}'),
+        m('两次', undefined, 'fn b() {}'),
+        m('文件不在', 'src/renderer/gone.tsx', 'x'),
+      ],
+    });
+    expect(problems).toHaveLength(3);
+    expect(problems[0]).toBe('要改的原文在 src-tauri/src/main.rs 里出现 0 次（应为 1 次）：零次');
+    expect(problems[1]).toBe('要改的原文在 src-tauri/src/main.rs 里出现 2 次（应为 1 次）：两次');
+    expect(problems[2]).toMatch(/^读不到 src\/renderer\/gone\.tsx（.*）：文件不在$/);
+  });
+
+  it('仓库里现有的每条真实窗口负对照，原文都在目标文件里恰好出现一次', () => {
+    expect(checkSources()).toEqual([]);
+  });
+
+  // GitHub#631 review round 1: the real command line, as `npm run test:rust` runs it
+  const LINK = "      else if (m.cavil === 'link') openFrameLink(m.url, 'frame');\n";
+  const PANEL = 'src/renderer/DetailPanel.tsx';
+  const twice = (r: string) => {
+    const f = join(r, PANEL);
+    const t = readFileSync(f, 'utf8');
+    expect(t.split(LINK)).toHaveLength(2); // the real file holds it once
+    writeFileSync(f, t.replace(LINK, LINK + LINK));
+  };
+
+  it('--check-copy 命令：原文都恰好一次时退出 0，并且确实走到了副本编译', () => {
+    const { run, cargoRan } = runCli(['--check-copy']);
+    expect(run.stdout).toContain('7 个真实窗口负对照要改的原文，各自在目标文件里恰好出现一次');
+    expect(run.stdout).toContain('真实窗口负对照的副本（没改坏）能编译');
+    expect(cargoRan).toBe(true);
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+  });
+
+  const BAD: { name: string; edit: (r: string) => void; says: RegExp }[] = [
+    { name: '重复', edit: twice, says: /要改的原文在 src\/renderer\/DetailPanel\.tsx 里出现 2 次（应为 1 次）/ },
+    {
+      name: '缺失',
+      edit: (r) => {
+        const f = join(r, PANEL);
+        writeFileSync(f, readFileSync(f, 'utf8').replace(LINK, ''));
+      },
+      says: /要改的原文在 src\/renderer\/DetailPanel\.tsx 里出现 0 次（应为 1 次）/,
+    },
+    { name: '读不到', edit: (r) => rmSync(join(r, PANEL)), says: /读不到 src\/renderer\/DetailPanel\.tsx（/ },
+  ];
+  for (const c of BAD) {
+    it(`--check-copy 命令：原文${c.name}时退出非零（副本照样编译通过也一样）`, () => {
+      const { run, cargoRan } = runCli(['--check-copy'], { edit: c.edit });
+      expect(run.stdout).toMatch(c.says);
+      expect(cargoRan).toBe(true); // the copies were still checked, and passed
+      expect(run.stdout).toContain('真实窗口负对照的副本（没改坏）能编译');
+      expect(run.status).toBe(1);
+    });
+  }
+
+  it('每晚的执行路径：原文出现两次时在准备时就失败，不改、不编译、不跑测试', () => {
+    const { run, cargoRan, app } = runCli(['--one', '0'], { edit: twice });
+    expect(run.stdout).toContain('准备失败（要改的原文在 src/renderer/DetailPanel.tsx 里出现 2 次（应为 1 次）');
+    expect(cargoRan).toBe(false);
+    expect(app).toBe('');
+    expect(run.status).toBe(1);
+  });
+
+  it('每晚的执行路径：原文恰好一次时照常改坏、构建、跑测试（界面代码的条目）', () => {
+    const { r, run, cargoRan, app, webRan, web } = runCli(['--one', '0']);
+    expect(run.stderr).not.toMatch(/ReferenceError|TypeError/);
+    const source = readFileSync(join(r, PANEL), 'utf8');
+    expect(source.split(LINK)).toHaveLength(2); // the sandbox's own source keeps the line
+    // the window was built from the entry's copy with exactly that one line removed, nothing else changed
+    expect(webRan).toBe(true);
+    expect(web.split(LINK)).toHaveLength(1);
+    expect(web).toBe(source.replace(LINK, ''));
+    expect(cargoRan).toBe(true);
+    expect(app).not.toBe('');
+    expect(run.stdout).toContain('红了，但不是在预期那一步');
   });
 });
