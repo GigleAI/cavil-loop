@@ -16,7 +16,8 @@
 #   6  已过期 / 状态未知：首次写前发现 → 写请求数为零；改写已发出后才发现 → 之后新增写请求为零、维护者的标签不动
 #   7  托管受保护读取的视图：外部账号带同款标记的评论不当成记录
 #   8  统计：拆成单元后用量记录与「各节拆成独立评论」一致；周报的取材先取齐整串评论再按各节时间归周
-#   9  复审轮次：单元里带轮次标记的个数 = 拆成独立评论时的个数
+#   9  复审轮次：单元里带轮次标记的个数 = 拆成独立评论时的个数；材料按时间列出标记与人的评论、标明是全部历史，
+#      跨人工重置时只数重置点之后的（同一节两份只列一次）
 #  10  提示词：开着时多一段、占位符都填上；关着时不加（其余逐字节对比由各自的测试守）
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -215,6 +216,39 @@ PY
 o=$(RL show 7)
 has "最后插入人的评论：最新单元是人的评论" "$(sed -n '/^## 最新单元：/,$p' <<<"$o")" "人：等一下"
 lacks "最新单元是普通评论时不附完整版本" "$o" "最新单元对应的完整版本"
+echo "── 4b. 复审轮次跨人工重置：材料按时间列出，总数标明是全部历史 ──"
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')" >/dev/null
+sleep 1
+python3 - "$GD/comments.json" <<'PY2'
+import json, sys, datetime
+d = json.load(open(sys.argv[1]))
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "人：方向改一下，重新来", "user": {"login": "maint"}, "created_at": now})
+json.dump(d, open(sys.argv[1], "w"))
+PY2
+sleep 1
+RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版（人工重置后）')" --full "$(mk f2 'V2')" >/dev/null
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:1 -->\n## ❌ 新周期打回 1')"); rc=$?
+chk "人工重置后新周期第 1 轮：已写入" "$rc $(result "$o")" "0 RESULT=written"
+o=$(RL show 7)
+mat=$(sed -n '/^## 复审轮次的材料/,$p' <<<"$o")
+has "材料：标题写明是全部历史、不是当前轮次" "$mat" "## 复审轮次的材料（全部历史，不是当前轮次）"
+chk "材料：按时间依次是 原有人的评论、标记、人工重置的评论、标记" "$(grep -oE '带复审轮次标记（|@maint 的评论' <<<"$mat" | tr '\n' ' ')" "@maint 的评论 带复审轮次标记（ @maint 的评论 带复审轮次标记（ "
+has "材料：总数标明是全部历史" "$mat" "带复审轮次标记的 2 个，是全部历史"
+has "材料：只改标签、编辑评论要另外查 issue events" "$mat" "只改标签这类动作要照上文分页读评论编辑信息和 issue events 另外确定"
+t1=$(grep '带复审轮次标记' <<<"$mat" | head -1 | awk '{print $2}'); th=$(grep '@maint 的评论' <<<"$mat" | tail -1 | awk '{print $2}'); t2=$(grep '带复审轮次标记' <<<"$mat" | sed -n 2p | awk '{print $2}')
+chk "材料：时间可用来切分（第 1 个标记 < 人的评论 < 第 2 个标记）" "$([[ "$t1" < "$th" && "$th" < "$t2" ]] && echo ok)" "ok"
+chk "材料：重置点之后只有 1 个带标记单元（当前是第 1 轮，下一轮是第 2 轮）" "$(grep -E '带复审轮次标记（|@maint 的评论' <<<"$mat" | sed -n '3,$p' | grep -c '带复审轮次标记（')" "1"
+# 同一节在评论区出现两次（改写超时其实成功）：材料里只列一次
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+: > "$GD/F_patch_comment_lost"
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')" >/dev/null
+rm -f "$GD/F_patch_comment_lost"
+chk "同一节出现两次：评论区里那一节确有两份" "$(jq -r '.["7"][] | .body' "$GD/comments.json" | grep -o 'sec id=[0-9a-f]* role=review' | sort | uniq -c | awk '{print $1}')" "2"
+chk "同一节出现两次：材料只列一次" "$(RL show 7 | sed -n '/^## 复审轮次的材料/,$p' | grep -c '带复审轮次标记（')" "1"
 fresh issue 'ENABLE_ROUND_LOG=""'
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')"); rc=$?
 chk "开关关着：拒收、照现在单独发" "$rc" "2"
@@ -631,6 +665,11 @@ has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补�
 has "开着：复审必须带读取时标出的 --of、原样照抄" "$sec" "复审**必须**带 \`--of\`"
 has "开着：过期的复审结论不改成单独发" "$sec" "**也不改成单独发**"
 has "开着：首次交付只有正文时的 --of 写法" "$sec" "| 正文本身（线程里还没有任何交付，如首次开 PR 时交付说明只写在 PR 正文里） | \`body\` | 拒收：照上文单独发 | 过期：不发、不翻标签 |"
+has "开着：轮次仍按最近一次人工动作重置（照上文的办法定重置点）" "$sec" "仍是「最近一次人工动作之后本目标第几轮」"
+has "开着：材料里的总数是全部历史、只数重置点之后的" "$sec" "那里的总数是**全部历史**，不是当前轮次——只数重置点之后的带标记单元"
+has "开着：只改标签、编辑评论要另外查" "$sec" "只改了标签、编辑了评论这类动作不在这份材料里，必须另外查"
+has "开着：复审模板本身的重置规则仍在（读 issue events、派工账号以外的动作才重置）" "$sec" "只有 actor/login **不同于派工账号** 的动作才可重置轮次"
+lacks "开着：不再叫复审直接用末尾的总数" "$sec" "数单元里带轮次标记的个数（输出末尾写了）"
 fresh issue 'ENABLE_ROUND_LOG=""'
 sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template review); cat "$f"' _ "$REPO_DIR")
 lacks "关着：不加这一段" "$sec" "# 往返记录（本项目开启了"

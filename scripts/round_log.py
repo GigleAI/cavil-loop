@@ -179,8 +179,19 @@ def render(us, show_all):
             return ("❌ 版本对不上：最新一节（节 %s）对应的完整版本在记录里找不到。没有输出任何当前版本。"
                     "照读评论失败的规则处理。\n" % last["sec"]), 4
         lines += ["", "## 最新单元对应的完整版本", "", v]
-    rounds = sum(1 for u in us if u["body"].lstrip().startswith("<!-- codex-review-round"))
-    lines += ["", "（共 %d 个单元，其中带复审轮次标记的 %d 个；同一节在评论区出现多次的只算一次）" % (len(us), rounds)]
+    # 复审轮次的材料：只列事实（哪些单元带轮次标记、哪些评论不是 loop 账号写的、各自的时间），
+    # 不替复审算当前轮次——重置点还要看评论的编辑和标签事件，这些不在评论视图里（PR #625 复审第 5 轮）
+    marked = [u for u in us if u["body"].lstrip().startswith("<!-- codex-review-round")]
+    lines += ["", "## 复审轮次的材料（全部历史，不是当前轮次）", ""]
+    for u in us:
+        if u in marked:
+            where = ("节 %s" % u["sec"]) if u["kind"] == "section" else ("评论 #%s" % u["id"])
+            lines.append("- %s　带复审轮次标记（%s）" % (u["at"], where))
+        elif u["kind"] == "comment" and not u.get("_trusted"):
+            lines.append("- %s　@%s 的评论 #%s（不是 loop 账号写的）" % (u["at"], u["author"], u["id"]))
+    lines += ["", "（共 %d 个单元，其中带复审轮次标记的 %d 个，是全部历史；同一节在评论区出现多次的只算一次。"
+              "当前轮次照上文规则：先定最近一次人工动作——上面只列了评论，评论的编辑、只改标签这类动作要照上文"
+              "分页读评论编辑信息和 issue events 另外确定——只数它之后的带标记单元）" % (len(us), len(marked))]
     return "\n".join(lines) + "\n", 0
 
 
