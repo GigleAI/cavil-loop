@@ -54,16 +54,20 @@ export function createServer({ root, prefix = '/review-assets/', log = (m) => co
   const judgeStrict = (file) => {
     const rel = path.relative(realRoot, file);
     if (rel.split(path.sep).some((seg) => seg.startsWith('.'))) return { ok: false, reason: '路径里有以 . 开头的段' };
-    let keys;
-    try {
-      keys = strict.keys();
-    } catch (e) {
-      return { ok: false, reason: `读不出登记的项目（${e.code || e.message}）` };
-    }
-    const inProject = projectPath(rel, keys);
-    const legacy = inProject ? null : strict.legacy.ok ? strict.legacy.map.get(rel) : undefined;
-    if (!inProject && !legacy) {
-      return { ok: false, reason: strict.legacy.ok ? '不在项目子目录下，也不在旧图清单里' : `不在项目子目录下；旧图清单不可用（${strict.legacy.why}）` };
+    // 旧图只看旧图清单（路径在清单里，内容下面再按清单的 SHA-256 核对），不依赖登记的项目：
+    // 某个项目配置一时读不出，不能连带让已登记、内容没变的旧图在已发评论里变成破图。
+    // 只有不在清单里的路径才需要「是不是登记项目的子目录」这个判断；那时读不出项目就拒绝。
+    const legacy = strict.legacy.ok ? strict.legacy.map.get(rel) : undefined;
+    if (!legacy) {
+      let keys;
+      try {
+        keys = strict.keys();
+      } catch (e) {
+        return { ok: false, reason: `读不出登记的项目（${e.code || e.message}）` };
+      }
+      if (!projectPath(rel, keys)) {
+        return { ok: false, reason: strict.legacy.ok ? '不在项目子目录下，也不在旧图清单里' : `不在项目子目录下；旧图清单不可用（${strict.legacy.why}）` };
+      }
     }
     let fd;
     try {

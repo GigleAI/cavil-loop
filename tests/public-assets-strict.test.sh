@@ -530,6 +530,21 @@ bash "$SWITCH" --auto 2> "$TMP/auto.err"
 chk "有项目配置读不出：自动切换也不切换" "$(state_of)/$(grep -c '读不出' "$TMP/auto.err" | awk '{print ($1>0)?"有":"无"}')" "not-enforced/有"
 chk "有项目配置读不出：核验命令也不核验（服务没在严格模式之外，项目清单读不出同样拒绝）" "$(bash "$SWITCH" --verify 2>/dev/null; echo $?)" "1"
 chmod 644 "$C9"
+# 严格模式运行中有项目配置读不出：旧图（只看旧图清单）照常交出，项目子目录的图和清单外的新文件不交出
+cp "$TMP/c9.pre" "$C9"; cp "$TMP/ac.pre" "$AC"; printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
+sw >/dev/null 2>&1
+png "$ROOT/issue-464/new-while-unreadable.png"
+chmod 000 "$C9"
+systemctl --user restart cavil-loop-public-assets.service   # 新进程第一次请求就重读项目清单（不等缓存过期）
+chk "严格模式运行中有项目配置读不出：清单里的旧图仍 200，项目子目录的图 404，清单外新放的文件 404" \
+    "$(code "$B/issue-464/old-b.png")/$(code "$B/acme/12/at.png")/$(code "$B/issue-464/new-while-unreadable.png")" "200/404/404"
+cp "$ROOT/issue-464/old-b.png" "$TMP/oldb.keep"; png "$ROOT/issue-464/old-b.png"
+chk "同时旧图内容被换掉：仍按清单核对，404" "$(code "$B/issue-464/old-b.png")" "404"
+cp "$TMP/oldb.keep" "$ROOT/issue-464/old-b.png"
+chmod 644 "$C9"
+systemctl --user restart cavil-loop-public-assets.service
+chk "配置恢复可读后：旧图 200、项目子目录的图 200、清单外新文件仍 404" \
+    "$(code "$B/issue-464/old-b.png")/$(code "$B/acme/12/at.png")/$(code "$B/issue-464/new-while-unreadable.png")" "200/200/404"
 cp "$TMP/c9.pre" "$C9"; cp "$TMP/ac.pre" "$AC"
 printf 'WEEKLY_REPORT_ASSET_ROOT_URL="%s"\n' "$B" >> "$AC"
 sw; rc=$?
