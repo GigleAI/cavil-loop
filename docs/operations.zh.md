@@ -531,6 +531,67 @@ pending/agent ──claude──> 代码产出 or 设计方案? ──否──>
 
 留空 = 完全关闭，行为与从前一致。
 
+### 复审收敛：首轮一次报全，之后只复核修复（GitHub#621）
+
+以前一个 PR 常要分多轮才收到完整的复审意见：每轮都从头审一遍，每轮都在上一轮没看到的地方再找出一个。
+现在复审的说明里总会多一段（`prompts/review-converge.md`，由拼 prompt 的公共步骤追加，整份替换了复审模板的
+项目也收得到）：
+
+- **全量轮**——最近一次人工动作之后的第 1 轮，或任何算不出基线的轮次：需求、diff（方案就是全文）、测试、
+  文档一次过完，问题全部列出、编号（`#1`、`#2`…，之后各轮沿用）。
+- **复核轮**——第 2 轮起、基线可用时：清单逐条核对（改好 / 没改好 / worker 给的不改理由成立否），**修复本身**
+  里的新问题照常编号、可以打回，照拦关卡仍对整个 PR 照查。
+- **每个问题一条判断顺序**，停在第一个给出结果的一步：① 照拦——检查有失败或被取消的行、与主干冲突、违反
+  适用的硬规则、突破安全边界、会删 / 写坏数据（任何项目规则都不能降级）；② 定级——依次看项目的复审附加
+  说明 → `REVIEW.md` → 工具默认分界（行为 / 数据 / 测试错 = 必须改；措辞、命名、可读性 = 建议），建议一律
+  不打回，列进折叠块；③ 全量轮或落在修复范围内 → 打回；④ 复核轮在修复范围外迟到的「必须改」→ 普通条目
+  写进「需要人注意」、不打回（人合并前决定）；托管条目打回——daemon 合并前没人看这条提醒。
+  复审模板里本来就写明「判不通过」的条目（硬规则、拍板问题里出现代码名字、用「你」「我」指代参与方、交人评论的
+  版式各项、冲突、方案审查各点）一律是「必须改」，不会被定成建议；worker 这一轮写的评论、方案和 PR 正文总在
+  审查范围内，所以这些在第 ③ 步打回，走不到第 ④ 步。
+- 轮次标记格式不变（周报按它认复审评论）；下一行是隐藏的基线标记，下一轮据此算修复范围（只认结论评论的
+  第一、二行，别处引用的旧标记不算）：
+  `<!-- review-baseline: code head=<sha> base=<分支> -->` 或
+  `<!-- review-baseline: plan comment=<id> sha256=<指纹> -->`。
+
+**「修复本身」是哪些改动**由 `scripts/review-scope.sh`（托管安装走 `entrypoints/review-scope.sh`，只读）算出。
+它读派工账号最近一条复审结论里的基线，从上往下判、停在第一条命中的：
+
+| # | 代码 | 输出 |
+|---|---|---|
+| 1 | 最近一次人工动作后的第 1 轮 | `full first-round` |
+| 2 | 读评论 / 读 PR 失败 | `full read-failed` |
+| 3 | 没有基线标记，或格式不符 | `full no-baseline` |
+| 4 | PR 的目标分支与基线里的不同 | `full base-changed` |
+| 5 | 拉取失败，或上轮审过的提交取不到 | `full baseline-missing` |
+| 6 | 上轮审过的提交不是本轮提交的祖先（变基 / 强推） | `full history-rewritten` |
+| 7 | 与目标分支的分叉点算不出 | `full read-failed` |
+| 8 | 「上轮审过的提交 + 分叉点」合成时冲突（PR 本轮手工解决了与主干的冲突时也是） | `full merge-conflict` |
+| 9 | 合成出别的错 | `full read-failed` |
+| 10 | 合成的树与本轮提交比较失败 | `full read-failed` |
+| 11 | 没有差异（只同步了主干，或没有新提交） | `scope 0` |
+| 12 | 有差异 | `scope <文件数>` + 差异全文 |
+
+合成的树是 `git merge-tree --write-tree <上轮审过的提交> <分叉点>`：上一轮复审看到的内容，加上此后主干带进来
+的改动，所以单纯把 `main` 合进分支不算修复本身。设计方案：第 1 轮、读不到评论、没有基线 → 全量；上一版方案
+评论被删（`deleted`）、此后被原地编辑过（`edited`）、就是本轮这条（`same-comment`）、任一条不是派工账号自己发的
+（`not-own`）或不在本条 issue 下（`not-this-issue`）→ 全量；否则 `scope` 加上一版到这一版的全文差异。命令只输出
+本条 issue 下派工账号自己发的文字（受保护的读取命令对这类评论也是原样显示）；托管条目上别的内容仍只经受保护的
+读取命令读。方案模式还输出本轮这条评论的 `current sha256=<指纹>` 和全文，两者出自同一次读取——复审审的就是印出来
+的这份全文，指纹对应的就是复审看到的版本；基线只经 `review-scope.sh fingerprint <id> --issue <N> --expect <这个指纹>` 写：审阅途中评论被改过就拒绝（退出码 3），那一轮不写基线、
+下一轮全量。托管条目又开了外部内容保护（`AUTOPILOT_OUTSIDER_GUARD`）时，本条的评论只经受保护的读取命令读，复审说明里
+干脆不带方案模式：方案复审每轮全量，不写方案基线。代码模式在这类条目上也不读评论：复审从受保护读取命令的输出里
+抄下自己上一条结论的第二行，用 `--baseline-mark '<那一行>'` 交给命令；受保护读取成功、但找不到这一行（或格式不对），本轮全量；受保护读取本身失败不算「没有基线」，照外部内容保护的规则重试一次，仍失败就交人并写明报错，不按全量继续审。其他
+条目上代码模式读评论列表只为找这一行，不把任何评论文字输出给复审。指纹用 `sha256sum` 或 macOS 的 `shasum`（`scripts/_sha256.sh`，和配置指纹共用一份），两个都没有就是
+`full read-failed`。没输出、退出码非 0、第一行认不出 → 一律按全量。
+
+**`REVIEW.md`**——项目可以在仓库根目录放一份 `REVIEW.md`，写本项目复审重点看什么、什么算必须改、什么只算建议、
+哪些不用提。daemon 和读项目 prompt 文件一样从 `origin/<base>` 读它，结果分三种：有 → 复审 prompt 追加全文，
+四个 worker 入口（新 issue、issue 回复、PR 回复、拆出来的子 issue）各追加一句指向它；主干上确认没有 → 什么都
+不加；读不到（远端引用不在、读目录出错、不是普通文件）→ 复审 prompt 写「REVIEW.md 未能读取：按全量复审，不放宽
+任何标准」，worker prompt 写「未能读取」。不回落去读主 checkout 里的本地副本。本仓库自己的 `REVIEW.md` 装的是
+原来 `review.extra.md` 里「测试证据」那一节，附加说明只留评论怎么写。
+
 ## 托管标签（可选，**默认关闭**）
 
 GitHub#114。配 `LABEL_AUTOPILOT`（例如 `autopilot`），并且开着复审关卡 `LABEL_PENDING_REVIEW`
@@ -1428,7 +1489,7 @@ project/.agents/skills/cavil-loop/prompts/
 | `${PR}` | PR 编号（仅 pr-comment） |
 | `${REPO}` | 仓库 owner/repo |
 | `${TITLE}` | issue 标题（仅 new-issue） |
-| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-pr↔issue-闭环关系-worker-在设计阶段就决定)） |
+| `${PARENT_ISSUE}` | 父 issue 编号（仅 `sub-issue.template.md`，见 [architecture.zh.md 闭环关系](architecture.zh.md#关于-prissue-闭环关系worker-在设计阶段就决定)） |
 | `${WORKTREE}` | worktree 绝对路径 |
 | `${BRANCH}` | branch 全名 |
 | `${ISSUE_N}` | 从 branch 反推的 issue 编号（仅 pr-comment） |
@@ -2247,7 +2308,78 @@ systemctl --user daemon-reload && systemctl --user enable --now cavil-loop-publi
 
 `PUBLIC_ASSETS_ROOT` 填实际在用的资产目录（旧安装是 `~/.local/state/coding-agent-poll/review-shots`）。对外路径前缀不是 `/review-assets/` 时加一行 `PUBLIC_ASSETS_PREFIX=`。
 
-发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（三份工作说明模板里已写这一步，`publish-asset.sh` 发布前也会跑）。
+发图前自查用 `node scripts/public-assets/check.mjs <目录或文件>`：逐个报公网拿不拿得到，任何文件里有令牌 / 密钥样式就点名并以退出码 1 结束（发布命令发布前也会跑；配了出图地址的项目，worker 不再自己跑它，见下一节）。
+
+### 目录规则、唯一的发布命令、服务端强制拦截（GitHub#613）
+
+**目录规则**：新发的图一律落在资产目录的 `<项目 key>/<条目编号>/<名字>-rev-<唯一戳>.<扩展名>`，周报是 `<项目 key>/weekly-report/<文件名>`。路径由 cavil-loop 定，worker 不起名、不选目录。项目 key 就是 `~/.config/cavil-loop/<key>.conf` 的名字。
+
+**发布命令**：评论配图和周报共用 `scripts/publish-asset.sh`（托管安装走长期入口 `~/.agents/releases/cavil-loop/entrypoints/publish-asset.sh`；`scripts/weekly-report/publish-asset.sh` 是早期路径，原样转发）。配了出图地址的项目，派工提示词里讲出图的两条（「怎么出图」「评论配图标准」）换成这一条命令，项目 key 和条目编号已写死：`bash '<入口>' --project '<key>' --item <编号> <图片>...`。它依次：
+
+1. 读对外服务自己报告的状态，服务端拦截没生效就拒绝（原因写在 stderr）；目录取服务报告的实际目录，不猜；
+2. 把文件复制成目标目录里的隐藏临时文件，**查这份副本**有没有凭证样式，有就删掉、拒绝；
+3. 改名成最终名字，同名已存在就拒绝（不覆盖）；
+4. 核对公网地址 HTTP 200 且下载到的字节数等于文件大小，不对就删掉刚放的文件、报错；
+5. stdout 只打印地址，一行一个。
+
+不是图片 / 视频的（周报 PDF 等）照旧不公开，放进不公开目录的 `<项目 key>/<子目录>/` 下。
+
+**服务端强制拦截（严格模式）**：对外服务配置里有 `PUBLIC_ASSETS_STRICT=1` 时，它只交出两类文件——项目子目录下的（key 必须是本机登记过的项目），或旧图清单里**路径和内容（SHA-256）都对得上**的旧图；每个文件整份读进内存，在这份内存上判格式、查凭证（所有类型，不只 SVG）、比清单，再从这份内存送出——检查过的就是送出去的。绕过发布命令直接拷进目录的文件，含凭证样式的不给；拷到项目子目录以外的新文件，一律不给。没有这一行时行为和以前一样（这也是切换失败时的退回状态）。
+
+单文件上限默认 256 MB（`PUBLIC_ASSETS_MAX_BYTES=` 调），超过的不交出。
+
+**旧图**：切换时把资产目录里不在项目子目录下的全部图片 / 视频登记成旧图清单（相对路径 + 大小 + SHA-256），写两份：配置目录里的 `public-assets-legacy.json` 和 `~/.local/state/cavil-loop/public-assets/legacy.json`；清单的校验值写进服务配置的 `PUBLIC_ASSETS_LEGACY_SHA=` 一行。**这一行就是唯一的可信状态**：有它 = 清单已生效、以它为准、永不重建；没有它 = 从未生效、可以重建。
+
+- 改权限、改修改时间、按原路径原内容从备份还原：旧图照常能打开；
+- 改名、挪位置、换内容：旧图变 404（已发评论里的那张会破）；
+- 一份清单坏了：服务用另一份，再跑一次切换会把好的那份复制回去；
+- 两份都坏、或校验值那一行格式不对：旧结构一律 404，日志写原因，切换命令不重建——从备份找回任一份（校验值对上即可）；只有人决定时才删掉校验值那一行重建（重建会把此刻目录里项目子目录以外的文件都当旧图）。
+
+**切换**：
+
+```bash
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --status   # 只读：配置、服务、拦截是否生效、代码是否一致、清单状态
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh --verify   # 放几个测试文件经本机端口和公网地址各查一遍，再删掉；不改配置
+bash ~/.agents/skills/cavil-loop/scripts/public-assets/switch.sh            # 执行切换：备份配置 → 建 / 核对清单 → 写严格模式 → 重启 → 核验；失败自动退回老规则
+```
+
+切换命令核验通过后另写一份验收记录（状态目录里的 `accepted.json`，记的是核验时那个服务进程）。**只有服务在严格模式、而且验收记录对的正是现在这个进程，才算拦截已生效**：切换在核验之前被中断、服务自己重启过，都会让它变成「严格模式在跑、核验没完成」，这时发布命令不发图，自动切换会重新核验。
+
+只配了早期周报图片地址（`WEEKLY_REPORT_ASSET_URL`）、没配出图地址的项目，切换命令一律不切换、点名这些项目：严格模式下它们的周报图不会被交出，而新地址没法从旧地址推出来。给这些项目的 `<key>.conf` 加一行 `WEEKLY_REPORT_ASSET_ROOT_URL=`（公网入口实际挂的前缀）后再切换。
+
+daemon 每轮调一次 `switch.sh --auto`：服务没在严格模式、或在跑的代码和磁盘上的不一样，就自动切换（会重启一次服务），失败按 1、5、15、60 分钟退避，每个代码版本最多试 5 次。不想让它自动切换：服务配置里加 `PUBLIC_ASSETS_AUTO_SWITCH=0`。核验做四项：一张旧图 200、旧结构位置新放的图 404、`<key>/0/`（0 号条目留给核验）下的正常图 200、带假令牌样式的图 404；只删它自己刚建的文件。
+
+切换出问题时手动退回老规则（不依赖切换命令能运行；先把 `OLD_IMAGE_URL` 设成任一张旧图的公网地址）：
+
+<!-- public-assets-rollback:begin -->
+```bash
+(
+set -eu
+CONF="$(ls ~/.config/cavil-loop/public-assets.conf ~/.config/coding-agent-work-loop/public-assets.conf 2>/dev/null | head -n 1)" || true
+if [ -z "$CONF" ]; then echo "NO-CONFIG: nothing changed"; exit 1; fi
+BAK="$CONF.bak-manual-$(date +%Y%m%d-%H%M%S)"
+if ! cp -p "$CONF" "$BAK" || ! cmp -s "$CONF" "$BAK"; then echo "BACKUP-FAILED: nothing changed"; exit 1; fi
+sed -i '/^PUBLIC_ASSETS_STRICT=/d' "$CONF"
+grep -q '^PUBLIC_ASSETS_AUTO_SWITCH=0$' "$CONF" || echo 'PUBLIC_ASSETS_AUTO_SWITCH=0' >> "$CONF"
+if grep -q '^PUBLIC_ASSETS_STRICT=' "$CONF"; then echo "EDIT-FAILED: restore $BAK"; exit 1; fi
+systemctl --user restart cavil-loop-public-assets.service
+sleep 2
+systemctl --user is-active cavil-loop-public-assets.service
+PID="$(systemctl --user show -p MainPID --value cavil-loop-public-assets.service)"
+jq -e --argjson p "$PID" '.pid == $p and .strict == false' ~/.local/state/cavil-loop/public-assets/status.json
+curl -sk -o /dev/null -w '%{http_code}\n' "$OLD_IMAGE_URL"
+echo "ROLLED-BACK"
+)
+```
+<!-- public-assets-rollback:end -->
+
+看到 `active`、`true`、`200` 和最后一行 `ROLLED-BACK` 算恢复：`true` 是服务自己报告「现在这个进程严格模式关」（进程号对得上才算）。中途任何一步失败，命令块就地停下、后面的步骤都不做：`NO-CONFIG` / `BACKUP-FAILED` 表示什么都没改；`EDIT-FAILED` 表示配置改了一半，用它打印的备份文件覆盖回去；`systemctl` 或 `jq` 那一行失败表示服务没按老规则起来，看 `journalctl --user -u cavil-loop-public-assets -n 50`。`PUBLIC_ASSETS_LEGACY_SHA=` 那一行保留，下次切换沿用；想恢复自动切换就删掉 `PUBLIC_ASSETS_AUTO_SWITCH=0` 那一行。
+
+**占用统计**（只读，不删任何文件）：`bash ~/.agents/skills/cavil-loop/scripts/public-assets/usage.sh` 按项目、按条目列出占用，旧结构里归不到项目的单列一行，按名字推出来但对外服务不交出的那个目录也单列。删不删、删哪些由人决定：删掉的图在已发评论里会变成破图。
+
+**脚本查不出来的**：截到的画面里显示了令牌、个人信息（姓名、邮箱、账号、订单……），凭证检查只看文件字节，看不出像素里的内容。这一条仍靠 worker 只截可公开的页面、复审抽查。
+
+**限制**：只有装了这套对外服务的机器能发图；直接把目录交给别的静态服务对外的机器，发布命令一律拒绝。切换会重启一次服务，重启那一下（秒级）的图片请求会失败。
 
 不是图片 / 视频的附件（周报 PDF 等）不公开发布：`publish-asset.sh` 把它放进不公开的目录，项目配置里设了 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT_URL`（只在内网可达的地址前缀，对应目录由 `WEEKLY_REPORT_PRIVATE_ASSET_ROOT` 指定，默认资产目录旁的 `private-assets/`）就给那个地址，没设就给本机路径。周报趋势图的矢量版留在本机（`WEEKLY_REPORT_VECTOR_DIR`，默认资产目录旁的 `weekly-report-vector/`），`topdf.mjs` 从本机读。
 

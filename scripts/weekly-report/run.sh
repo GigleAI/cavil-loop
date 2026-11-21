@@ -41,7 +41,9 @@ done
 CONF="$(cavil_project_env "$PROJECT")"
 [ -f "$CONF" ] || { echo "找不到项目配置 $CONF" >&2; exit 1; }
 # shellcheck disable=SC1090
-set -a; . "$CONF"; set +a
+# shellcheck source=_asset_mode.sh
+source "$HERE/_asset_mode.sh"
+project_conf_source "$CONF"
 : "${PROJECT_ROOT:?项目配置里缺 PROJECT_ROOT}"
 
 # REPO 从项目配置读；没有就从 PROJECT_ROOT 的 git remote 推
@@ -49,14 +51,28 @@ REPO="${WEEKLY_REPORT_REPO:-$(git -C "$PROJECT_ROOT" remote get-url origin 2>/de
       | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')}"
 [ -n "$REPO" ] || { echo "推不出 REPO，请在 $CONF 里设 WEEKLY_REPORT_REPO" >&2; exit 1; }
 
-ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$(cavil_review_shots)/weekly-report}"
-# 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
-ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
-[ -n "$ASSET_URL" ] || {
-    echo "缺 WEEKLY_REPORT_ASSET_URL —— 配图要能被 GitHub 抓到，必须是公网可达的 URL 前缀。" >&2
-    echo "在 $CONF 里设，例如：WEEKLY_REPORT_ASSET_URL=\"https://<你的公网主机>/review-assets/weekly-report\"" >&2
-    exit 1
-}
+# 配图怎么发（GitHub#613），按项目配置里有哪几行分两种，不从一行推另一行：
+#   · 有 WEEKLY_REPORT_ASSET_ROOT_URL（出图地址）→ 经发布命令发到 <出图地址>/<项目 key>/weekly-report/，
+#     报告里的图链就是发布命令返回的地址；服务端拦截没生效时在出图之前就停下。
+#   · 只有 WEEKLY_REPORT_ASSET_URL（早期的周报图片地址）→ 照旧复制进 WEEKLY_REPORT_ASSET_DIR、拼地址；
+#     但对外服务已切到严格模式时（这种位置的新文件它不交出），在出图之前停下，说明要加哪一行。
+PUBLISH="$(dirname "$HERE")/publish-asset.sh"
+STRICT_JS="$(dirname "$HERE")/public-assets/strict.mjs"
+ROOT_URL="${WEEKLY_REPORT_ASSET_ROOT_URL:-}"
+if [ "$(weekly_asset_mode "$ROOT_URL" "${WEEKLY_REPORT_ASSET_URL:-}")" = publish ]; then
+    USE_PUBLISH=1
+    ASSET_URL="${ROOT_URL%/}/$PROJECT/weekly-report"
+else
+    USE_PUBLISH=0
+    ASSET_DIR="${WEEKLY_REPORT_ASSET_DIR:-$(cavil_review_shots)/weekly-report}"
+    # 公网 URL 前缀没有默认值：主机名属于部署环境，不进这个公开仓库。在项目配置里设。
+    ASSET_URL="${WEEKLY_REPORT_ASSET_URL:-}"
+    [ -n "$ASSET_URL" ] || {
+        echo "缺 WEEKLY_REPORT_ASSET_URL —— 配图要能被 GitHub 抓到，必须是公网可达的 URL 前缀。" >&2
+        echo "在 $CONF 里设，例如：WEEKLY_REPORT_ASSET_URL=\"https://<你的公网主机>/review-assets/weekly-report\"" >&2
+        exit 1
+    }
+fi
 # 矢量版图表放哪：本机、不公开。topdf.mjs 按同一条规则找（见该文件 vectorDirs）。
 VECTOR_DIR="${WEEKLY_REPORT_VECTOR_DIR:-$(dirname "$(cavil_review_shots)")/weekly-report-vector}"
 FONTS_DIR="${WEEKLY_REPORT_FONTS_DIR:-$PROJECT_ROOT/public/fonts}"
@@ -180,6 +196,15 @@ DUPR=$(cut -f2 "$IDS" | sort | uniq -d)
 python3 "$HERE/merge.py" --out "$WORK/data.json" --primary "${PARTS[0]}" "${PARTS[@]:1}"
 fi
 
+if [ "$USE_PUBLISH" = 1 ]; then
+    bash "$PUBLISH" --project "$PROJECT" --check-ready || { echo "配图发不出去，周报中止（还没出图）" >&2; exit 1; }
+elif case "$(node "$STRICT_JS" status-check "${PUBLIC_ASSETS_STATUS:-$(cavil_public_assets_status)}" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" in
+        enforced|strict-unverified) true ;; *) false ;; esac; then
+    echo "对外服务已切到严格模式，WEEKLY_REPORT_ASSET_DIR 里新放的图不会被交出，周报中止（还没出图）。" >&2
+    echo "在 $CONF 里加一行出图地址，例如：WEEKLY_REPORT_ASSET_ROOT_URL=\"https://<你的公网主机>/review-assets\"" >&2
+    exit 1
+fi
+
 echo "== 2/4 出图"
 python3 "$HERE/render.py" --data "$WORK/data.json" --out-dir "$WORK" \
     --asset-url-base "$ASSET_URL" --rev "$REV" --fonts-dir "$FONTS_DIR"
@@ -188,9 +213,11 @@ for n in delivery effort cost token; do
 done
 
 echo "== 3/4 传图"
-mkdir -p "$ASSET_DIR"
-# 目录列表由对外服务（scripts/public-assets/serve.mjs）挡，不再往目录里放 index.html。
-cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
+if [ "$USE_PUBLISH" = 0 ]; then
+    mkdir -p "$ASSET_DIR"
+    # 目录列表由对外服务（scripts/public-assets/serve.mjs）挡，不再往目录里放 index.html。
+    cp "$WORK"/*-"$REV".png "$ASSET_DIR/"
+fi
 # 矢量版（GitHub#273）：和 PNG 同名同戳，topdf.mjs 出 PDF 时按 PNG 的文件名找到它、代替 PNG。
 # 临时目录随退出删掉，所以必须在这里留一份；字体已内嵌，不带本机路径。
 # 它是网页不是图片，公网资产目录只放行图片和视频，所以留在本机不公开的目录里，topdf.mjs 从本机读。
@@ -198,12 +225,22 @@ mkdir -p "$VECTOR_DIR"
 for n in delivery effort cost token; do
     cp "$WORK/$n.chart.html" "$VECTOR_DIR/$n-$REV.chart.html"
 done
-for n in delivery effort cost token; do
-    f="$n-$REV.png"
-    code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
-    [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP ${code}），中止" >&2; exit 1; }
-    echo "   $ASSET_URL/$f → 200"
-done
+if [ "$USE_PUBLISH" = 1 ]; then
+    # 发布命令自己核对公网 200 和大小；这里核对它返回的地址正好是报告要用的那几个
+    URLS="$(bash "$PUBLISH" --project "$PROJECT" --weekly-report --keep-name \
+        "$WORK/delivery-$REV.png" "$WORK/effort-$REV.png" "$WORK/cost-$REV.png" "$WORK/token-$REV.png")" \
+        || { echo "配图发布失败，中止" >&2; exit 1; }
+    want="$(for n in delivery effort cost token; do printf '%s\n' "$ASSET_URL/$n-$REV.png"; done)"
+    [ "$URLS" = "$want" ] || { echo "发布命令返回的地址和报告要用的不一致，中止：" >&2; printf '%s\n' "$URLS" >&2; exit 1; }
+    printf '   %s → 200\n' $URLS
+else
+    for n in delivery effort cost token; do
+        f="$n-$REV.png"
+        code=$(curl -sk -o /dev/null -w '%{http_code}' "$ASSET_URL/$f")
+        [ "$code" = "200" ] || { echo "配图公网不可达（$f → HTTP ${code}），中止" >&2; exit 1; }
+        echo "   $ASSET_URL/$f → 200"
+    done
+fi
 
 echo "== 4/4 出报告"
 python3 "$HERE/report.py" --data "$WORK/data.json" --out "$WORK/report.md" \

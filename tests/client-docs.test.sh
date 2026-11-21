@@ -8,7 +8,7 @@
 #
 # 管四件事：
 #   1. 这几份文档里指向仓库内文件的相对链接（含图片）都存在；带 #锚点 的，目标文件里真有那个标题
-#      （按 GitHub 生成锚点的规则算），同一页内的 #锚点 也一样
+#      （按 GitHub 生成锚点的规则算，解析在 tests/lib/doc_links.py，和全仓库链接检查共用），同一页内的 #锚点 也一样
 #   2. docs/client-screens/ 里的每张图都被中英两份说明引用，两份引用的图一模一样；两份 README 引用的图也一样
 #   3. 中英两份说明的 ## 章节数相同，「正在开发中」一节列的 issue 编号相同
 #   4. 网络边界的说法：四份对外文档（两份 README、两份说明）都写到远程 daemon 的三段连接（打开添加窗口就探测
@@ -28,66 +28,12 @@ PASS=0 FAIL=0
 ok()   { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
 
-cat > "$TMP/check.py" <<'PY'
-import os, re, sys, unicodedata, urllib.parse
-
-root = sys.argv[1]
-docs = sys.argv[2:]
-problems = []
-
-def slug(text):
-    # GitHub: lower-case, drop everything but letters / marks / numbers / connector punctuation / space / hyphen, spaces -> '-'
-    t = re.sub(r'`', '', text.strip().lower())
-    keep = ''.join(c for c in t if c in ' -' or unicodedata.category(c)[0] in 'LMN' or unicodedata.category(c) == 'Pc')
-    return keep.replace(' ', '-')
-
-def strip_code(text):
-    text = re.sub(r'```.*?```', '', text, flags=re.S)
-    return re.sub(r'`[^`\n]*`', '', text)
-
-def anchors(path):
-    out, seen = set(), {}
-    for line in strip_code(open(path, encoding='utf-8').read()).splitlines():
-        m = re.match(r'^(#{1,6})\s+(.*?)\s*#*\s*$', line)
-        if not m:
-            continue
-        s = slug(m.group(2))
-        n = seen.get(s, 0)
-        out.add(s if n == 0 else f'{s}-{n}')
-        seen[s] = n + 1
-    return out
-
-def links(path):
-    text = strip_code(open(path, encoding='utf-8').read())
-    found = re.findall(r'!?\[[^\]]*\]\(([^)\s]+)\)', text)
-    found += re.findall(r'<img[^>]*\ssrc="([^"]+)"', text)
-    return found
-
-for doc in docs:
-    path = os.path.join(root, doc)
-    if not os.path.isfile(path):
-        problems.append(f'{doc}: 文件不存在')
-        continue
-    for target in links(path):
-        if re.match(r'^[a-z]+:', target):
-            continue
-        file_part, _, frag = target.partition('#')
-        dest = path if file_part == '' else os.path.normpath(os.path.join(os.path.dirname(path), urllib.parse.unquote(file_part)))
-        if not os.path.exists(dest):
-            problems.append(f'{doc}: 链接指向不存在的文件 {target}')
-            continue
-        if frag and dest.endswith('.md'):
-            if urllib.parse.unquote(frag) not in anchors(dest):
-                problems.append(f'{doc}: 锚点不存在 {target}')
-
-for p in problems:
-    print(p)
-sys.exit(1 if problems else 0)
-PY
+# 链接与锚点的解析和全仓库链接检查（tests/doc-links.test.sh）共用一份：tests/lib/doc_links.py
+CHECK="$TEST_DIR/lib/doc_links.py"
 
 echo "== 1. 相对链接与锚点"
 DOCS=(README.md README.zh.md docs/client.md docs/client.zh.md client/README.md)
-if out=$(python3 "$TMP/check.py" "$REPO_DIR" "${DOCS[@]}" 2>&1); then
+if out=$(python3 "$CHECK" "$REPO_DIR" "${DOCS[@]}" 2>&1); then
     ok "${#DOCS[@]} 份文档里的相对链接、图片和锚点都找得到"
 else
     bad "有断链："; echo "$out" | head -20
@@ -103,7 +49,7 @@ cat > "$TMP/bad/docs/x.md" <<'MD'
 [ok](#第一次用只用客户端) [missing file](nope.md) [bad anchor](#没有这一节) ![gone](client-screens/none.png)
 `[in code](ignored.md)`
 MD
-if out=$(python3 "$TMP/check.py" "$TMP/bad" docs/x.md 2>&1); then
+if out=$(python3 "$CHECK" "$TMP/bad" docs/x.md 2>&1); then
     bad "检查器放过了一份坏文档"
 else
     n=$(printf '%s\n' "$out" | grep -c .)

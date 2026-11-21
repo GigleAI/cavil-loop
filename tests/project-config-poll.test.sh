@@ -9,7 +9,8 @@
 #   2. 用真实 project-config.sh set 把这四项写进同一份配置，再跑：派 2 条、「1/5」、「1/4」、不清理
 #   3. 等人审的 PR 和主干冲突（真冲突、真 merge-tree）：不写时刚更新的交回 agent、3 天没更新的只提醒
 #      （= 开、2 天）；改成 5 天后 3 天没更新的也交回；关掉后什么都不做
-#   4. 有新合并时刷新常驻正式站（GitHub#554）：不写 = 不刷新；用 project-config.sh 打开后，同样的合并触发刷新
+#   4. 有新合并时刷新常驻正式站（GitHub#554）：不写 = 不刷新；用 project-config.sh 打开后，同样的合并触发刷新；
+#      编排文档写的两条边界（GitHub#615）：关掉合并后清理时不刷新；清理脚本报错时照样刷新，下一轮再扫到再刷新一次
 #   5. 冲突检查判不出时重试几轮（GitHub#555）：不写 = 第 10 轮放弃这一版；用 project-config.sh 改成 3 后第 3 轮放弃
 #   6. 「开着的都派」每轮扫几条（GitHub#555）：0 / 1 / 9 位 / 10 位 / 20 位，以及手写配置里带前导 0 的写法
 #      （0000000000、0000000001、20 位长的 1、前导 0 的 10 亿），各在本机 GNU head 和一个照 macOS head 行为做的替身
@@ -54,6 +55,7 @@ case "$1" in
         for a in "$@"; do [ "$prev" = -t ] && t="${a#=}"; prev="$a"; done
         grep -qxF -- "$t" "$log.live" 2>/dev/null; exit $? ;;
     ls|list-sessions) [ -s "$log.live" ] && cat "$log.live"; exit 0 ;;
+    kill-session) [ -e "$log.killfail" ] && { echo "fake tmux: kill-session refused" >&2; exit 1; }; exit 0 ;;
 esac
 exit 0
 SH
@@ -109,7 +111,7 @@ chmod 600 "$CONF"
 printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$W/project" "$CONF" > "$HOME/.config/cavil-loop/pctest.conf"
 
 world() {   # <场景：two-pending | failing | dead-worker>
-    rm -rf "$W/state" "$W/wt" "$W/project" "$GD" "$W/tmux.log" "$W/tmux.log.live" "$W/tmux.log.fail"
+    rm -rf "$W/state" "$W/wt" "$W/project" "$GD" "$W/tmux.log" "$W/tmux.log.live" "$W/tmux.log.fail" "$W/tmux.log.killfail"
     mkdir -p "$W/state" "$W/wt" "$GD"
     git clone -q "$SANDBOX/origin.git" "$W/project" 2>/dev/null
     export FAKE_GH_DIR="$GD" FAKE_TMUX_LOG="$W/tmux.log"
@@ -236,6 +238,24 @@ out="$(printf '{"LATEST_SITE_REFRESH":"true","AUTO_CLEANUP_ON_MERGE":"true"}' | 
 chk "打开刷新（并把合并后清理改回开）：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
 world two-pending; poll
 chk "看到新合并、触发刷新" "$(cleaned) $(logged 'merge 钩子')" "true 1"
+
+echo "【4b】刷新的两条边界（docs/orchestration{,.zh}.md「刷新常驻站」）"
+rev="$(pc get pctest | jq -r .rev)"
+out="$(printf '{"AUTO_CLEANUP_ON_MERGE":"false"}' | pc set pctest --rev "$rev")"
+chk "关掉合并后清理（刷新仍开着）：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+world two-pending; poll
+chk "关掉合并后清理：不清理、不刷新（这一轮确实跑了：起了 worker 会话）" "$(cleaned) $(logged 'merge 钩子') $([ "$(sessions)" -ge 1 ] && echo ran)" "false 0 ran"
+rev="$(pc get pctest | jq -r .rev)"
+out="$(printf '{"AUTO_CLEANUP_ON_MERGE":"true"}' | pc set pctest --rev "$rev")"
+chk "合并后清理改回开：保存成功" "$(tail -1 <<<"$out")" "RESULT=saved"
+# 清理脚本报错：已合并 PR 的 worker 会话还在，结束会话那一步失败
+world two-pending; echo "pctest-issue$M" >> "$W/tmux.log.live"; : > "$W/tmux.log.killfail"; poll
+chk "清理脚本报错：没记成已清理、日志记了清理失败，刷新照样启动" \
+    "$(cleaned) $(logged "auto-cleanup PR #$M 失败") $(logged 'merge 钩子')" "false 1 1"
+poll
+chk "下一轮再扫到同一个合并：清理又失败一次，刷新又启动一次" \
+    "$(cleaned) $(logged "auto-cleanup PR #$M 失败") $(logged 'merge 钩子')" "false 2 2"
+rm -f "$W/tmux.log.killfail"
 
 echo "【5】冲突检查重试上限：经 project-config.sh 改成 3，轮询跟着变"
 rev="$(pc get pctest | jq -r .rev)"

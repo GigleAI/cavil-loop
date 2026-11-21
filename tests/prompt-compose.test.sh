@@ -14,6 +14,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -54,8 +56,11 @@ reset() { rm -f "$PROMPTS"/new-issue.*; }
 echo "── 什么都不放 → 用 skill 自带的 base ──"
 reset
 out=$(compose_prompt_template new-issue)
-chk "路径是 skill 的"       "$(basename "$out")" "new-issue.template.md"
+# 沙盘项目不是 git 仓库：主干上的 REVIEW.md 读不到（GitHub#621），拼装会追加一句「未能读取」，所以
+# 这里拿到的是合成文件；拿掉那一段之后必须就是 base 原样
+chk "拿掉 REVIEW.md 那一段后就是 base 原样" "$(strip_review_converge < "$out" | cmp -s - "$SKILL_DIR/prompts/new-issue.template.md" && echo same)" "same"
 chk "内容是 base"           "$(grep -c '^BASE-通用工作流$' "$out")" "1"
+chk "追加的是「未能读取」那一句" "$(grep -c '^REVIEW.md 未能读取' "$out")" "1"
 
 echo "── 只放 .template.md → 完全覆写（老行为不能破）──"
 reset

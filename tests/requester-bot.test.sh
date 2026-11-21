@@ -32,6 +32,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -184,7 +186,8 @@ make_copy "$SANDBOX/old-src" "$OLD"
 # ── 两段共用的定义（GitHub#211 拆段：段 2 也要用，放在分段之前）──
 compose_out() {   # <scripts 副本> <W> <kind> → 拼好的提示词内容
     env FAKE_GH_DIR="$2/gh" CODING_AGENT_CONFIG="$2/cavil-loop.config" bash -c '
-        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3"
+        source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3" \
+        | strip_review_converge   # GitHub#621 起复审 prompt 总多一段收敛规则，不归这里的对拍管
 }
 
 # 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
@@ -1519,7 +1522,7 @@ names_suite() {   # <scripts 副本>
     for kind in new-issue review; do
         compose_out "$S" "$RW" $kind > "$SANDBOX/names-old-$kind.md"
         env CODING_AGENT_CONFIG="$W2/cavil-loop.config" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; cat "$(compose_prompt_template "$2")"' _ "$S" $kind \
-            | sed "s|$W2/cavil-loop.config|$RW/cavil-loop.config|g" > "$SANDBOX/names-new-$kind.md"
+            | sed "s|$W2/cavil-loop.config|$RW/cavil-loop.config|g" | strip_review_converge > "$SANDBOX/names-new-$kind.md"
         chk "旧名字 · 提示词 $kind 与新名字的逐字节相同" \
             "$(cmp -s "$SANDBOX/names-old-$kind.md" "$SANDBOX/names-new-$kind.md" && echo same || echo diff)" same
     done

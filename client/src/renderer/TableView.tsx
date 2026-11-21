@@ -68,6 +68,14 @@ function toneOf(it: Item) {
 
 /** GitHub#368: the hover text of a pulled row — right for a sub-issue and for a sub-issue's sub-issue alike */
 export const PULLED_TITLE = zhKey('此条目不符合搜索条件；因上层有命中的 issue 而显示');
+/** GitHub#622: the hover text of an issue shown only because a matched PR goes under it */
+export const CARRIED_TITLE = zhKey('此 issue 不符合搜索条件；因下面有命中的 PR 而显示');
+
+/** a faded row's hover text: one line per reason it is shown (GitHub#622: a row can have both) */
+export function fadedTitle(r: { pulled: boolean; carried: boolean }): string | undefined {
+  const lines = [...(r.pulled ? [tKey(PULLED_TITLE)] : []), ...(r.carried ? [tKey(CARRIED_TITLE)] : [])];
+  return lines.length ? lines.join('\n') : undefined;
+}
 
 function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all: Item[]; now: number; dark: boolean }) {
   switch (col) {
@@ -571,14 +579,16 @@ export function TableView({
             data-depth={r.depth}
             data-under={r.under ?? undefined}
             data-pulled={r.pulled ? '' : undefined}
+            data-carried={r.carried ? '' : undefined}
             data-open-item={openKey !== null && r.item.key === openKey ? 'yes' : undefined}
-            className={[dragRow === r.id ? 'dragging' : '', r.pulled ? 'pulled' : '', openKey !== null && r.item.key === openKey ? 'open-item' : ''].filter(Boolean).join(' ') || undefined}
-            // GitHub#368: a row shown only because an issue above it matched the search
-            title={r.pulled ? tKey(PULLED_TITLE) : undefined}
-            // an open cell editor keeps its text box / dropdowns usable: that row does not drag; nor does a pulled row (it sits in its parent's group, not its own)
-            draggable={canDrag && !r.pulled && editing?.row !== r.id}
+            className={[dragRow === r.id ? 'dragging' : '', r.pulled || r.carried ? 'pulled' : '', openKey !== null && r.item.key === openKey ? 'open-item' : ''].filter(Boolean).join(' ') || undefined}
+            // GitHub#368: a row shown only because an issue above it matched the search; GitHub#622: or because a PR below it did
+            title={fadedTitle(r)}
+            // an open cell editor keeps its text box / dropdowns usable: that row does not drag; nor does a pulled row
+            // (it sits in its parent's group, not its own), nor a carried one (it did not match the search)
+            draggable={canDrag && !r.pulled && !r.carried && editing?.row !== r.id}
             onDragStart={(e) => {
-              if (!canDrag || r.pulled || editing?.row === r.id) return;
+              if (!canDrag || r.pulled || r.carried || editing?.row === r.id) return;
               e.dataTransfer.setData('text/plain', r.item.key);
               e.dataTransfer.effectAllowed = 'move';
               dragging.current = { row: r, from: g };
@@ -619,6 +629,11 @@ export function TableView({
               <span className="muted small" data-verbatim="github" data-testid="row-ref">
                 {rowRef(r.item, repo)}
               </span>
+              {r.carried && (
+                <span className="carried-tag" data-testid="carried-tag">
+                  {t('随 PR 显示')}
+                </span>
+              )}
             </td>
             {cols.map((c) => {
               const editable = canWrite && EDITABLE_COLUMNS.includes(c);

@@ -26,6 +26,8 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# shellcheck source=lib/review-converge.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -1771,7 +1773,7 @@ PATH="$SANDBOX/bin:\$PATH"
 CONF
     local f
     f=$(cd "$W/project" && env "$@" CODING_AGENT_CONFIG="$W/conf" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; compose_prompt_template "$2"' _ "$root" "$name" 2>/dev/null)
-    [ -n "$f" ] && [ -f "$f" ] && sed "s|$root|<ROOT>|g" "$f"
+    [ -n "$f" ] && [ -f "$f" ] && sed "s|$root|<ROOT>|g" "$f" | strip_review_converge   # GitHub#621 的两段不归这里的对拍管
 }
 
 prompts_check() {
