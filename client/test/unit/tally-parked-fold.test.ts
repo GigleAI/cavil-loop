@@ -100,17 +100,22 @@ describe('GitHub#643: the default fold of a written 稍后处理 number', () => 
     expect([e.count, e.folded]).toEqual([3, false]);
   });
 
-  it('only A then A + B then A again: folded, in the bar, folded — count and click unchanged throughout', () => {
-    const steps: [string[], TallyFold, boolean][] = [
-      [[SRC_A.key], 'always', true],
-      [[SRC_A.key, SRC_B.key], 'zero', false],
-      [[SRC_A.key], 'always', true],
+  it('only A then A + B then A again: folded with 2, in the bar with 3, folded with 2 — over the ticked sources\' items only, as the board merges them', () => {
+    // the board hands the bar only the ticked sources' items: written out here per step
+    const of = (repos: string[]) => ITEMS.filter((i) => repos.includes(i.repo));
+    const steps: [string[], string[], TallyFold, number, boolean][] = [
+      [[SRC_A.key], [A], 'always', 2, true],
+      [[SRC_A.key, SRC_B.key], [A, B], 'zero', 3, false],
+      [[SRC_A.key], [A], 'always', 2, true],
     ];
-    for (const [selected, fold, folded] of steps) {
+    for (const [selected, repos, fold, count, folded] of steps) {
       const c: Case = { own: renamedA, sources: [SRC_A, SRC_B], selected };
-      expect(foldOf(c, 'label:"待排期"')).toBe(fold);
-      // the count is over every item in hand here (the board narrows items by source before this)
-      expect(bar(c, [row('label:"待排期"')])[0].folded).toBe(folded);
+      const d = row('label:"待排期"');
+      const [e] = bar(c, [d], of(repos));
+      const [old] = bar(c, [d], of(repos), false);
+      expect([e.fold, e.count, e.folded, e.query]).toEqual([fold, count, folded, 'label:"待排期"']);
+      expect([old.count, old.query]).toEqual([e.count, e.query]);
+      expect(picker(c, d)).toBe(fold);
     }
   });
 
