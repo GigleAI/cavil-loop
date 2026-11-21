@@ -194,19 +194,23 @@ def check(root, docs, into=None, listing=None):
             problems.append(f'{doc}: 文件不存在')
             continue
         for raw in links(path):
-            # markdown-it percent-encodes destinations. Split file and anchor on the
-            # still-encoded text first, then decode each part: a "%23" in a file name is
-            # part of the name, never the "#" that starts the anchor. The target is
-            # reported decoded, with a "#" inside the file name shown as %23 again
-            raw_file, sep, raw_frag = raw.partition('#')
-            file_part = urllib.parse.unquote(raw_file)
-            frag = urllib.parse.unquote(raw_frag)
-            target = file_part.replace('#', '%23') + sep + frag
+            # markdown-it percent-encodes destinations. The whole address is split once,
+            # on the still-encoded text, into scheme / host / path / query / anchor
+            # (urlsplit, RFC 3986); only then is each part decoded. So "%23" and "%3F" in
+            # a file name stay part of the name, a "?query" never becomes part of the
+            # file, and only the decoded path locates the file and matches --into. The
+            # target is reported decoded, with a "#" / "?" inside the path shown encoded
+            parts = urllib.parse.urlsplit(raw)
+            file_part = urllib.parse.unquote(parts.path)
+            frag = urllib.parse.unquote(parts.fragment)
+            target = (file_part.replace('%', '%25').replace('#', '%23').replace('?', '%3F')
+                      + ('?' + parts.query if '?' in raw.partition('#')[0] else '')
+                      + ('#' + frag if '#' in raw else ''))
             if raw == '':
                 if into is None or os.path.relpath(path, root) in into:
                     problems.append(f'{doc}: 链接目标为空')
                 continue
-            if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*:', raw) or raw.startswith('//'):
+            if parts.scheme or parts.netloc or raw.startswith('//'):
                 continue   # absolute URL, mailto:, …
             if file_part == '':
                 dest = path

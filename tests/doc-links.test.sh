@@ -192,6 +192,32 @@ chk "  限定目标范围时按真实文件名匹配：限定 guide#part.md 查�
     "OK README.md -> guide%23part.md#heading
 rc=0 | README.md: 链接指向不存在的文件 docs/guide%23missing.md
 rc=1 | rc=0"
+# 地址里的分隔符全表：查询参数（?…）不是文件名的一部分，编码的 ?（%3F）和 #（%23）是文件名的一部分；
+# 整篇检查和限定目标范围两种入口都只用解码后的路径找文件、匹配范围，锚点单独核对
+mkdir -p "$TMP/q/docs"
+printf '# Heading\n' > "$TMP/q/docs/guide.md"
+printf '# Heading\n' > "$TMP/q/a?b.md"
+printf '# Heading\n' > "$TMP/q/c#d.md"
+touch "$TMP/q/a" "$TMP/q/c"
+printf '%s\n' '[1](docs/guide.md?plain=1#heading)' '[2](docs/guide.md?plain=1#missing)' '[3](a%3Fb.md#heading)' \
+    '[4](c%23d.md?x=1#heading)' '[5](a%3Fmissing.md)' '[6](?plain=1#heading)' '# Heading' > "$TMP/q/README.md"
+chk "分隔符全表·整篇：带查询参数的文件和锚点照查、文件名里编码的 ? 和 # 按文件名查，坏锚点和坏文件各报一处" \
+    "$(python3 "$CHECK" --list "$TMP/q" README.md; echo "rc=$?")" \
+    "OK README.md -> docs/guide.md?plain=1#heading
+OK README.md -> a%3Fb.md#heading
+OK README.md -> c%23d.md?x=1#heading
+OK README.md -> ?plain=1#heading
+README.md: 锚点不存在 docs/guide.md?plain=1#missing
+README.md: 链接指向不存在的文件 a%3Fmissing.md
+rc=1"
+chk "  分隔符全表·限定范围：限定 docs/guide.md 时带查询参数的两条都查到（坏锚点报出）；限定 a?b.md、c#d.md 时按真实文件名查到" \
+    "$(python3 "$CHECK" --list --into docs/guide.md "$TMP/q" README.md; echo "rc=$?") | $(python3 "$CHECK" --list --into 'a?b.md,c#d.md' "$TMP/q" README.md; echo "rc=$?")" \
+    "OK README.md -> docs/guide.md?plain=1#heading
+README.md: 锚点不存在 docs/guide.md?plain=1#missing
+rc=1 | OK README.md -> a%3Fb.md#heading
+OK README.md -> c%23d.md?x=1#heading
+rc=0"
+
 
 # 只查指向某些文件的链接（提示词、AGENTS.md 用的入口）时，空目标这种不指向任何文件的不报；整篇检查照报
 printf '%s\n' '[空]()' '[ok](img/ok.png)' > "$TMP/v/scoped.md"
