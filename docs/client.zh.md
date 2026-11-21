@@ -31,7 +31,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 ## 需要什么
 
 - 一个 GitHub 账号，能看到想管理的仓库。
-- 一台 Mac（macOS 14 或更新），或一台 64 位（x64）的 Windows 10 / 11 电脑。正式版有 Apple 芯片、Intel 和 Windows 三种安装包；开发版只有 Apple 芯片和 Windows 的（见[更新](#更新)）。Windows 上不能运行 daemon 本身（见[可选：接上 daemon](#可选接上-daemon)），其余都一样。
+- 一台 Mac（macOS 14 或更新），或一台 64 位（x64）的 Windows 10 / 11 电脑。正式版有 Apple 芯片和 Intel 两种安装包（现有的正式版还没有 Windows 安装包）；开发版只有 Apple 芯片和 Windows 的（见[更新](#更新)）。Windows 上不能运行 daemon 本身（见[可选：接上 daemon](#可选接上-daemon)），其余都一样。
 
 ## 第一次用（只用客户端）
 

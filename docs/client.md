@@ -31,7 +31,7 @@ The Cavil Loop client is a desktop app (macOS, Windows) for managing GitHub issu
 ## What you need
 
 - A GitHub account that can see the repositories you want to manage.
-- A Mac with macOS 14 or later, or a 64-bit (x64) Windows 10 / 11 PC. Stable releases come with an Apple-silicon, an Intel and a Windows package; development builds are Apple silicon and Windows only (see [Updates](#updates)). On Windows the daemon itself cannot run (see [Optional: connect the daemon](#optional-connect-the-daemon)); everything else works the same.
+- A Mac with macOS 14 or later, or a 64-bit (x64) Windows 10 / 11 PC. Stable releases come with an Apple-silicon and an Intel package (the current stable release has no Windows package yet); development builds are Apple silicon and Windows only (see [Updates](#updates)). On Windows the daemon itself cannot run (see [Optional: connect the daemon](#optional-connect-the-daemon)); everything else works the same.
 
 ## First run (the client on its own)
 
