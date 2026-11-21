@@ -95,6 +95,8 @@ J
     fi
 }
 RL() { bash "$REPO_DIR/scripts/round-log.sh" --config "$CONF" "$@"; }
+# 复审开始时读取命令标出的 --of 值（复审照提示词原样照抄它）
+ofv() { RL show "$1" | grep -o -- '--of [^`]*' | head -1 | cut -d' ' -f2; }
 writes() { local n; n=$(grep -cE '^gh api (-X (POST|PATCH)|.*-X (POST|PATCH))' "$CALLS" 2>/dev/null) || true; echo "${n:-0}"; }
 ncomments() { jq --arg n "$N" '.[$n] | length' "$GD/comments.json"; }
 records() { jq --arg n "$N" '[.[$n][] | select(.body | startswith("<!-- cavil-round-log:v1 -->"))] | length' "$GD/comments.json"; }
@@ -106,10 +108,10 @@ fresh issue
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版：初稿')" --full "$(mk f1 '方案全文 V1')"); rc=$?
 chk "第 1 次交付：已写入（新开）" "$rc $(result "$o")" "0 RESULT=written"
 has "第 1 次交付是新开一条" "$o" "MODE=new"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回 1')"); rc=$?
 chk "复审第 1 轮：追加" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
 RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版：只改了验收第 3 条')" --full "$(mk f2 '方案全文 V2（验收 3 改成 X）')" >/dev/null
-RL post 7 --role review --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n## ❌ 打回 2')" >/dev/null
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n## ❌ 打回 2')" >/dev/null
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b3 '第 3 版：补了一条')" --full "$(mk f3 '方案全文 V3')"); rc=$?
 chk "第 3 版：已写入" "$rc" "0"
 chk "评论区只多了 1 条（原有 1 条 + 1 条往返记录）" "$(ncomments)" "2"
@@ -132,7 +134,7 @@ review_view() {   # → 复审侧读取输出（交第 2 版之后）
 path_case() {   # <名字> <注入文件|空>
     fresh issue
     RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 '方案全文 V1：验收 3 = 旧写法')" >/dev/null
-    RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回：验收 3 不对')" >/dev/null
+    RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回：验收 3 不对')" >/dev/null
     [ -z "$2" ] || : > "$GD/$2"
     local o rc; o=$(RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版：只改了验收 3')" --full "$(mk f2 '方案全文 V2：验收 3 = 新写法')"); rc=$?
     rm -f "$GD/$2" 2>/dev/null
@@ -175,10 +177,10 @@ lacks "顶部节号对不上：不给任何当前版本" "$o" "最新单元对�
 echo "── 2. 不该进记录的交付：拒收、零写入 ──"
 fresh issue
 for to in pending/merge pending/human; do
-    o=$(RL post 7 --role review --to "$to" --body "$(mk r '结论')"); rc=$?
+    o=$(RL post 7 --role review --of "$(ofv 7)" --to "$to" --body "$(mk r '结论')"); rc=$?
     chk "翻到 $to 的评论：拒收" "$rc $(result "$o")" "2 RESULT=rejected"
 done
-o=$(RL post 7 --role review --to pending/review --body "$(mk r $'<!-- autopilot-review-pass head=aaaa000000000000000000000000000000000001 passed=3 failed=0 -->\nok')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/review --body "$(mk r $'<!-- autopilot-review-pass head=aaaa000000000000000000000000000000000001 passed=3 failed=0 -->\nok')"); rc=$?
 chk "带托管测试记录标记的正文：拒收" "$rc" "2"
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b '<!-- cavil-round-log:sec-end -->')" --full "$(mk f 'V')"); rc=$?
 chk "正文里有记录标记：拒收" "$rc" "2"
@@ -197,11 +199,11 @@ json.dump(d, open(sys.argv[1], "w"))
 PY
 o=$(RL show 7)
 has "插入 daemon 提醒后，最新单元是那条提醒" "$o" "daemon：提醒一下"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
 chk "交付之后插入了 loop 账号的单独评论：分不清最新交付是哪条，复审结论拒收（照现在单独发）" "$rc $(result "$o")" "2 RESULT=rejected"
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版')" --full "$(mk f2 'V2')")
 has "插入别的评论之后：下一次交付另起一条新记录" "$o" "MODE=new"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:1 -->\n打回')")
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:1 -->\n打回')")
 o=$(RL show 7)
 has "另起之后：复审节附着它所审那一版（第 2 版）" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V2"
 python3 - "$GD/comments.json" <<'PY'
@@ -233,7 +235,7 @@ expired_case() {   # <名字> <做法：shell 片段，改 $GD> <期望退出码
     RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
     : > "$CALLS"
     eval "$2"
-    local o rc; o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 'x')"); rc=$?
+    local o rc; o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 'x')"); rc=$?
     chk "$1：退出码 $3" "$rc" "$3"
     chk "$1：写请求数为零" "$(writes)" "0"
 }
@@ -249,7 +251,7 @@ for inj in F_patch_comment F_patch_comment_lost; do
     : > "$GD/$inj"
     printf '#!/usr/bin/env bash\necho %s > "%s/labels.json"\n' "'{\"7\": [\"doing/agent\", \"pending/blocked\"]}'" "$GD" > "$GD/hook_PATCH_comment_1"
     : > "$CALLS"
-    o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+    o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
     chk "改写已发出后才发现（$inj）：退出码 3" "$rc" "3"
     chk "改写已发出后才发现（$inj）：只发出了那一次改写" "$(writes)" "1"
     chk "改写已发出后才发现（$inj）：没有另起新记录" "$(records)" "1"
@@ -273,12 +275,12 @@ done
 chk "PR：漏传依据的三次都零写入" "$(writes)" "0"
 o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：依据提交、目标分支都对得上 → 写入" "$rc" "0"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis bbbb000000000000000000000000000000000002 --base main); rc=$?
+o=$(RL post 8 --role review --of "$(ofv 8)" --to pending/agent --body "$(mk r1 'x')" --basis bbbb000000000000000000000000000000000002 --base main); rc=$?
 chk "PR：有了不是本次依据的提交 → 已过期" "$rc $(result "$o")" "3 RESULT=expired"
 printf '#!/usr/bin/env bash\njq %s "%s/items.json" > "%s/i" && mv "%s/i" "%s/items.json"\n' \
     "'.[\"8\"].base.ref = \"release\"'" "$GD" "$GD" "$GD" "$GD" > "$GD/hook_pulls_8_$(( $(cat "$GD/count_pulls_8" 2>/dev/null || echo 0) + 2 ))"
 : > "$CALLS"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+o=$(RL post 8 --role review --of "$(ofv 8)" --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：第一次核对之后目标分支变了 → 已过期、零写入" "$rc $(writes)" "3 0"
 has "PR：已过期的原因是目标分支变了（不是别的检查）" "$o" "目标分支变了"
 # 交付开始后、调用命令之前就改投了：命令第一次读到的已经是新分支，照样要认出来
@@ -294,7 +296,7 @@ chk "PR：来源仓库不是本仓库（没给 --source）→ 已过期" "$rc" "
 o=$(RL post 8 --role worker --to pending/review --body "$(mk b1 '修了')" --full "$(mk f1 'PR 说明')" --basis aaaa000000000000000000000000000000000001 --base main --source someone/fork); rc=$?
 chk "PR：给了 --source 且对得上 → 写入" "$rc" "0"
 jq '.["8"].merged = true' "$GD/items.json" > "$GD/i" && mv "$GD/i" "$GD/items.json"
-o=$(RL post 8 --role review --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
+o=$(RL post 8 --role review --of "$(ofv 8)" --to pending/agent --body "$(mk r1 'x')" --basis aaaa000000000000000000000000000000000001 --base main); rc=$?
 chk "PR：已合并 → 已过期" "$rc" "3"
 fresh issue
 python3 - "$GD/items.json" <<'PY'
@@ -315,9 +317,9 @@ d["7"].append({"id": 300, "body": "## 方案第 3 版（开关打开前的独立
 json.dump(d, open(sys.argv[1], "w"))
 PY
 : > "$CALLS"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
 chk "旧式交付上的复审：拒收，照现在单独发" "$rc $(result "$o")" "2 RESULT=rejected"
-has "旧式交付上的复审：说明原因" "$o" "所审的交付不在往返记录里"
+has "旧式交付上的复审：说明原因" "$o" "所审的交付是一条单独的评论、不在往返记录里"
 chk "旧式交付上的复审：零写入（不留一条读不出版本的记录）" "$(writes) $(records)" "0 0"
 o=$(RL show 7); rc=$?
 chk "旧式交付上的复审：读取照常（退出码 0）" "$rc" "0"
@@ -329,7 +331,7 @@ d["7"].append({"id": 301, "body": "<!-- codex-review-round:1 -->\n打回（单�
 json.dump(d, open(sys.argv[1], "w"))
 PY
 RL post 7 --role worker --to pending/review --body "$(mk b2 '第 4 版')" --full "$(mk f2 'V4 全文')" >/dev/null
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n再打回')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:2 -->\n再打回')"); rc=$?
 chk "之后的复审追加进新记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
 o=$(RL show 7); rc=$?
 chk "之后读取照常（退出码 0）" "$rc" "0"
@@ -347,10 +349,10 @@ d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "## 方案�
 json.dump(d, open(sys.argv[1], "w"))
 PY
 : > "$CALLS"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
 chk "最新交付是单独的评论：复审结论拒收（不挂到记录里的第 1 版上）" "$rc $(result "$o")" "2 RESULT=rejected"
 o=$(RL post 7 --role review --to pending/agent --of "$V1SEC" --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
-chk "明确给 --of 第 1 版也拒收（它不是最新的交付）" "$rc" "2"
+chk "给 --of 第 1 版：它之后已经有了新交付 → 过期（不发、不翻标签）" "$rc $(result "$o")" "3 RESULT=expired"
 chk "两次都零写入" "$(writes)" "0"
 python3 - "$GD/comments.json" <<'PY'
 import json, sys
@@ -359,12 +361,32 @@ d["7"].append({"id": 1000 + sum(len(v) for v in d.values()), "body": "<!-- codex
 json.dump(d, open(sys.argv[1], "w"))
 PY
 RL post 7 --role worker --to pending/review --body "$(mk b3 '第 3 版')" --full "$(mk f3 '方案全文 V3')" >/dev/null
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r3 $'<!-- codex-review-round:2 -->\n打回第 3 版')"); rc=$?
+o=$(RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r3 $'<!-- codex-review-round:2 -->\n打回第 3 版')"); rc=$?
 chk "续跑：第 3 版之后的复审追加进新记录" "$rc $(printf '%s' "$o" | grep ^MODE=)" "0 MODE=append"
 o=$(RL show 7); rc=$?
 chk "续跑：读取成功" "$rc" "0"
 has "续跑：打回意见附着的是第 3 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "方案全文 V3"
 lacks "续跑：没有附上第 1 版" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "V1"
+
+echo "── 复审依据从读取带到写入：审的过程中又来了新交付 ──"
+fresh issue
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 '方案全文 V1')" >/dev/null
+o=$(RL post 7 --role review --to pending/agent --body "$(mk r0 'x')"); rc=$?
+chk "复审没给 --of：用法不对（不是「照现在单独发」）" "$rc $(result "$o")" "64 RESULT=usage"
+READ_OF=$(ofv 7)
+chk "读取命令标出了所审那一节的 --of 值" "$( [ -n "$READ_OF" ] && echo yes)" "yes"
+RL post 7 --role worker --to pending/review --body "$(mk b2 '第 2 版')" --full "$(mk f2 '方案全文 V2')" >/dev/null
+: > "$CALLS"
+o=$(RL post 7 --role review --of "$READ_OF" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回第 1 版')"); rc=$?
+chk "读完第 1 版后又交了第 2 版：第 1 版的结论过期，不发" "$rc $(result "$o")" "3 RESULT=expired"
+chk "过期的结论：零写入（没有改成单独发）" "$(writes)" "0"
+has "过期的结论：说明是被新交付取代" "$o" "已经不是最新的交付"
+READ_OF=$(ofv 7)
+o=$(RL post 7 --role review --of "$READ_OF" --to pending/agent --body "$(mk r2 $'<!-- codex-review-round:1 -->\n打回第 2 版')"); rc=$?
+chk "重新读到第 2 版再发：写入" "$rc $(result "$o")" "0 RESULT=written"
+o=$(RL show 7)
+has "重新读到第 2 版再发：打回意见附着第 2 版全文" "$(sed -n '/最新单元对应的完整版本/,$p' <<<"$o")" "方案全文 V2"
+has "重新读到第 2 版再发：最新单元是第 2 版的打回" "$(sed -n '/^## 最新单元：/,/^## 最新单元对应/p' <<<"$o")" "打回第 2 版"
 
 echo "── 托管 + 外部内容保护：写入路径也走受保护读取 ──"
 GUARD=('LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""')
@@ -373,9 +395,11 @@ echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')"); rc=$?
 chk "保护开着、受保护读取读全：写入" "$rc $(result "$o")" "0 RESULT=written"
 has "保护开着：确实跑了受保护读取（查了评论作者的权限）" "$(cat "$CALLS")" "collaborators/maint/permission"
+: > "$CALLS"
+OFX=$(ofv 7)
 : > "$GD/F_collaborators_maint_permission"
 : > "$CALLS"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+o=$(RL post 7 --role review --of "$OFX" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
 chk "保护开着、原样评论读得到但受保护读取失败：不写" "$rc $(result "$o")" "5 RESULT=unreadable"
 chk "受保护读取失败：零写入" "$(writes)" "0"
 has "受保护读取失败：原样评论确实读成功了（失败的只是受保护读取）" "$(cat "$CALLS")" "issues/7/comments"
@@ -383,9 +407,10 @@ rm -f "$GD/F_collaborators_maint_permission"
 o=$(RL show 7); rc=$?
 chk "保护开着：读取命令也走受保护读取、成功" "$rc" "0"
 # 两次读之间同一条评论被改了（编号不变、版本变了）：不写
+OFX=$(ofv 7)
 printf '#!/usr/bin/env bash\npython3 - "%s/comments.json" <<'"'"'PY'"'"'\nimport json, sys\nd = json.load(open(sys.argv[1]))\nd["7"][0]["body"] = "人改过的需求"\nd["7"][0]["updated_at"] = "2026-02-01T00:00:00Z"\njson.dump(d, open(sys.argv[1], "w"))\nPY\n' "$GD" > "$GD/hook_issues_7_comments_$(( $(cat "$GD/count_issues_7_comments" 2>/dev/null || echo 0) + 2 ))"
 : > "$CALLS"
-o=$(RL post 7 --role review --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
+o=$(RL post 7 --role review --of "$OFX" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n打回')"); rc=$?
 chk "两次读之间评论被改：不写" "$rc $(result "$o")" "5 RESULT=unreadable"
 has "两次读之间评论被改：原因是版本不同" "$o" "编号或版本不同"
 chk "两次读之间评论被改：零写入" "$(writes)" "0"
@@ -425,7 +450,7 @@ FOOT1='<!-- agent-metrics agent=claude wt=7 start=2026-01-04T23:50:00+08:00 end=
 FOOT2='<!-- agent-metrics agent=codex wt=7 start=2026-01-05T01:00:00+08:00 end=2026-01-05T01:05:00+08:00 wall_secs=300 in=5 out=6 cache_r=7 cache_w=8 cost_usd=0.25 -->'
 RL post 7 --role worker --to pending/review --body "$(mk b1 "第 1 版
 $FOOT1")" --full "$(mk f1 'V1')" >/dev/null
-RL post 7 --role review --to pending/agent --body "$(mk r1 "<!-- codex-review-round:1 -->
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$(mk r1 "<!-- codex-review-round:1 -->
 打回
 $FOOT2")" >/dev/null
 o=$(WEEKLY_REPORT_BOT_LOGINS=loop-bot PYTHONPATH="$REPO_DIR/scripts:$REPO_DIR/scripts/weekly-report" python3 - "$GD/comments.json" <<'PY'
@@ -563,6 +588,8 @@ lacks "开着：占位符都填上了" "$sec" "@@"
 has "开着：写入命令指向本次的脚本" "$sec" "round-log.sh' --config '$CONF' post <编号>"
 has "开着：缺本次依据时提示词要求补齐重跑、不改成单独发" "$sec" "| \`RESULT=usage\`（64） | 用法不对，包括发到 PR 上没给"
 has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补不齐就不发评论、不翻标签，停下"
+has "开着：复审必须带读取时标出的 --of、原样照抄" "$sec" "复审**必须**带 \`--of\`"
+has "开着：过期的复审结论不改成单独发" "$sec" "**也不改成单独发**"
 fresh issue 'ENABLE_ROUND_LOG=""'
 sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template review); cat "$f"' _ "$REPO_DIR")
 lacks "关着：不加这一段" "$sec" "# 往返记录（本项目开启了"

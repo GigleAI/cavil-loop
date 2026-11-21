@@ -41,6 +41,10 @@ class FormatError(Exception):
     pass
 
 
+class Superseded(FormatError):
+    """复审所审的那一版在读取之后已经被新的交付取代：这条结论过期了，不发、不翻标签。"""
+
+
 def is_record(body):
     return (body or "").split("\n", 1)[0].strip() == HEAD
 
@@ -110,7 +114,8 @@ def units(comments, trusted):
                     best[s["sec"]] = u
             continue
         out.append({"kind": "comment", "id": cid, "author": c.get("author"), "url": c.get("url", ""),
-                    "at": c.get("at", ""), "body": c.get("body") or "", "key": (cid, 0, "", 0, 0)})
+                    "at": c.get("at", ""), "body": c.get("body") or "", "key": (cid, 0, "", 0, 0),
+                    "_trusted": _trusted(c, trusted)})
     out.extend(best.values())
     out.sort(key=lambda u: u["key"])
     return out
@@ -153,7 +158,19 @@ def render(us, show_all):
             lines += ["", "### 单元 %d / %d：%s" % (i, len(us), desc(u)), "", u["body"]]
         lines.append("")
     last = us[-1]
-    lines += ["", "## 最新单元：%s" % desc(last), "", last["body"]]
+    lines += ["", "## 最新单元：%s" % desc(last), ""]
+    # 复审发结论时要原样带上这个值（--of）：写入命令据它判断这期间有没有新的交付
+    rev = None
+    for u in reversed(us):
+        if u["kind"] == "section" and u["role"] == "worker":
+            rev = u["sec"]
+            break
+        if u["kind"] == "comment" and u.get("_trusted"):
+            rev = "comment-%s" % u["id"]
+            break
+    if rev:
+        lines += ["（复审对这次交付发结论时，写入命令带上 `--of %s`）" % rev, ""]
+    lines.append(last["body"])
     if last["kind"] == "section":
         v = version_of(last, us)
         if v is None:
@@ -217,21 +234,23 @@ def plan(inp):
     latest_id = int(comments[-1]["id"]) if comments else 0
     of = inp.get("of") or None
     if role == "review":
-        # 复审依据的交付 = 往返记录里最近的那一节 worker 交付，且它之后没有 agent 单独发的评论（loop 账号发的普通评论：
-        # 开关打开前的旧式交付、改走单独发的交付、daemon 的提醒）。有这样一条 → 最新交付不在记录里，这条复审结论单独发；
-        # 不往前找一节旧版本来顶替。给了 --of 也必须正好是这一节
-        found = None
+        # 复审依据的交付由调用方给（--of = 读取时最新单元标出的那个值）：读取之后线程可能又多了新的交付，
+        # 写入时不能按当时的线程重新挑一版。结果只有三种：
+        #   ① 所审的就是记录里最新的那一节 worker 交付 → 照常写（of = 它）
+        #   ② 所审的是一条单独的评论（开关打开前的旧式交付等），且它仍是最新交付 → 拒收，照现在单独发
+        #   ③ 所审的那一版之后又有了交付（新的一节，或 loop 账号又单独发了评论），或者它已经找不到 → 过期，不发
+        if not of:
+            raise FormatError("复审要给 --of（读取时最新单元标出的值）")
+        latest = None
         for u in reversed(us):
-            if u["kind"] == "section" and u["role"] == "worker":
-                found = u["sec"]
+            if (u["kind"] == "section" and u["role"] == "worker") or (u["kind"] == "comment" and u.get("_trusted")):
+                latest = u
                 break
-            if u["kind"] == "comment" and _trusted(u, trusted):
-                break
-        if found is None:
-            raise FormatError("所审的交付不在往返记录里（最新的交付是一条单独的评论），这一条复审结论照现在单独发")
-        if of and of != found:
-            raise FormatError("--of 给的不是往返记录里最新的那一节交付，这一条复审结论照现在单独发")
-        of = found
+        latest_key = None if latest is None else (latest["sec"] if latest["kind"] == "section" else "comment-%s" % latest["id"])
+        if latest_key != of:
+            raise Superseded("所审的那一版（%s）读取之后已经不是最新的交付（现在是 %s），这条复审结论过期了" % (of, latest_key or "无"))
+        if latest["kind"] == "comment":
+            raise FormatError("所审的交付是一条单独的评论、不在往返记录里，这一条复审结论照现在单独发")
     sec, at = inp["sec"], inp["at"]
     # 新开记录时顶部放的版本：worker = 本次完整版本；复审 = 所审那一节的完整版本（取不到就不放，读的时候报对不上）
     if role == "worker":
@@ -348,6 +367,9 @@ def main():
         if cmd == "plan":
             json.dump(plan(inp), sys.stdout, ensure_ascii=False)
             return 0
+    except Superseded as e:
+        sys.stdout.write("❌ %s\n" % e)
+        return 4 if cmd == "show" else 7
     except FormatError as e:
         sys.stdout.write("❌ %s\n" % e)
         return 4 if cmd == "show" else 3

@@ -10,12 +10,12 @@
 #   0 RESULT=written   已写入（MODE=append 追加到现有记录 / new 新开一条 / fallback 改写不成、另起一条完整的新记录）
 #                      → 照现在的指令翻标签
 #   3 RESULT=expired   目标已不归这次派工（关了 / 合并了 / 换了目标分支或来源 / 有了不是本次依据的提交 /
-#                      人已接手）→ 什么都没写；不翻标签，停下
+#                      人已接手；复审所审的那一版读取之后已被新的交付取代）→ 什么都没写；不翻标签，停下
 #   4 RESULT=unknown   目标状态读不到 → 什么都没写；不翻标签，停下
 #   5 RESULT=unreadable 评论读不全 → 什么都没写；照现在读评论失败的规则处理
 #   6 RESULT=failed    该写的写不进去（另起也失败）→ 照现在发评论失败的做法处理
-#   2 RESULT=rejected  这类交付不该进记录（交合并、交人等）/ 所审的交付不在记录里 / 正文里有记录标记 → 什么都没写，照现在单独发
-#  64 RESULT=usage     用法不对，含 PR 上缺 --basis / --base → 什么都没写；补齐参数重跑，补不齐就不发、不翻标签（不改成单独发）
+#   2 RESULT=rejected  这类交付不该进记录（交合并、交人等）/ 所审的交付是单独的评论且仍是最新 / 正文里有记录标记 → 什么都没写，照现在单独发
+#  64 RESULT=usage     用法不对，含 PR 上缺 --basis / --base、复审缺 --of → 什么都没写；补齐参数重跑，补不齐就不发、不翻标签（不改成单独发）
 # 「已过期 / 状态未知」若发生在改写请求已经发出之后，那次请求生效与否按事实保留：不撤回、不补写、不另起。
 #
 # show：本条（issue 或 PR 的对话评论）按单元排好，打印最新单元和它对应的完整版本；--all 打印全部单元。
@@ -189,9 +189,12 @@ jq -c --arg me "$me" --arg role "$ROLE" --arg of "$OF" --arg sec "$SEC" --arg at
       of: (if $of == "" then null else $of end), sec: $sec, at: $at}' < "$TMPD/c.json" > "$TMPD/in.json" \
     || finish 6 failed "整理不了输入"
 python3 "$RL_PY" plan < "$TMPD/in.json" > "$TMPD/plan.json" || plan_rc=$?
-if [ "$plan_rc" != 0 ]; then
-    finish 2 rejected "$(head -c 300 "$TMPD/plan.json")；照现在单独发"
-fi
+case "$plan_rc" in
+    0) ;;
+    7) finish 3 expired "$(head -c 300 "$TMPD/plan.json")；不发、不翻标签" ;;
+    *) grep -q -- '要给 --of' "$TMPD/plan.json" && finish 64 usage "$(head -c 300 "$TMPD/plan.json")；补上重跑，不要改成单独发"
+       finish 2 rejected "$(head -c 300 "$TMPD/plan.json")；照现在单独发" ;;
+esac
 mode=$(jq -r '.mode' < "$TMPD/plan.json") || finish 6 failed "写入计划读不懂"
 jq -c '{body: .new_body}' < "$TMPD/plan.json" > "$TMPD/new.json" || finish 6 failed "写入计划读不懂"
 
