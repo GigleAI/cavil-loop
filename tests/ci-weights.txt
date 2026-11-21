@@ -46,6 +46,7 @@ doc-diagrams 1
 doc-links 2
 fake-gh-server 8
 footer-ci-wait 10
+footer-listed-price 4
 footer-test-time 39
 greedy-dispatch 1
 heavy-test 173

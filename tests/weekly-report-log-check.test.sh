@@ -402,20 +402,21 @@ mk_marker_from_kv() {  # $1 kv 原文 → 一条 wt=10 的完整记账评论
         "$W" "$W" "$1"
 }
 
-# ⑴ 不足一分的 unstable：100 output × 参照 $25/M = $0.0025
+# ⑴ 不足一分的桶：100 output × 内置参照 $25/M = $0.0025。评论 footer 直接取价（GitHub#606），
+#    没有最新价时用内置表，桶名是 reference_only（以前反解不出时兜底叫 unstable）
 KV_TINY=$(cdrv tiny 100)
 chk "driver 没把不足一分的桶舍成 0.00" \
-    "$(printf '%s' "$KV_TINY" | grep -qF 'price_status=unstable:0.0025' && echo yes || echo no)" "yes"
+    "$(printf '%s' "$KV_TINY" | grep -qF 'price_status=reference_only:0.0025' && echo yes || echo no)" "yes"
 rm -rf "$CLAUDE_PROJECTS_DIR"          # 删日志 → 走沿用 footer 那条路
 run "$(mk_marker_from_kv "$KV_TINY")"
 chk "确实是沿用原值那条路"            "$(q src_original)"          "1"
 chk "算「有金额」"                    "$(q cost_records)"          "1"
-chk "unstable 桶活着（非零）"         \
+chk "reference_only 桶活着（非零）"   \
     "$(python3 -c "
 import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
-print('yes' if w.get('price_usd_unstable',0) > 0 else 'no')")" "yes"
-chk "报告写明用了外部参照兜底"        \
-    "$(grep -qF '反解不出、用外部参照兜底' "$TMP/r.md" && echo yes || echo no)" "yes"
+print('yes' if w.get('price_usd_reference_only',0) > 0 else 'no')")" "yes"
+chk "报告写明直接取了参照价"          \
+    "$(grep -qF '直接取参照价' "$TMP/r.md" && echo yes || echo no)" "yes"
 chk "不许再说「没有算出金额」"        \
     "$(grep -qF '没有算出金额' "$TMP/r.md" && echo yes || echo no)" "no"
 chk "小额按分显示（< \$0.01）"        \
@@ -430,7 +431,7 @@ chk "合计含大额 + 那笔不足一分的（2500.0025 → 2500.0）" "$(q cos
 chk "两笔都落在同一个桶里、合计比大额还多一点点" \
     "$(python3 -c "
 import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
-print('yes' if w.get('price_usd_unstable',0) > 2500 else 'no')")" "yes"
+print('yes' if w.get('price_usd_reference_only',0) > 2500 else 'no')")" "yes"
 
 # ⑶ 反向：真的零调用 —— 不许把真零包装成一个正的小额
 rm -rf "$CLAUDE_PROJECTS_DIR"
@@ -464,7 +465,7 @@ run "$(mk_marker_from_kv "$KV_SUB")"
 chk "沿用 footer 后可信状态还在" \
     "$(python3 -c "
 import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
-print('yes' if w.get('price_usd_unstable',0) > 0 else 'no')")" "yes"
+print('yes' if w.get('price_usd_reference_only',0) > 0 else 'no')")" "yes"
 chk "报告不再说「没有算出金额」" \
     "$(grep -qF '没有算出金额' "$TMP/r.md" && echo yes || echo no)" "no"
 
@@ -484,8 +485,11 @@ printf '{"type":"assistant","requestId":"rd","uuid":"ud","timestamp":"%sT02:05:0
     "$W" > "$TMP/solveproj/$DDENC/s.jsonl"
 KV_DISP=$( cd "$DD" && CLAUDE_PROJECTS_DIR="$TMP/solveproj" XDG_CACHE_HOME="$TMP/sc2" \
            bash "$REPO_DIR/scripts/drivers/token-usage/claude.sh" 0 --kv )
-chk "driver 的 footer 里带出了 disputed 桶" \
-    "$(printf '%s' "$KV_DISP" | grep -qF 'disputed:' && echo yes || echo no)" "yes"
+# 评论 footer 直接取价、不反推（GitHub#606）：同一批样本下驱动不再报 disputed。
+# 以前的驱动写过 disputed 桶，这类历史 footer 仍要能沿用、报红——下面用那种写法的记录走一遍
+chk "driver 直接取价：本机样本冲突也不出 disputed 桶" \
+    "$(printf '%s' "$KV_DISP" | grep -qF 'disputed:' && echo yes || echo no)" "no"
+KV_DISP="in=0 out=1 cache_r=0 cache_w=0 cost_usd=0.00005 cost_state=full cost_unknown_tokens=0 price_source=solved price_status=disputed:0.00005 models=claude-opus-5 model_unknown=no"
 rm -rf "$CLAUDE_PROJECTS_DIR"
 run "$(mk_marker_from_kv "$KV_DISP")"
 chk "沿用 footer 后 disputed 桶还在" \
