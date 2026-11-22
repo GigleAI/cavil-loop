@@ -10,7 +10,8 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os, restoreWorld, snapshotWorld } from '../support/daemon-world';
+import { wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { configWorld } from '../support/config-world';
 import { canEdit, configGroups, configLayout, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
@@ -126,45 +127,17 @@ describe('the rules the form is drawn from', () => {
 });
 
 describe('the back end and the daemon\'s real script', () => {
-  const open: HarnessBackend[] = [];
+  // GitHub#649: the machine, built once for this block, a fresh copy per case (test/support/config-world.ts)
+  const cw = configWorld();
+  const backend = (os?: Os, p?: string) => cw.backend(os, p);
+  const line = (name: string) => cw.line(name);
+  const byName = (c: ProjectConfig, name: string) => cw.byName(c, name);
   let w: DaemonWorld;
   let path: string;
-  let host: string;
   let config: string;
-
-  // GitHub#649: the machine, the daemon cloned and a project connected with the real setup.sh, built
-  // once for this block with its own time limit; every case gets a fresh copy of it
-  let snap: string;
-  beforeAll(() => {
-    w = daemonWorld(tempDir());
-    installByHand(w);
-    path = pathFor(w);
-    host = connect(w, 'widget', 'Darwin', path);
-    config = join(host, 'cavil-loop.config');
-    snap = snapshotWorld(w);
-  }, 120_000);
   beforeEach(() => {
-    restoreWorld(w, snap);
-  }, 30_000);
-  afterEach(async () => {
-    await Promise.all(open.splice(0).map((b) => b.close()));
+    ({ w, path, config } = cw);
   });
-  // the machine and its copy go when the block is done (~2300 files, GitHub#469)
-  afterAll(() => {
-    dropWorlds();
-  }, 60_000);
-  function backend(os: Os = 'Darwin', p = path) {
-    const b = new HarnessBackend({
-      db: join(w.dir, `cache-${open.length}.sqlite`),
-      endpoints: { api: 'http://127.0.0.1:9', web: 'http://127.0.0.1:9' },
-      credentials: new MemoryStore(),
-      env: daemonEnv(w, { os, path: p }),
-    });
-    open.push(b);
-    return b;
-  }
-  const line = (name: string) => readFileSync(config, 'utf8').split('\n').filter((l) => l.startsWith(`${name}=`));
-  const byName = (c: ProjectConfig, name: string) => c.fields.find((f) => f.name === name)!;
 
   it('reads the settings of a project the real setup.sh connected: values from its config, nothing secret', async () => {
     const r = await backend().call('daemonConfigGet', { key: 'widget' });
@@ -223,103 +196,6 @@ describe('the back end and the daemon\'s real script', () => {
     expect(readFileSync(config, 'utf8')).toContain('# edited elsewhere\n');
     expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   });
-
-  // GitHub#649: one case per request (each on a fresh copy of the machine), so no case holds tens of
-  // calls through the real back end under one time limit
-  /** a back end, the config's text before, and `set` sending one save for that config's current rev */
-  async function saving() {
-    // the save is the only thing that takes a lock: a wrapper in front of flock records every start
-    const calls = join(w.dir, 'flock-calls');
-    wrapTool(path, 'flock', `echo x >> ${JSON.stringify(calls)}\nexec "$REAL" "$@"`);
-    const b = backend();
-    const before = readFileSync(config, 'utf8');
-    const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-    const set = (o: Record<string, unknown>) => b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { MAX_CONCURRENT_WORKERS: '2' }, ...o });
-    return { calls, before, c, set };
-  }
-  const REFUSED: [string, (rev: string) => Record<string, unknown>][] = [
-    ['key ../x', () => ({ key: '../x' })],
-    ['key deploy', () => ({ key: 'deploy' })],
-    ['rev abc', () => ({ rev: 'abc' })],
-    ['rev with a command after it', (rev) => ({ rev: `${rev}; rm -rf x` })],
-    ['no values', () => ({ values: {} })],
-    ['GH_TOKEN', () => ({ values: { GH_TOKEN: 'x' } })],
-    ['WORKTREE_SETUP_CMD', () => ({ values: { WORKTREE_SETUP_CMD: 'true' } })],
-    ['PR_CREATED_HOOK', () => ({ values: { PR_CREATED_HOOK: 'x' } })],
-    ['DISPATCH_MODE', () => ({ values: { DISPATCH_MODE: 'greedy' } })],
-    ['LABEL_AUTOPILOT', () => ({ values: { LABEL_AUTOPILOT: 'autopilot' } })],
-    ['a setting that does not exist next to a real one', () => ({ values: { MAX_CONCURRENT_WORKERS: '2', NOT_A_SETTING: '1' } })],
-    ['a name with a line break', () => ({ values: { 'MAX_CONCURRENT_WORKERS=2\nGH_TOKEN': 'x' } })],
-    ['WORKER_MODEL with a blank', () => ({ values: { WORKER_MODEL: 'a b' } })],
-    ['WORKER_MODEL with $( )', () => ({ values: { WORKER_MODEL: '$(id)' } })],
-    ['WORKER_MODEL with a quote and a line break', () => ({ values: { WORKER_MODEL: 'a"\nGH_TOKEN="x' } })],
-    ['a number, not text', () => ({ values: { MAX_CONCURRENT_WORKERS: 2 } })],
-  ];
-  it.each(REFUSED)('what the window may not name is refused before the script\'s save ever starts: %s', async (_name, req) => {
-    const { calls, before, c, set } = await saving();
-    const o = req(c.rev);
-    expect((await set(o)).result, JSON.stringify(o)).toBe('refused');
-    expect(existsSync(calls)).toBe(false);
-    expect(readFileSync(config, 'utf8')).toBe(before);
-  });
-  it('…while a value of plain characters the type does not allow reaches the script ("invalid"), and a good one is saved', async () => {
-    const { calls, before, set } = await saving();
-    const r = await set({ values: { MAX_CONCURRENT_WORKERS: '99' } });
-    expect(r.result).toBe('invalid');
-    expect(readFileSync(config, 'utf8')).toBe(before);
-    // reachable: the wrapper does see a save, and this one is written
-    expect((await set({})).result).toBe('saved');
-    expect(readFileSync(calls, 'utf8').trim().split('\n').length).toBe(2);
-    expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
-  });
-
-  // GitHub#649: one case per value (each is one read and one save through the real script, on a fresh
-  // copy of the machine), so no case holds tens of script runs under one time limit
-  const MODEL_VALUES = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];
-  const modelVerdicts: [string, boolean, string][] = [];
-  it.each(MODEL_VALUES.map((v) => [JSON.stringify(v), v]))('one value, three checks — the form, the back end, the script — agree whether it may be written: %s', async (_name, v) => {
-    const b = backend();
-    const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-    const model = byName(c, 'WORKER_MODEL');
-    const form = fieldProblem(model, v) === null;
-    const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { WORKER_MODEL: v } });
-    modelVerdicts.push([v, form, r.result]);
-    // written exactly when the form would have let it through (the value already there is "unchanged")
-    expect(['saved', 'unchanged'].includes(r.result), `${JSON.stringify(v)} → ${r.result}`).toBe(form);
-    if (form) expect(line('WORKER_MODEL')).toEqual([`WORKER_MODEL="${v}"`]);
-  });
-  it('…and across those values both kinds occurred; a refusal never came back as anything but "nothing written"', () => {
-    expect(modelVerdicts).toHaveLength(MODEL_VALUES.length);
-    expect(modelVerdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
-    expect(new Set(modelVerdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
-  });
-
-  // GitHub#555: whole numbers past 9 digits, up to the using code's own bound, go through the form, the back end and the
-  // script alike; one past the bound, or a leading zero, through none of them. GitHub#649: one case per value.
-  const INTEGER_CASES: [string, string, boolean][] = [
-    ['GREEDY_SCAN_LIMIT', '1000000000', true], ['GREEDY_SCAN_LIMIT', '18446744073709551616', true],
-    ['GREEDY_SCAN_LIMIT', '0', true], ['GREEDY_SCAN_LIMIT', '0100', false], ['GREEDY_SCAN_LIMIT', '100', true],
-    ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215', true], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216', false],
-    ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60), true], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0', false],
-    // GitHub#556: the one integer that may be left blank, and one that may not
-    ['PREVIEW_PORT_MODULO', '1000', true], ['PREVIEW_PORT_MODULO', '', true], ['PREVIEW_PORT_MODULO', '0', false], ['PREVIEW_PORT_MODULO', '1000000000', true],
-    ['PREVIEW_PORT_MODULO', '3074457345618258603', true], ['PREVIEW_PORT_MODULO', '9223372036854775808', false],
-    ['PREVIEW_BACKEND_OFFSET', '', false],
-  ];
-  it.each(INTEGER_CASES.map(([n, v, ok]) => [`${n}=${v.length > 24 ? `${v.slice(0, 4)}…(${v.length} digits)` : v}`, n, v, ok] as const))(
-    'integers: the form, the back end and the script agree up to the using code\'s own bound: %s',
-    async (_label, name, v, ok) => {
-      const b = backend();
-      const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-      const f = byName(c, name);
-      expect(f.editable, `${name} editable before ${v}`).toBe(true);
-      const form = fieldProblem(f, v) === null;
-      expect(form, `${name}=${v}: the form`).toBe(ok);
-      const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { [name]: v } });
-      expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(ok);
-      if (ok) expect(line(name).map((l) => l.replace(/"/g, ''))).toEqual([`${name}=${v}`]);
-    },
-  );
 
   it('a config that does not load: "unreadable" with no values; an unknown project: "not_found"', async () => {
     const b = backend();

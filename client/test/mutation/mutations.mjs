@@ -570,8 +570,9 @@ export const MUTATIONS = [
     from: "if (missing.length) return { ok: false, why:", to: "if (false) return { ok: false, why:",
     expect: ['cannot tell is never "nothing related"'] },
   { what: '读不出改动时 run.sh 照样往下跑', file: 'test/mutation/run.sh',
-    from: '> "$state/changes.json" || { echo "❌ 判断不了这次改了什么，一项负对照都没跑"; exit 1; }',
-    to: '> "$state/changes.json" || true',
+    // GitHub#649: the call goes through `call`; the check after it is what stops the run
+    from: '[ "$rc" -eq 0 ] || { echo "❌ 判断不了这次改了什么，一项负对照都没跑"; exit 1; }',
+    to: 'true',
     expect: ['run.sh --changed stops with exit 1 before the baseline'] },
   { what: '真实 App 外壳改了也说「没有相关项」', file: 'test/mutation/select.mjs',
     from: "'test/fixtures/', 'src-tauri/src/', 'src-tauri/capabilities/'];", to: "'test/fixtures/', 'src-tauri/capabilities/'];",
