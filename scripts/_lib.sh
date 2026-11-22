@@ -4440,12 +4440,14 @@ requester_bot_webhook_notify() {
 #      1 = 这次没做成，下轮再试（任何读写失败、PR 状态字段缺失、写身份不在名单）。
 REQUESTER_BOT_DONE_TAG='requester-bot-done'
 
+# 入队不覆盖已有条目的其余字段（GitHub#656：迁移接管的旧「已合并」条目带 legacy，合并后的交接收敛时再入队一次，
+# legacy 必须留着，发送那一步才会先按旧标记辨认旧评论）
 requester_bot_done_enqueue() {   # <PR> <merged|closed> <state_file>
     local pr="$1" kind="$2" state_file="$3" tmp
     requester_bot_enabled || return 0
     tmp=$(mktemp)
     jq --arg p "$pr" --arg k "$kind" \
-        '.requester_bot_done_queue = ((.requester_bot_done_queue // {}) + {($p): ({kind: $k, tries: (((.requester_bot_done_queue // {})[$p].tries) // 0)} + (if $k == "merged" then {v: 2} else {} end))})' \
+        '.requester_bot_done_queue = ((.requester_bot_done_queue // {}) + {($p): (((.requester_bot_done_queue // {})[$p] // {}) + {kind: $k, tries: (((.requester_bot_done_queue // {})[$p].tries) // 0)} + (if $k == "merged" then {v: 2} else {} end))})' \
         "$state_file" > "$tmp" && mv "$tmp" "$state_file"
 }
 
@@ -4512,9 +4514,9 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
            && printf '%s\n' "$marks" | grep -qxF "$mark"; then
             old_sent=yes   # 升级前已发过旧的「需求已完成」评论（当前写身份发的、带旧标记）
         fi
-        if ! b1=$(mf_notice_basis "$pr") || ! b2=$(mf_notice_basis "$pr") || [ "$b1" != "$b2" ]; then
+        if ! b1=$(mf_notice_basis "$pr" "$origin") || ! b2=$(mf_notice_basis "$pr" "$origin") || [ "$b1" != "$b2" ]; then
             log "  PR #$pr 的合并后交接还没收敛（或依据有变化），结果通知下轮再判"
-            return 1
+            return 2   # 等交接（表 2 第 0 行），不是一次失败：清队时不计重试次数
         fi
         nb=$(printf '%s' "$b1" | jq -c --arg c "$old_sent" '. + {correction: ($c == "yes")}' | python3 -B "$MERGE_FOLLOWUP_PY" notice) || return 1
         mark="<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=merged v=$(printf '%s' "$b1" | jq -r .version) -->"
@@ -4538,6 +4540,14 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
         run_gh "issue #$origin 发 PR #$pr 的结果评论" \
             gh_write api -X POST "repos/$REPO/issues/$origin/comments" -f "body=$body" || return 1
     fi
+    # 合并结果：写等待标签之前再算一次依据（目标、来源 issue 的状态和标签、PR 身份），和发评论前那一份一致才写（GitHub#656）
+    if [ "$kind" = merged ]; then
+        local b3
+        if ! b3=$(mf_notice_basis "$pr" "$origin") || [ "$b3" != "$b1" ]; then
+            log "  PR #${pr}：结果评论发出后、加等待标签之前依据变了，下轮再判（评论不重发）"
+            return 2
+        fi
+    fi
     if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then
         log "  issue #$origin 加等待标签 $LABEL_PENDING_REQUESTER_BOT 失败，PR #$pr 的结果通知下轮重试"
         return 1
@@ -4558,17 +4568,28 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
 }
 
 requester_bot_done_drain() {   # <state_file>
-    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" pr kind tries tmp
+    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" pr kind tries tmp rc
     for pr in $(jq -r '(.requester_bot_done_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
         [[ "$pr" =~ ^[0-9]+$ ]] || continue
         kind=$(jq -r --arg p "$pr" '.requester_bot_done_queue[$p].kind // ""' "$state_file")
+        # 「已合并」通知用尽重试后留着（GitHub#656）：每 30 轮合并后交接再试一次，不删记录
+        if [ "$kind" = merged ] && [ "$(jq -r --arg p "$pr" '.requester_bot_done_queue[$p].gaveup // false' "$state_file")" = true ] \
+           && [ $(( $(jq -r '.merge_followup.round // 0' "$state_file") % 30 )) -ne 0 ]; then
+            continue
+        fi
         tmp=$(mktemp)
-        if requester_bot_done_notify "$pr" "$kind"; then
+        rc=0; requester_bot_done_notify "$pr" "$kind" || rc=$?
+        if [ "$rc" = 0 ]; then
             jq --arg p "$pr" 'del(.requester_bot_done_queue[$p])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
             continue
         fi
+        # 2 = 在等合并后的交接收敛（表 2 第 0 行），不算一次失败
+        if [ "$rc" = 2 ]; then rm -f "$tmp"; continue; fi
         tries=$(jq -r --arg p "$pr" '(.requester_bot_done_queue[$p].tries // 0) + 1' "$state_file")
-        if [ "$tries" -ge "$cap" ]; then
+        if [ "$tries" -ge "$cap" ] && [ "$kind" = merged ]; then
+            log "⚠️ PR #$pr 的合并结果连续 $tries 次没能告诉外部需求机器人 → 先停下，之后每 30 轮再试一次（也可以手动在来源 issue 上通知它）"
+            jq --arg p "$pr" --argjson n "$tries" '.requester_bot_done_queue[$p] += {tries: $n, gaveup: true}' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
+        elif [ "$tries" -ge "$cap" ]; then
             log "⚠️ PR #$pr 的结果连续 $tries 次没能告诉外部需求机器人 → 放弃（请手动在来源 issue 上通知它）"
             jq --arg p "$pr" 'del(.requester_bot_done_queue[$p])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
         else

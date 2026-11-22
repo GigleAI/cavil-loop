@@ -272,6 +272,67 @@ chk "写明没有待办、被合并带关（不是维护者亲手关）→ 第 5
 chk "写明没有待办、目标还开着 → 第 5 行" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"none","guard":false,"target_state":"open","maintainer_closed":false}')" "5 false"
 chk "旧评论说过完成、现在不是完成 → 更正开头" "$(printf '%s' '{'"$B"',"conc":{"followups":true,"fu":[]},"own_s":"list","guard":false,"target_state":"open","correction":true}' | python3 -B "$REPO_DIR/scripts/merge_followup.py" notice | jq -r .body | head -1)" "## 更正：上一条『需求已完成』不准确"
 
+echo "⑬ 关闭来源：PR 带关的关闭事件 commit_id 也是空的，只有 closer 为空才算维护者亲手关；读不到 closer = 判不了"
+fresh
+mkissue 130 "" open
+mkmerged 131 feature/issue-130 "Refs #130"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+tick
+# 维护者账号做的、但其实是别的 PR 带关的关闭（closer = PullRequest，commit_id 空）
+jset items.json '.["130"].state = "closed" | .["130"].state_reason = "completed"'
+jset events.json '.["130"] += [{event:"closed", actor:{login:"maint", type:"User"}, created_at:"2026-03-02T10:00:00Z", commit_id:null, closer:{"__typename":"PullRequest"}}]'
+mkmerged 132 feature/issue-130 "Refs #130"$'\n\n'"$NONE" 2026-03-03T10:00:00Z ""
+tick
+chk "PR 带关（closer = PullRequest）→ 第一个 PR 的清单没结束、照列" "$(jq -r '.merge_followup.prs["131"].ended // "no"' "$STATE")/$(has "$(last_comment 130)" 'migrate-x.sql')" "no/yes"
+fresh
+mkissue 133 "" open
+mkmerged 134 feature/issue-133 "Refs #133"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+tick
+close_by 133 maint 2026-03-02T10:00:00Z
+mkmerged 135 feature/issue-133 "Refs #133"$'\n\n'"$NONE" 2026-03-03T10:00:00Z ""
+touch "$GD/F_graphql_closer"
+tick
+chk "关闭来源读不到 → 判不了，清单照列并注明无法确认" "$(jq -r '.merge_followup.prs["134"].ended // "no"' "$STATE")/$(has "$(last_comment 133)" '无法确认之后维护者是否亲手关闭过')" "no/yes"
+rm -f "$GD/F_graphql_closer"
+mkmerged 136 feature/issue-133 "Refs #133"$'\n\n'"$NONE" 2026-03-04T10:00:00Z ""
+tick
+chk "对照：同形的关闭、closer 为空（人亲手关）→ 记为已结束" "$(jq -r '.merge_followup.prs["134"].ended // "no"' "$STATE")" "yes"
+
+echo "⑭ PR 自己的 Done 没写成 → 不算交接完成；下一轮只补标签、清单评论不重发"
+fresh
+mkissue 140 "pending/PR" open
+mkmerged 141 feature/issue-140 "Refs #140"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+touch "$GD/F_post_label_Done"
+tick
+chk "第 1 轮：清单评论发了、PR 没 Done（旧流程标签已先摘掉）、PR 记录没记已交接" "$(comments_of 140)/$(labels_of 141)/$(jq -r '.merge_followup.prs["141"].handed // "none"' "$STATE")" "1//none"
+rm -f "$GD/F_post_label_Done"
+tick
+chk "第 2 轮：PR 补上 Done、记已交接，评论仍只有一条" "$(comments_of 140)/$(labels_of 141)/$(jq -r '.merge_followup.prs["141"].handed // "none"' "$STATE")" "1/Done/1"
+
+echo "⑮ 交接失败的目标：没有新合并、清理也没变化就一直停着；有新 PR 并进来才重新计数"
+fresh
+mkissue 150 "" open
+mkmerged 151 feature/issue-150 "Refs #150"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+touch "$GD/F_issues_150"
+tick
+jq '.merge_followup.targets["150"] += {tries: 30, failed: "读不到", wake: false}' "$STATE" > "$STATE.t" && mv "$STATE.t" "$STATE"
+rm -f "$GD/F_issues_150"
+tick; tick
+chk "失败之后两轮：没有评论、仍标着失败、次数不归零" "$(comments_of 150)/$(jq -r '.merge_followup.targets["150"].failed // "none"' "$STATE")/$(jq -r '.merge_followup.targets["150"].tries' "$STATE")" "0/读不到/30"
+mkmerged 152 feature/issue-150 "Refs #150"$'\n\n'"$NONE" 2026-03-02T10:00:00Z ""
+tick
+chk "有新 PR 并进来 → 重新交接（覆盖两个 PR）" "$(comments_of 150)/$(has "$(last_comment 150)" 'covers=151,152')/$(jq -r '.merge_followup.targets["150"].failed // "none"' "$STATE")" "1/yes/none"
+
+echo "⑯ 两次判定之间目标变了（挂上新一轮的流程标签）→ 这一轮零写入；下一轮按新状态交付"
+fresh
+mkissue 160 "pending/PR" open
+mkmerged 161 feature/issue-160 "Refs #160"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+printf 'cd %q && jq %q labels.json > l.tmp && mv l.tmp labels.json\n' "$GD" '.["160"] += ["pending/review"]' > "$GD/hook_issues_160_comments_1"
+tick
+chk "这一轮：清单评论没发、issue 标签没被 daemon 写" "$(comments_of 160)/$(labels_of 160)" "0/pending/PR,pending/review"
+chk "  → 到达性：hook 确实在两次判定之间跑了" "$([ -f "$GD/count_issues_160_comments" ] && echo ran || echo no)" "ran"
+tick
+chk "下一轮：按新状态发清单评论（写明新一轮在进行，标签不动）" "$(comments_of 160)/$(has "$(last_comment 160)" '已挂着新一轮的流程标签')/$(labels_of 160)" "1/yes/pending/PR,pending/review"
+
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]

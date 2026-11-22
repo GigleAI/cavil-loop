@@ -143,7 +143,7 @@ mf_discover() {   # <列表文件>
         # 托管预存：分支提交和核准提交一致才接上（不一致 = 合进去的不是复审过的那一版，说明作废）
         # 托管预存：交接目标按托管的绑定（绑 issue = 那个 issue，没绑 = PR 本身），不按分支名猜——分支 feature/issue-7
         # 撞上本仓库无关的 #7 时，清理按工作编号照旧（work），交接不碰 #7
-        mf_set 'reduce ($n[]) as $e (.; .prs[$e.key] = (
+        mf_set 'reduce ($n[]) as $e (.; (if $e.value.target != null then .targets[$e.value.target].wake = true else . end) | .prs[$e.key] = (
                     ($e.value + {work: $e.value.target}) as $v
                     | (if (.prs[$e.key].ap // null) != null and .prs[$e.key].ap.head == $v.head_sha
                        then $v + {target: (.prs[$e.key].ap.target // $v.target), ap: (.prs[$e.key].ap + {pre: "found"})} else $v end)))' \
@@ -207,7 +207,7 @@ mf_reread_tick() {
             mf_set '.prs[$p] += ($x[0] + {body: "ok", owner: "known", target: $t, work: $t, rereads: (.prs[$p].rereads + 1)})
                     | (if $note != "" then .prs[$p].fb_note = $note else . end)
                     | (if .prs[$p].fb != null then .prs[$p].fb.superseded = true else . end)
-                    | .prs[$p].handed = null' \
+                    | .prs[$p].handed = null | .targets[$t].wake = true' \
                 --arg p "$pr" --slurpfile x "$STATE_DIR/.mf-parsed" --arg t "$target" --arg note "$note" || continue
             log "  合并后交接：PR #$pr 的正文补读到了（目标 #${target}）"
             [ "${AUTO_CLEANUP_ON_MERGE:-true}" = false ] || sub_issue_rollup_enqueue "$target" "${STATE_FILE:-$STATE_DIR/state.json}"
@@ -285,7 +285,7 @@ mf_target_conclude() {   # <目标编号> [兜底 PR：目标就是这个正文�
     return "$out"
 }
 _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
-    local n="$1" fb="$2" d="$3" ij st labs kind need actors writers='{}' login atype rc ended me flows sup=false newest
+    local n="$1" fb="$2" d="$3" ij st labs kind need actors writers='{}' closers='{}' login atype rc ended me flows sup=false newest nid out pr lastclose=unread
     ij=$(gh api "repos/$REPO/issues/$n" 2>/dev/null) || return 1
     printf '%s' "$ij" | jq -e '(.state | type) == "string" and (.labels | type) == "array"' >/dev/null 2>&1 || return 1
     st=$(printf '%s' "$ij" | jq -r .state); labs=$(printf '%s' "$ij" | jq -c '[.labels[].name] | sort')
@@ -296,6 +296,18 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
         mf_get '[.prs // {} | to_entries[] | select((.value.found // false) and .value.target == $n) | {pr: .key} + .value]' --arg n "$n" > "$d/recs"
     fi
     [ "$(jq 'length' "$d/recs" 2>/dev/null)" -gt 0 ] 2>/dev/null || return 1
+    # 每个覆盖到的 PR 现读身份（已合并、合并提交、目标分支、来源分支），和记录对得上才往下算；对不上或读不到 = 不写。
+    # 读到的身份进写前依据（basis），两次判定逐字比较
+    : > "$d/ident"
+    for pr in $(jq -r '.[].pr' "$d/recs"); do
+        gh api "repos/$REPO/pulls/$pr" > "$d/pj" 2>/dev/null || return 1
+        jq -c --arg p "$pr" '{pr: $p, merged: (.merged // null), sha: (.merge_commit_sha // ""), base: (.base.ref // ""),
+            head_ref: (.head.ref // ""), head_repo: (.head.repo.full_name // "")}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
+        jq -e --slurpfile i <(tail -n 1 "$d/ident") --arg p "$pr" '.[] | select(.pr == $p) as $r | $i[0] as $i
+            | $i.merged == true and (($r.sha // "") == "" or $r.sha == $i.sha) and (($r.base // "") == "" or $r.base == $i.base)
+              and (($r.head_ref // "") == "" or $r.head_ref == $i.head_ref)' "$d/recs" >/dev/null 2>&1 || {
+            log "  合并后交接：PR #$pr 现读的身份和记录对不上（或缺字段），#$n 本轮不写"; return 1; }
+    done
     me=$(write_identity_login)
     MF_BOTS_JSON=$(printf '%s\n%s\n' "$me" "${REQUESTER_BOT_ACCOUNT:-}" | jq -Rsc 'split("\n") | map(select(. != ""))')
     need=$(jq -c '[.[] | select(.ended != "yes") | {(.pr): (.merged_at // "")}] | add // {}' "$d/recs")
@@ -311,11 +323,24 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
                 writers=$(printf '%s' "$writers" | jq -c --arg l "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')" --arg r "$rc" \
                     '.[$l] = (if $r == "0" then true elif $r == "1" then false else null end)')
             done <<< "$actors"
+            # 关闭事件是谁关的：只认 GraphQL 的 ClosedEvent.closer（PR 合并带关时 REST 的 commit_id 是空的，分不出
+            # 合并带关和人亲手关）。只查可能算数的那几条（没有 commit_id、不是 loop / 机器人关的）；读不到 = 判不了
+            jq -r --argjson b "$MF_BOTS_JSON" '.[] | select(.event == "closed" and ((.commit_id // "") == ""))
+                | select(((.actor.login // "") | ascii_downcase) as $l | $l != "" and ($b | map(ascii_downcase) | index($l)) == null)
+                | .node_id // empty' "$d/evs" | sort -u > "$d/nids"
+            while IFS= read -r nid; do
+                [ -n "$nid" ] || continue
+                if out=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on ClosedEvent{closer{__typename}}}}' -f id="$nid" 2>/dev/null) \
+                   && printf '%s' "$out" | jq -e '.data.node | type == "object"' >/dev/null 2>&1; then
+                    closers=$(printf '%s' "$closers" | jq -c --arg n "$nid" --argjson o "$out" '.[$n] = ($o.data.node.closer.__typename // "none")')
+                fi
+            done < "$d/nids"
+            lastclose=$(jq -r '[.[] | select(.event == "closed" or .event == "reopened") | "\(.event):\(.id // "")"] | last // "none"' "$d/evs")
         else
             echo null > "$d/evs"
         fi
-        ended=$(jq -c --argjson m "$need" --argjson w "$writers" --argjson b "$MF_BOTS_JSON" \
-            '{events: ., merged: $m, writers: $w, bots: $b}' "$d/evs" | python3 -B "$MERGE_FOLLOWUP_PY" ended) || return 1
+        ended=$(jq -c --argjson m "$need" --argjson w "$writers" --argjson b "$MF_BOTS_JSON" --argjson c "$closers" \
+            '{events: ., merged: $m, writers: $w, bots: $b, closers: $c}' "$d/evs" | python3 -B "$MERGE_FOLLOWUP_PY" ended) || return 1
         # T13：确认维护者在合并之后亲手关闭过 → 永久记下（只增不改）
         if [ -z "$fb" ] && printf '%s' "$ended" | jq -e 'to_entries | any(.value == "yes")' >/dev/null; then
             mf_set 'reduce ($e | to_entries[] | select(.value == "yes") | .key) as $k (.; .prs[$k].ended = "yes")' --argjson e "$ended" || return 1
@@ -337,7 +362,12 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
         --arg H "$LABEL_PENDING_HUMAN" --arg D "$LABEL_DONE" --arg A "${LABEL_PENDING_AGENT_DEFAULT:-pending/agent}" \
         '{target: $n, kind: $k, state: $s, superseded: $sup, newest: $nw, autopilot: $ap[0], labels: {human: $H, done: $D, agent: $A}, records: $r[0]}' \
         | python3 -B "$MERGE_FOLLOWUP_PY" conclude > "$d/c" || return 1
-    jq -c --arg s "$st" --arg k "$kind" --argjson l "$labs" --slurpfile ap "$d/ap" '. + {state: $s, kind: $k, labels: $l, ap: $ap[0]}' "$d/c"
+    # basis = 写前核对的全部依据：目标状态、完整标签、每个覆盖 PR 的现读身份、关闭证据（最后一次关闭 / 重开、每条清单
+    # 结束与否）。发评论前两次判定的 fp 和 basis 都要逐字一致
+    jq -c --arg s "$st" --arg k "$kind" --argjson l "$labs" --slurpfile ap "$d/ap" --slurpfile id "$d/ident" \
+        --slurpfile r "$d/recs" --arg lc "$lastclose" \
+        '. + {state: $s, kind: $k, labels: $l, ap: $ap[0],
+              basis: {state: $s, labels: $l, ident: $id, last_close: $lc, ended: ($r[0] | map({(.pr): (.ended // "no")}) | add)}}' "$d/c"
 }
 
 # 目标上已确认发出的那条清单评论（按标记找，只认写身份发的）。0 = 有；1 = 没有；2 = 读不到
@@ -350,6 +380,23 @@ mf_comment_find() {   # <目标> <指纹>
             and ((.body // "") | contains($m) and contains($f)))' >/dev/null 2>&1 \
         && return 0
     return 1
+}
+
+# 合并 PR 自己的标签：Done（<reminder>=true 时另挂 pending/human），摘掉流程标签；写完读回，实得就是这样才 return 0
+mf_pr_labels() {   # <PR> <true|false>
+    local pr="$1" rem="$2" labs
+    if [ "$rem" = true ]; then
+        run_gh "合并后交接：PR #$pr → Done + $LABEL_PENDING_HUMAN" gh_label_flip "$pr" --add "$LABEL_DONE" "$LABEL_PENDING_HUMAN" \
+            --remove "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
+    else
+        run_gh "合并后交接：PR #$pr → Done" gh_label_flip "$pr" --add "$LABEL_DONE" \
+            --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
+    fi
+    labs=$(gh api "repos/$REPO/issues/$pr" --jq '[.labels[].name]' 2>/dev/null) || return 1
+    printf '%s' "$labs" | jq -e --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" \
+        --argjson gone "$(printf '%s\n' "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+        . as $L | index($D) != null and (if $r == "true" then index($H) != null else index($H) == null end)
+        and all($gone[]; . as $g | ($L | index($g)) == null)' >/dev/null 2>&1
 }
 
 mf_try_fail() {   # <目标> <原因>：一次真正尝试了读写却没成功的轮次（等清理的轮次不调它）
@@ -400,7 +447,7 @@ mf_target_tick() {   # <目标> [兜底 PR]
         rc=0; mf_comment_find "$n" "$fp" || rc=$?
         if [ "$rc" = 2 ]; then mf_try_fail "$n" "读不到 #$n 的评论"; return 1; fi
         if [ "$rc" = 1 ]; then
-            if ! c2=$(mf_target_conclude "$n" "$fb") || [ "$(printf '%s' "$c2" | jq -r .fp)" != "$fp" ]; then
+            if ! c2=$(mf_target_conclude "$n" "$fb") || [ "$(printf '%s' "$c2" | jq -c '{fp, basis}')" != "$(printf '%s' "$c1" | jq -c '{fp, basis}')" ]; then
                 mf_try_fail "$n" "#$n 判定之后有变化"; return 1
             fi
             bf=$(mktemp) || return 1
@@ -437,37 +484,29 @@ mf_target_tick() {   # <目标> [兜底 PR]
         if [ "$rc" != 0 ]; then mf_try_fail "$n" "#$n 的标签没收敛"; return 1; fi
         [ "$(printf '%s' "$c1" | jq -r .state)" = open ] && mf_set '.targets[$n].human_added = true' --arg n "$n" || true
     else
-        if [ "$(printf '%s' "$c1" | jq -r .reminder)" = true ]; then
-            run_gh "合并后交接：PR #$n → Done + $LABEL_PENDING_HUMAN" gh_label_flip "$n" --add "$LABEL_DONE" "$LABEL_PENDING_HUMAN" \
-                --remove "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
-        else
-            run_gh "合并后交接：PR #$n → Done" gh_label_flip "$n" --add "$LABEL_DONE" \
-                --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
-        fi
-        mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || true
+        # 目标就是 PR 本身：Done，有待办（或兜底）时另挂 pending/human；读回确认才算写成
+        if ! mf_pr_labels "$n" "$(printf '%s' "$c1" | jq -r .reminder)"; then mf_try_fail "$n" "PR #$n 的标签没写成"; return 1; fi
+        mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
         if [ -n "$fb" ]; then
-            # 兜底送达：本轮读回看到兜底评论（上面已确认）且 PR 上挂着 pending/human，才写「是」
-            if gh api "repos/$REPO/issues/$n" --jq '[.labels[].name]' 2>/dev/null | jq -e --arg H "$LABEL_PENDING_HUMAN" 'index($H) != null' >/dev/null 2>&1; then
-                mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || true
-                log "  合并后交接：PR #$fb 的兜底提醒已送达"
-            else
-                mf_try_fail "$n" "PR #$n 上读不回 $LABEL_PENDING_HUMAN"; return 1
-            fi
+            # 兜底送达：上面已确认兜底评论，PR 上读回到 Done + pending/human（mf_pr_labels 的读回），才写「是」
+            mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || return 1
+            log "  合并后交接：PR #$fb 的兜底提醒已送达"
         fi
     fi
-    # 收敛：目标记录标已收敛，覆盖的 PR 记录标已交接；每个合并 PR 自己的 Done（不是目标的那些）
+    # 每个合并 PR 自己的 Done（不是目标的那些）：读回确认写成之后才往下走；没写成这一轮停在这里，
+    # 下一轮评论不重发（已确认的指纹），只补标签
+    for pr in $(printf '%s' "$c1" | jq -r '.covers[]'); do
+        [ "$pr" != "$n" ] || continue
+        if [ "$(mf_get '.prs[$p].pr_labeled // false' --arg p "$pr")" != true ]; then
+            if ! mf_pr_labels "$pr" false; then mf_try_fail "$n" "PR #$pr 的标签没写成"; return 1; fi
+            mf_set '.prs[$p].pr_labeled = true' --arg p "$pr" || return 1
+        fi
+    done
+    # 收敛：目标记录标已收敛，覆盖的 PR 记录标已交接
     mf_set '.targets[$n] += {converged: $f, tries: 0, wake: false, close_waits: 0} | del(.targets[$n].failed)
             | reduce ($c[] | tostring) as $p (.; if .prs[$p] != null then .prs[$p].handed = $v else . end)' \
         --arg n "$n" --arg f "$fp" --argjson v "$v" --argjson c "$(printf '%s' "$c1" | jq -c .covers)" || return 1
     [ -n "$fb" ] || log "  合并后交接：#$n 交接完成（第 $v 版，覆盖 PR $(printf '%s' "$c1" | jq -r '.covers | map("#\(.)") | join(" ")')）"
-    for pr in $(printf '%s' "$c1" | jq -r '.covers[]'); do
-        [ "$pr" != "$n" ] || continue
-        if [ "$(mf_get '.prs[$p].pr_labeled // false' --arg p "$pr")" != true ]; then
-            run_gh "合并后交接：PR #$pr → Done" gh_label_flip "$pr" --add "$LABEL_DONE" \
-                --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
-            mf_set '.prs[$p].pr_labeled = true' --arg p "$pr" || true
-        fi
-    done
     for pr in $(printf '%s' "$c1" | jq -r '.covers[]'); do
         # 合并清理关着时主干不发机器人的结果通知（发送那一段也在清理开着时才跑），这里也不入队
         if requester_bot_enabled && [ "${AUTO_CLEANUP_ON_MERGE:-true}" != false ] \
@@ -492,12 +531,13 @@ mf_handover_tick() {
     round=$(mf_get '.round // 0')
     mf_migrate
     mf_reread_tick
-    # 有新 PR 并进来的「交接失败」目标回到 T6、重新计数
-    mf_set '(.prs // {}) as $P | reduce ($P | to_entries[] | select((.value.found // false) and .value.target != null and .value.handed == null) | .value.target) as $t
-              (.; if (.targets[$t].failed // null) != null then .targets[$t] |= (del(.failed) | .tries = 0) else . end)' || true
+    # 「交接失败」的目标只在被唤醒时回到 T6、重新计数：有新 PR 并进来（发现 / 补读到正文）、或覆盖的 PR 清理状态变了。
+    # 没有这些就一直停着，不会因为它自己那几条还没交接的记录每轮复活
+    mf_set 'reduce ((.targets // {}) | to_entries[] | select((.value.failed // null) != null and (.value.wake // false)) | .key) as $t
+              (.; .targets[$t] |= (del(.failed) | .tries = 0))' || true
     for n in $(mf_get '(.prs // {}) as $P | (.targets // {}) as $T
             | [$P | to_entries[] | select((.value.found // false) and .value.target != null) | .value.target] | unique
-            | map(select(. as $t | (($T[$t].failed // null) == null)
+            | map(select(. as $t | (($T[$t].failed // null) == null or ($T[$t].wake // false))
                 and ([$P | to_entries[] | select(.value.target == $t and (.value.found // false))] as $R
                      | (any($R[]; .value.handed == null) or ($T[$t].wake // false) or (($T[$t].fp // "") != ($T[$t].converged // "")))))) | .[]' | tr -d '"'); do
         [[ "$n" =~ ^[0-9]+$ ]] || continue
@@ -521,8 +561,13 @@ mf_handover_tick() {
 
 # ── T9 / T10：机器人结果评论的通知依据（一个函数，发之前现算两次、逐字一致才发）──
 # stdout：依据 JSON（同时是 notice 的输入）；return 1 = 不成立（表 2 第 0 行：不发，下轮再判）
-mf_notice_basis() {   # <PR>
-    local pr="$1" rec t fb c conv guard d rc=0
+mf_notice_basis() {   # <PR> [来源 issue]
+    local pr="$1" origin="${2:-}" rec t fb c conv guard d rc=0 oj='null'
+    # 来源 issue（机器人的需求，可能不是交接目标）：状态和完整标签也进依据，发评论前、写等待标签前都现读比对
+    if [ -n "$origin" ]; then
+        oj=$(gh api "repos/$REPO/issues/$origin" --jq '{n: .number, state: (.state // ""), labels: ([.labels[].name] | sort)}' 2>/dev/null) || return 1
+        printf '%s' "$oj" | jq -e '.state != ""' >/dev/null 2>&1 || return 1
+    fi
     [ "$MF_DISCOVERED" = 1 ] || return 1
     rec=$(mf_get '.prs[$p] // null | if . == null then null else del(.ap) end' --arg p "$pr"); [ -n "$rec" ] && [ "$rec" != null ] || return 1
     [ "$(printf '%s' "$rec" | jq -r '.handed // "null"')" != null ] || return 1
@@ -534,13 +579,14 @@ mf_notice_basis() {   # <PR>
     guard=$(mf_get --arg at "$(printf '%s' "$rec" | jq -r '.merged_at // ""')" \
         '[.prs // {} | .[] | select(.body == "pending" and .owner == "unknown" and (.fb.sent // false) == false and (.merged_at // "") <= $at)] | length > 0')
     d=$(mktemp -d) || return 1
-    printf '%s' "$rec" > "$d/r"; printf '%s' "$c" | jq -c '{fp, state, followups, fu}' > "$d/c" || rc=1
-    [ "$rc" = 0 ] && jq -cn --arg pr "$pr" --slurpfile r "$d/r" --slurpfile c "$d/c" --argjson g "${guard:-true}" --arg v "$(mf_get '.targets[$t].v // 0' --arg t "$t")" '
+    printf '%s' "$rec" > "$d/r"; printf '%s' "$c" | jq -c '{fp, state, followups, fu, basis}' > "$d/c" || rc=1
+    [ "$rc" = 0 ] && jq -cn --arg pr "$pr" --argjson o "$oj" --slurpfile r "$d/r" --slurpfile c "$d/c" --argjson g "${guard:-true}" --arg v "$(mf_get '.targets[$t].v // 0' --arg t "$t")" '
         $r[0] as $r | $c[0] as $c
         | ($c.fu | map(select(.pr == $pr)) | .[0].ended // null) as $own_end
         | {pr: $pr, title: ($r.title // ""), base: ($r.base // ""), sha: ($r.sha // ""), merged_at: ($r.merged_at // ""),
            conc: {fp: $c.fp, followups: $c.followups, fu: $c.fu}, own_s: $r.s, own_ended: ($r.ended // $own_end // "no"),
-           guard: $g, target_state: $c.state, maintainer_closed: (($r.ended // "") == "yes"), version: $v}' || rc=1
+           guard: $g, target_state: $c.state, maintainer_closed: (($r.ended // "") == "yes"), version: $v,
+           target_basis: $c.basis, origin: $o}' || rc=1
     rm -rf "$d"
     return "$rc"
 }

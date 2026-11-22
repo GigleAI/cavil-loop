@@ -1316,7 +1316,8 @@ done_retry_suite() {   # <scripts 副本>：加标签失败 → 下轮只补标�
     set_field "$DW" 75 drop_pull_fields '["merged","merged_at"]'
     done_tick "$S"
     chk "现读核对 · PR 合并状态字段缺失：不评论" "$(my_marks 54)" ""
-    chk "现读核对 · PR 合并状态字段缺失：留队待下轮" "$(jq -r '.requester_bot_done_queue["75"].tries // "none"' "$DW/state/state.json")" 1
+    # GitHub#656 起合并后的交接写前就现读 PR 身份：缺字段时交接本身不收敛，通知也就还没入队，下轮再判
+    chk "现读核对 · PR 合并状态字段缺失：交接没收敛、通知没入队" "$(jq -r '(.merge_followup.prs["75"].handed // "none")' "$DW/state/state.json")/$(jq -r '.requester_bot_done_queue["75"] // "none"' "$DW/state/state.json")" "none/none"
     # 入队后 PR 被重新打开（现状和入队时不符）→ 不写、出队
     done_env on
     jq '.requester_bot_done_queue = {"74": {"kind": "merged", "tries": 0}}' "$DW/state/state.json" > "$DW/state/s.tmp" && mv "$DW/state/s.tmp" "$DW/state/state.json"
@@ -1382,7 +1383,33 @@ actor_suite() {   # <scripts 副本>
         fi
     done <<< "$ACTOR_CASES"
 }
-done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"
+# 升级前在途的「已合并」通知（GitHub#656）：旧队列条目只有 kind / tries，看不出评论发没发。接管后先按旧标记辨认：
+# 旧评论已发、现在的结论不是「完成」→ 只发一条「更正」，再补等待标签；没有旧评论 → 照常发一条结果。
+# 两种都走真实轮询，交接收敛时再入队一次也不能把接管时记下的 legacy 冲掉（复审第 1 轮问题 2）
+done_legacy_suite() {   # <scripts 副本>
+    local S="$1" old_mark='<!-- requester-bot-done pr=60 kind=merged -->' sent
+    for sent in yes no; do
+        done_env on
+        printf '{"cleaned_prs":[60,71,75,76],"cleaned_issues":[],"unmerged_prs_handled":[],"requester_bot_done_queue":{"60":{"kind":"merged","tries":0}}}' > "$DW/state/state.json"
+        if [ "$sent" = yes ]; then
+            set_field "$DW" 50 comments "$(jq -cn --arg b "## 需求已完成：PR #60 已合并
+
+$old_mark" '[{"user":"worker-bot","body":$b}]')"
+        fi
+        done_tick "$S"; done_tick "$S"
+        local mine
+        mine=$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body] | length' "$DW/gh/state.json")
+        if [ "$sent" = yes ]; then
+            chk "旧通知接管 · 旧评论已发：只多一条「更正」结果评论" \
+                "$mine/$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body | select(startswith("## 更正："))] | length' "$DW/gh/state.json")" "2/1"
+        else
+            chk "旧通知接管 · 没有旧评论：发一条结果评论，不是更正" \
+                "$mine/$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body | select(startswith("## 更正："))] | length' "$DW/gh/state.json")" "1/0"
+        fi
+        chk "旧通知接管（旧评论 $sent）· 等待标签挂上、唤醒一次（#52 是夹具里关闭未合并那条）、出队" "$(has_wait 50)/$(hook_numbers)/$(queue_len)" "1/50:issue 52:issue/0"
+    done
+}
+done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"; done_legacy_suite "$NEW"
 # 地址里带 [1-2] / {a,b}（复审 #101 第 1 轮）：curl 默认把它们展开成多个请求。叫醒和结果通知
 # 两条真实路径各跑一遍：恰好 1 次、路径和查询原样、记 HTTP 200
 GLOB_QS='?filter[1-2]=x&pick={a,b}'

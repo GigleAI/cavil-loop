@@ -257,10 +257,14 @@ def conclude(d):
 # ── "ended": a maintainer closed the target after the PR's merge ──────────────
 
 def ended(d):
-    """d = {events: [...] | null, merged: {<pr>: merged_at}, writers: {<login>: true|false|null}, bots: [login]}
+    """d = {events: [...] | null, merged: {<pr>: merged_at}, writers: {<login>: true|false|null}, bots: [login],
+            closers: {<event node_id>: "none" | "PullRequest" | "Commit" | ... | null}}
     events = REST issue events (paged and joined). A close counts when it is strictly later than the merge
-    (same second = unknown), not done by a commit / PR (commit_id empty), by an account that is not the
-    loop's or the bot's, with write access. → {<pr>: yes|no|unknown}"""
+    (same second = unknown), was not done by a PR or a commit, by an account that is not the loop's or the
+    bot's, with write access. "Not done by a PR or a commit" comes from the close event's GraphQL `closer`
+    (`closers`, read by the shell for exactly these events) — the REST `commit_id` is empty when a PR merge
+    closes an issue, so it cannot tell a merge close from a hand close; a closer that could not be read is
+    unknown, never "by hand". → {<pr>: yes|no|unknown}"""
     out = {}
     evs = d.get("events")
     bots = {x.lower() for x in d.get("bots", []) if x}
@@ -286,6 +290,13 @@ def ended(d):
                 continue
             who = ((e.get("actor") or {}).get("login") or "").lower()
             if not who or who in bots:
+                continue
+            closer = (d.get("closers") or {}).get(e.get("node_id") or "")
+            if closer is None:
+                if verdict == "no":
+                    verdict = "unknown"
+                continue
+            if closer != "none":
                 continue
             w = d.get("writers", {}).get(who)
             if w is None:

@@ -373,6 +373,23 @@ if path == "user":
         fail("HTTP 502: injected failure (user)")
     emit({"login": me()})
 
+if path == "graphql" and "ClosedEvent" in fields.get("query", ""):
+    # 关闭事件是谁关的（GitHub#656）：node(id) → ClosedEvent.closer。events.json 里事件的 "closer" 原样给出
+    # （{"__typename": "PullRequest"} / {"__typename": "Commit"} / 没写 = null，即人亲手关）；节点号是 REST 事件的
+    # node_id（没写的按 "CE_<id>" 补，和 GET …/events 补的 id 一致）。F_graphql_closer 让这类读取失败
+    if os.path.exists(p("F_graphql_closer")):
+        fail("HTTP 502: injected failure (graphql closer)")
+    nid = fields.get("id", "")
+    found = None
+    for _n, _evl in load("events.json", {}).items():
+        for _i, _e in enumerate(_evl):
+            _id = _e.get("id", 5000 + _i)
+            if _e.get("node_id", "CE_%s" % _id) == nid and _e.get("event") == "closed":
+                found = _e
+    if found is None:
+        emit({"data": {"node": None}})
+    emit({"data": {"node": {"__typename": "ClosedEvent", "closer": found.get("closer")}}})
+
 if path == "graphql":
     # PR 正文的修改历史（GitHub#142）：edits.json {"<pr>": [ {editedAt, deletedAt, diff}, ... ]}，按时间倒序，
     # 和真接口一样；没有这一项 = 正文从没改过（历史为空）。F_graphql / F_graphql_<pr> 让读取失败；
@@ -552,6 +569,8 @@ if method == "GET":
         for i, e in enumerate(evl):
             if "id" not in e:
                 e["id"] = 5000 + i
+            if e.get("event") == "closed" and "node_id" not in e:
+                e["node_id"] = "CE_%s" % e["id"]
         emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(paged(load("comments.json", {}).get(parts[1], [])), pages=True)
@@ -808,7 +827,8 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
                 items[_n]["state"] = "closed"
                 items[_n]["state_reason"] = "completed"
                 _evs.setdefault(_n, []).append({"event": "closed", "actor": {"login": me(), "type": me_type()},
-                                                "commit_id": "m" * 40, "created_at": now_iso()})
+                                                "commit_id": None, "closer": {"__typename": "PullRequest"},
+                                                "created_at": now_iso()})
         save("items.json", items)
         save("events.json", _evs)
     # hook_after_PUT_pulls_<n>_merge（GitHub#656）：合并成功之后、响应返回之前运行——测试用它在「合并」和「同一轮里
