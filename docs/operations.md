@@ -1610,25 +1610,18 @@ nothing when it fails.
 <details><summary>Turning it off</summary>
 
 Set `ENABLE_ROUND_LOG=false` (or remove the line). It takes effect at once, not only for new
-dispatches: existing records stay as they are and are still counted, and the round-log write command
-checks the setting each time it runs. A worker or reviewer session already running still has the
-round-log instructions in its prompt; what it does next depends on which command it reads the thread
-with:
+dispatches. Existing records stay as they are and are still counted; from the next post on, every
+agent posts its deliveries and verdicts as separate comments again, so a back-and-forth that was in
+progress simply ends its record there. An agent session already running still has the round-log
+instructions in its prompt, and those instructions cover the switch being turned off under it:
 
-- **Every item except autopilot items with the outside-content guard** is read with `round-log.sh show`.
-  That read does not look at the setting: it still splits existing records and still names the delivery
-  to answer (`--of …`). The next delivery or verdict gets `RESULT=rejected` (exit 2) and, as the
-  instructions say, is posted as a separate comment.
-- **Autopilot items with the outside-content guard** are read with `outsider-read.sh`, which adds the
-  split view only while the setting is on. A reviewer that read the thread before the change already
-  has the delivery's id and is rejected the same way. A reviewer that reads it only after the change
-  gets no id; its instructions then say to post nothing and stop, so that item stays on `doing/agent`
-  without a verdict until a person puts `pending/review` back on it (the review then runs again and
-  posts its verdict as a separate comment).
-
-So turning it off in the middle of a back-and-forth ends that record there, and can stop one guarded
-review. To avoid both, turn it off when no item is in an agent back-and-forth — nothing on
-`pending/review`, or on `pending/agent` / `doing/agent` after a review sent it back.
+| Where the item is when it is turned off | What happens next |
+|---|---|
+| Waiting for a review (`pending/review`) | The review is dispatched without the round-log instructions and posts its verdict as a separate comment |
+| Review or worker dispatched, thread not read yet | The read shows no round-log view (autopilot items with the outside-content guard, read with `outsider-read.sh`), or still shows it (all other items, read with `round-log.sh show`, which ignores the setting). Without the view the instructions say to post separately; with it, the write command rejects the post (`RESULT=rejected`, exit 2) and the instructions again say to post separately |
+| Thread already read, post not sent yet | The agent already holds the delivery's id; the write command rejects the post and it goes out as a separate comment |
+| Sent back for rework (`pending/agent` / `doing/agent`) | Same as the two rows above for the worker |
+| Handed to a person, or merged | Nothing changes: those comments were separate already |
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
