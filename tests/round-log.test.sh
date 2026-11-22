@@ -221,7 +221,7 @@ chk "以上全部零写入" "$(writes)" "0"
 
 echo "── 4a. 来回进行到一半关掉开关：下一次调用立刻按关着处理（GitHub#646）──"
 # 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收，一笔不写；受保护读取（outsider-read.sh）不再附往返视图，
-# 直接读取（round-log.sh show）不看开关、照常拆分并标出 --of；文档给的退路是重新打开——同一会话照常写进记录
+# 直接读取（round-log.sh show）不看开关、照常拆分并标出 --of；重新打开后同一会话照常写进记录
 fresh issue 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""'
 echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
 RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
@@ -241,7 +241,7 @@ lacks "关掉之后受保护读取没有「最新单元」这一段" "$o" "## �
 chk "关掉之后读取命令照常成功" "$rc" "0"
 o=$(RL show 7); rc=$?
 chk "关掉之后直接读取命令（round-log.sh show）不看开关：照常成功、仍标出 --of" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
-# 文档给的退路：关掉之后发现有条目还在来回中，重新打开 → 同一个会话带着关掉前取得的节编号照常写进记录
+# 重新打开 → 同一个会话带着关掉前取得的节编号照常写进记录
 sed -i 's/^ENABLE_ROUND_LOG=false$/ENABLE_ROUND_LOG=true/' "$CONF"
 o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
 chk "重新打开后受保护读取又附上往返视图、标出同一个节编号" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"

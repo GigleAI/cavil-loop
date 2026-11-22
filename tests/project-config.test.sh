@@ -893,33 +893,10 @@ chk "读回失败：文件里已是 false" "$(rl_val)" "false"
 rm -f "$RL_W/jq"; rl_run "$SANDBOX/rl-check.sh"
 chk "读回失败之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
 
-# 第 1、3 步的检查：照字面跑，假 gh 按文档写的路径返回打开的条目，--jq 交给真 jq 算
-for b in round-log-busy-ops round-log-on-ops; do
-    chk "$b：中英两份文档里的命令一字不差" "$(doc_block operations.zh.md "$b")" "$(doc_block operations.md "$b")"
-done
-doc_block operations.md round-log-busy-ops > "$SANDBOX/rl-busy.sh"
+# 想恢复时：重新打开，照字面跑，中英两份一字不差
+chk "round-log-on-ops：中英两份文档里的命令一字不差" "$(doc_block operations.zh.md round-log-on-ops)" "$(doc_block operations.md round-log-on-ops)"
 doc_block operations.md round-log-on-ops > "$SANDBOX/rl-on.sh"
-RL_G="$SANDBOX/rl-gh"; rm -rf "$RL_G"; mkdir -p "$RL_G"
-cat > "$RL_G/gh" <<W
-#!/usr/bin/env bash
-echo "\$*" >> "$RL_G/calls"
-[ -e "$RL_G/fail" ] && exit 1
-[ "\$1 \$2 \$3" = "api --paginate repos/owner/repo/issues?state=open&per_page=100" ] && [ "\$4" = --jq ] || exit 9
-exec "$REAL_JQ" -r "\$5" "$RL_G/items.json"
-W
-chmod +x "$RL_G/gh"
-rl_busy() { RL_RC=0; RL_OUT="$(env -i HOME="$H" PATH="$RL_G:$SYS_PATH" LANG=C.UTF-8 bash "$SANDBOX/rl-busy.sh" 2>&1)" || RL_RC=$?; }
-echo '[{"number":5,"labels":[{"name":"pending/human"}]},{"number":7,"labels":[{"name":"Done"}]}]' > "$RL_G/items.json"
-rl_busy
-chk "检查：没有条目挂 doing/agent / pending/review → IDLE、退出 0" "$RL_OUT $RL_RC" "IDLE 0"
-chk "到达性：检查确实按文档写的路径读了打开的条目" "$(grep -c 'repos/owner/repo/issues?state=open' "$RL_G/calls")" "1"
-echo '[{"number":5,"labels":[{"name":"doing/agent"}]},{"number":8,"pull_request":{},"labels":[{"name":"pending/review"},{"name":"autopilot"}]},{"number":9,"labels":[{"name":"pending/agent"}]}]' > "$RL_G/items.json"
-rl_busy
-chk "检查：issue 挂 doing/agent、PR 挂 pending/review → BUSY 列出两个、退出非 0" "$RL_OUT $([ "$RL_RC" != 0 ] && echo nz)" "BUSY: 5 8 nz"
-: > "$RL_G/fail"; rl_busy; rm -f "$RL_G/fail"
-chk "检查：列表读不到 → UNKNOWN（不当成 IDLE）、退出非 0" "$RL_OUT $([ "$RL_RC" != 0 ] && echo nz)" "UNKNOWN: could not read the open items nz"
-
-# 第 3 步发现还有条目时的退路：重新打开
+chk "文档里不再有查标签的检查命令" "$(doc_block operations.md round-log-busy-ops; doc_block operations.zh.md round-log-busy-ops)" ""
 rl_world false; rl_run "$SANDBOX/rl-on.sh"
 chk "重新打开：最后一行 ROUND_LOG=on、退出 0、配置里变成 true" "$(rl_last) $RL_RC $(rl_val)" "ROUND_LOG=on 0 true"
 rl_world false; chmod 000 "$CONF"; rl_run "$SANDBOX/rl-on.sh"; chmod 640 "$CONF"

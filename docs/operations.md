@@ -1612,10 +1612,24 @@ nothing when it fails.
 Set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
 counted. It takes effect at once: the round-log write command checks the setting each time it runs, and
 the guarded read (`outsider-read.sh`, autopilot items with the outside-content guard) stops adding the
-split view. An agent session already running keeps the round-log instructions it was started with, so a
-session that is in the middle of a back-and-forth can have its post refused or, on a guarded item, find
-no delivery to answer and stop. Turn it off only while no item is in an agent back-and-forth, in four
-steps: check, turn off, check again, and turn it back on if the second check finds something.
+split view. An agent session already running keeps the instructions it was started with, so an item that
+is in the middle of an agent back-and-forth when the setting goes off can stop half-way: a worker whose
+delivery the write command refuses posts it as a separate comment and carries on; a review on a guarded
+item may find no delivery to answer and stop without a verdict or a label change, leaving the item on
+`doing/agent`.
+
+Looking at which items carry `doing/agent` or `pending/review` before turning it off makes a collision
+less likely but cannot rule it out: an item queued for dispatch, or one being dispatched that does not
+carry `doing/agent` yet, does not show. So keep an eye on the items for a while afterwards and dispatch
+again any item that stopped half-way:
+
+- **How to spot one**: the item carries `doing/agent`, has had no new comment for a while, and its agent
+  session has stopped (on a project with the stuck-worker check, the daemon also reminds or hands over by itself)
+- **How to dispatch it again**: in the Labels box on the item's page, remove `doing/agent`, then add the
+  dispatch label that fits the latest agent comment — `pending/review` when it is a worker's delivery
+  waiting for review, `pending/agent` when it is a review verdict or anything else
+- **How to tell it worked**: within a few minutes a new comment by the loop account appears on the item
+  (a separate comment now, no longer part of the round log) and `doing/agent` has given way to the next step's label
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
@@ -1626,22 +1640,7 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 ```
 <!-- round-log-check-ops:end -->
 
-**1. Check that nothing is in progress.** Replace `owner/repo` with the repository (and the two label
-names, if the project renamed them). `IDLE` means no open item carries `doing/agent` or `pending/review`;
-`BUSY: …` lists the ones that do — wait until they reach a person or are merged and run it again;
-`UNKNOWN` means the list could not be read, so nothing is known: run it again.
-
-<!-- round-log-busy-ops:begin -->
-```bash
-(
-  REPO=owner/repo
-  OUT="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(any(.labels[]; .name == "doing/agent" or .name == "pending/review")) | .number')" || { echo "UNKNOWN: could not read the open items"; exit 1; }
-  if [ -z "$OUT" ]; then echo "IDLE"; else echo "BUSY:" $OUT; exit 1; fi
-)
-```
-<!-- round-log-busy-ops:end -->
-
-**2. Turn it off.** Run this whole block and read its last line:
+To turn it off, run this whole block and read its last line:
 
 - `ROUND_LOG=off` — saved and read back as `false` (the line above it is `RESULT=saved`, or
   `RESULT=unchanged` when it was already off).
@@ -1674,11 +1673,9 @@ names, if the project renamed them). `IDLE` means no open item carries `doing/ag
 ```
 <!-- round-log-off-ops:end -->
 
-**3. Run the check from step 1 again.** `IDLE`: done. `BUSY: …`: a dispatch started between the first
-check and the save may still carry the round-log instructions — turn the round log back on with the
-block below (same last-line words as step 2, `ROUND_LOG=on` when it worked), wait until those items
-reach a person or are merged, and start again from step 1. With the setting on again, such a session
-writes into its record as before.
+To turn it back on, use the block below — same last-line words as the one above, `ROUND_LOG=on` when it
+worked. Turning it back on only affects later writes and reads; an item that already stopped half-way
+still needs to be dispatched again as described above.
 
 <!-- round-log-on-ops:begin -->
 ```bash

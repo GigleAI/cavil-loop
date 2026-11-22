@@ -1365,9 +1365,17 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 <details><summary>关掉</summary>
 
 写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被统计。改完立刻生效：往返记录的写入命令每次运行都按当时的配置判断，
-受保护读取（`outsider-read.sh`，托管且开了外部内容保护的条目用它读）也不再附上拆好的往返视图。已经开着的 agent 会话仍按它开始时的提示词
-写，所以正处在来回中间的会话，可能被写入命令拒收，或者在受保护的条目上找不到要回应的交付而停下。只在没有条目处于 agent 之间的来回时关，
-分四步：先查、关掉、再查一次、再查发现有就重新打开。
+受保护读取（`outsider-read.sh`，托管且开了外部内容保护的条目用它读）也不再附上拆好的往返视图。已经开着的 agent 会话仍按它开始时的提示词写，
+所以关掉时正处在 agent 之间来回的条目可能停在半路：worker 的交付被写入命令拒收后改成单独发，照常往下走；受保护条目上的复审可能找不到要回应的交付，
+不发结论、不翻标签就停下，条目一直挂着 `doing/agent`。
+
+关掉之前看一眼哪些条目挂着 `doing/agent` 或 `pending/review` 能减少撞上的机会，但不能排除：排队等派工的条目和正在派工、还没挂上 `doing/agent`
+的条目都看不出来。所以关掉之后留意一阵，发现停在半路的条目就重派一次：
+
+- **怎么认出来**：条目挂着 `doing/agent`，却好一阵没有新评论，它的 agent 会话已经停下（开了卡住检测的项目，daemon 也会自己提醒或交人）
+- **怎么重派**：在条目页面右侧的 Labels 里摘掉 `doing/agent`，再按最新一条 agent 评论挂派工标签——最新一条是 worker 的交付（等复审）就挂
+  `pending/review`，是复审结论或别的就挂 `pending/agent`
+- **怎样算救回来了**：几分钟内条目上出现一条 loop 账号的新评论（关掉之后它是单独的一条，不再进往返记录），`doing/agent` 换成了下一步的标签
 
 不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
 
@@ -1377,20 +1385,7 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 ```
 <!-- round-log-check-ops:end -->
 
-**1. 先查有没有正在来回的条目。** 把 `owner/repo` 换成仓库名（项目改过这两个标签名的，也一并换掉）。`IDLE` = 没有打开的条目挂着
-`doing/agent` 或 `pending/review`；`BUSY: …` 列出挂着的条目——等它们交到人手上或合并后再查；`UNKNOWN` = 列表读不到，什么都不知道，重查。
-
-<!-- round-log-busy-ops:begin -->
-```bash
-(
-  REPO=owner/repo
-  OUT="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(any(.labels[]; .name == "doing/agent" or .name == "pending/review")) | .number')" || { echo "UNKNOWN: could not read the open items"; exit 1; }
-  if [ -z "$OUT" ]; then echo "IDLE"; else echo "BUSY:" $OUT; exit 1; fi
-)
-```
-<!-- round-log-busy-ops:end -->
-
-**2. 关掉。** 整段运行下面这一段，看最后一行：
+关掉：整段运行下面这一段，看最后一行：
 
 - `ROUND_LOG=off`：已保存，读回是 `false`（上一行是 `RESULT=saved`；本来就是关的时是 `RESULT=unchanged`）。
 - `NOT_WRITTEN: …`：配置脚本明确说了什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
@@ -1418,8 +1413,8 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 ```
 <!-- round-log-off-ops:end -->
 
-**3. 再跑一次第 1 步的检查。** `IDLE`：完成。`BUSY: …`：第一次检查和保存之间开始的派工可能仍带着往返记录的提示词——用下面这段把往返记录重新打开
-（最后一行的说法和第 2 步相同，成功时是 `ROUND_LOG=on`），等这些条目交到人手上或合并后，从第 1 步重来。开关重新打开后，这类会话照旧写进记录。
+想重新打开时用下面这段，最后一行的说法和关掉那段相同，成功时是 `ROUND_LOG=on`。重新打开只对之后的写入和读取生效，已经停在半路的条目
+仍要照上面重派一次。
 
 <!-- round-log-on-ops:begin -->
 ```bash
