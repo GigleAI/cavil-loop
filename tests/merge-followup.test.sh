@@ -367,7 +367,7 @@ tick
 chk "PR 标签原样、issue 有清单评论并翻 pending/human" "$(labels_of 191)/$(comments_of 190)/$(labels_of 190)" "pending/review/1/pending/human"
 chk "  → 交接照常收敛" "$(jq -r '.merge_followup.prs["191"].handed // "none"' "$STATE")" "1"
 
-echo "⑳ 给 PR 写标签的两步之间有人挂上 pending/review → 停手；下一轮认出是新一轮，不摘它"
+echo "⑳ 给 PR 加完 Done 之后有人挂上 pending/review → 写完读回用同一判定认出新一轮：不摘它，记让位，交接收敛"
 fresh
 mkissue 200 "" open
 mkmerged 201 feature/issue-200 "Refs #200"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/merge"
@@ -375,9 +375,8 @@ printf 'cd %q && jq %q labels.json > l.tmp && mv l.tmp labels.json && jq %q even
     '.["201"] += ["pending/review"]' '.["201"] += [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}]' \
     > "$GD/hook_after_POST_issues_201_labels_1"
 tick
-chk "这一轮：加了 Done 之后停手，pending/review 和 pending/merge 都还在、没记已交接" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")" "Done,pending/merge,pending/review/none"
-tick
-chk "下一轮：认出合并后挂上的是新一轮，PR 标签一个不动，交接收敛" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")/$(comments_of 200)" "Done,pending/merge,pending/review/1/1"
+chk "PR 标签：Done + 别人挂的都留着；记让位、交接收敛、清单一条" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")/$(comments_of 200)" "Done,pending/merge,pending/review/true/1/1"
+chk "  → 到达性：日志写明新一轮" "$(grep -c 'PR #201 合并之后又挂上了流程标签' "$W/state/poll.log")" "1"
 
 echo "㉑ PR 上的流程标签找不到「加上」它的事件 → 判不了，PR 标签不动、不算交接完成；事件补齐后照常收敛"
 fresh
@@ -480,6 +479,31 @@ jset events.json '.["311"] = [range(0; 1600) | {event: (if . % 2 == 0 then "labe
 chk "  → 前提：事件记录本身超过 128 KB" "$(jq -c '.["311"]' "$GD/events.json" | wc -c | awk '{print ($1>131072)?"yes":"no"}')" "yes"
 tick
 chk "Done、提醒、交接收敛" "$(labels_of 311)/$(jq -r '.merge_followup.prs["311"].handed // "none"' "$STATE")" "Done,pending/human/1"
+
+echo "㉜ 最后一步挂上提醒后，事件记录一时还没有这条「加上」（读回能看到标签）→ 本轮不记完成；事件出现后下一轮收敛"
+fresh
+mkmerged 321 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+# 事件按夹具原样给（不补），挂上提醒之后的那次读回把它那条事件藏起来（标签照样挂着）
+touch "$GD/nosynth_321"
+jset events.json '.["321"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-02-01T00:00:00Z"}]'
+printf 'cd %q && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["321"] = [(.["321"] // [])[] | select(.event != "labeled" or .label.name != "pending/human")]' > "$GD/hook_issues_321_events_7"
+tick
+chk "第 1 轮：标签已是 Done + 提醒、没记完成、没记让位" "$(labels_of 321)/$(jq -r '.merge_followup.prs["321"].handed // "none"' "$STATE")/$(jq -r '.merge_followup.prs["321"].pr_superseded // false' "$STATE")" "Done,pending/human/none/false"
+chk "  → 到达性：日志写明挂完读不到这次的记录" "$(grep -c 'PR #321 挂完提醒还读不到这次挂上的记录' "$W/state/poll.log")" "1"
+jset events.json '.["321"] += [{event:"labeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-05T00:00:00Z"}]'
+tick
+chk "第 2 轮：事件齐了 → 收尾完成、零次标签写入" "$(jq -r '.merge_followup.prs["321"].handed // "none"' "$STATE")/$(jq -r '.merge_followup.prs["321"].pr_superseded // false' "$STATE")/$(grep -c 'issues/321/labels' "$CALLS")" "1/false/0"
+
+echo "㉝ 挂上提醒之后、读回之前，维护者把它摘掉又挂上 → 读回认出新一轮：记让位，不当成交接自己的收尾"
+fresh
+mkmerged 331 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["331"] += [{event:"unlabeled", label:{name:"pending/human"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}, {event:"labeled", label:{name:"pending/human"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:01Z"}]' \
+    > "$GD/hook_after_POST_issues_331_labels_2"
+tick
+chk "标签 Done + 提醒；记让位；兜底不涉及；交接收敛" "$(labels_of 331)/$(jq -r '.merge_followup.prs["331"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["331"].handed // "none"' "$STATE")" "Done,pending/human/true/1"
+chk "  → 到达性：日志写明新一轮" "$(grep -c 'PR #331 合并之后又挂上了流程标签' "$W/state/poll.log")" "1"
 
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"

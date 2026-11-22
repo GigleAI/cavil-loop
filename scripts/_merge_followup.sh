@@ -443,18 +443,10 @@ mf_flow_labels() {
 #   - 其余合并之后挂的（别人挂的；写入账号挂的别的流程标签；写入账号挂的提醒、但 PR 还不是最终状态——交接自己的写法
 #     不会留下这种状态，只能是另一轮）= 新一轮：这个 PR 的标签一个不动，交接让位
 #   - 找不到事件、同一秒判不了、读不出写入账号或事件的作者 = 判不了，本轮不动（return 1）
-mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位，1 = 本轮没成
-    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect out me n=0 total
-    at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
-    [ -n "$at" ] || return 1
-    s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
-    # 身份口径和清单判定那边（_mf_conclude_in）同一套五项：合并提交、目标分支、来源分支、分支最新提交、来源仓库
-    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" "$MF_IDENT_JQ"' .merged == true and mf_ident_ok($r; .ident)' \
-        >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
-    me=$(write_identity_login 2>/dev/null | tr '[:upper:]' '[:lower:]') || me=""
-    flows=$(mf_flow_labels)
-    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" --arg me "$me" --arg H "$LABEL_PENDING_HUMAN" \
-        --arg D "$LABEL_DONE" --arg r "$rem" '
+# 一份 PR 现状的判定（起步和写完读回用同一个）：stdout ok | new | unknown
+mf_pr_verdict() {   # <现状 JSON> <合并时间> <写入账号（小写，可空）> <true|false：要不要留提醒>
+    printf '%s\n' "$1" | jq -r --argjson f "$(mf_flow_labels)" --arg at "$2" --arg me "$3" --arg r "$4" \
+        --arg H "$LABEL_PENDING_HUMAN" --arg D "$LABEL_DONE" '
         .merged_pos as $mp | .labels as $L
         | ([$L[] | select(. as $l | ($f | index($l)) != null and $l != $H)] | length == 0) as $others_gone
         | [ $L[] as $l | select(($f | index($l)) != null) | (.last[$l] // null) as $x
@@ -467,23 +459,32 @@ mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位，1 = 本轮没成
               elif $me == "" or ($x.by // "") == "" then "unknown"
               elif $l == $H and $x.by == $me and $r == "true" and ($L | index($D)) != null and $others_gone then "final"
               else "new" end ]
-        | if index("new") != null then "new" elif index("unknown") != null then "unknown" else "ok" end')
-    case "$verdict" in
-        new) log "  合并后交接：PR #$pr 合并之后又挂上了流程标签（新一轮），它的标签不动"
-             mf_set '.prs[$p].pr_superseded = true' --arg p "$pr" || true; return 0 ;;
-        unknown) log "  合并后交接：PR #$pr 有流程标签判不了是谁、什么时候挂的（缺事件、缺时间、读不出写入账号或挂的人），本轮不动"; return 1 ;;
-        ok) ;;
-        *) return 1 ;;
-    esac
+        | if index("new") != null then "new" elif index("unknown") != null then "unknown" else "ok" end' 2>/dev/null
+}
+# 结果另放在 MF_PR_LABEL_RESULT：done = 收尾写成并按同一判定读回确认；superseded = 新一轮，让位
+mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位（见 MF_PR_LABEL_RESULT），1 = 本轮没成
+    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect out me last
+    MF_PR_LABEL_RESULT=""
+    at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
+    [ -n "$at" ] || return 1
+    s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
+    # 身份口径和清单判定那边（_mf_conclude_in）同一套五项：合并提交、目标分支、来源分支、分支最新提交、来源仓库
+    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" "$MF_IDENT_JQ"' .merged == true and mf_ident_ok($r; .ident)' \
+        >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
+    me=$(write_identity_login 2>/dev/null | tr '[:upper:]' '[:lower:]') || me=""
+    flows=$(mf_flow_labels)
+    verdict=$(mf_pr_verdict "$s0" "$at" "$me" "$rem")
+    mf_pr_verdict_act "$pr" "$verdict" || return $?
+    [ "$verdict" = ok ] || return 0
     # 顺序固定：Done → 摘旧标签 → 提醒
     plan=$(printf '%s' "$s0" | jq -c --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" --argjson f "$flows" '.labels as $L
         | (if ($L | index($D)) == null then ["add:" + $D] else [] end)
         + [$L[] | select(. as $l | ($f | index($l)) != null and ($r != "true" or $l != $H)) | "del:" + .]
         + (if $r == "true" and ($L | index($H)) == null then ["add:" + $H] else [] end)')
-    total=$(printf '%s' "$plan" | jq 'length')
+    last=$(printf '%s' "$plan" | jq -r 'last // ""')
     expect="$s0"
     for step in $(printf '%s' "$plan" | jq -r '.[] | @base64'); do
-        step=$(printf '%s' "$step" | base64 -d); kind="${step%%:*}"; lab="${step#*:}"; n=$((n + 1))
+        step=$(printf '%s' "$step" | base64 -d); kind="${step%%:*}"; lab="${step#*:}"
         cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || { log "  合并后交接：PR #$pr 写标签途中读不全，本轮停手"; return 1; }
         if ! mf_pr_state_same "$cur" "$expect" ""; then
             log "  合并后交接：PR #$pr 的标签在两次写之间被人改了，本轮停手，下轮从头判"; return 1
@@ -499,13 +500,32 @@ mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位，1 = 本轮没成
             expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '.labels = (.labels | map(select(. != $l)))')
         fi
     done
-    cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || return 1
-    # 最后一步挂了提醒时，它自己那条「加上」事件不在期望里，读回时不比它（下一轮按「最终状态」那条规则再判一次）
-    if [ "$total" -gt 0 ] && [ "$(printf '%s' "$plan" | jq -r 'last')" = "add:$LABEL_PENDING_HUMAN" ]; then
-        mf_pr_state_same "$cur" "$expect" "$LABEL_PENDING_HUMAN"
-    else
-        mf_pr_state_same "$cur" "$expect" ""
+    # 写完读回：和起步用同一个判定（mf_pr_verdict）。最后一步挂了提醒时，它那条「加上」事件必须已经读得到、而且是这次
+    # 新出现的（不在写之前的事件清单里）——读不到就是判不了，挂提醒的人不是写入账号就是新一轮
+    cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || { log "  合并后交接：PR #$pr 写完读不回，本轮不记完成"; return 1; }
+    if [ "$last" = "add:$LABEL_PENDING_HUMAN" ]; then
+        printf '%s\n%s\n' "$cur" "$expect" | jq -es --arg H "$LABEL_PENDING_HUMAN" '.[0] as $c | .[1] as $e
+            | ($c.last[$H].id // null) as $i | $i != null and ([$e.lev[].id] | index($i)) == null' >/dev/null 2>&1 \
+            || { log "  合并后交接：PR #$pr 挂完提醒还读不到这次挂上的记录，本轮不记完成"; return 1; }
     fi
+    verdict=$(mf_pr_verdict "$cur" "$at" "$me" "$rem")
+    mf_pr_verdict_act "$pr" "$verdict" || return $?
+    [ "$verdict" = ok ] || return 0
+    if [ "$last" = "add:$LABEL_PENDING_HUMAN" ]; then
+        mf_pr_state_same "$cur" "$expect" "$LABEL_PENDING_HUMAN" || { log "  合并后交接：PR #$pr 写完读回和期望对不上，本轮不记完成"; return 1; }
+    else
+        mf_pr_state_same "$cur" "$expect" "" || { log "  合并后交接：PR #$pr 写完读回和期望对不上，本轮不记完成"; return 1; }
+    fi
+    MF_PR_LABEL_RESULT=done
+}
+mf_pr_verdict_act() {   # <PR> <判定>：new → 记让位（return 0）；unknown / 其他 → return 1；ok → return 0
+    case "$2" in
+        ok) return 0 ;;
+        new) log "  合并后交接：PR #$1 合并之后又挂上了流程标签（新一轮），它的标签不动"
+             mf_set '.prs[$p].pr_superseded = true' --arg p "$1" || true; MF_PR_LABEL_RESULT=superseded; return 0 ;;
+        unknown) log "  合并后交接：PR #$1 有流程标签判不了是谁、什么时候挂的（缺事件、缺时间、读不出写入账号或挂的人），本轮不动"; return 1 ;;
+        *) return 1 ;;
+    esac
 }
 # 两份 PR 现状是不是同一个：身份、标签集合、流程标签的「加上」事件编号集合都一样（摘标签不产生「加上」事件；任何人
 # 挂上或重挂流程标签都会多出一条）。第三个参数非空时，这个标签的事件不比（只用于最后一步刚挂上的提醒）。
@@ -605,12 +625,14 @@ mf_target_tick() {   # <目标> [兜底 PR]
         if ! mf_pr_labels "$n" "$(printf '%s' "$c1" | jq -r .reminder)"; then mf_try_fail "$n" "PR #$n 的标签没写成"; return 1; fi
         mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
         if [ -n "$fb" ]; then
-            # 兜底送达：上面已确认兜底评论，PR 上现读到 pending/human 才写「是」（新一轮的流程标签挡着、没挂上时不算）
-            if gh api "repos/$REPO/issues/$n" --jq '[.labels[].name]' 2>/dev/null | jq -e --arg H "$LABEL_PENDING_HUMAN" 'index($H) != null' >/dev/null 2>&1; then
+            # 兜底送达：只认这次收尾按同一判定读回确认的提醒（MF_PR_LABEL_RESULT=done）。新一轮接手时提醒不算送达：
+            # 记下让位、不再重试（PR 已在别人手里），fb.sent 保持 false，之后合并的 PR 照旧不说「完成」
+            if [ "$MF_PR_LABEL_RESULT" = done ]; then
                 mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || return 1
                 log "  合并后交接：PR #$fb 的兜底提醒已送达"
             else
-                mf_try_fail "$n" "PR #$n 上没挂上 $LABEL_PENDING_HUMAN"; return 1
+                mf_set '.prs[$p].fb.label = "superseded" | .prs[$p].fb.superseded = true' --arg p "$fb" || return 1
+                log "  合并后交接：PR #$fb 已有新一轮接手，兜底提醒不算送达（之后合并的 PR 仍不说「完成」）"
             fi
         fi
     fi
