@@ -556,8 +556,17 @@ def expand_github_comments(comments, trusted):
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "is-record":
+        # 标准输入是一条评论正文：是往返记录 → 0，不是 → 1（复审算修复范围的命令用，GitHub#676）
+        return 0 if is_record(sys.stdin.read()) else 1
     try:
         inp = json.load(sys.stdin)
+        if cmd == "expand":
+            # {comments: GitHub 评论原样的列表, trusted_login} → 同样形状、往返记录换成各节、按位置排好的列表
+            # （复审算修复范围的命令用它找上一轮的复审结论，GitHub#676）；读不懂的记录 → 退出码 3
+            json.dump(expand_github_comments(inp["comments"], trusted_by(inp.get("trusted_login"))),
+                      sys.stdout, ensure_ascii=False)
+            return 0
         if cmd == "show":
             us = units(inp["comments"], trusted_by(inp.get("trusted_login")))
             text, rc = render(us, bool(inp.get("all")))
@@ -581,7 +590,7 @@ def main():
     except (ValueError, KeyError, TypeError) as e:
         sys.stdout.write("❌ 输入读不懂：%s\n" % e)
         return 5
-    sys.stderr.write("用法: round_log.py show|plan < 输入 JSON\n")
+    sys.stderr.write("用法: round_log.py show|plan|expand < 输入 JSON；round_log.py is-record < 评论正文\n")
     return 2
 
 
