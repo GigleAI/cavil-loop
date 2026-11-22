@@ -179,6 +179,12 @@ del_conv 30 303
 set_reviews 30 '[]'
 o=$(cmp_ 30 "$TMP/rec-30")
 chk "删掉一条较早的维护者反馈 → need-continue" "$(verdict "$o")|$(field "$o" reason)" "need-continue|feedback-deleted"
+# 删一条、同时新增一条（GitHub#654 第 3 轮复审）：判定是 need-continue，新增的编号仍列出——
+# 「疑问 + 建议」停下后「继续」取待办按停下前最近一次交付之后的全部反馈取，不依赖这里有没有给出新条目的正文
+add_conv 30 304 alice "另外再补一条回归测试"
+o=$(cmp_ 30 "$TMP/rec-30")
+chk "删一条 + 新增一条 → need-continue（feedback-deleted），added 仍列出 c304" "$(verdict "$o")|$(field "$o" reason)|$(field "$o" added)" "need-continue|feedback-deleted|c304"
+del_conv 30 304
 
 echo "── 4. 外部账号的动作不影响恢复 ──"
 add_conv 10 105 mallory "外部账号新评论"
