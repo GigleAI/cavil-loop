@@ -205,6 +205,7 @@ describe('the back end and the daemon\'s real script', () => {
     expect(p.deps).toEqual({ state: 'missing', missing: ['codex'] });
   });
 
+  // GitHub#649: two cases of one read and one save each (they were one case of four script runs)
   it('a file edited since it was read: "changed", and the outside edit stays', async () => {
     const b = backend();
     const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
@@ -213,10 +214,14 @@ describe('the back end and the daemon\'s real script', () => {
     const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { MAX_CONCURRENT_WORKERS: '2' } });
     expect(r.result).toBe('changed');
     expect(readFileSync(config, 'utf8')).toBe(after);
-    // reachable: the same save with the fingerprint of the file as it is now goes through
+  });
+  it('…reachable: the same save with the fingerprint of the file as it is now goes through, the outside edit kept', async () => {
+    const b = backend();
+    writeFileSync(config, readFileSync(config, 'utf8') + '# edited elsewhere\n');
     const c2: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
     expect((await b.call('daemonConfigSet', { key: 'widget', rev: c2.rev, values: { MAX_CONCURRENT_WORKERS: '2' } })).result).toBe('saved');
     expect(readFileSync(config, 'utf8')).toContain('# edited elsewhere\n');
+    expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   });
 
   // GitHub#649: one case per request (each on a fresh copy of the machine), so no case holds tens of
