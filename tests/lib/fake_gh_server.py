@@ -32,7 +32,8 @@ make this run the sandbox's hook scripts). Exits when the owning test process is
 directory has been removed.
 
 Test-only switch (tests/fake-gh-server.test.sh): `--fault-file F`. When F exists and holds
-`after-ack` or `after-exec`, the child serving a call dies at that point without replying further.
+`after-ack` or `after-exec`, the child serving a call dies at that point without replying further;
+`slow-log` makes every server.log write wait 0.5 s first (the FALLBACK answer must still come after it).
 Without the option nothing reads any such file.
 """
 import ast
@@ -76,6 +77,14 @@ STATE = O["state"]
 SCRIPT = os.path.abspath(O["script"])
 OWNER = int(O["owner"])
 FAULT = O["fault_file"]
+
+
+def _fault_value():
+    try:
+        with open(FAULT) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def script_sig():
@@ -151,6 +160,8 @@ def log(msg):
     (PR #657 review round 1: an encoding error here cut the FALLBACK answer off and the call
     failed with exit 70 instead of running the old way)."""
     try:
+        if FAULT and _fault_value() == "slow-log":
+            time.sleep(0.5)   # test-only: a slow disk; the caller must still find the line once answered
         text = str(msg).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
         line = text.encode("utf-8", "backslashreplace")
         with open(os.path.join(STATE, "server.log"), "ab") as f:
@@ -251,14 +262,7 @@ def proc_read(pid, name):
 
 
 def fault(point):
-    if not FAULT:
-        return
-    try:
-        with open(FAULT) as f:
-            want = f.read().strip()
-    except OSError:
-        return
-    if want == point:
+    if FAULT and _fault_value() == point:
         os._exit(0)
 
 
@@ -298,8 +302,11 @@ def serve(conn):
                     raise OSError("fd %d is not a pipe / character device" % n)
                 fds.append(os.open(path, os.O_WRONLY | os.O_CLOEXEC))
         except (OSError, ValueError) as e:
-            conn.sendall(b"FALLBACK\n")   # answer first: nothing in the log may stand in its way
+            # Log first, then answer: a caller that has its FALLBACK has the reason on disk already
+            # (PR #657 review round 2 — answering first let a test read server.log before it was
+            # written). log() never raises, so a failed write cannot cut the answer off (round 1).
             log("FALLBACK pid=%d: %s" % (pid, e))
+            conn.sendall(b"FALLBACK\n")
             os._exit(0)
 
         conn.sendall(b"ACK\n")

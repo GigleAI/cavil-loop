@@ -267,13 +267,30 @@ suite() {
     chk "中断 · 服务回复退回（输出写进文件）：退回旧方式执行一次，结果与正例相同" "$(tally file)" "0/1/1/1"
     chk "  …输出与正例相同、服务没接这一次" "$(cat "$W/int-file.txt")/$(( $(served "$G") - s1 ))" "$(cat "$W/int-ok.out")/0"
 
+    # 退回原因先落盘、再回退回（PR #657 复审第 2 轮）：写日志慢 0.5 秒时，调用一返回，那一行就已经在
+    # server.log 里——不等、不重试。先回应答再写日志的写法在这里读到 0 行
+    local nlog; nlog=$(grep -c '^FALLBACK ' "$G.d/server.log")
+    echo slow-log > "$FF"
+    D="$W/int-slow"; seed_rb "$D"; export FAKE_GH_DIR="$D"; : > "$W/int-slow.txt"
+    cap "$W/int-slow" --stdout-file "$W/int-slow.txt" -- "$G" api repos/example/requester-bot/issues/50 --jq .title
+    chk "退回原因慢写 0.5 秒：调用返回时退出码 0、输出对，server.log 已多出那一行" \
+        "$(cat "$W/int-slow.rc")/$(cat "$W/int-slow.txt")/$(( $(grep -c '^FALLBACK ' "$G.d/server.log") - nlog ))" "0/t50/1"
+    rm -f "$FF"
+    # 日志写不进去（server.log 换成一个目录）：照样退回旧方式，结果不变
+    mv "$G.d/server.log" "$G.d/server.log.keep"; mkdir "$G.d/server.log"
+    D="$W/int-nolog"; seed_rb "$D"; export FAKE_GH_DIR="$D"; : > "$W/int-nolog.txt"
+    cap "$W/int-nolog" --stdout-file "$W/int-nolog.txt" -- "$G" api repos/example/requester-bot/issues/50 --jq .title
+    chk "server.log 写不进去：照样退回旧方式，退出码 0、输出对、原因字母仍记 f" \
+        "$(cat "$W/int-nolog.rc")/$(cat "$W/int-nolog.txt")/$(tail -c 1 "$G.d/fallback")" "0/t50/f"
+    rmdir "$G.d/server.log"; mv "$G.d/server.log.keep" "$G.d/server.log"
+
     kill -9 "$(cat "$G.d/pid")" 2>/dev/null; sleep 0.2
     chk "到达性 · 服务确实被杀了、端口文件还在（测的是连不上，不是找不到端口）" \
         "$(kill -0 "$(cat "$G.d/pid")" 2>/dev/null && echo alive || echo dead)/$([ -s "$G.d/port" ] && echo port || echo noport)" "dead/port"
     post killed
     chk "中断 · 服务在两次调用之间被杀，下一次调用：连不上 → 退回旧方式执行一次，结果与正例相同" "$(tally killed)" "0/1/1/1"
     chk "  …输出与正例相同、stderr 为空" "$(cat "$W/int-killed.out")/$(wc -c < "$W/int-killed.err" | tr -d ' ')" "$(cat "$W/int-ok.out")/0"
-    chk "  …退回原因记的是「连不上」（之前输出写进文件那次是「服务回了退回」）" "$(cat "$G.d/fallback")" "fc"
+    chk "  …退回原因记的是「连不上」（之前三次输出写进文件都是「服务回了退回」）" "$(cat "$G.d/fallback")" "fffc"
 
     # ── 解释器启动设置（PR #221 复审第 1 轮）：输出编码、出错时的处理方式、不缓冲、区域设置 ──
     # 原方式每次起一个 python3，这些设置按调用方当时的环境定；常驻服务的在它启动时就定了。
