@@ -142,24 +142,30 @@ RUN_BASH="$(cavil_bash_bin "$OS")"
 # F_DEF = 不写这一行时的值；F_EMPTY = 写成空值时的值（登记成「默认;empty=值」的项和默认值不同，其余同默认值）；
 # F_WHY = 只显示的原因（show 行的第 8 列）；F_TIER = 层级（第 9 列：main / more / advanced，GitHub#591）
 F_NAME=(); F_GROUP=(); F_TYPE=(); F_DEF=(); F_EMPTY=(); F_MODE=(); F_LABEL=(); F_HELP=(); F_WHY=(); F_TIER=()
-trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+# 去掉首尾空白，结果写进 <变量名>：不经命令替换。登记表每行 9 列、84 行，每列起一个子 shell 就是读一次
+# 七百多个进程，CI 上那条逐值读写的用例因此卡在 60 秒时限边上（GitHub#662）
+trim_to() {   # <变量名> <文本>
+    local __t="$2"; __t="${__t#"${__t%%[![:space:]]*}"}"; __t="${__t%"${__t##*[![:space:]]}"}"; printf -v "$1" '%s' "$__t"
+}
 [ -r "$FIELDS_FILE" ] || fail unreadable "找不到登记表 $FIELDS_FILE" 2
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     IFS='|' read -r c1 c2 c3 c4 c5 c6 c7 c8 c9 <<<"$line"
-    c4="$(trim "$c4")"
+    trim_to c4 "$c4"
     case "$c4" in
         *';empty='*) F_DEF+=("${c4%%;empty=*}"); F_EMPTY+=("${c4#*;empty=}") ;;
         *) F_DEF+=("$c4"); F_EMPTY+=("$c4") ;;
     esac
-    F_NAME+=("$(trim "$c1")"); F_GROUP+=("$(trim "$c2")"); F_TYPE+=("$(trim "$c3")")
-    F_MODE+=("$(trim "$c5")"); F_LABEL+=("$(trim "$c6")"); F_HELP+=("$(trim "${c7:-}")"); F_WHY+=("$(trim "${c8:-}")")
+    trim_to c1 "$c1"; trim_to c2 "$c2"; trim_to c3 "$c3"; trim_to c5 "$c5"; trim_to c6 "$c6"
+    trim_to c7 "${c7:-}"; trim_to c8 "${c8:-}"
+    F_NAME+=("$c1"); F_GROUP+=("$c2"); F_TYPE+=("$c3")
+    F_MODE+=("$c5"); F_LABEL+=("$c6"); F_HELP+=("$c7"); F_WHY+=("$c8")
     # 层级是一个词，去掉全部空白即可，不再为它起一个子进程（81 行各一次，PR #596 复审第 3 轮实测慢了约 1 成）
     c9="${c9:-}"; F_TIER+=("${c9//[[:space:]]/}")
 done < "$FIELDS_FILE"
 # F_EARLY = 这一项的早期名字（_names.sh 的 CAVIL_SETTING_EARLY_NAMES，daemon 加载时按同一张表挑值），没有就是空
 F_EARLY=()
-for __k in "${F_NAME[@]}"; do F_EARLY+=("$(cavil_setting_early_name "$__k")"); done
+for __k in "${F_NAME[@]}"; do cavil_setting_early_name_to __e "$__k"; F_EARLY+=("$__e"); done
 # 加载时一起读的早期名字：和 F_NAME 同下标，没有早期名字的位置放一个配置里不会有的名字（读出来一定是没设置）
 EARLY_LOAD=()
 for __k in "${F_EARLY[@]}"; do EARLY_LOAD+=("${__k:-__pc_no_early_name}"); done
@@ -228,26 +234,76 @@ $__pc_src
         echo __pc_end__
     ' _ "$1" 2>/dev/null)" || return 0
     case "$NORM" in *__pc_end__) NORM_OK=1 ;; esac
+    [ "$NORM_OK" = 1 ] || return 0
+    index_structure "$1"
     return 0
 }
 # 这一项的名字在整份配置的代码里（注释不算——规范格式里没有注释）出现了几次、是不是最外层的赋值。
 # 「能不能改这一行」和「没有这一行、能不能在末尾追加」用的是这同一份证据：
-#   mentions <KEY>           名字作为一个完整的词出现的次数。不只数 KEY= 这种写法：export / declare / read /
+#   M_NAME[i] / M_EARLY[i]   名字（早期名字）作为一个完整的词出现的次数。不只数 KEY= 这种写法：export / declare / read /
 #                            printf -v / for KEY in / ${KEY:=…} / unset / 写在一行里的 if、函数体、a && KEY=…
 #                            都会提到这个名字，一处都不能漏看
 #   top_level_assign <KEY>   规范格式里有一行恰好缩进 4 格、以 KEY= 开头
-# 输出有几行（命令替换去掉了末尾换行：空 = 0 行，否则 = 换行数 + 1）。在 bash 里数，不另起 wc：
-# 每个登记项都要数几次，进程数跟着登记项一起涨（GitHub#554 登记到 45 项后读一次慢了一倍）
+#   file_hits <KEY>          原文件里以 KEY= 开头（前面可以有空白和 export）的行，grep -n 的格式
+# 三样都在 load_structure 里对全部登记项一次算好（index_structure），不再每项各起几次 grep：逐项算时
+# 读一次要开约 1400 个进程，CI 上那条逐值读写的用例卡在 60 秒时限边上（GitHub#662）。
+# 「完整的词」和 grep -w 同一个意思：名字只由字母、数字、下划线组成，前后紧挨着的不是这三类字符
+# （本脚本开头 LC_ALL=C，非 ASCII 字节不算这三类）——等于把代码切成连续的字母数字下划线段，数和名字相同的段。
+# 输出有几行（命令替换去掉了末尾换行：空 = 0 行，否则 = 换行数 + 1）。在 bash 里数，不另起 wc
 line_count() {   # <文本>
     local nl
     if [ -z "$1" ]; then printf 0; return 0; fi
     nl="${1//[!$'\n']/}"; printf '%s' "$(( ${#nl} + 1 ))"
 }
-mentions() {
-    line_count "$(printf '%s\n' "$NORM" | grep -ow -- "$1" || true)"
+M_NAME=(); M_EARLY=(); TOP_NAMES=" "; HIT_NAME=(); HIT_LINE=(); HITS_OK=0
+index_structure() {   # <配置文件>：填 M_NAME / M_EARLY（和 F_NAME 同下标）、TOP_NAMES、HIT_NAME / HIT_LINE
+    local counts=() c l re all
+    # 1. 出现次数：一个 awk 把规范化代码切成词段，只数登记过的名字和早期名字，按传进去的顺序各输出一个数
+    while IFS= read -r c; do counts+=("$c"); done < <(printf '%s\n' "$NORM" | awk -v names="${F_NAME[*]} ${EARLY_LOAD[*]}" '
+        BEGIN { n = split(names, N, " "); for (i = 1; i <= n; i++) want[N[i]] = 1 }
+        { s = $0
+          while (match(s, /[A-Za-z0-9_]+/)) { w = substr(s, RSTART, RLENGTH); if (w in want) c[w]++; s = substr(s, RSTART + RLENGTH) } }
+        END { for (i = 1; i <= n; i++) print ((N[i] in c) ? c[N[i]] : 0) }')
+    M_NAME=(); M_EARLY=()
+    if [ "${#counts[@]}" -ne $(( ${#F_NAME[@]} * 2 )) ]; then NORM_OK=0; return 0; fi   # 数不出来：当成结构读不出
+    for c in "${!F_NAME[@]}"; do
+        M_NAME+=("${counts[$c]}"); M_EARLY+=("${counts[$(( ${#F_NAME[@]} + c ))]}")
+    done
+    # 2. 最外层赋值：规范格式里恰好缩进 4 格、以 [export ]名字= 开头的行
+    TOP_NAMES=" "
+    re='^    (export )?([A-Za-z0-9_]+)='
+    while IFS= read -r l; do
+        [[ "$l" =~ $re ]] && TOP_NAMES+="${BASH_REMATCH[2]} "
+    done <<<"$NORM"
+    # 3. 原文件里的赋值行：一次 grep 取出所有「[空白][export 空白]名字=」开头的行，按名字分好。
+    #    有一行不是「行号:内容」（例如老 grep 对含 NUL 的文件只说一句 Binary file matches）就不用这份结果，
+    #    退回逐项 grep，结果和以前逐字节相同
+    HIT_NAME=(); HIT_LINE=(); HITS_OK=1
+    all="$(grep -nE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]+=' "$1" || true)"
+    re='^[0-9]+:[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]+)='
+    if [ -n "$all" ]; then
+        while IFS= read -r l; do
+            if [[ "$l" =~ $re ]]; then HIT_NAME+=("${BASH_REMATCH[2]}"); HIT_LINE+=("$l")
+            else HITS_OK=0; HIT_NAME=(); HIT_LINE=(); break; fi
+        done <<<"$all"
+    fi
+    return 0
 }
 top_level_assign() {
-    printf '%s\n' "$NORM" | grep -qE "^    (export )?$1="
+    case "$TOP_NAMES" in *" $1 "*) return 0 ;; esac
+    return 1
+}
+file_hits_to() {   # <变量名> <配置文件> <KEY>：和 grep -nE "^[[:space:]]*(export[[:space:]]+)?KEY=" 的输出相同（去掉末尾换行）
+    local __fh="" __j
+    if [ "$HITS_OK" != 1 ]; then
+        __fh="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$3=" "$2" || true)"
+    else
+        for __j in ${HIT_NAME[@]+"${!HIT_NAME[@]}"}; do
+            [ "${HIT_NAME[$__j]}" = "$3" ] || continue
+            if [ -z "$__fh" ]; then __fh="${HIT_LINE[$__j]}"; else __fh+=$'\n'"${HIT_LINE[$__j]}"; fi
+        done
+    fi
+    printf -v "$1" '%s' "$__fh"
 }
 
 # daemon 实际用的值：有值 → 它；没有值但早期名字有值 → 早期名字的值（_lib.sh 用 cavil_pick_setting
@@ -255,12 +311,15 @@ top_level_assign() {
 # 少数项读的是 ${X-默认}，空值有自己的意思，登记成「默认;empty=值」——例如等前置、暂缓两个标签
 # （GitHub#551：不写 = 开，写成空值 = 关）。按项登记、不按类型：同是标签的「等合并」读的是 ${X:-默认}，空值仍是默认标签）。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
-effective() {   # <下标>
-    local picked
-    picked="$(cavil_pick_setting "${V_VAL[$1]}" "${V_EARLY_VAL[$1]}")"
-    if [ -n "$picked" ]; then printf '%s' "$picked"
-    elif [ "${V_SET[$1]}" = 1 ]; then printf '%s' "${F_EMPTY[$1]}"
-    else printf '%s' "${F_DEF[$1]}"; fi
+effective_to() {   # <变量名> <下标>：结果写进变量，不经命令替换（每次读对每一项都要算，GitHub#662）
+    local __ep
+    cavil_pick_setting_to __ep "${V_VAL[$2]}" "${V_EARLY_VAL[$2]}"
+    if [ -n "$__ep" ]; then printf -v "$1" '%s' "$__ep"
+    elif [ "${V_SET[$2]}" = 1 ]; then printf -v "$1" '%s' "${F_EMPTY[$2]}"
+    else printf -v "$1" '%s' "${F_DEF[$2]}"; fi
+}
+effective() {   # <下标>：同上，打印出来
+    local __ev; effective_to __ev "$1"; printf '%s' "$__ev"
 }
 
 V_SET=(); V_VAL=(); V_EARLY_SET=(); V_EARLY_VAL=(); STATE_DIR_VAL=""
@@ -296,7 +355,7 @@ inspect_field() {   # <配置文件> <下标>
     # 值还可能互相矛盾。两份证据任一成立都只显示：配置的代码里提到了它（没执行的分支、unset 也算），
     # 或者加载完它有定义（不管来自哪里——配置加载的另一个文件、运行时拼出来的名字，这里都看不到文字）
     if [ -n "${F_EARLY[$i]}" ]; then
-        if [ "$(mentions "${F_EARLY[$i]}")" != 0 ]; then
+        if [ "${M_EARLY[$i]}" != 0 ]; then
             W_WHY="配置文件里写的是这一项的早期名字 ${F_EARLY[$i]}（daemon 照样认）；在文件里把它改成 ${k} 后才能在这里改"
             return 0
         fi
@@ -305,14 +364,14 @@ inspect_field() {   # <配置文件> <下标>
             return 0
         fi
     fi
-    m="$(mentions "$k")"
+    m="${M_NAME[$i]}"
     # 整份配置的代码里一次都没提到这个名字，加载后也确实没有值：才算「没有这一行」，可以追加
     if [ "$m" = 0 ]; then
         if [ "${V_SET[$i]}" = 0 ]; then W_KIND=absent
         else W_WHY="配置文件里找不到这一项的赋值，它的值是别处给的"; fi
         return 0
     fi
-    hits="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$k=" "$file" || true)"
+    file_hits_to hits "$file" "$k"
     count="$(line_count "$hits")"
     if [ "$count" -gt 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
     # 不是「单独一行、在最外层的赋值」：写在 if / 循环 / case / 函数 / { } 组里（一行写完的也算）、
@@ -434,7 +493,7 @@ if [ "$MODE" = get ]; then
     fields=()
     for i in "${!F_NAME[@]}"; do
         inspect_field "$REAL" "$i"
-        in_file=true; value="$(effective "$i")"; editable=false; why="$W_WHY"
+        in_file=true; effective_to value "$i"; editable=false; why="$W_WHY"
         [ "$W_KIND" = absent ] && in_file=false
         if [ "${F_MODE[$i]}" = edit ]; then
             if [ "$W_KIND" = complex ]; then :
@@ -525,7 +584,7 @@ for j in "${!W_NAMES[@]}"; do
             DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
         fi
         inspect_field "$SNAP" "$i"
-        old="$(effective "$i")"
+        effective_to old "$i"
         rec="$(label_rename_record_path "$STATE_DIR_VAL")"
         if [ "$W_KIND" != literal ] || [ -z "$old" ] \
            || ! jq -e --arg k "$k" --arg o "$old" --arg n "$v" '.field == $k and .from == $o and .to == $n' "$rec" >/dev/null 2>&1; then
@@ -541,7 +600,7 @@ for j in "${!W_NAMES[@]}"; do
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
     else
     inspect_field "$SNAP" "$i"
-    old="$(effective "$i")"
+    effective_to old "$i"
     if [ "$W_KIND" = complex ] || ! valid_value "${F_TYPE[$i]}" "$old"; then
         echo "$k 现在不能在这里改（${W_WHY:-现在的值不是标准写法}），什么都没写"
         DETAIL="$(jq -cn --arg k "$k" '{field:$k}')"; finish not_editable 2
