@@ -17,6 +17,10 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
+# shellcheck source=lib/tmux-sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -24,21 +28,43 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 source "$TEST_DIR/lib/mutation.sh"
 BASE_COMMIT="d1946f2"   # 改名前的 main，用作「行为与改动前一致」的对照
 
-TMP="$(mktemp -d)"
-cleanup() {
-    local s
-    for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^namestest' || true); do
-        tmux kill-session -t "=$s" 2>/dev/null || true
-    done
-    rm -rf "$TMP"
-}
-trap cleanup EXIT
+TMP="$(mktemp -d)" || exit 1
+tmux_sandbox_own_dir "$TMP"
 
 pass=0; fail=0
 chk() {
     if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
     else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
 }
+
+# ── 真会话建在本次运行的专用服务上（GitHub#647）──
+# 本文件现有的场景都不建真会话（它和 tmux 的关系只有按前缀清会话、被测代码读会话列表），
+# 所以单独建一个：会话名用被测代码自己的命名函数，再用被测代码自己的列表函数读回来。
+# 当场关掉，免得后面的轮询把它当成 worker 去回收、打乱调用计数。
+echo "【0】真会话建在本次运行的专用 tmux 服务上"
+if command -v tmux >/dev/null 2>&1; then
+    mkdir -p "$TMP/sbprobe/state"
+    cat > "$TMP/sbprobe/conf" <<CONF
+REPO="example/none"
+PROJECT_ROOT="$TMP/sbprobe"
+WORKTREE_BASE="$TMP/sbprobe/wt"
+STATE_DIR="$TMP/sbprobe/state"
+TMUX_PREFIX="namestest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+CONF
+    sb_lib() { env CODING_AGENT_CONFIG="$TMP/sbprobe/conf" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; eval "$2"' _ "$REPO_DIR" "$1"; }
+    sb_name=$(sb_lib 'tmux_session_name 990')
+    tmux new-session -d -s "$sb_name" 'sleep 300'
+    chk "$sb_name 建在本次运行的专用服务上" \
+        "$(tmux -S "$(tmux_sandbox_socket)" has-session -t "=$sb_name" 2>/dev/null && echo yes || echo no)" "yes"
+    chk "被测代码列出的 worker 会话来自专用服务" "$(sb_lib list_worker_sessions | grep -cx "$sb_name")" "1"
+    tmux kill-session -t "=$sb_name" 2>/dev/null
+else
+    echo "  ⏭  跳过（本机没有 tmux）"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo "【1】挑新还是挑旧：_names.sh 与 release-entry.sh 的内联版本逐个夹具对拍"

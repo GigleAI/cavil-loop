@@ -1,0 +1,649 @@
+#!/usr/bin/env bash
+# kind: unit
+# tests/lib/tmux-sandbox.sh 的启动和收尾（GitHub#647）。
+#
+# 跑法：bash tests/tmux-sandbox.test.sh   （约 30 秒；有几种情况要等 SIGTERM 的 2 秒）
+# 依赖：tmux、python3 ≥ 3.9、Linux。不碰本机默认 tmux 服务：每个场景都是一个小脚本，
+# 在 env -i 的干净环境里真的载入共用脚本、真的起 tmux 服务，跑完核对服务和窗格进程
+# 是不是真没了、临时目录删没删、退出码对不对。
+#
+# 收尾是尽力清理（维护者在 #647 选的）：这里测的是能看到的情况都收得掉、看到残留就报，
+# 不测「扫描途中被过继的进程」那种已接受的漏网。
+set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="$TEST_DIR/lib/tmux-sandbox.sh"
+T="$(mktemp -d)"
+OUTER_SOCK="$T/outer.sock"
+trap 'tmux -S "$OUTER_SOCK" kill-server 2>/dev/null; [ -n "${KEEP_T:-}" ] || rm -rf "$T"' EXIT
+
+pass=0; fail=0
+chk() {
+    if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
+    else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
+}
+
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "⏭ 本机没有 tmux，整个文件跳过"
+    report_counts 0 0
+    exit 0
+fi
+
+mkdir -p "$T/home" "$T/fakebin"
+REAL_TMUX="$(command -v tmux)"
+REAL_PY="$(command -v python3)"
+
+# 进程还活着（僵尸算死）
+alive() {
+    local st
+    st=$(sed -e 's/.*) //' -e 's/ .*//' "/proc/$1/stat" 2>/dev/null) || { echo no; return; }
+    [ -n "$st" ] && [ "$st" != Z ] && echo yes || echo no
+}
+alive_all() {   # <文件里每行一个进程号> → 还活着的个数
+    local p c=0
+    [ -s "$1" ] || { echo none; return; }
+    while read -r p; do [ -n "$p" ] && [ "$(alive "$p")" = yes ] && c=$((c+1)); done < "$1"
+    echo "$c"
+}
+
+# run_case <名字> [PATH 前缀]：正文从 stdin 读，前面自动加上载入共用脚本那两行。
+# 结果：$T/<名字>.out（stdout+stderr）、$T/<名字>.d（场景自己写的事实）、CASE_RC。
+run_case() {
+    local name="$1" pre="${2:-}"
+    mkdir -p "$T/$name.d"
+    { printf 'set -uo pipefail\nOUT=%q\nsource %q\n' "$T/$name.d" "$LIB"; cat; } > "$T/$name.sh"
+    ( cd "$T" && env -i HOME="$T/home" PATH="${pre:+$pre:}$PATH" LANG=C.UTF-8 \
+        ${CASE_TMUX:+TMUX="$CASE_TMUX"} ${TMP:+TMP="$TMP"} \
+        ${CAVIL_TMUX_REAP_BUDGET:+CAVIL_TMUX_REAP_BUDGET="$CAVIL_TMUX_REAP_BUDGET"} bash "$T/$name.sh" ) > "$T/$name.out" 2>&1
+    CASE_RC=$?
+}
+sandbox_dir_of() { sed -n 's|.*TMUX_TMPDIR=\(/tmp/cvtmx\.[A-Za-z0-9]*\)/s.*|\1|p' "$T/$1.out" | head -1; }
+
+echo "【1】正常：一个服务，收尾关掉它、删目录，退出码不变"
+run_case normal <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+tmux new-session -d -s reaptest-issue901 'sleep 300'
+tmux display-message -p -t '=reaptest-issue901:' '#{pid}' > "$OUT/servers"
+echo CASE-RAN
+EOF
+chk "退出码 0" "$CASE_RC" "0"
+chk "用例跑了" "$(grep -c CASE-RAN "$T/normal.out")" "1"
+chk "服务进程已不存在" "$(alive_all "$T/normal.d/servers")" "0"
+d=$(sandbox_dir_of normal)
+chk "临时目录已删" "$([ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+chk "汇总：1 个业务会话、1 个服务" "$(grep -c '成功建出 1 个业务会话，起过 1 个服务，全部已退出' "$T/normal.out")" "1"
+
+echo "【2】外层 TMUX 指向别的服务：不碰它，同名会话也不碰"
+"$REAL_TMUX" -S "$OUTER_SOCK" -f /dev/null new-session -d -s reaptest-issue901 'sleep 300'
+"$REAL_TMUX" -S "$OUTER_SOCK" new-session -d -s sentinel 'sleep 300'
+outer_pid=$("$REAL_TMUX" -S "$OUTER_SOCK" display-message -p -t '=sentinel:' '#{pid}')
+CASE_TMUX="$OUTER_SOCK,$outer_pid,0" run_case outer <<'EOF'
+tmux_sandbox_start
+tmux new-session -d -s reaptest-issue901 'sleep 300'
+tmux ls -F '#{session_name}' | sort > "$OUT/seen"
+for s in $(tmux ls -F '#{session_name}' | grep '^reaptest-'); do tmux kill-session -t "=$s"; done
+EOF
+chk "退出码 0" "$CASE_RC" "0"
+chk "测试里只看得到自己的会话" "$(tr '\n' ' ' < "$T/outer.d/seen")" "cavil-sandbox-keep reaptest-issue901 "
+chk "外层同名会话还在" "$(tmux -S "$OUTER_SOCK" has-session -t '=reaptest-issue901' 2>/dev/null && echo yes)" "yes"
+chk "外层普通会话还在" "$(tmux -S "$OUTER_SOCK" has-session -t '=sentinel' 2>/dev/null && echo yes)" "yes"
+
+echo "【3】中途重开（允许），重开后 socket 被挪走也照样收掉；重开不读用户配置"
+printf 'set -g @marker leaked\n' > "$T/home/.tmux.conf"
+run_case restart <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+tmux show-options -gv @marker > "$OUT/marker1" 2>&1
+tmux display-message -p -t '=cavil-sandbox-keep:' '#{pid}' >> "$OUT/servers"
+tmux kill-server; sleep 0.3
+tmux new-session -d -s a 'sleep 300'
+tmux display-message -p -t '=a:' '#{pid}' >> "$OUT/servers"
+tmux show-options -gv @marker > "$OUT/marker2" 2>&1
+mv "$TMUX_TMPDIR/tmux-$(id -u)/default" "$OUT/moved.sock"
+tmux new-session -d -s b 'sleep 300'
+tmux display-message -p -t '=b:' '#{pid}' >> "$OUT/servers"
+EOF
+rm -f "$T/home/.tmux.conf"
+chk "退出码 0" "$CASE_RC" "0"
+chk "起过 3 个服务" "$(sort -u "$T/restart.d/servers" | wc -l)" "3"
+chk "3 个服务（含 socket 被挪走的那个）都已不存在" "$(alive_all "$T/restart.d/servers")" "0"
+chk "第一次起服务没读用户配置" "$(grep -c leaked "$T/restart.d/marker1")" "0"
+chk "重开的服务也没读用户配置" "$(grep -c leaked "$T/restart.d/marker2")" "0"
+d=$(sandbox_dir_of restart)
+chk "临时目录已删" "$([ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+
+echo "【4】忽略挂断信号的窗格程序，在测试回收它之前就收尾 → 收尾后已不存在"
+run_case hup <<'EOF'
+tmux_sandbox_start
+tmux new-session -d -s reaptest-issue906 'trap "" HUP; while :; do sleep 1; done'
+sleep 0.5
+tmux list-panes -t '=reaptest-issue906' -F '#{pane_pid}' > "$OUT/pane"
+EOF
+chk "退出码 0" "$CASE_RC" "0"
+chk "窗格程序已不存在" "$(alive_all "$T/hup.d/pane")" "0"
+chk "收尾结束过被过继来的窗格进程" "$(grep -cE '结束了 [1-9][0-9]* 个进程' "$T/hup.out")" "1"
+
+echo "【5】关门：收尾开始后还在调 tmux 的后台任务被拒绝，起不了新服务"
+run_case gate <<'EOF'
+tmux_sandbox_start
+( trap '' TERM
+  while :; do
+      tmux new-session -d -s "late$RANDOM" 'sleep 300' 2>> "$OUT/late.err" \
+          && tmux display-message -p '#{pid}' >> "$OUT/servers" 2>/dev/null
+      sleep 0.1
+  done ) &
+sleep 0.5
+EOF
+chk "退出码 0" "$CASE_RC" "0"
+chk "后台任务的调用被拒绝过" "$([ "$(grep -c '已关闭' "$T/gate.d/late.err" 2>/dev/null)" -gt 0 ] && echo yes)" "yes"
+chk "服务进程都已不存在" "$(alive_all "$T/gate.d/servers")" "0"
+
+echo "【6】清理回调：资源还没建出来就退出 → 什么也不删，沙盒照样收尾，原退出码保留"
+run_case early <<'EOF'
+tmux_sandbox_on_exit '[ -z "${X:-}" ] || : > "$OUT/x-touched"'
+tmux_sandbox_start
+exit 3
+X=$(mktemp -d)
+EOF
+chk "原退出码 3" "$CASE_RC" "3"
+chk "没有清理失败" "$(grep -c '清理失败' "$T/early.out")" "0"
+chk "回调判断出资源还没建、什么也没动" "$([ -e "$T/early.d/x-touched" ] && echo touched || echo no)" "no"
+chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/early.out")" "1"
+
+echo "【7】清理回调触发 shell 致命错误（读未赋值变量、exit 1）→ 后面的清理和沙盒收尾照样执行"
+# 回调里不再自己 set -u：它继承的是测试文件开头的 set -uo pipefail（复审 #3）
+run_case fatal <<'EOF'
+tmux_sandbox_on_exit ': "$NOT_SET_ANYWHERE"'
+tmux_sandbox_on_exit 'exit 1'
+tmux_sandbox_on_exit ': > "$OUT/third-ran"'
+tmux_sandbox_start
+tmux display-message -p -t '=cavil-sandbox-keep:' '#{pid}' > "$OUT/servers"
+EOF
+chk "原来是 0 → 有清理失败所以是 1" "$CASE_RC" "1"
+chk "两条清理失败都记下了" "$(grep -c '清理失败' "$T/fatal.out")" "2"
+chk "第三个回调照样执行" "$([ -e "$T/fatal.d/third-ran" ] && echo yes)" "yes"
+chk "服务进程已不存在" "$(alive_all "$T/fatal.d/servers")" "0"
+chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/fatal.out")" "1"
+echo "【7b】测试开着 set -e：回调中途失败就停在那里、记为失败，后面的清理和收尾照样执行"
+run_case errexit <<'EOF'
+set -e
+tmux_sandbox_on_exit 'false; : > "$OUT/continued"'
+tmux_sandbox_on_exit ': > "$OUT/next-ran"'
+tmux_sandbox_start
+EOF
+chk "回调在 false 处停下（后半句没执行）" "$([ -e "$T/errexit.d/continued" ] && echo continued || echo stopped)" "stopped"
+chk "记为清理失败、退出码 1" "$CASE_RC:$(grep -c '清理失败' "$T/errexit.out")" "1:1"
+chk "下一个回调照样执行" "$([ -e "$T/errexit.d/next-ran" ] && echo yes)" "yes"
+chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/errexit.out")" "1"
+run_case noerrexit <<'EOF'
+tmux_sandbox_on_exit 'false; : > "$OUT/continued"'
+tmux_sandbox_start
+EOF
+chk "测试没开 set -e：回调照 bash 原来的规矩往下跑、退出码 0" "$CASE_RC:$([ -e "$T/noerrexit.d/continued" ] && echo continued)" "0:continued"
+run_case fatal_rc <<'EOF'
+tmux_sandbox_on_exit 'exit 1'
+tmux_sandbox_start
+exit 5
+EOF
+chk "用例本来就红：保留原退出码 5" "$CASE_RC" "5"
+
+echo "【8】启动建到一半报错（服务已起、保活会话那步失败）→ 不跑用例，退出处理照样执行"
+cat > "$T/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+    *" cavil-sandbox-keep "*)
+        "$REAL_TMUX" -f /dev/null new-session -d -s half 'sleep 300'
+        "$REAL_TMUX" display-message -p -t '=half:' '#{pid}' > "$T/half.d/servers"
+        exit 1 ;;
+esac
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$T/fakebin/tmux"
+mkdir -p "$T/half.d"
+run_case half "$T/fakebin" <<'EOF'
+tmux_sandbox_on_exit ': > "$OUT/hook-ran"'
+tmux_sandbox_start
+echo CASE-RAN
+EOF
+rm -f "$T/fakebin/tmux"
+chk "以失败退出" "$CASE_RC" "1"
+chk "用例没跑" "$(grep -c CASE-RAN "$T/half.out")" "0"
+chk "已登记的清理执行了" "$([ -e "$T/half.d/hook-ran" ] && echo yes)" "yes"
+chk "起了一半的服务也收掉了" "$(alive_all "$T/half.d/servers")" "0"
+
+echo "【9】设收养人失败 → 什么都没建，不跑用例，以失败退出"
+cat > "$T/fakebin/python3" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *PR_SET_CHILD_SUBREAPER*) exit 1 ;; esac
+exec "$REAL_PY" "\$@"
+EOF
+chmod +x "$T/fakebin/python3"
+run_case noreaper "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo CASE-RAN
+EOF
+rm -f "$T/fakebin/python3"
+chk "以失败退出" "$([ "$CASE_RC" -ne 0 ] && echo yes)" "yes"
+chk "用例没跑" "$(grep -c CASE-RAN "$T/noreaper.out")" "0"
+
+echo "【10】读进程清单出错 → 保留目录，整个文件以失败退出"
+cat > "$T/fakebin/python3" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *tmux_sandbox_reap.py*) echo "读进程清单出错：模拟"; exit 2 ;; esac
+exec "$REAL_PY" "\$@"
+EOF
+chmod +x "$T/fakebin/python3"
+run_case readfail "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+EOF
+rm -f "$T/fakebin/python3"
+chk "以失败退出" "$CASE_RC" "1"
+chk "报了没能确认" "$(grep -c '没能确认本次运行的进程都已退出' "$T/readfail.out")" "1"
+d=$(sandbox_dir_of readfail)
+chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
+[ -n "$d" ] && rm -rf "$d"
+
+now() { date +%s.%N; }
+elapsed() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
+
+echo "【11】登记要删的目录：只删本次 mktemp 建的，从环境继承来的路径不碰"
+mkdir -p "$T/inherited"; : > "$T/inherited/sentinel"
+cat > "$T/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" cavil-sandbox-keep "*) exit 1 ;; esac
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$T/fakebin/tmux"
+TMP="$T/inherited" run_case inherit_fail "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+EOF
+rm -f "$T/fakebin/tmux"
+chk "启动失败：以失败退出" "$CASE_RC" "1"
+chk "启动失败：继承来的目录和哨兵都还在" "$([ -e "$T/inherited/sentinel" ] && echo yes)" "yes"
+run_case owned <<'EOF'
+tmux_sandbox_start
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+echo "$TMP" > "$OUT/tmp"
+EOF
+chk "正常：退出码 0" "$CASE_RC" "0"
+chk "正常：本次建的目录已删" "$(d=$(cat "$T/owned.d/tmp"); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/fakebin/mktemp"; chmod +x "$T/fakebin/mktemp"
+TMP="$T/inherited" run_case mkfail "$T/fakebin" <<'EOF'
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+EOF
+rm -f "$T/fakebin/mktemp"
+chk "mktemp 失败：以失败退出" "$CASE_RC" "1"
+chk "mktemp 失败：继承来的目录还在" "$([ -e "$T/inherited/sentinel" ] && echo yes)" "yes"
+run_case ownbad <<'EOF'
+tmux_sandbox_own_dir /
+echo CASE-RAN
+EOF
+chk "拒绝登记 /" "$CASE_RC:$(grep -c CASE-RAN "$T/ownbad.out")" "1:0"
+
+echo "【12】改过的五个测试：环境里带着同名变量、启动失败 → 不删别人的目录"
+cat > "$T/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" cavil-sandbox-keep "*) exit 1 ;; esac
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$T/fakebin/tmux"
+for f in reap-finished-workers session-isolation poll-pace pending-human-conflict cavil-names; do
+    rm -rf "$T/inh-$f"; mkdir -p "$T/inh-$f"; : > "$T/inh-$f/sentinel"
+    ( cd "$T" && env -i HOME="$T/home" PATH="$T/fakebin:$PATH" LANG=C.UTF-8 \
+        TMP="$T/inh-$f" SANDBOX="$T/inh-$f" TMP_CONF="$T/inh-$f/coding-agent.config" \
+        bash "$TEST_DIR/$f.test.sh" ) > "$T/inh-$f.out" 2>&1
+    r=$?
+    chk "$f：启动失败时退出码非 0、继承来的目录还在" \
+        "$([ "$r" -ne 0 ] && echo fail):$([ -e "$T/inh-$f/sentinel" ] && echo kept)" "fail:kept"
+done
+rm -f "$T/fakebin/tmux"
+
+echo "【13】删目录失败、关门标记写不了 → 记为清理失败，退出码 1，原来红的保留原值"
+printf '#!/usr/bin/env bash\nexit 23\n' > "$T/fakebin/rm"; chmod +x "$T/fakebin/rm"
+run_case rmfail "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+EOF
+chk "rm 返回 23：退出码 1" "$CASE_RC" "1"
+chk "rm 返回 23：报了删除失败" "$(grep -c '清理失败：删除 /tmp/cvtmx.*退出码 23' "$T/rmfail.out")" "1"
+chk "rm 返回 23：没打印成功汇总" "$(grep -c '全部已退出' "$T/rmfail.out")" "0"
+run_case rmfail_red "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+exit 4
+EOF
+rm -f "$T/fakebin/rm"
+chk "用例本来就红：保留原退出码 4" "$CASE_RC" "4"
+for c in rmfail rmfail_red; do d=$(sandbox_dir_of "$c"); [ -n "$d" ] && rm -rf "$d"; done
+run_case nogate <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+chmod 500 "${TMUX_TMPDIR%/s}"
+EOF
+d=$(sandbox_dir_of nogate)
+chk "关门标记写不了：退出码 1" "$CASE_RC" "1"
+chk "关门标记写不了：报了出来" "$(grep -c '写不了关门标记' "$T/nogate.out")" "1"
+[ -n "$d" ] && { chmod 700 "$d"; rm -rf "$d"; }
+
+echo "【14】tmux_sandbox_env_i 起的空环境子进程带着原样的 PATH：用的是沙盒的 tmux 包装"
+run_case childpath <<'EOF'
+tmux_sandbox_start
+tmux_sandbox_env_i bash -c 'command -v tmux' > "$OUT/which"
+echo "$TMUX_TMPDIR" > "$OUT/dir"
+EOF
+chk "子进程找到的是包装" "$(w=$(cat "$T/childpath.d/which"); d=$(cat "$T/childpath.d/dir"); [ "$w" = "${d%/s}/bin/tmux" ] && echo wrapper || echo "$w")" "wrapper"
+
+echo "【15】六个不理 SIGTERM 的子进程：一起收，不按个数叠加等待"
+run_case six <<'EOF'
+tmux_sandbox_start
+for i in 1 2 3 4 5 6; do ( trap '' TERM; while :; do sleep 0.2; done ) & echo $! >> "$OUT/pids"; done
+sleep 0.3
+date +%s.%N > "$OUT/t0"
+EOF
+t1=$(now)
+chk "退出码 0" "$CASE_RC" "0"
+chk "六个进程都已不存在" "$(alive_all "$T/six.d/pids")" "0"
+chk "收尾用时不到 8 秒（逐个等要 12 秒以上）" "$(awk -v e="$(elapsed "$(cat "$T/six.d/t0")" "$t1")" 'BEGIN { print (e < 8) ? "yes" : e }')" "yes"
+
+echo "【15b】描述符编号超过 1023（调用方开着很多文件）：照样收得掉"
+for n in 1 3; do
+    run_case "highfd$n" <<EOF
+ulimit -n 4096 2>/dev/null || { echo NO-ULIMIT; exit 0; }
+tmux_sandbox_start
+for i in \$(seq 3 1100); do [ "\$i" = 255 ] || eval "exec \$i</dev/null"; done
+for i in \$(seq 1 $n); do ( trap '' TERM; while :; do sleep 0.2; done ) & echo \$! >> "\$OUT/pids"; done
+sleep 0.3
+EOF
+    if grep -q NO-ULIMIT "$T/highfd$n.out"; then
+        echo "  ⏭  本机不能把打开文件数上限调到 4096，跳过（$n 个进程）"
+        continue
+    fi
+    chk "$n 个不理 SIGTERM 的进程、描述符过 1023：退出码 0" "$CASE_RC" "0"
+    chk "$n 个进程都已不存在" "$(alive_all "$T/highfd$n.d/pids")" "0"
+    chk "$n 个进程：没有 select 的描述符越界报错" "$(grep -c 'out of range' "$T/highfd$n.out")" "0"
+done
+
+echo "【15c】直接测收尾程序：进程句柄编号一定过 1023（3–1100 号描述符都占着），1 个和 3 个进程"
+for n in 1 3; do
+    r=$(python3 - "$TEST_DIR/lib/tmux_sandbox_reap.py" "$n" <<'PY2'
+import os, resource, signal, subprocess, sys, time
+reap, n = sys.argv[1], int(sys.argv[2])
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+if hard != resource.RLIM_INFINITY and hard < 1200:
+    print("SKIP"); sys.exit(0)
+resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1200), hard))
+fds = []
+while True:
+    fd = os.open("/dev/null", os.O_RDONLY)
+    fds.append(fd)
+    if fd >= 1100:
+        break
+kids = [subprocess.Popen(["bash", "-c", "trap '' TERM; while :; do sleep 0.2; done"], pass_fds=()) for _ in range(n)]
+time.sleep(0.3)
+out = subprocess.run([sys.executable, reap, str(os.getpid())], pass_fds=fds, capture_output=True, text=True)
+alive = sum(1 for k in kids if k.poll() is None)
+for k in kids:
+    try:
+        k.kill()
+    except ProcessLookupError:
+        pass
+print(out.returncode, alive, "range" if "out of range" in (out.stdout + out.stderr) else "ok")
+PY2
+)
+    if [ "$r" = SKIP ]; then echo "  ⏭  打开文件数上限不到 1200，跳过（$n 个进程）"; continue; fi
+    chk "$n 个进程：收尾程序退出码 0、进程都没了、没有描述符越界" "$r" "0 0 ok"
+done
+
+echo "【16】总时限到了还有进程：保留现场、以失败退出，不超时限太多"
+CAVIL_TMUX_REAP_BUDGET=1 run_case budget <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+( trap '' TERM; while :; do sleep 0.2; done ) & echo $! > "$OUT/pids"
+sleep 0.3
+date +%s.%N > "$OUT/t0"
+EOF
+t1=$(now)
+chk "以失败退出" "$CASE_RC" "1"
+# 时限到时最后一次 SIGKILL 可能刚好让进程退出：报「仍有进程」或「没读到连续空清单」都是时限用完
+chk "报了时限用完" "$(grep -c -E '秒后仍有进程|秒内没读到连续' "$T/budget.out")" "1"
+chk "收尾用时不到 3 秒（时限 1 秒）" "$(awk -v e="$(elapsed "$(cat "$T/budget.d/t0")" "$t1")" 'BEGIN { print (e < 3) ? "yes" : e }')" "yes"
+d=$(sandbox_dir_of budget)
+chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
+while read -r p; do kill -9 "$p" 2>/dev/null; done < "$T/budget.d/pids"
+[ -n "$d" ] && rm -rf "$d"
+
+echo "【17】本机没有 tmux：什么都不起，但 TMUX_TMPDIR 设上了，set -u 下 tmux_sandbox_env_i 照常起子进程"
+NOTMUX="$T/notmux-bin"; mkdir -p "$NOTMUX"
+for d in /usr/local/bin /usr/bin /bin; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+        b=${f##*/}
+        [ "$b" = tmux ] || [ -e "$NOTMUX/$b" ] || ln -s "$f" "$NOTMUX/$b" 2>/dev/null
+    done
+done
+mkdir -p "$T/notmux.d"
+{ printf 'set -uo pipefail\nOUT=%q\nsource %q\n' "$T/notmux.d" "$LIB"; cat <<'EOF'; } > "$T/notmux.sh"
+unset TMUX_TMPDIR
+tmux_sandbox_start
+command -v tmux >/dev/null 2>&1 && echo HAS-TMUX
+tmux_sandbox_env_i /bin/sh -c 'echo "child-ok[${TMUX_TMPDIR-unset}]"'
+echo CASE-RAN
+EOF
+( cd "$T" && env -i HOME="$T/home" PATH="$NOTMUX" LANG=C.UTF-8 bash "$T/notmux.sh" ) > "$T/notmux.out" 2>&1
+chk "退出码 0" "$?" "0"
+chk "这个 PATH 上确实找不到 tmux" "$(grep -c HAS-TMUX "$T/notmux.out")" "0"
+chk "子进程照常起来、拿到空的 TMUX_TMPDIR" "$(grep -c 'child-ok\[\]' "$T/notmux.out")" "1"
+chk "用例跑完了" "$(grep -c CASE-RAN "$T/notmux.out")" "1"
+
+echo "【18】tmux_sandbox_env_i：子进程环境只有给的赋值加原样的 PATH / TMUX_TMPDIR，想改这两样的一律拒绝"
+run_case envi <<'EOF'
+tmux_sandbox_start
+printf '%s\n%s\n' "$PATH" "$TMUX_TMPDIR" > "$OUT/parent"
+tmux_sandbox_env_i A=1 B='x y' env > "$OUT/env.ok"; echo "$?" > "$OUT/rc.ok"
+tmux_sandbox_env_i A=1 bash -c 'command -v tmux' > "$OUT/which"
+# 重定向在中间（复审第 4 轮的写法）：bash 先处理掉重定向，PATH= 照样进参数 → 拒绝
+tmux_sandbox_env_i A=1 >/dev/null PATH=/usr/bin:/bin bash -c ': > "$1/ran.redir"' _ "$OUT"; echo "$?" > "$OUT/rc.redir"
+tmux_sandbox_env_i TMUX_TMPDIR= bash -c ': > "$1/ran.empty"' _ "$OUT"; echo "$?" > "$OUT/rc.empty"
+tmux_sandbox_env_i "TMUX_TMPDIR=/x" bash -c ': > "$1/ran.quoted"' _ "$OUT"; echo "$?" > "$OUT/rc.quoted"
+tmux_sandbox_env_i TMUX=/x,1,0 bash -c ': > "$1/ran.tmux"' _ "$OUT"; echo "$?" > "$OUT/rc.tmux"
+set -- HOME=/h PATH=/usr/bin
+tmux_sandbox_env_i "$@" bash -c ': > "$1/ran.expand"' _ "$OUT"; echo "$?" > "$OUT/rc.expand"
+set --
+tmux_sandbox_env_i -u HOME bash -c ': > "$1/ran.opt"' _ "$OUT"; echo "$?" > "$OUT/rc.opt"
+tmux_sandbox_env_i A=1; echo "$?" > "$OUT/rc.nocmd"
+# 只带 -u 取消普通变量的 env（守卫放行的那种）：隔离变量照样传下去
+FOO=1 env -u FOO bash -c 'printf "%s|%s|%s" "${FOO-unset}" "$PATH" "$TMUX_TMPDIR"' > "$OUT/envu"
+# 命令名之后的 PATH= 是给命令的参数，不进环境
+tmux_sandbox_env_i A=1 bash -c 'printf "%s" "$PATH"' _ PATH=/usr/bin > "$OUT/after"; echo "$?" > "$OUT/rc.after"
+EOF
+D="$T/envi.d"
+p_path=$(sed -n 1p "$D/parent"); p_dir=$(sed -n 2p "$D/parent")
+chk "退出码 0" "$CASE_RC" "0"
+chk "正常起：退出码 0" "$(cat "$D/rc.ok")" "0"
+chk "子进程环境恰好是 A、B、TMUX_TMPDIR、PATH 四项" "$(cut -d= -f1 "$D/env.ok" | sort | tr '\n' ' ')" "A B PATH TMUX_TMPDIR "
+chk "PATH 原样" "$(sed -n 's/^PATH=//p' "$D/env.ok")" "$p_path"
+chk "TMUX_TMPDIR 原样（本次运行的专用服务）" "$(sed -n 's/^TMUX_TMPDIR=//p' "$D/env.ok")" "$p_dir"
+chk "带空格的值原样" "$(sed -n 's/^B=//p' "$D/env.ok")" "x y"
+chk "子进程找到的是包装" "$(w=$(cat "$D/which"); [ "$w" = "${p_dir%/s}/bin/tmux" ] && echo wrapper || echo "$w")" "wrapper"
+for k in redir empty quoted tmux expand opt; do
+    chk "拒绝（$k）：返回 125" "$(cat "$D/rc.$k")" "125"
+    chk "拒绝（$k）：命令没跑" "$([ -e "$D/ran.$k" ] && echo ran || echo no)" "no"
+done
+chk "没给命令：返回 125" "$(cat "$D/rc.nocmd")" "125"
+chk "env -u 普通变量：那个变量没了，PATH / TMUX_TMPDIR 原样" "$(cat "$D/envu")" "unset|$p_path|$p_dir"
+chk "命令名之后的 PATH= 是参数：照常跑" "$(cat "$D/rc.after")" "0"
+chk "命令名之后的 PATH= 不进环境" "$(cat "$D/after")" "$p_path"
+
+echo "【19】运行时核对：连错服务的调用被包装拒绝，绕过包装起的沙盒外服务被收尾报出（维护者选 A）"
+run_case rtok <<'EOF'
+tmux_sandbox_start
+tmux new-session -d -s rt-issue1 "sleep 30" && echo NEW-OK
+tmux capture-pane -p -S - -t '=rt-issue1:' > /dev/null && echo CAPTURE-OK
+tmux -S "$(tmux_sandbox_socket)" has-session -t '=rt-issue1' && echo EXPLICIT-OK
+# 经符号链接指到服务目录的 TMUX_TMPDIR：核过后用真实地址连，仍是同一个服务
+ln -s "$TMUX_TMPDIR" "$OUT/alias"
+TMUX_TMPDIR="$OUT/alias" tmux has-session -t '=rt-issue1' && echo ALIAS-OK
+# 服务目录里一个已经不存在的目录：调用 tmux 之前就拒绝（复审 #9：tmux 自己选址会退回别的临时目录）
+TMUX_TMPDIR="$TMUX_TMPDIR/gone" tmux new-session -d -s gone "sleep 30" 2> "$OUT/gone.err"; echo "gone=$?" > "$OUT/gone.rc"
+[ -e "$TMUX_TMPDIR/gone" ] && echo GONE-DIR-CREATED
+# 窗格里的程序：TMUX 由 tmux 自己设，指向专用服务
+tmux new-session -d -s rt-issue2 "tmux display-message -p inpane > '$OUT/inpane' 2>&1; sleep 30"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$OUT/inpane" ] && break; sleep 0.2; done
+EOF
+chk "正常调用（含一条故意的拒绝）：以失败退出" "$CASE_RC" "1"
+chk "正常调用：建会话、capture-pane -S -、显式 -S 都放行" "$(grep -c -e NEW-OK -e CAPTURE-OK -e EXPLICIT-OK "$T/rtok.out")" "3"
+chk "正常调用：窗格里调 tmux 放行" "$(cat "$T/rtok.d/inpane" 2>/dev/null)" "inpane"
+chk "符号链接指到服务目录：照常连到同一个服务" "$(grep -c ALIAS-OK "$T/rtok.out")" "1"
+chk "目录已不存在：拒绝（退出 1）" "$(cat "$T/rtok.d/gone.rc")" "gone=1"
+chk "目录已不存在：拒绝发生在调用 tmux 之前（包装记下原因）" "$(grep -c '所在的目录不存在' "$T/rtok.d/gone.err")" "1"
+chk "目录已不存在：没去建那个目录" "$(grep -c GONE-DIR-CREATED "$T/rtok.out")" "0"
+chk "正常调用：只有这一条拒绝记录" "$(grep -c '^  服务地址 ' "$T/rtok.out")" "1"
+
+run_case rtbad <<'EOF'
+tmux_sandbox_start
+TMUX_TMPDIR="$OUT/elsewhere" tmux ls > /dev/null 2>&1; echo "rc1=$?"
+env -u TMUX_TMPDIR tmux ls > /dev/null 2>&1; echo "rc2=$?"
+tmux -S "$OUT/other.sock" ls > /dev/null 2>&1; echo "rc3=$?"
+TMUX="/tmp/tmux-0/default,1,0" tmux ls > /dev/null 2>&1; echo "rc4=$?"
+# 文字前缀在服务目录里、实际位置在外面：父目录分量、符号链接（复审 #7）
+tmux -S "$TMUX_TMPDIR/../dotdot.sock" ls > /dev/null 2>&1; echo "rc5=$?"
+ln -s "$OUT" "$TMUX_TMPDIR/link"
+tmux -S "$TMUX_TMPDIR/link/viasym.sock" ls > /dev/null 2>&1; echo "rc6=$?"
+TMUX_TMPDIR="$TMUX_TMPDIR/link" tmux ls > /dev/null 2>&1; echo "rc7=$?"
+# 合并短选项、紧贴的参数（复审 #8）
+tmux -2S "$OUT/combined.sock" ls > /dev/null 2>&1; echo "rc8=$?"
+tmux -qS"$OUT/attached.sock" ls > /dev/null 2>&1; echo "rc9=$?"
+tmux -Z ls > /dev/null 2>&1; echo "unknown=$?"
+# -L 名字落在本次运行的服务目录里：照常放行（单独写、和别的短选项合并写）
+tmux -L other new-session -d -s lab "sleep 30"; echo "lab=$?"
+tmux -uL other2 new-session -d -s lab2 "sleep 30"; echo "lab2=$?"
+echo CASE-RAN
+EOF
+chk "连错服务：以失败退出" "$CASE_RC" "1"
+chk "连错服务：九种写法都被拒绝" "$(grep -c -E '^rc[1-9]=1$' "$T/rtbad.out")" "9"
+chk "连错服务：收尾列出九条地址拒绝" "$(grep -c '^  服务地址 ' "$T/rtbad.out")" "9"
+chk "看不懂的全局选项：拒绝并记下" "$(grep -c '^unknown=1$' "$T/rtbad.out"):$(grep -c '^  看不懂的 tmux 全局选项' "$T/rtbad.out")" "1:1"
+chk "合并写法的地址上没起服务" "$([ -e "$T/rtbad.d/combined.sock" ] || [ -e "$T/rtbad.d/attached.sock" ] && echo yes || echo no)" "no"
+chk "-L 落在服务目录里：单独写、合并写都放行" "$(grep -c -E '^lab2?=0$' "$T/rtbad.out")" "2"
+chk "连错服务：父目录分量、符号链接指过去的地方没起服务" "$([ -e "$T/rtbad.d/viasym.sock" ] || ls "$T/rtbad.d"/tmux-* >/dev/null 2>&1 && echo yes || echo no)" "no"
+
+echo "    共用的归属规则：tmux_sandbox_reap.py owns"
+OW="$T/owns"; mkdir -p "$OW/s/tmux-1" "$OW/s/tmux-$(id -u)" "$OW/out"; ln -s "$OW/out" "$OW/s/link"; ln -s "$OW/s" "$OW/alias"
+owns() { python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" owns "$OW/s" "$1" && echo in || echo out; }
+chk "owns：服务目录里的地址" "$(owns "$OW/s/tmux-1/default")" "in"
+chk "owns：经别名指到服务目录里" "$(owns "$OW/alias/tmux-1/default")" "in"
+chk "owns：父目录分量出了服务目录" "$(owns "$OW/s/../x.sock")" "out"
+chk "owns：符号链接出了服务目录" "$(owns "$OW/s/link/x.sock")" "out"
+chk "owns：临时根里、服务目录外" "$(owns "$OW/x.sock")" "out"
+chk "owns：服务目录本身不算" "$(owns "$OW/s")" "out"
+echo "    包装算地址：tmux_sandbox_reap.py check，单独写和合并写结论一致"
+ck() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@" > /dev/null && echo in || echo out; }
+chk "check：-2 -S 外面 / -2S 外面 / -2S外面" "$(ck -2 -S "$OW/x.sock" ls) $(ck -2S "$OW/x.sock" ls) $(ck -2S"$OW/x.sock" ls)" "out out out"
+chk "check：-u -L 名字 / -uL 名字 / -uL名字（都在服务目录里）" "$(ck -u -L n ls) $(ck -uL n ls) $(ck -uLn ls)" "in in in"
+chk "check：-f 的参数不当地址（-fS 是配置文件名 S）" "$(ck -f S ls) $(ck -fS ls)" "in in"
+chk "check：-S 在子命令之后不算全局选项" "$(ck capture-pane -p -S -)" "in"
+chk "check：看不懂的全局选项" "$(ck -Z ls)" "out"
+chk "check：地址在服务目录里、但所在目录已不存在（复审 #9）" "$(TMUX_TMPDIR="$OW/s/gone" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls > /dev/null && echo in || echo out)" "out"
+RS=$(cd "$OW/s" && pwd -P); U=$(id -u)
+# check 的输出：一条一个、以 NUL 结尾，ok / 个数 / 参数… / end；这里换成空格分隔的一行再比
+nulline() { tr '\0' '\n' | paste -sd' ' -; }
+ckout() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@" | nulline; }
+chk "check：输出里每一项都以 NUL 结尾（末尾没有残余）" "$(TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls | tail -c 4 | od -An -c | tr -s ' ')" " e n d \\0"
+chk "check：放行时给出要原样执行的参数，只有一个 -S（核过的真实地址）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls | nulline)" "ok 3 -S $RS/tmux-$U/default ls end"
+chk "check：参数里的空格、引号、换行原样成一项" "$(TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" display -p "a b'\"\$(x)
+y" | tr '\0' '|')" "ok|5|-S|$RS/tmux-$U/default|display|-p|a b'\"\$(x)
+y|end|"
+chk "check：原来的全局 -S（别名）换成真实地址，子命令自己的 -S 不动（复审 #11）" "$(ckout -S "$OW/alias/tmux-$U/default" -2 capture-pane -p -S -)" "ok 7 -S $RS/tmux-$U/default -2 capture-pane -p -S - end"
+chk "check：两个全局 -S 只剩一个" "$(ckout -S "$OW/s/tmux-$U/a" -S "$OW/alias/tmux-$U/b" ls)" "ok 3 -S $RS/tmux-$U/b ls end"
+chk "check：-L 去掉，换成它对应的地址；别的全局选项和参数原样" "$(ckout -uL n -f /dev/null ls -F x)" "ok 8 -S $RS/tmux-$U/n -u -f /dev/null ls -F x end"
+chk "check：-- 保留" "$(ckout -- ls)" "ok 4 -S $RS/tmux-$U/default -- ls end"
+chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
+
+REAL_TMUX=$(command -v tmux)
+run_case rtstray <<EOF
+tmux_sandbox_start
+# 绕过包装（绝对路径、另一个地址）起服务：沙盒外的服务，它是本测试的子孙
+D=\$(mktemp -d /tmp/cvstray.XXXXXX) || exit 1; tmux_sandbox_own_dir "\$D"; echo "\$D" > "\$OUT/dir"
+TMUX_TMPDIR="\$D" "$REAL_TMUX" -f /dev/null new-session -d -s stray "sleep 300"
+"$REAL_TMUX" -S "\$D/tmux-\$(id -u)/default" display-message -p '#{pid}' > "\$OUT/pid"
+# 在本次运行的临时根里、但不在服务目录里；和文字前缀在服务目录里、经符号链接指到外面（复审 #7）
+R=\${TMUX_TMPDIR%/s}
+"$REAL_TMUX" -f /dev/null -S "\$R/root.sock" new-session -d -s root "sleep 300"
+"$REAL_TMUX" -S "\$R/root.sock" display-message -p '#{pid}' >> "\$OUT/pid"
+ln -s "\$D" "\$TMUX_TMPDIR/link"
+"$REAL_TMUX" -f /dev/null -S "\$TMUX_TMPDIR/link/sym.sock" new-session -d -s sym "sleep 300"
+"$REAL_TMUX" -S "\$TMUX_TMPDIR/link/sym.sock" display-message -p '#{pid}' >> "\$OUT/pid"
+EOF
+chk "沙盒外服务：以失败退出" "$CASE_RC" "1"
+chk "沙盒外服务：收尾报出" "$(grep -c '发现沙盒外的 tmux 服务' "$T/rtstray.out")" "1"
+chk "沙盒外服务：三个都报出（另一个目录、临时根里、符号链接）" "$(grep '发现沙盒外的 tmux 服务' "$T/rtstray.out" | grep -o '[0-9][0-9]*（' | wc -l)" "3"
+chk "沙盒外服务：已被结束" "$(alive_all "$T/rtstray.d/pid")" "0"
+chk "沙盒外服务：它的临时目录照样删掉" "$(d=$(cat "$T/rtstray.d/dir" 2>/dev/null); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+
+echo "【20】包装交给真 tmux 的参数：只有核过的那一个地址（复审 #11）"
+REC="$T/recbin"; mkdir -p "$REC"
+REAL_TMUX=$(command -v tmux)
+cat > "$REC/tmux" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/rec.log"
+exec "$REAL_TMUX" "\$@"
+SH
+chmod +x "$REC/tmux"; : > "$T/rec.log"
+run_case fwd "$REC" <<'EOF'
+tmux_sandbox_start
+ln -s "$TMUX_TMPDIR" "$OUT/alias"
+tmux -S "$OUT/alias/tmux-$(id -u)/default" has-session -t '=cavil-sandbox-keep' && echo FWD-ALIAS-OK
+tmux -S "$TMUX_TMPDIR/tmux-$(id -u)/default" -S "$OUT/alias/tmux-$(id -u)/default" has-session -t '=cavil-sandbox-keep' && echo FWD-TWO-OK
+echo "$TMUX_TMPDIR" > "$OUT/dir"
+EOF
+D2=$(cat "$T/fwd.d/dir")   # 启动时已解析成真实路径
+# 只看经包装的调用（包装总是先加 -f /dev/null；沙盒启动时自己直接调真 tmux 的那几次不算）
+grep -- '^-f /dev/null .*has-session' "$T/rec.log" > "$T/rec.wrapped"
+chk "转发：退出码 0" "$CASE_RC" "0"
+chk "转发：别名地址照常连上、两个 -S 照常连上" "$(grep -c -e FWD-ALIAS-OK -e FWD-TWO-OK "$T/fwd.out")" "2"
+chk "转发：真 tmux 收到的 has-session 调用，每次恰好一个 -S" "$(wc -l < "$T/rec.wrapped" | tr -d ' '):$(awk '{n=0; for(i=1;i<=NF;i++) if($i=="-S") n++; print n}' "$T/rec.wrapped" | sort -u | tr '\n' ' ')" "2:1 "
+chk "转发：那个 -S 就是核过的真实地址，别名没传下去" "$(grep -c -- "^-f /dev/null -S $D2/tmux-$(id -u)/default has-session" "$T/rec.wrapped")" "2"
+chk "转发：别名路径一次也没交给真 tmux" "$(grep -c '/alias/' "$T/rec.log")" "0"
+
+echo "【21】检查进程的诊断和坏结果：参数不被诊断污染，坏结果在调用真 tmux 之前拒绝（复审 #12）"
+# 在 PATH 最前放一个 python3：照 FAKEPY 的模式改真 check 的输出，别的照常交给真 python3
+FP="$T/fakepy"; mkdir -p "$FP"; REALPY=$(command -v python3)
+cat > "$FP/python3" <<SH
+#!/usr/bin/env bash
+case "\${2:-}:\${FAKEPY:-}" in
+check:warn) echo "Python runtime state: core initialized; warning: \"\$(id)\" ' \\\`x\\\`" >&2; exec "$REALPY" "\$@" ;;
+check:junk) "$REALPY" "\$@"; printf 'extra'; exit 0 ;;
+check:short) "$REALPY" "\$@" | head -c 10; exit 0 ;;
+check:count) printf 'ok\0009\000-S\000/x\000end\000'; exit 0 ;;
+check:noS) printf 'ok\0001\000ls\000end\000'; exit 0 ;;
+check:empty) exit 0 ;;
+check:fail) echo "boom" >&2; exit 7 ;;
+esac
+exec "$REALPY" "\$@"
+SH
+chmod +x "$FP/python3"; : > "$T/rec.log"
+run_case diag "$FP:$REC" <<'EOF'
+tmux_sandbox_start
+for m in warn junk short count noS empty fail; do
+    FAKEPY=$m tmux has-session -t '=cavil-sandbox-keep' 2> "$OUT/$m.err" && echo "RC-$m=0" || echo "RC-$m=1"
+done
+EOF
+chk "诊断：退出 0 带一行警告（含引号、命令替换的写法）照常连上" "$(grep -c '^RC-warn=0' "$T/diag.out")" "1"
+chk "诊断：警告照常显示在标准错误，没进参数" "$(grep -c 'Python runtime state' "$T/diag.d/warn.err" 2>/dev/null)" "1"
+chk "诊断：警告那次真 tmux 收到的参数恰好是核过的一份" "$(grep -c -- '^-f /dev/null -S [^ ]*/tmux-[0-9]*/default has-session -t =cavil-sandbox-keep$' "$T/rec.log")" "1"
+chk "诊断：末尾多出残余 / 截断 / 个数不对 / 第一项不是 -S / 没有输出 / 进程失败，都拒绝" "$(grep -c -e '^RC-junk=1' -e '^RC-short=1' -e '^RC-count=1' -e '^RC-noS=1' -e '^RC-empty=1' -e '^RC-fail=1' "$T/diag.out")" "6"
+chk "诊断：被拒的 6 次一次也没调到真 tmux（经包装的只有警告那一次）" "$(grep -c -- '^-f /dev/null -S .* has-session' "$T/rec.log")" "1"
+chk "诊断：被拒的都记进 violations、文件判失败" "$CASE_RC:$(grep -c -e '^  核对服务地址的结果格式不对 | ' -e '^  判断服务地址失败.* | ' "$T/diag.out")" "1:6"
+
+echo
+echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

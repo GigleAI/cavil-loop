@@ -140,6 +140,7 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 ├── tests/                        ← Self-contained shell tests (see "Tests" below)
 │   ├── run.sh                     ← One entry point: run all / by name / by kind (--kind, --quick) / one CI shard / verify shards; -j, parts
 │   ├── lib/report.sh              ← The one count line every test file ends with (regression / comparisons / negative controls)
+│   ├── lib/tmux-sandbox.sh        ← Every test that uses real tmux gets its own tmux server for the run, and a best-effort exit that stops it and every process the test left (GitHub#647)
 │   ├── lib/gha_expr.py            ← Evaluates a workflow's own GitHub Actions expressions and simulates which jobs run (GitHub#628)
 │   ├── lib/doc_links.py           ← The one parser for links / anchors in markdown, and the list of external user documents (used by doc-links and client-docs)
 │   ├── lib/doc_placeholders.py    ← The one reader of upper-case names and the placeholder table in the orchestration guide, judged per occurrence and position (used by orchestration-docs and orchestration-placeholders)
@@ -471,7 +472,13 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   its parts gets there.
   A file that must not run next to anything else declares `# parallel: no` and runs alone after the
   rest; none needs it today — every file was run as two simultaneous copies and the whole suite with
-  `-j` to check, so re-check when a test starts using a real tmux server, systemd, a fixed port or a
+  `-j` to check (GitHub#211). That check missed five files that shared the machine's default tmux server
+  under fixed session names (`reap-finished-workers`, `session-isolation`, `poll-pace`,
+  `pending-human-conflict`, `cavil-names`): two copies of `reap-finished-workers` went red in 4 of 10
+  rounds on w01. Since GitHub#647 they use their own tmux server per run (see "A test that uses real
+  tmux" below) and were checked again as two simultaneous copies — 10 rounds for
+  `reap-finished-workers` plus 5 started inside another tmux session, 3 rounds for each of the other
+  four, all green. Re-check when a test starts using a real tmux server, systemd, a fixed port or a
   fixed path outside its sandbox
 - **Resident fake GitHub** (GitHub#211). The tests that run a Python fake `gh`
   (`tests/lib/fake_github.py`, `tests/fixtures/requester-bot-fake-gh.py`,
@@ -521,6 +528,12 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
 - **Negative controls run only in the nightly `Negative controls` workflow; Mac packaging never on a PR**
   (GitHub#195 / #416) — see the table under "When negative controls run" below. Neither Tests nor
   Client has a "negative controls" option on *Run workflow* any more
+- **A test that uses real tmux gets a tmux server of its own** (GitHub#647): it sources
+  `tests/lib/tmux-sandbox.sh` before it creates anything and follows the rules in that file's header
+  (clean-up through `tmux_sandbox_on_exit`, its directories through `tmux_sandbox_own_dir`, empty-
+  environment children through `tmux_sandbox_env_i`). Isolation is checked at run time; the clean-up
+  is best effort, not a proof (the maintainer's choice on #647). The text lint is
+  `tests/tmux-sandbox-guard.test.sh` (rules in `tests/lib/tmux_guard.py`)
 - **Tests must not lean on the dev box.** The first CI run caught three that did: bare fixture repos
   taking their branch from the machine's `init.defaultBranch` (runners default to `master` — use
   `git init -b main`), a fixture written in Beijing time while `date` followed the host timezone (pin
@@ -654,6 +667,7 @@ the line itself.
 - **The tab / floating panel put away after an action started from it** — entry: `autoCloseVerdict`, `handOffCloseVerdict`, `client/src/shared/tabs.ts`, `App.tsx`, `closeStarted`, `settleCloses` · read first: `client/src/shared/tabs.ts` (comment above `autoCloseVerdict`) · tests: `cd client && npx vitest run test/unit/tabs.test.ts && CAVIL_E2E_ENGINE=chromium npm run test:e2e -- tabs --grep 'GitHub#447|GitHub#633'`
 - **The dependency graph's PR ⇢ issue links** — entry: `GraphLink`, `links`, `prBlocked`, `client/src/data/graph.ts`, `prsNaming`, `client/src/data/prNest.ts` · read first: `client/src/data/graph.ts` (header) · tests: `cd client && npx vitest run test/unit/graph-links.test.ts test/unit/loop-blocked.test.ts test/unit/graph-prs.test.ts && npm run test:e2e -- graph`
 - **The view bar's fold** — entry: `fold`, `never`, `zero`, `always`, `tallyFold`, `client/src/shared/tallies.ts` · read first: `client/src/shared/tallies.ts` (header) · tests: `cd client && npx vitest run test/unit/tallies.test.ts test/unit/flowTally.test.ts && npm run test:e2e -- flow-tally`, `cd client && npx vitest run test/unit/tally-parked-fold.test.ts && npm run test:e2e -- flow-tally-fold --grep 643`
+- **The per-run tmux server for tests** — entry: `tests/lib/tmux-sandbox.sh`, `tmux_sandbox_start`, `tmux_sandbox_on_exit`, `tmux_sandbox_own_dir`, `tmux_sandbox_env_i`, `tests/lib/tmux_sandbox_reap.py`, `tests/lib/tmux_guard.py`, the five tests that use it · read first: `tests/lib/tmux-sandbox.sh` (header), `tests/lib/tmux_guard.py` (header) · tests: `tests/tmux-sandbox.test.sh` (~30 s), `tests/tmux-sandbox-guard.test.sh` (~1 s), plus the changed test itself run as two simultaneous copies
 - **The animated explainer diagrams in `docs/images/`** — entry: `scripts/doc-diagrams/gen.py`, `docs/images/` · read first: `scripts/doc-diagrams/gen.py` (header) · tests: `tests/doc-diagrams.test.sh`
 - **External user documents in general** — entry: `docs/AGENTS.md`, `tests/lib/doc_links.py`, every external user document · read first: `tests/lib/doc_links.py` (header) · tests: `tests/doc-links.test.sh` (~2 s), `tests/client-docs.test.sh`, `tests/doc-numbers.test.sh` (~1 s), `tests/orchestration-docs.test.sh` (~3 s), `tests/doc-diagrams.test.sh`, `tests/orchestration-placeholders.test.sh` (~10 s), `tests/project-config-poll.test.sh`
 - **The desktop client's user guide** — entry: `docs/client{,.zh}.md`, `docs/client-screens/`, the client section of both READMEs · read first: `tests/client-docs.test.sh` (header) · tests: `tests/client-docs.test.sh` (~1 s), `cd client && CAVIL_DOC_SHOTS=1 npm run test:e2e -- doc-screenshots`
