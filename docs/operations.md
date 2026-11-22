@@ -1633,11 +1633,16 @@ again any item that stopped half-way:
 
 - **How to spot one**: the item carries `doing/agent`, has had no new comment for a while, and its agent
   session has stopped (on a project with the stuck-worker check, the daemon also reminds or hands over by itself)
-- **Hand it to a person first**: in the Labels box on the item's page, remove `doing/agent` and add
-  `pending/human`, so the daemon does not dispatch it again before someone has looked
-- **Then dispatch it as usual**: look at the latest agent comment. If it is a worker's delivery waiting
-  for review, replace `pending/human` with `pending/review` so the review carries on; if it is a review
-  verdict or anything else, replace it with `pending/agent` so a worker carries on
+- **Hand it to a person first**: in the Labels box on the item's page, add `pending/human` first,
+  reload the page to see it is there, and only then remove `doing/agent`. Not the other way round: for the
+  moment neither is on, a project that picks up items on its own may dispatch it again as a new one. If
+  `pending/human` did not stick, do not remove `doing/agent`
+- **Then dispatch it as usual**: see which step it stopped at. If the latest delivery has no review verdict
+  yet — it is a worker's comment, or a first round whose delivery is only in the PR description with none in
+  the comments — add `pending/review` so the review carries on; if the latest agent comment is a review
+  verdict (a rejection or anything else), add `pending/agent` so a worker carries on. Either way, add the
+  new label first and remove `pending/human` after it. If the step cannot be told, leave it on
+  `pending/human` for a maintainer
 - **How to tell it worked**: the item first carries `doing/agent` again (the daemon dispatched it), then a
   new comment by the loop account appears — a review verdict or a worker delivery, a separate comment now,
   no longer part of the round log — and `doing/agent` has given way to the next step's label. With a queue of

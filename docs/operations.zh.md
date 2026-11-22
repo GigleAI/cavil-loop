@@ -1378,8 +1378,8 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 的条目都看不出来。所以关掉之后留意一阵，发现停在半路的条目就重派一次：
 
 - **怎么认出来**：条目挂着 `doing/agent`，却好一阵没有新评论，它的 agent 会话已经停下（开了卡住检测的项目，daemon 也会自己提醒或交人）
-- **先交给人**：在条目页面右侧的 Labels 里摘掉 `doing/agent`，挂上 `pending/human`。这样在人看清之前，daemon 不会再派它
-- **再照平常派工**：看评论区最新一条 agent 评论。是 worker 的交付（等复审）就把 `pending/human` 换成 `pending/review`，让复审接着审；是复审结论或别的，就换成 `pending/agent`，让 worker 接着做
+- **先交给人**：在条目页面右侧的 Labels 里先挂上 `pending/human`，刷新页面确认它已经在了，再摘掉 `doing/agent`。顺序不能反：两个都不挂的那一刻，开了自动捞取的项目可能把它当成新条目再派一次。`pending/human` 没挂上就别摘 `doing/agent`
+- **再照平常派工**：看这一轮停在哪一步。最新一份交付还没有复审结论——交付是 worker 的评论，或者是首轮只写在 PR 正文里、评论区还没有交付——就挂上 `pending/review`，让复审接着审；最新一条是复审结论（打回或别的），就挂上 `pending/agent`，让 worker 接着做。两种都是先挂新标签、再摘 `pending/human`。看不清停在哪一步，就留在 `pending/human`，由维护者处理
 - **怎样算救回来了**：条目先又挂上 `doing/agent`（daemon 已经重新派出），之后出现一条 loop 账号单独发的新评论——复审结论或 worker 交付，关掉之后它不再进往返记录——`doing/agent` 换成了下一步的标签。派工排队或 agent 撞到用量上限时会晚很久，以这两样实际出现为准，不按等了多久判断
 
 不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：

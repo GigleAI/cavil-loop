@@ -34,9 +34,11 @@
 # For an item that stopped half-way the docs give no command that decides which label to put back: four
 # review rounds on PR #652 each found a new input such a command got wrong (a maintainer doing the two label
 # steps by hand, a later hand-over, protecting labels, a closed item, a nameless event, the loop account taken
-# from an old comment), and the maintainer chose (PR #652 second Q1 = A) to have a person take it: remove
-# doing/agent and add pending/human, then read the latest agent comment and dispatch as usual (a worker's
-# delivery → pending/review, anything else → pending/agent). Do not bring back such a command.
+# from an old comment), and the maintainer chose (PR #652 second Q1 = A) to have a person take it: add
+# pending/human and only then remove doing/agent (with neither on, greedy pick-up may dispatch it again), then
+# see which step it stopped at — a delivery with no verdict yet, including a first round whose delivery is only
+# the PR description → pending/review; a review verdict → pending/agent; cannot tell → stay on pending/human —
+# adding the new label before removing pending/human. Do not bring back such a command.
 # The blocks behind <!-- round-log-check-ops / -off-ops / -on-ops:begin --> are run verbatim by
 # tests/project-config.test.sh §9 (they trust only the settings script's RESULT= word, never its exit code: a save
 # killed after the rename exits non-zero with the file written).
