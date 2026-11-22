@@ -29,6 +29,11 @@ await vite({
   // a wider margin than needed, kept so the old-engine UI test keeps meaning something
   build: { outDir, emptyOutDir: true, sourcemap: testBridge, target: ['safari14', 'chrome110'] },
 });
+// GitHub#680: the mermaid copy the diagram helper frame runs (src/renderer/diagramHost.ts), next to its own
+// script (src/renderer/public/diagram/draw.js, copied by Vite) — mermaid's one-file build, as published
+mkdirSync(join(outDir, 'diagram'), { recursive: true });
+copyFileSync(join(root, 'node_modules', 'mermaid', 'dist', 'mermaid.min.js'), join(outDir, 'diagram', 'mermaid.min.js'));
+copyFileSync(join(root, 'node_modules', 'mermaid', 'LICENSE'), join(outDir, 'diagram', 'mermaid.LICENSE.txt'));
 console.log(`built ${outDir.slice(root.length + 1)}/`);
 
 // The app's icon set (src-tauri/icons, not committed): generated from build/icon.png — the one

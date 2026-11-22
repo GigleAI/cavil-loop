@@ -174,6 +174,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 <details><summary>细节：浮窗宽度、详情里有什么、标签页、没发出去的文字</summary>
 
 - **浮窗**默认铺到只给后面的列表留出约 15 个字的标题，跟着窗口变宽变窄（拖左边缘改宽度，拖过的宽度会记住；双击左边缘回到默认）。里面有正文、讨论、标签、负责人、迭代、状态、里程碑；PR 还有检查结果和合并按钮。
+- **讨论里的 mermaid 流程图**在这台电脑上画成图显示（浅色 / 深色跟着窗口），原文折叠在图下面的「流程图原文」里，展开可以复制，⌘F 也找得到；原文写错画不出来时，写明没画出来并直接展开原文，附「在 GitHub 打开」。回复框下方的「预览」也一样。GitHub 网页上另外几种自己画的块（地图、3D 模型）客户端不画，按普通代码块显示，并注明只在 GitHub 网页上显示。
 - **依赖图上**单击节点只显示摘要，双击或点摘要里的「打开详情」才打开浮窗；不在当前来源里的节点只有摘要和「在 GitHub 打开」，没有详情。
 - **标签页**：按住 ⌘ 点、右键菜单 →「在新标签页打开」，或浮窗右上角的「在标签页打开」。标签页排在窗口最上面那一行（Logo 右边），「首页」就是看板 / 表格 / 依赖图，标签页多了可以左右滚动；⌘1 … ⌘9 切标签页。打开的标签页重开 App 还在。
 - **没发出去的文字**跟着各自的标签页 / 浮窗，切走再回来还在；关掉有字的标签页前会先问。
@@ -241,7 +242,7 @@ Cavil Loop 客户端是一个管理 GitHub issue / PR 的桌面 App（macOS、Wi
 
 <details><summary>细节：GitHub 的地址、Tailscale 连接、链接、凭据、离线</summary>
 
-- **GitHub 的地址**：同步和修改只发给 `api.github.com` / `github.com`。另外几处也是 GitHub 自己的地址：头像（`avatars.githubusercontent.com`）、讨论里的图片（GitHub 的附件地址和图片代理）、仓库文件（`raw.githubusercontent.com`）、讨论里引用的 Release 附件图，以及自动更新下载更新包时跳转到的 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`。
+- **GitHub 的地址**：同步和修改只发给 `api.github.com` / `github.com`。另外几处也是 GitHub 自己的地址：头像（`avatars.githubusercontent.com`）、讨论里的图片（GitHub 的附件地址和图片代理）、仓库文件（`raw.githubusercontent.com`）、讨论里引用的 Release 附件图，以及自动更新下载更新包时跳转到的 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`。讨论里的 mermaid 流程图由 App 自带的画图程序在本机画，不连任何地址：它跑在一个隐藏的隔离页面里，连不上网，也拿不到登录凭据。
 - **Tailscale 上的机器**（见[可选：接上 daemon](#可选接上-daemon)）：① 在设置 →「远程 daemon」里打开「添加远程 daemon」窗口时，客户端读一次本机 Tailscale 的设备列表，并向每台在线设备发一个不带内容的 HTTPS 请求，问它的远程入口开没开——这时还没选机器、也没输配对码；② 提交配对码时，只向人选定的那一台发配对请求；③ 配对之后，读状态、停启项目、看日志、读改项目配置也只连已配对的机器。这些连接只接受 `*.ts.net` 的完整机器名，地址必须全是 Tailscale 地址，对方必须出示这个名字的有效 HTTPS 证书，都不带 GitHub 凭据。没打开过添加窗口、也没有已配对的机器时，不发这类请求。
 - **讨论里的链接交给系统浏览器**：在详情里点 `http` / `https` 链接（不论是不是 GitHub 的），由系统浏览器打开，和网页版 GitHub 一样，打开前不再确认；⌘ / Ctrl + 点击、中键点击一样，回复框下方「预览」里的链接也一样。客户端自己不访问这个地址，也不带凭据。指向本页某处的链接（如脚注）在讨论里跳过去，不开浏览器；`javascript:`、`file:`、`mailto:` 这类别的地址不打开。
 - **凭据**：登录凭据存在 macOS 钥匙串（Windows 上存在 Windows 凭据管理器，名字是 `dev.luosky.cavil-loop.client/github-oauth`，配对远程机器的钥匙也在旁边），只在 App 的后台使用，窗口里的页面拿不到。退出登录会清掉凭据和本机缓存。

@@ -281,5 +281,12 @@
   "关闭 PR #{number}（不合并）？": "Close PR #{number} (without merging)?",
   "确认关闭": "Confirm close",
   "可选：附一句评论（关闭成功后发出）": "Optional: add a comment (sent once it is closed)",
-  "关闭 issue #{number}？": "Close issue #{number}?"
+  "关闭 issue #{number}？": "Close issue #{number}?",
+  "流程图": "Diagram",
+  "正在画流程图…": "Drawing the diagram…",
+  "流程图原文": "Diagram source",
+  "这张流程图没画出来（写法有误），下面是原文": "This diagram could not be drawn (its source has an error); the source is below",
+  "这张流程图太长，没有画，下面是原文": "This diagram is too long to draw; the source is below",
+  "这张流程图没画出来，下面是原文": "This diagram could not be drawn; the source is below",
+  "这类图只在 GitHub 网页上显示": "This kind of block is only drawn on GitHub's web page"
 }

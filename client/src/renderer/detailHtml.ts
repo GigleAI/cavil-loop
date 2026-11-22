@@ -19,6 +19,8 @@ import { annotateTaskBoxes, type PendingTick } from '../data/taskList';
 import { FRAME_SCRIPT, FRAME_SCRIPT_HASH, PREVIEW_SCRIPT, PREVIEW_SCRIPT_HASH, frameWords } from './frameScript';
 import { t, tKey, zhKey } from '../shared/i18n';
 import { annotateCodeBlocks, codeCss } from './codeBlocks';
+import { annotateDiagrams, diagramCss, withoutPlaceholders } from './diagramBlocks';
+import type { DrawResult } from './diagramHost';
 import { parseReleaseImage } from '../shared/images';
 import { formatDuration, withoutFooter } from '../shared/agentMetrics';
 
@@ -155,7 +157,8 @@ export type Unfold = 'latest' | 'all' | 'none';
 function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick | null, wrap: boolean, web?: string): { html: string; note: string } {
   const tasks = e.tasks;
   // GitHub#381: every code block gets its two buttons; the boxes are numbered first, exactly as before
-  const html = markReleaseImages(annotateCodeBlocks(annotateTaskBoxes(e.bodyHtml, canTick && tasks?.clickable === true, pending), wrap), web);
+  // GitHub#680: a diagram GitHub's page would draw becomes the client's own block before its code block gets the buttons
+  const html = markReleaseImages(annotateCodeBlocks(annotateDiagrams(annotateTaskBoxes(e.bodyHtml, canTick && tasks?.clickable === true, pending), { web: e.url }), wrap), web);
   const note = tasks && !tasks.clickable ? `<div class="tasknote" data-testid="task-readonly">${escapeHtml(tKey(tasks.why))}</div>` : '';
   return { html, note };
 }
@@ -176,7 +179,8 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
   // GitHub#472: the excerpt is GitHub's words, marked as such; only the client's own fallbacks are not
   // GitHub#651: a round log's preview is its last section's fold title (written by the loop)
   const rl = e.roundLog;
-  const quoted = plainExcerpt(e.wallSecs !== undefined && !rl ? withoutFooter(e.bodyHtml) : e.bodyHtml);
+  // GitHub#680: a diagram's placeholder counts as its source only (not GitHub's "Loading")
+  const quoted = plainExcerpt(withoutPlaceholders(e.wallSecs !== undefined && !rl ? withoutFooter(e.bodyHtml) : e.bodyHtml));
   const excerpt =
     rl?.latest !== undefined
       ? `<span class="latest">${escapeHtml(t('最新：'))}</span><span data-verbatim="github">${escapeHtml(rl.latest)}</span>`
@@ -222,7 +226,7 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
       e.lineComments
         .map(
           (l) =>
-            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code data-verbatim="github">${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b data-verbatim="github">${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md" data-verbatim="github">${markReleaseImages(annotateCodeBlocks(l.bodyHtml, wrap), web)}</div></div>`,
+            `<div class="line" data-entry="${escapeHtml(l.id)}"><div class="head"><code data-verbatim="github">${escapeHtml(l.path)}${l.line != null ? `:${l.line}` : ''}</code> · ${avatarHtml(l.author, 16)}<b data-verbatim="github">${escapeHtml(l.author ?? '')}</b> · ${escapeHtml(when(l.at))}</div><div class="md" data-verbatim="github">${markReleaseImages(annotateCodeBlocks(annotateDiagrams(l.bodyHtml, { web: l.url }), wrap), web)}</div></div>`,
         )
         .join('') +
       '</div>';
@@ -309,6 +313,7 @@ a{color:${accent}}
 .md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
 .md img{max-width:100%}
 ${codeCss(dark, '.md ')}
+${diagramCss(dark, '.md ')}
 .cb{position:relative;margin:1em 0}
 .cb>pre{margin:0}
 body[data-wrap] .md pre{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -365,6 +370,8 @@ ${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && p
  * coloured the same in both — and one script, PREVIEW_SCRIPT (GitHub#590: a clicked
  * web link goes to the window).
  */
-export function previewDocument(html: string, dark: boolean): string {
-  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}"><base target="_blank"><style>${codeCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${html}<script>${PREVIEW_SCRIPT}</script></body>`;
+export function previewDocument(html: string, dark: boolean, drawn?: (src: string) => DrawResult | undefined): string {
+  // GitHub#680: the same diagram blocks as the discussion; the window has drawn them already (`drawn`), so the
+  // picture goes straight in and the preview's script stays links-only
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}"><base target="_blank"><style>${codeCss(dark)}\n${diagramCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${annotateDiagrams(html, { drawn })}<script>${PREVIEW_SCRIPT}</script></body>`;
 }
